@@ -701,7 +701,9 @@ export function BondFormModal({
       }>).detail;
       if (!detail?.requestId || !detail.entryId) return;
       setRequestId(detail.requestId);
-      setEditEntryId(detail.cashEntryId ?? null);
+      // detail.entryId 是行上的分录 id（债券行 = cashEntryId ?? bondTransactionId），
+      // 调用方没单独带 cashEntryId 时用它兜底，避免编辑退化成新增。
+      setEditEntryId(detail.cashEntryId ?? detail.entryId ?? null);
       setEditBusinessTransactionId(detail.businessTransactionId ?? null);
       const nextSubtype: WealthSubtype =
         detail.fundSubtype === "dividend_cash" ? "dividend_cash"

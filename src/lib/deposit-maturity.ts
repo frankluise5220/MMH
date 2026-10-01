@@ -38,16 +38,18 @@ export function dayDiffDays(later: Date, earlier: Date): number {
 }
 
 /**
- * Interest day count for one deposit segment under the 存入日计息 convention:
- * the deposit day itself counts, and the count follows real calendar days
- * (a year spanning Feb 29 accrues 366 days, otherwise 365).
+ * Interest day count for one deposit segment under the 算头不算尾 convention:
+ * the deposit day itself counts and the maturity day does not, so the count
+ * follows real calendar days (a year spanning Feb 29 accrues 366 days,
+ * otherwise 365).
  *
- * Spans whose maturity sits one day before the Nth calendar anniversary encode
- * that convention (maturity = 起存日 + N 年 − 1 天, e.g. 2025-01-20 → 2026-01-19
- * = 365 days; 2019-03-20 → 2020-03-19 = 366 days), so they count inclusively
- * (raw difference + 1). Legacy same-day-anniversary spans already contain the
- * full span in the raw difference and stay unchanged, as do day/month/week
- * based terms.
+ * Two maturity conventions are recognized because both exist in stored data:
+ *   - 对年对月对日 (current, since 2026-10-01): maturity === Nth anniversary,
+ *     the raw difference already carries the full count (365/366) — unchanged;
+ *   - 周年 − 1 天 (legacy rows written before 2026-10-01): maturity sits one day
+ *     before the Nth anniversary (2025-01-20 → 2026-01-19), so it counts
+ *     inclusively (raw difference + 1) to recover the same 365/366 days.
+ * Day/month/week based terms are unchanged either way.
  */
 export function depositInterestDaysUtc(start: Date, maturity: Date): number {
   const days = Math.max(0, dayDiffDays(maturity, start));
@@ -66,9 +68,9 @@ export function depositInterestDaysUtc(start: Date, maturity: Date): number {
  * 起存日 + N 月 − 1 天 (2026-01-15 + 6 个月 → 2026-07-14), which made the segment
  * fall back to a day count (180/365 → 12.82) instead of the month rule
  * (6/12 → 13.00) and pushed every renewal one day earlier. This maps such an
- * `end` back onto its anniversary. Whole-year spans (N % 12 === 0) keep their
- * −1 天 convention (存入日计息) and are returned untouched, as is anything that
- * is not exactly one day before an anniversary.
+ * `end` back onto its anniversary. Whole-year spans (N % 12 === 0) are returned
+ * untouched: their `−1 天` form is the legacy 到期日 convention and is handled by
+ * the interest-day logic, not by this month-term normaliser.
  */
 export function normalizeDepositMonthTermEndUtc(start: Date, end: Date): Date {
   const spanMonths =
@@ -92,10 +94,14 @@ export function depositWholeMonthsUtc(start: Date, end: Date): number | null {
 }
 
 /**
- * Interest for one deposit segment. Whole-month spans are prorated by calendar
- * months (N/12) — a 6-month term at 1.3% on 2000 pays
- * 2000 × 1.3% × 6/12 = 13.00 — everything else keeps the day-count convention
- * (principal × rate × days / 365).
+ * Interest for one deposit segment.
+ *
+ * Calendar-year terms use the bank-style annual formula directly: principal ×
+ * annual rate × years. This is important for legacy lots whose maturity was
+ * stored one day before the anniversary: turning that span into 365/366-day
+ * interest first can produce a fractional extra year across leap years.
+ * Whole-month spans use N/12; only non-calendar day/week spans fall back to
+ * day-count interest.
  */
 export function depositSegmentInterest(params: {
   principal: number;
@@ -106,6 +112,19 @@ export function depositSegmentInterest(params: {
   const { principal, annualRatePercent, startDate, endDate } = params;
   if (!(principal > 0) || !(annualRatePercent && annualRatePercent > 0) || !startDate || !endDate) return 0;
   if (endDate.getTime() <= startDate.getTime()) return 0;
+
+  // Both conventions exist in stored data: the current anniversary date and
+  // the legacy anniversary-minus-one-day date. An annual deposit must use the
+  // integer year count, not the raw day count (e.g. 3 years is exactly 3).
+  const spanDays = dayDiffDays(endDate, startDate);
+  const maxYears = Math.floor(spanDays / 365) + 1;
+  for (let years = maxYears; years >= 1; years--) {
+    const anniversaryDays = dayDiffDays(addCalendarYearsUtc(startDate, years), startDate);
+    if (spanDays === anniversaryDays || spanDays === anniversaryDays - 1) {
+      return round2(principal * (annualRatePercent / 100) * years);
+    }
+  }
+
   // 遗留的「起存日 + N 月 − 1 天」到期日先归一到周年，再按 月数/12 计息。
   const normalizedEnd = normalizeDepositMonthTermEndUtc(startDate, endDate);
   const months = depositWholeMonthsUtc(startDate, endDate) ?? depositWholeMonthsUtc(startDate, normalizedEnd);
@@ -129,10 +148,10 @@ export function calculateDepositAccruedInterest(params: {
  *   - exact N calendar months (anniversary-aligned span, the month-term rule):
  *     roll keeps the anniversary (2031-01-15 + 60 months → 2036-01-15, leap
  *     years included);
- *   - N whole years minus one day (存入日计息 convention, maturity =
- *     起存日 + N 年 − 1 天): the renewed term starts on the previous maturity
- *     day, so its maturity is the next anniversary − 1 day, i.e. exactly
- *     `currentMaturity + N months` (no second −1, which would drift a day
+ *   - N whole years — both the current 对年对月对日 convention and the legacy
+ *     周年 − 1 天 form, which sits exactly one day before the anniversary: the
+ *     renewed term starts on the previous maturity day, so its maturity is
+ *     `currentMaturity + N months` (no extra −1, which would drift a day
  *     earlier per renewal);
  *   - anything else rolls by raw days — using `originalTermDays` (the lot's
  *     original term length) when provided so multi-round catch-ups advance one
@@ -160,7 +179,7 @@ export function nextDepositTermMaturityUtc(
       const termMonths = originalTermMonthsUtc(startDate, originalTermDays) ?? spanMonths;
       // 月周期锚在原始起存日的周年上：遗留的「−1 天」月到期日（旧规则 起存日 +
       // N 月 − 1 天）若不回到周年，后续每期都会比周年早一天。整年（12 的倍数）
-      // 保持 存入日计息 的 −1 天语义，继续从当前到期日滚动。
+      // 保持整年口径不变（对日，或尚未迁移的遗留「−1 天」），继续从当前到期日滚动。
       return addMonthsClampedUtc(normalizeDepositMonthTermEndUtc(startDate, currentMaturity), termMonths);
     }
   }

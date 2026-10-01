@@ -116,10 +116,17 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
     const generalPlans = plansToRun
       .filter((plan) => isNonFundScheduledTask(decodeScheduledTaskMemo(plan.memo).type))
       .sort((left, right) => {
+        // 生息 → 取息 → 取本的**硬顺序**：取息必须等生息先生成利息收入，取本必须等
+        // 利息清算完毕。判据用 memo 解码出的任务类型（与执行分支 executeDepositPlan /
+        // bond 分支的判定**同源**），而不是 plan.planAction —— planAction 对历史
+        // 计划行可能是 null（如旧 depi_ 无显式动作），会导致排序失效、取息跑到生息之前
+        // （2026-10-01 用户报障：生息取息计划没有时间顺序）。sort 是稳定的，同 rank
+        // 保持 findMany 自然顺序，不影响其它非存款/债券计划的相对次序。
         const rank = (plan: typeof left) => {
-          if (plan.planAction === "interest_accrual") return 0;
-          if (plan.planAction === "interest_withdrawal") return 1;
-          if (plan.planAction === "principal_withdrawal") return 2;
+          const task = decodeScheduledTaskMemo(plan.memo);
+          if (task.type === "deposit_interest_accrual" || task.type === "bond_interest_accrual") return 0;
+          if (task.type === "deposit_interest_payout" || task.type === "bond_interest_payout") return 1;
+          if (task.type === "deposit_maturity" || task.type === "bond_maturity") return 2;
           return 3;
         };
         return rank(left) - rank(right);

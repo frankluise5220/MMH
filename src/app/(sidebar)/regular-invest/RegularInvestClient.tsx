@@ -1600,11 +1600,17 @@ export function RegularInvestClient({
   }, [t]);
 
   function renderPlanActions(plan: RegularInvestPlanView) {
-    // 存款到期/取息系统计划放开编辑（周期/金额/下一执行日），编辑后 manualOverride
-    // 使手动值永久生效；债券/房贷账单仍只读。
+    // 存款/债券三动作系统计划（deposit_* / bond_*）都放开编辑（周期/金额/下一执行日），
+    // 编辑后写 manualOverride 使手动值永久生效；房贷账单仍只读。
     const planTaskType = getPlanTaskType(plan);
-    const isDepositSystemPlan = planTaskType === "deposit_maturity" || planTaskType === "deposit_interest_accrual" || planTaskType === "deposit_interest_payout";
-    if (plan.isSystemTask && !isDepositSystemPlan) {
+    const isLotSystemPlan =
+      planTaskType === "deposit_maturity" ||
+      planTaskType === "deposit_interest_accrual" ||
+      planTaskType === "deposit_interest_payout" ||
+      planTaskType === "bond_maturity" ||
+      planTaskType === "bond_interest_accrual" ||
+      planTaskType === "bond_interest_payout";
+    if (plan.isSystemTask && !isLotSystemPlan) {
       return (
         <>
           <span className="inline-flex h-6 items-center rounded border border-slate-200 bg-slate-50 px-1.5 text-[10px] text-slate-400" title={t("regularInvest.client.systemTask.title")}>
@@ -1616,9 +1622,9 @@ export function RegularInvestClient({
         </>
       );
     }
-    // 存款到期/取息系统计划：可编辑（周期/金额/下一执行日）+ 删除，但不提供
+    // 存款/债券三动作系统计划：可编辑（周期/金额/下一执行日）+ 删除，但不提供
     // 暂停/停止/立即执行（存单驱动，暂停会被存单条款自愈恢复）。
-    if (plan.isSystemTask && isDepositSystemPlan) {
+    if (plan.isSystemTask && isLotSystemPlan) {
       return (
         <>
           <span className="inline-flex h-6 items-center rounded border border-slate-200 bg-slate-50 px-1.5 text-[10px] text-slate-400" title={t("regularInvest.client.systemTask.title")}>

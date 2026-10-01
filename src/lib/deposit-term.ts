@@ -9,19 +9,26 @@ export const DEFAULT_DEPOSIT_TERM_DAYS = 365;
 
 /**
  * Maturity date for a deposit term, calendar-aware for periodic units:
- *   - year  → Nth calendar anniversary − 1 day (存入日计息: 2025-01-20 存 1 年 → 2026-01-19);
- *   - month → Nth calendar month anniversary, no −1 shift (2026-01-15 存 6 个月 → 2026-07-15).
- *     Whole-year month spans (12/24/36…) keep the 整年 rule above so 12 个月 ≡ 1 年;
- *   - week/day → raw day math (no −1 shift).
+ *   - year  → Nth calendar anniversary (2026-12-21 存 1 年 → 2027-12-21);
+ *   - month → Nth calendar month anniversary, month-end starts clamp
+ *     (2026-01-15 存 6 个月 → 2026-07-15; 2026-01-31 存 1 个月 → 2026-02-28).
+ *     Whole-year month spans (12/24/36…) are the same rule as `year`;
+ *   - week/day → raw day math (no shift).
  * Never approximate months as 30-day blocks: 24 × 30 days lands 10 days early.
+ *
+ * **到期日 = 对年对月对日**（银行业惯例：自存入日至次年同月同日为一对年）。
+ * 「算头不算尾」说的是**计息天数**（含存入日、不含到期日），不是到期日本身：
+ * 2026-12-21 存 1 年 → 到期日 2027-12-21，计息 365 天。
+ *
+ * 2026-10-01 用户裁定更正：旧实现把 −1 天写进了到期日（2026-12-21 → 2027-12-20），
+ * 再靠 `depositInterestDaysUtc` 的 +1 补偿把利息修回 365 天 —— 结果是**利息对、到期日早一天**，
+ * 且与已经定版的付息锚点口径（`depositPayoutAnchorUtc`：对应日、不提前一天）自相矛盾。
+ * 存量已按旧口径落库的存单由 `prisma/migrations` 的 data migration 迁回对日。
  */
 export function depositTermMaturityUtc(start: Date, unit: DepositTermUnit, count: number): Date {
   const n = Math.max(0, Math.trunc(count));
-  if (unit === "year") return addDaysUtc(addCalendarYearsUtc(start, n), -1);
-  if (unit === "month") {
-    if (n > 0 && n % 12 === 0) return addDaysUtc(addMonthsClampedUtc(start, n), -1);
-    return addMonthsClampedUtc(start, n);
-  }
+  if (unit === "year") return addCalendarYearsUtc(start, n);
+  if (unit === "month") return addMonthsClampedUtc(start, n);
   return addDaysUtc(start, n * TERM_UNIT_DAYS[unit]);
 }
 
@@ -29,8 +36,13 @@ export function depositTermMaturityUtc(start: Date, unit: DepositTermUnit, count
  * Decompose a day count into unit + count for the unit-first term picker.
  * When the deposit's start date is known, calendar units win over naive day
  * math: a 2026-01-15 → 2031-01-15 span (1826 days across a leap year) reads
- * as 5 年, not 1826 天, and the 存入日计息 convention (maturity = 起存日 +
- * N 年 − 1 天, e.g. 2025-01-20 → 2026-01-19) also reads as whole years.
+ * as 5 年, not 1826 天.
+ *
+ * **两种到期日口径都识别为整年**，因为存量数据里两者并存：
+ *   - 对年对月对日（现行，2026-10-01 起）：anniversaryDays === d；
+ *   - 旧口径「周年 − 1 天」（2026-10-01 前落库）：anniversaryDays - 1 === d。
+ * 保留旧口径分支是**刻意的**：迁移是幂等的、按账簿逐步生效，未迁移的账簿仍要能正确
+ * 反解出「整年」，否则一张 2 年存单会被读成 729 天而退化成按天计息。
  * Whole years win over months, months over weeks, so 90 -> 3 months,
  * 14 -> 2 weeks, and anything else stays in days.
  */

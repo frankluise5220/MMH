@@ -2562,7 +2562,9 @@ export function TransactionFormModal({
                           onChange={setDepositLotId}
                           options={depositLotOptions.map((lot) => ({
                             id: lot.id,
-                            label: lot.fundName || t("sidebar.deposit.unnamed"),
+                            // 老存单 fundName 为 null，真实名称在 DepositProduct.name（接口以 productName 返回）。
+                            // 只回退 fundName 会显示成「未命名存款」（2026-10-01 实测：编辑利息收入时关联存单下拉显示占位名）。
+                            label: (lot.fundName ?? "").trim() || (lot.productName ?? "").trim() || t("sidebar.deposit.unnamed"),
                             subLabel: [
                               lot.startDate ?? "",
                               lot.maturityDate ?? "",

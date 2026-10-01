@@ -83,6 +83,8 @@ type RedeemLotOption = {
   label: string;
   subLabel?: string;
   fundName: string;
+  /** 存单所挂存款产品的名称，仅用于显示（老存单 fundName 为 null，名称在产品上）。 */
+  productName?: string | null;
   depositProductId?: string | null;
   startDate?: string | null;
   maturityDate?: string | null;
@@ -96,6 +98,8 @@ type RedeemLotOption = {
 type EditingRedeemSource = {
   id: string;
   fundName: string;
+  /** 存单所挂存款产品的名称，仅用于显示（老存单 fundName 是占位名时靠它兜底）。 */
+  productName?: string | null;
   depositProductId?: string | null;
   startDate?: string | null;
   maturityDate?: string | null;
@@ -445,11 +449,51 @@ export function DepositFormModal({
   // 期间付息的存单利息已逐期付过，没有可滚入的利息。
   const rollInDisabledForRenew =
     !!renewSource && parseDepositInterestPayout(renewSource.interestPayoutFrequency ?? null).kind === "periodic";
+  /**
+   * 取回存单下拉的显示名。
+   *
+   * 存单名称有三个来源，且**老存单的 fundName 是 null**（真实名称挂在
+   * `DepositProduct.name` 上，接口以 `productName` 返回）：
+   *   - `fundName` —— 存单自身名称（`/api/v1/deposit/lots` 返回）
+   *   - `label`    —— 父级（存单列表）/ 编辑态算好的显示名
+   *   - `productName` —— 所挂存款产品的名称
+   * 父级与编辑态在拿不到名字时会塞入占位名「未命名存款」，那不是真实名称：
+   * 必须跳过占位名，否则产品名会被它盖住，下拉渲染成「有记录、没文字」的空条目
+   * （2026-10-01 用户报障：刚打开能看到两条存单，约 2 秒后接口返回把选项覆盖成空白）。
+   */
+  const redeemLotDisplayName = useCallback(
+    (lot: RedeemLotOption) => {
+      const placeholders = new Set([t("depositForm.unnamedDeposit"), t("sidebar.deposit.unnamed")]);
+      for (const candidate of [lot.fundName, lot.label, lot.productName]) {
+        const value = String(candidate ?? "").trim();
+        if (value && !placeholders.has(value)) return value;
+      }
+      return t("sidebar.deposit.unnamed");
+    },
+    [t],
+  );
   const availableRedeemLotOptions = useMemo(
     () => {
       const byId = new Map<string, RedeemLotOption>();
       for (const lot of redeemLotOptions) byId.set(lot.id, lot);
-      for (const lot of fetchedRedeemLotOptions) byId.set(lot.id, lot);
+      for (const lot of fetchedRedeemLotOptions) {
+        const previous = byId.get(lot.id);
+        if (!previous) {
+          byId.set(lot.id, lot);
+          continue;
+        }
+        // 接口返回的存单带的是最新剩余本金，但它没有 label / subLabel，老存单的
+        // fundName 还是空串 —— 整条覆盖会把父级已经算好的显示名和副标题抹掉，
+        // 表现就是「刚打开能看见两条存单，约 2 秒后变空白」（2026-10-01 用户报障）。
+        // 只在接口确实给得出名称时覆盖显示字段，其余沿用父级；fundName 保持接口值，
+        // 不改写存单自身名称语义。
+        const fetchedName = (lot.fundName ?? "").trim() || (lot.productName ?? "").trim();
+        byId.set(lot.id, {
+          ...lot,
+          label: fetchedName || previous.label,
+          subLabel: previous.subLabel ?? lot.subLabel,
+        });
+      }
       return [...byId.values()];
     },
     [fetchedRedeemLotOptions, redeemLotOptions],
@@ -460,9 +504,13 @@ export function DepositFormModal({
       return;
     }
     let cancelled = false;
+    // 只取「仍有剩余本金」的存单（includeClosed 缺省即 false）。
+    // 编辑态**不要**改传 includeClosed=1：被编辑的那张存单由下面的 excludeEntryId 把
+    // 当前取回本金加回，余额自然 > 0 仍会出现在选项里；而 includeClosed=1 会把**已全额
+    // 取回**的存单也一并列出，表现为「编辑提前取款时，取出存单下拉出现 3 项，实际只应 2 项」
+    // （2026-10-01 用户报障：民泰账户 3 张存单里有 1 张已全额取回、余额 0）。
     const params = new URLSearchParams({
       accountIds: depositAccountList.map((option) => option.id).join(","),
-      includeClosed: mode === "edit" ? "1" : "0",
     });
     if (editEntryId) params.set("excludeEntryId", editEntryId);
     void fetch(`/api/v1/deposit/lots?${params.toString()}`, { cache: "no-store" })
@@ -477,10 +525,10 @@ export function DepositFormModal({
     return () => {
       cancelled = true;
     };
-  }, [depositAccountList, editEntryId, isRedeem, mode, open]);
+  }, [depositAccountList, editEntryId, isRedeem, open]);
   const effectiveRedeemLotOptions = useMemo(() => {
     if (!editingRedeemSource || !isRedeem) return availableRedeemLotOptions;
-    const restored = {
+    const restored: RedeemLotOption = {
       id: editingRedeemSource.id,
       label: editingRedeemSource.fundName,
       subLabel: [
@@ -491,6 +539,7 @@ export function DepositFormModal({
         .filter(Boolean)
         .join(" · "),
       fundName: editingRedeemSource.fundName,
+      productName: editingRedeemSource.productName ?? null,
       depositProductId: editingRedeemSource.depositProductId ?? null,
       startDate: editingRedeemSource.startDate,
       maturityDate: editingRedeemSource.maturityDate,
@@ -525,11 +574,10 @@ export function DepositFormModal({
     () =>
       sortedRedeemLotOptions.map((lot) => ({
         id: lot.id,
-        // `/api/v1/deposit/lots` 返回的存单用 fundName，父级 prop 用 label —— 统一兜底，避免 label 为 undefined。
-        label: lot.label ?? lot.fundName,
+        label: redeemLotDisplayName(lot),
         subLabel: lot.subLabel,
       })),
-    [sortedRedeemLotOptions],
+    [sortedRedeemLotOptions, redeemLotDisplayName],
   );
   const selectedRedeemLot = useMemo(
     () => effectiveRedeemLotOptions.find((lot) => lot.id === selectedRedeemLotId) ?? null,
@@ -1023,10 +1071,14 @@ export function DepositFormModal({
           ? String(detail.depositInterest)
           : "",
       );
-      setInterestEdited(
-        !isRedeem && detail.depositInterest != null && Number.isFinite(detail.depositInterest),
-      );
-      setArrivalEdited(!isRedeem && mode === "edit");
+      // 编辑既有记录：库里的利息/到账额是用户上次保存的真值，必须标成「已手改」，
+      // 否则下面两个预览 effect（interestEdited/arrivalEdited 为 false 时）会立刻用
+      // 存单条款公式覆盖它 —— 用户看到的就是「利息没被带进来、保存后数字变了」。
+      // 改本金时 amount 的 onChange 会把两个标记清掉并重算，手动纠正路径不受影响。
+      const hasStoredInterest = detail.depositInterest != null && Number.isFinite(detail.depositInterest);
+      const hasStoredArrival = !!detail.amount && Math.abs(Number(detail.amount)) > 0;
+      setInterestEdited(hasStoredInterest);
+      setArrivalEdited(isRedeem ? hasStoredArrival : mode === "edit");
       if (detail.date && detail.fundArrivalDate) {
         const diffDays = Math.max(
           0,
@@ -1063,6 +1115,8 @@ export function DepositFormModal({
             ? {
                 id: restoredLotId,
                 fundName: detail.fundName ?? matchedLot?.fundName ?? t("depositForm.unnamedDeposit"),
+                // 老存单 fundName 为 null，产品名才是真正的显示名；编辑态下拉要靠它显示文字。
+                productName: matchedLot?.productName ?? null,
                 depositProductId: detail.depositProductId ?? matchedLot?.depositProductId ?? null,
                 startDate: matchedLot?.startDate ?? null,
                 maturityDate: matchedLot?.maturityDate ?? null,
@@ -1120,6 +1174,7 @@ export function DepositFormModal({
     const nextDepositProductId = matchedLot.depositProductId ?? editingRedeemSource.depositProductId ?? null;
     const nextAnnualRate = matchedLot.annualRate ?? editingRedeemSource.annualRate ?? null;
     const nextAccountLabel = matchedLot.depositAccountLabel ?? editingRedeemSource.depositAccountLabel;
+    const nextProductName = matchedLot.productName ?? editingRedeemSource.productName ?? null;
     if (
       editingRedeemSource.startDate === matchedLot.startDate &&
       editingRedeemSource.maturityDate === matchedLot.maturityDate &&
@@ -1128,7 +1183,8 @@ export function DepositFormModal({
       editingRedeemSource.latestInterestDate === (matchedLot.latestInterestDate ?? null) &&
       editingRedeemSource.restoredRemainingAmount === restoredRemainingAmount &&
       editingRedeemSource.depositAccountId === matchedLot.depositAccountId &&
-      editingRedeemSource.depositAccountLabel === nextAccountLabel
+      editingRedeemSource.depositAccountLabel === nextAccountLabel &&
+      editingRedeemSource.productName === nextProductName
     ) {
       return;
     }
@@ -1136,6 +1192,7 @@ export function DepositFormModal({
       if (!current || current.id !== sourceId) return current;
       return {
         ...current,
+        productName: nextProductName,
         depositProductId: nextDepositProductId,
         startDate: matchedLot.startDate,
         maturityDate: matchedLot.maturityDate,
@@ -1277,10 +1334,19 @@ export function DepositFormModal({
   }, [cashAccountList, depositAccountList, editEntryId, isRedeem, mode, selectedRedeemLot]);
 
   useEffect(() => {
+    // 只在「新建」时把取出日顺延到最近一次已生成利息之后（防止取出早于结息）。
+    // 两个必须的守卫：
+    //   1. `editEntryId` —— 编辑既有记录时，库里的日期就是用户保存的真值，改它等于篡改历史；
+    //      而且 latestInterestDate 由该存单全部记录算出，必然 ≥ 本条记录日期，会把日期顶走。
+    //   2. 日期必须已输入完整 —— 原生 date 输入在分段键入途中 value 为 ""，
+    //      若此时判定 `"" < minimumDate` 就会把中间态顶成 minimumDate，
+    //      表现为「数字键打不进去 / 一输入就变成另一个日期」。
+    if (!isRedeem || editEntryId) return;
     const minimumDate = selectedRedeemLot?.latestInterestDate ?? null;
-    if (!isRedeem || !minimumDate || date >= minimumDate) return;
+    if (!minimumDate || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
+    if (date >= minimumDate) return;
     setDate(minimumDate);
-  }, [date, isRedeem, selectedRedeemLot]);
+  }, [date, editEntryId, isRedeem, selectedRedeemLot]);
 
   useEffect(() => {
     if (!isRedeem || editEntryId) return;
@@ -1417,10 +1483,12 @@ export function DepositFormModal({
           throw new Error(t("wealthForm.alert.arrivalAmountInvalid"));
         }
         const interestValue = parseNumber(interestAmount);
-        if (interestValue > 0) {
-          fd.set("depositInterest", String(interestValue));
-        }
+        // 始终提交利息（含 0）与「用户是否手改过」标记：服务端据此决定用用户输入
+        // 还是按存单条款重算 —— 否则手填的利息会被公式覆盖（编辑取回记录时丢失）。
+        fd.set("depositInterest", String(interestValue));
+        fd.set("depositInterestEdited", interestEdited ? "1" : "0");
         fd.set("fundArrivalAmount", String(arrivalValue));
+        fd.set("fundArrivalAmountEdited", arrivalEdited ? "1" : "0");
         if (selectedRedeemLotId) {
           fd.set("depositSourceEntryId", selectedRedeemLotId);
         }
@@ -1433,7 +1501,7 @@ export function DepositFormModal({
         fd.set("depositInterestCalcBasis", isPeriodicInterestPayout ? interestCalcBasis : "daily");
         const termCountNumber = Math.trunc(parseNumber(termCount));
         if (Number.isFinite(termCountNumber) && termCountNumber > 0) {
-          // 月/年周期按日历月/对年对日滚动（−1 天口径），不能用 30/365 天块近似。
+          // 月/年周期按日历月/对年对日滚动（到期日 = 起存日 + N 月/年），不能用 30/365 天块近似。
           const maturityDate = new Date(`${date}T00:00:00.000Z`);
           const normalizedMaturityDate = depositTermMaturityUtc(maturityDate, termUnit, termCountNumber);
           fd.set("fundArrivalDate", normalizedMaturityDate.toISOString().slice(0, 10));

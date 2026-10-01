@@ -462,12 +462,21 @@ export async function PUT(req: NextRequest) {
       return NextResponse.json({ ok: false, code: "SYSTEM_MANAGED_PLAN", error: "房贷账单由系统生成（利率由人行/LPR调整），不可作为计划任务修改" }, { status: 403 });
     }
 
-    // Deposit maturity/payout plans are system-generated from the deposit lot
-    // (same read-only treatment as mortgage bills): the dates follow the lot,
-    // pausing has no real effect (auto-maturity scans the lots directly), and
-    // deleting is undone by the startup self-heal. Edit the deposit instead.
-    if (isSystemManagedScheduledTask(existingTaskForAction)) {
-      return NextResponse.json({ ok: false, code: "SYSTEM_MANAGED_PLAN", error: "存款到期/取息计划由系统根据存单生成，不可在计划任务中修改；如需调整请编辑对应存单" }, { status: 403 });
+    // Deposit / bond three-action plans (depm_/depa_/depi_, bondm_/bonda_/bondi_)
+    // are no longer rejected here: they stay system-generated from the lot, but
+    // their amount / interval / next run date are user-correctable from the plan
+    // list (2026-10-01 用户要求：「存款/债券类计划任务，应该允许被修改金额和执行日」).
+    // A manual edit writes manualOverride = true so the startup self-heal stops
+    // re-deriving those fields from the lot terms; the memo (which carries the
+    // deposit lot link) and the plan name are preserved instead of being rebuilt
+    // from the generic task label. Loan bills remain read-only (guarded above).
+    // 状态动作（暂停/恢复/终止）仍拒绝：这些计划由存单驱动，状态会被启动自愈恢复成
+    // active，改状态没有实际效果，保持原契约（只放开「编辑」，不放开状态动作）。
+    if (
+      isSystemManagedScheduledTask(existingTaskForAction) &&
+      (action === "pause" || action === "resume" || action === "stop")
+    ) {
+      return NextResponse.json({ ok: false, code: "SYSTEM_MANAGED_PLAN", error: "存款/债券到期/取息计划由系统根据存单生成，不可暂停或终止；如需调整请修改计划的金额与执行日，或编辑对应存单" }, { status: 403 });
     }
 
     // Status actions
@@ -527,6 +536,15 @@ export async function PUT(req: NextRequest) {
     const existingTask = decodeScheduledTaskMemo(existing.memo);
     const existingTaskType = normalizeScheduledTaskType(existing.taskType ?? existingTask.type);
     const nextTaskType = normalizeScheduledTaskType(taskType || existingTaskType);
+    // 存款/债券三动作系统计划：允许手动纠正金额/周期/下次执行日，但必须保住
+    // 存单名、memo（携带 depositSourceEntryId 存单关联）与 fundProductType。
+    const isLotSystemPlan =
+      existingTaskType === "deposit_maturity" ||
+      existingTaskType === "deposit_interest_accrual" ||
+      existingTaskType === "deposit_interest_payout" ||
+      existingTaskType === "bond_maturity" ||
+      existingTaskType === "bond_interest_accrual" ||
+      existingTaskType === "bond_interest_payout";
     if (existingTaskType === "loan_repayment" && amount != null) {
       const requestedAmount = parseOptionalNonNegativeNumber(amount);
       const currentAmount = Number(existing.amount ?? 0);
@@ -671,7 +689,10 @@ export async function PUT(req: NextRequest) {
         ? nextInsuranceProductName ?? suppliedFundName ?? existing.targetName ?? existing.fundName ?? scheduledTaskTypeLabel(nextTaskType)
         : isOrdinaryTask
           ? suppliedFundName ?? nextCategoryName ?? existing.targetName ?? existing.fundName ?? scheduledTaskTypeLabel(nextTaskType)
-          : fundDisplayName ?? scheduledTaskTypeLabel(nextTaskType);
+          : isLotSystemPlan
+            // 存款/债券系统计划保留存单名，不回退成「存款取息 / 城投债付息」通用标签。
+            ? suppliedFundName ?? existing.targetName ?? existing.fundName ?? scheduledTaskTypeLabel(nextTaskType)
+            : fundDisplayName ?? scheduledTaskTypeLabel(nextTaskType);
     updateData.insuranceProductName = isInsuranceTask ? nextInsuranceProductName ?? updateData.targetName : null;
     if (amount != null) updateData.amount = parseFloat(amount);
     if (intervalUnit != null || intervalValue != null) {
@@ -721,24 +742,29 @@ export async function PUT(req: NextRequest) {
     if (memo != null) updateData.memo = memo || null;
     if (hasPlanName) updateData.planName = cleanOptionalString(planName);
     if (skipPendingPreceding !== undefined) (updateData as any).skipPendingPreceding = skipPendingPreceding;
-    updateData.memo = encodeScheduledTaskMemo({
-      type: nextTaskType,
-      title: updateData.targetName,
-      fromAccountId: isOrdinaryTask ? null : cashAccountId != null ? cashAccountId || null : existing.cashAccountId,
-      toAccountId: accountId || existing.accountId,
-      categoryId: isOrdinaryTask ? nextCategoryId : null,
-      categoryName: isOrdinaryTask ? nextCategoryName : null,
-      insuranceProductId: effectiveInsuranceProductId,
-      note: isOrdinaryTask ? nextNote : null,
-      annualRate: isLoanTask ? nextAnnualRate : null,
-      repaymentMethod: isLoanTask ? nextRepaymentMethod : null,
-      repaymentIntervalMonths: isLoanTask ? nextRepaymentIntervalMonths : null,
-      loanPlanRole: isLoanTask ? getLoanScheduledPlanRole(existingTask) ?? "auto_debit" : null,
-    });
+    // 存款/债券系统计划的 memo 原样保留：它携带 depositSourceEntryId（存单关联）、
+    // type 等执行器必需字段，重建会丢失关联（decodeScheduledTaskMemo 不返回该字段）。
+    if (!isLotSystemPlan) {
+      updateData.memo = encodeScheduledTaskMemo({
+        type: nextTaskType,
+        title: updateData.targetName,
+        fromAccountId: isOrdinaryTask ? null : cashAccountId != null ? cashAccountId || null : existing.cashAccountId,
+        toAccountId: accountId || existing.accountId,
+        categoryId: isOrdinaryTask ? nextCategoryId : null,
+        categoryName: isOrdinaryTask ? nextCategoryName : null,
+        insuranceProductId: effectiveInsuranceProductId,
+        note: isOrdinaryTask ? nextNote : null,
+        annualRate: isLoanTask ? nextAnnualRate : null,
+        repaymentMethod: isLoanTask ? nextRepaymentMethod : null,
+        repaymentIntervalMonths: isLoanTask ? nextRepaymentIntervalMonths : null,
+        loanPlanRole: isLoanTask ? getLoanScheduledPlanRole(existingTask) ?? "auto_debit" : null,
+      });
+    }
     if (!isFundTask) {
       updateData.fundCode = nextTaskType;
       updateData.fundName = updateData.targetName;
-      updateData.fundProductType = null;
+      // 存款/债券系统计划的 fundProductType（deposit / bond）由自愈写入，别清空。
+      if (!isLotSystemPlan) updateData.fundProductType = null;
       updateData.confirmDays = 0;
       updateData.arrivalDays = 0;
       updateData.feeRate = 0;
@@ -773,7 +799,9 @@ export async function PUT(req: NextRequest) {
 
     const plan = await prisma.regularInvestPlan.update({
       where: { id },
-      data: updateData,
+      // 存款/债券系统计划被手动编辑后置 manualOverride：自愈（ensureDepositPlansForLot /
+      // ensureBondPlansForLot）不再用存单条款覆盖用户改过的金额/周期/下次执行日。
+      data: isLotSystemPlan ? { ...updateData, manualOverride: true } : updateData,
     });
 
     // Sync confirm days and fee rate to the unified store

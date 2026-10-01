@@ -396,11 +396,17 @@ async function updateRegularInvest(formData: FormData) {
 
   const updateData: any = {};
   const profileFundName = isFundTask ? await resolveFundName(fundCode, { householdId }) : null;
-  const isDepositSystemPlanEdit =
+  // 存款/债券三动作系统计划（depm_/depa_/depi_、bondm_/bonda_/bondi_）统一按「存单计划」
+  // 处理：保留存单名与 memo（存款 memo 携带 depositSourceEntryId 存单关联），且不清空
+  // fundProductType（deposit / bond）。与 API 路由 PUT 的 isLotSystemPlan 同口径。
+  const isLotSystemPlanEdit =
     existingTaskForGuard.type === "deposit_maturity" ||
     existingTaskForGuard.type === "deposit_interest_accrual" ||
-    existingTaskForGuard.type === "deposit_interest_payout";
-  const displayName = isDepositSystemPlanEdit
+    existingTaskForGuard.type === "deposit_interest_payout" ||
+    existingTaskForGuard.type === "bond_maturity" ||
+    existingTaskForGuard.type === "bond_interest_accrual" ||
+    existingTaskForGuard.type === "bond_interest_payout";
+  const displayName = isLotSystemPlanEdit
     // 存款系统计划编辑时保留存单名，不回退成「存款取息/存款到期」的通用标签。
     ? (suppliedFundName || plan.fundName || scheduledTaskTypeLabel(taskType))
     : isFundTask
@@ -413,13 +419,9 @@ async function updateRegularInvest(formData: FormData) {
   updateData.taskType = taskType;
   updateData.targetName = displayName;
   updateData.insuranceProductName = taskType === "insurance_premium" ? displayName : null;
-  // 存款到期/取息系统计划的 memo 保留原样：它携带 depositSourceEntryId（存单关联）、
+  // 存款/债券系统计划的 memo 保留原样：存款 memo 携带 depositSourceEntryId（存单关联）、
   // type、note 等执行器必需字段，重建会丢失关联导致取息/到期无法定位存单。
-  const editedDepositSystemPlanForMemo =
-    existingTaskForGuard.type === "deposit_maturity" ||
-    existingTaskForGuard.type === "deposit_interest_accrual" ||
-    existingTaskForGuard.type === "deposit_interest_payout";
-  if (!editedDepositSystemPlanForMemo) {
+  if (!isLotSystemPlanEdit) {
     updateData.memo = encodeScheduledTaskMemo({
       type: taskType,
       title: displayName,
@@ -440,8 +442,11 @@ async function updateRegularInvest(formData: FormData) {
     if (!targetAcc) return { ok: false as const, error: isFundTask ? "基金账户不存在" : "目标账户不存在" };
     if (householdId && targetAcc.householdId !== householdId) return { ok: false as const, error: "目标账户不属于当前账簿" };
     updateData.accountName = targetAcc.name;
-    updateData.fundProductType = isFundTask ? (targetAcc.investProductType || plan.fundProductType || null) : null;
-  } else if (!isFundTask) {
+    // 存款/债券系统计划的 fundProductType（deposit / bond）由自愈写入，换账户时保留。
+    updateData.fundProductType = isFundTask
+      ? (targetAcc.investProductType || plan.fundProductType || null)
+      : isLotSystemPlanEdit ? plan.fundProductType ?? null : null;
+  } else if (!isFundTask && !isLotSystemPlanEdit) {
     updateData.fundProductType = null;
   }
   if (Number.isFinite(amountRaw) && amountRaw > 0) updateData.amount = amountRaw;
@@ -578,7 +583,8 @@ async function updateRegularInvest(formData: FormData) {
     updateData.arrivalDays = null;
   }
   if (!isFundTask) {
-    updateData.fundProductType = null;
+    // 存款/债券系统计划的 fundProductType（deposit / bond）由自愈写入，别清空。
+    if (!isLotSystemPlanEdit) updateData.fundProductType = null;
     updateData.confirmDays = 0;
     updateData.arrivalDays = 0;
     updateData.feeRate = 0;

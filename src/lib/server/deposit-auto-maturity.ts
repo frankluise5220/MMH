@@ -804,9 +804,10 @@ async function autoRenewDeposit(
     // 取出日 = 新存单起存日。遗留月周期到期日（起存日 + N 月 − 1 天）归一到周年，
     // 新存单那一段才是整月（6 个月按 6/12 = 13.00，而不是 185 天）。
     fd.set("date", depositRenewalStartUtc(chainStart, maturity).toISOString().slice(0, 10));
-    // Calendar-aware roll: anniversary-aligned terms (e.g. 5 年) renew to the
-    // next anniversary; 存入日计息 terms (maturity = start + N 年 − 1 天) roll
-    // the same rule per term; day-based terms roll by their original day count.
+    // Calendar-aware roll: anniversary-aligned terms (e.g. 5 年, and the current
+    // 对年对月对日 convention) renew to the next anniversary; legacy 存入日计息
+    // terms (maturity = start + N 年 − 1 天, written before 2026-10-01) roll the
+    // same rule per term; day-based terms roll by their original day count.
     // Anchored on the chain's original start so a legacy maturity that sits one
     // day before its anniversary cannot drift a day earlier per round.
     fd.set("newMaturityDate", nextDepositTermMaturityUtc(chainStart, maturity, originalTermDays).toISOString().slice(0, 10));

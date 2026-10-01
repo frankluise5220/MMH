@@ -1826,6 +1826,11 @@ export default async function Home({
             date: entryDate,
             amount: toNumber(entry.bondPrincipalAmount),
             note: entry.note ?? "",
+            // 编辑定位必须带上现金流分录 id 与业务行 id：BondFormModal 只认
+            // detail.cashEntryId / detail.businessTransactionId，缺了会退化成「新增」
+            // 分支，保存后原记录不变、利息看起来被丢失。
+            cashEntryId: entry.id,
+            businessTransactionId: entry.businessTransactionId ?? null,
             // accountId / toAccountId 沿用交易表的现金流方向（买入：accountId=现金侧，
             // 付息/赎回：accountId=债券账户），录入弹窗按 subtype 自行取用。
             accountId: entry.accountId ?? "",
@@ -2098,7 +2103,10 @@ export default async function Home({
                   ? t("deposit.subtype.dividend")
                   : t("deposit.subtype.buy"),
               fundName: entry.fundName ?? entry.fundCode ?? "",
-              maturityDate: arrivalDate,
+              // 明细表的「入账日期」列：直接展示该笔流水的 fundArrivalDate
+              // （存入行=到期到账日，取出行=实际到账日）。原来借 maturityDate 字段
+              // 承载同一个值，但列名写成「到期日」，与存单表重复且含义漂移。
+              arrivalDate,
               cashAccountLabel,
               note: entry.note ?? "",
               amount: isRedeemEntry
@@ -2169,7 +2177,7 @@ export default async function Home({
                 date: entryDate,
                 typeLabel,
                 fundName: entry.categoryName ?? "",
-                maturityDate: null,
+                arrivalDate: toYmdOrNull(entry.fundArrivalDate),
                 cashAccountLabel: isDepositReceivingSide
                   ? (entry.accountId ? (accountLabelById.get(entry.accountId) ?? entry.accountName ?? "") : (entry.accountName ?? ""))
                   : (entry.toAccountId ? (accountLabelById.get(entry.toAccountId) ?? entry.toAccountName ?? "") : (entry.toAccountName ?? "")),
@@ -2196,6 +2204,11 @@ export default async function Home({
                   toAccountName: entry.toAccountName ?? undefined,
                   categoryId: entry.categoryId ?? undefined,
                   categoryName: entry.categoryName ?? undefined,
+                  // 存款「利息收入 / 利息取出」腿必须把存单绑定一起带进编辑载荷：
+                  // 缺了它，编辑弹窗（TransactionFormModal）拿不到 depositSourceEntryId，
+                  // 存单下拉无法预选，提交时又把 depositSourceEntryId 置空 —— 表现为
+                  // 「编辑利息收入/取出交易后，不再绑定在存单上」（2026-10-01 用户报障）。
+                  depositSourceEntryId: entry.depositSourceEntryId ?? null,
                   source: entry.source ?? null,
                 },
               };
@@ -2601,38 +2614,50 @@ export default async function Home({
       const isRedeemEntry = entry.fundSubtype === "redeem" || entry.fundSubtype === "switch_out";
       const isDividendEntry = entry.fundSubtype === "dividend_cash" || entry.fundSubtype === "dividend_reinvest";
       if (isDividendEntry) continue;
-      const amountValue = isRedeemEntry
-        ? Math.max(
-            0,
-            Math.abs(toNumber(entry.fundArrivalAmount ?? entry.amount)) - Math.max(0, toNumber(entry.depositInterest)),
-          )
-        : Math.abs(toNumber(entry.fundArrivalAmount ?? entry.amount));
+      // 取回/转出留到第二遍再扣减 —— 见下面「第二遍」的注释（提前取回时排序会颠倒）。
+      if (isRedeemEntry) continue;
+      const amountValue = Math.abs(toNumber(entry.fundArrivalAmount ?? entry.amount));
       const depositAccountId = (
         isRedeemEntry ? entry.accountId : entry.toAccountId
       ) ?? "";
       const depositAccountName = accountNameById.get(depositAccountId) ?? entry.toAccountName ?? entry.accountName ?? t("sidebar.deposit.fallbackName");
       const lotKey = `${depositAccountId}\u001f${fundName}\u001f${maturityDate ?? ""}`;
 
-      if (!isRedeemEntry) {
-        const lot = {
-          id: entry.id,
-          fundName,
-          depositProductId: entry.depositProductId ?? null,
-          maturityDate,
-          maturityAction: entry.depositMaturityAction ?? null,
-          interestPayoutFrequency: entry.depositInterestPayoutFrequency ?? null,
-          interestCalcBasis: entry.depositInterestCalcBasis ?? null,
-          remainingAmount: amountValue,
-          depositAccountId,
-          depositAccountName,
-          relatedEntryIds: [entry.id],
-        };
-        const bucket = lotBuckets.get(lotKey);
-        if (bucket) bucket.push(lot);
-        else lotBuckets.set(lotKey, [lot]);
-        allLots.push(lot);
-        continue;
-      }
+      const lot = {
+        id: entry.id,
+        fundName,
+        depositProductId: entry.depositProductId ?? null,
+        maturityDate,
+        maturityAction: entry.depositMaturityAction ?? null,
+        interestPayoutFrequency: entry.depositInterestPayoutFrequency ?? null,
+        interestCalcBasis: entry.depositInterestCalcBasis ?? null,
+        remainingAmount: amountValue,
+        depositAccountId,
+        depositAccountName,
+        relatedEntryIds: [entry.id],
+      };
+      const bucket = lotBuckets.get(lotKey);
+      if (bucket) bucket.push(lot);
+      else lotBuckets.set(lotKey, [lot]);
+      allLots.push(lot);
+    }
+
+    // 第二遍：取回 / 转出按已建好的存单扣减剩余本金。
+    // 必须两遍 —— 明细的展示排序把「存款存入行」按**到期日**排（getDetailEntryDisplayDate），
+    // 提前取回时「取回日 < 到期日」，取回行会排在存入行之前；一遍扫描会因为存单还没建
+    // 而漏扣，表现为「已提前取回的存单仍留在持有中、剩余本金不减、取回下拉里还能再选它」
+    // （2026-10-01 实测：未到期存单取回保存成功后，存单列表毫无变化）。
+    for (const entry of depositSourceEntries) {
+      const isRedeemEntry = entry.fundSubtype === "redeem" || entry.fundSubtype === "switch_out";
+      if (!isRedeemEntry) continue;
+      const fundName = (entry.fundName ?? entry.fundCode ?? "").trim() || t("sidebar.deposit.unnamed");
+      const maturityDate = toYmdOrNull(entry.fundArrivalDate);
+      const amountValue = Math.max(
+        0,
+        Math.abs(toNumber(entry.fundArrivalAmount ?? entry.amount)) - Math.max(0, toNumber(entry.depositInterest)),
+      );
+      const depositAccountId = entry.accountId ?? "";
+      const lotKey = `${depositAccountId}\u001f${fundName}\u001f${maturityDate ?? ""}`;
 
       const linkedBucket = entry.depositSourceEntryId
         ? allLots.filter((lot) => lot.id === entry.depositSourceEntryId)
@@ -2726,7 +2751,14 @@ export default async function Home({
           if (sourceEntry?.depositAnnualRate != null) return toNumber(sourceEntry.depositAnnualRate);
           return sourceEntry?.fundNav != null ? toNumber(sourceEntry.fundNav) : null;
         })();
-        const startDate = toYmdOrNull(sourceEntry?.fundConfirmDate) ?? toYmdOrNull(sourceEntry?.date);
+        // 存单「起存日」= 存入行的 date。**不能**用 fundConfirmDate：那个字段在
+        // 周期付息存单上会被自动结息推进成「最近一次结息日」
+        // （deposit-auto-maturity.ts 的 "Advance the interest segment anchor"），
+        // 于是「存入日期」列会显示成结息日、而「预计利息」的区间变成
+        // 「最近结息日 → 到期日」——每结一次息就缩水一次，最后一次结息日等于
+        // 到期日时 startUtc == maturityUtc，全期利息直接算成 null（列显示为空）。
+        // 计划执行器也是以 buy.date 为起算日（deposit-plan-tasks.ts `const start = buy.date`）。
+        const startDate = toYmdOrNull(sourceEntry?.date) ?? toYmdOrNull(sourceEntry?.fundConfirmDate);
         // Count income-side payouts only; transfer rows move the same interest
         // and must not count twice. Redemption interest is already in arrival.
         const payoutEntryById = new Map((ordinaryInterestPool ?? []).map((e) => [e.id, e] as const));

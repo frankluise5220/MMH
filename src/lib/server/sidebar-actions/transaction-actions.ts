@@ -902,6 +902,11 @@ export async function createTransaction(formData: FormData) {
       let calculatedDepositRedemptionInterest: number | null = null;
       let calculatedDepositRedemptionArrival: number | null = null;
       let calculatedDepositRedemptionAnnualRate: number | null = null;
+      // 取回/转出（redeemLike）的产品身份一律**继承被取回的存单**：存单才是身份，
+      // 取回只是它的子行，取回弹窗里也没有产品字段可填。下面 redeemLike 分支取到
+      // sourceLot 后回填，产品解析与落库都以它为准。
+      let inheritedDepositProductId: string | null = null;
+      let inheritedDepositFundName: string | null = null;
       await prisma.$transaction(async (tx) => {
         // accountId is unified as the investment (fund) account.
         const investAcc =
@@ -940,11 +945,15 @@ export async function createTransaction(formData: FormData) {
               date: true,
               fundConfirmDate: true,
               fundArrivalDate: true,
+              fundName: true,
+              depositProductId: true,
               depositAnnualRate: true,
               DepositProduct: { select: { annualRate: true } },
             },
           });
           if (!sourceLot) throw new Error(t("depositForm.alert.selectRedeemLot"));
+          inheritedDepositProductId = sourceLot.depositProductId ?? null;
+          inheritedDepositFundName = sourceLot.fundName ?? null;
           const latestInterestDate = await loadLatestDepositInterestDate({
             householdId,
             lotId: sourceLot.id,
@@ -1045,14 +1054,23 @@ export async function createTransaction(formData: FormData) {
         const depositProduct = fundProductType === "deposit"
           ? await resolveOrCreateDepositProduct(tx, {
               householdId,
-              productId: depositProductIdInput,
-              name: fundNameInput,
+              // 取回/转出只认「存单上已有的产品」：显式传 id 优先，其次继承存单的产品；
+              // **不带名称**，避免为一次取回凭空创建产品主数据（也不触发遗留产品的机构认领）。
+              productId: redeemLike
+                ? (depositProductIdInput || inheritedDepositProductId || "")
+                : depositProductIdInput,
+              name: redeemLike
+                ? ""
+                : fundNameInput,
               institutionId: investAcc.institutionId ?? null,
               currency: recordCurrency ?? investAcc.currency ?? "CNY",
               annualRate: depositAnnualRate,
             })
           : null;
-        if (fundProductType === "deposit" && !depositProduct) throw new Error(t("sidebar.action.selectOrCreateDepositProduct"));
+        // 取回/转出不再强制要求存款产品（弹窗没有产品字段；老存单可能既无产品关联
+        // 也无产品名，强制要求会让它永远存不进去 —— 2026-10-01 实测「未到期存单点
+        // 取回后保存报『请选择或新增存款产品』」）。存入（buy）仍必须解析出产品。
+        if (fundProductType === "deposit" && !depositProduct && !redeemLike) throw new Error(t("sidebar.action.selectOrCreateDepositProduct"));
 
         const isMetalProduct = fundProductType === "metal";
         const isWealthProduct = fundProductType === "wealth";
@@ -1065,9 +1083,10 @@ export async function createTransaction(formData: FormData) {
           : fundNameInput || null;
         const effectiveCreateFundDisplayName = profileCreateFundDisplayName ?? inputCreateFundDisplayName;
         // fundName stores fund/deposit product names; precious metal names come from metalTypeName.
+        // 取回/转出的名称同样继承存单（老存单名称为空时保持为空，与自动到期取回一致）。
         const entryFundName = isMetalProduct
           ? null
-          : (wealthProduct?.name || depositProduct?.name || effectiveCreateFundDisplayName || entryFundCode || null);
+          : (wealthProduct?.name || depositProduct?.name || effectiveCreateFundDisplayName || entryFundCode || (redeemLike ? inheritedDepositFundName : null) || null);
 
 
         // Create the TxRecord, including all fund fields directly.
@@ -1229,7 +1248,10 @@ export async function createTransaction(formData: FormData) {
               currency: recordCurrency ?? (fundProductType === "deposit" ? investAcc.currency : cashAcc?.currency) ?? "CNY",
               fundName: entryFundName,
               wealthProductId: wealthProduct?.id ?? undefined,
-              depositProductId: depositProduct?.id ?? undefined,
+              // 取回/转出继承存单的产品关联（存单没有就留空），其余存款行走解析出的产品。
+              depositProductId: fundProductType === "deposit" && redeemLike
+                ? inheritedDepositProductId ?? undefined
+                : depositProduct?.id ?? undefined,
               metalTypeId: metalType?.id ?? undefined,
               metalTypeName: metalType?.name ?? undefined,
               metalUnitId: metalUnit?.id ?? undefined,
@@ -1937,7 +1959,11 @@ export async function editInvestment(formData: FormData) {
               : null)
         : null;
       if (fundProductType === "wealth" && !wealthProduct) throw new Error(t("sidebar.action.selectOrCreateWealthProduct"));
-      const depositProduct = fundProductType === "deposit"
+      // 取回/转出的产品身份继承：先取本条记录自己的关联，下面 redeemLike 分支取到
+      // sourceLot 后可在它为空时补上存单上的关联（老记录两者都可能为空）。
+      let inheritedDepositProductId: string | null = txRecord.depositProductId ?? null;
+      let inheritedDepositFundName: string | null = txRecord.fundName ?? null;
+      const depositProduct = fundProductType === "deposit" && !redeemLike
         ? await resolveOrCreateDepositProduct(tx, {
             householdId,
             productId: depositProductIdInput || txRecord.depositProductId,
@@ -1947,7 +1973,8 @@ export async function editInvestment(formData: FormData) {
             annualRate: depositAnnualRate ?? undefined,
           })
         : null;
-      if (fundProductType === "deposit" && !depositProduct) throw new Error(t("sidebar.action.selectOrCreateDepositProduct"));
+      // 同创建路径：取回/转出不再强制要求存款产品（编辑弹窗没有产品字段可填）。
+      if (fundProductType === "deposit" && !depositProduct && !redeemLike) throw new Error(t("sidebar.action.selectOrCreateDepositProduct"));
 
       const effectiveDepositSourceEntryId = fundProductType === "deposit"
         ? (hasDepositSourceEntryId ? depositSourceEntryIdStr || null : txRecord.depositSourceEntryId)
@@ -1973,11 +2000,16 @@ export async function editInvestment(formData: FormData) {
             date: true,
             fundConfirmDate: true,
             fundArrivalDate: true,
+            fundName: true,
+            depositProductId: true,
             depositAnnualRate: true,
             DepositProduct: { select: { annualRate: true } },
           },
         });
         if (!sourceLot) throw new Error(t("depositForm.alert.selectRedeemLot"));
+        // 记录自身没带产品/名称时，从被取回的存单补上，保证编辑不会把继承关系抹掉。
+        inheritedDepositProductId = inheritedDepositProductId ?? sourceLot.depositProductId ?? null;
+        inheritedDepositFundName = inheritedDepositFundName ?? sourceLot.fundName ?? null;
         const latestInterestDate = await loadLatestDepositInterestDate({
           householdId,
           lotId: sourceLot.id,
@@ -2017,16 +2049,33 @@ export async function editInvestment(formData: FormData) {
               endDate: cappedEndDate,
             })
           : 0;
-        const arrival = hasCalculationInputs
-          ? Number((redemptionPrincipal + calculatedInterest).toFixed(2))
-          : fundArrivalAmount ?? Math.abs(Number(txRecord.fundArrivalAmount ?? txRecord.amount ?? 0));
+        // 用户在取款弹窗里明确改过利息 / 到账金额时，以用户输入为准 —— 银行实际
+        // 到账与公式估算不一致是常态，编辑保存必须能纠正；只有用户没动过的字段
+        // 才按存单条款重算（2026-10-01 报的「编辑时添加利息，保存后数字丢失」）。
+        const userEditedInterest = String(formData.get("depositInterestEdited") ?? "").trim() === "1";
+        const userEditedArrival = String(formData.get("fundArrivalAmountEdited") ?? "").trim() === "1";
+        const suppliedInterest = userEditedInterest && typeof depositInterest === "number" ? depositInterest : null;
+        const suppliedArrival = userEditedArrival && typeof fundArrivalAmount === "number" ? fundArrivalAmount : null;
+        let arrival: number;
+        if (suppliedInterest != null) {
+          // 利息为准，到账额 = 本金 + 利息（未同时手改到账额时）。
+          arrival = suppliedArrival ?? Number((redemptionPrincipal + suppliedInterest).toFixed(2));
+          effectiveDepositInterest = suppliedInterest;
+        } else if (suppliedArrival != null) {
+          // 到账额为准，利息 = 到账额 − 本金。
+          arrival = suppliedArrival;
+          effectiveDepositInterest = Number((suppliedArrival - redemptionPrincipal).toFixed(2));
+        } else if (hasCalculationInputs) {
+          arrival = Number((redemptionPrincipal + calculatedInterest).toFixed(2));
+          effectiveDepositInterest = calculatedInterest;
+        } else {
+          arrival = fundArrivalAmount ?? Math.abs(Number(txRecord.fundArrivalAmount ?? txRecord.amount ?? 0));
+          effectiveDepositInterest = Number((arrival - redemptionPrincipal).toFixed(2));
+        }
         if (!(arrival > 0) || arrival + 0.0001 < redemptionPrincipal) {
           throw new Error(t("txForm.alert.invalidAmount"));
         }
         effectiveFundArrivalAmount = arrival;
-        effectiveDepositInterest = hasCalculationInputs
-          ? calculatedInterest
-          : Number((arrival - redemptionPrincipal).toFixed(2));
       }
 
       // Build the TxRecord update data.
@@ -2049,9 +2098,12 @@ export async function editInvestment(formData: FormData) {
       const updateData: any = {
         date,
         fundCode: isMetalProduct || isWealthProduct ? null : fundCode,
-        fundName: isMetalProduct ? null : (wealthProduct?.name || depositProduct?.name || effectiveFundDisplayName),
+        fundName: isMetalProduct ? null : (wealthProduct?.name || depositProduct?.name || effectiveFundDisplayName || (redeemLike ? inheritedDepositFundName : null) || null),
         wealthProductId: wealthProduct?.id ?? null,
-        depositProductId: depositProduct?.id ?? (fundProductType === "deposit" ? null : txRecord.depositProductId),
+        // 取回/转出保持继承来的产品关联（存单没有就留空），别把它改写成解析结果。
+        depositProductId: fundProductType === "deposit" && redeemLike
+          ? inheritedDepositProductId
+          : depositProduct?.id ?? (fundProductType === "deposit" ? null : txRecord.depositProductId),
         fundProductType,
         metalTypeId: metalType?.id ?? null,
         metalTypeName: metalType?.name ?? null,

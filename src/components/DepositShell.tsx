@@ -27,7 +27,12 @@ type DepositEntry = {
   date: string;
   typeLabel: string;
   fundName: string;
-  maturityDate?: string | null;
+  /**
+   * 明细行的「入账日期」= 该笔流水的 fundArrivalDate：
+   * 存入行是到期日（本息到账日）、取出行是实际到账日。
+   * 明细表不展示「到期日」（那是存单表的列），避免同一列在两张表里含义漂移。
+   */
+  arrivalDate?: string | null;
   cashAccountLabel: string;
   note: string;
   amount: number;
@@ -51,6 +56,8 @@ type DepositEntry = {
     categoryName?: string;
     toAccountId?: string;
     toAccountName?: string;
+    /** 存款「利息收入/取出」腿的存单归属，编辑时据此预选存单、提交时保留绑定。 */
+    depositSourceEntryId?: string | null;
     source?: string | null;
   };
 };
@@ -463,7 +470,7 @@ export function DepositShell({
     { key: "date", label: t("detail.column.date"), width: 100, minWidth: 80, filterKind: "dateRange", filterText: (entry) => entry.date, sortValue: (entry) => entry.date, render: (entry) => <span className="tabular-nums text-slate-700">{entry.date}</span> },
     { key: "action", label: t("depositShell.colAction"), width: 90, minWidth: 70, filterText: (entry) => entry.typeLabel, sortValue: (entry) => entry.typeLabel, render: (entry) => <span className="text-slate-700">{entry.typeLabel}</span> },
     { key: "product", label: t("depositShell.colProduct"), width: 190, minWidth: 120, filterText: (entry) => entry.fundName, filterSearchText: (entry) => entry.fundName, sortValue: (entry) => entry.fundName, render: (entry) => <span className="truncate text-slate-700" title={entry.fundName}>{entry.fundName || "-"}</span> },
-    { key: "maturityDate", label: t("depositShell.colMaturityDate"), width: 110, minWidth: 84, hideable: true, filterKind: "dateRange", filterText: (entry) => entry.maturityDate ?? "", sortValue: (entry) => entry.maturityDate ?? "", render: (entry) => <span className="tabular-nums text-slate-600">{entry.maturityDate || "-"}</span> },
+    { key: "arrivalDate", label: t("depositShell.colArrivalDate"), width: 110, minWidth: 84, hideable: true, filterKind: "dateRange", filterText: (entry) => entry.arrivalDate ?? "", sortValue: (entry) => entry.arrivalDate ?? "", render: (entry) => <span className="tabular-nums text-slate-600">{entry.arrivalDate || "-"}</span> },
     { key: "cashAccount", label: t("depositShell.colCashAccount"), width: 150, minWidth: 100, hideable: true, filterText: (entry) => entry.cashAccountLabel, filterSearchText: (entry) => entry.cashAccountLabel, sortValue: (entry) => entry.cashAccountLabel, render: (entry) => <span className="truncate text-slate-600" title={entry.cashAccountLabel}>{entry.cashAccountLabel || "-"}</span> },
     { key: "note", label: t("detail.column.remark"), width: 240, minWidth: 120, hideable: true, filterText: (entry) => entry.note, filterSearchText: (entry) => entry.note, sortValue: (entry) => entry.note, render: (entry) => <span className="block truncate text-slate-600" title={entry.note}>{entry.note || "-"}</span> },
     {

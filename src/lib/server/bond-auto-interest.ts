@@ -2,7 +2,7 @@ import { FundSubtype, TransactionType } from "@prisma/client";
 
 import { bondDateKey, bondPayoutDatesUpTo, estimateBondInterestForDays, estimateBondPeriodInterest } from "@/lib/bond";
 import { prisma } from "@/lib/db/prisma";
-import { parseDepositInterestPayout } from "@/lib/deposit-interest-payout";
+import { encodeDepositInterestPayout, parseDepositInterestPayout } from "@/lib/deposit-interest-payout";
 import { resolveCategorySnapshot } from "@/lib/default-categories";
 import { SYSTEM_BOND_INTEREST_CATEGORY } from "@/lib/investment-category";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
@@ -48,11 +48,43 @@ export async function autoAccrueBondPeriodicInterestForLot(params: {
   const source = await loadBondLotPlanSource({ householdId: params.householdId, lotId: params.lotId });
   if (!source) return { status: "skipped", reason: "存单不存在" };
 
-  const frequency = parseDepositInterestPayout(source.payoutFrequency);
+  // 用户手动覆盖（计划行 manualOverride=true）：每期金额 = 计划行 amount，
+  // 付息周期 = 计划行 intervalUnit/intervalValue。与存款 autoAccruePeriodicInterest
+  // 完全同口径，只覆盖用户实际改过的维度（未改的仍由存单条款决定）。
+  let amountOverride: number | null = null;
+  let payoutFrequencyOverride: string | null = null;
+  if (params.planId) {
+    const overridePlan = await prisma.regularInvestPlan.findUnique({
+      where: { id: params.planId },
+      select: { manualOverride: true, amount: true, intervalUnit: true, intervalValue: true },
+    });
+    if (overridePlan?.manualOverride) {
+      const amt = Number(overridePlan.amount);
+      if (Number.isFinite(amt) && amt > 0) amountOverride = amt;
+      const unit = overridePlan.intervalUnit === "month"
+        ? "month"
+        : overridePlan.intervalUnit === "week"
+          ? "week"
+          : overridePlan.intervalUnit === "year"
+            ? "year"
+            : null;
+      if (unit) {
+        payoutFrequencyOverride = encodeDepositInterestPayout({
+          kind: "periodic",
+          unit,
+          interval: Math.max(1, overridePlan.intervalValue || 1),
+        });
+      }
+    }
+  }
+  const effectivePayoutFrequency = payoutFrequencyOverride ?? source.payoutFrequency;
+
+  const frequency = parseDepositInterestPayout(effectivePayoutFrequency);
   if (frequency.kind !== "periodic" && frequency.kind !== "maturity") return { status: "skipped", reason: "无有效付息方式" };
-  if (!(source.principal > 0)) return { status: "skipped", reason: "存单本金为 0" };
+  // 手动指定每期金额时，本金/利率都不再是必要条件（与存款一致）。
+  if (amountOverride == null && !(source.principal > 0)) return { status: "skipped", reason: "存单本金为 0" };
   const annualRate = Number(source.annualRate ?? 0);
-  if (!(annualRate > 0)) return { status: "skipped", reason: "缺票面利率" };
+  if (amountOverride == null && !(annualRate > 0)) return { status: "skipped", reason: "缺票面利率" };
 
   // 应付息日：从首次付息日按周期步进，只取不晚于「今天」的期次（到期日尾差一并纳入）。
   const todayKey = localDayKey(params.today);
@@ -62,7 +94,7 @@ export async function autoAccrueBondPeriodicInterestForLot(params: {
       annualRate,
       termDays: source.termDays,
       maturityDate: source.maturityDate,
-      payoutFrequency: source.payoutFrequency,
+      payoutFrequency: effectivePayoutFrequency,
       firstPayoutDate: source.firstPayoutDate,
     },
     start: source.startDate,
@@ -89,7 +121,7 @@ export async function autoAccrueBondPeriodicInterestForLot(params: {
     if (key) coveredKeys.add(key);
   }
 
-  const interest = frequency.kind === "maturity"
+  const interest = amountOverride ?? (frequency.kind === "maturity"
     ? estimateBondInterestForDays({
         principal: source.principal,
         annualRate,
@@ -102,7 +134,7 @@ export async function autoAccrueBondPeriodicInterestForLot(params: {
         annualRate,
         frequency,
         interestCalcBasis: source.interestCalcBasis,
-      });
+      }));
   if (!(interest > 0)) return { status: "skipped", reason: "单期利息为 0" };
 
   const cashAccountId = source.cashAccountId;
@@ -219,7 +251,12 @@ export async function autoAccrueBondPeriodicInterestForLot(params: {
   await recalcAndSaveAccountBalance(bondAccount.id).catch(() => {});
   await recalcAndSaveAccountBalance(cashAccount.id).catch(() => {});
   // 付息后计划行跟着推进（nextRunDate = 下一未付息日；本金清零才完成）。
-  await ensureBondPlansForLot({ householdId: params.householdId, lotId: source.lotId }).catch(() => {});
+  // advanceManualNextRunDate：手动覆盖过的计划行也要推进排期（金额/周期仍以计划行为准）。
+  await ensureBondPlansForLot({
+    householdId: params.householdId,
+    lotId: source.lotId,
+    advanceManualNextRunDate: true,
+  }).catch(() => {});
 
   return { status: "accrued", pairs, totalInterest, entryIds: createdEntryIds };
 }
@@ -317,7 +354,11 @@ export async function autoWithdrawAccruedBondInterestForLot(params: {
   if (entryIds.length === 0) return { status: "skipped", reason: "没有有效利息" };
   await recalcAndSaveAccountBalance(bondAccount.id).catch(() => {});
   await recalcAndSaveAccountBalance(cashAccount.id).catch(() => {});
-  await ensureBondPlansForLot({ householdId: params.householdId, lotId: source.lotId }).catch(() => {});
+  await ensureBondPlansForLot({
+    householdId: params.householdId,
+    lotId: source.lotId,
+    advanceManualNextRunDate: true,
+  }).catch(() => {});
   return { status: "accrued", pairs: entryIds.length, totalInterest, entryIds };
 }
 

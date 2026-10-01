@@ -16,14 +16,18 @@ export function addCalendarYearsUtc(date: Date, years: number) {
 
 /**
  * Calculate a term-deposit maturity date. Short terms remain day-based, while
- * whole-year terms follow the 存入日计息 convention: the withdrawal day lands
- * one day before the Nth calendar anniversary (2025-01-20 + 1 年 → 2026-01-19),
- * so a non-leap-year term spans exactly 365 interest days (366 across Feb 29).
+ * whole-year terms follow the 对年对月对日 rule: the maturity lands on the Nth
+ * calendar anniversary (2026-12-21 + 1 年 → 2027-12-21).
+ *
+ * 「算头不算尾」只约束计息天数（含存入日、不含到期日），不提前到期日。
+ * 2026-10-01 更正：旧实现返回 anniversary − 1 天，与 `depositTermMaturityUtc`
+ * 的现行口径不一致；两者必须同口径（`depositTermMaturityUtc` 是存单主路径，
+ * 本函数是等价的按天入口）。
  */
 export function addDepositTermUtc(date: Date, termDays: number) {
   const normalizedDays = Math.trunc(termDays);
   if (normalizedDays >= 365 && normalizedDays % 365 === 0) {
-    return addDaysUtc(addCalendarYearsUtc(date, normalizedDays / 365), -1);
+    return addCalendarYearsUtc(date, normalizedDays / 365);
   }
   return addDaysUtc(date, normalizedDays);
 }

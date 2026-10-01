@@ -168,6 +168,12 @@ export async function loadBondLotPlanSource(params: {
 export async function ensureBondPlansForLot(params: {
   householdId: string;
   lotId: string;
+  /**
+   * 执行路径专用（自动落账后调用）：允许把 manualOverride 计划行的 nextRunDate
+   * 一并推进到存单的下一应付息日。自愈路径不能开——否则用户刚手动设的执行日
+   * 会在开机自愈时被存单条款冲掉。
+   */
+  advanceManualNextRunDate?: boolean;
 }): Promise<{ maturityPlanId: string | null; payoutPlanId: string | null }> {
   const source = await loadBondLotPlanSource(params);
   if (!source) {
@@ -303,7 +309,15 @@ export async function ensureBondPlansForLot(params: {
         memo: accrualMemo,
       },
       update: manualOverride.has(`bonda_${source.lotId}`)
-        ? { planAction: BOND_ACTION_ACCRUAL, fundCode: BOND_ACCRUAL_PLAN_FUND_CODE, memo: accrualMemo, status: RegularInvestStatus.active }
+        ? {
+            planAction: BOND_ACTION_ACCRUAL,
+            fundCode: BOND_ACCRUAL_PLAN_FUND_CODE,
+            memo: accrualMemo,
+            status: RegularInvestStatus.active,
+            // 手动覆盖只固定金额/周期，不冻结排期：执行后必须推进下次执行日，
+            // 否则用户改过的日期执行完会永远停在过去，计划一直显示逾期。
+            ...(params.advanceManualNextRunDate ? { nextRunDate: nextRun } : {}),
+          }
         : {
             ...common,
             planAction: BOND_ACTION_ACCRUAL,
@@ -322,7 +336,13 @@ export async function ensureBondPlansForLot(params: {
         memo: payoutMemo,
       },
       update: manualOverride.has(`bondi_${source.lotId}`)
-        ? { planAction: BOND_ACTION_PAYOUT, fundCode: BOND_PAYOUT_PLAN_FUND_CODE, memo: payoutMemo, status: RegularInvestStatus.active }
+        ? {
+            planAction: BOND_ACTION_PAYOUT,
+            fundCode: BOND_PAYOUT_PLAN_FUND_CODE,
+            memo: payoutMemo,
+            status: RegularInvestStatus.active,
+            ...(params.advanceManualNextRunDate ? { nextRunDate: nextRun } : {}),
+          }
         : {
             ...common,
             planAction: BOND_ACTION_PAYOUT,
