@@ -116,4 +116,107 @@ expect(
   "Restore route must use the shared 512MB limit, compact export JSON, file.size check, and disk-backed upload.",
 );
 
+// Bond (bond products + bond certificates) must stay wired into every backup
+// path: export query, payload, parser, restore clear, restore import, and the
+// entry-business-link reference. It was silently missing until 2026-10-01,
+// which both broke restores (dangling bondTransactionId FK) and dropped bond
+// data from every backup. This block exists so the same gap cannot come back.
+for (const key of ["bondProducts", "bondTransactions"]) {
+  expect(backupSource.includes(`${key}: ensureArray`), `Backup parser must accept ${key}.`);
+  expect(backupSource.includes(`data.${key}`), `Backup payload must expose ${key}.`);
+}
+expect(
+  backupSource.includes("prisma.bondProduct.findMany") &&
+  backupSource.includes("prisma.bondTransaction.findMany"),
+  "Backup export must read bond products and bond transactions.",
+);
+expect(
+  backupSource.includes('["BondProducts", sheetRows(payload.data.bondProducts)]') &&
+  backupSource.includes('["BondTransactions", sheetRows(payload.data.bondTransactions)]'),
+  "Table export workbooks must include BondProducts and BondTransactions sheets.",
+);
+expect(
+  backupSource.includes("await tx.bondTransaction.deleteMany({ where: { householdId } });") &&
+  backupSource.includes("await tx.bondProduct.deleteMany({ where: { householdId } });"),
+  "Restore must clear stale bond transactions and bond products before importing the snapshot.",
+);
+expect(
+  backupSource.includes("tx.bondProduct,") &&
+  backupSource.includes("tx.bondTransaction,"),
+  "Restore must import bond products and bond transactions.",
+);
+expect(
+  backupSource.includes("importedBondProducts") &&
+  backupSource.includes("importedBondTransactions"),
+  "Restore must gate bond references on the bond rows that were actually imported.",
+);
+expect(
+  backupSource.includes('{ name: "bondProductId", select: \'x."bondProductId"\' }'),
+  "Transaction restore whitelist must carry bondProductId, or the bond link is silently dropped.",
+);
+expect(
+  backupSource.includes("importedBondTransactions.has(String(item.bondTransactionId))"),
+  "Entry business links must restore a bond reference only when that bond transaction was imported.",
+);
+
+// Reimbursement family (2026-10-01). Only Reimbursement and ReimbursementItem
+// used to be backed up; ReimbursementBatch / ReimbursementTransaction /
+// ReimbursementSettlement / ReimbursementSettlementTransaction were silently
+// dropped, and reimbursements.batchId was force-nulled on restore because the
+// batch table never travelled with the snapshot. The generic audit in
+// scripts/check-backup-coverage.cjs catches a *missing* table; this block pins
+// the *semantics* it cannot see (gated references instead of dropped rows).
+for (const key of [
+  "reimbursementBatches",
+  "reimbursementTransactions",
+  "reimbursementSettlements",
+  "reimbursementSettlementTransactions",
+  "creditCardBillingDays",
+]) {
+  expect(backupSource.includes(`${key}: ensureArray`), `Backup parser must accept ${key}.`);
+  expect(backupSource.includes(`data.${key}`), `Backup payload must expose ${key}.`);
+}
+expect(
+  backupSource.includes("prisma.reimbursementBatch.findMany") &&
+  backupSource.includes("prisma.reimbursementTransaction.findMany") &&
+  backupSource.includes("prisma.reimbursementSettlement.findMany") &&
+  backupSource.includes("prisma.reimbursementSettlementTransaction.findMany") &&
+  backupSource.includes("prisma.creditCardBillingDay.findMany"),
+  "Backup export must read the whole reimbursement family plus credit-card billing-day history.",
+);
+expect(
+  backupSource.includes("await tx.reimbursementSettlementTransaction.deleteMany") &&
+  backupSource.includes("await tx.reimbursementSettlement.deleteMany") &&
+  backupSource.includes("await tx.reimbursementTransaction.deleteMany") &&
+  backupSource.includes("await tx.reimbursementBatch.deleteMany") &&
+  backupSource.includes("await tx.creditCardBillingDay.deleteMany"),
+  "Restore must clear stale reimbursement batches/settlements/links and billing-day history.",
+);
+expect(
+  backupSource.includes("tx.reimbursementBatch,") &&
+  backupSource.includes("tx.reimbursementTransaction,") &&
+  backupSource.includes("tx.reimbursementSettlement,") &&
+  backupSource.includes("tx.reimbursementSettlementTransaction,") &&
+  backupSource.includes("tx.creditCardBillingDay.createMany"),
+  "Restore must import the whole reimbursement family and billing-day history.",
+);
+expect(
+  backupSource.includes("importedReimbursementBatches") &&
+  backupSource.includes("importedReimbursementSettlements") &&
+  backupSource.includes("importedReimbursementBatches.has(String(item.batchId))"),
+  "Restore must gate reimbursement batch/settlement references on the rows that were imported.",
+);
+expect(
+  !backupSource.includes("Reimbursement batches are not part of the backup payload"),
+  "reimbursements.batchId must carry a gated reference now that batches are backed up, not be force-nulled.",
+);
+expect(
+  backupSource.includes("item.paymentTxRecordId && importedTransactions.has(String(item.paymentTxRecordId))"),
+  "reimbursements.paymentTxRecordId is a real foreign key and must be gated on imported transactions.",
+);
+expect(
+  backupSource.includes("item.txRecordId && importedTransactions.has(String(item.txRecordId))"),
+  "Reimbursement items must gate their optional txRecordId on imported transactions instead of dropping the row.",
+);
+
 console.log("Backup completeness checks passed.");

@@ -38,6 +38,13 @@ jobs:
       - name: Verify Docker entrypoint
         run: npm run check:docker
 
+      # Fails the build when a household-scoped model in prisma/schema.prisma is
+      # not wired into src/lib/server/backup.ts. Without this, adding a table and
+      # forgetting backup.ts silently drops that data from every export and can
+      # break restores with dangling foreign keys (the bond/reimbursement gaps).
+      - name: Verify backup coverage
+        run: npm run check:backup
+
       # Tag ownership rules:
       # - Release refs (v* tags, dispatched by the release process) own the
       #   `latest` tag and the plain version tag (0.1.x).

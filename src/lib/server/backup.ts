@@ -657,6 +657,7 @@ const TRANSACTION_RESTORE_COLUMNS = [
   { name: "fundName", select: 'x."fundName"' },
   { name: "wealthProductId", select: 'x."wealthProductId"' },
   { name: "depositProductId", select: 'x."depositProductId"' },
+  { name: "bondProductId", select: 'x."bondProductId"' },
   { name: "insuranceProductId", select: 'x."insuranceProductId"' },
   { name: "insuranceAction", select: 'x."insuranceAction"' },
   { name: "insuranceProductName", select: 'x."insuranceProductName"' },
@@ -1276,6 +1277,7 @@ export async function ensureSqliteRestoreCompatibilitySchema() {
   await prisma.$executeRawUnsafe('CREATE INDEX IF NOT EXISTS "DepositProduct_institutionId_idx" ON "DepositProduct"("institutionId")');
   await ensureSqliteColumn("transactions", "depositProductId", "TEXT");
   await ensureSqliteColumn("deposit_transactions", "depositProductId", "TEXT");
+  await ensureSqliteColumn("transactions", "bondProductId", "TEXT");
   await prisma.$executeRawUnsafe(
     `CREATE INDEX IF NOT EXISTS "entry_business_links_stockTransactionId_idx" ON "entry_business_links"("stockTransactionId")`,
   );
@@ -1662,13 +1664,19 @@ export async function buildHouseholdBackupPayload(
     insuranceProductMasters,
     wealthProducts,
     depositProducts,
+    bondProducts,
     accounts,
     regularInvestPlans,
     creditCardInstallmentPlans,
+    creditCardBillingDays,
     loanRateAdjustments,
     debtAgreements,
     reimbursements,
+    reimbursementBatches,
     reimbursementItems,
+    reimbursementTransactions,
+    reimbursementSettlements,
+    reimbursementSettlementTransactions,
     fundQueryApis,
     statementRecognitionRules,
     importBatches,
@@ -1684,6 +1692,7 @@ export async function buildHouseholdBackupPayload(
     insuranceTransactions,
     wealthTransactions,
     depositTransactions,
+    bondTransactions,
     preciousMetalTransactions,
     stockSecurities,
     stockHoldings,
@@ -1718,13 +1727,31 @@ export async function buildHouseholdBackupPayload(
     prisma.insuranceProductMaster.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.wealthProduct.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.depositProduct.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
+    prisma.bondProduct.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.account.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.regularInvestPlan.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.creditCardInstallmentPlan.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
+    prisma.creditCardBillingDay.findMany({
+      where: { Account: { householdId } },
+      orderBy: [{ accountId: "asc" }, { effectiveDate: "asc" }],
+    }),
     prisma.loanRateAdjustment.findMany({ where: { householdId }, orderBy: [{ effectiveDate: "asc" }] }),
     prisma.debtAgreement.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.reimbursement.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
+    prisma.reimbursementBatch.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.reimbursementItem.findMany({ where: { Reimbursement: { householdId } }, orderBy: [{ createdAt: "asc" }] }),
+    prisma.reimbursementTransaction.findMany({
+      where: { Reimbursement: { householdId } },
+      orderBy: [{ createdAt: "asc" }],
+    }),
+    prisma.reimbursementSettlement.findMany({
+      where: { Reimbursement: { householdId } },
+      orderBy: [{ createdAt: "asc" }],
+    }),
+    prisma.reimbursementSettlementTransaction.findMany({
+      where: { Settlement: { Reimbursement: { householdId } } },
+      orderBy: [{ createdAt: "asc" }],
+    }),
     prisma.fundQueryApi.findMany({
       where: isSystemBackup
         ? { OR: [{ householdId }, { householdId: null }] }
@@ -1748,6 +1775,7 @@ export async function buildHouseholdBackupPayload(
     prisma.insuranceTransaction.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.wealthTransaction.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.depositTransaction.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
+    prisma.bondTransaction.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.preciousMetalTransaction.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     optionalPrismaFindMany<Record<string, unknown>>(
       prisma,
@@ -1916,6 +1944,7 @@ export async function buildHouseholdBackupPayload(
         insuranceTransactions.length +
         wealthTransactions.length +
         depositTransactions.length +
+        bondTransactions.length +
         preciousMetalTransactions.length +
         stockTransactions.length +
         propertyTransactions.length,
@@ -1948,11 +1977,13 @@ export async function buildHouseholdBackupPayload(
       insuranceProductMasters,
       wealthProducts,
       depositProducts,
+      bondProducts,
       accounts,
       accountAliases,
       billOverrides,
       creditCardCycles,
       creditCardInstallmentPlans,
+      creditCardBillingDays,
       fundConfirmDays,
       fundFeeRates,
       fundHoldings,
@@ -1962,7 +1993,11 @@ export async function buildHouseholdBackupPayload(
       loanRateAdjustments,
       debtAgreements,
       reimbursements,
+      reimbursementBatches,
       reimbursementItems,
+      reimbursementTransactions,
+      reimbursementSettlements,
+      reimbursementSettlementTransactions,
       fundQueryApis,
       statementRecognitionRules,
       regularInvestPlans,
@@ -1978,6 +2013,7 @@ export async function buildHouseholdBackupPayload(
       insuranceTransactions,
       wealthTransactions,
       depositTransactions,
+      bondTransactions,
       preciousMetalTransactions,
       stockSecurities,
       stockHoldings,
@@ -2021,11 +2057,13 @@ export async function buildHouseholdBackupWorkbook(payload: HouseholdBackupPaylo
     ["InsuranceProductMasters", sheetRows(payload.data.insuranceProductMasters)],
     ["WealthProducts", sheetRows(payload.data.wealthProducts)],
     ["DepositProducts", sheetRows(payload.data.depositProducts)],
+    ["BondProducts", sheetRows(payload.data.bondProducts)],
     ["Accounts", sheetRows(payload.data.accounts)],
     ["AccountAliases", sheetRows(payload.data.accountAliases)],
     ["BillOverrides", sheetRows(payload.data.billOverrides)],
     ["CreditCardCycles", sheetRows(payload.data.creditCardCycles)],
     ["CreditCardInstallmentPlans", sheetRows(payload.data.creditCardInstallmentPlans)],
+    ["CreditCardBillingDays", sheetRows(payload.data.creditCardBillingDays)],
     ["FundConfirmDays", sheetRows(payload.data.fundConfirmDays)],
     ["FundFeeRates", sheetRows(payload.data.fundFeeRates)],
     ["FundHoldings", sheetRows(payload.data.fundHoldings)],
@@ -2035,7 +2073,11 @@ export async function buildHouseholdBackupWorkbook(payload: HouseholdBackupPaylo
     ["LoanRateAdjustments", sheetRows(payload.data.loanRateAdjustments)],
     ["DebtAgreements", sheetRows(payload.data.debtAgreements)],
     ["Reimbursements", sheetRows(payload.data.reimbursements)],
+    ["ReimbursementBatches", sheetRows(payload.data.reimbursementBatches)],
     ["ReimbursementItems", sheetRows(payload.data.reimbursementItems)],
+    ["ReimbursementTransactions", sheetRows(payload.data.reimbursementTransactions)],
+    ["ReimbursementSettlements", sheetRows(payload.data.reimbursementSettlements)],
+    ["ReimbursementSettlementTransactions", sheetRows(payload.data.reimbursementSettlementTransactions)],
     ["FundQueryApis", sheetRows(payload.data.fundQueryApis)],
     ["StatementRecognitionRules", sheetRows(payload.data.statementRecognitionRules)],
     ["RegularInvestPlans", sheetRows(payload.data.regularInvestPlans)],
@@ -2049,6 +2091,7 @@ export async function buildHouseholdBackupWorkbook(payload: HouseholdBackupPaylo
     ["InsuranceTransactions", sheetRows(payload.data.insuranceTransactions)],
     ["WealthTransactions", sheetRows(payload.data.wealthTransactions)],
     ["DepositTransactions", sheetRows(payload.data.depositTransactions)],
+    ["BondTransactions", sheetRows(payload.data.bondTransactions)],
     ["PreciousMetalTransactions", sheetRows(payload.data.preciousMetalTransactions)],
     ["StockSecurities", sheetRows(payload.data.stockSecurities)],
     ["StockHoldings", sheetRows(payload.data.stockHoldings)],
@@ -2113,11 +2156,13 @@ export async function buildHouseholdTableExportWorkbook(payload: HouseholdBackup
     ["InsuranceProductMasters", sheetRows(payload.data.insuranceProductMasters)],
     ["WealthProducts", sheetRows(payload.data.wealthProducts)],
     ["DepositProducts", sheetRows(payload.data.depositProducts)],
+    ["BondProducts", sheetRows(payload.data.bondProducts)],
     ["Accounts", sheetRows(payload.data.accounts)],
     ["AccountAliases", sheetRows(payload.data.accountAliases)],
     ["BillOverrides", sheetRows(payload.data.billOverrides)],
     ["CreditCardCycles", sheetRows(payload.data.creditCardCycles)],
     ["CreditCardInstallmentPlans", sheetRows(payload.data.creditCardInstallmentPlans)],
+    ["CreditCardBillingDays", sheetRows(payload.data.creditCardBillingDays)],
     ["FundConfirmDays", sheetRows(payload.data.fundConfirmDays)],
     ["FundFeeRates", sheetRows(payload.data.fundFeeRates)],
     ["FundHoldings", sheetRows(payload.data.fundHoldings)],
@@ -2127,7 +2172,11 @@ export async function buildHouseholdTableExportWorkbook(payload: HouseholdBackup
     ["LoanRateAdjustments", sheetRows(payload.data.loanRateAdjustments)],
     ["DebtAgreements", sheetRows(payload.data.debtAgreements)],
     ["Reimbursements", sheetRows(payload.data.reimbursements)],
+    ["ReimbursementBatches", sheetRows(payload.data.reimbursementBatches)],
     ["ReimbursementItems", sheetRows(payload.data.reimbursementItems)],
+    ["ReimbursementTransactions", sheetRows(payload.data.reimbursementTransactions)],
+    ["ReimbursementSettlements", sheetRows(payload.data.reimbursementSettlements)],
+    ["ReimbursementSettlementTransactions", sheetRows(payload.data.reimbursementSettlementTransactions)],
     ["FundQueryApis", sheetRows(payload.data.fundQueryApis)],
     ["StatementRecognitionRules", sheetRows(payload.data.statementRecognitionRules)],
     ["RegularInvestPlans", sheetRows(tableRegularInvestPlans)],
@@ -2141,6 +2190,7 @@ export async function buildHouseholdTableExportWorkbook(payload: HouseholdBackup
     ["InsuranceTransactions", sheetRows(payload.data.insuranceTransactions)],
     ["WealthTransactions", sheetRows(payload.data.wealthTransactions)],
     ["DepositTransactions", sheetRows(payload.data.depositTransactions)],
+    ["BondTransactions", sheetRows(payload.data.bondTransactions)],
     ["PreciousMetalTransactions", sheetRows(payload.data.preciousMetalTransactions)],
     ["StockSecurities", sheetRows(payload.data.stockSecurities)],
     ["StockHoldings", sheetRows(payload.data.stockHoldings)],
@@ -2199,11 +2249,13 @@ export function parseBackupPayload(raw: unknown) {
       insuranceProductMasters: ensureArray(data.insuranceProductMasters ?? [], "data.insuranceProductMasters"),
       wealthProducts: ensureArray(data.wealthProducts ?? [], "data.wealthProducts"),
       depositProducts: ensureArray(data.depositProducts ?? [], "data.depositProducts"),
+      bondProducts: ensureArray(data.bondProducts ?? [], "data.bondProducts"),
       accounts: ensureArray(data.accounts ?? [], "data.accounts"),
       accountAliases: ensureArray(data.accountAliases ?? [], "data.accountAliases"),
       billOverrides: ensureArray(data.billOverrides ?? [], "data.billOverrides"),
       creditCardCycles: ensureArray(data.creditCardCycles ?? [], "data.creditCardCycles"),
       creditCardInstallmentPlans: ensureArray(data.creditCardInstallmentPlans ?? [], "data.creditCardInstallmentPlans"),
+      creditCardBillingDays: ensureArray(data.creditCardBillingDays ?? [], "data.creditCardBillingDays"),
       fundConfirmDays: ensureArray(data.fundConfirmDays ?? [], "data.fundConfirmDays"),
       fundFeeRates: ensureArray(data.fundFeeRates ?? [], "data.fundFeeRates"),
       fundHoldings: ensureArray(data.fundHoldings ?? [], "data.fundHoldings"),
@@ -2213,7 +2265,14 @@ export function parseBackupPayload(raw: unknown) {
       loanRateAdjustments: ensureArray(data.loanRateAdjustments ?? [], "data.loanRateAdjustments"),
       debtAgreements: ensureArray(data.debtAgreements ?? [], "data.debtAgreements"),
       reimbursements: ensureArray(data.reimbursements ?? [], "data.reimbursements"),
+      reimbursementBatches: ensureArray(data.reimbursementBatches ?? [], "data.reimbursementBatches"),
       reimbursementItems: ensureArray(data.reimbursementItems ?? [], "data.reimbursementItems"),
+      reimbursementTransactions: ensureArray(data.reimbursementTransactions ?? [], "data.reimbursementTransactions"),
+      reimbursementSettlements: ensureArray(data.reimbursementSettlements ?? [], "data.reimbursementSettlements"),
+      reimbursementSettlementTransactions: ensureArray(
+        data.reimbursementSettlementTransactions ?? [],
+        "data.reimbursementSettlementTransactions",
+      ),
       fundQueryApis: ensureArray(data.fundQueryApis ?? [], "data.fundQueryApis"),
       statementRecognitionRules: ensureArray(data.statementRecognitionRules ?? [], "data.statementRecognitionRules"),
       statementCategoryRules: ensureArray(data.statementCategoryRules ?? [], "data.statementCategoryRules"),
@@ -2228,6 +2287,7 @@ export function parseBackupPayload(raw: unknown) {
       insuranceTransactions: ensureArray(data.insuranceTransactions ?? [], "data.insuranceTransactions"),
       wealthTransactions: ensureArray(data.wealthTransactions ?? [], "data.wealthTransactions"),
       depositTransactions: ensureArray(data.depositTransactions ?? [], "data.depositTransactions"),
+      bondTransactions: ensureArray(data.bondTransactions ?? [], "data.bondTransactions"),
       preciousMetalTransactions: ensureArray(data.preciousMetalTransactions ?? [], "data.preciousMetalTransactions"),
       stockSecurities: ensureArray(data.stockSecurities ?? [], "data.stockSecurities"),
       stockHoldings: ensureArray(data.stockHoldings ?? [], "data.stockHoldings"),
@@ -2298,6 +2358,7 @@ export async function restoreHouseholdBackup(
   const importedInsuranceProducts = new Set(data.insuranceProducts.map((item) => String(item.id)));
   const importedWealthProducts = new Set(data.wealthProducts.map((item) => String(item.id)));
   const importedDepositProducts = new Set((data.depositProducts ?? []).map((item) => String(item.id)));
+  const importedBondProducts = new Set((data.bondProducts ?? []).map((item) => String(item.id)));
   const importedCreditCardInstallmentPlans = new Set(data.creditCardInstallmentPlans.map((item) => String(item.id)));
   const importedPreciousMetalTypes = new Set(data.preciousMetalTypes.map((item) => String(item.id)));
   const importedPreciousMetalUnits = new Set(data.preciousMetalUnits.map((item) => String(item.id)));
@@ -2308,6 +2369,8 @@ export async function restoreHouseholdBackup(
   const restoredMetalUnitNameById = restoredDisplayNameById(data.preciousMetalUnits);
   const restoredInsuranceProductNameById = restoredDisplayNameById(data.insuranceProducts);
   const importedReimbursements = new Set(data.reimbursements.map((item) => String(item.id)));
+  const importedReimbursementBatches = new Set(data.reimbursementBatches.map((item) => String(item.id)));
+  const importedReimbursementSettlements = new Set(data.reimbursementSettlements.map((item) => String(item.id)));
   const importedFundTransactions = new Set(data.fundTransactions.map((item) => String(item.id)));
   const importedStockSecurities = new Set(data.stockSecurities.map((item) => String(item.id)));
   const importedStockTransactions = new Set(
@@ -2338,6 +2401,7 @@ export async function restoreHouseholdBackup(
   const importedInsuranceTransactions = new Set(data.insuranceTransactions.map((item) => String(item.id)));
   const importedWealthTransactions = new Set(data.wealthTransactions.map((item) => String(item.id)));
   const importedDepositTransactions = new Set(data.depositTransactions.map((item) => String(item.id)));
+  const importedBondTransactions = new Set((data.bondTransactions ?? []).map((item) => String(item.id)));
   const importedPreciousMetalTransactions = new Set(data.preciousMetalTransactions.map((item) => String(item.id)));
   const importedAiChannels = new Set(data.aiChannels.map((item) => String(item.id)));
   const hasIndependentFundTransactions = data.fundTransactions.length > 0;
@@ -2415,6 +2479,7 @@ export async function restoreHouseholdBackup(
     await tx.insuranceTransaction.deleteMany({ where: { householdId } });
     await tx.wealthTransaction.deleteMany({ where: { householdId } });
     await tx.depositTransaction.deleteMany({ where: { householdId } });
+    await tx.bondTransaction.deleteMany({ where: { householdId } });
     await tx.preciousMetalTransaction.deleteMany({ where: { householdId } });
     const stockTransactionsDeleted = await optionalPrismaDeleteMany(
       tx,
@@ -2492,8 +2557,15 @@ export async function restoreHouseholdBackup(
     await tx.creditCardInstallmentPlan.deleteMany({ where: { householdId } });
     await tx.loanRateAdjustment.deleteMany({ where: { householdId } });
     await tx.debtAgreement.deleteMany({ where: { householdId } });
+    await tx.reimbursementSettlementTransaction.deleteMany({
+      where: { Settlement: { Reimbursement: { householdId } } },
+    });
+    await tx.reimbursementSettlement.deleteMany({ where: { Reimbursement: { householdId } } });
+    await tx.reimbursementTransaction.deleteMany({ where: { Reimbursement: { householdId } } });
     await tx.reimbursementItem.deleteMany({ where: { Reimbursement: { householdId } } });
     await tx.reimbursement.deleteMany({ where: { householdId } });
+    // Reimbursements are gone by now, so the batch rows they pointed at are safe to drop.
+    await tx.reimbursementBatch.deleteMany({ where: { householdId } });
 
     if (currentAccountIds.length > 0) {
       await tx.fundSnapshot.deleteMany({ where: { accountId: { in: currentAccountIds } } });
@@ -2523,6 +2595,10 @@ export async function restoreHouseholdBackup(
       await tx.accountAlias.deleteMany({ where: { accountId: { in: currentAccountIds } } });
     }
 
+    // Scoped through Account rather than currentAccountIds, so stale billing-day
+    // history is cleared even when the current database has no accounts left.
+    await tx.creditCardBillingDay.deleteMany({ where: { Account: { householdId } } });
+
     await tx.undoOperation.deleteMany({ where: { householdId } });
     await tx.txRecord.deleteMany({ where: { householdId } });
     await tx.account.deleteMany({ where: { householdId } });
@@ -2530,6 +2606,7 @@ export async function restoreHouseholdBackup(
     await tx.insuranceProductMaster.deleteMany({ where: { householdId } });
     await tx.wealthProduct.deleteMany({ where: { householdId } });
     await tx.depositProduct.deleteMany({ where: { householdId } });
+    await tx.bondProduct.deleteMany({ where: { householdId } });
     await tx.importBatch.deleteMany({ where: { householdId } });
     if (isSystemRestore) {
       await tx.fundQueryApi.deleteMany({ where: { OR: [{ householdId }, { householdId: null }] } });
@@ -2890,6 +2967,20 @@ export async function restoreHouseholdBackup(
       );
     }
 
+    if ((data.bondProducts ?? []).length > 0) {
+      await createManyRecords(
+        tx.bondProduct,
+        data.bondProducts.map((item) => ({
+          ...item,
+          householdId,
+          institutionId:
+            item.institutionId && importedInstitutions.has(String(item.institutionId))
+              ? String(item.institutionId)
+              : null,
+        })),
+      );
+    }
+
     if (data.fundQueryApis.length > 0) {
       await tx.fundQueryApi.createMany({
         data: data.fundQueryApis.map((item) => ({
@@ -3048,6 +3139,21 @@ export async function restoreHouseholdBackup(
             isCurrentCycle: item.isCurrentCycle == null ? false : Boolean(item.isCurrentCycle),
             isLocked: item.isLocked == null ? false : Boolean(item.isLocked),
             lockSource: item.lockSource == null ? null : String(item.lockSource),
+            createdAt: item.createdAt ? new Date(String(item.createdAt)) : new Date(),
+            updatedAt: item.updatedAt ? new Date(String(item.updatedAt)) : new Date(),
+          })),
+      });
+    }
+
+    if (data.creditCardBillingDays.length > 0) {
+      await tx.creditCardBillingDay.createMany({
+        data: data.creditCardBillingDays
+          .filter((item) => importedAccounts.has(String(item.accountId)))
+          .map((item) => ({
+            id: String(item.id),
+            accountId: String(item.accountId),
+            effectiveDate: new Date(String(item.effectiveDate)),
+            billingDay: Number(item.billingDay ?? 0),
             createdAt: item.createdAt ? new Date(String(item.createdAt)) : new Date(),
             updatedAt: item.updatedAt ? new Date(String(item.updatedAt)) : new Date(),
           })),
@@ -3472,6 +3578,10 @@ export async function restoreHouseholdBackup(
                 item.insuranceProductId && importedInsuranceProducts.has(String(item.insuranceProductId))
                   ? String(item.insuranceProductId)
                   : null,
+              bondProductId:
+                item.bondProductId && importedBondProducts.has(String(item.bondProductId))
+                  ? String(item.bondProductId)
+                  : null,
               insuranceAction: item.insuranceAction == null ? null : String(item.insuranceAction),
               insuranceProductName: restoredLookupName(
                 item.insuranceProductId && importedInsuranceProducts.has(String(item.insuranceProductId))
@@ -3738,6 +3848,33 @@ export async function restoreHouseholdBackup(
     );
 
     await createManyRecords(
+      tx.bondTransaction,
+      data.bondTransactions
+        .filter((item) => importedAccounts.has(String(item.accountId)))
+        .map((item) => ({
+          ...item,
+          householdId,
+          cashAccountId:
+            item.cashAccountId && importedAccounts.has(String(item.cashAccountId))
+              ? String(item.cashAccountId)
+              : null,
+          cashEntryId:
+            item.cashEntryId && importedTransactions.has(String(item.cashEntryId))
+              ? String(item.cashEntryId)
+              : null,
+          sourceBondTransactionId:
+            item.sourceBondTransactionId && importedBondTransactions.has(String(item.sourceBondTransactionId))
+              ? String(item.sourceBondTransactionId)
+              : null,
+          bondProductId:
+            item.bondProductId && importedBondProducts.has(String(item.bondProductId))
+              ? String(item.bondProductId)
+              : null,
+        })),
+      new Set(["tradeDate", "confirmDate", "arrivalDate", "maturityDate", "firstPayoutDate", "deletedAt"]),
+    );
+
+    await createManyRecords(
       tx.preciousMetalTransaction,
       data.preciousMetalTransactions
         .filter(
@@ -3897,12 +4034,21 @@ export async function restoreHouseholdBackup(
           item.preciousMetalTransactionId && importedPreciousMetalTransactions.has(String(item.preciousMetalTransactionId))
             ? String(item.preciousMetalTransactionId)
             : null,
-        ...(item.stockTransactionId && importedStockTransactions.has(String(item.stockTransactionId))
-          ? { stockTransactionId: String(item.stockTransactionId) }
-          : {}),
-        ...(item.propertyTransactionId && importedPropertyTransactions.has(String(item.propertyTransactionId))
-          ? { propertyTransactionId: String(item.propertyTransactionId) }
-          : {}),
+        // The `...item` spread above keeps the original value whenever the
+        // referenced row is not part of this restore, which violates the
+        // foreign key; set these columns explicitly instead.
+        bondTransactionId:
+          item.bondTransactionId && importedBondTransactions.has(String(item.bondTransactionId))
+            ? String(item.bondTransactionId)
+            : null,
+        stockTransactionId:
+          item.stockTransactionId && importedStockTransactions.has(String(item.stockTransactionId))
+            ? String(item.stockTransactionId)
+            : null,
+        propertyTransactionId:
+          item.propertyTransactionId && importedPropertyTransactions.has(String(item.propertyTransactionId))
+            ? String(item.propertyTransactionId)
+            : null,
       })),
       new Set(["deletedAt"]),
     );
@@ -4010,20 +4156,76 @@ export async function restoreHouseholdBackup(
         })),
     );
 
+    // Batches must land before reimbursements, because reimbursements.batchId
+    // points at them.
+    await createManyRecords(
+      tx.reimbursementBatch,
+      data.reimbursementBatches.map((item) => ({
+        ...item,
+        householdId,
+      })),
+      new Set(["startDate", "endDate"]),
+    );
+
     await createManyRecords(
       tx.reimbursement,
       data.reimbursements.map((item) => ({
         ...item,
         householdId,
+        // Both real foreign keys are gated on the rows that actually made it into
+        // this restore, so a partial backup cannot violate
+        // reimbursements_batchId_fkey or reimbursements_paymentTxRecordId_fkey.
+        batchId:
+          item.batchId && importedReimbursementBatches.has(String(item.batchId))
+            ? String(item.batchId)
+            : null,
+        paymentTxRecordId:
+          item.paymentTxRecordId && importedTransactions.has(String(item.paymentTxRecordId))
+            ? String(item.paymentTxRecordId)
+            : null,
       })),
+      new Set(["approvalDate", "travelStartDate", "travelEndDate", "reimbursedDate", "deletedAt"]),
     );
 
     await createManyRecords(
       tx.reimbursementItem,
       data.reimbursementItems
+        .filter((item) => importedReimbursements.has(String(item.reimbursementId)))
+        .map((item) => ({
+          ...item,
+          // txRecordId is optional here, so a link that did not survive the
+          // restore must clear the column instead of dropping the expense line.
+          txRecordId:
+            item.txRecordId && importedTransactions.has(String(item.txRecordId))
+              ? String(item.txRecordId)
+              : null,
+        })),
+    );
+
+    await createManyRecords(
+      tx.reimbursementTransaction,
+      data.reimbursementTransactions
         .filter(
           (item) =>
             importedReimbursements.has(String(item.reimbursementId)) &&
+            importedTransactions.has(String(item.txRecordId)),
+        )
+        .map((item) => ({ ...item })),
+    );
+
+    await createManyRecords(
+      tx.reimbursementSettlement,
+      data.reimbursementSettlements
+        .filter((item) => importedReimbursements.has(String(item.reimbursementId)))
+        .map((item) => ({ ...item })),
+    );
+
+    await createManyRecords(
+      tx.reimbursementSettlementTransaction,
+      data.reimbursementSettlementTransactions
+        .filter(
+          (item) =>
+            importedReimbursementSettlements.has(String(item.settlementId)) &&
             importedTransactions.has(String(item.txRecordId)),
         )
         .map((item) => ({ ...item })),
