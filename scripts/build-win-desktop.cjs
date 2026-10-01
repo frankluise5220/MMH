@@ -226,8 +226,22 @@ step("copy portable Node runtime");
 copyDir(portableNodeRoot, stageNodeDir);
 
 // ------------------------------------------------- better-sqlite3 ABI rebuild
-step("rebuild better-sqlite3 with bundled Node " + require("node:child_process").execFileSync(toArgvPath(path.join(stageNodeDir, "node.exe")), ["--version"]).toString().trim());
-const portableNode = toArgvPath(path.join(stageNodeDir, "node.exe"));
+const stagedPortableNode = toArgvPath(path.join(stageNodeDir, "node.exe"));
+let portableNode = stagedPortableNode;
+let portableNodeVersion;
+try {
+  portableNodeVersion = require("node:child_process").execFileSync(stagedPortableNode, ["--version"]).toString().trim();
+} catch (error) {
+  // Some Windows build sandboxes refuse to execute a freshly copied binary
+  // and return EBUSY. The managed Node that launched this script has the same
+  // Node 22 ABI; use it for native-module rebuild/verification only. The
+  // staged portable runtime is still shipped unchanged in the installer.
+  if (error?.code !== "EBUSY") throw error;
+  portableNode = process.execPath;
+  portableNodeVersion = process.version;
+  console.warn("Staged portable Node could not execute in this build environment; using the build Node for native-module verification.");
+}
+step("rebuild better-sqlite3 with bundled Node " + portableNodeVersion);
 const portableNpmCli = toArgvPath(path.join(stageNodeDir, "node_modules", "npm", "bin", "npm-cli.js"));
 const rebuild = spawnSync(portableNode, [portableNpmCli, "rebuild", "better-sqlite3"], {
   cwd: stageAppDir,
