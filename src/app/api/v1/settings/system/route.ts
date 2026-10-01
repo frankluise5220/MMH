@@ -2,8 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { getCurrentUser, isAdmin } from "@/lib/server/auth";
 import {
+  normalizeLedgerInviteCodeMetadata,
   parseLedgerInviteCodeRecords,
   serializeLedgerInviteCodeRecords,
+  stampLedgerInviteCodeCreators,
 } from "@/lib/ledger-invite-codes";
 import { LEDGER_CREATION_INVITE_CODE_KEY } from "@/lib/households/create-ledger";
 import { signLedgerInviteCodeRecords } from "@/lib/server/ledger-invite-code-signing";
@@ -74,9 +76,34 @@ export async function POST(req: NextRequest) {
     if (!user?.householdId) {
       return NextResponse.json({ ok: false, code: "HOUSEHOLD_REQUIRED", error: "邀请码必须由已有账簿管理员生成。" }, { status: 400 });
     }
+    // Issuer-managed metadata (note / expiry / creator) is validated and
+    // normalised here, then stamped on records the client created. The HMAC
+    // signature only covers identity fields, so these stay admin-editable.
+    const metadata = normalizeLedgerInviteCodeMetadata(parseLedgerInviteCodeRecords(nextValue));
+    if (!metadata.ok) {
+      const { issue } = metadata;
+      if (issue.kind === "note-too-long") {
+        return NextResponse.json(
+          { ok: false, code: "INVITE_CODE_NOTE_TOO_LONG", error: `备注长度不能超过 ${issue.max} 个字符。` },
+          { status: 400 },
+        );
+      }
+      return NextResponse.json({ ok: false, code: "INVITE_CODE_EXPIRY_INVALID", error: "有效期不是合法的日期时间。" }, { status: 400 });
+    }
+    // Read the stored value first: only codes absent from it are new in this
+    // save, and only those can be honestly attributed to the current admin.
+    const storedInviteSetting = await prisma.systemSetting.findUnique({
+      where: { key: LEDGER_CREATION_INVITE_CODE_KEY },
+      select: { value: true },
+    });
+    const storedInviteCodes = parseLedgerInviteCodeRecords(storedInviteSetting?.value).map((record) => record.code);
     try {
-      const records = parseLedgerInviteCodeRecords(nextValue);
-      nextValue = serializeLedgerInviteCodeRecords(signLedgerInviteCodeRecords(records, user.householdId));
+      nextValue = serializeLedgerInviteCodeRecords(
+        signLedgerInviteCodeRecords(
+          stampLedgerInviteCodeCreators(metadata.records, { id: user.id, name: user.name }, storedInviteCodes),
+          user.householdId,
+        ),
+      );
     } catch (error) {
       return NextResponse.json({ ok: false, code: "INVALID_INVITE_CODE_SIGNATURE", error: error instanceof Error ? error.message : "邀请码签名无效。" }, { status: 400 });
     }

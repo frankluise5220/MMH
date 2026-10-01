@@ -92,10 +92,24 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, code: "ADMIN_PASSWORD_REQUIRED", error: "Administrator password is required." }, { status: 400 });
   }
 
+  const existingMmhPrincipal = !fnosUid
+    ? await prisma.user.findFirst({
+        where: { id: user.id, registrationPrincipalId: { not: null } },
+        select: { registrationPrincipalId: true },
+      })
+    : null;
+
   const created = await prisma.$transaction((tx) =>
     createLedgerWithDefaults(
       tx,
-      { name, adminName, adminPassword: fnosUid ? undefined : adminPassword, adminEmail, fnosUid: fnosUid || undefined },
+      {
+        name,
+        adminName,
+        adminPassword: fnosUid ? undefined : adminPassword,
+        adminEmail,
+        fnosUid: fnosUid || undefined,
+        registrationPrincipalId: existingMmhPrincipal?.registrationPrincipalId,
+      },
       { currentUser: user },
     ),
   );

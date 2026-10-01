@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { verifyPassword } from "@/lib/auth/password";
-import { getCurrentUser, isAdmin } from "@/lib/server/auth";
+import { getCurrentUser } from "@/lib/server/auth";
 
 export const runtime = "nodejs";
 
@@ -14,7 +14,7 @@ const LEGACY_PASSWORD_KEY = "access_password";
  * settings, returning the deployment to first-use setup state.
  *
  * Security requirements:
- * - The current signed-in user must be an administrator.
+ * - The current signed-in user must be a system administrator (`isSystem=true`).
  * - The request must submit that user's current password. Legacy deployments
  *   without per-user passwords may still verify the old access password.
  * Body: { password: string }
@@ -24,8 +24,8 @@ export async function POST(req: NextRequest) {
   if (!currentUser) {
     return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "Please sign in first." }, { status: 401 });
   }
-  if (!isAdmin(currentUser)) {
-    return NextResponse.json({ ok: false, code: "ADMIN_REQUIRED", error: "Administrator permission is required." }, { status: 403 });
+  if (currentUser.isSystem !== true) {
+    return NextResponse.json({ ok: false, code: "SYSTEM_ADMIN_REQUIRED", error: "Only a system administrator can initialize the entire system." }, { status: 403 });
   }
 
   const body = (await req.json().catch(() => null)) as { password?: string } | null;

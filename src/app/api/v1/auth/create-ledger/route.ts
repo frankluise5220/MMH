@@ -15,12 +15,11 @@ import {
 } from "@/lib/households/create-ledger";
 import {
   activeLedgerInviteCodes,
-  findLedgerInviteCodeRecord,
   markLedgerInviteCodeUsed,
   parseLedgerInviteCodeRecords,
   serializeLedgerInviteCodeRecords,
 } from "@/lib/ledger-invite-codes";
-import { isLedgerInviteCodeRecordAuthentic } from "@/lib/server/ledger-invite-code-signing";
+import { inspectLedgerInviteCode, missingIssuerRejection } from "@/lib/server/ledger-invite-code-guard";
 
 const LEGACY_PASSWORD_KEY = "access_password";
 
@@ -104,31 +103,30 @@ export async function POST(req: NextRequest) {
         where: { key: LEDGER_CREATION_INVITE_CODE_KEY },
       });
       const inviteRecords = parseLedgerInviteCodeRecords(inviteSetting?.value);
-      const inviteRecord = findLedgerInviteCodeRecord(inviteRecords, inviteCode);
-      if (!inviteRecord) {
-        if (activeLedgerInviteCodes(inviteRecords).length === 0) {
+      // Precise verdicts: a wrong code, a code from another instance, an
+      // already-used code and an unconfigured server must not look the same.
+      const inspection = inspectLedgerInviteCode(inviteRecords, inviteCode);
+      if (!inspection.ok) {
+        const { rejection } = inspection;
+        if (rejection.code === "INVITE_CODE_NOT_FOUND" && activeLedgerInviteCodes(inviteRecords).length === 0) {
           throw new CreateLedgerError("Ledger creation is currently closed. Contact an administrator.", 403);
         }
-        throw new CreateLedgerError("The invite code is invalid.", 403);
-      }
-      if (inviteRecord.usedAt) {
-        throw new CreateLedgerError("The invite code has already been used.", 403);
-      }
-      if (!isLedgerInviteCodeRecordAuthentic(inviteRecord)) {
-        throw new CreateLedgerError("The invite code belongs to another system or has been altered.", 403);
+        throw new CreateLedgerError(rejection.message, rejection.status);
       }
       const issuerHousehold = await tx.household.findUnique({
-        where: { id: inviteRecord.issuerHouseholdId },
+        where: { id: inspection.record.issuerHouseholdId },
         select: { id: true },
       });
       if (!issuerHousehold) {
-        throw new CreateLedgerError("The invite code's issuing ledger no longer exists.", 403);
+        throw new CreateLedgerError(missingIssuerRejection().message, 403);
       }
 
       const result = await createLedgerWithDefaults(tx, { name, adminName, adminPassword, adminEmail });
       const usedInviteRecords = markLedgerInviteCodeUsed(inviteRecords, inviteCode, {
         householdId: result.household.id,
         householdName: result.household.name,
+        usedUserId: result.adminUser.id,
+        usedUserName: result.adminUser.name,
       });
       await tx.systemSetting.upsert({
         where: { key: LEDGER_CREATION_INVITE_CODE_KEY },

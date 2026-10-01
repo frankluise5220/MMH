@@ -13,7 +13,9 @@ import {
 } from "@/components/settings/SettingsPageScaffold";
 import { generateRandomKey } from "@/lib/client/randomKey";
 import {
+  INVITE_CODE_NOTE_MAX_LENGTH,
   createLedgerInviteCodeRecord,
+  isLedgerInviteCodeExpired,
   parseLedgerInviteCodeRecords,
   serializeLedgerInviteCodeRecords,
   type LedgerInviteCodeRecord,
@@ -32,6 +34,20 @@ import { copyToClipboard } from "@/lib/client/clipboard";
 type I18nT = (key: string, params?: Record<string, string | number>) => string;
 
 const LEDGER_INVITE_CODE_KEY = "ledger_creation_invite_code";
+
+/**
+ * Invite-code row plus the redemption verdict computed by the server.
+ *
+ * The verdict cannot be derived on the client: only the server holds the HMAC
+ * secret, so only it can tell "this code is fine" from "this code was signed by
+ * another instance". Rendering the server verdict keeps the admin view and the
+ * redeemer's error message consistent.
+ */
+type LedgerInviteCodeRecordView = LedgerInviteCodeRecord & {
+  signatureState?: "valid" | "invalid" | "unavailable";
+  expired?: boolean;
+  redeemable?: boolean;
+};
 
 type SaveFilePickerHandle = {
   name?: string;
@@ -86,6 +102,13 @@ type BackupOptions = {
 type SettingsValuesResult = {
   ok?: boolean;
   values?: Record<string, string | null>;
+  error?: string;
+};
+
+type LedgerInviteCodeViewResult = {
+  ok?: boolean;
+  records?: LedgerInviteCodeRecordView[];
+  signingAvailable?: boolean;
   error?: string;
 };
 
@@ -237,6 +260,29 @@ function formatInviteDateTime(value?: string) {
   if (Number.isNaN(date.getTime())) return value;
   const pad = (num: number) => String(num).padStart(2, "0");
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+/** ISO / stored text -> value for `<input type="datetime-local">` (browser local time). */
+function toInviteExpiryInput(value?: string | null) {
+  if (!value) return "";
+  const time = Date.parse(value);
+  if (!Number.isFinite(time)) return "";
+  const date = new Date(time);
+  const pad = (num: number) => String(num).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+/**
+ * `datetime-local` value -> ISO string. Empty means "no expiry" (cleared), and
+ * the conversion happens in the browser so the local timezone is the user's,
+ * never the server's.
+ */
+function fromInviteExpiryInput(value: string): string | null {
+  const text = value.trim();
+  if (!text) return null;
+  const time = Date.parse(text);
+  if (!Number.isFinite(time)) return null;
+  return new Date(time).toISOString();
 }
 
 async function saveDataBackup(options: BackupOptions, t: I18nT): Promise<BackupSaveResult | null> {
@@ -559,11 +605,16 @@ export default function DatabaseSettingsPage() {
   const [originMessage, setOriginMessage] = useState("");
   const [originError, setOriginError] = useState("");
   const [ledgerInviteCode, setLedgerInviteCode] = useState("");
-  const [ledgerInviteRecords, setLedgerInviteRecords] = useState<LedgerInviteCodeRecord[]>([]);
+  const [ledgerInviteNote, setLedgerInviteNote] = useState("");
+  const [ledgerInviteExpiry, setLedgerInviteExpiry] = useState("");
+  const [ledgerInviteRecords, setLedgerInviteRecords] = useState<LedgerInviteCodeRecordView[]>([]);
+  const [ledgerInviteSigningAvailable, setLedgerInviteSigningAvailable] = useState(true);
   const [ledgerInviteLoading, setLedgerInviteLoading] = useState(false);
   const [ledgerInviteSaving, setLedgerInviteSaving] = useState(false);
   const [ledgerInviteMessage, setLedgerInviteMessage] = useState("");
   const [ledgerInviteError, setLedgerInviteError] = useState("");
+  const [editingInviteCode, setEditingInviteCode] = useState<string | null>(null);
+  const [inviteEditDraft, setInviteEditDraft] = useState<{ note: string; expiresAt: string }>({ note: "", expiresAt: "" });
 
   const [backuping, setBackuping] = useState(false);
   const [tableExporting, setTableExporting] = useState(false);
@@ -589,9 +640,12 @@ export default function DatabaseSettingsPage() {
   const [restoreProgress, setRestoreProgress] = useState<RestoreProgressState>(RESTORE_PROGRESS_IDLE);
 
   const [resetDbPassword, setResetDbPassword] = useState("");
+  const [resetScope, setResetScope] = useState<"system" | "household">("system");
   const [resetPasswordDialogOpen, setResetPasswordDialogOpen] = useState(false);
   const [resetError, setResetError] = useState("");
   const [resetting, setResetting] = useState(false);
+  const [isSystemAdmin, setIsSystemAdmin] = useState(false);
+  const [canResetHousehold, setCanResetHousehold] = useState(false);
 
   const [cacheRefreshing, setCacheRefreshing] = useState(false);
   const [cacheRefreshMessage, setCacheRefreshMessage] = useState("");
@@ -740,8 +794,10 @@ export default function DatabaseSettingsPage() {
     setOriginError("");
     try {
       const permissionResponse = await fetch("/api/v1/households", { cache: "no-store" });
-      const permissionData = await permissionResponse.json().catch(() => null) as { canBackupSystem?: boolean } | null;
+      const permissionData = await permissionResponse.json().catch(() => null) as { canBackupSystem?: boolean; isSystem?: boolean; isAdmin?: boolean } | null;
       setCanBackupSystem(permissionData?.canBackupSystem === true);
+      setIsSystemAdmin(permissionData?.isSystem === true);
+      setCanResetHousehold(permissionData?.isAdmin === true);
     } catch {
       setCanBackupSystem(false);
     }
@@ -767,21 +823,41 @@ export default function DatabaseSettingsPage() {
     }
 
     try {
-      const data = await fetchJsonWithTimeout<SettingsValuesResult>(
-        `/api/v1/settings/system?keys=${encodeURIComponent(LEDGER_INVITE_CODE_KEY)}`,
-        { cache: "no-store", timeoutMs: 12_000, t },
-      );
-      if (!data.ok) {
-        throw new Error(data.error ?? t("settings.database.readInviteFailed"));
-      }
-      const values = data.values ?? {};
-      setLedgerInviteRecords(parseLedgerInviteCodeRecords(values[LEDGER_INVITE_CODE_KEY]));
+      const view = await fetchLedgerInviteCodeView();
+      setLedgerInviteRecords(view.records);
+      setLedgerInviteSigningAvailable(view.signingAvailable);
       setLedgerInviteCode("");
     } catch (error) {
       setLedgerInviteRecords([]);
       setLedgerInviteError(error instanceof Error ? error.message : t("settings.database.readInviteFailed"));
     } finally {
       setLedgerInviteLoading(false);
+    }
+  }
+
+  /**
+   * Reads the invite codes with the server-computed redemption verdict, so the
+   * table can show "signature invalid" instead of a misleading "available".
+   */
+  async function fetchLedgerInviteCodeView() {
+    const data = await fetchJsonWithTimeout<LedgerInviteCodeViewResult>(
+      "/api/v1/settings/ledger-invite-codes",
+      { cache: "no-store", timeoutMs: 12_000, t },
+    );
+    if (!data.ok) {
+      throw new Error(data.error ?? t("settings.database.readInviteFailed"));
+    }
+    return { records: data.records ?? [], signingAvailable: data.signingAvailable !== false };
+  }
+
+  /** Silent re-read so server-stamped fields (creator, usage) show up right away. */
+  async function refreshLedgerInviteRecords() {
+    try {
+      const view = await fetchLedgerInviteCodeView();
+      setLedgerInviteRecords(view.records);
+      setLedgerInviteSigningAvailable(view.signingAvailable);
+    } catch {
+      // Keep the locally normalised list; the next load will reconcile.
     }
   }
 
@@ -802,12 +878,27 @@ export default function DatabaseSettingsPage() {
       const normalized = parseLedgerInviteCodeRecords(serializeLedgerInviteCodeRecords(nextRecords));
       setLedgerInviteRecords(normalized);
       setLedgerInviteCode("");
+      setLedgerInviteNote("");
+      setLedgerInviteExpiry("");
+      setEditingInviteCode(null);
       setLedgerInviteMessage(normalized.length > 0 ? successMessage : t("settings.database.inviteDisabled"));
+      void refreshLedgerInviteRecords();
+      return true;
     } catch (error) {
       setLedgerInviteError(error instanceof Error ? error.message : t("settings.database.saveInviteFailed"));
+      return false;
     } finally {
       setLedgerInviteSaving(false);
     }
+  }
+
+  function validateInviteNote(note: string) {
+    if (note.length > INVITE_CODE_NOTE_MAX_LENGTH) {
+      setLedgerInviteMessage("");
+      setLedgerInviteError(t("settings.database.inviteNoteTooLong", { max: INVITE_CODE_NOTE_MAX_LENGTH }));
+      return false;
+    }
+    return true;
   }
 
   async function addLedgerInviteCode() {
@@ -820,12 +911,47 @@ export default function DatabaseSettingsPage() {
       setLedgerInviteError(t("settings.database.inviteExists"));
       return;
     }
-    await saveLedgerInviteRecords([...ledgerInviteRecords, createLedgerInviteCodeRecord(code)], t("settings.database.inviteAdded"));
+    const note = ledgerInviteNote.trim();
+    if (!validateInviteNote(note)) return;
+    await saveLedgerInviteRecords(
+      [
+        ...ledgerInviteRecords,
+        {
+          ...createLedgerInviteCodeRecord(code),
+          note: note || null,
+          expiresAt: fromInviteExpiryInput(ledgerInviteExpiry),
+        },
+      ],
+      t("settings.database.inviteAdded"),
+    );
   }
 
   async function removeLedgerInviteCode(code: string) {
     const nextRecords = ledgerInviteRecords.filter((item) => item.code !== code);
     await saveLedgerInviteRecords(nextRecords, t("settings.database.inviteDeleted"));
+  }
+
+  function startEditLedgerInviteCode(record: LedgerInviteCodeRecord) {
+    setEditingInviteCode(record.code);
+    setInviteEditDraft({ note: record.note ?? "", expiresAt: toInviteExpiryInput(record.expiresAt) });
+    setLedgerInviteError("");
+    setLedgerInviteMessage("");
+  }
+
+  function cancelEditLedgerInviteCode() {
+    setEditingInviteCode(null);
+    setInviteEditDraft({ note: "", expiresAt: "" });
+  }
+
+  async function commitLedgerInviteCodeEdit(code: string) {
+    const note = inviteEditDraft.note.trim();
+    if (!validateInviteNote(note)) return;
+    const nextRecords = ledgerInviteRecords.map((record) => (
+      record.code === code
+        ? { ...record, note: note || null, expiresAt: fromInviteExpiryInput(inviteEditDraft.expiresAt) }
+        : record
+    ));
+    await saveLedgerInviteRecords(nextRecords, t("settings.database.inviteUpdated"));
   }
 
   async function copyLedgerInviteCode(code: string) {
@@ -1181,6 +1307,14 @@ export default function DatabaseSettingsPage() {
   }
 
   function openFactoryResetDialog() {
+    setResetScope("system");
+    setResetDbPassword("");
+    setResetError("");
+    setResetPasswordDialogOpen(true);
+  }
+
+  function openHouseholdResetDialog() {
+    setResetScope("household");
     setResetDbPassword("");
     setResetError("");
     setResetPasswordDialogOpen(true);
@@ -1205,7 +1339,7 @@ export default function DatabaseSettingsPage() {
         return;
       }
 
-      const res = await fetch("/api/v1/settings/factory-reset", {
+      const res = await fetch(resetScope === "system" ? "/api/v1/settings/factory-reset" : "/api/v1/settings/household-reset", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ password: resetDbPassword }),
@@ -1789,10 +1923,10 @@ export default function DatabaseSettingsPage() {
           <div className="w-full max-w-sm rounded-lg border border-red-100 bg-white p-4 shadow-xl">
             <div className="flex items-center gap-2 text-sm font-semibold text-red-800">
               <Shield className="h-4 w-4 shrink-0 text-amber-500" />
-              {t("settings.database.resetTitle")}
+              {resetScope === "system" ? t("settings.database.resetTitle") : t("settings.database.householdResetTitle")}
             </div>
             <div className="mt-1 text-xs text-slate-500">
-              {t("settings.database.resetDesc")}
+              {resetScope === "system" ? t("settings.database.resetDesc") : t("settings.database.householdResetDesc")}
             </div>
             <input
               type="password"
@@ -1830,7 +1964,7 @@ export default function DatabaseSettingsPage() {
                 disabled={resetting || resetDbPassword.trim().length === 0}
                 className="h-9 rounded-md bg-red-600 px-3 text-sm text-white hover:bg-red-700 disabled:opacity-50"
               >
-                {resetting ? t("settings.database.executing") : t("settings.database.confirmInit")}
+                {resetting ? t("settings.database.executing") : resetScope === "system" ? t("settings.database.confirmInit") : t("settings.database.confirmHouseholdInit")}
               </button>
             </div>
           </div>
@@ -1926,60 +2060,143 @@ export default function DatabaseSettingsPage() {
             </div>
             {ledgerInviteMessage ? <div className="mt-2 text-xs text-emerald-600">{ledgerInviteMessage}</div> : null}
             {ledgerInviteError ? <div className="mt-2 text-xs text-red-600">{ledgerInviteError}</div> : null}
+            {!ledgerInviteSigningAvailable ? (
+              <div className="mt-2 rounded border border-rose-200 bg-rose-50 px-2 py-1.5 text-xs text-rose-700">
+                {t("settings.database.inviteSigningUnavailableHint")}
+              </div>
+            ) : null}
           </div>
         </div>
-        <SettingsTable minWidth={900} maxWidth="full" className="mt-4">
+        <SettingsTable minWidth={1180} maxWidth="full" className="mt-4">
           <colgroup>
-            <col style={{ width: "42%" }} />
-            <col style={{ width: "72px" }} />
-            <col style={{ width: "22%" }} />
-            <col style={{ width: "160px" }} />
-            <col style={{ width: "88px" }} />
+            <col style={{ width: "20%" }} />
+            <col style={{ width: "20%" }} />
+            <col style={{ width: "172px" }} />
+            <col style={{ width: "118px" }} />
+            <col style={{ width: "110px" }} />
+            <col style={{ width: "20%" }} />
+            <col style={{ width: "150px" }} />
           </colgroup>
           <thead className="sticky top-0 z-10">
             <tr>
               <SettingsTh>{t("settings.database.inviteCode")}</SettingsTh>
+              <SettingsTh>{t("settings.database.inviteNote")}</SettingsTh>
+              <SettingsTh>{t("settings.database.inviteExpiry")}</SettingsTh>
               <SettingsTh>{t("settings.database.inviteStatus")}</SettingsTh>
-              <SettingsTh>{t("settings.database.createdBook")}</SettingsTh>
-              <SettingsTh>{t("settings.database.usedTime")}</SettingsTh>
+              <SettingsTh>{t("settings.database.inviteCreator")}</SettingsTh>
+              <SettingsTh>{t("settings.database.usedInfo")}</SettingsTh>
               <SettingsTh align="right">{t("detail.column.actions")}</SettingsTh>
             </tr>
           </thead>
           <tbody>
             {ledgerInviteLoading ? (
-              <SettingsEmptyRow colSpan={5}>{t("settings.database.loadingInvites")}</SettingsEmptyRow>
+              <SettingsEmptyRow colSpan={7}>{t("settings.database.loadingInvites")}</SettingsEmptyRow>
             ) : sortedLedgerInviteRecords.length > 0 ? (
-              sortedLedgerInviteRecords.map((record) => (
-                <tr key={record.code} className="hover:bg-slate-50">
-                  <SettingsTd>
-                    <div className="min-w-0">
-                      <div className="truncate font-mono text-[11px] text-slate-700" title={record.code}>{record.code}</div>
-                      <div className="mt-0.5 text-[10px] text-slate-400">{t("settings.database.createdPrefix", { time: formatInviteDateTime(record.createdAt) })}</div>
-                    </div>
-                  </SettingsTd>
-                  <SettingsTd>
-                    {record.usedAt ? (
-                      <span className="rounded bg-slate-100 px-1.5 py-0.5 text-slate-500">{t("settings.database.used")}</span>
-                    ) : (
-                      <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-emerald-700">{t("settings.database.available")}</span>
-                    )}
-                  </SettingsTd>
-                  <SettingsTd className="max-w-[16rem] truncate" title={record.usedHouseholdName || ""}>
-                    {record.usedHouseholdName || "-"}
-                  </SettingsTd>
-                  <SettingsTd>{formatInviteDateTime(record.usedAt)}</SettingsTd>
-                  <SettingsTd align="right">
-                    <SettingsRowActions>
-                      <SettingsActionButton label={t("settings.database.copyInvite")} variant="copy" onClick={() => void copyLedgerInviteCode(record.code)} disabled={ledgerInviteSaving} />
-                      <SettingsActionButton label={t("settings.database.deleteInvite")} variant="delete" onClick={() => void removeLedgerInviteCode(record.code)} disabled={ledgerInviteSaving} />
-                    </SettingsRowActions>
-                  </SettingsTd>
-                </tr>
-              ))
+              sortedLedgerInviteRecords.map((record) => {
+                const editing = editingInviteCode === record.code;
+                const expired = !record.usedAt && isLedgerInviteCodeExpired(record);
+                return (
+                  <tr key={record.code} className={editing ? "bg-blue-50/40" : "hover:bg-slate-50"}>
+                    <SettingsTd>
+                      <div className="min-w-0">
+                        <div className="truncate font-mono text-[11px] text-slate-700" title={record.code}>{record.code}</div>
+                        <div className="mt-0.5 text-[10px] text-slate-400">{t("settings.database.createdPrefix", { time: formatInviteDateTime(record.createdAt) })}</div>
+                      </div>
+                    </SettingsTd>
+                    <SettingsTd>
+                      {editing ? (
+                        <input
+                          type="text"
+                          value={inviteEditDraft.note}
+                          maxLength={INVITE_CODE_NOTE_MAX_LENGTH}
+                          onChange={(event) => setInviteEditDraft((draft) => ({ ...draft, note: event.target.value }))}
+                          placeholder={t("settings.database.inviteNotePlaceholder")}
+                          disabled={ledgerInviteSaving}
+                          className="h-8 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700 focus:border-blue-300 focus:outline-none disabled:bg-slate-50"
+                        />
+                      ) : (
+                        <div className="truncate text-slate-600" title={record.note || ""}>{record.note || "-"}</div>
+                      )}
+                    </SettingsTd>
+                    <SettingsTd>
+                      {editing ? (
+                        <div className="min-w-0">
+                          <input
+                            type="datetime-local"
+                            value={inviteEditDraft.expiresAt}
+                            onChange={(event) => setInviteEditDraft((draft) => ({ ...draft, expiresAt: event.target.value }))}
+                            disabled={ledgerInviteSaving}
+                            className="h-8 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 focus:border-blue-300 focus:outline-none disabled:bg-slate-50"
+                          />
+                          <div className="mt-0.5 text-[10px] text-slate-400">{t("settings.database.inviteExpiryHint")}</div>
+                        </div>
+                      ) : record.expiresAt ? (
+                        <span className={expired ? "text-amber-700" : "text-slate-600"}>{formatInviteDateTime(record.expiresAt)}</span>
+                      ) : (
+                        <span className="text-slate-400">{t("settings.database.inviteNoExpiry")}</span>
+                      )}
+                    </SettingsTd>
+                    <SettingsTd>
+                      {record.usedAt ? (
+                        <span className="rounded bg-slate-100 px-1.5 py-0.5 text-slate-500">{t("settings.database.used")}</span>
+                      ) : expired ? (
+                        <span className="rounded bg-amber-50 px-1.5 py-0.5 text-amber-700">{t("settings.database.inviteExpired")}</span>
+                      ) : record.signatureState === "unavailable" ? (
+                        <span className="rounded bg-rose-50 px-1.5 py-0.5 text-rose-700" title={t("settings.database.inviteSignatureUnavailableHint")}>{t("settings.database.inviteSignatureUnavailable")}</span>
+                      ) : record.signatureState === "invalid" ? (
+                        <span className="rounded bg-rose-50 px-1.5 py-0.5 text-rose-700" title={t("settings.database.inviteSignatureInvalidHint")}>{t("settings.database.inviteSignatureInvalid")}</span>
+                      ) : (
+                        <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-emerald-700">{t("settings.database.available")}</span>
+                      )}
+                    </SettingsTd>
+                    <SettingsTd className="truncate" title={record.createdByName || ""}>{record.createdByName || "-"}</SettingsTd>
+                    <SettingsTd>
+                      {record.usedAt ? (
+                        <div className="min-w-0">
+                          <div className="truncate text-slate-600" title={record.usedHouseholdName || ""}>{record.usedHouseholdName || "-"}</div>
+                          <div className="mt-0.5 truncate text-[10px] text-slate-400" title={record.usedUserName || ""}>
+                            {record.usedUserName ? t("settings.database.usedBy", { name: record.usedUserName }) : formatInviteDateTime(record.usedAt)}
+                          </div>
+                        </div>
+                      ) : (
+                        <span className="text-slate-400">-</span>
+                      )}
+                    </SettingsTd>
+                    <SettingsTd align="right">
+                      {editing ? (
+                        <SettingsRowActions>
+                          <button
+                            type="button"
+                            onClick={() => void commitLedgerInviteCodeEdit(record.code)}
+                            disabled={ledgerInviteSaving}
+                            className="primary-button h-7 px-2 text-xs disabled:opacity-50"
+                          >
+                            {ledgerInviteSaving ? t("settings.database.saving") : t("settings.database.saveInvite")}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={cancelEditLedgerInviteCode}
+                            disabled={ledgerInviteSaving}
+                            className="secondary-button h-7 px-2 text-xs disabled:opacity-50"
+                          >
+                            {t("settings.database.cancelInvite")}
+                          </button>
+                        </SettingsRowActions>
+                      ) : (
+                        <SettingsRowActions>
+                          <SettingsActionButton label={t("settings.database.copyInvite")} variant="copy" onClick={() => void copyLedgerInviteCode(record.code)} disabled={ledgerInviteSaving} />
+                          <SettingsActionButton label={t("settings.database.editInvite")} variant="edit" onClick={() => startEditLedgerInviteCode(record)} disabled={ledgerInviteSaving} />
+                          <SettingsActionButton label={t("settings.database.deleteInvite")} variant="delete" onClick={() => void removeLedgerInviteCode(record.code)} disabled={ledgerInviteSaving} />
+                        </SettingsRowActions>
+                      )}
+                    </SettingsTd>
+                  </tr>
+                );
+              })
             ) : ledgerInviteError ? (
-              <SettingsEmptyRow colSpan={5}>{t("settings.database.inviteLoadFailed", { error: ledgerInviteError })}</SettingsEmptyRow>
+              <SettingsEmptyRow colSpan={7}>{t("settings.database.inviteLoadFailed", { error: ledgerInviteError })}</SettingsEmptyRow>
             ) : (
-              <SettingsEmptyRow colSpan={5}>{t("settings.database.noInvites")}</SettingsEmptyRow>
+              <SettingsEmptyRow colSpan={7}>{t("settings.database.noInvites")}</SettingsEmptyRow>
             )}
             <tr className="bg-slate-50/60">
               <SettingsTd>
@@ -2012,6 +2229,34 @@ export default function DatabaseSettingsPage() {
                     {t("settings.database.randomFill")}
                   </button>
                 </div>
+              </SettingsTd>
+              <SettingsTd>
+                <input
+                  type="text"
+                  value={ledgerInviteNote}
+                  maxLength={INVITE_CODE_NOTE_MAX_LENGTH}
+                  onChange={(event) => {
+                    setLedgerInviteNote(event.target.value);
+                    setLedgerInviteError("");
+                    setLedgerInviteMessage("");
+                  }}
+                  placeholder={t("settings.database.inviteNotePlaceholder")}
+                  disabled={ledgerInviteLoading || ledgerInviteSaving}
+                  className="h-8 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700 focus:border-blue-300 focus:outline-none disabled:bg-slate-50"
+                />
+              </SettingsTd>
+              <SettingsTd>
+                <input
+                  type="datetime-local"
+                  value={ledgerInviteExpiry}
+                  onChange={(event) => {
+                    setLedgerInviteExpiry(event.target.value);
+                    setLedgerInviteError("");
+                    setLedgerInviteMessage("");
+                  }}
+                  disabled={ledgerInviteLoading || ledgerInviteSaving}
+                  className="h-8 w-full min-w-0 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 focus:border-blue-300 focus:outline-none disabled:bg-slate-50"
+                />
               </SettingsTd>
               <SettingsTd><span className="text-xs text-slate-400">{t("settings.database.add")}</span></SettingsTd>
               <SettingsTd><span className="text-xs text-slate-400">-</span></SettingsTd>
@@ -2048,21 +2293,39 @@ export default function DatabaseSettingsPage() {
         </div>
       </section>
 
-      <section className="rounded-lg border border-red-200 bg-red-50 p-4">
-        <div className="text-sm font-medium text-red-800">{t("settings.database.factoryReset")}</div>
-        <div className="mt-0.5 text-xs text-red-600">
-          {t("settings.database.factoryResetDesc")}
+      {canResetHousehold ? (
+      <section className="rounded-lg border border-amber-200 bg-amber-50 p-4">
+        <div className="text-sm font-medium text-amber-900">{t("settings.database.householdReset")}</div>
+        <div className="mt-0.5 text-xs text-amber-700">
+          {t("settings.database.householdResetDesc")}
         </div>
-
         <button
           type="button"
-          onClick={openFactoryResetDialog}
+          onClick={openHouseholdResetDialog}
           disabled={resetting}
-          className="mt-3 h-9 rounded-md bg-red-600 px-4 text-sm text-white hover:bg-red-700 disabled:opacity-50"
+          className="mt-3 h-9 rounded-md bg-amber-600 px-4 text-sm text-white hover:bg-amber-700 disabled:opacity-50"
         >
-          {resetting ? t("settings.database.executing") : t("settings.database.factoryReset")}
+          {resetting ? t("settings.database.executing") : t("settings.database.householdReset")}
         </button>
       </section>
+      ) : null}
+
+      {isSystemAdmin ? (
+        <section className="rounded-lg border border-red-200 bg-red-50 p-4">
+          <div className="text-sm font-medium text-red-800">{t("settings.database.factoryReset")}</div>
+          <div className="mt-0.5 text-xs text-red-600">
+            {t("settings.database.factoryResetDesc")}
+          </div>
+          <button
+            type="button"
+            onClick={openFactoryResetDialog}
+            disabled={resetting}
+            className="mt-3 h-9 rounded-md bg-red-600 px-4 text-sm text-white hover:bg-red-700 disabled:opacity-50"
+          >
+            {resetting ? t("settings.database.executing") : t("settings.database.factoryReset")}
+          </button>
+        </section>
+      ) : null}
     </div>
   );
 }
