@@ -21,14 +21,21 @@ const LEGACY_PASSWORD_KEY = "access_password";
 // Keep the timeout bounded, but do not turn a cold start into a false 503.
 const AUTH_LOOKUP_TIMEOUT_MS = 10000;
 
-async function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T | null> {
+class AuthLookupTimeoutError extends Error {
+  constructor() {
+    super("Authentication lookup timed out");
+    this.name = "AuthLookupTimeoutError";
+  }
+}
+
+async function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<null>((resolve) => {
-    timeoutId = setTimeout(() => resolve(null), timeoutMs);
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => reject(new AuthLookupTimeoutError()), timeoutMs);
   });
 
   try {
-    return await Promise.race([operation.catch(() => null), timeout]);
+    return await Promise.race([operation, timeout]);
   } finally {
     if (timeoutId) {
       clearTimeout(timeoutId);
@@ -203,9 +210,15 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  const candidates = await withTimeout(resolveLoginCandidates(username, householdId, userId), AUTH_LOOKUP_TIMEOUT_MS);
-  if (!candidates) {
-    return NextResponse.json({ ok: false, code: "AUTH_SERVICE_UNAVAILABLE", error: "认证服务暂时不可用，请稍后重试" }, { status: 503 });
+  let candidates: LoginUser[];
+  try {
+    candidates = await withTimeout(resolveLoginCandidates(username, householdId, userId), AUTH_LOOKUP_TIMEOUT_MS);
+  } catch (error) {
+    if (error instanceof AuthLookupTimeoutError) {
+      return NextResponse.json({ ok: false, code: "AUTH_SERVICE_UNAVAILABLE", error: "认证服务暂时不可用，请稍后重试" }, { status: 503 });
+    }
+    logger.error("认证用户查询失败", "auth/verify", error);
+    return NextResponse.json({ ok: false, code: "AUTH_DATABASE_ERROR", error: "认证数据库初始化失败，请查看应用日志" }, { status: 503 });
   }
 
   if (candidates.length === 0) {
