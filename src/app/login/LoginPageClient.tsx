@@ -839,7 +839,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
 
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/58 p-4 backdrop-blur-sm">
-      <div className="grid w-full max-w-5xl overflow-hidden rounded-2xl border border-white/16 bg-white/92 shadow-[0_24px_80px_rgba(15,23,42,0.34)] backdrop-blur-xl lg:grid-cols-[minmax(0,1fr)_390px]">
+      <div className="grid h-[min(46rem,calc(100vh-2rem))] w-full max-w-5xl overflow-hidden rounded-2xl border border-white/16 bg-white/92 shadow-[0_24px_80px_rgba(15,23,42,0.34)] backdrop-blur-xl lg:grid-cols-[minmax(0,1fr)_390px]">
         <section className="relative hidden overflow-hidden bg-slate-950 px-8 py-8 text-white lg:block">
           <div className="absolute -right-16 -top-16 h-48 w-48 rounded-full bg-blue-400/20 blur-3xl" />
           <div className="absolute -bottom-16 left-8 h-56 w-56 rounded-full bg-emerald-300/15 blur-3xl" />
@@ -862,8 +862,8 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
           </div>
         </section>
 
-        <div className="min-w-0">
-        <div className="border-b border-slate-200/70 bg-white/72 px-6 py-5 shadow-[inset_0_-1px_0_rgba(148,163,184,0.14)] backdrop-blur">
+        <div className="flex min-h-0 min-w-0 flex-col">
+        <div className="shrink-0 border-b border-slate-200/70 bg-white/72 px-6 py-5 shadow-[inset_0_-1px_0_rgba(148,163,184,0.14)] backdrop-blur">
           {householdName && <div className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-400">{t("login.book")}</div>}
           <div className="flex items-center">
             <div className="flex min-w-0 items-center gap-2">
@@ -883,6 +883,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
           )}
         </div>
 
+        <div className="min-h-0 flex-1 overflow-y-auto">
         {mode === "login" && (
           <div className="space-y-4 p-6">
             {!showReset && !showRegister && (
@@ -1774,6 +1775,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
             </button>
           </div>
         )}
+        </div>
         </div>
       </div>
     </div>

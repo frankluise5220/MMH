@@ -4,26 +4,26 @@
       "id": "mmh",
       "name": "MMH",
       "display_name": "MMH 家庭财务工作台",
-      "version": "0.1.67",
+      "version": "0.1.68",
       "platform": "x86",
       "platforms": [
         "x86",
         "arm"
       ],
       "description": "MMH 家庭财务工作台是本地优先的家庭记账与全资产管理工具，数据保存在自己的飞牛 NAS 上。支持多账本、多成员、账户流水、往来款、信用卡、贷款、基金、股票、存款、债券、房产、保险、统计报表、导入导出、AI 助手以及手动/自动备份。报销与差旅工作流正在开发中，已提供部分录入和查看能力。",
-      "download_url": "http://fnapp.floatingice.win/apps/mmh-0.1.67.fpk",
+      "download_url": "http://fnapp.floatingice.win/apps/mmh-0.1.68.fpk",
       "download_urls": {
-        "x86_64": "http://fnapp.floatingice.win/apps/mmh-0.1.67.fpk",
-        "arm64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.67/mmh-fnos-v0.1.67-arm64.fpk"
+        "x86_64": "http://fnapp.floatingice.win/apps/mmh-0.1.68.fpk",
+        "arm64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.68/mmh-fnos-v0.1.68-arm64.fpk"
       },
       "homepage": "https://github.com/frankluise5220/MMH",
-      "changelog": "新增邮箱验证码注册与 fnOS 账号绑定，报销工作流补齐全局视图、批量操作与打印排版；修复 Docker 版从旧版本升级无法启动、明细大表在全部现金视图查询报错、会话失效时保存报错，以及存款续存与债券付息问题；本版含数据库结构变更，完整说明见 GitHub Release v0.1.67",
+      "changelog": "修复首次安装注册入口与登录卡片布局；首次安装仍免邀请码，并统一支持本地、MMH 用户及 fnOS 网关免密方式。完整说明见 GitHub Release v0.1.68",
       "tags": [
         "finance",
         "bookkeeping"
       ],
       "type": "原生",
-      "updated_at": "2026-09-30",
+      "updated_at": "2026-10-01",
       "downloads": 0,
       "screenshots": [
         "http://fnapp.floatingice.win/previews/mmh/1.PNG",
