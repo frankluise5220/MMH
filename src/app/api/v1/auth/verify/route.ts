@@ -17,7 +17,9 @@ import {
 import { normalizeSessionDays, sessionDaysToMaxAge } from "@/lib/session-days";
 
 const LEGACY_PASSWORD_KEY = "access_password";
-const AUTH_LOOKUP_TIMEOUT_MS = 1500;
+// SQLite may need to load the bundled native driver on the first desktop login.
+// Keep the timeout bounded, but do not turn a cold start into a false 503.
+const AUTH_LOOKUP_TIMEOUT_MS = 10000;
 
 async function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T | null> {
   let timeoutId: ReturnType<typeof setTimeout> | undefined;
