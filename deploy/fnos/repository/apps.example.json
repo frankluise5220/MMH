@@ -17,7 +17,7 @@
         "arm64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.68/mmh-fnos-v0.1.68-arm64.fpk"
       },
       "homepage": "https://github.com/frankluise5220/MMH",
-      "changelog": "修复首次安装注册入口与登录卡片布局；首次安装仍免邀请码，并统一支持本地、MMH 用户及 fnOS 网关免密方式。完整说明见 GitHub Release v0.1.68",
+      "changelog": "0.1.66/0.1.67 升级至 0.1.68：首次安装仍免邀请码，补齐本地、MMH 用户及 fnOS 网关免密注册；固定登录卡片高度并修复 fnOS/Windows 登录兼容问题。完整说明见 GitHub Release v0.1.68",
       "tags": [
         "finance",
         "bookkeeping"

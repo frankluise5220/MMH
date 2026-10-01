@@ -20,7 +20,7 @@
       "icon": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png?v=0.1.68",
       "repo": "https://github.com/frankluise5220/MMH",
       "tags": "财务,记账",
-      "changelog": "修复首次安装注册入口与登录卡片布局；首次安装仍免邀请码，并统一支持本地、MMH 用户及 fnOS 网关免密方式。完整说明见 GitHub Release v0.1.68",
+      "changelog": "0.1.66/0.1.67 升级至 0.1.68：首次安装仍免邀请码，补齐本地、MMH 用户及 fnOS 网关免密注册；固定登录卡片高度并修复 fnOS/Windows 登录兼容问题。完整说明见 GitHub Release v0.1.68",
       "type": "原生",
       "updated_at": "2026-10-01",
       "downloads": 0,
