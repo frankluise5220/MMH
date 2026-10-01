@@ -132,6 +132,7 @@ def list_principals(ctx):
     with _db() as conn:
         rows = _rows(conn, """
             SELECT p.id, p.display_name, p.status, p.created_at, p.updated_at,
+                   p.last_login_at,
                    (SELECT COUNT(*) FROM identities    i WHERE i.principal_id=p.id) n_identities,
                    (SELECT COUNT(*) FROM installations t WHERE t.principal_id=p.id) n_installations,
                    (SELECT GROUP_CONCAT(provider) FROM identities i WHERE i.principal_id=p.id)

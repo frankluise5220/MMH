@@ -106,7 +106,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   const [systemUsers, setSystemUsers] = useState<LoginUserChoice[]>([]);
   const [passwordResetEnabled, setPasswordResetEnabled] = useState(false);
   const [householdChoices, setHouseholdChoices] = useState<HouseholdChoice[]>([]);
-  const [pendingLogin, setPendingLogin] = useState<{ username: string; password: string } | null>(null);
+  const [pendingLogin, setPendingLogin] = useState<{ username: string; password: string; authMode?: "local" | "mmh" } | null>(null);
   const [initialLedgerSetup, setInitialLedgerSetup] = useState(false);
 
   const [createMethod, setCreateMethod] = useState<"invite" | "existing">("invite");
@@ -152,11 +152,23 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   const [registerCodeSent, setRegisterCodeSent] = useState(false);
   const [registerCode, setRegisterCode] = useState("");
   const [registerPassword, setRegisterPassword] = useState("");
+  const [registerMmhPassword, setRegisterMmhPassword] = useState("");
   const [registerName, setRegisterName] = useState("");
   const [registerInfo, setRegisterInfo] = useState("");
   const [registerError, setRegisterError] = useState("");
   const [registerLoading, setRegisterLoading] = useState(false);
   const [registerInviteMode, setRegisterInviteMode] = useState(false);
+
+  // MMH membership password reset (separate from the ledger-local password reset).
+  const [showMmhReset, setShowMmhReset] = useState(false);
+  const [mmhResetEmail, setMmhResetEmail] = useState("");
+  const [mmhResetCode, setMmhResetCode] = useState("");
+  const [mmhResetNewPassword, setMmhResetNewPassword] = useState("");
+  const [mmhResetConfirmPassword, setMmhResetConfirmPassword] = useState("");
+  const [mmhResetCodeSent, setMmhResetCodeSent] = useState(false);
+  const [mmhResetInfo, setMmhResetInfo] = useState("");
+  const [mmhResetError, setMmhResetError] = useState("");
+  const [mmhResetLoading, setMmhResetLoading] = useState(false);
   const { t } = useI18n();
   // Stable primitive so the status effect does not re-run on object identity.
   const hasFnosGateway = Boolean(fnosGatewayUser);
@@ -405,7 +417,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
     };
   }, [t, hasFnosGateway]);
 
-  async function verifyLogin(params: { userId?: string; username?: string; password: string; householdId?: string }) {
+  async function verifyLogin(params: { userId?: string; username?: string; password: string; householdId?: string; authMode?: "local" | "mmh" }) {
     const res = await fetch("/api/v1/auth/verify", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -449,13 +461,14 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
         username: trimmedUsername,
         ...(selectedScopeId ? { householdId: selectedScopeId } : {}),
         password: trimmedPassword,
+        authMode: loginMode === "mmh" ? "mmh" : "local",
       });
       if (data.ok) {
         window.location.href = withBasePath("/");
         return;
       }
       if (data.code === "AMBIGUOUS_USER" && data.households?.length) {
-        setPendingLogin({ username: trimmedUsername, password: trimmedPassword });
+        setPendingLogin({ username: trimmedUsername, password: trimmedPassword, authMode: loginMode === "mmh" ? "mmh" : "local" });
         setHouseholdChoices(data.households);
         setError(data.error ?? t("login.error.ambiguousUser"));
         return;
@@ -476,7 +489,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
     setLoading(true);
     setError("");
     try {
-      const data = await verifyLogin({ ...credentials, householdId });
+      const data = await verifyLogin({ ...credentials, householdId, authMode: credentials.authMode ?? "local" });
       if (data.ok) {
         window.location.href = withBasePath("/");
         return;
@@ -771,9 +784,11 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
     const email = registerEmail.trim();
     const code = registerCode.trim();
     const password = registerPassword.trim();
+    const mmhPassword = registerMmhPassword.trim();
     if (!email) { setRegisterError(t("login.register.error.emailRequired")); return; }
     if (!code) { setRegisterError(t("login.register.error.codeRequired")); return; }
     if (password.length < 6) { setRegisterError(t("login.register.error.passwordRequired")); return; }
+    if (mmhPassword.length < 6) { setRegisterError(t("login.register.error.mmhPasswordRequired")); return; }
     if (inviteMode && !createInviteCode.trim()) { setRegisterError(t("login.error.inviteRequired")); return; }
     if (inviteMode && !createLedgerName.trim()) { setRegisterError(t("login.error.ledgerNameRequired")); return; }
 
@@ -788,6 +803,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
           email,
           code,
           password,
+          mmhPassword,
           ...(registerName.trim() ? { name: registerName.trim() } : {}),
           ...(inviteMode
             ? { inviteCode: createInviteCode.trim(), ledgerName: createLedgerName.trim() }
@@ -810,6 +826,74 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
       setRegisterError(t("login.register.error.failed"));
     } finally {
       setRegisterLoading(false);
+    }
+  }
+
+  async function handleMmhResetSendCode() {
+    const email = mmhResetEmail.trim();
+    if (!email) { setMmhResetError(t("login.register.error.emailRequired")); return; }
+    setMmhResetLoading(true);
+    setMmhResetError("");
+    setMmhResetInfo("");
+    try {
+      const res = await fetch("/api/v1/auth/mmh-password-reset/send-code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+      });
+      const data = await res.json().catch(() => null) as { ok: boolean; code?: string; error?: string } | null;
+      if (!data?.ok) {
+        setMmhResetError(data?.error ?? t("login.register.error.sendFailed"));
+        return;
+      }
+      setMmhResetCodeSent(true);
+      setMmhResetInfo(t("login.register.codeSent", { email }));
+    } catch {
+      setMmhResetError(t("login.register.error.sendFailed"));
+    } finally {
+      setMmhResetLoading(false);
+    }
+  }
+
+  async function handleMmhResetConfirm() {
+    const email = mmhResetEmail.trim();
+    const code = mmhResetCode.trim();
+    const newPassword = mmhResetNewPassword.trim();
+    const confirmPassword = mmhResetConfirmPassword.trim();
+    if (!email) { setMmhResetError(t("login.register.error.emailRequired")); return; }
+    if (!code) { setMmhResetError(t("login.register.error.codeRequired")); return; }
+    if (newPassword.length < 8) { setMmhResetError(t("login.mmhReset.error.passwordTooShort")); return; }
+    if (newPassword !== confirmPassword) { setMmhResetError(t("login.error.passwordMismatch")); return; }
+
+    setMmhResetLoading(true);
+    setMmhResetError("");
+    setMmhResetInfo("");
+    try {
+      const res = await fetch("/api/v1/auth/mmh-password-reset/confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, code, newPassword }),
+      });
+      const data = await res.json().catch(() => null) as { ok: boolean; code?: string; error?: string } | null;
+      if (!data?.ok) {
+        setMmhResetError(
+          data?.code === "INVALID_OR_EXPIRED_CODE"
+            ? t("login.register.error.invalidCode")
+            : data?.error ?? t("login.mmhReset.error.failed"),
+        );
+        return;
+      }
+      setMmhResetInfo(t("login.mmhReset.success"));
+      setShowMmhReset(false);
+      setMmhResetEmail("");
+      setMmhResetCode("");
+      setMmhResetNewPassword("");
+      setMmhResetConfirmPassword("");
+      setMmhResetCodeSent(false);
+    } catch {
+      setMmhResetError(t("login.mmhReset.error.failed"));
+    } finally {
+      setMmhResetLoading(false);
     }
   }
 
@@ -1050,6 +1134,27 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                 </div>
                 )}
 
+                {loginMode === "mmh" && (
+                  <button
+                    type="button"
+                    className="text-xs text-slate-500 hover:text-slate-700"
+                    disabled={loading || mmhResetLoading}
+                    onClick={() => {
+                      if (showMmhReset) {
+                        setShowMmhReset(false);
+                        setMmhResetError("");
+                        setMmhResetInfo("");
+                        return;
+                      }
+                      setShowMmhReset(true);
+                      setShowReset(false);
+                      setShowRegister(false);
+                    }}
+                  >
+                    {showMmhReset ? t("common.collapse") : t("login.mmhReset.forgot")}
+                  </button>
+                )}
+
                 {householdChoices.length > 0 && (
                   <div className="space-y-3 rounded-xl border border-blue-100 bg-blue-50/70 p-3">
                     <div>
@@ -1100,6 +1205,50 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                 )}
                 </form>
               )}
+
+            {showMmhReset && (
+              <div className="space-y-3">
+                <div className="text-xs font-medium text-slate-600">{t("login.mmhReset.title")}</div>
+                <div className="space-y-1">
+                  <div className="text-xs font-medium text-slate-600">{t("login.register.email")}</div>
+                  <input
+                    value={mmhResetEmail}
+                    onChange={(event) => { setMmhResetEmail(event.target.value); setMmhResetCodeSent(false); setMmhResetCode(""); setMmhResetError(""); setMmhResetInfo(""); }}
+                    type="email"
+                    autoComplete="email"
+                    className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                    placeholder={t("login.register.emailPlaceholder")}
+                  />
+                </div>
+                {mmhResetCodeSent && (
+                  <>
+                    <div className="space-y-1">
+                      <div className="text-xs font-medium text-slate-600">{t("login.register.code")}</div>
+                      <input value={mmhResetCode} onChange={(event) => setMmhResetCode(event.target.value)} type="text" autoComplete="one-time-code" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100" placeholder={t("login.register.codePlaceholder")} />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="text-xs font-medium text-slate-600">{t("login.mmhReset.newPassword")}</div>
+                      <input value={mmhResetNewPassword} onChange={(event) => setMmhResetNewPassword(event.target.value)} type="password" autoComplete="new-password" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100" placeholder={t("login.passwordPlaceholder")} />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="text-xs font-medium text-slate-600">{t("login.confirmPassword")}</div>
+                      <input value={mmhResetConfirmPassword} onChange={(event) => setMmhResetConfirmPassword(event.target.value)} type="password" autoComplete="new-password" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100" placeholder={t("login.confirmPassword")} />
+                    </div>
+                  </>
+                )}
+                {mmhResetInfo && <div className="text-xs text-slate-600">{mmhResetInfo}</div>}
+                {mmhResetError && <div className="text-xs text-red-600">{mmhResetError}</div>}
+                {!mmhResetCodeSent ? (
+                  <button type="button" className="h-10 w-full rounded-md bg-blue-600 text-sm text-white hover:bg-blue-700 disabled:opacity-50" disabled={mmhResetLoading} onClick={() => void handleMmhResetSendCode()}>
+                    {mmhResetLoading ? t("login.verifying") : t("login.register.sendCode")}
+                  </button>
+                ) : (
+                  <button type="button" className="h-10 w-full rounded-md bg-blue-600 text-sm text-white hover:bg-blue-700 disabled:opacity-50" disabled={mmhResetLoading} onClick={() => void handleMmhResetConfirm()}>
+                    {mmhResetLoading ? t("login.register.submitting") : t("login.mmhReset.submit")}
+                  </button>
+                )}
+              </div>
+            )}
 
             {showReset && (
               <div className="space-y-3">
@@ -1474,6 +1623,10 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                                 <input value={registerPassword} onChange={(event) => setRegisterPassword(event.target.value)} type="password" autoComplete="new-password" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" placeholder={t("login.passwordPlaceholder")} />
                               </div>
                               <div className="space-y-1">
+                                <div className="text-xs font-medium text-slate-600">{t("login.register.mmhPassword")}</div>
+                                <input value={registerMmhPassword} onChange={(event) => setRegisterMmhPassword(event.target.value)} type="password" autoComplete="new-password" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" placeholder={t("login.register.mmhPasswordPlaceholder")} />
+                              </div>
+                              <div className="space-y-1">
                                 <div className="text-xs font-medium text-slate-600">{t("login.register.name")}</div>
                                 <input value={registerName} onChange={(event) => setRegisterName(event.target.value)} type="text" autoComplete="username" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" placeholder={t("login.register.namePlaceholder")} />
                               </div>
@@ -1653,6 +1806,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                       <>
                         <div className="space-y-1"><div className="text-xs font-medium text-slate-600">{t("login.register.code")}</div><input value={registerCode} onChange={(event) => setRegisterCode(event.target.value)} type="text" autoComplete="one-time-code" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm outline-none" placeholder={t("login.register.codePlaceholder")} /></div>
                         <div className="space-y-1"><div className="text-xs font-medium text-slate-600">{t("login.register.password")}</div><input value={registerPassword} onChange={(event) => setRegisterPassword(event.target.value)} type="password" autoComplete="new-password" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm outline-none" placeholder={t("login.passwordPlaceholder")} /></div>
+                        <div className="space-y-1"><div className="text-xs font-medium text-slate-600">{t("login.register.mmhPassword")}</div><input value={registerMmhPassword} onChange={(event) => setRegisterMmhPassword(event.target.value)} type="password" autoComplete="new-password" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm outline-none" placeholder={t("login.register.mmhPasswordPlaceholder")} /></div>
                         <div className="space-y-1"><div className="text-xs font-medium text-slate-600">{t("login.register.name")}</div><input value={registerName} onChange={(event) => setRegisterName(event.target.value)} type="text" autoComplete="username" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm outline-none" placeholder={t("login.register.namePlaceholder")} /></div>
                       </>
                     )}
@@ -1701,6 +1855,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                   setRegisterCode("");
                   setRegisterCodeSent(false);
                   setRegisterPassword("");
+                  setRegisterMmhPassword("");
                   setRegisterName("");
                   setRegisterInfo("");
                   setRegisterError("");

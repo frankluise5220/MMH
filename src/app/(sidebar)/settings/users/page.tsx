@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { X } from "lucide-react";
+import { UserRoundPlus, X } from "lucide-react";
 import {
   SettingsActionButton,
   SettingsEmptyRow,
@@ -24,6 +24,7 @@ type ManagedUser = {
   isSystem?: boolean;
   hasPassword?: boolean;
   sessionDays?: number;
+  registrationPrincipalId?: string | null;
   fnosUid?: string | null;
   createdAt?: string;
 };
@@ -167,25 +168,21 @@ function RegisterModal({
   const [step, setStep] = useState<"form" | "code" | "done">("form");
   const [email, setEmail] = useState(target.email ?? "");
   const [password, setPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
-  const [showPassword, setShowPassword] = useState(false);
   const [code, setCode] = useState("");
   const [error, setError] = useState("");
   const [sending, setSending] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [method, setMethod] = useState<"email" | "fnid">("email");
-  const [fnid, setFnid] = useState("");
-  const [done, setDone] = useState<{ kind: "email" | "fnid"; value: string } | null>(null);
+  const [method, setMethod] = useState<"existing" | "email">("existing");
+  const [done, setDone] = useState<{ value: string } | null>(null);
 
-  function validateForm(): string | null {
+  function validateEmail(): string | null {
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) return t("settings.users.register.error.emailInvalid");
-    if (!password) return t("settings.users.error.passwordRequired");
-    if (password !== confirmPassword) return t("settings.users.error.passwordMismatch");
+    if (!target.hasPassword && password.length < 6) return t("settings.users.error.passwordRequired");
     return null;
   }
 
   async function sendCode() {
-    const err = validateForm();
+    const err = validateEmail();
     if (err) { setError(err); return; }
     setSending(true);
     setError("");
@@ -216,18 +213,25 @@ function RegisterModal({
       const res = await fetch("/api/v1/settings/users/register/confirm", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId: target.id, email: email.trim(), password: password.trim(), code: code.trim() }),
+        body: JSON.stringify({
+          userId: target.id,
+          email: email.trim(),
+          ...(target.hasPassword ? {} : { password: password.trim() }),
+          code: code.trim(),
+        }),
       });
       const data = await res.json().catch(() => null);
       if (data?.ok && typeof data.principalId === "string") {
-        setDone({ kind: "email", value: data.principalId });
+        setDone({ value: data.principalId });
         setStep("done");
         onRegistered(data.principalId);
       } else {
-        setError(data?.error || t("settings.users.register.error.failed"));
+        setError(data?.code === "MMH_CREDENTIAL_VERIFICATION_UNAVAILABLE"
+          ? t("settings.users.register.error.mmhCredentialVerificationUnavailable")
+          : data?.error || t("settings.users.register.error.failed"));
       }
-    } catch {
-      setError(t("settings.users.register.error.network"));
+    } catch (error) {
+      setError(error instanceof Error && error.message ? error.message : t("settings.users.register.error.network"));
     } finally {
       setSubmitting(false);
     }
@@ -237,28 +241,33 @@ function RegisterModal({
     if (done) navigator.clipboard?.writeText(done.value).catch(() => {});
   }
 
-  async function bindFnosUid() {
-    if (!fnid.trim()) { setError(t("settings.users.register.error.fnidRequired")); return; }
+  async function bindExistingMmhUser() {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+      setError(t("settings.users.register.error.emailInvalid"));
+      return;
+    }
+    if (!password.trim()) {
+      setError(t("settings.users.error.passwordRequired"));
+      return;
+    }
     setSubmitting(true);
     setError("");
     try {
-      const res = await fetch("/api/v1/settings/users/bind-fnid", {
+      const res = await fetch("/api/v1/settings/users/register/bind-existing", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId: target.id, fnosUid: fnid.trim() }),
+        body: JSON.stringify({ userId: target.id, username: email.trim(), password: password.trim() }),
       });
       const data = await res.json().catch(() => null);
-      if (data?.ok && typeof data.data?.fnosUid === "string") {
-        setDone({ kind: "fnid", value: data.data.fnosUid });
+      if (data?.ok && typeof data.principalId === "string") {
+        setDone({ value: data.principalId });
         setStep("done");
-        onRegistered(data.data.fnosUid);
-      } else if (data?.code === "FNOS_UID_TAKEN") {
-        setError(t("settings.users.register.error.fnosUidTaken"));
+        onRegistered(data.principalId);
       } else {
-        setError(data?.error || t("settings.users.register.error.fnidBindFailed"));
+        setError(data?.error || t("settings.users.register.error.failed"));
       }
-    } catch {
-      setError(t("settings.users.register.error.network"));
+    } catch (error) {
+      setError(error instanceof Error && error.message ? error.message : t("settings.users.register.error.network"));
     } finally {
       setSubmitting(false);
     }
@@ -276,13 +285,9 @@ function RegisterModal({
         <div className="p-5 space-y-4">
           {step === "done" && done ? (
             <div className="space-y-4">
-              <div className="text-xs text-slate-600">{done.kind === "email"
-                ? t("settings.users.register.success", { email })
-                : t("settings.users.register.successFnid", { fnid: done.value })}</div>
+              <div className="text-xs text-slate-600">{t("settings.users.register.success", { email })}</div>
               <div>
-                <div className="mb-1.5 block text-xs font-medium text-slate-600">{done.kind === "email"
-                  ? t("settings.users.register.registrationId")
-                  : t("settings.users.register.fnidBound")}</div>
+                <div className="mb-1.5 block text-xs font-medium text-slate-600">{t("settings.users.register.registrationId")}</div>
                 <div className="flex items-center gap-2">
                   <code className="flex-1 break-all rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">{done.value}</code>
                   <button type="button" className="secondary-button h-9 px-3" onClick={handleCopy}>{t("settings.users.register.copy")}</button>
@@ -327,17 +332,48 @@ function RegisterModal({
               )}
               <div className="flex gap-1 rounded-lg border border-slate-200 bg-slate-50 p-1">
                 <button type="button"
+                  onClick={() => { setMethod("existing"); setError(""); }}
+                  className={method === "existing" ? "flex-1 rounded-md bg-white px-3 py-1.5 text-xs font-medium text-slate-800 shadow-sm" : "flex-1 rounded-md px-3 py-1.5 text-xs font-medium text-slate-500"}>
+                  {t("settings.users.register.methodExisting")}
+                </button>
+                <button type="button"
                   onClick={() => { setMethod("email"); setError(""); }}
                   className={method === "email" ? "flex-1 rounded-md bg-white px-3 py-1.5 text-xs font-medium text-slate-800 shadow-sm" : "flex-1 rounded-md px-3 py-1.5 text-xs font-medium text-slate-500"}>
                   {t("settings.users.register.methodEmail")}
                 </button>
-                <button type="button"
-                  onClick={() => { setMethod("fnid"); setError(""); }}
-                  className={method === "fnid" ? "flex-1 rounded-md bg-white px-3 py-1.5 text-xs font-medium text-slate-800 shadow-sm" : "flex-1 rounded-md px-3 py-1.5 text-xs font-medium text-slate-500"}>
-                  {t("settings.users.register.methodFnid")}
-                </button>
               </div>
-              {method === "email" ? (
+              {method === "existing" ? (
+                <>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.users.register.field.mmhUsername")}</label>
+                    <input
+                      type="email"
+                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                      value={email}
+                      onChange={(e) => { setEmail(e.target.value); setError(""); }}
+                      autoFocus
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.users.register.field.mmhPassword")}</label>
+                    <input
+                      type="password"
+                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                      value={password}
+                      onChange={(e) => { setPassword(e.target.value); setError(""); }}
+                      placeholder={t("settings.users.register.placeholder.mmhPassword")}
+                    />
+                  </div>
+                  <div className="text-[11px] text-slate-500">{t("settings.users.register.hintExisting")}</div>
+                  <div className="flex justify-end gap-2">
+                    <button type="button" className="secondary-button h-9 px-4" onClick={onClose}>{t("common.cancel")}</button>
+                    <button type="button" className="primary-button h-9 px-4 disabled:opacity-50"
+                      onClick={bindExistingMmhUser} disabled={submitting || !email.trim() || !password.trim()}>
+                      {submitting ? t("settings.users.register.submitting") : t("settings.users.register.bindMmh")}
+                    </button>
+                  </div>
+                </>
+              ) : (
                 <>
                   <div>
                     <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.users.register.field.email")}</label>
@@ -349,53 +385,24 @@ function RegisterModal({
                       autoFocus
                     />
                   </div>
-                  <div>
-                    <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.users.register.field.password")}</label>
-                    <input
-                      type={showPassword ? "text" : "password"}
-                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                      value={password}
-                      onChange={(e) => { setPassword(e.target.value); setError(""); }}
-                      placeholder={t("settings.users.register.placeholder.password")}
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.users.confirmPassword.label")}</label>
-                    <input
-                      type={showPassword ? "text" : "password"}
-                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                      value={confirmPassword}
-                      onChange={(e) => { setConfirmPassword(e.target.value); setError(""); }}
-                    />
-                  </div>
+                  {!target.hasPassword && (
+                    <div>
+                      <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.users.register.field.password")}</label>
+                      <input
+                        type="password"
+                        className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                        value={password}
+                        onChange={(e) => { setPassword(e.target.value); setError(""); }}
+                        placeholder={t("settings.users.register.placeholder.password")}
+                      />
+                    </div>
+                  )}
                   <div className="text-[11px] text-slate-500">{t("settings.users.register.hint")}</div>
                   <div className="flex justify-end gap-2">
                     <button type="button" className="secondary-button h-9 px-4" onClick={onClose}>{t("common.cancel")}</button>
                     <button type="button" className="primary-button h-9 px-4 disabled:opacity-50"
-                      onClick={sendCode} disabled={sending || !email.trim() || !password}>
+                      onClick={sendCode} disabled={sending || !email.trim() || (!target.hasPassword && !password)}>
                       {sending ? t("settings.users.register.submitting") : t("settings.users.register.sendCode")}
-                    </button>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div>
-                    <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.users.register.field.fnid")}</label>
-                    <input
-                      type="text"
-                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                      value={fnid}
-                      onChange={(e) => { setFnid(e.target.value); setError(""); }}
-                      placeholder={t("settings.users.register.placeholder.fnid")}
-                      autoFocus
-                    />
-                  </div>
-                  <div className="text-[11px] text-slate-500">{t("settings.users.register.hintFnid")}</div>
-                  <div className="flex justify-end gap-2">
-                    <button type="button" className="secondary-button h-9 px-4" onClick={onClose}>{t("common.cancel")}</button>
-                    <button type="button" className="primary-button h-9 px-4 disabled:opacity-50"
-                      onClick={bindFnosUid} disabled={submitting || !fnid.trim()}>
-                      {submitting ? t("settings.users.register.submitting") : t("settings.users.register.bindFnid")}
                     </button>
                   </div>
                 </>
@@ -411,6 +418,7 @@ function RegisterModal({
 export default function UsersPage() {
   const { t } = useI18n();
   const [users, setUsers] = useState<ManagedUser[]>([]);
+  const [isFnosEnvironment, setIsFnosEnvironment] = useState(false);
   const [canManageUsers, setCanManageUsers] = useState(false);
   const [loadError, setLoadError] = useState("");
   const [showModal, setShowModal] = useState(false);
@@ -430,14 +438,15 @@ export default function UsersPage() {
     try {
       const res = await fetch("/api/v1/settings/users");
       const text = await res.text();
-      let data: { ok?: boolean; users?: ManagedUser[]; canManageUsers?: boolean; error?: string } | { raw: string } = { raw: "" };
+      let data: { ok?: boolean; users?: ManagedUser[]; isFnosEnvironment?: boolean; canManageUsers?: boolean; error?: string } | { raw: string } = { raw: "" };
       try {
-        data = JSON.parse(text) as { ok?: boolean; users?: ManagedUser[]; canManageUsers?: boolean; error?: string };
+        data = JSON.parse(text) as { ok?: boolean; users?: ManagedUser[]; isFnosEnvironment?: boolean; canManageUsers?: boolean; error?: string };
       } catch {
         data = { raw: text.slice(0, 200) };
       }
       if ("ok" in data && data.ok && Array.isArray(data.users)) {
         setUsers(data.users);
+        setIsFnosEnvironment(data.isFnosEnvironment === true);
         setCanManageUsers(data.canManageUsers === true);
         setLoadError("");
       } else {
@@ -611,14 +620,23 @@ export default function UsersPage() {
                   </span>
                 </SettingsTd>
                 <SettingsTd>
-                  {u.isSystem ? (
-                    <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-xs text-emerald-700">{t("settings.users.status.system")}</span>
-                  ) : (
-                    <span className="text-xs text-slate-400">{t("settings.users.status.normal")}</span>
-                  )}
-                  {u.fnosUid ? (
-                    <span className="mt-0.5 inline-block rounded-full bg-sky-50 px-2 py-0.5 text-xs text-sky-700">{t("settings.users.status.fnidBound")}</span>
-                  ) : null}
+                  <div className="flex flex-nowrap items-center gap-1 whitespace-nowrap">
+                    {u.isSystem ? (
+                      <span className="rounded-full border border-emerald-700 bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-800">{t("settings.users.status.system")}</span>
+                    ) : (
+                      <span className="rounded-full border border-slate-600 bg-slate-50 px-2 py-0.5 text-xs font-medium text-slate-700">{t("settings.users.status.normal")}</span>
+                    )}
+                    {u.registrationPrincipalId ? (
+                      <span className="rounded-full border border-violet-700 bg-violet-50 px-2 py-0.5 text-xs font-medium text-violet-800">{t("settings.users.status.mmh")}</span>
+                    ) : isFnosEnvironment && u.fnosUid ? (
+                      <span className="rounded-full border border-sky-700 bg-sky-50 px-2 py-0.5 text-xs font-medium text-sky-800">{t("settings.users.status.fnos")}</span>
+                    ) : (
+                      <span className="rounded-full border border-slate-700 bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-800">{t("settings.users.status.local")}</span>
+                    )}
+                    {!u.registrationPrincipalId && !(isFnosEnvironment && u.fnosUid) && u.hasPassword && (
+                      <span className="rounded-full border border-dashed border-slate-800 bg-white px-2 py-0.5 text-xs font-medium text-slate-900">{t("settings.users.status.mmhUnbound")}</span>
+                    )}
+                  </div>
                 </SettingsTd>
                 <SettingsTd align="right">
                   {canManageUsers ? (
@@ -628,10 +646,11 @@ export default function UsersPage() {
                         variant="edit"
                         onClick={() => { setEditingUser(u); setShowModal(true); }}
                       />
-                      {u.isSystem && (
+                      {!u.registrationPrincipalId && u.hasPassword && (
                         <SettingsActionButton
                           label={t("settings.users.register")}
                           variant="default"
+                          icon={<UserRoundPlus className="h-3.5 w-3.5" />}
                           onClick={() => setRegisterTarget(u)}
                         />
                       )}

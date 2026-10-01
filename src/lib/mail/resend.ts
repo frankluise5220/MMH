@@ -98,26 +98,45 @@ async function sendWithResendConfig(cfg: ResendConfig | null, params: ResendSend
     return { ok: false as const, error: "未配置 Resend 邮件服务" };
   }
 
-  const res = await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${cfg.apiKey}`,
-      "Content-Type": "application/json; charset=utf-8",
-    },
-    body: JSON.stringify({
-      from: cfg.from,
-      to: params.to,
-      subject: params.subject,
-      text: params.text,
-      html: params.html,
-      reply_to: params.replyTo,
-      attachments: params.attachments?.map((attachment) => ({
-        filename: attachment.filename,
-        content: attachment.content.toString("base64"),
-        content_type: attachment.contentType,
-      })),
-    }),
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+  let res: Response;
+  try {
+    res = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${cfg.apiKey}`,
+        "Content-Type": "application/json; charset=utf-8",
+      },
+      body: JSON.stringify({
+        from: cfg.from,
+        to: params.to,
+        subject: params.subject,
+        text: params.text,
+        html: params.html,
+        reply_to: params.replyTo,
+        attachments: params.attachments?.map((attachment) => ({
+          filename: attachment.filename,
+          content: attachment.content.toString("base64"),
+          content_type: attachment.contentType,
+        })),
+      }),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    const timedOut = error instanceof Error && error.name === "AbortError";
+    const detail = error instanceof Error && error.message && error.message !== "fetch failed"
+      ? `（${error.message}）`
+      : "";
+    return {
+      ok: false as const,
+      error: timedOut
+        ? "连接 Resend 超时（15 秒）。请检查运行 MMH 的服务器到 api.resend.com 的 DNS、HTTPS 出站连接和代理配置。"
+        : `连接 Resend 失败${detail}。请检查运行 MMH 的服务器到 api.resend.com 的 DNS、HTTPS 出站连接和代理配置。`,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
 
   const data = await res.json().catch(() => null) as { message?: string; name?: string; error?: string } | null;
   if (!res.ok) {

@@ -16,6 +16,7 @@ export type CreateLedgerInput = {
   adminPassword?: string;
   adminEmail?: string;
   fnosUid?: string;
+  registrationPrincipalId?: string | null;
 };
 
 export async function createLedgerWithDefaults(
@@ -102,7 +103,8 @@ export async function createLedgerWithDefaults(
       role: "admin",
       isSystem: false,
       passwordHash,
-      email: input.adminEmail?.trim() ? input.adminEmail.trim() : null,
+      email: input.adminEmail?.trim() ? input.adminEmail.trim().toLowerCase() : null,
+      registrationPrincipalId: input.registrationPrincipalId?.trim() ? input.registrationPrincipalId.trim() : null,
       fnosUid: input.fnosUid?.trim() ? input.fnosUid.trim() : null,
       householdId: household.id,
     },

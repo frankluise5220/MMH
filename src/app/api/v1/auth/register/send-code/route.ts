@@ -6,12 +6,11 @@ import { isRegistrationConfigured } from "@/lib/server/registration-client";
 import { sendRegistrationVerificationEmail } from "@/lib/mail/registration";
 import {
   activeLedgerInviteCodes,
-  findLedgerInviteCodeRecord,
   parseLedgerInviteCodeRecords,
 } from "@/lib/ledger-invite-codes";
 import { LEDGER_CREATION_INVITE_CODE_KEY } from "@/lib/households/create-ledger";
 import { logger } from "@/lib/logger";
-import { isLedgerInviteCodeRecordAuthentic } from "@/lib/server/ledger-invite-code-signing";
+import { inspectLedgerInviteCode, missingIssuerRejection } from "@/lib/server/ledger-invite-code-guard";
 
 export const runtime = "nodejs";
 
@@ -79,16 +78,20 @@ export async function POST(req: NextRequest) {
   if (inviteCode) {
     const inviteSetting = await prisma.systemSetting.findUnique({ where: { key: LEDGER_CREATION_INVITE_CODE_KEY } });
     const inviteRecords = parseLedgerInviteCodeRecords(inviteSetting?.value);
-    const inviteRecord = findLedgerInviteCodeRecord(inviteRecords, inviteCode);
-    if (!inviteRecord || inviteRecord.usedAt || !isLedgerInviteCodeRecordAuthentic(inviteRecord)) {
-      return NextResponse.json({ ok: false, code: "INVITE_CODE_INVALID", error: "The invite code is invalid, belongs to another system, or has already been used." }, { status: 403, headers: cors() });
+    // Each failure mode gets its own code + message: "invalid / another system /
+    // already used" in one string left signups undiagnosable from the UI.
+    const inspection = inspectLedgerInviteCode(inviteRecords, inviteCode);
+    if (!inspection.ok) {
+      const { rejection } = inspection;
+      return NextResponse.json({ ok: false, code: rejection.code, error: rejection.message }, { status: rejection.status, headers: cors() });
     }
     const issuerHousehold = await prisma.household.findUnique({
-      where: { id: inviteRecord.issuerHouseholdId },
+      where: { id: inspection.record.issuerHouseholdId },
       select: { id: true },
     });
     if (!issuerHousehold) {
-      return NextResponse.json({ ok: false, code: "INVITE_CODE_INVALID", error: "The invite code's issuing ledger no longer exists." }, { status: 403, headers: cors() });
+      const rejection = missingIssuerRejection();
+      return NextResponse.json({ ok: false, code: rejection.code, error: rejection.message }, { status: rejection.status, headers: cors() });
     }
     if (activeLedgerInviteCodes(inviteRecords).length === 0) {
       return NextResponse.json({ ok: false, code: "INVITE_CODE_CLOSED", error: "Ledger creation is currently closed." }, { status: 403, headers: cors() });
@@ -151,6 +154,7 @@ export async function POST(req: NextRequest) {
       to: email,
       code,
       expiresMinutes: CODE_TTL_MINUTES,
+      allowSmtp: false,
     });
     if (!mailRes.ok) {
       await prisma.registrationCode.delete({ where: { id: created.id } }).catch(logger.catchSilent("delete unsent signup code", "user-registration"));

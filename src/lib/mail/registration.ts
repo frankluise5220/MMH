@@ -1,11 +1,14 @@
 import { sendEmailByResend, hasAnyResendConfig } from "./resend";
 import { sendEmail, hasAnySmtpConfig } from "./smtp";
+import { isMailRelayConfigured, sendVerificationCodeByRelay } from "./relay";
 
 type RegistrationEmailParams = {
   to: string;
   code: string;
   expiresMinutes: number;
   householdId?: string | null;
+  /** Public MMH signup must never borrow an SMTP account from another ledger. */
+  allowSmtp?: boolean;
 };
 
 export type SendEmailResult = {
@@ -40,15 +43,35 @@ export async function hasEmailService(householdId?: string | null): Promise<bool
 export async function sendRegistrationVerificationEmail(
   params: RegistrationEmailParams,
 ): Promise<SendEmailResult> {
+  const allowSmtp = params.allowSmtp !== false;
   const [hasResend, hasSmtp] = await Promise.all([
     hasAnyResendConfig(),
-    hasAnySmtpConfig(params.householdId),
+    allowSmtp ? hasAnySmtpConfig(params.householdId) : Promise.resolve(false),
   ]);
-  if (!hasResend && !hasSmtp) {
+  const hasRelay = isMailRelayConfigured();
+  if (!hasResend && !hasSmtp && !hasRelay) {
     return {
       ok: false,
-      error: "No email service is configured (SMTP or Resend), so the verification code could not be sent.",
+      error: "No email service is configured (SMTP or Resend or mail relay), so the verification code could not be sent.",
     };
+  }
+
+  // The relay is the preferred path for MMH verification codes (it only carries
+  // recipient + code + expiry, never a password, and avoids the unreliable
+  // api.resend.com egress). It is used whenever configured; SMTP is still
+  // honored only when the caller explicitly allows it.
+  if (hasRelay) {
+    const relayResult = await sendVerificationCodeByRelay({
+      to: params.to,
+      code: params.code,
+      expiresMinutes: params.expiresMinutes,
+    });
+    if (relayResult.ok) return relayResult;
+    if (hasResend || hasSmtp) {
+      // Fall through to the legacy path below; combine errors on final failure.
+      return sendFallback({ params, hasResend, hasSmtp, relayError: relayResult.error });
+    }
+    return relayResult;
   }
 
   const content = buildRegistrationContent(params);
@@ -78,6 +101,48 @@ export async function sendRegistrationVerificationEmail(
 
   return {
     ok: false,
-    error: "No email service is configured (SMTP or Resend), so the verification code could not be sent.",
+    error: "No email service is configured (SMTP or Resend or mail relay), so the verification code could not be sent.",
+  };
+}
+
+async function sendFallback(params: {
+  params: RegistrationEmailParams;
+  hasResend: boolean;
+  hasSmtp: boolean;
+  relayError?: string;
+}): Promise<SendEmailResult> {
+  const { params: p, hasResend, hasSmtp, relayError } = params;
+  const content = buildRegistrationContent(p);
+  if (hasSmtp) {
+    const smtpResult = await sendEmail({
+      to: p.to,
+      householdId: p.householdId,
+      ...content,
+    });
+    if (smtpResult.ok) return smtpResult;
+    if (hasResend) {
+      const resendResult = await sendEmailByResend({ to: p.to, ...content });
+      if (resendResult.ok) return resendResult;
+      return {
+        ok: false,
+        error: `The mail relay failed (${relayError ?? "unknown error"}); SMTP also failed (${smtpResult.error ?? "unknown error"}); the Resend fallback also failed (${resendResult.error ?? "unknown error"}).`,
+      };
+    }
+    return {
+      ok: false,
+      error: `The mail relay failed (${relayError ?? "unknown error"}); SMTP also failed (${smtpResult.error ?? "unknown error"}).`,
+    };
+  }
+  if (hasResend) {
+    const resendResult = await sendEmailByResend({ to: p.to, ...content });
+    if (resendResult.ok) return resendResult;
+    return {
+      ok: false,
+      error: `The mail relay failed (${relayError ?? "unknown error"}); the Resend fallback also failed (${resendResult.error ?? "unknown error"}).`,
+    };
+  }
+  return {
+    ok: false,
+    error: relayError ?? "No email service is configured (SMTP or Resend or mail relay).",
   };
 }

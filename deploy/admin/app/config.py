@@ -66,5 +66,17 @@ GITHUB_API = "https://api.github.com"
 GITHUB_ALLOWED_REPOS = [x.strip() for x in
                         _env("GITHUB_ALLOWED_REPOS", GITHUB_REPO).split(",") if x.strip()]
 
+# ---------------------------------------------------------------- 邮件中继
+# MMH 应用把「收件邮箱 + 验证码 + 过期分钟数」送到这里，由本服务内部经 Postfix
+# 发验证码邮件。这是给 MMH 注册/绑定流程的专用窄接口：
+#   - 只允许「验证码」这一种用途，发件人/主题/正文由服务端固定生成；
+#   - 用独立中继 Token 鉴权，绝不复用后台管理员口令 / 后台 Cookie；
+#   - 不接收、不存储、不记录任何密码。
+# 留空则中继关闭（接口直接 403）。
+MMH_RELAY_TOKEN = _env("MMH_RELAY_TOKEN")
+# 同一收件邮箱在时间窗内的最大发送次数（防滥用）。默认 6 次 / 15 分钟。
+MMH_RELAY_MAX_PER_WINDOW = _env_int("MMH_RELAY_MAX_PER_WINDOW", 6)
+MMH_RELAY_WINDOW_SECONDS = _env_int("MMH_RELAY_WINDOW_SECONDS", 15 * 60)
+
 # ---------------------------------------------------------------- 业务常量
 STATS_DEFAULT_DAYS = _env_int("STATS_DEFAULT_DAYS", 30)

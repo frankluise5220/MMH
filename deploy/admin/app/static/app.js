@@ -450,7 +450,7 @@ async function renderRegistrations(view) {
     </div>
     ${list.items.length ? `<div class="scroll-x"><table>
       <thead><tr><th>用户</th><th>ID</th><th>状态</th><th>身份</th>
-        <th class="num">设备</th><th>最近活跃</th><th>注册时间</th><th></th></tr></thead>
+        <th class="num">设备</th><th>最近登录</th><th>注册时间</th><th></th></tr></thead>
       <tbody>${list.items.map(p => `
         <tr>
           <td><strong>${esc(p.display_name || '(未命名)')}</strong></td>
@@ -461,7 +461,11 @@ async function renderRegistrations(view) {
           <td>${(p.providers || '').split(',').filter(Boolean)
                 .map(x => `<span class="badge">${esc(x)}</span>`).join('') || '—'}</td>
           <td class="num">${p.n_installations}</td>
-          <td class="note">${p.last_seen_at ? esc(ago(Math.floor(new Date(p.last_seen_at).getTime() / 1000))) : '—'}</td>
+          <td class="note">${p.last_login_at
+                ? esc(ago(Math.floor(new Date(p.last_login_at).getTime() / 1000)))
+                : p.last_seen_at
+                  ? esc(ago(Math.floor(new Date(p.last_seen_at).getTime() / 1000)))
+                  : '—'}</td>
           <td class="mono">${esc((p.created_at || '').replace('T', ' ').slice(0, 16))}</td>
           <td><button class="sm" onclick="openPrincipal('${esc(p.id)}')">详情</button></td>
         </tr>`).join('')}</tbody></table></div>`
@@ -502,6 +506,9 @@ async function openPrincipal(pid) {
                                 : '<span class="badge danger">已禁用</span>'}</dd>
       <dt>注册时间</dt><dd>${esc(p.created_at)}</dd>
       <dt>更新时间</dt><dd>${esc(p.updated_at)}</dd>
+      <dt>最近登录</dt><dd>${p.last_login_at
+        ? esc(ago(Math.floor(new Date(p.last_login_at).getTime() / 1000)))
+        : '—'}</dd>
     </dl>
 
     <h3 style="font-size:13px;margin:16px 0 8px">登录身份（${d.identities.length}）</h3>

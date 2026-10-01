@@ -201,7 +201,12 @@ class Handler(BaseHTTPRequestHandler):
         if method == "POST" and path == "/api/login":
             return self._api_login()
 
-        if not self._session_ok():
+        # MMH 验证码邮件中继不使用后台 Cookie 会话，改用独立的
+        # MMH_RELAY_TOKEN（见 panels/relay.py）。这里跳过会话检查，让请求
+        # 继续走到 body 解析和 dispatch，由 relay.py 自行鉴权。
+        is_relay = method == "POST" and path == "/api/mmh/relay/send-code"
+
+        if not is_relay and not self._session_ok():
             self._drain_body()          # 提前返回前必须读掉 body，否则连接错位
             return self._error(401, "未登录或会话已过期")
 

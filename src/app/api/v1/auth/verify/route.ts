@@ -3,8 +3,8 @@ import { prisma } from "@/lib/db/prisma";
 import { hashPassword, verifyPassword } from "@/lib/auth/password";
 import { logger } from "@/lib/logger";
 import { getHouseholdDisplayName } from "@/lib/household-display";
-import { getCurrentUser, isAdmin } from "@/lib/server/auth";
 import { verifySensitiveOperationPassword } from "@/lib/server/sensitive-operation-auth";
+import { verifyEmailPrincipal } from "@/lib/server/registration-client";
 import {
   HOUSEHOLD_COOKIE,
   SESSION_DAYS_COOKIE,
@@ -51,6 +51,8 @@ const userSelect = {
   passwordHash: true,
   authVersion: true,
   householdId: true,
+  email: true,
+  registrationPrincipalId: true,
   Household: { select: { id: true, name: true } },
 } as const;
 
@@ -62,6 +64,8 @@ type LoginUser = {
   passwordHash: string | null;
   authVersion: number;
   householdId: string | null;
+  email: string | null;
+  registrationPrincipalId: string | null;
   Household: { id: string; name: string } | null;
 };
 
@@ -170,6 +174,111 @@ async function findPasswordMatches(users: LoginUser[], password: string) {
 }
 
 /**
+ * Resolves the local ledger users bound to an MMH membership account.
+ *
+ * MMH login is verified against the central registration service (email +
+ * membership password); the returned principalId is then used to find the local
+ * user(s) that carry that registrationPrincipalId. A single MMH principal may
+ * be bound to several ledgers, in which case the caller asks the user to choose.
+ */
+async function resolveMmhLoginUsers(email: string, password: string) {
+  const verification = await verifyEmailPrincipal({ email, password });
+  if (!verification.ok) {
+    return {
+      users: [] as LoginUser[],
+      error: verification,
+    };
+  }
+  const principalId = verification.principalId;
+  if (!principalId) {
+    return {
+      users: [] as LoginUser[],
+      error: { ok: false as const, status: 502, code: "MMH_PRINCIPAL_MISSING", error: "The MMH account has no principal id." },
+    };
+  }
+  const users = await withTimeout(
+    prisma.user.findMany({
+      where: { registrationPrincipalId: principalId },
+      select: userSelect,
+      orderBy: { createdAt: "asc" },
+    }),
+    AUTH_LOOKUP_TIMEOUT_MS,
+  );
+  return { users, error: null };
+}
+
+/** Signs a verified login session and returns the response. */
+async function issueSessionResponse(req: NextRequest, user: LoginUser) {
+  const response = NextResponse.json({ ok: true, username: user.name, householdId: user.householdId });
+  const sessionDays = await getUserSessionDays(user.id);
+  const maxAge = sessionDaysToMaxAge(sessionDays);
+  const cookieOptions = sessionCookieOptions(maxAge, req);
+  response.cookies.set(VERIFIED_COOKIE, createVerifiedSessionValue(user.id, maxAge, user.authVersion), cookieOptions);
+  response.cookies.set(USER_ID_COOKIE, user.id, cookieOptions);
+  response.cookies.set(USERNAME_COOKIE, user.name, cookieOptions);
+  response.cookies.set(SESSION_DAYS_COOKIE, String(sessionDays), {
+    path: "/",
+    maxAge: 60 * 60 * 24 * 365,
+    httpOnly: false,
+    sameSite: "lax",
+  });
+  if (user.householdId) {
+    response.cookies.set(HOUSEHOLD_COOKIE, user.householdId, cookieOptions);
+  }
+  return response;
+}
+
+/**
+ * Handles MMH membership login: email + membership password against the central
+ * registration service. Returns the session response on success, or the error
+ * (INVALID_CREDENTIALS / PASSWORD_NOT_SET / registration service errors) /
+ * AMBIGUOUS_USER when several ledgers share the same MMH principal.
+ */
+async function handleMmhLogin(req: NextRequest, email: string, password: string, householdId: string) {
+  const normalizedEmail = email.trim().toLowerCase();
+  if (!normalizedEmail) {
+    return NextResponse.json({ ok: false, code: "USER_NOT_FOUND", error: "请输入 MMH 账户邮箱" }, { status: 401 });
+  }
+
+  let resolved: Awaited<ReturnType<typeof resolveMmhLoginUsers>>;
+  try {
+    resolved = await resolveMmhLoginUsers(normalizedEmail, password);
+  } catch (error) {
+    if (error instanceof AuthLookupTimeoutError) {
+      return NextResponse.json({ ok: false, code: "AUTH_SERVICE_UNAVAILABLE", error: "认证服务暂时不可用，请稍后重试" }, { status: 503 });
+    }
+    logger.error("MMH 登录查询失败", "auth/verify", error);
+    return NextResponse.json({ ok: false, code: "AUTH_DATABASE_ERROR", error: "认证数据库初始化失败，请查看应用日志" }, { status: 503 });
+  }
+
+  if (resolved.error) {
+    const err = resolved.error;
+    return NextResponse.json(
+      { ok: false, code: err.code ?? "MMH_LOGIN_FAILED", error: err.error ?? "MMH 账户验证失败" },
+      { status: err.status ?? 401 },
+    );
+  }
+
+  const users = resolved.users;
+  if (users.length === 0) {
+    return NextResponse.json({ ok: false, code: "MMH_USER_NOT_BOUND", error: "该 MMH 账户未绑定任何账簿" }, { status: 404 });
+  }
+
+  if (users.length > 1 && !householdId) {
+    return ambiguousUsernameResponse(users);
+  }
+
+  const user = householdId
+    ? users.find((u) => u.householdId === householdId) ?? null
+    : users[0];
+  if (!user) {
+    return NextResponse.json({ ok: false, code: "MMH_USER_NOT_BOUND", error: "该 MMH 账户未绑定该账簿" }, { status: 404 });
+  }
+
+  return issueSessionResponse(req, user);
+}
+
+/**
  * POST /api/v1/auth/verify
  * Verify a password for login or privileged system actions.
  *
@@ -188,11 +297,12 @@ async function findPasswordMatches(users: LoginUser[], password: string) {
  *   { ok:false, code:"AMBIGUOUS_USER", error, households }.
  */
 export async function POST(req: NextRequest) {
-  const body = await req.json() as { password?: string; userId?: string; username?: string; householdId?: string; verifySystem?: boolean };
+  const body = await req.json() as { password?: string; userId?: string; username?: string; householdId?: string; verifySystem?: boolean; authMode?: string };
   const password = (body.password ?? "").trim();
   const userId = (body.userId ?? "").trim();
   const username = (body.username ?? "").trim();
   const householdId = (body.householdId ?? "").trim();
+  const authMode = (body.authMode ?? "local").trim().toLowerCase();
 
   if (!password) {
     return NextResponse.json({ ok: false, code: "INVALID_REQUEST", error: "请输入密码" }, { status: 400 });
@@ -208,6 +318,12 @@ export async function POST(req: NextRequest) {
     } catch {
       return NextResponse.json({ ok: false, code: "SYSTEM_CONFIG_ERROR", error: "系统配置错误" }, { status: 500 });
     }
+  }
+
+  // MMH membership login: verify the email + membership password against the
+  // central registration service, then map the principalId to local user(s).
+  if (authMode === "mmh") {
+    return handleMmhLogin(req, username, password, householdId);
   }
 
   let candidates: LoginUser[];
@@ -251,21 +367,5 @@ export async function POST(req: NextRequest) {
     await prisma.systemSetting.delete({ where: { key: LEGACY_PASSWORD_KEY } }).catch(logger.catchLog("删除旧密码失败", "route.ts"));
   }
 
-  const response = NextResponse.json({ ok: true, username: user.name, householdId: user.householdId });
-  const sessionDays = await getUserSessionDays(user.id);
-  const maxAge = sessionDaysToMaxAge(sessionDays);
-  const cookieOptions = sessionCookieOptions(maxAge, req);
-  response.cookies.set(VERIFIED_COOKIE, createVerifiedSessionValue(user.id, maxAge, user.authVersion), cookieOptions);
-  response.cookies.set(USER_ID_COOKIE, user.id, cookieOptions);
-  response.cookies.set(USERNAME_COOKIE, user.name, cookieOptions);
-  response.cookies.set(SESSION_DAYS_COOKIE, String(sessionDays), {
-    path: "/",
-    maxAge: 60 * 60 * 24 * 365,
-    httpOnly: false,
-    sameSite: "lax",
-  });
-  if (user.householdId) {
-    response.cookies.set(HOUSEHOLD_COOKIE, user.householdId, cookieOptions);
-  }
-  return response;
+  return issueSessionResponse(req, user);
 }

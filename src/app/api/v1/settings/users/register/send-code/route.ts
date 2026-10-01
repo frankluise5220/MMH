@@ -4,7 +4,6 @@ import crypto from "crypto";
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { getCurrentUser, isAdmin } from "@/lib/server/auth";
-import { isRegistrationConfigured } from "@/lib/server/registration-client";
 import { sendRegistrationVerificationEmail } from "@/lib/mail/registration";
 import { logger } from "@/lib/logger";
 
@@ -58,13 +57,6 @@ export async function POST(req: NextRequest) {
   if (!isAdmin(currentUser)) {
     return NextResponse.json({ ok: false, code: "FORBIDDEN", error: "Admin permission required." }, { status: 403, headers: cors() });
   }
-  if (!isRegistrationConfigured()) {
-    return NextResponse.json(
-      { ok: false, code: "REGISTRATION_NOT_CONFIGURED", error: "The registration service is not configured on this server." },
-      { status: 503, headers: cors() },
-    );
-  }
-
   const body = await req.json().catch(() => null);
   const parse = SendCodeSchema.safeParse(body);
   if (!parse.success) {
@@ -131,7 +123,8 @@ export async function POST(req: NextRequest) {
       to: normalizedEmail,
       code,
       expiresMinutes: CODE_TTL_MINUTES,
-      householdId: target.householdId,
+      // MMH registration is a central service flow; it must not borrow a ledger SMTP account.
+      allowSmtp: false,
     });
     if (!mailRes.ok) {
       await prisma.registrationCode.delete({ where: { id: created.id } }).catch(logger.catchSilent("delete unsent registration code", "user-registration"));

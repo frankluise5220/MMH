@@ -2,19 +2,18 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import crypto from "crypto";
 import { prisma } from "@/lib/db/prisma";
-import { isRegistrationConfigured, registerEmailPrincipal } from "@/lib/server/registration-client";
+import { isRegistrationConfigured, registerEmailPrincipal, setEmailPrincipalPassword } from "@/lib/server/registration-client";
 import {
   createLedgerWithDefaults,
   LEDGER_CREATION_INVITE_CODE_KEY,
 } from "@/lib/households/create-ledger";
 import {
-  findLedgerInviteCodeRecord,
   markLedgerInviteCodeUsed,
   parseLedgerInviteCodeRecords,
   serializeLedgerInviteCodeRecords,
 } from "@/lib/ledger-invite-codes";
 import { logger } from "@/lib/logger";
-import { isLedgerInviteCodeRecordAuthentic } from "@/lib/server/ledger-invite-code-signing";
+import { inspectLedgerInviteCode, missingIssuerRejection } from "@/lib/server/ledger-invite-code-guard";
 import {
   HOUSEHOLD_COOKIE,
   SESSION_DAYS_COOKIE,
@@ -31,6 +30,9 @@ const ConfirmSchema = z.object({
   email: z.string().email(),
   code: z.string().min(4).max(20),
   password: z.string().min(6).max(200),
+  // Optional MMH membership password (scrypt, stored in the central registration
+  // service). Distinct from `password`, which is the ledger-local admin password.
+  mmhPassword: z.string().min(6).max(200).optional(),
   name: z.string().trim().min(1).max(50).optional(),
   inviteCode: z.string().trim().optional(),
   ledgerName: z.string().trim().min(1).max(50).optional(),
@@ -117,16 +119,20 @@ export async function POST(req: NextRequest) {
   if (inviteRegistration) {
     const inviteSetting = await prisma.systemSetting.findUnique({ where: { key: LEDGER_CREATION_INVITE_CODE_KEY } });
     inviteRecords = parseLedgerInviteCodeRecords(inviteSetting?.value);
-    const inviteRecord = findLedgerInviteCodeRecord(inviteRecords, inviteCode);
-    if (!inviteRecord || inviteRecord.usedAt || !isLedgerInviteCodeRecordAuthentic(inviteRecord)) {
-      return NextResponse.json({ ok: false, code: "INVITE_CODE_INVALID", error: "The invite code is invalid, belongs to another system, or has already been used." }, { status: 403, headers: cors() });
+    // Same precise verdicts as send-code: this is the last chance to tell the
+    // user *why* their code was rejected.
+    const inspection = inspectLedgerInviteCode(inviteRecords, inviteCode);
+    if (!inspection.ok) {
+      const { rejection } = inspection;
+      return NextResponse.json({ ok: false, code: rejection.code, error: rejection.message }, { status: rejection.status, headers: cors() });
     }
     const issuerHousehold = await prisma.household.findUnique({
-      where: { id: inviteRecord.issuerHouseholdId },
+      where: { id: inspection.record.issuerHouseholdId },
       select: { id: true },
     });
     if (!issuerHousehold) {
-      return NextResponse.json({ ok: false, code: "INVITE_CODE_INVALID", error: "The invite code's issuing ledger no longer exists." }, { status: 403, headers: cors() });
+      const rejection = missingIssuerRejection();
+      return NextResponse.json({ ok: false, code: rejection.code, error: rejection.message }, { status: rejection.status, headers: cors() });
     }
   }
 
@@ -158,6 +164,21 @@ export async function POST(req: NextRequest) {
   }
   const principalId = registration.principalId;
 
+  // If the user supplied an MMH membership password, set it on the freshly
+  // created principal. This is the central credential (scrypt) and is distinct
+  // from the ledger-local admin password above. Do this before creating the
+  // local ledger so a failure here never leaves a half-created account.
+  const mmhPassword = parse.data.mmhPassword?.trim();
+  if (mmhPassword) {
+    const setPassword = await setEmailPrincipalPassword({ email, password: mmhPassword });
+    if (!setPassword.ok) {
+      return NextResponse.json(
+        { ok: false, code: setPassword.code ?? "MMH_PASSWORD_SET_FAILED", error: setPassword.error ?? "Failed to set the MMH membership password." },
+        { status: setPassword.status ?? 502, headers: cors() },
+      );
+    }
+  }
+
   let created: Awaited<ReturnType<typeof createLedgerWithDefaults>>;
   try {
     created = await prisma.$transaction(async (tx) => {
@@ -180,6 +201,8 @@ export async function POST(req: NextRequest) {
         const usedInviteRecords = markLedgerInviteCodeUsed(inviteRecords, inviteCode, {
           householdId: result.household.id,
           householdName: result.household.name,
+          usedUserId: result.adminUser.id,
+          usedUserName: result.adminUser.name,
         });
         await tx.systemSetting.upsert({
           where: { key: LEDGER_CREATION_INVITE_CODE_KEY },

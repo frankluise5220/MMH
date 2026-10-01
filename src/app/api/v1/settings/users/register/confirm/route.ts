@@ -5,7 +5,7 @@ import { prisma } from "@/lib/db/prisma";
 import { hashPassword } from "@/lib/auth/password";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { getCurrentUser, isAdmin } from "@/lib/server/auth";
-import { isRegistrationConfigured, registerEmailPrincipal } from "@/lib/server/registration-client";
+import { registerEmailPrincipal } from "@/lib/server/registration-client";
 import { createVerifiedSessionValue, HOUSEHOLD_COOKIE, SESSION_DAYS_COOKIE, sessionCookieOptions, USER_ID_COOKIE, USERNAME_COOKIE, VERIFIED_COOKIE } from "@/lib/server/session-cookies";
 import { normalizeSessionDays, sessionDaysToMaxAge } from "@/lib/session-days";
 
@@ -68,7 +68,7 @@ function recordConfirmAttempt(ip: string) {
 const ConfirmSchema = z.object({
   userId: z.string().min(1),
   email: z.string().email(),
-  password: z.string().min(6).max(200),
+  password: z.string().min(6).max(200).optional(),
   code: z.string().min(4).max(20),
 });
 
@@ -79,10 +79,11 @@ const ConfirmSchema = z.object({
  * to the email, registers the email identity in the external mmh-registration
  * service, and makes the email a valid login name for the target user.
  *
- * Body: { userId, email, password, code }
+ * Body: { userId, email, password?, code }
  * - The code is single-use and expires after 15 minutes.
- * - On success the user's email and passwordHash are set and the returned
- *   principalId is stored on the user row.
+ * - On success the returned principalId is stored on the user row. The email is
+ *   updated to the verified address; a password is only required when the target
+ *   user does not already have a local login password.
  * - Re-registering an already-registered user with the same email returns the
  *   existing principalId (idempotent) and still updates the local email/password.
  *
@@ -97,13 +98,6 @@ export async function POST(req: NextRequest) {
   if (!isAdmin(currentUser)) {
     return NextResponse.json({ ok: false, code: "FORBIDDEN", error: "Admin permission required." }, { status: 403, headers: cors() });
   }
-  if (!isRegistrationConfigured()) {
-    return NextResponse.json(
-      { ok: false, code: "REGISTRATION_NOT_CONFIGURED", error: "The registration service is not configured on this server." },
-      { status: 503, headers: cors() },
-    );
-  }
-
   const ip = getClientIp(req);
   if (ip && isConfirmAttemptLimited(ip)) {
     return NextResponse.json({ ok: false, code: "RATE_LIMITED", error: "Too many attempts, please try again later." }, { status: 429, headers: cors() });
@@ -152,6 +146,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, code: "INVALID_OR_EXPIRED_CODE", error: "The verification code is invalid or has expired." }, { status: 400, headers: cors() });
   }
 
+  if (target.passwordHash == null && !password) {
+    return NextResponse.json({ ok: false, code: "PASSWORD_REQUIRED", error: "A local login password is required for this user." }, { status: 400, headers: cors() });
+  }
+
   const emailTaken = await prisma.user.findFirst({
     where: { email: normalizedEmail, id: { not: userId } },
     select: { id: true },
@@ -176,7 +174,7 @@ export async function POST(req: NextRequest) {
   // Only when the target account has no password yet does registration set one
   // (and then bump authVersion to invalidate older sessions).
   const passwordWasSet = target.passwordHash == null;
-  const passwordHash = passwordWasSet ? await hashPassword(password.trim()) : null;
+  const passwordHash = passwordWasSet && password ? await hashPassword(password.trim()) : null;
   await prisma.$transaction(async (tx) => {
     await tx.user.update({
       where: { id: userId },

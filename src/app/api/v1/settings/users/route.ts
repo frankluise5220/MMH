@@ -38,15 +38,12 @@ export async function GET() {
     const auth = requireSignedIn(currentUser);
     if (!auth.ok) return NextResponse.json({ ok: false, code: auth.code, error: auth.error }, { status: auth.status, headers: cors() });
 
-    const { householdId, user } = await getHouseholdScope();
-    const orFilters: Array<Record<string, unknown>> = [
-      { householdId },
-      { isSystem: true },
-    ];
-    if (isAdmin(user)) {
-      orFilters.push({ householdId: null });
-    }
-    const where = { OR: orFilters };
+    const { householdId } = await getHouseholdScope();
+    // A household's user list must contain only users owned by that household.
+    // System users are global operators (householdId = null), not members of
+    // every ledger, so including them here makes the inviter appear in the
+    // invited ledger's user list.
+    const where = { householdId };
 
     let users: Array<{
       id: string;
@@ -55,6 +52,8 @@ export async function GET() {
       role: string;
       isSystem: boolean;
       passwordHash: string | null;
+      registrationPrincipalId: string | null;
+      fnosUid: string | null;
       createdAt: Date;
       updatedAt: Date;
     }>;
@@ -69,6 +68,7 @@ export async function GET() {
           role: true,
           isSystem: true,
           fnosUid: true,
+          registrationPrincipalId: true,
           passwordHash: true,
           createdAt: true,
           updatedAt: true,
@@ -87,12 +87,13 @@ export async function GET() {
             role: true,
             isSystem: true,
             fnosUid: true,
+            registrationPrincipalId: true,
             passwordHash: true,
             createdAt: true,
             updatedAt: true,
           },
         });
-        users = fallback.map((u) => ({ ...u, email: null }));
+        users = fallback.map((u) => ({ ...u, email: null, registrationPrincipalId: null }));
       } else {
         throw error;
       }
@@ -111,8 +112,10 @@ export async function GET() {
       // Missing older preference columns should not prevent the user list from loading.
     }
 
+    const isFnosEnvironment = String(process.env.MMH_DEPLOY_TARGET ?? "").trim().toLowerCase() === "fnos";
     return NextResponse.json({
       ok: true,
+      isFnosEnvironment,
       users: users.map(u => ({
         ...u,
         sessionDays: sessionDaysByUserId.get(u.id) ?? DEFAULT_SESSION_DAYS,
