@@ -37,6 +37,7 @@ type LoginUserChoice = {
   hasPassword?: boolean;
   role?: string;
   isSystem?: boolean;
+  registrationPrincipalId?: string | null;
   householdId?: string | null;
   householdName?: string | null;
 };
@@ -60,9 +61,14 @@ export type FnosGatewayUser = {
 };
 
 type ResetStep = "request" | "confirm";
-type LoginMode = "login" | "setup" | "create";
+type LoginMode = "login" | "create";
 
 const SYSTEM_LOGIN_SCOPE_ID = "__system__";
+
+// 文件卡片式页签：抽成独立组件（src/app/login/FolderTabs.tsx）。
+// 本文件用其导出的纯函数（folderTabClass / folderTabPanelClass / FOLDER_TAB_STRIP），
+// 登录方式页签与建账方式页签共用；<FolderTabs> 组件本身供外部页面直接复用。
+import { folderTabClass, folderTabPanelClass, FOLDER_TAB_STRIP } from "./FolderTabs";
 
 function getLoginUserScopeId(user: LoginUserChoice) {
   return user.householdId ?? SYSTEM_LOGIN_SCOPE_ID;
@@ -103,9 +109,6 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   const [pendingLogin, setPendingLogin] = useState<{ username: string; password: string } | null>(null);
   const [initialLedgerSetup, setInitialLedgerSetup] = useState(false);
 
-  const [setupUsername, setSetupUsername] = useState("");
-  const [newPassword, setNewPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
   const [createMethod, setCreateMethod] = useState<"invite" | "existing">("invite");
   const [createAuthMode, setCreateAuthMode] = useState<"local" | "mmh" | "fnos">("local");
   const [createInviteCode, setCreateInviteCode] = useState("");
@@ -155,13 +158,18 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   const [registerLoading, setRegisterLoading] = useState(false);
   const [registerInviteMode, setRegisterInviteMode] = useState(false);
   const { t } = useI18n();
+  // Stable primitive so the status effect does not re-run on object identity.
+  const hasFnosGateway = Boolean(fnosGatewayUser);
   const currentHouseholdDisplayName = getHouseholdDisplayName({ name: householdName }, t("login.defaultBook"));
   const productIntro = getProductIntro(t);
   const loginHouseholdChoices = getLoginHouseholdChoices();
+  // 页签顺序：本地账户 → MMH 用户 →（有网关头时）飞牛账户。
+  // 内容板的左上圆角要按「活动页签是不是第一个」决定是否去掉，见 folderTabPanelClass。
+  const loginTabOrder: Array<"local" | "mmh" | "fnos"> = fnosGatewayUser ? ["local", "mmh", "fnos"] : ["local", "mmh"];
   const selectedHouseholdUsers = selectedHouseholdId
     ? systemUsers.filter((user) => getLoginUserScopeId(user) === selectedHouseholdId)
     : [];
-  const mmhUserChoices = systemUsers.filter((user) => user.isSystem && user.email && user.hasPassword);
+  const mmhUserChoices = systemUsers.filter((user) => user.registrationPrincipalId && user.email && user.hasPassword);
 
   function maskEmail(email: string) {
     const normalized = email.trim().toLowerCase();
@@ -326,7 +334,20 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
           const needsInitialLedgerSetup = data.needsInitialLedgerSetup === true;
           const users = data.users ?? [];
           setInitialLedgerSetup(needsInitialLedgerSetup);
-          setMode(needsInitialLedgerSetup ? "create" : data.hasPassword ? "login" : "setup");
+          // `hasPassword` is a global flag: "some user somewhere has a password
+          // hash". A deployment whose users are all credential-free (an admin
+          // created with a fnOS gateway identity stores no password hash) is
+          // already initialised, so it must open the normal sign-in screen — the
+          // user signs in with the identity they already hold.
+          // Only a completely empty deployment goes to ledger creation; there is
+          // no third "set the first administrator password" screen any more.
+          setMode(needsInitialLedgerSetup ? "create" : "login");
+          // No local credential exists anywhere and the gateway vouches for the
+          // user: open on the fnOS tab so they enter with one click instead of
+          // being shown a username/password form they cannot fill in.
+          if (hasFnosGateway && !data.hasPassword) {
+            setLoginMode("fnos");
+          }
           setSystemUsers(users);
           setPasswordResetEnabled(data.passwordResetEnabled ?? false);
           const initialSelection = getInitialLoginSelection(users);
@@ -382,7 +403,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
       window.clearTimeout(timeoutId);
       controller.abort();
     };
-  }, [t]);
+  }, [t, hasFnosGateway]);
 
   async function verifyLogin(params: { userId?: string; username?: string; password: string; householdId?: string }) {
     const res = await fetch("/api/v1/auth/verify", {
@@ -506,40 +527,6 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
       setError(data.error ?? t("login.error.loginFailed"));
     } catch {
       setError(t("login.error.verifyRetry"));
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function handleSetup() {
-    const trimmedUsername = setupUsername.trim();
-    const trimmedPassword = newPassword.trim();
-    if (!trimmedUsername) { setError(t("login.error.usernameRequired")); return; }
-    if (!trimmedPassword) { setError(t("login.error.passwordRequired")); return; }
-    if (trimmedPassword !== confirmPassword.trim()) { setError(t("login.error.passwordMismatch")); return; }
-
-    setLoading(true);
-    setError("");
-    try {
-      const setupRes = await fetch("/api/v1/auth/password-status", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password: trimmedPassword, username: trimmedUsername }),
-      });
-      const setupData = await setupRes.json() as { ok: boolean; error?: string };
-      if (!setupData.ok) {
-        setError(setupData.error ?? t("login.error.setupFailed"));
-        return;
-      }
-
-      const loginData = await verifyLogin({ username: trimmedUsername, password: trimmedPassword });
-      if (loginData.ok) {
-        window.location.href = withBasePath("/");
-        return;
-      }
-      setError(loginData.error ?? t("login.error.loginFailed"));
-    } catch {
-      setError(t("login.error.setupRetry"));
     } finally {
       setLoading(false);
     }
@@ -874,7 +861,6 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
             </div>
           </div>
           {mode === "login" && <div className="mt-1 text-xs text-slate-500">{t("login.continueHint")}</div>}
-          {mode === "setup" && <div className="mt-1 text-xs text-slate-500">{t("login.setupHint")}</div>}
           {mode === "create" && (
             <div className="mt-1 text-xs text-slate-500">
               {initialLedgerSetup ? t("login.initialCreateHint") : t("login.createHint")}
@@ -885,48 +871,67 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
         <div className="min-h-0 flex-1 overflow-y-auto">
         {mode === "login" && (
           <div className="space-y-4 p-6">
-            {!showReset && !showRegister && (
-              <>
-                {loginHouseholdChoices.length > 0 && (
-                  <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">{t("login.book")}</div>
-                    <select
-                      value={selectedHouseholdId}
-                      onChange={(event) => selectLoginHousehold(event.target.value)}
-                      className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
-                      autoFocus
-                    >
-                      {loginHouseholdChoices.map((household) => (
-                        <option key={household.id} value={household.id}>{household.name}</option>
-                      ))}
-                    </select>
-                  </div>
-                )}
-                <div className="flex gap-1 rounded-lg border border-slate-200 bg-slate-50 p-1">
+            {!showReset && !showRegister && loginHouseholdChoices.length > 0 && (
+              <div className="space-y-1">
+                <div className="text-xs font-medium text-slate-600">{t("login.book")}</div>
+                <select
+                  value={selectedHouseholdId}
+                  onChange={(event) => selectLoginHousehold(event.target.value)}
+                  className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                  autoFocus
+                >
+                  {loginHouseholdChoices.map((household) => (
+                    <option key={household.id} value={household.id}>{household.name}</option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            {/* 登录方式 = 文件卡片页签；卡片内容 = 用户名 / 密码 / 忘记密码 / 进入账簿 */}
+            {/* 重置密码是登录表单的子态：此时收起页签条，也不再留出 pt-10 的页签高度，
+                否则点了页签看起来毫无反应（switchLoginMode 不改 showReset）。 */}
+            <div className={showReset || showRegister ? "relative" : "relative pt-10"}>
+              {!showReset && !showRegister && (
+              <div className={FOLDER_TAB_STRIP}>
+                <button
+                  type="button"
+                  onClick={() => switchLoginMode("local")}
+                  className={folderTabClass(loginMode === "local", loginTabOrder.indexOf("local") === loginTabOrder.length - 1)}
+                >
+                  {t("login.mode.local")}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => switchLoginMode("mmh")}
+                  className={folderTabClass(loginMode === "mmh", loginTabOrder.indexOf("mmh") === loginTabOrder.length - 1)}
+                >
+                  {t("login.mode.mmh")}
+                </button>
+                {fnosGatewayUser ? (
                   <button
                     type="button"
-                    onClick={() => switchLoginMode("local")}
-                    className={loginMode === "local" ? "flex-1 rounded-md bg-white px-3 py-1.5 text-xs font-medium text-slate-800 shadow-sm" : "flex-1 rounded-md px-3 py-1.5 text-xs font-medium text-slate-500"}
+                    onClick={() => switchLoginMode("fnos")}
+                    className={folderTabClass(loginMode === "fnos", loginTabOrder.indexOf("fnos") === loginTabOrder.length - 1)}
                   >
-                    {t("login.mode.local")}
+                    {t("login.fnosLogin")}
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => switchLoginMode("mmh")}
-                    className={loginMode === "mmh" ? "flex-1 rounded-md bg-white px-3 py-1.5 text-xs font-medium text-slate-800 shadow-sm" : "flex-1 rounded-md px-3 py-1.5 text-xs font-medium text-slate-500"}
+                ) : null}
+              </div>
+              )}
+
+              <div className={`${folderTabPanelClass(loginTabOrder.indexOf(loginMode), loginTabOrder.length)} space-y-4`}>
+                {!showReset && !showRegister && (
+                  <form
+                    id="mmh-login-form"
+                    action={withBasePath("/login")}
+                    method="post"
+                    className="space-y-4"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      if (loginMode === "fnos") void handleFnosLogin();
+                      else void handleLogin();
+                    }}
                   >
-                    {t("login.mode.mmh")}
-                  </button>
-                  {fnosGatewayUser ? (
-                    <button
-                      type="button"
-                      onClick={() => switchLoginMode("fnos")}
-                      className={loginMode === "fnos" ? "flex-1 rounded-md bg-white px-3 py-1.5 text-xs font-medium text-slate-800 shadow-sm" : "flex-1 rounded-md px-3 py-1.5 text-xs font-medium text-slate-500"}
-                    >
-                      {t("login.fnosLogin")}
-                    </button>
-                  ) : null}
-                </div>
                 {loginMode === "fnos" && fnosGatewayUser ? (
                 <div className="space-y-3">
                   <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
@@ -950,9 +955,10 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                 </div>
                 ) : loginMode === "local" ? (
                 <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">{t("login.username")}</div>
                   {selectedHouseholdUsers.length > 0 ? (
                     <select
+                      id="login-username"
+                      name="username"
                       value={selectedUserId}
                       onChange={(event) => {
                         const user = selectedHouseholdUsers.find((item) => item.id === event.target.value);
@@ -972,6 +978,8 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                     </select>
                   ) : (
                     <input
+                      id="login-username"
+                      name="username"
                       value={username}
                       onChange={(event) => {
                         setSelectedUserId("");
@@ -988,9 +996,11 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                 </div>
                 ) : (
                 <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">{t("login.mmhAccount")}</div>
                   {mmhUserChoices.length > 0 ? (
                     <select
+                      id="login-username"
+                      name="username"
+                      autoComplete="username"
                       value={loginCredentials.mmh.userId || ""}
                       onChange={(event) => selectMmhUser(event.target.value)}
                       className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
@@ -1001,6 +1011,8 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                     </select>
                   ) : (
                     <input
+                      id="login-username"
+                      name="username"
                       value={username}
                       onChange={(event) => {
                         setSelectedUserId("");
@@ -1021,6 +1033,8 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                 <div className="space-y-1">
                   <div className="text-xs font-medium text-slate-600">{t("login.password")}</div>
                     <input
+                      id="login-password"
+                      name="password"
                       value={password}
                       onChange={(event) => {
                         setPassword(event.target.value);
@@ -1032,7 +1046,6 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                     className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
                     placeholder={t("login.passwordPlaceholder")}
                     autoFocus={loginHouseholdChoices.length === 0}
-                    onKeyDown={(event) => { if (event.key === "Enter") void handleLogin(); }}
                   />
                 </div>
                 )}
@@ -1070,48 +1083,26 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                 {error && <div className="text-sm text-red-600">{error}</div>}
                 {loginMode === "fnos" ? (
                   <button
-                    type="button"
+                    type="submit"
                     className="h-10 w-full rounded-md bg-blue-600 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
                     disabled={loading}
-                    onClick={() => void handleFnosLogin()}
                   >
                     {loading ? t("login.verifying") : t("login.fnosEnter")}
                   </button>
                 ) : (
                   <button
-                    type="button"
+                    type="submit"
                     className="h-10 w-full rounded-md bg-blue-600 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
                     disabled={loading}
-                    onClick={() => void handleLogin()}
                   >
                     {loading ? t("login.verifying") : t("login.enter")}
                   </button>
                 )}
-              </>
-            )}
-
-            {!showRegister && (
-            <button
-              type="button"
-              className="w-full text-xs text-slate-500 hover:text-slate-700"
-              onClick={() => {
-                if (showReset) {
-                  setShowReset(false);
-                  setResetStep("request");
-                  setResetError("");
-                  setResetInfo("");
-                  return;
-                }
-                openPasswordReset();
-              }}
-              disabled={loading || resetLoading}
-            >
-              {showReset ? t("common.collapse") : t("login.forgotPassword")}
-            </button>
-            )}
+                </form>
+              )}
 
             {showReset && (
-              <div className="space-y-3 border-t border-slate-100 pt-2">
+              <div className="space-y-3">
                 <div className="text-xs font-medium text-slate-600">{t("login.reset.title")}</div>
                 <div className="space-y-1">
                   <div className="text-xs font-medium text-slate-600">{t("login.username")}</div>
@@ -1259,6 +1250,30 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                 )}
               </div>
             )}
+
+            {/* 忘记密码 / 收起：始终排在卡片内容之后。
+                重置态下若留在表单上方，会被卡片顶边衬成「卡片标题」，观感突兀。 */}
+            {!showRegister && (
+            <button
+              type="button"
+              className="w-full text-xs text-slate-500 hover:text-slate-700"
+              onClick={() => {
+                if (showReset) {
+                  setShowReset(false);
+                  setResetStep("request");
+                  setResetError("");
+                  setResetInfo("");
+                  return;
+                }
+                openPasswordReset();
+              }}
+              disabled={loading || resetLoading}
+            >
+              {showReset ? t("common.collapse") : t("login.forgotPassword")}
+            </button>
+            )}
+              </div>
+            </div>
           </div>
         )}
 
@@ -1375,27 +1390,23 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
           <div className="space-y-4 p-6">
             {!initialLedgerSetup && (
               <div className="relative pt-10">
-                <div className="absolute inset-x-3 top-0 z-10 flex items-end gap-1.5">
+                <div className={FOLDER_TAB_STRIP}>
                   <button
                     type="button"
                     onClick={() => setCreateMethod("invite")}
-                    className={createMethod === "invite"
-                      ? "relative z-30 -mb-px min-w-[7.5rem] rounded-t-[10px] border border-b-0 border-slate-300 bg-[#fbfaf7] px-4 py-2.5 text-xs font-semibold text-slate-800 shadow-[0_-3px_10px_rgba(15,23,42,0.10)]"
-                      : "relative z-10 -mb-1 min-w-[7.5rem] rounded-t-[10px] border border-slate-300 bg-slate-200 px-4 py-2 text-xs font-medium text-slate-500 shadow-[0_2px_4px_rgba(15,23,42,0.08)] hover:-translate-y-0.5 hover:bg-slate-100"}
+                    className={folderTabClass(createMethod === "invite", false, "min")}
                   >
                     邀请码创建
                   </button>
                   <button
                     type="button"
                     onClick={() => setCreateMethod("existing")}
-                    className={createMethod === "existing"
-                      ? "relative z-30 -mb-px min-w-[7.5rem] rounded-t-[10px] border border-b-0 border-slate-300 bg-[#fbfaf7] px-4 py-2.5 text-xs font-semibold text-slate-800 shadow-[0_-3px_10px_rgba(15,23,42,0.10)]"
-                      : "relative z-10 -mb-1 min-w-[7.5rem] rounded-t-[10px] border border-slate-300 bg-slate-200 px-4 py-2 text-xs font-medium text-slate-500 shadow-[0_2px_4px_rgba(15,23,42,0.08)] hover:-translate-y-0.5 hover:bg-slate-100"}
+                    className={folderTabClass(createMethod === "existing", true, "min")}
                   >
                     已有用户验证
                   </button>
                 </div>
-                <div className="relative z-20 rounded-xl border border-slate-300 bg-[#fbfaf7] p-4 shadow-[0_10px_24px_rgba(15,23,42,0.10)] ring-1 ring-white">
+                <div className={`${folderTabPanelClass(createMethod === "invite" ? 0 : 1, 2)} space-y-4`}>
                 {createMethod === "invite" ? (
                   <>
                     <div className="space-y-1">
@@ -1403,9 +1414,10 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                       <input
                         value={createInviteCode}
                         onChange={(event) => setCreateInviteCode(event.target.value)}
-                        type="password"
+                        type="text"
                         autoComplete="off"
-                        className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                        spellCheck={false}
+                        className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 font-mono text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
                         placeholder={t("login.invitePlaceholder")}
                         autoFocus
                       />
@@ -1698,56 +1710,6 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                 {t("login.backToLogin")}
               </button>
             )}
-          </div>
-        )}
-
-        {mode === "setup" && (
-          <div className="space-y-4 p-6">
-            <div className="space-y-1">
-              <div className="text-xs font-medium text-slate-600">{t("login.username")}</div>
-              <input
-                value={setupUsername}
-                onChange={(event) => setSetupUsername(event.target.value)}
-                type="text"
-                autoComplete="username"
-                className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
-                placeholder={t("login.adminUsernamePlaceholder")}
-                autoFocus
-              />
-            </div>
-            <div className="space-y-1">
-              <div className="text-xs font-medium text-slate-600">{t("login.setupPassword")}</div>
-              <input
-                value={newPassword}
-                onChange={(event) => setNewPassword(event.target.value)}
-                type="password"
-                autoComplete="new-password"
-                className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
-                placeholder={t("login.passwordPlaceholder")}
-                onKeyDown={(event) => { if (event.key === "Enter") void handleSetup(); }}
-              />
-            </div>
-            <div className="space-y-1">
-              <div className="text-xs font-medium text-slate-600">{t("login.confirmPassword")}</div>
-              <input
-                value={confirmPassword}
-                onChange={(event) => setConfirmPassword(event.target.value)}
-                type="password"
-                autoComplete="new-password"
-                className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
-                placeholder={t("login.confirmPassword")}
-                onKeyDown={(event) => { if (event.key === "Enter") void handleSetup(); }}
-              />
-            </div>
-            {error && <div className="text-sm text-red-600">{error}</div>}
-            <button
-              type="button"
-              className="h-10 w-full rounded-md bg-blue-600 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
-              disabled={loading}
-              onClick={() => void handleSetup()}
-            >
-              {loading ? t("login.setting") : t("login.setupAndEnter")}
-            </button>
           </div>
         )}
 
