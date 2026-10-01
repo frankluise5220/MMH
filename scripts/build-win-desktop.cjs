@@ -46,6 +46,7 @@ const prismaCli = toArgvPath(path.join(root, "node_modules", "prisma", "build", 
 const args = process.argv.slice(2);
 const skipBuild = args.includes("--skip-build");
 const skipPackage = args.includes("--skip-package");
+const reuseStage = args.includes("--reuse-stage");
 
 function run(command, args, env, cwd) {
   const useShell = process.platform === "win32" && (command === "npm" || command === "npx");
@@ -111,11 +112,15 @@ if (!fs.existsSync(path.join(standaloneDir, "server.js"))) {
   console.error("Missing standalone build output. Run without --skip-build first.");
   process.exit(1);
 }
-fs.rmSync(stageDir, { recursive: true, force: true });
-fs.mkdirSync(stageAppDir, { recursive: true });
-copyDir(standaloneDir, stageAppDir);
-
-pruneStagedApp(stageAppDir);
+const canReuseStage = reuseStage && fs.existsSync(path.join(stageAppDir, "server.js"));
+if (!canReuseStage) {
+  fs.rmSync(stageDir, { recursive: true, force: true });
+  fs.mkdirSync(stageAppDir, { recursive: true });
+  copyDir(standaloneDir, stageAppDir);
+  pruneStagedApp(stageAppDir);
+} else {
+  console.log("Reusing existing staged standalone app (--reuse-stage).");
+}
 
 step("sync .next/static and public");
 copyDir(path.join(root, ".next", "static"), path.join(stageAppDir, ".next", "static"));
