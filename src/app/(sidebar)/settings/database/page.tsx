@@ -27,6 +27,7 @@ import {
 } from "@/lib/access-whitelist";
 import { useI18n } from "@/lib/i18n";
 import { RESTORE_UPLOAD_LIMIT_BYTES, RESTORE_UPLOAD_LIMIT_LABEL } from "@/lib/backup-upload-limit";
+import { copyToClipboard } from "@/lib/client/clipboard";
 
 type I18nT = (key: string, params?: Record<string, string | number>) => string;
 
@@ -825,6 +826,17 @@ export default function DatabaseSettingsPage() {
   async function removeLedgerInviteCode(code: string) {
     const nextRecords = ledgerInviteRecords.filter((item) => item.code !== code);
     await saveLedgerInviteRecords(nextRecords, t("settings.database.inviteDeleted"));
+  }
+
+  async function copyLedgerInviteCode(code: string) {
+    const copied = await copyToClipboard(code);
+    if (copied) {
+      setLedgerInviteError("");
+      setLedgerInviteMessage(t("settings.database.inviteCopied"));
+    } else {
+      setLedgerInviteMessage("");
+      setLedgerInviteError(t("settings.database.copyInviteFailed"));
+    }
   }
 
   async function saveSystemSetting(key: string, value: string) {
@@ -1958,6 +1970,7 @@ export default function DatabaseSettingsPage() {
                   <SettingsTd>{formatInviteDateTime(record.usedAt)}</SettingsTd>
                   <SettingsTd align="right">
                     <SettingsRowActions>
+                      <SettingsActionButton label={t("settings.database.copyInvite")} variant="copy" onClick={() => void copyLedgerInviteCode(record.code)} disabled={ledgerInviteSaving} />
                       <SettingsActionButton label={t("settings.database.deleteInvite")} variant="delete" onClick={() => void removeLedgerInviteCode(record.code)} disabled={ledgerInviteSaving} />
                     </SettingsRowActions>
                   </SettingsTd>

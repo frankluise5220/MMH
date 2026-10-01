@@ -117,6 +117,19 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   const [createExistingPassword, setCreateExistingPassword] = useState("");
   const [createConfirmPassword, setCreateConfirmPassword] = useState("");
 
+  function resetCreateLedgerForm() {
+    setCreateMethod("invite");
+    setCreateAuthMode("local");
+    setCreateInviteCode("");
+    setCreateLedgerName("");
+    setCreateAdminName("");
+    setCreateAdminEmail("");
+    setCreatePassword("");
+    setCreateExistingUserId("");
+    setCreateExistingPassword("");
+    setCreateConfirmPassword("");
+  }
+
   const [showReset, setShowReset] = useState(false);
   const [resetStep, setResetStep] = useState<ResetStep>("request");
   const [resetUsername, setResetUsername] = useState("");
@@ -1670,15 +1683,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                   setResetError("");
                   setResetInfo("");
                   setShowReset(false);
-                  setCreateMethod("invite");
-                  setCreateAuthMode("local");
-                  setCreateInviteCode("");
-                  setCreateLedgerName("");
-                  setCreateAdminName("");
-                  setCreateAdminEmail("");
-                  setCreatePassword("");
-                  setCreateConfirmPassword("");
-                  setCreateExistingUserId("");
+                  resetCreateLedgerForm();
                   setRegisterInviteMode(false);
                   setRegisterEmail("");
                   setRegisterCode("");
@@ -1757,12 +1762,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                 setResetError("");
                 setResetInfo("");
                 setShowReset(false);
-                setCreateInviteCode("");
-                setCreateLedgerName("");
-                setCreateAdminName("");
-                setCreateAdminEmail("");
-                setCreatePassword("");
-                setCreateConfirmPassword("");
+                resetCreateLedgerForm();
                 setMode("create");
               }}
             >

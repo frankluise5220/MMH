@@ -2,6 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { getCurrentUser, isAdmin } from "@/lib/server/auth";
 import {
+  parseLedgerInviteCodeRecords,
+  serializeLedgerInviteCodeRecords,
+} from "@/lib/ledger-invite-codes";
+import { LEDGER_CREATION_INVITE_CODE_KEY } from "@/lib/households/create-ledger";
+import { signLedgerInviteCodeRecords } from "@/lib/server/ledger-invite-code-signing";
+import {
   extractAccessHostnames,
   getExplicitAccessHostnames,
   isAccessHostnameAllowed,
@@ -64,6 +70,17 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, code: "FORBIDDEN", error: "仅管理员可修改系统设置" }, { status: 403 });
   }
   let nextValue = String(value ?? "");
+  if (key === LEDGER_CREATION_INVITE_CODE_KEY) {
+    if (!user?.householdId) {
+      return NextResponse.json({ ok: false, code: "HOUSEHOLD_REQUIRED", error: "邀请码必须由已有账簿管理员生成。" }, { status: 400 });
+    }
+    try {
+      const records = parseLedgerInviteCodeRecords(nextValue);
+      nextValue = serializeLedgerInviteCodeRecords(signLedgerInviteCodeRecords(records, user.householdId));
+    } catch (error) {
+      return NextResponse.json({ ok: false, code: "INVALID_INVITE_CODE_SIGNATURE", error: error instanceof Error ? error.message : "邀请码签名无效。" }, { status: 400 });
+    }
+  }
   if (key === ACCESS_WHITELIST_KEY) {
     const nextAllowedList = parseNextAllowedAccessValue(value);
     nextValue = JSON.stringify(nextAllowedList);

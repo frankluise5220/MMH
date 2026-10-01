@@ -1,6 +1,8 @@
 export type LedgerInviteCodeRecord = {
   code: string;
   createdAt?: string;
+  issuerHouseholdId?: string;
+  signature?: string;
   usedAt?: string;
   usedHouseholdId?: string;
   usedHouseholdName?: string;
@@ -19,6 +21,8 @@ function normalizeInviteRecords(records: LedgerInviteCodeRecord[]) {
     byCode.set(code, {
       code,
       createdAt: cleanText(record.createdAt) || existing?.createdAt || undefined,
+      issuerHouseholdId: cleanText(record.issuerHouseholdId) || existing?.issuerHouseholdId || undefined,
+      signature: cleanText(record.signature) || existing?.signature || undefined,
       usedAt: cleanText(record.usedAt) || existing?.usedAt || undefined,
       usedHouseholdId: cleanText(record.usedHouseholdId) || existing?.usedHouseholdId || undefined,
       usedHouseholdName: cleanText(record.usedHouseholdName) || existing?.usedHouseholdName || undefined,
@@ -40,6 +44,8 @@ export function parseLedgerInviteCodeRecords(value: string | null | undefined): 
           return {
             code: cleanText(source.code),
             createdAt: cleanText(source.createdAt) || undefined,
+            issuerHouseholdId: cleanText(source.issuerHouseholdId) || undefined,
+            signature: cleanText(source.signature) || undefined,
             usedAt: cleanText(source.usedAt) || undefined,
             usedHouseholdId: cleanText(source.usedHouseholdId) || undefined,
             usedHouseholdName: cleanText(source.usedHouseholdName) || undefined,

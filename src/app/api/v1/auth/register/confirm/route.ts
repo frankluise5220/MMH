@@ -14,6 +14,7 @@ import {
   serializeLedgerInviteCodeRecords,
 } from "@/lib/ledger-invite-codes";
 import { logger } from "@/lib/logger";
+import { isLedgerInviteCodeRecordAuthentic } from "@/lib/server/ledger-invite-code-signing";
 import {
   HOUSEHOLD_COOKIE,
   SESSION_DAYS_COOKIE,
@@ -117,8 +118,15 @@ export async function POST(req: NextRequest) {
     const inviteSetting = await prisma.systemSetting.findUnique({ where: { key: LEDGER_CREATION_INVITE_CODE_KEY } });
     inviteRecords = parseLedgerInviteCodeRecords(inviteSetting?.value);
     const inviteRecord = findLedgerInviteCodeRecord(inviteRecords, inviteCode);
-    if (!inviteRecord || inviteRecord.usedAt) {
-      return NextResponse.json({ ok: false, code: "INVITE_CODE_INVALID", error: "The invite code is invalid or has already been used." }, { status: 403, headers: cors() });
+    if (!inviteRecord || inviteRecord.usedAt || !isLedgerInviteCodeRecordAuthentic(inviteRecord)) {
+      return NextResponse.json({ ok: false, code: "INVITE_CODE_INVALID", error: "The invite code is invalid, belongs to another system, or has already been used." }, { status: 403, headers: cors() });
+    }
+    const issuerHousehold = await prisma.household.findUnique({
+      where: { id: inviteRecord.issuerHouseholdId },
+      select: { id: true },
+    });
+    if (!issuerHousehold) {
+      return NextResponse.json({ ok: false, code: "INVITE_CODE_INVALID", error: "The invite code's issuing ledger no longer exists." }, { status: 403, headers: cors() });
     }
   }
 

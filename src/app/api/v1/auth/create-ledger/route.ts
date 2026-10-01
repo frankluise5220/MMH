@@ -20,6 +20,7 @@ import {
   parseLedgerInviteCodeRecords,
   serializeLedgerInviteCodeRecords,
 } from "@/lib/ledger-invite-codes";
+import { isLedgerInviteCodeRecordAuthentic } from "@/lib/server/ledger-invite-code-signing";
 
 const LEGACY_PASSWORD_KEY = "access_password";
 
@@ -112,6 +113,16 @@ export async function POST(req: NextRequest) {
       }
       if (inviteRecord.usedAt) {
         throw new CreateLedgerError("The invite code has already been used.", 403);
+      }
+      if (!isLedgerInviteCodeRecordAuthentic(inviteRecord)) {
+        throw new CreateLedgerError("The invite code belongs to another system or has been altered.", 403);
+      }
+      const issuerHousehold = await tx.household.findUnique({
+        where: { id: inviteRecord.issuerHouseholdId },
+        select: { id: true },
+      });
+      if (!issuerHousehold) {
+        throw new CreateLedgerError("The invite code's issuing ledger no longer exists.", 403);
       }
 
       const result = await createLedgerWithDefaults(tx, { name, adminName, adminPassword, adminEmail });
