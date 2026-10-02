@@ -230,6 +230,17 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   // state (the panel expands right below the form, and re-picking a user there
   // must be reflected here immediately).
   const resetAccount = (getSelectedLoginUser()?.name ?? username).trim();
+  // Re-pointing the card at a different local account — another ledger, or
+  // another user inside the same ledger — invalidates a code that was already
+  // sent for the previous one, so the panel drops back to its first step. Same
+  // rule as the MMH panel above.
+  useEffect(() => {
+    if (!showReset) return;
+    setResetStep("request");
+    setResetSentTo("");
+    setResetError("");
+    setResetInfo("");
+  }, [showReset, resetAccount]);
 
   function maskEmail(email: string) {
     const normalized = email.trim().toLowerCase();
@@ -1205,8 +1216,12 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
           <div className="space-y-4 p-6">
             {/* The ledger picker is for local / MMH sign-in. The fnOS tab resolves
                 its ledger from the gateway UID server-side, so showing it there
-                only invited a choice that could not help (and could mislead). */}
-            {!showReset && loginMode !== "fnos" && loginHouseholdChoices.length > 0 && (
+                only invited a choice that could not help (and could mislead).
+                It must stay visible while the reset panel is open: the account
+                being recovered is derived from the selected ledger's users, so
+                hiding the picker left no way to point the reset at another one
+                (leftover from when resetting replaced the whole card). */}
+            {loginMode !== "fnos" && loginHouseholdChoices.length > 0 && (
               <div className="space-y-1">
                 <div className="text-xs font-medium text-slate-600">{t("login.book")}</div>
                 <select

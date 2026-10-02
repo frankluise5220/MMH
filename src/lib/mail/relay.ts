@@ -1,3 +1,5 @@
+import "@/lib/net/prefer-ipv4";
+
 /**
  * Client for the self-hosted verification-code mail relay.
  *

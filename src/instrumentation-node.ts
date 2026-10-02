@@ -1,23 +1,6 @@
-import dns from "node:dns";
+import "@/lib/net/prefer-ipv4";
 import { runDueSystemTasks } from "@/lib/server/system-tasks";
 import { runAutoBackupTick, runWindowsStartupAutoBackupIfStale } from "@/lib/server/auto-backup";
-
-/**
- * Prefer IPv4 when resolving outbound hostnames.
- *
- * Node's default result order is "verbatim", so a host that publishes AAAA
- * records is dialled over IPv6 first. On the consumer networks this app is
- * deployed to (home NAS, dev boxes behind a home router) IPv6 egress is often
- * broken in a specific way: the TCP connect *succeeds* and the peer then resets
- * the connection, which surfaces as ECONNRESET / "fetch failed". Because the
- * socket was established rather than refused, Happy Eyeballs never falls back
- * to IPv4, and the whole request dies. api.resend.com (Cloudflare) is a repeat
- * offender here — mail then fails with "连接 Resend 失败".
- *
- * "ipv4first" only reorders the list: AAAA records stay in it, so a genuinely
- * IPv6-only network still resolves and connects.
- */
-dns.setDefaultResultOrder("ipv4first");
 
 /**
  * System-level scheduled task runner.

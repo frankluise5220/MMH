@@ -17,6 +17,8 @@
  * All /v1 endpoints require `Authorization: Bearer <token>`.
  */
 
+import "@/lib/net/prefer-ipv4";
+
 export interface RegistrationConfig {
   baseUrl: string;
   apiToken: string;

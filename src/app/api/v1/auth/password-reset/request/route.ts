@@ -173,6 +173,12 @@ export async function POST(req: NextRequest) {
       code,
       expiresMinutes,
       householdId: user.householdId ?? cookieHouseholdId ?? undefined,
+      // The mail spells out that this is the ledger-local password (MMH has two
+      // independent ones) and names the ledger so the reader can tell them apart.
+      householdName: getHouseholdDisplayName(
+        { id: user.householdId, name: user.Household?.name },
+        "未命名账簿",
+      ),
     });
     if (!mailRes.ok) {
       await prisma.passwordResetToken.delete({ where: { id: created.id } }).catch(logger.catchSilent("删除未发送验证码", "password-reset"));

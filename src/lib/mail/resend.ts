@@ -1,3 +1,4 @@
+import "@/lib/net/prefer-ipv4";
 import { prisma } from "@/lib/db/prisma";
 import type { MailAttachment } from "@/lib/mail/types";
 
