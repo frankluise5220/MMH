@@ -155,6 +155,79 @@ function UserModal({
   );
 }
 
+function FnosBindModal({
+  target,
+  onClose,
+  onBound,
+}: {
+  target: ManagedUser;
+  onClose: () => void;
+  onBound: () => void;
+}) {
+  const { t } = useI18n();
+  const [fnosUid, setFnosUid] = useState(target.fnosUid ?? "");
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  async function submit(value: string | null) {
+    setSubmitting(true);
+    setError("");
+    try {
+      const res = await fetch("/api/v1/settings/users/bind-fnid", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: target.id, fnosUid: value }),
+      });
+      const data = await res.json().catch(() => null);
+      if (data?.ok) {
+        onBound();
+        onClose();
+      } else {
+        setError(data?.code === "FNOS_UID_TAKEN"
+          ? t("settings.users.register.error.fnosUidTaken")
+          : data?.error || t("settings.users.register.error.fnidBindFailed"));
+      }
+    } catch {
+      setError(t("settings.users.register.error.fnidBindFailed"));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="app-modal-backdrop z-[1100]">
+      <div className="app-modal-panel max-w-md">
+        <div className="modal-header shrink-0">
+          <div className="text-sm font-semibold text-slate-800">{t("settings.users.register.bindFnid")}</div>
+          <button type="button" onClick={onClose} className="secondary-button h-8 px-2"><X className="h-4 w-4" /></button>
+        </div>
+        <div className="space-y-4 p-5">
+          {error && <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">{error}</div>}
+          <div className="text-xs text-slate-600">{t("settings.users.register.hintFnid")}</div>
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-slate-600">{t("settings.users.register.field.fnid")}</label>
+            <input
+              autoFocus
+              value={fnosUid}
+              onChange={(event) => { setFnosUid(event.target.value); setError(""); }}
+              placeholder={t("settings.users.register.placeholder.fnid")}
+              className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+            />
+          </div>
+          <div className="text-xs text-slate-500">{t("settings.users.register.fnidBound")}: {target.fnosUid || t("settings.users.status.local")}</div>
+          <div className="flex justify-end gap-2">
+            <button type="button" className="secondary-button h-9 px-4" onClick={onClose}>{t("common.cancel")}</button>
+            {target.fnosUid && <button type="button" className="secondary-button h-9 px-4" onClick={() => void submit(null)} disabled={submitting}>{t("common.delete")}</button>}
+            <button type="button" className="primary-button h-9 px-4 disabled:opacity-50" onClick={() => void submit(fnosUid.trim())} disabled={submitting || !fnosUid.trim()}>
+              {submitting ? t("settings.users.register.submitting") : t("common.save")}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function RegisterModal({
   target,
   onClose,
@@ -418,7 +491,6 @@ function RegisterModal({
 export default function UsersPage() {
   const { t } = useI18n();
   const [users, setUsers] = useState<ManagedUser[]>([]);
-  const [isFnosEnvironment, setIsFnosEnvironment] = useState(false);
   const [canManageUsers, setCanManageUsers] = useState(false);
   const [loadError, setLoadError] = useState("");
   const [showModal, setShowModal] = useState(false);
@@ -429,6 +501,7 @@ export default function UsersPage() {
   const [deleting, setDeleting] = useState(false);
   const [savingSessionUserId, setSavingSessionUserId] = useState("");
   const [registerTarget, setRegisterTarget] = useState<ManagedUser | null>(null);
+  const [fnosBindTarget, setFnosBindTarget] = useState<ManagedUser | null>(null);
 
   useEffect(() => {
     fetchUsers();
@@ -446,7 +519,6 @@ export default function UsersPage() {
       }
       if ("ok" in data && data.ok && Array.isArray(data.users)) {
         setUsers(data.users);
-        setIsFnosEnvironment(data.isFnosEnvironment === true);
         setCanManageUsers(data.canManageUsers === true);
         setLoadError("");
       } else {
@@ -626,16 +698,24 @@ export default function UsersPage() {
                     ) : (
                       <span className="rounded-full border border-slate-600 bg-slate-50 px-2 py-0.5 text-xs font-medium text-slate-700">{t("settings.users.status.normal")}</span>
                     )}
-                    {u.registrationPrincipalId ? (
-                      <span className="rounded-full border border-violet-700 bg-violet-50 px-2 py-0.5 text-xs font-medium text-violet-800">{t("settings.users.status.mmh")}</span>
-                    ) : isFnosEnvironment && u.fnosUid ? (
-                      <span className="rounded-full border border-sky-700 bg-sky-50 px-2 py-0.5 text-xs font-medium text-sky-800">{t("settings.users.status.fnos")}</span>
-                    ) : (
-                      <span className="rounded-full border border-slate-700 bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-800">{t("settings.users.status.local")}</span>
-                    )}
-                    {!u.registrationPrincipalId && !(isFnosEnvironment && u.fnosUid) && u.hasPassword && (
-                      <span className="rounded-full border border-dashed border-slate-800 bg-white px-2 py-0.5 text-xs font-medium text-slate-900">{t("settings.users.status.mmhUnbound")}</span>
-                    )}
+                    <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${u.hasPassword
+                      ? "border-slate-700 bg-slate-100 text-slate-800"
+                      : "border-dashed border-slate-400 bg-white text-slate-400"
+                    }`}>
+                      {t("settings.users.status.local")}
+                    </span>
+                    <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${u.fnosUid
+                      ? "border-sky-700 bg-sky-50 text-sky-800"
+                      : "border-dashed border-sky-300 bg-white text-sky-400"
+                    }`}>
+                      {t("settings.users.status.fnos")}
+                    </span>
+                    <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${u.registrationPrincipalId
+                      ? "border-violet-700 bg-violet-50 text-violet-800"
+                      : "border-dashed border-violet-300 bg-white text-violet-400"
+                    }`}>
+                      {t("settings.users.status.mmh")}
+                    </span>
                   </div>
                 </SettingsTd>
                 <SettingsTd align="right">
@@ -654,6 +734,11 @@ export default function UsersPage() {
                           onClick={() => setRegisterTarget(u)}
                         />
                       )}
+                      <SettingsActionButton
+                        label={u.fnosUid ? t("settings.users.register.fnidBound") : t("settings.users.register.bindFnid")}
+                        variant="default"
+                        onClick={() => setFnosBindTarget(u)}
+                      />
                       {!u.isSystem ? (
                         <SettingsActionButton
                           label={t("settings.users.delete")}
@@ -682,6 +767,14 @@ export default function UsersPage() {
           users={users}
           onSave={handleSave}
           onCancel={() => { setShowModal(false); setEditingUser(null); }}
+        />
+      )}
+
+      {fnosBindTarget && (
+        <FnosBindModal
+          target={fnosBindTarget}
+          onClose={() => setFnosBindTarget(null)}
+          onBound={() => void fetchUsers()}
         />
       )}
 

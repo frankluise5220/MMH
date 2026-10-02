@@ -121,7 +121,13 @@ export async function POST(req: NextRequest) {
         throw new CreateLedgerError(missingIssuerRejection().message, 403);
       }
 
-      const result = await createLedgerWithDefaults(tx, { name, adminName, adminPassword, adminEmail });
+      const result = await createLedgerWithDefaults(tx, {
+        name,
+        adminName,
+        adminPassword: authMode === "fnos" ? undefined : adminPassword,
+        adminEmail,
+        fnosUid: authMode === "fnos" ? fnosUid : undefined,
+      });
       const usedInviteRecords = markLedgerInviteCodeUsed(inviteRecords, inviteCode, {
         householdId: result.household.id,
         householdName: result.household.name,

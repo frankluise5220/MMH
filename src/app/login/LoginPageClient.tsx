@@ -75,7 +75,8 @@ function getLoginUserScopeId(user: LoginUserChoice) {
 }
 
 function getInitialLoginSelection(users: LoginUserChoice[]) {
-  const firstUser = users.find((user) => !!user.householdId) ?? users[0] ?? null;
+  const localUsers = users.filter((user) => user.hasPassword === true);
+  const firstUser = localUsers.find((user) => !!user.householdId) ?? localUsers[0] ?? null;
   return {
     scopeId: firstUser ? getLoginUserScopeId(firstUser) : "",
     user: firstUser,
@@ -122,7 +123,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
 
   function resetCreateLedgerForm() {
     setCreateMethod("invite");
-    setCreateAuthMode("local");
+    setCreateAuthMode(fnosGatewayUser ? "fnos" : "local");
     setCreateInviteCode("");
     setCreateLedgerName("");
     setCreateAdminName("");
@@ -178,8 +179,9 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   // 页签顺序：本地账户 → MMH 用户 →（有网关头时）飞牛账户。
   // 内容板的左上圆角要按「活动页签是不是第一个」决定是否去掉，见 folderTabPanelClass。
   const loginTabOrder: Array<"local" | "mmh" | "fnos"> = fnosGatewayUser ? ["local", "mmh", "fnos"] : ["local", "mmh"];
+  const localLoginUsers = systemUsers.filter((user) => user.hasPassword === true);
   const selectedHouseholdUsers = selectedHouseholdId
-    ? systemUsers.filter((user) => getLoginUserScopeId(user) === selectedHouseholdId)
+    ? localLoginUsers.filter((user) => getLoginUserScopeId(user) === selectedHouseholdId)
     : [];
   const mmhUserChoices = systemUsers.filter((user) => user.registrationPrincipalId && user.email && user.hasPassword);
 
@@ -354,6 +356,9 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
           // Only a completely empty deployment goes to ledger creation; there is
           // no third "set the first administrator password" screen any more.
           setMode(needsInitialLedgerSetup ? "create" : "login");
+          if (hasFnosGateway && needsInitialLedgerSetup) {
+            setCreateAuthMode("fnos");
+          }
           // No local credential exists anywhere and the gateway vouches for the
           // user: open on the fnOS tab so they enter with one click instead of
           // being shown a username/password form they cannot fill in.
@@ -1061,21 +1066,9 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                       ))}
                     </select>
                   ) : (
-                    <input
-                      id="login-username"
-                      name="username"
-                      value={username}
-                      onChange={(event) => {
-                        setSelectedUserId("");
-                        setUsername(event.target.value);
-                        updateLoginCredentialField("username", event.target.value);
-                        cancelHouseholdChoice();
-                      }}
-                      type="text"
-                      autoComplete="username"
-                      className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
-                      placeholder={t("login.usernamePlaceholder")}
-                    />
+                    <div className="rounded-md border border-dashed border-slate-300 bg-slate-50 px-3 py-2 text-xs text-slate-500">
+                      {t("login.noLocalUsers")}
+                    </div>
                   )}
                 </div>
                 ) : (
@@ -1198,7 +1191,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                   <button
                     type="submit"
                     className="h-10 w-full rounded-md bg-blue-600 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
-                    disabled={loading}
+                    disabled={loading || (loginMode === "local" && localLoginUsers.length === 0)}
                   >
                     {loading ? t("login.verifying") : t("login.enter")}
                   </button>
