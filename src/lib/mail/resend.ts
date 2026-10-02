@@ -93,6 +93,27 @@ export async function hasAnyResendConfig(): Promise<boolean> {
   return (await resolveResendConfig()) !== null;
 }
 
+/**
+ * Builds the parenthetical detail for a failed fetch. Node's fetch throws a
+ * bare "fetch failed" and puts the real reason on `cause` (ECONNRESET,
+ * ENOTFOUND, ETIMEDOUT, certificate errors…), so reporting only `message`
+ * leaves the operator with nothing actionable to look at.
+ */
+function describeFetchFailure(error: unknown) {
+  const parts: string[] = [];
+  if (error instanceof Error && error.message && error.message !== "fetch failed") {
+    parts.push(error.message);
+  }
+  const cause = (error as { cause?: unknown } | null | undefined)?.cause;
+  if (cause && typeof cause === "object") {
+    const code = (cause as { code?: unknown }).code;
+    const message = (cause as { message?: unknown }).message;
+    if (typeof code === "string" && code) parts.push(code);
+    if (typeof message === "string" && message && message !== code) parts.push(message);
+  }
+  return parts.length ? `（${parts.join("；")}）` : "";
+}
+
 async function sendWithResendConfig(cfg: ResendConfig | null, params: ResendSendParams) {
   if (!cfg) {
     return { ok: false as const, error: "未配置 Resend 邮件服务" };
@@ -125,9 +146,7 @@ async function sendWithResendConfig(cfg: ResendConfig | null, params: ResendSend
     });
   } catch (error) {
     const timedOut = error instanceof Error && error.name === "AbortError";
-    const detail = error instanceof Error && error.message && error.message !== "fetch failed"
-      ? `（${error.message}）`
-      : "";
+    const detail = describeFetchFailure(error);
     return {
       ok: false as const,
       error: timedOut

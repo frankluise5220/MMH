@@ -10,7 +10,6 @@ export const runtime = "nodejs";
 
 const BodySchema = z.object({
   username: z.string().min(1).max(80),
-  email: z.string().email().optional(),
   householdId: z.string().min(1).optional(),
 });
 
@@ -24,6 +23,16 @@ function getClientIp(req: NextRequest) {
 
 function normalizeEmail(v: string) {
   return v.trim().toLowerCase();
+}
+
+/** Masks the local part so the page can confirm *where* the code went without
+ * echoing the address in full. */
+function maskEmail(email: string) {
+  const normalized = normalizeEmail(email);
+  const [localPart, domain = ""] = normalized.split("@");
+  if (!localPart || !domain) return normalized;
+  const visibleLocal = localPart.length <= 2 ? localPart.slice(0, 1) : localPart.slice(0, 2);
+  return `${visibleLocal}***@${domain}`;
 }
 
 type ResetUser = {
@@ -60,10 +69,14 @@ function ambiguousHouseholdResponse(users: ResetUser[], error: string) {
   );
 }
 
-async function findTargetUser(params: { username: string; email?: string | null; householdId?: string | null }) {
+/**
+ * Locates the single local account the caller means. The account is identified
+ * by username plus the ledger: the bound email is deliberately *not* an input —
+ * it is where the code goes, and the page only ever shows it masked.
+ */
+async function findTargetUser(params: { username: string; householdId?: string | null }) {
   const username = params.username.trim();
   if (!username) return null;
-  const providedEmail = params.email ? normalizeEmail(params.email) : null;
 
   const users = await prisma.user.findMany({
     where: { name: username },
@@ -77,18 +90,9 @@ async function findTargetUser(params: { username: string; email?: string | null;
     : null;
   if (byCookie) return byCookie;
 
-  if (!providedEmail && users.length > 1) {
-    return ambiguousHouseholdResponse(users, "该用户名存在于多个账簿，请先选择账簿");
-  }
+  if (users.length === 1) return users[0]!;
 
-  const emailMatches = providedEmail
-    ? users.filter((u) => u.email && normalizeEmail(u.email) === providedEmail)
-    : users;
-
-  if (emailMatches.length === 0) return null;
-  if (emailMatches.length === 1) return emailMatches[0]!;
-
-  return ambiguousHouseholdResponse(emailMatches, "该用户名和邮箱匹配多个账簿，请选择要找回的账簿");
+  return ambiguousHouseholdResponse(users, "该用户名存在于多个账簿，请先选择账簿");
 }
 
 function hashCode(params: { userId: string; code: string }) {
@@ -97,6 +101,15 @@ function hashCode(params: { userId: string; code: string }) {
   return crypto.createHash("sha256").update(`${secret}:${params.userId}:${params.code}`).digest("hex");
 }
 
+/**
+ * POST /api/v1/auth/password-reset/request
+ *
+ * Step 1 of ledger-local password recovery: `{ username, householdId? }`. The
+ * bound email is never an input. When the account has one, a code is mailed to
+ * it and the response carries the masked address so the page can tell the user
+ * where it went; when it has none, the caller gets NO_BOUND_EMAIL instead of
+ * silently waiting for a code that will never arrive.
+ */
 export async function POST(req: NextRequest) {
   const body = (await req.json().catch(() => null)) as unknown;
   const parse = BodySchema.safeParse(body);
@@ -109,30 +122,25 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, code: "PASSWORD_RESET_NOT_CONFIGURED", error: "未配置密码找回功能" }, { status: 500 });
   }
 
-  const { username, email, householdId } = parse.data;
+  const { username, householdId } = parse.data;
   const cookieHouseholdId = householdId ?? req.cookies.get("householdId")?.value ?? null;
-  const user = await findTargetUser({ username, email, householdId: cookieHouseholdId });
+  const user = await findTargetUser({ username, householdId: cookieHouseholdId });
   if (user instanceof NextResponse) {
     return user;
   }
 
   const userEmail = user?.email ? normalizeEmail(user.email) : null;
+  // "No such user" and "user without a bound email" answer identically: neither
+  // can receive a code, and distinguishing them would leak which names exist.
+  if (!user || !userEmail) {
+    return NextResponse.json(
+      { ok: false, code: "NO_BOUND_EMAIL", error: "该账户不存在或没有绑定邮箱，无法通过邮箱找回密码。" },
+      { status: 400 },
+    );
+  }
 
   const ip = getClientIp(req);
   const userAgent = req.headers.get("user-agent") ?? null;
-
-  const response = NextResponse.json({
-    ok: true,
-    message: "如果该用户已绑定邮箱，将收到一封验证码邮件。",
-  });
-
-  const providedEmail = email ? normalizeEmail(email) : null;
-  if (providedEmail && user && userEmail && providedEmail !== userEmail) {
-    return NextResponse.json({ ok: false, code: "USER_EMAIL_MISMATCH", error: "用户名和绑定邮箱不匹配" }, { status: 400 });
-  }
-  if (!user || !userEmail || (providedEmail && userEmail !== providedEmail)) {
-    return response;
-  }
 
   const now = Date.now();
   const windowStart = new Date(now - 60 * 60 * 1000);
@@ -141,7 +149,7 @@ export async function POST(req: NextRequest) {
     ip ? prisma.passwordResetToken.count({ where: { ip, createdAt: { gt: windowStart } } }) : Promise.resolve(0),
   ]);
   if (userRecent >= 3 || ipRecent >= 10) {
-    return response;
+    return NextResponse.json({ ok: false, code: "RATE_LIMITED", error: "发送过于频繁，请稍后再试" }, { status: 429 });
   }
 
   const code = String(crypto.randomInt(100000, 1000000));
@@ -179,7 +187,7 @@ export async function POST(req: NextRequest) {
 
   return NextResponse.json({
     ok: true,
-    message: "验证码邮件已发送，请检查邮箱收件箱或垃圾邮件。",
+    maskedEmail: maskEmail(userEmail),
     householdId: user.householdId,
   });
 }

@@ -19,6 +19,8 @@ type AuthVerifyResponse = {
   households?: HouseholdChoice[];
   householdId?: string | null;
   message?: string;
+  /** Masked bound email, e.g. "j***@gmail.com" (local password recovery). */
+  maskedEmail?: string | null;
 };
 
 type PasswordStatusResponse = {
@@ -156,8 +158,9 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
 
   const [showReset, setShowReset] = useState(false);
   const [resetStep, setResetStep] = useState<ResetStep>("request");
-  const [resetUsername, setResetUsername] = useState("");
-  const [resetEmail, setResetEmail] = useState("");
+  // Masked address the code was just sent to (e.g. "j***@gmail.com"). The user
+  // never types the bound email: it is resolved server-side from the account.
+  const [resetSentTo, setResetSentTo] = useState("");
   const [resetCode, setResetCode] = useState("");
   const [resetNewPassword, setResetNewPassword] = useState("");
   const [resetConfirmPassword, setResetConfirmPassword] = useState("");
@@ -180,7 +183,6 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
 
   // MMH membership password reset (separate from the ledger-local password reset).
   const [showMmhReset, setShowMmhReset] = useState(false);
-  const [mmhResetEmail, setMmhResetEmail] = useState("");
   const [mmhResetCode, setMmhResetCode] = useState("");
   const [mmhResetNewPassword, setMmhResetNewPassword] = useState("");
   const [mmhResetConfirmPassword, setMmhResetConfirmPassword] = useState("");
@@ -210,6 +212,24 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   // The local tab is dead when the *selected* ledger has no local account: the
   // account has to be created inside the ledger, by someone who can already get in.
   const localTabUnavailable = loginMode === "local" && selectedHouseholdUsers.length === 0;
+  // The MMH membership password belongs to an *email* identity, and the card
+  // already carries that email: either the account select (when the ledger knows
+  // MMH identities) or the free-text email field. The reset panel must reuse it
+  // instead of asking for the address a second time.
+  const mmhResetAccount = getCurrentMmhEmail();
+  // Pointing the card at a different account invalidates a code that was already
+  // sent for the previous one, so the panel drops back to its first step.
+  useEffect(() => {
+    setMmhResetCodeSent(false);
+    setMmhResetCode("");
+    setMmhResetError("");
+    setMmhResetInfo("");
+  }, [mmhResetAccount]);
+  // Same idea for the local tab: the account to recover is the one already
+  // selected in this card, so it is derived live rather than kept in its own
+  // state (the panel expands right below the form, and re-picking a user there
+  // must be reflected here immediately).
+  const resetAccount = (getSelectedLoginUser()?.name ?? username).trim();
 
   function maskEmail(email: string) {
     const normalized = email.trim().toLowerCase();
@@ -254,6 +274,19 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
       mmh: { ...current.mmh, username: user.email ?? "", userId: user.id },
     }));
     cancelHouseholdChoice();
+  }
+
+  /**
+   * The MMH account the card is currently pointing at — the selected option of
+   * the account select when the ledger knows MMH identities, otherwise whatever
+   * email the user typed. Returns "" when nothing is chosen yet.
+   */
+  function getCurrentMmhEmail() {
+    if (mmhUserChoices.length > 0) {
+      const selected = mmhUserChoices.find((user) => user.id === loginCredentials.mmh.userId) ?? mmhUserChoices[0];
+      if (selected?.email) return selected.email.trim();
+    }
+    return username.trim();
   }
 
   function getLoginHouseholdChoices() {
@@ -306,6 +339,14 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
     setHouseholdChoices([]);
     setPendingLogin(null);
     setPendingFnos(false);
+    // 两个页签共用一条「忘记密码」入口：切页签时必须把上一页签展开的重置面板
+    // 收起来，否则本地面板会挂到 MMH 页签下面，文案与页面语义都对不上。
+    setShowReset(false);
+    setShowMmhReset(false);
+    setResetError("");
+    setResetInfo("");
+    setMmhResetError("");
+    setMmhResetInfo("");
     if (mode === "mmh") {
       const credentials = loginCredentials.mmh;
       const defaultMmhUser = mmhUserChoices.find((user) => user.id === credentials.userId) ?? mmhUserChoices[0];
@@ -342,19 +383,17 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   function openPasswordReset() {
     setResetStep("request");
     setResetInfo("");
-    setResetEmail("");
+    setResetSentTo("");
     setResetHouseholdId("");
     setResetHouseholdChoices([]);
     if (!passwordResetEnabled) {
       setResetError(t("login.reset.mailNotConfigured"));
       setShowReset(true);
-      setResetUsername(getSelectedLoginUser()?.name ?? username);
       cancelHouseholdChoice();
       return;
     }
     setResetError("");
     setShowReset(true);
-    setResetUsername(getSelectedLoginUser()?.name ?? username);
     cancelHouseholdChoice();
   }
 
@@ -730,8 +769,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   }
 
   async function handleResetRequest(selectedHouseholdId = resetHouseholdId) {
-    if (!resetUsername.trim()) { setResetError(t("login.error.usernameRequired")); return; }
-    if (!resetEmail.trim()) { setResetError(t("login.reset.emailRequired")); return; }
+    if (!resetAccount) { setResetError(t("login.error.usernameRequired")); return; }
 
     setResetLoading(true);
     setResetError("");
@@ -741,8 +779,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          username: resetUsername.trim(),
-          email: resetEmail.trim(),
+          username: resetAccount,
           ...(selectedHouseholdId ? { householdId: selectedHouseholdId } : {}),
         }),
       });
@@ -753,12 +790,16 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
           setResetError(data.error ?? t("login.reset.ambiguousUserEmail"));
           return;
         }
+        // The account has no bound email, so there is nothing to send a code to.
+        // Say so plainly instead of advancing to a step that can never complete.
+        if (data?.code === "NO_BOUND_EMAIL") { setResetError(t("login.reset.noBoundEmail")); return; }
+        if (data?.code === "RATE_LIMITED") { setResetError(t("login.reset.rateLimited")); return; }
         setResetError(data?.error ?? t("login.reset.sendFailed"));
         return;
       }
       setResetHouseholdId(data.householdId ?? selectedHouseholdId ?? "");
       setResetHouseholdChoices([]);
-      setResetInfo(data.message ?? t("login.reset.codeSent"));
+      setResetSentTo(data.maskedEmail ?? "");
       setResetStep("confirm");
     } catch {
       setResetError(t("login.reset.sendRetry"));
@@ -768,7 +809,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   }
 
   async function handleResetConfirm(selectedHouseholdId = resetHouseholdId) {
-    if (!resetUsername.trim()) { setResetError(t("login.error.usernameRequired")); return; }
+    if (!resetAccount) { setResetError(t("login.error.usernameRequired")); return; }
     if (!resetCode.trim()) { setResetError(t("login.reset.codeRequired")); return; }
     if (!resetNewPassword.trim()) { setResetError(t("login.reset.newPasswordRequired")); return; }
     if (resetNewPassword.trim() !== resetConfirmPassword.trim()) {
@@ -784,7 +825,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          username: resetUsername.trim(),
+          username: resetAccount,
           code: resetCode.trim(),
           newPassword: resetNewPassword.trim(),
           ...(selectedHouseholdId ? { householdId: selectedHouseholdId } : {}),
@@ -806,7 +847,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
       setResetHouseholdId("");
       setResetHouseholdChoices([]);
       setPassword(resetNewPassword.trim());
-      setUsername(resetUsername.trim());
+      setUsername(resetAccount);
     } catch {
       setResetError(t("login.reset.retry"));
     } finally {
@@ -900,8 +941,8 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   }
 
   async function handleMmhResetSendCode() {
-    const email = mmhResetEmail.trim();
-    if (!email) { setMmhResetError(t("login.register.error.emailRequired")); return; }
+    const email = getCurrentMmhEmail();
+    if (!email) { setMmhResetError(t("login.mmhReset.accountMissing")); return; }
     setMmhResetLoading(true);
     setMmhResetError("");
     setMmhResetInfo("");
@@ -926,11 +967,11 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   }
 
   async function handleMmhResetConfirm() {
-    const email = mmhResetEmail.trim();
+    const email = getCurrentMmhEmail();
     const code = mmhResetCode.trim();
     const newPassword = mmhResetNewPassword.trim();
     const confirmPassword = mmhResetConfirmPassword.trim();
-    if (!email) { setMmhResetError(t("login.register.error.emailRequired")); return; }
+    if (!email) { setMmhResetError(t("login.mmhReset.accountMissing")); return; }
     if (!code) { setMmhResetError(t("login.register.error.codeRequired")); return; }
     if (newPassword.length < 8) { setMmhResetError(t("login.mmhReset.error.passwordTooShort")); return; }
     if (newPassword !== confirmPassword) { setMmhResetError(t("login.error.passwordMismatch")); return; }
@@ -955,7 +996,6 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
       }
       setMmhResetInfo(t("login.mmhReset.success"));
       setShowMmhReset(false);
-      setMmhResetEmail("");
       setMmhResetCode("");
       setMmhResetNewPassword("");
       setMmhResetConfirmPassword("");
@@ -1183,10 +1223,9 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
             )}
 
             {/* 登录方式 = 文件卡片页签；卡片内容 = 用户名 / 密码 / 忘记密码 / 进入账簿 */}
-            {/* 重置密码是登录表单的子态：此时收起页签条，也不再留出 pt-10 的页签高度，
-                否则点了页签看起来毫无反应（switchLoginMode 不改 showReset）。 */}
-            <div className={showReset ? "relative" : "relative pt-10"}>
-              {!showReset && (
+            {/* 重置密码不再是「另一张卡片」：它就在本卡片里、在「进入」下方就地展开，
+                页签条与登录表单都保持可见，用户随时能收起或换页签。 */}
+            <div className="relative pt-10">
               <div className={FOLDER_TAB_STRIP}>
                 <button
                   type="button"
@@ -1212,21 +1251,19 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                   </button>
                 ) : null}
               </div>
-              )}
 
               <div className={`${folderTabPanelClass(loginTabOrder.indexOf(loginMode), loginTabOrder.length)} space-y-4`}>
-                {!showReset && (
-                  <form
-                    id="mmh-login-form"
-                    action={withBasePath("/login")}
-                    method="post"
-                    className="space-y-4"
-                    onSubmit={(event) => {
-                      event.preventDefault();
-                      if (loginMode === "fnos") void handleFnosLogin();
-                      else void handleLogin();
-                    }}
-                  >
+                <form
+                  id="mmh-login-form"
+                  action={withBasePath("/login")}
+                  method="post"
+                  className="space-y-4"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    if (loginMode === "fnos") void handleFnosLogin();
+                    else void handleLogin();
+                  }}
+                >
                 {loginMode === "fnos" && fnosGatewayUser ? (
                 <div className="space-y-3">
                   <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
@@ -1337,26 +1374,6 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                 </div>
                 )}
 
-                {loginMode === "mmh" && (
-                  <button
-                    type="button"
-                    className="text-xs text-slate-500 hover:text-slate-700"
-                    disabled={loading || mmhResetLoading}
-                    onClick={() => {
-                      if (showMmhReset) {
-                        setShowMmhReset(false);
-                        setMmhResetError("");
-                        setMmhResetInfo("");
-                        return;
-                      }
-                      setShowMmhReset(true);
-                      setShowReset(false);
-                    }}
-                  >
-                    {showMmhReset ? t("common.collapse") : t("login.mmhReset.forgot")}
-                  </button>
-                )}
-
                 {householdChoices.length > 0 && (
                   <div className="space-y-3 rounded-xl border border-blue-100 bg-blue-50/70 p-3">
                     <div>
@@ -1406,21 +1423,18 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                   </button>
                 )}
                 </form>
-              )}
 
             {showMmhReset && (
               <div className="space-y-3">
                 <div className="text-xs font-medium text-slate-600">{t("login.mmhReset.title")}</div>
-                <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">{t("login.register.email")}</div>
-                  <input
-                    value={mmhResetEmail}
-                    onChange={(event) => { setMmhResetEmail(event.target.value); setMmhResetCodeSent(false); setMmhResetCode(""); setMmhResetError(""); setMmhResetInfo(""); }}
-                    type="email"
-                    autoComplete="email"
-                    className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
-                    placeholder={t("login.register.emailPlaceholder")}
-                  />
+                {/* The account is already chosen at the top of the card (the
+                    account select, or the email field when this ledger knows no
+                    MMH identity yet), so the panel shows it read-only instead of
+                    asking for the address a second time. */}
+                <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                  {mmhResetAccount
+                    ? t("login.mmhReset.account", { email: mmhResetAccount })
+                    : t("login.mmhReset.accountMissing")}
                 </div>
                 {mmhResetCodeSent && (
                   <>
@@ -1441,7 +1455,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                 {mmhResetInfo && <div className="text-xs text-slate-600">{mmhResetInfo}</div>}
                 {mmhResetError && <div className="text-xs text-red-600">{mmhResetError}</div>}
                 {!mmhResetCodeSent ? (
-                  <button type="button" className="h-10 w-full rounded-md bg-blue-600 text-sm text-white hover:bg-blue-700 disabled:opacity-50" disabled={mmhResetLoading} onClick={() => void handleMmhResetSendCode()}>
+                  <button type="button" className="h-10 w-full rounded-md bg-blue-600 text-sm text-white hover:bg-blue-700 disabled:opacity-50" disabled={mmhResetLoading || !mmhResetAccount} onClick={() => void handleMmhResetSendCode()}>
                     {mmhResetLoading ? t("login.verifying") : t("login.register.sendCode")}
                   </button>
                 ) : (
@@ -1455,39 +1469,22 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
             {showReset && (
               <div className="space-y-3">
                 <div className="text-xs font-medium text-slate-600">{t("login.reset.title")}</div>
-                <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">{t("login.username")}</div>
-                  <input
-                    value={resetUsername}
-                    onChange={(event) => {
-                      setResetUsername(event.target.value);
-                      setResetEmail("");
-                      setResetHouseholdId("");
-                      setResetHouseholdChoices([]);
-                    }}
-                    type="text"
-                    className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                    placeholder={t("login.usernamePlaceholder")}
-                  />
+                {/* The account is the one already selected in this card, exactly
+                    like the MMH panel: showing it read-only beats asking for the
+                    username a second time right below the form's own field. */}
+                <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                  {resetAccount
+                    ? t("login.reset.account", { account: resetAccount })
+                    : t("login.reset.accountMissing")}
                 </div>
-                {resetStep === "request" && (
-                  <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">{t("login.reset.emailLabel")}</div>
-                    <input
-                      value={resetEmail}
-                      onChange={(event) => {
-                        setResetEmail(event.target.value);
-                        setResetHouseholdChoices([]);
-                      }}
-                      type="email"
-                      autoComplete="email"
-                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                      placeholder={t("login.reset.emailPlaceholder")}
-                    />
-                  </div>
-                )}
                 {resetStep === "confirm" && (
                   <>
+                    {/* The bound email is never typed: the server resolved it from
+                        the account and mailed the code there, so this only tells
+                        the user where to look (address shown masked). */}
+                    <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                      {resetSentTo ? t("login.reset.sentTo", { email: resetSentTo }) : t("login.reset.codeSent")}
+                    </div>
                     <div className="space-y-1">
                       <div className="text-xs font-medium text-slate-600">{t("login.reset.code")}</div>
                       <input
@@ -1550,7 +1547,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                     <button
                       type="button"
                       className="h-9 w-full rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-                      disabled={resetLoading}
+                      disabled={resetLoading || !resetAccount}
                       onClick={() => void handleResetRequest()}
                     >
                       {resetLoading ? t("login.reset.processing") : t("login.reset.sendCode")}
@@ -1583,14 +1580,26 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
               </div>
             )}
 
-            {/* 忘记密码 / 收起：始终排在卡片内容之后。
-                重置态下若留在表单上方，会被卡片顶边衬成「卡片标题」，观感突兀。
-                账簿没有本地账户时也没有可找回的本地密码，一并收起。 */}
-            {!localTabUnavailable && (
+            {/* 忘记密码 / 收起：本地与 MMH 两个页签共用同一条入口 —— 同一个文案、
+                同一个位置（都排在「进入」按钮下方）。飞牛页签不输入密码，账簿没有
+                本地账户时也没有可找回的本地密码，两种情况都不显示。 */}
+            {(loginMode === "mmh" || (loginMode === "local" && !localTabUnavailable)) && (
             <button
               type="button"
               className="w-full text-xs text-slate-500 hover:text-slate-700"
+              disabled={loading || resetLoading || mmhResetLoading}
               onClick={() => {
+                if (loginMode === "mmh") {
+                  if (showMmhReset) {
+                    setShowMmhReset(false);
+                    setMmhResetError("");
+                    setMmhResetInfo("");
+                    return;
+                  }
+                  setShowMmhReset(true);
+                  setShowReset(false);
+                  return;
+                }
                 if (showReset) {
                   setShowReset(false);
                   setResetStep("request");
@@ -1600,9 +1609,8 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                 }
                 openPasswordReset();
               }}
-              disabled={loading || resetLoading}
             >
-              {showReset ? t("common.collapse") : t("login.forgotPassword")}
+              {(loginMode === "mmh" ? showMmhReset : showReset) ? t("common.collapse") : t("login.forgotPassword")}
             </button>
             )}
               </div>
