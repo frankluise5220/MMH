@@ -1,4 +1,4 @@
-import { AccountKind, FundSubtype, Prisma, RegularInvestStatus, TransactionType, type IntervalUnit, type RegularInvestPlan } from "@prisma/client";
+import { AccountKind, Prisma, RegularInvestStatus, TransactionType, type IntervalUnit, type RegularInvestPlan } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { formatDateUtc, startOfDayUtc, toNumber, toStatementMonth } from "@/lib/date-utils";
 import { logger } from "@/lib/logger";
@@ -150,7 +150,12 @@ export async function executeNonFundScheduledTaskPlan(params: {
           insuranceProductId: task.insuranceProductId,
           source: { in: sourceFilter },
           type: TransactionType.investment,
-          fundSubtype: FundSubtype.buy,
+          // 去重只认「已存在的缴费」，用**保单语义**的 insuranceAction 判别。
+          // 旧写法借用**基金语义**的 fundSubtype="buy"：而历史上有 7 条保险缴费流水
+          // fundSubtype 为 null（导入/早期数据），去重会把它们当成「不存在」→
+          // 计划的执行日撞上这些日期时会**重复生成**（「每年执行 2 次」的成因）。
+          // 注意：不能用 `fundSubtype: { not: "redeem" }` 之类替代 —— 该字段与保单无关。
+          insuranceAction: { in: ["premium", "additional_premium"] },
           deletedAt: null,
         }
       : {
