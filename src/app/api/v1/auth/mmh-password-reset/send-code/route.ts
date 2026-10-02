@@ -95,6 +95,10 @@ export async function POST(req: NextRequest) {
       code,
       expiresMinutes: CODE_TTL_MINUTES,
       allowSmtp: false,
+      // This is a *recovery* code, not a signup one: the registration copy told
+      // people "You are registering an MMH account" while they were resetting a
+      // password.
+      purpose: "password-reset",
     });
     if (!mailRes.ok) {
       await prisma.registrationCode.delete({ where: { id: created.id } }).catch(logger.catchSilent("delete unsent mmh reset code", "user-registration"));
