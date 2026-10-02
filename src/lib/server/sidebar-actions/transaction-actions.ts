@@ -3049,6 +3049,8 @@ export async function updateTransactionFromDialog(formData: FormData) {
           tx.account.findUnique({ where: { id: toAccountId } }),
         ]);
         if (!fromAcc || !toAcc) throw new Error(t("sidebar.action.accountNotFound"));
+        const formHasDepositLot = formData.has("depositSourceEntryId");
+        const formDepositLotId = String(formData.get("depositSourceEntryId") ?? "").trim();
         const counterpartyInstitution = counterpartyInstitutionId
           ? await tx.institution.findUnique({ where: { id: counterpartyInstitutionId } })
           : null;
@@ -3058,6 +3060,21 @@ export async function updateTransactionFromDialog(formData: FormData) {
         // transfers. Editing amount/date/note is safe; changing the pair still
         // uses the normal validation rules.
         const transferAccountsUnchanged = entry.accountId === fromAccountId && entry.toAccountId === toAccountId;
+        if (transferAccountsUnchanged && formHasDepositLot && formDepositLotId) {
+          const linkedLot = await tx.txRecord.findFirst({
+            where: {
+              id: formDepositLotId,
+              householdId: ctx.householdId,
+              deletedAt: null,
+              type: "investment",
+              fundProductType: "deposit",
+              fundSubtype: "buy",
+              toAccountId: { in: [fromAcc.id, toAcc.id] },
+            },
+            select: { id: true },
+          });
+          if (!linkedLot) throw new Error("DEPOSIT_LOT_NOT_FOUND");
+        }
         if (fromAcc.kind === "loan" || toAcc.kind === "loan") {
           throw new Error(t("sidebar.action.specialTargetTransferNotAllowed"));
         }
@@ -3117,6 +3134,9 @@ export async function updateTransactionFromDialog(formData: FormData) {
             debtPrincipalAmount: debtMode ? amountAbs : null,
             debtInterestAmount: debtMode ? 0 : null,
             debtFeeAmount: debtMode ? 0 : null,
+            depositSourceEntryId: transferAccountsUnchanged
+              ? (formHasDepositLot ? (formDepositLotId || null) : entry.depositSourceEntryId)
+              : null,
           },
         });
         return;

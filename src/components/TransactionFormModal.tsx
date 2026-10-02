@@ -623,41 +623,9 @@ export function TransactionFormModal({
     [accountList, accountId],
   );
   const selectedAccountIsDeposit = isDepositAccount(selectedAccountOption ?? null);
-  const showDepositLotSelect = txType === "income" && selectedAccountIsDeposit;
   const [depositLotId, setDepositLotId] = useState("");
   const [depositLotOptions, setDepositLotOptions] = useState<DepositLotOption[]>([]);
   const [depositLotsLoading, setDepositLotsLoading] = useState(false);
-  useEffect(() => {
-    if (!open || !showDepositLotSelect || !accountId) {
-      setDepositLotOptions([]);
-      setDepositLotsLoading(false);
-      return;
-    }
-    let cancelled = false;
-    setDepositLotsLoading(true);
-    const params = new URLSearchParams({ accountIds: accountId, includeClosed: editEntryId ? "1" : "0" });
-    fetch(`/api/v1/deposit/lots?${params.toString()}`, { cache: "no-store" })
-      .then((res) => res.json().catch(() => null))
-      .then((data) => {
-        if (!cancelled) setDepositLotOptions(data?.ok && Array.isArray(data.lots) ? data.lots : []);
-      })
-      .catch(() => {
-        if (!cancelled) setDepositLotOptions([]);
-      })
-      .finally(() => {
-        if (!cancelled) setDepositLotsLoading(false);
-      });
-    return () => { cancelled = true; };
-  }, [accountId, editEntryId, open, showDepositLotSelect]);
-
-  useEffect(() => {
-    if (!open || !showDepositLotSelect || depositLotsLoading || depositLotOptions.length === 0) return;
-    setDepositLotId((current) => {
-      if (depositLotOptions.some((option) => option.id === current)) return current;
-      if (editEntryId) return current;
-      return depositLotOptions.length === 1 ? depositLotOptions[0].id : "";
-    });
-  }, [depositLotOptions, depositLotsLoading, editEntryId, open, showDepositLotSelect]);
 
   /** Build hierarchical SmartSelect options for category dropdown.
    * All real categories are selectable. Categories with children are collapsible
@@ -681,7 +649,57 @@ export function TransactionFormModal({
   }, [categoryList, t, txType, selectedAccountIsDeposit]);
   const [fromAccountId, setFromAccountId] = useState(isCreditCardAccount ? (lastRepayFromAccountId ?? defaultAccountId ?? "") : "");
   const [toAccountId, setToAccountId] = useState(isCreditCardAccount ? (defaultAccountId ?? "") : "");
+  const selectedTransferDepositAccountIds = useMemo(
+    () => [fromAccountId, toAccountId].filter((id) => {
+      const option = transferAccountList.find((item) => item.id === id)
+        ?? accountList.find((item) => item.id === id);
+      return isDepositAccount(option ?? null);
+    }),
+    [accountList, fromAccountId, toAccountId, transferAccountList],
+  );
+  const shouldLoadDepositLotOptions = (txType === "income" && selectedAccountIsDeposit)
+    || (txType === "transfer" && Boolean(editEntryId) && selectedTransferDepositAccountIds.length > 0);
+  const showDepositLotSelect = (txType === "income" && selectedAccountIsDeposit)
+    || (txType === "transfer" && Boolean(editEntryId) && Boolean(depositLotId) && selectedTransferDepositAccountIds.length > 0);
+  const depositLotAccountIds = useMemo(
+    () => txType === "income" ? (accountId ? [accountId] : []) : selectedTransferDepositAccountIds,
+    [accountId, selectedTransferDepositAccountIds, txType],
+  );
   const [categoryId, setCategoryId] = useState("");
+  useEffect(() => {
+    if (!open || !shouldLoadDepositLotOptions || depositLotAccountIds.length === 0) {
+      setDepositLotOptions([]);
+      setDepositLotsLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setDepositLotsLoading(true);
+    const params = new URLSearchParams({
+      accountIds: depositLotAccountIds.join(","),
+      includeClosed: editEntryId ? "1" : "0",
+    });
+    fetch(`/api/v1/deposit/lots?${params.toString()}`, { cache: "no-store" })
+      .then((res) => res.json().catch(() => null))
+      .then((data) => {
+        if (!cancelled) setDepositLotOptions(data?.ok && Array.isArray(data.lots) ? data.lots : []);
+      })
+      .catch(() => {
+        if (!cancelled) setDepositLotOptions([]);
+      })
+      .finally(() => {
+        if (!cancelled) setDepositLotsLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [depositLotAccountIds, editEntryId, open, shouldLoadDepositLotOptions]);
+
+  useEffect(() => {
+    if (!open || !showDepositLotSelect || depositLotsLoading || depositLotOptions.length === 0) return;
+    setDepositLotId((current) => {
+      if (depositLotOptions.some((option) => option.id === current)) return current;
+      if (editEntryId) return current;
+      return depositLotOptions.length === 1 ? depositLotOptions[0].id : "";
+    });
+  }, [depositLotOptions, depositLotsLoading, editEntryId, open, showDepositLotSelect]);
   const [fixedAssetLinked, setFixedAssetLinked] = useState(false);
   const [fixedAssetAccountId, setFixedAssetAccountId] = useState("");
   const [fixedAssetAssetId, setFixedAssetAssetId] = useState("");
@@ -2066,6 +2084,7 @@ export function TransactionFormModal({
       if (txType === "transfer") {
         formData.set("fromAccountId", fromAccountId);
         formData.set("toAccountId", toAccountId);
+        if (showDepositLotSelect) formData.set("depositSourceEntryId", depositLotId);
         } else if (txType === "income") {
           formData.set("accountId", accountId);
           formData.set("categoryId", categoryId);
@@ -3071,6 +3090,26 @@ export function TransactionFormModal({
                       </div>
                     </div>
                   )}
+
+                  {showDepositLotSelect ? (
+                    <div className="space-y-1">
+                      <div className="form-label">{t("txForm.depositLot")}</div>
+                      <div className={REQUIRED_FIELD_CLASS}>
+                        <SmartSelect
+                          mode="single"
+                          value={depositLotId}
+                          onChange={setDepositLotId}
+                          options={depositLotOptions.map((lot) => ({
+                            id: lot.id,
+                            label: (lot.fundName ?? "").trim() || (lot.productName ?? "").trim() || t("sidebar.deposit.unnamed"),
+                            subLabel: [lot.startDate ?? "", lot.maturityDate ?? "", lot.remainingAmount.toLocaleString(language, { minimumFractionDigits: 2, maximumFractionDigits: 2 })].filter(Boolean).join(" · "),
+                          }))}
+                          placeholder={depositLotsLoading ? t("common.loading") : t("txForm.selectPlaceholder")}
+                          behavior={{ ...compactAccountSelectBehavior, clearable: false }}
+                        />
+                      </div>
+                    </div>
+                  ) : null}
 
                   {/* Row 3: posted date | amount */}
                   <div className="grid grid-cols-2 gap-3">

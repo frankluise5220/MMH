@@ -3260,10 +3260,27 @@ export async function PUT(req: Request) {
           tx.account.findUnique({ where: { id: toAccountId } }),
         ]);
         if (!fromAcc || !toAcc) throw new Error("账户不存在");
+        const bodyHasDepositLot = Object.prototype.hasOwnProperty.call(body, "depositSourceEntryId");
+        const bodyDepositLotId = String(body.depositSourceEntryId ?? "").trim();
         // Allow in-place edits when the account pair is unchanged. Scheduled
         // deposit/bond interest transfers only adjust amount, date, or note;
         // changing the pair still uses the regular strict validation.
         const transferAccountsUnchanged = entry.accountId === fromAccountId && entry.toAccountId === toAccountId;
+        if (transferAccountsUnchanged && bodyHasDepositLot && bodyDepositLotId) {
+          const linkedLot = await tx.txRecord.findFirst({
+            where: {
+              id: bodyDepositLotId,
+              householdId,
+              deletedAt: null,
+              type: "investment",
+              fundProductType: "deposit",
+              fundSubtype: "buy",
+              toAccountId: { in: [fromAcc.id, toAcc.id] },
+            },
+            select: { id: true },
+          });
+          if (!linkedLot) throw new Error("DEPOSIT_LOT_NOT_FOUND");
+        }
         if (fromAcc.kind === "loan" || toAcc.kind === "loan") {
           throw new Error("基金、存款、贷款和往来款账户不能保存为普通转账，请使用对应的专用记账窗口");
         }
@@ -3334,7 +3351,9 @@ export async function PUT(req: Request) {
             wealthProductId: null,
             depositAnnualRate: null,
             depositInterest: null,
-            depositSourceEntryId: transferAccountsUnchanged ? entry.depositSourceEntryId : null,
+            depositSourceEntryId: transferAccountsUnchanged
+              ? (bodyHasDepositLot ? (bodyDepositLotId || null) : entry.depositSourceEntryId)
+              : null,
             metalTypeId: null,
             metalTypeName: null,
             metalUnitId: null,

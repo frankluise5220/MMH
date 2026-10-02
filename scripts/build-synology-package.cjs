@@ -1957,9 +1957,26 @@ function preparePackageRoot() {
     requirePath(path.join(fnosStage, "app", "server", "server.js"), "Run the Synology standalone build before packaging: npm run build:synology:app");
     requirePath(path.join(fnosStage, "app", "bin", "node"), `Provide a Linux ${target.nodeArch} Node runtime tarball before building ${spkAssetName()}.`);
     copyDir(path.join(fnosStage, "app"), path.join(packageRoot, "app"));
+    // init-sqlite.cjs reads this schema snapshot at runtime when an upgraded
+    // database is missing objects that are present in the current Prisma schema.
+    // Keep it in the SPK payload just like the fnOS package does.
+    const nativeInitSql = path.join(fnosStage, "app", "server", "prisma", "native-init.sql");
+    requirePath(nativeInitSql, "Synology package staging must contain prisma/native-init.sql.");
+    copyFile(nativeInitSql, path.join(packageRoot, "app", "server", "prisma", "native-init.sql"));
   }
   requirePath(path.join(packageRoot, "app", "server", "server.js"), "Synology package payload must contain the standalone server.");
   requirePath(path.join(packageRoot, "app", "bin", "node"), `Synology package payload must contain the Linux ${target.nodeArch} Node runtime.`);
+  const stagedNativeInitSql = path.join(packageRoot, "app", "server", "prisma", "native-init.sql");
+  if (!fs.existsSync(stagedNativeInitSql)) {
+    const fallbackCandidates = [
+      path.join(root, "release-artifacts", "fnos", target.fnosStageDirName, "app", "server", "prisma", "native-init.sql"),
+      path.join(root, "prisma", "native-init.sql"),
+    ];
+    const fallbackNativeInitSql = fallbackCandidates.find((candidate) => fs.existsSync(candidate));
+    requirePath(fallbackNativeInitSql || fallbackCandidates[0], "Synology package payload must contain prisma/native-init.sql.");
+    copyFile(fallbackNativeInitSql, stagedNativeInitSql);
+  }
+  requirePath(stagedNativeInitSql, "Synology package payload must contain prisma/native-init.sql.");
   writeInfoFile();
   writeInstallWizard();
   writeUpgradeWizard();

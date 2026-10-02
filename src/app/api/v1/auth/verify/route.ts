@@ -4,6 +4,7 @@ import { hashPassword, verifyPassword } from "@/lib/auth/password";
 import { logger } from "@/lib/logger";
 import { getHouseholdDisplayName } from "@/lib/household-display";
 import { verifySensitiveOperationPassword } from "@/lib/server/sensitive-operation-auth";
+import { getCurrentUser, isAdmin } from "@/lib/server/auth";
 import { verifyEmailPrincipal } from "@/lib/server/registration-client";
 import {
   HOUSEHOLD_COOKIE,
@@ -310,6 +311,13 @@ export async function POST(req: NextRequest) {
 
   if (body.verifySystem) {
     try {
+      const currentUser = await getCurrentUser();
+      if (!currentUser || !isAdmin(currentUser)) {
+        return NextResponse.json(
+          { ok: false, code: currentUser ? "FORBIDDEN" : "UNAUTHORIZED", error: currentUser ? "Administrator access is required." : "Sign in required." },
+          { status: currentUser ? 403 : 401 },
+        );
+      }
       const verified = await verifySensitiveOperationPassword(password);
       if (!verified.ok) {
         return NextResponse.json({ ok: false, code: "AUTH_VERIFICATION_FAILED", error: verified.error }, { status: verified.status });

@@ -649,6 +649,7 @@ function verifyBuiltSpk() {
       "app/server/server.js",
       "app/server/scripts/init-sqlite.cjs",
       "app/server/prisma/schema.native.prisma",
+      "app/server/prisma/native-init.sql",
       "ui/config",
       "app/config",
       "app/ui/config",
