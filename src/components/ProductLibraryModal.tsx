@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, Loader2, Plus, Search, Trash2, X } from "lucide-react";
 
 import { useI18n } from "@/lib/i18n";
+import { CredentialPasswordField } from "@/components/CredentialPasswordField";
 
 /**
  * 产品库统一管理弹窗（存款 / 理财 / 债券 / 保险产品主数据）。
@@ -646,16 +647,7 @@ export function ProductLibraryModal({
                   <span>{t("productLibrary.cascadeLabel")}</span>
                 </label>
 
-                <div className="space-y-1">
-                  <div className="form-label">{t("productLibrary.passwordLabel")}</div>
-                  <input
-                    type="password"
-                    value={password}
-                    onChange={(event) => setPassword(event.target.value)}
-                    className="form-input"
-                    autoComplete="current-password"
-                  />
-                </div>
+                <CredentialPasswordField value={password} onChange={setPassword} />
 
                 {deleteError ? <div className="text-xs text-rose-600">{deleteError}</div> : null}
               </div>

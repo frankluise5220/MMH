@@ -398,6 +398,7 @@ function pruneStagedServer(serverDir) {
   if (!fs.existsSync(serverDir)) return;
   const keepTopLevel = new Set([
     ".next",
+    ".mmh-version",
     "node_modules",
     "prisma",
     "public",
@@ -572,6 +573,51 @@ function removeRuntimeDependency(name) {
     recursive: true,
     force: true,
   });
+}
+
+// Next's standalone tracing already emits the minimal runtime file set — the
+// Synology SPK ships exactly that set and runs fine on the same hosts. The
+// `copyRuntimeDependencyClosure` pass re-copies whole packages from the root
+// `node_modules` though, which drags compile-time-only payload back in: every
+// `@prisma/client/runtime` query-compiler WASM for all five database dialects
+// (~75 MB) and the vendored better-sqlite3 C sources plus node-gyp build
+// intermediates (~30 MB). That is why the fnOS FPK used to be ~75 MB larger
+// than the Synology SPK while running identical code.
+//
+// Prune the staged copies down to exactly the files the standalone build kept,
+// so the trim tracks whatever the current Next version actually traces instead
+// of hard-coding file names that change between releases.
+//
+// The generated client at `node_modules/.prisma/client` ships its own
+// query_compiler_fast_bg.wasm-base64.js and only ever requires
+// `@prisma/client/runtime/client.js`; nothing references the runtime's
+// query_compiler_* files (verified by grepping the standalone output).
+function pruneAgainstReference(referenceDir, stagedDir) {
+  for (const entry of fs.readdirSync(stagedDir, { withFileTypes: true })) {
+    const stagedPath = path.join(stagedDir, entry.name);
+    const referencePath = path.join(referenceDir, entry.name);
+    if (!fs.existsSync(referencePath)) {
+      fs.rmSync(stagedPath, { recursive: true, force: true });
+      continue;
+    }
+    if (entry.isDirectory()) {
+      pruneAgainstReference(referencePath, stagedPath);
+    }
+  }
+}
+
+// Must be called only AFTER the better-sqlite3 native rebuild — node-gyp needs
+// the sources this removes. See the call site near the end of the staging flow.
+function pruneRuntimeToStandalone(serverDir) {
+  if (!standaloneAppDir) return;
+  const referenceModules = path.join(standaloneAppDir, "node_modules");
+  const stagedModules = path.join(serverDir, "node_modules");
+  for (const name of ["@prisma/client", "better-sqlite3"]) {
+    const reference = path.join(referenceModules, ...name.split("/"));
+    const staged = path.join(stagedModules, ...name.split("/"));
+    if (!fs.existsSync(reference) || !fs.existsSync(staged)) continue;
+    pruneAgainstReference(reference, staged);
+  }
 }
 
 function findStandaloneAppDir(baseDir) {
@@ -1582,6 +1628,7 @@ ${externalNodeStartup}
   export NODE_ENV=production
   export HOSTNAME=0.0.0.0
   export MMH_DEPLOY_TARGET=fnos
+  export MMH_APP_VERSION="${version}"
   export DATABASE_URL="file:$DATA_DEST/mmh.db"
   export PRISMA_SCHEMA_PATH="$SERVER_DIR/prisma/schema.native.prisma"
   (cd "$SERVER_DIR" && "$NODE_BIN" "$SERVER_DIR/scripts/init-sqlite.cjs") >>"$LOG_FILE" 2>&1 || exit 1
@@ -1962,6 +2009,7 @@ if (fs.existsSync(standaloneDir)) {
     path.join(root, "node_modules", "next", "dist", "compiled", "webpack"),
     path.join(stageDir, "app", "server", "node_modules", "next", "dist", "compiled", "webpack"),
   );
+  write(path.join(stageDir, "app", "server", ".mmh-version"), `${version}\n`);
   const runtimePackageJson = path.join(stageDir, "app", "server", "package.json");
   if (fs.existsSync(runtimePackageJson)) {
     const runtimePkg = JSON.parse(fs.readFileSync(runtimePackageJson, "utf8"));
@@ -3617,6 +3665,33 @@ if (process.env.FNOS_SKIP_NATIVE_REBUILD === "1") {
   if (verifyNative.status !== 0) {
     console.error("Node20 better-sqlite3 verification failed after native rebuild.");
     process.exit(verifyNative.status || 1);
+  }
+}
+
+// Trim the staged runtime down to the file set Next's standalone tracing
+// produced (the Synology SPK ships exactly that set and runs fine on the same
+// hosts). This MUST run after the native rebuild above: `node-gyp` needs
+// better-sqlite3/deps, better-sqlite3/src and binding.gyp to compile, and it
+// regenerates better-sqlite3/build/ with object files and static archives.
+// Pruning afterwards leaves only build/Release/better_sqlite3.node plus lib/,
+// and drops the ~75 MB of @prisma/client/runtime query-compiler WASM for the
+// four database dialects this package never uses.
+pruneRuntimeToStandalone(path.join(stageDir, "app", "server"));
+
+// The native smoke test above runs before the prune, so prove the pruned tree
+// still loads the SQLite binding. Cheap (in-memory) and catches a future
+// standalone layout change that would make the reference set insufficient.
+if (fs.existsSync(stagedNodeRuntime)) {
+  const verifyPruned = run(stagedNodeRuntime, [
+    "-e",
+    "const Database=require('better-sqlite3'); const db=new Database(':memory:'); if (db.prepare('select 1 as ok').get().ok !== 1) process.exit(1); db.close();",
+  ], {
+    cwd: stagedServerDir,
+    stdio: "inherit",
+  });
+  if (verifyPruned.status !== 0) {
+    console.error("Pruned better-sqlite3 failed to load: the standalone reference set was not sufficient.");
+    process.exit(verifyPruned.status || 1);
   }
 }
 

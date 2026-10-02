@@ -1,11 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
-import { verifyPassword } from "@/lib/auth/password";
 import { getCurrentUser } from "@/lib/server/auth";
+import { verifySensitiveOperationPassword } from "@/lib/server/sensitive-operation-auth";
 
 export const runtime = "nodejs";
-
-const LEGACY_PASSWORD_KEY = "access_password";
 
 /**
  * POST /api/v1/settings/factory-reset
@@ -34,15 +32,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, code: "PASSWORD_REQUIRED", error: "Current user password is required." }, { status: 400 });
   }
 
-  const dbUser = await prisma.user.findUnique({
-    where: { id: currentUser.id },
-    select: { passwordHash: true },
-  });
-  const matched = dbUser?.passwordHash
-    ? await verifyPassword(password, dbUser.passwordHash)
-    : (await prisma.systemSetting.findUnique({ where: { key: LEGACY_PASSWORD_KEY }, select: { value: true } }))?.value === password;
-  if (!matched) {
-    return NextResponse.json({ ok: false, code: "INVALID_PASSWORD", error: "Current user password is incorrect." }, { status: 401 });
+  const verification = await verifySensitiveOperationPassword(password);
+  if (!verification.ok) {
+    return NextResponse.json({ ok: false, code: verification.code ?? "AUTH_VERIFICATION_FAILED", error: verification.error }, { status: verification.status });
   }
 
   await prisma.$transaction(async (tx) => {

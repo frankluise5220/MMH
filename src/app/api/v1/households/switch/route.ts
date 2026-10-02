@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
-import { verifyPassword } from "@/lib/auth/password";
 import { getCurrentUser, isAdmin } from "@/lib/server/auth";
+import { CREDENTIAL_SUBJECT_SELECT, verifyUserCredential } from "@/lib/server/verify-credential";
 import { HOUSEHOLD_COOKIE, USER_ID_COOKIE } from "@/lib/server/session-cookies";
 
 /**
@@ -38,18 +38,29 @@ export async function POST(req: NextRequest) {
     }
     const namedTargetUser = await prisma.user.findFirst({
       where: { name: username, householdId, role: "admin" },
-      select: { passwordHash: true },
+      select: CREDENTIAL_SUBJECT_SELECT,
     });
     const targetUser = namedTargetUser ?? await prisma.user.findFirst({
       where: { householdId, role: "admin" },
-      select: { passwordHash: true },
+      select: CREDENTIAL_SUBJECT_SELECT,
     });
-    if (!targetUser?.passwordHash) {
-      return NextResponse.json({ ok: false, code: "TARGET_ADMIN_NOT_FOUND", error: "The target ledger administrator was not found or has no password." }, { status: 401 });
+    if (!targetUser) {
+      return NextResponse.json({ ok: false, code: "TARGET_ADMIN_NOT_FOUND", error: "The target ledger administrator was not found." }, { status: 401 });
     }
-    const matched = await verifyPassword(password, targetUser.passwordHash);
-    if (!matched) {
-      return NextResponse.json({ ok: false, code: "INVALID_ADMIN_PASSWORD", error: "The target ledger administrator password is incorrect." }, { status: 401 });
+    // The target administrator may be a local, MMH-only or fnOS-bound account,
+    // so this runs the same credential order as login and sensitive operations
+    // (`verifyUserCredential`). Only the wording differs, because here the
+    // secret belongs to someone else.
+    const verdict = await verifyUserCredential(targetUser, password);
+    if (!verdict.ok) {
+      const code = verdict.code === "INVALID_PASSWORD" ? "INVALID_ADMIN_PASSWORD" : verdict.code;
+      const error =
+        verdict.code === "INVALID_PASSWORD"
+          ? "The target ledger administrator password is incorrect."
+          : verdict.code === "LOCAL_PASSWORD_REQUIRED"
+            ? "该飞牛账户尚未建立本地密码，请先在用户设置中设置本地密码。"
+            : "The target ledger administrator has no password set.";
+      return NextResponse.json({ ok: false, code, error }, { status: verdict.status });
     }
   }
 

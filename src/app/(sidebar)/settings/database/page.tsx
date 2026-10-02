@@ -28,6 +28,7 @@ import {
   parseAllowedAccessList,
 } from "@/lib/access-whitelist";
 import { useI18n } from "@/lib/i18n";
+import { CredentialPasswordField } from "@/components/CredentialPasswordField";
 import { RESTORE_UPLOAD_LIMIT_BYTES, RESTORE_UPLOAD_LIMIT_LABEL } from "@/lib/backup-upload-limit";
 import { copyToClipboard } from "@/lib/client/clipboard";
 
@@ -1333,9 +1334,11 @@ export default function DatabaseSettingsPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ password: resetDbPassword, verifySystem: true }),
       });
-      const verifyData = await verifyRes.json().catch(() => null) as { ok?: boolean; error?: string } | null;
+      const verifyData = await verifyRes.json().catch(() => null) as { ok?: boolean; code?: string; error?: string } | null;
       if (!verifyRes.ok || !verifyData?.ok) {
-        setResetError(verifyData?.error ?? t("settings.database.currentPasswordWrong"));
+        setResetError(verifyData?.code === "LOCAL_PASSWORD_REQUIRED"
+          ? t("settings.database.localPasswordRequired")
+          : verifyData?.error ?? t("settings.database.currentPasswordWrong"));
         return;
       }
 
@@ -1928,21 +1931,18 @@ export default function DatabaseSettingsPage() {
             <div className="mt-1 text-xs text-slate-500">
               {resetScope === "system" ? t("settings.database.resetDesc") : t("settings.database.householdResetDesc")}
             </div>
-            <input
-              type="password"
-              value={resetDbPassword}
-              onChange={(event) => {
-                setResetDbPassword(event.target.value);
-                setResetError("");
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Enter") void handleFactoryReset();
-              }}
-              placeholder={t("settings.database.resetPlaceholder")}
-              autoComplete="off"
-              autoFocus
-              className="mt-3 h-10 w-full rounded-md border border-red-100 px-3 text-sm text-slate-700 outline-none focus:border-red-400 focus:ring-2 focus:ring-red-50"
-            />
+            <div className="mt-3">
+              <CredentialPasswordField
+                value={resetDbPassword}
+                onChange={(value) => {
+                  setResetDbPassword(value);
+                  setResetError("");
+                }}
+                onEnter={() => void handleFactoryReset()}
+                inputClassName="h-10 w-full rounded-md border border-red-100 px-3 text-sm text-slate-700 outline-none focus:border-red-400 focus:ring-2 focus:ring-red-50"
+                autoFocus
+              />
+            </div>
             {resetError ? <div className="mt-2 text-xs text-red-600">{resetError}</div> : null}
             <div className="mt-4 flex justify-end gap-2">
               <button

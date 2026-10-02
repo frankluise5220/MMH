@@ -70,6 +70,7 @@ function degradedStatusResponse() {
     degraded: true,
     hasPassword: true,
     needsInitialLedgerSetup: false,
+    fnosBound: false,
     passwordResetEnabled: false,
     users: [],
   });
@@ -174,9 +175,13 @@ async function ensureInitialHousehold(adminName: string) {
  * - If the household cookie is stale and filters all users out, the endpoint
  *   clears the stale cookie and falls back to the full login user list.
  */
-export async function GET() {
+export async function GET(req: NextRequest) {
   const cookieStore = await cookies();
   const householdId = cookieStore.get("householdId")?.value;
+  // fnOS gateway identity, when present. It decides whether the login page may
+  // open on the fnOS tab: that tab is the fastest way in, but only for a
+  // gateway user that is actually bound to a ledger.
+  const gatewayFnosUid = req.headers.get("x-trim-userid")?.trim() ?? "";
   const status = await withTimeout(Promise.all([
     prisma.household.count(),
     prisma.user.count(),
@@ -190,15 +195,22 @@ export async function GET() {
     }),
     selectLoginUsers(householdId),
     hasEmailService(householdId ?? undefined),
+    gatewayFnosUid
+      ? prisma.user.findFirst({ where: { fnosUid: gatewayFnosUid }, select: { id: true } })
+      : Promise.resolve(null),
   ]), STATUS_LOOKUP_TIMEOUT_MS);
 
   if (!status) {
     return degradedStatusResponse();
   }
 
-  const [householdCount, userCount, userWithPassword, legacy, users, passwordResetEnabled] = status;
+  const [householdCount, userCount, userWithPassword, legacy, users, passwordResetEnabled, fnosBoundUser] = status;
   const hasPassword = !!userWithPassword || (!!legacy && legacy.value.length > 0);
   const needsInitialLedgerSetup = householdCount === 0 && userCount === 0 && !hasPassword;
+  // Whether the *current* fnOS gateway user owns a ledger user. Deliberately
+  // independent of `hasPassword`: binding a local password must not demote the
+  // fnOS passwordless login from its default position.
+  const fnosBound = !!fnosBoundUser;
   let loginUsers = users;
   const shouldClearStaleHouseholdCookie = !!householdId && users.length === 0 && hasPassword && !needsInitialLedgerSetup;
   if (shouldClearStaleHouseholdCookie) {
@@ -209,6 +221,7 @@ export async function GET() {
     ok: true,
     hasPassword,
     needsInitialLedgerSetup,
+    fnosBound,
     passwordResetEnabled,
     users: loginUsers.map(u => ({
       id: u.id,

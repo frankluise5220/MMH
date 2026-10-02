@@ -456,13 +456,15 @@ async function updateRegularInvest(formData: FormData) {
   );
   const effectiveIntervalUnit = normalizedEffectiveInterval.unit;
   const effectiveIntervalValue = normalizedEffectiveInterval.value;
-  const effectiveExecutionDay = effectiveIntervalUnit === "year"
-    ? null
-    : executionDayRaw
-      ? parseExecutionDayValue(executionDayRaw)
-      : formData.has("executionDay")
-        ? null
-        : plan.executionDay;
+  // 年度计划的 executionDay 是**年度锚点**（编码 month*100+day，见 isYearlyExecutionDay /
+  // dateAtYearAnchor），与月/周口径同样是用户可改字段，不能对 year 一律抹成 null ——
+  // 抹掉后 `calcInitialScheduledRunDate` 会退回按开始日期的月/日推算，用户选的执行日静默失效。
+  // 这里与 /api/v1/regular-invest 的 PUT、以及本文件的 createRegularInvest 保持同一口径。
+  const effectiveExecutionDay = executionDayRaw
+    ? parseExecutionDayValue(executionDayRaw)
+    : formData.has("executionDay")
+      ? null
+      : plan.executionDay;
   const effectiveSecondaryExecutionDay = parseSecondaryExecutionDayValue(
     effectiveIntervalUnit,
     formData.has("secondaryExecutionDay")
@@ -488,7 +490,10 @@ async function updateRegularInvest(formData: FormData) {
   }
   const startDateChanged = parsedStartDate != null && !sameDateOnly(nextStoredStartDate, plan.startDate);
   const taskTypeChanged = taskType !== existingTaskType;
-  const normalizedExistingExecutionDay = effectiveIntervalUnit === IntervalUnit.year ? null : plan.executionDay;
+  // 与 /api/v1/regular-invest 的 PUT 逐字对齐：存库的 executionDay 原样参与比较。
+  // 旧版这里对 year 归一化成 null（因为上面 effectiveExecutionDay 被强制抹空），
+  // 现在 year 的 executionDay 是真值，若继续归一化会让每次编辑都误判 scheduleChanged。
+  const normalizedExistingExecutionDay = plan.executionDay;
   const normalizedExistingSecondaryExecutionDay =
     effectiveIntervalUnit === plan.intervalUnit ? plan.secondaryExecutionDay : null;
   const scheduleChanged =
@@ -627,13 +632,16 @@ async function updateRegularInvest(formData: FormData) {
   try {
     // 存款到期/取息系统计划被手动编辑时，置 manualOverride=true：之后
     // ensureDepositPlansForLot 不再用存单条款覆盖手动改的周期/金额/下一执行日。
+    // 保险缴费计划同理：置位后记录缴费流水不再用保单条款把用户改过的
+    // 金额/频率/执行日/起算日/总期数覆盖回去。
     const editedSystemPlan =
       existingTaskForGuard.type === "deposit_maturity" ||
       existingTaskForGuard.type === "deposit_interest_accrual" ||
       existingTaskForGuard.type === "deposit_interest_payout" ||
       existingTaskForGuard.type === "bond_maturity" ||
       existingTaskForGuard.type === "bond_interest_accrual" ||
-      existingTaskForGuard.type === "bond_interest_payout";
+      existingTaskForGuard.type === "bond_interest_payout" ||
+      existingTaskForGuard.type === "insurance_premium";
     await prisma.regularInvestPlan.update({
       where: { id: planId },
       data: editedSystemPlan ? { ...updateData, manualOverride: true } : updateData,

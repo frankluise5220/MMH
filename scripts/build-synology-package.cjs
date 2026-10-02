@@ -369,6 +369,17 @@ function runFnosStage() {
   if (result.status !== 0) process.exit(result.status || 1);
 }
 
+function runSynologyAppBuild() {
+  const result = run(process.execPath, [path.join(root, "scripts", "build-synology-app.cjs")], {
+    stdio: "inherit",
+    env: {
+      MMH_BASE_PATH: "",
+      MMH_DEPLOY_TARGET: "synology",
+    },
+  });
+  if (result.status !== 0) process.exit(result.status || 1);
+}
+
 function writeInfoFile(options = {}) {
   const checksumLine = options.checksum ? `checksum="${options.checksum}"\n` : "";
   const extractSizeLine = options.extractSizeKb ? `extractsize="${options.extractSizeKb}"\n` : "";
@@ -1063,7 +1074,7 @@ update_dsm_wizard_defaults() {
   done
 }
 
-is_own_mmh_process() {
+is_own_mmh_pid() {
   [ -f "$PID_FILE" ] || return 1
   pid="$(cat "$PID_FILE" 2>/dev/null)"
   case "$pid" in
@@ -1074,7 +1085,12 @@ is_own_mmh_process() {
   if ! process_belongs_to_package "$pid" && ! process_runs_our_server "$pid"; then
     return 1
   fi
-  process_owns_port "$pid" "$1"
+  return 0
+}
+
+is_own_mmh_process() {
+  is_own_mmh_pid || return 1
+  port_is_listening "$1"
 }
 
 ensure_port_available() {
@@ -1317,6 +1333,7 @@ start_app() {
   export NODE_ENV=production
   export HOSTNAME=0.0.0.0
   export MMH_DEPLOY_TARGET=synology
+  export MMH_APP_VERSION="${version}"
   export MMH_DATA_DIR="$DATA_DIR"
   export DATABASE_URL="file:$DATA_DIR/mmh.db"
   export PRISMA_SCHEMA_PATH="$SERVER_DIR/prisma/schema.native.prisma"
@@ -1333,34 +1350,61 @@ start_app() {
     fail_start "SQLite initialization failed."
   fi
   if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" >/dev/null 2>&1; then
-    append_log "MMH already running with pid $(cat "$PID_FILE")"
-    exit 0
+    if is_own_mmh_process "$PORT"; then
+      append_log "MMH already running with pid $(cat "$PID_FILE")"
+      exit 0
+    fi
   fi
+  rm -f "$PID_FILE"
   if ! ensure_port_available "$PORT"; then
     fail_start "Port $PORT is occupied by another service. Choose a different MMH port in package settings."
   fi
   update_dsm_app_config "$PORT"
   update_dsm_wizard_defaults "$PORT"
   append_log "Launching Next standalone server."
-  nohup "$NODE_BIN" "$SERVER_DIR/server.js" >>"$LOG_FILE" 2>&1 &
-  echo "$!" > "$PID_FILE"
-  sleep 2
-  if ! kill -0 "$(cat "$PID_FILE")" >/dev/null 2>&1; then
-    rm -f "$PID_FILE"
-    fail_start "MMH server process exited immediately."
+  if command -v setsid >/dev/null 2>&1; then
+    nohup setsid "$NODE_BIN" "$SERVER_DIR/server.js" </dev/null >>"$LOG_FILE" 2>&1 &
+  else
+    nohup "$NODE_BIN" "$SERVER_DIR/server.js" </dev/null >>"$LOG_FILE" 2>&1 &
   fi
-  append_log "MMH started with pid $(cat "$PID_FILE")"
+  echo "$!" > "$PID_FILE"
+  launched_pid="$!"
+  wait_seconds=0
+  while [ "$wait_seconds" -lt 30 ]; do
+    if ! kill -0 "$launched_pid" >/dev/null 2>&1; then
+      rm -f "$PID_FILE"
+      fail_start "MMH server process exited during startup."
+    fi
+    if port_is_listening "$PORT" && process_owns_port "$launched_pid" "$PORT"; then
+      append_log "MMH started with pid $launched_pid and port $PORT is listening."
+      return 0
+    fi
+    sleep 1
+    wait_seconds=$((wait_seconds + 1))
+  done
+  append_log "ERROR: MMH pid $launched_pid remained alive but did not own port $PORT after \${wait_seconds}s."
+  kill "$launched_pid" >/dev/null 2>&1 || true
+  rm -f "$PID_FILE"
+  fail_start "MMH server did not become ready on port $PORT."
 }
 
 stop_app() {
-  if [ -f "$PID_FILE" ]; then
-    kill "$(cat "$PID_FILE")" >/dev/null 2>&1 || true
-    rm -f "$PID_FILE"
+  if is_own_mmh_pid; then
+    pid="$(cat "$PID_FILE")"
+    kill "$pid" >/dev/null 2>&1 || true
+    wait_seconds=0
+    while kill -0 "$pid" >/dev/null 2>&1 && [ "$wait_seconds" -lt 10 ]; do
+      sleep 1
+      wait_seconds=$((wait_seconds + 1))
+    done
+    kill -9 "$pid" >/dev/null 2>&1 || true
   fi
+  rm -f "$PID_FILE"
 }
 
 status_app() {
-  if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" >/dev/null 2>&1; then
+  port="$(read_env_value PORT 2>/dev/null || echo 7777)"
+  if is_own_mmh_process "$port"; then
     exit 0
   fi
   exit 3
@@ -1455,7 +1499,7 @@ process_owns_port() {
   return 1
 }
 
-is_own_mmh_process() {
+is_own_mmh_pid() {
   [ -f "$PID_FILE" ] || return 1
   pid="$(cat "$PID_FILE" 2>/dev/null)"
   case "$pid" in
@@ -1466,7 +1510,12 @@ is_own_mmh_process() {
   if ! process_belongs_to_package "$pid" && ! process_runs_our_server "$pid"; then
     return 1
   fi
-  process_owns_port "$pid" "$1"
+  return 0
+}
+
+is_own_mmh_process() {
+  is_own_mmh_pid || return 1
+  port_is_listening "$1"
 }
 
 ensure_port_available() {
@@ -1697,7 +1746,7 @@ process_owns_port() {
   return 1
 }
 
-is_own_mmh_process() {
+is_own_mmh_pid() {
   [ -f "$PID_FILE" ] || return 1
   pid="$(cat "$PID_FILE" 2>/dev/null)"
   case "$pid" in
@@ -1708,7 +1757,12 @@ is_own_mmh_process() {
   if ! process_belongs_to_package "$pid" && ! process_runs_our_server "$pid"; then
     return 1
   fi
-  process_owns_port "$pid" "$1"
+  return 0
+}
+
+is_own_mmh_process() {
+  is_own_mmh_pid || return 1
+  port_is_listening "$1"
 }
 
 update_dsm_app_config() {
@@ -1952,18 +2006,42 @@ function preparePackageRoot() {
       throw new Error(extract.stderr || extract.stdout || "Unable to extract the reusable Synology package payload.");
     }
   } else {
+    // Synology must use a root-path standalone build. The fnOS stage is only a
+    // source for the architecture-specific Linux runtime and SQLite helpers;
+    // copying its full app would bake fnOS's /app/mmh basePath into this SPK.
+    runSynologyAppBuild();
     runFnosStage();
     const fnosStage = path.join(root, "release-artifacts", "fnos", target.fnosStageDirName);
-    requirePath(path.join(fnosStage, "app", "server", "server.js"), "Run the Synology standalone build before packaging: npm run build:synology:app");
+    const synologyStandalone = path.join(root, ".next", "standalone");
+    requirePath(path.join(synologyStandalone, "server.js"), "Synology standalone build did not produce .next/standalone/server.js.");
     requirePath(path.join(fnosStage, "app", "bin", "node"), `Provide a Linux ${target.nodeArch} Node runtime tarball before building ${spkAssetName()}.`);
-    copyDir(path.join(fnosStage, "app"), path.join(packageRoot, "app"));
-    // init-sqlite.cjs reads this schema snapshot at runtime when an upgraded
-    // database is missing objects that are present in the current Prisma schema.
-    // Keep it in the SPK payload just like the fnOS package does.
-    const nativeInitSql = path.join(fnosStage, "app", "server", "prisma", "native-init.sql");
-    requirePath(nativeInitSql, "Synology package staging must contain prisma/native-init.sql.");
-    copyFile(nativeInitSql, path.join(packageRoot, "app", "server", "prisma", "native-init.sql"));
+    copyDir(synologyStandalone, path.join(packageRoot, "app", "server"));
+    copyDir(path.join(root, ".next", "static"), path.join(packageRoot, "app", "server", ".next", "static"));
+    copyDir(path.join(root, "public"), path.join(packageRoot, "app", "server", "public"));
+    copyFile(path.join(fnosStage, "app", "bin", "node"), path.join(packageRoot, "app", "bin", "node"));
+    const fnosServer = path.join(fnosStage, "app", "server");
+    for (const helper of [
+      "scripts/init-sqlite.cjs",
+      "prisma/native-init.sql",
+      "prisma/schema.native.prisma",
+    ]) {
+      requirePath(path.join(fnosServer, helper), `Synology package staging must contain ${helper}.`);
+      copyFile(path.join(fnosServer, helper), path.join(packageRoot, "app", "server", helper));
+    }
   }
+  // Next standalone tracing pulls in `sharp` plus its `@img/*` libvips binaries
+  // (both the glibc and musl builds) only because
+  // `next/dist/server/image-optimizer.js` contains a literal `require('sharp')`.
+  // Every `next/image` in this app is `unoptimized`, so the image optimizer is
+  // never exercised and the runtime never loads sharp. Dropping it saves
+  // ~14.5 MB compressed and removes the musl libvips half, which DSM cannot use.
+  for (const name of ["sharp", "@img"]) {
+    fs.rmSync(path.join(packageRoot, "app", "server", "node_modules", ...name.split("/")), {
+      recursive: true,
+      force: true,
+    });
+  }
+  write(path.join(packageRoot, "app", "server", ".mmh-version"), `${version}\n`);
   requirePath(path.join(packageRoot, "app", "server", "server.js"), "Synology package payload must contain the standalone server.");
   requirePath(path.join(packageRoot, "app", "bin", "node"), `Synology package payload must contain the Linux ${target.nodeArch} Node runtime.`);
   const stagedNativeInitSql = path.join(packageRoot, "app", "server", "prisma", "native-init.sql");
@@ -1998,19 +2076,48 @@ function buildSpk() {
     throw new Error(`SYNOLOGY_TARGET_ARCH=${target.id} must be built on a Linux ${target.processArch} runner.`);
   }
 
-  const nodeHeadersDir = findNodeHeadersDir();
-  const rebuildEnv = nodeHeadersDir ? { npm_config_nodedir: nodeHeadersDir } : {};
   const stagedServerDir = path.join(packageRoot, "app", "server");
-  if (process.env.SYNOLOGY_SKIP_NATIVE_REBUILD !== "1") {
-    const nativeRebuild = run(commandName("npm"), ["rebuild", "better-sqlite3", "--build-from-source"], {
-      cwd: stagedServerDir,
-      stdio: "inherit",
-      env: rebuildEnv,
-    });
-    if (nativeRebuild.status !== 0) process.exit(nativeRebuild.status || 1);
-  } else {
-    console.log("Reusing the native SQLite module from the Synology package payload.");
-  }
+  const nodeTarballRoot = path.join(stageDir, ".synology-node");
+  const node20BinDir = path.join(nodeTarballRoot, `node-v20.20.2-linux-${target.nodeArch}`, "bin");
+  const node20Bin = path.join(node20BinDir, "node");
+  const node20Npm = path.join(node20BinDir, "npm");
+  const node20HeadersRoot = path.join(stageDir, ".synology-node-headers");
+  fs.rmSync(nodeTarballRoot, { recursive: true, force: true });
+  fs.rmSync(node20HeadersRoot, { recursive: true, force: true });
+  mkdirp(nodeTarballRoot);
+  mkdirp(node20HeadersRoot);
+  const nodeExtract = run("tar", ["-xzf", nodeTarball, "-C", nodeTarballRoot]);
+  if (nodeExtract.status !== 0) process.exit(nodeExtract.status || 1);
+  requirePath(node20Bin, "Synology packaging requires the bundled Node 20 runtime tarball.");
+  requirePath(node20Npm, "Synology packaging requires npm from the bundled Node 20 runtime tarball.");
+  const headersTarball = process.env.SYNOLOGY_NODE_HEADERS_TARBALL || "";
+  requirePath(headersTarball, "SYNOLOGY_NODE_HEADERS_TARBALL is required for the bundled Node 20 native rebuild.");
+  const headersExtract = run("tar", ["-xzf", headersTarball, "-C", node20HeadersRoot]);
+  if (headersExtract.status !== 0) process.exit(headersExtract.status || 1);
+  const nodeHeadersDir = path.join(node20HeadersRoot, "node-v20.20.2");
+  requirePath(path.join(nodeHeadersDir, "include", "node", "node.h"), "Node 20 headers are missing include/node/node.h.");
+  const sourceServerDir = root;
+  const nativeRebuild = run(node20Bin, [node20Npm, "rebuild", "better-sqlite3", "--build-from-source"], {
+    cwd: sourceServerDir,
+    stdio: "inherit",
+    env: {
+      npm_config_nodedir: nodeHeadersDir,
+      npm_config_runtime: "node",
+      npm_config_build_from_source: "true",
+    },
+  });
+  if (nativeRebuild.status !== 0) process.exit(nativeRebuild.status || 1);
+  const sourceNativeModule = path.join(root, "node_modules", "better-sqlite3", "build", "Release", "better_sqlite3.node");
+  const stagedNativeModule = path.join(stagedServerDir, "node_modules", "better-sqlite3", "build", "Release", "better_sqlite3.node");
+  requirePath(sourceNativeModule, "Node 20 native rebuild did not produce better_sqlite3.node in the source tree.");
+  copyFile(sourceNativeModule, stagedNativeModule);
+  const verifyNative = run(node20Bin, ["-e", "const Database=require('better-sqlite3'); const db=new Database(':memory:'); if (db.prepare('select 1 as ok').get().ok !== 1) process.exit(1); db.close();"], {
+    cwd: stagedServerDir,
+    stdio: "inherit",
+  });
+  if (verifyNative.status !== 0) process.exit(verifyNative.status || 1);
+  fs.rmSync(nodeTarballRoot, { recursive: true, force: true });
+  fs.rmSync(node20HeadersRoot, { recursive: true, force: true });
 
   const packageTgz = path.join(stageDir, "package.tgz");
   fs.rmSync(packageTgz, { force: true });

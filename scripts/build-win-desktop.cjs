@@ -121,6 +121,7 @@ if (!canReuseStage) {
 } else {
   console.log("Reusing existing staged standalone app (--reuse-stage).");
 }
+fs.writeFileSync(path.join(stageAppDir, ".mmh-version"), `${JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")).version}\n`, "utf8");
 
 step("sync .next/static and public");
 copyDir(path.join(root, ".next", "static"), path.join(stageAppDir, ".next", "static"));

@@ -253,7 +253,7 @@ export function depositRenewRoundsNeeded(params: {
   return Math.floor(overdueDays / term) + 1;
 }
 
-/** Unit-day approximation used only for maturity pacing (week=7, month=30, year=365). */
+/** Unit-day approximation used only for maturity pacing (day=1, week=7, month=30, year=365). */
 export function payoutUnitDaysForMaturityPace(unit: DepositInterestPayoutUnit): number {
-  return unit === "week" ? 7 : unit === "month" ? 30 : 365;
+  return unit === "day" ? 1 : unit === "week" ? 7 : unit === "month" ? 30 : 365;
 }

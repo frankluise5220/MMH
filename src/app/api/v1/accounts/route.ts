@@ -5,8 +5,8 @@ import { parseDebtAgreementInput, upsertDebtAgreementForAccount } from "@/lib/se
 import { toNumber } from "@/lib/date-utils";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { isAdmin } from "@/lib/server/auth";
-import { verifyPassword } from "@/lib/auth/password";
 import { getApiHouseholdScope } from "@/lib/server/api-auth";
+import { verifySensitiveOperationPassword } from "@/lib/server/sensitive-operation-auth";
 import { getOrCreateDefaultAccountGroupId } from "@/lib/server/account-group-default";
 import { normalizeFundUnitsDecimals } from "@/lib/fund/unit-precision";
 import { resolveTradingCalendarForAccount } from "@/lib/fund/trading-calendar";
@@ -974,21 +974,10 @@ export async function DELETE(req: NextRequest) {
       }, { status: 409 });
     }
 
-    // Verify password against current user
     if (!user) return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "Not signed in" }, { status: 401 });
-    const currentUser = await prisma.user.findUnique({ where: { id: user.id } });
-    if (!currentUser) return NextResponse.json({ ok: false, code: "USER_NOT_FOUND", error: "User not found" }, { status: 401 });
-
-    if (currentUser.passwordHash) {
-      const match = await verifyPassword(password, currentUser.passwordHash);
-      if (!match) return NextResponse.json({ ok: false, code: "INVALID_PASSWORD", error: "Incorrect password" }, { status: 401 });
-    } else {
-      // No passwordHash → check legacy SystemSetting password
-      const legacy = await prisma.systemSetting.findUnique({ where: { key: "access_password" } });
-      if (!legacy || !legacy.value) {
-        return NextResponse.json({ ok: false, code: "PASSWORD_NOT_SET", error: "Please set a password first" }, { status: 400 });
-      }
-      if (password !== legacy.value) return NextResponse.json({ ok: false, code: "INVALID_PASSWORD", error: "Incorrect password" }, { status: 401 });
+    const verification = await verifySensitiveOperationPassword(password);
+    if (!verification.ok) {
+      return NextResponse.json({ ok: false, code: verification.code ?? "AUTH_VERIFICATION_FAILED", error: verification.error }, { status: verification.status });
     }
 
     await deleteAccountPermanently(id);

@@ -2656,7 +2656,17 @@ export async function POST(req: Request) {
             orderBy: { createdAt: "desc" },
           });
           const existingExecutedRuns = existingPlan?.executedRuns ?? 0;
-          const existingCompleted = existingPlan?.status === RegularInvestStatus.completed && existingExecutedRuns >= insurancePremiumTotalRuns;
+          // 用户手动改过的缴费计划（计划任务页保存 → manualOverride=true）：
+          // 金额 / 缴费频率 / 执行日 / 起算日 / 总期数由用户说了算，记录缴费流水时
+          // 不再用保单条款覆盖回去（否则「改好的执行日」会被静默改回保单口径，
+          // 与保单页提示「生效日/缴费期变更不会自动同步保费计划任务」的口径相反）。
+          const manualOverride = existingPlan?.manualOverride === true;
+          const planTotalRuns = manualOverride
+            ? existingPlan?.totalRuns ?? null
+            : insurancePremiumTotalRuns;
+          const existingCompleted =
+            existingPlan?.status === RegularInvestStatus.completed &&
+            (planTotalRuns == null || existingExecutedRuns >= planTotalRuns);
           const planData = {
             accountId: investAcc.id,
             accountName: investAcc.name,
@@ -2668,13 +2678,17 @@ export async function POST(req: Request) {
             targetName: insuranceProductForPlan.name,
             insuranceProductName: insuranceProductForPlan.name,
             fundProductType: null,
-            amount: premiumAmount,
-            intervalUnit: premiumFrequencyMonths === 12 ? IntervalUnit.year : IntervalUnit.month,
-            intervalValue: premiumFrequencyMonths === 12 ? 1 : premiumFrequencyMonths,
-            executionDay: premiumFrequencyMonths === 12 ? null : anchorDay,
-            startDate: anchorDate,
+            // amount / startDate 是必填列（create 分支也要有值）：
+            // 手动覆盖时保留计划行自己的金额与起算日，不写保单口径。
+            amount: manualOverride ? existingPlan?.amount ?? premiumAmount : premiumAmount,
+            startDate: manualOverride ? existingPlan?.startDate ?? anchorDate : anchorDate,
+            ...(manualOverride ? {} : {
+              intervalUnit: premiumFrequencyMonths === 12 ? IntervalUnit.year : IntervalUnit.month,
+              intervalValue: premiumFrequencyMonths === 12 ? 1 : premiumFrequencyMonths,
+              executionDay: premiumFrequencyMonths === 12 ? null : anchorDay,
+              totalRuns: insurancePremiumTotalRuns,
+            }),
             nextRunDate: existingPlan?.nextRunDate ?? anchorDate,
-            totalRuns: insurancePremiumTotalRuns,
             executedRuns: existingExecutedRuns,
             lastRunDate: existingPlan?.lastRunDate ?? null,
             feeRate: 0,
@@ -2682,7 +2696,9 @@ export async function POST(req: Request) {
             arrivalDays: 0,
             memo,
             skipPendingPreceding: false,
-            status: existingCompleted ? RegularInvestStatus.completed : RegularInvestStatus.active,
+            status: manualOverride
+              ? existingPlan?.status ?? RegularInvestStatus.active
+              : existingCompleted ? RegularInvestStatus.completed : RegularInvestStatus.active,
           };
           if (existingPlan) {
             await tx.regularInvestPlan.update({

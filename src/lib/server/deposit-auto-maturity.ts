@@ -1,7 +1,14 @@
 import { FundSubtype, RegularInvestStatus, TransactionType } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
-import { isPeriodicDepositInterestPayout, parseDepositInterestPayout, depositPayoutAnchorUtc, depositPayoutMaxPeriods } from "@/lib/deposit-interest-payout";
+import {
+  isPeriodicDepositInterestPayout,
+  parseDepositInterestPayout,
+  depositPayoutAnchorUtc,
+  depositPayoutMaxPeriods,
+  depositPayoutPhaseBase,
+  depositPayoutUnitFromIntervalUnit,
+} from "@/lib/deposit-interest-payout";
 import {
   computeDepositMaturityInterest,
   dayDiffDays,
@@ -342,29 +349,26 @@ async function autoAccruePeriodicInterest(
   if (frequency.kind !== "periodic") return { status: "skipped", reason: "not periodic" };
 
   // 用户手动覆盖（depi_ 计划行 manualOverride=true）：金额=计划行 amount（每期固定），
-  // 周期=计划行 intervalUnit/intervalValue。二者独立覆盖，只覆盖用户实际改过的维度。
-  // 先读覆盖，再校验本金/利率：手动指定每期金额时无需依赖存单的本金/利率。
+  // 周期=计划行 intervalUnit/intervalValue，相位=计划行 nextRunDate。三者独立覆盖，
+  // 只覆盖用户实际改过的维度。先读覆盖，再校验本金/利率：手动指定每期金额时无需依赖
+  // 存单的本金/利率。
   let amountOverride: number | null = null;
+  let manualPhaseDate: Date | null = null;
   if (planId) {
     const overridePlan = await prisma.regularInvestPlan.findUnique({
       where: { id: planId },
-      select: { manualOverride: true, amount: true, intervalUnit: true, intervalValue: true },
+      select: { manualOverride: true, amount: true, intervalUnit: true, intervalValue: true, nextRunDate: true },
     });
     if (overridePlan?.manualOverride) {
       const amt = Number(overridePlan.amount);
       if (Number.isFinite(amt) && amt > 0) amountOverride = amt;
-      if (overridePlan.intervalUnit) {
-        const unit = overridePlan.intervalUnit === "month"
-          ? "month"
-          : overridePlan.intervalUnit === "week"
-            ? "week"
-            : overridePlan.intervalUnit === "year"
-              ? "year"
-              : null;
-        if (unit) {
-          frequency = { kind: "periodic", unit, interval: Math.max(1, overridePlan.intervalValue || 1) };
-        }
+      const unit = depositPayoutUnitFromIntervalUnit(overridePlan.intervalUnit);
+      if (unit) {
+        frequency = { kind: "periodic", unit, interval: Math.max(1, overridePlan.intervalValue || 1) };
       }
+      // 用户手改过的「下一执行日」即新相位起点，执行器必须尊重它，否则改完下一轮就被
+      // 存单起存日的锚点覆盖（2026-10-03 用户裁定）。
+      manualPhaseDate = overridePlan.nextRunDate ?? null;
     }
   }
 
@@ -409,9 +413,14 @@ async function autoAccruePeriodicInterest(
   // 付息锚点 = 起存日 + N 周期（对应日）：1-01 起存 7 天取息 → 1-08、1-15……；
   // 18 号存按月 → 次月 18 号。与计划排程共用 depositPayoutAnchorUtc，两处永远一致。
   // periods 是「期数」，interval 的乘法在 depositPayoutAnchorUtc 内部完成。
+  //
+  // 手动覆盖时相位基准换成计划行的 nextRunDate（用户手改的下一执行日），且**只向后
+  // 枚举**（k ≥ 0）：回溯会把旧相位下已付过、而新相位又落进过去的日子重复生成。
+  // 未手动覆盖时 phaseBase = 起存日，第 0 期被 addPayout 的「> 起存日」过滤掉，行为不变。
+  const phaseBase = depositPayoutPhaseBase(manualPhaseDate, startDate);
   const maxPeriods = depositPayoutMaxPeriods(frequency);
-  for (let periods = 1; periods <= maxPeriods; periods++) {
-    const date = depositPayoutAnchorUtc(startDate, frequency, periods);
+  for (let periods = 0; periods <= maxPeriods; periods++) {
+    const date = depositPayoutAnchorUtc(phaseBase, frequency, periods);
     if (localDayKey(date) > upperKey) break;
     addPayout(date);
   }
@@ -495,8 +504,16 @@ async function autoAccruePeriodicInterest(
     // 「锚点 − 1 天」（如 1-01 存 7 天取息，历史按 1-07 生息）。该日已有本存单
     // 记录时视为本期已覆盖，避免补生成重复利息；下一期计息起点用**实际付息日**
     // （锚点 − 1 天），过渡期既不丢一天也不多算一天。
+    //
+    // 两种情况下这段兼容必须关掉，否则会把**真实的一期**当成历史遗留吞掉：
+    //   ①「每 1 天取息」—— 锚点 − 1 天恰好就是上一个锚点本身（2026-10-03 加「按天
+    //      取息」时发现，吞掉会让生成节奏变成隔天一次）；
+    //   ② 手动覆盖相位 —— 用户明确指定的付息日不能被静默跳过（例如把日期挪到旧付息日
+    //      的次日，锚点 − 1 天正好命中旧记录）。
+    const skipLegacyPrevDayCompat =
+      manualPhaseDate != null || (frequency.unit === "day" && frequency.interval <= 1);
     const prevDay = new Date(payoutDate.getTime() - 86400000);
-    if (coveredDays.has(localDayKey(prevDay))) {
+    if (!skipLegacyPrevDayCompat && coveredDays.has(localDayKey(prevDay))) {
       segmentStart = prevDay;
       continue;
     }

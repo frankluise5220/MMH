@@ -1,23 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
-import { hashPassword, verifyPassword } from "@/lib/auth/password";
+import { hashPassword } from "@/lib/auth/password";
 import { logger } from "@/lib/logger";
 import { getHouseholdDisplayName } from "@/lib/household-display";
 import { verifySensitiveOperationPassword } from "@/lib/server/sensitive-operation-auth";
 import { getCurrentUser, isAdmin } from "@/lib/server/auth";
 import { verifyEmailPrincipal } from "@/lib/server/registration-client";
 import {
-  HOUSEHOLD_COOKIE,
-  SESSION_DAYS_COOKIE,
-  USER_ID_COOKIE,
-  USERNAME_COOKIE,
-  VERIFIED_COOKIE,
-  createVerifiedSessionValue,
-  sessionCookieOptions,
-} from "@/lib/server/session-cookies";
-import { normalizeSessionDays, sessionDaysToMaxAge } from "@/lib/session-days";
+  LEGACY_ACCESS_PASSWORD_KEY,
+  readLegacyAccessPassword,
+  verifyUserCredential,
+} from "@/lib/server/verify-credential";
+import { getUserSessionDays, issueSessionCookies } from "@/lib/server/session-issue";
 
-const LEGACY_PASSWORD_KEY = "access_password";
+const LEGACY_PASSWORD_KEY = LEGACY_ACCESS_PASSWORD_KEY;
 // SQLite may need to load the bundled native driver on the first desktop login.
 // Keep the timeout bounded, but do not turn a cold start into a false 503.
 const AUTH_LOOKUP_TIMEOUT_MS = 10000;
@@ -54,6 +50,7 @@ const userSelect = {
   householdId: true,
   email: true,
   registrationPrincipalId: true,
+  fnosUid: true,
   Household: { select: { id: true, name: true } },
 } as const;
 
@@ -67,21 +64,9 @@ type LoginUser = {
   householdId: string | null;
   email: string | null;
   registrationPrincipalId: string | null;
+  fnosUid: string | null;
   Household: { id: string; name: string } | null;
 };
-
-async function getUserSessionDays(userId: string) {
-  try {
-    const settings = await prisma.userSettings.findUnique({
-      where: { userId },
-      select: { sessionDays: true },
-    });
-    return normalizeSessionDays(settings?.sessionDays);
-  } catch {
-    // If a deployment has not applied this preference column yet, keep login working.
-    return normalizeSessionDays(undefined);
-  }
-}
 
 function householdChoicesForUsers(users: LoginUser[]) {
   const seen = new Set<string>();
@@ -153,22 +138,28 @@ async function resolveLoginCandidates(username: string, householdId: string, use
   return user ? [user] : [];
 }
 
+/**
+ * Verifies `password` against every same-name candidate.
+ *
+ * The per-account order (local password → fnOS → MMH membership password →
+ * legacy deployment password) lives in `verifyUserCredential`, shared with
+ * sensitive operations and the ledger-switch path. This function only adds the
+ * multi-candidate aggregation the login form needs, because one username may
+ * exist in several ledgers.
+ */
 async function findPasswordMatches(users: LoginUser[], password: string) {
-  const legacySetting = users.some((user) => !user.passwordHash)
-    ? await withTimeout(prisma.systemSetting.findUnique({ where: { key: LEGACY_PASSWORD_KEY } }), AUTH_LOOKUP_TIMEOUT_MS)
-    : null;
-  const legacyPassword = legacySetting?.value ?? "";
+  // One legacy read for the whole candidate set, and only when some candidate
+  // actually lacks a per-user hash.
+  const legacyPassword = users.some((user) => !user.passwordHash)
+    ? await withTimeout(readLegacyAccessPassword(), AUTH_LOOKUP_TIMEOUT_MS)
+    : "";
   const matches: Array<{ user: LoginUser; migrateLegacyPassword: boolean }> = [];
 
   for (const user of users) {
-    if (user.passwordHash) {
-      const match = await verifyPassword(password, user.passwordHash);
-      if (match) matches.push({ user, migrateLegacyPassword: false });
-      continue;
-    }
-    if (legacyPassword.length > 0 && password === legacyPassword) {
-      matches.push({ user, migrateLegacyPassword: true });
-    }
+    const verdict = await verifyUserCredential(user, password, { legacyPassword });
+    // A legacy match is migrated to a real per-user hash on the spot, so the
+    // deployment password stops working as soon as someone logs in with it.
+    if (verdict.ok) matches.push({ user, migrateLegacyPassword: verdict.kind === "legacy" });
   }
 
   return matches;
@@ -211,21 +202,16 @@ async function resolveMmhLoginUsers(email: string, password: string) {
 /** Signs a verified login session and returns the response. */
 async function issueSessionResponse(req: NextRequest, user: LoginUser) {
   const response = NextResponse.json({ ok: true, username: user.name, householdId: user.householdId });
-  const sessionDays = await getUserSessionDays(user.id);
-  const maxAge = sessionDaysToMaxAge(sessionDays);
-  const cookieOptions = sessionCookieOptions(maxAge, req);
-  response.cookies.set(VERIFIED_COOKIE, createVerifiedSessionValue(user.id, maxAge, user.authVersion), cookieOptions);
-  response.cookies.set(USER_ID_COOKIE, user.id, cookieOptions);
-  response.cookies.set(USERNAME_COOKIE, user.name, cookieOptions);
-  response.cookies.set(SESSION_DAYS_COOKIE, String(sessionDays), {
-    path: "/",
-    maxAge: 60 * 60 * 24 * 365,
-    httpOnly: false,
-    sameSite: "lax",
-  });
-  if (user.householdId) {
-    response.cookies.set(HOUSEHOLD_COOKIE, user.householdId, cookieOptions);
-  }
+  issueSessionCookies(
+    response,
+    {
+      userId: user.id,
+      name: user.name,
+      householdId: user.householdId,
+      authVersion: user.authVersion,
+    },
+    { sessionDays: await getUserSessionDays(user.id), req },
+  );
   return response;
 }
 
@@ -320,7 +306,7 @@ export async function POST(req: NextRequest) {
       }
       const verified = await verifySensitiveOperationPassword(password);
       if (!verified.ok) {
-        return NextResponse.json({ ok: false, code: "AUTH_VERIFICATION_FAILED", error: verified.error }, { status: verified.status });
+        return NextResponse.json({ ok: false, code: verified.code ?? "AUTH_VERIFICATION_FAILED", error: verified.error }, { status: verified.status });
       }
       return NextResponse.json({ ok: true, systemVerified: true });
     } catch {
@@ -355,9 +341,20 @@ export async function POST(req: NextRequest) {
 
   const matches = await findPasswordMatches(candidates, password);
   if (matches.length === 0) {
+    // A ledger where nobody has a password yet is "not set up", not "wrong
+    // password". Keep that distinction, and call out a fnOS binding separately
+    // because its fix is different: the password has to be created from inside
+    // the ledger (the gateway exposes no password API to verify against).
     if (candidates.some((user) => !user.passwordHash)) {
       const hasAnyPassword = candidates.some((user) => user.passwordHash);
-      if (!hasAnyPassword) return NextResponse.json({ ok: false, code: "PASSWORD_NOT_SET", error: "请先设置密码" }, { status: 400 });
+      if (!hasAnyPassword) {
+        return NextResponse.json(
+          candidates.some((user) => user.fnosUid)
+            ? { ok: false, code: "LOCAL_PASSWORD_REQUIRED", error: "该飞牛账户尚未建立本地密码，请先使用飞牛账户登录，再在用户设置中设置本地密码。" }
+            : { ok: false, code: "PASSWORD_NOT_SET", error: "请先设置密码" },
+          { status: 400 },
+        );
+      }
     }
     return NextResponse.json({ ok: false, code: "INVALID_PASSWORD", error: "密码错误" }, { status: 401 });
   }

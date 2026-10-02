@@ -513,6 +513,11 @@ export function RegularInvestForm({
   const confirmDaysTouchedRef = useRef(false);
   const arrivalDaysTouchedRef = useRef(false);
   const lastFundRuleKeyRef = useRef("");
+  // 编辑态「剩余次数」输入框是否被用户真正改过。未改动时必须原样回写存储的总期数：
+  // 剩余次数 = totalRuns - executedRuns，若计划已执行完（剩余 = 0），
+  // serializeTotalRunsFromRemaining("0") 会返回 null（= 无限期），
+  // 于是「改执行日/改金额」这种无关编辑会把总期数静默抹掉。
+  const totalRunsTouchedRef = useRef(false);
 
   const { t } = useI18n();
 
@@ -588,8 +593,12 @@ export function RegularInvestForm({
         policyholderGroupId: insuranceProduct?.ownerGroupId || "",
         note: editData.taskNote || "",
         amount: String(editData.amount || ""),
-        intervalUnit: isStoredOneTime ? "once" : normalizedInterval.intervalUnit,
-        intervalValue: isStoredOneTime ? "1" : normalizedInterval.intervalValue,
+        // 「一次性」只是**总期数**口径（totalRuns === 1），不代表存储周期本身是 once：
+        // 存款到期/生息/取息系统计划就是 month/1 + totalRuns=1，且带 executionDay / endDate。
+        // 因此编辑态一律按存储值回填，不再把周期、执行日、停用日期、总期数抹成 once / 空值 ——
+        // 否则「改一下执行日」会把执行日、停用日期、总期数一起静默清掉（2026-10-03 修复）。
+        intervalUnit: normalizedInterval.intervalUnit,
+        intervalValue: normalizedInterval.intervalValue,
         startDate,
         nextRunDate,
         weeklyExecutionDate: !isStoredOneTime && normalizedInterval.intervalUnit === "week"
@@ -610,9 +619,9 @@ export function RegularInvestForm({
         secondaryYearlyExecutionDate: !isStoredOneTime && normalizedInterval.intervalUnit === "year"
           ? secondaryExecutionDateInStartPeriod(originalStartDate, "year", secondaryExecutionDay)
           : "",
-        endDate: isStoredOneTime ? "" : toDateInput(editData.endDate),
-        totalRuns: isStoredOneTime ? "" : remainingRunsInput(editData.totalRuns, editData.executedRuns),
-        executionDay: isStoredOneTime ? "" : executionDay,
+        endDate: toDateInput(editData.endDate),
+        totalRuns: remainingRunsInput(editData.totalRuns, editData.executedRuns),
+        executionDay,
         cashAccountId: isOrdinaryTaskType(editTaskType) ? "" : editData.cashAccountId || "",
         feeRate: editData.feeRate != null ? String(editData.feeRate) : "0",
         confirmDays: editData.confirmDays != null ? String(editData.confirmDays) : "0",
@@ -675,6 +684,7 @@ export function RegularInvestForm({
     confirmDaysTouchedRef.current = false;
     arrivalDaysTouchedRef.current = false;
     lastFundRuleKeyRef.current = "";
+    totalRunsTouchedRef.current = false;
   }, [editData, mode]);
 
   useEffect(() => { setCashAccountList(cashAccounts ?? []); }, [cashAccounts]);
@@ -840,6 +850,7 @@ export function RegularInvestForm({
     setFormData(getDefaultFormData());
     confirmDaysTouchedRef.current = false;
     arrivalDaysTouchedRef.current = false;
+    totalRunsTouchedRef.current = false;
   }
 
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
@@ -944,12 +955,31 @@ export function RegularInvestForm({
           : normalizedInterval.intervalUnit === "year"
             ? serializeSecondaryExecutionDay(formData.secondaryYearlyExecutionDate, "year")
             : null;
+      // 「剩余次数」输入框的三种提交语义（2026-10-03 修复「改执行日把期数抹掉」）：
+      //  - 用户没动过 → 原样回写存储的总期数。编辑态该框显示的是 totalRuns - executedRuns，
+      //    计划执行完时显示 0；若照旧走 serializeTotalRunsFromRemaining("0") 会得到 null
+      //    （= 无限期），于是「改执行日/改金额」这种无关编辑会把总期数静默清空。
+      //  - 改成正整数 N → 总期数 = N + 已执行次数。
+      //  - 清空 → 无限期（null）；填 0 或非法值 → 视为无效输入，保持原值不动。
+      const storedTotalRuns = mode === "edit" ? editData?.totalRuns ?? null : null;
+      const storedExecutedRuns = mode === "edit" ? editData?.executedRuns ?? 0 : 0;
+      // 存储态的「一次性」计划 totalRuns === 1，且 intervalUnit 已落成 day/1，
+      // 因此 rawIntervalUnit 看不到 "once"，需要单独识别，否则会被当成无限期计划。
+      const isStoredOneTime = mode === "edit" && storedTotalRuns === 1;
+      const touchedTotalRunsRaw = formData.totalRuns.trim();
+      const touchedRemaining = touchedTotalRunsRaw ? parseInt(touchedTotalRunsRaw, 10) : NaN;
+      const editedTotalRuns = touchedTotalRunsRaw === ""
+        ? null
+        : Number.isFinite(touchedRemaining) && touchedRemaining > 0
+          ? serializeTotalRunsFromRemaining(touchedTotalRunsRaw, storedExecutedRuns)
+          : storedTotalRuns;
       const effectiveTotalRuns = isOneTimeInterval
         ? Math.max(0, mode === "edit" ? editData?.executedRuns ?? 0 : 0) + 1
-        : serializeTotalRunsFromRemaining(
-            formData.totalRuns,
-            mode === "edit" ? editData?.executedRuns : 0,
-          );
+        : isStoredOneTime
+          ? storedTotalRuns
+          : totalRunsTouchedRef.current
+            ? editedTotalRuns
+            : storedTotalRuns;
       const effectiveEndDate = isOneTimeInterval ? "" : formData.endDate;
       // 展示类型口径：存款利息生成按收入模板、取息/本金取出按转账模板提交。
       const isOrdinaryTask = isOrdinaryTaskType(planFormDisplayTaskType(formData.taskType));
@@ -1805,7 +1835,10 @@ export function RegularInvestForm({
                       inputMode="numeric"
                       min="1"
                       value={formData.totalRuns}
-                      onChange={(e) => setFormData(d => ({ ...d, totalRuns: e.target.value }))}
+                      onChange={(e) => {
+                        totalRunsTouchedRef.current = true;
+                        setFormData(d => ({ ...d, totalRuns: e.target.value }));
+                      }}
                       placeholder={t("regularInvest.unlimited")}
                       className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
                     />
@@ -1883,16 +1916,27 @@ export function RegularInvestForm({
                     </div>
                   </div>
                   )}
-                  {!isOneTimeInterval && (
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">{mode === "edit" ? t("regularInvest.nextRunDateLabel") : t("regularInvest.executionDay")}</div>
-                    {displayedIntervalUnit === "day" ? (
-                      <input
-                        type="text"
-                        value={t("regularInvest.noDayRequired")}
-                        disabled
-                        className="h-9 w-full rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-500 cursor-not-allowed"
-                      />
+                    {displayedIntervalUnit === "day" || displayedIntervalUnit === "once" ? (
+                      mode === "edit" ? (
+                        // 按天 / 一次性计划：下一执行日就是排期游标（day 无锚点、once 只有这一次），
+                        // 编辑时放开为可改，服务端 updateRegularInvest 直接采纳。
+                        <DateStepper
+                          value={formData.nextRunDate}
+                          min={nextRunDateMin}
+                          onChange={(value) => setFormData((d) => ({ ...d, nextRunDate: value }))}
+                          className={REQUIRED_FIELD_CLASS}
+                        />
+                      ) : (
+                        // 新建时首次执行日 = 开始日期，无需单独指定。
+                        <input
+                          type="text"
+                          value={t("regularInvest.noDayRequired")}
+                          disabled
+                          className="h-9 w-full rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-500 cursor-not-allowed"
+                        />
+                      )
                     ) : displayedIntervalUnit === "week" ? (
                       (() => {
                         const weeklyBounds = executionDayBounds(formData.startDate, nextRunDateMin);
@@ -1969,7 +2013,6 @@ export function RegularInvestForm({
                       </select>
                     )}
                   </div>
-                  )}
                   {showSecondaryExecutionDay && (
                     <div className="space-y-1">
                       <div className="text-xs font-medium text-slate-600">{t("regularInvest.secondaryExecutionDayOptional")}</div>

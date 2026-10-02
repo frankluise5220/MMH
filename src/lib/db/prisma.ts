@@ -17,6 +17,30 @@ export function getConfiguredPgPoolMax() {
   return Number.isInteger(configured) && configured > 0 ? configured : defaultPgPoolMax();
 }
 
+/**
+ * Default options for interactive transactions ($transaction(async (tx) => ...)).
+ *
+ * Prisma's built-in defaults are `maxWait: 2000` / `timeout: 5000`. Those are far
+ * too tight for low-power NAS deployments (e.g. Synology DS with a Celeron J1900
+ * and a slow disk): creating a ledger runs ~500 sequential statements inside one
+ * transaction (default categories + ~176 default institutions, each doing a
+ * conflict check + insert), which takes 4-6s there and randomly tripped
+ * `P2028: A query cannot be executed on an expired transaction` — surfacing to
+ * users as "ledger creation failed" with no useful detail.
+ *
+ * Raising the default here fixes every interactive transaction at once instead of
+ * sprinkling per-call options across ~140 call sites. Override per deployment with
+ * `PRISMA_TX_TIMEOUT_MS` / `PRISMA_TX_MAX_WAIT_MS` if needed.
+ */
+export function getConfiguredTransactionOptions() {
+  const timeout = Number(process.env.PRISMA_TX_TIMEOUT_MS);
+  const maxWait = Number(process.env.PRISMA_TX_MAX_WAIT_MS);
+  return {
+    timeout: Number.isFinite(timeout) && timeout > 0 ? timeout : 30_000,
+    maxWait: Number.isFinite(maxWait) && maxWait > 0 ? maxWait : 10_000,
+  };
+}
+
 function createClient(): PrismaClient {
   const connectionString = process.env.DATABASE_URL;
   if (!connectionString) {
@@ -30,6 +54,7 @@ function createClient(): PrismaClient {
     return new PrismaClient({
       log: ["error"],
       adapter,
+      transactionOptions: getConfiguredTransactionOptions(),
     });
   }
 
@@ -47,6 +72,7 @@ function createClient(): PrismaClient {
   return new PrismaClient({
     log: ["error"],
     adapter,
+    transactionOptions: getConfiguredTransactionOptions(),
   });
 }
 

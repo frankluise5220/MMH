@@ -19,13 +19,14 @@ type AuthVerifyResponse = {
   households?: HouseholdChoice[];
   householdId?: string | null;
   message?: string;
-  maskedEmailHint?: string | null;
 };
 
 type PasswordStatusResponse = {
   ok: boolean;
   hasPassword: boolean;
   needsInitialLedgerSetup?: boolean;
+  /** Whether the current fnOS gateway user owns a ledger user. */
+  fnosBound?: boolean;
   passwordResetEnabled?: boolean;
   users?: LoginUserChoice[];
 };
@@ -65,6 +66,11 @@ type LoginMode = "login" | "create";
 
 const SYSTEM_LOGIN_SCOPE_ID = "__system__";
 
+// Shared control style for the login/create forms. Kept in one place so the
+// per-card forms cannot drift apart visually as they get edited independently.
+const LOGIN_INPUT_CLASS =
+  "h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100";
+
 // 文件卡片式页签：抽成独立组件（src/app/login/FolderTabs.tsx）。
 // 本文件用其导出的纯函数（folderTabClass / folderTabPanelClass / FOLDER_TAB_STRIP），
 // 登录方式页签与建账方式页签共用；<FolderTabs> 组件本身供外部页面直接复用。
@@ -75,12 +81,19 @@ function getLoginUserScopeId(user: LoginUserChoice) {
 }
 
 function getInitialLoginSelection(users: LoginUserChoice[]) {
-  const localUsers = users.filter((user) => user.hasPassword === true);
-  const firstUser = localUsers.find((user) => !!user.householdId) ?? localUsers[0] ?? null;
-  return {
-    scopeId: firstUser ? getLoginUserScopeId(firstUser) : "",
-    user: firstUser,
-  };
+  // The default ledger must be derived from the full user list, never from the
+  // "has a local password" subset. A fnOS-gateway deployment creates its admin
+  // with no password hash at all, so filtering on `hasPassword` left
+  // `selectedHouseholdId` as an empty string while the ledger dropdown still
+  // listed every ledger: the <select> rendered a ledger that the state did not
+  // actually hold, and submitting reported "select a ledger" for a ledger the
+  // user could plainly see selected.
+  const ledgerUser = users.find((user) => !!user.householdId) ?? users[0] ?? null;
+  const scopeId = ledgerUser ? getLoginUserScopeId(ledgerUser) : "";
+  // The pre-selected *user* still prefers a local account: it is only used to
+  // prefill the local username field, which MMH / fnOS sign-in ignores.
+  const user = users.find((candidate) => candidate.hasPassword === true && getLoginUserScopeId(candidate) === scopeId) ?? null;
+  return { scopeId, user };
 }
 
 export function LoginPageClient({ householdName, fnosGatewayUser }: { householdName: string | null; fnosGatewayUser?: FnosGatewayUser | null }) {
@@ -112,6 +125,11 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
 
   const [createMethod, setCreateMethod] = useState<"invite" | "existing">("invite");
   const [createAuthMode, setCreateAuthMode] = useState<"local" | "mmh" | "fnos">("local");
+  // The MMH card has two shapes, mirroring the login tab: the default "sign in
+  // with an existing MMH identity" form, and an opt-in "create an MMH user"
+  // signup form for people who do not have one yet.
+  const [createMmhMode, setCreateMmhMode] = useState<"login" | "register">("login");
+  const [createMmhPassword, setCreateMmhPassword] = useState("");
   const [createInviteCode, setCreateInviteCode] = useState("");
   const [createLedgerName, setCreateLedgerName] = useState("");
   const [createAdminName, setCreateAdminName] = useState("");
@@ -124,6 +142,8 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   function resetCreateLedgerForm() {
     setCreateMethod("invite");
     setCreateAuthMode(fnosGatewayUser ? "fnos" : "local");
+    setCreateMmhMode("login");
+    setCreateMmhPassword("");
     setCreateInviteCode("");
     setCreateLedgerName("");
     setCreateAdminName("");
@@ -138,7 +158,6 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   const [resetStep, setResetStep] = useState<ResetStep>("request");
   const [resetUsername, setResetUsername] = useState("");
   const [resetEmail, setResetEmail] = useState("");
-  const [resetEmailHint, setResetEmailHint] = useState("");
   const [resetCode, setResetCode] = useState("");
   const [resetNewPassword, setResetNewPassword] = useState("");
   const [resetConfirmPassword, setResetConfirmPassword] = useState("");
@@ -148,7 +167,6 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   const [resetHouseholdId, setResetHouseholdId] = useState("");
   const [resetHouseholdChoices, setResetHouseholdChoices] = useState<HouseholdChoice[]>([]);
 
-  const [showRegister, setShowRegister] = useState(false);
   const [registerEmail, setRegisterEmail] = useState("");
   const [registerCodeSent, setRegisterCodeSent] = useState(false);
   const [registerCode, setRegisterCode] = useState("");
@@ -183,7 +201,15 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   const selectedHouseholdUsers = selectedHouseholdId
     ? localLoginUsers.filter((user) => getLoginUserScopeId(user) === selectedHouseholdId)
     : [];
-  const mmhUserChoices = systemUsers.filter((user) => user.registrationPrincipalId && user.email && user.hasPassword);
+  // MMH sign-in verifies the email + membership password against the central
+  // registration service, never against a ledger-local hash — so `hasPassword`
+  // must not gate this list. Requiring it hid every MMH identity that had not
+  // set a local ledger password (which is exactly what an MMH-created ledger
+  // admin has).
+  const mmhUserChoices = systemUsers.filter((user) => user.registrationPrincipalId && user.email);
+  // The local tab is dead when the *selected* ledger has no local account: the
+  // account has to be created inside the ledger, by someone who can already get in.
+  const localTabUnavailable = loginMode === "local" && selectedHouseholdUsers.length === 0;
 
   function maskEmail(email: string) {
     const normalized = email.trim().toLowerCase();
@@ -317,7 +343,6 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
     setResetStep("request");
     setResetInfo("");
     setResetEmail("");
-    setResetEmailHint("");
     setResetHouseholdId("");
     setResetHouseholdChoices([]);
     if (!passwordResetEnabled) {
@@ -359,22 +384,26 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
           if (hasFnosGateway && needsInitialLedgerSetup) {
             setCreateAuthMode("fnos");
           }
-          // No local credential exists anywhere and the gateway vouches for the
-          // user: open on the fnOS tab so they enter with one click instead of
-          // being shown a username/password form they cannot fill in.
-          if (hasFnosGateway && !data.hasPassword) {
+          // Behind the fnOS gateway, passwordless login is the primary way in,
+          // so open on that tab — but only when the gateway user actually owns a
+          // ledger user, otherwise the tab is a dead end. Note this does NOT
+          // depend on `hasPassword`: once a fnOS admin binds a local password
+          // (which sensitive operations require), the fnOS tab must stay the
+          // default rather than demoting passwordless login.
+          if (hasFnosGateway && (data.fnosBound || !data.hasPassword)) {
             setLoginMode("fnos");
           }
           setSystemUsers(users);
           setPasswordResetEnabled(data.passwordResetEnabled ?? false);
           const initialSelection = getInitialLoginSelection(users);
           setSelectedHouseholdId(initialSelection.scopeId);
-          if (initialSelection.user) {
-            setSelectedUserId(initialSelection.user.id);
-            setUsername(initialSelection.user.name);
+          const initialUser = initialSelection.user;
+          if (initialUser) {
+            setSelectedUserId(initialUser.id);
+            setUsername(initialUser.name);
             setLoginCredentials((current) => ({
               ...current,
-              local: { ...current.local, username: initialSelection.user?.name ?? "", userId: initialSelection.user.id },
+              local: { ...current.local, username: initialUser.name ?? "", userId: initialUser.id },
             }));
           } else {
             setSelectedUserId("");
@@ -422,6 +451,13 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
     };
   }, [t, hasFnosGateway]);
 
+  // Leaving the MMH card resets it to the default "sign in with an existing MMH
+  // identity" shape, so switching local → MMH → local → MMH does not reopen on
+  // the signup form the user abandoned.
+  useEffect(() => {
+    if (createAuthMode !== "mmh") setCreateMmhMode("login");
+  }, [createAuthMode]);
+
   async function verifyLogin(params: { userId?: string; username?: string; password: string; householdId?: string; authMode?: "local" | "mmh" }) {
     const res = await fetch("/api/v1/auth/verify", {
       method: "POST",
@@ -444,6 +480,16 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
     return data;
   }
 
+  /**
+   * The central registration service answers in English with machine codes.
+   * "no MMH user for this email" is the one people hit most often, and it needs
+   * to point at the signup entry instead of reading like a hard failure.
+   */
+  function mmhErrorText(code: string | undefined, fallback: string | undefined, fallbackKey: string) {
+    if (code === "PRINCIPAL_NOT_FOUND") return t("login.error.mmhAccountNotFound");
+    return fallback ?? t(fallbackKey);
+  }
+
   async function handleLogin() {
     const selectedUser = loginMode === "local" ? getSelectedLoginUser() : null;
     const selectedScopeId = loginMode === "local" && selectedHouseholdId && selectedHouseholdId !== SYSTEM_LOGIN_SCOPE_ID
@@ -451,7 +497,10 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
       : "";
     const trimmedUsername = (loginMode === "mmh" ? username : selectedUser?.name ?? username).trim();
     const trimmedPassword = password.trim();
-    if (loginHouseholdChoices.length > 0 && !selectedHouseholdId) { setError(t("login.error.bookRequired")); return; }
+    // A local account belongs to exactly one ledger, so the ledger has to be
+    // chosen first. MMH sign-in carries its own account identity and resolves
+    // the ledger server-side, so it must not be blocked by this check.
+    if (loginMode === "local" && loginHouseholdChoices.length > 0 && !selectedHouseholdId) { setError(t("login.error.bookRequired")); return; }
     if (!trimmedUsername) { setError(t("login.error.usernameRequired")); return; }
     if (!trimmedPassword) { setError(t("login.error.passwordRequired")); return; }
 
@@ -478,7 +527,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
         setError(data.error ?? t("login.error.ambiguousUser"));
         return;
       }
-      setError(data.error ?? t("login.error.loginFailed"));
+      setError(mmhErrorText(data.code, data.error, "login.error.loginFailed"));
     } catch {
       setError(t("login.error.verifyRetry"));
     } finally {
@@ -515,8 +564,12 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   }
 
   async function handleFnosLogin(householdId?: string) {
-    const scopeId = householdId ?? selectedHouseholdId;
-    if (loginHouseholdChoices.length > 0 && !scopeId) { setError(t("login.error.bookRequired")); return; }
+    // Resolved server-side from X-Trim-Userid. The ledger picker belongs to the
+    // local/MMH tabs: forwarding its value here made a UID that is bound in
+    // several ledgers fail with FNOS_USER_NOT_BOUND, merely because the form had
+    // pre-selected a ledger that this UID happens not to be bound in. Only an
+    // explicit pick (the AMBIGUOUS_USER card) carries a ledger.
+    const scopeId = householdId ?? "";
     setLoading(true);
     setError("");
     setHouseholdChoices([]);
@@ -557,6 +610,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
     const trimmedAdminEmail = createAdminEmail.trim();
     const trimmedPassword = createPassword.trim();
     const trimmedConfirmPassword = createConfirmPassword.trim();
+    const trimmedMmhPassword = createMmhPassword.trim();
     if (!initialLedgerSetup && createMethod === "invite" && !trimmedInviteCode) { setError(t("login.error.inviteRequired")); return; }
     if (!trimmedLedgerName) { setError(t("login.error.ledgerNameRequired")); return; }
     if (createMethod === "existing") {
@@ -566,6 +620,12 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
       if (!initialLedgerSetup && !trimmedAdminEmail) { setError(t("login.error.adminEmailRequired")); return; }
       if (!trimmedPassword) { setError(t("login.error.passwordRequired")); return; }
       if (trimmedPassword !== trimmedConfirmPassword) { setError(t("login.error.passwordMismatch")); return; }
+    } else if (createAuthMode === "mmh") {
+      // Signing in with an existing MMH identity: the email is the account and
+      // the password is the MMH membership password, verified by the central
+      // registration service on the server.
+      if (!trimmedAdminEmail) { setError(t("login.error.adminEmailRequired")); return; }
+      if (!trimmedMmhPassword) { setError(t("login.error.mmhPasswordRequired")); return; }
     }
 
     setLoading(true);
@@ -603,12 +663,15 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
           if (!existingUsername.trim()) { setError(t("login.error.usernameRequired")); return; }
           if (!existingPassword) { setError(t("login.error.passwordRequired")); return; }
           const verifyData = await verifyLogin({
-            ...(existingUserId ? { userId: existingUserId } : {}),
+            ...(createAuthMode === "local" && existingUserId ? { userId: existingUserId } : {}),
             username: existingUsername.trim(),
             password: existingPassword,
+            // MMH accounts are verified against the central registration service
+            // with the membership password, never against a local ledger hash.
+            authMode: createAuthMode === "mmh" ? "mmh" : "local",
           });
           if (!verifyData.ok) {
-            setError(verifyData.error ?? t("login.error.loginFailed"));
+            setError(mmhErrorText(verifyData.code, verifyData.error, "login.error.loginFailed"));
             return;
           }
           adminPassword = existingPassword;
@@ -638,15 +701,23 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
             ...(initialLedgerSetup ? {} : { inviteCode: trimmedInviteCode }),
             name: trimmedLedgerName,
             authMode: createAuthMode,
-            adminName: createAuthMode === "fnos" ? (fnosGatewayUser?.username ?? fnosGatewayUser?.uid ?? "admin") : trimmedAdminName,
-            adminEmail: createAuthMode === "mmh" ? trimmedAdminEmail : trimmedAdminEmail || undefined,
-            adminPassword: createAuthMode === "fnos" ? "" : trimmedPassword,
+            adminName: createAuthMode === "fnos"
+              ? (fnosGatewayUser?.username ?? fnosGatewayUser?.uid ?? "admin")
+              : createAuthMode === "mmh"
+                ? (trimmedAdminName || trimmedAdminEmail.split("@")[0] || "admin")
+                : trimmedAdminName,
+            adminEmail: trimmedAdminEmail || undefined,
+            // Only the local mode stores a ledger-local admin password. The MMH
+            // mode authenticates an existing membership identity instead, and the
+            // fnOS mode is vouched for by the gateway.
+            adminPassword: createAuthMode === "local" ? trimmedPassword : "",
+            ...(createAuthMode === "mmh" ? { mmhPassword: trimmedMmhPassword } : {}),
             ...(createAuthMode === "fnos" && fnosGatewayUser ? { fnosUid: fnosGatewayUser.uid } : {}),
           }),
         });
         const createData = await createRes.json().catch(() => null) as CreateLedgerResponse | null;
         if (!createRes.ok || !createData?.ok) {
-          setError(createData?.error ?? t("login.error.createFailed"));
+          setError(mmhErrorText(createData?.code, createData?.error, "login.error.createFailed"));
           return;
         }
       }
@@ -660,8 +731,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
 
   async function handleResetRequest(selectedHouseholdId = resetHouseholdId) {
     if (!resetUsername.trim()) { setResetError(t("login.error.usernameRequired")); return; }
-    const previewOnly = !resetEmailHint;
-    if (!previewOnly && !resetEmail.trim()) { setResetError(t("login.reset.emailRequired")); return; }
+    if (!resetEmail.trim()) { setResetError(t("login.reset.emailRequired")); return; }
 
     setResetLoading(true);
     setResetError("");
@@ -672,7 +742,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           username: resetUsername.trim(),
-          ...(previewOnly ? { preview: true } : { email: resetEmail.trim() }),
+          email: resetEmail.trim(),
           ...(selectedHouseholdId ? { householdId: selectedHouseholdId } : {}),
         }),
       });
@@ -902,6 +972,145 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
     }
   }
 
+  /**
+   * The MMH block inside the ledger-creation form.
+   *
+   * Two shapes, mirroring how an MMH identity actually works: the account is
+   * global and may already exist, so the default is "sign in with it" — email +
+   * membership password, verified server-side against the central registration
+   * service. Only someone who does not have one yet opts into the signup shape
+   * through the secondary "create an MMH user" link.
+   */
+  function renderMmhCreateFields(inviteMode: boolean) {
+    if (createMmhMode === "register") {
+      return (
+        <div className="space-y-3 border-t border-slate-200 pt-3">
+          <div className="space-y-1">
+            <div className="text-xs font-medium text-slate-600">{t("login.register.email")}</div>
+            <input
+              value={registerEmail}
+              onChange={(event) => {
+                setRegisterEmail(event.target.value);
+                setRegisterCodeSent(false);
+                setRegisterCode("");
+                setRegisterError("");
+                setRegisterInfo("");
+              }}
+              type="email"
+              autoComplete="email"
+              className={LOGIN_INPUT_CLASS}
+              placeholder={t("login.register.emailPlaceholder")}
+            />
+          </div>
+          {registerCodeSent && (
+            <>
+              <div className="space-y-1">
+                <div className="text-xs font-medium text-slate-600">{t("login.register.code")}</div>
+                <input value={registerCode} onChange={(event) => setRegisterCode(event.target.value)} type="text" autoComplete="one-time-code" className={LOGIN_INPUT_CLASS} placeholder={t("login.register.codePlaceholder")} />
+              </div>
+              <div className="space-y-1">
+                <div className="text-xs font-medium text-slate-600">{t("login.register.password")}</div>
+                <input value={registerPassword} onChange={(event) => setRegisterPassword(event.target.value)} type="password" autoComplete="new-password" className={LOGIN_INPUT_CLASS} placeholder={t("login.passwordPlaceholder")} />
+              </div>
+              <div className="space-y-1">
+                <div className="text-xs font-medium text-slate-600">{t("login.register.mmhPassword")}</div>
+                <input value={registerMmhPassword} onChange={(event) => setRegisterMmhPassword(event.target.value)} type="password" autoComplete="new-password" className={LOGIN_INPUT_CLASS} placeholder={t("login.register.mmhPasswordPlaceholder")} />
+              </div>
+              <div className="space-y-1">
+                <div className="text-xs font-medium text-slate-600">{t("login.register.name")}</div>
+                <input value={registerName} onChange={(event) => setRegisterName(event.target.value)} type="text" autoComplete="username" className={LOGIN_INPUT_CLASS} placeholder={t("login.register.namePlaceholder")} />
+              </div>
+            </>
+          )}
+          {registerInfo && <div className="text-xs text-slate-600">{registerInfo}</div>}
+          {registerError && <div className="text-xs text-red-600">{registerError}</div>}
+          {!registerCodeSent ? (
+            <button
+              type="button"
+              className="h-10 w-full rounded-md bg-blue-600 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
+              disabled={registerLoading}
+              onClick={() => { setRegisterInviteMode(inviteMode); void handleRegisterSendCode(inviteMode); }}
+            >
+              {registerLoading ? t("login.verifying") : t("login.register.sendCode")}
+            </button>
+          ) : (
+            <div className="space-y-2">
+              <button
+                type="button"
+                className="h-10 w-full rounded-md bg-blue-600 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
+                disabled={registerLoading}
+                onClick={() => { setRegisterInviteMode(inviteMode); void handleRegisterConfirm(inviteMode); }}
+              >
+                {registerLoading ? t("login.register.submitting") : t("login.register.submitCreate")}
+              </button>
+              <button
+                type="button"
+                className="h-10 w-full rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                disabled={registerLoading}
+                onClick={() => { setRegisterInviteMode(inviteMode); void handleRegisterSendCode(inviteMode); }}
+              >
+                {t("login.register.resend")}
+              </button>
+            </div>
+          )}
+          <button
+            type="button"
+            className="w-full text-xs text-slate-500 hover:text-slate-700"
+            onClick={() => { setCreateMmhMode("login"); setRegisterError(""); setRegisterInfo(""); }}
+          >
+            {t("login.backToMmhLogin")}
+          </button>
+        </div>
+      );
+    }
+
+    return (
+      <div className="space-y-3 border-t border-slate-200 pt-3">
+        <div className="space-y-1">
+          <div className="text-xs font-medium text-slate-600">{t("login.mmhAccount")}</div>
+          <input
+            value={createAdminEmail}
+            onChange={(event) => setCreateAdminEmail(event.target.value)}
+            type="email"
+            autoComplete="email"
+            className={LOGIN_INPUT_CLASS}
+            placeholder={t("login.mmhAccountPlaceholder")}
+          />
+        </div>
+        <div className="space-y-1">
+          <div className="text-xs font-medium text-slate-600">{t("login.mmhPassword")}</div>
+          <input
+            value={createMmhPassword}
+            onChange={(event) => setCreateMmhPassword(event.target.value)}
+            type="password"
+            autoComplete="current-password"
+            className={LOGIN_INPUT_CLASS}
+            placeholder={t("login.mmhPasswordPlaceholder")}
+            onKeyDown={(event) => { if (event.key === "Enter") void handleCreateLedger(); }}
+          />
+        </div>
+        <div className="space-y-1">
+          <div className="text-xs font-medium text-slate-600">{t("login.register.name")}</div>
+          <input
+            value={createAdminName}
+            onChange={(event) => setCreateAdminName(event.target.value)}
+            type="text"
+            autoComplete="username"
+            className={LOGIN_INPUT_CLASS}
+            placeholder={t("login.register.namePlaceholder")}
+          />
+        </div>
+        <button
+          type="button"
+          className="w-full text-xs text-slate-500 hover:text-slate-700"
+          onClick={() => setCreateMmhMode("register")}
+        >
+          {t("login.createMmhUser")}
+        </button>
+      </div>
+    );
+  }
+
   if (checking) {
     return (
       <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm">
@@ -911,7 +1120,6 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
       </div>
     );
   }
-
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950/58 p-4 backdrop-blur-sm">
       <div className="grid h-[min(46rem,calc(100vh-2rem))] w-full max-w-5xl overflow-hidden rounded-2xl border border-white/16 bg-white/92 shadow-[0_24px_80px_rgba(15,23,42,0.34)] backdrop-blur-xl lg:grid-cols-[minmax(0,1fr)_390px]">
@@ -960,7 +1168,10 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
         <div className="min-h-0 flex-1 overflow-y-auto">
         {mode === "login" && (
           <div className="space-y-4 p-6">
-            {!showReset && !showRegister && loginHouseholdChoices.length > 0 && (
+            {/* The ledger picker is for local / MMH sign-in. The fnOS tab resolves
+                its ledger from the gateway UID server-side, so showing it there
+                only invited a choice that could not help (and could mislead). */}
+            {!showReset && loginMode !== "fnos" && loginHouseholdChoices.length > 0 && (
               <div className="space-y-1">
                 <div className="text-xs font-medium text-slate-600">{t("login.book")}</div>
                 <select
@@ -979,8 +1190,8 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
             {/* 登录方式 = 文件卡片页签；卡片内容 = 用户名 / 密码 / 忘记密码 / 进入账簿 */}
             {/* 重置密码是登录表单的子态：此时收起页签条，也不再留出 pt-10 的页签高度，
                 否则点了页签看起来毫无反应（switchLoginMode 不改 showReset）。 */}
-            <div className={showReset || showRegister ? "relative" : "relative pt-10"}>
-              {!showReset && !showRegister && (
+            <div className={showReset ? "relative" : "relative pt-10"}>
+              {!showReset && (
               <div className={FOLDER_TAB_STRIP}>
                 <button
                   type="button"
@@ -1009,7 +1220,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
               )}
 
               <div className={`${folderTabPanelClass(loginTabOrder.indexOf(loginMode), loginTabOrder.length)} space-y-4`}>
-                {!showReset && !showRegister && (
+                {!showReset && (
                   <form
                     id="mmh-login-form"
                     action={withBasePath("/login")}
@@ -1066,8 +1277,9 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                       ))}
                     </select>
                   ) : (
-                    <div className="rounded-md border border-dashed border-slate-300 bg-slate-50 px-3 py-2 text-xs text-slate-500">
-                      {t("login.noLocalUsers")}
+                    <div className="space-y-1 rounded-lg border border-amber-200 bg-amber-50/70 px-3 py-3">
+                      <div className="text-sm font-semibold text-slate-800">{t("login.noLocalUsersTitle")}</div>
+                      <div className="text-xs leading-5 text-slate-600">{t("login.noLocalUsers")}</div>
                     </div>
                   )}
                 </div>
@@ -1106,7 +1318,10 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                 </div>
                 )}
 
-                {loginMode !== "fnos" && (
+                {/* No password field when the ledger has no local account at all:
+                    showing one invited people to type a password that could never
+                    be checked. The block above already explains what to do. */}
+                {loginMode !== "fnos" && !localTabUnavailable && (
                 <div className="space-y-1">
                   <div className="text-xs font-medium text-slate-600">{t("login.password")}</div>
                     <input
@@ -1121,7 +1336,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                     type="password"
                     autoComplete="current-password"
                     className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
-                    placeholder={t("login.passwordPlaceholder")}
+                    placeholder={loginMode === "mmh" ? t("login.mmhPasswordPlaceholder") : t("login.passwordPlaceholder")}
                     autoFocus={loginHouseholdChoices.length === 0}
                   />
                 </div>
@@ -1141,7 +1356,6 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                       }
                       setShowMmhReset(true);
                       setShowReset(false);
-                      setShowRegister(false);
                     }}
                   >
                     {showMmhReset ? t("common.collapse") : t("login.mmhReset.forgot")}
@@ -1187,11 +1401,11 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                   >
                     {loading ? t("login.verifying") : t("login.fnosEnter")}
                   </button>
-                ) : (
+                ) : localTabUnavailable ? null : (
                   <button
                     type="submit"
                     className="h-10 w-full rounded-md bg-blue-600 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
-                    disabled={loading || (loginMode === "local" && localLoginUsers.length === 0)}
+                    disabled={loading}
                   >
                     {loading ? t("login.verifying") : t("login.enter")}
                   </button>
@@ -1394,8 +1608,9 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
             )}
 
             {/* 忘记密码 / 收起：始终排在卡片内容之后。
-                重置态下若留在表单上方，会被卡片顶边衬成「卡片标题」，观感突兀。 */}
-            {!showRegister && (
+                重置态下若留在表单上方，会被卡片顶边衬成「卡片标题」，观感突兀。
+                账簿没有本地账户时也没有可找回的本地密码，一并收起。 */}
+            {!localTabUnavailable && (
             <button
               type="button"
               className="w-full text-xs text-slate-500 hover:text-slate-700"
@@ -1419,116 +1634,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
           </div>
         )}
 
-        {showRegister && (
-          <div className="space-y-4 p-6">
-            <div className="space-y-1">
-              <div className="text-xs font-medium text-slate-600">{t("login.register.email")}</div>
-              <input
-                value={registerEmail}
-                onChange={(event) => {
-                  setRegisterEmail(event.target.value);
-                  setRegisterCodeSent(false);
-                  setRegisterCode("");
-                  setRegisterError("");
-                  setRegisterInfo("");
-                }}
-                type="email"
-                autoComplete="email"
-                className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
-                placeholder={t("login.register.emailPlaceholder")}
-                autoFocus
-              />
-            </div>
-            {registerCodeSent && (
-              <>
-                <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">{t("login.register.code")}</div>
-                  <input
-                    value={registerCode}
-                    onChange={(event) => {
-                      setRegisterCode(event.target.value);
-                      setRegisterError("");
-                    }}
-                    type="text"
-                    autoComplete="one-time-code"
-                    className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
-                    placeholder={t("login.register.codePlaceholder")}
-                  />
-                </div>
-                <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">{t("login.register.password")}</div>
-                  <input
-                    value={registerPassword}
-                    onChange={(event) => {
-                      setRegisterPassword(event.target.value);
-                      setRegisterError("");
-                    }}
-                    type="password"
-                    autoComplete="new-password"
-                    className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
-                    placeholder={t("login.passwordPlaceholder")}
-                  />
-                </div>
-                <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">{t("login.register.name")}</div>
-                  <input
-                    value={registerName}
-                    onChange={(event) => setRegisterName(event.target.value)}
-                    type="text"
-                    autoComplete="username"
-                    className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
-                    placeholder={t("login.register.namePlaceholder")}
-                  />
-                </div>
-              </>
-            )}
-            {registerInfo && <div className="text-sm text-slate-600">{registerInfo}</div>}
-            {registerError && <div className="text-sm text-red-600">{registerError}</div>}
-            {!registerCodeSent ? (
-              <button
-                type="button"
-                className="h-10 w-full rounded-md bg-blue-600 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
-                disabled={registerLoading}
-                onClick={() => void handleRegisterSendCode()}
-              >
-                {registerLoading ? t("login.verifying") : t("login.register.sendCode")}
-              </button>
-            ) : (
-              <div className="space-y-2">
-                <button
-                  type="button"
-                  className="h-10 w-full rounded-md bg-blue-600 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
-                  disabled={registerLoading}
-                  onClick={() => void handleRegisterConfirm()}
-                >
-                  {registerLoading ? t("login.register.submitting") : t("login.register.submit")}
-                </button>
-                <button
-                  type="button"
-                  className="h-10 w-full rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-                  disabled={registerLoading}
-                  onClick={() => void handleRegisterSendCode()}
-                >
-                  {t("login.register.resend")}
-                </button>
-              </div>
-            )}
-            <button
-              type="button"
-              className="w-full text-xs text-slate-500 hover:text-slate-700"
-              disabled={registerLoading}
-              onClick={() => {
-                setShowRegister(false);
-                setRegisterError("");
-                setRegisterInfo("");
-              }}
-            >
-              {t("login.register.back")}
-            </button>
-          </div>
-        )}
-
-        {mode === "create" && !showRegister && (
+        {mode === "create" && (
           <div className="space-y-4 p-6">
             {!initialLedgerSetup && (
               <div className="relative pt-10">
@@ -1587,61 +1693,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                           {t("login.fnosUser", { user: fnosGatewayUser?.username ?? fnosGatewayUser?.uid ?? "" })}
                         </div>
                       ) : createAuthMode === "mmh" ? (
-                        <div className="space-y-3 border-t border-slate-200 pt-3">
-                          <div className="space-y-1">
-                            <div className="text-xs font-medium text-slate-600">{t("login.register.email")}</div>
-                            <input
-                              value={registerEmail}
-                              onChange={(event) => {
-                                setRegisterEmail(event.target.value);
-                                setRegisterCodeSent(false);
-                                setRegisterCode("");
-                                setRegisterError("");
-                                setRegisterInfo("");
-                              }}
-                              type="email"
-                              autoComplete="email"
-                              className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                              placeholder={t("login.register.emailPlaceholder")}
-                            />
-                          </div>
-                          {registerCodeSent && (
-                            <>
-                              <div className="space-y-1">
-                                <div className="text-xs font-medium text-slate-600">{t("login.register.code")}</div>
-                                <input value={registerCode} onChange={(event) => setRegisterCode(event.target.value)} type="text" autoComplete="one-time-code" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" placeholder={t("login.register.codePlaceholder")} />
-                              </div>
-                              <div className="space-y-1">
-                                <div className="text-xs font-medium text-slate-600">{t("login.register.password")}</div>
-                                <input value={registerPassword} onChange={(event) => setRegisterPassword(event.target.value)} type="password" autoComplete="new-password" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" placeholder={t("login.passwordPlaceholder")} />
-                              </div>
-                              <div className="space-y-1">
-                                <div className="text-xs font-medium text-slate-600">{t("login.register.mmhPassword")}</div>
-                                <input value={registerMmhPassword} onChange={(event) => setRegisterMmhPassword(event.target.value)} type="password" autoComplete="new-password" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" placeholder={t("login.register.mmhPasswordPlaceholder")} />
-                              </div>
-                              <div className="space-y-1">
-                                <div className="text-xs font-medium text-slate-600">{t("login.register.name")}</div>
-                                <input value={registerName} onChange={(event) => setRegisterName(event.target.value)} type="text" autoComplete="username" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" placeholder={t("login.register.namePlaceholder")} />
-                              </div>
-                            </>
-                          )}
-                          {registerInfo && <div className="text-xs text-slate-600">{registerInfo}</div>}
-                          {registerError && <div className="text-xs text-red-600">{registerError}</div>}
-                          {!registerCodeSent ? (
-                              <button type="button" className="h-9 w-full rounded-md bg-blue-600 text-sm text-white hover:bg-blue-700 disabled:opacity-50" disabled={registerLoading} onClick={() => { setRegisterInviteMode(true); void handleRegisterSendCode(true); }}>
-                              {registerLoading ? t("login.verifying") : t("login.register.sendCode")}
-                            </button>
-                          ) : (
-                            <div className="space-y-2">
-                              <button type="button" className="h-9 w-full rounded-md bg-blue-600 text-sm text-white hover:bg-blue-700 disabled:opacity-50" disabled={registerLoading} onClick={() => { setRegisterInviteMode(true); void handleRegisterConfirm(true); }}>
-                                {registerLoading ? t("login.register.submitting") : t("login.register.submit")}
-                              </button>
-                              <button type="button" className="h-9 w-full rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50" disabled={registerLoading} onClick={() => { setRegisterInviteMode(true); void handleRegisterSendCode(true); }}>
-                                {t("login.register.resend")}
-                              </button>
-                            </div>
-                          )}
-                        </div>
+                        renderMmhCreateFields(true)
                       ) : (
                         <div className="space-y-3 border-t border-slate-200 pt-3">
                           <div className="space-y-1">
@@ -1790,23 +1842,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                     {t("login.fnosUser", { user: fnosGatewayUser?.username ?? fnosGatewayUser?.uid ?? "" })}
                   </div>
                 ) : createAuthMode === "mmh" ? (
-                  <div className="space-y-3 border-t border-slate-200 pt-3">
-                    <div className="space-y-1">
-                      <div className="text-xs font-medium text-slate-600">{t("login.register.email")}</div>
-                      <input value={registerEmail} onChange={(event) => { setRegisterEmail(event.target.value); setRegisterCodeSent(false); setRegisterCode(""); setRegisterError(""); setRegisterInfo(""); }} type="email" autoComplete="email" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm outline-none" placeholder={t("login.register.emailPlaceholder")} />
-                    </div>
-                    {registerCodeSent && (
-                      <>
-                        <div className="space-y-1"><div className="text-xs font-medium text-slate-600">{t("login.register.code")}</div><input value={registerCode} onChange={(event) => setRegisterCode(event.target.value)} type="text" autoComplete="one-time-code" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm outline-none" placeholder={t("login.register.codePlaceholder")} /></div>
-                        <div className="space-y-1"><div className="text-xs font-medium text-slate-600">{t("login.register.password")}</div><input value={registerPassword} onChange={(event) => setRegisterPassword(event.target.value)} type="password" autoComplete="new-password" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm outline-none" placeholder={t("login.passwordPlaceholder")} /></div>
-                        <div className="space-y-1"><div className="text-xs font-medium text-slate-600">{t("login.register.mmhPassword")}</div><input value={registerMmhPassword} onChange={(event) => setRegisterMmhPassword(event.target.value)} type="password" autoComplete="new-password" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm outline-none" placeholder={t("login.register.mmhPasswordPlaceholder")} /></div>
-                        <div className="space-y-1"><div className="text-xs font-medium text-slate-600">{t("login.register.name")}</div><input value={registerName} onChange={(event) => setRegisterName(event.target.value)} type="text" autoComplete="username" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm outline-none" placeholder={t("login.register.namePlaceholder")} /></div>
-                      </>
-                    )}
-                    {registerInfo && <div className="text-xs text-slate-600">{registerInfo}</div>}
-                    {registerError && <div className="text-xs text-red-600">{registerError}</div>}
-                    {!registerCodeSent ? <button type="button" className="h-10 w-full rounded-md bg-blue-600 text-sm text-white hover:bg-blue-700 disabled:opacity-50" disabled={registerLoading} onClick={() => void handleRegisterSendCode(false)}>{registerLoading ? t("login.verifying") : t("login.register.sendCode")}</button> : <button type="button" className="h-10 w-full rounded-md bg-blue-600 text-sm text-white hover:bg-blue-700 disabled:opacity-50" disabled={registerLoading} onClick={() => void handleRegisterConfirm(false)}>{registerLoading ? t("login.register.submitting") : t("login.register.submit")}</button>}
-                  </div>
+                  renderMmhCreateFields(false)
                 ) : (
                   <div className="space-y-3 border-t border-slate-200 pt-3">
                     <div className="space-y-1"><div className="text-xs font-medium text-slate-600">{t("login.adminUsername")}</div><input value={createAdminName} onChange={(event) => setCreateAdminName(event.target.value)} type="text" autoComplete="username" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm outline-none" placeholder={t("login.adminUsernamePlaceholder")} /></div>
@@ -1822,7 +1858,9 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
               </div>
             ) : null}
             {error && <div className="text-sm text-red-600">{error}</div>}
-            {(createMethod !== "invite" || createAuthMode !== "mmh") && (
+            {/* The MMH signup shape owns its own submit button ("register and
+                create the ledger"); every other shape submits the form here. */}
+            {!(createMethod === "invite" && createAuthMode === "mmh" && createMmhMode === "register") && (
               <button
                 type="button"
                 className="h-10 w-full rounded-md bg-blue-600 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
@@ -1861,7 +1899,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
           </div>
         )}
 
-        {mode === "login" && !showReset && !showRegister && (
+        {mode === "login" && !showReset && (
           <div className="px-6 pb-6 -mt-2 space-y-2">
             <button
               type="button"

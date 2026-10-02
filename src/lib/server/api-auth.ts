@@ -71,7 +71,7 @@ export async function getApiHouseholdScope(req: Request): Promise<ApiHouseholdCo
   const adminUser = await prisma.user.findFirst({
     where: { OR: [{ role: "admin" }, { isSystem: true }] },
     orderBy: [{ isSystem: "desc" }, { createdAt: "asc" }],
-    select: { id: true, name: true, role: true, isSystem: true, householdId: true, fnosUid: true, authVersion: true },
+    select: { id: true, name: true, role: true, isSystem: true, householdId: true, fnosUid: true, email: true, registrationPrincipalId: true, authVersion: true },
   });
 
   if (!adminUser) {
@@ -98,6 +98,8 @@ export async function getApiHouseholdScope(req: Request): Promise<ApiHouseholdCo
       isSystem: adminUser.isSystem,
       householdId: adminUser.householdId,
       fnosUid: adminUser.fnosUid,
+      email: adminUser.email,
+      registrationPrincipalId: adminUser.registrationPrincipalId,
       authVersion: adminUser.authVersion,
     },
     authMethod: "accessKey",

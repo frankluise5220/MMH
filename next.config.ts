@@ -37,6 +37,15 @@ const nextConfig: NextConfig = {
   // Re-exported for the hand-written URLs Next cannot rewrite (fetch,
   // window.location, raw asset src, metadata.icons, PWA manifest body).
   env: { NEXT_PUBLIC_MMH_BASE_PATH: basePath },
+  // Type-checking runs in the `next build` step and needs >2GB heap. The 149
+  // fnOS build host has only ~3.3GB RAM shared with the fnOS VM and services,
+  // so the check OOMs there. Type correctness is verified on the dev machine
+  // with `tsc --noEmit` before shipping; the fnOS host sets
+  // MMH_SKIP_BUILD_TYPE_CHECK=1 to skip the in-build check and only produce
+  // binaries. Never set this in CI/dev where the check is expected to run.
+  typescript: {
+    ignoreBuildErrors: process.env.MMH_SKIP_BUILD_TYPE_CHECK === "1",
+  },
   experimental: {
     proxyClientMaxBodySize: RESTORE_UPLOAD_LIMIT_CONFIG,
   },

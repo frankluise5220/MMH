@@ -2,8 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { FundSubtype, InsuranceAccountingType, InsuranceProductType, InsuranceStatus, Prisma } from "@prisma/client";
 
 import { isInsuranceAccount } from "@/lib/account-kind-utils";
-import { verifyPassword } from "@/lib/auth/password";
 import { getOrCreateInsuranceAccount } from "@/lib/insurance/autoAccount";
+import { verifySensitiveOperationPassword } from "@/lib/server/sensitive-operation-auth";
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { assertInstitutionDisplayNamesUnique } from "@/lib/server/institution-name-unique";
@@ -1152,23 +1152,9 @@ export async function DELETE(req: NextRequest) {
       if (!user) {
         return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "未登录" }, { status: 401 });
       }
-      const currentUser = await prisma.user.findUnique({ where: { id: user.id } });
-      if (!currentUser) {
-        return NextResponse.json({ ok: false, code: "USER_NOT_FOUND", error: "用户不存在" }, { status: 401 });
-      }
-      if (currentUser.passwordHash) {
-        const match = await verifyPassword(password, currentUser.passwordHash);
-        if (!match) {
-          return NextResponse.json({ ok: false, code: "INVALID_PASSWORD", error: "密码错误" }, { status: 401 });
-        }
-      } else {
-        const legacy = await prisma.systemSetting.findUnique({ where: { key: "access_password" } });
-        if (!legacy?.value) {
-          return NextResponse.json({ ok: false, code: "PASSWORD_NOT_SET", error: "请先设置密码" }, { status: 400 });
-        }
-        if (password !== legacy.value) {
-          return NextResponse.json({ ok: false, code: "INVALID_PASSWORD", error: "密码错误" }, { status: 401 });
-        }
+      const verification = await verifySensitiveOperationPassword(password);
+      if (!verification.ok) {
+        return NextResponse.json({ ok: false, code: verification.code ?? "AUTH_VERIFICATION_FAILED", error: verification.error }, { status: verification.status });
       }
 
       const linkedPolicies = await prisma.insuranceProduct.findMany({
@@ -1319,23 +1305,9 @@ export async function DELETE(req: NextRequest) {
     if (!user) {
       return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "未登录" }, { status: 401 });
     }
-    const currentUser = await prisma.user.findUnique({ where: { id: user.id } });
-    if (!currentUser) {
-      return NextResponse.json({ ok: false, code: "USER_NOT_FOUND", error: "用户不存在" }, { status: 401 });
-    }
-    if (currentUser.passwordHash) {
-      const match = await verifyPassword(password, currentUser.passwordHash);
-      if (!match) {
-        return NextResponse.json({ ok: false, code: "INVALID_PASSWORD", error: "密码错误" }, { status: 401 });
-      }
-    } else {
-      const legacy = await prisma.systemSetting.findUnique({ where: { key: "access_password" } });
-      if (!legacy?.value) {
-        return NextResponse.json({ ok: false, code: "PASSWORD_NOT_SET", error: "请先设置密码" }, { status: 400 });
-      }
-      if (password !== legacy.value) {
-        return NextResponse.json({ ok: false, code: "INVALID_PASSWORD", error: "密码错误" }, { status: 401 });
-      }
+    const verification = await verifySensitiveOperationPassword(password);
+    if (!verification.ok) {
+      return NextResponse.json({ ok: false, code: verification.code ?? "AUTH_VERIFICATION_FAILED", error: verification.error }, { status: verification.status });
     }
 
     await prisma.$transaction(async (tx) => {

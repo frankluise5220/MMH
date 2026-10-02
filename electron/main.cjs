@@ -227,6 +227,7 @@ function startServer() {
       HOSTNAME: bindHost,
       DATABASE_URL: dbUrl(),
       MMH_DEPLOY_TARGET: "windows",
+      MMH_APP_VERSION: app.getVersion(),
       MMH_DATA_DIR: userDataDir,
       MMH_SESSION_SECRET: ensureSessionSecret(),
     };

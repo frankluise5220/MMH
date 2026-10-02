@@ -39,6 +39,7 @@ import {
 import { FIXED_ASSET_TYPES, isFixedAssetAccountLike } from "@/lib/fixed-asset";
 import { supportsTradingCalendarForAccount, TRADING_CALENDARS } from "@/lib/fund/trading-calendar";
 import { useI18n } from "@/lib/i18n";
+import { CredentialPasswordField } from "@/components/CredentialPasswordField";
 import { showConfirmDialog } from "@/lib/client/confirm-dialog";
 import { CURRENCY_OPTIONS, normalizeCurrency } from "@/lib/currency";
 import { formatCurrencyMoney } from "@/lib/format";
@@ -753,6 +754,24 @@ export default function SettingsAccountsPage() {
     window.alert(data.error);
   }, [t, tf, refreshSettingsAccounts]);
 
+  // Shared by the dialog's Enter key and its confirm button so both submit the
+  // same request (they used to duplicate the fetch body verbatim).
+  const submitDeleteWithPassword = useCallback(async () => {
+    if (!deleteTarget) return;
+    const res = await fetch(`/api/v1/accounts?id=${deleteTarget.account.id}`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password: deletePassword }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      setDeleteTarget(null);
+      void refreshSettingsAccounts("account:delete-with-password");
+    } else {
+      setDeleteError(data.error);
+    }
+  }, [deleteTarget, deletePassword, refreshSettingsAccounts]);
+
   // ---- 软删除记录预览与彻底删除（「待删」列入口） ----
   const openTrash = useCallback((a: Account) => {
     setTrashAccount(a);
@@ -1242,46 +1261,18 @@ export default function SettingsAccountsPage() {
                 </div>
               ) : null}
             </div>
-            <input
-              type="password"
+            <CredentialPasswordField
               value={deletePassword}
-              onChange={e => { setDeletePassword(e.target.value); setDeleteError(""); }}
-              onKeyDown={async e => {
-                if (e.key === "Enter") {
-                  const res = await fetch(`/api/v1/accounts?id=${deleteTarget.account.id}`, {
-                    method: "DELETE",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ password: deletePassword }),
-                  });
-                  const data = await res.json();
-                  if (data.ok) {
-                    setDeleteTarget(null);
-                    void refreshSettingsAccounts("account:delete-with-password");
-                  }
-                  else setDeleteError(data.error);
-                }
-              }}
-              placeholder={t("settings.accounts.passwordPlaceholder")}
+              onChange={(value) => { setDeletePassword(value); setDeleteError(""); }}
+              onEnter={() => void submitDeleteWithPassword()}
+              inputClassName="h-9 w-full rounded-md border border-slate-200 px-3 text-sm outline-none focus:border-blue-400"
               autoFocus
-              className="h-9 w-full rounded-md border border-slate-200 px-3 text-sm outline-none focus:border-blue-400"
             />
             {deleteError && <div className="text-xs text-red-500 mt-1">{deleteError}</div>}
             <div className="flex justify-end gap-2 mt-3">
               <button onClick={() => { setDeleteTarget(null); setDeleteError(""); }}
                 className="h-8 px-3 rounded-md border border-slate-200 bg-white text-xs text-slate-600 hover:bg-slate-50">{t("common.cancel")}</button>
-              <button onClick={async () => {
-                const res = await fetch(`/api/v1/accounts?id=${deleteTarget.account.id}`, {
-                  method: "DELETE",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ password: deletePassword }),
-                });
-                const data = await res.json();
-                if (data.ok) {
-                  setDeleteTarget(null);
-                  void refreshSettingsAccounts("account:delete-with-password");
-                }
-                else setDeleteError(data.error);
-              }}
+              <button onClick={() => void submitDeleteWithPassword()}
                 className="h-8 px-3 rounded-md bg-red-600 text-white text-xs hover:bg-red-700">{t("settings.accounts.confirmDelete")}</button>
             </div>
           </div>

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { AlertTriangle, X } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
+import { CredentialPasswordField } from "@/components/CredentialPasswordField";
 
 type InsurancePolicyDeleteValue = {
   id: string;
@@ -67,17 +68,7 @@ export function InsurancePolicyDeleteModal({
           </div>
 
           {value.relatedEntryCount > 0 ? (
-            <div className="space-y-1">
-              <div className="form-label">{t("insurancePolicy.confirmPassword")}</div>
-              <input
-                type="password"
-                value={password}
-                onChange={(event) => setPassword(event.target.value)}
-                className="form-input"
-                autoComplete="current-password"
-                placeholder={t("insurancePolicy.passwordPlaceholder")}
-              />
-            </div>
+            <CredentialPasswordField value={password} onChange={setPassword} />
           ) : null}
         </div>
 

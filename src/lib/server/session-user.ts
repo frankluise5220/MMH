@@ -21,6 +21,8 @@ export type SessionUserRow = {
   isSystem: boolean;
   householdId: string | null;
   fnosUid: string | null;
+  email: string | null;
+  registrationPrincipalId: string | null;
   authVersion: number;
 };
 
@@ -31,6 +33,8 @@ export const SESSION_USER_SELECT = {
   isSystem: true,
   householdId: true,
   fnosUid: true,
+  email: true,
+  registrationPrincipalId: true,
   authVersion: true,
 } as const;
 

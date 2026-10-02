@@ -6,6 +6,7 @@ import { Check, RefreshCw, Shield, X } from "lucide-react";
 import { SettingsActionButton, SettingsPrimaryAddButton } from "@/components/settings/SettingsPageScaffold";
 import { getHouseholdDisplayName } from "@/lib/household-display";
 import { useI18n } from "@/lib/i18n";
+import { CredentialPasswordField } from "@/components/CredentialPasswordField";
 
 type Household = {
   id: string;
@@ -585,18 +586,12 @@ export default function LedgerSettingsPage() {
                 autoFocus
               />
             </label>
-            <label className="grid gap-1.5">
-              <span className="form-label inline-flex items-center gap-1.5"><Shield className="h-3.5 w-3.5 text-amber-500" />{t("settings.ledgers.currentPasswordLabel")}</span>
-              <input
-                type="password"
-                value={deleteForm.dbPassword}
-                onChange={(event) => setDeleteForm((prev) => prev ? { ...prev, dbPassword: event.target.value } : prev)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") void deleteLedger();
-                }}
-                className="form-input"
-              />
-            </label>
+            <CredentialPasswordField
+              value={deleteForm.dbPassword}
+              onChange={(value) => setDeleteForm((prev) => prev ? { ...prev, dbPassword: value } : prev)}
+              onEnter={() => void deleteLedger()}
+              labelIcon={<Shield className="h-3.5 w-3.5 text-amber-500" />}
+            />
             <div className="flex justify-end gap-2">
               <button type="button" onClick={() => setDeleteForm(null)} disabled={busy?.startsWith("delete:")} className="h-9 rounded-md border border-slate-200 bg-white px-4 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50">
                 {t("common.cancel")}

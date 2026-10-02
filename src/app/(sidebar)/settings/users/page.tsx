@@ -15,6 +15,7 @@ import {
 } from "@/components/settings/SettingsPageScaffold";
 import { SESSION_DAY_OPTIONS } from "@/lib/session-days";
 import { useI18n } from "@/lib/i18n";
+import { CredentialPasswordField, resetCredentialKindCache } from "@/components/CredentialPasswordField";
 
 type ManagedUser = {
   id: string;
@@ -502,6 +503,11 @@ export default function UsersPage() {
   const [savingSessionUserId, setSavingSessionUserId] = useState("");
   const [registerTarget, setRegisterTarget] = useState<ManagedUser | null>(null);
   const [fnosBindTarget, setFnosBindTarget] = useState<ManagedUser | null>(null);
+  // fnOS passwordless login only exists inside the native fnOS app environment
+  // (the unified gateway injects `X-Trim-*` headers there). Synology, Docker and
+  // Windows builds have no fnOS capability at all, so every fnOS-related control
+  // must stay hidden unless the backend reports a fnOS deployment.
+  const [isFnosEnvironment, setIsFnosEnvironment] = useState(false);
 
   useEffect(() => {
     fetchUsers();
@@ -520,16 +526,19 @@ export default function UsersPage() {
       if ("ok" in data && data.ok && Array.isArray(data.users)) {
         setUsers(data.users);
         setCanManageUsers(data.canManageUsers === true);
+        setIsFnosEnvironment(data.isFnosEnvironment === true);
         setLoadError("");
       } else {
         setUsers([]);
         setCanManageUsers(false);
+        setIsFnosEnvironment(false);
         const hint = "ok" in data ? (data.error || t("settings.users.requestFailed", { status: res.status })) : t("settings.users.requestFailed", { status: res.status });
         setLoadError(hint);
       }
     } catch {
       setUsers([]);
       setCanManageUsers(false);
+      setIsFnosEnvironment(false);
       setLoadError(t("settings.users.networkError"));
     }
   }
@@ -547,6 +556,12 @@ export default function UsersPage() {
       });
       const result = await res.json().catch(() => null);
       if (result?.ok) {
+        // Setting a local password turns a fnOS-bound or MMH-only account into
+        // a locally-verifiable one. The verification dialogs cache the account's
+        // credential kind for the whole client session, so drop it here — else a
+        // fnOS user who just set a local password keeps seeing the "go set a
+        // local password" notice in every sensitive-operation dialog until reload.
+        if (data.password) resetCredentialKindCache();
         await fetchUsers();
         setShowModal(false);
         setEditingUser(null);
@@ -704,12 +719,14 @@ export default function UsersPage() {
                     }`}>
                       {t("settings.users.status.local")}
                     </span>
-                    <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${u.fnosUid
-                      ? "border-sky-700 bg-sky-50 text-sky-800"
-                      : "border-dashed border-sky-300 bg-white text-sky-400"
-                    }`}>
-                      {t("settings.users.status.fnos")}
-                    </span>
+                    {isFnosEnvironment ? (
+                      <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${u.fnosUid
+                        ? "border-sky-700 bg-sky-50 text-sky-800"
+                        : "border-dashed border-sky-300 bg-white text-sky-400"
+                      }`}>
+                        {t("settings.users.status.fnos")}
+                      </span>
+                    ) : null}
                     <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${u.registrationPrincipalId
                       ? "border-violet-700 bg-violet-50 text-violet-800"
                       : "border-dashed border-violet-300 bg-white text-violet-400"
@@ -734,11 +751,13 @@ export default function UsersPage() {
                           onClick={() => setRegisterTarget(u)}
                         />
                       )}
-                      <SettingsActionButton
-                        label={u.fnosUid ? t("settings.users.register.fnidBound") : t("settings.users.register.bindFnid")}
-                        variant="default"
-                        onClick={() => setFnosBindTarget(u)}
-                      />
+                      {isFnosEnvironment ? (
+                        <SettingsActionButton
+                          label={u.fnosUid ? t("settings.users.register.fnidBound") : t("settings.users.register.bindFnid")}
+                          variant="default"
+                          onClick={() => setFnosBindTarget(u)}
+                        />
+                      ) : null}
                       {!u.isSystem ? (
                         <SettingsActionButton
                           label={t("settings.users.delete")}
@@ -770,7 +789,7 @@ export default function UsersPage() {
         />
       )}
 
-      {fnosBindTarget && (
+      {isFnosEnvironment && fnosBindTarget && (
         <FnosBindModal
           target={fnosBindTarget}
           onClose={() => setFnosBindTarget(null)}
@@ -809,17 +828,13 @@ export default function UsersPage() {
               <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
                 {t("settings.users.delete.confirm", { name: deleteTarget.name })}
               </div>
-              <div>
-                <label className="mb-1.5 block text-xs font-medium text-slate-600">{t("settings.users.delete.passwordLabel")}</label>
-                <input
-                  type="password"
-                  value={deletePassword}
-                  onChange={(e) => { setDeletePassword(e.target.value); setDeleteError(""); }}
-                  className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                  placeholder={t("settings.users.delete.passwordRequired")}
-                  autoFocus
-                />
-              </div>
+              <CredentialPasswordField
+                value={deletePassword}
+                onChange={(value) => { setDeletePassword(value); setDeleteError(""); }}
+                inputClassName="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                labelClassName="text-xs font-medium text-slate-600"
+                autoFocus
+              />
               {deleteError && (
                 <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">{deleteError}</div>
               )}

@@ -801,7 +801,9 @@ export async function PUT(req: NextRequest) {
       where: { id },
       // 存款/债券系统计划被手动编辑后置 manualOverride：自愈（ensureDepositPlansForLot /
       // ensureBondPlansForLot）不再用存单条款覆盖用户改过的金额/周期/下次执行日。
-      data: isLotSystemPlan ? { ...updateData, manualOverride: true } : updateData,
+      // 保险缴费计划同理：置位后记录缴费流水（transactions/detail 的保单计划刷新）
+      // 不再用保单条款把用户改过的金额/频率/执行日/起算日/总期数覆盖回去。
+      data: isLotSystemPlan || isInsuranceTask ? { ...updateData, manualOverride: true } : updateData,
     });
 
     // Sync confirm days and fee rate to the unified store

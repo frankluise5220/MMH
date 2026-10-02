@@ -325,6 +325,8 @@ expect(/assertManifestChangelog\(manifestChangelog\);/.test(buildScript), "fnOS 
 expect(!/packageManifestNotes \|\|/.test(buildScript), "fnOS package build must not fall back to full release notes for the App Center changelog.");
 expect(/changelog=\$\{manifestChangelog\}/.test(buildScript), "fnOS manifest must include a changelog for official submission.");
 expect(/mmhReleaseNotes/.test(buildScript), "fnOS package build must copy release notes into the runtime package.json.");
+expect(/\.mmh-version/.test(buildScript), "fnOS package build must inject the outer package version into the runtime payload.");
+expect(/export MMH_APP_VERSION/.test(buildScript), "fnOS start script must export the package version to the runtime.");
 expect(!/path\.join\(stageDir,\s*"wizard",\s*"install"\)/.test(buildScript), "fnOS package must not ship wizard/install; the FN soft-store client only parses that file, and shipping it makes every update wait for the service port again.");
 expect(!/path\.join\(stageDir,\s*"wizard",\s*"upgrade"\)/.test(buildScript), "fnOS package must not ship wizard/upgrade; updates must not ask for the service port.");
 expect(/path\.join\(stageDir,\s*"wizard",\s*"uninstall"\)/.test(buildScript), "fnOS package must ship wizard/uninstall so manual uninstalls from the App Center offer a keep/delete-data choice; the FN soft-store client never parses it and CLI-driven update uninstalls pass no wizard parameters, so silent updates stay unaffected.");

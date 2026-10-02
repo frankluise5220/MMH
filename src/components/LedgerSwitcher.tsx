@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { Plus, Check, Pencil, X, Trash2, Shield } from "lucide-react";
 import { getHouseholdDisplayName } from "@/lib/household-display";
 import { useI18n } from "@/lib/i18n";
+import { CredentialPasswordField } from "@/components/CredentialPasswordField";
 
 type Household = { id: string; name: string; createdAt?: string };
 type ApiResult = { ok?: boolean; code?: string; error?: string };
@@ -98,22 +99,21 @@ export function LedgerSwitcher({
     setSwitchError("");
   }
 
+  // The target ledger's administrator credentials are verified by
+  // `households/switch` itself, which already accepts all three identity types
+  // (local password → fnOS → MMH membership password). The old local-only
+  // `auth/verify` pre-check ran first and rejected MMH-only target
+  // administrators, so switching to such a ledger could never succeed — the
+  // check was redundant and harmful, and is gone.
   async function handleSwitchVerify() {
-    if (!switchTargetId || !switchPassword.trim() || !switchUsername.trim() || switching) return;
+    if (!switchTargetId || switching) return;
+    // An admin needs no target credentials (the server skips verification for
+    // them), so the guard only applies to regular users.
+    if (!isAdminUser && (!switchUsername.trim() || !switchPassword.trim())) return;
     setSwitching(true);
     setSwitchError("");
     try {
-      const res = await fetch("/api/v1/auth/verify", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ username: switchUsername.trim(), password: switchPassword, householdId: switchTargetId }),
-      });
-      const d = await res.json();
-      if (d.ok) {
-        await switchTo(switchTargetId, switchUsername.trim(), switchPassword);
-      } else {
-        setSwitchError(d.error ?? t("ledgerSwitch.error.verifyFailed"));
-      }
+      await switchTo(switchTargetId, switchUsername.trim(), switchPassword);
     } catch {
       setSwitchError(t("ledgerSwitch.error.network"));
     } finally {
@@ -434,28 +434,39 @@ export function LedgerSwitcher({
                 </div>
 
                 <div className="p-6 space-y-4">
-                  <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">{t("ledgerSwitch.adminUsername")}</div>
-                    <input
-                      value={switchUsername}
-                      onChange={(e) => setSwitchUsername(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === "Enter") handleSwitchVerify(); }}
-                      className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400"
-                      placeholder={t("ledgerSwitch.usernamePlaceholder")}
-                      autoFocus
-                    />
-                  </div>
-                  <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">{t("ledgerSwitch.password")}</div>
-                    <input
-                      type="password"
-                      value={switchPassword}
-                      onChange={(e) => setSwitchPassword(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === "Enter") handleSwitchVerify(); }}
-                      className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400"
-                      placeholder={t("ledgerSwitch.loginPasswordPlaceholder")}
-                    />
-                  </div>
+                  {isAdminUser ? (
+                    // An admin may switch into any ledger, and `households/switch`
+                    // skips verification for them entirely. Asking for the target
+                    // ledger's admin credentials here was a UI/server mismatch —
+                    // the fields were required on screen and ignored on the server.
+                    <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-500">
+                      {t("ledgerSwitch.adminDirectSwitch")}
+                    </div>
+                  ) : (
+                    <>
+                      <div className="space-y-1">
+                        <div className="text-xs font-medium text-slate-600">{t("ledgerSwitch.adminUsername")}</div>
+                        <input
+                          value={switchUsername}
+                          onChange={(e) => setSwitchUsername(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === "Enter") handleSwitchVerify(); }}
+                          className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400"
+                          placeholder={t("ledgerSwitch.usernamePlaceholder")}
+                          autoFocus
+                        />
+                      </div>
+                      {/* The target ledger's administrator may be local or MMH-only,
+                          so the label follows that account's credential type. */}
+                      <CredentialPasswordField
+                        subject="target"
+                        householdId={switchTargetId ?? undefined}
+                        value={switchPassword}
+                        onChange={setSwitchPassword}
+                        onEnter={() => void handleSwitchVerify()}
+                        inputClassName="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400"
+                      />
+                    </>
+                  )}
 
                   {switchError && (
                     <div className="text-sm text-red-600">{switchError}</div>
@@ -486,7 +497,7 @@ export function LedgerSwitcher({
                     <button
                       type="button"
                       onClick={handleSwitchVerify}
-                      disabled={switching || !switchUsername.trim() || !switchPassword.trim()}
+                      disabled={switching || (!isAdminUser && (!switchUsername.trim() || !switchPassword.trim()))}
                       className="flex-1 h-10 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50"
                     >
                       {switching ? t("ledgerSwitch.verifying") : t("ledgerSwitch.confirmSwitch")}
@@ -519,17 +530,6 @@ export function LedgerSwitcher({
                   />
                   <div className="text-[10px] text-slate-400">{t("ledgerSwitch.adminNameHint")}</div>
                 </div>
-                    <div className="space-y-1">
-                      <div className="text-xs font-medium text-slate-600">{t("ledgerSwitch.adminName")}</div>
-                      <input
-                        value={createAdminName}
-                        onChange={(e) => setCreateAdminName(e.target.value)}
-                        className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400"
-                        placeholder={t("ledgerSwitch.adminNamePlaceholder")}
-                        autoFocus
-                      />
-                      <div className="text-[10px] text-slate-400">{t("ledgerSwitch.adminNameHint")}</div>
-                    </div>
                     <div className="space-y-1">
                       <div className="text-xs font-medium text-slate-600">{t("ledgerSwitch.email")}</div>
                       <input
@@ -626,18 +626,13 @@ export function LedgerSwitcher({
 
                   {/* Current user password verification */}
                   <div className="pt-2 border-t border-slate-100">
-                    <div className="flex items-center gap-1.5 mb-1">
-                      <Shield className="h-3.5 w-3.5 text-amber-500 shrink-0" />
-                      <span className="text-xs font-medium text-amber-700">{t("ledgerSwitch.passwordVerifyTitle")}</span>
-                    </div>
-                    <input
-                      type="password"
+                    <CredentialPasswordField
                       value={deleteDbPassword}
-                      onChange={(e) => { setDeleteDbPassword(e.target.value); setDeleteError(""); }}
-                      onKeyDown={(e) => { if (e.key === "Enter") handleDelete(); }}
-                      className="h-10 w-full rounded-md border border-amber-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-amber-100 focus:border-amber-400"
-                      placeholder={t("ledgerSwitch.currentPasswordPlaceholder")}
-                      autoComplete="off"
+                      onChange={(value) => { setDeleteDbPassword(value); setDeleteError(""); }}
+                      onEnter={() => void handleDelete()}
+                      inputClassName="h-10 w-full rounded-md border border-amber-200 bg-white px-3 text-sm outline-none focus:ring-2 focus:ring-amber-100 focus:border-amber-400"
+                      labelClassName="text-xs font-medium text-amber-700"
+                      labelIcon={<Shield className="h-3.5 w-3.5 text-amber-500 shrink-0" />}
                     />
                     <div className="mt-1 text-[10px] text-slate-400">{t("ledgerSwitch.passwordVerifyHint")}</div>
                   </div>

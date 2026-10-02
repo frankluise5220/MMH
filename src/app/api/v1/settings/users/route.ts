@@ -1,8 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
-import { hashPassword, verifyPassword } from "@/lib/auth/password";
+import { hashPassword } from "@/lib/auth/password";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { verifySensitiveOperationPassword } from "@/lib/server/sensitive-operation-auth";
 import { getCurrentUser, isAdmin } from "@/lib/server/auth";
 import { DEFAULT_SESSION_DAYS, normalizeSessionDays } from "@/lib/session-days";
 
@@ -294,13 +295,9 @@ export async function DELETE(req: NextRequest) {
     return NextResponse.json({ ok: false, code: "PASSWORD_REQUIRED", error: "请输入当前用户密码" }, { status: 400, headers: cors() });
   }
 
-  const operator = await prisma.user.findUnique({ where: { id: currentUser!.id } });
-  if (!operator?.passwordHash) {
-    return NextResponse.json({ ok: false, code: "OPERATOR_NO_PASSWORD", error: "当前用户未设置密码，不能执行删除用户操作" }, { status: 403, headers: cors() });
-  }
-  const passwordMatched = await verifyPassword(parse.data.password, operator.passwordHash);
-  if (!passwordMatched) {
-    return NextResponse.json({ ok: false, code: "INVALID_PASSWORD", error: "当前用户密码不正确" }, { status: 403, headers: cors() });
+  const verification = await verifySensitiveOperationPassword(parse.data.password);
+  if (!verification.ok) {
+    return NextResponse.json({ ok: false, code: verification.code ?? "AUTH_VERIFICATION_FAILED", error: verification.error }, { status: verification.status ?? 403, headers: cors() });
   }
 
   const existing = await prisma.user.findUnique({ where: { id } });

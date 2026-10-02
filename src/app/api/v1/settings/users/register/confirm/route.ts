@@ -6,8 +6,7 @@ import { hashPassword } from "@/lib/auth/password";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { getCurrentUser, isAdmin } from "@/lib/server/auth";
 import { registerEmailPrincipal } from "@/lib/server/registration-client";
-import { createVerifiedSessionValue, HOUSEHOLD_COOKIE, SESSION_DAYS_COOKIE, sessionCookieOptions, USER_ID_COOKIE, USERNAME_COOKIE, VERIFIED_COOKIE } from "@/lib/server/session-cookies";
-import { normalizeSessionDays, sessionDaysToMaxAge } from "@/lib/session-days";
+import { getUserSessionDays, issueSessionCookies } from "@/lib/server/session-issue";
 
 export const runtime = "nodejs";
 
@@ -26,15 +25,6 @@ function cors() {
     "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
     "Access-Control-Allow-Headers": "Content-Type, Authorization",
   } as const;
-}
-
-async function getUserSessionDays(userId: string) {
-  try {
-    const settings = await prisma.userSettings.findUnique({ where: { userId }, select: { sessionDays: true } });
-    return normalizeSessionDays(settings?.sessionDays);
-  } catch {
-    return normalizeSessionDays(undefined);
-  }
 }
 
 export async function OPTIONS() {
@@ -197,21 +187,16 @@ export async function POST(req: NextRequest) {
   // authVersion is untouched and the operator stays signed in.
   if (passwordWasSet && target.id === currentUser.id) {
     const newAuthVersion = target.authVersion + 1;
-    const sessionDays = await getUserSessionDays(target.id);
-    const maxAge = sessionDaysToMaxAge(sessionDays);
-    const cookieOptions = sessionCookieOptions(maxAge, req);
-    response.cookies.set(VERIFIED_COOKIE, createVerifiedSessionValue(target.id, maxAge, newAuthVersion), cookieOptions);
-    response.cookies.set(USER_ID_COOKIE, target.id, cookieOptions);
-    response.cookies.set(USERNAME_COOKIE, target.name, cookieOptions);
-    response.cookies.set(SESSION_DAYS_COOKIE, String(sessionDays), {
-      path: "/",
-      maxAge: 60 * 60 * 24 * 365,
-      httpOnly: false,
-      sameSite: "lax",
-    });
-    if (target.householdId) {
-      response.cookies.set(HOUSEHOLD_COOKIE, target.householdId, cookieOptions);
-    }
+    issueSessionCookies(
+      response,
+      {
+        userId: target.id,
+        name: target.name,
+        householdId: target.householdId,
+        authVersion: newAuthVersion,
+      },
+      { sessionDays: await getUserSessionDays(target.id), req },
+    );
   }
 
   return response;

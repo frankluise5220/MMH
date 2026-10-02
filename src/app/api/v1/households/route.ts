@@ -1,27 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { canWrite, getCurrentUser, isAdmin, isReadOnly } from "@/lib/server/auth";
-import {
-  HOUSEHOLD_COOKIE,
-  SESSION_DAYS_COOKIE,
-  USER_ID_COOKIE,
-  USERNAME_COOKIE,
-  VERIFIED_COOKIE,
-  createVerifiedSessionValue,
-  sessionCookieOptions,
-} from "@/lib/server/session-cookies";
+import { issueSessionCookies, sessionDaysFromRequest } from "@/lib/server/session-issue";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { getHouseholdDisplayName } from "@/lib/household-display";
 import { createLedgerWithDefaults } from "@/lib/households/create-ledger";
+import { hashPassword } from "@/lib/auth/password";
 import { optionalPrismaDeleteMany } from "@/lib/server/optional-prisma-delegate";
 import { logger } from "@/lib/logger";
-
-function resolveSessionMaxAge(req: NextRequest) {
-  const raw = req.cookies.get(SESSION_DAYS_COOKIE)?.value ?? "30";
-  const days = Number(raw);
-  const normalizedDays = Number.isFinite(days) ? Math.min(Math.max(Math.round(days), 1), 365) : 30;
-  return normalizedDays * 24 * 60 * 60;
-}
 
 export async function GET() {
   const user = await getCurrentUser();
@@ -99,13 +85,16 @@ export async function POST(req: NextRequest) {
       })
     : null;
 
+  // Hash before the transaction: bcrypt is CPU-bound and needs no database access.
+  const adminPasswordHash = fnosUid || !adminPassword ? null : await hashPassword(adminPassword);
+
   const created = await prisma.$transaction((tx) =>
     createLedgerWithDefaults(
       tx,
       {
         name,
         adminName,
-        adminPassword: fnosUid ? undefined : adminPassword,
+        adminPasswordHash,
         adminEmail,
         fnosUid: fnosUid || undefined,
         registrationPrincipalId: existingMmhPrincipal?.registrationPrincipalId,
@@ -117,22 +106,16 @@ export async function POST(req: NextRequest) {
   // Creating a ledger is also a login transition: issue the new admin session
   // so the redirect cannot reopen the previous ledger from stale cookies.
   const response = NextResponse.json({ ok: true, household: created.household });
-  const maxAge = resolveSessionMaxAge(req);
-  const cookieOptions = sessionCookieOptions(maxAge, req);
-  response.cookies.set(
-    VERIFIED_COOKIE,
-    createVerifiedSessionValue(created.adminUser.id, maxAge, created.adminUser.authVersion),
-    cookieOptions,
+  issueSessionCookies(
+    response,
+    {
+      userId: created.adminUser.id,
+      name: created.adminUser.name,
+      householdId: created.household.id,
+      authVersion: created.adminUser.authVersion,
+    },
+    { sessionDays: sessionDaysFromRequest(req), req },
   );
-  response.cookies.set(USER_ID_COOKIE, created.adminUser.id, cookieOptions);
-  response.cookies.set(USERNAME_COOKIE, created.adminUser.name, cookieOptions);
-  response.cookies.set(SESSION_DAYS_COOKIE, String(Math.round(maxAge / (24 * 60 * 60))), {
-    path: "/",
-    maxAge: 365 * 24 * 60 * 60,
-    httpOnly: false,
-    sameSite: "lax",
-  });
-  response.cookies.set(HOUSEHOLD_COOKIE, created.household.id, cookieOptions);
   return response;
 }
 

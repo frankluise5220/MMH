@@ -151,17 +151,21 @@ export function DepositShell({
       const parsed = parseDepositInterestPayout(frequency);
       if (parsed.kind !== "periodic") return t("deposit.payoutFrequency.maturity");
       const unitKey =
-        parsed.unit === "week"
-          ? "depositForm.termUnit.week"
-          : parsed.unit === "year"
-            ? "depositForm.termUnit.year"
-            : "depositForm.termUnit.month";
+        parsed.unit === "day"
+          ? "depositForm.termUnit.day"
+          : parsed.unit === "week"
+            ? "depositForm.termUnit.week"
+            : parsed.unit === "year"
+              ? "depositForm.termUnit.year"
+              : "depositForm.termUnit.month";
       if (parsed.interval <= 1) {
-        return parsed.unit === "week"
-          ? t("deposit.payoutFrequency.weekly")
-          : parsed.unit === "year"
-            ? t("deposit.payoutFrequency.yearly")
-            : t("deposit.payoutFrequency.monthly");
+        return parsed.unit === "day"
+          ? t("deposit.payoutFrequency.daily")
+          : parsed.unit === "week"
+            ? t("deposit.payoutFrequency.weekly")
+            : parsed.unit === "year"
+              ? t("deposit.payoutFrequency.yearly")
+              : t("deposit.payoutFrequency.monthly");
       }
       return t("deposit.payoutFrequency.everyN", {
         interval: String(parsed.interval),

@@ -28,6 +28,7 @@ import {
 import {
   clampDepositInterestPayoutInterval,
   encodeDepositInterestPayout,
+  foldDepositPayoutWeekToDay,
   maxDepositInterestPayoutInterval,
   parseDepositInterestPayout,
   type DepositInterestPayoutUnit,
@@ -299,8 +300,9 @@ export function DepositFormModal({
         ? "renew_principal_interest"
         : "redeem",
   );
-  const initPayout = parseDepositInterestPayout(
-    mode === "edit" ? entry?.depositInterestPayoutFrequency : null,
+  // 取息周期选项只有 天/月/年；老存单的 "weekly" 折成等价的「每 N 天」，避免选中项落空。
+  const initPayout = foldDepositPayoutWeekToDay(
+    parseDepositInterestPayout(mode === "edit" ? entry?.depositInterestPayoutFrequency : null),
   );
   const [interestPayoutUnit, setInterestPayoutUnit] = useState<"maturity" | DepositInterestPayoutUnit>(
     initPayout.kind === "periodic" ? initPayout.unit : "maturity",
@@ -803,7 +805,9 @@ export function DepositFormModal({
     const maturity = detail.defaultRenewMaturityDate ?? "";
     const principal = detail.defaultRenewPrincipal ?? 0;
     const rate = detail.defaultRenewAnnualRate ?? 0;
-    const payout = parseDepositInterestPayout(detail.defaultRenewPayoutFrequency ?? null);
+    const payout = foldDepositPayoutWeekToDay(
+      parseDepositInterestPayout(detail.defaultRenewPayoutFrequency ?? null),
+    );
     // 期间付息的存单利息已经逐期付过了，没有可滚入的利息，只能本金续存。
     const rollInDisabled = payout.kind === "periodic";
     const nextMode: "renew_principal" | "renew_principal_interest" =
@@ -1146,7 +1150,9 @@ export function DepositFormModal({
             : "redeem",
       );
       {
-        const payout = parseDepositInterestPayout(detail.depositInterestPayoutFrequency);
+        const payout = foldDepositPayoutWeekToDay(
+          parseDepositInterestPayout(detail.depositInterestPayoutFrequency),
+        );
         if (payout.kind === "periodic") {
           setInterestPayoutUnit(payout.unit);
           setInterestPayoutInterval(String(payout.interval));
@@ -1945,7 +1951,7 @@ export function DepositFormModal({
                 // 到期行为 + 取息相关控件统一铺满整宽、共用同一列宽，
                 // 每一行都填满、不留空白格：
                 //   到期一次付 → [到期行为][取息周期]
-                //   按周/按年 → [到期行为][取息周期][取息间隔]（三列同一行）
+                //   按天/按年 → [到期行为][取息周期][取息间隔]（三列同一行）
                 //   按月     → [到期行为][取息周期][计息方式][取息间隔]（四列同一行）
                 <div className={`grid grid-cols-1 items-start gap-3 ${
                   isPeriodicInterestPayout
@@ -2000,7 +2006,7 @@ export function DepositFormModal({
                       className="form-input w-full"
                     >
                       <option value="maturity">{t("deposit.payoutFrequency.maturity")}</option>
-                      <option value="week">{t("deposit.payoutFrequency.weekly")}</option>
+                      <option value="day">{t("deposit.payoutFrequency.daily")}</option>
                       <option value="month">{t("deposit.payoutFrequency.monthly")}</option>
                       <option value="year">{t("deposit.payoutFrequency.yearly")}</option>
                     </select>
@@ -2055,7 +2061,7 @@ export function DepositFormModal({
                         title={t("deposit.payoutFrequency.intervalTitle", { max: String(maxInterestPayoutInterval) })}
                         aria-label={t("deposit.payoutFrequency.intervalLabel")}
                       />
-                      {/* 按周/按年取息时，取息说明跟在间隔下方（这一行只有它，说明放这里最贴近）。 */}
+                      {/* 按天/按年取息时，取息说明跟在间隔下方（这一行只有它，说明放这里最贴近）。 */}
                       {interestPayoutUnit === "month" ? null : (
                         <div className="text-[11px] text-slate-400">
                           {!showGuideHints
@@ -2063,8 +2069,8 @@ export function DepositFormModal({
                             : t("deposit.payoutFrequency.periodicHint", {
                                 interval: String(Math.trunc(parseNumber(interestPayoutInterval)) || 1),
                                 unit: t(
-                                  interestPayoutUnit === "week"
-                                    ? "depositForm.termUnit.week"
+                                  interestPayoutUnit === "day"
+                                    ? "depositForm.termUnit.day"
                                     : "depositForm.termUnit.year",
                                 ),
                                 max: String(maxInterestPayoutInterval),

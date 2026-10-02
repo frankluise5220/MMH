@@ -9,7 +9,7 @@
  * GET  200 { ok, status, version, time, db, uptimeSeconds, runtime } when ready
  * GET  503 { ok: false, status: "degraded", ... }                    when the DB probe fails
  */
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { freemem, totalmem } from "node:os";
 import path from "node:path";
 import { getHeapStatistics } from "node:v8";
@@ -34,6 +34,23 @@ type ProcessMemoryApi = typeof process & {
 
 function appVersion(): string {
   if (cachedVersion) return cachedVersion;
+  const injectedVersion = process.env.MMH_APP_VERSION?.trim() || process.env.APP_VERSION?.trim();
+  if (injectedVersion) {
+    cachedVersion = injectedVersion;
+    return cachedVersion;
+  }
+  const versionFile = path.join(process.cwd(), ".mmh-version");
+  try {
+    if (existsSync(versionFile)) {
+      const version = readFileSync(versionFile, "utf8").trim();
+      if (version) {
+        cachedVersion = version;
+        return cachedVersion;
+      }
+    }
+  } catch {
+    // Fall through to the development fallback below.
+  }
   try {
     const pkg = JSON.parse(readFileSync(path.join(process.cwd(), "package.json"), "utf8")) as { version?: string };
     cachedVersion = typeof pkg.version === "string" ? pkg.version : "unknown";

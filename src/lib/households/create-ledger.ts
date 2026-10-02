@@ -14,6 +14,17 @@ export type CreateLedgerInput = {
   name: string;
   adminName: string;
   adminPassword?: string;
+  /**
+   * Precomputed bcrypt hash of `adminPassword`.
+   *
+   * bcryptjs is pure JS and takes a noticeable amount of CPU on low-power NAS
+   * hardware, and it does not need the database at all. Callers that already run
+   * inside an interactive transaction should hash the password *before* opening
+   * the transaction and pass it here, so the hash never counts against the
+   * transaction timeout. When omitted, the hash is computed inline (unchanged
+   * behaviour for callers that cannot precompute).
+   */
+  adminPasswordHash?: string | null;
   adminEmail?: string;
   fnosUid?: string;
   registrationPrincipalId?: string | null;
@@ -96,7 +107,12 @@ export async function createLedgerWithDefaults(
   await createDefaultCategoriesForHousehold(writer, household.id);
   await createDefaultInstitutionsForHousehold(writer, household.id);
 
-  const passwordHash = input.adminPassword?.trim() ? await hashPassword(input.adminPassword) : null;
+  const passwordHash =
+    input.adminPasswordHash !== undefined
+      ? input.adminPasswordHash
+      : input.adminPassword?.trim()
+        ? await hashPassword(input.adminPassword)
+        : null;
   const adminUser = await writer.user.create({
     data: {
       name: input.adminName,

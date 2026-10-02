@@ -185,9 +185,20 @@ export async function ensureBondPlansForLot(params: {
       householdId: source.householdId,
       id: { in: [`bondm_${source.lotId}`, `bonda_${source.lotId}`, `bondi_${source.lotId}`] },
     },
-    select: { id: true, manualOverride: true },
+    select: { id: true, manualOverride: true, nextRunDate: true },
   });
   const manualOverride = new Set(existingPlans.filter((plan) => plan.manualOverride).map((plan) => plan.id));
+  // 执行路径（advanceManualNextRunDate）：手动覆盖过的付息计划，其 nextRunDate 就是用户
+  // 设定的相位起点；推进时必须拿它当基准重算下一付息日，否则用户改的日期执行一次就被
+  // 债单的首次付息日拉回去。自愈路径不传该标记 → 保持用户手设的日期不动。
+  const manualPhase = params.advanceManualNextRunDate
+    ? existingPlans.find(
+        (plan) =>
+          plan.manualOverride
+          && (plan.id === `bonda_${source.lotId}` || plan.id === `bondi_${source.lotId}`),
+      )?.nextRunDate ?? null
+    : null;
+  const payoutPhaseStart = manualPhase ?? source.firstPayoutDate;
 
   // 存单已了结（本金收回/核销完）→ 计划行完成，避免空挂。
   if (source.principal <= OPEN_PRINCIPAL_EPSILON) {
@@ -203,10 +214,10 @@ export async function ensureBondPlansForLot(params: {
       termDays: source.termDays,
       maturityDate: source.maturityDate,
       payoutFrequency: source.payoutFrequency,
-      firstPayoutDate: source.firstPayoutDate,
+      firstPayoutDate: payoutPhaseStart,
       interestCalcBasis: source.interestCalcBasis,
     },
-    start: source.firstPayoutDate ?? source.lastPayoutAnchor ?? source.startDate,
+    start: payoutPhaseStart ?? source.lastPayoutAnchor ?? source.startDate,
     after: source.lastPayoutAnchor,
     principal: source.principal,
   });

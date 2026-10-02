@@ -53,10 +53,11 @@ export async function autoAccrueBondPeriodicInterestForLot(params: {
   // 完全同口径，只覆盖用户实际改过的维度（未改的仍由存单条款决定）。
   let amountOverride: number | null = null;
   let payoutFrequencyOverride: string | null = null;
+  let manualPhaseDate: Date | null = null;
   if (params.planId) {
     const overridePlan = await prisma.regularInvestPlan.findUnique({
       where: { id: params.planId },
-      select: { manualOverride: true, amount: true, intervalUnit: true, intervalValue: true },
+      select: { manualOverride: true, amount: true, intervalUnit: true, intervalValue: true, nextRunDate: true },
     });
     if (overridePlan?.manualOverride) {
       const amt = Number(overridePlan.amount);
@@ -75,6 +76,9 @@ export async function autoAccrueBondPeriodicInterestForLot(params: {
           interval: Math.max(1, overridePlan.intervalValue || 1),
         });
       }
+      // 用户手改过的「下一执行日」即新相位起点（与存款同口径）：付息日从它往后排，
+      // 而不是被债单的首次付息日拉回去。
+      manualPhaseDate = overridePlan.nextRunDate ?? null;
     }
   }
   const effectivePayoutFrequency = payoutFrequencyOverride ?? source.payoutFrequency;
@@ -95,7 +99,8 @@ export async function autoAccrueBondPeriodicInterestForLot(params: {
       termDays: source.termDays,
       maturityDate: source.maturityDate,
       payoutFrequency: effectivePayoutFrequency,
-      firstPayoutDate: source.firstPayoutDate,
+      // 手动覆盖时以计划行的 nextRunDate 作为付息相位起点（首次付息日 = 该日期）。
+      firstPayoutDate: manualPhaseDate ?? source.firstPayoutDate,
     },
     start: source.startDate,
     untilKey: todayKey,

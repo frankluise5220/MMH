@@ -2,16 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdDisplayName } from "@/lib/household-display";
-import {
-  HOUSEHOLD_COOKIE,
-  SESSION_DAYS_COOKIE,
-  USER_ID_COOKIE,
-  USERNAME_COOKIE,
-  VERIFIED_COOKIE,
-  createVerifiedSessionValue,
-  sessionCookieOptions,
-} from "@/lib/server/session-cookies";
-import { normalizeSessionDays, sessionDaysToMaxAge } from "@/lib/session-days";
+import { getUserSessionDays, issueSessionCookies } from "@/lib/server/session-issue";
 
 export const runtime = "nodejs";
 
@@ -36,15 +27,6 @@ interface FnosLoginUser {
   authVersion: number;
   email: string | null;
   Household: { id: string; name: string } | null;
-}
-
-async function getUserSessionDays(userId: string) {
-  try {
-    const settings = await prisma.userSettings.findUnique({ where: { userId }, select: { sessionDays: true } });
-    return normalizeSessionDays(settings?.sessionDays);
-  } catch {
-    return normalizeSessionDays(undefined);
-  }
 }
 
 function householdChoicesForUsers(users: FnosLoginUser[]) {
@@ -146,20 +128,15 @@ export async function POST(request: NextRequest) {
   }
 
   const response = NextResponse.json({ ok: true, username: user.name, householdId: user.householdId });
-  const sessionDays = await getUserSessionDays(user.id);
-  const maxAge = sessionDaysToMaxAge(sessionDays);
-  const cookieOptions = sessionCookieOptions(maxAge, request);
-  response.cookies.set(VERIFIED_COOKIE, createVerifiedSessionValue(user.id, maxAge, user.authVersion), cookieOptions);
-  response.cookies.set(USER_ID_COOKIE, user.id, cookieOptions);
-  response.cookies.set(USERNAME_COOKIE, user.name, cookieOptions);
-  response.cookies.set(SESSION_DAYS_COOKIE, String(sessionDays), {
-    path: "/",
-    maxAge: 60 * 60 * 24 * 365,
-    httpOnly: false,
-    sameSite: "lax",
-  });
-  if (user.householdId) {
-    response.cookies.set(HOUSEHOLD_COOKIE, user.householdId, cookieOptions);
-  }
+  issueSessionCookies(
+    response,
+    {
+      userId: user.id,
+      name: user.name,
+      householdId: user.householdId,
+      authVersion: user.authVersion,
+    },
+    { sessionDays: await getUserSessionDays(user.id), req: request },
+  );
   return response;
 }

@@ -13,16 +13,9 @@ import {
   serializeLedgerInviteCodeRecords,
 } from "@/lib/ledger-invite-codes";
 import { logger } from "@/lib/logger";
+import { hashPassword } from "@/lib/auth/password";
 import { inspectLedgerInviteCode, missingIssuerRejection } from "@/lib/server/ledger-invite-code-guard";
-import {
-  HOUSEHOLD_COOKIE,
-  SESSION_DAYS_COOKIE,
-  USER_ID_COOKIE,
-  USERNAME_COOKIE,
-  VERIFIED_COOKIE,
-  createVerifiedSessionValue,
-  sessionCookieOptions,
-} from "@/lib/server/session-cookies";
+import { issueSessionCookies, sessionDaysFromRequest } from "@/lib/server/session-issue";
 
 export const runtime = "nodejs";
 
@@ -52,16 +45,7 @@ export async function OPTIONS() {
   return new NextResponse(null, { status: 204, headers: cors() });
 }
 
-function resolveSessionMaxAge(req: NextRequest) {
-  const raw = req.cookies.get(SESSION_DAYS_COOKIE)?.value ?? "30";
-  const days = Number(raw);
-  const normalizedDays = Number.isFinite(days) ? Math.min(Math.max(Math.round(days), 1), 365) : 30;
-  return normalizedDays * 24 * 60 * 60;
-}
-
 /**
- * POST /api/v1/auth/register/confirm
- *
  * Step 2 of the public self-service signup flow (no session required): verifies
  * the email code, registers an email principal in the external mmh-registration
  * service, then creates a new ledger with the registrant as its admin user
@@ -179,13 +163,16 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // Hash before the transaction: bcrypt is CPU-bound and needs no database access.
+  const adminPasswordHash = password?.trim() ? await hashPassword(password) : null;
+
   let created: Awaited<ReturnType<typeof createLedgerWithDefaults>>;
   try {
     created = await prisma.$transaction(async (tx) => {
       const result = await createLedgerWithDefaults(tx, {
         name: inviteRegistration ? ledgerName : adminName,
         adminName,
-        adminPassword: password,
+        adminPasswordHash,
         adminEmail: email,
       });
       // Record the external registration identity on the newly created admin user.
@@ -223,12 +210,16 @@ export async function POST(req: NextRequest) {
     household: { id: created.household.id, name: created.household.name },
   }, { headers: cors() });
 
-  const maxAge = resolveSessionMaxAge(req);
-  const cookieOptions = sessionCookieOptions(maxAge, req);
-  response.cookies.set(VERIFIED_COOKIE, createVerifiedSessionValue(created.adminUser.id, maxAge, created.adminUser.authVersion), cookieOptions);
-  response.cookies.set(USER_ID_COOKIE, created.adminUser.id, cookieOptions);
-  response.cookies.set(USERNAME_COOKIE, created.adminUser.name, cookieOptions);
-  response.cookies.set(HOUSEHOLD_COOKIE, created.household.id, cookieOptions);
+  issueSessionCookies(
+    response,
+    {
+      userId: created.adminUser.id,
+      name: created.adminUser.name,
+      householdId: created.household.id,
+      authVersion: created.adminUser.authVersion,
+    },
+    { sessionDays: sessionDaysFromRequest(req), req },
+  );
 
   return response;
 }

@@ -1,14 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import {
-  HOUSEHOLD_COOKIE,
-  SESSION_DAYS_COOKIE,
-  USER_ID_COOKIE,
-  USERNAME_COOKIE,
-  VERIFIED_COOKIE,
-  createVerifiedSessionValue,
-  sessionCookieOptions,
-} from "@/lib/server/session-cookies";
 import { prisma } from "@/lib/db/prisma";
+import { issueSessionCookies, sessionDaysFromRequest } from "@/lib/server/session-issue";
 import {
   createLedgerWithDefaults,
   LEDGER_CREATION_INVITE_CODE_KEY,
@@ -20,6 +12,8 @@ import {
   serializeLedgerInviteCodeRecords,
 } from "@/lib/ledger-invite-codes";
 import { inspectLedgerInviteCode, missingIssuerRejection } from "@/lib/server/ledger-invite-code-guard";
+import { verifyEmailPrincipal } from "@/lib/server/registration-client";
+import { hashPassword } from "@/lib/auth/password";
 
 const LEGACY_PASSWORD_KEY = "access_password";
 
@@ -27,13 +21,6 @@ class CreateLedgerError extends Error {
   constructor(message: string, readonly status = 400) {
     super(message);
   }
-}
-
-function resolveSessionMaxAge(req: NextRequest) {
-  const raw = req.cookies.get(SESSION_DAYS_COOKIE)?.value ?? "30";
-  const days = Number(raw);
-  const normalizedDays = Number.isFinite(days) ? Math.min(Math.max(Math.round(days), 1), 365) : 30;
-  return normalizedDays * 24 * 60 * 60;
 }
 
 /**
@@ -62,6 +49,10 @@ export async function POST(req: NextRequest) {
   const adminName = String(body.adminName ?? "").trim();
   const adminPassword = String(body.adminPassword ?? "").trim();
   const adminEmail = String(body.adminEmail ?? "").trim();
+  // The MMH membership password (central registration service, scrypt). It is
+  // NOT the ledger-local admin password: it proves ownership of an existing MMH
+  // identity, exactly like the login tab does.
+  const mmhPassword = String(body.mmhPassword ?? "").trim();
 
   if (!name || name.length > 50) {
     return NextResponse.json({ ok: false, code: "INVALID_LEDGER_NAME", error: "Ledger name must be between 1 and 50 characters." }, { status: 400 });
@@ -72,8 +63,31 @@ export async function POST(req: NextRequest) {
   if (authMode === "fnos" && (!fnosUid || !gatewayFnosUid || fnosUid !== gatewayFnosUid)) {
     return NextResponse.json({ ok: false, code: "FNOS_ID_REQUIRED", error: "The fnOS account identity is required." }, { status: 400 });
   }
-  if (authMode !== "fnos" && !adminPassword) {
+  if (authMode === "mmh" && (!adminEmail || !mmhPassword)) {
+    return NextResponse.json({ ok: false, code: "MMH_CREDENTIALS_REQUIRED", error: "An MMH account email and membership password are required." }, { status: 400 });
+  }
+  if (authMode === "local" && !adminPassword) {
     return NextResponse.json({ ok: false, code: "ADMIN_PASSWORD_REQUIRED", error: "Administrator password is required." }, { status: 400 });
+  }
+
+  // Verify an *existing* MMH identity against the central registration service
+  // before touching the database. Network-bound, so it stays outside the
+  // transaction (same reason the bcrypt hash below does). The returned
+  // principalId is what lets this ledger later recognise the same MMH account.
+  let mmhPrincipalId: string | null = null;
+  if (authMode === "mmh") {
+    const verification = await verifyEmailPrincipal({ email: adminEmail, password: mmhPassword });
+    if (!verification.ok || !verification.principalId) {
+      return NextResponse.json(
+        {
+          ok: false,
+          code: verification.code ?? "MMH_CREDENTIALS_INVALID",
+          error: verification.error ?? "The MMH account email or membership password is incorrect.",
+        },
+        { status: verification.status ?? 401 },
+      );
+    }
+    mmhPrincipalId = verification.principalId;
   }
 
   const [householdCount, userCount, legacy] = await prisma.$transaction([
@@ -92,11 +106,26 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  // Hash the admin password *before* opening the transaction: bcrypt is CPU-bound
+  // and needs no database access, so keeping it outside avoids burning the
+  // transaction budget on low-power hardware (see getConfiguredTransactionOptions).
+  // fnOS and MMH admins sign in with an external identity, so they start with no
+  // ledger-local password (same shape as the fnOS gateway path); the sensitive
+  // operation guard walks them through creating one on first use.
+  const adminPasswordHash = authMode === "fnos" || authMode === "mmh" || !adminPassword ? null : await hashPassword(adminPassword);
+
   let created: Awaited<ReturnType<typeof createLedgerWithDefaults>>;
   try {
     created = await prisma.$transaction(async (tx) => {
       if (isInitialLedgerSetup) {
-        return createLedgerWithDefaults(tx, { name, adminName, adminPassword: authMode === "fnos" ? undefined : adminPassword, adminEmail, fnosUid: authMode === "fnos" ? fnosUid : undefined });
+        return createLedgerWithDefaults(tx, {
+          name,
+          adminName,
+          adminPasswordHash,
+          adminEmail,
+          fnosUid: authMode === "fnos" ? fnosUid : undefined,
+          registrationPrincipalId: mmhPrincipalId,
+        });
       }
 
       const inviteSetting = await tx.systemSetting.findUnique({
@@ -124,9 +153,10 @@ export async function POST(req: NextRequest) {
       const result = await createLedgerWithDefaults(tx, {
         name,
         adminName,
-        adminPassword: authMode === "fnos" ? undefined : adminPassword,
+        adminPasswordHash,
         adminEmail,
         fnosUid: authMode === "fnos" ? fnosUid : undefined,
+        registrationPrincipalId: mmhPrincipalId,
       });
       const usedInviteRecords = markLedgerInviteCodeUsed(inviteRecords, inviteCode, {
         householdId: result.household.id,
@@ -156,11 +186,15 @@ export async function POST(req: NextRequest) {
     initialSetup: isInitialLedgerSetup,
     household: { id: created.household.id, name: created.household.name },
   });
-  const maxAge = resolveSessionMaxAge(req);
-  const cookieOptions = sessionCookieOptions(maxAge, req);
-  response.cookies.set(VERIFIED_COOKIE, createVerifiedSessionValue(created.adminUser.id, maxAge, created.adminUser.authVersion), cookieOptions);
-  response.cookies.set(USER_ID_COOKIE, created.adminUser.id, cookieOptions);
-  response.cookies.set(USERNAME_COOKIE, created.adminUser.name, cookieOptions);
-  response.cookies.set(HOUSEHOLD_COOKIE, created.household.id, cookieOptions);
+  issueSessionCookies(
+    response,
+    {
+      userId: created.adminUser.id,
+      name: created.adminUser.name,
+      householdId: created.household.id,
+      authVersion: created.adminUser.authVersion,
+    },
+    { sessionDays: sessionDaysFromRequest(req), req },
+  );
   return response;
 }

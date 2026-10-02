@@ -4,8 +4,12 @@ import { prisma } from "@/lib/db/prisma";
 import {
   depositPayoutAnchorUtc,
   depositPayoutMaxPeriods,
+  depositPayoutPhaseBase,
+  depositPayoutUnitFromIntervalUnit,
   isPeriodicDepositInterestPayout,
+  nextDepositPayoutDateFromPhase,
   parseDepositInterestPayout,
+  type DepositInterestPayoutUnit,
 } from "@/lib/deposit-interest-payout";
 import { depositSegmentInterest, round2 } from "@/lib/deposit-maturity";
 import { decodeScheduledTaskMemo, encodeScheduledTaskMemo, type ScheduledTaskPayload } from "@/lib/scheduled-task";
@@ -320,7 +324,11 @@ export async function ensureDepositPlansForLot(params: {
         fundName: label,
         fundProductType: "deposit",
         amount: defaultInterestAmount,
-        intervalUnit: frequency.kind === "periodic" && frequency.unit === "week" ? IntervalUnit.week : IntervalUnit.month,
+        intervalUnit: frequency.kind === "periodic" && frequency.unit === "day"
+          ? IntervalUnit.day
+          : frequency.kind === "periodic" && frequency.unit === "week"
+            ? IntervalUnit.week
+            : IntervalUnit.month,
         intervalValue: frequency.kind === "periodic" ? Math.max(1, frequency.interval) : 1,
         executionDay: frequency.kind === "periodic" && frequency.unit === "week"
           ? weekdayExecutionDay(accrualDate)
@@ -357,8 +365,14 @@ export async function ensureDepositPlansForLot(params: {
   if (frequency.kind === "periodic" || !!maturity) {
     const anchor = startDateAnchorUtc(start);
     const isOneTimePayout = frequency.kind !== "periodic";
-    const intervalUnit = isOneTimePayout ? IntervalUnit.month : frequency.unit === "month" ? IntervalUnit.month : IntervalUnit.week;
-    const intervalValue = isOneTimePayout ? 1 : frequency.unit === "month"
+    const intervalUnit = isOneTimePayout
+      ? IntervalUnit.month
+      : frequency.unit === "month"
+        ? IntervalUnit.month
+        : frequency.unit === "day"
+          ? IntervalUnit.day
+          : IntervalUnit.week;
+    const intervalValue = isOneTimePayout ? 1 : frequency.unit === "month" || frequency.unit === "day"
       ? frequency.interval
       : frequency.unit === "week" ? frequency.interval : 0;
     const payoutMemo = encodeScheduledTaskMemo({
@@ -453,7 +467,7 @@ function weekdayExecutionDay(date: Date): number {
 /** 严格晚于 `after` 的第一个付息锚点（对应日口径，见 depositPayoutAnchorUtc）。 */
 function nextPayoutDateUtc(
   startDate: Date,
-  frequency: { unit: "week" | "month" | "year"; interval: number },
+  frequency: { unit: DepositInterestPayoutUnit; interval: number },
   after: Date,
 ): Date {
   const maxPeriods = depositPayoutMaxPeriods(frequency);
@@ -493,6 +507,14 @@ export async function executeDepositPlan(params: {
     || ((plan.id.startsWith("depm_") || plan.id.startsWith("depa_") || plan.id.startsWith("depi_")) ? plan.id.slice(5) : "");
   if (!lotId) return { executed: false, pairs: 0, message: "计划缺少存单关联" };
 
+  // 用户改过的计划（manualOverride）由用户说了算：执行器只推进排期与状态，
+  // **绝不再用存单条款回写用户可编辑的字段**（金额等），否则改一次就被改回去。
+  const overridePlan = await prisma.regularInvestPlan.findUnique({
+    where: { id: plan.id },
+    select: { manualOverride: true, intervalUnit: true, intervalValue: true, nextRunDate: true },
+  });
+  const manualOverride = Boolean(overridePlan?.manualOverride);
+
   if (task.type === "deposit_maturity") {
     const { processDepositMaturityForLot } = await import("@/lib/server/deposit-auto-maturity");
     const outcome = await processDepositMaturityForLot({ householdId, lotId, now });
@@ -510,7 +532,8 @@ export async function executeDepositPlan(params: {
         : {
             startDate: fresh.fundArrivalDate ?? plan.startDate,
             nextRunDate: fresh.fundArrivalDate ?? plan.nextRunDate,
-            amount: balance.remainingPrincipal,
+            // 手动改过金额的计划：续存后不再用存单剩余本金覆盖用户设的金额。
+            ...(manualOverride ? {} : { amount: balance.remainingPrincipal }),
             status: RegularInvestStatus.active,
           },
     }).catch(() => {});
@@ -572,11 +595,27 @@ export async function executeDepositPlan(params: {
     },
   });
   if (fresh && !fresh.deletedAt && fresh.date) {
-    const frequency = parseDepositInterestPayout(fresh.depositInterestPayoutFrequency);
+    // 手动覆盖（manualOverride）：周期与相位都以计划行为准，与 autoAccruePeriodicInterest
+    // 同口径。否则用户改过的周期/下一执行日会在每次推进时被存单条款抹掉。
+    let frequency = parseDepositInterestPayout(fresh.depositInterestPayoutFrequency);
+    if (manualOverride) {
+      const unit = depositPayoutUnitFromIntervalUnit(overridePlan?.intervalUnit);
+      if (unit) {
+        frequency = { kind: "periodic", unit, interval: Math.max(1, overridePlan?.intervalValue || 1) };
+      }
+    }
     if (frequency.kind === "periodic") {
       const anchorAfter = fresh.fundConfirmDate ?? new Date(fresh.date.getTime() - 86400000);
       const maturityCap = fresh.fundArrivalDate && fresh.fundArrivalDate <= now ? fresh.fundArrivalDate : null;
-      const candidate = nextPayoutDateUtc(fresh.date, frequency, anchorAfter);
+      // 手动覆盖时相位基准 = 计划行自己的 nextRunDate（用户手改的下一执行日），
+      // 从该相位往后推进，而不是拉回存单起存日的锚点。
+      const candidate = manualOverride
+        ? nextDepositPayoutDateFromPhase(
+            depositPayoutPhaseBase(overridePlan?.nextRunDate, fresh.date),
+            frequency,
+            anchorAfter,
+          )
+        : nextPayoutDateUtc(fresh.date, frequency, anchorAfter);
       // 已到期（maturity ≤ 今天）的存单：利息只到到期日，取息计划就此完成，
       // 后续由「存款到期」计划负责取回 —— 避免每轮开机都空跑这个计划。
       const nextRunDate = maturityCap && candidate > maturityCap ? maturityCap : candidate;
@@ -584,8 +623,11 @@ export async function executeDepositPlan(params: {
         where: { id: plan.id },
         data: maturityCap
           ? { nextRunDate, status: RegularInvestStatus.completed }
-          // 存单起存日被编辑后，取息计划的锚点起点（startDate）一并同步。
-          : { startDate: fresh.date ?? plan.startDate, nextRunDate },
+          // 未手动覆盖时同步 startDate（存单起存日被编辑后锚点起点跟随）；
+          // 手动覆盖后相位由计划行自己的 nextRunDate 决定，不再回写存单起存日。
+          : manualOverride
+            ? { nextRunDate }
+            : { startDate: fresh.date ?? plan.startDate, nextRunDate },
       }).catch(() => {});
     }
   }

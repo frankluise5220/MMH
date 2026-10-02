@@ -198,7 +198,10 @@ function verifySourceFiles() {
   expect(/build:synology/.test(packageJson), "package.json must expose build:synology.");
   expect(/check:synology/.test(packageJson), "package.json must expose check:synology.");
   expect(/MMH_DEPLOY_TARGET:\s*"synology"/.test(appBuildScript), "Synology app build must mark the deployment target.");
+  expect(/MMH_BASE_PATH:\s*""/.test(packageScript), "Synology package build must explicitly clear the fnOS basePath.");
   expect(/MMH_DEPLOY_TARGET=synology/.test(packageScript), "Synology start script must mark runtime deployment as synology.");
+  expect(/\.mmh-version/.test(packageScript), "Synology package must inject the outer package version into the runtime payload.");
+  expect(/MMH_APP_VERSION/.test(packageScript), "Synology start script must export the package version to the runtime.");
   const infoWriter = packageScript.slice(packageScript.indexOf("function writeInfoFile("), packageScript.indexOf("function writeInstallWizard()"));
   expect(!/adminport=/.test(infoWriter) && !/adminurl=/.test(infoWriter), "Synology source INFO must not reserve a fixed DSM web port before the install wizard runs.");
   expect(
