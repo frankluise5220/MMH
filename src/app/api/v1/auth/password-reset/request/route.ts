@@ -12,7 +12,6 @@ const BodySchema = z.object({
   username: z.string().min(1).max(80),
   email: z.string().email().optional(),
   householdId: z.string().min(1).optional(),
-  preview: z.boolean().optional(),
 });
 
 function getClientIp(req: NextRequest) {
@@ -25,14 +24,6 @@ function getClientIp(req: NextRequest) {
 
 function normalizeEmail(v: string) {
   return v.trim().toLowerCase();
-}
-
-function maskEmail(email: string) {
-  const normalized = normalizeEmail(email);
-  const [localPart, domain = ""] = normalized.split("@");
-  if (!localPart || !domain) return normalized;
-  const visibleLocal = localPart.length <= 2 ? localPart.slice(0, 1) : localPart.slice(0, 2);
-  return `${visibleLocal}***@${domain}`;
 }
 
 type ResetUser = {
@@ -118,7 +109,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, code: "PASSWORD_RESET_NOT_CONFIGURED", error: "未配置密码找回功能" }, { status: 500 });
   }
 
-  const { username, email, householdId, preview } = parse.data;
+  const { username, email, householdId } = parse.data;
   const cookieHouseholdId = householdId ?? req.cookies.get("householdId")?.value ?? null;
   const user = await findTargetUser({ username, email, householdId: cookieHouseholdId });
   if (user instanceof NextResponse) {
@@ -126,17 +117,6 @@ export async function POST(req: NextRequest) {
   }
 
   const userEmail = user?.email ? normalizeEmail(user.email) : null;
-
-  if (preview) {
-    return NextResponse.json({
-      ok: true,
-      householdId: user?.householdId ?? cookieHouseholdId,
-      maskedEmailHint: userEmail ? maskEmail(userEmail) : null,
-      message: userEmail
-        ? `请输入绑定邮箱并补全这部分：${maskEmail(userEmail)}`
-        : "如果该用户已绑定邮箱，请继续补全绑定邮箱后发送验证码。",
-    });
-  }
 
   const ip = getClientIp(req);
   const userAgent = req.headers.get("user-agent") ?? null;

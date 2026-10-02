@@ -758,11 +758,6 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
       }
       setResetHouseholdId(data.householdId ?? selectedHouseholdId ?? "");
       setResetHouseholdChoices([]);
-      if (previewOnly) {
-        setResetEmailHint(data.maskedEmailHint ?? "");
-        setResetInfo(data.message ?? t("login.reset.completeEmail"));
-        return;
-      }
       setResetInfo(data.message ?? t("login.reset.codeSent"));
       setResetStep("confirm");
     } catch {
@@ -954,7 +949,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
         setMmhResetError(
           data?.code === "INVALID_OR_EXPIRED_CODE"
             ? t("login.register.error.invalidCode")
-            : data?.error ?? t("login.mmhReset.error.failed"),
+            : mmhErrorText(data?.code, data?.error, "login.mmhReset.error.failed"),
         );
         return;
       }
@@ -1467,7 +1462,6 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                     onChange={(event) => {
                       setResetUsername(event.target.value);
                       setResetEmail("");
-                      setResetEmailHint("");
                       setResetHouseholdId("");
                       setResetHouseholdChoices([]);
                     }}
@@ -1477,22 +1471,20 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                   />
                 </div>
                 {resetStep === "request" && (
-                  resetEmailHint ? (
-                    <div className="space-y-1">
-                      <div className="text-xs font-medium text-slate-600">{t("login.reset.emailLabel")}</div>
-                      <div className="text-[11px] text-slate-500">{t("login.reset.emailHint", { hint: resetEmailHint })}</div>
-                      <input
-                        value={resetEmail}
-                        onChange={(event) => {
-                          setResetEmail(event.target.value);
-                          setResetHouseholdChoices([]);
-                        }}
-                        type="email"
-                        className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                        placeholder={t("login.reset.emailPlaceholder")}
-                      />
-                    </div>
-                  ) : null
+                  <div className="space-y-1">
+                    <div className="text-xs font-medium text-slate-600">{t("login.reset.emailLabel")}</div>
+                    <input
+                      value={resetEmail}
+                      onChange={(event) => {
+                        setResetEmail(event.target.value);
+                        setResetHouseholdChoices([]);
+                      }}
+                      type="email"
+                      autoComplete="email"
+                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                      placeholder={t("login.reset.emailPlaceholder")}
+                    />
+                  </div>
                 )}
                 {resetStep === "confirm" && (
                   <>
@@ -1561,24 +1553,8 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                       disabled={resetLoading}
                       onClick={() => void handleResetRequest()}
                     >
-                      {resetLoading ? t("login.reset.processing") : resetEmailHint ? t("login.reset.sendCode") : t("login.reset.nextStep")}
+                      {resetLoading ? t("login.reset.processing") : t("login.reset.sendCode")}
                     </button>
-                    {resetEmailHint ? (
-                      <button
-                        type="button"
-                        className="h-9 w-full rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-                        disabled={resetLoading}
-                        onClick={() => {
-                          setResetEmail("");
-                          setResetEmailHint("");
-                          setResetError("");
-                          setResetInfo("");
-                          setResetHouseholdChoices([]);
-                        }}
-                      >
-                        {t("login.reenterUsername")}
-                      </button>
-                    ) : null}
                   </div>
                 ) : (
                   <div className="space-y-2">
