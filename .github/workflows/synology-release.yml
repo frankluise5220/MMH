@@ -61,6 +61,16 @@ jobs:
             -o "release-artifacts/synology/runtime/${NODE_TARBALL}"
           echo "SYNOLOGY_NODE_TARBALL=${PWD}/release-artifacts/synology/runtime/${NODE_TARBALL}" >> "$GITHUB_ENV"
 
+      - name: Download matching Node headers
+        shell: bash
+        run: |
+          set -euo pipefail
+          NODE_VERSION="$(node -p "process.versions.node")"
+          HEADERS_TARBALL="node-v${NODE_VERSION}-headers.tar.gz"
+          curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/${HEADERS_TARBALL}" \
+            -o "release-artifacts/synology/runtime/${HEADERS_TARBALL}"
+          echo "SYNOLOGY_NODE_HEADERS_TARBALL=${PWD}/release-artifacts/synology/runtime/${HEADERS_TARBALL}" >> "$GITHUB_ENV"
+
       - name: Build Synology SQLite app
         env:
           DATABASE_URL: file:./native-build.db
@@ -73,6 +83,7 @@ jobs:
           SYNOLOGY_PACKAGE_VERSION: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.package_version || github.event.release.tag_name || '' }}
           SYNOLOGY_TARGET_ARCH: ${{ matrix.target_arch }}
           SYNOLOGY_NODE_TARBALL: ${{ env.SYNOLOGY_NODE_TARBALL }}
+          SYNOLOGY_NODE_HEADERS_TARBALL: ${{ env.SYNOLOGY_NODE_HEADERS_TARBALL }}
         run: npm run build:synology
 
       - name: Verify built Synology SPK
