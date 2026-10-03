@@ -43,6 +43,7 @@
     "_*.mts",
     "_*.mjs",
     "_tmp_*",
-    ".tmp*"
+    ".tmp*",
+    "deploy/registration"
   ]
 }

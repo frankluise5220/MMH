@@ -44,21 +44,37 @@ function AddMmhPanel({ onAdded, onError }: { onAdded: () => void; onError: (msg:
   const [method, setMethod] = useState<"existing" | "email">("existing");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [role, setRole] = useState("user");
   const [codeSent, setCodeSent] = useState(false);
   const [code, setCode] = useState("");
   const [sending, setSending] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [forgotMode, setForgotMode] = useState(false);
 
   function resetError() {
     onError("");
   }
 
-  async function sendCode() {
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
-      onError(t("settings.users.register.error.emailInvalid"));
-      return;
-    }
+  function validateEmail(): string | null {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) return t("settings.users.register.error.emailInvalid");
+    return null;
+  }
+
+  function switchMethod(next: "existing" | "email") {
+    setMethod(next);
+    resetError();
+    setForgotMode(false);
+    setCodeSent(false);
+    setCode("");
+    setPassword("");
+    setConfirmPassword("");
+  }
+
+  /** 发「注册」验证码（添加 MMH 用户 → 注册新身份）。 */
+  async function sendRegisterCode() {
+    const err = validateEmail();
+    if (err) { onError(err); return; }
     setSending(true);
     resetError();
     try {
@@ -82,46 +98,35 @@ function AddMmhPanel({ onAdded, onError }: { onAdded: () => void; onError: (msg:
     }
   }
 
-  async function confirmNew() {
-    if (!code.trim() || code.trim().length < 6) {
-      onError(t("settings.users.register.error.invalidCode"));
-      return;
-    }
-    setSubmitting(true);
+  /** 发「找回密码」验证码（已有 MMH 账号 → 忘记密码）。 */
+  async function sendResetCode() {
+    const err = validateEmail();
+    if (err) { onError(err); return; }
+    setSending(true);
     resetError();
     try {
-      const res = await fetch("/api/v1/settings/users/add-mmah/confirm", {
+      const res = await fetch("/api/v1/auth/mmh-password-reset/send-code", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          email: email.trim(),
-          code: code.trim(),
-          role,
-          ...(password.trim() ? { mmhPassword: password.trim() } : {}),
-        }),
+        body: JSON.stringify({ email: email.trim() }),
       });
       const data = await res.json().catch(() => null);
       if (data?.ok) {
-        onAdded();
+        setCodeSent(true);
       } else {
-        onError(data?.error || t("settings.users.register.error.failed"));
+        onError(data?.error || t("settings.users.register.error.sendFailed"));
       }
-    } catch (error) {
-      onError(error instanceof Error && error.message ? error.message : t("settings.users.register.error.network"));
+    } catch {
+      onError(t("settings.users.register.error.network"));
     } finally {
-      setSubmitting(false);
+      setSending(false);
     }
   }
 
+  /** 绑定已有 MMH 账号（邮箱 + 会员密码），创建新 User。 */
   async function bindExisting() {
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
-      onError(t("settings.users.register.error.emailInvalid"));
-      return;
-    }
-    if (!password.trim()) {
-      onError(t("settings.users.error.passwordRequired"));
-      return;
-    }
+    if (!validateEmail()) { onError(t("settings.users.register.error.emailInvalid")); return; }
+    if (!password.trim()) { onError(t("settings.users.error.passwordRequired")); return; }
     setSubmitting(true);
     resetError();
     try {
@@ -143,77 +148,214 @@ function AddMmhPanel({ onAdded, onError }: { onAdded: () => void; onError: (msg:
     }
   }
 
-  return (
-    <div className="space-y-4">
-      <div className="flex gap-1 rounded-lg border border-slate-200 bg-slate-50 p-1">
-        <button type="button"
-          onClick={() => { setMethod("existing"); resetError(); }}
-          className={method === "existing" ? "flex-1 rounded-md bg-white px-3 py-1.5 text-xs font-medium text-slate-800 shadow-sm" : "flex-1 rounded-md px-3 py-1.5 text-xs font-medium text-slate-500"}>
-          {t("settings.users.register.methodExisting")}
-        </button>
-        <button type="button"
-          onClick={() => { setMethod("email"); resetError(); }}
-          className={method === "email" ? "flex-1 rounded-md bg-white px-3 py-1.5 text-xs font-medium text-slate-800 shadow-sm" : "flex-1 rounded-md px-3 py-1.5 text-xs font-medium text-slate-500"}>
-          {t("settings.users.register.methodEmail")}
-        </button>
-      </div>
+  /** 忘记密码：重置 MMH 会员密码后，用新密码直接绑定（创建新 User）。 */
+  async function resetAndBind() {
+    if (!code.trim()) { onError(t("settings.users.register.error.invalidCode")); return; }
+    if (password.trim().length < 8) { onError(t("login.mmhReset.error.passwordTooShort")); return; }
+    if (password.trim() !== confirmPassword.trim()) { onError(t("login.error.passwordMismatch")); return; }
+    setSubmitting(true);
+    resetError();
+    try {
+      const resetRes = await fetch("/api/v1/auth/mmh-password-reset/confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: email.trim(), code: code.trim(), newPassword: password.trim() }),
+      });
+      const resetData = await resetRes.json().catch(() => null);
+      if (!resetData?.ok) {
+        onError(resetData?.code === "INVALID_OR_EXPIRED_CODE"
+          ? t("settings.users.register.error.invalidCode")
+          : resetData?.error || t("login.mmhReset.error.failed"));
+        return;
+      }
+      const bindRes = await fetch("/api/v1/settings/users/add-mmah/bind-existing", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: email.trim(), password: password.trim(), role }),
+      });
+      const bindData = await bindRes.json().catch(() => null);
+      if (bindData?.ok) {
+        onAdded();
+      } else {
+        onError(bindData?.error || t("settings.users.register.error.failed"));
+      }
+    } catch (error) {
+      onError(error instanceof Error && error.message ? error.message : t("settings.users.register.error.network"));
+    } finally {
+      setSubmitting(false);
+    }
+  }
 
+  /** 注册新 MMH 账号：验证码 + 会员密码，注册后直接创建并绑定。 */
+  async function registerAndBind() {
+    if (!code.trim()) { onError(t("settings.users.register.error.invalidCode")); return; }
+    if (password.trim().length < 8) { onError(t("login.mmhReset.error.passwordTooShort")); return; }
+    if (password.trim() !== confirmPassword.trim()) { onError(t("login.error.passwordMismatch")); return; }
+    setSubmitting(true);
+    resetError();
+    try {
+      const res = await fetch("/api/v1/settings/users/add-mmah/confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: email.trim(),
+          code: code.trim(),
+          role,
+          mmhPassword: password.trim(),
+        }),
+      });
+      const data = await res.json().catch(() => null);
+      if (data?.ok) {
+        onAdded();
+      } else {
+        onError(data?.code === "INVALID_OR_EXPIRED_CODE"
+          ? t("settings.users.register.error.invalidCode")
+          : data?.error || t("settings.users.register.error.failed"));
+      }
+    } catch (error) {
+      onError(error instanceof Error && error.message ? error.message : t("settings.users.register.error.network"));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  const emailField = (
+    <div>
+      <input
+        type="email"
+        className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+        value={email}
+        onChange={(e) => { setEmail(e.target.value); resetError(); }}
+        placeholder={t("settings.users.register.placeholder.mmhAccount")}
+        autoFocus
+      />
+    </div>
+  );
+
+  const codeAndPasswordFields = (
+    <>
       <div>
-        <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.users.register.field.mmhUsername")}</label>
+        <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.users.register.field.code")}</label>
         <input
-          type="email"
-          className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-          value={email}
-          onChange={(e) => { setEmail(e.target.value); resetError(); }}
-          autoFocus
+          type="text"
+          inputMode="numeric"
+          maxLength={6}
+          className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none tracking-widest"
+          value={code}
+          onChange={(e) => { setCode(e.target.value.replace(/\D/g, "")); resetError(); }}
+          placeholder={t("settings.users.register.placeholder.code")}
         />
       </div>
+      <div>
+        <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.users.register.field.mmhMemberPassword")}</label>
+        <input
+          type="password"
+          className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+          value={password}
+          onChange={(e) => { setPassword(e.target.value); resetError(); }}
+          placeholder={t("settings.users.register.placeholder.mmhMemberPassword")}
+        />
+      </div>
+      <div>
+        <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.users.register.field.confirmMmhMemberPassword")}</label>
+        <input
+          type="password"
+          className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+          value={confirmPassword}
+          onChange={(e) => { setConfirmPassword(e.target.value); resetError(); }}
+          placeholder={t("settings.users.register.placeholder.mmhMemberPassword")}
+        />
+      </div>
+    </>
+  );
 
-      {method === "existing" ? (
-        <>
-          <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.users.register.field.mmhPassword")}</label>
-            <input
-              type="password"
-              className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-              value={password}
-              onChange={(e) => { setPassword(e.target.value); resetError(); }}
-              placeholder={t("settings.users.register.placeholder.mmhPassword")}
-            />
-          </div>
-          <div className="text-[11px] text-slate-500">{t("settings.users.addMmh.hintExisting")}</div>
-        </>
-      ) : (
-        <>
-          {codeSent && (
-            <div>
-              <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.users.register.field.code")}</label>
-              <input
-                type="text"
-                inputMode="numeric"
-                maxLength={6}
-                className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none tracking-widest"
-                value={code}
-                onChange={(e) => { setCode(e.target.value.replace(/\D/g, "")); resetError(); }}
-                placeholder={t("settings.users.register.placeholder.code")}
-              />
-            </div>
-          )}
-          {codeSent && (
-            <div>
-              <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.users.addMmh.mmhPasswordLabel")}</label>
-              <input
-                type="password"
-                className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                value={password}
-                onChange={(e) => { setPassword(e.target.value); resetError(); }}
-                placeholder={t("settings.users.addMmh.mmhPasswordPlaceholder")}
-              />
-            </div>
-          )}
-          <div className="text-[11px] text-slate-500">{t("settings.users.addMmh.hintNew")}</div>
-        </>
-      )}
+  return (
+    <div className="space-y-4">
+      <FolderTabs
+        tabs={[
+          { id: "existing", label: t("settings.users.register.methodExisting") },
+          { id: "email", label: t("settings.users.register.methodEmail") },
+        ]}
+        activeId={method}
+        onChange={(id) => switchMethod(id as "existing" | "email")}
+        variant="stretch"
+        panelClassName="space-y-4 h-[23rem] overflow-y-auto"
+      >
+        {method === "existing" ? (
+          forgotMode ? (
+            codeSent ? (
+              <>
+                {emailField}
+                {codeAndPasswordFields}
+                <div className="flex justify-end gap-2">
+                  <button type="button" className="secondary-button h-9 px-4" onClick={() => switchMethod("existing")}>{t("common.cancel")}</button>
+                  <button type="button" className="primary-button h-9 px-4 disabled:opacity-50"
+                    onClick={resetAndBind} disabled={submitting || code.trim().length < 6 || password.trim().length < 8 || confirmPassword.trim().length < 8}>
+                    {submitting ? t("settings.users.register.submitting") : t("settings.users.register.confirmResetBind")}
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                {emailField}
+                <div className="flex justify-end gap-2">
+                  <button type="button" className="secondary-button h-9 px-4" onClick={() => { setForgotMode(false); resetError(); }}>{t("common.cancel")}</button>
+                  <button type="button" className="primary-button h-9 px-4 disabled:opacity-50"
+                    onClick={sendResetCode} disabled={sending || !email.trim()}>
+                    {sending ? t("settings.users.register.submitting") : t("settings.users.register.sendCode")}
+                  </button>
+                </div>
+              </>
+            )
+          ) : (
+            <>
+              {emailField}
+              <div>
+                <input
+                  type="password"
+                  className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                  value={password}
+                  onChange={(e) => { setPassword(e.target.value); resetError(); }}
+                  placeholder={t("settings.users.register.placeholder.mmhPassword")}
+                />
+              </div>
+              <div className="text-[11px] text-slate-500">{t("settings.users.addMmh.hintExisting")}</div>
+              <button
+                type="button"
+                className="w-full text-xs text-slate-500 hover:text-slate-700"
+                onClick={() => { setForgotMode(true); resetError(); setCodeSent(false); }}
+              >
+                {t("login.forgotPassword")}
+              </button>
+            </>
+          )
+        ) : (
+          codeSent ? (
+            <>
+              {emailField}
+              {codeAndPasswordFields}
+              <div className="flex justify-end gap-2">
+                <button type="button" className="secondary-button h-9 px-4" onClick={() => switchMethod("email")}>{t("common.cancel")}</button>
+                <button type="button" className="primary-button h-9 px-4 disabled:opacity-50"
+                  onClick={registerAndBind} disabled={submitting || code.trim().length < 6 || password.trim().length < 8 || confirmPassword.trim().length < 8}>
+                  {submitting ? t("settings.users.register.submitting") : t("settings.users.register.confirmRegisterBind")}
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              {emailField}
+              <div className="flex justify-end gap-2">
+                <button type="button" className="secondary-button h-9 px-4" onClick={() => switchMethod("existing")}>{t("common.cancel")}</button>
+                <button type="button" className="primary-button h-9 px-4 disabled:opacity-50"
+                  onClick={sendRegisterCode} disabled={sending || !email.trim()}>
+                  {sending ? t("settings.users.register.submitting") : t("settings.users.register.sendCode")}
+                </button>
+              </div>
+            </>
+          )
+        )}
+      </FolderTabs>
 
       <div>
         <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.users.field.role")}</label>
@@ -226,29 +368,12 @@ function AddMmhPanel({ onAdded, onError }: { onAdded: () => void; onError: (msg:
       </div>
 
       <div className="flex justify-end gap-2">
-        {method === "email" ? (
-          <>
-            {codeSent ? (
-              <>
-                <button type="button" className="secondary-button h-9 px-4" onClick={sendCode} disabled={sending}>{t("settings.users.register.resend")}</button>
-                <button type="button" className="primary-button h-9 px-4 disabled:opacity-50"
-                  onClick={confirmNew} disabled={submitting || code.trim().length < 6}>
-                  {submitting ? t("settings.users.register.submitting") : t("settings.users.register.confirm")}
-                </button>
-              </>
-            ) : (
-              <button type="button" className="primary-button h-9 px-4 disabled:opacity-50"
-                onClick={sendCode} disabled={sending || !email.trim()}>
-                {sending ? t("settings.users.register.submitting") : t("settings.users.register.sendCode")}
-              </button>
-            )}
-          </>
-        ) : (
+        {method === "existing" && !forgotMode ? (
           <button type="button" className="primary-button h-9 px-4 disabled:opacity-50"
             onClick={bindExisting} disabled={submitting || !email.trim() || !password.trim()}>
             {submitting ? t("settings.users.register.submitting") : t("settings.users.register.bindMmh")}
           </button>
-        )}
+        ) : null}
       </div>
     </div>
   );
@@ -489,8 +614,9 @@ function FnosBindModal({
 }
 
 /**
- * 「设置本地密码」弹窗：给尚无本地密码的用户（纯 MMH / 纯飞牛账户）补一个
- * 本地登录密码。复用 PUT /api/v1/settings/users，保留原有 name/email/role。
+ * 「绑定本地用户」弹窗：给尚无本地账户的用户（纯 MMH / 纯飞牛账户）新建一个
+ * 本地登录身份（本地账户名 + 本地密码）。本地账户名默认取当前显示名（飞牛账户
+ * 即飞牛用户名），可自行修改。复用 PUT /api/v1/settings/users 写 name + password。
  */
 function PasswordSetModal({
   target,
@@ -502,12 +628,18 @@ function PasswordSetModal({
   onSaved: () => void;
 }) {
   const { t } = useI18n();
+  // 本地账户名独立于显示名：默认取当前 name（飞牛账户即飞牛显示名），可改。
+  const [localName, setLocalName] = useState(target.name ?? "");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
   async function submit() {
+    if (!localName.trim()) {
+      setError(t("settings.users.error.usernameRequired"));
+      return;
+    }
     if (password.length < 6) {
       setError(t("settings.users.error.passwordRequired"));
       return;
@@ -524,7 +656,7 @@ function PasswordSetModal({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           id: target.id,
-          name: target.name,
+          name: localName.trim(),
           email: target.email ?? "",
           role: target.role,
           password: password.trim(),
@@ -549,41 +681,58 @@ function PasswordSetModal({
     <div className="app-modal-backdrop z-[1100]">
       <div className="app-modal-panel max-w-md">
         <div className="modal-header shrink-0">
-          <div className="text-sm font-semibold text-slate-800">{t("settings.users.setPassword")}</div>
+          <div className="text-sm font-semibold text-slate-800">{t("settings.users.bindLocal")}</div>
           <button type="button" onClick={onClose} className="secondary-button h-8 px-2"><X className="h-4 w-4" /></button>
         </div>
-        <div className="space-y-4 p-5">
-          {error && <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">{error}</div>}
-          <div className="text-xs text-slate-600">{t("settings.users.setPasswordHint")}</div>
-          <div>
-            <label className="mb-1.5 block text-xs font-medium text-slate-600">{t("settings.users.password.label")}</label>
-            <input
-              autoFocus
-              type="password"
-              value={password}
-              onChange={(e) => { setPassword(e.target.value); setError(""); }}
-              placeholder={t("settings.users.password.set")}
-              className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-            />
-          </div>
-          <div>
-            <label className="mb-1.5 block text-xs font-medium text-slate-600">{t("settings.users.confirmPassword.label")}</label>
-            <input
-              type="password"
-              value={confirmPassword}
-              onChange={(e) => { setConfirmPassword(e.target.value); setError(""); }}
-              placeholder={t("settings.users.placeholder.confirmPassword")}
-              onKeyDown={(e) => { if (e.key === "Enter") void submit(); }}
-              className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-            />
-          </div>
-          <div className="flex justify-end gap-2">
-            <button type="button" className="secondary-button h-9 px-4" onClick={onClose}>{t("common.cancel")}</button>
-            <button type="button" className="primary-button h-9 px-4 disabled:opacity-50"
-              onClick={submit} disabled={submitting || password.length < 6}>
-              {submitting ? t("settings.users.register.submitting") : t("common.save")}
-            </button>
-          </div>
+        <div className="p-5">
+          <FolderTabs
+            tabs={[{ id: "local", label: t("settings.users.tab.local") }]}
+            activeId="local"
+            onChange={() => {}}
+            variant="stretch"
+            panelClassName="space-y-4"
+          >
+            {error && <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">{error}</div>}
+            <div className="text-xs text-slate-600">{t("settings.users.bindLocal.hint")}</div>
+            <div>
+              <label className="mb-1.5 block text-xs font-medium text-slate-600">{t("settings.users.bindLocal.field.username")}</label>
+              <input
+                autoFocus
+                value={localName}
+                onChange={(e) => { setLocalName(e.target.value); setError(""); }}
+                placeholder={t("settings.users.bindLocal.placeholder.username")}
+                className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+              />
+            </div>
+            <div>
+              <label className="mb-1.5 block text-xs font-medium text-slate-600">{t("settings.users.bindLocal.field.password")}</label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => { setPassword(e.target.value); setError(""); }}
+                placeholder={t("settings.users.password.set")}
+                className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+              />
+            </div>
+            <div>
+              <label className="mb-1.5 block text-xs font-medium text-slate-600">{t("settings.users.bindLocal.field.confirm")}</label>
+              <input
+                type="password"
+                value={confirmPassword}
+                onChange={(e) => { setConfirmPassword(e.target.value); setError(""); }}
+                placeholder={t("settings.users.bindLocal.placeholder.confirm")}
+                onKeyDown={(e) => { if (e.key === "Enter") void submit(); }}
+                className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+              />
+            </div>
+            <div className="flex justify-end gap-2">
+              <button type="button" className="secondary-button h-9 px-4" onClick={onClose}>{t("common.cancel")}</button>
+              <button type="button" className="primary-button h-9 px-4 disabled:opacity-50"
+                onClick={submit} disabled={submitting || !localName.trim() || password.length < 6}>
+                {submitting ? t("settings.users.register.submitting") : t("common.save")}
+              </button>
+            </div>
+          </FolderTabs>
         </div>
       </div>
     </div>
@@ -599,14 +748,16 @@ function RegisterModal({
   onClose: () => void;
   onRegistered: (principalId: string) => void;
 }) {  const { t } = useI18n();
-  const [step, setStep] = useState<"form" | "code" | "done">("form");
+  const [method, setMethod] = useState<"existing" | "email">("existing");
   const [email, setEmail] = useState(target.email ?? "");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [code, setCode] = useState("");
+  const [codeSent, setCodeSent] = useState(false);
+  const [forgotMode, setForgotMode] = useState(false);
   const [error, setError] = useState("");
   const [sending, setSending] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [method, setMethod] = useState<"existing" | "email">("existing");
   const [done, setDone] = useState<{ value: string } | null>(null);
 
   function validateEmail(): string | null {
@@ -614,7 +765,43 @@ function RegisterModal({
     return null;
   }
 
-  async function sendCode() {
+  function switchMethod(next: "existing" | "email") {
+    setMethod(next);
+    setError("");
+    setForgotMode(false);
+    setCodeSent(false);
+    setCode("");
+    setPassword("");
+    setConfirmPassword("");
+  }
+
+  /** 发「找回密码」验证码（已有 MMH 账号 → 忘记密码）。 */
+  async function sendResetCode() {
+    const err = validateEmail();
+    if (err) { setError(err); return; }
+    setSending(true);
+    setError("");
+    try {
+      const res = await fetch("/api/v1/auth/mmh-password-reset/send-code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: email.trim() }),
+      });
+      const data = await res.json().catch(() => null);
+      if (data?.ok) {
+        setCodeSent(true);
+      } else {
+        setError(data?.error || t("settings.users.register.error.sendFailed"));
+      }
+    } catch {
+      setError(t("settings.users.register.error.network"));
+    } finally {
+      setSending(false);
+    }
+  }
+
+  /** 发「注册」验证码（注册 MMH 账号）。 */
+  async function sendRegisterCode() {
     const err = validateEmail();
     if (err) { setError(err); return; }
     setSending(true);
@@ -627,7 +814,7 @@ function RegisterModal({
       });
       const data = await res.json().catch(() => null);
       if (data?.ok) {
-        setStep("code");
+        setCodeSent(true);
       } else {
         setError(data?.error || t("settings.users.register.error.sendFailed"));
       }
@@ -638,8 +825,78 @@ function RegisterModal({
     }
   }
 
-  async function handleConfirm() {
+  /** 绑定已有 MMH 账号（邮箱 + 会员密码）。 */
+  async function bindExistingMmhUser() {
+    if (!validateEmail()) { setError(t("settings.users.register.error.emailInvalid")); return; }
+    if (!password.trim()) { setError(t("settings.users.error.passwordRequired")); return; }
+    setSubmitting(true);
+    setError("");
+    try {
+      const res = await fetch("/api/v1/settings/users/register/bind-existing", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: target.id, username: email.trim(), password: password.trim() }),
+      });
+      const data = await res.json().catch(() => null);
+      if (data?.ok && typeof data.principalId === "string") {
+        setDone({ value: data.principalId });
+        onRegistered(data.principalId);
+      } else {
+        setError(data?.error || t("settings.users.register.error.failed"));
+      }
+    } catch (error) {
+      setError(error instanceof Error && error.message ? error.message : t("settings.users.register.error.network"));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  /** 忘记密码：重置 MMH 会员密码后，用新密码直接绑定。 */
+  async function resetAndBind() {
     if (!code.trim()) { setError(t("settings.users.register.error.invalidCode")); return; }
+    if (password.trim().length < 8) { setError(t("login.mmhReset.error.passwordTooShort")); return; }
+    if (password.trim() !== confirmPassword.trim()) { setError(t("login.error.passwordMismatch")); return; }
+    setSubmitting(true);
+    setError("");
+    try {
+      // 1) 重置中央 MMH 会员密码。
+      const resetRes = await fetch("/api/v1/auth/mmh-password-reset/confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: email.trim(), code: code.trim(), newPassword: password.trim() }),
+      });
+      const resetData = await resetRes.json().catch(() => null);
+      if (!resetData?.ok) {
+        setError(resetData?.code === "INVALID_OR_EXPIRED_CODE"
+          ? t("settings.users.register.error.invalidCode")
+          : resetData?.error || t("login.mmhReset.error.failed"));
+        return;
+      }
+      // 2) 用新密码直接绑定。
+      const bindRes = await fetch("/api/v1/settings/users/register/bind-existing", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: target.id, username: email.trim(), password: password.trim() }),
+      });
+      const bindData = await bindRes.json().catch(() => null);
+      if (bindData?.ok && typeof bindData.principalId === "string") {
+        setDone({ value: bindData.principalId });
+        onRegistered(bindData.principalId);
+      } else {
+        setError(bindData?.error || t("settings.users.register.error.failed"));
+      }
+    } catch (error) {
+      setError(error instanceof Error && error.message ? error.message : t("settings.users.register.error.network"));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  /** 注册新 MMH 账号：验证码 + 会员密码，注册后直接绑定。 */
+  async function registerAndBind() {
+    if (!code.trim()) { setError(t("settings.users.register.error.invalidCode")); return; }
+    if (password.trim().length < 8) { setError(t("login.mmhReset.error.passwordTooShort")); return; }
+    if (password.trim() !== confirmPassword.trim()) { setError(t("login.error.passwordMismatch")); return; }
     setSubmitting(true);
     setError("");
     try {
@@ -649,18 +906,17 @@ function RegisterModal({
         body: JSON.stringify({
           userId: target.id,
           email: email.trim(),
-          ...(password.trim() ? { password: password.trim() } : {}),
           code: code.trim(),
+          mmhPassword: password.trim(),
         }),
       });
       const data = await res.json().catch(() => null);
       if (data?.ok && typeof data.principalId === "string") {
         setDone({ value: data.principalId });
-        setStep("done");
         onRegistered(data.principalId);
       } else {
-        setError(data?.code === "MMH_CREDENTIAL_VERIFICATION_UNAVAILABLE"
-          ? t("settings.users.register.error.mmhCredentialVerificationUnavailable")
+        setError(data?.code === "INVALID_OR_EXPIRED_CODE"
+          ? t("settings.users.register.error.invalidCode")
           : data?.error || t("settings.users.register.error.failed"));
       }
     } catch (error) {
@@ -674,37 +930,58 @@ function RegisterModal({
     if (done) navigator.clipboard?.writeText(done.value).catch(() => {});
   }
 
-  async function bindExistingMmhUser() {
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
-      setError(t("settings.users.register.error.emailInvalid"));
-      return;
-    }
-    if (!password.trim()) {
-      setError(t("settings.users.error.passwordRequired"));
-      return;
-    }
-    setSubmitting(true);
-    setError("");
-    try {
-      const res = await fetch("/api/v1/settings/users/register/bind-existing", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId: target.id, username: email.trim(), password: password.trim() }),
-      });
-      const data = await res.json().catch(() => null);
-      if (data?.ok && typeof data.principalId === "string") {
-        setDone({ value: data.principalId });
-        setStep("done");
-        onRegistered(data.principalId);
-      } else {
-        setError(data?.error || t("settings.users.register.error.failed"));
-      }
-    } catch (error) {
-      setError(error instanceof Error && error.message ? error.message : t("settings.users.register.error.network"));
-    } finally {
-      setSubmitting(false);
-    }
-  }
+  // 发码后的「验证码 + 两次密码」子表单（忘记密码与注册共用，仅文案/确认回调不同）。
+  const codeAndPasswordFields = (
+    <>
+      <div>
+        <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.users.register.field.code")}</label>
+        <input
+          type="text"
+          inputMode="numeric"
+          maxLength={6}
+          className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none tracking-widest"
+          value={code}
+          onChange={(e) => { setCode(e.target.value.replace(/\D/g, "")); setError(""); }}
+          placeholder={t("settings.users.register.placeholder.code")}
+          autoFocus
+        />
+      </div>
+      <div>
+        <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.users.register.field.mmhMemberPassword")}</label>
+        <input
+          type="password"
+          className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+          value={password}
+          onChange={(e) => { setPassword(e.target.value); setError(""); }}
+          placeholder={t("settings.users.register.placeholder.mmhMemberPassword")}
+        />
+      </div>
+      <div>
+        <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.users.register.field.confirmMmhMemberPassword")}</label>
+        <input
+          type="password"
+          className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+          value={confirmPassword}
+          onChange={(e) => { setConfirmPassword(e.target.value); setError(""); }}
+          placeholder={t("settings.users.register.placeholder.mmhMemberPassword")}
+          onKeyDown={(e) => { if (e.key === "Enter") void (forgotMode ? resetAndBind() : registerAndBind()); }}
+        />
+      </div>
+    </>
+  );
+
+  const emailField = (
+    <div>
+      <input
+        type="email"
+        className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+        value={email}
+        onChange={(e) => { setEmail(e.target.value); setError(""); }}
+        placeholder={t("settings.users.register.placeholder.mmhAccount")}
+        autoFocus
+      />
+    </div>
+  );
 
   return (
     <div className="app-modal-backdrop z-[1100]">
@@ -716,7 +993,7 @@ function RegisterModal({
           </button>
         </div>
         <div className="p-5 space-y-4">
-          {step === "done" && done ? (
+          {done ? (
             <div className="space-y-4">
               <div className="text-xs text-slate-600">{t("settings.users.register.success", { email })}</div>
               <div>
@@ -730,117 +1007,102 @@ function RegisterModal({
                 <button type="button" className="primary-button h-9 px-4" onClick={onClose}>{t("common.close")}</button>
               </div>
             </div>
-          ) : step === "code" ? (
-            <div className="space-y-4">
-              {error && (
-                <div className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-md px-3 py-2">{error}</div>
-              )}
-              <div className="text-xs text-slate-600">{t("settings.users.register.codeSentTo", { email })}</div>
-              <div>
-                <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.users.register.field.code")}</label>
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  maxLength={6}
-                  className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none tracking-widest"
-                  value={code}
-                  onChange={(e) => { setCode(e.target.value.replace(/\D/g, "")); setError(""); }}
-                  placeholder={t("settings.users.register.placeholder.code")}
-                  autoFocus
-                />
-              </div>
-              <div className="flex justify-end gap-2">
-                <button type="button" className="secondary-button h-9 px-4" onClick={() => setStep("form")}>{t("common.cancel")}</button>
-                <button type="button" className="secondary-button h-9 px-4" onClick={sendCode} disabled={sending}>{t("settings.users.register.resend")}</button>
-                <button type="button" className="primary-button h-9 px-4 disabled:opacity-50"
-                  onClick={handleConfirm} disabled={submitting || code.trim().length < 6}>
-                  {submitting ? t("settings.users.register.submitting") : t("settings.users.register.confirm")}
-                </button>
-              </div>
-            </div>
           ) : (
-            <div className="space-y-4">
+            <>
               {error && (
                 <div className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-md px-3 py-2">{error}</div>
               )}
-              <div className="flex gap-1 rounded-lg border border-slate-200 bg-slate-50 p-1">
-                <button type="button"
-                  onClick={() => { setMethod("existing"); setError(""); }}
-                  className={method === "existing" ? "flex-1 rounded-md bg-white px-3 py-1.5 text-xs font-medium text-slate-800 shadow-sm" : "flex-1 rounded-md px-3 py-1.5 text-xs font-medium text-slate-500"}>
-                  {t("settings.users.register.methodExisting")}
-                </button>
-                <button type="button"
-                  onClick={() => { setMethod("email"); setError(""); }}
-                  className={method === "email" ? "flex-1 rounded-md bg-white px-3 py-1.5 text-xs font-medium text-slate-800 shadow-sm" : "flex-1 rounded-md px-3 py-1.5 text-xs font-medium text-slate-500"}>
-                  {t("settings.users.register.methodEmail")}
-                </button>
-              </div>
-              {method === "existing" ? (
-                <>
-                  <div>
-                    <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.users.register.field.mmhUsername")}</label>
-                    <input
-                      type="email"
-                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                      value={email}
-                      onChange={(e) => { setEmail(e.target.value); setError(""); }}
-                      autoFocus
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.users.register.field.mmhPassword")}</label>
-                    <input
-                      type="password"
-                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                      value={password}
-                      onChange={(e) => { setPassword(e.target.value); setError(""); }}
-                      placeholder={t("settings.users.register.placeholder.mmhPassword")}
-                    />
-                  </div>
-                  <div className="text-[11px] text-slate-500">{t("settings.users.register.hintExisting")}</div>
-                  <div className="flex justify-end gap-2">
-                    <button type="button" className="secondary-button h-9 px-4" onClick={onClose}>{t("common.cancel")}</button>
-                    <button type="button" className="primary-button h-9 px-4 disabled:opacity-50"
-                      onClick={bindExistingMmhUser} disabled={submitting || !email.trim() || !password.trim()}>
-                      {submitting ? t("settings.users.register.submitting") : t("settings.users.register.bindMmh")}
-                    </button>
-                  </div>
-                </>
-              ) : (
-                <>
-                  <div>
-                    <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.users.register.field.email")}</label>
-                    <input
-                      type="email"
-                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                      value={email}
-                      onChange={(e) => { setEmail(e.target.value); setError(""); }}
-                      autoFocus
-                    />
-                  </div>
-                  {!target.hasPassword && (
-                    <div>
-                      <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.users.register.field.password")} <span className="font-normal text-slate-400">({t("settings.users.register.optional")})</span></label>
-                      <input
-                        type="password"
-                        className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                        value={password}
-                        onChange={(e) => { setPassword(e.target.value); setError(""); }}
-                        placeholder={t("settings.users.register.placeholder.passwordOptional")}
-                      />
-                    </div>
-                  )}
-                  <div className="text-[11px] text-slate-500">{t("settings.users.register.hint")}</div>
-                  <div className="flex justify-end gap-2">
-                    <button type="button" className="secondary-button h-9 px-4" onClick={onClose}>{t("common.cancel")}</button>
-                    <button type="button" className="primary-button h-9 px-4 disabled:opacity-50"
-                      onClick={sendCode} disabled={sending || !email.trim()}>
-                      {sending ? t("settings.users.register.submitting") : t("settings.users.register.sendCode")}
-                    </button>
-                  </div>
-                </>
-              )}
-            </div>
+              <FolderTabs
+                tabs={[
+                  { id: "existing", label: t("settings.users.register.methodExisting") },
+                  { id: "email", label: t("settings.users.register.methodEmail") },
+                ]}
+                activeId={method}
+                onChange={(id) => switchMethod(id as "existing" | "email")}
+                variant="stretch"
+                panelClassName="space-y-4 h-[23rem] overflow-y-auto"
+              >
+                {method === "existing" ? (
+                  <>
+                    {emailField}
+                    {forgotMode ? (
+                      codeSent ? (
+                        <>
+                          {codeAndPasswordFields}
+                          <div className="flex justify-end gap-2">
+                            <button type="button" className="secondary-button h-9 px-4" onClick={onClose}>{t("common.cancel")}</button>
+                            <button type="button" className="primary-button h-9 px-4 disabled:opacity-50"
+                              onClick={resetAndBind} disabled={submitting || code.trim().length < 6 || password.trim().length < 8 || confirmPassword.trim().length < 8}>
+                              {submitting ? t("settings.users.register.submitting") : t("settings.users.register.confirmResetBind")}
+                            </button>
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <div className="flex justify-end gap-2">
+                            <button type="button" className="secondary-button h-9 px-4" onClick={() => setForgotMode(false)}>{t("common.cancel")}</button>
+                            <button type="button" className="primary-button h-9 px-4 disabled:opacity-50"
+                              onClick={sendResetCode} disabled={sending || !email.trim()}>
+                              {sending ? t("settings.users.register.submitting") : t("settings.users.register.sendCode")}
+                            </button>
+                          </div>
+                        </>
+                      )
+                    ) : (
+                      <>
+                        <div>
+                          <input
+                            type="password"
+                            className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                            value={password}
+                            onChange={(e) => { setPassword(e.target.value); setError(""); }}
+                            placeholder={t("settings.users.register.placeholder.mmhPassword")}
+                          />
+                        </div>
+                        <div className="flex justify-end gap-2">
+                          <button type="button" className="secondary-button h-9 px-4" onClick={onClose}>{t("common.cancel")}</button>
+                          <button type="button" className="primary-button h-9 px-4 disabled:opacity-50"
+                            onClick={bindExistingMmhUser} disabled={submitting || !email.trim() || !password.trim()}>
+                            {submitting ? t("settings.users.register.submitting") : t("settings.users.register.bindMmh")}
+                          </button>
+                        </div>
+                        <button
+                          type="button"
+                          className="w-full text-xs text-slate-500 hover:text-slate-700"
+                          onClick={() => { setForgotMode(true); setError(""); setCodeSent(false); }}
+                        >
+                          {t("login.forgotPassword")}
+                        </button>
+                      </>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    {emailField}
+                    {codeSent ? (
+                      <>
+                        {codeAndPasswordFields}
+                        <div className="flex justify-end gap-2">
+                          <button type="button" className="secondary-button h-9 px-4" onClick={onClose}>{t("common.cancel")}</button>
+                          <button type="button" className="primary-button h-9 px-4 disabled:opacity-50"
+                            onClick={registerAndBind} disabled={submitting || code.trim().length < 6 || password.trim().length < 8 || confirmPassword.trim().length < 8}>
+                            {submitting ? t("settings.users.register.submitting") : t("settings.users.register.confirmRegisterBind")}
+                          </button>
+                        </div>
+                      </>
+                    ) : (
+                      <div className="flex justify-end gap-2">
+                        <button type="button" className="secondary-button h-9 px-4" onClick={onClose}>{t("common.cancel")}</button>
+                        <button type="button" className="primary-button h-9 px-4 disabled:opacity-50"
+                          onClick={sendRegisterCode} disabled={sending || !email.trim()}>
+                          {sending ? t("settings.users.register.submitting") : t("settings.users.register.sendCode")}
+                        </button>
+                      </div>
+                    )}
+                  </>
+                )}
+              </FolderTabs>
+            </>
           )}
         </div>
       </div>
@@ -1113,7 +1375,7 @@ export default function UsersPage() {
                       )}
                       {!u.hasPassword && (
                         <SettingsActionButton
-                          label={t("settings.users.setPassword")}
+                          label={t("settings.users.bindLocal")}
                           variant="default"
                           onClick={() => setPasswordSetTarget(u)}
                         />

@@ -251,8 +251,16 @@ async function handleMmhLogin(req: NextRequest, email: string, password: string,
     return NextResponse.json({ ok: false, code: "MMH_USER_NOT_BOUND", error: "该 MMH 账户未绑定任何账簿" }, { status: 404 });
   }
 
-  if (users.length > 1 && !householdId) {
-    return ambiguousUsernameResponse(users);
+  // Ambiguity is about *ledgers*, not about users: one MMH principal can be bound
+  // to several users inside the same ledger (e.g. an "admin" plus a member that
+  // both carry the same membership email). Only when the matches span more than
+  // one distinct ledger do we need the user to pick. Several matches within a
+  // single ledger are not ambiguous — log straight in as that ledger's user.
+  if (!householdId) {
+    const distinctHouseholds = new Set(users.map((u) => u.householdId).filter((id): id is string => !!id));
+    if (distinctHouseholds.size > 1) {
+      return ambiguousUsernameResponse(users);
+    }
   }
 
   const user = householdId

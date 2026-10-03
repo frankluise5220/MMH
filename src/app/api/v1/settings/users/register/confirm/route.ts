@@ -1,11 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import crypto from "crypto";
 import { prisma } from "@/lib/db/prisma";
 import { hashPassword } from "@/lib/auth/password";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { getCurrentUser, isAdmin } from "@/lib/server/auth";
-import { registerEmailPrincipal } from "@/lib/server/registration-client";
+import { registerEmailPrincipal, verifyRegistrationCode, setEmailPrincipalPassword } from "@/lib/server/registration-client";
 import { getUserSessionDays, issueSessionCookies } from "@/lib/server/session-issue";
 
 export const runtime = "nodejs";
@@ -59,6 +58,9 @@ const ConfirmSchema = z.object({
   userId: z.string().min(1),
   email: z.string().email(),
   password: z.string().min(6).max(200).optional(),
+  // Optional MMH membership password (scrypt, stored in the central registration
+  // service). Distinct from `password`, which is the ledger-local admin password.
+  mmhPassword: z.string().min(6).max(200).optional(),
   code: z.string().min(4).max(20),
 });
 
@@ -115,25 +117,15 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, code: "FORBIDDEN", error: "Unauthorized target user." }, { status: 403, headers: cors() });
   }
 
-  const secret = (process.env.PASSWORD_RESET_SECRET ?? "").trim();
-  if (!secret) {
-    return NextResponse.json({ ok: false, code: "EMAIL_CODE_NOT_CONFIGURED", error: "Email verification codes are not configured on this server." }, { status: 500, headers: cors() });
-  }
-
-  const codeHash = crypto.createHash("sha256").update(`${secret}:${userId}:${code.trim()}`).digest("hex");
-  const token = await prisma.registrationCode.findFirst({
-    where: {
-      targetUserId: userId,
-      email: normalizedEmail,
-      codeHash,
-      usedAt: null,
-      expiresAt: { gt: new Date() },
-    },
-    orderBy: { createdAt: "desc" },
-    select: { id: true },
+  // The code is verified by the central registration service, which issued it.
+  const codeResult = await verifyRegistrationCode({
+    email: normalizedEmail,
+    purpose: "registration",
+    code: code.trim(),
   });
-  if (!token) {
-    return NextResponse.json({ ok: false, code: "INVALID_OR_EXPIRED_CODE", error: "The verification code is invalid or has expired." }, { status: 400, headers: cors() });
+  if (!codeResult.ok) {
+    const status = codeResult.code === "RATE_LIMITED" || codeResult.code === "TOO_MANY_ATTEMPTS" ? 429 : 400;
+    return NextResponse.json({ ok: false, code: "INVALID_OR_EXPIRED_CODE", error: "The verification code is invalid or has expired." }, { status, headers: cors() });
   }
 
   // A password is now fully optional: an MMH identity can be bound to a user
@@ -160,6 +152,21 @@ export async function POST(req: NextRequest) {
     principalId = registration.principalId;
   }
 
+  // Set the MMH membership password on the (possibly freshly registered)
+  // principal when supplied. This is the central credential (scrypt), distinct
+  // from the ledger-local `password` above. Do this before touching the local
+  // row so a failure here never leaves a half-bound account.
+  const mmhPassword = parse.data.mmhPassword?.trim();
+  if (mmhPassword) {
+    const setPassword = await setEmailPrincipalPassword({ email: normalizedEmail, password: mmhPassword });
+    if (!setPassword.ok) {
+      return NextResponse.json(
+        { ok: false, code: setPassword.code ?? "MMH_PASSWORD_SET_FAILED", error: setPassword.error ?? "Failed to set the MMH membership password." },
+        { status: setPassword.status ?? 502, headers: cors() },
+      );
+    }
+  }
+
   // Binding an email to an account must NOT clobber an existing login password.
   // A password is set only when one was supplied AND the target has no password
   // yet (and then bump authVersion to invalidate older sessions).
@@ -173,10 +180,6 @@ export async function POST(req: NextRequest) {
         ...(passwordWasSet ? { passwordHash, authVersion: { increment: 1 } } : {}),
         ...(principalId ? { registrationPrincipalId: principalId } : {}),
       },
-    });
-    await tx.registrationCode.update({
-      where: { id: token.id },
-      data: { usedAt: new Date() },
     });
   });
 

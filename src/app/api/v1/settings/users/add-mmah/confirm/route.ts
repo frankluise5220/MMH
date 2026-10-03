@@ -1,10 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import crypto from "crypto";
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { getCurrentUser, isAdmin } from "@/lib/server/auth";
-import { registerEmailPrincipal, setEmailPrincipalPassword } from "@/lib/server/registration-client";
+import { registerEmailPrincipal, setEmailPrincipalPassword, verifyRegistrationCode } from "@/lib/server/registration-client";
 import { DEFAULT_SESSION_DAYS, normalizeSessionDays } from "@/lib/session-days";
 import { logger } from "@/lib/logger";
 
@@ -21,10 +20,6 @@ const ConfirmSchema = z.object({
 
 const CONFIRM_ATTEMPT_LIMIT = 10;
 const CONFIRM_ATTEMPT_WINDOW_MS = 15 * 60 * 1000;
-
-// See add-mmah/send-code: the code is anchored to this sentinel until the user
-// row is created on confirm.
-const ADD_MMH_TARGET_ID = "add-mmah-pending";
 
 declare global {
   var __addMmhConfirmAttempts: Map<string, number[]> | undefined;
@@ -107,25 +102,15 @@ export async function POST(req: NextRequest) {
 
   const { householdId } = await getHouseholdScope();
 
-  const secret = (process.env.PASSWORD_RESET_SECRET ?? "").trim();
-  if (!secret) {
-    return NextResponse.json({ ok: false, code: "EMAIL_CODE_NOT_CONFIGURED", error: "Email verification codes are not configured on this server." }, { status: 500, headers: cors() });
-  }
-
-  const codeHash = crypto.createHash("sha256").update(`${secret}:${ADD_MMH_TARGET_ID}:${email}:${code}`).digest("hex");
-  const token = await prisma.registrationCode.findFirst({
-    where: {
-      targetUserId: ADD_MMH_TARGET_ID,
-      email,
-      codeHash,
-      usedAt: null,
-      expiresAt: { gt: new Date() },
-    },
-    orderBy: { createdAt: "desc" },
-    select: { id: true },
+  // The code is verified by the central registration service, which issued it.
+  const codeResult = await verifyRegistrationCode({
+    email,
+    purpose: "registration",
+    code,
   });
-  if (!token) {
-    return NextResponse.json({ ok: false, code: "INVALID_OR_EXPIRED_CODE", error: "The verification code is invalid or has expired." }, { status: 400, headers: cors() });
+  if (!codeResult.ok) {
+    const status = codeResult.code === "RATE_LIMITED" || codeResult.code === "TOO_MANY_ATTEMPTS" ? 429 : 400;
+    return NextResponse.json({ ok: false, code: "INVALID_OR_EXPIRED_CODE", error: "The verification code is invalid or has expired." }, { status, headers: cors() });
   }
 
   const emailTaken = await prisma.user.findFirst({
@@ -178,10 +163,6 @@ export async function POST(req: NextRequest) {
           userId: user.id,
           sessionDays: normalizeSessionDays(undefined, DEFAULT_SESSION_DAYS),
         },
-      });
-      await tx.registrationCode.update({
-        where: { id: token.id },
-        data: { usedAt: new Date() },
       });
       return user;
     });

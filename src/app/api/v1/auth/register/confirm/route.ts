@@ -1,8 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import crypto from "crypto";
 import { prisma } from "@/lib/db/prisma";
-import { isRegistrationConfigured, registerEmailPrincipal, setEmailPrincipalPassword } from "@/lib/server/registration-client";
+import { isRegistrationConfigured, registerEmailPrincipal, setEmailPrincipalPassword, verifyRegistrationCode } from "@/lib/server/registration-client";
 import {
   createLedgerWithDefaults,
   LEDGER_CREATION_INVITE_CODE_KEY,
@@ -31,8 +30,6 @@ const ConfirmSchema = z.object({
   ledgerName: z.string().trim().min(1).max(50).optional(),
 });
 
-const SIGNUP_TARGET_ID = "signup-pending";
-
 function cors() {
   return {
     "Access-Control-Allow-Origin": "*",
@@ -47,8 +44,8 @@ export async function OPTIONS() {
 
 /**
  * Step 2 of the public self-service signup flow (no session required): verifies
- * the email code, registers an email principal in the external mmh-registration
- * service, then creates a new ledger with the registrant as its admin user
+ * the email code against the central registration service, registers an email
+ * principal, then creates a new ledger with the registrant as its admin user
  * (email as the login name) and signs them in.
  *
  * Body: { email, code, password, name? }
@@ -78,25 +75,15 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, code: "LEDGER_NAME_REQUIRED", error: "A ledger name is required." }, { status: 400, headers: cors() });
   }
 
-  const secret = (process.env.PASSWORD_RESET_SECRET ?? "").trim();
-  if (!secret) {
-    return NextResponse.json({ ok: false, code: "EMAIL_CODE_NOT_CONFIGURED", error: "Email verification codes are not configured on this server." }, { status: 500, headers: cors() });
-  }
-
-  const codeHash = crypto.createHash("sha256").update(`${secret}:${email}:${parse.data.code.trim()}`).digest("hex");
-  const token = await prisma.registrationCode.findFirst({
-    where: {
-      targetUserId: SIGNUP_TARGET_ID,
-      email,
-      codeHash,
-      usedAt: null,
-      expiresAt: { gt: new Date() },
-    },
-    orderBy: { createdAt: "desc" },
-    select: { id: true },
+  // The code is verified by the central registration service, which issued it.
+  const codeResult = await verifyRegistrationCode({
+    email,
+    purpose: "registration",
+    code: parse.data.code.trim(),
   });
-  if (!token) {
-    return NextResponse.json({ ok: false, code: "INVALID_OR_EXPIRED_CODE", error: "The verification code is invalid or has expired." }, { status: 400, headers: cors() });
+  if (!codeResult.ok) {
+    const status = codeResult.code === "RATE_LIMITED" || codeResult.code === "TOO_MANY_ATTEMPTS" ? 429 : 400;
+    return NextResponse.json({ ok: false, code: "INVALID_OR_EXPIRED_CODE", error: "The verification code is invalid or has expired." }, { status, headers: cors() });
   }
 
   let inviteRecords: ReturnType<typeof parseLedgerInviteCodeRecords> | null = null;
@@ -179,10 +166,6 @@ export async function POST(req: NextRequest) {
       await tx.user.update({
         where: { id: result.adminUser.id },
         data: { registrationPrincipalId: principalId },
-      });
-      await tx.registrationCode.update({
-        where: { id: token.id },
-        data: { usedAt: new Date() },
       });
       if (inviteRegistration && inviteRecords) {
         const usedInviteRecords = markLedgerInviteCodeUsed(inviteRecords, inviteCode, {
