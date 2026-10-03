@@ -85,8 +85,22 @@ function copyDir(src, dest) {
 // Remove non-runtime junk that leaks from the repo into .next/standalone
 // (dev agent logs, dev shared settings, runtime data dir, env files, build
 // cache). The desktop app keeps user data under %APPDATA%\MMH instead.
-function pruneStagedApp(dir) {  for (const name of [".codex-logs", "data", "shared", ".env", ".env.local", ".env.production", ".env.development"]) {
-    fs.rmSync(path.join(dir, name), { recursive: true, force: true });
+function pruneStagedApp(dir) {
+  for (const name of [".codex-logs", "data", "shared", ".env", ".env.local", ".env.production", ".env.development"]) {
+    // These are non-runtime junk. On Windows a dev agent (e.g. a still-running
+    // `next dev`) can hold a handle on files under `.codex-logs`, so rmSync can
+    // throw EPERM even with force:true (force only ignores ENOENT). Skip the
+    // entry instead of failing the whole build — leaving it just bloats the
+    // package slightly, never breaks the runtime.
+    try {
+      fs.rmSync(path.join(dir, name), { recursive: true, force: true });
+    } catch (error) {
+      if (error && error.code === "EPERM") {
+        console.warn(`pruneStagedApp: could not remove ${name} (EPERM, likely a dev handle); skipping.`);
+      } else {
+        throw error;
+      }
+    }
   }
   fs.rmSync(path.join(dir, ".next", "cache"), { recursive: true, force: true });
 }
