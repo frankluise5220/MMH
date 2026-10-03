@@ -175,7 +175,6 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   const [registerCode, setRegisterCode] = useState("");
   const [registerPassword, setRegisterPassword] = useState("");
   const [registerMmhPassword, setRegisterMmhPassword] = useState("");
-  const [registerName, setRegisterName] = useState("");
   const [registerInfo, setRegisterInfo] = useState("");
   const [registerError, setRegisterError] = useState("");
   const [registerLoading, setRegisterLoading] = useState(false);
@@ -926,7 +925,6 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
           code,
           password,
           mmhPassword,
-          ...(registerName.trim() ? { name: registerName.trim() } : {}),
           ...(inviteMode
             ? { inviteCode: createInviteCode.trim(), ledgerName: createLedgerName.trim() }
             : {}),
@@ -1062,10 +1060,6 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                 <div className="text-xs font-medium text-slate-600">{t("login.register.mmhPassword")}</div>
                 <input value={registerMmhPassword} onChange={(event) => setRegisterMmhPassword(event.target.value)} type="password" autoComplete="new-password" className={LOGIN_INPUT_CLASS} placeholder={t("login.register.mmhPasswordPlaceholder")} />
               </div>
-              <div className="space-y-1">
-                <div className="text-xs font-medium text-slate-600">{t("login.register.name")}</div>
-                <input value={registerName} onChange={(event) => setRegisterName(event.target.value)} type="text" autoComplete="username" className={LOGIN_INPUT_CLASS} placeholder={t("login.register.namePlaceholder")} />
-              </div>
             </>
           )}
           {registerInfo && <div className="text-xs text-slate-600">{registerInfo}</div>}
@@ -1133,17 +1127,6 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
             className={LOGIN_INPUT_CLASS}
             placeholder={t("login.mmhPasswordPlaceholder")}
             onKeyDown={(event) => { if (event.key === "Enter") void handleCreateLedger(); }}
-          />
-        </div>
-        <div className="space-y-1">
-          <div className="text-xs font-medium text-slate-600">{t("login.register.name")}</div>
-          <input
-            value={createAdminName}
-            onChange={(event) => setCreateAdminName(event.target.value)}
-            type="text"
-            autoComplete="username"
-            className={LOGIN_INPUT_CLASS}
-            placeholder={t("login.register.namePlaceholder")}
           />
         </div>
         <button
@@ -1886,7 +1869,6 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                   setRegisterCodeSent(false);
                   setRegisterPassword("");
                   setRegisterMmhPassword("");
-                  setRegisterName("");
                   setRegisterInfo("");
                   setRegisterError("");
                   setMode("login");

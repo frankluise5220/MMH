@@ -16,6 +16,7 @@ import {
 import { SESSION_DAY_OPTIONS } from "@/lib/session-days";
 import { useI18n } from "@/lib/i18n";
 import { CredentialPasswordField, resetCredentialKindCache } from "@/components/CredentialPasswordField";
+import { FolderTabs } from "@/app/login/FolderTabs";
 
 type ManagedUser = {
   id: string;
@@ -30,15 +31,240 @@ type ManagedUser = {
   createdAt?: string;
 };
 
+/**
+ * 「添加用户 → MMH 用户」页签。
+ *
+ * 从零创建一个纯 MMH 用户（无本地密码）。两种子模式：
+ *  - existing：验证已有 MMH 身份（邮箱 + 会员密码）→ add-mmah/bind-existing；
+ *  - email：邮箱验证码注册新 MMH 身份 → add-mmah/send-code + confirm。
+ * 成功后回调 onAdded（父组件刷新用户列表并关闭弹窗）。
+ */
+function AddMmhPanel({ onAdded, onError }: { onAdded: () => void; onError: (msg: string) => void }) {
+  const { t } = useI18n();
+  const [method, setMethod] = useState<"existing" | "email">("existing");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [role, setRole] = useState("user");
+  const [codeSent, setCodeSent] = useState(false);
+  const [code, setCode] = useState("");
+  const [sending, setSending] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+
+  function resetError() {
+    onError("");
+  }
+
+  async function sendCode() {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+      onError(t("settings.users.register.error.emailInvalid"));
+      return;
+    }
+    setSending(true);
+    resetError();
+    try {
+      const res = await fetch("/api/v1/settings/users/add-mmah/send-code", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: email.trim() }),
+      });
+      const data = await res.json().catch(() => null);
+      if (data?.ok) {
+        setCodeSent(true);
+      } else {
+        onError(data?.code === "DUPLICATE_EMAIL"
+          ? t("settings.users.register.error.emailTaken")
+          : data?.error || t("settings.users.register.error.sendFailed"));
+      }
+    } catch {
+      onError(t("settings.users.register.error.network"));
+    } finally {
+      setSending(false);
+    }
+  }
+
+  async function confirmNew() {
+    if (!code.trim() || code.trim().length < 6) {
+      onError(t("settings.users.register.error.invalidCode"));
+      return;
+    }
+    setSubmitting(true);
+    resetError();
+    try {
+      const res = await fetch("/api/v1/settings/users/add-mmah/confirm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: email.trim(),
+          code: code.trim(),
+          role,
+          ...(password.trim() ? { mmhPassword: password.trim() } : {}),
+        }),
+      });
+      const data = await res.json().catch(() => null);
+      if (data?.ok) {
+        onAdded();
+      } else {
+        onError(data?.error || t("settings.users.register.error.failed"));
+      }
+    } catch (error) {
+      onError(error instanceof Error && error.message ? error.message : t("settings.users.register.error.network"));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  async function bindExisting() {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) {
+      onError(t("settings.users.register.error.emailInvalid"));
+      return;
+    }
+    if (!password.trim()) {
+      onError(t("settings.users.error.passwordRequired"));
+      return;
+    }
+    setSubmitting(true);
+    resetError();
+    try {
+      const res = await fetch("/api/v1/settings/users/add-mmah/bind-existing", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: email.trim(), password: password.trim(), role }),
+      });
+      const data = await res.json().catch(() => null);
+      if (data?.ok) {
+        onAdded();
+      } else {
+        onError(data?.error || t("settings.users.register.error.failed"));
+      }
+    } catch (error) {
+      onError(error instanceof Error && error.message ? error.message : t("settings.users.register.error.network"));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex gap-1 rounded-lg border border-slate-200 bg-slate-50 p-1">
+        <button type="button"
+          onClick={() => { setMethod("existing"); resetError(); }}
+          className={method === "existing" ? "flex-1 rounded-md bg-white px-3 py-1.5 text-xs font-medium text-slate-800 shadow-sm" : "flex-1 rounded-md px-3 py-1.5 text-xs font-medium text-slate-500"}>
+          {t("settings.users.register.methodExisting")}
+        </button>
+        <button type="button"
+          onClick={() => { setMethod("email"); resetError(); }}
+          className={method === "email" ? "flex-1 rounded-md bg-white px-3 py-1.5 text-xs font-medium text-slate-800 shadow-sm" : "flex-1 rounded-md px-3 py-1.5 text-xs font-medium text-slate-500"}>
+          {t("settings.users.register.methodEmail")}
+        </button>
+      </div>
+
+      <div>
+        <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.users.register.field.mmhUsername")}</label>
+        <input
+          type="email"
+          className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+          value={email}
+          onChange={(e) => { setEmail(e.target.value); resetError(); }}
+          autoFocus
+        />
+      </div>
+
+      {method === "existing" ? (
+        <>
+          <div>
+            <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.users.register.field.mmhPassword")}</label>
+            <input
+              type="password"
+              className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+              value={password}
+              onChange={(e) => { setPassword(e.target.value); resetError(); }}
+              placeholder={t("settings.users.register.placeholder.mmhPassword")}
+            />
+          </div>
+          <div className="text-[11px] text-slate-500">{t("settings.users.addMmh.hintExisting")}</div>
+        </>
+      ) : (
+        <>
+          {codeSent && (
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.users.register.field.code")}</label>
+              <input
+                type="text"
+                inputMode="numeric"
+                maxLength={6}
+                className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none tracking-widest"
+                value={code}
+                onChange={(e) => { setCode(e.target.value.replace(/\D/g, "")); resetError(); }}
+                placeholder={t("settings.users.register.placeholder.code")}
+              />
+            </div>
+          )}
+          {codeSent && (
+            <div>
+              <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.users.addMmh.mmhPasswordLabel")}</label>
+              <input
+                type="password"
+                className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                value={password}
+                onChange={(e) => { setPassword(e.target.value); resetError(); }}
+                placeholder={t("settings.users.addMmh.mmhPasswordPlaceholder")}
+              />
+            </div>
+          )}
+          <div className="text-[11px] text-slate-500">{t("settings.users.addMmh.hintNew")}</div>
+        </>
+      )}
+
+      <div>
+        <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.users.field.role")}</label>
+        <select className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+          value={role} onChange={(e) => setRole(e.target.value)}>
+          <option value="admin">{t("settings.users.roleOptionAdmin")}</option>
+          <option value="user">{t("settings.users.roleOptionUser")}</option>
+          <option value="viewer">{t("settings.users.roleOptionViewer")}</option>
+        </select>
+      </div>
+
+      <div className="flex justify-end gap-2">
+        {method === "email" ? (
+          <>
+            {codeSent ? (
+              <>
+                <button type="button" className="secondary-button h-9 px-4" onClick={sendCode} disabled={sending}>{t("settings.users.register.resend")}</button>
+                <button type="button" className="primary-button h-9 px-4 disabled:opacity-50"
+                  onClick={confirmNew} disabled={submitting || code.trim().length < 6}>
+                  {submitting ? t("settings.users.register.submitting") : t("settings.users.register.confirm")}
+                </button>
+              </>
+            ) : (
+              <button type="button" className="primary-button h-9 px-4 disabled:opacity-50"
+                onClick={sendCode} disabled={sending || !email.trim()}>
+                {sending ? t("settings.users.register.submitting") : t("settings.users.register.sendCode")}
+              </button>
+            )}
+          </>
+        ) : (
+          <button type="button" className="primary-button h-9 px-4 disabled:opacity-50"
+            onClick={bindExisting} disabled={submitting || !email.trim() || !password.trim()}>
+            {submitting ? t("settings.users.register.submitting") : t("settings.users.register.bindMmh")}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function UserModal({
   initial,
   onSave,
   onCancel,
+  onMmhAdded,
   users,
 }: {
   initial?: ManagedUser;
   onSave: (data: { name: string; email?: string; role: string; password?: string }) => void;
   onCancel: () => void;
+  onMmhAdded?: () => void;
   users: ManagedUser[];
 }) {
   const { t } = useI18n();
@@ -49,6 +275,7 @@ function UserModal({
   const [confirmPassword, setConfirmPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState("");
+  const [addTab, setAddTab] = useState<"local" | "mmh">("local");
   const isSystemUser = initial?.isSystem ?? false;
   const hasExistingPassword = initial?.hasPassword ?? false;
   const isEditing = !!initial;
@@ -77,6 +304,70 @@ function UserModal({
     onSave({ name: name.trim(), email: email.trim() || undefined, role, password: password.trim() || undefined });
   }
 
+  const localFields = (
+    <div className="space-y-4">
+      <div>
+        <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.users.field.username")}</label>
+        <input className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+          placeholder={t("settings.users.placeholder.username")} value={name} onChange={(e) => { setName(e.target.value); setError(""); }} autoFocus />
+      </div>
+      <div>
+        <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.users.field.recoveryEmail")}</label>
+        <input className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+          placeholder={t("settings.users.placeholder.recoveryEmail")} value={email ?? ""} onChange={(e) => { setEmail(e.target.value); setError(""); }} />
+      </div>
+      <div>
+        <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.users.field.role")}</label>
+        <select className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none disabled:opacity-60 disabled:bg-slate-50"
+          value={role} onChange={(e) => setRole(e.target.value)} disabled={isSystemUser}>
+          <option value="admin">{t("settings.users.roleOptionAdmin")}</option>
+          <option value="user">{t("settings.users.roleOptionUser")}</option>
+          <option value="viewer">{t("settings.users.roleOptionViewer")}</option>
+        </select>
+        {isSystemUser && <div className="mt-1 text-[11px] text-slate-500">{t("settings.users.systemRoleFixed")}</div>}
+        {isLastAdmin && !isSystemUser && <div className="mt-1 text-[11px] text-amber-600">{t("settings.users.lastAdminWarning")}</div>}
+      </div>
+      <div>
+        <label className="block text-xs font-medium text-slate-600 mb-1.5">
+          {isEditing ? (hasExistingPassword ? t("settings.users.password.edit") : t("settings.users.password.set")) : t("settings.users.password.label")}
+        </label>
+        <div className="relative">
+          <input
+            type={showPassword ? "text" : "password"}
+            className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 pr-10 text-sm outline-none"
+            placeholder={isEditing ? (hasExistingPassword ? t("settings.users.placeholder.passwordKeep") : t("settings.users.placeholder.passwordNew")) : t("settings.users.password.set")}
+            value={password} onChange={(e) => { setPassword(e.target.value); setError(""); }}
+          />
+          <button type="button"
+            className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-slate-400 hover:text-slate-600 select-none"
+            onClick={() => setShowPassword(!showPassword)}
+            tabIndex={-1}
+          >
+            {showPassword ? t("settings.users.password.hide") : t("settings.users.password.show")}
+          </button>
+        </div>
+      </div>
+      <div>
+        <label className="block text-xs font-medium text-slate-600 mb-1.5">
+          {isEditing ? t("settings.users.confirmPassword.edit") : t("settings.users.confirmPassword.label")}
+        </label>
+        <input
+          type={showPassword ? "text" : "password"}
+          className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+          placeholder={t("settings.users.placeholder.confirmPassword")}
+          value={confirmPassword} onChange={(e) => { setConfirmPassword(e.target.value); setError(""); }}
+        />
+      </div>
+      <div className="flex justify-end gap-2">
+        <button className="secondary-button h-9 px-4" onClick={onCancel}>{t("common.cancel")}</button>
+        <button className="primary-button h-9 px-4 disabled:opacity-50"
+          onClick={handleSubmit} disabled={!name.trim()}>
+          {isEditing ? t("common.save") : t("settings.users.add")}
+        </button>
+      </div>
+    </div>
+  );
+
   return (
     <div className="app-modal-backdrop z-[1100]">
       <div className="app-modal-panel max-w-md">
@@ -86,71 +377,39 @@ function UserModal({
             <X className="h-4 w-4" />
           </button>
         </div>
-        <div className="p-5 space-y-4">
-          {error && (
-            <div className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-md px-3 py-2">{error}</div>
-          )}
-
-          <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.users.field.username")}</label>
-            <input className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-              placeholder={t("settings.users.placeholder.username")} value={name} onChange={(e) => { setName(e.target.value); setError(""); }} autoFocus />
+        {isEditing ? (
+          <div className="p-5">
+            {error && (
+              <div className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-md px-3 py-2 mb-4">{error}</div>
+            )}
+            {localFields}
           </div>
-          <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.users.field.recoveryEmail")}</label>
-            <input className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-              placeholder={t("settings.users.placeholder.recoveryEmail")} value={email ?? ""} onChange={(e) => { setEmail(e.target.value); setError(""); }} />
+        ) : (
+          <div className="p-5">
+            {error && (
+              <div className="text-xs text-red-600 bg-red-50 border border-red-200 rounded-md px-3 py-2 mb-3">{error}</div>
+            )}
+            <FolderTabs
+              tabs={[
+                { id: "local", label: t("settings.users.tab.local") },
+                { id: "mmh", label: t("settings.users.tab.mmh") },
+              ]}
+              activeId={addTab}
+              onChange={(id) => { setAddTab(id as "local" | "mmh"); setError(""); }}
+              variant="stretch"
+              panelClassName="space-y-4"
+            >
+              {addTab === "local" ? (
+                localFields
+              ) : (
+                <AddMmhPanel
+                  onAdded={() => onMmhAdded?.()}
+                  onError={(msg) => setError(msg)}
+                />
+              )}
+            </FolderTabs>
           </div>
-          <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.users.field.role")}</label>
-            <select className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none disabled:opacity-60 disabled:bg-slate-50"
-              value={role} onChange={(e) => setRole(e.target.value)} disabled={isSystemUser}>
-              <option value="admin">{t("settings.users.roleOptionAdmin")}</option>
-              <option value="user">{t("settings.users.roleOptionUser")}</option>
-              <option value="viewer">{t("settings.users.roleOptionViewer")}</option>
-            </select>
-            {isSystemUser && <div className="mt-1 text-[11px] text-slate-500">{t("settings.users.systemRoleFixed")}</div>}
-            {isLastAdmin && !isSystemUser && <div className="mt-1 text-[11px] text-amber-600">{t("settings.users.lastAdminWarning")}</div>}
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1.5">
-              {isEditing ? (hasExistingPassword ? t("settings.users.password.edit") : t("settings.users.password.set")) : t("settings.users.password.label")}
-            </label>
-            <div className="relative">
-              <input
-                type={showPassword ? "text" : "password"}
-                className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 pr-10 text-sm outline-none"
-                placeholder={isEditing ? (hasExistingPassword ? t("settings.users.placeholder.passwordKeep") : t("settings.users.placeholder.passwordNew")) : t("settings.users.password.set")}
-                value={password} onChange={(e) => { setPassword(e.target.value); setError(""); }}
-              />
-              <button type="button"
-                className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-slate-400 hover:text-slate-600 select-none"
-                onClick={() => setShowPassword(!showPassword)}
-                tabIndex={-1}
-              >
-                {showPassword ? t("settings.users.password.hide") : t("settings.users.password.show")}
-              </button>
-            </div>
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-slate-600 mb-1.5">
-              {isEditing ? t("settings.users.confirmPassword.edit") : t("settings.users.confirmPassword.label")}
-            </label>
-            <input
-              type={showPassword ? "text" : "password"}
-              className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-              placeholder={t("settings.users.placeholder.confirmPassword")}
-              value={confirmPassword} onChange={(e) => { setConfirmPassword(e.target.value); setError(""); }}
-            />
-          </div>
-          <div className="flex justify-end gap-2">
-            <button className="secondary-button h-9 px-4" onClick={onCancel}>{t("common.cancel")}</button>
-            <button className="primary-button h-9 px-4 disabled:opacity-50"
-              onClick={handleSubmit} disabled={!name.trim()}>
-              {isEditing ? t("common.save") : t("settings.users.add")}
-            </button>
-          </div>
-        </div>
+        )}
       </div>
     </div>
   );
@@ -786,6 +1045,11 @@ export default function UsersPage() {
           users={users}
           onSave={handleSave}
           onCancel={() => { setShowModal(false); setEditingUser(null); }}
+          onMmhAdded={() => {
+            setShowModal(false);
+            setEditingUser(null);
+            void fetchUsers();
+          }}
         />
       )}
 
