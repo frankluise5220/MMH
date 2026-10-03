@@ -137,6 +137,10 @@ settings-accounts*.png
 # personal docs（docs 目录只保存在本地、不进仓库；用户安装手册在 deploy/nas-install-manual.md）
 docs/*
 
+# 认证服务器（私有，不公开 GitHub）：MMH 发码/验码/改密码下沉到独立服务，
+# 部署在 VPS /opt/mmh-registration，源码只保存在本地与 VPS，不进公开仓库。
+deploy/registration/
+
 # 开发期审计/交接/分诊文档与本地发布草稿（只留本地，对用户运行程序无帮助）
 /*-triage.md
 /HANDOFF-*.md
