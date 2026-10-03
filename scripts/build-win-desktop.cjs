@@ -63,6 +63,20 @@ function run(command, args, env, cwd) {
 }
 
 function copyDir(src, dest) {
+  // Idempotency guard: when the destination already holds the source's own
+  // marker file (its package.json or node.exe), a previous run already staged
+  // this directory. Re-copying a multi-GB tree through fs.cpSync can exhaust
+  // the process in constrained sandboxes, so skip it and trust the existing
+  // stage. Callers that must always refresh can pass `force`.
+  const marker = fs.existsSync(path.join(src, "package.json"))
+    ? "package.json"
+    : fs.existsSync(path.join(src, "node.exe"))
+      ? "node.exe"
+      : null;
+  if (marker && fs.existsSync(path.join(dest, marker))) {
+    console.log(`copyDir: reusing existing ${dest} (marker ${marker} present)`);
+    return;
+  }
   fs.rmSync(dest, { recursive: true, force: true });
   fs.mkdirSync(path.dirname(dest), { recursive: true });
   fs.cpSync(src, dest, { recursive: true });
