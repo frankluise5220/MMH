@@ -76,7 +76,7 @@ const LOGIN_INPUT_CLASS =
 // 文件卡片式页签：抽成独立组件（src/app/login/FolderTabs.tsx）。
 // 本文件用其导出的纯函数（folderTabClass / folderTabPanelClass / FOLDER_TAB_STRIP），
 // 登录方式页签与建账方式页签共用；<FolderTabs> 组件本身供外部页面直接复用。
-import { folderTabClass, folderTabPanelClass, FOLDER_TAB_STRIP } from "./FolderTabs";
+import { folderTabClass, folderTabPanelClass, FOLDER_TAB_STRIP, FolderTabs } from "./FolderTabs";
 
 function getLoginUserScopeId(user: LoginUserChoice) {
   return user.householdId ?? SYSTEM_LOGIN_SCOPE_ID;
@@ -1665,37 +1665,44 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                     </div>
                     <div className="space-y-3 border-t border-slate-200 pt-3">
                       <div className="text-xs font-medium text-slate-600">{t("login.createUser")}</div>
-                      <div className="flex gap-1 rounded-lg border border-slate-200 bg-white p-1">
-                        <button type="button" onClick={() => setCreateAuthMode("local")} className={createAuthMode === "local" ? "flex-1 rounded-md bg-slate-100 px-2 py-1.5 text-xs font-medium text-slate-800" : "flex-1 rounded-md px-2 py-1.5 text-xs text-slate-500"}>{t("login.mode.local")}</button>
-                        <button type="button" onClick={() => setCreateAuthMode("mmh")} className={createAuthMode === "mmh" ? "flex-1 rounded-md bg-slate-100 px-2 py-1.5 text-xs font-medium text-slate-800" : "flex-1 rounded-md px-2 py-1.5 text-xs text-slate-500"}>{t("login.mode.mmh")}</button>
-                        {fnosGatewayUser ? <button type="button" onClick={() => setCreateAuthMode("fnos")} className={createAuthMode === "fnos" ? "flex-1 rounded-md bg-slate-100 px-2 py-1.5 text-xs font-medium text-slate-800" : "flex-1 rounded-md px-2 py-1.5 text-xs text-slate-500"}>{t("login.authModeFnos")}</button> : null}
-                      </div>
-                      {createAuthMode === "fnos" ? (
-                        <div className="rounded-md border border-dashed border-slate-300 bg-white px-3 py-2 text-xs text-slate-500">
-                          {t("login.fnosUser", { user: fnosGatewayUser?.username ?? fnosGatewayUser?.uid ?? "" })}
-                        </div>
-                      ) : createAuthMode === "mmh" ? (
-                        renderMmhCreateFields(true)
-                      ) : (
-                        <div className="space-y-3 border-t border-slate-200 pt-3">
-                          <div className="space-y-1">
-                            <div className="text-xs font-medium text-slate-600">{t("login.adminUsername")}</div>
-                            <input value={createAdminName} onChange={(event) => setCreateAdminName(event.target.value)} type="text" autoComplete="username" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" placeholder={t("login.adminUsernamePlaceholder")} />
+                      <FolderTabs
+                        tabs={[
+                          { id: "local", label: t("login.mode.local") },
+                          { id: "mmh", label: t("login.mode.mmh") },
+                          ...(fnosGatewayUser ? [{ id: "fnos", label: t("login.authModeFnos") }] : []),
+                        ]}
+                        activeId={createAuthMode}
+                        onChange={(id) => setCreateAuthMode(id as "local" | "mmh" | "fnos")}
+                        variant="min"
+                        panelClassName="space-y-3"
+                      >
+                        {createAuthMode === "fnos" ? (
+                          <div className="rounded-md border border-dashed border-slate-300 bg-white px-3 py-2 text-xs text-slate-500">
+                            {t("login.fnosUser", { user: fnosGatewayUser?.username ?? fnosGatewayUser?.uid ?? "" })}
                           </div>
-                          <div className="space-y-1">
-                            <div className="text-xs font-medium text-slate-600">{initialLedgerSetup ? t("login.adminEmailOptional") : t("login.adminEmail")}</div>
-                            <input value={createAdminEmail} onChange={(event) => setCreateAdminEmail(event.target.value)} type="email" autoComplete="email" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" placeholder={t("login.adminEmailPlaceholder")} />
+                        ) : createAuthMode === "mmh" ? (
+                          renderMmhCreateFields(true)
+                        ) : (
+                          <div className="space-y-3">
+                            <div className="space-y-1">
+                              <div className="text-xs font-medium text-slate-600">{t("login.adminUsername")}</div>
+                              <input value={createAdminName} onChange={(event) => setCreateAdminName(event.target.value)} type="text" autoComplete="username" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" placeholder={t("login.adminUsernamePlaceholder")} />
+                            </div>
+                            <div className="space-y-1">
+                              <div className="text-xs font-medium text-slate-600">{initialLedgerSetup ? t("login.adminEmailOptional") : t("login.adminEmail")}</div>
+                              <input value={createAdminEmail} onChange={(event) => setCreateAdminEmail(event.target.value)} type="email" autoComplete="email" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" placeholder={t("login.adminEmailPlaceholder")} />
+                            </div>
+                            <div className="space-y-1">
+                              <div className="text-xs font-medium text-slate-600">{t("login.password")}</div>
+                              <input value={createPassword} onChange={(event) => setCreatePassword(event.target.value)} type="password" autoComplete="new-password" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" placeholder={t("login.passwordPlaceholder")} />
+                            </div>
+                            <div className="space-y-1">
+                              <div className="text-xs font-medium text-slate-600">{t("login.confirmPassword")}</div>
+                              <input value={createConfirmPassword} onChange={(event) => setCreateConfirmPassword(event.target.value)} type="password" autoComplete="new-password" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" placeholder={t("login.confirmPassword")} onKeyDown={(event) => { if (event.key === "Enter") void handleCreateLedger(); }} />
+                            </div>
                           </div>
-                          <div className="space-y-1">
-                            <div className="text-xs font-medium text-slate-600">{t("login.password")}</div>
-                            <input value={createPassword} onChange={(event) => setCreatePassword(event.target.value)} type="password" autoComplete="new-password" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" placeholder={t("login.passwordPlaceholder")} />
-                          </div>
-                          <div className="space-y-1">
-                            <div className="text-xs font-medium text-slate-600">{t("login.confirmPassword")}</div>
-                            <input value={createConfirmPassword} onChange={(event) => setCreateConfirmPassword(event.target.value)} type="password" autoComplete="new-password" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" placeholder={t("login.confirmPassword")} onKeyDown={(event) => { if (event.key === "Enter") void handleCreateLedger(); }} />
-                          </div>
-                        </div>
-                      )}
+                        )}
+                      </FolderTabs>
                     </div>
                   </>
                 ) : (
@@ -1813,26 +1820,33 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                 </div>
                 <div className="space-y-3 border-t border-slate-200 pt-3">
                   <div className="text-xs font-medium text-slate-600">{t("login.createUser")}</div>
-                  <div className="flex gap-1 rounded-lg border border-slate-200 bg-white p-1">
-                    <button type="button" onClick={() => setCreateAuthMode("local")} className={createAuthMode === "local" ? "flex-1 rounded-md bg-slate-100 px-2 py-1.5 text-xs font-medium text-slate-800" : "flex-1 rounded-md px-2 py-1.5 text-xs text-slate-500"}>{t("login.mode.local")}</button>
-                    <button type="button" onClick={() => setCreateAuthMode("mmh")} className={createAuthMode === "mmh" ? "flex-1 rounded-md bg-slate-100 px-2 py-1.5 text-xs font-medium text-slate-800" : "flex-1 rounded-md px-2 py-1.5 text-xs text-slate-500"}>{t("login.mode.mmh")}</button>
-                    {fnosGatewayUser ? <button type="button" onClick={() => setCreateAuthMode("fnos")} className={createAuthMode === "fnos" ? "flex-1 rounded-md bg-slate-100 px-2 py-1.5 text-xs font-medium text-slate-800" : "flex-1 rounded-md px-2 py-1.5 text-xs text-slate-500"}>{t("login.authModeFnos")}</button> : null}
-                  </div>
+                  <FolderTabs
+                    tabs={[
+                      { id: "local", label: t("login.mode.local") },
+                      { id: "mmh", label: t("login.mode.mmh") },
+                      ...(fnosGatewayUser ? [{ id: "fnos", label: t("login.authModeFnos") }] : []),
+                    ]}
+                    activeId={createAuthMode}
+                    onChange={(id) => setCreateAuthMode(id as "local" | "mmh" | "fnos")}
+                    variant="min"
+                    panelClassName="space-y-3"
+                  >
+                    {createAuthMode === "fnos" ? (
+                      <div className="rounded-md border border-dashed border-slate-300 bg-white px-3 py-2 text-xs text-slate-500">
+                        {t("login.fnosUser", { user: fnosGatewayUser?.username ?? fnosGatewayUser?.uid ?? "" })}
+                      </div>
+                    ) : createAuthMode === "mmh" ? (
+                      renderMmhCreateFields(false)
+                    ) : (
+                      <div className="space-y-3">
+                        <div className="space-y-1"><div className="text-xs font-medium text-slate-600">{t("login.adminUsername")}</div><input value={createAdminName} onChange={(event) => setCreateAdminName(event.target.value)} type="text" autoComplete="username" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm outline-none" placeholder={t("login.adminUsernamePlaceholder")} /></div>
+                        <div className="space-y-1"><div className="text-xs font-medium text-slate-600">{t("login.adminEmailOptional")}</div><input value={createAdminEmail} onChange={(event) => setCreateAdminEmail(event.target.value)} type="email" autoComplete="email" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm outline-none" placeholder={t("login.adminEmailPlaceholder")} /></div>
+                        <div className="space-y-1"><div className="text-xs font-medium text-slate-600">{t("login.password")}</div><input value={createPassword} onChange={(event) => setCreatePassword(event.target.value)} type="password" autoComplete="new-password" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm outline-none" placeholder={t("login.passwordPlaceholder")} /></div>
+                        <div className="space-y-1"><div className="text-xs font-medium text-slate-600">{t("login.confirmPassword")}</div><input value={createConfirmPassword} onChange={(event) => setCreateConfirmPassword(event.target.value)} type="password" autoComplete="new-password" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm outline-none" placeholder={t("login.confirmPassword")} onKeyDown={(event) => { if (event.key === "Enter") void handleCreateLedger(); }} /></div>
+                      </div>
+                    )}
+                  </FolderTabs>
                 </div>
-                {createAuthMode === "fnos" ? (
-                  <div className="rounded-md border border-dashed border-slate-300 bg-white px-3 py-2 text-xs text-slate-500">
-                    {t("login.fnosUser", { user: fnosGatewayUser?.username ?? fnosGatewayUser?.uid ?? "" })}
-                  </div>
-                ) : createAuthMode === "mmh" ? (
-                  renderMmhCreateFields(false)
-                ) : (
-                  <div className="space-y-3 border-t border-slate-200 pt-3">
-                    <div className="space-y-1"><div className="text-xs font-medium text-slate-600">{t("login.adminUsername")}</div><input value={createAdminName} onChange={(event) => setCreateAdminName(event.target.value)} type="text" autoComplete="username" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm outline-none" placeholder={t("login.adminUsernamePlaceholder")} /></div>
-                    <div className="space-y-1"><div className="text-xs font-medium text-slate-600">{t("login.adminEmailOptional")}</div><input value={createAdminEmail} onChange={(event) => setCreateAdminEmail(event.target.value)} type="email" autoComplete="email" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm outline-none" placeholder={t("login.adminEmailPlaceholder")} /></div>
-                    <div className="space-y-1"><div className="text-xs font-medium text-slate-600">{t("login.password")}</div><input value={createPassword} onChange={(event) => setCreatePassword(event.target.value)} type="password" autoComplete="new-password" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm outline-none" placeholder={t("login.passwordPlaceholder")} /></div>
-                    <div className="space-y-1"><div className="text-xs font-medium text-slate-600">{t("login.confirmPassword")}</div><input value={createConfirmPassword} onChange={(event) => setCreateConfirmPassword(event.target.value)} type="password" autoComplete="new-password" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm outline-none" placeholder={t("login.confirmPassword")} onKeyDown={(event) => { if (event.key === "Enter") void handleCreateLedger(); }} /></div>
-                  </div>
-                )}
               </>
             ) : createMethod === "existing" ? (
               <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">

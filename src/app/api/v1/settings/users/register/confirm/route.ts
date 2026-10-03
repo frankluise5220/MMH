@@ -136,9 +136,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, code: "INVALID_OR_EXPIRED_CODE", error: "The verification code is invalid or has expired." }, { status: 400, headers: cors() });
   }
 
-  if (target.passwordHash == null && !password) {
-    return NextResponse.json({ ok: false, code: "PASSWORD_REQUIRED", error: "A local login password is required for this user." }, { status: 400, headers: cors() });
-  }
+  // A password is now fully optional: an MMH identity can be bound to a user
+  // without forcing a local login password (e.g. a pure fnOS-gateway account).
+  // When supplied, it is set only if the target has no existing password.
 
   const emailTaken = await prisma.user.findFirst({
     where: { email: normalizedEmail, id: { not: userId } },
@@ -161,10 +161,10 @@ export async function POST(req: NextRequest) {
   }
 
   // Binding an email to an account must NOT clobber an existing login password.
-  // Only when the target account has no password yet does registration set one
-  // (and then bump authVersion to invalidate older sessions).
-  const passwordWasSet = target.passwordHash == null;
-  const passwordHash = passwordWasSet && password ? await hashPassword(password.trim()) : null;
+  // A password is set only when one was supplied AND the target has no password
+  // yet (and then bump authVersion to invalidate older sessions).
+  const passwordWasSet = target.passwordHash == null && !!password;
+  const passwordHash = passwordWasSet ? await hashPassword(password!.trim()) : null;
   await prisma.$transaction(async (tx) => {
     await tx.user.update({
       where: { id: userId },

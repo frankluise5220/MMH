@@ -488,6 +488,108 @@ function FnosBindModal({
   );
 }
 
+/**
+ * 「设置本地密码」弹窗：给尚无本地密码的用户（纯 MMH / 纯飞牛账户）补一个
+ * 本地登录密码。复用 PUT /api/v1/settings/users，保留原有 name/email/role。
+ */
+function PasswordSetModal({
+  target,
+  onClose,
+  onSaved,
+}: {
+  target: ManagedUser;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const { t } = useI18n();
+  const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  async function submit() {
+    if (password.length < 6) {
+      setError(t("settings.users.error.passwordRequired"));
+      return;
+    }
+    if (password !== confirmPassword) {
+      setError(t("settings.users.error.passwordMismatch"));
+      return;
+    }
+    setSubmitting(true);
+    setError("");
+    try {
+      const res = await fetch("/api/v1/settings/users", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: target.id,
+          name: target.name,
+          email: target.email ?? "",
+          role: target.role,
+          password: password.trim(),
+        }),
+      });
+      const result = await res.json().catch(() => null);
+      if (result?.ok) {
+        resetCredentialKindCache();
+        onSaved();
+        onClose();
+      } else {
+        setError(result?.error || t("settings.users.updateFailed"));
+      }
+    } catch {
+      setError(t("settings.users.updateFailed"));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <div className="app-modal-backdrop z-[1100]">
+      <div className="app-modal-panel max-w-md">
+        <div className="modal-header shrink-0">
+          <div className="text-sm font-semibold text-slate-800">{t("settings.users.setPassword")}</div>
+          <button type="button" onClick={onClose} className="secondary-button h-8 px-2"><X className="h-4 w-4" /></button>
+        </div>
+        <div className="space-y-4 p-5">
+          {error && <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">{error}</div>}
+          <div className="text-xs text-slate-600">{t("settings.users.setPasswordHint")}</div>
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-slate-600">{t("settings.users.password.label")}</label>
+            <input
+              autoFocus
+              type="password"
+              value={password}
+              onChange={(e) => { setPassword(e.target.value); setError(""); }}
+              placeholder={t("settings.users.password.set")}
+              className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+            />
+          </div>
+          <div>
+            <label className="mb-1.5 block text-xs font-medium text-slate-600">{t("settings.users.confirmPassword.label")}</label>
+            <input
+              type="password"
+              value={confirmPassword}
+              onChange={(e) => { setConfirmPassword(e.target.value); setError(""); }}
+              placeholder={t("settings.users.placeholder.confirmPassword")}
+              onKeyDown={(e) => { if (e.key === "Enter") void submit(); }}
+              className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+            />
+          </div>
+          <div className="flex justify-end gap-2">
+            <button type="button" className="secondary-button h-9 px-4" onClick={onClose}>{t("common.cancel")}</button>
+            <button type="button" className="primary-button h-9 px-4 disabled:opacity-50"
+              onClick={submit} disabled={submitting || password.length < 6}>
+              {submitting ? t("settings.users.register.submitting") : t("common.save")}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function RegisterModal({
   target,
   onClose,
@@ -496,8 +598,7 @@ function RegisterModal({
   target: ManagedUser;
   onClose: () => void;
   onRegistered: (principalId: string) => void;
-}) {
-  const { t } = useI18n();
+}) {  const { t } = useI18n();
   const [step, setStep] = useState<"form" | "code" | "done">("form");
   const [email, setEmail] = useState(target.email ?? "");
   const [password, setPassword] = useState("");
@@ -510,7 +611,6 @@ function RegisterModal({
 
   function validateEmail(): string | null {
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) return t("settings.users.register.error.emailInvalid");
-    if (!target.hasPassword && password.length < 6) return t("settings.users.error.passwordRequired");
     return null;
   }
 
@@ -549,7 +649,7 @@ function RegisterModal({
         body: JSON.stringify({
           userId: target.id,
           email: email.trim(),
-          ...(target.hasPassword ? {} : { password: password.trim() }),
+          ...(password.trim() ? { password: password.trim() } : {}),
           code: code.trim(),
         }),
       });
@@ -720,13 +820,13 @@ function RegisterModal({
                   </div>
                   {!target.hasPassword && (
                     <div>
-                      <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.users.register.field.password")}</label>
+                      <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.users.register.field.password")} <span className="font-normal text-slate-400">({t("settings.users.register.optional")})</span></label>
                       <input
                         type="password"
                         className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
                         value={password}
                         onChange={(e) => { setPassword(e.target.value); setError(""); }}
-                        placeholder={t("settings.users.register.placeholder.password")}
+                        placeholder={t("settings.users.register.placeholder.passwordOptional")}
                       />
                     </div>
                   )}
@@ -734,7 +834,7 @@ function RegisterModal({
                   <div className="flex justify-end gap-2">
                     <button type="button" className="secondary-button h-9 px-4" onClick={onClose}>{t("common.cancel")}</button>
                     <button type="button" className="primary-button h-9 px-4 disabled:opacity-50"
-                      onClick={sendCode} disabled={sending || !email.trim() || (!target.hasPassword && !password)}>
+                      onClick={sendCode} disabled={sending || !email.trim()}>
                       {sending ? t("settings.users.register.submitting") : t("settings.users.register.sendCode")}
                     </button>
                   </div>
@@ -762,6 +862,7 @@ export default function UsersPage() {
   const [savingSessionUserId, setSavingSessionUserId] = useState("");
   const [registerTarget, setRegisterTarget] = useState<ManagedUser | null>(null);
   const [fnosBindTarget, setFnosBindTarget] = useState<ManagedUser | null>(null);
+  const [passwordSetTarget, setPasswordSetTarget] = useState<ManagedUser | null>(null);
   // fnOS passwordless login only exists inside the native fnOS app environment
   // (the unified gateway injects `X-Trim-*` headers there). Synology, Docker and
   // Windows builds have no fnOS capability at all, so every fnOS-related control
@@ -1002,7 +1103,7 @@ export default function UsersPage() {
                         variant="edit"
                         onClick={() => { setEditingUser(u); setShowModal(true); }}
                       />
-                      {!u.registrationPrincipalId && u.hasPassword && (
+                      {!u.registrationPrincipalId && (
                         <SettingsActionButton
                           label={t("settings.users.register")}
                           variant="default"
@@ -1010,13 +1111,20 @@ export default function UsersPage() {
                           onClick={() => setRegisterTarget(u)}
                         />
                       )}
-                      {isFnosEnvironment ? (
+                      {!u.hasPassword && (
                         <SettingsActionButton
-                          label={u.fnosUid ? t("settings.users.register.fnidBound") : t("settings.users.register.bindFnid")}
+                          label={t("settings.users.setPassword")}
+                          variant="default"
+                          onClick={() => setPasswordSetTarget(u)}
+                        />
+                      )}
+                      {isFnosEnvironment && !u.fnosUid && (
+                        <SettingsActionButton
+                          label={t("settings.users.register.bindFnid")}
                           variant="default"
                           onClick={() => setFnosBindTarget(u)}
                         />
-                      ) : null}
+                      )}
                       {!u.isSystem ? (
                         <SettingsActionButton
                           label={t("settings.users.delete")}
@@ -1058,6 +1166,14 @@ export default function UsersPage() {
           target={fnosBindTarget}
           onClose={() => setFnosBindTarget(null)}
           onBound={() => void fetchUsers()}
+        />
+      )}
+
+      {passwordSetTarget && (
+        <PasswordSetModal
+          target={passwordSetTarget}
+          onClose={() => setPasswordSetTarget(null)}
+          onSaved={() => void fetchUsers()}
         />
       )}
 
