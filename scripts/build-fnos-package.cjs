@@ -1438,13 +1438,16 @@ ensure_runtime_settings () {
   esac
   export MMH_NODE_MAX_OLD_SPACE_MB="$node_max_old_space"
 
-  # Email-registration service credentials (mmh-registration). Both must be set
-  # for registration to be enabled; they are passed through verbatim so a user
-  # can enable/disable registration without a package reinstall.
+  # Email-registration service credentials (mmh-registration). The central
+  # mmh-registration service issues the global MMH identity, so MMH login /
+  # registration needs both the URL and the shared API token. The URL and token
+  # ship with a default (the official floatingice.win service) but remain
+  # overridable via MMH_REGISTRATION_API_URL / MMH_REGISTRATION_API_TOKEN, and
+  # a user can still disable registration by blanking them in mmh.env.
   env_reg_url="$(read_env_value MMH_REGISTRATION_API_URL 2>/dev/null || true)"
   env_reg_token="$(read_env_value MMH_REGISTRATION_API_TOKEN 2>/dev/null || true)"
-  reg_url="\${MMH_REGISTRATION_API_URL:-$env_reg_url}"
-  reg_token="\${MMH_REGISTRATION_API_TOKEN:-$env_reg_token}"
+  reg_url="\${MMH_REGISTRATION_API_URL:-\${env_reg_url:-https://fnapp.floatingice.win:10101}}"
+  reg_token="\${MMH_REGISTRATION_API_TOKEN:-\${env_reg_token:-3f91f7ff3e2dd134b66f08c69cc4ec43e84bb0b268729f0a1ee846ee23c7919e}}"
   [ -n "$reg_url" ] && export MMH_REGISTRATION_API_URL="$reg_url"
   [ -n "$reg_token" ] && export MMH_REGISTRATION_API_TOKEN="$reg_token"
 
