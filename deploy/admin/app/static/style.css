@@ -236,6 +236,25 @@ label.chk input { width: auto; }
   width: 100%; height: 520px; border: 1px solid var(--border);
   border-radius: 8px; background: #fff;
 }
+.mail-translate {
+  margin-top: 14px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--panel-2); padding: 12px 14px;
+}
+.mail-translate .tr-title { font-weight: 650; margin-bottom: 10px; color: var(--text); }
+.mail-translate .tr-block { margin-bottom: 12px; }
+.mail-translate .tr-block:last-child { margin-bottom: 0; }
+.mail-translate .tr-label {
+  font-size: 12px; color: var(--text-dim); font-weight: 600;
+  margin-bottom: 4px; text-transform: uppercase; letter-spacing: .04em;
+}
+.mail-translate .tr-orig {
+  white-space: pre-wrap; word-break: break-word; font-size: 12.5px;
+  color: var(--text-faint); line-height: 1.6;
+}
+.mail-translate .tr-dst {
+  white-space: pre-wrap; word-break: break-word; font-size: 13.5px;
+  color: var(--text); line-height: 1.65; margin-top: 4px;
+}
 
 /* ------------------------------------------------------------ 其他 */
 .kv { display: grid; grid-template-columns: 130px 1fr; gap: 6px 12px; font-size: 13px; }

@@ -6,11 +6,13 @@
 文案原本硬编码在它的 src/templates.ts 里 —— 改一句话就得改代码、重建镜像、重启
 容器。现在模板存在注册库的一张表里，本面板直接读写：
 
-    mail_templates(purpose PK, subject, text, html, updated_at)
+    mail_templates(purpose, lang, subject, text, html, updated_at)
+                   PK(purpose, lang)
 
 数据源：REG_DB（与「自动注册」面板同一个 sqlite）。
-    注册服务发信时读这张表；**没有行就用它内置的默认文案**，所以
-    「恢复默认」= 删掉这一行，而不是把默认文案再写一遍。
+    注册服务发信时读这张表，并按请求语言选择对应 (purpose, lang) 行；
+    **没有行就用它内置的默认文案**，所以「恢复默认」= 删掉这一行，
+    而不是把默认文案再写一遍。
 
 写入方式：直接改 sqlite。理由同 registrations.py —— 注册服务没有暴露任何管理
 接口，为这个后台去改 Node 服务、重建镜像，代价和风险都更大。该库由 Node 侧以
@@ -20,9 +22,9 @@ WAL 模式持有，多读一写，写前 busy_timeout。
 预览也在服务端渲染（同一套替换规则），保证「页面看到的」就是「实际发出的」。
 
 安全边界
-    - 表不存在（注册服务还没跑 005 迁移）时只读不写，并明确提示先重启注册服务。
+    - 表不存在（注册服务还没跑 006 迁移）时只读不写，并明确提示先重启注册服务。
     - 只写 subject / text / html 三列，绝不碰 principals / identities / installations。
-    - 审计只记 purpose 与各字段长度，不记全文。
+    - 审计只记 purpose / lang 与各字段长度，不记全文。
 """
 
 import contextlib
@@ -38,6 +40,11 @@ from api import ApiError, route
 PURPOSES = (
     {"key": "registration", "label": "注册验证码", "audience": "新注册 MMH 会员时发出"},
     {"key": "password-reset", "label": "密码找回验证码", "audience": "MMH 会员找回密码时发出"},
+)
+
+LANGS = (
+    {"key": "zh", "label": "中文"},
+    {"key": "en", "label": "English"},
 )
 
 PLACEHOLDERS = (
@@ -57,37 +64,65 @@ SAMPLE_VARS = {"email": "user@example.com", "code": "123456", "expiresMinutes": 
 # ---------------------------------------------------------------------------
 # 内置默认文案。
 #
-# ⚠️ **必须与 deploy/registration/src/templates.ts 的 DEFAULT_MAIL_TEMPLATES 逐字一致。**
-#    注册服务在「表里没有该 purpose 的行」时用的就是那一份，本面板在同样情况下
-#    展示的是这一份。两边一旦分叉，页面显示的和实际发出的就会不同。
-#    改一边务必同步另一边 —— 注册服务的测试 `src/tests/mail-template.test.ts`
+# ⚠️ **必须与 deploy/registration/src/templates.ts 的 DEFAULT_MAIL_TEMPLATES
+#    逐字一致。** 注册服务在「表里没有该 (purpose, lang) 的行」时用的就是那一份，
+#    本面板在同样情况下展示的是这一份。两边一旦分叉，页面显示的和实际发出的
+#    就会不同。改一边务必同步另一边 —— 注册服务的测试 `src/tests/mail-template.test.ts`
 #    会读取本文件并核对这几段字符串，分叉了会红。
 #
 #    这里刻意用三引号原样写（不做拼接），测试才能用「子串包含」直接比对。
 # ---------------------------------------------------------------------------
 DEFAULT_TEMPLATES = {
     "registration": {
-        "subject": "MMH account registration verification code",
-        "text": """You are registering an MMH account (email: {{email}}).
+        "en": {
+            "subject": "MMH account registration verification code",
+            "text": """You are registering an MMH account (email: {{email}}).
 
 Verification code: {{code}}
 Valid for {{expiresMinutes}} minutes.
 
 If you did not request this, please ignore this email.""",
-        "html": """<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.7;color:#0f172a;"><h2 style="margin:0 0 12px;">MMH account registration</h2><p>You are registering an MMH account (email: {{email}}).</p><p style="font-size:24px;letter-spacing:6px;font-weight:700;margin:18px 0;">{{code}}</p><p>This code is valid for {{expiresMinutes}} minutes.</p><p style="color:#64748b;font-size:13px;">If you did not request this, please ignore this email.</p></div>""",
+            "html": """<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.7;color:#0f172a;"><h2 style="margin:0 0 12px;">MMH account registration</h2><p>You are registering an MMH account (email: {{email}}).</p><p style="font-size:24px;letter-spacing:6px;font-weight:700;margin:18px 0;">{{code}}</p><p>This code is valid for {{expiresMinutes}} minutes.</p><p style="color:#64748b;font-size:13px;">If you did not request this, please ignore this email.</p></div>""",
+        },
+        "zh": {
+            "subject": "MMH 账户注册验证码",
+            "text": """您正在注册 MMH 账户（邮箱：{{email}}）。
+
+验证码：{{code}}
+有效期：{{expiresMinutes}} 分钟
+
+如果不是您本人操作，请忽略本邮件。""",
+            "html": """<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.7;color:#0f172a;"><h2 style="margin:0 0 12px;">MMH 账户注册</h2><p>您正在注册 MMH 账户（邮箱：{{email}}）。</p><p style="font-size:24px;letter-spacing:6px;font-weight:700;margin:18px 0;">{{code}}</p><p>验证码有效期：{{expiresMinutes}} 分钟。</p><p style="color:#64748b;font-size:13px;">如果不是您本人操作，请忽略本邮件。</p></div>""",
+        },
     },
     "password-reset": {
-        "subject": "MMH 会员密码找回验证码",
-        "text": """你正在找回 MMH 会员密码（账号：{{email}}）。
+        "en": {
+            "subject": "MMH membership password reset verification code",
+            "text": """You are resetting your MMH membership password (account: {{email}}).
+
+Verification code: {{code}}
+Valid for {{expiresMinutes}} minutes.
+
+Note: this is the MMH membership password (the cross-ledger central identity password), not a local password for any single ledger.
+If you did not request this, please ignore this email.""",
+            "html": """<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.7;color:#0f172a;"><h2 style="margin:0 0 12px;">MMH membership password reset</h2><p>You are resetting your MMH membership password (account: {{email}}).</p><p style="font-size:24px;letter-spacing:6px;font-weight:700;margin:18px 0;">{{code}}</p><p>This code is valid for {{expiresMinutes}} minutes.</p><p style="color:#64748b;font-size:13px;">This is the MMH membership password (the cross-ledger central identity password), not a local password for any single ledger. If you did not request this, please ignore this email.</p></div>""",
+        },
+        "zh": {
+            "subject": "MMH 会员密码找回验证码",
+            "text": """你正在找回 MMH 会员密码（账号：{{email}}）。
 
 验证码：{{code}}
 有效期：{{expiresMinutes}} 分钟
 
 说明：这是 MMH 会员密码（跨账簿的中央身份密码），不是某个账簿内的本地账户密码。
 如果不是你本人操作，请忽略本邮件。""",
-        "html": """<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.7;color:#0f172a;"><h2 style="margin:0 0 12px;">MMH 会员密码找回验证码</h2><p>你正在找回 MMH 会员密码（账号：{{email}}）。</p><p style="font-size:24px;letter-spacing:6px;font-weight:700;margin:18px 0;">{{code}}</p><p>验证码有效期：{{expiresMinutes}} 分钟。</p><p style="color:#64748b;font-size:13px;">这是 MMH 会员密码（跨账簿的中央身份密码），不是某个账簿内的本地账户密码。如果不是你本人操作，请忽略本邮件。</p></div>""",
+            "html": """<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;line-height:1.7;color:#0f172a;"><h2 style="margin:0 0 12px;">MMH 会员密码找回验证码</h2><p>你正在找回 MMH 会员密码（账号：{{email}}）。</p><p style="font-size:24px;letter-spacing:6px;font-weight:700;margin:18px 0;">{{code}}</p><p>验证码有效期：{{expiresMinutes}} 分钟。</p><p style="color:#64748b;font-size:13px;">这是 MMH 会员密码（跨账簿的中央身份密码），不是某个账簿内的本地账户密码。如果不是你本人操作，请忽略本邮件。</p></div>""",
+        },
     },
 }
+
+# 每种用途的默认语言（与 templates.ts 的 MAIL_TEMPLATE_DEFAULT_LANG 一致）。
+DEFAULT_LANGS = {"registration": "en", "password-reset": "zh"}
 
 _PLACEHOLDER_RE = {
     "email": re.compile(r"\{\{\s*email\s*\}\}"),
@@ -129,19 +164,35 @@ def _table_exists(conn):
 
 
 def _stored_rows(conn):
+    """返回 {(purpose, lang): row}。兼容旧表（无 lang 列）时给默认语言。"""
     if not _table_exists(conn):
         return {}
+    cols = [r["name"] for r in conn.execute("PRAGMA table_info(mail_templates)")]
+    if "lang" in cols:
+        out = {}
+        for row in conn.execute(
+            "SELECT purpose, lang, subject, text, html, updated_at FROM mail_templates"
+        ):
+            out[(row["purpose"], row["lang"])] = dict(row)
+        return out
+    # 旧表（006 之前）：无 lang 列，整表归默认语言
     out = {}
     for row in conn.execute(
         "SELECT purpose, subject, text, html, updated_at FROM mail_templates"
     ):
-        out[row["purpose"]] = dict(row)
+        out[(row["purpose"], DEFAULT_LANGS.get(row["purpose"], "en"))] = dict(row)
     return out
 
 
 def _purpose_or_400(key):
     if key not in DEFAULT_TEMPLATES:
         raise ApiError(400, "未知的邮件用途：%s" % key)
+    return key
+
+
+def _lang_or_400(key):
+    if key not in ("zh", "en"):
+        raise ApiError(400, "未知的语言：%s" % key)
     return key
 
 
@@ -170,7 +221,7 @@ def _clean_text(value, field, limit):
 # ---------------------------------------------------------------- 接口
 @route("GET", "/api/mail-templates")
 def list_templates(ctx):
-    """返回两类模板的「生效内容」：库里改过就用库里的，否则是内置默认。"""
+    """返回两类模板各语言版本的「生效内容」：库里改过就用库里的，否则是内置默认。"""
     with _db() as conn:
         table_ok = _table_exists(conn)
         stored = _stored_rows(conn) if table_ok else {}
@@ -178,19 +229,29 @@ def list_templates(ctx):
     items = []
     for purpose in PURPOSES:
         key = purpose["key"]
-        default = DEFAULT_TEMPLATES[key]
-        row = stored.get(key)
-        effective = row or default
+        langs = []
+        for lang in LANGS:
+            lk = lang["key"]
+            default = DEFAULT_TEMPLATES[key][lk]
+            row = stored.get((key, lk))
+            effective = row or default
+            langs.append({
+                "key": lk,
+                "label": lang["label"],
+                "subject": effective["subject"],
+                "text": effective["text"],
+                "html": effective.get("html") or "",
+                "is_custom": row is not None,
+                "updated_at": (row or {}).get("updated_at"),
+                "default": default,
+                "default_lang": DEFAULT_LANGS.get(key) == lk,
+            })
         items.append({
             "key": key,
             "label": purpose["label"],
             "audience": purpose["audience"],
-            "subject": effective["subject"],
-            "text": effective["text"],
-            "html": effective.get("html") or "",
-            "is_custom": row is not None,
-            "updated_at": (row or {}).get("updated_at"),
-            "default": default,
+            "default_lang": DEFAULT_LANGS.get(key),
+            "langs": langs,
         })
 
     return {
@@ -203,10 +264,11 @@ def list_templates(ctx):
     }
 
 
-@route("POST", "/api/mail-templates/<purpose>")
+@route("POST", "/api/mail-templates/<purpose>/<lang>")
 def save_template(ctx):
-    """保存某一类模板。写库即生效：注册服务下次发信就会用新文案。"""
+    """保存某一类模板的某语言版本。写库即生效：注册服务下次发信就会用新文案。"""
     key = _purpose_or_400(ctx.params["purpose"])
+    lk = _lang_or_400(ctx.params["lang"])
 
     subject = str(ctx.need("subject")).strip()
     if len(subject) > MAX_SUBJECT:
@@ -222,52 +284,56 @@ def save_template(ctx):
             raise ApiError(
                 503,
                 "注册库里还没有 mail_templates 表：请先重启 mmh-registration "
-                "（它会应用 005 迁移），再回来保存",
+                "（它会应用 006 迁移），再回来保存",
             )
         # INSERT OR REPLACE 在这个「只有主键 + 三列内容」的表上就是 upsert。
         conn.execute(
             "INSERT OR REPLACE INTO mail_templates "
-            "(purpose, subject, text, html, updated_at) VALUES (?, ?, ?, ?, ?)",
-            (key, subject, text, html, now),
+            "(purpose, lang, subject, text, html, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (key, lk, subject, text, html, now),
         )
         conn.commit()
 
     audit.write("mail_template.save", {
-        "purpose": key, "subject_len": len(subject),
+        "purpose": key, "lang": lk, "subject_len": len(subject),
         "text_len": len(text), "html_len": len(html),
     }, ip=ctx.client_ip)
-    return {"purpose": key, "updated_at": now}
+    return {"purpose": key, "lang": lk, "updated_at": now}
 
 
-@route("POST", "/api/mail-templates/<purpose>/reset")
+@route("POST", "/api/mail-templates/<purpose>/<lang>/reset")
 def reset_template(ctx):
-    """恢复内置默认：删掉这一行（注册服务随后回落到它自己的默认文案）。"""
+    """恢复某语言版本的内置默认：删掉这一行（注册服务随后回落到默认文案）。"""
     key = _purpose_or_400(ctx.params["purpose"])
+    lk = _lang_or_400(ctx.params["lang"])
     with _db() as conn:
         if not _table_exists(conn):
             raise ApiError(
                 503,
                 "注册库里还没有 mail_templates 表：请先重启 mmh-registration "
-                "（它会应用 005 迁移）",
+                "（它会应用 006 迁移）",
             )
-        cur = conn.execute("DELETE FROM mail_templates WHERE purpose = ?", (key,))
+        cur = conn.execute(
+            "DELETE FROM mail_templates WHERE purpose = ? AND lang = ?", (key, lk)
+        )
         removed = cur.rowcount
         conn.commit()
 
-    audit.write("mail_template.reset", {"purpose": key, "removed": removed},
+    audit.write("mail_template.reset", {"purpose": key, "lang": lk, "removed": removed},
                 ip=ctx.client_ip)
-    return {"purpose": key, "reset": True, "removed": removed}
+    return {"purpose": key, "lang": lk, "reset": True, "removed": removed}
 
 
-@route("POST", "/api/mail-templates/<purpose>/preview")
+@route("POST", "/api/mail-templates/<purpose>/<lang>/preview")
 def preview_template(ctx):
     """用样例值渲染一份草稿（不落库），让「看到的」和「发出的」是同一套替换。"""
     key = _purpose_or_400(ctx.params["purpose"])
-    default = DEFAULT_TEMPLATES[key]
+    lk = _lang_or_400(ctx.params["lang"])
+    default = DEFAULT_TEMPLATES[key][lk]
     draft = {
         "subject": str(ctx.opt("subject", default["subject"])),
         "text": str(ctx.opt("text", default["text"])),
         "html": str(ctx.opt("html", default.get("html") or "")),
     }
-    return {"purpose": key, "sample": SAMPLE_VARS,
+    return {"purpose": key, "lang": lk, "sample": SAMPLE_VARS,
             "rendered": _render(draft, SAMPLE_VARS)}

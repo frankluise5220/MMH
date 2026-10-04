@@ -10,6 +10,7 @@ from . import issues         # noqa: F401
 from . import mail           # noqa: F401
 from . import mail_templates  # noqa: F401
 from . import overview       # noqa: F401
+from . import regadmin       # noqa: F401
 from . import registrations  # noqa: F401
 from . import relay          # noqa: F401
 from . import settings       # noqa: F401

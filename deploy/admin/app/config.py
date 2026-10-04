@@ -80,3 +80,11 @@ MMH_RELAY_WINDOW_SECONDS = _env_int("MMH_RELAY_WINDOW_SECONDS", 15 * 60)
 
 # ---------------------------------------------------------------- 业务常量
 STATS_DEFAULT_DAYS = _env_int("STATS_DEFAULT_DAYS", 30)
+
+# ---------------------------------------------------------------- 认证服务管理
+# 本面板通过 mmh-registration 的管理接口（/v1/admin/*，Bearer 鉴权）展示服务健康/配置
+# 并发送测试邮件。REGISTRATION_API_URL 指向该服务的回环地址；
+# REGISTRATION_API_TOKEN 是它的 REGISTRATION_API_TOKEN（独立于后台管理员口令）。
+# 留空则该面板降级为「未配置」，只展示本地可读的信息（验证码日志仍可用）。
+REGISTRATION_API_URL = _env("REGISTRATION_API_URL", "http://127.0.0.1:8790")
+REGISTRATION_API_TOKEN = _env("REGISTRATION_API_TOKEN")

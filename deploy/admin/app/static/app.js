@@ -207,7 +207,7 @@ async function startApp() {
 
 /* ---------------------------------------------------------------- 路由 */
 const TABS = ['overview', 'registrations', 'downloads', 'mail', 'mailtemplates',
-              'issues', 'audit', 'settings'];
+              'regadmin', 'issues', 'audit', 'settings'];
 let currentTab = 'overview';
 
 async function route() {
@@ -223,6 +223,7 @@ async function route() {
     else if (tab === 'downloads') await renderDownloads(view);
     else if (tab === 'mail') await renderMail(view);
     else if (tab === 'mailtemplates') await renderMailTemplates(view);
+    else if (tab === 'regadmin') await renderRegAdmin(view);
     else if (tab === 'issues') await renderIssues(view);
     else if (tab === 'audit') await renderAudit(view);
     else if (tab === 'settings') await renderSettings(view);
@@ -791,6 +792,7 @@ async function openMessage(key, silent) {
   host.innerHTML = `
     <header style="display:flex;align-items:center;gap:8px;padding:12px 16px;border-bottom:1px solid var(--border);background:var(--panel-2)">
       <h2 style="margin:0;font-size:14px;font-weight:600;flex:1">${esc(m.subject)}</h2>
+      <button class="sm" id="mTranslate">翻译</button>
       <button class="sm" id="mReply">回复</button>
       <button class="sm" id="mFlag">${m.seen ? '标为未读' : '标为已读'}</button>
       ${isTrash
@@ -814,6 +816,7 @@ async function openMessage(key, silent) {
         : `<div class="mail-body">${esc(m.text || '(无正文)')}</div>`}
     </div>`;
 
+  $('#mTranslate').addEventListener('click', () => translateMessage(m, host));
   $('#mReply').addEventListener('click', () => replyMail(m));
   $('#mFlag').addEventListener('click', () => mailFlag(key, !m.seen));
   const trash = $('#mTrash');
@@ -822,6 +825,98 @@ async function openMessage(key, silent) {
   if (restore) restore.addEventListener('click', () => mailMove(key, 'cur'));
   const del = $('#mDelete');
   if (del) del.addEventListener('click', () => mailDelete(key));
+}
+
+/* 一键翻译（英→中，浏览器端调免费在线接口，零后端依赖）。
+ * 翻译主题 + 正文，点击后把译文以「原版 / 译文」对照的形式插到正文下方。
+ * 优先 Google 非官方端点（无需 key、支持 CORS、无长度硬限），失败回退 MyMemory。
+ * 正文可能很长，按块切分翻译再拼接，避免单请求超长被拒。
+ */
+function _trSplit(text, max = 1400) {
+  if (!text) return [];
+  const parts = [];
+  let cur = '';
+  for (const line of String(text).split('\n')) {
+    if (cur.length + line.length > max && cur) { parts.push(cur); cur = line; }
+    else cur = cur ? cur + '\n' + line : line;
+  }
+  if (cur) parts.push(cur);
+  return parts;
+}
+
+async function _trGoogle(text) {
+  const url = 'https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=zh-CN&dt=t&q='
+    + encodeURIComponent(text);
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('翻译接口响应 ' + res.status);
+  const data = await res.json();
+  const out = (Array.isArray(data) && Array.isArray(data[0]))
+    ? data[0].map(seg => (seg && seg[0]) || '').join('')
+    : '';
+  if (!out) throw new Error('翻译接口返回为空');
+  return out;
+}
+
+async function _trMyMemory(text) {
+  const url = 'https://api.mymemory.translated.net/get?q=' + encodeURIComponent(text)
+    + '&langpair=en|zh-CN';
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('翻译接口响应 ' + res.status);
+  const data = await res.json();
+  const out = data && data.responseData && data.responseData.translatedText;
+  if (!out) throw new Error('翻译接口返回为空');
+  return out;
+}
+
+async function translateEnToZh(text) {
+  const parts = _trSplit(text);
+  const out = [];
+  for (const p of parts) {
+    let t = null;
+    try { t = await _trGoogle(p); }
+    catch (e) { try { t = await _trMyMemory(p); } catch (e2) { t = null; } }
+    out.push(t != null ? t : p);
+  }
+  return out.join('\n');
+}
+
+async function translateMessage(m, host) {
+  const btn = $('#mTranslate', host);
+  const body = $('#mailTranslateHost', host);
+  if (body && body.dataset.open === '1') {
+    body.remove();
+    if (btn) btn.textContent = '翻译';
+    return;
+  }
+  if (btn) { btn.disabled = true; btn.textContent = '翻译中…'; }
+  try {
+    const [subjZh, textZh] = await Promise.all([
+      translateEnToZh(m.subject || ''),
+      translateEnToZh(m.text || ''),
+    ]);
+    const hostBody = $('#mailDetail .body');
+    let box = hostBody.querySelector('#mailTranslateHost');
+    if (!box) {
+      box = document.createElement('div');
+      box.id = 'mailTranslateHost';
+      box.dataset.open = '1';
+      box.className = 'mail-translate';
+      box.innerHTML = `
+        <div class="tr-title">中文翻译</div>
+        <div class="tr-block"><div class="tr-label">主题</div>
+          <div class="tr-orig">${esc(m.subject)}</div>
+          <div class="tr-dst">${esc(subjZh)}</div></div>
+        <div class="tr-block"><div class="tr-label">正文</div>
+          <div class="tr-orig">${esc(m.text || '(无正文)')}</div>
+          <div class="tr-dst">${esc(textZh || '(无正文)')}</div></div>`;
+      hostBody.appendChild(box);
+    }
+    if (btn) btn.textContent = '收起译文';
+  } catch (e) {
+    toast('翻译失败：' + e.message, 'err');
+  } finally {
+    if (btn) btn.disabled = false;
+  }
 }
 
 window.downloadAttachment = async (key, idx) => {
@@ -945,7 +1040,7 @@ function composeMail() {
  * 保存即写库，认证服务器下次发信就生效，不用重建镜像/重启。
  * 预览走服务端同一套占位符替换，保证「看到的」就是「发出去的」。
  */
-let mtState = { purpose: 'registration' };
+let mtState = { purpose: 'registration', lang: 'zh' };
 let mtPreviewTimer = null;
 
 async function renderMailTemplates(view) {
@@ -955,6 +1050,11 @@ async function renderMailTemplates(view) {
     mtState.purpose = items.length ? items[0].key : 'registration';
   }
   const cur = items.find(i => i.key === mtState.purpose) || {};
+  const langs = cur.langs || [];
+  if (!langs.some(l => l.key === mtState.lang)) {
+    mtState.lang = langs.length ? langs[0].key : 'zh';
+  }
+  const curLang = langs.find(l => l.key === mtState.lang) || {};
   const sample = d.sample || {};
   const limits = d.limits || {};
 
@@ -962,15 +1062,20 @@ async function renderMailTemplates(view) {
     <div class="seg" id="mtPurposes">
       ${items.map(i => `<button data-v="${esc(i.key)}"
         class="${mtState.purpose === i.key ? 'active' : ''}">${esc(i.label)}
-        ${i.is_custom ? '<span class="badge warn">已自定义</span>' : ''}</button>`).join('')}
+        ${(i.langs || []).some(l => l.is_custom) ? '<span class="badge warn">已自定义</span>' : ''}</button>`).join('')}
     </div>
+    ${langs.length ? `<div class="seg" id="mtLangs">
+      ${langs.map(l => `<button data-v="${esc(l.key)}"
+        class="${mtState.lang === l.key ? 'active' : ''}">${esc(l.label)}
+        ${l.default_lang ? '<span class="badge">默认</span>' : ''}</button>`).join('')}
+    </div>` : ''}
     <div class="spacer" style="flex:1"></div>
     <span class="note">${esc(cur.audience || '')}</span>
   </div>`;
 
   if (!d.table_ok) {
     html += `<div class="err-box">
-      注册库里还没有 <code>mail_templates</code> 表（005 迁移尚未应用），
+      注册库里还没有 <code>mail_templates</code> 表（006 迁移尚未应用），
       现在只能查看默认文案、<b>不能保存</b>。请先重启 <code>mmh-registration</code>
       容器让它跑迁移，再回来编辑。<br>
       <span class="note">注册库：<code>${esc(d.db_path)}</code></span>
@@ -980,12 +1085,12 @@ async function renderMailTemplates(view) {
   html += `<div class="grid c2">
     ${card('编辑模板', `
       <label class="field"><span>主题</span>
-        <input type="text" id="mtSubject" value="${esc(cur.subject || '')}"
+        <input type="text" id="mtSubject" value="${esc(curLang.subject || '')}"
                maxlength="${esc(limits.subject || 300)}"></label>
       <label class="field" style="margin-top:12px"><span>纯文本正文（HTML 客户端不可用时用它，不能为空）</span>
-        <textarea id="mtText" style="min-height:200px">${esc(cur.text || '')}</textarea></label>
+        <textarea id="mtText" style="min-height:200px">${esc(curLang.text || '')}</textarea></label>
       <label class="field" style="margin-top:12px"><span>HTML 正文（可留空 = 只发纯文本）</span>
-        <textarea id="mtHtml" style="min-height:200px" spellcheck="false">${esc(cur.html || '')}</textarea></label>
+        <textarea id="mtHtml" style="min-height:200px" spellcheck="false">${esc(curLang.html || '')}</textarea></label>
       <div class="note" style="margin-top:12px">
         可用占位符：${(d.placeholders || []).map(p =>
           `<code>{{${esc(p.name)}}}</code> ${esc(p.desc)}`).join(' · ')}<br>
@@ -996,13 +1101,13 @@ async function renderMailTemplates(view) {
         <button id="mtPreviewBtn">刷新预览</button>
         <button class="ghost" id="mtReset">恢复默认</button>
         <div class="spacer" style="flex:1"></div>
-        <span class="note">${cur.is_custom
-          ? `已自定义${cur.updated_at
-              ? '（' + esc(String(cur.updated_at).replace('T', ' ').slice(0, 16)) + ' UTC）' : ''}`
+        <span class="note">${curLang.is_custom
+          ? `已自定义${curLang.updated_at
+              ? '（' + esc(String(curLang.updated_at).replace('T', ' ').slice(0, 16)) + ' UTC）' : ''}`
           : '当前用认证服务器内置默认文案'}</span>
       </div>`,
-      cur.is_custom ? '<span class="badge warn">已自定义</span>'
-                    : '<span class="badge ok">默认</span>')}
+      curLang.is_custom ? '<span class="badge warn">已自定义</span>'
+                        : '<span class="badge ok">默认</span>')}
     ${card('预览', `
       <div class="note" style="margin-bottom:10px">用样例值
         <code>${esc(sample.email || '')}</code> · <code>${esc(sample.code || '')}</code> ·
@@ -1021,6 +1126,11 @@ async function renderMailTemplates(view) {
     const b = e.target.closest('button[data-v]');
     if (b) { mtState.purpose = b.dataset.v; route(); }
   });
+  const langSeg = $('#mtLangs');
+  if (langSeg) langSeg.addEventListener('click', e => {
+    const b = e.target.closest('button[data-v]');
+    if (b) { mtState.lang = b.dataset.v; route(); }
+  });
 
   const schedulePreview = () => {
     clearTimeout(mtPreviewTimer);
@@ -1037,7 +1147,7 @@ async function renderMailTemplates(view) {
     const btn = $('#mtSave');
     btn.disabled = true; btn.textContent = '保存中…';
     try {
-      await api('POST', `/api/mail-templates/${encodeURIComponent(mtState.purpose)}`, {
+      await api('POST', `/api/mail-templates/${encodeURIComponent(mtState.purpose)}/${encodeURIComponent(mtState.lang)}`, {
         subject: $('#mtSubject', view).value,
         text: $('#mtText', view).value,
         html: $('#mtHtml', view).value
@@ -1051,13 +1161,13 @@ async function renderMailTemplates(view) {
   });
 
   $('#mtReset').addEventListener('click', async () => {
-    if (!cur.is_custom) { toast('当前已是默认文案', ''); return; }
+    if (!curLang.is_custom) { toast('当前已是默认文案', ''); return; }
     const ok = await confirmDialog('恢复默认文案？',
-      `将删除「${esc(cur.label || mtState.purpose)}」的自定义文案，改回认证服务器内置的默认版本。`,
+      `将删除「${esc(cur.label || mtState.purpose)}」${esc(curLang.label || mtState.lang)}版的自定义文案，改回认证服务器内置的默认版本。`,
       '恢复默认', false);
     if (!ok) return;
     try {
-      await api('POST', `/api/mail-templates/${encodeURIComponent(mtState.purpose)}/reset`, {});
+      await api('POST', `/api/mail-templates/${encodeURIComponent(mtState.purpose)}/${encodeURIComponent(mtState.lang)}/reset`, {});
       toast('已恢复默认', 'ok');
       await route();
     } catch (err) { toast(err.message, 'err'); }
@@ -1071,7 +1181,7 @@ async function refreshMtPreview() {
   if (!subj || !text || !html) return;
   try {
     const r = await api('POST',
-      `/api/mail-templates/${encodeURIComponent(mtState.purpose)}/preview`,
+      `/api/mail-templates/${encodeURIComponent(mtState.purpose)}/${encodeURIComponent(mtState.lang)}/preview`,
       { subject: subj.value, text: text.value, html: html.value });
     const out = r.rendered || {};
     $('#mtPvSubject').textContent = out.subject || '(空主题)';
@@ -1082,6 +1192,152 @@ async function refreshMtPreview() {
         || '<p style="font-family:sans-serif;color:#888">（无 HTML 正文）</p>';
     }
   } catch (err) { toast(err.message, 'err'); }
+}
+
+/* =========================================================================
+ * 认证服务管理端（验证码日志 / 健康与配置 / 发测试邮件）
+ * ========================================================================= */
+let regadmState = { purpose: '', q: '', offset: 0, limit: 100 };
+
+async function renderRegAdmin(view) {
+  const info = await api('GET', '/api/regadmin/info');
+  const q = new URLSearchParams();
+  if (regadmState.purpose) q.set('purpose', regadmState.purpose);
+  if (regadmState.q) q.set('email', regadmState.q);
+  q.set('offset', regadmState.offset);
+  q.set('limit', regadmState.limit);
+  const codes = await api('GET', `/api/regadmin/codes?${q.toString()}`);
+
+  let html = '';
+
+  // ---- 服务健康 / 配置 ----
+  html += `<div class="grid c4" style="margin-bottom:16px">`;
+  if (info.configured) {
+    const mail = info.mail || {};
+    const policy = info.policy || {};
+    html += metric('服务', esc(info.service || 'mmh-registration'), '认证服务运行中', 'accent');
+    html += metric('邮件通道', mail.configured ? '已配置' : '未配置',
+      `SMTP ${esc(mail.host || '—')}:${esc(mail.port != null ? mail.port : '—')}`, mail.configured ? 'ok' : '');
+    html += metric('验证码策略', `TTL ${esc(policy.codeTtlMinutes)}分`,
+      `尝试 ${esc(policy.codeMaxAttempts)}次 / 小时 ${esc(policy.codeMaxSendsPerHour)}封`);
+    const t = info.templates || {};
+    const dl = t.defaultLang || {};
+    html += metric('模板语言', `zh / en`, `registration→${esc(dl.registration || 'en')} · 重置→${esc(dl['password-reset'] || 'zh')}`);
+  } else {
+    html += metric('服务', '未配置', esc(info.note || '缺少 REGISTRATION_API_TOKEN'), '');
+    html += metric('邮件通道', '—', '—', '');
+    html += metric('验证码策略', '—', '—', '');
+    html += metric('模板语言', '—', '—', '');
+  }
+  html += `</div>`;
+
+  // ---- 发测试邮件 ----
+  html += `<div style="margin-bottom:16px">
+    <div class="card">
+      <div class="row" style="gap:10px;align-items:end;flex-wrap:wrap">
+        <div>
+          <label class="lbl">用途</label>
+          <select id="rgPurpose">
+            <option value="registration">注册 (registration)</option>
+            <option value="password-reset">重置密码 (password-reset)</option>
+          </select>
+        </div>
+        <div>
+          <label class="lbl">语言</label>
+          <select id="rgLang">
+            <option value="">（默认）</option>
+            <option value="zh">中文</option>
+            <option value="en">English</option>
+          </select>
+        </div>
+        <div style="flex:1;min-width:220px">
+          <label class="lbl">收件邮箱</label>
+          <input type="email" id="rgTo" placeholder="test@example.com" style="width:100%">
+        </div>
+        <button class="primary" id="rgSend">发送测试邮件</button>
+      </div>
+      <div id="rgSendResult" class="sub" style="margin-top:8px"></div>
+    </div>
+  </div>`;
+
+  // ---- 最近一小时统计 ----
+  const lh = codes.last_hour || {};
+  html += `<div class="grid c2" style="margin-bottom:16px">
+    ${metric('近1小时 注册验证码', esc(lh.registration || 0), '发送条数')}
+    ${metric('近1小时 重置密码验证码', esc(lh['password-reset'] || 0), '发送条数')}
+  </div>`;
+
+  // ---- 验证码日志 ----
+  html += `<div class="card">
+    <div class="row" style="gap:8px;margin-bottom:10px;flex-wrap:wrap">
+      <select id="rgFilterPurpose">
+        <option value="">全部用途</option>
+        <option value="registration">注册</option>
+        <option value="password-reset">重置密码</option>
+      </select>
+      <input type="search" id="rgFilterEmail" placeholder="按邮箱过滤" value="${esc(regadmState.q)}" style="max-width:220px">
+      <button class="ghost sm" id="rgApply">筛选</button>
+      <span class="spacer"></span>
+      <span class="sub">共 ${esc(codes.total)} 条</span>
+    </div>
+    <table class="tbl">
+      <thead><tr>
+        <th>邮箱</th><th>用途</th><th>发送时间</th><th>过期</th><th>状态</th><th>尝试</th>
+      </tr></thead>
+      <tbody>
+        ${(codes.items || []).map(c => `
+          <tr>
+            <td>${esc(c.email)}</td>
+            <td>${esc(c.purpose === 'registration' ? '注册' : '重置密码')}</td>
+            <td>${esc(c.created_at || '')}</td>
+            <td>${esc(c.expires_at || '')}</td>
+            <td>${c.used
+              ? '<span class="badge ok">已使用</span>'
+              : (c.expires_at && c.expires_at < new Date().toISOString() ? '<span class="badge">已过期</span>' : '<span class="badge ok">未使用</span>')}</td>
+            <td>${esc(c.attempts)}</td>
+          </tr>`).join('') || '<tr><td colspan="6" class="empty">暂无验证码记录</td></tr>'}
+      </tbody>
+    </table>
+    <div class="row" style="gap:8px;margin-top:10px">
+      <button class="ghost sm" id="rgPrev" ${codes.offset <= 0 ? 'disabled' : ''}>上一页</button>
+      <span class="sub">第 ${Math.floor(codes.offset / codes.limit) + 1} 页</span>
+      <button class="ghost sm" id="rgNext" ${codes.offset + codes.limit < codes.total ? '' : 'disabled'}>下一页</button>
+      <span class="spacer"></span>
+      <span class="sub">验证码仅存哈希，无法在此查看明文</span>
+    </div>
+  </div>`;
+
+  view.innerHTML = html;
+
+  $('#rgFilterPurpose').value = regadmState.purpose;
+  $('#rgSend').addEventListener('click', async () => {
+    const to = $('#rgTo').value.trim();
+    const purpose = $('#rgPurpose').value;
+    const lang = $('#rgLang').value;
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) { toast('请输入有效邮箱', 'err'); return; }
+    const btn = $('#rgSend');
+    btn.disabled = true; btn.textContent = '发送中…';
+    try {
+      await api('POST', '/api/regadmin/test-mail', { to, purpose, lang: lang || undefined });
+      $('#rgSendResult').textContent = '已通过认证服务真实通道发送，请检查收件箱 / 垃圾箱。';
+      toast('测试邮件已发送');
+    } catch (err) { toast(err.message, 'err'); }
+    finally { btn.disabled = false; btn.textContent = '发送测试邮件'; }
+  });
+  $('#rgApply').addEventListener('click', () => {
+    regadmState.purpose = $('#rgFilterPurpose').value;
+    regadmState.q = $('#rgFilterEmail').value.trim();
+    regadmState.offset = 0;
+    renderRegAdmin(view);
+  });
+  $('#rgPrev').addEventListener('click', () => {
+    regadmState.offset = Math.max(0, regadmState.offset - regadmState.limit);
+    renderRegAdmin(view);
+  });
+  $('#rgNext').addEventListener('click', () => {
+    regadmState.offset += regadmState.limit;
+    renderRegAdmin(view);
+  });
 }
 
 /* =========================================================================
