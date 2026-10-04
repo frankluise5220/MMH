@@ -13,7 +13,7 @@
 <div id="login" class="login-wrap" hidden>
   <form class="login-card" id="loginForm" autocomplete="off">
     <h1>MMH 后台管理</h1>
-    <p>自动用户注册 · 下载汇总 · 邮件 / Issue 盯盘</p>
+    <p>自动用户注册 · 下载汇总 · 邮件盯盘 / 模板 · Issue 盯盘</p>
     <input type="password" id="tokenInput" placeholder="访问口令" autocomplete="current-password" required>
     <div id="loginErr" class="err" style="min-height:20px;font-size:12.5px;margin:6px 0 4px"></div>
     <button type="submit" class="primary" style="width:100%" id="loginBtn">登录</button>
@@ -29,6 +29,7 @@
       <button data-tab="registrations">自动注册<span class="dot" id="dotReg" hidden>0</span></button>
       <button data-tab="downloads">下载汇总</button>
       <button data-tab="mail">邮件盯盘<span class="dot" id="dotMail" hidden>0</span></button>
+      <button data-tab="mailtemplates">邮件模板</button>
       <button data-tab="issues">Issue 盯盘<span class="dot" id="dotIss" hidden>0</span></button>
       <button data-tab="audit">审计</button>
       <button data-tab="settings">设置</button>

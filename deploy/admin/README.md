@@ -1,13 +1,14 @@
 # MMH 后台管理（mmh-admin）
 
-一个页面管三件事 + 一个盯盘：
+一个页面管几件事 + 两个盯盘：
 
 | 面板 | 作用 | 数据源 |
 |---|---|---|
-| **概览** | 一屏看完下面四块 | 聚合 |
+| **概览** | 一屏看完下面几块 | 聚合 |
 | **自动用户注册** | 看/禁用/删除注册用户、登录身份、已注册设备 | `/opt/mmh-registration/data/registration.sqlite3` |
 | **下载汇总** | 渠道 × 客户端软件 × 日期 × 版本 | `/opt/fn-appstores-server/data/mmh-stats.db` |
 | **邮件盯盘** | 看信、回复、标已读、移回收站 | `/var/vmail/floatingice.win/*/Maildir/` |
+| **邮件模板** | 改认证服务器发出的验证码邮件文案（注册 / 密码找回） | `/opt/mmh-registration/data/registration.sqlite3` 的 `mail_templates` 表 |
 | **Issue 盯盘** | 看/评论/关闭/打标签 | GitHub API（`frankluise5220/MMH`） |
 
 入口：**https://admin.floatingice.win/**
@@ -201,6 +202,7 @@ deploy/admin/
 │   │   ├── registrations.py 自动用户注册
 │   │   ├── downloads.py     下载汇总
 │   │   ├── mail.py          邮件盯盘
+│   │   ├── mail_templates.py 邮件模板（认证服务器发信文案，读写注册库 mail_templates）
 │   │   ├── issues.py        GitHub issue 盯盘
 │   │   └── settings.py      设置：改口令、改时区（+ 只读的服务信息）
 │   └── static/              index.html / app.js / style.css（原生 JS，无构建）
@@ -252,6 +254,7 @@ diff app/stats_store.py ../fnstore/app/stats_store.py   # 应该没有输出
 | `registration.identity.delete` | 删除某个登录身份 |
 | `mail.flag` / `mail.move` / `mail.delete` | 标记已读、移回收站、彻底删除 |
 | `mail.reply` / `mail.send` | 回复 / 发信（含 Message-ID） |
+| `mail_template.save` / `mail_template.reset` | 改 / 恢复认证服务器的验证码邮件文案（只记 purpose 与各字段长度，**不记全文**） |
 | `issue.comment` / `issue.state` / `issue.labels` | 评论 / 关闭重开 / 改标签 |
 
 几个刻意的安全边界：
@@ -264,6 +267,9 @@ diff app/stats_store.py ../fnstore/app/stats_store.py   # 应该没有输出
   编码，前端拿不到裸路径。
 - **GitHub 仓库受 `GITHUB_ALLOWED_REPOS` 白名单约束**，token 不会被拿去改别的仓库；
   token 本身永不回传前端，只回 `present / kind / len`。
+- **邮件模板面板只写 `mail_templates` 的 subject / text / html 三列**，绝不碰
+  `principals` / `identities` / `installations`；表不存在时**不自动建表**（schema 归认证服务管）。
+  审计只记 purpose 与各字段长度，不记全文。
 - **未登录的 POST 也要把请求体读掉**再回 401。HTTP/1.1 是 keep-alive，提前返回而
   不读 body，残留字节会被当成下一个请求行，服务端刷 `Bad request syntax`、连接错位
   （客户端仍能拿到 401，但这条连接废了）。见 `server.py` 的 `_drain_body()`。
@@ -283,6 +289,9 @@ diff app/stats_store.py ../fnstore/app/stats_store.py   # 应该没有输出
 | https 不通但 http 通 | SNI 分流器没重启或没加 `admin.floatingice.win` 路由；`./install.sh sni` 检查 |
 | 接口全 401，但登录返回 200 | 用 curl 探 `http://` 时会这样（Secure cookie 不回传明文）。换成 https，或手动带 `Cookie:` 头 |
 | 邮件面板 502 / 发信失败 | `./install.sh verify` 看 `smtp_ok`；确认 postfix 在跑、`mynetworks` 含 `127.0.0.1/32` |
+| 邮件模板页提示「还没有 mail_templates 表」 | 认证服务还没跑 005 迁移。`docker compose -f /opt/mmh-registration/docker-compose.yml restart`，再刷后台 |
+| 改了模板但收到的信没变 | ① 确认保存返回 200（不是 503）；② 查注册库 `SELECT purpose, updated_at FROM mail_templates`；③ 认证服务按**发送时**读库，不需要重启，但如果发信走的是中继（`relay.py`）就**不读这张表**（中继文案是它自己硬编码的） |
+| 页面显示的「默认文案」和实际发出的不一致 | 两份默认文案分叉了：`deploy/registration/src/templates.ts` vs `deploy/admin/app/panels/mail_templates.py`。跑 `cd deploy/registration && npm test` 会报哪一项对不上 |
 | 邮件列表里已读邮件打不开 | 检查 `panels/mail.py` 的 `_NAME_RE` 是否还允许 `,` |
 | Issue 面板 401 | `/etc/mmh-admin/github-token` 过期或没装；`./install.sh status` 看权限 |
 | 下载数字和 fnstore 页面不一致 | `diff app/stats_store.py ../fnstore/app/stats_store.py`，口径分叉了 |
@@ -309,7 +318,59 @@ token 单独放 `secrets/`。**不备**下载库 / 注册库 / Maildir——那�
 
 ---
 
-## 9. 变更记录
+## 9. 邮件模板（认证服务器发信文案）
+
+认证服务器（`deploy/registration`，容器 `mmh-registration`）会发两类验证码邮件：
+**注册验证码**、**密码找回验证码**。文案原本硬编码在它的 `src/templates.ts` 里 ——
+改一句话就得改代码、重建镜像、重启容器。现在文案存在注册库的一张表里，本面板直接编辑。
+
+```
+mail_templates(purpose PK, subject, text, html, updated_at)
+```
+
+- **读**：认证服务发信时读这张表。**表或行缺失一律回落到它内置的默认文案**，
+  所以「空表 = 全默认」，**「恢复默认」= 删掉那一行**（不是把默认文案再写一遍）。
+- **写**：本面板直接改同一个 sqlite（`REG_DB`，admin 容器已 rw 挂载注册库）。
+  理由同「自动注册」面板：认证服务没暴露管理接口，为这个后台去改 Node 服务、
+  重建镜像不划算。WAL 多读一写，写前 `busy_timeout`。
+- **生效**：保存即写库，认证服务**下次发信**就用新文案，不用重启任何东西。
+- **占位符**（只有三个，发送时替换）：`{{email}}` · `{{code}}` · `{{expiresMinutes}}`。
+  预览也在**服务端**用同一套替换渲染，所以「页面看到的」就是「实际发出的」。
+  写错的占位符会原样发出去，预览里能看出来。
+- **纯文本正文不能为空**：HTML 客户端不可用时它才是正文。HTML 正文可以留空（只发纯文本）。
+
+### 部署顺序（重要）
+
+新表由**认证服务**的迁移 `005_mail_templates.sql` 创建，所以：
+
+```bash
+docker compose -f /opt/mmh-registration/docker-compose.yml restart   # 先跑迁移建表
+docker compose -f /opt/mmh-admin/docker-compose.yml restart          # 再起后台
+```
+
+表还没建时本面板**只读**：照常显示默认文案，但顶部提示、且**保存返回 503**
+（不会去偷偷建表 —— schema 只有一个 owner，就是认证服务）。
+
+### ⚠️ 默认文案有两份拷贝，必须逐字一致
+
+| 位置 | 用途 |
+|---|---|
+| `deploy/registration/src/templates.ts` 的 `DEFAULT_MAIL_TEMPLATES` | 认证服务缺行时**实际发出**的文案 |
+| `deploy/admin/app/panels/mail_templates.py` 的 `DEFAULT_TEMPLATES` | 本面板**展示**「默认」时用的文案 |
+
+两边分叉就会出现「页面显示 A、实际发 B」。**已加闸门**：认证服务的测试
+`src/tests/mail-template.test.ts` 会读那个 Python 文件做逐字比对，分叉即红。
+
+```bash
+cd deploy/registration && npm test      # 其中一项就是这份比对
+```
+
+> 中继（`panels/relay.py`）的注册码文案**没有**接这张表，仍是它自己硬编码的那份。
+> 中继两侧 token 皆空、从未启用，所以没顺手改；要统一再说。
+
+---
+
+## 10. 变更记录
 
 - **2026-09-29 首版**
   - 四个面板 + 概览，全部支持写操作并落审计。
@@ -359,3 +420,20 @@ token 单独放 `secrets/`。**不备**下载库 / 注册库 / Maildir——那�
   - 自检扩到 63 项（新增 8 项覆盖时区：401/空值/非法名/超范围偏移/改成 UTC+8 后
     核对审计 `time` 与 `ts+8h` 一致/审计记 tz/Linux 不降级/reset 回落），
     本地 56/56、VPS 真实镜像 63/63 全绿；浏览器验证时区往返（含夏令时 `EDT`）。
+- **2026-10-04 加「邮件模板」面板：认证服务器发信文案可后台编辑**
+  - 认证服务 `deploy/registration` 新增迁移 `005_mail_templates.sql` + `src/templates.ts`：
+    两封验证码邮件（注册 / 密码找回）的文案从硬编码改为**读注册库 `mail_templates` 表**，
+    **表/行缺失回落内置默认**（`try/catch` 包住），所以空表 = 全默认、**删行 = 恢复默认**，
+    迁移没跑也不影响发信。`src/mail.ts` 退化为纯投递（只收已渲染的 subject/text/html）。
+  - 新增 `app/panels/mail_templates.py`：`GET /api/mail-templates`、
+    `POST /api/mail-templates/<purpose>`、`POST …/reset`、`POST …/preview`，
+    直接读写注册库同一张表（admin 已 rw 挂载），写操作落 `mail_template.save` / `.reset` 审计。
+  - 前端新增「邮件模板」页签：用途切换、subject / text / html 编辑、占位符提示、
+    **服务端渲染的实时预览**（防抖 400ms）、保存 / 恢复默认、默认/已自定义状态徽标。
+  - **默认文案两份拷贝加了闸门**：认证服务测试 `src/tests/mail-template.test.ts`
+    会读 `mail_templates.py` 做逐字比对，分叉即红（镜像里无该文件时自动 skip）。
+  - 认证服务测试 17 → 24 项（新增模板单测 5 项 + 「库里覆盖后发出的邮件用自定义文案」端到端 1 项 + 跨文件比对 1 项），全绿。
+  - 端到端实测：① HTTP 层 28 项（未登录 401 / 保存 / 直读 sqlite 核对 / 预览替换 /
+    空正文与未知用途 400 / reset / 审计 / 表缺失降级 503）；② Playwright 14 项（含无 JS 报错）；
+    ③ **跨进程**：admin 写 → 认证服务真发信 → 本地 SMTP 桩收信核对，reset 后回落中文默认。
+  - 部署顺序：**先重启 `mmh-registration`（建表），再重启 `mmh-admin`**。

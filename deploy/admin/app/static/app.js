@@ -206,7 +206,8 @@ async function startApp() {
 }
 
 /* ---------------------------------------------------------------- 路由 */
-const TABS = ['overview', 'registrations', 'downloads', 'mail', 'issues', 'audit', 'settings'];
+const TABS = ['overview', 'registrations', 'downloads', 'mail', 'mailtemplates',
+              'issues', 'audit', 'settings'];
 let currentTab = 'overview';
 
 async function route() {
@@ -221,6 +222,7 @@ async function route() {
     else if (tab === 'registrations') await renderRegistrations(view);
     else if (tab === 'downloads') await renderDownloads(view);
     else if (tab === 'mail') await renderMail(view);
+    else if (tab === 'mailtemplates') await renderMailTemplates(view);
     else if (tab === 'issues') await renderIssues(view);
     else if (tab === 'audit') await renderAudit(view);
     else if (tab === 'settings') await renderSettings(view);
@@ -934,6 +936,152 @@ function composeMail() {
       });
     }
   });
+}
+
+/* =========================================================================
+ * 邮件模板（认证服务器 mmh-registration 发出的验证码邮件文案）
+ * =========================================================================
+ * 数据源是注册库的 mail_templates 表；没有行时展示认证服务器内置的默认文案。
+ * 保存即写库，认证服务器下次发信就生效，不用重建镜像/重启。
+ * 预览走服务端同一套占位符替换，保证「看到的」就是「发出去的」。
+ */
+let mtState = { purpose: 'registration' };
+let mtPreviewTimer = null;
+
+async function renderMailTemplates(view) {
+  const d = await api('GET', '/api/mail-templates');
+  const items = d.items || [];
+  if (!items.some(i => i.key === mtState.purpose)) {
+    mtState.purpose = items.length ? items[0].key : 'registration';
+  }
+  const cur = items.find(i => i.key === mtState.purpose) || {};
+  const sample = d.sample || {};
+  const limits = d.limits || {};
+
+  let html = `<div class="toolbar" style="margin-bottom:16px">
+    <div class="seg" id="mtPurposes">
+      ${items.map(i => `<button data-v="${esc(i.key)}"
+        class="${mtState.purpose === i.key ? 'active' : ''}">${esc(i.label)}
+        ${i.is_custom ? '<span class="badge warn">已自定义</span>' : ''}</button>`).join('')}
+    </div>
+    <div class="spacer" style="flex:1"></div>
+    <span class="note">${esc(cur.audience || '')}</span>
+  </div>`;
+
+  if (!d.table_ok) {
+    html += `<div class="err-box">
+      注册库里还没有 <code>mail_templates</code> 表（005 迁移尚未应用），
+      现在只能查看默认文案、<b>不能保存</b>。请先重启 <code>mmh-registration</code>
+      容器让它跑迁移，再回来编辑。<br>
+      <span class="note">注册库：<code>${esc(d.db_path)}</code></span>
+    </div>`;
+  }
+
+  html += `<div class="grid c2">
+    ${card('编辑模板', `
+      <label class="field"><span>主题</span>
+        <input type="text" id="mtSubject" value="${esc(cur.subject || '')}"
+               maxlength="${esc(limits.subject || 300)}"></label>
+      <label class="field" style="margin-top:12px"><span>纯文本正文（HTML 客户端不可用时用它，不能为空）</span>
+        <textarea id="mtText" style="min-height:200px">${esc(cur.text || '')}</textarea></label>
+      <label class="field" style="margin-top:12px"><span>HTML 正文（可留空 = 只发纯文本）</span>
+        <textarea id="mtHtml" style="min-height:200px" spellcheck="false">${esc(cur.html || '')}</textarea></label>
+      <div class="note" style="margin-top:12px">
+        可用占位符：${(d.placeholders || []).map(p =>
+          `<code>{{${esc(p.name)}}}</code> ${esc(p.desc)}`).join(' · ')}<br>
+        发送时由认证服务器替换；写错的占位符会原样发出去，预览里能看出来。
+      </div>
+      <div class="toolbar" style="margin-top:14px">
+        <button class="primary" id="mtSave">保存</button>
+        <button id="mtPreviewBtn">刷新预览</button>
+        <button class="ghost" id="mtReset">恢复默认</button>
+        <div class="spacer" style="flex:1"></div>
+        <span class="note">${cur.is_custom
+          ? `已自定义${cur.updated_at
+              ? '（' + esc(String(cur.updated_at).replace('T', ' ').slice(0, 16)) + ' UTC）' : ''}`
+          : '当前用认证服务器内置默认文案'}</span>
+      </div>`,
+      cur.is_custom ? '<span class="badge warn">已自定义</span>'
+                    : '<span class="badge ok">默认</span>')}
+    ${card('预览', `
+      <div class="note" style="margin-bottom:10px">用样例值
+        <code>${esc(sample.email || '')}</code> · <code>${esc(sample.code || '')}</code> ·
+        <code>${esc(sample.expiresMinutes)}</code> 分钟渲染（不落库）。</div>
+      <div class="note" style="margin-bottom:6px">主题</div>
+      <div class="mail-body" id="mtPvSubject" style="max-height:none">—</div>
+      <div class="note" style="margin:12px 0 6px">HTML 正文</div>
+      <iframe class="mail-html" id="mtPvHtml" sandbox="" style="height:300px"></iframe>
+      <div class="note" style="margin:12px 0 6px">纯文本正文</div>
+      <div class="mail-body" id="mtPvText" style="max-height:260px">—</div>`)}
+  </div>`;
+
+  view.innerHTML = html;
+
+  $('#mtPurposes').addEventListener('click', e => {
+    const b = e.target.closest('button[data-v]');
+    if (b) { mtState.purpose = b.dataset.v; route(); }
+  });
+
+  const schedulePreview = () => {
+    clearTimeout(mtPreviewTimer);
+    mtPreviewTimer = setTimeout(refreshMtPreview, 400);
+  };
+  ['#mtSubject', '#mtText', '#mtHtml'].forEach(sel => {
+    const el = $(sel, view);
+    if (el) el.addEventListener('input', schedulePreview);
+  });
+
+  $('#mtPreviewBtn').addEventListener('click', refreshMtPreview);
+
+  $('#mtSave').addEventListener('click', async () => {
+    const btn = $('#mtSave');
+    btn.disabled = true; btn.textContent = '保存中…';
+    try {
+      await api('POST', `/api/mail-templates/${encodeURIComponent(mtState.purpose)}`, {
+        subject: $('#mtSubject', view).value,
+        text: $('#mtText', view).value,
+        html: $('#mtHtml', view).value
+      });
+      toast('已保存，认证服务器下次发信即生效', 'ok');
+      await route();
+    } catch (err) {
+      toast(err.message, 'err');
+      btn.disabled = false; btn.textContent = '保存';
+    }
+  });
+
+  $('#mtReset').addEventListener('click', async () => {
+    if (!cur.is_custom) { toast('当前已是默认文案', ''); return; }
+    const ok = await confirmDialog('恢复默认文案？',
+      `将删除「${esc(cur.label || mtState.purpose)}」的自定义文案，改回认证服务器内置的默认版本。`,
+      '恢复默认', false);
+    if (!ok) return;
+    try {
+      await api('POST', `/api/mail-templates/${encodeURIComponent(mtState.purpose)}/reset`, {});
+      toast('已恢复默认', 'ok');
+      await route();
+    } catch (err) { toast(err.message, 'err'); }
+  });
+
+  await refreshMtPreview();
+}
+
+async function refreshMtPreview() {
+  const subj = $('#mtSubject'), text = $('#mtText'), html = $('#mtHtml');
+  if (!subj || !text || !html) return;
+  try {
+    const r = await api('POST',
+      `/api/mail-templates/${encodeURIComponent(mtState.purpose)}/preview`,
+      { subject: subj.value, text: text.value, html: html.value });
+    const out = r.rendered || {};
+    $('#mtPvSubject').textContent = out.subject || '(空主题)';
+    $('#mtPvText').textContent = out.text || '(空正文)';
+    const frame = $('#mtPvHtml');
+    if (frame) {
+      frame.srcdoc = out.html
+        || '<p style="font-family:sans-serif;color:#888">（无 HTML 正文）</p>';
+    }
+  } catch (err) { toast(err.message, 'err'); }
 }
 
 /* =========================================================================

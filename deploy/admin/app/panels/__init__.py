@@ -8,6 +8,7 @@
 from . import downloads      # noqa: F401
 from . import issues         # noqa: F401
 from . import mail           # noqa: F401
+from . import mail_templates  # noqa: F401
 from . import overview       # noqa: F401
 from . import registrations  # noqa: F401
 from . import relay          # noqa: F401
