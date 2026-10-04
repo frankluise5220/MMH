@@ -206,19 +206,28 @@ function tableExists(db, table) {
 
 function columnExists(db, table, column) {
   if (!tableExists(db, table)) return false;
-  return db.prepare("PRAGMA table_info(\"" + table.replace(/\"/g, "\"\"") + "\")").all().some((row) => row.name === column);
+  return db.prepare("PRAGMA table_info(\\"" + table.replace(/\\"/g, "\\"\\"") + "\\")").all().some((row) => row.name === column);
 }
 
 function addColumnIfMissing(db, table, column, definition) {
   if (!columnExists(db, table, column)) {
-    db.exec("ALTER TABLE \"" + table.replace(/\"/g, "\"\"") + "\" ADD COLUMN \"" + column.replace(/\"/g, "\"\"") + "\" " + definition);
+    db.exec("ALTER TABLE \\"" + table.replace(/\\"/g, "\\"\\"") + "\\" ADD COLUMN \\"" + column.replace(/\\"/g, "\\"\\"") + "\\" " + definition);
   }
 }
 
 function applyRuntimeMigrations(db) {
   // Windows upgrades previously created only missing tables. Keep the login
   // query compatible with databases created by those older desktop builds.
+  // MUST stay in sync with the MIGRATIONS list in scripts/build-fnos-package.cjs
+  // (authVersion / registrationPrincipalId / fnosUid columns on User, and the
+  // User.householdId+fnosUid unique index). A missing column here makes the
+  // login/verify query throw "no such column" on upgraded desktop databases.
   addColumnIfMissing(db, "User", "authVersion", "INTEGER NOT NULL DEFAULT 1");
+  addColumnIfMissing(db, "User", "registrationPrincipalId", "TEXT");
+  addColumnIfMissing(db, "User", "fnosUid", "TEXT");
+  if (columnExists(db, "User", "fnosUid")) {
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS "User_householdId_fnosUid_key" ON "User"("householdId", "fnosUid")');
+  }
   addColumnIfMissing(db, "UserSettings", "sessionDays", "INTEGER NOT NULL DEFAULT 30");
 }
 
