@@ -2054,7 +2054,9 @@ function assertNoDeveloperData(serverRoot) {
   if (unique.length > 0) {
     throw new Error(
       `Refusing to package developer data: ${unique.join(", ")}. ` +
-        "Next file tracing copied these into .next/standalone; check outputFileTracingExcludes in next.config.ts, delete .next and rebuild.",
+        "Next file tracing copied these into .next/standalone; delete .next and rebuild. " +
+        "Do NOT add outputFileTracingExcludes to next.config.ts - it matches nested paths " +
+        "(e.g. next/dist/build/output/**) and breaks the standalone server at boot.",
     );
   }
 }

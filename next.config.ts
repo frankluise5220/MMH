@@ -49,32 +49,17 @@ const nextConfig: NextConfig = {
   experimental: {
     proxyClientMaxBodySize: RESTORE_UPLOAD_LIMIT_CONFIG,
   },
-  // Next's file tracing statically resolves `path.join(process.cwd(), "data")`
-  // and `path.join(process.cwd(), ".codex-logs")` (see settings/backup,
-  // server/auto-backup, server/attachments, server/import-debug-log) as literal
-  // runtime inputs and copies the *entire* directories into `.next/standalone`.
-  // On a working copy that ships the developer's real data directory into every
-  // SPK/FPK: `data/backups/*.mmhbackup` (whole household backups), uploaded
-  // attachments and the browser test logs under `.codex-logs/`. The runtime data
-  // directory is always supplied by MMH_DATA_DIR / MMH_ATTACHMENT_DIR, so none of
-  // it is needed in the bundle. `shared/settings/catalog.json` is deliberately
-  // NOT excluded - it is a real static import (src/lib/settings/catalog.ts).
-  outputFileTracingExcludes: {
-    "*": [
-      "./data/**",
-      "./.codex-logs/**",
-      "./release-artifacts/**",
-      "./.workbuddy-ai/**",
-      "./.codex/**",
-      "./.codex-tmp/**",
-      "./.old/**",
-      "./android/**",
-      "./output/**",
-      "./.gradle-home/**",
-      "./.playwright-cli/**",
-      "./_tmp*/**",
-    ],
-  },
+  // DO NOT add `outputFileTracingExcludes` here (removed 2026-10-04, v0.1.69).
+  // Next matches those globs via picomatch `{ contains: true }` (see
+  // next/dist/build/collect-build-traces.js -> makeIgnoreFn), i.e. UNANCHORED:
+  // a root-level pattern like "./data/**" also strips every nested `data/`
+  // (e.g. node_modules/caniuse-lite/data/**), and "./output/**" strips Next's
+  // own `next/dist/build/output/**`. The standalone server then dies at boot
+  // with `Cannot find module '../build/output/log'` in EVERY SPK/FPK/Docker
+  // image. Verified there is nothing to exclude anyway: nft never traces the
+  // root `data/` or `.codex-logs/` dirs (no such entries in any *.nft.json, and
+  // the shipped app.tgz carries no developer data). Guard packaging with a
+  // build-time assertion in scripts/build-*-package.cjs instead.
   allowedDevOrigins,
   webpack(config, { dev }) {
     if (dev) {
