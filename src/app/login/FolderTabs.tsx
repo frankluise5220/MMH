@@ -12,8 +12,19 @@ import type { ReactNode } from "react";
  * 核心不变量（改样式前必读，均有几何/像素探针守护）：
  *
  *  1. 页签条 `inset-x-0`（不能 `inset-x-3`，否则整条右移 12px）；
- *  2. 页签条 `top-0 bottom-0` + `items-start`（顶对齐）：`top-0` 与容器 `pt-10` 配平避免
- *     3px 白缝，`bottom-0` 让条铺满容器高度、非活动页签才能 `self-stretch` 对齐内容板底部，
+ *  2. 页签条 `top-0 bottom-0` + `items-start`（顶对齐）：容器 `pt-10`（40px）决定内容板顶位置——
+ *     **改页签高度时不要动它**，动了内容板会跟着上下移。页签靠 `mt` 从条顶往下收：
+ *     活动页签 `mt-[7px]`（7px），高 = 1px 上边框 + `pt-1.5`(6px) + `pb-[3px]`(3px) + `text-base`
+ *     行高 24px = 34px，页签底 = 7 + 34 = 41px = 内容板顶 40px + 1px，接缝恒 −1px。
+ *     上下内边距**不对称**（6 / 3）是有意的：让标签跟着页签顶一起下移 3px，而不是随高度收缩
+ *     上下各让 1.5px（用户明确要求「页签降 3px、活动页签的标签也降 3px」）。
+ *     非活动页签 `mt-[13px]`（13px），比活动页签多 6px —— 保持「活动页签高出 6px」的层次；
+ *     它 `self-stretch`、标签靠 `pt-[5px]` 在**露出区**内视觉居中（露出区 = 页签顶 → 内容板顶；
+ *     中文字形墨迹微偏上，故 pt 略补 0.5px）；`mx-0.75`（左右各 3px）让相邻非活动页签间距 =
+ *     3+3+gap(6px) = 12px，与非活动→活动页签间距一致（页签顶下移时用 `pt` 反补，**不能**用
+ *     `items-center`，见第 10 条）。
+ *     只改上下内边距而不同步改 `mt`，页签底会离开内容板顶露出「白缝」。
+ *     `bottom-0` 让条铺满容器高度、非活动页签才能 `self-stretch` 对齐内容板底部，
  *     `items-start` 才能让活动页签「顶部固定、不增高」；
  *  3. 页签条**不能带 z-index**（position:absolute + 非 auto z-index 会新建层叠上下文，
  *     把活动页签的 z-30 困在条内，导致内容板 1px 上边框画在活动页签之上）；
@@ -73,7 +84,12 @@ export function folderTabClass(active: boolean, atEnd: boolean, variant: TabVari
       // 改由 `ft-tab-fillet` 的两个伪元素画「外扩凹角」，把竖边向外侧接到内容板上沿横线
       // （几何与色值见 globals.css 的 .ft-tab-fillet 注释）。
       // 凹角必须画到按钮盒外，故这里**不能** overflow-hidden（超长标签改由内层 span 裁切）。
-      `relative z-30 mt-0 ${width} rounded-t-[8px] border border-b-0 border-slate-300 bg-[#fbfaf7] px-4 py-2 text-base font-semibold text-slate-800 shadow-[0_-2px_3px_rgba(15,23,42,0.06)]`,
+      // 页签高 = 1px 边框 + `pt-1.5`(6px) + `pb-[3px]`(3px) + `text-base` 行高 24px = 34px；
+      // `mt-[7px]` 把它从条顶往下收 7px（内容板不动），页签底 = 7 + 34 = 41px = 内容板顶
+      // （容器 `pt-10` = 40px）+ 1px，接缝恒 −1px。
+      // 上下内边距不对称（6 / 3）是有意的：让标签跟着页签顶下移 3px，而不是随高度收缩各让 1.5px。
+      // 改高度时必须同步改 `mt`（见文件头第 2 条），否则页签底会离开内容板顶露出白缝。
+      `relative z-30 mt-[7px] ${width} rounded-t-[8px] border border-b-0 border-slate-300 bg-[#fbfaf7] px-4 pt-1.5 pb-[3px] text-base font-semibold text-slate-800 shadow-[0_-2px_3px_rgba(15,23,42,0.06)]`,
       "ft-tab-fillet",
       // 排首位/末位时的缩进 = 内容板倒角半径(12px) + 页签凹角半径(6px) = 18px。
       // 凹角外端正好落在内容板上圆角弧的起点上，两条弧相切、不会打架；
@@ -83,8 +99,14 @@ export function folderTabClass(active: boolean, atEnd: boolean, variant: TabVari
       atEnd ? "mr-4.5" : "",
     ].filter(Boolean).join(" ");
   }
+  // 非活动页签 `mt-[13px]`（13px）= 活动页签 `mt-[7px]`（7px）+ 6px —— 与活动页签一起下移，
+  // 保持「活动页签高出 6px」的层次；顶部这 13px 是唯一露出区（其余被内容板 z-20 盖住）。
+  // `pt-[5px]` 让标签文字在**露出区**内视觉居中：露出区 = 页签顶 → 内容板顶 = 27px，文字行高 16px。
+  // 纯理论居中（行盒 5.5/5.5）会因中文字形 ascender 空间大、墨迹微偏上约 0.5px，故 `pt` 取 5px
+  // 把墨迹质心拉回正中（像素质心实测偏移 ≈ 0）。**不能**用 `items-center`：页签是 `self-stretch`
+  // （高到内容板下缘），居中会把文字推到内容板后面。
   return [
-    `relative z-10 mt-1.5 self-stretch ${width} flex items-start justify-center overflow-hidden whitespace-nowrap rounded-[8px] border border-slate-300 bg-slate-200 mx-1.5 px-4 pt-2 text-xs font-medium text-slate-500 shadow-[0_2px_4px_rgba(15,23,42,0.08)] hover:-translate-y-0.5 hover:bg-slate-100`,
+    `relative z-10 mt-[13px] self-stretch ${width} flex items-start justify-center overflow-hidden whitespace-nowrap rounded-[8px] border border-slate-300 bg-slate-200 mx-0.75 px-4 pt-[5px] text-xs font-medium text-slate-500 shadow-[0_2px_4px_rgba(15,23,42,0.08)] hover:-translate-y-0.5 hover:bg-slate-100`,
   ].join(" ");
 }
 
@@ -118,8 +140,8 @@ export type FolderTabsItem = {
  *     ...内容板里的表单...
  *   </FolderTabs>
  *
- * 注意：`variant="stretch"` 时页签条需要占满宽度；页签条容器自带 `pt-10` 由调用方控制
- * 显示与否（重置/注册子态要收起页签条时，调用方自行判断，见登录页的 showReset 分支）。
+ * 注意：`variant="stretch"` 时页签条需要占满宽度；页签条容器自带 `pt-10`（内容板顶位置，
+ * 与页签高无关，见文件头第 2 条）由调用方控制显示与否（重置/注册子态要收起页签条时，调用方自行判断，见登录页的 showReset 分支）。
  */
 export function FolderTabs({
   tabs,
