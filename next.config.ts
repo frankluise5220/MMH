@@ -49,6 +49,32 @@ const nextConfig: NextConfig = {
   experimental: {
     proxyClientMaxBodySize: RESTORE_UPLOAD_LIMIT_CONFIG,
   },
+  // Next's file tracing statically resolves `path.join(process.cwd(), "data")`
+  // and `path.join(process.cwd(), ".codex-logs")` (see settings/backup,
+  // server/auto-backup, server/attachments, server/import-debug-log) as literal
+  // runtime inputs and copies the *entire* directories into `.next/standalone`.
+  // On a working copy that ships the developer's real data directory into every
+  // SPK/FPK: `data/backups/*.mmhbackup` (whole household backups), uploaded
+  // attachments and the browser test logs under `.codex-logs/`. The runtime data
+  // directory is always supplied by MMH_DATA_DIR / MMH_ATTACHMENT_DIR, so none of
+  // it is needed in the bundle. `shared/settings/catalog.json` is deliberately
+  // NOT excluded - it is a real static import (src/lib/settings/catalog.ts).
+  outputFileTracingExcludes: {
+    "*": [
+      "./data/**",
+      "./.codex-logs/**",
+      "./release-artifacts/**",
+      "./.workbuddy-ai/**",
+      "./.codex/**",
+      "./.codex-tmp/**",
+      "./.old/**",
+      "./android/**",
+      "./output/**",
+      "./.gradle-home/**",
+      "./.playwright-cli/**",
+      "./_tmp*/**",
+    ],
+  },
   allowedDevOrigins,
   webpack(config, { dev }) {
     if (dev) {

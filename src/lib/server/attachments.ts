@@ -14,7 +14,13 @@ export type StoredAttachment = {
 };
 
 function attachmentRoot() {
-  return path.resolve(process.env.MMH_ATTACHMENT_DIR || path.join(process.cwd(), "data", "attachments"));
+  // Follow MMH_DATA_DIR exactly like the backup code does. The Synology/fnOS
+  // start scripts point it at the writable data root; inside an installed
+  // package `process.cwd()` is the read-only payload directory (app/server), so
+  // the previous fallback wrote attachments into the bundle where the next
+  // upgrade wiped them.
+  const dataDir = process.env.MMH_DATA_DIR || path.join(process.cwd(), "data");
+  return path.resolve(process.env.MMH_ATTACHMENT_DIR || path.join(dataDir, "attachments"));
 }
 
 export function attachmentFilePath(id: string) {

@@ -112,6 +112,18 @@ https://github.com/frankluise5220/MMH/releases
 
 卸载时，DSM 会提供“删除数据库和设置”的复选项，默认不勾选并保留数据。只有主动勾选后才会清空 MMH 套件数据目录中的数据库和设置；DSM 的数据目录本身会保留为空目录，以避免卸载钩子因套件用户无权删除父级目录而失败。需要保留账簿以便重装时，不要勾选。
 
+**注意：只有从 DSM 套件中心界面卸载才会弹出这个向导。** 命令行 `synopkg uninstall mmh`（脚本化卸载，以及部分第三方客户端的“卸载重装”流程）不会渲染向导，`preuninst` 收不到 `wizard_delete_data`，于是**一律保留数据**——此时重装会把原来的账簿原样带回来，看起来就像“新装完却不空”。
+
+想确认某次卸载到底做了什么，看 `/var/log/packages/mmh.log` 里 `preuninst` 打印的那一行：
+
+- `... retained (wizard_delete_data=<unset>).` —— 没弹向导（命令行卸载），数据被保留
+- `... retained (wizard_delete_data=false).` —— 弹了向导，用户选了保留
+- `... deleted (wizard_delete_data=true).` —— 弹了向导，用户选了删除
+
+0.1.70 及更早的版本只打印 `retained.` / `deleted.`，看不出是哪一种；本次改动起会带上实际收到的值。
+
+因此「卸载重装」不是清空数据的可靠手段。要确保彻底清空，请走套件中心卸载并勾选删除，或卸载后手动清空 `/volume1/@appdata/mmh`（务必先备份）。
+
 请下载同一个 Release 里的正式 `.spk` 文件，不要下载 `*-spk-source.tgz`，那只是调试包结构用的归档。
 
 ### 2. 更新
@@ -371,6 +383,8 @@ https://github.com/frankluise5220/MMH/releases
 
 清空重装会删除 MMH 数据库数据。确认不需要旧数据后再执行。
 
+**注意：Docker 版「重装」不会清数据。** 更新镜像、`docker compose up -d --force-recreate`、删掉安装目录再重新 `git clone` 部署，都不会动数据库——数据在命名卷 `mmh_pgdata` 里，只要不删卷就一直在，重装后打开会看到原来的账簿（这不是“没装干净”，是数据本来就被保留）。Docker 版**没有**套件版那种「卸载时是否删除数据」的向导，`down -v` 是唯一的清空手段。
+
 Docker 用户：
 
 ```bash
@@ -387,7 +401,7 @@ rm -rf ~/mmh
 
 飞牛用户请优先在飞牛应用中心卸载应用，并按飞牛系统界面确认是否保留应用数据。
 
-群晖用户请优先在 DSM 套件中心卸载套件，并按套件中心提示确认是否保留套件数据。
+群晖用户请优先在 DSM 套件中心卸载套件，并按套件中心提示确认是否保留套件数据。注意命令行 `synopkg uninstall mmh` 不会弹出该向导，数据会一律保留（详见上文“卸载”一节）。
 
 ### 常见问题
 

@@ -1844,7 +1844,17 @@ exit 0
 
 PACKAGE="mmh"
 VAR_DIR="\${SYNOPKG_PKGVAR:-/var/packages/$PACKAGE/var}"
-if [ "\${wizard_delete_data:-false}" = "true" ]; then
+# DSM runs preuninst on BOTH uninstall and upgrade, and only the Package Center
+# uninstall dialog exports wizard_delete_data. A CLI uninstall
+# (synopkg uninstall mmh) never renders the wizard, so the variable stays unset
+# and the data is retained - which is how a "fresh" reinstall can come back with
+# an old ledger. Keep the value we actually received in the log line, so
+# /var/log/packages/mmh.log tells "no wizard ran" apart from "user chose keep":
+#   retained (wizard_delete_data=<unset>)  -> CLI/scripted uninstall, never asked
+#   retained (wizard_delete_data=false)    -> wizard shown, user picked keep
+#   deleted  (wizard_delete_data=true)     -> wizard shown, user picked delete
+delete_flag="\${wizard_delete_data:-<unset>}"
+if [ "$delete_flag" = "true" ]; then
   if [ -d "$VAR_DIR" ]; then
     case "$VAR_DIR" in
       /|"") echo "Refusing to delete an invalid MMH data path." >&2; exit 1 ;;
@@ -1854,9 +1864,9 @@ if [ "\${wizard_delete_data:-false}" = "true" ]; then
       rm -rf "$entry" || exit 1
     done
   fi
-  echo "MMH database and settings deleted."
+  echo "MMH database and settings deleted (wizard_delete_data=$delete_flag)."
 else
-  echo "MMH database and settings retained."
+  echo "MMH database and settings retained (wizard_delete_data=$delete_flag)."
 fi
 exit 0
 `, 0o755);
@@ -1999,6 +2009,56 @@ function writeDsmAppConfig() {
   }
 }
 
+// Next copies `.env*` into `.next/standalone` unconditionally (its own step, not
+// file tracing) and the SPK/FPK start script exports everything the runtime
+// needs (DATABASE_URL, MMH_DATA_DIR, secrets), so the bundled copy is pure
+// leakage: it carries DATABASE_URL / ADMIN_PASSWORD / RESEND_API_KEY /
+// PASSWORD_RESET_SECRET into the published archive. Drop it here.
+function stripBundledEnvFiles(serverRoot) {
+  for (const name of [".env", ".env.local", ".env.production", ".env.development", ".env.test"]) {
+    const abs = path.join(serverRoot, name);
+    if (fs.existsSync(abs)) {
+      fs.rmSync(abs, { force: true });
+      console.log(`[release-gate] removed bundled ${name} from the package payload`);
+    }
+  }
+}
+
+// Anything below means Next file tracing copied the developer's working copy
+// into the payload (see outputFileTracingExcludes in next.config.ts). Shipping
+// these leaks whole household backups, uploaded attachments and browser test
+// logs, so refuse to build instead of publishing them.
+function assertNoDeveloperData(serverRoot) {
+  const offenders = [];
+  for (const rel of [".codex-logs", path.join("data", "backups"), path.join("data", "attachments")]) {
+    if (fs.existsSync(path.join(serverRoot, rel))) offenders.push(rel);
+  }
+  const walk = (dir) => {
+    let entries = [];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const abs = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(abs);
+      } else if (entry.name.endsWith(".mmhbackup")) {
+        offenders.push(path.relative(serverRoot, abs));
+      }
+    }
+  };
+  walk(serverRoot);
+  const unique = Array.from(new Set(offenders));
+  if (unique.length > 0) {
+    throw new Error(
+      `Refusing to package developer data: ${unique.join(", ")}. ` +
+        "Next file tracing copied these into .next/standalone; check outputFileTracingExcludes in next.config.ts, delete .next and rebuild.",
+    );
+  }
+}
+
 function preparePackageRoot() {
   fs.rmSync(stageDir, { recursive: true, force: true });
   mkdirp(packageRoot);
@@ -2058,6 +2118,8 @@ function preparePackageRoot() {
     copyFile(fallbackNativeInitSql, stagedNativeInitSql);
   }
   requirePath(stagedNativeInitSql, "Synology package payload must contain prisma/native-init.sql.");
+  stripBundledEnvFiles(path.join(packageRoot, "app", "server"));
+  assertNoDeveloperData(path.join(packageRoot, "app", "server"));
   writeInfoFile();
   writeInstallWizard();
   writeUpgradeWizard();

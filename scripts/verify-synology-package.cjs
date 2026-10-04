@@ -294,7 +294,7 @@ function verifySourceFiles() {
   expect(/JSON\.stringify\(\[\{\s*step_title:/.test(packageScript), "Synology wizard definitions must use DSM's top-level step array format.");
   expect(/description="家庭记账与财务管理应用/.test(packageScript), "Synology package description must explain MMH's purpose and local database behavior.");
   expect(/function writeUninstallWizard\(\)/.test(packageScript) && /key: "wizard_delete_data"/.test(packageScript), "Synology package must provide an uninstall data-retention choice.");
-  expect(/wizard_delete_data:-false/.test(packageScript) && /MMH database and settings retained/.test(packageScript), "Synology uninstall must preserve data unless deletion is explicitly selected.");
+  expect(/delete_flag="\\\$\{wizard_delete_data:-<unset>\}"/.test(packageScript) && /if \[ "\$delete_flag" = "true" \]/.test(packageScript) && /MMH database and settings retained/.test(packageScript), "Synology uninstall must preserve data unless deletion is explicitly selected.");
   expect(/for entry in "\$VAR_DIR"\/\* "\$VAR_DIR"\/\.\[!\.\]\* "\$VAR_DIR"\/\.\.\?\*/.test(packageScript), "Synology uninstall must clear only the MMH package data directory contents when requested.");
   expect(
     /wizard_port_value:-7777/.test(packageScript) &&
@@ -612,7 +612,7 @@ function verifyBuiltSpk() {
     expect(Array.isArray(builtUninstallWizard) && builtUninstallWizard[0]?.items?.[0]?.subitems?.some((item) => item.key === "wizard_delete_data" && item.defaultValue === false), "Built DSM uninstall wizard must offer data deletion and default to keeping user data.");
     const uninstallScript = run("tar", ["-xf", spkPath, "-O", "scripts/preuninst"]);
     expect(uninstallScript.status === 0, "Unable to read scripts/preuninst from built SPK.");
-    expect(/wizard_delete_data:-false/.test(uninstallScript.stdout || "") && /for entry in "\$VAR_DIR"\/\* "\$VAR_DIR"\/\.\[!\.\]\* "\$VAR_DIR"\/\.\.\?\*/.test(uninstallScript.stdout || ""), "Built uninstall script must retain data by default and only clear the MMH data directory contents when requested.");
+    expect(/delete_flag="\$\{wizard_delete_data:-<unset>\}"/.test(uninstallScript.stdout || "") && /if \[ "\$delete_flag" = "true" \]/.test(uninstallScript.stdout || "") && /for entry in "\$VAR_DIR"\/\* "\$VAR_DIR"\/\.\[!\.\]\* "\$VAR_DIR"\/\.\.\?\*/.test(uninstallScript.stdout || ""), "Built uninstall script must retain data by default and only clear the MMH data directory contents when requested.");
     const configScript = run("tar", ["-xf", spkPath, "-O", "scripts/config"]);
     expect(configScript.status === 0, "Unable to read scripts/config from built SPK.");
     expect(/wizard_port/.test(configScript.stdout || "") && /ensure_port_available/.test(configScript.stdout || "") && /process_owns_port/.test(configScript.stdout || "") && /mmh\.env/.test(configScript.stdout || "") && /for dsm_ui_dir in ui app app\/ui/.test(configScript.stdout || "") && /\$dsm_ui_dir\/config/.test(configScript.stdout || "") && /start-stop-status/.test(configScript.stdout || "") && /Choose a different.*port/.test(configScript.stdout || ""), "Built config callback must identify occupied ports, persist the selected service port, update DSM's app entry, and restart MMH.");

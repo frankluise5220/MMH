@@ -1632,6 +1632,13 @@ ${externalNodeStartup}
   export HOSTNAME=0.0.0.0
   export MMH_DEPLOY_TARGET=fnos
   export MMH_APP_VERSION="${version}"
+  # The Synology package has always exported MMH_DATA_DIR; fnOS never did, so the
+  # runtime fell back to path.join(process.cwd(), "data") - which inside an
+  # installed FPK is app/server/data. Backups, attachments and the desktop config
+  # then lived in the payload instead of the writable data root, and any
+  # data/backups that file tracing had copied into the bundle showed up as
+  # pre-existing household backups. Pin it to the same directory as the database.
+  export MMH_DATA_DIR="$DATA_DEST"
   export DATABASE_URL="file:$DATA_DEST/mmh.db"
   export PRISMA_SCHEMA_PATH="$SERVER_DIR/prisma/schema.native.prisma"
   (cd "$SERVER_DIR" && "$NODE_BIN" "$SERVER_DIR/scripts/init-sqlite.cjs") >>"$LOG_FILE" 2>&1 || exit 1
