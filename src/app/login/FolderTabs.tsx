@@ -12,8 +12,9 @@ import type { ReactNode } from "react";
  * 核心不变量（改样式前必读，均有几何/像素探针守护）：
  *
  *  1. 页签条 `inset-x-0`（不能 `inset-x-3`，否则整条右移 12px）；
- *  2. 页签条 `h-10` + `items-start`（顶对齐）：`h-10` 与容器 `pt-10` 配平避免 3px 白缝，
- *     `items-start` 才能「顶部固定、只增高」；
+ *  2. 页签条 `top-0 bottom-0` + `items-start`（顶对齐）：`top-0` 与容器 `pt-10` 配平避免
+ *     3px 白缝，`bottom-0` 让条铺满容器高度、非活动页签才能 `self-stretch` 对齐内容板底部，
+ *     `items-start` 才能让活动页签「顶部固定、不增高」；
  *  3. 页签条**不能带 z-index**（position:absolute + 非 auto z-index 会新建层叠上下文，
  *     把活动页签的 z-30 困在条内，导致内容板 1px 上边框画在活动页签之上）；
  *  4. 活动页签 z-30（盖内容板顶边框、与内容板连体），非活动页签 z-10（低于内容板 z-20，
@@ -21,11 +22,16 @@ import type { ReactNode } from "react";
  *     否则会盖住内容板里的表单标签；
  *  5. 活动页签外阴影只能「向上」（负 offset + 小 blur），否则向下溢出把内容板顶部压暗；
  *  6. 内容板圆角随活动页签位置切换（首→去左上圆角、末→去右上圆角），形成完整轮廓；
- *  7. 非活动页签排最右时右边缘缩进内容板右上倒角（`mr-3` = 圆角半径）。
+ *  7. 页签（活动/非活动）排最右时右边缘缩进 6px（`mr-1.5`），避免顶到内容板右边缘；
+ *  8. 非活动页签 `self-stretch`：拉伸到页签条（=容器）高度、底部恰好对齐内容板下缘、被
+ *     内容板完全覆盖——不能固定 `pb-24` 往下延，否则内容板矮（如飞牛页签）时会超出下缘；
+ *  9. stretch 变体必须带 `min-w-0`：flex 项默认 `min-width:auto`，活动页签字号大（text-base）
+ *     且标签长时会被内容撑宽、挤窄其他页签（宽度随文字缩放）——`min-w-0` 才能严格等宽平分；
+ *     `overflow-hidden` 兜底，防超长标签越出页签边框（当前最长标签仅溢出到 padding 内）。
  */
 
 /** 页签条容器类名。 */
-export const FOLDER_TAB_STRIP = "absolute inset-x-0 top-0 h-10 flex items-start gap-1.5";
+export const FOLDER_TAB_STRIP = "absolute inset-x-0 top-0 bottom-0 flex items-start gap-1.5";
 
 /** 内容板基础类名（圆角由 folderTabPanelClass 按活动页签位置追加）。 */
 export const FOLDER_TAB_PANEL =
@@ -40,12 +46,15 @@ type TabVariant = "stretch" | "min";
  * @param variant "stretch" 平分整行宽（登录页签）；"min" 最小宽（建账页签）
  */
 export function folderTabClass(active: boolean, atEnd: boolean, variant: TabVariant = "stretch") {
-  const width = variant === "stretch" ? "flex-1 basis-0" : "min-w-[7.5rem]";
+  const width = variant === "stretch" ? "flex-1 basis-0 min-w-0" : "min-w-[7.5rem]";
   if (active) {
-    return `relative z-30 mt-0 ${width} whitespace-nowrap rounded-t-[10px] border border-b-0 border-slate-300 bg-[#fbfaf7] px-4 py-2 text-base font-semibold text-slate-800 shadow-[0_-2px_3px_rgba(15,23,42,0.06)]`;
+    return [
+      `relative z-30 mt-0 ${width} overflow-hidden whitespace-nowrap rounded-t-[10px] border border-b-0 border-slate-300 bg-[#fbfaf7] px-4 py-2 text-base font-semibold text-slate-800 shadow-[0_-2px_3px_rgba(15,23,42,0.06)]`,
+      atEnd ? "mr-1.5" : "",
+    ].filter(Boolean).join(" ");
   }
   return [
-    `relative z-10 mt-1.5 ${width} whitespace-nowrap rounded-t-[10px] border border-slate-300 bg-slate-200 px-4 pt-2 pb-24 text-xs font-medium text-slate-500 shadow-[0_2px_4px_rgba(15,23,42,0.08)] hover:-translate-y-0.5 hover:bg-slate-100`,
+    `relative z-10 mt-1.5 self-stretch ${width} overflow-hidden whitespace-nowrap rounded-t-[10px] border border-slate-300 bg-slate-200 px-4 pt-2 text-xs font-medium text-slate-500 shadow-[0_2px_4px_rgba(15,23,42,0.08)] hover:-translate-y-0.5 hover:bg-slate-100`,
     atEnd ? "mr-1.5" : "",
   ].filter(Boolean).join(" ");
 }

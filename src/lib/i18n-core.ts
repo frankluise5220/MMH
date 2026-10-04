@@ -1138,7 +1138,7 @@ const I18N_MESSAGES = {
     "login.authMode": "管理员认证方式",
     "login.authModeManual": "自行设置管理员账号",
     "login.authModeFnos": "飞牛账号",
-    "login.fnosLogin": "飞牛账号登录",
+    "login.fnosLogin": "飞牛登录",
     "login.fnosLoginHint": "将使用当前飞牛账号作为该账簿管理员。此方式仅在飞牛原生应用环境中可用。",
     "login.fnosUser": "飞牛账号：{user}",
     "login.fnosEmailOptional": "邮箱（可选）",
