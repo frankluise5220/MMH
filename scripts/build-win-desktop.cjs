@@ -142,6 +142,15 @@ if (!fs.existsSync(path.join(standaloneDir, "server.js"))) {
 }
 const canReuseStage = reuseStage && fs.existsSync(path.join(stageAppDir, "server.js"));
 if (!canReuseStage) {
+  // Next's standalone build traces `path.join(process.cwd(), ".codex-logs")`
+  // (and `data` / `shared` / `.env*`) as literal runtime inputs and copies
+  // their directory trees into `.next/standalone`. Those are developer/runtime
+  // junk, not app code. Prune them from the standalone output *before* copying
+  // it into the stage, otherwise they ride into the installer and electron-
+  // builder fails with `EPERM: rmdir` when its pre-pack cleanup hits a read-only
+  // file under a leftover `.codex-logs/…` tree. `pruneStagedApp` below remains
+  // as a second-chance guard on the stage.
+  pruneStagedApp(standaloneDir);
   fs.rmSync(stageDir, { recursive: true, force: true });
   fs.mkdirSync(stageAppDir, { recursive: true });
   copyDir(standaloneDir, stageAppDir);
