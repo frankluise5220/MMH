@@ -4,6 +4,7 @@ import { hashPassword, verifyPassword } from "@/lib/auth/password";
 import { getCurrentUser, isAdmin } from "@/lib/server/auth";
 import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { readGatewayFnosIdentity } from "@/lib/server/gateway-identity";
 import { cookies } from "next/headers";
 import { hasEmailService } from "@/lib/mail/passwordReset";
 import { createDefaultCategoriesForHousehold } from "@/lib/default-categories";
@@ -181,7 +182,7 @@ export async function GET(req: NextRequest) {
   // fnOS gateway identity, when present. It decides whether the login page may
   // open on the fnOS tab: that tab is the fastest way in, but only for a
   // gateway user that is actually bound to a ledger.
-  const gatewayFnosUid = req.headers.get("x-trim-userid")?.trim() ?? "";
+  const gatewayIdentity = readGatewayFnosIdentity(req.headers);
   const status = await withTimeout(Promise.all([
     prisma.household.count(),
     prisma.user.count(),
@@ -195,8 +196,8 @@ export async function GET(req: NextRequest) {
     }),
     selectLoginUsers(householdId),
     hasEmailService(householdId ?? undefined),
-    gatewayFnosUid
-      ? prisma.user.findFirst({ where: { fnosUid: gatewayFnosUid }, select: { id: true } })
+    gatewayIdentity
+      ? prisma.user.findFirst({ where: { fnosUid: { in: gatewayIdentity.keys } }, select: { id: true } })
       : Promise.resolve(null),
   ]), STATUS_LOOKUP_TIMEOUT_MS);
 

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdDisplayName } from "@/lib/household-display";
+import { readGatewayFnosIdentity } from "@/lib/server/gateway-identity";
 import { getUserSessionDays, issueSessionCookies } from "@/lib/server/session-issue";
 
 export const runtime = "nodejs";
@@ -48,18 +49,20 @@ function householdChoicesForUsers(users: FnosLoginUser[]) {
  * Body: { householdId?: string, email?: string }
  *
  * fnOS-unified-gateway login. Requires the fnOS gateway to have forwarded the
- * user identity (X-Trim-Userid / X-Trim-Username). Resolves the ledger user by
- * fnosUid == X-Trim-Userid (Model 1: unique within a ledger, repeatable across
- * ledgers). When householdId is omitted and the UID is bound in several ledgers,
- * returns 409 AMBIGUOUS_USER with a ledger picker.
+ * user identity (X-Trim-Username / X-Trim-Userid). Resolves the ledger user by
+ * `fnosUid` — matched against the fnOS **username** first, falling back to the
+ * numeric UID for records bound before the window switched to usernames
+ * (see lib/server/gateway-identity.ts). Model 1: unique within a ledger,
+ * repeatable across ledgers. When householdId is omitted and the identity is
+ * bound in several ledgers, returns 409 AMBIGUOUS_USER with a ledger picker.
  *
  * An optional `email` is bound to the resolved user when provided (the fnOS
  * session is already authenticated by the gateway, so no extra code step).
  * On success sets the same session cookies as /api/v1/auth/verify.
  */
 export async function POST(request: NextRequest) {
-  const uid = request.headers.get("x-trim-userid");
-  if (!uid) {
+  const identity = readGatewayFnosIdentity(request.headers);
+  if (!identity) {
     return NextResponse.json(
       { ok: false, code: "NOT_BEHIND_GATEWAY", error: "fnOS gateway identity is not available in this environment." },
       { status: 403, headers: cors() },
@@ -89,13 +92,13 @@ export async function POST(request: NextRequest) {
   let matches: FnosLoginUser[];
   if (parsed.householdId) {
     const user = await prisma.user.findFirst({
-      where: { fnosUid: uid, householdId: parsed.householdId },
+      where: { fnosUid: { in: identity.keys }, householdId: parsed.householdId },
       select,
     });
     matches = user ? [user] : [];
   } else {
     matches = await prisma.user.findMany({
-      where: { fnosUid: uid },
+      where: { fnosUid: { in: identity.keys } },
       select,
       orderBy: { createdAt: "asc" },
     });

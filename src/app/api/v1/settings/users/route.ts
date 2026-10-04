@@ -5,6 +5,7 @@ import { hashPassword } from "@/lib/auth/password";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { verifySensitiveOperationPassword } from "@/lib/server/sensitive-operation-auth";
 import { getCurrentUser, isAdmin } from "@/lib/server/auth";
+import { readGatewayFnosIdentity } from "@/lib/server/gateway-identity";
 import { DEFAULT_SESSION_DAYS, normalizeSessionDays } from "@/lib/session-days";
 
 export const runtime = "nodejs";
@@ -33,7 +34,7 @@ function requireSignedIn(user: Awaited<ReturnType<typeof getCurrentUser>>) {
 }
 
 /** GET /api/v1/settings/users — Returns all users within the current household. */
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
     const currentUser = await getCurrentUser();
     const auth = requireSignedIn(currentUser);
@@ -114,9 +115,13 @@ export async function GET() {
     }
 
     const isFnosEnvironment = String(process.env.MMH_DEPLOY_TARGET ?? "").trim().toLowerCase() === "fnos";
+    // 当前网关注入的飞牛用户名：用户管理页用它预填「绑定飞牛用户」输入框，
+    // 免得管理员去猜一个内部数字 UID。不在网关后面（Docker / 群晖 / 直连）时为 null。
+    const gatewayIdentity = readGatewayFnosIdentity(req.headers);
     return NextResponse.json({
       ok: true,
       isFnosEnvironment,
+      gatewayFnosUser: gatewayIdentity?.username || gatewayIdentity?.uid || null,
       users: users.map(u => ({
         ...u,
         sessionDays: sessionDaysByUserId.get(u.id) ?? DEFAULT_SESSION_DAYS,

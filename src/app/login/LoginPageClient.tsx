@@ -82,6 +82,15 @@ function getLoginUserScopeId(user: LoginUserChoice) {
   return user.householdId ?? SYSTEM_LOGIN_SCOPE_ID;
 }
 
+/**
+ * 当前网关注入的飞牛用户标识：用户名优先，数字 UID 兜底。
+ * 用户名是用户在飞牛里实际登录的账号名（如 jsbyfubin），数字 UID 用户看不到，
+ * 只在用户名缺失时才拿来兜底。
+ */
+function gatewayFnosName(user?: FnosGatewayUser | null): string {
+  return user?.username?.trim() || user?.uid?.trim() || "";
+}
+
 function getInitialLoginSelection(users: LoginUserChoice[]) {
   // The default ledger must be derived from the full user list, never from the
   // "has a local password" subset. A fnOS-gateway deployment creates its admin
@@ -613,10 +622,11 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   }
 
   async function handleFnosLogin(householdId?: string) {
-    // Resolved server-side from X-Trim-Userid. The ledger picker belongs to the
-    // local/MMH tabs: forwarding its value here made a UID that is bound in
-    // several ledgers fail with FNOS_USER_NOT_BOUND, merely because the form had
-    // pre-selected a ledger that this UID happens not to be bound in. Only an
+    // Resolved server-side from the gateway identity (X-Trim-Username, falling
+    // back to X-Trim-Userid). The ledger picker belongs to the local/MMH tabs:
+    // forwarding its value here made an identity that is bound in several
+    // ledgers fail with FNOS_USER_NOT_BOUND, merely because the form had
+    // pre-selected a ledger that this user happens not to be bound in. Only an
     // explicit pick (the AMBIGUOUS_USER card) carries a ledger.
     const scopeId = householdId ?? "";
     setLoading(true);
@@ -694,7 +704,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
         let adminPassword: string | undefined;
 
         if (createAuthMode === "fnos") {
-          if (!fnosGatewayUser?.uid) { setError(t("login.error.loginFailed")); return; }
+          if (!gatewayFnosName(fnosGatewayUser)) { setError(t("login.error.loginFailed")); return; }
           const fnosRes = await fetch("/api/v1/auth/fnos-verify", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -705,7 +715,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
             setError(fnosData?.error ?? t("login.error.loginFailed"));
             return;
           }
-          adminName = fnosGatewayUser.username ?? fnosGatewayUser.uid;
+          adminName = gatewayFnosName(fnosGatewayUser);
           adminPassword = undefined;
         } else {
           const existingPassword = createExistingPassword.trim() || credentials.password.trim();
@@ -734,7 +744,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
             adminName,
             adminEmail,
             ...(adminPassword ? { adminPassword } : {}),
-            ...(createAuthMode === "fnos" ? { fnosUid: fnosGatewayUser?.uid } : {}),
+            ...(createAuthMode === "fnos" ? { fnosUid: gatewayFnosName(fnosGatewayUser) } : {}),
           }),
         });
         const createData = await createRes.json().catch(() => null) as CreateLedgerResponse | null;
@@ -751,7 +761,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
             name: trimmedLedgerName,
             authMode: createAuthMode,
             adminName: createAuthMode === "fnos"
-              ? (fnosGatewayUser?.username ?? fnosGatewayUser?.uid ?? "admin")
+              ? (gatewayFnosName(fnosGatewayUser) || "admin")
               : createAuthMode === "mmh"
                 ? (trimmedAdminName || trimmedAdminEmail.split("@")[0] || "admin")
                 : trimmedAdminName,
@@ -761,7 +771,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
             // fnOS mode is vouched for by the gateway.
             adminPassword: createAuthMode === "local" ? trimmedPassword : "",
             ...(createAuthMode === "mmh" ? { mmhPassword: trimmedMmhPassword } : {}),
-            ...(createAuthMode === "fnos" && fnosGatewayUser ? { fnosUid: fnosGatewayUser.uid } : {}),
+            ...(createAuthMode === "fnos" && fnosGatewayUser ? { fnosUid: gatewayFnosName(fnosGatewayUser) } : {}),
           }),
         });
         const createData = await createRes.json().catch(() => null) as CreateLedgerResponse | null;
@@ -1280,7 +1290,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                 {loginMode === "fnos" && fnosGatewayUser ? (
                 <div className="space-y-3">
                   <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-                    {t("login.fnosUser", { user: fnosGatewayUser.username ?? fnosGatewayUser.uid })}
+                    {t("login.fnosUser", { user: gatewayFnosName(fnosGatewayUser) })}
                   </div>
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">{t("login.fnosEmailOptional")}</div>
@@ -1693,7 +1703,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                       >
                         {createAuthMode === "fnos" ? (
                           <div className="rounded-md border border-dashed border-slate-300 bg-white px-3 py-2 text-xs text-slate-500">
-                            {t("login.fnosUser", { user: fnosGatewayUser?.username ?? fnosGatewayUser?.uid ?? "" })}
+                            {t("login.fnosUser", { user: gatewayFnosName(fnosGatewayUser) })}
                           </div>
                         ) : createAuthMode === "mmh" ? (
                           renderMmhCreateFields(true)
@@ -1754,7 +1764,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                       >
                         {createAuthMode === "fnos" ? (
                           <div className="rounded-md border border-dashed border-slate-300 bg-white px-3 py-2 text-xs text-slate-500">
-                            {t("login.fnosUser", { user: fnosGatewayUser?.username ?? fnosGatewayUser?.uid ?? "" })}
+                            {t("login.fnosUser", { user: gatewayFnosName(fnosGatewayUser) })}
                           </div>
                         ) : createAuthMode === "mmh" && mmhUserChoices.length > 0 ? (
                           <select
@@ -1837,7 +1847,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                   >
                     {createAuthMode === "fnos" ? (
                       <div className="rounded-md border border-dashed border-slate-300 bg-white px-3 py-2 text-xs text-slate-500">
-                        {t("login.fnosUser", { user: fnosGatewayUser?.username ?? fnosGatewayUser?.uid ?? "" })}
+                        {t("login.fnosUser", { user: gatewayFnosName(fnosGatewayUser) })}
                       </div>
                     ) : createAuthMode === "mmh" ? (
                       renderMmhCreateFields(false)
@@ -1854,7 +1864,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
               </>
             ) : createMethod === "existing" ? (
               <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-                新账簿管理员将使用当前验证账户：{createAuthMode === "mmh" ? (mmhUserChoices.find((user) => user.id === createExistingUserId)?.email ?? loginCredentials.mmh.username) : createAuthMode === "fnos" ? (fnosGatewayUser?.username ?? fnosGatewayUser?.uid ?? "") : (selectedHouseholdUsers.find((user) => user.id === createExistingUserId)?.name ?? loginCredentials.local.username)}
+                新账簿管理员将使用当前验证账户：{createAuthMode === "mmh" ? (mmhUserChoices.find((user) => user.id === createExistingUserId)?.email ?? loginCredentials.mmh.username) : createAuthMode === "fnos" ? gatewayFnosName(fnosGatewayUser) : (selectedHouseholdUsers.find((user) => user.id === createExistingUserId)?.name ?? loginCredentials.local.username)}
               </div>
             ) : null}
             {error && <div className="text-sm text-red-600">{error}</div>}

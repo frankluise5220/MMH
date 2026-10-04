@@ -13,6 +13,7 @@ import {
 } from "@/lib/ledger-invite-codes";
 import { inspectLedgerInviteCode, missingIssuerRejection } from "@/lib/server/ledger-invite-code-guard";
 import { verifyEmailPrincipal } from "@/lib/server/registration-client";
+import { matchesGatewayFnosIdentity, readGatewayFnosIdentity } from "@/lib/server/gateway-identity";
 import { hashPassword } from "@/lib/auth/password";
 
 const LEGACY_PASSWORD_KEY = "access_password";
@@ -41,7 +42,7 @@ class CreateLedgerError extends Error {
  */
 export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}));
-  const gatewayFnosUid = req.headers.get("x-trim-userid")?.trim() ?? "";
+  const gatewayIdentity = readGatewayFnosIdentity(req.headers);
   const inviteCode = String(body.inviteCode ?? "").trim();
   const name = String(body.name ?? "").trim();
   const authMode = body.authMode === "fnos" ? "fnos" : body.authMode === "mmh" ? "mmh" : "local";
@@ -60,7 +61,7 @@ export async function POST(req: NextRequest) {
   if (!adminName || adminName.length > 50) {
     return NextResponse.json({ ok: false, code: "INVALID_ADMIN_NAME", error: "Administrator username must be between 1 and 50 characters." }, { status: 400 });
   }
-  if (authMode === "fnos" && (!fnosUid || !gatewayFnosUid || fnosUid !== gatewayFnosUid)) {
+  if (authMode === "fnos" && !matchesGatewayFnosIdentity(gatewayIdentity, fnosUid)) {
     return NextResponse.json({ ok: false, code: "FNOS_ID_REQUIRED", error: "The fnOS account identity is required." }, { status: 400 });
   }
   if (authMode === "mmh" && (!adminEmail || !mmhPassword)) {

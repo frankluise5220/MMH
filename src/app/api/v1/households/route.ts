@@ -5,6 +5,7 @@ import { issueSessionCookies, sessionDaysFromRequest } from "@/lib/server/sessio
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { getHouseholdDisplayName } from "@/lib/household-display";
 import { createLedgerWithDefaults } from "@/lib/households/create-ledger";
+import { matchesGatewayFnosIdentity, readGatewayFnosIdentity } from "@/lib/server/gateway-identity";
 import { hashPassword } from "@/lib/auth/password";
 import { optionalPrismaDeleteMany } from "@/lib/server/optional-prisma-delegate";
 import { logger } from "@/lib/logger";
@@ -62,7 +63,7 @@ export async function POST(req: NextRequest) {
   const adminPassword = String(body.adminPassword ?? "").trim();
   const adminEmail = String(body.adminEmail ?? "").trim();
   const fnosUid = String(body.fnosUid ?? "").trim();
-  const gatewayFnosUid = req.headers.get("x-trim-userid")?.trim() ?? "";
+  const gatewayIdentity = readGatewayFnosIdentity(req.headers);
 
   if (!name || name.length > 50) {
     return NextResponse.json({ ok: false, code: "INVALID_HOUSEHOLD_NAME", error: "Ledger name must be between 1 and 50 characters." }, { status: 400 });
@@ -71,7 +72,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, code: "ADMIN_NAME_REQUIRED", error: "Administrator username must be between 1 and 50 characters." }, { status: 400 });
   }
   if (fnosUid) {
-    if (!gatewayFnosUid || fnosUid !== gatewayFnosUid) {
+    if (!matchesGatewayFnosIdentity(gatewayIdentity, fnosUid)) {
       return NextResponse.json({ ok: false, code: "FNOS_ID_REQUIRED", error: "The fnOS account identity is required." }, { status: 400 });
     }
   } else if (!adminPassword || adminPassword.length < 1) {

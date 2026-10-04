@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { UserRoundPlus, X } from "lucide-react";
+import { KeyRound, UserRoundCheck, UserRoundPlus, X } from "lucide-react";
 import {
   SettingsActionButton,
   SettingsEmptyRow,
@@ -125,7 +125,8 @@ function AddMmhPanel({ onAdded, onError }: { onAdded: () => void; onError: (msg:
 
   /** 绑定已有 MMH 账号（邮箱 + 会员密码），创建新 User。 */
   async function bindExisting() {
-    if (!validateEmail()) { onError(t("settings.users.register.error.emailInvalid")); return; }
+    const emailError = validateEmail();
+    if (emailError) { onError(emailError); return; }
     if (!password.trim()) { onError(t("settings.users.error.passwordRequired")); return; }
     setSubmitting(true);
     resetError();
@@ -540,19 +541,32 @@ function UserModal({
   );
 }
 
+/**
+ * 「绑定飞牛用户」弹窗：把账簿用户绑定到飞牛统一网关的登录用户。
+ *
+ * 绑定值 = 飞牛用户名（X-Trim-Username，如 jsbyfubin），不是数字 UID，也不是
+ * FN Connect / FN ID —— 后两者跟统一网关身份无关。打开时优先预填当前网关注入
+ * 的飞牛用户名（管理员就是在用它访问本应用），已有绑定则预填已绑定的值。
+ */
 function FnosBindModal({
   target,
+  currentGatewayUser,
   onClose,
   onBound,
 }: {
   target: ManagedUser;
+  /** 当前请求携带的飞牛用户名（不在网关后面时为 null）。 */
+  currentGatewayUser: string | null;
   onClose: () => void;
   onBound: () => void;
 }) {
   const { t } = useI18n();
-  const [fnosUid, setFnosUid] = useState(target.fnosUid ?? "");
+  const [fnosUid, setFnosUid] = useState(target.fnosUid ?? currentGatewayUser ?? "");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  // 当前网关用户与输入框不一致时，给一个一键填入的入口 —— 绑定的绝大多数场景
+  // 就是「把我自己（当前登录的飞牛用户）绑到这条账簿用户上」。
+  const canUseCurrentGatewayUser = Boolean(currentGatewayUser) && fnosUid.trim() !== currentGatewayUser;
 
   async function submit(value: string | null) {
     setSubmitting(true);
@@ -599,6 +613,20 @@ function FnosBindModal({
               className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
             />
           </div>
+          {currentGatewayUser && (
+            <div className="flex items-center justify-between gap-2 text-xs text-slate-500">
+              <span className="truncate">{t("settings.users.register.currentFnosUser", { user: currentGatewayUser })}</span>
+              {canUseCurrentGatewayUser && (
+                <button
+                  type="button"
+                  className="shrink-0 text-xs text-slate-500 underline-offset-2 hover:text-slate-700 hover:underline"
+                  onClick={() => { setFnosUid(currentGatewayUser); setError(""); }}
+                >
+                  {t("settings.users.register.useCurrentFnosUser")}
+                </button>
+              )}
+            </div>
+          )}
           <div className="text-xs text-slate-500">{t("settings.users.register.fnidBound")}: {target.fnosUid || t("settings.users.status.local")}</div>
           <div className="flex justify-end gap-2">
             <button type="button" className="secondary-button h-9 px-4" onClick={onClose}>{t("common.cancel")}</button>
@@ -827,7 +855,8 @@ function RegisterModal({
 
   /** 绑定已有 MMH 账号（邮箱 + 会员密码）。 */
   async function bindExistingMmhUser() {
-    if (!validateEmail()) { setError(t("settings.users.register.error.emailInvalid")); return; }
+    const emailError = validateEmail();
+    if (emailError) { setError(emailError); return; }
     if (!password.trim()) { setError(t("settings.users.error.passwordRequired")); return; }
     setSubmitting(true);
     setError("");
@@ -1130,6 +1159,8 @@ export default function UsersPage() {
   // Windows builds have no fnOS capability at all, so every fnOS-related control
   // must stay hidden unless the backend reports a fnOS deployment.
   const [isFnosEnvironment, setIsFnosEnvironment] = useState(false);
+  // 当前网关注入的飞牛用户名（如 jsbyfubin），用于预填「绑定飞牛用户」输入框。
+  const [gatewayFnosUser, setGatewayFnosUser] = useState<string | null>(null);
 
   useEffect(() => {
     fetchUsers();
@@ -1139,9 +1170,9 @@ export default function UsersPage() {
     try {
       const res = await fetch("/api/v1/settings/users");
       const text = await res.text();
-      let data: { ok?: boolean; users?: ManagedUser[]; isFnosEnvironment?: boolean; canManageUsers?: boolean; error?: string } | { raw: string } = { raw: "" };
+      let data: { ok?: boolean; users?: ManagedUser[]; isFnosEnvironment?: boolean; gatewayFnosUser?: string | null; canManageUsers?: boolean; error?: string } | { raw: string } = { raw: "" };
       try {
-        data = JSON.parse(text) as { ok?: boolean; users?: ManagedUser[]; isFnosEnvironment?: boolean; canManageUsers?: boolean; error?: string };
+        data = JSON.parse(text) as { ok?: boolean; users?: ManagedUser[]; isFnosEnvironment?: boolean; gatewayFnosUser?: string | null; canManageUsers?: boolean; error?: string };
       } catch {
         data = { raw: text.slice(0, 200) };
       }
@@ -1149,11 +1180,13 @@ export default function UsersPage() {
         setUsers(data.users);
         setCanManageUsers(data.canManageUsers === true);
         setIsFnosEnvironment(data.isFnosEnvironment === true);
+        setGatewayFnosUser(typeof data.gatewayFnosUser === "string" && data.gatewayFnosUser ? data.gatewayFnosUser : null);
         setLoadError("");
       } else {
         setUsers([]);
         setCanManageUsers(false);
         setIsFnosEnvironment(false);
+        setGatewayFnosUser(null);
         const hint = "ok" in data ? (data.error || t("settings.users.requestFailed", { status: res.status })) : t("settings.users.requestFailed", { status: res.status });
         setLoadError(hint);
       }
@@ -1161,6 +1194,7 @@ export default function UsersPage() {
       setUsers([]);
       setCanManageUsers(false);
       setIsFnosEnvironment(false);
+      setGatewayFnosUser(null);
       setLoadError(t("settings.users.networkError"));
     }
   }
@@ -1271,12 +1305,14 @@ export default function UsersPage() {
         }
       >
         <SettingsTable minWidth={820} maxWidth="full">
+          {/* 列宽：状态列要放下「系统 / 本地用户 / 飞牛免密 / MMH 用户」四枚胶囊，
+              是这一行里最长的内容，所以从用户/邮箱/登录保留各让出一点给它。 */}
           <colgroup>
-            <col className="w-[22%]" />
-            <col className="w-[28%]" />
-            <col className="w-[16%]" />
-            <col className="w-[12%]" />
-            <col className="w-[12%]" />
+            <col className="w-[13%]" />
+            <col className="w-[17%]" />
+            <col className="w-[13%]" />
+            <col className="w-[13%]" />
+            <col className="w-[34%]" />
             <col className="w-[10%]" />
           </colgroup>
           <thead className="sticky top-0 z-10">
@@ -1330,11 +1366,11 @@ export default function UsersPage() {
                 </SettingsTd>
                 <SettingsTd>
                   <div className="flex flex-nowrap items-center gap-1 whitespace-nowrap">
+                    {/* 状态列只标注「不普通」的身份：系统管理员。普通用户不再占一个
+                        「普通用户」胶囊 —— 那是默认状态，标出来只是噪音。 */}
                     {u.isSystem ? (
                       <span className="rounded-full border border-emerald-700 bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-800">{t("settings.users.status.system")}</span>
-                    ) : (
-                      <span className="rounded-full border border-slate-600 bg-slate-50 px-2 py-0.5 text-xs font-medium text-slate-700">{t("settings.users.status.normal")}</span>
-                    )}
+                    ) : null}
                     <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${u.hasPassword
                       ? "border-slate-700 bg-slate-100 text-slate-800"
                       : "border-dashed border-slate-400 bg-white text-slate-400"
@@ -1377,6 +1413,7 @@ export default function UsersPage() {
                         <SettingsActionButton
                           label={t("settings.users.bindLocal")}
                           variant="default"
+                          icon={<KeyRound className="h-3.5 w-3.5" />}
                           onClick={() => setPasswordSetTarget(u)}
                         />
                       )}
@@ -1384,6 +1421,7 @@ export default function UsersPage() {
                         <SettingsActionButton
                           label={t("settings.users.register.bindFnid")}
                           variant="default"
+                          icon={<UserRoundCheck className="h-3.5 w-3.5" />}
                           onClick={() => setFnosBindTarget(u)}
                         />
                       )}
@@ -1426,6 +1464,7 @@ export default function UsersPage() {
       {isFnosEnvironment && fnosBindTarget && (
         <FnosBindModal
           target={fnosBindTarget}
+          currentGatewayUser={gatewayFnosUser}
           onClose={() => setFnosBindTarget(null)}
           onBound={() => void fetchUsers()}
         />

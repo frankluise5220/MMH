@@ -30,14 +30,18 @@ function normalizeFnosUid(value: string | null): string | null {
  * POST /api/v1/settings/users/bind-fnid
  * Body: { userId, fnosUid: string | null }
  *
- * Binds (or unbinds, when fnosUid is null/empty) a fnOS user UID / FN ID to a
- * ledger user. Model 1: the same fnosUid may be bound in multiple ledgers, but
- * is unique within a single ledger.
+ * Binds (or unbinds, when fnosUid is null/empty) a fnOS unified-gateway user to
+ * a ledger user. The value stored in `User.fnosUid` is the fnOS **login
+ * username** (X-Trim-Username, e.g. `jsbyfubin`) — NOT the fnOS numeric UID and
+ * NOT an FN Connect / FN ID. The numeric UID is still accepted at login time as
+ * a legacy match for records bound before this window switched to usernames
+ * (see lib/server/gateway-identity.ts). Model 1: the same fnOS user may be bound
+ * in multiple ledgers, but is unique within a single ledger.
  *
  * - Requires an admin (role=admin or isSystem).
  * - A system admin (isSystem=true) may only be modified by the system admin.
  * - A non-system target must belong to the current household.
- * - Binding a fnosUid already used by another user in the same household is a
+ * - Binding a fnOS user already used by another user in the same household is a
  *   409 FNOS_UID_TAKEN.
  * Returns the updated user: { ok: true, data: { id, name, email, fnosUid } }.
  */
@@ -83,7 +87,7 @@ export async function POST(request: NextRequest) {
         select: { id: true },
       });
       if (taken) {
-        return NextResponse.json({ ok: false, code: "FNOS_UID_TAKEN", error: "This FN ID is already bound to another user in this ledger." }, { status: 409, headers: cors() });
+        return NextResponse.json({ ok: false, code: "FNOS_UID_TAKEN", error: "This fnOS user is already bound to another user in this ledger." }, { status: 409, headers: cors() });
       }
     }
 
