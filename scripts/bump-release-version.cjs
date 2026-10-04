@@ -22,10 +22,6 @@ function parseVersion(version) {
   return Number(match[1]);
 }
 
-function compareVersions(left, right) {
-  return parseVersion(left) - parseVersion(right);
-}
-
 function nextVersion(current) {
   const patch = parseVersion(current);
   return `0.1.${patch + 1}`;
@@ -53,25 +49,6 @@ function fnosDownloadUrls(version) {
     x86_64: fnosVpsX86Url(version),
     arm64: `${base}/${fnosFpkAssetName(version, "arm64")}`,
   };
-}
-
-function fnosFndepotPackages(version) {
-  const urls = fnosDownloadUrls(version);
-  return {
-    x86: {
-      download_url: urls.x86_64,
-    },
-    arm: {
-      download_url: urls.arm64,
-    },
-  };
-}
-
-function pruneReleaseHistory(releases, keepCount = 5) {
-  const ordered = Object.entries(releases || {})
-    .filter(([version]) => versionPattern.test(version))
-    .sort(([left], [right]) => compareVersions(left, right));
-  return Object.fromEntries(ordered.slice(-keepCount));
 }
 
 function updatePackageJson(version) {
@@ -122,26 +99,12 @@ function updateFnosRepositoryJson(version, file, rootKey, manifestChangelog) {
   writeJson(fullPath, payload);
 }
 
-function updateFndepotFnpackJson(version, manifestChangelog) {
-  const file = path.join(root, "deploy", "fnos", "repository", "fnpack.json");
-  const payload = readJson(file);
-  const app = payload.apps?.mmh;
-  if (!app) return;
-  app.platform = ["x86", "arm"];
-  if (typeof app.icon_url === "string") {
-    app.icon_url = app.icon_url.replace(/([?&]v=)[^&]+/, `$1${version}`);
-  }
-  const releases = app.releases && typeof app.releases === "object" ? app.releases : {};
-  const current = releases[version] && typeof releases[version] === "object" ? releases[version] : {};
-  releases[version] = {
-    ...current,
-    changelog: manifestChangelog,
-    os_min_version: current.os_min_version || "0.9.0",
-    packages: fnosFndepotPackages(version),
-  };
-  app.releases = pruneReleaseHistory(releases);
-  writeJson(file, payload);
-}
+// NOTE: `deploy/fnos/repository/fnpack.json`（FnDepot 外部源）故意不在这里写。
+// 该文件会被 FnDepot 每小时镜像一次，bump 时就写入条目会让「还没发布的版本」
+// 提前出现在用户的应用源里，下载必然 404（FnDepot 会报「Range 探测返回 HTTP 404」）。
+// release 条目改由 `release: published` 触发的
+// `.github/workflows/fnos-fndepot-sync.yml` → `scripts/sync-fndepot-source.cjs` 创建并回填
+// sha256/size；不在源里的版本 = 尚未发布，这是预期状态。
 
 function updateLegacyFnosAppstore(version, manifestChangelog) {
   const file = path.join(root, "fn-appstores.json");
@@ -169,7 +132,8 @@ updatePackageJson(version);
 updatePackageLock(version);
 updateFnosRepositoryJson(version, path.join("deploy", "fnos", "repository", "apps.example.json"), "apps", manifestChangelog);
 updateFnosRepositoryJson(version, path.join("deploy", "fnos", "repository", "api", "apps"), undefined, manifestChangelog);
-updateFndepotFnpackJson(version, manifestChangelog);
+// deploy/fnos/repository/fnpack.json 不在这里更新（见上方 NOTE）：
+// 它的 release 条目由 release: published 的 sync workflow 创建并回填。
 updateLegacyFnosAppstore(version, manifestChangelog);
 
 console.log(`MMH release version bumped to ${version}.`);

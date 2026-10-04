@@ -53,7 +53,7 @@ mmh.db
 
 通过飞牛统一网关进入 MMH 时，飞牛先完成飞牛账号认证，再由网关向 MMH 转发当前身份（`X-Trim-Userid`、`X-Trim-Username`、`X-Trim-Isadmin`）。这种登录不需要再次填写 MMH 用户名或密码。
 
-这里的 `FN ID` / `fnOS UID` 是 MMH 用来绑定账簿用户的身份标识，不是登录时额外填写的密码，也不是 MMH 自己生成的账号。MMH 实际绑定的是网关转发的 `X-Trim-Userid`；在 MMH 的「系统设置 → 用户」中绑定后，同一个飞牛账号即可免密进入对应账簿。一个飞牛身份可以绑定多个账簿，进入时会选择账簿。
+这里的绑定标识是**飞牛用户名**（网关转发的 `X-Trim-Username`，例如 `jsbyfubin`），不是登录时额外填写的密码，也不是 MMH 自己生成的账号，更不是 FN Connect 的 FN ID。在 MMH 的「系统设置 → 用户」中绑定后，同一个飞牛账号即可免密进入对应账簿。一个飞牛身份可以绑定多个账簿，进入时会选择账簿。
 
 只有通过飞牛统一网关的 `/app/mmh` 地址访问时，才有上述免密登录能力。直接访问 `http://飞牛IP:端口/` 不经过统一网关，不会带 `X-Trim-*` 身份头，因此仍使用 MMH 自己的本地登录方式。MMH 的“退出”只退出 MMH 会话，不退出飞牛账号；再次从飞牛应用入口打开 MMH 时，仍应由飞牛网关提供免密身份。
 
@@ -114,13 +114,16 @@ mmh-fnos-v0.1.x-arm64.fpk
   `http://fnapp.floatingice.win:5660`
 - FN 软仓当前已经内置 MMH 源，普通用户不需要手动添加源。
 - VPS 软仓服务同步 GitHub `frankluise5220/MMH` 仓库的 `main/deploy/fnos/repository` 目录并对外提供 `/api/apps`；`fnpack.json` 作为源数据文件保留在同一目录。
+- **`fnpack.json` 的 release 条目由「发布」创建，不由 `npm run release:version` 写入**：该文件会被 FnDepot 每小时镜像，bump 时就写条目会让还没发布的版本提前出现在用户的应用源里，点下载必然 404（FnDepot 报「Range 探测返回 HTTP 404」）。条目改由 `release: published` 触发的 `.github/workflows/fnos-fndepot-sync.yml` → `scripts/sync-fndepot-source.cjs` 建立并回填 `sha256` / `size`。**因此「源里没有当前版本」是正常的待发布状态，不是缺漏。**
+- `check:release-version` 会拦住三类坏源：条目缺 `sha256` / `size`（= 死链）、`changelog` 指向别的版本、版本数超过 5 或顺序错乱；`fnos-fndepot-sync.yml` 在回填前还会用 `sync-fndepot-source.cjs --check` 实时查一遍 GitHub Release，确认没有死链条目。
 - `download_url` 和 `download_urls.x86_64` 指向 VPS 托管的 x86_64 包 `http://fnapp.floatingice.win/apps/mmh-0.1.x.fpk`，`download_urls.arm64` 仍指向 GitHub Release 中的 arm64 FPK，直到 VPS 也托管 arm64 本地包。
 
 ## 升级边界
 
 - FN 软仓测试源只能验证“源里有新版本、下载地址可用、版本号能比较”这条测试链路。它不能替代飞牛官方应用中心的升级发布。
 - 正常更新必须是同一 `appname=mmh` 的覆盖升级：安装更高版本、同架构的 `.fpk` 时，飞牛应走 `cmd/upgrade_init` / `cmd/upgrade_callback`，不得把常规更新实现为先卸载再安装。
-- 手动安装的 `.fpk` 在飞牛应用中心里可能标记为 `manualInstall`。这会影响官方应用中心是否主动提示更新，但不应改变包自身的覆盖升级目标。
+- **已装 MMH 时，飞牛应用中心的「手动安装 `.fpk`」会被直接拒绝**（2026-10-04 在 149 实测）。判定在应用中心前端 `installByManual`：`installed && !installedInfo.canUpgrade` 成立就**中止安装**，`manual_install` 只决定用哪句文案——`true` 给「已安装相同或更高版本」，`false` 给「无法安装 MMH，请卸载应用中心版本的 MMH 后再进行手动安装」。MMH 不在飞牛官方应用中心里，`canUpgrade` 恒为假，所以**与要装的版本号高低无关**。149 上那个 0.1.58 是 CLI 装的，`manual_install=false`（该字段在 `/usr/trim/bin/trim_app_center` 里是 `not null default false`），于是命中后者。
+- 要用本地 `.fpk` 覆盖已装实例，只能**先卸载**：在飞牛应用中心 UI 卸载并选「保留用户数据（推荐）」，应用数据目录（含 `.port` / `mmh.env` / `mmh.db`）原样保留，再手动安装即可继续用原来的账簿与端口。命令行卸载（`appcenter-cli`）同样不删数据。
 - 覆盖升级后必须验证 `/var/apps/mmh/manifest`、`/vol1/@appcenter/mmh/server/package.json` 和关键 API，确认实际运行代码与 manifest 版本都已更新。
 - 包内不得包含安装类向导：`wizard/install`、`wizard/upgrade` 都不允许。FN 软仓客户端（`fn-appstores-client`）只解析 `wizard/install`：只要该文件存在，更新时就会渲染向导、等待用户输入，并把输入写入 `wizard.env` 后传给 `appcenter-cli install-fpk --env`；没有该文件时客户端直接安装，更新才是静默的。`wizard/uninstall` 例外（见下条）。端口必须先读取已安装 MMH 的 `.port` / `mmh.env`，只有两者都不存在时才从 `TRIM_SERVICE_PORT` / 默认 `7777` 开始用 `/dev/tcp` 探测空闲端口。
 - 包内包含 `wizard/uninstall`（卸载向导）：只在用户从飞牛**系统应用中心 UI 手动卸载**时弹出，提供「保留用户数据（推荐）/ 删除用户数据」选择。软仓客户端不解析该文件；其“卸载+重装”更新路径走 CLI，不会传向导参数，`cmd/uninstall_callback` 里 `wizard_delete_data` 缺省视为保留，因此静默更新完全不受影响。字段值以同名小写环境变量注入生命周期脚本。`uninstall_callback` 只在显式 `wizard_delete_data=true` 时删除数据目录，并且直接清空，不再先写目录外备份；删完后 `mmh.db` 还在则卸载失败。实测参照：qBittorrent / tailscale / techfunway-bill（账单）均为同一机制。

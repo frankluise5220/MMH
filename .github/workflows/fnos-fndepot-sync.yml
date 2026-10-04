@@ -74,6 +74,14 @@ jobs:
             sleep 30
           done
 
+      - name: Reject dead release entries in the FnDepot source
+        # --check 会对每个 release 条目查 GitHub Release；查不到的版本 = 死链
+        # （FnDepot 下载时会报「Range 探测返回 HTTP 404」），必须先从源里删掉。
+        # 放在回填之前，保证「源里有死链」时直接停住，不把回填结果提交上去。
+        # 这一步不会误报：workflow 只在 release: published 触发，当前版本一定有 Release；
+        # 手动 dispatch 但尚未发布的情况，上面的「Wait for release FPK assets」已经会先失败。
+        run: node scripts/sync-fndepot-source.cjs --input deploy/fnos/repository/fnpack.json --check
+
       - name: Backfill sha256/size/updated_at into fnpack.json
         env:
           VERSION: ${{ steps.meta.outputs.version }}

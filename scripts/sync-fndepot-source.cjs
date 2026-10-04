@@ -2,17 +2,24 @@
 /**
  * FnDepot 外部源 V2（fnpack.json）刷新工具
  *
- * 作用：读取现有源文件，向 GitHub Releases API 查询每个版本 FPK 的真实
- *       size / sha256 / 发布时间，补齐 FnDepot V2 规范要求的
- *       packages.<arch>.sha256、packages.<arch>.size、releases.<ver>.updated_at，
- *       并从 api/apps 补齐 preview_urls；对查不到 Release 的死链版本给出警告。
+ * 作用：
+ *   1) 为「本次发布」的版本建立/更新 release 条目（--version / VERSION 显式给出时）；
+ *      未发布的版本不该出现在源里，所以条目由 `release: published` 触发本脚本创建，
+ *      而不是由 `npm run release:version` 在 bump 时写入。
+ *   2) 读取现有源文件，向 GitHub Releases API 查询每个版本 FPK 的真实
+ *      size / sha256 / 发布时间，补齐 FnDepot V2 规范要求的
+ *      packages.<arch>.sha256、packages.<arch>.size、releases.<ver>.updated_at，
+ *      并从 api/apps 补齐 preview_urls；对查不到 Release 的死链版本给出警告。
+ *   3) 只保留最近 5 个版本（与仓库约定一致）。
  *
  * 用法：
  *   node sync-fndepot-source.cjs --input deploy/fnos/repository/fnpack.json \
  *                                --output ../FnDepot/fnpack.json \
- *                                --repo frankluise5220/MMH [--drop 0.1.61] [--check]
+ *                                --repo frankluise5220/MMH \
+ *                                [--version 0.1.69] [--drop 0.1.61] [--check]
  *
- * --check 只校验不写文件（用于发布前检查）。
+ * --check 只校验不写文件（用于发布前检查），也不建立条目。
+ * 不传 --version / VERSION 时退化为「只刷新已有条目」的旧行为。
  * 默认不改变任何 download_url，仅补字段；--drop 显式剔除指定版本。
  */
 
@@ -26,6 +33,27 @@ const FIXED_CATEGORIES = [
 const ARCH_KEYS = ["all", "x86", "arm"];
 const PLATFORM_KEYS = ["all", "x86", "arm"];
 const ASSET_SUFFIX = { x86: "x86_64", arm: "arm64" };
+const REPO_ROOT = path.resolve(__dirname, "..");
+const KEEP_RELEASE_COUNT = 5;
+
+function readPackageJson() {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(REPO_ROOT, "package.json"), "utf8"));
+  } catch (error) {
+    console.warn(`[warn] 读取 package.json 失败：${error.message}`);
+    return {};
+  }
+}
+
+// 与 scripts/bump-release-version.cjs 的 fnosDownloadUrls() 保持同一套地址约定。
+function fnosPackages(repo, version) {
+  return {
+    x86: { download_url: `http://fnapp.floatingice.win/apps/mmh-${version}.fpk` },
+    arm: {
+      download_url: `https://github.com/${repo}/releases/download/v${version}/mmh-fnos-v${version}-arm64.fpk`,
+    },
+  };
+}
 
 function parseArgs(argv) {
   const args = {};
@@ -151,6 +179,39 @@ async function main() {
     console.log(`[info] preview_urls <- ${previews.length} 张截图`);
   }
 
+  // 未发布版本不进源：release 条目由发布流程（release: published → 本脚本）创建。
+  // 只有显式给出 --version / VERSION 时才建条目，否则退化为「只刷新已有条目」。
+  const targetVersion = String(args.version || process.env.VERSION || "").trim();
+  if (!args.check && targetVersion) {
+    // 图标缓存串跟着发布走（原来在 bump 脚本里做，随 release 条目一起挪过来）。
+    if (typeof app.icon_url === "string") {
+      app.icon_url = app.icon_url.replace(/([?&]v=)[^&]+/, `$1${targetVersion}`);
+    }
+    const pkg = readPackageJson();
+    const pkgVersion = String(pkg.version || "").trim();
+    // changelog 只能来自「同一个版本」的 package.json。版本对不上时宁可留空
+    // （空 changelog 会在 check:release-version 里明显失败），也不要写入
+    // 别的版本的说明——那正是 cd5bab17 那类静默张冠李戴错误的成因。
+    const manifestChangelog = targetVersion === pkgVersion ? String(pkg.mmhFnosManifestChangelog || "").trim() : "";
+    if (targetVersion !== pkgVersion) {
+      console.warn(
+        `[warn] --version ${targetVersion} 与 package.json 的 ${pkgVersion || "(空)"} 不一致，changelog 留空；请确认要同步的是哪个版本。`,
+      );
+    }
+    const existing = app.releases[targetVersion];
+    if (!existing) {
+      app.releases[targetVersion] = {
+        changelog: manifestChangelog,
+        os_min_version: "0.9.0",
+        packages: fnosPackages(repo, targetVersion),
+      };
+      console.log(`[info] 新建 release 条目 v${targetVersion}（由发布流程创建）`);
+    } else if (manifestChangelog && existing.changelog !== manifestChangelog) {
+      existing.changelog = manifestChangelog;
+      console.log(`[info] v${targetVersion} changelog <- package.json mmhFnosManifestChangelog`);
+    }
+  }
+
   const dropped = [];
   for (const version of dropVersions) {
     if (app.releases[version]) {
@@ -189,8 +250,31 @@ async function main() {
     }
   }
 
+  // 发布流程必须产出完整条目：条目建好后仍拿不到 sha256/size，说明 Release 没发布
+  // 或资产缺失——宁可失败，也不要把半成品（= FnDepot 里的死链）写进源文件。
+  if (!args.check && targetVersion) {
+    const target = app.releases[targetVersion];
+    if (!target) {
+      console.error(`[FAIL] 未能为 v${targetVersion} 建立 release 条目。`);
+      process.exit(1);
+    }
+    for (const arch of ["x86", "arm"]) {
+      const branch = target.packages?.[arch];
+      if (!branch || !branch.sha256 || !branch.size) {
+        console.error(`[FAIL] v${targetVersion}/${arch} 未取得 sha256/size：Release 未发布或资产缺失，拒绝写出源文件。`);
+        process.exit(1);
+      }
+    }
+  }
+
+  const ordered = Object.keys(app.releases).sort(compareVersions);
+  if (ordered.length > KEEP_RELEASE_COUNT) {
+    console.log(
+      `[info] releases 只保留最近 ${KEEP_RELEASE_COUNT} 个，剔除：${ordered.slice(0, -KEEP_RELEASE_COUNT).join(", ")}`,
+    );
+  }
   const sorted = {};
-  for (const version of Object.keys(app.releases).sort(compareVersions)) {
+  for (const version of ordered.slice(-KEEP_RELEASE_COUNT)) {
     sorted[version] = app.releases[version];
   }
   app.releases = sorted;

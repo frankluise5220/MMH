@@ -111,11 +111,42 @@ if (fndepotApp) {
   expect(releaseVersions.length <= 5, "deploy/fnos/repository/fnpack.json must keep at most the latest 5 release versions.");
   expect(releaseVersions.every((releaseVersion, index, list) => index === 0 || compareVersions(list[index - 1], releaseVersion) < 0), "deploy/fnos/repository/fnpack.json release versions must stay in ascending version order.");
   const fndepotRelease = fndepotApp.releases?.[version];
-  expect(fndepotRelease, `deploy/fnos/repository/fnpack.json must contain a release entry for v${version}.`);
+  // 当前版本的条目允许「不存在」：未发布的版本不该出现在源里，条目由
+  // release: published 的 sync workflow 创建（见 scripts/sync-fndepot-source.cjs）。
+  // 但一旦存在，就必须是完整、正确、可下载的条目。
   if (fndepotRelease) {
     expect(fndepotRelease.changelog === manifestChangelog, "deploy/fnos/repository/fnpack.json releases changelog must match package.json mmhFnosManifestChangelog.");
     expect(fndepotRelease.packages?.x86?.download_url === downloadUrls.x86_64, "deploy/fnos/repository/fnpack.json releases x86 download_url must point to the x86_64 FPK for v${version}.");
     expect(fndepotRelease.packages?.arm?.download_url === downloadUrls.arm64, "deploy/fnos/repository/fnpack.json releases arm download_url must point to the arm64 FPK for v${version}.");
+  }
+
+  // 1) 源里出现的每个版本条目都必须"真的发布过"。
+  //    fnos-fndepot-sync.yml 只对 GitHub 上已 published 的 Release 回填 sha256/size，
+  //    所以「只有 download_url、没有 sha256/size」= 该版本在源里可见却永远下不动
+  //    （FnDepot 下载前做 Range 探测，会报「Range 探测返回 HTTP 404」）。
+  //    未发布的版本不应进源，因此这里对**所有**条目一律要求 sha256/size。
+  //    2) changelog 必须归属自己的版本。
+  //    历史事故 cd5bab17 把 0.1.65~0.1.68 四条 changelog 全量替换成了 0.1.69 的文案，
+  //    而旧断言只校验当前版本条目，于是整批错误一路绿灯进了发布源。
+  for (const releaseVersion of releaseVersions) {
+    const release = fndepotApp.releases[releaseVersion];
+    for (const arch of ["x86", "arm"]) {
+      const branch = release.packages?.[arch];
+      expect(branch, `deploy/fnos/repository/fnpack.json ${releaseVersion}/${arch} must exist.`);
+      if (!branch) continue;
+      expect(
+        typeof branch.sha256 === "string" && /^[0-9a-f]{64}$/.test(branch.sha256),
+        `deploy/fnos/repository/fnpack.json ${releaseVersion}/${arch} must carry sha256: 该版本在源里但没有已发布的 Release（死链），请删除条目，或先发布再回填。`,
+      );
+      expect(
+        Number.isInteger(branch.size) && branch.size > 0,
+        `deploy/fnos/repository/fnpack.json ${releaseVersion}/${arch} must carry size: 该版本在源里但没有已发布的 Release（死链），请删除条目，或先发布再回填。`,
+      );
+    }
+    expect(
+      typeof release.changelog === "string" && release.changelog.includes(`GitHub Release v${releaseVersion}`),
+      `deploy/fnos/repository/fnpack.json ${releaseVersion} changelog must reference its own release (GitHub Release v${releaseVersion}); 不要把当前版本的说明复制到历史版本上，实际内容：${release.changelog || "(empty)"}`,
+    );
   }
 }
 
