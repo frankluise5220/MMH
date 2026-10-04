@@ -3,7 +3,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { getCurrentUser, isAdmin } from "@/lib/server/auth";
-import { isRegistrationConfigured, sendRegistrationCode } from "@/lib/server/registration-client";
+import { isRegistrationConfigured, resolveTemplateLang, sendRegistrationCode } from "@/lib/server/registration-client";
 import { logger } from "@/lib/logger";
 
 export const runtime = "nodejs";
@@ -69,8 +69,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, code: "DUPLICATE_EMAIL", error: "This email is already registered." }, { status: 409, headers: cors() });
   }
 
+  const lang = resolveTemplateLang(req.cookies.get("mmh_display_language")?.value);
+
   try {
-    const result = await sendRegistrationCode({ email, purpose: "registration" });
+    const result = await sendRegistrationCode({ email, purpose: "registration", lang });
     if (!result.ok) {
       logger.warn(result.error || "add-mmh verification email sending failed", "user-registration");
       const status = result.code === "RATE_LIMITED" ? 429 : 502;

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
-import { isRegistrationConfigured, sendRegistrationCode } from "@/lib/server/registration-client";
+import { isRegistrationConfigured, resolveTemplateLang, sendRegistrationCode } from "@/lib/server/registration-client";
 import {
   activeLedgerInviteCodes,
   parseLedgerInviteCodeRecords,
@@ -98,8 +98,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, code: "DUPLICATE_EMAIL", error: "This email is already registered." }, { status: 409, headers: cors() });
   }
 
+  const lang = resolveTemplateLang(req.cookies.get("mmh_display_language")?.value);
+
   try {
-    const result = await sendRegistrationCode({ email, purpose: "registration" });
+    const result = await sendRegistrationCode({ email, purpose: "registration", lang });
     if (!result.ok) {
       logger.warn(result.error || "signup verification email sending failed", "user-registration");
       const status = result.code === "RATE_LIMITED" ? 429 : 502;

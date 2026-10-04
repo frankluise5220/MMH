@@ -273,6 +273,17 @@ export async function setEmailPrincipalPassword(params: {
 
 export type RegistrationCodePurpose = "registration" | "password-reset";
 
+/**
+ * Maps the MMH display-language cookie value (`zh-CN` / `en-US` / `ja-JP`,
+ * or any other / missing) to the registration service's template language.
+ * Only zh and en exist as mail template languages, so ja-JP and anything
+ * unknown fall back to en (the registration service would fall back to its
+ * own default if lang were omitted; passing en keeps the preference explicit).
+ */
+export function resolveTemplateLang(displayLanguage: string | undefined | null): "zh" | "en" {
+  return displayLanguage === "zh-CN" ? "zh" : "en";
+}
+
 export interface RegistrationCodeResult {
   ok: boolean;
   status?: number;
@@ -282,7 +293,7 @@ export interface RegistrationCodeResult {
 
 async function postRegistrationCode(
   endpoint: "send-code" | "verify-code",
-  params: { email: string; purpose: RegistrationCodePurpose; code?: string },
+  params: { email: string; purpose: RegistrationCodePurpose; code?: string; lang?: "zh" | "en" },
 ): Promise<RegistrationCodeResult> {
   const { baseUrl, apiToken } = getRegistrationConfig();
   if (!baseUrl || !apiToken) {
@@ -309,6 +320,7 @@ async function postRegistrationCode(
         email: params.email.trim().toLowerCase(),
         purpose: params.purpose,
         ...(params.code ? { code: params.code } : {}),
+        ...(params.lang ? { lang: params.lang } : {}),
       }),
       signal: controller.signal,
     });
@@ -362,6 +374,8 @@ async function postRegistrationCode(
 export async function sendRegistrationCode(params: {
   email: string;
   purpose: RegistrationCodePurpose;
+  /** Preferred template language; omitted lets the registration service use its default. */
+  lang?: "zh" | "en";
 }): Promise<RegistrationCodeResult> {
   return postRegistrationCode("send-code", params);
 }

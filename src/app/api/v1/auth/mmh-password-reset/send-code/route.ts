@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { sendRegistrationCode } from "@/lib/server/registration-client";
+import { resolveTemplateLang, sendRegistrationCode } from "@/lib/server/registration-client";
 import { logger } from "@/lib/logger";
 
 export const runtime = "nodejs";
@@ -37,9 +37,10 @@ export async function POST(req: NextRequest) {
   }
 
   const email = parse.data.email.trim().toLowerCase();
+  const lang = resolveTemplateLang(req.cookies.get("mmh_display_language")?.value);
 
   try {
-    const result = await sendRegistrationCode({ email, purpose: "password-reset" });
+    const result = await sendRegistrationCode({ email, purpose: "password-reset", lang });
     if (!result.ok) {
       logger.warn(result.error || "mmh password-reset code sending failed", "user-registration");
       // Map the registration-service verdict onto the historical MMH error code

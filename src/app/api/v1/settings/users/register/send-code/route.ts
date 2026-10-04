@@ -3,7 +3,7 @@ import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { getCurrentUser, isAdmin } from "@/lib/server/auth";
-import { sendRegistrationCode } from "@/lib/server/registration-client";
+import { resolveTemplateLang, sendRegistrationCode } from "@/lib/server/registration-client";
 import { logger } from "@/lib/logger";
 
 export const runtime = "nodejs";
@@ -73,8 +73,10 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, code: "DUPLICATE_EMAIL", error: "This email is already used by another user." }, { status: 409, headers: cors() });
   }
 
+  const lang = resolveTemplateLang(req.cookies.get("mmh_display_language")?.value);
+
   try {
-    const result = await sendRegistrationCode({ email: normalizedEmail, purpose: "registration" });
+    const result = await sendRegistrationCode({ email: normalizedEmail, purpose: "registration", lang });
     if (!result.ok) {
       logger.warn(result.error || "verification email sending failed", "user-registration");
       const status = result.code === "RATE_LIMITED" ? 429 : 502;
