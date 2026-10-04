@@ -196,7 +196,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   const productIntro = getProductIntro(t);
   const loginHouseholdChoices = getLoginHouseholdChoices();
   // 页签顺序：本地账户 → MMH 用户 →（有网关头时）飞牛账户。
-  // 内容板的左上圆角要按「活动页签是不是第一个」决定是否去掉，见 folderTabPanelClass。
+  // 内容板四角恒为 12px 圆角（不去任何圆角），见 folderTabPanelClass。
   const loginTabOrder: Array<"local" | "mmh" | "fnos"> = fnosGatewayUser ? ["local", "mmh", "fnos"] : ["local", "mmh"];
   const localLoginUsers = systemUsers.filter((user) => user.hasPassword === true);
   const selectedHouseholdUsers = selectedHouseholdId
@@ -1228,29 +1228,44 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                 <button
                   type="button"
                   onClick={() => switchLoginMode("local")}
-                  className={folderTabClass(loginMode === "local", loginTabOrder.indexOf("local") === loginTabOrder.length - 1)}
+                  className={folderTabClass(
+                    loginMode === "local",
+                    loginTabOrder.indexOf("local") === loginTabOrder.length - 1,
+                    "stretch",
+                    loginTabOrder.indexOf("local") === 0,
+                  )}
                 >
-                  {t("login.mode.local")}
+                  <span className="relative block overflow-hidden whitespace-nowrap">{t("login.mode.local")}</span>
                 </button>
                 <button
                   type="button"
                   onClick={() => switchLoginMode("mmh")}
-                  className={folderTabClass(loginMode === "mmh", loginTabOrder.indexOf("mmh") === loginTabOrder.length - 1)}
+                  className={folderTabClass(
+                    loginMode === "mmh",
+                    loginTabOrder.indexOf("mmh") === loginTabOrder.length - 1,
+                    "stretch",
+                    loginTabOrder.indexOf("mmh") === 0,
+                  )}
                 >
-                  {t("login.mode.mmh")}
+                  <span className="relative block overflow-hidden whitespace-nowrap">{t("login.mode.mmh")}</span>
                 </button>
                 {fnosGatewayUser ? (
                   <button
                     type="button"
                     onClick={() => switchLoginMode("fnos")}
-                    className={folderTabClass(loginMode === "fnos", loginTabOrder.indexOf("fnos") === loginTabOrder.length - 1)}
+                    className={folderTabClass(
+                      loginMode === "fnos",
+                      loginTabOrder.indexOf("fnos") === loginTabOrder.length - 1,
+                      "stretch",
+                      loginTabOrder.indexOf("fnos") === 0,
+                    )}
                   >
-                    {t("login.fnosLogin")}
+                    <span className="relative block overflow-hidden whitespace-nowrap">{t("login.fnosLogin")}</span>
                   </button>
                 ) : null}
               </div>
 
-              <div className={`${folderTabPanelClass(loginTabOrder.indexOf(loginMode), loginTabOrder.length)} space-y-4`}>
+              <div className={`${folderTabPanelClass()} space-y-4`}>
                 <form
                   id="mmh-login-form"
                   action={withBasePath("/login")}
@@ -1624,19 +1639,19 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                   <button
                     type="button"
                     onClick={() => setCreateMethod("invite")}
-                    className={folderTabClass(createMethod === "invite", false, "min")}
+                    className={folderTabClass(createMethod === "invite", false, "stretch", true)}
                   >
-                    邀请码创建
+                    <span className="relative block overflow-hidden whitespace-nowrap">邀请码创建</span>
                   </button>
                   <button
                     type="button"
                     onClick={() => setCreateMethod("existing")}
-                    className={folderTabClass(createMethod === "existing", true, "min")}
+                    className={folderTabClass(createMethod === "existing", true, "stretch", false)}
                   >
-                    已有用户验证
+                    <span className="relative block overflow-hidden whitespace-nowrap">已有用户验证</span>
                   </button>
                 </div>
-                <div className={`${folderTabPanelClass(createMethod === "invite" ? 0 : 1, 2)} space-y-4`}>
+                <div className={`${folderTabPanelClass()} space-y-4`}>
                 {createMethod === "invite" ? (
                   <>
                     <div className="space-y-1">
@@ -1673,7 +1688,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                         ]}
                         activeId={createAuthMode}
                         onChange={(id) => setCreateAuthMode(id as "local" | "mmh" | "fnos")}
-                        variant="min"
+                        variant="stretch"
                         panelClassName="space-y-3"
                       >
                         {createAuthMode === "fnos" ? (
@@ -1720,86 +1735,75 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                     </div>
                     <div className="space-y-3 border-t border-slate-200 pt-3">
                       <div className="text-xs text-slate-500">使用已有账户验证创建权限。</div>
-                    <div className="flex gap-1 rounded-lg border border-slate-200 bg-white p-1">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const user = selectedHouseholdUsers[0];
-                          setCreateAuthMode("local");
-                          setCreateExistingUserId(user?.id ?? "");
+                      {/* 与「邀请码创建」分支的 createUser 选择器保持一致：同一组 local/mmh/fnos
+                          用同一套 FT 卡片（文件卡片式页签），不再用旧的 segment 控件。 */}
+                      <FolderTabs
+                        tabs={[
+                          { id: "local", label: t("login.mode.local") },
+                          { id: "mmh", label: t("login.mode.mmh") },
+                          ...(fnosGatewayUser ? [{ id: "fnos", label: t("login.authModeFnos") }] : []),
+                        ]}
+                        activeId={createAuthMode}
+                        onChange={(id) => {
+                          setCreateAuthMode(id as "local" | "mmh" | "fnos");
+                          if (id === "local") setCreateExistingUserId(selectedHouseholdUsers[0]?.id ?? "");
+                          else if (id === "mmh") setCreateExistingUserId(mmhUserChoices[0]?.id ?? "");
                         }}
-                        className={createAuthMode === "local" ? "flex-1 rounded-md bg-slate-100 px-3 py-1.5 text-xs font-medium text-slate-800" : "flex-1 rounded-md px-3 py-1.5 text-xs text-slate-500"}
+                        variant="stretch"
+                        panelClassName="space-y-3"
                       >
-                        {t("login.mode.local")}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => { setCreateAuthMode("mmh"); setCreateExistingUserId(mmhUserChoices[0]?.id ?? ""); }}
-                        className={createAuthMode === "mmh" ? "flex-1 rounded-md bg-slate-100 px-3 py-1.5 text-xs font-medium text-slate-800" : "flex-1 rounded-md px-3 py-1.5 text-xs text-slate-500"}
-                      >
-                        {t("login.mode.mmh")}
-                      </button>
-                      {fnosGatewayUser ? (
-                        <button
-                          type="button"
-                          onClick={() => setCreateAuthMode("fnos")}
-                          className={createAuthMode === "fnos" ? "flex-1 rounded-md bg-slate-100 px-3 py-1.5 text-xs font-medium text-slate-800" : "flex-1 rounded-md px-3 py-1.5 text-xs text-slate-500"}
-                        >
-                          {t("login.authModeFnos")}
-                        </button>
-                      ) : null}
+                        {createAuthMode === "fnos" ? (
+                          <div className="rounded-md border border-dashed border-slate-300 bg-white px-3 py-2 text-xs text-slate-500">
+                            {t("login.fnosUser", { user: fnosGatewayUser?.username ?? fnosGatewayUser?.uid ?? "" })}
+                          </div>
+                        ) : createAuthMode === "mmh" && mmhUserChoices.length > 0 ? (
+                          <select
+                            value={createExistingUserId}
+                            onChange={(event) => {
+                              const user = mmhUserChoices.find((item) => item.id === event.target.value);
+                              setCreateExistingUserId(user?.id ?? "");
+                            }}
+                            className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                          >
+                            {mmhUserChoices.map((user) => (
+                              <option key={user.id} value={user.id}>{getMmhUserLabel(user)}</option>
+                            ))}
+                          </select>
+                        ) : createAuthMode === "local" && selectedHouseholdUsers.length > 0 ? (
+                          <select
+                            value={createExistingUserId}
+                            onChange={(event) => {
+                              const user = selectedHouseholdUsers.find((item) => item.id === event.target.value);
+                              setCreateExistingUserId(user?.id ?? "");
+                            }}
+                            className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                          >
+                            {selectedHouseholdUsers.map((user) => (
+                              <option key={user.id} value={user.id}>{getLoginUserLabel(user)}</option>
+                            ))}
+                          </select>
+                        ) : (
+                          <div className="rounded-md border border-dashed border-slate-300 bg-white px-3 py-2 text-xs text-slate-500">
+                            当前登录账户
+                          </div>
+                        )}
+                      </FolderTabs>
+                      {createAuthMode !== "fnos" && (
+                        <div className="space-y-1 border-t border-slate-200 pt-3">
+                          <div className="text-xs font-medium text-slate-600">验证密码</div>
+                          <input
+                            value={createExistingPassword}
+                            onChange={(event) => setCreateExistingPassword(event.target.value)}
+                            type="password"
+                            autoComplete="current-password"
+                            className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                            placeholder={t("login.passwordPlaceholder")}
+                            onKeyDown={(event) => { if (event.key === "Enter") void handleCreateLedger(); }}
+                          />
+                        </div>
+                      )}
                     </div>
-                    {createAuthMode === "fnos" ? (
-                      <div className="rounded-md border border-dashed border-slate-300 bg-white px-3 py-2 text-xs text-slate-500">
-                        {t("login.fnosUser", { user: fnosGatewayUser?.username ?? fnosGatewayUser?.uid ?? "" })}
-                      </div>
-                    ) : createAuthMode === "mmh" && mmhUserChoices.length > 0 ? (
-                      <select
-                        value={createExistingUserId}
-                        onChange={(event) => {
-                          const user = mmhUserChoices.find((item) => item.id === event.target.value);
-                          setCreateExistingUserId(user?.id ?? "");
-                        }}
-                        className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                      >
-                        {mmhUserChoices.map((user) => (
-                          <option key={user.id} value={user.id}>{getMmhUserLabel(user)}</option>
-                        ))}
-                      </select>
-                    ) : createAuthMode === "local" && selectedHouseholdUsers.length > 0 ? (
-                      <select
-                        value={createExistingUserId}
-                        onChange={(event) => {
-                          const user = selectedHouseholdUsers.find((item) => item.id === event.target.value);
-                          setCreateExistingUserId(user?.id ?? "");
-                        }}
-                        className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                      >
-                        {selectedHouseholdUsers.map((user) => (
-                          <option key={user.id} value={user.id}>{getLoginUserLabel(user)}</option>
-                        ))}
-                      </select>
-                    ) : (
-                      <div className="rounded-md border border-dashed border-slate-300 bg-white px-3 py-2 text-xs text-slate-500">
-                        当前登录账户
-                      </div>
-                    )}
-                    {createAuthMode !== "fnos" && (
-                      <div className="space-y-1 border-t border-slate-200 pt-3">
-                        <div className="text-xs font-medium text-slate-600">验证密码</div>
-                        <input
-                          value={createExistingPassword}
-                          onChange={(event) => setCreateExistingPassword(event.target.value)}
-                          type="password"
-                          autoComplete="current-password"
-                          className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                          placeholder={t("login.passwordPlaceholder")}
-                          onKeyDown={(event) => { if (event.key === "Enter") void handleCreateLedger(); }}
-                        />
-                      </div>
-                    )}
-                  </div>
-                </>
+                  </>
                 )}
               </div>
               </div>
@@ -1828,7 +1832,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                     ]}
                     activeId={createAuthMode}
                     onChange={(id) => setCreateAuthMode(id as "local" | "mmh" | "fnos")}
-                    variant="min"
+                    variant="stretch"
                     panelClassName="space-y-3"
                   >
                     {createAuthMode === "fnos" ? (

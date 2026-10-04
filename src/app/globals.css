@@ -327,6 +327,72 @@ html {
     @apply border-blue-200 bg-blue-50 text-blue-700;
   }
 
+  /* 页签下缘「凹角」（inverted radius / fillet）——把页签的竖边**向外侧**平滑接到内容板上沿的横线。
+     与上缘的凸圆角（rounded-t-*）相反：这里是往外扩的凹角，弧线同时切「页签竖边」与「内容板上沿」，
+     所以接缝处没有折角、也没有露出的直角台阶。
+
+     几何（关键，改数值前先看这段）：设页签边框盒的左/右边缘为 E、下边缘为 B（内容板上边框中线
+     在 B-0.5px 处，因为接缝是 -1px）。取弧线半径 R=6.5px、描边带宽 1px（半径 6–7px），弧心放在
+        (E ∓ 6px, B - 7px)      ← 左凹角取 -（向左侧外扩），右凹角取 +
+     于是：
+       · 弧心到「页签竖边框中线」(x = E ± 0.5) 与「内容板上边框中线」(y = B - 0.5) 都是 6.5px，
+         1px 环带的两端**正好**落在「页签竖边」(x ∈ [E, E+1]) 与「内容板上沿横线」(y ∈ [B-1, B])
+         的 1px 色带上 → 两条直线自然延续成一条弧，且弧两端的切线分别竖直 / 水平；
+       · 弧心横坐标 = 内容板边缘 ∓12px（页签缩进 18px = 内容板倒角 12px + 凹角半径 6px），
+         即弧线外端正好落在「内容板上圆角弧的起点」上 → 卡片大倒角圆弧与凹角小圆弧**直接相接**
+         （两条弧的边框中心线在同一点相切、端点重合）。
+     ⚠️ R 必须取 6.5 而不是 6：R=6 时弧心落在 B-6.5px 的**半像素**上，Chrome 会把背景层对齐到整像素，
+     弧线整体下移 0.5px，在内容板上边框下沿露出一小段「多余的头」。R=6.5 时弧心 = (E∓6, B-7) 是整像素。
+
+     两个伪元素**同尺寸同位置**（left/right:-7px、bottom:0、高 7px；每侧一个 7×7 方块，左方块贴左缘
+     `0 0`、右方块贴右缘 `100% 0`；弧心 = 方块的外上角）：
+       · ::before = 凹角**填充**层（底色 #fbfaf7）：方块挖掉半径 6.5px 的 1/4 圆，剩下的「角」就是
+         凹角多出来的那块料。**必须补满 7px 高**——凹角落地后，从落地点到页签竖边的这一小段
+         内容板上边框属于凹角内部，要被底色抹掉；否则会看到「圆弧落在一段多余横线上」，
+         卡片大倒角圆弧与凹角小圆弧接不上（2026-10-04 用户反馈「多出了一小段横线」）。
+       · ::after = 凹角**描边**层：半径 6–7px 的环 = 弧线（同页签 1px 边框色 #cbd5e1）。
+     方块宽必须 ≥7px：只有 6px 时环的外半段会被自身裁掉，弧线像被切断的半截。
+
+     ⚠️ 两层**都必须用内联 SVG，不能用硬色标 radial-gradient**：Chromium 对硬色标 radial-gradient
+     的圆环 / 圆弧边界**不做抗锯齿**（实测 1x/2x/8x 全是硬边），弧线会渲染成一段段锯齿台阶，
+     与两侧笔直的 1px 边框并排时显得「线十分不清晰」；填充层同理——它的抹除边界也会留锯齿。
+     SVG 走 SVG 光栅化管线，抗锯齿正常（1x 下能看到 0.5/0.6/0.7 这类中间覆盖率）。
+
+     仅用于**活动**页签；宿主需 position:relative 且**不能** overflow:hidden（否则方块被裁掉）。 */
+  .ft-tab-fillet::before,
+  .ft-tab-fillet::after {
+    content: "";
+    position: absolute;
+    left: -7px;
+    right: -7px;
+    bottom: 0;
+    height: 7px;
+    pointer-events: none;
+    background-repeat: no-repeat, no-repeat;
+    background-size: 7px 7px, 7px 7px;
+    background-position: 0 0, 100% 0;
+  }
+
+  /* 填充层：7×7 方块挖掉 1/4 圆（圆心在方块外上角、半径 6.5px），剩下的「角」补成页签底色。
+       左方块：M6.5 0 A6.5 6.5 0 0 1 0 6.5 L0 7 L7 7 L7 0 Z
+       右方块（左右镜像 → sweep 取反）：M0.5 0 A6.5 6.5 0 0 0 7 6.5 L7 7 L0 7 L0 0 Z */
+  .ft-tab-fillet::before {
+    background-image:
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='7' height='7' viewBox='0 0 7 7'%3E%3Cpath d='M6.5 0A6.5 6.5 0 0 1 0 6.5L0 7L7 7L7 0Z' fill='%23fbfaf7'/%3E%3C/svg%3E"),
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='7' height='7' viewBox='0 0 7 7'%3E%3Cpath d='M0.5 0A6.5 6.5 0 0 0 7 6.5L7 7L0 7L0 0Z' fill='%23fbfaf7'/%3E%3C/svg%3E");
+  }
+
+  /* 描边层：半径 6.5px 的 1/4 圆弧，stroke-width 1px → 环带落在半径 [6, 7]；stroke-linecap
+     默认 butt，两端平口，恰好与「页签竖边」（x ∈ [E, E+1]）和「内容板上沿横线」（y ∈ [B-1, B]）
+     的 1px 色带重合，所以两条直线能无缝延续成一条弧。
+       左方块（圆心 = 方块左上角）：M6.5 0 A6.5 6.5 0 0 1 0 6.5
+       右方块（圆心 = 方块右上角，左右镜像 → sweep 取反）：M0.5 0 A6.5 6.5 0 0 0 7 6.5 */
+  .ft-tab-fillet::after {
+    background-image:
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='7' height='7' viewBox='0 0 7 7'%3E%3Cpath d='M6.5 0A6.5 6.5 0 0 1 0 6.5' fill='none' stroke='%23cbd5e1' stroke-width='1'/%3E%3C/svg%3E"),
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='7' height='7' viewBox='0 0 7 7'%3E%3Cpath d='M0.5 0A6.5 6.5 0 0 0 7 6.5' fill='none' stroke='%23cbd5e1' stroke-width='1'/%3E%3C/svg%3E");
+  }
+
   thead th,
   thead th.text-left,
   thead th.text-right {
