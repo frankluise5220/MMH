@@ -27,7 +27,7 @@
       "categories": [
         "生活服务"
       ],
-      "icon_url": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png?v=0.1.69",
+      "icon_url": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png?v=0.1.70",
       "readme_url": "https://raw.githubusercontent.com/frankluise5220/MMH/main/README.md",
       "bug_report_url": "https://github.com/frankluise5220/MMH/issues",
       "maintainer": "frankluise5220",
@@ -80,6 +80,23 @@
             }
           },
           "updated_at": "2026-09-29T00:29:41+08:00"
+        },
+        "0.1.70": {
+          "changelog": "0.1.69 升级至 0.1.70：飞牛身份绑定改绑「飞牛用户名」（不再用数字 UID / FN ID，用户可在界面上看到并自证）；注册与找回密码验证码邮件按界面语言自动切换中英文；登录页文件卡片式页签高度收紧、文字视觉居中；移除误加的 outputFileTracingExcludes（曾导致 standalone 启动即崩）。完整说明见 GitHub Release v0.1.70",
+          "os_min_version": "0.9.0",
+          "packages": {
+            "x86": {
+              "download_url": "http://fnapp.floatingice.win/apps/mmh-0.1.70.fpk",
+              "size": 56305395,
+              "sha256": "77575ad0429a6fd48c1f7a8afc5eb84ab224010198b3515e3d0bcbc90745fe28"
+            },
+            "arm": {
+              "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.70/mmh-fnos-v0.1.70-arm64.fpk",
+              "size": 56242869,
+              "sha256": "53912d97399b17c4662ee698e41e7eac3edb3890ae244c323cb902377fa45b4b"
+            }
+          },
+          "updated_at": "2026-10-04T21:35:36+08:00"
         }
       },
       "preview_urls": [
