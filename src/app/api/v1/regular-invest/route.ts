@@ -9,7 +9,7 @@ import { getFundProfileNameMap, normalizeFundDisplayName, resolveFundName } from
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { decodeScheduledTaskMemo, encodeScheduledTaskMemo, getLoanScheduledPlanRole, isSystemManagedScheduledTask, normalizeScheduledTaskType, scheduledTaskTypeLabel } from "@/lib/scheduled-task";
 import { revalidateAfterInvestChange, revalidateAfterSettingsChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
-import { ACTIVE_DEBT_EPSILON } from "@/lib/server/debt-view-data";
+import { ACTIVE_LIABILITY_EPSILON } from "@/lib/server/liability-view-data";
 import { calcInitialScheduledRunDate as calcInitialRunDate, calcResumedScheduledRunDate as calcResumedRunDate, skipWeekend } from "@/lib/scheduled-task-date";
 import { deriveRegularInvestNextRunDate } from "@/lib/server/regular-invest-plan";
 import { allowsZeroAnnualRateRepaymentMethod, normalizeLoanRepaymentMethod } from "@/lib/loan-repayment";
@@ -774,7 +774,7 @@ export async function PUT(req: NextRequest) {
     // Auto-debit loan transfer plans are user-editable, but only for the
     // funding (cash) account, next run date and plan name.
     // The repayment schedule and the rate (PBOC/LPR driven) are derived from
-    // the loan and must be changed through the debt module. The memo is
+    // the loan and must be changed through the liability module. The memo is
     // rebuilt from the existing payload so loan-derived fields (LPR discount,
     // rate adjustments, original total runs, role) are preserved.
     if (existingTaskType === "loan_repayment") {
@@ -1180,7 +1180,7 @@ async function handleBondPlanDelete(
         if (row.action === "buy") return acc + amount;
         if (row.action === "redeem" || row.action === "switch_out" || row.action === "write_off") return acc - amount;
         return acc;
-      }, 0) > ACTIVE_DEBT_EPSILON
+      }, 0) > ACTIVE_LIABILITY_EPSILON
     : false;
 
   // 「仅删除计划任务」：不检测、不动债单，直接删行（债单仍在 → 自愈会重建，用户已知悉）。
@@ -1233,8 +1233,8 @@ async function handleBondPlanDelete(
  * DELETE /api/v1/regular-invest for loan_repayment plans.
  * Semantics agreed in 2026-09-17: first judge whether a loan is actually
  * linked. A loan counts as linked only when the account exists AND its
- * outstanding balance is non-zero (|balance| > ACTIVE_DEBT_EPSILON — the same
- * "settled" threshold the debt view uses, so an emptied/settled shell is
+ * outstanding balance is non-zero (|balance| > ACTIVE_LIABILITY_EPSILON — the same
+ * "settled" threshold the liability view uses, so an emptied/settled shell is
  * treated as "no linked loan").
  * - Linked (active loan): deleting the plan takes the loan with it — the
  *   account, its loan-side schedule records (bills/borrow) and all of the
@@ -1266,7 +1266,7 @@ async function handleLoanRepaymentPlanDelete(
   // No linked loan: account missing, or balance settled/zeroed (shell). Only
   // the stale plan rows are removed; the account and all records stay put.
   // 「仅删除计划任务」走同一分支：不判在贷、不动账户与记录。
-  const loanLinked = !keepSource && !!loanAccount && Math.abs(Number(loanAccount.balance ?? 0)) > ACTIVE_DEBT_EPSILON;
+  const loanLinked = !keepSource && !!loanAccount && Math.abs(Number(loanAccount.balance ?? 0)) > ACTIVE_LIABILITY_EPSILON;
   if (!loanLinked) {
     const siblingPlans = await prisma.regularInvestPlan.findMany({
       where: { accountId: loanAccountId, fundCode: "loan_repayment" },

@@ -5,7 +5,7 @@ import { parseFlexibleDateToYmd } from "@/lib/date-utils";
 
 type Db = typeof prisma | Parameters<Parameters<typeof prisma.$transaction>[0]>[0];
 
-export type DebtAgreementValues = {
+export type SettlementAgreementValues = {
   annualRate: number | null;
   termValue: number | null;
   dueDate: Date | null;
@@ -15,11 +15,11 @@ export type DebtAgreementValues = {
  * 解析往来款「约定」三要素（表单里都是可选；空串 / 非法值一律当未填）。
  * 日期统一走 parseFlexibleDateToYmd，与全站口径一致。
  */
-export function parseDebtAgreementInput(input: {
+export function parseSettlementAgreementInput(input: {
   annualRate?: unknown;
   termValue?: unknown;
   dueDate?: unknown;
-}): DebtAgreementValues {
+}): SettlementAgreementValues {
   const rateRaw = String(input.annualRate ?? "").trim();
   const rateNum = rateRaw === "" ? Number.NaN : Number(rateRaw);
   const annualRate = Number.isFinite(rateNum) && rateNum >= 0 ? rateNum : null;
@@ -35,19 +35,19 @@ export function parseDebtAgreementInput(input: {
 }
 
 /**
- * 往来款「约定」按账户 1:1 upsert（`DebtAgreement.accountId @unique`）。
+ * 往来款「约定」按账户 1:1 upsert（`SettlementAgreement.accountId @unique`）。
  * 用户定版：利率 / 期限 / 到期日是「这个往来对象这条关系」的属性，
  * 在**建立往来款账户**时提交，挂在账户上（不是某笔交易）。
  * 三要素全空 → 删除该账户的约定，不留空行。
  */
-export async function upsertDebtAgreementForAccount(
+export async function upsertSettlementAgreementForAccount(
   tx: Db,
-  input: { householdId: string; accountId: string } & DebtAgreementValues,
+  input: { householdId: string; accountId: string } & SettlementAgreementValues,
 ) {
   const { householdId, accountId, annualRate, termValue, dueDate } = input;
 
   if (annualRate == null && termValue == null && dueDate == null) {
-    await tx.debtAgreement.deleteMany({ where: { householdId, accountId } });
+    await tx.settlementAgreement.deleteMany({ where: { householdId, accountId } });
     return;
   }
 
@@ -57,7 +57,7 @@ export async function upsertDebtAgreementForAccount(
     termUnit: termValue != null ? IntervalUnit.month : null,
     dueDate,
   };
-  await tx.debtAgreement.upsert({
+  await tx.settlementAgreement.upsert({
     where: { accountId },
     create: { householdId, accountId, ...data },
     update: data,

@@ -16,7 +16,7 @@ import { toNumber } from "@/lib/date-utils";
 import { computeInvestBalances } from "@/lib/invest-balance";
 import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
 import { getMaintainedAccountBalances } from "@/lib/server/account-balance";
-import { computeDebtDisplaySummary } from "@/lib/server/debt-display-summary";
+import { computeLiabilityDisplaySummary } from "@/lib/server/liability-display-summary";
 import { isDepositAccount, isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
 import { convertCurrencyAmounts, getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
@@ -65,7 +65,7 @@ export async function GET(req: Request) {
     const creditIds = accounts
       .filter((account) => account.kind === AccountKind.bank_credit)
       .map((account) => account.id);
-    const hasDebtAccounts = accounts.some(
+    const hasLiabilityAccounts = accounts.some(
       (account) => account.kind === AccountKind.loan || account.kind === AccountKind.settlement,
     );
     const cashLikeAccounts = accounts
@@ -77,7 +77,7 @@ export async function GET(req: Request) {
         billingDay: account.billingDay,
       }));
 
-    const [investBalByAccountId, displayBalanceByAccountId, currentCreditCycles, insuranceDisplayBalanceByAccountId, debtDisplaySummary] = await Promise.all([
+    const [investBalByAccountId, displayBalanceByAccountId, currentCreditCycles, insuranceDisplayBalanceByAccountId, liabilityDisplaySummary] = await Promise.all([
       investAccounts.length > 0
         ? computeInvestBalances(ctx, investAccounts.map((account) => account.id))
         : Promise.resolve(new Map<string, { marketValue: number }>()),
@@ -101,7 +101,7 @@ export async function GET(req: Request) {
       insuranceIds.length > 0
         ? computeInsuranceAccountDisplayBalances(insuranceIds, hidFilter)
         : Promise.resolve(new Map<string, number>()),
-      hasDebtAccounts ? computeDebtDisplaySummary(ctx) : Promise.resolve({ balanceByAccountId: new Map<string, number>() }),
+      hasLiabilityAccounts ? computeLiabilityDisplaySummary(ctx) : Promise.resolve({ balanceByAccountId: new Map<string, number>() }),
     ]);
     const currentCreditBalanceByAccountId = new Map(
       currentCreditCycles.map((cycle) => [
@@ -118,7 +118,7 @@ export async function GET(req: Request) {
           : a.kind === AccountKind.bank_credit
             ? currentCreditBalanceByAccountId.get(a.id) ?? displayBalanceByAccountId.get(a.id) ?? toNumber(a.balance)
             : a.kind === AccountKind.loan || a.kind === AccountKind.settlement
-              ? debtDisplaySummary.balanceByAccountId.get(a.id) ?? displayBalanceByAccountId.get(a.id) ?? toNumber(a.balance)
+              ? liabilityDisplaySummary.balanceByAccountId.get(a.id) ?? displayBalanceByAccountId.get(a.id) ?? toNumber(a.balance)
               : isDepositAccount(a)
                 ? displayBalanceByAccountId.get(a.id) ?? toNumber(a.balance)
                 : displayBalanceByAccountId.get(a.id) ?? toNumber(a.balance);

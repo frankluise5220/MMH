@@ -19,7 +19,7 @@ import {
 import { INCOME_EXPENSE_INSTITUTION_TYPES } from "@/lib/institution-rules";
 import { assertInstitutionDisplayNamesUnique } from "@/lib/server/institution-name-unique";
 import { assertAccountIdentityUnique } from "@/lib/server/account-identity-unique";
-import { resolveDebtAccountByCounterpartyName, resolveDebtAccountByLoosePersonName } from "@/lib/server/import-debt-account";
+import { resolveSettlementAccountByCounterpartyName, resolveSettlementAccountByLoosePersonName } from "@/lib/server/import-settlement-account";
 import { importCounterKindFromCategory, type ImportCounterAccountKind } from "@/lib/account-import-match";
 import { BALANCE_RECONCILE_SOURCE, encodeBalanceReconcileTarget } from "@/lib/balance-reconcile";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
@@ -110,7 +110,7 @@ type ParsedItem = z.infer<typeof ParsedItemSchema>;
 type ParsedItemMeta = NonNullable<ParsedItem["_meta"]>;
 type ImportOptions = {
   autoCreateAccounts: boolean;
-  createDebtAccounts?: boolean;
+  createLiabilityAccounts?: boolean;
   forceCreateOwnedMoneyAccounts?: boolean;
   importBatchId?: string | null;
   createdAccounts?: Array<{ id: string; name: string; kind: string; institutionName?: string | null }>;
@@ -1055,7 +1055,7 @@ async function updateCreditAccountMeta(tx: Db, householdId: string, accountId: s
   const data: any = {};
   if (existing.kind !== AccountKind.bank_credit && (meta.institutionName || meta.cardNumberMasked)) {
     data.kind = AccountKind.bank_credit;
-    data.debtDirection = "payable";
+    data.liabilityDirection = "payable";
   }
   if (!existing.institutionId && meta.institutionName) {
     data.institutionId = await ensureBankInstitutionId(tx, householdId, meta.institutionName, cache);
@@ -1143,14 +1143,14 @@ async function ensureAccountIdUncached(
     if (matchedTailAccount?.id) return matchedTailAccount.id;
     throw new Error(`未找到付款尾号对应账户：${name}`);
   }
-  // When the account name matches the "<owner>'s debt" naming convention and a Counterparty exists,
+  // When the account name matches the counterparty settlement naming convention and a Counterparty exists,
   // resolve or create the loan account linked to that counterparty.
-  const debtAccountId = await resolveDebtAccountByCounterpartyName(tx, householdId, name, {
-    createCounterparty: options.createDebtAccounts === true,
-    createAccount: options.createDebtAccounts === true,
+  const liabilityAccountId = await resolveSettlementAccountByCounterpartyName(tx, householdId, name, {
+    createCounterparty: options.createLiabilityAccounts === true,
+    createAccount: options.createLiabilityAccounts === true,
     createdAccounts: options.createdAccounts,
   });
-  if (debtAccountId) return debtAccountId;
+  if (liabilityAccountId) return liabilityAccountId;
   // 活动类型提示的账户类型（信用卡还款→信用卡、网贷收回→贷款）：强制走对应匹配/建账，跳过人名归属。
   const isCreditCard = !!(counterKindHint === "credit" || _meta?.cardNumberMasked || isCreditAccountText(name));
   const inferredLast4 = inferCardLast4(name, _meta);
@@ -1178,8 +1178,8 @@ async function ensureAccountIdUncached(
   // 非所有人「XX的YYY」（如财智导出的「付斌的招行3833」）：勾选"创建往来款账户"时，
   // 在既有账户匹配全部失败后归属为往来对象 XX 的往来款账户（原名保留）。
   // 活动类型提示（信用卡还款/网贷收回）优先——对向侧按提示建信用卡/贷款账户，不走人名归属。
-  if (options.createDebtAccounts === true && !counterKindHint) {
-    const loosePersonAccountId = await resolveDebtAccountByLoosePersonName(tx, householdId, name, {
+  if (options.createLiabilityAccounts === true && !counterKindHint) {
+    const loosePersonAccountId = await resolveSettlementAccountByLoosePersonName(tx, householdId, name, {
       createCounterparty: true,
       createAccount: true,
       createdAccounts: options.createdAccounts,
@@ -1190,7 +1190,7 @@ async function ensureAccountIdUncached(
   // 活动类型提示的对向账户（信用卡还款→信用卡、网贷收回→贷款）即使转账默认不自动建账，
   // 勾选"创建往来款账户"时也按提示类型创建。
   const allowHintedCreate =
-    (counterKindHint === "credit" || counterKindHint === "loan") && options.createDebtAccounts === true;
+    (counterKindHint === "credit" || counterKindHint === "loan") && options.createLiabilityAccounts === true;
   if (!options.autoCreateAccounts && !allowHintedCreate) {
     throw new Error(`账户不存在：${name}`);
   }
@@ -1203,7 +1203,7 @@ async function ensureAccountIdUncached(
 
   if (isCreditCard) {
     accountData.kind = AccountKind.bank_credit;
-    accountData.debtDirection = "payable";
+    accountData.liabilityDirection = "payable";
     accountData.institutionId = await ensureBankInstitutionId(tx, householdId, _meta?.institutionName, cache);
     accountData.userId = await resolveUserIdByName(tx, householdId, _meta?.ownerName);
     accountData.numberMasked = inferredLast4 || null;
@@ -1214,7 +1214,7 @@ async function ensureAccountIdUncached(
   } else if (counterKindHint === "loan") {
     // 网贷收回|X → 对向侧建贷款类型账户；机构、所有人暂不填（用户口径）。
     accountData.kind = AccountKind.loan;
-    accountData.debtDirection = "payable";
+    accountData.liabilityDirection = "payable";
     accountData.currency = "CNY";
   }
 
@@ -1516,7 +1516,7 @@ function parseBalanceReconcileDate(value?: string): Date {
  * POST /api/v1/statement/import
  * Import parsed transaction items from bill recognition, quick add, or credit-card mail.
  *
- * Body: { items, defaultAccountName?, autoCreateAccounts?, createDebtAccounts?,
+ * Body: { items, defaultAccountName?, autoCreateAccounts?, createLiabilityAccounts?,
  * forceCreateOwnedMoneyAccounts?, mailSource?, manualRecordConflictPolicy? }
  * - item.type is one of expense/income/transfer/investment.
  * - item.amount is the absolute display amount for statement-import callers.
@@ -1531,7 +1531,7 @@ function parseBalanceReconcileDate(value?: string): Date {
  *   a counterparty institution; only values that match the Institution table
  *   are saved and learned. Unmatched institutions are left blank.
  * - transfer rows use fromAccount/toAccount and may carry transferDirection.
- *   Both sides must resolve to an account. With createDebtAccounts=true, the
+ *   Both sides must resolve to an account. With createLiabilityAccounts=true, the
  *   settlement-account naming pattern may create/reuse the needed Counterparty
  *   and account. With forceCreateOwnedMoneyAccounts=true, unmatched cash/debit/
  *   e-wallet/fund investment account text that names an existing owner may create that account.
@@ -1555,7 +1555,7 @@ export async function POST(req: Request) {
     items?: unknown;
     defaultAccountName?: unknown;
     autoCreateAccounts?: unknown;
-    createDebtAccounts?: unknown;
+    createLiabilityAccounts?: unknown;
     forceCreateOwnedMoneyAccounts?: unknown;
     mailSource?: unknown;
     balanceAdjustments?: unknown;
@@ -1566,7 +1566,7 @@ export async function POST(req: Request) {
       items: z.array(ParsedItemSchema).min(1),
       defaultAccountName: z.string().optional(),
       autoCreateAccounts: z.boolean().optional().default(true),
-      createDebtAccounts: z.boolean().optional().default(false),
+      createLiabilityAccounts: z.boolean().optional().default(false),
       forceCreateOwnedMoneyAccounts: z.boolean().optional().default(false),
       mailSource: MailSourceSchema.optional(),
       manualRecordConflictPolicy: z.enum(["overwrite", "keep"]).optional(),
@@ -1592,7 +1592,7 @@ export async function POST(req: Request) {
   const defaultAccountName = parse.data.defaultAccountName;
   const options: ImportOptions = {
     autoCreateAccounts: parse.data.autoCreateAccounts,
-    createDebtAccounts: parse.data.createDebtAccounts,
+    createLiabilityAccounts: parse.data.createLiabilityAccounts,
     forceCreateOwnedMoneyAccounts: parse.data.forceCreateOwnedMoneyAccounts,
     createdAccounts: [],
     lookupCache: createStatementImportLookupCache(),
@@ -1699,7 +1699,7 @@ export async function POST(req: Request) {
       ? await ensureAccountId(prisma, householdId, targetAccountName, undefined, {
           ...options,
           autoCreateAccounts: false,
-          createDebtAccounts: false,
+          createLiabilityAccounts: false,
           forceCreateOwnedMoneyAccounts: false,
         })
       : null;

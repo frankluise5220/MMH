@@ -1022,7 +1022,7 @@ export async function POST(req: Request) {
     }
 // Pre-build all rows in memory, then batch-insert via createMany
 
-    // Pre-resolve all unmatched debt account names BEFORE the loop
+    // Pre-resolve all unmatched liability account names BEFORE the loop
     // so the loop itself only does in-memory lookups
     const unmatchedNames = new Set<string>();
     for (const item of items) {
@@ -1040,7 +1040,7 @@ export async function POST(req: Request) {
       }
     }
     if (unmatchedNames.size > 0) {
-      // Batch-resolve debt accounts
+      // Batch-resolve liability accounts
       const counterpartyNames = [...unmatchedNames].map(name => {
         const m = name.match(/^(.+?)的往来款$/);
         return m?.[1]?.trim() || name.trim();
@@ -1075,7 +1075,7 @@ export async function POST(req: Request) {
         let loanId = loanByCpId.get(cpId);
         if (!loanId && defaultGroup) {
           try {
-            const nl = await prisma.account.create({ data: { name, kind: "settlement", debtDirection: "receivable", currency: "CNY", groupId: defaultGroup, counterpartyId: cpId, householdId: ctx.householdId, isActive: true } });
+            const nl = await prisma.account.create({ data: { name, kind: "settlement", liabilityDirection: "receivable", currency: "CNY", groupId: defaultGroup, counterpartyId: cpId, householdId: ctx.householdId, isActive: true } });
             loanId = nl.id; loanByCpId.set(cpId, loanId);
           } catch {}
         }

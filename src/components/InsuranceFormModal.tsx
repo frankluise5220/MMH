@@ -839,7 +839,7 @@ export function InsuranceFormModal({
       });
       const data = (await response.json().catch(() => null)) as { ok?: boolean; error?: string; data?: { id?: string } } | null;
       if (!response.ok || !data?.ok) {
-        throw new Error(data?.error || (isEdit ? t("debtTx.alert.saveFailed") : t("txForm.alert.saveFailed")));
+        throw new Error(data?.error || (isEdit ? t("liabilityTx.alert.saveFailed") : t("txForm.alert.saveFailed")));
       }
 
       if (isEdit) {
@@ -851,7 +851,7 @@ export function InsuranceFormModal({
         dispatchFinanceDataChanged({ reason: "insurance-save" });
       });
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : t("debtTx.alert.saveFailed"));
+      window.alert(error instanceof Error ? error.message : t("liabilityTx.alert.saveFailed"));
     } finally {
       setSubmitting(false);
     }
@@ -1455,7 +1455,7 @@ export function InsuranceFormModal({
                   onClick={handleCancelConfirm}
                   className="h-9 rounded-md border border-slate-200 bg-white px-4 text-sm text-slate-700 hover:bg-slate-50"
                 >
-                  {t("debtTx.backToEdit")}
+                  {t("liabilityTx.backToEdit")}
                 </button>
                 <button
                   type="button"

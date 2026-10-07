@@ -36,7 +36,7 @@ import { todayDateLocalYmd } from "@/lib/date-utils";
 import { formatLoanRecalculateSuccessMessage } from "@/lib/loan-repayment-recalculate-result";
 import { resolveLoanTypeValue, type LoanTypeValue } from "@/lib/loan-type";
 
-type DebtRow = {
+type LiabilityRow = {
   key: string;
   name: string;
   objectType: string;
@@ -77,7 +77,7 @@ type DebtRow = {
   loanType?: LoanTypeValue | null;
 };
 
-type DebtEntry = {
+type LiabilityEntry = {
   id: string;
   date: string;
   typeLabel: string;
@@ -97,11 +97,11 @@ type DebtEntry = {
     date: string;
     amount: number;
   };
-  debtEdit?: {
+  liabilityEdit?: {
     editEntryId: string;
     mode: "borrow_in" | "repay_out" | "prepay_out" | "lend_out" | "collect_in";
-    defaultDebtAccountId: string;
-    defaultDebtAccountName?: string | null;
+    defaultLiabilityAccountId: string;
+    defaultLiabilityAccountName?: string | null;
     defaultCashAccountId: string;
     defaultAutoDebitCashAccountId?: string;
     defaultFixedAssetAccountId?: string;
@@ -125,7 +125,7 @@ type DebtEntry = {
     defaultAutoDebitFirstDate?: string | null;
     defaultLoanRateAdjustments?: Array<{ effectiveDate: string; annualRate: number }>;
     defaultTagIds?: string[] | null;
-    dialogType?: "debt" | "loan";
+    dialogType?: "settlement" | "loan";
   };
   edit?: {
     type: "expense" | "income" | "advance" | "transfer" | "investment";
@@ -218,10 +218,10 @@ function formatDiscountValue(discount: number) {
   return discount.toFixed(4).replace(/\.?0+$/, "");
 }
 
-const SETTLED_DEBT_EPSILON = 0.005;
+const SETTLED_LIABILITY_EPSILON = 0.005;
 
-function isSettledDebtRow(row: DebtRow) {
-  return Math.abs(row.net) < SETTLED_DEBT_EPSILON && row.payable + row.receivable < SETTLED_DEBT_EPSILON;
+function isSettledLiabilityRow(row: LiabilityRow) {
+  return Math.abs(row.net) < SETTLED_LIABILITY_EPSILON && row.payable + row.receivable < SETTLED_LIABILITY_EPSILON;
 }
 
 function shouldShowUnpaidScheduleRow(row: RepaymentScheduleRow, todayKey: string) {
@@ -275,7 +275,7 @@ function makeRateDraft(
 // - 空表 + 房贷折扣：先按折扣生成 LPR 历史（含放款日行）；
 // - 空表：起始利率行 = 放款日（或今天）+ 初始利率；
 // - 已有行：按日期升序原样映射，首行恒视为起始利率行（isInitial：日期锁定、不可删）。
-function buildLoanRateDrafts(row: DebtRow, options: { todayKey: string; generateFromLprDiscount: boolean }) {
+function buildLoanRateDrafts(row: LiabilityRow, options: { todayKey: string; generateFromLprDiscount: boolean }) {
   if (
     options.generateFromLprDiscount &&
     row.loanRateAdjustments.length === 0 &&
@@ -325,14 +325,14 @@ function getSimpleLoanRateChangedStartDate(originalDrafts: RateAdjustmentDraft[]
   return changedDates.sort((a, b) => a.localeCompare(b))[0] ?? null;
 }
 
-function hasActiveDebtFilters(filters: Partial<Record<string, string[]>>) {
+function hasActiveLiabilityFilters(filters: Partial<Record<string, string[]>>) {
   return Object.values(filters).some((values) => (values?.length ?? 0) > 0);
 }
 
-function debtRowMatchesFilters(
-  row: DebtRow,
+function liabilityRowMatchesFilters(
+  row: LiabilityRow,
   filters: Partial<Record<string, string[]>>,
-  columns: AdvancedDataTableColumn<DebtRow>[],
+  columns: AdvancedDataTableColumn<LiabilityRow>[],
 ) {
   for (const [key, values] of Object.entries(filters)) {
     if ((values?.length ?? 0) === 0) continue;
@@ -344,7 +344,7 @@ function debtRowMatchesFilters(
   return true;
 }
 
-function compareDebtSortValues(
+function compareLiabilitySortValues(
   left: string | number | null | undefined,
   right: string | number | null | undefined,
 ) {
@@ -359,8 +359,8 @@ function compareDebtSortValues(
     : String(left).localeCompare(String(right), "zh-CN", { numeric: true });
 }
 
-function collectDebtChildrenByParentKey(rows: DebtRow[]) {
-  const childrenByParentKey = new Map<string, DebtRow[]>();
+function collectLiabilityChildrenByParentKey(rows: LiabilityRow[]) {
+  const childrenByParentKey = new Map<string, LiabilityRow[]>();
   for (const row of rows) {
     if (!row.parentKey) continue;
     const children = childrenByParentKey.get(row.parentKey) ?? [];
@@ -370,21 +370,21 @@ function collectDebtChildrenByParentKey(rows: DebtRow[]) {
   return childrenByParentKey;
 }
 
-function buildDebtTreeRows(
-  rows: DebtRow[],
+function buildLiabilityTreeRows(
+  rows: LiabilityRow[],
   filters: Partial<Record<string, string[]>>,
-  columns: AdvancedDataTableColumn<DebtRow>[],
+  columns: AdvancedDataTableColumn<LiabilityRow>[],
   expandedKeys: ReadonlySet<string>,
 ) {
-  const filtersActive = hasActiveDebtFilters(filters);
-  const childrenByParentKey = collectDebtChildrenByParentKey(rows);
-  const output: DebtRow[] = [];
+  const filtersActive = hasActiveLiabilityFilters(filters);
+  const childrenByParentKey = collectLiabilityChildrenByParentKey(rows);
+  const output: LiabilityRow[] = [];
 
   for (const row of rows) {
     if (row.parentKey) continue;
     const children = childrenByParentKey.get(row.key) ?? [];
     if (!row.isGroup) {
-      if (!filtersActive || debtRowMatchesFilters(row, filters, columns)) output.push(row);
+      if (!filtersActive || liabilityRowMatchesFilters(row, filters, columns)) output.push(row);
       continue;
     }
 
@@ -394,8 +394,8 @@ function buildDebtTreeRows(
       continue;
     }
 
-    const rowMatches = debtRowMatchesFilters(row, filters, columns);
-    const matchingChildren = children.filter((child) => debtRowMatchesFilters(child, filters, columns));
+    const rowMatches = liabilityRowMatchesFilters(row, filters, columns);
+    const matchingChildren = children.filter((child) => liabilityRowMatchesFilters(child, filters, columns));
     if (!rowMatches && matchingChildren.length === 0) continue;
     output.push(row);
     output.push(...(rowMatches ? children : matchingChildren));
@@ -404,10 +404,10 @@ function buildDebtTreeRows(
   return output;
 }
 
-function sortDebtTreeRows(
-  rows: DebtRow[],
+function sortLiabilityTreeRows(
+  rows: LiabilityRow[],
   sortState: AdvancedDataTableSortState | null,
-  columns: AdvancedDataTableColumn<DebtRow>[],
+  columns: AdvancedDataTableColumn<LiabilityRow>[],
 ) {
   if (!sortState) return rows;
   const column = columns.find((item) => item.key === sortState.key);
@@ -416,13 +416,13 @@ function sortDebtTreeRows(
 
   const direction = sortState.direction === "asc" ? 1 : -1;
   const originalIndexByKey = new Map(rows.map((row, index) => [row.key, index]));
-  const compareRows = (left: DebtRow, right: DebtRow) => {
-    const compared = compareDebtSortValues(readValue(left), readValue(right));
+  const compareRows = (left: LiabilityRow, right: LiabilityRow) => {
+    const compared = compareLiabilitySortValues(readValue(left), readValue(right));
     if (compared !== 0) return compared * direction;
     return (originalIndexByKey.get(left.key) ?? 0) - (originalIndexByKey.get(right.key) ?? 0);
   };
-  const childrenByParentKey = collectDebtChildrenByParentKey(rows);
-  const sortedRows: DebtRow[] = [];
+  const childrenByParentKey = collectLiabilityChildrenByParentKey(rows);
+  const sortedRows: LiabilityRow[] = [];
   const topRows = rows.filter((row) => !row.parentKey).sort(compareRows);
   for (const row of topRows) {
     sortedRows.push(row);
@@ -432,7 +432,7 @@ function sortDebtTreeRows(
   return sortedRows;
 }
 
-export function DebtShell({
+export function LiabilityShell({
   rows,
   selectedKey,
   entries,
@@ -445,9 +445,9 @@ export function DebtShell({
   selectedLoanType = null,
   loanEditAction,
 }: {
-  rows: DebtRow[];
+  rows: LiabilityRow[];
   selectedKey: string;
-  entries: DebtEntry[];
+  entries: LiabilityEntry[];
   repaymentScheduleRows: RepaymentScheduleRow[];
   summaryRemainingTotal: number;
   totalPayable: number;
@@ -475,19 +475,19 @@ export function DebtShell({
   const [rebuildBusy, setRebuildBusy] = useState(false);
   const [showSettledRows, setShowSettledRows] = useState(() => {
     const selected = rows.find((row) => row.key === selectedKey);
-    return selected ? isSettledDebtRow(selected) : false;
+    return selected ? isSettledLiabilityRow(selected) : false;
   });
-  const [expandedDebtRowKeys, setExpandedDebtRowKeys] = useState<Set<string>>(() => new Set());
-  const [editingDebtAccount, setEditingDebtAccount] = useState<AccountQuickEditValue | null>(null);
+  const [expandedLiabilityRowKeys, setExpandedLiabilityRowKeys] = useState<Set<string>>(() => new Set());
+  const [editingLiabilityAccount, setEditingLiabilityAccount] = useState<AccountQuickEditValue | null>(null);
   const [editingLoanDetails, setEditingLoanDetails] = useState<LoanQuickEditValue | null>(null);
   const [accountEditOpenSignal, setAccountEditOpenSignal] = useState(0);
   const [pendingLoanEditAccountId, setPendingLoanEditAccountId] = useState<string | null>(null);
   const rowClickTimerRef = useRef<number | null>(null);
   const baseRows = useMemo(
-    () => showSettledRows ? rows : rows.filter((row) => !isSettledDebtRow(row)),
+    () => showSettledRows ? rows : rows.filter((row) => !isSettledLiabilityRow(row)),
     [rows, showSettledRows],
   );
-  const childrenByParentKey = useMemo(() => collectDebtChildrenByParentKey(baseRows), [baseRows]);
+  const childrenByParentKey = useMemo(() => collectLiabilityChildrenByParentKey(baseRows), [baseRows]);
   const safeAccountEditData = Array.isArray(accountEditData) ? accountEditData : EMPTY_ACCOUNT_EDIT_DATA;
   const accountEditDataById = useMemo(
     () => new Map(safeAccountEditData.map((account) => [account.id, account])),
@@ -515,13 +515,13 @@ export function DebtShell({
     rows.find((row) => row.key === selectedKey) ??
     null;
   const remainingTotalLabel = selectedLoanType || selectedRow?.objectType === "银行贷款"
-    ? t("debtShell.remainingTotal.payable")
+    ? t("liabilityShell.remainingTotal.payable")
     : selectedRow?.objectType === "银行应收"
-      ? t("debtShell.remainingTotal.receivable")
-      : t("debtShell.remainingTotal.both");
-  const settledCount = rows.filter((row) => !row.parentKey && isSettledDebtRow(row)).length;
+      ? t("liabilityShell.remainingTotal.receivable")
+      : t("liabilityShell.remainingTotal.both");
+  const settledCount = rows.filter((row) => !row.parentKey && isSettledLiabilityRow(row)).length;
   const isSelectedBankLoan = !!selectedRow && !selectedRow.isGroup && selectedRow.isLoan === true;
-  const canRepaySelectedRow = !!selectedRow && !selectedRow.isGroup && selectedRow.net < -SETTLED_DEBT_EPSILON;
+  const canRepaySelectedRow = !!selectedRow && !selectedRow.isGroup && selectedRow.net < -SETTLED_LIABILITY_EPSILON;
   const selectedRowLoanType = selectedRow?.loanType ?? null;
   // Collateral (抵押物) is a mortgage-loan-only field: the borrow dialog only
   // links collateral assets for loanType="mortgage" accounts.
@@ -533,18 +533,18 @@ export function DebtShell({
   const canAdjustRateSelectedRow = isSelectedBankLoan && canRepaySelectedRow && !!selectedRow?.accountId && (
     isSelectedMortgageLoan || isSelectedConsumerLoan
   );
-  const filterDebtRows = useCallback((
-    tableRows: DebtRow[],
+  const filterLiabilityRows = useCallback((
+    tableRows: LiabilityRow[],
     filters: Partial<Record<string, string[]>>,
-    columns: AdvancedDataTableColumn<DebtRow>[],
-  ) => buildDebtTreeRows(tableRows, filters, columns, expandedDebtRowKeys), [expandedDebtRowKeys]);
-  const sortDebtRows = useCallback((
-    tableRows: DebtRow[],
+    columns: AdvancedDataTableColumn<LiabilityRow>[],
+  ) => buildLiabilityTreeRows(tableRows, filters, columns, expandedLiabilityRowKeys), [expandedLiabilityRowKeys]);
+  const sortLiabilityRows = useCallback((
+    tableRows: LiabilityRow[],
     sortState: AdvancedDataTableSortState | null,
-    columns: AdvancedDataTableColumn<DebtRow>[],
-  ) => sortDebtTreeRows(tableRows, sortState, columns), []);
-  const toggleDebtRowExpanded = useCallback((rowKey: string) => {
-    setExpandedDebtRowKeys((current) => {
+    columns: AdvancedDataTableColumn<LiabilityRow>[],
+  ) => sortLiabilityTreeRows(tableRows, sortState, columns), []);
+  const toggleLiabilityRowExpanded = useCallback((rowKey: string) => {
+    setExpandedLiabilityRowKeys((current) => {
       const next = new Set(current);
       if (next.has(rowKey)) next.delete(rowKey);
       else next.add(rowKey);
@@ -579,7 +579,7 @@ export function DebtShell({
       ?? periodRows[periodRows.length - 1];
     return repaymentScheduleRowKey(anchorRow);
   }, [showPaidScheduleRows, todayKey, visibleRepaymentScheduleRows]);
-  const debtRowSummary = useMemo(() => {
+  const liabilityRowSummary = useMemo(() => {
     const summaryRows = baseRows.filter((row) => !row.parentKey);
     const net = summaryRows.reduce((sum, row) => sum + row.net, 0);
     return {
@@ -601,7 +601,7 @@ export function DebtShell({
 
   useEffect(() => {
     const selected = rows.find((row) => row.key === selectedKey);
-    if (selected && isSettledDebtRow(selected)) {
+    if (selected && isSettledLiabilityRow(selected)) {
       setShowSettledRows(true);
     }
   }, [rows, selectedKey]);
@@ -609,7 +609,7 @@ export function DebtShell({
   useEffect(() => {
     const selected = rows.find((row) => row.key === selectedKey);
     if (!selected?.parentKey) return;
-    setExpandedDebtRowKeys((current) => {
+    setExpandedLiabilityRowKeys((current) => {
       if (current.has(selected.parentKey ?? "")) return current;
       const next = new Set(current);
       next.add(selected.parentKey ?? "");
@@ -626,15 +626,15 @@ export function DebtShell({
   const loanSetupEditForAccount = useCallback((accountId: string): LoanQuickEditValue | null => {
     const entry = entries
       .filter((item) => (
-        item.debtEdit?.dialogType === "loan" &&
-        item.debtEdit.mode === "borrow_in" &&
-        item.debtEdit.defaultDebtAccountId === accountId
+        item.liabilityEdit?.dialogType === "loan" &&
+        item.liabilityEdit.mode === "borrow_in" &&
+        item.liabilityEdit.defaultLiabilityAccountId === accountId
       ))
       .sort((left, right) => left.date.localeCompare(right.date))[0];
-    if (!entry?.debtEdit) return null;
+    if (!entry?.liabilityEdit) return null;
     const account = accountEditDataById.get(accountId);
     return {
-      ...entry.debtEdit,
+      ...entry.liabilityEdit,
       mode: "borrow_in",
       dialogType: "loan",
       loanType: accountLoanType(account),
@@ -647,32 +647,32 @@ export function DebtShell({
     if (!detail) return;
     const account = accountEditDataById.get(pendingLoanEditAccountId);
     if (!account) return;
-    setEditingDebtAccount(account);
+    setEditingLiabilityAccount(account);
     setEditingLoanDetails(detail);
     setAccountEditOpenSignal((value) => value + 1);
     setPendingLoanEditAccountId(null);
   }, [accountEditDataById, loanSetupEditForAccount, pendingLoanEditAccountId]);
 
-  function openDebtRow(row: DebtRow) {
+  function openLiabilityRow(row: LiabilityRow) {
     if (rowClickTimerRef.current) {
       window.clearTimeout(rowClickTimerRef.current);
     }
     rowClickTimerRef.current = window.setTimeout(() => {
       const params = new URLSearchParams(window.location.search);
-      params.set("view", "debt");
-      params.set("debtPerson", row.key);
+      params.set("view", "liability");
+      params.set("liabilityPerson", row.key);
       router.push(`/?${params.toString()}`, { scroll: false });
       rowClickTimerRef.current = null;
     }, 360);
   }
 
-  const openDebtAccountProperties = useCallback((row: DebtRow) => {
+  const openLiabilityAccountProperties = useCallback((row: LiabilityRow) => {
     if (rowClickTimerRef.current) {
       window.clearTimeout(rowClickTimerRef.current);
       rowClickTimerRef.current = null;
     }
     if (row.isGroup) {
-      toggleDebtRowExpanded(row.key);
+      toggleLiabilityRowExpanded(row.key);
       return;
     }
     if (row.isLoan && row.accountId) {
@@ -680,26 +680,26 @@ export function DebtShell({
       if (!account) return;
       const detail = loanSetupEditForAccount(row.accountId);
       if (detail) {
-        setEditingDebtAccount(account);
+        setEditingLiabilityAccount(account);
         setEditingLoanDetails(detail);
         setAccountEditOpenSignal((value) => value + 1);
         return;
       }
       setPendingLoanEditAccountId(row.accountId);
       const params = new URLSearchParams(window.location.search);
-      params.set("view", "debt");
-      params.set("debtPerson", row.key);
+      params.set("view", "liability");
+      params.set("liabilityPerson", row.key);
       router.push(`/?${params.toString()}`, { scroll: false });
       return;
     }
     const account = row.accountId ? accountEditDataById.get(row.accountId) : null;
     if (!account) return;
-    setEditingDebtAccount(account);
+    setEditingLiabilityAccount(account);
     setEditingLoanDetails(null);
     setAccountEditOpenSignal((value) => value + 1);
-  }, [accountEditDataById, loanSetupEditForAccount, router, toggleDebtRowExpanded]);
+  }, [accountEditDataById, loanSetupEditForAccount, router, toggleLiabilityRowExpanded]);
 
-  function openRateAdjustment(row: DebtRow) {
+  function openRateAdjustment(row: LiabilityRow) {
     if (!row.accountId) return;
     const rowLoanType = row.loanType ?? null;
     const isConsumerLoanRow = rowLoanType === "consumer" || row.isConsumerLoan === true;
@@ -732,7 +732,7 @@ export function DebtShell({
       const response = await fetch("/api/v1/loan-lpr/latest", { cache: "no-store" });
       const data = await response.json().catch(() => null);
       if (!response.ok || !data?.ok || !data.data?.date || !Number.isFinite(Number(data.data.rate))) {
-        window.alert(data?.error || t("debtShell.rateAdjust.lprQueryFailed"));
+        window.alert(data?.error || t("liabilityShell.rateAdjust.lprQueryFailed"));
         return;
       }
       const quoteDate: string = data.data.date;
@@ -741,7 +741,7 @@ export function DebtShell({
         item.effectiveDate.trim() > max ? item.effectiveDate.trim() : max
       ), "");
       if (quoteDate <= latestRowDate) {
-        window.alert(t("debtShell.rateAdjust.lprUpToDate", { date: quoteDate }));
+        window.alert(t("liabilityShell.rateAdjust.lprUpToDate", { date: quoteDate }));
         return;
       }
       const lastFilled = [...rateDrafts].reverse().find((item) => (
@@ -784,7 +784,7 @@ export function DebtShell({
     const effectiveDate = target.effectiveDate.trim();
     const annualRate = rateDraftAnnualRateNumber(target.annualRate);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(effectiveDate) || annualRate == null || annualRate < 0) {
-      window.alert(t("debtShell.alert.rateDraftInvalid"));
+      window.alert(t("liabilityShell.alert.rateDraftInvalid"));
       return;
     }
     const duplicate = rateDrafts.some((item) => (
@@ -793,7 +793,7 @@ export function DebtShell({
       item.effectiveDate.trim() === effectiveDate
     ));
     if (duplicate) {
-      window.alert(t("debtShell.alert.rateDraftDuplicateDate", { date: effectiveDate }));
+      window.alert(t("liabilityShell.alert.rateDraftDuplicateDate", { date: effectiveDate }));
       return;
     }
     updateRateDraft(id, {
@@ -812,10 +812,10 @@ export function DebtShell({
           <table className="min-w-full table-fixed text-sm">
             <thead className="sticky top-0 bg-slate-50 text-xs font-medium text-slate-500 shadow-[0_1px_0_0_#e2e8f0]">
               <tr>
-                <th className={`${options.showDiscountColumn ? "w-[28%]" : "w-[38%]"} px-3 py-2 text-left`}>{t("debtShell.rateAdjust.effectiveDate")}</th>
-                <th className={`${options.showDiscountColumn ? "w-[22%]" : "w-[32%]"} px-3 py-2 text-right`}>{t("debtShell.rateAdjust.annualRateLabel")}</th>
+                <th className={`${options.showDiscountColumn ? "w-[28%]" : "w-[38%]"} px-3 py-2 text-left`}>{t("liabilityShell.rateAdjust.effectiveDate")}</th>
+                <th className={`${options.showDiscountColumn ? "w-[22%]" : "w-[32%]"} px-3 py-2 text-right`}>{t("liabilityShell.rateAdjust.annualRateLabel")}</th>
                 {options.showDiscountColumn ? (
-                  <th className="w-[16%] px-3 py-2 text-right">{t("debtShell.rateAdjust.discountLabel")}</th>
+                  <th className="w-[16%] px-3 py-2 text-right">{t("liabilityShell.rateAdjust.discountLabel")}</th>
                 ) : null}
                 <th className={`${options.showDiscountColumn ? "w-[28%]" : "w-[30%]"} px-3 py-2 text-right`}>{t("detail.column.actions")}</th>
               </tr>
@@ -824,7 +824,7 @@ export function DebtShell({
               {rateDrafts.length === 0 ? (
                 <tr>
                   <td colSpan={columnCount} className="px-3 py-8 text-center text-sm text-slate-500">
-                    {t("debtShell.rateAdjust.empty")}
+                    {t("liabilityShell.rateAdjust.empty")}
                   </td>
                 </tr>
               ) : rateDrafts.map((item) => {
@@ -854,7 +854,7 @@ export function DebtShell({
                           value={item.annualRate}
                           onChange={(event) => updateRateDraft(item.id, { annualRate: event.target.value })}
                           inputMode="decimal"
-                          placeholder={t("debtShell.rateAdjust.annualRatePlaceholder")}
+                          placeholder={t("liabilityShell.rateAdjust.annualRatePlaceholder")}
                           className="form-input text-right"
                         />
                       ) : (
@@ -862,7 +862,7 @@ export function DebtShell({
                       )}
                     </td>
                     {options.showDiscountColumn ? (
-                      <td className="px-3 py-2 text-right align-middle text-xs tabular-nums text-slate-600" title={t("debtShell.rateAdjust.discountTitle")}>
+                      <td className="px-3 py-2 text-right align-middle text-xs tabular-nums text-slate-600" title={t("liabilityShell.rateAdjust.discountTitle")}>
                         {draftDiscount != null ? formatDiscountValue(draftDiscount) : "-"}
                       </td>
                     ) : null}
@@ -896,8 +896,8 @@ export function DebtShell({
                           onClick={() => { void openRebuildDialogForDate(item.effectiveDate); }}
                           className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-slate-200 bg-white text-blue-700 transition-colors hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
                           disabled={rebuildBusy || rateSaving}
-                          title={t("debtShell.rebuild.buttonTitle")}
-                          aria-label={t("debtShell.recalc")}
+                          title={t("liabilityShell.rebuild.buttonTitle")}
+                          aria-label={t("liabilityShell.recalc")}
                         >
                           <RefreshCw className="h-3.5 w-3.5" />
                         </button>
@@ -906,7 +906,7 @@ export function DebtShell({
                           onClick={() => deleteRateDraft(item.id)}
                           className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-slate-200 bg-white text-rose-600 transition-colors hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50"
                           disabled={rateSaving || item.isInitial}
-                          title={item.isInitial ? t("debtShell.rateAdjust.initialDeleteDisabled") : t("common.delete")}
+                          title={item.isInitial ? t("liabilityShell.rateAdjust.initialDeleteDisabled") : t("common.delete")}
                           aria-label={t("common.delete")}
                         >
                           <Trash2 className="h-3.5 w-3.5" />
@@ -931,7 +931,7 @@ export function DebtShell({
     });
     const data = await response.json().catch(() => null);
     if (!response.ok || !data?.ok) {
-      window.alert(data?.error || t("debtShell.error.recalculateFailed"));
+      window.alert(data?.error || t("liabilityShell.error.recalculateFailed"));
       return;
     }
     window.alert(formatLoanRecalculateSuccessMessage(data.data));
@@ -955,7 +955,7 @@ export function DebtShell({
       });
       const data = await response.json().catch(() => null);
       if (!response.ok || !data?.ok) {
-        window.alert(data?.error || t("debtShell.error.rebuildFailed"));
+        window.alert(data?.error || t("liabilityShell.error.rebuildFailed"));
         return;
       }
       const preview = data.data as LoanRebuildPreview;
@@ -1008,7 +1008,7 @@ export function DebtShell({
     if (remainingRunsText) {
       const parsed = Number.parseInt(remainingRunsText, 10);
       if (!Number.isFinite(parsed) || String(parsed) !== remainingRunsText || parsed < 1 || parsed > 600) {
-        window.alert(t("debtShell.rebuild.invalidRemainingRuns"));
+        window.alert(t("liabilityShell.rebuild.invalidRemainingRuns"));
         return;
       }
       remainingRuns = parsed;
@@ -1027,10 +1027,10 @@ export function DebtShell({
       });
       const data = await response.json().catch(() => null);
       if (!response.ok || !data?.ok) {
-        window.alert(data?.error || t("debtShell.error.rebuildFailed"));
+        window.alert(data?.error || t("liabilityShell.error.rebuildFailed"));
         return;
       }
-      window.alert(t("debtShell.rebuild.successMessage", {
+      window.alert(t("liabilityShell.rebuild.successMessage", {
         date: data.data.startRunDate,
         count: data.data.updateCount,
         payment: formatMoney(data.data.previewPayment ?? 0),
@@ -1087,11 +1087,11 @@ export function DebtShell({
     const duplicateDates = new Set<string>();
     for (const item of adjustments) {
       if (!/^\d{4}-\d{2}-\d{2}$/.test(item.effectiveDate) || !Number.isFinite(item.annualRate) || item.annualRate < 0) {
-        window.alert(t("debtShell.alert.rateDraftInvalid"));
+        window.alert(t("liabilityShell.alert.rateDraftInvalid"));
         return;
       }
       if (duplicateDates.has(item.effectiveDate)) {
-        window.alert(t("debtShell.alert.rateDraftDuplicateDate", { date: item.effectiveDate }));
+        window.alert(t("liabilityShell.alert.rateDraftDuplicateDate", { date: item.effectiveDate }));
         return;
       }
       duplicateDates.add(item.effectiveDate);
@@ -1116,17 +1116,17 @@ export function DebtShell({
       });
       const data = await response.json().catch(() => null);
       if (!response.ok || !data?.ok) {
-        window.alert(data?.error || t("debtShell.error.saveRateAdjustmentsFailed"));
+        window.alert(data?.error || t("liabilityShell.error.saveRateAdjustmentsFailed"));
         return;
       }
       setRateCardOpen(false);
       dispatchFinanceDataChanged({ reason: "loan-rate-adjustment", accountIds: [selectedRow.accountId] });
       if (changedStartDate) {
         const accepted = await showConfirmDialog({
-          title: t("debtShell.rateAdjust.recalculateTitle"),
-          message: t("debtShell.rateAdjust.recalculateMessage", { date: changedStartDate }),
-          confirmLabel: t("debtShell.recalc.confirm"),
-          cancelLabel: t("debtShell.recalc.skip"),
+          title: t("liabilityShell.rateAdjust.recalculateTitle"),
+          message: t("liabilityShell.rateAdjust.recalculateMessage", { date: changedStartDate }),
+          confirmLabel: t("liabilityShell.recalc.confirm"),
+          cancelLabel: t("liabilityShell.recalc.skip"),
         });
         if (accepted) {
           await recalculateRepaymentPlanFromDate(selectedRow.accountId, changedStartDate);
@@ -1137,10 +1137,10 @@ export function DebtShell({
     }
   }
 
-  const rowColumns = useMemo<AdvancedDataTableColumn<DebtRow>[]>(() => [
+  const rowColumns = useMemo<AdvancedDataTableColumn<LiabilityRow>[]>(() => [
     {
       key: "objectType",
-      label: isLoanTableView ? t("debtShell.colName") : t("debtShell.colObjectType"),
+      label: isLoanTableView ? t("liabilityShell.colName") : t("liabilityShell.colObjectType"),
       width: isLoanTableView ? 180 : 112,
       minWidth: isLoanTableView ? 120 : 84,
       filterText: (row) => (isLoanTableView ? row.name : row.objectType),
@@ -1153,14 +1153,14 @@ export function DebtShell({
     },
     {
       key: "objectName",
-      label: isLoanTableView ? t("debtShell.colLoanInstitution") : t("debtShell.colObject"),
+      label: isLoanTableView ? t("liabilityShell.colLoanInstitution") : t("liabilityShell.colObject"),
       width: 180,
       minWidth: 120,
       filterText: (row) => row.objectName,
       sortValue: (row) => row.objectName,
       render: (row) => {
         const childCount = row.isGroup ? childrenByParentKey.get(row.key)?.length ?? 0 : 0;
-        const expanded = expandedDebtRowKeys.has(row.key);
+        const expanded = expandedLiabilityRowKeys.has(row.key);
         return (
           <span
             className={`flex min-w-0 items-center truncate text-sm ${row.isGroup ? "font-semibold text-slate-900" : "font-medium text-slate-800"}`}
@@ -1175,7 +1175,7 @@ export function DebtShell({
                 aria-label={t(expanded ? "common.collapse" : "common.expand")}
                 onClick={(event) => {
                   event.stopPropagation();
-                  toggleDebtRowExpanded(row.key);
+                  toggleLiabilityRowExpanded(row.key);
                 }}
               >
                 {expanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
@@ -1194,7 +1194,7 @@ export function DebtShell({
       ? []
       : [{
           key: "itemName",
-          label: t("debtShell.colItem"),
+          label: t("liabilityShell.colItem"),
           width: 190,
           minWidth: 120,
           filterText: (row) => row.itemName,
@@ -1207,7 +1207,7 @@ export function DebtShell({
         }]),
     {
       key: "repaymentMethod",
-      label: t("debtShell.colRepaymentMethod"),
+      label: t("liabilityShell.colRepaymentMethod"),
       width: 140,
       minWidth: 100,
       hideable: true,
@@ -1217,7 +1217,7 @@ export function DebtShell({
     },
     {
       key: "annualRate",
-      label: t("debtShell.colAnnualRate"),
+      label: t("liabilityShell.colAnnualRate"),
       width: 110,
       minWidth: 80,
       align: "right",
@@ -1227,7 +1227,7 @@ export function DebtShell({
     },
     {
       key: "remainingRuns",
-      label: t("debtShell.colRemainingRuns"),
+      label: t("liabilityShell.colRemainingRuns"),
       width: 110,
       minWidth: 80,
       align: "right",
@@ -1237,7 +1237,7 @@ export function DebtShell({
     },
     {
       key: "paidPrincipal",
-      label: t("debtShell.colPaidPrincipal"),
+      label: t("liabilityShell.colPaidPrincipal"),
       width: 130,
       minWidth: 96,
       align: "right",
@@ -1247,7 +1247,7 @@ export function DebtShell({
     },
     {
       key: "paidInterest",
-      label: t("debtShell.colPaidInterest"),
+      label: t("liabilityShell.colPaidInterest"),
       width: 130,
       minWidth: 96,
       align: "right",
@@ -1257,7 +1257,7 @@ export function DebtShell({
     },
     {
       key: "remainingInterest",
-      label: t("debtShell.colRemainingInterest"),
+      label: t("liabilityShell.colRemainingInterest"),
       width: 130,
       minWidth: 96,
       align: "right",
@@ -1267,7 +1267,7 @@ export function DebtShell({
     },
     {
       key: "remainingPrincipal",
-      label: t("debtShell.colRemainingPrincipal"),
+      label: t("liabilityShell.colRemainingPrincipal"),
       width: 130,
       minWidth: 96,
       align: "right",
@@ -1297,10 +1297,10 @@ export function DebtShell({
               type="button"
               onClick={(event) => {
                 event.stopPropagation();
-                openDebtAccountProperties(row);
+                openLiabilityAccountProperties(row);
               }}
-              title={t("debtShell.editRow")}
-              aria-label={t("debtShell.editRow")}
+              title={t("liabilityShell.editRow")}
+              aria-label={t("liabilityShell.editRow")}
               className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-slate-200 bg-white text-slate-600 transition-colors hover:bg-slate-50 hover:text-blue-600"
             >
               <Pencil className="h-3.5 w-3.5" />
@@ -1309,19 +1309,19 @@ export function DebtShell({
         </div>
       ),
     },
-  ], [t, language, isRedUp, remainingTotalLabel, childrenByParentKey, expandedDebtRowKeys, toggleDebtRowExpanded, isLoanTableView, loanViewTypeLabel, openDebtAccountProperties]);
+  ], [t, language, isRedUp, remainingTotalLabel, childrenByParentKey, expandedLiabilityRowKeys, toggleLiabilityRowExpanded, isLoanTableView, loanViewTypeLabel, openLiabilityAccountProperties]);
 
-  const entryColumns = useMemo<AdvancedDataTableColumn<DebtEntry>[]>(() => {
-    const columns: AdvancedDataTableColumn<DebtEntry>[] = [
+  const entryColumns = useMemo<AdvancedDataTableColumn<LiabilityEntry>[]>(() => {
+    const columns: AdvancedDataTableColumn<LiabilityEntry>[] = [
       { key: "date", label: t("detail.column.date"), width: 100, minWidth: 80, filterText: (entry) => entry.date, render: (entry) => <span className="tabular-nums text-slate-700">{entry.date}</span> },
-      { key: "type", label: t("debtShell.colType"), width: 90, minWidth: 70, filterText: (entry) => entry.typeLabel, render: (entry) => <span className="text-slate-700">{entry.typeLabel}</span> },
-      { key: "relatedAccount", label: t("debtShell.colCashAccount"), width: 160, minWidth: 100, filterText: (entry) => entry.relatedAccountLabel, render: (entry) => <span className="block truncate text-slate-600" title={entry.relatedAccountTitle || entry.relatedAccountLabel}>{entry.relatedAccountLabel || "-"}</span> },
+      { key: "type", label: t("liabilityShell.colType"), width: 90, minWidth: 70, filterText: (entry) => entry.typeLabel, render: (entry) => <span className="text-slate-700">{entry.typeLabel}</span> },
+      { key: "relatedAccount", label: t("liabilityShell.colCashAccount"), width: 160, minWidth: 100, filterText: (entry) => entry.relatedAccountLabel, render: (entry) => <span className="block truncate text-slate-600" title={entry.relatedAccountTitle || entry.relatedAccountLabel}>{entry.relatedAccountLabel || "-"}</span> },
     ];
     // 抵押物是抵押贷款专属字段：往来款/房贷/消费贷明细不展示该列。
     if (isSelectedCollateralLoan) {
       columns.push({
         key: "collateral",
-        label: t("debtShell.colCollateral"),
+        label: t("liabilityShell.colCollateral"),
         width: 140,
         minWidth: 100,
         hideable: true,
@@ -1356,7 +1356,7 @@ export function DebtShell({
       },
       {
         key: "interest",
-        label: t("debtShell.colInterest"),
+        label: t("liabilityShell.colInterest"),
         width: 110,
         minWidth: 80,
         align: "right",
@@ -1365,7 +1365,7 @@ export function DebtShell({
       },
       {
         key: "paymentTotal",
-        label: isSelectedBankLoan ? t("debtShell.colPaymentTotalLoan") : t("debtShell.colPaymentTotalInflow"),
+        label: isSelectedBankLoan ? t("liabilityShell.colPaymentTotalLoan") : t("liabilityShell.colPaymentTotalInflow"),
         width: 120,
         minWidth: 92,
         align: "right",
@@ -1377,7 +1377,7 @@ export function DebtShell({
           </span>
         ),
       },
-      { key: "balance", label: t("debtShell.colBalance"), width: 130, minWidth: 92, align: "right", render: (entry) => <span className={`font-semibold tabular-nums ${amountClass(entry.balance, isRedUp)}`}>{formatMoney(entry.balance)}</span> },
+      { key: "balance", label: t("liabilityShell.colBalance"), width: 130, minWidth: 92, align: "right", render: (entry) => <span className={`font-semibold tabular-nums ${amountClass(entry.balance, isRedUp)}`}>{formatMoney(entry.balance)}</span> },
       { key: "note", label: t("detail.column.remark"), width: 260, minWidth: 120, hideable: true, filterText: (entry) => entry.note, render: (entry) => <span className="block truncate text-slate-600" title={entry.note}>{entry.note || "-"}</span> },
     );
     return columns;
@@ -1386,42 +1386,42 @@ export function DebtShell({
   const repaymentScheduleColumns = useMemo<AdvancedDataTableColumn<RepaymentScheduleRow>[]>(() => [
     {
       key: "status",
-      label: t("debtShell.colStatus"),
+      label: t("liabilityShell.colStatus"),
       width: 82,
       minWidth: 64,
-      filterText: (row) => row.rowType === "rate_adjustment" ? t("debtShell.rateAdjustment") : row.status === "paid" ? t("debtShell.paid") : t("debtShell.planned"),
+      filterText: (row) => row.rowType === "rate_adjustment" ? t("liabilityShell.rateAdjustment") : row.status === "paid" ? t("liabilityShell.paid") : t("liabilityShell.planned"),
       render: (row) => row.rowType === "rate_adjustment"
-        ? <span className="text-blue-700">{t("debtShell.rate")}</span>
+        ? <span className="text-blue-700">{t("liabilityShell.rate")}</span>
         : row.status === "paid"
-          ? <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">{t("debtShell.paid")}</span>
-          : <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600">{t("debtShell.planned")}</span>,
+          ? <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">{t("liabilityShell.paid")}</span>
+          : <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600">{t("liabilityShell.planned")}</span>,
     },
     {
       key: "eventType",
-      label: t("debtShell.colType"),
+      label: t("liabilityShell.colType"),
       width: 100,
       minWidth: 78,
-      filterText: (row) => row.rowType === "rate_adjustment" ? t("debtShell.rateAdjustment") : row.eventType === "prepayment" ? t("debtShell.prepayment") : t("debtShell.repayment"),
+      filterText: (row) => row.rowType === "rate_adjustment" ? t("liabilityShell.rateAdjustment") : row.eventType === "prepayment" ? t("liabilityShell.prepayment") : t("liabilityShell.repayment"),
       render: (row) => row.rowType === "rate_adjustment"
-        ? <span className="font-medium text-blue-700">{t("debtShell.rateAdjustment")}</span>
+        ? <span className="font-medium text-blue-700">{t("liabilityShell.rateAdjustment")}</span>
         : row.eventType === "prepayment"
-          ? <span className="font-medium text-amber-700">{t("debtShell.prepayment")}</span>
-          : <span className="text-slate-700">{t("debtShell.repayment")}</span>,
+          ? <span className="font-medium text-amber-700">{t("liabilityShell.prepayment")}</span>
+          : <span className="text-slate-700">{t("liabilityShell.repayment")}</span>,
     },
-    { key: "period", label: t("debtShell.colPeriod"), width: 80, minWidth: 64, align: "right", render: (row) => row.rowType === "rate_adjustment" || row.eventType === "prepayment" ? <span className="text-slate-400">-</span> : <span className="tabular-nums text-slate-700">{row.period}</span> },
+    { key: "period", label: t("liabilityShell.colPeriod"), width: 80, minWidth: 64, align: "right", render: (row) => row.rowType === "rate_adjustment" || row.eventType === "prepayment" ? <span className="text-slate-400">-</span> : <span className="tabular-nums text-slate-700">{row.period}</span> },
     { key: "date", label: t("detail.column.date"), width: 110, minWidth: 86, filterText: (row) => row.date, render: (row) => <span className="tabular-nums text-slate-700">{row.date}</span> },
-    { key: "principal", label: t("debtShell.colPrincipal"), width: 130, minWidth: 96, align: "right", render: (row) => row.rowType === "rate_adjustment" ? <span className="tabular-nums text-blue-700">{formatRate(row.annualRate, language)}</span> : <span className="tabular-nums text-emerald-700">{formatMoney(row.principal)}</span> },
-    { key: "interest", label: t("debtShell.colInterest"), width: 130, minWidth: 96, align: "right", render: (row) => row.rowType === "rate_adjustment" ? <span className="text-slate-400">-</span> : <span className="tabular-nums text-amber-700">{formatMoney(row.interest)}</span> },
-    { key: "payment", label: t("debtShell.colPayment"), width: 130, minWidth: 96, align: "right", render: (row) => row.rowType === "rate_adjustment" ? <span className="font-medium text-blue-700">{t("debtShell.rateAdjustment")}</span> : <span className="font-semibold tabular-nums text-slate-700">{formatMoney(row.payment)}</span> },
-    { key: "remainingPrincipal", label: t("debtShell.colRemainingPrincipal"), width: 140, minWidth: 104, align: "right", render: (row) => <span className="font-semibold tabular-nums text-slate-700">{formatMoney(row.remainingPrincipal)}</span> },
+    { key: "principal", label: t("liabilityShell.colPrincipal"), width: 130, minWidth: 96, align: "right", render: (row) => row.rowType === "rate_adjustment" ? <span className="tabular-nums text-blue-700">{formatRate(row.annualRate, language)}</span> : <span className="tabular-nums text-emerald-700">{formatMoney(row.principal)}</span> },
+    { key: "interest", label: t("liabilityShell.colInterest"), width: 130, minWidth: 96, align: "right", render: (row) => row.rowType === "rate_adjustment" ? <span className="text-slate-400">-</span> : <span className="tabular-nums text-amber-700">{formatMoney(row.interest)}</span> },
+    { key: "payment", label: t("liabilityShell.colPayment"), width: 130, minWidth: 96, align: "right", render: (row) => row.rowType === "rate_adjustment" ? <span className="font-medium text-blue-700">{t("liabilityShell.rateAdjustment")}</span> : <span className="font-semibold tabular-nums text-slate-700">{formatMoney(row.payment)}</span> },
+    { key: "remainingPrincipal", label: t("liabilityShell.colRemainingPrincipal"), width: 140, minWidth: 104, align: "right", render: (row) => <span className="font-semibold tabular-nums text-slate-700">{formatMoney(row.remainingPrincipal)}</span> },
   ], [t, language]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-transparent p-4 md:p-5">
-      {editingDebtAccount ? (
+      {editingLiabilityAccount ? (
         <AccountTypeQuickEdit
-          account={editingDebtAccount}
-          accountLabel={editingDebtAccount.name}
+          account={editingLiabilityAccount}
+          accountLabel={editingLiabilityAccount.name}
           openSignal={accountEditOpenSignal}
           showTrigger={false}
           loanDetails={editingLoanDetails}
@@ -1429,27 +1429,27 @@ export function DebtShell({
         />
       ) : null}
       <ResizableVerticalSplit
-        storageKey="mmh:debt:split-height"
+        storageKey="mmh:liability:split-height"
         hasLowerPane={!!selectedRow}
         defaultUpperHeight={360}
-        separatorLabel={t("debtShell.resizeLabel")}
-        separatorTitle={t("debtShell.resizeTitle")}
+        separatorLabel={t("liabilityShell.resizeLabel")}
+        separatorTitle={t("liabilityShell.resizeTitle")}
       >
         <section className="panel-surface flex h-full min-h-0 flex-col overflow-hidden">
           <AdvancedDataTable
-            storageKey="mmh_debt_rows_table_v1"
+            storageKey="mmh_liability_rows_table_v1"
             columns={rowColumns}
             rows={baseRows}
             rowKey={(row) => row.key}
             minTableWidth={1040}
-            emptyText={t("debtShell.emptyRows")}
+            emptyText={t("liabilityShell.emptyRows")}
             fillHeight
-            filterRows={filterDebtRows}
-            sortRows={sortDebtRows}
+            filterRows={filterLiabilityRows}
+            sortRows={sortLiabilityRows}
             toolbarTitle={(
               <span className="inline-flex items-center gap-2 text-sm font-semibold text-slate-800">
                 <HandCoins className="h-4 w-4 text-amber-500" />
-                {isLoanTableView && loanViewTypeLabel ? loanViewTypeLabel : t("debtShell.title")}
+                {isLoanTableView && loanViewTypeLabel ? loanViewTypeLabel : t("liabilityShell.title")}
               </span>
             )}
             toolbarRightContent={(
@@ -1461,13 +1461,13 @@ export function DebtShell({
                     onChange={(event) => setShowSettledRows(event.target.checked)}
                     className="h-3.5 w-3.5 accent-blue-600"
                   />
-                  {t("debtShell.showSettledRows")}{settledCount > 0 ? `(${settledCount})` : ""}
+                  {t("liabilityShell.showSettledRows")}{settledCount > 0 ? `(${settledCount})` : ""}
                 </label>
-                <div className="text-xs text-slate-400">{t("debtShell.inflowOutflowHint")}</div>
+                <div className="text-xs text-slate-400">{t("liabilityShell.inflowOutflowHint")}</div>
               </div>
             )}
-            onRowClick={(row) => openDebtRow(row)}
-            onRowDoubleClick={(row) => openDebtAccountProperties(row)}
+            onRowClick={(row) => openLiabilityRow(row)}
+            onRowDoubleClick={(row) => openLiabilityAccountProperties(row)}
             rowClassName={(row) => {
               if (row.key === (selectedRow?.key ?? "")) return "cursor-pointer bg-blue-50 hover:bg-blue-50";
               if (row.parentKey) return "cursor-pointer bg-slate-50/70 hover:bg-slate-100";
@@ -1477,12 +1477,12 @@ export function DebtShell({
               rowClassName: "bg-slate-50",
               cellClassName: "py-2.5",
               cells: {
-                name: <span className="font-semibold tracking-[0.08em] text-slate-500">{t("debtShell.summaryRow")}</span>,
-                paidPrincipal: <span className="font-semibold tabular-nums text-emerald-700">{formatMoney(debtRowSummary.paidPrincipal)}</span>,
-                paidInterest: <span className="font-semibold tabular-nums text-amber-700">{formatMoney(debtRowSummary.paidInterest)}</span>,
-                remainingInterest: <span className="font-semibold tabular-nums text-amber-700">{formatMoney(debtRowSummary.remainingInterest)}</span>,
-                remainingPrincipal: <span className="font-semibold tabular-nums text-slate-700">{formatMoney(debtRowSummary.remainingPrincipal)}</span>,
-                remainingTotal: <span className="font-semibold tabular-nums text-slate-700">{formatMoney(debtRowSummary.remainingTotal)}</span>,
+                name: <span className="font-semibold tracking-[0.08em] text-slate-500">{t("liabilityShell.summaryRow")}</span>,
+                paidPrincipal: <span className="font-semibold tabular-nums text-emerald-700">{formatMoney(liabilityRowSummary.paidPrincipal)}</span>,
+                paidInterest: <span className="font-semibold tabular-nums text-amber-700">{formatMoney(liabilityRowSummary.paidInterest)}</span>,
+                remainingInterest: <span className="font-semibold tabular-nums text-amber-700">{formatMoney(liabilityRowSummary.remainingInterest)}</span>,
+                remainingPrincipal: <span className="font-semibold tabular-nums text-slate-700">{formatMoney(liabilityRowSummary.remainingPrincipal)}</span>,
+                remainingTotal: <span className="font-semibold tabular-nums text-slate-700">{formatMoney(liabilityRowSummary.remainingTotal)}</span>,
               },
             }}
           />
@@ -1497,14 +1497,14 @@ export function DebtShell({
                   onClick={() => setDetailTab("entries")}
                   className={`h-7 rounded-full px-3 text-xs font-medium transition ${detailTab === "entries" ? "bg-slate-900 text-white shadow-sm" : "text-slate-600 hover:bg-white"}`}
                 >
-                  {t("debtShell.tabEntries")}
+                  {t("liabilityShell.tabEntries")}
                 </button>
                 <button
                   type="button"
                   onClick={() => setDetailTab("schedule")}
                   className={`h-7 rounded-full px-3 text-xs font-medium transition ${detailTab === "schedule" ? "bg-slate-900 text-white shadow-sm" : "text-slate-600 hover:bg-white"}`}
                 >
-                  {t("debtShell.tabSchedule")}
+                  {t("liabilityShell.tabSchedule")}
                 </button>
               </div>
             ) : <div />}
@@ -1516,10 +1516,10 @@ export function DebtShell({
                     disabled={!canAdjustRateSelectedRow}
                     onClick={() => selectedRow && openRateAdjustment(selectedRow)}
                     className="inline-flex h-8 items-center gap-1.5 rounded-full border border-blue-200 bg-blue-50 px-3 text-xs font-medium text-blue-700 transition hover:bg-blue-100 disabled:cursor-not-allowed disabled:border-slate-200 disabled:bg-slate-50 disabled:text-slate-400"
-                    title={canAdjustRateSelectedRow ? t("debtShell.rateAdjust.title") : t("debtShell.rateAdjust.disabledTitle")}
+                    title={canAdjustRateSelectedRow ? t("liabilityShell.rateAdjust.title") : t("liabilityShell.rateAdjust.disabledTitle")}
                   >
                     <Percent className="h-3.5 w-3.5" />
-                    {t("debtShell.rateAdjustment")}
+                    {t("liabilityShell.rateAdjustment")}
                   </button>
                 </>
               ) : null}
@@ -1528,12 +1528,12 @@ export function DebtShell({
 
           {!selectedRow ? (
             <div className="flex min-h-0 flex-1 items-center justify-center border-t border-slate-100 bg-slate-50/60 px-4 text-sm text-slate-500">
-              {t("debtShell.selectRowFirst")}
+              {t("liabilityShell.selectRowFirst")}
             </div>
           ) : detailTab === "entries" || !isSelectedBankLoan ? (
-            <BasicDetailSelectionProvider resetKey={`debt-entries:${selectedRow.key}`}>
+            <BasicDetailSelectionProvider resetKey={`liability-entries:${selectedRow.key}`}>
               <BasicDetailBatchDeleteMessage />
-              <DebtEntriesTable
+              <LiabilityEntriesTable
                 accountOptions={accountOptions}
                 categoryOptions={categoryOptions}
                 contextAccountId={selectedRow.accountId}
@@ -1566,20 +1566,20 @@ export function DebtShell({
             </BasicDetailSelectionProvider>
           ) : (
             <AdvancedDataTable
-              storageKey="mmh_debt_repayment_schedule_table_v1"
+              storageKey="mmh_liability_repayment_schedule_table_v1"
               columns={repaymentScheduleColumns}
               rows={visibleRepaymentScheduleRows}
               rowKey={repaymentScheduleRowKey}
               scrollToRowKey={repaymentScrollAnchorKey}
               minTableWidth={920}
-              emptyText={t("debtShell.emptySchedule")}
+              emptyText={t("liabilityShell.emptySchedule")}
               fillHeight
               toolbarMode="custom"
               toolbarLeftContent={(
                 <span>
                   {showPaidScheduleRows
-                    ? t("debtShell.scheduleVisibleCount", { visible: schedulePeriodCounts.visible, total: schedulePeriodCounts.total })
-                    : t("debtShell.scheduleUnpaidCount", { count: schedulePeriodCounts.visible })}
+                    ? t("liabilityShell.scheduleVisibleCount", { visible: schedulePeriodCounts.visible, total: schedulePeriodCounts.total })
+                    : t("liabilityShell.scheduleUnpaidCount", { count: schedulePeriodCounts.visible })}
                 </span>
               )}
               toolbarRightContent={(
@@ -1590,7 +1590,7 @@ export function DebtShell({
                     onChange={(event) => setShowPaidScheduleRows(event.target.checked)}
                     className="h-3.5 w-3.5 accent-blue-600"
                   />
-                  {t("debtShell.showPaid")}
+                  {t("liabilityShell.showPaid")}
                 </label>
               )}
               rowClassName={(row) => row.rowType === "rate_adjustment"
@@ -1608,8 +1608,8 @@ export function DebtShell({
             <div className="app-modal-panel max-w-2xl">
               <div className="modal-header shrink-0">
                 <div>
-                  <div className="text-sm font-semibold text-slate-800">{t("debtShell.rateAdjustment")}</div>
-                  <div className="mt-0.5 text-xs text-slate-500">{selectedRow?.name ?? t("debtShell.currentLoan")}</div>
+                  <div className="text-sm font-semibold text-slate-800">{t("liabilityShell.rateAdjustment")}</div>
+                  <div className="mt-0.5 text-xs text-slate-500">{selectedRow?.name ?? t("liabilityShell.currentLoan")}</div>
                 </div>
                 <button
                   type="button"
@@ -1623,7 +1623,7 @@ export function DebtShell({
 
               <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
                 <div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs leading-5 text-blue-800">
-                  {t(isSelectedMortgageLoan ? "debtShell.rateAdjust.hint" : "debtShell.rateAdjust.simpleHint")}
+                  {t(isSelectedMortgageLoan ? "liabilityShell.rateAdjust.hint" : "liabilityShell.rateAdjust.simpleHint")}
                 </div>
 
                 {renderRateDraftsTable({ showDiscountColumn: isSelectedMortgageLoan })}
@@ -1636,9 +1636,9 @@ export function DebtShell({
                         onClick={() => { void queryLatestLpr(); }}
                         className="secondary-button h-9 px-3"
                         disabled={rateSaving}
-                        title={t("debtShell.rateAdjust.queryLprTitle")}
+                        title={t("liabilityShell.rateAdjust.queryLprTitle")}
                       >
-                        {t("debtShell.rateAdjust.queryLpr")}
+                        {t("liabilityShell.rateAdjust.queryLpr")}
                       </button>
                     ) : null}
                     {isSelectedMortgageLoan ? null : (
@@ -1648,7 +1648,7 @@ export function DebtShell({
                         className="secondary-button h-9 px-3"
                         disabled={rateSaving}
                       >
-                        {t("debtShell.rateAdjust.addRow")}
+                        {t("liabilityShell.rateAdjust.addRow")}
                       </button>
                     )}
                   </div>
@@ -1658,7 +1658,7 @@ export function DebtShell({
                     className="primary-button h-9 px-3"
                     disabled={rateSaving}
                   >
-                    {rateSaving ? t("debtShell.saving") : t("debtShell.saveRateAdjustments")}
+                    {rateSaving ? t("liabilityShell.saving") : t("liabilityShell.saveRateAdjustments")}
                   </button>
                 </div>
               </div>
@@ -1671,9 +1671,9 @@ export function DebtShell({
             <div className="app-modal-panel max-w-md">
               <div className="modal-header shrink-0">
                 <div>
-                  <div className="text-sm font-semibold text-slate-800">{t("debtShell.rebuild.title")}</div>
+                  <div className="text-sm font-semibold text-slate-800">{t("liabilityShell.rebuild.title")}</div>
                   <div className="mt-0.5 text-xs text-slate-500">
-                    {t("debtShell.rebuild.subtitle", { date: rebuildDialog.effectiveDate })} · {selectedRow?.name ?? t("debtShell.currentLoan")}
+                    {t("liabilityShell.rebuild.subtitle", { date: rebuildDialog.effectiveDate })} · {selectedRow?.name ?? t("liabilityShell.currentLoan")}
                   </div>
                 </div>
                 <button
@@ -1688,36 +1688,36 @@ export function DebtShell({
 
               <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
                 <div className="rounded-lg border border-amber-100 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">
-                  {t("debtShell.rebuild.intro", { count: rebuildDialog.preview.updateCount })}
+                  {t("liabilityShell.rebuild.intro", { count: rebuildDialog.preview.updateCount })}
                 </div>
 
                 <div className="space-y-1">
-                  <div className="form-label">{t("debtShell.rebuild.startPeriod")}</div>
+                  <div className="form-label">{t("liabilityShell.rebuild.startPeriod")}</div>
                   <DateStepper
                     value={rebuildDialog.effectiveDate}
                     onChange={(value) => changeRebuildFromDate(value)}
                   />
-                  <div className="text-[11px] leading-5 text-slate-500">{t("debtShell.rebuild.startPeriodHint")}</div>
+                  <div className="text-[11px] leading-5 text-slate-500">{t("liabilityShell.rebuild.startPeriodHint")}</div>
                 </div>
 
                 <div className="space-y-1 text-xs text-slate-600">
                   <div className="flex items-center justify-between">
-                    <span>{t("debtShell.rebuild.startPeriod")}</span>
+                    <span>{t("liabilityShell.rebuild.startPeriod")}</span>
                     <span className="tabular-nums text-slate-800">{rebuildDialog.preview.startRunDate}</span>
                   </div>
                   <div className="flex items-center justify-between">
-                    <span>{t("debtShell.rebuild.balanceStart")}</span>
+                    <span>{t("liabilityShell.rebuild.balanceStart")}</span>
                     <span className="tabular-nums text-slate-800">{formatMoney(rebuildDialog.preview.balanceStart)}</span>
                   </div>
                   {rebuildDialog.preview.effectiveAnnualRate != null ? (
                     <div className="flex items-center justify-between">
-                      <span>{t("debtShell.rebuild.effectiveRate")}</span>
+                      <span>{t("liabilityShell.rebuild.effectiveRate")}</span>
                       <span className="tabular-nums text-slate-800">{formatRate(rebuildDialog.preview.effectiveAnnualRate, language)}%</span>
                     </div>
                   ) : null}
                   {rebuildDialog.preview.preservedAmount != null && !rebuildDialog.preview.recalcAtStart ? (
                     <div className="flex items-center justify-between">
-                      <span>{t("debtShell.rebuild.preservedAmount")}</span>
+                      <span>{t("liabilityShell.rebuild.preservedAmount")}</span>
                       <span className="tabular-nums text-slate-800">
                         {formatMoney(rebuildDialog.preview.lastRemainingPayment ?? rebuildDialog.preview.preservedAmount)}
                       </span>
@@ -1726,31 +1726,31 @@ export function DebtShell({
                 </div>
 
                 <div className="space-y-1">
-                  <div className="form-label">{t("debtShell.rebuild.remainingRunsLabel")}</div>
+                  <div className="form-label">{t("liabilityShell.rebuild.remainingRunsLabel")}</div>
                   <input
                     value={rebuildRemainingRuns}
                     onChange={(event) => setRebuildRemainingRuns(event.target.value)}
                     inputMode="numeric"
                     className="form-input"
                   />
-                  <div className="text-[11px] leading-5 text-slate-500">{t("debtShell.rebuild.remainingRunsHint")}</div>
+                  <div className="text-[11px] leading-5 text-slate-500">{t("liabilityShell.rebuild.remainingRunsHint")}</div>
                 </div>
 
                 <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
                   <div className="flex items-center justify-between">
-                    <span className="text-xs text-slate-600">{t("debtShell.rebuild.newPaymentLabel")}</span>
+                    <span className="text-xs text-slate-600">{t("liabilityShell.rebuild.newPaymentLabel")}</span>
                     <span className="text-sm font-semibold tabular-nums text-slate-900">{formatMoney(rebuildPreviewParts?.payment ?? rebuildDialog.preview.previewPayment)}</span>
                   </div>
                   <div className="mt-1 text-right text-[11px] tabular-nums text-slate-500">
-                    {t("debtShell.rebuild.newPaymentDetail", {
+                    {t("liabilityShell.rebuild.newPaymentDetail", {
                       principal: formatMoney(rebuildPreviewParts?.principal ?? rebuildDialog.preview.previewPrincipal),
                       interest: formatMoney(rebuildPreviewParts?.interest ?? rebuildDialog.preview.previewInterest),
                     })}
                   </div>
                   <div className="mt-1 text-[11px] leading-5 text-slate-500">
                     {rebuildDialog.preview.recalcAtStart
-                      ? t("debtShell.rebuild.recalcNote")
-                      : t("debtShell.rebuild.preserveNote")}
+                      ? t("liabilityShell.rebuild.recalcNote")
+                      : t("liabilityShell.rebuild.preserveNote")}
                   </div>
                 </div>
               </div>
@@ -1762,7 +1762,7 @@ export function DebtShell({
                   className="secondary-button h-9 px-3"
                   disabled={rebuildBusy}
                 >
-                  {t("debtShell.rebuild.cancel")}
+                  {t("liabilityShell.rebuild.cancel")}
                 </button>
                 <button
                   type="button"
@@ -1770,7 +1770,7 @@ export function DebtShell({
                   className="primary-button h-9 px-3"
                   disabled={rebuildBusy}
                 >
-                  {rebuildBusy ? t("debtShell.rebuild.busy") : t("debtShell.rebuild.confirm")}
+                  {rebuildBusy ? t("liabilityShell.rebuild.busy") : t("liabilityShell.rebuild.confirm")}
                 </button>
               </div>
             </div>
@@ -1781,7 +1781,7 @@ export function DebtShell({
   );
 }
 
-function DebtEntriesTable({
+function LiabilityEntriesTable({
   accountOptions,
   categoryOptions,
   contextAccountId,
@@ -1793,8 +1793,8 @@ function DebtEntriesTable({
   accountOptions: AccountOption[];
   categoryOptions: BasicDetailBatchCategoryOption[];
   contextAccountId?: string | null;
-  columns: AdvancedDataTableColumn<DebtEntry>[];
-  entries: DebtEntry[];
+  columns: AdvancedDataTableColumn<LiabilityEntry>[];
+  entries: LiabilityEntry[];
   loanType: LoanTypeValue;
   toolbarActions?: React.ReactNode;
 }) {
@@ -1810,35 +1810,35 @@ function DebtEntriesTable({
     })),
     [accountOptions],
   );
-  const getCustomEditEvent = (entry: DebtEntry) => {
+  const getCustomEditEvent = (entry: LiabilityEntry) => {
     if (entry.balanceReconcileEdit) {
       return { name: "mmh:balance-reconcile:edit", detail: { ...entry.balanceReconcileEdit } };
     }
-    if (!entry.debtEdit) return undefined;
-    const detail = entry.debtEdit.dialogType === "loan"
-      ? { ...entry.debtEdit, loanType }
-      : { ...entry.debtEdit };
+    if (!entry.liabilityEdit) return undefined;
+    const detail = entry.liabilityEdit.dialogType === "loan"
+      ? { ...entry.liabilityEdit, loanType }
+      : { ...entry.liabilityEdit };
     return {
-      name: entry.debtEdit.dialogType === "loan" ? "mmh:loan:create" : "mmh:debt:create",
+      name: entry.liabilityEdit.dialogType === "loan" ? "mmh:loan:create" : "mmh:settlement:create",
       detail,
     };
   };
 
   return (
     <AdvancedDataTable
-      storageKey="mmh_debt_entries_table_v1"
-      resetKey={`debt-entries:${contextAccountId ?? "all"}`}
+      storageKey="mmh_liability_entries_table_v1"
+      resetKey={`liability-entries:${contextAccountId ?? "all"}`}
       columns={columns}
       rows={entries}
       rowKey={(entry) => entry.id}
       minTableWidth={1240}
-      emptyText={t("debtShell.emptyEntries")}
+      emptyText={t("liabilityShell.emptyEntries")}
       fillHeight
-      toolbarTitle={t("debtShell.tabEntries")}
+      toolbarTitle={t("liabilityShell.tabEntries")}
       toolbarRightContent={(
         <>
           {toolbarActions}
-          <span className="text-xs text-slate-500">{t("debtShell.entryCount", { count: entries.length })}</span>
+          <span className="text-xs text-slate-500">{t("liabilityShell.entryCount", { count: entries.length })}</span>
         </>
       )}
       selectable
@@ -1870,7 +1870,7 @@ function DebtEntriesTable({
             categoryOptions={categoryOptions}
             contextAccountId={contextAccountId}
           />
-          <BasicDetailBatchDeleteButton recordLabel={t("debtShell.recordLabel")} />
+          <BasicDetailBatchDeleteButton recordLabel={t("liabilityShell.recordLabel")} />
         </>
       )}
     />

@@ -71,6 +71,18 @@ nsis:
   shortcutName: MMH
   artifactName: MMH-Setup-${version}.${ext}
   deleteAppDataOnUninstall: false
+  # Branded wizard artwork. Generated into the buildResources directory by
+  # scripts/generate-nsis-bitmaps.cjs on every build (24-bit BMP, the only
+  # format NSIS can render). Paths are relative to directories.buildResources.
+  installerHeader: installerHeader.bmp
+  installerSidebar: installerSidebar.bmp
+  uninstallerSidebar: uninstallerSidebar.bmp
+  # Show the wizard in Chinese unless the user (or an en-US system) picks
+  # English explicitly; without this the stock wizard is English-only.
+  displayLanguageSelector: true
+  installerLanguages:
+    - zh_CN
+    - en_US
   include: electron/installer.nsh
 
 electronLanguages:

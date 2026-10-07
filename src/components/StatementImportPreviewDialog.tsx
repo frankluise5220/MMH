@@ -21,7 +21,7 @@ import {
   encodeImportAccountId,
   importCounterKindFromCategory,
   normalizeImportAccountMatchKey,
-  parseDebtAccountName,
+  parseSettlementAccountName,
   parseImportAccountId,
   parseImportOwnedMoneyAccountCandidate,
   parseImportPersonAttributedCandidate,
@@ -146,12 +146,12 @@ type StatementImportPreviewDialogProps = {
   onClose: () => void;
   onConfirm: (
     items: StatementImportPreviewItem[],
-    options?: { createDebtAccounts?: boolean; forceCreateOwnedMoneyAccounts?: boolean },
+    options?: { createLiabilityAccounts?: boolean; forceCreateOwnedMoneyAccounts?: boolean },
   ) => void | Promise<void>;
 };
 
 type PreviewCreationOptions = {
-  createDebtAccounts: boolean;
+  createLiabilityAccounts: boolean;
   forceCreateOwnedMoneyAccounts: boolean;
 };
 
@@ -308,13 +308,13 @@ function counterAccountValue(item: StatementImportPreviewItem) {
   return isTransferOut(item) ? cleanText(item.toAccount) : cleanText(item.fromAccount);
 }
 
-function debtCounterpartyNameFromAccount(value?: string | null) {
-  return parseDebtAccountName(cleanText(value) || "") ?? "";
+function liabilityCounterpartyNameFromAccount(value?: string | null) {
+  return parseSettlementAccountName(cleanText(value) || "") ?? "";
 }
 
-function isCreatableDebtAccount(value: string | undefined | null, lookup: PreviewAccountLookup | null, options: PreviewCreationOptions) {
-  if (!options.createDebtAccounts || !lookup) return false;
-  const counterpartyName = debtCounterpartyNameFromAccount(value);
+function isCreatableLiabilityAccount(value: string | undefined | null, lookup: PreviewAccountLookup | null, options: PreviewCreationOptions) {
+  if (!options.createLiabilityAccounts || !lookup) return false;
+  const counterpartyName = liabilityCounterpartyNameFromAccount(value);
   if (counterpartyName) return true;
   // 非所有人「XX的YYY」（如财智的「付斌的招行3833」）→ 归属为往来对象 XX 的往来款账户
   return Boolean(parseImportPersonAttributedCandidate(value, lookup.ownerNames));
@@ -366,9 +366,9 @@ function findPreviewAccount(
     if (matched) return matched;
   }
   // 财智变体（XX的普通应付款/普通应收款）→ 复用既有「XX的往来款」账户，避免误判缺失
-  const debtCounterparty = parseDebtAccountName(raw);
-  if (debtCounterparty) {
-    const matched = lookup.resolveAccount(`${debtCounterparty}的往来款`);
+  const liabilityCounterparty = parseSettlementAccountName(raw);
+  if (liabilityCounterparty) {
+    const matched = lookup.resolveAccount(`${liabilityCounterparty}的往来款`);
     if (matched) return matched;
   }
   return null;
@@ -394,10 +394,10 @@ function isPreviewAccountResolvable(
 ) {
   return Boolean(
     findPreviewAccount(value, lookup, meta) ||
-    isCreatableDebtAccount(value, lookup, options) ||
+    isCreatableLiabilityAccount(value, lookup, options) ||
     isCreatableOwnedMoneyAccount(value, lookup, options) ||
     // 财智活动类型提示的对向账户（信用卡还款→信用卡、网贷收回→贷款）：勾选"创建往来款账户"后由程序按类型创建
-    (counterKindHint && options.createDebtAccounts && lookup)
+    (counterKindHint && options.createLiabilityAccounts && lookup)
   );
 }
 
@@ -438,7 +438,7 @@ export function statementImportMissingFields(
   item: StatementImportPreviewItem,
   defaultAccountName: string,
   lookup: PreviewAccountLookup | null = null,
-  creationOptions: PreviewCreationOptions = { createDebtAccounts: false, forceCreateOwnedMoneyAccounts: false },
+  creationOptions: PreviewCreationOptions = { createLiabilityAccounts: false, forceCreateOwnedMoneyAccounts: false },
 ) {
   const missing: string[] = [];
   if (!cleanText(item.date)) missing.push("date");
@@ -481,7 +481,7 @@ function buildPreviewRows(
   items: StatementImportPreviewItem[],
   defaultAccountName: string,
   lookup: PreviewAccountLookup | null = null,
-  creationOptions: PreviewCreationOptions = { createDebtAccounts: false, forceCreateOwnedMoneyAccounts: false },
+  creationOptions: PreviewCreationOptions = { createLiabilityAccounts: false, forceCreateOwnedMoneyAccounts: false },
 ): ImportPreviewRow[] {
   return items.map((item, index) => {
     const itemWithAccounts = canonicalizePreviewItemAccounts(item, defaultAccountName, lookup);
@@ -511,7 +511,7 @@ function missingAccountCandidateValuesForRow(row: ImportPreviewRow, defaultAccou
   return Array.from(new Set(candidates.map(cleanText).filter(Boolean)));
 }
 
-function missingDebtAccountNamesForRow(
+function missingLiabilityAccountNamesForRow(
   row: ImportPreviewRow,
   defaultAccountName: string,
   ownerNames: readonly string[] = [],
@@ -521,7 +521,7 @@ function missingDebtAccountNamesForRow(
     .map((value) => {
       const text = cleanText(value);
       if (!text) return "";
-      if (parseDebtAccountName(text)) return text;
+      if (parseSettlementAccountName(text)) return text;
       if (parseImportPersonAttributedCandidate(text, ownerNames)) return text;
       return "";
     })
@@ -549,9 +549,9 @@ export function StatementImportPreviewDialog({
   const [bookCounterparties, setBookCounterparties] = useState<BookCounterparty[]>([]);
   const [bookAccountGroups, setBookAccountGroups] = useState<BookAccountGroup[]>([]);
   const [settingsBootstrapLoaded, setSettingsBootstrapLoaded] = useState(false);
-  const [createDebtAccounts, setCreateDebtAccounts] = useState(false);
+  const [createLiabilityAccounts, setCreateLiabilityAccounts] = useState(false);
   const [forceCreateOwnedMoneyAccounts, setForceCreateOwnedMoneyAccounts] = useState(false);
-  const autoCheckedDebtAccountsRef = useRef(false);
+  const autoCheckedLiabilityAccountsRef = useRef(false);
   const [categorySyncMessage, setCategorySyncMessage] = useState("");
   const { t, language } = useI18n();
   const accountLabelFields = useMemo(() => getAccountLabelFieldsPreference(), []);
@@ -602,8 +602,8 @@ export function StatementImportPreviewDialog({
     accountResolveCacheRef.current.clear();
   }, [accountLookup]);
   const creationOptions = useMemo<PreviewCreationOptions>(
-    () => ({ createDebtAccounts, forceCreateOwnedMoneyAccounts }),
-    [createDebtAccounts, forceCreateOwnedMoneyAccounts],
+    () => ({ createLiabilityAccounts, forceCreateOwnedMoneyAccounts }),
+    [createLiabilityAccounts, forceCreateOwnedMoneyAccounts],
   );
   const accountSmartSelectOptions = useMemo(
     () => buildGroupedAccountOptions(accountDisplayOptions),
@@ -643,23 +643,23 @@ export function StatementImportPreviewDialog({
       return;
     }
     const nextRows = buildPreviewRows(items, defaultAccountName, accountLookup, creationOptions);
-    if (!autoCheckedDebtAccountsRef.current && !createDebtAccounts && nextRows.some((row) => missingDebtAccountNamesForRow(row, defaultAccountName, accountLookup.ownerNames).length > 0)) {
-      autoCheckedDebtAccountsRef.current = true;
-      setCreateDebtAccounts(true);
+    if (!autoCheckedLiabilityAccountsRef.current && !createLiabilityAccounts && nextRows.some((row) => missingLiabilityAccountNamesForRow(row, defaultAccountName, accountLookup.ownerNames).length > 0)) {
+      autoCheckedLiabilityAccountsRef.current = true;
+      setCreateLiabilityAccounts(true);
       return;
     }
     setRows(nextRows);
     setSelectedKeys(new Set(nextRows.filter((row) => row.ready).map((row) => row.key)));
     setEditingPreviewCell(null);
     setCategorySyncMessage("");
-  }, [accountLookup, createDebtAccounts, creationOptions, defaultAccountName, items, open, settingsBootstrapLoaded]);
+  }, [accountLookup, createLiabilityAccounts, creationOptions, defaultAccountName, items, open, settingsBootstrapLoaded]);
 
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
-    autoCheckedDebtAccountsRef.current = false;
+    autoCheckedLiabilityAccountsRef.current = false;
     setSettingsBootstrapLoaded(false);
-    setCreateDebtAccounts(false);
+    setCreateLiabilityAccounts(false);
     setForceCreateOwnedMoneyAccounts(false);
     setRows([]);
     setSelectedKeys(new Set());
@@ -687,9 +687,9 @@ export function StatementImportPreviewDialog({
     setRows([]);
     setSelectedKeys(new Set());
     setEditingPreviewCell(null);
-    autoCheckedDebtAccountsRef.current = false;
+    autoCheckedLiabilityAccountsRef.current = false;
     setSettingsBootstrapLoaded(false);
-    setCreateDebtAccounts(false);
+    setCreateLiabilityAccounts(false);
     setForceCreateOwnedMoneyAccounts(false);
     setCategorySyncMessage("");
     onClose();
@@ -767,13 +767,13 @@ export function StatementImportPreviewDialog({
     return missingAccountCandidateValuesForRow(row, defaultAccountName);
   }
 
-  function missingDebtAccountNames(row: ImportPreviewRow) {
+  function missingLiabilityAccountNames(row: ImportPreviewRow) {
     // 往来归属候选（含非所有人「XX的YYY」）：返回将创建的账户原名，用于自动勾选与提示。
     return missingAccountCandidateValues(row)
       .map((value) => {
         const text = cleanText(value);
         if (!text) return "";
-        if (parseDebtAccountName(text)) return text;
+        if (parseSettlementAccountName(text)) return text;
         if (accountLookup && parseImportPersonAttributedCandidate(text, accountLookup.ownerNames)) return text;
         return "";
       })
@@ -828,8 +828,8 @@ export function StatementImportPreviewDialog({
     return Array.from(new Set(labels));
   }
 
-  function debtAccountCreationLabels(row: ImportPreviewRow) {
-    if (!createDebtAccounts || !accountLookup) return [];
+  function liabilityAccountCreationLabels(row: ImportPreviewRow) {
+    if (!createLiabilityAccounts || !accountLookup) return [];
     const accountValues = row.item.type === "transfer"
       ? [
           { value: primaryAccountValue(row.item, defaultAccountName), meta: row.item._meta },
@@ -839,14 +839,14 @@ export function StatementImportPreviewDialog({
     // 保留原名口径：标签直接展示将创建的账户原名（类型=往来款）。
     const names = accountValues
       .filter(({ value, meta }) => cleanText(value) && !findPreviewAccount(value, accountLookup, meta))
-      .filter(({ value }) => isCreatableDebtAccount(value, accountLookup, { createDebtAccounts: true, forceCreateOwnedMoneyAccounts: false }))
+      .filter(({ value }) => isCreatableLiabilityAccount(value, accountLookup, { createLiabilityAccounts: true, forceCreateOwnedMoneyAccounts: false }))
       .map(({ value }) => cleanText(value))
       .filter(Boolean);
     return Array.from(new Set(names));
   }
 
   function counterKindCreationLabels(row: ImportPreviewRow) {
-    if (!createDebtAccounts || !accountLookup) return null;
+    if (!createLiabilityAccounts || !accountLookup) return null;
     const hint = importCounterKindFromCategory(row.item.category);
     if (!hint) return null;
     const value = counterAccountValue(row.item);
@@ -858,11 +858,11 @@ export function StatementImportPreviewDialog({
   }
 
   function previewCreationStatus(row: ImportPreviewRow) {
-    const debtLabels = debtAccountCreationLabels(row);
-    if (debtLabels.length > 0) {
+    const liabilityLabels = liabilityAccountCreationLabels(row);
+    if (liabilityLabels.length > 0) {
       return {
-        kind: "debt" as const,
-        text: t("statementImportPreview.willCreateDebtAccounts", { value: debtLabels.join(" / ") }),
+        kind: "settlement" as const,
+        text: t("statementImportPreview.willCreateLiabilityAccounts", { value: liabilityLabels.join(" / ") }),
       };
     }
     const counterKindStatus = counterKindCreationLabels(row);
@@ -911,9 +911,9 @@ export function StatementImportPreviewDialog({
       if (creationStatus) return creationStatus.text;
       return t("statementImportPreview.importable");
     }
-    const debtAccountNames = missingDebtAccountNames(row);
-    if (debtAccountNames.length > 0 && !createDebtAccounts) {
-      return t("statementImportPreview.enableCreateDebtAccounts", { name: debtAccountNames.join(" / ") });
+    const liabilityAccountNames = missingLiabilityAccountNames(row);
+    if (liabilityAccountNames.length > 0 && !createLiabilityAccounts) {
+      return t("statementImportPreview.enableCreateLiabilityAccounts", { name: liabilityAccountNames.join(" / ") });
     }
     const ownedMoneyAccountNames = missingOwnedMoneyAccountNames(row);
     if (ownedMoneyAccountNames.length > 0 && !forceCreateOwnedMoneyAccounts) {
@@ -1137,7 +1137,7 @@ export function StatementImportPreviewDialog({
     const selectedItems = selectedRows.map((row) => previewItemForImport(row.item));
     if (selectedItems.length === 0) return;
     await onConfirm(selectedItems, {
-      createDebtAccounts,
+      createLiabilityAccounts,
       forceCreateOwnedMoneyAccounts,
     });
   }
@@ -1563,7 +1563,7 @@ export function StatementImportPreviewDialog({
     bookCategories,
     categoryById,
     colorScheme,
-    createDebtAccounts,
+    createLiabilityAccounts,
     cycleOwnerFilter,
     defaultAccountName,
     displayAccountOptions,
@@ -1653,11 +1653,11 @@ export function StatementImportPreviewDialog({
                     <input
                       type="checkbox"
                       className="h-3.5 w-3.5 rounded border-slate-300 text-blue-600"
-                      checked={createDebtAccounts}
+                      checked={createLiabilityAccounts}
                       disabled={busy || !settingsBootstrapLoaded}
-                      onChange={(event) => setCreateDebtAccounts(event.target.checked)}
+                      onChange={(event) => setCreateLiabilityAccounts(event.target.checked)}
                     />
-                    <span>{t("statementImportPreview.createDebtAccounts")}</span>
+                    <span>{t("statementImportPreview.createLiabilityAccounts")}</span>
                   </label>
                   <label className="inline-flex shrink-0 items-center gap-1.5 text-slate-600">
                     <input

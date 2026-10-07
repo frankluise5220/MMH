@@ -151,7 +151,7 @@ export async function POST(req: Request) {
               householdId,
               accountId: plan.accountId,
               type: TransactionType.transfer,
-              source: { in: ["debt_borrow_in", "debt_financed_purchase"] },
+              source: { in: ["liability_borrow_in", "liability_financed_purchase"] },
               deletedAt: null,
             },
             orderBy: [{ date: "asc" }, { createdAt: "asc" }],

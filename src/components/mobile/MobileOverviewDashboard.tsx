@@ -86,8 +86,8 @@ export function MobileOverviewDashboard({
   const fixedRate = fixedAssetFloatingPnLRate ?? (fixedCostValue > 0 ? fixedPnL / fixedCostValue : 0);
   const monthNet = monthIncome - monthExpense;
   const netLiabilities = totals.liabilities - totals.loanReceivable;
-  const netDebtLabel = netLiabilities >= 0 ? t("overview.netDebt") : t("overview.netCredit");
-  const netDebtAmount = Math.abs(netLiabilities);
+  const netLiabilityLabel = netLiabilities >= 0 ? t("overview.netLiability") : t("overview.netCredit");
+  const netLiabilityAmount = Math.abs(netLiabilities);
   const creditUsed = creditAccountList.reduce((sum, account) => sum + Math.max(0, account.convertedBalance ?? account.balance), 0);
   const creditAvailable = creditAccountList.reduce((sum, account) => sum + Math.max(0, account.availableLimit), 0);
   const creditBill = creditAccountList.reduce((sum, account) => sum + Math.max(0, account.convertedCurrentBill ?? account.currentBill), 0);
@@ -131,7 +131,7 @@ export function MobileOverviewDashboard({
             </div>
             <div className="mt-4 grid grid-cols-2 gap-2">
               <HeroMetric label={t("overview.liquidAssets")} value={amount(totals.liquidAssets)} />
-              <HeroMetric label={netDebtLabel} value={amount(netDebtAmount)} />
+              <HeroMetric label={netLiabilityLabel} value={amount(netLiabilityAmount)} />
               {showInvestmentOverview ? <HeroMetric label={t("overview.investMarketValue")} value={amount(investMarketValue)} /> : null}
               {showFixedAssetOverview ? <HeroMetric label={t("overview.fixedAssetValue")} value={amount(fixedValue)} /> : null}
               {showInsuranceOverview ? <HeroMetric label={t("account.kind.insurance")} value={amount(totals.insuranceAsset)} /> : null}

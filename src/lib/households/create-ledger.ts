@@ -93,7 +93,7 @@ export async function createLedgerWithDefaults(
       data: {
         name: account.name,
         kind: account.kind,
-        debtDirection: account.kind === "bank_credit" ? "payable" : null,
+        liabilityDirection: account.kind === "bank_credit" ? "payable" : null,
         groupId: defaultOwner.id,
         investProductType: account.investProductType,
         tradingCalendar: getDefaultTradingCalendarForAccount(account.kind, account.investProductType) as any,

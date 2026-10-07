@@ -142,7 +142,7 @@ export async function loadReportDetailEntries(
     accountId: displayAccount?.id ?? record.accountId,
     accountName: displayAccount?.name ?? record.accountName,
     accountKind: displayAccount?.kind ?? null,
-    accountDebtDirection: displayAccount?.debtDirection ?? null,
+    accountLiabilityDirection: displayAccount?.liabilityDirection ?? null,
     accountInstitutionName: displayAccount?.Institution?.name ?? "",
     counterpartyInstitutionId: record.counterpartyInstitutionId,
     counterpartyInstitutionName: record.counterpartyInstitutionName,
@@ -155,9 +155,9 @@ export async function loadReportDetailEntries(
       ? (record.account?.name ?? record.accountName)
       : (record.toAccount?.name ?? record.toAccountName),
     toAccountKind: backfillCashSide ? (record.account?.kind ?? null) : (record.toAccount?.kind ?? null),
-    toAccountDebtDirection: backfillCashSide
-      ? (record.account?.debtDirection ?? null)
-      : (record.toAccount?.debtDirection ?? null),
+    toAccountLiabilityDirection: backfillCashSide
+      ? (record.account?.liabilityDirection ?? null)
+      : (record.toAccount?.liabilityDirection ?? null),
     toAccountInstitutionName: backfillCashSide
       ? (record.account?.Institution?.name ?? "")
       : (record.toAccount?.Institution?.name ?? ""),

@@ -46,6 +46,27 @@ export function PwaServiceWorkerRegistration() {
     if (!("serviceWorker" in navigator)) return;
 
     window.addEventListener("load", () => {
+      // Drop service workers left behind by a different deployment shape on the
+      // same origin: an IP:port that used to serve the fnOS package registered
+      // our worker with scope /app/mmh, and that registration survives the
+      // switch to Docker. Its BASE stays "/app/mmh" forever, so it rewrites
+      // every navigation to a path the new backend does not serve -> 404 after
+      // login. Symmetric case included (gateway after Docker). Only registrations
+      // whose scope matches this build's baked-in base path are kept.
+      navigator.serviceWorker
+        .getRegistrations()
+        .then((registrations) => {
+          for (const registration of registrations) {
+            try {
+              const scopePath = new URL(registration.scope).pathname.replace(/\/+$/, "");
+              if (scopePath !== MMH_BASE_PATH) registration.unregister();
+            } catch {
+              // A malformed scope should never break registration below.
+            }
+          }
+        })
+        .catch(() => undefined);
+
       // On the fnOS gateway build the app lives under /app/mmh, so both the
       // script URL and its scope have to stay inside that prefix; sw.js derives
       // its own base from self.registration.scope. Empty on other channels, so

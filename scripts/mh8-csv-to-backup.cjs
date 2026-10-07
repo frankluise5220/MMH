@@ -230,7 +230,7 @@ const accountTypeById = new Map(
     clean(row.mh8AccountTypeId),
     {
       kind: clean(row.mmhAccountKind) || "other",
-      debtDirection: clean(row.mmhDebtDirection) || null,
+      liabilityDirection: clean(row.mmhDebtDirection) || null,
       investProductType: clean(row.mmhInvestProductType) || null,
     },
   ]),
@@ -291,7 +291,7 @@ function inferAccountShape(name, preferred = {}) {
   const text = clean(name);
   const preferredKind = clean(preferred.kind);
   let kind = preferredKind || "other";
-  let debtDirection = preferred.debtDirection || null;
+  let liabilityDirection = preferred.liabilityDirection || null;
   let investProductType = preferred.investProductType || null;
 
   if (!preferredKind) {
@@ -303,10 +303,10 @@ function inferAccountShape(name, preferred = {}) {
     else if (/基金|证券|股票|贵金属|理财|房产|资产|网贷/.test(text)) kind = "investment";
     else if (/应收|借出/.test(text)) {
       kind = "loan";
-      debtDirection = "receivable";
+      liabilityDirection = "receivable";
     } else if (/应付|借入|贷款/.test(text)) {
       kind = "loan";
-      debtDirection = "payable";
+      liabilityDirection = "payable";
     }
   }
 
@@ -320,7 +320,7 @@ function inferAccountShape(name, preferred = {}) {
   }
 
   if (kind === "investment" && !investProductType) investProductType = null;
-  return { kind, debtDirection, investProductType };
+  return { kind, liabilityDirection, investProductType };
 }
 
 function ensureAccount(name, preferred = {}) {
@@ -330,7 +330,7 @@ function ensureAccount(name, preferred = {}) {
   if (existing) {
     if (preferred.investProductType && !existing.investProductType) existing.investProductType = preferred.investProductType;
     if (preferred.kind && existing.kind === "other") existing.kind = preferred.kind;
-    if (preferred.debtDirection && !existing.debtDirection) existing.debtDirection = preferred.debtDirection;
+    if (preferred.liabilityDirection && !existing.liabilityDirection) existing.liabilityDirection = preferred.liabilityDirection;
     existing.groupId = groupForKind(existing.kind);
     return existing;
   }
@@ -339,7 +339,7 @@ function ensureAccount(name, preferred = {}) {
     name: accountName,
     balance: "0.00",
     kind: inferred.kind,
-    debtDirection: inferred.debtDirection,
+    liabilityDirection: inferred.liabilityDirection,
     currency: "CNY",
     isActive: true,
     isPlaceholder: false,
@@ -479,9 +479,9 @@ function addTransaction(input) {
     depositInterest: null,
     depositSourceEntryId: null,
     fundSourceEntryId: null,
-    debtPrincipalAmount: input.debtPrincipalAmount == null ? null : amountString(input.debtPrincipalAmount, 2),
-    debtInterestAmount: input.debtInterestAmount == null ? null : amountString(input.debtInterestAmount, 2),
-    debtFeeAmount: input.debtFeeAmount == null ? null : amountString(input.debtFeeAmount, 2),
+    principalAmount: input.principalAmount == null ? null : amountString(input.principalAmount, 2),
+    interestAmount: input.interestAmount == null ? null : amountString(input.interestAmount, 2),
+    feeAmount: input.feeAmount == null ? null : amountString(input.feeAmount, 2),
     fundConfirmDate: input.fundConfirmDate ? isoDate(input.fundConfirmDate) : null,
     fundFee: input.fundFee == null ? null : amountString(input.fundFee, 2),
     fundNav: input.fundNav == null ? null : amountString(input.fundNav, 6),
@@ -553,9 +553,9 @@ function addCandidateCashFlow(row, options) {
     institutionName: row.institution,
     note: compactNote(row.note, `MH8:${clean(row.sourceFile)}#${clean(row.mh8TransID)}`, options.extraNote),
     source: `${EXPORT_SOURCE}_${options.sourceSuffix || options.seedPrefix}`,
-    debtPrincipalAmount: options.debtPrincipalAmount,
-    debtInterestAmount: options.debtInterestAmount,
-    debtFeeAmount: options.debtFeeAmount,
+    principalAmount: options.principalAmount,
+    interestAmount: options.interestAmount,
+    feeAmount: options.feeAmount,
     fundProductType: options.fundProductType || null,
     metalQuantity: options.metalQuantity,
     metalUnitPrice: options.metalUnitPrice,
@@ -905,7 +905,7 @@ for (const row of readCsv("mh8_debt_candidate_import.csv", true)) {
   let fromAccount = row.cashAccount;
   let toAccount = row.debtAccount;
   let signedAmount = -cashAmount;
-  const debtDirection = action === "borrow_in" || action === "repay_payable" ? "payable" : "receivable";
+  const liabilityDirection = action === "borrow_in" || action === "repay_payable" ? "payable" : "receivable";
   if (action === "collect_in" || action === "borrow_in") {
     fromAccount = row.debtAccount;
     toAccount = row.cashAccount;
@@ -918,15 +918,15 @@ for (const row of readCsv("mh8_debt_candidate_import.csv", true)) {
     amount: signedAmount,
     accountName: fromAccount,
     toAccountName: toAccount,
-    accountShape: clean(fromAccount) === clean(row.debtAccount) ? { kind: "loan", debtDirection } : undefined,
-    toAccountShape: clean(toAccount) === clean(row.debtAccount) ? { kind: "loan", debtDirection } : undefined,
+    accountShape: clean(fromAccount) === clean(row.debtAccount) ? { kind: "loan", liabilityDirection } : undefined,
+    toAccountShape: clean(toAccount) === clean(row.debtAccount) ? { kind: "loan", liabilityDirection } : undefined,
     categoryName: row.category || "借入借出",
     categoryType: "transfer",
     institutionName: row.institution,
     note: compactNote(row.note, row.counterparty, `MH8:${clean(row.sourceFile)}#${clean(row.mh8TransID)}`),
     source: `${EXPORT_SOURCE}_debt`,
-    debtPrincipalAmount: Math.abs(money(row.principalAmount || row.cashAmount)),
-    debtInterestAmount: nullableAmount(row.interestOrFeeReview, 2) == null ? null : Math.abs(money(row.interestOrFeeReview)),
+    principalAmount: Math.abs(money(row.principalAmount || row.cashAmount)),
+    interestAmount: nullableAmount(row.interestOrFeeReview, 2) == null ? null : Math.abs(money(row.interestOrFeeReview)),
   });
   stats.candidateRows += 1;
   if (!tx.toAccountId) warnings.push({ file: "mh8_debt_candidate_import.csv", id: clean(row.mh8TransID), reason: "missing debt transfer side" });

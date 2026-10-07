@@ -53,8 +53,8 @@ function dateKey(value: Date) {
   return startOfDayUtc(value).toISOString().slice(0, 10);
 }
 
-function principalOf(row: { debtPrincipalAmount?: unknown; amount: unknown }) {
-  return Math.abs(toNumber(row.debtPrincipalAmount ?? row.amount));
+function principalOf(row: { principalAmount?: unknown; amount: unknown }) {
+  return Math.abs(toNumber(row.principalAmount ?? row.amount));
 }
 
 function parseLoanTotalRunsFromNote(note?: string | null) {
@@ -115,7 +115,7 @@ export async function POST(req: Request) {
       where: {
         householdId,
         deletedAt: null,
-        source: { in: ["debt_borrow_in", "debt_financed_purchase"] },
+        source: { in: ["liability_borrow_in", "liability_financed_purchase"] },
         type: TransactionType.transfer,
         accountId: plan.accountId,
       },
@@ -166,7 +166,7 @@ export async function POST(req: Request) {
         date: { gte: startRunDate },
       },
       orderBy: [{ date: "asc" }, { id: "asc" }],
-      select: { id: true, date: true, amount: true, debtPrincipalAmount: true, source: true },
+      select: { id: true, date: true, amount: true, principalAmount: true, source: true },
     });
     const lastRemaining = await prisma.txRecord.findFirst({
       where: {
@@ -190,14 +190,14 @@ export async function POST(req: Request) {
       ...(lastRemainingDate ? { date: { gt: lastRemainingDate } } : {}),
     };
     const windowPrepayRows = await prisma.txRecord.findMany({
-      where: { ...windowFilter, source: "debt_prepay_out", type: TransactionType.transfer },
+      where: { ...windowFilter, source: "liability_prepay_out", type: TransactionType.transfer },
       orderBy: [{ date: "asc" }, { id: "asc" }],
-      select: { date: true, amount: true, debtPrincipalAmount: true },
+      select: { date: true, amount: true, principalAmount: true },
     });
     const windowManualRepayRows = await prisma.txRecord.findMany({
-      where: { ...windowFilter, source: "debt_repay_out" },
+      where: { ...windowFilter, source: "liability_repay_out" },
       orderBy: [{ date: "asc" }, { id: "asc" }],
-      select: { date: true, amount: true, debtPrincipalAmount: true },
+      select: { date: true, amount: true, principalAmount: true },
     });
 
     const balanceStart = roundLoanMoney(
@@ -247,7 +247,7 @@ export async function POST(req: Request) {
           const rowKey = dateKey(row.date);
           return rowKey > (previousRunDateKey ?? "") && rowKey <= runDateKey;
         })
-        .map((row) => ({ date: formatDateUtc(row.date), amount: Math.abs(toNumber(row.debtPrincipalAmount ?? row.amount)) }));
+        .map((row) => ({ date: formatDateUtc(row.date), amount: Math.abs(toNumber(row.principalAmount ?? row.amount)) }));
       if (index === 0) prepaymentInStartPeriod = principalAdjustments.length > 0;
       const remainingRunsForThisRun = totalRunsAfter != null
         ? Math.max(1, totalRunsAfter - executedRunsBefore - index)
@@ -371,8 +371,8 @@ export async function POST(req: Request) {
           where: { id: update.id },
           data: {
             amount: -roundLoanMoney(update.payment),
-            debtPrincipalAmount: roundLoanMoney(update.principal),
-            debtInterestAmount: roundLoanMoney(update.interest),
+            principalAmount: roundLoanMoney(update.principal),
+            interestAmount: roundLoanMoney(update.interest),
             ...(update.source === "scheduled_task"
               ? { realizedProfit: update.interest > 0 ? -Math.abs(roundLoanMoney(update.interest)) : null }
               : {}),
@@ -417,7 +417,7 @@ export async function POST(req: Request) {
       });
 
       // 重算更正后若贷款就此结清，同步解除抵押资产状态
-      await releaseMortgagedAssetsForSettledLoanAccounts(tx, { householdId, debtAccountIds: [plan.accountId] });
+      await releaseMortgagedAssetsForSettledLoanAccounts(tx, { householdId, liabilityAccountIds: [plan.accountId] });
     });
 
     for (const balanceAccountId of [plan.accountId, plan.cashAccountId].filter(Boolean) as string[]) {

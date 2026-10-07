@@ -19,7 +19,7 @@ const ordinaryRow = {
   toAccountId: null,
   toNote: null,
   source: null,
-  debtPrincipalAmount: null,
+  principalAmount: null,
   fundProductType: null,
   fundSubtype: null,
   fundConfirmDate: null,

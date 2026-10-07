@@ -16,8 +16,8 @@ import { BondFormModal } from "@/components/BondFormModal";
 import { DepositFormModal } from "@/components/DepositFormModal";
 import { InsuranceFormModal } from "@/components/InsuranceFormModal";
 import { InsuranceEntryEditBridge } from "@/components/InsuranceEntryEditBridge";
-import { DebtShell } from "@/components/DebtShell";
-import { DebtTransactionModal } from "@/components/DebtTransactionModal";
+import { LiabilityShell } from "@/components/LiabilityShell";
+import { LiabilityTransactionModal } from "@/components/LiabilityTransactionModal";
 import { FundShell } from "@/components/FundShell";
 import { BondShell, type BondShellEntry } from "@/components/BondShell";
 import { DepositShell } from "@/components/DepositShell";
@@ -37,13 +37,13 @@ import { calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
 import { recalcPreciousMetalPositions } from "@/lib/metal/recalcPosition";
 import { calculateWealthCashDividendProfit, recalcWealthPositions } from "@/lib/wealth-position";
 import { getMaintainedAccountBalances, recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
-import { computeDebtDisplaySummary } from "@/lib/server/debt-display-summary";
+import { computeLiabilityDisplaySummary } from "@/lib/server/liability-display-summary";
 import {
-  applyDebtRowEntryMetrics,
-  buildDebtDetailEntriesViewData,
-  buildDebtRepaymentScheduleRows,
-  buildDebtRowsViewData,
-} from "@/lib/server/debt-view-data";
+  applyLiabilityRowEntryMetrics,
+  buildLiabilityDetailEntriesViewData,
+  buildLiabilityRepaymentScheduleRows,
+  buildLiabilityRowsViewData,
+} from "@/lib/server/liability-view-data";
 import { loadCreditBillPageData } from "@/lib/server/credit-bill-page-data";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
 import { prepareEntryUndo, saveEntryUndo } from "@/lib/server/entry-undo";
@@ -93,7 +93,7 @@ import { resolveOrCreateWealthAccount } from "@/lib/server/wealth-account";
 import { createCreditCardInstallmentPlan } from "@/lib/server/credit-card-installment";
 import { regularInvestFormAction } from "@/lib/server/sidebar-actions/regular-invest-actions";
 import { fillFundNavFromCache } from "@/lib/server/sidebar-actions/fund-actions";
-import { createDebtTransaction } from "@/lib/server/sidebar-actions/debt-actions";
+import { createLiabilityTransaction } from "@/lib/server/sidebar-actions/liability-actions";
 import {
   createReimbursement,
   deleteReimbursement,
@@ -182,7 +182,7 @@ type AccountQuickEditSource = {
   groupId?: string | null;
   institutionId?: string | null;
   counterpartyId?: string | null;
-  debtDirection?: string | null;
+  liabilityDirection?: string | null;
   isConsumerLoan?: boolean | null;
   loanType?: string | null;
   billingDay?: number | null;
@@ -197,7 +197,7 @@ type AccountQuickEditSource = {
   tradingCalendar?: string | null;
   fixedAssetType?: string | null;
   /** 仅当查询带出该关系时才回填约定（undefined = 没查，语义上不能当作「清空」） */
-  DebtAgreement?: { annualRate?: unknown; termValue?: unknown; dueDate?: Date | null } | null;
+  SettlementAgreement?: { annualRate?: unknown; termValue?: unknown; dueDate?: Date | null } | null;
 };
 
 function toAccountQuickEditValue(account: AccountQuickEditSource): AccountQuickEditValue {
@@ -210,7 +210,7 @@ function toAccountQuickEditValue(account: AccountQuickEditSource): AccountQuickE
     groupId: account.groupId,
     institutionId: account.institutionId,
     counterpartyId: account.counterpartyId,
-    debtDirection: account.debtDirection,
+    liabilityDirection: account.liabilityDirection,
     isConsumerLoan: account.isConsumerLoan,
     loanType: account.loanType,
     billingDay: account.billingDay,
@@ -224,11 +224,11 @@ function toAccountQuickEditValue(account: AccountQuickEditSource): AccountQuickE
     fundUnitsDecimals: account.fundUnitsDecimals,
     tradingCalendar: account.tradingCalendar,
     fixedAssetType: account.fixedAssetType,
-    ...(account.DebtAgreement !== undefined
+    ...(account.SettlementAgreement !== undefined
       ? {
-          agreementAnnualRate: account.DebtAgreement?.annualRate == null ? "" : String(account.DebtAgreement.annualRate),
-          agreementTermValue: account.DebtAgreement?.termValue == null ? "" : String(account.DebtAgreement.termValue),
-          agreementDueDate: account.DebtAgreement?.dueDate ? formatDateUtc(account.DebtAgreement.dueDate) : "",
+          agreementAnnualRate: account.SettlementAgreement?.annualRate == null ? "" : String(account.SettlementAgreement.annualRate),
+          agreementTermValue: account.SettlementAgreement?.termValue == null ? "" : String(account.SettlementAgreement.termValue),
+          agreementDueDate: account.SettlementAgreement?.dueDate ? formatDateUtc(account.SettlementAgreement.dueDate) : "",
         }
       : {}),
   };
@@ -467,7 +467,9 @@ export default async function Home({
     fundPage?: string;
     showCleared?: string;
     fixedAssetType?: string;
-    debtPerson?: string;
+    liabilityPerson?: string;
+    loanType?: string;
+    /** Legacy alias of `loanType` (pre-2026-10-06 terminology). */
     debtLoanType?: string;
     detailAll?: string;
     detailFilterDate?: string;
@@ -489,43 +491,53 @@ export default async function Home({
   const t = await getServerT();
   const params = await searchParams;
   await connection();
+  // 2026-10-06 口径定版：视图参数值 debt → liability，旧值 view=debt 永久保留为别名。
+  const rawViewParamValue = typeof params.view === "string" ? params.view.trim() : "";
+  const viewParamValue = rawViewParamValue === "debt" ? "liability" : rawViewParamValue;
   const accountId = typeof params?.accountId === "string" ? params.accountId.trim() : "";
   const accountName = typeof params?.account === "string" ? params.account.trim() : "";
   const tagIdParam = typeof params?.tagId === "string" ? params.tagId.trim() : "";
   const fixedAssetTypeParam = typeof params?.fixedAssetType === "string" ? params.fixedAssetType.trim() : "";
   // If no account is selected, default to the overview page.
-  if (!accountId && !accountName && !tagIdParam && params?.view !== "debt" && params?.view !== "investproperty" && params?.view !== "allcash") {
+  if (!accountId && !accountName && !tagIdParam && viewParamValue !== "liability" && viewParamValue !== "investproperty" && viewParamValue !== "allcash") {
     redirect("/overview");
   }
   const viewParam = tagIdParam
     ? "detail"
-    : params?.view === "bill"
+    : viewParamValue === "bill"
       ? "bill"
-      : params?.view === "detail"
+      : viewParamValue === "detail"
         ? "detail"
-        : params?.view === "allcash"
+        : viewParamValue === "allcash"
           ? "allcash"
-        : params?.view === "investfund"
+        : viewParamValue === "investfund"
           ? "investfund"
-        : params?.view === "investmoney"
+        : viewParamValue === "investmoney"
           ? "investmoney"
-          : params?.view === "investwealth"
+          : viewParamValue === "investwealth"
             ? "investwealth"
-            : params?.view === "investbond"
+            : viewParamValue === "investbond"
               ? "investbond"
-            : params?.view === "investstock"
+            : viewParamValue === "investstock"
               ? "investstock"
-              : params?.view === "investproperty"
+              : viewParamValue === "investproperty"
                 ? "investproperty"
-                : params?.view === "regularinvest"
+                : viewParamValue === "regularinvest"
                   ? "regularinvest"
-                  : params?.view === "debt"
-                    ? "debt"
-                    : params?.view === "deposit"
+                  : viewParamValue === "liability"
+                    ? "liability"
+                    : viewParamValue === "deposit"
                       ? "deposit"
                       : "";
-  const debtPersonParam = typeof params?.debtPerson === "string" ? params.debtPerson.trim() : "";
-  const debtLoanTypeParam = normalizeLoanType(typeof params?.debtLoanType === "string" ? params.debtLoanType : "");
+  const liabilityPersonParam = typeof params?.liabilityPerson === "string" ? params.liabilityPerson.trim() : "";
+  // 2026-10-06 口径定版：贷款类型参数 debtLoanType → loanType，旧值永久保留为别名。
+  const liabilityLoanTypeParam = normalizeLoanType(
+    typeof params?.loanType === "string"
+      ? params.loanType
+      : typeof params?.debtLoanType === "string"
+        ? params.debtLoanType
+        : "",
+  );
   const billMonthParam = typeof params?.billMonth === "string" ? params.billMonth.trim() : "";
   const billPageParam = typeof params?.billPage === "string" ? parseInt(params.billPage, 10) : 1;
   const billPage = Number.isFinite(billPageParam) && billPageParam >= 1 ? billPageParam : 1;
@@ -537,7 +549,7 @@ export default async function Home({
   // 注意：只放宽【类型类】条件；占位符 / 停用 / 同所有人 这类条件仍须保留。
   const restrictAccountTypes = await getServerAccountDropdownRestrictType();
   const accountLabelFields = accountLabelFieldsFromCookieValue(cookieStore.get(ACCOUNT_LABEL_FIELDS_COOKIE)?.value);
-  const isAllCashViewParam = params?.view === "allcash";
+  const isAllCashViewParam = viewParamValue === "allcash";
   const detailPaginationPref = decodeDetailPaginationPreference(
     cookieStore.get(detailPaginationCookieName(isAllCashViewParam ? ALL_CASH_DETAIL_SCOPE_ID : accountId))?.value,
   );
@@ -622,14 +634,14 @@ export default async function Home({
   const metalTypes = preciousMetalDictionaries.types;
   const metalUnits = preciousMetalDictionaries.units;
   // Account balance/active state changes frequently and drives financial totals.
-  // Read accounts fresh so sidebar, debt view, and detail pages use one source of truth.
+  // Read accounts fresh so sidebar, liability view, and detail pages use one source of truth.
   const accounts = await prisma.account.findMany({
     where: { isPlaceholder: { not: true }, ...hidFilter },
     include: {
       Institution: true,
       Counterparty: true,
       AccountGroup: true,
-      DebtAgreement: { select: { annualRate: true, termValue: true, dueDate: true } },
+      SettlementAgreement: { select: { annualRate: true, termValue: true, dueDate: true } },
     },
     orderBy: [{ isActive: "desc" }, { name: "asc" }],
   });
@@ -643,7 +655,7 @@ export default async function Home({
     ? await getCreditBillAccountIds(prisma, selectedAccount)
     : [];
   const billStorageAccountId = billAccountIds[0] ?? selectedAccount?.id ?? "";
-  const isDebtAccount = isLoanOrSettlementAccountKind(selectedAccount?.kind);
+  const isLiabilityAccount = isLoanOrSettlementAccountKind(selectedAccount?.kind);
   const isInvestAccount = selectedAccount ? isPureInvestmentAccount(selectedAccount) : false;
   const isDepositView = selectedAccount ? isDepositAccount(selectedAccount) : false;
   const isOverview = !viewParam && !accountId && !accountName;
@@ -657,9 +669,9 @@ export default async function Home({
     viewParam && INVEST_FAMILY_VIEWS.has(viewParam) && isInvestAccount && accountInvestProductType
       ? getInvestmentAccountView(selectedAccount)
       : viewParam;
-  const view: "bill" | "detail" | "allcash" | "investfund" | "investmoney" | "investwealth" | "investbond" | "investstock" | "investproperty" | "regularinvest" | "debt" | "overview" | "deposit" | "insurance" =
-    isDebtAccount
-      ? "debt"
+  const view: "bill" | "detail" | "allcash" | "investfund" | "investmoney" | "investwealth" | "investbond" | "investstock" | "investproperty" | "regularinvest" | "liability" | "overview" | "deposit" | "insurance" =
+    isLiabilityAccount
+      ? "liability"
       : normalizedViewParam
         ? normalizedViewParam
         : isBillAccount
@@ -818,14 +830,14 @@ export default async function Home({
   const entryDisplayDate = (e: Parameters<typeof getDetailEntryDisplayDate>[0]) => getDetailEntryDisplayDate(e, flowAccountIdOf(e));
   const entries = [...rawEntries].sort((a, b) => compareDetailEntriesDesc(a, b, isAllCashView ? undefined : accountId));
   const accountMetaById = new Map(accounts.map((account) => [account.id, account]));
-  const isSettlementDebtAccountId = (id?: string | null) => {
+  const isSettlementLiabilityAccountId = (id?: string | null) => {
     if (!id) return false;
     const account = accountMetaById.get(id);
     if (!account) return false;
     return account.kind === AccountKind.settlement || (account.kind === AccountKind.loan && !!account.counterpartyId);
   };
   const isCreditCardRepaymentForDisplay = (e: DetailExportEntryLike) => {
-    if (isSettlementDebtAccountId(e.accountId) || isSettlementDebtAccountId(e.toAccountId)) return false;
+    if (isSettlementLiabilityAccountId(e.accountId) || isSettlementLiabilityAccountId(e.toAccountId)) return false;
     return isCreditCardRepaymentTransfer({
       type: e.type,
       accountKind: e.account?.kind ?? accountMetaById.get(e.accountId ?? "")?.kind ?? null,
@@ -1104,7 +1116,7 @@ export default async function Home({
     color: tag.color,
   }));
 
-  const [cashDisplayBalanceByAccountId, insuranceDisplayBalanceByAccountId, debtDisplaySummary, investBalances] = await Promise.all([
+  const [cashDisplayBalanceByAccountId, insuranceDisplayBalanceByAccountId, liabilityDisplaySummary, investBalances] = await Promise.all([
     getMaintainedAccountBalances(
       accounts
         .filter((account) => !isPureInvestmentAccount(account) && account.kind !== AccountKind.insurance)
@@ -1122,7 +1134,7 @@ export default async function Home({
         .map((account) => account.id),
       hidFilter,
     ),
-    computeDebtDisplaySummary(ctx),
+    computeLiabilityDisplaySummary(ctx),
     loadInvestBalances(JSON.stringify(hidFilter)),
   ]);
   const investBalByAccountId = new Map(Object.entries(investBalances));
@@ -1134,7 +1146,7 @@ export default async function Home({
       : account.kind === AccountKind.insurance
         ? insuranceDisplayBalanceByAccountId.get(account.id) ?? 0
         : isLoanOrSettlementAccountKind(account.kind)
-          ? debtDisplaySummary.balanceByAccountId.get(account.id) ?? cashDisplayBalanceByAccountId.get(account.id) ?? toNumber(account.balance)
+          ? liabilityDisplaySummary.balanceByAccountId.get(account.id) ?? cashDisplayBalanceByAccountId.get(account.id) ?? toNumber(account.balance)
           : cashDisplayBalanceByAccountId.get(account.id) ?? toNumber(account.balance);
     accountDisplayValueById.set(account.id, value);
   }
@@ -1208,10 +1220,10 @@ export default async function Home({
       institutionId: a.institutionId ?? "",
       institutionType: a.Institution?.type ?? "",
       counterpartyId: a.counterpartyId ?? "",
-      isSettlementDebt: a.kind === AccountKind.settlement || (a.kind === AccountKind.loan && !!a.counterpartyId),
+      isSettlementAccount: a.kind === AccountKind.settlement || (a.kind === AccountKind.loan && !!a.counterpartyId),
       isConsumerLoan: a.isConsumerLoan === true,
       investProductType: a.investProductType,
-      debtDirection: a.debtDirection ?? null,
+      liabilityDirection: a.liabilityDirection ?? null,
       billingDay: a.billingDay ?? null,
       subLabel: display.subLabel,
       currency: a.currency ?? "CNY",
@@ -1220,7 +1232,7 @@ export default async function Home({
 
   // Build hierarchical SmartSelect options: grouped by AccountGroup (isHeader),
   // ungrouped accounts shown flat with institution as subLabel
-  type SSOpt = { id: string; label: string; subLabel?: string; title?: string; isHeader?: boolean; isGroup?: boolean; parentId?: string; kind?: string | null; investProductType?: string | null; debtDirection?: string | null; institutionId?: string | null; institutionType?: string | null; counterpartyId?: string | null; isSettlementDebt?: boolean | null; isConsumerLoan?: boolean | null; billingDay?: number | null; currency?: string | null };
+  type SSOpt = { id: string; label: string; subLabel?: string; title?: string; isHeader?: boolean; isGroup?: boolean; parentId?: string; kind?: string | null; investProductType?: string | null; liabilityDirection?: string | null; institutionId?: string | null; institutionType?: string | null; counterpartyId?: string | null; isSettlementAccount?: boolean | null; isConsumerLoan?: boolean | null; billingDay?: number | null; currency?: string | null };
   const joinSSSubLabel = (parts: Array<string | null | undefined>) => {
     const result: string[] = [];
     const seen = new Set<string>();
@@ -1256,11 +1268,11 @@ export default async function Home({
         parentId: `group:${a.groupId}`,
         kind: a.kind,
         investProductType: a.investProductType ?? null,
-        debtDirection: a.debtDirection ?? null,
+        liabilityDirection: a.liabilityDirection ?? null,
         institutionId: a.institutionId || null,
         institutionType: a.institutionType || null,
         counterpartyId: a.counterpartyId || null,
-        isSettlementDebt: a.isSettlementDebt ?? null,
+        isSettlementAccount: a.isSettlementAccount ?? null,
         isConsumerLoan: a.isConsumerLoan ?? null,
         billingDay: a.billingDay ?? null,
         currency: a.currency ?? null,
@@ -1274,11 +1286,11 @@ export default async function Home({
       title: a.hoverTitle,
       kind: a.kind,
       investProductType: a.investProductType ?? null,
-      debtDirection: a.debtDirection ?? null,
+      liabilityDirection: a.liabilityDirection ?? null,
       institutionId: a.institutionId || null,
       institutionType: a.institutionType || null,
       counterpartyId: a.counterpartyId || null,
-      isSettlementDebt: a.isSettlementDebt ?? null,
+      isSettlementAccount: a.isSettlementAccount ?? null,
       isConsumerLoan: a.isConsumerLoan ?? null,
       billingDay: a.billingDay ?? null,
       currency: a.currency ?? null,
@@ -1315,7 +1327,7 @@ export default async function Home({
         institutionType: a.Institution?.type ?? "",
         counterpartyId: a.counterpartyId ?? "",
         investProductType: a.investProductType,
-        debtDirection: a.debtDirection ?? null,
+        liabilityDirection: a.liabilityDirection ?? null,
         billingDay: a.billingDay ?? null,
         subLabel: display.subLabel,
         currency: a.currency ?? "CNY",
@@ -1398,21 +1410,21 @@ export default async function Home({
     : accountOptions.filter((a) => isOrdinaryTransferAccount(a));
   const stockAccountSSOptions = buildAccountSSOptions(a => a.kind === "investment" && a.investProductType === "stock");
   const propertyAccountSSOptions = buildAccountSSOptions(a => a.kind === "investment" && a.investProductType === "property");
-  const debtTransferAccountSSOptions = buildAccountSSOptions(a => a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet" || a.kind === "bank_credit");
+  const liabilityTransferAccountSSOptions = buildAccountSSOptions(a => a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet" || a.kind === "bank_credit");
   // 不是所有往来对象都能当「往来款对象」—— 常用商户（merchant）排除
-  const debtCounterpartyOptions = counterparties.filter((counterparty) => isSettlementCounterpartyType(counterparty.type));
+  const liabilityCounterpartyOptions = counterparties.filter((counterparty) => isSettlementCounterpartyType(counterparty.type));
   // Only receivable accounts linked to explicitly reimbursable counterparties expose reimbursement.
-  const reimbursableCounterpartyOptions = debtCounterpartyOptions.filter((counterparty) => counterparty.isReimbursable === true);
+  const reimbursableCounterpartyOptions = liabilityCounterpartyOptions.filter((counterparty) => counterparty.isReimbursable === true);
   const reimbursableCounterpartyIdSet = new Set(reimbursableCounterpartyOptions.map((counterparty) => counterparty.id));
   // The detail-list action is gated by the selected rows' reimbursement-enabled accounts.
   const reimbursementAllowedAdvanceAccountIds = accounts
     .filter((account) => !!account.counterpartyId && reimbursableCounterpartyIdSet.has(account.counterpartyId))
     .map((account) => account.id);
   const loanSourceInstitutions = institutions.filter((institution) => isInstitutionTypeOf(institution.type, LOAN_DIALOG_INSTITUTION_TYPE_VALUES));
-  const debtObjectOptions: SSOpt[] = debtCounterpartyOptions.length > 0
+  const liabilityObjectOptions: SSOpt[] = liabilityCounterpartyOptions.length > 0
     ? [
-        { id: "debt-counterparty-header", label: t("txForm.counterparty"), isHeader: true },
-        ...debtCounterpartyOptions.map((counterparty) => ({
+        { id: "counterparty-header", label: t("txForm.counterparty"), isHeader: true },
+        ...liabilityCounterpartyOptions.map((counterparty) => ({
           id: `counterparty:${counterparty.id}`,
           label: counterparty.shortName?.trim() || counterparty.name,
           subLabel: institutionTypeLabel(counterparty.type, t),
@@ -1421,7 +1433,7 @@ export default async function Home({
     : [];
   const loanObjectOptions: SSOpt[] = loanSourceInstitutions.length > 0
     ? [
-        { id: "loan-institution-source-header", label: t("debtTx.loanInstitutionHeader"), isHeader: true },
+        { id: "loan-institution-source-header", label: t("liabilityTx.loanInstitutionHeader"), isHeader: true },
         ...loanSourceInstitutions.map((institution) => ({
           id: `institution:${institution.id}`,
           label: institution.shortName?.trim() || institution.name,
@@ -1450,7 +1462,7 @@ export default async function Home({
       institutionId: a.institutionId || null,
       institutionType: a.institutionType || null,
       counterpartyId: a.counterpartyId || null,
-      isSettlementDebt: a.isSettlementDebt ?? null,
+      isSettlementAccount: a.isSettlementAccount ?? null,
       isConsumerLoan: a.isConsumerLoan ?? null,
       label: a.label,
       title: a.hoverTitle,
@@ -1458,7 +1470,7 @@ export default async function Home({
       subLabel: joinSSSubLabel([a.groupName, a.subLabel]),
       currency: a.currency,
     }));
-  const debtTransferAccountList = accountOptions
+  const liabilityTransferAccountList = accountOptions
     .filter(a => a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet" || a.kind === "bank_credit")
     .map(a => ({
       id: a.id,
@@ -1468,7 +1480,7 @@ export default async function Home({
       institutionId: a.institutionId || null,
       institutionType: a.institutionType || null,
       counterpartyId: a.counterpartyId || null,
-      isSettlementDebt: a.isSettlementDebt ?? null,
+      isSettlementAccount: a.isSettlementAccount ?? null,
       isConsumerLoan: a.isConsumerLoan ?? null,
       label: a.label,
       title: a.hoverTitle,
@@ -1500,14 +1512,14 @@ export default async function Home({
     merchantId: counterparties.filter((it) => it.type === "merchant").map((it) => ({ id: it.id, name: it.shortName?.trim() || it.name })),
   };
 
-  const debtAccounts = accounts.filter((account) => isLoanOrSettlementAccountKind(account.kind) && account.isActive);
-  const debtAccountEditData = debtAccounts.map(toAccountQuickEditValue);
+  const liabilityAccounts = accounts.filter((account) => isLoanOrSettlementAccountKind(account.kind) && account.isActive);
+  const liabilityAccountEditData = liabilityAccounts.map(toAccountQuickEditValue);
   const loanRepaymentPlans =
-    view === "debt" && debtAccounts.length > 0
+    view === "liability" && liabilityAccounts.length > 0
       ? await prisma.regularInvestPlan.findMany({
           where: {
             ...hid,
-            accountId: { in: debtAccounts.map((account) => account.id) },
+            accountId: { in: liabilityAccounts.map((account) => account.id) },
             fundCode: "loan_repayment",
             status: { in: [RegularInvestStatus.active, RegularInvestStatus.paused] },
           },
@@ -1531,36 +1543,36 @@ export default async function Home({
         })
       : [];
   const loanRateAdjustmentsByAccountId =
-    view === "debt" && loanRepaymentPlans.length > 0
+    view === "liability" && loanRepaymentPlans.length > 0
       ? await listLoanRateAdjustmentsByAccountIds({
           householdId,
           accountIds: loanRepaymentPlans.map((plan) => plan.accountId),
         })
       : new Map<string, Array<{ effectiveDate: string; annualRate: number }>>();
-  const debtBorrowLprDiscountEntries =
-    view === "debt" && debtAccounts.length > 0
+  const liabilityBorrowLprDiscountEntries =
+    view === "liability" && liabilityAccounts.length > 0
       ? await prisma.txRecord.findMany({
           where: {
             deletedAt: null,
             ...hid,
-            source: { in: ["debt_borrow_in", "debt_financed_purchase"] },
-            accountId: { in: debtAccounts.map((account) => account.id) },
+            source: { in: ["liability_borrow_in", "liability_financed_purchase"] },
+            accountId: { in: liabilityAccounts.map((account) => account.id) },
           },
           select: { accountId: true, date: true, note: true, toNote: true },
           orderBy: [{ date: "desc" }, { createdAt: "desc" }],
         })
       : [];
-  const debtBorrowLprDiscountByAccountId = new Map<string, number>();
-  const debtBorrowStartDateByAccountId = new Map<string, string>();
-  for (const entry of debtBorrowLprDiscountEntries) {
+  const liabilityBorrowLprDiscountByAccountId = new Map<string, number>();
+  const liabilityBorrowStartDateByAccountId = new Map<string, string>();
+  for (const entry of liabilityBorrowLprDiscountEntries) {
     const discount = parseMortgageLprDiscountFromText(entry.note) ?? parseMortgageLprDiscountFromText(entry.toNote);
-    if (discount != null && !debtBorrowLprDiscountByAccountId.has(entry.accountId)) {
-      debtBorrowLprDiscountByAccountId.set(entry.accountId, discount);
+    if (discount != null && !liabilityBorrowLprDiscountByAccountId.has(entry.accountId)) {
+      liabilityBorrowLprDiscountByAccountId.set(entry.accountId, discount);
     }
     const dateKey = formatDateUtc(entry.date);
-    const existingDate = debtBorrowStartDateByAccountId.get(entry.accountId);
+    const existingDate = liabilityBorrowStartDateByAccountId.get(entry.accountId);
     if (!existingDate || dateKey < existingDate) {
-      debtBorrowStartDateByAccountId.set(entry.accountId, dateKey);
+      liabilityBorrowStartDateByAccountId.set(entry.accountId, dateKey);
     }
   }
   const loanRepaymentPlanByAccountId = new Map<string, (typeof loanRepaymentPlans)[number]>();
@@ -1576,36 +1588,36 @@ export default async function Home({
     }
   }
   const {
-    debtRows,
-    debtRowsForShell,
-    selectedDebtKey,
-    selectedDebtRow,
-    selectedDebtObjectValue,
-    ordinaryDebtAccountIds,
-  } = buildDebtRowsViewData({
-    debtAccounts,
+    liabilityRows,
+    liabilityRowsForShell,
+    selectedLiabilityKey,
+    selectedLiabilityRow,
+    selectedLiabilityObjectValue,
+    ordinaryLiabilityAccountIds,
+  } = buildLiabilityRowsViewData({
+    liabilityAccounts,
     cashDisplayBalanceByAccountId,
     loanRepaymentPlanByAccountId,
     loanRateAdjustmentsByAccountId,
-    debtBorrowLprDiscountByAccountId,
-    debtBorrowStartDateByAccountId,
+    liabilityBorrowLprDiscountByAccountId,
+    liabilityBorrowStartDateByAccountId,
     selectedAccountId: selectedAccount?.id,
     selectedAccountKind: selectedAccount?.kind,
-    debtPersonParam,
-    debtLoanTypeParam,
+    liabilityPersonParam,
+    liabilityLoanTypeParam,
   });
-  const selectedRepaymentPlan = selectedDebtRow ? loanRepaymentPlanByAccountId.get(selectedDebtRow.accountId) ?? null : null;
-  const selectedAutoDebitPlan = selectedDebtRow ? loanAutoDebitPlanByAccountId.get(selectedDebtRow.accountId) ?? null : null;
-  const selectedLoanTypeForLauncher = selectedDebtRow?.isLoan
-    ? resolveLoanTypeValue(selectedDebtRow.loanType, selectedDebtRow.isConsumerLoan)
-    : debtLoanTypeParam;
-  const isDebtLoanLauncherContext = view === "debt" && !!selectedLoanTypeForLauncher;
-  // Debt view header title: 贷款上下文显示"贷款"，往来款上下文显示"往来款"，
+  const selectedRepaymentPlan = selectedLiabilityRow ? loanRepaymentPlanByAccountId.get(selectedLiabilityRow.accountId) ?? null : null;
+  const selectedAutoDebitPlan = selectedLiabilityRow ? loanAutoDebitPlanByAccountId.get(selectedLiabilityRow.accountId) ?? null : null;
+  const selectedLoanTypeForLauncher = selectedLiabilityRow?.isLoan
+    ? resolveLoanTypeValue(selectedLiabilityRow.loanType, selectedLiabilityRow.isConsumerLoan)
+    : liabilityLoanTypeParam;
+  const isLiabilityLoanLauncherContext = view === "liability" && !!selectedLoanTypeForLauncher;
+  // Liability view header title: 贷款上下文显示"贷款"，往来款上下文显示"往来款"，
   // 不再把整个负债视图硬编码成"贷款"。
   const selectedAccountLabel = (() => {
     if (tagIdParam) return tags.find((tag) => tag.id === tagIdParam)?.name || t("statistics.allAccounts");
     if (isAllCashView) return t("nav.allCashEntries");
-    if (view === "debt") return isDebtLoanLauncherContext ? t("account.kind.loan") : t("sidebar.section.liabilities");
+    if (view === "liability") return isLiabilityLoanLauncherContext ? t("account.kind.loan") : t("sidebar.section.settlements");
     if (view === "investproperty") return t("txForm.fixedAssetToggle");
     if (selectedAccount) {
       const display = buildAccountDisplayOption({
@@ -1628,18 +1640,18 @@ export default async function Home({
     }
     return accountName || "";
   })();
-  const repaymentScheduleRows = buildDebtRepaymentScheduleRows({ selectedDebtRow, selectedRepaymentPlan });
+  const repaymentScheduleRows = buildLiabilityRepaymentScheduleRows({ selectedLiabilityRow, selectedRepaymentPlan });
 
   const loanRepaymentPlanIds = loanRepaymentPlans.map((plan) => plan.id);
-  const debtEntriesRaw =
-    view === "debt" && debtAccounts.length > 0
+  const liabilityEntriesRaw =
+    view === "liability" && liabilityAccounts.length > 0
       ? await prisma.txRecord.findMany({
           where: {
             deletedAt: null,
             ...hid,
             OR: [
-              { accountId: { in: debtAccounts.map((account) => account.id) } },
-              { toAccountId: { in: debtAccounts.map((account) => account.id) } },
+              { accountId: { in: liabilityAccounts.map((account) => account.id) } },
+              { toAccountId: { in: liabilityAccounts.map((account) => account.id) } },
               ...(loanRepaymentPlanIds.length > 0 ? [{ regularInvestPlanId: { in: loanRepaymentPlanIds } }] : []),
             ],
           },
@@ -1658,9 +1670,9 @@ export default async function Home({
             counterpartyInstitutionId: true,
             note: true,
             toNote: true,
-            debtPrincipalAmount: true,
-            debtInterestAmount: true,
-            debtFeeAmount: true,
+            principalAmount: true,
+            interestAmount: true,
+            feeAmount: true,
             regularInvestPlanId: true,
             installmentNo: true,
             fundSubtype: true,
@@ -1674,42 +1686,42 @@ export default async function Home({
           take: 50000,
         })
       : [];
-  applyDebtRowEntryMetrics({
-    debtRows,
-    debtEntriesRaw,
+  applyLiabilityRowEntryMetrics({
+    liabilityRows,
+    liabilityEntriesRaw,
     loanRepaymentPlans,
     loanRepaymentPlanByAccountId,
     loanRateAdjustmentsByAccountId,
     displayAccountId: accountId,
   });
-  const debtShellRemainingTotal = debtRowsForShell.filter((row) => !row.parentKey).reduce((sum, row) => sum + row.remainingTotal, 0);
-  const debtDisplaySummaryValue = debtShellRemainingTotal;
-  const selectedDebtAccountIds = new Set(selectedDebtRow?.accountIds ?? ordinaryDebtAccountIds);
-  const debtAccountLabelById = new Map(
-    debtAccounts.map((account) => [
+  const liabilityShellRemainingTotal = liabilityRowsForShell.filter((row) => !row.parentKey).reduce((sum, row) => sum + row.remainingTotal, 0);
+  const liabilityDisplaySummaryValue = liabilityShellRemainingTotal;
+  const selectedLiabilityAccountIds = new Set(selectedLiabilityRow?.accountIds ?? ordinaryLiabilityAccountIds);
+  const liabilityAccountLabelById = new Map(
+    liabilityAccounts.map((account) => [
       account.id,
       (account.Institution?.name ? `${account.Institution.name}·${account.name}` : account.name),
     ]),
   );
-  const debtDirectionByAccountId = new Map(
-    debtAccounts.map((account) => [account.id, account.debtDirection ?? null]),
+  const liabilityDirectionByAccountId = new Map(
+    liabilityAccounts.map((account) => [account.id, account.liabilityDirection ?? null]),
   );
   const selectedLoanRepaymentPlanIds = new Set(
     loanRepaymentPlans
-      .filter((plan) => selectedDebtAccountIds.has(plan.accountId))
+      .filter((plan) => selectedLiabilityAccountIds.has(plan.accountId))
       .map((plan) => plan.id),
   );
-  const { debtDetailEntries, repaymentScheduleRows: finalRepaymentScheduleRows } = buildDebtDetailEntriesViewData({
-    debtEntriesRaw,
-    selectedDebtAccountIds,
+  const { liabilityDetailEntries, repaymentScheduleRows: finalRepaymentScheduleRows } = buildLiabilityDetailEntriesViewData({
+    liabilityEntriesRaw,
+    selectedLiabilityAccountIds,
     selectedLoanRepaymentPlanIds,
-    selectedDebtRow,
+    selectedLiabilityRow,
     selectedRepaymentPlan,
     selectedAutoDebitPlan,
     repaymentScheduleRows,
     accountLabelById,
     accountTitleById,
-    debtDirectionByAccountId,
+    liabilityDirectionByAccountId,
     displayAccountId: accountId,
   });
 
@@ -1760,7 +1772,7 @@ export default async function Home({
     view,
     t,
     categoryLabels,
-    isSettlementDebtAccountId,
+    isSettlementLiabilityAccountId,
     isCreditCardRepaymentForDisplay,
   });
   const missingBillingDayForBill =
@@ -1774,7 +1786,7 @@ export default async function Home({
       : selectedAccount.kind === AccountKind.bank_credit
         ? creditBillBalanceValue
       : isLoanOrSettlementAccountKind(selectedAccount.kind)
-        ? debtDisplaySummary.balanceByAccountId.get(selectedAccount.id) ?? cashDisplayBalanceByAccountId.get(selectedAccount.id) ?? toNumber(selectedAccount.balance)
+        ? liabilityDisplaySummary.balanceByAccountId.get(selectedAccount.id) ?? cashDisplayBalanceByAccountId.get(selectedAccount.id) ?? toNumber(selectedAccount.balance)
         : cashDisplayBalanceByAccountId.get(selectedAccount.id) ?? toNumber(selectedAccount.balance)
     : 0;
   const selectedAccountFxRate = selectedAccount ? fxRateByCurrency.get(normalizeCurrency(selectedAccount.currency)) : null;
@@ -1981,8 +1993,8 @@ export default async function Home({
     accountId: linkedFund ? (linkedFundIsCashIn ? linkedFundAccountId : linkedFundCashAccountId) : e.accountId,
     accountName: linkedFund ? (linkedFundIsCashIn ? linkedFundAccountName : linkedFundCashAccountName) : e.accountName,
     accountKind: linkedFund ? (linkedFundIsCashIn ? linkedFund?.Account?.kind ?? null : linkedFund?.CashAccount?.kind ?? e.account?.kind ?? null) : e.account?.kind ?? null,
-    accountDebtDirection: e.account?.debtDirection ?? null,
-    accountIsSettlementDebt: isSettlementDebtAccountId(linkedFund ? (linkedFundIsCashIn ? linkedFundAccountId : linkedFundCashAccountId) : e.accountId),
+    accountLiabilityDirection: e.account?.liabilityDirection ?? null,
+    accountIsSettlementAccount: isSettlementLiabilityAccountId(linkedFund ? (linkedFundIsCashIn ? linkedFundAccountId : linkedFundCashAccountId) : e.accountId),
     counterpartyInstitutionId: e.counterpartyInstitutionId ?? null,
     counterpartyInstitutionName: e.counterpartyInstitutionName ?? null,
     originalCurrency: e.originalCurrency ?? null,
@@ -1992,8 +2004,8 @@ export default async function Home({
     toAccountId: linkedFund ? (linkedFundIsCashIn ? linkedFundCashAccountId : linkedFundAccountId) : e.toAccountId,
     toAccountName: linkedFund ? (linkedFundIsCashIn ? linkedFundCashAccountName : linkedFundAccountName) : e.toAccountName,
     toAccountKind: linkedFund ? (linkedFundIsCashIn ? linkedFund?.CashAccount?.kind ?? e.toAccount?.kind ?? null : linkedFund?.Account?.kind ?? null) : e.toAccount?.kind ?? null,
-    toAccountDebtDirection: e.toAccount?.debtDirection ?? null,
-    toAccountIsSettlementDebt: isSettlementDebtAccountId(linkedFund ? (linkedFundIsCashIn ? linkedFundCashAccountId : linkedFundAccountId) : e.toAccountId),
+    toAccountLiabilityDirection: e.toAccount?.liabilityDirection ?? null,
+    toAccountIsSettlementAccount: isSettlementLiabilityAccountId(linkedFund ? (linkedFundIsCashIn ? linkedFundCashAccountId : linkedFundAccountId) : e.toAccountId),
     note: linkedWealth
       ? buildWealthCashFlowNote({
           action: linkedWealth.action,
@@ -2013,9 +2025,9 @@ export default async function Home({
     depositProductId: e.depositProductId ?? null,
     source: linkedFund?.source ?? e.source,
     insuranceProductId: e.insuranceProductId ?? null,
-    debtPrincipalAmount: e.debtPrincipalAmount != null ? toNumber(e.debtPrincipalAmount) : null,
-    debtInterestAmount: e.debtInterestAmount != null ? toNumber(e.debtInterestAmount) : null,
-    debtFeeAmount: e.debtFeeAmount != null ? toNumber(e.debtFeeAmount) : null,
+    principalAmount: e.principalAmount != null ? toNumber(e.principalAmount) : null,
+    interestAmount: e.interestAmount != null ? toNumber(e.interestAmount) : null,
+    feeAmount: e.feeAmount != null ? toNumber(e.feeAmount) : null,
     realizedProfit: e.realizedProfit != null ? toNumber(e.realizedProfit) : null,
     depositAnnualRate: linkedWealth?.annualRate != null ? toNumber(linkedWealth.annualRate) : e.depositAnnualRate != null ? toNumber(e.depositAnnualRate) : null,
     depositInterest: linkedWealth?.interest != null ? toNumber(linkedWealth.interest) : e.depositInterest != null ? toNumber(e.depositInterest) : null,
@@ -2886,8 +2898,8 @@ export default async function Home({
   const selectedAccountDisplayValue = selectedAccount
     ? accountDisplayValueById.get(selectedAccount.id) ?? selectedAccountRawBalanceValue
     : selectedAccountRawBalanceValue;
-  const selectedViewHeaderAmount = view === "debt"
-    ? debtDisplaySummaryValue
+  const selectedViewHeaderAmount = view === "liability"
+    ? liabilityDisplaySummaryValue
     : view === "investproperty" && investpropertyFilteredData
       ? investpropertyFilteredData.totalMarketValue
       : selectedAccountDisplayValue;
@@ -2982,9 +2994,9 @@ export default async function Home({
               ) : (
                 <span className="page-title">{selectedAccountLabel || t("statistics.allAccounts")}</span>
               )}
-              {view === "debt" ? (
-                <span className={`tabular-nums font-semibold ${pnlCls(debtDisplaySummaryValue)}`}>
-                  {formatCurrencyMoney(debtDisplaySummaryValue, baseCurrency)}
+              {view === "liability" ? (
+                <span className={`tabular-nums font-semibold ${pnlCls(liabilityDisplaySummaryValue)}`}>
+                  {formatCurrencyMoney(liabilityDisplaySummaryValue, baseCurrency)}
                 </span>
               ) : view === "investproperty" && investpropertyFilteredData ? (
                 <span className={`tabular-nums font-semibold ${pnlCls(investpropertyFilteredData.totalMarketValue)}`}>
@@ -3045,10 +3057,10 @@ export default async function Home({
                         )
                       : view === "regularinvest"
                         ? "regular-task"
-                        : view === "debt"
-                          ? isDebtLoanLauncherContext
+                        : view === "liability"
+                          ? isLiabilityLoanLauncherContext
                             ? "loan"
-                            : "debt"
+                            : "settlement"
                           : isInsuranceView
                             ? "insurance"
                             : isBillAccount
@@ -3079,8 +3091,8 @@ export default async function Home({
                   // 取出请走明细里存单行的「取回」操作。
                   defaultDepositSubtype: "buy",
                   defaultInsuranceAccountId: isInsuranceView ? (selectedAccount?.id ?? "") : "",
-                  defaultDebtAccountId: selectedDebtRow?.accountIds?.[0] ?? "",
-                  defaultDebtInstitutionId: selectedDebtObjectValue,
+                  defaultLiabilityAccountId: selectedLiabilityRow?.accountIds?.[0] ?? "",
+                  defaultLiabilityInstitutionId: selectedLiabilityObjectValue,
                   defaultFundCode: isFundLikeInvestView ? selectedFundCode : "",
                   defaultFundName: currentFundDefault?.name ?? "",
                   defaultScheduledTaskType:
@@ -3126,7 +3138,7 @@ export default async function Home({
                   { key: "bond", label: t("entry.kind.bond") },
                   { key: "deposit", label: t("entry.kind.deposit") },
                   { key: "insurance", label: t("entry.kind.insurance") },
-                  { key: "debt", label: t("entry.kind.debt"), disabled: cashAccountList.length === 0 },
+                  { key: "settlement", label: t("entry.kind.settlement"), disabled: cashAccountList.length === 0 },
                   {
                     key: "loan",
                     label: t("entry.kind.loan"),
@@ -3138,13 +3150,13 @@ export default async function Home({
                       { key: "loan", label: t("loan.type.other"), loanType: "other" },
                       {
                         key: "loan",
-                        label: t("debtShell.repayment"),
+                        label: t("liabilityShell.repayment"),
                         mode: "repay_out",
                         ...(selectedLoanTypeForLauncher ? { loanType: selectedLoanTypeForLauncher } : {}),
                       },
                       {
                         key: "loan",
-                        label: t("debtShell.prepayment"),
+                        label: t("liabilityShell.prepayment"),
                         mode: "prepay_out",
                         ...(selectedLoanTypeForLauncher ? { loanType: selectedLoanTypeForLauncher } : {}),
                       },
@@ -3383,33 +3395,33 @@ export default async function Home({
                 action={regularInvestFormAction}
                 showTriggerButton={false}
               />
-              <DebtTransactionModal
-                dialogType="debt"
-                debtAccounts={debtAccounts.filter((account) => !!account.counterpartyId).map((account) => ({
+              <LiabilityTransactionModal
+                dialogType="settlement"
+                liabilityAccounts={liabilityAccounts.filter((account) => !!account.counterpartyId).map((account) => ({
                   id: account.id,
                   kind: account.kind,
-                  label: debtAccountLabelById.get(account.id) ?? account.name,
+                  label: liabilityAccountLabelById.get(account.id) ?? account.name,
                   subLabel: account.Counterparty?.name ? t("txForm.counterparty") : account.Institution?.name ? t("liabilities.institutionDeal") : t("account.kind.loan"),
                   institutionId: account.institutionId ?? null,
                   counterpartyId: account.counterpartyId ?? null,
                   institutionType: account.Institution?.type ?? account.Counterparty?.type ?? null,
                   isInstitutionLoan: false,
                   isConsumerLoan: account.isConsumerLoan === true,
-                  debtDirection: account.debtDirection ?? null,
+                  liabilityDirection: account.liabilityDirection ?? null,
                 }))}
-                cashAccounts={debtTransferAccountList}
-                debtObjectOptions={debtObjectOptions}
-                cashAccountSSOptions={debtTransferAccountSSOptions}
+                cashAccounts={liabilityTransferAccountList}
+                liabilityObjectOptions={liabilityObjectOptions}
+                cashAccountSSOptions={liabilityTransferAccountSSOptions}
                 nestedFieldData={nestedFieldData}
-                defaultDebtAccountId={selectedDebtRow?.isLoan ? "" : selectedDebtRow?.accountIds?.[0] ?? ""}
-                defaultDebtInstitutionId={selectedDebtRow?.isLoan ? "" : selectedDebtObjectValue}
-                defaultCashAccountId={debtTransferAccountList[0]?.id ?? ""}
-                action={createDebtTransaction}
+                defaultLiabilityAccountId={selectedLiabilityRow?.isLoan ? "" : selectedLiabilityRow?.accountIds?.[0] ?? ""}
+                defaultLiabilityInstitutionId={selectedLiabilityRow?.isLoan ? "" : selectedLiabilityObjectValue}
+                defaultCashAccountId={liabilityTransferAccountList[0]?.id ?? ""}
+                action={createLiabilityTransaction}
                 showTriggerButton={false}
               />
-              <DebtTransactionModal
+              <LiabilityTransactionModal
                 dialogType="loan"
-                debtAccounts={debtAccounts.filter((account) =>
+                liabilityAccounts={liabilityAccounts.filter((account) =>
                   // 其他贷款（2026-09-19）：可挂机构或往来对象，都可能需要还款入口；
                   // 机构贷款仍要求有机构且不挂往来对象。
                   account.loanType === "other" ||
@@ -3417,22 +3429,22 @@ export default async function Home({
                 ).map((account) => ({
                   id: account.id,
                   kind: account.kind,
-                  label: debtAccountLabelById.get(account.id) ?? account.name,
+                  label: liabilityAccountLabelById.get(account.id) ?? account.name,
                   subLabel: account.Institution?.name ? t("liabilities.institutionDeal") : t("account.kind.loan"),
                   institutionId: account.institutionId ?? null,
                   counterpartyId: account.counterpartyId ?? null,
                   institutionType: account.Institution?.type ?? account.Counterparty?.type ?? null,
-                  // Keep filtering aligned with /api/v1/debt/repayable-loan-accounts:
+                  // Keep filtering aligned with /api/v1/liability/repayable-loan-accounts:
                   // institution-backed loans have an institution and no counterparty,
-                  // and both bank and debt institutions can be repaid.
+                  // and both bank and lender institutions can be repaid.
                   // 其他贷款挂往来对象时 isInstitutionLoan=false，还款列表靠 kind=loan 放行。
                   isInstitutionLoan: !!account.institutionId && !account.counterpartyId,
                   isConsumerLoan: account.isConsumerLoan === true,
-                  debtDirection: account.debtDirection ?? null,
+                  liabilityDirection: account.liabilityDirection ?? null,
                 }))}
-                cashAccounts={debtTransferAccountList}
-                debtObjectOptions={loanObjectOptions}
-                cashAccountSSOptions={debtTransferAccountSSOptions}
+                cashAccounts={liabilityTransferAccountList}
+                liabilityObjectOptions={loanObjectOptions}
+                cashAccountSSOptions={liabilityTransferAccountSSOptions}
                 nestedFieldData={nestedFieldData}
                 expenseCategories={expenseCategories.map((c) => ({
                   id: c.id,
@@ -3445,10 +3457,10 @@ export default async function Home({
                 }))}
                 fixedAssetAccounts={propertyAccountOptions}
                 fixedAssetAccountSSOptions={propertyAccountSSOptions}
-                defaultDebtAccountId={selectedDebtRow?.isLoan ? selectedDebtRow?.accountIds?.[0] ?? "" : ""}
-                defaultDebtInstitutionId={selectedDebtRow?.isLoan ? selectedDebtObjectValue : ""}
-                defaultCashAccountId={debtTransferAccountList[0]?.id ?? ""}
-                action={createDebtTransaction}
+                defaultLiabilityAccountId={selectedLiabilityRow?.isLoan ? selectedLiabilityRow?.accountIds?.[0] ?? "" : ""}
+                defaultLiabilityInstitutionId={selectedLiabilityRow?.isLoan ? selectedLiabilityObjectValue : ""}
+                defaultCashAccountId={liabilityTransferAccountList[0]?.id ?? ""}
+                action={createLiabilityTransaction}
                 showTriggerButton={false}
               />
               </>
@@ -3533,9 +3545,9 @@ export default async function Home({
                 </ResizableVerticalSplit>
               </div>
             </div>
-          ) : view === "debt" ? (
-            <DebtShell
-              rows={debtRowsForShell.map((row) => ({
+          ) : view === "liability" ? (
+            <LiabilityShell
+              rows={liabilityRowsForShell.map((row) => ({
                 key: row.key,
                 name: row.name,
                 objectType: row.objectType,
@@ -3574,18 +3586,18 @@ export default async function Home({
                 isGroup: row.isGroup,
                 isLoan: row.isLoan,
               }))}
-              selectedKey={selectedDebtKey}
-              selectedLoanType={debtLoanTypeParam}
-              entries={debtDetailEntries}
+              selectedKey={selectedLiabilityKey}
+              selectedLoanType={liabilityLoanTypeParam}
+              entries={liabilityDetailEntries}
               repaymentScheduleRows={finalRepaymentScheduleRows}
-              summaryRemainingTotal={debtShellRemainingTotal}
-              totalPayable={debtDisplaySummary.totalPayable}
-              totalReceivable={debtDisplaySummary.totalReceivable}
+              summaryRemainingTotal={liabilityShellRemainingTotal}
+              totalPayable={liabilityDisplaySummary.totalPayable}
+              totalReceivable={liabilityDisplaySummary.totalReceivable}
               isRedUp={isRedUp}
               accountOptions={accountOptions}
               categoryOptions={categoryBatchReplaceOptions}
-              accountEditData={debtAccountEditData}
-              loanEditAction={createDebtTransaction}
+              accountEditData={liabilityAccountEditData}
+              loanEditAction={createLiabilityTransaction}
             />
           ) : view === "deposit" && selectedAccount ? (
             <DepositShell

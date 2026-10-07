@@ -7,11 +7,14 @@ type AccessKeyRow = {
   id: string;
   name: string;
   key: string;
+  scope: string;
 };
 
 export type AccessKeyAuthResult = {
   id: string;
   name: string;
+  /** "read" keys may query; only "write" keys may create or delete records. */
+  scope: "read" | "write";
 };
 
 function plainTextEquals(a: string, b: string) {
@@ -80,13 +83,15 @@ export async function verifyAccessKey(providedKey: string | null | undefined): P
   if (!key || key.length < 4) return null;
 
   const rows = await prisma.accessKey.findMany({
-    select: { id: true, name: true, key: true },
+    select: { id: true, name: true, key: true, scope: true },
     orderBy: { createdAt: "desc" },
   });
 
   for (const row of rows) {
     if (await verifyStoredAccessKey(key, row)) {
-      return { id: row.id, name: row.name };
+      // Anything other than an explicit "read" keeps full access, so keys
+      // created before the column existed keep behaving as they always did.
+      return { id: row.id, name: row.name, scope: row.scope === "read" ? "read" : "write" };
     }
   }
 

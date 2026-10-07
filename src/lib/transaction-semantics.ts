@@ -120,92 +120,92 @@ function statementMonthForBillSide(date: Date, account: StatementAccountLike | n
 }
 
 /**
- * Returns true for transfer records whose cash movement represents a debt-principal
+ * Returns true for transfer records whose cash movement represents a liability-principal
  * flow (borrow/lend, repayment, collection) and should not be counted as income
  * or expense in cash-flow statistics.  These are:
- *   debt_borrow_in         — money I borrowed (principal enters my cash account)
- *   debt_financed_purchase — installment purchase (principal enters my cash account)
- *   debt_lend_out          — money I lent out (principal leaves my cash account)
- *   debt_collect_in        — money I borrowed / collected back (principal enters my cash account)
- *   debt_repay_out         — principal repaid to a creditor
- *   debt_prepay_out        — early repayment of principal
- *   scheduled_task         — scheduled repayment (same as debt_repay_out)
+ *   liability_borrow_in         — money I borrowed (principal enters my cash account)
+ *   liability_financed_purchase — installment purchase (principal enters my cash account)
+ *   liability_lend_out          — money I lent out (principal leaves my cash account)
+ *   liability_collect_in        — money I borrowed / collected back (principal enters my cash account)
+ *   liability_repay_out         — principal repaid to a creditor
+ *   liability_prepay_out        — early repayment of principal
+ *   scheduled_task         — scheduled repayment (same as liability_repay_out)
  *
  * Only the interest portion (handled separately via getBusinessResultStatisticItems)
  * should appear in income/expense statistics.
  *
- * ⚠️ 必须包含 `debt_borrow_in` / `debt_financed_purchase`：当 scope 排除债务账户时，
- * 这两种 source 的现金方向（现金账户 in、债务账户 out）会触发 `isToSelf && !isFromSelf`，
+ * ⚠️ 必须包含 `liability_borrow_in` / `liability_financed_purchase`：当 scope 排除负债账户时，
+ * 这两种 source 的现金方向（现金账户 in、负债账户 out）会触发 `isToSelf && !isFromSelf`，
  * 本金会落入"收入来源"饼图。这是统计页与 API 端点都必须调用的过滤函数，
  * 任何漏配都会让借到的钱变成"收入"被错误呈现。
  */
-/** 债务账户 kind：往来款（settlement）与贷款（loan，含银行贷与往来款贷款）。 */
-export function isDebtAccountKind(kind?: string | null) {
+/** 负债账户 kind：往来款（settlement）与贷款（loan，含银行贷与往来款贷款）。 */
+export function isLiabilityAccountKind(kind?: string | null) {
   return kind === "settlement" || kind === "loan";
 }
 
 /**
- * 以账户现状判断这笔转账是否仍构成债务活动。
+ * 以账户现状判断这笔转账是否仍构成负债活动。
  *
  * `source` 只记录写入时的业务语义（借出/收回/借入/还款）；账户被改成普通资金账户后，
- * 历史 `source` 不应再让该行按债务口径展示或统计。账户 kind 是账户当前属性的唯一权威。
+ * 历史 `source` 不应再让该行按负债口径展示或统计。账户 kind 是账户当前属性的唯一权威。
  *
  * 返回 `null` 表示"两端都没有拿到账户 kind、无法判定"，由调用方维持原行为，避免信息缺失时
  * 静默改变统计口径。
  */
-export function isDebtActivityByAccount(
+export function isLiabilityActivityByAccount(
   entry: { accountKind?: string | null; toAccountKind?: string | null } | null | undefined,
 ) {
   if (!entry) return null;
   const sourceKind = entry.accountKind ?? null;
   const targetKind = entry.toAccountKind ?? null;
   if (!sourceKind && !targetKind) return null;
-  return isDebtAccountKind(sourceKind) || isDebtAccountKind(targetKind);
+  return isLiabilityAccountKind(sourceKind) || isLiabilityAccountKind(targetKind);
 }
 
-const DEBT_PRINCIPAL_SOURCES = new Set([
-  "debt_borrow_in",
-  "debt_financed_purchase",
-  "debt_lend_out",
-  "debt_collect_in",
-  "debt_repay_out",
-  "debt_prepay_out",
+const LIABILITY_PRINCIPAL_SOURCES = new Set([
+  "liability_borrow_in",
+  "liability_financed_purchase",
+  "liability_lend_out",
+  "liability_collect_in",
+  "liability_repay_out",
+  "liability_prepay_out",
   "scheduled_task",
 ]);
 
-export function isDebtPrincipalSource(source?: string | null) {
-  return DEBT_PRINCIPAL_SOURCES.has(source ?? "");
+export function isLiabilityPrincipalSource(source?: string | null) {
+  return LIABILITY_PRINCIPAL_SOURCES.has(source ?? "");
 }
 
-export function isDebtPrincipalTransfer(entry: {
+export function isLiabilityPrincipalTransfer(entry: {
   source?: string | null;
   accountKind?: string | null;
   toAccountKind?: string | null;
 } | null | undefined) {
-  if (!isDebtPrincipalSource(entry?.source)) return false;
-  // 账户两端都已不是债务账户时，历史 source 不再按债务本金处理；拿不到账户信息时保持原口径。
-  return isDebtActivityByAccount(entry) ?? true;
+  if (!isLiabilityPrincipalSource(entry?.source)) return false;
+  // 账户两端都已不是负债账户时，历史 source 不再按负债本金处理；拿不到账户信息时保持原口径。
+  return isLiabilityActivityByAccount(entry) ?? true;
 }
 
 /**
- * 资金统计收入/支出（含收入来源、支出来源饼图）应排除的债务本金现金流。
+ * 资金统计收入/支出（含收入来源、支出来源饼图）应排除的负债本金现金流。
  *
- * 比 {@link isDebtPrincipalTransfer} 更严：只要账户一端当前是 loan/settlement，
- * 即便 source 不是 debt_*（手工/代付导入），本金也不进收入/支出。
+ * 比 {@link isLiabilityPrincipalTransfer} 更严：只要账户一端当前是 loan/settlement，
+ * 即便 source 不是 liability_*（手工/代付导入），本金也不进收入/支出。
  * 利息仍走 getBusinessResultStatisticItems，不在这里排除。
  *
  * ⚠️ 调用方必须用**全账本**账户 kind 表（含挂往来对象、已停用账户）。
  * 统计页筛选下拉会排除 `counterpartyId != null` 的往来款账户；若用那份列表
- * 建 kind 表，一端是资金账户、一端是往来款时 `isDebtActivityByAccount`
+ * 建 kind 表，一端是资金账户、一端是往来款时 `isLiabilityActivityByAccount`
  * 会得到 false，本金被当成跨范围转账打进饼图。
  */
-export function isDebtPrincipalCashFlow(entry: {
+export function isLiabilityPrincipalCashFlow(entry: {
   source?: string | null;
   accountKind?: string | null;
   toAccountKind?: string | null;
 } | null | undefined) {
-  if (isDebtActivityByAccount(entry) === true) return true;
-  return isDebtPrincipalTransfer(entry);
+  if (isLiabilityActivityByAccount(entry) === true) return true;
+  return isLiabilityPrincipalTransfer(entry);
 }
 
 export function statementMonthForTransfer(

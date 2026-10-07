@@ -21,8 +21,14 @@ type AccessKey = {
   id: string;
   name: string;
   keyPreview: string;
+  /** Absent for keys created before the column existed; those are full-access. */
+  scope?: "read" | "write";
   createdAt?: string;
 };
+
+function isReadScope(key: AccessKey) {
+  return key.scope === "read";
+}
 
 export default function ApiKeysPage() {
   const { t } = useI18n();
@@ -30,6 +36,7 @@ export default function ApiKeysPage() {
   const [showModal, setShowModal] = useState(false);
   const [name, setName] = useState("");
   const [newKey, setNewKey] = useState("");
+  const [newScope, setNewScope] = useState<"read" | "write">("read");
 
   useEffect(() => {
     const controller = new AbortController();
@@ -53,7 +60,7 @@ export default function ApiKeysPage() {
       const res = await fetch("/api/v1/settings/access-keys", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: name.trim(), key: newKey }),
+        body: JSON.stringify({ name: name.trim(), key: newKey, scope: newScope }),
       });
       const data = await res.json();
       if (data.ok && data.key) {
@@ -61,6 +68,7 @@ export default function ApiKeysPage() {
         setShowModal(false);
         setName("");
         setNewKey("");
+        setNewScope("read");
       }
     } catch { /* ignore */ }
   }
@@ -94,6 +102,7 @@ export default function ApiKeysPage() {
         <thead className="sticky top-0 z-10">
           <tr>
             <SettingsTh>{t("settings.externalApiKeys.name")}</SettingsTh>
+            <SettingsTh>{t("settings.externalApiKeys.scope")}</SettingsTh>
             <SettingsTh>{t("settings.externalApiKeys.key")}</SettingsTh>
             <SettingsTh>{t("settings.externalApiKeys.createdAt")}</SettingsTh>
             <SettingsTh align="right">{t("settings.externalApiKeys.actions")}</SettingsTh>
@@ -103,6 +112,13 @@ export default function ApiKeysPage() {
           {keys.length > 0 ? keys.map((k) => (
               <tr key={k.id} className="hover:bg-slate-50">
                 <SettingsTd className="text-sm font-medium text-slate-800">{k.name}</SettingsTd>
+                <SettingsTd>
+                  <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${isReadScope(k) ? "bg-slate-100 text-slate-600" : "bg-amber-50 text-amber-700"}`}>
+                    {isReadScope(k)
+                      ? t("settings.externalApiKeys.scopeRead")
+                      : t("settings.externalApiKeys.scopeWrite")}
+                  </span>
+                </SettingsTd>
                 <SettingsTd className="max-w-[24rem] truncate font-mono text-[11px] text-slate-500">
                   {k.keyPreview}
                 </SettingsTd>
@@ -118,7 +134,7 @@ export default function ApiKeysPage() {
                 </SettingsTd>
               </tr>
           )) : (
-            <SettingsEmptyRow colSpan={4}>{t("settings.externalApiKeys.empty")}</SettingsEmptyRow>
+            <SettingsEmptyRow colSpan={5}>{t("settings.externalApiKeys.empty")}</SettingsEmptyRow>
           )}
         </tbody>
       </SettingsTable>
@@ -138,6 +154,17 @@ export default function ApiKeysPage() {
                 <label className="form-label mb-1.5 block">{t("settings.externalApiKeys.name")}</label>
                 <input className="form-input"
                   value={name} onChange={(e) => setName(e.target.value)} placeholder={t("settings.externalApiKeys.namePlaceholder")} autoFocus />
+              </div>
+              <div>
+                <label className="form-label mb-1.5 block">{t("settings.externalApiKeys.scope")}</label>
+                <select className="form-input h-9"
+                  value={newScope} onChange={(e) => setNewScope(e.target.value === "write" ? "write" : "read")}>
+                  <option value="read">{t("settings.externalApiKeys.scopeRead")}</option>
+                  <option value="write">{t("settings.externalApiKeys.scopeWrite")}</option>
+                </select>
+                <p className="mt-1.5 text-[11px] leading-4 text-slate-500">
+                  {t("settings.externalApiKeys.scopeHint")}
+                </p>
               </div>
               <div>
                 <label className="form-label mb-1.5 block">{t("settings.externalApiKeys.key")}</label>

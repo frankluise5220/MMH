@@ -6,7 +6,7 @@ import {
   BALANCE_RECONCILE_TARGET_PREFIX,
 } from "@/lib/balance-reconcile";
 import { formatDateLocal } from "@/lib/date-utils";
-import { isLoanOrSettlementAccountKind } from "@/lib/debt";
+import { isLoanOrSettlementAccountKind } from "@/lib/liability";
 import { prisma } from "@/lib/db/prisma";
 
 const FX_CONVERSION_SOURCE = "fx_conversion";
@@ -48,10 +48,10 @@ function buildOrderingCtesSql(args: {
   accountIds: string[];
   householdId: string;
   sortAccountId?: string | null;
-  /** 排序账户是贷款 / 往来款时，余额折叠走本金口径（见 debtPrincipalForAccountSide）。 */
-  debtAccountMode?: boolean;
+  /** 排序账户是贷款 / 往来款时，余额折叠走本金口径（见 liabilityPrincipalForAccountSide）。 */
+  liabilityAccountMode?: boolean;
 }) {
-  const { accountIds, householdId, sortAccountId, debtAccountMode = false } = args;
+  const { accountIds, householdId, sortAccountId, liabilityAccountMode = false } = args;
   const sortAccountIdValue = sortAccountId ?? null;
   // 账户余额口径（account-balance.ts 的 isOnOrBeforeToday）以「今天」为截止，
   // 明细「余额」列必须用同一个截止日，否则未来日期的流水会把列表顶部的余额
@@ -70,7 +70,7 @@ function buildOrderingCtesSql(args: {
     t."toAccountId",
     t."toNote",
     t."source",
-    t."debtPrincipalAmount",
+    t."principalAmount",
     t."fundProductType",
     t."fundSubtype",
     t."fundArrivalDate",
@@ -166,7 +166,7 @@ function buildOrderingCtesSql(args: {
 
   // 每笔流水对「余额」列的贡献。必须与 account-balance.ts 的 foldBalanceEntry 逐条对齐，
   // 否则明细余额列会与账户余额不一致。
-  const effectiveAmountCase = debtAccountMode
+  const effectiveAmountCase = liabilityAccountMode
     ? Prisma.sql`
           WHEN c."isAnchor" = 1 THEN 0
           WHEN CAST(DATE(
@@ -180,15 +180,15 @@ function buildOrderingCtesSql(args: {
             END
           ) AS TEXT) > ${todayKey} THEN 0
           -- 贷款 / 往来款：只有 transfer 腿参与，且本金带 source 决定的正负号。
-          -- 逐条镜像 src/lib/debt.ts 的 debtPrincipalForAccountSide。
+          -- Mirrors liabilityPrincipalForAccountSide in src/lib/liability.ts.
           WHEN c."type" <> 'transfer' THEN 0
-          WHEN c."source" IN ('debt_borrow_in', 'debt_financed_purchase') THEN -COALESCE(c."debtPrincipalAmount", ABS(c."amount"))
-          WHEN c."source" IN ('debt_repay_out', 'debt_prepay_out') THEN COALESCE(c."debtPrincipalAmount", ABS(c."amount"))
-          WHEN c."source" = 'debt_lend_out' THEN COALESCE(c."debtPrincipalAmount", ABS(c."amount"))
-          WHEN c."source" = 'debt_collect_in' THEN -COALESCE(c."debtPrincipalAmount", ABS(c."amount"))
-          WHEN c."source" = 'scheduled_task' THEN COALESCE(c."debtPrincipalAmount", ABS(c."amount"))
-          WHEN c."source" = 'reimbursement' THEN -COALESCE(c."debtPrincipalAmount", ABS(c."amount"))
-          WHEN c."toAccountId" = CAST(${sortAccountIdValue} AS TEXT) THEN COALESCE(c."debtPrincipalAmount", ABS(c."amount"))
+          WHEN c."source" IN ('liability_borrow_in', 'liability_financed_purchase') THEN -COALESCE(c."principalAmount", ABS(c."amount"))
+          WHEN c."source" IN ('liability_repay_out', 'liability_prepay_out') THEN COALESCE(c."principalAmount", ABS(c."amount"))
+          WHEN c."source" = 'liability_lend_out' THEN COALESCE(c."principalAmount", ABS(c."amount"))
+          WHEN c."source" = 'liability_collect_in' THEN -COALESCE(c."principalAmount", ABS(c."amount"))
+          WHEN c."source" = 'scheduled_task' THEN COALESCE(c."principalAmount", ABS(c."amount"))
+          WHEN c."source" = 'reimbursement' THEN -COALESCE(c."principalAmount", ABS(c."amount"))
+          WHEN c."toAccountId" = CAST(${sortAccountIdValue} AS TEXT) THEN COALESCE(c."principalAmount", ABS(c."amount"))
           ELSE c."amount"`
     : Prisma.sql`
           WHEN c."isAnchor" = 1 THEN 0
@@ -206,12 +206,12 @@ function buildOrderingCtesSql(args: {
             END
           ) AS TEXT) > ${todayKey} THEN 0
           WHEN c."toAccountId" = CAST(${sortAccountIdValue} AS TEXT)
-            AND c."debtPrincipalAmount" IS NOT NULL
+            AND c."principalAmount" IS NOT NULL
             AND (
               COALESCE(c."source", '') = ''
-              OR c."source" IN ('debt_repay_out', 'debt_prepay_out', 'debt_lend_out', 'scheduled_task')
+              OR c."source" IN ('liability_repay_out', 'liability_prepay_out', 'liability_lend_out', 'scheduled_task')
             )
-            THEN c."debtPrincipalAmount"
+            THEN c."principalAmount"
           WHEN c."toAccountId" = CAST(${sortAccountIdValue} AS TEXT)
             THEN ABS(COALESCE(c."fundArrivalAmount", c."amount"))
           ELSE c."amount"`;
@@ -328,7 +328,7 @@ export async function queryDetailPage(args: DetailPageQueryArgs): Promise<Detail
   const limit = offset + pageSize;
   // 只有「单账户 + 逐笔余额」这一条路径需要知道账户类别：贷款 / 往来款的余额
   // 按本金口径折叠，与 account-balance.ts 的 foldBalanceEntry 保持一致。
-  const debtAccountMode = args.includeRunningBalances && args.sortAccountId
+  const liabilityAccountMode = args.includeRunningBalances && args.sortAccountId
     ? isLoanOrSettlementAccountKind(
       (await prisma.account.findUnique({ where: { id: args.sortAccountId }, select: { kind: true } }))?.kind,
     )
@@ -337,7 +337,7 @@ export async function queryDetailPage(args: DetailPageQueryArgs): Promise<Detail
     accountIds,
     householdId: args.householdId,
     sortAccountId: args.sortAccountId,
-    debtAccountMode,
+    liabilityAccountMode,
   });
 
   if (!args.includeRunningBalances || !args.sortAccountId) {

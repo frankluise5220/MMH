@@ -18,7 +18,7 @@ export type ReorderDisplayEntry = {
   type: string;
   accountId?: string | null;
   toAccountId?: string | null;
-  debtPrincipalAmount?: unknown;
+  principalAmount?: unknown;
   fundSubtype?: string | null;
   source?: string | null;
   toNote?: string | null;

@@ -18,7 +18,8 @@
  *   1. export    - prisma.<delegate>.findMany / optionalPrismaFindMany(prisma, "<delegate>"
  *   2. clear     - tx.<delegate>.deleteMany  / optionalPrismaDeleteMany(tx, "<delegate>"
  *   3. write     - tx.<delegate>,            / tx.<delegate>.createMany
- *   4. parser    - the payload collection is read back with ensureArray
+ *   4. parser    - the payload collection is read back with ensureArray /
+ *                  ensureLiabilityArray
  *
  * Models that are intentionally not part of a household snapshot (global config,
  * caches, security tokens, audit trails) must be listed in INTENTIONAL_EXCLUSIONS
@@ -178,7 +179,12 @@ for (const name of INTENTIONAL_EXCLUSIONS.keys()) {
 // ---------------------------------------------------------------------------
 // 4. Guard the parser side: every exported collection must be read back.
 // ---------------------------------------------------------------------------
-const parserKeys = new Set([...backup.matchAll(/(\w+):\s*ensureArray/g)].map((match) => match[1]));
+// `ensureArray` reads a collection verbatim; `ensureLiabilityArray` (2026-10-06
+// 口径定版) additionally maps legacy debt* field names onto liability semantics.
+// Both prove the collection is read back by parseBackupPayload.
+const parserKeys = new Set(
+  [...backup.matchAll(/(\w+):\s*ensure(?:Liability)?Array/g)].map((match) => match[1]),
+);
 for (const name of covered) {
   const delegate = delegateOf(name);
   const override = PAYLOAD_KEY_OVERRIDES.get(name);

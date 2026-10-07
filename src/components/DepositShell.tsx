@@ -454,7 +454,7 @@ export function DepositShell({
     if (visibleLots.length === 0) return undefined;
     const totalOriginalAmount = visibleLots.reduce((sum, lot) => sum + lot.remainingAmount, 0);
     const cells: Record<string, ReactNode> = {
-      product: <span className="font-semibold text-slate-800">{t("debtShell.summaryRow")}</span>,
+      product: <span className="font-semibold text-slate-800">{t("liabilityShell.summaryRow")}</span>,
       originalAmount: <span className="font-semibold tabular-nums text-slate-800">{formatMoney(totalOriginalAmount)}</span>,
     };
     if (lotTab === "held") {

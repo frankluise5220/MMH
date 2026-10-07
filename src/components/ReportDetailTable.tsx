@@ -23,7 +23,7 @@ type AccountOption = {
   hoverTitle?: string | null;
   tableHoverTitle?: string | null;
   kind?: string | null;
-  debtDirection?: string | null;
+  liabilityDirection?: string | null;
 };
 
 const PAGE_SIZE_OPTIONS = [40, 80] as const;

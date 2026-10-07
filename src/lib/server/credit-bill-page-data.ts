@@ -99,7 +99,7 @@ type LoadCreditBillPageDataParams = {
   t: (key: string) => string;
   forceCycleRefresh?: boolean;
   categoryLabels: Map<string, string>;
-  isSettlementDebtAccountId: (accountId: string | null | undefined) => boolean;
+  isSettlementLiabilityAccountId: (accountId: string | null | undefined) => boolean;
   isCreditCardRepaymentForDisplay: (entry: any) => boolean;
 };
 
@@ -159,7 +159,7 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
     t,
     forceCycleRefresh = false,
     categoryLabels,
-    isSettlementDebtAccountId,
+    isSettlementLiabilityAccountId,
     isCreditCardRepaymentForDisplay,
   } = params;
 
@@ -1058,8 +1058,8 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
             accountId: e.accountId,
             accountName: e.accountName,
             accountKind: e.account?.kind ?? null,
-            accountDebtDirection: e.account?.debtDirection ?? null,
-            accountIsSettlementDebt: isSettlementDebtAccountId(e.accountId),
+            accountLiabilityDirection: e.account?.liabilityDirection ?? null,
+            accountIsSettlementAccount: isSettlementLiabilityAccountId(e.accountId),
             counterpartyInstitutionId: e.counterpartyInstitutionId ?? null,
             counterpartyInstitutionName: e.counterpartyInstitutionName ?? null,
             originalCurrency: e.originalCurrency ?? null,
@@ -1069,8 +1069,8 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
             toAccountId: e.toAccountId,
             toAccountName: e.toAccountName,
             toAccountKind: e.toAccount?.kind ?? null,
-            toAccountDebtDirection: e.toAccount?.debtDirection ?? null,
-            toAccountIsSettlementDebt: isSettlementDebtAccountId(e.toAccountId),
+            toAccountLiabilityDirection: e.toAccount?.liabilityDirection ?? null,
+            toAccountIsSettlementAccount: isSettlementLiabilityAccountId(e.toAccountId),
             note: e.note,
             toNote: e.toNote,
             fundSubtype: e.fundSubtype,
@@ -1080,9 +1080,9 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
             depositProductId: e.depositProductId ?? null,
             source: e.source,
             insuranceProductId: e.insuranceProductId ?? null,
-            debtPrincipalAmount: e.debtPrincipalAmount != null ? toNumber(e.debtPrincipalAmount) : null,
-            debtInterestAmount: e.debtInterestAmount != null ? toNumber(e.debtInterestAmount) : null,
-            debtFeeAmount: e.debtFeeAmount != null ? toNumber(e.debtFeeAmount) : null,
+            principalAmount: e.principalAmount != null ? toNumber(e.principalAmount) : null,
+            interestAmount: e.interestAmount != null ? toNumber(e.interestAmount) : null,
+            feeAmount: e.feeAmount != null ? toNumber(e.feeAmount) : null,
             depositAnnualRate: e.depositAnnualRate != null ? toNumber(e.depositAnnualRate) : null,
             depositInterest: e.depositInterest != null ? toNumber(e.depositInterest) : null,
             fundProductType: e.fundProductType,
@@ -1202,7 +1202,7 @@ export async function refreshCreditCardCycleCachesForAccountIds(params: {
       t: (key) => key,
       forceCycleRefresh: true,
       categoryLabels: new Map(),
-      isSettlementDebtAccountId: () => false,
+      isSettlementLiabilityAccountId: () => false,
       isCreditCardRepaymentForDisplay: () => false,
     });
   }

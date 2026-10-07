@@ -638,7 +638,7 @@ export function buildFlatAccountOptions(
     title?: string | null;
     kind?: string | null;
     investProductType?: string | null;
-    debtDirection?: string | null;
+    liabilityDirection?: string | null;
     institutionId?: string | null;
     currency?: string | null;
   }>,
@@ -654,7 +654,7 @@ export function buildFlatAccountOptions(
     }),
     kind: account.kind ?? null,
     investProductType: account.investProductType ?? null,
-    debtDirection: account.debtDirection ?? null,
+    liabilityDirection: account.liabilityDirection ?? null,
     institutionId: account.institutionId ?? null,
     currency: account.currency ?? null,
   }));

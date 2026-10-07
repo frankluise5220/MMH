@@ -27,7 +27,7 @@ type EntryKind =
   | "deposit-buy"
   | "deposit-redeem"
   | "insurance"
-  | "debt"
+  | "settlement"
   | "loan"
   | "regular-task";
 
@@ -65,8 +65,8 @@ type Props = {
     defaultDepositSubtype?: "buy" | "redeem";
     defaultRedeemLotId?: string;
     defaultInsuranceAccountId?: string;
-    defaultDebtAccountId?: string;
-    defaultDebtInstitutionId?: string;
+    defaultLiabilityAccountId?: string;
+    defaultLiabilityInstitutionId?: string;
     defaultScheduledTaskType?: "fund_regular_invest" | "loan_repayment" | "transfer" | "insurance_premium";
     defaultFundCode?: string;
     defaultFundName?: string;
@@ -341,13 +341,13 @@ function dispatchEntryAction(kind: EntryKind, context?: Props["context"], loanTy
         }),
       );
       return;
-    case "debt":
+    case "settlement":
       window.dispatchEvent(
-        new CustomEvent("mmh:debt:create", {
+        new CustomEvent("mmh:settlement:create", {
           detail: {
             requestId,
-            defaultDebtAccountId: context?.defaultDebtAccountId ?? "",
-            defaultDebtInstitutionId: context?.defaultDebtInstitutionId ?? "",
+            defaultLiabilityAccountId: context?.defaultLiabilityAccountId ?? "",
+            defaultLiabilityInstitutionId: context?.defaultLiabilityInstitutionId ?? "",
             defaultCashAccountId: context?.defaultCashAccountId ?? context?.defaultAccountId ?? "",
           },
         }),
@@ -361,8 +361,8 @@ function dispatchEntryAction(kind: EntryKind, context?: Props["context"], loanTy
             ...(loanMode
               ? { mode: loanMode, ...(loanType ? { loanType } : {}) }
               : { loanType: loanType ?? "consumer" }),
-            defaultDebtAccountId: context?.defaultDebtAccountId ?? "",
-            defaultDebtInstitutionId: context?.defaultDebtInstitutionId ?? "",
+            defaultLiabilityAccountId: context?.defaultLiabilityAccountId ?? "",
+            defaultLiabilityInstitutionId: context?.defaultLiabilityInstitutionId ?? "",
             defaultCashAccountId: context?.defaultCashAccountId ?? context?.defaultAccountId ?? "",
           },
         }),

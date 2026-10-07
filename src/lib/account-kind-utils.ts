@@ -1,20 +1,20 @@
-import { isLoanOrSettlementAccountKind } from "@/lib/debt";
+import { isLoanOrSettlementAccountKind } from "@/lib/liability";
 import { resolveLoanTypeValue, type LoanTypeValue } from "@/lib/loan-type";
 import { isFixedAssetAccountLike } from "@/lib/fixed-asset";
 
-export { isDebtAccountKind, isLoanOrSettlementAccountKind } from "@/lib/debt";
+export { isLiabilityAccountKind, isLoanOrSettlementAccountKind } from "@/lib/liability";
 
 export type AccountKindLike = {
   kind?: string | null;
   investProductType?: string | null;
-  debtDirection?: string | null;
+  liabilityDirection?: string | null;
   isConsumerLoan?: boolean | null;
   loanType?: string | null;
   institutionType?: string | null;
   Institution?: { type?: string | null; name?: string | null; shortName?: string | null } | null;
 };
 
-export type CashTargetOperation = "transfer" | "investment" | "wealth" | "deposit" | "debt";
+export type CashTargetOperation = "transfer" | "investment" | "wealth" | "deposit" | "liability";
 
 export type InvestmentAccountView = "investfund" | "investmoney" | "investwealth" | "investbond" | "investstock" | "investproperty" | "detail";
 
@@ -248,7 +248,7 @@ export function getCashTargetOperation(account: AccountKindLike | null | undefin
     if (account.investProductType === "wealth" || account.investProductType === "bond") return "wealth";
     return "investment";
   }
-  if (isLoanOrSettlementAccountKind(account.kind)) return "debt";
+  if (isLoanOrSettlementAccountKind(account.kind)) return "liability";
   return "transfer";
 }
 

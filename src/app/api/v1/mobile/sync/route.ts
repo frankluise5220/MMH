@@ -152,7 +152,7 @@ export async function GET(req: Request) {
           note: true,
           balance: true,
           kind: true,
-          debtDirection: true,
+          liabilityDirection: true,
           currency: true,
           isActive: true,
           isPlaceholder: true,
@@ -567,7 +567,10 @@ export async function GET(req: Request) {
                 ? currentCreditBalanceByAccountId.get(account.id) ?? toNumber(account.balance)
                 : displayBalanceByAccountId.get(account.id) ?? toNumber(account.balance),
           kind: account.kind,
-          debtDirection: account.debtDirection,
+          liabilityDirection: account.liabilityDirection,
+          // 2026-10-06 口径定版：字段改名 liabilityDirection；已发布的移动端仍读
+          // 旧名 debtDirection，按「旧名永久保留别名」规则同时返回。
+          debtDirection: account.liabilityDirection,
           currency: account.currency,
           isActive: account.isActive,
           isPlaceholder: account.isPlaceholder,

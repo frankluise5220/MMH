@@ -20,9 +20,9 @@ import type { BatchReplaceField } from "@/lib/client/batchReplaceEntries";
 import { useI18n } from "@/lib/i18n";
 import { BALANCE_INITIALIZATION_SOURCE, BALANCE_RECONCILE_SOURCE, applyBalanceReconcileEntry, effectiveAmountForAccount, getBalanceReconcileTarget } from "@/lib/balance-reconcile";
 import { compareDetailEntriesAsc, compareDetailEntriesDesc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
-import { debtPrincipalForAccountSide } from "@/lib/debt";
+import { liabilityPrincipalForAccountSide } from "@/lib/liability";
 import { rebaseRunningBalancesAfterSameDayReorder, startOfDayRunningBalanceSeed } from "@/lib/entry-reorder";
-import { buildDebtActivityEditEvent, inferDebtMode, isDebtActivityEntry, type DebtMode } from "@/lib/debt-entry-edit";
+import { buildLiabilityActivityEditEvent, inferLiabilityMode, isLiabilityActivityEntry, type LiabilityMode } from "@/lib/liability-entry-edit";
 import { parseLoanPrepayStrategy } from "@/lib/loan-prepay-strategy";
 import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
 import { isCreditCardRepaymentTransfer, isLicensedInsuranceEntry, isRegularInvestRefundEntry, TRANSACTION_SOURCE_INSURANCE } from "@/lib/transaction-semantics";
@@ -103,8 +103,8 @@ export type DetailEntry = {
   accountId: string | null;
   accountName: string | null;
   accountKind?: string | null;
-  accountDebtDirection?: string | null;
-  accountIsSettlementDebt?: boolean | null;
+  accountLiabilityDirection?: string | null;
+  accountIsSettlementAccount?: boolean | null;
   accountInstitutionName?: string | null;
   counterpartyInstitutionId?: string | null;
   counterpartyInstitutionName?: string | null;
@@ -115,8 +115,8 @@ export type DetailEntry = {
   toAccountId: string | null;
   toAccountName: string | null;
   toAccountKind?: string | null;
-  toAccountDebtDirection?: string | null;
-  toAccountIsSettlementDebt?: boolean | null;
+  toAccountLiabilityDirection?: string | null;
+  toAccountIsSettlementAccount?: boolean | null;
   toAccountInstitutionName?: string | null;
   note: string | null;
   businessNote?: string | null;
@@ -138,9 +138,9 @@ export type DetailEntry = {
   insuranceProductId?: string | null;
   insuranceAction?: string | null;
   insuranceProductName?: string | null;
-  debtPrincipalAmount?: number | null;
-  debtInterestAmount?: number | null;
-  debtFeeAmount?: number | null;
+  principalAmount?: number | null;
+  interestAmount?: number | null;
+  feeAmount?: number | null;
   realizedProfit?: number | null;
   cashAccountId?: string | null;
   coverageAmount?: number | null;
@@ -262,7 +262,7 @@ function isFutureBalanceEntry(entry: DetailEntry, accountId: string) {
 }
 
 /** 贷款 / 往来款账户：只有 transfer 腿参与，本金带 source 决定的正负号（与 foldBalanceEntry 一致）。 */
-function isDebtBalanceAccountKind(accountKind?: string | null) {
+function isLiabilityBalanceAccountKind(accountKind?: string | null) {
   return accountKind === "loan" || accountKind === "settlement";
 }
 
@@ -273,19 +273,19 @@ function applyEntryToRunningBalance(
   accountKind?: string | null,
 ) {
   if (isFutureBalanceEntry(entry, accountId)) return runningBalance;
-  if (isDebtBalanceAccountKind(accountKind)) {
+  if (isLiabilityBalanceAccountKind(accountKind)) {
     if (getBalanceReconcileTarget(entry) != null) return applyBalanceReconcileEntry(runningBalance, entry, accountId);
     if (entry.type !== "transfer") return runningBalance;
-    return runningBalance + debtPrincipalForAccountSide(entry, accountId);
+    return runningBalance + liabilityPrincipalForAccountSide(entry, accountId);
   }
   return applyBalanceReconcileEntry(runningBalance, entry, accountId);
 }
 
 function runningBalanceContribution(entry: DetailEntry, accountId: string, accountKind?: string | null) {
   if (isFutureBalanceEntry(entry, accountId)) return 0;
-  if (isDebtBalanceAccountKind(accountKind)) {
+  if (isLiabilityBalanceAccountKind(accountKind)) {
     if (getBalanceReconcileTarget(entry) != null) return applyBalanceReconcileEntry(0, entry, accountId);
-    return entry.type === "transfer" ? debtPrincipalForAccountSide(entry, accountId) : 0;
+    return entry.type === "transfer" ? liabilityPrincipalForAccountSide(entry, accountId) : 0;
   }
   return applyBalanceReconcileEntry(0, entry, accountId);
 }
@@ -351,9 +351,9 @@ type DetailAccountOption = {
   hoverTitle?: string | null;
   tableHoverTitle?: string | null;
   kind?: string | null;
-  debtDirection?: string | null;
+  liabilityDirection?: string | null;
   numberMasked?: string | null;
-  isSettlementDebt?: boolean | null;
+  isSettlementAccount?: boolean | null;
 };
 
 /* Helpers */
@@ -411,17 +411,17 @@ function formatSelectedAmountsByCurrency(amounts: Map<string, number>) {
 }
 
 function isCreditCardRepaymentDisplayEntry(entry: DetailEntry) {
-  if (entry.accountIsSettlementDebt || entry.toAccountIsSettlementDebt) return false;
+  if (entry.accountIsSettlementAccount || entry.toAccountIsSettlementAccount) return false;
   if (entry.accountKind === "loan" || entry.toAccountKind === "loan") return false;
   return isCreditCardRepaymentTransfer(entry);
 }
 
-function bankDebtTransferLabel(entry: DetailEntry, mode: DebtMode | null, t: (key: string) => string) {
-  const involvesBankDebt =
-    (entry.accountKind === "loan" && !entry.accountIsSettlementDebt) ||
-    (entry.toAccountKind === "loan" && !entry.toAccountIsSettlementDebt);
-  if (!involvesBankDebt) return null;
-  if (entry.source === "debt_financed_purchase") return t("txForm.installment");
+function bankLiabilityTransferLabel(entry: DetailEntry, mode: LiabilityMode | null, t: (key: string) => string) {
+  const involvesBankLoan =
+    (entry.accountKind === "loan" && !entry.accountIsSettlementAccount) ||
+    (entry.toAccountKind === "loan" && !entry.toAccountIsSettlementAccount);
+  if (!involvesBankLoan) return null;
+  if (entry.source === "liability_financed_purchase") return t("txForm.installment");
   if (mode === "borrow_in") return t("detailView.loanDisbursement");
   if (mode === "repay_out") return t("detailView.loanRepayment");
   if (mode === "prepay_out") return t("detailView.loanPrepayment");
@@ -430,10 +430,10 @@ function bankDebtTransferLabel(entry: DetailEntry, mode: DebtMode | null, t: (ke
   return systemCategoryLabel(entry.categoryName, t) || t("detailView.bankLoan");
 }
 
-function debtCategoryLabel(entry: DetailEntry, accountById: Map<string, DetailAccountOption> | undefined, t: (key: string) => string) {
-  if (!isDebtActivityEntry(entry, accountById)) return null;
-  const mode = inferDebtMode(entry, accountById);
-  const bankLabel = bankDebtTransferLabel(entry, mode, t);
+function liabilityCategoryLabel(entry: DetailEntry, accountById: Map<string, DetailAccountOption> | undefined, t: (key: string) => string) {
+  if (!isLiabilityActivityEntry(entry, accountById)) return null;
+  const mode = inferLiabilityMode(entry, accountById);
+  const bankLabel = bankLiabilityTransferLabel(entry, mode, t);
   if (bankLabel) return bankLabel;
   return systemCategoryLabel(normalizeSettlementTransferCategoryName(entry.categoryName), t);
 }
@@ -764,8 +764,8 @@ export function DetailViewClient({
     return text;
   };
   const detailCategoryLabel = useCallback((entry: DetailEntry) => {
-    const debtLabel = debtCategoryLabel(entry, accountOptionById, t);
-    if (debtLabel) return debtLabel;
+    const liabilityLabel = liabilityCategoryLabel(entry, accountOptionById, t);
+    if (liabilityLabel) return liabilityLabel;
     const entryFundProductType =
       entry.fundProductType ??
       (entry.toAccountId ? investmentProductTypeByAccountId[entry.toAccountId] : undefined) ??
@@ -1027,11 +1027,11 @@ export function DetailViewClient({
         source: e.source,
       },
     };
-    const debtEditEvent = balanceReconcileEditEvent
+    const liabilityEditEvent = balanceReconcileEditEvent
       ? null
-      : buildDebtActivityEditEvent({ ...e, date: dateStr }, accountOptionById);
+      : buildLiabilityActivityEditEvent({ ...e, date: dateStr }, accountOptionById);
 
-    if (balanceReconcileEditEvent || debtEditEvent) return { customEditEvent: balanceReconcileEditEvent ?? debtEditEvent ?? undefined };
+    if (balanceReconcileEditEvent || liabilityEditEvent) return { customEditEvent: balanceReconcileEditEvent ?? liabilityEditEvent ?? undefined };
     return { edit: e.type === "investment" ? investmentEditPayload : buildBasicEntryEditPayload(e, flowAccountIdOf(e)) };
   }, [accountId, accountOptionById, allowInvestmentEdit, flowAccountIdOf, investmentProductTypeByAccountId, linkedInvestmentCandidateEntries]);
   const colorScheme =
@@ -1383,7 +1383,7 @@ export function DetailViewClient({
           (e.accountId ? investmentProductTypeByAccountId[e.accountId] : undefined) ??
           null;
         const displaySource = entryFundProductType === "deposit" ? "deposit" : e.source;
-        if (isDebtActivityEntry(e, accountOptionById)) return t("transaction.type.transfer");
+        if (isLiabilityActivityEntry(e, accountOptionById)) return t("transaction.type.transfer");
         if (entryFundProductType === "property" && e.type === "investment") {
           const ordinaryType = propertyIncomeExpenseType(e);
           if (ordinaryType) return formatType(ordinaryType, t);
@@ -1396,7 +1396,7 @@ export function DetailViewClient({
         return activityLabel(e.type, e.fundSubtype, displaySource, t, balanceTarget);
       },
       render: (e) => {
-        const isDebtActivity = isDebtActivityEntry(e, accountOptionById);
+        const isLiabilityActivity = isLiabilityActivityEntry(e, accountOptionById);
         const entryFundProductType =
           e.fundProductType ??
           (e.toAccountId ? investmentProductTypeByAccountId[e.toAccountId] : undefined) ??
@@ -1405,7 +1405,7 @@ export function DetailViewClient({
         const displaySource = entryFundProductType === "deposit" ? "deposit" : e.source;
         const balanceTarget = getBalanceReconcileTarget(e);
         const ordinaryPropertyType = entryFundProductType === "property" && e.type === "investment" ? propertyIncomeExpenseType(e) : null;
-        const actLabel = isDebtActivity
+        const actLabel = isLiabilityActivity
           ? t("transaction.type.transfer")
           : ordinaryPropertyType
             ? formatType(ordinaryPropertyType, t)

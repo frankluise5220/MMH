@@ -12,6 +12,11 @@ import {
   type OptionalPrismaRestoreDelegate,
 } from "@/lib/server/optional-prisma-delegate";
 import { createManySkipDuplicatesCompat } from "@/lib/server/prisma-create-many";
+import {
+  BUILTIN_LOAN_CATEGORIES,
+  builtinLoanCategoryId,
+  ensureBuiltinLoanCategories,
+} from "@/lib/server/loan-category";
 import { extractStatementLearningKeyword, normalizeStatementKeywordText } from "@/lib/statement/import-normalization";
 import { DEFAULT_SESSION_DAYS, normalizeSessionDays } from "@/lib/session-days";
 import type { CurrentUser } from "@/lib/server/auth";
@@ -638,9 +643,9 @@ const TRANSACTION_RESTORE_COLUMNS = [
   { name: "depositInterestPayoutFrequency", select: 'x."depositInterestPayoutFrequency"' },
   { name: "depositInterestCalcBasis", select: 'x."depositInterestCalcBasis"' },
   { name: "fundSourceEntryId", select: 'x."fundSourceEntryId"' },
-  { name: "debtPrincipalAmount", select: "NULLIF(x.\"debtPrincipalAmount\", '')::numeric" },
-  { name: "debtInterestAmount", select: "NULLIF(x.\"debtInterestAmount\", '')::numeric" },
-  { name: "debtFeeAmount", select: "NULLIF(x.\"debtFeeAmount\", '')::numeric" },
+  { name: "principalAmount", select: "NULLIF(x.\"principalAmount\", '')::numeric" },
+  { name: "interestAmount", select: "NULLIF(x.\"interestAmount\", '')::numeric" },
+  { name: "feeAmount", select: "NULLIF(x.\"feeAmount\", '')::numeric" },
   { name: "fundConfirmDate", select: "NULLIF(x.\"fundConfirmDate\", '')::timestamptz" },
   { name: "fundFee", select: "NULLIF(x.\"fundFee\", '')::numeric" },
   { name: "fundNav", select: "NULLIF(x.\"fundNav\", '')::numeric" },
@@ -1670,7 +1675,8 @@ export async function buildHouseholdBackupPayload(
     creditCardInstallmentPlans,
     creditCardBillingDays,
     loanRateAdjustments,
-    debtAgreements,
+    loanCategories,
+    settlementAgreements,
     reimbursements,
     reimbursementBatches,
     reimbursementItems,
@@ -1736,7 +1742,11 @@ export async function buildHouseholdBackupPayload(
       orderBy: [{ accountId: "asc" }, { effectiveDate: "asc" }],
     }),
     prisma.loanRateAdjustment.findMany({ where: { householdId }, orderBy: [{ effectiveDate: "asc" }] }),
-    prisma.debtAgreement.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
+    prisma.loanCategory.findMany({
+      where: { householdId },
+      orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
+    }),
+    prisma.settlementAgreement.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.reimbursement.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.reimbursementBatch.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.reimbursementItem.findMany({ where: { Reimbursement: { householdId } }, orderBy: [{ createdAt: "asc" }] }),
@@ -1991,7 +2001,8 @@ export async function buildHouseholdBackupPayload(
       preciousMetalUnits,
       preciousMetalHoldings,
       loanRateAdjustments,
-      debtAgreements,
+      loanCategories,
+      settlementAgreements,
       reimbursements,
       reimbursementBatches,
       reimbursementItems,
@@ -2071,7 +2082,7 @@ export async function buildHouseholdBackupWorkbook(payload: HouseholdBackupPaylo
     ["PreciousMetalUnits", sheetRows(payload.data.preciousMetalUnits)],
     ["PreciousMetalHoldings", sheetRows(payload.data.preciousMetalHoldings)],
     ["LoanRateAdjustments", sheetRows(payload.data.loanRateAdjustments)],
-    ["DebtAgreements", sheetRows(payload.data.debtAgreements)],
+    ["SettlementAgreements", sheetRows(payload.data.settlementAgreements)],
     ["Reimbursements", sheetRows(payload.data.reimbursements)],
     ["ReimbursementBatches", sheetRows(payload.data.reimbursementBatches)],
     ["ReimbursementItems", sheetRows(payload.data.reimbursementItems)],
@@ -2170,7 +2181,7 @@ export async function buildHouseholdTableExportWorkbook(payload: HouseholdBackup
     ["PreciousMetalUnits", sheetRows(payload.data.preciousMetalUnits)],
     ["PreciousMetalHoldings", sheetRows(payload.data.preciousMetalHoldings)],
     ["LoanRateAdjustments", sheetRows(payload.data.loanRateAdjustments)],
-    ["DebtAgreements", sheetRows(payload.data.debtAgreements)],
+    ["SettlementAgreements", sheetRows(payload.data.settlementAgreements)],
     ["Reimbursements", sheetRows(payload.data.reimbursements)],
     ["ReimbursementBatches", sheetRows(payload.data.reimbursementBatches)],
     ["ReimbursementItems", sheetRows(payload.data.reimbursementItems)],
@@ -2214,6 +2225,44 @@ export async function buildHouseholdTableExportWorkbook(payload: HouseholdBackup
   return XLSX.write(workbook, { type: "buffer", bookType: "xlsx" }) as Buffer;
 }
 
+/**
+ * 2026-10-06 口径定版：旧备份用 `debt*` 命名，恢复时必须映射到 liability 口径，
+ * 否则列名对不上会报错、source 前缀对不上会让统计与余额静默算错。
+ * - 字段：debtDirection / debtPrincipalAmount / debtInterestAmount / debtFeeAmount
+ * - 值：source 前缀 debt_ → liability_；机构类型 debt → lender
+ */
+const LEGACY_LIABILITY_FIELD_MAP: Record<string, string> = {
+  debtDirection: "liabilityDirection",
+  debtPrincipalAmount: "principalAmount",
+  debtInterestAmount: "interestAmount",
+  debtFeeAmount: "feeAmount",
+};
+
+function normalizeLegacyLiabilityRecord(raw: unknown) {
+  const row = ensureObject(raw, "backup row");
+  let next: Record<string, unknown> = row;
+  const patch = (key: string, value: unknown) => {
+    if (next === row) next = { ...row };
+    next[key] = value;
+  };
+  for (const [legacy, current] of Object.entries(LEGACY_LIABILITY_FIELD_MAP)) {
+    if (legacy in row) {
+      if (!(current in row)) patch(current, row[legacy]);
+      if (next === row) next = { ...row };
+      delete next[legacy];
+    }
+  }
+  if (typeof row.source === "string" && row.source.startsWith("debt_")) {
+    patch("source", `liability_${row.source.slice("debt_".length)}`);
+  }
+  if (row.type === "debt") patch("type", "lender");
+  return next;
+}
+
+function ensureLiabilityArray(value: unknown, label: string) {
+  return ensureArray(value, label).map((row) => normalizeLegacyLiabilityRecord(row) as Record<string, unknown>);
+}
+
 export function parseBackupPayload(raw: unknown) {
   const payload = ensureObject(raw, "payload");
   if (payload.app !== "MMH") {
@@ -2242,7 +2291,7 @@ export function parseBackupPayload(raw: unknown) {
       users: ensureArray(data.users ?? [], "data.users"),
       userSettings: ensureArray(data.userSettings ?? [], "data.userSettings"),
       accountGroups: ensureArray(data.accountGroups ?? [], "data.accountGroups"),
-      institutions: ensureArray(data.institutions ?? [], "data.institutions"),
+      institutions: ensureLiabilityArray(data.institutions ?? [], "data.institutions"),
       counterparties: ensureArray(data.counterparties ?? [], "data.counterparties"),
       categories: ensureArray(data.categories ?? [], "data.categories"),
       tags: ensureArray(data.tags ?? [], "data.tags"),
@@ -2250,7 +2299,7 @@ export function parseBackupPayload(raw: unknown) {
       wealthProducts: ensureArray(data.wealthProducts ?? [], "data.wealthProducts"),
       depositProducts: ensureArray(data.depositProducts ?? [], "data.depositProducts"),
       bondProducts: ensureArray(data.bondProducts ?? [], "data.bondProducts"),
-      accounts: ensureArray(data.accounts ?? [], "data.accounts"),
+      accounts: ensureLiabilityArray(data.accounts ?? [], "data.accounts"),
       accountAliases: ensureArray(data.accountAliases ?? [], "data.accountAliases"),
       billOverrides: ensureArray(data.billOverrides ?? [], "data.billOverrides"),
       creditCardCycles: ensureArray(data.creditCardCycles ?? [], "data.creditCardCycles"),
@@ -2263,7 +2312,12 @@ export function parseBackupPayload(raw: unknown) {
       preciousMetalUnits: ensureArray(data.preciousMetalUnits ?? [], "data.preciousMetalUnits"),
       preciousMetalHoldings: ensureArray(data.preciousMetalHoldings ?? [], "data.preciousMetalHoldings"),
       loanRateAdjustments: ensureArray(data.loanRateAdjustments ?? [], "data.loanRateAdjustments"),
-      debtAgreements: ensureArray(data.debtAgreements ?? [], "data.debtAgreements"),
+      loanCategories: ensureArray(data.loanCategories ?? [], "data.loanCategories"),
+      // 旧备份的键名是 data.debtAgreements（2026-10-06 口径定版前的命名）。
+      settlementAgreements: ensureLiabilityArray(
+        data.settlementAgreements ?? data.debtAgreements ?? [],
+        "data.settlementAgreements",
+      ),
       reimbursements: ensureArray(data.reimbursements ?? [], "data.reimbursements"),
       reimbursementBatches: ensureArray(data.reimbursementBatches ?? [], "data.reimbursementBatches"),
       reimbursementItems: ensureArray(data.reimbursementItems ?? [], "data.reimbursementItems"),
@@ -2278,7 +2332,7 @@ export function parseBackupPayload(raw: unknown) {
       statementCategoryRules: ensureArray(data.statementCategoryRules ?? [], "data.statementCategoryRules"),
       regularInvestPlans: ensureArray(data.regularInvestPlans ?? [], "data.regularInvestPlans"),
       importBatches: ensureArray(data.importBatches ?? [], "data.importBatches"),
-      transactions: ensureArray(data.transactions ?? [], "data.transactions"),
+      transactions: ensureLiabilityArray(data.transactions ?? [], "data.transactions"),
       fxRates: ensureArray(data.fxRates ?? [], "data.fxRates"),
       fxConversions: ensureArray(data.fxConversions ?? [], "data.fxConversions"),
       insuranceProducts: ensureArray(data.insuranceProducts ?? [], "data.insuranceProducts"),
@@ -2556,7 +2610,7 @@ export async function restoreHouseholdBackup(
     }
     await tx.creditCardInstallmentPlan.deleteMany({ where: { householdId } });
     await tx.loanRateAdjustment.deleteMany({ where: { householdId } });
-    await tx.debtAgreement.deleteMany({ where: { householdId } });
+    await tx.settlementAgreement.deleteMany({ where: { householdId } });
     await tx.reimbursementSettlementTransaction.deleteMany({
       where: { Settlement: { Reimbursement: { householdId } } },
     });
@@ -2602,6 +2656,8 @@ export async function restoreHouseholdBackup(
     await tx.undoOperation.deleteMany({ where: { householdId } });
     await tx.txRecord.deleteMany({ where: { householdId } });
     await tx.account.deleteMany({ where: { householdId } });
+    // 账户先删（账户引用类别，链上 onDelete: SetNull 会静默置空，所以顺序反过来删更干净）
+    await tx.loanCategory.deleteMany({ where: { householdId } });
     await tx.insuranceProduct.deleteMany({ where: { householdId } });
     await tx.insuranceProductMaster.deleteMany({ where: { householdId } });
     await tx.wealthProduct.deleteMany({ where: { householdId } });
@@ -3035,6 +3091,23 @@ export async function restoreHouseholdBackup(
       );
     }
 
+    if (data.loanCategories.length > 0) {
+      await tx.loanCategory.createMany({
+        data: data.loanCategories.map((item) => ({
+          id: String(item.id),
+          householdId,
+          name: String(item.name ?? ""),
+          baseType: String(item.baseType ?? "other") as never,
+          sortOrder: Number(item.sortOrder ?? 0),
+          isSystem: item.isSystem == null ? false : Boolean(item.isSystem),
+          isActive: item.isActive == null ? true : Boolean(item.isActive),
+          createdAt: item.createdAt ? new Date(String(item.createdAt)) : new Date(),
+          updatedAt: item.updatedAt ? new Date(String(item.updatedAt)) : new Date(),
+        })),
+      });
+    }
+    const importedLoanCategoryIds = new Set(data.loanCategories.map((item) => String(item.id)));
+
     if (data.accounts.length > 0) {
       await tx.account.createMany({
         data: data.accounts.map((item) => ({
@@ -3042,7 +3115,24 @@ export async function restoreHouseholdBackup(
           name: String(item.name ?? ""),
           balance: item.balance == null ? "0" : String(item.balance),
           kind: String(item.kind ?? "other") as never,
-          debtDirection: item.debtDirection == null ? null : (String(item.debtDirection) as never),
+          liabilityDirection: item.liabilityDirection == null ? null : (String(item.liabilityDirection) as never),
+          // 2026-10-06 修复：以下 6 个业务字段此前不在恢复白名单里，恢复后一律落到列
+          // 默认值（NULL / false / current），再被启动回填统一写成 home —— 表现就是
+          // 「消费贷分组消失、所有贷款变房贷」，同时固定资产细分类型、抵押物、
+          // 信用卡还款偏移与账单日口径也一起被清掉。备份里有的值必须原样带回来。
+          loanType: item.loanType == null ? null : (String(item.loanType) as never),
+          isConsumerLoan: item.isConsumerLoan == null ? false : Boolean(item.isConsumerLoan),
+          loanCategoryId:
+            item.loanCategoryId && importedLoanCategoryIds.has(String(item.loanCategoryId))
+              ? String(item.loanCategoryId)
+              : null,
+          collateralAssetId: item.collateralAssetId == null ? null : String(item.collateralAssetId),
+          fixedAssetType: item.fixedAssetType == null ? null : (String(item.fixedAssetType) as never),
+          repaymentOffsetDays: item.repaymentOffsetDays == null ? null : Number(item.repaymentOffsetDays),
+          billingDayTxPeriod:
+            item.billingDayTxPeriod == null ? "current" : (String(item.billingDayTxPeriod) as never),
+          balanceRecomputedAt:
+            item.balanceRecomputedAt == null ? null : new Date(String(item.balanceRecomputedAt)),
           currency: item.currency == null ? "CNY" : String(item.currency),
           isActive: item.isActive == null ? true : Boolean(item.isActive),
           isPlaceholder: item.isPlaceholder == null ? false : Boolean(item.isPlaceholder),
@@ -3078,6 +3168,24 @@ export async function restoreHouseholdBackup(
               : null,
           fundUnitsDecimals: item.fundUnitsDecimals == null ? 2 : Number(item.fundUnitsDecimals),
         })),
+      });
+    }
+
+    // 旧备份（2026-10-07 之前）没有贷款类别：补齐四个内置类别，并把没有类别的贷款按口径
+    // 映射过去（loanType 缺失时按 isConsumerLoan 兜底），否则恢复后贷款会没有类别。
+    await ensureBuiltinLoanCategories(tx, householdId);
+    await tx.account.updateMany({
+      where: { householdId, kind: "loan", loanType: null, isConsumerLoan: true },
+      data: { loanType: "consumer" },
+    });
+    await tx.account.updateMany({
+      where: { householdId, kind: "loan", loanType: null },
+      data: { loanType: "home" },
+    });
+    for (const builtinCategory of BUILTIN_LOAN_CATEGORIES) {
+      await tx.account.updateMany({
+        where: { householdId, kind: "loan", loanCategoryId: null, loanType: builtinCategory.baseType },
+        data: { loanCategoryId: builtinLoanCategoryId(householdId, builtinCategory.baseType) },
       });
     }
 
@@ -3546,9 +3654,9 @@ export async function restoreHouseholdBackup(
                 item.fundSourceEntryId && importedTransactions.has(String(item.fundSourceEntryId))
                   ? String(item.fundSourceEntryId)
                   : null,
-              debtPrincipalAmount: item.debtPrincipalAmount == null ? null : String(item.debtPrincipalAmount),
-              debtInterestAmount: item.debtInterestAmount == null ? null : String(item.debtInterestAmount),
-              debtFeeAmount: item.debtFeeAmount == null ? null : String(item.debtFeeAmount),
+              principalAmount: item.principalAmount == null ? null : String(item.principalAmount),
+              interestAmount: item.interestAmount == null ? null : String(item.interestAmount),
+              feeAmount: item.feeAmount == null ? null : String(item.feeAmount),
               fundConfirmDate: isSplitFundProjection(item) || item.fundConfirmDate == null ? null : new Date(String(item.fundConfirmDate)),
               fundFee: isSplitFundProjection(item) || item.fundFee == null ? null : String(item.fundFee),
               fundNav: isSplitFundProjection(item) || item.fundNav == null ? null : String(item.fundNav),
@@ -4147,8 +4255,8 @@ export async function restoreHouseholdBackup(
     );
 
     await createManyRecords(
-      tx.debtAgreement,
-      data.debtAgreements
+      tx.settlementAgreement,
+      data.settlementAgreements
         .filter((item) => importedTransactions.has(String(item.entryId)))
         .map((item) => ({
           ...item,

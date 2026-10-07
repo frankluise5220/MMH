@@ -48,7 +48,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { AccountKind, FundCashFlowKind, TransactionType, FundSubtype, IntervalUnit, Prisma, RegularInvestStatus } from "@prisma/client";
-import { getHouseholdScope } from "@/lib/server/household-scope";
 import { getApiHouseholdScope } from "@/lib/server/api-auth";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { recalcPreciousMetalPositions } from "@/lib/metal/recalcPosition";
@@ -171,7 +170,7 @@ async function assertDepositRedemptionDateAllowed(params: {
   }
 }
 
-function isSettlementDebtAccountForDetail(account?: { kind?: string | null; counterpartyId?: string | null } | null) {
+function isSettlementLiabilityAccountForDetail(account?: { kind?: string | null; counterpartyId?: string | null } | null) {
   return account?.kind === AccountKind.settlement || (account?.kind === AccountKind.loan && !!account.counterpartyId);
 }
 
@@ -1038,8 +1037,8 @@ async function loadApiDetailRecord(entryId: string) {
     accountId: entry.accountId,
     accountName: accountDisplayName(entry.account, entry.accountName),
     accountKind: entry.account?.kind ?? null,
-    accountDebtDirection: entry.account?.debtDirection ?? null,
-    accountIsSettlementDebt: isSettlementDebtAccountForDetail(entry.account),
+    accountLiabilityDirection: entry.account?.liabilityDirection ?? null,
+    accountIsSettlementAccount: isSettlementLiabilityAccountForDetail(entry.account),
     accountInstitutionName: entry.account?.Institution?.name ?? "",
     counterpartyInstitutionId: entry.counterpartyInstitutionId ?? null,
     counterpartyInstitutionName: entry.counterpartyInstitutionName ?? null,
@@ -1050,8 +1049,8 @@ async function loadApiDetailRecord(entryId: string) {
     toAccountId: entry.toAccountId,
     toAccountName: accountDisplayName(entry.toAccount, entry.toAccountName),
     toAccountKind: entry.toAccount?.kind ?? null,
-    toAccountDebtDirection: entry.toAccount?.debtDirection ?? null,
-    toAccountIsSettlementDebt: isSettlementDebtAccountForDetail(entry.toAccount),
+    toAccountLiabilityDirection: entry.toAccount?.liabilityDirection ?? null,
+    toAccountIsSettlementAccount: isSettlementLiabilityAccountForDetail(entry.toAccount),
     toAccountInstitutionName: entry.toAccount?.Institution?.name ?? "",
     note: entry.note,
     fundSubtype: entry.fundSubtype,
@@ -1149,16 +1148,16 @@ async function loadApiFundTransactionRecord(fundTransactionId: string) {
     accountId: account?.id ?? null,
     accountName: accountDisplayName(account, null),
     accountKind: account?.kind ?? null,
-    accountDebtDirection: account?.debtDirection ?? null,
-    accountIsSettlementDebt: isSettlementDebtAccountForDetail(account),
+    accountLiabilityDirection: account?.liabilityDirection ?? null,
+    accountIsSettlementAccount: isSettlementLiabilityAccountForDetail(account),
     accountInstitutionName: account?.Institution?.name ?? "",
     counterpartyInstitutionId: null,
     counterpartyInstitutionName: null,
     toAccountId: toAccount?.id ?? null,
     toAccountName: accountDisplayName(toAccount, null),
     toAccountKind: toAccount?.kind ?? null,
-    toAccountDebtDirection: toAccount?.debtDirection ?? null,
-    toAccountIsSettlementDebt: isSettlementDebtAccountForDetail(toAccount),
+    toAccountLiabilityDirection: toAccount?.liabilityDirection ?? null,
+    toAccountIsSettlementAccount: isSettlementLiabilityAccountForDetail(toAccount),
     toAccountInstitutionName: toAccount?.Institution?.name ?? "",
     note: row.note,
     fundSubtype: row.fundSubtype,
@@ -1478,7 +1477,7 @@ export async function GET(req: Request) {
   const pageSize = Math.min(Math.max(1, parseInt(url.searchParams.get("pageSize") ?? "20", 10) || 20), DETAIL_ALL_PAGE_SIZE);
 
   try {
-    const { hidFilter } = await getHouseholdScope();
+    const { hidFilter } = await getApiHouseholdScope(req);
 
     // Single record lookup by ID
     if (entryId) {
@@ -1556,8 +1555,8 @@ export async function GET(req: Request) {
         accountId: record.accountId,
         accountName: accountDisplayName(record.account, record.accountName),
         accountKind: record.account?.kind ?? null,
-        accountDebtDirection: record.account?.debtDirection ?? null,
-        accountIsSettlementDebt: isSettlementDebtAccountForDetail(record.account),
+        accountLiabilityDirection: record.account?.liabilityDirection ?? null,
+        accountIsSettlementAccount: isSettlementLiabilityAccountForDetail(record.account),
         accountInstitutionName: record.account?.Institution?.name ?? "",
         counterpartyInstitutionId: record.counterpartyInstitutionId ?? null,
         counterpartyInstitutionName: record.counterpartyInstitutionName ?? null,
@@ -1568,8 +1567,8 @@ export async function GET(req: Request) {
         toAccountId: record.toAccountId,
         toAccountName: accountDisplayName(record.toAccount, record.toAccountName),
         toAccountKind: record.toAccount?.kind ?? null,
-        toAccountDebtDirection: record.toAccount?.debtDirection ?? null,
-        toAccountIsSettlementDebt: isSettlementDebtAccountForDetail(record.toAccount),
+        toAccountLiabilityDirection: record.toAccount?.liabilityDirection ?? null,
+        toAccountIsSettlementAccount: isSettlementLiabilityAccountForDetail(record.toAccount),
         toAccountInstitutionName: record.toAccount?.Institution?.name ?? "",
         note: record.note,
         toNote: record.toNote,
@@ -1581,9 +1580,9 @@ export async function GET(req: Request) {
         insuranceProductId: record.insuranceProductId ?? null,
         insuranceAction: record.insuranceAction ?? null,
         insuranceProductName: record.insuranceProductName ?? record.fundName ?? null,
-        debtPrincipalAmount: record.debtPrincipalAmount ? toNumber(record.debtPrincipalAmount) : null,
-        debtInterestAmount: record.debtInterestAmount ? toNumber(record.debtInterestAmount) : null,
-        debtFeeAmount: record.debtFeeAmount ? toNumber(record.debtFeeAmount) : null,
+        principalAmount: record.principalAmount ? toNumber(record.principalAmount) : null,
+        interestAmount: record.interestAmount ? toNumber(record.interestAmount) : null,
+        feeAmount: record.feeAmount ? toNumber(record.feeAmount) : null,
         realizedProfit: record.realizedProfit ? toNumber(record.realizedProfit) : null,
         fundProductType: record.fundProductType,
         metalTypeId: record.metalTypeId ?? null,
@@ -1792,8 +1791,8 @@ export async function GET(req: Request) {
       accountId: e.accountId,
       accountName: accountDisplayName(e.account, e.accountName),
       accountKind: e.account?.kind ?? null,
-      accountDebtDirection: e.account?.debtDirection ?? null,
-      accountIsSettlementDebt: isSettlementDebtAccountForDetail(e.account),
+      accountLiabilityDirection: e.account?.liabilityDirection ?? null,
+      accountIsSettlementAccount: isSettlementLiabilityAccountForDetail(e.account),
       accountInstitutionName: e.account?.Institution?.name ?? "",
       counterpartyInstitutionId: e.counterpartyInstitutionId ?? null,
       counterpartyInstitutionName: e.counterpartyInstitutionName ?? null,
@@ -1804,8 +1803,8 @@ export async function GET(req: Request) {
       toAccountId: e.toAccountId,
       toAccountName: accountDisplayName(e.toAccount, e.toAccountName),
       toAccountKind: e.toAccount?.kind ?? null,
-      toAccountDebtDirection: e.toAccount?.debtDirection ?? null,
-      toAccountIsSettlementDebt: isSettlementDebtAccountForDetail(e.toAccount),
+      toAccountLiabilityDirection: e.toAccount?.liabilityDirection ?? null,
+      toAccountIsSettlementAccount: isSettlementLiabilityAccountForDetail(e.toAccount),
       toAccountInstitutionName: e.toAccount?.Institution?.name ?? "",
       note: e.note,
       toNote: e.toNote,
@@ -1817,9 +1816,9 @@ export async function GET(req: Request) {
       insuranceProductId: e.insuranceProductId ?? null,
       insuranceAction: e.insuranceAction ?? null,
       insuranceProductName: e.insuranceProductName ?? e.fundName ?? null,
-    debtPrincipalAmount: e.debtPrincipalAmount ? toNumber(e.debtPrincipalAmount) : null,
-    debtInterestAmount: e.debtInterestAmount ? toNumber(e.debtInterestAmount) : null,
-    debtFeeAmount: e.debtFeeAmount ? toNumber(e.debtFeeAmount) : null,
+    principalAmount: e.principalAmount ? toNumber(e.principalAmount) : null,
+    interestAmount: e.interestAmount ? toNumber(e.interestAmount) : null,
+    feeAmount: e.feeAmount ? toNumber(e.feeAmount) : null,
     realizedProfit: e.realizedProfit ? toNumber(e.realizedProfit) : null,
       fundProductType: e.fundProductType,
       metalTypeId: e.metalTypeId ?? null,
@@ -1888,7 +1887,7 @@ export async function GET(req: Request) {
  *   accountId: string
  *   categoryId?: string
  *   categoryName?: string
- *   toAccountId?: string (transfer; ordinary cash/credit targets only. Fund, deposit, and debt targets must use their specialized transaction payloads.)
+ *   toAccountId?: string (transfer; ordinary cash/credit targets only. Fund, deposit, and liability targets must use their specialized transaction payloads.)
  *   toAccountName?: string
  *   note?: string
  *   tagIds?: string[]
@@ -1980,7 +1979,7 @@ export async function POST(req: Request) {
         const resolvedAdvance = await resolveOrCreateAdvanceAccount(tx, {
           householdId,
           cashAccountId: acc.id,
-          debtObjectId: counterpartyInstitutionId,
+          liabilityObjectId: counterpartyInstitutionId,
           preferredAccountId: preferredAdvanceAccountId,
         });
         advanceAccountId = resolvedAdvance.account.id;
@@ -2028,23 +2027,23 @@ export async function POST(req: Request) {
         if (fromAcc.kind === "loan" || toAcc.kind === "loan") {
           throw new Error("基金、存款、贷款和往来款账户不能保存为普通转账，请使用对应的专用记账窗口");
         }
-        const isDebtTransfer = isLoanOrSettlementAccountKind(fromAcc.kind) || isLoanOrSettlementAccountKind(toAcc.kind);
+        const isLiabilityTransfer = isLoanOrSettlementAccountKind(fromAcc.kind) || isLoanOrSettlementAccountKind(toAcc.kind);
         if (isLoanOrSettlementAccountKind(fromAcc.kind) && isLoanOrSettlementAccountKind(toAcc.kind)) {
           throw new Error("往来款账户之间不能保存为普通转账");
         }
-        if (!isDebtTransfer && (isSpecialCashTargetAccount(fromAcc) || isSpecialCashTargetAccount(toAcc))) {
+        if (!isLiabilityTransfer && (isSpecialCashTargetAccount(fromAcc) || isSpecialCashTargetAccount(toAcc))) {
           throw new Error("基金、存款、贷款和往来款账户不能保存为普通转账，请使用对应的专用记账窗口");
         }
         const transferCurrency = resolveSameCurrencyTransfer(fromAcc, toAcc);
-        const debtMode = isDebtTransfer
+        const liabilityMode = isLiabilityTransfer
           ? isLoanOrSettlementAccountKind(fromAcc.kind)
-            ? fromAcc.debtDirection === "receivable" ? "collect_in" : "borrow_in"
-            : toAcc.debtDirection === "receivable" ? "lend_out" : "repay_out"
+            ? fromAcc.liabilityDirection === "receivable" ? "collect_in" : "borrow_in"
+            : toAcc.liabilityDirection === "receivable" ? "lend_out" : "repay_out"
           : null;
-        const signedTransferAmount = debtMode === "collect_in" ? amountAbs : -amountAbs;
+        const signedTransferAmount = liabilityMode === "collect_in" ? amountAbs : -amountAbs;
 
         const transferStatementMonth = statementMonthForTransfer(date, fromAcc, toAcc);
-        const transferCategory = debtMode
+        const transferCategory = liabilityMode
           ? await ensureSettlementTransferCategory(tx, householdId)
           : isCreditCardRepaymentTransfer({
               type: TransactionType.transfer,
@@ -2062,7 +2061,7 @@ export async function POST(req: Request) {
           amount: signedTransferAmount,
           categoryId: transferCategory?.id ?? null,
           note,
-          source: debtMode ? `debt_${debtMode}` : "manual",
+          source: liabilityMode ? `liability_${liabilityMode}` : "manual",
         });
         if (duplicate) {
           createdId = duplicate.id;
@@ -2084,10 +2083,10 @@ export async function POST(req: Request) {
             toNote: (toNote || note) || null,
             currency: transferCurrency,
             statementMonth: transferStatementMonth,
-            source: debtMode ? `debt_${debtMode}` : "manual",
-            debtPrincipalAmount: debtMode ? amountAbs : null,
-            debtInterestAmount: debtMode ? 0 : null,
-            debtFeeAmount: debtMode ? 0 : null,
+            source: liabilityMode ? `liability_${liabilityMode}` : "manual",
+            principalAmount: liabilityMode ? amountAbs : null,
+            interestAmount: liabilityMode ? 0 : null,
+            feeAmount: liabilityMode ? 0 : null,
             householdId,
           },
         });
@@ -3069,14 +3068,14 @@ export async function POST(req: Request) {
             accountId: created.accountId,
             accountName: accountDisplayName(created.account, created.accountName),
             accountKind: created.account?.kind ?? null,
-            accountDebtDirection: created.account?.debtDirection ?? null,
-            accountIsSettlementDebt: isSettlementDebtAccountForDetail(created.account),
+            accountLiabilityDirection: created.account?.liabilityDirection ?? null,
+            accountIsSettlementAccount: isSettlementLiabilityAccountForDetail(created.account),
             accountInstitutionName: created.account?.Institution?.name ?? "",
             toAccountId: created.toAccountId,
             toAccountName: accountDisplayName(created.toAccount, created.toAccountName),
             toAccountKind: created.toAccount?.kind ?? null,
-            toAccountDebtDirection: created.toAccount?.debtDirection ?? null,
-            toAccountIsSettlementDebt: isSettlementDebtAccountForDetail(created.toAccount),
+            toAccountLiabilityDirection: created.toAccount?.liabilityDirection ?? null,
+            toAccountIsSettlementAccount: isSettlementLiabilityAccountForDetail(created.toAccount),
             toAccountInstitutionName: created.toAccount?.Institution?.name ?? "",
             note: created.note,
             fundSubtype: created.fundSubtype,
@@ -3129,7 +3128,7 @@ export async function POST(req: Request) {
  *   type?: "expense" | "income" | "advance" | "transfer" | "investment"
  *   accountId?: string
  *   categoryId?: string
- *   toAccountId?: string (transfer; ordinary cash/credit targets only. Fund, deposit, and debt targets must use their specialized transaction payloads.)
+ *   toAccountId?: string (transfer; ordinary cash/credit targets only. Fund, deposit, and liability targets must use their specialized transaction payloads.)
  *   toAccountName?: string
  *   note?: string
  *   tagIds?: string[]
@@ -3300,30 +3299,30 @@ export async function PUT(req: Request) {
         if (fromAcc.kind === "loan" || toAcc.kind === "loan") {
           throw new Error("基金、存款、贷款和往来款账户不能保存为普通转账，请使用对应的专用记账窗口");
         }
-        const isDebtTransfer = isLoanOrSettlementAccountKind(fromAcc.kind) || isLoanOrSettlementAccountKind(toAcc.kind);
+        const isLiabilityTransfer = isLoanOrSettlementAccountKind(fromAcc.kind) || isLoanOrSettlementAccountKind(toAcc.kind);
         if (isLoanOrSettlementAccountKind(fromAcc.kind) && isLoanOrSettlementAccountKind(toAcc.kind)) {
           throw new Error("往来款账户之间不能保存为普通转账");
         }
-        if (!isDebtTransfer && (isSpecialCashTargetAccount(fromAcc) || isSpecialCashTargetAccount(toAcc)) && !transferAccountsUnchanged) {
+        if (!isLiabilityTransfer && (isSpecialCashTargetAccount(fromAcc) || isSpecialCashTargetAccount(toAcc)) && !transferAccountsUnchanged) {
           throw new Error("基金、存款、贷款和往来款账户不能保存为普通转账，请使用对应的专用记账窗口");
         }
         const transferCurrency = resolveSameCurrencyTransfer(fromAcc, toAcc);
-        const debtMode = isDebtTransfer
+        const liabilityMode = isLiabilityTransfer
           ? isLoanOrSettlementAccountKind(fromAcc.kind)
-            ? fromAcc.debtDirection === "receivable" ? "collect_in" : "borrow_in"
-            : toAcc.debtDirection === "receivable" ? "lend_out" : "repay_out"
+            ? fromAcc.liabilityDirection === "receivable" ? "collect_in" : "borrow_in"
+            : toAcc.liabilityDirection === "receivable" ? "lend_out" : "repay_out"
           : null;
         if (
-          !debtMode &&
-          String(entry.source ?? "").startsWith("debt_") &&
-          (Math.abs(toNumber(entry.debtInterestAmount)) > 0.005 || Math.abs(toNumber(entry.debtFeeAmount)) > 0.005)
+          !liabilityMode &&
+          String(entry.source ?? "").startsWith("liability_") &&
+          (Math.abs(toNumber(entry.interestAmount)) > 0.005 || Math.abs(toNumber(entry.feeAmount)) > 0.005)
         ) {
           throw new Error("有利息或手续费的借入借出记录不能直接改为普通转账");
         }
-        const signedTransferAmount = debtMode === "collect_in" ? amountAbs : -amountAbs;
+        const signedTransferAmount = liabilityMode === "collect_in" ? amountAbs : -amountAbs;
 
         const transferStatementMonth = statementMonthForTransfer(date, fromAcc, toAcc);
-        const transferCategory = debtMode
+        const transferCategory = liabilityMode
           ? await ensureSettlementTransferCategory(tx, householdId)
           : isCreditCardRepaymentTransfer({
               type: TransactionType.transfer,
@@ -3352,7 +3351,7 @@ export async function PUT(req: Request) {
             note: note || null,
             toNote: (toNote || note) || null,
             currency: transferCurrency,
-            source: debtMode ? `debt_${debtMode}` : transferAccountsUnchanged && entry.source ? entry.source : "manual",
+            source: liabilityMode ? `liability_${liabilityMode}` : transferAccountsUnchanged && entry.source ? entry.source : "manual",
             fundCode: null,
             fundName: null,
             fundProductType: null,
@@ -3380,9 +3379,9 @@ export async function PUT(req: Request) {
             insuranceProductId: null,
             insuranceAction: null,
             insuranceProductName: null,
-            debtPrincipalAmount: debtMode ? amountAbs : null,
-            debtInterestAmount: debtMode ? 0 : null,
-            debtFeeAmount: debtMode ? 0 : null,
+            principalAmount: liabilityMode ? amountAbs : null,
+            interestAmount: liabilityMode ? 0 : null,
+            feeAmount: liabilityMode ? 0 : null,
             realizedProfit: null,
           },
         });
@@ -3919,7 +3918,7 @@ return;
         const resolvedAdvance = await resolveOrCreateAdvanceAccount(tx, {
           householdId,
           cashAccountId: acc.id,
-          debtObjectId: counterpartyInstitutionId,
+          liabilityObjectId: counterpartyInstitutionId,
           preferredAccountId: preferredAdvanceAccountId,
         });
         advanceAccountId = resolvedAdvance.account.id;
@@ -4072,9 +4071,9 @@ return;
           insuranceProductId: null,
           insuranceAction: null,
           insuranceProductName: null,
-          debtPrincipalAmount: null,
-          debtInterestAmount: null,
-          debtFeeAmount: null,
+          principalAmount: null,
+          interestAmount: null,
+          feeAmount: null,
           realizedProfit: null,
         },
       });
@@ -4207,16 +4206,16 @@ return;
         accountId: updated.accountId,
         accountName: accountDisplayName(updated.account, updated.accountName),
         accountKind: updated.account?.kind ?? null,
-        accountDebtDirection: updated.account?.debtDirection ?? null,
-        accountIsSettlementDebt: isSettlementDebtAccountForDetail(updated.account),
+        accountLiabilityDirection: updated.account?.liabilityDirection ?? null,
+        accountIsSettlementAccount: isSettlementLiabilityAccountForDetail(updated.account),
         accountInstitutionName: updated.account?.Institution?.name ?? "",
         counterpartyInstitutionId: updated.counterpartyInstitutionId ?? null,
         counterpartyInstitutionName: updated.counterpartyInstitutionName ?? null,
         toAccountId: updated.toAccountId,
         toAccountName: accountDisplayName(updated.toAccount, updated.toAccountName),
         toAccountKind: updated.toAccount?.kind ?? null,
-        toAccountDebtDirection: updated.toAccount?.debtDirection ?? null,
-        toAccountIsSettlementDebt: isSettlementDebtAccountForDetail(updated.toAccount),
+        toAccountLiabilityDirection: updated.toAccount?.liabilityDirection ?? null,
+        toAccountIsSettlementAccount: isSettlementLiabilityAccountForDetail(updated.toAccount),
         toAccountInstitutionName: updated.toAccount?.Institution?.name ?? "",
         note: updated.note,
         fundSubtype: updated.fundSubtype,

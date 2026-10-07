@@ -3,7 +3,7 @@ import { prisma } from "@/lib/db/prisma";
 import { findInstitutionDisplayNameConflict } from "@/lib/server/institution-name-unique";
 import { defaultFundCompanyNames } from "@/lib/default-fund-companies";
 
-export type DefaultInstitutionType = "bank" | "insurance" | "brokerage" | "fund_company" | "payment" | "debt" | "other";
+export type DefaultInstitutionType = "bank" | "insurance" | "brokerage" | "fund_company" | "payment" | "lender" | "other";
 
 export type DefaultInstitutionTemplate = {
   name: string;

@@ -1,0 +1,73 @@
+#!/usr/bin/env node
+
+// Windows 桌面端（SQLite）升级路径的静态断言。
+//
+// 桌面端不是靠 `prisma migrate deploy`，而是由 scripts/build-win-desktop.cjs 生成
+// scripts/init-sqlite.cjs：全新安装整份执行 native-init.sql，存量库只「建缺失的表」+
+// 跑 applyRuntimeMigrations 里的列回填与数据迁移。所以任何新列/新主数据只要忘了写进
+// 这段模板，升级后的旧库就会缺列，页面直接报 "no such column: xxx"
+// （生产构建下表现为 "Server Components render" 通用报错）。
+//
+// 这些断言只做文本校验（不跑 better-sqlite3），保证在任何 Node 版本下都能执行；
+// 行为验证见 scripts/verify-win-sqlite-runtime.cjs（需要匹配 ABI 的 Node）。
+
+const fs = require("node:fs");
+const path = require("node:path");
+
+const root = path.resolve(__dirname, "..");
+const failures = [];
+const buildScript = fs.readFileSync(path.join(root, "scripts", "build-win-desktop.cjs"), "utf8");
+
+function expect(condition, message) {
+  if (!condition) failures.push(message);
+}
+
+expect(
+  /function applyRuntimeMigrations\(db\)/.test(buildScript) &&
+    /applyRuntimeMigrations\(db\);/.test(buildScript),
+  "Windows SQLite init must define and call applyRuntimeMigrations for existing databases.",
+);
+
+// 2026-10-06 负债口径改名：漏掉会让升级后的旧桌面库缺 Account.liabilityDirection。
+expect(
+  /function applyLiabilityTerminologyMigration\(db\)/.test(buildScript) &&
+    /renameColumnIfNeeded\(db, "Account", "debtDirection", "liabilityDirection"\)/.test(buildScript) &&
+    /renameColumnIfNeeded\(db, "transactions", "debtPrincipalAmount", "principalAmount"\)/.test(buildScript),
+  "Windows SQLite init must rename debt* storage to liability semantics on upgraded databases.",
+);
+
+// 2026-10-06 AccessKey 读写权限：漏掉会让「设置 → API」读不到 scope 列。
+expect(
+  /addColumnIfMissing\(db, "AccessKey", "scope", "TEXT NOT NULL DEFAULT 'write'"\)/.test(buildScript),
+  "Windows SQLite init must backfill AccessKey.scope for existing databases (old keys keep write access).",
+);
+
+// 2026-10-07 贷款类别：列 + 四个内置类别播种 + 存量贷款映射，三件事缺一不可。
+expect(
+  /function applyLoanCategoryMigration\(db\)/.test(buildScript) &&
+    /addColumnIfMissing\(db, "Account", "loanCategoryId", "TEXT"\)/.test(buildScript),
+  "Windows SQLite init must backfill Account.loanCategoryId for existing databases.",
+);
+expect(
+  /INSERT OR IGNORE INTO "LoanCategory"/.test(buildScript) &&
+    /"lc_" \+ household\.id \+ "_" \+ baseType/.test(buildScript) &&
+    /\["房贷", "home", 0\]/.test(buildScript) &&
+    /\["其他贷款", "other", 3\]/.test(buildScript),
+  "Windows SQLite init must seed the four built-in loan categories with deterministic lc_<householdId>_<baseType> ids.",
+);
+expect(
+  /UPDATE "Account" SET "loanCategoryId" = \? \|\| "householdId" \|\| \? \|\| "loanType"/.test(buildScript),
+  "Windows SQLite init must map existing loan accounts onto their built-in category.",
+);
+expect(
+  /applyLoanCategoryMigration\(db\);/.test(buildScript),
+  "Windows SQLite init must call applyLoanCategoryMigration from applyRuntimeMigrations.",
+);
+
+if (failures.length > 0) {
+  console.error("Windows desktop verification failed:");
+  for (const failure of failures) console.error(" - " + failure);
+  process.exit(1);
+}
+
+console.log("Windows desktop verification passed.");

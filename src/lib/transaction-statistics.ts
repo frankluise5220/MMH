@@ -18,7 +18,7 @@ import {
   SYSTEM_WEALTH_LOSS_CATEGORY,
   SYSTEM_WEALTH_PROFIT_CATEGORY,
 } from "@/lib/default-categories";
-import { isDebtPrincipalTransfer, TRANSACTION_SOURCE_BOND } from "@/lib/transaction-semantics";
+import { isLiabilityPrincipalTransfer, TRANSACTION_SOURCE_BOND } from "@/lib/transaction-semantics";
 
 /**
  * Converts stored cash-flow amounts into category-statistics amounts.
@@ -42,7 +42,7 @@ export function getIncomeExpenseStatisticAmount(
 
 export type InvestmentStatisticType = "income" | "expense";
 
-type InvestmentProductKind = "fund" | "wealth" | "deposit" | "bond" | "debt";
+type InvestmentProductKind = "fund" | "wealth" | "deposit" | "bond" | "liability";
 
 const MONEY_EPSILON = 0.005;
 
@@ -51,16 +51,16 @@ export type InvestmentStatisticEntryLike = {
   amount: unknown;
   type?: TransactionType | string | null;
   source?: string | null;
-  debtPrincipalAmount?: unknown | null;
+  principalAmount?: unknown | null;
   reimbursementDifferenceAmount?: unknown | null;
   reimbursementDifferenceCategoryName?: string | null;
-  /** 账户现状 kind，用于判断历史 source 是否仍应按债务口径统计。 */
+  /** 账户现状 kind，用于判断历史 source 是否仍应按负债口径统计。 */
   accountKind?: string | null;
   toAccountKind?: string | null;
   fundSubtype?: FundSubtype | string | null;
   fundProductType?: FundProductType | string | null;
   realizedProfit?: unknown | null;
-  debtInterestAmount?: unknown | null;
+  interestAmount?: unknown | null;
   depositInterest?: unknown | null;
   bondInterest?: unknown | null;
   bondFee?: unknown | null;
@@ -545,22 +545,22 @@ export function getInvestmentStatisticItems(entry: InvestmentStatisticEntryLike)
   return items;
 }
 
-function debtResultProfitFallback(entry: InvestmentStatisticEntryLike) {
+function liabilityResultProfitFallback(entry: InvestmentStatisticEntryLike) {
   if (entry.source === "reimbursement" && entry.reimbursementDifferenceAmount != null) {
     return toNumber(entry.reimbursementDifferenceAmount);
   }
   if (entry.realizedProfit !== null && entry.realizedProfit !== undefined) return toNumber(entry.realizedProfit);
-  if (entry.source === "reimbursement" && entry.debtPrincipalAmount != null) {
-    return Math.abs(toNumber(entry.amount)) - Math.abs(toNumber(entry.debtPrincipalAmount));
+  if (entry.source === "reimbursement" && entry.principalAmount != null) {
+    return Math.abs(toNumber(entry.amount)) - Math.abs(toNumber(entry.principalAmount));
   }
-  if (entry.debtInterestAmount === null || entry.debtInterestAmount === undefined) return 0;
-  const interest = Math.abs(toNumber(entry.debtInterestAmount));
+  if (entry.interestAmount === null || entry.interestAmount === undefined) return 0;
+  const interest = Math.abs(toNumber(entry.interestAmount));
   if (interest === 0) return 0;
-  // 账户两端都已改成普通账户时，历史 source 不再按债务利息口径决定正负号。
-  if (!isDebtPrincipalTransfer(entry)) return 0;
+  // 账户两端都已改成普通账户时，历史 source 不再按负债利息口径决定正负号。
+  if (!isLiabilityPrincipalTransfer(entry)) return 0;
   const source = String(entry.source ?? "");
-  if (source === "debt_collect_in") return interest;
-  if (source === "debt_repay_out" || source === "debt_prepay_out" || source === "scheduled_task" || source === "debt_lend_out") {
+  if (source === "liability_collect_in") return interest;
+  if (source === "liability_repay_out" || source === "liability_prepay_out" || source === "scheduled_task" || source === "liability_lend_out") {
     return -interest;
   }
   return 0;
@@ -578,7 +578,7 @@ export function getBusinessResultStatisticItems(entry: InvestmentStatisticEntryL
   }
   if (entry.type !== TransactionType.transfer && entry.type !== "transfer") return [];
 
-  const profit = debtResultProfitFallback(entry);
+  const profit = liabilityResultProfitFallback(entry);
   if (profit === 0) return [];
   const positive = profit > 0;
   if (entry.source === "reimbursement") {
@@ -586,7 +586,7 @@ export function getBusinessResultStatisticItems(entry: InvestmentStatisticEntryL
     return [{
       idSuffix: "reimbursement-difference",
       type: positive ? "income" : "expense",
-      productKind: "debt",
+      productKind: "liability",
       amount: Math.abs(profit),
       categoryName: differenceCategory || (positive ? SYSTEM_REIMBURSEMENT_INCOME_CATEGORY : SYSTEM_OTHER_MISC_EXPENSE_CATEGORY),
       categoryCandidates: differenceCategory
@@ -600,7 +600,7 @@ export function getBusinessResultStatisticItems(entry: InvestmentStatisticEntryL
   return [{
     idSuffix: "realized-profit",
     type: positive ? "income" : "expense",
-    productKind: "debt",
+    productKind: "liability",
     amount: Math.abs(profit),
     categoryName: positive ? "利息" : "贷款利息",
     categoryCandidates: positive

@@ -14,7 +14,7 @@ type AccountOption = {
   subLabel?: string;
   kind?: string;
   investProductType?: string | null;
-  debtDirection?: string | null;
+  liabilityDirection?: string | null;
   institutionId?: string | null;
   currency?: string | null;
 };

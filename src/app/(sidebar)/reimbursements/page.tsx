@@ -40,9 +40,10 @@ export default async function ReimbursementsPage({
       where: {
         householdId,
         isActive: true,
-        isPlaceholder: false,
+        // 与侧边栏「费用报销」入口的判定保持同一口径（未标记的占位账户一律排除）。
+        isPlaceholder: { not: true },
         kind: { in: [AccountKind.loan, AccountKind.settlement] },
-        debtDirection: "receivable",
+        liabilityDirection: "receivable",
         Counterparty: { isReimbursable: true },
       },
       select: {

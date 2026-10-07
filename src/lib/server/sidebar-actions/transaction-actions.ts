@@ -503,23 +503,23 @@ export async function createTransaction(formData: FormData) {
         if (fromAcc.kind === "loan" || toAcc.kind === "loan") {
           throw new Error(t("sidebar.action.specialTargetTransferNotAllowed"));
         }
-        const isDebtTransfer = isLoanOrSettlementAccountKind(fromAcc.kind) || isLoanOrSettlementAccountKind(toAcc.kind);
+        const isLiabilityTransfer = isLoanOrSettlementAccountKind(fromAcc.kind) || isLoanOrSettlementAccountKind(toAcc.kind);
         if (isLoanOrSettlementAccountKind(fromAcc.kind) && isLoanOrSettlementAccountKind(toAcc.kind)) {
           throw new Error(t("sidebar.action.settlementTransferNotAllowed"));
         }
-        if (!isDebtTransfer && (isSpecialCashTargetAccount(fromAcc) || isSpecialCashTargetAccount(toAcc))) {
+        if (!isLiabilityTransfer && (isSpecialCashTargetAccount(fromAcc) || isSpecialCashTargetAccount(toAcc))) {
           throw new Error(t("sidebar.action.specialTargetTransferNotAllowed"));
         }
         const transferCurrency = resolveSameCurrencyTransfer(fromAcc, toAcc);
-        const debtMode = isDebtTransfer
+        const liabilityMode = isLiabilityTransfer
           ? isLoanOrSettlementAccountKind(fromAcc.kind)
-            ? fromAcc.debtDirection === "receivable" ? "collect_in" : "borrow_in"
-            : toAcc.debtDirection === "receivable" ? "lend_out" : "repay_out"
+            ? fromAcc.liabilityDirection === "receivable" ? "collect_in" : "borrow_in"
+            : toAcc.liabilityDirection === "receivable" ? "lend_out" : "repay_out"
           : null;
-        const signedTransferAmount = debtMode === "collect_in" ? amountAbs : -amountAbs;
+        const signedTransferAmount = liabilityMode === "collect_in" ? amountAbs : -amountAbs;
 
         const transferStatementMonth = statementMonthForTransfer(date, fromAcc, toAcc);
-        const transferCategory = debtMode
+        const transferCategory = liabilityMode
           ? await ensureSettlementTransferCategory(tx, householdId)
           : isCreditCardRepaymentTransfer({
               type: TransactionType.transfer,
@@ -537,7 +537,7 @@ export async function createTransaction(formData: FormData) {
           amount: signedTransferAmount,
           categoryId: transferCategory?.id ?? null,
           note,
-          source: debtMode ? `debt_${debtMode}` : "manual",
+          source: liabilityMode ? `liability_${liabilityMode}` : "manual",
         });
         if (duplicate) return;
 
@@ -558,10 +558,10 @@ export async function createTransaction(formData: FormData) {
             toNote: (toNote || note) || null,
             currency: transferCurrency,
             statementMonth: transferStatementMonth,
-            source: debtMode ? `debt_${debtMode}` : "manual",
-            debtPrincipalAmount: debtMode ? amountAbs : null,
-            debtInterestAmount: debtMode ? 0 : null,
-            debtFeeAmount: debtMode ? 0 : null,
+            source: liabilityMode ? `liability_${liabilityMode}` : "manual",
+            principalAmount: liabilityMode ? amountAbs : null,
+            interestAmount: liabilityMode ? 0 : null,
+            feeAmount: liabilityMode ? 0 : null,
             ...{ householdId },
           },
         });
@@ -696,7 +696,7 @@ export async function createTransaction(formData: FormData) {
       const counterpartyInstitutionId = String(formData.get("counterpartyInstitutionId") ?? "").trim();
       const preferredAdvanceAccountId = String(formData.get("advanceAccountId") ?? "").trim();
       if (!accountId) return { ok: false as const, error: t("investForm.selectCashAccount") };
-      if (!counterpartyInstitutionId) return { ok: false as const, error: t("debtTx.placeholder.selectCounterparty") };
+      if (!counterpartyInstitutionId) return { ok: false as const, error: t("liabilityTx.placeholder.selectCounterparty") };
 
       let advanceAccountId = "";
       await prisma.$transaction(async (tx) => {
@@ -709,7 +709,7 @@ export async function createTransaction(formData: FormData) {
         const resolvedAdvance = await resolveOrCreateAdvanceAccount(tx, {
           householdId,
           cashAccountId: acc.id,
-          debtObjectId: counterpartyInstitutionId,
+          liabilityObjectId: counterpartyInstitutionId,
           preferredAccountId: preferredAdvanceAccountId,
         });
         const advanceAccount = resolvedAdvance.account;
@@ -3078,30 +3078,30 @@ export async function updateTransactionFromDialog(formData: FormData) {
         if (fromAcc.kind === "loan" || toAcc.kind === "loan") {
           throw new Error(t("sidebar.action.specialTargetTransferNotAllowed"));
         }
-        const isDebtTransfer = isLoanOrSettlementAccountKind(fromAcc.kind) || isLoanOrSettlementAccountKind(toAcc.kind);
+        const isLiabilityTransfer = isLoanOrSettlementAccountKind(fromAcc.kind) || isLoanOrSettlementAccountKind(toAcc.kind);
         if (isLoanOrSettlementAccountKind(fromAcc.kind) && isLoanOrSettlementAccountKind(toAcc.kind)) {
           throw new Error(t("sidebar.action.settlementTransferNotAllowed"));
         }
-        if (!isDebtTransfer && (isSpecialCashTargetAccount(fromAcc) || isSpecialCashTargetAccount(toAcc)) && !transferAccountsUnchanged) {
+        if (!isLiabilityTransfer && (isSpecialCashTargetAccount(fromAcc) || isSpecialCashTargetAccount(toAcc)) && !transferAccountsUnchanged) {
           throw new Error(t("sidebar.action.specialTargetTransferNotAllowed"));
         }
         const transferCurrency = resolveSameCurrencyTransfer(fromAcc, toAcc);
-        const debtMode = isDebtTransfer
+        const liabilityMode = isLiabilityTransfer
           ? isLoanOrSettlementAccountKind(fromAcc.kind)
-            ? fromAcc.debtDirection === "receivable" ? "collect_in" : "borrow_in"
-            : toAcc.debtDirection === "receivable" ? "lend_out" : "repay_out"
+            ? fromAcc.liabilityDirection === "receivable" ? "collect_in" : "borrow_in"
+            : toAcc.liabilityDirection === "receivable" ? "lend_out" : "repay_out"
           : null;
         if (
-          !debtMode &&
-          String(entry.source ?? "").startsWith("debt_") &&
-          (Math.abs(toNumber(entry.debtInterestAmount)) > 0.005 || Math.abs(toNumber(entry.debtFeeAmount)) > 0.005)
+          !liabilityMode &&
+          String(entry.source ?? "").startsWith("liability_") &&
+          (Math.abs(toNumber(entry.interestAmount)) > 0.005 || Math.abs(toNumber(entry.feeAmount)) > 0.005)
         ) {
-          throw new Error(t("sidebar.action.debtWithInterestNoTransfer"));
+          throw new Error(t("sidebar.action.liabilityWithInterestNoTransfer"));
         }
-        const signedTransferAmount = debtMode === "collect_in" ? amountAbs : -amountAbs;
+        const signedTransferAmount = liabilityMode === "collect_in" ? amountAbs : -amountAbs;
 
         const transferStatementMonth = statementMonthForTransfer(date, fromAcc, toAcc);
-        const transferCategory = debtMode
+        const transferCategory = liabilityMode
           ? await ensureSettlementTransferCategory(tx, ctx.householdId)
           : isCreditCardRepaymentTransfer({
               type: TransactionType.transfer,
@@ -3130,10 +3130,10 @@ export async function updateTransactionFromDialog(formData: FormData) {
             note: note || null,
             toNote: (toNote || note) || null,
             currency: transferCurrency,
-            source: debtMode ? `debt_${debtMode}` : transferAccountsUnchanged && entry.source ? entry.source : "manual",
-            debtPrincipalAmount: debtMode ? amountAbs : null,
-            debtInterestAmount: debtMode ? 0 : null,
-            debtFeeAmount: debtMode ? 0 : null,
+            source: liabilityMode ? `liability_${liabilityMode}` : transferAccountsUnchanged && entry.source ? entry.source : "manual",
+            principalAmount: liabilityMode ? amountAbs : null,
+            interestAmount: liabilityMode ? 0 : null,
+            feeAmount: liabilityMode ? 0 : null,
             depositSourceEntryId: transferAccountsUnchanged
               ? (formHasDepositLot ? (formDepositLotId || null) : entry.depositSourceEntryId)
               : null,
@@ -3360,10 +3360,10 @@ export async function updateTransactionFromDialog(formData: FormData) {
       if (type === "advance") {
         const accountId = String(formData.get("accountId") ?? "").trim();
         const categoryId = String(formData.get("categoryId") ?? "").trim();
-        const debtObjectId = String(formData.get("counterpartyInstitutionId") ?? "").trim();
+        const liabilityObjectId = String(formData.get("counterpartyInstitutionId") ?? "").trim();
         const preferredAdvanceAccountId = String(formData.get("advanceAccountId") ?? "").trim();
         if (!accountId) throw new Error(t("investForm.selectCashAccount"));
-        if (!debtObjectId) throw new Error(t("debtTx.placeholder.selectCounterparty"));
+        if (!liabilityObjectId) throw new Error(t("liabilityTx.placeholder.selectCounterparty"));
         const [acc, cat] = await Promise.all([
           tx.account.findUnique({ where: { id: accountId } }),
           categoryId ? tx.category.findUnique({ where: { id: categoryId } }) : Promise.resolve(null),
@@ -3373,7 +3373,7 @@ export async function updateTransactionFromDialog(formData: FormData) {
         const resolvedAdvance = await resolveOrCreateAdvanceAccount(tx, {
           householdId: ctx.householdId,
           cashAccountId: acc.id,
-          debtObjectId,
+          liabilityObjectId,
           preferredAccountId: preferredAdvanceAccountId,
         });
         const transfer = resolveAdvanceTransfer({ amount: amountRaw, cashAccount: acc, advanceAccount: resolvedAdvance.account });

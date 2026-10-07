@@ -30,7 +30,7 @@ export async function GET() {
 
   const keys = await prisma.accessKey.findMany({
     orderBy: { createdAt: "desc" },
-    select: { id: true, name: true, key: true, createdAt: true },
+    select: { id: true, name: true, key: true, scope: true, createdAt: true },
   });
 
   return NextResponse.json({
@@ -39,14 +39,21 @@ export async function GET() {
       id: key.id,
       name: key.name,
       keyPreview: storedAccessKeyPreview(key.key),
+      scope: normalizeScope(key.scope),
       createdAt: key.createdAt,
     })),
   });
 }
 
+/** Anything other than an explicit "read" keeps full access. */
+function normalizeScope(value: string): "read" | "write" {
+  return value === "read" ? "read" : "write";
+}
+
 const CreateSchema = z.object({
   name: z.string().min(1).max(80),
   key: z.string().min(16).max(200),
+  scope: z.enum(["read", "write"]).optional().default("write"),
 });
 
 export async function POST(req: Request) {
@@ -62,12 +69,12 @@ export async function POST(req: Request) {
     );
   }
 
-  const { name, key } = parse.data;
+  const { name, key, scope } = parse.data;
   const hashedKey = await hashAccessKey(key);
 
   const created = await prisma.accessKey.create({
-    data: { name, key: hashedKey },
-    select: { id: true, name: true, key: true, createdAt: true },
+    data: { name, key: hashedKey, scope },
+    select: { id: true, name: true, key: true, scope: true, createdAt: true },
   });
 
   return NextResponse.json({
@@ -76,6 +83,7 @@ export async function POST(req: Request) {
       id: created.id,
       name: created.name,
       keyPreview: storedAccessKeyPreview(created.key),
+      scope: normalizeScope(created.scope),
       createdAt: created.createdAt,
     },
   });

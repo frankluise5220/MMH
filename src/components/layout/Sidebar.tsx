@@ -9,7 +9,7 @@ import { prisma } from "@/lib/db/prisma";
 import { computeInvestBalances } from "@/lib/invest-balance";
 import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
 import { getMaintainedAccountBalances } from "@/lib/server/account-balance";
-import { computeDebtDisplaySummary } from "@/lib/server/debt-display-summary";
+import { computeLiabilityDisplaySummary } from "@/lib/server/liability-display-summary";
 import { getCachedHouseholdScope } from "@/lib/server/household-scope";
 import { isDepositAccount, isLoanOrSettlementAccountKind, isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import type { SidebarGroupMode } from "@/lib/client/appPreferences";
@@ -72,12 +72,12 @@ async function getSidebarData() {
       })
     : Promise.resolve([]);
   const insuranceDisplayBalancePromise = computeInsuranceAccountDisplayBalances(insuranceAccountIds, hidFilter);
-  const debtDisplaySummaryPromise = computeDebtDisplaySummary(ctx);
-  const [cashDisplayBalanceByAccountId, currentCreditCycles, insuranceDisplayBalanceByAccountId, debtDisplaySummary] = await Promise.all([
+  const liabilityDisplaySummaryPromise = computeLiabilityDisplaySummary(ctx);
+  const [cashDisplayBalanceByAccountId, currentCreditCycles, insuranceDisplayBalanceByAccountId, liabilityDisplaySummary] = await Promise.all([
     cashDisplayBalancePromise,
     currentCreditCyclesPromise,
     insuranceDisplayBalancePromise,
-    debtDisplaySummaryPromise,
+    liabilityDisplaySummaryPromise,
   ]);
   const currentCreditBalanceByAccountId = new Map<string, number>(
     currentCreditCycles.map((cycle) => [
@@ -98,7 +98,7 @@ async function getSidebarData() {
       : account.kind === AccountKind.bank_credit
         ? (currentCreditBalanceByAccountId.get(account.id) ?? cashDisplayBalanceByAccountId.get(account.id) ?? Number(account.balance))
       : isLoanOrSettlementAccountKind(account.kind)
-        ? (debtDisplaySummary.balanceByAccountId.get(account.id) ?? cashDisplayBalanceByAccountId.get(account.id) ?? Number(account.balance))
+        ? (liabilityDisplaySummary.balanceByAccountId.get(account.id) ?? cashDisplayBalanceByAccountId.get(account.id) ?? Number(account.balance))
         : (cashDisplayBalanceByAccountId.get(account.id) ?? Number(account.balance));
     const display = buildAccountDisplayOption({
       id: account.id,
@@ -127,6 +127,7 @@ async function getSidebarData() {
       institutionType: account.Institution?.type ?? null,
       counterpartyId: account.counterpartyId ?? null,
       counterpartyReimbursable: account.Counterparty?.isReimbursable === true,
+      liabilityDirection: account.liabilityDirection ?? null,
       isConsumerLoan: account.isConsumerLoan === true,
       loanType: account.loanType ?? null,
       investProductType: account.investProductType || undefined,

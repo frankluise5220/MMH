@@ -27,7 +27,7 @@ const KIND_LABEL_FALLBACK: Record<string, string> = {
   investment: "投资",
   fixed_asset: "固定资产",
   settlement: "往来款",
-  loan: "债务/债权",
+  loan: "贷款",
   insurance: "保险",
   other: "其他",
   bank_savings: "储蓄卡",
@@ -122,7 +122,7 @@ export const INSTITUTION_TYPE_VALUES = [
   "fund_company",
   "payment",
   "provident_fund",
-  "debt",
+  "lender",
   "other",
 ] as const;
 
@@ -137,7 +137,7 @@ export const INSTITUTION_TYPE_LABEL_KEYS: Record<string, string> = {
   fund_company: "institution.type.fund_company",
   payment: "institution.type.payment",
   provident_fund: "institution.type.provident_fund",
-  debt: "institution.type.debt",
+  lender: "institution.type.lender",
   other: "institution.type.other",
 };
 
@@ -153,7 +153,7 @@ const INSTITUTION_TYPE_LABEL_FALLBACK: Record<string, string> = {
   payment: "第三方支付",
   provident_fund: "公积金中心",
   merchant: "常用商户",
-  debt: "债权债务",
+  lender: "放款机构",
   other: "其他",
 };
 
@@ -180,13 +180,13 @@ export const FINANCIAL_INSTITUTION_TYPE_VALUES = [
 ] as const;
 
 /** 贷款弹窗的「贷款机构」子集：银行 + 公积金中心 + 往来款（legacy）。不含基金公司/证券等投资类机构。 */
-export const LOAN_DIALOG_INSTITUTION_TYPE_VALUES = ["bank", "provident_fund", "debt"] as const;
+export const LOAN_DIALOG_INSTITUTION_TYPE_VALUES = ["bank", "provident_fund", "lender"] as const;
 
 /** 贷款账户（kind=loan）允许挂的机构类型（账户层规则，比贷款弹窗多 payment/other）。 */
 export const LOAN_ACCOUNT_INSTITUTION_TYPE_VALUES = ["bank", "provident_fund", "payment", "other"] as const;
 
 /** 负债页「来自机构」来源子集：贷款机构 + 可挂往来款的组织类。 */
-export const DEBT_SOURCE_INSTITUTION_TYPE_VALUES = ["bank", "provident_fund", "debt", "organization", "other"] as const;
+export const LENDER_INSTITUTION_TYPE_VALUES = ["bank", "provident_fund", "lender", "organization", "other"] as const;
 
 /** 往来对象类型的子集（同一张表派生，别再手抄）。 */
 export const COUNTERPARTY_TYPE_VALUES = ["person", "organization", "merchant"] as const;
@@ -220,7 +220,7 @@ export function institutionTypeIconName(t: string | null): string {
   if (t === "fund_company") return "building-2";
   if (t === "payment") return "credit-card";
   if (t === "provident_fund") return "landmark";
-  if (t === "debt") return "hand-coins";
+  if (t === "lender") return "hand-coins";
   return "building-2";
 }
 

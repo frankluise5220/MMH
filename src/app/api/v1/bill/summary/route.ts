@@ -70,7 +70,7 @@ export async function GET(request: Request) {
       view: "refresh",
       t: () => "",
       categoryLabels: new Map(),
-      isSettlementDebtAccountId: () => false,
+      isSettlementLiabilityAccountId: () => false,
       isCreditCardRepaymentForDisplay: () => false,
     });
 

@@ -30,7 +30,7 @@ type CreditBillDetailPanelProps = {
   resetKey: string;
   selectedBillMonth: string;
   title: ReactNode;
-  accountOptions: Array<{ id: string; label: string; fullLabel?: string | null; title?: string | null; kind?: string | null; debtDirection?: string | null; numberMasked?: string | null }>;
+  accountOptions: Array<{ id: string; label: string; fullLabel?: string | null; title?: string | null; kind?: string | null; liabilityDirection?: string | null; numberMasked?: string | null }>;
   categoryOptions?: BasicDetailBatchCategoryOption[];
   tagOptions?: BasicDetailBatchCategoryOption[];
   investmentProductTypeByAccountId: Record<string, string | undefined | null>;

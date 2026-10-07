@@ -5,7 +5,7 @@ import { getHouseholdScope } from "@/lib/server/household-scope";
 import { computeInvestBalances } from "@/lib/invest-balance";
 import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
 import { getMaintainedAccountBalances } from "@/lib/server/account-balance";
-import { computeDebtDisplaySummary } from "@/lib/server/debt-display-summary";
+import { computeLiabilityDisplaySummary } from "@/lib/server/liability-display-summary";
 import { isDepositAccount, isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
 import { buildAccountDisplayOption, type AccountLabelField } from "@/lib/account-display";
@@ -154,7 +154,7 @@ export async function GET(request: Request) {
       insuranceAccountIds,
       hidFilter,
     );
-    const debtDisplaySummary = await computeDebtDisplaySummary(ctx);
+    const liabilityDisplaySummary = await computeLiabilityDisplaySummary(ctx);
     const enrichedAccounts = accounts.map((a) => {
       if (isPureInvestmentAccount(a)) {
         const detail = investBalByAccountId.get(a.id);
@@ -172,8 +172,8 @@ export async function GET(request: Request) {
         if (creditDisplayBalance != null) return { ...a, balance: creditDisplayBalance };
       }
       if (a.kind === AccountKind.loan || a.kind === AccountKind.settlement) {
-        const debtDisplayBalance = debtDisplaySummary.balanceByAccountId.get(a.id);
-        if (debtDisplayBalance != null) return { ...a, balance: debtDisplayBalance };
+        const liabilityDisplayBalance = liabilityDisplaySummary.balanceByAccountId.get(a.id);
+        if (liabilityDisplayBalance != null) return { ...a, balance: liabilityDisplayBalance };
       }
       const displayBalance = cashDisplayBalanceByAccountId.get(a.id);
       return displayBalance == null ? a : { ...a, balance: displayBalance };

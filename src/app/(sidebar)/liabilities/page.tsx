@@ -5,21 +5,21 @@ import Link from "next/link";
 
 import { LiabilitiesGuideClient } from "@/components/LiabilitiesGuideClient";
 import { buildAccountDisplayOption, normalizeCreditCardLabelTemplate } from "@/lib/account-display";
-import { DEBT_SOURCE_INSTITUTION_TYPE_VALUES, institutionTypeLabel, isInstitutionTypeOf, isSettlementCounterpartyType } from "@/lib/account-kinds";
+import { LENDER_INSTITUTION_TYPE_VALUES, institutionTypeLabel, isInstitutionTypeOf, isSettlementCounterpartyType } from "@/lib/account-kinds";
 import { toNumber } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
 import { formatMoney } from "@/lib/format";
 import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
 import { isCreditCardMonthEndBillingDay } from "@/lib/credit/rules";
 import { getMaintainedAccountBalances } from "@/lib/server/account-balance";
-import { createDebtTransaction } from "@/lib/server/sidebar-actions/debt-actions";
+import { createLiabilityTransaction } from "@/lib/server/sidebar-actions/liability-actions";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { ACCOUNT_LABEL_FIELDS_COOKIE, accountLabelFieldsFromCookieValue } from "@/lib/server/account-label-fields";
 import { getServerT } from "@/lib/server/i18n";
 
 export const dynamic = "force-dynamic";
 
-const DEBT_KINDS: AccountKind[] = [AccountKind.bank_credit, AccountKind.settlement, AccountKind.loan];
+const LIABILITY_KINDS: AccountKind[] = [AccountKind.bank_credit, AccountKind.settlement, AccountKind.loan];
 
 function yuan(value: number) {
   return `¥${formatMoney(value)}`;
@@ -41,7 +41,7 @@ function kindLabel(kind: AccountKind, t: (key: string) => string) {
   if (kind === AccountKind.bank_credit) return t("account.kind.bank_credit");
   if (kind === AccountKind.settlement) return t("account.kind.settlement");
   if (kind === AccountKind.loan) return t("account.kind.loan");
-  return t("liabilities.debtAccount");
+  return t("liabilities.borrowLendAccount");
 }
 
 function dayLabel(day: number | null, t: (key: string, params?: Record<string, string | number>) => string) {
@@ -63,7 +63,7 @@ type SmartSelectOptionLike = {
   isHeader?: boolean;
   parentId?: string;
   kind?: string | null;
-  debtDirection?: string | null;
+  liabilityDirection?: string | null;
   institutionId?: string | null;
   billingDay?: number | null;
   currency?: string | null;
@@ -116,7 +116,7 @@ export default async function LiabilitiesPage({
       orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
     }),
   ]);
-  const accounts = allAccounts.filter((account) => DEBT_KINDS.includes(account.kind));
+  const accounts = allAccounts.filter((account) => LIABILITY_KINDS.includes(account.kind));
   const accountOptions = allAccounts.map((account) => {
     const display = buildAccountDisplayOption({
       id: account.id,
@@ -144,7 +144,7 @@ export default async function LiabilitiesPage({
       institutionId: account.institutionId ?? "",
       institutionType: account.Institution?.type ?? "",
       counterpartyId: account.counterpartyId ?? "",
-      debtDirection: account.debtDirection ?? null,
+      liabilityDirection: account.liabilityDirection ?? null,
       billingDay: account.billingDay ?? null,
       subLabel: kindLabel(account.kind, t),
       currency: account.currency ?? "CNY",
@@ -169,7 +169,7 @@ export default async function LiabilitiesPage({
         title: account.hoverTitle,
         parentId: `group:${account.groupId}`,
         kind: account.kind,
-        debtDirection: account.debtDirection,
+        liabilityDirection: account.liabilityDirection,
         institutionId: account.institutionId || null,
         billingDay: account.billingDay,
         currency: account.currency,
@@ -180,7 +180,7 @@ export default async function LiabilitiesPage({
       subLabel: joinSubLabel([account.subLabel]),
       title: account.hoverTitle,
       kind: account.kind,
-      debtDirection: account.debtDirection,
+      liabilityDirection: account.liabilityDirection,
       institutionId: account.institutionId || null,
       billingDay: account.billingDay,
       currency: account.currency,
@@ -213,10 +213,10 @@ export default async function LiabilitiesPage({
     ]),
   );
   const accountLinkedCounterparties = counterparties.filter((counterparty) => isSettlementCounterpartyType(counterparty.type));
-  const debtObjectOptions: SmartSelectOptionLike[] = [
+  const liabilityObjectOptions: SmartSelectOptionLike[] = [
     ...(accountLinkedCounterparties.length > 0
       ? [
-          { id: "debt-counterparty-header", label: t("liabilities.counterparties"), isHeader: true },
+          { id: "counterparty-header", label: t("liabilities.counterparties"), isHeader: true },
           ...accountLinkedCounterparties.map((counterparty) => ({
             id: `counterparty:${counterparty.id}`,
             label: counterparty.shortName?.trim() || counterparty.name,
@@ -224,10 +224,10 @@ export default async function LiabilitiesPage({
           })),
         ]
       : []),
-    ...(institutions.some((institution) => isInstitutionTypeOf(institution.type, DEBT_SOURCE_INSTITUTION_TYPE_VALUES))
+    ...(institutions.some((institution) => isInstitutionTypeOf(institution.type, LENDER_INSTITUTION_TYPE_VALUES))
       ? [
-          { id: "debt-institution-source-header", label: t("liabilities.fromInstitution"), isHeader: true },
-          ...institutions.filter((institution) => isInstitutionTypeOf(institution.type, DEBT_SOURCE_INSTITUTION_TYPE_VALUES)).map((institution) => ({
+          { id: "institution-source-header", label: t("liabilities.fromInstitution"), isHeader: true },
+          ...institutions.filter((institution) => isInstitutionTypeOf(institution.type, LENDER_INSTITUTION_TYPE_VALUES)).map((institution) => ({
             id: `institution:${institution.id}`,
             label: institution.shortName?.trim() || institution.name,
             subLabel: institutionTypeLabel(institution.type, t),
@@ -235,13 +235,13 @@ export default async function LiabilitiesPage({
         ]
       : []),
   ];
-  const debtTransferAccountSSOptions = buildAccountSSOptions((account) => (
+  const liabilityTransferAccountSSOptions = buildAccountSSOptions((account) => (
     account.kind === AccountKind.bank_debit ||
     account.kind === AccountKind.cash ||
     account.kind === AccountKind.ewallet ||
     account.kind === AccountKind.bank_credit
   ));
-  const debtTransferAccountList = accountOptions
+  const liabilityTransferAccountList = accountOptions
     .filter((account) => (
       account.kind === AccountKind.bank_debit ||
       account.kind === AccountKind.cash ||
@@ -256,7 +256,7 @@ export default async function LiabilitiesPage({
       institutionId: account.institutionId || null,
       institutionType: account.institutionType || null,
     }));
-  const debtAccountOptions = allAccounts
+  const liabilityAccountOptions = allAccounts
     .filter((account) => (account.kind === AccountKind.loan || account.kind === AccountKind.settlement) && account.isActive)
     .map((account) => {
       const display = buildAccountDisplayOption({
@@ -277,7 +277,7 @@ export default async function LiabilitiesPage({
         counterpartyId: account.counterpartyId ?? null,
         institutionType: account.Institution?.type ?? account.Counterparty?.type ?? null,
         isInstitutionLoan: !!account.institutionId && account.Institution?.type === "bank",
-        debtDirection: account.debtDirection ?? null,
+        liabilityDirection: account.liabilityDirection ?? null,
       };
     });
   const counterpartyGuideRows = counterparties.map((counterparty) => {
@@ -312,13 +312,13 @@ export default async function LiabilitiesPage({
     return (
       <LiabilitiesGuideClient
         counterparties={counterpartyGuideRows}
-        debtAccounts={debtAccountOptions}
-        debtObjectOptions={debtObjectOptions}
-        cashAccounts={debtTransferAccountList}
-        cashAccountSSOptions={debtTransferAccountSSOptions}
+        liabilityAccounts={liabilityAccountOptions}
+        liabilityObjectOptions={liabilityObjectOptions}
+        cashAccounts={liabilityTransferAccountList}
+        cashAccountSSOptions={liabilityTransferAccountSSOptions}
         nestedFieldData={nestedFieldData}
-        defaultCashAccountId={debtTransferAccountList[0]?.id ?? ""}
-        action={createDebtTransaction}
+        defaultCashAccountId={liabilityTransferAccountList[0]?.id ?? ""}
+        action={createLiabilityTransaction}
       />
     );
   }
@@ -340,7 +340,7 @@ export default async function LiabilitiesPage({
       Counterparty: account.Counterparty,
     }, creditCardLabelTemplate, { fields: accountLabelFields });
     const institutionName = display.institutionName || t("liabilities.noCounterparty");
-    const debtPersonKey = institutionName
+    const liabilityPersonKey = institutionName
       ? `institution:${account.institutionId ?? institutionName}`
       : `account:${account.id}`;
     return {
@@ -359,7 +359,7 @@ export default async function LiabilitiesPage({
       repaymentOffsetDays: account.repaymentOffsetDays,
       creditLimit: account.creditLimit == null ? 0 : toNumber(account.creditLimit),
       numberMasked: account.numberMasked,
-      debtPersonKey,
+      liabilityPersonKey,
     };
   });
 
@@ -371,7 +371,7 @@ export default async function LiabilitiesPage({
   const institutionRows = Array.from(
     rows.reduce((map, row) => {
       const current = map.get(row.institutionName) ?? {
-        key: row.debtPersonKey,
+        key: row.liabilityPersonKey,
         name: row.institutionName,
         payable: 0,
         receivable: 0,
@@ -422,7 +422,7 @@ export default async function LiabilitiesPage({
             <div className="divide-y divide-slate-100">
               {institutionRows.length > 0 ? (
                 institutionRows.map((institution) => (
-                  <Link key={institution.key} href={`/?view=debt&debtPerson=${encodeURIComponent(institution.key)}`} className="block px-4 py-3 hover:bg-slate-50">
+                  <Link key={institution.key} href={`/?view=liability&liabilityPerson=${encodeURIComponent(institution.key)}`} className="block px-4 py-3 hover:bg-slate-50">
                     <div className="flex items-center justify-between gap-3">
                       <div className="min-w-0">
                         <div className="truncate text-sm font-semibold text-slate-800">{institution.name}</div>
@@ -454,7 +454,7 @@ export default async function LiabilitiesPage({
                 rows.map((row) => {
                   const Icon = row.kind === AccountKind.bank_credit ? CreditCard : HandCoins;
                   const href = row.kind === AccountKind.loan
-                    ? `/?view=debt&debtPerson=${encodeURIComponent(row.debtPersonKey)}`
+                    ? `/?view=liability&liabilityPerson=${encodeURIComponent(row.liabilityPersonKey)}`
                     : `/?accountId=${row.id}&view=bill`;
                   return (
                     <Link key={row.id} href={href} title={row.hoverTitle} className="block px-4 py-4 hover:bg-slate-50">

@@ -19,7 +19,7 @@ export function TopEntryLauncher({
     | "deposit-buy"
     | "deposit-redeem"
     | "insurance"
-    | "debt"
+    | "settlement"
     | "regular-task";
 }) {
   const { t } = useI18n();
@@ -45,7 +45,7 @@ export function TopEntryLauncher({
         { key: "deposit-buy", label: t("txForm.depositIn") },
         { key: "deposit-redeem", label: t("detailView.depositWithdraw") },
         { key: "insurance", label: t("sidebar.section.insurance") },
-        { key: "debt", label: t("debtTx.borrowRepay") },
+        { key: "settlement", label: t("liabilityTx.borrowRepay") },
         { key: "regular-task", label: t("nav.scheduledTasks") },
       ]}
       context={{}}

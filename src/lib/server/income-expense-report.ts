@@ -366,8 +366,8 @@ export async function getIncomeExpenseReport(
           {
             OR: [
               { realizedProfit: { not: null } },
-              { debtInterestAmount: { not: null } },
-              { source: "reimbursement", debtPrincipalAmount: { not: null } },
+              { interestAmount: { not: null } },
+              { source: "reimbursement", principalAmount: { not: null } },
             ],
           },
         ],
@@ -379,8 +379,8 @@ export async function getIncomeExpenseReport(
         source: true,
         amount: true,
         realizedProfit: true,
-        debtInterestAmount: true,
-        debtPrincipalAmount: true,
+        interestAmount: true,
+        principalAmount: true,
         reimbursementDifferenceAmount: true,
         reimbursementDifferenceCategoryName: true,
         accountId: true,

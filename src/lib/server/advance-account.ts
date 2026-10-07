@@ -6,7 +6,7 @@ type Db = typeof prisma | Parameters<Parameters<typeof prisma.$transaction>[0]>[
 type ResolveAdvanceAccountInput = {
   householdId: string;
   cashAccountId: string;
-  debtObjectId: string;
+  liabilityObjectId: string;
   /** Explicit settlement account picked in the advance dialog; reused only when it belongs to the selected counterparty. */
   preferredAccountId?: string;
 };
@@ -103,9 +103,9 @@ export async function resolveOrCreateAdvanceAccount(tx: Db, input: ResolveAdvanc
   });
   if (!cashAccount) throw new Error("资金账户不存在或已停用");
 
-  const refMatch = /^(counterparty|institution):(.+)$/.exec(input.debtObjectId);
+  const refMatch = /^(counterparty|institution):(.+)$/.exec(input.liabilityObjectId);
   const sourceKind = refMatch?.[1] ?? "counterparty";
-  const sourceId = refMatch?.[2] ?? input.debtObjectId;
+  const sourceId = refMatch?.[2] ?? input.liabilityObjectId;
   const counterparty = sourceKind === "counterparty"
     ? await tx.counterparty.findFirst({
         where: { id: sourceId, householdId: input.householdId },
@@ -186,7 +186,7 @@ export async function resolveOrCreateAdvanceAccount(tx: Db, input: ResolveAdvanc
     data: {
       name: `${objectName}${SETTLEMENT_ACCOUNT_SUFFIX}`,
       kind: AccountKind.settlement,
-      debtDirection: "receivable",
+      liabilityDirection: "receivable",
       currency: cashAccount.currency,
       groupId: group.id,
       counterpartyId: counterparty?.id ?? null,

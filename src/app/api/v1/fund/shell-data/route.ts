@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { computePositionDisplay } from "@/lib/invest-balance";
-import { getHouseholdScope } from "@/lib/server/household-scope";
+import { getApiHouseholdScope } from "@/lib/server/api-auth";
 import { loadFixedAssetPositionDisplay, loadFixedAssetTransactionEntries } from "@/lib/server/cached-data";
 import { loadFundTransactionEntryLike } from "@/lib/fund/transactions";
 import {
@@ -12,7 +12,7 @@ import {
 
 export async function GET(req: Request) {
   try {
-    const ctx = await getHouseholdScope();
+    const ctx = await getApiHouseholdScope(req);
     const { hidFilter } = ctx;
     const url = new URL(req.url);
     const accountId = url.searchParams.get("accountId");

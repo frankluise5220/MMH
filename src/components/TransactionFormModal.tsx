@@ -53,7 +53,7 @@ type FxDirection = "buy" | "sell";
 type TransactionActionResult =
   | { ok: true; data?: { id?: string | null; cashEntryId?: string | null } | null }
   | { ok: false; error: string };
-type DebtTransferMode = "borrow_in" | "repay_out" | "lend_out" | "collect_in";
+type LiabilityTransferMode = "borrow_in" | "repay_out" | "lend_out" | "collect_in";
 
 /** Red frame marking required select fields (from/to accounts etc.). */
 const REQUIRED_FIELD_CLASS = "rounded-[10px] ring-1 ring-rose-200/80";
@@ -65,11 +65,11 @@ type AccountOption = {
   subLabel?: string;
   kind?: string | null;
   investProductType?: string | null;
-  debtDirection?: string | null;
+  liabilityDirection?: string | null;
   institutionId?: string | null;
   institutionType?: string | null;
   counterpartyId?: string | null;
-  isSettlementDebt?: boolean | null;
+  isSettlementAccount?: boolean | null;
   isConsumerLoan?: boolean | null;
   currency?: string | null;
   billingDay?: number | null;
@@ -198,28 +198,28 @@ function compactIds(ids: Array<string | null | undefined>) {
   return Array.from(new Set(ids.map((id) => String(id ?? "").trim()).filter(Boolean)));
 }
 
-function inferDebtTransferMode(
+function inferLiabilityTransferMode(
   sourceAccount: AccountOption | SmartSelectOption | undefined,
   targetAccount: AccountOption | SmartSelectOption | undefined,
-): DebtTransferMode | null {
+): LiabilityTransferMode | null {
   const source = sourceAccount as AccountOption | undefined;
   const target = targetAccount as AccountOption | undefined;
   if (source?.kind === "loan") {
-    return source.debtDirection === "receivable" ? "collect_in" : "borrow_in";
+    return source.liabilityDirection === "receivable" ? "collect_in" : "borrow_in";
   }
   if (target?.kind === "loan") {
-    return target.debtDirection === "receivable" ? "lend_out" : "repay_out";
+    return target.liabilityDirection === "receivable" ? "lend_out" : "repay_out";
   }
   return null;
 }
 
 function isLoanDialogAccount(account: AccountOption | SmartSelectOption | undefined) {
   const option = account as AccountOption | undefined;
-  return option?.kind === "loan" && option.isSettlementDebt !== true;
+  return option?.kind === "loan" && option.isSettlementAccount !== true;
 }
 
-function debtDialogEventName(sourceAccount: AccountOption | SmartSelectOption | undefined, targetAccount: AccountOption | SmartSelectOption | undefined) {
-  return isLoanDialogAccount(sourceAccount) || isLoanDialogAccount(targetAccount) ? "mmh:loan:create" : "mmh:debt:create";
+function liabilityDialogEventName(sourceAccount: AccountOption | SmartSelectOption | undefined, targetAccount: AccountOption | SmartSelectOption | undefined) {
+  return isLoanDialogAccount(sourceAccount) || isLoanDialogAccount(targetAccount) ? "mmh:loan:create" : "mmh:settlement:create";
 }
 
 function findAccountIdByLabel(input: string | undefined, options: AccountOption[]) {
@@ -287,7 +287,7 @@ function settingsAccountToOption(account: SettingsAccountRecord): AccountOption 
     subLabel: display.subLabel,
     kind: account.kind ?? null,
     investProductType: account.investProductType ?? null,
-    debtDirection: account.debtDirection ?? null,
+    liabilityDirection: account.liabilityDirection ?? null,
     institutionId: account.institutionId ?? null,
     institutionType: account.Institution?.type ?? null,
     currency: account.currency ?? null,
@@ -332,7 +332,7 @@ type SettingsAccountRecord = {
   counterpartyId?: string | null;
   numberMasked?: string | null;
   investProductType?: string | null;
-  debtDirection?: string | null;
+  liabilityDirection?: string | null;
   currency?: string | null;
   billingDay?: number | null;
   Institution?: { name: string | null; shortName?: string | null; type?: string | null } | null;
@@ -902,7 +902,7 @@ export function TransactionFormModal({
     }
     const objectName = (localNestedFieldData ?? nestedFieldData)?.counterpartyId
       ?.find((item) => item.id === counterpartyInstitutionId)?.name ?? "";
-    return objectName ? t("txForm.advanceAccountAutoCreate", { name: objectName }) : t("debtTx.placeholder.autoReuseOrCreate");
+    return objectName ? t("txForm.advanceAccountAutoCreate", { name: objectName }) : t("liabilityTx.placeholder.autoReuseOrCreate");
   }, [advanceAccountId, advanceAccountOptions, counterpartyInstitutionId, localNestedFieldData, nestedFieldData, t]);
   // Auto-default to the counterparty's first existing settlement account;
   // empty selection means "resolve or create on save". A pinned account (edit
@@ -1171,39 +1171,39 @@ export function TransactionFormModal({
     if (txType !== "transfer") return false;
     const sourceAccount = accountMetaById.get(fromAccountId);
     const targetAccount = accountMetaById.get(toAccountId);
-    const debtMode = inferDebtTransferMode(sourceAccount, targetAccount);
-    const operation = debtMode ? "debt" : getCashTargetOperation(targetAccount);
+    const liabilityMode = inferLiabilityTransferMode(sourceAccount, targetAccount);
+    const operation = liabilityMode ? "liability" : getCashTargetOperation(targetAccount);
     if (operation === "transfer") return false;
 
     // Settlement accounts are identified by the account kind, not by the entry
     // dialog. A transfer into/out of a settlement account is saved directly and
-    // the server records it as a debt entry (borrow/lend/repay/collect) based on
-    // the account's debtDirection and the cash flow. Loan accounts keep the
+    // the server records it as a liability entry (borrow/lend/repay/collect) based on
+    // the account's liabilityDirection and the cash flow. Loan accounts keep the
     // dedicated dialog because they carry extra fields beyond a plain transfer.
-    if (operation === "debt" && !debtMode) return false;
+    if (operation === "liability" && !liabilityMode) return false;
 
     if (editEntryId) {
       // Allow edits in place when the account pair is unchanged: scheduled
       // deposit/bond interest transfers use dedicated accounts, but their
       // amount/date/note can be corrected. Dedicated-window rules still block
-      // account-pair changes and new records; debt pairs keep their own window.
+      // account-pair changes and new records; liability pairs keep their own window.
       if (
-        !debtMode &&
+        !liabilityMode &&
         editOriginalTransferAccounts &&
         fromAccountId === editOriginalTransferAccounts.fromAccountId &&
         toAccountId === editOriginalTransferAccounts.toAccountId
       ) {
         return false;
       }
-      if (operation === "debt" && debtMode && editEntryOriginalType !== "transfer") {
+      if (operation === "liability" && liabilityMode && editEntryOriginalType !== "transfer") {
         return false;
       }
-      if (operation === "debt" && debtMode) {
-        const isDebtSourceFlow = debtMode === "borrow_in" || debtMode === "collect_in";
-        const cashAccountId = isDebtSourceFlow ? toAccountId : fromAccountId;
-        const debtAccountId = isDebtSourceFlow ? fromAccountId : toAccountId;
+      if (operation === "liability" && liabilityMode) {
+        const isLiabilitySourceFlow = liabilityMode === "borrow_in" || liabilityMode === "collect_in";
+        const cashAccountId = isLiabilitySourceFlow ? toAccountId : fromAccountId;
+        const liabilityAccountId = isLiabilitySourceFlow ? fromAccountId : toAccountId;
         if (!cashAccountId) {
-          window.alert(isDebtSourceFlow ? t("txForm.alert.selectCashInAccount") : t("txForm.alert.selectCashSourceAccount"));
+          window.alert(isLiabilitySourceFlow ? t("txForm.alert.selectCashInAccount") : t("txForm.alert.selectCashSourceAccount"));
           return true;
         }
         const amountNumber = Number(amount);
@@ -1212,12 +1212,12 @@ export function TransactionFormModal({
           return true;
         }
 
-        window.dispatchEvent(new CustomEvent(debtDialogEventName(sourceAccount, targetAccount), {
+        window.dispatchEvent(new CustomEvent(liabilityDialogEventName(sourceAccount, targetAccount), {
           detail: {
             requestId: requestId ?? makeRequestId(operation),
             editEntryId,
-            mode: debtMode,
-            defaultDebtAccountId: debtAccountId,
+            mode: liabilityMode,
+            defaultLiabilityAccountId: liabilityAccountId,
             defaultCashAccountId: cashAccountId,
             defaultDate: date,
             defaultPrincipal: amountNumber,
@@ -1231,11 +1231,11 @@ export function TransactionFormModal({
       window.alert(t("txForm.alert.specialTargetAccount"));
       return true;
     }
-    const isDebtSourceFlow = debtMode === "borrow_in" || debtMode === "collect_in";
-    const cashAccountId = isDebtSourceFlow ? toAccountId : fromAccountId;
-    const debtAccountId = isDebtSourceFlow ? fromAccountId : toAccountId;
+    const isLiabilitySourceFlow = liabilityMode === "borrow_in" || liabilityMode === "collect_in";
+    const cashAccountId = isLiabilitySourceFlow ? toAccountId : fromAccountId;
+    const liabilityAccountId = isLiabilitySourceFlow ? fromAccountId : toAccountId;
     if (!cashAccountId) {
-      window.alert(isDebtSourceFlow ? t("txForm.alert.selectCashInAccount") : t("txForm.alert.selectCashSourceAccount"));
+      window.alert(isLiabilitySourceFlow ? t("txForm.alert.selectCashInAccount") : t("txForm.alert.selectCashSourceAccount"));
       return true;
     }
     const amountNumber = Number(amount);
@@ -1279,12 +1279,12 @@ export function TransactionFormModal({
           defaultSubtype: "buy",
         },
       }));
-    } else if (operation === "debt") {
-      window.dispatchEvent(new CustomEvent(debtDialogEventName(sourceAccount, targetAccount), {
+    } else if (operation === "liability") {
+      window.dispatchEvent(new CustomEvent(liabilityDialogEventName(sourceAccount, targetAccount), {
         detail: {
           requestId: nextRequestId,
-          mode: debtMode ?? (targetAccount?.debtDirection === "receivable" ? "lend_out" : "repay_out"),
-          defaultDebtAccountId: debtAccountId,
+          mode: liabilityMode ?? (targetAccount?.liabilityDirection === "receivable" ? "lend_out" : "repay_out"),
+          defaultLiabilityAccountId: liabilityAccountId,
           defaultCashAccountId: cashAccountId,
           defaultDate: date,
           defaultPrincipal: amountNumber,

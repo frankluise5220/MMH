@@ -65,8 +65,8 @@ export async function POST(req: NextRequest) {
     if (keepKind === "investment" && (keep.investProductType ?? "") !== (merged.investProductType ?? "")) {
       return NextResponse.json({ ok: false, code: "INVEST_TYPE_MISMATCH", error: "Investment product types differ" }, { status: 400 });
     }
-    if (keepKind === "loan" && (keep.debtDirection ?? "") !== (merged.debtDirection ?? "")) {
-      return NextResponse.json({ ok: false, code: "DEBT_DIRECTION_MISMATCH", error: "Debt directions differ" }, { status: 400 });
+    if (keepKind === "loan" && (keep.liabilityDirection ?? "") !== (merged.liabilityDirection ?? "")) {
+      return NextResponse.json({ ok: false, code: "LIABILITY_DIRECTION_MISMATCH", error: "Lending directions differ" }, { status: 400 });
     }
     if (keep.groupId !== merged.groupId) {
       return NextResponse.json({ ok: false, code: "OWNER_MISMATCH", error: "Owners differ" }, { status: 400 });

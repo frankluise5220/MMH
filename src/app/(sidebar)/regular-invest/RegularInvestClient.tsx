@@ -1718,7 +1718,7 @@ export function RegularInvestClient({
                     children: [
                       { key: "loan", label: t("entry.kind.consumerLoan"), loanType: "consumer" },
                       { key: "loan", label: t("entry.kind.mortgageLoan"), loanType: "mortgage" },
-                      { key: "loan", label: t("debtTx.loanMode.repayment"), mode: "repay_out" },
+                      { key: "loan", label: t("liabilityTx.loanMode.repayment"), mode: "repay_out" },
                     ],
                   },
                   { key: "regular-task", label: t("regularInvest.client.addPlan") },
@@ -1742,7 +1742,7 @@ export function RegularInvestClient({
                   { key: "bond", label: t("entry.kind.bond") },
                   { key: "deposit", label: t("entry.kind.deposit") },
                   { key: "insurance", label: t("entry.kind.insurance") },
-                  { key: "debt", label: t("entry.kind.debt"), disabled: cashAccounts.length === 0 },
+                  { key: "settlement", label: t("entry.kind.settlement"), disabled: cashAccounts.length === 0 },
                 ]}
               />
               <DepositEntryHost createAction={createTransaction} editAction={editInvestment} />

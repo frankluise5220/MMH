@@ -4,7 +4,7 @@ import { buildAccountDisplayOption, buildFlatAccountOptions, buildGroupedAccount
 import { buildCategorySmartSelectOptions } from "@/components/categorySmartSelect";
 import { categoryOrderBy } from "@/lib/category-order";
 import { decodeScheduledTaskMemo, getLoanScheduledPlanRole, isSystemManagedScheduledTask, normalizeScheduledTaskType, scheduledTaskTypeLabel } from "@/lib/scheduled-task";
-import { ACTIVE_DEBT_EPSILON } from "@/lib/server/debt-view-data";
+import { ACTIVE_LIABILITY_EPSILON } from "@/lib/server/liability-view-data";
 import { AccountKind, TransactionType } from "@prisma/client";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { revalidateAfterTxChange } from "@/lib/server/revalidate";
@@ -219,12 +219,12 @@ export default async function RegularInvestPage() {
 
   const accountOptions = accounts.map((account) => buildAccountDisplayOption(account, undefined, { fields: accountLabelFields }));
   const accountById = new Map(accountOptions.map((account) => [account.id, account]));
-  // 贷款是否"仍关联着"与负债视图同口径：|余额| > ACTIVE_DEBT_EPSILON 才算在贷，
+  // 贷款是否"仍关联着"与负债视图同口径：|余额| > ACTIVE_LIABILITY_EPSILON 才算在贷，
   // 已结清/空壳账户按"无关联贷款"处理（提示可放心删除）。
   const accountBalanceById = new Map(accounts.map((account) => [account.id, Number(account.balance ?? 0)]));
   const isLoanLinked = (accountId: string) => {
     const balance = accountBalanceById.get(accountId);
-    return balance != null && Math.abs(balance) > ACTIVE_DEBT_EPSILON;
+    return balance != null && Math.abs(balance) > ACTIVE_LIABILITY_EPSILON;
   };
   // 系统计划（存款本金/生息/取息、债券本金/生息/取息）的关联真源：存单 = 计划 memo 的
   // depositSourceEntryId（或 depm_/depa_/depi_ 前缀），债券存单 = bondm_/bonda_/bondi_ 的存单 id
@@ -344,7 +344,7 @@ export default async function RegularInvestPage() {
       systemPlanSourceByPlanId.set(item.planId, {
         kind: "bond",
         name: index > 1 ? `${productName} #${index}` : productName,
-        linked: !!lot && principal > ACTIVE_DEBT_EPSILON,
+        linked: !!lot && principal > ACTIVE_LIABILITY_EPSILON,
       });
     }
   }

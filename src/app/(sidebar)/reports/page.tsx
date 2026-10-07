@@ -275,7 +275,7 @@ export default async function ReportsPage({
     subLabel: kindLabel(account.kind),
     kind: account.kind,
     investProductType: account.investProductType,
-    debtDirection: account.debtDirection,
+    liabilityDirection: account.liabilityDirection,
     institutionId: account.institutionId,
     currency: account.currency,
   }));
@@ -290,7 +290,7 @@ export default async function ReportsPage({
     tableHoverTitle: allAccountDisplayById.get(account.id)?.tableHoverTitle,
     kind: account.kind,
     investProductType: account.investProductType,
-    debtDirection: account.debtDirection,
+    liabilityDirection: account.liabilityDirection,
     institutionId: account.institutionId,
     currency: account.currency,
   }));
@@ -348,7 +348,7 @@ export default async function ReportsPage({
     subLabel: kindLabel(account.kind),
     kind: account.kind,
     investProductType: account.investProductType,
-    debtDirection: account.debtDirection,
+    liabilityDirection: account.liabilityDirection,
     institutionId: account.institutionId,
     currency: account.currency,
   }));

@@ -208,9 +208,9 @@ function calculateReimbursementSettlement(
 
 function reimbursementLinkedTransactionAmount(
   amount: unknown,
-  debtPrincipalAmount: unknown,
+  principalAmount: unknown,
 ) {
-  const principal = debtPrincipalAmount == null ? Number(amount) : Number(debtPrincipalAmount);
+  const principal = principalAmount == null ? Number(amount) : Number(principalAmount);
   return toMoney(Math.abs(Number.isFinite(principal) ? principal : 0));
 }
 
@@ -292,7 +292,7 @@ async function resolveReimbursementObjectScope(db: Db, householdId: string, obje
     where: {
       householdId,
       kind: { in: [AccountKind.loan, AccountKind.settlement] },
-      debtDirection: "receivable",
+      liabilityDirection: "receivable",
       isPlaceholder: { not: true },
       OR: [
         { counterpartyId: { in: matchingObjectIds } },
@@ -372,7 +372,7 @@ export async function getReimbursementOverview(
         where: {
           householdId,
           kind: { in: [AccountKind.loan, AccountKind.settlement] },
-          debtDirection: "receivable",
+          liabilityDirection: "receivable",
           isPlaceholder: { not: true },
           Counterparty: { isReimbursable: true },
         },
@@ -456,7 +456,7 @@ export async function getReimbursementOverview(
     const linkedRecords = linkedTransactionIds.length > 0
       ? await prisma.txRecord.findMany({
         where: { id: { in: linkedTransactionIds }, householdId },
-        select: { id: true, date: true, amount: true, debtPrincipalAmount: true, categoryName: true, note: true },
+        select: { id: true, date: true, amount: true, principalAmount: true, categoryName: true, note: true },
       })
       : [];
     const linkedRecordById = new Map(linkedRecords.map((record) => [record.id, record]));
@@ -502,7 +502,7 @@ export async function getReimbursementOverview(
         (sum, reimbursement) => sum + reimbursement.linkedTransactions.reduce(
           (linkedSum, link) => linkedSum + reimbursementLinkedTransactionAmount(
             linkedRecordById.get(link.txRecordId)?.amount,
-            linkedRecordById.get(link.txRecordId)?.debtPrincipalAmount,
+            linkedRecordById.get(link.txRecordId)?.principalAmount,
           ),
           0,
         ),
@@ -550,7 +550,7 @@ export async function getReimbursementOverview(
       linkedTransactionTotal: toMoney(reimbursement.linkedTransactions.reduce(
         (sum, link) => sum + reimbursementLinkedTransactionAmount(
           linkedRecordById.get(link.txRecordId)?.amount,
-          linkedRecordById.get(link.txRecordId)?.debtPrincipalAmount,
+          linkedRecordById.get(link.txRecordId)?.principalAmount,
         ),
         0,
       )),
@@ -644,7 +644,7 @@ export async function createReimbursementBatch(formData: FormData): Promise<Reim
     return { ok: false, error: "REIMBURSEMENT_BATCH_DATE_RANGE_INVALID" };
   }
   const account = await prisma.account.findFirst({
-    where: { id: advanceAccountId, householdId, kind: { in: [AccountKind.loan, AccountKind.settlement] }, debtDirection: "receivable" },
+    where: { id: advanceAccountId, householdId, kind: { in: [AccountKind.loan, AccountKind.settlement] }, liabilityDirection: "receivable" },
     select: { id: true },
   });
   if (!account) return { ok: false, error: "REIMBURSEMENT_ADVANCE_ACCOUNT_INVALID" };
@@ -931,7 +931,7 @@ export async function reimburseReimbursement(
             source: "advance",
             toAccountId: reimbursement.advanceAccountId ?? undefined,
           },
-          select: { id: true, amount: true, debtPrincipalAmount: true, categoryId: true, categoryName: true },
+          select: { id: true, amount: true, principalAmount: true, categoryId: true, categoryName: true },
         })
         : [];
       if (linkedRecordIds.length > 0) {
@@ -941,7 +941,7 @@ export async function reimburseReimbursement(
         for (const record of linkedRecords) {
           originalAmountByRecordId.set(
             record.id,
-            reimbursementLinkedTransactionAmount(record.amount, record.debtPrincipalAmount),
+            reimbursementLinkedTransactionAmount(record.amount, record.principalAmount),
           );
         }
       }
@@ -979,7 +979,7 @@ export async function reimburseReimbursement(
           id: { in: advanceAccountIds },
           householdId,
           kind: { in: [AccountKind.loan, AccountKind.settlement] },
-          debtDirection: "receivable",
+          liabilityDirection: "receivable",
         },
         select: { id: true, name: true, kind: true, investProductType: true, billingDay: true },
       });
@@ -1035,7 +1035,7 @@ export async function reimburseReimbursement(
           toAccountId: cashAccount.id,
           toAccountName: cashAccount.name,
           amount: -actualAmount,
-          debtPrincipalAmount: settlementCalculation.clearingAmount,
+          principalAmount: settlementCalculation.clearingAmount,
           type: TransactionType.transfer,
           date,
           statementMonth,

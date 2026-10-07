@@ -21,7 +21,7 @@ export type BatchReplaceOption = {
   parentId?: string;
   kind?: string | null;
   investProductType?: string | null;
-  debtDirection?: string | null;
+  liabilityDirection?: string | null;
   institutionId?: string | null;
   currency?: string | null;
   categoryType?: string | null;
@@ -237,7 +237,7 @@ export function BatchReplacePopoverButton<Field extends string>({
                       parentId: option.parentId,
                       kind: option.kind,
                       investProductType: option.investProductType,
-                      debtDirection: option.debtDirection,
+                      liabilityDirection: option.liabilityDirection,
                       institutionId: option.institutionId,
                       currency: option.currency,
                     } satisfies SmartSelectOption))}

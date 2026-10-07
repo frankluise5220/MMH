@@ -4,7 +4,7 @@ import { toNumber } from "@/lib/date-utils";
 import { normalizeFixedAssetType } from "@/lib/fixed-asset";
 import { prisma } from "@/lib/db/prisma";
 import { computeLoanPrincipalBalancesAsOf } from "@/lib/server/account-balance";
-import { ACTIVE_DEBT_EPSILON } from "@/lib/server/debt-view-data";
+import { ACTIVE_LIABILITY_EPSILON } from "@/lib/server/liability-view-data";
 import { upsertEntryBusinessCashFlowLink } from "@/lib/server/entry-business-link";
 
 type TxClient = Prisma.TransactionClient | typeof prisma;
@@ -391,7 +391,7 @@ export async function recalcPropertyAssetsFromTransactions(
           new Date(),
           { client },
         );
-        if ((loanBalances.get(loanAccount.id) ?? 0) >= -ACTIVE_DEBT_EPSILON) {
+        if ((loanBalances.get(loanAccount.id) ?? 0) >= -ACTIVE_LIABILITY_EPSILON) {
           effectiveMortgageLoanAccountId = null;
         }
       }

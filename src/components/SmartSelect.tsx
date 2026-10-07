@@ -32,7 +32,7 @@ export type SmartSelectOption = {
   parentId?: string;
   kind?: string | null;
   investProductType?: string | null;
-  debtDirection?: string | null;
+  liabilityDirection?: string | null;
   institutionId?: string | null;
   currency?: string | null;
 };
@@ -363,8 +363,8 @@ function normalizeSingleBehavior(props: SingleModeProps, options: SmartSelectOpt
   const legacyCycleAction = props.onCycleOwnerFilter
     ? {
         onClick: props.onCycleOwnerFilter,
-        title: t("debtTx.ownerFilterTitle", { label: props.ownerFilterLabel || t("common.all") }),
-        ariaLabel: t("debtTx.ownerFilterAria", { label: props.ownerFilterLabel || t("common.all") }),
+        title: t("liabilityTx.ownerFilterTitle", { label: props.ownerFilterLabel || t("common.all") }),
+        ariaLabel: t("liabilityTx.ownerFilterAria", { label: props.ownerFilterLabel || t("common.all") }),
       }
     : undefined;
   const cycleAction = behavior?.cycleAction ?? props.cycleAction ?? legacyCycleAction;

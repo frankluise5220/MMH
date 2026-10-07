@@ -743,7 +743,7 @@ export function StockHoldingsPanel({
     const totalHistorical = displayPositions.reduce((sum, p) => sum + (p.historicalProfit ?? 0), 0);
     return {
       cells: {
-        stock: t("debtShell.summaryRow"),
+        stock: t("liabilityShell.summaryRow"),
         units: <span className="tabular-nums text-slate-800">{t(showCleared ? "stockPanel.clearedCount" : "stockPanel.holdingCount", { count: displayPositions.length })}</span>,
         cost: <span className="tabular-nums text-slate-800">{formatCurrencyMoney(displayCost, currency)}</span>,
         marketValue: <span className={`tabular-nums ${pnlClass(displayMarketValue, isRedUp)}`}>{formatCurrencyMoney(displayMarketValue, currency)}</span>,
@@ -1196,7 +1196,7 @@ export function StockHoldingsPanel({
                     <span className="mx-1 h-4 w-px bg-slate-200" />
                   </div>
                 ) : null}
-                <span className="shrink-0">{t("debtShell.tabEntries")}</span>
+                <span className="shrink-0">{t("liabilityShell.tabEntries")}</span>
                 <div className="ml-2 min-w-0 max-w-[16rem]">{renderStockNameCode(selectedPosition.name, selectedPosition.stockCode)}</div>
                 <span className="ml-2 text-xs font-normal text-slate-400">{t("stockPanel.entryCount", { count: transactions.length })}</span>
               </div>

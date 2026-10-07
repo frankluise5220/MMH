@@ -17,6 +17,8 @@ export type ApiHouseholdContext = HouseholdContext & {
   accessKey?: {
     id: string;
     name: string;
+    /** "read" keys may query; only "write" keys may create or delete records. */
+    scope: "read" | "write";
   };
 };
 

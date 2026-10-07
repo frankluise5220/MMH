@@ -13,6 +13,15 @@ ARG APP_VERSION=0.1.0
 WORKDIR /app
 ENV DATABASE_URL=postgresql://build:build@127.0.0.1:5432/build?schema=public
 ENV NEXT_TELEMETRY_DISABLED=1
+# Base-path contract: this image serves MMH from the ORIGIN ROOT. Only the fnOS
+# gateway package carries a prefix (/app/mmh, see scripts/build-fnos-app.cjs).
+# Declaring the empty value here (instead of relying on the default) stops a
+# leftover MMH_BASE_PATH in the build host / CI environment from baking a
+# prefix into this image -- that would break every route when the container is
+# published as http://host:<port>/. Mounting MMH on a reverse-proxy sub-path
+# needs a rebuild with this value changed; it can never differ at runtime,
+# because Next inlines basePath into the build output.
+ENV MMH_BASE_PATH=""
 ENV APP_COMMIT=${APP_COMMIT}
 ENV APP_COMMIT_MESSAGE=${APP_COMMIT_MESSAGE}
 ENV APP_COMMIT_DATE=${APP_COMMIT_DATE}

@@ -115,7 +115,7 @@ export type OverviewDashboardProps = {
   monthExpense: number;
   accountList: AccountItem[];
   creditAccountList: CreditAccountItem[];
-  debtAccountList?: AccountItem[];
+  liabilityAccountList?: AccountItem[];
   topPositions?: InvestmentOverviewItem[];
   investmentAccountCount?: number;
   insuranceAccountCount?: number;
@@ -192,7 +192,7 @@ export function OverviewDashboard({
   monthExpense,
   accountList,
   creditAccountList,
-  debtAccountList = [],
+  liabilityAccountList = [],
   topPositions = [],
   investmentAccountCount,
   insuranceAccountCount,
@@ -225,14 +225,14 @@ export function OverviewDashboard({
   const fixedRate = fixedAssetFloatingPnLRate ?? (fixedCostValue > 0 ? fixedPnL / fixedCostValue : 0);
   const monthNet = monthIncome - monthExpense;
   const netLiabilities = totals.liabilities - totals.loanReceivable;
-  const netDebtLabel = netLiabilities >= 0 ? t("overview.netDebt") : t("overview.netCredit");
-  const netDebtAmount = Math.abs(netLiabilities);
-  const netDebtClass = netLiabilities >= 0
-    ? liabilityClass(netDebtAmount, isRedUp)
-    : directionalClass(netDebtAmount, isRedUp);
+  const netLiabilityLabel = netLiabilities >= 0 ? t("overview.netLiability") : t("overview.netCredit");
+  const netLiabilityAmount = Math.abs(netLiabilities);
+  const netLiabilityClass = netLiabilities >= 0
+    ? liabilityClass(netLiabilityAmount, isRedUp)
+    : directionalClass(netLiabilityAmount, isRedUp);
   const hasForeignCurrency =
     accountList.some((account) => isForeign(account, baseCurrency)) ||
-    debtAccountList.some((account) => isForeign(account, baseCurrency)) ||
+    liabilityAccountList.some((account) => isForeign(account, baseCurrency)) ||
     fixedAssetAccountList.some((item) => isForeign(item, baseCurrency));
   const topAccounts = accountList
     .slice()
@@ -249,7 +249,7 @@ export function OverviewDashboard({
     (sum, account) => sum + Math.max(0, Math.min(paidOf(account), Math.max(0, creditBillOf(account)))),
     0,
   );
-  const debtAccounts = debtAccountList.filter((account) => account.balance !== 0);
+  const liabilityAccounts = liabilityAccountList.filter((account) => account.balance !== 0);
   const showInvestmentOverview = investmentAccountCount == null
     ? topPositions.length > 0 || investMarketValue !== 0 || investCost !== 0
     : investmentAccountCount > 0;
@@ -265,13 +265,13 @@ export function OverviewDashboard({
     (showFixedAssetOverview ? 1 : 0) +
     (showInsuranceOverview ? 1 : 0) +
     (creditCards.length > 0 ? 1 : 0) +
-    (debtAccounts.length > 0 ? 1 : 0);
+    (liabilityAccounts.length > 0 ? 1 : 0);
   const investmentModuleIndex = showInvestmentOverview ? 0 : -1;
   const dailyModuleIndex = showInvestmentOverview ? 1 : 0;
   const fixedAssetModuleIndex = dailyModuleIndex + 1;
   const insuranceModuleIndex = fixedAssetModuleIndex + (showFixedAssetOverview ? 1 : 0);
   const creditModuleIndex = insuranceModuleIndex + (showInsuranceOverview ? 1 : 0);
-  const debtModuleIndex = creditModuleIndex + (creditCards.length > 0 ? 1 : 0);
+  const liabilityModuleIndex = creditModuleIndex + (creditCards.length > 0 ? 1 : 0);
   const moduleClass = (index: number) =>
     `panel-surface ${overviewModuleCount === 3 && index === 0 ? "xl:col-span-2" : ""}`;
 
@@ -286,7 +286,7 @@ export function OverviewDashboard({
         monthExpense={monthExpense}
         accountList={accountList}
         creditAccountList={creditAccountList}
-        debtAccountList={debtAccountList}
+        liabilityAccountList={liabilityAccountList}
         topPositions={topPositions}
         investmentAccountCount={investmentAccountCount}
         insuranceAccountCount={insuranceAccountCount}
@@ -320,7 +320,7 @@ export function OverviewDashboard({
             </div>
             <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
               <MetricCard label={t("overview.liquidAssets")} value={formatMoneyYuan(totals.liquidAssets)} valueClass={directionalClass(totals.liquidAssets, isRedUp)} />
-              <MetricCard label={netDebtLabel} value={formatMoneyYuan(netDebtAmount)} valueClass={netDebtClass} />
+              <MetricCard label={netLiabilityLabel} value={formatMoneyYuan(netLiabilityAmount)} valueClass={netLiabilityClass} />
               {showInvestmentOverview ? (
                 <MetricCard label={t("overview.investMarketValue")} value={formatMoneyYuan(investMarketValue)} valueClass={directionalClass(investMarketValue, isRedUp)} />
               ) : null}
@@ -502,21 +502,21 @@ export function OverviewDashboard({
             </div>
           )}
 
-          {debtAccounts.length > 0 && (
-            <div className={moduleClass(debtModuleIndex)}>
+          {liabilityAccounts.length > 0 && (
+            <div className={moduleClass(liabilityModuleIndex)}>
               <div className="panel-header">
                 <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
                   <HandCoins className="h-4 w-4 text-rose-500" />
-                  {t("overview.debtCredit")}
+                  {t("overview.settlementNet")}
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-3 px-4 py-4 sm:grid-cols-3">
                 <MetricCard label={t("overview.iOwe")} value={formatMoneyYuan(-totals.loan)} valueClass={directionalClass(-totals.loan, isRedUp)} />
                 <MetricCard label={t("overview.owedToMe")} value={formatMoneyYuan(totals.loanReceivable)} valueClass={directionalClass(totals.loanReceivable, isRedUp)} />
-                <MetricCard label={t("overview.accountCount")} value={t("overview.accountCountValue", { count: debtAccounts.length })} />
+                <MetricCard label={t("overview.accountCount")} value={t("overview.accountCountValue", { count: liabilityAccounts.length })} />
               </div>
               <div className="grid grid-cols-1 gap-3 px-4 pb-4 sm:grid-cols-2">
-                {debtAccounts.slice(0, 4).map((account) => (
+                {liabilityAccounts.slice(0, 4).map((account) => (
                   <Link
                     key={account.id}
                     href={`/?accountId=${account.id}&view=detail`}

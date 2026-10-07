@@ -12,7 +12,7 @@ import { getAccountDropdownRestrictTypePreference } from "./appPreferences";
  * predicate is ignored and the full list is returned.
  *
  * Only the type-style predicate should be passed in (kind / investProductType /
- * debtDirection ...). Predicates that are not about account type — e.g. skipping a
+ * liabilityDirection ...). Predicates that are not about account type — e.g. skipping a
  * placeholder, hiding inactive accounts, or excluding a single already-selected
  * account — must NOT be routed through this helper, because they must keep applying
  * even when the setting is off.

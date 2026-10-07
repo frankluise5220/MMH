@@ -28,7 +28,7 @@ type AccountOption = {
   hoverTitle?: string | null;
   tableHoverTitle?: string | null;
   kind?: string | null;
-  debtDirection?: string | null;
+  liabilityDirection?: string | null;
 };
 
 type ReportQuery = {

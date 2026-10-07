@@ -14,7 +14,7 @@ import { loadInvestmentProfitReport } from "@/lib/server/investment-profit-repor
 import { computeInvestBalances } from "@/lib/invest-balance";
 import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
 import { getMaintainedAccountBalances } from "@/lib/server/account-balance";
-import { computeDebtDisplaySummary } from "@/lib/server/debt-display-summary";
+import { computeLiabilityDisplaySummary } from "@/lib/server/liability-display-summary";
 import { getConversionRate, getHouseholdBaseCurrency, type ConversionRate } from "@/lib/server/fx-rates";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 import { isLegacyDepositAccount, isPureInvestmentAccount } from "@/lib/account-kind-utils";
@@ -149,7 +149,7 @@ export type OverviewSummary = {
   dailyAssetDistribution: AssetDistributionItem[];
   dailyAccountList: AccountListRow[];
   creditAccountList: CreditAccountRow[];
-  debtAccountList: AccountListRow[];
+  liabilityAccountList: AccountListRow[];
   accountTypeTotals: AccountTypeTotals;
   creditUsedTotal: number;
   creditLimitTotal: number;
@@ -306,7 +306,7 @@ export async function computeOverviewSummary(
   const fixedAssetAccounts = pureInvestmentAccounts.filter(isFixedAssetAccountLike);
   const investmentOnlyAccounts = pureInvestmentAccounts.filter((account) => !isFixedAssetAccountLike(account));
   const creditAccounts = accounts.filter((account) => account.kind === AccountKind.bank_credit);
-  const debtAccounts = accounts.filter((account) => account.kind === AccountKind.loan);
+  const liabilityAccounts = accounts.filter((account) => account.kind === AccountKind.loan);
   const insuranceAccounts = accounts.filter((account) => account.kind === AccountKind.insurance);
 
   const dailyBaseAccounts = accounts.filter(
@@ -324,8 +324,8 @@ export async function computeOverviewSummary(
   ];
   const dailyAccountIds = dailyAccounts.map((account) => account.id);
   const dailyCurrencyByAccountId = new Map(dailyAccounts.map((account) => [account.id, currencyOf(account)]));
-  const dailyAndDebtDisplayBalanceByAccountId = await getMaintainedAccountBalances(
-    [...dailyAccounts, ...debtAccounts].map((account) => ({
+  const dailyAndLiabilityDisplayBalanceByAccountId = await getMaintainedAccountBalances(
+    [...dailyAccounts, ...liabilityAccounts].map((account) => ({
       id: account.id,
       kind: account.kind,
       investProductType: account.investProductType,
@@ -333,7 +333,7 @@ export async function computeOverviewSummary(
     })),
     hidFilter,
   );
-  const debtDisplaySummary = await computeDebtDisplaySummary(ctx, fx);
+  const liabilityDisplaySummary = await computeLiabilityDisplaySummary(ctx, fx);
 
   let monthIncome = 0;
   let monthExpense = 0;
@@ -385,7 +385,7 @@ export async function computeOverviewSummary(
 
     const accountCurrency = currencyOf(account);
     const balance =
-      dailyAndDebtDisplayBalanceByAccountId.get(account.id) ?? toNumber(account.balance);
+      dailyAndLiabilityDisplayBalanceByAccountId.get(account.id) ?? toNumber(account.balance);
     const rate = fx.rateOf(accountCurrency);
 
     return {
@@ -515,7 +515,7 @@ export async function computeOverviewSummary(
     };
   });
 
-  const debtAccountList: AccountListRow[] = debtAccounts.map((account) => {
+  const liabilityAccountList: AccountListRow[] = liabilityAccounts.map((account) => {
     const display = buildAccountDisplayOption(
       {
         id: account.id,
@@ -531,8 +531,8 @@ export async function computeOverviewSummary(
     );
     const accountCurrency = currencyOf(account);
     const balance =
-      debtDisplaySummary.balanceByAccountId.get(account.id) ??
-      dailyAndDebtDisplayBalanceByAccountId.get(account.id) ??
+      liabilityDisplaySummary.balanceByAccountId.get(account.id) ??
+      dailyAndLiabilityDisplayBalanceByAccountId.get(account.id) ??
       toNumber(account.balance);
     const rate = fx.rateOf(accountCurrency);
 
@@ -562,8 +562,8 @@ export async function computeOverviewSummary(
   const deposit = sumConverted(dailyAccountList, (account) => account.kind === "deposit");
   const other = sumConverted(dailyAccountList, (account) => account.kind === AccountKind.other);
 
-  const loan = debtDisplaySummary.totalPayable;
-  const loanReceivable = debtDisplaySummary.totalReceivable;
+  const loan = liabilityDisplaySummary.totalPayable;
+  const loanReceivable = liabilityDisplaySummary.totalReceivable;
 
   const creditUsedTotal = creditAccountList.reduce((sum, account) => sum + Math.max(0, account.convertedBalance ?? 0), 0);
   const creditLimitTotal = creditAccountList.reduce((sum, account) => sum + (account.convertedCreditLimit ?? 0), 0);
@@ -777,7 +777,7 @@ export async function computeOverviewSummary(
     dailyAssetDistribution,
     dailyAccountList,
     creditAccountList,
-    debtAccountList,
+    liabilityAccountList,
     accountTypeTotals,
     creditUsedTotal,
     creditLimitTotal,

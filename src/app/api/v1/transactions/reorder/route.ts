@@ -45,7 +45,7 @@ type ReorderRow = {
   type: string;
   accountId: string | null;
   toAccountId: string | null;
-  debtPrincipalAmount: unknown;
+  principalAmount: unknown;
   fundSubtype: string | null;
   source: string | null;
   toNote: string | null;
@@ -90,7 +90,7 @@ export async function POST(req: Request) {
       type: true,
       accountId: true,
       toAccountId: true,
-      debtPrincipalAmount: true,
+      principalAmount: true,
       fundSubtype: true,
       source: true,
       toNote: true,

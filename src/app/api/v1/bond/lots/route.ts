@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 import { prisma } from "@/lib/db/prisma";
 import { loadBondLotOptions } from "@/lib/server/bond-shell-data";
-import { getHouseholdScope } from "@/lib/server/household-scope";
+import { getApiHouseholdScope } from "@/lib/server/api-auth";
 
 /**
  * 债券存单下拉数据源。
@@ -13,7 +13,7 @@ import { getHouseholdScope } from "@/lib/server/household-scope";
  */
 export async function GET(req: Request) {
   try {
-    const ctx = await getHouseholdScope();
+    const ctx = await getApiHouseholdScope(req);
     const url = new URL(req.url);
     const accountIdsParam = url.searchParams.get("accountIds");
     const accountIds = accountIdsParam

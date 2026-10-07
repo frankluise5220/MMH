@@ -87,11 +87,11 @@ function neutralMoneyClass(value: number) {
   return value < 0 ? "text-slate-700" : "text-slate-900";
 }
 
-function debtMoneyClass(value: number, isRedUp: boolean) {
+function liabilityMoneyClass(value: number, isRedUp: boolean) {
   return pnlClassFromRedUp(value, isRedUp, "strong");
 }
 
-function liabilityMoneyClass(value: number, isRedUp: boolean) {
+function liabilityMoneyClassRedUp(value: number, isRedUp: boolean) {
   return pnlClassFromRedUp(value, isRedUp, "strong", true);
 }
 
@@ -283,7 +283,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
               <SummaryCard label={t("accountsPage.availableAssets")} value={formatMoneyYuan(assetTotal)} />
               <SummaryCard label={t("accountsPage.creditUsed")} value={formatMoneyYuan(creditUsedTotal)} />
               <SummaryCard label={t("accountsPage.creditAvailable")} value={formatMoneyYuan(creditAvailableTotal)} />
-              <SummaryCard label={t("overview.debtCredit")} value={formatMoneyYuan(loanTotal)} />
+              <SummaryCard label={t("overview.loanBalance")} value={formatMoneyYuan(loanTotal)} />
             </div>
           </div>
           <div className="border-t border-slate-100 bg-slate-50/70 px-4 py-3">
@@ -345,9 +345,9 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
                       <div className="mt-3 grid grid-cols-2 gap-2 text-xs md:grid-cols-5">
                         <MiniMetric label={t("settings.accounts.creditLimitLabel")} value={formatMoney(account.creditLimit)} />
                         <MiniMetric label={t("accountsPage.available")} value={formatMoney(account.availableLimit)} />
-                        <MiniMetric label={t("creditBillSummary.colNetAmount")} value={formatMoney(account.currentAmount)} valueClass={liabilityMoneyClass(account.currentAmount, isRedUp)} />
-                        <MiniMetric label={t("creditBill.currentBill")} value={formatMoney(account.currentBill)} valueClass={liabilityMoneyClass(account.currentBill, isRedUp)} />
-                        <MiniMetric label={t("accountsPage.repayRemain")} value={formatMoney(account.remain)} valueClass={liabilityMoneyClass(account.remain, isRedUp)} />
+                        <MiniMetric label={t("creditBillSummary.colNetAmount")} value={formatMoney(account.currentAmount)} valueClass={liabilityMoneyClassRedUp(account.currentAmount, isRedUp)} />
+                        <MiniMetric label={t("creditBill.currentBill")} value={formatMoney(account.currentBill)} valueClass={liabilityMoneyClassRedUp(account.currentBill, isRedUp)} />
+                        <MiniMetric label={t("accountsPage.repayRemain")} value={formatMoney(account.remain)} valueClass={liabilityMoneyClassRedUp(account.remain, isRedUp)} />
                       </div>
                     </Link>
                   ))
@@ -379,7 +379,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
                         </div>
                         <div className="min-w-0 flex-1">
                           <div className="text-sm font-medium text-slate-700">{group.label}</div>
-                          <div className={`text-base font-semibold tabular-nums ${group.kind === AccountKind.loan || group.kind === AccountKind.settlement ? debtMoneyClass(total, isRedUp) : neutralMoneyClass(total)}`}>{formatMoney(total)}</div>
+                          <div className={`text-base font-semibold tabular-nums ${group.kind === AccountKind.loan || group.kind === AccountKind.settlement ? liabilityMoneyClass(total, isRedUp) : neutralMoneyClass(total)}`}>{formatMoney(total)}</div>
                         </div>
                         <div className="text-xs text-slate-400">{t("settings.accounts.kindCount", { count: group.accounts.length })}</div>
                       </div>
@@ -405,7 +405,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
                       String(account.kind) === "deposit"
                         ? "deposit"
                         : account.kind === "loan" || account.kind === "settlement"
-                          ? "debt"
+                          ? "liability"
                           : "detail";
                     return (
                       <Link key={account.id} href={`/?accountId=${account.id}&view=${detailView}`} title={account.hoverTitle} className="flex items-center gap-3 px-4 py-3 hover:bg-slate-50">
@@ -419,7 +419,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
                             <span className="rounded bg-slate-100 px-1.5 py-0.5">{account.groupName}</span>
                           </div>
                         </div>
-                        <div className={`shrink-0 text-sm font-semibold tabular-nums ${account.kind === AccountKind.loan || account.kind === AccountKind.settlement ? debtMoneyClass(account.balance, isRedUp) : neutralMoneyClass(account.balance)}`}>
+                        <div className={`shrink-0 text-sm font-semibold tabular-nums ${account.kind === AccountKind.loan || account.kind === AccountKind.settlement ? liabilityMoneyClass(account.balance, isRedUp) : neutralMoneyClass(account.balance)}`}>
                           {formatMoney(account.balance)}
                         </div>
                       </Link>

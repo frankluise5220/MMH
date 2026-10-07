@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { prisma } from "@/lib/db/prisma";
-import { getHouseholdScope } from "@/lib/server/household-scope";
+import { getApiHouseholdScope } from "@/lib/server/api-auth";
 import { loadWealthStatisticSourceEntries } from "@/lib/server/investment-statistic-sources";
 import { TransactionType } from "@prisma/client";
 import { toNumber } from "@/lib/date-utils";
@@ -13,7 +13,7 @@ import {
   SYSTEM_INSURANCE_RETURN_CATEGORY,
 } from "@/lib/default-categories";
 import { addStatisticCategoryBucket, addStatisticTagBucket, buildStatisticCategoryItemsFromBuckets, buildStatisticTagItemsFromBuckets, createStatisticCategoryResolver, createStatisticDistributionCollector, getBusinessResultStatisticItems, getIncomeExpenseStatisticAmount, getInvestmentStatisticItems, isBondInterestIncomeEntry, BOND_INTEREST_INCOME_CATEGORY_CANDIDATES } from "@/lib/transaction-statistics";
-import { isCreditCardRepaymentTransfer, isDebtPrincipalCashFlow, TRANSACTION_SOURCE_BOND } from "@/lib/transaction-semantics";
+import { isCreditCardRepaymentTransfer, isLiabilityPrincipalCashFlow, TRANSACTION_SOURCE_BOND } from "@/lib/transaction-semantics";
 
 export const dynamic = "force-dynamic";
 
@@ -55,7 +55,7 @@ export const dynamic = "force-dynamic";
  */
 export async function GET(req: NextRequest) {
   try {
-    const ctx = await getHouseholdScope();
+    const ctx = await getApiHouseholdScope(req);
     const { hidFilter, householdId } = ctx;
 
     const url = req.nextUrl;
@@ -126,8 +126,8 @@ export async function GET(req: NextRequest) {
         fundCode: true,
         fundName: true,
         realizedProfit: true,
-        debtInterestAmount: true,
-        debtPrincipalAmount: true,
+        interestAmount: true,
+        principalAmount: true,
         reimbursementDifferenceAmount: true,
         reimbursementDifferenceCategoryName: true,
         depositInterest: true,
@@ -183,8 +183,8 @@ export async function GET(req: NextRequest) {
       const row = monthMap.get(m)!;
       const amount = toNumber(e.amount);
 
-      // 账户现状 kind：历史 debt_* source 是否仍按债务口径统计，以账户为准。
-      const debtKindEntry = {
+      // 账户现状 kind：历史 liability_* source 是否仍按负债口径统计，以账户为准。
+      const liabilityKindEntry = {
         ...e,
         accountKind: accountKindById.get(e.accountId),
         toAccountKind: accountKindById.get(e.toAccountId ?? ""),
@@ -221,23 +221,23 @@ export async function GET(req: NextRequest) {
         // itself is a balance-sheet move, not income/expense.  Skip the principal
         // here; the interest portion is still reported via
         // getBusinessResultStatisticItems below.
-        const isDebtPrincipal = isDebtPrincipalCashFlow(debtKindEntry);
+        const isLiabilityPrincipal = isLiabilityPrincipalCashFlow(liabilityKindEntry);
         if (isToSelf && !isFromSelf) {
-          if (!isDebtPrincipal) {
+          if (!isLiabilityPrincipal) {
             row.income += Math.abs(amount);
             addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", categoryId: e.categoryId, categoryName: e.categoryName }), Math.abs(amount));
             dist.add("income", e, Math.abs(amount));
             addStatisticTagBucket(incomeByTag, e.EntryTag, Math.abs(amount));
           }
         } else if (isFromSelf && !isToSelf) {
-          if (!isDebtPrincipal) {
+          if (!isLiabilityPrincipal) {
             row.expense += Math.abs(amount);
             addStatisticCategoryBucket(expenseByCat, resolveCategory({ type: "expense", categoryId: e.categoryId, categoryName: e.categoryName }), Math.abs(amount));
             dist.add("expense", e, Math.abs(amount));
             addStatisticTagBucket(expenseByTag, e.EntryTag, Math.abs(amount));
           }
         }
-        for (const item of getBusinessResultStatisticItems(debtKindEntry)) {
+        for (const item of getBusinessResultStatisticItems(liabilityKindEntry)) {
           if (item.type === "income") {
             row.income += item.amount;
             addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", candidates: item.categoryCandidates, fallbackName: item.categoryName }), item.amount);

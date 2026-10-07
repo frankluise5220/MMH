@@ -83,7 +83,7 @@ export async function resetHouseholdData(input: {
     // StockFeeRule is account-scoped only; never filter it by householdId.
     await optionalPrismaDeleteMany(tx, "stockFeeRule", { where: { accountId: { in: accountIds } } }, { tableNames: ["stock_fee_rules"] });
 
-    await tx.debtAgreement.deleteMany({ where: { householdId } });
+    await tx.settlementAgreement.deleteMany({ where: { householdId } });
 
     // Optional models: some deployments have not applied these tables yet.
     await optionalPrismaDeleteMany(tx, "stockPriceCache", { where: { StockSecurity: { is: { householdId } } } }, { tableNames: ["stock_price_cache", "stock_securities"] });

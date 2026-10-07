@@ -54,7 +54,7 @@ function mdUtcDots(date: Date) {
   return `${month}.${day}`;
 }
 
-function isSettlementDebtAccount(account?: { kind?: AccountKind | null; counterpartyId?: string | null } | null) {
+function isSettlementLiabilityAccount(account?: { kind?: AccountKind | null; counterpartyId?: string | null } | null) {
   return account?.kind === AccountKind.settlement || (account?.kind === AccountKind.loan && !!account.counterpartyId);
 }
 
@@ -90,15 +90,15 @@ function mapDetailEntry(
     accountId: entry.accountId,
     accountName: entry.accountName,
     accountKind: entry.account?.kind ?? null,
-    accountDebtDirection: entry.account?.debtDirection ?? null,
-    accountIsSettlementDebt: isSettlementDebtAccount(entry.account),
+    accountLiabilityDirection: entry.account?.liabilityDirection ?? null,
+    accountIsSettlementAccount: isSettlementLiabilityAccount(entry.account),
     counterpartyInstitutionId: entry.counterpartyInstitutionId ?? null,
     counterpartyInstitutionName: entry.counterpartyInstitutionName ?? null,
     toAccountId: entry.toAccountId,
     toAccountName: entry.toAccountName,
     toAccountKind: entry.toAccount?.kind ?? null,
-    toAccountDebtDirection: entry.toAccount?.debtDirection ?? null,
-    toAccountIsSettlementDebt: isSettlementDebtAccount(entry.toAccount),
+    toAccountLiabilityDirection: entry.toAccount?.liabilityDirection ?? null,
+    toAccountIsSettlementAccount: isSettlementLiabilityAccount(entry.toAccount),
     toNote: entry.toNote,
     note: entry.note,
     fundSubtype: entry.fundSubtype,
@@ -107,9 +107,9 @@ function mapDetailEntry(
     wealthProductId: entry.wealthProductId ?? null,
     source: entry.source,
     insuranceProductId: entry.insuranceProductId ?? null,
-    debtPrincipalAmount: entry.debtPrincipalAmount != null ? toNumber(entry.debtPrincipalAmount) : null,
-    debtInterestAmount: entry.debtInterestAmount != null ? toNumber(entry.debtInterestAmount) : null,
-    debtFeeAmount: entry.debtFeeAmount != null ? toNumber(entry.debtFeeAmount) : null,
+    principalAmount: entry.principalAmount != null ? toNumber(entry.principalAmount) : null,
+    interestAmount: entry.interestAmount != null ? toNumber(entry.interestAmount) : null,
+    feeAmount: entry.feeAmount != null ? toNumber(entry.feeAmount) : null,
     depositAnnualRate: entry.depositAnnualRate != null ? toNumber(entry.depositAnnualRate) : null,
     depositInterest: entry.depositInterest != null ? toNumber(entry.depositInterest) : null,
     fundProductType: entry.fundProductType,

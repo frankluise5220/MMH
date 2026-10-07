@@ -46,7 +46,7 @@ export function ReimbursementView({
   const createRequested = searchParams.get("create") === "1";
 
   if (!seedStateReady) {
-    return <div className="min-h-0 flex-1 animate-pulse bg-background" aria-label={t("debtShell.saving")} />;
+    return <div className="min-h-0 flex-1 animate-pulse bg-background" aria-label={t("liabilityShell.saving")} />;
   }
 
   return (

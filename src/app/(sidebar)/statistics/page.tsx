@@ -21,7 +21,7 @@ import {
   SYSTEM_INSURANCE_RETURN_CATEGORY,
 } from "@/lib/default-categories";
 import { addStatisticCategoryBucket, addStatisticTagBucket, buildStatisticCategoryItemsFromBuckets, buildStatisticTagItemsFromBuckets, createStatisticCategoryResolver, createStatisticDistributionCollector, getBusinessResultStatisticItems, getIncomeExpenseStatisticAmount, getInvestmentStatisticItems, isBondInterestIncomeEntry, BOND_INTEREST_INCOME_CATEGORY_CANDIDATES } from "@/lib/transaction-statistics";
-import { isCreditCardRepaymentTransfer, isDebtPrincipalCashFlow, TRANSACTION_SOURCE_BOND } from "@/lib/transaction-semantics";
+import { isCreditCardRepaymentTransfer, isLiabilityPrincipalCashFlow, TRANSACTION_SOURCE_BOND } from "@/lib/transaction-semantics";
 import { getServerT } from "@/lib/server/i18n";
 import { categoryOrderBy } from "@/lib/category-order";
 
@@ -114,7 +114,7 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
       select: { id: true, name: true, kind: true, userId: true, groupId: true, counterpartyId: true, numberMasked: true, Institution: { select: { id: true, name: true, type: true } } },
       orderBy: { name: "asc" },
     }),
-    // 债务本金判定必须覆盖挂往来对象/已停用账户。筛选下拉那份 allAccounts
+    // 负债本金判定必须覆盖挂往来对象/已停用账户。筛选下拉那份 allAccounts
     // 排除了 counterpartyId != null 的往来款，不能拿来建 kind 表。
     prisma.account.findMany({
       where: hidFilter,
@@ -177,8 +177,8 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
       fundCode: true,
       fundName: true,
       realizedProfit: true,
-      debtInterestAmount: true,
-      debtPrincipalAmount: true,
+      interestAmount: true,
+      principalAmount: true,
       reimbursementDifferenceAmount: true,
       reimbursementDifferenceCategoryName: true,
       depositInterest: true,
@@ -248,8 +248,8 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
     const amount = fx.convert(e, toNumber(e.amount));
     if (amount == null) continue;
 
-    // 账户现状 kind：历史 debt_* source 是否仍按债务口径统计，以账户为准。
-    const debtKindEntry = {
+    // 账户现状 kind：历史 liability_* source 是否仍按负债口径统计，以账户为准。
+    const liabilityKindEntry = {
       ...e,
       accountKind: accountKindById.get(e.accountId),
       toAccountKind: accountKindById.get(e.toAccountId ?? ""),
@@ -286,23 +286,23 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
       // itself is a balance-sheet move, not income/expense.  Skip the principal
       // here; the interest portion is still reported via
       // getBusinessResultStatisticItems below.
-      const isDebtPrincipal = isDebtPrincipalCashFlow(debtKindEntry);
+      const isLiabilityPrincipal = isLiabilityPrincipalCashFlow(liabilityKindEntry);
       if (isToSelf && !isFromSelf) {
-        if (!isDebtPrincipal) {
+        if (!isLiabilityPrincipal) {
           row.income += Math.abs(amount);
           addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", categoryId: e.categoryId, categoryName: e.categoryName }), Math.abs(amount));
           dist.add("income", e, Math.abs(amount));
           addStatisticTagBucket(incomeByTag, e.EntryTag, Math.abs(amount), untaggedLabel);
         }
       } else if (isFromSelf && !isToSelf) {
-        if (!isDebtPrincipal) {
+        if (!isLiabilityPrincipal) {
           row.expense += Math.abs(amount);
           addStatisticCategoryBucket(expenseByCat, resolveCategory({ type: "expense", categoryId: e.categoryId, categoryName: e.categoryName }), Math.abs(amount));
           dist.add("expense", e, Math.abs(amount));
           addStatisticTagBucket(expenseByTag, e.EntryTag, Math.abs(amount), untaggedLabel);
         }
       }
-        for (const item of getBusinessResultStatisticItems(debtKindEntry)) {
+        for (const item of getBusinessResultStatisticItems(liabilityKindEntry)) {
           if (item.type === "income") {
             row.income += item.amount;
             addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", candidates: item.categoryCandidates, fallbackName: item.categoryName }), item.amount);

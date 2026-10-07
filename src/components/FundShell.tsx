@@ -1940,7 +1940,7 @@ export function FundShell(props: Props) {
     const floatingProfit = d.totalMarketValue - d.totalCost;
     return {
       cells: {
-        fund: t("debtShell.summaryRow"),
+        fund: t("liabilityShell.summaryRow"),
         cost: <span className="tabular-nums text-slate-800">{formatMoney(d.totalCost)}</span>,
         marketValue: <span className={`tabular-nums ${pnl(d.totalMarketValue)}`}>{formatMoney(d.totalMarketValue)}</span>,
         floatingPnL: <span className={`tabular-nums ${pnl(floatingProfit)}`}>{formatMoney(floatingProfit)}</span>,
@@ -2052,7 +2052,7 @@ export function FundShell(props: Props) {
     const totalReturnRate = totalBuyAmt > 0 ? d.clearedHistoricalProfit / totalBuyAmt : 0;
     return {
       cells: {
-        fund: <span className="text-xs font-semibold text-slate-700">{t("debtShell.summaryRow")}</span>,
+        fund: <span className="text-xs font-semibold text-slate-700">{t("liabilityShell.summaryRow")}</span>,
         buyAmount: <span className="tabular-nums text-xs text-slate-800">{formatMoney(totalBuyAmt)}</span>,
         redeemAmount: <span className="tabular-nums text-xs text-slate-800">{formatMoney(totalRedeemAmt)}</span>,
         historical: <span className={`tabular-nums text-xs ${pnl(d.clearedHistoricalProfit)}`}>{formatMoney(d.clearedHistoricalProfit)}</span>,

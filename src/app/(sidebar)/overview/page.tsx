@@ -58,7 +58,7 @@ export default async function OverviewPage() {
       monthExpense={summary.monthExpense}
       accountList={summary.dailyAccountList}
       creditAccountList={summary.creditAccountList}
-      debtAccountList={summary.debtAccountList}
+      liabilityAccountList={summary.liabilityAccountList}
       topPositions={summary.topPositions}
       investmentAccountCount={summary.investmentAccountCount}
       insuranceAccountCount={summary.insuranceAccountCount}

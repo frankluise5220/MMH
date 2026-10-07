@@ -83,6 +83,7 @@ type AccountItem = {
   institutionType?: string | null;
   counterpartyId?: string | null;
   counterpartyReimbursable?: boolean;
+  liabilityDirection?: string | null;
   isConsumerLoan?: boolean;
   loanType?: string | null;
   investProductType?: string;
@@ -184,7 +185,7 @@ function isSidebarLoanItem(item: AccountItem) {
 }
 
 function loanSubgroupKey(loanType: LoanTypeValue) {
-  return `debt_loan_${loanType}`;
+  return `loan_${loanType}`;
 }
 
 function loanTypeForSidebarItem(item: AccountItem): LoanTypeValue {
@@ -278,7 +279,7 @@ function normalizeSidebarItems(items: AccountItem[], t: (key: string, params?: R
   const reimbursableChildren = settlementChildren.filter((item) => item.counterpartyReimbursable === true);
   const plainSettlementChildren = settlementChildren.filter((item) => item.counterpartyReimbursable !== true);
   const settlementSummary = plainSettlementChildren.length > 0
-    ? buildSummaryItem(plainSettlementChildren, "loan_summary", t("sidebar.section.liabilities"), t("sidebar.debt.counterpartySummary"))
+    ? buildSummaryItem(plainSettlementChildren, "loan_summary", t("sidebar.section.settlements"), t("sidebar.counterparty.counterpartySummary"))
     : null;
   const reimbursementSummary = reimbursableChildren.length > 0
     ? buildSummaryItem(reimbursableChildren, REIMBURSEMENT_SUMMARY_KIND, t("sidebar.section.reimbursements"), t("sidebar.section.reimbursements"))
@@ -335,6 +336,7 @@ function getSidebarItemSignature(item: AccountItem): string {
     item.institutionType ?? "",
     item.counterpartyId ?? "",
     item.counterpartyReimbursable ? "1" : "0",
+    item.liabilityDirection ?? "",
     item.isConsumerLoan ? "1" : "0",
     item.loanType ?? "",
     item.investProductType ?? "",
@@ -374,6 +376,7 @@ function toSidebarAccountItem(a: any, t: (key: string, params?: Record<string, s
     institutionType: a.Institution?.type ?? a.institutionType ?? null,
     counterpartyId: a.counterpartyId ?? null,
     counterpartyReimbursable: a.Counterparty?.isReimbursable === true || a.counterpartyReimbursable === true,
+    liabilityDirection: a.liabilityDirection ?? a.debtDirection ?? null,
     isConsumerLoan: a.isConsumerLoan === true,
     loanType: a.loanType ?? null,
     investProductType: a.investProductType || undefined,
@@ -413,11 +416,14 @@ export function SidebarClient({
   }, [pathname, searchParams]);
   const selectedAccountId = (searchParams.get("accountId") ?? "").trim();
   const selectedAccount = (searchParams.get("account") ?? "").trim();
-  const selectedView = (searchParams.get("view") ?? "").trim();
+  const rawSelectedView = (searchParams.get("view") ?? "").trim();
+  // 2026-10-06 口径定版：视图值 debt → liability，旧值永久保留为别名。
+  const selectedView = rawSelectedView === "debt" ? "liability" : rawSelectedView;
   const selectedFixedAssetType = (searchParams.get("fixedAssetType") ?? "").trim();
-  const selectedDebtLoanTypeRaw = (searchParams.get("debtLoanType") ?? "").trim();
-  const selectedDebtLoanType = LOAN_TYPES.includes(selectedDebtLoanTypeRaw as LoanTypeValue)
-    ? selectedDebtLoanTypeRaw as LoanTypeValue
+  // 贷款类型参数 debtLoanType → loanType，旧参数名永久保留为别名。
+  const selectedLiabilityLoanTypeRaw = (searchParams.get("loanType") ?? searchParams.get("debtLoanType") ?? "").trim();
+  const selectedLiabilityLoanType = LOAN_TYPES.includes(selectedLiabilityLoanTypeRaw as LoanTypeValue)
+    ? selectedLiabilityLoanTypeRaw as LoanTypeValue
     : null;
   const isRootInvestmentView =
     pathname === "/" &&
@@ -446,6 +452,19 @@ export function SidebarClient({
     seedConvertedBalances(normalized);
     return normalized;
   });
+  // 费用报销入口以「报销页真的有条目可列」为前提，条件与 /reimbursements 的查询完全一致：
+  // 往来款/贷款账户 + 对象勾了「是否报销」+ 方向为应收。三条都满足才给入口，
+  // 否则空账套（或只有付方向对象）点进去只会看到一个空工作区。
+  const hasReimbursableAccounts = useMemo(() => {
+    const isListedByReimbursementPage = (item: AccountItem): boolean =>
+      (item.kind === "settlement" || item.kind === "loan")
+      && item.counterpartyReimbursable === true
+      && item.liabilityDirection === "receivable";
+    const visit = (item: AccountItem): boolean =>
+      isListedByReimbursementPage(item) || (item.children ?? []).some(visit);
+    return items.some(visit);
+  }, [items]);
+  const reimbursementEntryVisible = showReimbursements && hasReimbursableAccounts;
   const [accountFilterOpen, setAccountFilterOpen] = useState(false);
   const [accountFilterText, setAccountFilterText] = useState("");
   const accountFilterQuery = accountFilterText.trim().toLowerCase();
@@ -812,7 +831,7 @@ export function SidebarClient({
     if (label === FIXED_ASSET_SECTION) return t("sidebar.section.fixedAssets");
     if (label === "保险") return t("sidebar.section.insurance");
     if (label === LOAN_SECTION) return t("sidebar.section.loans");
-    if (label === LIABILITY_SECTION) return t("sidebar.section.liabilities");
+    if (label === LIABILITY_SECTION) return t("sidebar.section.settlements");
     return label;
   };
   const assetSubgroupLabel = (label: string) => {
@@ -837,7 +856,7 @@ export function SidebarClient({
     if (kind === FIXED_ASSET_SUMMARY_KIND) return t("sidebar.section.fixedAssets");
     if (kind === "insurance") return t("sidebar.kind.insurance");
     if (kind === "bank_credit") return t("sidebar.kind.creditCard");
-    if (kind === "loan_summary") return t("sidebar.section.liabilities");
+    if (kind === "loan_summary") return t("sidebar.section.settlements");
     if (kind === REIMBURSEMENT_SUMMARY_KIND) return t("sidebar.section.reimbursements");
     if (kind === "settlement") return t("account.kind.settlement");
     if (kind === "loan") return t("account.kind.loan");
@@ -931,16 +950,16 @@ export function SidebarClient({
           label: t(`loan.type.${loanType}`),
           accounts,
           total: accounts.reduce((sum, account) => sum + displayBalance(account), 0),
-          href: `/?view=debt&debtLoanType=${loanType}`,
+          href: `/?view=liability&loanType=${loanType}`,
         };
       }).filter((subgroup) => subgroup.accounts.length > 0);
     };
-    const buildDebtSections = (): SidebarSection[] => {
+    const buildLiabilitySections = (): SidebarSection[] => {
       const loanItems = visibleItems.filter(isSidebarLoanItem);
       const liabilityItems = visibleItems.filter((item) => item.kind === "loan_summary");
-      const debtSections: SidebarSection[] = [];
+      const liabilitySections: SidebarSection[] = [];
       if (liabilityItems.length > 0) {
-        debtSections.push({
+        liabilitySections.push({
           kind: LIABILITY_SECTION,
           label: LIABILITY_SECTION,
           accounts: sortAccountsByUsage(liabilityItems),
@@ -949,7 +968,7 @@ export function SidebarClient({
         });
       }
       if (loanItems.length > 0) {
-        debtSections.push({
+        liabilitySections.push({
           kind: LOAN_SECTION,
           label: LOAN_SECTION,
           accounts: sortAccountsByUsage(loanItems),
@@ -957,13 +976,13 @@ export function SidebarClient({
           subgroups: buildLoanSubgroups(loanItems),
         });
       }
-      return debtSections;
+      return liabilitySections;
     };
     if (sidebarGroupBy === "institution") {
-      const debtKinds = new Set(["loan", "loan_summary", REIMBURSEMENT_SUMMARY_KIND]);
+      const liabilityKinds = new Set(["loan", "loan_summary", REIMBURSEMENT_SUMMARY_KIND]);
       const map = new Map<string, SidebarSection>();
       for (const item of visibleItems) {
-        if (debtKinds.has(item.kind)) continue;
+        if (liabilityKinds.has(item.kind)) continue;
         const label = item.kind === FIXED_ASSET_SUMMARY_KIND
           ? FIXED_ASSET_SECTION
           : item.institution?.trim() || t("insurance.noInstitution");
@@ -994,7 +1013,7 @@ export function SidebarClient({
             : section.accounts,
         }))
         .sort((a, b) => a.label.localeCompare(b.label, "zh-Hans-CN"));
-      return [...institutionSections, ...buildDebtSections()];
+      return [...institutionSections, ...buildLiabilitySections()];
     }
 
     const groups = [
@@ -1043,10 +1062,10 @@ export function SidebarClient({
     }).filter(s => s.accounts.length > 0);
   }, [visibleItems, sidebarGroupBy, accountUsage, displayBalance, t]);
 
-  const selectedDebtPerson = (searchParams.get("debtPerson") ?? "").trim();
-  const debtPersonKeyFor = (item: AccountItem) => item.id ? `account:${item.id}` : "";
-  const isDebtAccountSelected = (item: AccountItem) =>
-    pathname === "/" && selectedView === "debt" && debtPersonKeyFor(item) === selectedDebtPerson;
+  const selectedLiabilityPerson = (searchParams.get("liabilityPerson") ?? "").trim();
+  const liabilityPersonKeyFor = (item: AccountItem) => item.id ? `account:${item.id}` : "";
+  const isLiabilityAccountSelected = (item: AccountItem) =>
+    pathname === "/" && selectedView === "liability" && liabilityPersonKeyFor(item) === selectedLiabilityPerson;
 
   function isAccountItemActive(item: AccountItem) {
     if (pathname === "/reimbursements") {
@@ -1058,9 +1077,9 @@ export function SidebarClient({
     }
     if (pathname !== "/") return false;
     if (item.kind === "loan_summary") {
-      return selectedView === "debt" && (!selectedDebtPerson || (item.children?.some(isDebtAccountSelected) ?? false));
+      return selectedView === "liability" && (!selectedLiabilityPerson || (item.children?.some(isLiabilityAccountSelected) ?? false));
     }
-    if (item.kind === "loan" || item.kind === "settlement") return isDebtAccountSelected(item) || (!!item.id && selectedAccountId === item.id && selectedView === "debt");
+    if (item.kind === "loan" || item.kind === "settlement") return isLiabilityAccountSelected(item) || (!!item.id && selectedAccountId === item.id && selectedView === "liability");
     if (item.kind === FIXED_ASSET_SUMMARY_KIND) {
       if (selectedFixedAssetType) {
         const itemType = item.id?.startsWith(`${FIXED_ASSET_SUMMARY_ID}:`)
@@ -1076,10 +1095,10 @@ export function SidebarClient({
   const activeSectionKind = sections.find((section) => {
     if (
       pathname === "/" &&
-      selectedView === "debt" &&
-      selectedDebtLoanType &&
+      selectedView === "liability" &&
+      selectedLiabilityLoanType &&
       section.kind === LOAN_SECTION &&
-      section.subgroups.some((subgroup) => subgroup.key === loanSubgroupKey(selectedDebtLoanType))
+      section.subgroups.some((subgroup) => subgroup.key === loanSubgroupKey(selectedLiabilityLoanType))
     ) {
       return true;
     }
@@ -1088,8 +1107,8 @@ export function SidebarClient({
 
   const activeSubgroupKey = (() => {
     if (sidebarGroupBy !== "kind") return "";
-    if (pathname === "/" && selectedView === "debt" && selectedDebtLoanType) {
-      const key = loanSubgroupKey(selectedDebtLoanType);
+    if (pathname === "/" && selectedView === "liability" && selectedLiabilityLoanType) {
+      const key = loanSubgroupKey(selectedLiabilityLoanType);
       const loanSection = sections.find((section) => section.kind === LOAN_SECTION);
       if (loanSection?.subgroups.some((subgroup) => subgroup.key === key)) return key;
     }
@@ -1244,7 +1263,7 @@ export function SidebarClient({
           <Link href="/reports" className={collapsedNavCls(pathname.startsWith("/reports"))} title={t("nav.reports")}>
             <Table2 size={18} />
           </Link>
-          {showReimbursements ? (
+          {reimbursementEntryVisible ? (
             <Link href="/reimbursements" className={collapsedNavCls(pathname.startsWith("/reimbursements"))} title={t("sidebar.section.reimbursements")}>
               <ReceiptText size={18} />
             </Link>
@@ -1371,7 +1390,7 @@ export function SidebarClient({
               <Table2 size={18} />
               <span className="font-medium">{t("nav.reports")}</span>
             </Link>
-            {showReimbursements ? (
+            {reimbursementEntryVisible ? (
               <Link href="/reimbursements" className={navItemCls("/reimbursements")}>
                 <ReceiptText size={18} />
                 <span className="font-medium">{t("sidebar.section.reimbursements")}</span>
@@ -1493,7 +1512,7 @@ export function SidebarClient({
                           const hasSubgroups = !!sec.subgroups?.length;
                           const isLoanTypeNode = sec.kind === LOAN_SECTION && !!group.href;
                           const subgroupCollapsed = !accountFilterQuery && !isLoanTypeNode && hasSubgroups && collapsedAssetSubgroupKeys.has(group.key);
-                          const loanTypeActive = isLoanTypeNode && pathname === "/" && selectedView === "debt" && group.key === (selectedDebtLoanType ? loanSubgroupKey(selectedDebtLoanType) : "");
+                          const loanTypeActive = isLoanTypeNode && pathname === "/" && selectedView === "liability" && group.key === (selectedLiabilityLoanType ? loanSubgroupKey(selectedLiabilityLoanType) : "");
                           const subgroupLabel = sec.kind === "资产" ? assetSubgroupLabel(group.label) : group.label;
                           return (
                             <div key={group.key} className="space-y-1">
@@ -1552,16 +1571,16 @@ export function SidebarClient({
                                     if (type) q.set("fixedAssetType", type);
                                     return `/?${q.toString()}`;
                                   }
-                                  if (it.kind === "loan_summary") return "/?view=debt";
+                                  if (it.kind === "loan_summary") return "/?view=liability";
                                   if (it.kind === REIMBURSEMENT_SUMMARY_KIND) return "/reimbursements";
                                   if (it.kind === "loan" || it.kind === "settlement") {
                                     if (it.counterpartyReimbursable) {
                                       return it.id ? `/reimbursements?accountId=${it.id}` : "/reimbursements";
                                     }
                                     const q = new URLSearchParams();
-                                    q.set("view", "debt");
-                                    const debtPersonKey = debtPersonKeyFor(it);
-                                    if (debtPersonKey) q.set("debtPerson", debtPersonKey);
+                                    q.set("view", "liability");
+                                    const liabilityPersonKey = liabilityPersonKeyFor(it);
+                                    if (liabilityPersonKey) q.set("liabilityPerson", liabilityPersonKey);
                                     return `/?${q.toString()}`;
                                   }
                                   const q = new URLSearchParams();

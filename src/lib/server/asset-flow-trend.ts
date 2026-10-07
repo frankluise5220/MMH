@@ -20,7 +20,7 @@
  *               principal with dated manual NAV, metal units + last traded
  *               price, stock positions + price cache + brokerage cash),
  *               fixed assets (existence window + valuation history)
- *   liabilities: credit-card debt (raw ledger walk) and loan/往来 payables
+ *   liabilities: credit-card balances (raw ledger walk) and loan/往来 payables
  *               (negative walked balances) — credit history is a raw-ledger
  *               approximation, the cycle cache is current-only.
  *
@@ -37,7 +37,7 @@ import { depositRedemptionPrincipal } from "@/lib/server/deposit-lot-balance";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 import { applyBalanceReconcileEntry, getBalanceReconcileTarget } from "@/lib/balance-reconcile";
 import { getDetailEntryDisplayDate, compareDetailEntriesAsc } from "@/lib/detail-entry-order";
-import { debtPrincipalForAccountSide } from "@/lib/debt";
+import { liabilityPrincipalForAccountSide } from "@/lib/liability";
 import { txRecordAccountScopeWhere } from "@/lib/transaction-account-scope";
 import { isLegacyDepositAccount, isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import { isInsuranceBalanceMetric } from "@/lib/insurance/display";
@@ -162,7 +162,7 @@ export async function loadAssetMonthEndLevels(
     account.kind === AccountKind.ewallet ||
     account.kind === AccountKind.other,
   );
-  // Credit-card debt is reconstructed from billing cycles (cumulativeRemain
+  // Credit-card balances are reconstructed from billing cycles (cumulativeRemain
   // per statement month) — the app-native ledger that also feeds the overview.
   // The raw TxRecord walk is unreliable for consolidated-billing groups where
   // member cards share one storage account.
@@ -170,7 +170,7 @@ export async function loadAssetMonthEndLevels(
   const depositAccounts = accounts.filter((account) =>
     account.kind === AccountKind.deposit || isLegacyDepositAccount(account),
   );
-  const debtishAccounts = accounts.filter((account) =>
+  const liabilityLikeAccounts = accounts.filter((account) =>
     account.kind === AccountKind.loan || account.kind === AccountKind.settlement,
   );
   const insuranceAccounts = accounts.filter((account) => account.kind === AccountKind.insurance);
@@ -188,7 +188,7 @@ export async function loadAssetMonthEndLevels(
   );
   // fund/money accounts are covered by the fund portfolio trend simulation.
 
-  const txWalkAccounts = [...plainAccounts, ...depositAccounts, ...debtishAccounts, ...stockAccounts];
+  const txWalkAccounts = [...plainAccounts, ...depositAccounts, ...liabilityLikeAccounts, ...stockAccounts];
   const currencyByAccountId = new Map(accounts.map((account) => [account.id, normalizeCurrency(account.currency)]));
 
   // ── FX rates (latest stored rates, same basis as overview net worth) ──────
@@ -233,7 +233,7 @@ export async function loadAssetMonthEndLevels(
         toAccountId: true,
         toNote: true,
         source: true,
-        debtPrincipalAmount: true,
+        principalAmount: true,
         fundSubtype: true,
         fundConfirmDate: true,
         fundArrivalDate: true,
@@ -252,9 +252,9 @@ export async function loadAssetMonthEndLevels(
       }
     }
 
-    const debtishKinds = new Set<string>([AccountKind.loan, AccountKind.settlement]);
+    const liabilityLikeKinds = new Set<string>([AccountKind.loan, AccountKind.settlement]);
     for (const account of txWalkAccounts) {
-      const isDebtish = debtishKinds.has(account.kind);
+      const isLiabilityish = liabilityLikeKinds.has(account.kind);
       const isDepositKind = account.kind === AccountKind.deposit || isLegacyDepositAccount(account);
       const rows = (txByAccountId.get(account.id) ?? [])
         .slice()
@@ -266,13 +266,13 @@ export async function loadAssetMonthEndLevels(
       for (const entry of rows) {
         const dayKey = localDateKey(getDetailEntryDisplayDate(entry, account.id));
         walker.flushBefore(dayKey, (index) => { snapshots[index] = balance; });
-        if (isDebtish) {
+        if (isLiabilityish) {
           if (getBalanceReconcileTarget(entry) != null) {
             balance = applyBalanceReconcileEntry(balance, entry, account.id);
             continue;
           }
           if (entry.type !== TransactionType.transfer) continue;
-          balance += debtPrincipalForAccountSide(entry, account.id);
+          balance += liabilityPrincipalForAccountSide(entry, account.id);
           continue;
         }
         // Deposit accounts: the lots walk below already counts deposit-product
@@ -825,12 +825,12 @@ export async function loadAssetMonthEndLevels(
     }
   }
 
-  // ── 9. Credit-card debt from billing cycles ───────────────────────────────
-  // Month-end debt = the running cumulativeRemain (minus overpaid) of the last
+  // ── 9. Credit-card balances from billing cycles ──────────────────────────
+  // Month-end balance = the running cumulativeRemain (minus overpaid) of the last
   // bill period that closed on or before the month end. Member cards of
   // consolidated-billing groups have no cycles of their own; their storage
   // account carries the group's cycles, so per-account summation is correct.
-  const creditDebtSeries = new Map<string, Array<{ dayKey: string; value: number }>>();
+  const creditLiabilitySeries = new Map<string, Array<{ dayKey: string; value: number }>>();
   if (creditAccounts.length > 0) {
     const cycleRows = await prisma.creditCardCycle.findMany({
       where: { accountId: { in: creditAccounts.map((account) => account.id) } },
@@ -843,10 +843,10 @@ export async function loadAssetMonthEndLevels(
       orderBy: { periodEnd: "asc" },
     });
     for (const row of cycleRows) {
-      const debt = Math.max(0, toNumber(row.cumulativeRemain) - toNumber(row.cumulativeOverpaid));
-      const series = creditDebtSeries.get(row.accountId) ?? [];
-      series.push({ dayKey: localDateKey(row.periodEnd), value: debt });
-      creditDebtSeries.set(row.accountId, series);
+      const outstanding = Math.max(0, toNumber(row.cumulativeRemain) - toNumber(row.cumulativeOverpaid));
+      const series = creditLiabilitySeries.get(row.accountId) ?? [];
+      series.push({ dayKey: localDateKey(row.periodEnd), value: outstanding });
+      creditLiabilitySeries.set(row.accountId, series);
     }
   }
 
@@ -854,18 +854,18 @@ export async function loadAssetMonthEndLevels(
   for (let index = 0; index < boundaries.length; index += 1) {
     // Net base: every balance-kind account contributes its raw walked balance
     // (loan/往来 payables arrive negative and subtract; receivables and
-    // overpayments add). Credit-card debt comes from the billing cycles and
+    // overpayments add). Credit-card balances come from the billing cycles and
     // subtracts. Same netting direction as the overview net-worth card.
     let netBase = 0;
     for (const account of plainAccounts) {
       netBase += convert(account.id, txSnapshots.get(account.id)?.[index] ?? 0);
     }
     for (const account of creditAccounts) {
-      const series = creditDebtSeries.get(account.id);
+      const series = creditLiabilitySeries.get(account.id);
       // includeZero: a repaid-to-zero balance is a valid state and must not
-      // fall back to the last outstanding debt.
-      const debt = series ? (lastValueOnOrBefore(series, boundaries[index]!.dayKey, true) ?? 0) : 0;
-      netBase -= convert(account.id, debt);
+      // fall back to the last outstanding balance.
+      const outstanding = series ? (lastValueOnOrBefore(series, boundaries[index]!.dayKey, true) ?? 0) : 0;
+      netBase -= convert(account.id, outstanding);
     }
     for (const account of depositAccounts) {
       const layer = txSnapshots.get(account.id)?.[index] ?? 0;
@@ -873,7 +873,7 @@ export async function loadAssetMonthEndLevels(
       netBase += convert(account.id, layer + lots);
     }
     let settlement = 0;
-    for (const account of debtishAccounts) {
+    for (const account of liabilityLikeAccounts) {
       const value = convert(account.id, txSnapshots.get(account.id)?.[index] ?? 0);
       netBase += value;
       if (account.kind === AccountKind.settlement) settlement += value;

@@ -814,7 +814,7 @@ export function ReimbursementEditor({
                 className="primary-button h-8 flex-1 px-3 text-xs"
                 disabled={auditBusy || auditAmountValue == null}
               >
-                {auditBusy ? t("debtShell.saving") : t("common.save")}
+                {auditBusy ? t("liabilityShell.saving") : t("common.save")}
               </button>
             </div>
           </section>
@@ -953,7 +953,7 @@ export function ReimbursementEditor({
                 className="primary-button h-9 px-3"
                 disabled={linkingTransaction || selectedTransactionIds.length === 0}
               >
-                {linkingTransaction ? t("debtShell.saving") : t("reimburse.source.link")}
+                {linkingTransaction ? t("liabilityShell.saving") : t("reimburse.source.link")}
               </button>
             </div>
           </div>

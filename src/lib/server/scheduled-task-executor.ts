@@ -233,7 +233,7 @@ export async function executeNonFundScheduledTaskPlan(params: {
   );
   const nextStatus = willComplete ? RegularInvestStatus.completed : RegularInvestStatus.active;
 
-  const initialDebtAccount =
+  const initialLiabilityAccount =
     task.type === "loan_repayment"
       ? await prisma.account.findUnique({
           where: { id: targetAcc.id },
@@ -243,7 +243,7 @@ export async function executeNonFundScheduledTaskPlan(params: {
   let rollingRemainingPrincipal =
     task.type === "loan_repayment" && params.initialLoanPrincipal && params.initialLoanPrincipal > 0
       ? params.initialLoanPrincipal
-      : Math.abs(toNumber(initialDebtAccount?.balance ?? 0));
+      : Math.abs(toNumber(initialLiabilityAccount?.balance ?? 0));
   let rollingExactRemainingPrincipal = rollingRemainingPrincipal;
   let rollingPreviousRunDate = latestExistingDate
     ? startOfDayUtc(latestExistingDate)
@@ -255,18 +255,18 @@ export async function executeNonFundScheduledTaskPlan(params: {
         where: {
           householdId,
           deletedAt: null,
-          source: "debt_prepay_out",
+          source: "liability_prepay_out",
           type: TransactionType.transfer,
           toAccountId: plan.accountId,
           date: { gt: rollingPreviousRunDate, lte: finalLastRunDate },
         },
         orderBy: [{ date: "asc" }, { id: "asc" }],
-        select: { date: true, amount: true, debtPrincipalAmount: true },
+        select: { date: true, amount: true, principalAmount: true },
       })
     : [];
   if (task.type === "loan_repayment" && !(params.initialLoanPrincipal && params.initialLoanPrincipal > 0) && prepaymentRows.length > 0) {
     const prepaymentsAlreadyInBalance = prepaymentRows.reduce(
-      (sum, row) => sum + Math.abs(toNumber(row.debtPrincipalAmount ?? row.amount)),
+      (sum, row) => sum + Math.abs(toNumber(row.principalAmount ?? row.amount)),
       0,
     );
     rollingRemainingPrincipal = roundLoanMoney(rollingRemainingPrincipal + prepaymentsAlreadyInBalance);
@@ -275,7 +275,7 @@ export async function executeNonFundScheduledTaskPlan(params: {
   let nextPrepaymentIndex = 0;
   const applyPrepaymentsBefore = (previousRunDate: Date) => {
     while (nextPrepaymentIndex < prepaymentRows.length && prepaymentRows[nextPrepaymentIndex]!.date <= previousRunDate) {
-      const amount = Math.abs(toNumber(prepaymentRows[nextPrepaymentIndex]!.debtPrincipalAmount ?? prepaymentRows[nextPrepaymentIndex]!.amount));
+      const amount = Math.abs(toNumber(prepaymentRows[nextPrepaymentIndex]!.principalAmount ?? prepaymentRows[nextPrepaymentIndex]!.amount));
       rollingExactRemainingPrincipal = Math.max(0, rollingExactRemainingPrincipal - amount);
       rollingRemainingPrincipal = Math.max(0, roundLoanMoney(rollingRemainingPrincipal - amount));
       nextPrepaymentIndex += 1;
@@ -323,7 +323,7 @@ export async function executeNonFundScheduledTaskPlan(params: {
             .filter((row) => row.date > rollingPreviousRunDate && row.date <= runDate)
             .map((row) => ({
               date: formatDateUtc(row.date),
-              amount: Math.abs(toNumber(row.debtPrincipalAmount ?? row.amount)),
+              amount: Math.abs(toNumber(row.principalAmount ?? row.amount)),
             })),
           intervalMonths: task.repaymentIntervalMonths,
           scheduledAmount: rollingScheduledAmount,
@@ -338,7 +338,7 @@ export async function executeNonFundScheduledTaskPlan(params: {
         rollingScheduledAmountExact = parts.scheduledAmountExact ?? rollingScheduledAmountExact;
         const inPeriodPrepaymentTotal = prepaymentRows
           .filter((row) => row.date > rollingPreviousRunDate && row.date <= runDate)
-          .reduce((sum, row) => sum + Math.abs(toNumber(row.debtPrincipalAmount ?? row.amount)), 0);
+          .reduce((sum, row) => sum + Math.abs(toNumber(row.principalAmount ?? row.amount)), 0);
         rollingExactRemainingPrincipal = Math.max(0, rollingExactRemainingPrincipal - (parts.principalExact ?? parts.principal));
         rollingRemainingPrincipal = Math.max(0, roundLoanMoney(rollingRemainingPrincipal - parts.principal));
         if (inPeriodPrepaymentTotal > 0) {
@@ -366,9 +366,9 @@ export async function executeNonFundScheduledTaskPlan(params: {
                 toAccountId: targetAcc.id,
                 toAccountName: targetAcc.name,
                 amount: -roundLoanMoney(parts.principal + parts.interest),
-                debtPrincipalAmount: Math.abs(parts.principal),
-                debtInterestAmount: Math.abs(parts.interest),
-                debtFeeAmount: 0,
+                principalAmount: Math.abs(parts.principal),
+                interestAmount: Math.abs(parts.interest),
+                feeAmount: 0,
                 realizedProfit: parts.interest > 0 ? -Math.abs(parts.interest) : null,
                 source: "scheduled_task",
                 entryOrigin: ENTRY_ORIGIN_SCHEDULED_TASK,
@@ -381,7 +381,7 @@ export async function executeNonFundScheduledTaskPlan(params: {
           } else {
             // Bill-only (consumer loan without auto-debit): generate only a
             // bill record on the loan side — no cash movement. source
-            // "loan_bill" keeps it out of the debt view's principal/interest
+            // "loan_bill" keeps it out of the liability view's principal/interest
             // aggregations (it is a bill, not a payment).
             await tx.txRecord.create({
               data: {
@@ -392,9 +392,9 @@ export async function executeNonFundScheduledTaskPlan(params: {
                 accountId: targetAcc.id,
                 accountName: targetAcc.name,
                 amount: -roundLoanMoney(parts.principal + parts.interest),
-                debtPrincipalAmount: Math.abs(parts.principal),
-                debtInterestAmount: Math.abs(parts.interest),
-                debtFeeAmount: 0,
+                principalAmount: Math.abs(parts.principal),
+                interestAmount: Math.abs(parts.interest),
+                feeAmount: 0,
                 source: "loan_bill",
                 entryOrigin: ENTRY_ORIGIN_SCHEDULED_TASK,
                 regularInvestPlanId: plan.id,
@@ -488,7 +488,7 @@ export async function executeNonFundScheduledTaskPlan(params: {
 
     // 贷款扣款落库后，若贷款就此结清（最后一期扣完），同步解除抵押资产状态
     if (task.type === "loan_repayment") {
-      await releaseMortgagedAssetsForSettledLoanAccounts(tx, { householdId, debtAccountIds: [targetAcc.id] });
+      await releaseMortgagedAssetsForSettledLoanAccounts(tx, { householdId, liabilityAccountIds: [targetAcc.id] });
     }
   }, NON_FUND_SCHEDULED_TASK_TRANSACTION_OPTIONS);
 

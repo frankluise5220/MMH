@@ -487,7 +487,7 @@ export function ReimbursementFormModal({
               className="primary-button h-9 px-3"
               disabled={busy || rows.length === 0}
             >
-              {busy ? t("debtShell.saving") : t("reimburse.createConfirm")}
+              {busy ? t("liabilityShell.saving") : t("reimburse.createConfirm")}
             </button>
           </div>
         </div>

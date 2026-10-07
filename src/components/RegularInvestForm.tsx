@@ -71,11 +71,11 @@ function accountKindLabel(t: (key: string) => string, kind: string) {
 
 const LOAN_REPAYMENT_METHOD_OPTIONS = ["等额本息", "等额本金", INSTALLMENT_REPAYMENT_METHOD, "自由还款", "先还利息一次性还本"];
 const LOAN_REPAYMENT_METHOD_LABEL_KEYS = new Map([
-  [LOAN_REPAYMENT_METHOD_OPTIONS[0], "debtTx.method.equalInstallment"],
-  [LOAN_REPAYMENT_METHOD_OPTIONS[1], "debtTx.method.equalPrincipal"],
-  [INSTALLMENT_REPAYMENT_METHOD, "debtTx.method.interestFreeInstallment"],
-  [LOAN_REPAYMENT_METHOD_OPTIONS[3], "debtTx.method.freeRepayment"],
-  [LOAN_REPAYMENT_METHOD_OPTIONS[4], "debtTx.method.interestFirstThenPrincipal"],
+  [LOAN_REPAYMENT_METHOD_OPTIONS[0], "liabilityTx.method.equalInstallment"],
+  [LOAN_REPAYMENT_METHOD_OPTIONS[1], "liabilityTx.method.equalPrincipal"],
+  [INSTALLMENT_REPAYMENT_METHOD, "liabilityTx.method.interestFreeInstallment"],
+  [LOAN_REPAYMENT_METHOD_OPTIONS[3], "liabilityTx.method.freeRepayment"],
+  [LOAN_REPAYMENT_METHOD_OPTIONS[4], "liabilityTx.method.interestFirstThenPrincipal"],
 ]);
 const FIXED_LOAN_REPAYMENT_METHODS = new Set(["等额本息", "等额本金", INSTALLMENT_REPAYMENT_METHOD, "先还利息一次性还本"]);
 

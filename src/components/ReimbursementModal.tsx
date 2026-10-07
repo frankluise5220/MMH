@@ -800,7 +800,7 @@ export function ReimbursementWorkspace({
           ) : null}
           {loading && !data ? (
             <div className="flex h-full items-center justify-center text-sm text-slate-400">
-              {t("debtShell.saving")}
+              {t("liabilityShell.saving")}
             </div>
           ) : data ? (
             <div className="min-h-0 flex-1">
@@ -1115,7 +1115,7 @@ export function ReimbursementWorkspace({
             </div>
             <div className="flex justify-end gap-2 border-t border-slate-100 p-3">
               <button type="button" onClick={() => { setShowCreateBatch(false); setEditingBatchId(null); setBatchTitle(""); setBatchNote(""); setBatchStartDate(""); setBatchEndDate(""); }} className="secondary-button h-9 px-3" disabled={busy}>{t("common.cancel")}</button>
-              <button type="button" onClick={() => void (editingBatchId ? submitEditBatch() : submitCreateBatch())} className="primary-button h-9 px-3" disabled={busy || !batchTitle.trim()}>{busy ? t("debtShell.saving") : t("common.save")}</button>
+              <button type="button" onClick={() => void (editingBatchId ? submitEditBatch() : submitCreateBatch())} className="primary-button h-9 px-3" disabled={busy || !batchTitle.trim()}>{busy ? t("liabilityShell.saving") : t("common.save")}</button>
             </div>
           </div>
         </div>
@@ -1236,7 +1236,7 @@ export function ReimbursementWorkspace({
                 {t("common.cancel")}
               </button>
               <button type="button" onClick={() => { void submitBatchPayment(); }} className="primary-button h-9 px-3" disabled={busy || !reimburseCashAccountId || paymentBatchPayableCount === 0}>
-                {busy ? t("debtShell.saving") : t("reimburse.batch.reimburseConfirm")}
+                {busy ? t("liabilityShell.saving") : t("reimburse.batch.reimburseConfirm")}
               </button>
             </div>
           </div>
@@ -1313,7 +1313,7 @@ export function ReimbursementWorkspace({
                 className="primary-button h-9 px-3"
                 disabled={busy || linkingReimbursement.status !== "pending" || linkTransactionIds.length === 0}
               >
-                {busy ? t("debtShell.saving") : t("reimburse.source.link")}
+                {busy ? t("liabilityShell.saving") : t("reimburse.source.link")}
               </button>
             </div>
           </div>
@@ -1421,7 +1421,7 @@ export function ReimbursementWorkspace({
             <div className="flex justify-end gap-2 border-t border-slate-100 p-3">
               <button type="button" onClick={() => setBatchApproveOpen(false)} className="secondary-button h-9 px-3" disabled={busy}>{t("common.cancel")}</button>
               <button type="button" onClick={() => void submitBatchApprove()} className="primary-button h-9 px-3" disabled={busy || selectedPendingDocuments.length === 0}>
-                {busy ? t("debtShell.saving") : t("reimburse.document.audit")}
+                {busy ? t("liabilityShell.saving") : t("reimburse.document.audit")}
               </button>
             </div>
           </div>

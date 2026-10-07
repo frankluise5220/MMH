@@ -76,7 +76,7 @@ const LOGIN_INPUT_CLASS =
 // 文件卡片式页签：抽成独立组件（src/app/login/FolderTabs.tsx）。
 // 本文件用其导出的纯函数（folderTabClass / folderTabPanelClass / FOLDER_TAB_STRIP），
 // 登录方式页签与建账方式页签共用；<FolderTabs> 组件本身供外部页面直接复用。
-import { folderTabClass, folderTabPanelClass, FOLDER_TAB_STRIP, FolderTabs } from "./FolderTabs";
+import { folderTabClass, folderTabNeighbors, folderTabPanelClass, FOLDER_TAB_STRIP, FolderTabs } from "./FolderTabs";
 
 function getLoginUserScopeId(user: LoginUserChoice) {
   return user.householdId ?? SYSTEM_LOGIN_SCOPE_ID;
@@ -1243,6 +1243,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                     loginTabOrder.indexOf("local") === loginTabOrder.length - 1,
                     "stretch",
                     loginTabOrder.indexOf("local") === 0,
+                    folderTabNeighbors(loginTabOrder, "local", loginMode),
                   )}
                 >
                   <span className="relative block overflow-hidden whitespace-nowrap">{t("login.mode.local")}</span>
@@ -1255,6 +1256,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                     loginTabOrder.indexOf("mmh") === loginTabOrder.length - 1,
                     "stretch",
                     loginTabOrder.indexOf("mmh") === 0,
+                    folderTabNeighbors(loginTabOrder, "mmh", loginMode),
                   )}
                 >
                   <span className="relative block overflow-hidden whitespace-nowrap">{t("login.mode.mmh")}</span>
@@ -1268,6 +1270,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                       loginTabOrder.indexOf("fnos") === loginTabOrder.length - 1,
                       "stretch",
                       loginTabOrder.indexOf("fnos") === 0,
+                      folderTabNeighbors(loginTabOrder, "fnos", loginMode),
                     )}
                   >
                     <span className="relative block overflow-hidden whitespace-nowrap">{t("login.fnosLogin")}</span>

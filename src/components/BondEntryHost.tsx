@@ -44,7 +44,7 @@ type SettingsAccountRecord = {
   counterpartyId?: string | null;
   numberMasked?: string | null;
   investProductType?: string | null;
-  debtDirection?: string | null;
+  liabilityDirection?: string | null;
   currency?: string | null;
   billingDay?: number | null;
   Institution?: { name: string | null; shortName?: string | null; type?: string | null } | null;

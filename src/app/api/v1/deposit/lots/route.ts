@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { loadDepositLotOptions } from "@/lib/server/deposit-lot-options";
-import { getHouseholdScope } from "@/lib/server/household-scope";
+import { getApiHouseholdScope } from "@/lib/server/api-auth";
 
 /**
  * GET /api/v1/deposit/lots
@@ -10,7 +10,7 @@ import { getHouseholdScope } from "@/lib/server/household-scope";
  */
 export async function GET(req: Request) {
   try {
-    const ctx = await getHouseholdScope();
+    const ctx = await getApiHouseholdScope(req);
     const url = new URL(req.url);
     const accountIds = (url.searchParams.get("accountIds") ?? "")
       .split(",")

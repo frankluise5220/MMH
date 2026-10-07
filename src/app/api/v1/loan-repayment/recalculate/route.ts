@@ -77,7 +77,7 @@ async function getPrepaymentStrategyForStartDate(params: {
     where: {
       householdId: params.householdId,
       deletedAt: null,
-      source: "debt_prepay_out",
+      source: "liability_prepay_out",
       type: TransactionType.transfer,
       toAccountId: params.accountId,
       date: params.date,
@@ -91,19 +91,19 @@ async function getPrepaymentStrategyForStartDate(params: {
 
 function structuredPaymentTotal(row: {
   amount: unknown;
-  debtPrincipalAmount?: unknown;
-  debtInterestAmount?: unknown;
-  debtFeeAmount?: unknown;
+  principalAmount?: unknown;
+  interestAmount?: unknown;
+  feeAmount?: unknown;
 }) {
   const hasStructuredSplit =
-    row.debtPrincipalAmount != null ||
-    row.debtInterestAmount != null ||
-    row.debtFeeAmount != null;
+    row.principalAmount != null ||
+    row.interestAmount != null ||
+    row.feeAmount != null;
   if (!hasStructuredSplit) return Math.abs(toNumber(row.amount));
   return (
-    Math.abs(toNumber(row.debtPrincipalAmount)) +
-    Math.abs(toNumber(row.debtInterestAmount)) +
-    Math.abs(toNumber(row.debtFeeAmount))
+    Math.abs(toNumber(row.principalAmount)) +
+    Math.abs(toNumber(row.interestAmount)) +
+    Math.abs(toNumber(row.feeAmount))
   );
 }
 
@@ -125,9 +125,9 @@ async function getCarriedPaymentAmountBeforeDate(params: {
     orderBy: [{ date: "desc" }, { createdAt: "desc" }, { id: "desc" }],
     select: {
       amount: true,
-      debtPrincipalAmount: true,
-      debtInterestAmount: true,
-      debtFeeAmount: true,
+      principalAmount: true,
+      interestAmount: true,
+      feeAmount: true,
     },
   });
   const generatedAmount = generatedRow ? structuredPaymentTotal(generatedRow) : null;
@@ -137,7 +137,7 @@ async function getCarriedPaymentAmountBeforeDate(params: {
     where: {
       householdId: params.householdId,
       deletedAt: null,
-      source: "debt_repay_out",
+      source: "liability_repay_out",
       type: TransactionType.transfer,
       toAccountId: params.accountId,
       date: { lt: params.date },
@@ -145,9 +145,9 @@ async function getCarriedPaymentAmountBeforeDate(params: {
     orderBy: [{ date: "desc" }, { createdAt: "desc" }, { id: "desc" }],
     select: {
       amount: true,
-      debtPrincipalAmount: true,
-      debtInterestAmount: true,
-      debtFeeAmount: true,
+      principalAmount: true,
+      interestAmount: true,
+      feeAmount: true,
     },
   });
   const manualAmount = manualRepaymentRow ? structuredPaymentTotal(manualRepaymentRow) : null;
@@ -201,7 +201,7 @@ export async function POST(req: Request) {
       where: {
         householdId,
         deletedAt: null,
-        source: { in: ["debt_borrow_in", "debt_financed_purchase"] },
+        source: { in: ["liability_borrow_in", "liability_financed_purchase"] },
         type: TransactionType.transfer,
         accountId: plan.accountId,
       },

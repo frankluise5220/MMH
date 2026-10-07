@@ -276,7 +276,7 @@ export function BondShell({
   const lotsSummaryRow = useMemo<AdvancedDataTableSummaryRow | undefined>(() => {
     if (visibleLots.length === 0) return undefined;
     const cells: Record<string, ReactNode> = {
-      bond: <span className="font-semibold text-slate-800">{t("debtShell.summaryRow")}</span>,
+      bond: <span className="font-semibold text-slate-800">{t("liabilityShell.summaryRow")}</span>,
     };
     if (lotTab === "held") {
       cells.principal = <span className="font-semibold tabular-nums text-slate-800">{formatMoney(totalPrincipal)}</span>;

@@ -70,7 +70,7 @@ function kindLabel(kind: string) {
     ewallet: "电子钱包",
     deposit: "存款",
     investment: "投资",
-    loan: "债务/债权",
+    loan: "贷款",
     insurance: "保险",
     other: "其他",
   };

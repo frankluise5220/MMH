@@ -99,7 +99,7 @@ export const loadSelectedAccount = cache(
         Institution: true,
         Counterparty: true,
         AccountGroup: true,
-        DebtAgreement: { select: { annualRate: true, termValue: true, dueDate: true } },
+        SettlementAgreement: { select: { annualRate: true, termValue: true, dueDate: true } },
       },
     });
   },

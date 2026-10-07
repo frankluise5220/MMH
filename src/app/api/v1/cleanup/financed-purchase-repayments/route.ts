@@ -21,7 +21,7 @@ import { ENTRY_ORIGIN_SCHEDULED_TASK } from "@/lib/transaction-semantics";
  * }
  *
  * Internal maintenance endpoint. Finds auto-generated `scheduled_task` loan
- * repayment TxRecord rows for loans whose initial row is `debt_financed_purchase`.
+ * repayment TxRecord rows for loans whose initial row is `liability_financed_purchase`.
  * Defaults to dry-run and only targets future-dated rows. Passing `dryRun:false`
  * soft-deletes matched rows, recalculates affected balances, and realigns the
  * repayment plan cursor from the remaining linked repayment rows.
@@ -80,7 +80,7 @@ export async function POST(req: Request) {
         ...scope.hidFilter,
         deletedAt: null,
         type: TransactionType.transfer,
-        source: "debt_financed_purchase",
+        source: "liability_financed_purchase",
         ...(accountId ? { accountId } : {}),
       },
       select: {
@@ -145,8 +145,8 @@ export async function POST(req: Request) {
             toAccountId: true,
             toAccountName: true,
             amount: true,
-            debtPrincipalAmount: true,
-            debtInterestAmount: true,
+            principalAmount: true,
+            interestAmount: true,
           },
           orderBy: [{ date: "asc" }, { id: "asc" }],
         })
@@ -182,8 +182,8 @@ export async function POST(req: Request) {
           id: row.id,
           date: formatDateUtc(row.date),
           amount: toNumber(row.amount),
-          principal: row.debtPrincipalAmount == null ? null : toNumber(row.debtPrincipalAmount),
-          interest: row.debtInterestAmount == null ? null : toNumber(row.debtInterestAmount),
+          principal: row.principalAmount == null ? null : toNumber(row.principalAmount),
+          interest: row.interestAmount == null ? null : toNumber(row.interestAmount),
         })),
       };
     });
@@ -241,7 +241,7 @@ export async function POST(req: Request) {
             regularInvestPlanId: plan.id,
             type: TransactionType.transfer,
             toAccountId: plan.accountId,
-            source: { in: ["scheduled_task", "debt_repay_out"] },
+            source: { in: ["scheduled_task", "liability_repay_out"] },
           },
           select: { date: true },
           orderBy: [{ date: "asc" }, { id: "asc" }],

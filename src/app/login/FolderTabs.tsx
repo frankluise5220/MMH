@@ -20,8 +20,9 @@ import type { ReactNode } from "react";
  *     上下各让 1.5px（用户明确要求「页签降 3px、活动页签的标签也降 3px」）。
  *     非活动页签 `mt-[13px]`（13px），比活动页签多 6px —— 保持「活动页签高出 6px」的层次；
  *     它 `self-stretch`、标签靠 `pt-[5px]` 在**露出区**内视觉居中（露出区 = 页签顶 → 内容板顶；
- *     中文字形墨迹微偏上，故 pt 略补 0.5px）；`mx-0.75`（左右各 3px）让相邻非活动页签间距 =
- *     3+3+gap(6px) = 12px，与非活动→活动页签间距一致（页签顶下移时用 `pt` 反补，**不能**用
+ *     中文字形墨迹微偏上，故 pt 略补 0.5px）；`mx-0.75`（左右各 3px）让相邻两个非活动页签间距 =
+ *     3+3+gap(6px) = 12px。**紧邻活动页签的那一侧收到 1px**（见第 7 条），让「非活动 → 活动」的
+ *     间距 = gap(6px) + 1px = 7px，与凹角方块宽度一致（页签顶下移时用 `pt` 反补，**不能**用
  *     `items-center`，见第 10 条）。
  *     只改上下内边距而不同步改 `mt`，页签底会离开内容板顶露出「白缝」。
  *     `bottom-0` 让条铺满容器高度、非活动页签才能 `self-stretch` 对齐内容板底部，
@@ -38,7 +39,10 @@ import type { ReactNode } from "react";
  *  7. 活动页签左右**对称**：排首位时左缩进 18px（`ml-4.5`），排末位时右缩进 18px（`mr-4.5`），
  *     18px = 内容板倒角半径 12px + 页签凹角半径 6px——凹角外端正好落在内容板上圆角弧的起点
  *     （x = 内容板边缘 ∓ 12px），两条弧相切、接缝处不出现折角/断口。排在中间时不缩进，两侧
- *     凹角分别接到左右相邻页签的竖边；
+ *     凹角分别接到左右相邻页签的竖边 —— **前提是该侧间距正好等于凹角宽度 7px**：活动页签自身
+ *     不带 margin，间距 = `gap`(6px) + 相邻非活动页签的该侧 margin，必须是 1px 而不是默认的
+ *     3px（由 `folderTabClass` 的 `sideMargin` 按邻居是否活动自动切换）；放 3px 时间距 9px，
+ *     多出的 2px 内容板上边框会露在凹角外，看着像「倒角旁边多一根短横线」；
  *  8. 非活动页签左右各缩进 6px（`mx-1.5`），不顶到内容板左右边缘；
  *  9. 非活动页签 `self-stretch`：拉伸到页签条（=容器）高度、底部恰好对齐内容板下缘、被
  *     内容板完全覆盖——不能固定 `pb-24` 往下延，否则内容板矮（如飞牛页签）时会超出下缘；
@@ -68,6 +72,29 @@ export const FOLDER_TAB_PANEL =
 type TabVariant = "stretch" | "min";
 
 /**
+ * 邻居页签是否活动。手写调用点（不用 <FolderTabs> 组件时）用 folderTabNeighbors 计算。
+ */
+export type FolderTabNeighbors = {
+  /** 左邻页签是否为活动页签。 */
+  prevActive?: boolean;
+  /** 右邻页签是否为活动页签。 */
+  nextActive?: boolean;
+};
+
+/**
+ * 计算某个页签左右邻居的活动状态（供手写调用点传给 folderTabClass）。
+ * @param order 页签 id 的**实际渲染顺序**
+ */
+export function folderTabNeighbors(order: readonly string[], id: string, activeId: string): FolderTabNeighbors {
+  const index = order.indexOf(id);
+  if (index < 0) return {};
+  return {
+    prevActive: index > 0 && order[index - 1] === activeId,
+    nextActive: index < order.length - 1 && order[index + 1] === activeId,
+  };
+}
+
+/**
  * 页签按钮类名。
  * @param active 是否活动页签
  * @param atEnd 是否排在最末（最右）
@@ -75,8 +102,16 @@ type TabVariant = "stretch" | "min";
  *                保留仅为兼容可能的「不填满」场景
  * @param atStart 是否排在首位。活动页签排首位时左缩进 18px（`ml-4.5`），与排末位时的 `mr-4.5`
  *                左右对称——凹角外端落在内容板上圆角弧起点，两条弧相切
+ * @param neighbors 左右邻居是否活动。紧邻活动页签的那一侧 margin 必须从 3px 收到 1px，
+ *                  详见函数体内 `sideMargin` 的推导（2026-10-05 用户反馈「中间页签左侧倒角多一根横线」）
  */
-export function folderTabClass(active: boolean, atEnd: boolean, variant: TabVariant = "stretch", atStart = false) {
+export function folderTabClass(
+  active: boolean,
+  atEnd: boolean,
+  variant: TabVariant = "stretch",
+  atStart = false,
+  neighbors: FolderTabNeighbors = {},
+) {
   const width = variant === "stretch" ? "flex-1 basis-0 min-w-0" : "min-w-[7.5rem]";
   if (active) {
     return [
@@ -105,8 +140,19 @@ export function folderTabClass(active: boolean, atEnd: boolean, variant: TabVari
   // 纯理论居中（行盒 5.5/5.5）会因中文字形 ascender 空间大、墨迹微偏上约 0.5px，故 `pt` 取 5px
   // 把墨迹质心拉回正中（像素质心实测偏移 ≈ 0）。**不能**用 `items-center`：页签是 `self-stretch`
   // （高到内容板下缘），居中会把文字推到内容板后面。
+  // 左右 margin：默认各 3px（`ml-0.75`/`mr-0.75`），相邻两个**非活动**页签的间距 =
+  // 3 + gap(6px) + 3 = 12px。
+  // ⚠️ 但**紧邻活动页签的那一侧必须收到 1px（`ml-px`/`mr-px`）**：活动页签两侧的凹角方块只有
+  // 7px 宽（left/right:-7px），它的外端必须正好落在相邻页签的竖边上才能接住；
+  // 间距 = gap(6px) + 邻居 margin，取 3px 时是 9px > 7px，中间那约 2px 的内容板上边框会整段
+  // 露在凹角外侧 —— 就是用户看到的「倒角旁边多出一根短横线」（中间页签两侧都会出现）。
+  // 取 1px 时 6 + 1 = 7px，弧线外端与相邻页签竖边相接，多余横线消失。
+  const sideMargin =
+    variant === "stretch"
+      ? `${neighbors.prevActive ? "ml-px" : "ml-0.75"} ${neighbors.nextActive ? "mr-px" : "mr-0.75"}`
+      : "mx-0.75";
   return [
-    `relative z-10 mt-[13px] self-stretch ${width} flex items-start justify-center overflow-hidden whitespace-nowrap rounded-[8px] border border-slate-300 bg-slate-200 mx-0.75 px-4 pt-[5px] text-xs font-medium text-slate-500 shadow-[0_2px_4px_rgba(15,23,42,0.08)] hover:-translate-y-0.5 hover:bg-slate-100`,
+    `relative z-10 mt-[13px] self-stretch ${width} flex items-start justify-center overflow-hidden whitespace-nowrap rounded-[8px] border border-slate-300 bg-slate-200 ${sideMargin} px-4 pt-[5px] text-xs font-medium text-slate-500 shadow-[0_2px_4px_rgba(15,23,42,0.08)] hover:-translate-y-0.5 hover:bg-slate-100`,
   ].join(" ");
 }
 
@@ -169,12 +215,14 @@ export function FolderTabs({
         {tabs.map((tab, index) => {
           const active = tab.id === activeId;
           const atEnd = index === lastIndex;
+          const prevActive = index > 0 && tabs[index - 1]?.id === activeId;
+          const nextActive = index < lastIndex && tabs[index + 1]?.id === activeId;
           return (
             <button
               key={tab.id}
               type="button"
               onClick={() => onChange(tab.id)}
-              className={folderTabClass(active, atEnd, variant, index === 0)}
+              className={folderTabClass(active, atEnd, variant, index === 0, { prevActive, nextActive })}
             >
               {/* 活动页签不能 overflow-hidden（下缘凹角要画到按钮盒外），
                   故把「裁切超长标签」的兜底挪到内层 span。 */}

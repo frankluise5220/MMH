@@ -44,7 +44,7 @@ export const dynamic = "force-dynamic";
  *     monthExpense: number,
  *     dailyAssetDistribution: [{ kind, label, value, pct }],
  *     dailyAccountList: [{ id, name, kind, balance, groupName, institutionName, currency, convertedBalance, fxRate, fxRateDate, fxRateMissing }],
- *     debtAccountList: [{ id, name, kind, balance, groupName, institutionName, currency, convertedBalance, fxRate, fxRateDate, fxRateMissing }],
+ *     liabilityAccountList: [{ id, name, kind, balance, groupName, institutionName, currency, convertedBalance, fxRate, fxRateDate, fxRateMissing }],
  *     creditAccountList: [{          // consolidated credit cards are returned once per bill storage group
  *       id, name, kind, balance, groupName, institutionName, currency, convertedBalance,
  *       fxRate, fxRateDate, fxRateMissing,
@@ -73,7 +73,15 @@ export async function GET(req: NextRequest) {
     const data = await computeOverviewSummary(ctx, undefined, language, {
       accountLabelFields: accountLabelFieldsFromRequest(req),
     });
-    return NextResponse.json({ ok: true, data });
+    return NextResponse.json({
+      ok: true,
+      data: {
+        ...data,
+        // 2026-10-06 口径定版：字段改名 liabilityAccountList；已发布的移动端仍读
+        // 旧名 debtAccountList，按「旧名永久保留别名」规则同时返回。
+        debtAccountList: data.liabilityAccountList,
+      },
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to read overview summary";
     return NextResponse.json({ ok: false, code: "INTERNAL_ERROR", error: message }, { status: 500 });

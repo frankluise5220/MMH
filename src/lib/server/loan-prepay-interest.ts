@@ -6,9 +6,9 @@
  * 还款在发生日之后降低计息基数。
  *
  * 计息起点（利息已结清边界）取以下日期的最大值：
- * - 借款日：最早的 debt_borrow_in / debt_financed_purchase 转账日期；
+ * - 借款日：最早的 liability_borrow_in / liability_financed_purchase 转账日期；
  * - 最近一笔 scheduled_task 自动扣款转账日期（每期扣款已结清当期利息）；
- * - 最近一笔带利息（debtInterestAmount > 0）的 debt_repay_out / debt_prepay_out。
+ * - 最近一笔带利息（interestAmount > 0）的 liability_repay_out / liability_prepay_out。
  *
  * 仅对 loanType=consumer（消费贷）计算；房贷等其他类型返回 null，
  * 保持其利息随分期计划的既有口径。
@@ -18,7 +18,7 @@ import { RegularInvestStatus, TransactionType } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { formatDateUtc, toNumber } from "@/lib/date-utils";
 import { compareDetailEntriesAsc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
-import { debtPrincipalForAccountSide } from "@/lib/debt";
+import { liabilityPrincipalForAccountSide } from "@/lib/liability";
 import { calcLoanAccruedInterestBetweenDates } from "@/lib/loan-repayment";
 import { decodeScheduledTaskMemo, shouldPreferLoanScheduledPlan } from "@/lib/scheduled-task";
 import {
@@ -55,8 +55,8 @@ export async function computeLoanPrepayInterestPreview(params: {
         type: TransactionType.transfer,
         ...(params.excludeEntryId ? { id: { not: params.excludeEntryId } } : {}),
         OR: [
-          { accountId: params.accountId, source: { in: ["debt_borrow_in", "debt_financed_purchase", "debt_repay_out", "debt_prepay_out"] } },
-          { toAccountId: params.accountId, source: { in: ["debt_repay_out", "debt_prepay_out", "scheduled_task"] } },
+          { accountId: params.accountId, source: { in: ["liability_borrow_in", "liability_financed_purchase", "liability_repay_out", "liability_prepay_out"] } },
+          { toAccountId: params.accountId, source: { in: ["liability_repay_out", "liability_prepay_out", "scheduled_task"] } },
         ],
       },
       select: {
@@ -67,8 +67,8 @@ export async function computeLoanPrepayInterestPreview(params: {
         accountId: true,
         toAccountId: true,
         source: true,
-        debtPrincipalAmount: true,
-        debtInterestAmount: true,
+        principalAmount: true,
+        interestAmount: true,
       },
     }),
     prisma.regularInvestPlan.findMany({
@@ -107,19 +107,19 @@ export async function computeLoanPrepayInterestPreview(params: {
     const dateKey = dateKeyOf(displayDate);
     const source = String(row.source ?? "");
     const principalPart = Math.abs(
-      row.debtPrincipalAmount == null ? toNumber(row.amount) : toNumber(row.debtPrincipalAmount),
+      row.principalAmount == null ? toNumber(row.amount) : toNumber(row.principalAmount),
     );
-    const interestPart = Math.abs(toNumber(row.debtInterestAmount));
+    const interestPart = Math.abs(toNumber(row.interestAmount));
 
-    if (source === "debt_borrow_in" || source === "debt_financed_purchase") {
+    if (source === "liability_borrow_in" || source === "liability_financed_purchase") {
       if (loanStartDateKey == null || dateKey < loanStartDateKey) loanStartDateKey = dateKey;
     }
-    runningPrincipal += debtPrincipalForAccountSide(row, params.accountId);
+    runningPrincipal += liabilityPrincipalForAccountSide(row, params.accountId);
     balanceSnapshots.push({ dateKey, balance: runningPrincipal });
 
     if (
-      source === "debt_repay_out" ||
-      source === "debt_prepay_out" ||
+      source === "liability_repay_out" ||
+      source === "liability_prepay_out" ||
       source === "scheduled_task"
     ) {
       reductionCandidates.push({ dateKey, amount: principalPart });
@@ -128,7 +128,7 @@ export async function computeLoanPrepayInterestPreview(params: {
     // 自动扣款转账 / 带利息的还款或提前还款：利息已结清到该日期。
     const settlesInterest =
       source === "scheduled_task" ||
-      ((source === "debt_repay_out" || source === "debt_prepay_out") && interestPart > 0.005);
+      ((source === "liability_repay_out" || source === "liability_prepay_out") && interestPart > 0.005);
     if (settlesInterest && (latestSettleDateKey == null || dateKey > latestSettleDateKey)) {
       latestSettleDateKey = dateKey;
     }

@@ -327,7 +327,7 @@ async function updateRegularInvest(formData: FormData) {
 
   // Mortgage bills ("bill" loan plans) are system-generated and read-only:
   // the bill schedule and the rate (PBOC/LPR driven) are derived from the
-  // loan and managed through the debt module. Auto-debit transfer plans
+  // loan and managed through the liability module. Auto-debit transfer plans
   // stay user-editable below.
   const existingTaskForGuard = decodeScheduledTaskMemo(plan.memo);
   if (existingTaskForGuard.type === "loan_repayment" && getLoanScheduledPlanRole(existingTaskForGuard) === "bill") {
@@ -601,7 +601,7 @@ async function updateRegularInvest(formData: FormData) {
   // Auto-debit loan transfer plans are user-editable, but only for the
   // funding (cash) account, next run date and plan name.
   // The repayment schedule and the rate (PBOC/LPR driven) are derived from
-  // the loan and must be changed through the debt module. The memo is
+  // the loan and must be changed through the liability module. The memo is
   // rebuilt from the existing payload so loan-derived fields (LPR discount,
   // rate adjustments, original total runs, role) are preserved.
   if (existingTaskType === "loan_repayment") {

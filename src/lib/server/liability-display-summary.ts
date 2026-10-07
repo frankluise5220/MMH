@@ -4,11 +4,11 @@ import { formatDateUtc, toNumber } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
 import { getMaintainedAccountBalances } from "@/lib/server/account-balance";
 import {
-  applyDebtRowEntryMetrics,
-  buildDebtRowsViewData,
-  type DebtMetricEntry,
-  type DebtViewAccount,
-} from "@/lib/server/debt-view-data";
+  applyLiabilityRowEntryMetrics,
+  buildLiabilityRowsViewData,
+  type LiabilityMetricEntry,
+  type LiabilityViewAccount,
+} from "@/lib/server/liability-view-data";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 import { listLoanRateAdjustmentsByAccountIds } from "@/lib/server/loan-rate-adjustments";
 import { shouldPreferLoanScheduledPlan } from "@/lib/scheduled-task";
@@ -22,7 +22,7 @@ function parseMortgageLprDiscountFromText(value?: string | null) {
   return Number.isFinite(discount) && discount > 0 ? discount : null;
 }
 
-export type DebtDisplaySummary = {
+export type LiabilityDisplaySummary = {
   /** Balances in each account's own currency. */
   balanceByAccountId: Map<string, number>;
   /** Totals in the household base currency when an `fx` converter is supplied, otherwise raw sums. */
@@ -31,16 +31,16 @@ export type DebtDisplaySummary = {
   net: number;
 };
 
-export type DebtDisplayFxConverter = {
+export type LiabilityDisplayFxConverter = {
   /** Restate an amount into the base currency; missing-rate amounts must contribute 0, not 1:1. */
   convertForTotal: (amount: number, currency?: string | null) => number;
 };
 
-export async function computeDebtDisplaySummary(
+export async function computeLiabilityDisplaySummary(
   ctx: Pick<HouseholdContext, "householdId" | "hidFilter">,
-  fx?: DebtDisplayFxConverter | null,
-): Promise<DebtDisplaySummary> {
-  const debtAccounts = await prisma.account.findMany({
+  fx?: LiabilityDisplayFxConverter | null,
+): Promise<LiabilityDisplaySummary> {
+  const liabilityAccounts = await prisma.account.findMany({
     where: {
       ...ctx.hidFilter,
       kind: { in: [AccountKind.settlement, AccountKind.loan] },
@@ -53,14 +53,14 @@ export async function computeDebtDisplaySummary(
       currency: true,
       kind: true,
       isActive: true,
-      debtDirection: true,
+      liabilityDirection: true,
       institutionId: true,
       counterpartyId: true,
       Institution: { select: { name: true, shortName: true, type: true } },
       Counterparty: { select: { name: true, shortName: true, type: true } },
     },
   });
-  if (debtAccounts.length === 0) {
+  if (liabilityAccounts.length === 0) {
     return {
       balanceByAccountId: new Map(),
       totalPayable: 0,
@@ -68,15 +68,15 @@ export async function computeDebtDisplaySummary(
       net: 0,
     };
   }
-  const debtCurrencyByAccountId = new Map(debtAccounts.map((account) => [account.id, account.currency]));
+  const liabilityCurrencyByAccountId = new Map(liabilityAccounts.map((account) => [account.id, account.currency]));
   const convertRow = (amount: number, rowAccountIds: string[]) => {
     if (!fx) return amount;
-    return fx.convertForTotal(amount, debtCurrencyByAccountId.get(rowAccountIds[0]) ?? null);
+    return fx.convertForTotal(amount, liabilityCurrencyByAccountId.get(rowAccountIds[0]) ?? null);
   };
 
-  const debtAccountIds = debtAccounts.map((account) => account.id);
+  const liabilityAccountIds = liabilityAccounts.map((account) => account.id);
   const cashDisplayBalanceByAccountId = await getMaintainedAccountBalances(
-    debtAccounts.map((account) => ({
+    liabilityAccounts.map((account) => ({
       id: account.id,
       kind: account.kind,
       investProductType: null,
@@ -88,7 +88,7 @@ export async function computeDebtDisplaySummary(
   const loanRepaymentPlans = await prisma.regularInvestPlan.findMany({
     where: {
       ...ctx.hidFilter,
-      accountId: { in: debtAccountIds },
+      accountId: { in: liabilityAccountIds },
       fundCode: "loan_repayment",
       status: { in: [RegularInvestStatus.active, RegularInvestStatus.paused] },
     },
@@ -121,50 +121,50 @@ export async function computeDebtDisplaySummary(
     householdId: ctx.householdId,
     accountIds: loanRepaymentPlans.map((plan) => plan.accountId),
   });
-  const debtBorrowLprDiscountEntries = await prisma.txRecord.findMany({
+  const liabilityBorrowLprDiscountEntries = await prisma.txRecord.findMany({
     where: {
       deletedAt: null,
       ...ctx.hidFilter,
-      source: { in: ["debt_borrow_in", "debt_financed_purchase"] },
-      accountId: { in: debtAccountIds },
+      source: { in: ["liability_borrow_in", "liability_financed_purchase"] },
+      accountId: { in: liabilityAccountIds },
     },
     select: { accountId: true, date: true, note: true, toNote: true },
     orderBy: [{ date: "desc" }, { createdAt: "desc" }],
   });
-  const debtBorrowLprDiscountByAccountId = new Map<string, number>();
-  const debtBorrowStartDateByAccountId = new Map<string, string>();
-  for (const entry of debtBorrowLprDiscountEntries) {
+  const liabilityBorrowLprDiscountByAccountId = new Map<string, number>();
+  const liabilityBorrowStartDateByAccountId = new Map<string, string>();
+  for (const entry of liabilityBorrowLprDiscountEntries) {
     const discount = parseMortgageLprDiscountFromText(entry.note) ?? parseMortgageLprDiscountFromText(entry.toNote);
-    if (discount != null && !debtBorrowLprDiscountByAccountId.has(entry.accountId)) {
-      debtBorrowLprDiscountByAccountId.set(entry.accountId, discount);
+    if (discount != null && !liabilityBorrowLprDiscountByAccountId.has(entry.accountId)) {
+      liabilityBorrowLprDiscountByAccountId.set(entry.accountId, discount);
     }
     const dateKey = formatDateUtc(entry.date);
-    const existingDate = debtBorrowStartDateByAccountId.get(entry.accountId);
+    const existingDate = liabilityBorrowStartDateByAccountId.get(entry.accountId);
     if (!existingDate || dateKey < existingDate) {
-      debtBorrowStartDateByAccountId.set(entry.accountId, dateKey);
+      liabilityBorrowStartDateByAccountId.set(entry.accountId, dateKey);
     }
   }
 
-  const { debtRows } = buildDebtRowsViewData({
-    debtAccounts: debtAccounts satisfies DebtViewAccount[],
+  const { liabilityRows } = buildLiabilityRowsViewData({
+    liabilityAccounts: liabilityAccounts satisfies LiabilityViewAccount[],
     cashDisplayBalanceByAccountId,
     loanRepaymentPlanByAccountId,
     loanRateAdjustmentsByAccountId,
-    debtBorrowLprDiscountByAccountId,
-    debtBorrowStartDateByAccountId,
+    liabilityBorrowLprDiscountByAccountId,
+    liabilityBorrowStartDateByAccountId,
     selectedAccountId: null,
     selectedAccountKind: null,
-    debtPersonParam: "",
+    liabilityPersonParam: "",
   });
 
   const loanRepaymentPlanIds = loanRepaymentPlans.map((plan) => plan.id);
-  const debtEntriesRaw: DebtMetricEntry[] = await prisma.txRecord.findMany({
+  const liabilityEntriesRaw: LiabilityMetricEntry[] = await prisma.txRecord.findMany({
     where: {
       deletedAt: null,
       ...ctx.hidFilter,
       OR: [
-        { accountId: { in: debtAccountIds } },
-        { toAccountId: { in: debtAccountIds } },
+        { accountId: { in: liabilityAccountIds } },
+        { toAccountId: { in: liabilityAccountIds } },
         ...(loanRepaymentPlanIds.length > 0 ? [{ regularInvestPlanId: { in: loanRepaymentPlanIds } }] : []),
       ],
     },
@@ -183,18 +183,18 @@ export async function computeDebtDisplaySummary(
       counterpartyInstitutionId: true,
       note: true,
       toNote: true,
-      debtPrincipalAmount: true,
-      debtInterestAmount: true,
-      debtFeeAmount: true,
+      principalAmount: true,
+      interestAmount: true,
+      feeAmount: true,
       regularInvestPlanId: true,
       fundSubtype: true,
       fundConfirmDate: true,
       fundArrivalDate: true,
     },
   });
-  applyDebtRowEntryMetrics({
-    debtRows,
-    debtEntriesRaw,
+  applyLiabilityRowEntryMetrics({
+    liabilityRows,
+    liabilityEntriesRaw,
     loanRepaymentPlans,
     loanRepaymentPlanByAccountId,
     loanRateAdjustmentsByAccountId,
@@ -203,7 +203,7 @@ export async function computeDebtDisplaySummary(
   const balanceByAccountId = new Map<string, number>();
   let totalPayable = 0;
   let totalReceivable = 0;
-  for (const row of debtRows) {
+  for (const row of liabilityRows) {
     if (row.parentKey) continue;
     const value = Number.isFinite(row.remainingTotal) && Math.abs(row.remainingTotal) > 0
       ? row.remainingTotal
@@ -216,7 +216,7 @@ export async function computeDebtDisplaySummary(
       continue;
     }
     for (const accountId of row.accountIds) {
-      const fallback = cashDisplayBalanceByAccountId.get(accountId) ?? toNumber(debtAccounts.find((account) => account.id === accountId)?.balance);
+      const fallback = cashDisplayBalanceByAccountId.get(accountId) ?? toNumber(liabilityAccounts.find((account) => account.id === accountId)?.balance);
       balanceByAccountId.set(accountId, fallback);
     }
   }

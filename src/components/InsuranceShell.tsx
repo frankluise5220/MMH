@@ -803,7 +803,7 @@ export function InsuranceShell({
   const holdingSummaryRow = useMemo<AdvancedDataTableSummaryRow>(
     () => ({
       cells: {
-        name: <span className="font-semibold text-slate-800">{t("debtShell.summaryRow")}</span>,
+        name: <span className="font-semibold text-slate-800">{t("liabilityShell.summaryRow")}</span>,
         totalPremium: (
           <span className="font-semibold tabular-nums text-slate-800">
             {formatMoney(holdingSummary.totalPremium)}

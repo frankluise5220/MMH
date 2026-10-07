@@ -12,28 +12,28 @@ type BalanceReconcileEntryLike = {
 
 type AccountFlowEntryLike = BalanceReconcileEntryLike & {
   amount: unknown;
-  debtPrincipalAmount?: unknown;
+  principalAmount?: unknown;
   fundArrivalAmount?: unknown;
   toAccountId?: string | null;
 };
 
-/** 债务账户是转入方：还款/提前还款/借出。资金账户是转入方的收回/借入不能走本金。 */
-const DEBT_ACCOUNT_RECEIVING_SOURCES = new Set([
-  "debt_repay_out",
-  "debt_prepay_out",
-  "debt_lend_out",
+/** 负债账户是转入方：还款/提前还款/借出。资金账户是转入方的收回/借入不能走本金。 */
+const LIABILITY_ACCOUNT_RECEIVING_SOURCES = new Set([
+  "liability_repay_out",
+  "liability_prepay_out",
+  "liability_lend_out",
   "scheduled_task",
 ]);
 
-function isDebtAccountReceivingSide(entry: AccountFlowEntryLike, accountId?: string | null) {
-  if (!accountId || entry.toAccountId !== accountId || entry.debtPrincipalAmount == null) return false;
+function isLiabilityAccountReceivingSide(entry: AccountFlowEntryLike, accountId?: string | null) {
+  if (!accountId || entry.toAccountId !== accountId || entry.principalAmount == null) return false;
   const source = String(entry.source ?? "");
   // 收回/借入：toAccount 是资金账户，资金侧必须走本息合计（amount），不能用本金覆盖。
-  if (source === "debt_collect_in" || source === "debt_borrow_in" || source === "debt_financed_purchase" || source === "reimbursement") {
+  if (source === "liability_collect_in" || source === "liability_borrow_in" || source === "liability_financed_purchase" || source === "reimbursement") {
     return false;
   }
-  // 有明确债务 source 时，只有债务账户转入才用本金；无 source 的历史行沿用「转入方=本金」旧启发式。
-  return !source || DEBT_ACCOUNT_RECEIVING_SOURCES.has(source);
+  // 有明确负债 source 时，只有负债账户转入才用本金；无 source 的历史行沿用「转入方=本金」旧启发式。
+  return !source || LIABILITY_ACCOUNT_RECEIVING_SOURCES.has(source);
 }
 
 export function encodeBalanceReconcileTarget(balance: number) {
@@ -51,7 +51,7 @@ export function effectiveAmountForAccount(entry: AccountFlowEntryLike, accountId
   const target = getBalanceReconcileTarget(entry);
   if (target != null) return 0;
   const amount = toNumber(entry.amount);
-  if (isDebtAccountReceivingSide(entry, accountId)) return toNumber(entry.debtPrincipalAmount);
+  if (isLiabilityAccountReceivingSide(entry, accountId)) return toNumber(entry.principalAmount);
   return accountId && entry.toAccountId === accountId
     ? Math.abs(toNumber(entry.fundArrivalAmount ?? amount))
     : amount;

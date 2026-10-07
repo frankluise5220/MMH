@@ -1,7 +1,7 @@
-import { AccountKind, DebtDirection, IntervalUnit, TransactionType } from "@prisma/client";
+import { AccountKind, LiabilityDirection, IntervalUnit, TransactionType } from "@prisma/client";
 
 import { toNumber, formatDateUtc, formatDateLocal, parseDateInputToUtc } from "@/lib/date-utils";
-import { debtPrincipalForAccountSide as canonicalDebtPrincipalForAccountSide } from "@/lib/debt";
+import { liabilityPrincipalForAccountSide as canonicalLiabilityPrincipalForAccountSide } from "@/lib/liability";
 import { normalizeSettlementTransferCategoryName } from "@/lib/default-categories";
 import { compareDetailEntriesAsc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
 import { DEFAULT_LOAN_PREPAY_STRATEGY, parseLoanPrepayStrategy } from "@/lib/loan-prepay-strategy";
@@ -24,7 +24,7 @@ import {
   getBalanceReconcileTarget,
 } from "@/lib/balance-reconcile";
 
-export const ACTIVE_DEBT_EPSILON = 0.005;
+export const ACTIVE_LIABILITY_EPSILON = 0.005;
 
 const SETTLEMENT_ACCOUNT_SUFFIX = "\u7684\u5f80\u6765\u6b3e";
 const SETTLEMENT_ITEM_NAME = "\u5f80\u6765\u6b3e";
@@ -41,28 +41,28 @@ const LOAN_PREPAYMENT_LABEL = "\u63d0\u524d\u8fd8\u6b3e";
 const BANK_LENDING_LABEL = "\u94f6\u884c\u653e\u6b3e";
 const BANK_COLLECTION_LABEL = "\u94f6\u884c\u6536\u56de";
 
-function roundDebtDisplayMoney(value: number) {
+function roundLiabilityDisplayMoney(value: number) {
   return Math.round(value * 100) / 100;
 }
 
 function signedRemainingTotal(net: number, remainingPrincipal: number, remainingInterest: number) {
-  const total = roundDebtDisplayMoney(Math.abs(remainingPrincipal) + Math.abs(remainingInterest));
-  if (Math.abs(net) < ACTIVE_DEBT_EPSILON) return 0;
+  const total = roundLiabilityDisplayMoney(Math.abs(remainingPrincipal) + Math.abs(remainingInterest));
+  if (Math.abs(net) < ACTIVE_LIABILITY_EPSILON) return 0;
   return net < 0 ? -total : total;
 }
 
-/** Keep this aligned with DebtShell.isSettledDebtRow (SETTLED_DEBT_EPSILON = 0.005). */
-function isSettledDebtViewRow(row: DebtViewRow) {
-  return Math.abs(row.net) < ACTIVE_DEBT_EPSILON && row.payable + row.receivable < ACTIVE_DEBT_EPSILON;
+/** Keep this aligned with LiabilityShell.isSettledLiabilityRow (SETTLED_LIABILITY_EPSILON = 0.005). */
+function isSettledLiabilityViewRow(row: LiabilityViewRow) {
+  return Math.abs(row.net) < ACTIVE_LIABILITY_EPSILON && row.payable + row.receivable < ACTIVE_LIABILITY_EPSILON;
 }
 
-export type DebtViewAccount = {
+export type LiabilityViewAccount = {
   id: string;
   name: string;
   balance: unknown;
   kind: AccountKind;
   isActive: boolean;
-  debtDirection?: DebtDirection | null;
+  liabilityDirection?: LiabilityDirection | null;
   institutionId?: string | null;
   counterpartyId?: string | null;
   isConsumerLoan?: boolean | null;
@@ -80,7 +80,7 @@ export type DebtViewAccount = {
   } | null;
 };
 
-export type DebtViewPlan = {
+export type LiabilityViewPlan = {
   id: string;
   accountId: string;
   amount: unknown;
@@ -97,7 +97,7 @@ export type DebtViewPlan = {
   status: string;
 };
 
-export type DebtViewRow = {
+export type LiabilityViewRow = {
   key: string;
   name: string;
   objectType: string;
@@ -147,7 +147,7 @@ export type DebtViewRow = {
   isLoan: boolean;
 };
 
-export type DebtRepaymentScheduleRow = {
+export type LiabilityRepaymentScheduleRow = {
   rowType: "payment" | "rate_adjustment";
   status?: "paid" | "planned";
   eventType?: "repayment" | "prepayment" | "rate_adjustment";
@@ -160,7 +160,7 @@ export type DebtRepaymentScheduleRow = {
   annualRate: number | null;
 };
 
-export type DebtDetailEntry = {
+export type LiabilityDetailEntry = {
   id: string;
   date: string;
   typeLabel: string;
@@ -180,11 +180,11 @@ export type DebtDetailEntry = {
     date: string;
     amount: number;
   };
-  debtEdit?: {
+  liabilityEdit?: {
     editEntryId: string;
     mode: "borrow_in" | "repay_out" | "prepay_out" | "lend_out" | "collect_in";
-    defaultDebtAccountId: string;
-    defaultDebtAccountName?: string | null;
+    defaultLiabilityAccountId: string;
+    defaultLiabilityAccountName?: string | null;
     defaultLoanPurposeCategoryId?: string | null;
     defaultCashAccountId: string;
     defaultAutoDebitCashAccountId?: string;
@@ -223,9 +223,9 @@ export type DebtDetailEntry = {
   };
 };
 
-type DebtEntryMode = "borrow_in" | "repay_out" | "prepay_out" | "lend_out" | "collect_in";
+type LiabilityEntryMode = "borrow_in" | "repay_out" | "prepay_out" | "lend_out" | "collect_in";
 
-function formatDebtEntryType(type: string) {
+function formatLiabilityEntryType(type: string) {
   if (type === "expense") return "支出";
   if (type === "income") return "收入";
   if (type === "advance") return "代付";
@@ -234,8 +234,8 @@ function formatDebtEntryType(type: string) {
   return type;
 }
 
-function bankDebtTransferTypeLabel(source: string | null | undefined, mode: DebtEntryMode) {
-  if (source === "debt_financed_purchase") return FINANCED_PURCHASE_LABEL;
+function bankLiabilityTransferTypeLabel(source: string | null | undefined, mode: LiabilityEntryMode) {
+  if (source === "liability_financed_purchase") return FINANCED_PURCHASE_LABEL;
   if (mode === "borrow_in") return LOAN_DISBURSEMENT_LABEL;
   if (mode === "repay_out") return LOAN_REPAYMENT_LABEL;
   if (mode === "prepay_out") return LOAN_PREPAYMENT_LABEL;
@@ -244,7 +244,7 @@ function bankDebtTransferTypeLabel(source: string | null | undefined, mode: Debt
   return BANK_LOAN_OBJECT_TYPE;
 }
 
-export type DebtMetricEntry = {
+export type LiabilityMetricEntry = {
   id: string;
   date: Date;
   createdAt: Date;
@@ -259,9 +259,9 @@ export type DebtMetricEntry = {
   counterpartyInstitutionId?: string | null;
   note?: string | null;
   toNote?: string | null;
-  debtPrincipalAmount?: unknown;
-  debtInterestAmount?: unknown;
-  debtFeeAmount?: unknown;
+  principalAmount?: unknown;
+  interestAmount?: unknown;
+  feeAmount?: unknown;
   regularInvestPlanId?: string | null;
   installmentNo?: number | null;
   fundSubtype?: string | null;
@@ -270,83 +270,83 @@ export type DebtMetricEntry = {
   EntryTag?: Array<{ tagId?: string | null }>;
 };
 
-function getDebtBalanceReconcileTarget(entry: DebtMetricEntry) {
+function getLiabilityBalanceReconcileTarget(entry: LiabilityMetricEntry) {
   if (entry.source !== BALANCE_RECONCILE_SOURCE && entry.source !== BALANCE_INITIALIZATION_SOURCE) return null;
   return getBalanceReconcileTarget(entry);
 }
 
-export function debtPrincipalForAccountSide(
-  entry: { amount: unknown; debtPrincipalAmount?: unknown; source?: string | null; accountId?: string | null; toAccountId?: string | null },
-  debtAccountIds: Set<string>,
+export function liabilityPrincipalForAccountSide(
+  entry: { amount: unknown; principalAmount?: unknown; source?: string | null; accountId?: string | null; toAccountId?: string | null },
+  liabilityAccountIds: Set<string>,
 ) {
-  return canonicalDebtPrincipalForAccountSide(entry, debtAccountIds);
+  return canonicalLiabilityPrincipalForAccountSide(entry, liabilityAccountIds);
 }
 
-export function debtCashFlowForAccountSide(
-  entry: { amount: unknown; debtPrincipalAmount?: unknown; source?: string | null; accountId?: string | null; toAccountId?: string | null },
-  debtAccountIds: Set<string>,
+export function liabilityCashFlowForAccountSide(
+  entry: { amount: unknown; principalAmount?: unknown; source?: string | null; accountId?: string | null; toAccountId?: string | null },
+  liabilityAccountIds: Set<string>,
 ) {
   const amount = toNumber(entry.amount);
-  const principal = entry.debtPrincipalAmount == null ? Math.abs(amount) : toNumber(entry.debtPrincipalAmount);
+  const principal = entry.principalAmount == null ? Math.abs(amount) : toNumber(entry.principalAmount);
   const source = String(entry.source ?? "");
-  if (source === "debt_borrow_in") return principal;
-  if (source === "debt_financed_purchase") return 0;
-  if (source === "debt_repay_out" || source === "debt_prepay_out" || source === "debt_lend_out" || source === "scheduled_task") return -principal;
-  if (source === "debt_collect_in") return principal;
-  return debtAccountIds.has(entry.accountId ?? "") ? -amount : amount;
+  if (source === "liability_borrow_in") return principal;
+  if (source === "liability_financed_purchase") return 0;
+  if (source === "liability_repay_out" || source === "liability_prepay_out" || source === "liability_lend_out" || source === "scheduled_task") return -principal;
+  if (source === "liability_collect_in") return principal;
+  return liabilityAccountIds.has(entry.accountId ?? "") ? -amount : amount;
 }
 
-export function debtPaymentTotal(
-  entry: { amount: unknown; debtPrincipalAmount?: unknown; debtInterestAmount?: unknown; debtFeeAmount?: unknown },
+export function liabilityPaymentTotal(
+  entry: { amount: unknown; principalAmount?: unknown; interestAmount?: unknown; feeAmount?: unknown },
   fallbackInterest = 0,
   fallbackFee = 0,
 ) {
   const hasStructuredSplit =
-    entry.debtPrincipalAmount != null ||
-    entry.debtInterestAmount != null ||
-    entry.debtFeeAmount != null;
-  const principal = entry.debtPrincipalAmount == null ? Math.abs(toNumber(entry.amount)) : toNumber(entry.debtPrincipalAmount);
-  const interest = Math.abs(toNumber(entry.debtInterestAmount));
-  const fee = Math.abs(toNumber(entry.debtFeeAmount));
+    entry.principalAmount != null ||
+    entry.interestAmount != null ||
+    entry.feeAmount != null;
+  const principal = entry.principalAmount == null ? Math.abs(toNumber(entry.amount)) : toNumber(entry.principalAmount);
+  const interest = Math.abs(toNumber(entry.interestAmount));
+  const fee = Math.abs(toNumber(entry.feeAmount));
   if (!hasStructuredSplit) return principal + fallbackInterest + fallbackFee;
   return principal + interest + fee;
 }
 
-function debtMetricDisplayDate(entry: DebtMetricEntry, displayAccountId?: string | null) {
+function liabilityMetricDisplayDate(entry: LiabilityMetricEntry, displayAccountId?: string | null) {
   return getDetailEntryDisplayDate(entry, displayAccountId);
 }
 
-function repaymentScheduleStartDate(plan: DebtViewPlan) {
+function repaymentScheduleStartDate(plan: LiabilityViewPlan) {
   const savedDate = decodeScheduledTaskMemo(plan.memo).firstRepaymentDate;
   return savedDate ? parseDateInputToUtc(savedDate) ?? plan.startDate : plan.startDate;
 }
 
-function debtPrincipalKey(entry: DebtMetricEntry, debtAccountIds: Set<string>, displayAccountId?: string | null) {
-  const dateKey = debtMetricDisplayDate(entry, displayAccountId).toISOString().slice(0, 10);
+function liabilityPrincipalKey(entry: LiabilityMetricEntry, liabilityAccountIds: Set<string>, displayAccountId?: string | null) {
+  const dateKey = liabilityMetricDisplayDate(entry, displayAccountId).toISOString().slice(0, 10);
   if (entry.regularInvestPlanId) return `plan:${entry.regularInvestPlanId}:${dateKey}`;
-  const debtAccountId = debtAccountIds.has(entry.toAccountId ?? "")
+  const liabilityAccountId = liabilityAccountIds.has(entry.toAccountId ?? "")
     ? entry.toAccountId
-    : debtAccountIds.has(entry.accountId ?? "")
+    : liabilityAccountIds.has(entry.accountId ?? "")
       ? entry.accountId
       : "";
-  const cashSideAccountId = debtAccountIds.has(entry.toAccountId ?? "")
+  const cashSideAccountId = liabilityAccountIds.has(entry.toAccountId ?? "")
     ? entry.accountId
     : entry.toAccountId;
-  return `account:${debtAccountId ?? ""}:${dateKey}:${cashSideAccountId ?? ""}`;
+  return `account:${liabilityAccountId ?? ""}:${dateKey}:${cashSideAccountId ?? ""}`;
 }
 
-export function applyDebtRowEntryMetrics({
-  debtRows,
-  debtEntriesRaw,
+export function applyLiabilityRowEntryMetrics({
+  liabilityRows,
+  liabilityEntriesRaw,
   loanRepaymentPlans,
   loanRepaymentPlanByAccountId,
   loanRateAdjustmentsByAccountId,
   displayAccountId,
 }: {
-  debtRows: DebtViewRow[];
-  debtEntriesRaw: DebtMetricEntry[];
-  loanRepaymentPlans: DebtViewPlan[];
-  loanRepaymentPlanByAccountId: Map<string, DebtViewPlan>;
+  liabilityRows: LiabilityViewRow[];
+  liabilityEntriesRaw: LiabilityMetricEntry[];
+  loanRepaymentPlans: LiabilityViewPlan[];
+  loanRepaymentPlanByAccountId: Map<string, LiabilityViewPlan>;
   loanRateAdjustmentsByAccountId: Map<string, Array<{ effectiveDate: string; annualRate: number }>>;
   displayAccountId?: string | null;
 }) {
@@ -355,7 +355,7 @@ export function applyDebtRowEntryMetrics({
       .filter((plan) => getLoanScheduledPlanRole(decodeScheduledTaskMemo(plan.memo)) === "auto_debit")
       .map((plan) => plan.id),
   );
-  for (const row of debtRows) {
+  for (const row of liabilityRows) {
     if (row.isGroup) continue;
     const rowAccountIds = new Set(row.accountIds);
     const rowPlanIds = new Set(
@@ -363,14 +363,14 @@ export function applyDebtRowEntryMetrics({
         .filter((plan) => rowAccountIds.has(plan.accountId))
         .map((plan) => plan.id),
     );
-    const rowPrincipalEntries = debtEntriesRaw.filter(
+    const rowPrincipalEntries = liabilityEntriesRaw.filter(
       (entry) =>
         entry.type === TransactionType.transfer &&
         (rowAccountIds.has(entry.accountId ?? "") || rowAccountIds.has(entry.toAccountId ?? "")),
     );
-    const rowPrincipalKey = (entry: DebtMetricEntry) => debtPrincipalKey(entry, rowAccountIds, displayAccountId);
+    const rowPrincipalKey = (entry: LiabilityMetricEntry) => liabilityPrincipalKey(entry, rowAccountIds, displayAccountId);
     const rowLockedInterestKeys = new Set<string>();
-    for (const entry of debtEntriesRaw) {
+    for (const entry of liabilityEntriesRaw) {
       if (
         entry.type === TransactionType.transfer ||
         !(
@@ -386,12 +386,12 @@ export function applyDebtRowEntryMetrics({
         continue;
       }
       const source = String(entry.source ?? "");
-      if (source.startsWith("debt_") && source.includes("interest")) {
+      if (source.startsWith("liability_") && source.includes("interest")) {
         rowLockedInterestKeys.add(rowPrincipalKey(entry));
       }
     }
     const rowInterestByPrincipalKey = new Map<string, number>();
-    for (const entry of debtEntriesRaw) {
+    for (const entry of liabilityEntriesRaw) {
       if (
         entry.type === TransactionType.transfer ||
         !(
@@ -411,20 +411,20 @@ export function applyDebtRowEntryMetrics({
       rowInterestByPrincipalKey.set(key, (rowInterestByPrincipalKey.get(key) ?? 0) + Math.abs(toNumber(entry.amount)));
     }
     const paidEntries = rowPrincipalEntries.filter((entry) => {
-      const displayAmount = debtPrincipalForAccountSide(entry, rowAccountIds);
+      const displayAmount = liabilityPrincipalForAccountSide(entry, rowAccountIds);
       if (displayAmount <= 0) return false;
       const source = String(entry.source ?? "");
       return (
-        source === "debt_repay_out" ||
-        source === "debt_prepay_out" ||
+        source === "liability_repay_out" ||
+        source === "liability_prepay_out" ||
         (source === "scheduled_task" && !!entry.regularInvestPlanId && automaticRepaymentPlanIds.has(entry.regularInvestPlanId))
       );
     });
     row.paidPrincipal = paidEntries.reduce((sum, entry) => {
-      return sum + Math.abs(debtPrincipalForAccountSide(entry, rowAccountIds));
+      return sum + Math.abs(liabilityPrincipalForAccountSide(entry, rowAccountIds));
     }, 0);
     row.paidInterest = paidEntries.reduce(
-      (sum, entry) => sum + Math.abs(toNumber(entry.debtInterestAmount)) + (rowInterestByPrincipalKey.get(rowPrincipalKey(entry)) ?? 0),
+      (sum, entry) => sum + Math.abs(toNumber(entry.interestAmount)) + (rowInterestByPrincipalKey.get(rowPrincipalKey(entry)) ?? 0),
       0,
     );
     row.remainingPrincipal = Math.abs(row.net);
@@ -432,7 +432,7 @@ export function applyDebtRowEntryMetrics({
     const plan = loanRepaymentPlanByAccountId.get(row.accountId);
     const memo = plan ? decodeScheduledTaskMemo(plan.memo) : null;
     row.remainingInterest = 0;
-    if (plan && memo && row.net < -ACTIVE_DEBT_EPSILON && plan.nextRunDate) {
+    if (plan && memo && row.net < -ACTIVE_LIABILITY_EPSILON && plan.nextRunDate) {
       let remainingPrincipal = Math.abs(row.net);
       let runDate = plan.nextRunDate;
       let lastScheduleDate = plan.lastRunDate ?? plan.startDate;
@@ -448,7 +448,7 @@ export function applyDebtRowEntryMetrics({
         loanStartDate: row.loanStartDate,
       });
       let scheduledAmountForRun = toNumber(plan.amount);
-      for (let index = 0; index < maxRuns && remainingPrincipal > ACTIVE_DEBT_EPSILON; index++) {
+      for (let index = 0; index < maxRuns && remainingPrincipal > ACTIVE_LIABILITY_EPSILON; index++) {
         const remainingRunsForThisRun = remainingRuns == null ? Math.max(1, maxRuns - index) : Math.max(1, remainingRuns - index);
         const parts = calcLoanRunPartsWithRateAdjustments({
           repaymentMethod: memo.repaymentMethod,
@@ -478,14 +478,14 @@ export function applyDebtRowEntryMetrics({
     row.remainingTotal = signedRemainingTotal(row.net, row.remainingPrincipal, row.remainingInterest);
   }
 
-  const childRowsByParentKey = new Map<string, DebtViewRow[]>();
-  for (const row of debtRows) {
+  const childRowsByParentKey = new Map<string, LiabilityViewRow[]>();
+  for (const row of liabilityRows) {
     if (!row.parentKey) continue;
     const childRows = childRowsByParentKey.get(row.parentKey) ?? [];
     childRows.push(row);
     childRowsByParentKey.set(row.parentKey, childRows);
   }
-  for (const row of debtRows) {
+  for (const row of liabilityRows) {
     if (!row.isGroup) continue;
     const childRows = childRowsByParentKey.get(row.key) ?? [];
     if (childRows.length === 0) continue;
@@ -504,31 +504,31 @@ export function applyDebtRowEntryMetrics({
   }
 }
 
-export function buildDebtDetailEntriesViewData({
-  debtEntriesRaw,
-  selectedDebtAccountIds,
+export function buildLiabilityDetailEntriesViewData({
+  liabilityEntriesRaw,
+  selectedLiabilityAccountIds,
   selectedLoanRepaymentPlanIds,
-  selectedDebtRow,
+  selectedLiabilityRow,
   selectedRepaymentPlan,
   selectedAutoDebitPlan,
   repaymentScheduleRows,
   accountLabelById,
   accountTitleById,
-  debtDirectionByAccountId,
+  liabilityDirectionByAccountId,
   displayAccountId,
   mortgagedAssetByLoanAccountId,
   collateralNameByLoanAccountId,
 }: {
-  debtEntriesRaw: DebtMetricEntry[];
-  selectedDebtAccountIds: Set<string>;
+  liabilityEntriesRaw: LiabilityMetricEntry[];
+  selectedLiabilityAccountIds: Set<string>;
   selectedLoanRepaymentPlanIds: Set<string>;
-  selectedDebtRow: DebtViewRow | null;
-  selectedRepaymentPlan: DebtViewPlan | null;
-  selectedAutoDebitPlan?: DebtViewPlan | null;
-  repaymentScheduleRows: DebtRepaymentScheduleRow[];
+  selectedLiabilityRow: LiabilityViewRow | null;
+  selectedRepaymentPlan: LiabilityViewPlan | null;
+  selectedAutoDebitPlan?: LiabilityViewPlan | null;
+  repaymentScheduleRows: LiabilityRepaymentScheduleRow[];
   accountLabelById: Map<string, string>;
   accountTitleById?: Map<string, string>;
-  debtDirectionByAccountId: Map<string, DebtDirection | string | null>;
+  liabilityDirectionByAccountId: Map<string, LiabilityDirection | string | null>;
   displayAccountId?: string | null;
   mortgagedAssetByLoanAccountId?: Map<string, { accountId: string; id: string }>;
   collateralNameByLoanAccountId?: Map<string, string>;
@@ -538,15 +538,15 @@ export function buildDebtDetailEntriesViewData({
   if (selectedRepaymentPlan && getLoanScheduledPlanRole(decodeScheduledTaskMemo(selectedRepaymentPlan.memo)) === "auto_debit") {
     automaticRepaymentPlanIds.add(selectedRepaymentPlan.id);
   }
-  const filteredDebtEntries = debtEntriesRaw.filter(
-    (entry) => selectedDebtAccountIds.has(entry.accountId ?? "") || selectedDebtAccountIds.has(entry.toAccountId ?? ""),
+  const filteredLiabilityEntries = liabilityEntriesRaw.filter(
+    (entry) => selectedLiabilityAccountIds.has(entry.accountId ?? "") || selectedLiabilityAccountIds.has(entry.toAccountId ?? ""),
   );
-  const filteredDebtInterestEntries = debtEntriesRaw.filter(
+  const filteredLiabilityInterestEntries = liabilityEntriesRaw.filter(
     (entry) =>
       entry.type !== TransactionType.transfer &&
       String(entry.source ?? "") !== "loan_bill" &&
       (
-        selectedDebtAccountIds.has(entry.toAccountId ?? "") ||
+        selectedLiabilityAccountIds.has(entry.toAccountId ?? "") ||
         (entry.regularInvestPlanId ? selectedLoanRepaymentPlanIds.has(entry.regularInvestPlanId) : false)
       ) &&
       (
@@ -555,12 +555,12 @@ export function buildDebtDetailEntriesViewData({
         String(entry.note ?? "").includes("利息")
       ),
   );
-  const filteredDebtFeeEntries = debtEntriesRaw.filter(
+  const filteredLiabilityFeeEntries = liabilityEntriesRaw.filter(
     (entry) =>
       entry.type !== TransactionType.transfer &&
       String(entry.source ?? "") !== "loan_bill" &&
       (
-        selectedDebtAccountIds.has(entry.toAccountId ?? "") ||
+        selectedLiabilityAccountIds.has(entry.toAccountId ?? "") ||
         (entry.regularInvestPlanId ? selectedLoanRepaymentPlanIds.has(entry.regularInvestPlanId) : false)
       ) &&
       (
@@ -569,98 +569,98 @@ export function buildDebtDetailEntriesViewData({
         String(entry.note ?? "").includes("违约金")
       ),
   );
-  const principalKey = (entry: DebtMetricEntry) => debtPrincipalKey(entry, selectedDebtAccountIds, displayAccountId);
-  const debtInterestByPrincipalKey = new Map<string, number>();
-  const lockedDebtInterestKeys = new Set<string>();
-  for (const entry of filteredDebtInterestEntries) {
+  const principalKey = (entry: LiabilityMetricEntry) => liabilityPrincipalKey(entry, selectedLiabilityAccountIds, displayAccountId);
+  const liabilityInterestByPrincipalKey = new Map<string, number>();
+  const lockedLiabilityInterestKeys = new Set<string>();
+  for (const entry of filteredLiabilityInterestEntries) {
     const source = String(entry.source ?? "");
-    if (source.startsWith("debt_") && source.includes("interest")) {
-      lockedDebtInterestKeys.add(principalKey(entry));
+    if (source.startsWith("liability_") && source.includes("interest")) {
+      lockedLiabilityInterestKeys.add(principalKey(entry));
     }
   }
-  for (const entry of filteredDebtInterestEntries) {
+  for (const entry of filteredLiabilityInterestEntries) {
     const key = principalKey(entry);
-    if (String(entry.source ?? "") === "scheduled_task" && lockedDebtInterestKeys.has(key)) continue;
-    debtInterestByPrincipalKey.set(key, (debtInterestByPrincipalKey.get(key) ?? 0) + Math.abs(toNumber(entry.amount)));
+    if (String(entry.source ?? "") === "scheduled_task" && lockedLiabilityInterestKeys.has(key)) continue;
+    liabilityInterestByPrincipalKey.set(key, (liabilityInterestByPrincipalKey.get(key) ?? 0) + Math.abs(toNumber(entry.amount)));
   }
-  const debtFeeByPrincipalKey = new Map<string, number>();
-  for (const entry of filteredDebtFeeEntries) {
+  const liabilityFeeByPrincipalKey = new Map<string, number>();
+  for (const entry of filteredLiabilityFeeEntries) {
     const key = principalKey(entry);
-    debtFeeByPrincipalKey.set(key, (debtFeeByPrincipalKey.get(key) ?? 0) + Math.abs(toNumber(entry.amount)));
+    liabilityFeeByPrincipalKey.set(key, (liabilityFeeByPrincipalKey.get(key) ?? 0) + Math.abs(toNumber(entry.amount)));
   }
-  const filteredDebtPrincipalEntries = filteredDebtEntries.filter(
-    (entry) => entry.type === TransactionType.transfer || getDebtBalanceReconcileTarget(entry) != null,
+  const filteredLiabilityPrincipalEntries = filteredLiabilityEntries.filter(
+    (entry) => entry.type === TransactionType.transfer || getLiabilityBalanceReconcileTarget(entry) != null,
   );
-  const debtBalanceByEntryId = new Map<string, number>();
-  const debtDisplayAmountByEntryId = new Map<string, number>();
-  const debtBalanceTimeline: Array<{ date: string; balance: number }> = [];
-  let runningDebtBalance = 0;
-  for (const entry of [...filteredDebtPrincipalEntries].sort((a, b) => compareDetailEntriesAsc(a, b, displayAccountId))) {
-    const reconcileTarget = getDebtBalanceReconcileTarget(entry);
+  const liabilityBalanceByEntryId = new Map<string, number>();
+  const liabilityDisplayAmountByEntryId = new Map<string, number>();
+  const liabilityBalanceTimeline: Array<{ date: string; balance: number }> = [];
+  let runningLiabilityBalance = 0;
+  for (const entry of [...filteredLiabilityPrincipalEntries].sort((a, b) => compareDetailEntriesAsc(a, b, displayAccountId))) {
+    const reconcileTarget = getLiabilityBalanceReconcileTarget(entry);
     const displayAmount = reconcileTarget == null
-      ? debtPrincipalForAccountSide(entry, selectedDebtAccountIds)
-      : reconcileTarget - runningDebtBalance;
-    runningDebtBalance = reconcileTarget == null ? runningDebtBalance + displayAmount : reconcileTarget;
-    debtDisplayAmountByEntryId.set(entry.id, displayAmount);
-    debtBalanceByEntryId.set(entry.id, runningDebtBalance);
-    debtBalanceTimeline.push({
-      date: debtMetricDisplayDate(entry, displayAccountId).toISOString().slice(0, 10),
-      balance: runningDebtBalance,
+      ? liabilityPrincipalForAccountSide(entry, selectedLiabilityAccountIds)
+      : reconcileTarget - runningLiabilityBalance;
+    runningLiabilityBalance = reconcileTarget == null ? runningLiabilityBalance + displayAmount : reconcileTarget;
+    liabilityDisplayAmountByEntryId.set(entry.id, displayAmount);
+    liabilityBalanceByEntryId.set(entry.id, runningLiabilityBalance);
+    liabilityBalanceTimeline.push({
+      date: liabilityMetricDisplayDate(entry, displayAccountId).toISOString().slice(0, 10),
+      balance: runningLiabilityBalance,
     });
   }
-  const getDebtRemainingPrincipalBeforeDate = (dateKey: string) => {
+  const getLiabilityRemainingPrincipalBeforeDate = (dateKey: string) => {
     let balanceBeforeDate: number | null = null;
-    for (const item of debtBalanceTimeline) {
+    for (const item of liabilityBalanceTimeline) {
       if (item.date >= dateKey) break;
       balanceBeforeDate = item.balance;
     }
-    return Math.abs(balanceBeforeDate ?? selectedDebtRow?.net ?? 0);
+    return Math.abs(balanceBeforeDate ?? selectedLiabilityRow?.net ?? 0);
   };
 
-  const debtDetailEntries: DebtDetailEntry[] = filteredDebtPrincipalEntries.map((entry) => {
+  const liabilityDetailEntries: LiabilityDetailEntry[] = filteredLiabilityPrincipalEntries.map((entry) => {
     const amount = toNumber(entry.amount);
-    const reconcileTarget = getDebtBalanceReconcileTarget(entry);
+    const reconcileTarget = getLiabilityBalanceReconcileTarget(entry);
     const isBalanceReconcile = reconcileTarget != null;
-    const isToDebtAccount = selectedDebtAccountIds.has(entry.toAccountId ?? "");
-    const displayAmount = debtDisplayAmountByEntryId.get(entry.id) ?? debtPrincipalForAccountSide(entry, selectedDebtAccountIds);
-    const cashFlowAmount = isBalanceReconcile ? displayAmount : debtCashFlowForAccountSide(entry, selectedDebtAccountIds);
-    const interestAmount = Math.abs(toNumber(entry.debtInterestAmount)) + (debtInterestByPrincipalKey.get(principalKey(entry)) ?? 0);
-    const feeAmount = Math.abs(toNumber(entry.debtFeeAmount)) + (debtFeeByPrincipalKey.get(principalKey(entry)) ?? 0);
-    const isSelectedBankLoan = selectedDebtRow?.isLoan === true;
+    const isToLiabilityAccount = selectedLiabilityAccountIds.has(entry.toAccountId ?? "");
+    const displayAmount = liabilityDisplayAmountByEntryId.get(entry.id) ?? liabilityPrincipalForAccountSide(entry, selectedLiabilityAccountIds);
+    const cashFlowAmount = isBalanceReconcile ? displayAmount : liabilityCashFlowForAccountSide(entry, selectedLiabilityAccountIds);
+    const interestAmount = Math.abs(toNumber(entry.interestAmount)) + (liabilityInterestByPrincipalKey.get(principalKey(entry)) ?? 0);
+    const feeAmount = Math.abs(toNumber(entry.feeAmount)) + (liabilityFeeByPrincipalKey.get(principalKey(entry)) ?? 0);
+    const isSelectedBankLoan = selectedLiabilityRow?.isLoan === true;
     const paymentTotal = isSelectedBankLoan
-      ? interestAmount > 0 || feeAmount > 0 || entry.source === "debt_repay_out" || entry.source === "debt_prepay_out" || entry.source === "debt_collect_in" || entry.source === "scheduled_task"
-        ? debtPaymentTotal(entry, interestAmount, feeAmount) || Math.abs(displayAmount) + interestAmount + feeAmount
+      ? interestAmount > 0 || feeAmount > 0 || entry.source === "liability_repay_out" || entry.source === "liability_prepay_out" || entry.source === "liability_collect_in" || entry.source === "scheduled_task"
+        ? liabilityPaymentTotal(entry, interestAmount, feeAmount) || Math.abs(displayAmount) + interestAmount + feeAmount
         : null
       : cashFlowAmount > 0
         ? Math.abs(cashFlowAmount) + interestAmount + feeAmount
         : null;
-    const debtSideAccountId = isToDebtAccount ? (entry.toAccountId ?? "") : (entry.accountId ?? "");
-    const cashSideAccountId = isToDebtAccount ? (entry.accountId ?? "") : (entry.toAccountId ?? "");
-    const relatedDebtDirection =
-      debtDirectionByAccountId.get(debtSideAccountId) ??
-      ((selectedDebtRow?.net ?? 0) >= 0 ? "receivable" : "payable");
-    const inferredDirection = relatedDebtDirection ?? ((selectedDebtRow?.net ?? 0) >= 0 ? "receivable" : "payable");
-    const debtEditMode =
-      entry.source === "debt_borrow_in" || entry.source === "debt_financed_purchase"
+    const liabilitySideAccountId = isToLiabilityAccount ? (entry.toAccountId ?? "") : (entry.accountId ?? "");
+    const cashSideAccountId = isToLiabilityAccount ? (entry.accountId ?? "") : (entry.toAccountId ?? "");
+    const relatedLiabilityDirection =
+      liabilityDirectionByAccountId.get(liabilitySideAccountId) ??
+      ((selectedLiabilityRow?.net ?? 0) >= 0 ? "receivable" : "payable");
+    const inferredDirection = relatedLiabilityDirection ?? ((selectedLiabilityRow?.net ?? 0) >= 0 ? "receivable" : "payable");
+    const liabilityEditMode =
+      entry.source === "liability_borrow_in" || entry.source === "liability_financed_purchase"
         ? ("borrow_in" as const)
-        : entry.source === "debt_lend_out"
+        : entry.source === "liability_lend_out"
           ? ("lend_out" as const)
-          : entry.source === "debt_collect_in"
+          : entry.source === "liability_collect_in"
             ? ("collect_in" as const)
-            : entry.source === "debt_prepay_out"
+            : entry.source === "liability_prepay_out"
               ? ("prepay_out" as const)
-              : entry.source === "debt_repay_out" || entry.source === "scheduled_task"
+              : entry.source === "liability_repay_out" || entry.source === "scheduled_task"
                 ? ("repay_out" as const)
-                : isToDebtAccount
+                : isToLiabilityAccount
                   ? (inferredDirection === "receivable" ? ("lend_out" as const) : ("repay_out" as const))
                   : (inferredDirection === "receivable" ? ("collect_in" as const) : ("borrow_in" as const));
-    const entryDate = debtMetricDisplayDate(entry, displayAccountId);
+    const entryDate = liabilityMetricDisplayDate(entry, displayAccountId);
     const entryDateKey = entryDate.toISOString().slice(0, 10);
     const defaultRecalculateStartDate =
       selectedRepaymentPlan &&
       (entry.regularInvestPlanId
         ? entry.regularInvestPlanId === selectedRepaymentPlan.id
-        : selectedDebtAccountIds.has(debtSideAccountId))
+        : selectedLiabilityAccountIds.has(liabilitySideAccountId))
         ? formatDateUtc(
             entry.regularInvestPlanId
               ? calcNextScheduledRunDate(
@@ -686,40 +686,40 @@ export function buildDebtDetailEntriesViewData({
       typeLabel: isBalanceReconcile
         ? (entry.source === BALANCE_INITIALIZATION_SOURCE ? "初始余额" : "余额校准")
         : entry.type === TransactionType.income
-        ? formatDebtEntryType(entry.type)
+        ? formatLiabilityEntryType(entry.type)
         : entry.source === "advance"
         ? (entry.categoryName || "代付")
         : entry.type === TransactionType.transfer
           ? isSelectedBankLoan
-            ? bankDebtTransferTypeLabel(entry.source, debtEditMode)
+            ? bankLiabilityTransferTypeLabel(entry.source, liabilityEditMode)
             : normalizeSettlementTransferCategoryName(entry.categoryName)
-          : (entry.categoryName || formatDebtEntryType(entry.type)),
+          : (entry.categoryName || formatLiabilityEntryType(entry.type)),
       relatedAccountLabel: isBalanceReconcile ? "-" : (accountLabelById.get(cashSideAccountId) ?? "-"),
       relatedAccountTitle: isBalanceReconcile ? "" : (accountTitleById?.get(cashSideAccountId) ?? ""),
-      collateralLabel: collateralNameByLoanAccountId?.get(debtSideAccountId) ?? null,
+      collateralLabel: collateralNameByLoanAccountId?.get(liabilitySideAccountId) ?? null,
       note: entry.note ?? "",
       amount: displayAmount,
       principal: cashFlowAmount,
       interest: interestAmount,
       paymentTotal: isBalanceReconcile ? null : paymentTotal,
-      balance: debtBalanceByEntryId.get(entry.id) ?? 0,
+      balance: liabilityBalanceByEntryId.get(entry.id) ?? 0,
       balanceReconcileEdit: isBalanceReconcile
         ? {
             entryId: entry.id,
-            accountId: debtSideAccountId,
-            accountName: selectedDebtRow?.name ?? entry.accountId ?? "",
+            accountId: liabilitySideAccountId,
+            accountName: selectedLiabilityRow?.name ?? entry.accountId ?? "",
             date: entryDateKey,
             amount: reconcileTarget,
           }
         : undefined,
-      debtEdit: !isBalanceReconcile && entry.type === TransactionType.transfer && entry.source !== "advance"
+      liabilityEdit: !isBalanceReconcile && entry.type === TransactionType.transfer && entry.source !== "advance"
         ? (() => {
             const repaymentMemo = selectedRepaymentPlan ? decodeScheduledTaskMemo(selectedRepaymentPlan.memo) : null;
             const autoDebitMemo = selectedAutoDebitPlan ? decodeScheduledTaskMemo(selectedAutoDebitPlan.memo) : null;
             const isLoanRepaymentPlan = repaymentMemo?.type === "loan_repayment";
             const isLoanAutoDebitPlan = autoDebitMemo?.type === "loan_repayment";
             const defaultAutoDebitCashAccountId = selectedAutoDebitPlan?.cashAccountId ?? selectedRepaymentPlan?.cashAccountId ?? "";
-            const mortgagedAsset = mortgagedAssetByLoanAccountId?.get(debtSideAccountId);
+            const mortgagedAsset = mortgagedAssetByLoanAccountId?.get(liabilitySideAccountId);
             const defaultTagIds = Array.from(new Set(
               (entry.EntryTag ?? [])
                 .map((item) => item.tagId ?? "")
@@ -727,27 +727,27 @@ export function buildDebtDetailEntriesViewData({
             ));
             return {
               editEntryId: entry.id,
-              mode: debtEditMode,
-              dialogType: isSelectedBankLoan ? "loan" : "debt",
-              defaultDebtAccountId: debtSideAccountId,
+              mode: liabilityEditMode,
+              dialogType: isSelectedBankLoan ? "loan" : "settlement",
+              defaultLiabilityAccountId: liabilitySideAccountId,
               // Prefill the account's real stored name, not the row display
               // name: `name` already contains the `objectName | itemName`
               // prefix, and writing it back on save re-prepends the
               // institution on every edit (the tripled "农行" bug).
-              defaultDebtAccountName: selectedDebtRow?.accountName ?? null,
-              defaultLoanPurposeCategoryId: debtEditMode === "borrow_in" ? (entry.categoryId ?? null) : null,
-              defaultCashAccountId: entry.source === "debt_financed_purchase" ? defaultAutoDebitCashAccountId : cashSideAccountId,
+              defaultLiabilityAccountName: selectedLiabilityRow?.accountName ?? null,
+              defaultLoanPurposeCategoryId: liabilityEditMode === "borrow_in" ? (entry.categoryId ?? null) : null,
+              defaultCashAccountId: entry.source === "liability_financed_purchase" ? defaultAutoDebitCashAccountId : cashSideAccountId,
               defaultAutoDebitCashAccountId,
               defaultFixedAssetAccountId: mortgagedAsset?.accountId,
               defaultFixedAssetAssetId: mortgagedAsset?.id,
-              defaultLoanFundingMode: entry.source === "debt_financed_purchase" ? "financed_purchase" as const : "cash_disbursement" as const,
+              defaultLoanFundingMode: entry.source === "liability_financed_purchase" ? "financed_purchase" as const : "cash_disbursement" as const,
               defaultDate: entryDateKey,
               defaultPrincipal: displayAmount,
               defaultInterest: interestAmount,
               defaultNote: entry.note ?? "",
-              defaultPenalty: Math.abs(toNumber(entry.debtFeeAmount)),
+              defaultPenalty: Math.abs(toNumber(entry.feeAmount)),
               defaultRecalculateStartDate,
-              defaultPrepayStrategy: entry.source === "debt_prepay_out"
+              defaultPrepayStrategy: entry.source === "liability_prepay_out"
                 ? parseLoanPrepayStrategy(entry.toNote) ?? DEFAULT_LOAN_PREPAY_STRATEGY
                 : undefined,
               defaultRepaymentMethod: isLoanRepaymentPlan ? (repaymentMemo.repaymentMethod ?? null) : null,
@@ -761,7 +761,7 @@ export function buildDebtDetailEntriesViewData({
               defaultFirstRepaymentDate: isLoanRepaymentPlan
                 ? repaymentMemo.firstRepaymentDate ?? (selectedRepaymentPlan?.startDate ? formatDateUtc(selectedRepaymentPlan.startDate) : null)
                 : null,
-              defaultAutoDebit: isLoanRepaymentPlan && (entry.source === "debt_financed_purchase" || entry.source === "debt_borrow_in")
+              defaultAutoDebit: isLoanRepaymentPlan && (entry.source === "liability_financed_purchase" || entry.source === "liability_borrow_in")
                 ? isLoanAutoDebitPlan
                 : undefined,
               defaultAutoDebitFirstDate: isLoanRepaymentPlan && isLoanAutoDebitPlan && selectedAutoDebitPlan?.startDate
@@ -772,7 +772,7 @@ export function buildDebtDetailEntriesViewData({
                     ? formatDateUtc(selectedRepaymentPlan.startDate)
                   : null,
               defaultLoanRateAdjustments: isLoanRepaymentPlan
-                ? (selectedDebtRow?.loanRateAdjustments ?? repaymentMemo.loanRateAdjustments ?? [])
+                ? (selectedLiabilityRow?.loanRateAdjustments ?? repaymentMemo.loanRateAdjustments ?? [])
                 : [],
               defaultTagIds,
             };
@@ -784,10 +784,10 @@ export function buildDebtDetailEntriesViewData({
         ? {
             type: "advance" as const,
             date: entryDateKey,
-            amount: isToDebtAccount ? Math.abs(amount) : -Math.abs(amount),
+            amount: isToLiabilityAccount ? Math.abs(amount) : -Math.abs(amount),
             note: entry.note ?? "",
             accountId: cashSideAccountId,
-            advanceAccountId: debtSideAccountId,
+            advanceAccountId: liabilitySideAccountId,
             categoryId: entry.categoryId ?? "",
             counterpartyInstitutionId: entry.counterpartyInstitutionId ?? "",
           }
@@ -811,16 +811,16 @@ export function buildDebtDetailEntriesViewData({
     };
   });
 
-  if (selectedDebtRow && selectedRepaymentPlan) {
-    const paidPrincipalEntries = [...filteredDebtPrincipalEntries]
+  if (selectedLiabilityRow && selectedRepaymentPlan) {
+    const paidPrincipalEntries = [...filteredLiabilityPrincipalEntries]
       .sort((a, b) => compareDetailEntriesAsc(a, b, displayAccountId))
       .filter((entry) => {
-        const displayAmount = debtPrincipalForAccountSide(entry, selectedDebtAccountIds);
+        const displayAmount = liabilityPrincipalForAccountSide(entry, selectedLiabilityAccountIds);
         if (displayAmount <= 0) return false;
         const source = String(entry.source ?? "");
         return (
-          source === "debt_repay_out" ||
-          source === "debt_prepay_out" ||
+          source === "liability_repay_out" ||
+          source === "liability_prepay_out" ||
           (source === "scheduled_task" && !!entry.regularInvestPlanId && automaticRepaymentPlanIds.has(entry.regularInvestPlanId))
         );
       });
@@ -831,12 +831,12 @@ export function buildDebtDetailEntriesViewData({
       latestDate: string;
       remainingPrincipal: number;
     }>();
-    const prepaymentEntries: DebtMetricEntry[] = [];
+    const prepaymentEntries: LiabilityMetricEntry[] = [];
     for (const entry of paidPrincipalEntries) {
-      const displayAmount = debtPrincipalForAccountSide(entry, selectedDebtAccountIds);
-      const interestAmount = Math.abs(toNumber(entry.debtInterestAmount)) + (debtInterestByPrincipalKey.get(principalKey(entry)) ?? 0);
-      const feeAmount = Math.abs(toNumber(entry.debtFeeAmount)) + (debtFeeByPrincipalKey.get(principalKey(entry)) ?? 0);
-      const isPrepayment = entry.source === "debt_prepay_out";
+      const displayAmount = liabilityPrincipalForAccountSide(entry, selectedLiabilityAccountIds);
+      const interestAmount = Math.abs(toNumber(entry.interestAmount)) + (liabilityInterestByPrincipalKey.get(principalKey(entry)) ?? 0);
+      const feeAmount = Math.abs(toNumber(entry.feeAmount)) + (liabilityFeeByPrincipalKey.get(principalKey(entry)) ?? 0);
+      const isPrepayment = entry.source === "liability_prepay_out";
       if (isPrepayment) {
         prepaymentEntries.push(entry);
         continue;
@@ -849,27 +849,27 @@ export function buildDebtDetailEntriesViewData({
             intervalValue: selectedRepaymentPlan.intervalValue,
             executionDay: selectedRepaymentPlan.executionDay,
             totalRuns: selectedRepaymentPlan.totalRuns,
-          }, debtMetricDisplayDate(entry, displayAccountId))?.period ?? null;
+          }, liabilityMetricDisplayDate(entry, displayAccountId))?.period ?? null;
       if (!resolvedPeriod) continue;
-      const date = debtMetricDisplayDate(entry, displayAccountId).toISOString().slice(0, 10);
+      const date = liabilityMetricDisplayDate(entry, displayAccountId).toISOString().slice(0, 10);
       const current = paymentByPeriod.get(resolvedPeriod) ?? {
         principal: 0,
         interest: 0,
         total: 0,
         latestDate: date,
-        remainingPrincipal: Math.abs(debtBalanceByEntryId.get(entry.id) ?? 0),
+        remainingPrincipal: Math.abs(liabilityBalanceByEntryId.get(entry.id) ?? 0),
       };
       paymentByPeriod.set(resolvedPeriod, {
         principal: current.principal + Math.abs(displayAmount),
         interest: current.interest + interestAmount,
-        total: current.total + (debtPaymentTotal(entry, interestAmount, feeAmount) || Math.abs(displayAmount) + interestAmount + feeAmount),
+        total: current.total + (liabilityPaymentTotal(entry, interestAmount, feeAmount) || Math.abs(displayAmount) + interestAmount + feeAmount),
         latestDate: current.latestDate > date ? current.latestDate : date,
-        remainingPrincipal: Math.abs(debtBalanceByEntryId.get(entry.id) ?? current.remainingPrincipal),
+        remainingPrincipal: Math.abs(liabilityBalanceByEntryId.get(entry.id) ?? current.remainingPrincipal),
       });
     }
 
-    const billByPeriod = new Map<number, DebtMetricEntry>();
-    for (const entry of debtEntriesRaw) {
+    const billByPeriod = new Map<number, LiabilityMetricEntry>();
+    for (const entry of liabilityEntriesRaw) {
       if (
         entry.source !== "loan_bill" ||
         entry.regularInvestPlanId !== selectedRepaymentPlan.id ||
@@ -884,8 +884,8 @@ export function buildDebtDetailEntriesViewData({
       if (row.rowType !== "payment" || row.eventType === "prepayment" || row.period <= 0) continue;
       const bill = billByPeriod.get(row.period);
       if (bill) {
-        row.principal = Math.abs(toNumber(bill.debtPrincipalAmount));
-        row.interest = Math.abs(toNumber(bill.debtInterestAmount));
+        row.principal = Math.abs(toNumber(bill.principalAmount));
+        row.interest = Math.abs(toNumber(bill.interestAmount));
         row.payment = Math.max(row.principal + row.interest, Math.abs(toNumber(bill.amount)));
       }
       const paid = paymentByPeriod.get(row.period);
@@ -921,19 +921,19 @@ export function buildDebtDetailEntriesViewData({
     }
 
     for (const entry of prepaymentEntries) {
-      const displayAmount = debtPrincipalForAccountSide(entry, selectedDebtAccountIds);
-      const interestAmount = Math.abs(toNumber(entry.debtInterestAmount)) + (debtInterestByPrincipalKey.get(principalKey(entry)) ?? 0);
-      const feeAmount = Math.abs(toNumber(entry.debtFeeAmount)) + (debtFeeByPrincipalKey.get(principalKey(entry)) ?? 0);
+      const displayAmount = liabilityPrincipalForAccountSide(entry, selectedLiabilityAccountIds);
+      const interestAmount = Math.abs(toNumber(entry.interestAmount)) + (liabilityInterestByPrincipalKey.get(principalKey(entry)) ?? 0);
+      const feeAmount = Math.abs(toNumber(entry.feeAmount)) + (liabilityFeeByPrincipalKey.get(principalKey(entry)) ?? 0);
       repaymentScheduleRows.push({
         rowType: "payment",
         status: "paid",
         eventType: "prepayment",
         period: 0,
-        date: debtMetricDisplayDate(entry, displayAccountId).toISOString().slice(0, 10),
-        payment: debtPaymentTotal(entry, interestAmount, feeAmount) || Math.abs(displayAmount) + interestAmount + feeAmount,
+        date: liabilityMetricDisplayDate(entry, displayAccountId).toISOString().slice(0, 10),
+        payment: liabilityPaymentTotal(entry, interestAmount, feeAmount) || Math.abs(displayAmount) + interestAmount + feeAmount,
         principal: Math.abs(displayAmount),
         interest: interestAmount,
-        remainingPrincipal: Math.abs(debtBalanceByEntryId.get(entry.id) ?? 0),
+        remainingPrincipal: Math.abs(liabilityBalanceByEntryId.get(entry.id) ?? 0),
         annualRate: null,
       });
     }
@@ -943,7 +943,7 @@ export function buildDebtDetailEntriesViewData({
       (latest, payment) => payment.latestDate > latest ? payment.latestDate : latest,
       "",
     );
-    for (const adjustment of normalizeLoanRateAdjustments(selectedDebtRow.loanRateAdjustments)) {
+    for (const adjustment of normalizeLoanRateAdjustments(selectedLiabilityRow.loanRateAdjustments)) {
       if (existingRateRows.has(adjustment.effectiveDate)) continue;
       repaymentScheduleRows.push({
         rowType: "rate_adjustment",
@@ -954,54 +954,54 @@ export function buildDebtDetailEntriesViewData({
         payment: 0,
         principal: 0,
         interest: 0,
-        remainingPrincipal: getDebtRemainingPrincipalBeforeDate(adjustment.effectiveDate),
+        remainingPrincipal: getLiabilityRemainingPrincipalBeforeDate(adjustment.effectiveDate),
         annualRate: adjustment.annualRate,
       });
     }
     repaymentScheduleRows.sort((a, b) => {
       const byDate = a.date.localeCompare(b.date);
       if (byDate !== 0) return byDate;
-      const rank = (row: DebtRepaymentScheduleRow) => row.rowType === "rate_adjustment" ? 0 : row.status === "paid" ? 1 : 2;
+      const rank = (row: LiabilityRepaymentScheduleRow) => row.rowType === "rate_adjustment" ? 0 : row.status === "paid" ? 1 : 2;
       const byRank = rank(a) - rank(b);
       if (byRank !== 0) return byRank;
       return a.period - b.period;
     });
   }
 
-  return { debtDetailEntries, repaymentScheduleRows };
+  return { liabilityDetailEntries, repaymentScheduleRows };
 }
 
-export function buildDebtRowsViewData({
-  debtAccounts,
+export function buildLiabilityRowsViewData({
+  liabilityAccounts,
   cashDisplayBalanceByAccountId,
   loanRepaymentPlanByAccountId,
   loanRateAdjustmentsByAccountId,
-  debtBorrowLprDiscountByAccountId,
-  debtBorrowStartDateByAccountId,
+  liabilityBorrowLprDiscountByAccountId,
+  liabilityBorrowStartDateByAccountId,
   selectedAccountId,
   selectedAccountKind,
-  debtPersonParam,
-  debtLoanTypeParam,
+  liabilityPersonParam,
+  liabilityLoanTypeParam,
 }: {
-  debtAccounts: DebtViewAccount[];
+  liabilityAccounts: LiabilityViewAccount[];
   cashDisplayBalanceByAccountId: Map<string, number>;
-  loanRepaymentPlanByAccountId: Map<string, DebtViewPlan>;
+  loanRepaymentPlanByAccountId: Map<string, LiabilityViewPlan>;
   loanRateAdjustmentsByAccountId: Map<string, Array<{ effectiveDate: string; annualRate: number }>>;
-  debtBorrowLprDiscountByAccountId: Map<string, number>;
-  debtBorrowStartDateByAccountId?: Map<string, string>;
+  liabilityBorrowLprDiscountByAccountId: Map<string, number>;
+  liabilityBorrowStartDateByAccountId?: Map<string, string>;
   selectedAccountId?: string | null;
   selectedAccountKind?: AccountKind | null;
-  debtPersonParam: string;
-  debtLoanTypeParam?: string | null;
+  liabilityPersonParam: string;
+  liabilityLoanTypeParam?: string | null;
 }) {
-  const selectedDebtLoanType = normalizeLoanType(debtLoanTypeParam);
-  const debtRowMap = new Map<string, DebtViewRow>();
-  const debtGroupKeyByAccountId = new Map<string, string>();
-  const debtGroupKeyByInstitutionId = new Map<string, string>();
-  const debtGroupKeyByCounterpartyId = new Map<string, string>();
-  const ordinaryDebtAccountIds: string[] = [];
-  const visibleDebtAccounts: Array<{
-    account: DebtViewAccount;
+  const selectedLiabilityLoanType = normalizeLoanType(liabilityLoanTypeParam);
+  const liabilityRowMap = new Map<string, LiabilityViewRow>();
+  const liabilityGroupKeyByAccountId = new Map<string, string>();
+  const liabilityGroupKeyByInstitutionId = new Map<string, string>();
+  const liabilityGroupKeyByCounterpartyId = new Map<string, string>();
+  const ordinaryLiabilityAccountIds: string[] = [];
+  const visibleLiabilityAccounts: Array<{
+    account: LiabilityViewAccount;
     institutionName: string;
     counterpartyName: string;
     objectName: string;
@@ -1012,17 +1012,17 @@ export function buildDebtRowsViewData({
   }> = [];
   const ordinaryAccountIdsByGroupKey = new Map<string, string[]>();
 
-  for (const account of debtAccounts) {
+  for (const account of liabilityAccounts) {
     const institutionName = (account.Institution?.shortName?.trim() || account.Institution?.name || "").trim();
     const counterpartyName = (account.Counterparty?.shortName?.trim() || account.Counterparty?.name || "").trim();
     const objectName = counterpartyName || institutionName || account.name;
     const balance = cashDisplayBalanceByAccountId.get(account.id) ?? toNumber(account.balance);
     const isInstitutionLoanAccount = account.kind === AccountKind.loan && !account.counterpartyId;
-    const isLoanAccount = isInstitutionLoanAccount && account.debtDirection !== DebtDirection.receivable;
-    if (isInstitutionLoanAccount && Math.abs(balance) < ACTIVE_DEBT_EPSILON) continue;
-    if (!isInstitutionLoanAccount && !account.isActive && Math.abs(balance) < ACTIVE_DEBT_EPSILON) continue;
+    const isLoanAccount = isInstitutionLoanAccount && account.liabilityDirection !== LiabilityDirection.receivable;
+    if (isInstitutionLoanAccount && Math.abs(balance) < ACTIVE_LIABILITY_EPSILON) continue;
+    if (!isInstitutionLoanAccount && !account.isActive && Math.abs(balance) < ACTIVE_LIABILITY_EPSILON) continue;
     const ordinaryGroupKey = objectName ? `settlement-object:${objectName}` : `settlement-account:${account.id}`;
-    visibleDebtAccounts.push({
+    visibleLiabilityAccounts.push({
       account,
       institutionName,
       counterpartyName,
@@ -1039,7 +1039,7 @@ export function buildDebtRowsViewData({
     }
   }
 
-  for (const visibleAccount of visibleDebtAccounts) {
+  for (const visibleAccount of visibleLiabilityAccounts) {
     const {
       account,
       objectName,
@@ -1049,7 +1049,7 @@ export function buildDebtRowsViewData({
       ordinaryGroupKey,
     } = visibleAccount;
     const loanPlan = loanRepaymentPlanByAccountId.get(account.id);
-    if (!isInstitutionLoanAccount) ordinaryDebtAccountIds.push(account.id);
+    if (!isInstitutionLoanAccount) ordinaryLiabilityAccountIds.push(account.id);
 
     const groupedOrdinaryAccount = !isInstitutionLoanAccount && (ordinaryAccountIdsByGroupKey.get(ordinaryGroupKey)?.length ?? 0) > 1;
     const defaultItemName = objectName ? `${objectName}${SETTLEMENT_ACCOUNT_SUFFIX}` : "";
@@ -1070,19 +1070,19 @@ export function buildDebtRowsViewData({
         : ORGANIZATION_SETTLEMENT_OBJECT_TYPE;
     const accountLoanType = isInstitutionLoanAccount ? resolveLoanType(account) ?? "home" : null;
     const isMortgageLoanAccount = accountLoanType === "home" || accountLoanType === "mortgage";
-    debtGroupKeyByAccountId.set(account.id, accountRowKey);
-    if (account.institutionId) debtGroupKeyByInstitutionId.set(account.institutionId, groupedOrdinaryAccount ? ordinaryGroupKey : accountRowKey);
-    if (account.counterpartyId) debtGroupKeyByCounterpartyId.set(account.counterpartyId, groupedOrdinaryAccount ? ordinaryGroupKey : accountRowKey);
+    liabilityGroupKeyByAccountId.set(account.id, accountRowKey);
+    if (account.institutionId) liabilityGroupKeyByInstitutionId.set(account.institutionId, groupedOrdinaryAccount ? ordinaryGroupKey : accountRowKey);
+    if (account.counterpartyId) liabilityGroupKeyByCounterpartyId.set(account.counterpartyId, groupedOrdinaryAccount ? ordinaryGroupKey : accountRowKey);
 
     const loanMemo = loanPlan ? decodeScheduledTaskMemo(loanPlan.memo) : null;
     const rawLoanRateAdjustments = resolveLoanRateAdjustments({
       tableAdjustments: loanPlan ? loanRateAdjustmentsByAccountId.get(account.id) : [],
       memoAdjustments: loanMemo?.loanRateAdjustments,
     });
-    const loanStartDate = debtBorrowStartDateByAccountId?.get(account.id) ?? (loanPlan?.startDate ? formatDateUtc(loanPlan.startDate) : "");
+    const loanStartDate = liabilityBorrowStartDateByAccountId?.get(account.id) ?? (loanPlan?.startDate ? formatDateUtc(loanPlan.startDate) : "");
     const mortgageLprDiscount = isMortgageLoanAccount
       ? loanMemo?.mortgageLprDiscount ??
-        debtBorrowLprDiscountByAccountId.get(account.id) ??
+        liabilityBorrowLprDiscountByAccountId.get(account.id) ??
         inferMortgageLprDiscountFromRateAdjustments(rawLoanRateAdjustments, { skipOnOrBefore: loanStartDate }) ??
         null
       : null;
@@ -1152,7 +1152,7 @@ export function buildDebtRowsViewData({
         })()
       : "";
 
-    const current = debtRowMap.get(rowKey) ?? {
+    const current = liabilityRowMap.get(rowKey) ?? {
       key: rowKey,
       name: accountRowName,
       objectType: accountObjectType,
@@ -1163,7 +1163,7 @@ export function buildDebtRowsViewData({
       institutionId: account.institutionId ?? "",
       counterpartyId: account.counterpartyId ?? "",
       counterpartyReimbursementEnabled: account.Counterparty?.isReimbursable === true,
-      itemType: balance >= 0 ? "【债权】应收款" : "【债务】应付款",
+      itemType: balance >= 0 ? "应收款" : "应付款",
       repaymentMethod: "",
       repaymentCycle: "",
       baseAnnualRate: loanMemo?.annualRate ?? null,
@@ -1193,7 +1193,7 @@ export function buildDebtRowsViewData({
       isLoan: isInstitutionLoanAccount,
       isConsumerLoan: account.isConsumerLoan === true,
       loanType: accountLoanType,
-    } satisfies DebtViewRow;
+    } satisfies LiabilityViewRow;
 
     current.accountCount += 1;
     current.accountIds.push(account.id);
@@ -1215,14 +1215,14 @@ export function buildDebtRowsViewData({
       current.nextRepaymentCashAccountId = loanPlan.cashAccountId ?? current.nextRepaymentCashAccountId;
       current.loanRateAdjustments = loanRateAdjustments;
     }
-    current.itemType = current.net >= 0 ? "【债权】应收款" : "【债务】应付款";
+    current.itemType = current.net >= 0 ? "应收款" : "应付款";
     current.remainingPrincipal = Math.abs(current.net);
     current.remainingTotal = signedRemainingTotal(current.net, current.remainingPrincipal, current.remainingInterest);
-    debtRowMap.set(rowKey, current);
+    liabilityRowMap.set(rowKey, current);
   }
 
-  const childRowsByParentKey = new Map<string, DebtViewRow[]>();
-  for (const row of debtRowMap.values()) {
+  const childRowsByParentKey = new Map<string, LiabilityViewRow[]>();
+  for (const row of liabilityRowMap.values()) {
     if (!row.parentKey) continue;
     const childRows = childRowsByParentKey.get(row.parentKey) ?? [];
     childRows.push(row);
@@ -1238,7 +1238,7 @@ export function buildDebtRowsViewData({
     const counterpartyIds = childRows.map((row) => row.counterpartyId).filter(Boolean);
     const institutionIds = childRows.map((row) => row.institutionId).filter(Boolean);
     const remainingPrincipal = Math.abs(net);
-    debtRowMap.set(parentKey, {
+    liabilityRowMap.set(parentKey, {
       key: parentKey,
       name: first.objectName || first.name,
       objectType: first.objectType,
@@ -1278,125 +1278,125 @@ export function buildDebtRowsViewData({
       isGroup: true,
       isLoan: false,
       loanType: null,
-    } satisfies DebtViewRow);
+    } satisfies LiabilityViewRow);
   }
 
-  const compareDebtRows = (a: DebtViewRow, b: DebtViewRow) => {
+  const compareLiabilityRows = (a: LiabilityViewRow, b: LiabilityViewRow) => {
     const amountDiff = (b.payable + b.receivable) - (a.payable + a.receivable);
-    if (Math.abs(amountDiff) > ACTIVE_DEBT_EPSILON) return amountDiff;
+    if (Math.abs(amountDiff) > ACTIVE_LIABILITY_EPSILON) return amountDiff;
     return a.name.localeCompare(b.name, "zh-CN");
   };
-  const topDebtRows = Array.from(debtRowMap.values())
+  const topLiabilityRows = Array.from(liabilityRowMap.values())
     .filter((row) => !row.parentKey)
-    .sort(compareDebtRows);
-  const debtRows: DebtViewRow[] = [];
-  for (const row of topDebtRows) {
-    debtRows.push(row);
+    .sort(compareLiabilityRows);
+  const liabilityRows: LiabilityViewRow[] = [];
+  for (const row of topLiabilityRows) {
+    liabilityRows.push(row);
     const childRows = childRowsByParentKey.get(row.key);
-    if (childRows?.length) debtRows.push(...[...childRows].sort(compareDebtRows));
+    if (childRows?.length) liabilityRows.push(...[...childRows].sort(compareLiabilityRows));
   }
-  const derivedDebtKey = (selectedAccountKind === AccountKind.loan || selectedAccountKind === AccountKind.settlement) && selectedAccountId
-    ? debtGroupKeyByAccountId.get(selectedAccountId) ?? `account:${selectedAccountId}`
+  const derivedLiabilityKey = (selectedAccountKind === AccountKind.loan || selectedAccountKind === AccountKind.settlement) && selectedAccountId
+    ? liabilityGroupKeyByAccountId.get(selectedAccountId) ?? `account:${selectedAccountId}`
     : "";
-  const legacyInstitutionDebtRow = debtPersonParam.startsWith("institution:")
-    ? debtRows.find((row) => row.key === debtGroupKeyByInstitutionId.get(debtPersonParam.slice("institution:".length)))
+  const legacyInstitutionLiabilityRow = liabilityPersonParam.startsWith("institution:")
+    ? liabilityRows.find((row) => row.key === liabilityGroupKeyByInstitutionId.get(liabilityPersonParam.slice("institution:".length)))
     : null;
-  const legacyCounterpartyDebtRow = debtPersonParam.startsWith("counterparty:")
-    ? debtRows.find((row) => row.key === debtGroupKeyByCounterpartyId.get(debtPersonParam.slice("counterparty:".length)))
+  const legacyCounterpartyLiabilityRow = liabilityPersonParam.startsWith("counterparty:")
+    ? liabilityRows.find((row) => row.key === liabilityGroupKeyByCounterpartyId.get(liabilityPersonParam.slice("counterparty:".length)))
     : null;
-  const explicitSelectedDebtKey = debtRows.some((row) => row.key === debtPersonParam)
-    ? debtPersonParam
-    : legacyInstitutionDebtRow
-      ? legacyInstitutionDebtRow.key
-    : legacyCounterpartyDebtRow
-      ? legacyCounterpartyDebtRow.key
-    : debtRows.some((row) => row.key === derivedDebtKey)
-      ? derivedDebtKey
+  const explicitSelectedLiabilityKey = liabilityRows.some((row) => row.key === liabilityPersonParam)
+    ? liabilityPersonParam
+    : legacyInstitutionLiabilityRow
+      ? legacyInstitutionLiabilityRow.key
+    : legacyCounterpartyLiabilityRow
+      ? legacyCounterpartyLiabilityRow.key
+    : liabilityRows.some((row) => row.key === derivedLiabilityKey)
+      ? derivedLiabilityKey
       : "";
-  const ordinaryDebtAccountIdSet = new Set(ordinaryDebtAccountIds);
-  const ordinaryDebtRows = debtRows.filter((row) => row.accountIds.some((id) => ordinaryDebtAccountIdSet.has(id)));
-  const selectedLoanTypeRows = selectedDebtLoanType
-    ? debtRows.filter((row) => !row.parentKey && row.isLoan && row.loanType === selectedDebtLoanType)
+  const ordinaryLiabilityAccountIdSet = new Set(ordinaryLiabilityAccountIds);
+  const ordinaryLiabilityRows = liabilityRows.filter((row) => row.accountIds.some((id) => ordinaryLiabilityAccountIdSet.has(id)));
+  const selectedLoanTypeRows = selectedLiabilityLoanType
+    ? liabilityRows.filter((row) => !row.parentKey && row.isLoan && row.loanType === selectedLiabilityLoanType)
     : [];
-  // When no debtPerson query explicitly selects a row, select the first visible
+  // When no liabilityPerson query explicitly selects a row, select the first visible
   // shell row by default (skipping settled rows) so details are visible on open.
   // The fallback comes from the unselected shell list, so the default selection
   // does not narrow the table above.
-  const fallbackShellRows = selectedDebtLoanType ? selectedLoanTypeRows : ordinaryDebtRows;
-  const fallbackSelectedDebtRow =
-    fallbackShellRows.find((row) => !isSettledDebtViewRow(row)) ?? fallbackShellRows[0] ?? null;
-  const selectedDebtKey = explicitSelectedDebtKey || fallbackSelectedDebtRow?.key || "";
-  const selectedDebtRow = debtRows.find((row) => row.key === selectedDebtKey) ?? null;
-  const selectedDebtRowIsOrdinary = !!selectedDebtRow?.accountIds?.some((id) => ordinaryDebtAccountIdSet.has(id));
+  const fallbackShellRows = selectedLiabilityLoanType ? selectedLoanTypeRows : ordinaryLiabilityRows;
+  const fallbackSelectedLiabilityRow =
+    fallbackShellRows.find((row) => !isSettledLiabilityViewRow(row)) ?? fallbackShellRows[0] ?? null;
+  const selectedLiabilityKey = explicitSelectedLiabilityKey || fallbackSelectedLiabilityRow?.key || "";
+  const selectedLiabilityRow = liabilityRows.find((row) => row.key === selectedLiabilityKey) ?? null;
+  const selectedLiabilityRowIsOrdinary = !!selectedLiabilityRow?.accountIds?.some((id) => ordinaryLiabilityAccountIdSet.has(id));
   // Selecting a specific loan should only highlight it and focus the detail
-  // panel. Keep the list showing all same-type debt rows so other loans do not
+  // panel. Keep the list showing all same-type loan rows so other loans do not
   // appear to disappear after a click.
-  const debtRowsForShell = selectedDebtLoanType
+  const liabilityRowsForShell = selectedLiabilityLoanType
     ? selectedLoanTypeRows
-    : selectedDebtRow && !selectedDebtRowIsOrdinary
-      ? debtRows.filter((row) => !row.parentKey && (row.isLoan || row.key === selectedDebtRow.key))
-      : ordinaryDebtRows;
-  const selectedDebtObjectValue = selectedDebtRow?.counterpartyId
-    ? `counterparty:${selectedDebtRow.counterpartyId}`
-    : selectedDebtRow?.institutionId
-      ? `institution:${selectedDebtRow.institutionId}`
+    : selectedLiabilityRow && !selectedLiabilityRowIsOrdinary
+      ? liabilityRows.filter((row) => !row.parentKey && (row.isLoan || row.key === selectedLiabilityRow.key))
+      : ordinaryLiabilityRows;
+  const selectedLiabilityObjectValue = selectedLiabilityRow?.counterpartyId
+    ? `counterparty:${selectedLiabilityRow.counterpartyId}`
+    : selectedLiabilityRow?.institutionId
+      ? `institution:${selectedLiabilityRow.institutionId}`
       : "";
-  const totalDebtPayable = debtRows.filter((row) => !row.parentKey).reduce((sum, row) => sum + row.payable, 0);
-  const totalDebtReceivable = debtRows.filter((row) => !row.parentKey).reduce((sum, row) => sum + row.receivable, 0);
+  const totalLiabilityPayable = liabilityRows.filter((row) => !row.parentKey).reduce((sum, row) => sum + row.payable, 0);
+  const totalLiabilityReceivable = liabilityRows.filter((row) => !row.parentKey).reduce((sum, row) => sum + row.receivable, 0);
 
   return {
-    debtRows,
-    debtRowsForShell,
-    selectedDebtKey,
-    selectedDebtRow,
-    selectedDebtObjectValue,
-    ordinaryDebtAccountIds,
-    totalDebtPayable,
-    totalDebtReceivable,
+    liabilityRows,
+    liabilityRowsForShell,
+    selectedLiabilityKey,
+    selectedLiabilityRow,
+    selectedLiabilityObjectValue,
+    ordinaryLiabilityAccountIds,
+    totalLiabilityPayable,
+    totalLiabilityReceivable,
   };
 }
 
-export function buildDebtRepaymentScheduleRows({
-  selectedDebtRow,
+export function buildLiabilityRepaymentScheduleRows({
+  selectedLiabilityRow,
   selectedRepaymentPlan,
-  debtEntriesRaw = [],
-  selectedDebtAccountIds,
+  liabilityEntriesRaw = [],
+  selectedLiabilityAccountIds,
   displayAccountId,
 }: {
-  selectedDebtRow: DebtViewRow | null;
-  selectedRepaymentPlan: DebtViewPlan | null;
-  debtEntriesRaw?: DebtMetricEntry[];
-  selectedDebtAccountIds?: Set<string>;
+  selectedLiabilityRow: LiabilityViewRow | null;
+  selectedRepaymentPlan: LiabilityViewPlan | null;
+  liabilityEntriesRaw?: LiabilityMetricEntry[];
+  selectedLiabilityAccountIds?: Set<string>;
   displayAccountId?: string | null;
-}): DebtRepaymentScheduleRow[] {
+}): LiabilityRepaymentScheduleRow[] {
   const selectedRepaymentMemo = selectedRepaymentPlan ? decodeScheduledTaskMemo(selectedRepaymentPlan.memo) : null;
   const selectedRemainingRuns = selectedRepaymentPlan?.totalRuns == null
     ? null
     : Math.max(0, selectedRepaymentPlan.totalRuns - Math.max(0, selectedRepaymentPlan.executedRuns ?? 0));
-  const repaymentScheduleRows: DebtRepaymentScheduleRow[] = [];
-  if (!selectedDebtRow || !selectedRepaymentPlan || selectedDebtRow.net >= -ACTIVE_DEBT_EPSILON) return repaymentScheduleRows;
+  const repaymentScheduleRows: LiabilityRepaymentScheduleRow[] = [];
+  if (!selectedLiabilityRow || !selectedRepaymentPlan || selectedLiabilityRow.net >= -ACTIVE_LIABILITY_EPSILON) return repaymentScheduleRows;
 
-  const scheduleDebtAccountIds = selectedDebtAccountIds ?? new Set(selectedDebtRow.accountIds);
-  const prepaymentAdjustments = debtEntriesRaw
+  const scheduleLiabilityAccountIds = selectedLiabilityAccountIds ?? new Set(selectedLiabilityRow.accountIds);
+  const prepaymentAdjustments = liabilityEntriesRaw
     .filter(
       (entry) =>
         entry.type === TransactionType.transfer &&
-        entry.source === "debt_prepay_out" &&
-        (scheduleDebtAccountIds.has(entry.accountId ?? "") || scheduleDebtAccountIds.has(entry.toAccountId ?? "")),
+        entry.source === "liability_prepay_out" &&
+        (scheduleLiabilityAccountIds.has(entry.accountId ?? "") || scheduleLiabilityAccountIds.has(entry.toAccountId ?? "")),
     )
     .map((entry) => ({
-      date: debtMetricDisplayDate(entry, displayAccountId).toISOString().slice(0, 10),
-      amount: Math.abs(debtPrincipalForAccountSide(entry, scheduleDebtAccountIds)),
+      date: liabilityMetricDisplayDate(entry, displayAccountId).toISOString().slice(0, 10),
+      amount: Math.abs(liabilityPrincipalForAccountSide(entry, scheduleLiabilityAccountIds)),
     }))
-    .filter((item) => item.amount > ACTIVE_DEBT_EPSILON)
+    .filter((item) => item.amount > ACTIVE_LIABILITY_EPSILON)
     .sort((a, b) => a.date.localeCompare(b.date));
   const todayKey = formatDateLocal(new Date());
 
-  let remainingPrincipal = Math.abs(selectedDebtRow.net);
+  let remainingPrincipal = Math.abs(selectedLiabilityRow.net);
   let runDate = selectedRepaymentPlan.nextRunDate;
   let lastScheduleDate =
     selectedRepaymentPlan.lastRunDate ??
-    parseDateInputToUtc(selectedDebtRow.loanStartDate) ??
+    parseDateInputToUtc(selectedLiabilityRow.loanStartDate) ??
     selectedRepaymentPlan.startDate;
   if (!selectedRepaymentPlan.lastRunDate) {
     const executedRuns = Math.max(0, selectedRepaymentPlan.executedRuns ?? 0);
@@ -1418,11 +1418,11 @@ export function buildDebtRepaymentScheduleRows({
       );
     }
   }
-  const rateAdjustments = normalizeLoanRateAdjustments(selectedDebtRow.loanRateAdjustments);
+  const rateAdjustments = normalizeLoanRateAdjustments(selectedLiabilityRow.loanRateAdjustments);
   const emittedAdjustmentKeys = new Set<string>();
   const maxRuns = Math.min(selectedRemainingRuns ?? 24, 360);
   let scheduledAmountForRun = toNumber(selectedRepaymentPlan.amount);
-  for (let index = 0; index < maxRuns && remainingPrincipal > ACTIVE_DEBT_EPSILON; index++) {
+  for (let index = 0; index < maxRuns && remainingPrincipal > ACTIVE_LIABILITY_EPSILON; index++) {
     const runDateKey = formatDateUtc(runDate);
     const lastScheduleDateKey = formatDateUtc(lastScheduleDate);
     for (const adjustment of rateAdjustments) {

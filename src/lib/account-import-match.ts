@@ -51,11 +51,11 @@ export function encodeImportAccountId(accountId: string) {
 
 // 财智导出的往来命名变体（XX的普通应付款/XX的普通应收款）与标准命名（XX的往来款）
 // 都解析出同一往来对象。账户名保留财智原名（原来是什么就是什么），往来款属性由账户类型（kind=settlement）+往来对象体现。
-const DEBT_ACCOUNT_NAME_RE = /^(.+?)的(?:往来款|普通应付款|普通应收款)$/;
+const SETTLEMENT_ACCOUNT_NAME_RE = /^(.+?)的(?:往来款|普通应付款|普通应收款)$/;
 
 /** Extract counterparty name from "XX的往来款"（含财智变体「XX的普通应付款/普通应收款」）. Returns null on no match. */
-export function parseDebtAccountName(v: string): string | null {
-  const m = v.trim().match(DEBT_ACCOUNT_NAME_RE);
+export function parseSettlementAccountName(v: string): string | null {
+  const m = v.trim().match(SETTLEMENT_ACCOUNT_NAME_RE);
   return m?.[1]?.trim() ?? null;
 }
 
@@ -92,7 +92,7 @@ export function importCounterKindFromCategory(category: string | undefined | nul
 
 /**
  * 「XX的YYY」形态且 XX 不是所有人（不在账户分组名单内）→ 可归属为往来对象 XX 的往来款账户。
- * 债务命名变体（XX的往来款/普通应付款/普通应收款）走 parseDebtAccountName，不在此重复。
+ * 往来款命名变体（XX的往来款/普通应付款/普通应收款）走 parseSettlementAccountName，不在此重复。
  */
 export function parseImportPersonAttributedCandidate(
   value: string | undefined | null,
@@ -104,7 +104,7 @@ export function parseImportPersonAttributedCandidate(
   const personName = match[1].trim();
   const restName = match[2].trim();
   if (!personName || !restName) return null;
-  if (parseDebtAccountName(raw)) return null;
+  if (parseSettlementAccountName(raw)) return null;
   if (isImportBankLikeName(personName)) return null;
   const personKey = normalizeImportAccountMatchKey(personName);
   if (!personKey) return null;
@@ -761,7 +761,7 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(a
     // "XX的往来款" pattern: try to match extracted counterparty name directly
     // against loan account names, bypassing kind-alias partial matching.
     if (targetKind === "settlement") {
-      const counterpartyName = parseDebtAccountName(raw);
+      const counterpartyName = parseSettlementAccountName(raw);
       if (counterpartyName) {
         const cKey = normalizeImportAccountMatchKey(counterpartyName);
         if (cKey) {

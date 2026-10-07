@@ -1356,7 +1356,7 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
 
   async function confirmImport(
     items: StatementImportPreviewItem[],
-    options?: { createDebtAccounts?: boolean; forceCreateOwnedMoneyAccounts?: boolean },
+    options?: { createLiabilityAccounts?: boolean; forceCreateOwnedMoneyAccounts?: boolean },
   ) {
     if (items.length === 0) return;
     setBusy(true);
@@ -1370,7 +1370,7 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
         items: batchItems,
         defaultAccountName: statementDefaultAccountName(props),
         autoCreateAccounts: false,
-        createDebtAccounts: options?.createDebtAccounts === true,
+        createLiabilityAccounts: options?.createLiabilityAccounts === true,
         forceCreateOwnedMoneyAccounts: options?.forceCreateOwnedMoneyAccounts === true,
         // 余额校准行放最后一批：所有交易记录落库后再校准余额
         ...(withBalanceAdjustments && balanceAdjustments.length > 0 ? { balanceAdjustments } : {}),

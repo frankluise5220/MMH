@@ -9,8 +9,8 @@ import {
   BALANCE_RECONCILE_TARGET_PREFIX,
   getBalanceReconcileTarget,
 } from "@/lib/balance-reconcile";
-import { isLoanOrSettlementAccountKind } from "@/lib/debt";
-import { debtPrincipalForAccountSide } from "@/lib/debt";
+import { isLoanOrSettlementAccountKind } from "@/lib/liability";
+import { liabilityPrincipalForAccountSide } from "@/lib/liability";
 import { txRecordAccountScopeWhere } from "@/lib/transaction-account-scope";
 import { logger } from "@/lib/logger";
 import { depositRedemptionPrincipal } from "@/lib/server/deposit-lot-balance";
@@ -33,7 +33,7 @@ export const BALANCE_ENTRY_SELECT = {
   toAccountId: true,
   toNote: true,
   source: true,
-  debtPrincipalAmount: true,
+  principalAmount: true,
   fundProductType: true,
   fundSubtype: true,
   fundConfirmDate: true,
@@ -142,7 +142,7 @@ function foldBalanceEntry(
       return applyBalanceReconcileEntry(runningBalance, entry, account.id);
     }
     if (entry.type !== TransactionType.transfer) return runningBalance;
-    return runningBalance + debtPrincipalForAccountSide(entry, account.id);
+    return runningBalance + liabilityPrincipalForAccountSide(entry, account.id);
   }
   return applyBalanceReconcileEntry(runningBalance, entry, account.id);
 }
@@ -151,7 +151,7 @@ function balanceEntryDelta(entry: BalanceEntryRow, account: AccountBalanceLike) 
   if (isBalanceAnchorEntry(entry)) return null;
   if (isLoanOrSettlementAccountKind(account.kind)) {
     if (entry.type !== TransactionType.transfer) return 0;
-    return debtPrincipalForAccountSide(entry, account.id);
+    return liabilityPrincipalForAccountSide(entry, account.id);
   }
   return applyBalanceReconcileEntry(0, entry, account.id);
 }
@@ -436,7 +436,7 @@ export async function computeAccountDisplayBalances(
         toAccountId: true,
         toNote: true,
         source: true,
-        debtPrincipalAmount: true,
+        principalAmount: true,
         fundSubtype: true,
         fundConfirmDate: true,
         fundArrivalDate: true,
@@ -494,7 +494,7 @@ export async function computeAccountDisplayBalances(
         toAccountId: true,
         toNote: true,
         source: true,
-        debtPrincipalAmount: true,
+        principalAmount: true,
         fundSubtype: true,
         fundConfirmDate: true,
         fundArrivalDate: true,
@@ -536,7 +536,7 @@ export async function computeAccountDisplayBalances(
             continue;
           }
           if (entry.type !== TransactionType.transfer) continue;
-          runningBalance += debtPrincipalForAccountSide(entry, account.id);
+          runningBalance += liabilityPrincipalForAccountSide(entry, account.id);
           continue;
         }
         runningBalance = applyBalanceReconcileEntry(runningBalance, entry, account.id);
@@ -589,7 +589,7 @@ export async function computeLoanPrincipalBalancesAsOf(
       toAccountId: true,
       toNote: true,
       source: true,
-      debtPrincipalAmount: true,
+      principalAmount: true,
       fundSubtype: true,
       fundConfirmDate: true,
       fundArrivalDate: true,
@@ -621,7 +621,7 @@ export async function computeLoanPrincipalBalancesAsOf(
         continue;
       }
       if (entry.type !== TransactionType.transfer) continue;
-      runningBalance += debtPrincipalForAccountSide(entry, accountId);
+      runningBalance += liabilityPrincipalForAccountSide(entry, accountId);
     }
     result.set(accountId, runningBalance);
   }

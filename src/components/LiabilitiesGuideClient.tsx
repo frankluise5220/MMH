@@ -3,7 +3,7 @@
 import { useCallback, useMemo, useState } from "react";
 import { Building2, CheckCircle2, Landmark, Plus, UserRound } from "lucide-react";
 
-import { DebtTransactionModal } from "@/components/DebtTransactionModal";
+import { LiabilityTransactionModal } from "@/components/LiabilityTransactionModal";
 import { EntityCreateForm } from "@/components/EntityCreateForm";
 import { institutionTypeLabel, type I18nT } from "@/lib/account-kinds";
 import { formatMoney } from "@/lib/format";
@@ -28,7 +28,7 @@ type AccountOption = {
   counterpartyId?: string | null;
   institutionType?: string | null;
   isInstitutionLoan?: boolean;
-  debtDirection?: "payable" | "receivable" | null;
+  liabilityDirection?: "payable" | "receivable" | null;
 };
 
 type SmartSelectLikeOption = {
@@ -39,7 +39,7 @@ type SmartSelectLikeOption = {
   isHeader?: boolean;
   parentId?: string;
   kind?: string | null;
-  debtDirection?: string | null;
+  liabilityDirection?: string | null;
   institutionId?: string | null;
   billingDay?: number | null;
   currency?: string | null;
@@ -61,8 +61,8 @@ const GUIDE_STEPS = [
 
 export function LiabilitiesGuideClient({
   counterparties,
-  debtAccounts,
-  debtObjectOptions,
+  liabilityAccounts,
+  liabilityObjectOptions,
   cashAccounts,
   cashAccountSSOptions,
   nestedFieldData,
@@ -70,8 +70,8 @@ export function LiabilitiesGuideClient({
   action,
 }: {
   counterparties: CounterpartyGuideRow[];
-  debtAccounts: AccountOption[];
-  debtObjectOptions: SmartSelectLikeOption[];
+  liabilityAccounts: AccountOption[];
+  liabilityObjectOptions: SmartSelectLikeOption[];
   cashAccounts: AccountOption[];
   cashAccountSSOptions: SmartSelectLikeOption[];
   nestedFieldData: NestedFieldData;
@@ -202,17 +202,17 @@ export function LiabilitiesGuideClient({
               {t("liabilitiesGuide.guideTitle")}
             </div>
             {selectedRow ? (
-              <DebtTransactionModal
+              <LiabilityTransactionModal
                 key={selectedRow.id}
-                debtAccounts={debtAccounts}
+                liabilityAccounts={liabilityAccounts}
                 cashAccounts={cashAccounts}
-                debtObjectOptions={debtObjectOptions}
+                liabilityObjectOptions={liabilityObjectOptions}
                 cashAccountSSOptions={cashAccountSSOptions}
                 nestedFieldData={nestedFieldData}
-                defaultDebtInstitutionId={`counterparty:${selectedRow.id}`}
+                defaultLiabilityInstitutionId={`counterparty:${selectedRow.id}`}
                 defaultCashAccountId={defaultCashAccountId}
                 action={action}
-                triggerLabel={t("liabilitiesGuide.newDebtTransaction")}
+                triggerLabel={t("liabilitiesGuide.newLiabilityTransaction")}
               />
             ) : null}
           </div>

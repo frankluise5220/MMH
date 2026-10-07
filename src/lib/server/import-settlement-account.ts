@@ -1,5 +1,5 @@
 import { AccountKind, type Prisma } from "@prisma/client";
-import { parseDebtAccountName, parseImportPersonAttributedCandidate } from "@/lib/account-import-match";
+import { parseSettlementAccountName, parseImportPersonAttributedCandidate } from "@/lib/account-import-match";
 import { assertCounterpartyDisplayNamesUnique } from "@/lib/server/counterparty-name-unique";
 import { ensureInstitutionForCounterparty } from "@/lib/server/counterparty-sync";
 
@@ -8,16 +8,16 @@ type CreatedImportAccount = { id: string; name: string; kind: string; institutio
 
 const resolutionCache = new Map<string, Map<string, { accountId: string | null; created: boolean }>>();
 
-function debtResolveCacheGet(householdId: string, key: string): { accountId: string | null; created: boolean } | undefined {
+function liabilityResolveCacheGet(householdId: string, key: string): { accountId: string | null; created: boolean } | undefined {
   return resolutionCache.get(householdId)?.get(key);
 }
-function debtResolveCacheSet(householdId: string, key: string, val: { accountId: string | null; created: boolean }) {
+function liabilityResolveCacheSet(householdId: string, key: string, val: { accountId: string | null; created: boolean }) {
   let m = resolutionCache.get(householdId);
   if (!m) { m = new Map(); resolutionCache.set(householdId, m); }
   m.set(key, val);
 }
 
-type DebtResolveOptions = {
+type LiabilityResolveOptions = {
   createCounterparty?: boolean;
   createAccount?: boolean;
   createdAccounts?: CreatedImportAccount[];
@@ -39,7 +39,7 @@ async function resolveOrCreateSettlementForCounterparty(
   cacheKey: string,
   personName: string,
   accountName: string,
-  options: DebtResolveOptions,
+  options: LiabilityResolveOptions,
 ): Promise<string | null> {
   let counterparty = await tx.counterparty.findFirst({
     where: {
@@ -71,7 +71,7 @@ async function resolveOrCreateSettlementForCounterparty(
     },
     orderBy: [{ isActive: "desc" }, { createdAt: "asc" }],
   });
-  if (existing) { debtResolveCacheSet(householdId, cacheKey, { accountId: existing.id, created: false });
+  if (existing) { liabilityResolveCacheSet(householdId, cacheKey, { accountId: existing.id, created: false });
     if (!existing.isActive) {
       await tx.account.update({
         where: { id: existing.id },
@@ -93,12 +93,12 @@ async function resolveOrCreateSettlementForCounterparty(
       where: { householdId },
       orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
     }));
-  if (!group) { debtResolveCacheSet(householdId, cacheKey, { accountId: null, created: false }); return null; }
+  if (!group) { liabilityResolveCacheSet(householdId, cacheKey, { accountId: null, created: false }); return null; }
   const created = await tx.account.create({
     data: {
       name: accountName,
       kind: AccountKind.settlement,
-      debtDirection: "receivable",
+      liabilityDirection: "receivable",
       currency: "CNY",
       groupId: group.id,
       counterpartyId: counterparty.id,
@@ -106,7 +106,7 @@ async function resolveOrCreateSettlementForCounterparty(
       isActive: true,
     },
   });
-  debtResolveCacheSet(householdId, cacheKey, { accountId: created.id, created: true });
+  liabilityResolveCacheSet(householdId, cacheKey, { accountId: created.id, created: true });
   options.createdAccounts?.push({ id: created.id, name: created.name, kind: created.kind });
   return created.id;
 }
@@ -126,22 +126,22 @@ async function resolveOrCreateSettlementForCounterparty(
  * Returns the account ID, or null if the name doesn't match the pattern
  * or no matching Counterparty was found.
  */
-export async function resolveDebtAccountByCounterpartyName(
+export async function resolveSettlementAccountByCounterpartyName(
   tx: Db,
   householdId: string,
   accountName: string,
-  options: DebtResolveOptions = {},
+  options: LiabilityResolveOptions = {},
 ): Promise<string | null> {
   const cacheKey = accountName;
   const cached = options.createCounterparty || options.createAccount
     ? undefined
-    : debtResolveCacheGet(householdId, cacheKey);
+    : liabilityResolveCacheGet(householdId, cacheKey);
   if (cached !== undefined) return cached.accountId;
   // Try "XX的往来款" pattern first, then fall back to the raw name.
-  const parsedCounterpartyName = parseDebtAccountName(accountName);
+  const parsedCounterpartyName = parseSettlementAccountName(accountName);
   if (!parsedCounterpartyName && (options.createCounterparty || options.createAccount)) return null;
   const counterpartyName = parsedCounterpartyName ?? accountName.trim();
-  if (!counterpartyName) { debtResolveCacheSet(householdId, cacheKey, { accountId: null, created: false }); return null; }
+  if (!counterpartyName) { liabilityResolveCacheSet(householdId, cacheKey, { accountId: null, created: false }); return null; }
 
   const resolved = await resolveOrCreateSettlementForCounterparty(tx, householdId, cacheKey, counterpartyName, accountName.trim(), options);
   return resolved;
@@ -157,14 +157,14 @@ export async function resolveDebtAccountByCounterpartyName(
  * never during resolve-only lookups, and never for owner names (those go
  * through the owned-money-account path) or bank-like prefixes.
  */
-export async function resolveDebtAccountByLoosePersonName(
+export async function resolveSettlementAccountByLoosePersonName(
   tx: Db,
   householdId: string,
   accountName: string,
-  options: DebtResolveOptions = {},
+  options: LiabilityResolveOptions = {},
 ): Promise<string | null> {
   const cacheKey = accountName;
-  const cached = debtResolveCacheGet(householdId, cacheKey);
+  const cached = liabilityResolveCacheGet(householdId, cacheKey);
   if (cached !== undefined) return cached.accountId;
   const candidate = parseImportPersonAttributedCandidate(accountName, await loadHouseholdOwnerNames(tx, householdId));
   if (!candidate) return null;

@@ -12,7 +12,7 @@ export function isStockAccountInstitutionType(type: string | null | undefined) {
   return type === "brokerage";
 }
 
-// Consumer loans use financial institutions; counterparty debt units are settlement owners.
+// Consumer loans use financial institutions; counterparty-backed settlement accounts
 // 贷款机构类型子集统一引用 account-kinds（bank/公积金中心/往来款），不要在这里手抄。
 export function isConsumerLoanInstitutionType(type: string | null | undefined) {
   return isInstitutionTypeOf(type, LOAN_DIALOG_INSTITUTION_TYPE_VALUES);
@@ -21,7 +21,7 @@ export function isConsumerLoanInstitutionType(type: string | null | undefined) {
 export function allowedInstitutionTypesForAccount(
   kind: string | null | undefined,
   investProductType: string | null | undefined,
-  options?: { includeLegacyDebtInstitution?: boolean },
+  options?: { includeLegacyLiabilityInstitution?: boolean },
 ) {
   const accountKind = kind ?? "";
   const productType = investProductType ?? "";
@@ -32,10 +32,10 @@ export function allowedInstitutionTypesForAccount(
   if (accountKind === "insurance") return ["insurance"];
   if (accountKind === "loan") {
     const base = LOAN_ACCOUNT_INSTITUTION_TYPE_VALUES;
-    return options?.includeLegacyDebtInstitution ? [...base, "debt"] : [...base];
+    return options?.includeLegacyLiabilityInstitution ? [...base, "lender"] : [...base];
   }
   if (accountKind === "settlement") {
-    return options?.includeLegacyDebtInstitution ? ["person", "organization"] : [];
+    return options?.includeLegacyLiabilityInstitution ? ["person", "organization"] : [];
   }
   if (accountKind === "investment") {
     if (productType === "stock") return ["brokerage"];
@@ -65,7 +65,7 @@ export function accountInstitutionTypeIsAllowed(
   kind: string | null | undefined,
   investProductType: string | null | undefined,
   institutionType: string | null | undefined,
-  options?: { includeLegacyDebtInstitution?: boolean },
+  options?: { includeLegacyLiabilityInstitution?: boolean },
 ) {
   if (!institutionType) return false;
   return allowedInstitutionTypesForAccount(kind, investProductType, options).includes(institutionType);
