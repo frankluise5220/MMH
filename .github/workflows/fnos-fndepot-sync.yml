@@ -21,6 +21,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
         with:
+          # 必须 checkout main（而非触发 release 的 tag）：本 workflow 要往 main
+          # 回填 fnpack.json 元数据。若 checkout 到 tag（detached HEAD），末尾
+          # `git push HEAD:main` 会因 main 上已有 tag 之后的 commit 而 non-fast-forward
+          # 被拒（2026-10-04 v0.1.70 发布时即因此失败，导致 FnDepot 源缺新版本条目）。
+          # fetch-depth: 0 保证拿到全部 tag，供「Resolve release version」里的
+          # `git tag -l` 校验使用。
+          ref: main
           fetch-depth: 0
 
       - name: Set up Node
@@ -32,10 +39,16 @@ jobs:
         id: meta
         env:
           DISPATCH_VERSION: ${{ github.event.inputs.package_version }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           set -euo pipefail
+          # 版本来源优先级：workflow_dispatch 输入 > release 事件的 tag_name > package.json。
+          # 不能用 package.json 作唯一来源：checkout 到 main 时 package.json 可能已 bump 到
+          # 更高版本，而本次要同步的是「刚发布的 release」对应的版本（= release tag）。
           if [ -n "${DISPATCH_VERSION}" ]; then
             version="${DISPATCH_VERSION#v}"
+          elif [ -n "${RELEASE_TAG}" ]; then
+            version="${RELEASE_TAG#v}"
           else
             version="$(node -p "require('./package.json').version")"
           fi
@@ -101,4 +114,9 @@ jobs:
             exit 0
           fi
           git commit -m "chore(fnos): backfill FnDepot source metadata for ${{ steps.meta.outputs.tag }}"
+          # 推送前 rebase 到远端 main 最新提交：即使本 workflow 运行期间有并发
+          # 提交（如 release 流程同时改 main），也先把本地的回填 commit 挪到
+          # main 最新 tip 之上再推，避免 non-fast-forward。checkout 已是 main 分支，
+          # rebase 不会产生分叉。
+          git pull --rebase origin main
           git push origin HEAD:main
