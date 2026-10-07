@@ -2064,6 +2064,18 @@ const Database = require("better-sqlite3");
 
 const MIGRATIONS = [
   {
+    // External API key capability: "read" (query only) or "write"
+    // (query + bookkeeping). Defaults to "write" so keys created before this
+    // column existed keep the full access they already had.
+    version: "20261006_add_access_key_scope",
+    description: "Add AccessKey.scope: read/write capability for external API keys",
+    apply(db) {
+      if (tableExists(db, "AccessKey")) {
+        addColumnIfMissing(db, "AccessKey", "scope", "TEXT NOT NULL DEFAULT 'write'");
+      }
+    },
+  },
+  {
     // Owner group <-> family member data-layer link: AccountGroup.institutionId.
     // SQLite 的 FK 约束由 Prisma 侧负责（与 bond 存单列一致，这里只补列与索引）；
     // 配对数据（组↔成员互建互链）由应用层 system-task 自愈完成，不在此处造数据。
@@ -2750,6 +2762,94 @@ const MIGRATIONS = [
           const next = shiftMaturityToAnniversary(row.maturity, row.start);
           if (next !== null) update.run(next, row.id);
         }
+      }
+    },
+  },
+  {
+    // 2026-10-06 口径定版：贷款 = loan，往来款 = settlement，负债 = liability；
+    // debt 这个名字在库中释放，留给未来真正的「债务」概念。全部为无损改名。
+    version: "20261006_liability_terminology",
+    description: "Rename debt* storage to liability semantics (columns / agreement table / source prefix / lender institution type)",
+    apply(db) {
+      const renameColumn = (table, from, to) => {
+        if (!tableExists(db, table)) return;
+        if (!columnExists(db, table, from) || columnExists(db, table, to)) return;
+        db.exec("ALTER TABLE " + quoteIdent(table) + " RENAME COLUMN " + quoteIdent(from) + " TO " + quoteIdent(to));
+      };
+      renameColumn("Account", "debtDirection", "liabilityDirection");
+      renameColumn("transactions", "debtPrincipalAmount", "principalAmount");
+      renameColumn("transactions", "debtInterestAmount", "interestAmount");
+      renameColumn("transactions", "debtFeeAmount", "feeAmount");
+      if (tableExists(db, "DebtAgreement") && !tableExists(db, "SettlementAgreement")) {
+        db.exec("ALTER TABLE " + quoteIdent("DebtAgreement") + " RENAME TO " + quoteIdent("SettlementAgreement"));
+        db.exec('DROP INDEX IF EXISTS "DebtAgreement_accountId_key"');
+        db.exec('DROP INDEX IF EXISTS "DebtAgreement_householdId_dueDate_idx"');
+      }
+      if (tableExists(db, "SettlementAgreement")) {
+        db.exec('CREATE UNIQUE INDEX IF NOT EXISTS "SettlementAgreement_accountId_key" ON "SettlementAgreement"("accountId")');
+        db.exec('CREATE INDEX IF NOT EXISTS "SettlementAgreement_householdId_dueDate_idx" ON "SettlementAgreement"("householdId", "dueDate")');
+      }
+      if (tableExists(db, "transactions")) {
+        db.prepare("UPDATE transactions SET source = 'liability_' || substr(source, 6) WHERE substr(source, 1, 5) = 'debt_'").run();
+      }
+      if (tableExists(db, "Institution")) {
+        db.prepare("UPDATE " + quoteIdent("Institution") + " SET type = 'lender' WHERE type = 'debt'").run();
+      }
+    },
+  },
+  {
+    // 2026-10-07 贷款类别（LoanCategory）：贷款类型从固定枚举升级为可管理的类别主数据。
+    // 全新安装由 native-init.sql 建表；这里给存量库建表 + 播种四个内置类别 + 映射存量贷款。
+    // 注意：这里的字符串会被外层模板字面量求值，所以 SQL 文本一律用单引号 JS 字符串，
+    // 其中的单引号 SQL 字面量全部走参数绑定，避免转义踩坑。
+    version: "20261007_add_loan_category",
+    description: "Add LoanCategory master data and Account.loanCategoryId, seed the four built-in loan categories",
+    apply(db) {
+      if (!tableExists(db, "LoanCategory")) {
+        db.exec(
+          "CREATE TABLE " + quoteIdent("LoanCategory") + " (" +
+            '"id" TEXT NOT NULL PRIMARY KEY, ' +
+            '"householdId" TEXT NOT NULL, ' +
+            '"name" TEXT NOT NULL, ' +
+            '"baseType" TEXT NOT NULL, ' +
+            '"sortOrder" INTEGER NOT NULL DEFAULT 0, ' +
+            '"isSystem" BOOLEAN NOT NULL DEFAULT false, ' +
+            '"isActive" BOOLEAN NOT NULL DEFAULT true, ' +
+            '"createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, ' +
+            '"updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, ' +
+            'CONSTRAINT "LoanCategory_householdId_fkey" FOREIGN KEY ("householdId") REFERENCES "Household"("id") ON DELETE CASCADE ON UPDATE CASCADE' +
+            ")",
+        );
+      }
+      db.exec('CREATE UNIQUE INDEX IF NOT EXISTS "LoanCategory_householdId_name_key" ON "LoanCategory"("householdId","name")');
+      db.exec('CREATE INDEX IF NOT EXISTS "LoanCategory_householdId_sortOrder_idx" ON "LoanCategory"("householdId","sortOrder")');
+      addColumnIfMissing(db, "Account", "loanCategoryId", "TEXT");
+      db.exec('CREATE INDEX IF NOT EXISTS "Account_householdId_loanCategoryId_idx" ON "Account"("householdId","loanCategoryId")');
+      if (tableExists(db, "Account")) {
+        db.prepare(
+          'UPDATE "Account" SET "loanType" = CASE WHEN "isConsumerLoan" = 1 THEN ? ELSE ? END WHERE "kind" = ? AND "loanType" IS NULL',
+        ).run("consumer", "home", "loan");
+      }
+      if (tableExists(db, "Household") && tableExists(db, "LoanCategory")) {
+        const insertCategory = db.prepare(
+          'INSERT OR IGNORE INTO "LoanCategory" ("id","householdId","name","baseType","sortOrder","isSystem","isActive","createdAt","updatedAt")' +
+            " VALUES (?, ?, ?, ?, ?, 1, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)",
+        );
+        for (const household of db.prepare('SELECT "id" AS id FROM "Household"').all()) {
+          for (const [name, baseType, sortOrder] of [
+            ["房贷", "home", 0],
+            ["消费贷", "consumer", 1],
+            ["抵押贷", "mortgage", 2],
+            ["其他贷款", "other", 3],
+          ]) {
+            insertCategory.run("lc_" + household.id + "_" + baseType, household.id, name, baseType, sortOrder);
+          }
+        }
+      }
+      if (tableExists(db, "Account")) {
+        db.prepare(
+          'UPDATE "Account" SET "loanCategoryId" = ? || "householdId" || ? || "loanType" WHERE "kind" = ? AND "loanCategoryId" IS NULL AND "loanType" IS NOT NULL',
+        ).run("lc_", "_", "loan");
       }
     },
   },

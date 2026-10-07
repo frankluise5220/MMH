@@ -109,6 +109,39 @@ function step(message) {
   console.log("\n=== [win-desktop] " + message + " ===");
 }
 
+function isWritableDir(dir) {
+  if (!dir) return false;
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+    const probe = path.join(dir, ".mmh-write-test");
+    fs.writeFileSync(probe, "ok");
+    fs.rmSync(probe, { force: true });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// NSIS (driven by electron-builder) writes intermediate scripts into %TEMP% and
+// aborts with `!include: could not find "…\nstXXXX.tmp"` when that directory is
+// not writable — which happens when TEMP resolves to C:\Windows\TEMP from a
+// restricted shell. Keep the inherited TEMP when it works, otherwise point the
+// packager at a directory next to the build output.
+function packageEnv() {
+  const base = {
+    CSC_IDENTITY_AUTO_DISCOVERY: "false",
+    ELECTRON_BUILDER_BINARIES_MIRROR: "https://npmmirror.com/mirrors/electron-builder-binaries/",
+  };
+  if (isWritableDir(process.env.TEMP) || isWritableDir(process.env.TMP)) return base;
+  const fallback = path.join(artifacts, "nsis-tmp");
+  if (!isWritableDir(fallback)) {
+    console.warn("Neither TEMP nor " + fallback + " is writable; the NSIS step may fail.");
+    return base;
+  }
+  console.warn("TEMP is not writable; building the installer with TEMP=" + fallback);
+  return { ...base, TEMP: fallback, TMP: fallback, TMPDIR: fallback };
+}
+
 // ---------------------------------------------------------------- build app
 if (!skipBuild) {
   step("1/4 generate native SQLite schema");
@@ -121,10 +154,17 @@ if (!skipBuild) {
   });
 
   step("3/4 next build (standalone)");
+  // Base-path contract: the desktop shell loads http://127.0.0.1:<port> with no
+  // path at all (electron/main.cjs), so this build MUST stay on the origin
+  // root. `run()` merges process.env, so an MMH_BASE_PATH left over in the
+  // shell (e.g. right after building the fnOS package, the only channel that
+  // sets /app/mmh) would quietly bake a prefix in and leave every route 404
+  // inside the desktop window. Pin it explicitly to empty.
   run("npm", ["run", "build"], {
     DATABASE_URL: "file:./native-build.db",
     PRISMA_SCHEMA_PATH: nativeSchema,
     MMH_DEPLOY_TARGET: "windows",
+    MMH_BASE_PATH: "",
   });
 
   step("4/4 prisma generate (restore pg schema)");
@@ -215,6 +255,93 @@ function addColumnIfMissing(db, table, column, definition) {
   }
 }
 
+// Rename a column only when the old name is present and the new one is not, so
+// every call is idempotent. Table/column names here are internal constants.
+function renameColumnIfNeeded(db, table, from, to) {
+  if (!tableExists(db, table)) return;
+  if (!columnExists(db, table, from) || columnExists(db, table, to)) return;
+  db.exec('ALTER TABLE "' + table + '" RENAME COLUMN "' + from + '" TO "' + to + '"');
+}
+
+function applyLiabilityTerminologyMigration(db) {
+  // 2026-10-06 口径定版：debt* 存储改名（贷款 = loan，往来款 = settlement，负债 = liability）。
+  // 与 prisma/migrations/20261006_liability_terminology、scripts/docker-entrypoint.sh 以及
+  // scripts/build-fnos-package.cjs 的 MIGRATIONS 同名同义，全部无损改名。
+  // 漏掉这段：升级后的旧桌面库缺少 Account.liabilityDirection，打开概览/费用报销等页面会报
+  // "no such column: liabilityDirection"（生产构建下即 "Server Components render" 通用报错）。
+  renameColumnIfNeeded(db, "Account", "debtDirection", "liabilityDirection");
+  renameColumnIfNeeded(db, "transactions", "debtPrincipalAmount", "principalAmount");
+  renameColumnIfNeeded(db, "transactions", "debtInterestAmount", "interestAmount");
+  renameColumnIfNeeded(db, "transactions", "debtFeeAmount", "feeAmount");
+  if (tableExists(db, "DebtAgreement") && !tableExists(db, "SettlementAgreement")) {
+    db.exec('ALTER TABLE "DebtAgreement" RENAME TO "SettlementAgreement"');
+    db.exec('DROP INDEX IF EXISTS "DebtAgreement_accountId_key"');
+    db.exec('DROP INDEX IF EXISTS "DebtAgreement_householdId_dueDate_idx"');
+  }
+  if (tableExists(db, "SettlementAgreement")) {
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS "SettlementAgreement_accountId_key" ON "SettlementAgreement"("accountId")');
+    db.exec('CREATE INDEX IF NOT EXISTS "SettlementAgreement_householdId_dueDate_idx" ON "SettlementAgreement"("householdId", "dueDate")');
+  }
+  if (tableExists(db, "transactions")) {
+    db.prepare("UPDATE transactions SET source = 'liability_' || substr(source, 6) WHERE substr(source, 1, 5) = 'debt_'").run();
+  }
+  if (tableExists(db, "Institution")) {
+    db.prepare('UPDATE "Institution" SET type = \\'lender\\' WHERE type = \\'debt\\'').run();
+  }
+}
+
+function applyLoanCategoryMigration(db) {
+  // 2026-10-07 贷款类别（LoanCategory）：与 prisma/migrations/20261007_add_loan_category、
+  // scripts/docker-entrypoint.sh 以及 scripts/build-fnos-package.cjs 的 MIGRATIONS 同名同义。
+  // 全新安装由 native-init.sql 建表；这里给存量桌面库补列 + 播种四个内置类别 + 映射存量贷款。
+  // 漏掉这段：升级后的旧桌面库缺少 Account.loanCategoryId，读账户会报
+  // "no such column: Account.loanCategoryId"（生产构建下即 "Server Components render" 通用报错）。
+  if (!tableExists(db, "LoanCategory")) {
+    db.exec(
+      'CREATE TABLE "LoanCategory" (' +
+        '"id" TEXT NOT NULL PRIMARY KEY, ' +
+        '"householdId" TEXT NOT NULL, ' +
+        '"name" TEXT NOT NULL, ' +
+        '"baseType" TEXT NOT NULL, ' +
+        '"sortOrder" INTEGER NOT NULL DEFAULT 0, ' +
+        '"isSystem" BOOLEAN NOT NULL DEFAULT false, ' +
+        '"isActive" BOOLEAN NOT NULL DEFAULT true, ' +
+        '"createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, ' +
+        '"updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP' +
+        ")",
+    );
+  }
+  db.exec('CREATE UNIQUE INDEX IF NOT EXISTS "LoanCategory_householdId_name_key" ON "LoanCategory"("householdId","name")');
+  db.exec('CREATE INDEX IF NOT EXISTS "LoanCategory_householdId_sortOrder_idx" ON "LoanCategory"("householdId","sortOrder")');
+  addColumnIfMissing(db, "Account", "loanCategoryId", "TEXT");
+  db.exec('CREATE INDEX IF NOT EXISTS "Account_householdId_loanCategoryId_idx" ON "Account"("householdId","loanCategoryId")');
+  if (tableExists(db, "Account")) {
+    db.prepare(
+      'UPDATE "Account" SET "loanType" = CASE WHEN "isConsumerLoan" = 1 THEN ? ELSE ? END WHERE "kind" = ? AND "loanType" IS NULL',
+    ).run("consumer", "home", "loan");
+  }
+  if (tableExists(db, "Household")) {
+    const insertCategory = db.prepare(
+      'INSERT OR IGNORE INTO "LoanCategory" ("id","householdId","name","baseType","sortOrder","isSystem","isActive","createdAt","updatedAt") VALUES (?, ?, ?, ?, ?, 1, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)',
+    );
+    for (const household of db.prepare('SELECT "id" AS id FROM "Household"').all()) {
+      for (const [name, baseType, sortOrder] of [
+        ["房贷", "home", 0],
+        ["消费贷", "consumer", 1],
+        ["抵押贷", "mortgage", 2],
+        ["其他贷款", "other", 3],
+      ]) {
+        insertCategory.run("lc_" + household.id + "_" + baseType, household.id, name, baseType, sortOrder);
+      }
+    }
+  }
+  if (tableExists(db, "Account")) {
+    db.prepare(
+      'UPDATE "Account" SET "loanCategoryId" = ? || "householdId" || ? || "loanType" WHERE "kind" = ? AND "loanCategoryId" IS NULL AND "loanType" IS NOT NULL',
+    ).run("lc_", "_", "loan");
+  }
+}
+
 function applyRuntimeMigrations(db) {
   // Windows upgrades previously created only missing tables. Keep the login
   // query compatible with databases created by those older desktop builds.
@@ -229,6 +356,12 @@ function applyRuntimeMigrations(db) {
     db.exec('CREATE UNIQUE INDEX IF NOT EXISTS "User_householdId_fnosUid_key" ON "User"("householdId", "fnosUid")');
   }
   addColumnIfMissing(db, "UserSettings", "sessionDays", "INTEGER NOT NULL DEFAULT 30");
+  applyLiabilityTerminologyMigration(db);
+  // 2026-10-06 AccessKey 读写权限：老密钥沿用升级前已有的完整权限（write）。
+  // 与 scripts/build-fnos-package.cjs 的 20261006_add_access_key_scope 同义；
+  // 漏掉这段：升级后的旧桌面库打开「设置 → API」会报 "no such column: scope"。
+  addColumnIfMissing(db, "AccessKey", "scope", "TEXT NOT NULL DEFAULT 'write'");
+  applyLoanCategoryMigration(db);
 }
 
 fs.mkdirSync(dataDir, { recursive: true });
@@ -346,15 +479,18 @@ step("prepare installer icon");
 fs.mkdirSync(buildDir, { recursive: true });
 fs.cpSync(path.join(root, "public", "branding", "mmh-logo-pwa-512.png"), path.join(buildDir, "icon.png"));
 
+step("generate NSIS wizard bitmaps");
+// Branded MUI2 artwork (installerHeader / installerSidebar / uninstallerSidebar)
+// regenerated from the current logo on every build, so the wizard never falls
+// back to the stock grey NSIS skin.
+run(process.execPath, [toArgvPath(path.join(root, "scripts", "generate-nsis-bitmaps.cjs")), "--out", toArgvPath(buildDir)], {});
+
 // electron-builder strips node_modules from extraResources during pack
 // (dependency dedup). The standalone server needs its own node_modules at
 // runtime, so we pack --dir first, restore node_modules into the unpacked
 // app, then build the NSIS installer from the prepackaged directory.
 step("electron-builder pack (dir, x64)");
-run("npx", ["electron-builder", "--win", "--dir", "--x64"], {
-  CSC_IDENTITY_AUTO_DISCOVERY: "false",
-  ELECTRON_BUILDER_BINARIES_MIRROR: "https://npmmirror.com/mirrors/electron-builder-binaries/",
-});
+run("npx", ["electron-builder", "--win", "--dir", "--x64"], packageEnv());
 
 const unpackedDir = path.join(distDir, "win-unpacked");
 const unpackedAppDir = path.join(unpackedDir, "resources", "app");
@@ -371,10 +507,7 @@ fs.writeFileSync(
 );
 
 step("electron-builder nsis (prepackaged)");
-run("npx", ["electron-builder", "--win", "nsis", "--x64", "--prepackaged", toArgvPath(unpackedDir)], {
-  CSC_IDENTITY_AUTO_DISCOVERY: "false",
-  ELECTRON_BUILDER_BINARIES_MIRROR: "https://npmmirror.com/mirrors/electron-builder-binaries/",
-});
+run("npx", ["electron-builder", "--win", "nsis", "--x64", "--prepackaged", toArgvPath(unpackedDir)], packageEnv());
 
 const exeFiles = fs.existsSync(distDir)
   ? fs.readdirSync(distDir).filter((f) => f.toLowerCase().endsWith(".exe"))

@@ -42,7 +42,7 @@ type EntityCreatedExtra = {
   institutionShortName?: string;
   counterpartyId?: string;
   counterpartyName?: string;
-  debtDirection?: "payable" | "receivable" | null;
+  liabilityDirection?: "payable" | "receivable" | null;
   loanType?: string | null;
   isConsumerLoan?: boolean | null;
   currency?: string;
@@ -313,6 +313,9 @@ const ENTITY_CONFIG = {
     fullFields: [
       { key: "name", labelKey: "entityForm.accountNameLabel", type: "text", placeholderKey: "entityForm.accountNamePlaceholder" },
       { key: "kind", labelKey: "entityForm.accountTypeLabel", type: "select", options: ACCOUNT_KIND_OPTIONS, defaultValue: "bank_debit" },
+      // The loan category is one level below the account kind, so it follows `kind`;
+      // the server derives the account's loanType from it.
+      { key: "loanType", labelKey: "settings.accounts.loanCategory", type: "select", options: LOAN_TYPE_OPTIONS, defaultValue: "home", condition: (f) => f.kind === "loan" },
       { key: "fixedAssetType", labelKey: "fixedAssetEdit.assetType", type: "select", options: FIXED_ASSET_TYPE_OPTIONS, defaultValue: "property", condition: (f) => isFixedAssetAccountLike(f) },
       { key: "investProductType", labelKey: "settings.accounts.investmentAccountType", type: "select", options: INVEST_PRODUCT_OPTIONS, defaultValue: "fund", condition: (f) => f.kind === "investment" },
       { key: "fundUnitsDecimals", labelKey: "settings.accounts.fundUnitsDecimals", type: "text", defaultValue: "2", placeholderKey: "settings.accounts.defaultUnitsDecimals", condition: (f) => f.kind === "investment" && (f.investProductType ?? "fund") === "fund" },
@@ -334,11 +337,10 @@ const ENTITY_CONFIG = {
         nestedCreate: "counterparty",
         condition: (f) => f.kind === "settlement",
       },
-      // 往来款「约定」：挂在账户上（DebtAgreement），建立往来款账户时提交
-      { key: "agreementAnnualRate", labelKey: "debtTx.agreementAnnualRate", type: "text", placeholderKey: "stockFee.optional", condition: (f) => f.kind === "settlement" },
-      { key: "agreementTermValue", labelKey: "debtTx.agreementTerm", type: "text", placeholderKey: "stockFee.optional", condition: (f) => f.kind === "settlement" },
-      { key: "agreementDueDate", labelKey: "debtTx.agreementDueDate", type: "date", condition: (f) => f.kind === "settlement" },
-      { key: "loanType", labelKey: "settings.accounts.loanType", type: "select", options: LOAN_TYPE_OPTIONS, defaultValue: "home", condition: (f) => f.kind === "loan" },
+      // 往来款「约定」：挂在账户上（SettlementAgreement），建立往来款账户时提交
+      { key: "agreementAnnualRate", labelKey: "liabilityTx.agreementAnnualRate", type: "text", placeholderKey: "stockFee.optional", condition: (f) => f.kind === "settlement" },
+      { key: "agreementTermValue", labelKey: "liabilityTx.agreementTerm", type: "text", placeholderKey: "stockFee.optional", condition: (f) => f.kind === "settlement" },
+      { key: "agreementDueDate", labelKey: "liabilityTx.agreementDueDate", type: "date", condition: (f) => f.kind === "settlement" },
       { key: "currency", labelKey: "detail.column.currency", type: "select", options: CURRENCY_OPTION_KEYS, defaultValue: "CNY" },
       { key: "billingDay", labelKey: "settings.accounts.billingDayLabel", type: "text", placeholderKey: "entityForm.billingDayPlaceholder", condition: (f) => f.kind === "bank_credit" },
       { key: "billingDayTxPeriod", labelKey: "settings.accounts.billingDayTxPeriodLabel", type: "select", options: CREDIT_BILLING_DAY_TX_PERIOD_OPTIONS, defaultValue: "current", condition: (f) => f.kind === "bank_credit" },
@@ -427,7 +429,7 @@ function getSmartSelectCreateLabel(t: (key: string) => string, entityType: Neste
 
 function smartSelectPlaceholder(t: (key: string) => string, fieldKey: string) {
   if (fieldKey === "groupId") return t("settings.accounts.selectOwner");
-  if (fieldKey === "counterpartyId") return t("debtTx.placeholder.selectCounterparty");
+  if (fieldKey === "counterpartyId") return t("liabilityTx.placeholder.selectCounterparty");
   if (fieldKey === "institutionId") return t("settings.accounts.selectInstitution");
   return t("txForm.selectPlaceholder");
 }
@@ -929,7 +931,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
       const investProductType = form.investProductType || extraFields?.investProductType || "fund";
       const selectedInstitution = (nestedFieldData.institutionId ?? []).find((item) => item.id === form.institutionId);
       if (accountKind === "settlement" && !form.counterpartyId) {
-        setError(t("debtTx.placeholder.selectCounterparty"));
+        setError(t("liabilityTx.placeholder.selectCounterparty"));
         return;
       }
       // 口径（2026-09-13）：贷款窗口建的账户一律是贷款账户，不按机构属性判定——
@@ -1029,7 +1031,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
           institutionShortName: entityType === "account" ? created.Institution?.shortName : undefined,
           counterpartyId: entityType === "account" ? created.counterpartyId ?? form.counterpartyId ?? undefined : undefined,
           counterpartyName: entityType === "account" ? created.Counterparty?.name : undefined,
-          debtDirection: entityType === "account" ? created.debtDirection ?? undefined : undefined,
+          liabilityDirection: entityType === "account" ? created.liabilityDirection ?? undefined : undefined,
           loanType: entityType === "account" ? created.loanType ?? form.loanType ?? undefined : undefined,
           isConsumerLoan: entityType === "account" ? created.isConsumerLoan ?? form.isConsumerLoan === "true" : undefined,
           currency: entityType === "account" ? created.currency ?? form.currency ?? undefined : undefined,

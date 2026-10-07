@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { AccountKind, TransactionType } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
-import { parseDebtAgreementInput, upsertDebtAgreementForAccount } from "@/lib/server/debt-agreement";
+import { parseSettlementAgreementInput, upsertSettlementAgreementForAccount } from "@/lib/server/settlement-agreement";
 import { toNumber } from "@/lib/date-utils";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { resolveLoanCategoryForWrite } from "@/lib/server/loan-category";
 import { isAdmin } from "@/lib/server/auth";
 import { getApiHouseholdScope } from "@/lib/server/api-auth";
 import { verifySensitiveOperationPassword } from "@/lib/server/sensitive-operation-auth";
@@ -55,7 +56,7 @@ import {
 } from "@/lib/account-institution-rules";
 import { normalizeCurrency } from "@/lib/currency";
 import { normalizeFixedAssetType } from "@/lib/fixed-asset";
-import { normalizeDebtDirection } from "@/lib/debt";
+import { normalizeLiabilityDirection } from "@/lib/liability";
 import { normalizeLoanType } from "@/lib/loan-type";
 import { getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
 import {
@@ -154,9 +155,9 @@ export async function POST(req: NextRequest) {
     const requestedCounterpartyId = String(body.counterpartyId ?? "").trim() || null;
     const requestedUserId = String(body.userId ?? "").trim() || null;
     const rawIsConsumerLoan = body.isConsumerLoan === true || String(body.isConsumerLoan ?? "").trim().toLowerCase() === "true";
-    const loanType = normalizeLoanType(body.loanType)
+    let loanType = normalizeLoanType(body.loanType)
       ?? (kind === "loan" ? (rawIsConsumerLoan ? "consumer" : "home") : null);
-    const isConsumerLoan = kind === "loan" && loanType === "consumer";
+    let isConsumerLoan = kind === "loan" && loanType === "consumer";
     const isInvestment = kind === "investment";
     const isCreditLike = kind === "bank_credit";
     const investProductType = isInvestment ? normalizeFundProductType(body.investProductType) : null;
@@ -178,6 +179,25 @@ export async function POST(req: NextRequest) {
     }
 
     const { householdId } = await getHouseholdScope();
+    // 2026-10-07：贷款类别（LoanCategory）。贷款账户一律落到一个类别上，口径（loanType）
+    // 由类别的 baseType 派生；显式给了不存在的类别直接报错，不静默兜底。
+    let loanCategoryId: string | null = null;
+    if (kind === "loan") {
+      const resolvedLoanCategory = await resolveLoanCategoryForWrite(prisma, householdId, {
+        loanCategoryId: String(body.loanCategoryId ?? "").trim(),
+        loanType,
+        isConsumerLoan: rawIsConsumerLoan,
+      });
+      if (!resolvedLoanCategory) {
+        return NextResponse.json(
+          { ok: false, code: "LOAN_CATEGORY_NOT_FOUND", error: "Loan category not found in this household" },
+          { status: 400 },
+        );
+      }
+      loanCategoryId = resolvedLoanCategory.loanCategoryId;
+      loanType = resolvedLoanCategory.loanType;
+      isConsumerLoan = loanType === "consumer";
+    }
     const currencyInput = String(body.currency ?? "").trim();
     const currency = normalizeCurrency(currencyInput || await getHouseholdBaseCurrency(householdId));
 
@@ -197,14 +217,14 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, code: "ACCOUNT_INSTITUTION_REQUIRED", error: ACCOUNT_INSTITUTION_REQUIRED_ERROR }, { status: 400 });
     }
     // 口径（2026-09-13）：贷款窗口借入的账户挂往来对象时没有机构——消费贷要求
-    // 「有 debt 机构或有往来对象」之一即可（机构类型校验仍走下方白名单）。
+    // 「有 放款机构或有往来对象」之一即可（机构类型校验仍走下方白名单）。
     if (isConsumerLoan && !institution && !requestedCounterpartyId) {
       return NextResponse.json({ ok: false, code: "CONSUMER_LOAN_INSTITUTION_REQUIRED", error: "Consumer loan accounts must be linked to a lending institution" }, { status: 400 });
     }
     if (isStockInvestmentAccount(kind, investProductType) && !isStockAccountInstitutionType(institution?.type)) {
       return NextResponse.json({ ok: false, code: "STOCK_ACCOUNT_INSTITUTION_REQUIRED", error: STOCK_ACCOUNT_INSTITUTION_ERROR }, { status: 400 });
     }
-    if (institution && !accountInstitutionTypeIsAllowed(kind, investProductType, institution.type, { includeLegacyDebtInstitution: true })) {
+    if (institution && !accountInstitutionTypeIsAllowed(kind, investProductType, institution.type, { includeLegacyLiabilityInstitution: true })) {
       return NextResponse.json({ ok: false, code: "ACCOUNT_INSTITUTION_TYPE_MISMATCH", error: ACCOUNT_INSTITUTION_TYPE_ERROR }, { status: 400 });
     }
     const counterparty = requestedCounterpartyId
@@ -296,7 +316,7 @@ export async function POST(req: NextRequest) {
       numberMasked,
     });
 
-    const requestedDebtDirection = body.debtDirection !== undefined ? normalizeDebtDirection(kind, body.debtDirection) : null;
+    const requestedLiabilityDirection = body.liabilityDirection !== undefined ? normalizeLiabilityDirection(kind, body.liabilityDirection) : null;
     const supportsDefaultFundQueryApi = isInvestment && (investProductType === "fund" || investProductType === "money");
     const shouldCreateInitialBalance =
       !isInvestment &&
@@ -309,15 +329,16 @@ export async function POST(req: NextRequest) {
         data: {
           name,
           kind,
-          debtDirection: kind === "bank_credit" || isConsumerLoan
+          liabilityDirection: kind === "bank_credit" || isConsumerLoan
             ? "payable"
             : kind === "loan" && !isConsumerLoan && (counterparty?.id || institution?.id)
-              ? requestedDebtDirection ?? (institution?.id ? "payable" : "receivable")
+              ? requestedLiabilityDirection ?? (institution?.id ? "payable" : "receivable")
               : kind === "settlement" && counterparty?.id
-                ? requestedDebtDirection ?? "receivable"
+                ? requestedLiabilityDirection ?? "receivable"
                 : null,
           isConsumerLoan,
           loanType,
+          loanCategoryId,
           currency,
           groupId: ensuredGroup.id,
           institutionId: kind === "settlement" ? null : institution?.id ?? null,
@@ -380,14 +401,14 @@ export async function POST(req: NextRequest) {
         brokerageCashAccount = await ensureBrokerageCashAccountForStockAccount(tx, createdAccount);
       }
 
-      // 往来款「约定」：建立往来款账户时提交，挂在账户上（DebtAgreement）
+      // 往来款「约定」：建立往来款账户时提交，挂在账户上（SettlementAgreement）
       if (createdAccount.kind === "settlement") {
-        const agreement = parseDebtAgreementInput({
+        const agreement = parseSettlementAgreementInput({
           annualRate: body.agreementAnnualRate,
           termValue: body.agreementTermValue,
           dueDate: body.agreementDueDate,
         });
-        await upsertDebtAgreementForAccount(tx, { householdId, accountId: createdAccount.id, ...agreement });
+        await upsertSettlementAgreementForAccount(tx, { householdId, accountId: createdAccount.id, ...agreement });
       }
       return createdAccount;
     });
@@ -521,13 +542,28 @@ export async function PUT(req: NextRequest) {
     const rawNextIsConsumerLoan = data.isConsumerLoan === undefined ? existing.isConsumerLoan === true : data.isConsumerLoan === true;
     let nextIsConsumerLoan = false;
     if (nextKind === "loan") {
-      const nextLoanType = normalizeLoanType(body.loanType)
-        ?? normalizeLoanType(existing.loanType)
-        ?? (rawNextIsConsumerLoan ? "consumer" : "home");
-      data.loanType = nextLoanType;
-      nextIsConsumerLoan = nextLoanType === "consumer";
+      // 2026-10-07：贷款类别优先。显式提交类别 → 以类别为准；否则沿用已有类别；
+      // 两者都没有才按口径回退到内置类别。口径（loanType）始终由类别派生。
+      const submittedLoanCategoryId = body.loanCategoryId === undefined
+        ? existing.loanCategoryId
+        : String(body.loanCategoryId ?? "").trim();
+      const resolvedLoanCategory = await resolveLoanCategoryForWrite(prisma, householdId, {
+        loanCategoryId: submittedLoanCategoryId,
+        loanType: normalizeLoanType(body.loanType) ?? normalizeLoanType(existing.loanType),
+        isConsumerLoan: rawNextIsConsumerLoan,
+      });
+      if (!resolvedLoanCategory) {
+        return NextResponse.json(
+          { ok: false, code: "LOAN_CATEGORY_NOT_FOUND", error: "Loan category not found in this household" },
+          { status: 400 },
+        );
+      }
+      data.loanCategoryId = resolvedLoanCategory.loanCategoryId;
+      data.loanType = resolvedLoanCategory.loanType;
+      nextIsConsumerLoan = resolvedLoanCategory.loanType === "consumer";
       data.isConsumerLoan = nextIsConsumerLoan;
     } else {
+      data.loanCategoryId = null;
       data.loanType = null;
       data.isConsumerLoan = false;
     }
@@ -559,7 +595,7 @@ export async function PUT(req: NextRequest) {
     if (nextCounterparty?.type === "merchant") {
       return NextResponse.json({ ok: false, code: "SETTLEMENT_COUNTERPARTY_MERCHANT_FORBIDDEN", error: "A merchant counterparty cannot be used as a settlement (advance) account owner" }, { status: 400 });
     }
-    const requestedDebtDirection = body.debtDirection !== undefined ? normalizeDebtDirection(nextKind, body.debtDirection) : null;
+    const requestedLiabilityDirection = body.liabilityDirection !== undefined ? normalizeLiabilityDirection(nextKind, body.liabilityDirection) : null;
     let nextCreditBillingDay: number | null = null;
     if (nextKind === "bank_credit") {
       const nextBillingDay = body.billingDay !== undefined ? parseBillingDay(body.billingDay) : existing.billingDay;
@@ -676,16 +712,16 @@ export async function PUT(req: NextRequest) {
     if (isStockInvestmentAccount(nextKind, nextInvestProductTypeForInstitution) && !isStockAccountInstitutionType(nextInstitution?.type)) {
       return NextResponse.json({ ok: false, code: "STOCK_ACCOUNT_INSTITUTION_REQUIRED", error: STOCK_ACCOUNT_INSTITUTION_ERROR }, { status: 400 });
     }
-    if (nextInstitution && !accountInstitutionTypeIsAllowed(nextKind, nextInvestProductTypeForInstitution, nextInstitution.type, { includeLegacyDebtInstitution: true })) {
+    if (nextInstitution && !accountInstitutionTypeIsAllowed(nextKind, nextInvestProductTypeForInstitution, nextInstitution.type, { includeLegacyLiabilityInstitution: true })) {
       return NextResponse.json({ ok: false, code: "ACCOUNT_INSTITUTION_TYPE_MISMATCH", error: ACCOUNT_INSTITUTION_TYPE_ERROR }, { status: 400 });
     }
-    const hasDebtOwner = Boolean(nextCounterparty?.id || nextInstitution?.id);
-    data.debtDirection = nextKind === "bank_credit" || nextIsConsumerLoan
+    const hasLiabilityOwner = Boolean(nextCounterparty?.id || nextInstitution?.id);
+    data.liabilityDirection = nextKind === "bank_credit" || nextIsConsumerLoan
       ? "payable"
-      : nextKind === "loan" && hasDebtOwner
-        ? requestedDebtDirection ?? existing.debtDirection ?? (nextInstitution?.id ? "payable" : "receivable")
+      : nextKind === "loan" && hasLiabilityOwner
+        ? requestedLiabilityDirection ?? existing.liabilityDirection ?? (nextInstitution?.id ? "payable" : "receivable")
         : nextKind === "settlement" && nextCounterparty?.id
-          ? requestedDebtDirection ?? existing.debtDirection ?? "receivable"
+          ? requestedLiabilityDirection ?? existing.liabilityDirection ?? "receivable"
           : null;
     await assertAccountIdentityUnique(prisma, {
       householdId,
@@ -722,19 +758,19 @@ export async function PUT(req: NextRequest) {
         body.agreementDueDate !== undefined;
       if (next.kind === "settlement" && (agreementSubmitted || existing.kind === "settlement")) {
         const agreement = agreementSubmitted
-          ? parseDebtAgreementInput({
+          ? parseSettlementAgreementInput({
               annualRate: body.agreementAnnualRate,
               termValue: body.agreementTermValue,
               dueDate: body.agreementDueDate,
             })
           : null;
         if (agreement) {
-          await upsertDebtAgreementForAccount(tx, { householdId, accountId: next.id, ...agreement });
+          await upsertSettlementAgreementForAccount(tx, { householdId, accountId: next.id, ...agreement });
         } else if (existing.kind !== "settlement") {
-          await tx.debtAgreement.deleteMany({ where: { householdId, accountId: next.id } });
+          await tx.settlementAgreement.deleteMany({ where: { householdId, accountId: next.id } });
         }
       } else if (existing.kind === "settlement" && next.kind !== "settlement") {
-        await tx.debtAgreement.deleteMany({ where: { householdId, accountId: next.id } });
+        await tx.settlementAgreement.deleteMany({ where: { householdId, accountId: next.id } });
       }
       return next;
     });
@@ -1056,7 +1092,7 @@ export async function GET(req: Request) {
       kind: account.kind,
       investProductType: account.investProductType,
       fixedAssetType: account.fixedAssetType,
-      debtDirection: account.debtDirection,
+      liabilityDirection: account.liabilityDirection,
       note: account.note,
       currency: account.currency,
       groupName: account.kind === AccountKind.loan || account.kind === AccountKind.settlement ? "" : account.AccountGroup?.name ?? "",

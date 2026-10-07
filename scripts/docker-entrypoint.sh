@@ -336,6 +336,130 @@ SQL
   fi
 }
 
+# 2026-10-06 口径定版：贷款 = loan，往来款 = settlement，负债 = liability；
+# `debt` 这个名字在库中释放。Docker 通道走 prisma db push（不跑 migration 文件），
+# 所以必须在 push 之前把旧名字就地改完，否则 push 会按「删旧列 + 建新列」处理，
+# 直接把历史数据丢掉（余额、本金、利息全在这里）。
+# 幂等：全部按「旧对象在、新对象不在」判定。
+ensure_liability_terminology() {
+  if ! psql_mmh -v ON_ERROR_STOP=1 <<'SQL' >/dev/null 2>&1; then
+DO $$
+BEGIN
+  IF to_regclass('public."DebtAgreement"') IS NOT NULL
+     AND to_regclass('public."SettlementAgreement"') IS NULL THEN
+    ALTER TABLE "DebtAgreement" RENAME TO "SettlementAgreement";
+  END IF;
+END
+$$;
+
+DO $$
+BEGIN
+  IF to_regclass('public."SettlementAgreement"') IS NOT NULL THEN
+    IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'DebtAgreement_pkey') THEN
+      ALTER TABLE "SettlementAgreement" RENAME CONSTRAINT "DebtAgreement_pkey" TO "SettlementAgreement_pkey";
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'DebtAgreement_accountId_fkey') THEN
+      ALTER TABLE "SettlementAgreement" RENAME CONSTRAINT "DebtAgreement_accountId_fkey" TO "SettlementAgreement_accountId_fkey";
+    END IF;
+    IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'DebtAgreement_householdId_fkey') THEN
+      ALTER TABLE "SettlementAgreement" RENAME CONSTRAINT "DebtAgreement_householdId_fkey" TO "SettlementAgreement_householdId_fkey";
+    END IF;
+    IF to_regclass('public."DebtAgreement_accountId_key"') IS NOT NULL THEN
+      ALTER INDEX "DebtAgreement_accountId_key" RENAME TO "SettlementAgreement_accountId_key";
+    END IF;
+    IF to_regclass('public."DebtAgreement_householdId_dueDate_idx"') IS NOT NULL THEN
+      ALTER INDEX "DebtAgreement_householdId_dueDate_idx" RENAME TO "SettlementAgreement_householdId_dueDate_idx";
+    END IF;
+  END IF;
+END
+$$;
+
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_type WHERE typname = 'DebtDirection')
+     AND NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'LiabilityDirection') THEN
+    ALTER TYPE "DebtDirection" RENAME TO "LiabilityDirection";
+  END IF;
+END
+$$;
+
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'Account' AND column_name = 'debtDirection')
+     AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'Account' AND column_name = 'liabilityDirection') THEN
+    ALTER TABLE "Account" RENAME COLUMN "debtDirection" TO "liabilityDirection";
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'transactions' AND column_name = 'debtPrincipalAmount')
+     AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'transactions' AND column_name = 'principalAmount') THEN
+    ALTER TABLE "transactions" RENAME COLUMN "debtPrincipalAmount" TO "principalAmount";
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'transactions' AND column_name = 'debtInterestAmount')
+     AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'transactions' AND column_name = 'interestAmount') THEN
+    ALTER TABLE "transactions" RENAME COLUMN "debtInterestAmount" TO "interestAmount";
+  END IF;
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'transactions' AND column_name = 'debtFeeAmount')
+     AND NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'transactions' AND column_name = 'feeAmount') THEN
+    ALTER TABLE "transactions" RENAME COLUMN "debtFeeAmount" TO "feeAmount";
+  END IF;
+END
+$$;
+
+UPDATE "transactions"
+SET "source" = 'liability_' || substring("source" from 6)
+WHERE "source" LIKE 'debt\_%' ESCAPE '\';
+
+UPDATE "Institution" SET "type" = 'lender' WHERE "type" = 'debt';
+SQL
+    mmh_log "WARNING: liability terminology rename failed; schema sync may refuse to start on an upgraded database."
+    return 1
+  fi
+  mmh_log "liability terminology rename complete (debt* -> liability*)."
+  return 0
+}
+
+# 2026-10-07 贷款类别（LoanCategory）：表本身由 prisma db push 建，这里只做
+# 「播种四个内置类别 + 存量贷款账户映射」，幂等（确定性 id + ON CONFLICT DO NOTHING）。
+# 必须在 db push 之后执行，否则表还不存在。
+ensure_loan_categories() {
+  if ! psql_mmh -v ON_ERROR_STOP=1 <<'SQL' >/dev/null 2>&1; then
+UPDATE "Account"
+SET "loanType" = CASE WHEN "isConsumerLoan" = TRUE THEN 'consumer'::"LoanType" ELSE 'home'::"LoanType" END
+WHERE "kind" = 'loan'::"AccountKind" AND "loanType" IS NULL;
+
+INSERT INTO "LoanCategory" ("id", "householdId", "name", "baseType", "sortOrder", "isSystem", "isActive", "createdAt", "updatedAt")
+SELECT
+  'lc_' || h."id" || '_' || t.base_type,
+  h."id",
+  t.display_name,
+  t.base_type::"LoanType",
+  t.sort_order,
+  TRUE,
+  TRUE,
+  CURRENT_TIMESTAMP,
+  CURRENT_TIMESTAMP
+FROM "Household" h
+CROSS JOIN (
+  VALUES
+    ('房贷', 'home', 0),
+    ('消费贷', 'consumer', 1),
+    ('抵押贷', 'mortgage', 2),
+    ('其他贷款', 'other', 3)
+) AS t(display_name, base_type, sort_order)
+ON CONFLICT ("id") DO NOTHING;
+
+UPDATE "Account" a
+SET "loanCategoryId" = 'lc_' || a."householdId" || '_' || a."loanType"::text
+WHERE a."kind" = 'loan'::"AccountKind"
+  AND a."loanCategoryId" IS NULL
+  AND a."loanType" IS NOT NULL;
+SQL
+    mmh_log "WARNING: loan category backfill failed; continuing so MMH stays available."
+    return 1
+  fi
+  mmh_log "loan category backfill complete."
+  return 0
+}
+
 run_compat_migrations() {
   legacy_statement_category_rules="$(
     psql_mmh -tAc "SELECT CASE WHEN to_regclass('public.statement_category_rules') IS NULL THEN '0' ELSE '1' END" | tr -d '[:space:]'
@@ -787,6 +911,9 @@ should_skip_schema_push() {
 
 refuse_if_schema_newer
 run_compat_migrations
+# 2026-10-06 口径定版：debt* → liability* 必须在 prisma db push 之前完成，
+# 否则 push 会按「删旧列 / 建新列」执行并丢掉本金与利息数据。
+ensure_liability_terminology || true
 # Best effort by design: if the function still fails (e.g. a transient DB
 # error), swallow the status. Under `set -e` a top-level failing call would
 # kill the entrypoint before the schema sync ever runs (the fresh-install
@@ -834,6 +961,8 @@ else
       mmh_log "WARNING: settlement account backfill failed; continuing so MMH stays available."
     fi
     mmh_log "account-kind compatibility backfill complete."
+    # 2026-10-07 贷款类别：表由 db push 建好后播种四个内置类别并映射存量贷款。
+    ensure_loan_categories || true
     if ! record_schema_version "$(get_build_version)"; then
       mmh_log "ERROR: database schema synced but schema version marker could not be recorded. Refusing to start so future upgrades cannot be misreported."
       rm -f "$PUSH_OUTPUT"

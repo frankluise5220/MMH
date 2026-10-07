@@ -67,6 +67,7 @@ function kindIcon(k: string) {
 }
 
 type Group = { id: string; name: string; sortOrder: number };
+type LoanCategoryView = { id: string; name: string; baseType: string; sortOrder: number; isSystem: boolean; isActive: boolean };
 type Institution = { id: string; name: string; shortName?: string | null; type?: string };
 type Counterparty = { id: string; name: string; shortName?: string | null; type?: string | null; isReimbursable?: boolean | null };
 type Account = {
@@ -87,7 +88,8 @@ type Account = {
   tradingCalendar?: string | null;
   fixedAssetType?: string | null;
   isConsumerLoan?: boolean | null;
-  debtDirection?: string | null;
+  loanCategoryId?: string | null;
+  liabilityDirection?: string | null;
   recordCount?: number;
   deletedRecordCount?: number;
 };
@@ -125,11 +127,11 @@ function normalizedAccountKind(account: Pick<Account, "kind" | "investProductTyp
 }
 
 function accountInstitutionTypeMatches(kind: string, investProductType: string | null | undefined, type: string | null | undefined) {
-  return accountInstitutionTypeIsAllowed(kind, investProductType, type, { includeLegacyDebtInstitution: true });
+  return accountInstitutionTypeIsAllowed(kind, investProductType, type, { includeLegacyLiabilityInstitution: true });
 }
 
 function allowedInstitutionTypesForEdit(kind: string | null | undefined, investProductType: string | null | undefined) {
-  return allowedInstitutionTypesForAccount(kind, investProductType, { includeLegacyDebtInstitution: true });
+  return allowedInstitutionTypesForAccount(kind, investProductType, { includeLegacyLiabilityInstitution: true });
 }
 
 function parseOptionalIntegerField(value: string, min: number, max: number) {
@@ -153,9 +155,9 @@ const ACCOUNT_TABLE_DEFAULT_SORT = { key: "name", direction: "asc" } as const;
 function getAccountDetailHref(account: Account) {
   const query = new URLSearchParams();
   if (account.kind === "loan" || account.kind === "settlement") {
-    // Match the sidebar's per-person debt entry instead of selecting a detail account.
-    query.set("view", "debt");
-    query.set("debtPerson", `account:${account.id}`);
+    // Match the sidebar's per-person liability entry instead of selecting a detail account.
+    query.set("view", "liability");
+    query.set("liabilityPerson", `account:${account.id}`);
     return `/?${query.toString()}`;
   }
   query.set("accountId", account.id);
@@ -190,6 +192,7 @@ export default function SettingsAccountsPage() {
   const fixedAssetTypeLabel = useCallback((value: string | null | undefined) => t(`fixedAsset.type.${value || "property"}`), [t]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
+  const [loanCategories, setLoanCategories] = useState<LoanCategoryView[]>([]);
   const [institutions, setInstitutions] = useState<Institution[]>([]);
   const [counterparties, setCounterparties] = useState<Counterparty[]>([]);
   // 内存缓存未命中时首屏 accounts=[]；没有 loading 会误显示「暂无账户」。
@@ -298,6 +301,23 @@ export default function SettingsAccountsPage() {
     }
   }, []);
 
+  // 贷款类别下拉数据源（2026-10-07）：贷款账户可在此处改类别，服务端按类别派生口径 loanType。
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const response = await fetch("/api/v1/loan-categories", { cache: "no-store" }).catch(() => null);
+      const data = await response?.json().catch(() => null) as {
+        ok?: boolean;
+        categories?: LoanCategoryView[];
+      } | null;
+      if (cancelled) return;
+      setLoanCategories(response?.ok && data?.ok && Array.isArray(data.categories) ? data.categories : []);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // ---- Account handlers ----
   function buildEditForm(a: Account): Record<string, string> {
     const normalizedKind = normalizedAccountKind(a);
@@ -327,6 +347,7 @@ export default function SettingsAccountsPage() {
       fundUnitsDecimals: String(a.fundUnitsDecimals ?? 2),
       tradingCalendar: a.tradingCalendar || "cn_fund",
       isConsumerLoan: a.isConsumerLoan === true ? "true" : "false",
+      loanCategoryId: editKind === "loan" ? a.loanCategoryId || "" : "",
     };
   }
 
@@ -381,7 +402,7 @@ export default function SettingsAccountsPage() {
       return;
     }
     if (nextKind === "settlement" && !String(editForm.counterpartyId ?? "").trim()) {
-      setEditError(t("debtTx.placeholder.selectCounterparty"));
+      setEditError(t("liabilityTx.placeholder.selectCounterparty"));
       return;
     }
     const isFixedAssetKind = nextKind === "fixed_asset";
@@ -516,6 +537,9 @@ export default function SettingsAccountsPage() {
       counterpartyId: nextKind === "settlement" ? (f.counterpartyId || existingCounterpartyId) : "",
       investProductType: nextInvestProductType,
       fixedAssetType: nextKind === "fixed_asset" ? (f.fixedAssetType || "property") : "",
+      // Loan category sits one level below the account kind: default it when switching to "loan",
+      // clear it when switching away (the server clears it too).
+      loanCategoryId: nextKind === "loan" ? (f.loanCategoryId || loanCategories[0]?.id || "") : "",
     }));
     // Converting into a credit card while keeping the institution: prefill the
     // institution's billing defaults for still-empty day fields (mirrors changeEditInstitution).
@@ -612,7 +636,7 @@ export default function SettingsAccountsPage() {
 
   // ---- Account merge: allow merging exactly 2 accounts with the same type,
   // same owner, and same institution (currency and, for investment/loan
-  // accounts, product type / debt direction must also match). ----
+  // accounts, product type / liability direction must also match). ----
   const toggleMergeSelected = useCallback((id: string) => {
     setMergeSelectedIds((prev) => prev.includes(id) ? prev.filter((item) => item !== id) : [...prev, id].slice(-2));
   }, []);
@@ -632,8 +656,8 @@ export default function SettingsAccountsPage() {
     ) {
       return { ok: false, reason: t("settings.accounts.merge.hint.investType") };
     }
-    if ((first.kind === "loan" || first.kind === "settlement") && (first.debtDirection ?? "") !== (second.debtDirection ?? "")) {
-      return { ok: false, reason: t("settings.accounts.merge.hint.debtDirection") };
+    if ((first.kind === "loan" || first.kind === "settlement") && (first.liabilityDirection ?? "") !== (second.liabilityDirection ?? "")) {
+      return { ok: false, reason: t("settings.accounts.merge.hint.liabilityDirection") };
     }
     if ((first.groupId ?? "") !== (second.groupId ?? "")) {
       return { ok: false, reason: t("settings.accounts.merge.hint.owner") };
@@ -1353,14 +1377,13 @@ export default function SettingsAccountsPage() {
               <div className="min-h-0 flex-1 overflow-y-auto p-4">
               {loanEditLocked ? (
                 <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-700">
-                  {t("settings.accounts.loanEditLockedHint")}
+                  {t("settings.accounts.loanEditableHint")}
                 </div>
               ) : null}
               <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
                 <div>
                   <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.name")}</label>
                   <input value={editForm.name || ""} onChange={e => setEditForm(f => ({ ...f, name: e.target.value }))}
-                    disabled={loanEditLocked}
                     className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none focus:border-blue-400 disabled:bg-slate-50 disabled:text-slate-500" />
                 </div>
                 <div>
@@ -1376,6 +1399,22 @@ export default function SettingsAccountsPage() {
                     ))}
                   </select>
                 </div>
+                {editKind === "loan" ? (
+                  <div>
+                    <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.loanCategory")}</label>
+                    <select
+                      value={editForm.loanCategoryId || loanCategories[0]?.id || ""}
+                      onChange={e => setEditForm(f => ({ ...f, loanCategoryId: e.target.value }))}
+                      className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none focus:border-blue-400"
+                    >
+                      {loanCategories.map((category) => (
+                        <option key={category.id} value={category.id}>
+                          {category.isSystem ? t(`loan.type.${category.baseType}`) : category.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                ) : null}
                 <div>
                   <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.owner")}</label>
                   <div className={loanLockedWrapperCls}>
@@ -1416,7 +1455,7 @@ export default function SettingsAccountsPage() {
                       disabled={loanEditLocked}
                       className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none disabled:bg-slate-50 disabled:text-slate-500"
                     >
-                      <option value="">{t("debtTx.placeholder.selectCounterparty")}</option>
+                      <option value="">{t("liabilityTx.placeholder.selectCounterparty")}</option>
                       {settlementCounterparties.map((counterparty) => (
                         <option key={counterparty.id} value={counterparty.id}>{counterparty.shortName?.trim() || counterparty.name}</option>
                       ))}
@@ -1625,7 +1664,6 @@ export default function SettingsAccountsPage() {
                 <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.note")}</label>
                 <ClearableNoteField
                   multiline
-                  disabled={loanEditLocked}
                   value={editForm.note || ""}
                   onValueChange={value => setEditForm(f => ({ ...f, note: value }))}
                   className="min-h-[96px] w-full resize-y rounded-md border border-slate-200 px-2 py-2 text-sm leading-5 outline-none focus:border-blue-400"
@@ -1652,24 +1690,22 @@ export default function SettingsAccountsPage() {
 
               <div className="mt-4 flex items-center justify-end gap-2 border-t border-slate-100 pt-3">
                 {editError ? <div className="mr-auto text-xs text-red-600">{editError}</div> : null}
-                {!loanEditLocked && (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => void saveEdit({ closeAfter: false })}
-                      className="h-8 rounded-md border border-blue-200 bg-blue-50 px-3 text-xs font-medium text-blue-700 hover:bg-blue-100"
-                    >
-                      {t("common.save")}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void saveEdit({ closeAfter: true })}
-                      className="h-8 rounded-md bg-blue-600 px-4 text-xs font-medium text-white hover:bg-blue-700"
-                    >
-                      {t("settings.accounts.saveAndClose")}
-                    </button>
-                  </>
-                )}
+                <>
+                  <button
+                    type="button"
+                    onClick={() => void saveEdit({ closeAfter: false })}
+                    className="h-8 rounded-md border border-blue-200 bg-blue-50 px-3 text-xs font-medium text-blue-700 hover:bg-blue-100"
+                  >
+                    {t("common.save")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void saveEdit({ closeAfter: true })}
+                    className="h-8 rounded-md bg-blue-600 px-4 text-xs font-medium text-white hover:bg-blue-700"
+                  >
+                    {t("settings.accounts.saveAndClose")}
+                  </button>
+                </>
               </div>
               </div>
             </div>

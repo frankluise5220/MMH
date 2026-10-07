@@ -449,6 +449,23 @@ expect(/20260910_add_tx_original_currency_location/.test(buildScript) && /addCol
 expect(/20260911_add_debt_agreement/.test(buildScript) && /CREATE TABLE IF NOT EXISTS "DebtAgreement"/.test(buildScript) && /DebtAgreement_entryId_key/.test(buildScript), "fnOS SQLite migrations must create the DebtAgreement table for existing databases.");
 expect(/20260911_rekey_debt_agreement_to_account/.test(buildScript) && /rebuildDebtAgreementToAccount/.test(buildScript) && /DebtAgreement__account_fix/.test(buildScript) && /COALESCE\(t\./.test(buildScript) && /DebtAgreement_accountId_key/.test(buildScript), "fnOS SQLite migrations must rekey DebtAgreement to accountId without dropping existing rows (and tolerate a fresh-install table created by native-init).");
   expect(/20260922_add_account_balance_recomputed_at/.test(buildScript) && /addColumnIfMissing\(db, "Account", "balanceRecomputedAt", "DATETIME"\)/.test(buildScript), "fnOS SQLite migrations must add Account.balanceRecomputedAt for existing databases.");
+  expect(
+    /20261007_add_loan_category/.test(buildScript) &&
+      /CREATE TABLE " \+ quoteIdent\("LoanCategory"\)/.test(buildScript) &&
+      /INSERT OR IGNORE INTO "LoanCategory"/.test(buildScript) &&
+      /"loanCategoryId" IS NULL/.test(buildScript) &&
+      /addColumnIfMissing\(db, "Account", "loanCategoryId", "TEXT"\)/.test(buildScript),
+    "fnOS SQLite migrations must create LoanCategory master data, seed the four built-in categories and map existing loan accounts (legacy liability rename must ship too).",
+  );
+  expect(
+    /20261006_liability_terminology/.test(buildScript) &&
+      /RENAME COLUMN/.test(buildScript) &&
+      /"liabilityDirection"/.test(buildScript) &&
+      /"principalAmount"/.test(buildScript) &&
+      /SettlementAgreement/.test(buildScript) &&
+      /SET type = 'lender' WHERE type = 'debt'/.test(buildScript),
+    "fnOS SQLite migrations must rename debt* storage to liability semantics (columns, agreement table, source prefix, lender institution type) for existing databases.",
+  );
 for (const tableName of [
   "transactions",
   "fund_transactions",

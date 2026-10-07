@@ -154,6 +154,24 @@ expect(
 );
 
 expect(
+  /ensure_loan_categories/.test(entrypoint) &&
+    /ensure_loan_categories \|\| true/.test(entrypoint) &&
+    /INSERT INTO "LoanCategory"/.test(entrypoint) &&
+    /'lc_' \|\| h\."id"/.test(entrypoint) &&
+    /"loanCategoryId" IS NULL/.test(entrypoint),
+  "Docker entrypoint must seed the four built-in loan categories and map existing loan accounts after db push.",
+);
+
+expect(
+  /ensure_liability_terminology/.test(entrypoint) &&
+    /RENAME COLUMN "debtPrincipalAmount" TO "principalAmount"/.test(entrypoint) &&
+    /RENAME COLUMN "debtDirection" TO "liabilityDirection"/.test(entrypoint) &&
+    /SET "type" = 'lender' WHERE "type" = 'debt'/.test(entrypoint) &&
+    /ensure_liability_terminology \|\| true/.test(entrypoint),
+  "Docker entrypoint must rename debt* storage to liability semantics before prisma db push, otherwise push would drop the principal/interest columns as data loss.",
+);
+
+expect(
   /PUSH_ATTEMPTS=5/.test(entrypoint) &&
     /retrying in 3s/.test(entrypoint) &&
     /ERROR: prisma db push failed after retries; refusing to start/.test(entrypoint) &&

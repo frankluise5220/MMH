@@ -24,6 +24,7 @@ type AccountBatchImportField =
   | "counterpartyType"
   | "categoryType"
   | "parentCategory"
+  | "loanCategory"
   | "shortName"
   | "investProductType"
   | "fixedAssetType"
@@ -72,6 +73,7 @@ type ImportAccountRow = {
   categoryType: string;
   parentCategoryName: string;
   parentCategoryId: string;
+  loanCategory: string;
   shortName: string;
   investProductType: string;
   fixedAssetType: string;
@@ -150,6 +152,7 @@ const HEADER_ALIASES: Record<AccountBatchImportField, string[]> = {
   counterpartyType: ["counterpartyType", "type"],
   categoryType: ["categoryType", "type"],
   parentCategory: ["parentCategory", "parent", "parentName"],
+  loanCategory: ["loanCategory", "loanCategoryName", "loanType"],
   shortName: ["shortName"],
   investProductType: ["investProductType", "productType", "accountSubtype"],
   fixedAssetType: ["fixedAssetType", "assetType"],
@@ -179,6 +182,7 @@ const HEADER_LABELS: Record<AccountBatchImportField, (t: (key: string) => string
   counterpartyType: (t) => t("settings.accounts.type"),
   categoryType: (t) => t("settings.accounts.import.categoryType"),
   parentCategory: (t) => t("settings.accounts.import.parentCategory"),
+  loanCategory: (t) => t("settings.accounts.loanCategory"),
   shortName: (t) => t("settings.accounts.import.shortName"),
   investProductType: (t) => t("settings.accounts.investmentAccountType"),
   fixedAssetType: (t) => t("fixedAssetEdit.assetType"),
@@ -236,7 +240,7 @@ const SHEETS: ImportSheetDefinition[] = [
     sheetKey: "settings.accounts.import.sheet.settlement",
     target: "account",
     defaultKind: "loan",
-    fields: ["name", "institution", "counterparty", "owner", "currency", "initialBalance", "initialBalanceDate", "note", "sample"],
+    fields: ["name", "loanCategory", "institution", "counterparty", "owner", "currency", "initialBalance", "initialBalanceDate", "note", "sample"],
   },
   {
     type: "investment",
@@ -319,7 +323,7 @@ const CATEGORY_TYPE_OPTIONS: AccountImportOption[] = [
   { value: "income", labelKey: "transaction.type.income" },
 ];
 const MASTER_TARGETS: ImportTarget[] = ["institution", "familyMember", "counterparty", "category", "tag"];
-const ACCOUNT_INSTITUTION_ENTITY_TYPES = new Set(["family_member", "person", "organization", "debt"]);
+const ACCOUNT_INSTITUTION_ENTITY_TYPES = new Set(["family_member", "person", "organization", "lender"]);
 const GUIDE_NOTE_COLUMN_START = 2;
 const GUIDE_NOTE_COLUMN_SPAN = 5;
 const GUIDE_NOTE_COLUMN_END = GUIDE_NOTE_COLUMN_START + GUIDE_NOTE_COLUMN_SPAN - 1;
@@ -615,6 +619,10 @@ function parseSheetRows(
       else if (!parsedFixedAssetType) errors.push(t("settings.accounts.import.invalidEnum"));
     }
 
+    // 2026-10-07 贷款类别：贷款账户必须填类别（存在性在导入前校验阶段按名称核对）。
+    const loanCategory = kind === "loan" ? valueAt("loanCategory").trim() : "";
+    if (kind === "loan" && !loanCategory) errors.push(requiredFieldError("loanCategory", t));
+
     const billingDayRaw = valueAt("billingDay");
     const parsedBillingDay = billingDayRaw ? Number(parseImportNumber(billingDayRaw)) : null;
     if (billingDayRaw) {
@@ -667,6 +675,7 @@ function parseSheetRows(
       categoryType,
       parentCategoryName: valueAt("parentCategory"),
       parentCategoryId: "",
+      loanCategory,
       shortName: valueAt("shortName"),
       investProductType,
       fixedAssetType,
@@ -745,6 +754,7 @@ function buildCategoryImportRow(params: {
     categoryType: params.categoryType,
     parentCategoryName: params.parentCategoryName,
     parentCategoryId: "",
+    loanCategory: "",
     shortName: "",
     investProductType: "",
     fixedAssetType: "",
@@ -1137,6 +1147,7 @@ function rowFieldValue(row: ImportAccountRow, field: AccountBatchImportField): s
     case "categoryType": return row.categoryType;
     case "investProductType": return row.investProductType;
     case "fixedAssetType": return row.fixedAssetType;
+    case "loanCategory": return row.loanCategory;
     case "creditBillMode": return row.creditBillMode;
     case "costBasisMethod": return row.costBasisMethod;
     case "tradingCalendar": return row.tradingCalendar;
@@ -1173,6 +1184,7 @@ function rowFieldDisplay(row: ImportAccountRow, field: AccountBatchImportField, 
     case "categoryType": return categoryTypeLabel(row.categoryType, t);
     case "investProductType": return row.investProductType ? t(`investment.product.${row.investProductType}`) : "";
     case "fixedAssetType": return row.fixedAssetType ? t(`fixedAsset.type.${row.fixedAssetType}`) : "";
+    case "loanCategory": return row.loanCategory;
     case "creditBillMode": return row.creditBillMode ? t(`entityForm.creditBillMode.${row.creditBillMode}`) : "";
     case "costBasisMethod": return row.costBasisMethod ? displayCostBasisMethod(row.costBasisMethod, t) : "";
     case "tradingCalendar": return row.tradingCalendar ? t(`tradingCalendar.${row.tradingCalendar}`) : "";
@@ -1225,6 +1237,7 @@ function applyRowEdit(row: ImportAccountRow, field: AccountBatchImportField, raw
     case "categoryType": next.categoryType = trimmed; break;
     case "investProductType": next.investProductType = trimmed; break;
     case "fixedAssetType": next.fixedAssetType = trimmed; break;
+    case "loanCategory": next.loanCategory = trimmed; break;
     case "creditBillMode": next.creditBillMode = trimmed; break;
     case "costBasisMethod": next.costBasisMethod = trimmed; break;
     case "tradingCalendar": next.tradingCalendar = trimmed; break;
@@ -1577,6 +1590,15 @@ function PreviewTable({
 async function fetchCategories(): Promise<ExistingCategory[]> {
   const response = await fetch("/api/v1/category", { cache: "no-store" });
   const data = await response.json().catch(() => null) as { ok?: boolean; categories?: ExistingCategory[] } | null;
+  return data?.ok && Array.isArray(data.categories) ? data.categories : [];
+}
+
+/** 2026-10-07 贷款类别：贷款账户必选类别，导入前按名称核对本账簿已有类别。 */
+async function fetchLoanCategories(): Promise<Array<{ id: string; name: string; baseType: string }>> {
+  const response = await fetch("/api/v1/loan-categories", { cache: "no-store" });
+  const data = await response.json().catch(() => null) as
+    | { ok?: boolean; categories?: Array<{ id: string; name: string; baseType: string }> }
+    | null;
   return data?.ok && Array.isArray(data.categories) ? data.categories : [];
 }
 
@@ -2240,6 +2262,7 @@ export function AccountBatchImportButton({
     if (sheetType === "settlement") {
       return [
         ["name", t("settings.accounts.import.guideRequiredValue"), t("settings.accounts.import.guideAccountName")],
+        ["loanCategory", t("settings.accounts.import.guideRequiredValue"), t("settings.accounts.import.guideLoanCategory")],
         ["institution", t("settings.accounts.import.guideInstitutionNameValue"), t("settings.accounts.import.guideSettlementInstitution")],
         ["counterparty", t("settings.accounts.import.guideCounterpartyValue"), t("settings.accounts.import.guideSettlementCounterparty")],
         ...commonAccountGuideRows(),
@@ -2295,7 +2318,7 @@ export function AccountBatchImportButton({
     const fundCompanyInstitution = t("settings.accounts.importSampleFundCompanyShort");
     const paymentInstitution = t("settings.accounts.importSamplePaymentShort");
     const ewalletInstitution = t("settings.accounts.importSampleEwalletShort");
-    const debtInstitution = t("settings.accounts.importSampleDebtInstitutionShort");
+    const liabilityInstitution = t("settings.accounts.importSampleLiabilityInstitutionShort");
     const templateCategories = await fetchCategories().catch(() => []);
     const sheetByType = new Map(SHEETS.map((sheet) => [sheet.type, sheet]));
     const institutionSheet = sheetByType.get("institution")!;
@@ -2313,7 +2336,7 @@ export function AccountBatchImportButton({
       { name: t("settings.accounts.importSampleFundCompany"), institutionType: t("institution.type.fund_company"), shortName: t("settings.accounts.importSampleFundCompanyShort") },
       { name: t("settings.accounts.importSamplePayment"), institutionType: t("institution.type.payment"), shortName: t("settings.accounts.importSamplePaymentShort") },
       { name: t("settings.accounts.importSampleEwallet"), institutionType: t("institution.type.payment"), shortName: ewalletInstitution },
-      { name: t("settings.accounts.importSampleDebtInstitution"), institutionType: t("institution.type.other"), shortName: t("settings.accounts.importSampleDebtInstitutionShort") },
+      { name: t("settings.accounts.importSampleLiabilityInstitution"), institutionType: t("institution.type.other"), shortName: t("settings.accounts.importSampleLiabilityInstitutionShort") },
       { name: t("settings.accounts.importSampleOtherInstitution"), institutionType: t("institution.type.other"), shortName: t("settings.accounts.importSampleOtherInstitutionShort") },
     ], guideRowsForSheet("institution"), t);
     appendStyledSheet(XLSX, workbook, t(objectSheet.sheetKey), objectSheet.type, objectSheet.fields, [
@@ -2349,8 +2372,8 @@ export function AccountBatchImportButton({
       },
     ], guideRowsForSheet("funding"), t);
     appendStyledSheet(XLSX, workbook, t(settlementSheet.sheetKey), settlementSheet.type, settlementSheet.fields, [
-      { name: t("settings.accounts.importSampleLoan"), counterparty, owner, currency: baseCurrency },
-      { name: t("settings.accounts.importSampleSettlementInstitution"), institution: debtInstitution, owner, currency: baseCurrency },
+      { name: t("settings.accounts.importSampleLoan"), loanCategory: t("loan.type.home"), counterparty, owner, currency: baseCurrency },
+      { name: t("settings.accounts.importSampleSettlementInstitution"), institution: liabilityInstitution, owner, currency: baseCurrency },
       { name: t("settings.accounts.importSampleMmhTransferAccount"), counterparty: mmhCounterpartyShort, owner, currency: baseCurrency },
       { name: t("settings.accounts.importSampleMmhSettlementAccount"), counterparty: mmhCounterpartyShort, owner, currency: baseCurrency },
     ], guideRowsForSheet("settlement"), t);
@@ -2440,6 +2463,13 @@ export function AccountBatchImportButton({
     const ownerIds = mapByName(groups);
     const categoryIds = mapByName(await fetchCategories());
     const tagIds = mapByName(await fetchExistingTags());
+    // 贷款类别：内置类别的显示名走 i18n，所以同时按「存储名」和「本地化名」建索引。
+    const loanCategoryIds = new Map<string, string>();
+    for (const category of await fetchLoanCategories()) {
+      loanCategoryIds.set(normalizeImportHeader(category.name), category.id);
+      const localized = t(`loan.type.${category.baseType}`);
+      if (localized) loanCategoryIds.set(normalizeImportHeader(localized), category.id);
+    }
 
     for (const target of [...MASTER_TARGETS, "account"] as ImportTarget[]) {
       for (const row of selectedRows.filter((item) => item.target === target)) {
@@ -2489,8 +2519,24 @@ export function AccountBatchImportButton({
               errors.push({ key: row.key, sheet: row.sheet, sourceRow: row.sourceRow, name: row.name, message: t("settings.accounts.import.ownerNotFound") });
               continue;
             }
+            // 贷款账户：类别必选，且必须命中本账簿已有类别（找不到就报错不导）。
+            let loanCategoryId = "";
+            if (row.kind === "loan") {
+              loanCategoryId = loanCategoryIds.get(normalizeImportHeader(row.loanCategory)) || "";
+              if (!loanCategoryId) {
+                errors.push({
+                  key: row.key,
+                  sheet: row.sheet,
+                  sourceRow: row.sourceRow,
+                  name: row.name,
+                  message: t("settings.accounts.import.loanCategoryRequired"),
+                });
+                continue;
+              }
+            }
             body = {
               name: row.name,
+              loanCategoryId: loanCategoryId || undefined,
               kind: row.kind === "fixed_asset" ? "investment" : row.kind,
               investProductType: row.kind === "fixed_asset" ? "property" : row.investProductType,
               fixedAssetType: row.kind === "fixed_asset" ? row.fixedAssetType : undefined,
