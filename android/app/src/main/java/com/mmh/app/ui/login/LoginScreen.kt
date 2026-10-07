@@ -84,6 +84,7 @@ fun LoginScreen(
     var protocol by remember { mutableStateOf(viewModel.savedProtocol) }
     var host by remember { mutableStateOf(viewModel.savedHost) }
     var port by remember { mutableStateOf(viewModel.savedPort) }
+    var path by remember { mutableStateOf(viewModel.savedPath) }
     var username by remember { mutableStateOf(viewModel.savedUsername) }
     var password by remember { mutableStateOf("") }
     var showPassword by remember { mutableStateOf(false) }
@@ -108,7 +109,7 @@ fun LoginScreen(
 
     fun doLogin() {
         syncProtocol()
-        viewModel.login(protocol, host, port, username, password)
+        viewModel.login(protocol, host, port, path, username, password)
     }
 
     fun doResetRequest() {
@@ -223,6 +224,8 @@ fun LoginScreen(
                         onHostChange = { host = it },
                         port = port,
                         onPortChange = { port = it },
+                        path = path,
+                        onPathChange = { path = it },
                         focusManager = focusManager
                     )
                 }
@@ -389,6 +392,8 @@ private fun ServerConfigFields(
     onHostChange: (String) -> Unit,
     port: String,
     onPortChange: (String) -> Unit,
+    path: String,
+    onPathChange: (String) -> Unit,
     focusManager: androidx.compose.ui.focus.FocusManager
 ) {
     Column {
@@ -442,6 +447,22 @@ private fun ServerConfigFields(
                 )
             }
         }
+
+        // Optional gateway sub-path: only the fnOS unified gateway serves MMH
+        // below a declared prefix (/app/mmh). Leave empty for Docker, Synology
+        // and Windows, which are all served from their origin root.
+        LineField(
+            value = path,
+            onValueChange = onPathChange,
+            label = "子路径（可选）",
+            placeholder = "app/mmh",
+            modifier = Modifier.fillMaxWidth(),
+            keyboardOptions = KeyboardOptions(
+                keyboardType = KeyboardType.Uri,
+                imeAction = ImeAction.Next
+            ),
+            keyboardActions = KeyboardActions(onNext = { focusManager.moveFocus(FocusDirection.Down) })
+        )
     }
 }
 

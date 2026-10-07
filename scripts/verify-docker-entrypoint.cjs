@@ -28,6 +28,24 @@ function expect(condition, message) {
   if (!condition) failures.push(message);
 }
 
+// Cross-channel base-path contract: this image is served from the ORIGIN ROOT
+// (http://host:<port>/); only the fnOS gateway package carries /app/mmh. Next
+// inlines basePath at build time, so inheriting a leftover MMH_BASE_PATH from
+// the build host would ship an image whose every route 404s with no visible
+// cause. Declare the empty value instead of relying on the default.
+expect(
+  /ENV MMH_BASE_PATH=""/m.test(dockerfile),
+  'Dockerfile must declare MMH_BASE_PATH="" so the root-served image never inherits a gateway prefix from the build environment.',
+);
+expect(
+  !/ENV MMH_BASE_PATH="\/app\/mmh"/.test(dockerfile),
+  "Dockerfile must not bake the fnOS gateway prefix /app/mmh; that prefix belongs to scripts/build-fnos-app.cjs exclusively.",
+);
+expect(
+  !/MMH_BASE_PATH:/.test(rootCompose) && !/MMH_BASE_PATH:/.test(nasCompose),
+  "Compose files must not set MMH_BASE_PATH at runtime; the Docker build already bakes empty and Next cannot change it afterwards.",
+);
+
 expect(/gosu/.test(dockerfile), "Dockerfile must install gosu so the runtime can drop root privileges.");
 expect(/COPY --chown=node:node --from=build/.test(dockerfile), "Dockerfile must copy app files as node-owned files.");
 expect(/ensure_session_secret/.test(entrypoint), "Docker entrypoint must generate and persist MMH_SESSION_SECRET when it is not configured.");

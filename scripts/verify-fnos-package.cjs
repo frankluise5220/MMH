@@ -652,6 +652,41 @@ if (fs.existsSync(stageDir)) {
     const entry = stageUiConfig[".url"]["mmh.Application"];
     expect(entry?.gatewayPrefix === "/app/mmh" && entry?.gatewaySocket === "app.sock" && entry?.url === "/app/mmh", `fnOS ${verifyTarget.id} stage app/ui/config must register the unified-gateway entry /app/mmh on app.sock.`);
   }
+  // Cross-channel base-path contract. Next inlines basePath into the build
+  // output, so the gateway's declared gatewayPrefix and the baked value are two
+  // halves of ONE contract: when they drift apart every gateway request
+  // resolves to an unknown route (a bare 404) while asset URLs still look
+  // plausible enough that nobody suspects the prefix. Asserting the pair here
+  // means a mismatch fails packaging instead of shipping as a broken app. No
+  // server layer is allowed to "repair" a bad URL: every URL leaves exactly
+  // once through withBasePath() (see src/lib/base-path.ts).
+  const FNOS_BASE_PATH = "/app/mmh";
+  const stageNextServerFiles = path.join(stageDir, "app", "server", ".next", "required-server-files.json");
+  expect(
+    fs.existsSync(stageNextServerFiles),
+    `fnOS ${verifyTarget.id} stage must ship Next's required-server-files.json; it is the source of truth for the baked basePath.`,
+  );
+  if (fs.existsSync(stageNextServerFiles)) {
+    const stageNextConfig = JSON.parse(fs.readFileSync(stageNextServerFiles, "utf8"))?.config ?? {};
+    expect(
+      stageNextConfig.basePath === FNOS_BASE_PATH,
+      `fnOS ${verifyTarget.id} build must bake basePath "${FNOS_BASE_PATH}" to match the gateway prefix (found "${stageNextConfig.basePath ?? ""}").`,
+    );
+  }
+  // A doubled prefix in a shipped manifest or hand-written asset URL is a
+  // construction bug, never a runtime condition to tolerate, so it has to fail
+  // packaging rather than be silently rewritten on the server.
+  const doubledPrefix = `${FNOS_BASE_PATH}${FNOS_BASE_PATH}`;
+  for (const candidate of [
+    path.join(stageDir, "app", "server", ".next", "server", "app", "manifest.webmanifest.body"),
+    path.join(stageDir, "app", "server", "public", "sw.js"),
+  ]) {
+    if (!fs.existsSync(candidate)) continue;
+    expect(
+      !fs.readFileSync(candidate, "utf8").includes(doubledPrefix),
+      `fnOS ${verifyTarget.id} stage ${path.relative(stageDir, candidate)} must not contain the doubled prefix ${doubledPrefix}; URLs are built once by withBasePath().`,
+    );
+  }
   expect(/@appcenter\/"\$appname"/.test(stageMainScript), `fnOS ${verifyTarget.id} stage cmd/main must rediscover the appcenter install directory without TRIM_APPDEST.`);
   expect(/MMH_SESSION_SECRET/.test(stageMainScript) && /mmh-session-secret\.txt/.test(stageMainScript), `fnOS ${verifyTarget.id} stage cmd/main must export and persist MMH_SESSION_SECRET.`);
   expect(

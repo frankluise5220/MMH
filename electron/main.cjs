@@ -227,6 +227,11 @@ function startServer() {
       HOSTNAME: bindHost,
       DATABASE_URL: dbUrl(),
       MMH_DEPLOY_TARGET: "windows",
+      // Cross-channel base-path contract: this shell opens MMH at
+      // http://127.0.0.1:<port>/ with no path, so no prefix may apply. Pinning
+      // it keeps the runtime view identical to the build even when the desktop
+      // app is launched from a shell that still carries a fnOS MMH_BASE_PATH.
+      MMH_BASE_PATH: "",
       MMH_APP_VERSION: app.getVersion(),
       MMH_DATA_DIR: userDataDir,
       MMH_SESSION_SECRET: ensureSessionSecret(),

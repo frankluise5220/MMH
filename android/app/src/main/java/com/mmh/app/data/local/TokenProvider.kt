@@ -35,12 +35,23 @@ class TokenProvider @Inject constructor(
         val protocol: String = "http:",
         val host: String = "",
         val port: String = "",
+        // Root-hosted deployments leave this empty. Only the fnOS unified
+        // gateway serves MMH under a declared prefix (/app/mmh), and the app
+        // must keep that path as part of the connection instead of dropping it
+        // — see AuthInterceptor, which joins it exactly once per request.
+        val path: String = "",
         val username: String = "",
         val householdId: String = "",
         val householdName: String = ""
     ) {
         val serverUrl: String
-            get() = if (host.isBlank()) "" else if (port.isNotBlank()) "${protocol}//${host}:${port}" else "${protocol}//${host}"
+            get() = if (host.isBlank()) {
+                ""
+            } else {
+                val authority = if (port.isNotBlank()) "${protocol}//${host}:${port}" else "${protocol}//${host}"
+                val suffix = if (path.isNotBlank()) "/${path.trim('/')}" else ""
+                "$authority$suffix"
+            }
     }
 
     private val masterKeyAlias = MasterKeys.getOrCreate(MasterKeys.AES256_GCM_SPEC)
@@ -85,6 +96,25 @@ class TokenProvider @Inject constructor(
         syncCurrentServerProfile()
     }
 
+    /** e.g. "app/mmh". Empty string = the server hosts MMH at its origin root. */
+    fun getPath(): String = prefs.getString(KEY_PATH, "") ?: ""
+
+    fun setPath(path: String) {
+        prefs.edit().putString(KEY_PATH, normalizeServerPath(path)).apply()
+        isConnectedState = getServerUrl().isNotBlank() && prefs.getBoolean(KEY_AUTHENTICATED, false)
+        syncCurrentServerProfile()
+    }
+
+    /**
+     * Normalize a user-entered sub-path to "segment/segment" (no leading or
+     * trailing slash) so it can be joined with exactly one "/" downstream and
+     * can never produce a doubled prefix such as /app/mmh/app/mmh.
+     */
+    private fun normalizeServerPath(raw: String): String {
+        val trimmed = raw.trim().trim('/').trim()
+        return trimmed.split('/').filter { it.isNotBlank() }.joinToString("/")
+    }
+
     /** "http:" or "https:" */
     fun getProtocol(): String = prefs.getString(KEY_PROTOCOL, "http:") ?: "http:"
 
@@ -95,13 +125,16 @@ class TokenProvider @Inject constructor(
 
     // ── Composite server URL ──
 
-    /** Full server URL, assembled from parts, e.g. "http://192.168.1.100:3000" */
+    /** Full server URL, assembled from parts, e.g. "http://192.168.1.100:3000/app/mmh" */
     fun getServerUrl(): String {
         val host = getHost()
         if (host.isBlank()) return getLegacyServerUrl()
         val protocol = getProtocol()
         val port = getPort()
-        return if (port.isNotBlank()) "${protocol}//${host}:${port}" else "${protocol}//${host}"
+        val authority = if (port.isNotBlank()) "${protocol}//${host}:${port}" else "${protocol}//${host}"
+        val path = getPath()
+        val suffix = if (path.isNotBlank()) "/${path.trim('/')}" else ""
+        return "$authority$suffix"
     }
 
     /** Legacy: fallback to old KEY_SERVER_URL for backward compatibility */
@@ -115,6 +148,7 @@ class TokenProvider @Inject constructor(
                     .putString(KEY_PROTOCOL, u.scheme + ":")
                     .putString(KEY_HOST, u.host ?: "")
                     .putString(KEY_PORT, if (u.port > 0) u.port.toString() else "")
+                    .putString(KEY_PATH, normalizeServerPath(u.path ?: ""))
                     .remove(KEY_SERVER_URL)
                     .apply()
                 return legacy.trimEnd('/')
@@ -133,6 +167,7 @@ class TokenProvider @Inject constructor(
                 .putString(KEY_PROTOCOL, u.scheme + ":")
                 .putString(KEY_HOST, u.host ?: "")
                 .putString(KEY_PORT, if (u.port > 0) u.port.toString() else "")
+                .putString(KEY_PATH, normalizeServerPath(u.path ?: ""))
                 .putString(KEY_USERNAME, "")  // Clear username on server change
                 .putBoolean(KEY_AUTHENTICATED, false)
                 .apply()
@@ -192,7 +227,7 @@ class TokenProvider @Inject constructor(
         }
     }
 
-    fun addServer(protocol: String = "http:", host: String = "", port: String = ""): String {
+    fun addServer(protocol: String = "http:", host: String = "", port: String = "", path: String = ""): String {
         val id = UUID.randomUUID().toString()
         val list = getSavedServers().toMutableList()
         list.add(
@@ -200,7 +235,8 @@ class TokenProvider @Inject constructor(
                 id = id,
                 protocol = protocol,
                 host = host,
-                port = port
+                port = port,
+                path = path
             )
         )
         saveServerProfiles(list, activeId = id)
@@ -208,9 +244,16 @@ class TokenProvider @Inject constructor(
         return id
     }
 
-    fun updateServerProfile(id: String, protocol: String, host: String, port: String) {
+    fun updateServerProfile(id: String, protocol: String, host: String, port: String, path: String = "") {
         val updated = getSavedServers().map {
-            if (it.id == id) it.copy(protocol = protocol, host = host.trim(), port = port.trim()) else it
+            if (it.id == id) {
+                it.copy(
+                    protocol = protocol,
+                    host = host.trim(),
+                    port = port.trim(),
+                    path = normalizeServerPath(path)
+                )
+            } else it
         }
         saveServerProfiles(updated, activeId = id)
         updated.firstOrNull { it.id == id }?.let { applyServerProfile(it, keepAuthState = false) }
@@ -229,6 +272,7 @@ class TokenProvider @Inject constructor(
                 .putString(KEY_PROTOCOL, "http:")
                 .putString(KEY_HOST, "")
                 .putString(KEY_PORT, "")
+                .putString(KEY_PATH, "")
                 .putString(KEY_USERNAME, "")
                 .putString(KEY_HOUSEHOLD_ID, "")
                 .putString(KEY_HOUSEHOLD_NAME, "")
@@ -286,6 +330,7 @@ class TokenProvider @Inject constructor(
         val protocol = getProtocol()
         val host = getHost()
         val port = getPort()
+        val path = getPath()
         val username = getUsername()
         val colorScheme = getColorScheme()
 
@@ -294,6 +339,7 @@ class TokenProvider @Inject constructor(
             .putString(KEY_PROTOCOL, protocol)
             .putString(KEY_HOST, host)
             .putString(KEY_PORT, port)
+            .putString(KEY_PATH, path)
             .putString(KEY_USERNAME, username)
             .putString(KEY_COLOR_SCHEME, colorScheme)
             .putBoolean(KEY_AUTHENTICATED, false)
@@ -309,6 +355,7 @@ class TokenProvider @Inject constructor(
     private fun syncCurrentServerProfile() {
         val host = getHost().trim()
         val port = getPort().trim()
+        val path = getPath().trim()
         val protocol = getProtocol()
         val username = getUsername()
         val householdId = getHouseholdId()
@@ -332,6 +379,7 @@ class TokenProvider @Inject constructor(
             protocol = protocol,
             host = host,
             port = port,
+            path = path,
             username = username,
             householdId = householdId,
             householdName = householdName
@@ -356,6 +404,7 @@ class TokenProvider @Inject constructor(
             .putString(KEY_PROTOCOL, profile.protocol)
             .putString(KEY_HOST, profile.host)
             .putString(KEY_PORT, profile.port)
+            .putString(KEY_PATH, normalizeServerPath(profile.path))
             .putString(KEY_USERNAME, profile.username)
             .putString(KEY_HOUSEHOLD_ID, profile.householdId)
             .putString(KEY_HOUSEHOLD_NAME, profile.householdName)
@@ -373,6 +422,10 @@ class TokenProvider @Inject constructor(
         private const val KEY_PROTOCOL = "server_protocol"
         private const val KEY_HOST = "server_host"
         private const val KEY_PORT = "server_port"
+        // Optional sub-path for gateway-hosted deployments (fnOS serves MMH
+        // under /app/mmh). Empty for Docker / Synology / Windows, which serve
+        // from the origin root.
+        private const val KEY_PATH = "server_path"
         private const val KEY_ACTIVE_SERVER_ID = "active_server_id"
         private const val KEY_SERVER_PROFILES = "server_profiles"
         // Auth keys

@@ -523,6 +523,19 @@ function verifyStagedSource() {
     "Staged start-stop-status must apply the Node old-space guardrail.",
   );
   expect(fs.existsSync(path.join(stageDir, "package", "app", "server", "server.js")), "Staged package must contain the Next standalone server.");
+  // Cross-channel base-path contract: DSM opens MMH at http://host:<port>/ and
+  // package/ui/config declares no path, so this build must bake an EMPTY
+  // basePath. Only the fnOS gateway package carries /app/mmh (baked by
+  // scripts/build-fnos-app.cjs); Next inlines the value, so a leaked prefix
+  // here ships a package whose every route 404s behind DSM.
+  const stagedNextServerFiles = path.join(stageDir, "package", "app", "server", ".next", "required-server-files.json");
+  if (fs.existsSync(stagedNextServerFiles)) {
+    const stagedNextConfig = JSON.parse(fs.readFileSync(stagedNextServerFiles, "utf8"))?.config ?? {};
+    expect(
+      (stagedNextConfig.basePath ?? "") === "",
+      `Staged package must bake an empty basePath because DSM serves MMH from the origin root; found "${stagedNextConfig.basePath ?? ""}".`,
+    );
+  }
   expect(fs.existsSync(path.join(stageDir, "package", "app", "bin", "node")), `Staged package must contain a Linux ${verifyTarget.nodeArch} Node runtime.`);
 }
 

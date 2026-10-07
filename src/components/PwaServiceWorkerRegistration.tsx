@@ -3,9 +3,19 @@
 import { Share2, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useI18n } from "@/lib/i18n";
-import { MMH_BASE_PATH } from "@/lib/base-path";
+import { withBasePath } from "@/lib/base-path";
 
 const INSTALL_HINT_DISMISSED_KEY = "mmh_pwa_install_hint_dismissed";
+
+// Built once through the single base-path exit, then reused for both jobs below
+// (comparing an existing scope and registering ours). `""` on every channel
+// served from the origin root, `/app/mmh` on the fnOS gateway build. Deriving
+// it here instead of concatenating MMH_BASE_PATH by hand is what keeps this
+// file on the same invariant as the rest of the app: a prefix can be added
+// exactly once, so nothing ever has to "repair" one later.
+const SW_SCOPE = withBasePath("/");
+const SW_SCRIPT = withBasePath("/sw.js");
+const SW_SCOPE_BASE = SW_SCOPE.replace(/\/+$/, "");
 
 function isIosDevice() {
   const ua = navigator.userAgent;
@@ -59,7 +69,7 @@ export function PwaServiceWorkerRegistration() {
           for (const registration of registrations) {
             try {
               const scopePath = new URL(registration.scope).pathname.replace(/\/+$/, "");
-              if (scopePath !== MMH_BASE_PATH) registration.unregister();
+              if (scopePath !== SW_SCOPE_BASE) registration.unregister();
             } catch {
               // A malformed scope should never break registration below.
             }
@@ -71,8 +81,8 @@ export function PwaServiceWorkerRegistration() {
       // script URL and its scope have to stay inside that prefix; sw.js derives
       // its own base from self.registration.scope. Empty on other channels, so
       // this stays exactly "/sw.js" + scope "/" there.
-      navigator.serviceWorker.register(`${MMH_BASE_PATH}/sw.js`, {
-        scope: `${MMH_BASE_PATH}/`,
+      navigator.serviceWorker.register(SW_SCRIPT, {
+        scope: SW_SCOPE,
         updateViaCache: "none",
       }).catch((error) => {
         console.warn("MMH service worker registration failed:", error);

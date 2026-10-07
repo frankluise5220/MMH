@@ -72,6 +72,7 @@ fun ServerSettingsScreen(
     var draftServerId by rememberSaveable { mutableStateOf("") }
     var editHost by rememberSaveable { mutableStateOf("") }
     var editPort by rememberSaveable { mutableStateOf("") }
+    var editPath by rememberSaveable { mutableStateOf("") }
     var useHttps by rememberSaveable { mutableStateOf(false) }
 
     fun beginEdit(server: TokenProvider.SavedServerProfile, isDraft: Boolean = false) {
@@ -79,6 +80,7 @@ fun ServerSettingsScreen(
         draftServerId = if (isDraft) server.id else draftServerId
         editHost = server.host
         editPort = server.port
+        editPath = server.path
         useHttps = server.protocol == "https:"
     }
 
@@ -266,6 +268,22 @@ fun ServerSettingsScreen(
                                 )
                             }
 
+                            // Optional gateway sub-path. Only the fnOS unified
+                            // gateway hosts MMH below a declared prefix
+                            // (/app/mmh); root-served channels stay empty. Without
+                            // this field a gateway deployment is unreachable from
+                            // the app: requests would go to "<host>/api/...",
+                            // which no route answers.
+                            OutlinedTextField(
+                                value = editPath,
+                                onValueChange = { editPath = it },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true,
+                                textStyle = MaterialTheme.typography.bodyMedium.copy(fontSize = 15.sp),
+                                label = { Text("子路径（可选）") },
+                                placeholder = { Text("app/mmh") }
+                            )
+
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 verticalAlignment = Alignment.CenterVertically,
@@ -294,7 +312,8 @@ fun ServerSettingsScreen(
                                                 serverId = server.id,
                                                 protocol = if (useHttps) "https:" else "http:",
                                                 host = editHost,
-                                                port = editPort
+                                                port = editPort,
+                                                path = editPath
                                             )
                                             viewModel.selectServer(server.id)
                                             editingServerId = ""
@@ -303,6 +322,7 @@ fun ServerSettingsScreen(
                                             }
                                             editHost = ""
                                             editPort = ""
+                                            editPath = ""
                                             useHttps = false
                                         },
                                         enabled = editHost.isNotBlank()
@@ -388,7 +408,9 @@ fun ServerSettingsScreen(
 
 private fun formatServerAddress(server: TokenProvider.SavedServerProfile): String {
     val host = server.host.ifBlank { "未填写" }
-    return if (server.port.isNotBlank()) "$host:${server.port}" else host
+    val authority = if (server.port.isNotBlank()) "$host:${server.port}" else host
+    val path = server.path.trim('/')
+    return if (path.isBlank()) authority else "$authority/$path"
 }
 
 @Composable

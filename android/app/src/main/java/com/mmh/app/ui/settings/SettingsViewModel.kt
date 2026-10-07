@@ -70,10 +70,10 @@ class SettingsViewModel @Inject constructor(
             }
         }.getOrElse { fallbackSettingsCatalog() }
 
-    fun updateServer(serverId: String, protocol: String, host: String, port: String) {
+    fun updateServer(serverId: String, protocol: String, host: String, port: String, path: String = "") {
         viewModelScope.launch {
             if (serverId.isNotBlank()) {
-                tokenProvider.updateServerProfile(serverId, protocol, host, port)
+                tokenProvider.updateServerProfile(serverId, protocol, host, port, path)
             }
             refresh()
         }

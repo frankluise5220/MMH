@@ -17,6 +17,28 @@ const path = require("node:path");
 const root = path.resolve(__dirname, "..");
 const failures = [];
 const buildScript = fs.readFileSync(path.join(root, "scripts", "build-win-desktop.cjs"), "utf8");
+const electronMain = fs.readFileSync(path.join(root, "electron", "main.cjs"), "utf8");
+
+// Cross-channel base-path contract: only the fnOS gateway package carries a
+// prefix (/app/mmh). Every other channel is served from the ORIGIN ROOT, and
+// Windows is the strictest case because the Electron shell hard-codes
+// http://127.0.0.1:<port>/ with no path at all. Next inlines basePath at build
+// time, so a value left over in the shell (the desktop builder's run() merges
+// process.env) would ship an installer whose every route 404s inside the window.
+// Fixing that at the source is the point: no layer ever "repairs" a URL, every
+// URL leaves exactly once through withBasePath() (src/lib/base-path.ts).
+expect(
+  /MMH_BASE_PATH:\s*""/.test(buildScript),
+  'Windows desktop build must pin MMH_BASE_PATH: "" instead of inheriting the shell environment.',
+);
+expect(
+  /MMH_BASE_PATH:\s*""/.test(electronMain),
+  'Electron must spawn the server with MMH_BASE_PATH: "" so runtime matches the root-served build.',
+);
+expect(
+  /loadURL\("http:\/\/127\.0\.0\.1:" \+ port\)/.test(electronMain),
+  "Electron must open the window at the bare origin root (http://127.0.0.1:<port>); any entry path there would demand a matching basePath build.",
+);
 
 function expect(condition, message) {
   if (!condition) failures.push(message);

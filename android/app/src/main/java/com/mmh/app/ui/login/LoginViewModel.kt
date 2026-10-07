@@ -32,31 +32,39 @@ class LoginViewModel @Inject constructor(
     val savedProtocol: String = tokenProvider.getProtocol().ifBlank { "http:" }
     val savedHost: String = tokenProvider.getHost()
     val savedPort: String = tokenProvider.getPort()
+    // Optional gateway sub-path: fnOS publishes MMH under /app/mmh, so the app
+    // has to keep that path instead of silently talking to the origin root.
+    val savedPath: String = tokenProvider.getPath()
     val savedUsername: String = tokenProvider.getUsername()
 
     val hasServerConfigured: Boolean = savedHost.isNotBlank()
 
-    fun buildServerUrl(protocol: String, host: String, port: String): String {
+    fun buildServerUrl(protocol: String, host: String, port: String, path: String = ""): String {
         val p = protocol.ifBlank { "http:" }
         val h = host.trim()
         val pt = port.trim()
+        val suffix = if (path.trim('/').isNotBlank()) "/${path.trim('/')}" else ""
         return if (h.isNotBlank()) {
-            if (pt.isNotBlank()) "${p}//${h}:${pt}" else "${p}//${h}"
+            if (pt.isNotBlank()) "${p}//${h}:${pt}$suffix" else "${p}//${h}$suffix"
         } else ""
     }
 
-    fun login(protocol: String, host: String, port: String, username: String, password: String) {
+    fun login(protocol: String, host: String, port: String, username: String, password: String) =
+        login(protocol, host, port, "", username, password)
+
+    fun login(protocol: String, host: String, port: String, path: String, username: String, password: String) {
         val h = host.trim()
         if (h.isBlank()) { _uiState.value = LoginUiState.Error("请填写服务器地址"); return }
         if (username.isBlank() || password.isBlank()) { _uiState.value = LoginUiState.Error("请填写用户名和密码"); return }
 
-        val serverUrl = buildServerUrl(protocol, h, port)
+        val serverUrl = buildServerUrl(protocol, h, port, path)
 
         viewModelScope.launch {
             _uiState.value = LoginUiState.Testing
             tokenProvider.setProtocol(protocol.ifBlank { "http:" })
             tokenProvider.setHost(h)
             tokenProvider.setPort(port.trim())
+            tokenProvider.setPath(path)
             tokenProvider.setUsername(username.trim())
             tokenProvider.setAuthenticated(false)
             tokenProvider.setSessionCookie("")
@@ -89,7 +97,15 @@ class LoginViewModel @Inject constructor(
                     e.message?.contains("timeout") == true -> "连接超时，请检查网络和服务器状态"
                     else -> e.message ?: "连接失败"
                 }
-                _uiState.value = LoginUiState.Error(msg)
+                // A configured sub-path is the one field users cannot verify from
+                // anywhere else, and a wrong one fails exactly like a dead host,
+                // so say so instead of leaving them to guess.
+                val withPathHint = if (path.trim('/').isNotBlank() && !msg.contains("子路径")) {
+                    "$msg（已配置子路径 /${path.trim('/')}，若它是飞牛网关地址请确认前缀一致）"
+                } else {
+                    msg
+                }
+                _uiState.value = LoginUiState.Error(withPathHint)
             }
         }
     }
