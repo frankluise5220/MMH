@@ -3,8 +3,11 @@ import { NextResponse } from "next/server";
 export function corsHeaders() {
   return {
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "POST,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
+    // X-Api-Key is the header advertised in the docs and accepted by
+    // getApiHouseholdScope; omitting it made browser preflight reject the
+    // header even though the server would have accepted it.
+    "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Api-Key",
   } as const;
 }
 
