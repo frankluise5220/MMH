@@ -17,6 +17,8 @@ import { institutionTypeLabel, isSettlementCounterpartyType, isInstitutionTypeOf
 import { buildAccountDisplayOption, formatAccountHoverTitle } from "@/lib/account-display";
 import { recordRecentAccount, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
+/** 固定弹窗高度：切换贷款/还款/提前还款等模式时窗体尺寸与位置不变。 */
+import { useModalHeightLock } from "@/lib/client/useModalHeightLock";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { showConfirmDialog } from "@/lib/client/confirm-dialog";
 import { formatDateLocal as formatDateInput, parseDateInputToUtc as dateInputToUtcDate } from "@/lib/date-utils";
@@ -583,6 +585,8 @@ export function LiabilityTransactionModal({
   ) : undefined;
 
   const [open, setOpen] = useState(false);
+  /** 弹窗高度锁定（贷款/还款/提前还款等模式内容长短不同，锁定后窗体不位移） */
+  const { panelRef, scrollRef, fixedHeightProps } = useModalHeightLock<HTMLDivElement, HTMLFormElement>("liability-tx", open);
   const [submitting, setSubmitting] = useState(false);
   const [editingEntryId, setEditingEntryId] = useState("");
   // True when the open/edit event already carried repayment-plan defaults
@@ -2805,7 +2809,7 @@ export function LiabilityTransactionModal({
       {open
         ? createPortal(
             <div className="app-modal-backdrop" style={{ zIndex: modalZIndex }}>
-              <div className="app-modal-panel max-w-xl">
+              <div className={`app-modal-panel max-w-xl ${fixedHeightProps.className ?? ""}`} style={fixedHeightProps.style} ref={panelRef}>
                   <div className="modal-header shrink-0">
                     <div className="text-sm font-semibold text-slate-800">
                       {editingEntryId
@@ -2826,7 +2830,7 @@ export function LiabilityTransactionModal({
                     </div>
                   </div>
 
-                  <form className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4" onSubmit={onSubmit}>
+                  <form ref={scrollRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4" onSubmit={onSubmit}>
                     {isLoanDialog ? (
                       activeLoanTab === "repay_out" ? (
                         <div className="text-sm font-semibold text-slate-700">{t("liabilityTx.loanMode.repayment")}</div>

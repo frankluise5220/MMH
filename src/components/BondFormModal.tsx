@@ -12,6 +12,8 @@ import { useAccountSSFilter } from "./accountSSFilter";
 import { NestedAddModal } from "./EntityCreateForm";
 import { kindLabel } from "@/lib/account-kinds";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
+/** 固定弹窗高度：切换买入/赎回/收息/核销时窗体尺寸与位置不变。 */
+import { useModalHeightLock } from "@/lib/client/useModalHeightLock";
 import { recordRecentAccount, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
 import { compactFinanceAccountIds, dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { restrictAccountsByType } from "@/lib/client/account-dropdown-filter";
@@ -258,6 +260,8 @@ export function BondFormModal({
     : defaultAccountId;
 
   const [open, setOpen] = useState(false);
+  /** 弹窗高度锁定（买入/赎回/收息/核销内容长短不同，锁定后窗体不位移） */
+  const { panelRef, scrollRef, fixedHeightProps } = useModalHeightLock("bond", open);
   const [subtype, setSubtype] = useState<WealthSubtype>(initIsDividend ? "dividend_cash" : initIsWriteOff ? "write_off" : initIsRedeem ? "redeem" : "buy");
   const [date, setDate] = useState(initDate);
   const [holdingFilterDate, setHoldingFilterDate] = useState(initDate);
@@ -1404,7 +1408,7 @@ export function BondFormModal({
   return createPortal(
     <ModalLayerProvider value={modalZIndex}>
       <div className="app-modal-backdrop" style={{ zIndex: modalZIndex }}>
-        <div className="app-modal-panel max-w-2xl">
+        <div className={`app-modal-panel max-w-2xl ${fixedHeightProps.className ?? ""}`} style={fixedHeightProps.style} ref={panelRef}>
           <div className="modal-header">
             <div className="text-sm font-semibold text-slate-800">
               {mode === "edit"
@@ -1424,7 +1428,7 @@ export function BondFormModal({
           </div>
 
           <form className="flex min-h-0 flex-1 flex-col" onSubmit={onSubmit}>
-            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain p-3 sm:p-4">
+            <div ref={scrollRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain p-3 sm:p-4">
               <div className="flex gap-2">
                 <button
                   type="button"

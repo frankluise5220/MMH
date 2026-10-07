@@ -206,13 +206,19 @@ export const CalcInput = forwardRef<HTMLInputElement, CalcInputProps>(function C
         className={`form-input ${hideCalculator ? "" : "pr-10"} font-mono placeholder:text-slate-300 caret-slate-800 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500 ${inputClassName ?? ""}`}
       />
 
-      {!hideCalculator && <div className="absolute right-0 top-0">
+      {/* 计算器按钮**内缩 1px**、尺寸减 2px：与输入框边框留出 1px 缝，
+          否则它会盖住输入框右侧边框与焦点环（红/蓝外框在右侧缺一段）。
+          `rounded-r-[9px]` = 输入框 10px 圆角内缩 1px 的同心圆角。
+          按钮**不带任何边框**（包括左侧分隔线）：内缩后这些边框会与输入框自身的边框平行贴在一起
+          （右侧能看到两层描边 + 抗锯齿造成的“模糊重影”），而左侧一条竖线与整体外框不搭。
+          外框（描边 + 红/蓝环）统一由输入框负责，图标本身就够区分按钮。 */}
+      {!hideCalculator && <div className="absolute right-px top-px">
         <button
           ref={triggerRef}
           type="button"
           disabled={disabled}
           onClick={() => setOpen(true)}
-          className="flex h-9 w-9 items-center justify-center rounded-r-[10px] border border-l-0 border-slate-200 bg-white text-blue-600 hover:bg-blue-50 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400 disabled:hover:bg-white"
+          className="flex h-[34px] w-[34px] items-center justify-center rounded-r-[9px] bg-white text-blue-600 hover:bg-blue-50 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-400 disabled:hover:bg-white"
           title={label ? t("calcInput.titleWithLabel").replace("{label}", label) : t("calcInput.title")}
         >
           <Calculator className="h-4 w-4" />

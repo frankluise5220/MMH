@@ -19,6 +19,8 @@ import { getCashTargetOperation, isAdvanceFundingAccount, isDepositAccount, isDe
 import { buildAccountDisplayOption, buildGroupedAccountOptions, formatAccountHoverTitle } from "@/lib/account-display";
 import { recordRecentAccount, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+/** 必填字段红框（统一实现，见该模块注释）。 */
+import { REQUIRED_FIELD_CLASS } from "@/lib/client/required-field";
 import type { DepositLotOption } from "@/lib/server/deposit-lot-options";
 import {
   fetchSettingsAccountData,
@@ -55,8 +57,6 @@ type TransactionActionResult =
   | { ok: false; error: string };
 type LiabilityTransferMode = "borrow_in" | "repay_out" | "lend_out" | "collect_in";
 
-/** Red frame marking required select fields (from/to accounts etc.). */
-const REQUIRED_FIELD_CLASS = "rounded-[10px] ring-1 ring-rose-200/80";
 
 type AccountOption = {
   id: string;

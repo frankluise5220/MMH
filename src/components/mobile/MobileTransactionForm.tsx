@@ -10,6 +10,7 @@ import { DateStepper } from "@/components/DateStepper";
 import { EntryAttachmentButton, uploadEntryAttachmentFiles } from "@/components/EntryAttachmentPanel";
 import { buildCategoryTreeOptions } from "@/components/categorySmartSelect";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { REQUIRED_FIELD_CLASS } from "@/lib/client/required-field";
 import { useI18n } from "@/lib/i18n";
 import { getAccountLabelFieldsPreference } from "@/lib/client/appPreferences";
 
@@ -282,7 +283,7 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
 
         <label className="mt-3 block">
           <span className="text-xs text-slate-500">{draft.type === "transfer" ? t("mobileTxForm.transferFromAccount") : t("mobileTxForm.account")}</span>
-          <div className="mt-1 rounded-[10px] ring-1 ring-rose-200/80 [&>[role=button]]:h-11">
+          <div className={`mt-1 ${REQUIRED_FIELD_CLASS} [&>[role=button]]:h-11`}>
             <SmartSelect
               mode="single"
               value={draft.accountId}
@@ -312,7 +313,7 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
         {draft.type === "transfer" ? (
           <label className="mt-1.5 block">
             <span className="text-xs text-slate-500">{t("mobileTxForm.transferToAccount")}</span>
-            <div className="mt-1 rounded-[10px] ring-1 ring-rose-200/80 [&>[role=button]]:h-11">
+            <div className={`mt-1 ${REQUIRED_FIELD_CLASS} [&>[role=button]]:h-11`}>
               <SmartSelect
                 mode="single"
                 value={draft.toAccountId}
@@ -326,7 +327,7 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
         ) : (
           <label className="mt-3 block">
             <span className="text-xs text-slate-500">{t("mobileTxForm.category")}</span>
-            <div className="mt-1 rounded-[10px] ring-1 ring-rose-200/80 [&>[role=button]]:h-11">
+            <div className={`mt-1 ${REQUIRED_FIELD_CLASS} [&>[role=button]]:h-11`}>
               <SmartSelect
                 mode="single"
                 value={draft.categoryId}

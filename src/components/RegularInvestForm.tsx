@@ -14,6 +14,7 @@ import { NestedAddModal } from "./EntityCreateForm";
 import { useI18n } from "@/lib/i18n";
 import { scheduledTaskTypeLabel, type LoanScheduledPlanRole, type ScheduledTaskType } from "@/lib/scheduled-task";
 import { recordRecentAccount, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
+import { REQUIRED_FIELD_CLASS } from "@/lib/client/required-field";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
 import { formatDateUtc, lastDayOfMonthUtc } from "@/lib/date-utils";
 import { decodeYearlyExecutionDay, encodeYearlyExecutionDay, isYearlyExecutionDay } from "@/lib/scheduled-task-date";
@@ -30,8 +31,6 @@ const INTERVAL_LABELS: Record<string, string> = {
   month: "regularInvest.interval.month",
   year: "regularInvest.interval.year",
 };
-
-const REQUIRED_FIELD_CLASS = "rounded-[10px] ring-1 ring-rose-200/80";
 
 // Loan repayment is a system-level scheduled task: the repayment schedule is
 // derived from the loan and created automatically on loan setup, so it is not

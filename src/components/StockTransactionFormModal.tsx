@@ -14,6 +14,8 @@ import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
+/** 固定弹窗高度：切换买入/卖出/分红/股份变动时窗体尺寸与位置不变。 */
+import { useModalHeightLock } from "@/lib/client/useModalHeightLock";
 import { recordRecentAccount, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
 import { formatMoneyWithCurrencyCode as formatMoney } from "@/lib/format";
 import { todayDateLocalYmd as todayDateInputValue } from "@/lib/date-utils";
@@ -442,6 +444,8 @@ export function StockTransactionFormModal({
   const modalZIndex = getNextModalLayerZIndex(parentModalZIndex);
 
   const [open, setOpen] = useState(false);
+  /** 弹窗高度锁定（买入/卖出/分红/股份变动内容长短不同，锁定后窗体不位移） */
+  const { panelRef, scrollRef, fixedHeightProps } = useModalHeightLock("stock-tx", open);
   const [requestId, setRequestId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [stockAccountId, setStockAccountId] = useState(defaultStockAccountId ?? "");
@@ -1384,7 +1388,7 @@ export function StockTransactionFormModal({
   return createPortal(
     <ModalLayerProvider value={modalZIndex}>
       <div className="app-modal-backdrop" style={{ zIndex: modalZIndex }}>
-        <div className="app-modal-panel max-w-[min(38rem,calc(100vw-1rem))]">
+        <div className={`app-modal-panel max-w-[min(38rem,calc(100vw-1rem))] ${fixedHeightProps.className ?? ""}`} style={fixedHeightProps.style} ref={panelRef}>
           <form ref={formRef} onSubmit={submit} className="flex min-h-0 flex-1 flex-col">
             <div className="modal-header">
               <div className="text-sm font-semibold text-slate-800">{editingId ? t("stockTx.editTitle") : t("stockTx.title")}</div>
@@ -1393,7 +1397,7 @@ export function StockTransactionFormModal({
               </button>
             </div>
 
-            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain p-3 sm:px-5 sm:py-4">
+            <div ref={scrollRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain p-3 sm:px-5 sm:py-4">
               <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
                 {STOCK_ACTIONS.map((item) => (
                   <button

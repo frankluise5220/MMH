@@ -10,11 +10,15 @@ import { EntryTagsField } from "./EntryTagsField";
 import { ModalLayerProvider, getNextModalLayerZIndex, useModalLayerZIndex } from "./ModalLayer";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
+/** FT 卡片弹窗外壳（等宽靠左页签 + 实体卡片 + 固定页脚）：规则集中在它，几何不变量见 FolderTabs 文件头。 */
+import { FolderTabsCard } from "@/components/FolderTabsCard";
 import { useI18n } from "@/lib/i18n";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { recordRecentAccount, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
+/** 必填字段红框（统一实现：申请日期 / 基金代码 / 买入金额 / 份额）。 */
+import { REQUIRED_FIELD_CLASS } from "@/lib/client/required-field";
 import { getColorSchemeFromCookie, pnlClassFromRedUp } from "@/lib/client/colors";
 import { compactFinanceAccountIds, dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
@@ -47,6 +51,14 @@ const p = parseNumber;
 
 function addFundTradingDays(date: string, days: number) {
   return days > 0 ? addTradingDaysUtc(date, days, "cn_fund") : date;
+}
+
+/**
+ * 净值「实际日期」提示只显示月-日（YYYY-MM-DD → MM-DD）。
+ * 净值日期与申请日基本同年，年份对判断「取到的是哪天的净值」没有帮助，且净值列已收窄。
+ */
+function formatNavHintDate(date: string) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(date) ? date.slice(5) : date;
 }
 
 function buildFundNavUrl(code: string, date: string, accountId?: string, applyDate?: string, subtype?: FundSubtype) {
@@ -488,30 +500,6 @@ export function InvestmentFormModal({
     if (mode !== "edit" || !linkedRecords || linkedRecords.linkedRefunds.length === 0) return null;
     return linkedRecords.linkedRefunds[0] ?? null;
   }, [mode, linkedRecords]);
-
-  function applyLinkedRefundToForm(refund?: RefundLinkableEntry | null) {
-    if (!refund) return false;
-    setLinkedRefundEntryId(refund.id);
-    setArrivalAmount(Math.abs(Number(refund.amount) || 0).toFixed(2));
-    const refundDate = normalizeYmd(refund.fundArrivalDate ?? refund.date);
-    if (refundDate && !arrivalDateEditedRef.current) setArrivalDate(refundDate);
-    calculateBuyUnits(amount, fee, String(Math.abs(Number(refund.amount) || 0)), nav, true);
-    return true;
-  }
-
-  function toggleBuyRefund(enabled: boolean) {
-    setBuyResultStatus(enabled ? "refund" : "normal");
-    if (enabled) {
-      const applied = applyLinkedRefundToForm(firstLinkedRefund);
-      if (!applied && !arrivalDate) {
-        const baseDate = applyDate || confirmDate;
-        setArrivalDate(baseDate && arrivalDays > 0 ? addFundTradingDays(baseDate, arrivalDays) : baseDate);
-      }
-      return;
-    }
-    setArrivalAmount("");
-    calculateUnitsAfterRefundChange("");
-  }
 
   useEffect(() => {
     if (mode !== "edit" || !open || subtype !== "buy" || linkedRefundTotal <= 0) return;
@@ -1529,6 +1517,11 @@ export function InvestmentFormModal({
 
   const subtypeGroups = PRODUCT_SUBTYPES[productType];
   const allSubtypes = subtypeGroups.flat();
+  /** 交易类型文案：存款账户用「转入 / 转出」，其余按 subtype 取通用文案。 */
+  const subtypeLabel = (s: FundSubtype) =>
+    productType === "deposit"
+      ? (s === "buy" ? t("investForm.subtype.depositIn") : t("investForm.subtype.depositOut"))
+      : t(`fund.subtype.${s}`);
   function selectSubtype(nextSubtype: FundSubtype) {
     if (isRedeemLike(nextSubtype) && !isRedeemLike(subtype)) {
       // Switching to redeem clears buy amount/fee; create mode may prefill application-date available units.
@@ -2577,7 +2570,10 @@ export function InvestmentFormModal({
 
       {open && typeof document !== "undefined" ? createPortal(
         <div className="app-modal-backdrop" style={{ zIndex: modalZIndex }}>
-          <div className="app-modal-panel max-w-2xl">
+          {/* 宽度 = 原 `max-w-2xl`(672px) 的 3/4 = 504px（移动端仍由 `.app-modal-panel` 的
+              `max-width: 100vw` 覆盖成全屏，不受影响）。
+              `app-modal-panel-fixed-height`：窗体高度固定（见 globals.css），切页签不位移。 */}
+          <div className="app-modal-panel app-modal-panel-fixed-height max-w-[31.5rem]">
               <div className="modal-header shrink-0">
                 <div className="text-sm font-semibold text-slate-800">
                   {title}
@@ -2587,29 +2583,41 @@ export function InvestmentFormModal({
                     className="secondary-button h-8 px-2">{t("investForm.close")}</button>
               </div>
 
-              <form className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4" onSubmit={onSubmit}>
-              <div className="space-y-1">
-                <div className="form-label">{t("investForm.transactionType")}</div>
-                <div className="space-y-1.5">
-                  {PRODUCT_SUBTYPES[productType].map((group, gi) => (
-                    <div key={gi} className="flex gap-1.5">
-                      {group.map((s) => {
-                        const isActive = subtype === s;
-                        return (
-                          <button key={s} type="button" onClick={() => selectSubtypeOption(s)}
-                            className={`segment-button h-8 flex-1 text-xs ${isActive ? "segment-button-active font-medium" : ""}`}>
-                            {productType === "deposit"
-                              ? (s === "buy" ? t("investForm.subtype.depositIn") : t("investForm.subtype.depositOut"))
-                              : t(`fund.subtype.${s}`)}
-                          </button>
-                        );
-                      })}
-
-                    </div>
-                  ))}
-                </div>
-              </div>
-
+              {/* 表单 = FT 卡片弹窗外壳 `FolderTabsCard`：等宽靠左页签（按最长标签定宽）、
+                  米色实心卡片、字段在卡片内滚动、保存按钮固定贴卡片底边。规则集中在该组件 +
+                  globals.css 的 `.ft-card-surface` / `.ft-card-footer`，弹窗这边只写字段。
+                  页签可见项由 `PRODUCT_SUBTYPES[productType]` 决定（存款/贵金属等只有买入赎回）。 */}
+              <form className="flex min-h-0 flex-1 flex-col" onSubmit={onSubmit}>
+                <FolderTabsCard
+                  tabs={allSubtypes.map((item) => ({ id: item, label: subtypeLabel(item) }))}
+                  activeId={subtype}
+                  onChange={(id) => selectSubtypeOption(id as FundSubtype)}
+                  rulerLabels={allSubtypes.map((item) => subtypeLabel(item))}
+                  footer={(
+                    <>
+                      {mode === "create" && (
+                        <button
+                          type="button"
+                          disabled={submitting}
+                          onClick={(e) => {
+                            e.preventDefault();
+                            onSubmit(e as any, true);
+                          }}
+                          className="secondary-button h-9 px-4 text-blue-700 disabled:opacity-50"
+                        >
+                          {submitting ? t("stockFee.saving") : t("investForm.saveAndContinue")}
+                        </button>
+                      )}
+                      <button
+                        type="submit"
+                        disabled={submitting}
+                        className="primary-button h-9 disabled:opacity-50"
+                      >
+                        {submitting ? t("stockFee.saving") : t("common.save")}
+                      </button>
+                    </>
+                  )}
+                >
               {isDividend(subtype) ? (
                 <>
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -2658,7 +2666,7 @@ export function InvestmentFormModal({
                         onChange={selectHoldingFund}
                         options={holdingFundOptions}
                         placeholder={holdingFundLoading ? t("investForm.fetching") : holdingFundOptions.length > 0 ? t("investForm.selectHoldingFund") : t("investForm.noHoldingFundOnDate")}
-                        behavior={{ search: true, clearable: false, density: "compact" }}
+                        behavior={{ search: true, clearable: false }}
                       />
                     </div>
                   ) : showCode && effectiveHoldings && effectiveHoldings.length > 0 ? (
@@ -2739,38 +2747,15 @@ export function InvestmentFormModal({
                       className="form-input"
                     />
                   </div>
-
-                  <EntryTagsField value={selectedTagIds} onChange={setSelectedTagIds} />
-
-                  <div className="sticky bottom-0 z-10 -mx-4 -mb-4 flex justify-end gap-2 border-t border-slate-100 bg-white/95 px-4 py-3 backdrop-blur">
-                    {mode === "create" && (
-                      <button
-                        type="button"
-                        disabled={submitting}
-                        onClick={(e) => {
-                          e.preventDefault();
-                          onSubmit(e as any, true);
-                        }}
-                        className="secondary-button h-9 px-4 text-blue-700 disabled:opacity-50"
-                      >
-                        {submitting ? t("stockFee.saving") : t("investForm.saveAndContinue")}
-                      </button>
-                    )}
-                    <button
-                      type="submit"
-                      disabled={submitting}
-                      className="primary-button h-9 disabled:opacity-50"
-                    >
-                      {submitting ? t("stockFee.saving") : t("common.save")}
-                    </button>
-                  </div>
                 </>
               ) : (
               <>
               <div className="grid grid-cols-[1fr_auto_1fr] gap-2 items-end">
                 <div className="space-y-1">
                   <div className="text-xs font-medium text-slate-600">{t("investForm.applyDate")}</div>
+                  {/* 申请日期为必填（红框）：仅买入窗口标记，赎回窗口用同一行但不加框 */}
                   <DateStepper value={applyDate} onChange={changeApplyDate}
+                    className={redeemPanelMode ? undefined : REQUIRED_FIELD_CLASS}
                     onBlur={() => {
                       if (confirmDays >= 0 && applyDate) {
                         enableEditAutoNav();
@@ -2825,7 +2810,7 @@ export function InvestmentFormModal({
                         onChange={selectHoldingFund}
                         options={holdingFundOptions}
                         placeholder={holdingFundLoading ? t("investForm.fetching") : holdingFundOptions.length > 0 ? t("investForm.selectHoldingFund") : t("investForm.noRedeemableFund")}
-                        behavior={{ search: true, clearable: false, density: "compact" }}
+                        behavior={{ search: true, clearable: false }}
                       />
                     </div>
                   ) : showCode && effectiveHoldings && effectiveHoldings.length > 0 ? (
@@ -2910,7 +2895,7 @@ export function InvestmentFormModal({
                             <span className="ml-1 font-normal text-slate-400">{t("investForm.fetching")}</span>
                           ) : null}
                           {navActualDate && !navLoading ? (
-                            <span className="ml-1 font-normal text-amber-600">{t("investForm.navActualDate", { date: navActualDate, label: productType === "metal" ? t("investForm.metalPrice") : t("investForm.nav") })}</span>
+                            <span className="ml-1 whitespace-nowrap font-normal text-amber-600">{t("investForm.navActualDate", { date: formatNavHintDate(navActualDate), label: productType === "metal" ? t("investForm.metalPrice") : t("investForm.nav") })}</span>
                           ) : null}
                         </div>
                         <input
@@ -2934,19 +2919,23 @@ export function InvestmentFormModal({
                         />
                       </div>
                     </div>
-                  <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">{t("investForm.redeemAmount")}</div>
-                    <input
-                      inputMode="decimal"
-                      value={amount}
-                      readOnly
-                      style={{ caretColor: "var(--foreground)" }}
-                      className="form-input bg-slate-50 text-slate-700 caret-slate-800"
-                    />
-                  </div>
+                  {/* 赎回金额与「手续费率 / 手续费金额」同一行：赎回金额占 50%，费率 + 手续费金额
+                      合计占 50%（各 25%）。无手续费（`showFee` 为假，如理财/存款赎回）时赎回金额独占整行；
+                      窄屏（<sm）内层 50% 区自身换行，仍是「赎回金额一行、费率+手续费一行」。 */}
+                  <div className={`grid grid-cols-1 items-end gap-2 ${showFee ? "sm:grid-cols-2" : ""}`}>
+                    <div className="space-y-1">
+                      <div className="text-xs font-medium text-slate-600">{t("investForm.redeemAmount")}</div>
+                      <input
+                        inputMode="decimal"
+                        value={amount}
+                        readOnly
+                        style={{ caretColor: "var(--foreground)" }}
+                        className="form-input bg-slate-50 text-slate-700 caret-slate-800"
+                      />
+                    </div>
 
-                  {showFee && (
-                  <div className="grid grid-cols-1 items-end gap-2 sm:grid-cols-2">
+                    {showFee && (
+                    <div className="grid grid-cols-2 items-end gap-2">
                       <div className="space-y-1">
                         <div className="text-xs font-medium text-slate-600">{t("investForm.feeRatePercent")}</div>
                         <input
@@ -2980,7 +2969,8 @@ export function InvestmentFormModal({
                         />
                       </div>
                     </div>
-                  )}
+                    )}
+                  </div>
 
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                     <div className="space-y-1">
@@ -3011,40 +3001,35 @@ export function InvestmentFormModal({
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">{t("investForm.cashSourceAccount")}</div>
-                    {renderCashAccountSelect(t("investForm.selectCashAccount"))}
+                    {/* 资金来源账户、基金账户同为必填（统一红框） */}
+                    <div className={REQUIRED_FIELD_CLASS}>
+                      {renderCashAccountSelect(t("investForm.selectCashAccount"))}
+                    </div>
                   </div>
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">{productAccountLabel}</div>
-                    {renderInvestmentAccountSelect(t("investForm.selectProductAccount", { account: productAccountLabel }))}
+                    <div className={REQUIRED_FIELD_CLASS}>
+                      {renderInvestmentAccountSelect(t("investForm.selectProductAccount", { account: productAccountLabel }))}
+                    </div>
                   </div>
                 </div>
               ) : showAccountSelectorsFor(subtype) && cashAccounts && cashAccounts.length > 0 ? (
                 <div className="space-y-1">
                   <div className="text-xs font-medium text-slate-600">{t("investForm.cashSourceAccount")}</div>
-                  {renderCashAccountSelect(t("investForm.selectCashAccount"))}
+                  <div className={REQUIRED_FIELD_CLASS}>
+                    {renderCashAccountSelect(t("investForm.selectCashAccount"))}
+                  </div>
                 </div>
               ) : investmentAccounts && investmentAccounts.length > 0 ? (
                 <div className="space-y-1">
                   <div className="text-xs font-medium text-slate-600">{productAccountLabel}</div>
-                  {renderInvestmentAccountSelect(t("investForm.selectProductAccount", { account: productAccountLabel }))}
+                  <div className={REQUIRED_FIELD_CLASS}>
+                    {renderInvestmentAccountSelect(t("investForm.selectProductAccount", { account: productAccountLabel }))}
+                  </div>
                 </div>
               ) : null}
 
-              {productType === "metal" ? renderMetalFields() : showCode && !fundCode.trim() && holdings && holdings.length > 0 ? (
-                <HoldingPicker
-                  holdings={holdings}
-                  fundCode={fundCode}
-                  fundName={fundName}
-                  searchText={holdingSearch}
-                  onSearchChange={setHoldingSearch}
-                  onSelect={(h) => {
-                    changeFundCode(h.fundCode);
-                    setFundName(h.name);
-                  }}
-                  onBlur={handleFundCodeBlur}
-                  placeholder={productCodePlaceholder}
-                />
-              ) : showCode ? (
+              {productType === "metal" ? renderMetalFields() : showCode ? (
                 <div className="grid grid-cols-[1fr_2fr] items-end gap-2">
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">{productCodeLabel}</div>
@@ -3057,7 +3042,7 @@ export function InvestmentFormModal({
                       }}
                       onBlur={handleFundCodeBlur}
                       placeholder={productCodePlaceholder}
-                      className="form-input"
+                      className={`form-input ${REQUIRED_FIELD_CLASS}`}
                     />
                   </div>
                   <div className="space-y-1">
@@ -3085,7 +3070,11 @@ export function InvestmentFormModal({
                 </div>
               )}
 
-              <div className="grid grid-cols-1 items-end gap-2 sm:grid-cols-[0.7fr_auto_1fr]">
+              {/* 净值列已收窄（原 `0.7fr`，当前面板宽下约 11rem）。取 6.25rem = 100px：
+                  「净值 (10-07净值)」实测 93.4px，再窄（如严格一半 5.5rem = 88px）标签必然换行，
+                  100px 是「单行不换行」的下限，其余宽度全给右侧「买入金额 / 退回金额 / 确认金额」
+                  三格，三格再均分（内层 `1fr 1fr 1fr`）。 */}
+              <div className="grid grid-cols-1 items-end gap-2 sm:grid-cols-[6.25rem_auto_1fr]">
                 <div className="space-y-1">
                   <div className="text-xs font-medium text-slate-600">
                     {productType === "metal" ? t("investForm.metalPrice") : t("investForm.nav")}
@@ -3093,7 +3082,7 @@ export function InvestmentFormModal({
                       <span className="ml-1 font-normal text-slate-400">{t("investForm.fetching")}</span>
                     ) : null}
                     {navActualDate && !navLoading ? (
-                      <span className="ml-1 font-normal text-amber-600">{t("investForm.navActualDate", { date: navActualDate, label: productType === "metal" ? t("investForm.metalPrice") : t("investForm.nav") })}</span>
+                      <span className="ml-1 whitespace-nowrap font-normal text-amber-600">{t("investForm.navActualDate", { date: formatNavHintDate(navActualDate), label: productType === "metal" ? t("investForm.metalPrice") : t("investForm.nav") })}</span>
                     ) : null}
                   </div>
                   <input
@@ -3147,25 +3136,19 @@ export function InvestmentFormModal({
                       label={t("txForm.amount")}
                       placeholder={subtype === "dividend_reinvest" ? t("investForm.amountAutoPlaceholder") : undefined}
                       precision={2}
+                      className={REQUIRED_FIELD_CLASS}
                     />
                   </div>
                   {isBuyLike(subtype) && subtype === "buy" && !isDividend(subtype) && productType !== "metal" ? (
                     <div className="space-y-1">
-                      <div className="flex min-h-4 items-center justify-between gap-2">
-                        <div className="text-xs font-medium text-slate-600">{t("investForm.refundAmount")}</div>
-                        <button
-                          type="button"
-                          onClick={() => toggleBuyRefund(buyResultStatus !== "refund")}
-                          className={`h-4 rounded-full px-1.5 text-[10px] leading-none transition-colors ${buyResultStatus === "refund" ? "bg-amber-600 text-white" : "bg-slate-100 text-slate-500 hover:bg-slate-200"}`}
-                        >
-                          {buyResultStatus === "refund" ? t("investForm.refundOn") : t("investForm.refundOff")}
-                        </button>
-                      </div>
+                      <div className="text-xs font-medium text-slate-600">{t("investForm.refundAmount")}</div>
                       <CalcInput
                         value={arrivalAmount}
                         onChange={(v) => {
                           setArrivalAmount(v);
-                          if (p(v) > 0 && buyResultStatus !== "refund") setBuyResultStatus("refund");
+                          // 退回金额本身就是开关（不再有独立「开/关」按钮）：
+                          // 有数字 = 有退回（记录为退回/失败单），清空 = 无退回（普通买入）。
+                          setBuyResultStatus(p(v) > 0 ? "refund" : "normal");
                           if (p(v) > 0 && !arrivalDate) {
                             const baseDate = applyDate || confirmDate;
                             setArrivalDate(baseDate && arrivalDays > 0 ? addFundTradingDays(baseDate, arrivalDays) : baseDate);
@@ -3232,7 +3215,8 @@ export function InvestmentFormModal({
                   <CalcInput value={units}
                     onChange={(v) => { unitsEditedRef.current = true; setUnits(v); }}
                     placeholder={computedUnits || "0.00"}
-                    label={t("investForm.units")} precision={fundUnitsDecimals} />
+                    label={t("investForm.units")} precision={fundUnitsDecimals}
+                    className={REQUIRED_FIELD_CLASS} />
                 </div>
               </div>
                 </>
@@ -3242,31 +3226,9 @@ export function InvestmentFormModal({
                 <div className="text-xs font-medium text-slate-600">{t("detail.column.remark")}</div>
                 <ClearableNoteField value={memo} onValueChange={setMemo} placeholder={t("stockFee.optional")} className="form-input" />
               </div>
-
-              <div className="sticky bottom-0 z-10 -mx-4 -mb-4 flex justify-end gap-2 border-t border-slate-100 bg-white/95 px-4 py-3 backdrop-blur">
-                {mode === "create" && (
-                  <button
-                    type="button"
-                    disabled={submitting}
-                    onClick={(e) => {
-                      e.preventDefault();
-                      onSubmit(e as any, true);
-                    }}
-                    className="secondary-button h-9 px-4 text-blue-700 disabled:opacity-50"
-                  >
-                    {submitting ? t("stockFee.saving") : t("investForm.saveAndContinue")}
-                  </button>
-                )}
-                <button
-                  type="submit"
-                  disabled={submitting}
-                  className="primary-button h-9 disabled:opacity-50"
-                >
-                  {submitting ? t("stockFee.saving") : t("common.save")}
-                </button>
-              </div>
               </>
               )}
+                </FolderTabsCard>
               </form>
           </div>
         </div>,

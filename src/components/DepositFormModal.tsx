@@ -13,6 +13,8 @@ import { NestedAddModal } from "./EntityCreateForm";
 import { kindLabel } from "@/lib/account-kinds";
 import { recordRecentAccount, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
+/** 固定弹窗高度：切换买入/取出（含续存）时窗体尺寸与位置不变。 */
+import { useModalHeightLock } from "@/lib/client/useModalHeightLock";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
 import { APP_PREFS_EVENT, getSidebarHideInitialDataPreference } from "@/lib/client/appPreferences";
@@ -233,6 +235,8 @@ export function DepositFormModal({
       : defaultAccountId;
 
   const [open, setOpen] = useState(false);
+  /** 弹窗高度锁定（买入/取出/续存三态内容长短不同，锁定后窗体不位移） */
+  const { panelRef, scrollRef, fixedHeightProps } = useModalHeightLock("deposit", open);
   const [subtype, setSubtype] = useState<"buy" | "redeem">(initIsRedeem ? "redeem" : "buy");
   const [date, setDate] = useState(initDate);
   const [arrivalDate, setArrivalDate] = useState(initIsRedeem && entry?.fundArrivalDate ? entry.fundArrivalDate.slice(0, 10) : initDate);
@@ -1630,7 +1634,7 @@ export function DepositFormModal({
     <ModalLayerProvider value={modalZIndex}>
       {createPortal(
         <div className="app-modal-backdrop" style={{ zIndex: modalZIndex }}>
-          <div className="app-modal-panel max-w-xl">
+          <div className={`app-modal-panel max-w-xl ${fixedHeightProps.className ?? ""}`} style={fixedHeightProps.style} ref={panelRef}>
             <div className="modal-header">
               <div className="text-sm font-semibold text-slate-800">
                 {mode === "edit"
@@ -1653,7 +1657,7 @@ export function DepositFormModal({
             </div>
 
             <form className="flex min-h-0 flex-1 flex-col" onSubmit={onSubmit}>
-              <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain p-3 sm:p-4">
+              <div ref={scrollRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain p-3 sm:p-4">
               <div className="flex gap-2">
                 <button
                   type="button"

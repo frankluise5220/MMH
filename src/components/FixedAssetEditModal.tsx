@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import { DateStepper } from "./DateStepper";
 import { ClearableNoteField } from "./ClearableNoteField";
 import { useI18n } from "@/lib/i18n";
+/** 固定弹窗高度：切换资产类型时窗体尺寸与位置不变。 */
+import { useModalHeightLock } from "@/lib/client/useModalHeightLock";
 import { FIXED_ASSET_TYPES, type FixedAssetType } from "@/lib/fixed-asset";
 
 type FixedAssetEditValue = {
@@ -48,6 +50,8 @@ export function FixedAssetEditModal({
 }) {
   const [draft, setDraft] = useState<FixedAssetEditValue | null>(value);
   const { t } = useI18n();
+  /** 弹窗高度锁定（按资产类型分支渲染、字段多少不同，锁定后窗体不位移） */
+  const { panelRef, scrollRef, fixedHeightProps } = useModalHeightLock("fixed-asset-edit", open);
 
   useEffect(() => {
     setDraft(value);
@@ -70,7 +74,7 @@ export function FixedAssetEditModal({
 
   return (
     <div className="app-modal-backdrop z-[1200]">
-      <div className="app-modal-panel max-w-xl">
+      <div className={`app-modal-panel max-w-xl ${fixedHeightProps.className ?? ""}`} style={fixedHeightProps.style} ref={panelRef}>
         <div className="modal-header">
           <div className="text-sm font-semibold text-slate-800">{t("fixedAssetEdit.editTitle")}</div>
           <button type="button" onClick={onClose} className="secondary-button h-8 px-2">
@@ -85,7 +89,7 @@ export function FixedAssetEditModal({
             void onSaved(draft);
           }}
         >
-          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
+          <div ref={scrollRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
             <div className="rounded-lg bg-slate-50/70 px-3 py-2 text-[11px] leading-5 text-slate-500">
               {[
                 meta.accountName ? t("fixedAssetEdit.accountLine", { name: meta.accountName }) : "",

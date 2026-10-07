@@ -193,6 +193,65 @@ html {
     border-color: var(--line-strong);
   }
 
+  /* ── FT 卡片外壳（配套组件 `src/components/FolderTabsCard.tsx`）────────────────────────
+     记账弹窗里「FT 页签 + 内容板 + 固定页脚」的两层外观集中在这里，弹窗只写字段。
+     几何不变量（页签高 34px、`pt-10`、凹角、`z-index` 层级）见 `@/app/login/FolderTabs` 文件头。 */
+
+  /* 内容板（实体卡片）：压在页签之上（z-20 > 页签 z-10），圆角/边框/阴影 + 米色底，
+     与白色弹窗底形成卡片感；`--ft-card-bg` 可被色阶类覆盖。 */
+  .ft-card-surface {
+    --ft-card-bg: #fbfaf7;
+    position: relative;
+    z-index: 20;
+    display: flex;
+    flex: 1 1 0%;
+    min-height: 0;
+    flex-direction: column;
+    overflow: hidden;
+    border: 1px solid #cbd5e1; /* = 页签凹角描边色 slate-300，接缝处不断色 */
+    border-radius: 12px;
+    background-color: var(--ft-card-bg);
+    box-shadow: 0 6px 16px rgba(15, 23, 42, 0.08);
+  }
+
+  /* 白色色阶：卡片白底 + 页签挂 `ft-tab-fillet-white`（由 FolderTabsCard 的 tone="white" 自动加） */
+  .ft-card-surface-white {
+    --ft-card-bg: #ffffff;
+  }
+
+  /* 卡片页脚：**固定在卡片底边**（不是 sticky 吸附层，所以不会浮上去盖住最后一个字段），
+     内容超出时字段在卡片内滚动、按钮位置恒定。 */
+  .ft-card-footer {
+    display: flex;
+    flex: none;
+    justify-content: flex-end;
+    gap: 8px;
+    border-top: 1px solid #f1f5f9;
+    background-color: rgba(255, 255, 255, 0.95);
+    padding: 12px 16px;
+    backdrop-filter: blur(8px);
+  }
+
+  /* 投资记账弹窗（InvestmentFormModal，配 `app-modal-panel-fixed-height`）：**固定窗体尺寸**。
+     四个页签（买入 / 赎回 / 现金分红 / 红利再投）内容长短不同；若弹窗高度随内容变化，
+     在 `app-modal-backdrop` 的居中布局下整个弹窗会上下位移、底部保存按钮的位置也跟着跳。
+     固定高度后：内容短的页签在卡片底部留空白，内容长的页签在卡片内滚动，外框与按钮位置恒定。
+     高度贴着「最长页签（买入，新建态）」的**实测**自然高度（Chromium 量过，勿按估算改小）：
+       一字段行 = 标签 16（text-xs 行高）+ 4（space-y-1）+ 控件 36（form-input h-9）= 56
+       7 行 + 6×12（space-y-3）+ 32（p-4）= 496  ← 卡片滚动区内容
+       + 1（页脚上边框）+ 60（页脚 py-3 + h-9 按钮）= 557   ← 卡片
+       + 40（页签带 pt-10）= 597
+       + 56（弹窗标题）+ 1 = 654                            ← 弹窗总高
+     取 42rem(672px) 留 ~18px 余量：不出现内部滚动条，且不会像 44rem 那样明显偏高。
+     ⚠️ 双类名用于提高优先级：同层同优先级下，写在后面的 `.app-modal-panel` 的 `h-auto` 会压过单类名。
+     移动端不受影响：`@media (max-width: 767px)` 里那条 `.app-modal-panel` 是**层外**规则，
+     层外样式优先级高于任何 `@layer`，会把高度重置回整屏 `100dvh`。 */
+  .app-modal-panel.app-modal-panel-fixed-height {
+    /* `--app-modal-fixed-height` 由调用方按自己的内容高度指定；默认 42rem 是投资记账弹窗
+       （最长页签「买入」）的实测值。其它记账弹窗复用同一个类时只改这个变量即可。 */
+    height: min(var(--app-modal-fixed-height, 42rem), calc(100dvh - 2rem));
+  }
+
   .app-modal-panel-dragging {
     user-select: none;
   }
@@ -391,6 +450,25 @@ html {
     background-image:
       url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='7' height='7' viewBox='0 0 7 7'%3E%3Cpath d='M6.5 0A6.5 6.5 0 0 1 0 6.5' fill='none' stroke='%23cbd5e1' stroke-width='1'/%3E%3C/svg%3E"),
       url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='7' height='7' viewBox='0 0 7 7'%3E%3Cpath d='M0.5 0A6.5 6.5 0 0 0 7 6.5' fill='none' stroke='%23cbd5e1' stroke-width='1'/%3E%3C/svg%3E");
+  }
+
+  /* 接缝为白时的凹角（如基金视图持仓卡片：内容板底色仍是米色 #fbfaf7，但**紧贴页签底边的
+     那一条**是白色表头，所以页签与凹角填充要取白，而不是内容板底色）。
+     ⚠️ 必须与 `.ft-tab-fillet` 挂在**同一个**元素上：几何（位置/尺寸/background-size、
+     以及 ::after 的 slate-300 描边）都来自上面两条规则，这里只把**填充层**的底色换成
+     内容板底色白 —— 凹角填充的作用是抹掉页签底下那一小段内容板上边框，填充色必须等于
+     内容板底色，否则接缝处露出异色。
+     同时把活动页签**自身底色**也刷成内容板底色：同属 `@layer utilities`，但本文件的手写规则
+     排在顶部 `@import "tailwindcss"`（Tailwind 生成的 utilities）之后，同层同优先级时后者胜，
+     因此能覆盖 `bg-[#fbfaf7]`（无需 !important），「页签 → 卡片」衔接处颜色完全一致。 */
+  .ft-tab-fillet-white {
+    background-color: #ffffff;
+  }
+
+  .ft-tab-fillet-white::before {
+    background-image:
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='7' height='7' viewBox='0 0 7 7'%3E%3Cpath d='M6.5 0A6.5 6.5 0 0 1 0 6.5L0 7L7 7L7 0Z' fill='%23ffffff'/%3E%3C/svg%3E"),
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='7' height='7' viewBox='0 0 7 7'%3E%3Cpath d='M0.5 0A6.5 6.5 0 0 0 7 6.5L7 7L0 7L0 0Z' fill='%23ffffff'/%3E%3C/svg%3E");
   }
 
   thead th,
