@@ -1468,7 +1468,7 @@ export function SmartSelect(props: SmartSelectProps) {
         aria-expanded={open}
         aria-haspopup="listbox"
         aria-activedescendant={open && focusedIndex >= 0 ? `${listId}-${focusedIndex}` : undefined}
-        className={`flex ${micro ? "h-6 rounded-[7px] px-1.5 text-[11px]" : dense ? "h-7 rounded-[8px] px-2 text-xs" : compact ? "h-8 rounded-[8px] px-2 text-xs" : "h-9 rounded-[10px] px-3 text-sm"} w-full items-center justify-between border border-slate-300/70 bg-surface-white outline-none transition-colors hover:border-slate-400/60 focus-visible:border-blue-400 focus-visible:ring-2 focus-visible:ring-blue-100`}
+        className={`flex ${micro ? "h-6 rounded-[7px] px-1.5 text-[11px]" : dense ? "h-7 rounded-[8px] px-2 text-xs" : compact ? "h-8 rounded-[8px] px-2 text-xs" : "h-9 smart-select-trigger rounded-[10px] px-3 text-sm"} w-full items-center justify-between border border-slate-300/70 bg-surface-white outline-none transition-colors hover:border-slate-400/60 focus-visible:border-blue-400 focus-visible:ring-2 focus-visible:ring-blue-100`}
       >
         {mode === "single" ? (
           <span className={`${selectedLabel ? "text-slate-800" : "text-slate-400"} flex min-w-0 flex-1 items-center`} title={selectedTitle}>

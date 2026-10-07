@@ -32,7 +32,12 @@ import { FOLDER_TAB_STRIP, FolderTabRuler, folderTabClass, folderTabNeighbors } 
  * 弹窗本体（`.app-modal-panel`）若希望**切换页签时窗体尺寸不变**，再加
  * `app-modal-panel-fixed-height`（高度见 globals.css 的 `--app-modal-fixed-height`）。
  */
-export type FolderTabsCardItem = { id: string; label: ReactNode };
+export type FolderTabsCardItem = {
+  id: string;
+  label: ReactNode;
+  /** 禁止切换（如存款编辑时子类型被锁定）：页签置灰且点击无效 */
+  disabled?: boolean;
+};
 
 export function FolderTabsCard({
   tabs,
@@ -75,18 +80,20 @@ export function FolderTabsCard({
           <div className="flex h-full items-start gap-1.5">
             {tabs.map((tab, index) => {
               const active = tab.id === activeId;
+              const disabled = !!tab.disabled;
               return (
                 <button
                   key={tab.id}
                   type="button"
-                  onClick={() => onChange(tab.id)}
+                  disabled={disabled}
+                  onClick={() => { if (!disabled) onChange(tab.id); }}
                   className={`${folderTabClass(
                     active,
                     index === tabs.length - 1,
                     "stretch",
                     index === 0,
                     folderTabNeighbors(order, tab.id, activeId),
-                  )}${active && tone === "white" ? " ft-tab-fillet-white" : ""}`}
+                  )}${active && tone === "white" ? " ft-tab-fillet-white" : ""}${disabled ? " disabled:cursor-not-allowed disabled:opacity-60" : ""}`}
                 >
                   {/* 活动页签不能 overflow-hidden（下缘凹角画在按钮盒外），裁切交给内层 span。 */}
                   <span className="relative block overflow-hidden text-ellipsis whitespace-nowrap">

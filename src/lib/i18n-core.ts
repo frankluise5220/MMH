@@ -3205,7 +3205,7 @@ const I18N_MESSAGES = {
     "wealthForm.termDays": "期限天数",
     "wealthForm.termPresetPlaceholder": "请选择常见期限",
     "wealthForm.daysSuffix": "{days}天",
-    "wealthForm.arrivalAccount": "到账账户",
+    "wealthForm.arrivalAccount": "入账资金账户",
     "wealthForm.arrivalDate": "到账日期",
     "wealthForm.arrivalAmount": "到账金额",
     "wealthForm.dividendAmount": "分红金额",

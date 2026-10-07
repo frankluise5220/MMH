@@ -4,8 +4,8 @@ import { useEffect, useState } from "react";
 import { DateStepper } from "./DateStepper";
 import { ClearableNoteField } from "./ClearableNoteField";
 import { useI18n } from "@/lib/i18n";
-/** 固定弹窗高度：切换资产类型时窗体尺寸与位置不变。 */
-import { useModalHeightLock } from "@/lib/client/useModalHeightLock";
+/** 记账弹窗整窗外壳：宽度/标题栏/表单/卡片/固定页脚/高度锁定统一由它负责。 */
+import { EntryModalShell } from "@/components/EntryModalShell";
 import { FIXED_ASSET_TYPES, type FixedAssetType } from "@/lib/fixed-asset";
 
 type FixedAssetEditValue = {
@@ -50,8 +50,6 @@ export function FixedAssetEditModal({
 }) {
   const [draft, setDraft] = useState<FixedAssetEditValue | null>(value);
   const { t } = useI18n();
-  /** 弹窗高度锁定（按资产类型分支渲染、字段多少不同，锁定后窗体不位移） */
-  const { panelRef, scrollRef, fixedHeightProps } = useModalHeightLock("fixed-asset-edit", open);
 
   useEffect(() => {
     setDraft(value);
@@ -73,23 +71,36 @@ export function FixedAssetEditModal({
   }
 
   return (
-    <div className="app-modal-backdrop z-[1200]">
-      <div className={`app-modal-panel max-w-xl ${fixedHeightProps.className ?? ""}`} style={fixedHeightProps.style} ref={panelRef}>
-        <div className="modal-header">
-          <div className="text-sm font-semibold text-slate-800">{t("fixedAssetEdit.editTitle")}</div>
-          <button type="button" onClick={onClose} className="secondary-button h-8 px-2">
-            {t("table.close")}
+    /* 整窗外壳见 `EntryModalShell`（无页签：资产类型切换在表单内，内容长短变化由高度锁定吸收）；
+       该弹窗原本就地渲染，故 `portal={false}` 保持挂载点不变。 */
+    <EntryModalShell
+      open={open}
+      heightKey="fixed-asset-edit"
+      width="md"
+      title={t("fixedAssetEdit.editTitle")}
+      onClose={onClose}
+      portal={false}
+      backdropClassName="z-[1200]"
+      onSubmit={(event) => {
+        event.preventDefault();
+        void onSaved(draft);
+      }}
+      footer={(
+        <>
+          <button type="button" onClick={onClose} className="secondary-button h-9 px-4">
+            {t("common.cancel")}
           </button>
-        </div>
+          <button
+            type="submit"
+            disabled={saving}
+            className="primary-button h-9 px-4 text-white disabled:opacity-50"
+          >
+            {saving ? t("fixedAssetEdit.saving") : t("common.save")}
+          </button>
+        </>
+      )}
+    >
 
-        <form
-          className="flex min-h-0 flex-1 flex-col"
-          onSubmit={(event) => {
-            event.preventDefault();
-            void onSaved(draft);
-          }}
-        >
-          <div ref={scrollRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
             <div className="rounded-lg bg-slate-50/70 px-3 py-2 text-[11px] leading-5 text-slate-500">
               {[
                 meta.accountName ? t("fixedAssetEdit.accountLine", { name: meta.accountName }) : "",
@@ -259,25 +270,7 @@ export function FixedAssetEditModal({
                 <span>{t("fixedAssetEdit.status.mortgaged")}</span>
               </label>
             </div>
-          </div>
-
-          <div className="shrink-0 border-t border-slate-100 bg-white/95 px-4 py-3">
-            <div className="flex items-center justify-end gap-2">
-              <button type="button" onClick={onClose} className="secondary-button h-9 px-4">
-                {t("common.cancel")}
-              </button>
-              <button
-                type="submit"
-                disabled={saving}
-                className="primary-button h-9 px-4 text-white disabled:opacity-50"
-              >
-                {saving ? t("fixedAssetEdit.saving") : t("common.save")}
-              </button>
-            </div>
-          </div>
-        </form>
-      </div>
-    </div>
+    </EntryModalShell>
   );
 }
 

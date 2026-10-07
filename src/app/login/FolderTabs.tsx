@@ -191,10 +191,17 @@ export type FolderTabsItem = {
  * 列用 `minmax(0, max-content)`：量尺的 **max-content** 仍是「最长标签」（决定等宽），但
  * **min-content 为 0**、可以被压缩 —— 否则量尺会把每个页签的最小宽度锁死在最长标签上，
  * 窄屏下页签组撑破容器、末尾页签点不到。压缩时标签由页签内层 span 的 ellipsis 裁切。
+ *
+ * 另有一枚**下限探针** `RULER_MIN_PROBE`：四个汉字宽，保证再短的标签（如「买入」「赎回」）
+ * 也不会窄成一条 —— 太短的标签不好看。探针与真实标签同字号同字体，所以它量出来的就是
+ * 「四个字的宽度」；同样只抬高 max-content，`<sm` 窄屏仍可继续压缩。
  */
+const RULER_MIN_PROBE = "宽度量尺";
+
 export function FolderTabRuler({ labels }: { labels: readonly ReactNode[] }) {
   return (
     <span className="grid h-0 grid-cols-[minmax(0,max-content)] overflow-hidden text-base font-semibold" aria-hidden="true">
+      <span className="col-start-1 row-start-1 whitespace-nowrap">{RULER_MIN_PROBE}</span>
       {labels.map((label, index) => (
         <span key={index} className="col-start-1 row-start-1 whitespace-nowrap">{label}</span>
       ))}

@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { createPortal } from "react-dom";
+/** 记账弹窗整窗外壳：宽度/标题栏/表单/FT 页签卡片/固定页脚/高度锁定统一由它负责。 */
+import { EntryModalShell } from "@/components/EntryModalShell";
 
 import { Repeat } from "lucide-react";
 import { DateStepper } from "./DateStepper";
@@ -895,49 +896,43 @@ export function InsuranceFormModal({
   const isRedeem = subtype === "redeem";
   const isEditingRecord = mode === "edit" || !!editEntryId;
 
-  return createPortal(
+  return (
     <ModalLayerProvider value={modalZIndex}>
-      <div className="app-modal-backdrop" style={{ zIndex: modalZIndex }}>
-        <div className="app-modal-panel max-w-[min(42rem,calc(100vw-1rem))]">
-          <div className="modal-header">
-            <div className="text-sm font-semibold text-slate-800">
-              {isEditingRecord ? t("insuranceFormModal.editPolicy") : t("insuranceFormModal.newPolicy")}
-              <span className="ml-2 text-xs font-normal text-slate-500">{t("insuranceFormModal.insurance")}</span>
-            </div>
-            <button
-              type="button"
-              onClick={() => {
-                setOpen(false);
-                if (mode === "create") resetForm();
-              }}
-              className="secondary-button h-8 px-2"
-            >
-              {t("table.close")}
-            </button>
-          </div>
-
-          <form className="flex min-h-0 flex-1 flex-col" onSubmit={onSubmit}>
-            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain p-3 sm:p-4">
-              {/* Buy / redeem toggle */}
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => setSubtype("buy")}
-                  className={`segment-button h-8 flex-1 text-xs ${subtype === "buy" ? "segment-button-active font-medium" : ""}`}
-                >
-                  {t("insuranceFormModal.buy")}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSubtype("redeem");
-                    if (!arrivalDateTouchedRef.current) setArrivalDate(date);
-                  }}
-                  className={`segment-button h-8 flex-1 text-xs ${subtype === "redeem" ? "segment-button-active font-medium" : ""}`}
-                >
-                  {t("insuranceFormModal.redeem")}
-                </button>
-              </div>
+      {/* 整窗外壳见 `EntryModalShell`：买入/取出由表单内分段按钮提到窗口顶部，成为 FT 页签。 */}
+      <EntryModalShell
+        open={open}
+        heightKey="insurance"
+        width="lg"
+        title={isEditingRecord ? t("insuranceFormModal.editPolicy") : t("insuranceFormModal.newPolicy")}
+        subtitle={t("insuranceFormModal.insurance")}
+        onClose={() => {
+          setOpen(false);
+          if (mode === "create") resetForm();
+        }}
+        onSubmit={onSubmit}
+        tabs={[
+          { id: "buy", label: t("insuranceFormModal.buy") },
+          { id: "redeem", label: t("insuranceFormModal.redeem") },
+        ]}
+        activeTabId={subtype}
+        onTabChange={(id) => {
+          if (id === "buy") {
+            setSubtype("buy");
+            return;
+          }
+          setSubtype("redeem");
+          if (!arrivalDateTouchedRef.current) setArrivalDate(date);
+        }}
+        footer={(
+          <button
+            type="submit"
+            disabled={submitting}
+            className={`h-9 rounded-[10px] px-4 text-sm text-white disabled:opacity-50 ${isRedeem ? "bg-orange-600 hover:bg-orange-700" : "primary-button"}`}
+          >
+            {submitting ? t("txForm.saving") : isEditingRecord ? t("txForm.saveChanges") : isRedeem ? t("insuranceFormModal.recordRedeem") : t("insuranceFormModal.recordBuy")}
+          </button>
+        )}
+      >
 
               {isRedeem ? (
                 /* ========== Redeem mode ========== */
@@ -1239,22 +1234,7 @@ export function InsuranceFormModal({
                   </div>
                 </>
               )}
-            </div>
-
-            <div className="shrink-0 border-t border-slate-100 bg-white/95 px-3 py-3 sm:px-4">
-              <div className="flex justify-end gap-2">
-                <button
-                  type="submit"
-                  disabled={submitting}
-                  className={`h-9 rounded-[10px] px-4 text-sm text-white disabled:opacity-50 ${isRedeem ? "bg-orange-600 hover:bg-orange-700" : "primary-button"}`}
-                >
-                  {submitting ? t("txForm.saving") : isEditingRecord ? t("txForm.saveChanges") : isRedeem ? t("insuranceFormModal.recordRedeem") : t("insuranceFormModal.recordBuy")}
-                </button>
-              </div>
-            </div>
-          </form>
-        </div>
-      </div>
+      </EntryModalShell>
 
       {/* Nested modals */}
       {nestedEntityType === "cash-account" && (
@@ -1469,7 +1449,6 @@ export function InsuranceFormModal({
           </div>
         </div>
       )}
-    </ModalLayerProvider>,
-    document.body,
+    </ModalLayerProvider>
   );
 }

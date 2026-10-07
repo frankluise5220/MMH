@@ -13,8 +13,8 @@ import { NestedAddModal } from "./EntityCreateForm";
 import { kindLabel } from "@/lib/account-kinds";
 import { recordRecentAccount, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
-/** 固定弹窗高度：切换买入/取出（含续存）时窗体尺寸与位置不变。 */
-import { useModalHeightLock } from "@/lib/client/useModalHeightLock";
+/** 记账弹窗整窗外壳：宽度/标题栏/表单/FT 页签卡片/固定页脚/高度锁定统一由它负责。 */
+import { EntryModalShell } from "@/components/EntryModalShell";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
 import { APP_PREFS_EVENT, getSidebarHideInitialDataPreference } from "@/lib/client/appPreferences";
@@ -235,8 +235,6 @@ export function DepositFormModal({
       : defaultAccountId;
 
   const [open, setOpen] = useState(false);
-  /** 弹窗高度锁定（买入/取出/续存三态内容长短不同，锁定后窗体不位移） */
-  const { panelRef, scrollRef, fixedHeightProps } = useModalHeightLock("deposit", open);
   const [subtype, setSubtype] = useState<"buy" | "redeem">(initIsRedeem ? "redeem" : "buy");
   const [date, setDate] = useState(initDate);
   const [arrivalDate, setArrivalDate] = useState(initIsRedeem && entry?.fundArrivalDate ? entry.fundArrivalDate.slice(0, 10) : initDate);
@@ -1632,56 +1630,66 @@ export function DepositFormModal({
 
   return (
     <ModalLayerProvider value={modalZIndex}>
-      {createPortal(
-        <div className="app-modal-backdrop" style={{ zIndex: modalZIndex }}>
-          <div className={`app-modal-panel max-w-xl ${fixedHeightProps.className ?? ""}`} style={fixedHeightProps.style} ref={panelRef}>
-            <div className="modal-header">
-              <div className="text-sm font-semibold text-slate-800">
-                {mode === "edit"
-                  ? t("depositForm.title.edit")
-                  : isRenew
-                    ? t("deposit.renew.title")
-                    : t("depositForm.title.create")}
-                <span className="ml-2 text-xs font-normal text-slate-500">{t("investment.product.deposit")}</span>
-              </div>
+      {/* 整窗外壳（遮罩/宽度/标题栏/表单/FT 页签卡片/固定页脚/高度锁定）见 `EntryModalShell`；
+          买入/取出从表单内的分段按钮提到窗口顶部，成为 FT 页签。 */}
+      <EntryModalShell
+        open={open}
+        heightKey="deposit"
+        width="md"
+        title={mode === "edit"
+          ? t("depositForm.title.edit")
+          : isRenew
+            ? t("deposit.renew.title")
+            : t("depositForm.title.create")}
+        subtitle={t("investment.product.deposit")}
+        onClose={() => {
+          setOpen(false);
+          if (mode === "create") reset();
+        }}
+        closeLabel={t("investForm.close")}
+        onSubmit={onSubmit}
+        tabs={[
+          { id: "buy", label: t("deposit.subtype.buy"), disabled: !!lockedSubtype },
+          { id: "redeem", label: t("deposit.subtype.redeem"), disabled: !!lockedSubtype },
+        ]}
+        activeTabId={subtype}
+        onTabChange={(id) => {
+          if (lockedSubtype) return;
+          if (id === "buy") applyBuyDefaults();
+          else applyRedeemDefaults();
+        }}
+        footer={(
+          <>
+            {mode === "create" && !isRenew ? (
               <button
                 type="button"
-                onClick={() => {
-                  setOpen(false);
-                  if (mode === "create") reset();
-                }}
-                className="secondary-button h-8 px-2"
+                disabled={submitting}
+                onClick={() => { void saveDepositTransaction(true); }}
+                className="secondary-button h-9 px-4 text-sm disabled:opacity-50"
               >
-                {t("investForm.close")}
+                {submitting ? t("txForm.saving") : t("txForm.saveAndRepeat")}
               </button>
-            </div>
-
-            <form className="flex min-h-0 flex-1 flex-col" onSubmit={onSubmit}>
-              <div ref={scrollRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain p-3 sm:p-4">
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (lockedSubtype) return;
-                    applyBuyDefaults();
-                  }}
-                  disabled={!!lockedSubtype}
-                  className={`segment-button h-8 flex-1 text-xs ${subtype === "buy" ? "segment-button-active font-medium" : ""} ${lockedSubtype ? "cursor-not-allowed opacity-60" : ""}`}
-                >
-                  {t("deposit.subtype.buy")}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (lockedSubtype) return;
-                    applyRedeemDefaults();
-                  }}
-                  disabled={!!lockedSubtype}
-                  className={`segment-button h-8 flex-1 text-xs ${subtype === "redeem" ? "segment-button-active font-medium" : ""} ${lockedSubtype ? "cursor-not-allowed opacity-60" : ""}`}
-                >
-                  {t("deposit.subtype.redeem")}
-                </button>
-              </div>
+            ) : null}
+            <button
+              type="submit"
+              disabled={submitting}
+              className={`h-9 rounded-[10px] px-4 text-sm text-white disabled:opacity-50 ${
+                isRedeem ? "bg-orange-600 hover:bg-orange-700" : "primary-button"
+              }`}
+            >
+              {submitting
+                ? t("txForm.saving")
+                : isRenew
+                  ? t("deposit.renew.submit")
+                  : mode === "edit"
+                    ? t("txForm.saveChanges")
+                    : isRedeem
+                      ? t("depositForm.recordRedeem")
+                      : t("depositForm.recordBuy")}
+            </button>
+          </>
+        )}
+      >
               {lockedSubtype && showGuideHints ? (
                 <div className="text-[11px] text-slate-400">
                   {t("depositForm.lockedSubtypeHint")}
@@ -2171,41 +2179,8 @@ export function DepositFormModal({
                 />
               </div>
 
-              <div className="flex justify-end gap-2 pt-1">
-                {mode === "create" && !isRenew ? (
-                  <button
-                    type="button"
-                    disabled={submitting}
-                    onClick={() => { void saveDepositTransaction(true); }}
-                    className="secondary-button h-9 px-4 text-sm disabled:opacity-50"
-                  >
-                    {submitting ? t("txForm.saving") : t("txForm.saveAndRepeat")}
-                  </button>
-                ) : null}
-                <button
-                  type="submit"
-                  disabled={submitting}
-                  className={`h-9 rounded-[10px] px-4 text-sm text-white disabled:opacity-50 ${
-                    isRedeem ? "bg-orange-600 hover:bg-orange-700" : "primary-button"
-                  }`}
-                >
-                  {submitting
-                    ? t("txForm.saving")
-                    : isRenew
-                      ? t("deposit.renew.submit")
-                      : mode === "edit"
-                        ? t("txForm.saveChanges")
-                        : isRedeem
-                          ? t("depositForm.recordRedeem")
-                          : t("depositForm.recordBuy")}
-                </button>
-              </div>
-              </div>
-            </form>
-          </div>
-        </div>,
-        document.body,
-      )}
+      </EntryModalShell>
+
 
       {nestedEntityType
         ? createPortal(

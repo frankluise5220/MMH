@@ -1,8 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
-import { createPortal } from "react-dom";
 import { X } from "lucide-react";
+/** 记账弹窗整窗外壳：宽度/标题栏/表单/FT 页签卡片/固定页脚/高度锁定统一由它负责。 */
+import { EntryModalShell } from "@/components/EntryModalShell";
 
 import { CalcInput } from "@/components/CalcInput";
 import { ClearableNoteField } from "@/components/ClearableNoteField";
@@ -274,36 +275,32 @@ export function PropertyFormModal({
 
   if (!open || typeof document === "undefined") return null;
 
-  return createPortal(
-    <div className="app-modal-backdrop z-[1000]">
-      <div className="app-modal-panel max-w-[min(34rem,calc(100vw-1rem))]">
-        <form onSubmit={submit} className="flex min-h-0 flex-1 flex-col">
-          <div className="modal-header">
-            <div className="text-sm font-semibold text-slate-800">{mode === "valuation" ? t("propertyForm.title.updateValuation") : t("propertyForm.title.transaction")}</div>
-            <button type="button" onClick={close} className="secondary-button h-8 px-2" title={t("table.close")}>
-              <X className="h-4 w-4" />
-            </button>
-          </div>
-
-          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain p-3 sm:px-5 sm:py-4">
-            {mode === "transaction" ? (
-              <div className="grid grid-cols-3 gap-2">
-                {([
-                  ["purchase", "propertyForm.action.purchase"],
-                  ["improvement", "propertyForm.action.improvement"],
-                  ["sale", "propertyForm.action.sale"],
-                ] as const).map(([key, labelKey]) => (
-                  <button
-                    key={key}
-                    type="button"
-                    onClick={() => setAction(key)}
-                    className={`h-8 rounded-[10px] border px-2 text-xs ${action === key ? "border-blue-200 bg-blue-50 font-medium text-blue-700" : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"}`}
-                  >
-                    {t(labelKey)}
-                  </button>
-                ))}
-              </div>
-            ) : null}
+  return (
+    /* 整窗外壳见 `EntryModalShell`：估值/交易共用同一窗体；交易下的三个动作（购入/装修/出售）
+       由表单内按钮提到窗口顶部，成为 FT 页签（估值态没有页签）。 */
+    <EntryModalShell
+      open={open}
+      heightKey="property"
+      width="sm"
+      title={mode === "valuation" ? t("propertyForm.title.updateValuation") : t("propertyForm.title.transaction")}
+      onClose={close}
+      closeLabel={<X className="h-4 w-4" />}
+      closeTitle={t("table.close")}
+      onSubmit={submit}
+      tabs={mode === "transaction" ? [
+        { id: "purchase", label: t("propertyForm.action.purchase") },
+        { id: "improvement", label: t("propertyForm.action.improvement") },
+        { id: "sale", label: t("propertyForm.action.sale") },
+      ] : []}
+      activeTabId={action}
+      onTabChange={(id) => setAction(id as Parameters<typeof setAction>[0])}
+      footer={(
+        <>
+          <button type="button" onClick={close} className="secondary-button" disabled={submitting}>{t("ledgerSwitch.cancel")}</button>
+          <button type="submit" className="primary-button" disabled={submitting}>{submitting ? t("stockFee.saving") : t("common.save")}</button>
+        </>
+      )}
+    >
 
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <div className="space-y-1">
@@ -407,15 +404,6 @@ export function PropertyFormModal({
               <div className="form-label">{t("detail.column.remark")}</div>
               <ClearableNoteField multiline value={note} onValueChange={setNote} className="form-input min-h-[72px] resize-none py-2" placeholder={t("stockFee.optional")} />
             </div>
-          </div>
-
-          <div className="flex justify-end gap-2 border-t border-slate-200 p-3 sm:px-5">
-            <button type="button" onClick={close} className="secondary-button" disabled={submitting}>{t("ledgerSwitch.cancel")}</button>
-            <button type="submit" className="primary-button" disabled={submitting}>{submitting ? t("stockFee.saving") : t("common.save")}</button>
-          </div>
-        </form>
-      </div>
-    </div>,
-    document.body,
+    </EntryModalShell>
   );
 }

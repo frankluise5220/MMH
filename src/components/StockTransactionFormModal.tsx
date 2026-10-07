@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 
 import { EntryAttachmentButton, uploadEntryAttachmentFiles } from "./EntryAttachmentPanel";
@@ -14,8 +13,8 @@ import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
-/** 固定弹窗高度：切换买入/卖出/分红/股份变动时窗体尺寸与位置不变。 */
-import { useModalHeightLock } from "@/lib/client/useModalHeightLock";
+/** 记账弹窗整窗外壳：宽度/标题栏/表单/FT 页签卡片/固定页脚/高度锁定统一由它负责。 */
+import { EntryModalShell } from "@/components/EntryModalShell";
 import { recordRecentAccount, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
 import { formatMoneyWithCurrencyCode as formatMoney } from "@/lib/format";
 import { todayDateLocalYmd as todayDateInputValue } from "@/lib/date-utils";
@@ -444,8 +443,6 @@ export function StockTransactionFormModal({
   const modalZIndex = getNextModalLayerZIndex(parentModalZIndex);
 
   const [open, setOpen] = useState(false);
-  /** 弹窗高度锁定（买入/卖出/分红/股份变动内容长短不同，锁定后窗体不位移） */
-  const { panelRef, scrollRef, fixedHeightProps } = useModalHeightLock("stock-tx", open);
   const [requestId, setRequestId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [stockAccountId, setStockAccountId] = useState(defaultStockAccountId ?? "");
@@ -1385,31 +1382,48 @@ export function StockTransactionFormModal({
 
   if (!open || typeof document === "undefined") return null;
 
-  return createPortal(
+  return (
     <ModalLayerProvider value={modalZIndex}>
-      <div className="app-modal-backdrop" style={{ zIndex: modalZIndex }}>
-        <div className={`app-modal-panel max-w-[min(38rem,calc(100vw-1rem))] ${fixedHeightProps.className ?? ""}`} style={fixedHeightProps.style} ref={panelRef}>
-          <form ref={formRef} onSubmit={submit} className="flex min-h-0 flex-1 flex-col">
-            <div className="modal-header">
-              <div className="text-sm font-semibold text-slate-800">{editingId ? t("stockTx.editTitle") : t("stockTx.title")}</div>
-              <button type="button" onClick={close} className="secondary-button h-8 px-2" title={t("stockTx.close")}>
-                <X className="h-4 w-4" />
+      {/* 整窗外壳见 `EntryModalShell`：买入/卖出/分红/股份变动由表单内按钮提到窗口顶部，成为 FT 页签；
+          「保存并继续」仍走 `formRef.requestSubmit()`（外壳把 ref 透传到 `<form>`）。 */}
+      <EntryModalShell
+        open={open}
+        heightKey="stock-tx"
+        width="md"
+        title={editingId ? t("stockTx.editTitle") : t("stockTx.title")}
+        onClose={close}
+        closeLabel={<X className="h-4 w-4" />}
+        closeTitle={t("stockTx.close")}
+        onSubmit={submit}
+        formRef={formRef}
+        tabs={STOCK_ACTIONS.map((item) => ({ id: item.key, label: t(item.labelKey) }))}
+        activeTabId={action}
+        onTabChange={(id) => changeModalAction(id as StockModalAction)}
+        footer={(
+          <>
+            {!editingId ? (
+              <button
+                type="button"
+                disabled={submitting || autoCreatingAccount}
+                className="secondary-button h-9 px-4 text-sm disabled:opacity-50"
+                onClick={() => {
+                  submitModeRef.current = "repeat";
+                  formRef.current?.requestSubmit();
+                }}
+              >
+                {t("txForm.saveAndRepeat")}
               </button>
-            </div>
-
-            <div ref={scrollRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain p-3 sm:px-5 sm:py-4">
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-                {STOCK_ACTIONS.map((item) => (
-                  <button
-                    key={item.key}
-                    type="button"
-                    onClick={() => changeModalAction(item.key)}
-                    className={`h-8 rounded-[10px] border px-2 text-xs ${action === item.key ? item.tone : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"}`}
-                  >
-                    {t(item.labelKey)}
-                  </button>
-                ))}
-              </div>
+            ) : null}
+            <button
+              type="submit"
+              disabled={submitting || autoCreatingAccount}
+              className="primary-button h-9 px-4 text-sm disabled:opacity-50"
+            >
+              {submitting ? t("stockTx.saving") : t("common.save")}
+            </button>
+          </>
+        )}
+      >
 
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div className="space-y-1">
@@ -1667,35 +1681,7 @@ export function StockTransactionFormModal({
                   </div>
                 </div>
               </div>
-            </div>
-
-            <div className="shrink-0 border-t border-slate-100 bg-white/95 px-3 py-3 sm:px-5">
-              <div className="flex justify-end gap-2">
-                {!editingId ? (
-                  <button
-                    type="button"
-                    disabled={submitting || autoCreatingAccount}
-                    className="secondary-button h-9 px-4 text-sm disabled:opacity-50"
-                    onClick={() => {
-                      submitModeRef.current = "repeat";
-                      formRef.current?.requestSubmit();
-                    }}
-                  >
-                    {t("txForm.saveAndRepeat")}
-                  </button>
-                ) : null}
-                <button
-                  type="submit"
-                  disabled={submitting || autoCreatingAccount}
-                  className="primary-button h-9 px-4 text-sm disabled:opacity-50"
-                >
-                  {submitting ? t("stockTx.saving") : t("common.save")}
-                </button>
-              </div>
-            </div>
-          </form>
-        </div>
-      </div>
+      </EntryModalShell>
       <EntityCreateForm
         mode="compact"
         entityType="account"
@@ -1728,7 +1714,6 @@ export function StockTransactionFormModal({
         nestedFieldData={accountCreateFieldData}
         existingNames={existingCashAccountNames}
       />
-    </ModalLayerProvider>,
-    document.body,
+    </ModalLayerProvider>
   );
 }

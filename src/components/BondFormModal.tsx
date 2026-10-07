@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { createPortal } from "react-dom";
 import { parseNumber } from "@/lib/investment-config";
 import { DateStepper } from "./DateStepper";
 import { CalcInput } from "./CalcInput";
@@ -12,8 +11,8 @@ import { useAccountSSFilter } from "./accountSSFilter";
 import { NestedAddModal } from "./EntityCreateForm";
 import { kindLabel } from "@/lib/account-kinds";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
-/** 固定弹窗高度：切换买入/赎回/收息/核销时窗体尺寸与位置不变。 */
-import { useModalHeightLock } from "@/lib/client/useModalHeightLock";
+/** 记账弹窗整窗外壳：宽度/标题栏/表单/FT 页签卡片/固定页脚/高度锁定统一由它负责。 */
+import { EntryModalShell } from "@/components/EntryModalShell";
 import { recordRecentAccount, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
 import { compactFinanceAccountIds, dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { restrictAccountsByType } from "@/lib/client/account-dropdown-filter";
@@ -260,8 +259,6 @@ export function BondFormModal({
     : defaultAccountId;
 
   const [open, setOpen] = useState(false);
-  /** 弹窗高度锁定（买入/赎回/收息/核销内容长短不同，锁定后窗体不位移） */
-  const { panelRef, scrollRef, fixedHeightProps } = useModalHeightLock("bond", open);
   const [subtype, setSubtype] = useState<WealthSubtype>(initIsDividend ? "dividend_cash" : initIsWriteOff ? "write_off" : initIsRedeem ? "redeem" : "buy");
   const [date, setDate] = useState(initDate);
   const [holdingFilterDate, setHoldingFilterDate] = useState(initDate);
@@ -1403,106 +1400,106 @@ export function BondFormModal({
 
   const accountLabelText = t("bondForm.accountLabel");
   const accountPlaceholderText = t("bondForm.selectAccount");
+  /** FT 页签切换：字段重置逻辑沿用原来的分段按钮（逐项照搬，行为不变）。 */
+  function selectSubtypeTab(next: WealthSubtype) {
+    if (next === "buy") {
+      setSubtype("buy");
+      setSelectedHoldingId("");
+      setUnits("");
+      setNav("");
+      unitsEditedRef.current = false;
+      autoFilledUnitsForRef.current = null;
+      setInterestAmount("");
+      setArrivalAmount("");
+      setInterestEdited(false);
+      setArrivalEdited(false);
+      return;
+    }
+    if (next === "redeem") {
+      setSubtype("redeem");
+      setAmount("");
+      setUnits("");
+      setNav("");
+      unitsEditedRef.current = false;
+      autoFilledUnitsForRef.current = null;
+      if (!arrivalDateTouchedRef.current) setArrivalDate(date);
+      setInterestEdited(false);
+      setArrivalEdited(false);
+      return;
+    }
+    if (next === "dividend_cash") {
+      setSubtype("dividend_cash");
+      setAmount("");
+      setUnits("");
+      setNav("");
+      unitsEditedRef.current = false;
+      autoFilledUnitsForRef.current = null;
+      setInterestAmount("");
+      setArrivalAmount("");
+      if (!arrivalDateTouchedRef.current) setArrivalDate(date);
+      setInterestEdited(false);
+      setArrivalEdited(false);
+      return;
+    }
+    setSubtype("write_off");
+    setAmount("");
+    setUnits("");
+    setNav("");
+    unitsEditedRef.current = false;
+    autoFilledUnitsForRef.current = null;
+    setInterestAmount("");
+    setArrivalAmount("");
+    setInterestEdited(false);
+    setArrivalEdited(false);
+  }
+
   if (!open) return null;
 
-  return createPortal(
+  return (
     <ModalLayerProvider value={modalZIndex}>
-      <div className="app-modal-backdrop" style={{ zIndex: modalZIndex }}>
-        <div className={`app-modal-panel max-w-2xl ${fixedHeightProps.className ?? ""}`} style={fixedHeightProps.style} ref={panelRef}>
-          <div className="modal-header">
-            <div className="text-sm font-semibold text-slate-800">
-              {mode === "edit"
-                ? (t("bondForm.title.edit"))
-                : (t("bondForm.title.create"))}
-            </div>
+      {/* 整窗外壳见 `EntryModalShell`：买入/赎回/收息/核销由表单内分段按钮提到窗口顶部，成为 FT 页签；
+          切换时的字段重置逻辑原样搬到 `selectSubtypeTab()`。 */}
+      <EntryModalShell
+        open={open}
+        heightKey="bond"
+        width="lg"
+        title={mode === "edit" ? t("bondForm.title.edit") : t("bondForm.title.create")}
+        onClose={() => {
+          setOpen(false);
+          if (mode === "create") reset();
+        }}
+        closeLabel={t("table.close")}
+        onSubmit={onSubmit}
+        tabs={[
+          { id: "buy", label: t("fund.subtype.buy") },
+          { id: "redeem", label: t("bondForm.redeem") },
+          { id: "dividend_cash", label: t("bondForm.interestReceipt") },
+          { id: "write_off", label: t("fund.subtype.write_off") },
+        ]}
+        activeTabId={subtype}
+        onTabChange={(id) => selectSubtypeTab(id as WealthSubtype)}
+        footer={(
+          <>
+            {mode === "create" ? (
+              <button
+                type="button"
+                disabled={submitting}
+                onClick={() => { void saveWealthTransaction(true); }}
+                className="secondary-button h-9 px-4 text-sm disabled:opacity-50"
+              >
+                {submitting ? t("txForm.saving") : t("txForm.saveAndRepeat")}
+              </button>
+            ) : null}
             <button
-              type="button"
-              onClick={() => {
-                setOpen(false);
-                if (mode === "create") reset();
-              }}
-              className="secondary-button h-8 px-2"
+              type="submit"
+              disabled={submitting}
+              className={`h-9 rounded-[10px] px-4 text-sm text-white disabled:opacity-50 ${isRedeem ? "bg-orange-600 hover:bg-orange-700" : isDividend ? "bg-emerald-600 hover:bg-emerald-700" : "primary-button"}`}
             >
-              {t("table.close")}
+              {submitting ? t("txForm.saving") : mode === "edit" ? t("txForm.saveChanges") : isRedeem ? t("wealthForm.recordRedeem") : isDividend ? t("wealthForm.recordDividend") : t("wealthForm.recordBuy")}
             </button>
-          </div>
-
-          <form className="flex min-h-0 flex-1 flex-col" onSubmit={onSubmit}>
-            <div ref={scrollRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain p-3 sm:p-4">
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSubtype("buy");
-                    setSelectedHoldingId("");
-                    setUnits("");
-                    setNav("");
-                    unitsEditedRef.current = false;
-                    autoFilledUnitsForRef.current = null;
-                    setInterestAmount("");
-                    setArrivalAmount("");
-                    setInterestEdited(false);
-                    setArrivalEdited(false);
-                  }}
-                  className={`segment-button h-8 flex-1 text-xs ${subtype === "buy" ? "segment-button-active font-medium" : ""}`}
-                >
-                  {t("fund.subtype.buy")}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSubtype("redeem");
-                    setAmount("");
-                    setUnits("");
-                    setNav("");
-                    unitsEditedRef.current = false;
-                    autoFilledUnitsForRef.current = null;
-                    if (!arrivalDateTouchedRef.current) setArrivalDate(date);
-                    setInterestEdited(false);
-                    setArrivalEdited(false);
-                  }}
-                  className={`segment-button h-8 flex-1 text-xs ${subtype === "redeem" ? "segment-button-active font-medium" : ""}`}
-                >
-                  {t("bondForm.redeem")}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSubtype("dividend_cash");
-                    setAmount("");
-                    setUnits("");
-                    setNav("");
-                    unitsEditedRef.current = false;
-                    autoFilledUnitsForRef.current = null;
-                    setInterestAmount("");
-                    setArrivalAmount("");
-                    if (!arrivalDateTouchedRef.current) setArrivalDate(date);
-                    setInterestEdited(false);
-                    setArrivalEdited(false);
-                  }}
-                  className={`segment-button h-8 flex-1 text-xs ${subtype === "dividend_cash" ? "segment-button-active font-medium" : ""}`}
-                >
-                  {t("bondForm.interestReceipt")}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSubtype("write_off");
-                    setAmount("");
-                    setUnits("");
-                    setNav("");
-                    unitsEditedRef.current = false;
-                    autoFilledUnitsForRef.current = null;
-                    setInterestAmount("");
-                    setArrivalAmount("");
-                    setInterestEdited(false);
-                    setArrivalEdited(false);
-                  }}
-                  className={`segment-button h-8 flex-1 text-xs ${subtype === "write_off" ? "segment-button-active font-medium" : ""}`}
-                >
-                  {t("fund.subtype.write_off")}
-                </button>
-              </div>
+          </>
+        )}
+      >
 
               {isWriteOff ? (
                 <>
@@ -1865,29 +1862,7 @@ export function BondFormModal({
                 </div>
               </div>
 
-              <div className="flex justify-end gap-2 pt-1">
-                {mode === "create" ? (
-                  <button
-                    type="button"
-                    disabled={submitting}
-                    onClick={() => { void saveWealthTransaction(true); }}
-                    className="secondary-button h-9 px-4 text-sm disabled:opacity-50"
-                  >
-                    {submitting ? t("txForm.saving") : t("txForm.saveAndRepeat")}
-                  </button>
-                ) : null}
-                <button
-                  type="submit"
-                  disabled={submitting}
-                  className={`h-9 rounded-[10px] px-4 text-sm text-white disabled:opacity-50 ${isRedeem ? "bg-orange-600 hover:bg-orange-700" : isDividend ? "bg-emerald-600 hover:bg-emerald-700" : "primary-button"}`}
-                >
-                  {submitting ? t("txForm.saving") : mode === "edit" ? t("txForm.saveChanges") : isRedeem ? t("wealthForm.recordRedeem") : isDividend ? t("wealthForm.recordDividend") : t("wealthForm.recordBuy")}
-                </button>
-              </div>
-            </div>
-          </form>
-        </div>
-      </div>
+      </EntryModalShell>
 
       {nestedEntityType ? (
         <NestedAddModal
@@ -2022,7 +1997,6 @@ export function BondFormModal({
           </div>
         </div>
       ) : null}
-    </ModalLayerProvider>,
-    document.body,
+    </ModalLayerProvider>
   );
 }

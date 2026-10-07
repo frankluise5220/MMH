@@ -519,7 +519,13 @@ html {
     padding-top: max(0.75rem, env(safe-area-inset-top));
   }
 
+  /* 移动端弹窗内所有表单控件统一 44px 高（触摸热区）。⚠️ SmartSelect 的触发框**不是**
+     `.form-input`（它是 `role="button"` 的 div，自带宽高 `h-9`），漏在这条规则之外时，
+     同一个弹窗里「下拉框 36px + 输入框 44px」并存，同一行的两个字段高矮不一。
+     故给默认尺寸的触发框挂上 `.smart-select-trigger`（见 SmartSelect.tsx，micro/dense/compact
+     等紧凑尺寸不加，避免影响表格工具栏里的紧凑下拉）。 */
   .app-modal-panel .form-input,
+  .app-modal-panel .smart-select-trigger,
   .app-modal-panel .primary-button,
   .app-modal-panel .secondary-button,
   .app-modal-panel .segment-button {

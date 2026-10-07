@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { createPortal } from "react-dom";
+/** 记账弹窗整窗外壳：宽度/标题栏/表单/FT 页签卡片/固定页脚/高度锁定统一由它负责。 */
+import { EntryModalShell } from "@/components/EntryModalShell";
 import { parseNumber } from "@/lib/investment-config";
 import { DateStepper } from "./DateStepper";
 import { CalcInput } from "./CalcInput";
@@ -1134,106 +1135,106 @@ export function WealthFormModal({
 
   const accountLabelText = t("wealthForm.accountLabel");
   const accountPlaceholderText = t("wealthForm.selectWealthAccount");
+  /** FT 页签切换：字段重置逻辑沿用原来的分段按钮（逐项照搬，行为不变）。 */
+  function selectSubtypeTab(next: WealthSubtype) {
+    if (next === "buy") {
+      setSubtype("buy");
+      setSelectedHoldingId("");
+      setUnits("");
+      setNav("");
+      unitsEditedRef.current = false;
+      autoFilledUnitsForRef.current = null;
+      setInterestAmount("");
+      setArrivalAmount("");
+      setInterestEdited(false);
+      setArrivalEdited(false);
+      return;
+    }
+    if (next === "redeem") {
+      setSubtype("redeem");
+      setAmount("");
+      setUnits("");
+      setNav("");
+      unitsEditedRef.current = false;
+      autoFilledUnitsForRef.current = null;
+      if (!arrivalDateTouchedRef.current) setArrivalDate(date);
+      setInterestEdited(false);
+      setArrivalEdited(false);
+      return;
+    }
+    if (next === "dividend_cash") {
+      setSubtype("dividend_cash");
+      setAmount("");
+      setUnits("");
+      setNav("");
+      unitsEditedRef.current = false;
+      autoFilledUnitsForRef.current = null;
+      setInterestAmount("");
+      setArrivalAmount("");
+      if (!arrivalDateTouchedRef.current) setArrivalDate(date);
+      setInterestEdited(false);
+      setArrivalEdited(false);
+      return;
+    }
+    setSubtype("write_off");
+    setAmount("");
+    setUnits("");
+    setNav("");
+    unitsEditedRef.current = false;
+    autoFilledUnitsForRef.current = null;
+    setInterestAmount("");
+    setArrivalAmount("");
+    setInterestEdited(false);
+    setArrivalEdited(false);
+  }
+
   if (!open) return null;
 
-  return createPortal(
+  return (
     <ModalLayerProvider value={modalZIndex}>
-      <div className="app-modal-backdrop" style={{ zIndex: modalZIndex }}>
-        <div className="app-modal-panel max-w-2xl">
-          <div className="modal-header">
-            <div className="text-sm font-semibold text-slate-800">
-              {mode === "edit"
-                ? (t("wealthForm.title.edit"))
-                : (t("wealthForm.title.create"))}
-            </div>
+      {/* 整窗外壳见 `EntryModalShell`：买入/赎回/分红/核销由表单内分段按钮提到窗口顶部，成为 FT 页签；
+          切换时的字段重置逻辑原样搬到 `selectSubtypeTab()`。 */}
+      <EntryModalShell
+        open={open}
+        heightKey="wealth"
+        width="lg"
+        title={mode === "edit" ? t("wealthForm.title.edit") : t("wealthForm.title.create")}
+        onClose={() => {
+          setOpen(false);
+          if (mode === "create") reset();
+        }}
+        closeLabel={t("table.close")}
+        onSubmit={onSubmit}
+        tabs={[
+          { id: "buy", label: t("fund.subtype.buy") },
+          { id: "redeem", label: t("fund.subtype.redeem") },
+          { id: "dividend_cash", label: t("stockPanel.action.dividend") },
+          { id: "write_off", label: t("fund.subtype.write_off") },
+        ]}
+        activeTabId={subtype}
+        onTabChange={(id) => selectSubtypeTab(id as WealthSubtype)}
+        footer={(
+          <>
+            {mode === "create" ? (
+              <button
+                type="button"
+                disabled={submitting}
+                onClick={() => { void saveWealthTransaction(true); }}
+                className="secondary-button h-9 px-4 text-sm disabled:opacity-50"
+              >
+                {submitting ? t("txForm.saving") : t("txForm.saveAndRepeat")}
+              </button>
+            ) : null}
             <button
-              type="button"
-              onClick={() => {
-                setOpen(false);
-                if (mode === "create") reset();
-              }}
-              className="secondary-button h-8 px-2"
+              type="submit"
+              disabled={submitting}
+              className={`h-9 rounded-[10px] px-4 text-sm text-white disabled:opacity-50 ${isRedeem ? "bg-orange-600 hover:bg-orange-700" : isDividend ? "bg-emerald-600 hover:bg-emerald-700" : "primary-button"}`}
             >
-              {t("table.close")}
+              {submitting ? t("txForm.saving") : mode === "edit" ? t("txForm.saveChanges") : isRedeem ? t("wealthForm.recordRedeem") : isDividend ? t("wealthForm.recordDividend") : t("wealthForm.recordBuy")}
             </button>
-          </div>
-
-          <form className="flex min-h-0 flex-1 flex-col" onSubmit={onSubmit}>
-            <div className="min-h-0 flex-1 space-y-3 overflow-y-auto overscroll-contain p-3 sm:p-4">
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSubtype("buy");
-                    setSelectedHoldingId("");
-                    setUnits("");
-                    setNav("");
-                    unitsEditedRef.current = false;
-                    autoFilledUnitsForRef.current = null;
-                    setInterestAmount("");
-                    setArrivalAmount("");
-                    setInterestEdited(false);
-                    setArrivalEdited(false);
-                  }}
-                  className={`segment-button h-8 flex-1 text-xs ${subtype === "buy" ? "segment-button-active font-medium" : ""}`}
-                >
-                  {t("fund.subtype.buy")}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSubtype("redeem");
-                    setAmount("");
-                    setUnits("");
-                    setNav("");
-                    unitsEditedRef.current = false;
-                    autoFilledUnitsForRef.current = null;
-                    if (!arrivalDateTouchedRef.current) setArrivalDate(date);
-                    setInterestEdited(false);
-                    setArrivalEdited(false);
-                  }}
-                  className={`segment-button h-8 flex-1 text-xs ${subtype === "redeem" ? "segment-button-active font-medium" : ""}`}
-                >
-                  {t("fund.subtype.redeem")}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSubtype("dividend_cash");
-                    setAmount("");
-                    setUnits("");
-                    setNav("");
-                    unitsEditedRef.current = false;
-                    autoFilledUnitsForRef.current = null;
-                    setInterestAmount("");
-                    setArrivalAmount("");
-                    if (!arrivalDateTouchedRef.current) setArrivalDate(date);
-                    setInterestEdited(false);
-                    setArrivalEdited(false);
-                  }}
-                  className={`segment-button h-8 flex-1 text-xs ${subtype === "dividend_cash" ? "segment-button-active font-medium" : ""}`}
-                >
-                  {t("stockPanel.action.dividend")}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setSubtype("write_off");
-                    setAmount("");
-                    setUnits("");
-                    setNav("");
-                    unitsEditedRef.current = false;
-                    autoFilledUnitsForRef.current = null;
-                    setInterestAmount("");
-                    setArrivalAmount("");
-                    setInterestEdited(false);
-                    setArrivalEdited(false);
-                  }}
-                  className={`segment-button h-8 flex-1 text-xs ${subtype === "write_off" ? "segment-button-active font-medium" : ""}`}
-                >
-                  {t("fund.subtype.write_off")}
-                </button>
-              </div>
+          </>
+        )}
+      >
 
               {isWriteOff ? (
                 <>
@@ -1325,9 +1326,14 @@ export function WealthFormModal({
                         : t("wealthForm.holdingHint")}
                     </div>
                   </div>
-                  {isRedeem ? (
-                    <div className={`grid grid-cols-2 gap-3 ${""}`}>
-                      <div className="space-y-1">
+                  {/* 赎回 / 分红字段共用一个 4 列栅格，按状态给跨列，压缩窗口高度：
+                      赎回三行 —— ① 赎回本金 | 入账资金账户　② 赎回份额 | 净值 | 年化收益率 | 利息
+                      ③ 到账日期 | 到账金额；
+                      分红两行 —— ① 入账资金账户 | 到账日期　② 分红/到账金额（整行）。
+                      `<sm` 降为 2 列，窄屏每行两个、不再一列到底。 */}
+                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                    {isRedeem ? (
+                      <div className="space-y-1 sm:col-span-2">
                         <div className="form-label">{t("wealthForm.redeemPrincipal")}</div>
                         <CalcInput
                           value={amount}
@@ -1337,54 +1343,8 @@ export function WealthFormModal({
                           precision={2}
                         />
                       </div>
-                      {(
-                        <>
-                          <div className="space-y-1">
-                            <div className="form-label">{t("wealthForm.redeemUnits")}</div>
-                            <CalcInput
-                              value={units}
-                              onChange={changeRedeemUnits}
-                              placeholder={t("stockFee.optional")}
-                              label={t("wealthForm.redeemUnits")}
-                              precision={6}
-                            />
-                          </div>
-                          <div className="space-y-1">
-                            <div className="form-label">{t("viewImport.nav")}</div>
-                            <CalcInput
-                              value={nav}
-                              onChange={changeRedeemNav}
-                              placeholder={t("stockFee.optional")}
-                              label={t("viewImport.nav")}
-                              precision={6}
-                            />
-                          </div>
-                        </>
-                      )}
-                      <div className="space-y-1">
-                        <div className="form-label">{t("wealthForm.annualRatePercent")}</div>
-                        <CalcInput
-                          value={annualRate}
-                          onChange={setAnnualRate}
-                          placeholder={t("wealthForm.rateExample")}
-                          label={t("wealthForm.annualRate")}
-                          precision={4}
-                        />
-                      </div>
-                      <div className="space-y-1">
-                        <div className="form-label">{t("txForm.interest")}</div>
-                        <CalcInput
-                          value={interestAmount}
-                          onChange={changeRedeemInterest}
-                          placeholder="0.00"
-                          label={t("txForm.interest")}
-                          precision={2}
-                        />
-                      </div>
-                    </div>
-                  ) : null}
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                    <div className="space-y-1">
+                    ) : null}
+                    <div className="space-y-1 sm:col-span-2">
                       <div className="form-label">{t("wealthForm.arrivalAccount")}</div>
                       <SmartSelect
                         mode="single"
@@ -1402,11 +1362,55 @@ export function WealthFormModal({
                         ownerFilterLabel={cfLabel}
                       />
                     </div>
-                    <div className="space-y-1">
+                    {isRedeem ? (
+                      <>
+                        <div className="space-y-1">
+                          <div className="form-label">{t("wealthForm.redeemUnits")}</div>
+                          <CalcInput
+                            value={units}
+                            onChange={changeRedeemUnits}
+                            placeholder={t("stockFee.optional")}
+                            label={t("wealthForm.redeemUnits")}
+                            precision={6}
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <div className="form-label">{t("viewImport.nav")}</div>
+                          <CalcInput
+                            value={nav}
+                            onChange={changeRedeemNav}
+                            placeholder={t("stockFee.optional")}
+                            label={t("viewImport.nav")}
+                            precision={6}
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <div className="form-label">{t("wealthForm.annualRatePercent")}</div>
+                          <CalcInput
+                            value={annualRate}
+                            onChange={setAnnualRate}
+                            placeholder={t("wealthForm.rateExample")}
+                            label={t("wealthForm.annualRate")}
+                            precision={4}
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <div className="form-label">{t("txForm.interest")}</div>
+                          <CalcInput
+                            value={interestAmount}
+                            onChange={changeRedeemInterest}
+                            placeholder="0.00"
+                            label={t("txForm.interest")}
+                            precision={2}
+                          />
+                        </div>
+                      </>
+                    ) : null}
+                    <div className="space-y-1 sm:col-span-2">
                       <div className="form-label">{t("wealthForm.arrivalDate")}</div>
                       <DateStepper value={arrivalDate} onChange={changeArrivalDate} />
                     </div>
-                    <div className="space-y-1 sm:col-span-2">
+                    <div className={`space-y-1 ${isRedeem ? "sm:col-span-2" : "col-span-2 sm:col-span-4"}`}>
                       <div className="form-label">{isDividend ? (t("wealthForm.dividendAmount")) : t("wealthForm.arrivalAmount")}</div>
                       <CalcInput
                         value={isDividend ? amount : arrivalAmount}
@@ -1543,29 +1547,7 @@ export function WealthFormModal({
                 </div>
               </div>
 
-              <div className="flex justify-end gap-2 pt-1">
-                {mode === "create" ? (
-                  <button
-                    type="button"
-                    disabled={submitting}
-                    onClick={() => { void saveWealthTransaction(true); }}
-                    className="secondary-button h-9 px-4 text-sm disabled:opacity-50"
-                  >
-                    {submitting ? t("txForm.saving") : t("txForm.saveAndRepeat")}
-                  </button>
-                ) : null}
-                <button
-                  type="submit"
-                  disabled={submitting}
-                  className={`h-9 rounded-[10px] px-4 text-sm text-white disabled:opacity-50 ${isRedeem ? "bg-orange-600 hover:bg-orange-700" : isDividend ? "bg-emerald-600 hover:bg-emerald-700" : "primary-button"}`}
-                >
-                  {submitting ? t("txForm.saving") : mode === "edit" ? t("txForm.saveChanges") : isRedeem ? t("wealthForm.recordRedeem") : isDividend ? t("wealthForm.recordDividend") : t("wealthForm.recordBuy")}
-                </button>
-              </div>
-            </div>
-          </form>
-        </div>
-      </div>
+      </EntryModalShell>
 
       {nestedEntityType ? (
         <NestedAddModal
@@ -1700,7 +1682,6 @@ export function WealthFormModal({
           </div>
         </div>
       ) : null}
-    </ModalLayerProvider>,
-    document.body,
+    </ModalLayerProvider>
   );
 }

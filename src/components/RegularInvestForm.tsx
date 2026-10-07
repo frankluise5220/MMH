@@ -7,6 +7,8 @@ import { CalcInput } from "./CalcInput";
 import { ClearableNoteField } from "./ClearableNoteField";
 import { DateStepper } from "./DateStepper";
 import { ModalLayerProvider, getNextModalLayerZIndex, useModalLayerZIndex } from "./ModalLayer";
+/** 记账弹窗整窗外壳（FT 卡片 + 页签 + 固定页脚 + 高度锁定），与 理财/债券/存款 弹窗共用。 */
+import { EntryModalShell } from "./EntryModalShell";
 import { SmartSelect, type SmartSelectOption, type SmartSelectProps } from "./SmartSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
 import { CATEGORY_SMART_SELECT_BEHAVIOR, type CategorySmartSelectOption } from "./categorySmartSelect";
@@ -1369,39 +1371,38 @@ export function RegularInvestForm({
         </button>
       )}
 
-      {actualOpen && (
-        <div className="app-modal-backdrop" style={{ zIndex: modalZIndex }}>
-          <div className="app-modal-panel max-w-[min(42rem,calc(100vw-1rem))]">
-            <div className="modal-header shrink-0">
-              <div className="text-sm font-semibold text-slate-800">{title}</div>
-              <button
-                type="button"
-                onClick={() => setActualOpen(false)}
-                className="h-8 px-2 rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50"
-              >
-                {t("table.close")}
-              </button>
-            </div>
-
-            <form className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4" onSubmit={onSubmit}>
-              <div className="grid grid-cols-5 gap-2">
-                {TASK_TYPE_OPTIONS.map((item) => (
-                  <button
-                    key={item.value}
-                    type="button"
-                    onClick={() => mode === "create" ? handleTaskTypeChange(item.value) : undefined}
-                    disabled={mode === "edit"}
-                    title={t(item.labelKey)}
-                    className={`min-w-0 whitespace-nowrap rounded-lg border px-1 py-2 text-center transition-colors ${
-                      displayTaskType === item.value
-                        ? "border-blue-200 bg-blue-50 text-blue-700"
-                        : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
-                      } disabled:cursor-not-allowed disabled:opacity-70`}
-                  >
-                    <div className="truncate whitespace-nowrap text-xs font-semibold">{t(item.labelKey)}</div>
-                  </button>
-                ))}
-              </div>
+      {/* 迁移到 FT 卡片外壳（`EntryModalShell`）：遮罩 / 面板 / 标题栏 / 内容板滚动区 /
+          卡片固定页脚 / 高度锁定全部由外壳统一提供。原来的「任务类型」五段按钮组换成 FT 页签
+          （与 理财 / 债券 / 存款 记账弹窗一致）；保存按钮从内容末尾移到卡片底部固定页脚。 */}
+      <EntryModalShell
+        open={actualOpen}
+        heightKey="regularInvest"
+        width="lg"
+        title={title}
+        onClose={() => setActualOpen(false)}
+        closeLabel={t("table.close")}
+        onSubmit={onSubmit}
+        zIndex={modalZIndex}
+        tabs={TASK_TYPE_OPTIONS.map((item) => ({
+          id: item.value,
+          label: t(item.labelKey),
+          // 编辑态只读：沿用原按钮组的 `disabled`
+          disabled: mode === "edit",
+        }))}
+        activeTabId={displayTaskType}
+        onTabChange={(id) => {
+          if (mode === "create") handleTaskTypeChange(id as ScheduledTaskType);
+        }}
+        footer={(
+          <button
+            type="submit"
+            disabled={submitting}
+            className="primary-button h-9 px-4 text-sm disabled:opacity-50"
+          >
+            {submitting ? t("txForm.saving") : t("common.save")}
+          </button>
+        )}
+      >
 
               <div className="space-y-1">
                 <div className="text-xs font-medium text-slate-600">{t("regularInvest.planName")}</div>
@@ -2167,20 +2168,7 @@ export function RegularInvestForm({
                 </div>
               )}
 
-              {/* Save buttons */}
-              <div className="flex justify-end pt-1">
-                <button
-                  type="submit"
-                  disabled={submitting}
-                  className="h-9 px-4 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50"
-                >
-                  {submitting ? t("txForm.saving") : t("common.save")}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+      </EntryModalShell>
       {nestedEntityType && typeof document !== "undefined" ? createPortal(
         <NestedAddModal
           mode="compact"
