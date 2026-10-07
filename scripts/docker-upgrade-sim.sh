@@ -134,6 +134,48 @@ list_db_objects() { # $1 pg container
     "SELECT table_name||':'||column_name FROM information_schema.columns WHERE table_schema='public' ORDER BY 1"
 }
 
+# 2026-10-06 口径定版：debt* → liability* 是一次**无损重命名**（ALTER ... RENAME，
+# 数据原样保留）。升级后「旧名消失」是预期行为，不是数据丢失。此处的映射
+# 把「已知合法改名」的旧对象从 dropped 判定里豁免，并校验新名对象确实出现。
+# 格式：old_table:old_col=new_table:new_col（表名改名的用 * 代表该表所有列）。
+KNOWN_RENAMES='Account:debtDirection=Account:liabilityDirection
+transactions:debtPrincipalAmount=transactions:principalAmount
+transactions:debtInterestAmount=transactions:interestAmount
+transactions:debtFeeAmount=transactions:feeAmount
+DebtAgreement:*=SettlementAgreement:*'
+
+# 过滤掉「合法重命名」导致的 dropped，返回非空则仍有真实数据丢失。
+# $1 = dropped 对象列表（多行，来自 comm -23），$2 = 升级后对象文件路径。
+filter_known_renames() {
+  local dropped_list="$1" after_file="$2"
+  local line old_obj new_obj old_table new_table matched
+  printf '%s\n' "$dropped_list" | while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    matched=""
+    while IFS= read -r mapping; do
+      [ -z "$mapping" ] && continue
+      old_obj="$(printf '%s' "$mapping" | cut -d= -f1)"
+      new_obj="$(printf '%s' "$mapping" | cut -d= -f2)"
+      # 表级重命名（old 以 :* 结尾）：豁免该表所有列，条件是新表存在
+      if printf '%s' "$old_obj" | grep -q ':\*$'; then
+        old_table="${old_obj%:*}"
+        new_table="${new_obj%:*}"
+        if [ "${line#${old_table}:}" != "$line" ] && grep -q "^${new_table}:" "$after_file"; then
+          matched=1
+          break
+        fi
+      # 列级重命名：精确匹配 old_obj，且新对象确实存在
+      elif [ "$line" = "$old_obj" ] && grep -q "^${new_obj}$" "$after_file"; then
+        matched=1
+        break
+      fi
+    done <<EOF
+$KNOWN_RENAMES
+EOF
+    [ -z "$matched" ] && printf '%s\n' "$line"
+  done
+}
+
 # Runs one simulation case. $1 label, $2 seed image tag or "empty".
 # Returns 0 on PASS, 1 on FAIL (reason in CASE_REASON).
 run_case() {
@@ -310,8 +352,11 @@ LEGACY_SQL
     if [ "$rc" -eq 0 ]; then
       sort "$WORK/$label.base-objects.txt" > "$WORK/$label.base-objects.sorted"
       sort "$WORK/$label.after-objects.txt" > "$WORK/$label.after-objects.sorted"
-      local dropped
-      dropped="$(comm -23 "$WORK/$label.base-objects.sorted" "$WORK/$label.after-objects.sorted")"
+      # 先算「base 有、after 无」的原始差集，再过滤掉「合法重命名」的旧对象
+      # （debt* -> liability* 等），剩下的才是真实数据丢失。
+      local raw_dropped dropped
+      raw_dropped="$(comm -23 "$WORK/$label.base-objects.sorted" "$WORK/$label.after-objects.sorted")"
+      dropped="$(filter_known_renames "$raw_dropped" "$WORK/$label.after-objects.sorted")"
       if [ -n "$dropped" ]; then
         reason="pre-existing objects missing after upgrade: $(printf '%s' "$dropped" | head -c 400 | tr '\n' ' ')"
         rc=1
