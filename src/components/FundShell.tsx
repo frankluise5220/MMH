@@ -36,6 +36,12 @@ import { ProductLibraryModal } from "@/components/ProductLibraryModal";
 
 import { ResizableVerticalSplit } from "@/components/ResizableVerticalSplit";
 
+/**
+ * 文件卡片式页签（FT 卡片）：持仓 / 清仓共用一个卡片内容板，页签组靠左等宽。
+ * 几何不变量见 `src/app/login/FolderTabs.tsx` 文件头（改样式前必读）。
+ */
+import { FOLDER_TAB_STRIP, FolderTabRuler, folderTabClass, folderTabNeighbors } from "@/app/login/FolderTabs";
+
 import { RefreshNavButton } from "@/components/RefreshNavButton";
 
 import { AddNavButton } from "@/components/AddNavButton";
@@ -661,6 +667,12 @@ export function FundShell(props: Props) {
   const holdingTabLabel = isMetalAccount ? t("fundShell.tab.holdings.metal") : isWealthAccount ? t("fundShell.tab.holdings.wealth") : t("fundShell.tab.holdings.fund");
   const clearedTabLabel = isWealthAccount ? t("fundShell.tab.cleared.wealth") : t("fundShell.tab.cleared.fund");
   const noClearedText = isWealthAccount ? t("fundShell.empty.cleared.wealth") : t("fundShell.empty.cleared.fund");
+  /** 上窗格 FT 卡片页签：贵金属账户没有「清仓」概念，只有持仓一页。 */
+  const positionTabItems = useMemo(() => {
+    const items: { id: string; label: string }[] = [{ id: "held", label: holdingTabLabel }];
+    if (!isMetalAccount) items.push({ id: "cleared", label: clearedTabLabel });
+    return items;
+  }, [clearedTabLabel, holdingTabLabel, isMetalAccount]);
   const chooseHoldingText = isWealthAccount ? t("fundShell.selectHoldingFirst.wealth") : t("fundShell.selectHoldingFirst.fund");
   const investmentAccountLabel = isWealthAccount ? t("fundShell.account.wealth") : t("viewImport.fundAccount");
   const fundAccountOptions = useMemo(() => investmentAccounts.filter((account: any) => isFundLikeInvestmentAccount(account)), [investmentAccounts]);
@@ -705,6 +717,9 @@ export function FundShell(props: Props) {
   }, []);
 
   const [showCleared, setShowCleared] = useState(initialShowCleared);
+
+  /** FT 卡片当前页签 id（与 showCleared 同源，贵金属账户恒为持仓）。 */
+  const activePositionTabId = showCleared && !isMetalAccount ? "cleared" : "held";
 
   const [fundPage, setFundPage] = useState(1);
 
@@ -3049,9 +3064,49 @@ export function FundShell(props: Props) {
         stackLowerFirstOnMobile={false}
       >
 
-      <div className="panel-surface flex h-full min-h-0 flex-col overflow-hidden">
+      {/* FT 卡片：页签条绝对定位铺满容器（页签组靠左、等宽），内容板 z-20 压在页签之上。
+          容器 `pt-10` 决定内容板顶位置，改页签高度时不要动它（见 FolderTabs 文件头第 2 条）。 */}
+      <div className="relative flex h-full min-h-0 flex-col pt-10">
 
-        <div className="panel-header shrink-0">
+        <div className={FOLDER_TAB_STRIP}>
+
+          {/* 页签等宽靠左：宽度不写死，由每个页签内的「隐形量尺」（见下方注释）决定——
+              所有页签的 max-content 宽都等于**最长标签**在活动页签字号下的宽度，因此等宽；
+              页签组不设 `w-full`（自带 max-content 宽度），靠左且右侧留出工具栏的位置。 */}
+          <div className="flex h-full max-w-[calc(100%-9rem)] items-start gap-1.5">
+
+            {positionTabItems.map((tab, index) => {
+              const active = tab.id === activePositionTabId;
+              return (
+              <button
+                key={tab.id}
+                type="button"
+                onClick={() => toggleCleared(tab.id === "cleared")}
+                className={`${folderTabClass(
+                  active,
+                  index === positionTabItems.length - 1,
+                  "stretch",
+                  index === 0,
+                  folderTabNeighbors(positionTabItems.map((item) => item.id), tab.id, activePositionTabId),
+                )}${active ? " ft-tab-fillet-white" : ""}`}
+              >
+                {/* 活动页签不能 overflow-hidden（下缘凹角画在按钮盒外），裁切交给内层 span。 */}
+                <span className="relative block overflow-hidden whitespace-nowrap">
+                  {/* 隐形量尺：各页签都按「最长标签」定宽 → 等宽且只占最长标签的宽度（组件见 FolderTabs）。 */}
+                  <FolderTabRuler labels={positionTabItems.map((item) => item.label)} />
+                  {tab.label}
+                </span>
+              </button>
+              );
+            })}
+
+          </div>
+
+        </div>
+
+        {/* 工具栏（刷新净值 / 导入导出 / 产品库 / 列设置）移出卡片，占与页签同一条 40px 顶部带
+            （页签 7..41px，故这里 top-7px + h-34px，垂直中心与页签一致）并靠右。 */}
+        <div className="absolute right-0 top-[7px] z-30 flex h-[34px] items-center gap-2 pr-1">
 
           <div className="flex items-center gap-2">
             <InvestmentFormModal
@@ -3074,14 +3129,6 @@ export function FundShell(props: Props) {
               listenCreateEvents={false}
               fundUnitsDecimals={fundUnitsDecimals}
             />
-
-            <div className="flex items-center gap-0.5">
-
-              <button onClick={() => toggleCleared(false)} className={`h-6 px-2 rounded text-xs ${!showCleared ? "bg-blue-50 text-blue-700 font-medium" : "text-slate-500 hover:text-slate-700"}`}>{holdingTabLabel}</button>
-
-              {!isMetalAccount ? <button onClick={() => toggleCleared(true)} className={`h-6 px-2 rounded text-xs ${showCleared ? "bg-blue-50 text-blue-700 font-medium" : "text-slate-500 hover:text-slate-700"}`}>{clearedTabLabel}</button> : null}
-
-            </div>
 
           </div>
 
@@ -3157,6 +3204,13 @@ export function FundShell(props: Props) {
           </div>
 
         </div>
+
+        {/* 内容板（FT 卡片）：外观规则统一在 globals.css 的 `.ft-card-surface`
+            （z-20 压在页签之下、圆角/边框/阴影、米色底；卡片顶边由容器 `pt-10` 决定）。
+            底色米色 `#fbfaf7` 不能改白：表体行是透明行、靠它呈米色，而表头是白底，两者要保持区分。
+            活动页签只用 `ft-tab-fillet-white` 把**页签自身 + 凹角填充**取成白：页签底边与凹角
+            正下方就是白色表头，衔接处同色；边框色 = 凹角描边色 slate-300。 */}
+        <div className="ft-card-surface">
 
         <div className="flex-1 min-h-0 overflow-hidden">
           <div className="block h-full overflow-y-auto overscroll-contain px-3 pb-4 pt-2 md:hidden">
@@ -3308,6 +3362,8 @@ export function FundShell(props: Props) {
           )}
 
           </div>
+        </div>
+
         </div>
 
       </div>

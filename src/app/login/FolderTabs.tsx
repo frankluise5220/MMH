@@ -43,7 +43,9 @@ import type { ReactNode } from "react";
  *     不带 margin，间距 = `gap`(6px) + 相邻非活动页签的该侧 margin，必须是 1px 而不是默认的
  *     3px（由 `folderTabClass` 的 `sideMargin` 按邻居是否活动自动切换）；放 3px 时间距 9px，
  *     多出的 2px 内容板上边框会露在凹角外，看着像「倒角旁边多一根短横线」；
- *  8. 非活动页签左右各缩进 6px（`mx-1.5`），不顶到内容板左右边缘；
+ *  8. 非活动页签的**外侧边**（排在首位 / 末位，该侧就是内容板左右边缘）缩进 12px
+ *     （`ml-3`/`mr-3`，= 内容板倒角半径），不压住内容板上角的圆弧；其余各边默认 3px
+ *     （`ml-0.75`/`mr-0.75`），紧邻活动页签的一侧收到 1px（见第 7 条）；
  *  9. 非活动页签 `self-stretch`：拉伸到页签条（=容器）高度、底部恰好对齐内容板下缘、被
  *     内容板完全覆盖——不能固定 `pb-24` 往下延，否则内容板矮（如飞牛页签）时会超出下缘；
  * 10. 非活动页签必须 `flex items-start justify-center`：`self-stretch` 后 button 默认垂直
@@ -98,10 +100,11 @@ export function folderTabNeighbors(order: readonly string[], id: string, activeI
  * 页签按钮类名。
  * @param active 是否活动页签
  * @param atEnd 是否排在最末（最右）
- * @param variant "stretch" 平分整行宽（当前所有调用点都用它）；"min" 最小宽——目前已无调用点，
- *                保留仅为兼容可能的「不填满」场景
+ * @param variant "stretch" 页签组内等宽平分（配合 `FolderTabRuler` 时组宽 = N × 最长标签宽）；
+ *                "min" 最小宽——目前已无调用点，保留仅为兼容可能的「不填满」场景
  * @param atStart 是否排在首位。活动页签排首位时左缩进 18px（`ml-4.5`），与排末位时的 `mr-4.5`
- *                左右对称——凹角外端落在内容板上圆角弧起点，两条弧相切
+ *                左右对称——凹角外端落在内容板上圆角弧起点，两条弧相切；
+ *                非活动页签在首位 / 末位时该侧缩进 12px（`ml-3`/`mr-3`，= 内容板倒角半径）
  * @param neighbors 左右邻居是否活动。紧邻活动页签的那一侧 margin 必须从 3px 收到 1px，
  *                  详见函数体内 `sideMargin` 的推导（2026-10-05 用户反馈「中间页签左侧倒角多一根横线」）
  */
@@ -147,9 +150,12 @@ export function folderTabClass(
   // 间距 = gap(6px) + 邻居 margin，取 3px 时是 9px > 7px，中间那约 2px 的内容板上边框会整段
   // 露在凹角外侧 —— 就是用户看到的「倒角旁边多出一根短横线」（中间页签两侧都会出现）。
   // 取 1px 时 6 + 1 = 7px，弧线外端与相邻页签竖边相接，多余横线消失。
+  // **外侧边**（`atStart` / `atEnd`：该侧没有相邻页签，即页签条 = 内容板的左/右边缘）缩进
+  // 一个**内容板倒角半径** 12px（`ml-3`/`mr-3`）：非活动页签不得压住内容板上角的圆弧，
+  // 缩进 12px 后它的竖边正好落在圆角弧的起点上（与活动页签 18px = 12 + 凹角半径 6 同一原点）。
   const sideMargin =
     variant === "stretch"
-      ? `${neighbors.prevActive ? "ml-px" : "ml-0.75"} ${neighbors.nextActive ? "mr-px" : "mr-0.75"}`
+      ? `${neighbors.prevActive ? "ml-px" : atStart ? "ml-3" : "ml-0.75"} ${neighbors.nextActive ? "mr-px" : atEnd ? "mr-3" : "mr-0.75"}`
       : "mx-0.75";
   return [
     `relative z-10 mt-[13px] self-stretch ${width} flex items-start justify-center overflow-hidden whitespace-nowrap rounded-[8px] border border-slate-300 bg-slate-200 ${sideMargin} px-4 pt-[5px] text-xs font-medium text-slate-500 shadow-[0_2px_4px_rgba(15,23,42,0.08)] hover:-translate-y-0.5 hover:bg-slate-100`,
@@ -171,6 +177,30 @@ export type FolderTabsItem = {
   id: string;
   label: ReactNode;
 };
+
+/**
+ * 隐形量尺（invisible ruler）：让**同一组**页签等宽、且宽度只按最长标签占位。
+ *
+ * 用法：把本组件放进每个页签的内层 span（活动页签裁切用的那层）里，页签本身用
+ * `folderTabClass(..., "stretch", ...)`。原理：量尺把**全部**标签按活动页签的字号
+ * （`text-base` / `font-semibold`）叠在同一个网格单元里，于是它的 max-content 宽 = 最长标签宽；
+ * 每个页签里放同一份量尺 → 各页签的 max-content 宽都相等 → 页签组自身宽度 = N × 最长标签宽，
+ * 配合 `flex-1 basis-0` 平分即得严格等宽；页签组不做 `w-full`，所以整组靠左、不铺满整行。
+ *
+ * `h-0 overflow-hidden` 保证它只参与宽度计算、不占页签高度（页签高仍由 pt/pb + 行高决定）。
+ * 列用 `minmax(0, max-content)`：量尺的 **max-content** 仍是「最长标签」（决定等宽），但
+ * **min-content 为 0**、可以被压缩 —— 否则量尺会把每个页签的最小宽度锁死在最长标签上，
+ * 窄屏下页签组撑破容器、末尾页签点不到。压缩时标签由页签内层 span 的 ellipsis 裁切。
+ */
+export function FolderTabRuler({ labels }: { labels: readonly ReactNode[] }) {
+  return (
+    <span className="grid h-0 grid-cols-[minmax(0,max-content)] overflow-hidden text-base font-semibold" aria-hidden="true">
+      {labels.map((label, index) => (
+        <span key={index} className="col-start-1 row-start-1 whitespace-nowrap">{label}</span>
+      ))}
+    </span>
+  );
+}
 
 /**
  * 文件卡片式页签组件。

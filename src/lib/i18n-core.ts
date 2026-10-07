@@ -3564,7 +3564,7 @@ const I18N_MESSAGES = {
     "fundShell.subtypeCompact.refund": "退回",
     "fundShell.subtypeCompact.unitsReconcile": "校准",
     "fundShell.tab.cleared.fund": "清仓基金",
-    "fundShell.tab.cleared.wealth": "已赎回理财",
+    "fundShell.tab.cleared.wealth": "已赎理财",
     "fundShell.tab.holdings.fund": "持仓基金",
     "fundShell.tab.holdings.metal": "持仓贵金属",
     "fundShell.tab.holdings.wealth": "持仓理财",
