@@ -9,6 +9,7 @@ import type { BasicDetailBatchCategoryOption } from "@/components/BasicDetailSel
 import { DebitBalanceReconcileButton } from "@/components/DebitBalanceReconcileButton";
 import { DetailTablePaginationControls } from "@/components/DetailTablePaginationControls";
 import { DetailViewClient, type DetailEntry } from "@/components/DetailViewClient";
+import { removeEntriesAndUpdateRunningBalances } from "@/lib/detail-running-balance";
 import { ViewExcelImportMenuButton } from "@/components/ViewExcelImportMenuButton";
 import { FINANCE_DATA_CHANGED_EVENT, type FinanceDataChangedDetail } from "@/lib/client/refresh";
 import { formatDateLocal } from "@/lib/date-utils";
@@ -494,21 +495,26 @@ export function BasicDetailPanel({
       const deletedEntryIds = detail.deletedEntryIds ?? [];
       if (deletedEntryIds.length === 0) return;
       const deletedSet = new Set(deletedEntryIds);
-      setLocalEntries((current) => {
-        const next = current.filter((entry) => !deletedSet.has(entry.id));
-        const removedCount = current.length - next.length;
-        if (removedCount > 0) {
-          setLocalTotalCount((count) => Math.max(0, count - removedCount));
-          setLocalOriginalCount((count) => Math.max(0, count - removedCount));
-        }
-        return next;
-      });
+      // 剔除已删行的同时重算「余额」列：子组件拿到新的 initialEntries 引用后会
+      // 丢弃自己的本地快照，所以重算结果必须由父层写进这份数据里，否则删除一条
+      // 之后后续行的余额不会变，只有刷新页面才对。
+      // 重算全程只动当前已渲染页的行，不发请求。只有本地确实推不出（被删的校准
+      // 锚点行之前没有任何已加载行）才按当前页重取一次；且绝不走 detailAll 的
+      // DETAIL_ALL_PAGE_SIZE(=50000) 全量拉取——那正是要避免的卡壳路径。
+      const result = removeEntriesAndUpdateRunningBalances(localEntries, deletedSet, accountId, accountKind);
+      const removedCount = localEntries.length - result.entries.length;
+      if (removedCount > 0) {
+        setLocalEntries(result.entries);
+        setLocalTotalCount((count) => Math.max(0, count - removedCount));
+        setLocalOriginalCount((count) => Math.max(0, count - removedCount));
+      }
+      if (!result.complete && !detailAll) reloadDetailPage();
     };
     window.addEventListener(FINANCE_DATA_CHANGED_EVENT, handleFinanceChange);
     return () => {
       window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, handleFinanceChange);
     };
-  }, [accountId, reloadDetailPage, scopeAccountIds]);
+  }, [accountId, accountKind, detailAll, localEntries, reloadDetailPage, scopeAccountIds]);
 
   useEffect(() => {
     if (detailAll || page === safePage || locatingDateRef.current) return;

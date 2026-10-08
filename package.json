@@ -21,6 +21,7 @@
     "check:encoding": "node scripts/check-encoding.cjs",
     "check:backup": "node scripts/verify-backup-completeness.cjs && node scripts/check-backup-coverage.cjs && node scripts/check-restore-field-coverage.cjs",
     "check:account-balance": "tsx scripts/verify-account-balance-window.ts",
+    "check:running-balance": "tsx scripts/verify-detail-running-balance-recalc.ts",
     "check:docker": "node scripts/verify-docker-entrypoint.cjs",
     "check:fnos-gateway": "node scripts/check-fnos-gateway-guards.cjs",
     "check:fnos": "node scripts/verify-fnos-package.cjs",
