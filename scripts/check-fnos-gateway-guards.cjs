@@ -212,7 +212,7 @@ function loadTcpInjector(failures) {
 function loadForwardedHostNormalizer(failures) {
   const file = GUARD_FILES.launcher;
   const source = read(file);
-  const helpers = ["function firstHeaderValue(value) {", "function hostHasPort(host) {"]
+  const helpers = ["function firstHeaderValue(value) {", "function hostHasPort(host) {", "function portFromOrigin(origin) {", "function hostnameAgrees(host, origin) {"]
     .map((marker) => sliceBetween(source, marker, "\n}", file, "fnOS forwarded-host helper", failures))
     .filter(Boolean)
     .join("\n");
@@ -353,6 +353,23 @@ function collectFnosGatewayGuardFailures() {
     const ipv6 = { "x-forwarded-host": "[fd00::1]", origin: "http://[fd00::1]:5666" };
     normalizeForwardedHost(ipv6);
     expectEqual("forwarded-host normalizer must keep IPv6 literals bracketed", ipv6["x-forwarded-host"], "[fd00::1]:5666");
+
+    // 2026-10-08 实测：fnOS 网关并不发 x-forwarded-host，而是把端口剥在
+    // Host 头上（host=192.168.5.149，origin=http://192.168.5.149:5666）。
+    // Next 的 Server Action 校验在 x-forwarded-host 缺失时会 fallback 到 host，
+    // 所以必须同时补 Host 头的端口。
+    const hostOnlyShape = { host: "192.168.5.149", origin: "http://192.168.5.149:5666" };
+    normalizeForwardedHost(hostOnlyShape);
+    expectEqual("forwarded-host normalizer must restore the port on the Host header when x-forwarded-host is absent", hostOnlyShape.host, "192.168.5.149:5666");
+    expectEqual("forwarded-host normalizer must not invent an x-forwarded-host header", hostOnlyShape["x-forwarded-host"], undefined);
+
+    const hostOnlyForeign = { host: "evil.example", origin: "http://192.168.5.149:5666" };
+    normalizeForwardedHost(hostOnlyForeign);
+    expectEqual("forwarded-host normalizer must NOT adopt a foreign origin's port onto the Host header", hostOnlyForeign.host, "evil.example");
+
+    const hostOnlyWithPort = { host: "192.168.5.149:7777", origin: "http://192.168.5.149:5666" };
+    normalizeForwardedHost(hostOnlyWithPort);
+    expectEqual("forwarded-host normalizer must leave a Host header that already has a port alone", hostOnlyWithPort.host, "192.168.5.149:7777");
   }
 
   // The normalizer only helps if the request path actually calls it -- and a

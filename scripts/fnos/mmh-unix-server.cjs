@@ -201,38 +201,79 @@ function hostHasPort(host) {
  * fnOS package's only ingress, so nothing else can steer this.
  */
 function normalizeGatewayForwardedHost(headers) {
+  // fnOS's gateway strips the port off the **Host** header (its nginx uses
+  // `proxy_set_header Host $host`, so `host` arrives as `192.168.5.149` with
+  // no port) and does NOT always send `x-forwarded-host`. Next's Server Action
+  // guard falls back to `host` when `x-forwarded-host` is absent, so BOTH
+  // headers have to be repaired, not just `x-forwarded-host`. Measured on
+  // 5.149: the save POST arrived with `fwd-host=undefined host=192.168.5.149`
+  // while `origin=http://192.168.5.149:5666`, and the guard aborted the action.
+  const origin = firstHeaderValue(headers["origin"]);
+  const originPort = portFromOrigin(origin);
   const forwardedValue = firstHeaderValue(headers["x-forwarded-host"]);
-  if (!forwardedValue) return;
-  // Keep the remaining hops: Next reads only the first, but this app's own
-  // host whitelist (src/proxy.ts, src/lib/access-whitelist.ts) splits and reads
-  // every value, so rewriting the header must not drop them.
-  const forwardedParts = forwardedValue
-    .split(",")
-    .map((item) => item.trim())
-    .filter(Boolean);
-  const forwardedHost = forwardedParts[0] ?? "";
-  if (!forwardedHost || hostHasPort(forwardedHost)) return;
-
+  const hostValue = firstHeaderValue(headers["host"]);
+  // Prefer x-forwarded-port when it is a real numeric port, then the origin's
+  // port. The gateway's port (what the browser dialed, e.g. 5666) is what the
+  // origin carries; x-forwarded-port may name the upstream instead, so it only
+  // wins when it is present and numeric AND the origin is missing.
   const forwardedPort = firstHeaderValue(headers["x-forwarded-port"]);
-  let port = /^\d+$/.test(forwardedPort) ? forwardedPort : "";
-  if (!port) {
-    const origin = firstHeaderValue(headers["origin"]);
-    if (!origin || origin === "null") return;
-    let originUrl;
-    try {
-      originUrl = new URL(origin);
-    } catch (error) {
-      return; // malformed Origin: leave the header alone
+  const numericForwardedPort = /^\d+$/.test(forwardedPort) ? forwardedPort : "";
+
+  // Repair x-forwarded-host (comma-separated hops, first hop wins for Next).
+  // Only adopt the origin's port when the hostname already agrees, so the
+  // repair can never turn a mismatched host into a matching one (CSRF).
+  if (forwardedValue) {
+    const parts = forwardedValue
+      .split(",")
+      .map((item) => item.trim())
+      .filter(Boolean);
+    const first = parts[0] ?? "";
+    if (first && !hostHasPort(first)) {
+      const port = numericForwardedPort || (hostnameAgrees(first, origin) ? originPort : "");
+      if (port) {
+        parts[0] = first.startsWith("[")
+          ? `${first}:${port}`
+          : `${first.includes(":") ? `[${first}]` : first}:${port}`;
+        headers["x-forwarded-host"] = parts.join(", ");
+      }
     }
-    const originHostname = originUrl.hostname.replace(/^\[|\]$/g, "").toLowerCase();
-    if (originHostname !== forwardedHost.replace(/^\[|\]$/g, "").toLowerCase()) return;
-    port = originUrl.port;
   }
-  if (!port) return;
-  forwardedParts[0] = forwardedHost.startsWith("[")
-    ? `${forwardedHost}:${port}`
-    : `${forwardedHost.includes(":") ? `[${forwardedHost}]` : forwardedHost}:${port}`;
-  headers["x-forwarded-host"] = forwardedParts.join(", ");
+
+  // Repair the Host header too: Next falls back to it when x-forwarded-host is
+  // absent, and the app's own host whitelist also reads it. Only add the port
+  // when the hostname already agrees with the origin hostname, so the repair
+  // cannot be used to smuggle an arbitrary host.
+  if (hostValue && !hostHasPort(hostValue)) {
+    const port = numericForwardedPort || originPort;
+    if (port && hostnameAgrees(hostValue, origin)) {
+      headers["host"] = `${hostValue}:${port}`;
+    }
+  }
+}
+
+function portFromOrigin(origin) {
+  if (!origin || origin === "null") return "";
+  let url;
+  try {
+    url = new URL(origin);
+  } catch (error) {
+    return ""; // malformed Origin: leave headers alone
+  }
+  return url.port;
+}
+
+function hostnameAgrees(host, origin) {
+  if (!origin || origin === "null") return false;
+  let url;
+  try {
+    url = new URL(origin);
+  } catch (error) {
+    return false;
+  }
+  return (
+    url.hostname.replace(/^\[|\]$/g, "").toLowerCase() ===
+    host.replace(/^\[|\]$/g, "").toLowerCase()
+  );
 }
 
 async function main() {
