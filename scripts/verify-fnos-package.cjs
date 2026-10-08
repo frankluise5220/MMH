@@ -6,6 +6,7 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 
 const root = path.resolve(__dirname, "..");
+const { collectFnosGatewayGuardFailures } = require("./check-fnos-gateway-guards.cjs");
 const failures = [];
 const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
 const verifyVersion = normalizeFnosVersion(process.env.FNOS_PACKAGE_VERSION || pkg.version || "0.1.0");
@@ -825,6 +826,19 @@ if (fs.existsSync(nativeSchema)) {
   });
   expect(validate.status === 0, `Native Prisma schema should validate.\n${validate.stderr || validate.stdout || validate.error?.message}`);
 }
+
+// Runtime half of the base-path contract: the client fetch/XHR shim
+// (src/app/layout.tsx), withBasePath() (src/lib/base-path.ts) and the local TCP
+// port's injection (scripts/fnos/mmh-unix-server.cjs) must all decide "already
+// prefixed" on the URL path only. v0.1.71 shipped the raw `startsWith(BASE + "/")`
+// form there and every basePath'd root route 404'd
+// (`/app/mmh/app/mmh?view=allcash`).
+//
+// Same check also covers the fnOS ingress's port-stripped X-Forwarded-Host,
+// which made Next abort every Server Action with a 500 digest error (the
+// "An error occurred in the Server Components render ..." save failure).
+// See scripts/check-fnos-gateway-guards.cjs.
+failures.push(...collectFnosGatewayGuardFailures());
 
 if (failures.length > 0) {
   console.error("fnOS package verification failed:");

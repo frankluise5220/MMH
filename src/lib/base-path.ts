@@ -17,10 +17,19 @@
  */
 export const MMH_BASE_PATH = (process.env.NEXT_PUBLIC_MMH_BASE_PATH || "").replace(/\/+$/, "");
 
-/** Prefix an origin-absolute path with the fnOS gateway prefix (no-op elsewhere). */
+/**
+ * Prefix an origin-absolute path with the fnOS gateway prefix (no-op elsewhere).
+ *
+ * Idempotent, and the "already prefixed" test looks at the PATH only: Next
+ * collapses a basePath'd root route to the BARE prefix plus its query
+ * (`/?view=allcash` -> `/app/mmh?view=allcash`), so a raw
+ * `startsWith(basePath + "/")` test misses that form and prepends the prefix a
+ * second time (`/app/mmh/app/mmh?view=allcash`).
+ */
 export function withBasePath(path: string): string {
   if (!MMH_BASE_PATH) return path;
   if (!path.startsWith("/") || path.startsWith("//")) return path;
-  if (path === MMH_BASE_PATH || path.startsWith(`${MMH_BASE_PATH}/`)) return path;
+  const pathOnly = path.split(/[?#]/, 1)[0] ?? path;
+  if (pathOnly === MMH_BASE_PATH || pathOnly.startsWith(`${MMH_BASE_PATH}/`)) return path;
   return `${MMH_BASE_PATH}${path}`;
 }

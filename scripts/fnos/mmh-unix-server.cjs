@@ -167,6 +167,74 @@ async function clearStaleGatewaySocket(socketPath) {
   log(`Removed stale gateway socket ${socketPath}`);
 }
 
+function firstHeaderValue(value) {
+  if (Array.isArray(value)) return String(value[0] ?? "").trim();
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function hostHasPort(host) {
+  // A bracketed IPv6 literal carries its port after "]:", a bare one never has
+  // one (and is not a valid Host value anyway) -- treat both as "leave alone".
+  if (host.startsWith("[")) return host.includes("]:");
+  return host.includes(":");
+}
+
+/**
+ * fnOS's gateway forwards the host with its PORT STRIPPED: its nginx uses
+ * `proxy_set_header Host $host` and trim_http_cgi passes that on as
+ * `X-Forwarded-Host`, while the browser's `Origin` keeps `host:port`.
+ *
+ * Next's Server Action guard compares the forwarded host against the origin
+ * host by exact string equality and aborts the action otherwise:
+ *   `x-forwarded-host` header with value `192.168.5.149` does not match
+ *   `origin` header with value `192.168.5.149:5666` ... Aborting the action.
+ * Every Server Action then answered 500 carrying a digest-only flight error, so
+ * the UI showed "An error occurred in the Server Components render ... A digest
+ * property is included on this error instance" while reads (which use /api/**,
+ * not actions) kept working. Measured on 5.149 in v0.1.71: the 「记一笔」 save
+ * POST answered 500 and mmh.log recorded the abort at the same minute.
+ *
+ * Restore the port the ingress dropped, but only when the hostNAME already
+ * agrees with the hostname the ingress reported, so the guard still proves a
+ * forwarded request comes from the host the gateway fronts. Browsers cannot
+ * forge `X-Forwarded-Host` (forbidden header name) and this entrypoint is the
+ * fnOS package's only ingress, so nothing else can steer this.
+ */
+function normalizeGatewayForwardedHost(headers) {
+  const forwardedValue = firstHeaderValue(headers["x-forwarded-host"]);
+  if (!forwardedValue) return;
+  // Keep the remaining hops: Next reads only the first, but this app's own
+  // host whitelist (src/proxy.ts, src/lib/access-whitelist.ts) splits and reads
+  // every value, so rewriting the header must not drop them.
+  const forwardedParts = forwardedValue
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+  const forwardedHost = forwardedParts[0] ?? "";
+  if (!forwardedHost || hostHasPort(forwardedHost)) return;
+
+  const forwardedPort = firstHeaderValue(headers["x-forwarded-port"]);
+  let port = /^\d+$/.test(forwardedPort) ? forwardedPort : "";
+  if (!port) {
+    const origin = firstHeaderValue(headers["origin"]);
+    if (!origin || origin === "null") return;
+    let originUrl;
+    try {
+      originUrl = new URL(origin);
+    } catch (error) {
+      return; // malformed Origin: leave the header alone
+    }
+    const originHostname = originUrl.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    if (originHostname !== forwardedHost.replace(/^\[|\]$/g, "").toLowerCase()) return;
+    port = originUrl.port;
+  }
+  if (!port) return;
+  forwardedParts[0] = forwardedHost.startsWith("[")
+    ? `${forwardedHost}:${port}`
+    : `${forwardedHost.includes(":") ? `[${forwardedHost}]` : forwardedHost}:${port}`;
+  headers["x-forwarded-host"] = forwardedParts.join(", ");
+}
+
 async function main() {
   if (!gatewaySocketPath) {
     throw new Error("MMH_GATEWAY_SOCKET_PATH or TRIM_APPDEST is required");
@@ -205,13 +273,27 @@ async function main() {
       // The local TCP compatibility port serves clients that do not know about
       // the gateway prefix, so prepend it here (see `basePath` note above). The
       // gateway Unix socket must NOT do this: fnOS already forwards the prefix.
+      //
+      // Decide "already prefixed" on the PATH only, and never rewrite the bare
+      // prefix. Clients load the same basePath'd app on this port, so their
+      // links are already prefixed, and Next collapses the root route to the
+      // BARE prefix plus its query (`/app/mmh?accountId=..&view=detail`,
+      // `/app/mmh?view=allcash`). A raw `startsWith(basePath + "/")` test misses
+      // that form and injects the prefix twice, 404ing every root-route request.
+      // Rewriting the bare prefix to `basePath + "/"` is no fix either: Next
+      // 308-redirects that back to the bare prefix, which the shim would inject
+      // again -- the redirect loop that reverted the 2026-09-30 guard.
       if (injectBasePath && basePath && req.url) {
-        if (req.url === "/") {
-          req.url = `${basePath}/`;
-        } else if (req.url.startsWith("/") && !req.url.startsWith(`${basePath}/`)) {
-          req.url = `${basePath}${req.url}`;
+        const queryIndex = req.url.search(/[?#]/);
+        const urlPath = queryIndex === -1 ? req.url : req.url.slice(0, queryIndex);
+        const alreadyPrefixed = urlPath === basePath || urlPath.startsWith(`${basePath}/`);
+        if (!alreadyPrefixed && req.url.startsWith("/")) {
+          req.url = req.url === "/" ? `${basePath}/` : `${basePath}${req.url}`;
         }
       }
+      // Both listeners need this: the gateway socket is exactly where fnOS hands
+      // over a port-less X-Forwarded-Host (see the function comment).
+      normalizeGatewayForwardedHost(req.headers);
       Promise.resolve(handlers.requestHandler(req, res)).catch((error) => {
         log("Request handler failed", error);
         if (!res.headersSent) {

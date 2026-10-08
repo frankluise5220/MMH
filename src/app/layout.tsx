@@ -65,7 +65,15 @@ const gatewayRequestPrefixScript = MMH_BASE_PATH
     if (typeof input !== "string") return input;
     // charCodeAt(0) === 47 is "/"; a leading "//" is protocol-relative (external).
     if (input.charCodeAt(0) !== 47 || input.charCodeAt(1) === 47) return input;
-    if (input === BASE || input.startsWith(BASE + "/")) return input;
+    // Decide "already prefixed" on the PATH only. Next collapses a basePath'd
+    // root route to the BARE prefix plus its query ("/?view=allcash" ->
+    // "/app/mmh?view=allcash"), so a raw startsWith(BASE + "/") test misses
+    // that form and prepends the prefix a second time
+    // ("/app/mmh/app/mmh?view=allcash"), 404ing every root-route request --
+    // including the router's own RSC fetches, measured on 5.149 in v0.1.71.
+    const cut = input.search(/[?#]/);
+    const pathOnly = cut === -1 ? input : input.slice(0, cut);
+    if (pathOnly === BASE || pathOnly.startsWith(BASE + "/")) return input;
     return BASE + input;
   };
   const rewriteUrl = (url) => {
