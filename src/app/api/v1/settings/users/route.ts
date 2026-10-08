@@ -243,8 +243,18 @@ export async function PUT(req: NextRequest) {
   if (role) data.role = role;
   if (password && password.trim()) {
     data.passwordHash = await hashPassword(password.trim());
-    // A new password kills every previously issued session for this user.
-    data.authVersion = { increment: 1 };
+    // A new password kills every previously issued session for this user —
+    // but not when the operator is changing their *own* password. The current
+    // request has already authenticated the operator, so bumping authVersion
+    // here would log them out mid-operation: the browser still holds the old
+    // session cookie, but every subsequent request resolves to "not signed in"
+    // (getCurrentUser → sessionMatchesAuthVersion mismatch) while the UI still
+    // looks logged in. That is exactly the "bind a local account to myself"
+    // flow (PasswordSetModal), where an fnOS-passwordless admin gives their own
+    // account a local name + password.
+    if (id !== currentUser?.id) {
+      data.authVersion = { increment: 1 };
+    }
   }
 
   const hasSessionDays = sessionDays !== undefined;
