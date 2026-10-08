@@ -29,6 +29,12 @@ type PasswordStatusResponse = {
   needsInitialLedgerSetup?: boolean;
   /** Whether the current fnOS gateway user owns a ledger user. */
   fnosBound?: boolean;
+  /**
+   * Household ids the current fnOS gateway user is bound in; `null` entries mean
+   * the bound user sits in the system scope. Used to decide whether the ledger
+   * chosen in the picker may be entered with fnOS passwordless login.
+   */
+  fnosHouseholdIds?: Array<string | null>;
   passwordResetEnabled?: boolean;
   users?: LoginUserChoice[];
 };
@@ -129,6 +135,8 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   const [fnosEmail, setFnosEmail] = useState("");
   const [pendingFnos, setPendingFnos] = useState(false);
   const [systemUsers, setSystemUsers] = useState<LoginUserChoice[]>([]);
+  // Ledgers the forwarded fnOS identity is bound in (`null` = system scope).
+  const [fnosHouseholdIds, setFnosHouseholdIds] = useState<Array<string | null>>([]);
   const [passwordResetEnabled, setPasswordResetEnabled] = useState(false);
   const [householdChoices, setHouseholdChoices] = useState<HouseholdChoice[]>([]);
   const [pendingLogin, setPendingLogin] = useState<{ username: string; password: string; authMode?: "local" | "mmh" } | null>(null);
@@ -217,9 +225,28 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   // set a local ledger password (which is exactly what an MMH-created ledger
   // admin has).
   const mmhUserChoices = systemUsers.filter((user) => user.registrationPrincipalId && user.email);
+  // The MMH tab gets the same "dead ledger" treatment as the local / fnOS tabs:
+  // when the selected ledger links no MMH user, the card shows an amber notice
+  // instead of letting the user type an email and password into MMH_USER_NOT_BOUND.
+  const selectedHouseholdMmhUsers = selectedHouseholdId
+    ? mmhUserChoices.filter((user) => getLoginUserScopeId(user) === selectedHouseholdId)
+    : mmhUserChoices;
+  const mmhTabUnavailable =
+    loginMode === "mmh" &&
+    mmhUserChoices.length > 0 &&
+    !!selectedHouseholdId &&
+    selectedHouseholdMmhUsers.length === 0;
   // The local tab is dead when the *selected* ledger has no local account: the
   // account has to be created inside the ledger, by someone who can already get in.
   const localTabUnavailable = loginMode === "local" && selectedHouseholdUsers.length === 0;
+  // Ledger scopes this fnOS identity may enter without a password. The id list
+  // comes from the server; a `null` householdId is the system scope, exactly like
+  // `getLoginUserScopeId` maps an unbound user.
+  const fnosBoundScopes = new Set(fnosHouseholdIds.map((id) => id ?? SYSTEM_LOGIN_SCOPE_ID));
+  // The fnOS tab has the same dead-ledger state as the local tab: picking a
+  // ledger this fnOS account is not bound in cannot sign in, so the card warns
+  // instead of offering a button that could only fail with FNOS_USER_NOT_BOUND.
+  const fnosTabUnavailable = loginMode === "fnos" && !!selectedHouseholdId && !fnosBoundScopes.has(selectedHouseholdId);
   // The MMH membership password belongs to an *email* identity, and the card
   // already carries that email: either the account select (when the ledger knows
   // MMH identities) or the free-text email field. The reset panel must reuse it
@@ -368,7 +395,10 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
     setMmhResetInfo("");
     if (mode === "mmh") {
       const credentials = loginCredentials.mmh;
-      const defaultMmhUser = mmhUserChoices.find((user) => user.id === credentials.userId) ?? mmhUserChoices[0];
+      const scopedMmhUsers = selectedHouseholdId
+        ? mmhUserChoices.filter((user) => getLoginUserScopeId(user) === selectedHouseholdId)
+        : mmhUserChoices;
+      const defaultMmhUser = scopedMmhUsers.find((user) => user.id === credentials.userId) ?? scopedMmhUsers[0];
       const nextUsername = credentials.username || defaultMmhUser?.email || "";
       setSelectedUserId("");
       setUsername(nextUsername);
@@ -448,14 +478,31 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
           // depend on `hasPassword`: once a fnOS admin binds a local password
           // (which sensitive operations require), the fnOS tab must stay the
           // default rather than demoting passwordless login.
-          if (hasFnosGateway && (data.fnosBound || !data.hasPassword)) {
+          const openOnFnosTab = hasFnosGateway && (data.fnosBound === true || !data.hasPassword);
+          if (openOnFnosTab) {
             setLoginMode("fnos");
           }
           setSystemUsers(users);
           setPasswordResetEnabled(data.passwordResetEnabled ?? false);
+          const boundHouseholdIds = data.fnosHouseholdIds ?? [];
+          setFnosHouseholdIds(boundHouseholdIds);
+          const boundScopes = new Set(boundHouseholdIds.map((id) => id ?? SYSTEM_LOGIN_SCOPE_ID));
           const initialSelection = getInitialLoginSelection(users);
-          setSelectedHouseholdId(initialSelection.scopeId);
-          const initialUser = initialSelection.user;
+          // The picker lists every ledger, and on the fnOS tab the chosen ledger
+          // is the one the gateway identity is matched against. Opening on a
+          // ledger this identity is not bound in would greet the user with the
+          // "no fnOS access" notice on a screen that used to sign them straight
+          // in, so land on a bound ledger when there is one.
+          let initialScopeId = initialSelection.scopeId;
+          if (openOnFnosTab && boundScopes.size > 0 && !boundScopes.has(initialScopeId)) {
+            const boundUser = users.find((user) => boundScopes.has(getLoginUserScopeId(user)));
+            if (boundUser) initialScopeId = getLoginUserScopeId(boundUser);
+          }
+          setSelectedHouseholdId(initialScopeId);
+          // The prefilled local account only fits the ledger it was picked from;
+          // a scope switch above must not leave a user from the previous ledger
+          // selected (the local tab recomputes its own selection when entered).
+          const initialUser = initialScopeId === initialSelection.scopeId ? initialSelection.user : null;
           if (initialUser) {
             setSelectedUserId(initialUser.id);
             setUsername(initialUser.name);
@@ -476,6 +523,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
           setMode("login");
           setInitialLedgerSetup(false);
           setSystemUsers([]);
+          setFnosHouseholdIds([]);
           setSelectedHouseholdId("");
           setSelectedUserId("");
           setPasswordResetEnabled(false);
@@ -490,6 +538,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
         setMode("login");
         setInitialLedgerSetup(false);
         setSystemUsers([]);
+        setFnosHouseholdIds([]);
         setSelectedHouseholdId("");
         setSelectedUserId("");
         setPasswordResetEnabled(false);
@@ -623,11 +672,12 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
 
   async function handleFnosLogin(householdId?: string) {
     // Resolved server-side from the gateway identity (X-Trim-Username, falling
-    // back to X-Trim-Userid). The ledger picker belongs to the local/MMH tabs:
-    // forwarding its value here made an identity that is bound in several
-    // ledgers fail with FNOS_USER_NOT_BOUND, merely because the form had
-    // pre-selected a ledger that this user happens not to be bound in. Only an
-    // explicit pick (the AMBIGUOUS_USER card) carries a ledger.
+    // back to X-Trim-Userid). The ledger picker's value IS forwarded: the fnOS
+    // card hides its submit button whenever the picked ledger carries no binding
+    // for this identity, so a submitted ledger is always one the identity is
+    // bound in — an earlier version forwarded the ambient pre-selection without
+    // that guard and made a multi-ledger identity fail with FNOS_USER_NOT_BOUND.
+    // The AMBIGUOUS_USER card's explicit pick travels the same path.
     const scopeId = householdId ?? "";
     setLoading(true);
     setError("");
@@ -1207,14 +1257,17 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
         <div className="min-h-0 flex-1 overflow-y-auto">
         {mode === "login" && (
           <div className="space-y-4 p-6">
-            {/* The ledger picker is for local / MMH sign-in. The fnOS tab resolves
-                its ledger from the gateway UID server-side, so showing it there
-                only invited a choice that could not help (and could mislead).
-                It must stay visible while the reset panel is open: the account
-                being recovered is derived from the selected ledger's users, so
-                hiding the picker left no way to point the reset at another one
-                (leftover from when resetting replaced the whole card). */}
-            {loginMode !== "fnos" && loginHouseholdChoices.length > 0 && (
+            {/* The ledger picker belongs to every sign-in tab. A local account
+                belongs to exactly one ledger, MMH resolves its ledger from the
+                account, and on the fnOS tab the picked ledger is what the
+                forwarded gateway identity is matched against — so the picker is
+                shown there too, and the fnOS card warns when the picked ledger
+                carries no fnOS binding for this identity. It must stay visible
+                while the reset panel is open: the account being recovered is
+                derived from the selected ledger's users, so hiding the picker
+                left no way to point the reset at another one (leftover from when
+                resetting replaced the whole card). */}
+            {loginHouseholdChoices.length > 0 && (
               <div className="space-y-1">
                 <div className="text-xs font-medium text-slate-600">{t("login.book")}</div>
                 <select
@@ -1286,7 +1339,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                   className="space-y-4"
                   onSubmit={(event) => {
                     event.preventDefault();
-                    if (loginMode === "fnos") void handleFnosLogin();
+                    if (loginMode === "fnos") void handleFnosLogin(selectedHouseholdId);
                     else void handleLogin();
                   }}
                 >
@@ -1295,6 +1348,15 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                   <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
                     {t("login.fnosUser", { user: gatewayFnosName(fnosGatewayUser) })}
                   </div>
+                  {/* Mirror of the local tab's "this ledger has no local account"
+                      notice: the picked ledger exists but this fnOS account is
+                      not bound in it, so there is nothing this card could check. */}
+                  {fnosTabUnavailable ? (
+                    <div className="space-y-1 rounded-lg border border-amber-200 bg-amber-50/70 px-3 py-3">
+                      <div className="text-sm font-semibold text-slate-800">{t("login.fnosNoLedgerTitle")}</div>
+                      <div className="text-xs leading-5 text-slate-600">{t("login.fnosNoLedger")}</div>
+                    </div>
+                  ) : (
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">{t("login.fnosEmailOptional")}</div>
                     <input
@@ -1310,6 +1372,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                     />
                     <div className="text-[11px] text-slate-500">{t("login.fnosEmailHint")}</div>
                   </div>
+                  )}
                 </div>
                 ) : loginMode === "local" ? (
                 <div className="space-y-1">
@@ -1343,7 +1406,12 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                 </div>
                 ) : (
                 <div className="space-y-1">
-                  {mmhUserChoices.length > 0 ? (
+                  {mmhTabUnavailable ? (
+                    <div className="space-y-1 rounded-lg border border-amber-200 bg-amber-50/70 px-3 py-3">
+                      <div className="text-sm font-semibold text-slate-800">{t("login.mmhNoLedgerTitle")}</div>
+                      <div className="text-xs leading-5 text-slate-600">{t("login.mmhNoLedger")}</div>
+                    </div>
+                  ) : selectedHouseholdMmhUsers.length > 0 ? (
                     <select
                       id="login-username"
                       name="username"
@@ -1352,7 +1420,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                       onChange={(event) => selectMmhUser(event.target.value)}
                       className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
                     >
-                      {mmhUserChoices.map((user) => (
+                      {selectedHouseholdMmhUsers.map((user) => (
                         <option key={user.id} value={user.id}>{getMmhUserLabel(user)}</option>
                       ))}
                     </select>
@@ -1432,14 +1500,16 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
 
                 {error && <div className="text-sm text-red-600">{error}</div>}
                 {loginMode === "fnos" ? (
-                  <button
-                    type="submit"
-                    className="h-10 w-full rounded-md bg-blue-600 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
-                    disabled={loading}
-                  >
-                    {loading ? t("login.verifying") : t("login.fnosEnter")}
-                  </button>
-                ) : localTabUnavailable ? null : (
+                  fnosTabUnavailable ? null : (
+                    <button
+                      type="submit"
+                      className="h-10 w-full rounded-md bg-blue-600 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
+                      disabled={loading}
+                    >
+                      {loading ? t("login.verifying") : t("login.fnosEnter")}
+                    </button>
+                  )
+                ) : localTabUnavailable || mmhTabUnavailable ? null : (
                   <button
                     type="submit"
                     className="h-10 w-full rounded-md bg-blue-600 text-sm text-white hover:bg-blue-700 disabled:opacity-50"

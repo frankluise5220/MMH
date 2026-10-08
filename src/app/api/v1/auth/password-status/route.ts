@@ -72,6 +72,7 @@ function degradedStatusResponse() {
     hasPassword: true,
     needsInitialLedgerSetup: false,
     fnosBound: false,
+    fnosHouseholdIds: [],
     passwordResetEnabled: false,
     users: [],
   });
@@ -175,6 +176,11 @@ async function ensureInitialHousehold(adminName: string) {
  * - Regular users are shown only when they belong to the current householdId.
  * - If the household cookie is stale and filters all users out, the endpoint
  *   clears the stale cookie and falls back to the full login user list.
+ *
+ * Behind the fnOS gateway it also reports `fnosBound` plus `fnosHouseholdIds`:
+ * the ledgers the forwarded gateway identity is bound in. The login page uses
+ * them to open on a ledger that passwordless fnOS login can actually enter and
+ * to warn when the selected ledger has no fnOS binding.
  */
 export async function GET(req: NextRequest) {
   const cookieStore = await cookies();
@@ -196,22 +202,30 @@ export async function GET(req: NextRequest) {
     }),
     selectLoginUsers(householdId),
     hasEmailService(householdId ?? undefined),
+    // Every ledger user bound to this gateway identity, not just the first one:
+    // the login page needs the whole set to tell whether the ledger currently
+    // selected in the picker may be entered with fnOS passwordless login, and
+    // to open on a ledger that this identity can actually get into.
     gatewayIdentity
-      ? prisma.user.findFirst({ where: { fnosUid: { in: gatewayIdentity.keys } }, select: { id: true } })
-      : Promise.resolve(null),
+      ? prisma.user.findMany({ where: { fnosUid: { in: gatewayIdentity.keys } }, select: { householdId: true } })
+      : Promise.resolve([]),
   ]), STATUS_LOOKUP_TIMEOUT_MS);
 
   if (!status) {
     return degradedStatusResponse();
   }
 
-  const [householdCount, userCount, userWithPassword, legacy, users, passwordResetEnabled, fnosBoundUser] = status;
+  const [householdCount, userCount, userWithPassword, legacy, users, passwordResetEnabled, fnosBoundUsers] = status;
   const hasPassword = !!userWithPassword || (!!legacy && legacy.value.length > 0);
   const needsInitialLedgerSetup = householdCount === 0 && userCount === 0 && !hasPassword;
   // Whether the *current* fnOS gateway user owns a ledger user. Deliberately
   // independent of `hasPassword`: binding a local password must not demote the
   // fnOS passwordless login from its default position.
-  const fnosBound = !!fnosBoundUser;
+  const fnosBound = fnosBoundUsers.length > 0;
+  // Ledgers this gateway identity may enter without a password. `null` means the
+  // bound user sits in the system scope rather than in a ledger; the client maps
+  // that to its own `__system__` scope id, so no literal is shared here.
+  const fnosHouseholdIds = Array.from(new Set(fnosBoundUsers.map((user) => user.householdId)));
   let loginUsers = users;
   const shouldClearStaleHouseholdCookie = !!householdId && users.length === 0 && hasPassword && !needsInitialLedgerSetup;
   if (shouldClearStaleHouseholdCookie) {
@@ -223,6 +237,7 @@ export async function GET(req: NextRequest) {
     hasPassword,
     needsInitialLedgerSetup,
     fnosBound,
+    fnosHouseholdIds,
     passwordResetEnabled,
     users: loginUsers.map(u => ({
       id: u.id,
