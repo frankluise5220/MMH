@@ -13,6 +13,7 @@ import {
 } from "@/lib/ledger-invite-codes";
 import { inspectLedgerInviteCode, missingIssuerRejection } from "@/lib/server/ledger-invite-code-guard";
 import { verifyEmailPrincipal } from "@/lib/server/registration-client";
+import { queueLedgerInventoryReport } from "@/lib/server/ledger-inventory";
 import { matchesGatewayFnosIdentity, readGatewayFnosIdentity } from "@/lib/server/gateway-identity";
 import { hashPassword } from "@/lib/auth/password";
 
@@ -181,6 +182,10 @@ export async function POST(req: NextRequest) {
     }
     throw error;
   }
+
+  // A ledger was created (possibly the first one on a brand-new deployment);
+  // refresh the installation inventory in the background.
+  queueLedgerInventoryReport("ledger-created");
 
   const response = NextResponse.json({
     ok: true,

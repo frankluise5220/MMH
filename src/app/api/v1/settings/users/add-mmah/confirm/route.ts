@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { getCurrentUser, isAdmin } from "@/lib/server/auth";
 import { registerEmailPrincipal, setEmailPrincipalPassword, verifyRegistrationCode } from "@/lib/server/registration-client";
+import { queueLedgerInventoryReport } from "@/lib/server/ledger-inventory";
 import { DEFAULT_SESSION_DAYS, normalizeSessionDays } from "@/lib/session-days";
 import { logger } from "@/lib/logger";
 
@@ -170,6 +171,9 @@ export async function POST(req: NextRequest) {
     logger.error("add-mmh user creation failed", "user-registration", error);
     return NextResponse.json({ ok: false, code: "ADD_MMH_FAILED", error: "Failed to add the MMH user. Please try again." }, { status: 500, headers: cors() });
   }
+
+  // A new MMH-bound member joined this ledger; refresh the inventory.
+  queueLedgerInventoryReport("mmh-bound");
 
   return NextResponse.json({
     ok: true,

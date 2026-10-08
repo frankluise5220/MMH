@@ -6,6 +6,7 @@ import { getHouseholdScope } from "@/lib/server/household-scope";
 import { verifySensitiveOperationPassword } from "@/lib/server/sensitive-operation-auth";
 import { getCurrentUser, isAdmin } from "@/lib/server/auth";
 import { readGatewayFnosIdentity } from "@/lib/server/gateway-identity";
+import { queueLedgerInventoryReport } from "@/lib/server/ledger-inventory";
 import { DEFAULT_SESSION_DAYS, normalizeSessionDays } from "@/lib/session-days";
 
 export const runtime = "nodejs";
@@ -181,6 +182,9 @@ export async function POST(req: NextRequest) {
     },
   });
 
+  // The ledger gained a member; refresh the installation inventory.
+  queueLedgerInventoryReport("member-changed");
+
   return NextResponse.json({
     ok: true,
     user: { ...user, sessionDays: normalizeSessionDays(sessionDays, DEFAULT_SESSION_DAYS) },
@@ -327,6 +331,9 @@ export async function DELETE(req: NextRequest) {
   }
 
   await prisma.user.delete({ where: { id } });
+
+  // The ledger lost a member; refresh the installation inventory.
+  queueLedgerInventoryReport("member-changed");
 
   return NextResponse.json({ ok: true }, { headers: cors() });
 }

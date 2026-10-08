@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { getCurrentUser, isAdmin } from "@/lib/server/auth";
 import { verifyEmailPrincipal } from "@/lib/server/registration-client";
+import { queueLedgerInventoryReport } from "@/lib/server/ledger-inventory";
 
 export const runtime = "nodejs";
 
@@ -87,6 +88,9 @@ export async function POST(req: NextRequest) {
       registrationPrincipalId: principalId,
     },
   });
+
+  // The ledger now carries one more MMH-bound member; refresh the inventory.
+  queueLedgerInventoryReport("mmh-bound");
 
   return NextResponse.json(
     { ok: true, principalId, email: username.trim().toLowerCase() },

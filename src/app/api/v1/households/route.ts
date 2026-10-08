@@ -5,6 +5,7 @@ import { issueSessionCookies, sessionDaysFromRequest } from "@/lib/server/sessio
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { getHouseholdDisplayName } from "@/lib/household-display";
 import { createLedgerWithDefaults } from "@/lib/households/create-ledger";
+import { queueLedgerInventoryReport } from "@/lib/server/ledger-inventory";
 import { matchesGatewayFnosIdentity, readGatewayFnosIdentity } from "@/lib/server/gateway-identity";
 import { hashPassword } from "@/lib/auth/password";
 import { optionalPrismaDeleteMany } from "@/lib/server/optional-prisma-delegate";
@@ -103,6 +104,9 @@ export async function POST(req: NextRequest) {
       { currentUser: user },
     ),
   );
+
+  // A ledger was created; refresh the installation inventory in the background.
+  queueLedgerInventoryReport("ledger-created");
 
   // Creating a ledger is also a login transition: issue the new admin session
   // so the redirect cannot reopen the previous ledger from stale cookies.
@@ -279,6 +283,9 @@ export async function DELETE(req: NextRequest) {
     logger.error("Failed to delete ledger", "api/v1/households", error);
     return NextResponse.json({ ok: false, code: "INTERNAL_ERROR", error: "Failed to delete ledger." }, { status: 500 });
   }
+
+  // A ledger was deleted; refresh the installation inventory in the background.
+  queueLedgerInventoryReport("ledger-deleted");
 
   return NextResponse.json({ ok: true });
 }

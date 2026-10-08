@@ -5,6 +5,7 @@ import { hashPassword } from "@/lib/auth/password";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { getCurrentUser, isAdmin } from "@/lib/server/auth";
 import { registerEmailPrincipal, verifyRegistrationCode, setEmailPrincipalPassword } from "@/lib/server/registration-client";
+import { queueLedgerInventoryReport } from "@/lib/server/ledger-inventory";
 import { getUserSessionDays, issueSessionCookies } from "@/lib/server/session-issue";
 
 export const runtime = "nodejs";
@@ -182,6 +183,9 @@ export async function POST(req: NextRequest) {
       },
     });
   });
+
+  // The ledger now carries one more MMH-bound member; refresh the inventory.
+  queueLedgerInventoryReport("mmh-bound");
 
   const response = NextResponse.json({ ok: true, principalId, email: normalizedEmail }, { headers: cors() });
 

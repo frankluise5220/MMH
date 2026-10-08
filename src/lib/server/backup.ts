@@ -5,6 +5,7 @@ import { prisma } from "@/lib/db/prisma";
 import { normalizeAiApiMode } from "@/lib/ai/config";
 import { EMAIL_IMPORT_KEYWORD_SETTING_PREFIX } from "@/lib/mail/email-import-settings";
 import { upsertEntryBusinessCashFlowLink } from "@/lib/server/entry-business-link";
+import { INSTALLATION_ID_SETTING_KEY } from "@/lib/server/installation-id";
 import {
   getOptionalPrismaDelegate,
   optionalPrismaDeleteMany,
@@ -1600,8 +1601,13 @@ function settingsForBackup(
   settings: Array<{ key: string }>,
   backupScope: BackupScope,
 ) {
-  if (backupScope === "system") return settings;
-  return settings.filter((setting) =>
+  // The installation id identifies THIS deployment, so it is excluded even from
+  // a full system backup: restoring that backup onto another deployment would
+  // clone the id and the central registration service would merge the two
+  // deployments' ledger inventories into one.
+  const exportable = settings.filter((setting) => setting.key !== INSTALLATION_ID_SETTING_KEY);
+  if (backupScope === "system") return exportable;
+  return exportable.filter((setting) =>
     RESTORABLE_GLOBAL_SYSTEM_SETTING_KEYS.has(setting.key) ||
     RESTORABLE_HOUSEHOLD_SETTING_PREFIXES.some((prefix) => setting.key.startsWith(prefix)),
   );
@@ -2517,7 +2523,21 @@ export async function restoreHouseholdBackup(
     const propertyTransactionDelegate = getOptionalPrismaDelegate<OptionalPrismaRestoreDelegate>(tx, "propertyTransaction");
 
     if (isSystemRestore) {
+      // The installation id is this deployment's own identity, not backup data,
+      // so preserve the LOCAL value across the wipe: it is never taken from the
+      // file (that id belongs to the deployment the backup came from), and a
+      // restore must not make the central registration service see a brand-new
+      // installation while retiring a live one.
+      const localInstallationId = await tx.systemSetting.findUnique({
+        where: { key: INSTALLATION_ID_SETTING_KEY },
+        select: { value: true },
+      });
       await tx.systemSetting.deleteMany({});
+      if (localInstallationId?.value?.trim()) {
+        await tx.systemSetting.create({
+          data: { key: INSTALLATION_ID_SETTING_KEY, value: localInstallationId.value },
+        });
+      }
       await tx.accessKey.deleteMany({});
       await tx.aiModel.deleteMany({});
       await tx.aiChannel.deleteMany({});
@@ -2727,6 +2747,9 @@ export async function restoreHouseholdBackup(
 
     for (const item of data.systemSettings) {
       const rawKey = String(item.key ?? "");
+      // Never import another deployment's installation id (a backup written
+      // before this key was excluded may still contain one).
+      if (rawKey === INSTALLATION_ID_SETTING_KEY) continue;
       const key = remapHouseholdSystemSettingKey(rawKey, payload.scope.householdId, householdId) ?? rawKey;
       if (!key) continue;
       const value = String(item.value ?? "");

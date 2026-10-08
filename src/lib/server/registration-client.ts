@@ -15,6 +15,24 @@
  *     -> error { ok:false, code, error } (401 UNAUTHORIZED, 400 VALIDATION_ERROR,
  *        409 IDENTITY_ALREADY_BOUND / INSTALLATION_ALREADY_BOUND, ...)
  * All /v1 endpoints require `Authorization: Bearer <token>`.
+ *
+ * Ledger inventory report — NOT implemented by the registration service yet
+ * (see `reportInstallationInventory`). Deployments are independent self-hosted
+ * instances, so the central service cannot discover on its own how many ledgers
+ * an MMH account is bound to; the app has to push that. This is the one piece
+ * the central service still has to add:
+ *   POST {baseUrl}/v1/installations
+ *     body: { installationId, platform, reportedAt,
+ *             households: [{ householdId, createdAt, memberCount,
+ *                            mmhMemberCount, principalIds[] }] }
+ *     -> any 2xx is accepted (empty body is fine)
+ *     -> error { ok:false, code, error } (401 UNAUTHORIZED, 400 VALIDATION_ERROR);
+ *        an explicit `ok:false` is honored even on a 2xx
+ *   Semantics: upsert the deployment's WHOLE inventory keyed by
+ *   `installationId` — every call replaces the previous snapshot, so repeats
+ *   are idempotent and a missed call self-heals on the next one. No ledger or
+ *   member names are sent, only ids and counts.
+ *   Until the endpoint exists the app logs a warning and continues.
  */
 
 import "@/lib/net/prefer-ipv4";
@@ -390,4 +408,111 @@ export async function verifyRegistrationCode(params: {
   code: string;
 }): Promise<RegistrationCodeResult> {
   return postRegistrationCode("verify-code", params);
+}
+
+/** One ledger inside an installation inventory report. Ids and counts only. */
+export interface InstallationInventoryHousehold {
+  /** Household.id — the user-facing ledger name is deliberately never sent. */
+  householdId: string;
+  createdAt: string;
+  /** Members owned by the ledger (the global system user is excluded). */
+  memberCount: number;
+  /** Members carrying a registrationPrincipalId (i.e. bound to an MMH account). */
+  mmhMemberCount: number;
+  /** Distinct principal ids bound inside this ledger. */
+  principalIds: string[];
+}
+
+/**
+ * Whole-deployment snapshot. Sent as a replacement, never as a delta, so the
+ * registration service can answer "this MMH account is bound to N ledgers"
+ * without the app having to track unbinds and deletions itself.
+ */
+export interface InstallationInventory {
+  installationId: string;
+  /** MMH_DEPLOY_TARGET when set (fnos / windows / ...), else the Node platform. */
+  platform: string;
+  reportedAt: string;
+  households: InstallationInventoryHousehold[];
+}
+
+export interface InstallationReportResult {
+  ok: boolean;
+  status?: number;
+  code?: string;
+  error?: string;
+}
+
+/**
+ * Pushes the deployment's ledger/member inventory to the registration service.
+ * Best-effort by contract: callers (`ledger-inventory.ts`) run it in the
+ * background and ignore failures, so a missing endpoint or an offline central
+ * service can never block binding, ledger creation or login.
+ */
+export async function reportInstallationInventory(
+  inventory: InstallationInventory,
+): Promise<InstallationReportResult> {
+  const { baseUrl, apiToken } = getRegistrationConfig();
+  if (!baseUrl || !apiToken) {
+    return {
+      ok: false,
+      status: 503,
+      code: "REGISTRATION_NOT_CONFIGURED",
+      error: "The registration service is not configured on this server.",
+    };
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5000);
+
+  let response: Response;
+  try {
+    response = await fetch(`${baseUrl}/v1/installations`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiToken}`,
+      },
+      body: JSON.stringify(inventory),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    clearTimeout(timeout);
+    const timedOut = error instanceof Error && error.name === "AbortError";
+    return {
+      ok: false,
+      status: 503,
+      code: "REGISTRATION_SERVICE_UNREACHABLE",
+      error: timedOut
+        ? "The MMH registration service timed out after 5 seconds."
+        : "The MMH registration service is unreachable.",
+    };
+  }
+  clearTimeout(timeout);
+
+  interface ReportPayload {
+    ok?: boolean;
+    code?: string;
+    error?: string;
+  }
+
+  let payload: ReportPayload | null = null;
+  try {
+    const raw = (await response.json()) as unknown;
+    if (raw && typeof raw === "object") payload = raw as ReportPayload;
+  } catch {
+    payload = null;
+  }
+
+  if (!response.ok || payload?.ok === false) {
+    return {
+      ok: false,
+      status: response.status,
+      code: typeof payload?.code === "string" ? payload.code : "REGISTRATION_SERVICE_ERROR",
+      error: localizeRegistrationError(typeof payload?.code === "string" ? payload.code : undefined)
+        ?? (typeof payload?.error === "string" ? payload.error : `Registration service returned HTTP ${response.status}.`),
+    };
+  }
+
+  return { ok: true, status: response.status };
 }

@@ -1,6 +1,7 @@
 import "@/lib/net/prefer-ipv4";
 import { runDueSystemTasks } from "@/lib/server/system-tasks";
 import { runAutoBackupTick, runWindowsStartupAutoBackupIfStale } from "@/lib/server/auto-backup";
+import { reportLedgerInventoryHeartbeat } from "@/lib/server/ledger-inventory";
 
 /**
  * System-level scheduled task runner.
@@ -9,6 +10,9 @@ import { runAutoBackupTick, runWindowsStartupAutoBackupIfStale } from "@/lib/ser
  * default 10 minutes). The interval is unref()'d so it never keeps the server
  * process alive on shutdown, and a module-level flag prevents overlapping runs.
  * Set MMH_SYSTEM_TASKS_DISABLED=1 to turn this off (e.g. during maintenance).
+ *
+ * The ledger inventory heartbeat rides on the same tick but behind its own flag
+ * so a failure there cannot stop due installments or backups.
  */
 const SYSTEM_TASK_INTERVAL_MS = Math.max(
   60_000,
@@ -51,6 +55,23 @@ async function runAutoBackupTickGuarded(options: { checkWindowsStartup?: boolean
   }
 }
 
+// Ledger inventory heartbeat: refreshes the central registration service's view
+// of this deployment's ledgers and members at most once every 6 hours
+// (see ledger-inventory.ts). Independent flag, same reasoning as auto backup.
+let inventoryReportRunning = false;
+
+async function runInventoryReportTick() {
+  if (inventoryReportRunning) return;
+  inventoryReportRunning = true;
+  try {
+    await reportLedgerInventoryHeartbeat();
+  } catch (error) {
+    console.error("[ledger-inventory] tick failed:", error);
+  } finally {
+    inventoryReportRunning = false;
+  }
+}
+
 export function registerNodeRuntime() {
   if (systemTaskInterval) return;
   if (String(process.env.MMH_SYSTEM_TASKS_DISABLED ?? "") === "1") return;
@@ -58,12 +79,14 @@ export function registerNodeRuntime() {
   const firstRun = setTimeout(() => {
     void runSystemTaskTick();
     void runAutoBackupTickGuarded({ checkWindowsStartup: true });
+    void runInventoryReportTick();
   }, 30_000);
   firstRun.unref?.();
 
   systemTaskInterval = setInterval(() => {
     void runSystemTaskTick();
     void runAutoBackupTickGuarded();
+    void runInventoryReportTick();
   }, SYSTEM_TASK_INTERVAL_MS);
   systemTaskInterval.unref?.();
 }
