@@ -231,9 +231,12 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   const selectedHouseholdMmhUsers = selectedHouseholdId
     ? mmhUserChoices.filter((user) => getLoginUserScopeId(user) === selectedHouseholdId)
     : mmhUserChoices;
+  // 「死账」判定与 local 页签对称：只看选中账簿有没有绑 MMH 用户，不看
+  // 全局是否存在 MMH 用户。飞牛免密建账后整个系统可能一个 MMH 用户都没有，
+  // 但 MMH 页签仍应变黄警示（否则会让人以为能直接邮箱+密码登录，而登录
+  // 只能得到 MMH_USER_NOT_BOUND）。
   const mmhTabUnavailable =
     loginMode === "mmh" &&
-    mmhUserChoices.length > 0 &&
     !!selectedHouseholdId &&
     selectedHouseholdMmhUsers.length === 0;
   // The local tab is dead when the *selected* ledger has no local account: the
