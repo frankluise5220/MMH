@@ -1447,10 +1447,11 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                 </div>
                 )}
 
-                {/* No password field when the ledger has no local account at all:
+                {/* No password field when the ledger has no local account at all,
+                    and none on the MMH tab when the ledger links no MMH user:
                     showing one invited people to type a password that could never
-                    be checked. The block above already explains what to do. */}
-                {loginMode !== "fnos" && !localTabUnavailable && (
+                    be checked. The amber notice above already explains what to do. */}
+                {loginMode !== "fnos" && !localTabUnavailable && !mmhTabUnavailable && (
                 <div className="space-y-1">
                   <div className="text-xs font-medium text-slate-600">{t("login.password")}</div>
                     <input
@@ -1681,8 +1682,9 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
 
             {/* 忘记密码 / 收起：本地与 MMH 两个页签共用同一条入口 —— 同一个文案、
                 同一个位置（都排在「进入」按钮下方）。飞牛页签不输入密码，账簿没有
-                本地账户时也没有可找回的本地密码，两种情况都不显示。 */}
-            {(loginMode === "mmh" || (loginMode === "local" && !localTabUnavailable)) && (
+                本地账户时也没有可找回的本地密码，账簿没绑 MMH 用户时同样没有可找回
+                的 MMH 密码，这些情况都不显示。 */}
+            {(loginMode === "mmh" && !mmhTabUnavailable) || (loginMode === "local" && !localTabUnavailable) ? (
             <button
               type="button"
               className="w-full text-xs text-slate-500 hover:text-slate-700"
@@ -1711,7 +1713,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
             >
               {(loginMode === "mmh" ? showMmhReset : showReset) ? t("common.collapse") : t("login.forgotPassword")}
             </button>
-            )}
+            ) : null}
               </div>
             </div>
           </div>
