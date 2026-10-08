@@ -1291,26 +1291,26 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                 <button
                   type="button"
                   onClick={() => switchLoginMode("local")}
-                  className={folderTabClass(
+                  className={`${folderTabClass(
                     loginMode === "local",
                     loginTabOrder.indexOf("local") === loginTabOrder.length - 1,
                     "stretch",
                     loginTabOrder.indexOf("local") === 0,
                     folderTabNeighbors(loginTabOrder, "local", loginMode),
-                  )}
+                  )}${localTabUnavailable ? " ft-tab-fillet-amber" : ""}`}
                 >
                   <span className="relative block overflow-hidden whitespace-nowrap">{t("login.mode.local")}</span>
                 </button>
                 <button
                   type="button"
                   onClick={() => switchLoginMode("mmh")}
-                  className={folderTabClass(
+                  className={`${folderTabClass(
                     loginMode === "mmh",
                     loginTabOrder.indexOf("mmh") === loginTabOrder.length - 1,
                     "stretch",
                     loginTabOrder.indexOf("mmh") === 0,
                     folderTabNeighbors(loginTabOrder, "mmh", loginMode),
-                  )}
+                  )}${mmhTabUnavailable ? " ft-tab-fillet-amber" : ""}`}
                 >
                   <span className="relative block overflow-hidden whitespace-nowrap">{t("login.mode.mmh")}</span>
                 </button>
@@ -1318,13 +1318,13 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                   <button
                     type="button"
                     onClick={() => switchLoginMode("fnos")}
-                    className={folderTabClass(
+                    className={`${folderTabClass(
                       loginMode === "fnos",
                       loginTabOrder.indexOf("fnos") === loginTabOrder.length - 1,
                       "stretch",
                       loginTabOrder.indexOf("fnos") === 0,
                       folderTabNeighbors(loginTabOrder, "fnos", loginMode),
-                    )}
+                    )}${fnosTabUnavailable ? " ft-tab-fillet-amber" : ""}`}
                   >
                     <span className="relative block overflow-hidden whitespace-nowrap">{t("login.fnosLogin")}</span>
                   </button>

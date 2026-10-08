@@ -471,6 +471,30 @@ html {
       url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='7' height='7' viewBox='0 0 7 7'%3E%3Cpath d='M0.5 0A6.5 6.5 0 0 0 7 6.5L7 7L0 7L0 0Z' fill='%23ffffff'/%3E%3C/svg%3E");
   }
 
+  /* 「未绑定」警示色阶：活动页签 + 凹角整体刷成浅黄（amber），与内容板里的 amber notice
+     提示框呼应——选中账簿缺失该类型用户时，页签 tab 本身也变黄，而不只是内容区给提示。
+     覆盖点比 `.ft-tab-fillet-white` 多两处：除 `background-color`（页签底）与 `::before`
+     （凹角填充，色 = 页签底 amber-50 #fffbeb）外，还要把 `border-color`（页签 1px 边框）
+     与 `::after`（凹角描边）换成 amber-200 #fde68a，否则接缝处「页签黄底 + 灰描边」打架。
+     同样挂在**活动页签**上、与 `.ft-tab-fillet` 同元素；本文件手写规则排在 Tailwind utilities
+     之后，故能覆盖 `bg-[#fbfaf7]` / `border-slate-300`（无需 !important）。 */
+  .ft-tab-fillet-amber {
+    background-color: #fffbeb;
+    border-color: #fde68a;
+  }
+
+  .ft-tab-fillet-amber::before {
+    background-image:
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='7' height='7' viewBox='0 0 7 7'%3E%3Cpath d='M6.5 0A6.5 6.5 0 0 1 0 6.5L0 7L7 7L7 0Z' fill='%23fffbeb'/%3E%3C/svg%3E"),
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='7' height='7' viewBox='0 0 7 7'%3E%3Cpath d='M0.5 0A6.5 6.5 0 0 0 7 6.5L7 7L0 7L0 0Z' fill='%23fffbeb'/%3E%3C/svg%3E");
+  }
+
+  .ft-tab-fillet-amber::after {
+    background-image:
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='7' height='7' viewBox='0 0 7 7'%3E%3Cpath d='M6.5 0A6.5 6.5 0 0 1 0 6.5' fill='none' stroke='%23fde68a' stroke-width='1'/%3E%3C/svg%3E"),
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='7' height='7' viewBox='0 0 7 7'%3E%3Cpath d='M0.5 0A6.5 6.5 0 0 0 7 6.5' fill='none' stroke='%23fde68a' stroke-width='1'/%3E%3C/svg%3E");
+  }
+
   thead th,
   thead th.text-left,
   thead th.text-right {
