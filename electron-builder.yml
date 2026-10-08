@@ -19,6 +19,7 @@ directories:
 
 files:
   - electron/main.cjs
+  - electron/preload.cjs
   - "!node_modules/**"
   - "!**/node_modules/**"
   # electron-updater and its runtime deps (the standalone server keeps its
@@ -41,8 +42,9 @@ files:
   - "node_modules/sax/**"
 
 publish:
-  provider: generic
-  url: http://fnapp.floatingice.win:5660/mmh/
+  provider: github
+  owner: frankluise5220
+  repo: MMH
 
 extraResources:
   - from: release-artifacts/win/stage/app

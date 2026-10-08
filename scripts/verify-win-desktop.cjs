@@ -40,6 +40,47 @@ expect(
   "Electron must open the window at the bare origin root (http://127.0.0.1:<port>); any entry path there would demand a matching basePath build.",
 );
 
+// 2026-10-07 在线更新源修正：electron-updater 必须走 GitHub Release feed。
+// 曾经的 generic 源 http://fnapp.floatingice.win:5660/mmh/ 是 FN 软仓服务端，
+// 只承载 fnOS .fpk，不承载 Windows latest.yml，导致自动更新从未生效（404）。
+const builderYml = fs.readFileSync(path.join(root, "electron-builder.yml"), "utf8");
+expect(
+  /provider:\s*github/.test(builderYml) &&
+    /owner:\s*frankluise5220/.test(builderYml) &&
+    /repo:\s*MMH/.test(builderYml),
+  "electron-builder.yml publish must use the GitHub provider (frankluise5220/MMH), not the retired generic FN soft-store feed.",
+);
+expect(
+  /provider:\s*"github"/.test(buildScript) &&
+    /owner:\s*"frankluise5220"/.test(buildScript) &&
+    /repo:\s*"MMH"/.test(buildScript),
+  "build-win-desktop.cjs must write app-update.yml pointing at the GitHub provider feed.",
+);
+expect(
+  !/fnapp\.floatingice\.win:5660\/mmh/.test(builderYml) &&
+    !/fnapp\.floatingice\.win:5660\/mmh/.test(buildScript),
+  "The retired generic update feed (fnapp.floatingice.win:5660/mmh) must not be reintroduced as the Windows update source.",
+);
+
+// 2026-10-07 手动"检查更新"入口：preload 桥必须被打包，且 main.cjs 在
+// 沙箱下挂载它（contextIsolation + preload），否则设置页的更新按钮静默失效。
+expect(
+  /electron\/preload\.cjs/.test(builderYml),
+  "electron-builder.yml files must include electron/preload.cjs so the update bridge ships in the asar.",
+);
+expect(
+  /preload:\s*preloadPath/.test(electronMain) &&
+    /contextIsolation:\s*true/.test(electronMain) &&
+    /sandbox:\s*true/.test(electronMain),
+  "Electron must mount the sandboxed preload bridge (preload: preloadPath) with contextIsolation + sandbox enabled.",
+);
+expect(
+  /mmh:check-for-updates/.test(electronMain) &&
+    /mmh:get-version/.test(electronMain) &&
+    /mmh:update-status/.test(electronMain),
+  "Electron must expose mmh:check-for-updates / mmh:get-version / mmh:update-status IPC for the settings update button.",
+);
+
 function expect(condition, message) {
   if (!condition) failures.push(message);
 }

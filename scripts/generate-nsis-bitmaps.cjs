@@ -10,10 +10,20 @@
 //   uninstallerSidebar.bmp    164 x 314  (uninstaller welcome / finish page)
 //
 // Output must be 24-bit BI_RGB BMP: NSIS cannot render 32-bit bitmaps with an
-// alpha channel, so the transparent areas are composited onto the gradient.
+// alpha channel, so transparent areas are composited onto the gradient.
 //
 // Implementation is pure Node (zlib only) so the same script runs on the Linux
 // and Windows build agents; no ImageMagick / sharp dependency is added.
+//
+// Design (2026-10-07 refresh): instead of a single diagonal gradient + a tiny
+// logo (the old "30 years old" look), the wizard now renders a layered,
+// modern composition:
+//   - a deep forest-green → mint vertical gradient (brand colour derived from
+//     the logo's own dominant tone, never hard-coded),
+//   - a large centred logo with a soft radial glow,
+//   - a crisp "MMH" wordmark in a built-in 5x7 bitmap font (no font lib),
+//   - fine geometric accents: hairline rules, a dotted grid and a ring, so the
+//     page reads as designed rather than as the stock NSIS skin.
 //
 // Usage: node scripts/generate-nsis-bitmaps.cjs [--out <dir>] [--logo <png>]
 
@@ -107,7 +117,6 @@ function decodePng(buffer) {
   }
 
   if (channels === 4) return { width, height, data: pixels };
-  // Expand RGB to RGBA so the rest of the pipeline has a single layout.
   const rgba = Buffer.alloc(width * height * 4);
   for (let i = 0, j = 0; i < pixels.length; i += 3, j += 4) {
     rgba[j] = pixels[i];
@@ -193,10 +202,9 @@ function averageOpaqueColor(image) {
 function createCanvas(width, height, topColor, bottomColor) {
   const rgba = Buffer.alloc(width * height * 4);
   for (let y = 0; y < height; y++) {
+    const t = y / Math.max(1, height - 1);
+    const color = mix(topColor, bottomColor, t);
     for (let x = 0; x < width; x++) {
-      // Diagonal gradient: darker bottom-left, lighter top-right.
-      const t = (x / Math.max(1, width - 1) + (1 - y / Math.max(1, height - 1))) / 2;
-      const color = mix(topColor, bottomColor, t);
       const index = (y * width + x) * 4;
       rgba[index] = clampByte(color[0]);
       rgba[index + 1] = clampByte(color[1]);
@@ -249,17 +257,121 @@ function blendImage(canvas, image, left, top) {
   }
 }
 
-function drawAccentRule(canvas, accent, height, maxAlpha) {
-  for (let y = canvas.height - height; y < canvas.height; y++) {
-    if (y < 0) continue;
-    for (let x = 0; x < canvas.width; x++) {
-      const alpha = (x / Math.max(1, canvas.width - 1)) * maxAlpha;
-      const index = (y * canvas.width + x) * 4;
-      const color = mix([canvas.data[index], canvas.data[index + 1], canvas.data[index + 2]], accent, alpha);
-      canvas.data[index] = clampByte(color[0]);
-      canvas.data[index + 1] = clampByte(color[1]);
-      canvas.data[index + 2] = clampByte(color[2]);
+function fillPixel(canvas, x, y, color, alpha) {
+  if (x < 0 || y < 0 || x >= canvas.width || y >= canvas.height) return;
+  const index = (y * canvas.width + x) * 4;
+  const blended = mix(
+    [canvas.data[index], canvas.data[index + 1], canvas.data[index + 2]],
+    color,
+    alpha,
+  );
+  canvas.data[index] = clampByte(blended[0]);
+  canvas.data[index + 1] = clampByte(blended[1]);
+  canvas.data[index + 2] = clampByte(blended[2]);
+}
+
+// A single-pixel-wide hairline, blended so it softens over the gradient.
+function hairline(canvas, color, y, x0, x1, alpha) {
+  for (let x = x0; x <= x1; x++) {
+    fillPixel(canvas, x, y, color, alpha);
+  }
+}
+
+// A dotted grid: rows of evenly spaced single-pixel dots, lightly blended.
+function dotGrid(canvas, color, x0, y0, x1, y1, spacing, alpha) {
+  for (let y = y0; y <= y1; y += spacing) {
+    for (let x = x0; x <= x1; x += spacing) {
+      fillPixel(canvas, x, y, color, alpha);
     }
+  }
+}
+
+// A thin ring (outline circle) via midpoint circle drawing.
+function ring(canvas, color, cx, cy, radius, alpha) {
+  const plot = (x, y) => {
+    fillPixel(canvas, cx + x, cy + y, color, alpha);
+    fillPixel(canvas, cx - x, cy + y, color, alpha);
+    fillPixel(canvas, cx + x, cy - y, color, alpha);
+    fillPixel(canvas, cx - x, cy - y, color, alpha);
+    fillPixel(canvas, cx + y, cy + x, color, alpha);
+    fillPixel(canvas, cx - y, cy + x, color, alpha);
+    fillPixel(canvas, cx + y, cy - x, color, alpha);
+    fillPixel(canvas, cx - y, cy - x, color, alpha);
+  };
+  let x = 0;
+  let y = radius;
+  let d = 3 - 2 * radius;
+  plot(x, y);
+  while (y >= x) {
+    x++;
+    if (d > 0) {
+      y--;
+      d = d + 4 * (x - y) + 10;
+    } else {
+      d = d + 4 * x + 6;
+    }
+    plot(x, y);
+  }
+}
+
+// ------------------------------------------------------------------ bitmap font
+
+// A minimal 5x7 bitmap font covering just the glyphs the wizard needs
+// ("MMH" and the "FAMILY FINANCE" subtitle). Rows top-to-bottom, '#' lit.
+const FONT_5x7 = {
+  " ": [".....", ".....", ".....", ".....", ".....", ".....", "....."],
+  A: [".###.", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"],
+  C: [".####", "#....", "#....", "#....", "#....", "#....", ".####"],
+  E: ["#####", "#....", "#....", "####.", "#....", "#....", "#####"],
+  F: ["#####", "#....", "#....", "####.", "#....", "#....", "#...."],
+  H: ["#...#", "#...#", "#...#", "#####", "#...#", "#...#", "#...#"],
+  I: ["#####", "..#..", "..#..", "..#..", "..#..", "..#..", "#####"],
+  L: ["#....", "#....", "#....", "#....", "#....", "#....", "#####"],
+  M: ["#...#", "##.##", "#.#.#", "#...#", "#...#", "#...#", "#...#"],
+  N: ["#...#", "##..#", "#.#.#", "#..##", "#...#", "#...#", "#...#"],
+  Y: ["#...#", "#...#", ".#.#.", "..#..", "..#..", "..#..", "..#.."],
+};
+
+const FONT_H = 7;
+const FONT_W = 5;
+
+function textWidth(text, scale, letterSpacing) {
+  let w = 0;
+  for (const ch of text) {
+    const glyph = FONT_5x7[ch];
+    if (!glyph) continue;
+    w += FONT_W * scale + letterSpacing;
+  }
+  return Math.max(0, w - letterSpacing);
+}
+
+function drawText(canvas, text, x, y, color, scale, letterSpacing) {
+  let cursorX = x;
+  for (const ch of text) {
+    const glyph = FONT_5x7[ch];
+    if (!glyph) {
+      cursorX += FONT_W * scale + letterSpacing;
+      continue;
+    }
+    for (let gy = 0; gy < FONT_H; gy++) {
+      const row = glyph[gy];
+      for (let gx = 0; gx < FONT_W; gx++) {
+        if (row[gx] !== "#") continue;
+        for (let sy = 0; sy < scale; sy++) {
+          for (let sx = 0; sx < scale; sx++) {
+            const px = cursorX + gx * scale + sx;
+            const py = y + gy * scale + sy;
+            if (px < 0 || py < 0 || px >= canvas.width || py >= canvas.height) continue;
+            const index = (py * canvas.width + px) * 4;
+            canvas.data[index] = clampByte(color[0]);
+            canvas.data[index + 1] = clampByte(color[1]);
+            canvas.data[index + 2] = clampByte(color[2]);
+            canvas.data[index + 3] = 255;
+          }
+        }
+      }
+    }
+    cursorX += FONT_W * scale + letterSpacing;
   }
 }
 
@@ -297,32 +409,127 @@ function encodeBmp24(canvas) {
 
 // ------------------------------------------------------------------ compose
 
+function softWhite(accent) {
+  return mix(accent, [255, 255, 255], 0.82);
+}
+
+function drawAccentRule(canvas, accent, ruleHeight, maxAlpha) {
+  for (let y = canvas.height - ruleHeight; y < canvas.height; y++) {
+    if (y < 0) continue;
+    for (let x = 0; x < canvas.width; x++) {
+      const alpha = (x / Math.max(1, canvas.width - 1)) * maxAlpha;
+      const index = (y * canvas.width + x) * 4;
+      const color = mix([canvas.data[index], canvas.data[index + 1], canvas.data[index + 2]], accent, alpha);
+      canvas.data[index] = clampByte(color[0]);
+      canvas.data[index + 1] = clampByte(color[1]);
+      canvas.data[index + 2] = clampByte(color[2]);
+    }
+  }
+}
+
 function buildHeader(logo, accent, tint) {
   const { width, height } = HEADER;
   const canvas = createCanvas(width, height, tint.dark, tint.mid);
-  blendGlow(canvas, accent, width * 0.72, height * 0.5, width * 1.05, 0.24);
-  const logoSize = height - 12;
+
+  // Radial glow behind the logo (right side).
+  blendGlow(canvas, accent, width * 0.76, height * 0.5, width * 0.95, 0.22);
+
+  // Logo, right-aligned.
+  const logoSize = height - 14;
   const scaled = {
     width: logoSize,
     height: logoSize,
     data: resizeRgba(logo.data, logo.width, logo.height, logoSize, logoSize),
   };
-  blendImage(canvas, scaled, width - logoSize - 10, Math.round((height - logoSize) / 2));
+  blendImage(canvas, scaled, width - logoSize - 12, Math.round((height - logoSize) / 2));
+
+  // "MMH" wordmark, left-aligned, with a faint hairline underneath.
+  const white = softWhite(accent);
+  drawText(canvas, "MMH", 14, Math.round((height - FONT_H * 2) / 2) - 1, white, 2, 2);
+  hairline(canvas, mix(accent, white, 0.5), height - 12, 14, 14 + textWidth("MMH", 2, 2), 0.35);
+
+  // Bottom accent rule (kept, re-tinted).
   drawAccentRule(canvas, accent, 2, 0.5);
   return canvas;
 }
 
-function buildSidebar(logo, accent, tint) {
+function buildSidebar(logo, accent, tint, opts) {
   const { width, height } = SIDEBAR;
   const canvas = createCanvas(width, height, tint.dark, tint.mid);
-  blendGlow(canvas, accent, width * 0.42, height * 0.3, width * 1.15, 0.3);
-  const logoSize = 104;
+  const white = softWhite(accent);
+
+  // Ambient glow behind the logo.
+  blendGlow(canvas, accent, width * 0.5, height * 0.30, width * 1.05, 0.28);
+
+  // Large centred logo.
+  const logoSize = opts.logoSize || 116;
   const scaled = {
     width: logoSize,
     height: logoSize,
     data: resizeRgba(logo.data, logo.width, logo.height, logoSize, logoSize),
   };
-  blendImage(canvas, scaled, Math.round((width - logoSize) / 2), Math.round(height * 0.33));
+  blendImage(canvas, scaled, Math.round((width - logoSize) / 2), Math.round(height * 0.17));
+
+  // "MMH" wordmark under the logo.
+  const scale = 3;
+  const wm = textWidth("MMH", scale, 2);
+  drawText(canvas, "MMH", Math.round((width - wm) / 2), Math.round(height * 0.17) + logoSize + 16, white, scale, 2);
+
+  // Subtitle wordmark.
+  const subScale = 1;
+  const sub = opts.subtitle || "FAMILY FINANCE";
+  const sw = textWidth(sub, subScale, 1);
+  const subY = Math.round(height * 0.17) + logoSize + 16 + FONT_H * scale + 8;
+  drawText(canvas, sub, Math.round((width - sw) / 2), subY, mix(accent, white, 0.45), subScale, 1);
+
+  // Decorative ring peeking from the top-right corner.
+  ring(canvas, mix(accent, white, 0.35), Math.round(width * 0.92), Math.round(height * 0.05), Math.round(width * 0.34), 0.28);
+
+  // Dotted grid along the bottom, fading out.
+  dotGrid(canvas, mix(accent, white, 0.4), 18, height - 30, width - 18, height - 14, 8, 0.22);
+
+  // Bottom accent rule.
+  drawAccentRule(canvas, accent, 3, 0.6);
+  return canvas;
+}
+
+// A full-bleed welcome/finish page background. The custom nsDialogs page
+// stretches it across the whole MUI2 client area (~496x290 px) and draws the
+// headline / subtext as white nsDialogs labels on top, so the page reads as a
+// single designed dark surface instead of the stock MUI2 white panel.
+// `textX` marks the horizontal inset where the nsDialogs labels start, so the
+// artwork leaves the right-hand side visually uncluttered for the copy.
+function buildWelcomeBackground(logo, accent, tint, opts) {
+  const width = opts.width || 496;
+  const height = opts.height || 290;
+  const canvas = createCanvas(width, height, tint.dark, tint.mid);
+  const white = softWhite(accent);
+
+  // Soft diagonal glow behind the logo (left side).
+  blendGlow(canvas, accent, width * 0.16, height * 0.32, width * 0.55, 0.30);
+
+  // Left-side logo cluster.
+  const logoSize = Math.round(height * 0.34);
+  const scaled = {
+    width: logoSize,
+    height: logoSize,
+    data: resizeRgba(logo.data, logo.width, logo.height, logoSize, logoSize),
+  };
+  blendImage(canvas, scaled, Math.round(width * 0.055), Math.round(height * 0.14));
+
+  // Decorative ring behind the logo, peeking off the left edge.
+  ring(canvas, mix(accent, white, 0.30), Math.round(width * 0.02), Math.round(height * 0.12), Math.round(width * 0.30), 0.22);
+
+  // Fine dotted grid across the lower third (subtle texture).
+  dotGrid(canvas, mix(accent, white, 0.32), Math.round(width * 0.08), height - 46, width - 18, height - 14, 9, 0.20);
+
+  // A vertical hairline separating the logo zone from the copy zone, so the
+  // nsDialogs text area has a clean anchor.
+  for (let y = Math.round(height * 0.12); y <= Math.round(height * 0.82); y++) {
+    fillPixel(canvas, Math.round(width * 0.34), y, mix(accent, white, 0.35), 0.35);
+  }
+
+  // Bottom accent rule.
   drawAccentRule(canvas, accent, 3, 0.6);
   return canvas;
 }
@@ -332,20 +539,23 @@ function buildSidebar(logo, accent, tint) {
 const logo = decodePng(fs.readFileSync(logoPath));
 const accent = averageOpaqueColor(logo);
 // Tints are derived from the logo's own accent colour so the wizard always
-// matches the brand mark without hard-coding hex values.
+// matches the brand mark without hard-coding hex values. The dark stop is
+// deepened toward a near-black green for contrast against the mint accent.
 const installerTint = {
-  dark: mix(accent, [4, 14, 12], 0.86),
-  mid: mix(accent, [4, 14, 12], 0.44),
+  dark: mix(accent, [6, 22, 19], 0.90),
+  mid: mix(accent, [6, 22, 19], 0.48),
 };
 const uninstallerTint = {
-  dark: mix(accent, [14, 18, 24], 0.85),
-  mid: mix(accent, [14, 18, 24], 0.55),
+  dark: mix(accent, [16, 22, 30], 0.90),
+  mid: mix(accent, [16, 22, 30], 0.55),
 };
 
 const outputs = [
   ["installerHeader.bmp", buildHeader(logo, accent, installerTint)],
-  ["installerSidebar.bmp", buildSidebar(logo, accent, installerTint)],
-  ["uninstallerSidebar.bmp", buildSidebar(logo, accent, uninstallerTint)],
+  ["installerSidebar.bmp", buildSidebar(logo, accent, installerTint, { subtitle: "FAMILY FINANCE" })],
+  ["uninstallerSidebar.bmp", buildSidebar(logo, accent, uninstallerTint, { subtitle: "UNINSTALL" })],
+  ["installerWelcome.bmp", buildWelcomeBackground(logo, accent, installerTint, { width: 496, height: 290 })],
+  ["uninstallerWelcome.bmp", buildWelcomeBackground(logo, accent, uninstallerTint, { width: 496, height: 290 })],
 ];
 
 fs.mkdirSync(outDir, { recursive: true });

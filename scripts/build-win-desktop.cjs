@@ -36,8 +36,14 @@ const stageNodeDir = path.join(stageDir, "node");
 const buildDir = path.join(artifacts, "build");
 const distDir = path.join(artifacts, "dist");
 const portableNodeRoot = path.join(artifacts, "node22", "node-v22.23.2-win-x64");
-// Update feed URL must match the `publish.url` in electron-builder.yml.
-const UPDATE_FEED_URL = "http://fnapp.floatingice.win:5660/mmh/";
+// Update feed for the packaged app. Must match the `publish` block in
+// electron-builder.yml: the GitHub provider pulls `latest.yml` from the
+// frankluise5220/MMH Releases feed (no static HTTP host needed).
+const UPDATE_FEED = {
+  provider: "github",
+  owner: "frankluise5220",
+  repo: "MMH",
+};
 
 const nativeSchema = toArgvPath(path.join(root, "prisma", "schema.native.prisma"));
 const pgSchema = toArgvPath(path.join(root, "prisma", "schema.prisma"));
@@ -502,7 +508,7 @@ copyDir(path.join(stageAppDir, "node_modules"), path.join(unpackedAppDir, "node_
 step("write app-update.yml (update feed)");
 fs.writeFileSync(
   path.join(unpackedDir, "resources", "app-update.yml"),
-  "provider: generic\nurl: " + UPDATE_FEED_URL + "\n",
+  "provider: " + UPDATE_FEED.provider + "\nowner: " + UPDATE_FEED.owner + "\nrepo: " + UPDATE_FEED.repo + "\n",
   "utf8",
 );
 

@@ -12,7 +12,7 @@
 //
 // The Next.js application code is untouched; this shell only hosts it.
 
-const { app, BrowserWindow, dialog } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain } = require("electron");
 const { spawn } = require("child_process");
 const path = require("path");
 const fs = require("fs");
@@ -67,6 +67,11 @@ const nodeExe = isPackaged
 const iconPath = isPackaged
   ? path.join(resourcesDir, "icon.png")
   : path.join(projectRoot, "public", "branding", "mmh-logo-pwa-512.png");
+
+// Sandboxed preload bridging the renderer to the updater via IPC.
+const preloadPath = isPackaged
+  ? path.join(__dirname, "preload.cjs")
+  : path.join(projectRoot, "electron", "preload.cjs");
 
 const userDataDir = resolveDataDir();
 app.setPath("userData", userDataDir);
@@ -297,12 +302,20 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      preload: preloadPath,
     },
   });
   mainWindow.loadURL("http://127.0.0.1:" + port);
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
+}
+
+// Push an update lifecycle event to the renderer (settings page), if open.
+function sendUpdateStatus(payload) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send("mmh:update-status", payload);
+  }
 }
 
 // Check for updates in the background and prompt the user when a new version
@@ -312,6 +325,7 @@ function setupAutoUpdater() {
   autoUpdater.autoInstallOnAppQuit = true;
   autoUpdater.on("update-available", (info) => {
     log("Update available: " + info.version);
+    sendUpdateStatus({ type: "available", version: info.version });
     if (!mainWindow || mainWindow.isDestroyed()) return;
     dialog
       .showMessageBox(mainWindow, {
@@ -327,8 +341,16 @@ function setupAutoUpdater() {
         if (response === 0) autoUpdater.downloadUpdate();
       });
   });
+  autoUpdater.on("update-not-available", (info) => {
+    log("No update available (current: " + info.version + ")");
+    sendUpdateStatus({ type: "not-available", version: info.version });
+  });
+  autoUpdater.on("download-progress", (p) => {
+    sendUpdateStatus({ type: "progress", percent: Math.round(p.percent) });
+  });
   autoUpdater.on("update-downloaded", (info) => {
     log("Update downloaded: " + info.version);
+    sendUpdateStatus({ type: "downloaded", version: info.version });
     if (!mainWindow || mainWindow.isDestroyed()) return;
     dialog
       .showMessageBox(mainWindow, {
@@ -344,8 +366,29 @@ function setupAutoUpdater() {
       });
   });
   autoUpdater.on("error", (err) => {
-    log("Auto-update error: " + (err && err.message ? err.message : String(err)));
+    const message = err && err.message ? err.message : String(err);
+    log("Auto-update error: " + message);
+    sendUpdateStatus({ type: "error", message });
   });
+
+  // Renderer-initiated update check (settings page "检查更新" button).
+  ipcMain.handle("mmh:check-for-updates", async () => {
+    try {
+      const result = await autoUpdater.checkForUpdates();
+      // checkForUpdates resolves to an UpdateCheckResult; if there is no
+      // update it throws, which the caller treats as "up to date".
+      return { ok: true, version: result && result.updateInfo && result.updateInfo.version };
+    } catch (error) {
+      const message = error && error.message ? error.message : String(error);
+      // "no update available" is the normal up-to-date path, not an error.
+      if (/no update|up to date|latest/i.test(message)) {
+        return { ok: true, upToDate: true };
+      }
+      return { ok: false, error: message };
+    }
+  });
+  ipcMain.handle("mmh:get-version", () => app.getVersion());
+
   // Delay the check so startup is never blocked by a slow update server.
   setTimeout(() => {
     autoUpdater.checkForUpdates().catch((err) => {
