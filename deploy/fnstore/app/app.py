@@ -386,6 +386,22 @@ def _is_synology_source_request():
     return host == 'synology.floatingice.win' or forwarded_host == 'synology.floatingice.win'
 
 
+def _synology_snapshot_urls():
+    """群晖套件中心的「截图」列表，从 DATA_DIR/previews/mmh 扫描本地图片。
+
+    不能用 raw.githubusercontent.com（国内访问超时/被墙，套件中心显示破图），
+    必须走本地 `/previews/mmh/<file>` 路由。没有截图时返回空列表（DSM 不显示
+    截图区块），而不是塞一个 logo 图当截图。
+    """
+    preview_dir = os.path.join(DATA_DIR, 'previews', 'mmh')
+    urls = []
+    if os.path.isdir(preview_dir):
+        for filename in sorted(os.listdir(preview_dir)):
+            if filename.upper().endswith(('.PNG', '.JPG', '.JPEG', '.GIF', '.WEBP')):
+                urls.append(f"{SYNOLOGY_SOURCE_BASE_URL}/previews/mmh/{filename}")
+    return urls
+
+
 def _synology_package_info():
     targets = {}
     downloads_dir = os.path.join(DATA_DIR, 'downloads')
@@ -436,8 +452,8 @@ def _synology_catalog():
             'cht': 'MMH 家庭財務工作台（MoneyMoneyHome）是本地優先的家庭記賬與全資產管理工具，程式與賬本資料全部保存在你自己的 NAS 上，不經過第三方雲端。覆蓋支出、收入、轉賬與往來款，支持多幣種、分類、標籤、機構、家庭成員管理；信用卡、貸款、基金、股票、存款、債券、理財、貴金屬、房產、保險等資產與負債可放進同一套賬長期維護。提供統計報表、餘額對賬、週期任務、賬單導入導出、AI 識別與助手、附件、撤銷恢復、手動/自動備份。支持 PC/手機瀏覽器、Windows 桌面端、Android App 與開放 API 多端訪問。',
             'enu': 'MMH (MoneyMoneyHome) is a local-first home bookkeeping and full asset-management workspace. The app and your ledger data stay on your own NAS, without a third-party cloud. It supports multiple ledgers and members, PC and mobile browsers, a Windows desktop app, an Android app, and an open API. Daily entries cover expenses, income, transfers, and settlements, with multi-currency, categories, tags, institutions, and family members. Assets and liabilities share one ledger: credit cards and installments; loans; funds and regular investing; stocks, dividends and holding P/L; deposits and bonds; wealth products and precious metals; property and insurance. Reports, balance reconciliation, scheduled entries, bill imports, AI recognition and assistant workflows, attachments, undo/restore, and manual/automatic backups are also available.',
         },
-        'icon_url': 'https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png',
-        'snapshot_urls': ['https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png'],
+        'icon_url': f"{SYNOLOGY_SOURCE_BASE_URL}/icons/mmh.PNG",
+        'snapshot_urls': _synology_snapshot_urls(),
         'maintainer': 'frankluise5220',
         'maintainer_url': 'https://github.com/frankluise5220/MMH',
         'distributor': 'MMH',
