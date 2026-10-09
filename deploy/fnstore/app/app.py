@@ -366,6 +366,18 @@ SYNOLOGY_SOURCE_BASE_URL = os.environ.get(
     'SYNOLOGY_SOURCE_BASE_URL', 'https://synology.floatingice.win'
 ).rstrip('/')
 
+# 群晖套件中心「新增功能」文案，按版本映射。内容与 package.json 的
+# mmhFnosManifestChangelog 保持一致（同一份版本说明）；发布新版本时把该版本
+# 的新功能摘要加进来，否则套件中心只显示 "MMH x.y.z" 几个字。
+SYNOLOGY_CHANGELOG = {
+    '0.1.71': (
+        '0.1.70 升级至 0.1.71：记账弹窗统一为整窗外壳（页签切换窗体不位移、'
+        '移动端表单控件 44px 触摸热区、必填红框收口）；贷款账户新增贷款类别主数据'
+        '与可编辑字段；开放 JSON-RPC Agent 端点（AccessKey 作用域门控）；债务模块'
+        '语义统一为负债命名；各发行通道各自烘焙路径前缀（Android 支持服务器子路径）。'
+    ),
+}
+
 
 def _is_synology_source_request():
     host = (request.host or '').split(':', 1)[0].lower()
@@ -484,7 +496,7 @@ def _synology_entry(catalog, arch, build, language):
         'distributor': catalog['distributor'],
         'distributor_url': catalog['distributor_url'],
         'support_url': catalog['support_url'],
-        'changelog': f"MMH {catalog['version']}",
+        'changelog': SYNOLOGY_CHANGELOG.get(catalog['version'], f"MMH {catalog['version']}"),
         'size': package_info['size'],
     }
 
