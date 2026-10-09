@@ -27,7 +27,7 @@
       "categories": [
         "生活服务"
       ],
-      "icon_url": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png?v=0.1.70",
+      "icon_url": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png?v=0.1.71",
       "readme_url": "https://raw.githubusercontent.com/frankluise5220/MMH/main/README.md",
       "bug_report_url": "https://github.com/frankluise5220/MMH/issues",
       "maintainer": "frankluise5220",
@@ -97,6 +97,23 @@
             }
           },
           "updated_at": "2026-10-04T21:35:36+08:00"
+        },
+        "0.1.71": {
+          "changelog": "0.1.70 升级至 0.1.71：记账弹窗统一为整窗外壳（页签切换窗体不位移、移动端表单控件 44px 触摸热区、必填红框收口）；贷款账户新增贷款类别主数据与可编辑字段；开放 JSON-RPC Agent 端点（AccessKey 作用域门控）；债务模块语义统一为负债命名；各发行通道各自烘焙路径前缀（Android 支持服务器子路径）。完整说明见 GitHub Release v0.1.71",
+          "os_min_version": "0.9.0",
+          "packages": {
+            "x86": {
+              "download_url": "http://fnapp.floatingice.win/apps/mmh-0.1.71.fpk",
+              "size": 56394505,
+              "sha256": "cf9411244b48d00fa8f86636011d541e4c56e8f522d97190007f72522bcc0166"
+            },
+            "arm": {
+              "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.71/mmh-fnos-v0.1.71-arm64.fpk",
+              "size": 56331837,
+              "sha256": "fdb7237520511bc4adf67f9bc90bb05e1d6abfe9d4ca74df29fa2a4fc0e5b1f5"
+            }
+          },
+          "updated_at": "2026-10-09T01:08:40+08:00"
         }
       },
       "preview_urls": [
