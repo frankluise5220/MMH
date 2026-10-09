@@ -419,7 +419,11 @@ def _synology_catalog():
         'min_dsm_build': 40000,
         'default_language': 'chs',
         'dname': {'chs': 'MMH Home Finance Workspace', 'cht': 'MMH Home Finance Workspace', 'enu': 'MMH Home Finance Workspace'},
-        'description': {'chs': 'MMH home finance and asset management package.', 'cht': 'MMH home finance and asset management package.', 'enu': 'MMH home finance and asset management package.'},
+        'description': {
+            'chs': 'MMH 家庭财务工作台（MoneyMoneyHome）是本地优先的家庭记账与全资产管理工具，程序与账本数据全部保存在你自己的 NAS 上，不经过第三方云端。覆盖支出、收入、转账与往来款，支持多币种、分类、标签、机构、家庭成员管理；信用卡、贷款、基金、股票、存款、债券、理财、贵金属、房产、保险等资产与负债可放进同一套账长期维护。提供统计报表、余额对账、周期任务、账单导入导出、AI 识别与助手、附件、撤销恢复、手动/自动备份。支持 PC/手机浏览器、Windows 桌面端、Android App 与开放 API 多端访问。',
+            'cht': 'MMH 家庭財務工作台（MoneyMoneyHome）是本地優先的家庭記賬與全資產管理工具，程式與賬本資料全部保存在你自己的 NAS 上，不經過第三方雲端。覆蓋支出、收入、轉賬與往來款，支持多幣種、分類、標籤、機構、家庭成員管理；信用卡、貸款、基金、股票、存款、債券、理財、貴金屬、房產、保險等資產與負債可放進同一套賬長期維護。提供統計報表、餘額對賬、週期任務、賬單導入導出、AI 識別與助手、附件、撤銷恢復、手動/自動備份。支持 PC/手機瀏覽器、Windows 桌面端、Android App 與開放 API 多端訪問。',
+            'enu': 'MMH (MoneyMoneyHome) is a local-first home bookkeeping and full asset-management workspace. The app and your ledger data stay on your own NAS, without a third-party cloud. It supports multiple ledgers and members, PC and mobile browsers, a Windows desktop app, an Android app, and an open API. Daily entries cover expenses, income, transfers, and settlements, with multi-currency, categories, tags, institutions, and family members. Assets and liabilities share one ledger: credit cards and installments; loans; funds and regular investing; stocks, dividends and holding P/L; deposits and bonds; wealth products and precious metals; property and insurance. Reports, balance reconciliation, scheduled entries, bill imports, AI recognition and assistant workflows, attachments, undo/restore, and manual/automatic backups are also available.',
+        },
         'icon_url': 'https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png',
         'snapshot_urls': ['https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png'],
         'maintainer': 'frankluise5220',
