@@ -704,7 +704,15 @@ export function AIPanel({
         : "";
       setMessages((m) => [...m, { role: "assistant", text: t("aiPanel.importedCount", { count: result.createdCount, extra: accountText }) }]);
       setImportConfirmDialog(null);
-      dispatchFinanceDataChanged({ reason: "ai-entry-import" });
+      // 服务端已在导入结束时重算这些账户的 Account.balance；带上 id 让顶栏/侧边栏
+      // 走 scoped 刷新（种子不完整时会自动回落到全量重算）。
+      const importedAccountIds = Array.isArray(result.accountIds)
+        ? result.accountIds.filter((id: unknown): id is string => typeof id === "string" && id.length > 0)
+        : [];
+      dispatchFinanceDataChanged({
+        reason: "ai-entry-import",
+        accountIds: importedAccountIds.length > 0 ? importedAccountIds : undefined,
+      });
     } catch (e: any) {
       setMessages((m) => [...m, { role: "assistant", text: t("aiPanel.importFailed", { message: e.message }) }]);
     } finally { setLoading(false); }

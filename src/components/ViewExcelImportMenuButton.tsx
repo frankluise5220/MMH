@@ -1366,18 +1366,23 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
     let skippedCount = 0;
     let importedRows = 0;
     try {
-      const requestBody = (batchItems: StatementImportPreviewItem[], withBalanceAdjustments: boolean) => JSON.stringify({
+      const requestBody = (batchItems: StatementImportPreviewItem[], isLastBatch: boolean) => JSON.stringify({
         items: batchItems,
         defaultAccountName: statementDefaultAccountName(props),
         autoCreateAccounts: false,
         createLiabilityAccounts: options?.createLiabilityAccounts === true,
         forceCreateOwnedMoneyAccounts: options?.forceCreateOwnedMoneyAccounts === true,
+        // 末批标记：服务端只在末批对全部受影响账户做一次余额重算
+        isLastBatch,
         // 余额校准行放最后一批：所有交易记录落库后再校准余额
-        ...(withBalanceAdjustments && balanceAdjustments.length > 0 ? { balanceAdjustments } : {}),
+        ...(isLastBatch && balanceAdjustments.length > 0 ? { balanceAdjustments } : {}),
       });
 
       // 与基金/股票导入一致：拆成 10 批顺序提交，单批事务小、避免 NAS 反代超时
       const IMPORT_BATCH_SIZE = Math.max(1, Math.ceil(items.length / 10));
+      // 服务端每批都回报「本次真正碰过的账户」（含转账对手账户、余额校准账户）。
+      // 这里取并集，导入结束后一次性用它触发刷新；只刷当前打开的那个账户会漏掉对手账户。
+      const refreshedAccountIds = new Set<string>();
       for (let start = 0; start < items.length; start += IMPORT_BATCH_SIZE) {
         const batchItems = items.slice(start, start + IMPORT_BATCH_SIZE);
         const isLastBatch = start + IMPORT_BATCH_SIZE >= items.length;
@@ -1387,12 +1392,15 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
           headers: { "Content-Type": "application/json" },
           body: requestBody(batchItems, isLastBatch),
         });
-        const data = await res.json().catch(() => null) as { ok?: boolean; error?: string; createdCount?: number; skippedCount?: number; errors?: Array<{ error?: string }> } | null;
+        const data = await res.json().catch(() => null) as { ok?: boolean; error?: string; createdCount?: number; skippedCount?: number; accountIds?: string[]; errors?: Array<{ error?: string }> } | null;
         if (!res.ok || !data?.ok) {
           throw new Error(data?.error || data?.errors?.[0]?.error || t("creditBill.importFailed"));
         }
         createdCount += data.createdCount ?? 0;
         skippedCount += data.skippedCount ?? 0;
+        for (const accountId of data.accountIds ?? []) {
+          if (typeof accountId === "string" && accountId) refreshedAccountIds.add(accountId);
+        }
         importedRows += batchItems.length;
         setImportProgress({ imported: importedRows, total: items.length });
       }
@@ -1400,7 +1408,10 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
       setBalanceAdjustments([]);
       setPreviewOpen(false);
       setPreviewItems([]);
-      dispatchFinanceDataChanged({ reason: "statement-excel-import", accountIds: [props.accountId] });
+      dispatchFinanceDataChanged({
+        reason: "statement-excel-import",
+        accountIds: refreshedAccountIds.size > 0 ? Array.from(refreshedAccountIds) : [props.accountId],
+      });
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       if (importedRows > 0 && items.length > importedRows) {

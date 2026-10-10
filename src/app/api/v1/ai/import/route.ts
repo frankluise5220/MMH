@@ -5,6 +5,7 @@ import { FundCashFlowKind, FundSubtype } from "@prisma/client";
 import { toNumber, toStatementMonth } from "@/lib/date-utils";
 import { getLatestFundNav } from "@/lib/fund/navCache";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
+import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { createFundTransactionWithCashFlows } from "@/lib/fund/transactions";
 import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
@@ -512,6 +513,10 @@ export async function POST(req: NextRequest) {
   let createdCount = 0;
   const errors: Array<{ index: number; rawText: string; error: string }> = [];
   const createdAccounts: Array<{ id: string; name: string; kind: string; institutionName?: string | null }> = [];
+  // 本次真正写入了记录的账户。导入只写 TxRecord，而顶部/侧边栏的「上余额」读的是
+  // Account.balance 存储列，所以结束时必须对它们做一次重算，否则余额要等
+  // system-task 每 10 分钟补算 1 个账户才慢慢追上。
+  const touchedAccountIds = new Set<string>();
   const defaultAcc = (defaultAccountName ?? "").trim();
   const defaultContextAccount = (() => {
     const account = findAccount(defaultAcc);
@@ -808,6 +813,7 @@ export async function POST(req: NextRequest) {
           if (duplicate) return;
           await tx.txRecord.create({ data: entryData as any });
           didCreate = true;
+          touchedAccountIds.add(account.id);
         });
       }
       if (didCreate) createdCount++;
@@ -821,6 +827,10 @@ export async function POST(req: NextRequest) {
     if (fundContext?.accountId) {
       await recalcFundPositions(fundContext.accountId).catch(logger.catchLog("操作失败", "route.ts"));
     }
+    // 余额重算：与账单/基金导入保持同一口径，导入结束即刷新 Account.balance
+    for (const accountId of touchedAccountIds) {
+      await recalcAndSaveAccountBalance(accountId).catch(logger.catchLog("余额重算失败", "ai/import"));
+    }
     // Client-side handles page refresh
   }
 
@@ -829,6 +839,7 @@ export async function POST(req: NextRequest) {
     createdCount,
     skippedCount: errors.length,
     createdAccounts,
+    accountIds: Array.from(touchedAccountIds),
     errors: errors.length > 0 ? errors : undefined,
   });
 }

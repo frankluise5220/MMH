@@ -948,7 +948,13 @@ export function EmailSettingsPanel({ embedded = false, onStatementPreviewOpened,
         });
         setImportPreview(null);
         setParsedItems([]);
-        dispatchFinanceDataChanged({ reason: "email-bill-import", accountIds: refreshAccountIds.length > 0 ? refreshAccountIds : undefined });
+        // 服务端在导入结束时对全部受影响账户做了余额重算，并把账户清单回传；
+        // 与本地推算的清单取并集，避免漏掉对手账户导致上/左余额不刷新。
+        const serverAccountIds = Array.isArray(data.accountIds)
+          ? data.accountIds.filter((id: unknown): id is string => typeof id === "string" && id.length > 0)
+          : [];
+        const refreshIds = Array.from(new Set([...refreshAccountIds, ...serverAccountIds]));
+        dispatchFinanceDataChanged({ reason: "email-bill-import", accountIds: refreshIds.length > 0 ? refreshIds : undefined });
       }
       else {
         postImportDebugLog(traceId, "email_import_failed", {

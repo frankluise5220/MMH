@@ -1559,6 +1559,7 @@ export async function POST(req: Request) {
     forceCreateOwnedMoneyAccounts?: unknown;
     mailSource?: unknown;
     balanceAdjustments?: unknown;
+    isLastBatch?: unknown;
   };
 
   const parse = z
@@ -1570,6 +1571,10 @@ export async function POST(req: Request) {
       forceCreateOwnedMoneyAccounts: z.boolean().optional().default(false),
       mailSource: MailSourceSchema.optional(),
       manualRecordConflictPolicy: z.enum(["overwrite", "keep"]).optional(),
+      // 客户端把导入拆成 10 批顺序提交（见 ViewExcelImportMenuButton）。余额重算只在
+      // 末批做一次 —— 每批都算会把同一批账户的流水重复扫 10 遍。缺省为 true：单次
+      // 调用方（邮件导入、脚本）不传这个字段，也必须重算。
+      isLastBatch: z.boolean().optional().default(true),
       balanceAdjustments: z
         .array(
           z.object({
@@ -1746,17 +1751,32 @@ export async function POST(req: Request) {
         appliedBalanceAdjustments.push({ accountId: targetAccount.id, date: adjustDate.toISOString().slice(0, 10), balance, entryId: anchor.id });
         touchedAccountIds.add(targetAccount.id);
       }
-      if (appliedBalanceAdjustments.length > 0) {
-        await recalcAndSaveAccountBalance(targetAccount.id).catch((error) => {
-          console.error("Failed to recalculate balance after statement import adjustments:", error);
-        });
-      }
+      // 校准账户已并入 touchedAccountIds，由下方「末批统一重算」兜底，这里不再单独算
+      // （避免同一账户重算两遍）。
     }
   }
 
   const lockedStatementBills = statementBillLocks.length > 0
     ? await lockImportedStatementBills(prisma, statementBillLocks)
     : [];
+
+  // 导入结束后对全部受影响账户做一次余额重算。
+  //
+  // 为什么必须做：顶部/侧边栏的「上余额」读的是 Account.balance 存储列
+  // （getMaintainedAccountBalances 只回读，不现算），而导入只写 TxRecord。
+  // 不重算的话，余额要等 system-task 每 10 分钟补算 1 个账户才慢慢追上 ——
+  // 用户看到的就是「导入完了余额还是旧的」。明细页行内的「左余额」由明细接口
+  // 现算（截断在余额锚点），不需要重算，但需要客户端重新取数。
+  let recalculatedAccountCount = 0;
+  if (parse.data.isLastBatch && touchedAccountIds.size > 0) {
+    for (const accountId of touchedAccountIds) {
+      const saved = await recalcAndSaveAccountBalance(accountId).catch((error) => {
+        console.error("Failed to recalculate balance after statement import:", error);
+        return false;
+      });
+      if (saved) recalculatedAccountCount += 1;
+    }
+  }
 
   await refreshCreditCardCycleCachesForAccountIds({
     householdId,
@@ -1779,6 +1799,10 @@ export async function POST(req: Request) {
     ids: created.map((t) => t.id),
     importBatchId,
     deletedManualRecordCount,
+    // 本次导入真正碰过的账户（含转账对手账户、余额校准账户）。客户端必须拿它去
+    // 触发刷新 —— 只刷「当前打开的那个账户」会漏掉对手账户的余额。
+    accountIds: Array.from(touchedAccountIds),
+    recalculatedAccountCount,
     lockedStatementBills: lockedStatementBills.map((lock) => ({
       accountId: lock.storageAccountId,
       billAccountIds: lock.billAccountIds,
