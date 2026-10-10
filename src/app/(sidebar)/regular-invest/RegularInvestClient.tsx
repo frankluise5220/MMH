@@ -27,6 +27,8 @@ import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { clearBackgroundTaskProgress, dispatchBackgroundTaskProgress } from "@/lib/client/background-tasks";
 import { useI18n } from "@/lib/i18n";
 import { recordMatchesRegularInvestPlan } from "@/lib/transaction-semantics";
+import { publishExecutionReceipt } from "@/lib/client/notification-receipts";
+import { summarizeAutoExecute, type AutoExecuteSummary } from "@/lib/notifications";
 
 type CategoryOption = {
   id: string;
@@ -1010,6 +1012,17 @@ export function RegularInvestClient({
       let ok = 0;
       let fail = 0;
       const messages: string[] = [];
+      // 真实落账计数。`ok++` 只代表 HTTP 成功，**不代表执行了**：
+      // batch-execute 在"到期记录已存在"时同样返回 ok:true + executedCount:0，
+      // 所以回执只能累加 executedCount，否则又会退化成"提示成功但界面毫无变化"。
+      const receiptTotals: AutoExecuteSummary = {
+        rounds: 0,
+        executed: 0,
+        completed: 0,
+        skippedPaused: 0,
+        skippedGap: 0,
+        skippedTotal: 0,
+      };
       for (let index = 0; index < activePlans.length; index += 1) {
         const plan = activePlans[index];
         setRunningExecution({ mode: "all", planId: plan.id });
@@ -1029,6 +1042,15 @@ export function RegularInvestClient({
           const data = await readJsonSafe(res);
           if (res.ok && data?.ok) {
             ok++;
+            const summary = summarizeAutoExecute(data);
+            if (summary) {
+              receiptTotals.rounds += summary.rounds;
+              receiptTotals.executed += summary.executed;
+              receiptTotals.completed += summary.completed;
+              receiptTotals.skippedPaused += summary.skippedPaused;
+              receiptTotals.skippedGap += summary.skippedGap;
+              receiptTotals.skippedTotal += summary.skippedTotal;
+            }
             updatePlanFromExecutionResult(plan.id, data);
             messages.push(t("regularInvest.client.execute.message", { name: getPlanDisplayName(plan), message: data.message || t("regularInvest.client.execute.done") }));
           } else {
@@ -1048,6 +1070,7 @@ export function RegularInvestClient({
           messages: messages.slice(-6),
         } : prev);
       }
+      publishExecutionReceipt({ source: "manual", summary: receiptTotals });
       await refreshAfterScheduledExecution(activePlans);
       setExecutionProgress((prev) => prev ? {
         ...prev,

@@ -3,6 +3,8 @@
 import { useEffect, useRef } from "react";
 import { usePathname } from "next/navigation";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { publishExecutionReceipt } from "@/lib/client/notification-receipts";
+import { summarizeAutoExecute } from "@/lib/notifications";
 
 let startupCheckStarted = false;
 let startupCheckCompleted = false;
@@ -64,6 +66,10 @@ export function DailyTaskCheck() {
         });
         const planData = await planRes.json().catch(() => null);
         assertOkResponse(planRes, planData, "scheduled task auto-execution");
+        // 无论生成几条都要留回执 —— 尤其是 executedCount = 0 的情况：那正是
+        // "任务到底执行了没有"最容易变成悬案的地方，必须让用户看到"这次执行生成 0 条"。
+        const executionSummary = summarizeAutoExecute(planData);
+        if (executionSummary) publishExecutionReceipt({ source: "startup", summary: executionSummary });
 
         const pendingRes = await fetch("/api/v1/fund/refresh-pending", {
           method: "POST",
