@@ -714,6 +714,23 @@ function normalizeTableHeaderCell(value: string) {
   return value.replace(/\s+/g, "").replace(/[：:]/g, "").trim();
 }
 
+/**
+ * 交行账单里同一张 6 列交易表会出现两种分区标题：有消费时是「消费、取现、其他费用明细」；
+ * 而当本期**只还款、没有新消费**时，消费段**整个不会被渲染**（页面上只剩一行
+ * `<!--隐藏设置:消费取现及其他费用明细-->` 模板开关键名注释，且那行注释**有无数据都存在**，
+ * 不能拿它判断该段有没有渲染），交行只渲染「还款、退货、费用返还明细」。
+ * 两种标题都代表交易区，必须都能进入，否则纯还款账单会一条都解析不出来。
+ */
+const BOCOM_TRANSACTION_SECTION_TITLE_RE =
+  /消费[、，,]?取现[、，,]?其他费用明细|还款[、，,]?退货[、，,]?费用返还明细/i;
+
+/**
+ * 交行把表头写成「交易<br>日期 Transaction<br>Date」这种跨标签形式，`stripHtml` 会把标签
+ * 换成空格，所以整行文本是「交易 日期 Transaction Date」。旧写法
+ * `/交易日期|TransactionDate/` 中间没有 `\s*`，永远匹配不上，必须容忍空白。
+ */
+const BOCOM_TRANSACTION_HEADER_TEXT_RE = /交易\s*日期|Transaction\s*Date/i;
+
 function findBocomTransactionHeaderIndexes(cells: string[]): BocomTransactionHeaderIndexes | null {
   const headers = cells.map(normalizeTableHeaderCell);
   const find = (pattern: RegExp) => headers.findIndex((header) => pattern.test(header));
@@ -803,14 +820,14 @@ function parseBankOfCommunicationsCreditCardStatement(text: string): ParsedItem[
     const compactRowText = rowText.replace(/\s+/g, "");
     const cells = extractTableCells(row).map((cell) => cell.trim()).filter(Boolean);
 
-    if (/消费[、，,]?取现[、，,]?其他费用明细/i.test(compactRowText)) {
+    if (BOCOM_TRANSACTION_SECTION_TITLE_RE.test(compactRowText)) {
       inTransactionSection = true;
       headerIndexes = null;
       continue;
     }
 
     const detectedHeader = findBocomTransactionHeaderIndexes(cells);
-    if (detectedHeader && (inTransactionSection || /交易日期|TransactionDate/i.test(rowText))) {
+    if (detectedHeader && (inTransactionSection || BOCOM_TRANSACTION_HEADER_TEXT_RE.test(rowText))) {
       inTransactionSection = true;
       headerIndexes = detectedHeader;
       continue;
@@ -2311,7 +2328,7 @@ function inferCreditCardHtmlSignedAmountInflowSign(text: string) {
 
   for (const row of text.match(/<tr\b[\s\S]*?<\/tr>/gi) ?? []) {
     const rowText = stripHtml(row);
-    if (/(交易日期|交易日|Trans Date)/i.test(rowText) && /(交易摘要|交易说明|交易描述|摘要|Trans Description|金额|Amount)/i.test(rowText)) {
+    if (CREDIT_CARD_HTML_ROW_DATE_HEADER_RE.test(rowText) && CREDIT_CARD_HTML_ROW_DESC_HEADER_RE.test(rowText)) {
       inTransactionRows = true;
       continue;
     }
@@ -2339,6 +2356,38 @@ function inferCreditCardHtmlSignedAmountInflowSign(text: string) {
   }
 
   return inferSignedAmountInflowSign(samples);
+}
+
+/**
+ * 行级检测：这一行是不是信用卡账单的交易表头。`parseCreditCardHtmlStatement` 与
+ * `inferCreditCardHtmlSignedAmountInflowSign` 靠它进入交易区，这里抽成常量是为了让
+ * `parseStructuredStatement` 的兜底闸门用同一判据（见下方 `hasCreditCardHtmlTransactionHeader`）。
+ */
+const CREDIT_CARD_HTML_ROW_DATE_HEADER_RE = /(交易日期|交易日|Trans Date)/i;
+const CREDIT_CARD_HTML_ROW_DESC_HEADER_RE = /(交易摘要|交易说明|交易描述|摘要|Trans Description|金额|Amount)/i;
+
+/**
+ * HTML 里是否存在「信用卡交易表头」行。
+ *
+ * 为什么需要它：`parseStructuredStatement` 里有一道兜底闸门——
+ * 「是 HTML 且认不出通用表头 → 直接 return []」。但通用表头
+ * （`findGenericCreditCardHtmlHeaderIndexes`）走的是**整格精确匹配**，而很多银行把中英文
+ * 塞进同一个单元格（平安：`交易日期<br>Trans Date` → `stripHtml` 后归一化是
+ * "交易日期transdate"，永远不等于别名 "交易日期"）→ 通用表头认不出来 → 提前 `return []`
+ * → **本来 `parseCreditCardHtmlStatement` 能完整解析的账单被整封丢掉**（平安实测：能解析
+ * 出全部 5 笔，却因为这道闸门返回 0 条）。
+ * 用行级判据补一次识别，只放宽、不收紧：原本能走到 `parseCreditCardHtmlStatement` 的账单
+ * 行为完全不变（它们的通用表头本来就认得出来）。
+ */
+function hasCreditCardHtmlTransactionHeader(text: string) {
+  if (!/<tr[\s>]/i.test(text)) return false;
+  for (const row of text.match(/<tr\b[\s\S]*?<\/tr>/gi) ?? []) {
+    const rowText = stripHtml(row);
+    if (CREDIT_CARD_HTML_ROW_DATE_HEADER_RE.test(rowText) && CREDIT_CARD_HTML_ROW_DESC_HEADER_RE.test(rowText)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function parseCreditCardHtmlStatement(text: string): ParsedItem[] {
@@ -2370,7 +2419,7 @@ function parseCreditCardHtmlStatement(text: string): ParsedItem[] {
 
   for (const row of text.match(/<tr\b[\s\S]*?<\/tr>/gi) ?? []) {
     const rowText = stripHtml(row);
-    if (/(交易日期|交易日|Trans Date)/i.test(rowText) && /(交易摘要|交易说明|交易描述|摘要|Trans Description|金额|Amount)/i.test(rowText)) {
+    if (CREDIT_CARD_HTML_ROW_DATE_HEADER_RE.test(rowText) && CREDIT_CARD_HTML_ROW_DESC_HEADER_RE.test(rowText)) {
       inTransactionRows = true;
       continue;
     }
@@ -2648,7 +2697,12 @@ function parseStructuredStatement(text: string): ParsedItem[] {
   if (genericHtmlItems.length > 0) return genericHtmlItems;
   if (hasSpdbCreditCardTransactionHeader(text)) return [];
 
-  if (/<[^>]+>/.test(text) && !findGenericCreditCardHtmlHeader(text) && !hasSpdbCreditCardTransactionHeader(text)) {
+  if (
+    /<[^>]+>/.test(text) &&
+    !findGenericCreditCardHtmlHeader(text) &&
+    !hasSpdbCreditCardTransactionHeader(text) &&
+    !hasCreditCardHtmlTransactionHeader(text)
+  ) {
     return [];
   }
 
