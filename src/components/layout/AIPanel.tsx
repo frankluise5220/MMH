@@ -1383,6 +1383,7 @@ export function AIPanel({
                     <label className="block text-[10px] font-bold text-foreground/30 mb-1">{t("settings.ai.client.channelName")}</label>
                     <input
                       className="w-full h-10 rounded-xl bg-background/50 border border-foreground/10 px-4 text-sm outline-none focus:border-accent-green/30 text-foreground"
+                      name="mmh-ai-channel-name" autoComplete="off"
                       value={editModelOverlay.channelName}
                       onChange={(e) => setEditModelOverlay(o => o ? { ...o, channelName: e.target.value } : null)}
                     />
@@ -1401,6 +1402,7 @@ export function AIPanel({
                     <label className="block text-[10px] font-bold text-foreground/30 mb-1">Base URL</label>
                     <input
                       className="w-full h-10 rounded-xl bg-background/50 border border-foreground/10 px-4 text-sm outline-none focus:border-accent-green/30 text-foreground"
+                      name="mmh-ai-base-url" autoComplete="off"
                       value={editModelOverlay.baseUrl}
                       onChange={(e) => setEditModelOverlay(o => o ? { ...o, baseUrl: e.target.value } : null)}
                     />
@@ -1409,6 +1411,7 @@ export function AIPanel({
                     <label className="block text-[10px] font-bold text-foreground/30 mb-1">API Key</label>
                     <input
                       type="password"
+                      name="mmh-ai-api-key" autoComplete="new-password"
                       className="w-full h-10 rounded-xl bg-background/50 border border-foreground/10 px-4 text-sm outline-none focus:border-accent-green/30 text-foreground"
                       value={editModelOverlay.apiKey}
                       onChange={(e) => setEditModelOverlay(o => o ? { ...o, apiKey: e.target.value } : null)}
@@ -1547,6 +1550,7 @@ export function AIPanel({
                   <input
                     className="w-full h-9 rounded-xl bg-background/50 border border-foreground/10 px-3 text-sm outline-none focus:border-accent-green/30 text-foreground"
                     placeholder={t("aiPanel.channelNamePlaceholder")}
+                    name="mmh-ai-channel-name" autoComplete="off"
                     value={addChannelForm.name}
                     onChange={(e) => setAddChannelForm(f => ({ ...f, name: e.target.value }))}
                   />
@@ -1572,6 +1576,7 @@ export function AIPanel({
                   <input
                     className="w-full h-9 rounded-xl bg-background/50 border border-foreground/10 px-3 text-sm outline-none focus:border-accent-green/30 text-foreground"
                     placeholder="https://api.deepseek.com/v1"
+                    name="mmh-ai-base-url" autoComplete="off"
                     value={addChannelForm.baseUrl}
                     onChange={(e) => { setAddChannelForm(f => ({ ...f, baseUrl: e.target.value })); setModelFetched(false); setRemoteModels([]); }}
                   />
@@ -1580,6 +1585,7 @@ export function AIPanel({
                   <label className="block text-[10px] font-bold text-foreground/30 mb-1">API Key {addChannelForm.channelType === "ollama" ? t("aiPanel.optionalSuffix") : ""}</label>
                   <input
                     type="password"
+                    name="mmh-ai-api-key" autoComplete="new-password"
                     className="w-full h-9 rounded-xl bg-background/50 border border-foreground/10 px-3 text-sm outline-none focus:border-accent-green/30 text-foreground"
                     placeholder={addChannelForm.channelType === "ollama" ? t("aiPanel.localNoKey") : "sk-..."}
                     value={addChannelForm.apiKey}

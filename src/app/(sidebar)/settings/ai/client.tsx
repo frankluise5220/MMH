@@ -138,6 +138,8 @@ function UrlInputGroup({
         </select>
         <span className="text-slate-300 text-sm font-mono">://</span>
         <input
+          name="mmh-ai-base-url-host"
+          autoComplete="off"
           value={value.host}
           onChange={e => onChange({ ...value, host: e.target.value })}
           placeholder={t("settings.ai.client.hostPlaceholder")}
@@ -145,6 +147,8 @@ function UrlInputGroup({
         />
         <span className="text-slate-300 text-sm font-mono">:</span>
         <input
+          name="mmh-ai-base-url-port"
+          autoComplete="off"
           value={value.port}
           onChange={e => onChange({ ...value, port: e.target.value })}
           type="number"
@@ -160,6 +164,8 @@ function UrlInputGroup({
       </div>
       <div>
         <input
+          name="mmh-ai-base-url-path"
+          autoComplete="off"
           value={value.path}
           onChange={e => onChange({ ...value, path: e.target.value })}
           placeholder={t("settings.ai.client.pathPlaceholder")}
@@ -238,7 +244,8 @@ function ModelModal({
             <>
               <div>
                 <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.ai.client.channelName")}</label>
-                <input className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                <input name="mmh-ai-channel-name" autoComplete="off"
+                  className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
                   placeholder={t("settings.ai.client.channelNamePlaceholder")} value={channelName} onChange={e => setChannelName(e.target.value)} />
               </div>
               <div>
@@ -256,7 +263,8 @@ function ModelModal({
               </div>
               <div>
                 <label className="block text-xs font-medium text-slate-600 mb-1.5">{t("settings.ai.client.apiKey")}</label>
-                <input className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                <input name="mmh-ai-api-key" autoComplete="new-password"
+                  className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
                   type="password" placeholder="sk-..." value={apiKey} onChange={e => setApiKey(e.target.value)} />
                 {channelType === "ollama" && <p className="text-[11px] text-slate-400 mt-1">{t("settings.ai.client.ollamaNoKey")}</p>}
               </div>
