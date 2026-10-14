@@ -190,7 +190,7 @@ export function isIncomeExpensePostingAccount(account: AccountKindLike | null | 
 /**
  * 存款账户参与收支记账时的分类白名单（2026-09-18 用户口径）：
  * 收入侧只能「存款利息」（利息收入）；支出侧「存款手续费」「利息支出」。
- * 转账不受此限制——资金侧来回转账走 isOrdinaryTransferAccount 已放行。
+ * 转账不受此限制——资金侧来回转账走 isTransferDropdownAccount 已放行。
  */
 export const DEPOSIT_POSTING_INCOME_CATEGORY_NAMES = ["存款利息", "利息"];
 export const DEPOSIT_POSTING_EXPENSE_CATEGORY_NAMES = ["存款手续费", "利息支出", "手续费"];
@@ -227,12 +227,18 @@ export function isAdvanceFundingAccount(account: AccountKindLike | null | undefi
   return !isLoanOrSettlementAccountKind(account?.kind);
 }
 
-/** 普通转账下拉：贷款走专用窗口，基金持仓也不进转账。存款/往来款仍可出现并跳到对应专用窗。 */
-export function isOrdinaryTransferAccount(account: AccountKindLike | null | undefined) {
+/**
+ * 转账账户候选（下拉 / 转账表单，2026-10-13 用户口径「允许资金账户向贷款账户输出资金」）：
+ * **只排除纯投资账户**（基金/股票/理财/债券/固定资产）—— 它们有自己的视图与录入窗口，
+ * 而且服务端对含纯投资账户的普通转账仍然拒绝。
+ *
+ * **贷款账户放行**：用户要在转账里「转入贷款账户 = 还款」。两侧都是贷款（或贷款↔往来款）时
+ * 服务端仍拒（`transaction-actions.ts` / `transactions/detail` 的 `settlementTransferNotAllowed`），
+ * 前端 `TransactionFormModal` 也会先拦。桌面与移动端共用本谓词 —— 服务端既已允许，两端不该漂移。
+ */
+export function isTransferDropdownAccount(account: AccountKindLike | null | undefined) {
   if (!account) return false;
-  if (account.kind === "loan") return false;
-  if (isPureInvestmentAccount(account)) return false;
-  return true;
+  return !isPureInvestmentAccount(account);
 }
 
 export function isBillLikeAccount(account: Pick<AccountKindLike, "kind"> & { billingDay?: number | null }) {

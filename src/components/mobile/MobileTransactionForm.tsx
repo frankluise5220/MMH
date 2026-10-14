@@ -1,9 +1,10 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeftRight, X } from "lucide-react";
 import { buildGroupedAccountOptions, buildAccountDisplayOption, type AccountDisplaySource } from "@/lib/account-display";
-import { isDepositAccount, isDepositPostingCategoryAllowed, isIncomeExpensePostingOrDepositAccount, isOrdinaryTransferAccount } from "@/lib/account-kind-utils";
+import { isDepositAccount, isDepositPostingCategoryAllowed, isIncomeExpensePostingOrDepositAccount, isTransferDropdownAccount } from "@/lib/account-kind-utils";
 import { SmartSelect } from "@/components/SmartSelect";
 import { ClearableNoteField } from "@/components/ClearableNoteField";
 import { DateStepper } from "@/components/DateStepper";
@@ -59,7 +60,7 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
   const accountOptions = useMemo(
     () => {
       const source = draft.type === "transfer"
-        ? accounts.filter((account) => isOrdinaryTransferAccount(account))
+        ? accounts.filter((account) => isTransferDropdownAccount(account))
         // Deposit accounts are also valid posting accounts (2026-09-18);
         // category submission validates against the allowlist.
         : accounts.filter((account) => isIncomeExpensePostingOrDepositAccount(account));
@@ -244,7 +245,7 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-[1000] flex items-end overflow-hidden bg-slate-950/30" role="dialog" aria-modal="true" aria-label={draft.id ? t("mobileTxForm.editTitle") : t("mobileTxForm.newTitle")}>
+    <ModalLayer className="fixed inset-0 flex items-end overflow-hidden bg-slate-950/30" role="dialog" aria-modal="true" aria-label={draft.id ? t("mobileTxForm.editTitle") : t("mobileTxForm.newTitle")}>
       <div className="flex h-[min(86dvh,42rem)] max-h-[calc(100dvh-max(0.75rem,env(safe-area-inset-top)))] w-full flex-col overflow-hidden rounded-t-2xl bg-white shadow-2xl">
         <div className="shrink-0 px-4 pt-3">
         <div className="mx-auto mb-3 h-1 w-10 rounded bg-slate-200" />
@@ -357,7 +358,7 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
         </button>
         </div>
       </div>
-    </div>
+    </ModalLayer>
   );
 }
 

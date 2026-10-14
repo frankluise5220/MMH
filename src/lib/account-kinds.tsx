@@ -69,6 +69,33 @@ export function investProductTypeLabel(p: string | null, t?: I18nT): string {
   return INVEST_PRODUCT_TYPE_LABEL_FALLBACK[p ?? ""] ?? t?.("account.kind.investment") ?? "投资";
 }
 
+export type AccountFilterGroupSource = {
+  kind?: string | null;
+  investProductType?: string | null;
+};
+
+const INVEST_PRODUCT_TYPE_GROUP_PREFIX = "__ipt__";
+
+/**
+ * Grouping key for account filter pickers (statistics/report account menu and
+ * the scheduled-task account filter). Investment accounts group by product
+ * category (fund/wealth/stock/property/...), everything else by account kind.
+ * Shared so every picker shows the same group headers.
+ */
+export function accountFilterGroupKey(account: AccountFilterGroupSource): string {
+  if (account.kind === "investment" && account.investProductType) {
+    return `${INVEST_PRODUCT_TYPE_GROUP_PREFIX}${account.investProductType}`;
+  }
+  return account.kind ?? "other";
+}
+
+export function accountFilterGroupLabel(type: string, t?: I18nT): string {
+  if (type.startsWith(INVEST_PRODUCT_TYPE_GROUP_PREFIX)) {
+    return investProductTypeLabel(type.slice(INVEST_PRODUCT_TYPE_GROUP_PREFIX.length), t);
+  }
+  return kindLabel(type, t);
+}
+
 export function kindColor(k: string): string {
   if (k === "bank_credit") return "bg-amber-50 text-amber-700 border-amber-200";
   if (k === "bank_debit") return "bg-slate-50 text-slate-700 border-slate-200";
