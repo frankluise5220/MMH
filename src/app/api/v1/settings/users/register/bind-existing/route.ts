@@ -88,12 +88,21 @@ export async function POST(req: NextRequest) {
   }
 
   const requestedEmail = username.trim().toLowerCase();
+  const recordedAddress = (target.registrationEmail ?? "").trim().toLowerCase();
   // Re-verifying repairs ONE account, it does not move the user onto another
   // one. Switching a bound user to a different MMH account is a deliberate
   // unbind-then-bind: silently re-pointing an existing identity here would make
   // "re-bind" a way to swap whose account it is, from a dialog that reads like
   // a confirmation.
-  if (target.registrationPrincipalId && requestedEmail !== (target.registrationEmail ?? "").trim().toLowerCase()) {
+  //
+  // A binding with no recorded address is exempt, and must be: it cannot answer
+  // for ANY address, so every request would count as a "change" and the binding
+  // could never be repaired. This path is the repair — the membership password
+  // proves ownership and the service returns the account's CURRENT principal id,
+  // which is exactly what gets written, so the row is re-aligned rather than
+  // re-pointed. Blocking it here would make the "no address recorded" guidance
+  // (which sends the user to re-verify) a dead end.
+  if (target.registrationPrincipalId && recordedAddress && requestedEmail !== recordedAddress) {
     return NextResponse.json(
       {
         ok: false,

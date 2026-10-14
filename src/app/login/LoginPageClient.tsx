@@ -410,6 +410,28 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
     return { ...match, email: null, hasPassword: false, role: "user", isSystem: false };
   }
 
+  /**
+   * The account a new ledger's administrator is about to be created for, named
+   * the way the credential actually works.
+   *
+   * MMH entries must be named by `registrationEmail` — the membership address —
+   * never by `email`. Both fields exist on the same row, and reading `email`
+   * showed the local contact address of the account while the picker right above
+   * it showed the MMH one, so the same person appeared as two different accounts
+   * in one dialog.
+   */
+  function existingCreateAdminAccountLabel(): string {
+    if (createAuthMode === "mmh") {
+      const selected = mmhUserChoices.find((user) => user.id === createExistingUserId) ?? mmhUserChoices[0];
+      return (selected ? mmhAddress(selected) : "") || loginCredentials.mmh.username;
+    }
+    if (createAuthMode === "fnos") {
+      return gatewayFnosName(fnosGatewayUser) ?? "";
+    }
+    const selected = selectedHouseholdUsers.find((user) => user.id === createExistingUserId) ?? selectedHouseholdUsers[0];
+    return selected?.name ?? loginCredentials.local.username;
+  }
+
   function getCurrentMmhEmail() {
     if (mmhUserChoices.length > 0) {
       const selected = mmhUserChoices.find((user) => user.id === loginCredentials.mmh.userId) ?? mmhUserChoices[0];
@@ -665,9 +687,14 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   // Leaving the MMH card resets it to the default "sign in with an existing MMH
   // identity" shape, so switching local → MMH → local → MMH does not reopen on
   // the signup form the user abandoned.
+  //
+  // Switching the ledger-creation entry does too: the signup shape only exists on
+  // the entries that open a ledger, so arriving at "already have an account" while
+  // the signup form is open would leave a form behind that must not be reachable
+  // from there (and whose submit would be refused).
   useEffect(() => {
-    if (createAuthMode !== "mmh") setCreateMmhMode("login");
-  }, [createAuthMode]);
+    if (createAuthMode !== "mmh" || createMethod === "existing") setCreateMmhMode("login");
+  }, [createAuthMode, createMethod]);
 
   async function verifyLogin(params: { userId?: string; username?: string; password: string; householdId?: string; authMode?: "local" | "mmh" }) {
     const res = await fetch("/api/v1/auth/verify", {
@@ -833,6 +860,46 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
     }
   }
 
+  /**
+   * The single submit entry point behind the fixed "create and enter" button.
+   *
+   * Every other shape of the creation card is submitted by `handleCreateLedger`.
+   * The one exception is the MMH signup shape: it is a two-step flow of its own
+   * (send a code, then confirm it) whose confirmation used to be an extra button
+   * rendered inside the card. That button is gone, so the fixed button drives the
+   * confirmation step instead of leaving the screen with two competing submits.
+   */
+  function submitCreateLedger() {
+    if (createMethod === "invite" && createAuthMode === "mmh" && createMmhMode === "register") {
+      void handleRegisterConfirm(true);
+      return;
+    }
+    void handleCreateLedger();
+  }
+
+  /**
+   * Leaves ledger creation for the sign-in card, clearing every piece of the
+   * creation form on the way out — including the MMH signup panel, which holds
+   * its own code/password state and would otherwise reopen half-filled the next
+   * time this card is shown.
+   */
+  function backToLoginFromCreate() {
+    setError("");
+    setResetError("");
+    setResetInfo("");
+    setShowReset(false);
+    resetCreateLedgerForm();
+    setRegisterInviteMode(false);
+    setRegisterEmail("");
+    setRegisterCode("");
+    setRegisterCodeSent(false);
+    setRegisterPassword("");
+    setRegisterMmhPassword("");
+    setRegisterInfo("");
+    setRegisterError("");
+    setMode("login");
+  }
+
   async function handleCreateLedger() {
     const trimmedInviteCode = createInviteCode.trim();
     const trimmedLedgerName = createLedgerName.trim();
@@ -866,12 +933,25 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
           ? mmhUserChoices.find((user) => user.id === createExistingUserId) ?? mmhUserChoices[0]
           : selectedHouseholdUsers.find((user) => user.id === createExistingUserId) ?? selectedHouseholdUsers[0];
         const credentials = createAuthMode === "mmh" ? loginCredentials.mmh : loginCredentials.local;
+        // The credential being verified. For MMH this must be the membership
+        // address (`registrationEmail`): that is the only address the central
+        // registration service can answer about. `email` on the same row is the
+        // local contact address of the ledger the user is already in, so verifying
+        // with it asks the service about an account that generally is not the one
+        // selected — and fails, or worse matches somebody else.
         const existingUsername = createAuthMode === "mmh"
-          ? selectedExistingUser?.email ?? credentials.username
+          ? (selectedExistingUser ? mmhAddress(selectedExistingUser) : "") || credentials.username
           : selectedExistingUser?.name ?? credentials.username;
         const existingUserId = selectedExistingUser?.id ?? credentials.userId;
         let adminName = selectedExistingUser?.name ?? existingUsername.trim();
-        let adminEmail = selectedExistingUser?.email ?? undefined;
+        // The new administrator's contact address. For an MMH identity that is the
+        // membership address (`registrationEmail`) — `email` on the same row is the
+        // local contacts field of the OTHER ledger, and using it here both named
+        // the wrong account in the confirmation line and wrote a mismatched address
+        // onto the new administrator.
+        let adminEmail = createAuthMode === "mmh"
+          ? (selectedExistingUser ? mmhAddress(selectedExistingUser) : "") || undefined
+          : selectedExistingUser?.email ?? undefined;
         let adminPassword: string | undefined;
 
         if (createAuthMode === "fnos") {
@@ -1200,14 +1280,21 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   /**
    * The MMH block inside the ledger-creation form.
    *
-   * Two shapes, mirroring how an MMH identity actually works: the account is
-   * global and may already exist, so the default is "sign in with it" — email +
+   * Always offers the "sign in with an existing MMH identity" shape — email +
    * membership password, verified server-side against the central registration
-   * service. Only someone who does not have one yet opts into the signup shape
-   * through the secondary "create an MMH user" link.
+   * service. `allowSignup` additionally offers the signup shape, through the
+   * secondary "create an MMH user" link.
+   *
+   * Only the entries that actually OPEN a ledger offer signup: the first-ledger
+   * setup and the invite-code entry. "Already have an account" verification does
+   * not, and its refusal is the point of the entry — it exists so somebody who
+   * already belongs to another ledger can prove that and open a new one. Letting
+   * it mint a brand-new MMH identity would contradict what the entry is for, and
+   * it cannot work anyway: self-service signup is gated to an empty deployment
+   * (`SIGNUP_CLOSED`), while this entry is only reachable once a ledger exists.
    */
-  function renderMmhCreateFields(inviteMode: boolean) {
-    if (createMmhMode === "register") {
+  function renderMmhCreateFields(allowSignup: boolean) {
+    if (allowSignup && createMmhMode === "register") {
       return (
         <div className="space-y-3 border-t border-slate-200 pt-3">
           <div className="space-y-1">
@@ -1250,29 +1337,21 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
               type="button"
               className="h-10 w-full rounded-md bg-blue-600 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
               disabled={registerLoading}
-              onClick={() => { setRegisterInviteMode(inviteMode); void handleRegisterSendCode(inviteMode); }}
+              onClick={() => { setRegisterInviteMode(true); void handleRegisterSendCode(true); }}
             >
               {registerLoading ? t("login.verifying") : t("login.register.sendCode")}
             </button>
           ) : (
-            <div className="space-y-2">
-              <button
-                type="button"
-                className="h-10 w-full rounded-md bg-blue-600 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
-                disabled={registerLoading}
-                onClick={() => { setRegisterInviteMode(inviteMode); void handleRegisterConfirm(inviteMode); }}
-              >
-                {registerLoading ? t("login.register.submitting") : t("login.register.submitCreate")}
-              </button>
-              <button
-                type="button"
-                className="h-10 w-full rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-                disabled={registerLoading}
-                onClick={() => { setRegisterInviteMode(inviteMode); void handleRegisterSendCode(inviteMode); }}
-              >
-                {t("login.register.resend")}
-              </button>
-            </div>
+            /* No submit button here: confirmation is the card's fixed
+               "create and enter" button, so this step only offers "resend". */
+            <button
+              type="button"
+              className="h-10 w-full rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+              disabled={registerLoading}
+              onClick={() => { setRegisterInviteMode(true); void handleRegisterSendCode(true); }}
+            >
+              {t("login.register.resend")}
+            </button>
           )}
           <button
             type="button"
@@ -1310,13 +1389,17 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
             onKeyDown={(event) => { if (event.key === "Enter") void handleCreateLedger(); }}
           />
         </div>
-        <button
-          type="button"
-          className="w-full text-xs text-slate-500 hover:text-slate-700"
-          onClick={() => setCreateMmhMode("register")}
-        >
-          {t("login.createMmhUser")}
-        </button>
+        {allowSignup ? (
+          <button
+            type="button"
+            className="w-full text-xs text-slate-500 hover:text-slate-700"
+            onClick={() => setCreateMmhMode("register")}
+          >
+            {t("login.createMmhUser")}
+          </button>
+        ) : (
+          <div className="text-[11px] leading-5 text-slate-500">{t("login.mmhSignupElsewhere")}</div>
+        )}
       </div>
     );
   }
@@ -1375,6 +1458,9 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
           )}
         </div>
 
+        {/* The body scrolls; the action bar below is its sibling in this column,
+            so "create and enter" stays put and is visible without scrolling
+            however tall the form gets. */}
         <div className="min-h-0 flex-1 overflow-y-auto">
         {mode === "login" && (
           <div className="space-y-4 p-6">
@@ -1921,6 +2007,8 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                             {t("login.fnosUser", { user: gatewayFnosName(fnosGatewayUser) })}
                           </div>
                         ) : createAuthMode === "mmh" ? (
+                          /* The invite-code entry opens a ledger, so it may create
+                             the MMH account on the spot. */
                           renderMmhCreateFields(true)
                         ) : (
                           <div className="space-y-3">
@@ -1981,52 +2069,58 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                           <div className="rounded-md border border-dashed border-slate-300 bg-white px-3 py-2 text-xs text-slate-500">
                             {t("login.fnosUser", { user: gatewayFnosName(fnosGatewayUser) })}
                           </div>
-                        ) : createAuthMode === "mmh" && mmhUserChoices.length > 0 ? (
-                          <select
-                            value={createExistingUserId}
-                            onChange={(event) => {
-                              const user = mmhUserChoices.find((item) => item.id === event.target.value);
-                              setCreateExistingUserId(user?.id ?? "");
-                            }}
-                            className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                          >
-                            {mmhUserChoices.map((user) => (
-                              <option key={user.id} value={user.id}>{getMmhUserLabel(user)}</option>
-                            ))}
-                          </select>
-                        ) : createAuthMode === "local" && selectedHouseholdUsers.length > 0 ? (
-                          <select
-                            value={createExistingUserId}
-                            onChange={(event) => {
-                              const user = selectedHouseholdUsers.find((item) => item.id === event.target.value);
-                              setCreateExistingUserId(user?.id ?? "");
-                            }}
-                            className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                          >
-                            {selectedHouseholdUsers.map((user) => (
-                              <option key={user.id} value={user.id}>{getLoginUserLabel(user)}</option>
-                            ))}
-                          </select>
                         ) : (
-                          <div className="rounded-md border border-dashed border-slate-300 bg-white px-3 py-2 text-xs text-slate-500">
-                            当前登录账户
-                          </div>
+                          <>
+                            {createAuthMode === "mmh" && mmhUserChoices.length > 0 ? (
+                              <select
+                                value={createExistingUserId}
+                                onChange={(event) => {
+                                  const user = mmhUserChoices.find((item) => item.id === event.target.value);
+                                  setCreateExistingUserId(user?.id ?? "");
+                                }}
+                                className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                              >
+                                {mmhUserChoices.map((user) => (
+                                  <option key={user.id} value={user.id}>{getMmhUserLabel(user)}</option>
+                                ))}
+                              </select>
+                            ) : createAuthMode === "local" && selectedHouseholdUsers.length > 0 ? (
+                              <select
+                                value={createExistingUserId}
+                                onChange={(event) => {
+                                  const user = selectedHouseholdUsers.find((item) => item.id === event.target.value);
+                                  setCreateExistingUserId(user?.id ?? "");
+                                }}
+                                className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                              >
+                                {selectedHouseholdUsers.map((user) => (
+                                  <option key={user.id} value={user.id}>{getLoginUserLabel(user)}</option>
+                                ))}
+                              </select>
+                            ) : (
+                              <div className="rounded-md border border-dashed border-slate-300 bg-white px-3 py-2 text-xs text-slate-500">
+                                当前登录账户
+                              </div>
+                            )}
+                            {/* The password belongs to the identity picked right
+                                above: choosing an account and proving it is one
+                                step, so it stays inside the same card instead of
+                                hanging below it as a separate block. */}
+                            <div className="space-y-1 border-t border-slate-200 pt-3">
+                              <div className="text-xs font-medium text-slate-600">验证密码</div>
+                              <input
+                                value={createExistingPassword}
+                                onChange={(event) => setCreateExistingPassword(event.target.value)}
+                                type="password"
+                                autoComplete="current-password"
+                                className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                                placeholder={t("login.passwordPlaceholder")}
+                                onKeyDown={(event) => { if (event.key === "Enter") void handleCreateLedger(); }}
+                              />
+                            </div>
+                          </>
                         )}
                       </FolderTabs>
-                      {createAuthMode !== "fnos" && (
-                        <div className="space-y-1 border-t border-slate-200 pt-3">
-                          <div className="text-xs font-medium text-slate-600">验证密码</div>
-                          <input
-                            value={createExistingPassword}
-                            onChange={(event) => setCreateExistingPassword(event.target.value)}
-                            type="password"
-                            autoComplete="current-password"
-                            className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                            placeholder={t("login.passwordPlaceholder")}
-                            onKeyDown={(event) => { if (event.key === "Enter") void handleCreateLedger(); }}
-                          />
-                        </div>
-                      )}
                     </div>
                   </>
                 )}
@@ -2079,47 +2173,10 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
               </>
             ) : createMethod === "existing" ? (
               <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-                新账簿管理员将使用当前验证账户：{createAuthMode === "mmh" ? (mmhUserChoices.find((user) => user.id === createExistingUserId)?.email ?? loginCredentials.mmh.username) : createAuthMode === "fnos" ? gatewayFnosName(fnosGatewayUser) : (selectedHouseholdUsers.find((user) => user.id === createExistingUserId)?.name ?? loginCredentials.local.username)}
+                新账簿管理员将使用当前验证账户：{existingCreateAdminAccountLabel()}
               </div>
             ) : null}
             {error && <div className="text-sm text-red-600">{error}</div>}
-            {/* The MMH signup shape owns its own submit button ("register and
-                create the ledger"); every other shape submits the form here. */}
-            {!(createMethod === "invite" && createAuthMode === "mmh" && createMmhMode === "register") && (
-              <button
-                type="button"
-                className="h-10 w-full rounded-md bg-blue-600 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
-                disabled={loading || registerLoading}
-                onClick={() => void handleCreateLedger()}
-              >
-                {loading ? t("login.creating") : t("login.createAndEnter")}
-              </button>
-            )}
-            {!initialLedgerSetup && (
-              <button
-                type="button"
-                className="h-10 w-full rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
-                disabled={loading}
-                onClick={() => {
-                  setError("");
-                  setResetError("");
-                  setResetInfo("");
-                  setShowReset(false);
-                  resetCreateLedgerForm();
-                  setRegisterInviteMode(false);
-                  setRegisterEmail("");
-                  setRegisterCode("");
-                  setRegisterCodeSent(false);
-                  setRegisterPassword("");
-                  setRegisterMmhPassword("");
-                  setRegisterInfo("");
-                  setRegisterError("");
-                  setMode("login");
-                }}
-              >
-                {t("login.backToLogin")}
-              </button>
-            )}
           </div>
         )}
 
@@ -2143,6 +2200,40 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
           </div>
         )}
         </div>
+
+        {/* The fixed action bar: sibling of the scrolling body, not part of it,
+            so "create and enter" is on screen without scrolling however tall the
+            form grows. It also no longer hides — it used to live inside the MMH
+            tab's panel and vanish while that tab's signup shape was open (that
+            shape carried its own submit button). `submitCreateLedger` dispatches
+            to whichever flow the current shape needs, so this one button is
+            always actionable. */}
+        {mode === "create" && (
+          <div className="shrink-0 space-y-3 border-t border-slate-200 bg-white/95 px-6 pb-6 pt-3">
+            <button
+              type="button"
+              className="h-10 w-full rounded-md bg-blue-600 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
+              disabled={loading || registerLoading}
+              onClick={() => void submitCreateLedger()}
+            >
+              {loading || registerLoading ? t("login.creating") : t("login.createAndEnter")}
+            </button>
+            {/* The way out sits under the primary action, not inside the
+                scrolling body, so the two always appear together. Kept off the
+                first-ledger setup: an empty deployment has no account to return
+                to. */}
+            {!initialLedgerSetup && (
+              <button
+                type="button"
+                className="w-full text-xs text-slate-500 hover:text-slate-700 disabled:opacity-50"
+                disabled={loading}
+                onClick={backToLoginFromCreate}
+              >
+                {t("login.backToLogin")}
+              </button>
+            )}
+          </div>
+        )}
         </div>
       </div>
     </div>

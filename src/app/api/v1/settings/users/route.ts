@@ -241,6 +241,24 @@ export async function PUT(req: NextRequest) {
     return NextResponse.json({ ok: false, code: "FORBIDDEN", error: "越权操作" }, { status: 403, headers: cors() });
   }
 
+  // Renaming must respect the same uniqueness rule as creation. It used to skip
+  // this check entirely, so two ledger members could end up sharing a name —
+  // including through the "give this MMH account a local login" dialog, where the
+  // local name is the account's primary human-facing identifier. Local sign-in
+  // resolves a name with `findFirst({ where: { name } })`, which returns exactly
+  // one row: with two members sharing a name inside one ledger, which account you
+  // get is arbitrary. `householdId: null` is meaningful here — it is how the
+  // global system user is matched, mirroring POST's scoping.
+  if (name) {
+    const nameTaken = await prisma.user.findFirst({
+      where: { name, householdId: existing.householdId, id: { not: id } },
+      select: { id: true },
+    });
+    if (nameTaken) {
+      return NextResponse.json({ ok: false, code: "DUPLICATE_USERNAME", error: "用户名已存在" }, { status: 409, headers: cors() });
+    }
+  }
+
   // The last admin cannot be changed to a non-admin role.
   if (role !== undefined && role !== "admin" && existing.role === "admin" && !existing.isSystem) {
     const adminCount = await prisma.user.count({ where: { householdId, role: "admin" } });

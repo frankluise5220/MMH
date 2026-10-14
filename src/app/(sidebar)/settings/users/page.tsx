@@ -696,7 +696,6 @@ function PasswordSetModal({
         body: JSON.stringify({
           id: target.id,
           name: localName.trim(),
-          email: target.email ?? "",
           role: target.role,
           password: password.trim(),
         }),
@@ -707,7 +706,11 @@ function PasswordSetModal({
         onSaved();
         onClose();
       } else {
-        setError(result?.error || t("settings.users.updateFailed"));
+        setError(
+          result?.code === "DUPLICATE_USERNAME"
+            ? t("settings.users.error.usernameTaken")
+            : result?.error || t("settings.users.updateFailed"),
+        );
       }
     } catch {
       setError(t("settings.users.updateFailed"));

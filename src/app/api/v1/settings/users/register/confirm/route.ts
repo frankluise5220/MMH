@@ -157,7 +157,25 @@ export async function POST(req: NextRequest) {
   // update below would write the new address next to the OLD principal id and
   // silently produce a binding that matches neither account. Changing which
   // MMH account a user belongs to is an explicit unbind-then-bind.
-  if (target.registrationPrincipalId && normalizedEmail !== (target.registrationEmail ?? "").trim().toLowerCase()) {
+  const recordedAddress = (target.registrationEmail ?? "").trim().toLowerCase();
+  if (target.registrationPrincipalId && !recordedAddress) {
+    // A binding with no recorded address cannot be repaired over this path.
+    // Unlike the password route, confirming a code gives no way to learn the
+    // central account's current principal id (the registration endpoint answers
+    // IDENTITY_ALREADY_BOUND for an existing address), and the code below would
+    // keep the STALE id while writing the new address next to it — a binding
+    // matching neither account, and one that fails every later check. Send the
+    // user to the path that can re-align it.
+    return NextResponse.json(
+      {
+        ok: false,
+        code: "MMH_IDENTITY_UNRECORDED",
+        error: "该账号的 MMH 绑定未记录账号地址，无法用邮箱验证码重新绑定。请改用「重新绑定 MMH」并输入该 MMH 账号密码，以补全绑定信息。",
+      },
+      { status: 409, headers: cors() },
+    );
+  }
+  if (target.registrationPrincipalId && normalizedEmail !== recordedAddress) {
     return NextResponse.json(
       {
         ok: false,
