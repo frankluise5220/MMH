@@ -67,15 +67,18 @@ function CredentialSetupNotice({ subject }: { subject: CredentialSubject }) {
   // "go to user settings" link is offered for `self` alone.
   if (subject === "target") {
     return (
-      <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">
+      <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600">
         {t("credential.targetFnosNeedsLocalPassword")}
       </div>
     );
   }
   return (
-    <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">
+    <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600">
       {t("credential.fnosNeedsLocalPassword")}{" "}
-      <a href={withBasePath("/settings/users")} className="font-medium underline">
+      <a
+        href={withBasePath("/settings/users")}
+        className="font-medium text-blue-600 underline hover:text-blue-700"
+      >
         {t("credential.goToUserSettings")}
       </a>
     </div>

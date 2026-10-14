@@ -462,7 +462,22 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
     const user = systemUsers.find((item) => getLoginUserScopeId(item) === scopeId) ?? null;
     setSelectedHouseholdId(scopeId);
     setSelectedUserId(user?.id ?? "");
-    setUsername(user?.name ?? "");
+    // The ledger picker belongs to every tab, so on the MMH tab it must re-point
+    // the MMH identity, not the ledger user: `user.name` is not an MMH account
+    // and the central service cannot answer about it, so pushing it in here made
+    // the card submit a name where an address belonged.
+    if (loginMode === "mmh") {
+      const nextMmhUser = mmhUserChoices.find((item) => getLoginUserScopeId(item) === scopeId) ?? null;
+      const nextAddress = nextMmhUser ? mmhAddress(nextMmhUser) : "";
+      setSelectedUserId("");
+      setUsername(nextAddress);
+      setLoginCredentials((current) => ({
+        ...current,
+        mmh: { ...current.mmh, username: nextAddress, userId: nextMmhUser?.id ?? "" },
+      }));
+    } else {
+      setUsername(user?.name ?? "");
+    }
     cancelHouseholdChoice();
   }
 
@@ -505,11 +520,18 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
         ? mmhUserChoices.filter((user) => getLoginUserScopeId(user) === selectedHouseholdId)
         : mmhUserChoices;
       const defaultMmhUser = scopedMmhUsers.find((user) => user.id === credentials.userId) ?? scopedMmhUsers[0];
-      const nextUsername = credentials.username || defaultMmhUser?.email || "";
+      // `mmhAddress` (`registrationEmail`), never `.email`: the local contact
+      // column is null on accounts that only ever came in through fnOS or MMH,
+      // and reading it left the card with a selected account and an EMPTY
+      // username field — the select still displays the first option, so the
+      // failure surfaced as "请输入用户名" for an account that was plainly picked.
+      const nextUsername = credentials.username || (defaultMmhUser ? mmhAddress(defaultMmhUser) : "");
       setSelectedUserId("");
       setUsername(nextUsername);
       setPassword(credentials.password);
-      if (!credentials.userId && defaultMmhUser?.email) {
+      // The credentials must name the same account the select displays, otherwise
+      // `value` has no matching option and the browser silently shows the first one.
+      if (!credentials.userId && defaultMmhUser) {
         setLoginCredentials((current) => ({
           ...current,
           mmh: { ...current.mmh, username: nextUsername, userId: defaultMmhUser.id },
@@ -750,7 +772,17 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
     const selectedScopeId = loginMode === "local" && selectedHouseholdId && selectedHouseholdId !== SYSTEM_LOGIN_SCOPE_ID
       ? selectedHouseholdId
       : "";
-    const trimmedUsername = (loginMode === "mmh" ? username : selectedUser?.name ?? username).trim();
+    // On the MMH tab the account select is the source of truth: whatever it shows
+    // is what has to be submitted. Resolving the membership address from the
+    // selected option (instead of trusting the free-text state that mirrors it)
+    // means a card already displaying an account can never submit an empty
+    // username, and can never submit a ledger user `name` as an MMH identity.
+    const selectedMmhUser = loginMode === "mmh"
+      ? mmhUserChoices.find((user) => user.id === loginCredentials.mmh.userId) ?? null
+      : null;
+    const trimmedUsername = loginMode === "mmh"
+      ? (selectedMmhUser ? mmhAddress(selectedMmhUser) : username).trim()
+      : (selectedUser?.name ?? username).trim();
     const trimmedPassword = password.trim();
     // A local account belongs to exactly one ledger, so the ledger has to be
     // chosen first. MMH sign-in carries its own account identity and resolves
