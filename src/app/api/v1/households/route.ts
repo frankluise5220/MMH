@@ -9,6 +9,7 @@ import { queueLedgerInventoryReport } from "@/lib/server/ledger-inventory";
 import { matchesGatewayFnosIdentity, readGatewayFnosIdentity } from "@/lib/server/gateway-identity";
 import { hashPassword } from "@/lib/auth/password";
 import { optionalPrismaDeleteMany } from "@/lib/server/optional-prisma-delegate";
+import { deleteHouseholdScopedSettings } from "@/lib/server/system-setting";
 import { logger } from "@/lib/logger";
 
 export async function GET() {
@@ -279,6 +280,9 @@ export async function DELETE(req: NextRequest) {
       await tx.category.deleteMany({ where: { householdId: id } });
       // Delete users under this household
       await tx.user.deleteMany({ where: { householdId: id } });
+      // Household-scoped settings carry the ledger id inside the key, so they
+      // cannot be reached by any schema cascade; drop them with the ledger.
+      await deleteHouseholdScopedSettings(id, tx);
       // Finally delete the household itself
       await tx.household.delete({ where: { id } });
     }, { maxWait: 10_000, timeout: 120_000 });

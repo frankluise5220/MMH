@@ -20,8 +20,10 @@ import {
 import { extractStatementLearningKeyword, normalizeStatementKeywordText } from "@/lib/statement/import-normalization";
 import { DEFAULT_SESSION_DAYS, normalizeSessionDays } from "@/lib/session-days";
 import {
+  deleteHouseholdScopedSettings,
   ensureSystemSetting,
   getSystemSetting,
+  householdScopedSettingKeys,
   HOUSEHOLD_SCOPED_SETTING_NAMES,
   setSystemSetting,
   systemSettingKey,
@@ -1583,7 +1585,6 @@ export async function decryptBackupBytes(
   }
 }
 
-const RESTORABLE_HOUSEHOLD_SETTING_PREFIXES = HOUSEHOLD_SCOPED_SETTING_NAMES.map((name) => `${name}:`);
 const RESTORABLE_GLOBAL_SYSTEM_SETTING_KEYS = new Set([
   "access_password",
   "api_key_encryption_master",
@@ -1592,23 +1593,35 @@ const RESTORABLE_GLOBAL_SYSTEM_SETTING_KEYS = new Set([
   "resend_config",
 ]);
 
-function householdSystemSettingKeys(householdId: string) {
-  return HOUSEHOLD_SCOPED_SETTING_NAMES.map((name) => systemSettingKey(name, householdId));
+const HOUSEHOLD_SETTING_NAME_PREFIXES = HOUSEHOLD_SCOPED_SETTING_NAMES.map((name) => `${name}:`);
+
+/**
+ * A household-scoped key that belongs to some other ledger — usually one that
+ * has already been deleted. Such a row must never be exported: restoring it
+ * cannot pick a target ledger (`remapHouseholdSystemSettingKey` only knows the
+ * source and target ids), so it re-inserts the dead id verbatim.
+ */
+function belongsToAnotherHousehold(key: string, householdId: string) {
+  const prefix = HOUSEHOLD_SETTING_NAME_PREFIXES.find((candidate) => key.startsWith(candidate));
+  return prefix != null && key !== `${prefix}${householdId}`;
 }
 
 function settingsForBackup(
   settings: Array<{ key: string }>,
   backupScope: BackupScope,
+  householdId: string,
 ) {
   // The installation id identifies THIS deployment, so it is excluded even from
   // a full system backup: restoring that backup onto another deployment would
   // clone the id and the central registration service would merge the two
   // deployments' ledger inventories into one.
-  const exportable = settings.filter((setting) => setting.key !== INSTALLATION_ID_SETTING_KEY);
+  const exportable = settings.filter(
+    (setting) => setting.key !== INSTALLATION_ID_SETTING_KEY && !belongsToAnotherHousehold(setting.key, householdId),
+  );
   if (backupScope === "system") return exportable;
-  return exportable.filter((setting) =>
-    RESTORABLE_GLOBAL_SYSTEM_SETTING_KEYS.has(setting.key) ||
-    RESTORABLE_HOUSEHOLD_SETTING_PREFIXES.some((prefix) => setting.key.startsWith(prefix)),
+  const householdKeys = new Set(householdScopedSettingKeys(householdId));
+  return exportable.filter(
+    (setting) => RESTORABLE_GLOBAL_SYSTEM_SETTING_KEYS.has(setting.key) || householdKeys.has(setting.key),
   );
 }
 
@@ -1878,7 +1891,7 @@ export async function buildHouseholdBackupPayload(
     prisma.aiChannel.findMany({ orderBy: [{ createdAt: "asc" }] }),
     prisma.aiModel.findMany({ orderBy: [{ createdAt: "asc" }] }),
   ]);
-  const exportedSystemSettings = settingsForBackup(systemSettings, backupScope);
+  const exportedSystemSettings = settingsForBackup(systemSettings, backupScope, householdId);
 
   const userIds = users.map((item) => item.id);
   const accountIds = accounts.map((item) => item.id);
@@ -2536,7 +2549,7 @@ export async function restoreHouseholdBackup(
       await tx.aiModel.deleteMany({});
       await tx.aiChannel.deleteMany({});
     } else {
-      await tx.systemSetting.deleteMany({ where: { key: { in: householdSystemSettingKeys(householdId) } } });
+      await deleteHouseholdScopedSettings(householdId, tx);
     }
     await tx.attachment.deleteMany({ where: { transactions: { householdId } } });
     await tx.entryTag.deleteMany({ where: { transactions: { householdId } } });

@@ -105,6 +105,22 @@ export async function deleteSystemSetting(name: string, options: SystemSettingOp
   await db.systemSetting.deleteMany({ where: { key } });
 }
 
+/** Every key a single household owns, derived from the registry above. */
+export function householdScopedSettingKeys(householdId: string) {
+  return HOUSEHOLD_SCOPED_SETTING_NAMES.map((name) => systemSettingKey(name, householdId));
+}
+
+/**
+ * Drops every setting row owned by a household. Call this from every place that
+ * removes the household's own data (ledger deletion, backup restore wipe):
+ * `SystemSetting` has no householdId column, so no schema-level cascade can
+ * reach these rows and each site has to ask for the cleanup explicitly.
+ */
+export async function deleteHouseholdScopedSettings(householdId: string, db?: SystemSettingDb): Promise<void> {
+  const client = db ?? (await defaultDb());
+  await client.systemSetting.deleteMany({ where: { key: { in: householdScopedSettingKeys(householdId) } } });
+}
+
 export function parseJsonSetting<T = unknown>(raw: string | null | undefined): T | null {
   if (!raw) return null;
   try {
