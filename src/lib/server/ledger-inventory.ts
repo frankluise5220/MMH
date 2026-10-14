@@ -81,12 +81,27 @@ async function buildInventory(installationId: string): Promise<InstallationInven
     getInstallationPublicKey(),
   ]);
 
-  const perHousehold = new Map<string, { memberCount: number; principalIds: Set<string> }>();
+  const perHousehold = new Map<string, { memberCount: number; principals: Map<string, number> }>();
+  // Account-centric totals for the whole deployment, keyed by principal id: how
+  // many ledger users carry it, and where. The service cannot derive this itself
+  // (it observes logins, not ledger rows), and it is what answers "how many
+  // users is this MMH account bound to".
+  const perPrincipal = new Map<string, { userCount: number; householdIds: string[] }>();
   for (const user of users) {
     if (!user.householdId) continue;
-    const entry = perHousehold.get(user.householdId) ?? { memberCount: 0, principalIds: new Set<string>() };
+    const entry = perHousehold.get(user.householdId) ?? { memberCount: 0, principals: new Map<string, number>() };
     entry.memberCount += 1;
-    if (user.registrationPrincipalId) entry.principalIds.add(user.registrationPrincipalId);
+    if (user.registrationPrincipalId) {
+      // Count users per principal rather than distinct principals: one MMH account
+      // bound to three users of the same ledger is three bindings, so each bind
+      // adds one and each unbind removes one.
+      const boundUsers = (entry.principals.get(user.registrationPrincipalId) ?? 0) + 1;
+      entry.principals.set(user.registrationPrincipalId, boundUsers);
+      const summary = perPrincipal.get(user.registrationPrincipalId) ?? { userCount: 0, householdIds: [] };
+      summary.userCount += 1;
+      if (!summary.householdIds.includes(user.householdId)) summary.householdIds.push(user.householdId);
+      perPrincipal.set(user.registrationPrincipalId, summary);
+    }
     perHousehold.set(user.householdId, entry);
   }
 
@@ -100,19 +115,28 @@ async function buildInventory(installationId: string): Promise<InstallationInven
     reportedAt: new Date().toISOString(),
     households: households.map((household) => {
       const entry = perHousehold.get(household.id);
-      const principalIds = entry ? [...entry.principalIds] : [];
+      const principals = entry ? [...entry.principals.entries()] : [];
       return {
         householdId: household.id,
         createdAt: household.createdAt.toISOString(),
         memberCount: entry?.memberCount ?? 0,
-        // Distinct MMH accounts bound inside this ledger. Rebinding the same
-        // account (or binding one account to several users here) still counts
-        // once, and an unbind removes it — the count is derived from the current
-        // rows on every report rather than incremented, so it cannot drift.
-        mmhMemberCount: principalIds.length,
-        principalIds,
+        // Distinct MMH accounts bound inside this ledger — the "how many
+        // accounts" view. Derived from the current rows on every report instead
+        // of incremented, so it cannot drift.
+        mmhMemberCount: principals.length,
+        // The "how many users" view: each account with the number of ledger users
+        // carrying it, so a bind moves it by one even when the same account is
+        // bound to several users of this ledger.
+        mmhBindings: principals.map(([principalId, userCount]) => ({ principalId, userCount })),
       };
     }),
+    // Account-centric totals across the whole deployment, so the service does not
+    // have to aggregate the per-ledger view itself.
+    principals: [...perPrincipal.entries()].map(([principalId, summary]) => ({
+      principalId,
+      userCount: summary.userCount,
+      householdIds: summary.householdIds,
+    })),
   };
 }
 

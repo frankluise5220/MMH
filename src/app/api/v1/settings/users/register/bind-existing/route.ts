@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { getCurrentUser, isAdmin } from "@/lib/server/auth";
 import { verifyEmailPrincipal } from "@/lib/server/registration-client";
+import { refuseMmhSessionBindingChange } from "@/lib/server/mmh-binding-guard";
 import { queueLedgerInventoryReport } from "@/lib/server/ledger-inventory";
 
 export const runtime = "nodejs";
@@ -54,6 +55,11 @@ export async function POST(req: NextRequest) {
   }
   if (!isAdmin(currentUser)) {
     return NextResponse.json({ ok: false, code: "FORBIDDEN", error: "Admin permission required." }, { status: 403, headers: cors() });
+  }
+
+  const mmhSessionRefusal = refuseMmhSessionBindingChange(currentUser.authMethod);
+  if (mmhSessionRefusal) {
+    return NextResponse.json(mmhSessionRefusal, { status: 403, headers: cors() });
   }
 
   const body = await req.json().catch(() => null);

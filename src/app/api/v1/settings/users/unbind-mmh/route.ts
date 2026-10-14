@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { getCurrentUser, isAdmin } from "@/lib/server/auth";
 import { verifyEmailPrincipal } from "@/lib/server/registration-client";
+import { refuseMmhSessionBindingChange } from "@/lib/server/mmh-binding-guard";
 import { queueLedgerInventoryReport } from "@/lib/server/ledger-inventory";
 
 export const runtime = "nodejs";
@@ -55,15 +56,9 @@ export async function POST(req: NextRequest) {
   if (!isAdmin(currentUser)) {
     return NextResponse.json({ ok: false, code: "FORBIDDEN", error: "需要管理员权限" }, { status: 403, headers: cors() });
   }
-  if (currentUser.authMethod === "mmh") {
-    return NextResponse.json(
-      {
-        ok: false,
-        code: "MMH_UNBIND_REQUIRES_LOCAL",
-        error: "取消 MMH 绑定需由本地账号登录后操作：MMH 登录本身无法证明对绑定数据的修改权。",
-      },
-      { status: 403, headers: cors() },
-    );
+  const mmhSessionRefusal = refuseMmhSessionBindingChange(currentUser.authMethod);
+  if (mmhSessionRefusal) {
+    return NextResponse.json(mmhSessionRefusal, { status: 403, headers: cors() });
   }
 
   const body = await req.json().catch(() => null);

@@ -5,6 +5,7 @@ import { getHouseholdScope } from "@/lib/server/household-scope";
 import { getCurrentUser, isAdmin } from "@/lib/server/auth";
 import { registerEmailPrincipal, setEmailPrincipalPassword, verifyRegistrationCode } from "@/lib/server/registration-client";
 import { queueLedgerInventoryReport } from "@/lib/server/ledger-inventory";
+import { refuseMmhSessionBindingChange } from "@/lib/server/mmh-binding-guard";
 import { DEFAULT_SESSION_DAYS, normalizeSessionDays } from "@/lib/session-days";
 import { logger } from "@/lib/logger";
 
@@ -83,6 +84,10 @@ export async function POST(req: NextRequest) {
   }
   if (!isAdmin(currentUser)) {
     return NextResponse.json({ ok: false, code: "FORBIDDEN", error: "Admin permission required." }, { status: 403, headers: cors() });
+  }
+  const mmhSessionRefusal = refuseMmhSessionBindingChange(currentUser.authMethod);
+  if (mmhSessionRefusal) {
+    return NextResponse.json(mmhSessionRefusal, { status: 403, headers: cors() });
   }
   const ip = getClientIp(req);
   if (ip && isConfirmAttemptLimited(ip)) {

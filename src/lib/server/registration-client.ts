@@ -16,15 +16,15 @@
  *        409 IDENTITY_ALREADY_BOUND / INSTALLATION_ALREADY_BOUND, ...)
  * All /v1 endpoints require `Authorization: Bearer <token>`.
  *
- * Ledger inventory report — NOT implemented by the registration service yet
- * (see `reportInstallationInventory`). Deployments are independent self-hosted
- * instances, so the central service cannot discover on its own how many ledgers
- * an MMH account is bound to; the app has to push that. This is the one piece
- * the central service still has to add:
+ * Ledger inventory report. Deployments are independent self-hosted instances, so
+ * the central service cannot discover on its own how many ledger users an MMH
+ * account is bound to; the app pushes a snapshot on bind/unbind, ledger change
+ * and a 6-hour heartbeat.
  *   POST {baseUrl}/v1/installations
- *     body: { installationId, platform, reportedAt,
- *             households: [{ householdId, createdAt, memberCount,
- *                            mmhMemberCount, principalIds[] }] }
+ *     body: { installationId, platform, reportedAt, installation?:{ platform, publicKey },
+ *             households: [{ householdId, createdAt, memberCount, mmhMemberCount,
+ *                            mmhBindings:[{ principalId, userCount }] }],
+ *             principals: [{ principalId, userCount, householdIds[] }] }
  *     -> any 2xx is accepted (empty body is fine)
  *     -> error { ok:false, code, error } (401 UNAUTHORIZED, 400 VALIDATION_ERROR);
  *        an explicit `ok:false` is honored even on a 2xx
@@ -491,10 +491,14 @@ export interface InstallationInventoryHousehold {
   createdAt: string;
   /** Members owned by the ledger (the global system user is excluded). */
   memberCount: number;
-  /** Members carrying a registrationPrincipalId (i.e. bound to an MMH account). */
+  /** Distinct MMH accounts bound inside this ledger (the "accounts" view). */
   mmhMemberCount: number;
-  /** Distinct principal ids bound inside this ledger. */
-  principalIds: string[];
+  /**
+   * Per-account binding detail for this ledger: how many of its users carry each
+   * MMH account. The "users" view — one account bound to three users here is
+   * three, so a bind/unbind moves this by one.
+   */
+  mmhBindings: Array<{ principalId: string; userCount: number }>;
 }
 
 /**
@@ -521,6 +525,17 @@ export interface InstallationInventory {
   };
   reportedAt: string;
   households: InstallationInventoryHousehold[];
+  /**
+   * Account-centric totals for the deployment: for every MMH account, how many
+   * ledger users carry it and in which ledgers.
+   *
+   * Reported as a first-class list rather than leaving the service to aggregate
+   * `households[].mmhBindings`, so "how many users does this MMH account have
+   * bound" is answered by data the app actually has, not by a join it would have
+   * to invent. Rebinding the same account to a different local user still moves
+   * `userCount` by one; unbind subtracts one.
+   */
+  principals: Array<{ principalId: string; userCount: number; householdIds: string[] }>;
 }
 
 export interface InstallationReportResult {

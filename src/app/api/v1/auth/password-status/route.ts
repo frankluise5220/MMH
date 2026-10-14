@@ -111,6 +111,7 @@ function selectLoginUsers(householdId?: string) {
       // with `email` — that one is the editable local contact field, so an email
       // edit would otherwise silently repoint the MMH sign-in entry.
       registrationEmail: true,
+      fnosUid: true,
       householdId: true,
       Household: { select: { name: true } },
     },
@@ -213,9 +214,16 @@ export async function GET(req: NextRequest) {
     // Every ledger user bound to this gateway identity, not just the first one:
     // the login page needs the whole set to tell whether the ledger currently
     // selected in the picker may be entered with fnOS passwordless login, and
-    // to open on a ledger that this identity can actually get into.
+    // to open on a ledger that this identity can actually get into. The rows
+    // themselves travel too (`name`/`fnosUid`), so the page can label the fnOS
+    // tab with the LEDGER user it signs in as — the same name the local and MMH
+    // tabs show — instead of the bare gateway account name, which is a different
+    // thing entirely and reads like a different person.
     gatewayIdentity
-      ? prisma.user.findMany({ where: { fnosUid: { in: gatewayIdentity.keys } }, select: { householdId: true } })
+      ? prisma.user.findMany({
+          where: { fnosUid: { in: gatewayIdentity.keys } },
+          select: { id: true, name: true, fnosUid: true, householdId: true },
+        })
       : Promise.resolve([]),
   ]), STATUS_LOOKUP_TIMEOUT_MS);
 
@@ -259,6 +267,18 @@ export async function GET(req: NextRequest) {
       registrationEmail: u.registrationEmail,
       householdId: u.householdId,
       householdName: u.Household?.name ?? null,
+      fnosUid: u.fnosUid,
+    })),
+    // The ledger users this gateway identity is bound to, so the fnOS tab can be
+    // labelled with the same ledger user name as the other tabs instead of the
+    // gateway account name. Ids and names only — this endpoint is unauthenticated
+    // (it backs the login form), so nothing more is exposed here than the local
+    // user list already is.
+    fnosBoundUsers: fnosBoundUsers.map((u) => ({
+      id: u.id,
+      name: u.name,
+      fnosUid: u.fnosUid,
+      householdId: u.householdId,
     })),
   });
   if (shouldClearStaleHouseholdCookie) {

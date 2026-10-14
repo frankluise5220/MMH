@@ -35,6 +35,11 @@ type PasswordStatusResponse = {
    * chosen in the picker may be entered with fnOS passwordless login.
    */
   fnosHouseholdIds?: Array<string | null>;
+  /**
+   * Ledger users the current fnOS gateway identity is bound to. Lets the fnOS
+   * tab name the LEDGER user it signs in as, so it matches the local and MMH tabs.
+   */
+  fnosBoundUsers?: Array<{ id: string; name: string; fnosUid: string | null; householdId: string | null }>;
   passwordResetEnabled?: boolean;
   /**
    * Whether MMH membership sign-in is available on this deployment (the server
@@ -49,6 +54,8 @@ type PasswordStatusResponse = {
 type LoginUserChoice = {
   id: string;
   name: string;
+  /** fnOS UID bound to this ledger user, when the gateway identity matches. */
+  fnosUid?: string | null;
   /** Editable local contact address. Never an MMH identity — see `mmhAddress`. */
   email?: string | null;
   /**
@@ -149,6 +156,9 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   const [fnosEmail, setFnosEmail] = useState("");
   const [pendingFnos, setPendingFnos] = useState(false);
   const [systemUsers, setSystemUsers] = useState<LoginUserChoice[]>([]);
+  // Ledger users this fnOS gateway identity is bound to. The fnOS tab labels
+  // itself with one of these so all three tabs name the same ledger user.
+  const [fnosBoundUsers, setFnosBoundUsers] = useState<LoginUserChoice[]>([]);
   // Ledgers the forwarded fnOS identity is bound in (`null` = system scope).
   const [fnosHouseholdIds, setFnosHouseholdIds] = useState<Array<string | null>>([]);
   const [passwordResetEnabled, setPasswordResetEnabled] = useState(false);
@@ -311,9 +321,30 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
     return `${visibleLocal}***@${domain}`;
   }
 
+  /**
+   * One label shape for every sign-in tab, so the same ledger user reads the same
+   * way whichever entry you come in through.
+   *
+   * The ledger user name leads, because that is the thing that is actually the
+   * same across all three tabs — the credentials are not. What follows says which
+   * credential this tab will actually check, which is the only thing that differs.
+   * The old MMH label put the membership address first (`masked(name)`) while the
+   * local one put it last (`name(masked)`), so the same person looked like two
+   * different entries and there was nothing to match on when switching tabs.
+   * Nothing else is appended: the local tab carries no marker at all, because a
+   * role badge ("system user") says something about permissions the sign-in form
+   * is not deciding, and it made the same name look like a different kind of
+   * entry depending on which tab listed it.
+   */
   function getLoginUserLabel(user: LoginUserChoice) {
-    if (user.email) return `${user.name}(${maskEmail(user.email)})`;
-    return user.isSystem ? `${user.name} · ${t("login.systemUserBadge")}` : user.name;
+    return user.name;
+  }
+
+  /** Same person, seen through the MMH entry: name first, then which credential. */
+  function getMmhUserLabel(user: LoginUserChoice) {
+    const address = mmhAddress(user);
+    const suffix = address ? ` · ${maskEmail(address)}` : "";
+    return `${getLoginUserLabel(user)}${suffix}`;
   }
 
   /**
@@ -328,12 +359,6 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
    */
   function mmhAddress(user: LoginUserChoice): string {
     return user.registrationEmail?.trim() ?? "";
-  }
-
-  function getMmhUserLabel(user: LoginUserChoice) {
-    const address = mmhAddress(user);
-    if (!address) return user.name;
-    return `${maskEmail(address)}(${user.name})`;
   }
 
   function updateLoginCredentialField(field: "username" | "password", value: string) {
@@ -367,6 +392,24 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
    * the account select when the ledger knows MMH identities, otherwise whatever
    * email the user typed. Returns "" when nothing is chosen yet.
    */
+  /**
+   * The ledger user the fnOS gateway identity signs in as in the selected ledger.
+   *
+   * The gateway identity itself (`jsbyfubin`) is NOT a ledger user name, so
+   * showing it alone made the fnOS tab look like a different person from the
+   * local and MMH tabs for the same account. When this gateway identity is bound
+   * to a ledger user here, show that user's name — the common label — and keep
+   * the gateway name as the secondary fact.
+   */
+  function fnosLedgerUser(): LoginUserChoice | null {
+    if (fnosBoundUsers.length === 0) return null;
+    const match = selectedHouseholdId
+      ? fnosBoundUsers.find((u) => getLoginUserScopeId(u) === selectedHouseholdId)
+      : fnosBoundUsers[0];
+    if (!match) return null;
+    return { ...match, email: null, hasPassword: false, role: "user", isSystem: false };
+  }
+
   function getCurrentMmhEmail() {
     if (mmhUserChoices.length > 0) {
       const selected = mmhUserChoices.find((user) => user.id === loginCredentials.mmh.userId) ?? mmhUserChoices[0];
@@ -538,6 +581,15 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
           }
           const boundHouseholdIds = data.fnosHouseholdIds ?? [];
           setFnosHouseholdIds(boundHouseholdIds);
+          setFnosBoundUsers(
+            (data.fnosBoundUsers ?? []).map((u) => ({
+              ...u,
+              email: null,
+              hasPassword: false,
+              role: "user",
+              isSystem: false,
+            })),
+          );
           const boundScopes = new Set(boundHouseholdIds.map((id) => id ?? SYSTEM_LOGIN_SCOPE_ID));
           const initialSelection = getInitialLoginSelection(users);
           // The picker lists every ledger, and on the fnOS tab the chosen ledger
@@ -1416,8 +1468,25 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                 >
                 {loginMode === "fnos" && fnosGatewayUser ? (
                 <div className="space-y-3">
+                  {/* Same label shape as the local and MMH tabs: the ledger user
+                      name leads, the credential that will actually be checked
+                      follows. The gateway account name is secondary — it is not a
+                      ledger user, and putting it first is what made this tab look
+                      like a different person. */}
                   <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
-                    {t("login.fnosUser", { user: gatewayFnosName(fnosGatewayUser) })}
+                    {fnosLedgerUser() ? (
+                      <>
+                        <div className="font-semibold text-slate-800">
+                          {getLoginUserLabel(fnosLedgerUser()!)}
+                          <span className="ml-1 font-normal text-slate-500">· {t("login.fnosPasswordlessBadge")}</span>
+                        </div>
+                        <div className="mt-0.5 text-[11px] text-slate-500">
+                          {t("login.fnosUser", { user: gatewayFnosName(fnosGatewayUser) })}
+                        </div>
+                      </>
+                    ) : (
+                      <span>{t("login.fnosUser", { user: gatewayFnosName(fnosGatewayUser) })}</span>
+                    )}
                   </div>
                   {/* Mirror of the local tab's "this ledger has no local account"
                       notice: the picked ledger exists but this fnOS account is
