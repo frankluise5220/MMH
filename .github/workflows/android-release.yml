@@ -147,3 +147,15 @@ jobs:
         with:
           files: release-artifacts/android/*.apk
           overwrite_files: true
+
+      # workflow_dispatch builds never fire `release: published`, so the
+      # "Upload APK to GitHub Release" step above is skipped and the APK would
+      # exist only inside the runner. Draft releases assemble their assets from
+      # workflow artifacts, so a dispatch must emit one.
+      - name: Upload APK as workflow artifact
+        if: github.event_name != 'release' && steps.android.outputs.publish == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mmh-android-apk
+          path: release-artifacts/android/*.apk
+          if-no-files-found: error
