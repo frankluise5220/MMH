@@ -27,7 +27,7 @@
       "categories": [
         "生活服务"
       ],
-      "icon_url": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png?v=0.1.71",
+      "icon_url": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png?v=0.1.72",
       "readme_url": "https://raw.githubusercontent.com/frankluise5220/MMH/main/README.md",
       "bug_report_url": "https://github.com/frankluise5220/MMH/issues",
       "maintainer": "frankluise5220",
@@ -114,6 +114,23 @@
             }
           },
           "updated_at": "2026-10-09T01:08:40+08:00"
+        },
+        "0.1.72": {
+          "changelog": "MMH 身份与本地邮箱彻底分离，新增解除绑定；绑定类操作统一禁止 MMH 会话，登录页三页签统一用户名；新增流水对账锁定、剪贴板账单识别、普通转账放行贷款账户；编辑记录不再整页刷新，弹窗层级统一；修复删除账簿残留设置与 Android 安装包无法构建。完整说明见 GitHub Release v0.1.72",
+          "os_min_version": "0.9.0",
+          "packages": {
+            "x86": {
+              "download_url": "http://fnapp.floatingice.win/apps/mmh-0.1.72.fpk",
+              "size": 56455040,
+              "sha256": "15bd0e4a232e8ed4682cb1c1ee6045580d22c0de689f5a48e268152a8e7f32d2"
+            },
+            "arm": {
+              "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.72/mmh-fnos-v0.1.72-arm64.fpk",
+              "size": 56404511,
+              "sha256": "b92990b4f74b17d767040a63cba24dc72d38e37c2c1268aa6e2f6af69daddc8f"
+            }
+          },
+          "updated_at": "2026-10-14T22:14:44+08:00"
         }
       },
       "preview_urls": [
