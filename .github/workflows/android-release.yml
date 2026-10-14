@@ -75,7 +75,7 @@ jobs:
           # 显式给出实际需要的包；platforms / build-tools 由 Gradle 按 AGP 的
           # compileSdk=35 要求自动安装，licenses 由本 action 统一接受。
           packages: 'platform-tools'
-          accept-android-sdk-licenses: 'yes'
+          accept-android-sdk-licenses: true
 
       - name: Resolve MMH version
         id: version
