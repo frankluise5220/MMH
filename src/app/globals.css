@@ -556,7 +556,13 @@ html {
     min-height: 44px;
   }
 
-  .mobile-transaction-modal form .grid {
+  /* 移动端：把「等宽字段组」网格（日期+账户、分类+XX 这类 grid-cols-2/3）强制单列堆叠。
+     但**不能**无差别命中所有 `.grid`：金额行是 `grid-cols-[4.5rem_5.33rem_minmax(0,1fr)_…]`
+     的固定窄列紧凑布局（货币 + 金额 + 换算按钮），FX 汇率行是 `grid-cols-[1fr_auto_1fr]`，
+     这些被 !important 强制单列后会打乱（货币/金额/换算按钮竖排堆叠、与上方日期字段
+     视觉重叠）。所以只对 grid-cols-2 / grid-cols-3 生效。 */
+  .mobile-transaction-modal form .grid-cols-2,
+  .mobile-transaction-modal form .grid-cols-3 {
     grid-template-columns: minmax(0, 1fr) !important;
   }
 

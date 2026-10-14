@@ -39,7 +39,12 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: "device-width",
   initialScale: 1,
+  // 锁定缩放：iOS Safari 在输入框聚焦弹出软键盘时会自动放大页面（input focus zoom），
+  // 导致界面整体放大、不便滑动。记账高频输入场景下禁用手动缩放是合理取舍。
+  maximumScale: 1,
+  userScalable: false,
   viewportFit: "cover",
+  // 软键盘弹出时重排内容（而非覆盖在内容上），避免输入框被键盘挡住。
   interactiveWidget: "resizes-content",
   themeColor: "#f4f7fb",
   colorScheme: "light",
