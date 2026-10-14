@@ -136,6 +136,26 @@ export async function POST(req: Request) {
     if (!entryIds || !Array.isArray(entryIds) || entryIds.length === 0) {
       return NextResponse.json({ ok: false, code: "MISSING_ENTRY_IDS", error: "缺少 entryIds" }, { status: 400 });
     }
+    // 「对账」锁定守卫：已对账的记录不可删除，必须先解除对账（点锁标记）。
+    const reconciledRows = await prisma.txRecord.findMany({
+      where: {
+        id: { in: entryIds },
+        OR: [{ householdId }, { householdId: null }],
+        deletedAt: null,
+        reconciledAt: { not: null },
+      },
+      select: { id: true },
+    });
+    if (reconciledRows.length > 0) {
+      return NextResponse.json(
+        {
+          ok: false,
+          code: "ENTRY_RECONCILED",
+          error: `有 ${reconciledRows.length} 条记录已对账锁定，需先解除对账才能删除`,
+        },
+        { status: 409 },
+      );
+    }
     const impacts = await listEntryBusinessDeleteImpacts(ctx, entryIds);
     // 存单删除影响（2026-09-15）：lot=buy 的 TxRecord，其到期/取息计划为
     // depm_<buyId>/depi_<buyId>；计划生成的记录不会随存单删除而删除

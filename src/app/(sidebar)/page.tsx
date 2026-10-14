@@ -84,7 +84,7 @@ import {
   counterpartyQualifiedAccountName,
   normalizeCreditCardLabelTemplate,
 } from "@/lib/account-display";
-import { getInvestmentAccountView, isDepositAccount, isIncomeExpensePostingAccount, isIncomeExpensePostingOrDepositAccount, isLoanOrSettlementAccountKind, isOrdinaryTransferAccount, isPureInvestmentAccount, isSpecialCashTargetAccount } from "@/lib/account-kind-utils";
+import { getInvestmentAccountView, isDepositAccount, isIncomeExpensePostingAccount, isIncomeExpensePostingOrDepositAccount, isLoanOrSettlementAccountKind, isPureInvestmentAccount, isSpecialCashTargetAccount, isTransferDropdownAccount } from "@/lib/account-kind-utils";
 import { ALL_CASH_DETAIL_SCOPE_ID, cashLedgerAccountIdsOf, cashLedgerFlowAccountId } from "@/lib/all-cash-entries";
 import { normalizeLoanType, resolveLoanTypeValue } from "@/lib/loan-type";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
@@ -1404,10 +1404,10 @@ export default async function Home({
     && (!transferOwnerGroupId || a.groupId === transferOwnerGroupId);
   const transferAccountSSOptions = view === "investstock"
     ? buildAccountSSOptions(isStockTransferEligibleAccount)
-    : buildAccountSSOptions((a) => isOrdinaryTransferAccount(a));
+    : buildAccountSSOptions((a) => isTransferDropdownAccount(a));
   const transferAccountOptions = view === "investstock"
     ? accountOptions.filter(isStockTransferEligibleAccount)
-    : accountOptions.filter((a) => isOrdinaryTransferAccount(a));
+    : accountOptions.filter((a) => isTransferDropdownAccount(a));
   const stockAccountSSOptions = buildAccountSSOptions(a => a.kind === "investment" && a.investProductType === "stock");
   const propertyAccountSSOptions = buildAccountSSOptions(a => a.kind === "investment" && a.investProductType === "property");
   const liabilityTransferAccountSSOptions = buildAccountSSOptions(a => a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet" || a.kind === "bank_credit");
@@ -1987,6 +1987,9 @@ export default async function Home({
     amount: linkedFundAmount,
     currency: e.currency ?? "CNY",
     runningBalance: balanceByEntryId.get(e.id) ?? null,
+    // 对账锁定：reconciledAt 非空 = 不可删除/修改；reconciledBalance 是余额锚点。
+    reconciledAt: toIsoOrNull(e.reconciledAt),
+    reconciledBalance: e.reconciledBalance == null ? null : toNumber(e.reconciledBalance),
     type: e.type,
     categoryId: e.categoryId,
     categoryName: e.categoryName,
@@ -3807,6 +3810,9 @@ export default async function Home({
                   }
                   showAccountColumn={!!tagIdParam || isAllCashView}
                   showRunningBalance={!tagIdParam && !isAllCashView && !isInvestAccount}
+                  // 「对账」只在「有逐笔余额」的单账户明细视图开放：锁定要钉住本行余额，
+                  // 多账户视图（全部现金 / 标签筛选）没有唯一的本行余额。
+                  showReconcile={!tagIdParam && !isAllCashView && !isInvestAccount}
                   refreshOnGlobalEvent={!tagIdParam}
                   draggableRows={!tagIdParam && !isAllCashView}
                   sortable={!tagIdParam}

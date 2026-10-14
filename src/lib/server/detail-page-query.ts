@@ -74,7 +74,8 @@ function buildOrderingCtesSql(args: {
     t."fundProductType",
     t."fundSubtype",
     t."fundArrivalDate",
-    t."fundArrivalAmount"
+    t."fundArrivalAmount",
+    t."reconciledBalance"
   `;
   const scopedSource = Prisma.sql`
     FROM "transactions" t
@@ -241,6 +242,10 @@ function buildOrderingCtesSql(args: {
           ELSE s."date"
         END AS "displayAt",
         CASE
+          -- 锚点两类：① 已「对账」锁定的行（reconciledBalance 非空）；
+          -- ② 余额校准 / 期初余额行（备注前缀带目标值）。两者语义相同。
+          WHEN s."reconciledBalance" IS NOT NULL
+            THEN 1
           WHEN s."source" IN (${BALANCE_RECONCILE_SOURCE}, ${BALANCE_INITIALIZATION_SOURCE})
             AND TRIM(COALESCE(s."toNote", '')) LIKE ${`${BALANCE_RECONCILE_TARGET_PREFIX}%`}
             THEN 1
@@ -257,6 +262,9 @@ function buildOrderingCtesSql(args: {
       SELECT
         c.*,
         CASE
+          -- 已「对账」锁定行的目标余额直接读列；余额校准 / 期初余额行仍从备注前缀取。
+          WHEN c."reconciledBalance" IS NOT NULL
+            THEN CAST(c."reconciledBalance" AS DECIMAL)
           WHEN c."isAnchor" = 1
             THEN CAST(
               SUBSTR(
@@ -406,6 +414,81 @@ export async function queryDetailPage(args: DetailPageQueryArgs): Promise<Detail
     pageIds: rows.map((row) => String(row.id)),
     runningBalanceById,
   };
+}
+
+/**
+ * 计算指定流水在某个账户明细口径下的「本行事后余额」（runningBalance）。
+ *
+ * 与 `queryDetailPage` 的逐笔余额路径共用同一套 CTE / 折叠口径（含锚点分组），
+ * 只是不按分页切片——「对账」锁定记录时用它把余额钉进 `reconciledBalance`，
+ * 保证写进库的值与列表上显示的值逐分一致（否则会出现「对账后余额跳一下」）。
+ *
+ * 口径必须按**单账户**调用（`accountIds=[该账户]` + `sortAccountId=该账户`）：
+ * 多账户视图（全部现金 / 合并信用卡账单）没有唯一的「本行余额」。
+ */
+export async function queryDetailRunningBalancesForEntries(args: {
+  accountIds: string[];
+  householdId: string;
+  entryIds: string[];
+  sortAccountId?: string | null;
+}): Promise<Record<string, number>> {
+  const accountIds = normalizedAccountIds(args.accountIds);
+  const entryIds = Array.from(new Set(args.entryIds.map((id) => String(id ?? "").trim()).filter(Boolean)));
+  if (accountIds.length === 0 || entryIds.length === 0) return {};
+
+  const liabilityAccountMode = args.sortAccountId
+    ? isLoanOrSettlementAccountKind(
+      (await prisma.account.findUnique({ where: { id: args.sortAccountId }, select: { kind: true } }))?.kind,
+    )
+    : false;
+  const orderingCtes = buildOrderingCtesSql({
+    accountIds,
+    householdId: args.householdId,
+    sortAccountId: args.sortAccountId,
+    liabilityAccountMode,
+  });
+
+  const rows = await prisma.$queryRaw<Array<{ id: string; runningBalance: unknown }>>(Prisma.sql`
+    ${orderingCtes},
+    "grouped" AS (
+      SELECT
+        r.*,
+        SUM(r."isAnchor") OVER (
+          ORDER BY r."rowNumber" DESC
+          ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        ) AS "anchorGroup"
+      FROM "ranked" r
+    ),
+    "balanced" AS (
+      SELECT
+        g.*,
+        SUM(
+          CASE WHEN g."isAnchor" = 1 THEN 0 ELSE g."effectiveAmount" END
+        ) OVER (
+          PARTITION BY g."anchorGroup"
+          ORDER BY g."rowNumber" DESC
+          ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        ) AS "groupBalance",
+        MAX(
+          CASE WHEN g."isAnchor" = 1 THEN g."anchorTarget" ELSE NULL END
+        ) OVER (
+          PARTITION BY g."anchorGroup"
+        ) AS "anchorBalance"
+      FROM "grouped" g
+    )
+    SELECT
+      b."id" AS "id",
+      (COALESCE(b."anchorBalance", 0) + b."groupBalance") AS "runningBalance"
+    FROM "balanced" b
+    WHERE b."id" IN (${Prisma.join(entryIds)})
+  `);
+
+  const runningBalanceById: Record<string, number> = {};
+  for (const row of rows) {
+    const value = Number(row.runningBalance);
+    if (Number.isFinite(value)) runningBalanceById[String(row.id)] = value;
+  }
+  return runningBalanceById;
 }
 
 export async function locateDetailPage(args: {

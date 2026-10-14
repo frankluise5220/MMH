@@ -37,6 +37,8 @@ export type RunningBalanceEntry = {
   fundArrivalDate?: string | null;
   principalAmount?: number | null;
   fundArrivalAmount?: number | null;
+  /** 对账锁定钉住的本行事后余额；非空即该行是锚点（等价「余额校准」）。 */
+  reconciledBalance?: number | null;
 };
 
 function detailEntryDayKey(entry: RunningBalanceEntry, accountId: string) {

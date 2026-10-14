@@ -736,6 +736,10 @@ export async function softDeleteEntriesByIds(
     const txRecord = await prisma.txRecord.findUnique({ where: { id: entryId } });
     if (!txRecord) continue;
     if (txRecord.deletedAt) continue;
+    // 「对账」锁定的记录不可删除：路由层对显式选择已返回 ENTRY_RECONCILED，
+    // 这里兜住「删除范围扩展」带进来的锁定行（付息配对腿 / 报销结算 / 关联业务行），
+    // 避免它们被间接删掉。解除对账后才能再删。
+    if (txRecord.reconciledAt) continue;
     if (!isAdmin(ctx.user) && txRecord.householdId && txRecord.householdId !== ctx.householdId) continue;
     balanceChangesByEntryId.set(txRecord.id, { entryId: txRecord.id, previous: txRecord });
     await upsertLegacyCombinedEntryBusinessLink(prisma, txRecord).catch(

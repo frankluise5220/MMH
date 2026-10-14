@@ -1800,6 +1800,10 @@ export async function GET(req: Request) {
       originalAmount: e.originalAmount == null ? null : toNumber(e.originalAmount),
       locationId: e.locationId ?? null,
       locationName: e.locationName ?? null,
+      // 对账锁定 + 余额锚点：RSC 直出与客户端分页取数必须给同款形状，
+      // 否则客户端翻页/刷新后锁标记会凭空消失（行上的锁图标就靠这两个字段判断）。
+      reconciledAt: e.reconciledAt?.toISOString?.() ?? null,
+      reconciledBalance: e.reconciledBalance == null ? null : toNumber(e.reconciledBalance),
       toAccountId: e.toAccountId,
       toAccountName: accountDisplayName(e.toAccount, e.toAccountName),
       toAccountKind: e.toAccount?.kind ?? null,
@@ -2024,9 +2028,9 @@ export async function POST(req: Request) {
           tx.account.findUnique({ where: { id: toAccountId }, include: { Institution: true } }),
         ]);
         if (!fromAcc || !toAcc) throw new Error("账户不存在");
-        if (fromAcc.kind === "loan" || toAcc.kind === "loan") {
-          throw new Error("基金、存款、贷款和往来款账户不能保存为普通转账，请使用对应的专用记账窗口");
-        }
+        // 贷款账户允许进普通转账（2026-10-13 用户口径「允许资金账户向贷款账户输出资金」）：
+        // 「资金 ↔ 贷款」落到下面的 isLiabilityTransfer 分支记为 repay_out / borrow_in 等。
+        // 「贷款↔贷款 / 贷款↔往来款 / 往来款↔往来款」互转仍由下一行拒绝。
         const isLiabilityTransfer = isLoanOrSettlementAccountKind(fromAcc.kind) || isLoanOrSettlementAccountKind(toAcc.kind);
         if (isLoanOrSettlementAccountKind(fromAcc.kind) && isLoanOrSettlementAccountKind(toAcc.kind)) {
           throw new Error("往来款账户之间不能保存为普通转账");

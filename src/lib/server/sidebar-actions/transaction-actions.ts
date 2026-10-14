@@ -16,6 +16,7 @@ import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit
 import { depositLotBelongsToAccount } from "@/lib/server/deposit-lot-options";
 import { isDepositRedemptionDateAllowed, loadDepositLotBalance, loadLatestDepositInterestDate } from "@/lib/server/deposit-lot-balance";
 import { prepareEntryUndo, saveEntryUndo } from "@/lib/server/entry-undo";
+import { isEntryReconciled } from "@/lib/server/entry-reconcile";
 import { getFundArrivalDays, getFundConfirmDays, setFundConfirmDays, setFundArrivalDays } from "@/lib/fund/confirmDays";
 import { setFundFeeRateByDate } from "@/lib/fund/feeRate";
 import { createFundTransactionWithCashFlows, detachFundTransactionCashFlow, findFundTransactionForEntryId, syncFundTransactionsFromTxRecords, upsertFundTransactionRefundCashFlow, type FundCashFlowInput } from "@/lib/fund/transactions";
@@ -500,9 +501,11 @@ export async function createTransaction(formData: FormData) {
         const counterpartyInstitution = counterpartyInstitutionId
           ? await tx.institution.findUnique({ where: { id: counterpartyInstitutionId } })
           : null;
-        if (fromAcc.kind === "loan" || toAcc.kind === "loan") {
-          throw new Error(t("sidebar.action.specialTargetTransferNotAllowed"));
-        }
+        // 贷款账户允许进普通转账（2026-10-13 用户口径「允许资金账户向贷款账户输出资金」）：
+        // 「资金 ↔ 贷款」落到下面的 isLiabilityTransfer 分支，按 liabilityDirection 与现金流记为
+        // repay_out / lend_out / borrow_in / collect_in（source=liability_*）。
+        // 仍然拒绝的是「贷款↔贷款 / 贷款↔往来款 / 往来款↔往来款」互转（下一行）与
+        // 非负债配对里的基金/存款/纯投资目标。
         const isLiabilityTransfer = isLoanOrSettlementAccountKind(fromAcc.kind) || isLoanOrSettlementAccountKind(toAcc.kind);
         if (isLoanOrSettlementAccountKind(fromAcc.kind) && isLoanOrSettlementAccountKind(toAcc.kind)) {
           throw new Error(t("sidebar.action.settlementTransferNotAllowed"));
@@ -1622,6 +1625,11 @@ export async function editInvestment(formData: FormData) {
   const t = await getServerT();
   const { householdId } = await getHouseholdScope();
   const entryId = String(formData.get("entryId") ?? "").trim();
+  // 「对账」锁定守卫：已对账的记录不可修改（编辑窗只读），需先解除对账。
+  // 放在最前面：债券 / 理财 / 基金等分支各自走不同的编辑实现，统一在这里拦。
+  if (entryId && (await isEntryReconciled(entryId))) {
+    return { ok: false as const, error: t("reconcile.lockedError") };
+  }
   const subtype =
     String(formData.get("fundSubtype") ?? formData.get("subtype") ?? "").trim() ||
     String(formData.get("subtype") ?? "buy").trim() ||
@@ -2982,6 +2990,10 @@ export async function updateTransactionFromDialog(formData: FormData) {
 
   const entryId = String(formData.get("entryId") ?? "").trim();
   if (!entryId) return { ok: false as const, error: t("sidebar.action.missingEntryId") };
+  // 「对账」锁定守卫：已对账的记录不可修改（编辑窗只读），需先解除对账。
+  if (await isEntryReconciled(entryId)) {
+    return { ok: false as const, error: t("reconcile.lockedError") };
+  }
 
   const type = String(formData.get("type") ?? "").trim();
   const dateStr = String(formData.get("date") ?? "").trim();
@@ -3545,9 +3557,14 @@ export async function updateTransactionFromDialog(formData: FormData) {
     }
     await applyEntryChangesToAccountBalances([{ entryId, previous: previousBalanceEntry }]).catch(() => {});
     await invalidateCreditCardCycleCacheForAccountIds(touchedAccountIds).catch(() => {});
+    // 普通收支 / 转账 / 垫付的编辑保存：不 purge 当前所在的 "/"（revalidatePath("/")
+    // 会让 action 响应带回整棵首页的 RSC payload，用户看到的就是「改一条记录 =
+    // 全页面刷新」）。明细行由 DetailViewClient 按当前页重取，余额由
+    // LiveAccountBalance / SidebarClient 打补丁刷新；tag 失效保证下次导航仍最新。
+    // 投资 / 固定资产分支的数据由各 Shell 自己重取，保持原有 path purge 不变。
     if (type === "investment" && isFundShellProductType(formData)) revalidateAfterFundShellChange();
     else if (type === "investment" || touchedFixedAsset) revalidateAfterInvestChange();
-    else revalidateAfterTxChange();
+    else revalidateAfterTxChange({ skipHomePath: true });
     await saveEntryUndo(prisma, ctx, undo, "edit", t("sidebar.undo.editEntry"));
     return { ok: true as const };
   } catch (e) {

@@ -7,7 +7,7 @@ import {
   BALANCE_INITIALIZATION_SOURCE,
   BALANCE_RECONCILE_SOURCE,
   BALANCE_RECONCILE_TARGET_PREFIX,
-  getBalanceReconcileTarget,
+  getBalanceAnchorTarget,
 } from "@/lib/balance-reconcile";
 import { isLoanOrSettlementAccountKind } from "@/lib/liability";
 import { liabilityPrincipalForAccountSide } from "@/lib/liability";
@@ -42,6 +42,9 @@ export const BALANCE_ENTRY_SELECT = {
   depositInterest: true,
   depositSourceEntryId: true,
   deletedAt: true,
+  // 对账锁定锚点：reconciledBalance 非空的行在余额折叠里等价「余额校准」。
+  reconciledAt: true,
+  reconciledBalance: true,
 } as const;
 
 export type BalanceEntryRow = Prisma.TxRecordGetPayload<{ select: typeof BALANCE_ENTRY_SELECT }>;
@@ -90,11 +93,8 @@ function roundMoney(value: number) {
   return Number(value.toFixed(2));
 }
 
-function isBalanceAnchorEntry(entry: Pick<BalanceEntryRow, "source" | "toNote">) {
-  return (
-    (entry.source === BALANCE_RECONCILE_SOURCE || entry.source === BALANCE_INITIALIZATION_SOURCE) &&
-    getBalanceReconcileTarget(entry) != null
-  );
+function isBalanceAnchorEntry(entry: Pick<BalanceEntryRow, "source" | "toNote" | "reconciledBalance">) {
+  return getBalanceAnchorTarget(entry) != null;
 }
 
 function isDepositAccountLike(account: AccountBalanceLike) {
@@ -138,7 +138,7 @@ function foldBalanceEntry(
     return runningBalance;
   }
   if (isLoanOrSettlementAccountKind(account.kind)) {
-    if (getBalanceReconcileTarget(entry) != null) {
+    if (isBalanceAnchorEntry(entry)) {
       return applyBalanceReconcileEntry(runningBalance, entry, account.id);
     }
     if (entry.type !== TransactionType.transfer) return runningBalance;
@@ -440,6 +440,7 @@ export async function computeAccountDisplayBalances(
         fundSubtype: true,
         fundConfirmDate: true,
         fundArrivalDate: true,
+        reconciledBalance: true,
       },
     });
 
@@ -498,6 +499,7 @@ export async function computeAccountDisplayBalances(
         fundSubtype: true,
         fundConfirmDate: true,
         fundArrivalDate: true,
+        reconciledBalance: true,
       },
     });
 
@@ -531,7 +533,7 @@ export async function computeAccountDisplayBalances(
       let runningBalance = 0;
       for (const entry of orderedRows) {
         if (isLoanOrSettlementAccountKind(account.kind)) {
-          if (getBalanceReconcileTarget(entry) != null) {
+          if (isBalanceAnchorEntry(entry)) {
             runningBalance = applyBalanceReconcileEntry(runningBalance, entry, account.id);
             continue;
           }
@@ -615,7 +617,7 @@ export async function computeLoanPrincipalBalancesAsOf(
       .sort((a, b) => compareDetailEntriesAsc(a, b, accountId));
     let runningBalance = 0;
     for (const entry of orderedRows) {
-      const reconcileTarget = getBalanceReconcileTarget(entry);
+      const reconcileTarget = getBalanceAnchorTarget(entry);
       if (reconcileTarget != null) {
         runningBalance = reconcileTarget;
         continue;
@@ -724,9 +726,16 @@ function buildBalanceWindowWhere(
 }
 
 function balanceAnchorMatchWhere() {
+  // 两类锚点：①「余额校准 / 期初余额」行（备注前缀带目标值）；
+  // ② 已「对账」锁定的行（reconciledBalance 非空）。两者在余额折叠里语义相同。
   return {
-    source: { in: [BALANCE_RECONCILE_SOURCE, BALANCE_INITIALIZATION_SOURCE] },
-    toNote: { startsWith: BALANCE_RECONCILE_TARGET_PREFIX },
+    OR: [
+      {
+        source: { in: [BALANCE_RECONCILE_SOURCE, BALANCE_INITIALIZATION_SOURCE] },
+        toNote: { startsWith: BALANCE_RECONCILE_TARGET_PREFIX },
+      },
+      { reconciledBalance: { not: null } },
+    ],
   } satisfies Prisma.TxRecordWhereInput;
 }
 
@@ -787,7 +796,7 @@ export async function foldOversizedBalanceWindow(
     orderBy: [{ date: "asc" }, { createdAt: "asc" }, { id: "asc" }],
   });
   const orderedAnchors = anchors
-    .filter((row) => getBalanceReconcileTarget(row) != null)
+    .filter((row) => getBalanceAnchorTarget(row) != null)
     .filter((row) => {
       const day = localDateKey(getDetailEntryDisplayDate(row, account.id));
       return day > startKeyExclusive && day <= endKeyInclusive;
@@ -981,7 +990,7 @@ export async function loadLastBalanceAnchor(
     });
     if (page.length === 0) break;
     for (const row of page) {
-      if (getBalanceReconcileTarget(row) == null) continue;
+      if (getBalanceAnchorTarget(row) == null) continue;
       if (localDateKey(getDetailEntryDisplayDate(row, accountId)) > todayKey) continue;
       if (!lastAnchor || compareDetailEntriesAsc(lastAnchor, row, accountId) < 0) {
         lastAnchor = row;
@@ -1105,7 +1114,7 @@ async function advanceAccountBalanceStep(accountId: string, maxWindows = 1) {
         acc.householdId,
       );
       const nextBalance =
-        (getBalanceReconcileTarget(anchor) ?? 0) +
+        (getBalanceAnchorTarget(anchor) ?? 0) +
         ordinary.balance +
         principalAtEnd -
         principalAtAnchor;

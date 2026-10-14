@@ -8,6 +8,8 @@ export const BALANCE_RECONCILE_TARGET_PREFIX = "balance_reconcile_target:";
 type BalanceReconcileEntryLike = {
   source?: string | null;
   toNote?: string | null;
+  /** 对账锁定时钉住的本行「事后余额」；非空即该行是锚点（等价「余额校准」）。 */
+  reconciledBalance?: unknown;
 };
 
 type AccountFlowEntryLike = BalanceReconcileEntryLike & {
@@ -48,13 +50,36 @@ export function getBalanceReconcileTarget(entry: BalanceReconcileEntryLike) {
 }
 
 /**
+ * 「对账」锁定钉住的本行事后余额（`TxRecord.reconciledBalance`）。
+ *
+ * 非空 = 这一行已对账：在余额折叠里它是锚点，余额被钉成这个值，
+ * 它之前流水的变化不再影响它及之后的行（与「余额校准」同一套语义）。
+ * 与源标记（`source` + `toNote` 前缀）那套锚点**并存**：两者都算锚点。
+ */
+export function getReconciledAnchorTarget(entry: { reconciledBalance?: unknown }) {
+  const raw = entry.reconciledBalance;
+  if (raw == null) return null;
+  const value = toNumber(raw);
+  return Number.isFinite(value) ? value : null;
+}
+
+/** 该行是否已对账锁定（不可删除 / 修改，编辑窗只读）。 */
+export function isReconciledEntry(entry: { reconciledBalance?: unknown; reconciledAt?: unknown }) {
+  if (entry.reconciledAt != null) return true;
+  return getReconciledAnchorTarget(entry) != null;
+}
+
+/**
  * 与服务端明细 SQL 的 `isAnchor` 判定保持一致（detail-page-query.ts）：
- * 来源必须是「余额校准」或「期初余额」，**并且**备注里带目标值。
+ * ① 已对账锁定（`reconciledBalance` 非空）→ 锚点，target 就是它；
+ * ② 来源必须是「余额校准」或「期初余额」，**并且**备注里带目标值。
  *
  * 只带备注前缀、来源不对的行，服务端不当锚点，客户端也不能当——否则本页余额
  * 重算会和服务端的窗口函数口径分叉，出现「前端一个数字、刷新后另一个数字」。
  */
 export function getBalanceAnchorTarget(entry: BalanceReconcileEntryLike) {
+  const reconciled = getReconciledAnchorTarget(entry);
+  if (reconciled != null) return reconciled;
   const source = String(entry.source ?? "");
   if (source !== BALANCE_RECONCILE_SOURCE && source !== BALANCE_INITIALIZATION_SOURCE) return null;
   return getBalanceReconcileTarget(entry);
@@ -79,6 +104,10 @@ export function applyBalanceReconcileEntry(
   entry: AccountFlowEntryLike,
   accountId?: string | null,
 ) {
+  // ① 已对账锁定的行：余额钉成对账当时的事后余额（等价「余额校准」）。
+  // ② 余额校准 / 期初余额锚点行：沿用备注前缀里的目标值。
+  const reconciled = getReconciledAnchorTarget(entry);
+  if (reconciled != null) return reconciled;
   const target = getBalanceReconcileTarget(entry);
   if (target != null) return target;
   return currentBalance + effectiveAmountForAccount(entry, accountId);

@@ -159,10 +159,24 @@ export async function POST(req: NextRequest) {
         fundSourceEntryId: true,
         fundConfirmDate: true,
         fundArrivalDate: true,
+        reconciledAt: true,
       },
     });
     type ExistingRecord = (typeof existingRecords)[number];
     const existingMap = new Map<string, ExistingRecord>(existingRecords.map((record) => [record.id, record]));
+    // 「对账」锁定守卫：已对账的记录不可修改（含批量替换），必须先解除对账。
+    const reconciledIds = existingRecords.filter((record) => record.reconciledAt != null).map((record) => record.id);
+    if (reconciledIds.length > 0) {
+      return NextResponse.json(
+        {
+          ok: false,
+          code: "ENTRY_RECONCILED",
+          error: `有 ${reconciledIds.length} 条记录已对账锁定，需先解除对账才能修改`,
+          reconciledIds,
+        },
+        { status: 409 },
+      );
+    }
     let notFoundIds = ids.filter((id) => !existingMap.has(id));
     const updateById = new Map(updates.map((item) => [String(item.id ?? "").trim(), item]));
     const directFundUpdateIds = notFoundIds.filter((id) => {

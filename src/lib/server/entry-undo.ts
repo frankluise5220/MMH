@@ -342,6 +342,12 @@ export async function undoLatestEntryOperation(ctx: HouseholdContext) {
       for (const snapshot of snapshots) {
         const id = String(snapshot.id ?? "");
         if (!id) continue;
+        // 「对账」锁定的记录不可删除：撤销「新建」等价于删除，必须先解除对账。
+        const locked = await tx.txRecord.findFirst({
+          where: { id, OR: [{ householdId: ctx.householdId }, { householdId: null }], reconciledAt: { not: null } },
+          select: { id: true },
+        });
+        if (locked) throw new Error("该记录已对账锁定，需先解除对账才能撤销");
         await tx.txRecord.updateMany({
           where: { id, OR: [{ householdId: ctx.householdId }, { householdId: null }], deletedAt: null },
           data: { deletedAt: new Date() },
@@ -355,9 +361,11 @@ export async function undoLatestEntryOperation(ctx: HouseholdContext) {
       if (!id) continue;
       const current = await tx.txRecord.findFirst({
         where: { id, OR: [{ householdId: ctx.householdId }, { householdId: null }] },
-        select: { id: true },
+        select: { id: true, reconciledAt: true },
       });
       if (!current) throw new Error(`Record ${id} has been permanently deleted and cannot be undone`);
+      // 「对账」锁定的记录不可修改：撤销编辑会把快照写回去，必须先解除对账。
+      if (current.reconciledAt) throw new Error("该记录已对账锁定，需先解除对账才能撤销");
       await tx.txRecord.update({ where: { id }, data: snapshotToUpdateData(snapshot) as Prisma.TxRecordUncheckedUpdateInput });
       const tagIds = Array.isArray(snapshot._entryTagIds)
         ? snapshot._entryTagIds.map(String).filter(Boolean)
