@@ -24,8 +24,8 @@
  *   `reportedAt`) as retired.
  */
 import { randomUUID } from "node:crypto";
-import { prisma } from "@/lib/db/prisma";
 import { logger } from "@/lib/logger";
+import { ensureSystemSetting, getSystemSetting } from "@/lib/server/system-setting";
 
 export const INSTALLATION_ID_SETTING_KEY = "mmh_installation_id";
 
@@ -36,26 +36,14 @@ export const INSTALLATION_ID_SETTING_KEY = "mmh_installation_id";
  */
 export async function getInstallationId(): Promise<string | null> {
   try {
-    const existing = await prisma.systemSetting.findUnique({
-      where: { key: INSTALLATION_ID_SETTING_KEY },
-      select: { value: true },
-    });
-    const stored = existing?.value?.trim();
+    const stored = (await getSystemSetting(INSTALLATION_ID_SETTING_KEY))?.trim();
     if (stored) return stored;
 
-    // `update: {}` keeps a value written by a concurrent request, so two
-    // simultaneous first reports can never fight over the primary key.
     const generated = randomUUID();
-    await prisma.systemSetting.upsert({
-      where: { key: INSTALLATION_ID_SETTING_KEY },
-      create: { key: INSTALLATION_ID_SETTING_KEY, value: generated },
-      update: {},
-    });
-    const settled = await prisma.systemSetting.findUnique({
-      where: { key: INSTALLATION_ID_SETTING_KEY },
-      select: { value: true },
-    });
-    return settled?.value?.trim() || generated;
+    // `ensureSystemSetting` keeps a value written by a concurrent request, so
+    // two simultaneous first reports can never fight over the primary key.
+    const settled = await ensureSystemSetting(INSTALLATION_ID_SETTING_KEY, generated);
+    return settled.trim() || generated;
   } catch (error) {
     logger.warn("read or create installation id failed", "installation-id", error);
     return null;

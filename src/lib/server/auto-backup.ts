@@ -11,6 +11,7 @@ import {
   serializeEncryptedBackupPackage,
 } from "@/lib/server/backup";
 import { createSqliteSnapshotBuffer, isSqliteFileDatabase } from "@/lib/server/sqlite-snapshot";
+import { readJsonSystemSetting, writeJsonSystemSetting } from "@/lib/server/system-setting";
 
 /**
  * Server-side automatic backup (NAS / Docker / desktop).
@@ -77,15 +78,6 @@ const WINDOWS_STARTUP_BACKUP_STALE_MS = 24 * 3600_000;
 
 function configError(message: string): never {
   throw new Error(message);
-}
-
-function parseJsonSetting(value: string | null | undefined): unknown {
-  if (!value) return null;
-  try {
-    return JSON.parse(value);
-  } catch {
-    return null;
-  }
 }
 
 export function normalizeAutoBackupConfig(raw: unknown): AutoBackupConfig {
@@ -184,24 +176,17 @@ export async function probeBackupPath(
 }
 
 export async function loadAutoBackupConfig(): Promise<AutoBackupConfig> {
-  const row = await prisma.systemSetting.findUnique({ where: { key: AUTO_BACKUP_CONFIG_KEY } });
-  return normalizeAutoBackupConfig(parseJsonSetting(row?.value));
+  return normalizeAutoBackupConfig(await readJsonSystemSetting(AUTO_BACKUP_CONFIG_KEY, null));
 }
 
 export async function saveAutoBackupConfig(config: unknown): Promise<AutoBackupConfig> {
   const normalized = normalizeAutoBackupConfig(config);
-  const value = JSON.stringify(normalized);
-  await prisma.systemSetting.upsert({
-    where: { key: AUTO_BACKUP_CONFIG_KEY },
-    create: { key: AUTO_BACKUP_CONFIG_KEY, value },
-    update: { value },
-  });
+  await writeJsonSystemSetting(AUTO_BACKUP_CONFIG_KEY, normalized);
   return normalized;
 }
 
 export async function loadAutoBackupStatus(): Promise<AutoBackupStatus> {
-  const row = await prisma.systemSetting.findUnique({ where: { key: AUTO_BACKUP_STATUS_KEY } });
-  const obj = (parseJsonSetting(row?.value) ?? {}) as Record<string, unknown>;
+  const obj = await readJsonSystemSetting<Record<string, unknown>>(AUTO_BACKUP_STATUS_KEY, {});
   return {
     lastRunAt: typeof obj.lastRunAt === "string" ? obj.lastRunAt : null,
     lastRunOk: typeof obj.lastRunOk === "boolean" ? obj.lastRunOk : null,
@@ -211,12 +196,7 @@ export async function loadAutoBackupStatus(): Promise<AutoBackupStatus> {
 }
 
 export async function saveAutoBackupStatus(status: AutoBackupStatus): Promise<void> {
-  const value = JSON.stringify(status);
-  await prisma.systemSetting.upsert({
-    where: { key: AUTO_BACKUP_STATUS_KEY },
-    create: { key: AUTO_BACKUP_STATUS_KEY, value },
-    update: { value },
-  });
+  await writeJsonSystemSetting(AUTO_BACKUP_STATUS_KEY, status);
 }
 
 function startOfDay(date: Date): Date {

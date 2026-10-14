@@ -1,9 +1,8 @@
 import {
-  BALANCE_INITIALIZATION_SOURCE,
-  BALANCE_RECONCILE_SOURCE,
   applyBalanceReconcileEntry,
   effectiveAmountForAccount,
-  getBalanceReconcileTarget,
+  getBalanceAnchorTarget,
+  isReconciledEntry,
 } from "@/lib/balance-reconcile";
 import { getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
 import { formatDateLocal, toNumber } from "@/lib/date-utils";
@@ -25,6 +24,9 @@ export type ReorderDisplayEntry = {
   fundArrivalDate?: Date | string | number | null | undefined;
   fundArrivalAmount?: unknown;
   runningBalance?: number | null;
+  /** 对账锁定：reconciledAt 非空 = 锁定；reconciledBalance 非空 = 余额锚点。 */
+  reconciledAt?: Date | string | number | null | undefined;
+  reconciledBalance?: unknown;
 };
 
 export type LinkedWealthForReorder = {
@@ -38,10 +40,10 @@ export function entryReorderDayKey(entry: ReorderDisplayEntry, accountId?: strin
   return formatDateLocal(getDetailEntryDisplayDate(entry, accountId));
 }
 
-export function isReorderBalanceAnchor(entry: { source?: string | null; toNote?: string | null }) {
-  const source = String(entry.source ?? "");
-  if (source !== BALANCE_RECONCILE_SOURCE && source !== BALANCE_INITIALIZATION_SOURCE) return false;
-  return getBalanceReconcileTarget(entry) != null;
+export function isReorderBalanceAnchor(entry: { source?: string | null; toNote?: string | null; reconciledBalance?: unknown; reconciledAt?: unknown }) {
+  // 锚点（余额校准 / 期初余额 / 已对账锁定）都不能被拖动重排：它们钉住余额，
+  // 挪位会让锚点前后段的分段口径整体漂移。
+  return getBalanceAnchorTarget(entry) != null || isReconciledEntry(entry);
 }
 
 export function isWealthCashReceiptAction(action?: string | null) {
@@ -150,7 +152,7 @@ export function startOfDayRunningBalanceSeed<T extends ReorderDisplayEntry>(
   const sameDay = entries.filter((entry) => dayOf(entry) === dayKey);
   const firstOfDay = sameDay[sameDay.length - 1];
   if (!firstOfDay || firstOfDay.runningBalance == null) return null;
-  if (getBalanceReconcileTarget(firstOfDay) != null) return toNumber(firstOfDay.runningBalance);
+  if (getBalanceAnchorTarget(firstOfDay) != null) return toNumber(firstOfDay.runningBalance);
   return toNumber(firstOfDay.runningBalance) - effectiveAmountForAccount(firstOfDay, accountId);
 }
 
