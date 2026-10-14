@@ -1150,7 +1150,7 @@ resolve_port() {
 write_env_file() {
     local requested_port="$1"
     local requested_node_bin="\${2:-}"
-    local port pkgvar system_password session_secret node_max_old_space node_bin reg_url reg_token password_file session_secret_file port_file
+    local port pkgvar system_password session_secret node_max_old_space node_bin reg_url reg_token reg_disabled password_file session_secret_file port_file
     if [ -n "$requested_port" ]; then
         port="$(printf '%s' "$requested_port" | tr -d '[:space:]')"
     else
@@ -1168,6 +1168,7 @@ write_env_file() {
     esac
     reg_url="$(read_env_value MMH_REGISTRATION_API_URL 2>/dev/null || true)"
     reg_token="$(read_env_value MMH_REGISTRATION_API_TOKEN 2>/dev/null || true)"
+    reg_disabled="$(read_env_value MMH_REGISTRATION_DISABLED 2>/dev/null || true)"
     password_file="\${pkgvar}/mmh-system-password.txt"
     session_secret_file="\${pkgvar}/mmh-session-secret.txt"
     port_file="\${pkgvar}/.port"
@@ -1183,6 +1184,7 @@ MMH_NODE_MAX_OLD_SPACE_MB=\${node_max_old_space}
 MMH_NODE_BIN=\${node_bin}
 MMH_REGISTRATION_API_URL=\${reg_url}
 MMH_REGISTRATION_API_TOKEN=\${reg_token}
+MMH_REGISTRATION_DISABLED=\${reg_disabled}
 EOF
     chmod 600 "\${pkgvar}/mmh.env" 2>/dev/null || true
     printf '%s\\n' "$port" > "$port_file"
@@ -1377,7 +1379,7 @@ generate_session_secret () {
 }
 
 ensure_runtime_settings () {
-  local env_port env_password system_password env_session_secret session_secret env_password_reset_secret password_reset_secret env_node_max_old_space node_max_old_space env_node_bin node_bin env_reg_url env_reg_token reg_url reg_token
+  local env_port env_password system_password env_session_secret session_secret env_password_reset_secret password_reset_secret env_node_max_old_space node_max_old_space env_node_bin node_bin env_reg_url env_reg_token env_reg_disabled reg_url reg_token reg_disabled
   mkdir -p "$DATA_DEST" "$DATA_ROOT"
 
   env_port="$(read_env_value PORT 2>/dev/null || true)"
@@ -1440,16 +1442,21 @@ ensure_runtime_settings () {
 
   # Email-registration service credentials (mmh-registration). The central
   # mmh-registration service issues the global MMH identity, so MMH login /
-  # registration needs both the URL and the shared API token. The URL and token
-  # ship with a default (the official floatingice.win service) but remain
-  # overridable via MMH_REGISTRATION_API_URL / MMH_REGISTRATION_API_TOKEN, and
-  # a user can still disable registration by blanking them in mmh.env.
+  # registration needs both the URL and the shared API token. No default is
+  # written here any more: src/lib/server/registration-client.ts ships the
+  # official service as a built-in fallback, so every channel (Synology, fnOS,
+  # Docker, desktop, source checkout) resolves the same defaults and the token
+  # lives in exactly one place. Keep forwarding whatever this install already
+  # has; MMH_REGISTRATION_DISABLED turns MMH membership off entirely.
   env_reg_url="$(read_env_value MMH_REGISTRATION_API_URL 2>/dev/null || true)"
   env_reg_token="$(read_env_value MMH_REGISTRATION_API_TOKEN 2>/dev/null || true)"
-  reg_url="\${MMH_REGISTRATION_API_URL:-\${env_reg_url:-https://fnapp.floatingice.win:10101}}"
-  reg_token="\${MMH_REGISTRATION_API_TOKEN:-\${env_reg_token:-3f91f7ff3e2dd134b66f08c69cc4ec43e84bb0b268729f0a1ee846ee23c7919e}}"
+  env_reg_disabled="$(read_env_value MMH_REGISTRATION_DISABLED 2>/dev/null || true)"
+  reg_url="\${MMH_REGISTRATION_API_URL:-\${env_reg_url:-}}"
+  reg_token="\${MMH_REGISTRATION_API_TOKEN:-\${env_reg_token:-}}"
+  reg_disabled="\${MMH_REGISTRATION_DISABLED:-\${env_reg_disabled:-0}}"
   [ -n "$reg_url" ] && export MMH_REGISTRATION_API_URL="$reg_url"
   [ -n "$reg_token" ] && export MMH_REGISTRATION_API_TOKEN="$reg_token"
+  [ -n "$reg_disabled" ] && export MMH_REGISTRATION_DISABLED="$reg_disabled"
 
   cat > "$ENV_FILE" <<EOF
 PORT=\${PORT}
@@ -1460,6 +1467,7 @@ MMH_NODE_MAX_OLD_SPACE_MB=\${MMH_NODE_MAX_OLD_SPACE_MB}
 MMH_NODE_BIN=\${node_bin}
 MMH_REGISTRATION_API_URL=\${reg_url}
 MMH_REGISTRATION_API_TOKEN=\${reg_token}
+MMH_REGISTRATION_DISABLED=\${reg_disabled}
 PASSWORD_RESET_SECRET=\${password_reset_secret}
 EOF
   chmod 600 "$ENV_FILE" 2>/dev/null || true
@@ -2063,6 +2071,29 @@ const path = require("node:path");
 const Database = require("better-sqlite3");
 
 const MIGRATIONS = [
+  {
+    // MMH 会员邮箱：绑定当时写入，之后不随本地联系邮箱改动。
+    // 绑定关系的权威标识只有 registrationPrincipalId，这里只是展示与
+    // 重新匹配用的稳定来源。可空：存量账号由自愈逻辑补齐。
+    version: "20261013_add_user_registration_email",
+    description: "Add User.registrationEmail: MMH membership address captured at binding time",
+    apply(db) {
+      addColumnIfMissing(db, "User", "registrationEmail", "TEXT");
+    },
+  },
+  {
+    // 流水「对账」锁定：reconciledAt 非空 = 已对账（不可删除/修改，编辑窗只读）；
+    // reconciledBalance = 对账当时钉住的本行事後余额，余额折叠把它当锚点（等价「余额校准」）。
+    // 两列都可空，存量流水全部是「未对账」，无需回填。
+    version: "20261013_add_entry_reconcile",
+    description: "Add TxRecord.reconciledAt/reconciledBalance: reconcile lock + balance anchor",
+    apply(db) {
+      if (tableExists(db, "transactions")) {
+        addColumnIfMissing(db, "transactions", "reconciledAt", "DATETIME");
+        addColumnIfMissing(db, "transactions", "reconciledBalance", "DECIMAL(18,2)");
+      }
+    },
+  },
   {
     // External API key capability: "read" (query only) or "write"
     // (query + bookkeeping). Defaults to "write" so keys created before this

@@ -1,7 +1,8 @@
 import { verifyPassword } from "@/lib/auth/password";
-import { prisma } from "@/lib/db/prisma";
 import { credentialKindOf, type CredentialKind } from "@/lib/credential-kind";
 import { verifyEmailPrincipal } from "@/lib/server/registration-client";
+import { getSystemSetting } from "@/lib/server/system-setting";
+import type { SessionAuthMethod } from "@/lib/server/session-cookies";
 
 /**
  * The single credential-verification implementation.
@@ -32,6 +33,8 @@ export type CredentialSubject = {
   passwordHash: string | null;
   fnosUid: string | null;
   registrationPrincipalId: string | null;
+  /** MMH membership address captured at binding time; the editable `email` is not it. */
+  registrationEmail?: string | null;
   email: string | null;
 };
 
@@ -40,6 +43,7 @@ export const CREDENTIAL_SUBJECT_SELECT = {
   passwordHash: true,
   fnosUid: true,
   registrationPrincipalId: true,
+  registrationEmail: true,
   email: true,
 } as const;
 
@@ -63,16 +67,23 @@ export type CredentialVerification =
  * always empty and the legacy branch below is dead.
  */
 export async function readLegacyAccessPassword(): Promise<string> {
-  const setting = await prisma.systemSetting.findUnique({
-    where: { key: LEGACY_ACCESS_PASSWORD_KEY },
-    select: { value: true },
-  });
-  return setting?.value ?? "";
+  return (await getSystemSetting(LEGACY_ACCESS_PASSWORD_KEY)) ?? "";
 }
 
 /**
- * Verifies `password` against `subject`. The order is fixed and MUST NOT be
- * reordered per caller:
+ * Verifies `password` against `subject`.
+ *
+ * Pass `options.authMethod` when the caller knows which identity the user
+ * signed in with — that is the normal case for anything after login, because
+ * the session cookie carries it. It pins the check to that one credential
+ * type, which is what "sign in with X, confirm with X" means: an account can
+ * hold several credentials at once (a local password plus an MMH binding), so
+ * trying them in a fixed order would ask for the wrong secret and report a
+ * meaningless "wrong password".
+ *
+ * Without `authMethod` (login, and the ledger-switch path where the secret
+ * belongs to an account nobody is signed in as yet) the type is derived from
+ * the row's own fields in this fixed order, which MUST NOT be reordered:
  *
  *   1. **local** — a bcrypt `passwordHash` on the account itself.
  *   2. **fnOS** — a gateway-bound account with no local password is refused
@@ -96,8 +107,49 @@ export async function readLegacyAccessPassword(): Promise<string> {
 export async function verifyUserCredential(
   subject: CredentialSubject,
   password: string,
-  options: { legacyPassword?: string | null } = {},
+  options: { legacyPassword?: string | null; authMethod?: SessionAuthMethod | null } = {},
 ): Promise<CredentialVerification> {
+  const authMethod = options.authMethod ?? null;
+
+  if (authMethod === "local") {
+    if (!subject.passwordHash) {
+      return { ok: false, code: "PASSWORD_NOT_SET", status: 400, attempted: "local" };
+    }
+    const matched = await verifyPassword(password, subject.passwordHash);
+    return matched
+      ? { ok: true, kind: "local" }
+      : { ok: false, code: "INVALID_PASSWORD", status: 401, attempted: "local" };
+  }
+
+  if (authMethod === "mmh") {
+    // The membership address is the one captured at binding time; the editable
+    // local contact field is not a valid way to address the central account.
+    const identity = subject.registrationEmail ?? subject.email;
+    if (!subject.registrationPrincipalId || !identity) {
+      return { ok: false, code: "PASSWORD_NOT_SET", status: 400, attempted: "none" };
+    }
+    const verification = await verifyEmailPrincipal({ email: identity, password });
+    return verification.ok
+      ? { ok: true, kind: "mmh" }
+      : { ok: false, code: "INVALID_PASSWORD", status: 401, attempted: "mmh" };
+  }
+
+  if (authMethod === "fnos") {
+    return { ok: false, code: "LOCAL_PASSWORD_REQUIRED", status: 400, attempted: "fnos" };
+  }
+
+  if (authMethod === "legacy") {
+    const legacyPassword =
+      options.legacyPassword === undefined
+        ? await readLegacyAccessPassword()
+        : options.legacyPassword ?? "";
+    if (legacyPassword.length > 0 && password === legacyPassword) {
+      return { ok: true, kind: "legacy" };
+    }
+    return { ok: false, code: "INVALID_PASSWORD", status: 401, attempted: "legacy" };
+  }
+
+  // No session identity available: derive the type from the row's own fields.
   if (subject.passwordHash) {
     const matched = await verifyPassword(password, subject.passwordHash);
     return matched

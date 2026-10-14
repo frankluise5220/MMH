@@ -14,6 +14,18 @@ export const SESSION_COOKIES = [
   HOUSEHOLD_COOKIE,
 ] as const;
 
+/**
+ * How the session was established.
+ *
+ * Stamped into the signed cookie so later credential checks verify against the
+ * SAME identity the user actually signed in with, instead of re-deriving a type
+ * from whichever fields the row happens to carry. An account can hold several
+ * at once (a local password plus an MMH binding), so "try them in some order"
+ * silently asks for the wrong secret: someone who signed in with their MMH
+ * membership password would be told the local password was wrong.
+ */
+export type SessionAuthMethod = "local" | "mmh" | "fnos" | "legacy";
+
 type CookieRequestContext = {
   nextUrl?: { protocol?: string };
   headers?: { get(name: string): string | null };
@@ -26,6 +38,10 @@ type VerifiedSessionPayload = {
   // authVersion at issuance time. A credential change bumps the user's
   // authVersion, which invalidates every session carrying an older value.
   av?: number;
+  // Identity the user signed in with (see SessionAuthMethod). Sessions minted
+  // before this existed carry no claim; those fall back to deriving the type
+  // from the user row.
+  am?: SessionAuthMethod;
 };
 
 const VERIFIED_SESSION_VERSION = "v1";
@@ -63,7 +79,21 @@ function timingSafeEqualText(a: string, b: string) {
   return timingSafeEqual(left, right);
 }
 
-export function createVerifiedSessionValue(userId: string, maxAgeSeconds: number, authVersion = 1, now = new Date()) {
+const SESSION_AUTH_METHODS: readonly SessionAuthMethod[] = ["local", "mmh", "fnos", "legacy"];
+
+function normalizeAuthMethod(value: unknown): SessionAuthMethod | undefined {
+  return typeof value === "string" && SESSION_AUTH_METHODS.includes(value as SessionAuthMethod)
+    ? (value as SessionAuthMethod)
+    : undefined;
+}
+
+export function createVerifiedSessionValue(
+  userId: string,
+  maxAgeSeconds: number,
+  authVersion = 1,
+  now = new Date(),
+  authMethod?: SessionAuthMethod,
+) {
   const normalizedUserId = userId.trim();
   if (!normalizedUserId) {
     throw new Error("User id is required to create a verified session.");
@@ -77,6 +107,7 @@ export function createVerifiedSessionValue(userId: string, maxAgeSeconds: number
     exp: expiresAt,
     nonce: randomBytes(16).toString("base64url"),
     av: authVersion,
+    ...(authMethod ? { am: authMethod } : {}),
   };
   const encodedPayload = base64UrlEncode(JSON.stringify(payload));
   return `${VERIFIED_SESSION_VERSION}.${encodedPayload}.${signSessionPayload(encodedPayload)}`;
@@ -86,7 +117,7 @@ export function verifyVerifiedSessionValue(
   value: string | null | undefined,
   expectedUserId?: string | null,
   now = new Date(),
-): { ok: true; userId: string; expiresAt: Date; authVersion: number } | { ok: false } {
+): { ok: true; userId: string; expiresAt: Date; authVersion: number; authMethod: SessionAuthMethod | null } | { ok: false } {
   const raw = value?.trim();
   if (!raw) return { ok: false };
   const [version, encodedPayload, signature, ...extra] = raw.split(".");
@@ -107,7 +138,14 @@ export function verifyVerifiedSessionValue(
     const expected = expectedUserId?.trim();
     if (!userId || !expiresAt || expiresAt <= now.getTime()) return { ok: false };
     if (expected && expected !== userId) return { ok: false };
-    return { ok: true, userId, expiresAt: new Date(expiresAt), authVersion };
+    return {
+      ok: true,
+      userId,
+      expiresAt: new Date(expiresAt),
+      authVersion,
+      // Older sessions carry no claim; null means "derive it from the user row".
+      authMethod: normalizeAuthMethod(payload.am) ?? null,
+    };
   } catch {
     return { ok: false };
   }

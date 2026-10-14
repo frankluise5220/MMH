@@ -102,7 +102,11 @@ export async function getApiHouseholdScope(req: Request): Promise<ApiHouseholdCo
       fnosUid: adminUser.fnosUid,
       email: adminUser.email,
       registrationPrincipalId: adminUser.registrationPrincipalId,
+      registrationEmail: null,
       authVersion: adminUser.authVersion,
+      // An access-key session is not a login, so there is no signed-in identity
+      // to pin: credential checks derive the type from the row's own fields.
+      authMethod: null,
     },
     authMethod: "accessKey",
     accessKey,

@@ -1,4 +1,5 @@
 import crypto from "crypto";
+import { getSystemSetting, setSystemSetting } from "@/lib/server/system-setting";
 
 const ALGORITHM = "aes-256-gcm";
 const IV_LENGTH = 12;
@@ -43,19 +44,14 @@ export function isEncrypted(s: string): boolean {
  */
 export async function getOrCreateMasterKey(): Promise<Buffer> {
   if (_masterKey) return _masterKey;
-  const { prisma } = await import("@/lib/db/prisma");
-  let setting = await prisma.systemSetting.findUnique({ where: { key: MASTER_KEY_SETTING } });
-  if (setting && setting.value) {
-    _masterKey = Buffer.from(setting.value, "base64");
+  const stored = await getSystemSetting(MASTER_KEY_SETTING);
+  if (stored) {
+    _masterKey = Buffer.from(stored, "base64");
     return _masterKey;
   }
   // Generate a 256-bit random key
   _masterKey = crypto.randomBytes(32);
-  await prisma.systemSetting.upsert({
-    where: { key: MASTER_KEY_SETTING },
-    create: { key: MASTER_KEY_SETTING, value: _masterKey.toString("base64") },
-    update: { value: _masterKey.toString("base64") },
-  });
+  await setSystemSetting(MASTER_KEY_SETTING, _masterKey.toString("base64"));
   console.log("[encrypt] Generated new master encryption key");
   return _masterKey;
 }

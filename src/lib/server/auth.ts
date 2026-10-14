@@ -42,6 +42,10 @@ export const getCurrentUser = cache(async function getCurrentUser(): Promise<Cur
       userId: verified.userId,
       username: cookieStore.get(USERNAME_COOKIE)?.value,
       householdId: cookieStore.get(HOUSEHOLD_COOKIE)?.value,
+      // Which identity signed in. Sensitive operations must ask for the secret
+      // that belongs to THIS identity, not for whichever credential the user
+      // row happens to also carry.
+      authMethod: verified.authMethod,
     },
     { totalTimeoutMs: USER_LOOKUP_TIMEOUT_MS },
   );

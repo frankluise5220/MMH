@@ -9,6 +9,7 @@ import {
   VERIFIED_COOKIE,
   createVerifiedSessionValue,
   sessionCookieOptions,
+  type SessionAuthMethod,
 } from "@/lib/server/session-cookies";
 
 /**
@@ -25,6 +26,14 @@ export type SessionIssueTarget = {
   name: string;
   householdId: string | null;
   authVersion: number;
+  /**
+   * Identity the user signed in with. Later credential checks (sensitive
+   * operations) verify against this, so an account that carries more than one
+   * credential type is asked for the secret that matches how it was entered.
+   * Omit only when the caller genuinely cannot tell; the check then falls back
+   * to deriving the type from the user row.
+   */
+  authMethod?: SessionAuthMethod;
 };
 
 type CookieRequestContext = Parameters<typeof sessionCookieOptions>[1];
@@ -76,7 +85,7 @@ export function issueSessionCookies(
 
   response.cookies.set(
     VERIFIED_COOKIE,
-    createVerifiedSessionValue(target.userId, maxAge, target.authVersion),
+    createVerifiedSessionValue(target.userId, maxAge, target.authVersion, new Date(), target.authMethod),
     cookieOptions,
   );
   response.cookies.set(USER_ID_COOKIE, target.userId, cookieOptions);

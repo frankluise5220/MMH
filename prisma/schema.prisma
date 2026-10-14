@@ -1546,6 +1546,10 @@ model User {
   authVersion             Int                  @default(1)
   /// principalId issued by the external mmh-registration service (registration identifier)
   registrationPrincipalId String?
+  /// MMH membership address captured when the binding was made. Deliberately
+  /// separate from `email`: that one is the editable local contact field and
+  /// can be changed afterwards, which must not lose track of the bound account.
+  registrationEmail      String?
   /// fnOS user UID / FN ID bound to this user, unique within its ledger (one UID per ledger)
   fnosUid                 String?
   householdId             String?
@@ -1909,6 +1913,11 @@ model TxRecord {
   originalAmount                      Decimal?                             @db.Decimal(18, 2)
   locationId                          String?
   locationName                        String?
+  // 对账锁定：reconciledAt 非空表示该记录已「对账」——不可删除、不可修改（编辑窗只读），
+  // 只有解除对账才能再改。reconciledBalance 是对账当时钉住的「本行事后余额」，
+  // 在余额折叠里作为锚点（等价于「余额校准」）：它之前的流水变化不再影响它及之后的行。
+  reconciledAt                        DateTime?
+  reconciledBalance                   Decimal?                             @db.Decimal(18, 2)
   Attachment                          Attachment[]
   EntryTag                            EntryTag[]
   account                             Account                              @relation("transactions_accountIdToAccount", fields: [accountId], references: [id])

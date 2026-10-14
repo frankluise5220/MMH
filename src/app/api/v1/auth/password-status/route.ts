@@ -7,9 +7,11 @@ import { getHouseholdScope } from "@/lib/server/household-scope";
 import { readGatewayFnosIdentity } from "@/lib/server/gateway-identity";
 import { cookies } from "next/headers";
 import { hasEmailService } from "@/lib/mail/passwordReset";
+import { isRegistrationConfigured } from "@/lib/server/registration-client";
 import { createDefaultCategoriesForHousehold } from "@/lib/default-categories";
 import { createDefaultInstitutionsForHousehold } from "@/lib/default-institutions";
 import { getDefaultTradingCalendarForAccount } from "@/lib/fund/trading-calendar";
+import { deleteSystemSetting, getSystemSetting } from "@/lib/server/system-setting";
 
 const LEGACY_PASSWORD_KEY = "access_password";
 const STATUS_LOOKUP_TIMEOUT_MS = 5000;
@@ -74,6 +76,10 @@ function degradedStatusResponse() {
     fnosBound: false,
     fnosHouseholdIds: [],
     passwordResetEnabled: false,
+    // Whether MMH membership sign-in is available on this deployment. The
+    // login page hides the MMH tab when it is false, instead of letting the
+    // user type a password that can only fail.
+    mmhEnabled: isRegistrationConfigured(),
     users: [],
   });
   for (const [key, value] of Object.entries(NO_STORE_HEADERS)) {
@@ -196,10 +202,7 @@ export async function GET(req: NextRequest) {
       where: { passwordHash: { not: null } },
       select: { id: true },
     }),
-    prisma.systemSetting.findUnique({
-      where: { key: LEGACY_PASSWORD_KEY },
-      select: { value: true },
-    }),
+    getSystemSetting(LEGACY_PASSWORD_KEY),
     selectLoginUsers(householdId),
     hasEmailService(householdId ?? undefined),
     // Every ledger user bound to this gateway identity, not just the first one:
@@ -216,7 +219,7 @@ export async function GET(req: NextRequest) {
   }
 
   const [householdCount, userCount, userWithPassword, legacy, users, passwordResetEnabled, fnosBoundUsers] = status;
-  const hasPassword = !!userWithPassword || (!!legacy && legacy.value.length > 0);
+  const hasPassword = !!userWithPassword || (legacy ?? "").length > 0;
   const needsInitialLedgerSetup = householdCount === 0 && userCount === 0 && !hasPassword;
   // Whether the *current* fnOS gateway user owns a ledger user. Deliberately
   // independent of `hasPassword`: binding a local password must not demote the
@@ -239,6 +242,7 @@ export async function GET(req: NextRequest) {
     fnosBound,
     fnosHouseholdIds,
     passwordResetEnabled,
+    mmhEnabled: isRegistrationConfigured(),
     users: loginUsers.map(u => ({
       id: u.id,
       name: u.name,
@@ -327,16 +331,14 @@ export async function POST(req: NextRequest) {
     }
   } else {
     // Migration bridge: if a legacy SystemSetting password exists, verify the legacy password first
-    const legacy = await prisma.systemSetting.findUnique({
-      where: { key: LEGACY_PASSWORD_KEY },
-    });
-    if (legacy && legacy.value.length > 0) {
+    const legacy = await getSystemSetting(LEGACY_PASSWORD_KEY);
+    if (legacy && legacy.length > 0) {
       const currentPassword = (body.currentPassword ?? "").trim();
-      if (currentPassword !== legacy.value) {
+      if (currentPassword !== legacy) {
         return NextResponse.json({ ok: false, code: "INVALID_CURRENT_PASSWORD", error: "当前密码错误" }, { status: 401 });
       }
       // Delete the legacy password (migration complete)
-      await prisma.systemSetting.delete({ where: { key: LEGACY_PASSWORD_KEY } }).catch(logger.catchLog("操作失败", "route.ts"));
+      await deleteSystemSetting(LEGACY_PASSWORD_KEY).catch(logger.catchLog("操作失败", "route.ts"));
     } else if (user.passwordHash == null) {
       // Accounts with no password and no legacy password: only allowed during first setup
       // (no user has set a password yet) or under a logged-in session (e.g. a new ledger

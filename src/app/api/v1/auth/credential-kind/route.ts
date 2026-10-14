@@ -1,10 +1,39 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { getCurrentUser } from "@/lib/server/auth";
-import { credentialKindOf } from "@/lib/credential-kind";
+import { credentialKindOf, type CredentialKind } from "@/lib/credential-kind";
 import { CREDENTIAL_SUBJECT_SELECT } from "@/lib/server/verify-credential";
+import type { SessionAuthMethod } from "@/lib/server/session-cookies";
 
 export const runtime = "nodejs";
+
+/**
+ * Which secret a signed-in identity must present.
+ *
+ * The verifier pins the check to the identity the session was established with
+ * (`verifyUserCredential`), so the dialog must name that same secret. Deriving
+ * it from the row's fields instead would label the wrong one whenever an
+ * account carries more than a single credential — a local password plus an MMH
+ * binding is exactly that case.
+ *
+ * Returns null when the session predates the identity claim, so the caller
+ * falls back to `credentialKindOf`.
+ */
+function credentialKindForSession(authMethod: SessionAuthMethod | null): CredentialKind | null {
+  switch (authMethod) {
+    case "local":
+    // A legacy deployment password was migrated onto the account at login, so
+    // the account is now a local-password one.
+    case "legacy":
+      return "local";
+    case "mmh":
+      return "mmh";
+    case "fnos":
+      return "fnos";
+    default:
+      return null;
+  }
+}
 
 /**
  * GET /api/v1/auth/credential-kind[?householdId=<id>]
@@ -65,11 +94,14 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ ok: false, code: "USER_NOT_FOUND", error: "The signed-in user no longer exists." }, { status: 404 });
   }
 
+  const sessionKind = credentialKindForSession(user.authMethod);
   return NextResponse.json({
     ok: true,
-    credentialKind: credentialKindOf(dbUser),
+    credentialKind: sessionKind ?? credentialKindOf(dbUser),
     target: false,
     // Only used to explain *which* account is being verified; never a secret.
-    email: dbUser.email ?? null,
+    // For an MMH identity that is the bound membership address, which the
+    // central service actually answers for — not the editable contact email.
+    email: sessionKind === "mmh" ? dbUser.registrationEmail ?? dbUser.email ?? null : dbUser.email ?? null,
   });
 }

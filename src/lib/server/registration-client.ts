@@ -63,9 +63,42 @@ export interface RegistrationConfig {
   apiToken: string;
 }
 
+/**
+ * Built-in defaults for the official mmh-registration service.
+ *
+ * MMH membership is platform-independent by design: the same central service
+ * backs fnOS, Synology, Docker and Windows desktop installs alike, and nothing
+ * in this module branches on the channel. What used to be platform-dependent
+ * was only *where the defaults came from* — the Synology and fnOS package
+ * builders baked these two values into the env file they generate, while the
+ * Docker image and the desktop installer shipped nothing at all, so those
+ * installs could never use MMH sign-in (every attempt failed with
+ * REGISTRATION_NOT_CONFIGURED). Keeping the fallback in the one module that
+ * reads the config makes every channel behave the same out of the box.
+ *
+ * Env vars still win, so a private registration service remains a one-line
+ * change. To switch MMH off entirely — a self-hosted or offline install that
+ * must never call out to the central service — set
+ * MMH_REGISTRATION_DISABLED=1 rather than blanking the two values.
+ */
+const DEFAULT_REGISTRATION_BASE_URL = "https://fnapp.floatingice.win:10101";
+const DEFAULT_REGISTRATION_API_TOKEN = "3f91f7ff3e2dd134b66f08c69cc4ec43e84bb0b268729f0a1ee846ee23c7919e";
+
+/** Reads an env var as trimmed text; a missing or blank value reads as "". */
+function readRegistrationEnv(key: string): string {
+  return (process.env[key] ?? "").trim();
+}
+
+/** Explicit opt-out, because blanking the two values now falls back to defaults. */
+export function isRegistrationDisabled(): boolean {
+  const raw = readRegistrationEnv("MMH_REGISTRATION_DISABLED").toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
+}
+
 export function getRegistrationConfig(): RegistrationConfig {
-  const baseUrl = (process.env.MMH_REGISTRATION_API_URL ?? "").trim().replace(/\/+$/, "");
-  const apiToken = (process.env.MMH_REGISTRATION_API_TOKEN ?? "").trim();
+  if (isRegistrationDisabled()) return { baseUrl: "", apiToken: "" };
+  const baseUrl = (readRegistrationEnv("MMH_REGISTRATION_API_URL") || DEFAULT_REGISTRATION_BASE_URL).replace(/\/+$/, "");
+  const apiToken = readRegistrationEnv("MMH_REGISTRATION_API_TOKEN") || DEFAULT_REGISTRATION_API_TOKEN;
   return { baseUrl, apiToken };
 }
 
@@ -102,7 +135,7 @@ export async function registerEmailPrincipal(params: {
       ok: false,
       status: 503,
       code: "REGISTRATION_NOT_CONFIGURED",
-      error: "The registration service is not configured on this server.",
+      error: "本部署未启用 MMH 账号服务。",
     };
   }
 
@@ -198,7 +231,7 @@ async function postRegistrationAuth(
       ok: false,
       status: 503,
       code: "REGISTRATION_NOT_CONFIGURED",
-      error: "The registration service is not configured on this server.",
+      error: "本部署未启用 MMH 账号服务。",
     };
   }
 
@@ -227,8 +260,8 @@ async function postRegistrationAuth(
       status: 503,
       code: "REGISTRATION_SERVICE_UNREACHABLE",
       error: timedOut
-        ? "The MMH registration service timed out after 8 seconds. Check DNS, HTTPS egress, and proxy settings."
-        : "The MMH registration service is unreachable. Check DNS, HTTPS egress, and proxy settings.",
+        ? "连接 MMH 账号服务超时（8 秒），请检查 DNS、HTTPS 出口与代理设置。"
+        : "无法连接 MMH 账号服务，请检查 DNS、HTTPS 出口与代理设置。",
     };
   }
   clearTimeout(timeout);
@@ -319,7 +352,7 @@ async function postRegistrationCode(
       ok: false,
       status: 503,
       code: "REGISTRATION_NOT_CONFIGURED",
-      error: "The registration service is not configured on this server.",
+      error: "本部署未启用 MMH 账号服务。",
     };
   }
 
@@ -350,8 +383,8 @@ async function postRegistrationCode(
       status: 503,
       code: "REGISTRATION_SERVICE_UNREACHABLE",
       error: timedOut
-        ? "The MMH registration service timed out after 8 seconds. Check DNS, HTTPS egress, and proxy settings."
-        : "The MMH registration service is unreachable. Check DNS, HTTPS egress, and proxy settings.",
+        ? "连接 MMH 账号服务超时（8 秒），请检查 DNS、HTTPS 出口与代理设置。"
+        : "无法连接 MMH 账号服务，请检查 DNS、HTTPS 出口与代理设置。",
     };
   }
   clearTimeout(timeout);
@@ -458,7 +491,7 @@ export async function reportInstallationInventory(
       ok: false,
       status: 503,
       code: "REGISTRATION_NOT_CONFIGURED",
-      error: "The registration service is not configured on this server.",
+      error: "本部署未启用 MMH 账号服务。",
     };
   }
 

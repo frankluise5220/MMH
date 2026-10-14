@@ -8,6 +8,7 @@ import { getCurrentUser, isAdmin } from "@/lib/server/auth";
 import { readGatewayFnosIdentity } from "@/lib/server/gateway-identity";
 import { queueLedgerInventoryReport } from "@/lib/server/ledger-inventory";
 import { DEFAULT_SESSION_DAYS, normalizeSessionDays } from "@/lib/session-days";
+import { isRegistrationConfigured } from "@/lib/server/registration-client";
 
 export const runtime = "nodejs";
 
@@ -72,6 +73,7 @@ export async function GET(req: NextRequest) {
           isSystem: true,
           fnosUid: true,
           registrationPrincipalId: true,
+          registrationEmail: true,
           passwordHash: true,
           createdAt: true,
           updatedAt: true,
@@ -91,12 +93,18 @@ export async function GET(req: NextRequest) {
             isSystem: true,
             fnosUid: true,
             registrationPrincipalId: true,
+            registrationEmail: true,
             passwordHash: true,
             createdAt: true,
             updatedAt: true,
           },
         });
-        users = fallback.map((u) => ({ ...u, email: null, registrationPrincipalId: null }));
+        users = fallback.map((u) => ({
+          ...u,
+          email: null,
+          registrationPrincipalId: null,
+          registrationEmail: null,
+        }));
       } else {
         throw error;
       }
@@ -123,6 +131,10 @@ export async function GET(req: NextRequest) {
       ok: true,
       isFnosEnvironment,
       gatewayFnosUser: gatewayIdentity?.username || gatewayIdentity?.uid || null,
+      // Whether MMH membership can actually be used here. The user page hides
+      // the MMH tab, the "register MMH" row action and the MMH status pill when
+      // it is false, rather than offering controls that can only fail.
+      mmhEnabled: isRegistrationConfigured(),
       users: users.map(u => ({
         ...u,
         sessionDays: sessionDaysByUserId.get(u.id) ?? DEFAULT_SESSION_DAYS,

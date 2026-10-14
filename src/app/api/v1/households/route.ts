@@ -118,6 +118,9 @@ export async function POST(req: NextRequest) {
       name: created.adminUser.name,
       householdId: created.household.id,
       authVersion: created.adminUser.authVersion,
+      // Keep the identity the operator is already signed in with: creating a
+      // ledger is not a new authentication, it only switches the active ledger.
+      authMethod: user.authMethod ?? undefined,
     },
     { sessionDays: sessionDaysFromRequest(req), req },
   );

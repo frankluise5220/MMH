@@ -9,6 +9,7 @@ import {
 import { LEDGER_CREATION_INVITE_CODE_KEY } from "@/lib/households/create-ledger";
 import { logger } from "@/lib/logger";
 import { inspectLedgerInviteCode, missingIssuerRejection } from "@/lib/server/ledger-invite-code-guard";
+import { getSystemSetting } from "@/lib/server/system-setting";
 
 export const runtime = "nodejs";
 
@@ -42,7 +43,7 @@ export async function OPTIONS() {
 export async function POST(req: NextRequest) {
   if (!isRegistrationConfigured()) {
     return NextResponse.json(
-      { ok: false, code: "REGISTRATION_NOT_CONFIGURED", error: "The registration service is not configured on this server." },
+      { ok: false, code: "REGISTRATION_NOT_CONFIGURED", error: "本部署未启用 MMH 账号服务。" },
       { status: 503, headers: cors() },
     );
   }
@@ -57,8 +58,8 @@ export async function POST(req: NextRequest) {
   const inviteCode = parse.data.inviteCode?.trim() ?? "";
 
   if (inviteCode) {
-    const inviteSetting = await prisma.systemSetting.findUnique({ where: { key: LEDGER_CREATION_INVITE_CODE_KEY } });
-    const inviteRecords = parseLedgerInviteCodeRecords(inviteSetting?.value);
+    const inviteSetting = await getSystemSetting(LEDGER_CREATION_INVITE_CODE_KEY);
+    const inviteRecords = parseLedgerInviteCodeRecords(inviteSetting);
     // Each failure mode gets its own code + message: "invalid / another system /
     // already used" in one string left signups undiagnosable from the UI.
     const inspection = inspectLedgerInviteCode(inviteRecords, inviteCode);

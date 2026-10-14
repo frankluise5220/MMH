@@ -155,6 +155,7 @@ export async function POST(req: NextRequest) {
           role,
           householdId,
           registrationPrincipalId: principalId,
+          registrationEmail: email,
           // Pure MMH account: no local password.
         },
         select: { id: true, name: true, email: true, role: true },

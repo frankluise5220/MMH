@@ -60,9 +60,11 @@ export async function verifySensitiveOperationPassword(
   // replaced the user table), fall through with an empty subject so the legacy
   // bridge still gets a chance instead of throwing.
   const subject: CredentialSubject =
-    dbUser ?? { passwordHash: null, fnosUid: null, registrationPrincipalId: null, email: null };
+    dbUser ?? { passwordHash: null, fnosUid: null, registrationPrincipalId: null, registrationEmail: null, email: null };
 
-  const verdict = await verifyUserCredential(subject, password);
+  // Ask for the secret that matches how the user signed in, not for whichever
+  // credential the row happens to also carry.
+  const verdict = await verifyUserCredential(subject, password, { authMethod: currentUser.authMethod });
   if (verdict.ok) return { ok: true };
   return { ok: false, code: verdict.code, error: failureMessage(verdict), status: verdict.status };
 }

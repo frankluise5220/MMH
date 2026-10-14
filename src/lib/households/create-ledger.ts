@@ -28,6 +28,14 @@ export type CreateLedgerInput = {
   adminEmail?: string;
   fnosUid?: string;
   registrationPrincipalId?: string | null;
+  /**
+   * MMH membership address captured at binding time.
+   *
+   * Kept apart from `adminEmail`/`User.email`, which is the editable local
+   * contact field: editing it must not lose track of which central account a
+   * user is bound to. Backfilled for existing bindings on the next MMH login.
+   */
+  registrationEmail?: string | null;
 };
 
 export async function createLedgerWithDefaults(
@@ -121,6 +129,13 @@ export async function createLedgerWithDefaults(
       passwordHash,
       email: input.adminEmail?.trim() ? input.adminEmail.trim().toLowerCase() : null,
       registrationPrincipalId: input.registrationPrincipalId?.trim() ? input.registrationPrincipalId.trim() : null,
+      // Only meaningful alongside a principal id: the address that identity
+      // was verified under, so the UI can keep naming the bound account even
+      // after the local contact email is edited.
+      registrationEmail:
+        input.registrationPrincipalId?.trim() && input.adminEmail?.trim()
+          ? input.adminEmail.trim().toLowerCase()
+          : null,
       fnosUid: input.fnosUid?.trim() ? input.fnosUid.trim() : null,
       householdId: household.id,
     },

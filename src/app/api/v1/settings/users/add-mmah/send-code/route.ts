@@ -46,7 +46,7 @@ export async function POST(req: NextRequest) {
   }
   if (!isRegistrationConfigured()) {
     return NextResponse.json(
-      { ok: false, code: "REGISTRATION_NOT_CONFIGURED", error: "The registration service is not configured on this server." },
+      { ok: false, code: "REGISTRATION_NOT_CONFIGURED", error: "本部署未启用 MMH 账号服务。" },
       { status: 503, headers: cors() },
     );
   }

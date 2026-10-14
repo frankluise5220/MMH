@@ -15,6 +15,7 @@ import { logger } from "@/lib/logger";
 import { hashPassword } from "@/lib/auth/password";
 import { inspectLedgerInviteCode, missingIssuerRejection } from "@/lib/server/ledger-invite-code-guard";
 import { issueSessionCookies, sessionDaysFromRequest } from "@/lib/server/session-issue";
+import { getSystemSetting, setSystemSetting } from "@/lib/server/system-setting";
 
 export const runtime = "nodejs";
 
@@ -53,7 +54,7 @@ export async function OPTIONS() {
 export async function POST(req: NextRequest) {
   if (!isRegistrationConfigured()) {
     return NextResponse.json(
-      { ok: false, code: "REGISTRATION_NOT_CONFIGURED", error: "The registration service is not configured on this server." },
+      { ok: false, code: "REGISTRATION_NOT_CONFIGURED", error: "本部署未启用 MMH 账号服务。" },
       { status: 503, headers: cors() },
     );
   }
@@ -88,8 +89,8 @@ export async function POST(req: NextRequest) {
 
   let inviteRecords: ReturnType<typeof parseLedgerInviteCodeRecords> | null = null;
   if (inviteRegistration) {
-    const inviteSetting = await prisma.systemSetting.findUnique({ where: { key: LEDGER_CREATION_INVITE_CODE_KEY } });
-    inviteRecords = parseLedgerInviteCodeRecords(inviteSetting?.value);
+    const inviteSetting = await getSystemSetting(LEDGER_CREATION_INVITE_CODE_KEY);
+    inviteRecords = parseLedgerInviteCodeRecords(inviteSetting);
     // Same precise verdicts as send-code: this is the last chance to tell the
     // user *why* their code was rejected.
     const inspection = inspectLedgerInviteCode(inviteRecords, inviteCode);
@@ -174,10 +175,8 @@ export async function POST(req: NextRequest) {
           usedUserId: result.adminUser.id,
           usedUserName: result.adminUser.name,
         });
-        await tx.systemSetting.upsert({
-          where: { key: LEDGER_CREATION_INVITE_CODE_KEY },
-          create: { key: LEDGER_CREATION_INVITE_CODE_KEY, value: serializeLedgerInviteCodeRecords(usedInviteRecords) },
-          update: { value: serializeLedgerInviteCodeRecords(usedInviteRecords) },
+        await setSystemSetting(LEDGER_CREATION_INVITE_CODE_KEY, serializeLedgerInviteCodeRecords(usedInviteRecords), {
+          db: tx,
         });
       }
       return result;
@@ -200,6 +199,9 @@ export async function POST(req: NextRequest) {
       name: created.adminUser.name,
       householdId: created.household.id,
       authVersion: created.adminUser.authVersion,
+      // This flow just verified the MMH membership password against the central
+      // service, so that is the identity to confirm with later.
+      authMethod: "mmh",
     },
     { sessionDays: sessionDaysFromRequest(req), req },
   );

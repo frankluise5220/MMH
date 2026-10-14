@@ -1,4 +1,5 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
 import { useState, useEffect } from "react";
 import { KeyRound, UserRoundCheck, UserRoundPlus, X } from "lucide-react";
@@ -27,6 +28,12 @@ type ManagedUser = {
   hasPassword?: boolean;
   sessionDays?: number;
   registrationPrincipalId?: string | null;
+  /**
+   * MMH membership address captured when the binding was made. Falls back to
+   * `email` for bindings created before this column existed, until the account
+   * signs in with MMH once and backfills it.
+   */
+  registrationEmail?: string | null;
   fnosUid?: string | null;
   createdAt?: string;
 };
@@ -386,12 +393,16 @@ function UserModal({
   onCancel,
   onMmhAdded,
   users,
+  mmhEnabled,
 }: {
   initial?: ManagedUser;
   onSave: (data: { name: string; email?: string; role: string; password?: string }) => void;
   onCancel: () => void;
   onMmhAdded?: () => void;
   users: ManagedUser[];
+  /** False when this deployment has no MMH registration service: the MMH tab is
+   * a dead end then, so it is not offered at all. */
+  mmhEnabled: boolean;
 }) {
   const { t } = useI18n();
   const [name, setName] = useState(initial?.name ?? "");
@@ -495,7 +506,7 @@ function UserModal({
   );
 
   return (
-    <div className="app-modal-backdrop z-[1100]">
+    <ModalLayer className="app-modal-backdrop">
       <div className="app-modal-panel max-w-md">
         <div className="modal-header shrink-0">
           <div className="text-sm font-semibold text-slate-800">{isEditing ? t("settings.users.modalTitleEdit") : t("settings.users.modalTitleAdd")}</div>
@@ -518,14 +529,14 @@ function UserModal({
             <FolderTabs
               tabs={[
                 { id: "local", label: t("settings.users.tab.local") },
-                { id: "mmh", label: t("settings.users.tab.mmh") },
+                ...(mmhEnabled ? [{ id: "mmh", label: t("settings.users.tab.mmh") }] : []),
               ]}
               activeId={addTab}
               onChange={(id) => { setAddTab(id as "local" | "mmh"); setError(""); }}
               variant="stretch"
               panelClassName="space-y-4"
             >
-              {addTab === "local" ? (
+              {addTab === "local" || !mmhEnabled ? (
                 localFields
               ) : (
                 <AddMmhPanel
@@ -537,7 +548,7 @@ function UserModal({
           </div>
         )}
       </div>
-    </div>
+    </ModalLayer>
   );
 }
 
@@ -594,7 +605,7 @@ function FnosBindModal({
   }
 
   return (
-    <div className="app-modal-backdrop z-[1100]">
+    <ModalLayer className="app-modal-backdrop">
       <div className="app-modal-panel max-w-md">
         <div className="modal-header shrink-0">
           <div className="text-sm font-semibold text-slate-800">{t("settings.users.register.bindFnid")}</div>
@@ -637,7 +648,7 @@ function FnosBindModal({
           </div>
         </div>
       </div>
-    </div>
+    </ModalLayer>
   );
 }
 
@@ -706,7 +717,7 @@ function PasswordSetModal({
   }
 
   return (
-    <div className="app-modal-backdrop z-[1100]">
+    <ModalLayer className="app-modal-backdrop">
       <div className="app-modal-panel max-w-md">
         <div className="modal-header shrink-0">
           <div className="text-sm font-semibold text-slate-800">{t("settings.users.bindLocal")}</div>
@@ -763,7 +774,7 @@ function PasswordSetModal({
           </FolderTabs>
         </div>
       </div>
-    </div>
+    </ModalLayer>
   );
 }
 
@@ -1013,7 +1024,7 @@ function RegisterModal({
   );
 
   return (
-    <div className="app-modal-backdrop z-[1100]">
+    <ModalLayer className="app-modal-backdrop">
       <div className="app-modal-panel max-w-md">
         <div className="modal-header shrink-0">
           <div className="text-sm font-semibold text-slate-800">{t("settings.users.register.title")}</div>
@@ -1135,7 +1146,7 @@ function RegisterModal({
           )}
         </div>
       </div>
-    </div>
+    </ModalLayer>
   );
 }
 
@@ -1161,6 +1172,10 @@ export default function UsersPage() {
   const [isFnosEnvironment, setIsFnosEnvironment] = useState(false);
   // 当前网关注入的飞牛用户名（如 jsbyfubin），用于预填「绑定飞牛用户」输入框。
   const [gatewayFnosUser, setGatewayFnosUser] = useState<string | null>(null);
+  // Whether MMH membership is usable on this deployment (server has a
+  // registration service). Optimistic default like the fnOS flags: a missing or
+  // older response must not hide controls that work.
+  const [mmhEnabled, setMmhEnabled] = useState(true);
 
   useEffect(() => {
     fetchUsers();
@@ -1170,9 +1185,9 @@ export default function UsersPage() {
     try {
       const res = await fetch("/api/v1/settings/users");
       const text = await res.text();
-      let data: { ok?: boolean; users?: ManagedUser[]; isFnosEnvironment?: boolean; gatewayFnosUser?: string | null; canManageUsers?: boolean; error?: string } | { raw: string } = { raw: "" };
+      let data: { ok?: boolean; users?: ManagedUser[]; isFnosEnvironment?: boolean; gatewayFnosUser?: string | null; canManageUsers?: boolean; mmhEnabled?: boolean; error?: string } | { raw: string } = { raw: "" };
       try {
-        data = JSON.parse(text) as { ok?: boolean; users?: ManagedUser[]; isFnosEnvironment?: boolean; gatewayFnosUser?: string | null; canManageUsers?: boolean; error?: string };
+        data = JSON.parse(text) as { ok?: boolean; users?: ManagedUser[]; isFnosEnvironment?: boolean; gatewayFnosUser?: string | null; canManageUsers?: boolean; mmhEnabled?: boolean; error?: string };
       } catch {
         data = { raw: text.slice(0, 200) };
       }
@@ -1181,6 +1196,7 @@ export default function UsersPage() {
         setCanManageUsers(data.canManageUsers === true);
         setIsFnosEnvironment(data.isFnosEnvironment === true);
         setGatewayFnosUser(typeof data.gatewayFnosUser === "string" && data.gatewayFnosUser ? data.gatewayFnosUser : null);
+        setMmhEnabled(data.mmhEnabled !== false);
         setLoadError("");
       } else {
         setUsers([]);
@@ -1385,12 +1401,21 @@ export default function UsersPage() {
                         {t("settings.users.status.fnos")}
                       </span>
                     ) : null}
-                    <span className={`rounded-full border px-2 py-0.5 text-xs font-medium ${u.registrationPrincipalId
-                      ? "border-violet-700 bg-violet-50 text-violet-800"
-                      : "border-dashed border-violet-300 bg-white text-violet-400"
-                    }`}>
-                      {t("settings.users.status.mmh")}
-                    </span>
+                    {mmhEnabled ? (
+                      <span
+                        className={`rounded-full border px-2 py-0.5 text-xs font-medium ${u.registrationPrincipalId
+                          ? "border-violet-700 bg-violet-50 text-violet-800"
+                          : "border-dashed border-violet-300 bg-white text-violet-400"
+                        }`}
+                        title={u.registrationPrincipalId
+                          ? t("settings.users.status.mmhAccountHint", {
+                              email: u.registrationEmail ?? u.email ?? "",
+                            })
+                          : t("settings.users.status.mmhUnboundHint")}
+                      >
+                        {t("settings.users.status.mmh")}
+                      </span>
+                    ) : null}
                   </div>
                 </SettingsTd>
                 <SettingsTd align="right">
@@ -1401,7 +1426,7 @@ export default function UsersPage() {
                         variant="edit"
                         onClick={() => { setEditingUser(u); setShowModal(true); }}
                       />
-                      {!u.registrationPrincipalId && (
+                      {mmhEnabled && !u.registrationPrincipalId && (
                         <SettingsActionButton
                           label={t("settings.users.register")}
                           variant="default"
@@ -1451,6 +1476,7 @@ export default function UsersPage() {
         <UserModal
           initial={editingUser ?? undefined}
           users={users}
+          mmhEnabled={mmhEnabled}
           onSave={handleSave}
           onCancel={() => { setShowModal(false); setEditingUser(null); }}
           onMmhAdded={() => {
@@ -1478,7 +1504,7 @@ export default function UsersPage() {
         />
       )}
 
-      {registerTarget && (
+      {mmhEnabled && registerTarget && (
         <RegisterModal
           target={registerTarget}
           onClose={() => setRegisterTarget(null)}
@@ -1487,7 +1513,7 @@ export default function UsersPage() {
       )}
 
       {deleteTarget && (
-        <div className="app-modal-backdrop z-[1100]">
+        <ModalLayer className="app-modal-backdrop">
           <div className="app-modal-panel max-w-md">
             <div className="modal-header shrink-0">
               <div className="text-sm font-semibold text-slate-800">{t("settings.users.delete")}</div>
@@ -1543,7 +1569,7 @@ export default function UsersPage() {
               </div>
             </div>
           </div>
-        </div>
+        </ModalLayer>
       )}
     </div>
   );

@@ -138,6 +138,9 @@ export async function POST(request: NextRequest) {
       name: user.name,
       householdId: user.householdId,
       authVersion: user.authVersion,
+      // The gateway vouched for this identity, so a later credential check must
+      // not silently fall back to a local password on the same row.
+      authMethod: "fnos",
     },
     { sessionDays: await getUserSessionDays(user.id), req: request },
   );

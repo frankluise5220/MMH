@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db/prisma";
+import type { SessionAuthMethod } from "@/lib/server/session-cookies";
 
 /**
  * Session user resolution — the single source of truth for turning the three
@@ -23,7 +24,14 @@ export type SessionUserRow = {
   fnosUid: string | null;
   email: string | null;
   registrationPrincipalId: string | null;
+  registrationEmail: string | null;
   authVersion: number;
+  /**
+   * Identity the session was signed in with, or null when the cookie predates
+   * that claim. Credential checks use it to ask for the matching secret; when
+   * null they derive the type from the row's own fields instead.
+   */
+  authMethod: SessionAuthMethod | null;
 };
 
 export const SESSION_USER_SELECT = {
@@ -35,6 +43,7 @@ export const SESSION_USER_SELECT = {
   fnosUid: true,
   email: true,
   registrationPrincipalId: true,
+  registrationEmail: true,
   authVersion: true,
 } as const;
 
@@ -45,6 +54,8 @@ export type SessionUserCandidates = {
   username?: string | null;
   /** `householdId` cookie. */
   householdId?: string | null;
+  /** Identity from the signed cookie; null when the session predates it. */
+  authMethod?: SessionAuthMethod | null;
 };
 
 export type SessionUserMatchedBy = "id" | "username" | "system" | "household-admin" | "household-member" | "single-user";
@@ -78,10 +89,29 @@ function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T | n
  * `totalTimeoutMs` bounds the whole resolution, not each query, so a slow
  * database cannot stretch a single request indefinitely.
  */
+/**
+ * Resolves the session cookies to a user row, carrying the signed-in identity
+ * from the cookie onto the row so no caller has to re-derive it.
+ */
 export async function resolveSessionUser(
   candidates: SessionUserCandidates,
   budget: { totalTimeoutMs: number },
 ): Promise<SessionUserResolution> {
+  const resolution = await resolveSessionUserRow(candidates, budget);
+  if (!resolution.user) return resolution;
+  return {
+    user: { ...resolution.user, authMethod: candidates.authMethod ?? null },
+    matchedBy: resolution.matchedBy,
+  };
+}
+
+async function resolveSessionUserRow(
+  candidates: SessionUserCandidates,
+  budget: { totalTimeoutMs: number },
+): Promise<
+  | { user: Omit<SessionUserRow, "authMethod">; matchedBy: SessionUserMatchedBy }
+  | { user: null; reason: "not-found" | "ambiguous" | "lookup-timeout" }
+> {
   const deadline = Date.now() + Math.max(1, budget.totalTimeoutMs);
   const lookup = async <T>(operation: Promise<T>): Promise<T | null> => {
     const remaining = deadline - Date.now();

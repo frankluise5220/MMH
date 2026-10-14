@@ -179,7 +179,9 @@ export async function POST(req: NextRequest) {
       data: {
         email: normalizedEmail,
         ...(passwordWasSet ? { passwordHash, authVersion: { increment: 1 } } : {}),
-        ...(principalId ? { registrationPrincipalId: principalId } : {}),
+        ...(principalId
+          ? { registrationPrincipalId: principalId, registrationEmail: normalizedEmail }
+          : {}),
       },
     });
   });
@@ -201,6 +203,9 @@ export async function POST(req: NextRequest) {
         name: target.name,
         householdId: target.householdId,
         authVersion: newAuthVersion,
+        // Re-minting after a credential change keeps the identity the user
+        // signed in with; binding an MMH account does not switch it.
+        authMethod: currentUser.authMethod ?? undefined,
       },
       { sessionDays: await getUserSessionDays(target.id), req },
     );

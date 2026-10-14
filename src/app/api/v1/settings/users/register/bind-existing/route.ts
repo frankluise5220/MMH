@@ -86,6 +86,7 @@ export async function POST(req: NextRequest) {
     data: {
       email: username.trim().toLowerCase(),
       registrationPrincipalId: principalId,
+      registrationEmail: username.trim().toLowerCase(),
     },
   });
 

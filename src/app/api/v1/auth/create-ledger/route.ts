@@ -16,6 +16,7 @@ import { verifyEmailPrincipal } from "@/lib/server/registration-client";
 import { queueLedgerInventoryReport } from "@/lib/server/ledger-inventory";
 import { matchesGatewayFnosIdentity, readGatewayFnosIdentity } from "@/lib/server/gateway-identity";
 import { hashPassword } from "@/lib/auth/password";
+import { getSystemSetting, setSystemSetting } from "@/lib/server/system-setting";
 
 const LEGACY_PASSWORD_KEY = "access_password";
 
@@ -92,15 +93,12 @@ export async function POST(req: NextRequest) {
     mmhPrincipalId = verification.principalId;
   }
 
-  const [householdCount, userCount, legacy] = await prisma.$transaction([
+  const [householdCount, userCount] = await prisma.$transaction([
     prisma.household.count(),
     prisma.user.count(),
-    prisma.systemSetting.findUnique({
-      where: { key: LEGACY_PASSWORD_KEY },
-      select: { value: true },
-    }),
   ]);
-  const isInitialLedgerSetup = householdCount === 0 && userCount === 0 && !(legacy?.value?.length);
+  const legacy = await getSystemSetting(LEGACY_PASSWORD_KEY);
+  const isInitialLedgerSetup = householdCount === 0 && userCount === 0 && !legacy?.length;
 
   if (!isInitialLedgerSetup) {
     if (!inviteCode) {
@@ -130,10 +128,8 @@ export async function POST(req: NextRequest) {
         });
       }
 
-      const inviteSetting = await tx.systemSetting.findUnique({
-        where: { key: LEDGER_CREATION_INVITE_CODE_KEY },
-      });
-      const inviteRecords = parseLedgerInviteCodeRecords(inviteSetting?.value);
+      const inviteSetting = await getSystemSetting(LEDGER_CREATION_INVITE_CODE_KEY, { db: tx });
+      const inviteRecords = parseLedgerInviteCodeRecords(inviteSetting);
       // Precise verdicts: a wrong code, a code from another instance, an
       // already-used code and an unconfigured server must not look the same.
       const inspection = inspectLedgerInviteCode(inviteRecords, inviteCode);
@@ -166,13 +162,8 @@ export async function POST(req: NextRequest) {
         usedUserId: result.adminUser.id,
         usedUserName: result.adminUser.name,
       });
-      await tx.systemSetting.upsert({
-        where: { key: LEDGER_CREATION_INVITE_CODE_KEY },
-        create: {
-          key: LEDGER_CREATION_INVITE_CODE_KEY,
-          value: serializeLedgerInviteCodeRecords(usedInviteRecords),
-        },
-        update: { value: serializeLedgerInviteCodeRecords(usedInviteRecords) },
+      await setSystemSetting(LEDGER_CREATION_INVITE_CODE_KEY, serializeLedgerInviteCodeRecords(usedInviteRecords), {
+        db: tx,
       });
       return result;
     });
@@ -199,6 +190,10 @@ export async function POST(req: NextRequest) {
       name: created.adminUser.name,
       householdId: created.household.id,
       authVersion: created.adminUser.authVersion,
+      // The ledger was created under this identity (the fnOS gateway vouched for
+      // it, the MMH membership password was verified centrally, or a local
+      // password was set), so confirm with the same kind later.
+      authMethod: authMode,
     },
     { sessionDays: sessionDaysFromRequest(req), req },
   );
