@@ -3,7 +3,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { prisma } from "@/lib/db/prisma";
 import { normalizeAiApiMode } from "@/lib/ai/config";
-import { EMAIL_IMPORT_KEYWORD_SETTING_PREFIX } from "@/lib/mail/email-import-settings";
 import { upsertEntryBusinessCashFlowLink } from "@/lib/server/entry-business-link";
 import { INSTALLATION_ID_SETTING_KEY } from "@/lib/server/installation-id";
 import {
@@ -20,6 +19,13 @@ import {
 } from "@/lib/server/loan-category";
 import { extractStatementLearningKeyword, normalizeStatementKeywordText } from "@/lib/statement/import-normalization";
 import { DEFAULT_SESSION_DAYS, normalizeSessionDays } from "@/lib/session-days";
+import {
+  ensureSystemSetting,
+  getSystemSetting,
+  HOUSEHOLD_SCOPED_SETTING_NAMES,
+  setSystemSetting,
+  systemSettingKey,
+} from "@/lib/server/system-setting";
 import type { CurrentUser } from "@/lib/server/auth";
 
 export const BACKUP_FORMAT_VERSION = 4;
@@ -1301,32 +1307,29 @@ function decodeBackupPackageKey(value: string) {
 }
 
 async function getOrCreateBackupPackageKey() {
-  const existing = await prisma.systemSetting.findUnique({ where: { key: BACKUP_PACKAGE_KEY_SETTING } });
-  if (existing?.value) {
-    return decodeBackupPackageKey(existing.value);
+  const existing = await getSystemSetting(BACKUP_PACKAGE_KEY_SETTING);
+  if (existing) {
+    return decodeBackupPackageKey(existing);
   }
 
   const generatedValue = crypto.randomBytes(32).toString("base64");
   try {
-    const created = await prisma.systemSetting.create({
-      data: { key: BACKUP_PACKAGE_KEY_SETTING, value: generatedValue },
-    });
-    return decodeBackupPackageKey(created.value);
+    return decodeBackupPackageKey(await ensureSystemSetting(BACKUP_PACKAGE_KEY_SETTING, generatedValue));
   } catch {
-    const retry = await prisma.systemSetting.findUnique({ where: { key: BACKUP_PACKAGE_KEY_SETTING } });
-    if (retry?.value) {
-      return decodeBackupPackageKey(retry.value);
+    const retry = await getSystemSetting(BACKUP_PACKAGE_KEY_SETTING);
+    if (retry) {
+      return decodeBackupPackageKey(retry);
     }
     restoreError("当前系统无法创建备份加密密钥");
   }
 }
 
 async function getBackupPackageKey() {
-  const existing = await prisma.systemSetting.findUnique({ where: { key: BACKUP_PACKAGE_KEY_SETTING } });
-  if (!existing?.value) {
+  const existing = await getSystemSetting(BACKUP_PACKAGE_KEY_SETTING);
+  if (!existing) {
     restoreError("当前系统缺少备份解密密钥，无法恢复该加密备份");
   }
-  return decodeBackupPackageKey(existing.value);
+  return decodeBackupPackageKey(existing);
 }
 
 function normalizeBackupPassphrase(value: string | null | undefined) {
@@ -1580,11 +1583,7 @@ export async function decryptBackupBytes(
   }
 }
 
-const RESTORABLE_HOUSEHOLD_SETTING_PREFIXES = [
-  "category_hierarchy_normalized:",
-  "category_deleted_default_templates:",
-  EMAIL_IMPORT_KEYWORD_SETTING_PREFIX,
-];
+const RESTORABLE_HOUSEHOLD_SETTING_PREFIXES = HOUSEHOLD_SCOPED_SETTING_NAMES.map((name) => `${name}:`);
 const RESTORABLE_GLOBAL_SYSTEM_SETTING_KEYS = new Set([
   "access_password",
   "api_key_encryption_master",
@@ -1594,7 +1593,7 @@ const RESTORABLE_GLOBAL_SYSTEM_SETTING_KEYS = new Set([
 ]);
 
 function householdSystemSettingKeys(householdId: string) {
-  return RESTORABLE_HOUSEHOLD_SETTING_PREFIXES.map((prefix) => `${prefix}${householdId}`);
+  return HOUSEHOLD_SCOPED_SETTING_NAMES.map((name) => systemSettingKey(name, householdId));
 }
 
 function settingsForBackup(
@@ -1614,9 +1613,9 @@ function settingsForBackup(
 }
 
 function remapHouseholdSystemSettingKey(key: string, sourceHouseholdId: string, targetHouseholdId: string) {
-  for (const prefix of RESTORABLE_HOUSEHOLD_SETTING_PREFIXES) {
-    if (key === `${prefix}${sourceHouseholdId}` || key === `${prefix}${targetHouseholdId}`) {
-      return `${prefix}${targetHouseholdId}`;
+  for (const name of HOUSEHOLD_SCOPED_SETTING_NAMES) {
+    if (key === systemSettingKey(name, sourceHouseholdId) || key === systemSettingKey(name, targetHouseholdId)) {
+      return systemSettingKey(name, targetHouseholdId);
     }
   }
   return null;
@@ -2528,15 +2527,10 @@ export async function restoreHouseholdBackup(
       // file (that id belongs to the deployment the backup came from), and a
       // restore must not make the central registration service see a brand-new
       // installation while retiring a live one.
-      const localInstallationId = await tx.systemSetting.findUnique({
-        where: { key: INSTALLATION_ID_SETTING_KEY },
-        select: { value: true },
-      });
+      const localInstallationId = await getSystemSetting(INSTALLATION_ID_SETTING_KEY, { db: tx });
       await tx.systemSetting.deleteMany({});
-      if (localInstallationId?.value?.trim()) {
-        await tx.systemSetting.create({
-          data: { key: INSTALLATION_ID_SETTING_KEY, value: localInstallationId.value },
-        });
+      if (localInstallationId?.trim()) {
+        await setSystemSetting(INSTALLATION_ID_SETTING_KEY, localInstallationId, { db: tx });
       }
       await tx.accessKey.deleteMany({});
       await tx.aiModel.deleteMany({});
@@ -2753,6 +2747,8 @@ export async function restoreHouseholdBackup(
       const key = remapHouseholdSystemSettingKey(rawKey, payload.scope.householdId, householdId) ?? rawKey;
       if (!key) continue;
       const value = String(item.value ?? "");
+      // Raw upsert: restore replays archived keys verbatim (including their
+      // original `updatedAt`) and cannot route through `setSystemSetting`.
       await tx.systemSetting.upsert({
         where: { key },
         create: { key, value, updatedAt: item.updatedAt ? new Date(String(item.updatedAt)) : new Date() },

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { prisma } from "@/lib/db/prisma";
 import { getCurrentUser, isAdmin } from "@/lib/server/auth";
+import { getSystemSetting, getSystemSettings, setSystemSetting } from "@/lib/server/system-setting";
 import {
   normalizeLedgerInviteCodeMetadata,
   parseLedgerInviteCodeRecords,
@@ -46,8 +46,7 @@ export async function GET(req: NextRequest) {
         return NextResponse.json({ ok: false, code: "FORBIDDEN", error: "仅管理员可读取该设置" }, { status: 403 });
       }
     }
-    const rows = await prisma.systemSetting.findMany({ where: { key: { in: keys } } });
-    const values = Object.fromEntries(keys.map((key) => [key, rows.find((row) => row.key === key)?.value ?? null]));
+    const values = await getSystemSettings(keys);
     return NextResponse.json({ ok: true, values });
   }
 
@@ -60,8 +59,8 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ ok: false, code: "FORBIDDEN", error: "仅管理员可读取该设置" }, { status: 403 });
     }
   }
-  const row = await prisma.systemSetting.findUnique({ where: { key } });
-  return NextResponse.json({ ok: true, value: row?.value ?? null });
+  const value = await getSystemSetting(key);
+  return NextResponse.json({ ok: true, value });
 }
 
 export async function POST(req: NextRequest) {
@@ -92,11 +91,8 @@ export async function POST(req: NextRequest) {
     }
     // Read the stored value first: only codes absent from it are new in this
     // save, and only those can be honestly attributed to the current admin.
-    const storedInviteSetting = await prisma.systemSetting.findUnique({
-      where: { key: LEDGER_CREATION_INVITE_CODE_KEY },
-      select: { value: true },
-    });
-    const storedInviteCodes = parseLedgerInviteCodeRecords(storedInviteSetting?.value).map((record) => record.code);
+    const storedInviteSetting = await getSystemSetting(LEDGER_CREATION_INVITE_CODE_KEY);
+    const storedInviteCodes = parseLedgerInviteCodeRecords(storedInviteSetting).map((record) => record.code);
     try {
       nextValue = serializeLedgerInviteCodeRecords(
         signLedgerInviteCodeRecords(
@@ -111,8 +107,8 @@ export async function POST(req: NextRequest) {
   if (key === ACCESS_WHITELIST_KEY) {
     const nextAllowedList = parseNextAllowedAccessValue(value);
     nextValue = JSON.stringify(nextAllowedList);
-    const enabledRow = await prisma.systemSetting.findUnique({ where: { key: ORIGIN_CHECK_KEY } });
-    if (enabledRow?.value === "true") {
+    const enabledRow = await getSystemSetting(ORIGIN_CHECK_KEY);
+    if (enabledRow === "true") {
       if (nextAllowedList.length === 0) {
         return NextResponse.json(
           { ok: false, code: "EMPTY_ACCESS_WHITELIST", error: "访问白名单开启时，至少需要保留一个非本机访问域名或 IP。" },
@@ -124,8 +120,8 @@ export async function POST(req: NextRequest) {
     }
   }
   if (key === ORIGIN_CHECK_KEY && nextValue === "true") {
-    const allowedRow = await prisma.systemSetting.findUnique({ where: { key: ACCESS_WHITELIST_KEY } });
-    const allowedList = parseAllowedAccessList(allowedRow?.value);
+    const allowedRow = await getSystemSetting(ACCESS_WHITELIST_KEY);
+    const allowedList = parseAllowedAccessList(allowedRow);
     if (allowedList.length === 0) {
       return NextResponse.json(
         { ok: false, code: "EMPTY_ACCESS_WHITELIST", error: "请先添加至少一个非本机访问域名或 IP，再开启访问白名单。" },
@@ -135,10 +131,6 @@ export async function POST(req: NextRequest) {
     const selfLockError = validateCurrentAccessHost(req, allowedList);
     if (selfLockError) return NextResponse.json({ ok: false, code: "SELF_LOCK_OUT", error: selfLockError }, { status: 400 });
   }
-  await prisma.systemSetting.upsert({
-    where: { key },
-    create: { key, value: nextValue },
-    update: { value: nextValue },
-  });
+  await setSystemSetting(key, nextValue);
   return NextResponse.json({ ok: true });
 }

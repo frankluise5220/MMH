@@ -1,12 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
-import { prisma } from "@/lib/db/prisma";
 import {
   DEFAULT_EMAIL_IMPORT_KEYWORD,
-  emailImportKeywordSettingKey,
+  EMAIL_IMPORT_KEYWORD_SETTING_NAME,
   normalizeEmailImportKeyword,
 } from "@/lib/mail/email-import-settings";
 import { isAdmin } from "@/lib/server/auth";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { getSystemSetting, setSystemSetting } from "@/lib/server/system-setting";
 
 export const runtime = "nodejs";
 
@@ -17,12 +17,10 @@ export const runtime = "nodejs";
  */
 export async function GET() {
   const { householdId } = await getHouseholdScope();
-  const row = await prisma.systemSetting.findUnique({
-    where: { key: emailImportKeywordSettingKey(householdId) },
-  });
+  const stored = await getSystemSetting(EMAIL_IMPORT_KEYWORD_SETTING_NAME, { householdId });
   return NextResponse.json({
     ok: true,
-    data: { keyword: row ? normalizeEmailImportKeyword(row.value) : DEFAULT_EMAIL_IMPORT_KEYWORD },
+    data: { keyword: stored == null ? DEFAULT_EMAIL_IMPORT_KEYWORD : normalizeEmailImportKeyword(stored) },
   });
 }
 
@@ -43,10 +41,6 @@ export async function PUT(req: NextRequest) {
 
   const body = (await req.json().catch(() => ({}))) as { keyword?: unknown };
   const keyword = normalizeEmailImportKeyword(body.keyword);
-  await prisma.systemSetting.upsert({
-    where: { key: emailImportKeywordSettingKey(householdId) },
-    create: { key: emailImportKeywordSettingKey(householdId), value: keyword },
-    update: { value: keyword },
-  });
+  await setSystemSetting(EMAIL_IMPORT_KEYWORD_SETTING_NAME, keyword, { householdId });
   return NextResponse.json({ ok: true, data: { keyword } });
 }

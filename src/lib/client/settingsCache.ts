@@ -1,5 +1,7 @@
 "use client";
 
+import { normalizeEmailImportKeyword } from "@/lib/mail/email-import-settings";
+
 export type SettingsAccountGroup = { id: string; name: string; sortOrder?: number };
 export type SettingsInstitution = { id: string; name: string; shortName?: string | null; type?: string | null };
 export type SettingsCounterparty = { id: string; name: string; shortName?: string | null; type?: string | null; isReimbursable?: boolean | null };
@@ -35,6 +37,10 @@ const ACCOUNT_DATA_KEY = "accounts-basic";
 const BOOTSTRAP_KEY = "settings-bootstrap";
 const CATEGORIES_KEY = "categories";
 const TAGS_KEY = "tags";
+// Email accounts carry IMAP credentials, so this key is memory-only and is
+// never written to localStorage.
+const EMAIL_ACCOUNTS_KEY = "email-accounts";
+const EMAIL_IMPORT_KEYWORD_KEY = "email-import-keyword";
 const TTL_MS = 60_000;
 const HOUSEHOLD_COOKIE = "householdId";
 const PERSIST_PREFIX = "mmh:settings:accounts-basic:";
@@ -118,6 +124,8 @@ function hydrateAccountCacheFromPersist() {
     cache.delete(BOOTSTRAP_KEY);
     cache.delete(CATEGORIES_KEY);
     cache.delete(TAGS_KEY);
+    cache.delete(EMAIL_ACCOUNTS_KEY);
+    cache.delete(EMAIL_IMPORT_KEYWORD_KEY);
   }
   hydratedHouseholdId = householdId;
   const existing = cache.get(ACCOUNT_DATA_KEY) as CacheEntry<SettingsAccountData> | undefined;
@@ -184,6 +192,9 @@ export async function fetchSettingsBootstrap(options?: { force?: boolean }) {
         tags: data.tags || [],
       };
       seedBootstrapCaches(value);
+      // Mailboxes and the mail import keyword are system settings too: warm them
+      // alongside the bootstrap so the mail import dialog opens from cache.
+      warmEmailSettings();
       return value;
     })
     .catch((error) => {
@@ -199,6 +210,7 @@ export async function fetchSettingsBootstrap(options?: { force?: boolean }) {
 
 export function warmSettingsBootstrap(options?: { force?: boolean }) {
   void fetchSettingsBootstrap(options).catch(() => null);
+  warmEmailSettings();
 }
 
 function scopeTouchesAccounts(scope: SettingsDataScope) {
@@ -362,4 +374,102 @@ export async function fetchSettingsTags(options?: { force?: boolean }) {
 export function setSettingsTags(next: SettingsTag[]) {
   cache.set(TAGS_KEY, { value: next, updatedAt: Date.now() });
   cache.delete(BOOTSTRAP_KEY);
+}
+
+export type EmailAccountRow = Record<string, unknown>;
+
+export function getCachedEmailAccounts<T = EmailAccountRow>() {
+  const entry = cache.get(EMAIL_ACCOUNTS_KEY) as CacheEntry<unknown[]> | undefined;
+  return (entry?.value as T[] | undefined) ?? null;
+}
+
+function startEmailAccountsFetch(entry?: CacheEntry<unknown[]>) {
+  const promise = fetch("/api/v1/settings/email-accounts", { cache: "no-store" })
+    .then((res) => res.json())
+    .then((data) => {
+      if (!data?.ok) throw new Error(data?.error || "读取邮箱账户失败");
+      const value: unknown[] = Array.isArray(data.accounts) ? data.accounts : [];
+      setCacheValue(EMAIL_ACCOUNTS_KEY, value);
+      return value;
+    })
+    .catch((error) => {
+      const prev = cache.get(EMAIL_ACCOUNTS_KEY) as CacheEntry<unknown[]> | undefined;
+      if (prev?.value) cache.set(EMAIL_ACCOUNTS_KEY, { value: prev.value, updatedAt: prev.updatedAt });
+      else cache.delete(EMAIL_ACCOUNTS_KEY);
+      throw error;
+    });
+
+  cache.set(EMAIL_ACCOUNTS_KEY, { value: entry?.value, promise, updatedAt: entry?.updatedAt ?? 0 });
+  return promise;
+}
+
+/**
+ * Email accounts are reused across repeated opens of the mail import dialog.
+ * The list is tiny and only changes through explicit writes, so the entry is
+ * never dropped on a timer: it lives until a write invalidates it or the
+ * household switches.
+ */
+export async function fetchEmailAccounts<T = EmailAccountRow>(options?: { force?: boolean }): Promise<T[]> {
+  const entry = cache.get(EMAIL_ACCOUNTS_KEY) as CacheEntry<unknown[]> | undefined;
+  if (!options?.force) {
+    if (entry?.value) return entry.value as T[];
+    if (entry?.promise) return entry.promise as unknown as Promise<T[]>;
+  }
+  return startEmailAccountsFetch(entry) as Promise<T[]>;
+}
+
+export function invalidateEmailAccounts() {
+  cache.delete(EMAIL_ACCOUNTS_KEY);
+}
+
+export function getCachedEmailImportKeyword() {
+  const entry = cache.get(EMAIL_IMPORT_KEYWORD_KEY) as CacheEntry<string> | undefined;
+  return entry?.value ?? null;
+}
+
+function startEmailImportKeywordFetch(entry?: CacheEntry<string>) {
+  const promise = fetch("/api/v1/settings/email-import", { cache: "no-store" })
+    .then((res) => res.json())
+    .then((data) => {
+      if (!data?.ok) throw new Error(data?.error || "读取邮件导入关键词失败");
+      const value = normalizeEmailImportKeyword(data?.data?.keyword, { fallbackToDefault: true });
+      setCacheValue(EMAIL_IMPORT_KEYWORD_KEY, value);
+      return value;
+    })
+    .catch((error) => {
+      const prev = cache.get(EMAIL_IMPORT_KEYWORD_KEY) as CacheEntry<string> | undefined;
+      if (prev?.value) cache.set(EMAIL_IMPORT_KEYWORD_KEY, { value: prev.value, updatedAt: prev.updatedAt });
+      else cache.delete(EMAIL_IMPORT_KEYWORD_KEY);
+      throw error;
+    });
+
+  cache.set(EMAIL_IMPORT_KEYWORD_KEY, { value: entry?.value, promise, updatedAt: entry?.updatedAt ?? 0 });
+  return promise;
+}
+
+export async function fetchEmailImportKeyword(options?: { force?: boolean }): Promise<string> {
+  const entry = cache.get(EMAIL_IMPORT_KEYWORD_KEY) as CacheEntry<string> | undefined;
+  if (!options?.force) {
+    if (entry?.value) return entry.value;
+    if (entry?.promise) return entry.promise;
+  }
+  return startEmailImportKeywordFetch(entry);
+}
+
+/**
+ * Preloads the mail settings together with the other system settings so the
+ * mail import dialog usually opens without any request of its own.
+ */
+export function warmEmailSettings() {
+  if (typeof window === "undefined") return;
+  if (!cache.get(EMAIL_ACCOUNTS_KEY)?.value) void fetchEmailAccounts().catch(() => null);
+  if (!cache.get(EMAIL_IMPORT_KEYWORD_KEY)?.value) void fetchEmailImportKeyword().catch(() => null);
+}
+
+export function setEmailImportKeyword(next: string) {
+  setCacheValue(EMAIL_IMPORT_KEYWORD_KEY, next);
+}
+
+export function invalidateEmailImportKeyword() {
+  cache.delete(EMAIL_IMPORT_KEYWORD_KEY);
 }

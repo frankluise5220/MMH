@@ -21,6 +21,20 @@ import {
   SYSTEM_WEALTH_INVESTMENT_CATEGORY,
   getInvestmentCategoryName,
 } from "@/lib/investment-category";
+import {
+  normalizeSettlementTransferCategoryName,
+  SYSTEM_SETTLEMENT_TRANSFER_CATEGORY,
+} from "@/lib/settlement-category-name";
+// Re-exported so existing importers of these names keep working.
+export { normalizeSettlementTransferCategoryName, SYSTEM_SETTLEMENT_TRANSFER_CATEGORY };
+import {
+  CATEGORY_HIERARCHY_SETTING_NAME,
+  DELETED_DEFAULT_CATEGORY_SETTING_NAME,
+  getSystemSetting,
+  readJsonSystemSetting,
+  setSystemSetting,
+  writeJsonSystemSetting,
+} from "@/lib/server/system-setting";
 
 export type DefaultCategoryType = "expense" | "income" | "advance" | "transfer" | "investment";
 type CategoryMainType = DefaultCategoryType;
@@ -34,7 +48,6 @@ export type DefaultCategoryTemplate = {
 
 type CategoryWriter = typeof prisma | Prisma.TransactionClient;
 export const CATEGORY_HIERARCHY_NORMALIZATION_VERSION = "2026-09-21-fund-dividend-category-v1";
-const DELETED_DEFAULT_CATEGORY_KEY_PREFIX = "category_deleted_default_templates:";
 
 type DefaultCategoryTemplateChild = {
   name: string;
@@ -74,19 +87,10 @@ export const SYSTEM_INVESTMENT_PROFIT_CATEGORY = SYSTEM_FUND_PROFIT_CATEGORY;
 export const SYSTEM_INVESTMENT_LOSS_CATEGORY = "投资亏损";
 export const SYSTEM_INSURANCE_RETURN_CATEGORY = "保险回款";
 export const SYSTEM_INSURANCE_EXPENSE_CATEGORY = "保险支出";
-export const SYSTEM_SETTLEMENT_TRANSFER_CATEGORY = "借入借出";
 export const SYSTEM_MORTGAGE_FUND_CATEGORY = "资金账户";
 export const SYSTEM_BANK_INSTALLMENT_EXPENSE_CATEGORY = "银行分期";
 export const SYSTEM_INSTALLMENT_FEE_EXPENSE_CATEGORY = "分期手续费";
 export const SYSTEM_FINANCE_INVESTMENT_INCOME_CATEGORY = "金融及投资收入";
-
-const legacySettlementTransferActionCategoryNames = new Set(["往来款", "还款", "提前还款", "贷款还款", "借入", "借出", "出借", "收回"]);
-
-export function normalizeSettlementTransferCategoryName(categoryName?: string | null) {
-  const name = String(categoryName ?? "").trim();
-  if (!name || legacySettlementTransferActionCategoryNames.has(name)) return SYSTEM_SETTLEMENT_TRANSFER_CATEGORY;
-  return name;
-}
 
 const systemCategoryTemplateNames: Record<DefaultCategoryType, Set<string>> = {
   income: new Set([
@@ -448,20 +452,15 @@ export async function createDefaultCategoriesForHousehold(writer: CategoryWriter
     }
   }
 
-  await writer.systemSetting.upsert({
-    where: { key: categoryNormalizationKey(householdId) },
-    update: { value: CATEGORY_HIERARCHY_NORMALIZATION_VERSION },
-    create: { key: categoryNormalizationKey(householdId), value: CATEGORY_HIERARCHY_NORMALIZATION_VERSION },
+  await setSystemSetting(CATEGORY_HIERARCHY_SETTING_NAME, CATEGORY_HIERARCHY_NORMALIZATION_VERSION, {
+    householdId,
+    db: writer,
   });
 }
 
 export async function normalizeDefaultCategoryHierarchyForHousehold(writer: CategoryWriter, householdId: string) {
-  const normalizationKey = categoryNormalizationKey(householdId);
-  const marker = await writer.systemSetting.findUnique({
-    where: { key: normalizationKey },
-    select: { value: true },
-  });
-  if (marker?.value === CATEGORY_HIERARCHY_NORMALIZATION_VERSION) return;
+  const marker = await getSystemSetting(CATEGORY_HIERARCHY_SETTING_NAME, { householdId, db: writer });
+  if (marker === CATEGORY_HIERARCHY_NORMALIZATION_VERSION) return;
 
   await normalizeCategoryTypeLabelNodes(writer, householdId);
 
@@ -480,10 +479,9 @@ export async function normalizeDefaultCategoryHierarchyForHousehold(writer: Cate
     await normalizeSameNameChild(writer, householdId, category.type, category.name);
   }
 
-  await writer.systemSetting.upsert({
-    where: { key: normalizationKey },
-    update: { value: CATEGORY_HIERARCHY_NORMALIZATION_VERSION },
-    create: { key: normalizationKey, value: CATEGORY_HIERARCHY_NORMALIZATION_VERSION },
+  await setSystemSetting(CATEGORY_HIERARCHY_SETTING_NAME, CATEGORY_HIERARCHY_NORMALIZATION_VERSION, {
+    householdId,
+    db: writer,
   });
 }
 
@@ -636,14 +634,6 @@ async function normalizeCreditCardRepaymentTransferCategories(writer: CategoryWr
   });
 }
 
-function categoryNormalizationKey(householdId: string) {
-  return `category_hierarchy_normalized:${householdId}`;
-}
-
-function deletedDefaultCategoryKey(householdId: string) {
-  return `${DELETED_DEFAULT_CATEGORY_KEY_PREFIX}${householdId}`;
-}
-
 function defaultCategoryTemplateKey(type: DefaultCategoryType, parentName: string | null, name: string) {
   return JSON.stringify([type, parentName ?? "", name]);
 }
@@ -652,23 +642,17 @@ function isKnownCategoryType(type: string): type is DefaultCategoryType {
   return ["expense", "income", "advance", "transfer", "investment"].includes(type);
 }
 
-function getDeletedDefaultCategorySet(value?: string | null) {
-  if (!value) return new Set<string>();
-  try {
-    const parsed = JSON.parse(value);
-    if (!Array.isArray(parsed)) return new Set<string>();
-    return new Set(parsed.filter((item): item is string => typeof item === "string"));
-  } catch {
-    return new Set<string>();
-  }
+function getDeletedDefaultCategorySet(value: string[] | null | undefined) {
+  if (!Array.isArray(value)) return new Set<string>();
+  return new Set(value.filter((item): item is string => typeof item === "string"));
 }
 
 async function getDeletedDefaultCategories(writer: CategoryWriter, householdId: string) {
-  const setting = await writer.systemSetting.findUnique({
-    where: { key: deletedDefaultCategoryKey(householdId) },
-    select: { value: true },
+  const stored = await readJsonSystemSetting<string[]>(DELETED_DEFAULT_CATEGORY_SETTING_NAME, [], {
+    householdId,
+    db: writer,
   });
-  return getDeletedDefaultCategorySet(setting?.value);
+  return getDeletedDefaultCategorySet(stored);
 }
 
 function getDefaultCategoryDeletionTemplateKey(input: {
@@ -718,20 +702,12 @@ export async function recordDefaultCategoryDeletion(
   const templateKey = getDefaultCategoryDeletionTemplateKey(input);
   if (!templateKey) return;
 
-  const settingKey = deletedDefaultCategoryKey(householdId);
-  const current = await writer.systemSetting.findUnique({
-    where: { key: settingKey },
-    select: { value: true },
-  });
-  const deleted = getDeletedDefaultCategorySet(current?.value);
+  const options = { householdId, db: writer };
+  const deleted = await getDeletedDefaultCategories(writer, householdId);
   if (deleted.has(templateKey)) return;
   deleted.add(templateKey);
 
-  await writer.systemSetting.upsert({
-    where: { key: settingKey },
-    update: { value: JSON.stringify([...deleted].sort()) },
-    create: { key: settingKey, value: JSON.stringify([...deleted].sort()) },
-  });
+  await writeJsonSystemSetting(DELETED_DEFAULT_CATEGORY_SETTING_NAME, [...deleted].sort(), options);
 }
 
 async function normalizeCategoryTypeLabelNodes(writer: CategoryWriter, householdId: string) {

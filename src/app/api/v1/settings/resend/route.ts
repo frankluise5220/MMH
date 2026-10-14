@@ -1,8 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import { prisma } from "@/lib/db/prisma";
-import { RESEND_FROM, getEnvResendConfig } from "@/lib/mail/resend";
+import { RESEND_CONFIG_SETTING_KEY, RESEND_FROM, getEnvResendConfig } from "@/lib/mail/resend";
 import { isAdmin } from "@/lib/server/auth";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import {
+  deleteSystemSetting,
+  getSystemSetting,
+  parseJsonSetting,
+  writeJsonSystemSetting,
+} from "@/lib/server/system-setting";
 
 export const runtime = "nodejs";
 
@@ -17,7 +22,7 @@ function maskApiKey(apiKey: string) {
  * Gets the Resend mail configuration (API key and sender address).
  */
 export async function GET() {
-  const setting = await prisma.systemSetting.findUnique({ where: { key: "resend_config" } });
+  const stored = await getSystemSetting(RESEND_CONFIG_SETTING_KEY);
   const envConfig = getEnvResendConfig();
   const fallback = {
     configured: Boolean(envConfig?.apiKey),
@@ -27,28 +32,22 @@ export async function GET() {
     canDelete: false,
   };
 
-  if (!setting) {
-    return NextResponse.json({ ok: true, data: fallback });
-  }
+  const parsed = parseJsonSetting<{ apiKey?: string; from?: string }>(stored);
+  if (!parsed) return NextResponse.json({ ok: true, data: fallback });
 
-  try {
-    const parsed = JSON.parse(setting.value) as { apiKey?: string; from?: string };
-    const apiKey = String(parsed.apiKey ?? "").trim();
-    const from = String(parsed.from ?? "").trim();
-    if (!apiKey) return NextResponse.json({ ok: true, data: fallback });
-    return NextResponse.json({
-      ok: true,
-      data: {
-        configured: true,
-        keyPreview: maskApiKey(apiKey),
-        from: from || fallback.from,
-        source: "db",
-        canDelete: true,
-      },
-    });
-  } catch {
-    return NextResponse.json({ ok: true, data: fallback });
-  }
+  const apiKey = String(parsed.apiKey ?? "").trim();
+  const from = String(parsed.from ?? "").trim();
+  if (!apiKey) return NextResponse.json({ ok: true, data: fallback });
+  return NextResponse.json({
+    ok: true,
+    data: {
+      configured: true,
+      keyPreview: maskApiKey(apiKey),
+      from: from || fallback.from,
+      source: "db",
+      canDelete: true,
+    },
+  });
 }
 
 /**
@@ -70,12 +69,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, code: "MISSING_RESEND_API_KEY", error: "请填写 Resend API Key" }, { status: 400 });
   }
 
-  const value = JSON.stringify({ apiKey, from });
-  await prisma.systemSetting.upsert({
-    where: { key: "resend_config" },
-    update: { value },
-    create: { key: "resend_config", value },
-  });
+  await writeJsonSystemSetting(RESEND_CONFIG_SETTING_KEY, { apiKey, from });
 
   return NextResponse.json({ ok: true });
 }
@@ -90,6 +84,6 @@ export async function DELETE() {
     return NextResponse.json({ ok: false, code: "ADMIN_ONLY", error: "仅管理员可操作" }, { status: 403 });
   }
 
-  await prisma.systemSetting.deleteMany({ where: { key: "resend_config" } });
+  await deleteSystemSetting(RESEND_CONFIG_SETTING_KEY);
   return NextResponse.json({ ok: true });
 }

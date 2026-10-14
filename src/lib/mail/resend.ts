@@ -1,9 +1,13 @@
 import "@/lib/net/prefer-ipv4";
 import { prisma } from "@/lib/db/prisma";
 import type { MailAttachment } from "@/lib/mail/types";
+import { readJsonSystemSetting } from "@/lib/server/system-setting";
 
 /** Fixed sender address */
 export const RESEND_FROM = "mmh@floatingice.win";
+
+/** Global (not household-scoped) Resend config stored in SystemSetting. */
+export const RESEND_CONFIG_SETTING_KEY = "resend_config";
 
 type ResendConfig = {
   apiKey: string;
@@ -60,13 +64,10 @@ function getFeedbackResendConfig(): ResendConfig | null {
 /** Reads the Resend config from the SystemSetting table or env. */
 async function getDbResendConfig(): Promise<ResendConfig | null> {
   try {
-    const setting = await prisma.systemSetting.findUnique({ where: { key: "resend_config" } });
-    if (setting) {
-      const parsed = JSON.parse(setting.value) as { apiKey?: string; from?: string };
-      if (parsed.apiKey) {
-        // Prefer the from stored in the database, which is the fixed value anyway
-        return { apiKey: parsed.apiKey, from: parsed.from || RESEND_FROM };
-      }
+    const parsed = await readJsonSystemSetting<{ apiKey?: string; from?: string }>(RESEND_CONFIG_SETTING_KEY, {});
+    if (parsed?.apiKey) {
+      // Prefer the from stored in the database, which is the fixed value anyway
+      return { apiKey: parsed.apiKey, from: parsed.from || RESEND_FROM };
     }
     // fallback: legacy UserSettings (for backward compatibility with old data)
     const users = await prisma.user.findMany({ where: { role: "admin" }, take: 1 });

@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { prisma } from "@/lib/db/prisma";
 import { getCurrentUser, isAdmin } from "@/lib/server/auth";
 import {
   isLedgerInviteCodeExpired,
@@ -7,6 +6,7 @@ import {
 } from "@/lib/ledger-invite-codes";
 import { LEDGER_CREATION_INVITE_CODE_KEY } from "@/lib/households/create-ledger";
 import { isLedgerInviteCodeSigningAvailable, ledgerInviteCodeSignatureState } from "@/lib/server/ledger-invite-code-signing";
+import { getSystemSetting } from "@/lib/server/system-setting";
 
 /**
  * GET /api/v1/settings/ledger-invite-codes
@@ -27,8 +27,8 @@ export async function GET() {
   if (!isAdmin(user)) {
     return NextResponse.json({ ok: false, code: "FORBIDDEN", error: "仅管理员可读取邀请码" }, { status: 403 });
   }
-  const row = await prisma.systemSetting.findUnique({ where: { key: LEDGER_CREATION_INVITE_CODE_KEY } });
-  const records = parseLedgerInviteCodeRecords(row?.value ?? null).map((record) => {
+  const stored = await getSystemSetting(LEDGER_CREATION_INVITE_CODE_KEY);
+  const records = parseLedgerInviteCodeRecords(stored).map((record) => {
     const signatureState = ledgerInviteCodeSignatureState(record);
     const expired = !record.usedAt && isLedgerInviteCodeExpired(record);
     return {

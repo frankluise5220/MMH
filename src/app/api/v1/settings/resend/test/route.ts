@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
-import { prisma } from "@/lib/db/prisma";
-import { formatResendSendError, getEnvResendConfig } from "@/lib/mail/resend";
+import { RESEND_CONFIG_SETTING_KEY, formatResendSendError, getEnvResendConfig } from "@/lib/mail/resend";
+import { getSystemSetting, parseJsonSetting } from "@/lib/server/system-setting";
 
 export const runtime = "nodejs";
 
@@ -16,13 +16,12 @@ export async function POST(req: NextRequest) {
 
   // When no config is passed, read it from SystemSetting
   if (!apiKey || !from) {
-    const setting = await prisma.systemSetting.findUnique({ where: { key: "resend_config" } });
-    if (setting) {
-      try {
-        const parsed = JSON.parse(setting.value) as { apiKey?: string; from?: string };
-        if (!apiKey) apiKey = parsed.apiKey ?? "";
-        if (!from) from = parsed.from ?? "";
-      } catch {}
+    const parsed = parseJsonSetting<{ apiKey?: string; from?: string }>(
+      await getSystemSetting(RESEND_CONFIG_SETTING_KEY),
+    );
+    if (parsed) {
+      if (!apiKey) apiKey = parsed.apiKey ?? "";
+      if (!from) from = parsed.from ?? "";
     }
   }
 
