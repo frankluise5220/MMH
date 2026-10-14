@@ -36,6 +36,13 @@ type PasswordStatusResponse = {
    */
   fnosHouseholdIds?: Array<string | null>;
   passwordResetEnabled?: boolean;
+  /**
+   * Whether MMH membership sign-in is available on this deployment (the server
+   * has a usable registration service). Absent means "unknown" — an older or
+   * degraded status response — and the MMH tab stays visible rather than
+   * hiding a working entry point.
+   */
+  mmhEnabled?: boolean;
   users?: LoginUserChoice[];
 };
 
@@ -138,6 +145,10 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   // Ledgers the forwarded fnOS identity is bound in (`null` = system scope).
   const [fnosHouseholdIds, setFnosHouseholdIds] = useState<Array<string | null>>([]);
   const [passwordResetEnabled, setPasswordResetEnabled] = useState(false);
+  // Optimistic default: the MMH tab only disappears when the status response
+  // explicitly reports the registration service as unavailable, so a failed or
+  // older status response never hides a working sign-in method.
+  const [mmhEnabled, setMmhEnabled] = useState(true);
   const [householdChoices, setHouseholdChoices] = useState<HouseholdChoice[]>([]);
   const [pendingLogin, setPendingLogin] = useState<{ username: string; password: string; authMode?: "local" | "mmh" } | null>(null);
   const [initialLedgerSetup, setInitialLedgerSetup] = useState(false);
@@ -214,7 +225,10 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   const loginHouseholdChoices = getLoginHouseholdChoices();
   // 页签顺序：本地账户 → MMH 用户 →（有网关头时）飞牛账户。
   // 内容板四角恒为 12px 圆角（不去任何圆角），见 folderTabPanelClass。
-  const loginTabOrder: Array<"local" | "mmh" | "fnos"> = fnosGatewayUser ? ["local", "mmh", "fnos"] : ["local", "mmh"];
+  // MMH 页签只在服务端确有注册服务时出现，否则它是个必然失败的死入口。
+  const loginTabOrder: Array<"local" | "mmh" | "fnos"> = fnosGatewayUser
+    ? mmhEnabled ? ["local", "mmh", "fnos"] : ["local", "fnos"]
+    : mmhEnabled ? ["local", "mmh"] : ["local"];
   const localLoginUsers = systemUsers.filter((user) => user.hasPassword === true);
   const selectedHouseholdUsers = selectedHouseholdId
     ? localLoginUsers.filter((user) => getLoginUserScopeId(user) === selectedHouseholdId)
@@ -487,6 +501,17 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
           }
           setSystemUsers(users);
           setPasswordResetEnabled(data.passwordResetEnabled ?? false);
+          // A deployment with no registration service cannot verify an MMH
+          // membership password at all, so drop the tab instead of letting the
+          // user type credentials that can only fail.
+          const mmhAvailable = data.mmhEnabled !== false;
+          setMmhEnabled(mmhAvailable);
+          if (!mmhAvailable) {
+            setLoginMode((current) => (current === "mmh" ? "local" : current));
+            setCreateAuthMode((current) =>
+              current === "mmh" ? (hasFnosGateway ? "fnos" : "local") : current,
+            );
+          }
           const boundHouseholdIds = data.fnosHouseholdIds ?? [];
           setFnosHouseholdIds(boundHouseholdIds);
           const boundScopes = new Set(boundHouseholdIds.map((id) => id ?? SYSTEM_LOGIN_SCOPE_ID));
@@ -591,12 +616,22 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   }
 
   /**
-   * The central registration service answers in English with machine codes.
-   * "no MMH user for this email" is the one people hit most often, and it needs
-   * to point at the signup entry instead of reading like a hard failure.
+   * The central registration service answers in English with machine codes,
+   * and so do the local routes that refuse to call it. Map every code the MMH
+   * flow can produce: "no MMH user for this email" is the one people hit most
+   * often and needs to point at the signup entry instead of reading like a hard
+   * failure, and the two service-availability codes must never surface as raw
+   * English (they used to, which is how "The registration service is not
+   * configured on this server." reached the login form).
    */
   function mmhErrorText(code: string | undefined, fallback: string | undefined, fallbackKey: string) {
     if (code === "PRINCIPAL_NOT_FOUND") return t("login.error.mmhAccountNotFound");
+    if (code === "REGISTRATION_NOT_CONFIGURED") return t("login.error.mmhNotConfigured");
+    if (code === "REGISTRATION_SERVICE_UNREACHABLE") return t("login.error.mmhServiceUnreachable");
+    // The central account was verified but carries no principal id, so it
+    // cannot be matched to a local user. Almost always a contract mismatch on
+    // the service side, which the user cannot fix from the login form.
+    if (code === "MMH_PRINCIPAL_MISSING") return t("login.error.mmhPrincipalMissing");
     return fallback ?? t(fallbackKey);
   }
 
@@ -951,7 +986,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
         setRegisterError(
           data?.code === "DUPLICATE_EMAIL"
             ? t("login.register.error.emailTaken")
-            : data?.error ?? t("login.register.error.sendFailed"),
+            : mmhErrorText(data?.code, data?.error, "login.register.error.sendFailed"),
         );
         return;
       }
@@ -1000,7 +1035,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
             ? t("login.register.error.invalidCode")
             : data?.code === "DUPLICATE_EMAIL"
               ? t("login.register.error.emailTaken")
-              : data?.error ?? t("login.register.error.failed"),
+              : mmhErrorText(data?.code, data?.error, "login.register.error.failed"),
         );
         return;
       }
@@ -1026,7 +1061,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
       });
       const data = await res.json().catch(() => null) as { ok: boolean; code?: string; error?: string } | null;
       if (!data?.ok) {
-        setMmhResetError(data?.error ?? t("login.register.error.sendFailed"));
+        setMmhResetError(mmhErrorText(data?.code, data?.error, "login.register.error.sendFailed"));
         return;
       }
       setMmhResetCodeSent(true);
@@ -1304,19 +1339,21 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                 >
                   <span className="relative block overflow-hidden whitespace-nowrap">{t("login.mode.local")}</span>
                 </button>
-                <button
-                  type="button"
-                  onClick={() => switchLoginMode("mmh")}
-                  className={`${folderTabClass(
-                    loginMode === "mmh",
-                    loginTabOrder.indexOf("mmh") === loginTabOrder.length - 1,
-                    "stretch",
-                    loginTabOrder.indexOf("mmh") === 0,
-                    folderTabNeighbors(loginTabOrder, "mmh", loginMode),
-                  )}${mmhTabUnavailable ? " ft-tab-fillet-amber" : ""}`}
-                >
-                  <span className="relative block overflow-hidden whitespace-nowrap">{t("login.mode.mmh")}</span>
-                </button>
+                {mmhEnabled ? (
+                  <button
+                    type="button"
+                    onClick={() => switchLoginMode("mmh")}
+                    className={`${folderTabClass(
+                      loginMode === "mmh",
+                      loginTabOrder.indexOf("mmh") === loginTabOrder.length - 1,
+                      "stretch",
+                      loginTabOrder.indexOf("mmh") === 0,
+                      folderTabNeighbors(loginTabOrder, "mmh", loginMode),
+                    )}${mmhTabUnavailable ? " ft-tab-fillet-amber" : ""}`}
+                  >
+                    <span className="relative block overflow-hidden whitespace-nowrap">{t("login.mode.mmh")}</span>
+                  </button>
+                ) : null}
                 {fnosGatewayUser ? (
                   <button
                     type="button"
@@ -1771,7 +1808,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                       <FolderTabs
                         tabs={[
                           { id: "local", label: t("login.mode.local") },
-                          { id: "mmh", label: t("login.mode.mmh") },
+                          ...(mmhEnabled ? [{ id: "mmh", label: t("login.mode.mmh") }] : []),
                           ...(fnosGatewayUser ? [{ id: "fnos", label: t("login.authModeFnos") }] : []),
                         ]}
                         activeId={createAuthMode}
@@ -1828,7 +1865,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                       <FolderTabs
                         tabs={[
                           { id: "local", label: t("login.mode.local") },
-                          { id: "mmh", label: t("login.mode.mmh") },
+                          ...(mmhEnabled ? [{ id: "mmh", label: t("login.mode.mmh") }] : []),
                           ...(fnosGatewayUser ? [{ id: "fnos", label: t("login.authModeFnos") }] : []),
                         ]}
                         activeId={createAuthMode}
@@ -1915,7 +1952,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                   <FolderTabs
                     tabs={[
                       { id: "local", label: t("login.mode.local") },
-                      { id: "mmh", label: t("login.mode.mmh") },
+                      ...(mmhEnabled ? [{ id: "mmh", label: t("login.mode.mmh") }] : []),
                       ...(fnosGatewayUser ? [{ id: "fnos", label: t("login.authModeFnos") }] : []),
                     ]}
                     activeId={createAuthMode}
