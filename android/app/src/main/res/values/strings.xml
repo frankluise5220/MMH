@@ -1,4 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">MMH 记账</string>
+    <string name="accessibility_service_label">MMH 自动记账</string>
+    <string name="accessibility_service_desc">用于在支付类 App 的付款成功页面识别账单信息，生成待确认账单供你确认后入账。仅在开启自动记账时读取你开启的 App 屏幕文字，数据只在本地解析，不会离开设备。</string>
 </resources>

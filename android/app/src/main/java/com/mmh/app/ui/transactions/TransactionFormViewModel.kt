@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.mmh.app.data.remote.api.TransactionApi
 import com.mmh.app.data.remote.dto.*
 import com.mmh.app.data.repository.AccountRepository
+import com.mmh.app.data.repository.AutoDraftRepository
 import com.mmh.app.data.repository.CategoryRepository
 import com.mmh.app.domain.model.Resource
 import com.mmh.app.ui.util.formatAccountDisplayName
@@ -22,6 +23,7 @@ data class TransactionFormUiState(
     val error: String? = null,
     val isEdit: Boolean = false,
     val entryId: String? = null,
+    val pendingDraftId: String? = null,
 
     // Form fields
     val type: String = "expense",
@@ -61,7 +63,8 @@ class TransactionFormViewModel @Inject constructor(
     private val transactionApi: TransactionApi,
     private val categoryRepository: CategoryRepository,
     private val accountRepository: AccountRepository,
-    private val transactionRepository: com.mmh.app.data.repository.TransactionRepository
+    private val transactionRepository: com.mmh.app.data.repository.TransactionRepository,
+    private val autoDraftRepository: AutoDraftRepository
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(TransactionFormUiState())
@@ -148,6 +151,33 @@ class TransactionFormViewModel @Inject constructor(
                     error = "加载记录失败: ${e.message}"
                 )
             }
+        }
+    }
+
+    /** Initialize the form from a captured auto-bookkeeping draft (pre-filled, waiting for confirm). */
+    fun initFromDraft(draftId: String) {
+        viewModelScope.launch {
+            _uiState.value = _uiState.value.copy(isLoading = true, error = null, isEdit = false)
+            val draft = autoDraftRepository.getById(draftId)
+            if (draft == null) {
+                _uiState.value = _uiState.value.copy(
+                    isLoading = false,
+                    error = "该待确认账单不存在或已处理"
+                )
+                return@launch
+            }
+            _uiState.value = _uiState.value.copy(
+                isLoading = false,
+                isEdit = false,
+                pendingDraftId = draftId,
+                type = draft.direction,
+                date = draft.date,
+                amount = String.format("%.2f", draft.amount),
+                note = draft.note ?: draft.merchant ?: "",
+                categoryId = null,
+                categoryName = ""
+            )
+            loadReferenceData(draft.direction, allowNetwork = false)
         }
     }
 
@@ -441,6 +471,10 @@ class TransactionFormViewModel @Inject constructor(
                 when (result) {
                     is Resource.Success -> {
                         _uiState.value = _uiState.value.copy(isSaving = false)
+                        val draftId = _uiState.value.pendingDraftId
+                        if (draftId != null) {
+                            autoDraftRepository.deleteById(draftId)
+                        }
                         onSuccess()
                     }
                     is Resource.Error -> {

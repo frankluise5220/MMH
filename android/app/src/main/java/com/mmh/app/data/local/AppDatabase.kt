@@ -3,6 +3,7 @@ package com.mmh.app.data.local
 import androidx.room.Database
 import androidx.room.RoomDatabase
 import com.mmh.app.data.local.dao.AccountCacheDao
+import com.mmh.app.data.local.dao.AutoDraftDao
 import com.mmh.app.data.local.dao.CategoryCacheDao
 import com.mmh.app.data.local.dao.FundHoldingCacheDao
 import com.mmh.app.data.local.dao.FundNavCacheDao
@@ -12,6 +13,7 @@ import com.mmh.app.data.local.dao.StockHoldingCacheDao
 import com.mmh.app.data.local.dao.SyncStateDao
 import com.mmh.app.data.local.dao.TransactionCacheDao
 import com.mmh.app.data.local.entity.AccountCacheEntity
+import com.mmh.app.data.local.entity.AutoDraftEntity
 import com.mmh.app.data.local.entity.CategoryCacheEntity
 import com.mmh.app.data.local.entity.FundHoldingCacheEntity
 import com.mmh.app.data.local.entity.FundNavCacheEntity
@@ -35,9 +37,10 @@ import com.mmh.app.data.local.entity.TransactionCacheEntity
         RegularInvestPlanCacheEntity::class,
         StockHoldingCacheEntity::class,
         PropertyAssetCacheEntity::class,
-        SyncStateEntity::class
+        SyncStateEntity::class,
+        AutoDraftEntity::class
     ],
-    version = 9,
+    version = 10,
     exportSchema = false
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -50,4 +53,5 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun stockHoldingCacheDao(): StockHoldingCacheDao
     abstract fun propertyAssetCacheDao(): PropertyAssetCacheDao
     abstract fun syncStateDao(): SyncStateDao
+    abstract fun autoDraftDao(): AutoDraftDao
 }

@@ -71,6 +71,7 @@ fun TransactionFormScreen(
     onSaved: () -> Unit,
     editTransaction: TransactionDto? = null,
     entryId: String? = null,
+    draftId: String? = null,
     initialType: String = "expense",
     initialFundSubtype: String = "",
     initialFundCode: String = "",
@@ -83,11 +84,13 @@ fun TransactionFormScreen(
     val isQuickFundBuy = isInvestment && !uiState.isEdit && uiState.fundSubtype == "buy" && uiState.fundCode.isNotBlank()
     val isQuickFundSell = isInvestment && !uiState.isEdit && uiState.fundSubtype == "redeem" && uiState.fundCode.isNotBlank()
 
-    LaunchedEffect(editTransaction, entryId, initialType, initialFundSubtype, initialFundCode, initialFundName, initialAccountId) {
+    LaunchedEffect(editTransaction, entryId, draftId, initialType, initialFundSubtype, initialFundCode, initialFundName, initialAccountId) {
         if (editTransaction != null) {
             viewModel.initEdit(editTransaction)
         } else if (!entryId.isNullOrEmpty()) {
             viewModel.initEditById(entryId)
+        } else if (!draftId.isNullOrEmpty()) {
+            viewModel.initFromDraft(draftId)
         } else {
             viewModel.initCreate(
                 type = initialType,

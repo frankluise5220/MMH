@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.room.Room
 import com.mmh.app.data.local.AppDatabase
 import com.mmh.app.data.local.dao.AccountCacheDao
+import com.mmh.app.data.local.dao.AutoDraftDao
 import com.mmh.app.data.local.dao.CategoryCacheDao
 import com.mmh.app.data.local.dao.FundHoldingCacheDao
 import com.mmh.app.data.local.dao.FundNavCacheDao
@@ -61,4 +62,7 @@ object DatabaseModule {
 
     @Provides
     fun provideSyncStateDao(db: AppDatabase): SyncStateDao = db.syncStateDao()
+
+    @Provides
+    fun provideAutoDraftDao(db: AppDatabase): AutoDraftDao = db.autoDraftDao()
 }

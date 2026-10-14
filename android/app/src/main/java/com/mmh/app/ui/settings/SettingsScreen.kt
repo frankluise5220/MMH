@@ -36,6 +36,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 @Composable
 fun SettingsScreen(
     onNavigateToServerSettings: () -> Unit,
+    onNavigateToAutoDrafts: () -> Unit,
     viewModel: SettingsViewModel = hiltViewModel()
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -86,6 +87,8 @@ fun SettingsScreen(
                 )
             }
         }
+
+        AutoBookkeepSection(onOpenDrafts = onNavigateToAutoDrafts)
 
         SettingsSectionCard(title = displayGroup?.label ?: "显示偏好") {
             Text(

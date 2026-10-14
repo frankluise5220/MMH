@@ -43,6 +43,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
 import com.mmh.app.ui.accounts.AccountsScreen
+import com.mmh.app.ui.auto.AutoDraftListScreen
 import com.mmh.app.ui.funddetail.FundDetailScreen
 import com.mmh.app.ui.funds.FundsScreen
 import com.mmh.app.ui.invest.InvestTabScreen
@@ -145,7 +146,31 @@ fun MainScreen(
 
             composable(NavRoutes.SETTINGS) {
                 SettingsScreen(
-                    onNavigateToServerSettings = { navController.navigate(NavRoutes.SERVER_SETTINGS) }
+                    onNavigateToServerSettings = { navController.navigate(NavRoutes.SERVER_SETTINGS) },
+                    onNavigateToAutoDrafts = { navController.navigate(NavRoutes.AUTO_DRAFTS) }
+                )
+            }
+
+            composable(NavRoutes.AUTO_DRAFTS) {
+                AutoDraftListScreen(
+                    onBack = { navController.popBackStack() },
+                    onRecord = { draftId ->
+                        navController.navigate(NavRoutes.transactionFormDraft(draftId))
+                    }
+                )
+            }
+
+            composable(
+                route = NavRoutes.TRANSACTION_FORM_DRAFT,
+                arguments = listOf(
+                    navArgument("draftId") { type = NavType.StringType }
+                )
+            ) { backStackEntry ->
+                val draftId = backStackEntry.arguments?.getString("draftId") ?: ""
+                TransactionFormScreen(
+                    draftId = draftId,
+                    onBack = { navController.popBackStack() },
+                    onSaved = { navController.popBackStack() }
                 )
             }
 

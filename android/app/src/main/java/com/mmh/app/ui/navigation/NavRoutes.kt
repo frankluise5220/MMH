@@ -26,6 +26,8 @@ object NavRoutes {
     const val FUND_DETAIL = "fund_detail/{accountId}/{fundCode}"
     const val REGULAR_INVEST = "regular_invest?fundCode={fundCode}"
     const val SERVER_SETTINGS = "server_settings"
+    const val AUTO_DRAFTS = "auto_drafts"
+    const val TRANSACTION_FORM_DRAFT = "transaction_form_draft/{draftId}"
     const val TRANSACTION_FORM = "transaction_form"
     const val TRANSACTION_FORM_EDIT = "transaction_form_edit/{entryId}"
     const val STOCK_HOLDINGS = "stock_holdings?accountId={accountId}"
@@ -47,6 +49,7 @@ object NavRoutes {
             "&accountId=${Uri.encode(accountId)}"
     }
     fun transactionFormEdit(entryId: String) = "transaction_form_edit/$entryId"
+    fun transactionFormDraft(draftId: String) = "transaction_form_draft/$draftId"
     fun fundDetail(accountId: String, fundCode: String) = "fund_detail/$accountId/$fundCode"
     fun regularInvest(fundCode: String = "") = "regular_invest?fundCode=$fundCode"
     fun stockHoldings(accountId: String = "") = "stock_holdings?accountId=${Uri.encode(accountId)}"
