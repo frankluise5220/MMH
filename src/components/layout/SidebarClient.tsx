@@ -32,7 +32,8 @@ import { LedgerSwitcher } from "../LedgerSwitcher";
 import { NewLedgerSetupCheck } from "../NewLedgerSetupCheck";
 import { DailyTaskCheck } from "../DailyTaskCheck";
 import { NotificationBell } from "../NotificationBell";
-import { AutoDraftPanel } from "../AutoDraftPanel";
+// 「待确认账单」入口（AutoDraftPanel）功能尚未完善，暂时不在侧边栏展示图标；
+// 组件本身保留在 src/components/AutoDraftPanel.tsx，完善后恢复这两处渲染即可。
 import { ClipboardBillListener } from "../ClipboardBillListener";
 import { LanguageSwitcher } from "../LanguageSwitcher";
 import { formatCurrencyMoney, isDisplayZeroMoney, roundDisplayNumber } from "@/lib/format";
@@ -1236,7 +1237,6 @@ export function SidebarClient({
               <UserRound size={18} />
             </button>
             <NotificationBell collapsed />
-            <AutoDraftPanel />
             <LanguageSwitcher />
             <button
               onClick={toggleSidebarCollapsed}
@@ -1355,7 +1355,6 @@ export function SidebarClient({
               <MessageSquare size={15} />
             </Link>
             <NotificationBell collapsed={false} />
-            <AutoDraftPanel />
           </div>
           <div className="ml-auto flex items-center justify-end gap-1">
             <LanguageSwitcher />
