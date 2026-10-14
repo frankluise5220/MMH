@@ -68,6 +68,14 @@ jobs:
       - name: Set up Android SDK
         if: steps.android.outputs.publish == 'true'
         uses: android-actions/setup-android@v3
+        with:
+          # setup-android@v3 的默认 packages 含 'tools'，而该包已从 Google SDK
+          # 仓库下架，sdkmanager 会以 "Failed to find package 'tools'" 退出 1
+          # （自 v0.1.71 起 Android 构建一直失败在这一步，0.1.71 因此没有发布 APK）。
+          # 显式给出实际需要的包；platforms / build-tools 由 Gradle 按 AGP 的
+          # compileSdk=35 要求自动安装，licenses 由本 action 统一接受。
+          packages: 'platform-tools'
+          accept-android-sdk-licenses: 'yes'
 
       - name: Resolve MMH version
         id: version
