@@ -1,4 +1,5 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
 import { useEffect, useRef, useState, type ClipboardEvent } from "react";
 import { createPortal } from "react-dom";
@@ -8,6 +9,7 @@ import { formatMoney } from "@/lib/format";
 import { AI_API_MODES, CHANNEL_TYPES, getModelsUrl, normalizeAiApiMode, type AiApiMode } from "@/lib/ai/config";
 import { callDeleteEntries, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { AI_CONFIG_CHANGED_EVENT } from "@/lib/client/aiConfig";
+import { AI_PREFILL_EVENT } from "@/lib/client/clipboard-drafts";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { showConfirmDialog } from "@/lib/client/confirm-dialog";
 import { TableColumnFilter } from "@/components/TableColumnFilter";
@@ -324,6 +326,20 @@ export function AIPanel({
     aiPanelMessagesCache = messages;
   }, [messages]);
 
+  // 剪贴板自动记账：待确认账单面板点「记一笔」后，把账单原文预填进输入框并展开，
+  // 走这里既有的「解析 → 确认 → 入账」路径，不另起一套入账逻辑。
+  useEffect(() => {
+    const onPrefill = (event: Event) => {
+      const detail = (event as CustomEvent<{ text?: string }>).detail ?? {};
+      const text = typeof detail.text === "string" ? detail.text : "";
+      if (!text.trim()) return;
+      setInput(text);
+      setCollapsedPersist(false);
+    };
+    window.addEventListener(AI_PREFILL_EVENT, onPrefill as EventListener);
+    return () => window.removeEventListener(AI_PREFILL_EVENT, onPrefill as EventListener);
+  }, []);
+
   useEffect(() => {
     if (!mounted) return;
     if (!enabled) return;
@@ -572,6 +588,11 @@ export function AIPanel({
           ? t("aiPanel.sumTotal", { value: formatMoney(parsed.sum) })
           : t("aiPanel.countSuffix", { count: parsed.count });
         setMessages((m) => [...m, { role: "assistant", text: t("aiPanel.statsResult", { value: statsValue }), trace: parsed.trace }]);
+        return;
+      }
+
+      if ("operation" in parsed && parsed.operation === "chat") {
+        setMessages((m) => [...m, { role: "assistant", text: t("aiPanel.queryNotRecorded"), trace: parsed.trace }]);
         return;
       }
 
@@ -1107,7 +1128,7 @@ export function AIPanel({
     const accountOptions = deletePreviewAccountOptions(deletePreviewDialog);
 
     return createPortal(
-      <div className="fixed inset-0 z-[1100] flex items-center justify-center bg-slate-950/40 px-4 py-6 backdrop-blur-[2px]">
+      <ModalLayer className="fixed inset-0 flex items-center justify-center bg-slate-950/40 px-4 py-6 backdrop-blur-[2px]">
         <div className="flex h-[min(82vh,760px)] w-[min(1120px,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-2xl">
           <div className="flex shrink-0 items-start justify-between gap-4 border-b border-slate-200 bg-slate-50/80 px-5 py-4">
             <div className="min-w-0">
@@ -1225,7 +1246,7 @@ export function AIPanel({
             </button>
           </div>
         </div>
-      </div>,
+      </ModalLayer>,
       document.body,
     );
   }

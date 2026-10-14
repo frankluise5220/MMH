@@ -1,4 +1,5 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
 import { useEffect, useState } from "react";
 import { ArrowLeftRight } from "lucide-react";
@@ -14,6 +15,7 @@ import {
   SettingsTh,
 } from "@/components/settings/SettingsPageScaffold";
 import { AI_API_MODES, CHANNEL_TYPES, getModelsUrl, normalizeAiApiMode, type AiApiMode } from "@/lib/ai/config";
+import { detectModelInfo } from "@/lib/ai/model-capabilities";
 import { dispatchAiConfigChanged } from "@/lib/client/aiConfig";
 import { parseBaseUrl, buildBaseUrl, PROTOCOL_OPTIONS, PORT_SUGGESTIONS } from "@/lib/urlInput";
 import type { ParsedUrl } from "@/lib/urlInput";
@@ -46,17 +48,6 @@ const MODELS_KEY = "mmh_ai_models";
 const ACTIVE_MODEL_KEY = "mmh_ai_active_model";
 
 function genId() { return Math.random().toString(36).slice(2, 10); }
-
-function detectModelInfo(id: string) {
-  const lower = id.toLowerCase();
-  const supportsVision = /gpt-4o|vision|qwen[-_]?vl|glm-4v|internvl|llava|pix|multimodal|mm/.test(lower);
-  const category = supportsVision ? "vision"
-    : /embed|embedding/.test(lower) ? "embedding"
-    : /whisper|audio|tts|speech|transcrib/.test(lower) ? "audio"
-    : /dall|image|sdxl|stable[-_ ]diffusion|flux/.test(lower) ? "image"
-    : "text";
-  return { id, category, supportsVision };
-}
 
 function categoryLabel(category: string, t: (key: string, params?: Record<string, string | number>) => string) {
   if (category === "vision") return t("settings.ai.client.category.vision");
@@ -235,7 +226,7 @@ function ModelModal({
     : initial ? t("settings.ai.client.modalTitle.selectEdit") : t("settings.ai.client.modalTitle.select");
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+    <ModalLayer className="fixed inset-0 flex items-center justify-center bg-black/40 p-4">
       <div className="w-full max-w-lg bg-white rounded-xl shadow-xl overflow-hidden">
         <div className="px-5 py-4 border-b border-slate-200 bg-slate-50">
           <div className="text-sm font-semibold text-slate-800">
@@ -322,7 +313,7 @@ function ModelModal({
           )}
         </div>
       </div>
-    </div>
+    </ModalLayer>
   );
 }
 
@@ -550,6 +541,10 @@ export default function AISettingsClient({
         count={models.length}
       />
 
+      <p className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-relaxed text-slate-600">
+        {t("settings.ai.client.visionHint")}
+      </p>
+
       <SettingsSection
         title={t("settings.ai.client.listTitle")}
         count={models.length}
@@ -600,9 +595,10 @@ export default function AISettingsClient({
                 </SettingsTd>
                 <SettingsTd>
                   <div className="flex flex-wrap gap-1.5">
-                    {supportsVision ? <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] text-emerald-700">{t("settings.ai.client.category.vision")}</span> : null}
+                    {supportsVision
+                      ? <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] text-emerald-700">{t("settings.ai.client.category.vision")}</span>
+                      : <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-500">{t("settings.ai.client.noVision")}</span>}
                     {isActive ? <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[11px] text-blue-700">{t("settings.display.default")}</span> : null}
-                    {!supportsVision && !isActive ? <span className="text-xs text-slate-400">-</span> : null}
                   </div>
                 </SettingsTd>
                 <SettingsTd align="right">
@@ -646,7 +642,7 @@ export default function AISettingsClient({
 
       {/* Quick add modal */}
       {quickAdd && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4">
+        <ModalLayer className="fixed inset-0 flex items-center justify-center bg-black/40 p-4">
           <div className="w-full max-w-md bg-white rounded-xl shadow-xl overflow-hidden">
             <div className="px-5 py-4 border-b border-slate-200 bg-slate-50">
               <div className="text-sm font-semibold text-slate-800">{t("settings.ai.client.switchTitle", { name: quickAdd.channelName || quickAdd.channelId })}</div>
@@ -694,7 +690,7 @@ export default function AISettingsClient({
               </div>
             </div>
           </div>
-        </div>
+        </ModalLayer>
       )}
 
       {showModal && (

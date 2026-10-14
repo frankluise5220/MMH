@@ -7,7 +7,13 @@ import { getHouseholdScope, type HouseholdContext } from "@/lib/server/household
 import { callAiForCommand, parseUpdateCommand, normalizeOperationText, type AnalyzedCommand, type ParsedDateRange, type ParsedUpdateCommand } from "@/lib/commandParser";
 import { SYSTEM_PROMPT, buildFundSystemPrompt, buildBillHeaderContext } from "@/lib/ai/prompts";
 import type { BillHeader } from "@/lib/ai/prompts";
-import { modelSupportsVision, buildAccountContextText, classifyInput } from "@/lib/ai/client";
+import { buildAccountContextText, classifyInput } from "@/lib/ai/client";
+import { modelSupportsVision } from "@/lib/ai/model-capabilities";
+import {
+  buildQueryNotRecordedResponse,
+  looksLikeDataQuestion,
+  parseStatsCommand,
+} from "@/lib/ai/query-intent";
 import { normalizeAiApiMode } from "@/lib/ai/config";
 import { buildResponsesRequestBody, extractResponsesText, type ChatContentPart } from "@/lib/ai/responses";
 import { isSpendableAccount } from "@/lib/account-kind-utils";
@@ -963,6 +969,34 @@ async function executeRestorePlan(plan: { take: number }, apply: boolean, hidFil
   return { ok: true as const, restoredCount: res.count, requiresConfirm: false as const, targets };
 }
 
+/**
+ * Image uploads need a model that actually reads images. The name heuristic is
+ * permissive, and it is combined with the explicit "支持图片" flag stored on the
+ * model row in AI settings, so a model the user configured is never blocked just
+ * because the heuristic does not recognise its name.
+ */
+async function isVisionCapableModel(modelName: string): Promise<boolean> {
+  if (modelSupportsVision(modelName)) return true;
+  const name = (modelName ?? "").trim();
+  if (!name) return false;
+  try {
+    const row = await prisma.aiModel.findFirst({
+      where: { vision: true, OR: [{ model: name }, { name }] },
+      select: { id: true },
+    });
+    return !!row;
+  } catch {
+    return false;
+  }
+}
+
+/** 账单/批量文本要走各自的解析链路，不能被「不记账」兜底拦下。 */
+function isStatementLikeText(text: string): boolean {
+  if (!text) return false;
+  if (isBillStatement(text) || looksLikeBatchLedgerText(text)) return true;
+  return preprocessBillText(text).txLines.length > 0;
+}
+
 function parseQueryCommand(text: string) {
   const t = normalizeOperationText(text);
   if (!t) return null;
@@ -974,35 +1008,14 @@ function parseQueryCommand(text: string) {
   return { mode: "recycle_recent" as const, take };
 }
 
-function parseStatsCommand(text: string) {
-  const t = normalizeOperationText(text);
-  if (!t) return null;
-  if (!/(统计|算一下|统计一下|汇总)/.test(t)) return null;
-  const metric = /(多少钱|金额|总额|合计)/.test(t) ? "sum" : "count";
-  const type = /收入/.test(t) ? TransactionType.income : /转账/.test(t) ? TransactionType.transfer : TransactionType.expense;
-
-  let year: number | undefined = undefined;
-  const yearMatch = t.match(/(\d{4})年/);
-  if (yearMatch) year = Number(yearMatch[1]);
-
-  let month: number | undefined = undefined;
-  const monthMatch = t.match(/(\d{1,2})月/);
-  if (monthMatch) month = Number(monthMatch[1]);
-
-  let accountKeyword: string | undefined = undefined;
-  const bankKey = extractBankKeywordFromBill(t);
-  if (bankKey) accountKeyword = bankKey;
-
-  return { metric: metric as "count" | "sum", type, year, month, accountKeyword };
-}
-
 async function executeStatsPlan(plan: { metric: "count" | "sum"; type: TransactionType; year?: number; month?: number; accountKeyword?: string }, hidFilter: Record<string, string> = {}) {
+  // TxRecord 本身就是流水行（date/type/deletedAt 都在它自己身上），
+  // 不存在 `transaction` 关联。旧代码写成 where.transaction.{...} → Prisma 直接抛错，
+  // 被上层 catch {} 吞掉后「统计…」全部静默掉进记账分支（issue #22 的 ¥10 就是这样来的）。
   const where: any = {
     ...hidFilter,
-    transaction: {
-      deletedAt: null,
-      type: plan.type,
-    },
+    deletedAt: null,
+    type: plan.type,
   };
 
   if (plan.year) {
@@ -1010,7 +1023,7 @@ async function executeStatsPlan(plan: { metric: "count" | "sum"; type: Transacti
     const end = plan.month
       ? new Date(plan.year, plan.month, 1)
       : new Date(plan.year + 1, 0, 1);
-    where.transaction.date = { gte: start, lt: end };
+    where.date = { gte: start, lt: end };
   }
 
   if (plan.accountKeyword) {
@@ -1277,13 +1290,18 @@ export async function POST(req: Request) {
             sum: s.sum,
             trace: [
               `识别为统计指令：${statsPlan.metric === "sum" ? "金额汇总" : "数量统计"}`,
+              `统计范围：${statsPlan.year ? `${statsPlan.year}年${statsPlan.month ? `${statsPlan.month}月` : "全年"}` : "全部时间"}${statsPlan.accountKeyword ? ` · 账户含「${statsPlan.accountKeyword}」` : ""}`,
               `统计结果：count=${s.count}, sum=${s.sum.toFixed(2)}`,
             ],
           },
           { headers: corsHeaders() },
         );
-      } catch {
-        // Database unavailable, fall through to the next step
+      } catch (error) {
+        // 已经识别成统计诉求就不能再退回「解析成流水」——否则问句会被记成一笔账。
+        return NextResponse.json(
+          { ok: false, code: "STATS_FAILED", error: `统计失败：${error instanceof Error ? error.message : "数据库暂时不可用"}` },
+          { status: 500, headers: corsHeaders() },
+        );
       }
     }
 
@@ -1301,15 +1319,19 @@ export async function POST(req: Request) {
           },
           { headers: corsHeaders() },
         );
-      } catch {
-        // Database unavailable, fall through to the next step
+      } catch (error) {
+        // 同上：识别成查询后不能退回记账分支。
+        return NextResponse.json(
+          { ok: false, code: "QUERY_FAILED", error: `查询失败：${error instanceof Error ? error.message : "数据库暂时不可用"}` },
+          { status: 500, headers: corsHeaders() },
+        );
       }
     }
   }
 
-  if (imageDataUrl && !modelSupportsVision(modelName)) {
+  if (imageDataUrl && !(await isVisionCapableModel(modelName))) {
     return NextResponse.json(
-      { ok: false, code: "VISION_NOT_SUPPORTED", error: `当前模型 "${modelName}" 不支持图片识别，请切换到支持图片的模型（如 GPT-4o、Claude-3.5、Qwen-VL 等），或将截图另存为文本后粘贴上传。` },
+      { ok: false, code: "VISION_NOT_SUPPORTED", error: `当前模型 "${modelName}" 不支持图片识别，请切换到支持图片的模型（如 GPT-4o、Claude-3.5、Qwen-VL、GLM-4V 等），或将截图另存为文本后粘贴上传。注意：截图识别依赖模型自身的视觉能力，纯文本渠道（如 DeepSeek 官方接口）即使切换模型也无法识别图片。` },
       { status: 422, headers: corsHeaders() },
     );
   }
@@ -1444,6 +1466,11 @@ export async function POST(req: Request) {
       return null;
     }
 
+    // 「查询/闲聊」意图：只回答问题，绝不落成流水。
+    if ((inputType === "query" || inputType === "chat") && !isStatementLikeText(text)) {
+      return buildQueryNotRecordedResponse(text);
+    }
+
     return null;
   }
 
@@ -1516,6 +1543,12 @@ export async function POST(req: Request) {
           { headers: corsHeaders() },
         );
       }
+    }
+
+    // 最后一道闸门：能走到这里说明前面所有直出分支都没命中。
+    // 如果句子是在问已有数据，就不要让模型把它「解析成流水」。
+    if (text && !isStatementLikeText(text) && looksLikeDataQuestion(text)) {
+      return NextResponse.json(buildQueryNotRecordedResponse(text), { headers: corsHeaders() });
     }
 
     const nowForPrompt = new Date();

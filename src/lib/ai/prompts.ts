@@ -87,16 +87,20 @@ export const CLASSIFY_PROMPT = `你是 MMH 系统的输入分类器。你的任�
 2. 批量账单（bill_statement）：来自银行/信用卡的账单邮件或截图，包含账单日、还款日、多笔交易明细
 3. 批量表格（batch_table）：多行格式化的交易记录文本，如日期+金额+备注的表格形式，每行一条记录
 4. 操作指令（command）：删除、恢复、统计等操作命令，如"删除上个月的所有消费"、"恢复最近10条"
+5. 数据查询（query）：用户在询问已有账目的结果，本身不是一笔新交易，如"这个月支出多少"、"统计10月支出总额"、"最近5条回收站记录"
+6. 闲聊（chat）：与记账完全无关的提问或闲聊，如"你是谁"、"今天天气怎么样"
 
 判断规则：
 - 如果包含"账单日"、"最后还款日"、"本期应还"等关键词 → bill_statement
 - 如果包含多行日期格式（YYYY-MM-DD）且每行有金额 → batch_table
 - 如果是"删"、"恢复"、"统计"、"查询回收站"等明确操作意图 → command
+- 如果句子里没有要新增的交易（没有金额、没有"买了/花了/收到/转入"等交易动作），而是在问已有数据的结果（含"多少"、"几笔"、"合计"、"总额"等）→ query
+- 如果与记账完全无关 → chat
 - 其他情况 → natural
 
 只输出严格 JSON，格式如下：
 {
-  "inputType": "natural|bill_statement|batch_table|command",
+  "inputType": "natural|bill_statement|batch_table|command|query|chat",
   "confidence": 0.95,
   "reason": "判断理由（1-2句话）",
   "suggestedAction": "分类后建议的处理方式（1句话）"

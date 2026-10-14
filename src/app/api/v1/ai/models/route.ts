@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { lookup } from "node:dns/promises";
 import net from "node:net";
 import { getCurrentUser, isAdmin } from "@/lib/server/auth";
+import { detectModelInfo } from "@/lib/ai/model-capabilities";
 
 const MODEL_LIST_TIMEOUT_MS = 10_000;
 const MODEL_LIST_MAX_BYTES = 1024 * 1024;
@@ -149,34 +150,6 @@ async function readResponseText(response: Response, maxBytes: number) {
     chunks.push(value);
   }
   return Buffer.concat(chunks, total).toString("utf8");
-}
-
-function detectModelInfo(id: string, raw: unknown) {
-  const lower = id.toLowerCase();
-  const obj = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : null;
-  const capabilities = obj && typeof obj.capabilities === "object" ? (obj.capabilities as Record<string, unknown>) : null;
-  const modalities = obj && Array.isArray(obj.modalities) ? (obj.modalities as unknown[]) : null;
-
-  const supportsVision =
-    (capabilities?.vision === true ||
-      capabilities?.image === true ||
-      capabilities?.multimodal === true ||
-      (Array.isArray(modalities) &&
-        modalities.some((m) => typeof m === "string" && /image|vision|multimodal/i.test(m)))) ||
-    /gpt-4o|vision|qwen[-_]?vl|glm-4v|internvl|llava|pix|multimodal|mm/.test(lower);
-
-  const category =
-    supportsVision
-      ? "vision"
-      : /embed|embedding/.test(lower)
-        ? "embedding"
-        : /whisper|audio|tts|speech|transcrib/.test(lower)
-          ? "audio"
-          : /dall|image|sdxl|stable[-_ ]diffusion|flux/.test(lower)
-            ? "image"
-            : "text";
-
-  return { id, category, supportsVision };
 }
 
 export async function POST(req: NextRequest) {

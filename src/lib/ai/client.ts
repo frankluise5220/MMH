@@ -6,23 +6,9 @@ import { CLASSIFY_PROMPT } from "@/lib/ai/prompts";
 import { normalizeAiApiMode, type AiApiMode } from "@/lib/ai/config";
 import { buildResponsesRequestBody, extractResponsesText } from "@/lib/ai/responses";
 
-export function modelSupportsVision(modelName: string): boolean {
-  const lower = modelName.toLowerCase();
-  return [
-    "gpt-4o",
-    "gpt-4-turbo",
-    "gpt-4-vision",
-    "claude-3",
-    "claude-3.5",
-    "claude-3.7",
-    "gemini-1.5",
-    "gemini-2",
-    "gemini-pro-vision",
-    "qwen-vl",
-    "qwen2-vl",
-    "vision",
-  ].some((m) => lower.includes(m)) || lower.includes("vision") || lower.includes("vl") || lower.includes("gemma3");
-}
+// Re-exported so the /api/v1/ai/chat vision gate shares one implementation with
+// the AI settings page and /api/v1/ai/models. See model-capabilities.ts.
+export { modelSupportsVision, modelNameSupportsVision } from "@/lib/ai/model-capabilities";
 
 export async function buildAccountContextText(householdId?: string) {
   try {
