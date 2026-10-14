@@ -1,0 +1,58 @@
+# MMH Bug Harness —— 群晖 Container Manager / docker compose 部署
+#
+# 部署位置建议：/volume1/docker/mmh-bug-harness/
+#   该目录下放：docker-compose.yml、.env、src/、package.json、package-lock.json、Dockerfile
+#   运行后自动生成：data/（状态库+附件）、tasks/（任务出口，给第三方 harness 读）
+#
+# 启动： docker compose up -d --build
+# 看日志：docker compose logs -f
+# 单轮验证：docker compose run --rm mmh-bug-harness node src/index.mjs --once
+
+services:
+  mmh-bug-harness:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: mmh-bug-harness:0.1.0
+    container_name: mmh-bug-harness
+    restart: unless-stopped
+
+    # 以 NAS 管理员账户身份运行（148 上 jsbyfubin = uid 1026, gid 100 / users）。
+    # 好处：tasks/ 下生成的文件属主是你自己，能在 DSM File Station 里直接查看/删除；
+    # 若换成别的 uid，请同步确认 tasks/ 与 data/ 的属主可写。
+    user: "1026:100"
+
+    # 密钥与配置全部走 .env，不写进镜像
+    env_file:
+      - .env
+    environment:
+      HARNESS_DATA_DIR: /data
+      HARNESS_TASKS_DIR: /tasks
+      TZ: Asia/Shanghai
+
+    volumes:
+      # 状态库与附件（服务私有）
+      - ./data:/data
+      # 任务出口 —— 第三方 harness 读这个目录
+      - ./tasks:/tasks
+
+    # 用 host 网络，而不是默认的 bridge + 端口映射。
+    #
+    # 原因：模型网关可能不在容器能路由到的网段。148 是双网卡（ovs_eth0 = 192.168.2.148、
+    # ovs_eth1 = 192.168.5.148），实测 bridge 网络下容器能到 192.168.2.x，但到 192.168.5.x
+    # 一律超时（宿主机自己可以，host 网络的容器也可以）。走 host 网络后容器直接用宿主机的
+    # 路由表，行为与宿主机一致。
+    #
+    # 代价：不再有端口映射 —— 服务直接绑宿主机的 0.0.0.0:7788。局域网访问方式不变
+    # （http://<NAS-IP>:7788/），但端口冲突要自己留意，`ports:` 写了也会被忽略。
+    network_mode: host
+
+    # 本服务很轻（采集 + HTTP），但 148 内存紧张，显式设上限
+    mem_limit: 384m
+    memswap_limit: 768m
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

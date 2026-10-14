@@ -1,0 +1,10 @@
+# 运行时数据不进镜像：data/ 含 config.json（页面密码、API Key）与状态库，
+# tasks/ 含 issue/邮件正文与附件。两者都由 volume 挂载，镜像里不需要。
+data
+tasks
+.env
+.env.*
+!.env.example
+node_modules
+_tmp_*
+*.log

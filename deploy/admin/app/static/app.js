@@ -982,7 +982,7 @@ function replyMail(m) {
         const btn = $('[data-send]', mask);
         btn.disabled = true; btn.textContent = '发送中…';
         try {
-          await api('POST', '/api/mail/reply', {
+          const r = await api('POST', '/api/mail/reply', {
             key: m.key,
             to: $('#rpTo', mask).value.trim(),
             subject: $('#rpSubj', mask).value.trim(),
@@ -990,6 +990,9 @@ function replyMail(m) {
           });
           toast('已发送', 'ok');
           close();
+          // 服务端回复后会给原邮件打 R/S 标记并改名，旧 key 失效；
+          // 用返回的新 key 更新选中项，否则 route() 会拿旧 key 重开而报"邮件不存在"。
+          if (r && r.key) mailState.sel = r.key;
           route();
         } catch (e) {
           toast(e.message, 'err');

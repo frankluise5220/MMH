@@ -589,9 +589,13 @@ def mail_reply(ctx):
                 in_reply_to=orig["message_id"], references=references,
                 reply_to_msg=orig["message_id"])
 
-    # 回复后按惯例打 R + S 标记
+    # 回复后按惯例打 R + S 标记：会改文件名（如 1759...mx -> 1759...mx:2,RS），
+    # 旧的 key（编码了原文件名）随之失效，因此把改名后的新 key 一并返回，
+    # 前端据此更新选中项，避免回复后拿旧 key 重新打开时报"邮件不存在"。
+    new_key = ctx.need("key")
     try:
-        _rename_with_flags(account, folder, name, add=("R", "S"))
+        new_name = _rename_with_flags(account, folder, name, add=("R", "S"))
+        new_key = _key(account, folder, new_name)
     except Exception:
         pass
 
@@ -600,7 +604,7 @@ def mail_reply(ctx):
                  "to": to, "subject": subject, "message_id": msg["Message-ID"]},
                 ip=ctx.client_ip)
     return {"sent": True, "to": to, "subject": subject,
-            "message_id": msg["Message-ID"]}
+            "message_id": msg["Message-ID"], "key": new_key}
 
 
 @route("POST", "/api/mail/send")

@@ -1,0 +1,19 @@
+{
+  "name": "mmh-bug-harness",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "常驻检测服务：轮询 GitHub issue 与 MMH 反馈邮箱，用指定模型分诊并生成规范化修复任务，供第三方 harness 读取执行。",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node src/index.mjs",
+    "once": "node src/index.mjs --once",
+    "selftest": "node src/selftest.mjs"
+  },
+  "dependencies": {
+    "imapflow": "^1.0.164",
+    "mailparser": "^3.7.2"
+  }
+}
