@@ -368,6 +368,12 @@ function applyRuntimeMigrations(db) {
   // 漏掉这段：升级后的旧桌面库打开「设置 → API」会报 "no such column: scope"。
   addColumnIfMissing(db, "AccessKey", "scope", "TEXT NOT NULL DEFAULT 'write'");
   applyLoanCategoryMigration(db);
+  // 2026-10-13 流水「对账」锁定：reconciledAt / reconciledBalance。
+  // 与 prisma/migrations/20261013_add_entry_reconcile、scripts/docker-entrypoint.sh 以及
+  // scripts/build-fnos-package.cjs 的 MIGRATIONS 同名同义（两列可空，无需回填）。
+  // 漏掉这段：升级后的旧桌面库读明细会报 "no such column: reconciledAt"。
+  addColumnIfMissing(db, "transactions", "reconciledAt", "DATETIME");
+  addColumnIfMissing(db, "transactions", "reconciledBalance", "DECIMAL(18,2)");
 }
 
 fs.mkdirSync(dataDir, { recursive: true });

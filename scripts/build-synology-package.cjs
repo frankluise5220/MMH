@@ -1168,16 +1168,21 @@ ensure_runtime_settings() {
 
   # Email-registration service credentials (mmh-registration). The central
   # mmh-registration service issues the global MMH identity, so MMH login /
-  # registration needs both the URL and the shared API token. The URL and token
-  # ship with a default (the official floatingice.win service) but remain
-  # overridable via MMH_REGISTRATION_API_URL / MMH_REGISTRATION_API_TOKEN, and
-  # a user can still disable registration by blanking them in mmh.env.
+  # registration needs both the URL and the shared API token. No default is
+  # written here any more: src/lib/server/registration-client.ts ships the
+  # official service as a built-in fallback, so every channel (Synology, fnOS,
+  # Docker, desktop, source checkout) resolves the same defaults and the token
+  # lives in exactly one place. Keep forwarding whatever this install already
+  # has; MMH_REGISTRATION_DISABLED turns MMH membership off entirely.
   env_reg_url="$(read_env_value MMH_REGISTRATION_API_URL 2>/dev/null || true)"
   env_reg_token="$(read_env_value MMH_REGISTRATION_API_TOKEN 2>/dev/null || true)"
-  reg_url="\${MMH_REGISTRATION_API_URL:-\${env_reg_url:-https://fnapp.floatingice.win:10101}}"
-  reg_token="\${MMH_REGISTRATION_API_TOKEN:-\${env_reg_token:-3f91f7ff3e2dd134b66f08c69cc4ec43e84bb0b268729f0a1ee846ee23c7919e}}"
+  env_reg_disabled="$(read_env_value MMH_REGISTRATION_DISABLED 2>/dev/null || true)"
+  reg_url="\${MMH_REGISTRATION_API_URL:-\${env_reg_url:-}}"
+  reg_token="\${MMH_REGISTRATION_API_TOKEN:-\${env_reg_token:-}}"
+  reg_disabled="\${MMH_REGISTRATION_DISABLED:-\${env_reg_disabled:-0}}"
   [ -n "$reg_url" ] && export MMH_REGISTRATION_API_URL="$reg_url"
   [ -n "$reg_token" ] && export MMH_REGISTRATION_API_TOKEN="$reg_token"
+  [ -n "$reg_disabled" ] && export MMH_REGISTRATION_DISABLED="$reg_disabled"
 
   cat > "$ENV_FILE" <<EOF
 PORT=\${PORT}
@@ -1187,6 +1192,7 @@ MMH_SESSION_SECRET=\${MMH_SESSION_SECRET}
 MMH_NODE_MAX_OLD_SPACE_MB=\${MMH_NODE_MAX_OLD_SPACE_MB}
 MMH_REGISTRATION_API_URL=\${reg_url}
 MMH_REGISTRATION_API_TOKEN=\${reg_token}
+MMH_REGISTRATION_DISABLED=\${reg_disabled}
 PASSWORD_RESET_SECRET=\${password_reset_secret}
 EOF
   chmod 600 "$ENV_FILE" 2>/dev/null || true
