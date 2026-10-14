@@ -25,9 +25,10 @@
  */
 import { prisma } from "@/lib/db/prisma";
 import { logger } from "@/lib/logger";
-import { getInstallationId } from "@/lib/server/installation-id";
+import { getInstallationPublicKey, getReportableInstallationId } from "@/lib/server/installation-id";
 import {
   isRegistrationConfigured,
+  mmhDeploymentPlatform,
   reportInstallationInventory,
   type InstallationInventory,
 } from "@/lib/server/registration-client";
@@ -56,22 +57,28 @@ export function ledgerInventoryReportingDisabled(): boolean {
 
 /** MMH_DEPLOY_TARGET (fnos / windows / ...) when provided, else the Node platform. */
 function deploymentPlatform(): string {
-  const target = (process.env.MMH_DEPLOY_TARGET ?? "").trim().toLowerCase();
-  return target || process.platform;
+  return mmhDeploymentPlatform();
 }
 
 async function buildInventory(installationId: string): Promise<InstallationInventory> {
-  const [households, users] = await Promise.all([
+  const [households, users, publicKey] = await Promise.all([
     prisma.household.findMany({
       select: { id: true, createdAt: true },
       orderBy: { createdAt: "asc" },
     }),
-    // The global system user has householdId = null and is not a ledger member,
-    // exactly like the settings users list (see settings/users/route.ts GET).
+    // Ledger members are exactly the users that belong to a ledger. Membership is
+    // decided by `householdId`, NOT by `isSystem`: a system user is an operator
+    // role, and one can perfectly well own a ledger (a single-admin deployment
+    // is `isSystem: true` *with* a `householdId`). Filtering on `isSystem` here
+    // reported `memberCount: 0` for exactly those deployments — the numbers were
+    // structurally unable to move, so binding and unbinding looked like no-ops.
+    // A user with no `householdId` is the deployment-wide global operator and
+    // genuinely is not a member of any ledger, so it stays excluded.
     prisma.user.findMany({
-      where: { isSystem: false, householdId: { not: null } },
+      where: { householdId: { not: null } },
       select: { householdId: true, registrationPrincipalId: true },
     }),
+    getInstallationPublicKey(),
   ]);
 
   const perHousehold = new Map<string, { memberCount: number; principalIds: Set<string> }>();
@@ -86,6 +93,10 @@ async function buildInventory(installationId: string): Promise<InstallationInven
   return {
     installationId,
     platform: deploymentPlatform(),
+    // Required by the registration service on every report: it identifies the
+    // deployment the numbers belong to. Stable per deployment (see
+    // `getInstallationPublicKey`).
+    ...(publicKey ? { installation: { platform: deploymentPlatform(), publicKey } } : {}),
     reportedAt: new Date().toISOString(),
     households: households.map((household) => {
       const entry = perHousehold.get(household.id);
@@ -94,6 +105,10 @@ async function buildInventory(installationId: string): Promise<InstallationInven
         householdId: household.id,
         createdAt: household.createdAt.toISOString(),
         memberCount: entry?.memberCount ?? 0,
+        // Distinct MMH accounts bound inside this ledger. Rebinding the same
+        // account (or binding one account to several users here) still counts
+        // once, and an unbind removes it — the count is derived from the current
+        // rows on every report rather than incremented, so it cannot drift.
         mmhMemberCount: principalIds.length,
         principalIds,
       };
@@ -108,7 +123,7 @@ export async function reportLedgerInventory(reason: LedgerInventoryReason): Prom
 
   lastReportAttemptedAt = Date.now();
   try {
-    const installationId = await getInstallationId();
+    const installationId = await getReportableInstallationId();
     if (!installationId) return;
     const inventory = await buildInventory(installationId);
     const result = await reportInstallationInventory(inventory);

@@ -133,12 +133,33 @@ export async function POST(req: NextRequest) {
   // without forcing a local login password (e.g. a pure fnOS-gateway account).
   // When supplied, it is set only if the target has no existing password.
 
-  const emailTaken = await prisma.user.findFirst({
-    where: { email: normalizedEmail, id: { not: userId } },
-    select: { id: true },
-  });
-  if (emailTaken) {
-    return NextResponse.json({ ok: false, code: "DUPLICATE_EMAIL", error: "This email is already used by another user." }, { status: 409, headers: cors() });
+  // The membership address no longer overwrites the local contact email, so the
+  // duplicate check only matters in the one case that still writes it: an
+  // account that has no contact address yet.
+  if (!target.email) {
+    const emailTaken = await prisma.user.findFirst({
+      where: { email: normalizedEmail, id: { not: userId } },
+      select: { id: true },
+    });
+    if (emailTaken) {
+      return NextResponse.json({ ok: false, code: "DUPLICATE_EMAIL", error: "This email is already used by another user." }, { status: 409, headers: cors() });
+    }
+  }
+
+  // Registering an MMH identity for an already-bound account may only RE-verify
+  // that same account, never move the user onto another one. Without this the
+  // update below would write the new address next to the OLD principal id and
+  // silently produce a binding that matches neither account. Changing which
+  // MMH account a user belongs to is an explicit unbind-then-bind.
+  if (target.registrationPrincipalId && normalizedEmail !== (target.registrationEmail ?? "").trim().toLowerCase()) {
+    return NextResponse.json(
+      {
+        ok: false,
+        code: "MMH_ALREADY_BOUND_OTHER",
+        error: "该账号已绑定其他 MMH 账号。如需更换，请先取消绑定再绑定新的 MMH 账号。",
+      },
+      { status: 409, headers: cors() },
+    );
   }
 
   let principalId = target.registrationPrincipalId;
@@ -177,7 +198,12 @@ export async function POST(req: NextRequest) {
     await tx.user.update({
       where: { id: userId },
       data: {
-        email: normalizedEmail,
+        // The membership address is recorded in `registrationEmail`; the local
+        // `email` column only gets it as a starting value when the account has
+        // no contact address yet. An existing one is a local attribute (it is
+        // how the local account is found for password recovery) and binding an
+        // MMH account must not overwrite it.
+        ...(target.email ? {} : { email: normalizedEmail }),
         ...(passwordWasSet ? { passwordHash, authVersion: { increment: 1 } } : {}),
         ...(principalId
           ? { registrationPrincipalId: principalId, registrationEmail: normalizedEmail }

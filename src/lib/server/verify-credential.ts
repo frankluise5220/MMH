@@ -33,7 +33,15 @@ export type CredentialSubject = {
   passwordHash: string | null;
   fnosUid: string | null;
   registrationPrincipalId: string | null;
-  /** MMH membership address captured at binding time; the editable `email` is not it. */
+  /**
+   * MMH membership address captured at binding time.
+   *
+   * The only address that identifies the central account. `email` below is the
+   * editable local contact field — it is how the local account is looked up for
+   * password recovery — so it must never stand in for this, even as a fallback:
+   * a binding whose recorded address is missing is a binding that has to be
+   * re-verified, not one that can be addressed by a field the user may change.
+   */
   registrationEmail?: string | null;
   email: string | null;
 };
@@ -52,7 +60,7 @@ export { credentialKindOf, type CredentialKind };
 /** Deployment-wide password of installations that predate per-user hashes. */
 export const LEGACY_ACCESS_PASSWORD_KEY = "access_password";
 
-export type CredentialFailureCode = "INVALID_PASSWORD" | "LOCAL_PASSWORD_REQUIRED" | "PASSWORD_NOT_SET";
+export type CredentialFailureCode = "INVALID_PASSWORD" | "LOCAL_PASSWORD_REQUIRED" | "PASSWORD_NOT_SET" | "MMH_IDENTITY_UNRECORDED";
 
 /** Which branch the verifier tried, so callers can pick context-correct wording. */
 export type CredentialAttempt = "local" | "fnos" | "mmh" | "legacy" | "none";
@@ -122,13 +130,16 @@ export async function verifyUserCredential(
   }
 
   if (authMethod === "mmh") {
-    // The membership address is the one captured at binding time; the editable
-    // local contact field is not a valid way to address the central account.
-    const identity = subject.registrationEmail ?? subject.email;
-    if (!subject.registrationPrincipalId || !identity) {
+    // Address the central account by the address it was bound with. The local
+    // `email` column is never a substitute: it is an editable contact field, and
+    // using it here would let an email edit silently repoint credential checks.
+    if (!subject.registrationPrincipalId) {
       return { ok: false, code: "PASSWORD_NOT_SET", status: 400, attempted: "none" };
     }
-    const verification = await verifyEmailPrincipal({ email: identity, password });
+    if (!subject.registrationEmail) {
+      return { ok: false, code: "MMH_IDENTITY_UNRECORDED", status: 400, attempted: "none" };
+    }
+    const verification = await verifyEmailPrincipal({ email: subject.registrationEmail, password });
     return verification.ok
       ? { ok: true, kind: "mmh" }
       : { ok: false, code: "INVALID_PASSWORD", status: 401, attempted: "mmh" };
@@ -161,8 +172,14 @@ export async function verifyUserCredential(
     return { ok: false, code: "LOCAL_PASSWORD_REQUIRED", status: 400, attempted: "fnos" };
   }
 
-  if (subject.registrationPrincipalId && subject.email) {
-    const verification = await verifyEmailPrincipal({ email: subject.email, password });
+  if (subject.registrationPrincipalId) {
+    // Same rule as the `mmh` branch above. Callers without a session identity
+    // (the ledger-switch path, where the secret belongs to an account nobody is
+    // signed in as yet) land here.
+    if (!subject.registrationEmail) {
+      return { ok: false, code: "MMH_IDENTITY_UNRECORDED", status: 400, attempted: "none" };
+    }
+    const verification = await verifyEmailPrincipal({ email: subject.registrationEmail, password });
     return verification.ok
       ? { ok: true, kind: "mmh" }
       : { ok: false, code: "INVALID_PASSWORD", status: 401, attempted: "mmh" };

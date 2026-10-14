@@ -2,7 +2,7 @@
 import { ModalLayer } from "@/components/ModalLayer";
 
 import { useState, useEffect } from "react";
-import { KeyRound, UserRoundCheck, UserRoundPlus, X } from "lucide-react";
+import { KeyRound, Unlink, UserRoundCheck, UserRoundPlus, X } from "lucide-react";
 import {
   SettingsActionButton,
   SettingsEmptyRow,
@@ -785,10 +785,13 @@ function RegisterModal({
 }: {
   target: ManagedUser;
   onClose: () => void;
-  onRegistered: (principalId: string) => void;
+  onRegistered: () => void;
 }) {  const { t } = useI18n();
   const [method, setMethod] = useState<"existing" | "email">("existing");
-  const [email, setEmail] = useState(target.email ?? "");
+  // Pre-fill with the bound MMH account, never with the local contact email: the
+  // local field is an editable address, and offering it here is what used to
+  // look like "this is the MMH account you are binding".
+  const [email, setEmail] = useState(target.registrationEmail?.trim() ?? "");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [code, setCode] = useState("");
@@ -797,7 +800,11 @@ function RegisterModal({
   const [error, setError] = useState("");
   const [sending, setSending] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [done, setDone] = useState<{ value: string } | null>(null);
+  // Success is a flag, not a payload. The MMH principalId the service issues is
+  // an internal correlation id — it cannot be used to sign in or recover
+  // anything — so it is never surfaced here; the verified email is what the
+  // user actually needs to see.
+  const [done, setDone] = useState(false);
 
   function validateEmail(): string | null {
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) return t("settings.users.register.error.emailInvalid");
@@ -875,12 +882,19 @@ function RegisterModal({
       const res = await fetch("/api/v1/settings/users/register/bind-existing", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId: target.id, username: email.trim(), password: password.trim() }),
+        body: JSON.stringify({
+          userId: target.id,
+          username: email.trim(),
+          password: password.trim(),
+          // Present only when a binding already exists: that is the repair path
+          // for a stale principal id, and it must be requested deliberately.
+          ...(target.registrationPrincipalId ? { rebind: true } : {}),
+        }),
       });
       const data = await res.json().catch(() => null);
-      if (data?.ok && typeof data.principalId === "string") {
-        setDone({ value: data.principalId });
-        onRegistered(data.principalId);
+      if (data?.ok) {
+        setDone(true);
+        onRegistered();
       } else {
         setError(data?.error || t("settings.users.register.error.failed"));
       }
@@ -916,12 +930,17 @@ function RegisterModal({
       const bindRes = await fetch("/api/v1/settings/users/register/bind-existing", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ userId: target.id, username: email.trim(), password: password.trim() }),
+        body: JSON.stringify({
+          userId: target.id,
+          username: email.trim(),
+          password: password.trim(),
+          ...(target.registrationPrincipalId ? { rebind: true } : {}),
+        }),
       });
       const bindData = await bindRes.json().catch(() => null);
-      if (bindData?.ok && typeof bindData.principalId === "string") {
-        setDone({ value: bindData.principalId });
-        onRegistered(bindData.principalId);
+      if (bindData?.ok) {
+        setDone(true);
+        onRegistered();
       } else {
         setError(bindData?.error || t("settings.users.register.error.failed"));
       }
@@ -951,9 +970,9 @@ function RegisterModal({
         }),
       });
       const data = await res.json().catch(() => null);
-      if (data?.ok && typeof data.principalId === "string") {
-        setDone({ value: data.principalId });
-        onRegistered(data.principalId);
+      if (data?.ok) {
+        setDone(true);
+        onRegistered();
       } else {
         setError(data?.code === "INVALID_OR_EXPIRED_CODE"
           ? t("settings.users.register.error.invalidCode")
@@ -966,9 +985,7 @@ function RegisterModal({
     }
   }
 
-  function handleCopy() {
-    if (done) navigator.clipboard?.writeText(done.value).catch(() => {});
-  }
+  
 
   // 发码后的「验证码 + 两次密码」子表单（忘记密码与注册共用，仅文案/确认回调不同）。
   const codeAndPasswordFields = (
@@ -1036,13 +1053,6 @@ function RegisterModal({
           {done ? (
             <div className="space-y-4">
               <div className="text-xs text-slate-600">{t("settings.users.register.success", { email })}</div>
-              <div>
-                <div className="mb-1.5 block text-xs font-medium text-slate-600">{t("settings.users.register.registrationId")}</div>
-                <div className="flex items-center gap-2">
-                  <code className="flex-1 break-all rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800">{done.value}</code>
-                  <button type="button" className="secondary-button h-9 px-3" onClick={handleCopy}>{t("settings.users.register.copy")}</button>
-                </div>
-              </div>
               <div className="flex justify-end gap-2">
                 <button type="button" className="primary-button h-9 px-4" onClick={onClose}>{t("common.close")}</button>
               </div>
@@ -1161,6 +1171,10 @@ export default function UsersPage() {
   const [deletePassword, setDeletePassword] = useState("");
   const [deleteError, setDeleteError] = useState("");
   const [deleting, setDeleting] = useState(false);
+  const [unbindTarget, setUnbindTarget] = useState<ManagedUser | null>(null);
+  const [unbindPassword, setUnbindPassword] = useState("");
+  const [unbindError, setUnbindError] = useState("");
+  const [unbinding, setUnbinding] = useState(false);
   const [savingSessionUserId, setSavingSessionUserId] = useState("");
   const [registerTarget, setRegisterTarget] = useState<ManagedUser | null>(null);
   const [fnosBindTarget, setFnosBindTarget] = useState<ManagedUser | null>(null);
@@ -1176,6 +1190,25 @@ export default function UsersPage() {
   // registration service). Optimistic default like the fnOS flags: a missing or
   // older response must not hide controls that work.
   const [mmhEnabled, setMmhEnabled] = useState(true);
+
+  /**
+   * Tooltip for the MMH status pill: names the MMH account this user is bound
+   * to.
+   *
+   * `registrationEmail` — the address the central service verified when the
+   * binding was made — is the only address that belongs here. Falling back to
+   * `email` is what made this tooltip appear to "follow" an email edit, and the
+   * fallback also implied the local contact field was part of the identity. A
+   * binding with no recorded address says so; repairing it is a re-verification,
+   * not a lookup.
+   */
+  function mmhStatusHint(u: ManagedUser): string {
+    if (!u.registrationPrincipalId) return t("settings.users.status.mmhUnboundHint");
+    const address = u.registrationEmail?.trim();
+    return address
+      ? t("settings.users.status.mmhAccountHint", { email: address })
+      : t("settings.users.status.mmhAccountUnknownHint");
+  }
 
   useEffect(() => {
     fetchUsers();
@@ -1269,6 +1302,43 @@ export default function UsersPage() {
       setDeleteError(t("settings.users.deleteFailed"));
     } finally {
       setDeleting(false);
+    }
+  }
+
+  /**
+   * Removes the MMH binding, leaving the local account intact.
+   *
+   * The user keeps their local name, password and contact email — only the link
+   * to the MMH account goes away, so this is the right action for "this MMH
+   * account is not this person" (a shared address, a membership that belongs to
+   * somebody else) where deleting the account would be wrong.
+   */
+  async function handleUnbind() {
+    if (!unbindTarget || unbinding) return;
+    if (!unbindPassword.trim()) {
+      setUnbindError(t("settings.users.unbind.passwordRequired"));
+      return;
+    }
+    setUnbinding(true);
+    setUnbindError("");
+    try {
+      const res = await fetch("/api/v1/settings/users/unbind-mmh", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId: unbindTarget.id, password: unbindPassword }),
+      });
+      const result = await res.json().catch(() => null);
+      if (result?.ok) {
+        setUnbindTarget(null);
+        setUnbindPassword("");
+        await fetchUsers();
+      } else {
+        setUnbindError(result?.error || t("settings.users.unbind.failed"));
+      }
+    } catch {
+      setUnbindError(t("settings.users.unbind.failed"));
+    } finally {
+      setUnbinding(false);
     }
   }
 
@@ -1407,11 +1477,7 @@ export default function UsersPage() {
                           ? "border-violet-700 bg-violet-50 text-violet-800"
                           : "border-dashed border-violet-300 bg-white text-violet-400"
                         }`}
-                        title={u.registrationPrincipalId
-                          ? t("settings.users.status.mmhAccountHint", {
-                              email: u.registrationEmail ?? u.email ?? "",
-                            })
-                          : t("settings.users.status.mmhUnboundHint")}
+                        title={mmhStatusHint(u)}
                       >
                         {t("settings.users.status.mmh")}
                       </span>
@@ -1426,9 +1492,16 @@ export default function UsersPage() {
                         variant="edit"
                         onClick={() => { setEditingUser(u); setShowModal(true); }}
                       />
-                      {mmhEnabled && !u.registrationPrincipalId && (
+                      {mmhEnabled && (
                         <SettingsActionButton
-                          label={t("settings.users.register")}
+                          // A bound account still needs this entry: re-verifying
+                          // the membership password is the only way to repair a
+                          // binding whose principal id the registration service
+                          // no longer recognises (MMH_BINDING_STALE), and the
+                          // central service's answer is what gets written back.
+                          label={t(u.registrationPrincipalId
+                            ? "settings.users.rebind"
+                            : "settings.users.register")}
                           variant="default"
                           icon={<UserRoundPlus className="h-3.5 w-3.5" />}
                           onClick={() => setRegisterTarget(u)}
@@ -1448,6 +1521,18 @@ export default function UsersPage() {
                           variant="default"
                           icon={<UserRoundCheck className="h-3.5 w-3.5" />}
                           onClick={() => setFnosBindTarget(u)}
+                        />
+                      )}
+                      {mmhEnabled && u.registrationPrincipalId && (
+                        <SettingsActionButton
+                          label={t("settings.users.unbind")}
+                          variant="delete"
+                          icon={<Unlink className="h-3.5 w-3.5" />}
+                          onClick={() => {
+                            setUnbindTarget(u);
+                            setUnbindPassword("");
+                            setUnbindError("");
+                          }}
                         />
                       )}
                       {!u.isSystem ? (
@@ -1565,6 +1650,66 @@ export default function UsersPage() {
                   disabled={deleting || !deletePassword.trim()}
                 >
                   {deleting ? t("settings.users.deleting") : t("settings.users.confirmDelete")}
+                </button>
+              </div>
+            </div>
+          </div>
+        </ModalLayer>
+      )}
+
+      {unbindTarget && (
+        <ModalLayer className="app-modal-backdrop">
+          <div className="app-modal-panel max-w-md">
+            <div className="modal-header shrink-0">
+              <div className="text-sm font-semibold text-slate-800">{t("settings.users.unbind")}</div>
+              <button
+                type="button"
+                onClick={() => {
+                  setUnbindTarget(null);
+                  setUnbindPassword("");
+                  setUnbindError("");
+                }}
+                className="secondary-button h-8 px-2"
+                disabled={unbinding}
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="space-y-4 p-5">
+              <div className="text-xs text-slate-500">{t("settings.users.unbind.passwordHint")}</div>
+              <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                {t("settings.users.unbind.confirm", { name: unbindTarget.name })}
+              </div>
+              <CredentialPasswordField
+                value={unbindPassword}
+                onChange={(value) => { setUnbindPassword(value); setUnbindError(""); }}
+                inputClassName="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                labelClassName="text-xs font-medium text-slate-600"
+                autoFocus
+              />
+              {unbindError && (
+                <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">{unbindError}</div>
+              )}
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  className="secondary-button h-9 px-4"
+                  onClick={() => {
+                    setUnbindTarget(null);
+                    setUnbindPassword("");
+                    setUnbindError("");
+                  }}
+                  disabled={unbinding}
+                >
+                  {t("common.cancel")}
+                </button>
+                <button
+                  type="button"
+                  className="h-9 rounded-md bg-red-600 px-4 text-sm text-white hover:bg-red-700 disabled:opacity-50"
+                  onClick={handleUnbind}
+                  disabled={unbinding || !unbindPassword.trim()}
+                >
+                  {unbinding ? t("settings.users.deleting") : t("settings.users.unbind.confirmButton")}
                 </button>
               </div>
             </div>

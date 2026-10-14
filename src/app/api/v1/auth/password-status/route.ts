@@ -106,6 +106,11 @@ function selectLoginUsers(householdId?: string) {
       role: true,
       isSystem: true,
       registrationPrincipalId: true,
+      // The MMH membership address, next to the principal id it belongs to.
+      // The login page must pre-fill and label MMH identities with THIS, never
+      // with `email` — that one is the editable local contact field, so an email
+      // edit would otherwise silently repoint the MMH sign-in entry.
+      registrationEmail: true,
       householdId: true,
       Household: { select: { name: true } },
     },
@@ -251,6 +256,7 @@ export async function GET(req: NextRequest) {
       role: u.role,
       isSystem: u.isSystem,
       registrationPrincipalId: u.registrationPrincipalId,
+      registrationEmail: u.registrationEmail,
       householdId: u.householdId,
       householdName: u.Household?.name ?? null,
     })),

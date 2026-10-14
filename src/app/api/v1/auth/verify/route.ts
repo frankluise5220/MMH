@@ -179,89 +179,73 @@ function emailDomain(email: string): string {
 /**
  * Resolves the local ledger users bound to an MMH membership account.
  *
- * MMH login is verified against the central registration service (email +
- * membership password); the returned principalId is then used to find the local
- * user(s) that carry that registrationPrincipalId. A single MMH principal may
- * be bound to several ledgers, in which case the caller asks the user to choose.
+ * Order matters, and it is local-first: this deployment's own bindings are
+ * consulted **before** the central registration service is contacted at all.
+ * An address that no user here is bound to is answered with MMH_USER_NOT_BOUND
+ * straight away, because from this ledger's point of view that is the whole
+ * truth — whether the address exists centrally or which password it has cannot
+ * change the fact that it is not a member of this ledger, and asking the central
+ * service first only turns "not bound" into misleading messages about passwords
+ * and accounts the user never intended to authenticate against.
  *
- * A principalId is stable for the lifetime of a central account, but it is NOT
- * stable across *instances*: if this deployment was bound while pointing at a
- * different mmh-registration service, or the service was rebuilt afterwards,
- * the stored id no longer matches what verify now returns and sign-in would
- * fail with "not bound" even though the account visibly carries an MMH binding.
- * That case heals itself here — see `findMmhBoundUsersByEmail` below.
+ * Only once a binding exists does the membership password get verified centrally.
+ *
+ * A principalId is stable for the lifetime of a central account but not across
+ * *instances*: a deployment bound while pointing at one mmh-registration service
+ * stops matching once that service is repointed or rebuilt. Such rows are dropped
+ * rather than silently accepted, and the caller tells the user to re-verify the
+ * membership password from a signed-in session (`register/bind-existing`), which
+ * rewrites the id from the central service's own answer. There is deliberately no
+ * inference from `User.email` here: that column is an editable local contact
+ * field, not an identity.
  */
-async function resolveMmhLoginUsers(email: string, password: string) {
+async function resolveMmhLoginUsers(email: string, password: string, householdId: string) {
   const normalized = email.trim().toLowerCase();
+
+  // 1. Does this ledger know the address at all?
+  const bound = await withTimeout(
+    prisma.user.findMany({
+      where: {
+        registrationEmail: normalized,
+        registrationPrincipalId: { not: null },
+        ...(householdId ? { householdId } : {}),
+      },
+      select: { ...userSelect, registrationPrincipalId: true },
+      orderBy: { createdAt: "asc" },
+    }),
+    AUTH_LOOKUP_TIMEOUT_MS,
+  );
+  if (!bound || bound.length === 0) {
+    return { users: [] as LoginUser[], error: null, stale: false };
+  }
+
+  // 2. It does — now verify the membership password.
   const verification = await verifyEmailPrincipal({ email: normalized, password });
   if (!verification.ok) {
-    return {
-      users: [] as LoginUser[],
-      error: verification,
-      principalId: null as string | null,
-      healPrincipalId: false,
-    };
+    return { users: [] as LoginUser[], error: verification, stale: false };
   }
   const principalId = verification.principalId;
   if (!principalId) {
     return {
       users: [] as LoginUser[],
       error: { ok: false as const, status: 502, code: "MMH_PRINCIPAL_MISSING", error: "MMH 账号服务未返回账号标识。" },
-      principalId: null as string | null,
-      healPrincipalId: false,
+      stale: false,
     };
   }
 
-  const users = await withTimeout(
-    prisma.user.findMany({
-      where: { registrationPrincipalId: principalId },
-      select: userSelect,
-      orderBy: { createdAt: "asc" },
-    }),
-    AUTH_LOOKUP_TIMEOUT_MS,
-  );
-  if (users && users.length > 0) {
-    return { users, error: null, principalId, healPrincipalId: false };
-  }
-
-  // Nothing carries this principal id. Before refusing, look the account up by
-  // the email it just proved ownership of: the central service accepted the
-  // membership password for that address, so the binding is still valid — only
-  // the stored identifier is stale.
-  //
-  // This deliberately stays limited to accounts that ALREADY carry an MMH
-  // binding (`registrationPrincipalId` non-null). A local account with no
-  // MMH identity is never reachable this way, so pointing
-  // MMH_REGISTRATION_API_URL at a rogue service cannot open a new way in.
-  const emailMatches = await withTimeout(
-    prisma.user.findMany({
-      where: {
-        registrationPrincipalId: { not: null },
-        OR: [
-          { registrationEmail: normalized },
-          // Bindings written before `registrationEmail` existed still carry the
-          // bound address in `email`.
-          { registrationEmail: null, email: normalized },
-        ],
-      },
-      select: userSelect,
-      orderBy: { createdAt: "asc" },
-    }),
-    AUTH_LOOKUP_TIMEOUT_MS,
-  );
-  if (!emailMatches || emailMatches.length === 0) {
-    logger.warn(
-      `MMH login: "${emailDomain(email)}" verified as principal ${principalId.slice(0, 8)}… (len ${principalId.length}) but no local user is bound to it`,
-      "auth/verify",
-    );
-    return { users: [] as LoginUser[], error: null, principalId, healPrincipalId: false };
+  // 3. The password is right. Drop rows whose stored principal id belongs to a
+  //    previous incarnation of that central account: the password proves who the
+  //    user is, not that this ledger's binding is still the same link.
+  const fresh = bound.filter((u) => u.registrationPrincipalId === principalId);
+  if (fresh.length > 0) {
+    return { users: fresh, error: null, stale: false };
   }
 
   logger.warn(
-    `MMH login: "${emailDomain(email)}" stored principal id is stale; re-pointing ${emailMatches.length} bound user(s) at ${principalId.slice(0, 8)}…`,
+    `MMH login: "${emailDomain(email)}" verified as principal ${principalId.slice(0, 8)}… but the local binding(s) still point at ${[...new Set(bound.map((u) => String(u.registrationPrincipalId).slice(0, 8)))].join(", ")}… (stale binding; re-verify the membership password in user settings to re-point it)`,
     "auth/verify",
   );
-  return { users: emailMatches, error: null, principalId, healPrincipalId: true };
+  return { users: [] as LoginUser[], error: null, stale: true };
 }
 
 /**
@@ -289,8 +273,9 @@ async function issueSessionResponse(req: NextRequest, user: LoginUser, authMetho
 /**
  * Handles MMH membership login: email + membership password against the central
  * registration service. Returns the session response on success, or the error
- * (INVALID_CREDENTIALS / PASSWORD_NOT_SET / registration service errors) /
- * AMBIGUOUS_USER when several ledgers share the same MMH principal.
+ * (MMH_USER_NOT_BOUND / MMH_BINDING_STALE / INVALID_CREDENTIALS /
+ * PASSWORD_NOT_SET / registration service errors) / AMBIGUOUS_USER when several
+ * ledgers share the same MMH principal.
  */
 async function handleMmhLogin(req: NextRequest, email: string, password: string, householdId: string) {
   const normalizedEmail = email.trim().toLowerCase();
@@ -300,7 +285,7 @@ async function handleMmhLogin(req: NextRequest, email: string, password: string,
 
   let resolved: Awaited<ReturnType<typeof resolveMmhLoginUsers>>;
   try {
-    resolved = await resolveMmhLoginUsers(normalizedEmail, password);
+    resolved = await resolveMmhLoginUsers(normalizedEmail, password, householdId);
   } catch (error) {
     if (error instanceof AuthLookupTimeoutError) {
       return NextResponse.json({ ok: false, code: "AUTH_SERVICE_UNAVAILABLE", error: "认证服务暂时不可用，请稍后重试" }, { status: 503 });
@@ -319,7 +304,22 @@ async function handleMmhLogin(req: NextRequest, email: string, password: string,
 
   const users = resolved.users;
   if (users.length === 0) {
-    return NextResponse.json({ ok: false, code: "MMH_USER_NOT_BOUND", error: "该 MMH 账户未绑定任何账簿" }, { status: 404 });
+    // Two different reasons produce no user, and the wording must not blur them:
+    // never bound here (nothing to repair), or bound to a principal id the
+    // central service no longer recognises (repair by re-verifying).
+    return resolved.stale
+      ? NextResponse.json(
+          {
+            ok: false,
+            code: "MMH_BINDING_STALE",
+            error: "此 MMH 账号的绑定信息已过期。请用本地账号登录，在「用户设置」中重新验证 MMH 密码以重新绑定。",
+          },
+          { status: 409 },
+        )
+      : NextResponse.json(
+          { ok: false, code: "MMH_USER_NOT_BOUND", error: "此 MMH 账号未绑定于该账簿。" },
+          { status: 404 },
+        );
   }
 
   // Ambiguity is about *ledgers*, not about users: one MMH principal can be bound
@@ -338,21 +338,7 @@ async function handleMmhLogin(req: NextRequest, email: string, password: string,
     ? users.find((u) => u.householdId === householdId) ?? null
     : users[0];
   if (!user) {
-    return NextResponse.json({ ok: false, code: "MMH_USER_NOT_BOUND", error: "该 MMH 账户未绑定该账簿" }, { status: 404 });
-  }
-
-  // The stored binding was stale (see resolveMmhLoginUsers). The central
-  // service just accepted the membership password for this address, so the
-  // binding is still valid — re-point this user at the account's current
-  // principal id and the next sign-in matches directly.
-  if (resolved.healPrincipalId && resolved.principalId && user.registrationPrincipalId !== resolved.principalId) {
-    await prisma.user.update({
-      where: { id: user.id },
-      data: {
-        registrationPrincipalId: resolved.principalId,
-        registrationEmail: normalizedEmail,
-      },
-    });
+    return NextResponse.json({ ok: false, code: "MMH_USER_NOT_BOUND", error: "此 MMH 账号未绑定于该账簿。" }, { status: 404 });
   }
 
   return issueSessionResponse(req, user, "mmh");

@@ -49,7 +49,14 @@ type PasswordStatusResponse = {
 type LoginUserChoice = {
   id: string;
   name: string;
+  /** Editable local contact address. Never an MMH identity — see `mmhAddress`. */
   email?: string | null;
+  /**
+   * MMH membership address captured when the binding was made. The only field
+   * that identifies the central account, and therefore the only one the MMH tab
+   * may pre-fill or label with.
+   */
+  registrationEmail?: string | null;
   hasPassword?: boolean;
   role?: string;
   isSystem?: boolean;
@@ -238,7 +245,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   // must not gate this list. Requiring it hid every MMH identity that had not
   // set a local ledger password (which is exactly what an MMH-created ledger
   // admin has).
-  const mmhUserChoices = systemUsers.filter((user) => user.registrationPrincipalId && user.email);
+  const mmhUserChoices = systemUsers.filter((user) => user.registrationPrincipalId && mmhAddress(user));
   // The MMH tab gets the same "dead ledger" treatment as the local / fnOS tabs:
   // when the selected ledger links no MMH user, the card shows an amber notice
   // instead of letting the user type an email and password into MMH_USER_NOT_BOUND.
@@ -309,9 +316,24 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
     return user.isSystem ? `${user.name} · ${t("login.systemUserBadge")}` : user.name;
   }
 
+  /**
+   * The MMH identity an account row carries, or null when it has none.
+   *
+   * Deliberately NOT `email`: that column is the editable local contact field
+   * (it is how the local account is found for password recovery), so using it
+   * here made the MMH tab pre-fill and label sign-in entries with a local
+   * contact address — after an email edit the tab pointed at an MMH account the
+   * ledger had never heard of. A row with a binding but no recorded address is
+   * no use as an MMH sign-in choice either: there is nothing to type.
+   */
+  function mmhAddress(user: LoginUserChoice): string {
+    return user.registrationEmail?.trim() ?? "";
+  }
+
   function getMmhUserLabel(user: LoginUserChoice) {
-    if (!user.email) return user.name;
-    return `${maskEmail(user.email)}(${user.name})`;
+    const address = mmhAddress(user);
+    if (!address) return user.name;
+    return `${maskEmail(address)}(${user.name})`;
   }
 
   function updateLoginCredentialField(field: "username" | "password", value: string) {
@@ -328,13 +350,14 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
 
   function selectMmhUser(userId: string) {
     const user = mmhUserChoices.find((item) => item.id === userId) ?? null;
-    if (!user || !user.email) return;
+    const address = user ? mmhAddress(user) : "";
+    if (!user || !address) return;
     setSelectedUserId("");
-    setUsername(user.email);
+    setUsername(address);
     setPassword(loginCredentials.mmh.password);
     setLoginCredentials((current) => ({
       ...current,
-      mmh: { ...current.mmh, username: user.email ?? "", userId: user.id },
+      mmh: { ...current.mmh, username: address, userId: user.id },
     }));
     cancelHouseholdChoice();
   }
@@ -347,7 +370,8 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   function getCurrentMmhEmail() {
     if (mmhUserChoices.length > 0) {
       const selected = mmhUserChoices.find((user) => user.id === loginCredentials.mmh.userId) ?? mmhUserChoices[0];
-      if (selected?.email) return selected.email.trim();
+      const address = selected ? mmhAddress(selected) : "";
+      if (address) return address;
     }
     return username.trim();
   }
@@ -632,6 +656,13 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
     // cannot be matched to a local user. Almost always a contract mismatch on
     // the service side, which the user cannot fix from the login form.
     if (code === "MMH_PRINCIPAL_MISSING") return t("login.error.mmhPrincipalMissing");
+    // The central account exists and the password checked out, but this ledger's
+    // binding still points at a principal id the service no longer recognises.
+    if (code === "MMH_BINDING_STALE") return t("login.error.mmhBindingStale");
+    // Not a member of this ledger. Said before any password check, because it
+    // does not depend on one — an address this ledger never bound cannot be
+    // logged into no matter what the central service answers.
+    if (code === "MMH_USER_NOT_BOUND") return t("login.error.mmhNotBoundToLedger");
     return fallback ?? t(fallbackKey);
   }
 

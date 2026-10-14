@@ -12,6 +12,19 @@ const BindSchema = z.object({
   userId: z.string().min(1),
   username: z.string().email(),
   password: z.string().min(1).max(200),
+  /**
+   * Re-point an existing binding.
+   *
+   * A principalId is stable for one central account but not across registration
+   * service instances: once the service this deployment was bound to is
+   * repointed or rebuilt, the stored id no longer matches and MMH sign-in is
+   * refused with MMH_BINDING_STALE. Re-verifying the membership password is the
+   * repair — the central service answers with the account's current id, and that
+   * answer is authoritative, so overwriting the row is safe by construction. It
+   * still has to be asked for explicitly, so a stray request cannot silently
+   * rebind an account to whatever identity the password happens to reach.
+   */
+  rebind: z.boolean().optional(),
 });
 
 function cors() {
@@ -53,7 +66,7 @@ export async function POST(req: NextRequest) {
   const { householdId } = await getHouseholdScope();
   const target = await prisma.user.findUnique({
     where: { id: userId },
-    select: { id: true, householdId: true, isSystem: true, registrationPrincipalId: true, email: true },
+    select: { id: true, householdId: true, isSystem: true, registrationPrincipalId: true, registrationEmail: true, email: true },
   });
   if (!target) {
     return NextResponse.json({ ok: false, code: "USER_NOT_FOUND", error: "User was not found." }, { status: 404, headers: cors() });
@@ -64,13 +77,30 @@ export async function POST(req: NextRequest) {
   if (!target.isSystem && target.householdId !== householdId) {
     return NextResponse.json({ ok: false, code: "FORBIDDEN", error: "Unauthorized target user." }, { status: 403, headers: cors() });
   }
-  if (target.registrationPrincipalId) {
+  if (target.registrationPrincipalId && !parsed.data.rebind) {
     return NextResponse.json({ ok: false, code: "ALREADY_BOUND", error: "This user is already bound to an MMH user." }, { status: 409, headers: cors() });
+  }
+
+  const requestedEmail = username.trim().toLowerCase();
+  // Re-verifying repairs ONE account, it does not move the user onto another
+  // one. Switching a bound user to a different MMH account is a deliberate
+  // unbind-then-bind: silently re-pointing an existing identity here would make
+  // "re-bind" a way to swap whose account it is, from a dialog that reads like
+  // a confirmation.
+  if (target.registrationPrincipalId && requestedEmail !== (target.registrationEmail ?? "").trim().toLowerCase()) {
+    return NextResponse.json(
+      {
+        ok: false,
+        code: "MMH_ALREADY_BOUND_OTHER",
+        error: "该账号已绑定其他 MMH 账号。如需更换，请先取消绑定再绑定新的 MMH 账号。",
+      },
+      { status: 409, headers: cors() },
+    );
   }
 
   // Verify the membership credentials against the central registration service.
   const verification = await verifyEmailPrincipal({
-    email: username.trim().toLowerCase(),
+    email: requestedEmail,
     password: password.trim(),
   });
   if (!verification.ok || !verification.principalId) {
@@ -84,9 +114,12 @@ export async function POST(req: NextRequest) {
   await prisma.user.update({
     where: { id: userId },
     data: {
-      email: username.trim().toLowerCase(),
+      // Only the MMH columns move. `User.email` is the local contact address
+      // (it is how the local account is looked up for password recovery) and
+      // must not be overwritten by the membership address — binding an MMH
+      // account is not a request to change who the local user is.
       registrationPrincipalId: principalId,
-      registrationEmail: username.trim().toLowerCase(),
+      registrationEmail: requestedEmail,
     },
   });
 
@@ -94,7 +127,7 @@ export async function POST(req: NextRequest) {
   queueLedgerInventoryReport("mmh-bound");
 
   return NextResponse.json(
-    { ok: true, principalId, email: username.trim().toLowerCase() },
+    { ok: true, principalId, email: requestedEmail },
     { headers: cors() },
   );
 }

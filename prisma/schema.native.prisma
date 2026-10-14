@@ -1550,9 +1550,9 @@ model User {
   /// principalId issued by the external mmh-registration service (registration identifier)
   registrationPrincipalId String?
   /// MMH membership address captured when the binding was made. Deliberately
-/// separate from `email`: that one is the editable local contact field and
-/// can be changed afterwards, which must not lose track of the bound account.
-registrationEmail      String?
+  /// separate from `email`: that one is the editable local contact field and
+  /// can be changed afterwards, which must not lose track of the bound account.
+  registrationEmail      String?
   /// fnOS user UID / FN ID bound to this user, unique within its ledger (one UID per ledger)
   fnosUid                 String?
   householdId             String?

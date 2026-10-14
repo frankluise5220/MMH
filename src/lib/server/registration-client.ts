@@ -36,6 +36,10 @@
  */
 
 import "@/lib/net/prefer-ipv4";
+import {
+  getInstallationPublicKey,
+  rememberCentralInstallationId,
+} from "@/lib/server/installation-id";
 
 /**
  * The registration service answers in English with machine codes. Map the
@@ -113,9 +117,23 @@ export interface RegisterEmailPrincipalResult {
   principalId?: string;
   identityId?: string | null;
   createdAt?: string;
+  /**
+   * Installation id ASSIGNED BY THE SERVICE for this deployment, present when the
+   * request carried an `installation` block. The service only knows an
+   * installation once a registration has registered it, and ledger-inventory
+   * reports are keyed by this value — so it is what the inventory must report
+   * against, not the locally generated fallback.
+   */
+  installationId?: string | null;
   status?: number;
   code?: string;
   error?: string;
+}
+
+/** MMH_DEPLOY_TARGET (fnos / windows / ...) when provided, else the Node platform. */
+export function mmhDeploymentPlatform(): string {
+  const target = readRegistrationEnv("MMH_DEPLOY_TARGET").toLowerCase();
+  return target || process.platform;
 }
 
 /**
@@ -124,6 +142,14 @@ export interface RegisterEmailPrincipalResult {
  * The identity uses provider="email", issuer="mmh", subject=<email>, so the
  * same email can only be bound once across all MMH deployments that share the
  * registration service.
+ *
+ * The request also registers THIS deployment with the service (`installation`
+ * block, carrying the persisted deployment public key). That is what makes the
+ * service willing to accept later `POST /v1/installations` inventory reports —
+ * it refuses them with `VALIDATION_ERROR: installation.publicKey is required`
+ * for any installation it has not seen, and answering an id it does not know
+ * with a complaint about the key is misleading enough to cost hours. It also
+ * allocates the installation id the reports must be keyed by, returned here.
  */
 export async function registerEmailPrincipal(params: {
   displayName?: string | null;
@@ -139,6 +165,7 @@ export async function registerEmailPrincipal(params: {
     };
   }
 
+  const publicKey = await getInstallationPublicKey();
   const body = {
     displayName: params.displayName?.trim() || null,
     identity: {
@@ -147,6 +174,9 @@ export async function registerEmailPrincipal(params: {
       subject: params.email.trim().toLowerCase(),
       displayName: params.displayName?.trim() || null,
     },
+    ...(publicKey
+      ? { installation: { platform: mmhDeploymentPlatform(), publicKey } }
+      : {}),
   };
 
   const controller = new AbortController();
@@ -182,7 +212,7 @@ export async function registerEmailPrincipal(params: {
 
   interface RegistrationPayload {
     ok?: boolean;
-    data?: { principalId?: string; identityId?: string; createdAt?: string };
+    data?: { principalId?: string; identityId?: string; installationId?: string; createdAt?: string };
     code?: string;
     error?: string;
   }
@@ -205,10 +235,21 @@ export async function registerEmailPrincipal(params: {
     };
   }
 
+  const centralInstallationId = typeof payload.data?.installationId === "string"
+    ? payload.data.installationId.trim() || null
+    : null;
+  // Persist it before returning: inventory reports are keyed by the service's id
+  // for this deployment, and the caller's next step (binding) may be what
+  // triggers the first report.
+  if (centralInstallationId) {
+    await rememberCentralInstallationId(centralInstallationId);
+  }
+
   return {
     ok: true,
     principalId: typeof payload.data?.principalId === "string" ? payload.data.principalId : undefined,
     identityId: typeof payload.data?.identityId === "string" ? payload.data.identityId : null,
+    installationId: centralInstallationId,
     createdAt: typeof payload.data?.createdAt === "string" ? payload.data.createdAt : undefined,
   };
 }
@@ -465,6 +506,19 @@ export interface InstallationInventory {
   installationId: string;
   /** MMH_DEPLOY_TARGET when set (fnos / windows / ...), else the Node platform. */
   platform: string;
+  /**
+   * Deployment identity required by the service.
+   *
+   * A report without it is refused with `VALIDATION_ERROR: installation.publicKey
+   * is required`, so it is sent on every call. The key is generated once per
+   * deployment and persisted (see `getInstallationPublicKey`) — it has to stay
+   * the same value across reports, because the service records it against the
+   * installation.
+   */
+  installation?: {
+    platform: string;
+    publicKey: string;
+  };
   reportedAt: string;
   households: InstallationInventoryHousehold[];
 }

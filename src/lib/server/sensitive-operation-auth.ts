@@ -24,6 +24,8 @@ function failureMessage(verdict: Extract<CredentialVerification, { ok: false }>)
   switch (verdict.code) {
     case "LOCAL_PASSWORD_REQUIRED":
       return "该飞牛账户尚未建立本地密码，请先在用户设置中设置本地密码。";
+    case "MMH_IDENTITY_UNRECORDED":
+      return "该账号的 MMH 绑定未记录账号地址，请先在用户设置中重新验证 MMH 密码以补全绑定信息。";
     case "INVALID_PASSWORD":
       return verdict.attempted === "mmh"
         ? "The MMH account password is incorrect."
