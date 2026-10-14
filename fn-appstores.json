@@ -3,7 +3,7 @@
     "id": "mmh",
     "_manual": {
       "name": "MMH 家庭财务工作台",
-      "version": "0.1.71",
+      "version": "0.1.72",
       "platform": "x86",
       "platforms": [
         "x86",
@@ -11,18 +11,18 @@
       ],
       "author": "frankluise5220",
       "desc": "MMH 家庭财务工作台是本地优先的家庭记账与全资产管理工具，数据保存在自己的飞牛 NAS 上。支持多账本、多成员、账户流水、往来款、信用卡、贷款、基金、股票、存款、债券、房产、保险、统计报表、导入导出、AI 助手以及手动/自动备份。报销与差旅工作流正在开发中，已提供部分录入和查看能力。",
-      "icon": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png?v=0.1.71",
-      "download_url": "http://fnapp.floatingice.win/apps/mmh-0.1.71.fpk",
+      "icon": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png?v=0.1.72",
+      "download_url": "http://fnapp.floatingice.win/apps/mmh-0.1.72.fpk",
       "download_urls": {
-        "x86_64": "http://fnapp.floatingice.win/apps/mmh-0.1.71.fpk",
-        "arm64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.71/mmh-fnos-v0.1.71-arm64.fpk"
+        "x86_64": "http://fnapp.floatingice.win/apps/mmh-0.1.72.fpk",
+        "arm64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.72/mmh-fnos-v0.1.72-arm64.fpk"
       },
       "screenshots": [],
       "tags": [
         "财务",
         "记账"
       ],
-      "changelog": "0.1.70 升级至 0.1.71：记账弹窗统一为整窗外壳（页签切换窗体不位移、移动端表单控件 44px 触摸热区、必填红框收口）；贷款账户新增贷款类别主数据与可编辑字段；开放 JSON-RPC Agent 端点（AccessKey 作用域门控）；债务模块语义统一为负债命名；各发行通道各自烘焙路径前缀（Android 支持服务器子路径）。完整说明见 GitHub Release v0.1.71",
+      "changelog": "新增流水对账锁定、剪贴板账单识别（Web 与 Android）、普通转账放行贷款账户、MMH 账号开箱可用并按登录方式校验会话；编辑记录不再整页刷新，弹窗层级统一，移动端输入体验修正；修复管理面板邮件回复后标识失效与登录页无效入口；群晖与 Windows 安装脚本不再硬编码注册服务配置。本版有数据库结构变更，升级会自动迁移。完整说明见 GitHub Release v0.1.72",
       "updated_at": "2026-09-02"
     }
   }
