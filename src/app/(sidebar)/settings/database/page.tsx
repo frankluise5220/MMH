@@ -1,4 +1,5 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Download, RotateCcw, Shield, Upload, RefreshCw } from "lucide-react";
@@ -1686,7 +1687,7 @@ export default function DatabaseSettingsPage() {
       </section>
 
       {backupOptionsDialogOpen ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/35 px-4">
+        <ModalLayer className="fixed inset-0 flex items-center justify-center bg-slate-900/35 px-4">
           <div className="w-full max-w-sm rounded-lg border border-slate-200 bg-white p-4 shadow-xl">
             <div className="text-sm font-semibold text-slate-800">{t("settings.database.backupOptionsTitle")}</div>
             <div className="mt-1 text-xs text-slate-500">
@@ -1810,11 +1811,11 @@ export default function DatabaseSettingsPage() {
               </button>
             </div>
           </div>
-        </div>
+        </ModalLayer>
       ) : null}
 
       {restoreOptionsDialogOpen ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/35 px-4">
+        <ModalLayer className="fixed inset-0 flex items-center justify-center bg-slate-900/35 px-4">
           <div className="w-full max-w-sm rounded-lg border border-slate-200 bg-white p-4 shadow-xl">
             <div className="text-sm font-semibold text-slate-800">{t("settings.database.restoreTitle")}</div>
             <div className="mt-1 text-xs text-slate-500">
@@ -1918,11 +1919,11 @@ export default function DatabaseSettingsPage() {
               </button>
             </div>
           </div>
-        </div>
+        </ModalLayer>
       ) : null}
 
       {resetPasswordDialogOpen ? (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/35 px-4">
+        <ModalLayer className="fixed inset-0 flex items-center justify-center bg-slate-900/35 px-4">
           <div className="w-full max-w-sm rounded-lg border border-red-100 bg-white p-4 shadow-xl">
             <div className="flex items-center gap-2 text-sm font-semibold text-red-800">
               <Shield className="h-4 w-4 shrink-0 text-amber-500" />
@@ -1968,7 +1969,7 @@ export default function DatabaseSettingsPage() {
               </button>
             </div>
           </div>
-        </div>
+        </ModalLayer>
       ) : null}
 
       <section className="rounded-lg border border-slate-200 bg-white p-4">

@@ -1,4 +1,5 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
 import { useI18n } from "@/lib/i18n";
 import { formatMoneyYuan } from "@/lib/format";
@@ -885,7 +886,7 @@ export function ReimbursementEditor({
         </article>
       </div>
       {showLinkDialog ? (
-        <div className="app-modal-backdrop z-[90]">
+        <ModalLayer className="app-modal-backdrop">
           <div className="app-modal-panel max-w-xl">
             <div className="modal-header shrink-0">
               <div className="text-sm font-semibold text-slate-800">{t("reimburse.source.add")}</div>
@@ -957,7 +958,7 @@ export function ReimbursementEditor({
               </button>
             </div>
           </div>
-        </div>
+        </ModalLayer>
       ) : null}
     </div>
   );

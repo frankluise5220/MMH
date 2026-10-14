@@ -1,4 +1,5 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
 import {
   useEffect,
@@ -9,7 +10,11 @@ import {
 import { Pause, Pencil, Play, RefreshCw, Square, Trash2 } from "lucide-react";
 import { AdvancedDataTable, type AdvancedDataTableColumn, type AdvancedDataTableSortState } from "@/components/AdvancedDataTable";
 import { DateStepper } from "@/components/DateStepper";
-import { MultiSelectFilterDropdown } from "@/components/MultiSelectFilterDropdown";
+import {
+  MultiSelectFilterDropdown,
+  SingleSelectFilterDropdown,
+  type MultiSelectFilterGroup,
+} from "@/components/MultiSelectFilterDropdown";
 import { RegularInvestForm } from "@/components/RegularInvestForm";
 import { TransactionFormModal } from "@/components/TransactionFormModal";
 import { UnifiedEntryLauncher } from "@/components/UnifiedEntryLauncher";
@@ -20,6 +25,7 @@ import type { SmartSelectOption } from "@/components/SmartSelect";
 import type { CategorySmartSelectOption } from "@/components/categorySmartSelect";
 import { addWorkdaysUtc, formatDateUtc } from "@/lib/date-utils";
 import type { AccountDisplayOption } from "@/lib/account-display";
+import { accountFilterGroupKey, accountFilterGroupLabel } from "@/lib/account-kinds";
 import { scheduledTaskTypeLabel, type LoanScheduledPlanRole, type ScheduledTaskType } from "@/lib/scheduled-task";
 import { showBlockingLoading } from "@/lib/client/blocking-loading";
 import { showChoiceDialog, showConfirmDialog } from "@/lib/client/confirm-dialog";
@@ -54,6 +60,16 @@ const STATUS_MAP: Record<string, { labelKey: string; cls: string }> = {
   paused: { labelKey: "regularInvest.client.status.paused", cls: "text-yellow-600" },
   stopped: { labelKey: "regularInvest.client.status.stopped", cls: "text-red-600" },
   completed: { labelKey: "regularInvest.client.status.completed", cls: "text-blue-600" },
+};
+
+/** Plan task source filter: all / user-created plans / system-managed plans. */
+const PLAN_SOURCE_FILTERS: Array<"all" | "user" | "system"> = ["all", "user", "system"];
+
+export type AccountFilterOption = {
+  id: string;
+  label: string;
+  kind: string;
+  investProductType: string | null;
 };
 
 const SCHEDULED_TASK_TYPES: ScheduledTaskType[] = [
@@ -605,6 +621,7 @@ export function RegularInvestClient({
   advanceCategories,
   nestedFieldData,
   allAccountSSOptions,
+  filterAccounts,
   transactionCreateAction,
   transactionEditAction,
 }: {
@@ -625,6 +642,8 @@ export function RegularInvestClient({
   incomeCategories: CategoryOption[];
   advanceCategories: CategoryOption[];
   allAccountSSOptions: SmartSelectOption[];
+  /** Accounts with their kind, used to group the "all accounts" filter like the report page. */
+  filterAccounts: AccountFilterOption[];
   nestedFieldData?: Record<string, Array<{ id: string; name: string; type?: string }>>;
   transactionCreateAction: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
   transactionEditAction: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
@@ -1483,20 +1502,52 @@ export function RegularInvestClient({
     }
   }
 
+  // Only accounts that a plan actually touches are offered, so a selection can
+  // never produce an empty list. They carry their kind so the dropdown can group
+  // them exactly like the report page account picker (kind / investment product
+  // category headers + whole-group checkboxes).
   const accountFilterOptions = useMemo(() => {
-    const map = new Map<string, string>();
+    const accountById = new Map(filterAccounts.map((account) => [account.id, account]));
+    const map = new Map<string, { id: string; name: string; kind: string; investProductType: string | null }>();
+    const addAccount = (accountId?: string | null, fallbackName?: string | null) => {
+      if (!accountId) return;
+      const account = accountById.get(accountId);
+      const name = account?.label || fallbackName;
+      if (!name) return;
+      map.set(accountId, {
+        id: accountId,
+        name,
+        kind: account?.kind ?? "other",
+        investProductType: account?.investProductType ?? null,
+      });
+    };
     for (const plan of plans) {
       // Dropdown text follows the account display format setting
       // (institution + account name), same as table cells elsewhere.
-      const targetLabel = plan.accountLabel || plan.accountName;
-      if (plan.accountId && targetLabel) map.set(plan.accountId, targetLabel);
-      const cashLabel = plan.cashAccountLabel || plan.cashAccountName;
-      if (plan.cashAccountId && cashLabel) map.set(plan.cashAccountId, cashLabel);
+      addAccount(plan.accountId, plan.accountLabel || plan.accountName);
+      addAccount(plan.cashAccountId, plan.cashAccountLabel || plan.cashAccountName);
     }
-    return Array.from(map.entries())
-      .map(([id, name]) => ({ id, name }))
-      .sort((a, b) => compareText(a.name, b.name));
-  }, [plans]);
+    return Array.from(map.values()).sort((a, b) => compareText(a.name, b.name));
+  }, [plans, filterAccounts]);
+
+  const accountFilterGroups = useMemo<MultiSelectFilterGroup[]>(() => {
+    const order: string[] = [];
+    const valuesByKey = new Map<string, string[]>();
+    for (const option of accountFilterOptions) {
+      const key = accountFilterGroupKey(option);
+      const values = valuesByKey.get(key);
+      if (values) values.push(option.id);
+      else {
+        valuesByKey.set(key, [option.id]);
+        order.push(key);
+      }
+    }
+    return order.map((key) => ({
+      key,
+      label: accountFilterGroupLabel(key, t),
+      values: valuesByKey.get(key) ?? [],
+    }));
+  }, [accountFilterOptions, t]);
 
   const filteredPlans = plans.filter((plan) => {
     if (!showEnded && (plan.status === "stopped" || plan.status === "completed")) return false;
@@ -1828,32 +1879,19 @@ export function RegularInvestClient({
                       selectedSummaryLabel={(first, count) => t("regularInvest.client.filter.selectedSummary", { first, count })}
                       clearLabel={t("statistics.clearSelection")}
                       emptyLabel={t("table.empty")}
+                      groups={accountFilterGroups}
                     />
                   </div>
                 )}
                 toolbarRightContent={(
                   <>
-                    <div className="flex h-7 items-center overflow-hidden rounded-md border border-slate-200 text-xs" role="tablist">
-                      {([
-                        { value: "all", labelKey: "regularInvest.client.sourceFilter.all" },
-                        { value: "user", labelKey: "regularInvest.client.sourceFilter.user" },
-                        { value: "system", labelKey: "regularInvest.client.sourceFilter.system" },
-                      ] as const).map((option) => (
-                        <button
-                          key={option.value}
-                          role="tab"
-                          aria-selected={planSourceFilter === option.value}
-                          onClick={() => setPlanSourceFilter(option.value)}
-                          className={`h-full px-2.5 whitespace-nowrap transition-colors ${
-                            planSourceFilter === option.value
-                              ? "bg-blue-600 text-white"
-                              : "bg-white text-slate-600 hover:bg-slate-50"
-                          }`}
-                        >
-                          {t(option.labelKey)}
-                        </button>
-                      ))}
-                    </div>
+                    <SingleSelectFilterDropdown
+                      options={PLAN_SOURCE_FILTERS}
+                      value={planSourceFilter}
+                      onChange={(next) => setPlanSourceFilter(next as "all" | "user" | "system")}
+                      labelFor={(value) => t(`regularInvest.client.sourceFilter.${value}`)}
+                      title={t("regularInvest.client.filter.sourceTitle")}
+                    />
                     <label className="flex cursor-pointer select-none items-center gap-1.5 text-xs text-slate-500">
                       <input type="checkbox" checked={!showEnded} onChange={(e) => setShowEnded(!e.target.checked)} className="h-3.5 w-3.5 accent-blue-600" />
                       {t("regularInvest.client.hideEnded")}
@@ -2047,7 +2085,7 @@ export function RegularInvestClient({
       </div>
 
       {deleteConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4">
+        <ModalLayer className="fixed inset-0 flex items-center justify-center bg-black/35 p-4">
           <div className="w-full max-w-sm overflow-hidden rounded-xl border border-slate-200 bg-white shadow-lg">
             <div className="border-b border-slate-200 bg-slate-50 px-4 py-3">
               <div className="text-sm font-semibold text-slate-800">{t("regularInvest.client.deleteDialog.title")}</div>
@@ -2070,11 +2108,11 @@ export function RegularInvestClient({
               </div>
             </div>
           </div>
-        </div>
+        </ModalLayer>
       )}
 
       {editingRecord && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4">
+        <ModalLayer className="fixed inset-0 flex items-center justify-center bg-black/35 p-4">
           <div className="w-full max-w-sm overflow-hidden rounded-xl border border-slate-200 bg-white shadow-lg">
             <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-4 py-3">
               <div className="text-sm font-semibold text-slate-800">{t("regularInvest.client.editDateDialog.title")}</div>
@@ -2107,7 +2145,7 @@ export function RegularInvestClient({
               </div>
             </div>
           </div>
-        </div>
+        </ModalLayer>
       )}
     </>
   );

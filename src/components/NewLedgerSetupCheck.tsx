@@ -1,4 +1,5 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
 import { usePathname } from "next/navigation";
 import { useState, useEffect, useRef } from "react";
@@ -98,7 +99,7 @@ export function NewLedgerSetupCheck() {
   if (checking || !show) return null;
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 backdrop-blur-sm">
+    <ModalLayer className="fixed inset-0 flex items-center justify-center bg-black/50 backdrop-blur-sm">
       <div className="w-full max-w-sm bg-white rounded-xl border border-slate-200 shadow-xl overflow-hidden">
         <div className="px-6 py-5 border-b border-slate-200 bg-slate-50">
           <div className="text-base font-semibold text-slate-800">{t("newLedgerSetup.title")}</div>
@@ -149,6 +150,6 @@ export function NewLedgerSetupCheck() {
           </button>
         </div>
       </div>
-    </div>
+    </ModalLayer>
   );
 }

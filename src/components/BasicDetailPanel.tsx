@@ -45,6 +45,8 @@ type BasicDetailPanelProps = {
   investmentProductTypeByAccountId: Record<string, string | undefined | null>;
   compactRows?: boolean;
   showBalanceReconcile?: boolean;
+  /** 是否显示批量「对账」按钮（锁定记录 + 钉住本行余额）。 */
+  showReconcile?: boolean;
   showImportExport?: boolean;
   showAccountColumn?: boolean;
   showRunningBalance?: boolean;
@@ -280,6 +282,7 @@ export function BasicDetailPanel({
   investmentProductTypeByAccountId,
   compactRows = false,
   showBalanceReconcile = false,
+  showReconcile = false,
   showImportExport = true,
   showAccountColumn = false,
   showRunningBalance,
@@ -492,8 +495,31 @@ export function BasicDetailPanel({
         return;
       }
 
+      // 对账 / 解锁只改写明细行的 reconciledAt / reconciledBalance（锁标记 + 余额锚点），
+      // 本地快照推不出这两个字段的差异（删行重算那套逻辑用不上）→ 必须重取。
+      // 没有这个分支，锁定/解锁后列表不刷新，行上的锁图标永远不出现，也就无从解锁。
+      if (
+        event.type === FINANCE_DATA_CHANGED_EVENT &&
+        detail.reason === "entry-reconcile" &&
+        isCurrentAccountEvent
+      ) {
+        // 有明细筛选时 localEntries 由 RSC 的 entries prop 持有，客户端分页
+        // 取数路径是禁用的，只能整棵刷新。
+        if (clientPaginationEnabled) reloadDetailPage();
+        else router.refresh();
+        return;
+      }
+
       const deletedEntryIds = detail.deletedEntryIds ?? [];
-      if (deletedEntryIds.length === 0) return;
+      if (deletedEntryIds.length === 0) {
+        // 编辑类改动：常规视图交给 DetailViewClient 按当前页重取（不再整页刷新，
+        // 服务端编辑保存也不再 purge 当前路由）。下面两种情形它补不了，只能
+        // 整棵刷新：① 有明细筛选——数据由 RSC 的 entries prop 持有，客户端
+        // 分页取数被禁用，且重取不带筛选条件会把筛选结果冲掉；
+        // ② refreshOnGlobalEvent 关闭（标签视图）——子组件根本不监听。
+        if (isCurrentAccountEvent && (!clientPaginationEnabled || !refreshOnGlobalEvent)) router.refresh();
+        return;
+      }
       const deletedSet = new Set(deletedEntryIds);
       // 剔除已删行的同时重算「余额」列：子组件拿到新的 initialEntries 引用后会
       // 丢弃自己的本地快照，所以重算结果必须由父层写进这份数据里，否则删除一条
@@ -514,7 +540,7 @@ export function BasicDetailPanel({
     return () => {
       window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, handleFinanceChange);
     };
-  }, [accountId, accountKind, detailAll, localEntries, reloadDetailPage, scopeAccountIds]);
+  }, [accountId, accountKind, clientPaginationEnabled, detailAll, localEntries, refreshOnGlobalEvent, reloadDetailPage, router, scopeAccountIds]);
 
   useEffect(() => {
     if (detailAll || page === safePage || locatingDateRef.current) return;
@@ -860,7 +886,10 @@ export function BasicDetailPanel({
           toolbarMode="custom"
           toolbarTitle={t("basicDetail.entriesTitle")}
           showRunningBalance={showRunningBalance ?? !isInvestAccount}
-          refreshOnGlobalEvent={refreshOnGlobalEvent}
+          reconcileEnabled={showReconcile}
+          // 有明细筛选时列表由 RSC 的 entries prop 持有，DetailViewClient 的
+          // 重取不带筛选参数，会把筛选结果冲掉 —— 交给上面的整棵刷新。
+          refreshOnGlobalEvent={refreshOnGlobalEvent && clientPaginationEnabled}
           draggableRows={draggableRows}
           sortable={sortable}
           onRowsFitChange={autoFit && !detailAll ? handleRowsFitChange : undefined}

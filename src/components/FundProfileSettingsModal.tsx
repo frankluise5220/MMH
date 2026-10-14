@@ -1,4 +1,5 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Loader2 } from "lucide-react";
@@ -256,13 +257,10 @@ export function FundProfileSettingsModal({ open, account, fundCode, fallbackFund
   if (!open) return null;
 
   return (
-    <div
-      className="fixed inset-0 z-[100] flex items-start justify-center overflow-y-auto bg-slate-950/40 p-2 sm:p-4"
-      role="presentation"
+    <ModalLayer className="fixed inset-0 flex items-start justify-center overflow-y-auto bg-slate-950/40 p-2 sm:p-4" role="presentation"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) handleClose();
-      }}
-    >
+      }}>
       <div
         className="app-modal-panel relative mt-2 w-full max-w-xl sm:mt-4"
         role="dialog"
@@ -308,6 +306,6 @@ export function FundProfileSettingsModal({ open, account, fundCode, fallbackFund
         ) : null}
         {loadError ? <div className="border-t border-amber-100 bg-amber-50 px-4 py-2 text-xs text-amber-700">{loadError}</div> : null}
       </div>
-    </div>
+    </ModalLayer>
   );
 }

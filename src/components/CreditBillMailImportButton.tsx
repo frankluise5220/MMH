@@ -1,10 +1,11 @@
 "use client";
 
 import dynamic from "next/dynamic";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { MailSearch, X } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
+import { warmEmailSettings } from "@/lib/client/settingsCache";
 
 const EmailSettingsPanel = dynamic(
   () => import("@/components/EmailSettingsPanel").then((mod) => mod.EmailSettingsPanel),
@@ -13,6 +14,17 @@ const EmailSettingsPanel = dynamic(
     loading: () => <EmailSettingsLoading />,
   },
 );
+
+/**
+ * Warms both halves of what the dialog waits for: the panel chunk (this module
+ * is big — importing it inline is what makes the first open feel slow) and the
+ * mail settings data. Safe to call repeatedly.
+ */
+export function prefetchMailImportPanel() {
+  if (typeof window === "undefined") return;
+  void import("@/components/EmailSettingsPanel").catch(() => null);
+  warmEmailSettings();
+}
 
 function EmailSettingsLoading() {
   const { t } = useI18n();
@@ -41,6 +53,14 @@ export function CreditBillMailImportDialog({ open, onClose, accountId, accountNa
   const { t } = useI18n();
   const [previewOpen, setPreviewOpen] = useState(false);
 
+  // 关闭时必须复位 previewOpen。本组件关闭时只是 return null、并不会卸载，
+  // 于是 previewOpen 会跨「关闭 → 重开」残留；而 previewOpen=true 会让外层遮罩渲染成
+  // `opacity-0 + pointer-events-none`（见下方 mailOverlayHidden）——重开时整层都是透明且
+  // 不可点的，用户看到的现象就是「邮箱导入关掉之后再也点不开」。
+  useEffect(() => {
+    if (!open) setPreviewOpen(false);
+  }, [open]);
+
   if (!open || typeof document === "undefined") return null;
 
   // When the statement preview opens, hide the mail dialog visually but keep
@@ -68,7 +88,11 @@ export function CreditBillMailImportDialog({ open, onClose, accountId, accountNa
           <EmailSettingsPanel
             embedded
             onStatementPreviewOpened={() => setPreviewOpen(true)}
-            onStatementPreviewClosed={onClose}
+            onStatementPreviewClosed={() => {
+              // 预览关掉后要把外层恢复成可见可点（否则父级若保持 open=true，这里会一直是透明遮罩）。
+              setPreviewOpen(false);
+              onClose();
+            }}
           />
         </div>
       </div>
@@ -81,11 +105,33 @@ export function CreditBillMailImportButton(props: CreditBillMailImportButtonProp
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
 
+  // Touch devices never fire hover, so also warm the chunk once the browser is
+  // idle. Without this the first open pays for downloading the panel.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const idle = (window as unknown as { requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number })
+      .requestIdleCallback;
+    if (typeof idle === "function") {
+      const handle = idle(() => prefetchMailImportPanel(), { timeout: 4000 });
+      return () => {
+        (window as unknown as { cancelIdleCallback?: (handle: number) => void }).cancelIdleCallback?.(handle);
+      };
+    }
+    const timer = window.setTimeout(prefetchMailImportPanel, 2000);
+    return () => window.clearTimeout(timer);
+  }, []);
+
   return (
     <>
       <button
         type="button"
-        onClick={() => setOpen(true)}
+        onMouseEnter={() => prefetchMailImportPanel()}
+        onFocus={() => prefetchMailImportPanel()}
+        onPointerDown={() => prefetchMailImportPanel()}
+        onClick={() => {
+          prefetchMailImportPanel();
+          setOpen(true);
+        }}
         className="inline-flex h-7 items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 hover:bg-blue-50 hover:text-blue-700"
         title={t("creditBill.fetchMailTitle")}
       >

@@ -1,4 +1,5 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
 import { useEffect, useState } from "react";
 import { X } from "lucide-react";
@@ -84,7 +85,7 @@ export function InsuranceProductEditModal({
   if (!open || !draft) return null;
 
   return (
-    <div className="app-modal-backdrop z-[1200]">
+    <ModalLayer className="app-modal-backdrop">
       <div className="app-modal-panel max-w-2xl">
         <div className="modal-header">
           <div className="text-sm font-semibold text-slate-800">{t("insuranceProductEdit.editTitle")}</div>
@@ -253,7 +254,7 @@ export function InsuranceProductEditModal({
           </div>
         </form>
       </div>
-    </div>
+    </ModalLayer>
   );
 }
 

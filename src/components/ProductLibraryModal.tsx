@@ -1,4 +1,5 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, Loader2, Plus, Search, Trash2, X } from "lucide-react";
@@ -531,7 +532,7 @@ export function ProductLibraryModal({
   const canSave = isCreating || !!selectedRow;
 
   return (
-    <div className="app-modal-backdrop z-[1300]">
+    <ModalLayer className="app-modal-backdrop">
       <div className="app-modal-panel h-[min(760px,84vh)] max-w-4xl min-h-0">
         <div className="modal-header">
           <div className="text-sm font-semibold text-slate-800">{t(config.titleKey)}</div>
@@ -776,6 +777,6 @@ export function ProductLibraryModal({
           </div>
         </div>
       </div>
-    </div>
+    </ModalLayer>
   );
 }

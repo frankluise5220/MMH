@@ -1,4 +1,5 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -816,7 +817,7 @@ export function CreditBillSummaryTable({
         onRulesChanged={setBillingDayRulesLocal}
       />
       {exportOpen ? (
-        <div className="fixed inset-0 z-[85] flex items-center justify-center bg-slate-900/25 px-4">
+        <ModalLayer className="fixed inset-0 flex items-center justify-center bg-slate-900/25 px-4">
           <div className="w-full max-w-md overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
             <div className="border-b border-slate-100 px-4 py-3">
               <div className="text-sm font-semibold text-slate-800">{t("creditBillSummary.exportTitle")}</div>
@@ -864,10 +865,10 @@ export function CreditBillSummaryTable({
               </button>
             </div>
           </div>
-        </div>
+        </ModalLayer>
       ) : null}
       {installmentOpen ? (
-        <div className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-900/25 px-4">
+        <ModalLayer className="fixed inset-0 flex items-center justify-center bg-slate-900/25 px-4">
           <div className="w-full max-w-lg overflow-hidden rounded-lg border border-slate-200 bg-white shadow-xl">
             <div className="flex items-start justify-between border-b border-slate-100 px-4 py-3">
               <div>
@@ -1039,10 +1040,10 @@ export function CreditBillSummaryTable({
               </button>
             </div>
           </div>
-        </div>
+        </ModalLayer>
       ) : null}
       {editingCycle ? (
-        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-900/20 px-4">
+        <ModalLayer className="fixed inset-0 flex items-center justify-center bg-slate-900/20 px-4">
           <div className="w-full max-w-md rounded-xl border border-slate-200 bg-white shadow-xl">
             <div className="border-b border-slate-100 px-4 py-3">
               <div className="text-sm font-semibold text-slate-800">{t("creditBill.editCycleTitle", { month: editingCycle.month })}</div>
@@ -1084,7 +1085,7 @@ export function CreditBillSummaryTable({
               </button>
             </div>
           </div>
-        </div>
+        </ModalLayer>
       ) : null}
     </div>
   );

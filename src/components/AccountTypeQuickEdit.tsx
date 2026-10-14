@@ -1,4 +1,5 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
 import { createPortal } from "react-dom";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -372,7 +373,7 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
         <span className="page-title cursor-pointer" onDoubleClick={() => { void openEditor(); }} title={accountLabel || account.name}>{accountLabel || account.name}</span>
       ) : null}
       {open && typeof document !== "undefined" ? createPortal(
-        <div className="fixed inset-0 z-[1000] flex items-center justify-center overflow-y-auto bg-slate-950/30 p-4" onMouseDown={() => !saving && setOpen(false)}>
+        <ModalLayer className="fixed inset-0 flex items-center justify-center overflow-y-auto bg-slate-950/30 p-4" onMouseDown={() => !saving && setOpen(false)}>
           <div className="max-h-[calc(100dvh-2rem)] w-[720px] max-w-[calc(100vw-2rem)] overflow-y-auto rounded-xl border border-slate-200 bg-white p-4 shadow-xl" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
             <div className="mb-3 flex items-center justify-between"><h2 className="text-sm font-semibold text-slate-800">{t("settings.accounts.editTitle", { name: account.name })}</h2><button type="button" className="h-8 rounded border border-slate-200 px-2 text-sm text-slate-600" onClick={() => setOpen(false)}>{t("table.close")}</button></div>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3">
@@ -462,7 +463,7 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
             {error ? <p className="mt-3 text-sm text-red-600">{error}</p> : null}
             <div className="mt-4 flex justify-end gap-2"><button type="button" className="rounded border border-slate-200 px-3 py-2 text-sm text-slate-600" onClick={() => setOpen(false)} disabled={saving}>{t("common.cancel")}</button><button type="button" className="rounded bg-blue-600 px-3 py-2 text-sm text-white disabled:opacity-50" onClick={save} disabled={saving}>{saving ? t("accountTypeQuickEdit.saving") : t("common.save")}</button></div>
           </div>
-        </div>, document.body,
+        </ModalLayer>, document.body,
       ) : null}
     </>
   );

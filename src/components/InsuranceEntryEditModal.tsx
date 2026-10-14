@@ -1,4 +1,5 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
@@ -9,7 +10,6 @@ import { ClearableNoteField } from "./ClearableNoteField";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
 import { NestedAddModal } from "./EntityCreateForm";
-import { ModalLayerProvider, getNextModalLayerZIndex, useModalLayerZIndex } from "./ModalLayer";
 import { kindLabel } from "@/lib/account-kinds";
 import { useI18n } from "@/lib/i18n";
 
@@ -86,8 +86,6 @@ export function InsuranceEntryEditModal({
 
   const cashOptions = cashFiltered ?? cashAccountList;
   const { t } = useI18n();
-  const parentModalZIndex = useModalLayerZIndex();
-  const modalZIndex = getNextModalLayerZIndex(parentModalZIndex);
 
   // Called when a nested institution/group is created inside an account dialog.
   // Keep the shared nested option data fresh so subsequent account dialogs can
@@ -191,7 +189,7 @@ export function InsuranceEntryEditModal({
 
   if (nestedEntityType === "cash-account" && typeof document !== "undefined") {
     return createPortal(
-      <ModalLayerProvider value={modalZIndex}>
+      <>
         <NestedAddModal
           mode="compact"
           entityType="account"
@@ -209,14 +207,13 @@ export function InsuranceEntryEditModal({
           nestedFieldData={localNestedFieldData ?? nestedFieldData}
           onNestedCreated={handleNestedOptionCreated}
         />
-      </ModalLayerProvider>,
+      </>,
       document.body,
     );
   }
 
   return createPortal(
-    <ModalLayerProvider value={modalZIndex}>
-    <div className="app-modal-backdrop" style={{ zIndex: modalZIndex }}>
+    <ModalLayer className="app-modal-backdrop">
       <div className="app-modal-panel max-w-xl">
         <div className="modal-header">
           <div className="text-sm font-semibold text-slate-800">{title}</div>
@@ -348,8 +345,7 @@ export function InsuranceEntryEditModal({
           </div>
         </form>
       </div>
-    </div>
-    </ModalLayerProvider>,
+    </ModalLayer>,
     document.body,
   );
 }

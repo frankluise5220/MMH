@@ -1,4 +1,5 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { CalendarDays, Check, Loader2, Percent, Trash2, X } from "lucide-react";
@@ -513,7 +514,7 @@ export function FundConfirmDaysModal({
       : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50";
 
   return (
-    <div className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-900/40 p-4">
+    <ModalLayer className="fixed inset-0 flex items-center justify-center bg-slate-900/40 p-4">
       <div className="flex max-h-[86vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
         <div className="flex shrink-0 items-center justify-between border-b border-slate-200 bg-slate-50 px-4 py-3">
           <div className="flex min-w-0 items-center gap-2 text-sm font-semibold text-slate-800">
@@ -569,6 +570,6 @@ export function FundConfirmDaysModal({
           </div>
         </div>
       </div>
-    </div>
+    </ModalLayer>
   );
 }

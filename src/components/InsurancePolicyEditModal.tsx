@@ -1,4 +1,5 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
 import { useEffect, useState } from "react";
 import { DateStepper } from "./DateStepper";
@@ -49,7 +50,7 @@ export function InsurancePolicyEditModal({
   if (!open || !draft || !meta) return null;
 
   return (
-    <div className="app-modal-backdrop z-[1200]">
+    <ModalLayer className="app-modal-backdrop">
       <div className="app-modal-panel max-w-xl">
         <div className="modal-header">
           <div className="text-sm font-semibold text-slate-800">{t("insurancePolicy.editTitle")}</div>
@@ -185,7 +186,7 @@ export function InsurancePolicyEditModal({
           </div>
         </form>
       </div>
-    </div>
+    </ModalLayer>
   );
 }
 

@@ -1,4 +1,5 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
 /**
  * CurrencySmartSelect - system and user-added currency selector.
@@ -391,12 +392,9 @@ function CurrencyRequestModal({
   }
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4"
-      onClick={(e) => {
+    <ModalLayer className="fixed inset-0 flex items-center justify-center bg-black/30 p-4" onClick={(e) => {
         if (e.target === e.currentTarget) onClose();
-      }}
-    >
+      }}>
       <div className="w-full max-w-md rounded-lg border border-slate-200 bg-white p-4 shadow-xl">
         <div className="mb-3 flex items-start justify-between">
           <div>
@@ -465,7 +463,7 @@ function CurrencyRequestModal({
           </button>
         </div>
       </div>
-    </div>
+    </ModalLayer>
   );
 }
 

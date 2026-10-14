@@ -1,4 +1,5 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -1265,8 +1266,7 @@ export default function SettingsAccountsPage() {
 
       {/* Password confirmation dialog for deleting account with records */}
       {deleteTarget && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-[1px] p-4"
-          onMouseDown={() => { setDeleteTarget(null); setDeleteError(""); }}>
+        <ModalLayer className="fixed inset-0 flex items-center justify-center bg-black/30 backdrop-blur-[1px] p-4" onMouseDown={() => { setDeleteTarget(null); setDeleteError(""); }}>
           <div className="w-[340px] max-w-[calc(100vw-2rem)] rounded-xl border border-slate-200 bg-white shadow-xl p-4"
             onMouseDown={e => e.stopPropagation()}>
             <div className="text-sm font-semibold text-slate-800 mb-1">{t("settings.accounts.passwordTitle")}</div>
@@ -1300,7 +1300,7 @@ export default function SettingsAccountsPage() {
                 className="h-8 px-3 rounded-md bg-red-600 text-white text-xs hover:bg-red-700">{t("settings.accounts.confirmDelete")}</button>
             </div>
           </div>
-        </div>
+        </ModalLayer>
       )}
 
       {/* Account edit modal */}
@@ -1348,8 +1348,7 @@ export default function SettingsAccountsPage() {
           setEditFormBaseline({});
         };
         return (
-          <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/30 p-4 backdrop-blur-[1px]"
-            onMouseDown={closeEditModal}>
+          <ModalLayer className="fixed inset-0 flex items-start justify-center overflow-y-auto bg-black/30 p-4 backdrop-blur-[1px]" onMouseDown={closeEditModal}>
             <div
               className="app-modal-panel relative mt-16 !w-[720px] max-w-[calc(100vw-2rem)] sm:mt-20"
               role="dialog"
@@ -1709,7 +1708,7 @@ export default function SettingsAccountsPage() {
               </div>
               </div>
             </div>
-          </div>
+          </ModalLayer>
         );
       })()}
 
@@ -1744,8 +1743,7 @@ export default function SettingsAccountsPage() {
       {mergeModalOpen && mergeSelectedAccounts.length === 2 && (() => {
         const [first, second] = mergeSelectedAccounts;
         return (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 backdrop-blur-[1px] p-4"
-            onMouseDown={() => { if (!mergeBusy) setMergeModalOpen(false); }}>
+          <ModalLayer className="fixed inset-0 flex items-center justify-center bg-black/30 backdrop-blur-[1px] p-4" onMouseDown={() => { if (!mergeBusy) setMergeModalOpen(false); }}>
             <div className="w-[420px] max-w-[calc(100vw-2rem)] rounded-xl border border-slate-200 bg-white shadow-xl p-4"
               onMouseDown={e => e.stopPropagation()}>
               <div className="text-sm font-semibold text-slate-800 mb-1">{t("settings.accounts.merge.title")}</div>
@@ -1791,7 +1789,7 @@ export default function SettingsAccountsPage() {
                 </button>
               </div>
             </div>
-          </div>
+          </ModalLayer>
         );
       })()}
 
@@ -1799,10 +1797,7 @@ export default function SettingsAccountsPage() {
       {trashAccount && (() => {
         const allSelected = trashRecords.length > 0 && trashSelectedIds.length === trashRecords.length;
         return (
-          <div
-            className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4 backdrop-blur-[1px]"
-            onMouseDown={() => { if (!trashBusy) setTrashAccount(null); }}
-          >
+          <ModalLayer className="fixed inset-0 flex items-center justify-center bg-black/30 p-4 backdrop-blur-[1px]" onMouseDown={() => { if (!trashBusy) setTrashAccount(null); }}>
             <div
               className="app-modal-panel relative flex max-h-[85vh] w-[860px] max-w-[calc(100vw-2rem)] flex-col"
               role="dialog"
@@ -1934,7 +1929,7 @@ export default function SettingsAccountsPage() {
                 </div>
               </div>
             </div>
-          </div>
+          </ModalLayer>
         );
       })()}
     </div>

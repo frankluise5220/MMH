@@ -11,14 +11,16 @@ import { AdvancedDataTable, type AdvancedDataTableColumn, type AdvancedDataTable
 import { BusinessLinkActionButton } from "./BusinessLinkActionButton";
 import { EntryAttachmentWindow } from "./EntryAttachmentWindow";
 import { BasicDetailBatchDeleteButton,
+  BasicDetailBatchReconcileButton,
   BasicDetailBatchReplaceButton,
+  BasicDetailReconcileLockButton,
   type BasicDetailBatchCategoryOption,
   useBasicDetailSelection,
   usePruneBasicDetailSelection,
 } from "./BasicDetailSelection";
 import type { BatchReplaceField } from "@/lib/client/batchReplaceEntries";
 import { useI18n } from "@/lib/i18n";
-import { BALANCE_INITIALIZATION_SOURCE, BALANCE_RECONCILE_SOURCE, effectiveAmountForAccount, getBalanceReconcileTarget } from "@/lib/balance-reconcile";
+import { BALANCE_INITIALIZATION_SOURCE, BALANCE_RECONCILE_SOURCE, effectiveAmountForAccount, getBalanceReconcileTarget, isReconciledEntry } from "@/lib/balance-reconcile";
 import { compareDetailEntriesAsc, compareDetailEntriesDesc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
 import { removeEntriesAndUpdateRunningBalances } from "@/lib/detail-running-balance";
 import { rebaseRunningBalancesAfterSameDayReorder, startOfDayRunningBalanceSeed } from "@/lib/entry-reorder";
@@ -26,7 +28,7 @@ import { buildLiabilityActivityEditEvent, inferLiabilityMode, isLiabilityActivit
 import { parseLoanPrepayStrategy } from "@/lib/loan-prepay-strategy";
 import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
 import { isCreditCardRepaymentTransfer, isLicensedInsuranceEntry, isRegularInvestRefundEntry, TRANSACTION_SOURCE_INSURANCE } from "@/lib/transaction-semantics";
-import { normalizeSettlementTransferCategoryName } from "@/lib/default-categories";
+import { normalizeSettlementTransferCategoryName } from "@/lib/settlement-category-name";
 import { advanceDialogAmount } from "@/lib/advance-transfer";
 import {
   DETAIL_ALL_PAGE_SIZE,
@@ -97,6 +99,10 @@ export type DetailEntry = {
   amount: number;
   currency?: string | null;
   runningBalance?: number | null;
+  /** 对账锁定：非空 = 该记录已对账，不可删除 / 修改（编辑窗只读）。 */
+  reconciledAt?: string | null;
+  /** 对账时钉住的本行事后余额；非空即在余额折叠里充当锚点（等价「余额校准」）。 */
+  reconciledBalance?: number | null;
   type: string;
   categoryId: string | null;
   categoryName: string | null;
@@ -536,6 +542,8 @@ export function DetailViewClient({
   onDisplayRowsChange,
   onRowsFitChange,
   batchExtraActions,
+  reconcileEnabled = false,
+  reconcileContextAccountId,
 }: {
   accountId: string;
   isInvestAccount: boolean;
@@ -573,6 +581,10 @@ export function DetailViewClient({
    * Receives the exact rows the table is rendering, so selection keys always
    * resolve against the same array the user sees. */
   batchExtraActions?: (renderedEntries: DetailEntry[]) => ReactNode;
+  /** 是否显示批量「对账」按钮：只在单账户、逐笔余额可见的明细视图里开启。 */
+  reconcileEnabled?: boolean;
+  /** 「对账」锁定余额时用的明细视图账户（多账户视图留空，按每行自己的账户算）。 */
+  reconcileContextAccountId?: string | null;
 }) {
   const { t } = useI18n();
   const storageKey = storageKeyProp ?? basicDetailTableStorageKey(accountId);
@@ -947,8 +959,14 @@ export function DetailViewClient({
       ? null
       : buildLiabilityActivityEditEvent({ ...e, date: dateStr }, accountOptionById);
 
-    if (balanceReconcileEditEvent || liabilityEditEvent) return { customEditEvent: balanceReconcileEditEvent ?? liabilityEditEvent ?? undefined };
-    return { edit: e.type === "investment" ? investmentEditPayload : buildBasicEntryEditPayload(e, flowAccountIdOf(e)) };
+    // 已「对账」锁定的记录：编辑窗只读（可查看，不可改）；服务端另有硬守卫。
+    const reconciledReadOnly = isReconciledEntry(e);
+    if (balanceReconcileEditEvent || liabilityEditEvent) {
+      const customEvent = balanceReconcileEditEvent ?? liabilityEditEvent!;
+      return { customEditEvent: { ...customEvent, detail: { ...customEvent.detail, reconciledReadOnly } } };
+    }
+    const baseEdit = e.type === "investment" ? investmentEditPayload : buildBasicEntryEditPayload(e, flowAccountIdOf(e));
+    return { edit: baseEdit ? { ...baseEdit, reconciledReadOnly } : undefined };
   }, [accountId, accountOptionById, allowInvestmentEdit, flowAccountIdOf, investmentProductTypeByAccountId, linkedInvestmentCandidateEntries]);
   const colorScheme =
     typeof document === "undefined"
@@ -958,6 +976,8 @@ export function DetailViewClient({
   const outflowCls = pnlColor(-1, colorScheme);
   const { selectedIds, setSelection } = useBasicDetailSelection();
   const selectedCount = selectedIds.size;
+  // 「对账」锁定余额时用的明细视图账户：单账户明细视图就是 accountId。
+  const reconcileAccountId = reconcileContextAccountId ?? accountId;
   const currentEntryIds = useMemo(() => entries.map((entry) => entry.id), [entries]);
   const selectedFlowSummary = useMemo(() => {
     const inflowByCurrency = new Map<string, number>();
@@ -1466,6 +1486,7 @@ export function DetailViewClient({
     <div className="flex min-w-0 items-center gap-2">
       {selectedCount > 0 ? <BasicDetailBatchReplaceButton fields={batchReplaceFields} accountOptions={accountOptions} categoryOptions={categoryOptions} tagOptions={tagOptions} categoryTypes={selectedCategoryTypes} contextAccountId={accountId} contextAccountIds={accountColumnScopeIdList} /> : null}
       {selectedCount > 0 ? <BasicDetailBatchDeleteButton /> : null}
+      {selectedCount > 0 && reconcileEnabled ? <BasicDetailBatchReconcileButton contextAccountId={reconcileAccountId} /> : null}
       {/* The reimbursement entry works both ways: with rows picked it pre-seeds the
           create form; without, it opens the account's reimbursement status hub. */}
       {batchExtraActions?.(entries)}
@@ -1547,6 +1568,12 @@ export function DetailViewClient({
                         ) : null}
                       </span>
                       <EntryAttachmentIndicator entry={entry} asButton={false} onClick={() => setAttachmentViewEntryId(entry.id)} />
+                      <BasicDetailReconcileLockButton
+                        entryId={entry.id}
+                        reconciled={isReconciledEntry(entry)}
+                        contextAccountId={reconcileAccountId}
+                        asButton={false}
+                      />
                       <span className="text-slate-300">›</span>
                     </button>
                   );
@@ -1592,6 +1619,11 @@ export function DetailViewClient({
           : t("detailView.notLinked");
         return (
           <>
+            <BasicDetailReconcileLockButton
+              entryId={entry.id}
+              reconciled={isReconciledEntry(entry)}
+              contextAccountId={reconcileAccountId}
+            />
             <EntryAttachmentIndicator entry={entry} onClick={() => setAttachmentViewEntryId(entry.id)} />
             {shouldShowBusinessLinkStatus(entry) ? (
               <BusinessLinkActionButton
@@ -1615,6 +1647,7 @@ export function DetailViewClient({
         <>
           <BasicDetailBatchReplaceButton fields={batchReplaceFields} accountOptions={accountOptions} categoryOptions={categoryOptions} tagOptions={tagOptions} categoryTypes={selectedCategoryTypes} contextAccountId={accountId} contextAccountIds={accountColumnScopeIdList} />
           <BasicDetailBatchDeleteButton />
+          {reconcileEnabled ? <BasicDetailBatchReconcileButton contextAccountId={reconcileAccountId} /> : null}
           {batchExtraActions?.(entries)}
         </>
       ) : undefined}

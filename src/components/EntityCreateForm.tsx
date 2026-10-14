@@ -1,4 +1,5 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
 import { createPortal } from "react-dom";
 import { useEffect, useMemo, useRef, useState, useCallback, type FormEvent, type ReactNode } from "react";
@@ -8,7 +9,6 @@ import { PRODUCT_TYPES, supportsCostBasisMethod } from "@/lib/investment-config"
 import { supportsTradingCalendarForAccount, TRADING_CALENDARS } from "@/lib/fund/trading-calendar";
 import { DateStepper } from "@/components/DateStepper";
 import { ClearableNoteField } from "@/components/ClearableNoteField";
-import { ModalLayerProvider, getNextModalLayerZIndex, useModalLayerZIndex } from "@/components/ModalLayer";
 import { notifySmartSelectOptionCreated, SmartSelect, type SmartSelectOption } from "@/components/SmartSelect";
 import { CurrencySmartSelect } from "@/components/CurrencySmartSelect";
 import { notifySettingsDataChanged, type SettingsDataScope } from "@/lib/client/settingsCache";
@@ -447,8 +447,6 @@ function renderEntityCreatePortal(content: ReactNode) {
 
 export function EntityCreateForm(props: EntityCreateFormProps) {
   const { t } = useI18n();
-  const parentModalZIndex = useModalLayerZIndex();
-  const modalZIndex = getNextModalLayerZIndex(parentModalZIndex);
   const mode = props.mode;
   const entityType = props.entityType;
   const config = ENTITY_CONFIG[entityType];
@@ -1094,8 +1092,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     if (!open) return null;
 
     return renderEntityCreatePortal(
-      <ModalLayerProvider value={modalZIndex}>
-        <div className="app-modal-backdrop" style={{ zIndex: modalZIndex }}>
+        <ModalLayer className="app-modal-backdrop">
           <div className="app-modal-panel max-w-sm">
             <div className="modal-header">
               <div className="text-sm font-semibold text-slate-800">{displayTitle}</div>
@@ -1284,23 +1281,21 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
               </div>
             </form>
           </div>
-        </div>
-
-        {/* Nested creation modals (for group/institution inside account compact mode) */}
-        {nestedEntityType && nestedOpen && (
-          <EntityCreateForm
-            mode="compact"
-            entityType={nestedEntityType}
-            open={nestedOpen}
-            onClose={() => { setNestedOpen(false); setNestedEntityType(null); }}
-            onCreated={handleNestedCreated}
-            defaultType={nestedInstitutionDefaultType()}
-            allowedInstitutionTypes={nestedInstitutionAllowedTypes()}
-            // 往来对象不能是「常用商户」（用户定版）
-            allowedCounterpartyTypes={nestedEntityType === "counterparty" ? ["person", "organization"] : undefined}
-          />
-        )}
-      </ModalLayerProvider>
+          {/* Nested creation modals (for group/institution inside account compact mode) */}
+          {nestedEntityType && nestedOpen && (
+            <EntityCreateForm
+              mode="compact"
+              entityType={nestedEntityType}
+              open={nestedOpen}
+              onClose={() => { setNestedOpen(false); setNestedEntityType(null); }}
+              onCreated={handleNestedCreated}
+              defaultType={nestedInstitutionDefaultType()}
+              allowedInstitutionTypes={nestedInstitutionAllowedTypes()}
+              // 往来对象不能是「常用商户」（用户定版）
+              allowedCounterpartyTypes={nestedEntityType === "counterparty" ? ["person", "organization"] : undefined}
+            />
+          )}
+        </ModalLayer>
     );
   }
 
@@ -1410,8 +1405,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     if (mode !== "full" || !props.open) return null;
 
     return renderEntityCreatePortal(
-      <ModalLayerProvider value={modalZIndex}>
-        <div className="app-modal-backdrop" style={{ zIndex: modalZIndex }}>
+        <ModalLayer className="app-modal-backdrop">
           <div className="app-modal-panel max-w-3xl">
             <div className="modal-header shrink-0">
               <div className="text-sm font-semibold text-slate-800">{displayTitle}</div>
@@ -1612,22 +1606,20 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
               </div>
             </form>
           </div>
-        </div>
-
-        {nestedEntityType && (
-          <EntityCreateForm
-            mode="compact"
-            entityType={nestedEntityType}
-            open={nestedOpen}
-            onClose={() => { setNestedOpen(false); setNestedEntityType(null); }}
-            onCreated={handleNestedCreated}
-            defaultType={nestedInstitutionDefaultType()}
-            allowedInstitutionTypes={nestedInstitutionAllowedTypes()}
-            // 往来对象不能是「常用商户」（用户定版）
-            allowedCounterpartyTypes={nestedEntityType === "counterparty" ? ["person", "organization"] : undefined}
-          />
-        )}
-      </ModalLayerProvider>
+          {nestedEntityType && (
+            <EntityCreateForm
+              mode="compact"
+              entityType={nestedEntityType}
+              open={nestedOpen}
+              onClose={() => { setNestedOpen(false); setNestedEntityType(null); }}
+              onCreated={handleNestedCreated}
+              defaultType={nestedInstitutionDefaultType()}
+              allowedInstitutionTypes={nestedInstitutionAllowedTypes()}
+              // 往来对象不能是「常用商户」（用户定版）
+              allowedCounterpartyTypes={nestedEntityType === "counterparty" ? ["person", "organization"] : undefined}
+            />
+          )}
+        </ModalLayer>
     );
   }
 

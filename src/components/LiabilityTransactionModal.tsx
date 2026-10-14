@@ -1,4 +1,5 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
 import { ArrowLeftRight, ArrowRight, CheckCircle2, ChevronDown, Info, Plus, RefreshCw, Repeat } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
@@ -9,7 +10,6 @@ import { ClearableNoteField } from "./ClearableNoteField";
 import { DateStepper } from "./DateStepper";
 import { EntryTagsField } from "./EntryTagsField";
 import { EntityCreateForm } from "./EntityCreateForm";
-import { ModalLayerProvider, getNextModalLayerZIndex, useModalLayerZIndex } from "./ModalLayer";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
 import { buildCategoryTreeOptions, type CategorySource } from "./categorySmartSelect";
@@ -378,13 +378,10 @@ function FixedAssetCreateDialog({
   onSubmit: () => void;
 }) {
   const { t } = useI18n();
-  const parentModalZIndex = useModalLayerZIndex();
-  const modalZIndex = getNextModalLayerZIndex(parentModalZIndex);
   if (!open) return null;
   return (
-    <ModalLayerProvider value={modalZIndex}>
-      {createPortal(
-        <div className="app-modal-backdrop" style={{ zIndex: modalZIndex }}>
+    <>
+      <ModalLayer className="app-modal-backdrop">
           <div className="app-modal-panel max-w-md">
             <div className="modal-header shrink-0">
               <div className="text-sm font-semibold text-slate-800">{t("txForm.createFixedAsset")}</div>
@@ -468,11 +465,9 @@ function FixedAssetCreateDialog({
               </div>
             </form>
           </div>
-        </div>,
-        document.body,
-      )}
+        </ModalLayer>
       {accountCreateForm}
-    </ModalLayerProvider>
+    </>
   );
 }
 
@@ -515,10 +510,6 @@ export function LiabilityTransactionModal({
   const isLoanDialog = dialogType === "loan";
   const today = useMemo(() => formatDateInput(new Date()), []);
   const { t, language } = useI18n();
-  const parentModalZIndex = useModalLayerZIndex();
-  const modalZIndex = getNextModalLayerZIndex(parentModalZIndex);
-  const confirmModalZIndex = getNextModalLayerZIndex(modalZIndex);
-  const rateModalZIndex = getNextModalLayerZIndex(confirmModalZIndex);
   const [localLiabilityAccounts, setLocalLiabilityAccounts] = useState(liabilityAccounts);
   const [localLiabilityObjectOptions, setLocalLiabilityObjectOptions] = useState(liabilityObjectOptions);
   const [localNestedFieldData, setLocalNestedFieldData] = useState<NestedFieldData | undefined>(nestedFieldData);
@@ -2789,7 +2780,7 @@ export function LiabilityTransactionModal({
   );
 
   return (
-    <ModalLayerProvider value={modalZIndex}>
+    <>
       {showTriggerButton ? (
         <button
           type="button"
@@ -2808,7 +2799,7 @@ export function LiabilityTransactionModal({
 
       {open
         ? createPortal(
-            <div className="app-modal-backdrop" style={{ zIndex: modalZIndex }}>
+            <ModalLayer className="app-modal-backdrop">
               <div className={`app-modal-panel max-w-xl ${fixedHeightProps.className ?? ""}`} style={fixedHeightProps.style} ref={panelRef}>
                   <div className="modal-header shrink-0">
                     <div className="text-sm font-semibold text-slate-800">
@@ -3407,13 +3398,13 @@ export function LiabilityTransactionModal({
                     </div>
                   </form>
               </div>
-            </div>,
+            </ModalLayer>,
             document.body,
           )
         : null}
       {open && historyConfirmOpen
         ? createPortal(
-            <div className="app-modal-backdrop" style={{ zIndex: confirmModalZIndex }}>
+            <ModalLayer className="app-modal-backdrop">
               <div className="app-modal-panel max-w-lg">
                 <div className="modal-header shrink-0">
                   <div className="text-sm font-semibold text-slate-800">{t("liabilityTx.historyConfirmTitle")}</div>
@@ -3529,13 +3520,13 @@ export function LiabilityTransactionModal({
                   </div>
                 </div>
               </div>
-            </div>,
+            </ModalLayer>,
             document.body,
           )
         : null}
       {open && historicalRatesOpen
         ? createPortal(
-            <div className="app-modal-backdrop" style={{ zIndex: rateModalZIndex }}>
+            <ModalLayer className="app-modal-backdrop">
               <div className="app-modal-panel max-w-xl">
                 <div className="modal-header shrink-0">
                   <div className="text-sm font-semibold text-slate-800">{t("liabilityShell.rateAdjustment")}</div>
@@ -3641,7 +3632,7 @@ export function LiabilityTransactionModal({
                   </div>
                 </div>
               </div>
-            </div>,
+            </ModalLayer>,
             document.body,
           )
         : null}
@@ -3794,6 +3785,6 @@ export function LiabilityTransactionModal({
           onSubmit={() => { void submitFixedAssetCreate(); }}
         />
       ) : null}
-    </ModalLayerProvider>
+    </>
   );
 }

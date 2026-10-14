@@ -1,4 +1,5 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
 import { useEffect, useState } from "react";
 import { AlertTriangle, X } from "lucide-react";
@@ -38,7 +39,7 @@ export function InsurancePolicyDeleteModal({
   if (!open || !value) return null;
 
   return (
-    <div className="app-modal-backdrop z-[1200]">
+    <ModalLayer className="app-modal-backdrop">
       <div className="app-modal-panel max-w-lg">
         <div className="modal-header">
           <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
@@ -91,6 +92,6 @@ export function InsurancePolicyDeleteModal({
           </div>
         </div>
       </div>
-    </div>
+    </ModalLayer>
   );
 }

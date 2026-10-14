@@ -1,4 +1,5 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
 
 
@@ -3369,10 +3370,7 @@ export function FundShell(props: Props) {
       </div>
 
       {showSelectedFundChart ? (
-        <div
-          className="fixed inset-0 z-40 flex items-center justify-center bg-slate-900/10 p-4"
-          onClick={() => setFundChartOpen(false)}
-        >
+        <ModalLayer className="fixed inset-0 flex items-center justify-center bg-slate-900/10 p-4" onClick={() => setFundChartOpen(false)}>
           <div
             className="w-[min(720px,calc(100vw-2rem))] overflow-hidden rounded-lg border border-slate-200 bg-white shadow-xl"
             onClick={(event) => event.stopPropagation()}
@@ -3410,7 +3408,7 @@ export function FundShell(props: Props) {
               embedded
             />
           </div>
-        </div>
+        </ModalLayer>
       ) : null}
 
       <FundProfileSettingsModal

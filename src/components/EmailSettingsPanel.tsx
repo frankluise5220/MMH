@@ -1,4 +1,5 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -22,7 +23,14 @@ import {
 import { createImportTraceId, postImportDebugLog } from "@/lib/client/importDebugLog";
 import { showChoiceDialog } from "@/lib/client/confirm-dialog";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
-import { fetchSettingsBootstrap } from "@/lib/client/settingsCache";
+import {
+  fetchEmailAccounts,
+  fetchEmailImportKeyword,
+  fetchSettingsBootstrap,
+  getCachedEmailAccounts,
+  getCachedEmailImportKeyword,
+  setEmailImportKeyword,
+} from "@/lib/client/settingsCache";
 import { DEFAULT_EMAIL_IMPORT_KEYWORD, normalizeEmailImportKeyword } from "@/lib/mail/email-import-settings";
 import { inferKnownStatementMerchant } from "@/lib/statement/merchant-inference";
 import {
@@ -297,9 +305,14 @@ export function EmailSettingsPanel({ embedded = false, onStatementPreviewOpened,
   const importPreviewFieldLabels = useMemo(() => IMPORT_PREVIEW_FIELD_LABELS(t), [t]);
   const previewTypeOptions = useMemo(() => PREVIEW_TYPE_OPTIONS(t), [t]);
   const router = useRouter();
-  const [accounts, setAccounts] = useState<Account[]>([]);
-  const [loadingAccounts, setLoadingAccounts] = useState(true);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  // Reuse the previously loaded mailbox list so reopening the mail import
+  // dialog does not refetch (and flash) the already configured accounts.
+  const initialEmailAccounts = useMemo(() => getCachedEmailAccounts<Account>() ?? [], []);
+  const [accounts, setAccounts] = useState<Account[]>(initialEmailAccounts);
+  const [loadingAccounts, setLoadingAccounts] = useState(() => getCachedEmailAccounts() === null);
+  const [selectedId, setSelectedId] = useState<string | null>(
+    initialEmailAccounts.length === 1 ? initialEmailAccounts[0].id : null,
+  );
   const [editingId, setEditingId] = useState<string | null>(null);
   const [showAccountModal, setShowAccountModal] = useState(false);
 
@@ -342,8 +355,8 @@ export function EmailSettingsPanel({ embedded = false, onStatementPreviewOpened,
   const [importComplete, setImportComplete] = useState<ImportCompleteState | null>(null);
   const [mailStartDate, setMailStartDate] = useState(() => monthAgoDateString());
   const [mailEndDate, setMailEndDate] = useState(() => todayDateString());
-  const [mailKeyword, setMailKeyword] = useState(DEFAULT_EMAIL_IMPORT_KEYWORD);
-  const [mailKeywordDraft, setMailKeywordDraft] = useState(DEFAULT_EMAIL_IMPORT_KEYWORD);
+  const [mailKeyword, setMailKeyword] = useState(() => getCachedEmailImportKeyword() ?? DEFAULT_EMAIL_IMPORT_KEYWORD);
+  const [mailKeywordDraft, setMailKeywordDraft] = useState(() => getCachedEmailImportKeyword() ?? DEFAULT_EMAIL_IMPORT_KEYWORD);
   const [savingMailKeyword, setSavingMailKeyword] = useState(false);
   const [mailListHint, setMailListHint] = useState("");
   const [accountTested, setAccountTested] = useState(false);
@@ -367,14 +380,11 @@ export function EmailSettingsPanel({ embedded = false, onStatementPreviewOpened,
 
   async function loadMailImportSettings(signal?: AbortSignal) {
     try {
-      const res = await fetch("/api/v1/settings/email-import", { signal });
-      const data = await res.json() as { ok?: boolean; data?: { keyword?: string | null } };
-      if (data.ok) {
-        const nextKeyword = normalizeEmailImportKeyword(data.data?.keyword);
-        setMailKeyword(nextKeyword);
-        setMailKeywordDraft(nextKeyword);
-        return nextKeyword;
-      }
+      const nextKeyword = await fetchEmailImportKeyword();
+      if (signal?.aborted) return DEFAULT_EMAIL_IMPORT_KEYWORD;
+      setMailKeyword(nextKeyword);
+      setMailKeywordDraft(nextKeyword);
+      return nextKeyword;
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return DEFAULT_EMAIL_IMPORT_KEYWORD;
     }
@@ -383,21 +393,20 @@ export function EmailSettingsPanel({ embedded = false, onStatementPreviewOpened,
     return DEFAULT_EMAIL_IMPORT_KEYWORD;
   }
 
-  async function loadAccounts(signal?: AbortSignal) {
-    setLoadingAccounts(true);
+  async function loadAccounts(signal?: AbortSignal, options?: { force?: boolean }) {
+    // A cached list is shown immediately; only a cold cache shows the spinner.
+    if (getCachedEmailAccounts() === null) setLoadingAccounts(true);
     try {
-      const res = await fetch("/api/v1/settings/email-accounts", { signal });
-      const data = await res.json();
-      if (data.ok) {
-        const nextAccounts: Account[] = Array.isArray(data.accounts) ? data.accounts : [];
-        setAccounts(nextAccounts);
-        if (nextAccounts.length === 1 && selectedId !== nextAccounts[0].id) {
-          const onlyAccount = nextAccounts[0];
-          setSelectedId(onlyAccount.id);
-        }
+      const nextAccounts = await fetchEmailAccounts<Account>(options);
+      if (signal?.aborted) return;
+      setAccounts(nextAccounts);
+      if (nextAccounts.length === 1 && selectedId !== nextAccounts[0].id) {
+        const onlyAccount = nextAccounts[0];
+        setSelectedId(onlyAccount.id);
       }
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
+      setAccounts([]);
     } finally {
       if (!signal?.aborted) setLoadingAccounts(false);
     }
@@ -523,7 +532,7 @@ export function EmailSettingsPanel({ embedded = false, onStatementPreviewOpened,
       if (data.ok) {
         setInfo(t("settings.email.accountSaved"));
         closeAccountModal();
-        loadAccounts();
+        void loadAccounts(undefined, { force: true });
       } else {
         setError(data.error ?? t("settings.accounts.saveFailed"));
       }
@@ -539,7 +548,7 @@ export function EmailSettingsPanel({ embedded = false, onStatementPreviewOpened,
         body: JSON.stringify({ id }),
       });
       if (selectedId === id) { setSelectedId(null); setMailItems([]); setSelectedMail(null); }
-      loadAccounts();
+      void loadAccounts(undefined, { force: true });
     } catch {}
   }
 
@@ -575,6 +584,7 @@ export function EmailSettingsPanel({ embedded = false, onStatementPreviewOpened,
       const savedKeyword = normalizeEmailImportKeyword(data.data?.keyword);
       setMailKeyword(savedKeyword);
       setMailKeywordDraft(savedKeyword);
+      setEmailImportKeyword(savedKeyword);
       setInfo(t("settings.email.keywordSaved"));
     } catch (error) {
       setError(error instanceof Error ? error.message : t("settings.passwordRecovery.networkError"));
@@ -2291,7 +2301,7 @@ export function EmailSettingsPanel({ embedded = false, onStatementPreviewOpened,
       />
 
       {importComplete && !importPreview && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/40 px-4 py-6">
+        <ModalLayer className="fixed inset-0 flex items-center justify-center bg-slate-900/40 px-4 py-6">
           <div className="w-full max-w-2xl rounded-xl border border-slate-200 bg-white shadow-xl">
             <div className="border-b border-slate-200 bg-slate-50 px-4 py-3">
               <div className="text-sm font-semibold text-slate-800">{t("batchImport.importPhase.done")}</div>
@@ -2318,11 +2328,11 @@ export function EmailSettingsPanel({ embedded = false, onStatementPreviewOpened,
               </button>
             </div>
           </div>
-        </div>
+        </ModalLayer>
       )}
 
       {renderLegacyImportPreview && importPreview && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/40 px-4 py-6">
+        <ModalLayer className="fixed inset-0 flex items-center justify-center bg-slate-900/40 px-4 py-6">
           <div data-smart-select-boundary className="flex h-[82vh] min-h-[420px] w-full min-w-0 max-w-6xl resize flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
             <div className="flex items-start justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3">
               <div>
@@ -2425,11 +2435,11 @@ export function EmailSettingsPanel({ embedded = false, onStatementPreviewOpened,
               </div>
             </div>
           </div>
-        </div>
+        </ModalLayer>
       )}
 
       {accountDraft && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/40 px-4 py-6">
+        <ModalLayer className="fixed inset-0 flex items-center justify-center bg-slate-900/40 px-4 py-6">
           <div className="w-full max-w-2xl rounded-xl border border-slate-200 bg-white p-4 shadow-xl">
             <div className="mb-3 flex items-start justify-between gap-3">
               <div>
@@ -2514,11 +2524,11 @@ export function EmailSettingsPanel({ embedded = false, onStatementPreviewOpened,
               </button>
             </div>
           </div>
-        </div>
+        </ModalLayer>
       )}
 
       {showAccountModal && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/40 px-4 py-6">
+        <ModalLayer className="fixed inset-0 flex items-center justify-center bg-slate-900/40 px-4 py-6">
           <div className="max-h-[90vh] w-full max-w-3xl overflow-auto rounded-xl border border-slate-200 bg-white p-4 shadow-xl">
             <div className="mb-3 flex items-start justify-between gap-3">
               <div>
@@ -2567,7 +2577,7 @@ export function EmailSettingsPanel({ embedded = false, onStatementPreviewOpened,
             {testResult && <div className="mt-2 text-xs text-emerald-700">{testResult}</div>}
             {!accountTested && <div className="mt-2 text-xs text-slate-500">{t("settings.email.recommendTestFirst")}</div>}
           </div>
-        </div>
+        </ModalLayer>
       )}
     </div>
   );

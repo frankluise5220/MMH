@@ -1,4 +1,5 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
 import { useCallback, useState, useEffect, useRef, RefObject } from "react";
 import { createPortal } from "react-dom";
@@ -426,7 +427,7 @@ export function LedgerSwitcher({
           if (!h) return null;
           const displayName = getHouseholdDisplayName(h);
           return (
-            <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm">
+            <ModalLayer className="fixed inset-0 flex items-center justify-center bg-black/50 backdrop-blur-sm">
               <div className="w-full max-w-sm bg-white rounded-xl border border-slate-200 shadow-xl overflow-hidden">
                 <div className="px-6 py-5 border-b border-slate-200 bg-slate-50">
                   <div className="text-base font-semibold text-slate-800">{t("ledgerSwitch.switchToTitle", { name: displayName })}</div>
@@ -505,13 +506,13 @@ export function LedgerSwitcher({
                   </div>
                 </div>
               </div>
-            </div>
+            </ModalLayer>
           );
         })()}
 
         {/* Create ledger dialog */}
         {showCreateDialog && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm">
+          <ModalLayer className="fixed inset-0 flex items-center justify-center bg-black/50 backdrop-blur-sm">
             <div ref={dialogRef} className="w-full max-w-sm bg-white rounded-xl border border-slate-200 shadow-xl overflow-hidden">
               <div className="px-6 py-5 border-b border-slate-200 bg-slate-50">
                 <div className="text-base font-semibold text-slate-800">{t("ledgerSwitch.newLedger")}</div>
@@ -593,7 +594,7 @@ export function LedgerSwitcher({
                 </div>
               </div>
             </div>
-          </div>
+          </ModalLayer>
         )}
 
         {/* Delete ledger confirmation dialog */}
@@ -602,7 +603,7 @@ export function LedgerSwitcher({
           if (!h) return null;
           const displayName = getHouseholdDisplayName(h);
           return (
-            <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50 backdrop-blur-sm">
+            <ModalLayer className="fixed inset-0 flex items-center justify-center bg-black/50 backdrop-blur-sm">
               <div className="w-full max-w-sm bg-white rounded-xl border border-slate-200 shadow-xl overflow-hidden">
                 <div className="px-6 py-5 border-b border-red-100 bg-red-50">
                   <div className="text-base font-semibold text-red-800">{t("ledgerSwitch.deleteLedger")}</div>
@@ -665,7 +666,7 @@ export function LedgerSwitcher({
                   </div>
                 </div>
               </div>
-            </div>
+            </ModalLayer>
           );
         })()}
     </>

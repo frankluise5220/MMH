@@ -8,7 +8,6 @@ import { CalcInput } from "./CalcInput";
 import { ClearableNoteField } from "./ClearableNoteField";
 import { DateStepper } from "./DateStepper";
 import { EntityCreateForm } from "./EntityCreateForm";
-import { ModalLayerProvider, getNextModalLayerZIndex, useModalLayerZIndex } from "./ModalLayer";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
@@ -439,8 +438,6 @@ export function StockTransactionFormModal({
   const today = useMemo(() => todayDateInputValue(), []);
   const accountUsage = useAccountUsage();
   const { t, language } = useI18n();
-  const parentModalZIndex = useModalLayerZIndex();
-  const modalZIndex = getNextModalLayerZIndex(parentModalZIndex);
 
   const [open, setOpen] = useState(false);
   const [requestId, setRequestId] = useState<string | null>(null);
@@ -1383,10 +1380,7 @@ export function StockTransactionFormModal({
   if (!open || typeof document === "undefined") return null;
 
   return (
-    <ModalLayerProvider value={modalZIndex}>
-      {/* 整窗外壳见 `EntryModalShell`：买入/卖出/分红/股份变动由表单内按钮提到窗口顶部，成为 FT 页签；
-          「保存并继续」仍走 `formRef.requestSubmit()`（外壳把 ref 透传到 `<form>`）。 */}
-      <EntryModalShell
+    <EntryModalShell
         open={open}
         heightKey="stock-tx"
         width="md"
@@ -1423,6 +1417,42 @@ export function StockTransactionFormModal({
             </button>
           </>
         )}
+        overlays={
+                  <>
+            <EntityCreateForm
+                    mode="compact"
+                    entityType="account"
+                    open={nestedAccountOpen}
+                    onClose={() => setNestedAccountOpen(false)}
+                    onCreated={(id, name, extra) => handleStockAccountCreated(id, name, extra as StockAccountCreatedExtra)}
+                    title={t("stockTx.addStockAccount")}
+                    nameLabel={t("stockTx.stockAccountNameLabel")}
+                    namePlaceholder={t("stockTx.stockAccountNamePlaceholder")}
+                    defaultType="investment"
+                    extraFields={{ kind: "investment", investProductType: "stock" }}
+                    hiddenFields={["kind", "investProductType", "fundUnitsDecimals", "tradingCalendar"]}
+                    nestedFieldData={accountCreateFieldData}
+                    existingNames={existingStockAccountNames}
+                  />
+                  <EntityCreateForm
+                    mode="compact"
+                    entityType="account"
+                    open={nestedCashAccountOpen}
+                    onClose={() => setNestedCashAccountOpen(false)}
+                    onCreated={(id, name, extra) => handleCashAccountCreated(id, name, extra as StockAccountCreatedExtra)}
+                    title={t("stockTx.addCashAccount")}
+                    nameLabel={t("stockTx.cashAccountNameLabel")}
+                    namePlaceholder={t("stockTx.cashAccountNamePlaceholder")}
+                    defaultType="ewallet"
+                    extraFields={cashAccountCreateExtraFields}
+                    hiddenFields={[]}
+                    allowedAccountKinds={["bank_debit", "ewallet"]}
+                    readOnlyFields={cashAccountCreateReadOnlyFields}
+                    nestedFieldData={accountCreateFieldData}
+                    existingNames={existingCashAccountNames}
+                  />
+                  </>
+        }
       >
 
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -1682,38 +1712,5 @@ export function StockTransactionFormModal({
                 </div>
               </div>
       </EntryModalShell>
-      <EntityCreateForm
-        mode="compact"
-        entityType="account"
-        open={nestedAccountOpen}
-        onClose={() => setNestedAccountOpen(false)}
-        onCreated={(id, name, extra) => handleStockAccountCreated(id, name, extra as StockAccountCreatedExtra)}
-        title={t("stockTx.addStockAccount")}
-        nameLabel={t("stockTx.stockAccountNameLabel")}
-        namePlaceholder={t("stockTx.stockAccountNamePlaceholder")}
-        defaultType="investment"
-        extraFields={{ kind: "investment", investProductType: "stock" }}
-        hiddenFields={["kind", "investProductType", "fundUnitsDecimals", "tradingCalendar"]}
-        nestedFieldData={accountCreateFieldData}
-        existingNames={existingStockAccountNames}
-      />
-      <EntityCreateForm
-        mode="compact"
-        entityType="account"
-        open={nestedCashAccountOpen}
-        onClose={() => setNestedCashAccountOpen(false)}
-        onCreated={(id, name, extra) => handleCashAccountCreated(id, name, extra as StockAccountCreatedExtra)}
-        title={t("stockTx.addCashAccount")}
-        nameLabel={t("stockTx.cashAccountNameLabel")}
-        namePlaceholder={t("stockTx.cashAccountNamePlaceholder")}
-        defaultType="ewallet"
-        extraFields={cashAccountCreateExtraFields}
-        hiddenFields={[]}
-        allowedAccountKinds={["bank_debit", "ewallet"]}
-        readOnlyFields={cashAccountCreateReadOnlyFields}
-        nestedFieldData={accountCreateFieldData}
-        existingNames={existingCashAccountNames}
-      />
-    </ModalLayerProvider>
   );
 }

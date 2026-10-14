@@ -1,4 +1,5 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
 import { useEffect, useMemo, useState } from "react";
 import { Banknote, Check, Link2, Pencil, Plus, Printer, ReceiptText, Trash2 } from "lucide-react";
@@ -1072,7 +1073,7 @@ export function ReimbursementWorkspace({
       ) : null}
 
       {showCreateBatch || editingBatchId ? (
-        <div className="app-modal-backdrop z-[70]">
+        <ModalLayer className="app-modal-backdrop">
           <div className="app-modal-panel max-w-md">
             <div className="modal-header shrink-0">
               <div className="text-sm font-semibold text-slate-800">{t(editingBatchId ? "reimburse.batch.edit" : "reimburse.batchCreate")}</div>
@@ -1118,11 +1119,11 @@ export function ReimbursementWorkspace({
               <button type="button" onClick={() => void (editingBatchId ? submitEditBatch() : submitCreateBatch())} className="primary-button h-9 px-3" disabled={busy || !batchTitle.trim()}>{busy ? t("liabilityShell.saving") : t("common.save")}</button>
             </div>
           </div>
-        </div>
+        </ModalLayer>
       ) : null}
 
       {paymentBatch ? (
-        <div className="app-modal-backdrop z-[80]">
+        <ModalLayer className="app-modal-backdrop">
           <div className="app-modal-panel max-w-md">
             <div className="modal-header shrink-0">
               <div>
@@ -1240,7 +1241,7 @@ export function ReimbursementWorkspace({
               </button>
             </div>
           </div>
-        </div>
+        </ModalLayer>
       ) : null}
 
       {printTarget ? (
@@ -1252,7 +1253,7 @@ export function ReimbursementWorkspace({
       ) : null}
 
       {linkingReimbursement ? (
-        <div className="app-modal-backdrop z-[80]">
+        <ModalLayer className="app-modal-backdrop">
           <div className="app-modal-panel max-w-3xl">
             <div className="modal-header shrink-0">
               <div>
@@ -1317,11 +1318,11 @@ export function ReimbursementWorkspace({
               </button>
             </div>
           </div>
-        </div>
+        </ModalLayer>
       ) : null}
 
       {approvalTarget || editingReimb ? (
-        <div className="app-modal-backdrop z-[80]">
+        <ModalLayer className="app-modal-backdrop">
           <div
             className="app-modal-panel resize"
             style={{
@@ -1364,7 +1365,7 @@ export function ReimbursementWorkspace({
               onSaved={async () => { await load(); }}
             />
           </div>
-        </div>
+        </ModalLayer>
       ) : null}
 
       {batchPrintDocs ? (
@@ -1376,7 +1377,7 @@ export function ReimbursementWorkspace({
       ) : null}
 
       {batchApproveOpen ? (
-        <div className="app-modal-backdrop z-[70]">
+        <ModalLayer className="app-modal-backdrop">
           <div className="app-modal-panel max-w-xl">
             <div className="modal-header shrink-0">
               <div>
@@ -1425,7 +1426,7 @@ export function ReimbursementWorkspace({
               </button>
             </div>
           </div>
-        </div>
+        </ModalLayer>
       ) : null}
     </div>
   );

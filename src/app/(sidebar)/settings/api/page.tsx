@@ -1,4 +1,5 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
 import { useState, useEffect } from "react";
 import { X } from "lucide-react";
@@ -141,7 +142,7 @@ export default function ApiKeysPage() {
       </SettingsSection>
 
       {showModal && (
-        <div className="app-modal-backdrop z-[1100]">
+        <ModalLayer className="app-modal-backdrop">
           <div className="app-modal-panel max-w-md">
             <div className="modal-header shrink-0">
               <div className="text-sm font-semibold text-slate-800">{t("settings.externalApiKeys.addTitle")}</div>
@@ -181,7 +182,7 @@ export default function ApiKeysPage() {
               </div>
             </div>
           </div>
-        </div>
+        </ModalLayer>
       )}
     </div>
   );

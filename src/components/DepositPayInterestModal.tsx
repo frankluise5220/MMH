@@ -1,11 +1,10 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
 import { useEffect, useMemo, useState } from "react";
-import { createPortal } from "react-dom";
 import { parseNumber } from "@/lib/investment-config";
 import { DateStepper } from "./DateStepper";
 import { CalcInput } from "./CalcInput";
-import { ModalLayerProvider, getNextModalLayerZIndex, useModalLayerZIndex } from "./ModalLayer";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
@@ -33,8 +32,6 @@ export function DepositPayInterestModal({
   payInterestAction: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
 }) {
   const { t } = useI18n();
-  const parentModalZIndex = useModalLayerZIndex();
-  const modalZIndex = getNextModalLayerZIndex(parentModalZIndex);
   const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
 
   const [payoutDate, setPayoutDate] = useState(today);
@@ -99,9 +96,7 @@ export function DepositPayInterestModal({
   }
 
   return (
-    <ModalLayerProvider value={modalZIndex}>
-      {createPortal(
-        <div className="app-modal-backdrop" style={{ zIndex: modalZIndex }}>
+      <ModalLayer className="app-modal-backdrop">
           <div className="app-modal-panel max-w-[min(26rem,calc(100vw-1rem))]">
             <div className="modal-header">
               <div className="text-sm font-semibold text-slate-800">
@@ -169,9 +164,6 @@ export function DepositPayInterestModal({
               </div>
             </div>
           </div>
-        </div>,
-        document.body,
-      )}
-    </ModalLayerProvider>
+        </ModalLayer>
   );
 }

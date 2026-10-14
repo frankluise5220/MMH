@@ -1,4 +1,5 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
 import { useEffect, useState, type FormEvent } from "react";
 import { X } from "lucide-react";
@@ -192,7 +193,7 @@ function TagEditModal({
   }
 
   return (
-    <div className="app-modal-backdrop z-[1100]">
+    <ModalLayer className="app-modal-backdrop">
       <div className="app-modal-panel max-w-md">
         <div className="modal-header shrink-0">
           <div className="text-sm font-semibold text-slate-800">{tag ? t("settings.tags.edit") : t("settings.tags.add")}</div>
@@ -235,6 +236,6 @@ function TagEditModal({
           </div>
         </form>
       </div>
-    </div>
+    </ModalLayer>
   );
 }

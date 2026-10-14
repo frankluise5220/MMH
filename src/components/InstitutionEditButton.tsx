@@ -1,4 +1,5 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
 import { useState, type FormEvent } from "react";
 import { SettingsActionButton } from "@/components/settings/SettingsPageScaffold";
@@ -82,7 +83,7 @@ export function InstitutionEditButton({
       />
 
       {open && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4">
+        <ModalLayer className="fixed inset-0 flex items-center justify-center bg-black/35 p-4">
           <div className="w-full max-w-sm rounded-xl bg-white border border-slate-200 shadow-lg overflow-hidden">
             <div className="px-4 py-3 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
               <div className="text-sm font-semibold text-slate-800">{title ?? t("settings.counterparties.editTitle")}</div>
@@ -145,7 +146,7 @@ export function InstitutionEditButton({
               </div>
             </form>
           </div>
-        </div>
+        </ModalLayer>
       )}
     </>
   );

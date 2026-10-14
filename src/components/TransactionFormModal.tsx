@@ -1,6 +1,7 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
-import { ArrowLeftRight, ArrowRight, RefreshCw } from "lucide-react";
+import { ArrowLeftRight, ArrowRight, Lock, RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { CalcInput } from "./CalcInput";
@@ -9,15 +10,15 @@ import { CurrencySmartSelect } from "./CurrencySmartSelect";
 import { DateStepper } from "./DateStepper";
 import { EntityCreateForm, NestedAddModal } from "./EntityCreateForm";
 import { EntryAttachmentButton, uploadEntryAttachmentFiles } from "./EntryAttachmentPanel";
-import { ModalLayerProvider, getNextModalLayerZIndex, useModalLayerZIndex } from "./ModalLayer";
 import { SmartSelect, SmartSelectOption } from "./SmartSelect";
 import { UnifiedEntryLauncher } from "./UnifiedEntryLauncher";
 import { useAccountSSFilter } from "./accountSSFilter";
 import { isSettlementCounterpartyType, kindLabel } from "@/lib/account-kinds";
 import { restrictAccountsByType } from "@/lib/client/account-dropdown-filter";
-import { getCashTargetOperation, isAdvanceFundingAccount, isDepositAccount, isDepositPostingCategoryAllowed, isIncomeExpensePostingAccount, isIncomeExpensePostingOrDepositAccount, isOrdinaryTransferAccount } from "@/lib/account-kind-utils";
+import { getCashTargetOperation, isAdvanceFundingAccount, isDepositAccount, isDepositPostingCategoryAllowed, isIncomeExpensePostingAccount, isIncomeExpensePostingOrDepositAccount, isLoanOrSettlementAccountKind, isTransferDropdownAccount } from "@/lib/account-kind-utils";
 import { buildAccountDisplayOption, buildGroupedAccountOptions, formatAccountHoverTitle } from "@/lib/account-display";
 import { recordRecentAccount, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
+import { useEntryModalReconciledReadOnly, useResetEntryModalReconciledReadOnlyOnClose } from "@/lib/client/entryModalLock";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 /** 必填字段红框（统一实现，见该模块注释）。 */
 import { REQUIRED_FIELD_CLASS } from "@/lib/client/required-field";
@@ -386,10 +387,11 @@ export function TransactionFormModal({
   hideTrigger?: boolean;
 }) {
   const { t, language } = useI18n();
-  const parentModalZIndex = useModalLayerZIndex();
-  const modalZIndex = getNextModalLayerZIndex(parentModalZIndex);
   const quickEntryConsumedRef = useRef<string | null>(null);
   const [open, setOpen] = useState(false);
+  // 已「对账」的记录：编辑窗照常打开，但整张表单禁用（可查看、不可改）。
+  const reconciledReadOnly = useEntryModalReconciledReadOnly();
+  useResetEntryModalReconciledReadOnlyOnClose(open);
   const [txType, setTxType] = useState<TxType>("expense");
   const [lockedType, setLockedType] = useState<TxType | null>(null);
   const [stockTransferMode, setStockTransferMode] = useState(false);
@@ -739,7 +741,7 @@ export function TransactionFormModal({
         const selectedOnly = prev.filter((option) => selectedIds.has(option.id) && !nextAccountOptions.some((next) => next.id === option.id));
         return mergeSmartSelectOptions(nextAccountOptions, selectedOnly);
       });
-      const transferOptions = allOptions.filter((option) => isOrdinaryTransferAccount(option));
+      const transferOptions = allOptions.filter((option) => isTransferDropdownAccount(option));
       setTransferAccountList((prev) => {
         const selectedOnly = prev.filter((option) => selectedIds.has(option.id) && !transferOptions.some((next) => next.id === option.id));
         return mergeSmartSelectOptions(transferOptions, selectedOnly);
@@ -748,7 +750,7 @@ export function TransactionFormModal({
         const selectedOnly = prev.filter((option) => fixedAssetAccountId === option.id && !nextFixedAssetAccountOptions.some((next) => next.id === option.id));
         return mergeSmartSelectOptions(nextFixedAssetAccountOptions, selectedOnly);
       });
-      const groupedAll = buildGroupedOptionsFromSettingsAccounts(rawAccounts.filter((account) => isOrdinaryTransferAccount(account)));
+      const groupedAll = buildGroupedOptionsFromSettingsAccounts(rawAccounts.filter((account) => isTransferDropdownAccount(account)));
       const groupedAccount = buildGroupedOptionsFromSettingsAccounts(
         rawAccounts.filter((account) =>
           isIncomeExpensePostingOrDepositAccount(account) && (!allowedKinds.size || allowedKinds.has(account.kind ?? "")),
@@ -1175,11 +1177,27 @@ export function TransactionFormModal({
     const operation = liabilityMode ? "liability" : getCashTargetOperation(targetAccount);
     if (operation === "transfer") return false;
 
+    // 「资金账户 ↔ 贷款账户」直接保存为普通转账，不再跳负债专用窗口
+    // （2026-10-13 用户口径：允许资金账户向贷款账户输出资金）。
+    // 服务端此时已放行这一对：按 liabilityDirection 与现金流记为 repay_out / lend_out /
+    // borrow_in / collect_in（source=liability_*），贷款余额同步减少。
+    // 例外：① 两侧都是贷款/往来款时服务端仍拒，这里先拦，别让用户白跑一趟；
+    //       ② 编辑已有的负债记录仍跳专用窗口——利息/手续费拆分只有负债窗口能填。
+    if (liabilityMode && !editEntryId) {
+      if (
+        isLoanOrSettlementAccountKind((sourceAccount as AccountOption | undefined)?.kind) &&
+        isLoanOrSettlementAccountKind((targetAccount as AccountOption | undefined)?.kind)
+      ) {
+        window.alert(t("sidebar.action.settlementTransferNotAllowed"));
+        return true;
+      }
+      return false;
+    }
+
     // Settlement accounts are identified by the account kind, not by the entry
     // dialog. A transfer into/out of a settlement account is saved directly and
     // the server records it as a liability entry (borrow/lend/repay/collect) based on
-    // the account's liabilityDirection and the cash flow. Loan accounts keep the
-    // dedicated dialog because they carry extra fields beyond a plain transfer.
+    // the account's liabilityDirection and the cash flow.
     if (operation === "liability" && !liabilityMode) return false;
 
     if (editEntryId) {
@@ -2180,7 +2198,7 @@ export function TransactionFormModal({
   }
 
   return (
-    <ModalLayerProvider value={modalZIndex}>
+    <>
       {!hideTrigger ? (
         <UnifiedEntryLauncher
           defaultAction="transaction"
@@ -2210,7 +2228,7 @@ export function TransactionFormModal({
       ) : null}
 
       {open ? createPortal(
-        <div className="app-modal-backdrop" style={{ zIndex: modalZIndex }}>
+        <ModalLayer className="app-modal-backdrop">
           <div className="app-modal-panel mobile-transaction-modal max-w-xl">
             <div className="modal-header shrink-0">
               <div className="text-sm font-semibold text-slate-800">
@@ -2230,6 +2248,14 @@ export function TransactionFormModal({
               </button>
             </div>
 
+            {reconciledReadOnly ? (
+              <div className="flex shrink-0 items-center gap-2 border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs font-medium text-amber-800">
+                <Lock className="h-3.5 w-3.5 shrink-0" />
+                <span>{t("reconcile.readOnlyNotice")}</span>
+              </div>
+            ) : null}
+
+            <fieldset disabled={reconciledReadOnly} className="contents">
             <form ref={formRef} className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4" onSubmit={onSubmit}>
               {txType !== "fx" && lockedType ? (
                 <div className="flex flex-wrap justify-center gap-2">
@@ -3178,8 +3204,9 @@ export function TransactionFormModal({
                 </button>
               </div>
             </form>
+            </fieldset>
           </div>
-        </div>
+        </ModalLayer>
       , document.body) : null}
     {open && categoryNestedOpen && createPortal(
       <NestedAddModal
@@ -3357,6 +3384,6 @@ export function TransactionFormModal({
       />,
       document.body,
     )}
-    </ModalLayerProvider>
+    </>
   );
 }

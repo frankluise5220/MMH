@@ -1,4 +1,5 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
 import { useState, useEffect, type DragEvent } from "react";
 import { Power, PowerOff } from "lucide-react";
@@ -441,7 +442,7 @@ export default function FundQueryApiPage() {
       </SettingsSection>
 
       {(isCreating || editingApi) ? (
-        <div className="app-modal-backdrop z-[1100]">
+        <ModalLayer className="app-modal-backdrop">
           <div className="app-modal-panel max-w-2xl">
             <div className="modal-header shrink-0">
               <div className="text-sm font-semibold text-slate-800">{isCreating ? t("settings.fundApi.addTitle") : t("settings.fundApi.editTitle")}</div>
@@ -488,7 +489,7 @@ export default function FundQueryApiPage() {
               </div>
             </div>
           </div>
-        </div>
+        </ModalLayer>
       ) : null}
     </div>
   );

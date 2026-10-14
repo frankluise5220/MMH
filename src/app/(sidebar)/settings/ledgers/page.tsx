@@ -1,4 +1,5 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -633,7 +634,7 @@ function Modal({
 }) {
   const { t } = useI18n();
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/40 p-4">
+    <ModalLayer className="fixed inset-0 flex items-center justify-center bg-slate-950/40 p-4">
       <div className="w-full max-w-lg overflow-hidden rounded-lg border border-slate-200 bg-white shadow-xl">
         <div className={`flex items-center justify-between border-b px-5 py-4 ${tone === "danger" ? "border-red-100 bg-red-50" : "border-slate-200 bg-slate-50"}`}>
           <div className={`text-sm font-semibold ${tone === "danger" ? "text-red-800" : "text-slate-800"}`}>{title}</div>
@@ -643,6 +644,6 @@ function Modal({
         </div>
         <div className="p-5">{children}</div>
       </div>
-    </div>
+    </ModalLayer>
   );
 }

@@ -1,4 +1,5 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
@@ -6,7 +7,6 @@ import { parseNumber } from "@/lib/investment-config";
 import { DateStepper } from "./DateStepper";
 import { CalcInput } from "./CalcInput";
 import { ClearableNoteField } from "./ClearableNoteField";
-import { ModalLayerProvider, getNextModalLayerZIndex, useModalLayerZIndex } from "./ModalLayer";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
 import { NestedAddModal } from "./EntityCreateForm";
@@ -203,8 +203,6 @@ export function DepositFormModal({
 }) {
   const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
   const { t } = useI18n();
-  const parentModalZIndex = useModalLayerZIndex();
-  const modalZIndex = getNextModalLayerZIndex(parentModalZIndex);
 
   const initIsRedeem = mode === "edit" && entry ? entry.amount > 0 : false;
   const initAmount = mode === "edit" && entry ? String(Math.abs(entry.amount)) : "";
@@ -1629,9 +1627,8 @@ export function DepositFormModal({
   ) : undefined;
 
   return (
-    <ModalLayerProvider value={modalZIndex}>
-      {/* 整窗外壳（遮罩/宽度/标题栏/表单/FT 页签卡片/固定页脚/高度锁定）见 `EntryModalShell`；
-          买入/取出从表单内的分段按钮提到窗口顶部，成为 FT 页签。 */}
+    // 整窗外壳（遮罩/宽度/标题栏/表单/FT 页签卡片/固定页脚/高度锁定）见 `EntryModalShell`；
+  // 买入/取出从表单内的分段按钮提到窗口顶部，成为 FT 页签。
       <EntryModalShell
         open={open}
         heightKey="deposit"
@@ -1689,6 +1686,150 @@ export function DepositFormModal({
             </button>
           </>
         )}
+        overlays={
+            <>
+            {nestedEntityType
+              ? createPortal(
+                  <NestedAddModal
+                    mode="compact"
+                    entityType="account"
+                    open
+                    onClose={() => setNestedEntityType(null)}
+                    onCreated={(id, name, extra) => {
+                      const createdKind = extra?.kind || (nestedEntityType === "cash-account" ? "bank_debit" : "deposit");
+                      const optionLabel = name;
+                      const optionSubLabel = kindLabel(createdKind);
+                      const groupId = extra?.groupId;
+                      const groupName = extra?.groupName;
+                      const extraWithCurrency = extra as typeof extra & { currency?: unknown; institutionId?: unknown };
+                      const currency = extraWithCurrency?.currency ? String(extraWithCurrency.currency) : "CNY";
+                      const institutionId = extraWithCurrency?.institutionId ? String(extraWithCurrency.institutionId) : null;
+
+                      if (nestedEntityType === "cash-account") {
+                        const flat = { id, label: optionLabel, subLabel: optionSubLabel, currency, institutionId };
+                        setCashAccountList((prev) => appendFlatOption(prev, flat));
+                        setLocalCashSSOpts((prev) =>
+                          appendSmartSelectOption(prev, { id, label: optionLabel, subLabel: optionSubLabel }, groupId, groupName),
+                        );
+                        setCashAccountId(id);
+                      } else {
+                        const flat = { id, label: optionLabel, subLabel: optionSubLabel, currency, institutionId };
+                        setDepositAccountList((prev) => appendFlatOption(prev, flat));
+                        setLocalDepositSSOpts((prev) =>
+                          appendSmartSelectOption(prev, { id, label: optionLabel, subLabel: optionSubLabel }, groupId, groupName),
+                        );
+                        setDepositAccountId(id);
+                      }
+                      setNestedEntityType(null);
+                    }}
+                    extraFields={
+                      nestedEntityType === "cash-account"
+                        ? undefined
+                        : { kind: "deposit" }
+                    }
+                    hiddenFields={nestedEntityType === "cash-account" ? [] : ["kind"]}
+                    allowedAccountKinds={nestedEntityType === "cash-account" ? ["bank_debit", "ewallet"] : undefined}
+                    nestedFieldData={localNestedFieldData ?? nestedFieldData}
+                    onNestedCreated={handleNestedOptionCreated}
+                  />,
+                  document.body,
+                )
+              : null}
+            {productModalOpen ? (
+              <ModalLayer>
+                <div className="app-modal-panel max-w-[min(30rem,calc(100vw-1rem))]">
+                  <div className="modal-header">
+                    <div>
+                      <div className="text-sm font-semibold text-slate-800">{t("depositForm.addProduct")}</div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setProductModalOpen(false)}
+                      className="secondary-button h-8 px-2"
+                    >
+                      {t("table.close")}
+                    </button>
+                  </div>
+                  <div className="space-y-3 p-3 sm:p-4">
+                    <div className="space-y-1">
+                      <div className="form-label">{t("wealthForm.productName")}</div>
+                      <input
+                        value={productDraft.name}
+                        onChange={(e) => setProductDraft((prev) => ({ ...prev, name: e.target.value }))}
+                        placeholder={t("depositForm.productNamePlaceholder")}
+                        className="form-input"
+                        autoFocus
+                      />
+                    </div>
+                    {productError ? (
+                      <div className="rounded-[10px] border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                        {productError}
+                      </div>
+                    ) : null}
+                    <div className="space-y-1">
+                      <div className="form-label">{t("wealthForm.shortName")}</div>
+                      <input
+                        value={productDraft.shortName}
+                        onChange={(e) => setProductDraft((prev) => ({ ...prev, shortName: e.target.value }))}
+                        placeholder={t("wealthForm.shortNamePlaceholder")}
+                        className="form-input"
+                      />
+                    </div>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <div className="form-label">{t("depositForm.annualRatePercent")}</div>
+                        <input
+                          inputMode="decimal"
+                          value={productDraft.annualRate}
+                          onChange={(e) => setProductDraft((prev) => ({ ...prev, annualRate: e.target.value }))}
+                          placeholder={t("depositForm.rateExample")}
+                          className="form-input"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <div className="form-label">{t("wealthForm.termDays")}</div>
+                        <input
+                          inputMode="numeric"
+                          value={productDraft.termDays}
+                          onChange={(e) => setProductDraft((prev) => ({ ...prev, termDays: e.target.value }))}
+                          placeholder={t("stockFee.optional")}
+                          className="form-input"
+                        />
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <div className="form-label">{t("detail.column.remark")}</div>
+                      <ClearableNoteField
+                        value={productDraft.note}
+                        onValueChange={(value) => setProductDraft((prev) => ({ ...prev, note: value }))}
+                        placeholder={t("stockFee.optional")}
+                        className="form-input"
+                      />
+                    </div>
+                    <div className="flex justify-end gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => setProductModalOpen(false)}
+                        className="secondary-button h-9 px-4 text-sm"
+                        disabled={productSaving}
+                      >
+                        {t("common.cancel")}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { void saveDepositProduct(); }}
+                        disabled={productSaving}
+                        className="primary-button h-9 px-4 text-sm disabled:opacity-50"
+                      >
+                        {productSaving ? t("txForm.saving") : t("wealthForm.saveAndSelect")}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </ModalLayer>
+            ) : null}
+            </>
+        }
       >
               {lockedSubtype && showGuideHints ? (
                 <div className="text-[11px] text-slate-400">
@@ -2182,148 +2323,6 @@ export function DepositFormModal({
       </EntryModalShell>
 
 
-      {nestedEntityType
-        ? createPortal(
-            <NestedAddModal
-              mode="compact"
-              entityType="account"
-              open
-              onClose={() => setNestedEntityType(null)}
-              onCreated={(id, name, extra) => {
-                const createdKind = extra?.kind || (nestedEntityType === "cash-account" ? "bank_debit" : "deposit");
-                const optionLabel = name;
-                const optionSubLabel = kindLabel(createdKind);
-                const groupId = extra?.groupId;
-                const groupName = extra?.groupName;
-                const extraWithCurrency = extra as typeof extra & { currency?: unknown; institutionId?: unknown };
-                const currency = extraWithCurrency?.currency ? String(extraWithCurrency.currency) : "CNY";
-                const institutionId = extraWithCurrency?.institutionId ? String(extraWithCurrency.institutionId) : null;
-
-                if (nestedEntityType === "cash-account") {
-                  const flat = { id, label: optionLabel, subLabel: optionSubLabel, currency, institutionId };
-                  setCashAccountList((prev) => appendFlatOption(prev, flat));
-                  setLocalCashSSOpts((prev) =>
-                    appendSmartSelectOption(prev, { id, label: optionLabel, subLabel: optionSubLabel }, groupId, groupName),
-                  );
-                  setCashAccountId(id);
-                } else {
-                  const flat = { id, label: optionLabel, subLabel: optionSubLabel, currency, institutionId };
-                  setDepositAccountList((prev) => appendFlatOption(prev, flat));
-                  setLocalDepositSSOpts((prev) =>
-                    appendSmartSelectOption(prev, { id, label: optionLabel, subLabel: optionSubLabel }, groupId, groupName),
-                  );
-                  setDepositAccountId(id);
-                }
-                setNestedEntityType(null);
-              }}
-              extraFields={
-                nestedEntityType === "cash-account"
-                  ? undefined
-                  : { kind: "deposit" }
-              }
-              hiddenFields={nestedEntityType === "cash-account" ? [] : ["kind"]}
-              allowedAccountKinds={nestedEntityType === "cash-account" ? ["bank_debit", "ewallet"] : undefined}
-              nestedFieldData={localNestedFieldData ?? nestedFieldData}
-              onNestedCreated={handleNestedOptionCreated}
-            />,
-            document.body,
-          )
-        : null}
-      {productModalOpen ? createPortal(
-        <div className="app-modal-backdrop" style={{ zIndex: getNextModalLayerZIndex(modalZIndex) }}>
-          <div className="app-modal-panel max-w-[min(30rem,calc(100vw-1rem))]">
-            <div className="modal-header">
-              <div>
-                <div className="text-sm font-semibold text-slate-800">{t("depositForm.addProduct")}</div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setProductModalOpen(false)}
-                className="secondary-button h-8 px-2"
-              >
-                {t("table.close")}
-              </button>
-            </div>
-            <div className="space-y-3 p-3 sm:p-4">
-              <div className="space-y-1">
-                <div className="form-label">{t("wealthForm.productName")}</div>
-                <input
-                  value={productDraft.name}
-                  onChange={(e) => setProductDraft((prev) => ({ ...prev, name: e.target.value }))}
-                  placeholder={t("depositForm.productNamePlaceholder")}
-                  className="form-input"
-                  autoFocus
-                />
-              </div>
-              {productError ? (
-                <div className="rounded-[10px] border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
-                  {productError}
-                </div>
-              ) : null}
-              <div className="space-y-1">
-                <div className="form-label">{t("wealthForm.shortName")}</div>
-                <input
-                  value={productDraft.shortName}
-                  onChange={(e) => setProductDraft((prev) => ({ ...prev, shortName: e.target.value }))}
-                  placeholder={t("wealthForm.shortNamePlaceholder")}
-                  className="form-input"
-                />
-              </div>
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1">
-                  <div className="form-label">{t("depositForm.annualRatePercent")}</div>
-                  <input
-                    inputMode="decimal"
-                    value={productDraft.annualRate}
-                    onChange={(e) => setProductDraft((prev) => ({ ...prev, annualRate: e.target.value }))}
-                    placeholder={t("depositForm.rateExample")}
-                    className="form-input"
-                  />
-                </div>
-                <div className="space-y-1">
-                  <div className="form-label">{t("wealthForm.termDays")}</div>
-                  <input
-                    inputMode="numeric"
-                    value={productDraft.termDays}
-                    onChange={(e) => setProductDraft((prev) => ({ ...prev, termDays: e.target.value }))}
-                    placeholder={t("stockFee.optional")}
-                    className="form-input"
-                  />
-                </div>
-              </div>
-              <div className="space-y-1">
-                <div className="form-label">{t("detail.column.remark")}</div>
-                <ClearableNoteField
-                  value={productDraft.note}
-                  onValueChange={(value) => setProductDraft((prev) => ({ ...prev, note: value }))}
-                  placeholder={t("stockFee.optional")}
-                  className="form-input"
-                />
-              </div>
-              <div className="flex justify-end gap-2 pt-1">
-                <button
-                  type="button"
-                  onClick={() => setProductModalOpen(false)}
-                  className="secondary-button h-9 px-4 text-sm"
-                  disabled={productSaving}
-                >
-                  {t("common.cancel")}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { void saveDepositProduct(); }}
-                  disabled={productSaving}
-                  className="primary-button h-9 px-4 text-sm disabled:opacity-50"
-                >
-                  {productSaving ? t("txForm.saving") : t("wealthForm.saveAndSelect")}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>,
-        document.body,
-      ) : null}
-    </ModalLayerProvider>
   );
 }
 

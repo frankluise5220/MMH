@@ -1,4 +1,5 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
 import { useEffect, useState } from "react";
 import { CREDIT_CARD_MAX_REPAYMENT_OFFSET_DAYS } from "@/lib/credit/rules";
@@ -136,7 +137,7 @@ export function CreditCardBillingDaySettingsDialog({
   return (
     <>
       {open ? (
-        <div className="app-modal-backdrop">
+        <ModalLayer className="app-modal-backdrop">
           <div className="app-modal-panel max-w-lg">
             <div className="modal-header shrink-0 gap-3">
               <div className="min-w-0">
@@ -222,7 +223,7 @@ export function CreditCardBillingDaySettingsDialog({
               />
             </div>
           </div>
-        </div>
+        </ModalLayer>
       ) : null}
     </>
   );

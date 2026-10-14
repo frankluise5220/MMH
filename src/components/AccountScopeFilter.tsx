@@ -4,7 +4,7 @@ import { ChevronDown } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useI18n } from "@/lib/i18n";
-import { investProductTypeLabel } from "@/lib/account-kinds";
+import { accountFilterGroupKey, accountFilterGroupLabel } from "@/lib/account-kinds";
 import {
   FUND_COMPANY_INSTITUTION_PREFIX,
   fundCompanyInstitutionId,
@@ -250,15 +250,14 @@ export function AccountScopeFilter({
   }
 
   /** Grouping key for the account menu: investment accounts group by product
-   *  category (fund/wealth/stock/property/...), everything else by account kind. */
+   *  category (fund/wealth/stock/property/...), everything else by account kind.
+   *  Shared with the scheduled-task account filter so both pickers group alike. */
   function accountGroupKey(account: StatisticsAccountItem) {
-    if (account.kind === "investment" && account.investProductType) return `__ipt__${account.investProductType}`;
-    return account.kind ?? "other";
+    return accountFilterGroupKey(account);
   }
 
   function accountGroupLabel(type: string) {
-    if (type.startsWith("__ipt__")) return investProductTypeLabel(type.slice("__ipt__".length), t);
-    return t(`account.kind.${type}`);
+    return accountFilterGroupLabel(type, t);
   }
 
   function toggleAccountType(type: string) {

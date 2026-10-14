@@ -1,13 +1,13 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
-import { DatabaseZap, Pencil, Plus, Repeat, Trash2 } from "lucide-react";
+import { DatabaseZap, Lock, Pencil, Plus, Repeat, Trash2 } from "lucide-react";
 import { CalcInput } from "./CalcInput";
 import { ClearableNoteField } from "./ClearableNoteField";
 import { DateStepper } from "./DateStepper";
 import { NestedAddModal } from "./EntityCreateForm";
 import { HoldingPicker } from "./HoldingPicker";
 import { EntryTagsField } from "./EntryTagsField";
-import { ModalLayerProvider, getNextModalLayerZIndex, useModalLayerZIndex } from "./ModalLayer";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
 /** FT 卡片弹窗外壳（等宽靠左页签 + 实体卡片 + 固定页脚）：规则集中在它，几何不变量见 FolderTabs 文件头。 */
@@ -21,6 +21,7 @@ import { recordRecentAccount, sortByAccountUsage, useAccountUsage } from "@/lib/
 import { REQUIRED_FIELD_CLASS } from "@/lib/client/required-field";
 import { getColorSchemeFromCookie, pnlClassFromRedUp } from "@/lib/client/colors";
 import { compactFinanceAccountIds, dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { useEntryModalReconciledReadOnly, useResetEntryModalReconciledReadOnlyOnClose } from "@/lib/client/entryModalLock";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
 import { addTradingDaysUtc, countTradingDaysUtc } from "@/lib/date-utils";
 import { findLinkedEntries, type RefundLinkableEntry } from "@/lib/fund/refund-link";
@@ -262,8 +263,6 @@ export function InvestmentFormModal({
   fundUnitsDecimals?: number | null;
 }) {
   const { t, language } = useI18n();
-  const parentModalZIndex = useModalLayerZIndex();
-  const modalZIndex = getNextModalLayerZIndex(parentModalZIndex);
   const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
   const fundUnitsDecimals = normalizeFundUnitsDecimals(fundUnitsDecimalsProp, 2);
   const formatUnits = (value: number) => formatFundUnitsValue(value, fundUnitsDecimals);
@@ -345,6 +344,9 @@ export function InvestmentFormModal({
   const initConfirmDaysValue = typeof initConfirmDays === "number" ? initConfirmDays : Number(initConfirmDays) || 0;
 
   const [open, setOpen] = useState(false);
+  // 已「对账」的记录：编辑窗照常打开，但整张表单禁用（可查看、不可改）。
+  const reconciledReadOnly = useEntryModalReconciledReadOnly();
+  useResetEntryModalReconciledReadOnlyOnClose(open);
   const [productType, setProductType] = useState<ProductType>(fixedProductType);
   const [subtype, setSubtype] = useState<FundSubtype>(initSubtype);
   const [applyDate, setApplyDate] = useState(initDate);
@@ -2565,11 +2567,11 @@ export function InvestmentFormModal({
   );
 
   return (
-    <ModalLayerProvider value={modalZIndex}>
+    <>
       {!hideTrigger ? triggerButton : null}
 
       {open && typeof document !== "undefined" ? createPortal(
-        <div className="app-modal-backdrop" style={{ zIndex: modalZIndex }}>
+        <ModalLayer className="app-modal-backdrop">
           {/* 宽度 = 原 `max-w-2xl`(672px) 的 3/4 = 504px（移动端仍由 `.app-modal-panel` 的
               `max-width: 100vw` 覆盖成全屏，不受影响）。
               `app-modal-panel-fixed-height`：窗体高度固定（见 globals.css），切页签不位移。 */}
@@ -2587,6 +2589,13 @@ export function InvestmentFormModal({
                   米色实心卡片、字段在卡片内滚动、保存按钮固定贴卡片底边。规则集中在该组件 +
                   globals.css 的 `.ft-card-surface` / `.ft-card-footer`，弹窗这边只写字段。
                   页签可见项由 `PRODUCT_SUBTYPES[productType]` 决定（存款/贵金属等只有买入赎回）。 */}
+              {reconciledReadOnly ? (
+                <div className="flex shrink-0 items-center gap-2 border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs font-medium text-amber-800">
+                  <Lock className="h-3.5 w-3.5 shrink-0" />
+                  <span>{t("reconcile.readOnlyNotice")}</span>
+                </div>
+              ) : null}
+              <fieldset disabled={reconciledReadOnly} className="contents">
               <form className="flex min-h-0 flex-1 flex-col" onSubmit={onSubmit}>
                 <FolderTabsCard
                   tabs={allSubtypes.map((item) => ({ id: item, label: subtypeLabel(item) }))}
@@ -3230,8 +3239,9 @@ export function InvestmentFormModal({
               )}
                 </FolderTabsCard>
               </form>
+              </fieldset>
           </div>
-        </div>,
+        </ModalLayer>,
         document.body,
       ) : null}
       {nestedEntityType && typeof document !== "undefined" ? createPortal(
@@ -3251,6 +3261,6 @@ export function InvestmentFormModal({
         />,
         document.body,
       ) : null}
-    </ModalLayerProvider>
+    </>
   );
 }

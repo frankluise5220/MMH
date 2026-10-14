@@ -1,4 +1,5 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
@@ -184,7 +185,7 @@ export function StockFeeRuleSettingsButton({
         <Settings2 className="h-3.5 w-3.5" />
       </button>
       {open && typeof document !== "undefined" ? createPortal(
-        <div className="app-modal-backdrop z-[1000]">
+        <ModalLayer className="app-modal-backdrop">
           <div className="app-modal-panel max-w-[min(42rem,calc(100vw-1rem))]">
             <div className="modal-header">
               <div>
@@ -286,7 +287,7 @@ export function StockFeeRuleSettingsButton({
               </div>
             </div>
           </div>
-        </div>,
+        </ModalLayer>,
         document.body,
       ) : null}
     </>

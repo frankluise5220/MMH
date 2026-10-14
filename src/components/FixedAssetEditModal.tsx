@@ -80,7 +80,6 @@ export function FixedAssetEditModal({
       title={t("fixedAssetEdit.editTitle")}
       onClose={onClose}
       portal={false}
-      backdropClassName="z-[1200]"
       onSubmit={(event) => {
         event.preventDefault();
         void onSaved(draft);

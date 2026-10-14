@@ -1,4 +1,5 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
 import {
   useCallback,
@@ -1648,7 +1649,7 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
   if (!open || !file) return null;
 
   return (
-    <div className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-900/40 p-4">
+    <ModalLayer className="fixed inset-0 flex items-center justify-center bg-slate-900/40 p-4">
       <div data-smart-select-boundary data-batch-popover-boundary className="flex h-[82vh] min-h-[420px] w-[80rem] min-w-[720px] max-w-[calc(100vw-2rem)] resize flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl">
         <div className="shrink-0 border-b border-slate-200 px-4 py-3">
           <div className="flex items-center justify-between gap-3">
@@ -1864,6 +1865,6 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
           </div>
         </div>
       </div>
-    </div>
+    </ModalLayer>
   );
 }

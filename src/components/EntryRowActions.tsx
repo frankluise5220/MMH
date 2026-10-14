@@ -3,12 +3,15 @@
 import { useState } from "react";
 import { Pencil, Trash2 } from "lucide-react";
 import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
+import { setEntryModalReconciledReadOnly } from "@/lib/client/entryModalLock";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
 
 export type EditPayload = {
   requestId?: string;
   entryId: string;
+  /** 该记录已「对账」锁定：编辑窗只读（可查看，不可改）。 */
+  reconciledReadOnly?: boolean;
   transactionId?: string;
   cashEntryId?: string | null;
   businessTransactionId?: string | null;
@@ -107,6 +110,10 @@ export function dispatchEntryEdit({
   edit?: Omit<EditPayload, "entryId">;
   customEditEvent?: { name: string; detail: Record<string, unknown> };
 }) {
+  // 已「对账」锁定的记录：编辑窗只读（可查看，不可改）。服务端另有硬守卫。
+  setEntryModalReconciledReadOnly(Boolean(
+    edit?.reconciledReadOnly || customEditEvent?.detail?.reconciledReadOnly,
+  ));
   if (customEditEvent) {
     window.dispatchEvent(new CustomEvent(customEditEvent.name, { detail: customEditEvent.detail }));
     return;
@@ -143,6 +150,8 @@ export function EntryRowActions({
 }) {
   const [deleting, setDeleting] = useState(false);
   const { t } = useI18n();
+  // 已「对账」锁定：编辑窗仍可打开（只读查看），但删除按钮禁用。
+  const locked = Boolean(edit?.reconciledReadOnly);
   const actionButtonClass = "flex h-6 w-6 items-center justify-center rounded border bg-white transition-colors disabled:opacity-50";
 
   function onEdit() {
@@ -186,7 +195,7 @@ export function EntryRowActions({
           className={`${actionButtonClass} border-slate-200 text-slate-700 hover:bg-slate-50`}
           type="button"
           onClick={onEdit}
-          title={t("insuranceShell.editButton")}
+          title={locked ? t("reconcile.readOnlyNotice") : t("insuranceShell.editButton")}
           aria-label={t("insuranceShell.editButton")}
         >
           <Pencil className="h-3.5 w-3.5" />
@@ -194,11 +203,11 @@ export function EntryRowActions({
       ) : null}
       <button
         className={`${actionButtonClass} border-red-200 text-red-700 hover:bg-red-50`}
-        disabled={deleting}
+        disabled={deleting || locked}
         type="button"
         onClick={onDelete}
-        title={deleting ? t("ledgerSwitch.deleting") : t("depositShell.deleteButton")}
-        aria-label={deleting ? t("ledgerSwitch.deleting") : t("depositShell.deleteButton")}
+        title={locked ? t("reconcile.lockedError") : deleting ? t("ledgerSwitch.deleting") : t("depositShell.deleteButton")}
+        aria-label={locked ? t("reconcile.lockedError") : deleting ? t("ledgerSwitch.deleting") : t("depositShell.deleteButton")}
       >
         <Trash2 className="h-3.5 w-3.5" />
       </button>

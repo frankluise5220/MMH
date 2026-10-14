@@ -1,4 +1,5 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 /** 记账弹窗整窗外壳：宽度/标题栏/表单/FT 页签卡片/固定页脚/高度锁定统一由它负责。 */
@@ -8,7 +9,6 @@ import { Repeat } from "lucide-react";
 import { DateStepper } from "./DateStepper";
 import { CalcInput } from "./CalcInput";
 import { ClearableNoteField } from "./ClearableNoteField";
-import { ModalLayerProvider, getNextModalLayerZIndex, useModalLayerZIndex } from "./ModalLayer";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
 import { NestedAddModal } from "./EntityCreateForm";
@@ -308,8 +308,6 @@ export function InsuranceFormModal({
 }) {
   const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
   const { t } = useI18n();
-  const parentModalZIndex = useModalLayerZIndex();
-  const modalZIndex = getNextModalLayerZIndex(parentModalZIndex);
 
   const initIsRedeem = mode === "edit" && entry ? entry.amount > 0 : false;
   const initAmount = mode === "edit" && entry ? String(Math.abs(entry.amount)) : "";
@@ -897,8 +895,7 @@ export function InsuranceFormModal({
   const isEditingRecord = mode === "edit" || !!editEntryId;
 
   return (
-    <ModalLayerProvider value={modalZIndex}>
-      {/* 整窗外壳见 `EntryModalShell`：买入/取出由表单内分段按钮提到窗口顶部，成为 FT 页签。 */}
+    // 整窗外壳见 `EntryModalShell`：买入/取出由表单内分段按钮提到窗口顶部，成为 FT 页签。
       <EntryModalShell
         open={open}
         heightKey="insurance"
@@ -932,6 +929,228 @@ export function InsuranceFormModal({
             {submitting ? t("txForm.saving") : isEditingRecord ? t("txForm.saveChanges") : isRedeem ? t("insuranceFormModal.recordRedeem") : t("insuranceFormModal.recordBuy")}
           </button>
         )}
+        overlays={
+            <>
+            {/* Nested modals */}
+            {nestedEntityType === "cash-account" && (
+              <NestedAddModal
+                mode="compact"
+                entityType="account"
+                open={true}
+                onClose={() => setNestedEntityType(null)}
+                onCreated={(id, name, extra) => {
+                  const option = { id, label: name, subLabel: kindLabel(extra?.kind ?? "bank_debit") };
+                  setCashAccountList((prev) => [...prev, option]);
+                  setLocalCashSSOpts((prev) => (prev ? [...prev, option] : prev));
+                  setCashAccountId(id);
+                  setNestedEntityType(null);
+                }}
+                allowedAccountKinds={["bank_debit", "ewallet"]}
+                hiddenFields={[]}
+                nestedFieldData={localNestedFieldData ?? nestedFieldData}
+                onNestedCreated={handleNestedOptionCreated}
+              />
+            )}
+
+            {nestedEntityType === "family-member" && (
+              <NestedAddModal
+                mode="compact"
+                entityType="institution"
+                open={true}
+                onClose={() => setNestedEntityType(null)}
+                onCreated={(id, name) => {
+                  const option = { id, label: name, subLabel: t("institution.type.family_member") };
+                  setFamilyMemberOptions((prev) => [...prev, option]);
+                  setNestedEntityType(null);
+                }}
+                extraFields={{ type: "family_member" }}
+                hiddenFields={["type"]}
+                nestedFieldData={localNestedFieldData ?? nestedFieldData}
+                onNestedCreated={handleNestedOptionCreated}
+              />
+            )}
+
+            {/* New insurance product master modal */}
+            {/* 内层窗口必须 portal 到 document.body：本组件挂在 `.page-header`（`position:sticky` +
+                `backdrop-filter`）内部，该祖先既是 fixed 后代的**包含块**、又是 z-30 **层叠上下文** ——
+                就地渲染时 `inset-0` 会相对 56px 高的 header 解析（弹窗被压扁进标题条）、且永远压不过
+                portal 到 body 的外层遮罩，表现为「新增窗口藏在记账窗口后面、无法输入」。
+                层级不用写：`ModalLayer` 自动取「当前窗口层 + 步长」。 */}
+            {showNewProductModal ? (
+              <ModalLayer className="fixed inset-0 flex items-center justify-center bg-black/35 p-4">
+                <div className="w-full max-w-sm overflow-hidden rounded-xl border border-slate-200 bg-white shadow-lg">
+                  <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-4 py-3">
+                    <div className="text-sm font-semibold text-slate-800">{t("insuranceFormModal.newProductTitle")}</div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowNewProductModal(false);
+                        setNewProductInstitutionId("");
+                        setNewProductName("");
+                        setNewProductLookupCandidates([]);
+                        setNewProductSelectedCandidate(-1);
+                        setNewProductLookupError("");
+                      }}
+                      className="h-8 rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700 hover:bg-slate-50"
+                    >
+                      {t("table.close")}
+                    </button>
+                  </div>
+                  <div className="space-y-3 p-4">
+                    <div className="space-y-1">
+                      <div className="text-xs font-medium text-slate-600">{t("insuranceFormModal.underwritingInstitution")}</div>
+                      <select
+                        value={newProductInstitutionId}
+                        onChange={(event) => setNewProductInstitutionId(event.target.value)}
+                        className="form-input bg-white"
+                      >
+                        <option value="">{t("insuranceFormModal.selectInstitution")}</option>
+                        {institutionOptions.map((item) => (
+                          <option key={item.id} value={item.id}>
+                            {item.label}{item.subLabel && item.subLabel !== t("institution.type.insurance") ? ` (${item.subLabel})` : ""}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="text-xs font-medium text-slate-600">{t("investForm.productNameLabel")}</div>
+                        <button
+                          type="button"
+                          onClick={handleNewProductLookup}
+                          disabled={newProductLookupLoading || !newProductName.trim() || !newProductInstitutionId}
+                          className="text-[11px] text-blue-600 hover:text-blue-700 disabled:text-slate-300"
+                        >
+                          {newProductLookupLoading ? t("insuranceFormModal.lookupLoading") : t("insuranceFormModal.lookup")}
+                        </button>
+                      </div>
+                      <input
+                        value={newProductName}
+                        onChange={(event) => {
+                          setNewProductName(event.target.value);
+                          setNewProductLookupError("");
+                          setNewProductLookupCandidates([]);
+                          setNewProductSelectedCandidate(-1);
+                        }}
+                        placeholder={t("insuranceFormModal.productNamePlaceholder")}
+                        className="form-input bg-white"
+                      />
+                    </div>
+
+                    {newProductLookupError && (
+                      <div className="text-[11px] text-rose-600">{newProductLookupError}</div>
+                    )}
+
+                    {newProductLookupCandidates.length > 0 && (
+                      <div className="space-y-1">
+                        <div className="text-xs font-medium text-slate-600">
+                          {t("insuranceFormModal.lookupResultCount", { count: newProductLookupCandidates.length })}
+                        </div>
+                        <div className="max-h-40 overflow-auto rounded-md border border-slate-200">
+                          {newProductLookupCandidates.map((candidate, index) => (
+                            <label
+                              key={`${candidate.name}-${candidate.institutionName}-${index}`}
+                              className={`flex cursor-pointer items-start gap-2 border-b border-slate-100 px-3 py-2 text-xs last:border-b-0 hover:bg-slate-50 ${
+                                newProductSelectedCandidate === index ? "bg-blue-50" : ""
+                              }`}
+                            >
+                              <input
+                                type="radio"
+                                name="lookupCandidate"
+                                checked={newProductSelectedCandidate === index}
+                                onChange={() => setNewProductSelectedCandidate(index)}
+                                className="mt-0.5 accent-blue-600"
+                              />
+                              <div>
+                                <div className="text-slate-800">{candidate.name}</div>
+                                <div className="text-[11px] text-slate-500">
+                                  {candidate.institutionName}
+                                  {candidate.productType ? ` · ${productTypeLabel(t, candidate.productType)}` : ""}
+                                  {candidate.status ? ` · ${candidate.status}` : ""}
+                                </div>
+                              </div>
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="flex justify-end gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowNewProductModal(false);
+                          setNewProductInstitutionId("");
+                          setNewProductName("");
+                          setNewProductLookupCandidates([]);
+                          setNewProductSelectedCandidate(-1);
+                          setNewProductLookupError("");
+                        }}
+                        className="h-9 rounded-md border border-slate-200 bg-white px-4 text-sm text-slate-700 hover:bg-slate-50"
+                      >
+                        {t("common.cancel")}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleCreateProductMaster}
+                        disabled={newProductSaving || !newProductName.trim() || !newProductInstitutionId}
+                        className="h-9 rounded-md bg-blue-600 px-4 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
+                      >
+                        {newProductSaving ? t("txForm.saving") : t("settings.fundApi.create")}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </ModalLayer>
+            ) : null}
+
+            {/* Confirm dialog: premium plan is always generated; user only confirms whether to backfill past records */}
+            {showConfirmDialog && pendingPlanData ? (
+              <ModalLayer className="fixed inset-0 flex items-center justify-center bg-black/35 p-4">
+                <div className="w-full max-w-sm overflow-hidden rounded-xl border border-slate-200 bg-white shadow-lg">
+                  <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-4 py-3">
+                    <div className="text-sm font-semibold text-slate-800">{t("insuranceFormModal.planConfirmTitle")}</div>
+                  </div>
+                  <div className="space-y-4 p-4">
+                    <div className="text-sm text-slate-600">
+                      {t("insuranceFormModal.planConfirmSummary", { startDate: productStartDate, endDate: pendingPlanData.currentRecordDate })}
+                    </div>
+                    <div className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-700">
+                      {t("insuranceFormModal.planSummary", { totalRuns: pendingPlanData.totalRuns, frequencyLabel: pendingPlanData.frequencyLabel, amount: formatMoney(pendingPlanData.amount) })}
+                    </div>
+                    <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-700">
+                      <input
+                        type="checkbox"
+                        checked={confirmBatchGenerate}
+                        onChange={(e) => setConfirmBatchGenerate(e.target.checked)}
+                        disabled={pendingPlanData.dueCount <= 0}
+                        className="h-4 w-4 accent-blue-600"
+                      />
+                      {t("insuranceFormModal.planBackfill", { dueCount: pendingPlanData.dueCount, planStartDate: pendingPlanData.planStartDate, currentRecordDate: pendingPlanData.currentRecordDate })}
+                    </label>
+                    <div className="flex justify-end gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={handleCancelConfirm}
+                        className="h-9 rounded-md border border-slate-200 bg-white px-4 text-sm text-slate-700 hover:bg-slate-50"
+                      >
+                        {t("liabilityTx.backToEdit")}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleConfirmPlanAndBatch}
+                        className="h-9 rounded-md bg-blue-600 px-4 text-sm text-white hover:bg-blue-700"
+                      >
+                        {t("insuranceFormModal.confirmAndSave")}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </ModalLayer>
+            ) : null}
+            </>
+        }
       >
 
               {isRedeem ? (
@@ -1236,219 +1455,5 @@ export function InsuranceFormModal({
               )}
       </EntryModalShell>
 
-      {/* Nested modals */}
-      {nestedEntityType === "cash-account" && (
-        <NestedAddModal
-          mode="compact"
-          entityType="account"
-          open={true}
-          onClose={() => setNestedEntityType(null)}
-          onCreated={(id, name, extra) => {
-            const option = { id, label: name, subLabel: kindLabel(extra?.kind ?? "bank_debit") };
-            setCashAccountList((prev) => [...prev, option]);
-            setLocalCashSSOpts((prev) => (prev ? [...prev, option] : prev));
-            setCashAccountId(id);
-            setNestedEntityType(null);
-          }}
-          allowedAccountKinds={["bank_debit", "ewallet"]}
-          hiddenFields={[]}
-          nestedFieldData={localNestedFieldData ?? nestedFieldData}
-          onNestedCreated={handleNestedOptionCreated}
-        />
-      )}
-
-      {nestedEntityType === "family-member" && (
-        <NestedAddModal
-          mode="compact"
-          entityType="institution"
-          open={true}
-          onClose={() => setNestedEntityType(null)}
-          onCreated={(id, name) => {
-            const option = { id, label: name, subLabel: t("institution.type.family_member") };
-            setFamilyMemberOptions((prev) => [...prev, option]);
-            setNestedEntityType(null);
-          }}
-          extraFields={{ type: "family_member" }}
-          hiddenFields={["type"]}
-          nestedFieldData={localNestedFieldData ?? nestedFieldData}
-          onNestedCreated={handleNestedOptionCreated}
-        />
-      )}
-
-      {/* New insurance product master modal */}
-      {showNewProductModal && (
-        <div className="fixed inset-0 z-[1100] flex items-center justify-center bg-black/35 p-4">
-          <div className="w-full max-w-sm overflow-hidden rounded-xl border border-slate-200 bg-white shadow-lg">
-            <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-4 py-3">
-              <div className="text-sm font-semibold text-slate-800">{t("insuranceFormModal.newProductTitle")}</div>
-              <button
-                type="button"
-                onClick={() => {
-                  setShowNewProductModal(false);
-                  setNewProductInstitutionId("");
-                  setNewProductName("");
-                  setNewProductLookupCandidates([]);
-                  setNewProductSelectedCandidate(-1);
-                  setNewProductLookupError("");
-                }}
-                className="h-8 rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700 hover:bg-slate-50"
-              >
-                {t("table.close")}
-              </button>
-            </div>
-            <div className="space-y-3 p-4">
-              <div className="space-y-1">
-                <div className="text-xs font-medium text-slate-600">{t("insuranceFormModal.underwritingInstitution")}</div>
-                <select
-                  value={newProductInstitutionId}
-                  onChange={(event) => setNewProductInstitutionId(event.target.value)}
-                  className="form-input bg-white"
-                >
-                  <option value="">{t("insuranceFormModal.selectInstitution")}</option>
-                  {institutionOptions.map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.label}{item.subLabel && item.subLabel !== t("institution.type.insurance") ? ` (${item.subLabel})` : ""}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="space-y-1">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="text-xs font-medium text-slate-600">{t("investForm.productNameLabel")}</div>
-                  <button
-                    type="button"
-                    onClick={handleNewProductLookup}
-                    disabled={newProductLookupLoading || !newProductName.trim() || !newProductInstitutionId}
-                    className="text-[11px] text-blue-600 hover:text-blue-700 disabled:text-slate-300"
-                  >
-                    {newProductLookupLoading ? t("insuranceFormModal.lookupLoading") : t("insuranceFormModal.lookup")}
-                  </button>
-                </div>
-                <input
-                  value={newProductName}
-                  onChange={(event) => {
-                    setNewProductName(event.target.value);
-                    setNewProductLookupError("");
-                    setNewProductLookupCandidates([]);
-                    setNewProductSelectedCandidate(-1);
-                  }}
-                  placeholder={t("insuranceFormModal.productNamePlaceholder")}
-                  className="form-input bg-white"
-                />
-              </div>
-
-              {newProductLookupError && (
-                <div className="text-[11px] text-rose-600">{newProductLookupError}</div>
-              )}
-
-              {newProductLookupCandidates.length > 0 && (
-                <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">
-                    {t("insuranceFormModal.lookupResultCount", { count: newProductLookupCandidates.length })}
-                  </div>
-                  <div className="max-h-40 overflow-auto rounded-md border border-slate-200">
-                    {newProductLookupCandidates.map((candidate, index) => (
-                      <label
-                        key={`${candidate.name}-${candidate.institutionName}-${index}`}
-                        className={`flex cursor-pointer items-start gap-2 border-b border-slate-100 px-3 py-2 text-xs last:border-b-0 hover:bg-slate-50 ${
-                          newProductSelectedCandidate === index ? "bg-blue-50" : ""
-                        }`}
-                      >
-                        <input
-                          type="radio"
-                          name="lookupCandidate"
-                          checked={newProductSelectedCandidate === index}
-                          onChange={() => setNewProductSelectedCandidate(index)}
-                          className="mt-0.5 accent-blue-600"
-                        />
-                        <div>
-                          <div className="text-slate-800">{candidate.name}</div>
-                          <div className="text-[11px] text-slate-500">
-                            {candidate.institutionName}
-                            {candidate.productType ? ` · ${productTypeLabel(t, candidate.productType)}` : ""}
-                            {candidate.status ? ` · ${candidate.status}` : ""}
-                          </div>
-                        </div>
-                      </label>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              <div className="flex justify-end gap-2 pt-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowNewProductModal(false);
-                    setNewProductInstitutionId("");
-                    setNewProductName("");
-                    setNewProductLookupCandidates([]);
-                    setNewProductSelectedCandidate(-1);
-                    setNewProductLookupError("");
-                  }}
-                  className="h-9 rounded-md border border-slate-200 bg-white px-4 text-sm text-slate-700 hover:bg-slate-50"
-                >
-                  {t("common.cancel")}
-                </button>
-                <button
-                  type="button"
-                  onClick={handleCreateProductMaster}
-                  disabled={newProductSaving || !newProductName.trim() || !newProductInstitutionId}
-                  className="h-9 rounded-md bg-blue-600 px-4 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
-                >
-                  {newProductSaving ? t("txForm.saving") : t("settings.fundApi.create")}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Confirm dialog: premium plan is always generated; user only confirms whether to backfill past records */}
-      {showConfirmDialog && pendingPlanData && (
-        <div className="fixed inset-0 z-[1200] flex items-center justify-center bg-black/35 p-4">
-          <div className="w-full max-w-sm overflow-hidden rounded-xl border border-slate-200 bg-white shadow-lg">
-            <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-4 py-3">
-              <div className="text-sm font-semibold text-slate-800">{t("insuranceFormModal.planConfirmTitle")}</div>
-            </div>
-            <div className="space-y-4 p-4">
-              <div className="text-sm text-slate-600">
-                {t("insuranceFormModal.planConfirmSummary", { startDate: productStartDate, endDate: pendingPlanData.currentRecordDate })}
-              </div>
-              <div className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-700">
-                {t("insuranceFormModal.planSummary", { totalRuns: pendingPlanData.totalRuns, frequencyLabel: pendingPlanData.frequencyLabel, amount: formatMoney(pendingPlanData.amount) })}
-              </div>
-              <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-700">
-                <input
-                  type="checkbox"
-                  checked={confirmBatchGenerate}
-                  onChange={(e) => setConfirmBatchGenerate(e.target.checked)}
-                  disabled={pendingPlanData.dueCount <= 0}
-                  className="h-4 w-4 accent-blue-600"
-                />
-                {t("insuranceFormModal.planBackfill", { dueCount: pendingPlanData.dueCount, planStartDate: pendingPlanData.planStartDate, currentRecordDate: pendingPlanData.currentRecordDate })}
-              </label>
-              <div className="flex justify-end gap-2 pt-1">
-                <button
-                  type="button"
-                  onClick={handleCancelConfirm}
-                  className="h-9 rounded-md border border-slate-200 bg-white px-4 text-sm text-slate-700 hover:bg-slate-50"
-                >
-                  {t("liabilityTx.backToEdit")}
-                </button>
-                <button
-                  type="button"
-                  onClick={handleConfirmPlanAndBatch}
-                  className="h-9 rounded-md bg-blue-600 px-4 text-sm text-white hover:bg-blue-700"
-                >
-                  {t("insuranceFormModal.confirmAndSave")}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-    </ModalLayerProvider>
   );
 }

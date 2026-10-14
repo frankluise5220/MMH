@@ -1,7 +1,7 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
 import { useState } from "react";
-import { createPortal } from "react-dom";
 import { Database, Plus } from "lucide-react";
 import { DateStepper } from "./DateStepper";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
@@ -154,8 +154,7 @@ export function AddNavButton({
   return (
     <>
       {triggerButton}
-      {createPortal(
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 p-4 text-left">
+      <ModalLayer className="fixed inset-0 flex items-center justify-center bg-black/35 p-4 text-left">
           <div className="w-full max-w-sm rounded-xl bg-white border border-slate-200 shadow-lg overflow-hidden">
             <div className="px-4 py-3 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
               <div className="text-sm font-semibold text-slate-800">{t("addNav.addNavShortTitle")}</div>
@@ -208,9 +207,7 @@ export function AddNavButton({
               </div>
             </div>
           </div>
-        </div>,
-        document.body,
-      )}
+        </ModalLayer>
     </>
   );
 }

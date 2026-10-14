@@ -1,4 +1,5 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import type { WorkBook } from "xlsx";
@@ -3935,7 +3936,7 @@ export default function BatchImportPage() {
       )}
 
       {showUploadProcessingOverlay && (
-        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-900/45 px-4 py-6">
+        <ModalLayer className="fixed inset-0 flex items-center justify-center bg-slate-900/45 px-4 py-6">
           <div role="status" aria-live="polite" className="w-full max-w-md rounded-xl border border-blue-200 bg-white p-5 text-sm shadow-2xl">
             <div className="flex items-start gap-3">
               <div className="mt-0.5 h-5 w-5 shrink-0 animate-spin rounded-full border-2 border-blue-200 border-t-blue-600" />
@@ -3946,11 +3947,11 @@ export default function BatchImportPage() {
               </div>
             </div>
           </div>
-        </div>
+        </ModalLayer>
       )}
 
       {importCompletion && (
-        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/25 px-4 py-6">
+        <ModalLayer className="fixed inset-0 flex items-center justify-center bg-slate-900/25 px-4 py-6">
           <div className="w-full max-w-md rounded-xl border border-green-200 bg-green-50 p-4 text-sm text-green-700 shadow-2xl">
             <div className="font-medium">{formatText("batchImport.importSuccessRedirect", { count: importCompletion.count })}</div>
             <div className="mt-1 text-xs text-green-600">{t("batchImport.importCompleteConfirmHint")}</div>
@@ -3964,7 +3965,7 @@ export default function BatchImportPage() {
               </button>
             </div>
           </div>
-        </div>
+        </ModalLayer>
       )}
 
       <div className="p-4 space-y-4">
@@ -4039,7 +4040,7 @@ export default function BatchImportPage() {
       </div>
 
       {activeImportKind === "normal" && (items.length > 0 || (uploading && !showUploadProcessingOverlay)) && (
-        <div className="fixed inset-0 z-50 bg-slate-900/40 p-4 flex items-center justify-center">
+        <ModalLayer className="fixed inset-0 bg-slate-900/40 p-4 flex items-center justify-center">
           <div data-smart-select-boundary className="h-[82vh] min-h-[420px] w-[80rem] min-w-[720px] max-w-[calc(100vw-2rem)] resize overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl flex flex-col">
             <div className="shrink-0 px-4 py-3 border-b border-slate-200 flex items-center justify-between gap-3">
               <div>
@@ -4224,11 +4225,11 @@ export default function BatchImportPage() {
               </div>
             </div>
           </div>
-        </div>
+        </ModalLayer>
       )}
 
       {activeImportKind === "fund" && (fundPreviewItems.length > 0 || (uploading && !showUploadProcessingOverlay)) && (
-        <div className="fixed inset-0 z-50 bg-slate-900/40 p-4 flex items-center justify-center">
+        <ModalLayer className="fixed inset-0 bg-slate-900/40 p-4 flex items-center justify-center">
           <div data-smart-select-boundary className="h-[82vh] min-h-[420px] w-[80rem] min-w-[720px] max-w-[calc(100vw-2rem)] resize overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl flex flex-col">
             <div className="shrink-0 px-4 py-3 border-b border-slate-200 flex items-center justify-between gap-3">
               <div>
@@ -4389,7 +4390,7 @@ export default function BatchImportPage() {
               </div>
             </div>
           </div>
-        </div>
+        </ModalLayer>
       )}
     </div>
   );

@@ -1,4 +1,5 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
 import { useEffect, useState } from "react";
 import Image from "next/image";
@@ -203,10 +204,7 @@ export function SponsorPanel() {
       </p>
 
       {zoomedTier && !qrFailedById[zoomedTier.id] ? (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 p-6 backdrop-blur-sm"
-          onClick={() => setZoomedTierId(null)}
-        >
+        <ModalLayer className="fixed inset-0 flex items-center justify-center bg-slate-950/70 p-6 backdrop-blur-sm" onClick={() => setZoomedTierId(null)}>
           <div
             className="relative flex max-h-full w-full max-w-xs flex-col items-center rounded-2xl bg-white p-4 shadow-xl"
             onClick={(event) => event.stopPropagation()}
@@ -223,7 +221,7 @@ export function SponsorPanel() {
               {t("settings.sponsor.close")}
             </button>
           </div>
-        </div>
+        </ModalLayer>
       ) : null}
     </div>
   );

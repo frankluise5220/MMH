@@ -6,7 +6,6 @@ import { createPortal } from "react-dom";
 import { CalcInput } from "./CalcInput";
 import { ClearableNoteField } from "./ClearableNoteField";
 import { DateStepper } from "./DateStepper";
-import { ModalLayerProvider, getNextModalLayerZIndex, useModalLayerZIndex } from "./ModalLayer";
 /** 记账弹窗整窗外壳（FT 卡片 + 页签 + 固定页脚 + 高度锁定），与 理财/债券/存款 弹窗共用。 */
 import { EntryModalShell } from "./EntryModalShell";
 import { SmartSelect, type SmartSelectOption, type SmartSelectProps } from "./SmartSelect";
@@ -497,8 +496,6 @@ export function RegularInvestForm({
   submitMethod?: "serverAction" | "api";
   onSuccess?: (plan?: unknown) => void;
 }) {
-  const parentModalZIndex = useModalLayerZIndex();
-  const modalZIndex = getNextModalLayerZIndex(parentModalZIndex);
   const [internalOpen, setInternalOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [nameLoading, setNameLoading] = useState(false);
@@ -1359,22 +1356,7 @@ export function RegularInvestForm({
   }
 
   return (
-    <ModalLayerProvider value={modalZIndex}>
-      {showTriggerButton && mode === "create" && (
-        <button
-          type="button"
-          onClick={() => { resetForm(); setActualOpen(true); }}
-          className="h-7 px-2 rounded-md border border-slate-200 bg-white text-xs text-slate-700 hover:bg-slate-50 flex items-center gap-1"
-        >
-          <CalendarPlus className="w-3.5 h-3.5" />
-          {t("regularInvest.plan")}
-        </button>
-      )}
-
-      {/* 迁移到 FT 卡片外壳（`EntryModalShell`）：遮罩 / 面板 / 标题栏 / 内容板滚动区 /
-          卡片固定页脚 / 高度锁定全部由外壳统一提供。原来的「任务类型」五段按钮组换成 FT 页签
-          （与 理财 / 债券 / 存款 记账弹窗一致）；保存按钮从内容末尾移到卡片底部固定页脚。 */}
-      <EntryModalShell
+    <EntryModalShell
         open={actualOpen}
         heightKey="regularInvest"
         width="lg"
@@ -1382,7 +1364,6 @@ export function RegularInvestForm({
         onClose={() => setActualOpen(false)}
         closeLabel={t("table.close")}
         onSubmit={onSubmit}
-        zIndex={modalZIndex}
         tabs={TASK_TYPE_OPTIONS.map((item) => ({
           id: item.value,
           label: t(item.labelKey),
@@ -1402,6 +1383,27 @@ export function RegularInvestForm({
             {submitting ? t("txForm.saving") : t("common.save")}
           </button>
         )}
+        overlays={
+                  <>
+            {nestedEntityType && typeof document !== "undefined" ? createPortal(
+                    <NestedAddModal
+                      mode="compact"
+                      entityType="account"
+                      open={true}
+                      onClose={() => setNestedEntityType(null)}
+                      onCreated={handleNestedAccountCreated}
+                      extraFields={nestedEntityType === "cash-account"
+                        ? undefined
+                        : { kind: "investment", investProductType: "fund" }}
+                      hiddenFields={nestedEntityType === "cash-account" ? [] : ["kind"]}
+                      allowedAccountKinds={nestedEntityType === "cash-account" ? ["bank_debit", "ewallet"] : undefined}
+                      nestedFieldData={localNestedFieldData ?? nestedFieldData}
+                      onNestedCreated={handleNestedOptionCreated}
+                    />,
+                    document.body,
+                  ) : null}
+                  </>
+        }
       >
 
               <div className="space-y-1">
@@ -2169,23 +2171,5 @@ export function RegularInvestForm({
               )}
 
       </EntryModalShell>
-      {nestedEntityType && typeof document !== "undefined" ? createPortal(
-        <NestedAddModal
-          mode="compact"
-          entityType="account"
-          open={true}
-          onClose={() => setNestedEntityType(null)}
-          onCreated={handleNestedAccountCreated}
-          extraFields={nestedEntityType === "cash-account"
-            ? undefined
-            : { kind: "investment", investProductType: "fund" }}
-          hiddenFields={nestedEntityType === "cash-account" ? [] : ["kind"]}
-          allowedAccountKinds={nestedEntityType === "cash-account" ? ["bank_debit", "ewallet"] : undefined}
-          nestedFieldData={localNestedFieldData ?? nestedFieldData}
-          onNestedCreated={handleNestedOptionCreated}
-        />,
-        document.body,
-      ) : null}
-    </ModalLayerProvider>
   );
 }

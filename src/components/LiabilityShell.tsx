@@ -1,4 +1,5 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
 import { Check, ChevronDown, ChevronRight, HandCoins, Pencil, Percent, ReceiptText, RefreshCw, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
@@ -1604,7 +1605,7 @@ export function LiabilityShell({
       </ResizableVerticalSplit>
 
         {rateCardOpen ? (
-          <div className="app-modal-backdrop z-50">
+          <ModalLayer className="app-modal-backdrop">
             <div className="app-modal-panel max-w-2xl">
               <div className="modal-header shrink-0">
                 <div>
@@ -1663,11 +1664,11 @@ export function LiabilityShell({
                 </div>
               </div>
             </div>
-          </div>
+          </ModalLayer>
         ) : null}
 
         {rebuildDialog ? (
-          <div className="app-modal-backdrop z-[60]">
+          <ModalLayer className="app-modal-backdrop">
             <div className="app-modal-panel max-w-md">
               <div className="modal-header shrink-0">
                 <div>
@@ -1774,7 +1775,7 @@ export function LiabilityShell({
                 </button>
               </div>
             </div>
-          </div>
+          </ModalLayer>
         ) : null}
 
       </div>

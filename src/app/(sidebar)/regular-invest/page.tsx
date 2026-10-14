@@ -480,6 +480,12 @@ export default async function RegularInvestPage() {
       incomeCategories={incomeCategories}
       advanceCategories={advanceCategories}
       allAccountSSOptions={buildGroupedAccountOptions(accountOptions)}
+      filterAccounts={accountOptions.map((account) => ({
+        id: account.id,
+        label: account.label,
+        kind: account.kind,
+        investProductType: account.investProductType,
+      }))}
       nestedFieldData={{
         groupId: groups.map((group) => ({ id: group.id, name: group.name })),
         institutionId: institutions.map((institution) => ({ id: institution.id, name: institution.name, type: institution.type ?? undefined })),

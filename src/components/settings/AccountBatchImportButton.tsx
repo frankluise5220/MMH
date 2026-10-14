@@ -1,4 +1,5 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
 import { createPortal } from "react-dom";
 import { useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
@@ -2613,7 +2614,7 @@ export function AccountBatchImportButton({
   }
 
   const dialog = open ? createPortal(
-    <div className="fixed inset-0 z-[70] flex items-center justify-center bg-slate-900/40 p-4" onMouseDown={close}>
+    <ModalLayer className="fixed inset-0 flex items-center justify-center bg-slate-900/40 p-4" onMouseDown={close}>
       <div
         data-batch-popover-boundary
         className="flex h-[86vh] w-[1120px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl"
@@ -2738,7 +2739,7 @@ export function AccountBatchImportButton({
           <div className="px-4 py-12 text-center text-sm text-slate-400">{t("settings.accounts.import.noPreview")}</div>
         )}
       </div>
-    </div>,
+    </ModalLayer>,
     document.body,
   ) : null;
 

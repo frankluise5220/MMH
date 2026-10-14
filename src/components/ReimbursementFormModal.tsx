@@ -1,4 +1,5 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
 import { useMemo, useRef, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
@@ -235,7 +236,7 @@ export function ReimbursementFormModal({
   };
 
   return (
-    <div className="app-modal-backdrop z-[70]">
+    <ModalLayer className="app-modal-backdrop">
       <div className={`app-modal-panel ${isTravel ? "max-w-4xl" : "max-w-2xl"}`}>
         <div className="modal-header shrink-0">
           <div>
@@ -492,6 +493,6 @@ export function ReimbursementFormModal({
           </div>
         </div>
       </div>
-    </div>
+    </ModalLayer>
   );
 }

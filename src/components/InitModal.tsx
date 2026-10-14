@@ -1,4 +1,5 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
 import { useState, useEffect, useRef, useMemo } from "react";
 import { createPortal } from "react-dom";
@@ -6,7 +7,6 @@ import { X, Plus, Trash2, Database, TrendingUp } from "lucide-react";
 import { DateStepper } from "./DateStepper";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { NestedAddModal } from "./EntityCreateForm";
-import { ModalLayerProvider, getNextModalLayerZIndex, useModalLayerZIndex } from "./ModalLayer";
 import { isSettlementCounterpartyType, kindLabel } from "@/lib/account-kinds";
 import { buildAccountDisplayOption } from "@/lib/account-display";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
@@ -75,8 +75,6 @@ export function InitModal({
   const [tab, setTab] = useState<"balance" | "fund">("balance");
   const [busy, setBusy] = useState(false);
   const { t } = useI18n();
-  const parentModalZIndex = useModalLayerZIndex();
-  const modalZIndex = getNextModalLayerZIndex(parentModalZIndex);
   const [message, setMessage] = useState<{ ok: boolean; text: string; details?: string[] } | null>(null);
   const [loadingAccounts, setLoadingAccounts] = useState(false);
   const [accountsLoaded, setAccountsLoaded] = useState(false);
@@ -486,14 +484,14 @@ export function InitModal({
   if (!open) return null;
 
   return (
-    <ModalLayerProvider value={modalZIndex}>
+    <>
     {typeof document !== "undefined" && createPortal(
     <>
     <style>{`.init-modal-dropdown .smartselect-dropdown { z-index: 9999 !important; }
       .init-modal-number::-webkit-outer-spin-button,
       .init-modal-number::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
       .init-modal-number { appearance: textfield; -moz-appearance: textfield; }`}</style>
-    <div className="fixed inset-0 flex items-center justify-center bg-black/35 p-4 overflow-auto" style={{ zIndex: modalZIndex }}>
+    <ModalLayer className="fixed inset-0 flex items-center justify-center bg-black/35 p-4 overflow-auto">
       <div className="w-full max-w-6xl rounded-xl bg-white border border-slate-200 shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
         <div className="shrink-0 px-5 py-3 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
           <div className="text-base font-bold text-slate-800">📦 {t("nav.initialData")}</div>
@@ -741,7 +739,7 @@ export function InitModal({
           </div>
         </div>
       </div>
-    </div>
+    </ModalLayer>
     </>, document.body
     )}
 
@@ -764,6 +762,6 @@ export function InitModal({
         onNestedCreated={handleNestedOptionCreated}
       />, document.body
     )}
-    </ModalLayerProvider>
+    </>
   );
 }

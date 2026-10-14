@@ -1,4 +1,5 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
 import { Paperclip, Plus, X } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -133,7 +134,7 @@ export function EntryAttachmentWindow({
   if (!open) return null;
 
   return createPortal(
-    <div className="app-modal-backdrop z-[70]" onClick={onClose}>
+    <ModalLayer className="app-modal-backdrop" onClick={onClose}>
       <div
         className="app-modal-panel max-w-md"
         onClick={(event) => event.stopPropagation()}
@@ -220,7 +221,7 @@ export function EntryAttachmentWindow({
           </button>
         </div>
       </div>
-    </div>,
+    </ModalLayer>,
     document.body,
   );
 }

@@ -1,4 +1,5 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 /** 记账弹窗整窗外壳：宽度/标题栏/表单/FT 页签卡片/固定页脚/高度锁定统一由它负责。 */
@@ -7,7 +8,6 @@ import { parseNumber } from "@/lib/investment-config";
 import { DateStepper } from "./DateStepper";
 import { CalcInput } from "./CalcInput";
 import { ClearableNoteField } from "./ClearableNoteField";
-import { ModalLayerProvider, getNextModalLayerZIndex, useModalLayerZIndex } from "./ModalLayer";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
 import { NestedAddModal } from "./EntityCreateForm";
@@ -213,8 +213,6 @@ export function WealthFormModal({
 }) {
   const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
   const { t } = useI18n();
-  const parentModalZIndex = useModalLayerZIndex();
-  const modalZIndex = getNextModalLayerZIndex(parentModalZIndex);
 
   const initIsDividend = mode === "edit" && entry?.fundSubtype === "dividend_cash";
   const initIsWriteOff = mode === "edit" && entry?.fundSubtype === "write_off";
@@ -1191,9 +1189,8 @@ export function WealthFormModal({
   if (!open) return null;
 
   return (
-    <ModalLayerProvider value={modalZIndex}>
-      {/* 整窗外壳见 `EntryModalShell`：买入/赎回/分红/核销由表单内分段按钮提到窗口顶部，成为 FT 页签；
-          切换时的字段重置逻辑原样搬到 `selectSubtypeTab()`。 */}
+    // 整窗外壳见 `EntryModalShell`：买入/赎回/分红/核销由表单内分段按钮提到窗口顶部，成为 FT 页签；
+  // 切换时的字段重置逻辑原样搬到 `selectSubtypeTab()`。
       <EntryModalShell
         open={open}
         heightKey="wealth"
@@ -1234,6 +1231,147 @@ export function WealthFormModal({
             </button>
           </>
         )}
+        overlays={
+            <>
+            {nestedEntityType ? (
+              <NestedAddModal
+                mode="compact"
+                entityType="account"
+                open={true}
+                onClose={() => setNestedEntityType(null)}
+                onCreated={(id, name, extra) => {
+                  const kind = extra?.kind || "bank_debit";
+                  const institutionLabel = extra?.institutionShortName?.trim() || extra?.institutionName?.trim() || "";
+                  const label = [institutionLabel, name].filter(Boolean).join("·") || name;
+                  const option = {
+                    id,
+                    label,
+                    subLabel: [
+                      extra?.groupName,
+                      nestedEntityType === "wealth-account" ? accountLabelText : kindLabel(kind),
+                    ].filter(Boolean).join(" · "),
+                    parentId: extra?.groupId ? `group:${extra.groupId}` : undefined,
+                    kind,
+                    groupId: extra?.groupId ?? null,
+                    institutionId: extra?.institutionId ?? null,
+                    institutionType: nestedFieldData?.institutionId?.find((item) => item.id === extra?.institutionId)?.type ?? null,
+                    currency: extra?.currency ?? "CNY",
+                    investProductType: nestedEntityType === "wealth-account" ? ("wealth") : null,
+                  };
+                  if (nestedEntityType === "wealth-account") {
+                    setInvestmentAccountList((prev) => [
+                      ...prev.filter((item) => item.id !== id),
+                      option,
+                    ]);
+                    setLocalInvestSSOpts((prev) => (prev ? [...prev.filter((item) => item.id !== id), option] : [option]));
+                    setToAccountId(id);
+                  } else {
+                    setCashAccountList((prev) => [...prev.filter((item) => item.id !== id), option]);
+                    setLocalCashSSOpts((prev) => (prev ? [...prev.filter((item) => item.id !== id), option] : [option]));
+                    setCashAccountId(id);
+                  }
+                  setNestedEntityType(null);
+                }}
+                title={nestedEntityType === "wealth-account" ? (t("wealthForm.addWealthAccount")) : undefined}
+                nameLabel={nestedEntityType === "wealth-account" ? (t("wealthForm.wealthAccountName")) : undefined}
+                namePlaceholder={nestedEntityType === "wealth-account" ? t("wealthForm.wealthAccountNamePlaceholder") : undefined}
+                defaultType={nestedEntityType === "wealth-account" ? "investment" : "bank_debit"}
+                extraFields={
+                  nestedEntityType === "wealth-account" && selectedCashAccount
+                    ? {
+                        kind: "investment",
+                        investProductType: "wealth",
+                        ...(selectedCashAccount.groupId ? { groupId: selectedCashAccount.groupId } : {}),
+                        ...(selectedCashAccount.institutionId ? { institutionId: selectedCashAccount.institutionId } : {}),
+                        currency: selectedCashAccount.currency ?? "CNY",
+                      }
+                    : undefined
+                }
+                hiddenFields={nestedEntityType === "wealth-account" ? ["kind", "investProductType"] : undefined}
+                readOnlyFields={nestedEntityType === "wealth-account" ? ["groupId", "institutionId", "currency"] : undefined}
+                allowedAccountKinds={nestedEntityType === "wealth-account" ? undefined : ["bank_debit", "ewallet"]}
+                nestedFieldData={localNestedFieldData ?? nestedFieldData}
+                onNestedCreated={handleNestedOptionCreated}
+              />
+            ) : null}
+            {/* 内层窗口：`ModalLayer` 自带 portal 到 body，并自动取「当前窗口层 + 步长」，调用方不写层级。
+                本组件挂在 `.page-header`（sticky + backdrop-filter）内部，该祖先同时是 fixed 后代的
+                包含块与 z-30 层叠上下文 —— 就地渲染会被压扁进标题条、并永远压不过外层遮罩
+                （「新增产品」窗口藏在记账窗口后面）。 */}
+            {productModalOpen ? (
+              <ModalLayer>
+                <div className="app-modal-panel max-w-[min(30rem,calc(100vw-1rem))]">
+                  <div className="modal-header">
+                    <div>
+                      <div className="text-sm font-semibold text-slate-800">
+                        {t("wealthForm.addProduct")}
+                      </div>
+                      <div className="mt-0.5 text-xs text-slate-500">
+                        {selectedWealthAccount?.label || selectedCashAccount?.label || t("txForm.alert.selectCashSourceAccount")}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setProductModalOpen(false)}
+                      className="secondary-button h-8 px-2"
+                    >
+                      {t("table.close")}
+                    </button>
+                  </div>
+                  <div className="space-y-3 p-3 sm:p-4">
+                    <div className="space-y-1">
+                      <div className="form-label">{t("wealthForm.productName")}</div>
+                      <input
+                        value={productDraft.name}
+                        onChange={(e) => setProductDraft((prev) => ({ ...prev, name: e.target.value }))}
+                        placeholder={t("wealthForm.productNamePlaceholder")}
+                        className="form-input"
+                        autoFocus
+                      />
+                    </div>
+                    <div className="rounded-[10px] border border-blue-100 bg-blue-50 px-3 py-2 text-xs leading-5 text-blue-700">
+                      {productAccountHint()}
+                    </div>
+                    {productError ? (
+                      <div className="rounded-[10px] border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                        {productError}
+                      </div>
+                    ) : null}
+                    {/* 条款（利率/到期日/付息方式/首次付息日）不在产品弹窗填写：
+                        新建只登记名称，条款在购买界面按次填写并写入产品真源。 */}
+                    <div className="space-y-1">
+                      <div className="form-label">{t("detail.column.remark")}</div>
+                      <ClearableNoteField
+                        value={productDraft.note}
+                        onValueChange={(value) => setProductDraft((prev) => ({ ...prev, note: value }))}
+                        placeholder={t("stockFee.optional")}
+                        className="form-input"
+                      />
+                    </div>
+                    <div className="flex justify-end gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={() => setProductModalOpen(false)}
+                        className="secondary-button h-9 px-4 text-sm"
+                        disabled={productSaving}
+                      >
+                        {t("common.cancel")}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { void saveWealthProduct(); }}
+                        disabled={productSaving}
+                        className="primary-button h-9 px-4 text-sm disabled:opacity-50"
+                      >
+                        {productSaving ? t("txForm.saving") : t("wealthForm.saveAndSelect")}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </ModalLayer>
+            ) : null}
+            </>
+        }
       >
 
               {isWriteOff ? (
@@ -1549,139 +1687,5 @@ export function WealthFormModal({
 
       </EntryModalShell>
 
-      {nestedEntityType ? (
-        <NestedAddModal
-          mode="compact"
-          entityType="account"
-          open={true}
-          onClose={() => setNestedEntityType(null)}
-          onCreated={(id, name, extra) => {
-            const kind = extra?.kind || "bank_debit";
-            const institutionLabel = extra?.institutionShortName?.trim() || extra?.institutionName?.trim() || "";
-            const label = [institutionLabel, name].filter(Boolean).join("·") || name;
-            const option = {
-              id,
-              label,
-              subLabel: [
-                extra?.groupName,
-                nestedEntityType === "wealth-account" ? accountLabelText : kindLabel(kind),
-              ].filter(Boolean).join(" · "),
-              parentId: extra?.groupId ? `group:${extra.groupId}` : undefined,
-              kind,
-              groupId: extra?.groupId ?? null,
-              institutionId: extra?.institutionId ?? null,
-              institutionType: nestedFieldData?.institutionId?.find((item) => item.id === extra?.institutionId)?.type ?? null,
-              currency: extra?.currency ?? "CNY",
-              investProductType: nestedEntityType === "wealth-account" ? ("wealth") : null,
-            };
-            if (nestedEntityType === "wealth-account") {
-              setInvestmentAccountList((prev) => [
-                ...prev.filter((item) => item.id !== id),
-                option,
-              ]);
-              setLocalInvestSSOpts((prev) => (prev ? [...prev.filter((item) => item.id !== id), option] : [option]));
-              setToAccountId(id);
-            } else {
-              setCashAccountList((prev) => [...prev.filter((item) => item.id !== id), option]);
-              setLocalCashSSOpts((prev) => (prev ? [...prev.filter((item) => item.id !== id), option] : [option]));
-              setCashAccountId(id);
-            }
-            setNestedEntityType(null);
-          }}
-          title={nestedEntityType === "wealth-account" ? (t("wealthForm.addWealthAccount")) : undefined}
-          nameLabel={nestedEntityType === "wealth-account" ? (t("wealthForm.wealthAccountName")) : undefined}
-          namePlaceholder={nestedEntityType === "wealth-account" ? t("wealthForm.wealthAccountNamePlaceholder") : undefined}
-          defaultType={nestedEntityType === "wealth-account" ? "investment" : "bank_debit"}
-          extraFields={
-            nestedEntityType === "wealth-account" && selectedCashAccount
-              ? {
-                  kind: "investment",
-                  investProductType: "wealth",
-                  ...(selectedCashAccount.groupId ? { groupId: selectedCashAccount.groupId } : {}),
-                  ...(selectedCashAccount.institutionId ? { institutionId: selectedCashAccount.institutionId } : {}),
-                  currency: selectedCashAccount.currency ?? "CNY",
-                }
-              : undefined
-          }
-          hiddenFields={nestedEntityType === "wealth-account" ? ["kind", "investProductType"] : undefined}
-          readOnlyFields={nestedEntityType === "wealth-account" ? ["groupId", "institutionId", "currency"] : undefined}
-          allowedAccountKinds={nestedEntityType === "wealth-account" ? undefined : ["bank_debit", "ewallet"]}
-          nestedFieldData={localNestedFieldData ?? nestedFieldData}
-          onNestedCreated={handleNestedOptionCreated}
-        />
-      ) : null}
-      {productModalOpen ? (
-        <div className="app-modal-backdrop" style={{ zIndex: getNextModalLayerZIndex(modalZIndex) }}>
-          <div className="app-modal-panel max-w-[min(30rem,calc(100vw-1rem))]">
-            <div className="modal-header">
-              <div>
-                <div className="text-sm font-semibold text-slate-800">
-                  {t("wealthForm.addProduct")}
-                </div>
-                <div className="mt-0.5 text-xs text-slate-500">
-                  {selectedWealthAccount?.label || selectedCashAccount?.label || t("txForm.alert.selectCashSourceAccount")}
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setProductModalOpen(false)}
-                className="secondary-button h-8 px-2"
-              >
-                {t("table.close")}
-              </button>
-            </div>
-            <div className="space-y-3 p-3 sm:p-4">
-              <div className="space-y-1">
-                <div className="form-label">{t("wealthForm.productName")}</div>
-                <input
-                  value={productDraft.name}
-                  onChange={(e) => setProductDraft((prev) => ({ ...prev, name: e.target.value }))}
-                  placeholder={t("wealthForm.productNamePlaceholder")}
-                  className="form-input"
-                  autoFocus
-                />
-              </div>
-              <div className="rounded-[10px] border border-blue-100 bg-blue-50 px-3 py-2 text-xs leading-5 text-blue-700">
-                {productAccountHint()}
-              </div>
-              {productError ? (
-                <div className="rounded-[10px] border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
-                  {productError}
-                </div>
-              ) : null}
-              {/* 条款（利率/到期日/付息方式/首次付息日）不在产品弹窗填写：
-                  新建只登记名称，条款在购买界面按次填写并写入产品真源。 */}
-              <div className="space-y-1">
-                <div className="form-label">{t("detail.column.remark")}</div>
-                <ClearableNoteField
-                  value={productDraft.note}
-                  onValueChange={(value) => setProductDraft((prev) => ({ ...prev, note: value }))}
-                  placeholder={t("stockFee.optional")}
-                  className="form-input"
-                />
-              </div>
-              <div className="flex justify-end gap-2 pt-1">
-                <button
-                  type="button"
-                  onClick={() => setProductModalOpen(false)}
-                  className="secondary-button h-9 px-4 text-sm"
-                  disabled={productSaving}
-                >
-                  {t("common.cancel")}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => { void saveWealthProduct(); }}
-                  disabled={productSaving}
-                  className="primary-button h-9 px-4 text-sm disabled:opacity-50"
-                >
-                  {productSaving ? t("txForm.saving") : t("wealthForm.saveAndSelect")}
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      ) : null}
-    </ModalLayerProvider>
   );
 }

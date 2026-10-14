@@ -1,9 +1,10 @@
 "use client";
+import { ModalLayer } from "@/components/ModalLayer";
 
 import { useEffect, useRef, useState } from "react";
 import { flushSync } from "react-dom";
 import { ChevronDown, Download, FileSpreadsheet, MailSearch, Upload } from "lucide-react";
-import { CreditBillMailImportDialog } from "@/components/CreditBillMailImportButton";
+import { CreditBillMailImportDialog, prefetchMailImportPanel } from "@/components/CreditBillMailImportButton";
 import { DateStepper } from "@/components/DateStepper";
 import { FundImportPreviewDialog, type FundImportDialogContext } from "@/components/FundImportPreviewDialog";
 import { StatementImportPreviewDialog, type StatementImportPreviewItem } from "@/components/StatementImportPreviewDialog";
@@ -1481,7 +1482,7 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
   return (
     <div ref={menuRef} className={["relative inline-flex items-center", props.className ?? ""].filter(Boolean).join(" ")}>
       {processingFile ? (
-        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-slate-900/45 px-4 py-6">
+        <ModalLayer className="fixed inset-0 flex items-center justify-center bg-slate-900/45 px-4 py-6">
           <div role="status" aria-live="polite" className="w-full max-w-md rounded-xl border border-blue-200 bg-white p-5 text-sm shadow-2xl">
             <div className="flex items-start gap-3">
               <div className="mt-0.5 h-5 w-5 shrink-0 animate-spin rounded-full border-2 border-blue-200 border-t-blue-600" />
@@ -1492,7 +1493,7 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
               </div>
             </div>
           </div>
-        </div>
+        </ModalLayer>
       ) : null}
       <button
         type="button"
@@ -1565,6 +1566,7 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
           {props.mailImport ? (
             <button
               type="button"
+              onMouseEnter={() => prefetchMailImportPanel()}
               onClick={() => {
                 setOpen(false);
                 setMailImportOpen(true);
@@ -1633,7 +1635,7 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
         }}
       />
       {props.excelExport && excelExportOpen ? (
-        <div className="fixed inset-0 z-[85] flex items-center justify-center bg-slate-900/25 px-4">
+        <ModalLayer className="fixed inset-0 flex items-center justify-center bg-slate-900/25 px-4">
           <div className="w-full max-w-md overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
             <div className="border-b border-slate-100 px-4 py-3">
               <div className="text-sm font-semibold text-slate-800">{props.excelExport.title ?? t("viewImport.exportExcel")}</div>
@@ -1661,7 +1663,7 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
               </button>
             </div>
           </div>
-        </div>
+        </ModalLayer>
       ) : null}
       {status ? <span className="ml-2 max-w-64 truncate text-xs text-slate-500" title={status}>{status}</span> : null}
     </div>

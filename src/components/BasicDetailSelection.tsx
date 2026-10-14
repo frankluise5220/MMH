@@ -1,13 +1,15 @@
 "use client";
 
-import { ReceiptText, Trash2 } from "lucide-react";
+import { Lock, ReceiptText, ShieldCheck, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { BatchReplacePopoverButton, type BatchReplaceFieldConfig, type BatchReplaceOption } from "@/components/BatchReplacePopoverButton";
 import { CATEGORY_SMART_SELECT_BEHAVIOR } from "@/components/categorySmartSelect";
 import type { ReimbursementFormEntry } from "@/components/ReimbursementFormModal";
+import { callReconcileEntries } from "@/lib/api/entry-reconcile";
 import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { showConfirmDialog } from "@/lib/client/confirm-dialog";
 import { batchReplaceEntries, type BatchReplaceField } from "@/lib/client/batchReplaceEntries";
 import { translate, useI18n } from "@/lib/i18n";
 
@@ -329,6 +331,154 @@ export function BasicDetailBatchDeleteButton({ recordLabel }: { recordLabel?: st
   );
 }
 
+
+/**
+ * 批量「对账」：把选中的流水锁定。
+ *
+ * 锁定后该记录不可删除 / 修改（编辑窗只读），并把「本行事后余额」钉进
+ * `reconciledBalance` 当余额锚点（等价「余额校准」）。解除对账走行内的锁标记。
+ */
+export function BasicDetailBatchReconcileButton({ contextAccountId }: { contextAccountId?: string | null }) {
+  const { t } = useI18n();
+  const { selectedIds, clear, setDeleteMessage } = useBasicDetailSelection();
+  const [submitting, setSubmitting] = useState(false);
+  const selectedCount = selectedIds.size;
+  const disabled = selectedCount === 0 || submitting;
+
+  async function applyReconcile() {
+    if (disabled) return;
+    const entryIds = Array.from(selectedIds);
+    const confirmed = await showConfirmDialog({
+      title: t("reconcile.lockConfirmTitle"),
+      message: t("reconcile.lockConfirm", { count: entryIds.length }),
+      confirmLabel: t("reconcile.button"),
+      cancelLabel: t("common.cancel"),
+    });
+    if (!confirmed) return;
+
+    setSubmitting(true);
+    setDeleteMessage("");
+    try {
+      const data = await callReconcileEntries({
+        entryIds,
+        action: "lock",
+        contextAccountId: contextAccountId ?? undefined,
+      });
+      if (!data.ok) {
+        setDeleteMessage(data.error || t("reconcile.failed"));
+        return;
+      }
+      setDeleteMessage(t("reconcile.lockedCount", { count: data.count }));
+      clear();
+      dispatchFinanceDataChanged({ reason: "entry-reconcile", accountIds: data.accountIds, entryIds });
+    } catch {
+      setDeleteMessage(t("reconcile.failed"));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={applyReconcile}
+      disabled={disabled}
+      className="flex h-6 w-6 items-center justify-center rounded border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-50"
+      title={selectedCount === 0 ? t("reconcile.selectRowsFirst") : t("reconcile.buttonTitle")}
+      aria-label={t("reconcile.button")}
+    >
+      <ShieldCheck className="h-3.5 w-3.5" />
+    </button>
+  );
+}
+
+/**
+ * 行内锁标记：已对账的记录显示锁，单击解除对账。
+ *
+ * 未对账的记录不渲染任何东西——加锁是批量动作（工具栏「对账」），行内只负责解锁。
+ */
+export function BasicDetailReconcileLockButton({
+  entryId,
+  reconciled,
+  contextAccountId,
+  asButton = true,
+}: {
+  entryId: string;
+  reconciled: boolean;
+  contextAccountId?: string | null;
+  /**
+   * 移动端整行本身是个 `<button>`，行内图标不能渲染嵌套 `<button>`
+   * （无效 HTML，且浏览器在解析期就会把外层按钮闭合掉 → 行结构与 hydration 全乱）。
+   * 与 `EntryAttachmentIndicator` 同一约定：嵌套时传 `false` 渲染 span。
+   */
+  asButton?: boolean;
+}) {
+  const { t } = useI18n();
+  const [busy, setBusy] = useState(false);
+  if (!reconciled) return null;
+
+  async function unlock() {
+    if (busy) return;
+    const confirmed = await showConfirmDialog({
+      title: t("reconcile.unlockConfirmTitle"),
+      message: t("reconcile.unlockConfirm"),
+      confirmLabel: t("reconcile.unlock"),
+      cancelLabel: t("common.cancel"),
+    });
+    if (!confirmed) return;
+    setBusy(true);
+    try {
+      const data = await callReconcileEntries({
+        entryIds: [entryId],
+        action: "unlock",
+        contextAccountId: contextAccountId ?? undefined,
+      });
+      if (!data.ok) {
+        window.alert(data.error || t("reconcile.failed"));
+        return;
+      }
+      dispatchFinanceDataChanged({ reason: "entry-reconcile", accountIds: data.accountIds, entryIds: [entryId] });
+    } catch {
+      window.alert(t("reconcile.failed"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const lockClassName =
+    "flex h-6 w-6 shrink-0 items-center justify-center rounded border border-amber-300 bg-amber-50 text-amber-700 transition-colors hover:bg-amber-100";
+  const lockTitle = t("reconcile.unlockTitle");
+  const lockIcon = <Lock className="h-3.5 w-3.5" />;
+
+  // 整行是可点的 <button>：只当图标用，点它不能顺带打开编辑窗。
+  if (!asButton) {
+    return (
+      <span
+        title={lockTitle}
+        className={lockClassName}
+        onClick={(event) => {
+          event.stopPropagation();
+          void unlock();
+        }}
+      >
+        {lockIcon}
+      </span>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={unlock}
+      disabled={busy}
+      className={`${lockClassName} disabled:opacity-50`}
+      title={lockTitle}
+      aria-label={lockTitle}
+    >
+      {lockIcon}
+    </button>
+  );
+}
 
 export function BasicDetailBatchDeleteMessage() {
   const { deleteMessage } = useBasicDetailSelection();
