@@ -117,11 +117,44 @@ function loadEmittedShim(failures) {
   }
 
   const calls = [];
+  const historyCalls = [];
+  const locationCalls = [];
+  const windowOpenCalls = [];
+  const docHandlers = {};
   const fakeWindow = {
     fetch(input) {
       calls.push(input);
       return Promise.resolve({ ok: true });
     },
+    // Each browser-level navigation exit records what the ORIGINAL implementation
+    // received, so the assertions observe the address-bar/wire URL, not our patch.
+    history: {
+      pushState(...args) {
+        historyCalls.push(["pushState", ...args]);
+      },
+      replaceState(...args) {
+        historyCalls.push(["replaceState", ...args]);
+      },
+    },
+    location: {
+      href: "",
+      assign(url) {
+        locationCalls.push(["assign", url]);
+      },
+      replace(url) {
+        locationCalls.push(["replace", url]);
+      },
+    },
+    open(url, target, features) {
+      windowOpenCalls.push([url, target, features]);
+      return null;
+    },
+    document: {
+      addEventListener(type, handler) {
+        docHandlers[type] = handler;
+      },
+    },
+    Location: { prototype: {} },
   };
   // The shim captures this as `originalOpen` and calls it with the rewritten
   // URL after patching, so recording here observes the wire URL.
@@ -142,6 +175,11 @@ function loadEmittedShim(failures) {
     return null;
   }
 
+  const lastHistoryUrl = (kind) => {
+    const call = historyCalls.filter(([name]) => name === kind).pop();
+    return call?.[3];
+  };
+
   return {
     /** Wire URL handed to the real fetch for one call. */
     fetchWireUrl(input) {
@@ -155,6 +193,68 @@ function loadEmittedShim(failures) {
       lastXhrArgs = null;
       fakeXhrPrototype.open("GET", url);
       return lastXhrArgs?.[1];
+    },
+    /** Address-bar URL handed to the original history.pushState for one call. */
+    pushStateUrl(url) {
+      historyCalls.length = 0;
+      fakeWindow.history.pushState(null, "", url);
+      return lastHistoryUrl("pushState");
+    },
+    /** Address-bar URL handed to the original history.replaceState for one call. */
+    replaceStateUrl(url) {
+      historyCalls.length = 0;
+      fakeWindow.history.replaceState(null, "", url);
+      return lastHistoryUrl("replaceState");
+    },
+    /** Target handed to the original location.assign for one call. */
+    assignUrl(url) {
+      locationCalls.length = 0;
+      fakeWindow.location.assign(url);
+      return locationCalls[0]?.[1];
+    },
+    /** Target handed to the original window.open for one call. */
+    openUrl(url) {
+      windowOpenCalls.length = 0;
+      fakeWindow.open(url);
+      return windowOpenCalls[0]?.[0];
+    },
+    /**
+     * Simulate activating one `<a>` and report what the shim did with it.
+     * `href` is what getAttribute("href") returns, i.e. the attribute as written
+     * in the source -- exactly what the browser would resolve against the origin.
+     */
+    anchorActivation({ href, target = "", type = "click", ...rest }) {
+      const handler = docHandlers[type];
+      if (!handler) return { prevented: false, navigatedTo: "", openedWith: undefined, installed: false };
+      const anchor = {
+        target,
+        getAttribute: (name) => (name === "href" ? href : null),
+        setAttribute: (name, value) => {
+          if (name === "href") anchor.href = value;
+        },
+        hasAttribute: () => false,
+      };
+      const event = {
+        type,
+        target: { closest: (selector) => (selector === "a[href]" ? anchor : null) },
+        defaultPrevented: false,
+        button: rest.button,
+        metaKey: rest.metaKey,
+        ctrlKey: rest.ctrlKey,
+        shiftKey: rest.shiftKey,
+        preventDefault() {
+          event.defaultPrevented = true;
+        },
+      };
+      fakeWindow.location.href = "";
+      windowOpenCalls.length = 0;
+      handler(event);
+      return {
+        installed: true,
+        prevented: event.defaultPrevented,
+        navigatedTo: fakeWindow.location.href,
+        openedWith: windowOpenCalls[0]?.[0],
+      };
     },
   };
 }
@@ -237,6 +337,171 @@ function countPrefixes(value) {
   return value.split(BASE).length - 1;
 }
 
+// Hand-written URL exits never reach Next's basePath rewriting, and the runtime
+// shim above is only the safety net: the call site has to be correct too, or the
+// two layers drift apart and a channel that ships without the shim (7777 direct,
+// Docker, Android) breaks in a way 5.149 cannot reproduce. The scan is textual on
+// purpose -- it must also flag code paths that are never exercised in a test.
+const BASE_PATH_EXIT_PATTERNS = [
+  {
+    label: "location.assign/replace() with a bare root path",
+    pattern: /(?:^|[^\w])location\s*\.\s*(?:assign|replace)\s*\((?![^)]*withBasePath\s*\()\s*["'`]\/(?!\/)/,
+  },
+  {
+    label: "location.href assignment with a bare root path",
+    pattern: /location\s*\.\s*href\s*=\s*["'`]\/(?!\/)/,
+  },
+  {
+    label: "history.pushState/replaceState() with a bare root path",
+    pattern: /history\s*\.\s*(?:pushState|replaceState)\s*\((?![^)]*withBasePath\s*\()\s*[^)]*["'`]\/(?!\/)/,
+  },
+  {
+    label: "window.open() with a bare root path",
+    pattern: /window\s*\.\s*open\s*\((?![^)]*withBasePath\s*\()\s*["'`]\/(?!\/)/,
+  },
+  {
+    // next/image does NOT add basePath to src (verified against
+    // next/dist/shared/lib/get-img-props.js), and a raw <img> never goes through
+    // Next at all. Optimized images have to stay `unoptimized` under the
+    // gateway, because the /_next/image route itself is not prefixed.
+    label: "image src with a bare root path",
+    pattern: /\bsrc=\{?\s*["'`]\/(?!\/)/,
+  },
+];
+const RAW_ANCHOR_PATTERN = /<a\b[^>]*?\bhref=\{?\s*["'`]\/(?!\/)/g;
+const RAW_ANCHOR_LABEL = "raw <a href> with a bare root path (next/link prefixes itself; a raw anchor does not)";
+// next/image gets no basePath from Next either, and `unoptimized` is what makes
+// the gateway path work (the /_next/image route itself is not prefixed), so every
+// image source has to be either already-prefixed or external. A variable or a
+// static import is flagged on purpose: the author has to decide, not the scanner.
+const IMAGE_SRC_PATTERN = /<(?:Image|img)\b[^>]*?\bsrc=(\{[^}]*\}|"[^"]*"|'[^']*')/g;
+const IMAGE_SRC_LABEL = "image src that does not go through withBasePath() (next/image adds no basePath to src, and a raw <img> reaches the gateway root)";
+const BARE_URL_EXIT_ALLOW = "fnos-basepath-allow";
+
+/** A line we must not judge: blank, commented out, or explicitly allowed. */
+function isUnscannableLine(line) {
+  if (line.includes(BARE_URL_EXIT_ALLOW)) return true;
+  const trimmed = line.trim();
+  return !trimmed || trimmed.startsWith("//") || trimmed.startsWith("*") || trimmed.startsWith("/*");
+}
+
+function collectBareUrlExitFailures(failures) {
+  const files = [];
+  const walk = (dir) => {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        walk(full);
+        continue;
+      }
+      if (/\.tsx?$/.test(entry.name)) files.push(full);
+    }
+  };
+  walk(path.join(root, "src"));
+
+  assertBareUrlExitScanner(failures);
+
+  for (const file of files) {
+    const relative = path.relative(root, file).split(path.sep).join("/");
+    for (const hit of scanBareUrlExitSource(relative, read(file))) {
+      failures.push(
+        `${hit.file}:${hit.line}: ${hit.label} -- a bare root path loses the gateway prefix ("${BASE}"); pass it through withBasePath() (or an "// ${BARE_URL_EXIT_ALLOW}: <reason>" comment when it is deliberately raw).`,
+      );
+    }
+  }
+}
+
+/**
+ * Textual scan of one source file for bare-root URL exits. Separate from the walk
+ * so the scanner can be tested against samples -- a scanner nobody tests silently
+ * stops matching after a refactor, and then the contract only holds by luck.
+ */
+function scanBareUrlExitSource(relative, source) {
+  const hits = [];
+  const lines = source.split(/\r?\n/);
+  const lineNumberAt = (index) => source.slice(0, index).split(/\r?\n/).length;
+  const push = (line, label) => hits.push({ file: relative, line, label });
+
+  lines.forEach((line, index) => {
+    if (isUnscannableLine(line)) return;
+    for (const { label, pattern } of BASE_PATH_EXIT_PATTERNS) {
+      if (pattern.test(line)) push(index + 1, label);
+    }
+  });
+
+  const scanMatches = (pattern, label) => {
+    const scanner = new RegExp(pattern.source, "g");
+    let match;
+    while ((match = scanner.exec(source)) !== null) {
+      const line = lineNumberAt(match.index);
+      if (!isUnscannableLine(lines[line - 1] ?? "")) push(line, label);
+      if (scanner.lastIndex === match.index) scanner.lastIndex += 1;
+    }
+  };
+
+  scanMatches(RAW_ANCHOR_PATTERN, RAW_ANCHOR_LABEL);
+
+  const imageScanner = new RegExp(IMAGE_SRC_PATTERN.source, "g");
+  let imageMatch;
+  while ((imageMatch = imageScanner.exec(source)) !== null) {
+    const expression = imageMatch[1];
+    const safe = /withBasePath\s*\(/.test(expression) || /^["']?(?:(?:https?:)?\/\/|data:|blob:)/.test(expression);
+    if (!safe) {
+      const line = lineNumberAt(imageMatch.index);
+      if (!isUnscannableLine(lines[line - 1] ?? "")) push(line, IMAGE_SRC_LABEL);
+    }
+    if (imageScanner.lastIndex === imageMatch.index) imageScanner.lastIndex += 1;
+  }
+
+  return hits;
+}
+
+/** Each sample is a URL exit that MUST be flagged, or a form that must NOT be. */
+const BARE_URL_EXIT_SAMPLES = [
+  { source: 'window.location.assign("/regular-invest?create=1");', label: "location.assign/replace() with a bare root path" },
+  { source: 'window.location.replace(`/reports?view=income`);', label: "location.assign/replace() with a bare root path" },
+  { source: 'window.location.href = "/?view=cash";', label: "location.href assignment with a bare root path" },
+  { source: 'window.history.replaceState(null, "", `/?view=allcash`);', label: "history.pushState/replaceState() with a bare root path" },
+  { source: 'window.history.pushState(state, "", "/reports?view=income");', label: "history.pushState/replaceState() with a bare root path" },
+  { source: 'window.open("/api/v1/attachments/a1", "_blank");', label: "window.open() with a bare root path" },
+  { source: '<Image src="/reward/alipay-9.90.jpg" alt="" unoptimized />', label: "image src with a bare root path" },
+  { source: '<a href="/?accountId=1&view=detail">x</a>', label: RAW_ANCHOR_LABEL },
+  { source: '<Image src={tier.qrUrl} alt="" unoptimized />', label: IMAGE_SRC_LABEL },
+  { source: '<Image src={logo} alt="" unoptimized />', label: IMAGE_SRC_LABEL },
+];
+const BARE_URL_EXIT_CLEAN_SAMPLES = [
+  'window.location.assign(withBasePath("/regular-invest?create=1"));',
+  "window.location.replace(withBasePath(`/reports?view=income`));",
+  'window.location.href = withBasePath("/?view=cash");',
+  'window.history.replaceState(null, "", withBasePath(`/?${q}`));',
+  'window.open(withBasePath("/api/v1/attachments/a1"), "_blank");',
+  'window.location.assign("https://example.com/x");',
+  'window.location.assign("//cdn.example.com/x");',
+  '<Image src={withBasePath(tier.qrUrl)} alt="" unoptimized />',
+  '<a href={withBasePath("/?accountId=1&view=detail")}>x</a>',
+  '<Link href="/reports?view=income">x</Link>',
+  'router.push("/reports?view=income");',
+  'router.replace(`/reports?view=${view}`);',
+  'fetch("/api/v1/reports");',
+  'window.location.href = item.url;',
+  '// <a href="/legacy">x</a> -- fnos-basepath-allow: documentation sample',
+];
+
+function assertBareUrlExitScanner(failures) {
+  for (const sample of BARE_URL_EXIT_SAMPLES) {
+    const hits = scanBareUrlExitSource("sample.tsx", sample.source);
+    if (!hits.some((hit) => hit.label === sample.label)) {
+      failures.push(`bare-URL exit scan: the guard no longer flags ${JSON.stringify(sample.source)} as "${sample.label}"`);
+    }
+  }
+  for (const source of BARE_URL_EXIT_CLEAN_SAMPLES) {
+    const hits = scanBareUrlExitSource("sample.tsx", source);
+    if (hits.length > 0) {
+      failures.push(`bare-URL exit scan: the guard wrongly flags ${JSON.stringify(source)} as "${hits[0].label}"`);
+    }
+  }
+}
+
 /**
  * Collect every guard regression as a message. Empty array === contract holds.
  * @returns {string[]}
@@ -286,6 +551,33 @@ function collectFnosGatewayGuardFailures() {
     expectEqual("emitted shim must leave absolute URLs alone", emittedShim.fetchWireUrl("http://nas/x"), "http://nas/x");
     expectEqual("emitted shim must send prefixed XHR targets unchanged", emittedShim.xhrWireUrl(`${BASE}?view=allcash`), `${BASE}?view=allcash`);
     expectEqual("emitted shim must prefix XHR targets once", emittedShim.xhrWireUrl("/api/v1/x"), `${BASE}/api/v1/x`);
+
+    // Navigation exits. These keep the prefix in the ADDRESS BAR, so they are only
+    // visible on reload / bookmark / share -- the 2026-10-15 fnOS report class.
+    expectEqual("emitted shim must prefix hand-written replaceState targets", emittedShim.replaceStateUrl("/?view=allcash"), `${BASE}/?view=allcash`);
+    expectEqual("emitted shim must leave a prefixed replaceState target alone", emittedShim.replaceStateUrl(`${BASE}?view=allcash`), `${BASE}?view=allcash`);
+    expectEqual("emitted shim must prefix hand-written pushState targets", emittedShim.pushStateUrl("/reports?view=income"), `${BASE}/reports?view=income`);
+    expectEqual("emitted shim must leave a prefixed pushState target alone", emittedShim.pushStateUrl(`${BASE}/reports?view=income`), `${BASE}/reports?view=income`);
+    expectEqual("emitted shim must prefix location.assign targets", emittedShim.assignUrl("/regular-invest?create=1"), `${BASE}/regular-invest?create=1`);
+    expectEqual("emitted shim must leave absolute location targets alone", emittedShim.assignUrl("http://nas/x"), "http://nas/x");
+    expectEqual("emitted shim must prefix window.open targets", emittedShim.openUrl("/api/v1/attachments/a1"), `${BASE}/api/v1/attachments/a1`);
+
+    // Raw anchors. This is what the 「新增计划」 report actually did: a bare
+    // /regular-invest?create=1 reached http://nas:5666/..., where fnOS routes
+    // nothing to MMH and answers with its own "no page installed here" shell.
+    const bareAnchor = emittedShim.anchorActivation({ href: "/regular-invest?create=1" });
+    expectEqual("emitted shim must intercept a raw root anchor", bareAnchor.prevented, true);
+    expectEqual("emitted shim must navigate a raw root anchor with the prefix", bareAnchor.navigatedTo, `${BASE}/regular-invest?create=1`);
+    const blankAnchor = emittedShim.anchorActivation({ href: "/api/v1/attachments/a1", target: "_blank" });
+    expectEqual("emitted shim must intercept a raw target=_blank anchor", blankAnchor.prevented, true);
+    expectEqual("emitted shim must open a raw target=_blank anchor with the prefix", blankAnchor.openedWith, `${BASE}/api/v1/attachments/a1`);
+    const middleClickAnchor = emittedShim.anchorActivation({ href: "/api/v1/attachments/a1", type: "auxclick" });
+    expectEqual("emitted shim must open a raw middle-click anchor with the prefix", middleClickAnchor.openedWith, `${BASE}/api/v1/attachments/a1`);
+    const prefixedAnchor = emittedShim.anchorActivation({ href: `${BASE}/overview` });
+    expectEqual("emitted shim must NOT intercept a next/link anchor (it already carries the prefix)", prefixedAnchor.prevented, false);
+    expectEqual("emitted shim must NOT navigate a next/link anchor itself", prefixedAnchor.navigatedTo, "");
+    const externalAnchor = emittedShim.anchorActivation({ href: "https://example.com/x" });
+    expectEqual("emitted shim must NOT intercept an external anchor", externalAnchor.prevented, false);
   }
 
   if (withBasePath) {
@@ -381,6 +673,9 @@ function collectFnosGatewayGuardFailures() {
   if (!calledForReal) {
     failures.push("scripts/fnos/mmh-unix-server.cjs must call normalizeGatewayForwardedHost(req.headers) in its request handler.");
   }
+
+  // Layer 1: the call sites themselves.
+  collectBareUrlExitFailures(failures);
 
   return failures;
 }

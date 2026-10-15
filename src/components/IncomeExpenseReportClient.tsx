@@ -10,6 +10,7 @@ import type { DetailEntry } from "@/components/DetailViewClient";
 import { formatMoney } from "@/lib/format";
 import { pnlColor, type ColorScheme } from "@/lib/client/colors";
 import { useI18n } from "@/lib/i18n";
+import { withBasePath } from "@/lib/base-path";
 import type {
   IncomeExpenseGroupBy,
   IncomeExpenseReport,
@@ -82,7 +83,10 @@ function buildClearUrl(query: ReportQuery) {
     params.set("startYear", query.start.slice(0, 4));
     params.set("endYear", query.end.slice(0, 4));
   }
-  return `/reports?${params.toString()}`;
+  // Single sink: every caller of buildClearUrl feeds it to history.replaceState /
+  // pushState, i.e. straight into the address bar, so the gateway prefix belongs
+  // here rather than at each call site.
+  return withBasePath(`/reports?${params.toString()}`);
 }
 
 function detailKey(detail: DetailSelection) {
@@ -256,7 +260,7 @@ export function IncomeExpenseReportClient({
       clientDetailKeyRef.current = activeDetailKey(data.data.details);
       setActiveDetails(data.data.details);
       setDetailEntries(data.data.entries ?? []);
-      window.history.replaceState(window.history.state, "", `/reports?${params.toString()}`);
+      window.history.replaceState(window.history.state, "", withBasePath(`/reports?${params.toString()}`));
       window.requestAnimationFrame(() => {
         document.getElementById("report-details")?.scrollIntoView({ block: "nearest" });
       });

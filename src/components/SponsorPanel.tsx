@@ -6,6 +6,7 @@ import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { ArrowUpRight, CheckCircle2, Coffee, Heart, QrCode, Star } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
+import { withBasePath } from "@/lib/base-path";
 
 const GITHUB_REPO_URL = "https://github.com/frankluise5220/MMH";
 
@@ -145,7 +146,7 @@ export function SponsorPanel() {
                   ) : (
                     <span className="relative block aspect-square w-full">
                       <Image
-                        src={tier.qrUrl}
+                        src={withBasePath(tier.qrUrl)}
                         alt={tierQrHint}
                         fill
                         sizes="(max-width: 767px) 100vw, 30vw"
@@ -210,7 +211,7 @@ export function SponsorPanel() {
             onClick={(event) => event.stopPropagation()}
           >
             <span className="relative block h-72 w-72">
-              <Image src={zoomedTier.qrUrl} alt={qrHint} fill sizes="288px" unoptimized className="object-contain" />
+              <Image src={withBasePath(zoomedTier.qrUrl)} alt={qrHint} fill sizes="288px" unoptimized className="object-contain" />
             </span>
             <p className="mt-3 text-center text-xs text-slate-500">{qrHint}</p>
             <button

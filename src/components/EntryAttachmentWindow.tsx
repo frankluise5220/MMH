@@ -5,6 +5,7 @@ import { Paperclip, Plus, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { useI18n } from "@/lib/i18n";
+import { withBasePath } from "@/lib/base-path";
 
 export const ATTACHMENT_MAX_BYTES = 5 * 1024 * 1024;
 
@@ -154,7 +155,11 @@ export function EntryAttachmentWindow({
             <div key={item.id} className="flex items-center gap-2 rounded border border-slate-200 bg-white px-2 py-1.5 text-sm">
               <a
                 className="min-w-0 flex-1 truncate text-blue-600 hover:underline"
-                href={item.url || `/api/v1/attachments/${encodeURIComponent(item.id)}`}
+                // The API hands over a channel-neutral path ("/api/v1/attachments/.."),
+                // so the gateway prefix has to be added here: a raw target="_blank"
+                // anchor never passes through Next, and without the prefix fnOS
+                // answers with its own "no page installed here" shell.
+                href={withBasePath(item.url || `/api/v1/attachments/${encodeURIComponent(item.id)}`)}
                 target="_blank"
                 rel="noreferrer"
                 title={item.name}

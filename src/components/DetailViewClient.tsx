@@ -27,6 +27,7 @@ import { rebaseRunningBalancesAfterSameDayReorder, startOfDayRunningBalanceSeed 
 import { buildLiabilityActivityEditEvent, inferLiabilityMode, isLiabilityActivityEntry, type LiabilityMode } from "@/lib/liability-entry-edit";
 import { parseLoanPrepayStrategy } from "@/lib/loan-prepay-strategy";
 import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
+import { withBasePath } from "@/lib/base-path";
 import { isCreditCardRepaymentTransfer, isLicensedInsuranceEntry, isRegularInvestRefundEntry, TRANSACTION_SOURCE_INSURANCE } from "@/lib/transaction-semantics";
 import { normalizeSettlementTransferCategoryName } from "@/lib/settlement-category-name";
 import { advanceDialogAmount } from "@/lib/advance-transfer";
@@ -766,7 +767,9 @@ export function DetailViewClient({
       pageSize: "40",
       focusEntryId: entry.id,
     });
-    window.location.assign(`/?${params.toString()}`);
+    // 手写 URL 不会走 Next 的 basePath 重写：fnOS 网关下裸 "/?..." 落在网关
+    // 根路径（那里没有 MMH 路由，飞牛回「这里暂时没有装入页面」）。
+    window.location.assign(withBasePath(`/?${params.toString()}`));
   }, [enableAccountNavigation]);
 
   const renderNavigableAccountLabel = useCallback((

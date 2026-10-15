@@ -4,6 +4,7 @@ import { ChevronDown, ChevronRight, Plus } from "lucide-react";
 import { createPortal } from "react-dom";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useI18n } from "@/lib/i18n";
+import { MMH_BASE_PATH, withBasePath } from "@/lib/base-path";
 import type { LoanTypeValue } from "@/lib/loan-type";
 
 type EntryKind =
@@ -75,6 +76,21 @@ type Props = {
 
 function makeRequestId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+/**
+ * 当前路由，去掉 fnOS 网关前缀后再比较。
+ *
+ * 网关（5666）下 pathname 是 `/app/mmh/regular-invest`，裸 `"/regular-invest"`
+ * 比较永远不成立；而局域网兼容端口（7777）直连时地址栏本身不带前缀。
+ * 两种访问方式都要能命中，才能就地派发事件而不是整页跳转。
+ */
+function currentRoutePath(): string {
+  const { pathname } = window.location;
+  if (MMH_BASE_PATH && pathname.startsWith(MMH_BASE_PATH)) {
+    return pathname.slice(MMH_BASE_PATH.length) || "/";
+  }
+  return pathname;
 }
 
 function getCurrentFundContext(context?: Props["context"]) {
@@ -369,7 +385,7 @@ function dispatchEntryAction(kind: EntryKind, context?: Props["context"], loanTy
       );
       return;
     case "regular-task":
-      if (window.location.pathname === "/regular-invest") {
+      if (currentRoutePath() === "/regular-invest") {
         window.dispatchEvent(
           new CustomEvent("mmh:regular-task:create", {
             detail: {
@@ -381,7 +397,7 @@ function dispatchEntryAction(kind: EntryKind, context?: Props["context"], loanTy
           }),
         );
       } else {
-        window.location.assign("/regular-invest?create=1");
+        window.location.assign(withBasePath("/regular-invest?create=1"));
       }
       return;
   }

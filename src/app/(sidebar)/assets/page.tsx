@@ -8,6 +8,7 @@ import { getServerT } from "@/lib/server/i18n";
 import { cookies } from "next/headers";
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
+import { withBasePath } from "@/lib/base-path";
 
 export const dynamic = "force-dynamic";
 
@@ -67,7 +68,10 @@ export default async function AssetsPage() {
           return (
             <a
               key={a.id}
-              href={`/?accountId=${a.id}&view=detail`}
+              // A raw anchor keeps the full page load this page has always done,
+              // but has to carry the gateway prefix itself (next/link would, an
+              // <a> does not).
+              href={withBasePath(`/?accountId=${a.id}&view=detail`)}
               className="block page-card px-6 py-4 transition-all"
             >
               <div className="flex justify-between items-center">

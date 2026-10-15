@@ -52,17 +52,29 @@ export const viewport: Viewport = {
 
 /**
  * fnOS gateway builds only. Next rewrites redirect(), <Link>, the router and
- * /_next assets for basePath, but it cannot rewrite a hand-written
- * `fetch("/api/...")` -- and the browser resolves that against the fnOS origin
- * (http://nas:5666/api/...), where the gateway routes nothing to MMH. Measured
- * on the 5.149 device: /app/mmh/api/* answers, /api/* is 404.
+ * /_next assets for basePath, but it cannot rewrite a URL the app hands to the
+ * browser by hand. Measured on the 5.149 device: /app/mmh/api/* answers,
+ * /api/* is 404, and a bare `/regular-invest?create=1` lands on the gateway
+ * root, which routes nothing to MMH and answers with fnOS's own "here is no
+ * page installed" placeholder.
  *
- * So install one request-recording-level shim, before any app code runs:
- * origin-absolute paths get the prefix; external URLs, "//host" and
- * already-prefixed paths are left alone. Empty (no script emitted at all) on
- * Docker / Synology / Android, where MMH_BASE_PATH is "".
+ * Hand-written exits are covered in three layers, and all three are required:
+ *
+ *  1. The call site uses `withBasePath()` (`src/lib/base-path.ts`) and is right
+ *     on its own. The guard script rejects new bare-root exits.
+ *  2. THIS shim rewrites every browser-level exit before app code runs, so a
+ *     forgotten call site still works instead of dropping the prefix. It covers
+ *     fetch / XMLHttpRequest (requests), history.pushState/replaceState,
+ *     location.assign/replace, window.open and raw `<a href>` activations
+ *     (navigations, including target="_blank" and modifier clicks).
+ *  3. `scripts/check-fnos-gateway-guards.cjs` extracts this script and these
+ *     behaviours from the real sources, so a regression fails packaging.
+ *
+ * Only origin-absolute paths are rewritten; external URLs, "//host",
+ * "data:"/"blob:" and already-prefixed paths are left alone. Empty (no script
+ * emitted at all) on Docker / Synology / Android, where MMH_BASE_PATH is "".
  */
-const gatewayRequestPrefixScript = MMH_BASE_PATH
+const gatewayPrefixScript = MMH_BASE_PATH
   ? `
 (() => {
   const BASE = ${JSON.stringify(MMH_BASE_PATH)};
@@ -87,6 +99,9 @@ const gatewayRequestPrefixScript = MMH_BASE_PATH
     if (fixed === path) return url;
     return new URL(url.origin + fixed);
   };
+  // fetch/XHR/history/location/window.open all accept a string or a URL object.
+  const rewriteTarget = (target) =>
+    typeof URL !== "undefined" && target instanceof URL ? rewriteUrl(target) : rewrite(target);
   const originalFetch = window.fetch;
   if (typeof originalFetch === "function") {
     window.fetch = function (input, init) {
@@ -116,6 +131,104 @@ const gatewayRequestPrefixScript = MMH_BASE_PATH
     }
     return originalOpen.apply(this, args);
   };
+  // Hand-written history/location navigations. Next prefixes its own
+  // router.push/replace, but not a bare replaceState(..., "/?view=x") or
+  // location.assign("/x") -- and those are exactly what silently drop the
+  // prefix from the address bar, which breaks reload, bookmark and share.
+  const shimHistory = window.history;
+  const patchHistory = (name) => {
+    const original = shimHistory[name];
+    if (typeof original !== "function") return;
+    shimHistory[name] = function (state, title, url) {
+      const args = Array.prototype.slice.call(arguments);
+      if (args.length > 2) args[2] = rewriteTarget(args[2]);
+      return original.apply(this, args);
+    };
+  };
+  if (shimHistory) {
+    try {
+      patchHistory("pushState");
+      patchHistory("replaceState");
+    } catch (error) {}
+  }
+  const shimLocation = window.location;
+  const patchLocation = (name) => {
+    const original = shimLocation[name];
+    if (typeof original !== "function") return;
+    const patched = function (url) {
+      const args = Array.prototype.slice.call(arguments);
+      args[0] = rewriteTarget(args[0]);
+      return original.apply(this, args);
+    };
+    try {
+      shimLocation[name] = patched;
+      // A silent no-op assignment (non-writable in some engines) must not pass
+      // for a successful patch.
+      if (shimLocation[name] === patched) return;
+    } catch (error) {}
+    // Location members are unforgeable own properties; fall back to the
+    // prototype only when the instance itself refuses the assignment.
+    const proto = window.Location && window.Location.prototype;
+    if (proto) {
+      try {
+        proto[name] = patched;
+      } catch (innerError) {}
+    }
+  };
+  if (shimLocation) {
+    try {
+      patchLocation("assign");
+      patchLocation("replace");
+    } catch (error) {}
+  }
+  const originalOpenWindow = window.open;
+  if (typeof originalOpenWindow === "function") {
+    window.open = function (url) {
+      const args = Array.prototype.slice.call(arguments);
+      if (args.length > 0) args[0] = rewriteTarget(args[0]);
+      return originalOpenWindow.apply(this, args);
+    };
+  }
+  // A raw <a href="/..."> (including target="_blank", e.g. an attachment
+  // download) never passes through Next's router, so the browser resolves it
+  // against the gateway origin. An anchor that already carries the prefix --
+  // every next/link -- is left untouched, so SPA navigation keeps working.
+  const shimDocument = window.document;
+  const activateAnchor = (event) => {
+    try {
+      if (!event || event.defaultPrevented) return;
+      const target = event.target;
+      if (!target || typeof target.closest !== "function") return;
+      const anchor = target.closest("a[href]");
+      if (!anchor) return;
+      const raw = anchor.getAttribute("href");
+      if (typeof raw !== "string") return;
+      const fixed = rewrite(raw);
+      if (fixed === raw) return;
+      if (typeof anchor.hasAttribute === "function" && anchor.hasAttribute("download")) {
+        // Nothing to intercept here: point the default download at the fixed URL.
+        anchor.setAttribute("href", fixed);
+        return;
+      }
+      event.preventDefault();
+      const opensNewTab =
+        anchor.target === "_blank" ||
+        event.type === "auxclick" ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.shiftKey ||
+        event.button === 1;
+      if (opensNewTab && typeof window.open === "function") {
+        window.open(fixed, "_blank", "noopener,noreferrer");
+        return;
+      }
+      window.location.href = fixed;
+    } catch (error) {}
+  };
+  if (shimDocument && typeof shimDocument.addEventListener === "function") {
+    shimDocument.addEventListener("click", activateAnchor, true);
+    shimDocument.addEventListener("auxclick", activateAnchor, true);
+  }
 })();
 `
   : "";
@@ -135,11 +248,11 @@ export default async function RootLayout({
         suppressHydrationWarning
         className="antialiased h-screen overflow-x-hidden overflow-y-hidden"
       >
-        {gatewayRequestPrefixScript ? (
+        {gatewayPrefixScript ? (
           <Script
-            id="gateway-request-prefix"
+            id="gateway-prefix"
             strategy="beforeInteractive"
-            dangerouslySetInnerHTML={{ __html: gatewayRequestPrefixScript }}
+            dangerouslySetInnerHTML={{ __html: gatewayPrefixScript }}
           />
         ) : null}
         <I18nProvider initialLanguage={displayLanguage}>{children}</I18nProvider>
