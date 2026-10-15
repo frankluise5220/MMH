@@ -94,7 +94,7 @@
           "os_min_version": "0.9.0",
           "packages": {
             "x86": {
-              "download_url": "http://fnapp.floatingice.win/apps/mmh-0.1.71.fpk",
+              "download_url": "http://fnapp.floatingice.win/apps/mmh-0.1.70.fpk",
               "size": 56305395,
               "sha256": "77575ad0429a6fd48c1f7a8afc5eb84ab224010198b3515e3d0bcbc90745fe28"
             },
