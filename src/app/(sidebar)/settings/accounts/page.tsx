@@ -28,6 +28,7 @@ import { currentBillingDayFromRules, type CreditBillingDayRuleView } from "@/lib
 import { CREDIT_CARD_MAX_REPAYMENT_OFFSET_DAYS } from "@/lib/credit/rules";
 import { SettingsActionButton, SettingsPageHeader, SettingsPrimaryAddButton } from "@/components/settings/SettingsPageScaffold";
 import { buildAccountDisplayOption } from "@/lib/account-display";
+import { accountOwnerNameById, buildAccountOwnerOptions } from "@/lib/account-owner-options";
 import { getAccountLabelFieldsPreference, getCreditCardLabelTemplatePreference } from "@/lib/client/appPreferences";
 import { fetchSettingsAccountData, getCachedSettingsAccountData, notifySettingsDataChanged } from "@/lib/client/settingsCache";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
@@ -67,7 +68,7 @@ function kindIcon(k: string) {
   return map[kindIconName(k)] || <Building2 className="w-3.5 h-3.5" />;
 }
 
-type Group = { id: string; name: string; sortOrder: number };
+type Group = { id: string; name: string; sortOrder: number; institutionId?: string | null };
 type LoanCategoryView = { id: string; name: string; baseType: string; sortOrder: number; isSystem: boolean; isActive: boolean };
 type Institution = { id: string; name: string; shortName?: string | null; type?: string };
 type Counterparty = { id: string; name: string; shortName?: string | null; type?: string | null; isReimbursable?: boolean | null };
@@ -627,10 +628,17 @@ export default function SettingsAccountsPage() {
     name: institution.shortName?.trim() || institution.name,
     type: institution.type,
   }));
-  const statisticsUsers: StatisticsUserItem[] = groups.map((group) => ({
-    id: group.id,
-    name: group.name,
-  }));
+  // 「账户所有人」一律按配对家庭成员的姓名展示（见 src/lib/account-owner-options.ts）：
+  // 选项 value 仍是分组 id，只换展示名；在家庭成员或账户所有人任一处改名都双向同步。
+  const ownerOptions = useMemo(
+    () => buildAccountOwnerOptions(
+      groups,
+      institutions.filter((institution) => institution.type === "family_member"),
+    ),
+    [groups, institutions],
+  );
+  const ownerNameByGroupId = useMemo(() => accountOwnerNameById(ownerOptions), [ownerOptions]);
+  const statisticsUsers: StatisticsUserItem[] = ownerOptions;
   const accountKindFilterOptions = useMemo(() => kindOrder.filter((kind) =>
     accounts.some((account) => normalizedAccountKind(account) === kind),
   ), [accounts]);
@@ -974,11 +982,14 @@ export default function SettingsAccountsPage() {
       width: 110,
       minWidth: 90,
       truncate: true,
-      sortValue: (a) => a.AccountGroup?.name || "",
-      filterText: (a) => a.AccountGroup?.name || null,
-      render: (a) => (a.AccountGroup
-        ? <span className="text-slate-700">{a.AccountGroup.name}</span>
-        : <span className="text-slate-300">-</span>),
+      sortValue: (a) => ownerNameByGroupId.get(a.groupId ?? "") ?? a.AccountGroup?.name ?? "",
+      filterText: (a) => ownerNameByGroupId.get(a.groupId ?? "") ?? a.AccountGroup?.name ?? null,
+      render: (a) => {
+        const ownerName = ownerNameByGroupId.get(a.groupId ?? "") ?? a.AccountGroup?.name;
+        return ownerName
+          ? <span className="text-slate-700">{ownerName}</span>
+          : <span className="text-slate-300">-</span>;
+      },
     },
     {
       key: "institution",
@@ -1092,7 +1103,7 @@ export default function SettingsAccountsPage() {
         ? <span className="text-slate-500">{a.note}</span>
         : <span className="text-slate-300">-</span>),
     },
-  ], [t, tf, router, accountKindLabel, investmentLabel, fixedAssetTypeLabel, mergeSelectedIds, toggleMergeSelected, openTrash]);
+  ], [t, tf, router, accountKindLabel, investmentLabel, fixedAssetTypeLabel, mergeSelectedIds, toggleMergeSelected, openTrash, ownerNameByGroupId]);
 
   const renderRowActions = useCallback((a: Account) => (
     <>
@@ -1212,7 +1223,7 @@ export default function SettingsAccountsPage() {
         open={showCreateAccount}
         onClose={() => setShowCreateAccount(false)}
         fieldData={{
-          groupId: groups,
+          groupId: statisticsUsers,
           institutionId: institutions,
           // 往来款账户的「往来对象」下拉：只允许 person/organization（merchant 是常用商户，不当往来款对象）
           counterpartyId: counterparties
@@ -1419,7 +1430,7 @@ export default function SettingsAccountsPage() {
                   <div className={loanLockedWrapperCls}>
                     <SmartSelect mode="single" value={editForm.groupId || ""}
                       onChange={id => setEditForm(f => ({ ...f, groupId: id }))}
-                      options={groups.map(g => ({ id: g.id, label: g.name }))}
+                      options={statisticsUsers.map((owner) => ({ id: owner.id, label: owner.name }))}
                       placeholder={t("settings.accounts.selectOwner")}
                       onCreateClick={() => setNestedEntityType("group")} createLabel={t("settings.accounts.addOwner")} />
                   </div>

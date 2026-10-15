@@ -5,6 +5,7 @@ import Link from "next/link";
 
 import { LiabilitiesGuideClient } from "@/components/LiabilitiesGuideClient";
 import { buildAccountDisplayOption, normalizeCreditCardLabelTemplate } from "@/lib/account-display";
+import { buildAccountOwnerOptions } from "@/lib/account-owner-options";
 import { LENDER_INSTITUTION_TYPE_VALUES, institutionTypeLabel, isInstitutionTypeOf, isSettlementCounterpartyType } from "@/lib/account-kinds";
 import { toNumber } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
@@ -299,7 +300,10 @@ export default async function LiabilitiesPage({
     };
   });
   const nestedFieldData = {
-    groupId: groups.filter((group) => group.name !== "未指定").map((group) => ({ id: group.id, name: group.name })),
+    groupId: buildAccountOwnerOptions(
+      groups.filter((group) => group.name !== "未指定"),
+      institutions.filter((institution) => institution.type === "family_member"),
+    ),
     institutionId: institutions.map((institution) => ({ id: institution.id, name: institution.name, type: institution.type ?? "" })),
     counterpartyId: accountLinkedCounterparties.map((counterparty) => ({
       id: counterparty.id,

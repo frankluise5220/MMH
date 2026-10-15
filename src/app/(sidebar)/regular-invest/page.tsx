@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { buildAccountDisplayOption, buildFlatAccountOptions, buildGroupedAccountOptions } from "@/lib/account-display";
+import { buildAccountOwnerOptions } from "@/lib/account-owner-options";
 import { buildCategorySmartSelectOptions } from "@/components/categorySmartSelect";
 import { categoryOrderBy } from "@/lib/category-order";
 import { decodeScheduledTaskMemo, getLoanScheduledPlanRole, isSystemManagedScheduledTask, normalizeScheduledTaskType, scheduledTaskTypeLabel } from "@/lib/scheduled-task";
@@ -487,7 +488,10 @@ export default async function RegularInvestPage() {
         investProductType: account.investProductType,
       }))}
       nestedFieldData={{
-        groupId: groups.map((group) => ({ id: group.id, name: group.name })),
+        groupId: buildAccountOwnerOptions(
+          groups,
+          institutions.filter((institution) => institution.type === "family_member"),
+        ),
         institutionId: institutions.map((institution) => ({ id: institution.id, name: institution.name, type: institution.type ?? undefined })),
       }}
       transactionCreateAction={createTransaction}

@@ -14,6 +14,7 @@ import { loadWealthStatisticSourceEntries } from "@/lib/server/investment-statis
 import { buildStatisticsCurrencyConverter } from "@/lib/server/statistics-currency";
 import { buildStatisticsFundDisplayResolver } from "@/lib/server/statistics-fund-display";
 import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
+import { buildAccountOwnerOptions } from "@/lib/account-owner-options";
 import {
   normalizeDefaultCategoryHierarchyForHousehold,
   SYSTEM_FINANCE_INVESTMENT_INCOME_CATEGORY,
@@ -108,7 +109,7 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
 
   await normalizeDefaultCategoryHierarchyForHousehold(prisma, ctx.householdId);
 
-  const [allAccounts, accountKindRows, categories, allInstitutions, allUsers] = await Promise.all([
+  const [allAccounts, accountKindRows, categories, allInstitutions, ownerGroups, ownerMembers] = await Promise.all([
     prisma.account.findMany({
       where: { ...hidFilter, isActive: true, counterpartyId: null, kind: { not: "insurance" } },
       select: { id: true, name: true, kind: true, userId: true, groupId: true, counterpartyId: true, numberMasked: true, Institution: { select: { id: true, name: true, type: true } } },
@@ -126,8 +127,12 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
       orderBy: categoryOrderBy(),
     }),
     prisma.institution.findMany({ where: { householdId: ctx.householdId, Account: { some: { ...hidFilter, isActive: true, counterpartyId: null, kind: { not: "insurance" } } } }, select: { id: true, name: true, type: true }, orderBy: { name: "asc" } }),
-    prisma.accountGroup.findMany({ where: { householdId: ctx.householdId, Account: { some: { ...hidFilter, isActive: true, counterpartyId: null, kind: { not: "insurance" } } } }, select: { id: true, name: true }, orderBy: { name: "asc" } }),
+    prisma.accountGroup.findMany({ where: { householdId: ctx.householdId, Account: { some: { ...hidFilter, isActive: true, counterpartyId: null, kind: { not: "insurance" } } } }, select: { id: true, name: true, institutionId: true }, orderBy: { name: "asc" } }),
+    prisma.institution.findMany({ where: { householdId: ctx.householdId, type: "family_member" }, select: { id: true, name: true } }),
   ]);
+
+  // 「账户所有人」一律按配对家庭成员的姓名展示（见 src/lib/account-owner-options.ts）。
+  const allUsers = buildAccountOwnerOptions(ownerGroups, ownerMembers);
 
   const nonInvestAccountIds = allAccounts.filter((a) => !isPureInvestmentAccount(a)).map(a => a.id);
   const accountKindById = new Map(accountKindRows.map((account) => [account.id, account.kind]));

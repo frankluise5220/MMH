@@ -22,6 +22,7 @@ import { FundGroupModeFilter } from "@/components/FundGroupModeFilter";
 import FundPortfolioTrendChart from "@/components/FundPortfolioTrendChart";
 import { loadFundPortfolioTrendData } from "@/lib/server/fund-portfolio-trend";
 import { buildAccountDisplayOption, buildGroupedAccountOptions, normalizeCreditCardLabelTemplate } from "@/lib/account-display";
+import { buildAccountOwnerOptions, filterAccountOwnersWithGroupIds } from "@/lib/account-owner-options";
 import { ACCOUNT_LABEL_FIELDS_COOKIE, accountLabelFieldsFromCookieValue } from "@/lib/server/account-label-fields";
 import { kindLabel } from "@/lib/account-kinds";
 import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
@@ -240,11 +241,17 @@ export default async function ReportsPage({
 
 
   const commonData = await loadCommonData(ctx.hidFilter);
+  // 「账户所有人」一律按配对家庭成员的姓名展示（见 src/lib/account-owner-options.ts）：
+  // 建账时首次赋成飞牛登录名 / 本地管理员名都无所谓，用户在家庭成员或账户所有人
+  // 任一处改名即可，两边双向同步。
+  const ownerOptions = buildAccountOwnerOptions(
+    commonData.groups,
+    commonData.institutions.filter((institution) => institution.type === "family_member"),
+  );
+  const ownerFilterUsers = (records: ReadonlyArray<{ groupId?: string | null }>) =>
+    filterAccountOwnersWithGroupIds(ownerOptions, records.map((record) => record.groupId));
   const allAccountRecords = commonData.accounts.filter((account) =>
     account.isActive && account.isPlaceholder !== true && account.name !== "未指定账户",
-  );
-  const groupsWithAccounts = commonData.groups.filter((group) =>
-    allAccountRecords.some((account) => account.groupId === group.id),
   );
   const accountRecords = allAccountRecords.filter((account) => !isPureInvestmentAccount(account));
   const allAccountDisplayOptions = allAccountRecords.map((account) =>
@@ -306,7 +313,7 @@ export default async function ReportsPage({
   const incomeFilterInstitutions = commonData.institutions
     .filter((institution) => incomeFilterAccounts.some((account) => account.Institution?.id === institution.id))
     .map((institution) => ({ id: institution.id, name: institution.name, type: institution.type ?? null }));
-  const incomeFilterUsers = groupsWithAccounts.map((group) => ({ id: group.id, name: group.name }));
+  const incomeFilterUsers = ownerFilterUsers(allAccountRecords);
   const selectedIncomeUserIds = typeof params.userIds === "string"
     ? params.userIds.split(",").map((id) => id.trim()).filter(Boolean)
     : [];
@@ -398,9 +405,7 @@ export default async function ReportsPage({
   const currentStockHref = buildReportHref("stock-holdings", undefined, undefined, undefined, PROFIT_SCOPE_ALL);
   const currentFundHref = buildReportHref("fund-holdings", undefined, undefined, undefined, PROFIT_SCOPE_ALL);
   const currentStatisticsHref = buildStatisticsHref(profitYear);
-  const investmentFilterUsers = commonData.groups
-    .filter((group) => investmentAccountRecords.some((account) => account.groupId === group.id))
-    .map((group) => ({ id: group.id, name: group.name }));
+  const investmentFilterUsers = ownerFilterUsers(investmentAccountRecords);
   const investmentFilterInstitutions = commonData.institutions
     .filter((institution) => investmentAccountRecords.some((account) => account.institutionId === institution.id))
     .map((institution) => ({ id: institution.id, name: institution.name, type: institution.type ?? null }));
@@ -578,9 +583,7 @@ export default async function ReportsPage({
       JSON.stringify(ctx.hidFilter),
       JSON.stringify(stockScopedAccountIds ?? []),
     );
-    const stockFilterUsers = commonData.groups
-      .filter((group) => stockAccountRecords.some((account) => account.groupId === group.id))
-      .map((group) => ({ id: group.id, name: group.name }));
+    const stockFilterUsers = ownerFilterUsers(stockAccountRecords);
     const stockFilterInstitutions = commonData.institutions
       .filter((institution) => stockAccountRecords.some((account) => account.institutionId === institution.id))
       .map((institution) => ({ id: institution.id, name: institution.name, type: institution.type ?? null }));
@@ -714,9 +717,7 @@ export default async function ReportsPage({
       JSON.stringify(fundScopedAccountIds ?? []),
       JSON.stringify(selectedFundCompanies),
     );
-    const fundFilterUsers = commonData.groups
-      .filter((group) => fundAccountRecords.some((account) => account.groupId === group.id))
-      .map((group) => ({ id: group.id, name: group.name }));
+    const fundFilterUsers = ownerFilterUsers(fundAccountRecords);
     const fundFilterInstitutions = commonData.institutions
       .filter((institution) => fundAccountRecords.some((account) => account.institutionId === institution.id))
       .map((institution) => ({ id: institution.id, name: institution.name, type: institution.type ?? null }));
@@ -868,7 +869,6 @@ export default async function ReportsPage({
     category.type === "income" || category.type === "expense",
   );
   const editTags = commonData.tags;
-  const editGroups = commonData.groups;
   const editInstitutions = commonData.institutions;
   const editCounterparties = commonData.counterparties;
   const expenseCategories = editCategories
@@ -892,7 +892,7 @@ export default async function ReportsPage({
       isSystem: category.isSystem,
     }));
   const nestedFieldData = {
-    groupId: editGroups.map((group) => ({ id: group.id, name: group.name })),
+    groupId: ownerOptions.map((option) => ({ id: option.id, name: option.name })),
     institutionId: editInstitutions.map((institution) => ({ id: institution.id, name: institution.name, type: institution.type ?? "" })),
     counterpartyId: editCounterparties.map((counterparty) => ({
       id: counterparty.id,
