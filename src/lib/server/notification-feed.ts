@@ -1,18 +1,29 @@
-import { FundSubtype, RegularInvestStatus } from "@prisma/client";
+import { AccountKind, FundSubtype, Prisma, RegularInvestStatus } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
+import {
+  buildAccountDisplayOption,
+  DEFAULT_CREDIT_CARD_LABEL_TEMPLATE,
+  type AccountDisplaySource,
+  type AccountLabelField,
+} from "@/lib/account-display";
+import { getMaintainedAccountBalances } from "@/lib/server/account-balance";
 import { addDaysUtc, formatDateUtc, startOfDayUtc, toNumber } from "@/lib/date-utils";
 import {
   decodeScheduledTaskMemo,
+  getLoanScheduledPlanRole,
   normalizeScheduledTaskType,
   scheduledTaskTypeLabel,
   type ScheduledTaskPayload,
 } from "@/lib/scheduled-task";
 import {
   isManualConfirmReminderKind,
+  isOutflowReminderKind,
   isUpcomingReminderKind,
   reminderUrgency,
   type ExecutionReceipt,
+  type ExecutionReceiptAccountGroup,
+  type ExecutionReceiptGroup,
   type ReminderItem,
   type ReminderKind,
 } from "@/lib/notifications";
@@ -34,7 +45,11 @@ export const REMINDER_WINDOW_DAYS = 7;
  * 但也不能无限回溯，否则长期卡住的僵尸计划会永久霸占面板。
  */
 export const REMINDER_OVERDUE_DAYS = 30;
-/** 回执统计窗口（天）。 */
+/**
+ * 回执回溯窗口（天）：只用来（a）找出最近一批落账，（b）回答"近 N 天什么都没落账"。
+ * **不是**用来累加条数的——面板只报最近一批的条数，窗口累计会把"本次生成 20 条"
+ * 的标题和一大堆数字搅在一起。
+ */
 export const RECEIPT_WINDOW_DAYS = 7;
 /**
  * 同一批执行写在同一个事务里，createdAt 几乎相同。用分钟级窗口把"最近一次执行"
@@ -87,6 +102,10 @@ function diffDaysUtc(from: Date, to: Date) {
 
 type PlanRow = {
   id: string;
+  accountId: string;
+  cashAccountId: string | null;
+  accountName: string | null;
+  cashAccountName: string | null;
   fundName: string | null;
   planName: string | null;
   targetName: string | null;
@@ -97,6 +116,20 @@ type PlanRow = {
   nextRunDate: Date;
   status: RegularInvestStatus;
 };
+
+/**
+ * 出账提醒的**付款账户**——与执行器 scheduled-task-executor 的口径一致：
+ * - 固定支出/固定收入：记在计划自身的账户（accountId）；
+ * - 转账/保费/定投/贷款自动扣款：从资金账户（cashAccountId）扣；
+ * - 「仅出账单」的贷款计划（bill 角色）不产生资金流动，不参与余额判断。
+ * 返回 null 表示这条提醒不涉及账户支出，不报"余额不足"。
+ */
+function fundingAccountIdOf(plan: PlanRow, task: ScheduledTaskPayload, kind: ReminderKind): string | null {
+  if (!isOutflowReminderKind(kind)) return null;
+  if (kind === "loan_repayment" && getLoanScheduledPlanRole(task) === "bill") return null;
+  if (kind === "expense") return plan.accountId ?? null;
+  return plan.cashAccountId ?? null;
+}
 
 /**
  * 存款/债券计划的展示名。计划行自身的 fundName 对存款是泛称「存款」、对债券是
@@ -199,11 +232,64 @@ function resolveDisplayName(plan: PlanRow, task: ScheduledTaskPayload, lotName?:
   );
 }
 
+/**
+ * 账户名渲染所需的字段。少取一个（机构、后4位、所有人、对手方）渲染出来的名字就和
+ * 列表页/明细表不同，所以这里与总览页、设置页取的是同一组。
+ */
+const NOTIFICATION_ACCOUNT_SELECT = {
+  id: true,
+  name: true,
+  kind: true,
+  numberMasked: true,
+  groupId: true,
+  investProductType: true,
+  Institution: { select: { name: true, shortName: true } },
+  AccountGroup: { select: { name: true } },
+  Counterparty: { select: { name: true, shortName: true } },
+} as const;
+
+type NotificationAccountRow = Prisma.AccountGetPayload<{ select: typeof NOTIFICATION_ACCOUNT_SELECT }>;
+
+/**
+ * 账户名一律走"账户显示格式"设置（系统设置 → 显示：机构/账户名/后4位/所有人/账户类型，
+ * 顺序由用户定），和列表页、明细表、下拉框用的是同一个渲染器 —— 同一个账户在通知里
+ * 叫一个名字、在别处叫另一个名字，是这个面板最容易被当成 bug 的地方。
+ *
+ * 账户行已经删掉时退回传进来的兜底名（流水上的名称快照）。
+ */
+function renderNotificationAccountName(
+  account: NotificationAccountRow | null | undefined,
+  fields: AccountLabelField[] | null,
+  fallback = "",
+) {
+  if (!account) return fallback;
+  const source: AccountDisplaySource = {
+    id: account.id,
+    name: account.name,
+    kind: account.kind,
+    numberMasked: account.numberMasked,
+    groupId: account.groupId,
+    investProductType: account.investProductType,
+    Institution: account.Institution,
+    // 渲染器只需要所有人的名字；`AccountDisplaySource` 要求 id，补空串即可（总览页同样写法）。
+    AccountGroup: account.AccountGroup ? { id: "", name: account.AccountGroup.name } : null,
+    Counterparty: account.Counterparty,
+  };
+  const label = buildAccountDisplayOption(source, DEFAULT_CREDIT_CARD_LABEL_TEMPLATE, { fields }).label;
+  return label || fallback;
+}
+
 export async function loadNotificationFeed(params: {
   householdId: string;
   now?: Date;
+  /**
+   * "账户显示格式"设置（来自请求 cookie）。账户名必须按它渲染，否则面板里的账户名
+   * 与别处不一致；缺省用默认格式。
+   */
+  accountLabelFields?: AccountLabelField[] | null;
 }): Promise<NotificationFeed> {
   const now = params.now ?? new Date();
+  const accountLabelFields = params.accountLabelFields ?? null;
   const today = startOfDayUtc(now);
   const windowEnd = addDaysUtc(today, REMINDER_WINDOW_DAYS);
   const windowStart = addDaysUtc(today, -REMINDER_OVERDUE_DAYS);
@@ -214,6 +300,10 @@ export async function loadNotificationFeed(params: {
     where: { householdId: params.householdId },
     select: {
       id: true,
+      accountId: true,
+      cashAccountId: true,
+      accountName: true,
+      cashAccountName: true,
       fundName: true,
       planName: true,
       targetName: true,
@@ -235,7 +325,6 @@ export async function loadNotificationFeed(params: {
         lastRunCount: 0,
         lastRunAmount: 0,
         lastRunTitles: [],
-        recentCount: 0,
         recentDays: RECEIPT_WINDOW_DAYS,
         groups: [],
       },
@@ -263,19 +352,61 @@ export async function loadNotificationFeed(params: {
     taskByPlanId,
   });
 
+  // 出账提醒的付款账户余额。用账户**维护余额**（不是计划金额）判断"够不够扣"，
+  // 否则用户只会看到"要扣款"，却不知道这张卡根本扣不动。
+  const fundingAccountIds = [
+    ...new Set(
+      duePlans
+        .map((plan) => {
+          const task = taskByPlanId.get(plan.id)!;
+          const kind = reminderKindOf(plan.taskType ?? task.type);
+          return kind ? fundingAccountIdOf(plan, task, kind) : null;
+        })
+        .filter((id): id is string => !!id),
+    ),
+  ];
+  const fundingAccounts = fundingAccountIds.length
+    ? await prisma.account.findMany({
+        where: { id: { in: fundingAccountIds }, householdId: params.householdId },
+        // 多取的是账户名的展示字段：提醒里的账户名要和别处同名（见 renderNotificationAccountName）。
+        select: { ...NOTIFICATION_ACCOUNT_SELECT, billingDay: true },
+      })
+    : [];
+  const fundingAccountById = new Map(fundingAccounts.map((account) => [account.id, account]));
+  const fundingBalances =
+    fundingAccounts.length > 0
+      ? await getMaintainedAccountBalances(fundingAccounts, { householdId: params.householdId })
+      : new Map<string, number>();
+
   const reminders: ReminderItem[] = duePlans.map((plan) => {
     const task = taskByPlanId.get(plan.id)!;
     const kind = reminderKindOf(plan.taskType ?? task.type)!;
     const date = formatDateUtc(plan.nextRunDate);
+    const amount = Math.abs(toNumber(plan.amount));
+    const fundingAccountId = fundingAccountIdOf(plan, task, kind);
+    const fundingAccount = fundingAccountId ? fundingAccountById.get(fundingAccountId) ?? null : null;
+    // 信用卡的"余额"不是可用现金口径（getMaintainedAccountBalances 对信用卡直接给 0），
+    // 拿它判断余额不足会天天误报，所以信用卡付款账户不报警。
+    const balance = fundingAccount ? fundingBalances.get(fundingAccount.id) : undefined;
+    const insufficient =
+      !!fundingAccount &&
+      fundingAccount.kind !== AccountKind.bank_credit &&
+      typeof balance === "number" &&
+      amount > 0 &&
+      amount > balance + 0.005;
     return {
       id: `${plan.id}:${date}`,
       kind,
       title: resolveDisplayName(plan, task, lotNames.get(plan.id)),
       date,
       daysUntil: diffDaysUtc(today, plan.nextRunDate),
-      amount: Math.abs(toNumber(plan.amount)),
+      amount,
       planId: plan.id,
       manualConfirm: isManualConfirmReminderKind(kind),
+      // 账户名按"账户显示格式"渲染，不直接把 Account.name 端上去。
+      fundingAccountName:
+        renderNotificationAccountName(fundingAccount, accountLabelFields, fundingAccount?.name ?? "") || null,
+      insufficient,
     };
   });
 
@@ -299,16 +430,35 @@ export async function loadNotificationFeed(params: {
       regularInvestPlanId: { in: plans.map((plan) => plan.id) },
       createdAt: { gte: receiptSince },
     },
-    select: { id: true, createdAt: true, amount: true, regularInvestPlanId: true },
+    select: {
+      id: true,
+      createdAt: true,
+      amount: true,
+      regularInvestPlanId: true,
+      accountId: true,
+      accountName: true,
+    },
     orderBy: { createdAt: "desc" },
   });
+
+  // 回执按账户拆分时的账户名：优先用账户行按"账户显示格式"渲染（账户可能后来改了名、
+  // 补了机构或后4位），流水上的 accountName 只是记账那一刻的快照，留作账户已删的兜底。
+  const recordAccountIds = [...new Set(recentRows.map((row) => row.accountId).filter((id): id is string => !!id))];
+  const recordAccounts = recordAccountIds.length
+    ? await prisma.account.findMany({
+        where: { id: { in: recordAccountIds } },
+        select: NOTIFICATION_ACCOUNT_SELECT,
+      })
+    : [];
+  const accountById = new Map<string, NotificationAccountRow>(
+    recordAccounts.map((account) => [account.id, account]),
+  );
 
   const receipt: ExecutionReceipt = {
     lastRunAt: null,
     lastRunCount: 0,
     lastRunAmount: 0,
     lastRunTitles: [],
-    recentCount: recentRows.length,
     recentDays: RECEIPT_WINDOW_DAYS,
     groups: [],
   };
@@ -330,24 +480,52 @@ export async function loadNotificationFeed(params: {
       })
       .filter(Boolean);
 
-    const byTaskType = new Map<string, { count: number; amount: number }>();
-    for (const row of recentRows) {
+    // 类型维度 + 账户维度：单说"生成 20 条记录"看不出是 20 笔定投还是混合类型，
+    // 更看不出钱分别落在/扣自哪个账户，所以每个类型再按账户拆一层。
+    //
+    // 拆的必须是**同一批**（batch），不能是 7 天窗口：标题写"生成 20 条记录"、
+    // 明细却按窗口累计出 122 条，用户只会认为面板在虚报。要窗口累计就得另开一块，
+    // 而不是塞进"最近一批"的明细里。
+    const byTaskType = new Map<
+      string,
+      { count: number; amount: number; accounts: Map<string, ExecutionReceiptAccountGroup> }
+    >();
+    for (const row of batch) {
       const planId = row.regularInvestPlanId;
       if (!planId) continue;
       const plan = planById.get(planId);
       const taskType = normalizeScheduledTaskType(plan?.taskType ?? taskByPlanId.get(planId)?.type);
-      const acc = byTaskType.get(taskType) ?? { count: 0, amount: 0 };
+      const rowAmount = Math.abs(toNumber(row.amount));
+      const acc = byTaskType.get(taskType) ?? { count: 0, amount: 0, accounts: new Map() };
       acc.count += 1;
-      acc.amount += Math.abs(toNumber(row.amount));
+      acc.amount += rowAmount;
+      const accountId = row.accountId ?? null;
+      // 同一个账户必须在面板里和别处同名 —— 所以这里渲染的是账户**当前**的显示格式，
+      // 而不是流水上记账时的名称快照（账户改名后快照就旧了）。
+      const accountName = renderNotificationAccountName(
+        accountId ? accountById.get(accountId) : undefined,
+        accountLabelFields,
+        row.accountName?.trim() ?? "",
+      );
+      const accountKey = accountId ?? `name:${accountName}`;
+      const bucket = acc.accounts.get(accountKey) ?? { accountId, accountName, count: 0, amount: 0 };
+      bucket.count += 1;
+      bucket.amount += rowAmount;
+      acc.accounts.set(accountKey, bucket);
       byTaskType.set(taskType, acc);
     }
     receipt.groups = [...byTaskType.entries()]
-      .map(([taskType, acc]) => ({
-        taskType,
-        label: scheduledTaskTypeLabel(taskType),
-        count: acc.count,
-        amount: acc.amount,
-      }))
+      .map(
+        ([taskType, acc]): ExecutionReceiptGroup => ({
+          taskType,
+          label: scheduledTaskTypeLabel(taskType),
+          count: acc.count,
+          amount: acc.amount,
+          accounts: [...acc.accounts.values()].sort(
+            (a, b) => b.count - a.count || a.accountName.localeCompare(b.accountName),
+          ),
+        }),
+      )
       .sort((a, b) => b.count - a.count);
   }
 

@@ -71,6 +71,28 @@ export function isUpcomingReminderKind(kind: ReminderKind): boolean {
 }
 
 /**
+ * Kinds whose booking actually takes money **out of an account** — i.e. the ones
+ * where "is there enough balance?" is a real question. Investment (fund regular
+ * invest), insurance premium and loan repayment are included because the user
+ * sees them as an outflow from the paying account. Deposits/bonds maturity and
+ * payout are incoming, so they never get a balance warning.
+ */
+export const OUTFLOW_REMINDER_KINDS: readonly ReminderKind[] = [
+  "fund_regular_invest",
+  "loan_repayment",
+  "transfer",
+  "insurance_premium",
+  "expense",
+];
+
+const OUTFLOW_REMINDER_KIND_SET = new Set<string>(OUTFLOW_REMINDER_KINDS);
+
+/** Whether booking this kind needs a funding account with enough balance. */
+export function isOutflowReminderKind(kind: ReminderKind): boolean {
+  return OUTFLOW_REMINDER_KIND_SET.has(kind);
+}
+
+/**
  * Reminder-only kinds: the system will never book them on its own, the user has
  * to confirm manually. Today that is `bond_maturity` — principal arrival date
  * and amount are unknown and a write-off may be needed, so `auto-execute` skips
@@ -108,6 +130,18 @@ export type ReminderItem = {
    * maturity would look permanently overdue.
    */
   manualConfirm: boolean;
+  /**
+   * 付款/扣款账户名（仅出账类提醒有）。用于「余额不足」提示里点名账户。
+   * 按"账户显示格式"设置渲染（机构/账户名/后4位…），与列表页同名 —— 见
+   * `renderNotificationAccountName`。
+   */
+  fundingAccountName?: string | null;
+  /**
+   * 出账类提醒（定投/贷款/转账/保费/固定支出）在付款账户当前余额不足时置 true
+   * —— 面板要用不同颜色标示，否则用户只看到"要扣款"却不知道扣不动。
+   * 账户缺失或信用卡（余额口径不适用）时为 false/undefined，即不报警。
+   */
+  insufficient?: boolean;
 };
 
 export type ReminderUrgency = "overdue" | "today" | "upcoming";
@@ -150,6 +184,32 @@ export function receiptLevel(summary: AutoExecuteSummary): ReceiptLevel {
 }
 
 /**
+ * Per-account split inside one task-type group — "A账户 3 条定投记录，B账户 …".
+ * Without this, a bare "生成 20 条记录" is unreadable: the user cannot tell
+ * whether it was 20 fund regular investments or a mix, and cannot tell which
+ * account each record landed on.
+ */
+export type ExecutionReceiptAccountGroup = {
+  accountId: string | null;
+  /**
+   * 账户的**显示名**，按"账户显示格式"设置（机构/账户名/后4位/所有人/账户类型）渲染，
+   * 与列表页、明细表、下拉框同名。账户已删时退回流水上的名称快照，不是 `Account.name`。
+   */
+  accountName: string;
+  count: number;
+  amount: number;
+};
+
+export type ExecutionReceiptGroup = {
+  taskType: string;
+  label: string;
+  count: number;
+  amount: number;
+  /** Per-account split within this task type, largest first. */
+  accounts: ExecutionReceiptAccountGroup[];
+};
+
+/**
  * Persistent receipt, derived server-side from the records the executors
  * actually wrote (TxRecord rows carrying `regularInvestPlanId`). This is the
  * cross-device, reload-proof answer to "did the system run?" — unlike the
@@ -164,12 +224,14 @@ export type ExecutionReceipt = {
   lastRunAmount: number;
   /** A few plan titles touched by the newest batch, for "…包含 A、B 等". */
   lastRunTitles: string[];
-  /** Records booked across the whole window. */
-  recentCount: number;
-  /** Window length in days, so the UI can say "近 N 天". */
+  /** Look-back window length in days, so the UI can say "近 N 天" when nothing ran. */
   recentDays: number;
-  /** Per-task-type breakdown of the window, largest first. */
-  groups: Array<{ taskType: string; label: string; count: number; amount: number }>;
+  /**
+   * Per-task-type breakdown of **that same newest batch**, largest first, each with a
+   * per-account split. Deliberately not a window aggregate: the group counts must add
+   * up to `lastRunCount`, or the panel reads as "生成 20 条" over a breakdown of 122.
+   */
+  groups: ExecutionReceiptGroup[];
 };
 
 /**
@@ -180,6 +242,72 @@ export type ExecutionReceipt = {
 export function receiptLevelFromFeed(receipt: ExecutionReceipt): ReceiptLevel {
   return receipt.lastRunCount > 0 ? "success" : "info";
 }
+
+/**
+ * 这次执行值不值得当成一条"执行结果"报出来。
+ *
+ * 强制刷新（F5 / Ctrl+F5）+ 0 条：用户只是把页面重新拉起来，计划任务一个都没轮到。
+ * 既没有可看的数字，也没有要处理的异常，留在通知里只会把真正的提醒挤下去 ——
+ * 所以这种情况不落档、不入列，"已读"存档里也不留（旧版本写下的那些由读取端滤掉）。
+ *
+ * 开机检查 / 手动执行的 0 条**相反**必须留：那是"系统查完了、确实没东西可写"，
+ * 和"用户刷新了一下页面"不是一回事。
+ */
+export function isReportableExecution(input: { source: string; executed: number }): boolean {
+  return !(input.source === "reload" && input.executed === 0);
+}
+
+/**
+ * 通知中心里**可被标记已读**的一条通知。
+ *
+ * 为什么把提醒也做成"有 id 的通知"，而不是维持"派生列表、不记已读"：
+ * 提醒是从计划行派生的，用户对它的真实诉求是"这条我看过了，别再出现在未读里"。
+ *
+ * 为什么已读状态存的是**快照**而不是 id：提醒的 id 含执行日，计划的 nextRunDate
+ * 一前进，旧提醒就从服务端消失了。只存 id 的话，「已读」页签会剩下一堆无法渲染
+ * 的孤儿 id。
+ */
+export type NotificationItem =
+  | {
+      /** 稳定去重 id：`reminder:<planId>:<date>`。 */
+      id: string;
+      type: "reminder";
+      kind: ReminderKind;
+      /** 发生时间（epoch ms）——这里取计划执行日 UTC 零点。 */
+      at: number;
+      /** 展示用日期 YYYY-MM-DD。 */
+      date: string;
+      /** 服务端给的计划显示名（用户数据，不随界面语言变化）。 */
+      title: string;
+      amount: number | null;
+    }
+  | {
+      /**
+       * 执行回执。三种来源共用一个形状：
+       *  - `run:<browser receipt id>`：本浏览器刚触发的那一次执行（含"生成 0 条"，
+       *    但强制刷新 + 0 条不发通知，见 isReportableExecution）；
+       *  - `server-run:<lastRunAt>`：服务端从真实落账算出的最新一批。
+       */
+      id: string;
+      type: "execution";
+      at: number;
+      date: string;
+      /** 真实落账条数。0 = 跑了但没写记录，必须与"没跑过"区分。 */
+      executed: number;
+      skippedTotal: number;
+      /**
+       * `startup` 开机检查（系统主动）、`reload` 强制刷新（用户被动触发）、
+       * `manual` 手动执行、`server` 服务端真实落账。
+       */
+      source: "startup" | "reload" | "manual" | "server";
+    };
+
+/** 已读存档里的一条：快照 + 标记时间。 */
+export type ReadNotificationEntry = {
+  item: NotificationItem;
+  /** 标记已读的时刻（epoch ms）。 */
+  readAt: number;
+};
 
 function toCount(value: unknown): number {
   const n = Number(value ?? 0);

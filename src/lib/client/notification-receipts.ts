@@ -1,8 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 
-import type { AutoExecuteSummary } from "@/lib/notifications";
+import { isReportableExecution, type AutoExecuteSummary } from "@/lib/notifications";
 
 /**
  * 本地「本次执行结果」收据。为什么不能只靠服务端回执：
@@ -14,15 +14,24 @@ import type { AutoExecuteSummary } from "@/lib/notifications";
  *
  * 所以这里把执行器返回的原始计数（executedCount / skippedPaused / skippedGap /
  * rounds）原样留档，并**明确区分 0 条**与"没跑过"。
+ *
+ * 唯一的例外是 `isReportableExecution` 判负的那种：强制刷新 + 0 条 = 用户按了一下
+ * F5、计划任务一个都没轮到。它报不出任何东西，也不该出现在未读/已读里，所以连档
+ * 都不留（读取端同时过滤，旧版本留下的也会被滤掉）。
  */
 
 export const NOTIFICATIONS_CHANGED_EVENT = "mmh:notifications:changed";
 export const NOTIFICATION_RECEIPTS_KEY = "mmh_notification_receipts";
-export const NOTIFICATION_READ_KEY = "mmh_notification_read_at";
 
 const MAX_RECEIPTS = 10;
 
-export type ReceiptSource = "startup" | "manual";
+/**
+ * 谁触发了这次执行。刻意把"开机"和"强制刷新"分开：两者跑的是同一段检查，
+ * 但对用户的含义完全不同——开机是应用刚起来、系统主动查一遍；强制刷新只是
+ * 用户把页面重新拉起来（F5/Ctrl+F5），属于被动触发。区别的落点有两处：
+ * 0 条时整条不报（见 `isReportableExecution`），有落账时标签如实写"强制刷新"。
+ */
+export type ReceiptSource = "startup" | "reload" | "manual";
 
 export type StoredReceipt = {
   id: string;
@@ -55,18 +64,10 @@ export function readReceipts(): StoredReceipt[] {
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter(isReceipt).slice(0, MAX_RECEIPTS);
+    // 滤掉不该报的那种（含旧版本写下的），顺带在下一次写入时把它们从存储里清掉。
+    return parsed.filter(isReceipt).filter(isReportableExecution).slice(0, MAX_RECEIPTS);
   } catch {
     return [];
-  }
-}
-
-export function readReceiptsReadAt(): number {
-  if (typeof window === "undefined") return 0;
-  try {
-    return Number(window.localStorage.getItem(NOTIFICATION_READ_KEY) ?? 0) || 0;
-  } catch {
-    return 0;
   }
 }
 
@@ -82,7 +83,8 @@ function writeReceipts(receipts: StoredReceipt[]) {
 
 /**
  * 记录一次执行结果。同一来源、同一分钟视为同一条（DailyTaskCheck 失败会重试 3 次，
- * 不能因此留 3 条收据）。
+ * 不能因此留 3 条收据）。没什么可报的那种（强制刷新 + 0 条）直接不写，
+ * 见 `isReportableExecution`。
  */
 export function publishExecutionReceipt(input: { source: ReceiptSource; summary: AutoExecuteSummary }) {
   if (typeof window === "undefined") return;
@@ -99,28 +101,15 @@ export function publishExecutionReceipt(input: { source: ReceiptSource; summary:
     skippedTotal: num(input.summary.skippedTotal),
     rounds: num(input.summary.rounds),
   };
+  if (!isReportableExecution(next)) return;
   writeReceipts([next, ...readReceipts().filter((row) => row.id !== id)]);
-}
-
-export function markReceiptsRead() {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(NOTIFICATION_READ_KEY, String(Date.now()));
-    window.dispatchEvent(new CustomEvent(NOTIFICATIONS_CHANGED_EVENT));
-  } catch {
-    // ignore
-  }
 }
 
 export function useNotificationReceipts() {
   const [receipts, setReceipts] = useState<StoredReceipt[]>([]);
-  const [readAt, setReadAt] = useState(0);
 
   useEffect(() => {
-    const sync = () => {
-      setReceipts(readReceipts());
-      setReadAt(readReceiptsReadAt());
-    };
+    const sync = () => setReceipts(readReceipts());
     sync();
     window.addEventListener(NOTIFICATIONS_CHANGED_EVENT, sync as EventListener);
     window.addEventListener("storage", sync);
@@ -130,12 +119,5 @@ export function useNotificationReceipts() {
     };
   }, []);
 
-  const markRead = useCallback(() => markReceiptsRead(), []);
-
-  return {
-    receipts,
-    readAt,
-    markRead,
-    unreadCount: receipts.filter((row) => row.at > readAt).length,
-  };
+  return receipts;
 }

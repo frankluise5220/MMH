@@ -3,13 +3,52 @@
 import { useEffect, useRef } from "react";
 import { usePathname } from "next/navigation";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
-import { publishExecutionReceipt } from "@/lib/client/notification-receipts";
+import { publishExecutionReceipt, type ReceiptSource } from "@/lib/client/notification-receipts";
 import { summarizeAutoExecute } from "@/lib/notifications";
 
 let startupCheckStarted = false;
 let startupCheckCompleted = false;
 let startupCheckAttempts = 0;
 const MAX_STARTUP_CHECK_ATTEMPTS = 3;
+
+/** 本标签页是否已经加载过应用；用来把"开机"和"用户刷新"分开。 */
+const LOAD_SEEN_KEY = "mmh_app_loaded";
+
+let loadSource: ReceiptSource | null = null;
+
+/**
+ * 这次检查算"开机"还是"强制刷新"。
+ *
+ * 判定顺序刻意先看 sessionStorage 再看导航类型：
+ *  - 本标签页此前已加载过应用（标记在）→ 本次是刷新 / 后退前进 / 重进，属于**被动**，
+ *    哪怕浏览器把它报成 navigate（新开页面、站内跳转后再刷新）也不会冒充系统主动执行；
+ *  - 导航类型 reload / back_forward → 同样是被动；
+ *  - 其余（本次会话第一次加载）→ 开机，系统主动检查一遍。
+ *
+ * 结果在模块级缓存：一次页面加载只判定一次，重试（最多 3 次）不会因为
+ * 刚刚写下的标记而把自己重新判成刷新。
+ */
+function detectLoadSource(): ReceiptSource {
+  if (typeof window === "undefined") return "startup";
+  let seenBefore = false;
+  try {
+    seenBefore = window.sessionStorage.getItem(LOAD_SEEN_KEY) === "1";
+    window.sessionStorage.setItem(LOAD_SEEN_KEY, "1");
+  } catch {
+    // 隐私模式 / 存储被禁用：拿不到标记就退化成只看导航类型
+  }
+  if (seenBefore) return "reload";
+  const nav = performance.getEntriesByType?.("navigation")?.[0] as PerformanceNavigationTiming | undefined;
+  const type = nav?.type;
+  if (type) return type === "reload" || type === "back_forward" ? "reload" : "startup";
+  const legacy = (performance as Performance & { navigation?: { type?: number } }).navigation?.type;
+  return legacy === 1 ? "reload" : "startup";
+}
+
+function getLoadSource(): ReceiptSource {
+  if (!loadSource) loadSource = detectLoadSource();
+  return loadSource;
+}
 
 function hasUsefulChange(result: unknown) {
   if (!result || typeof result !== "object") return false;
@@ -66,10 +105,12 @@ export function DailyTaskCheck() {
         });
         const planData = await planRes.json().catch(() => null);
         assertOkResponse(planRes, planData, "scheduled task auto-execution");
-        // 无论生成几条都要留回执 —— 尤其是 executedCount = 0 的情况：那正是
-        // "任务到底执行了没有"最容易变成悬案的地方，必须让用户看到"这次执行生成 0 条"。
+        // 留回执，包括 executedCount = 0 的情况：那正是"任务到底执行了没有"最容易变成
+        // 悬案的地方，必须让用户看到"这次执行生成 0 条"。来源一并记下，刷新触发的 0 条
+        // 会在发布端被判为"没什么可报"直接丢掉（见 isReportableExecution）——它是
+        // "页面被重新拉起来"，不是"系统执行了任务"。
         const executionSummary = summarizeAutoExecute(planData);
-        if (executionSummary) publishExecutionReceipt({ source: "startup", summary: executionSummary });
+        if (executionSummary) publishExecutionReceipt({ source: getLoadSource(), summary: executionSummary });
 
         const pendingRes = await fetch("/api/v1/fund/refresh-pending", {
           method: "POST",

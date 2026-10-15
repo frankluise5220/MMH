@@ -1,5 +1,6 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
+import { accountLabelFieldsFromRequest } from "@/lib/server/account-label-fields";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { loadNotificationFeed } from "@/lib/server/notification-feed";
 import { logger } from "@/lib/logger";
@@ -12,13 +13,17 @@ import { logger } from "@/lib/logger";
  *   - receipt  ：系统**真实落账**的执行回执（读 TxRecord，不看 ok:true）；
  *   - overdueAutoCount：逾期未落账的自动计划数。
  *
+ * 提醒与回执里的账户名按"账户显示格式"设置（请求 cookie）渲染，和列表页/明细表同名。
  * 只读、无副作用。失败时返回 ok:false 而不是抛错——侧边栏通知栏是装饰性组件，
  * 取数失败不应该影响任何页面。
  */
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
     const { householdId } = await getHouseholdScope();
-    const feed = await loadNotificationFeed({ householdId });
+    const feed = await loadNotificationFeed({
+      householdId,
+      accountLabelFields: accountLabelFieldsFromRequest(req),
+    });
     return NextResponse.json({
       ok: true,
       serverTime: new Date().toISOString(),
