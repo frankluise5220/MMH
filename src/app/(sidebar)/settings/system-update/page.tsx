@@ -6,6 +6,7 @@ import {
   APP_PREFS_EVENT,
   getTimeZoneModePreference,
   getTimeZonePreference,
+  type DisplayLanguage,
   type TimeZoneMode,
 } from "@/lib/client/appPreferences";
 import { useI18n } from "@/lib/i18n";
@@ -40,6 +41,7 @@ type VersionInfo = {
   canCheckUpdate?: boolean;
   imageSourceConfig?: ImageSourceConfig | null;
   localReleaseNotes?: string;
+  localReleaseNotesI18n?: Partial<Record<DisplayLanguage, string>>;
   fetchError?: string;
   error?: string;
 };
@@ -228,7 +230,7 @@ function deriveUpdaterImage(appImage: string) {
 }
 
 export default function SystemUpdatePage() {
-  const { t } = useI18n();
+  const { t, language } = useI18n();
   const [versionInfo, setVersionInfo] = useState<VersionInfo | null>(null);
   const [loadingVersion, setLoadingVersion] = useState(true);
   const [updating, setUpdating] = useState(false);
@@ -604,6 +606,8 @@ export default function SystemUpdatePage() {
     ? `${cleanVersionPart(versionInfo?.localVersion) || "unknown"} ${packageLabel}`
     : formatVersionLine(versionInfo?.localVersion, versionInfo?.localCommit, versionInfo?.localCommitDate, timeZoneMode, timeZone);
   const localReleaseNotes = versionInfo?.localReleaseNotes?.trim() || "";
+  // 「本版说明」按界面语言取译文，取不到就回落中文说明；两者都为空时整块不渲染。
+  const releaseNotesText = versionInfo?.localReleaseNotesI18n?.[language]?.trim() || localReleaseNotes;
   const availableVersionText = formatVersionLine(
     versionInfo?.remoteVersion,
     versionInfo?.remoteCommit,
@@ -700,40 +704,36 @@ sudo docker compose -p mmh up -d app updater`}</pre>
                 ) : null}
               </div>
 
-              {packageManaged && localReleaseNotes ? (
+              {releaseNotesText ? (
                 <>
                   <div className="text-slate-500">{t("settings.systemUpdate.releaseNotes")}</div>
-                  <ReleaseNotesText value={localReleaseNotes} />
+                  <ReleaseNotesText value={releaseNotesText} />
                 </>
               ) : null}
 
-              {packageManaged ? (
-                <>
-                  <div className="text-slate-500">{t("settings.systemUpdate.projectUrl")}</div>
-                  <div className="min-w-0">
-                    <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
-                      <a
-                        href={githubProjectUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex items-center gap-1 font-medium text-blue-600 hover:text-blue-700"
-                      >
-                        {t("settings.systemUpdate.githubHome")}
-                        <ExternalLink className="h-3.5 w-3.5" />
-                      </a>
-                      <a
-                        href={githubReleaseUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="inline-flex items-center gap-1 text-slate-600 hover:text-slate-800"
-                      >
-                        {t("settings.systemUpdate.currentRelease")}
-                        <ExternalLink className="h-3.5 w-3.5" />
-                      </a>
-                    </div>
-                  </div>
-                </>
-              ) : null}
+              <div className="text-slate-500">{t("settings.systemUpdate.projectUrl")}</div>
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+                  <a
+                    href={githubProjectUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1 font-medium text-blue-600 hover:text-blue-700"
+                  >
+                    {t("settings.systemUpdate.githubHome")}
+                    <ExternalLink className="h-3.5 w-3.5" />
+                  </a>
+                  <a
+                    href={githubReleaseUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="inline-flex items-center gap-1 text-slate-600 hover:text-slate-800"
+                  >
+                    {t("settings.systemUpdate.currentRelease")}
+                    <ExternalLink className="h-3.5 w-3.5" />
+                  </a>
+                </div>
+              </div>
 
               <div className="text-slate-500">{packageManaged ? t("settings.systemUpdate.updateMethod") : needsUpdate ? t("settings.systemUpdate.availableVersion") : t("settings.systemUpdate.remoteVersion")}</div>
               <div className="min-w-0">

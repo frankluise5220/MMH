@@ -40,6 +40,18 @@ expect(
   "Electron must open the window at the bare origin root (http://127.0.0.1:<port>); any entry path there would demand a matching basePath build.",
 );
 
+// 应用内「本版说明」（设置 → 系统更新）读运行时 package.json 的 mmhFnosManifestChangelog
+// —— 各渠道共用的那份「新版本更新说明」，不是 GitHub Release 正文（mmhReleaseNotes）。
+// 桌面版 stage 会被 --reuse-stage 复用，其中的 package.json 来自更早的 next build，所以
+// 打包时必须用仓库里的值重新注入一遍，否则桌面版会带着旧版本 / 空说明发出去。
+expect(
+  /applyRuntimeReleaseNotes\(\);/.test(buildScript) &&
+    /runtimePkg\.mmhFnosManifestChangelog = changelog/.test(buildScript) &&
+    /runtimePkg\.mmhReleaseNotes = notes/.test(buildScript) &&
+    /delete runtimePkg\.mmhReleaseNotesI18n/.test(buildScript),
+  "Windows desktop build must re-inject the shared mmhFnosManifestChangelog and mmhReleaseNotes (plus the optional mmhReleaseNotesI18n) from the repo package.json into the staged runtime package.json.",
+);
+
 // 2026-10-07 在线更新源修正：electron-updater 必须走 GitHub Release feed。
 // 曾经的 generic 源 http://fnapp.floatingice.win:5660/mmh/ 是 FN 软仓服务端，
 // 只承载 fnOS .fpk，不承载 Windows latest.yml，导致自动更新从未生效（404）。

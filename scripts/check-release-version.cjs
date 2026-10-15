@@ -75,6 +75,30 @@ expect(!/fn-appstores-client-2\.8\.4-x86\.fpk/.test(releaseNotes), "mmhReleaseNo
 expect(/fn-appstores-client-2\.9\.2-all\.fpk/.test(releaseNotes), "mmhReleaseNotes must keep the FN 软仓客户端 2.9.2 all.fpk link.");
 expect(/fnapp\.floatingice\.win:5660\//.test(releaseNotes), "mmhReleaseNotes dedicated source URL must keep the trailing slash.");
 
+// mmhReleaseNotesI18n 是**可选**的界面语言译文载体：应用内「本版说明」按界面语言取
+// ——面板正文 = 各渠道共用的 mmhFnosManifestChangelog（不是 Release 正文
+// mmhReleaseNotes），取不到就回落中文（见 .skill/mmh-release/references/update-notes-surfaces.md §2.6）。
+// 没有译文时必须**整个字段省略**——空对象、空字符串或非法语言键都会让应用端出现
+// 「该语言下说明为空」的假象，所以这里是硬断言。
+const releaseNotesI18n = pkg.mmhReleaseNotesI18n;
+const releaseNotesI18nKeys = ["zh-CN", "en-US", "ja-JP"];
+if (releaseNotesI18n !== undefined) {
+  const isPlainObject = releaseNotesI18n !== null && typeof releaseNotesI18n === "object" && !Array.isArray(releaseNotesI18n);
+  expect(isPlainObject, "package.json mmhReleaseNotesI18n must be an object keyed by zh-CN / en-US / ja-JP, or be omitted entirely.");
+  if (isPlainObject) {
+    const keys = Object.keys(releaseNotesI18n);
+    expect(keys.length > 0, "package.json mmhReleaseNotesI18n must be omitted entirely when there is no translation; an empty object is not allowed.");
+    for (const key of keys) {
+      expect(releaseNotesI18nKeys.includes(key), `package.json mmhReleaseNotesI18n has unsupported language key ${key}; only zh-CN / en-US / ja-JP are allowed.`);
+      const value = releaseNotesI18n[key];
+      expect(
+        typeof value === "string" && value.trim().length > 0,
+        `package.json mmhReleaseNotesI18n.${key} must be a non-empty release-notes string; omit the key instead of leaving it empty.`,
+      );
+    }
+  }
+}
+
 
 const lock = readJson("package-lock.json");
 expect(lock.version === version, "package-lock.json top-level version must match package.json.");

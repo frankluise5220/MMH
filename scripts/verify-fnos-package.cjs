@@ -326,6 +326,12 @@ expect(/assertManifestChangelog\(manifestChangelog\);/.test(buildScript), "fnOS 
 expect(!/packageManifestNotes \|\|/.test(buildScript), "fnOS package build must not fall back to full release notes for the App Center changelog.");
 expect(/changelog=\$\{manifestChangelog\}/.test(buildScript), "fnOS manifest must include a changelog for official submission.");
 expect(/mmhReleaseNotes/.test(buildScript), "fnOS package build must copy release notes into the runtime package.json.");
+expect(
+  /runtimePkg\.mmhFnosManifestChangelog = manifestChangelog/.test(buildScript),
+  "fnOS package build must inject the shared mmhFnosManifestChangelog (the same update note the fnOS App Center / soft store / FnDepot / Synology show) into the runtime package.json; the in-app 本版说明 reads it, not the long Release body.",
+);
+expect(/mmhReleaseNotesI18n/.test(buildScript), "fnOS package build must forward the optional mmhReleaseNotesI18n into the runtime package.json.");
+expect(/delete runtimePkg\.mmhReleaseNotesI18n/.test(buildScript), "fnOS package build must drop a stale mmhReleaseNotesI18n from the runtime package.json when the current package.json has no translation.");
 expect(/\.mmh-version/.test(buildScript), "fnOS package build must inject the outer package version into the runtime payload.");
 expect(/export MMH_APP_VERSION/.test(buildScript), "fnOS start script must export the package version to the runtime.");
 expect(!/path\.join\(stageDir,\s*"wizard",\s*"install"\)/.test(buildScript), "fnOS package must not ship wizard/install; the FN soft-store client only parses that file, and shipping it makes every update wait for the service port again.");
@@ -540,8 +546,26 @@ expect(/isFnos/.test(systemUpdateRoute), "System update API must return an expli
 expect(/remoteVersion/.test(systemUpdateRoute), "System update API must return the remote app version for update display.");
 expect(/飞牛版请通过飞牛应用中心更新 MMH 应用包/.test(systemUpdateRoute), "System update API must reject in-app updates for fnOS.");
 expect(/packageManaged \? t\("settings\.systemUpdate\.versionInfo"\)/.test(systemUpdatePage), "System update page must label package-managed details as version information.");
-expect(/function ReleaseNotesText/.test(systemUpdatePage) && /<ReleaseNotesText value=\{localReleaseNotes\}/.test(systemUpdatePage), "System update page must render package release notes as structured multi-line text instead of collapsing them into one paragraph.");
+expect(/function ReleaseNotesText/.test(systemUpdatePage) && /<ReleaseNotesText value=\{releaseNotesText\}/.test(systemUpdatePage), "System update page must render package release notes as structured multi-line text instead of collapsing them into one paragraph.");
+expect(/localReleaseNotesI18n\?\.\[language\]/.test(systemUpdatePage), "System update page must pick the release notes by the current UI language and fall back to the Chinese notes.");
+expect(
+  /\{releaseNotesText \? \(\s*<>/.test(systemUpdatePage) && !/packageManaged && (localReleaseNotes|releaseNotesText)/.test(systemUpdatePage),
+  "System update page must show release notes on every deployment form, not only package-managed ones.",
+);
+expect(/getPackageReleaseNotesI18n/.test(systemUpdateRoute), "System update API must return the optional per-language release notes alongside the Chinese ones.");
+expect(
+  /getPackageReleaseNotes/.test(systemUpdateRoute) && /mmhFnosManifestChangelog/.test(systemUpdateRoute),
+  "System update API must show the shared mmhFnosManifestChangelog in the in-app 本版说明 instead of the long GitHub Release body (mmhReleaseNotes stays only as a fallback for older packages).",
+);
+expect(/readLocalPackageJson/.test(systemUpdateRoute) && /process\.argv\[1\]/.test(systemUpdateRoute), "System update API must fall back to the entry script directory when process.cwd() is not the app root (Synology starts the bundled server one level above app/server).");
 expect(/githubProjectUrl/.test(systemUpdatePage) && /systemUpdate\.githubHome/.test(systemUpdatePage), "System update page must expose the GitHub project link for fnOS users.");
+// 共用更新说明的结尾是「完整说明见 GitHub Release v<ver>」，所以这行链接四个部署形态都要有；
+// 不能只在 packageManaged 下渲染（Docker / 独立同样需要入口）——标签行必须是普通 div，不是三元。
+expect(
+  /<div className="text-slate-500">\{t\("settings\.systemUpdate\.projectUrl"\)\}<\/div>/.test(systemUpdatePage)
+    && !/\{packageManaged \?[\s\S]{0,200}systemUpdate\.currentRelease/.test(systemUpdatePage),
+  "System update page must show the project / release links on every deployment form, not only package-managed ones.",
+);
 expect(/availableVersionText/.test(systemUpdatePage) && /systemUpdate\.availableVersion/.test(systemUpdatePage), "System update page must show the available app version beside the update commit.");
 expect(/systemUpdate\.fnosManagedInfo/.test(systemUpdatePage) && /systemUpdate\.managedByFnos/.test(systemUpdatePage), "System update page must guide fnOS users to update with the architecture-matched FPK.");
 expect(!/docker-project/.test(buildScript), "fnOS package build must not declare Docker resources.");

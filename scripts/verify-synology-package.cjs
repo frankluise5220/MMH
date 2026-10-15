@@ -201,6 +201,12 @@ function verifySourceFiles() {
   expect(/MMH_BASE_PATH:\s*""/.test(packageScript), "Synology package build must explicitly clear the fnOS basePath.");
   expect(/MMH_DEPLOY_TARGET=synology/.test(packageScript), "Synology start script must mark runtime deployment as synology.");
   expect(/\.mmh-version/.test(packageScript), "Synology package must inject the outer package version into the runtime payload.");
+  expect(/applyRuntimeReleaseNotes\(path\.join\(packageRoot, "app", "server", "package\.json"\)\)/.test(packageScript), "Synology package must inject the in-app 本版说明 into the runtime package.json (app/server/package.json).");
+  expect(/runtimePkg\.mmhReleaseNotes = packageReleaseNotes/.test(packageScript) && /delete runtimePkg\.mmhReleaseNotesI18n/.test(packageScript), "Synology package must write the optional per-language release notes and drop a stale copy when there is no translation.");
+  expect(
+    /runtimePkg\.mmhFnosManifestChangelog = packageManifestChangelog/.test(packageScript),
+    "Synology package must inject the shared mmhFnosManifestChangelog (the in-app 本版说明 source, same note as fnOS / soft store / FnDepot) into the runtime package.json.",
+  );
   expect(/MMH_APP_VERSION/.test(packageScript), "Synology start script must export the package version to the runtime.");
   const infoWriter = packageScript.slice(packageScript.indexOf("function writeInfoFile("), packageScript.indexOf("function writeInstallWizard()"));
   expect(!/adminport=/.test(infoWriter) && !/adminurl=/.test(infoWriter), "Synology source INFO must not reserve a fixed DSM web port before the install wizard runs.");

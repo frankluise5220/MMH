@@ -19,6 +19,41 @@ const stageOnly = process.argv.includes("--stage-only");
 const nodeTarball = process.env.SYNOLOGY_NODE_TARBALL || process.env.SYNOPKG_NODE_TARBALL || process.env.FNOS_NODE_TARBALL || "";
 const reusePackageTgz = process.env.SYNOLOGY_REUSE_PACKAGE_TGZ || "";
 const packageReleaseNotes = typeof pkg.mmhReleaseNotes === "string" ? pkg.mmhReleaseNotes.trim() : "";
+// 应用内「本版说明」= 各渠道共用的更新说明（`mmhFnosManifestChangelog`），与 fnOS /
+// 软仓 / FnDepot / 群晖 展示的是同一份；`mmhReleaseNotes` 只留给 GitHub Release 正文。
+const packageManifestChangelog = typeof pkg.mmhFnosManifestChangelog === "string" ? pkg.mmhFnosManifestChangelog.trim() : "";
+// Optional per-language release notes. Same rules as the runtime reader
+// (`getPackageReleaseNotesI18n` in src/app/api/v1/settings/system-update/route.ts):
+// only the three UI languages, only non-empty strings, no field when there is none.
+const packageReleaseNotesI18n = pickReleaseNotesI18n(pkg.mmhReleaseNotesI18n);
+
+function pickReleaseNotesI18n(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const picked = {};
+  for (const language of ["zh-CN", "en-US", "ja-JP"]) {
+    const text = typeof value[language] === "string" ? value[language].trim() : "";
+    if (text) picked[language] = text;
+  }
+  return Object.keys(picked).length > 0 ? picked : null;
+}
+
+/**
+ * 应用内「本版说明」读的是运行时 `package.json` 的 `mmhFnosManifestChangelog`（各渠道
+ * 共用的那份更新说明；`mmhReleaseNotes` 只服务 GitHub Release 正文）。SPK 里的
+ * `app/server` 是 `.next/standalone` 的副本，可能早于当前 `package.json`（本脚本
+ * 不自己跑 build），所以打包时用仓库里的值重新注入一遍——与
+ * `build-fnos-package.cjs` 的处理一致；没有译文时删掉字段而不是留空。
+ */
+function applyRuntimeReleaseNotes(packageJsonPath) {
+  const runtimePkg = JSON.parse(fs.readFileSync(packageJsonPath, "utf8"));
+  if (packageManifestChangelog) runtimePkg.mmhFnosManifestChangelog = packageManifestChangelog;
+  else delete runtimePkg.mmhFnosManifestChangelog;
+  if (packageReleaseNotes) runtimePkg.mmhReleaseNotes = packageReleaseNotes;
+  else delete runtimePkg.mmhReleaseNotes;
+  if (packageReleaseNotesI18n) runtimePkg.mmhReleaseNotesI18n = packageReleaseNotesI18n;
+  else delete runtimePkg.mmhReleaseNotesI18n;
+  fs.writeFileSync(packageJsonPath, `${JSON.stringify(runtimePkg, null, 2)}\n`);
+}
 const dsmMinVersion = "7.0-40000";
 const dsmAppName = "com.synocommunity.packages.mmh";
 // DSM reads the desktop-app registration from "<PKGDEST>/<dsmuidir>/config" and the
@@ -2113,6 +2148,8 @@ function preparePackageRoot() {
     });
   }
   write(path.join(packageRoot, "app", "server", ".mmh-version"), `${version}\n`);
+  requirePath(path.join(packageRoot, "app", "server", "package.json"), "Synology package payload must contain the runtime package.json (app/server).");
+  applyRuntimeReleaseNotes(path.join(packageRoot, "app", "server", "package.json"));
   requirePath(path.join(packageRoot, "app", "server", "server.js"), "Synology package payload must contain the standalone server.");
   requirePath(path.join(packageRoot, "app", "bin", "node"), `Synology package payload must contain the Linux ${target.nodeArch} Node runtime.`);
   const stagedNativeInitSql = path.join(packageRoot, "app", "server", "prisma", "native-init.sql");

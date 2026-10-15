@@ -13,6 +13,23 @@ const osMinVersion = process.env.FNOS_OS_MIN_VERSION || "0.9.0";
 const packageReleaseNotes = typeof pkg.mmhReleaseNotes === "string" ? pkg.mmhReleaseNotes.trim() : "";
 const packageManifestNotes = String(process.env.FNOS_PACKAGE_MANIFEST_CHANGELOG || pkg.mmhFnosManifestChangelog || "").trim();
 const runtimeReleaseNotes = process.env.FNOS_PACKAGE_CHANGELOG || packageReleaseNotes || "更新 MMH 飞牛 SQLite 原生包，优化本地安装、启动和更新验证流程。";
+// Optional per-language release notes, forwarded explicitly because the staged
+// standalone package.json may predate the current package.json. Same rules as the
+// runtime reader (`getPackageReleaseNotesI18n` in
+// src/app/api/v1/settings/system-update/route.ts): only the three UI languages,
+// only non-empty strings, and no field at all when there is no translation.
+const RELEASE_NOTES_LANGUAGE_KEYS = ["zh-CN", "en-US", "ja-JP"];
+const packageReleaseNotesI18n = pickReleaseNotesI18n(pkg.mmhReleaseNotesI18n);
+
+function pickReleaseNotesI18n(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const picked = {};
+  for (const language of RELEASE_NOTES_LANGUAGE_KEYS) {
+    const text = typeof value[language] === "string" ? value[language].trim() : "";
+    if (text) picked[language] = text;
+  }
+  return Object.keys(picked).length > 0 ? picked : null;
+}
 // The manifest `changelog` is a single-line INI field rendered as-is by the
 // fnOS App Center "版本说明" panel, so it must be a short plain-text summary
 // (no Markdown markers). The full multi-line release notes stay in
@@ -2032,7 +2049,17 @@ if (fs.existsSync(standaloneDir)) {
   if (fs.existsSync(runtimePackageJson)) {
     const runtimePkg = JSON.parse(fs.readFileSync(runtimePackageJson, "utf8"));
     runtimePkg.version = version;
+    // 应用内「本版说明」= 各渠道共用的更新说明（fnOS 应用中心 / 软仓 / FnDepot / 群晖
+    // 展示的是同一份），必须显式注入：stage 里的 package.json 可能来自更早的构建。
+    runtimePkg.mmhFnosManifestChangelog = manifestChangelog;
+    // mmhReleaseNotes 仍是 GitHub Release 正文（含安装说明），应用内面板不再用它。
     runtimePkg.mmhReleaseNotes = runtimeReleaseNotes;
+    if (packageReleaseNotesI18n) {
+      runtimePkg.mmhReleaseNotesI18n = packageReleaseNotesI18n;
+    } else {
+      // 没有译文时删掉字段，避免把上一次构建的过期 / 空译文带进包里。
+      delete runtimePkg.mmhReleaseNotesI18n;
+    }
     write(runtimePackageJson, JSON.stringify(runtimePkg, null, 2));
   }
   for (const envFile of [".env", ".env.local", ".env.production", ".env.development"]) {

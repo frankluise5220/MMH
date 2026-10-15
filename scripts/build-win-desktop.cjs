@@ -179,6 +179,39 @@ if (!skipBuild) {
   console.log("Skipping build steps (--skip-build).");
 }
 
+// 应用内「本版说明」（设置 → 系统更新）读的是运行时 package.json 的
+// mmhFnosManifestChangelog —— 各渠道共用的那份「新版本更新说明」（fnOS 应用中心 /
+// 软仓 / FnDepot / 群晖 展示的也是它）；mmhReleaseNotes 是 GitHub Release 正文
+// （含安装说明），不再进应用内面板。桌面版 stage 可能被 --reuse-stage 复用，其中的
+// package.json 来自更早的一次 next build，所以打包时用仓库里的值重新注入一遍，与
+// build-fnos-package.cjs / build-synology-package.cjs 的做法一致；没有译文时删字段而不是留空。
+function applyRuntimeReleaseNotes() {
+  const source = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+  const target = path.join(stageAppDir, "package.json");
+  if (!fs.existsSync(target)) {
+    console.error("Staged app is missing package.json; the in-app 本版说明 and version would be empty.");
+    process.exit(1);
+  }
+  const runtimePkg = JSON.parse(fs.readFileSync(target, "utf8"));
+  const changelog = typeof source.mmhFnosManifestChangelog === "string" ? source.mmhFnosManifestChangelog.trim() : "";
+  if (changelog) runtimePkg.mmhFnosManifestChangelog = changelog;
+  else delete runtimePkg.mmhFnosManifestChangelog;
+  const notes = typeof source.mmhReleaseNotes === "string" ? source.mmhReleaseNotes.trim() : "";
+  if (notes) runtimePkg.mmhReleaseNotes = notes;
+  else delete runtimePkg.mmhReleaseNotes;
+  const picked = {};
+  const i18n = source.mmhReleaseNotesI18n;
+  if (i18n && typeof i18n === "object" && !Array.isArray(i18n)) {
+    for (const language of ["zh-CN", "en-US", "ja-JP"]) {
+      const text = typeof i18n[language] === "string" ? i18n[language].trim() : "";
+      if (text) picked[language] = text;
+    }
+  }
+  if (Object.keys(picked).length > 0) runtimePkg.mmhReleaseNotesI18n = picked;
+  else delete runtimePkg.mmhReleaseNotesI18n;
+  fs.writeFileSync(target, `${JSON.stringify(runtimePkg, null, 2)}\n`, "utf8");
+}
+
 // ---------------------------------------------------------------- stage app
 step("stage standalone app");
 const standaloneDir = path.join(root, ".next", "standalone");
@@ -205,6 +238,7 @@ if (!canReuseStage) {
   console.log("Reusing existing staged standalone app (--reuse-stage).");
 }
 fs.writeFileSync(path.join(stageAppDir, ".mmh-version"), `${JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")).version}\n`, "utf8");
+applyRuntimeReleaseNotes();
 
 step("sync .next/static and public");
 copyDir(path.join(root, ".next", "static"), path.join(stageAppDir, ".next", "static"));

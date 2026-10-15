@@ -7,13 +7,13 @@
  * POST ?mode=rebuild: does not pull code; only reinstalls dependencies, generates Prisma, syncs the database, and builds.
  *
  * Response format:
- * - GET: { ok, deploymentTarget, isDocker, isFnos, isSynology, updateMode, localVersion, localReleaseNotes, localCommit, localCommitMsg, localCommitDate, remoteVersion, remoteCommit, remoteCommitMsg, needsUpdate, canCheckUpdate }
+ * - GET: { ok, deploymentTarget, isDocker, isFnos, isSynology, updateMode, localVersion, localReleaseNotes, localReleaseNotesI18n, localCommit, localCommitMsg, localCommitDate, remoteVersion, remoteCommit, remoteCommitMsg, needsUpdate, canCheckUpdate }
  * - POST: text/event-stream; each data is { step, status, output? }, ending with { type: "done", ok, error?, restartRequired }
  */
 import { NextRequest, NextResponse } from "next/server";
 import { exec, execSync } from "child_process";
 import { existsSync, readFileSync } from "fs";
-import { join } from "path";
+import { dirname, join } from "path";
 import { getCurrentUser, isAdmin } from "@/lib/server/auth";
 
 export const runtime = "nodejs";
@@ -141,9 +141,91 @@ function getDeploymentTarget(): "docker" | "fnos" | "synology" | "standalone" {
   return "standalone";
 }
 
-function getPackageReleaseNotes(pkg: { mmhReleaseNotes?: unknown; releaseNotes?: unknown }) {
-  const value = typeof pkg.mmhReleaseNotes === "string" ? pkg.mmhReleaseNotes : pkg.releaseNotes;
-  return typeof value === "string" ? value.trim() : "";
+type LocalPackageJson = {
+  version?: unknown;
+  /**
+   * The shared update note: the fnOS App Center 「版本说明」, the soft-store
+   * `changelog`, the FnDepot entry and the Synology「新增功能」panel all render
+   * this same single-line string. The in-app「本版说明」panel shows it too, so a
+   * version's in-app note and its store note can never drift apart.
+   */
+  mmhFnosManifestChangelog?: unknown;
+  /**
+   * The long Markdown release body (three blocks, including the install /
+   * upgrade instructions). It belongs to the GitHub Release 正文 only — the
+   * in-app panel deliberately does not use it.
+   */
+  mmhReleaseNotes?: unknown;
+  releaseNotes?: unknown;
+  mmhReleaseNotesI18n?: unknown;
+};
+
+/**
+ * Read the runtime `package.json` (version + release notes) from the app root.
+ *
+ * `process.cwd()` is correct for dev, Docker and the standalone/Windows layouts,
+ * but the package-managed layouts start the bundled `server.js` from a parent
+ * directory: the Synology start-stop script launches
+ * `node <target>/app/server/server.js` without changing directory, and the fnOS
+ * start script itself accepts both `<app>` and `<app>/server` as the process cwd
+ * when it looks for a surviving server (`build-fnos-package.cjs`). A cwd-only
+ * read therefore misses the file and blanks out both the local version and 本版说明
+ * on those deployments, so fall back to the directory of the running entry script.
+ */
+function readLocalPackageJson(projectRoot: string): LocalPackageJson {
+  const candidates = [join(projectRoot, "package.json")];
+  const entryScript = String(process.argv[1] ?? "").trim();
+  if (entryScript) candidates.push(join(dirname(entryScript), "package.json"));
+  for (const candidate of candidates) {
+    try {
+      if (!existsSync(candidate)) continue;
+      return JSON.parse(readFileSync(candidate, "utf-8")) as LocalPackageJson;
+    } catch {
+      // Try the next candidate instead of failing the whole update check.
+    }
+  }
+  return {};
+}
+
+/**
+ * The in-app「本版说明」text (设置 → 系统更新).
+ *
+ * It is the **shared** update note — `mmhFnosManifestChangelog`, the very string
+ * the stores render — not the GitHub Release body: `mmhReleaseNotes` also carries
+ * the install / upgrade instructions, which do not belong inside the app.
+ * Packages built before 2026-10-15 only carry `mmhReleaseNotes`, so fall back to
+ * it rather than blanking the panel.
+ */
+function getPackageReleaseNotes(pkg: { mmhFnosManifestChangelog?: unknown; mmhReleaseNotes?: unknown; releaseNotes?: unknown }) {
+  const candidates = [pkg.mmhFnosManifestChangelog, pkg.mmhReleaseNotes, pkg.releaseNotes];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && candidate.trim()) return candidate.trim();
+  }
+  return "";
+}
+
+/** The only languages `mmhReleaseNotesI18n` may carry; anything else is ignored instead of surfaced. */
+const RELEASE_NOTES_LANGUAGES = ["zh-CN", "en-US", "ja-JP"] as const;
+
+/**
+ * Optional per-language release notes (`package.json.mmhReleaseNotesI18n`).
+ *
+ * Only the three UI languages are read and only non-empty strings are kept, so a
+ * malformed or half-filled object can never render an empty "本版说明" panel:
+ * an empty result stays `undefined` and the client falls back to the Chinese
+ * shared update note (`mmhFnosManifestChangelog`).
+ */
+function getPackageReleaseNotesI18n(pkg: { mmhReleaseNotesI18n?: unknown }) {
+  const raw = pkg.mmhReleaseNotesI18n;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const source = raw as Record<string, unknown>;
+  const result: Partial<Record<(typeof RELEASE_NOTES_LANGUAGES)[number], string>> = {};
+  for (const language of RELEASE_NOTES_LANGUAGES) {
+    const value = source[language];
+    const text = typeof value === "string" ? value.trim() : "";
+    if (text) result[language] = text;
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
 }
 
 function safeGitName(value: string | undefined, fallback: string) {
@@ -538,9 +620,10 @@ export async function GET(req: NextRequest) {
     const { searchParams } = new URL(req.url);
     const checkRemote = searchParams.get("check") === "1";
     const projectRoot = process.cwd();
-    const pkg = JSON.parse(readFileSync(join(projectRoot, "package.json"), "utf-8"));
-    const localVersion = pkg.version || "unknown";
+    const pkg = readLocalPackageJson(projectRoot);
+    const localVersion = typeof pkg.version === "string" && pkg.version.trim() ? pkg.version.trim() : "unknown";
     const localReleaseNotes = getPackageReleaseNotes(pkg);
+    const localReleaseNotesI18n = getPackageReleaseNotesI18n(pkg);
     let imageSourceConfig: ImageSourceConfig | null = null;
     const deploymentTarget = getDeploymentTarget();
     const dockerEnvironment = deploymentTarget === "docker";
@@ -630,6 +713,7 @@ export async function GET(req: NextRequest) {
       imageSourceConfig,
       localVersion,
       localReleaseNotes,
+      localReleaseNotesI18n,
       ...versionInfo,
     });
   } catch (e) {
