@@ -102,7 +102,14 @@ function releaseNoteGroups(markdown) {
       continue;
     }
     const bullet = BULLET.exec(line);
-    if (bullet && current) current.items.push(bullet[1]);
+    if (bullet) {
+      // 「有条目、没有 ### 小标题」也认：挂到兜底分组，别把写好的条目静默丢掉。
+      if (!current) {
+        current = { title: "本次更新", items: [] };
+        groups.push(current);
+      }
+      current.items.push(bullet[1]);
+    }
   }
   return groups.filter((group) => group.items.length > 0);
 }
@@ -115,6 +122,15 @@ function storeChangelogLines(version, { bullet }) {
   for (const group of groups) {
     lines.push(`【${group.title}】`);
     for (const item of group.items) lines.push(`${bullet} ${item}`);
+  }
+  if (groups.length === 0) {
+    // 没有可派生的正典 —— 注意 `mmhReleaseNotesI18n` 按设计是**可选**的（没有译文时
+    // 整个字段省略，见 check-release-version.cjs 的硬断言），所以这条路径是**可达**的。
+    // 此时退回单行短说明 mmhFnosManifestChangelog：它自带 `完整说明见 GitHub Release v<ver>`
+    // 结尾，不必再追加。**绝不能**退化成只剩一行版本引用 —— 那会让商店的更新说明整段空掉，
+    // 而 VPS 侧的形态闸门又会拒收它，站点就静默停在上一版的说明上（比「没换行」更糟）。
+    const manifest = String(pkg.mmhFnosManifestChangelog || "").trim();
+    return [manifest || `完整说明见 GitHub Release v${version}`];
   }
   lines.push(`完整说明见 GitHub Release v${version}`);
   return lines;
