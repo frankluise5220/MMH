@@ -264,3 +264,24 @@ __pycache__/
 
 # quarantined local scratch files moved out of the repo root — never committed
 /.old/
+
+# 与"用户运行 / 打包 / 发版"无关的维护者文件：本地保留，不进公开仓库（2026-10-16 取消跟踪）
+# 一次性归档调试脚本（check_* / fix_* / test-* / migrate-*，无任何引用）
+/scripts/archive/
+/scripts/diag-cf-email-routing.cjs
+/scripts/diag-imap-inbox.cjs
+/scripts/diag-smtp-send.cjs
+# 维护者内部基建：内部测试/分诊工具、私有运维后台、FN 软仓运维站、Cloudflare 反馈中继
+/harness/
+/deploy/admin/
+/deploy/fnstore/
+/relay/feedback-worker/
+# Next.js 模板残留图片（全仓库无引用）
+/public/file.svg
+/public/globe.svg
+/public/next.svg
+/public/window.svg
+/public/vercel.svg
+# Android 脚手架测试桩（com.example.mmh 模板）
+/android/app/src/test/java/com/example/mmh/
+/android/app/src/androidTest/java/com/example/mmh/
