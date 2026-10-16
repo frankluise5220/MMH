@@ -2,6 +2,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+const storeChangelog = require("./store-changelog.cjs");
 
 const root = path.resolve(__dirname, "..");
 const failures = [];
@@ -138,6 +139,34 @@ for (const [file, key] of [
   expect(Array.isArray(app.screenshots) && app.screenshots.length > 0, `${file} screenshots must list at least one preview image.`);
 }
 
+// FN 软仓「应用介绍」= `desc` / `description`（2026-10-16 用户决定「换成长清单逐条一行」）。
+// 客户端按 **HTML** 渲染（fn-appstores-client `apps.js:391` `descEl.innerHTML = app.desc`），
+// 所以逐条换行只能用 `<br>`；而同一个客户端还会把 `desc` 去标签后按**真实 `\n`** 拆行
+// （`apps.js:377-386`），`lines.length >= 2` 就渲染一个与「应用介绍」重复的「更新内容」面板
+// —— 因此 `desc` 里**一个真实换行都不能有**。这两条互为表里，少一条就把旧的重复故障带回来。
+const storeUpdateBlock = storeChangelog.softstoreUpdateBlock(version);
+const storeDescPrefix = `${storeUpdateBlock}${storeChangelog.HTML_SEPARATOR}${storeChangelog.HTML_SEPARATOR}${storeChangelog.INTRO_MARKER}`;
+const mmhManualApps = (payload) =>
+  (Array.isArray(payload) ? payload : []).filter((item) => item.id === "mmh").map((item) => item._manual);
+for (const target of [
+  { file: "deploy/fnos/repository/apps.example.json", field: "description", getApps: (payload) => payload.apps ?? [] },
+  { file: "deploy/fnos/repository/api/apps", field: "desc", getApps: (payload) => payload.data ?? [] },
+  { file: "fn-appstores.json", field: "desc", getApps: mmhManualApps },
+  { file: "deploy/fnos/selfhosted-source/data/fn-appstores.json", field: "desc", getApps: mmhManualApps },
+]) {
+  for (const app of target.getApps(readJson(target.file)).filter(Boolean)) {
+    const desc = typeof app[target.field] === "string" ? app[target.field] : "";
+    expect(
+      desc.startsWith(storeDescPrefix),
+      `${target.file} ${target.field} must carry the per-item 【本版更新】 block derived from package.json mmhReleaseNotesI18n["zh-CN"] (run npm run sync:store-desc).`,
+    );
+    expect(
+      !/[\r\n]/.test(desc),
+      `${target.file} ${target.field} must not contain real newlines: fn-appstores-client splits desc by \\n and would then render a duplicated 「更新内容」 panel.`,
+    );
+  }
+}
+
 const fndepotFnpack = readJson("deploy/fnos/repository/fnpack.json");
 const fndepotApp = fndepotFnpack.apps?.mmh;
 expect(fndepotApp, "deploy/fnos/repository/fnpack.json must contain the mmh app entry under apps for FnDepot.");
@@ -152,7 +181,16 @@ if (fndepotApp) {
   // release: published 的 sync workflow 创建（见 scripts/sync-fndepot-source.cjs）。
   // 但一旦存在，就必须是完整、正确、可下载的条目。
   if (fndepotRelease) {
-    expect(fndepotRelease.changelog === manifestChangelog, "deploy/fnos/repository/fnpack.json releases changelog must match package.json mmhFnosManifestChangelog.");
+    // 2026-10-16 用户决定「FnDepot 也改成分行」：FnDepot「更新内容」不再是单行的
+    // mmhFnosManifestChangelog，而是从 mmhReleaseNotesI18n["zh-CN"] 派生的逐条一行文本
+    // （与软件内「本版说明」同一份清单，只做 `\n` 分隔的形态适配）。没有该正典时仍退回单行。
+    const expectedFndepotChangelog = storeChangelog.hasDerivedNotes()
+      ? storeChangelog.fndepotChangelog(version)
+      : manifestChangelog;
+    expect(
+      fndepotRelease.changelog === expectedFndepotChangelog,
+      "deploy/fnos/repository/fnpack.json releases changelog must equal the per-item changelog derived from package.json mmhReleaseNotesI18n[\"zh-CN\"] (release: published 的 fnos-fndepot-sync.yml 会写入；本地可跑 node scripts/sync-fndepot-source.cjs --version <ver>).",
+    );
     expect(fndepotRelease.packages?.x86?.download_url === downloadUrls.x86_64, "deploy/fnos/repository/fnpack.json releases x86 download_url must point to the x86_64 FPK for v${version}.");
     expect(fndepotRelease.packages?.arm?.download_url === downloadUrls.arm64, "deploy/fnos/repository/fnpack.json releases arm download_url must point to the arm64 FPK for v${version}.");
   }

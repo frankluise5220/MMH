@@ -32,6 +32,8 @@
     "check:synology": "node scripts/verify-synology-package.cjs",
     "check:migration-coverage": "node scripts/check-schema-migration-coverage.cjs",
     "check:release-version": "node scripts/check-release-version.cjs",
+    "sync:store-desc": "node scripts/store-changelog.cjs --write",
+    "check:store-desc": "node scripts/store-changelog.cjs --check",
     "release:version": "node scripts/bump-release-version.cjs",
     "codex:git": "node scripts/codex-git.cjs",
     "codex:rg": "node scripts/codex-rg.cjs",

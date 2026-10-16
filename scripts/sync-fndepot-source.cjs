@@ -25,6 +25,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+const storeChangelog = require("./store-changelog.cjs");
 
 const FIXED_CATEGORIES = [
   "影音娱乐", "系统工具", "编程开发", "AI赋能", "生活服务",
@@ -192,7 +193,18 @@ async function main() {
     // changelog 只能来自「同一个版本」的 package.json。版本对不上时宁可留空
     // （空 changelog 会在 check:release-version 里明显失败），也不要写入
     // 别的版本的说明——那正是 cd5bab17 那类静默张冠李戴错误的成因。
-    const manifestChangelog = targetVersion === pkgVersion ? String(pkg.mmhFnosManifestChangelog || "").trim() : "";
+    //
+    // 形态（2026-10-16 用户决定「FnDepot 也改成分行」）：FnDepot「更新内容」改为
+    // **逐条一行**，内容取自 package.json.mmhReleaseNotesI18n["zh-CN"] —— 与软件内
+    // 「本版说明」同一份正典，只做形态适配（`\n` 分隔）。派生规则与「为什么 FnDepot
+    // 用真实 `\n` 而软仓只能用 `<br>`」见 scripts/store-changelog.cjs 文件头。
+    // package.json 没有该正典时退回旧的单行短说明 mmhFnosManifestChangelog。
+    const releaseChangelog =
+      targetVersion === pkgVersion
+        ? storeChangelog.hasDerivedNotes()
+          ? storeChangelog.fndepotChangelog(targetVersion)
+          : String(pkg.mmhFnosManifestChangelog || "").trim()
+        : "";
     if (targetVersion !== pkgVersion) {
       console.warn(
         `[warn] --version ${targetVersion} 与 package.json 的 ${pkgVersion || "(空)"} 不一致，changelog 留空；请确认要同步的是哪个版本。`,
@@ -201,14 +213,14 @@ async function main() {
     const existing = app.releases[targetVersion];
     if (!existing) {
       app.releases[targetVersion] = {
-        changelog: manifestChangelog,
+        changelog: releaseChangelog,
         os_min_version: "0.9.0",
         packages: fnosPackages(repo, targetVersion),
       };
       console.log(`[info] 新建 release 条目 v${targetVersion}（由发布流程创建）`);
-    } else if (manifestChangelog && existing.changelog !== manifestChangelog) {
-      existing.changelog = manifestChangelog;
-      console.log(`[info] v${targetVersion} changelog <- package.json mmhFnosManifestChangelog`);
+    } else if (releaseChangelog && existing.changelog !== releaseChangelog) {
+      existing.changelog = releaseChangelog;
+      console.log(`[info] v${targetVersion} changelog <- package.json mmhReleaseNotesI18n["zh-CN"]（逐条一行）`);
     }
   }
 

@@ -109,6 +109,14 @@ jobs:
           VERSION: ${{ steps.meta.outputs.version }}
         run: node scripts/sync-fndepot-source.cjs --input deploy/fnos/repository/fnpack.json
 
+      - name: Rewrite the FN soft-store 【本版更新】 blocks from package.json
+        # 2026-10-16（用户报障「软仓的更新说明也没换行」）：软仓「应用介绍」的更新说明
+        # 改为**逐条一行** —— 用 `<br>` 分隔，且**绝不能出现真实 `\n`**：客户端
+        # fn-appstores-client `apps.js:377-386` 会把 desc 去标签后按 `\n` 拆行，≥2 行就渲染
+        # 一个与「应用介绍」重复的「更新内容」面板。内容源只有一个：package.json
+        # 的 mmhReleaseNotesI18n["zh-CN"]（与软件内「本版说明」同一份清单）。
+        run: npm run sync:store-desc
+
       - name: Verify release metadata consistency
         run: npm run check:release-version
 
@@ -117,9 +125,14 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add deploy/fnos/repository/fnpack.json
+          # FnDepot 源 + 4 处 FN 软仓 desc（【本版更新】段由 sync:store-desc 重写）。
+          git add deploy/fnos/repository/fnpack.json \
+                  deploy/fnos/repository/apps.example.json \
+                  deploy/fnos/repository/api/apps \
+                  fn-appstores.json \
+                  deploy/fnos/selfhosted-source/data/fn-appstores.json
           if git diff --staged --quiet; then
-            echo "fnpack.json unchanged; nothing to commit."
+            echo "fnpack.json / 软仓 desc unchanged; nothing to commit."
             exit 0
           fi
           git commit -m "chore(fnos): backfill FnDepot source metadata for ${{ steps.meta.outputs.tag }}"
@@ -129,3 +142,25 @@ jobs:
           # rebase 不会产生分叉。
           git pull --rebase origin main
           git push origin HEAD:main
+
+      # 2026-10-16 补：`distribution-channels.md` §4 一直声称本 workflow 末尾有这一步
+      # （「持久修复：…末尾已加 Kick the FnDepot mirror immediately 步骤」），但代码里
+      # 从来没有过它 —— `git log -S` 全历史为 0 命中，仓库里也搜不到 FNDEPOT_SYNC_TOKEN。
+      # 于是「发布后立即镜像 FnDepot」实际从未发生：MMH 侧的 fnpack.json 回填完就结束，
+      # 镜像只能等 FnDepot 自己的 scheduled cron（GitHub 对该 repo 实测节流到 4–6 小时），
+      # 而 FnDepot 平台又每天 UTC+8 00:00 才读一次仓库 —— 用户最坏晚一天才看到新版本。
+      # 实例：v0.1.73 于 2026-10-16T01:52:10Z 发布，镜像上一次 run 停在 01:13:32Z（早 39 分钟），
+      # 用户在 FnDepot 里看到的仍是 0.1.72（2026-10-16 报障）。
+      # 这一步把「立即镜像」补成真的；FNDEPOT_SYNC_TOKEN 缺失时只告警不失败，
+      # 行为与加这步之前完全一致（退化为等 cron）。
+      - name: Kick the FnDepot mirror immediately
+        env:
+          FNDEPOT_SYNC_TOKEN: ${{ secrets.FNDEPOT_SYNC_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${FNDEPOT_SYNC_TOKEN}" ]; then
+            echo "::warning::Secret FNDEPOT_SYNC_TOKEN is not configured; skipping the immediate FnDepot mirror kick. The mirror falls back to its scheduled cron (observed 4-6h), and the FnDepot platform reads the repo once daily at 00:00 UTC+8 - users may see the previous version for up to a day."
+            exit 0
+          fi
+          GH_TOKEN="${FNDEPOT_SYNC_TOKEN}" gh workflow run sync-from-mmh.yml -R frankluise5220/FnDepot
+          echo "Dispatched the FnDepot mirror workflow (sync-from-mmh.yml)."
