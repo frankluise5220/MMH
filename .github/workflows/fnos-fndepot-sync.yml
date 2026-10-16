@@ -72,18 +72,27 @@ jobs:
           set -euo pipefail
           # fnos-release builds both arch FPKs for ~10-20 minutes after the
           # release is published; give the assets up to 30 minutes to appear.
+          #
+          # 必须只认「发布之后上传的」FPK，不能只数个数（2026-10-14 v0.1.72 事故）：
+          # 那次 draft 里已经挂了本地手打的 FPK，release 一 published，本步骤的
+          # count>=2 立刻成立（回填提交 381319d2 落在 14:14:58Z，距 published_at
+          # 仅 14 秒），于是它哈希的是那两个本地包；而 fnos-release 要到 14:20:09Z
+          # 才用 tag 重建并覆盖真实资产。结果 fnpack.json 里 0.1.72 的 sha256/size
+          # 描述的是已被覆盖掉的文件，FnDepot 下载后校验必然失败（2026-10-16 报障）。
+          # draft 里的旧 FPK 一定早于 published_at，CI 产物一定晚于它 —— 用时间当判据。
           for attempt in $(seq 1 60); do
             count="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/v${VERSION}" \
-              --jq '[.assets[] | select(.name | endswith(".fpk"))] | length')"
+              --jq '.published_at as $p | [.assets[] | select(.name | endswith(".fpk")) | select((.created_at | fromdateiso8601) > ($p | fromdateiso8601))] | length')"
             if [ "$count" -ge 2 ]; then
-              echo "Found ${count} FPK assets for v${VERSION}."
+              echo "Found ${count} FPK assets for v${VERSION} built after publication."
               break
             fi
             if [ "$attempt" -eq 60 ]; then
-              echo "::error::FPK assets for v${VERSION} incomplete after 30 minutes (found ${count})."
+              echo "::error::No FPK asset for v${VERSION} was built after publication (found ${count}); refusing to hash a hand-built package."
+              echo "::error::Either fnos-release has not finished, or the draft still carried locally built FPKs that CI never replaced. Delete those stale FPK assets and re-run fnos-release before syncing the FnDepot source."
               exit 1
             fi
-            echo "Attempt ${attempt}/60: ${count}/2 FPK assets present, waiting..."
+            echo "Attempt ${attempt}/60: ${count}/2 post-publication FPK assets present, waiting..."
             sleep 30
           done
 
