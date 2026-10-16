@@ -285,3 +285,7 @@ __pycache__/
 # Android 脚手架测试桩（com.example.mmh 模板）
 /android/app/src/test/java/com/example/mmh/
 /android/app/src/androidTest/java/com/example/mmh/
+# 根目录 0 引用残留：陈旧 fnOS 软仓清单（已被 fn-appstores.json 取代）、仓库 logo、bat 版启动脚本
+/apps.json
+/logo/
+/start-dev.bat
