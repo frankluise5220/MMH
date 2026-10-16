@@ -606,8 +606,12 @@ export default function SystemUpdatePage() {
     ? `${cleanVersionPart(versionInfo?.localVersion) || "unknown"} ${packageLabel}`
     : formatVersionLine(versionInfo?.localVersion, versionInfo?.localCommit, versionInfo?.localCommitDate, timeZoneMode, timeZone);
   const localReleaseNotes = versionInfo?.localReleaseNotes?.trim() || "";
-  // 「本版说明」按界面语言取译文，取不到就回落中文说明；两者都为空时整块不渲染。
-  const releaseNotesText = versionInfo?.localReleaseNotesI18n?.[language]?.trim() || localReleaseNotes;
+  // 「本版说明」按界面语言取正文，该语言没有就回落中文正文；两者都为空时整块不渲染。
+  // `localReleaseNotes` 是各商店共用的单行短说明，`ReleaseNotesText` 按 `\n` 切行渲染，
+  // 单行文本会挤成一整团，所以它只作最后兜底（旧包没有 mmhReleaseNotesI18n 时的回落）。
+  const releaseNotesText = versionInfo?.localReleaseNotesI18n?.[language]?.trim()
+    || versionInfo?.localReleaseNotesI18n?.["zh-CN"]?.trim()
+    || localReleaseNotes;
   const availableVersionText = formatVersionLine(
     versionInfo?.remoteVersion,
     versionInfo?.remoteCommit,

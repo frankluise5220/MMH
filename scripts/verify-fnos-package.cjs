@@ -547,7 +547,11 @@ expect(/remoteVersion/.test(systemUpdateRoute), "System update API must return t
 expect(/飞牛版请通过飞牛应用中心更新 MMH 应用包/.test(systemUpdateRoute), "System update API must reject in-app updates for fnOS.");
 expect(/packageManaged \? t\("settings\.systemUpdate\.versionInfo"\)/.test(systemUpdatePage), "System update page must label package-managed details as version information.");
 expect(/function ReleaseNotesText/.test(systemUpdatePage) && /<ReleaseNotesText value=\{releaseNotesText\}/.test(systemUpdatePage), "System update page must render package release notes as structured multi-line text instead of collapsing them into one paragraph.");
-expect(/localReleaseNotesI18n\?\.\[language\]/.test(systemUpdatePage), "System update page must pick the release notes by the current UI language and fall back to the Chinese notes.");
+expect(
+  /localReleaseNotesI18n\?\.\[language\]/.test(systemUpdatePage)
+    && /localReleaseNotesI18n\?\.\["zh-CN"\]/.test(systemUpdatePage),
+  "System update page must pick the release notes by the current UI language and fall back to the canonical zh-CN in-app body; the shared one-line mmhFnosManifestChangelog is only the last resort, because a single-line note renders as one unbroken block.",
+);
 expect(
   /\{releaseNotesText \? \(\s*<>/.test(systemUpdatePage) && !/packageManaged && (localReleaseNotes|releaseNotesText)/.test(systemUpdatePage),
   "System update page must show release notes on every deployment form, not only package-managed ones.",

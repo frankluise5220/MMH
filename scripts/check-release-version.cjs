@@ -88,12 +88,24 @@ if (releaseNotesI18n !== undefined) {
   if (isPlainObject) {
     const keys = Object.keys(releaseNotesI18n);
     expect(keys.length > 0, "package.json mmhReleaseNotesI18n must be omitted entirely when there is no translation; an empty object is not allowed.");
+    // zh-CN 是本字段的正典语言：应用内先按界面语言取，取不到回落 zh-CN
+    // （共享的 mmhFnosManifestChangelog 是单行纯文本，只作旧包的最后兜底）。
+    // 只写 en-US 会让中文界面退回那一行挤成一团的文本，所以这里挡住。
+    expect(keys.includes("zh-CN"), "package.json mmhReleaseNotesI18n must include zh-CN: it is the canonical in-app 本版说明 body and the fallback for every other UI language.");
     for (const key of keys) {
       expect(releaseNotesI18nKeys.includes(key), `package.json mmhReleaseNotesI18n has unsupported language key ${key}; only zh-CN / en-US / ja-JP are allowed.`);
       const value = releaseNotesI18n[key];
       expect(
         typeof value === "string" && value.trim().length > 0,
         `package.json mmhReleaseNotesI18n.${key} must be a non-empty release-notes string; omit the key instead of leaving it empty.`,
+      );
+      // 这个字段只喂应用内面板，面板已经不再显示 GitHub Release 正文：
+      // 塞正文的固定块 = 2026-10-15「应用内变成发布公告」的回归；
+      // 塞「打包与部署」= 2026-10-16 用户明确的否定（本版说明不是 Release 全文，
+      // 用户关心的是能用上什么，不是哪个渠道重新打包了）。
+      expect(
+        !/安装 \/ 更新说明|手机端使用建议|打包与部署/.test(value),
+        `package.json mmhReleaseNotesI18n.${key} must stay the in-app 本版说明 body: no GitHub Release body blocks (安装 / 更新说明, 手机端使用建议) and no 打包与部署 group.`,
       );
     }
   }
