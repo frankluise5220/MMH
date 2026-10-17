@@ -28,7 +28,18 @@ import { buildLiabilityActivityEditEvent, inferLiabilityMode, isLiabilityActivit
 import { parseLoanPrepayStrategy } from "@/lib/loan-prepay-strategy";
 import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
 import { withBasePath } from "@/lib/base-path";
-import { isCreditCardRepaymentTransfer, isLicensedInsuranceEntry, isRegularInvestRefundEntry, TRANSACTION_SOURCE_INSURANCE } from "@/lib/transaction-semantics";
+import {
+  ENTRY_ORIGIN_AI_IMPORT,
+  ENTRY_ORIGIN_EMAIL_IMPORT,
+  ENTRY_ORIGIN_EXCEL_IMPORT,
+  ENTRY_ORIGIN_MANUAL,
+  ENTRY_ORIGIN_SCHEDULED_TASK,
+  isCreditCardRepaymentTransfer,
+  isFundBuyRefundCashLeg,
+  isLicensedInsuranceEntry,
+  isRegularInvestRefundEntry,
+  TRANSACTION_SOURCE_INSURANCE,
+} from "@/lib/transaction-semantics";
 import { normalizeSettlementTransferCategoryName } from "@/lib/settlement-category-name";
 import { advanceDialogAmount } from "@/lib/advance-transfer";
 import {
@@ -68,6 +79,46 @@ function migrateLegacyBasicDetailLayout(storageKey: string) {
   }
 }
 
+/** 审计列「创建来源」：TxRecord.entryOrigin 的取值 → i18n key。 */
+const ENTRY_ORIGIN_LABEL_KEYS: Record<string, string> = {
+  [ENTRY_ORIGIN_MANUAL]: "detail.entryOrigin.manual",
+  [ENTRY_ORIGIN_AI_IMPORT]: "detail.entryOrigin.ai_import",
+  [ENTRY_ORIGIN_EXCEL_IMPORT]: "detail.entryOrigin.excel_import",
+  [ENTRY_ORIGIN_SCHEDULED_TASK]: "detail.entryOrigin.scheduled_task",
+  [ENTRY_ORIGIN_EMAIL_IMPORT]: "detail.entryOrigin.email_import",
+};
+
+/** 空值按「手工录入」（DB 默认值）处理；未知取值直接显示原始标记，避免误标成手工。 */
+function entryOriginDisplayLabel(
+  origin: string | null | undefined,
+  t: (key: string) => string,
+): string {
+  const raw = origin?.trim() || ENTRY_ORIGIN_MANUAL;
+  const key = ENTRY_ORIGIN_LABEL_KEYS[raw];
+  return key ? t(key) : raw;
+}
+
+/**
+ * 审计时间（创建 / 最后修改）：日期部分跟随用户的日期显示格式，再补上本地时分秒，
+ * 便于区分同一天内的多次修改。无值或无法解析时返回空串。
+ */
+function formatEntryAuditTimestamp(
+  value: string | null | undefined,
+  format: DateDisplayFormat,
+): string {
+  const raw = String(value ?? "").trim();
+  if (!raw) return "";
+  const date = new Date(raw);
+  if (!Number.isFinite(date.getTime())) return formatDateDisplay(value, format);
+  // 纯日期串（没有时间部分）沿用字符串口径，避免 UTC 解析造成日期偏移。
+  if (!/[T\s]\d{1,2}:\d{2}/.test(raw)) return formatDateDisplay(value, format);
+  const dateText = formatDateDisplay(date, format);
+  const hh = String(date.getHours()).padStart(2, "0");
+  const mm = String(date.getMinutes()).padStart(2, "0");
+  const ss = String(date.getSeconds()).padStart(2, "0");
+  return `${dateText} ${hh}:${mm}:${ss}`;
+}
+
 /* Types */
 
 export type DetailEntry = {
@@ -96,6 +147,9 @@ export type DetailEntry = {
   date: string;
   postedAt?: string | null;
   createdAt?: string | null;
+  updatedAt?: string | null;
+  /** 创建来源：manual / ai_import / excel_import / scheduled_task / email_import */
+  entryOrigin?: string | null;
   dayOrder?: number | null;
   amount: number;
   currency?: string | null;
@@ -471,6 +525,9 @@ function investmentCategoryLabel(
   t: (key: string) => string,
 ): string {
   if (isLicensedInsuranceEntry(entry)) return getInsuranceDetailCategoryName(entry);
+  // 买入退款资金腿：`source` 才是权威标记。历史行可能把买入分类（基金买入 / 理财买入）
+  // 存到了这条流水上，不能让它盖掉「买入退回」。
+  if (isFundBuyRefundCashLeg(entry)) return t("detailView.buyRefund");
   if (entry.categoryName) return systemCategoryLabel(entry.categoryName, t);
   const subtype = String(entry.fundSubtype ?? "");
   const source = String(entry.source ?? "");
@@ -1484,6 +1541,54 @@ export function DetailViewClient({
         const text = displayDetailRemark(e, flowAccountIdOf(e));
         return <span className="block truncate text-slate-500" title={text}>{text}</span>;
       },
+    },
+    // 审计列三项（创建时间 / 最后修改时间 / 创建来源）集中放在「表头设置」列表最下方，
+    // 用紫色底色把这三项和普通数据列区分开（menuClassName 只影响设置列表项，不染表格）。
+    // 都是 transient：默认隐藏，勾选只在当前表格一次性生效，不写进持久化配置。
+    {
+      key: "createdAt",
+      label: t("detail.column.createdAt"),
+      width: 170,
+      minWidth: 132,
+      hideable: true,
+      defaultHidden: true,
+      transient: true,
+      menuClassName: "bg-violet-50 hover:bg-violet-100",
+      render: (e) => (
+        <span className="whitespace-nowrap tabular-nums text-slate-500">
+          {formatEntryAuditTimestamp(e.createdAt, dateDisplayFormat)}
+        </span>
+      ),
+    },
+    {
+      key: "updatedAt",
+      label: t("detail.column.updatedAt"),
+      width: 170,
+      minWidth: 132,
+      hideable: true,
+      defaultHidden: true,
+      transient: true,
+      menuClassName: "bg-violet-50 hover:bg-violet-100",
+      render: (e) => (
+        <span className="whitespace-nowrap tabular-nums text-slate-500">
+          {formatEntryAuditTimestamp(e.updatedAt, dateDisplayFormat)}
+        </span>
+      ),
+    },
+    {
+      key: "entryOrigin",
+      label: t("detail.column.entryOrigin"),
+      width: 120,
+      minWidth: 96,
+      hideable: true,
+      defaultHidden: true,
+      transient: true,
+      menuClassName: "bg-violet-50 hover:bg-violet-100",
+      render: (e) => (
+        <span className="whitespace-nowrap text-slate-500">
+          {entryOriginDisplayLabel(e.entryOrigin, t)}
+        </span>
+      ),
     },
   ], [accountColumnDefaultHidden, accountColumnDisplayFallback, resolvedAccountColumnLabel, accountColumnMode, accountDisplayFallback, accountId, accountOptionById, dateDisplayFormat, detailCategoryLabel, flowAccountIdOf, inflowCls, investmentProductTypeByAccountId, outflowCls, relatedAccountDefaultHidden, relatedAccountTarget, renderNavigableAccountLabel, runningBalanceDefaultHidden, showAccountColumn, showRunningBalance, t]);
 

@@ -2008,6 +2008,9 @@ export default async function Home({
     date: e.date.toISOString().slice(0, 10),
     postedAt: toDateOnlyLocalOrNull(e.postedAt),
     createdAt: toIsoOrNull(e.createdAt),
+    updatedAt: toIsoOrNull(e.updatedAt),
+    // 创建来源（手工 / AI 识别 / Excel / 邮件 / 计划任务），明细表审计列使用。
+    entryOrigin: e.entryOrigin ?? null,
     dayOrder: e.dayOrder ?? 0,
     amount: linkedFundAmount,
     currency: e.currency ?? "CNY",

@@ -77,8 +77,18 @@ export type AdvancedDataTableColumn<T> = {
   align?: "left" | "center" | "right";
   hideable?: boolean;
   defaultHidden?: boolean;
+  /**
+   * 临时列：默认隐藏，勾选只在当前表格实例内生效 —— 不写 localStorage，
+   * 切换账户 / 数据集（storageKey 或 resetKey 变化）后自动恢复隐藏。
+   */
+  transient?: boolean;
   className?: string;
   headerClassName?: string;
+  /**
+   * 「表头设置」列表里该列条目的附加 class，只影响设置列表项（例如给它加一层底色），
+   * 不影响表格单元格与表头。
+   */
+  menuClassName?: string;
   filterText?: (row: T) => string | null | undefined;
   sortValue?: (row: T) => string | number | null | undefined;
   filterKind?: "multi" | "dateRange" | "numberRange" | "text";
@@ -442,6 +452,8 @@ export function AdvancedDataTable<T>({
   const [needsHorizontalScroll, setNeedsHorizontalScroll] = useState(false);
   const [columnWidths, setColumnWidths] = useState<Record<string, number>>({});
   const [hiddenKeys, setHiddenKeys] = useState<Set<string>>(new Set());
+  // 临时列（transient）的显隐只存在于当前表格实例，从不落盘。
+  const [transientShownKeys, setTransientShownKeys] = useState<Set<string>>(new Set());
   const [menuOpen, setMenuOpen] = useState(false);
   const [externalColumnMenuAnchor, setExternalColumnMenuAnchor] = useState<ColumnMenuAnchor | null>(null);
   const [filters, setFilters] = useState<Partial<Record<string, string[]>>>({});
@@ -522,6 +534,10 @@ export function AdvancedDataTable<T>({
     () => tableColumns.filter((column) => column.defaultHidden && column.hideable).map((column) => column.key),
     [tableColumns],
   );
+  const transientColumnKeys = useMemo(
+    () => new Set(tableColumns.filter((column) => column.transient).map((column) => column.key)),
+    [tableColumns],
+  );
   const filterableColumnKeysSignature = useMemo(
     () => tableColumns.filter((column) => column.filterText).map((column) => column.key).join("\u001F"),
     [tableColumns],
@@ -555,12 +571,20 @@ export function AdvancedDataTable<T>({
     const savedHiddenKeys = readJson<string[] | null>(hiddenStorageKey, null);
     const legacyHiddenKeys = savedHiddenKeys == null ? readJson<string[]>(`${storageKey}:hidden`, []) : [];
     const rawHiddenKeys = savedHiddenKeys ?? [...defaultHiddenKeys, ...legacyHiddenKeys];
-    const nextHiddenKeys = new Set(rawHiddenKeys.filter((key) => hideableColumnKeys.has(key)));
+    // 临时列不进入持久化显隐集合：它只由 transientShownKeys 控制，切换后重新隐藏。
+    const nextHiddenKeys = new Set(
+      rawHiddenKeys.filter((key) => hideableColumnKeys.has(key) && !transientColumnKeys.has(key)),
+    );
     setHiddenKeys((prev) => {
       if (prev.size === nextHiddenKeys.size && Array.from(nextHiddenKeys).every((key) => prev.has(key))) return prev;
       return nextHiddenKeys;
     });
-  }, [defaultHiddenKeys, hiddenStorageKey, hideableColumnKeys, storageKey]);
+  }, [defaultHiddenKeys, hiddenStorageKey, hideableColumnKeys, storageKey, transientColumnKeys]);
+
+  useEffect(() => {
+    // 切换账户 / 数据集时清空临时列的勾选，让它们回到隐藏状态。
+    setTransientShownKeys((prev) => (prev.size === 0 ? prev : new Set()));
+  }, [resetKey, storageKey]);
 
   useEffect(() => {
     tableDisplayStateHydratedRef.current = false;
@@ -808,8 +832,11 @@ export function AdvancedDataTable<T>({
   }, [columnVisibilityTriggerId]);
 
   const visibleColumns = useMemo(
-    () => tableColumns.filter((column) => !column.hideable || !hiddenKeys.has(column.key)),
-    [hiddenKeys, tableColumns],
+    () => tableColumns.filter((column) => (
+      (!column.hideable || !hiddenKeys.has(column.key))
+      && (!column.transient || transientShownKeys.has(column.key))
+    )),
+    [hiddenKeys, tableColumns, transientShownKeys],
   );
   const activeFilterMeta = useMemo(() => {
     const empty = {
@@ -1217,6 +1244,16 @@ export function AdvancedDataTable<T>({
   function toggleColumn(key: string) {
     const column = tableColumns.find((item) => item.key === key);
     if (!column?.hideable) return;
+    if (column.transient) {
+      // 临时列：只改本次表格的内存状态，不写 localStorage（切换即恢复隐藏）。
+      setTransientShownKeys((prev) => {
+        const next = new Set(prev);
+        if (next.has(key)) next.delete(key);
+        else next.add(key);
+        return next;
+      });
+      return;
+    }
     setHiddenKeys((prev) => {
       const next = new Set(prev);
       if (next.has(key)) next.delete(key);
@@ -1556,8 +1593,22 @@ export function AdvancedDataTable<T>({
       <div className="mb-1 px-1 text-[11px] font-semibold text-slate-500">{t("table.visibleColumns")}</div>
       <div className="max-h-56 space-y-1 overflow-y-auto">
         {tableColumns.filter((column) => column.key !== "__row_actions").map((column) => (
-          <label key={column.key} className={`flex items-center gap-2 rounded px-1.5 py-1 text-xs ${column.hideable ? "cursor-pointer text-slate-700 hover:bg-slate-50" : "text-slate-400"}`}>
-            <input type="checkbox" checked={!hiddenKeys.has(column.key)} disabled={!column.hideable} onChange={() => toggleColumn(column.key)} className="h-3.5 w-3.5 rounded border-slate-300" />
+          <label
+            key={column.key}
+            className={[
+              "flex items-center gap-2 rounded px-1.5 py-1 text-xs",
+              column.hideable ? "cursor-pointer text-slate-700" : "text-slate-400",
+              // 带底色的条目自带 hover 色，避免和默认灰底两套 hover 打架。
+              column.menuClassName ?? (column.hideable ? "hover:bg-slate-50" : ""),
+            ].join(" ")}
+          >
+            <input
+              type="checkbox"
+              checked={!hiddenKeys.has(column.key) && (!column.transient || transientShownKeys.has(column.key))}
+              disabled={!column.hideable}
+              onChange={() => toggleColumn(column.key)}
+              className="h-3.5 w-3.5 rounded border-slate-300"
+            />
             <span className="truncate">{column.label}</span>
           </label>
         ))}

@@ -153,6 +153,8 @@ export async function loadReportDetailEntries(
     date: formatDateLocal(record.date),
     postedAt: record.postedAt ? formatDateLocal(record.postedAt) : null,
     createdAt: record.createdAt.toISOString(),
+    updatedAt: record.updatedAt ? record.updatedAt.toISOString() : null,
+    entryOrigin: record.entryOrigin ?? null,
     dayOrder: record.dayOrder,
     // Redemption principal is a transfer between investment and cash accounts;
     // only the realized result belongs in income/expense detail.

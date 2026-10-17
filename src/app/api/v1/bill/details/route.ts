@@ -76,6 +76,7 @@ function mapDetailEntry(
     date: toYmdOrNull(entry.date),
     postedAt: toDateOnlyLocalOrNull(entry.postedAt),
     createdAt: toIsoOrNull(entry.createdAt),
+    entryOrigin: entry.entryOrigin ?? null,
     dayOrder: entry.dayOrder ?? 0,
     amount: toNumber(
       entry.type === TransactionType.transfer && billAccountIdSet.has(entry.toAccountId ?? "")

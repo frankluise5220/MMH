@@ -99,7 +99,13 @@ import { regularInvestRefundNote } from "@/lib/fund/regular-invest-display";
 import { normalizeFundDisplayName, resolveFundName } from "@/lib/fund/fundProfile";
 import { normalizeCurrency, resolveSameCurrencyTransfer } from "@/lib/currency";
 import { resolveAdvanceTransfer } from "@/lib/advance-transfer";
-import { ENTRY_ORIGIN_MANUAL, isCreditCardRepaymentTransfer, statementMonthForTransfer } from "@/lib/transaction-semantics";
+import {
+  ENTRY_ORIGIN_MANUAL,
+  isCreditCardRepaymentTransfer,
+  isFundBuyRefundCashLeg,
+  statementMonthForTransfer,
+  TRANSACTION_SOURCE_REGULAR_INVEST_REFUND,
+} from "@/lib/transaction-semantics";
 import { ensureSettlementTransferCategory, resolveCategorySnapshot, resolveCreditCardRepaymentCategory } from "@/lib/default-categories";
 import { getInvestmentCategoryName } from "@/lib/investment-category";
 import { buildWealthCashFlowNote } from "@/lib/wealth-cash-note";
@@ -1028,6 +1034,7 @@ async function loadApiDetailRecord(entryId: string) {
     id: entry.id,
     date: formatDateLocal(entry.date),
     postedAt: toDateOnlyLocal(entry.postedAt),
+    entryOrigin: entry.entryOrigin ?? null,
     dayOrder: entry.dayOrder,
     amount: toNumber(entry.amount),
     currency: entry.currency ?? "CNY",
@@ -1286,6 +1293,42 @@ function linkedFundTransactionIdOf(entry: {
 // Fund (non-wealth) counterpart of linkedWealthDetailFields: a cash leg TxRecord carries no fund
 // fields of its own, so every reader must back-fill them from the linked fund_transactions row.
 function linkedFundDetailFields(record: any, fundRow: any) {
+  // 买入退款资金腿：这条流水自己就是「钱退回到现金账户」那一腿，`date` 是到账日、
+  // `amount` 是退款金额。若沿用买入口径（申请日 / 买入金额 / 现金→基金方向），
+  // 资金侧会把它显示成申请日当天又一笔买入，退款到账当天看不到这笔收入。
+  if (isFundBuyRefundCashLeg(record)) {
+    const refundDate = record.date ? formatDateLocal(record.date) : null;
+    const refundAmount = Math.abs(toNumber(record.amount));
+    const cashAccount = fundRow.CashAccount ?? null;
+    const cashAccountId = fundRow.cashAccountId ?? record.accountId ?? null;
+    return {
+      date: refundDate,
+      amount: refundAmount,
+      cashEntryId: fundRow.cashEntryId ?? record.id,
+      businessTransactionId: fundRow.id,
+      fundTransactionId: fundRow.id,
+      cashAccountId,
+      accountId: record.accountId ?? cashAccountId,
+      accountName:
+        accountDisplayName(record.account, record.accountName) || (cashAccount?.name ?? ""),
+      accountKind: record.accountKind ?? cashAccount?.kind ?? null,
+      toAccountId: record.toAccountId ?? null,
+      toAccountName: record.toAccountName ?? null,
+      toAccountKind: record.toAccountKind ?? null,
+      fundSubtype: record.fundSubtype ?? null,
+      fundCode: fundRow.fundCode ?? null,
+      fundName: fundRow.fundName ?? null,
+      fundProductType: fundRow.fundProductType ?? null,
+      fundUnits: null,
+      fundNav: null,
+      fundFee: null,
+      fundConfirmDate: null,
+      fundArrivalDate: refundDate,
+      fundArrivalAmount: refundAmount,
+      source: record.source ?? TRANSACTION_SOURCE_REGULAR_INVEST_REFUND,
+      note: record.note ?? fundRow.note,
+    };
+  }
   const isCashIn = isFundCashReceiptSubtype(fundRow.fundSubtype);
   const fundAccount = fundRow.Account ?? null;
   const cashAccount = fundRow.CashAccount ?? null;
@@ -1594,6 +1637,9 @@ export async function GET(req: Request) {
         id: record.id,
         date: formatDateLocal(record.date),
         postedAt: toDateOnlyLocal(record.postedAt),
+        createdAt: record.createdAt?.toISOString?.() ?? null,
+        updatedAt: record.updatedAt?.toISOString?.() ?? null,
+        entryOrigin: record.entryOrigin ?? null,
         dayOrder: record.dayOrder,
         amount: toNumber(record.amount),
         currency: record.currency ?? "CNY",
@@ -1845,6 +1891,8 @@ export async function GET(req: Request) {
       date: formatDateLocal(e.date),
       postedAt: toDateOnlyLocal(e.postedAt),
       createdAt: e.createdAt?.toISOString?.() ?? null,
+      updatedAt: e.updatedAt?.toISOString?.() ?? null,
+      entryOrigin: e.entryOrigin ?? null,
       dayOrder: e.dayOrder,
       amount: toNumber(e.amount),
       currency: e.currency ?? "CNY",
@@ -3128,6 +3176,9 @@ export async function POST(req: Request) {
             id: created.id,
             date: formatDateLocal(created.date),
             postedAt: toDateOnlyLocal(created.postedAt),
+            createdAt: created.createdAt?.toISOString?.() ?? null,
+            updatedAt: created.updatedAt?.toISOString?.() ?? null,
+            entryOrigin: created.entryOrigin ?? null,
             dayOrder: created.dayOrder,
             amount: toNumber(created.amount),
             currency: created.currency ?? "CNY",
@@ -4266,6 +4317,9 @@ return;
         id: updated.id,
         date: formatDateLocal(updated.date),
         postedAt: toDateOnlyLocal(updated.postedAt),
+        createdAt: updated.createdAt?.toISOString?.() ?? null,
+        updatedAt: updated.updatedAt?.toISOString?.() ?? null,
+        entryOrigin: updated.entryOrigin ?? null,
         dayOrder: updated.dayOrder,
         amount: toNumber(updated.amount),
         currency: updated.currency ?? "CNY",
