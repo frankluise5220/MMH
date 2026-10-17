@@ -10,6 +10,7 @@ import {
   useState,
   type MouseEvent as ReactMouseEvent,
   type DragEvent as ReactDragEvent,
+  type PointerEvent as ReactPointerEvent,
   type ReactNode,
   type UIEvent as ReactUIEvent,
 } from "react";
@@ -28,6 +29,16 @@ import {
 const HORIZONTAL_SCROLL_TOLERANCE_PX = 4;
 const ROW_VIRTUALIZATION_THRESHOLD = 200;
 const HEADER_SORT_CLICK_DELAY_MS = 220;
+/**
+ * 长按整行进入拖拽的触发时长。1 秒是刻意的：按住期间只做浅色高亮，不到点不起拖，
+ * 既不会和「滑动列表 / 点开记录」抢手势，也让「长按拿起」像一次明确的主动动作。
+ */
+const ROW_LONG_PRESS_DRAG_DELAY_MS = 1000;
+/** 长按待触发期间允许的抖动；超过即视为滚动或选字，取消本次长按。 */
+const ROW_LONG_PRESS_MOVE_TOLERANCE_PX = 10;
+/** 拖拽中手指贴近视口上下边缘时自动滚动，避免长列表拖不动。 */
+const ROW_DRAG_AUTO_SCROLL_MARGIN_PX = 56;
+const ROW_DRAG_AUTO_SCROLL_MAX_STEP = 22;
 // Compact rows stay fixed; the user-facing row-height preference owns normal density.
 const COMPACT_ROW_HEIGHT = 30;
 const COMPACT_ROW_CONTENT_HEIGHT = 20;
@@ -178,6 +189,30 @@ type ResizeSession = {
   baseWidths: Record<string, number>;
 };
 
+/** 已按下、尚未达到长按时长的行（到点后转成拖拽）。 */
+type PendingRowLongPress = {
+  key: string;
+  pointerId: number;
+  startX: number;
+  startY: number;
+  timer: number | null;
+};
+
+/** 长按已触发、手指/鼠标仍按住的拖拽会话。 */
+type PointerDragSession = {
+  key: string;
+  pointerId: number;
+  lastX: number;
+  lastY: number;
+};
+
+/** 长按拿起后跟随指针的「悬浮整行」，是原行的 DOM 克隆，不参与命中测试。 */
+type RowDragGhost = {
+  wrapper: HTMLDivElement;
+  grabOffsetX: number;
+  grabOffsetY: number;
+};
+
 function reorderRowItems<T>(items: RowItem<T>[], sourceKey: string, targetKey: string, position: AdvancedDataTableDropPosition) {
   const sourceIndex = items.findIndex((item) => item.key === sourceKey);
   const targetIndex = items.findIndex((item) => item.key === targetKey);
@@ -193,6 +228,143 @@ function reorderRowItems<T>(items: RowItem<T>[], sourceKey: string, targetKey: s
 function getDropPositionFromClientY(rowElement: HTMLElement, clientY: number): AdvancedDataTableDropPosition {
   const rect = rowElement.getBoundingClientRect();
   return clientY < rect.top + rect.height / 2 ? "before" : "after";
+}
+
+/** 指针贴近表体上下边缘时返回本帧应滚动的像素（带方向），否则 0。 */
+function getRowDragAutoScrollDelta(viewport: HTMLElement, clientY: number) {
+  const rect = viewport.getBoundingClientRect();
+  const stepFor = (distance: number) => Math.max(
+    4,
+    Math.min(ROW_DRAG_AUTO_SCROLL_MAX_STEP, Math.ceil(ROW_DRAG_AUTO_SCROLL_MAX_STEP * Math.min(1, distance / ROW_DRAG_AUTO_SCROLL_MARGIN_PX))),
+  );
+  const topEdge = rect.top + ROW_DRAG_AUTO_SCROLL_MARGIN_PX;
+  const bottomEdge = rect.bottom - ROW_DRAG_AUTO_SCROLL_MARGIN_PX;
+  if (clientY < topEdge) return -stepFor(topEdge - clientY);
+  if (clientY > bottomEdge) return stepFor(clientY - bottomEdge);
+  return 0;
+}
+
+/**
+ * 长按拿起：把整行拷贝成一张跟随指针的「悬浮卡片」贴在 `body` 上。
+ * 用 DOM 克隆而不是 React 再渲染一遍，是因为悬浮行必须与原行逐像素一致（列宽、选中态、行高），
+ * 而列宽由表格布局实时算出来，React 侧拿不到。`pointer-events: none` 让它不参与命中测试，
+ * 落点判定仍然落在下面真实的表格行上。
+ */
+function createRowDragGhost(
+  sourceRow: HTMLElement,
+  hintText: string,
+  clientX: number,
+  clientY: number,
+): RowDragGhost {
+  const rect = sourceRow.getBoundingClientRect();
+
+  const wrapper = document.createElement("div");
+  wrapper.setAttribute("data-row-drag-ghost", "");
+  wrapper.style.cssText = [
+    "position:fixed",
+    "left:0",
+    "top:0",
+    "z-index:80",
+    "pointer-events:none",
+    `width:${rect.width}px`,
+    "will-change:transform",
+    `transform:translate3d(${rect.left}px, ${rect.top}px, 0)`,
+  ].join(";");
+
+  const surface = document.createElement("div");
+  surface.style.cssText = [
+    "position:relative",
+    `width:${rect.width}px`,
+    "border-radius:10px",
+    // 卡片本身不填底色，整块悬浮行只留边框与文字。
+    "background:transparent",
+    "overflow:visible",
+    "transform:scale(1.02)",
+    "transform-origin:center center",
+    "transition:transform 140ms ease-out",
+    // 底色已经几乎全透，卡片的「悬浮感」全靠这圈不透明的蓝色描边和外投影。
+    "box-shadow:0 18px 36px -14px rgba(15,23,42,0.4), 0 0 0 1px rgba(37,99,235,0.95), 0 0 0 4px rgba(37,99,235,0.14)",
+  ].join(";");
+
+  const table = document.createElement("table");
+  // 只有边框和文字，底色几乎全透（背景透明度 90%）：拖起来的这一行必须能透出下面的落点槽位，
+  // 否则卡片正好盖住「会插在哪两条之间」。透明度只作用在背景上，文字和边框保持不透明才读得清。
+  table.style.cssText = [
+    "table-layout:fixed",
+    `width:${rect.width}px`,
+    "border-collapse:separate",
+    "border-spacing:0",
+    "background:rgba(255,255,255,0.1)",
+    "border-radius:10px",
+    "overflow:hidden",
+  ].join(";");
+
+  const clone = sourceRow.cloneNode(true) as HTMLElement;
+  clone.removeAttribute("data-index");
+  clone.removeAttribute("data-advanced-row-key");
+  clone.removeAttribute("data-advanced-table-body-row");
+  // 选中行的 bg-blue-50/75 之类挂在 class 上，会盖住「只有边框和文字」的设定，用内联样式压掉。
+  clone.style.background = "transparent";
+  // 克隆不会带走事件监听，但会丢 checkbox 的 checked 状态，按源行抄一遍避免勾选态凭空消失。
+  const sourceInputs = sourceRow.querySelectorAll("input");
+  clone.querySelectorAll("input").forEach((input, index) => {
+    const source = sourceInputs[index];
+    if (input instanceof HTMLInputElement && source instanceof HTMLInputElement) input.checked = source.checked;
+  });
+  // 脱离原表后列宽会按内容重算，必须逐列锁定成源行的实际像素宽度。
+  const sourceCells = Array.from(sourceRow.children) as HTMLElement[];
+  const cloneCells = Array.from(clone.children) as HTMLElement[];
+  cloneCells.forEach((cell, index) => {
+    const sourceCell = sourceCells[index];
+    if (!sourceCell) return;
+    cell.style.width = `${sourceCell.getBoundingClientRect().width}px`;
+    cell.style.boxSizing = "border-box";
+    // 卡片没有底色，原来的 border-slate-100 网线等于看不见，换成可见的分隔线，让「只有边框和文字」成立。
+    cell.style.borderBottom = "1px solid rgba(148,163,184,0.6)";
+    if (index < cloneCells.length - 1) cell.style.borderRight = "1px solid rgba(148,163,184,0.45)";
+  });
+  // CSS 会给裸 <tr> 生成匿名 row-group，但显式补一个 <tbody> 更稳，也便于逐列锁定宽度。
+  const tbody = document.createElement("tbody");
+  tbody.appendChild(clone);
+  table.appendChild(tbody);
+  surface.appendChild(table);
+
+  const hint = document.createElement("div");
+  hint.textContent = hintText;
+  const hintAbove = rect.top > 44;
+  hint.style.cssText = [
+    "position:absolute",
+    "left:50%",
+    "transform:translateX(-50%)",
+    hintAbove ? "bottom:calc(100% + 8px)" : "top:calc(100% + 8px)",
+    "white-space:nowrap",
+    "padding:3px 10px",
+    "border-radius:9999px",
+    "background:#1e293b",
+    "color:#ffffff",
+    "font-size:12px",
+    "line-height:18px",
+    "font-weight:500",
+    "box-shadow:0 8px 18px -8px rgba(15,23,42,0.65)",
+  ].join(";");
+  surface.appendChild(hint);
+  wrapper.appendChild(surface);
+  document.body.appendChild(wrapper);
+
+  return { wrapper, grabOffsetX: clientX - rect.left, grabOffsetY: clientY - rect.top };
+}
+
+function moveRowDragGhost(ghost: RowDragGhost | null, clientX: number, clientY: number) {
+  if (!ghost) return;
+  ghost.wrapper.style.transform = `translate3d(${clientX - ghost.grabOffsetX}px, ${clientY - ghost.grabOffsetY}px, 0)`;
+}
+
+function removeRowDragGhost(ghost: RowDragGhost | null) {
+  if (!ghost) return;
+  const { wrapper } = ghost;
+  wrapper.style.transition = "opacity 120ms ease-out";
+  wrapper.style.opacity = "0";
+  window.setTimeout(() => wrapper.remove(), 160);
 }
 
 /** 取出单元格渲染结果里的纯文本，用来判断 hover 是否只是把同一句话重复一遍。 */
@@ -604,6 +776,13 @@ export function AdvancedDataTable<T>({
   const [internalSelectedKeys, setInternalSelectedKeys] = useState<Set<string>>(new Set());
   const [draggedRowKey, setDraggedRowKey] = useState<string | null>(null);
   const [dragTarget, setDragTarget] = useState<{ key: string; position: AdvancedDataTableDropPosition } | null>(null);
+  // 长按拖拽：draggedRowKey 由 pointer 手势驱动（触屏上 HTML5 drag 不会触发，握把在手机上等于没用）。
+  const [longPressRowKey, setLongPressRowKey] = useState<string | null>(null);
+  const [pointerDragActive, setPointerDragActive] = useState(false);
+  const longPressRef = useRef<PendingRowLongPress | null>(null);
+  const pointerDragRef = useRef<PointerDragSession | null>(null);
+  const rowDragGhostRef = useRef<RowDragGhost | null>(null);
+  const pointerDragClickResetRef = useRef<number | null>(null);
   const [resizeGuide, setResizeGuide] = useState<ResizeGuide | null>(null);
   const [resizeSession, setResizeSession] = useState<ResizeSession | null>(null);
   const suppressNextClickRef = useRef(false);
@@ -1747,6 +1926,237 @@ export function AdvancedDataTable<T>({
     };
   }, [cancelRowDrag, draggableRows, draggedRowKey, dropOnPreviewTarget, dropOnResolvedTarget, getAllowedGlobalDragTarget, handleRowDragEnd, updateGlobalDragTarget]);
 
+  /* ---------- 长按整行拖拽（pointer 手势，触屏可用） ---------- */
+
+  const clearPendingRowLongPress = useCallback(() => {
+    const pending = longPressRef.current;
+    longPressRef.current = null;
+    if (pending?.timer != null) window.clearTimeout(pending.timer);
+    setLongPressRowKey(null);
+  }, []);
+
+  const activateRowLongPressDrag = useCallback((press: PendingRowLongPress) => {
+    if (longPressRef.current !== press) return;
+    longPressRef.current = null;
+    setLongPressRowKey(null);
+    pointerDragRef.current = {
+      key: press.key,
+      pointerId: press.pointerId,
+      lastX: press.startX,
+      lastY: press.startY,
+    };
+    dragCancelledRef.current = false;
+    // 长按结束时浏览器仍会补发一次 click（会选中行或打开编辑弹窗），提前吞掉。
+    suppressNextClickRef.current = true;
+    // 「拿起」：整行拷贝成悬浮卡片跟着指针走，原行留在原位当占位。
+    removeRowDragGhost(rowDragGhostRef.current);
+    rowDragGhostRef.current = null;
+    const sourceRow = viewportRef.current?.querySelector<HTMLElement>(
+      `[data-advanced-row-key="${press.key.replace(/["\\]/g, "\\$&")}"]`,
+    );
+    if (sourceRow) {
+      rowDragGhostRef.current = createRowDragGhost(
+        sourceRow,
+        t("advancedTable.longPressDragHint"),
+        press.startX,
+        press.startY,
+      );
+    }
+    setPointerDragActive(true);
+    setDraggedRowKey(press.key);
+    setDragTarget(null);
+    // 长按往往已经选中了文字，清掉再进入拖拽，否则会出现"拖着一段蓝色选字"的错觉。
+    try {
+      window.getSelection()?.removeAllRanges();
+    } catch {
+      // 无 Selection API 的环境直接跳过，不影响拖拽。
+    }
+    if (typeof navigator !== "undefined") {
+      const vibrate = (navigator as unknown as { vibrate?: (pattern: number | number[]) => boolean }).vibrate;
+      if (typeof vibrate === "function") {
+        try {
+          void vibrate.call(navigator, 12);
+        } catch {
+          // 震动只是反馈增强，失败也不影响拖拽。
+        }
+      }
+    }
+  }, [t]);
+
+  const endPointerRowDrag = useCallback((clientX: number, clientY: number, commit: boolean) => {
+    const session = pointerDragRef.current;
+    pointerDragRef.current = null;
+    removeRowDragGhost(rowDragGhostRef.current);
+    rowDragGhostRef.current = null;
+    setPointerDragActive(false);
+    setDraggedRowKey(null);
+    setDragTarget(null);
+    if (commit && session) {
+      const target = getAllowedGlobalDragTarget(clientX, clientY);
+      if (target) dropOnResolvedTarget(session.key, target);
+      else dropOnPreviewTarget(session.key);
+    }
+    // pointerup 与随后的 click 是两个任务，抑制标记要留到 click 之后才能放开。
+    suppressNextClickRef.current = true;
+    if (pointerDragClickResetRef.current != null) window.clearTimeout(pointerDragClickResetRef.current);
+    pointerDragClickResetRef.current = window.setTimeout(() => {
+      pointerDragClickResetRef.current = null;
+      suppressNextClickRef.current = false;
+    }, 400);
+  }, [dropOnPreviewTarget, dropOnResolvedTarget, getAllowedGlobalDragTarget]);
+
+  function handleRowPointerDown(event: ReactPointerEvent<HTMLTableRowElement>, key: string, dragDisabled: boolean) {
+    if (!draggableRows || dragDisabled) return;
+    if (event.button !== 0) return;
+    if (pointerDragRef.current || longPressRef.current) return;
+    // 握把自己也是长按入口：触屏上 HTML5 drag 不触发，握把在手机上只有长按才有用。
+    const fromDragHandle = event.target instanceof Element && !!event.target.closest("[data-row-drag-handle]");
+    // 其余按钮、输入框、链接自己的手势（勾选、打开弹窗、删除）优先级更高。
+    if (!fromDragHandle && isInteractiveRowTarget(event.target)) return;
+    if (hasActiveTextSelection()) return;
+    const press: PendingRowLongPress = {
+      key,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      timer: null,
+    };
+    longPressRef.current = press;
+    setLongPressRowKey(key);
+    press.timer = window.setTimeout(() => activateRowLongPressDrag(press), ROW_LONG_PRESS_DRAG_DELAY_MS);
+  }
+
+  // 待触发阶段：一旦移动/滚动/松手就取消，保证正常滑动列表与点选行的手感不变。
+  useEffect(() => {
+    if (!longPressRowKey) return;
+    const cancelPending = () => clearPendingRowLongPress();
+    const handlePointerMove = (event: PointerEvent) => {
+      const press = longPressRef.current;
+      if (!press || event.pointerId !== press.pointerId) return;
+      const moved = Math.hypot(event.clientX - press.startX, event.clientY - press.startY);
+      if (moved <= ROW_LONG_PRESS_MOVE_TOLERANCE_PX) return;
+      cancelPending();
+    };
+    const handlePointerRelease = (event: PointerEvent) => {
+      const press = longPressRef.current;
+      if (!press || event.pointerId !== press.pointerId) return;
+      cancelPending();
+    };
+    window.addEventListener("pointermove", handlePointerMove, { passive: true });
+    window.addEventListener("pointerup", handlePointerRelease, { passive: true });
+    window.addEventListener("pointercancel", handlePointerRelease, { passive: true });
+    // 按住满 1 秒才起拖，中间这段时间足够移动端弹出自己的长按菜单（选中/复制），
+    // 一旦弹出，本次长按就废了，所以在待触发阶段就要把它按回去。
+    const blockContextMenu = (event: Event) => event.preventDefault();
+    window.addEventListener("scroll", cancelPending, true);
+    window.addEventListener("contextmenu", blockContextMenu, true);
+    // 桌面端从握把直接拖走是原生 HTML5 拖拽，长按不能与它抢同一个手势。
+    window.addEventListener("dragstart", cancelPending, true);
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerRelease);
+      window.removeEventListener("pointercancel", handlePointerRelease);
+      window.removeEventListener("scroll", cancelPending, true);
+      window.removeEventListener("contextmenu", blockContextMenu, true);
+      window.removeEventListener("dragstart", cancelPending, true);
+    };
+  }, [clearPendingRowLongPress, longPressRowKey]);
+
+  // 拖拽阶段：跟手更新目标行、贴边自动滚动，松手落位。
+  useEffect(() => {
+    if (!pointerDragActive) return;
+    let autoScrollFrame: number | null = null;
+
+    const stopAutoScroll = () => {
+      if (autoScrollFrame == null) return;
+      window.cancelAnimationFrame(autoScrollFrame);
+      autoScrollFrame = null;
+    };
+
+    const runAutoScroll = () => {
+      autoScrollFrame = null;
+      const session = pointerDragRef.current;
+      const viewport = viewportRef.current;
+      if (!session || !viewport) return;
+      const delta = getRowDragAutoScrollDelta(viewport, session.lastY);
+      if (delta === 0) return;
+      viewport.scrollTop += delta;
+      updateGlobalDragTarget(session.lastX, session.lastY);
+      autoScrollFrame = window.requestAnimationFrame(runAutoScroll);
+    };
+
+    const ensureAutoScroll = () => {
+      if (autoScrollFrame != null) return;
+      const session = pointerDragRef.current;
+      const viewport = viewportRef.current;
+      if (!session || !viewport) return;
+      if (getRowDragAutoScrollDelta(viewport, session.lastY) === 0) return;
+      autoScrollFrame = window.requestAnimationFrame(runAutoScroll);
+    };
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const session = pointerDragRef.current;
+      if (!session || event.pointerId !== session.pointerId) return;
+      session.lastX = event.clientX;
+      session.lastY = event.clientY;
+      moveRowDragGhost(rowDragGhostRef.current, event.clientX, event.clientY);
+      updateGlobalDragTarget(event.clientX, event.clientY);
+      ensureAutoScroll();
+    };
+    const handlePointerUp = (event: PointerEvent) => {
+      const session = pointerDragRef.current;
+      if (!session || event.pointerId !== session.pointerId) return;
+      // 阻止随后的 click / 长按菜单。
+      event.preventDefault();
+      stopAutoScroll();
+      endPointerRowDrag(event.clientX, event.clientY, true);
+    };
+    const handlePointerCancel = () => {
+      if (!pointerDragRef.current) return;
+      stopAutoScroll();
+      endPointerRowDrag(0, 0, false);
+    };
+    // 手指已经按住 420ms 才进入拖拽，此时必须挡住页面继续滚动；
+    // 非 passive 的 touchmove 是唯一可靠的拦截点（触摸滚动无法用 pointer 事件取消）。
+    const blockTouchScroll = (event: TouchEvent) => {
+      if (event.cancelable) event.preventDefault();
+    };
+    const blockBrowserGesture = (event: Event) => event.preventDefault();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      stopAutoScroll();
+      endPointerRowDrag(0, 0, false);
+    };
+
+    window.addEventListener("pointermove", handlePointerMove, { passive: true });
+    window.addEventListener("pointerup", handlePointerUp);
+    window.addEventListener("pointercancel", handlePointerCancel);
+    window.addEventListener("touchmove", blockTouchScroll, { passive: false });
+    window.addEventListener("contextmenu", blockBrowserGesture, true);
+    window.addEventListener("selectstart", blockBrowserGesture, true);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      stopAutoScroll();
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("pointercancel", handlePointerCancel);
+      window.removeEventListener("touchmove", blockTouchScroll);
+      window.removeEventListener("contextmenu", blockBrowserGesture, true);
+      window.removeEventListener("selectstart", blockBrowserGesture, true);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [endPointerRowDrag, pointerDragActive, updateGlobalDragTarget]);
+
+  useEffect(() => () => {
+    if (longPressRef.current?.timer != null) window.clearTimeout(longPressRef.current.timer);
+    if (pointerDragClickResetRef.current != null) window.clearTimeout(pointerDragClickResetRef.current);
+    rowDragGhostRef.current?.wrapper.remove();
+    longPressRef.current = null;
+    pointerDragRef.current = null;
+    rowDragGhostRef.current = null;
+  }, []);
+
   const selectedCount = selectedSelectableKeys.size;
   const selectedSelectableCount = selectedSelectableKeys.size;
   // 表头全选框以"全选优先集"为准：优先集全部选中=全选；部分优先集选中、或选中了优先集之外的行=半选
@@ -2135,6 +2545,7 @@ export function AdvancedDataTable<T>({
               const dragDisabled = (sortable && sortState != null) || (rowDragDisabled?.(row, index) ?? false);
               const isDragging = draggedRowKey != null;
               const isDraggedRow = draggedRowKey === key;
+              const isLongPressPending = longPressRowKey === key;
               const isAllowedDropTarget = dragTarget
                 ? canDropOnRow(row, index, key, dragDisabled, dragTarget.position)
                 : false;
@@ -2176,6 +2587,9 @@ export function AdvancedDataTable<T>({
                     if (isInteractiveRowTarget(event.target)) return;
                     onRowDoubleClick(row, displayIndex);
                   } : undefined}
+                  onPointerDown={draggableRows
+                    ? (event) => handleRowPointerDown(event, key, dragDisabled)
+                    : undefined}
                   onDragOver={(event) => handleRowDragOver(event, row, index, key, dragDisabled)}
                   onDrop={(event) => handleRowDrop(event, row, index, key, dragDisabled)}
                   className={[
@@ -2183,12 +2597,23 @@ export function AdvancedDataTable<T>({
                     baseRowClassName,
                     isSelectableRow && selectOnRowClick ? "cursor-pointer" : "",
                     isBlockedDropTarget ? "cursor-not-allowed" : "",
-                    isDraggedRow ? "relative z-10 bg-blue-50/80 outline outline-2 outline-blue-500 outline-offset-[-2px] shadow-[inset_0_0_0_1px_#2563eb]" : "",
+                    isLongPressPending ? "select-none bg-slate-100/80" : "",
+                    isDraggedRow
+                      ? (pointerDragActive
+                        // 整行已被「拿起」悬浮在指针下面，原位留一个空的蓝色虚线槽位，明确标出「松手插这里」。
+                        ? "relative z-10 select-none bg-blue-50/70 outline outline-2 outline-dashed outline-blue-500 outline-offset-[-2px] [&>td>*]:invisible"
+                        : "relative z-10 bg-blue-50/80 outline outline-2 outline-blue-500 outline-offset-[-2px] shadow-[inset_0_0_0_1px_#2563eb]")
+                      : "",
                     isSelected
                       ? "relative z-[1] bg-blue-50/75 hover:bg-blue-100/80"
                       : "",
                   ].filter(Boolean).join(" ")}
-                  style={{ height: rowHeight, ...(selectionShadow ? { boxShadow: selectionShadow } : {}) }}
+                  style={{
+                    height: rowHeight,
+                    ...(selectionShadow ? { boxShadow: selectionShadow } : {}),
+                    // iOS 的「长按呼出菜单」不受 user-select 控制，只能靠 touch-callout 关掉。
+                    ...(isLongPressPending || (isDraggedRow && pointerDragActive) ? { WebkitTouchCallout: "none" as const } : {}),
+                  }}
                 >
                   {(selectable || draggableRows) ? (
                     <td
