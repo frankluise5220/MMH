@@ -154,6 +154,11 @@ for (const target of [
   { file: "fn-appstores.json", field: "desc", getApps: mmhManualApps },
   { file: "deploy/fnos/selfhosted-source/data/fn-appstores.json", field: "desc", getApps: mmhManualApps },
 ]) {
+  // `deploy/fnos/selfhosted-source/` is gitignored (it is the VPS seed copy), so this
+  // file does not exist in a CI checkout. Reading it unconditionally crashed the
+  // `release: published` backfill with ENOENT and silently cost 0.1.74 its FnDepot
+  // metadata; skip absent optional targets instead of failing the whole gate.
+  if (!fs.existsSync(path.join(root, target.file))) continue;
   for (const app of target.getApps(readJson(target.file)).filter(Boolean)) {
     const desc = typeof app[target.field] === "string" ? app[target.field] : "";
     expect(
