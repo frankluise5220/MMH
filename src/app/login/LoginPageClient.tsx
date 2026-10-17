@@ -223,7 +223,6 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   const [registerInfo, setRegisterInfo] = useState("");
   const [registerError, setRegisterError] = useState("");
   const [registerLoading, setRegisterLoading] = useState(false);
-  const [registerInviteMode, setRegisterInviteMode] = useState(false);
 
   // MMH membership password reset (separate from the ledger-local password reset).
   const [showMmhReset, setShowMmhReset] = useState(false);
@@ -246,6 +245,17 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   const loginTabOrder: Array<"local" | "mmh" | "fnos"> = fnosGatewayUser
     ? mmhEnabled ? ["local", "mmh", "fnos"] : ["local", "fnos"]
     : mmhEnabled ? ["local", "mmh"] : ["local"];
+  /**
+   * Whether the open MMH signup shape must carry a ledger-creation invite code.
+   *
+   * Both ledger-opening entries offer signup, and the only difference between
+   * them is this gate: the invite-code entry runs on a deployment that already
+   * has a ledger, so the code is what authorises opening another one
+   * (`SIGNUP_CLOSED` otherwise), while the first-ledger setup IS the empty
+   * deployment the server allows self-service signup for and has no code to
+   * send.
+   */
+  const mmhSignupInviteMode = !initialLedgerSetup;
   const localLoginUsers = systemUsers.filter((user) => user.hasPassword === true);
   const selectedHouseholdUsers = selectedHouseholdId
     ? localLoginUsers.filter((user) => getLoginUserScopeId(user) === selectedHouseholdId)
@@ -764,6 +774,11 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
     // does not depend on one — an address this ledger never bound cannot be
     // logged into no matter what the central service answers.
     if (code === "MMH_USER_NOT_BOUND") return t("login.error.mmhNotBoundToLedger");
+    // Self-service signup only bootstraps the very first ledger, and the MMH
+    // signup shape now runs on the first-ledger setup too. Reaching this means
+    // another session created a ledger first (or this tab is stale), so the user
+    // needs the alternative entry, not the service's English sentence.
+    if (code === "SIGNUP_CLOSED") return t("login.error.mmhSignupClosed");
     return fallback ?? t(fallbackKey);
   }
 
@@ -900,10 +915,13 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
    * (send a code, then confirm it) whose confirmation used to be an extra button
    * rendered inside the card. That button is gone, so the fixed button drives the
    * confirmation step instead of leaving the screen with two competing submits.
+   * `createMmhMode` can only be "register" while that shape is on screen from one
+   * of the two ledger-opening entries, so the dispatcher needs no extra guard —
+   * and the invite gate comes from the entry, not from the mode.
    */
   function submitCreateLedger() {
-    if (createMethod === "invite" && createAuthMode === "mmh" && createMmhMode === "register") {
-      void handleRegisterConfirm(true);
+    if (createAuthMode === "mmh" && createMmhMode === "register") {
+      void handleRegisterConfirm(mmhSignupInviteMode);
       return;
     }
     void handleCreateLedger();
@@ -921,7 +939,6 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
     setResetInfo("");
     setShowReset(false);
     resetCreateLedgerForm();
-    setRegisterInviteMode(false);
     setRegisterEmail("");
     setRegisterCode("");
     setRegisterCodeSent(false);
@@ -1158,11 +1175,16 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
     }
   }
 
-  async function handleRegisterSendCode(inviteMode = registerInviteMode) {
+  /**
+   * Step 1 of the MMH signup shape. `inviteMode` selects how signup is gated
+   * server-side; see `mmhSignupInviteMode`. The shape always opens a ledger, so
+   * the ledger name is required here in both modes, not only on the invite entry.
+   */
+  async function handleRegisterSendCode(inviteMode: boolean) {
     const email = registerEmail.trim();
     if (!email) { setRegisterError(t("login.register.error.emailRequired")); return; }
     if (inviteMode && !createInviteCode.trim()) { setRegisterError(t("login.error.inviteRequired")); return; }
-    if (inviteMode && !createLedgerName.trim()) { setRegisterError(t("login.error.ledgerNameRequired")); return; }
+    if (!createLedgerName.trim()) { setRegisterError(t("login.error.ledgerNameRequired")); return; }
 
     setRegisterLoading(true);
     setRegisterError("");
@@ -1194,7 +1216,11 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
     }
   }
 
-  async function handleRegisterConfirm(inviteMode = registerInviteMode) {
+  /**
+   * Step 2 of the MMH signup shape, driven by the creation card's fixed button
+   * (`submitCreateLedger`). Same `inviteMode` contract as step 1.
+   */
+  async function handleRegisterConfirm(inviteMode: boolean) {
     const email = registerEmail.trim();
     const code = registerCode.trim();
     const password = registerPassword.trim();
@@ -1204,7 +1230,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
     if (password.length < 6) { setRegisterError(t("login.register.error.passwordRequired")); return; }
     if (mmhPassword.length < 6) { setRegisterError(t("login.register.error.mmhPasswordRequired")); return; }
     if (inviteMode && !createInviteCode.trim()) { setRegisterError(t("login.error.inviteRequired")); return; }
-    if (inviteMode && !createLedgerName.trim()) { setRegisterError(t("login.error.ledgerNameRequired")); return; }
+    if (!createLedgerName.trim()) { setRegisterError(t("login.error.ledgerNameRequired")); return; }
 
     setRegisterLoading(true);
     setRegisterError("");
@@ -1218,9 +1244,11 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
           code,
           password,
           mmhPassword,
-          ...(inviteMode
-            ? { inviteCode: createInviteCode.trim(), ledgerName: createLedgerName.trim() }
-            : {}),
+          // The ledger name the form collected is sent in both modes: the server
+          // names the new ledger from it, and only falls back to the admin's name
+          // for a bare API client that sends none.
+          ledgerName: createLedgerName.trim(),
+          ...(inviteMode ? { inviteCode: createInviteCode.trim() } : {}),
         }),
       });
       const data = await res.json().catch(() => null) as { ok: boolean; code?: string; error?: string } | null;
@@ -1312,21 +1340,23 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   /**
    * The MMH block inside the ledger-creation form.
    *
-   * Always offers the "sign in with an existing MMH identity" shape — email +
-   * membership password, verified server-side against the central registration
-   * service. `allowSignup` additionally offers the signup shape, through the
-   * secondary "create an MMH user" link.
+   * Two shapes, mirroring how an MMH identity works: the default is "sign in with
+   * an existing MMH identity" — email + membership password, verified
+   * server-side against the central registration service — and the secondary
+   * "create an MMH user" link opens the signup shape for somebody who does not
+   * have one yet.
    *
-   * Only the entries that actually OPEN a ledger offer signup: the first-ledger
-   * setup and the invite-code entry. "Already have an account" verification does
-   * not, and its refusal is the point of the entry — it exists so somebody who
-   * already belongs to another ledger can prove that and open a new one. Letting
-   * it mint a brand-new MMH identity would contradict what the entry is for, and
-   * it cannot work anyway: self-service signup is gated to an empty deployment
-   * (`SIGNUP_CLOSED`), while this entry is only reachable once a ledger exists.
+   * Both entries that actually OPEN a ledger render this block, so both offer
+   * signup: the first-ledger setup and the invite-code entry. They differ only in
+   * the server-side gate — see `mmhSignupInviteMode`. "Already have an account"
+   * verification does not render it at all, and its refusal is the point of the
+   * entry: it exists so somebody who already belongs to another ledger can prove
+   * that and open a new one, so letting it mint a brand-new MMH identity would
+   * contradict what the entry is for (and it cannot work anyway: that entry is
+   * only reachable once a ledger exists).
    */
-  function renderMmhCreateFields(allowSignup: boolean) {
-    if (allowSignup && createMmhMode === "register") {
+  function renderMmhCreateFields() {
+    if (createMmhMode === "register") {
       return (
         <div className="space-y-3 border-t border-slate-200 pt-3">
           <div className="space-y-1">
@@ -1369,7 +1399,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
               type="button"
               className="h-10 w-full rounded-md bg-blue-600 text-sm text-white hover:bg-blue-700 disabled:opacity-50"
               disabled={registerLoading}
-              onClick={() => { setRegisterInviteMode(true); void handleRegisterSendCode(true); }}
+              onClick={() => void handleRegisterSendCode(mmhSignupInviteMode)}
             >
               {registerLoading ? t("login.verifying") : t("login.register.sendCode")}
             </button>
@@ -1380,7 +1410,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
               type="button"
               className="h-10 w-full rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50"
               disabled={registerLoading}
-              onClick={() => { setRegisterInviteMode(true); void handleRegisterSendCode(true); }}
+              onClick={() => void handleRegisterSendCode(mmhSignupInviteMode)}
             >
               {t("login.register.resend")}
             </button>
@@ -1421,17 +1451,13 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
             onKeyDown={(event) => { if (event.key === "Enter") void handleCreateLedger(); }}
           />
         </div>
-        {allowSignup ? (
-          <button
-            type="button"
-            className="w-full text-xs text-slate-500 hover:text-slate-700"
-            onClick={() => setCreateMmhMode("register")}
-          >
-            {t("login.createMmhUser")}
-          </button>
-        ) : (
-          <div className="text-[11px] leading-5 text-slate-500">{t("login.mmhSignupElsewhere")}</div>
-        )}
+        <button
+          type="button"
+          className="w-full text-xs text-slate-500 hover:text-slate-700"
+          onClick={() => setCreateMmhMode("register")}
+        >
+          {t("login.createMmhUser")}
+        </button>
       </div>
     );
   }
@@ -2041,7 +2067,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                         ) : createAuthMode === "mmh" ? (
                           /* The invite-code entry opens a ledger, so it may create
                              the MMH account on the spot. */
-                          renderMmhCreateFields(true)
+                          renderMmhCreateFields()
                         ) : (
                           <div className="space-y-3">
                             <div className="space-y-1">
@@ -2191,7 +2217,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                         {t("login.fnosUser", { user: gatewayFnosName(fnosGatewayUser) })}
                       </div>
                     ) : createAuthMode === "mmh" ? (
-                      renderMmhCreateFields(false)
+                      renderMmhCreateFields()
                     ) : (
                       <div className="space-y-3">
                         <div className="space-y-1"><div className="text-xs font-medium text-slate-600">{t("login.adminUsername")}</div><input value={createAdminName} onChange={(event) => setCreateAdminName(event.target.value)} type="text" autoComplete="username" className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 py-2 text-sm outline-none" placeholder={t("login.adminUsernamePlaceholder")} /></div>

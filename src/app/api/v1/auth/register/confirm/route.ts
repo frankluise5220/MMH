@@ -158,7 +158,12 @@ export async function POST(req: NextRequest) {
   try {
     created = await prisma.$transaction(async (tx) => {
       const result = await createLedgerWithDefaults(tx, {
-        name: inviteRegistration ? ledgerName : adminName,
+        // The form's ledger name wins in both modes. It used to be read only on
+        // the invite path, which would have silently named a first-ledger signup
+        // after the admin's email prefix and dropped the name the form collected.
+        // The admin-name fallback now only covers a bare API client that posts no
+        // `ledgerName` at all.
+        name: ledgerName || adminName,
         adminName,
         adminPasswordHash,
         adminEmail: email,
