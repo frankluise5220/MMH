@@ -1275,6 +1275,54 @@ function linkedWealthDetailFields(record: any, wealthRow: any) {
   };
 }
 
+function linkedFundTransactionIdOf(entry: {
+  EntryBusinessLinkCash?: Array<{ fundTransactionId?: string | null }> | null;
+  EntryBusinessLinkBusiness?: Array<{ fundTransactionId?: string | null }> | null;
+}) {
+  return [...(entry.EntryBusinessLinkCash ?? []), ...(entry.EntryBusinessLinkBusiness ?? [])]
+    .find((link) => link.fundTransactionId)?.fundTransactionId ?? null;
+}
+
+// Fund (non-wealth) counterpart of linkedWealthDetailFields: a cash leg TxRecord carries no fund
+// fields of its own, so every reader must back-fill them from the linked fund_transactions row.
+function linkedFundDetailFields(record: any, fundRow: any) {
+  const isCashIn = isFundCashReceiptSubtype(fundRow.fundSubtype);
+  const fundAccount = fundRow.Account ?? null;
+  const cashAccount = fundRow.CashAccount ?? null;
+  const fundAccountId = fundRow.fundAccountId ?? null;
+  const cashAccountId = fundRow.cashAccountId ?? record.accountId;
+  return {
+    date: fundRow.applyDate ? formatDateLocal(fundRow.applyDate) : record.date,
+    amount: signedFundTransactionAmount(fundRow),
+    cashEntryId: fundRow.cashEntryId ?? record.id,
+    businessTransactionId: fundRow.id,
+    fundTransactionId: fundRow.id,
+    cashAccountId,
+    accountId: isCashIn ? fundAccountId : cashAccountId,
+    accountName: isCashIn
+      ? (fundAccount?.name ?? fundAccountId ?? "")
+      : (cashAccount?.name ?? accountDisplayName(record.account, record.accountName)),
+    accountKind: (isCashIn ? fundAccount?.kind : cashAccount?.kind) ?? record.accountKind ?? null,
+    toAccountId: isCashIn ? cashAccountId : fundAccountId,
+    toAccountName: isCashIn
+      ? (cashAccount?.name ?? accountDisplayName(record.account, record.accountName))
+      : (fundAccount?.name ?? fundAccountId ?? ""),
+    toAccountKind: (isCashIn ? cashAccount?.kind : fundAccount?.kind) ?? record.toAccountKind ?? null,
+    fundSubtype: fundRow.fundSubtype,
+    fundCode: fundRow.fundCode ?? null,
+    fundName: fundRow.fundName ?? null,
+    fundProductType: fundRow.fundProductType ?? null,
+    fundUnits: fundRow.units == null ? null : toNumber(fundRow.units),
+    fundNav: fundRow.nav == null ? null : toNumber(fundRow.nav),
+    fundFee: fundRow.fee == null ? null : toNumber(fundRow.fee),
+    fundConfirmDate: fundRow.confirmDate ? formatDateLocal(fundRow.confirmDate) : null,
+    fundArrivalDate: fundRow.arrivalDate ? formatDateLocal(fundRow.arrivalDate) : null,
+    fundArrivalAmount: fundRow.arrivalAmount == null ? null : toNumber(fundRow.arrivalAmount),
+    source: fundRow.source ?? record.source,
+    note: fundRow.note ?? record.note,
+  };
+}
+
 async function ensureFamilyMemberInstitutionInTx(input: {
   tx: InstitutionNameTx;
   householdId: string;
@@ -1772,9 +1820,25 @@ export async function GET(req: Request) {
       : [];
     const linkedWealthById = new Map(pageLinkedWealthRows.map((row) => [row.id, row]));
 
+    const pageLinkedFundIds = Array.from(new Set(pagedEntries
+      .map((entry) => linkedFundTransactionIdOf(entry))
+      .filter((id): id is string => !!id)));
+    const pageLinkedFundRows = pageLinkedFundIds.length > 0
+      ? await prisma.fundTransaction.findMany({
+          where: { id: { in: pageLinkedFundIds }, householdId: hidFilter.householdId, deletedAt: null },
+          include: {
+            Account: true,
+            CashAccount: true,
+          },
+        })
+      : [];
+    const linkedFundById = new Map(pageLinkedFundRows.map((row) => [row.id, row]));
+
     const entries = pagedEntries.map((e) => {
       const linkedWealthId = linkedWealthTransactionIdOf(e);
       const linkedWealth = linkedWealthId ? linkedWealthById.get(linkedWealthId) ?? null : null;
+      const linkedFundId = linkedFundTransactionIdOf(e);
+      const linkedFund = linkedFundId ? linkedFundById.get(linkedFundId) ?? null : null;
       const linkedStockTransaction = linkedStockTransactionOf(e);
       return ({
       id: e.id,
@@ -1853,6 +1917,7 @@ export async function GET(req: Request) {
       source: e.source,
       ...buildEntryBusinessLinkSummary(e),
       ...(linkedWealth ? linkedWealthDetailFields(e, linkedWealth) : {}),
+      ...(!linkedWealth && linkedFund ? linkedFundDetailFields(e, linkedFund) : {}),
       ...(linkedStockTransaction ? linkedStockDetailFields(linkedStockTransaction) : {}),
       attachments: mapEntryAttachments(e),
       entryTags: mapEntryTags(e),

@@ -472,6 +472,9 @@ export function StockTransactionFormModal({
   const [sellHoldingsLoading, setSellHoldingsLoading] = useState(false);
   const [sellHoldingsError, setSellHoldingsError] = useState("");
   const [tradeDate, setTradeDate] = useState(today);
+  // 到账日 / 交割日：留空表示与交易日期相同。资金账户侧明细把它当「生效日」
+  // （排序、日期列、余额），投资账户侧仍显示交易日期（2026-10-17）。
+  const [settleDate, setSettleDate] = useState("");
   const [quantity, setQuantity] = useState("");
   const [price, setPrice] = useState("");
   const [grossAmount, setGrossAmount] = useState("");
@@ -758,6 +761,7 @@ export function StockTransactionFormModal({
     setSellHoldingsLoading(false);
     setSellHoldingsError("");
     setTradeDate(detail?.defaultDate ?? todayDateInputValue());
+    setSettleDate("");
     setQuantity("");
     setPrice("");
     setGrossAmount(detail?.defaultAmount ? String(detail.defaultAmount) : "");
@@ -803,6 +807,7 @@ export function StockTransactionFormModal({
     setSellHoldingsLoading(false);
     setSellHoldingsError("");
     setTradeDate(tx.tradeDate || todayDateInputValue());
+    setSettleDate(tx.settleDate ?? "");
     setQuantity(tx.quantity == null ? "" : formatStockQuantity(Number(tx.quantity), language));
     setPrice(tx.price == null ? "" : String(Number(tx.price)));
     setGrossAmount(tx.grossAmount == null ? "" : String(Number(tx.grossAmount)));
@@ -1294,6 +1299,7 @@ export function StockTransactionFormModal({
         stockCode: normalizedCode,
         stockName: stockName.trim() || normalizedCode,
         tradeDate,
+        settleDate: settleDate || undefined,
         note: note.trim() || undefined,
         source: "manual",
       };
@@ -1558,6 +1564,16 @@ export function StockTransactionFormModal({
                   </div>
                 ) : null}
               </div>
+
+              {isBuySell ? (
+                <div className="grid grid-cols-1 items-end gap-3 sm:grid-cols-3">
+                  <div className="space-y-1">
+                    <div className="form-label">{t("stockTx.settleDateLabel")}</div>
+                    <DateStepper value={settleDate} onChange={setSettleDate} min={tradeDate} />
+                  </div>
+                  <div className="pb-2 text-xs text-slate-500 sm:col-span-2">{t("stockTx.settleDateHint")}</div>
+                </div>
+              ) : null}
 
               {isDividendAction ? (
                 <div className="flex flex-col gap-3 sm:flex-row sm:items-start">

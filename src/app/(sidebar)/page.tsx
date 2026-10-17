@@ -76,7 +76,9 @@ import { locateDetailEntryPage } from "@/lib/server/detail-page-query";
 import { loadBondShellData, loadBondLotOptions, bondSubtypeLabelKey } from "@/lib/server/bond-shell-data";
 import { computePositionDisplay } from "@/lib/invest-balance";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
-import { compareDetailEntriesAsc, compareDetailEntriesDesc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
+import { compareDetailEntriesAsc, compareDetailEntriesDescBy, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
+import { rowWithLinkedInvestmentDisplayDate } from "@/lib/entry-reorder";
+import { loadEntryLinkedInvestmentDisplay } from "@/lib/server/entry-business-display";
 import {
   SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE,
   buildAccountDisplayOption,
@@ -827,8 +829,29 @@ export default async function Home({
     : [];
   const flowAccountIdOf = (e: { accountId?: string | null; toAccountId?: string | null }) =>
     isAllCashView ? cashLedgerFlowAccountId(e, cashLedgerIdSet) : accountId;
-  const entryDisplayDate = (e: Parameters<typeof getDetailEntryDisplayDate>[0]) => getDetailEntryDisplayDate(e, flowAccountIdOf(e));
-  const entries = [...rawEntries].sort((a, b) => compareDetailEntriesDesc(a, b, isAllCashView ? undefined : accountId));
+  // 基金 / 理财独立交易的 TxRecord 上没有 fundSubtype / fundArrivalDate（业务事实
+  // 只存在 fund_transactions / wealth_transactions），展示接口会回填这几个字段；
+  // 明细排序、日期筛选与导出必须用同一份兜底，否则赎回行会按申请日而不是到账日排
+  // （现象：资金 10-08 才到账，却排在 09-24）。detail-page-query 的
+  // fund_candidates / wealth_candidates 只覆盖了 SQL 一侧，这里补齐 JS 一侧。
+  const linkedInvestmentDisplay = await loadEntryLinkedInvestmentDisplay(
+    rawEntries.filter((entry) => entry.type === TransactionType.investment).map((entry) => entry.id),
+    householdId,
+  );
+  const displayEntryOf = <T extends (typeof rawEntries)[number]>(entry: T) =>
+    rowWithLinkedInvestmentDisplayDate(
+      entry,
+      linkedInvestmentDisplay.fund.get(entry.id) ?? null,
+      linkedInvestmentDisplay.wealth.get(entry.id) ?? null,
+    );
+  const entryDisplayDate = (e: (typeof rawEntries)[number]) => {
+    const row = displayEntryOf(e);
+    return getDetailEntryDisplayDate(row, flowAccountIdOf(row));
+  };
+  // 多账户（全部收支记录）里每一行的资金账户不同，必须逐行解析生效日。
+  const entries = [...rawEntries]
+    .map((entry) => displayEntryOf(entry))
+    .sort((a, b) => compareDetailEntriesDescBy(a, b, (row) => getDetailEntryDisplayDate(row, flowAccountIdOf(row))));
   const accountMetaById = new Map(accounts.map((account) => [account.id, account]));
   const isSettlementLiabilityAccountId = (id?: string | null) => {
     if (!id) return false;
@@ -1178,7 +1201,9 @@ export default async function Home({
       balanceByEntryId.set(id, value);
     }
   } else if (where) {
-    const asc = [...rawEntries].sort((a, b) => compareDetailEntriesAsc(a, b, accountId));
+    const asc = [...rawEntries]
+      .map((entry) => displayEntryOf(entry))
+      .sort((a, b) => compareDetailEntriesAsc(a, b, accountId));
     let running = 0;
     for (const e of asc) {
       running = applyBalanceReconcileEntry(running, e, accountId);

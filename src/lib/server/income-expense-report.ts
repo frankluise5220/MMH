@@ -19,6 +19,7 @@ import type { HouseholdContext } from "@/lib/server/household-scope";
 import { getBusinessResultStatisticItems, getIncomeExpenseStatisticAmount, getInvestmentStatisticItems, isBondInterestIncomeEntry } from "@/lib/transaction-statistics";
 import { BALANCE_INITIALIZATION_SOURCE, BALANCE_RECONCILE_SOURCE } from "@/lib/balance-reconcile";
 import { buildStatisticsCurrencyConverter } from "@/lib/server/statistics-currency";
+import { getReportEntryDate } from "@/lib/report-entry-date";
 import { getServerT } from "@/lib/server/i18n";
 
 const REIMBURSEMENT_INCOME_CATEGORY = "\u62a5\u9500";
@@ -317,7 +318,13 @@ export async function getIncomeExpenseReport(
         ...hidFilter,
         deletedAt: null,
         type: TransactionType.investment,
-        date: { gte: rangeStart, lt: endExclusive },
+        // 报表按「资金到账日」归期（2026-10-17）：资金流入腿的到账日可能落在期间
+        // 边界之外（例如 09-24 申请、10-08 到账），所以先按 date 与到账日双向
+        // 放宽，再由 getReportEntryDate 精确归期。
+        OR: [
+          { date: { gte: rangeStart, lt: endExclusive } },
+          { fundArrivalDate: { gte: rangeStart, lt: endExclusive } },
+        ],
         AND: [
           ...((params.institutionIds?.length || params.institutionId || params.userIds?.length || params.accountIds?.length) ? [accountFilter] : []),
           {
@@ -335,6 +342,7 @@ export async function getIncomeExpenseReport(
       select: {
         id: true,
         date: true,
+        type: true,
         amount: true,
         fundSubtype: true,
         fundProductType: true,
@@ -350,6 +358,9 @@ export async function getIncomeExpenseReport(
         accountId: true,
         accountName: true,
         account: { select: { name: true } },
+        toAccountId: true,
+        fundArrivalDate: true,
+        postedAt: true,
         note: true,
         createdAt: true,
       },
@@ -626,6 +637,9 @@ export async function getIncomeExpenseReport(
 
   for (const record of investmentRecords) {
     if (independentFundEntryIds.has(record.id)) continue;
+    // OR 放宽只是不让边界行被 SQL 提前排除，这里按生效日精确归期（2026-10-17）。
+    const effectiveDate = getReportEntryDate(record);
+    if (effectiveDate.getTime() < rangeStart.getTime() || effectiveDate.getTime() >= endExclusive.getTime()) continue;
     const investmentName = record.fundName?.trim() || record.fundCode?.trim() || "";
     for (const item of getInvestmentStatisticItems(record)) {
       const category = findCategoryByName(item.type, item.categoryCandidates);

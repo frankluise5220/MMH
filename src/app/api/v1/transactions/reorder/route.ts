@@ -22,10 +22,10 @@ import {
   isReorderBalanceAnchor,
   normalizeSameDayOrders,
   reorderRowsWithinDay,
-  rowWithLinkedWealthDisplayDate,
+  rowWithLinkedInvestmentDisplayDate,
   sameDayUtcWindow,
-  type LinkedWealthForReorder,
 } from "@/lib/entry-reorder";
+import { loadEntryLinkedInvestmentDisplay } from "@/lib/server/entry-business-display";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { revalidateAfterEntryOrderChange } from "@/lib/server/revalidate";
 import { txRecordAccountScopeWhere } from "@/lib/transaction-account-scope";
@@ -116,31 +116,19 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, code: "BALANCE_ANCHOR_NOT_MOVABLE", error: "余额校准记录固定在当天末尾，不能手动移动" }, { status: 400 });
     }
 
-    const targetWealthLinks = await prisma.entryBusinessLink.findMany({
-      where: {
-        householdId,
-        deletedAt: null,
-        wealthTransactionId: { not: null },
-        OR: [
-          { cashEntryId: entryId },
-          { businessEntryId: entryId },
-        ],
-      },
-      include: { WealthTransaction: true },
-    });
-    const linkedWealthByEntryId = new Map<string, LinkedWealthForReorder>();
-    for (const link of targetWealthLinks) {
-      const wealthRow = link.WealthTransaction;
-      if (!wealthRow) continue;
-      if (link.cashEntryId) linkedWealthByEntryId.set(link.cashEntryId, wealthRow);
-      if (link.businessEntryId) linkedWealthByEntryId.set(link.businessEntryId, wealthRow);
-    }
+    // 赎回行的生效日是业务表的 arrivalDate：TxRecord 上的
+    // fundSubtype / fundArrivalDate 为空（见 rowWithLinkedInvestmentDisplayDate）。
+    const targetLinks = await loadEntryLinkedInvestmentDisplay([entryId], householdId);
     const targetDay = entryReorderDayKey(
-      rowWithLinkedWealthDisplayDate(target, linkedWealthByEntryId.get(target.id) ?? null),
+      rowWithLinkedInvestmentDisplayDate(
+        target,
+        targetLinks.fund.get(target.id) ?? null,
+        targetLinks.wealth.get(target.id) ?? null,
+      ),
       accountId,
     );
-    const { start: wealthStart, endExclusive: wealthEnd } = sameDayUtcWindow(targetDay);
-    const [windowRows, wealthArrivalLinks] = await Promise.all([
+    const { start: arrivalWindowStart, endExclusive: arrivalWindowEnd } = sameDayUtcWindow(targetDay);
+    const [windowRows, wealthArrivalLinks, fundArrivalLinks] = await Promise.all([
       prisma.txRecord.findMany({
         where: {
           deletedAt: null,
@@ -157,15 +145,29 @@ export async function POST(req: Request) {
           WealthTransaction: {
             deletedAt: null,
             action: { in: ["redeem", "dividend_cash"] },
-            arrivalDate: { gte: wealthStart, lt: wealthEnd },
+            arrivalDate: { gte: arrivalWindowStart, lt: arrivalWindowEnd },
           },
         },
         include: { WealthTransaction: true },
       }),
+      prisma.entryBusinessLink.findMany({
+        where: {
+          householdId,
+          deletedAt: null,
+          fundTransactionId: { not: null },
+          FundTransaction: {
+            deletedAt: null,
+            fundSubtype: { in: ["redeem", "dividend_cash"] },
+            arrivalDate: { gte: arrivalWindowStart, lt: arrivalWindowEnd },
+          },
+        },
+        include: { FundTransaction: true },
+      }),
     ]);
-    const extraIds = Array.from(new Set(
-      wealthArrivalLinks.flatMap((link) => [link.cashEntryId, link.businessEntryId].filter((id): id is string => !!id)),
-    )).filter((id) => id !== target.id && !windowRows.some((row) => row.id === id));
+    const extraIds = Array.from(new Set([
+      ...wealthArrivalLinks.flatMap((link) => [link.cashEntryId, link.businessEntryId].filter((id): id is string => !!id)),
+      ...fundArrivalLinks.flatMap((link) => [link.cashEntryId, link.businessEntryId].filter((id): id is string => !!id)),
+    ])).filter((id) => id !== target.id && !windowRows.some((row) => row.id === id));
     const extraRows = extraIds.length > 0
       ? await prisma.txRecord.findMany({
           where: {
@@ -179,27 +181,12 @@ export async function POST(req: Request) {
       : [];
     const rows = [target, ...windowRows.filter((row) => row.id !== target.id), ...extraRows.filter((row) => row.id !== target.id)];
     const rowIds = rows.map((row) => row.id);
-    const wealthLinks = rowIds.length > 0
-      ? await prisma.entryBusinessLink.findMany({
-          where: {
-            householdId,
-            deletedAt: null,
-            wealthTransactionId: { not: null },
-            OR: [
-              { cashEntryId: { in: rowIds } },
-              { businessEntryId: { in: rowIds } },
-            ],
-          },
-          include: { WealthTransaction: true },
-        })
-      : [];
-    for (const link of [...wealthArrivalLinks, ...wealthLinks]) {
-      const wealthRow = link.WealthTransaction;
-      if (!wealthRow) continue;
-      if (link.cashEntryId) linkedWealthByEntryId.set(link.cashEntryId, wealthRow);
-      if (link.businessEntryId) linkedWealthByEntryId.set(link.businessEntryId, wealthRow);
-    }
-    const displayRowOf = (row: ReorderRow) => rowWithLinkedWealthDisplayDate(row, linkedWealthByEntryId.get(row.id) ?? null);
+    const displayLinks = await loadEntryLinkedInvestmentDisplay(rowIds, householdId);
+    const displayRowOf = (row: ReorderRow) => rowWithLinkedInvestmentDisplayDate(
+      row,
+      displayLinks.fund.get(row.id) ?? null,
+      displayLinks.wealth.get(row.id) ?? null,
+    );
     const sameDayRows = rows
       .filter((row) => entryReorderDayKey(displayRowOf(row), accountId) === targetDay)
       .filter((row) => !isReorderBalanceAnchor(row))

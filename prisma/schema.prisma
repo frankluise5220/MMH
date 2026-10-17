@@ -790,6 +790,7 @@ model PreciousMetalTransaction {
   source            String?             @default("manual")
   entryOrigin       String?             @default("manual")
   tradeDate         DateTime
+  arrivalDate       DateTime?
   amount            Decimal             @db.Decimal(18, 2)
   quantity          Decimal?            @db.Decimal(20, 6)
   unitPrice         Decimal?            @db.Decimal(20, 6)

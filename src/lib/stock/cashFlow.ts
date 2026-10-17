@@ -168,7 +168,10 @@ export async function ensureStockTransactionCashFlow(
       fundNav: null,
       fundFee: null,
       fundConfirmDate: null,
-      fundArrivalDate: null,
+      // 股票资金腿的生效日由上面的 date 承担（`getCashFlowDate`：流入取结算日）；
+      // 这里仍把结算日写进到账日字段，与基金 / 理财 / 金属的资金腿保持同一份事实
+      // （本行 `toAccountId` 为 null、`fundSubtype` 为 null，解析器不会用它覆盖 date）。
+      fundArrivalDate: isCashIn ? (params.row.settleDate ?? null) : null,
       fundArrivalAmount: null,
       depositAnnualRate: null,
       depositInterest: null,

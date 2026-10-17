@@ -21,7 +21,7 @@ import { BasicDetailBatchDeleteButton,
 import type { BatchReplaceField } from "@/lib/client/batchReplaceEntries";
 import { useI18n } from "@/lib/i18n";
 import { BALANCE_INITIALIZATION_SOURCE, BALANCE_RECONCILE_SOURCE, effectiveAmountForAccount, getBalanceReconcileTarget, isReconciledEntry } from "@/lib/balance-reconcile";
-import { compareDetailEntriesAsc, compareDetailEntriesDesc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
+import { compareDetailEntriesAsc, compareDetailEntriesDesc, getDetailEntryDisplayDate, getDetailEntryTradeDate } from "@/lib/detail-entry-order";
 import { removeEntriesAndUpdateRunningBalances } from "@/lib/detail-running-balance";
 import { rebaseRunningBalancesAfterSameDayReorder, startOfDayRunningBalanceSeed } from "@/lib/entry-reorder";
 import { buildLiabilityActivityEditEvent, inferLiabilityMode, isLiabilityActivityEntry, type LiabilityMode } from "@/lib/liability-entry-edit";
@@ -1194,11 +1194,13 @@ export function DetailViewClient({
       filterKind: "dateRange",
       filterText: (e) => localDateKey(getDetailEntryDisplayDate(e, flowAccountIdOf(e))),
       sortValue: (e) => getDetailEntryDisplayDate(e, flowAccountIdOf(e)).getTime(),
-      // The date column shows the raw transaction date; the posting date has
-      // its own column. Row order comes from the server and follows the
-      // effective date (postedAt ?? date) — do not display that here, or the
-      // transaction date becomes invisible for rows posted on a later day.
-      render: (e) => <span className="tabular-nums text-slate-600">{formatDateDisplay(e.date, dateDisplayFormat)}</span>,
+      // The date column shows this side's transaction date. For expense /
+      // income rows that is the raw `date` (the posting date has its own
+      // column — do not display it here). An investment redemption's cash leg
+      // is different: on the cash side the money only moves on the arrival
+      // date, so the arrival date *is* the transaction date there, while the
+      // investment side keeps the trade date. See getDetailEntryTradeDate.
+      render: (e) => <span className="tabular-nums text-slate-600">{formatDateDisplay(getDetailEntryTradeDate(e, flowAccountIdOf(e)), dateDisplayFormat)}</span>,
     },
     ...(showAccountColumn ? [{
       key: "account",

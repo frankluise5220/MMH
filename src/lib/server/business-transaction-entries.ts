@@ -552,6 +552,8 @@ export async function loadPreciousMetalTransactionEntryLike(params: {
       fundName: row.metalTypeName,
       fundProductType: "metal",
       fundSubtype: row.action,
+      // 金属赎回的资金到账日：资金账户侧明细用它当「生效日」（2026-10-17）。
+      fundArrivalDate: ymd(row.arrivalDate),
       source: row.source,
       note: row.note,
       realizedProfit: row.realizedProfit,

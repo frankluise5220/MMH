@@ -83,8 +83,16 @@ function buildOrderingCtesSql(args: {
       AND t."householdId" = ${householdId}
       AND ${accountScope}
   `;
-  const scopedCtes = sortAccountIdValue
-    ? Prisma.sql`
+  // 明细排序用的「生效日」。基金独立交易的 TxRecord 被有意清空了
+  // fundSubtype / fundArrivalDate（业务事实只存在 fund_transactions，见
+  // transactions/detail 的 isFundLikeIndependentEdit 分支），而展示层一直用
+  // FundTransaction 覆盖这几列。排序层此前没有这份兜底，于是「到账日 10-08」的
+  // 赎回行会退化成按 date（申请日）排序。这里把基金和理财两类业务行都 JOIN 进来，
+  // 与展示层口径对齐。多账户（sortAccountId 为空）时按视图账户集合匹配资金账户。
+  // 注意：只能用 CAST(... AS ...)，不能写 PG 专有的双冒号 —— fnOS / 群晖 包跑的是
+  // SQLite（DATABASE_URL=file:.../mmh.db），双冒号会让整条 SQL 语法报错
+  // （unrecognized token ":"），整页 500。
+  const scopedCtes = Prisma.sql`
         "scoped_base" AS (
           SELECT ${scopedColumns}
           ${scopedSource}
@@ -126,6 +134,43 @@ function buildOrderingCtesSql(args: {
             AND w."householdId" = ${householdId}
           WHERE s."type" = 'investment'
         ),
+        "fund_candidates" AS (
+          SELECT
+            s."id" AS "entryId",
+            f."fundSubtype" AS "fundSubtype",
+            f."arrivalDate" AS "fundArrivalDate",
+            f."cashAccountId" AS "fundCashAccountId",
+            0 AS "priority",
+            l."id" AS "linkId"
+          FROM "scoped_base" s
+          INNER JOIN "entry_business_links" l
+            ON l."cashEntryId" = s."id"
+            AND l."deletedAt" IS NULL
+            AND l."fundTransactionId" IS NOT NULL
+          INNER JOIN "fund_transactions" f
+            ON f."id" = l."fundTransactionId"
+            AND f."deletedAt" IS NULL
+            AND f."householdId" = ${householdId}
+          WHERE s."type" = 'investment'
+          UNION ALL
+          SELECT
+            s."id" AS "entryId",
+            f."fundSubtype" AS "fundSubtype",
+            f."arrivalDate" AS "fundArrivalDate",
+            f."cashAccountId" AS "fundCashAccountId",
+            1 AS "priority",
+            l."id" AS "linkId"
+          FROM "scoped_base" s
+          INNER JOIN "entry_business_links" l
+            ON l."businessEntryId" = s."id"
+            AND l."deletedAt" IS NULL
+            AND l."fundTransactionId" IS NOT NULL
+          INNER JOIN "fund_transactions" f
+            ON f."id" = l."fundTransactionId"
+            AND f."deletedAt" IS NULL
+            AND f."householdId" = ${householdId}
+          WHERE s."type" = 'investment'
+        ),
         "wealth_ranked" AS (
           SELECT
             wc.*,
@@ -135,35 +180,44 @@ function buildOrderingCtesSql(args: {
             ) AS "rank"
           FROM "wealth_candidates" wc
         ),
+        "fund_ranked" AS (
+          SELECT
+            fc.*,
+            ROW_NUMBER() OVER (
+              PARTITION BY fc."entryId"
+              ORDER BY fc."priority" ASC, fc."linkId" ASC
+            ) AS "rank"
+          FROM "fund_candidates" fc
+        ),
         "scoped" AS (
           SELECT
             s.*,
             r."wealthAction",
             r."wealthArrivalDate",
-            r."wealthCashAccountId"
+            r."wealthCashAccountId",
+            fr."fundSubtype" AS "linkedFundSubtype",
+            fr."fundArrivalDate" AS "linkedFundArrivalDate",
+            fr."fundCashAccountId" AS "linkedFundCashAccountId"
           FROM "scoped_base" s
           LEFT JOIN "wealth_ranked" r
             ON r."entryId" = s."id"
             AND r."rank" = 1
-        )
-      `
-    : Prisma.sql`
-        "scoped" AS (
-          SELECT
-            ${scopedColumns},
-            -- 必须显式标注类型：裸 NULL 会被推断为 text，导致下方
-            -- COALESCE(s."wealthAction", s."fundSubtype") 等表达式出现
-            -- 42804（COALESCE types text and "FundSubtype" cannot be matched）。
-            -- 用 CAST(... AS ...) 而不是 PG 专有的双冒号写法：fnOS / 群晖 包跑的是
-            -- SQLite（DATABASE_URL=file:.../mmh.db），双冒号会让整条 SQL 直接
-            -- 语法报错（unrecognized token ":"），多账户 / 全部现金明细整页 500。
-            -- CAST 两种引擎都支持，PG 侧语义与双冒号写法完全等价。
-            CAST(NULL AS "FundSubtype") AS "wealthAction",
-            CAST(NULL AS TIMESTAMP(3)) AS "wealthArrivalDate",
-            CAST(NULL AS TEXT) AS "wealthCashAccountId"
-          ${scopedSource}
+          LEFT JOIN "fund_ranked" fr
+            ON fr."entryId" = s."id"
+            AND fr."rank" = 1
         )
       `;
+
+  // 资金账户一侧的匹配口径：
+  // - 单账户明细（sortAccountId 有值）：这笔钱的收款账户必须就是当前账户；
+  // - 多账户明细（全部收支记录，sortAccountId 为空）：收款账户在视图账户集合内即可。
+  const accountIdListSql = accountIds.length > 0 ? Prisma.join(accountIds) : Prisma.sql`NULL`;
+  const cashSideMatchSql = sortAccountIdValue
+    ? Prisma.sql`= CAST(${sortAccountIdValue} AS TEXT)`
+    : Prisma.sql`IN (${accountIdListSql})`;
+  const linkedBusinessSubtypeSql = Prisma.sql`COALESCE(s."linkedFundSubtype", s."wealthAction", s."fundSubtype")`;
+  const linkedBusinessArrivalSql = Prisma.sql`COALESCE(s."linkedFundArrivalDate", s."wealthArrivalDate", s."fundArrivalDate")`;
+  const linkedBusinessCashAccountSql = Prisma.sql`COALESCE(s."linkedFundCashAccountId", s."wealthCashAccountId", s."toAccountId")`;
 
   // 每笔流水对「余额」列的贡献。必须与 account-balance.ts 的 foldBalanceEntry 逐条对齐，
   // 否则明细余额列会与账户余额不一致。
@@ -225,16 +279,14 @@ function buildOrderingCtesSql(args: {
         CASE
           WHEN s."type" IN ('expense', 'income')
             THEN COALESCE(s."postedAt", s."date")
-          WHEN CAST(${sortAccountIdValue} AS TEXT) IS NOT NULL
-            AND s."type" = 'investment'
-            AND COALESCE(s."wealthCashAccountId", s."toAccountId") = CAST(${sortAccountIdValue} AS TEXT)
+          WHEN s."type" = 'investment'
+            AND ${linkedBusinessCashAccountSql} ${cashSideMatchSql}
             AND (
-              COALESCE(s."wealthAction", s."fundSubtype") IN ('redeem', 'dividend_cash')
-              OR (s."fundSubtype" = 'buy_failed' AND s."source" = 'regular_invest_refund')
+              ${linkedBusinessSubtypeSql} IN ('redeem', 'dividend_cash', 'switch_out')
+              OR (${linkedBusinessSubtypeSql} = 'buy_failed' AND s."source" = 'regular_invest_refund')
             )
-            THEN COALESCE(s."wealthArrivalDate", s."fundArrivalDate", s."date")
-          WHEN CAST(${sortAccountIdValue} AS TEXT) IS NOT NULL
-            AND s."type" = 'investment'
+            THEN COALESCE(${linkedBusinessArrivalSql}, s."date")
+          WHEN s."type" = 'investment'
             AND s."fundProductType" = 'deposit'
             AND s."fundSubtype" = 'buy'
             AND s."toAccountId" = CAST(${sortAccountIdValue} AS TEXT)

@@ -36,6 +36,18 @@ export type LinkedWealthForReorder = {
   deletedAt?: Date | string | number | null;
 };
 
+/**
+ * 关联基金交易（fund_transactions）的行，用于回填明细的「生效日」字段。
+ * `fundSubtype` / `arrivalDate` / `cashAccountId` 对应 FundTransaction 的
+ * 子类型 / 到账日 / 资金账户。
+ */
+export type LinkedFundForReorder = {
+  fundSubtype?: string | null;
+  arrivalDate?: Date | string | number | null;
+  cashAccountId?: string | null;
+  deletedAt?: Date | string | number | null;
+};
+
 export function entryReorderDayKey(entry: ReorderDisplayEntry, accountId?: string | null) {
   return formatDateLocal(getDetailEntryDisplayDate(entry, accountId));
 }
@@ -47,7 +59,7 @@ export function isReorderBalanceAnchor(entry: { source?: string | null; toNote?:
 }
 
 export function isWealthCashReceiptAction(action?: string | null) {
-  return action === "redeem" || action === "dividend_cash";
+  return action === "redeem" || action === "dividend_cash" || action === "switch_out";
 }
 
 export function rowWithLinkedWealthDisplayDate<T extends ReorderDisplayEntry>(
@@ -61,6 +73,49 @@ export function rowWithLinkedWealthDisplayDate<T extends ReorderDisplayEntry>(
     fundArrivalDate: wealthRow.arrivalDate ?? row.fundArrivalDate,
     toAccountId: wealthRow.cashAccountId ?? row.toAccountId,
   };
+}
+
+/**
+ * 基金交易行的「生效日」回填。
+ *
+ * 基金独立交易的 TxRecord 会被有意清空 `fundSubtype` / `fundArrivalDate`
+ * （业务事实只存在 fund_transactions，见 transactions/detail 的编辑分支），
+ * 明细展示层因此要用 FundTransaction 覆盖这几列。排序 / 余额层必须用同一份
+ * 兜底，否则赎回（资金回到现金账户）会退化成按 `date`（申请日）排序与计息，
+ * 表现为「到账日 10-08 却排在 09-24」。
+ *
+ * 只有资金流入现金账户的行才用得到账日：redeem / dividend_cash，以及
+ * 买入失败退款（buy_failed + regular_invest_refund）。
+ */
+export function rowWithLinkedFundDisplayDate<T extends ReorderDisplayEntry>(
+  row: T,
+  fundRow?: LinkedFundForReorder | null,
+): T {
+  if (!fundRow || fundRow.deletedAt) return row;
+  const subtype = String(fundRow.fundSubtype ?? "").trim();
+  const isCashReceipt = subtype === "redeem" || subtype === "dividend_cash" || subtype === "switch_out";
+  const isBuyFailedRefund = subtype === "buy_failed" && String(row.source ?? "") === "regular_invest_refund";
+  if (!isCashReceipt && !isBuyFailedRefund) return row;
+  return {
+    ...row,
+    fundSubtype: fundRow.fundSubtype ?? row.fundSubtype,
+    fundArrivalDate: fundRow.arrivalDate ?? row.fundArrivalDate,
+    toAccountId: fundRow.cashAccountId ?? row.toAccountId,
+  };
+}
+
+/**
+ * 同时投影基金与理财两侧的业务生效日字段。
+ *
+ * 基金优先：同一条 TxRecord 同时挂在两侧时，与 detail-page-query 的
+ * fund_candidates > wealth_candidates 优先级保持一致。
+ */
+export function rowWithLinkedInvestmentDisplayDate<T extends ReorderDisplayEntry>(
+  row: T,
+  fundRow?: LinkedFundForReorder | null,
+  wealthRow?: LinkedWealthForReorder | null,
+): T {
+  return rowWithLinkedFundDisplayDate(rowWithLinkedWealthDisplayDate(row, wealthRow), fundRow);
 }
 
 /** Inclusive UTC start / exclusive UTC end covering `dayKey` plus `padDays` on each side. */

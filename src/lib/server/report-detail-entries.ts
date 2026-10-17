@@ -1,6 +1,8 @@
 import type { DetailEntry } from "@/components/DetailViewClient";
 import { prisma } from "@/lib/db/prisma";
 import { formatDateLocal, toNumber } from "@/lib/date-utils";
+import { rowWithLinkedInvestmentDisplayDate } from "@/lib/entry-reorder";
+import { loadEntryLinkedInvestmentDisplay } from "@/lib/server/entry-business-display";
 import { buildEntryBusinessLinkSummary, entryBusinessLinkSummaryInclude } from "@/lib/server/entry-business-link";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 
@@ -102,7 +104,30 @@ export async function loadReportDetailEntries(
     }
   }
 
+  // 赎回的业务事实（到账日 / 收款资金账户）只存在 fund_transactions /
+  // wealth_transactions，TxRecord 上这两列可能为空。报表下钻必须和明细表用同一份
+  // 回填，否则赎回行显示的仍是申请日（2026-10-17）。
+  const linkedInvestmentDisplay = await loadEntryLinkedInvestmentDisplay(
+    records.map((record) => record.id),
+    ctx.householdId,
+  );
+
   const detailEntryById = new Map<string, DetailEntry>(records.map((record) => {
+    const linkedRow = rowWithLinkedInvestmentDisplayDate(
+      {
+        id: record.id,
+        date: record.date,
+        amount: record.amount,
+        type: record.type,
+        accountId: record.accountId,
+        toAccountId: record.toAccountId,
+        fundSubtype: record.fundSubtype,
+        source: record.source,
+        fundArrivalDate: record.fundArrivalDate,
+      },
+      linkedInvestmentDisplay.fund.get(record.id) ?? null,
+      linkedInvestmentDisplay.wealth.get(record.id) ?? null,
+    );
     const categoryName = overrides?.categoryByEntryId.has(record.id)
       ? overrides.categoryByEntryId.get(record.id) ?? null
       : record.categoryName;
@@ -150,7 +175,7 @@ export async function loadReportDetailEntries(
     originalAmount: record.originalAmount == null ? null : toNumber(record.originalAmount),
     locationId: record.locationId,
     locationName: record.locationName,
-    toAccountId: backfillCashSide ? record.accountId : record.toAccountId,
+    toAccountId: backfillCashSide ? record.accountId : linkedRow.toAccountId ?? record.toAccountId,
     toAccountName: backfillCashSide
       ? (record.account?.name ?? record.accountName)
       : (record.toAccount?.name ?? record.toAccountName),
@@ -163,7 +188,7 @@ export async function loadReportDetailEntries(
       : (record.toAccount?.Institution?.name ?? ""),
     note: record.note,
     toNote: record.toNote,
-    fundSubtype: record.fundSubtype,
+    fundSubtype: linkedRow.fundSubtype ?? record.fundSubtype,
     fundCode: record.fundCode,
     fundName: record.fundName,
     wealthProductId: record.wealthProductId,
@@ -189,7 +214,7 @@ export async function loadReportDetailEntries(
     fundSourceEntryId: record.fundSourceEntryId,
     fundFee: record.fundFee == null ? null : toNumber(record.fundFee),
     fundConfirmDate: record.fundConfirmDate ? formatDateLocal(record.fundConfirmDate) : null,
-    fundArrivalDate: record.fundArrivalDate ? formatDateLocal(record.fundArrivalDate) : null,
+    fundArrivalDate: linkedRow.fundArrivalDate ? formatDateLocal(linkedRow.fundArrivalDate) : null,
     fundArrivalAmount: record.fundArrivalAmount == null ? null : toNumber(record.fundArrivalAmount),
     ...buildEntryBusinessLinkSummary(record),
     attachments: (record.Attachment || []).map((attachment) => ({

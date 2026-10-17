@@ -13,7 +13,9 @@ import { isLoanOrSettlementAccountKind } from "@/lib/liability";
 import { liabilityPrincipalForAccountSide } from "@/lib/liability";
 import { txRecordAccountScopeWhere } from "@/lib/transaction-account-scope";
 import { logger } from "@/lib/logger";
+import { rowWithLinkedInvestmentDisplayDate } from "@/lib/entry-reorder";
 import { depositRedemptionPrincipal } from "@/lib/server/deposit-lot-balance";
+import { loadEntryLinkedInvestmentDisplay } from "@/lib/server/entry-business-display";
 
 const FX_CONVERSION_SOURCE = "fx_conversion";
 const BALANCE_ENTRY_PAGE_SIZE = 5000;
@@ -320,6 +322,37 @@ function entryTouchesAccount(entry: Pick<BalanceEntryRow, "accountId" | "toAccou
   return entry.toAccountId === accountId && entry.source !== FX_CONVERSION_SOURCE;
 }
 
+/**
+ * 余额的「生效日」必须与明细排序 / 展示用同一份数据。
+ *
+ * 基金 / 理财独立交易的 TxRecord 上没有 fundSubtype / fundArrivalDate（业务事实
+ * 只存在 fund_transactions / wealth_transactions，见 transactions/detail 的
+ * isFundLikeIndependentEdit 分支），而 `getDetailEntryDisplayDate` 判定「赎回资金
+ * 何时进/出现金账户」依赖这两列。缺这份回填时，赎回资金会在申请日（date）就改变
+ * 现金账户余额，与明细里按到账日排序的行互相矛盾
+ * （2026-10-16 用户报告：招行账户 10-08 到账的赎回排在 09-24）。
+ */
+async function decorateBalanceRowsWithInvestmentDisplay(
+  db: BalanceDbClient,
+  hidFilter: { householdId?: string } | undefined,
+  rows: BalanceEntryRow[],
+): Promise<BalanceEntryRow[]> {
+  if (rows.length === 0 || !hidFilter?.householdId) return rows;
+  const links = await loadEntryLinkedInvestmentDisplay(
+    rows.filter((row) => row.type === TransactionType.investment).map((row) => row.id),
+    hidFilter.householdId,
+    db,
+  );
+  if (links.fund.size === 0 && links.wealth.size === 0) return rows;
+  return rows.map((row) =>
+    rowWithLinkedInvestmentDisplayDate(
+      row,
+      links.fund.get(row.id) ?? null,
+      links.wealth.get(row.id) ?? null,
+    ),
+  );
+}
+
 function entryAffectsBalance(
   entry: BalanceEntryRow,
   accountId: string,
@@ -483,25 +516,12 @@ export async function computeAccountDisplayBalances(
         ...txWhere,
         ...txRecordAccountScopeWhere(nonDepositAccountIds),
       },
-      select: {
-        id: true,
-        date: true,
-        postedAt: true,
-        createdAt: true,
-        dayOrder: true,
-        type: true,
-        amount: true,
-        accountId: true,
-        toAccountId: true,
-        toNote: true,
-        source: true,
-        principalAmount: true,
-        fundSubtype: true,
-        fundConfirmDate: true,
-        fundArrivalDate: true,
-        reconciledBalance: true,
-      },
+      select: BALANCE_ENTRY_SELECT,
     });
+
+    // 生效日回填：赎回资金按到账日影响现金账户余额（与明细排序同一口径）。
+    const displayRows = await decorateBalanceRowsWithInvestmentDisplay(prisma, hidFilter, txRows);
+    const displayRowById = new Map(displayRows.map((row) => [row.id, row]));
 
     const txByAccountId = new Map<string, typeof txRows>();
     for (const accountId of nonDepositAccountIds) {
@@ -528,6 +548,7 @@ export async function computeAccountDisplayBalances(
 
       const rows = txByAccountId.get(account.id) ?? [];
       const orderedRows = rows
+        .map((entry) => displayRowById.get(entry.id) ?? entry)
         .filter((entry) => isOnOrBeforeToday(getDetailEntryDisplayDate(entry, account.id)))
         .sort((a, b) => compareDetailEntriesAsc(a, b, account.id));
       let runningBalance = 0;
@@ -795,7 +816,7 @@ export async function foldOversizedBalanceWindow(
     select: BALANCE_ENTRY_SELECT,
     orderBy: [{ date: "asc" }, { createdAt: "asc" }, { id: "asc" }],
   });
-  const orderedAnchors = anchors
+  const orderedAnchors = (await decorateBalanceRowsWithInvestmentDisplay(db, hidFilter, anchors))
     .filter((row) => getBalanceAnchorTarget(row) != null)
     .filter((row) => {
       const day = localDateKey(getDetailEntryDisplayDate(row, account.id));
@@ -819,7 +840,7 @@ export async function foldOversizedBalanceWindow(
       take: BALANCE_ENTRY_PAGE_SIZE,
     });
     if (page.length === 0) break;
-    for (const row of page) {
+    for (const row of await decorateBalanceRowsWithInvestmentDisplay(db, hidFilter, page)) {
       if (isBalanceAnchorEntry(row)) continue;
       const day = localDateKey(getDetailEntryDisplayDate(row, account.id));
       if (day <= startKeyExclusive || day > endKeyInclusive) continue;
@@ -934,8 +955,9 @@ async function foldAccountBalanceRange(
       continue;
     }
 
-    rows.sort((a, b) => compareDetailEntriesAsc(a, b, account.id));
-    for (const row of rows) {
+    const displayRows = await decorateBalanceRowsWithInvestmentDisplay(db, hidFilter, rows);
+    displayRows.sort((a, b) => compareDetailEntriesAsc(a, b, account.id));
+    for (const row of displayRows) {
       const day = localDateKey(getDetailEntryDisplayDate(row, account.id));
       if (day <= cursor || day > windowEnd) continue;
       runningBalance = foldBalanceEntry(runningBalance, row, account);
@@ -1257,6 +1279,25 @@ export async function applyEntryChangesToAccountBalances(changes: EntryBalanceCh
   const asOf = endOfLocalDayKey(todayKey);
   const changedEntryIds = changes.map((change) => change.entryId);
 
+  // 生效日回填（与 computeAccountDisplayBalances / 明细排序同一口径）：基金独立
+  // 交易行的到账日只存在 fund_transactions，缺这份回填时赎回会在申请日就改动
+  // 现金账户余额，与明细里按到账日排序的行矛盾。
+  const householdIds = Array.from(new Set(accounts.map((account) => account.householdId)));
+  const entryDisplayLinks = householdIds.length === 1
+    ? await loadEntryLinkedInvestmentDisplay(
+      changes.flatMap((change) => [change.entryId, change.previous?.id ?? null]),
+      householdIds[0],
+    )
+    : { fund: new Map(), wealth: new Map() };
+  const displayBalanceEntry = (entry: BalanceEntryRow | null | undefined) =>
+    entry
+      ? rowWithLinkedInvestmentDisplayDate(
+        entry,
+        entryDisplayLinks.fund.get(entry.id) ?? null,
+        entryDisplayLinks.wealth.get(entry.id) ?? null,
+      )
+      : null;
+
   for (const account of accounts) {
     const accountLike = {
       id: account.id,
@@ -1282,10 +1323,11 @@ export async function applyEntryChangesToAccountBalances(changes: EntryBalanceCh
     let currentDelta = 0;
     let requiresFullFold = false;
     for (const { change, current } of currentRows) {
-      const previous = change.previous ?? null;
+      const previous = displayBalanceEntry(change.previous ?? null);
+      const currentDisplay = displayBalanceEntry(current);
       const previousActive = previous && !previous.deletedAt && entryAffectsBalance(previous, account.id, anchor, todayKey);
-      const currentActive = current && !current.deletedAt && entryAffectsBalance(current, account.id, anchor, todayKey);
-      if (previousActive) {
+      const currentActive = currentDisplay && !currentDisplay.deletedAt && entryAffectsBalance(currentDisplay, account.id, anchor, todayKey);
+      if (previousActive && previous) {
         if (isDeposit && isDepositPrincipalEntry(previous)) {
           continue;
         }
@@ -1293,11 +1335,11 @@ export async function applyEntryChangesToAccountBalances(changes: EntryBalanceCh
         if (delta == null) requiresFullFold = true;
         else previousDelta += delta;
       }
-      if (currentActive) {
-        if (isDeposit && isDepositPrincipalEntry(current)) {
+      if (currentActive && currentDisplay) {
+        if (isDeposit && isDepositPrincipalEntry(currentDisplay)) {
           continue;
         }
-        const delta = balanceEntryDelta(current, accountLike);
+        const delta = balanceEntryDelta(currentDisplay, accountLike);
         if (delta == null) requiresFullFold = true;
         else currentDelta += delta;
       }
@@ -1328,7 +1370,7 @@ export async function applyEntryChangesToAccountBalances(changes: EntryBalanceCh
     }
     let previousIncludedDelta = 0;
     for (const { change } of currentRows) {
-      const previous = change.previous ?? null;
+      const previous = displayBalanceEntry(change.previous ?? null);
       if (!previous || previous.deletedAt) continue;
       if (!entryAffectsBalance(previous, account.id, anchor, todayKey)) continue;
       if (isDeposit && isDepositPrincipalEntry(previous)) continue;

@@ -5,6 +5,7 @@ import { getApiHouseholdScope } from "@/lib/server/api-auth";
 import { loadWealthStatisticSourceEntries } from "@/lib/server/investment-statistic-sources";
 import { TransactionType } from "@prisma/client";
 import { toNumber } from "@/lib/date-utils";
+import { getReportEntryDate, isReportEntryDateWithin } from "@/lib/report-entry-date";
 import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import {
   normalizeDefaultCategoryHierarchyForHousehold,
@@ -106,17 +107,27 @@ export async function GET(req: NextRequest) {
       ? { OR: [{ accountId: { in: selectedAccountIds } }, { toAccountId: { in: selectedAccountIds } }] }
       : {};
 
-    // Fetch all entries for the year
+    const yearStart = new Date(Date.UTC(year, 0, 1));
+    const yearEndExclusive = new Date(Date.UTC(year + 1, 0, 1));
+
+    // Fetch all entries for the year。报表按「资金到账日」归期（2026-10-17）：资金流入
+    // 腿的到账日可能跨年（12-30 申请、次年 01-02 到账），所以按 date 与到账日双向放宽，
+    // 再由 getReportEntryDate 精确归期。
     const allEntries = await prisma.txRecord.findMany({
       where: {
         deletedAt: null,
         ...hidFilter,
-        date: { gte: new Date(Date.UTC(year, 0, 1)), lt: new Date(Date.UTC(year + 1, 0, 1)) },
-        ...accountFilter,
+        OR: [
+          { date: { gte: yearStart, lt: yearEndExclusive } },
+          { fundArrivalDate: { gte: yearStart, lt: yearEndExclusive } },
+        ],
+        AND: [accountFilter],
       },
       select: {
         id: true,
         date: true,
+        postedAt: true,
+        fundArrivalDate: true,
         type: true,
         amount: true,
         source: true,
@@ -148,7 +159,7 @@ export async function GET(req: NextRequest) {
     });
     const representedInvestmentEntryIds = new Set(
       allEntries
-        .filter((entry) => entry.type === TransactionType.investment && getInvestmentStatisticItems(entry).length > 0)
+        .filter((entry) => isReportEntryDateWithin(entry, yearStart, yearEndExclusive) && entry.type === TransactionType.investment && getInvestmentStatisticItems(entry).length > 0)
         .map((entry) => entry.id),
     );
     const wealthStatisticEntries = await loadWealthStatisticSourceEntries(ctx, {
@@ -177,7 +188,9 @@ export async function GET(req: NextRequest) {
     const resolveCategory = createStatisticCategoryResolver(categories);
 
     for (const e of filteredEntries) {
-      const d = e.date;
+      // 生效日（资金流入腿取到账日）落在年外时跳过：上面的 OR 只是放宽边界。
+      const d = getReportEntryDate(e);
+      if (d.getTime() < yearStart.getTime() || d.getTime() >= yearEndExclusive.getTime()) continue;
       const m = String(d.getUTCMonth() + 1).padStart(2, "0");
       if (!monthMap.has(m)) monthMap.set(m, { income: 0, expense: 0, investPnL: 0 });
       const row = monthMap.get(m)!;

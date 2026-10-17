@@ -649,6 +649,11 @@ export async function POST(req: NextRequest) {
       const dateCashReceiptLike = currentSubtype === "redeem" || currentSubtype === "switch_out" || currentSubtype === "dividend_cash";
       const fundAccountIdForDateRule = linkedFundTransaction?.fundAccountId ?? (dateCashReceiptLike ? finalAccountId : finalToAccountId);
       const fundTradingCalendar = resolveAccountMeta(fundAccountIdForDateRule)?.tradingCalendar ?? "cn_fund";
+      // Fund business rows keep confirmDate / arrivalDate in fund_transactions: the TxRecord under
+      // this id is the cash leg and carries no fund columns, so writing only the TxRecord left both
+      // the fund views (they read fund_transactions.confirmDate) and the position recalculation
+      // untouched even though the request reported success.
+      const linkedFundDateUpdates: { confirmDate?: Date | null; arrivalDate?: Date | null } = {};
       if (item.fundConfirmDate !== undefined) {
         let value = String(item.fundConfirmDate).trim();
         if (value) {
@@ -664,7 +669,9 @@ export async function POST(req: NextRequest) {
         } else {
           data.fundConfirmDate = null;
         }
-        changed.push({ id, date: ymd(existing.date), oldValue: existing.fundConfirmDate ? ymd(existing.fundConfirmDate) : "", newValue: value, field: "fundConfirmDate" });
+        linkedFundDateUpdates.confirmDate = data.fundConfirmDate as Date | null;
+        const previousConfirmDate = linkedFundTransaction?.confirmDate ?? existing.fundConfirmDate;
+        changed.push({ id, date: ymd(existing.date), oldValue: previousConfirmDate ? ymd(previousConfirmDate) : "", newValue: value, field: "fundConfirmDate" });
       }
 
       if (item.fundArrivalDate !== undefined) {
@@ -682,7 +689,16 @@ export async function POST(req: NextRequest) {
         } else {
           data.fundArrivalDate = null;
         }
-        changed.push({ id, date: ymd(existing.date), oldValue: existing.fundArrivalDate ? ymd(existing.fundArrivalDate) : "", newValue: value, field: "fundArrivalDate" });
+        linkedFundDateUpdates.arrivalDate = data.fundArrivalDate as Date | null;
+        const previousArrivalDate = linkedFundTransaction?.arrivalDate ?? existing.fundArrivalDate;
+        changed.push({ id, date: ymd(existing.date), oldValue: previousArrivalDate ? ymd(previousArrivalDate) : "", newValue: value, field: "fundArrivalDate" });
+      }
+
+      if (Object.keys(linkedFundDateUpdates).length > 0) {
+        if (linkedFundTransaction) {
+          await prisma.fundTransaction.update({ where: { id: linkedFundTransaction.id }, data: linkedFundDateUpdates });
+        }
+        addFundPositionRecalcRequest(fundAccountIdForDateRule, currentFundCode);
       }
 
       if (item.fundFee !== undefined || item.feeRate !== undefined || item.cashAccountId !== undefined || item.fundAccountId !== undefined) {

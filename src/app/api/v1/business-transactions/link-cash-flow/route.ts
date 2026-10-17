@@ -460,9 +460,18 @@ export async function POST(req: Request) {
         ? await resolveCategorySnapshot(tx, householdId, { categoryName, type: "investment" })
         : null;
       const signedCashAmount = isCashIn ? Math.abs(cashAmount) : -Math.abs(cashAmount);
+      // 与理财分支同一口径：资金腿的「日期」是钱真正进出资金账户的那天 ——
+      // 流入取到账日（row.arrivalDate），流出取交易日。资金腿不写 fundSubtype，
+      // 解析器（getDetailEntryDisplayDate）在此行上只会用到 date，所以必须在这里换算，
+      // 否则补建出来的赎回资金腿会按申请日排序 / 记余额（2026-10-17）。
+      const cashDate = getCashFlowDate({
+        direction: isCashIn ? "inflow" : "outflow",
+        operationDate: row.tradeDate,
+        settlementDate: row.arrivalDate,
+      });
       const cashEntryData = {
         householdId,
-        date: row.tradeDate,
+        date: cashDate,
         type: TransactionType.investment,
         accountId: isCashIn ? row.accountId : row.cashAccountId,
         accountName: isCashIn ? row.Account.name : row.CashAccount.name,
@@ -490,7 +499,10 @@ export async function POST(req: Request) {
         fundNav: null,
         fundFee: null,
         fundConfirmDate: null,
-        fundArrivalDate: null,
+        // 金属赎回的到账日也一并落库：资金腿没有 fundSubtype，解析器目前只会用到上面的
+        // date；这一列与金属单行模型（TxRecord 自己带 fundArrivalDate）保持一致，
+        // 读取侧（loadPreciousMetalTransactionEntryLike）也按同一列回填（2026-10-17）。
+        fundArrivalDate: row.arrivalDate ?? null,
         fundArrivalAmount: null,
         depositAnnualRate: null,
         depositInterest: null,

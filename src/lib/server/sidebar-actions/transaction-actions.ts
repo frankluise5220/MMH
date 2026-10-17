@@ -1280,7 +1280,8 @@ export async function createTransaction(formData: FormData) {
               depositInterestCalcBasis: redeemLike || isDividendCash || isDividendReinvest ? null : depositInterestCalcBasis ?? undefined,
               fundFee: isMetalProduct ? undefined : fundFee ?? undefined,
               fundConfirmDate: isMetalProduct ? undefined : computedConfirmDate ?? undefined,
-              fundArrivalDate: isMetalProduct ? undefined : computedArrivalDate ?? undefined,
+              // 金属赎回的到账日同样落库：资金账户侧明细用它当「生效日」（2026-10-17）。
+              fundArrivalDate: computedArrivalDate ?? undefined,
               fundArrivalAmount: entryArrivalAmount ?? undefined,
               note: note || undefined,
               ...{ householdId },
@@ -2146,7 +2147,8 @@ export async function editInvestment(formData: FormData) {
         fundConfirmDate: isMetalProduct
           ? null
           : fundConfirmDate ?? (fundProductType === "deposit" && !redeemLike ? txRecord.fundConfirmDate : null),
-        fundArrivalDate: isMetalProduct ? null : fundArrivalDate ?? null,
+        // 金属赎回同样保留到账日：资金账户侧明细用它当「生效日」（2026-10-17）。
+        fundArrivalDate: fundArrivalDate ?? null,
         fundArrivalAmount: effectiveFundArrivalAmount ?? null,
         note: memo || null,
       };

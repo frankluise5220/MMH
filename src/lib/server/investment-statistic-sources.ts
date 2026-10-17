@@ -115,7 +115,11 @@ export async function loadFundStatisticSourceEntries(
       (row.cashEntryId ? cashEntryById.get(row.cashEntryId) : null) ??
       (primaryFlow ? cashEntryById.get(primaryFlow.txRecordId) : null)
     ) ?? null;
-    const mainDate = primaryCashEntry?.date ?? primaryFlow?.flowDate ?? row.applyDate;
+    // 报表按「资金到账日」归期（2026-10-17）：赎回 / 转换转出 / 现金分红用业务行
+    // 的到账日；部分历史行的现金腿 date 记的还是申请日。
+    const mainDate = isCashInAction(row.fundSubtype) && row.arrivalDate
+      ? row.arrivalDate
+      : primaryCashEntry?.date ?? primaryFlow?.flowDate ?? row.applyDate;
     const mainEntryId = primaryCashEntry?.id ?? row.cashEntryId ?? primaryFlow?.txRecordId ?? row.id;
     const mainTags = primaryCashEntry?.EntryTag ?? [];
     const mainTagMatches = tagIds.length === 0 || mainTags.some((tag) => tagIds.includes(tag.tagId));
@@ -278,7 +282,10 @@ export async function loadWealthStatisticSourceEntries(
     const entryId = row.cashEntryId ?? row.id;
     if (excluded.has(row.id) || excluded.has(entryId)) return [];
     const cashEntry = row.cashEntryId ? cashEntryById.get(row.cashEntryId) ?? null : null;
-    const statisticDate = cashEntry?.date ?? row.tradeDate;
+    // 同上：理财赎回的到账日优先于现金腿 date。
+    const statisticDate = isCashInAction(row.action) && row.arrivalDate
+      ? row.arrivalDate
+      : cashEntry?.date ?? row.tradeDate;
     const statisticMs = statisticDate.getTime();
     if (statisticMs < startMs || statisticMs >= endMs) return [];
     if (!isCashInAction(row.action) && row.realizedProfit == null && row.interest == null && row.fee == null) return [];

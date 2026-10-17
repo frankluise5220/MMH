@@ -2911,6 +2911,18 @@ const MIGRATIONS = [
       }
     },
   },
+  {
+    // 金属交易到账日（2026-10-17）：赎回的钱回到资金账户的日期，与基金/理财/债券/
+    // 存款同口径；资金账户侧明细用它当「生效日」。可空，存量行无需回填：写入侧此前
+    // 不落该字段（TxRecord.fundArrivalDate 被显式丢弃），读取时回退到 date。
+    version: "20261017_add_metal_arrival_date",
+    description: "Add precious_metal_transactions.arrivalDate: cash arrival date on the money side",
+    apply(db) {
+      if (tableExists(db, "precious_metal_transactions")) {
+        addColumnIfMissing(db, "precious_metal_transactions", "arrivalDate", "DATETIME");
+      }
+    },
+  },
 ];
 
 // 到期日「周年 − 1 天」→ 周年；返回 null 表示不是旧口径。
