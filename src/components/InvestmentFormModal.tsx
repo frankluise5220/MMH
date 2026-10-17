@@ -1804,7 +1804,8 @@ export function InvestmentFormModal({
     refundRaw?: string;
     recalculateFeeFromRate?: boolean;
   }) {
-    if (productType !== "fund" && productType !== "money") return false;
+    // 金属买入与基金同构：金额 = 克数 × 单价 + 手续费，所以手续费/份额的联动规则一致。
+    if (productType !== "fund" && productType !== "money" && productType !== "metal") return false;
     if (subtype !== "buy") return false;
 
     const nextAmountRaw = options?.amountRaw ?? amount;
@@ -1849,7 +1850,8 @@ export function InvestmentFormModal({
     recalculateFeeFromRate?: boolean;
   }) {
     const redeemTerms = redeemTermsRef.current;
-    if (redeemTerms.productType !== "fund" && redeemTerms.productType !== "money") return false;
+    // 金属赎回与基金同构：赎回金额 = 克数 × 单价，手续费 = 赎回金额 × 费率。
+    if (redeemTerms.productType !== "fund" && redeemTerms.productType !== "money" && redeemTerms.productType !== "metal") return false;
     if (!isRedeemLike(redeemTerms.subtype)) return false;
 
     const unitsN = Math.max(0, p(options?.unitsRaw ?? redeemTerms.units));
@@ -1891,7 +1893,7 @@ export function InvestmentFormModal({
   // Do not let fee state changes retrigger this effect, or zero-fee redeems can
   // bounce between the buy-flow empty fee placeholder and the redeem-flow value.
   useEffect(() => {
-    if (!open || productType === "metal" || !isRedeemLike(subtype)) return;
+    if (!open || !isRedeemLike(subtype)) return;
     if (mode === "edit" && !editAutoNavEnabledRef.current && !navEditedRef.current) return;
     if (!nav.trim()) return;
     recalculateRedeemAmountsFromTerms({ recalculateFeeFromRate: shouldRecalculateFeeFromRateForCurrentInputs() });
