@@ -13,11 +13,11 @@ import { isReportableExecution, type AutoExecuteSummary } from "@/lib/notificati
  * "最近一次执行是 3 天前"，于是又变成"提示成功但无变化"。
  *
  * 所以这里把执行器返回的原始计数（executedCount / skippedPaused / skippedGap /
- * rounds）原样留档，并**明确区分 0 条**与"没跑过"。
+ * rounds）原样留档，供面板说明"这次到底写了什么"。
  *
- * 唯一的例外是 `isReportableExecution` 判负的那种：强制刷新 + 0 条 = 用户按了一下
- * F5、计划任务一个都没轮到。它报不出任何东西，也不该出现在未读/已读里，所以连档
- * 都不留（读取端同时过滤，旧版本留下的也会被滤掉）。
+ * 但 0 条的一律不留：`isReportableExecution` 判负 = 这一轮什么都没写，报不出任何东西，
+ * 也不该出现在未读/已读里，所以连档都不写（读取端同时过滤，旧版本留下的也会被滤掉）。
+ * 无论是开机检查、强制刷新还是手动执行，都按这条规则走。
  */
 
 export const NOTIFICATIONS_CHANGED_EVENT = "mmh:notifications:changed";
@@ -28,8 +28,8 @@ const MAX_RECEIPTS = 10;
 /**
  * 谁触发了这次执行。刻意把"开机"和"强制刷新"分开：两者跑的是同一段检查，
  * 但对用户的含义完全不同——开机是应用刚起来、系统主动查一遍；强制刷新只是
- * 用户把页面重新拉起来（F5/Ctrl+F5），属于被动触发。区别的落点有两处：
- * 0 条时整条不报（见 `isReportableExecution`），有落账时标签如实写"强制刷新"。
+ * 用户把页面重新拉起来（F5/Ctrl+F5），属于被动触发。落点在标签上：有落账时
+ * 如实写"开机检查 / 强制刷新 / 手动执行"（0 条时整条都不报，见 `isReportableExecution`）。
  */
 export type ReceiptSource = "startup" | "reload" | "manual";
 
@@ -83,7 +83,7 @@ function writeReceipts(receipts: StoredReceipt[]) {
 
 /**
  * 记录一次执行结果。同一来源、同一分钟视为同一条（DailyTaskCheck 失败会重试 3 次，
- * 不能因此留 3 条收据）。没什么可报的那种（强制刷新 + 0 条）直接不写，
+ * 不能因此留 3 条收据）。没什么可报的那种（0 条，不分来源）直接不写，
  * 见 `isReportableExecution`。
  */
 export function publishExecutionReceipt(input: { source: ReceiptSource; summary: AutoExecuteSummary }) {

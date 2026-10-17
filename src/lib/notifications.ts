@@ -255,15 +255,16 @@ export function receiptLevelFromFeed(receipt: ExecutionReceipt): ReceiptLevel {
 /**
  * 这次执行值不值得当成一条"执行结果"报出来。
  *
- * 强制刷新（F5 / Ctrl+F5）+ 0 条：用户只是把页面重新拉起来，计划任务一个都没轮到。
- * 既没有可看的数字，也没有要处理的异常，留在通知里只会把真正的提醒挤下去 ——
- * 所以这种情况不落档、不入列，"已读"存档里也不留（旧版本写下的那些由读取端滤掉）。
+ * 只有**真的写下了记录**才算一次结果（用户决定 2026-10-17，推翻此前"开机检查 0 条必须留"）。
+ * 无论是开机检查、强制刷新（F5 / Ctrl+F5）还是手动执行，0 条都报不出任何东西 ——
+ * 没有可看的数字，剩下的只是"跳过 N 条"这种本来就不需要用户处理的流水账，留在通知里
+ * 只会把真正的提醒挤下去。所以 0 条一律不落档、不入列，"已读"存档里也不留
+ * （旧版本写下的那些由读取端滤掉）。
  *
- * 开机检查 / 手动执行的 0 条**相反**必须留：那是"系统查完了、确实没东西可写"，
- * 和"用户刷新了一下页面"不是一回事。
+ * 不担心丢预警：只因净值缺口 / 暂停申购没执行的计划，会由到期提醒（`overdueHint`）报出来。
  */
 export function isReportableExecution(input: { source: string; executed: number }): boolean {
-  return !(input.source === "reload" && input.executed === 0);
+  return input.executed > 0;
 }
 
 /**
@@ -288,7 +289,7 @@ export const SAME_BATCH_MAX_LEAD_MS = 2 * 60 * 1000;
  * 与服务端流水行数不必相等；时间才是两者的公共事实。
  *
  * 本地那条生成 0 条时判负：那次执行没写任何记录，服务端回执里的批次必然属于别的事情，
- * 两条信息不同，都该留着。
+ * 两条信息不同，都该留着（0 条收据本身已不入列，这里只是防御）。
  */
 export function isSameExecutionBatch(
   local: NotificationItem | null,
@@ -328,8 +329,8 @@ export type NotificationItem =
   | {
       /**
        * 执行回执。三种来源共用一个形状：
-       *  - `run:<browser receipt id>`：本浏览器刚触发的那一次执行（含"生成 0 条"，
-       *    但强制刷新 + 0 条不发通知，见 isReportableExecution）；
+       *  - `run:<browser receipt id>`：本浏览器刚触发的那一次执行（只报写了记录的，
+       *    0 条一律不发通知，见 isReportableExecution）；
        *  - `server-run:<lastRunAt>`：服务端从真实落账算出的最新一批。
        *
        * 两者说同一批落账时**只报前者**（见 isSameExecutionBatch）：后者是同一次执行的
@@ -339,7 +340,7 @@ export type NotificationItem =
       type: "execution";
       at: number;
       date: string;
-      /** 真实落账条数。0 = 跑了但没写记录，必须与"没跑过"区分。 */
+      /** 真实落账条数。只有 > 0 才会成为一条通知（见 isReportableExecution）。 */
       executed: number;
       skippedTotal: number;
       /**

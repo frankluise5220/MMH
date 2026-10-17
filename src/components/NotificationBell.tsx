@@ -123,9 +123,8 @@ function formatTime(epochMs: number) {
 /**
  * 执行类通知的摘要文案。
  *
- * 只有两种：有记录就报条数；0 条就是"跑过但没写记录"，带上跳过的条数说明原因。
- * 强制刷新 + 0 条走不到这里——那根本不算一次执行结果，`isReportableExecution`
- * 在发布端和读取端都拦掉了。
+ * 正常只有第一种：报生成条数。0 条根本不算一次执行结果，`isReportableExecution`
+ * 在发布端和读取端都拦掉了；第二种文案留作兜底。
  */
 function executionSummaryText(
   t: (key: string, params?: Record<string, string | number>) => string,
@@ -149,7 +148,7 @@ function reminderNotification(item: ReminderItem): NotificationItem {
   };
 }
 
-/** 本浏览器触发的执行 → 通知（含"生成 0 条"，那是**跑过**而不是没跑）。 */
+/** 本浏览器触发的执行 → 通知（收据已滤掉 0 条，走到这里的都写了记录）。 */
 function receiptNotification(receipt: StoredReceipt): NotificationItem {
   return {
     id: `run:${receipt.id}`,
@@ -595,12 +594,11 @@ function OverdueHint({ count }: { count: number }) {
 }
 
 /**
- * 本次执行：这一次浏览器触发的执行结果，保留 0 条的情形（"跑过但没写记录"必须与
- * "没跑过"分开看）。
+ * 本次执行：这一次浏览器触发的执行结果。
  *
- * 强制刷新 + 0 条的收据根本不会出现在列表里（见 `isReportableExecution`），
- * 所以这里只剩"开机检查/手动执行"和"确实生成了记录"两种。来源标签仍分三种：
- * 刷新后**有**落账时，那次执行是刷新触发的，值得如实标出来。
+ * 0 条的收据根本不会出现在列表里（见 `isReportableExecution`），所以走到这里的
+ * 一定是"确实生成了记录"的那种。来源标签仍分三种：刷新后**有**落账时，那次执行
+ * 是刷新触发的，值得如实标出来。
  *
  * 可展开：`breakdown` 是服务端那份同批落账的明细（本地收据只存计数，拿不出明细）。
  * 同一批只报一条时，明细必须跟着留下来的这条走，否则"生成 22 条记录"就变成一句
@@ -642,7 +640,7 @@ function ThisRunBlock({
       </div>
       <div className="flex items-start gap-2 px-3 pb-2.5">
         {nothing ? (
-          // 系统主动跑完却一条没写：值得看一眼（可能全是暂停申购/净值缺口）。
+          // 兜底：`isReportableExecution` 已把 0 条挡在列表外，正常渲染不会走到这里。
           <AlertTriangle size={13} className="mt-0.5 shrink-0 text-amber-500" />
         ) : (
           <CheckCircle2 size={13} className="mt-0.5 shrink-0 text-emerald-500" />

@@ -105,10 +105,9 @@ export function DailyTaskCheck() {
         });
         const planData = await planRes.json().catch(() => null);
         assertOkResponse(planRes, planData, "scheduled task auto-execution");
-        // 留回执，包括 executedCount = 0 的情况：那正是"任务到底执行了没有"最容易变成
-        // 悬案的地方，必须让用户看到"这次执行生成 0 条"。来源一并记下，刷新触发的 0 条
-        // 会在发布端被判为"没什么可报"直接丢掉（见 isReportableExecution）——它是
-        // "页面被重新拉起来"，不是"系统执行了任务"。
+        // 留回执：写了几条照实记下，来源一并带上（开机检查 / 强制刷新 / 手动执行）。
+        // 0 条会在发布端被判为"没结果"直接丢掉（见 isReportableExecution）——没有数字
+        // 可看，就不该占通知位；只因净值缺口 / 暂停申购没执行的计划由到期提醒报出来。
         const executionSummary = summarizeAutoExecute(planData);
         if (executionSummary) publishExecutionReceipt({ source: getLoadSource(), summary: executionSummary });
 

@@ -46,9 +46,9 @@ function isEntry(value: unknown): value is ReadNotificationEntry {
 }
 
 /**
- * 存档里不该有的条目：旧版本会把"强制刷新未执行计划任务"也放进通知，用户点过已读
- * 就成了这里的快照。那一条从一开始就不该成为通知（见 `isReportableExecution`），
- * 回看时同样不显示；下次写入顺手把它从存储里清掉。
+ * 存档里不该有的条目：旧版本会把"0 条的执行结果"（强制刷新、开机检查）也放进通知，
+ * 用户点过已读就成了这里的快照。那种条目从一开始就不该成为通知（见
+ * `isReportableExecution`），回看时同样不显示；下次写入顺手把它从存储里清掉。
  */
 function isReportableEntry(entry: ReadNotificationEntry) {
   return entry.item.type !== "execution" || isReportableExecution(entry.item);
