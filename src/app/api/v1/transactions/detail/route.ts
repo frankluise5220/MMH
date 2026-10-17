@@ -1300,7 +1300,12 @@ function linkedFundDetailFields(record: any, fundRow: any) {
     const refundDate = record.date ? formatDateLocal(record.date) : null;
     const refundAmount = Math.abs(toNumber(record.amount));
     const cashAccount = fundRow.CashAccount ?? null;
-    const cashAccountId = fundRow.cashAccountId ?? record.accountId ?? null;
+    const fundAccount = fundRow.Account ?? null;
+    // 存储口径是「基金账户 → 现金账户」，展示口径与赎回腿完全一致：
+    // 账户列=基金账户，对方账户=现金账户。历史单腿行（accountId=现金账户、
+    // toAccountId=null）用 fund 行上的 cashAccountId 兜底，两个方向都对得上。
+    const cashAccountId = fundRow.cashAccountId ?? record.toAccountId ?? record.accountId ?? null;
+    const fundAccountId = fundRow.fundAccountId ?? record.accountId ?? null;
     return {
       date: refundDate,
       amount: refundAmount,
@@ -1308,13 +1313,12 @@ function linkedFundDetailFields(record: any, fundRow: any) {
       businessTransactionId: fundRow.id,
       fundTransactionId: fundRow.id,
       cashAccountId,
-      accountId: record.accountId ?? cashAccountId,
-      accountName:
-        accountDisplayName(record.account, record.accountName) || (cashAccount?.name ?? ""),
-      accountKind: record.accountKind ?? cashAccount?.kind ?? null,
-      toAccountId: record.toAccountId ?? null,
-      toAccountName: record.toAccountName ?? null,
-      toAccountKind: record.toAccountKind ?? null,
+      accountId: fundAccountId,
+      accountName: fundAccount?.name ?? record.accountName ?? "",
+      accountKind: fundAccount?.kind ?? record.accountKind ?? null,
+      toAccountId: cashAccountId,
+      toAccountName: cashAccount?.name ?? record.toAccountName ?? "",
+      toAccountKind: cashAccount?.kind ?? record.toAccountKind ?? null,
       fundSubtype: record.fundSubtype ?? null,
       fundCode: fundRow.fundCode ?? null,
       fundName: fundRow.fundName ?? null,

@@ -224,15 +224,20 @@ export async function createFundTransactionWithCashFlows(
     const category = flow.categoryId || !categoryName
       ? null
       : await resolveCategorySnapshot(client, params.householdId, { categoryName, type: "investment" });
+    // 每条资金腿都记「出处 + 去处」：现金流出（买入）记 accountId=现金账户 →
+    // toAccountId=基金账户；现金流入（赎回/分红/退款）反过来记 accountId=基金账户 →
+    // toAccountId=现金账户。与库里既有的赎回腿（+20000 / 基金 → 现金）同构，
+    // 资金侧余额靠 toAccountId 取绝对值计入，不依赖符号。
+    const cashOut = toNumber(flow.amount) < 0;
     const entry = await client.txRecord.create({
       data: {
         householdId: params.householdId,
         type: TransactionType.investment,
         date: flowDate,
-        accountId: flow.accountId,
-        accountName: flow.accountName ?? "",
-        toAccountId: null,
-        toAccountName: null,
+        accountId: cashOut ? flow.accountId : params.fundAccountId,
+        accountName: cashOut ? (flow.accountName ?? "") : "",
+        toAccountId: cashOut ? params.fundAccountId : flow.accountId,
+        toAccountName: cashOut ? "" : (flow.accountName ?? ""),
         amount: flow.amount,
         currency: flow.currency ?? "CNY",
         source: flowSource ?? "manual",
@@ -415,6 +420,13 @@ export async function upsertFundTransactionRefundCashFlow(
         where: { id: existingFlow.txRecordId, householdId: params.householdId },
       })
     : null);
+  // 退款是「钱从基金账户回到现金账户」，两个账户都必须落到流水上：
+  // accountId=基金账户（出资侧），toAccountId=现金账户（收款侧）。
+  const fundRow = await client.fundTransaction.findFirst({
+    where: { id: params.fundTransactionId, householdId: params.householdId },
+    select: { fundAccountId: true, Account: { select: { name: true } } },
+  });
+  const fundAccountId = fundRow?.fundAccountId ?? null;
 
   // 退款腿的分类固定是「买入退回」：它是一笔独立的资金流入，不能被买入口径覆盖。
   const refundSource = params.source ?? TRANSACTION_SOURCE_REGULAR_INVEST_REFUND;
@@ -433,10 +445,10 @@ export async function upsertFundTransactionRefundCashFlow(
   const cashEntryData = {
     date: params.refundDate,
     type: TransactionType.investment,
-    accountId: params.cashAccountId,
-    accountName: params.cashAccountName ?? "",
-    toAccountId: null,
-    toAccountName: null,
+    accountId: fundAccountId ?? params.cashAccountId,
+    accountName: fundAccountId ? (fundRow?.Account?.name ?? "") : (params.cashAccountName ?? ""),
+    toAccountId: fundAccountId ? params.cashAccountId : null,
+    toAccountName: fundAccountId ? (params.cashAccountName ?? "") : null,
     amount: refundAmount,
     currency: params.currency ?? "CNY",
     source: refundSource,

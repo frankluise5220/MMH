@@ -60,8 +60,10 @@ export function isRegularInvestRefundEntry(entry: { source?: string | null; fund
 /**
  * 买入退款的「资金腿」：钱从基金账户退回现金账户的那条流水。
  *
- * 独立基金交易里退款腿自己是一条 TxRecord（`accountId` = 收款现金账户，
- * `toAccountId` = null），`fundSubtype` 有意留空、业务事实挂在 fund_transactions。
+ * 独立基金交易里退款腿自己是一条 TxRecord（`accountId` = 基金账户，
+ * `toAccountId` = 收款现金账户；历史上的单腿写法 `accountId` = 现金账户、
+ * `toAccountId` = null 仍按同一口径读取），`fundSubtype` 有意留空、业务事实挂在
+ * fund_transactions。
  * 部分退款时主业务行仍是 `buy`（只有整笔失败才落 `buy_failed`），所以不能只看
  * {@link isRegularInvestRefundEntry} 的 `buy_failed`：`source` 才是权威标记。
  *

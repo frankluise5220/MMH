@@ -336,6 +336,60 @@ SQL
   fi
 }
 
+# 基金资金腿「出处 + 去处」统一（2026-10-17 用户裁定）。
+# 规则：买入 = 现金账户 → 基金账户（amount < 0）；退款 = 基金账户 → 现金账户（amount > 0）；
+# 赎回/分红同退款方向。少数历史数据写成单腿（toAccountId 为空），这里一次性补齐，
+# 与库里 66/68 条退款腿及全部赎回腿的既有形态一致。
+# 幂等：补完后条件不再命中。余额不受影响（资金账户侧命中 toAccountId 时取 ABS(amount)，
+# 与原 accountId 侧取值相同；基金账户余额走 Account.balance 缓存，不按流水折叠）。
+# run_compat_migrations 跑在 prisma db push 之前，全新库没有这些表，必须先做存在性检查。
+migrate_fund_cash_leg_accounts() {
+  local tx_table link_table fund_table
+  tx_table="$(psql_mmh -tAc "SELECT to_regclass('public.transactions') IS NOT NULL;" 2>/dev/null | tr -d '[:space:]')"
+  link_table="$(psql_mmh -tAc "SELECT to_regclass('public.entry_business_links') IS NOT NULL;" 2>/dev/null | tr -d '[:space:]')"
+  fund_table="$(psql_mmh -tAc "SELECT to_regclass('public.fund_transactions') IS NOT NULL;" 2>/dev/null | tr -d '[:space:]')"
+  if [ "$tx_table" != "t" ] || [ "$link_table" != "t" ] || [ "$fund_table" != "t" ]; then
+    return 0
+  fi
+  mmh_log "unifying fund cash-leg account pairs..."
+  if ! psql_mmh -v ON_ERROR_STOP=1 <<'SQL'; then
+-- 退款腿：资金账户 → 基金账户 改为 基金账户 → 资金账户（两侧都落库）
+UPDATE "transactions" t
+   SET "accountId"     = ft."fundAccountId",
+       "accountName"   = COALESCE(NULLIF(fa."name", ''), t."accountName", ''),
+       "toAccountId"   = ft."cashAccountId",
+       "toAccountName" = COALESCE(NULLIF(ca."name", ''), t."accountName", '')
+  FROM "entry_business_links" l
+  JOIN "fund_transactions" ft ON ft."id" = l."fundTransactionId"
+  LEFT JOIN "Account" fa ON fa."id" = ft."fundAccountId"
+  LEFT JOIN "Account" ca ON ca."id" = ft."cashAccountId"
+ WHERE l."cashEntryId" = t."id"
+   AND l."deletedAt" IS NULL
+   AND t."deletedAt" IS NULL
+   AND t."source" = 'regular_invest_refund'
+   AND t."toAccountId" IS NULL
+   AND ft."fundAccountId" IS NOT NULL
+   AND ft."cashAccountId" IS NOT NULL;
+
+-- 买入腿：付款方已是现金账户，补齐收款方基金账户
+UPDATE "transactions" t
+   SET "toAccountId"   = ft."fundAccountId",
+       "toAccountName" = COALESCE(NULLIF(fa."name", ''), '')
+  FROM "entry_business_links" l
+  JOIN "fund_transactions" ft ON ft."id" = l."fundTransactionId"
+  LEFT JOIN "Account" fa ON fa."id" = ft."fundAccountId"
+ WHERE l."cashEntryId" = t."id"
+   AND l."deletedAt" IS NULL
+   AND t."deletedAt" IS NULL
+   AND t."type" = 'investment'
+   AND t."toAccountId" IS NULL
+   AND t."accountId" IS DISTINCT FROM ft."fundAccountId"
+   AND ft."fundAccountId" IS NOT NULL;
+SQL
+    mmh_log "WARNING: fund cash-leg unification failed; continuing so MMH stays available."
+  fi
+}
+
 # 2026-10-06 口径定版：贷款 = loan，往来款 = settlement，负债 = liability；
 # `debt` 这个名字在库中释放。Docker 通道走 prisma db push（不跑 migration 文件），
 # 所以必须在 push 之前把旧名字就地改完，否则 push 会按「删旧列 + 建新列」处理，
@@ -660,6 +714,7 @@ SQL
 
   migrate_debt_agreement_rekey
   migrate_deposit_maturity_anniversary
+  migrate_fund_cash_leg_accounts
 }
 
 until pg_isready -h "$PGHOST" -U "$PGUSER" -d "$PGDATABASE"; do

@@ -2099,6 +2099,67 @@ const Database = require("better-sqlite3");
 
 const MIGRATIONS = [
   {
+    // 基金资金腿「出处 + 去处」统一（2026-10-17 用户裁定）：买入记 现金账户 → 基金账户，
+    // 退款记 基金账户 → 现金账户，两侧账户都落库；历史单腿数据在此补齐。
+    // 幂等：补齐后 toAccountId 非空，条件不再命中。
+    version: "20261017_unify_fund_cash_leg_accounts",
+    description: "Fill both sides of fund cash-leg TxRecords (fund account and cash account)",
+    apply(db) {
+      if (
+        !tableExists(db, "transactions") ||
+        !tableExists(db, "entry_business_links") ||
+        !tableExists(db, "fund_transactions")
+      ) {
+        return;
+      }
+      // 用参数化查询：SQL 里不带反引号与反斜杠，避免在模板字符串里被二次转义。
+      const refunds = db
+        .prepare(
+          'SELECT t.id AS txId, ft."fundAccountId" AS fundId, ft."cashAccountId" AS cashId,' +
+            ' t."accountName" AS snapName,' +
+            ' (SELECT a.name FROM "Account" a WHERE a.id = ft."fundAccountId") AS fundName,' +
+            ' (SELECT a.name FROM "Account" a WHERE a.id = ft."cashAccountId") AS cashName' +
+            ' FROM "transactions" t' +
+            ' JOIN "entry_business_links" l ON l."cashEntryId" = t.id AND l."deletedAt" IS NULL' +
+            ' JOIN "fund_transactions" ft ON ft.id = l."fundTransactionId"' +
+            ' WHERE t."deletedAt" IS NULL AND t."source" = ? AND t."toAccountId" IS NULL' +
+            ' AND ft."fundAccountId" IS NOT NULL AND ft."cashAccountId" IS NOT NULL',
+        )
+        .all("regular_invest_refund");
+      const updateRefund = db.prepare(
+        'UPDATE "transactions" SET "accountId" = ?, "accountName" = ?, "toAccountId" = ?, "toAccountName" = ? WHERE id = ?',
+      );
+      for (const row of refunds) {
+        updateRefund.run(
+          row.fundId,
+          row.fundName || row.snapName || "",
+          row.cashId,
+          row.cashName || row.snapName || "",
+          row.txId,
+        );
+      }
+
+      const buys = db
+        .prepare(
+          'SELECT t.id AS txId, ft."fundAccountId" AS fundId,' +
+            ' (SELECT a.name FROM "Account" a WHERE a.id = ft."fundAccountId") AS fundName' +
+            ' FROM "transactions" t' +
+            ' JOIN "entry_business_links" l ON l."cashEntryId" = t.id AND l."deletedAt" IS NULL' +
+            ' JOIN "fund_transactions" ft ON ft.id = l."fundTransactionId"' +
+            ' WHERE t."deletedAt" IS NULL AND t."type" = ? AND t."toAccountId" IS NULL' +
+            ' AND ft."fundAccountId" IS NOT NULL' +
+            ' AND (t."accountId" IS NULL OR t."accountId" <> ft."fundAccountId")',
+        )
+        .all("investment");
+      const updateBuy = db.prepare(
+        'UPDATE "transactions" SET "toAccountId" = ?, "toAccountName" = ? WHERE id = ?',
+      );
+      for (const row of buys) {
+        updateBuy.run(row.fundId, row.fundName || "", row.txId);
+      }
+    },
+  },
+  {
     // MMH 会员邮箱：绑定当时写入，之后不随本地联系邮箱改动。
     // 绑定关系的权威标识只有 registrationPrincipalId，这里只是展示与
     // 重新匹配用的稳定来源。可空：存量账号由自愈逻辑补齐。
