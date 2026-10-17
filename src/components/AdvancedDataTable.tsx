@@ -1262,12 +1262,16 @@ export function AdvancedDataTable<T>({
     if (hasManualWidths) {
       const availableColumnWidth = Math.max(0, availableWidth - controlWidth);
       if (basePreferredColumnsTotal <= availableColumnWidth) {
-        // 总和装得下就严格按用户设定渲染：拖拽落盘时已把整表列宽一起冻结，
-        // 这里若再等比放大、或把剩余宽度塞给某一列，松手瞬间列宽就又变了（「松开后不对」）。
+        // 手动列宽只冻结列之间的相对比例，整表仍要按容器宽度铺满：总和装得下时等比放大到
+        // availableWidth，否则只要落盘过一次列宽（明细表还会把旧 key 的列宽迁移到每个账户），
+        // 表格就永久比卡片窄一截。松手落盘的总和本来就贴着可用列宽，放大系数≈1，不会回弹。
+        const growScale = basePreferredColumnsTotal > 0 ? availableColumnWidth / basePreferredColumnsTotal : 1;
         return {
-          tableWidth: controlWidth + basePreferredColumnsTotal,
+          tableWidth: availableWidth,
           controlWidth,
-          colWidths: Object.fromEntries(baseWidths.map((column) => [column.key, column.preferredWidth])),
+          colWidths: Object.fromEntries(
+            baseWidths.map((column) => [column.key, column.preferredWidth * growScale]),
+          ),
         };
       }
       // 装不下（窗口变窄或手动调宽）就等比压缩到容器内，且不低于最小列宽；
