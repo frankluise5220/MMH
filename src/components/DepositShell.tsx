@@ -4,7 +4,12 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { ArrowDownLeft, ArrowUpRight, Coins, Landmark, Library, Repeat, SlidersHorizontal, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 
-import { AdvancedDataTable, type AdvancedDataTableColumn, type AdvancedDataTableSummaryRow } from "./AdvancedDataTable";
+import {
+  ADVANCED_TABLE_HEAD_SURFACE_CLASS,
+  AdvancedDataTable,
+  type AdvancedDataTableColumn,
+  type AdvancedDataTableSummaryRow,
+} from "./AdvancedDataTable";
 import { BatchReplacePopoverButton, type BatchReplaceFieldConfig } from "./BatchReplacePopoverButton";
 import { BusinessLinkActionButton } from "./BusinessLinkActionButton";
 import { DepositPayInterestModal, type PayInterestLotInfo } from "./DepositPayInterestModal";
@@ -34,6 +39,8 @@ type DepositEntry = {
    */
   arrivalDate?: string | null;
   cashAccountLabel: string;
+  /** 账户单元格的 hover：只含标签里没显示的字段（所有人 / 账户类型）。 */
+  cashAccountTitle?: string | null;
   note: string;
   amount: number;
   balance?: number | null;
@@ -475,7 +482,7 @@ export function DepositShell({
     { key: "action", label: t("depositShell.colAction"), width: 90, minWidth: 70, filterText: (entry) => entry.typeLabel, sortValue: (entry) => entry.typeLabel, render: (entry) => <span className="text-slate-700">{entry.typeLabel}</span> },
     { key: "product", label: t("depositShell.colProduct"), width: 190, minWidth: 120, filterText: (entry) => entry.fundName, filterSearchText: (entry) => entry.fundName, sortValue: (entry) => entry.fundName, render: (entry) => <span className="truncate text-slate-700" title={entry.fundName}>{entry.fundName || "-"}</span> },
     { key: "arrivalDate", label: t("depositShell.colArrivalDate"), width: 110, minWidth: 84, hideable: true, filterKind: "dateRange", filterText: (entry) => entry.arrivalDate ?? "", sortValue: (entry) => entry.arrivalDate ?? "", render: (entry) => <span className="tabular-nums text-slate-600">{entry.arrivalDate || "-"}</span> },
-    { key: "cashAccount", label: t("depositShell.colCashAccount"), width: 150, minWidth: 100, hideable: true, filterText: (entry) => entry.cashAccountLabel, filterSearchText: (entry) => entry.cashAccountLabel, sortValue: (entry) => entry.cashAccountLabel, render: (entry) => <span className="truncate text-slate-600" title={entry.cashAccountLabel}>{entry.cashAccountLabel || "-"}</span> },
+    { key: "cashAccount", label: t("depositShell.colCashAccount"), width: 150, minWidth: 100, hideable: true, filterText: (entry) => entry.cashAccountLabel, filterSearchText: (entry) => entry.cashAccountLabel, sortValue: (entry) => entry.cashAccountLabel, render: (entry) => <span className="truncate text-slate-600" title={entry.cashAccountTitle || undefined}>{entry.cashAccountLabel || "-"}</span> },
     { key: "note", label: t("detail.column.remark"), width: 240, minWidth: 120, hideable: true, filterText: (entry) => entry.note, filterSearchText: (entry) => entry.note, sortValue: (entry) => entry.note, render: (entry) => <span className="block truncate text-slate-600" title={entry.note}>{entry.note || "-"}</span> },
     {
       key: "amount",
@@ -522,8 +529,8 @@ export function DepositShell({
         separatorLabel={t("depositShell.resizeLabel")}
         separatorTitle={t("depositShell.resizeTitle")}
       >
-        <section className="panel-surface flex h-full min-h-0 flex-col overflow-hidden">
-          <div className="panel-header">
+        <section className="paper-card flex h-full min-h-0 flex-col overflow-hidden">
+          <div className={`paper-card-header ${ADVANCED_TABLE_HEAD_SURFACE_CLASS}`}>
             <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
               <Landmark className="h-4 w-4 text-cyan-600" />
               <div className="flex items-center gap-0.5">
@@ -576,6 +583,7 @@ export function DepositShell({
               toolbarMode="none"
               defaultSort={null}
               summaryRow={lotsSummaryRow}
+              summaryRowPlacement="footer"
               onRowClick={(lot) => setSelectedLotId((current) => current === lot.id ? null : lot.id)}
               rowClassName={(lot) => `cursor-pointer ${selectedLotId === lot.id ? "bg-blue-50 hover:bg-blue-50" : "hover:bg-slate-50"}`}
               rowActions={lotTab === "held" ? (lot) => (

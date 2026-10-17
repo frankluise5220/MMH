@@ -837,7 +837,7 @@ export function PropertyShell({
         cellTitle: (entry) => accountDisplay(entry.accountId, entry.accountName).title,
         render: (entry) => {
           const display = accountDisplay(entry.accountId, entry.accountName);
-          return <span className="block truncate text-slate-600" title={display.title}>{display.label}</span>;
+          return <span className="block truncate text-slate-600" title={display.title || undefined}>{display.label}</span>;
         },
       },
       {
@@ -925,7 +925,7 @@ export function PropertyShell({
         cellTitle: (entry) => accountDisplay(entry.toAccountId, entry.toAccountName).title,
         render: (entry) => {
           const display = accountDisplay(entry.toAccountId, entry.toAccountName);
-          return <span className="block truncate text-slate-500" title={display.title}>{display.label}</span>;
+          return <span className="block truncate text-slate-500" title={display.title || undefined}>{display.label}</span>;
         },
       },
       {

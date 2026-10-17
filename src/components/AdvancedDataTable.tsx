@@ -1,6 +1,7 @@
 "use client";
 
 import {
+  isValidElement,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -194,6 +195,15 @@ function getDropPositionFromClientY(rowElement: HTMLElement, clientY: number): A
   return clientY < rect.top + rect.height / 2 ? "before" : "after";
 }
 
+/** 取出单元格渲染结果里的纯文本，用来判断 hover 是否只是把同一句话重复一遍。 */
+function plainTextOf(node: ReactNode): string {
+  if (node === null || node === undefined || typeof node === "boolean") return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(plainTextOf).join("");
+  if (isValidElement(node)) return plainTextOf((node.props as { children?: ReactNode }).children);
+  return "";
+}
+
 type ResizeFrameColumn = { key: string; resizeMinWidth: number };
 
 /** 按权重把 target 分给若干列，任何列都不低于 min；分不下时这些列取 min（总量会超出 target）。 */
@@ -340,6 +350,11 @@ export type AdvancedDataTableProps<T> = {
   ) => T[] | null | undefined;
   pagination?: AdvancedDataTablePagination;
   columnVisibilityTriggerId?: string;
+  /**
+   * 自绘「表头设置」菜单（持仓 / 明细等）派发该事件名时，把列宽恢复成列定义里的默认宽度。
+   * 列宽由表格内部 state + localStorage 管理，外部菜单只能通过这个入口重置。
+   */
+  resetWidthsTriggerId?: string;
   summaryRow?: AdvancedDataTableSummaryRow;
   /**
    * 汇总行的位置：
@@ -538,6 +553,7 @@ export function AdvancedDataTable<T>({
   sortRows,
   pagination,
   columnVisibilityTriggerId,
+  resetWidthsTriggerId,
   summaryRow,
   summaryRowPlacement = "sticky",
   resetKey,
@@ -990,7 +1006,8 @@ export function AdvancedDataTable<T>({
       values.add(value);
       counts[value] = (counts[value] ?? 0) + 1;
       const title = column.filterTitle?.(row)?.trim();
-      if (title && !titles[value]) titles[value] = title;
+      // 同一条写死规则：筛选项的 hover 与可见值一样时就不要，免得悬浮重复同一句话。
+      if (title && title !== value && !titles[value]) titles[value] = title;
       const searchParts = [
         column.filterSearchText?.(row) ?? "",
         column.filterTitle?.(row) ?? "",
@@ -1386,12 +1403,20 @@ export function AdvancedDataTable<T>({
     resizeCleanupRef.current = onUp;
   }, [columnWidths, layout.colWidths, layout.controlWidth, layout.tableWidth, storageKey, viewportWidth, visibleColumns]);
 
-  function resetColumnWidths() {
+  const resetColumnWidths = useCallback(() => {
     // 清空即可：没有手动列宽时 layout 会回到「按列定义的默认宽度铺满/压缩」的那套算法。
     setColumnWidths({});
     writeJson(`${storageKey}:widths`, {});
     setResizeSession(null);
-  }
+  }, [storageKey]);
+
+  // 自绘「表头设置」菜单（持仓 / 明细）派发事件时恢复默认列宽。
+  useEffect(() => {
+    if (!resetWidthsTriggerId) return;
+    const onResetWidths = () => resetColumnWidths();
+    window.addEventListener(resetWidthsTriggerId, onResetWidths);
+    return () => window.removeEventListener(resetWidthsTriggerId, onResetWidths);
+  }, [resetColumnWidths, resetWidthsTriggerId]);
 
   function toggleColumn(key: string) {
     const column = tableColumns.find((item) => item.key === key);
@@ -2201,7 +2226,12 @@ export function AdvancedDataTable<T>({
                   ) : null}
                   {visibleColumns.map((column) => {
                     const cellContent = column.render(row, displayIndex);
-                    const titleText = column.cellTitle?.(row) ?? column.filterText?.(row) ?? null;
+                    const rawTitle = column.cellTitle?.(row) ?? column.filterText?.(row) ?? null;
+                    // 写死规则：hover 只有比可见文字多出信息时才挂 title，
+                    // 否则（例如 filterText 顺手兜底成 title）悬浮只是把同一句话再说一遍。
+                    const titleText = rawTitle && rawTitle.trim() !== plainTextOf(cellContent).trim()
+                      ? rawTitle
+                      : null;
                     const wrappedContent = column.truncate ? (
                       <div className="min-w-0 truncate" title={titleText ?? undefined}>
                         {cellContent}

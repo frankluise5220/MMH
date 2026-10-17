@@ -5,6 +5,7 @@ import Link from "next/link";
 import { ArrowDownLeft, ArrowUpRight, Library, Pencil, Plus, Shield, Trash2 } from "lucide-react";
 
 import { formatMoney } from "@/lib/format";
+import { resolveAccountTableLabel, type AccountTableLabelLookup } from "@/lib/account-display";
 import { useI18n } from "@/lib/i18n";
 import {
   getInsuranceAction,
@@ -53,6 +54,8 @@ type InsuranceEntry = {
   typeLabel: string;
   productName: string;
   cashAccountLabel: string;
+  /** 账户单元格的 hover：只含标签里没显示的字段（所有人 / 账户类型）。 */
+  cashAccountTitle?: string | null;
   cashAccountId: string | null;
   note: string;
   fundArrivalDate?: string | null;
@@ -244,6 +247,7 @@ function mergeFamilyMemberOptions(
 function buildInsuranceEntries(
   t: (key: string) => string,
   detailEntries: Array<Record<string, unknown>>,
+  accountTableLabelLookup?: AccountTableLabelLookup | null,
 ): InsuranceEntry[] {
   return detailEntries
     .filter((entry) => entry.source === "insurance")
@@ -273,16 +277,16 @@ function buildInsuranceEntries(
         ? (entry.toAccountId ? String(entry.toAccountId) : null)
         : (entry.accountId ? String(entry.accountId) : null);
 
-      // Cash account display: institution · card name
-      const accountInstitutionName = String(entry.accountInstitutionName ?? "");
-      const toAccountInstitutionName = String(entry.toAccountInstitutionName ?? "");
+      // 现金账户列按「系统设置 - 显示 - 账户显示格式」渲染：标签和 hover 都来自
+      // 服务端预渲染好的映射，查不到才退回原始账户名；不要在这里手拼机构名。
       const rawAccountName = isRedeemEntry
         ? String(entry.toAccountName ?? "")
         : String(entry.accountName ?? "");
-      const rawInstitution = isRedeemEntry ? toAccountInstitutionName : accountInstitutionName;
-      const cashAccountLabel = [rawInstitution, rawAccountName]
-        .filter(Boolean)
-        .join(" · ") || rawAccountName || "-";
+      const { label: cashAccountLabel, title: cashAccountTitle } = resolveAccountTableLabel(
+        cashAccountId,
+        rawAccountName,
+        accountTableLabelLookup,
+      );
 
       return {
         id: String(entry.id ?? ""),
@@ -290,6 +294,7 @@ function buildInsuranceEntries(
         typeLabel,
         productName,
         cashAccountLabel,
+        cashAccountTitle,
         cashAccountId,
         note: String(entry.note ?? ""),
         fundArrivalDate: entry.fundArrivalDate == null ? null : String(entry.fundArrivalDate).slice(0, 10),
@@ -457,6 +462,8 @@ export function InsuranceShell({
   familyMemberOptions = [],
   cashAccounts = [],
   cashAccountSSOptions = [],
+  accountLabelById,
+  accountTitleById,
 }: {
   accountId: string;
   accountLabel: string;
@@ -468,6 +475,9 @@ export function InsuranceShell({
   familyMemberOptions?: SmartSelectOption[];
   cashAccounts?: InsuranceCashAccountOption[];
   cashAccountSSOptions?: SmartSelectOption[];
+  /** 按「账户显示格式」预渲染的现金账户标签 / hover（服务端下发，客户端刷新明细时复用）。 */
+  accountLabelById?: Record<string, string>;
+  accountTitleById?: Record<string, string>;
 }) {
   const [refreshedEntries, setRefreshedEntries] = useState<InsuranceEntry[] | null>(null);
   const [refreshedHoldings, setRefreshedHoldings] = useState<InsuranceHolding[] | null>(null);
@@ -500,6 +510,10 @@ export function InsuranceShell({
   const familyMemberOptionsRef = useRef<SmartSelectOption[]>(familyMemberOptions);
 
   const { t, language } = useI18n();
+  const accountTableLabelLookup = useMemo<AccountTableLabelLookup>(
+    () => ({ labels: accountLabelById, titles: accountTitleById }),
+    [accountLabelById, accountTitleById],
+  );
 
   const currentEntries = refreshedEntries ?? entries;
   const currentHoldings = refreshedHoldings ?? holdings;
@@ -539,7 +553,7 @@ export function InsuranceShell({
         return;
       }
 
-      const nextEntries = buildInsuranceEntries(t, detailData.data.entries);
+      const nextEntries = buildInsuranceEntries(t, detailData.data.entries, accountTableLabelLookup);
       const nextProducts = (productsData.products as InsuranceProductRow[]).filter(
         (product) => product.accountId === accountId,
       );
@@ -587,7 +601,7 @@ export function InsuranceShell({
       setRefreshedEntries(nextEntries);
       setRefreshedHoldings(nextHoldings);
     } catch {}
-  }, [accountId, t, language]);
+  }, [accountId, accountTableLabelLookup, t, language]);
 
   const linkInsuranceCashFlow = useCallback(async (entry: InsuranceEntry) => {
     const id = String(entry.id ?? "").trim();
@@ -1193,7 +1207,7 @@ export function InsuranceShell({
         hideable: true,
         filterText: (entry) => entry.cashAccountLabel,
         render: (entry) => (
-          <span className="block truncate text-slate-600" title={entry.cashAccountLabel}>
+          <span className="block truncate text-slate-600" title={entry.cashAccountTitle || undefined}>
             {entry.cashAccountLabel || "-"}
           </span>
         ),

@@ -380,7 +380,45 @@ export function formatAccountTableTitle(
   fields?: AccountLabelField[] | null,
 ) {
   const visibleLabel = formatAccountTableLabel(account, fallback, fields);
-  return firstTrimmedText([account.tableHoverTitle, account.hoverTitle, account.title, account.fullLabel, visibleLabel]);
+  const title = firstTrimmedText([account.tableHoverTitle, account.hoverTitle, account.title, account.fullLabel, visibleLabel]);
+  // 写死规则：hover 必须比可见标签多出信息；两者一样时返回空串，
+  // 由调用方省略 title 属性，免得悬浮只是把同一句话再说一遍。
+  return title === visibleLabel ? "" : title;
+}
+
+/** 表格账户列用的「按账户 id 预渲染好的标签 / hover」查表。 */
+export type AccountTableLabelLookup = {
+  labels?: Map<string, string> | Record<string, string> | null;
+  titles?: Map<string, string> | Record<string, string> | null;
+};
+
+function lookupAccountTableText(
+  source: Map<string, string> | Record<string, string> | null | undefined,
+  accountId: string | null | undefined,
+) {
+  if (!source || !accountId) return "";
+  if (source instanceof Map) return (source.get(accountId) ?? "").trim();
+  return (source[accountId] ?? "").trim();
+}
+
+/**
+ * 表格账户单元格的唯一解析入口：标签与 hover 都来自同一份按「系统设置 - 显示 -
+ * 账户显示格式」预渲染好的映射；查不到时才回退到原始账户名。
+ *
+ * 不要在表格里再手工拼 `机构 · 名称`：那样会绕过设置（这也是「表格里的账户只显示
+ * 名字、hover 没有所有人/类型」的根因）。
+ */
+export function resolveAccountTableLabel(
+  accountId: string | null | undefined,
+  fallbackName: string | null | undefined,
+  lookup?: AccountTableLabelLookup | null,
+) {
+  const label = lookupAccountTableText(lookup?.labels, accountId) || (fallbackName ?? "").trim();
+  const rawTitle = lookupAccountTableText(lookup?.titles, accountId) || label;
+  // 与 formatAccountTableTitle 同一条规则：hover 不比可见标签多信息时返回空串，
+  // 调用方据此省略 title，避免「悬浮出来还是同一句话」。
+  const title = rawTitle === label ? "" : rawTitle;
+  return { label, title };
 }
 
 export function formatOwnerQualifiedAccountLabel(input: {
@@ -551,8 +589,7 @@ export function buildAccountDisplayOption(
   // Table hover: show only what the configured label does not already show
   // (owner first, then the account kind). Loan/settlement accounts have no
   // AccountGroup owner — their counterparty is already merged into the
-  // rendered account name. When both fields are already visible, fall back to
-  // the full label so a truncated cell still reveals its whole text.
+  // rendered account name.
   const tableLabelFields = labelFields ?? DEFAULT_ACCOUNT_LABEL_FIELDS;
   const tableHoverParts: string[] = [];
   if (!tableLabelFields.includes("owner") && showOwner && groupName) {
@@ -561,9 +598,11 @@ export function buildAccountDisplayOption(
   if (!tableLabelFields.includes("kind") && subLabel) {
     tableHoverParts.push(subLabel);
   }
+  // 写死规则：hover 只补充标签里没有的字段；没有可补的就留空，
+  // 绝不退回 label —— 否则悬浮只是把单元格里已有的那句话重复一遍。
   const tableHoverTitle = tableHoverParts.length > 0
     ? joinAccountSubLabel(tableHoverParts)
-    : (label || selectorLabel);
+    : "";
 
   return {
     id: account.id,

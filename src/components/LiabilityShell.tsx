@@ -1316,7 +1316,7 @@ export function LiabilityShell({
     const columns: AdvancedDataTableColumn<LiabilityEntry>[] = [
       { key: "date", label: t("detail.column.date"), width: 100, minWidth: 80, filterText: (entry) => entry.date, render: (entry) => <span className="tabular-nums text-slate-700">{entry.date}</span> },
       { key: "type", label: t("liabilityShell.colType"), width: 90, minWidth: 70, filterText: (entry) => entry.typeLabel, render: (entry) => <span className="text-slate-700">{entry.typeLabel}</span> },
-      { key: "relatedAccount", label: t("liabilityShell.colCashAccount"), width: 160, minWidth: 100, filterText: (entry) => entry.relatedAccountLabel, render: (entry) => <span className="block truncate text-slate-600" title={entry.relatedAccountTitle || entry.relatedAccountLabel}>{entry.relatedAccountLabel || "-"}</span> },
+      { key: "relatedAccount", label: t("liabilityShell.colCashAccount"), width: 160, minWidth: 100, filterText: (entry) => entry.relatedAccountLabel, render: (entry) => <span className="block truncate text-slate-600" title={entry.relatedAccountTitle || undefined}>{entry.relatedAccountLabel || "-"}</span> },
     ];
     // 抵押物是抵押贷款专属字段：往来款/房贷/消费贷明细不展示该列。
     if (isSelectedCollateralLoan) {
