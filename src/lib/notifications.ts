@@ -142,6 +142,15 @@ export type ReminderItem = {
    * 账户缺失或信用卡（余额口径不适用）时为 false/undefined，即不报警。
    */
   insufficient?: boolean;
+  /**
+   * With the "balance guard" setting on, this **due** plan was withheld by automatic
+   * execution (insufficient balance → nothing was booked). The server only sets it
+   * when the guard is on, the plan is overdue and the funding account is short, so it
+   * is equivalent to "this scheduled task failed"; the panel renders the failure badge
+   * plus the "ignore balance and generate" button (a manual path that never checks the
+   * balance).
+   */
+  blocked?: boolean;
 };
 
 export type ReminderUrgency = "overdue" | "today" | "upcoming";
@@ -258,6 +267,41 @@ export function isReportableExecution(input: { source: string; executed: number 
 }
 
 /**
+ * 同一批落账的时间判定窗口。
+ *
+ * 两个时间戳来自不同的钟：
+ *  - 服务端回执的批次时间 = 这一批记录写入 DB 时的 `createdAt`（事务中间）；
+ *  - 本地收据的时间 = 浏览器**收到响应**的时刻（事务之后，还要等净值回填与持仓重算）。
+ *
+ * 所以同一批落账天然是"服务端略早、本地略晚"，两者相差的就是响应延迟。延迟上限给到
+ * 15 分钟：定投补跑多轮 + 多只基金回源净值时，整段响应可能跑好几分钟。
+ * 反向留 2 分钟容差，容忍 DB 与浏览器的时钟偏差。
+ */
+export const SAME_BATCH_MAX_LAG_MS = 15 * 60 * 1000;
+export const SAME_BATCH_MAX_LEAD_MS = 2 * 60 * 1000;
+
+/**
+ * 「本次执行结果」（本地收据）与「系统执行情况」（服务端回执）是否在说**同一批落账**。
+ *
+ * 是同一批时，两条通知会在面板里连成"生成 42 条记录"×2 —— 只落账了一次，却报了两次。
+ * 判据刻意不看条数：本地计数是执行器返回的原始值（存款按"期"、债券按"期×2"计），
+ * 与服务端流水行数不必相等；时间才是两者的公共事实。
+ *
+ * 本地那条生成 0 条时判负：那次执行没写任何记录，服务端回执里的批次必然属于别的事情，
+ * 两条信息不同，都该留着。
+ */
+export function isSameExecutionBatch(
+  local: NotificationItem | null,
+  server: NotificationItem | null,
+): boolean {
+  if (!local || !server) return false;
+  if (local.type !== "execution" || server.type !== "execution") return false;
+  if (local.executed <= 0) return false;
+  const delta = server.at - local.at;
+  return delta >= -SAME_BATCH_MAX_LAG_MS && delta <= SAME_BATCH_MAX_LEAD_MS;
+}
+
+/**
  * 通知中心里**可被标记已读**的一条通知。
  *
  * 为什么把提醒也做成"有 id 的通知"，而不是维持"派生列表、不记已读"：
@@ -287,6 +331,9 @@ export type NotificationItem =
        *  - `run:<browser receipt id>`：本浏览器刚触发的那一次执行（含"生成 0 条"，
        *    但强制刷新 + 0 条不发通知，见 isReportableExecution）；
        *  - `server-run:<lastRunAt>`：服务端从真实落账算出的最新一批。
+       *
+       * 两者说同一批落账时**只报前者**（见 isSameExecutionBatch）：后者是同一次执行的
+       * 第二个说法，并列会变成两条"生成 42 条记录"。
        */
       id: string;
       type: "execution";

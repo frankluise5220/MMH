@@ -11,11 +11,12 @@ import { getMaintainedAccountBalances } from "@/lib/server/account-balance";
 import { addDaysUtc, formatDateUtc, startOfDayUtc, toNumber } from "@/lib/date-utils";
 import {
   decodeScheduledTaskMemo,
-  getLoanScheduledPlanRole,
   normalizeScheduledTaskType,
   scheduledTaskTypeLabel,
   type ScheduledTaskPayload,
 } from "@/lib/scheduled-task";
+import { scheduledTaskFundingAccountId } from "@/lib/scheduled-task-balance";
+import { resolveScheduledTaskBalanceBlocks } from "@/lib/server/scheduled-task-balance-guard";
 import {
   isManualConfirmReminderKind,
   isOutflowReminderKind,
@@ -126,9 +127,10 @@ type PlanRow = {
  */
 function fundingAccountIdOf(plan: PlanRow, task: ScheduledTaskPayload, kind: ReminderKind): string | null {
   if (!isOutflowReminderKind(kind)) return null;
-  if (kind === "loan_repayment" && getLoanScheduledPlanRole(task) === "bill") return null;
-  if (kind === "expense") return plan.accountId ?? null;
-  return plan.cashAccountId ?? null;
+  // Which account is debited (own account / cash account / none for the `bill` role) is
+  // decided by the shared rule: the balance guard blocks with the very same function, so
+  // the two can never disagree about where the money comes from.
+  return scheduledTaskFundingAccountId(plan, task);
 }
 
 /**
@@ -378,6 +380,23 @@ export async function loadNotificationFeed(params: {
       ? await getMaintainedAccountBalances(fundingAccounts, { householdId: params.householdId })
       : new Map<string, number>();
 
+  // Balance guard: **due** plans withheld by automatic execution (overdue + unbooked =
+  // execution failed). With the guard off the map is always empty, so the setting does
+  // not have to be checked again here.
+  const balanceBlocks = await resolveScheduledTaskBalanceBlocks({
+    householdId: params.householdId,
+    plans: duePlans.map((plan) => ({
+      id: plan.id,
+      accountId: plan.accountId,
+      cashAccountId: plan.cashAccountId,
+      amount: plan.amount,
+      nextRunDate: plan.nextRunDate,
+      status: plan.status,
+      task: taskByPlanId.get(plan.id)!,
+    })),
+    now,
+  });
+
   const reminders: ReminderItem[] = duePlans.map((plan) => {
     const task = taskByPlanId.get(plan.id)!;
     const kind = reminderKindOf(plan.taskType ?? task.type)!;
@@ -388,12 +407,14 @@ export async function loadNotificationFeed(params: {
     // 信用卡的"余额"不是可用现金口径（getMaintainedAccountBalances 对信用卡直接给 0），
     // 拿它判断余额不足会天天误报，所以信用卡付款账户不报警。
     const balance = fundingAccount ? fundingBalances.get(fundingAccount.id) : undefined;
+    const blocked = balanceBlocks.has(plan.id);
     const insufficient =
-      !!fundingAccount &&
-      fundingAccount.kind !== AccountKind.bank_credit &&
-      typeof balance === "number" &&
-      amount > 0 &&
-      amount > balance + 0.005;
+      blocked ||
+      (!!fundingAccount &&
+        fundingAccount.kind !== AccountKind.bank_credit &&
+        typeof balance === "number" &&
+        amount > 0 &&
+        amount > balance + 0.005);
     return {
       id: `${plan.id}:${date}`,
       kind,
@@ -407,6 +428,7 @@ export async function loadNotificationFeed(params: {
       fundingAccountName:
         renderNotificationAccountName(fundingAccount, accountLabelFields, fundingAccount?.name ?? "") || null,
       insufficient,
+      blocked,
     };
   });
 

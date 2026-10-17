@@ -29,6 +29,7 @@ import {
   parseAllowedAccessList,
 } from "@/lib/access-whitelist";
 import { useI18n } from "@/lib/i18n";
+import SettingsSwitch from "@/components/settings/SettingsSwitch";
 import { CredentialPasswordField } from "@/components/CredentialPasswordField";
 import { RESTORE_UPLOAD_LIMIT_BYTES, RESTORE_UPLOAD_LIMIT_LABEL } from "@/lib/backup-upload-limit";
 import { copyToClipboard } from "@/lib/client/clipboard";
@@ -1457,20 +1458,19 @@ export default function DatabaseSettingsPage() {
               {t("settings.autoBackup.desc")}
             </div>
           </div>
-          <label className="inline-flex shrink-0 cursor-pointer items-center gap-2 text-xs text-slate-600">
-            <input
-              type="checkbox"
+          <div className="flex shrink-0 items-center gap-2 text-xs text-slate-600">
+            <span>{t("settings.autoBackup.enabled")}</span>
+            <SettingsSwitch
               checked={autoBackup?.enabled ?? false}
               disabled={autoBackupLoading}
-              onChange={(event) => {
-                setAutoBackup((prev) => (prev ? { ...prev, enabled: event.target.checked } : prev));
+              onCheckedChange={(next) => {
+                setAutoBackup((prev) => (prev ? { ...prev, enabled: next } : prev));
                 setAutoBackupMessage("");
                 setAutoBackupError("");
               }}
-              className="h-4 w-4 accent-blue-600"
+              label={t("settings.autoBackup.enabled")}
             />
-            {t("settings.autoBackup.enabled")}
-          </label>
+          </div>
         </div>
 
         {autoBackupMessage ? <div className="mt-2 text-xs text-emerald-600">{autoBackupMessage}</div> : null}
@@ -1734,19 +1734,18 @@ export default function DatabaseSettingsPage() {
                 {t("settings.database.householdBackupNote")}
               </div>
             )}
-            <label className="mt-3 flex items-center gap-2 text-xs text-slate-600">
-              <input
-                type="checkbox"
+            <div className="mt-3 flex items-center gap-2 text-xs text-slate-600">
+              <span>{t("settings.database.backupEncrypt")}</span>
+              <SettingsSwitch
                 checked={backupEncrypt}
-                onChange={(event) => {
-                  setBackupEncrypt(event.target.checked);
-                  if (!event.target.checked) setBackupPassphrase("");
+                onCheckedChange={(next) => {
+                  setBackupEncrypt(next);
+                  if (!next) setBackupPassphrase("");
                   setBackupError("");
                 }}
-                className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-400"
+                label={t("settings.database.backupEncrypt")}
               />
-              {t("settings.database.backupEncrypt")}
-            </label>
+            </div>
             {backupEncrypt ? (
               <>
                 <input
@@ -1978,15 +1977,11 @@ export default function DatabaseSettingsPage() {
             <div className="text-sm font-medium text-slate-800">{t("settings.database.whitelist")}</div>
             <div className="mt-0.5 text-xs text-slate-500">{t("settings.database.whitelistHint")}</div>
           </div>
-          <label className="relative inline-flex cursor-pointer items-center">
-            <input
-              type="checkbox"
-              className="peer sr-only"
-              checked={originCheckEnabled}
-              onChange={(event) => void toggleOriginCheck(event.target.checked)}
-            />
-            <div className="h-5 w-9 rounded-full bg-slate-200 transition-colors after:absolute after:start-[2px] after:top-[2px] after:h-4 after:w-4 after:rounded-full after:bg-white after:transition-all after:content-[''] peer-checked:bg-blue-600 peer-checked:after:translate-x-4" />
-          </label>
+          <SettingsSwitch
+            checked={originCheckEnabled}
+            onCheckedChange={(next) => void toggleOriginCheck(next)}
+            label={t("settings.database.whitelist")}
+          />
         </div>
 
         <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">

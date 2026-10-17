@@ -15,6 +15,14 @@ export type SystemSettingDb = Prisma.TransactionClient | PrismaClient;
 
 export const CATEGORY_HIERARCHY_SETTING_NAME = "category_hierarchy_normalized";
 export const DELETED_DEFAULT_CATEGORY_SETTING_NAME = "category_deleted_default_templates";
+/**
+ * Scheduled-task "balance guard" switch (household-scoped). With it on, automatic
+ * execution stops booking a task whose funding account is short: the plan stays
+ * where it is and reads as failed, and only the notification panel's explicit
+ * "ignore balance and generate" spends anyway. Off (default) keeps the historical
+ * behaviour of booking regardless of the balance.
+ */
+export const SCHEDULED_TASK_BALANCE_GUARD_SETTING_NAME = "scheduled_task_balance_guard";
 
 /**
  * Every household-scoped setting name. Adding one here is what makes it travel
@@ -25,6 +33,7 @@ export const HOUSEHOLD_SCOPED_SETTING_NAMES = [
   CATEGORY_HIERARCHY_SETTING_NAME,
   DELETED_DEFAULT_CATEGORY_SETTING_NAME,
   EMAIL_IMPORT_KEYWORD_SETTING_NAME,
+  SCHEDULED_TASK_BALANCE_GUARD_SETTING_NAME,
 ] as const;
 
 export type SystemSettingOptions = {

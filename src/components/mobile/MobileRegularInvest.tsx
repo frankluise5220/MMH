@@ -27,6 +27,9 @@ type MobilePlan = {
   nextRunDate?: string | null;
   executedCount?: number;
   status: string;
+  /** Withheld by the balance guard (short balance, nothing booked) = the task failed.
+   *  Same server-computed field the web plan table renders. */
+  balanceBlocked?: boolean;
   /** Mortgage "bill" plans are system-generated and read-only. */
   isSystemTask?: boolean;
 };
@@ -92,6 +95,14 @@ export function MobileRegularInvest({ plans }: { plans: MobilePlan[] }) {
                   <div className="flex items-center gap-2">
                     <h2 className="truncate text-sm font-semibold text-slate-900">{plan.planName || plan.taskTitle || plan.targetName || plan.taskCategoryName || plan.fundName || plan.fundCode}</h2>
                     <span className={`shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium ${active ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>{active ? t("regularInvest.client.status.active") : statusLabel(plan.status, t)}</span>
+                    {plan.balanceBlocked ? (
+                      <span
+                        title={t("regularInvest.client.status.balanceBlockedHint")}
+                        className="shrink-0 rounded bg-rose-50 px-1.5 py-0.5 text-[11px] font-semibold text-rose-600"
+                      >
+                        {t("regularInvest.client.status.balanceBlocked")}
+                      </span>
+                    ) : null}
                   </div>
                   <p className="mt-1 truncate text-xs text-slate-500">{taskTypeLabel(plan, t)} · {plan.accountLabel || t("mobileRegularInvest.noTargetAccount")}</p>
                 </div>

@@ -18,7 +18,7 @@ import {
 
 import { useI18n } from "@/lib/i18n";
 import { formatCurrencyMoney } from "@/lib/format";
-import { FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
+import { FINANCE_DATA_CHANGED_EVENT, dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { APP_PREFS_EVENT, getAccountLabelFieldsPreference } from "@/lib/client/appPreferences";
 import {
   useNotificationReceipts,
@@ -26,8 +26,10 @@ import {
 } from "@/lib/client/notification-receipts";
 import { useNotificationReads } from "@/lib/client/notification-reads";
 import {
+  isSameExecutionBatch,
   reminderUrgency,
   type ExecutionReceipt,
+  type ExecutionReceiptGroup,
   type NotificationItem,
   type ReadNotificationEntry,
   type ReminderItem,
@@ -46,6 +48,9 @@ import {
  *    永远清不空，已读页签就只是摆设。
  *  - 绝不把 HTTP ok 当"已执行"。回执数字一律来自 executedCount / TxRecord，
  *    否则就会重演"提示成功执行 118 个任务，但界面毫无变化"。
+ *  - 1 和 2 说同一批落账时**只报 1**：服务端回执是同一次执行的第二个说法，两条并列会
+ *    变成"生成 42 条记录"×2。见 `isSameExecutionBatch`；但 2 的明细要交给 1 去展开，
+ *    否则保留下来的那条点不开，"生成 22 条记录"就只剩一句空话。
  */
 
 const PANEL_WIDTH = 360;
@@ -310,7 +315,30 @@ export function NotificationBell({ collapsed }: { collapsed: boolean }) {
   );
 
   const localNote = useMemo(() => (latestReceipt ? receiptNotification(latestReceipt) : null), [latestReceipt]);
-  const serverNote = useMemo(() => serverReceiptNotification(feed.receipt), [feed.receipt]);
+  const rawServerNote = useMemo(() => serverReceiptNotification(feed.receipt), [feed.receipt]);
+  /**
+   * 同一批落账**只报一条**：本地收据已经报了这次执行的结果（条数、暂停申购、净值缺口、
+   * 轮次），服务端回执再把同一批报一遍，面板里就会连出两条"生成 42 条记录"。
+   *
+   * 判负的情形必须保留服务端回执，那是它唯一的信息价值：
+   *  - 本地没有收据（换设备、清了缓存、第一次打开面板）→ 只有服务端知道落过账；
+   *  - 本地收据指向别的批次（别的设备刚跑过、本地那次生成 0 条）→ 两条说的不是一回事。
+   */
+  const serverNote = useMemo(
+    () => (isSameExecutionBatch(localNote, rawServerNote) ? null : rawServerNote),
+    [localNote, rawServerNote],
+  );
+  /**
+   * 被去重掉的那条，**明细不能跟着消失**：本地收据只存计数，展开后的「按类型 + 账户」
+   * 拆分和计划名本来就只能来自真实落账。同一批时把服务端的明细交给保留的那条显示。
+   */
+  const localBreakdown = useMemo(
+    () =>
+      rawServerNote && !serverNote && feed.receipt
+        ? { groups: feed.receipt.groups, titles: feed.receipt.lastRunTitles }
+        : { groups: [] as ExecutionReceiptGroup[], titles: [] as string[] },
+    [rawServerNote, serverNote, feed.receipt],
+  );
   const unreadExecutions = useMemo(
     () => [localNote, serverNote].filter((note): note is NotificationItem => !!note && !readIds.has(note.id)),
     [localNote, serverNote, readIds],
@@ -411,7 +439,12 @@ export function NotificationBell({ collapsed }: { collapsed: boolean }) {
         {tab === "unread" ? (
           <>
             {localNote && latestReceipt && !readIds.has(localNote.id) ? (
-              <ThisRunBlock receipt={latestReceipt} onMarkRead={() => markRead(localNote)} />
+              <ThisRunBlock
+                receipt={latestReceipt}
+                breakdown={localBreakdown.groups}
+                titles={localBreakdown.titles}
+                onMarkRead={() => markRead(localNote)}
+              />
             ) : null}
 
             {serverNote ? (
@@ -568,10 +601,26 @@ function OverdueHint({ count }: { count: number }) {
  * 强制刷新 + 0 条的收据根本不会出现在列表里（见 `isReportableExecution`），
  * 所以这里只剩"开机检查/手动执行"和"确实生成了记录"两种。来源标签仍分三种：
  * 刷新后**有**落账时，那次执行是刷新触发的，值得如实标出来。
+ *
+ * 可展开：`breakdown` 是服务端那份同批落账的明细（本地收据只存计数，拿不出明细）。
+ * 同一批只报一条时，明细必须跟着留下来的这条走，否则"生成 22 条记录"就变成一句
+ * 点不开的空话。
  */
-function ThisRunBlock({ receipt, onMarkRead }: { receipt: StoredReceipt; onMarkRead: () => void }) {
+function ThisRunBlock({
+  receipt,
+  breakdown,
+  titles,
+  onMarkRead,
+}: {
+  receipt: StoredReceipt;
+  breakdown: ExecutionReceiptGroup[];
+  titles: string[];
+  onMarkRead: () => void;
+}) {
   const { t } = useI18n();
+  const [expanded, setExpanded] = useState(false);
   const nothing = receipt.executed === 0;
+  const canExpand = breakdown.length > 0;
   const sourceLabel =
     receipt.source === "manual"
       ? t("notification.thisRun.source.manual")
@@ -599,7 +648,23 @@ function ThisRunBlock({ receipt, onMarkRead }: { receipt: StoredReceipt; onMarkR
           <CheckCircle2 size={13} className="mt-0.5 shrink-0 text-emerald-500" />
         )}
         <div className="min-w-0 flex-1">
-          <p className="text-xs font-medium text-slate-700">{executionSummaryText(t, receipt)}</p>
+          {canExpand ? (
+            <button
+              type="button"
+              onClick={() => setExpanded((value) => !value)}
+              aria-expanded={expanded}
+              title={t(expanded ? "notification.receipt.collapse" : "notification.receipt.expand")}
+              className="flex items-start gap-1 rounded text-left text-xs font-medium text-slate-700 transition-colors hover:text-slate-900"
+            >
+              <ChevronRight
+                size={12}
+                className={`mt-0.5 shrink-0 text-slate-400 transition-transform ${expanded ? "rotate-90" : ""}`}
+              />
+              <span>{executionSummaryText(t, receipt)}</span>
+            </button>
+          ) : (
+            <p className="text-xs font-medium text-slate-700">{executionSummaryText(t, receipt)}</p>
+          )}
           <p className="mt-0.5 text-[10px] text-slate-400">
             {t("notification.thisRun.detail", {
               paused: receipt.skippedPaused,
@@ -607,6 +672,16 @@ function ThisRunBlock({ receipt, onMarkRead }: { receipt: StoredReceipt; onMarkR
               rounds: receipt.rounds,
             })}
           </p>
+          {canExpand && expanded ? (
+            <>
+              <ReceiptBreakdown groups={breakdown} />
+              {titles.length > 0 ? (
+                <p className="mt-0.5 truncate text-[10px] text-slate-400" title={titles.join("、")}>
+                  {t("notification.receipt.lastRunTitles", { titles: titles.join("、") })}
+                </p>
+              ) : null}
+            </>
+          ) : null}
         </div>
       </div>
     </div>
@@ -671,37 +746,7 @@ function ServerReceipt({
                 : t("notification.receipt.none", { days: receipt?.recentDays ?? 7 })}
             </p>
           )}
-          {canExpand && expanded ? (
-            <ul className="mt-1.5 space-y-1.5 rounded-lg bg-slate-50 px-2 py-1.5">
-              {groups.map((group) => (
-                <li key={group.taskType}>
-                  <div className="flex items-baseline justify-between gap-2 text-[10px] font-semibold text-slate-600">
-                    <span className="truncate">
-                      {TASK_TYPE_LABEL_KEY[group.taskType]
-                        ? t(TASK_TYPE_LABEL_KEY[group.taskType]!)
-                        : group.label}
-                    </span>
-                    <span className="shrink-0 tabular-nums">{group.count}</span>
-                  </div>
-                  {group.accounts.length > 0 ? (
-                    <ul className="mt-0.5 space-y-0.5 pl-2.5">
-                      {group.accounts.map((account) => (
-                        <li
-                          key={account.accountId ?? account.accountName}
-                          className="flex items-baseline justify-between gap-2 text-[10px] text-slate-400"
-                        >
-                          <span className="truncate" title={account.accountName || undefined}>
-                            {account.accountName || t("notification.receipt.unknownAccount")}
-                          </span>
-                          <span className="shrink-0 tabular-nums">{account.count}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  ) : null}
-                </li>
-              ))}
-            </ul>
-          ) : null}
+          {canExpand && expanded ? <ReceiptBreakdown groups={groups} /> : null}
           {hasRun && receipt && receipt.lastRunTitles.length > 0 ? (
             <p className="mt-0.5 truncate text-[10px] text-slate-400" title={receipt.lastRunTitles.join("、")}>
               {t("notification.receipt.lastRunTitles", { titles: receipt.lastRunTitles.join("、") })}
@@ -714,8 +759,51 @@ function ServerReceipt({
   );
 }
 
+/**
+ * 回执明细：按任务类型拆一层、每个类型再按账户拆一层。两条回执位置（本次执行结果 /
+ * 系统执行情况）共用同一套渲染，否则同一批落账在两个位置会有两种明细。
+ *
+ * 拆的必须是**同一批**（batch）：各项之和要等于标题的条数，不能变成"标题 20、明细 122"。
+ */
+function ReceiptBreakdown({ groups }: { groups: ExecutionReceiptGroup[] }) {
+  const { t } = useI18n();
+  return (
+    <ul className="mt-1.5 space-y-1.5 rounded-lg bg-slate-50 px-2 py-1.5">
+      {groups.map((group) => (
+        <li key={group.taskType}>
+          <div className="flex items-baseline justify-between gap-2 text-[10px] font-semibold text-slate-600">
+            <span className="truncate">
+              {TASK_TYPE_LABEL_KEY[group.taskType]
+                ? t(TASK_TYPE_LABEL_KEY[group.taskType]!)
+                : group.label}
+            </span>
+            <span className="shrink-0 tabular-nums">{group.count}</span>
+          </div>
+          {group.accounts.length > 0 ? (
+            <ul className="mt-0.5 space-y-0.5 pl-2.5">
+              {group.accounts.map((account) => (
+                <li
+                  key={account.accountId ?? account.accountName}
+                  className="flex items-baseline justify-between gap-2 text-[10px] text-slate-400"
+                >
+                  <span className="truncate" title={account.accountName || undefined}>
+                    {account.accountName || t("notification.receipt.unknownAccount")}
+                  </span>
+                  <span className="shrink-0 tabular-nums">{account.count}</span>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 function ReminderRow({ item, onMarkRead }: { item: ReminderItem; onMarkRead: () => void }) {
   const { t } = useI18n();
+  const [forcing, setForcing] = useState(false);
+  const [forceError, setForceError] = useState<string | null>(null);
   const urgency = reminderUrgency(item.daysUntil);
   const dueText =
     urgency === "overdue"
@@ -729,12 +817,55 @@ function ReminderRow({ item, onMarkRead }: { item: ReminderItem; onMarkRead: () 
       : urgency === "today"
         ? "bg-amber-50 text-amber-600"
         : "bg-slate-100 text-slate-500";
-  // 出账类提醒的付款账户余额不够：用不同于到期紧急度的颜色（橙）+ 图标标示，
-  // 让"这笔到点扣不动"在列表里一眼可见。
+  // An outflow reminder whose funding account is short: a colour (orange) and icon that
+  // differ from the due-date urgency, so "this debit will not go through" is visible at a
+  // glance in the list.
   const insufficient = item.insufficient === true;
+  /**
+   * A plan the balance guard withheld: automatic execution booked nothing because the
+   * funding account was short, which IS "this scheduled task failed" (the server sets it
+   * only when the guard is on, the plan is due and the account is short — see
+   * scheduled-task-balance-guard). This is more serious than the plain "the balance may
+   * not cover it" hint, so it renders in red and carries the force-generate escape hatch.
+   */
+  const blocked = item.blocked === true;
+
+  /**
+   * "Ignore balance and generate" goes through the **manual** entry point: manual
+   * execution never checks the balance (the guard only applies to automatic runs), so
+   * this is exactly the user saying "spend anyway" and needs no new endpoint.
+   * `batch-execute` dispatches deposits / bonds / ordinary plans / fund regular invest
+   * internally, so it works for every plan type.
+   */
+  async function handleForceExecute() {
+    if (forcing) return;
+    setForcing(true);
+    setForceError(null);
+    try {
+      const res = await fetch("/api/v1/regular-invest/batch-execute", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ planId: item.planId }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data?.ok) {
+        setForceError(
+          data?.error || t("regularInvest.client.execute.failedStatus", { status: res.status }),
+        );
+        return;
+      }
+      // Once booked, the plan advances to its next run date and the reminder disappears;
+      // the bell listens to this event and refetches its own feed.
+      dispatchFinanceDataChanged({ reason: "notification-force-execute" });
+    } catch (error) {
+      setForceError(error instanceof Error ? error.message : t("regularInvest.client.execute.failed"));
+    } finally {
+      setForcing(false);
+    }
+  }
 
   return (
-    <li className={`flex items-start gap-2 px-3 py-2 ${insufficient ? "bg-orange-50/50" : ""}`}>
+    <li className={`flex items-start gap-2 px-3 py-2 ${blocked ? "bg-rose-50/40" : insufficient ? "bg-orange-50/50" : ""}`}>
       <span className={`mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold tabular-nums ${dueClass}`}>
         {dueText}
       </span>
@@ -748,7 +879,19 @@ function ReminderRow({ item, onMarkRead }: { item: ReminderItem; onMarkRead: () 
               {t("notification.reminder.manual")}
             </span>
           ) : null}
-          {insufficient ? (
+          {blocked ? (
+            <span
+              className="inline-flex shrink-0 items-center gap-0.5 rounded bg-rose-100 px-1 py-0.5 text-[9px] font-semibold text-rose-700"
+              title={
+                item.fundingAccountName
+                  ? t("notification.reminder.blockedHint", { account: item.fundingAccountName })
+                  : t("notification.reminder.blocked")
+              }
+            >
+              <AlertTriangle size={9} />
+              {t("notification.reminder.blocked")}
+            </span>
+          ) : insufficient ? (
             <span
               className="inline-flex shrink-0 items-center gap-0.5 rounded bg-orange-100 px-1 py-0.5 text-[9px] font-semibold text-orange-700"
               title={
@@ -769,14 +912,33 @@ function ReminderRow({ item, onMarkRead }: { item: ReminderItem; onMarkRead: () 
           {item.amount ? (
             <>
               <span className="shrink-0">·</span>
-              <span className={`shrink-0 tabular-nums ${insufficient ? "font-semibold text-orange-600" : ""}`}>
+              <span className={`shrink-0 tabular-nums ${blocked ? "font-semibold text-rose-600" : insufficient ? "font-semibold text-orange-600" : ""}`}>
                 {formatCurrencyMoney(item.amount)}
               </span>
             </>
           ) : null}
         </div>
       </div>
-      <MarkReadButton onMarkRead={onMarkRead} />
+      <div className="flex shrink-0 flex-col items-end gap-1">
+        {blocked ? (
+          <button
+            type="button"
+            onClick={() => void handleForceExecute()}
+            disabled={forcing}
+            title={t("notification.reminder.forceExecute")}
+            className="flex items-center gap-0.5 whitespace-nowrap rounded px-1 py-0.5 text-[10px] font-medium text-rose-600 transition-colors hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {forcing ? <Loader2 size={10} className="animate-spin" /> : <RefreshCw size={10} />}
+            {forcing ? t("notification.reminder.forceExecuteRunning") : t("notification.reminder.forceExecute")}
+          </button>
+        ) : null}
+        {forceError ? (
+          <span className="max-w-[140px] truncate text-[9px] text-rose-500" title={forceError}>
+            {forceError}
+          </span>
+        ) : null}
+        <MarkReadButton onMarkRead={onMarkRead} />
+      </div>
     </li>
   );
 }

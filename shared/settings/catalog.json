@@ -141,6 +141,15 @@
           "surfaces": ["web"],
           "webHref": "/settings/fund-api",
           "apiRefs": ["/api/v1/settings/fund-query-api"]
+        },
+        {
+          "id": "scheduled-tasks",
+          "label": "计划任务",
+          "description": "计划任务执行时的余额校验与忽略余额强行生成",
+          "icon": "calendar-clock",
+          "surfaces": ["web"],
+          "webHref": "/settings/scheduled-tasks",
+          "apiRefs": ["/api/v1/settings/scheduled-tasks"]
         }
       ]
     },

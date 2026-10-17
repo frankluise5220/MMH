@@ -156,6 +156,14 @@ type RegularInvestPlanView = {
   arrivalDays?: number | null;
   skipPendingPreceding?: boolean;
   status: string;
+  /**
+   * Withheld by the balance guard (settings → scheduled tasks): due, but the funding
+   * account is short, so automatic execution **booked nothing** and the plan stayed put
+   * — that state is "this scheduled task failed". Derived by the server page (switch +
+   * due date + balance), never stored. The escape hatch is manual execution (this page's
+   * "run now" button), which never checks the balance.
+   */
+  balanceBlocked?: boolean;
   executedCount?: number;
   executedAmount?: number;
   confirmedCount?: number;
@@ -1657,9 +1665,23 @@ export function RegularInvestClient({
             return <span className="text-slate-500">{formatInterval(row.plan, t)}</span>;
           }
           if (column.key === "status") {
+            // Failure caused by an insufficient balance: the underlying status (running)
+            // is not wrong — the plan is still active and will be caught up automatically
+            // once the balance is topped up — so a failure badge is **added** to it rather
+            // than rewriting the status.
             return (
-              <span className={STATUS_MAP[row.plan.status]?.cls || "text-slate-600"}>
-                {getStatusLabel(row.plan.status, t)}
+              <span className="inline-flex items-center gap-1">
+                <span className={STATUS_MAP[row.plan.status]?.cls || "text-slate-600"}>
+                  {getStatusLabel(row.plan.status, t)}
+                </span>
+                {row.plan.balanceBlocked ? (
+                  <span
+                    className="inline-flex shrink-0 items-center rounded bg-rose-50 px-1 py-0.5 text-[10px] font-semibold text-rose-600"
+                    title={t("regularInvest.client.status.balanceBlockedHint")}
+                  >
+                    {t("regularInvest.client.status.balanceBlocked")}
+                  </span>
+                ) : null}
               </span>
             );
           }

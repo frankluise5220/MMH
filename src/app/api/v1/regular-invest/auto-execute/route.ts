@@ -29,6 +29,11 @@ import { autoAccrueBondPeriodicInterestForLot } from "@/lib/server/bond-auto-int
 import { resolveCategorySnapshot } from "@/lib/default-categories";
 import { ENTRY_ORIGIN_SCHEDULED_TASK } from "@/lib/transaction-semantics";
 import { acquireScheduledTaskPlanLock } from "@/lib/server/scheduled-task-lock";
+import {
+  resolveScheduledTaskBalanceBlocks,
+  scheduledTaskBalanceBlockReason,
+  type ScheduledTaskBalanceBlock,
+} from "@/lib/server/scheduled-task-balance-guard";
 import { buildLatestNavDateMap, isConfirmedNavGap } from "@/lib/server/regular-invest-plan";
 
 const AUTO_EXECUTE_TRANSACTION_OPTIONS = {
@@ -48,6 +53,8 @@ type AutoExecuteRoundResult = {
   skippedGap: number;
   details: AutoExecuteRoundDetail[];
   hasMoreDue: boolean;
+  /** Ids of plans withheld by the balance guard (insufficient balance → nothing booked). */
+  blockedPlanIds: string[];
 };
 
 /** Are there still active plans with a due next run? */
@@ -72,7 +79,7 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
     });
 
     if (allPlans.length === 0) {
-      return { ok: true, executedCount: 0, skippedCount: 0, completedCount: 0, skippedPaused: 0, skippedGap: 0, details: [], hasMoreDue: false };
+      return { ok: true, executedCount: 0, skippedCount: 0, completedCount: 0, skippedPaused: 0, skippedGap: 0, details: [], hasMoreDue: false, blockedPlanIds: [] };
     }
 
     // ── Phase 1: Filter & load all data in batch ──
@@ -110,8 +117,30 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
     }
 
     if (plansToRun.length === 0) {
-      return { ok: true, executedCount: 0, skippedCount: 0, completedCount: completed.length, skippedPaused: 0, skippedGap: 0, details: [], hasMoreDue: false };
+      return { ok: true, executedCount: 0, skippedCount: 0, completedCount: completed.length, skippedPaused: 0, skippedGap: 0, details: [], hasMoreDue: false, blockedPlanIds: [] };
     }
+
+    // Balance guard (settings → scheduled tasks, off by default): a **due** plan whose
+    // funding account cannot cover it is not booked at all; the plan stays where it is
+    // (nextRunDate is not advanced = stays overdue = reads as failed) and is retried
+    // automatically once the balance is topped up. With the guard off this map is empty
+    // and the historical behaviour (book anyway, possibly overdrawn) applies.
+    // Manual entry points (/regular-invest/execute, /batch-execute) never look at the
+    // balance, so "ignore balance and generate" reuses them and needs no new endpoint.
+    const balanceBlocks: Map<string, ScheduledTaskBalanceBlock> = await resolveScheduledTaskBalanceBlocks({
+      householdId,
+      plans: plansToRun.map((plan) => ({
+        id: plan.id,
+        accountId: plan.accountId,
+        cashAccountId: plan.cashAccountId,
+        amount: plan.amount,
+        nextRunDate: plan.nextRunDate,
+        status: plan.status,
+        task: decodeScheduledTaskMemo(plan.memo),
+      })),
+      now,
+    });
+    const blockedPlanIds = [...balanceBlocks.keys()];
 
     const generalPlans = plansToRun
       .filter((plan) => isNonFundScheduledTask(decodeScheduledTaskMemo(plan.memo).type))
@@ -141,6 +170,19 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
     for (const plan of generalPlans) {
       const task = decodeScheduledTaskMemo(plan.memo);
       try {
+        const balanceBlock = balanceBlocks.get(plan.id);
+        if (balanceBlock) {
+          // Insufficient balance → book nothing and do not advance the cursor: that
+          // state IS "this scheduled task failed".
+          generalSkipped.push(plan.id);
+          generalDetails.push({
+            planId: plan.id,
+            fundCode: plan.fundCode,
+            action: "failed",
+            reason: scheduledTaskBalanceBlockReason(balanceBlock),
+          });
+          continue;
+        }
         if (plan.nextRunDate > now) {
           generalSkipped.push(plan.id);
           generalDetails.push({ planId: plan.id, fundCode: plan.fundCode, action: "skipped", reason: "not due" });
@@ -216,6 +258,7 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
         skippedGap: 0,
         details: generalDetails,
         hasMoreDue: await hasMoreDuePlans(householdId, now),
+        blockedPlanIds,
       };
     }
 
@@ -273,6 +316,18 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
     const execs: PlanExec[] = [];
 
     for (const plan of plansToRun) {
+      const balanceBlock = balanceBlocks.get(plan.id);
+      if (balanceBlock) {
+        // Insufficient balance → book nothing and do not advance the cursor (failed).
+        skipped.push(plan.id);
+        details.push({
+          planId: plan.id,
+          fundCode: plan.fundCode,
+          action: "failed",
+          reason: scheduledTaskBalanceBlockReason(balanceBlock),
+        });
+        continue;
+      }
       if (plan.nextRunDate > now) {
         skipped.push(plan.id);
         details.push({ planId: plan.id, fundCode: plan.fundCode, action: "skipped", reason: "未到执行日" });
@@ -337,6 +392,7 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
         skippedGap,
         details: [...generalDetails, ...details],
         hasMoreDue: await hasMoreDuePlans(householdId, now),
+        blockedPlanIds,
       };
     }
 
@@ -728,9 +784,10 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
       skippedGap,
       details: [...generalDetails, ...details],
       hasMoreDue: await hasMoreDuePlans(householdId, now),
+      blockedPlanIds,
     };
   } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : "执行失败", executedCount: 0, skippedCount: 0, completedCount: 0, skippedPaused: 0, skippedGap: 0, details: [], hasMoreDue: false };
+    return { ok: false, error: e instanceof Error ? e.message : "执行失败", executedCount: 0, skippedCount: 0, completedCount: 0, skippedPaused: 0, skippedGap: 0, details: [], hasMoreDue: false, blockedPlanIds: [] };
   }
 }
 
@@ -764,6 +821,7 @@ export async function POST() {
       skippedGap: 0,
       details: [] as AutoExecuteRoundDetail[],
     };
+    const blockedPlanIds = new Set<string>();
 
     let rounds = 0;
     let moreDue = true;
@@ -779,7 +837,20 @@ export async function POST() {
       aggregated.skippedPaused += result.skippedPaused;
       aggregated.skippedGap += result.skippedGap;
       aggregated.details.push(...result.details);
+      for (const planId of result.blockedPlanIds) blockedPlanIds.add(planId);
       moreDue = result.hasMoreDue;
+      // A blocked plan never advances its cursor, while `hasMoreDue` only asks "is any
+      // active plan still due?" — so it stays true and would spin the catch-up rounds up
+      // to maxRounds. When a round booked nothing and balance blocks are the only reason
+      // it had work left, there is no catch-up space left: stop. The next automatic run
+      // picks the plan up as soon as the balance is topped up.
+      if (
+        result.blockedPlanIds.length > 0 &&
+        result.executedCount === 0 &&
+        result.completedCount === 0
+      ) {
+        moreDue = false;
+      }
     }
 
     const gapText = aggregated.skippedGap > 0
@@ -788,6 +859,9 @@ export async function POST() {
     const pauseText = aggregated.skippedPaused > 0 ? `（暂停申购 ${aggregated.skippedPaused}` : "";
     const closeParen = aggregated.skippedPaused + aggregated.skippedGap > 0 ? "）" : "";
 
+    // The blocked count is reported as data only: the human-readable "N tasks failed on
+    // an insufficient balance" line is rendered by the clients from `blockedCount` through
+    // their own i18n copy (this response must not add new user-facing Chinese text).
     return NextResponse.json({
       ok: true,
       message: `执行完成：共 ${rounds} 轮，生成 ${aggregated.executedCount} 条记录，${aggregated.skippedCount} 条计划已跳过${pauseText}${gapText}${closeParen}，${aggregated.completedCount} 条已完成`,
@@ -796,6 +870,8 @@ export async function POST() {
       completedCount: aggregated.completedCount,
       skippedPaused: aggregated.skippedPaused,
       skippedGap: aggregated.skippedGap,
+      blockedCount: blockedPlanIds.size,
+      blockedPlanIds: [...blockedPlanIds],
       rounds,
       details: aggregated.details,
     });

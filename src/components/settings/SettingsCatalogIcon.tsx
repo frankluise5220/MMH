@@ -1,6 +1,7 @@
 import {
   BookOpen,
   Building2,
+  CalendarClock,
   Cpu,
   Database,
   Globe,
@@ -24,6 +25,7 @@ import {
 const ICONS = {
   "book-open": BookOpen,
   "building-2": Building2,
+  "calendar-clock": CalendarClock,
   cpu: Cpu,
   database: Database,
   globe: Globe,

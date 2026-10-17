@@ -17,6 +17,7 @@ import { MobileRegularInvest } from "@/components/mobile/MobileRegularInvest";
 import { resolveCreditCardRepaymentCategory } from "@/lib/default-categories";
 import { isCreditCardRepaymentTransfer, recordMatchesRegularInvestPlan } from "@/lib/transaction-semantics";
 import { getServerAccountLabelFields } from "@/lib/server/account-label-fields";
+import { resolveScheduledTaskBalanceBlocks } from "@/lib/server/scheduled-task-balance-guard";
 import { getServerT } from "@/lib/server/i18n";
 import { createTransaction } from "@/lib/server/sidebar-actions/transaction-actions";
 import { normalizeLoanRepaymentMethod } from "@/lib/loan-repayment";
@@ -110,7 +111,7 @@ function recordMatchesTask(taskType: string, entry: { source: string | null }) {
 }
 
 export default async function RegularInvestPage() {
-  const { hidFilter } = await getHouseholdScope();
+  const { hidFilter, householdId } = await getHouseholdScope();
   const t = await getServerT();
   const accountLabelFields = await getServerAccountLabelFields();
 
@@ -156,6 +157,23 @@ export default async function RegularInvestPage() {
   ]);
 
   const scheduledTaskByPlanId = new Map(plans.map((plan) => [plan.id, decodeScheduledTaskMemo(plan.memo)]));
+  // Balance guard (settings → scheduled tasks, off by default): a **due** plan whose
+  // funding account is short is withheld by automatic execution (nothing booked, cursor
+  // not advanced) → the plan table shows it as failed. The notification panel's failure
+  // badge comes from the very same resolveScheduledTaskBalanceBlocks, so the two views
+  // can never compute different answers.
+  const balanceBlocks = await resolveScheduledTaskBalanceBlocks({
+    householdId,
+    plans: plans.map((plan) => ({
+      id: plan.id,
+      accountId: plan.accountId,
+      cashAccountId: plan.cashAccountId,
+      amount: plan.amount,
+      nextRunDate: plan.nextRunDate,
+      status: plan.status,
+      task: scheduledTaskByPlanId.get(plan.id) ?? decodeScheduledTaskMemo(plan.memo),
+    })),
+  });
   const planIds = plans.map((plan) => plan.id);
   const allEntries = planIds.length > 0
     ? await prisma.txRecord.findMany({
@@ -389,6 +407,7 @@ export default async function RegularInvestPage() {
       isSystemTask: isSystemManagedScheduledTask(scheduledTask),
       taskLoanLinked: taskType === "loan_repayment" ? isLoanLinked(plan.accountId) : null,
       taskSystemSource: systemPlanSourceByPlanId.get(plan.id) ?? null,
+      balanceBlocked: balanceBlocks.has(plan.id),
       amount: Number(plan.amount),
       feeRate: plan.feeRate ? Number(plan.feeRate) : null,
       startDate: plan.startDate && Number.isFinite(plan.startDate.getTime()) ? plan.startDate.toISOString() : null,

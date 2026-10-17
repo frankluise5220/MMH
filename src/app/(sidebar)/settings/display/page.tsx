@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 
+import SettingsSwitch from "@/components/settings/SettingsSwitch";
+
 import {
   DEFAULT_ACCOUNT_LABEL_FIELDS,
   normalizeAccountLabelFields,
@@ -635,43 +637,38 @@ export default function DisplaySettingsPage() {
             </div>
           </SettingRow>
           <SettingRow title={t("settings.display.hideZero")} desc={t("settings.display.hideZeroDesc")} hideDesc={hideSettingDescriptions}>
-            <input
-              type="checkbox"
+            <SettingsSwitch
               checked={sidebarHideZero}
-              onChange={(e) => updateSidebarHideZero(e.target.checked)}
-              className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-200"
+              onCheckedChange={updateSidebarHideZero}
+              label={t("settings.display.hideZero")}
             />
           </SettingRow>
           <SettingRow title={t("settings.display.showFixedAssets")} desc={t("settings.display.showFixedAssetsDesc")} hideDesc={hideSettingDescriptions}>
-            <input
-              type="checkbox"
+            <SettingsSwitch
               checked={sidebarShowFixedAssets}
-              onChange={(e) => void updateSidebarShowFixedAssets(e.target.checked)}
-              className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-200"
+              onCheckedChange={(next) => void updateSidebarShowFixedAssets(next)}
+              label={t("settings.display.showFixedAssets")}
             />
           </SettingRow>
           <SettingRow title={t("settings.display.showAllCashEntries")} desc={t("settings.display.showAllCashEntriesDesc")} hideDesc={hideSettingDescriptions}>
-            <input
-              type="checkbox"
+            <SettingsSwitch
               checked={sidebarShowAllCashEntries}
-              onChange={(e) => void updateSidebarShowAllCashEntries(e.target.checked)}
-              className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-200"
+              onCheckedChange={(next) => void updateSidebarShowAllCashEntries(next)}
+              label={t("settings.display.showAllCashEntries")}
             />
           </SettingRow>
           <SettingRow title={t("settings.display.showReimbursements")} desc={t("settings.display.showReimbursementsDesc")} hideDesc={hideSettingDescriptions}>
-            <input
-              type="checkbox"
+            <SettingsSwitch
               checked={sidebarShowReimbursements}
-              onChange={(e) => void updateSidebarShowReimbursements(e.target.checked)}
-              className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-200"
+              onCheckedChange={(next) => void updateSidebarShowReimbursements(next)}
+              label={t("settings.display.showReimbursements")}
             />
           </SettingRow>
           <SettingRow title={t("settings.display.accountDropdownRestrictType")} desc={t("settings.display.accountDropdownRestrictTypeDesc")} hideDesc={hideSettingDescriptions}>
-            <input
-              type="checkbox"
+            <SettingsSwitch
               checked={accountDropdownRestrictType}
-              onChange={(e) => void updateAccountDropdownRestrictType(e.target.checked)}
-              className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-200"
+              onCheckedChange={(next) => void updateAccountDropdownRestrictType(next)}
+              label={t("settings.display.accountDropdownRestrictType")}
             />
           </SettingRow>
           <SettingRow
@@ -679,11 +676,12 @@ export default function DisplaySettingsPage() {
             desc={t("settings.display.hideInitialDataDesc")}
             hideDesc={hideSettingDescriptions}
           >
-            <input
-              type="checkbox"
+            {/* The preference is stored inverted (sidebarHideInitialData) while the row
+                reads "Show First-Use Guide", so the switch follows the label, not the key. */}
+            <SettingsSwitch
               checked={!sidebarHideInitialData}
-              onChange={(e) => void updateSidebarHideInitialData(!e.target.checked)}
-              className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-200"
+              onCheckedChange={(next) => void updateSidebarHideInitialData(!next)}
+              label={t("settings.display.hideInitialData")}
             />
           </SettingRow>
         </div>
@@ -713,11 +711,10 @@ export default function DisplaySettingsPage() {
           </div>
         </SettingRow>
         <SettingRow title={t("settings.display.detailDateBackground")} desc={t("settings.display.detailDateBackgroundDesc")} hideDesc={hideSettingDescriptions}>
-          <input
-            type="checkbox"
+          <SettingsSwitch
             checked={detailDateBackground}
-            onChange={(e) => void updateDetailDateBackground(e.target.checked)}
-            className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-200"
+            onCheckedChange={(next) => void updateDetailDateBackground(next)}
+            label={t("settings.display.detailDateBackground")}
           />
         </SettingRow>
         <SettingRow title={t("settings.display.rowHeight")} desc={t("settings.display.rowHeightDesc")} hideDesc={hideSettingDescriptions}>

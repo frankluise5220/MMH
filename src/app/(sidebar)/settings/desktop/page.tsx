@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import SettingsSwitch from "@/components/settings/SettingsSwitch";
 import { useI18n } from "@/lib/i18n";
 
 // Electron preload bridge (see electron/preload.cjs). Only present when the
@@ -118,21 +119,12 @@ export default function DesktopSettingsClient() {
               {loaded ? (allowLan ? t("settings.desktop.bindLan") : t("settings.desktop.bindLocal")) : "…"}
             </p>
           </div>
-          <button
-            type="button"
+          <SettingsSwitch
+            checked={allowLan}
             disabled={saving || !loaded}
-            onClick={() => toggle(!allowLan)}
-            className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
-              allowLan ? "bg-blue-600" : "bg-slate-300"
-            } disabled:opacity-50`}
-            aria-pressed={allowLan}
-          >
-            <span
-              className={`absolute top-0.5 h-5 w-5 rounded-full bg-white shadow transition-transform ${
-                allowLan ? "translate-x-5" : "translate-x-0.5"
-              }`}
-            />
-          </button>
+            onCheckedChange={(next) => void toggle(next)}
+            label={t("settings.desktop.allowLan")}
+          />
         </div>
         {saved && (
           <p className="mt-3 rounded-lg bg-blue-50 px-3 py-2 text-xs text-blue-700">
