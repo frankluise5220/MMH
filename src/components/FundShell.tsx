@@ -1369,6 +1369,9 @@ export function FundShell(props: Props) {
     }));
 
     if (code) void loadFundShellData(code, showClearedRef.current);
+
+    // 净值 / 份额变了，市值必然变：广播一次，让左侧栏账户市值与顶部汇总跟着刷新。
+    dispatchFinanceDataChanged({ reason: "fund-nav-refilled" });
   }, [loadFundShellData]);
 
   function openPositionEntryModal(position: any) {
@@ -2332,7 +2335,48 @@ export function FundShell(props: Props) {
     });
 
     dispatchFinanceDataChanged({ reason: "fund-batch-update" });
-    return t("stockPanel.updatedCount", { count: data.updatedCount ?? 0 });
+
+    const message = t("stockPanel.updatedCount", { count: data.updatedCount ?? 0 });
+
+    // 净值日期换了，净值 / 份额还是旧口径：这里问一次是否按新日期重新取净值并重算份额。
+    if (field !== "fundConfirmDate" || !fillNavAction) return message;
+
+    const navEntries = ids
+      .map((id) => (d.allEntries ?? []).find((entry: any) => String(entry?.id ?? "") === id))
+      .filter((entry: any) => Boolean(entry
+        && entry.fundCode
+        && !isWealthAccount
+        && !isFundUnitsReconcileEntry(entry)
+        && (entry.fundProductType ?? "fund") === "fund"
+        && (entry.fundSubtype === "buy" || entry.fundSubtype === "redeem" || entry.fundSubtype === "switch_out")));
+
+    if (navEntries.length === 0) return message;
+
+    if (!window.confirm(t("fundShell.batch.refetchNavConfirm", { count: navEntries.length }))) return message;
+
+    let okCount = 0;
+    let failedCount = 0;
+
+    for (const entry of navEntries) {
+      try {
+        const formData = new FormData();
+        formData.set("entryId", String(entry.id));
+        const result = await fillNavAction(formData);
+
+        if (result?.ok && typeof result.nav === "number" && result.confirmDate) {
+          okCount += 1;
+          handleEntryNavFilled(entry, { nav: result.nav, confirmDate: result.confirmDate, units: Number(result.units ?? 0), arrivalDate: result.arrivalDate });
+        } else {
+          failedCount += 1;
+        }
+      } catch {
+        failedCount += 1;
+      }
+    }
+
+    return [message, failedCount > 0
+      ? t("fundShell.batch.refetchNavPartial", { ok: okCount, failed: failedCount })
+      : t("fundShell.batch.refetchNavDone", { count: okCount })].join(" ");
 
   }
 
