@@ -385,11 +385,31 @@ export function InvestmentFormModal({
     feeEdited: false,
   });
   redeemTermsRef.current = { mode, productType, subtype, units, nav, fee, feeRate, feeRateEdited, feeEdited };
+  /**
+   * 是否按「费率 × 金额」重算手续费。
+   * 创建模式一律按费率算；编辑模式过去一律不算（保留记录里已保存的手续费），
+   * 但记录本身已配置费率（> 0）时费率才是手续费依据 —— 否则改动买入金额后手续费
+   * 不跟着走、份额却按费率算，两者对不上（2026-10-16 用户反馈：编辑基金定投记录
+   * 改买入金额，手续费与份额都不联动）。
+   * 用户当次手填过手续费（feeEdited）时永远不覆盖。
+   */
+  function shouldRecalculateFeeFromRate(terms: {
+    mode: "create" | "edit";
+    subtype: FundSubtype;
+    productType: ProductType;
+    feeEdited: boolean;
+    feeRateEdited: boolean;
+    feeRate: string;
+  }) {
+    if (!showFeeFor(terms.subtype, terms.productType) || terms.feeEdited) return false;
+    if (terms.mode === "create" || terms.feeRateEdited) return true;
+    return p(terms.feeRate) > 0;
+  }
   function shouldRecalculateFeeFromRateForCurrentInputs() {
-    return showFeeFor(subtype, productType) && !feeEdited && (mode === "create" || feeRateEdited);
+    return shouldRecalculateFeeFromRate({ mode, subtype, productType, feeEdited, feeRateEdited, feeRate });
   }
   function shouldRecalculateFeeFromRateForTerms(terms: typeof redeemTermsRef.current) {
-    return showFeeFor(terms.subtype, terms.productType) && !terms.feeEdited && (terms.mode === "create" || terms.feeRateEdited);
+    return shouldRecalculateFeeFromRate(terms);
   }
   const [confirmDays, setConfirmDays] = useState(initConfirmDaysValue);
   const [confirmDaysEdited, setConfirmDaysEdited] = useState(false);
@@ -1542,6 +1562,9 @@ export function InvestmentFormModal({
         ? (redeemAvailableUnitsByFund?.get(fundCode.trim()) ?? 0)
         : 0;
       if (mode === "create") {
+        // 切到赎回页签等于重新进入该面板，这里会显式写入份额，因此同时清掉「用户改过份额」
+        // 标记，让后续按可交易份额回填（与 selectHoldingFund 一致）。
+        unitsEditedRef.current = false;
         if (nextIsFundRedeemAsOfMode) {
           setUnits(availableUnits > 0.0001 ? formatUnits(availableUnits) : "");
         } else {
@@ -1799,15 +1822,17 @@ export function InvestmentFormModal({
     }
 
     unitsEditedRef.current = false;
-    calculateBuyUnits(
-      nextAmountRaw,
-      nextFeeRaw,
-      nextRefundRaw,
-      nextNavRaw,
-      buyResultStatus === "refund",
-      true,
-      options?.feeRateRaw,
-    );
+    // 份额必须用「已经定下来的手续费」来算。以前这里把 feeRate 也塞进计算参数，
+    // 于是 buildInvestmentCalculation 又按费率派生了一次手续费：份额按费率算、
+    // 手续费字段却是另一个值，保存时两者对不上。现在只传手续费本身。
+    const nextCalc = buildInvestmentCalculation({
+      amountRaw: nextAmountRaw,
+      feeRaw: nextFeeRaw,
+      refundRaw: nextRefundRaw,
+      navRaw: nextNavRaw,
+      refundEnabled: buyResultStatus === "refund",
+    });
+    setUnits(nextCalc.computedUnits);
     return true;
   }
 
@@ -2003,15 +2028,19 @@ export function InvestmentFormModal({
       if (mode !== "create") return;
       if (!redeemAvailableUnitsByFund || !fundCode) return;
       const availableUnits = redeemAvailableUnitsByFund.get(fundCode) ?? 0;
-      unitsEditedRef.current = false;
-      if (availableUnits > 0.0001) {
-        setUnits(formatUnits(availableUnits));
-      } else {
+      if (availableUnits <= 0.0001) {
         changeFundCode("");
         setFundName("");
         setHoldingSearch("");
         setUnits("");
+        return;
       }
+      // 用户自定义过交易份额后，一律不再自动覆盖：只改交易日期、甚至该日期的可交易份额
+      // 变了，也保留用户输入（与理财/债券赎回一致）。超额由提交校验提示
+      // （investForm.alert.redeemUnitsExceed）。重新选基金或切换交易类型会重置
+      // unitsEditedRef，届时才重新按可交易份额回填。
+      if (unitsEditedRef.current) return;
+      setUnits(formatUnits(availableUnits));
       return;
     }
     if (isFundHoldingAsOfMode) {
@@ -2028,13 +2057,18 @@ export function InvestmentFormModal({
     if (!isRedeemLike(subtype) || unitsEditedRef.current || !fundCode || !effectiveHoldings) return;
     const h = effectiveHoldings.find(p => p.fundCode === fundCode);
     if (h && h.units > 0) setUnits(formatUnits(Number(h.units)));
-  }, [applyDate, effectiveHoldings, fundCode, holdingsAsOfDate, isFundHoldingAsOfMode, isFundRedeemAsOfMode, mode, redeemAvailableUnitsByFund, subtype]);
+  }, [applyDate, effectiveHoldings, fundCode, fundUnitsDecimals, holdingsAsOfDate, isFundHoldingAsOfMode, isFundRedeemAsOfMode, mode, redeemAvailableUnitsByFund, subtype]);
 
   useEffect(() => {
     const code = fundCode.trim();
     if (!confirmDate || !code || !showUnitsFor(subtype, productType)) return;
     if (productType === "metal") return;
-    if (mode === "edit" && !editAutoNavEnabledRef.current) return;
+    if (mode === "edit" && !editAutoNavEnabledRef.current) {
+      // 编辑模式默认尊重记录里已保存的净值（只有改动日期/代码时才重取）。
+      // 例外：记录本身没有净值的普通买入（例如尚未回填净值的定投买入）——不补取
+      // 净值就永远算不出份额，改动买入金额时份额也无法联动。
+      if (nav.trim() || subtype !== "buy" || buyResultStatus === "refund") return;
+    }
     // Source fields drive NAV lookup; buy-flow units are terminal output and must not retrigger it.
     // Debounce NAV fetching to avoid consecutive requests when date/code link.
     if (navDebounce.current) clearTimeout(navDebounce.current);
@@ -2053,7 +2087,9 @@ export function InvestmentFormModal({
             const recalculated = subtype === "buy"
               ? recalculateBuyUnitsFromInputs({
                   navRaw: nextNav,
-                  recalculateFeeFromRate: shouldRecalculateFeeFromRateForCurrentInputs(),
+                  // 自动补取净值只补「份额」，不顺手改手续费：编辑模式下记录里已保存的
+                  // 手续费不能因为打开弹窗就被费率覆盖。
+                  recalculateFeeFromRate: mode === "create" && shouldRecalculateFeeFromRateForCurrentInputs(),
                 })
               : recalculateRedeemAmountsFromNav(nextNav);
             if (!recalculated && isBuyLike(subtype)) {
@@ -2878,7 +2914,10 @@ export function InvestmentFormModal({
                         <CalcInput
                           value={units}
                           onChange={(v) => {
-                            unitsEditedRef.current = true;
+                            // CalcInput 失焦也会回调（纯数字被重新格式化，例如 10 -> 10.00）。
+                            // 数值没变不算「用户改过份额」，否则点一下份额框再改交易日期，
+                            // 份额就不会再按该日期的可交易份额变化了。
+                            if (p(v) !== p(units)) unitsEditedRef.current = true;
                             amountEditedRef.current = false;
                             setUnits(v);
                             recalculateRedeemAmountsFromTerms({ unitsRaw: v });
