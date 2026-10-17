@@ -57,6 +57,23 @@ export function isRegularInvestRefundEntry(entry: { source?: string | null; fund
   return entry.fundSubtype === "buy_failed" && entry.source === TRANSACTION_SOURCE_REGULAR_INVEST_REFUND;
 }
 
+/**
+ * 买入退款的「资金腿」：钱从基金账户退回现金账户的那条流水。
+ *
+ * 独立基金交易里退款腿自己是一条 TxRecord（`accountId` = 收款现金账户，
+ * `toAccountId` = null），`fundSubtype` 有意留空、业务事实挂在 fund_transactions。
+ * 部分退款时主业务行仍是 `buy`（只有整笔失败才落 `buy_failed`），所以不能只看
+ * {@link isRegularInvestRefundEntry} 的 `buy_failed`：`source` 才是权威标记。
+ *
+ * ⚠️ 这类行的 `date` 就是「到账日期」、`amount` 就是退款金额，展示层如果把
+ * FundTransaction 的买入口径（申请日 / 买入金额 / 现金→基金方向）套上去，
+ * 资金侧就会把它显示成「又一笔申请日的买入」，退款当天反而看不到这笔收入。
+ */
+export function isFundBuyRefundCashLeg(entry: { source?: string | null; fundSubtype?: string | null }) {
+  if (entry.source !== TRANSACTION_SOURCE_REGULAR_INVEST_REFUND) return false;
+  return entry.fundSubtype == null || entry.fundSubtype === "buy_failed";
+}
+
 export function isFundUnitsReconcileEntry(entry: { source?: string | null }) {
   return entry.source === TRANSACTION_SOURCE_FUND_UNITS_RECONCILE;
 }

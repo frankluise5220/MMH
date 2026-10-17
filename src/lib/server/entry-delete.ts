@@ -293,6 +293,55 @@ async function collectFundTransactionRecalcTargetsByEntryIds(
   }
 }
 
+/**
+ * 整笔删除范围：这些资金腿属于同一笔独立业务单（基金/保险/理财/债券/存款/贵金属/
+ * 股票/房产）时，返回该业务单的全部资金腿。删除与撤销删除都以整笔业务单为单位，
+ * 不会留下孤儿腿——例如基金买入 200 + 退回 100 两条腿，删任意一条都删两条。
+ */
+async function collectWholeBusinessLegIds(householdId: string, entryIds: string[]): Promise<string[]> {
+  const ids = Array.from(new Set(entryIds.filter(Boolean)));
+  if (ids.length === 0) return [];
+  const links = await prisma.entryBusinessLink.findMany({
+    where: { householdId, deletedAt: null, cashEntryId: { in: ids } },
+    select: {
+      fundTransactionId: true,
+      insuranceTransactionId: true,
+      wealthTransactionId: true,
+      bondTransactionId: true,
+      depositTransactionId: true,
+      preciousMetalTransactionId: true,
+      stockTransactionId: true,
+      propertyTransactionId: true,
+    },
+  });
+  if (links.length === 0) return [];
+  const idsOf = (field: keyof (typeof links)[number]) =>
+    Array.from(new Set(links.map((link) => link[field]).filter((id): id is string => Boolean(id))));
+  const siblingLinks = await prisma.entryBusinessLink.findMany({
+    where: {
+      householdId,
+      deletedAt: null,
+      OR: [
+        { fundTransactionId: { in: idsOf("fundTransactionId") } },
+        { insuranceTransactionId: { in: idsOf("insuranceTransactionId") } },
+        { wealthTransactionId: { in: idsOf("wealthTransactionId") } },
+        { bondTransactionId: { in: idsOf("bondTransactionId") } },
+        { depositTransactionId: { in: idsOf("depositTransactionId") } },
+        { preciousMetalTransactionId: { in: idsOf("preciousMetalTransactionId") } },
+        { stockTransactionId: { in: idsOf("stockTransactionId") } },
+        { propertyTransactionId: { in: idsOf("propertyTransactionId") } },
+      ],
+    },
+    select: { cashEntryId: true, CashEntry: { select: { id: true, deletedAt: true } } },
+  });
+  const legIds: string[] = [];
+  for (const row of siblingLinks) {
+    if (!row.cashEntryId || !row.CashEntry || row.CashEntry.deletedAt) continue;
+    legIds.push(row.cashEntryId);
+  }
+  return legIds;
+}
+
 async function softDeleteIndependentBusinessRecordsByIds(
   ctx: HouseholdContext,
   entryIds: string[],
@@ -715,7 +764,16 @@ export async function softDeleteEntriesByIds(
     logger.catchLog("收集付息配对记录失败", "entry-delete.ts")(error);
     return [] as string[];
   });
-  const ids = Array.from(new Set([...requestedIds, ...settlementTransactionIds, ...payoutPairIds]));
+  const baseIds = Array.from(new Set([...requestedIds, ...settlementTransactionIds, ...payoutPairIds]));
+  // 整笔语义（2026-10-17 用户规则）：删除任一资金腿时，把同一业务单的其余资金腿一并
+  // 纳入，避免「买入腿删了、退款腿还挂在资金账户里」这种孤儿。keepBusiness 只动选中腿。
+  const wholeBusinessLegIds = options.linkedAction === "keepBusiness"
+    ? []
+    : await collectWholeBusinessLegIds(ctx.householdId, baseIds).catch((error) => {
+        logger.catchLog("收集整笔业务资金腿失败", "entry-delete.ts")(error);
+        return [] as string[];
+      });
+  const ids = Array.from(new Set([...baseIds, ...wholeBusinessLegIds]));
   const undo = await prepareEntryUndo(prisma, ctx.householdId, ids);
   let deletedCount = 0;
   let keptBusinessCount = 0;

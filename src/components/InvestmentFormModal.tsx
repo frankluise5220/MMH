@@ -1783,11 +1783,16 @@ export function InvestmentFormModal({
   useEffect(() => {
     if (buyResultStatus !== "refund" || subtype !== "buy") return;
     if (linkedRefundEntryId) return;
+    // 编辑模式：到账日期已有值（业务行 arrivalDate 就是退款入账日，或用户自己填的），
+    // 不能再用「申请日 + 到账天数」覆盖 —— 那会把 10-19 的退款入账日悄悄改成
+    // 10-17，存回去之后资金侧就显示成 17 号。独立基金交易的退款腿不复用
+    // buy_failed 旧行，linkedRefundEntryId 常常为空，这条守卫因此必须显式判断。
+    if (mode === "edit" && arrivalDate) return;
     if (applyDate && !arrivalDateEditedRef.current) {
       const nextArrivalDate = arrivalDays > 0 ? addFundTradingDays(applyDate, arrivalDays) : applyDate;
       if (arrivalDate !== nextArrivalDate) setArrivalDate(nextArrivalDate);
     }
-  }, [buyResultStatus, subtype, applyDate, arrivalDate, arrivalDays, linkedRefundEntryId]);
+  }, [buyResultStatus, subtype, mode, applyDate, arrivalDate, arrivalDays, linkedRefundEntryId]);
 
   const computedUnits = investmentCalculation.computedUnits;
 

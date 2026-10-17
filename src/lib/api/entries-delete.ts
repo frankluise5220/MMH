@@ -21,6 +21,8 @@ export type EntryBusinessDeleteImpact = {
   businessType: string;
   businessLabel: string;
   legacyCombinedRecord?: boolean;
+  /** 业务侧另外显示的派生行数（基金买入/退回/分红等）：整笔删除提示要把它算进条数。 */
+  businessDisplayRowCount?: number;
 };
 
 export type EntriesDeleteResponse =
@@ -66,9 +68,17 @@ export function getDeleteRefreshAccountIds(data: EntriesDeleteResponse) {
 
 function describeBusinessImpacts(impacts: EntryBusinessDeleteImpact[] = [], t: I18nT, labelOverride?: string) {
   const counts = new Map<string, number>();
+  // 整笔删除：资金侧的每条腿各占一行，业务侧派生的行（基金买入/退回/分红）也各占一行，
+  // 提示里的「共 N 条」要把两边加起来。同一笔业务单的多条资金腿只加一次派生行数。
+  const displayRowCounted = new Set<string>();
   for (const impact of impacts) {
     const label = labelOverride || impact.counterpartLabel || impact.businessLabel || t("entriesDelete.linkedRecord");
     counts.set(label, (counts.get(label) ?? 0) + 1);
+    const businessKey = impact.businessEntryId;
+    if (!businessKey || displayRowCounted.has(businessKey)) continue;
+    displayRowCounted.add(businessKey);
+    const derivedRows = impact.businessDisplayRowCount ?? 0;
+    if (derivedRows > 0) counts.set(label, (counts.get(label) ?? 0) + derivedRows);
   }
   const parts = Array.from(counts.entries()).map(([label, count]) => t("entriesDelete.impactCount", { label, count }));
   return parts.join(", ") || t("entriesDelete.businessDetail");
@@ -104,7 +114,9 @@ export async function deleteEntriesWithLinkedPrompt({
     const linkedSelectedCount = linkedSelectedEntryIds.size;
     const unlinkedSelectedCount = Math.max(0, entryIds.length - linkedSelectedCount);
     const mixedSelection = linkedSelectedCount > 0 && unlinkedSelectedCount > 0;
-    const allBusinessSide = impacts.length > 0 && impacts.every((impact) => impact.selectedSide === "business");
+    // 整笔删除把同业务单的其余资金腿也带进了 impacts，判断「选中的是业务侧」只能看选中项。
+    const selectedImpacts = impacts.filter((impact) => selectedIdSet.has(impact.selectedEntryId || impact.entryId));
+    const allBusinessSide = selectedImpacts.length > 0 && selectedImpacts.every((impact) => impact.selectedSide === "business");
     // 存单口径（2026-09-15）：删除存单（buy）时，其已生成的到期/取息记录不会连带
     // 删除——在范围选择弹窗中附加提示，让用户带着这个口径做选择。
     const depositGeneratedRecordCount = precheck.depositGeneratedRecordCount ?? 0;
@@ -113,7 +125,7 @@ export async function deleteEntriesWithLinkedPrompt({
       : "";
     const businessRecordLabel = t("entriesDelete.businessRecord");
     const selectedLabel = allBusinessSide
-      ? (Array.from(new Set(impacts.map((impact) => impact.businessLabel || businessRecordLabel))).join(", ") || businessRecordLabel)
+      ? (Array.from(new Set(selectedImpacts.map((impact) => impact.businessLabel || businessRecordLabel))).join(", ") || businessRecordLabel)
       : t("entriesDelete.thisAccountRecord");
     const effectiveSelectedLabel = selectedRecordLabel || selectedLabel;
     const counterpartLabel = counterpartRecordLabel || (allBusinessSide ? t("entriesDelete.linkedCashTransaction") : t("entriesDelete.businessSideRecord"));

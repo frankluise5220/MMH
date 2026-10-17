@@ -40,6 +40,9 @@ export type EntryBusinessDeleteImpact = {
   businessLabel: string;
   linkType: string;
   legacyCombinedRecord: boolean;
+  /** 该业务单在业务侧（如投资侧）另外显示的派生行数。整笔删除的提示需要把它算进
+   * 「将删除 N 条记录」：资金侧腿各占一行，业务侧派生行（买入/退回等）也各占一行。 */
+  businessDisplayRowCount?: number;
 };
 
 type EntryBusinessLinkSummaryRow = {
@@ -613,5 +616,192 @@ export async function listEntryBusinessDeleteImpacts(
       counterpartLabel,
     });
   }
+
+  // 整笔删除语义（2026-10-17 用户规则）：命中的是某笔独立业务单的一条资金腿时，
+  // 把同一业务单的其余资金腿一并纳入影响范围。这样删除任意一条腿都会整笔删除
+  // （资金侧多腿 + 投资侧派生行），撤销删除也按同一批 id 整笔恢复。
+  const businessTargets = new Map<string, { type: EntryBusinessType; id: string }>();
+  for (const impact of unique.values()) {
+    if (!impact.businessEntryId) continue;
+    businessTargets.set(`${impact.businessType}:${impact.businessEntryId}`, {
+      type: impact.businessType,
+      id: impact.businessEntryId,
+    });
+  }
+  if (businessTargets.size > 0) {
+    const idsOfType = (type: EntryBusinessType) =>
+      Array.from(businessTargets.values())
+        .filter((target) => target.type === type)
+        .map((target) => target.id);
+    const businessAlive = (row: (typeof rows)[number]) =>
+      (!row.businessEntryId || Boolean(row.BusinessEntry && !row.BusinessEntry.deletedAt))
+      && (!row.fundTransactionId || Boolean(row.FundTransaction && !row.FundTransaction.deletedAt))
+      && (!row.insuranceTransactionId || Boolean(row.InsuranceTransaction && !row.InsuranceTransaction.deletedAt))
+      && (!row.wealthTransactionId || Boolean(row.WealthTransaction && !row.WealthTransaction.deletedAt))
+      && (!row.bondTransactionId || Boolean(row.BondTransaction && !row.BondTransaction.deletedAt))
+      && (!row.depositTransactionId || Boolean(row.DepositTransaction && !row.DepositTransaction.deletedAt))
+      && (!row.preciousMetalTransactionId || Boolean(row.PreciousMetalTransaction && !row.PreciousMetalTransaction.deletedAt))
+      && (!row.stockTransactionId || Boolean(row.StockTransaction && !row.StockTransaction.deletedAt))
+      && (!row.propertyTransactionId || Boolean(row.PropertyTransaction && !row.PropertyTransaction.deletedAt));
+    const siblingLinks = await prisma.entryBusinessLink.findMany({
+      where: {
+        householdId: ctx.householdId,
+        deletedAt: null,
+        OR: [
+          { fundTransactionId: { in: idsOfType("fund") } },
+          { insuranceTransactionId: { in: idsOfType("insurance") } },
+          { wealthTransactionId: { in: idsOfType("wealth") } },
+          { bondTransactionId: { in: idsOfType("bond") } },
+          { depositTransactionId: { in: idsOfType("deposit") } },
+          { preciousMetalTransactionId: { in: idsOfType("metal") } },
+          { stockTransactionId: { in: idsOfType("stock") } },
+          { propertyTransactionId: { in: idsOfType("property") } },
+        ],
+      },
+      select: linkSelect,
+    });
+    const coveredCashIds = new Set(Array.from(unique.values()).map((impact) => impact.entryId));
+    for (const row of siblingLinks) {
+      const cashEntryId = row.cashEntryId ?? "";
+      if (!cashEntryId || coveredCashIds.has(cashEntryId)) continue;
+      if (!row.CashEntry || row.CashEntry.deletedAt) continue;
+      if (!businessAlive(row)) continue;
+      if (row.FundTransaction && isFundUnitsReconcileEntry(row.FundTransaction)) continue;
+      const businessEntryId = businessTargetIdOf(row);
+      if (!businessEntryId) continue;
+      coveredCashIds.add(cashEntryId);
+      const businessLabel = entryBusinessTypeLabel(row.businessType);
+      unique.set(`${cashEntryId}:${businessEntryId}:${row.businessType}`, {
+        linkId: row.id,
+        selectedEntryId: cashEntryId,
+        selectedSide: "cash",
+        entryId: cashEntryId,
+        businessEntryId,
+        counterpartEntryId: businessEntryId,
+        businessType: row.businessType as EntryBusinessType,
+        businessLabel,
+        linkType: row.linkType,
+        legacyCombinedRecord: cashEntryId === businessEntryId,
+        counterpartLabel: businessLabel,
+      });
+    }
+  }
+
+  // 基金业务侧派生行（买入/退回/分红）也各占一行，整笔删除提示需要把它算进条数。
+  const fundBusinessIds = Array.from(new Set(
+    Array.from(unique.values())
+      .filter((impact) => impact.businessType === "fund")
+      .map((impact) => impact.businessEntryId)
+      .filter(Boolean),
+  ));
+  if (fundBusinessIds.length > 0) {
+    const flowCounts = await prisma.fundTransactionCashFlow.groupBy({
+      by: ["fundTransactionId"],
+      where: { fundTransactionId: { in: fundBusinessIds } },
+      _count: { _all: true },
+    });
+    const countByFundId = new Map(flowCounts.map((row) => [row.fundTransactionId, row._count._all]));
+    for (const impact of unique.values()) {
+      if (impact.businessType !== "fund") continue;
+      const count = countByFundId.get(impact.businessEntryId);
+      if (count && count > 0) impact.businessDisplayRowCount = count;
+    }
+  }
+
   return Array.from(unique.values());
+}
+
+export type RestoredBusinessFundTarget = { fundAccountId: string; fundCode: string };
+
+/**
+ * 撤销/恢复整笔删除的业务明细：按资金腿反查 EntryBusinessLink，把同一笔业务单
+ * （基金/保险/理财/债券/存款/贵金属/股票/房产）的 deletedAt 清空。
+ * deletedAfter 用于只恢复「本次删除」连带删掉的业务单，避免复活更早单独删除的业务。
+ */
+export async function restoreBusinessRecordsForCashEntryIds(
+  ctx: HouseholdContext,
+  cashEntryIds: string[],
+  options?: { deletedAfter?: Date | null },
+): Promise<{ restoredCount: number; fundTargets: RestoredBusinessFundTarget[] }> {
+  const ids = Array.from(new Set(cashEntryIds.filter(Boolean)));
+  const result: { restoredCount: number; fundTargets: RestoredBusinessFundTarget[] } = {
+    restoredCount: 0,
+    fundTargets: [],
+  };
+  if (ids.length === 0) return result;
+
+  // 注意：整笔删除会把 EntryBusinessLink 一起软删，所以这里不能要求 link.deletedAt = null，
+  // 否则撤销时反查不到业务单，投资侧派生行永远回不来。
+  const links = await prisma.entryBusinessLink.findMany({
+    where: { householdId: ctx.householdId, cashEntryId: { in: ids } },
+    select: {
+      id: true,
+      deletedAt: true,
+      fundTransactionId: true,
+      insuranceTransactionId: true,
+      wealthTransactionId: true,
+      bondTransactionId: true,
+      depositTransactionId: true,
+      preciousMetalTransactionId: true,
+      stockTransactionId: true,
+      propertyTransactionId: true,
+    },
+  });
+  if (links.length === 0) return result;
+  const idsOf = (field: keyof (typeof links)[number]) =>
+    Array.from(new Set(links.map((link) => link[field]).filter((id): id is string => Boolean(id))));
+  const deletedAtWhere = options?.deletedAfter ? { gte: options.deletedAfter } : { not: null };
+
+  // link 是删除范围的反查入口：删除时被连带软删，撤销必须先把它恢复，
+  // 否则恢复后的这笔业务再被删除时「整笔」范围就查不到其余资金腿了。
+  const restoreLinkIds = links
+    .filter((link) => link.deletedAt && (!options?.deletedAfter || link.deletedAt >= options.deletedAfter))
+    .map((link) => link.id);
+  if (restoreLinkIds.length > 0) {
+    await prisma.entryBusinessLink.updateMany({
+      where: { id: { in: restoreLinkIds }, householdId: ctx.householdId },
+      data: { deletedAt: null },
+    });
+  }
+
+  const fundIds = idsOf("fundTransactionId");
+  if (fundIds.length > 0) {
+    const updated = await prisma.fundTransaction.updateMany({
+      where: { householdId: ctx.householdId, id: { in: fundIds }, deletedAt: deletedAtWhere },
+      data: { deletedAt: null },
+    });
+    result.restoredCount += updated.count;
+    const fundRows = await prisma.fundTransaction.findMany({
+      where: { householdId: ctx.householdId, id: { in: fundIds } },
+      select: { fundAccountId: true, fundCode: true },
+    });
+    result.fundTargets.push(...fundRows);
+  }
+
+  const restoreTable = async (
+    model: "insuranceTransaction" | "wealthTransaction" | "bondTransaction" | "depositTransaction" | "preciousMetalTransaction" | "stockTransaction" | "propertyTransaction",
+    recordIds: string[],
+  ) => {
+    if (recordIds.length === 0) return;
+    const updated = await (prisma[model] as unknown as {
+      updateMany: (args: {
+        where: { householdId: string; id: { in: string[] }; deletedAt: { gte: Date } | { not: null } };
+        data: { deletedAt: null };
+      }) => Promise<{ count: number }>;
+    }).updateMany({
+      where: { householdId: ctx.householdId, id: { in: recordIds }, deletedAt: deletedAtWhere },
+      data: { deletedAt: null },
+    });
+    result.restoredCount += updated.count;
+  };
+
+  await restoreTable("insuranceTransaction", idsOf("insuranceTransactionId"));
+  await restoreTable("wealthTransaction", idsOf("wealthTransactionId"));
+  await restoreTable("bondTransaction", idsOf("bondTransactionId"));
+  await restoreTable("depositTransaction", idsOf("depositTransactionId"));
+  await restoreTable("preciousMetalTransaction", idsOf("preciousMetalTransactionId"));
+  await restoreTable("stockTransaction", idsOf("stockTransactionId"));
+  await restoreTable("propertyTransaction", idsOf("propertyTransactionId"));
+
+  return result;
 }

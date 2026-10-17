@@ -218,6 +218,9 @@ function buildOrderingCtesSql(args: {
   const linkedBusinessSubtypeSql = Prisma.sql`COALESCE(s."linkedFundSubtype", s."wealthAction", s."fundSubtype")`;
   const linkedBusinessArrivalSql = Prisma.sql`COALESCE(s."linkedFundArrivalDate", s."wealthArrivalDate", s."fundArrivalDate")`;
   const linkedBusinessCashAccountSql = Prisma.sql`COALESCE(s."linkedFundCashAccountId", s."wealthCashAccountId", s."toAccountId")`;
+  // "classified" 之后的 CTE 里行别名是 c，同一份口径再写一遍。
+  const classifiedSubtypeSql = Prisma.sql`COALESCE(c."linkedFundSubtype", c."wealthAction", c."fundSubtype")`;
+  const classifiedCashAccountSql = Prisma.sql`COALESCE(c."linkedFundCashAccountId", c."wealthCashAccountId", c."toAccountId")`;
 
   // 每笔流水对「余额」列的贡献。必须与 account-balance.ts 的 foldBalanceEntry 逐条对齐，
   // 否则明细余额列会与账户余额不一致。
@@ -309,6 +312,18 @@ function buildOrderingCtesSql(args: {
       SELECT c.*
       FROM "classified" c
       WHERE CAST(DATE(c."displayAt") AS TEXT) <= ${todayKey}
+        -- 投资资金到账腿（赎回 / 现金分红 / 买入退回）即使到账日在今天之后也要列出来：
+        -- 金额和到账日都已确认，用户要在资金侧按到账日看到这一行。它的余额贡献仍是 0
+        -- （见 effectiveAmountCase 里 displayAt > today 的分支），所以列表顶部余额不会
+        -- 被推到页头余额之外。不满足该条件的未来行（预约交易、存款到期计划等）照旧隐藏。
+        OR (
+          c."type" = 'investment'
+          AND ${classifiedCashAccountSql} ${cashSideMatchSql}
+          AND (
+            ${classifiedSubtypeSql} IN ('redeem', 'dividend_cash', 'switch_out')
+            OR c."source" = 'regular_invest_refund'
+          )
+        )
     ),
     "displayed" AS (
       SELECT

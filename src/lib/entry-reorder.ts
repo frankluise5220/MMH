@@ -6,6 +6,7 @@ import {
 } from "@/lib/balance-reconcile";
 import { getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
 import { formatDateLocal, toNumber } from "@/lib/date-utils";
+import { isFundBuyRefundCashLeg } from "@/lib/transaction-semantics";
 
 export type ReorderDisplayEntry = {
   id: string;
@@ -92,6 +93,10 @@ export function rowWithLinkedFundDisplayDate<T extends ReorderDisplayEntry>(
   fundRow?: LinkedFundForReorder | null,
 ): T {
   if (!fundRow || fundRow.deletedAt) return row;
+  // 买入退款资金腿：`date` 本身就是到账日、`amount` 就是退款金额，
+  // 套用买入口径会把资金侧那笔收入改写成「又一笔申请日的买入」。部分退款时
+  // 主业务行仍是 buy，也不该因此丢掉退款语义。
+  if (isFundBuyRefundCashLeg(row)) return row;
   const subtype = String(fundRow.fundSubtype ?? "").trim();
   const isCashReceipt = subtype === "redeem" || subtype === "dividend_cash" || subtype === "switch_out";
   const isBuyFailedRefund = subtype === "buy_failed" && String(row.source ?? "") === "regular_invest_refund";

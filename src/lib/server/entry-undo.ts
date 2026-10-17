@@ -11,6 +11,10 @@ import { syncIndependentBusinessTransactionFromTxRecord } from "@/lib/server/bus
 import type { HouseholdContext } from "@/lib/server/household-scope";
 import { createManySkipDuplicatesCompat } from "@/lib/server/prisma-create-many";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
+import {
+  restoreBusinessRecordsForCashEntryIds,
+  type RestoredBusinessFundTarget,
+} from "@/lib/server/entry-business-link";
 
 type DbWriter = PrismaClient | Prisma.TransactionClient;
 type UndoSnapshot = Record<string, unknown>;
@@ -272,7 +276,7 @@ function snapshotToUpdateData(snapshot: UndoSnapshot) {
   return data;
 }
 
-async function recalculateRestoredEntries(records: TxRecord[]) {
+async function recalculateRestoredEntries(records: TxRecord[], options?: { forceInvestRevalidate?: boolean }) {
   const accountIds = new Set<string>();
   const fundAccounts = new Map<string, Set<string>>();
   const metalAccounts = new Set<string>();
@@ -321,7 +325,10 @@ async function recalculateRestoredEntries(records: TxRecord[]) {
   await invalidateCreditCardCycleCacheForAccountIds(accountIds).catch((error) => {
     console.error("[entry-undo] failed to invalidate credit-card cycles", error);
   });
-  if (touchedInvestment) revalidateAfterInvestChange();
+  // 资金腿本身不带 fundCode / fundProductType，只看腿判断不出「投资侧也有变化」。
+  // 整笔恢复时业务单（基金交易/持仓）已回来，必须失效投资侧缓存，否则页面仍读旧缓存，
+  // 看起来像「只恢复了资金明细，关联数据没恢复」。
+  if (touchedInvestment || options?.forceInvestRevalidate) revalidateAfterInvestChange();
   else revalidateAfterTxChange();
 }
 
@@ -392,13 +399,39 @@ export async function undoLatestEntryOperation(ctx: HouseholdContext) {
     await tx.undoOperation.update({ where: { id: operation.id }, data: { undoneAt: new Date() } });
   });
 
+  // 整笔业务单也要一起恢复：业务单被整笔删除时，仅恢复 TxRecord 不够——资金腿不携带
+  // fundCode，syncFundTransactionsFromTxRecords 认不出来，投资侧派生行会永远回不来。
+  // 业务单删除必然连带删除它的资金腿，腿在快照里恢复，业务单就按 link 反查一起恢复。
+  const restoredBusiness = await restoreBusinessRecordsForCashEntryIds(
+    ctx,
+    snapshots.map((snapshot) => String(snapshot.id ?? "")).filter(Boolean),
+  ).catch((error) => {
+    console.error("[entry-undo] failed to restore business records", error);
+    return { restoredCount: 0, fundTargets: [] as RestoredBusinessFundTarget[] };
+  });
+
   const restored = await prisma.txRecord.findMany({
     where: {
       id: { in: snapshots.map((snapshot) => String(snapshot.id)) },
       OR: [{ householdId: ctx.householdId }, { householdId: null }],
     },
   });
-  await recalculateRestoredEntries(restored);
+  await recalculateRestoredEntries(restored, {
+    forceInvestRevalidate: restoredBusiness.restoredCount > 0 || restoredBusiness.fundTargets.length > 0,
+  });
+  for (const target of restoredBusiness.fundTargets) {
+    await recalcFundPositions(target.fundAccountId, [target.fundCode]).catch((error) => {
+      console.error("[entry-undo] failed to recalculate restored fund position", { target, error });
+    });
+  }
   const remainingCount = await getAvailableEntryUndoCount(ctx);
-  return { operationId: operation.id, label: operation.label, action: operation.action, restoredCount: restored.length, remainingCount, historyLimit: ENTRY_UNDO_HISTORY_LIMIT };
+  return {
+    operationId: operation.id,
+    label: operation.label,
+    action: operation.action,
+    restoredCount: restored.length,
+    restoredBusinessCount: restoredBusiness.restoredCount,
+    remainingCount,
+    historyLimit: ENTRY_UNDO_HISTORY_LIMIT,
+  };
 }

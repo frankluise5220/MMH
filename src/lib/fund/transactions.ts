@@ -209,10 +209,17 @@ export async function createFundTransactionWithCashFlows(
       arrivalDate: params.arrivalDate,
       requestedDate: flow.date,
     });
+    // 退款腿（refund_in）是独立的一笔资金流水：钱退回现金账户，分类是「买入退回」，
+    // source 必须是 regular_invest_refund。沿用买入口径会让资金侧把它显示成
+    // 申请日当天的又一笔「基金买入」（部分退款时主业务行仍是 buy，见
+    // isFundBuyRefundCashLeg）。
+    const isRefundFlow = flow.kind === FundCashFlowKind.refund_in;
+    const flowSource = flow.source
+      ?? (isRefundFlow ? TRANSACTION_SOURCE_REGULAR_INVEST_REFUND : params.source);
     const categoryName = flow.categoryName ?? getInvestmentCategoryName({
       fundProductType: params.fundProductType,
-      fundSubtype: params.fundSubtype,
-      source: flow.source ?? params.source,
+      fundSubtype: isRefundFlow ? FundSubtype.buy_failed : params.fundSubtype,
+      source: flowSource,
     });
     const category = flow.categoryId || !categoryName
       ? null
@@ -228,7 +235,7 @@ export async function createFundTransactionWithCashFlows(
         toAccountName: null,
         amount: flow.amount,
         currency: flow.currency ?? "CNY",
-        source: flow.source ?? params.source ?? "manual",
+        source: flowSource ?? "manual",
         entryOrigin: flow.entryOrigin ?? params.entryOrigin ?? ENTRY_ORIGIN_MANUAL,
         categoryId: flow.categoryId ?? category?.id ?? null,
         categoryName: flow.categoryName ?? category?.name ?? categoryName ?? null,
@@ -409,6 +416,20 @@ export async function upsertFundTransactionRefundCashFlow(
       })
     : null);
 
+  // 退款腿的分类固定是「买入退回」：它是一笔独立的资金流入，不能被买入口径覆盖。
+  const refundSource = params.source ?? TRANSACTION_SOURCE_REGULAR_INVEST_REFUND;
+  const refundCategoryName = getInvestmentCategoryName({
+    fundProductType: null,
+    fundSubtype: FundSubtype.buy_failed,
+    source: refundSource,
+  });
+  const refundCategory = refundCategoryName
+    ? await resolveCategorySnapshot(client, params.householdId, {
+        categoryName: refundCategoryName,
+        type: "investment",
+      })
+    : null;
+
   const cashEntryData = {
     date: params.refundDate,
     type: TransactionType.investment,
@@ -418,7 +439,9 @@ export async function upsertFundTransactionRefundCashFlow(
     toAccountName: null,
     amount: refundAmount,
     currency: params.currency ?? "CNY",
-    source: params.source ?? "regular_invest_refund",
+    source: refundSource,
+    categoryId: refundCategory?.id ?? null,
+    categoryName: refundCategory?.name ?? refundCategoryName ?? null,
     note: params.note ?? undefined,
     fundCode: null,
     fundName: null,
