@@ -115,16 +115,6 @@ function rate(value: number) {
   return formatPercent(value);
 }
 
-function transactionTypeLabel(t: (key: string) => string, entry: FixedAssetTransaction) {
-  if (entry.type === "income" || entry.type === "expense") {
-    return t(entry.type === "income" ? "transaction.type.income" : "transaction.type.expense");
-  }
-  const amount = Number(entry.amount ?? 0);
-  if (amount > 0) return t("transaction.type.income");
-  if (amount < 0) return t("transaction.type.expense");
-  return "-";
-}
-
 function transactionCategoryLabel(t: (key: string) => string, categoryName: string | null | undefined) {
   return systemCategoryLabel(categoryName, t) || t("txForm.uncategorized");
 }
@@ -797,10 +787,12 @@ export function PropertyShell({
       return { label: label || "-", title: source ? formatAccountTableTitle(source, label, getAccountLabelFieldsPreference()) : label };
     };
     const currencyFor = (entry: FixedAssetTransaction) => entry.currency || displayCurrency;
-    const flowAmount = (entry: FixedAssetTransaction) => Number(entry.amount ?? 0);
-    const renderAmount = (value: number | null, currency: string, className: string) => (
-      <span className={`whitespace-nowrap text-xs tabular-nums ${className}`}>{value == null ? "" : formatCurrencyMoney(value, currency)}</span>
-    );
+    /**
+     * 固定资产口径的金额：正 = 成本增加（购车、改装、税费、保险…），负 = 成本减少（卖出、国补/退费）。
+     * 底层 entry.amount 用的是资金侧符号（钱出账户为负、钱回账户为正），两者正好相反，
+     * 所以这里取反只为展示；排序/筛选/编辑弹窗仍沿用 entry.amount 的资金侧符号。
+     */
+    const assetDelta = (entry: FixedAssetTransaction) => -Number(entry.amount ?? 0);
     return [
       {
         key: "date",
@@ -841,33 +833,26 @@ export function PropertyShell({
         },
       },
       {
-        key: "inflow",
-        label: t("detail.column.inflow"),
-        width: 96,
-        minWidth: 76,
+        // 固定资产明细只给一列「金额」，正负即成本变动方向（与资金侧符号相反）：正=成本增加
+        // （购车、改装、税费），负=成本减少（卖出、国补/退费）。固定资产不走普通账户的
+        // 「流入/流出」两列格式，否则退款类记录会被塞进流出列，看起来像又花了一笔。
+        key: "amount",
+        label: t("propertyShell.column.amount"),
+        width: 120,
+        minWidth: 92,
         align: "right",
         filterKind: "numberRange",
-        filterText: (entry) => flowAmount(entry) > 0 ? String(flowAmount(entry)) : "",
-        filterNumber: (entry) => flowAmount(entry) > 0 ? flowAmount(entry) : null,
-        sortValue: (entry) => flowAmount(entry) > 0 ? flowAmount(entry) : null,
+        filterText: (entry) => String(assetDelta(entry)),
+        filterNumber: (entry) => assetDelta(entry),
+        sortValue: (entry) => assetDelta(entry),
         render: (entry) => {
-          const amount = flowAmount(entry);
-          return renderAmount(amount > 0 ? amount : null, currencyFor(entry), amount > 0 ? pnlCls(1) : "text-slate-700");
-        },
-      },
-      {
-        key: "outflow",
-        label: t("detail.column.outflow"),
-        width: 96,
-        minWidth: 76,
-        align: "right",
-        filterKind: "numberRange",
-        filterText: (entry) => flowAmount(entry) < 0 ? String(-flowAmount(entry)) : "",
-        filterNumber: (entry) => flowAmount(entry) < 0 ? -flowAmount(entry) : null,
-        sortValue: (entry) => flowAmount(entry) < 0 ? -flowAmount(entry) : null,
-        render: (entry) => {
-          const amount = flowAmount(entry);
-          return renderAmount(amount < 0 ? -amount : null, currencyFor(entry), amount < 0 ? pnlCls(-1) : "text-slate-700");
+          const delta = assetDelta(entry);
+          const money = formatCurrencyMoney(delta, currencyFor(entry));
+          return (
+            <span className={`whitespace-nowrap text-xs tabular-nums ${delta === 0 ? "text-slate-700" : pnlCls(delta > 0 ? 1 : -1)}`}>
+              {delta > 0 ? `+${money}` : money}
+            </span>
+          );
         },
       },
       {
@@ -880,15 +865,8 @@ export function PropertyShell({
         render: (entry) => <span className="block truncate text-center font-medium tabular-nums text-slate-500">{currencyFor(entry)}</span>,
       },
       {
-        key: "type",
-        label: t("detail.column.activityType"),
-        width: 96,
-        minWidth: 80,
-        filterText: (entry) => transactionTypeLabel(t, entry),
-        sortValue: (entry) => transactionTypeLabel(t, entry),
-        render: (entry) => <span className="text-slate-700">{transactionTypeLabel(t, entry)}</span>,
-      },
-      {
+        // 固定资产明细不显示「活动类型」（支出/收入那套是资金侧语义，和上面的增减方向会打架），
+        // 只显示活动分类。
         key: "category",
         label: t("detail.column.category"),
         width: 160,
@@ -897,7 +875,7 @@ export function PropertyShell({
         sortValue: (entry) => transactionCategoryLabel(t, entry.categoryName),
         truncate: true,
         cellTitle: (entry) => transactionCategoryLabel(t, entry.categoryName),
-        render: (entry) => <span className="block truncate text-slate-500" title={transactionCategoryLabel(t, entry.categoryName)}>{transactionCategoryLabel(t, entry.categoryName)}</span>,
+        render: (entry) => <span className="block truncate text-slate-600" title={transactionCategoryLabel(t, entry.categoryName)}>{transactionCategoryLabel(t, entry.categoryName)}</span>,
       },
       {
         key: "counterpartyInstitution",

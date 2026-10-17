@@ -670,6 +670,19 @@ export async function loadPropertyTransactionEntryLike(params: {
       : isCashIn
         ? "income"
         : "expense";
+    // 现金腿是收入/支出时，金额符号必须沿用 TxRecord 自己存的符号：支出通常存负数
+    // （钱流出付款账户），但汽车国补、保险退费等退款会存正数（钱回到账户）。只按 action
+    // 重算符号会把「国补 20,000 退回」写成「又花了 20,000」，固定资产明细和它的编辑弹窗
+    // （弹窗对 expense 再做一次取反）都会把方向弄反。转账腿（贷款买房等）不在本条规则内，
+    // 仍按 action 判断方向。
+    const cashLegAmount = cashEntry?.type === "income" || cashEntry?.type === "expense"
+      ? toNumber(cashEntry.amount)
+      : null;
+    const signedAmount = cashLegAmount != null && cashLegAmount !== 0
+      ? cashLegAmount
+      : isCashIn
+        ? amount
+        : -amount;
     return {
       id: linkedCashEntryId ?? row.id,
       cashEntryId: linkedCashEntryId,
@@ -683,7 +696,7 @@ export async function loadPropertyTransactionEntryLike(params: {
       toAccountId: row.accountId,
       toAccountName: row.Account.name,
       currency: cashEntry?.currency ?? row.CashAccount?.currency ?? row.Account.currency ?? "CNY",
-      amount: isCashIn ? amount : -amount,
+      amount: signedAmount,
       type,
       categoryId: cashEntry?.categoryId ?? null,
       categoryName: cashEntry?.categoryName ?? null,
