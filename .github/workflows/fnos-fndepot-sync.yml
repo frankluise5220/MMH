@@ -129,8 +129,13 @@ jobs:
           git add deploy/fnos/repository/fnpack.json \
                   deploy/fnos/repository/apps.example.json \
                   deploy/fnos/repository/api/apps \
-                  fn-appstores.json \
-                  deploy/fnos/selfhosted-source/data/fn-appstores.json
+                  fn-appstores.json
+          # deploy/fnos/selfhosted-source/ 被 .gitignore 忽略（VPS 种子副本），CI 里不存在：
+          # 直接 `git add` 它会以 "pathspec did not match any files" 退出 128，把整个
+          # 回填 commit 一起带走（v0.1.74 首次发布即如此）。存在才加。
+          if [ -f deploy/fnos/selfhosted-source/data/fn-appstores.json ]; then
+            git add deploy/fnos/selfhosted-source/data/fn-appstores.json
+          fi
           if git diff --staged --quiet; then
             echo "fnpack.json / 软仓 desc unchanged; nothing to commit."
             exit 0
