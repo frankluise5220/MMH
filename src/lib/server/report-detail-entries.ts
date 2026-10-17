@@ -161,6 +161,9 @@ export async function loadReportDetailEntries(
     amount: record.type === "investment" && (record.fundSubtype === "redeem" || record.fundSubtype === "switch_out")
       ? 0
       : toNumber(record.amount),
+    // 记账原值：上面的 amount 是报表展示口径（赎回本金会被抹成 0），
+    // 编辑窗要用这一列还原「取出本金 / 到账金额」。
+    bookAmount: toNumber(record.amount),
     currency: record.currency ?? "CNY",
     runningBalance: null,
     type: record.type,

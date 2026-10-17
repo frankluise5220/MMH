@@ -109,14 +109,33 @@ export async function linkExpenseToFixedAsset(
   const tradeDate = params.cashEntry.postedAt ?? params.cashEntry.date;
   const note = params.cashEntry.note?.trim() || null;
   const propertyName = params.propertyName?.trim() || propertyAccount.name;
-  const nextAssetType = normalizeFixedAssetType(propertyAccount.fixedAssetType);
+  // 类型判定的优先级：**指定资产 → 账户下已有资产 → 账户级默认值**。
+  // 账户级 `fixedAssetType` 是后加的列且迁移未回填（存量全 NULL），只认它会把
+  // 车辆/设备一路按「房产」写下去，所以必须先看资产行。
+  const accountFixedAsset = await client.propertyAsset.findFirst({
+    where: {
+      householdId: params.householdId,
+      accountId: propertyAccount.id,
+      status: "active",
+      deletedAt: null,
+    },
+    orderBy: [{ purchaseDate: "asc" }, { createdAt: "asc" }],
+    select: { assetType: true },
+  });
+  const nextAssetType = normalizeFixedAssetType(
+    requestedPropertyAsset?.assetType ?? accountFixedAsset?.assetType ?? propertyAccount.fixedAssetType,
+  );
 
   const existingLinked = await client.propertyTransaction.findFirst({
     where: { householdId: params.householdId, cashEntryId: params.cashEntry.id, deletedAt: null },
-    select: { id: true, propertyAssetId: true, accountId: true },
+    select: { id: true, propertyAssetId: true, accountId: true, PropertyAsset: { select: { assetType: true } } },
   });
   if (existingLinked) {
     let targetPropertyAssetId = requestedPropertyAsset?.id ?? existingLinked.propertyAssetId;
+    // 账户级类型最终以「这条关联真正指向的资产」为准，避免账户列被写成兜底值。
+    let resolvedAssetType = normalizeFixedAssetType(
+      existingLinked.PropertyAsset?.assetType ?? nextAssetType,
+    );
     const shouldSwitchAsset = Boolean(
       requestedPropertyAsset?.id && requestedPropertyAsset.id !== existingLinked.propertyAssetId,
     );
@@ -155,6 +174,7 @@ export async function linkExpenseToFixedAsset(
           data: { mortgageLoanAccountId },
         });
       }
+      resolvedAssetType = normalizeFixedAssetType(targetAsset.assetType);
       targetPropertyAssetId = targetAsset.id;
     }
     await client.propertyTransaction.update({
@@ -171,7 +191,7 @@ export async function linkExpenseToFixedAsset(
     });
     await client.account.update({
       where: { id: propertyAccount.id },
-      data: { fixedAssetType: nextAssetType },
+      data: { fixedAssetType: resolvedAssetType },
     });
     await upsertEntryBusinessCashFlowLink(client, {
       householdId: params.householdId,
@@ -242,7 +262,7 @@ export async function linkExpenseToFixedAsset(
 
   await client.account.update({
     where: { id: propertyAccount.id },
-    data: { fixedAssetType: nextAssetType },
+    data: { fixedAssetType: normalizeFixedAssetType(propertyAsset.assetType) },
   });
 
   const row = await client.propertyTransaction.create({

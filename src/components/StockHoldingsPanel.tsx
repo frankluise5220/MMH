@@ -11,7 +11,11 @@ import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
 import { ResizableVerticalSplit } from "@/components/ResizableVerticalSplit";
 import { StockFeeRuleSettingsButton } from "@/components/StockFeeRuleSettingsButton";
-import { AdvancedDataTable, type AdvancedDataTableColumn } from "@/components/AdvancedDataTable";
+import {
+  ADVANCED_TABLE_HEAD_SURFACE_CLASS,
+  AdvancedDataTable,
+  type AdvancedDataTableColumn,
+} from "@/components/AdvancedDataTable";
 import { BatchReplacePopoverButton, type BatchReplaceFieldConfig } from "@/components/BatchReplacePopoverButton";
 import { BusinessLinkActionButton } from "@/components/BusinessLinkActionButton";
 import { DetailTablePaginationControls } from "@/components/DetailTablePaginationControls";
@@ -1068,8 +1072,8 @@ export function StockHoldingsPanel({
         separatorTitle={t("stockPanel.resizeTitle")}
         stackOnMobile
       >
-      <div className="panel-surface flex h-full min-h-0 flex-col overflow-hidden">
-        <div className="panel-header shrink-0 gap-2">
+      <div className="paper-card flex h-full min-h-0 flex-col overflow-hidden">
+        <div className={`paper-card-header shrink-0 gap-2 ${ADVANCED_TABLE_HEAD_SURFACE_CLASS}`}>
           <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-left">
             <div className="flex min-w-0 items-center gap-1 text-sm font-semibold text-slate-800">
               <span className="flex h-6 min-w-0 shrink items-center truncate">{t("stockTx.holdingStock")}</span>
@@ -1162,6 +1166,7 @@ export function StockHoldingsPanel({
             draggableRows={false}
             defaultSort={showCleared ? { key: "historical", direction: "desc" } : { key: "marketValue", direction: "desc" }}
             summaryRow={positionSummaryRow}
+            summaryRowPlacement="footer"
           />
         </div>
       </div>

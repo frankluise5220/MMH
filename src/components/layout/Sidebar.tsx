@@ -12,6 +12,7 @@ import { getMaintainedAccountBalances } from "@/lib/server/account-balance";
 import { computeLiabilityDisplaySummary } from "@/lib/server/liability-display-summary";
 import { getCachedHouseholdScope } from "@/lib/server/household-scope";
 import { isDepositAccount, isLoanOrSettlementAccountKind, isPureInvestmentAccount } from "@/lib/account-kind-utils";
+import { dominantFixedAssetType } from "@/lib/fixed-asset";
 import type { SidebarGroupMode } from "@/lib/client/appPreferences";
 import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
 import { convertCurrencyAmounts } from "@/lib/server/fx-rates";
@@ -44,7 +45,19 @@ async function getSidebarData() {
     }),
     prisma.account.findMany({
       where: { isPlaceholder: { not: true }, name: { not: "未指定账户" }, ...hidFilter, isActive: true },
-      include: { AccountGroup: true, Institution: true, Counterparty: true },
+      include: {
+        AccountGroup: true,
+        Institution: true,
+        Counterparty: true,
+        // 固定资产的**真实类型在资产行上**：`Account.fixedAssetType` 是后加的列，
+        // 迁移没有回填 → 存量账户全为 NULL。这里必须带出 assetType 供分组回退，
+        // 否则车辆/设备会被兜底成「房产」，从侧边栏入口彻底看不到。
+        PropertyAsset: {
+          where: { deletedAt: null },
+          select: { assetType: true },
+          orderBy: [{ purchaseDate: "asc" }, { createdAt: "asc" }],
+        },
+      },
       orderBy: [{ name: "asc" }],
     }),
     computeInvestBalances(ctx),
@@ -131,7 +144,13 @@ async function getSidebarData() {
       isConsumerLoan: account.isConsumerLoan === true,
       loanType: account.loanType ?? null,
       investProductType: account.investProductType || undefined,
-      fixedAssetType: account.fixedAssetType ?? null,
+      // 分组口径必须与「点进去后按什么过滤」一致：视图按**资产行的 `assetType`** 过滤
+      // （`page.tsx` 的 `position.assetType === fixedAssetTypeParam`），所以这里也以资产行为准。
+      // `Account.fixedAssetType` 只是「新建资产时的默认类型」，只有在账户还没有资产行时才拿来兜底。
+      // 反过来（账户优先）会出现「分组里有它、点进去列表里没有」——正是这次「资产消失」的症状。
+      // 用户发现分类不对时，改的是**资产类型**（固定资产页 → `PUT /api/v1/properties`），
+      // 那条路径会同时回写账户列，所以改完这里立刻跟着变。
+      fixedAssetType: dominantFixedAssetType(account.PropertyAsset.map((asset) => asset.assetType)) ?? account.fixedAssetType,
     };
   });
   const conversion = await convertCurrencyAmounts({

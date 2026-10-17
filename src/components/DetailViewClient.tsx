@@ -25,6 +25,7 @@ import { compareDetailEntriesAsc, compareDetailEntriesDesc, getDetailEntryDispla
 import { removeEntriesAndUpdateRunningBalances } from "@/lib/detail-running-balance";
 import { rebaseRunningBalancesAfterSameDayReorder, startOfDayRunningBalanceSeed } from "@/lib/entry-reorder";
 import { buildLiabilityActivityEditEvent, inferLiabilityMode, isLiabilityActivityEntry, type LiabilityMode } from "@/lib/liability-entry-edit";
+import { resolveAccountProductType, resolveEntryProductType, toBusinessLinkType } from "@/lib/entry-product-type";
 import { parseLoanPrepayStrategy } from "@/lib/loan-prepay-strategy";
 import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
 import { withBasePath } from "@/lib/base-path";
@@ -152,6 +153,12 @@ export type DetailEntry = {
   entryOrigin?: string | null;
   dayOrder?: number | null;
   amount: number;
+  /**
+   * 记账真值（TxRecord.amount）。报表下钻会把 `amount` 换成展示口径
+   * （如赎回本金不计收支时置 0），编辑窗必须拿这个原值，否则取出本金 /
+   * 到账金额会空（2026-10-17 存款取出编辑报障）。
+   */
+  bookAmount?: number | null;
   currency?: string | null;
   runningBalance?: number | null;
   /** 对账锁定：非空 = 该记录已对账，不可删除 / 修改（编辑窗只读）。 */
@@ -571,6 +578,7 @@ export function DetailViewClient({
   accountId,
   initialEntries,
   accountOptions,
+  batchReplaceAccountOptions,
   categoryOptions = [],
   tagOptions = [],
   investmentProductTypeByAccountId,
@@ -607,6 +615,8 @@ export function DetailViewClient({
   isInvestAccount: boolean;
   initialEntries: DetailEntry[];
   accountOptions: DetailAccountOption[];
+  /** 批量替换账户下拉的选项；缺省时沿用 `accountOptions`。 */
+  batchReplaceAccountOptions?: DetailAccountOption[];
   categoryOptions?: BasicDetailBatchCategoryOption[];
   tagOptions?: BasicDetailBatchCategoryOption[];
   investmentProductTypeByAccountId: Record<string, string | undefined | null>;
@@ -670,6 +680,37 @@ export function DetailViewClient({
     () => new Map(accountOptions.map((option) => [option.id, option])),
     [accountOptions],
   );
+  // 账户 → 业务产品类型。必须同时看 `kind`：新式存款账户是
+  // `kind="deposit"` + `investProductType=NULL`，只看 investProductType
+  // 会让存款流水推不出 deposit，落到基金编辑窗（同一笔记录两种窗口的根因）。
+  const accountProductTypeById = useMemo(() => {
+    const map = new Map<string, ReturnType<typeof resolveAccountProductType>>();
+    for (const option of accountOptions) {
+      map.set(option.id, resolveAccountProductType({
+        kind: option.kind,
+        investProductType: investmentProductTypeByAccountId[option.id] ?? null,
+      }));
+    }
+    for (const [id, investProductType] of Object.entries(investmentProductTypeByAccountId)) {
+      if (map.has(id)) continue;
+      map.set(id, resolveAccountProductType({ investProductType }));
+    }
+    return map;
+  }, [accountOptions, investmentProductTypeByAccountId]);
+  /**
+   * 明细行的业务产品类型（唯一推导入口）。
+   * 分类列、类型列、编辑窗分流、关联业务按钮都必须走这里，否则同一行会
+   * 「显示成存款取出、双击却打开基金窗」——即用户看到的两种窗口。
+   */
+  const entryProductTypeOf = useCallback((entry: DetailEntry) => resolveEntryProductType({
+    fundProductType: entry.fundProductType,
+    businessLinkLabels: entry.businessLinkLabels,
+    toAccountProductType: entry.toAccountId ? accountProductTypeById.get(entry.toAccountId) ?? null : null,
+    accountProductType: entry.accountId ? accountProductTypeById.get(entry.accountId) ?? null : null,
+  }), [accountProductTypeById]);
+  // 账户单元格的显示来源是 `accountOptions`（全量账户），批量替换可选的账户
+  // 另有一套（通常只允许收支记账账户），两者不能混用。
+  const resolvedBatchReplaceAccountOptions = batchReplaceAccountOptions ?? accountOptions;
   const accountDisplayFallback = useCallback((accountId?: string | null, fallback?: string | null) => {
     const byId = accountId ? accountOptionById.get(accountId) : undefined;
     if (byId) {
@@ -752,11 +793,7 @@ export function DetailViewClient({
   const detailCategoryLabel = useCallback((entry: DetailEntry) => {
     const liabilityLabel = liabilityCategoryLabel(entry, accountOptionById, t);
     if (liabilityLabel) return liabilityLabel;
-    const entryFundProductType =
-      entry.fundProductType ??
-      (entry.toAccountId ? investmentProductTypeByAccountId[entry.toAccountId] : undefined) ??
-      (entry.accountId ? investmentProductTypeByAccountId[entry.accountId] : undefined) ??
-      null;
+    const entryFundProductType = entryProductTypeOf(entry);
     if (entryFundProductType === "property" && entry.type === "investment") return systemCategoryLabel(entry.categoryName, t);
     if (entry.type === "investment") return investmentCategoryLabel(entry, entryFundProductType, t);
     if (isCreditCardRepaymentDisplayEntry(entry)) return t("transaction.category.creditCardRepayment");
@@ -767,7 +804,7 @@ export function DetailViewClient({
       return t("systemCategory.reimbursement");
     }
     return "";
-  }, [accountOptionById, investmentProductTypeByAccountId, t]);
+  }, [accountOptionById, entryProductTypeOf, t]);
   const [refreshedEntries, setRefreshedEntries] = useState<{ accountId: string; entries: DetailEntry[] } | null>(null);
   const [linkingIds, setLinkingIds] = useState<Set<string>>(new Set());
   const entries = refreshedEntries?.accountId === accountId ? refreshedEntries.entries : initialEntries;
@@ -775,18 +812,10 @@ export function DetailViewClient({
     const id = String(entry.id ?? "").trim();
     if (!id || linkingIds.has(id)) return;
     const businessTransactionId = String(entry.businessTransactionId ?? "").trim();
-    const businessType =
-      entry.fundProductType === "wealth"
-        ? "wealth"
-        : entry.fundProductType === "deposit"
-          ? "deposit"
-          : entry.fundProductType === "metal"
-            ? "metal"
-            : entry.insuranceProductId || entry.insuranceAction || isLicensedInsuranceEntry(entry)
-              ? "insurance"
-              : entry.fundProductType === "fund" || entry.fundCode
-                ? "fund"
-                : null;
+    // 与编辑窗共用同一套产品类型推导：只看 `fundProductType` 时，历史记录
+    // （该列几乎全为 NULL）会在这里报「缺少业务类型」，而编辑窗却已经能打开。
+    const businessType = toBusinessLinkType(entryProductTypeOf(entry))
+      ?? (entry.insuranceProductId || entry.insuranceAction || isLicensedInsuranceEntry(entry) ? "insurance" : null);
     if (!businessType) {
       window.alert(t("detailView.alert.missingBusinessType"));
       return;
@@ -814,7 +843,7 @@ export function DetailViewClient({
         return next;
       });
     }
-  }, [linkingIds, t]);
+  }, [entryProductTypeOf, linkingIds, t]);
   const navigateToAccountEntry = useCallback((targetAccountId: string | null | undefined, entry: DetailEntry) => {
     const target = String(targetAccountId ?? "").trim();
     if (!enableAccountNavigation || !target) return;
@@ -898,6 +927,9 @@ export function DetailViewClient({
   } => {
     const dateStr = (e.date ?? "").slice(0, 10);
     const amount = toNumber(e.amount);
+    // 报表下钻把赎回本金抹成 0（本金不计收支），编辑窗必须用记账原值，
+    // 否则取出本金 / 到账金额都是空的。
+    const editAmount = amount === 0 && e.bookAmount != null ? toNumber(e.bookAmount) : amount;
     const linkedBusinessLabels = e.businessLinkLabels ?? [];
     const linkedStockTransaction = e.stockTransaction ?? null;
     if (linkedStockTransaction || e.stockTransactionId) {
@@ -929,21 +961,7 @@ export function DetailViewClient({
         },
       };
     }
-    const linkedFundProductType = linkedBusinessLabels.includes("理财交易")
-      ? "wealth"
-      : linkedBusinessLabels.includes("存款交易")
-        ? "deposit"
-        : linkedBusinessLabels.includes("贵金属交易")
-          ? "metal"
-          : linkedBusinessLabels.includes("基金交易")
-            ? "fund"
-            : null;
-    const entryFundProductType =
-      e.fundProductType ??
-      linkedFundProductType ??
-      (e.toAccountId ? investmentProductTypeByAccountId[e.toAccountId] : undefined) ??
-      (e.accountId ? investmentProductTypeByAccountId[e.accountId] : undefined) ??
-      null;
+    const entryFundProductType = entryProductTypeOf(e);
     const isRedeemEditEntry =
       e.fundSubtype === "redeem" ||
       e.fundSubtype === "switch_out" ||
@@ -952,7 +970,7 @@ export function DetailViewClient({
         !e.fundSubtype &&
         Boolean(e.toAccountId) &&
         entryFundProductType != null &&
-        investmentProductTypeByAccountId[e.accountId ?? ""] === entryFundProductType);
+        (e.accountId ? accountProductTypeById.get(e.accountId) ?? null : null) === entryFundProductType);
     const targetInvestmentEditEntryId =
       isRegularInvestRefundEntry(e) && e.fundSourceEntryId
         ? e.fundSourceEntryId
@@ -968,7 +986,7 @@ export function DetailViewClient({
             date: dateStr,
             confirmDate: e.fundConfirmDate?.slice(0, 10),
             type: e.type,
-            amount,
+            amount: editAmount,
             note: entryFundProductType === "wealth" ? e.businessNote ?? "" : e.note ?? "",
             fundCode: e.fundCode ?? undefined,
             fundName: e.fundName ?? undefined,
@@ -1027,7 +1045,7 @@ export function DetailViewClient({
     }
     const baseEdit = e.type === "investment" ? investmentEditPayload : buildBasicEntryEditPayload(e, flowAccountIdOf(e));
     return { edit: baseEdit ? { ...baseEdit, reconciledReadOnly } : undefined };
-  }, [accountId, accountOptionById, allowInvestmentEdit, flowAccountIdOf, investmentProductTypeByAccountId, linkedInvestmentCandidateEntries]);
+  }, [accountId, accountOptionById, allowInvestmentEdit, entryProductTypeOf, flowAccountIdOf, linkedInvestmentCandidateEntries]);
   const colorScheme =
     typeof document === "undefined"
       ? "red_up_green_down"
@@ -1376,11 +1394,7 @@ export function DetailViewClient({
       width: 96,
       minWidth: 74,
       filterText: (e) => {
-        const entryFundProductType =
-          e.fundProductType ??
-          (e.toAccountId ? investmentProductTypeByAccountId[e.toAccountId] : undefined) ??
-          (e.accountId ? investmentProductTypeByAccountId[e.accountId] : undefined) ??
-          null;
+        const entryFundProductType = entryProductTypeOf(e);
         const displaySource = entryFundProductType === "deposit" ? "deposit" : e.source;
         if (isLiabilityActivityEntry(e, accountOptionById)) return t("transaction.type.transfer");
         if (entryFundProductType === "property" && e.type === "investment") {
@@ -1396,11 +1410,7 @@ export function DetailViewClient({
       },
       render: (e) => {
         const isLiabilityActivity = isLiabilityActivityEntry(e, accountOptionById);
-        const entryFundProductType =
-          e.fundProductType ??
-          (e.toAccountId ? investmentProductTypeByAccountId[e.toAccountId] : undefined) ??
-          (e.accountId ? investmentProductTypeByAccountId[e.accountId] : undefined) ??
-          null;
+        const entryFundProductType = entryProductTypeOf(e);
         const displaySource = entryFundProductType === "deposit" ? "deposit" : e.source;
         const balanceTarget = getBalanceReconcileTarget(e);
         const ordinaryPropertyType = entryFundProductType === "property" && e.type === "investment" ? propertyIncomeExpenseType(e) : null;
@@ -1590,11 +1600,11 @@ export function DetailViewClient({
         </span>
       ),
     },
-  ], [accountColumnDefaultHidden, accountColumnDisplayFallback, resolvedAccountColumnLabel, accountColumnMode, accountDisplayFallback, accountId, accountOptionById, dateDisplayFormat, detailCategoryLabel, flowAccountIdOf, inflowCls, investmentProductTypeByAccountId, outflowCls, relatedAccountDefaultHidden, relatedAccountTarget, renderNavigableAccountLabel, runningBalanceDefaultHidden, showAccountColumn, showRunningBalance, t]);
+  ], [accountColumnDefaultHidden, accountColumnDisplayFallback, resolvedAccountColumnLabel, accountColumnMode, accountDisplayFallback, accountId, accountOptionById, dateDisplayFormat, detailCategoryLabel, entryProductTypeOf, flowAccountIdOf, inflowCls, outflowCls, relatedAccountDefaultHidden, relatedAccountTarget, renderNavigableAccountLabel, runningBalanceDefaultHidden, showAccountColumn, showRunningBalance, t]);
 
   const customToolbarLeft = toolbarMode === "custom" ? (
     <div className="flex min-w-0 items-center gap-2">
-      {selectedCount > 0 ? <BasicDetailBatchReplaceButton fields={batchReplaceFields} accountOptions={accountOptions} categoryOptions={categoryOptions} tagOptions={tagOptions} categoryTypes={selectedCategoryTypes} contextAccountId={accountId} contextAccountIds={accountColumnScopeIdList} /> : null}
+      {selectedCount > 0 ? <BasicDetailBatchReplaceButton fields={batchReplaceFields} accountOptions={resolvedBatchReplaceAccountOptions} categoryOptions={categoryOptions} tagOptions={tagOptions} categoryTypes={selectedCategoryTypes} contextAccountId={accountId} contextAccountIds={accountColumnScopeIdList} /> : null}
       {selectedCount > 0 ? <BasicDetailBatchDeleteButton /> : null}
       {selectedCount > 0 && reconcileEnabled ? <BasicDetailBatchReconcileButton contextAccountId={reconcileAccountId} /> : null}
       {/* The reimbursement entry works both ways: with rows picked it pre-seeds the
@@ -1631,11 +1641,7 @@ export function DetailViewClient({
               <div className="divide-y divide-slate-100 bg-white">
                 {group.entries.map((entry, entryIndex) => {
                   const effectiveAmount = effectiveAmountForAccount(entry, flowAccountIdOf(entry));
-                  const entryFundProductType =
-                    entry.fundProductType ??
-                    (entry.toAccountId ? investmentProductTypeByAccountId[entry.toAccountId] : undefined) ??
-                    (entry.accountId ? investmentProductTypeByAccountId[entry.accountId] : undefined) ??
-                    null;
+                  const entryFundProductType = entryProductTypeOf(entry);
                   const category = detailCategoryLabel(entry) || t("txForm.uncategorized");
                   const note = displayDetailRemark(entry, flowAccountIdOf(entry));
                   const related = relatedAccountTarget(entry);
@@ -1755,7 +1761,7 @@ export function DetailViewClient({
       rowActionsMinWidth={104}
       batchActionSlot={toolbarMode === "default" ? (
         <>
-          <BasicDetailBatchReplaceButton fields={batchReplaceFields} accountOptions={accountOptions} categoryOptions={categoryOptions} tagOptions={tagOptions} categoryTypes={selectedCategoryTypes} contextAccountId={accountId} contextAccountIds={accountColumnScopeIdList} />
+          <BasicDetailBatchReplaceButton fields={batchReplaceFields} accountOptions={resolvedBatchReplaceAccountOptions} categoryOptions={categoryOptions} tagOptions={tagOptions} categoryTypes={selectedCategoryTypes} contextAccountId={accountId} contextAccountIds={accountColumnScopeIdList} />
           <BasicDetailBatchDeleteButton />
           {reconcileEnabled ? <BasicDetailBatchReconcileButton contextAccountId={reconcileAccountId} /> : null}
           {batchExtraActions?.(entries)}

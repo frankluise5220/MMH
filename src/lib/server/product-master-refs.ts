@@ -57,6 +57,48 @@ const PLAN_PREFIXES: Record<ProductFamily, string[]> = {
   bond: ["bondm_", "bonda_", "bondi_"],
 };
 
+/**
+ * 理财产品引用的资金明细（TxRecord）id 集合。
+ *
+ * **理财的业务真源是 `wealth_transactions`，不是 `TxRecord.wealthProductId`。**
+ * 理财的买入/赎回/分红/核销写入路径只把产品外键写进业务行，从未回填到
+ * `transactions` 这条资金腿（2026-10-17 实测：全库 `transactions."wealthProductId"`
+ * 非空 0 条，而 `wealth_transactions` 有 131 条）。所以这里必须两条路都走：
+ * 1. 直查 `TxRecord.wealthProductId`（兼容将来回填后的数据）；
+ * 2. 按 `wealth_transactions.cashEntryId` 反查资金腿（当前唯一真实来源）。
+ *
+ * 少走第 2 条会导致两个后果：删除确认文案显示「0 条记录」，
+ * 以及勾选「同时删除关联记录」后级联删除一条明细都不删，
+ * 只把 `wealth_transactions.wealthProductId` 静默置空成孤儿行。
+ */
+async function collectWealthRefs(householdId: string, productId: string) {
+  const businessRows = await prisma.wealthTransaction.findMany({
+    where: { householdId, wealthProductId: productId, deletedAt: null },
+    select: { cashEntryId: true, action: true },
+  });
+  const cashEntryIds = businessRows
+    .map((row) => row.cashEntryId)
+    .filter((id): id is string => Boolean(id));
+
+  const [directEntries, linkedEntries] = await Promise.all([
+    prisma.txRecord.findMany({
+      where: { householdId, wealthProductId: productId, deletedAt: null },
+      select: { id: true },
+    }),
+    cashEntryIds.length
+      ? prisma.txRecord.findMany({
+          where: { householdId, id: { in: cashEntryIds }, deletedAt: null },
+          select: { id: true },
+        })
+      : Promise.resolve([] as { id: string }[]),
+  ]);
+
+  return {
+    businessRows,
+    entryIds: Array.from(new Set([...directEntries, ...linkedEntries].map((row) => row.id))),
+  };
+}
+
 export async function summarizeProductRefs(
   householdId: string,
   family: ProductFamily,
@@ -79,11 +121,10 @@ export async function summarizeProductRefs(
   }
 
   if (family === "wealth") {
-    const [entryCount, businessCount] = await Promise.all([
-      prisma.txRecord.count({ where: { householdId, wealthProductId: productId, deletedAt: null } }),
-      prisma.wealthTransaction.count({ where: { householdId, wealthProductId: productId, deletedAt: null } }),
-    ]);
-    return buildSummary(entryCount, businessCount, 0, 0);
+    const { businessRows, entryIds } = await collectWealthRefs(householdId, productId);
+    // 理财没有存单概念，用「买入行数」等价表达持仓数（与存款/债券的 lotCount 语义对齐）。
+    const lotCount = businessRows.filter((row) => row.action === FundSubtype.buy).length;
+    return buildSummary(entryIds.length, businessRows.length, lotCount, 0);
   }
 
   const [entryCount, businessCount, lotRows] = await Promise.all([
@@ -116,16 +157,20 @@ export async function cascadeDeleteProductRecords(
 ): Promise<{ deletedEntryCount: number; deletedPlanCount: number }> {
   const { householdId } = ctx;
 
-  const entryRows = await prisma.txRecord.findMany({
-    where:
-      family === "deposit"
-        ? { householdId, depositProductId: productId, deletedAt: null }
-        : family === "wealth"
-          ? { householdId, wealthProductId: productId, deletedAt: null }
-          : { householdId, bondProductId: productId, deletedAt: null },
-    select: { id: true },
-  });
-  const entryIds = entryRows.map((row) => row.id);
+  // 理财必须走 `collectWealthRefs`（业务表 → cashEntryId 反查），
+  // 只按 `TxRecord.wealthProductId` 查会拿到空集合，导致「确认级联」实际什么都没删。
+  const entryIds =
+    family === "wealth"
+      ? (await collectWealthRefs(householdId, productId)).entryIds
+      : (
+          await prisma.txRecord.findMany({
+            where:
+              family === "deposit"
+                ? { householdId, depositProductId: productId, deletedAt: null }
+                : { householdId, bondProductId: productId, deletedAt: null },
+            select: { id: true },
+          })
+        ).map((row) => row.id);
 
   let planIds: string[] = [];
   if (PLAN_PREFIXES[family].length > 0) {

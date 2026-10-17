@@ -1,11 +1,13 @@
 "use client";
 import { ModalLayer } from "@/components/ModalLayer";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, Loader2, Plus, Search, Trash2, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { AlertTriangle, Check, ChevronDown, Loader2, Plus, Search, Trash2, X } from "lucide-react";
 
 import { useI18n } from "@/lib/i18n";
 import { CredentialPasswordField } from "@/components/CredentialPasswordField";
+import { useDerivedLayerZIndex } from "@/components/ModalLayer";
 
 /**
  * 产品库统一管理弹窗（存款 / 理财 / 债券 / 保险产品主数据）。
@@ -53,6 +55,8 @@ type ProductRow = {
   accountingType?: string | null;
   /** 该产品下未软删的真实业务记录数。软删记录不计入。 */
   recordCount: number;
+  /** 当前持仓笔数（已全部赎回/结清的产品为 0）。列表行末尾展示的就是这个值。 */
+  holdingCount: number;
 };
 
 type InstitutionOption = { id: string; name: string; shortName: string | null; type?: string };
@@ -68,6 +72,9 @@ type DeleteState = {
   row: ProductRow;
   refs: RefSummary;
 };
+
+/** 机构筛选里「未指定机构」的伪 id（真实机构 id 都是 cuid）。 */
+const NO_INSTITUTION_KEY = "__no_institution__";
 
 const INSURANCE_PRODUCT_TYPES = [
   "savings",
@@ -268,6 +275,7 @@ function normalizeRow(family: ProductLibraryFamily, raw: Record<string, unknown>
       productType: str(raw.productType),
       accountingType: str(raw.accountingType),
       recordCount: Number(raw.recordCount ?? 0) || 0,
+      holdingCount: Number(raw.holdingCount ?? 0) || 0,
     };
   }
   return {
@@ -285,6 +293,7 @@ function normalizeRow(family: ProductLibraryFamily, raw: Record<string, unknown>
     payoutFrequency: str(raw.payoutFrequency),
     interestCalcBasis: str(raw.interestCalcBasis),
     recordCount: Number(raw.recordCount ?? 0) || 0,
+    holdingCount: Number(raw.holdingCount ?? 0) || 0,
   };
 }
 
@@ -308,6 +317,188 @@ function draftFromRow(family: ProductLibraryFamily, row: ProductRow | null): Rec
   return draft;
 }
 
+/**
+ * 机构筛选下拉：**复选 + 面板内输入筛选**，面板 portal 到 body。
+ *
+ * 层级必须由 `useDerivedLayerZIndex()` 从「所在弹窗层」派生（弹窗遮罩起步 1000）：
+ * 就地渲染或写死 z（例如 `z-[100]`）会被弹窗压在下面，表现为「点了没反应」。
+ * 空选择 = 不筛选（全部机构）。
+ */
+function InstitutionFilterDropdown({
+  options,
+  selected,
+  onChange,
+  triggerLabel,
+  allLabel,
+  searchPlaceholder,
+  clearLabel,
+  emptyLabel,
+}: {
+  options: Array<{ id: string; label: string; count: number }>;
+  selected: string[];
+  onChange: (next: string[]) => void;
+  triggerLabel: string;
+  allLabel: string;
+  searchPlaceholder: string;
+  clearLabel: string;
+  emptyLabel: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [mounted, setMounted] = useState(false);
+  const [position, setPosition] = useState({ left: 0, top: 0 });
+  const anchorRef = useRef<HTMLButtonElement | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const zIndex = useDerivedLayerZIndex();
+
+  const PANEL_WIDTH = 264;
+  const PANEL_MAX_HEIGHT = 360;
+
+  useEffect(() => setMounted(true), []);
+
+  const reposition = useCallback(() => {
+    const rect = anchorRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const left = Math.min(Math.max(8, rect.left), Math.max(8, window.innerWidth - PANEL_WIDTH - 8));
+    const panelHeight = Math.min(window.innerHeight * 0.6, PANEL_MAX_HEIGHT);
+    const openUpward = rect.bottom + 4 + panelHeight > window.innerHeight - 8 && rect.top - 4 - panelHeight > 8;
+    setPosition({ left, top: openUpward ? rect.top - panelHeight - 4 : rect.bottom + 4 });
+  }, []);
+
+  useEffect(() => {
+    if (!open) return;
+    reposition();
+    window.addEventListener("scroll", reposition, true);
+    window.addEventListener("resize", reposition);
+    return () => {
+      window.removeEventListener("scroll", reposition, true);
+      window.removeEventListener("resize", reposition);
+    };
+  }, [open, reposition]);
+
+  useEffect(() => {
+    if (!open) {
+      setQuery("");
+      return;
+    }
+    function handlePointerDown(event: PointerEvent) {
+      const target = event.target as Node;
+      if (panelRef.current?.contains(target) || anchorRef.current?.contains(target)) return;
+      setOpen(false);
+    }
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [open]);
+
+  const text = query.trim().toLowerCase();
+  const visible = text ? options.filter((option) => option.label.toLowerCase().includes(text)) : options;
+  const selectedLabels = selected
+    .map((id) => options.find((option) => option.id === id)?.label)
+    .filter((label): label is string => Boolean(label));
+  const summary = selected.length === 0
+    ? allLabel
+    : selected.length === 1
+      ? selectedLabels[0] ?? allLabel
+      : `${selectedLabels[0] ?? ""} +${selected.length - 1}`;
+
+  const toggle = (id: string) => {
+    onChange(selected.includes(id) ? selected.filter((item) => item !== id) : [...selected, id]);
+  };
+
+  return (
+    <div className="relative min-w-0 flex-1">
+      <button
+        ref={anchorRef}
+        type="button"
+        title={`${triggerLabel}：${summary}`}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        className="inline-flex h-8 w-full items-center justify-between gap-2 rounded-md border border-slate-300 bg-white px-2.5 text-left text-xs text-slate-700 shadow-sm hover:border-slate-400"
+        onClick={() => setOpen((current) => !current)}
+      >
+        <span className="min-w-0 truncate">
+          <span className="text-slate-400">{triggerLabel}：</span>
+          {summary}
+        </span>
+        <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-slate-400 transition-transform ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && mounted
+        ? createPortal(
+            <div
+              ref={panelRef}
+              style={{ left: position.left, top: position.top, width: PANEL_WIDTH, zIndex }}
+              className="fixed max-h-[min(60vh,360px)] overflow-y-auto rounded-md border border-slate-200 bg-white p-2 shadow-lg"
+            >
+              <input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder={searchPlaceholder}
+                className="form-input mb-1 h-7 text-xs"
+                autoFocus
+              />
+              <button
+                type="button"
+                className="flex min-h-7 w-full items-center gap-2 rounded px-2 py-1 text-left text-xs font-medium text-slate-700 hover:bg-slate-50"
+                onClick={() => onChange([])}
+              >
+                <input
+                  type="checkbox"
+                  className="h-3.5 w-3.5 shrink-0 accent-blue-600"
+                  checked={selected.length === 0}
+                  readOnly
+                  tabIndex={-1}
+                />
+                <span className="min-w-0 flex-1 truncate">{allLabel}</span>
+              </button>
+              <div className="my-1 border-t border-slate-100" />
+              {visible.length === 0 ? (
+                <div className="px-2 py-2 text-xs text-slate-400">{emptyLabel}</div>
+              ) : (
+                visible.map((option) => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    role="option"
+                    aria-selected={selected.includes(option.id)}
+                    className="flex min-h-7 w-full items-center gap-2 rounded px-2 py-1 text-left text-xs hover:bg-slate-50"
+                    onClick={() => toggle(option.id)}
+                  >
+                    <input
+                      type="checkbox"
+                      className="h-3.5 w-3.5 shrink-0 accent-blue-600"
+                      checked={selected.includes(option.id)}
+                      readOnly
+                      tabIndex={-1}
+                    />
+                    <span className="min-w-0 flex-1 truncate" title={option.label}>{option.label}</span>
+                    <span className="shrink-0 tabular-nums text-[11px] text-slate-400">{option.count}</span>
+                  </button>
+                ))
+              )}
+              {selected.length > 0 ? (
+                <button
+                  type="button"
+                  className="mt-1 w-full rounded px-2 py-1 text-left text-[11px] text-blue-600 hover:bg-slate-50 hover:text-blue-800"
+                  onClick={() => onChange([])}
+                >
+                  {clearLabel}
+                </button>
+              ) : null}
+            </div>,
+            document.body,
+          )
+        : null}
+    </div>
+  );
+}
+
 export function ProductLibraryModal({
   open,
   family,
@@ -329,6 +520,7 @@ export function ProductLibraryModal({
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [keyword, setKeyword] = useState("");
+  const [institutionFilter, setInstitutionFilter] = useState<string[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [isCreating, setIsCreating] = useState(false);
   const [draft, setDraft] = useState<Record<string, string>>(() => draftFromRow(family, null));
@@ -375,6 +567,7 @@ export function ProductLibraryModal({
   useEffect(() => {
     if (!open) return;
     setKeyword("");
+    setInstitutionFilter([]);
     setSelectedId(null);
     setIsCreating(false);
     setDeleteState(null);
@@ -394,8 +587,10 @@ export function ProductLibraryModal({
 
   const filtered = useMemo(() => {
     const text = keyword.trim().toLowerCase();
-    if (!text) return rows;
+    const institutionSet = new Set(institutionFilter);
     return rows.filter((row) => {
+      if (institutionSet.size > 0 && !institutionSet.has(row.institutionId ?? NO_INSTITUTION_KEY)) return false;
+      if (!text) return true;
       const institution = row.institutionId ? institutionNameById.get(row.institutionId) ?? "" : "";
       return (
         row.name.toLowerCase().includes(text) ||
@@ -403,7 +598,47 @@ export function ProductLibraryModal({
         institution.toLowerCase().includes(text)
       );
     });
-  }, [rows, keyword, institutionNameById]);
+  }, [rows, keyword, institutionNameById, institutionFilter]);
+
+  /** 机构下拉的选项：按当前产品集合统计，包含「未指定机构」分组。 */
+  const institutionFilterOptions = useMemo(() => {
+    const map = new Map<string, { id: string; label: string; count: number }>();
+    for (const row of rows) {
+      const id = row.institutionId ?? NO_INSTITUTION_KEY;
+      const label = row.institutionId
+        ? institutionNameById.get(row.institutionId) ?? row.institutionName ?? t("productLibrary.unknownInstitution")
+        : t("productLibrary.noInstitution");
+      const entry = map.get(id) ?? { id, label, count: 0 };
+      entry.count += 1;
+      map.set(id, entry);
+    }
+    return [...map.values()].sort((a, b) => {
+      if (a.id === NO_INSTITUTION_KEY) return 1;
+      if (b.id === NO_INSTITUTION_KEY) return -1;
+      return a.label.localeCompare(b.label, "zh-Hans-CN");
+    });
+  }, [rows, institutionNameById, t]);
+
+  /** 列表按所属机构分组（未指定机构排在最后）。 */
+  const groupedRows = useMemo(() => {
+    const groups: Array<{ key: string; label: string; count: number; rows: ProductRow[] }> = [];
+    const indexByKey = new Map<string, number>();
+    for (const row of filtered) {
+      const key = row.institutionId ?? NO_INSTITUTION_KEY;
+      let at = indexByKey.get(key);
+      if (at == null) {
+        const label = row.institutionId
+          ? institutionNameById.get(row.institutionId) ?? row.institutionName ?? t("productLibrary.unknownInstitution")
+          : t("productLibrary.noInstitution");
+        at = groups.length;
+        indexByKey.set(key, at);
+        groups.push({ key, label, count: 0, rows: [] });
+      }
+      groups[at].rows.push(row);
+      groups[at].count += 1;
+    }
+    return groups;
+  }, [filtered, institutionNameById, t]);
 
   const selectedRow = useMemo(
     () => (isCreating ? null : rows.find((row) => row.id === selectedId) ?? null),
@@ -533,7 +768,11 @@ export function ProductLibraryModal({
 
   return (
     <ModalLayer className="app-modal-backdrop">
-      <div className="app-modal-panel h-[min(760px,84vh)] max-w-4xl min-h-0">
+      {/* 高度用 inline style：`h-[min(...)]` 依赖 Tailwind 扫描新类，dev 下常不重新生成。 */}
+      <div
+        className="app-modal-panel max-w-4xl min-h-0"
+        style={{ height: "min(640px, 74vh)" }}
+      >
         <div className="modal-header">
           <div className="text-sm font-semibold text-slate-800">{t(config.titleKey)}</div>
           <button type="button" onClick={onClose} className="secondary-button h-8 px-2">
@@ -542,22 +781,38 @@ export function ProductLibraryModal({
         </div>
 
         <div className="flex min-h-0 flex-1">
-          {/* 左：产品列表 */}
-          <div className="flex w-[340px] shrink-0 flex-col border-r border-slate-100">
+          {/* 左：筛选 + 按所属机构分组的产品列表 */}
+          <div className="flex w-[360px] shrink-0 flex-col border-r border-slate-100">
             <div className="shrink-0 space-y-2 p-3">
               <div className="relative">
                 <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
                 <input
                   value={keyword}
                   onChange={(event) => setKeyword(event.target.value)}
-                  placeholder={t("productLibrary.searchPlaceholder")}
+                  placeholder={t("productLibrary.searchProductName")}
                   className="form-input pl-8"
                 />
               </div>
-              <button type="button" onClick={startCreate} className="secondary-button h-8 w-full px-3 text-xs">
-                <Plus className="h-3.5 w-3.5" />
-                {t("productLibrary.addProduct")}
-              </button>
+              <div className="flex items-center gap-2">
+                <InstitutionFilterDropdown
+                  options={institutionFilterOptions}
+                  selected={institutionFilter}
+                  onChange={setInstitutionFilter}
+                  triggerLabel={t("productLibrary.institution")}
+                  allLabel={t("productLibrary.allInstitutions")}
+                  searchPlaceholder={t("productLibrary.searchInstitution")}
+                  clearLabel={t("productLibrary.clearInstitutionFilter")}
+                  emptyLabel={t("productLibrary.institutionNoMatch")}
+                />
+                <button
+                  type="button"
+                  onClick={startCreate}
+                  className="secondary-button h-8 shrink-0 px-2.5 text-xs"
+                  title={t("productLibrary.addProduct")}
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                </button>
+              </div>
             </div>
 
             <div className="min-h-0 flex-1 overflow-y-auto px-2 pb-2">
@@ -568,50 +823,54 @@ export function ProductLibraryModal({
                 </div>
               ) : loadError ? (
                 <div className="px-2 py-6 text-xs text-rose-600">{loadError}</div>
-              ) : filtered.length === 0 ? (
+              ) : groupedRows.length === 0 ? (
                 <div className="px-2 py-6 text-xs text-slate-400">{t("productLibrary.empty")}</div>
               ) : (
-                filtered.map((row) => {
-                  const active = !isCreating && row.id === selectedId;
-                  const institutionLabel = row.institutionId
-                    ? institutionNameById.get(row.institutionId) ?? row.institutionName ?? ""
-                    : "";
-                  return (
-                    <button
-                      key={row.id}
-                      type="button"
-                      onClick={() => selectRow(row)}
-                      title={institutionLabel ? `${row.name} · ${institutionLabel}` : row.name}
-                      className={`mb-0.5 flex w-full items-center gap-2 overflow-hidden rounded-lg px-2.5 py-1.5 text-left transition-colors ${
-                        active ? "bg-cyan-50 ring-1 ring-cyan-200" : "hover:bg-slate-50"
-                      }`}
-                    >
-                      {/* 单行：产品名占满剩余宽度并截断，机构/利率/期限/记录数靠右不换行 */}
-                      <span className="min-w-0 flex-1 truncate text-sm font-medium text-slate-800">{row.name}</span>
-                      <span className="flex shrink-0 items-center gap-1 whitespace-nowrap text-[11px] text-slate-500">
-                        {row.institutionId ? (
-                          <span className="max-w-[92px] truncate">{institutionLabel}</span>
-                        ) : (
-                          <span className="inline-flex items-center gap-0.5 text-amber-600">
-                            <AlertTriangle className="h-3 w-3 shrink-0" />
-                            {t("productLibrary.noInstitution")}
-                          </span>
-                        )}
-                        {row.annualRate != null ? <span className="tabular-nums">· {row.annualRate}%</span> : null}
-                        {row.termDays != null ? (
-                          <span className="tabular-nums">
-                            · {row.termDays}
-                            {t("productLibrary.termUnitDay")}
-                          </span>
-                        ) : null}
-                        <span className="tabular-nums text-slate-400">
-                          · {row.recordCount}
-                          {t("productLibrary.recordUnit")}
-                        </span>
+                groupedRows.map((group) => (
+                  <div key={group.key} className="mb-1">
+                    <div className="sticky top-0 z-10 flex items-center justify-between gap-2 bg-white/95 px-2 py-1 backdrop-blur">
+                      <span
+                        className={`inline-flex min-w-0 items-center gap-1 truncate text-[11px] font-medium ${
+                          group.key === NO_INSTITUTION_KEY ? "text-amber-600" : "text-slate-500"
+                        }`}
+                      >
+                        {group.key === NO_INSTITUTION_KEY ? <AlertTriangle className="h-3 w-3 shrink-0" /> : null}
+                        {group.label}
                       </span>
-                    </button>
-                  );
-                })
+                      <span className="shrink-0 tabular-nums text-[11px] text-slate-400">{group.count}</span>
+                    </div>
+                    {group.rows.map((row) => {
+                      const active = !isCreating && row.id === selectedId;
+                      return (
+                        <button
+                          key={row.id}
+                          type="button"
+                          onClick={() => selectRow(row)}
+                          title={row.name}
+                          className={`mb-0.5 flex w-full items-center gap-2 overflow-hidden rounded-lg px-2.5 py-1.5 text-left transition-colors ${
+                            active ? "bg-cyan-50 ring-1 ring-cyan-200" : "hover:bg-slate-50"
+                          }`}
+                        >
+                          {/* 单行：产品名占满剩余宽度并截断，利率/期限/持仓数靠右不换行（机构已在分组头） */}
+                          <span className="min-w-0 flex-1 truncate text-sm font-medium text-slate-800">{row.name}</span>
+                          <span className="flex shrink-0 items-center gap-1 whitespace-nowrap text-[11px] text-slate-500">
+                            {row.annualRate != null ? <span className="tabular-nums">{row.annualRate}%</span> : null}
+                            {row.termDays != null ? (
+                              <span className="tabular-nums">
+                                · {row.termDays}
+                                {t("productLibrary.termUnitDay")}
+                              </span>
+                            ) : null}
+                            <span className="tabular-nums text-slate-400">
+                              · {row.holdingCount}
+                              {t("productLibrary.holdingUnit")}
+                            </span>
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ))
               )}
             </div>
           </div>

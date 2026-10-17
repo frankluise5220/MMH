@@ -25,7 +25,7 @@ import { buildAccountDisplayOption, buildGroupedAccountOptions, normalizeCreditC
 import { buildAccountOwnerOptions, filterAccountOwnersWithGroupIds } from "@/lib/account-owner-options";
 import { ACCOUNT_LABEL_FIELDS_COOKIE, accountLabelFieldsFromCookieValue } from "@/lib/server/account-label-fields";
 import { kindLabel } from "@/lib/account-kinds";
-import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
+import { isDepositAccount, isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import { prisma } from "@/lib/db/prisma";
 import { formatDateUtc } from "@/lib/date-utils";
 import type { ColorScheme } from "@/lib/client/colors";
@@ -366,6 +366,38 @@ export default async function ReportsPage({
   const investmentAccountSSOptions = buildGroupedAccountOptions(
     allAccountDisplayOptions.filter((account) => investmentAccountIds.has(account.id)),
   );
+  // 存款账户（kind = "deposit"，含 legacy investment + deposit）不算「纯投资账户」，
+  // 不会出现在上面的 investmentAccounts 里。存款编辑窗必须单独拿到它们，否则
+  // 「取出账户」下拉为空、存单列表也不请求（2026-10-17 报表下钻编辑取款报障）。
+  const depositAccountRecords = accountRecords.filter((account) => isDepositAccount(account));
+  const depositAccounts = depositAccountRecords.map((account) => ({
+    id: account.id,
+    label: allAccountDisplayById.get(account.id)?.label ?? account.name,
+    listLabel: allAccountDisplayById.get(account.id)?.listLabel,
+    selectorLabel: allAccountDisplayById.get(account.id)?.selectorLabel,
+    fullLabel: allAccountDisplayById.get(account.id)?.fullLabel,
+    title: allAccountDisplayById.get(account.id)?.hoverTitle,
+    hoverTitle: allAccountDisplayById.get(account.id)?.hoverTitle,
+    tableHoverTitle: allAccountDisplayById.get(account.id)?.tableHoverTitle,
+    subLabel: kindLabel(account.kind),
+    kind: account.kind,
+    investProductType: account.investProductType,
+    liabilityDirection: account.liabilityDirection,
+    institutionId: account.institutionId,
+    currency: account.currency,
+  }));
+  // 必须带 kind / investProductType：DepositFormModal 会再按 isDepositLikeOption 过滤一次，
+  // 只给分组后的 {id,label} 会被整体滤空（下拉打开是空白）。
+  const depositAccountSSOptions = depositAccounts.map((account) => ({
+    id: account.id,
+    label: account.label,
+    subLabel: account.subLabel,
+    title: account.hoverTitle,
+    kind: account.kind,
+    investProductType: account.investProductType,
+    institutionId: account.institutionId,
+    currency: account.currency,
+  }));
   const selectedUserIds = typeof params.userIds === "string"
     ? params.userIds.split(",").map((id) => id.trim()).filter(Boolean)
     : [];
@@ -1046,8 +1078,10 @@ export default async function ReportsPage({
             accountSSOptions={accountSSOptions}
             cashAccounts={cashAccounts}
             investmentAccounts={investmentAccounts}
+            depositAccounts={depositAccounts}
             cashAccountSSOptions={cashAccountSSOptions}
             investmentAccountSSOptions={investmentAccountSSOptions}
+            depositAccountSSOptions={depositAccountSSOptions}
             expenseCategories={expenseCategories}
             incomeCategories={incomeCategories}
             tags={editTags}

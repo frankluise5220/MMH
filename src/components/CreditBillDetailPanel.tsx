@@ -30,7 +30,10 @@ type CreditBillDetailPanelProps = {
   resetKey: string;
   selectedBillMonth: string;
   title: ReactNode;
-  accountOptions: Array<{ id: string; label: string; fullLabel?: string | null; title?: string | null; kind?: string | null; liabilityDirection?: string | null; numberMasked?: string | null }>;
+  /** 账户单元格的显示来源，应为全量账户（按「账户显示格式」渲染标签与 hover）。 */
+  accountOptions: Array<{ id: string; label: string; listLabel?: string | null; selectorLabel?: string | null; fullLabel?: string | null; title?: string | null; hoverTitle?: string | null; tableHoverTitle?: string | null; kind?: string | null; liabilityDirection?: string | null; numberMasked?: string | null; isSettlementAccount?: boolean | null }>;
+  /** 批量替换账户下拉的选项；缺省时沿用 `accountOptions`。 */
+  batchReplaceAccountOptions?: Array<{ id: string; label: string; listLabel?: string | null }>;
   categoryOptions?: BasicDetailBatchCategoryOption[];
   tagOptions?: BasicDetailBatchCategoryOption[];
   investmentProductTypeByAccountId: Record<string, string | undefined | null>;
@@ -80,6 +83,7 @@ export function CreditBillDetailPanel({
   selectedBillMonth,
   title,
   accountOptions,
+  batchReplaceAccountOptions,
   categoryOptions = [],
   tagOptions = [],
   investmentProductTypeByAccountId,
@@ -275,6 +279,7 @@ export function CreditBillDetailPanel({
           isInvestAccount={false}
           initialEntries={pageEntries}
           accountOptions={accountOptions}
+          batchReplaceAccountOptions={batchReplaceAccountOptions}
           categoryOptions={categoryOptions}
           tagOptions={tagOptions}
           investmentProductTypeByAccountId={investmentProductTypeByAccountId}

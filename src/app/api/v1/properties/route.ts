@@ -462,7 +462,9 @@ export async function PUT(req: NextRequest) {
     const purchasePrice = parseOptionalNonNegativeNumber(body?.purchasePrice);
     const nextStatus = String(body?.status ?? "").trim() || "active";
     const updated = await prisma.$transaction(async (tx) => {
-      const nextAssetType = normalizeFixedAssetType(body?.assetType);
+      // 缺省时沿用资产现有类型：`normalizeFixedAssetType(undefined)` 会得到 "property"，
+      // 任何只改名称/状态的局部提交都会把车辆、设备静默改回房产。
+      const nextAssetType = normalizeFixedAssetType(body?.assetType ?? asset.assetType);
       const updatedAsset = await tx.propertyAsset.update({
         where: { id: propertyAssetId },
         data: {

@@ -9,6 +9,7 @@ import {
   notInsurerOwnedFilter,
 } from "@/lib/server/product-family-guard";
 import { normalizeCurrency, normalizeOptionalCurrency } from "@/lib/currency";
+import { loadWealthHoldingCounts } from "@/lib/server/product-holding-counts";
 
 export const runtime = "nodejs";
 
@@ -50,8 +51,14 @@ export async function GET(req: NextRequest) {
       orderBy: [{ institutionId: "asc" }, { name: "asc" }],
     });
 
-    // 每个产品下的真实记录数 = 未软删的 TxRecord 数（软删不计入）。
-    const recordCounts = await prisma.txRecord.groupBy({
+    // 每个产品下的真实记录数 = 未软删的**理财业务记录**数（软删不计入）。
+    //
+    // 口径必须是 `wealth_transactions`，不能是 `TxRecord.wealthProductId`：
+    // 理财的买入/赎回/分红/核销写入路径（transactions/detail、transaction-actions、
+    // business-transactions）只把产品外键写在业务行上，从未回填到 `transactions`
+    // 这条资金腿，所以按 TxRecord 统计会恒为 0（2026-10-17 实测：全库
+    // `transactions."wealthProductId"` 非空 0 条，而 `wealth_transactions` 有 131 条）。
+    const recordCounts = await prisma.wealthTransaction.groupBy({
       by: ["wealthProductId"],
       where: {
         householdId,
@@ -66,6 +73,9 @@ export async function GET(req: NextRequest) {
         .map((item) => [item.wealthProductId as string, item._count._all]),
     );
 
+    // 产品库列表实际展示的是「当前持仓笔数」：已全部赎回的产品显示 0。
+    const holdingCounts = await loadWealthHoldingCounts(householdId, rows.map((item) => item.id));
+
     return NextResponse.json({
       ok: true,
       products: rows.map((item) => ({
@@ -79,6 +89,7 @@ export async function GET(req: NextRequest) {
         termDays: item.termDays,
         note: item.note,
         recordCount: recordCountByProductId.get(item.id) ?? 0,
+        holdingCount: holdingCounts.get(item.id) ?? 0,
       })),
     });
   } catch (error) {

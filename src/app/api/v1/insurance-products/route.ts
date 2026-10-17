@@ -457,7 +457,12 @@ export async function GET(req: NextRequest) {
         (sum, policyId) => sum + Math.max(entryCountByPolicyId.get(policyId) ?? 0, businessCountByPolicyId.get(policyId) ?? 0),
         0,
       );
-      return { ...serializeProductMaster(item), recordCount };
+      return {
+        ...serializeProductMaster(item),
+        recordCount,
+        // 保险的「持仓」= 该产品下的保单数（每个保单一行 InsuranceProduct）。
+        holdingCount: policyIds.length,
+      };
     });
   }
 

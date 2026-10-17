@@ -162,6 +162,22 @@ html {
     border-color: var(--line-soft);
   }
 
+  /* 持仓卡片（理财 / 存款 / 基金 / 债券 / 股票的持仓表）：米色纸卡 #fbfaf7，
+     与文件卡片式页签（FolderTabs 的 `bg-[#fbfaf7]`）同色；页签条 `.paper-card-header`
+     也取卡片底色、只留一条细分隔线 —— 于是「卡片与页签」是一个整体，不再是「白卡片 + 灰条」。
+     三段底色由 AdvancedDataTable 统一提供（调用方不再传色值）：
+     页签 / 表头 = `ADVANCED_TABLE_HEAD_SURFACE_CLASS`（#fbfaf7），表体 = `ADVANCED_TABLE_BODY_SURFACE_CLASS`（白）。 */
+  .paper-card {
+    @apply rounded-xl border shadow-soft;
+    background-color: #fbfaf7;
+    border-color: #cbd5e1;
+  }
+
+  .paper-card-header {
+    @apply flex items-center justify-between border-b px-4 py-3;
+    border-color: #e2e8f0;
+  }
+
   .modal-surface {
     @apply max-h-[calc(100dvh-1rem)] max-w-[calc(100vw-1rem)] overflow-hidden rounded-xl border bg-surface-white shadow-elevated;
     border-color: var(--line-strong);
@@ -452,8 +468,9 @@ html {
       url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='7' height='7' viewBox='0 0 7 7'%3E%3Cpath d='M0.5 0A6.5 6.5 0 0 0 7 6.5' fill='none' stroke='%23cbd5e1' stroke-width='1'/%3E%3C/svg%3E");
   }
 
-  /* 接缝为白时的凹角（如基金视图持仓卡片：内容板底色仍是米色 #fbfaf7，但**紧贴页签底边的
-     那一条**是白色表头，所以页签与凹角填充要取白，而不是内容板底色）。
+  /* 接缝为白时的凹角（当卡片是白色色阶 `ft-card-surface-white` 时使用：内容板底色白，
+     页签与凹角填充也要取白。基金 / 存款 / 债券 / 股票的持仓卡片**不用**它 ——
+     那边要求「卡片与页签同色」，活动页签保持 `#fbfaf7`）。
      ⚠️ 必须与 `.ft-tab-fillet` 挂在**同一个**元素上：几何（位置/尺寸/background-size、
      以及 ::after 的 slate-300 描边）都来自上面两条规则，这里只把**填充层**的底色换成
      内容板底色白 —— 凹角填充的作用是抹掉页签底下那一小段内容板上边框，填充色必须等于

@@ -85,6 +85,7 @@ import {
   buildFlatAccountOptions,
   counterpartyQualifiedAccountName,
   normalizeCreditCardLabelTemplate,
+  resolveAccountTableLabel,
 } from "@/lib/account-display";
 import { getInvestmentAccountView, isDepositAccount, isIncomeExpensePostingAccount, isIncomeExpensePostingOrDepositAccount, isLoanOrSettlementAccountKind, isPureInvestmentAccount, isSpecialCashTargetAccount, isTransferDropdownAccount } from "@/lib/account-kind-utils";
 import { ALL_CASH_DETAIL_SCOPE_ID, cashLedgerAccountIdsOf, cashLedgerFlowAccountId } from "@/lib/all-cash-entries";
@@ -111,7 +112,7 @@ import {
 } from "@/lib/server/loan-rate-adjustments";
 import { getInsuranceDisplayTypeLabel, getInsuranceMetricLabel, getInsuranceMetricMode } from "@/lib/insurance/display";
 import { BALANCE_INITIALIZATION_SOURCE, BALANCE_RECONCILE_SOURCE, applyBalanceReconcileEntry, effectiveAmountForAccount, getBalanceReconcileTarget } from "@/lib/balance-reconcile";
-import { ENTRY_ORIGIN_MANUAL, isCreditCardRepaymentTransfer, statementMonthForTransfer } from "@/lib/transaction-semantics";
+import { ENTRY_ORIGIN_MANUAL, isCreditCardRepaymentTransfer, isFundBuyRefundCashLeg, statementMonthForTransfer } from "@/lib/transaction-semantics";
 import { ensureSettlementTransferCategory, resolveCategorySnapshot, resolveCreditCardRepaymentCategory } from "@/lib/default-categories";
 import { getInvestmentCategoryName } from "@/lib/investment-category";
 import { getCashFlowDate } from "@/lib/cash-flow-date";
@@ -468,6 +469,7 @@ export default async function Home({
     fundPageSize?: string;
     fundPage?: string;
     showCleared?: string;
+    showCashflow?: string;
     fixedAssetType?: string;
     liabilityPerson?: string;
     loanType?: string;
@@ -598,6 +600,7 @@ export default async function Home({
   const fundPageParam = typeof params?.fundPage === "string" ? parseInt(params.fundPage, 10) : 1;
   const fundPage = Number.isFinite(fundPageParam) && fundPageParam >= 1 ? fundPageParam : 1;
   const showCleared = params?.showCleared === "1";
+  const showCashflow = params?.showCashflow === "1";
 
   // Read the up/down color scheme.
   const colorScheme = (cookieStore.get("colorScheme")?.value ?? "red_up_green_down") as "red_up_green_down" | "green_up_red_down";
@@ -1389,10 +1392,22 @@ export default async function Home({
         currency: a.currency ?? "CNY",
       };
     });
-  const accountLabelById = new Map(accountOptions.map((a) => [a.id, a.label]));
+  // Account-name table cells render `listLabel`, which follows the configured
+  // 「系统设置 - 显示 - 账户显示格式」fields (owner / kind included when picked).
+  // `label` is the dropdown (selector) label and intentionally drops owner/kind,
+  // so using it here silently un-configured every table column.
+  const accountLabelById = new Map(accountOptions.map((a) => [a.id, a.listLabel]));
   // Hover titles for account-name table cells: only the fields the cell label
   // does not already show (owner / account kind); falls back to the full label.
   const accountTitleById = new Map(accountOptions.map((a) => [a.id, a.tableHoverTitle]));
+  // 客户端组件（保险等）会在浏览器里重新拉明细并重拼账户标签，RSC 边界不能传 Map，
+  // 所以再导出一份可序列化的映射，保证服务端首屏与客户端刷新结果一致。
+  const accountLabelRecords = Object.fromEntries(accountLabelById) as Record<string, string>;
+  const accountTitleRecords = Object.fromEntries(accountTitleById) as Record<string, string>;
+  const accountTableLabelLookup = {
+    labels: accountLabelRecords,
+    titles: accountTitleRecords,
+  };
   const investmentProductTypeByAccountId = new Map(investmentAccountOptions.map((a) => [a.id, a.investProductType]));
   const investmentProductTypeByAccountIdObj = Object.fromEntries(investmentProductTypeByAccountId);
   const defaultFundInvestmentAccountId =
@@ -1722,10 +1737,12 @@ export default async function Home({
   const liabilityShellRemainingTotal = liabilityRowsForShell.filter((row) => !row.parentKey).reduce((sum, row) => sum + row.remainingTotal, 0);
   const liabilityDisplaySummaryValue = liabilityShellRemainingTotal;
   const selectedLiabilityAccountIds = new Set(selectedLiabilityRow?.accountIds ?? ordinaryLiabilityAccountIds);
+  // 负债/贷款账户名同样按「账户显示格式」渲染（机构全称手工拼接会忽略设置）。
   const liabilityAccountLabelById = new Map(
     liabilityAccounts.map((account) => [
       account.id,
-      (account.Institution?.name ? `${account.Institution.name}·${account.name}` : account.name),
+      accountLabelById.get(account.id)
+        || (account.Institution?.name ? `${account.Institution.name}·${account.name}` : account.name),
     ]),
   );
   const liabilityDirectionByAccountId = new Map(
@@ -1845,7 +1862,11 @@ export default async function Home({
         const arrivalDate = toYmdOrNull(entry.bondArrivalDate);
         const cashSideId = isCashIn ? entry.toAccountId : entry.accountId;
         const cashSideName = isCashIn ? entry.toAccountName : entry.accountName;
-        const cashAccountLabel = (cashSideId ? accountLabelById.get(cashSideId) : "") || cashSideName || "";
+        const { label: cashAccountLabel, title: cashAccountTitle } = resolveAccountTableLabel(
+          cashSideId,
+          cashSideName,
+          accountTableLabelLookup,
+        );
         return {
           id: entry.id,
           date: entryDate,
@@ -1853,6 +1874,7 @@ export default async function Home({
           bondName: entry.bondName ?? "",
           arrivalDate,
           cashAccountLabel,
+          cashAccountTitle,
           note: entry.note ?? "",
           amount: toNumber(entry.amount),
           businessTransactionId: entry.businessTransactionId ?? null,
@@ -1975,6 +1997,12 @@ export default async function Home({
   const allDetailEntries: DetailEntry[] = (filteredEntries2 || []).map((e) => {
     const linkedWealth = linkedWealthRowOf(e);
     const linkedFund = linkedFundRowOf(e);
+    // 买入退款资金腿自己就是「钱退回现金账户」那条流水：date 是到账日、amount 是
+    // 退款金额，业务事实挂在 fund_transactions（部分退款时 subtype 仍是 buy）。
+    // 沿用买入口径会让首屏显示成申请日的 200 元支出，客户端 refetch 后又变回 +100
+    // 入账（transactions/detail 的 linkedFundDetailFields 有同样的例外）。
+    const isBuyRefundCashLeg = isFundBuyRefundCashLeg(e);
+    const linkedFundForDisplay = isBuyRefundCashLeg ? null : linkedFund;
     const linkedWealthAction = linkedWealth?.action ?? null;
     const linkedWealthIsCashIn =
       linkedWealthAction === FundSubtype.redeem ||
@@ -1988,24 +2016,25 @@ export default async function Home({
         : -linkedWealthGrossAmount
       : toNumber(e.amount);
     const linkedFundIsCashIn =
-      linkedFund?.fundSubtype === FundSubtype.redeem ||
-      linkedFund?.fundSubtype === FundSubtype.switch_out ||
-      linkedFund?.fundSubtype === FundSubtype.dividend_cash;
-    const linkedFundGrossAmount = linkedFund ? Math.abs(toNumber(linkedFund.grossAmount)) : null;
-    const linkedFundAmount = linkedFund && linkedFundGrossAmount != null
+      linkedFundForDisplay?.fundSubtype === FundSubtype.redeem ||
+      linkedFundForDisplay?.fundSubtype === FundSubtype.switch_out ||
+      linkedFundForDisplay?.fundSubtype === FundSubtype.dividend_cash;
+    const linkedFundGrossAmount = linkedFundForDisplay ? Math.abs(toNumber(linkedFundForDisplay.grossAmount)) : null;
+    const linkedFundAmount = linkedFundForDisplay && linkedFundGrossAmount != null
       ? linkedFundIsCashIn
-        ? Math.abs(toNumber(linkedFund.arrivalAmount ?? linkedFund.grossAmount))
+        ? Math.abs(toNumber(linkedFundForDisplay.arrivalAmount ?? linkedFundForDisplay.grossAmount))
         : -linkedFundGrossAmount
       : linkedWealthAmount;
-    const linkedFundAccountId = linkedFund?.fundAccountId ?? null;
-    const linkedFundCashAccountId = linkedFund?.cashAccountId ?? e.accountId;
-    const linkedFundAccountName = linkedFund?.Account?.name ?? linkedFundAccountId ?? "";
-    const linkedFundCashAccountName = linkedFund?.CashAccount?.name ?? e.accountName ?? "";
+    const linkedFundAccountId = linkedFundForDisplay?.fundAccountId ?? null;
+    const linkedFundCashAccountId = linkedFundForDisplay?.cashAccountId ?? e.accountId;
+    const linkedFundAccountName = linkedFundForDisplay?.Account?.name ?? linkedFundAccountId ?? "";
+    const linkedFundCashAccountName = linkedFundForDisplay?.CashAccount?.name ?? e.accountName ?? "";
     return ({
     id: e.id,
     cashEntryId: linkedWealth?.cashEntryId ?? linkedFund?.cashEntryId ?? e.id,
     businessTransactionId: linkedWealth?.id ?? linkedFund?.id ?? null,
-    date: e.date.toISOString().slice(0, 10),
+    // 退款腿的 date 就是到账日（本地日），不能按 UTC 截断，否则首屏显示前一天。
+    date: isBuyRefundCashLeg ? formatDateLocal(e.date) : e.date.toISOString().slice(0, 10),
     postedAt: toDateOnlyLocalOrNull(e.postedAt),
     createdAt: toIsoOrNull(e.createdAt),
     updatedAt: toIsoOrNull(e.updatedAt),
@@ -2021,22 +2050,22 @@ export default async function Home({
     type: e.type,
     categoryId: e.categoryId,
     categoryName: e.categoryName,
-    accountId: linkedFund ? (linkedFundIsCashIn ? linkedFundAccountId : linkedFundCashAccountId) : e.accountId,
-    accountName: linkedFund ? (linkedFundIsCashIn ? linkedFundAccountName : linkedFundCashAccountName) : e.accountName,
-    accountKind: linkedFund ? (linkedFundIsCashIn ? linkedFund?.Account?.kind ?? null : linkedFund?.CashAccount?.kind ?? e.account?.kind ?? null) : e.account?.kind ?? null,
+    accountId: linkedFundForDisplay ? (linkedFundIsCashIn ? linkedFundAccountId : linkedFundCashAccountId) : e.accountId,
+    accountName: linkedFundForDisplay ? (linkedFundIsCashIn ? linkedFundAccountName : linkedFundCashAccountName) : e.accountName,
+    accountKind: linkedFundForDisplay ? (linkedFundIsCashIn ? linkedFundForDisplay.Account?.kind ?? null : linkedFundForDisplay.CashAccount?.kind ?? e.account?.kind ?? null) : e.account?.kind ?? null,
     accountLiabilityDirection: e.account?.liabilityDirection ?? null,
-    accountIsSettlementAccount: isSettlementLiabilityAccountId(linkedFund ? (linkedFundIsCashIn ? linkedFundAccountId : linkedFundCashAccountId) : e.accountId),
+    accountIsSettlementAccount: isSettlementLiabilityAccountId(linkedFundForDisplay ? (linkedFundIsCashIn ? linkedFundAccountId : linkedFundCashAccountId) : e.accountId),
     counterpartyInstitutionId: e.counterpartyInstitutionId ?? null,
     counterpartyInstitutionName: e.counterpartyInstitutionName ?? null,
     originalCurrency: e.originalCurrency ?? null,
     originalAmount: e.originalAmount == null ? null : toNumber(e.originalAmount),
     locationId: e.locationId ?? null,
     locationName: e.locationName ?? null,
-    toAccountId: linkedFund ? (linkedFundIsCashIn ? linkedFundCashAccountId : linkedFundAccountId) : e.toAccountId,
-    toAccountName: linkedFund ? (linkedFundIsCashIn ? linkedFundCashAccountName : linkedFundAccountName) : e.toAccountName,
-    toAccountKind: linkedFund ? (linkedFundIsCashIn ? linkedFund?.CashAccount?.kind ?? e.toAccount?.kind ?? null : linkedFund?.Account?.kind ?? null) : e.toAccount?.kind ?? null,
+    toAccountId: linkedFundForDisplay ? (linkedFundIsCashIn ? linkedFundCashAccountId : linkedFundAccountId) : e.toAccountId,
+    toAccountName: linkedFundForDisplay ? (linkedFundIsCashIn ? linkedFundCashAccountName : linkedFundAccountName) : e.toAccountName,
+    toAccountKind: linkedFundForDisplay ? (linkedFundIsCashIn ? linkedFundForDisplay.CashAccount?.kind ?? e.toAccount?.kind ?? null : linkedFundForDisplay.Account?.kind ?? null) : e.toAccount?.kind ?? null,
     toAccountLiabilityDirection: e.toAccount?.liabilityDirection ?? null,
-    toAccountIsSettlementAccount: isSettlementLiabilityAccountId(linkedFund ? (linkedFundIsCashIn ? linkedFundCashAccountId : linkedFundAccountId) : e.toAccountId),
+    toAccountIsSettlementAccount: isSettlementLiabilityAccountId(linkedFundForDisplay ? (linkedFundIsCashIn ? linkedFundCashAccountId : linkedFundAccountId) : e.toAccountId),
     note: linkedWealth
       ? buildWealthCashFlowNote({
           action: linkedWealth.action,
@@ -2049,12 +2078,12 @@ export default async function Home({
       : e.note,
     businessNote: linkedWealth?.note ?? null,
     toNote: e.toNote,
-    fundSubtype: linkedWealth?.action ?? linkedFund?.fundSubtype ?? e.fundSubtype,
+    fundSubtype: linkedWealth?.action ?? linkedFundForDisplay?.fundSubtype ?? e.fundSubtype,
     fundCode: linkedWealth ? null : linkedFund?.fundCode ?? e.fundCode,
     fundName: linkedWealth?.WealthProduct?.name ?? linkedWealth?.productName ?? linkedFund?.fundName ?? e.fundName,
     wealthProductId: linkedWealth?.wealthProductId ?? e.wealthProductId ?? null,
     depositProductId: e.depositProductId ?? null,
-    source: linkedFund?.source ?? e.source,
+    source: linkedFundForDisplay?.source ?? e.source,
     insuranceProductId: e.insuranceProductId ?? null,
     principalAmount: e.principalAmount != null ? toNumber(e.principalAmount) : null,
     interestAmount: e.interestAmount != null ? toNumber(e.interestAmount) : null,
@@ -2072,13 +2101,15 @@ export default async function Home({
     metalQuantity: e.metalQuantity != null ? toNumber(e.metalQuantity) : null,
     metalUnitPrice: e.metalUnitPrice != null ? toNumber(e.metalUnitPrice) : null,
     metalFee: e.metalFee != null ? toNumber(e.metalFee) : null,
-    fundUnits: linkedWealth?.units != null ? toNumber(linkedWealth.units) : linkedFund?.units != null ? toNumber(linkedFund.units) : e.fundUnits != null ? toNumber(e.fundUnits) : null,
-    fundNav: linkedWealth?.nav != null ? toNumber(linkedWealth.nav) : linkedFund?.nav != null ? toNumber(linkedFund.nav) : e.fundNav != null ? toNumber(e.fundNav) : null,
-    fundFee: linkedWealth?.fee != null ? toNumber(linkedWealth.fee) : linkedFund?.fee != null ? toNumber(linkedFund.fee) : e.fundFee != null ? toNumber(e.fundFee) : null,
-    fundConfirmDate: linkedWealth?.confirmDate ? toIsoOrNull(linkedWealth.confirmDate) : linkedFund?.confirmDate ? toIsoOrNull(linkedFund.confirmDate) : toIsoOrNull(e.fundConfirmDate),
-    fundArrivalDate: linkedWealth?.arrivalDate ? toIsoOrNull(linkedWealth.arrivalDate) : linkedFund?.arrivalDate ? toIsoOrNull(linkedFund.arrivalDate) : toIsoOrNull(e.fundArrivalDate),
+    fundUnits: linkedWealth?.units != null ? toNumber(linkedWealth.units) : linkedFundForDisplay?.units != null ? toNumber(linkedFundForDisplay.units) : e.fundUnits != null ? toNumber(e.fundUnits) : null,
+    fundNav: linkedWealth?.nav != null ? toNumber(linkedWealth.nav) : linkedFundForDisplay?.nav != null ? toNumber(linkedFundForDisplay.nav) : e.fundNav != null ? toNumber(e.fundNav) : null,
+    fundFee: linkedWealth?.fee != null ? toNumber(linkedWealth.fee) : linkedFundForDisplay?.fee != null ? toNumber(linkedFundForDisplay.fee) : e.fundFee != null ? toNumber(e.fundFee) : null,
+    fundConfirmDate: linkedWealth?.confirmDate ? toIsoOrNull(linkedWealth.confirmDate) : linkedFundForDisplay?.confirmDate ? toIsoOrNull(linkedFundForDisplay.confirmDate) : toIsoOrNull(e.fundConfirmDate),
+    // 退款腿没有确认日，到账日就是这条流水自己的日期（本地日）。
+    fundArrivalDate: isBuyRefundCashLeg ? formatDateLocal(e.date) : linkedWealth?.arrivalDate ? toIsoOrNull(linkedWealth.arrivalDate) : linkedFundForDisplay?.arrivalDate ? toIsoOrNull(linkedFundForDisplay.arrivalDate) : toIsoOrNull(e.fundArrivalDate),
     fundSourceEntryId: e.fundSourceEntryId ?? null,
-    fundArrivalAmount: linkedWealthArrivalAmount ?? (linkedFund?.arrivalAmount != null ? toNumber(linkedFund.arrivalAmount) : e.fundArrivalAmount != null ? toNumber(e.fundArrivalAmount) : null),
+    // 部分退款时 grossAmount 是买入额，退款腿的入账金额只能取流水本身。
+    fundArrivalAmount: isBuyRefundCashLeg ? Math.abs(toNumber(e.amount)) : linkedWealthArrivalAmount ?? (linkedFundForDisplay?.arrivalAmount != null ? toNumber(linkedFundForDisplay.arrivalAmount) : e.fundArrivalAmount != null ? toNumber(e.fundArrivalAmount) : null),
     ...buildEntryBusinessLinkSummary(e),
     attachments: (e.Attachment || []).map((attachment: any) => ({
       id: attachment.id,
@@ -2132,9 +2163,14 @@ export default async function Home({
             const depositSubtype = String(entry.fundSubtype ?? "");
             const isRedeemEntry = depositSubtype === "redeem" || depositSubtype === "switch_out";
             const isDividendEntry = depositSubtype === "dividend_cash" || depositSubtype === "dividend_reinvest";
-            const cashAccountLabel = isRedeemEntry || isDividendEntry
-              ? (entry.toAccountId ? (accountLabelById.get(entry.toAccountId) ?? entry.toAccountName ?? "") : (entry.toAccountName ?? ""))
-              : (entry.accountId ? (accountLabelById.get(entry.accountId) ?? entry.accountName ?? "") : (entry.accountName ?? ""));
+            const isCashInSide = isRedeemEntry || isDividendEntry;
+            const cashAccountId = isCashInSide ? (entry.toAccountId ?? null) : (entry.accountId ?? null);
+            const cashAccountFallbackName = isCashInSide ? (entry.toAccountName ?? "") : (entry.accountName ?? "");
+            const { label: cashAccountLabel, title: cashAccountTitle } = resolveAccountTableLabel(
+              cashAccountId,
+              cashAccountFallbackName,
+              accountTableLabelLookup,
+            );
             const entryDate = toYmdOrNull(entry.date) ?? "";
             const arrivalDate = toYmdOrNull(entry.fundArrivalDate);
             return {
@@ -2151,6 +2187,7 @@ export default async function Home({
               // 承载同一个值，但列名写成「到期日」，与存单表重复且含义漂移。
               arrivalDate,
               cashAccountLabel,
+              cashAccountTitle,
               note: entry.note ?? "",
               amount: isRedeemEntry
                 ? -Math.abs(toNumber(entry.fundArrivalAmount ?? entry.amount))
@@ -2215,15 +2252,22 @@ export default async function Home({
                     : entry.type === "transfer"
                       ? t("transaction.type.transfer")
                       : formatType(t, entry.type);
+              const relatedAccount = isDepositReceivingSide
+                ? { id: entry.accountId, name: entry.accountName }
+                : { id: entry.toAccountId, name: entry.toAccountName };
+              const { label: cashAccountLabel, title: cashAccountTitle } = resolveAccountTableLabel(
+                relatedAccount.id,
+                relatedAccount.name,
+                accountTableLabelLookup,
+              );
               return {
                 id: entry.id,
                 date: entryDate,
                 typeLabel,
                 fundName: entry.categoryName ?? "",
                 arrivalDate: toYmdOrNull(entry.fundArrivalDate),
-                cashAccountLabel: isDepositReceivingSide
-                  ? (entry.accountId ? (accountLabelById.get(entry.accountId) ?? entry.accountName ?? "") : (entry.accountName ?? ""))
-                  : (entry.toAccountId ? (accountLabelById.get(entry.toAccountId) ?? entry.toAccountName ?? "") : (entry.toAccountName ?? "")),
+                cashAccountLabel,
+                cashAccountTitle,
                 note: entry.note ?? "",
                 amount: effectiveAmount,
                 balance: null as number | null,
@@ -2334,7 +2378,13 @@ export default async function Home({
           .map((entry) => {
             const insuranceSubtype = String(entry.fundSubtype ?? "");
             const isRedeemEntry = insuranceSubtype === "redeem" || insuranceSubtype === "switch_out";
-            const cashAccountLabel = isRedeemEntry ? (entry.toAccountName ?? "") : (entry.accountName ?? "");
+            const cashAccountId = isRedeemEntry ? (entry.toAccountId ?? null) : (entry.accountId ?? null);
+            const cashAccountFallbackName = isRedeemEntry ? (entry.toAccountName ?? "") : (entry.accountName ?? "");
+            const { label: cashAccountLabel, title: cashAccountTitle } = resolveAccountTableLabel(
+              cashAccountId,
+              cashAccountFallbackName,
+              accountTableLabelLookup,
+            );
             const amount = isRedeemEntry ? Math.abs(toNumber(entry.amount)) : -Math.abs(toNumber(entry.amount));
             const entryDate = toYmdOrNull(entry.date) ?? "";
             return {
@@ -2343,7 +2393,8 @@ export default async function Home({
               typeLabel: isRedeemEntry ? t("fund.subtype.redeem") : t("insuranceShell.entryType.premium"),
               productName: entry.fundName ?? "",
               cashAccountLabel,
-              cashAccountId: isRedeemEntry ? (entry.toAccountId ?? null) : (entry.accountId ?? null),
+              cashAccountTitle,
+              cashAccountId,
               note: entry.note ?? "",
               amount,
               businessLinkCount: entry.businessLinkCount ?? 0,
@@ -3568,7 +3619,8 @@ export default async function Home({
                     resetKey={`${selectedAccount?.id ?? ""}:${selectedCreditBillMonth || "all"}:credit-bill-detail`}
                     selectedBillMonth={selectedCreditBillMonth}
                     title={creditBillDetailTitle}
-                    accountOptions={accountOptions.filter((a) => isIncomeExpensePostingAccount(a))}
+                    accountOptions={accountOptions}
+                    batchReplaceAccountOptions={accountOptions.filter((a) => isIncomeExpensePostingAccount(a))}
                     categoryOptions={categoryBatchReplaceOptions}
                     tagOptions={tagBatchReplaceOptions}
                     investmentProductTypeByAccountId={investmentProductTypeByAccountIdObj}
@@ -3651,6 +3703,8 @@ export default async function Home({
               entries={insuranceEntries}
               cashAccounts={cashAccountList}
               cashAccountSSOptions={cashAccountSSOptions}
+              accountLabelById={accountLabelRecords}
+              accountTitleById={accountTitleRecords}
               familyMemberOptions={institutions
                 .filter((item) => item.type === "family_member")
                 .map((item) => ({
@@ -3673,6 +3727,9 @@ export default async function Home({
               confirmDaysMap={investmoneyData.confirmDaysMap}
               feeRateMap={investmoneyData.feeRateMap}
               initialShowCleared={showCleared}
+              initialShowCashflow={showCashflow}
+              accountLabelById={accountLabelRecords}
+              accountTitleById={accountTitleRecords}
               baseQuery={baseQuery.toString()}
               accountId={accountId}
               selectedAccount={JSON.parse(JSON.stringify(selectedAccount ?? {}))}
@@ -3721,6 +3778,9 @@ export default async function Home({
               confirmDaysMap={investwealthData.confirmDaysMap}
               feeRateMap={investwealthData.feeRateMap}
               initialShowCleared={showCleared}
+              initialShowCashflow={showCashflow}
+              accountLabelById={accountLabelRecords}
+              accountTitleById={accountTitleRecords}
               baseQuery={baseQuery.toString()}
               accountId={accountId}
               selectedAccount={JSON.parse(JSON.stringify(selectedAccount ?? {}))}
@@ -3788,6 +3848,9 @@ export default async function Home({
               confirmDaysMap={investfundData.confirmDaysMap}
               feeRateMap={investfundData.feeRateMap}
               initialShowCleared={showCleared}
+              initialShowCashflow={showCashflow}
+              accountLabelById={accountLabelRecords}
+              accountTitleById={accountTitleRecords}
               baseQuery={baseQuery.toString()}
               accountId={accountId}
               selectedAccount={JSON.parse(JSON.stringify(selectedAccount ?? {}))}
@@ -3825,7 +3888,12 @@ export default async function Home({
                   normalExportFilename={normalExportFilename}
                   normalExportRows={normalExportRows}
                   normalExportRowsByEntryId={normalExportRowsByEntryId}
-                  accountOptions={accountOptions.filter((a) => isIncomeExpensePostingAccount(a)).map((a) => ({ id: a.id, label: a.label, listLabel: a.listLabel, fullLabel: a.fullLabel, title: a.hoverTitle }))}
+                  // 明细表的「账户 / 相关账户」列可以指向任何类型的账户（基金、股票、保险、
+                  // 定期、固定资产…），所以这里的显示选项必须是全量账户，否则列里只剩原始
+                  // 账户名（例如只显示「基金」），既没有机构也没有 hover。批替换下拉仍然只
+                  // 允许选择收支记账账户，单独用 batchReplaceAccountOptions 传。
+                  accountOptions={accountOptions}
+                  batchReplaceAccountOptions={accountOptions.filter((a) => isIncomeExpensePostingAccount(a))}
                   categoryOptions={categoryBatchReplaceOptions}
                   tagOptions={tagBatchReplaceOptions}
                   investmentProductTypeByAccountId={investmentProductTypeByAccountIdObj}

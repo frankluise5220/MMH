@@ -48,8 +48,10 @@ export function ReportTransactionEditHost({
   accountSSOptions,
   cashAccounts,
   investmentAccounts,
+  depositAccounts,
   cashAccountSSOptions,
   investmentAccountSSOptions,
+  depositAccountSSOptions,
   expenseCategories,
   incomeCategories,
   tags,
@@ -59,8 +61,11 @@ export function ReportTransactionEditHost({
   accountSSOptions: SmartSelectOption[];
   cashAccounts: AccountOption[];
   investmentAccounts: AccountOption[];
+  /** 存款账户（kind = "deposit"）单独一组：存款编辑窗的「取出账户」/存单列表只认它。 */
+  depositAccounts: AccountOption[];
   cashAccountSSOptions: SmartSelectOption[];
   investmentAccountSSOptions: SmartSelectOption[];
+  depositAccountSSOptions: SmartSelectOption[];
   expenseCategories: CategoryOption[];
   incomeCategories: CategoryOption[];
   tags: TagOption[];
@@ -197,11 +202,11 @@ export function ReportTransactionEditHost({
       />
       <DepositFormModal
         mode="edit"
-        accountId={investmentAccounts[0]?.id ?? ""}
+        accountId={depositAccounts[0]?.id ?? investmentAccounts[0]?.id ?? ""}
         cashAccounts={cashAccounts}
-        investmentAccounts={investmentAccounts}
+        investmentAccounts={depositAccounts}
         cashAccountSSOptions={cashAccountSSOptions}
-        investmentAccountSSOptions={investmentAccountSSOptions}
+        investmentAccountSSOptions={depositAccountSSOptions}
         nestedFieldData={nestedFieldData}
         createAction={updateInvestment}
         editAction={updateInvestment}

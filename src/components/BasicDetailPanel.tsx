@@ -39,7 +39,26 @@ type BasicDetailPanelProps = {
   normalExportFilename: string;
   normalExportRows?: string[][];
   normalExportRowsByEntryId?: Record<string, string[]>;
-  accountOptions: Array<{ id: string; label: string; listLabel?: string | null; fullLabel?: string | null; title?: string | null }>;
+  /**
+   * 账户单元格的显示来源，必须是**全量**账户（含投资 / 保险 / 定期 / 固定资产等），
+   * 否则明细表的「账户 / 相关账户」列只能回退到原始账户名，丢了机构和 hover。
+   */
+  accountOptions: Array<{
+    id: string;
+    label: string;
+    listLabel?: string | null;
+    selectorLabel?: string | null;
+    fullLabel?: string | null;
+    title?: string | null;
+    hoverTitle?: string | null;
+    tableHoverTitle?: string | null;
+    numberMasked?: string | null;
+    kind?: string | null;
+    liabilityDirection?: string | null;
+    isSettlementAccount?: boolean | null;
+  }>;
+  /** 批量替换账户下拉用的选项；默认与 `accountOptions` 相同。 */
+  batchReplaceAccountOptions?: Array<{ id: string; label: string; listLabel?: string | null }>;
   categoryOptions?: BasicDetailBatchCategoryOption[];
   tagOptions?: BasicDetailBatchCategoryOption[];
   investmentProductTypeByAccountId: Record<string, string | undefined | null>;
@@ -277,6 +296,7 @@ export function BasicDetailPanel({
   normalExportRows = [],
   normalExportRowsByEntryId,
   accountOptions,
+  batchReplaceAccountOptions,
   categoryOptions = [],
   tagOptions = [],
   investmentProductTypeByAccountId,
@@ -861,6 +881,7 @@ export function BasicDetailPanel({
           isInvestAccount={isInvestAccount}
           initialEntries={pageEntries}
           accountOptions={accountOptions}
+          batchReplaceAccountOptions={batchReplaceAccountOptions}
           categoryOptions={categoryOptions}
           tagOptions={tagOptions}
           investmentProductTypeByAccountId={investmentProductTypeByAccountId}

@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { resolveOrCreateDepositProduct } from "@/lib/server/deposit-product";
 import { normalizeCurrency, normalizeOptionalCurrency } from "@/lib/currency";
+import { loadDepositHoldingCounts } from "@/lib/server/product-holding-counts";
 
 export const runtime = "nodejs";
 
@@ -77,11 +78,15 @@ export async function GET(req: NextRequest) {
         .map((item) => [item.depositProductId as string, item._count._all]),
     );
 
+    // 产品库列表实际展示的是「当前持仓笔数」：已结清的存单不计入。
+    const holdingCounts = await loadDepositHoldingCounts(householdId, rows.map((item) => item.id));
+
     return NextResponse.json({
       ok: true,
       products: rows.map((item) => ({
         ...serializeDepositProduct(item),
         recordCount: recordCountByProductId.get(item.id) ?? 0,
+        holdingCount: holdingCounts.get(item.id) ?? 0,
       })),
     });
   } catch (error) {

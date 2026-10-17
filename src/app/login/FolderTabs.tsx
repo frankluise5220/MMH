@@ -127,6 +127,8 @@ export function folderTabClass(
       // （容器 `pt-10` = 40px）+ 1px，接缝恒 −1px。
       // 上下内边距不对称（6 / 3）是有意的：让标签跟着页签顶下移 3px，而不是随高度收缩各让 1.5px。
       // 改高度时必须同步改 `mt`（见文件头第 2 条），否则页签底会离开内容板顶露出白缝。
+      // 底色 = 内容板底色 = 表头底色：#fbfaf7，三处必须一致（表头那份由 AdvancedDataTable 的
+      // `ADVANCED_TABLE_HEAD_SURFACE_CLASS` 提供，这里不 import 它是为了不把 ADT 带进登录页的包）。
       `relative z-30 mt-[7px] ${width} rounded-t-[8px] border border-b-0 border-slate-300 bg-[#fbfaf7] px-4 pt-1.5 pb-[3px] text-base font-semibold text-slate-800 shadow-[0_-2px_3px_rgba(15,23,42,0.06)]`,
       "ft-tab-fillet",
       // 排首位/末位时的缩进 = 内容板倒角半径(12px) + 页签凹角半径(6px) = 18px。
