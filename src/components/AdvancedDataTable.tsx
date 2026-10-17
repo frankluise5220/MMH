@@ -10,6 +10,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type DragEvent as ReactDragEvent,
   type ReactNode,
+  type UIEvent as ReactUIEvent,
 } from "react";
 import { GripVertical, SlidersHorizontal, Trash2 } from "lucide-react";
 import { DateRangeColumnFilter, NumberRangeColumnFilter, TableColumnFilter, TextColumnFilter } from "./TableColumnFilter";
@@ -30,6 +31,17 @@ const HEADER_SORT_CLICK_DELAY_MS = 220;
 const COMPACT_ROW_HEIGHT = 30;
 const COMPACT_ROW_CONTENT_HEIGHT = 20;
 const ROW_BORDER_HEIGHT = 1;
+/**
+ * 表头与页签条共用的纸面底色（米色 `#fbfaf7`）。持仓卡片的页签条（`.paper-card-header`）、
+ * 文件卡片式页签（`FolderTabs` 的活动项）都直接复用这个类 —— 于是「页签 ≡ 表头」永远同色，
+ * 不在各页面里各写一份色值，衔接处也不会出现色差。
+ */
+export const ADVANCED_TABLE_HEAD_SURFACE_CLASS = "bg-[#fbfaf7]";
+/**
+ * 表体底色（纯白）：表头是一片米色纸面、数据区是白，靠这一档明度差把表头与记录行分开。
+ * 内置在组件里，调用方不必再给 `<tbody>` 传底色。
+ */
+export const ADVANCED_TABLE_BODY_SURFACE_CLASS = "bg-white";
 const ROW_ACTIONS_COMPACT_CLASS =
   " [&_button]:h-5 [&_button]:w-5 [&_button]:min-h-0 [&_svg]:h-3 [&_svg]:w-3";
 const ROW_ACTIONS_SIZE_CLASS: Record<RowHeightMode, string> = {
@@ -182,6 +194,93 @@ function getDropPositionFromClientY(rowElement: HTMLElement, clientY: number): A
   return clientY < rect.top + rect.height / 2 ? "before" : "after";
 }
 
+type ResizeFrameColumn = { key: string; resizeMinWidth: number };
+
+/** 按权重把 target 分给若干列，任何列都不低于 min；分不下时这些列取 min（总量会超出 target）。 */
+function distributeByWeight(
+  columns: { key: string; weight: number; min: number }[],
+  target: number,
+): Record<string, number> {
+  const result: Record<string, number> = {};
+  let active = columns.slice();
+  let poolTarget = target;
+  let poolWeight = active.reduce((sum, column) => sum + column.weight, 0);
+  while (active.length > 0) {
+    const scale = poolWeight > 0 ? poolTarget / poolWeight : 0;
+    const tooSmall = active.filter((column) => column.weight * scale < column.min);
+    if (tooSmall.length === 0) {
+      active.forEach((column) => { result[column.key] = column.weight * scale; });
+      break;
+    }
+    tooSmall.forEach((column) => {
+      result[column.key] = column.min;
+      poolTarget -= column.min;
+      poolWeight -= column.weight;
+    });
+    active = active.filter((column) => !tooSmall.includes(column));
+  }
+  return result;
+}
+
+/**
+ * 列宽拖拽过程中的整表列宽：始终在容器可用宽度内调整，尽量不产生横向滚动条。
+ * - 被拖列左侧的列一律冻结：它们一变宽/变窄，被拖列的左边界就跟着挪，手柄与鼠标脱节。
+ * - 空间由右侧的列按原比例吸收/让出，且各自不低于最小列宽；右侧全压到最小仍不够时，
+ *   才允许整表超出容器（此时才出现横向滚动条）。
+ * - 被拖的是最后一列时右侧无可调，改从左侧（由近及远）压缩，并把压缩量补回被拖列，
+ *   右边界因此仍钉在鼠标位置。
+ * 松手落盘复用同一份结果，保证「松手前最后一帧」与「松手后第一帧」完全一致。
+ */
+function computeResizeFrame(
+  columns: ResizeFrameColumn[],
+  startWidths: Record<string, number>,
+  draggedKey: string,
+  draggedWidth: number,
+  availableColumnWidth: number,
+): { colWidths: Record<string, number>; columnsTotal: number } {
+  const index = columns.findIndex((column) => column.key === draggedKey);
+  const widthOf = (column: ResizeFrameColumn) =>
+    Math.max(column.resizeMinWidth, startWidths[column.key] ?? column.resizeMinWidth);
+  if (index < 0) {
+    const colWidths = Object.fromEntries(columns.map((column) => [column.key, widthOf(column)]));
+    const columnsTotal = Object.values(colWidths).reduce((sum, width) => sum + width, 0);
+    return { colWidths, columnsTotal };
+  }
+
+  const dragged = columns[index];
+  const leftColumns = columns.slice(0, index);
+  const rightColumns = columns.slice(index + 1);
+  const colWidths: Record<string, number> = {};
+  leftColumns.forEach((column) => { colWidths[column.key] = widthOf(column); });
+  const leftTotal = leftColumns.reduce((sum, column) => sum + colWidths[column.key], 0);
+  let targetWidth = Math.max(dragged.resizeMinWidth, draggedWidth);
+
+  if (rightColumns.length > 0) {
+    const rest = availableColumnWidth - leftTotal - targetWidth;
+    const distributed = distributeByWeight(
+      rightColumns.map((column) => ({ key: column.key, weight: widthOf(column), min: column.resizeMinWidth })),
+      rest,
+    );
+    rightColumns.forEach((column) => {
+      colWidths[column.key] = distributed[column.key] ?? column.resizeMinWidth;
+    });
+  } else {
+    // 最后一列：已经没有右侧列可让，只能从左侧（由近及远）压缩来把表格收回容器内；
+    // 压到最小列宽仍然放不下时，才允许超出容器。
+    let deficit = leftTotal + targetWidth - availableColumnWidth;
+    for (let i = leftColumns.length - 1; i >= 0 && deficit > 0; i -= 1) {
+      const column = leftColumns[i];
+      const shrinkable = Math.max(0, colWidths[column.key] - column.resizeMinWidth);
+      const shrink = Math.min(shrinkable, deficit);
+      colWidths[column.key] -= shrink;
+      deficit -= shrink;
+    }
+  }
+  colWidths[dragged.key] = targetWidth;
+  const columnsTotal = Object.values(colWidths).reduce((sum, width) => sum + width, 0);
+  return { colWidths, columnsTotal };
+}
+
 export type AdvancedDataTableProps<T> = {
   storageKey: string;
   sortStorageKey?: string;
@@ -242,6 +341,13 @@ export type AdvancedDataTableProps<T> = {
   pagination?: AdvancedDataTablePagination;
   columnVisibilityTriggerId?: string;
   summaryRow?: AdvancedDataTableSummaryRow;
+  /**
+   * 汇总行的位置：
+   * - `sticky`（默认）：表格末尾的 `<tfoot>`，纵向滚动时吸在视口底边；
+   * - `footer`：移出表格，作为卡片底边的一条**独立底色**固定条。数据不足一屏时也贴在卡片底边，
+   *   不会跟着最后一行浮在中间；列宽与表头/表体保持一致，横向滚动会同步平移。
+   */
+  summaryRowPlacement?: "sticky" | "footer";
   resetKey?: string;
   resetDisplayStateOnMount?: boolean;
   scrollToRowKey?: string | null;
@@ -433,6 +539,7 @@ export function AdvancedDataTable<T>({
   pagination,
   columnVisibilityTriggerId,
   summaryRow,
+  summaryRowPlacement = "sticky",
   resetKey,
   resetDisplayStateOnMount = false,
   scrollToRowKey,
@@ -447,8 +554,19 @@ export function AdvancedDataTable<T>({
     return text;
   };
   const viewportRef = useRef<HTMLDivElement>(null);
+  // 表头渲染在表体滚动容器**之外**，横向滚动时用 transform 平移跟随（直接改 DOM，不触发 React 重渲染）。
+  const headerInnerRef = useRef<HTMLDivElement>(null);
+  // 汇总条固定在卡片底边（`summaryRowPlacement="footer"`）：同样脱离表格，单独渲染一张同列宽的窄表。
+  const summaryFooterRef = useRef<HTMLDivElement>(null);
+  const syncHeaderToScrollLeft = useCallback((scrollLeft: number) => {
+    const translate = `translateX(${-scrollLeft}px)`;
+    if (headerInnerRef.current) headerInnerRef.current.style.transform = translate;
+    if (summaryFooterRef.current) summaryFooterRef.current.style.transform = translate;
+  }, []);
   const columnMenuRef = useRef<HTMLDivElement>(null);
   const [viewportWidth, setViewportWidth] = useState(0);
+  /** 表体滚动条占位宽度：表头在滚动容器外面，靠它补齐右侧宽度，两边列才对得齐。 */
+  const [scrollbarGutterWidth, setScrollbarGutterWidth] = useState(0);
   const [needsHorizontalScroll, setNeedsHorizontalScroll] = useState(false);
   const [columnWidths, setColumnWidths] = useState<Record<string, number>>({});
   const [hiddenKeys, setHiddenKeys] = useState<Set<string>>(new Set());
@@ -679,7 +797,13 @@ export function AdvancedDataTable<T>({
   useEffect(() => {
     const node = viewportRef.current;
     if (!node) return;
-    const update = () => setViewportWidth(Math.floor(node.clientWidth));
+    const update = () => {
+      setViewportWidth(Math.floor(node.clientWidth));
+      // 表体容器恒有纵向滚动条（`overflow-y-scroll`），表头容器在它外面，必须让出同样宽度，
+      // 否则两边的可视宽度差一条滚动条，列会错位。
+      setScrollbarGutterWidth(Math.max(0, node.offsetWidth - node.clientWidth));
+      syncHeaderToScrollLeft(node.scrollLeft);
+    };
     update();
     if (typeof ResizeObserver === "undefined") {
       window.addEventListener("resize", update);
@@ -688,7 +812,7 @@ export function AdvancedDataTable<T>({
     const observer = new ResizeObserver(update);
     observer.observe(node);
     return () => observer.disconnect();
-  }, []);
+  }, [syncHeaderToScrollLeft]);
 
   useEffect(() => {
     const node = viewportRef.current;
@@ -1096,30 +1220,14 @@ export function AdvancedDataTable<T>({
     const hasManualWidths = Object.keys(columnWidths).length > 0;
 
     if (resizeSession) {
-      const resizingColumn = baseWidths.find((column) => column.key === resizeSession.key);
-      if (resizingColumn) {
-        const targetWidth = Math.max(resizingColumn.resizeMinWidth, resizeSession.width);
-        const otherColumns = baseWidths.filter((column) => column.key !== resizeSession.key);
-        const otherBaseTotal = otherColumns.reduce(
-          (sum, column) => sum + (resizeSession.baseWidths[column.key] ?? column.preferredWidth),
-          0,
-        );
-        const availableColumnWidth = Math.max(0, availableWidth - controlWidth, (minTableWidth ?? 0) - controlWidth);
-        const targetTotal = targetWidth + otherBaseTotal;
-        const extraWidth = Math.max(0, availableColumnWidth - targetTotal);
-        const otherScale = otherBaseTotal > 0 ? (otherBaseTotal + extraWidth) / otherBaseTotal : 1;
-        const colWidths = Object.fromEntries(baseWidths.map((column) => {
-          if (column.key === resizeSession.key) return [column.key, targetWidth];
-          const baseWidth = resizeSession.baseWidths[column.key] ?? column.preferredWidth;
-          return [column.key, baseWidth * otherScale];
-        }));
-        const resizedColumnsTotal = Object.values(colWidths).reduce((sum, width) => sum + width, 0);
-        return {
-          tableWidth: controlWidth + resizedColumnsTotal,
-          controlWidth,
-          colWidths,
-        };
-      }
+      const frame = computeResizeFrame(
+        baseWidths,
+        resizeSession.baseWidths,
+        resizeSession.key,
+        resizeSession.width,
+        Math.max(0, availableWidth - controlWidth),
+      );
+      return { tableWidth: controlWidth + frame.columnsTotal, controlWidth, colWidths: frame.colWidths };
     }
 
     if (!hasManualWidths && availableWidth >= controlWidth + preferredColumnsTotal) {
@@ -1134,16 +1242,25 @@ export function AdvancedDataTable<T>({
       };
     }
 
-    if (hasManualWidths && availableWidth >= controlWidth + preferredColumnsTotal) {
+    if (hasManualWidths) {
       const availableColumnWidth = Math.max(0, availableWidth - controlWidth);
-      const growScale = preferredColumnsTotal > 0 ? availableColumnWidth / preferredColumnsTotal : 1;
-      return {
-        tableWidth: availableWidth,
-        controlWidth,
-        colWidths: Object.fromEntries(
-          preferredWidths.map((column) => [column.key, column.preferredWidth * growScale]),
-        ),
-      };
+      if (basePreferredColumnsTotal <= availableColumnWidth) {
+        // 总和装得下就严格按用户设定渲染：拖拽落盘时已把整表列宽一起冻结，
+        // 这里若再等比放大、或把剩余宽度塞给某一列，松手瞬间列宽就又变了（「松开后不对」）。
+        return {
+          tableWidth: controlWidth + basePreferredColumnsTotal,
+          controlWidth,
+          colWidths: Object.fromEntries(baseWidths.map((column) => [column.key, column.preferredWidth])),
+        };
+      }
+      // 装不下（窗口变窄或手动调宽）就等比压缩到容器内，且不低于最小列宽；
+      // 只有全压到最小列宽仍放不下时才出现横向滚动条。
+      const colWidths = distributeByWeight(
+        baseWidths.map((column) => ({ key: column.key, weight: column.preferredWidth, min: column.minWidth })),
+        availableColumnWidth,
+      );
+      const columnsTotal = Object.values(colWidths).reduce((sum, width) => sum + width, 0);
+      return { tableWidth: controlWidth + columnsTotal, controlWidth, colWidths };
     }
 
     if (!hasManualWidths && availableWidth >= minTotal) {
@@ -1195,14 +1312,6 @@ export function AdvancedDataTable<T>({
     setSelection(next);
   }, [effectiveSelectedKeys, selectable, selectableRowKeySet, setSelection]);
 
-  const setColumnWidth = useCallback((key: string, width: number, minWidth: number) => {
-    setColumnWidths((prev) => {
-      const next = { ...prev, [key]: Math.max(minWidth, Math.round(width)) };
-      writeJson(`${storageKey}:widths`, next);
-      return next;
-    });
-  }, [storageKey]);
-
   const beginResize = useCallback((event: ReactMouseEvent, column: AdvancedDataTableColumn<T>) => {
     event.preventDefault();
     event.stopPropagation();
@@ -1210,17 +1319,28 @@ export function AdvancedDataTable<T>({
     const minWidth = column.resizeMinWidth ?? 52;
     const startX = event.clientX;
     const startWidth = layout.colWidths[column.key] ?? columnWidths[column.key] ?? column.width;
+    // 整表列宽的落盘依据：可见列顺序 + 拖拽开始时的实际宽度（与 layout 预览用的是同一份快照）。
+    const frameColumns: ResizeFrameColumn[] = visibleColumns.map((item) => ({
+      key: item.key,
+      resizeMinWidth: item.resizeMinWidth ?? 52,
+    }));
+    const availableColumnWidth = Math.max(0, (viewportWidth || layout.tableWidth) - layout.controlWidth);
     setResizeSession({ key: column.key, width: startWidth, baseWidths: layout.colWidths });
     const updateResizeGuide = (clientX: number) => {
       const viewportRect = viewportRef.current?.getBoundingClientRect();
       if (!viewportRect) return;
-      setResizeGuide({ x: clientX, top: viewportRect.top, height: viewportRect.height });
+      // 拖拽辅助线要从表头上沿画起：表头在滚动容器之外，单独把它并进来。
+      const headerRect = headerInnerRef.current?.parentElement?.getBoundingClientRect();
+      const top = headerRect ? Math.min(headerRect.top, viewportRect.top) : viewportRect.top;
+      setResizeGuide({ x: clientX, top, height: viewportRect.bottom - top });
     };
+    let latestWidth = startWidth;
     const onMove = (moveEvent: MouseEvent) => {
       updateResizeGuide(moveEvent.clientX);
-      const width = Math.max(minWidth, startWidth + moveEvent.clientX - startX);
-      setResizeSession((current) => current ? { ...current, width } : current);
-      setColumnWidth(column.key, width, minWidth);
+      // 只更新拖拽会话（layout 直接据此预览）；落盘留到松手时做一次 ——
+      // 每个 mousemove 都同步写一次 localStorage 会卡顿，手柄就跟不上鼠标了。
+      latestWidth = Math.max(minWidth, startWidth + moveEvent.clientX - startX);
+      setResizeSession((current) => current ? { ...current, width: latestWidth } : current);
     };
     const onUp = () => {
       window.removeEventListener("mousemove", onMove);
@@ -1231,6 +1351,31 @@ export function AdvancedDataTable<T>({
       document.body.style.userSelect = "";
       setResizeGuide(null);
       setResizeSession(null);
+      if (Math.round(latestWidth) === Math.round(startWidth)) return;
+      // 松手时把整表列宽一起冻结成「最后看到的宽度」：layout 之后按手动宽度直接渲染，
+      // 与被拖动的最后一帧完全一致，因此松手不回弹。
+      const frame = computeResizeFrame(frameColumns, layout.colWidths, column.key, latestWidth, availableColumnWidth);
+      const minWidthByKey = new Map(frameColumns.map((item) => [item.key, item.resizeMinWidth]));
+      const frozen = Object.entries(frame.colWidths).map(([key, width]) => ({
+        key,
+        width: Math.max(minWidthByKey.get(key) ?? 52, Math.round(width)),
+      }));
+      // 取整后可能比容器多出几像素；从最宽的列里扣掉，免得刚松手就冒出一条横向滚动条。
+      let roundedTotal = frozen.reduce((sum, item) => sum + item.width, 0);
+      const limit = Math.round(availableColumnWidth);
+      while (roundedTotal > limit) {
+        const widest = frozen.reduce((a, b) => (b.width > a.width ? b : a));
+        const take = Math.min(roundedTotal - limit, widest.width - (minWidthByKey.get(widest.key) ?? 52));
+        if (take <= 0) break;
+        widest.width -= take;
+        roundedTotal -= take;
+      }
+      setColumnWidths((prev) => {
+        const next = { ...prev };
+        frozen.forEach((item) => { next[item.key] = item.width; });
+        writeJson(`${storageKey}:widths`, next);
+        return next;
+      });
     };
     updateResizeGuide(startX);
     document.body.style.cursor = "col-resize";
@@ -1239,7 +1384,14 @@ export function AdvancedDataTable<T>({
     window.addEventListener("mouseup", onUp);
     window.addEventListener("blur", onUp);
     resizeCleanupRef.current = onUp;
-  }, [columnWidths, layout.colWidths, setColumnWidth]);
+  }, [columnWidths, layout.colWidths, layout.controlWidth, layout.tableWidth, storageKey, viewportWidth, visibleColumns]);
+
+  function resetColumnWidths() {
+    // 清空即可：没有手动列宽时 layout 会回到「按列定义的默认宽度铺满/压缩」的那套算法。
+    setColumnWidths({});
+    writeJson(`${storageKey}:widths`, {});
+    setResizeSession(null);
+  }
 
   function toggleColumn(key: string) {
     const column = tableColumns.find((item) => item.key === key);
@@ -1588,6 +1740,7 @@ export function AdvancedDataTable<T>({
     setActiveFilterColumn(null);
   };
   const clearSelection = () => setSelection(new Set());
+  const hasCustomColumnWidths = Object.keys(columnWidths).length > 0;
   const columnVisibilityMenuContent = (
     <>
       <div className="mb-1 px-1 text-[11px] font-semibold text-slate-500">{t("table.visibleColumns")}</div>
@@ -1612,6 +1765,20 @@ export function AdvancedDataTable<T>({
             <span className="truncate">{column.label}</span>
           </label>
         ))}
+      </div>
+      <div className="mt-2 border-t border-slate-100 pt-1.5">
+        <button
+          type="button"
+          onClick={resetColumnWidths}
+          disabled={!hasCustomColumnWidths}
+          title={t("table.resetColumnWidths")}
+          className={[
+            "w-full rounded px-1.5 py-1 text-left text-xs",
+            hasCustomColumnWidths ? "text-slate-600 hover:bg-slate-50" : "cursor-not-allowed text-slate-300",
+          ].join(" ")}
+        >
+          {t("table.resetColumnWidths")}
+        </button>
       </div>
     </>
   );
@@ -1654,6 +1821,11 @@ export function AdvancedDataTable<T>({
   const hasHorizontalScroll =
     needsHorizontalScroll ||
     (viewportWidth > 0 && layout.tableWidth > viewportWidth + HORIZONTAL_SCROLL_TOLERANCE_PX);
+
+  const handleViewportScroll = useCallback((event: ReactUIEvent<HTMLDivElement>) => {
+    syncHeaderToScrollLeft(event.currentTarget.scrollLeft);
+  }, [syncHeaderToScrollLeft]);
+  const summaryAtFooter = summaryRow && summaryRowPlacement === "footer" ? summaryRow : null;
 
   return (
     <div
@@ -1750,159 +1922,175 @@ export function AdvancedDataTable<T>({
         </div>
       ) : null}
 
+      {/* 表头：与表体共用同一份列宽，但渲染在滚动容器**外面** ——
+          纵向滚动条因此只覆盖数据区，不从表头上沿开始；横向滚动时内层用 transform 跟随。 */}
+      <div
+        className={`shrink-0 overflow-hidden ${ADVANCED_TABLE_HEAD_SURFACE_CLASS}`}
+        style={{ paddingRight: scrollbarGutterWidth }}
+      >
+        <div ref={headerInnerRef} className="will-change-transform" style={{ width: layout.tableWidth }}>
+          <table className="table-fixed border-separate border-spacing-0 [&_th]:border-r [&_th]:border-slate-200" style={{ width: layout.tableWidth }}>
+            <colgroup>
+              {(selectable || draggableRows) ? <col style={{ width: layout.controlWidth }} /> : null}
+              {visibleColumns.map((column) => <col key={column.key} style={{ width: layout.colWidths[column.key] ?? column.width }} />)}
+            </colgroup>
+            <thead className={ADVANCED_TABLE_HEAD_SURFACE_CLASS}>
+              <tr data-advanced-table-header-row style={{ height: rowHeight }}>
+                {(selectable || draggableRows) ? (
+                  <th className={`border-b border-slate-200 text-center ${selectPaddingClass}`}>
+                    {selectable ? (
+                      <input
+                        type="checkbox"
+                        checked={allSelected}
+                        ref={(input) => {
+                          if (input) input.indeterminate = partiallySelected;
+                        }}
+                        onChange={(event) => toggleAllRows(event.target.checked)}
+                        className="h-3.5 w-3.5 rounded border-slate-300"
+                        aria-label={t("table.selectAll")}
+                      />
+                    ) : null}
+                  </th>
+                ) : null}
+                {visibleColumns.map((column) => (
+                  <th key={column.key} data-advanced-table-header-cell={column.key} className={["relative select-none border-b border-slate-200 text-center text-xs font-semibold text-slate-600", headerPaddingClass, column.headerClassName ?? ""].join(" ")}>
+                    <div className="flex min-w-0 items-center justify-center gap-1">
+                      {(column.sortValue || column.filterText) && sortable ? (
+                        <span
+                          className={`block min-w-0 truncate cursor-pointer select-none text-xs font-semibold transition-transform duration-200 ${sortState?.key === column.key ? "text-purple-600" : (filters[column.key]?.length ?? 0) > 0 ? "text-blue-600" : "text-slate-600"} ${sortState?.key === column.key && sortState.direction === "desc" ? "rotate-180" : ""}`}
+                          onClick={(event) => handleHeaderSortClick(event, column.key, showFilters && !!column.filterText)}
+                          onDoubleClick={(event) => handleHeaderLabelDoubleClick(event, column.key, showFilters && !!column.filterText)}
+                          title={showFilters && column.filterText ? (sortState?.key === column.key ? (sortState.direction === "asc" ? t("advancedTable.sortAscDesc") : t("advancedTable.sortDescCancel")) : t("advancedTable.sortClickFilter")) : (sortState?.key === column.key ? (sortState.direction === "asc" ? t("advancedTable.sortAsc") : t("advancedTable.sortDesc")) : t("advancedTable.sortClick"))}
+                        >
+                          {labelText(column.label, column.key)}
+                        </span>
+                      ) : (
+                        <span
+                          className={`block min-w-0 truncate text-xs font-semibold ${((filters[column.key]?.length ?? 0) > 0) ? "text-blue-600" : "text-slate-600"} ${showFilters && column.filterText ? "cursor-pointer hover:text-blue-600" : ""}`}
+                          onDoubleClick={(event) => handleHeaderLabelDoubleClick(event, column.key, showFilters && !!column.filterText)}
+                          title={showFilters && column.filterText ? t("advancedTable.doubleClickFilter", { label: labelText(column.label, column.key) }) : labelText(column.label, column.key)}
+                        >
+                          {labelText(column.label, column.key)}
+                        </span>
+                      )}
+                      {showFilters && column.filterText ? (
+                        column.filterKind === "dateRange" ? (
+                          <DateRangeColumnFilter
+                            label={labelText(column.label, column.key)}
+                            from={filters[column.key]?.[0] ?? ""}
+                            to={filters[column.key]?.[1] ?? ""}
+                            open={activeFilterColumn === column.key}
+                            labelClassName="hidden"
+                            showTrigger={false}
+                            onToggleOpen={() => setActiveFilterColumn((current) => current === column.key ? null : column.key)}
+                            onClose={() => setActiveFilterColumn(null)}
+                            onChange={({ from, to }) =>
+                              setFilters((prev) => {
+                                if (!from && !to) {
+                                  const next = { ...prev };
+                                  delete next[column.key];
+                                  return next;
+                                }
+                                return { ...prev, [column.key]: [from, to] };
+                              })
+                            }
+                          />
+                        ) : column.filterKind === "numberRange" ? (
+                          <NumberRangeColumnFilter
+                            label={labelText(column.label, column.key)}
+                            from={filters[column.key]?.[0] ?? ""}
+                            to={filters[column.key]?.[1] ?? ""}
+                            open={activeFilterColumn === column.key}
+                            labelClassName="hidden"
+                            showTrigger={false}
+                            onToggleOpen={() => setActiveFilterColumn((current) => current === column.key ? null : column.key)}
+                            onClose={() => setActiveFilterColumn(null)}
+                            onChange={({ from, to }) =>
+                              setFilters((prev) => {
+                                if (!from && !to) {
+                                  const next = { ...prev };
+                                  delete next[column.key];
+                                  return next;
+                                }
+                                return { ...prev, [column.key]: [from, to] };
+                              })
+                            }
+                          />
+                        ) : column.filterKind === "text" ? (
+                          <TextColumnFilter
+                            label={labelText(column.label, column.key)}
+                            value={filters[column.key]?.[0] ?? ""}
+                            open={activeFilterColumn === column.key}
+                            labelClassName="hidden"
+                            showTrigger={false}
+                            onToggleOpen={() => setActiveFilterColumn((current) => current === column.key ? null : column.key)}
+                            onClose={() => setActiveFilterColumn(null)}
+                            onChange={(value) =>
+                              setFilters((prev) => {
+                                if (!value) {
+                                  const next = { ...prev };
+                                  delete next[column.key];
+                                  return next;
+                                }
+                                return { ...prev, [column.key]: [value] };
+                              })
+                            }
+                          />
+                        ) : (
+                          <TableColumnFilter
+                            label={labelText(column.label, column.key)}
+                            options={activeFilterMeta.columnKey === column.key ? activeFilterMeta.options : []}
+                            optionCounts={activeFilterMeta.columnKey === column.key ? activeFilterMeta.counts : undefined}
+                            optionTitles={activeFilterMeta.columnKey === column.key ? activeFilterMeta.titles : undefined}
+                            optionSearchText={activeFilterMeta.columnKey === column.key ? activeFilterMeta.searchText : undefined}
+                            selectedValues={filters[column.key] ?? []}
+                            open={activeFilterColumn === column.key}
+                            showLabel={false}
+                            showTrigger={false}
+                            onToggleOpen={() => setActiveFilterColumn((current) => current === column.key ? null : column.key)}
+                            onClose={() => setActiveFilterColumn(null)}
+                            onChange={(values) =>
+                              setFilters((prev) => {
+                                if (!values || values.length === 0) {
+                                  const next = { ...prev };
+                                  delete next[column.key];
+                                  return next;
+                                }
+                                return { ...prev, [column.key]: values };
+                              })
+                            }
+                          />
+                        )
+                      ) : null}
+                    </div>
+                    <div
+                      aria-hidden="true"
+                      data-advanced-table-resize-handle={column.key}
+                      className="absolute right-[-3px] top-0 z-20 h-full w-2 cursor-col-resize touch-none select-none bg-transparent transition-colors hover:bg-blue-300/40"
+                      onMouseDown={(event) => beginResize(event, column)}
+                    />
+                  </th>
+                ))}
+              </tr>
+            </thead>
+          </table>
+        </div>
+      </div>
       <div
         ref={viewportRef}
+        onScroll={handleViewportScroll}
         className={
           fillHeight
-            ? `advanced-table-viewport ${hasHorizontalScroll ? "overflow-x-auto" : "overflow-x-hidden"} min-h-0 flex-1 overflow-y-scroll [scrollbar-gutter:stable]`
-            : `advanced-table-viewport ${hasHorizontalScroll ? "overflow-x-auto" : "overflow-x-hidden"} overflow-y-scroll [scrollbar-gutter:stable]`
+            ? `advanced-table-viewport ${ADVANCED_TABLE_BODY_SURFACE_CLASS} ${hasHorizontalScroll ? "overflow-x-auto" : "overflow-x-hidden"} min-h-0 flex-1 overflow-y-scroll [scrollbar-gutter:stable]`
+            : `advanced-table-viewport ${ADVANCED_TABLE_BODY_SURFACE_CLASS} ${hasHorizontalScroll ? "overflow-x-auto" : "overflow-x-hidden"} overflow-y-scroll [scrollbar-gutter:stable]`
         }
       >
-        <table className="table-fixed border-separate border-spacing-0 [&_td]:border-r [&_td]:border-slate-100 [&_th]:border-r [&_th]:border-slate-200" style={{ width: layout.tableWidth }}>
+        <table className="table-fixed border-separate border-spacing-0 [&_td]:border-r [&_td]:border-slate-100" style={{ width: layout.tableWidth }}>
           <colgroup>
             {(selectable || draggableRows) ? <col style={{ width: layout.controlWidth }} /> : null}
             {visibleColumns.map((column) => <col key={column.key} style={{ width: layout.colWidths[column.key] ?? column.width }} />)}
           </colgroup>
-          <thead className="sticky top-0 z-10 bg-white">
-            <tr data-advanced-table-header-row>
-              {(selectable || draggableRows) ? (
-                <th className={`border-b border-slate-200 text-center ${selectPaddingClass}`}>
-                  {selectable ? (
-                    <input
-                      type="checkbox"
-                      checked={allSelected}
-                      ref={(input) => {
-                        if (input) input.indeterminate = partiallySelected;
-                      }}
-                      onChange={(event) => toggleAllRows(event.target.checked)}
-                      className="h-3.5 w-3.5 rounded border-slate-300"
-                      aria-label={t("table.selectAll")}
-                    />
-                  ) : null}
-                </th>
-              ) : null}
-              {visibleColumns.map((column) => (
-                <th key={column.key} data-advanced-table-header-cell={column.key} className={["relative select-none border-b border-slate-200 text-center text-xs font-semibold text-slate-600", headerPaddingClass, column.headerClassName ?? ""].join(" ")}>
-                  <div className="flex min-w-0 items-center justify-center gap-1">
-                    {(column.sortValue || column.filterText) && sortable ? (
-                      <span
-                        className={`block min-w-0 truncate cursor-pointer select-none text-xs font-semibold transition-transform duration-200 ${sortState?.key === column.key ? "text-purple-600" : (filters[column.key]?.length ?? 0) > 0 ? "text-blue-600" : "text-slate-600"} ${sortState?.key === column.key && sortState.direction === "desc" ? "rotate-180" : ""}`}
-                        onClick={(event) => handleHeaderSortClick(event, column.key, showFilters && !!column.filterText)}
-                        onDoubleClick={(event) => handleHeaderLabelDoubleClick(event, column.key, showFilters && !!column.filterText)}
-                        title={showFilters && column.filterText ? (sortState?.key === column.key ? (sortState.direction === "asc" ? t("advancedTable.sortAscDesc") : t("advancedTable.sortDescCancel")) : t("advancedTable.sortClickFilter")) : (sortState?.key === column.key ? (sortState.direction === "asc" ? t("advancedTable.sortAsc") : t("advancedTable.sortDesc")) : t("advancedTable.sortClick"))}
-                      >
-                        {labelText(column.label, column.key)}
-                      </span>
-                    ) : (
-                      <span
-                        className={`block min-w-0 truncate text-xs font-semibold ${((filters[column.key]?.length ?? 0) > 0) ? "text-blue-600" : "text-slate-600"} ${showFilters && column.filterText ? "cursor-pointer hover:text-blue-600" : ""}`}
-                        onDoubleClick={(event) => handleHeaderLabelDoubleClick(event, column.key, showFilters && !!column.filterText)}
-                        title={showFilters && column.filterText ? t("advancedTable.doubleClickFilter", { label: labelText(column.label, column.key) }) : labelText(column.label, column.key)}
-                      >
-                        {labelText(column.label, column.key)}
-                      </span>
-                    )}
-                    {showFilters && column.filterText ? (
-                      column.filterKind === "dateRange" ? (
-                        <DateRangeColumnFilter
-                          label={labelText(column.label, column.key)}
-                          from={filters[column.key]?.[0] ?? ""}
-                          to={filters[column.key]?.[1] ?? ""}
-                          open={activeFilterColumn === column.key}
-                          labelClassName="hidden"
-                          showTrigger={false}
-                          onToggleOpen={() => setActiveFilterColumn((current) => current === column.key ? null : column.key)}
-                          onClose={() => setActiveFilterColumn(null)}
-                          onChange={({ from, to }) =>
-                            setFilters((prev) => {
-                              if (!from && !to) {
-                                const next = { ...prev };
-                                delete next[column.key];
-                                return next;
-                              }
-                              return { ...prev, [column.key]: [from, to] };
-                            })
-                          }
-                        />
-                      ) : column.filterKind === "numberRange" ? (
-                        <NumberRangeColumnFilter
-                          label={labelText(column.label, column.key)}
-                          from={filters[column.key]?.[0] ?? ""}
-                          to={filters[column.key]?.[1] ?? ""}
-                          open={activeFilterColumn === column.key}
-                          labelClassName="hidden"
-                          showTrigger={false}
-                          onToggleOpen={() => setActiveFilterColumn((current) => current === column.key ? null : column.key)}
-                          onClose={() => setActiveFilterColumn(null)}
-                          onChange={({ from, to }) =>
-                            setFilters((prev) => {
-                              if (!from && !to) {
-                                const next = { ...prev };
-                                delete next[column.key];
-                                return next;
-                              }
-                              return { ...prev, [column.key]: [from, to] };
-                            })
-                          }
-                        />
-                      ) : column.filterKind === "text" ? (
-                        <TextColumnFilter
-                          label={labelText(column.label, column.key)}
-                          value={filters[column.key]?.[0] ?? ""}
-                          open={activeFilterColumn === column.key}
-                          labelClassName="hidden"
-                          showTrigger={false}
-                          onToggleOpen={() => setActiveFilterColumn((current) => current === column.key ? null : column.key)}
-                          onClose={() => setActiveFilterColumn(null)}
-                          onChange={(value) =>
-                            setFilters((prev) => {
-                              if (!value) {
-                                const next = { ...prev };
-                                delete next[column.key];
-                                return next;
-                              }
-                              return { ...prev, [column.key]: [value] };
-                            })
-                          }
-                        />
-                      ) : (
-                        <TableColumnFilter
-                          label={labelText(column.label, column.key)}
-                          options={activeFilterMeta.columnKey === column.key ? activeFilterMeta.options : []}
-                          optionCounts={activeFilterMeta.columnKey === column.key ? activeFilterMeta.counts : undefined}
-                          optionTitles={activeFilterMeta.columnKey === column.key ? activeFilterMeta.titles : undefined}
-                          optionSearchText={activeFilterMeta.columnKey === column.key ? activeFilterMeta.searchText : undefined}
-                          selectedValues={filters[column.key] ?? []}
-                          open={activeFilterColumn === column.key}
-                          showLabel={false}
-                          showTrigger={false}
-                          onToggleOpen={() => setActiveFilterColumn((current) => current === column.key ? null : column.key)}
-                          onClose={() => setActiveFilterColumn(null)}
-                          onChange={(values) =>
-                            setFilters((prev) => {
-                              if (!values || values.length === 0) {
-                                const next = { ...prev };
-                                delete next[column.key];
-                                return next;
-                              }
-                              return { ...prev, [column.key]: values };
-                            })
-                          }
-                        />
-                      )
-                    ) : null}
-                  </div>
-                  <div
-                    aria-hidden="true"
-                    data-advanced-table-resize-handle={column.key}
-                    className="absolute right-[-3px] top-0 z-20 h-full w-2 cursor-col-resize touch-none select-none bg-transparent transition-colors hover:bg-blue-300/40"
-                    onMouseDown={(event) => beginResize(event, column)}
-                  />
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody className={bodyTextClass}>
+          <tbody className={`${bodyTextClass} ${ADVANCED_TABLE_BODY_SURFACE_CLASS}`}>
             {shouldVirtualizeRows && virtualPaddingTop > 0 ? (
               <tr aria-hidden="true">
                 <td colSpan={bodyColSpan} style={{ height: virtualPaddingTop, padding: 0, border: 0 }} />
@@ -2044,11 +2232,14 @@ export function AdvancedDataTable<T>({
               </tr>
             ) : null}
           </tbody>
-          {summaryRow ? (
+          {summaryRow && !summaryAtFooter ? (
             <tfoot className="sticky bottom-0 z-[1] bg-slate-50/95 backdrop-blur-sm">
-              <tr className={summaryRow.rowClassName ?? ""} data-advanced-table-summary-row>
+              <tr className={summaryRow.rowClassName ?? ""} data-advanced-table-summary-row style={{ height: rowHeight }}>
                 {(selectable || draggableRows) ? (
-                  <td className={`border-t border-slate-200 text-center ${selectPaddingClass} ${summaryRow.cellClassName ?? ""}`}>
+                  <td
+                    className={`border-t border-slate-200 text-center ${selectPaddingClass} ${summaryRow.cellClassName ?? ""}`}
+                    style={rowCellPaddingStyle}
+                  >
                     {summaryRow.selectCell ?? null}
                   </td>
                 ) : null}
@@ -2062,6 +2253,7 @@ export function AdvancedDataTable<T>({
                       alignClass(column.align),
                       summaryRow.cellClassName ?? "",
                     ].join(" ")}
+                    style={rowCellPaddingStyle}
                   >
                     {summaryRow.cells[column.key] ?? null}
                   </td>
@@ -2071,6 +2263,53 @@ export function AdvancedDataTable<T>({
           ) : null}
         </table>
       </div>
+      {summaryAtFooter ? (
+        <div
+          data-advanced-table-summary-footer
+          className="shrink-0 overflow-hidden border-t border-slate-200 bg-slate-100"
+          // 与表头一样让出滚动条宽度，列才对得齐表体。
+          style={{ paddingRight: scrollbarGutterWidth }}
+        >
+          <div ref={summaryFooterRef} className="will-change-transform" style={{ width: layout.tableWidth }}>
+            <table
+              className="table-fixed border-separate border-spacing-0 [&_td]:border-r [&_td]:border-slate-200/70"
+              style={{ width: layout.tableWidth }}
+            >
+              <colgroup>
+                {(selectable || draggableRows) ? <col style={{ width: layout.controlWidth }} /> : null}
+                {visibleColumns.map((column) => <col key={column.key} style={{ width: layout.colWidths[column.key] ?? column.width }} />)}
+              </colgroup>
+              <tbody>
+                <tr className={summaryAtFooter.rowClassName ?? ""} data-advanced-table-summary-row style={{ height: rowHeight }}>
+                  {(selectable || draggableRows) ? (
+                    <td
+                      className={`text-center ${selectPaddingClass} ${summaryAtFooter.cellClassName ?? ""}`}
+                      style={rowCellPaddingStyle}
+                    >
+                      {summaryAtFooter.selectCell ?? null}
+                    </td>
+                  ) : null}
+                  {visibleColumns.map((column) => (
+                    <td
+                      key={column.key}
+                      className={[
+                        "font-medium text-slate-700",
+                        bodyTextClass,
+                        cellPaddingClass,
+                        alignClass(column.align),
+                        summaryAtFooter.cellClassName ?? "",
+                      ].join(" ")}
+                      style={rowCellPaddingStyle}
+                    >
+                      {summaryAtFooter.cells[column.key] ?? null}
+                    </td>
+                  ))}
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : null}
       {resizeGuide ? (
         <div
           aria-hidden="true"
