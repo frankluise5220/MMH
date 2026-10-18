@@ -989,7 +989,9 @@ export function AdvancedDataTable<T>({
     clearPendingHeaderSortClick();
   }, [clearPendingHeaderSortClick, resetKey]);
 
-  useEffect(() => {
+  // 量宽度必须在首帧绘制**之前**完成：用 useEffect 会先按保底宽度画一遍，再整表重渲染成容器宽，
+  // 打开视图时就会看到「表格先缩着、过一会才撑满」。useLayoutEffect 在 paint 前同步量完并重渲染。
+  useLayoutEffect(() => {
     const node = viewportRef.current;
     if (!node) return;
     const update = () => {
@@ -2257,6 +2259,9 @@ export function AdvancedDataTable<T>({
       !!toolbarRightContent ||
       showColumnVisibilityButton
     );
+  // 还没量到视口宽度时（首帧、或容器刚从隐藏转为可见）先按 100% 撑住，
+  // 不让表格以 minTableWidth 这类保底宽度先画一帧。
+  const tableWidthStyle: number | "100%" = viewportWidth > 0 ? layout.tableWidth : "100%";
   const hasHorizontalScroll =
     needsHorizontalScroll ||
     (viewportWidth > 0 && layout.tableWidth > viewportWidth + HORIZONTAL_SCROLL_TOLERANCE_PX);
@@ -2367,8 +2372,8 @@ export function AdvancedDataTable<T>({
         className={`shrink-0 overflow-hidden ${ADVANCED_TABLE_HEAD_SURFACE_CLASS}`}
         style={{ paddingRight: scrollbarGutterWidth }}
       >
-        <div ref={headerInnerRef} className="will-change-transform" style={{ width: layout.tableWidth }}>
-          <table className="table-fixed border-separate border-spacing-0 [&_th]:border-r [&_th]:border-slate-200" style={{ width: layout.tableWidth }}>
+        <div ref={headerInnerRef} className="will-change-transform" style={{ width: tableWidthStyle }}>
+          <table className="table-fixed border-separate border-spacing-0 [&_th]:border-r [&_th]:border-slate-200" style={{ width: tableWidthStyle }}>
             <colgroup>
               {(selectable || draggableRows) ? <col style={{ width: layout.controlWidth }} /> : null}
               {visibleColumns.map((column) => <col key={column.key} style={{ width: layout.colWidths[column.key] ?? column.width }} />)}
@@ -2524,7 +2529,7 @@ export function AdvancedDataTable<T>({
             : `advanced-table-viewport ${ADVANCED_TABLE_BODY_SURFACE_CLASS} ${hasHorizontalScroll ? "overflow-x-auto" : "overflow-x-hidden"} overflow-y-scroll [scrollbar-gutter:stable]`
         }
       >
-        <table className="table-fixed border-separate border-spacing-0 [&_td]:border-r [&_td]:border-slate-100" style={{ width: layout.tableWidth }}>
+        <table className="table-fixed border-separate border-spacing-0 [&_td]:border-r [&_td]:border-slate-100" style={{ width: tableWidthStyle }}>
           <colgroup>
             {(selectable || draggableRows) ? <col style={{ width: layout.controlWidth }} /> : null}
             {visibleColumns.map((column) => <col key={column.key} style={{ width: layout.colWidths[column.key] ?? column.width }} />)}
@@ -2729,10 +2734,10 @@ export function AdvancedDataTable<T>({
           // 与表头一样让出滚动条宽度，列才对得齐表体。
           style={{ paddingRight: scrollbarGutterWidth }}
         >
-          <div ref={summaryFooterRef} className="will-change-transform" style={{ width: layout.tableWidth }}>
+          <div ref={summaryFooterRef} className="will-change-transform" style={{ width: tableWidthStyle }}>
             <table
               className="table-fixed border-separate border-spacing-0 [&_td]:border-r [&_td]:border-slate-200/70"
-              style={{ width: layout.tableWidth }}
+              style={{ width: tableWidthStyle }}
             >
               <colgroup>
                 {(selectable || draggableRows) ? <col style={{ width: layout.controlWidth }} /> : null}
