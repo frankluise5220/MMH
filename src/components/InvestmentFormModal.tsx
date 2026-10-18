@@ -440,6 +440,14 @@ export function InvestmentFormModal({
   const amountEditedRef = useRef(false);
   const navEditedRef = useRef(false);
   const [holdingSearch, setHoldingSearch] = useState(initFundCode && initFundName ? `${initFundCode} ${initFundName}` : "");
+  // 用户主动改过「退回金额」：此后一律不再按关联退款记录回填，
+  // 否则把「买入 200 / 退回 200」改成「不退回」时，清成 0 会被立刻填回 200。
+  const refundAmountEditedRef = useRef(false);
+  // 「从 entry 重置表单」的幂等守卫：父组件每次渲染都会传新的 entry 对象字面量，
+  // 若不做签名去重，用户在弹窗里清空的退回金额会被重置效应反复填回去。
+  const lastResetSignatureRef = useRef("");
+  // 当前弹窗里正在编辑的记录 id：切换记录时要把「用户改过退回金额」的标记清掉
+  const lastResetEntryIdRef = useRef("");
   const [submitting, setSubmitting] = useState(false);
   const [nestedEntityType, setNestedEntityType] = useState<"cash-account" | "invest-account" | null>(null);
   // Local copy of nested option data (institutions/groups) so newly created
@@ -526,6 +534,9 @@ export function InvestmentFormModal({
   useEffect(() => {
     if (mode !== "edit" || !open || subtype !== "buy" || linkedRefundTotal <= 0) return;
     setBuyResultStatus("refund");
+    // 用户自己改过退回金额（典型：把「买入 200 / 退回 200」改成不退回，清成 0）：
+    // 这里不能再按关联退款记录回填，也不能把状态翻回「有退回」。
+    if (refundAmountEditedRef.current) return;
     if (firstLinkedRefund && !linkedRefundEntryId) setLinkedRefundEntryId(firstLinkedRefund.id);
     if (p(arrivalAmount) === 0) setArrivalAmount(linkedRefundTotal.toFixed(2));
     const firstRefundDate = firstLinkedRefund?.fundArrivalDate ?? firstLinkedRefund?.date;
@@ -857,6 +868,31 @@ export function InvestmentFormModal({
     if (!open || mode !== "edit" || !currentEditEntry) return;
     const editEntry = currentEditEntry;
     const nextSubtype: FundSubtype =
+    // 同一份 entry 内容只重置一次：父组件重渲染带来的新对象不应该抹掉用户正在输入的值
+    // （典型表现：把「买入 200 / 退回 200」清成 0 后又被填回 200）。
+    const resetSignature = [
+      editEntry.id,
+      editEntry.fundSubtype,
+      editEntry.fundCode,
+      editEntry.fundNav,
+      editEntry.fundUnits,
+      editEntry.amount,
+      editEntry.date,
+      editEntry.confirmDate,
+      editEntry.fundArrivalDate,
+      editEntry.fundArrivalAmount,
+      editEntry.refundAmount,
+      editEntry.source,
+      editEntry.accountId,
+      editEntry.toAccountId,
+      editEntry.fundFee,
+    ].join("|");
+    if (lastResetSignatureRef.current === resetSignature) return;
+    lastResetSignatureRef.current = resetSignature;
+    if (lastResetEntryIdRef.current !== String(editEntry.id ?? "")) {
+      lastResetEntryIdRef.current = String(editEntry.id ?? "");
+      refundAmountEditedRef.current = false;
+    }
       editEntry.fundSubtype === "buy_failed" && editEntry.source === "regular_invest_refund"
         ? "buy"
         : editEntry.fundSubtype === "buy" && editEntry.source === "dividend"
@@ -915,11 +951,14 @@ export function InvestmentFormModal({
           : [],
     );
     setArrivalDate(nextArrivalDate);
-    setArrivalAmount(nextArrivalAmount);
+    // 用户已经在弹窗里改过退回金额（含清空为 0）时，重新载入的 entry 不能把它填回去
+    const keepUserRefund = refundAmountEditedRef.current;
+    if (!keepUserRefund) setArrivalAmount(nextArrivalAmount);
     unitsEditedRef.current = false;
     amountEditedRef.current = false;
     navEditedRef.current = false;
     arrivalDateEditedRef.current = false;
+    refundAmountEditedRef.current = keepUserRefund;
     arrivalDaysEditedRef.current = false;
     lastNavFetchKey.current = "";
     editAutoNavEnabledRef.current = false;
@@ -930,6 +969,13 @@ export function InvestmentFormModal({
   }, [open, mode, currentEditEntry, defaultAccountId, defaults?.feeRate, fundUnitsDecimals, initConfirmDays]);
 
   // Fetch fund name/rate/confirmDays when AI sets a fund code
+  // 关闭后清掉重置签名与「用户改过退回金额」标记，下次打开同一笔记录时仍会按 entry 重新载入
+  useEffect(() => {
+    if (open) return;
+    lastResetSignatureRef.current = "";
+    refundAmountEditedRef.current = false;
+  }, [open]);
+
   useEffect(() => {
     if (!pendingFundCodeFetchRef.current || !open) return;
     const code = pendingFundCodeFetchRef.current;
@@ -1149,7 +1195,11 @@ export function InvestmentFormModal({
       setEventEditEntry(detailToEntry(detail));
       setEventLinkedEntries(detail.linkedCandidateEntries ?? null);
       const detailRefundAmount = Math.max(0, Number(detail.refundAmount) || 0);
-      setBuyResultStatus(linkedRefund || detailRefundAmount > 0 ? "refund" : "normal");
+      // 明细是异步回来的：用户已经先动过退回金额时，不能用它再覆盖一遍。
+      const keepUserRefund = refundAmountEditedRef.current;
+      if (!keepUserRefund) {
+        setBuyResultStatus(linkedRefund || detailRefundAmount > 0 ? "refund" : "normal");
+      }
       setLinkedRefundEntryId(linkedRefund?.id ?? null);
       if (detail.fundProductType && ["fund", "money", "wealth", "deposit", "metal"].includes(detail.fundProductType)) {
         setProductType(detail.fundProductType as ProductType);
@@ -1158,14 +1208,17 @@ export function InvestmentFormModal({
       editAutoNavEnabledRef.current = false;
       setApplyDate(detail.date || today);
       setConfirmDate(detail.confirmDate ?? "");
-      setArrivalDate(linkedRefund ? normalizeYmd(linkedRefund.fundArrivalDate ?? linkedRefund.date) : detail.fundArrivalDate ?? "");
-      setArrivalAmount(
-        linkedRefund?.amount != null
-          ? String(Math.abs(Number(linkedRefund.amount)))
-          : detailRefundAmount > 0
-            ? String(detailRefundAmount)
-            : "",
-      );
+      if (!keepUserRefund) {
+        setArrivalDate(linkedRefund ? normalizeYmd(linkedRefund.fundArrivalDate ?? linkedRefund.date) : detail.fundArrivalDate ?? "");
+        setArrivalAmount(
+          linkedRefund?.amount != null
+            ? String(Math.abs(Number(linkedRefund.amount)))
+            : detailRefundAmount > 0
+              ? String(detailRefundAmount)
+              : "",
+        );
+        refundAmountEditedRef.current = false;
+      }
       const numericAmount = Number(detail.amount);
       setAmount(Number.isFinite(numericAmount) && numericAmount !== 0 ? String(Math.abs(numericAmount)) : "");
       setMemo(detail.note ?? "");
@@ -1588,6 +1641,7 @@ export function InvestmentFormModal({
       setFeeRateEdited(false);
       setArrivalAmount("");
     }
+      refundAmountEditedRef.current = false;
     if (isDividend(nextSubtype)) {
       if (!arrivalDateEditedRef.current) setArrivalDate(applyDate || today);
       if (nextSubtype === "dividend_reinvest") {
@@ -2148,6 +2202,7 @@ export function InvestmentFormModal({
     setArrivalDate("");
     setArrivalAmount("");
     setArrivalDays(2);
+    refundAmountEditedRef.current = false;
     arrivalDateEditedRef.current = false;
     arrivalDaysEditedRef.current = false;
     setNav("");
@@ -3203,6 +3258,9 @@ export function InvestmentFormModal({
                           setArrivalAmount(v);
                           // 退回金额本身就是开关（不再有独立「开/关」按钮）：
                           // 有数字 = 有退回（记录为退回/失败单），清空 = 无退回（普通买入）。
+                          // 只有数值真的变了才算用户编辑：CalcInput 失焦时无条件
+                          // 回抛一次格式化结果（200 → 200.00），不能因此锁定回填。
+                          if (p(v) !== p(arrivalAmount)) refundAmountEditedRef.current = true;
                           setBuyResultStatus(p(v) > 0 ? "refund" : "normal");
                           if (p(v) > 0 && !arrivalDate) {
                             const baseDate = applyDate || confirmDate;

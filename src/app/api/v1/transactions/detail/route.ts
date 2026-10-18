@@ -3552,6 +3552,9 @@ export async function PUT(req: Request) {
             ))
       : null;
 
+    // 只有请求真的带了退回口径时，才允许按「无退回」去撤掉退款腿：
+    // 部分调用方只 PUT 少数字段（备注/标签），缺省值不能当成「用户清空了退回」。
+    const buyRefundSpecified = body.buyResultStatus !== undefined || body.refundAmount !== undefined;
     let investAcc = isInsuranceEdit && !accountIdFormData
       ? null
       : accountIdFormData
@@ -3998,6 +4001,13 @@ export async function PUT(req: Request) {
             fundTransactionId: independentFundTransaction.id,
             linkedRefundEntryId,
             refundDate: effectiveRefundDate,
+        // 退款腿可能挂在独立基金交易上，也可能是历史迁移行；两种都要能定位。
+        const buyRefundFundTransactionId = independentFundTransaction?.id
+          ?? (await tx.fundTransaction.findFirst({
+            where: { cashEntryId: entryId, householdId, deletedAt: null },
+            select: { id: true },
+          }))?.id
+          ?? null;
             refundAmount,
             cashAccountId: cashAccId,
             cashAccountName: cashAccName ?? "",
@@ -4036,6 +4046,56 @@ return;
         const [acc, cat] = await Promise.all([
           tx.account.findUnique({ where: { id: accountId } }),
           resolveCategorySnapshot(tx, householdId, { categoryId, type: "advance" }),
+        } else if (
+          buyRefundFundTransactionId &&
+          finalFundSubtype === FundSubtype.buy &&
+          !isDividendReinvest &&
+          buyRefundSpecified &&
+          !(buyResultStatus === "refund" && refundAmount && refundAmount > 0)
+        ) {
+          // 退回金额被改成 0 / 清空：退款腿（source=regular_invest_refund 的资金流水）一并撤掉，
+          // 否则记录里仍留着那笔「买入退回」，买入行也继续显示部分退回。
+          const refundFlows = await tx.fundTransactionCashFlow.findMany({
+            where: { fundTransactionId: buyRefundFundTransactionId, kind: FundCashFlowKind.refund_in },
+            select: { txRecordId: true },
+          });
+          const refundCandidateIds = Array.from(new Set([
+            ...refundFlows.map((flow) => flow.txRecordId),
+            linkedRefundEntryId,
+          ].filter((id): id is string => !!id)));
+          if (refundCandidateIds.length > 0) {
+            // 先无条件摘掉流水指针：即使退款行在上面的分支里已被软删，
+            // 残留的 refund_in 流水仍会让买入行显示「部分退回」。
+            await tx.fundTransactionCashFlow.deleteMany({
+              where: {
+                fundTransactionId: buyRefundFundTransactionId,
+                txRecordId: { in: refundCandidateIds },
+              },
+            });
+            const refundEntries = await tx.txRecord.findMany({
+              where: {
+                id: { in: refundCandidateIds },
+                householdId,
+                source: "regular_invest_refund",
+                deletedAt: null,
+              },
+              select: BALANCE_ENTRY_SELECT,
+            });
+            if (refundEntries.length > 0) {
+              const refundEntryIdList = refundEntries.map((row) => row.id);
+              await tx.entryBusinessLink.updateMany({
+                where: { householdId, cashEntryId: { in: refundEntryIdList } },
+                data: { deletedAt: new Date() },
+              });
+              await tx.txRecord.updateMany({
+                where: { id: { in: refundEntryIdList }, householdId, deletedAt: null },
+                data: { deletedAt: new Date() },
+              });
+              for (const row of refundEntries) {
+                balanceChangesToApply.set(row.id, { entryId: row.id, previous: row });
+              }
+            }
+          }
         ]);
         if (!acc) throw new Error("账户不存在");
         if (!isAdvanceFundingAccount(acc)) throw new Error("贷款、定期存款、基金资金、股票资金和基金/理财账户不参与代付记账");

@@ -1690,6 +1690,9 @@ export async function editInvestment(formData: FormData) {
   const fundUnitsStr = String(formData.get("fundUnits") ?? "").trim();
   const fundNavStr = String(formData.get("fundNav") ?? "").trim();
   const fundFeeStr = String(formData.get("fundFee") ?? "").trim();
+  // 只有调用方真的带了退回口径时，才允许按「无退回」撤掉退款腿；
+  // 缺省值不能当成「用户清空了退回」。
+  const buyRefundSpecified = formData.has("buyResultStatus") || formData.has("refundAmount");
   const metalQuantityStr = String(formData.get("metalQuantity") ?? formData.get("fundUnits") ?? "").trim();
   const metalUnitPriceStr = String(formData.get("metalUnitPrice") ?? formData.get("fundNav") ?? "").trim();
   const metalFeeStr = String(formData.get("metalFee") ?? formData.get("fundFee") ?? "").trim();
@@ -2424,6 +2427,9 @@ export async function editInvestment(formData: FormData) {
             refundAmount,
             date,
             finalInvestmentAccountInfo?.currency ?? txRecord.currency ?? "CNY",
+      // 买入退款腿可能挂在独立基金交易上，也可能是历史 TxRecord 迁移来的行；
+      // 两种都要能定位，否则「取消退回」在缺 fundCode 的编辑请求里会静默失败。
+      const buyRefundFundTransactionId = independentFundTransaction?.id ?? existingFundTransactionForRecalc?.id ?? null;
             memo,
           ),
         });
@@ -2457,6 +2463,57 @@ export async function editInvestment(formData: FormData) {
     }
     await applyEntryChangesToAccountBalances(Array.from(balanceChangesToApply.values())).catch((e) => {
       console.error("editInvestment update account balances:", e);
+      } else if (
+        buyRefundFundTransactionId &&
+        finalFundSubtype === FundSubtype.buy &&
+        buyRefundSpecified &&
+        !(buyResultStatus === "refund" && refundAmount && refundAmount > 0)
+      ) {
+        // 退回金额被改成 0 / 清空（把「买入 X / 退回 X」改成不退回）：退款腿必须一起撤掉。
+        // 独立基金交易的退款腿是一条 source=regular_invest_refund 的资金流水（fundSubtype 留空），
+        // 只把 fund_transactions.refundAmount 归零会留下那条「买入退回」记录，
+        // 买入行也会继续按它显示部分退回。
+        const refundFlows = await tx.fundTransactionCashFlow.findMany({
+          where: { fundTransactionId: buyRefundFundTransactionId, kind: FundCashFlowKind.refund_in },
+          select: { txRecordId: true },
+        });
+        const refundCandidateIds = Array.from(new Set([
+          ...refundFlows.map((flow) => flow.txRecordId),
+          linkedRefundEntryId,
+        ].filter((id): id is string => !!id)));
+        if (refundCandidateIds.length > 0) {
+          // 先无条件摘掉资金流水指针：即使退款行在上面的分支里已经被软删，
+          // 残留的 refund_in 流水仍会让买入行显示「部分退回」。
+          await tx.fundTransactionCashFlow.deleteMany({
+            where: {
+              fundTransactionId: buyRefundFundTransactionId,
+              txRecordId: { in: refundCandidateIds },
+            },
+          });
+          const refundEntries = await tx.txRecord.findMany({
+            where: {
+              id: { in: refundCandidateIds },
+              householdId,
+              source: "regular_invest_refund",
+              deletedAt: null,
+            },
+            select: BALANCE_ENTRY_SELECT,
+          });
+          if (refundEntries.length > 0) {
+            const refundEntryIdList = refundEntries.map((row) => row.id);
+            await tx.entryBusinessLink.updateMany({
+              where: { householdId, cashEntryId: { in: refundEntryIdList } },
+              data: { deletedAt: new Date() },
+            });
+            await tx.txRecord.updateMany({
+              where: { id: { in: refundEntryIdList }, householdId, deletedAt: null },
+              data: { deletedAt: new Date() },
+            });
+            for (const row of refundEntries) {
+              balanceChangesToApply.set(row.id, { entryId: row.id, previous: row });
+            }
+          }
+        }
     });
 
     // Recalculate positions: if the fund account changed, recalculate both the old and new accounts.
