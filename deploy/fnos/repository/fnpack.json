@@ -31,7 +31,7 @@
       "categories": [
         "生活服务"
       ],
-      "icon_url": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png?v=0.1.74",
+      "icon_url": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png?v=0.1.75",
       "readme_url": "https://raw.githubusercontent.com/frankluise5220/MMH/main/README.md",
       "bug_report_url": "https://github.com/frankluise5220/MMH/issues",
       "maintainer": "frankluise5220",
@@ -55,23 +55,6 @@
         }
       },
       "releases": {
-        "0.1.70": {
-          "changelog": "0.1.69 升级至 0.1.70：飞牛身份绑定改绑「飞牛用户名」（不再用数字 UID / FN ID，用户可在界面上看到并自证）；注册与找回密码验证码邮件按界面语言自动切换中英文；登录页文件卡片式页签高度收紧、文字视觉居中；移除误加的 outputFileTracingExcludes（曾导致 standalone 启动即崩）。完整说明见 GitHub Release v0.1.70",
-          "os_min_version": "0.9.0",
-          "packages": {
-            "x86": {
-              "download_url": "http://fnapp.floatingice.win/apps/mmh-0.1.70.fpk",
-              "size": 56305395,
-              "sha256": "77575ad0429a6fd48c1f7a8afc5eb84ab224010198b3515e3d0bcbc90745fe28"
-            },
-            "arm": {
-              "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.70/mmh-fnos-v0.1.70-arm64.fpk",
-              "size": 56242869,
-              "sha256": "53912d97399b17c4662ee698e41e7eac3edb3890ae244c323cb902377fa45b4b"
-            }
-          },
-          "updated_at": "2026-10-04T21:35:36+08:00"
-        },
         "0.1.71": {
           "changelog": "0.1.70 升级至 0.1.71：记账弹窗统一为整窗外壳（页签切换窗体不位移、移动端表单控件 44px 触摸热区、必填红框收口）；贷款账户新增贷款类别主数据与可编辑字段；开放 JSON-RPC Agent 端点（AccessKey 作用域门控）；债务模块语义统一为负债命名；各发行通道各自烘焙路径前缀（Android 支持服务器子路径）。完整说明见 GitHub Release v0.1.71",
           "os_min_version": "0.9.0",
@@ -139,6 +122,23 @@
             }
           },
           "updated_at": "2026-10-17T22:44:30+08:00"
+        },
+        "0.1.75": {
+          "changelog": "【功能改进】\n- 多币种父子账户：可以把一个账户设为父账户，下挂不同币种的子账户（同一父账户下每种币种只能有一个子账户）。父账户本身不记账，只按子账户汇总；账户列表、转账选择与报表都按「父账户 + 币种」呈现，币种一致性与唯一性由服务端校验。\n- 表格支持长按拖拽调整行顺序：长按一行进入拖拽，横向、纵向以及跨清单拖动都可用，松手后按新顺序保存。\n- 基金确认日改为规则表驱动：新增「基金确认日」表，按交易类型维护申请日到确认日、确认日到到账日的天数，作为全站唯一来源。在表里手工保存过的行会被标记为人工锁定，此后只有这张表能改，交易表单、定投、批量导入等自动写入不再覆盖它。\n- 支出币种只对信用卡开放：现金、借记卡、电子钱包等账户的支出币种固定为账户自身币种并只读，交易币种选择只在信用卡消费时出现；切换账户或交易类型会清空已选外币，避免把信用卡的外币选值带到其他账户。信用卡的外币支出能力保持不变。\n- 记账弹窗可直接新建标签：在标签下拉里输入名称就能创建并选中，收支与转账页签共用同一套选项，不必先去设置页维护。\n【Bug 修复】\n- 修复手动拖过列宽后表格仍铺满卡片：手工调整过宽度的表保留用户宽度，只有从未调整过的表才自动铺满。\n- 修复首屏渲染前测量列宽导致第一眼宽度不对：首屏之前不再测量，改为可交互后再测。\n- 修复 19:00 净值截断在非交易日误伤：截断只在交易日生效，非交易日不再把当日净值当成未来数据丢掉。\n- 修复基金买入的退款金额无法留空：允许显式清空，按无退款处理，不再强行回填。\n- 修复现金账户默认值：新建基金买入时默认取该账户最近一次买入用过的现金账户，而不是固定取第一个。\n- 修复资金流水的批量更新：改为按 FundTransaction.id 定位更新，不再按业务号串行处理时互相覆盖。\n- 修复侧边页码器的对齐与可见性：页码在侧边栏内居中，并在深色背景下更易辨认。\n- 修复记账弹窗切换页签时的字段错位与抖动：支出 / 收入 / 转账 / 预支来回切换时窗体高度固定、不再上下跳动，下拉与同行的日期、金额在字体与尺寸上逐项对齐。\n- 修复记账弹窗保存按钮被移动端安全区遮挡：保存区改为贴底固定页脚，底部留白由页脚承担，滚动区不再多出一段空白。\n完整说明见 GitHub Release v0.1.75",
+          "os_min_version": "0.9.0",
+          "packages": {
+            "x86": {
+              "download_url": "http://fnapp.floatingice.win/apps/mmh-0.1.75.fpk",
+              "size": 56593248,
+              "sha256": "31b8a9bf5f0a0c07c19398af6ce171cf1fcc22c82ebf6acfc3a8dc44dd89880a"
+            },
+            "arm": {
+              "download_url": "https://github.com/frankluise5220/MMH/releases/download/v0.1.75/mmh-fnos-v0.1.75-arm64.fpk",
+              "size": 56541180,
+              "sha256": "00d9112dacb718c98dbcd5fc275941d88b614a7088267fe5d058211134fe02da"
+            }
+          },
+          "updated_at": "2026-10-19T00:30:44+08:00"
         }
       },
       "preview_urls": [
