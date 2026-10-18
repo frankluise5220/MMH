@@ -62,9 +62,9 @@ import {
   type EntryBalanceChange,
 } from "@/lib/server/account-balance";
 import { creditBillEffectiveDate, creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
-import { getFundConfirmDays, getFundArrivalDays } from "@/lib/fund/confirmDays";
+import { fundArrivalDate as computeFundArrivalDate, resolveFundDates } from "@/lib/fund/confirmDays";
 import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
-import { toNumber, addWorkdaysUtc, toStatementMonth, startOfDayUtc, formatDateLocal } from "@/lib/date-utils";
+import { toNumber, toStatementMonth, startOfDayUtc, formatDateLocal } from "@/lib/date-utils";
 import { logger } from "@/lib/logger";
 import { isAdvanceFundingAccount, isDepositAccount, isDepositPostingCategoryAllowed, isIncomeExpensePostingAccount, isInsuranceAccount, isLoanOrSettlementAccountKind, isPureInvestmentAccount, isSpecialCashTargetAccount } from "@/lib/account-kind-utils";
 import { ALL_CASH_DETAIL_SCOPE_ID, cashLedgerAccountIdsOf, isAllCashDetailScope } from "@/lib/all-cash-entries";
@@ -1037,7 +1037,9 @@ async function loadApiDetailRecord(entryId: string) {
     entryOrigin: entry.entryOrigin ?? null,
     dayOrder: entry.dayOrder,
     amount: toNumber(entry.amount),
-    currency: entry.currency ?? "CNY",
+    // Legacy income rows have no currency: fall back to the posting account currency so
+    // income on a foreign-currency account is not rendered as CNY.
+    currency: entry.currency ?? entry.account?.currency ?? entry.toAccount?.currency ?? "CNY",
     type: entry.type,
     categoryId: entry.categoryId,
     categoryName: entry.categoryName,
@@ -1646,7 +1648,7 @@ export async function GET(req: Request) {
         entryOrigin: record.entryOrigin ?? null,
         dayOrder: record.dayOrder,
         amount: toNumber(record.amount),
-        currency: record.currency ?? "CNY",
+        currency: record.currency ?? record.account?.currency ?? record.toAccount?.currency ?? "CNY",
         type: record.type,
         categoryId: record.categoryId,
         categoryName: record.categoryName,
@@ -1899,7 +1901,7 @@ export async function GET(req: Request) {
       entryOrigin: e.entryOrigin ?? null,
       dayOrder: e.dayOrder,
       amount: toNumber(e.amount),
-      currency: e.currency ?? "CNY",
+      currency: e.currency ?? e.account?.currency ?? e.toAccount?.currency ?? "CNY",
       runningBalance: pageData.runningBalanceById[e.id] ?? null,
       type: e.type,
       categoryId: e.categoryId,
@@ -2322,10 +2324,20 @@ export async function POST(req: Request) {
       }
 
       await prisma.$transaction(async (tx) => {
-        const [acc, cat] = await Promise.all([
+        const [acc, cat, incomeLot] = await Promise.all([
           accountId ? tx.account.findUnique({ where: { id: accountId }, include: { Institution: true } }) : Promise.resolve(null),
           resolveCategorySnapshot(tx, householdId, { categoryId, type: "income" }),
+          depositLotId
+            ? tx.txRecord.findUnique({ where: { id: depositLotId }, select: { currency: true } })
+            : Promise.resolve(null),
         ]);
+
+        // Income currency follows the posting account; deposit interest inherits the
+        // certificate currency. Without this the row stored a null currency and the detail
+        // table showed every income as CNY (user report 2026-10-18).
+        const incomeCurrency = incomeLot?.currency
+          ? normalizeCurrency(incomeLot.currency)
+          : acc ? normalizeCurrency(acc.currency) : undefined;
 
         const statementMonth =
           acc && (acc.kind === AccountKind.bank_credit || acc.kind === AccountKind.loan) && acc.billingDay
@@ -2364,6 +2376,7 @@ export async function POST(req: Request) {
             amount: amountRaw,
             type: TransactionType.income,
             date,
+            currency: incomeCurrency,
             note: note || undefined,
             statementMonth: statementMonth ?? undefined,
             depositSourceEntryId: depositLotId || undefined,
@@ -2860,18 +2873,24 @@ export async function POST(req: Request) {
         }
 
         const applyDateStr = date.toISOString().slice(0, 10);
-        const shouldComputeArrival = finalFundSubtype === FundSubtype.buy && !redeemLike && !isDividendCash && !isDividendReinvest;
+        // 买入与赎回的确认日/到账日一律来自确认库（T+N 唯一来源）。
+        const shouldDeriveFundDates =
+          !isMetalProduct &&
+          fundProductType !== "wealth" &&
+          !!entryFundCode &&
+          (finalFundSubtype === FundSubtype.buy || (redeemLike && fundProductType !== "deposit"));
         let computedConfirmDate: Date | null = fundConfirmDate;
         let computedArrivalDate: Date | null = fundArrivalDate;
 
-        if (!isMetalProduct && shouldComputeArrival && entryFundCode) {
+        if (shouldDeriveFundDates && entryFundCode) {
+          const resolved = await resolveFundDates(investAcc.id, entryFundCode, applyDateStr);
           const confirmStr = computedConfirmDate
             ? computedConfirmDate.toISOString().slice(0, 10)
-            : addWorkdaysUtc(applyDateStr, await getFundConfirmDays(investAcc.id, entryFundCode));
+            : resolved.confirmDate;
           computedConfirmDate = new Date(`${confirmStr}T00:00:00.000Z`);
 
           if (!computedArrivalDate) {
-            const arrivalStr = addWorkdaysUtc(confirmStr, await getFundArrivalDays(investAcc.id, entryFundCode));
+            const arrivalStr = computeFundArrivalDate(confirmStr, resolved.arrivalDays, resolved.tradingCalendar);
             computedArrivalDate = new Date(`${arrivalStr}T00:00:00.000Z`);
           }
         }
@@ -3185,7 +3204,7 @@ export async function POST(req: Request) {
             entryOrigin: created.entryOrigin ?? null,
             dayOrder: created.dayOrder,
             amount: toNumber(created.amount),
-            currency: created.currency ?? "CNY",
+            currency: created.currency ?? created.account?.currency ?? created.toAccount?.currency ?? "CNY",
             type: created.type,
             categoryId: created.categoryId,
             categoryName: created.categoryName,
@@ -3533,6 +3552,9 @@ export async function PUT(req: Request) {
     const isDividendCash = fundSubtypeValue === FundSubtype.dividend_cash;
     const finalFundSubtype: FundSubtype = isDividendReinvest ? FundSubtype.buy : fundSubtypeValue;
     const buyResultStatus = String(body.buyResultStatus ?? "normal").trim();
+    // 只有请求真的带了退回口径时，才允许按「无退回」去撤掉退款腿：
+    // 部分调用方只 PUT 少数字段（备注/标签），缺省值不能当成「用户清空了退回」。
+    const buyRefundSpecified = body.buyResultStatus !== undefined || body.refundAmount !== undefined;
     const linkedRefundEntryId = String(body.linkedRefundEntryId ?? "").trim() || null;
     const refundAmountRaw = parseMoney(body.refundAmount);
     const refundDateStr = String(body.refundDate ?? "").trim();
@@ -3552,9 +3574,6 @@ export async function PUT(req: Request) {
             ))
       : null;
 
-    // 只有请求真的带了退回口径时，才允许按「无退回」去撤掉退款腿：
-    // 部分调用方只 PUT 少数字段（备注/标签），缺省值不能当成「用户清空了退回」。
-    const buyRefundSpecified = body.buyResultStatus !== undefined || body.refundAmount !== undefined;
     let investAcc = isInsuranceEdit && !accountIdFormData
       ? null
       : accountIdFormData
@@ -3982,6 +4001,13 @@ export async function PUT(req: Request) {
             }
           }
         }
+        // 退款腿可能挂在独立基金交易上，也可能是历史迁移行；两种都要能定位。
+        const buyRefundFundTransactionId = independentFundTransaction?.id
+          ?? (await tx.fundTransaction.findFirst({
+            where: { cashEntryId: entryId, householdId, deletedAt: null },
+            select: { id: true },
+          }))?.id
+          ?? null;
         if (
           independentFundTransaction &&
           finalFundSubtype === FundSubtype.buy &&
@@ -4001,13 +4027,6 @@ export async function PUT(req: Request) {
             fundTransactionId: independentFundTransaction.id,
             linkedRefundEntryId,
             refundDate: effectiveRefundDate,
-        // 退款腿可能挂在独立基金交易上，也可能是历史迁移行；两种都要能定位。
-        const buyRefundFundTransactionId = independentFundTransaction?.id
-          ?? (await tx.fundTransaction.findFirst({
-            where: { cashEntryId: entryId, householdId, deletedAt: null },
-            select: { id: true },
-          }))?.id
-          ?? null;
             refundAmount,
             cashAccountId: cashAccId,
             cashAccountName: cashAccName ?? "",
@@ -4027,25 +4046,6 @@ export async function PUT(req: Request) {
               ? { entryId: refundCashFlow.record.id }
               : { entryId: refundCashFlow.record.id, previous: refundCashFlow.previous });
           }
-        }
-
-if (!isInsuranceEdit && isMetalProduct) {
-  await recalcPreciousMetalPositions(investAcc.id).catch(logger.catchLog("操作失败", "route.ts"));
-} else if (!isInsuranceEdit) {
-  await recalcFundPositions(investAcc.id, fundCode ? [fundCode] : undefined).catch(logger.catchLog("操作失败", "route.ts"));
-}
-return;
-      }
-
-      if (type === "advance") {
-        const accountId = String(body.accountId ?? "").trim();
-        const categoryId = String(body.categoryId ?? "").trim();
-        const preferredAdvanceAccountId = String(body.advanceAccountId ?? "").trim();
-        if (!accountId) throw new Error("请选择资金账户");
-        if (!counterpartyInstitutionId) throw new Error("请选择往来对象");
-        const [acc, cat] = await Promise.all([
-          tx.account.findUnique({ where: { id: accountId } }),
-          resolveCategorySnapshot(tx, householdId, { categoryId, type: "advance" }),
         } else if (
           buyRefundFundTransactionId &&
           finalFundSubtype === FundSubtype.buy &&
@@ -4096,6 +4096,25 @@ return;
               }
             }
           }
+        }
+
+if (!isInsuranceEdit && isMetalProduct) {
+  await recalcPreciousMetalPositions(investAcc.id).catch(logger.catchLog("操作失败", "route.ts"));
+} else if (!isInsuranceEdit) {
+  await recalcFundPositions(investAcc.id, fundCode ? [fundCode] : undefined).catch(logger.catchLog("操作失败", "route.ts"));
+}
+return;
+      }
+
+      if (type === "advance") {
+        const accountId = String(body.accountId ?? "").trim();
+        const categoryId = String(body.categoryId ?? "").trim();
+        const preferredAdvanceAccountId = String(body.advanceAccountId ?? "").trim();
+        if (!accountId) throw new Error("请选择资金账户");
+        if (!counterpartyInstitutionId) throw new Error("请选择往来对象");
+        const [acc, cat] = await Promise.all([
+          tx.account.findUnique({ where: { id: accountId } }),
+          resolveCategorySnapshot(tx, householdId, { categoryId, type: "advance" }),
         ]);
         if (!acc) throw new Error("账户不存在");
         if (!isAdvanceFundingAccount(acc)) throw new Error("贷款、定期存款、基金资金、股票资金和基金/理财账户不参与代付记账");
@@ -4215,10 +4234,25 @@ return;
           ? toStatementMonth(creditBillEffectiveDate({ type, date, postedAt }) ?? date, acc.billingDay, acc.billingDayTxPeriod)
           : null;
 
+      // Income currency follows the posting account; deposit interest inherits the
+      // certificate currency. Legacy income rows stored no currency, so back-fill it on
+      // edit and follow the new account when the account changes (user report 2026-10-18).
+      let incomeCurrency: string | undefined;
+      if (type === "income") {
+        const incomeLotId = bodyHasDepositLot ? bodyDepositLotId : (entry.depositSourceEntryId ?? "");
+        const incomeLotCurrency = incomeLotId
+          ? (await tx.txRecord.findUnique({ where: { id: incomeLotId }, select: { currency: true } }))?.currency ?? null
+          : null;
+        if (!entry.currency || entry.accountId !== acc.id) {
+          incomeCurrency = normalizeCurrency(incomeLotCurrency ?? acc.currency);
+        }
+      }
+
       await tx.txRecord.update({
         where: { id: entryId },
         data: {
           amount: amountRaw,
+          ...(incomeCurrency ? { currency: incomeCurrency } : {}),
           accountId: acc.id,
           accountName: acc.name,
           categoryId: cat ? cat.id : null,
@@ -4386,7 +4420,7 @@ return;
         entryOrigin: updated.entryOrigin ?? null,
         dayOrder: updated.dayOrder,
         amount: toNumber(updated.amount),
-        currency: updated.currency ?? "CNY",
+        currency: updated.currency ?? updated.account?.currency ?? updated.toAccount?.currency ?? "CNY",
         type: updated.type,
         categoryId: updated.categoryId,
         categoryName: updated.categoryName,

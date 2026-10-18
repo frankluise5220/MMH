@@ -3,7 +3,7 @@ import { ModalLayer } from "@/components/ModalLayer";
 
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Power, PowerOff, CreditCard, Wallet, Building2, Landmark, PiggyBank, Banknote, Trash2, X } from "lucide-react";
+import { Power, PowerOff, CreditCard, Wallet, Building2, Landmark, PiggyBank, Banknote, Trash2, X, CornerDownRight } from "lucide-react";
 import { TransparentSideNavButtons } from "@/components/TransparentSideNavButtons";
 import type { AccountKind } from "@prisma/client";
 import { PRODUCT_TYPES, supportsCostBasisMethod } from "@/lib/investment-config";
@@ -26,7 +26,7 @@ import { AccountBatchImportButton } from "@/components/settings/AccountBatchImpo
 import { CreditCardBillingDayRulesTable } from "@/components/CreditCardBillingDayRulesTable";
 import { currentBillingDayFromRules, type CreditBillingDayRuleView } from "@/lib/credit/billing-day-rules";
 import { CREDIT_CARD_MAX_REPAYMENT_OFFSET_DAYS } from "@/lib/credit/rules";
-import { SettingsActionButton, SettingsPageHeader, SettingsPrimaryAddButton } from "@/components/settings/SettingsPageScaffold";
+import { SettingsActionButton, SettingsPageHeader, SettingsPrimaryAddButton, useHideSettingDescriptions } from "@/components/settings/SettingsPageScaffold";
 import { buildAccountDisplayOption } from "@/lib/account-display";
 import { accountOwnerNameById, buildAccountOwnerOptions } from "@/lib/account-owner-options";
 import { getAccountLabelFieldsPreference, getCreditCardLabelTemplatePreference } from "@/lib/client/appPreferences";
@@ -94,6 +94,10 @@ type Account = {
   liabilityDirection?: string | null;
   recordCount?: number;
   deletedRecordCount?: number;
+  /** 多币种层级：子账户的父账户 id（null = 根账户）。 */
+  parentId?: string | null;
+  /** 多币种父账户（聚合账户）：只参与统计，本身没有明细。 */
+  isAggregate?: boolean | null;
 };
 
 /** 软删除记录预览行（GET /api/v1/entries/deleted 的 data.records 元素）。 */
@@ -126,6 +130,19 @@ const investmentProductTypeOptions = PRODUCT_TYPES
 function normalizedAccountKind(account: Pick<Account, "kind" | "investProductType">): string {
   if (isFixedAssetAccountLike(account)) return "fixed_asset";
   return isDepositAccount(account) ? "deposit" : account.kind;
+}
+
+/** 多币种归属校验错误码 → 本地化文案 key（后端 error 是英文，直接展示体验差）。 */
+function accountParentErrorKey(code: string | undefined) {
+  switch (code) {
+    case "ACCOUNT_PARENT_NOT_FOUND": return "settings.accounts.parentError.notFound";
+    case "ACCOUNT_PARENT_NOT_AGGREGATE": return "settings.accounts.parentError.notAggregate";
+    case "ACCOUNT_PARENT_IS_AGGREGATE": return "settings.accounts.parentError.isAggregate";
+    case "ACCOUNT_PARENT_SELF": return "settings.accounts.parentError.self";
+    case "ACCOUNT_PARENT_CURRENCY_CONFLICT": return "settings.accounts.parentError.currencyConflict";
+    case "ACCOUNT_PARENT_KIND_MISMATCH": return "settings.accounts.parentError.kindMismatch";
+    default: return "";
+  }
 }
 
 function accountInstitutionTypeMatches(kind: string, investProductType: string | null | undefined, type: string | null | undefined) {
@@ -192,6 +209,8 @@ export default function SettingsAccountsPage() {
   const institutionKindLabel = (type: string | null | undefined) => institutionTypeLabel(type, t);
   const investmentLabel = useCallback((value: string | null | undefined) => t(`investment.product.${value || "fund"}`), [t]);
   const fixedAssetTypeLabel = useCallback((value: string | null | undefined) => t(`fixedAsset.type.${value || "property"}`), [t]);
+  // 说明类文案跟随首次使用向导开关：只在「新手期」显示，关掉向导后不再啰嗦。
+  const hideSettingDescriptions = useHideSettingDescriptions();
   const [groups, setGroups] = useState<Group[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [loanCategories, setLoanCategories] = useState<LoanCategoryView[]>([]);
@@ -211,9 +230,27 @@ export default function SettingsAccountsPage() {
   const [billingDayRulesLoading, setBillingDayRulesLoading] = useState(false);
   const [editError, setEditError] = useState("");
   const [showCreateAccount, setShowCreateAccount] = useState(false);
+  const [upgradingMultiCurrency, setUpgradingMultiCurrency] = useState(false);
   // ADT 表格当前视图（筛选+列排序后的全量行）：编辑弹窗的上一/下一导航沿此顺序。
   const [displayRows, setDisplayRows] = useState<Account[]>([]);
   const guideAccountSetup = searchParams.get("guide") === "accounts";
+
+  // 可选的上级账户 = 家庭里的多币种父账户（聚合账户）。父账户自己不能再挂上级，
+  // 所以编辑父账户时这个下拉不渲染；子账户可以改挂到别的父账户或解除归属。
+  const parentAccountOptions = useMemo<Array<{ id: string; label: string; kind: string; subLabel: string }>>(
+    () => accounts
+      .filter((account) => account.isAggregate === true && account.id !== editingId)
+      .map((account) => ({
+        id: account.id,
+        label: account.name,
+        // 子账户必须与父账户同类型：选项按当前编辑的类型过滤，避免选到保存必失败的项。
+        kind: normalizedAccountKind(account),
+        subLabel: tf("settings.accounts.hierarchyChildCount", {
+          count: accounts.filter((child) => child.parentId === account.id).length,
+        }),
+      })),
+    [accounts, editingId, tf],
+  );
 
   // Delete account with password verification
   const [deleteTarget, setDeleteTarget] = useState<{ account: Account; recordCount: number; toRecordCount: number; planCount: number; planGeneratedRecordCount: number } | null>(null);
@@ -350,6 +387,8 @@ export default function SettingsAccountsPage() {
       tradingCalendar: a.tradingCalendar || "cn_fund",
       isConsumerLoan: a.isConsumerLoan === true ? "true" : "false",
       loanCategoryId: editKind === "loan" ? a.loanCategoryId || "" : "",
+      // 多币种归属：空串 = 根账户（独立账户），否则为父账户 id。
+      parentId: a.parentId || "",
     };
   }
 
@@ -471,7 +510,8 @@ export default function SettingsAccountsPage() {
     } | null;
     if (!res.ok || data?.ok === false) {
       const lockKey = accountRecordLockErrorKey(data?.code);
-      setEditError(lockKey ? t(lockKey) : (data?.error ?? t("settings.accounts.saveFailed")));
+      const parentKey = accountParentErrorKey(data?.code);
+      setEditError(lockKey ? t(lockKey) : parentKey ? t(parentKey) : (data?.error ?? t("settings.accounts.saveFailed")));
       return;
     }
     // 保存成功后以当前表单为新基线，便于继续编辑/翻页；「保存并关闭」才关窗。
@@ -502,6 +542,64 @@ export default function SettingsAccountsPage() {
       });
     }
     void refreshSettingsAccounts("account:update");
+  }
+
+  /** 取消多币种：只在父账户仅剩一个子户时可用（子户提为根账户、父行删除）。 */
+  async function downgradeMultiCurrencyParent(target: Account) {
+    if (upgradingMultiCurrency) return;
+    const childCount = subAccountCountByParentId.get(target.id) ?? 0;
+    const confirmed = await showConfirmDialog({
+      title: t("settings.accounts.parentAccountDowngradeTitle"),
+      message: tf("settings.accounts.parentAccountDowngradeMessage", { name: target.name, count: childCount }),
+      tone: "danger",
+    });
+    if (!confirmed) return;
+    setUpgradingMultiCurrency(true);
+    setEditError("");
+    try {
+      const res = await fetch(`/api/v1/accounts/${encodeURIComponent(target.id)}/multi-currency`, { method: "DELETE" });
+      const data = await res.json().catch(() => null) as { ok?: boolean; error?: string } | null;
+      if (!res.ok || data?.ok !== true) {
+        setEditError(data?.error ?? t("settings.accounts.parentAccountDowngradeFailed"));
+        return;
+      }
+      setEditingId(null);
+      setEditFormBaseline({});
+      await refreshSettingsAccounts("account:multi-currency-downgrade");
+    } catch {
+      setEditError(t("settings.accounts.parentAccountDowngradeFailed"));
+    } finally {
+      setUpgradingMultiCurrency(false);
+    }
+  }
+
+  /** 把正在编辑的账户升级为多币种父账户（父行新建、本账户原地降级为币种子户）。 */
+  async function upgradeEditingAccountToMultiCurrency(target: Account) {
+    if (upgradingMultiCurrency) return;
+    const confirmed = await showConfirmDialog({
+      title: t("settings.accounts.parentAccountUpgradeTitle"),
+      message: tf("settings.accounts.parentAccountUpgradeMessage", { name: target.name }),
+    });
+    if (!confirmed) return;
+    setUpgradingMultiCurrency(true);
+    setEditError("");
+    try {
+      const res = await fetch(`/api/v1/accounts/${encodeURIComponent(target.id)}/multi-currency`, { method: "POST" });
+      const data = await res.json().catch(() => null) as { ok?: boolean; error?: string } | null;
+      if (!res.ok || data?.ok !== true) {
+        setEditError(data?.error ?? t("settings.accounts.parentAccountUpgradeFailed"));
+        return;
+      }
+      await refreshSettingsAccounts("account:multi-currency-upgrade");
+      // 升级后本账户变成子账户（id 不变），用最新数据重开编辑以显示新的归属。
+      const freshAccounts = (getCachedSettingsAccountData()?.accounts ?? []) as Account[];
+      const freshAccount = freshAccounts.find((account) => account.id === target.id);
+      if (freshAccount) openEdit(freshAccount);
+    } catch {
+      setEditError(t("settings.accounts.parentAccountUpgradeFailed"));
+    } finally {
+      setUpgradingMultiCurrency(false);
+    }
   }
 
   async function changeEditInstitution(institutionId: string) {
@@ -542,6 +640,8 @@ export default function SettingsAccountsPage() {
       // Loan category sits one level below the account kind: default it when switching to "loan",
       // clear it when switching away (the server clears it too).
       loanCategoryId: nextKind === "loan" ? (f.loanCategoryId || loanCategories[0]?.id || "") : "",
+      // 子账户必须与父账户同类型：切换类型时先解除归属，否则保存会被后端拒绝。
+      parentId: nextKind === f.kind ? f.parentId : "",
     }));
     // Converting into a credit card while keeping the institution: prefill the
     // institution's billing defaults for still-empty day fields (mirrors changeEditInstitution).
@@ -574,6 +674,22 @@ export default function SettingsAccountsPage() {
     void refreshSettingsAccounts("account:toggle-active");
   }, [refreshSettingsAccounts]);
 
+  // 多币种父子层级（2026-10-18 用户裁定）：父账户是统计单元、子账户是记账单元。
+  // 账户设置里必须能看到「谁归属谁」，否则升级/拆分后这一层关系在设置侧完全不可见。
+  const accountNameById = useMemo(
+    () => new Map(accounts.map((account) => [account.id, account.name])),
+    [accounts],
+  );
+  const subAccountCountByParentId = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const account of accounts) {
+      const parentId = account.parentId ?? "";
+      if (!parentId) continue;
+      counts.set(parentId, (counts.get(parentId) ?? 0) + 1);
+    }
+    return counts;
+  }, [accounts]);
+
   const accountDisplayName = (account: Account) => {
     return buildAccountDisplayOption(
       {
@@ -597,6 +713,9 @@ export default function SettingsAccountsPage() {
     const haystack = [
       account.name,
       accountDisplayName(account),
+      // 子账户也能用父账户名搜到；父账户能按「多币种」搜到。
+      account.parentId ? accountNameById.get(account.parentId) ?? "" : "",
+      account.isAggregate ? t("settings.accounts.hierarchyMultiCurrency") : "",
       account.note,
       account.numberMasked,
       account.AccountGroup?.name,
@@ -902,31 +1021,79 @@ export default function SettingsAccountsPage() {
       truncate: true,
       // 名称列只显示账户名，排序也只按账户名；机构有独立列，不拼进名称。
       sortValue: (a) => a.name,
-      cellTitle: (a) => (a.note ? `${a.name} · ${t("settings.accounts.notePrefix")}${a.note}` : a.name),
-      render: (a) => (
-        <div className="flex min-w-0 items-center gap-1.5">
-          {a.isPlaceholder ? (
-            <span className="truncate text-sm font-medium text-slate-800">{a.name}</span>
-          ) : (
-            <button
-              type="button"
-              onClick={(event) => {
-                event.stopPropagation();
-                void router.push(getAccountDetailHref(a));
-              }}
-              className="min-w-0 max-w-full truncate rounded text-left text-sm font-medium text-slate-800 hover:text-blue-600 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-200"
-            >
-              {a.name}
-            </button>
-          )}
-          {a.isPlaceholder && (
-            <span className="shrink-0 rounded-full border border-slate-300 bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-400">{t("settings.accounts.placeholder")}</span>
-          )}
-          {a.isConsumerLoan && (
-            <span className="shrink-0 rounded-full border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-700">{t("account.kind.consumer_loan")}</span>
-          )}
-        </div>
-      ),
+      cellTitle: (a) => [
+        a.parentId ? tf("settings.accounts.hierarchyParentHint", { name: accountNameById.get(a.parentId) ?? "-", currency: a.currency }) : "",
+        a.note ? `${a.name} · ${t("settings.accounts.notePrefix")}${a.note}` : a.name,
+      ].filter(Boolean).join(" · "),
+      render: (a) => {
+        const parentName = a.parentId ? accountNameById.get(a.parentId) ?? "" : "";
+        return (
+          <div className={`flex min-w-0 items-center gap-1.5 ${parentName ? "pl-3" : ""}`}>
+            {parentName ? <CornerDownRight className="h-3 w-3 shrink-0 text-slate-300" aria-hidden="true" /> : null}
+            {a.isPlaceholder || a.isAggregate ? (
+              // 聚合父账户没有明细，点进去只会是空列表（与侧边栏同一口径：只做折叠）。
+              <span className="truncate text-sm font-medium text-slate-800">{a.name}</span>
+            ) : (
+              <button
+                type="button"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  void router.push(getAccountDetailHref(a));
+                }}
+                className="min-w-0 max-w-full truncate rounded text-left text-sm font-medium text-slate-800 hover:text-blue-600 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-200"
+              >
+                {a.name}
+              </button>
+            )}
+            {a.isAggregate && (
+              <span className="shrink-0 rounded-full border border-sky-200 bg-sky-50 px-1.5 py-0.5 text-[10px] text-sky-700">{t("settings.accounts.hierarchyMultiCurrency")}</span>
+            )}
+            {a.isPlaceholder && (
+              <span className="shrink-0 rounded-full border border-slate-300 bg-slate-100 px-1.5 py-0.5 text-[10px] text-slate-400">{t("settings.accounts.placeholder")}</span>
+            )}
+            {a.isConsumerLoan && (
+              <span className="shrink-0 rounded-full border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-700">{t("account.kind.consumer_loan")}</span>
+            )}
+          </div>
+        );
+      },
+    },
+    {
+      // 「归属」列：多币种子账户 → 父账户名；父账户 → 子账户数量。
+      key: "hierarchy",
+      label: t("settings.accounts.colHierarchy"),
+      width: 170,
+      minWidth: 120,
+      truncate: true,
+      hideable: true,
+      sortValue: (a) => (a.parentId ? accountNameById.get(a.parentId) ?? "" : ""),
+      filterText: (a) => {
+        if (a.parentId) return accountNameById.get(a.parentId) ?? null;
+        return a.isAggregate ? t("settings.accounts.hierarchyMultiCurrency") : null;
+      },
+      render: (a) => {
+        if (a.parentId) {
+          const parentName = accountNameById.get(a.parentId) ?? "";
+          return parentName
+            ? (
+              <span
+                className="truncate text-slate-600"
+                title={tf("settings.accounts.hierarchyParentHint", { name: parentName, currency: a.currency })}
+              >
+                {parentName}
+              </span>
+            )
+            : <span className="text-slate-300">-</span>;
+        }
+        if (a.isAggregate) {
+          return (
+            <span className="whitespace-nowrap rounded bg-sky-50 px-1.5 py-0.5 text-[10px] font-medium text-sky-700">
+              {tf("settings.accounts.hierarchyChildCount", { count: subAccountCountByParentId.get(a.id) ?? 0 })}
+            </span>
+          );
+        }
+        return <span className="text-slate-300">-</span>;
+      },
     },
     {
       key: "lastFour",
@@ -1103,7 +1270,7 @@ export default function SettingsAccountsPage() {
         ? <span className="text-slate-500">{a.note}</span>
         : <span className="text-slate-300">-</span>),
     },
-  ], [t, tf, router, accountKindLabel, investmentLabel, fixedAssetTypeLabel, mergeSelectedIds, toggleMergeSelected, openTrash, ownerNameByGroupId]);
+  ], [t, tf, router, accountKindLabel, investmentLabel, fixedAssetTypeLabel, mergeSelectedIds, toggleMergeSelected, openTrash, ownerNameByGroupId, accountNameById, subAccountCountByParentId]);
 
   const renderRowActions = useCallback((a: Account) => (
     <>
@@ -1200,7 +1367,7 @@ export default function SettingsAccountsPage() {
           columns={accountTableColumns}
           rows={filteredAccounts}
           rowKey={(a) => a.id}
-          minTableWidth={1260}
+          minTableWidth={1430}
           fillHeight
           showFilters={false}
           sortable
@@ -1337,7 +1504,12 @@ export default function SettingsAccountsPage() {
           emptyAccountKinds: SETTINGS_ACCOUNT_KIND_OPTIONS,
         });
         const editKindOptions = kindEdit.options;
-        const kindSelectDisabled = loanEditLocked || kindEdit.kindSelectDisabled;
+        // 父账户的类型必须与子户一致，编辑时锁死（服务端同样拒绝变更）。
+        const kindSelectDisabled = loanEditLocked || kindEdit.kindSelectDisabled || editingAccount.isAggregate === true;
+        // 父账户候选按账户类型过滤：子账户必须与父账户同类型。
+        const parentOptionsForKind = parentAccountOptions
+          .filter((option) => option.kind === editKind)
+          .map(({ id, label, subLabel }) => ({ id, label, subLabel }));
         const settlementCounterparties = counterparties.filter((counterparty) => isSettlementCounterpartyType(counterparty.type));
         // Resolve the current account's object even when it is outside the
         // settlement-counterparty filter, such as a merchant fallback.
@@ -1369,7 +1541,7 @@ export default function SettingsAccountsPage() {
               <div className="modal-header shrink-0">
                 <div className="text-sm font-semibold text-slate-800">{t("settings.accounts.editTitle", { name: editingAccount.name })}</div>
                 <button type="button" onClick={closeEditModal}
-                  className="h-8 w-8 rounded-md border border-slate-200 bg-white text-slate-600 hover:bg-slate-50" aria-label={t("table.close")}>
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-600 hover:bg-slate-50" aria-label={t("table.close")}>
                   <X className="h-4 w-4" />
                 </button>
               </div>
@@ -1385,6 +1557,39 @@ export default function SettingsAccountsPage() {
                 />
               ) : null}
               <div className="min-h-0 flex-1 overflow-y-auto p-4">
+              {/* 多币种归属：父账户/子账户的关系只读展示（关系由转账时自动创建或升级产生）。
+                  「父账户只统计、不能记账」这类解释只在新手期显示，老用户只看归属事实。 */}
+              {editingAccount.parentId ? (
+                <div className="mb-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600">
+                  {hideSettingDescriptions
+                    ? tf("settings.accounts.hierarchyParentOwner", {
+                        name: accountNameById.get(editingAccount.parentId) ?? "-",
+                        currency: editingAccount.currency,
+                      })
+                    : tf("settings.accounts.hierarchyParentHint", {
+                        name: accountNameById.get(editingAccount.parentId) ?? "-",
+                        currency: editingAccount.currency,
+                      })}
+                </div>
+              ) : editingAccount.isAggregate ? (
+                <div className="mb-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600">
+                  <div>
+                    {hideSettingDescriptions
+                      ? `${t("settings.accounts.hierarchyMultiCurrency")} · ${tf("settings.accounts.hierarchyChildCount", { count: subAccountCountByParentId.get(editingAccount.id) ?? 0 })}`
+                      : tf("settings.accounts.hierarchyAggregateHint", { count: subAccountCountByParentId.get(editingAccount.id) ?? 0 })}
+                  </div>
+                  {(subAccountCountByParentId.get(editingAccount.id) ?? 0) === 1 ? (
+                    <button
+                      type="button"
+                      onClick={() => void downgradeMultiCurrencyParent(editingAccount)}
+                      disabled={upgradingMultiCurrency}
+                      className="mt-1 text-[11px] font-medium text-rose-600 underline decoration-dotted underline-offset-2 transition-colors hover:text-rose-700 disabled:cursor-not-allowed disabled:text-slate-300"
+                    >
+                      {t("settings.accounts.parentAccountDowngrade")}
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
               {loanEditLocked ? (
                 <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-700">
                   {t("settings.accounts.loanEditableHint")}
@@ -1435,6 +1640,43 @@ export default function SettingsAccountsPage() {
                       onCreateClick={() => setNestedEntityType("group")} createLabel={t("settings.accounts.addOwner")} />
                   </div>
                 </div>
+                {/* 多币种归属：子账户可改挂到别的父账户或解除归属；父账户自己不能有上级。 */}
+                {!editingAccount.isAggregate && (
+                  <div>
+                    <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.parentAccount")}</label>
+                    <SmartSelect mode="single" value={editForm.parentId || ""}
+                      onChange={id => setEditForm(f => ({ ...f, parentId: id }))}
+                      options={parentOptionsForKind}
+                      placeholder={t("settings.accounts.parentAccountNone")} />
+                    {/* 解释性文案只在新手期（首次使用向导仍开着）显示；
+                        「还没有父账户」这类空状态引导始终保留，否则用户不知道下拉为何是空的。 */}
+                    {!hideSettingDescriptions && (editForm.parentId || parentOptionsForKind.length > 0) ? (
+                      <p className="mt-1 text-[11px] leading-4 text-slate-400">
+                        {editForm.parentId
+                          ? t("settings.accounts.parentAccountHint")
+                          : t("settings.accounts.parentAccountNoneHint")}
+                      </p>
+                    ) : null}
+                    {!editForm.parentId && parentOptionsForKind.length === 0 ? (
+                      <p className="mt-1 text-[11px] leading-4 text-slate-400">
+                        {t("settings.accounts.parentAccountEmpty")}
+                      </p>
+                    ) : null}
+                    {/* 子账户不能再升级成父账户（服务端同样拒绝）：先解除归属保存后再升级。 */}
+                    {editForm.parentId ? null : (
+                      <button
+                        type="button"
+                        onClick={() => void upgradeEditingAccountToMultiCurrency(editingAccount)}
+                        disabled={upgradingMultiCurrency}
+                        className="mt-1 text-[11px] font-medium text-blue-600 underline decoration-dotted underline-offset-2 transition-colors hover:text-blue-700 disabled:cursor-not-allowed disabled:text-slate-300"
+                      >
+                        {upgradingMultiCurrency
+                          ? t("settings.accounts.parentAccountUpgrading")
+                          : t("settings.accounts.parentAccountUpgrade")}
+                      </button>
+                    )}
+                  </div>
+                )}
                 {supportsInstitution && (
                   <div>
                     <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.institution")}</label>
@@ -1496,7 +1738,8 @@ export default function SettingsAccountsPage() {
                   <select
                     value={normalizeCurrency(editForm.currency || baseCurrency)}
                     onChange={e => setEditForm(f => ({ ...f, currency: e.target.value }))}
-                    disabled={loanEditLocked || hasRecords}
+                    // 父账户是统计单元：币种固定为账簿本位币（服务端同样强制）。
+                    disabled={loanEditLocked || hasRecords || editingAccount.isAggregate === true}
                     className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none disabled:bg-slate-50 disabled:text-slate-500"
                   >
                     {CURRENCY_OPTIONS.map((option) => (
@@ -1825,7 +2068,7 @@ export default function SettingsAccountsPage() {
                 <button
                   type="button"
                   onClick={() => { if (!trashBusy) setTrashAccount(null); }}
-                  className="h-8 w-8 rounded-md border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
                   aria-label={t("table.close")}
                 >
                   <X className="h-4 w-4" />

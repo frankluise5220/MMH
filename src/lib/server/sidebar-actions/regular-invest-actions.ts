@@ -2,7 +2,7 @@
 
 import { IntervalUnit, RegularInvestStatus } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
-import { normalizeNonNegativeDays, setFundArrivalDays, setFundArrivalDaysInTx, setFundConfirmDays, setFundConfirmDaysInTx } from "@/lib/fund/confirmDays";
+import { normalizeNonNegativeDays, setFundDateRuleAuto, setFundDateRuleAutoInTx } from "@/lib/fund/confirmDays";
 import { setFundFeeRateByDateInTx } from "@/lib/fund/feeRate";
 import { normalizeFundDisplayName, resolveFundName } from "@/lib/fund/fundProfile";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
@@ -201,8 +201,6 @@ async function createRegularInvest(formData: FormData) {
           totalRuns: totalRuns && Number.isFinite(totalRuns) && totalRuns > 0 ? totalRuns : null,
           status: RegularInvestStatus.active,
           feeRate: isFundTask && feeRate != null && Number.isFinite(feeRate) ? feeRate : isFundTask ? null : 0,
-          confirmDays: isFundTask ? confirmDays : 0,
-          arrivalDays: isFundTask ? arrivalDays : 0,
           memo: encodeScheduledTaskMemo({
             type: taskType,
             title: fundName,
@@ -223,13 +221,11 @@ async function createRegularInvest(formData: FormData) {
       });
 
       // Keep the canonical confirm-days and fee-rate stores in sync (matching the API route)
-      const newDays = confirmDays != null && Number.isFinite(confirmDays) ? confirmDays : 0;
       const newRate = feeRate != null && Number.isFinite(feeRate) ? feeRate : 0;
       if (isFundTask && accountId && fundCode) {
-        await setFundConfirmDaysInTx(tx, accountId, fundCode, newDays);
+        // 只在表单显式给出时写入；设置页锁定过的行自动跳过。
+        await setFundDateRuleAutoInTx(tx, accountId, fundCode, { days: confirmDays, arrivalDays });
         await setFundFeeRateByDateInTx(tx, accountId, fundCode, newRate, startDate, "buy");
-        const newArrivalDays = arrivalDays != null && Number.isFinite(arrivalDays) ? arrivalDays : 2;
-        await setFundArrivalDaysInTx(tx, accountId, fundCode, newArrivalDays);
       }
     });
 
@@ -576,22 +572,16 @@ async function updateRegularInvest(formData: FormData) {
   } else if (isFundTask && formData.has("feeRate")) {
     updateData.feeRate = null;
   }
-  if (isFundTask && confirmDaysRaw !== "") {
-    updateData.confirmDays = normalizeNonNegativeDays(confirmDaysRaw, 0);
-  } else if (isFundTask && formData.has("confirmDays")) {
-    updateData.confirmDays = null;
-  }
-
-  if (isFundTask && arrivalDaysRaw !== "") {
-    updateData.arrivalDays = normalizeNonNegativeDays(arrivalDaysRaw, 2);
-  } else if (isFundTask && formData.has("arrivalDays")) {
-    updateData.arrivalDays = null;
-  }
+  // 计划表不再保存 T+N：确认/到账天数只写确认库（FundConfirmDays）。
+  const nextConfirmDays = isFundTask && formData.has("confirmDays")
+    ? normalizeNonNegativeDays(confirmDaysRaw, 0)
+    : null;
+  const nextArrivalDays = isFundTask && formData.has("arrivalDays")
+    ? normalizeNonNegativeDays(arrivalDaysRaw, 2)
+    : null;
   if (!isFundTask) {
     // 存款/债券系统计划的 fundProductType（deposit / bond）由自愈写入，别清空。
     if (!isLotSystemPlanEdit) updateData.fundProductType = null;
-    updateData.confirmDays = 0;
-    updateData.arrivalDays = 0;
     updateData.feeRate = 0;
     updateData.skipPendingPreceding = false;
   } else if (formData.has("skipPendingPreceding")) {
@@ -647,11 +637,9 @@ async function updateRegularInvest(formData: FormData) {
       data: editedSystemPlan ? { ...updateData, manualOverride: true } : updateData,
     });
 
-    if (isFundTask && updateData.confirmDays != null) {
-      await setFundConfirmDays(accountId, fundCode, updateData.confirmDays).catch(() => {});
-    }
-    if (isFundTask && updateData.arrivalDays != null) {
-      await setFundArrivalDays(accountId, fundCode, updateData.arrivalDays).catch(() => {});
+    if (isFundTask && accountId && fundCode) {
+      // 设置页锁定过的行只读：这里静默跳过即可（表单已按锁定态置灰）。
+      await setFundDateRuleAuto(accountId, fundCode, { days: nextConfirmDays, arrivalDays: nextArrivalDays }).catch(() => {});
     }
 
     // Client-side handles page refresh

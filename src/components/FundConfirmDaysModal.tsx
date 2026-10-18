@@ -1,11 +1,8 @@
 "use client";
-import { ModalLayer } from "@/components/ModalLayer";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { CalendarDays, Check, Loader2, Percent, Trash2, X } from "lucide-react";
+import { Check, Loader2, Lock, Trash2 } from "lucide-react";
 
-import { FundFeeRatePanel } from "@/components/FundFeeRatePanel";
-import { DateStepper } from "@/components/DateStepper";
 import { useI18n } from "@/lib/i18n";
 
 export type ConfirmDayRow = {
@@ -13,8 +10,8 @@ export type ConfirmDayRow = {
   fundName: string | null;
   days: number;
   arrivalDays: number;
-  redeemCostDays: number;
-  effectiveDate: string | null;
+  /** 已在设置页保存过：其它界面只读，不再覆盖这两个天数。 */
+  manualOverride?: boolean;
 };
 
 type ConfirmDaysListResponse = {
@@ -32,8 +29,6 @@ type ConfirmDayPayloadRow = {
   fundCode: string;
   days: number;
   arrivalDays: number;
-  redeemCostDays: number;
-  effectiveDate?: string | null;
 };
 
 function normalizeDaysValue(value: string) {
@@ -46,10 +41,9 @@ function defaultConfirmDayRow(fundCode: string, fundName: string | null | undefi
   return {
     fundCode,
     fundName: fundName ?? null,
-    days: 1,
+    days: 0,
     arrivalDays: 2,
-    redeemCostDays: 1,
-    effectiveDate: null,
+    manualOverride: false,
   };
 }
 
@@ -59,8 +53,7 @@ function normalizeRow(row: ConfirmDayRow, fallbackFundName?: string | null): Con
     fundName: row.fundName ?? fallbackFundName ?? null,
     days: normalizeDaysValue(String(row.days)),
     arrivalDays: normalizeDaysValue(String(row.arrivalDays)),
-    redeemCostDays: normalizeDaysValue(String(row.redeemCostDays)),
-    effectiveDate: row.effectiveDate || null,
+    manualOverride: Boolean(row.manualOverride),
   };
 }
 
@@ -69,9 +62,9 @@ function draftDaysValue(value: string, fallback: number) {
 }
 
 /**
- * Editable fund confirm-day rule list. Renders the table body only (no modal
- * overlay), so it can be embedded into an account edit dialog or shown inside
- * the FundConfirmDaysModal shell.
+ * Editable fund confirm-day rule list (the single T+N store). Renders the table
+ * body only (no modal overlay), so it can be embedded into an account edit
+ * dialog or the fund profile settings card.
  */
 export function FundConfirmDaysPanel({
   accountId,
@@ -104,8 +97,6 @@ export function FundConfirmDaysPanel({
   const [draftFundCode, setDraftFundCode] = useState(initialFundCode ?? "");
   const [draftDays, setDraftDays] = useState("");
   const [draftArrivalDays, setDraftArrivalDays] = useState("");
-  const [draftRedeemCostDays, setDraftRedeemCostDays] = useState("");
-  const [draftEffectiveDate, setDraftEffectiveDate] = useState("");
 
   const applyRows = useCallback((list: ConfirmDayRow[]) => {
     let selected = initialFundCode
@@ -145,8 +136,7 @@ export function FundConfirmDaysPanel({
           ok?: boolean;
           days?: number;
           arrivalDays?: number;
-          redeemCostDays?: number;
-          effectiveDate?: string | null;
+          manualOverride?: boolean;
           error?: string;
         } | null;
         if (!data?.ok) {
@@ -156,10 +146,9 @@ export function FundConfirmDaysPanel({
         setRows([normalizeRow({
           fundCode: initialFundCode,
           fundName: fundName ?? null,
-          days: data.days ?? 1,
+          days: data.days ?? 0,
           arrivalDays: data.arrivalDays ?? 2,
-          redeemCostDays: data.redeemCostDays ?? 1,
-          effectiveDate: data.effectiveDate ?? null,
+          manualOverride: Boolean(data.manualOverride),
         }, fundName)]);
         return;
       }
@@ -179,8 +168,6 @@ export function FundConfirmDaysPanel({
     setDraftFundCode(initialFundCode ?? "");
     setDraftDays("");
     setDraftArrivalDays("");
-    setDraftRedeemCostDays("");
-    setDraftEffectiveDate("");
     void loadRows();
   }, [initialFundCode, loadRows]);
 
@@ -197,8 +184,6 @@ export function FundConfirmDaysPanel({
     fundCode: (fundCodeOverride ?? row.fundCode).trim(),
     days: normalizeDaysValue(String(row.days)),
     arrivalDays: normalizeDaysValue(String(row.arrivalDays)),
-    redeemCostDays: normalizeDaysValue(String(row.redeemCostDays)),
-    effectiveDate: row.effectiveDate || null,
   }), []);
 
   const saveRule = useCallback(async (nextRows: ConfirmDayRow[], row: ConfirmDayRow, rowKey: string) => {
@@ -274,15 +259,13 @@ export function FundConfirmDaysPanel({
       setError(t("fundConfirmDays.duplicateFund", { code }));
       return;
     }
-    if (!draftDays.trim() && !draftArrivalDays.trim() && !draftRedeemCostDays.trim() && !draftEffectiveDate.trim()) return;
+    if (!draftDays.trim() && !draftArrivalDays.trim()) return;
 
     const draftRow = normalizeRow({
       fundCode: code,
       fundName: initialFundCode ? fundName ?? null : null,
-      days: draftDaysValue(draftDays, 1),
+      days: draftDaysValue(draftDays, 0),
       arrivalDays: draftDaysValue(draftArrivalDays, 2),
-      redeemCostDays: draftDaysValue(draftRedeemCostDays, 1),
-      effectiveDate: draftEffectiveDate.trim() || null,
     }, fundName);
     const nextRows = [...rows.filter((row) => row.fundCode !== code), draftRow];
     void (async () => {
@@ -291,14 +274,12 @@ export function FundConfirmDaysPanel({
       setDraftFundCode(initialFundCode ?? "");
       setDraftDays("");
       setDraftArrivalDays("");
-      setDraftRedeemCostDays("");
-      setDraftEffectiveDate("");
     })();
-  }, [draftArrivalDays, draftDays, draftEffectiveDate, draftFundCode, draftRedeemCostDays, fundName, initialFundCode, rows, saveRule, t]);
+  }, [draftArrivalDays, draftDays, draftFundCode, fundName, initialFundCode, rows, saveRule, t]);
 
   const draftCanSave = Boolean(
     (initialFundCode ?? draftFundCode).trim()
-    && (draftDays.trim() || draftArrivalDays.trim() || draftRedeemCostDays.trim() || draftEffectiveDate.trim()),
+    && (draftDays.trim() || draftArrivalDays.trim()),
   );
   const anySaving = savingRowKey !== null;
 
@@ -316,8 +297,6 @@ export function FundConfirmDaysPanel({
                 ) : null}
                 <th className="border-b border-slate-200 px-2 py-1.5 text-right text-xs font-semibold text-slate-600">{t("fundConfirmDays.col.confirmDays")}</th>
                 <th className="border-b border-slate-200 px-2 py-1.5 text-right text-xs font-semibold text-slate-600">{t("fundConfirmDays.col.arrivalDays")}</th>
-                <th className="border-b border-slate-200 px-2 py-1.5 text-right text-xs font-semibold text-slate-600">{t("fundConfirmDays.col.redeemCostDays")}</th>
-                <th className="border-b border-slate-200 px-2 py-1.5 text-right text-xs font-semibold text-slate-600">{t("fundConfirmDays.col.effectiveDate")}</th>
                 <th className="w-40 border-b border-slate-200 px-2 py-1.5 text-right text-xs font-semibold text-slate-600">{t("detail.column.actions")}</th>
               </tr>
             </thead>
@@ -327,14 +306,22 @@ export function FundConfirmDaysPanel({
                 const saving = savingRowKey === rowKey;
                 const canDelete = rows.length > 1;
                 return (
-                  <tr key={`${row.fundCode}-${row.effectiveDate ?? "latest"}-${index}`} className="hover:bg-slate-50">
+                  <tr key={`${row.fundCode}-${index}`} className="hover:bg-slate-50">
                     {!hideFundColumn ? (
                       <td className="border-b border-slate-100 px-2 py-1">
                         <div className="min-w-0">
                           <div className="truncate text-xs font-medium text-slate-800" title={row.fundName ?? undefined}>
                             {row.fundName || "-"}
                           </div>
-                          <div className="text-[11px] tabular-nums text-slate-400">{row.fundCode}</div>
+                          <div className="flex items-center gap-1 text-[11px] tabular-nums text-slate-400">
+                            <span>{row.fundCode}</span>
+                            {row.manualOverride ? (
+                              <span className="inline-flex items-center gap-0.5 rounded bg-slate-100 px-1 text-[10px] font-medium text-slate-500" title={t("fundConfirmDays.manualLockHint")}>
+                                <Lock className="h-2.5 w-2.5" />
+                                {t("fundConfirmDays.locked")}
+                              </span>
+                            ) : null}
+                          </div>
                         </div>
                       </td>
                     ) : null}
@@ -354,23 +341,6 @@ export function FundConfirmDaysPanel({
                         value={row.arrivalDays}
                         onChange={(e) => updateRow(index, { arrivalDays: normalizeDaysValue(e.target.value) })}
                         className="h-6 w-12 rounded border border-slate-200 px-1.5 text-right text-xs tabular-nums outline-none focus:border-blue-400"
-                      />
-                    </td>
-                    <td className="border-b border-slate-100 px-2 py-1 text-right">
-                      <input
-                        type="number"
-                        min={0}
-                        value={row.redeemCostDays}
-                        onChange={(e) => updateRow(index, { redeemCostDays: normalizeDaysValue(e.target.value) })}
-                        className="h-6 w-12 rounded border border-slate-200 px-1.5 text-right text-xs tabular-nums outline-none focus:border-blue-400"
-                      />
-                    </td>
-                    <td className="border-b border-slate-100 px-2 py-1 text-right">
-                      <DateStepper
-                        compact
-                        value={row.effectiveDate ?? ""}
-                        onChange={(value) => updateRow(index, { effectiveDate: value || null })}
-                        className="!min-h-0 !h-6 !w-32 !rounded !border-slate-200 !px-1.5 !text-xs tabular-nums"
                       />
                     </td>
                     <td className="border-b border-slate-100 px-2 py-1 text-right">
@@ -430,23 +400,6 @@ export function FundConfirmDaysPanel({
                   />
                 </td>
                 <td className="border-b border-slate-100 px-2 py-1 text-right">
-                  <input
-                    type="number"
-                    min={0}
-                    value={draftRedeemCostDays}
-                    onChange={(e) => setDraftRedeemCostDays(e.target.value)}
-                    className="h-6 w-12 rounded border border-slate-200 bg-white px-1.5 text-right text-xs tabular-nums outline-none focus:border-blue-400"
-                  />
-                </td>
-                <td className="border-b border-slate-100 px-2 py-1 text-right">
-                  <DateStepper
-                    compact
-                    value={draftEffectiveDate}
-                    onChange={setDraftEffectiveDate}
-                    className="!min-h-0 !h-6 !w-32 !rounded !border-slate-200 !px-1.5 !text-xs tabular-nums"
-                  />
-                </td>
-                <td className="border-b border-slate-100 px-2 py-1 text-right">
                   <div className="inline-flex items-center justify-end gap-1">
                     <button
                       type="button"
@@ -466,110 +419,7 @@ export function FundConfirmDaysPanel({
         )}
       </div>
       {error ? <div className="mt-2 text-right text-xs text-rose-600">{error}</div> : null}
+      <div className="mt-1 text-[11px] leading-4 text-slate-400">{t("fundConfirmDays.manualLockHint")}</div>
     </div>
-  );
-}
-
-/**
- * Full-screen dialog with two tabs (T+N rules and fee rates). Used from the
- * fund account page (row action / toolbar entry).
- */
-export function FundConfirmDaysModal({
-  accountId,
-  open,
-  onClose,
-  onSaved,
-  initialFundCode,
-  fundName,
-  initialTab = "confirm",
-}: {
-  accountId: string;
-  open: boolean;
-  onClose: () => void;
-  onSaved?: () => void;
-  /** When set, the modal edits only this fund's rule (row-action entry point). */
-  initialFundCode?: string | null;
-  /** Display name for the single-fund mode. */
-  fundName?: string | null;
-  initialTab?: "confirm" | "fee";
-}) {
-  const { t } = useI18n();
-  const singleFundMode = Boolean(initialFundCode);
-  const [activeTab, setActiveTab] = useState<"confirm" | "fee">("confirm");
-
-  useEffect(() => {
-    if (!open) return;
-    setActiveTab(initialTab);
-  }, [initialTab, open]);
-
-  if (!open) return null;
-
-  const modalTitle = singleFundMode
-    ? `${fundName || initialFundCode} · ${t("fundRules.title")}`
-    : t("fundRules.title");
-
-  const tabClass = (active: boolean) =>
-    active
-      ? "border-blue-300 bg-blue-50 text-blue-700"
-      : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50";
-
-  return (
-    <ModalLayer className="fixed inset-0 flex items-center justify-center bg-slate-900/40 p-4">
-      <div className="flex max-h-[86vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
-        <div className="flex shrink-0 items-center justify-between border-b border-slate-200 bg-slate-50 px-4 py-3">
-          <div className="flex min-w-0 items-center gap-2 text-sm font-semibold text-slate-800">
-            <CalendarDays className="h-4 w-4 shrink-0 text-slate-500" />
-            <span className="truncate">{modalTitle}</span>
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
-              aria-label={t("table.close")}
-            >
-              <X className="h-4 w-4" />
-            </button>
-          </div>
-        </div>
-        <div className="flex shrink-0 items-center gap-1 border-b border-slate-200 bg-white px-4 pt-2.5">
-          <button
-            type="button"
-            onClick={() => setActiveTab("confirm")}
-            className={`inline-flex h-8 items-center rounded-t-md border border-b-0 px-3 text-xs font-medium ${tabClass(activeTab === "confirm")}`}
-          >
-            <CalendarDays className="mr-1.5 h-3.5 w-3.5" />
-            {t("fundRules.tab.confirm")}
-          </button>
-          <button
-            type="button"
-            onClick={() => setActiveTab("fee")}
-            className={`inline-flex h-8 items-center rounded-t-md border border-b-0 px-3 text-xs font-medium ${tabClass(activeTab === "fee")}`}
-          >
-            <Percent className="mr-1.5 h-3.5 w-3.5" />
-            {t("fundRules.tab.fee")}
-          </button>
-        </div>
-        <div className="min-h-0 flex-1 p-4">
-          {/* Both panels stay mounted so switching tabs never re-fetches or
-              resizes the dialog; only visibility changes. */}
-          <div className={activeTab === "confirm" ? "h-full" : "hidden"}>
-            <FundConfirmDaysPanel
-              accountId={accountId}
-              initialFundCode={initialFundCode}
-              fundName={fundName}
-              onSaved={onSaved}
-            />
-          </div>
-          <div className={activeTab === "fee" ? "h-full" : "hidden"}>
-            <FundFeeRatePanel
-              accountId={accountId}
-              initialFundCode={initialFundCode}
-              onSaved={onSaved}
-            />
-          </div>
-        </div>
-      </div>
-    </ModalLayer>
   );
 }

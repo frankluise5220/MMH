@@ -48,7 +48,6 @@ import { loadCreditBillPageData } from "@/lib/server/credit-bill-page-data";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
 import { prepareEntryUndo, saveEntryUndo } from "@/lib/server/entry-undo";
 import { getCreditBillAccountIds } from "@/lib/server/credit-card-institution-settings";
-import { getFundArrivalDays, getFundConfirmDays, setFundConfirmDays, setFundArrivalDays } from "@/lib/fund/confirmDays";
 import { setFundFeeRateByDate } from "@/lib/fund/feeRate";
 import { formatCurrencyMoney, formatMoney } from "@/lib/format";
 import { pnlClassFromRedUp } from "@/lib/client/colors";
@@ -86,6 +85,7 @@ import {
   counterpartyQualifiedAccountName,
   normalizeCreditCardLabelTemplate,
   resolveAccountTableLabel,
+  stripVisibleHoverParts,
 } from "@/lib/account-display";
 import { getInvestmentAccountView, isDepositAccount, isIncomeExpensePostingAccount, isIncomeExpensePostingOrDepositAccount, isLoanOrSettlementAccountKind, isPureInvestmentAccount, isSpecialCashTargetAccount, isTransferDropdownAccount } from "@/lib/account-kind-utils";
 import { ALL_CASH_DETAIL_SCOPE_ID, cashLedgerAccountIdsOf, cashLedgerFlowAccountId } from "@/lib/all-cash-entries";
@@ -1167,7 +1167,11 @@ export default async function Home({
 
   const accountDisplayValueById = new Map<string, number>();
   for (const account of accounts) {
-    const value = isPureInvestmentAccount(account)
+    // 父账户（聚合账户）没有明细：余额只能用子户按本位币折算后维护进去的
+    // `account.balance`，明细口径会把它算成 0（2026-10-18）。
+    const value = account.isAggregate
+      ? toNumber(account.balance)
+      : isPureInvestmentAccount(account)
       ? investBalByAccountId.get(account.id)?.marketValue ?? toNumber(account.balance)
       : account.kind === AccountKind.insurance
         ? insuranceDisplayBalanceByAccountId.get(account.id) ?? 0
@@ -1178,10 +1182,13 @@ export default async function Home({
   }
   const netWorthConversion = await convertCurrencyAmounts({
     householdId,
-    amounts: accounts.map((account) => ({
-      amount: accountDisplayValueById.get(account.id) ?? 0,
-      currency: account.currency,
-    })),
+    // 只统计根账户：子账户已被父账户代表，计入就是双计（2026-10-18 用户裁定）。
+    amounts: accounts
+      .filter((account) => !account.parentId)
+      .map((account) => ({
+        amount: accountDisplayValueById.get(account.id) ?? 0,
+        currency: account.currency,
+      })),
     toCurrency: baseCurrency,
     refreshMissing: true,
   });
@@ -1224,10 +1231,11 @@ export default async function Home({
       numberMasked: a.numberMasked,
       groupId: a.groupId,
       investProductType: a.investProductType,
+      currency: a.currency,
       Institution: a.Institution,
       AccountGroup: a.AccountGroup,
       Counterparty: a.Counterparty,
-    }, creditCardLabelTemplate, { fields: accountLabelFields });
+    }, creditCardLabelTemplate, { fields: accountLabelFields, baseCurrency });
     return {
       id: a.id,
       name: a.name,
@@ -1255,12 +1263,18 @@ export default async function Home({
       billingDay: a.billingDay ?? null,
       subLabel: display.subLabel,
       currency: a.currency ?? "CNY",
+      // 多币种父账户不能记账：落账候选一律靠这个字段过滤掉（见 isIncomeExpensePostingAccount /
+      // isTransferDropdownAccount）。
+      isAggregate: a.isAggregate === true,
+      // 账户层级父 id（与下拉分组头的 parentId 无关）：转账表单靠它认出
+      // 「转入账户已经是子账户」，避免再问「是否创建子账户」（2026-10-18）。
+      accountParentId: a.parentId ?? null,
     };
   });
 
   // Build hierarchical SmartSelect options: grouped by AccountGroup (isHeader),
   // ungrouped accounts shown flat with institution as subLabel
-  type SSOpt = { id: string; label: string; subLabel?: string; title?: string; isHeader?: boolean; isGroup?: boolean; parentId?: string; kind?: string | null; investProductType?: string | null; liabilityDirection?: string | null; institutionId?: string | null; institutionType?: string | null; counterpartyId?: string | null; isSettlementAccount?: boolean | null; isConsumerLoan?: boolean | null; billingDay?: number | null; currency?: string | null };
+  type SSOpt = { id: string; label: string; subLabel?: string; title?: string; isHeader?: boolean; isGroup?: boolean; parentId?: string; kind?: string | null; investProductType?: string | null; liabilityDirection?: string | null; institutionId?: string | null; institutionType?: string | null; counterpartyId?: string | null; isSettlementAccount?: boolean | null; isConsumerLoan?: boolean | null; billingDay?: number | null; currency?: string | null; isAggregate?: boolean | null };
   const joinSSSubLabel = (parts: Array<string | null | undefined>) => {
     const result: string[] = [];
     const seen = new Set<string>();
@@ -1291,8 +1305,13 @@ export default async function Home({
       .map(a => ({
         id: a.id,
         label: a.label,
-        subLabel: joinSSSubLabel([a.groupName, a.subLabel]),
-        title: a.hoverTitle,
+        // 主标签里已经出现的元素（所有人/类型/币种）不再重复到右侧，
+        // 与 ADT 表格同一口径（2026-10-18）。
+        subLabel: joinSSSubLabel(
+          [a.groupName, a.subLabel].filter(part => !!part && !a.label.includes(part)),
+        ),
+        // 悬浮只补行里看不到的：右侧已经显示的元素不再重复。
+        title: stripVisibleHoverParts(a.hoverTitle, [a.groupName]),
         parentId: `group:${a.groupId}`,
         kind: a.kind,
         investProductType: a.investProductType ?? null,
@@ -1304,14 +1323,17 @@ export default async function Home({
         isConsumerLoan: a.isConsumerLoan ?? null,
         billingDay: a.billingDay ?? null,
         currency: a.currency ?? null,
+        isAggregate: a.isAggregate === true,
       }));
 
     // Build ungrouped account entries (no parentId)
     const ungroupedItems: SSOpt[] = ungrouped.map(a => ({
       id: a.id,
       label: a.label,
-      subLabel: joinSSSubLabel([a.subLabel]),
-      title: a.hoverTitle,
+      subLabel: joinSSSubLabel(
+        [a.groupName, a.subLabel].filter(part => !!part && !a.label.includes(part)),
+      ),
+      title: stripVisibleHoverParts(a.hoverTitle, [a.groupName]),
       kind: a.kind,
       investProductType: a.investProductType ?? null,
       liabilityDirection: a.liabilityDirection ?? null,
@@ -1322,6 +1344,7 @@ export default async function Home({
       isConsumerLoan: a.isConsumerLoan ?? null,
       billingDay: a.billingDay ?? null,
       currency: a.currency ?? null,
+      isAggregate: a.isAggregate === true,
     }));
 
     return [...groupHeaders, ...groupedItems, ...ungroupedItems];
@@ -1337,9 +1360,11 @@ export default async function Home({
         numberMasked: a.numberMasked,
         groupId: a.groupId,
         investProductType: a.investProductType,
+        // 币种只在非本位币时出现在标签里（2026-10-18）；本位币由 baseCurrency 判定。
+        currency: a.currency,
         Institution: a.Institution,
         AccountGroup: a.AccountGroup,
-      }, creditCardLabelTemplate, { fields: accountLabelFields });
+      }, creditCardLabelTemplate, { fields: accountLabelFields, baseCurrency });
       return {
         id: a.id,
         name: a.name,
@@ -1359,10 +1384,12 @@ export default async function Home({
         billingDay: a.billingDay ?? null,
         subLabel: display.subLabel,
         currency: a.currency ?? "CNY",
+        isAggregate: a.isAggregate === true,
       };
     });
   const investmentAccountOptions = accounts
-    .filter((a) => isPureInvestmentAccount(a) || isDepositAccount(a))
+    // 父账户（聚合账户）不能作为投资/存款落账账户，明细只能记在币种子账户上。
+    .filter((a) => a.isAggregate !== true && (isPureInvestmentAccount(a) || isDepositAccount(a)))
     .map((a) => {
       const display = buildAccountDisplayOption({
         id: a.id,
@@ -1371,9 +1398,11 @@ export default async function Home({
         numberMasked: a.numberMasked,
         groupId: a.groupId,
         investProductType: a.investProductType,
+        // 币种只在非本位币时出现在标签里（2026-10-18）；本位币由 baseCurrency 判定。
+        currency: a.currency,
         Institution: a.Institution,
         AccountGroup: a.AccountGroup,
-      }, creditCardLabelTemplate, { fields: accountLabelFields });
+      }, creditCardLabelTemplate, { fields: accountLabelFields, baseCurrency });
       return {
         id: a.id,
         name: a.name,
@@ -1390,6 +1419,7 @@ export default async function Home({
         investProductType: a.investProductType,
         subLabel: display.subLabel,
         currency: a.currency ?? "CNY",
+        isAggregate: a.isAggregate === true,
       };
     });
   // Account-name table cells render `listLabel`, which follows the configured
@@ -1450,7 +1480,7 @@ export default async function Home({
     : accountOptions.filter((a) => isTransferDropdownAccount(a));
   const stockAccountSSOptions = buildAccountSSOptions(a => a.kind === "investment" && a.investProductType === "stock");
   const propertyAccountSSOptions = buildAccountSSOptions(a => a.kind === "investment" && a.investProductType === "property");
-  const liabilityTransferAccountSSOptions = buildAccountSSOptions(a => a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet" || a.kind === "bank_credit");
+  const liabilityTransferAccountSSOptions = buildAccountSSOptions(a => a.isAggregate !== true && (a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet" || a.kind === "bank_credit"));
   // 不是所有往来对象都能当「往来款对象」—— 常用商户（merchant）排除
   const liabilityCounterpartyOptions = counterparties.filter((counterparty) => isSettlementCounterpartyType(counterparty.type));
   // Only receivable accounts linked to explicitly reimbursable counterparties expose reimbursement.
@@ -1489,11 +1519,13 @@ export default async function Home({
     return options.filter((option) => !option.isHeader || usedParents.has(option.id));
   })();
   const investmentAccountSSOptions = buildFlatAccountOptions(
-    restrictAccountTypes ? accountOptions.filter(a => isPureInvestmentAccount(a) || isDepositAccount(a)) : accountOptions,
+    (restrictAccountTypes ? accountOptions.filter(a => isPureInvestmentAccount(a) || isDepositAccount(a)) : accountOptions)
+      // 父账户不能记账：投资/存款弹窗的账户候选同样只到子账户一层。
+      .filter(a => a.isAggregate !== true),
   );
   // Flat lists for components that don't use SS hierarchy (backward compat)
   const cashAccountList = accountOptions
-    .filter(a => a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet")
+    .filter(a => a.isAggregate !== true && (a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet"))
     .map(a => ({
       id: a.id,
       name: a.name,
@@ -1505,13 +1537,16 @@ export default async function Home({
       isSettlementAccount: a.isSettlementAccount ?? null,
       isConsumerLoan: a.isConsumerLoan ?? null,
       label: a.label,
-      title: a.hoverTitle,
-      hoverTitle: a.hoverTitle,
-      subLabel: joinSSSubLabel([a.groupName, a.subLabel]),
+      // 所有人已经在下拉右侧 subLabel 里显示，悬浮只补没显示的（2026-10-18）。
+      title: stripVisibleHoverParts(a.hoverTitle, [a.groupName]),
+      hoverTitle: stripVisibleHoverParts(a.hoverTitle, [a.groupName]),
+      subLabel: joinSSSubLabel(
+        [a.groupName, a.subLabel].filter(part => !!part && !a.label.includes(part)),
+      ),
       currency: a.currency,
     }));
   const liabilityTransferAccountList = accountOptions
-    .filter(a => a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet" || a.kind === "bank_credit")
+    .filter(a => a.isAggregate !== true && (a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet" || a.kind === "bank_credit"))
     .map(a => ({
       id: a.id,
       name: a.name,
@@ -1523,13 +1558,16 @@ export default async function Home({
       isSettlementAccount: a.isSettlementAccount ?? null,
       isConsumerLoan: a.isConsumerLoan ?? null,
       label: a.label,
-      title: a.hoverTitle,
-      hoverTitle: a.hoverTitle,
-      subLabel: joinSSSubLabel([a.groupName, a.subLabel]),
+      // 所有人已经在下拉右侧 subLabel 里显示，悬浮只补没显示的（2026-10-18）。
+      title: stripVisibleHoverParts(a.hoverTitle, [a.groupName]),
+      hoverTitle: stripVisibleHoverParts(a.hoverTitle, [a.groupName]),
+      subLabel: joinSSSubLabel(
+        [a.groupName, a.subLabel].filter(part => !!part && !a.label.includes(part)),
+      ),
       currency: a.currency,
     }));
   const investmentAccountList = accountOptions
-    .filter(a => isPureInvestmentAccount(a) || isDepositAccount(a))
+    .filter(a => a.isAggregate !== true && (isPureInvestmentAccount(a) || isDepositAccount(a)))
     .map(a => ({
       id: a.id,
       name: a.name,
@@ -1539,9 +1577,12 @@ export default async function Home({
       institutionType: a.institutionType || null,
       investProductType: a.investProductType ?? null,
       label: a.label,
-      title: a.hoverTitle,
-      hoverTitle: a.hoverTitle,
-      subLabel: joinSSSubLabel([a.groupName, a.subLabel]),
+      // 所有人已经在下拉右侧 subLabel 里显示，悬浮只补没显示的（2026-10-18）。
+      title: stripVisibleHoverParts(a.hoverTitle, [a.groupName]),
+      hoverTitle: stripVisibleHoverParts(a.hoverTitle, [a.groupName]),
+      subLabel: joinSSSubLabel(
+        [a.groupName, a.subLabel].filter(part => !!part && !a.label.includes(part)),
+      ),
       currency: a.currency,
     }));
   // NestedAddModal fieldData for groups & institutions
@@ -1667,10 +1708,11 @@ export default async function Home({
         numberMasked: selectedAccount.numberMasked,
         groupId: selectedAccount.groupId,
         investProductType: selectedAccount.investProductType,
+        currency: selectedAccount.currency,
         Institution: selectedAccount.Institution,
         AccountGroup: selectedAccount.AccountGroup,
         Counterparty: selectedAccount.Counterparty,
-      }, selectedAccount.kind === AccountKind.bank_credit ? SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE : creditCardLabelTemplate, { fields: accountLabelFields });
+      }, selectedAccount.kind === AccountKind.bank_credit ? SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE : creditCardLabelTemplate, { fields: accountLabelFields, baseCurrency });
       const accountLabel = display.label;
       if (isPureInvestmentAccount(selectedAccount)) return accountLabel;
       if (isDepositAccount(selectedAccount)) return `${t("entry.kind.deposit")} / ${accountLabel}`;
@@ -1947,9 +1989,9 @@ export default async function Home({
   const currentFundDefault = currentInvestData && isFundLikeInvestView
     ? currentInvestData.positions.find((position) => position.fundCode === selectedFundCode)
     : null;
-  const currentFundConfirmDays = currentInvestData && isFundLikeInvestView
-    ? (selectedFundCode ? currentInvestData.confirmDaysMap[selectedFundCode] : undefined) ?? selectedAccount?.defaultConfirmDays ?? undefined
-    : selectedAccount?.defaultConfirmDays ?? undefined;
+  const currentFundConfirmDays = currentInvestData && isFundLikeInvestView && selectedFundCode
+    ? currentInvestData.confirmDaysMap[selectedFundCode] ?? undefined
+    : undefined;
   const currentFundInvestmentAccountId =
     currentInvestData && selectedAccount && isPureInvestmentAccount(selectedAccount)
       ? selectedAccount.id
@@ -2042,7 +2084,9 @@ export default async function Home({
     entryOrigin: e.entryOrigin ?? null,
     dayOrder: e.dayOrder ?? 0,
     amount: linkedFundAmount,
-    currency: e.currency ?? "CNY",
+    // Legacy income rows stored no currency: fall back to the posting account currency so
+    // income on a foreign-currency account is not rendered as CNY (user report 2026-10-18).
+    currency: e.currency ?? e.account?.currency ?? e.toAccount?.currency ?? "CNY",
     runningBalance: balanceByEntryId.get(e.id) ?? null,
     // 对账锁定：reconciledAt 非空 = 不可删除/修改；reconciledBalance 是余额锚点。
     reconciledAt: toIsoOrNull(e.reconciledAt),
@@ -2677,6 +2721,10 @@ export default async function Home({
         depositAccountId: string;
         depositAccountName: string;
         relatedEntryIds: string[];
+        /** 存单币种（决定到期取回可用的资金账户）。 */
+        currency: string | null;
+        /** 存入行的资金账户（到期取回的默认入账账户）。 */
+        cashAccountId: string | null;
       }>
     >();
 
@@ -2692,6 +2740,8 @@ export default async function Home({
       depositAccountId: string;
       depositAccountName: string;
       relatedEntryIds: string[];
+      currency: string | null;
+      cashAccountId: string | null;
     }> = [];
 
     // Interest payouts do not open or close lots, but they belong to the lot's
@@ -2729,6 +2779,10 @@ export default async function Home({
         depositAccountId,
         depositAccountName,
         relatedEntryIds: [entry.id],
+        // 存入行自身币种（外币存单即使挂在遗留的人民币存款账户上也要按外币入账），
+        // 以及存入时的资金账户 —— 到期取回默认回到这张卡、只列同币种账户。
+        currency: normalizeCurrency(entry.currency ?? null),
+        cashAccountId: entry.accountId ?? null,
       };
       const bucket = lotBuckets.get(lotKey);
       if (bucket) bucket.push(lot);
@@ -2919,6 +2973,8 @@ export default async function Home({
           depositAccountId: lot.depositAccountId,
           depositAccountLabel: lot.depositAccountName,
           relatedEntryIds: lot.relatedEntryIds,
+          currency: lot.currency ?? normalizeCurrency(sourceEntry?.currency ?? null),
+          cashAccountId: lot.cashAccountId ?? sourceEntry?.accountId ?? null,
         };
       })
       .sort((a, b) => {
@@ -2976,6 +3032,8 @@ export default async function Home({
       latestInterestDate: lot.latestInterestDate ?? null,
       depositAccountId: lot.depositAccountId,
       depositAccountLabel: lot.depositAccountLabel,
+      currency: lot.currency,
+      cashAccountId: lot.cashAccountId,
     }));
   const selectedAccountDisplayValue = selectedAccount
     ? accountDisplayValueById.get(selectedAccount.id) ?? selectedAccountRawBalanceValue

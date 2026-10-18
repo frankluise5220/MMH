@@ -460,6 +460,17 @@ export async function GET(req: Request) {
     const confirmDaysBatch = fundConfirmDays.slice(0, limit);
     const feeRateBatch = fundFeeRates.slice(0, limit);
     const regularInvestPlanBatch = regularInvestPlans.slice(0, limit);
+    // 定投计划表不再保存 T+N；计划上的确认日/到账日一律按确认库（FundConfirmDays）解析后再下发。
+    const planRuleTargets = regularInvestPlanBatch
+      .filter((item) => item.fundCode)
+      .map((item) => ({ accountId: item.accountId, fundCode: String(item.fundCode) }));
+    const planFundRules = planRuleTargets.length > 0
+      ? await prisma.fundConfirmDays.findMany({
+          where: { OR: planRuleTargets },
+          select: { accountId: true, fundCode: true, days: true, arrivalDays: true },
+        })
+      : [];
+    const planFundRuleByKey = new Map(planFundRules.map((rule) => [`${rule.accountId}|${rule.fundCode}`, rule]));
     const fundRegularInvestPlanCodes = regularInvestPlanBatch
       .filter((item) => normalizeScheduledTaskType(item.taskType ?? decodeScheduledTaskMemo(item.memo).type) === "fund_regular_invest")
       .map((item) => item.fundCode)
@@ -788,8 +799,8 @@ export async function GET(req: Request) {
             nextRunDate: formatDateUtc(item.nextRunDate),
             status: item.status,
             feeRate: item.feeRate == null ? null : toNumber(item.feeRate),
-            confirmDays: item.confirmDays,
-            arrivalDays: item.arrivalDays,
+            confirmDays: planFundRuleByKey.get(`${item.accountId}|${item.fundCode}`)?.days ?? 0,
+            arrivalDays: planFundRuleByKey.get(`${item.accountId}|${item.fundCode}`)?.arrivalDays ?? 2,
             memo: item.memo,
             skipPendingPreceding: item.skipPendingPreceding,
             createdAt: item.createdAt.toISOString(),

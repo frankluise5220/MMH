@@ -96,6 +96,10 @@ type RedeemLotOption = {
   latestInterestDate?: string | null;
   depositAccountId?: string;
   depositAccountLabel?: string;
+  /** 存单币种：外币存单到期只能原币种入账原外币账户（2026-10-18 用户裁定）。 */
+  currency?: string | null;
+  /** 存单存入时的资金来源账户，取回时默认回到这张卡。 */
+  cashAccountId?: string | null;
   status?: "open" | "closed";
 };
 type EditingRedeemSource = {
@@ -111,6 +115,9 @@ type EditingRedeemSource = {
   restoredRemainingAmount: number;
   annualRate?: number | null;
   latestInterestDate?: string | null;
+  /** 存单币种 / 存入时的原资金账户：编辑取回时入账账户候选按它们筛。 */
+  currency?: string | null;
+  cashAccountId?: string | null;
 };
 
 /** 续存建新存单时，被结清的旧存单快照（来自存单行「续存」入口）。 */
@@ -550,6 +557,8 @@ export function DepositFormModal({
       latestInterestDate: editingRedeemSource.latestInterestDate ?? null,
       depositAccountId: editingRedeemSource.depositAccountId,
       depositAccountLabel: editingRedeemSource.depositAccountLabel,
+      currency: editingRedeemSource.currency ?? null,
+      cashAccountId: editingRedeemSource.cashAccountId ?? null,
     } satisfies RedeemLotOption;
     if (availableRedeemLotOptions.some((lot) => lot.id === editingRedeemSource.id)) {
       return availableRedeemLotOptions.map((lot) =>
@@ -683,15 +692,47 @@ export function DepositFormModal({
     () => depositAccountList.find((option) => option.id === depositAccountId)?.institutionId ?? null,
     [depositAccountId, depositAccountList],
   );
-  const redeemCashOptions = useMemo(
-    () =>
-      cashAccountList.filter(
-        (option) =>
-          option.kind === "bank_debit" &&
-          (!redeemInstitutionId || option.institutionId === redeemInstitutionId),
-      ),
-    [cashAccountList, redeemInstitutionId],
-  );
+  /**
+   * 到期取回的资金账户候选（2026-10-18 用户裁定：外币存单到期必须原币种入账原外币账户）。
+   *
+   * 旧口径只看「同机构的借记卡」，外币账户若记成现金/电子钱包，或被记在另一家机构，
+   * 就整个从下拉里消失 —— 用户看到的现象是「外币存单到期只能选人民币账户」。
+   * 现在按优先级取：原资金账户 → 同币种同机构 → 同币种其他机构；
+   * 一个同币种账户都没有时才退回旧口径，避免把表单逼成死路。
+   */
+  const redeemCurrency = (
+    selectedRedeemLot?.currency
+    || depositAccountList.find((option) => option.id === depositAccountId)?.currency
+    || "CNY"
+  ).toUpperCase();
+  const redeemCashOptions = useMemo(() => {
+    const currencyOf = (option: AccountOption) => (option.currency || "CNY").toUpperCase();
+    const isCashLike = (option: AccountOption) =>
+      option.kind === "bank_debit" || option.kind === "cash" || option.kind === "ewallet";
+    const candidates = cashAccountList.filter(isCashLike);
+    const originalCashAccountId = selectedRedeemLot?.cashAccountId ?? "";
+    // 借记卡排在现金/电子钱包之前，同机构优先 —— 人民币存单的候选顺序保持原样。
+    const rank = (option: AccountOption) => {
+      if (originalCashAccountId && option.id === originalCashAccountId) return 0;
+      const sameInstitution = !!redeemInstitutionId && option.institutionId === redeemInstitutionId;
+      if (option.kind === "bank_debit") return sameInstitution ? 1 : 2;
+      return sameInstitution ? 3 : 4;
+    };
+    const sameCurrency = candidates
+      .filter((option) => currencyOf(option) === redeemCurrency)
+      .sort((a, b) => rank(a) - rank(b));
+    const picked = sameCurrency.length > 0
+      ? sameCurrency
+      : candidates.filter((option) => !redeemInstitutionId || option.institutionId === redeemInstitutionId);
+    // 编辑存量记录时，当前入账账户必须留在候选里：否则下面的兜底 effect 会把它
+    // 悄悄换成另一张卡，用户只是打开看一眼再保存就改写了历史流水。
+    // 新建时不能这么做 —— 否则换了一张外币存单，账户还停在上一次的人民币卡上。
+    const current = editEntryId && cashAccountId
+      ? candidates.find((option) => option.id === cashAccountId) ?? null
+      : null;
+    if (current && !picked.some((option) => option.id === current.id)) return [...picked, current];
+    return picked;
+  }, [cashAccountList, cashAccountId, editEntryId, redeemCurrency, redeemInstitutionId, selectedRedeemLot]);
   const redeemCashDefaultId = useMemo(
     () => redeemCashOptions[0]?.id ?? "",
     [redeemCashOptions],
@@ -711,13 +752,42 @@ export function DepositFormModal({
       .sort(compareRedeemLots)[0]?.id ?? "";
   }, [availableRedeemLotOptions]);
 
-  const resolveDefaultRedeemCashAccount = useCallback((depositId: string, explicitId?: string | null) => {
+  /**
+   * 取回默认入账账户：显式指定 → 存单存入时的原资金账户（币种匹配时）→
+   * 同币种同机构 → 同币种其他机构 → 旧口径（同机构借记卡）。
+   * 外币存单不该默认落到人民币卡上（2026-10-18 用户报障）。
+   */
+  const resolveDefaultRedeemCashAccount = useCallback((
+    depositId: string,
+    explicitId?: string | null,
+    preferredLotId?: string | null,
+  ) => {
+    const isCashLike = (option: AccountOption) =>
+      option.kind === "bank_debit" || option.kind === "cash" || option.kind === "ewallet";
+    const currencyOf = (option: AccountOption) => (option.currency || "CNY").toUpperCase();
+    const candidates = cashAccountList.filter(isCashLike);
+    if (explicitId && candidates.some((option) => option.id === explicitId)) return explicitId;
+    const preferredLot = preferredLotId
+      ? availableRedeemLotOptions.find((lot) => lot.id === preferredLotId) ?? null
+      : null;
     const depositAccount = depositAccountList.find((option) => option.id === depositId);
     const institutionId = depositAccount?.institutionId ?? contextInstitutionId;
-    const sameInstitutionDebitCards = cashAccountList.filter(
+    const currency = (preferredLot?.currency || depositAccount?.currency || "CNY").toUpperCase();
+    const originalCashAccount = preferredLot?.cashAccountId
+      ? candidates.find((option) => option.id === preferredLot.cashAccountId) ?? null
+      : null;
+    if (originalCashAccount && currencyOf(originalCashAccount) === currency) return originalCashAccount.id;
+    const sameCurrency = candidates.filter((option) => currencyOf(option) === currency);
+    if (sameCurrency.length > 0) {
+      // 同币种里仍优先借记卡（人民币存单的默认账户不能从借记卡漂移到现金/电子钱包）。
+      const debitCards = sameCurrency.filter((option) => option.kind === "bank_debit");
+      const pool = debitCards.length > 0 ? debitCards : sameCurrency;
+      const sameInstitution = pool.find((option) => institutionId && option.institutionId === institutionId);
+      return (sameInstitution ?? pool[0]).id;
+    }
+    const sameInstitutionDebitCards = candidates.filter(
       (option) => option.kind === "bank_debit" && (!institutionId || option.institutionId === institutionId),
     );
-    if (explicitId && sameInstitutionDebitCards.some((option) => option.id === explicitId)) return explicitId;
     if (
       currentContextAccount?.kind === "bank_debit" &&
       sameInstitutionDebitCards.some((option) => option.id === currentContextAccount.id)
@@ -725,7 +795,7 @@ export function DepositFormModal({
       return currentContextAccount.id;
     }
     return sameInstitutionDebitCards[0]?.id ?? "";
-  }, [cashAccountList, contextInstitutionId, currentContextAccount, depositAccountList]);
+  }, [availableRedeemLotOptions, cashAccountList, contextInstitutionId, currentContextAccount, depositAccountList]);
 
   const resolveDefaultBuyDepositAccount = useCallback((explicitId?: string | null) => {
     if (explicitId && depositAccountList.some((option) => option.id === explicitId)) return explicitId;
@@ -774,7 +844,13 @@ export function DepositFormModal({
     setArrivalDate(date || today);
     arrivalDateTouchedRef.current = false;
     setDepositAccountId(effectiveDepositAccountId);
-    setCashAccountId(resolveDefaultRedeemCashAccount(effectiveDepositAccountId, detail?.defaultCashAccountId));
+    setCashAccountId(
+      resolveDefaultRedeemCashAccount(
+        effectiveDepositAccountId,
+        detail?.defaultCashAccountId,
+        nextRedeemLotId || null,
+      ),
+    );
     setSelectedRedeemLotId(nextRedeemLotId);
     setInterestEdited(false);
     setArrivalEdited(false);
@@ -1134,6 +1210,8 @@ export function DepositFormModal({
                 ),
                 annualRate: detailAnnualRate ?? matchedLot?.annualRate ?? null,
                 latestInterestDate: matchedLot?.latestInterestDate ?? null,
+                currency: matchedLot?.currency ?? null,
+                cashAccountId: matchedLot?.cashAccountId ?? null,
               }
             : null,
         );

@@ -102,7 +102,10 @@ async function getSidebarData() {
   const rawItems = accounts.map((account) => {
     const isInvest = isPureInvestmentAccount(account);
     const investDetail = isInvest ? investBalByAccountId.get(account.id) : null;
-    const balance = isInvest
+    const balance = account.isAggregate
+      // 聚合账户（父账户）没有明细：余额只能用子户折本位币后维护进 `balance` 列的值。
+      ? Number(account.balance)
+      : isInvest
       ? (investDetail?.marketValue ?? 0)
       : account.kind === AccountKind.insurance
         ? (insuranceDisplayBalanceByAccountId.get(account.id) ?? 0)
@@ -151,6 +154,11 @@ async function getSidebarData() {
       // 用户发现分类不对时，改的是**资产类型**（固定资产页 → `PUT /api/v1/properties`），
       // 那条路径会同时回写账户列，所以改完这里立刻跟着变。
       fixedAssetType: dominantFixedAssetType(account.PropertyAsset.map((asset) => asset.assetType)) ?? account.fixedAssetType,
+      // 多币种父子层级（2026-10-18）：父账户是统计单元、子账户是记账单元。
+      // 侧边栏把子账户缩进挂在父账户下，两个字段必须原样带给客户端，
+      // 否则客户端只能看到一排平铺账户（父账户与子账户还会被重复统计）。
+      parentId: account.parentId ?? null,
+      isAggregate: account.isAggregate === true,
     };
   });
   const conversion = await convertCurrencyAmounts({

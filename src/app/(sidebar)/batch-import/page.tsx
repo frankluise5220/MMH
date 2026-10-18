@@ -129,16 +129,6 @@ type FundImportPreviewItem = FundImportUploadItem & {
   issues: FundImportPreviewIssue[];
 };
 
-type FundRuleEditorRow = {
-  key: string;
-  fundAccountId: string | null;
-  fundAccount: string;
-  fundCode: string;
-  fundName: string;
-  confirmDays: string;
-  arrivalDays: string;
-};
-
 type ImportTemplate = {
   key: "normal" | "credit" | "fund" | "wechat" | "jd";
   title: string;
@@ -1202,10 +1192,6 @@ function getFundImportSourceLabel(source: string, t: (key: string) => string) {
   return source || "-";
 }
 
-function buildFundRuleEditorRows(_items: FundImportPreviewItem[]) {
-  return [];
-}
-
 function hasFundBlockingIssue(item: FundImportPreviewItem | undefined) {
   return !!item?.issues.some((issue) => issue.level === "error");
 }
@@ -1213,33 +1199,6 @@ function hasFundBlockingIssue(item: FundImportPreviewItem | undefined) {
 function selectableFundIndexes(items: FundImportPreviewItem[]) {
   // 未匹配/有 error 的行也允许勾选，便于批量改账户后再导入
   return new Set(items.map((_, index) => index));
-}
-
-function serializeFundRuleOverrides(rows: FundRuleEditorRow[], t: (key: string) => string) {
-  const invalidLabels: string[] = [];
-  const overrides = rows.flatMap((row) => {
-    const parseDays = (value: string, label: string) => {
-      const trimmed = value.trim();
-      if (!trimmed) return null;
-      const num = Number(trimmed);
-      if (!Number.isFinite(num) || num < 0) {
-        invalidLabels.push(`${row.fundCode} ${label}`);
-        return null;
-      }
-      return Math.trunc(num);
-    };
-    const confirmDays = parseDays(row.confirmDays, t("batchImport.fundPreview.confirmDays"));
-    const arrivalDays = parseDays(row.arrivalDays, t("batchImport.fundPreview.arrivalDays"));
-    if (!row.fundCode || (!row.fundAccountId && !row.fundAccount.trim())) return [];
-    return [{
-      fundAccountId: row.fundAccountId,
-      fundAccount: row.fundAccount,
-      fundCode: row.fundCode,
-      confirmDays,
-      arrivalDays,
-    }];
-  });
-  return { overrides, invalidLabels };
 }
 
 function normalRowsToItems(
@@ -1657,8 +1616,6 @@ export default function BatchImportPage() {
   const [items, setItems] = useState<ParsedItem[]>([]);
   const [fundUploadItems, setFundUploadItems] = useState<FundImportUploadItem[]>([]);
   const [fundPreviewItems, setFundPreviewItems] = useState<FundImportPreviewItem[]>([]);
-  const [fundRuleRows, setFundRuleRows] = useState<FundRuleEditorRow[]>([]);
-  const [fundRulesDirty, setFundRulesDirty] = useState(false);
   const [fundImportContext, setFundImportContext] = useState<FundImportContext | null>(null);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [fundSelected, setFundSelected] = useState<Set<number>>(new Set());
@@ -2034,20 +1991,10 @@ export default function BatchImportPage() {
 
   const requestFundPreview = useCallback(async (
     sourceItems: FundImportUploadItem[],
-    ruleRows: FundRuleEditorRow[],
     preserveSelection: boolean,
     fileInfo?: string,
     context?: FundImportContext | null,
   ) => {
-    const { overrides, invalidLabels } = serializeFundRuleOverrides(ruleRows, t);
-    if (invalidLabels.length > 0) {
-      setMessage(formatText("batchImport.fundPreview.invalidRules", {
-        items: invalidLabels.slice(0, 3).join("、"),
-        more: invalidLabels.length > 3 ? t("batchImport.importValidationMore") : "",
-      }));
-      return false;
-    }
-
     setUploading(true);
     await waitForBrowserPaint();
     try {
@@ -2058,7 +2005,6 @@ export default function BatchImportPage() {
         body: JSON.stringify({
           mode: "preview",
           items: sourceItems,
-          overrides,
           ...(requestContext ? { context: requestContext } : {}),
         }),
       });
@@ -2067,8 +2013,6 @@ export default function BatchImportPage() {
         throw new Error(data?.error || res.statusText || `HTTP ${res.status}`);
       }
       setFundPreviewItems(data.items);
-      setFundRuleRows(buildFundRuleEditorRows(data.items));
-      setFundRulesDirty(false);
       if (preserveSelection) {
         setFundSelected((prev) => new Set(Array.from(prev).filter((idx) => idx < data.items!.length)));
       } else {
@@ -2079,7 +2023,6 @@ export default function BatchImportPage() {
       return true;
     } catch (error) {
       setFundPreviewItems([]);
-      setFundRuleRows([]);
       setFundSelected(new Set());
       const reason = error instanceof Error ? error.message : String(error);
       setUploadDebug(formatText("batchImport.readFailedDebug", { reason: reason || t("batchImport.unknownError"), fileInfo: fileInfo || "" }));
@@ -2114,8 +2057,6 @@ export default function BatchImportPage() {
       setItems([]);
       setFundUploadItems([]);
       setFundPreviewItems([]);
-      setFundRuleRows([]);
-      setFundRulesDirty(false);
       setFundImportContext(null);
       setDrafts({});
       setSelected(new Set());
@@ -2177,8 +2118,6 @@ export default function BatchImportPage() {
         setItems([]);
         setFundUploadItems([]);
         setFundPreviewItems([]);
-        setFundRuleRows([]);
-        setFundRulesDirty(false);
         setFundImportContext(null);
         setDrafts({});
         setSelected(new Set());
@@ -2192,8 +2131,6 @@ export default function BatchImportPage() {
       setItems(parsed);
       setFundUploadItems([]);
       setFundPreviewItems([]);
-      setFundRuleRows([]);
-      setFundRulesDirty(false);
       setFundImportContext(null);
       setDrafts({});
       setSelected(new Set());
@@ -2206,8 +2143,6 @@ export default function BatchImportPage() {
       setItems([]);
       setFundUploadItems([]);
       setFundPreviewItems([]);
-      setFundRuleRows([]);
-      setFundRulesDirty(false);
       setFundImportContext(null);
       setDrafts({});
       setSelected(new Set());
@@ -2251,8 +2186,6 @@ export default function BatchImportPage() {
       setItems([]);
       setFundUploadItems([]);
       setFundPreviewItems([]);
-      setFundRuleRows([]);
-      setFundRulesDirty(false);
       setFundImportContext(requestContext);
       setDrafts({});
       setSelected(new Set());
@@ -2290,12 +2223,10 @@ export default function BatchImportPage() {
 
       setFundUploadItems(parsed);
       previewRequested = true;
-      await requestFundPreview(parsed, [], false, fileInfo, requestContext);
+      await requestFundPreview(parsed, false, fileInfo, requestContext);
     } catch (error) {
       setFundUploadItems([]);
       setFundPreviewItems([]);
-      setFundRuleRows([]);
-      setFundRulesDirty(false);
       setFundImportContext(requestContext);
       setFundSelected(new Set());
       const reason = error instanceof Error ? error.message : String(error);
@@ -2311,11 +2242,6 @@ export default function BatchImportPage() {
     }
   }, [formatText, requestFundPreview, t]);
   handleFundFileRef.current = handleFundFile;
-
-  const handleApplyFundRules = useCallback(async () => {
-    if (fundUploadItems.length === 0 || importing) return;
-    await requestFundPreview(fundUploadItems, fundRuleRows, true);
-  }, [fundUploadItems, fundRuleRows, importing, requestFundPreview]);
 
   const openCellEdit = useCallback((idx: number, field: EditableCell) => {
     setEditingCell({ idx, field });
@@ -3117,13 +3043,6 @@ export default function BatchImportPage() {
     setUploadDebug(null);
 
     try {
-      const { overrides, invalidLabels } = serializeFundRuleOverrides(fundRuleRows, t);
-      if (invalidLabels.length > 0) {
-        throw new Error(formatText("batchImport.fundPreview.invalidRules", {
-          items: invalidLabels.slice(0, 3).join("、"),
-          more: invalidLabels.length > 3 ? t("batchImport.importValidationMore") : "",
-        }));
-      }
       const requestContext = normalizeFundImportContext(fundImportContext);
       const res = await fetch("/api/v1/fund/import", {
         method: "POST",
@@ -3131,7 +3050,6 @@ export default function BatchImportPage() {
         body: JSON.stringify({
           mode: "import",
           items: selectedItems,
-          overrides,
           ...(requestContext ? { context: requestContext } : {}),
         }),
       });
@@ -3156,7 +3074,7 @@ export default function BatchImportPage() {
     } finally {
       setImporting(false);
     }
-  }, [importing, fundSelected, fundPreviewItems, fundImportErrorIssues, fundImportIssues, fundRuleRows, fundImportContext, formatText, t]);
+  }, [importing, fundSelected, fundPreviewItems, fundImportErrorIssues, fundImportIssues, fundImportContext, formatText, t]);
 
   const handleCancel = useCallback(() => {
     sessionStorage.removeItem(BATCH_IMPORT_ITEMS_STORAGE_KEY);
@@ -3167,8 +3085,6 @@ export default function BatchImportPage() {
     setItems([]);
     setFundUploadItems([]);
     setFundPreviewItems([]);
-    setFundRuleRows([]);
-    setFundRulesDirty(false);
     setFundImportContext(null);
     setSelected(new Set());
     setFundSelected(new Set());
@@ -4267,69 +4183,6 @@ export default function BatchImportPage() {
                   <span className="font-medium text-amber-600">{formatText("batchImport.warningCount", { count: fundImportWarningIssues.length })}</span>
                 )}
               </div>
-              {fundRuleRows.length > 0 && (
-                <div className="mt-3 rounded-lg border border-slate-200 bg-white">
-                  <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-3 py-2">
-                    <div className="text-xs font-medium text-slate-700">{t("batchImport.fundPreview.ruleEditorTitle")}</div>
-                    <button
-                      type="button"
-                      onClick={handleApplyFundRules}
-                      disabled={uploading || importing || fundRuleRows.length === 0}
-                      className="rounded-md border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-                    >
-                      {fundRulesDirty ? t("batchImport.fundPreview.applyRulesDirty") : t("batchImport.fundPreview.applyRules")}
-                    </button>
-                  </div>
-                  <div className="max-h-40 overflow-auto">
-                    <div className="grid grid-cols-[minmax(140px,1.2fr)_96px_minmax(160px,1fr)_110px_110px] gap-x-3 gap-y-2 px-3 py-2 text-[11px] text-slate-500">
-                      <div>{t("batchImport.template.fund.label.fundAccount")}</div>
-                      <div>{t("batchImport.template.fund.label.fundCode")}</div>
-                      <div>{t("batchImport.template.fund.label.fundName")}</div>
-                      <div>{t("batchImport.fundPreview.confirmRuleHeader")}</div>
-                      <div>{t("batchImport.fundPreview.arrivalRuleHeader")}</div>
-                    </div>
-                    <div className="space-y-2 border-t border-slate-100 px-3 py-2">
-                      {fundRuleRows.map((row) => (
-                        <div key={row.key} className="grid grid-cols-[minmax(140px,1.2fr)_96px_minmax(160px,1fr)_110px_110px] items-center gap-x-3 gap-y-2">
-                          <div className="truncate text-xs text-slate-700" title={row.fundAccount}>{row.fundAccount}</div>
-                          <div className="text-xs tabular-nums text-slate-700">{row.fundCode}</div>
-                          <div className="truncate text-xs text-slate-700" title={row.fundName}>{row.fundName}</div>
-                          <label className="flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-600">
-                            <span>T+</span>
-                            <input
-                              type="number"
-                              min={0}
-                              step={1}
-                              value={row.confirmDays}
-                              onChange={(event) => {
-                                const value = event.target.value;
-                                setFundRuleRows((prev) => prev.map((item) => item.key === row.key ? { ...item, confirmDays: value } : item));
-                                setFundRulesDirty(true);
-                              }}
-                              className="w-full bg-transparent text-right tabular-nums text-slate-700 outline-none"
-                            />
-                          </label>
-                          <label className="flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-600">
-                            <span>T+</span>
-                            <input
-                              type="number"
-                              min={0}
-                              step={1}
-                              value={row.arrivalDays}
-                              onChange={(event) => {
-                                const value = event.target.value;
-                                setFundRuleRows((prev) => prev.map((item) => item.key === row.key ? { ...item, arrivalDays: value } : item));
-                                setFundRulesDirty(true);
-                              }}
-                              className="w-full bg-transparent text-right tabular-nums text-slate-700 outline-none"
-                            />
-                          </label>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              )}
               {fundPreviewWarningSummary && (
                 <div className="mt-2 text-xs text-amber-700">
                   <span className="font-medium text-amber-800">{t("batchImport.fundPreview.warningSummaryTitle")}</span>

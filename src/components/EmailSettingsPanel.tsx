@@ -2341,7 +2341,7 @@ export function EmailSettingsPanel({ embedded = false, onStatementPreviewOpened,
                   {t("settings.email.previewDescription", { count: importPreview.items.length })}
                 </div>
               </div>
-              <button className="h-8 w-8 rounded-md border border-slate-300 text-slate-500 hover:bg-white" onClick={() => importComplete ? confirmImportComplete() : setImportPreview(null)}>×</button>
+              <button className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-slate-300 text-slate-500 hover:bg-white" onClick={() => importComplete ? confirmImportComplete() : setImportPreview(null)}>×</button>
             </div>
 
             <div className="min-h-0 flex-1">
@@ -2446,7 +2446,7 @@ export function EmailSettingsPanel({ embedded = false, onStatementPreviewOpened,
                 <div className="text-sm font-semibold text-slate-800">{t("settings.email.createAccountFromBill")}</div>
                 <div className="mt-1 text-xs text-slate-500">{t("settings.email.createAccountFromBillDesc")}</div>
               </div>
-              <button className="h-8 w-8 rounded-md border border-slate-300 text-slate-500 hover:bg-slate-50" onClick={() => setAccountDraft(null)}>×</button>
+              <button className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-slate-300 text-slate-500 hover:bg-slate-50" onClick={() => setAccountDraft(null)}>×</button>
             </div>
 
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
@@ -2535,7 +2535,7 @@ export function EmailSettingsPanel({ embedded = false, onStatementPreviewOpened,
                 <div className="text-sm font-medium text-slate-800">{editingId ? t("settings.email.editAccountTitle") : t("settings.email.addAccountTitle")}</div>
                 <div className="mt-1 text-xs text-slate-500">{t("settings.email.testFirstHint")}</div>
               </div>
-              <button className="h-8 w-8 rounded-md border border-slate-300 text-slate-500 hover:bg-slate-50" onClick={closeAccountModal}>×</button>
+              <button className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-slate-300 text-slate-500 hover:bg-slate-50" onClick={closeAccountModal}>×</button>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <select className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" value={providerKey} onChange={(e) => applyProviderPreset(e.target.value)}>

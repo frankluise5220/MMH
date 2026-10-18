@@ -388,10 +388,10 @@ export default function LedgerSettingsPage() {
                               type="button"
                               onClick={() => renameLedger(household.id)}
                               disabled={rowBusy}
-                              className="h-8 w-8 rounded-md border border-slate-200 bg-white text-emerald-700 hover:bg-slate-50 disabled:opacity-50"
+                              className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-slate-200 bg-white text-emerald-700 hover:bg-slate-50 disabled:opacity-50"
                               title={t("common.save")}
                             >
-                              <Check className="mx-auto h-4 w-4" />
+                              <Check className="h-4 w-4" />
                             </button>
                             <button
                               type="button"
@@ -400,10 +400,10 @@ export default function LedgerSettingsPage() {
                                 setEditName("");
                               }}
                               disabled={rowBusy}
-                              className="h-8 w-8 rounded-md border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 disabled:opacity-50"
+                              className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 disabled:opacity-50"
                               title={t("common.cancel")}
                             >
-                              <X className="mx-auto h-4 w-4" />
+                              <X className="h-4 w-4" />
                             </button>
                           </div>
                         ) : (
@@ -638,8 +638,8 @@ function Modal({
       <div className="w-full max-w-lg overflow-hidden rounded-lg border border-slate-200 bg-white shadow-xl">
         <div className={`flex items-center justify-between border-b px-5 py-4 ${tone === "danger" ? "border-red-100 bg-red-50" : "border-slate-200 bg-slate-50"}`}>
           <div className={`text-sm font-semibold ${tone === "danger" ? "text-red-800" : "text-slate-800"}`}>{title}</div>
-          <button type="button" onClick={onClose} className="h-8 w-8 rounded-md text-slate-500 hover:bg-white" title={t("settings.ledgers.close")}>
-            <X className="mx-auto h-4 w-4" />
+          <button type="button" onClick={onClose} className="inline-flex h-8 w-8 items-center justify-center rounded-md text-slate-500 hover:bg-white" title={t("settings.ledgers.close")}>
+            <X className="h-4 w-4" />
           </button>
         </div>
         <div className="p-5">{children}</div>

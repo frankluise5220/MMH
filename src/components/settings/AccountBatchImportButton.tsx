@@ -2625,7 +2625,7 @@ export function AccountBatchImportButton({
             <div className="text-sm font-semibold text-slate-800">{t("settings.accounts.import.previewTitle")}</div>
             <div className="mt-1 text-xs text-slate-500">{fileName || t("settings.accounts.import.emptyFile")}</div>
           </div>
-          <button type="button" onClick={close} className="h-8 w-8 rounded-md border border-slate-200 bg-white text-slate-500 hover:bg-slate-50" aria-label={t("table.close")}>
+          <button type="button" onClick={close} className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 hover:bg-slate-50" aria-label={t("table.close")}>
             <X className="h-4 w-4" />
           </button>
         </div>

@@ -127,8 +127,9 @@ function planToEditData(plan: RelatedScheduledTask) {
     executedRuns: toOptionalInt(plan.executedRuns) ?? null,
     cashAccountId: plan.cashAccountId || null,
     feeRate: plan.feeRate == null ? null : Number(plan.feeRate),
-    confirmDays: plan.confirmDays == null ? null : Number(plan.confirmDays),
-    arrivalDays: plan.arrivalDays == null ? null : Number(plan.arrivalDays),
+    // 计划表不再保存 T+N；打开编辑时由 RegularInvestForm 从确认库读取。
+    confirmDays: null,
+    arrivalDays: null,
     skipPendingPreceding: plan.skipPendingPreceding !== false,
   };
 }

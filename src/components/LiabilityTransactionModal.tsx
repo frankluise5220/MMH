@@ -2606,7 +2606,12 @@ export function LiabilityTransactionModal({
           id,
           label: name,
           subLabel: [groupName, kindText].filter(Boolean).join(" · "),
-          title: formatAccountHoverTitle({ groupName, label: name, subLabel: kindText }),
+          // 悬浮只补行里看不到的：所有人/类型都在 subLabel 里，传进去让它自我去重。
+          title: formatAccountHoverTitle({
+            groupName,
+            label: name,
+            subLabel: [groupName, kindText].filter(Boolean).join(" · "),
+          }),
           parentId: groupId ? `group:${groupId}` : undefined,
         };
         setFixedAssetAccountList((prev) => (prev.some((item) => item.id === id) ? prev : [...prev, option]));

@@ -3,7 +3,7 @@ import { prisma } from "@/lib/db/prisma";
 import { IntervalUnit, RegularInvestStatus } from "@prisma/client";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
-import { normalizeNonNegativeDays, setFundConfirmDays, setFundConfirmDaysInTx, setFundArrivalDays, setFundArrivalDaysInTx } from "@/lib/fund/confirmDays";
+import { getFundDateContext, normalizeNonNegativeDays, setFundDateRuleAuto, setFundDateRuleAutoInTx, withFundDateRules } from "@/lib/fund/confirmDays";
 import { setFundFeeRate, setFundFeeRateInTx } from "@/lib/fund/feeRate";
 import { getFundProfileNameMap, normalizeFundDisplayName, resolveFundName } from "@/lib/fund/fundProfile";
 import { getHouseholdScope } from "@/lib/server/household-scope";
@@ -130,9 +130,11 @@ export async function GET(req: NextRequest) {
     // Mortgage bills ("bill" loan plans) are system-generated: the schedule and
     // the rate (PBOC/LPR driven) are derived from the loan, so they are shown
     // read-only. Auto-debit transfer plans remain user-editable.
+    // 计划表不再保存 T+N：下发前统一按确认库覆盖。
+    const plansWithFundRules = await withFundDateRules(plans);
     return NextResponse.json({
       ok: true,
-      plans: plans.map((plan) => {
+      plans: plansWithFundRules.map((plan) => {
         const scheduledTask = decodeScheduledTaskMemo(plan.memo);
         const resolvedTaskType = normalizeScheduledTaskType(plan.taskType ?? scheduledTask.type);
         const profileFundName = resolvedTaskType === "fund_regular_invest" ? profileFundNames.get(plan.fundCode) ?? null : null;
@@ -326,8 +328,6 @@ export async function POST(req: NextRequest) {
           nextRunDate: initialRunDate,
           status: RegularInvestStatus.active,
           feeRate: feeRate != null ? parseFloat(feeRate) : null,
-          confirmDays: safeConfirmDays,
-          arrivalDays: safeArrivalDays,
           memo: encodeScheduledTaskMemo({
             type: scheduledTaskType,
             title: taskTitle,
@@ -346,10 +346,9 @@ export async function POST(req: NextRequest) {
         },
       });
 
-      // Update the confirm days table
-      const newDays = safeConfirmDays ?? 0;
+      // 确认/到账天数只在调用方显式给出时写入；设置页锁定过的行自动跳过。
       if (isFundTask && effectiveAccountId && fundCode) {
-        await setFundConfirmDaysInTx(tx, effectiveAccountId, fundCode, newDays);
+        await setFundDateRuleAutoInTx(tx, effectiveAccountId, fundCode, { days: safeConfirmDays, arrivalDays: safeArrivalDays });
       }
 
       // Update the fee rate table
@@ -358,23 +357,22 @@ export async function POST(req: NextRequest) {
         await setFundFeeRateInTx(tx, effectiveAccountId, fundCode, newRate);
       }
 
-      // Update the arrival days table
-      const newArrivalDays = safeArrivalDays ?? 2;
-      if (isFundTask && effectiveAccountId && fundCode) {
-        await setFundArrivalDaysInTx(tx, effectiveAccountId, fundCode, newArrivalDays);
-      }
-
       // Do not pre-generate transaction entries; wait for the "batch generate" button
       return plan;
     });
 
     // Client-side handles page refresh, but return the created row so the current
     // list can show it immediately even before the server component refresh lands.
+    const createdDateRule = isFundTask && effectiveAccountId && fundCode
+      ? await getFundDateContext(effectiveAccountId, fundCode)
+      : null;
     return NextResponse.json({
       ok: true,
       message: "计划任务已创建，请点击执行按钮生成到期交易明细",
       plan: {
         ...createdPlan,
+        confirmDays: createdDateRule?.days ?? 0,
+        arrivalDays: createdDateRule?.arrivalDays ?? 2,
         taskType: scheduledTaskType,
         taskTypeLabel: scheduledTaskTypeLabel(scheduledTaskType),
         planName: createdPlan.planName ?? null,
@@ -724,8 +722,6 @@ export async function PUT(req: NextRequest) {
     if (endDate != null) updateData.endDate = parsedEndDate;
     if (totalRuns != null) updateData.totalRuns = totalRuns ? parseInt(totalRuns) : null;
     if (feeRate != null) updateData.feeRate = parseFloat(feeRate);
-    if (confirmDays != null) updateData.confirmDays = normalizeNonNegativeDays(confirmDays, 0);
-    if (arrivalDays != null) updateData.arrivalDays = normalizeNonNegativeDays(arrivalDays, 2);
     if (cashAccountId != null) {
       updateData.cashAccountId = cashAccountId || null;
       // Update the cash account name
@@ -765,8 +761,6 @@ export async function PUT(req: NextRequest) {
       updateData.fundName = updateData.targetName;
       // 存款/债券系统计划的 fundProductType（deposit / bond）由自愈写入，别清空。
       if (!isLotSystemPlan) updateData.fundProductType = null;
-      updateData.confirmDays = 0;
-      updateData.arrivalDays = 0;
       updateData.feeRate = 0;
       updateData.skipPendingPreceding = false;
     }
@@ -809,18 +803,26 @@ export async function PUT(req: NextRequest) {
     // Sync confirm days and fee rate to the unified store
     const effectiveAccountId = accountId || existing.accountId;
     const effectiveRuleFundCode = effectiveFundCode;
-    if (isFundTask && confirmDays != null && effectiveAccountId && effectiveRuleFundCode) {
-      await setFundConfirmDays(effectiveAccountId, effectiveRuleFundCode, normalizeNonNegativeDays(confirmDays, 0));
-    }
-    if (isFundTask && arrivalDays != null && effectiveAccountId && effectiveRuleFundCode) {
-      await setFundArrivalDays(effectiveAccountId, effectiveRuleFundCode, normalizeNonNegativeDays(arrivalDays, 2));
+    if (isFundTask && effectiveAccountId && effectiveRuleFundCode) {
+      await setFundDateRuleAuto(effectiveAccountId, effectiveRuleFundCode, { days: confirmDays, arrivalDays });
     }
     if (isFundTask && feeRate != null && effectiveAccountId && effectiveRuleFundCode) {
       await setFundFeeRate(effectiveAccountId, effectiveRuleFundCode, parseFloat(feeRate));
     }
 
+    // 计划表不再保存 T+N：返回前按确认库补成当前规则值。
+    const updatedDateRule = isFundTask && effectiveAccountId && effectiveRuleFundCode
+      ? await getFundDateContext(effectiveAccountId, effectiveRuleFundCode)
+      : null;
     // Client-side handles page refresh
-    return NextResponse.json({ ok: true, plan });
+    return NextResponse.json({
+      ok: true,
+      plan: {
+        ...plan,
+        confirmDays: updatedDateRule?.days ?? 0,
+        arrivalDays: updatedDateRule?.arrivalDays ?? 2,
+      },
+    });
   } catch (e) {
     return NextResponse.json({ ok: false, code: "UPDATE_FAILED", error: e instanceof Error ? e.message : "更新失败" }, { status: 500 });
   }

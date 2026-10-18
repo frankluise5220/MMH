@@ -6,7 +6,12 @@ import { Copy, Eye, EyeOff, Pencil, Plus, PlusCircle, Star, Trash2 } from "lucid
 import { APP_PREFS_EVENT, getSidebarHideInitialDataPreference } from "@/lib/client/appPreferences";
 import { useI18n } from "@/lib/i18n";
 
-function useHideSettingDescriptions() {
+/**
+ * 设置页「说明文案」的显隐：跟随首次使用向导开关（`sidebarHideInitialData`）。
+ * 新手期（向导还开着）显示解释文案；关掉向导后默认收起，界面只留必要信息。
+ * 导出给需要自己渲染说明/提示的页面复用，避免各页各写一套判定。
+ */
+export function useHideSettingDescriptions() {
   const [hidden, setHidden] = useState(false);
 
   useEffect(() => {

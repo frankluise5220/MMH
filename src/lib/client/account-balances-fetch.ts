@@ -43,7 +43,10 @@ export type ScopedAccountBalancesPayload = {
 type ConvertedSeedItem = {
   id?: string | null;
   convertedBalance?: number | null;
+  /** 分组节点（固定资产小类、往来款汇总行）。 */
   children?: ConvertedSeedItem[];
+  /** 多币种子账户：必须一起进折余额索引，否则子账户余额补丁会让总额增量失效。 */
+  subAccounts?: ConvertedSeedItem[];
 };
 
 let inFlight: Promise<InternalAccountBalancesPayload> | null = null;
@@ -74,6 +77,7 @@ export function seedConvertedBalances(items: ConvertedSeedItem[], totalConverted
       convertedBalanceById.set(id, finiteOrNull(item.convertedBalance ?? null));
     }
     for (const child of item.children ?? []) walk(child);
+    for (const child of item.subAccounts ?? []) walk(child);
   };
   for (const item of items) walk(item);
   seedTotalConvertedBalance(totalConvertedBalance);

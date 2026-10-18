@@ -3,7 +3,7 @@ import { prisma } from "@/lib/db/prisma";
 import { FundCashFlowKind, FundSubtype, Prisma, TransactionType, IntervalUnit, RegularInvestStatus } from "@prisma/client";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
-import { getFundConfirmDays, getFundArrivalDays, normalizeNonNegativeDays } from "@/lib/fund/confirmDays";
+import { fundArrivalDate, fundConfirmDate, getFundDateContext } from "@/lib/fund/confirmDays";
 import { getFundFeeRate, getFundFeeRateByDate } from "@/lib/fund/feeRate";
 import { normalizeFundDisplayName, resolveFundName } from "@/lib/fund/fundProfile";
 import { createFundTransactionWithCashFlows } from "@/lib/fund/transactions";
@@ -16,7 +16,7 @@ import {
   regularInvestFailureNote,
   regularInvestRefundNote,
 } from "@/lib/fund/regular-invest-display";
-import { addWorkdaysUtc, formatDateUtc, startOfDayUtc } from "@/lib/date-utils";
+import { formatDateUtc, startOfDayUtc } from "@/lib/date-utils";
 import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { decodeScheduledTaskMemo, scheduledTaskTypeLabel } from "@/lib/scheduled-task";
@@ -312,10 +312,10 @@ export async function POST(req: NextRequest) {
 
     // Precompute outside the transaction so NAV, fee-rate, and category lookups do not count toward the Prisma interactive transaction.
     const runDateStr = formatDateUtc(runDate);
-    const confirmDays = normalizeNonNegativeDays(plan.confirmDays ?? await getFundConfirmDays(plan.accountId, plan.fundCode), 0);
-    let confirmDateStr = addWorkdaysUtc(runDateStr, confirmDays);
+    const fundDateContext = await getFundDateContext(plan.accountId, plan.fundCode);
+    let confirmDateStr = fundConfirmDate(runDateStr, fundDateContext.days, fundDateContext.tradingCalendar);
     if (confirmDateStr < runDateStr) {
-      logger.warn(`confirmDate ${confirmDateStr} < runDate ${runDateStr}, confirmDays=${confirmDays}, planId=${planId}`, "execute");
+      logger.warn(`confirmDate ${confirmDateStr} < runDate ${runDateStr}, confirmDays=${fundDateContext.days}, planId=${planId}`, "execute");
       confirmDateStr = runDateStr;
     }
     const confirmDate = new Date(Date.UTC(
@@ -323,8 +323,7 @@ export async function POST(req: NextRequest) {
       parseInt(confirmDateStr.slice(5, 7)) - 1,
       parseInt(confirmDateStr.slice(8, 10))
     ));
-    const arrivalDays = normalizeNonNegativeDays(plan.arrivalDays ?? await getFundArrivalDays(plan.accountId, plan.fundCode), 2);
-    const arrivalDateStr = arrivalDays > 0 ? addWorkdaysUtc(confirmDateStr, arrivalDays) : confirmDateStr;
+    const arrivalDateStr = fundArrivalDate(confirmDateStr, fundDateContext.arrivalDays, fundDateContext.tradingCalendar);
     const arrivalDate = new Date(Date.UTC(
       parseInt(arrivalDateStr.slice(0, 4)),
       parseInt(arrivalDateStr.slice(5, 7)) - 1,

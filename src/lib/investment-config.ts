@@ -5,7 +5,6 @@
  * shared by components such as InvestmentFormModal.
  */
 
-import { addWorkdaysUtc } from "@/lib/date-utils";
 import { TRANSACTION_SOURCE_FUND_UNITS_RECONCILE } from "@/lib/transaction-semantics";
 
 // Fund transaction types
@@ -56,11 +55,6 @@ export const parseNumber = (s: string): number => {
   const n = parseFloat(String(s).replace(/,/g, ""));
   return Number.isFinite(n) && n >= 0 ? n : 0;
 };
-
-/**
- * Add/subtract workdays.
- */
-export const addDays = addWorkdaysUtc;
 
 /**
  * Whether this is a redeem-like transaction.

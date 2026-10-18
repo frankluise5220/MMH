@@ -4,12 +4,18 @@ import { formatDateLocal, toNumber } from "@/lib/date-utils";
 import { rowWithLinkedInvestmentDisplayDate } from "@/lib/entry-reorder";
 import { loadEntryLinkedInvestmentDisplay } from "@/lib/server/entry-business-display";
 import { buildEntryBusinessLinkSummary, entryBusinessLinkSummaryInclude } from "@/lib/server/entry-business-link";
+import { getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 
 export type ReportDetailEntryOverrides = {
   categoryByEntryId: ReadonlyMap<string, string>;
   realizedProfitByEntryId: ReadonlyMap<string, number | null>;
   accountByEntryId: ReadonlyMap<string, { accountId: string; accountName: string }>;
+  /**
+   * 报表明细行金额：报表在统计阶段已按汇率折成本位币，明细直接沿用这个值，
+   * 不能再对记账原值折一次（否则 244 USD 的流水会被折两遍）。
+   */
+  amountByEntryId: ReadonlyMap<string, number>;
 };
 
 /**
@@ -20,6 +26,7 @@ export type ReportDetailEntryOverrides = {
 export function buildReportDetailEntryOverrides(
   rows: ReadonlyArray<{
     entryId: string;
+    amount?: number | null;
     categoryName?: string | null;
     realizedProfit?: number | null;
     accountId?: string | null;
@@ -29,11 +36,17 @@ export function buildReportDetailEntryOverrides(
   const categoryByEntryId = new Map<string, string>();
   const realizedProfitByEntryId = new Map<string, number | null>();
   const accountByEntryId = new Map<string, { accountId: string; accountName: string }>();
+  const amountByEntryId = new Map<string, number>();
 
   for (const row of rows) {
     const categoryName = row.categoryName?.trim() ?? "";
     if (categoryName && !categoryByEntryId.has(row.entryId)) {
       categoryByEntryId.set(row.entryId, categoryName);
+    }
+    // 报表合计 = 各行 amount 之和（已是本位币值），明细展示必须取同一个数才不打架。
+    // 净额视图里支出行的 amount 是负数，只关心绝对值，符号由收支列自己判断。
+    if (row.amount != null && Number.isFinite(row.amount) && !amountByEntryId.has(row.entryId)) {
+      amountByEntryId.set(row.entryId, Math.abs(row.amount));
     }
     if (row.realizedProfit != null) {
       // One TxRecord can produce several report rows (for example fund
@@ -54,7 +67,7 @@ export function buildReportDetailEntryOverrides(
     }
   }
 
-  return { categoryByEntryId, realizedProfitByEntryId, accountByEntryId };
+  return { categoryByEntryId, realizedProfitByEntryId, accountByEntryId, amountByEntryId };
 }
 
 export async function loadReportDetailEntries(
@@ -112,6 +125,11 @@ export async function loadReportDetailEntries(
     ctx.householdId,
   );
 
+  // 报表是**本位币统计口径**：金额在统计阶段已经按汇率折算过，明细行只需要用本位币
+  // 展示币种，不能再折一次（2026-10-18 用户报障：原币 244 USD 的流水，报表里已是
+  // ¥1633.97，明细却标着 $）。账户明细页不走这里，仍按记录原币展示。
+  const displayCurrency = await getHouseholdBaseCurrency(ctx.householdId);
+
   const detailEntryById = new Map<string, DetailEntry>(records.map((record) => {
     const linkedRow = rowWithLinkedInvestmentDisplayDate(
       {
@@ -148,6 +166,16 @@ export async function loadReportDetailEntries(
     const displayAccount = overrideAccount ?? record.account;
     const backfillCashSide = !!overrideAccount && !record.toAccountId;
 
+    // 展示口径：赎回本金不计收支（置 0），其余取记账原值。
+    const reportAmount = record.type === "investment" && (record.fundSubtype === "redeem" || record.fundSubtype === "switch_out")
+      ? 0
+      : toNumber(record.amount);
+
+    // 明细金额优先用报表自己的行金额（统计时已折成本位币），批次里没有对应行时
+    // 才退回记账原值 —— 无论哪种都不再做汇率换算，避免二次折算。
+    const reportRowAmount = overrides?.amountByEntryId.get(record.id);
+    const displayAmount = reportRowAmount == null ? reportAmount : Math.abs(reportRowAmount);
+
     return [record.id, {
     id: record.id,
     date: formatDateLocal(record.date),
@@ -158,13 +186,16 @@ export async function loadReportDetailEntries(
     dayOrder: record.dayOrder,
     // Redemption principal is a transfer between investment and cash accounts;
     // only the realized result belongs in income/expense detail.
-    amount: record.type === "investment" && (record.fundSubtype === "redeem" || record.fundSubtype === "switch_out")
-      ? 0
-      : toNumber(record.amount),
+    amount: reportAmount,
     // 记账原值：上面的 amount 是报表展示口径（赎回本金会被抹成 0），
     // 编辑窗要用这一列还原「取出本金 / 到账金额」。
     bookAmount: toNumber(record.amount),
-    currency: record.currency ?? "CNY",
+    // Legacy income rows have no currency: the edit dialog restores it from the posting
+    // account instead of defaulting to CNY.
+    currency: record.currency ?? displayAccount?.currency ?? "CNY",
+    displayAmount,
+    displayRealizedProfit: realizedProfit,
+    displayCurrency,
     runningBalance: null,
     type: record.type,
     categoryId: record.categoryId,

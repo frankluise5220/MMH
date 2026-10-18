@@ -2,8 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { FundCashFlowKind, FundProductType, FundSubtype } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
-import { addWorkdaysUtc, isWithinRecentTradingDaysUtc } from "@/lib/date-utils";
-import { getFundConfirmDays } from "@/lib/fund/confirmDays";
+import { isWithinRecentTradingDaysUtc } from "@/lib/date-utils";
+import { fundConfirmDate, getFundConfirmDays } from "@/lib/fund/confirmDays";
 import { getFundNav, getFundNavFromCacheOnly, refreshHeldFundLatestNavs } from "@/lib/fund/navCache";
 import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
 import { getAccountFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
@@ -95,7 +95,7 @@ export async function POST(req: NextRequest) {
         const confirmDays = entry.confirmDate ? null : await getFundConfirmDays(accountId, entry.fundCode);
         const confirmDate = entry.confirmDate
           ? entry.confirmDate.toISOString().slice(0, 10)
-          : addWorkdaysUtc(applyDate, confirmDays ?? 0);
+          : fundConfirmDate(applyDate, confirmDays ?? 0, account.tradingCalendar);
         if (confirmDate < applyDate) logger.warn(`confirmDate ${confirmDate} < applyDate ${applyDate}, confirmDays=${confirmDays}`, "fund/refresh");
 
         // Existing exact cache data is valid regardless of age. Only query the

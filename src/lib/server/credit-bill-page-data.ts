@@ -1044,7 +1044,7 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
             entryOrigin: e.entryOrigin ?? null,
             dayOrder: e.dayOrder ?? 0,
             amount: toNumber(e.type === TransactionType.transfer && billAccountIdSet.has(e.toAccountId ?? "") ? Math.abs(toNumber(e.amount)) : e.amount),
-            currency: e.currency ?? "CNY",
+            currency: e.currency ?? e.account?.currency ?? e.toAccount?.currency ?? "CNY",
             runningBalance: null,
             type: e.type,
             categoryId: e.categoryId,

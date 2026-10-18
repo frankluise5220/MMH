@@ -17,7 +17,7 @@ import { depositLotBelongsToAccount } from "@/lib/server/deposit-lot-options";
 import { isDepositRedemptionDateAllowed, loadDepositLotBalance, loadLatestDepositInterestDate } from "@/lib/server/deposit-lot-balance";
 import { prepareEntryUndo, saveEntryUndo } from "@/lib/server/entry-undo";
 import { isEntryReconciled } from "@/lib/server/entry-reconcile";
-import { getFundArrivalDays, getFundConfirmDays, setFundConfirmDays, setFundArrivalDays } from "@/lib/fund/confirmDays";
+import { fundArrivalDate as computeFundArrivalDate, resolveFundDates, setFundDateRuleAuto } from "@/lib/fund/confirmDays";
 import { setFundFeeRateByDate } from "@/lib/fund/feeRate";
 import { createFundTransactionWithCashFlows, detachFundTransactionCashFlow, findFundTransactionForEntryId, syncFundTransactionsFromTxRecords, upsertFundTransactionRefundCashFlow, type FundCashFlowInput } from "@/lib/fund/transactions";
 import { regularInvestRefundNote } from "@/lib/fund/regular-invest-display";
@@ -48,7 +48,7 @@ import { findRecentManualTransactionDuplicate } from "@/lib/server/transaction-d
 import { getServerT } from "@/lib/server/i18n";
 import { touchAccountUsage } from "@/lib/server/account-usage";
 import { creditBillEffectiveDate } from "@/lib/credit/billing";
-import { toStatementMonth, toNumber, addWorkdaysUtc } from "@/lib/date-utils";
+import { toStatementMonth, toNumber } from "@/lib/date-utils";
 import { decodeScheduledTaskMemo } from "@/lib/scheduled-task";
 import {
   isPeriodicDepositInterestPayout,
@@ -757,10 +757,21 @@ export async function createTransaction(formData: FormData) {
       }
 
       await prisma.$transaction(async (tx) => {
-        const [acc, cat] = await Promise.all([
+        const [acc, cat, incomeLot] = await Promise.all([
           accountId ? tx.account.findUnique({ where: { id: accountId }, include: { Institution: true } }) : Promise.resolve(null),
           categoryId ? tx.category.findUnique({ where: { id: categoryId } }) : Promise.resolve(null),
+          depositLotId
+            ? tx.txRecord.findUnique({ where: { id: depositLotId }, select: { currency: true } })
+            : Promise.resolve(null),
         ]);
+
+        // Income currency follows the posting account; deposit interest inherits the
+        // certificate currency (a foreign-currency certificate may sit on a CNY deposit
+        // account). This used to be omitted, so income rows stored a null currency and the
+        // detail table showed every income as CNY (user report 2026-10-18).
+        const incomeCurrency = incomeLot?.currency
+          ? normalizeCurrency(incomeLot.currency)
+          : acc ? normalizeCurrency(acc.currency) : undefined;
 
         const statementMonth =
           acc && (acc.kind === AccountKind.bank_credit || acc.kind === AccountKind.loan) && acc.billingDay
@@ -797,6 +808,7 @@ export async function createTransaction(formData: FormData) {
             type: TransactionType.income,
             date,
             postedAt,
+            currency: incomeCurrency,
             note: note || undefined,
             statementMonth: statementMonth ?? undefined,
             depositSourceEntryId: depositLotId || undefined,
@@ -910,6 +922,9 @@ export async function createTransaction(formData: FormData) {
       // sourceLot 后回填，产品解析与落库都以它为准。
       let inheritedDepositProductId: string | null = null;
       let inheritedDepositFundName: string | null = null;
+      // 取回行的币种同样继承存单：外币存单到期必须按原币种入账原外币账户。存款账户
+      // 可能因历史迁移被并到人民币账户上，只按账户币种落库会把外币本息写成人民币。
+      let inheritedDepositCurrency: string | null = null;
       await prisma.$transaction(async (tx) => {
         // accountId is unified as the investment (fund) account.
         const investAcc =
@@ -949,6 +964,7 @@ export async function createTransaction(formData: FormData) {
               fundConfirmDate: true,
               fundArrivalDate: true,
               fundName: true,
+              currency: true,
               depositProductId: true,
               depositAnnualRate: true,
               DepositProduct: { select: { annualRate: true } },
@@ -957,6 +973,7 @@ export async function createTransaction(formData: FormData) {
           if (!sourceLot) throw new Error(t("depositForm.alert.selectRedeemLot"));
           inheritedDepositProductId = sourceLot.depositProductId ?? null;
           inheritedDepositFundName = sourceLot.fundName ?? null;
+          inheritedDepositCurrency = sourceLot.currency ?? null;
           const latestInterestDate = await loadLatestDepositInterestDate({
             householdId,
             lotId: sourceLot.id,
@@ -1140,19 +1157,25 @@ export async function createTransaction(formData: FormData) {
           : depositInterest;
 
         const applyDateStr = date.toISOString().slice(0, 10);
-        const shouldComputeArrival = finalFundSubtype === FundSubtype.buy && !redeemLike && !isDividendCash && !isDividendReinvest;
+        // 买入与赎回的确认日/到账日一律来自确认库（T+N 唯一来源）；现金分红不涉及份额确认，保持原口径。
+        const shouldDeriveFundDates =
+          !isMetalProduct &&
+          !isWealthProduct &&
+          !!entryFundCode &&
+          (finalFundSubtype === FundSubtype.buy || (redeemLike && fundProductType !== "deposit"));
         let computedConfirmDate: Date | null = fundConfirmDate;
         let computedArrivalDate: Date | null = fundArrivalDate;
 
-        if (!isMetalProduct && !isWealthProduct && shouldComputeArrival && entryFundCode) {
+        if (shouldDeriveFundDates && entryFundCode) {
+          const resolved = await resolveFundDates(investAcc.id, entryFundCode, applyDateStr);
           const confirmStr = computedConfirmDate
             ? computedConfirmDate.toISOString().slice(0, 10)
-            : addWorkdaysUtc(applyDateStr, await getFundConfirmDays(investAcc.id, entryFundCode));
+            : resolved.confirmDate;
           if (confirmStr < applyDateStr) console.warn(`[createTransaction] confirmDate ${confirmStr} < applyDate ${applyDateStr}`);
           computedConfirmDate = new Date(`${confirmStr}T00:00:00.000Z`);
 
           if (!computedArrivalDate) {
-            const arrivalStr = addWorkdaysUtc(confirmStr, await getFundArrivalDays(investAcc.id, entryFundCode));
+            const arrivalStr = computeFundArrivalDate(confirmStr, resolved.arrivalDays, resolved.tradingCalendar);
             computedArrivalDate = new Date(`${arrivalStr}T00:00:00.000Z`);
           }
         }
@@ -1248,7 +1271,9 @@ export async function createTransaction(formData: FormData) {
               toAccountId: recordToAccountId,
               toAccountName: recordToAccountName,
               amount: signedAmount,
-              currency: recordCurrency ?? (fundProductType === "deposit" ? investAcc.currency : cashAcc?.currency) ?? "CNY",
+              currency: recordCurrency
+                ?? (fundProductType === "deposit" ? inheritedDepositCurrency ?? investAcc.currency : cashAcc?.currency)
+                ?? "CNY",
               fundName: entryFundName,
               wealthProductId: wealthProduct?.id ?? undefined,
               // 取回/转出继承存单的产品关联（存单没有就留空），其余存款行走解析出的产品。
@@ -1665,6 +1690,9 @@ export async function editInvestment(formData: FormData) {
   const metalTypeIdInput = String(formData.get("metalTypeId") ?? "").trim();
   const metalUnitIdInput = String(formData.get("metalUnitId") ?? "").trim();
   const buyResultStatus = String(formData.get("buyResultStatus") ?? "normal").trim();
+  // 只有调用方真的带了退回口径时，才允许按「无退回」撤掉退款腿；
+  // 缺省值不能当成「用户清空了退回」。
+  const buyRefundSpecified = formData.has("buyResultStatus") || formData.has("refundAmount");
   const linkedRefundEntryId = String(formData.get("linkedRefundEntryId") ?? "").trim() || null;
   const refundAmountRaw = parseFloat(String(formData.get("refundAmount") ?? ""));
   const refundDateStr = String(formData.get("refundDate") ?? "").trim();
@@ -1690,9 +1718,6 @@ export async function editInvestment(formData: FormData) {
   const fundUnitsStr = String(formData.get("fundUnits") ?? "").trim();
   const fundNavStr = String(formData.get("fundNav") ?? "").trim();
   const fundFeeStr = String(formData.get("fundFee") ?? "").trim();
-  // 只有调用方真的带了退回口径时，才允许按「无退回」撤掉退款腿；
-  // 缺省值不能当成「用户清空了退回」。
-  const buyRefundSpecified = formData.has("buyResultStatus") || formData.has("refundAmount");
   const metalQuantityStr = String(formData.get("metalQuantity") ?? formData.get("fundUnits") ?? "").trim();
   const metalUnitPriceStr = String(formData.get("metalUnitPrice") ?? formData.get("fundNav") ?? "").trim();
   const metalFeeStr = String(formData.get("metalFee") ?? formData.get("fundFee") ?? "").trim();
@@ -2402,6 +2427,9 @@ export async function editInvestment(formData: FormData) {
           }
         }
       }
+      // 买入退款腿可能挂在独立基金交易上，也可能是历史 TxRecord 迁移来的行；
+      // 两种都要能定位，否则「取消退回」在缺 fundCode 的编辑请求里会静默失败。
+      const buyRefundFundTransactionId = independentFundTransaction?.id ?? existingFundTransactionForRecalc?.id ?? null;
       if (
         independentFundTransaction &&
         finalFundSubtype === FundSubtype.buy &&
@@ -2427,9 +2455,6 @@ export async function editInvestment(formData: FormData) {
             refundAmount,
             date,
             finalInvestmentAccountInfo?.currency ?? txRecord.currency ?? "CNY",
-      // 买入退款腿可能挂在独立基金交易上，也可能是历史 TxRecord 迁移来的行；
-      // 两种都要能定位，否则「取消退回」在缺 fundCode 的编辑请求里会静默失败。
-      const buyRefundFundTransactionId = independentFundTransaction?.id ?? existingFundTransactionForRecalc?.id ?? null;
             memo,
           ),
         });
@@ -2438,31 +2463,6 @@ export async function editInvestment(formData: FormData) {
             ? { entryId: refundCashFlow.record.id }
             : { entryId: refundCashFlow.record.id, previous: refundCashFlow.previous });
         }
-      }
-    }, { maxWait: 10_000, timeout: 20_000 });
-    if (!usedIndependentFundTransaction) {
-      await syncIndependentBusinessTransactionFromTxRecord(prisma, { businessEntryId: entryId }).catch((e) => {
-        console.error("editInvestment sync independent business transaction:", e);
-      });
-    }
-    const depositLotIdsToRefresh = new Set<string>();
-    if (oldDepositBuyLotId && fundProductType === "deposit" && fundSubtypeValue === FundSubtype.buy) {
-      depositLotIdsToRefresh.add(oldDepositBuyLotId);
-    }
-    if (oldDepositSourceEntryId) depositLotIdsToRefresh.add(oldDepositSourceEntryId);
-    if (fundProductType === "deposit" && redeemLike && newDepositSourceEntryId) {
-      depositLotIdsToRefresh.add(newDepositSourceEntryId);
-    }
-    if (depositLotIdsToRefresh.size > 0) {
-      const planTasks = await import("@/lib/server/deposit-plan-tasks");
-      await Promise.all([...depositLotIdsToRefresh].map((lotId) =>
-        planTasks.ensureDepositPlansForLot({ householdId, lotId }).catch((e) => {
-          console.error("editInvestment refresh deposit plans:", e);
-        }),
-      ));
-    }
-    await applyEntryChangesToAccountBalances(Array.from(balanceChangesToApply.values())).catch((e) => {
-      console.error("editInvestment update account balances:", e);
       } else if (
         buyRefundFundTransactionId &&
         finalFundSubtype === FundSubtype.buy &&
@@ -2514,6 +2514,31 @@ export async function editInvestment(formData: FormData) {
             }
           }
         }
+      }
+    }, { maxWait: 10_000, timeout: 20_000 });
+    if (!usedIndependentFundTransaction) {
+      await syncIndependentBusinessTransactionFromTxRecord(prisma, { businessEntryId: entryId }).catch((e) => {
+        console.error("editInvestment sync independent business transaction:", e);
+      });
+    }
+    const depositLotIdsToRefresh = new Set<string>();
+    if (oldDepositBuyLotId && fundProductType === "deposit" && fundSubtypeValue === FundSubtype.buy) {
+      depositLotIdsToRefresh.add(oldDepositBuyLotId);
+    }
+    if (oldDepositSourceEntryId) depositLotIdsToRefresh.add(oldDepositSourceEntryId);
+    if (fundProductType === "deposit" && redeemLike && newDepositSourceEntryId) {
+      depositLotIdsToRefresh.add(newDepositSourceEntryId);
+    }
+    if (depositLotIdsToRefresh.size > 0) {
+      const planTasks = await import("@/lib/server/deposit-plan-tasks");
+      await Promise.all([...depositLotIdsToRefresh].map((lotId) =>
+        planTasks.ensureDepositPlansForLot({ householdId, lotId }).catch((e) => {
+          console.error("editInvestment refresh deposit plans:", e);
+        }),
+      ));
+    }
+    await applyEntryChangesToAccountBalances(Array.from(balanceChangesToApply.values())).catch((e) => {
+      console.error("editInvestment update account balances:", e);
     });
 
     // Recalculate positions: if the fund account changed, recalculate both the old and new accounts.
@@ -2539,14 +2564,10 @@ export async function editInvestment(formData: FormData) {
       }
     }
 
-    // Update the T+N confirm days in the unified confirm-days store.
-    if (fundProductType !== "metal" && fundProductType !== "wealth" && finalInvestmentAccId && fundCode && confirmDays !== undefined && confirmDays !== null) {
-      await setFundConfirmDays(finalInvestmentAccId, fundCode, confirmDays).catch(() => {});
-
-    // Update the arrival days in the unified arrival-days store.
-    if (finalInvestmentAccId && fundCode && arrivalDays !== undefined && arrivalDays !== null) {
-      await setFundArrivalDays(finalInvestmentAccId, fundCode, arrivalDays).catch(() => {});
-    }
+    // Update the T+N confirm/arrival days in the unified store.
+    // 设置页保存过（manualOverride）的行这里只读，不会再被交易表单覆盖。
+    if (fundProductType !== "metal" && fundProductType !== "wealth" && finalInvestmentAccId && fundCode) {
+      await setFundDateRuleAuto(finalInvestmentAccId, fundCode, { days: confirmDays, arrivalDays }).catch(() => {});
     }
 
     // Update the fee-rate rule only when the user explicitly edited the rate.
@@ -3539,6 +3560,18 @@ export async function updateTransactionFromDialog(formData: FormData) {
       if (type === "expense" && formCurrencyRaw != null) {
         const formCurrency = String(formCurrencyRaw).trim().toUpperCase();
         expenseOrIncomeData.currency = formCurrency || normalizeCurrency(acc.currency);
+      }
+      // Income currency follows the posting account (income on a foreign-currency
+      // account must stay foreign). Legacy income rows stored no currency, so back-fill
+      // it on edit; when the account changes, follow the new account instead of leaving
+      // a foreign-currency income written as CNY. Deposit interest prefers the lot currency.
+      if (type === "income") {
+        const incomeLotCurrency = formHasDepositLot && formDepositLotId
+          ? (await tx.txRecord.findUnique({ where: { id: formDepositLotId }, select: { currency: true } }))?.currency ?? null
+          : null;
+        if (!entry.currency || entry.accountId !== acc.id) {
+          expenseOrIncomeData.currency = normalizeCurrency(incomeLotCurrency ?? acc.currency);
+        }
       }
       // Settlement facts (originalCurrency/originalAmount) and the tx location.
       // The form sends empty values to clear them on edit.

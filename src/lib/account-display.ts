@@ -1,12 +1,15 @@
 import type { SmartSelectOption } from "@/components/SmartSelect";
 import { kindLabel } from "@/lib/account-kinds";
 import { normalizeUserFacingAccountKind } from "@/lib/account-kind-utils";
+import { accountCurrencyLabelText, accountNameMentionsCurrency } from "@/lib/currency";
 import { FIXED_ASSET_EXPENSE_CATEGORY_NAME, isFixedAssetAccountLike } from "@/lib/fixed-asset";
 
 export type AccountDisplaySource = {
   id: string;
   name: string;
   kind: string;
+  /** 账户币种。只有非账簿本位币才出现在标签里，见 `accountCurrencyLabelText`。 */
+  currency?: string | null;
   numberMasked?: string | null;
   groupId?: string | null;
   investProductType?: string | null;
@@ -33,6 +36,9 @@ export const ACCOUNT_LABEL_FIELD_KEYS = [
   "name",
   "last4",
   "kind",
+  // 币种（2026-10-18）：只有账户币种不是账簿本位币时才渲染；父账户的币种就是
+  // 本位币，所以多币种父账户本身不带币种后缀，只有币种子户带。
+  "currency",
 ] as const;
 
 export type AccountLabelField = (typeof ACCOUNT_LABEL_FIELD_KEYS)[number];
@@ -50,7 +56,14 @@ export const EMPTY_ACCOUNT_LABEL_FIELDS_VALUE = "__empty";
  * account name · card last four, with the institution added only when the
  * account name does not already contain it.
  */
-export const DEFAULT_ACCOUNT_LABEL_FIELDS: AccountLabelField[] = ["institutionShort", "name", "last4"];
+export const DEFAULT_ACCOUNT_LABEL_FIELDS: AccountLabelField[] = ["institutionShort", "name", "last4", "currency"];
+
+/**
+ * Stored preference version. The currency field arrived after most users had
+ * already saved a field list, so an unversioned legacy value must be upgraded
+ * once — otherwise multi-currency accounts never show their currency for them.
+ */
+const ACCOUNT_LABEL_FIELDS_VERSION_PREFIX = "v2:";
 
 /** Full and short institution fields are two faces of the same selector slot. */
 const ACCOUNT_LABEL_FIELD_CONFLICTS: Record<string, AccountLabelField[]> = {
@@ -102,17 +115,24 @@ export function serializeAccountLabelFields(fields: AccountLabelField[]) {
   const normalized = normalizeAccountLabelFields(fields);
   // An empty selection means "not configured", not "hide every field".
   // Name-only labels are represented explicitly by the `name` field.
-  return normalized.length === 0
+  const value = normalized.length === 0
     ? DEFAULT_ACCOUNT_LABEL_FIELDS.join(",")
     : normalized.join(",");
+  return `${ACCOUNT_LABEL_FIELDS_VERSION_PREFIX}${value}`;
 }
 
 export function parseAccountLabelFields(value: unknown): AccountLabelField[] {
   if (typeof value !== "string" || !value.trim()) return [...DEFAULT_ACCOUNT_LABEL_FIELDS];
   const raw = value.trim();
   if (raw === EMPTY_ACCOUNT_LABEL_FIELDS_VALUE) return [...DEFAULT_ACCOUNT_LABEL_FIELDS];
-  const parsed = normalizeAccountLabelFields(raw, []);
-  return parsed.length > 0 ? parsed : [...DEFAULT_ACCOUNT_LABEL_FIELDS];
+  const versioned = raw.startsWith(ACCOUNT_LABEL_FIELDS_VERSION_PREFIX);
+  const body = versioned ? raw.slice(ACCOUNT_LABEL_FIELDS_VERSION_PREFIX.length) : raw;
+  const parsed = normalizeAccountLabelFields(body, []);
+  const result = parsed.length > 0 ? parsed : [...DEFAULT_ACCOUNT_LABEL_FIELDS];
+  // v2 之前存下来的字段串里不可能有 currency（那时这个字段还不存在），所以
+  // 老值一律补上；v2 之后用户明确取消勾选就不再强加。
+  if (!versioned && !result.includes("currency")) result.push("currency");
+  return result;
 }
 
 export type AccountLabelRenderInput = {
@@ -125,8 +145,26 @@ export type AccountLabelRenderInput = {
    * wiring, so callers pass `kindLabel(kind, t)` when they have a translator.
    */
   kindLabelText?: string | null;
+  /** 账户币种；非账簿本位币且名称里没写过时才渲染。 */
+  currency?: string | null;
+  /** 账簿本位币。缺省时不渲染币种（不拿 CNY 猜，避免本位币非 CNY 的账簿误标）。 */
+  baseCurrency?: string | null;
   fields?: AccountLabelField[] | null;
 };
+
+/**
+ * 标签里该显示的币种文本（本位币、以及名称里已写过的币种都返回空串）。
+ * 抽出来是因为 `buildAccountDisplayOption` 的 hover 补全也要用同一份判断。
+ */
+export function resolveAccountCurrencyText(
+  accountName: string | null | undefined,
+  currency: string | null | undefined,
+  baseCurrency: string | null | undefined,
+): string {
+  if (!currency) return "";
+  if (accountNameMentionsCurrency(accountName, currency)) return "";
+  return accountCurrencyLabelText(currency, baseCurrency);
+}
 
 /**
  * Renders an account label from the configured field list. Repeated content is
@@ -142,6 +180,9 @@ export function renderAccountLabel(input: AccountLabelRenderInput) {
   const last4Raw = (input.numberMasked ?? "").trim();
   const last4 = last4Raw && accountName.includes(last4Raw) ? "" : last4Raw;
   const institutionSuppressed = accountNameContainsInstitution(accountName, input.institution);
+  // 币种：本位币不显示；名称里已经写了币种（子户默认名「原名 · USD」）也不再重复，
+  // 否则会渲染成「… · USD · USD」。
+  const currencyText = resolveAccountCurrencyText(accountName, input.currency, input.baseCurrency);
   const fields = normalizeAccountLabelFields(input.fields);
 
   const parts: string[] = [];
@@ -166,6 +207,8 @@ export function renderAccountLabel(input: AccountLabelRenderInput) {
       push(last4);
     } else if (field === "kind") {
       push(input.kindLabelText ?? "");
+    } else if (field === "currency") {
+      push(currencyText);
     }
   }
 
@@ -247,16 +290,41 @@ function joinAccountSubLabel(parts: Array<string | null | undefined>) {
   return result.join(" · ");
 }
 
+/**
+ * 从悬浮标题里剔除「行里已经显示」的片段（所有人通常出现在下拉右侧的
+ * `subLabel` 或分组表头里，不该在悬浮里再说一遍）。
+ */
+export function stripVisibleHoverParts(
+  hoverTitle: string | null | undefined,
+  visibleParts: Array<string | null | undefined>,
+): string {
+  const text = String(hoverTitle ?? "").trim();
+  if (!text) return "";
+  const visible = visibleParts.map((part) => String(part ?? "").trim()).filter(Boolean);
+  if (visible.length === 0) return text;
+  return joinAccountSubLabel(
+    text
+      .split(ACCOUNT_LABEL_SEPARATOR)
+      .map((part) => part.trim())
+      .filter((part) => part && !visible.includes(part)),
+  );
+}
+
+/**
+ * 悬浮标题：**只补行里看不到的信息**（2026-10-18 用户裁定，与 ADT 表格同一口径）。
+ *
+ * 行的可见文本是 `label` + `subLabel`（下拉右侧那一列），所以 `label` 和
+ * `subLabel` 本身绝不再重复；只有所有人不在可见范围里时才补上。
+ */
 export function formatAccountHoverTitle(input: {
   label: string;
   groupName?: string | null;
   subLabel?: string | null;
 }) {
-  return joinAccountSubLabel([
-    input.groupName?.trim() || "未设置所有人",
-    input.label,
-    input.subLabel,
-  ]);
+  const visible = joinAccountSubLabel([input.label, input.subLabel]);
+  const groupName = input.groupName?.trim() ?? "";
+  if (!groupName || visible.includes(groupName)) return "";
+  return groupName;
 }
 
 function accountUsesOwnerInDisplay(account: { kind?: string | null }) {
@@ -323,6 +391,8 @@ export function formatAccountSelectorLabel(input: {
   accountName: string;
   institution?: { name: string | null; shortName?: string | null } | null;
   numberMasked?: string | null;
+  currency?: string | null;
+  baseCurrency?: string | null;
   fields?: AccountLabelField[] | null;
 }) {
   // The default field list reproduces the historical selector label exactly, so
@@ -331,6 +401,8 @@ export function formatAccountSelectorLabel(input: {
     accountName: input.accountName,
     institution: input.institution,
     numberMasked: input.numberMasked,
+    currency: input.currency,
+    baseCurrency: input.baseCurrency,
     fields: input.fields,
   });
 }
@@ -383,7 +455,10 @@ export function formatAccountTableTitle(
   const title = firstTrimmedText([account.tableHoverTitle, account.hoverTitle, account.title, account.fullLabel, visibleLabel]);
   // 写死规则：hover 必须比可见标签多出信息；两者一样时返回空串，
   // 由调用方省略 title 属性，免得悬浮只是把同一句话再说一遍。
-  return title === visibleLabel ? "" : title;
+  // 比较时忽略连接符差异（`a·b` 与 `a · b` 是同一句话）。
+  const normalize = (text: string) => text.replace(/[\s·・•|/\\()（）\-—_]+/g, "");
+  if (!title || title === visibleLabel) return "";
+  return normalize(title) === normalize(visibleLabel) ? "" : title;
 }
 
 /** 表格账户列用的「按账户 id 预渲染好的标签 / hover」查表。 */
@@ -498,12 +573,18 @@ export function formatCreditCardDisplayName(input: {
 export function buildAccountDisplayOption(
   account: AccountDisplaySource,
   creditCardLabelTemplateOrMode: string | CreditCardLabelMode = DEFAULT_CREDIT_CARD_LABEL_TEMPLATE,
-  options?: { suppressDuplicateCreditCardLast4?: boolean; fields?: AccountLabelField[] | null },
+  options?: {
+    suppressDuplicateCreditCardLast4?: boolean;
+    fields?: AccountLabelField[] | null;
+    /** 账簿本位币；不传时标签里不渲染币种。 */
+    baseCurrency?: string | null;
+  },
 ): AccountDisplayOption {
   // `fields` is the global "account display format" setting. Sidebar callers do
   // not pass it and keep the sidebar's own shape; every other list passes the
   // configured fields so all of them render identically.
   const labelFields = options?.fields ?? null;
+  const baseCurrency = options?.baseCurrency ?? null;
   const isFixedAsset = isFixedAssetAccountLike(account);
   // User-facing kind: legacy deposit (`investment` + `deposit`) and fixed assets
   // (`investment` + `property`) must render as their real type, not "investment",
@@ -539,6 +620,8 @@ export function buildAccountDisplayOption(
             numberMasked: account.numberMasked,
             ownerName: groupName,
             kindLabelText: kindLabel(displayKind),
+            currency: account.currency,
+            baseCurrency,
             fields: labelFields,
           })
         : account.kind === "bank_credit"
@@ -553,6 +636,8 @@ export function buildAccountDisplayOption(
     accountName: account.name,
     institution: isFixedAsset ? null : account.Institution,
     numberMasked: account.numberMasked,
+    currency: account.currency,
+    baseCurrency,
     fields: labelFields,
   });
   const selectorCoreLabel = formatAccountSelectorCoreLabel({
@@ -581,11 +666,18 @@ export function buildAccountDisplayOption(
             });
 
   const subLabel = isFixedAsset ? FIXED_ASSET_EXPENSE_CATEGORY_NAME : kindLabel(displayKind);
-  const hoverTitle = formatAccountHoverTitle({
-    groupName,
-    label: selectorLabel || label,
-    subLabel,
-  });
+  // 币种文本：本位币、以及名称里已写币种的返回空串（不会出现「… · USD · USD」）。
+  const tableCurrencyText = resolveAccountCurrencyText(accountDisplayName, account.currency, baseCurrency);
+  // 写死规则（2026-10-18 用户裁定，与 ADT 表格同一口径）：悬浮只补「行里看不到」
+  // 的信息，已经显示出来的元素不再重复。
+  // - 选择器行显示 `selectorLabel` + `subLabel`（类型/所有人可能已在其中）；
+  // - 表格行显示 `listLabel` + 类型列。
+  const selectorVisibleText = joinAccountSubLabel([selectorLabel, subLabel]);
+  const hoverParts: string[] = [];
+  if (showOwner && groupName && !selectorVisibleText.includes(groupName)) hoverParts.push(groupName);
+  if (tableCurrencyText && !selectorVisibleText.includes(tableCurrencyText)) hoverParts.push(tableCurrencyText);
+  const hoverTitle = joinAccountSubLabel(hoverParts);
+
   // Table hover: show only what the configured label does not already show
   // (owner first, then the account kind). Loan/settlement accounts have no
   // AccountGroup owner — their counterparty is already merged into the
@@ -598,8 +690,9 @@ export function buildAccountDisplayOption(
   if (!tableLabelFields.includes("kind") && subLabel) {
     tableHoverParts.push(subLabel);
   }
-  // 写死规则：hover 只补充标签里没有的字段；没有可补的就留空，
-  // 绝不退回 label —— 否则悬浮只是把单元格里已有的那句话重复一遍。
+  if (!tableLabelFields.includes("currency") && tableCurrencyText) {
+    tableHoverParts.push(tableCurrencyText);
+  }
   const tableHoverTitle = tableHoverParts.length > 0
     ? joinAccountSubLabel(tableHoverParts)
     : "";
@@ -623,6 +716,22 @@ export function buildAccountDisplayOption(
     hoverTitle,
     tableHoverTitle,
   };
+}
+
+/**
+ * 下拉右侧的 `subLabel`：剔除主标签里已经出现的元素（类型/所有人/币种），
+ * 保证同一个元素在一个选项行里只出现一次（2026-10-18 与 ADT 表格同口径）。
+ */
+export function buildOptionSubLabel(
+  label: string | null | undefined,
+  parts: Array<string | null | undefined>,
+): string {
+  const text = String(label ?? "");
+  return joinAccountSubLabel(
+    parts
+      .map((part) => String(part ?? "").trim())
+      .filter((part) => part && !text.includes(part)),
+  );
 }
 
 export function buildGroupedAccountOptions(accounts: AccountDisplayOption[]): SmartSelectOption[] {
@@ -651,8 +760,9 @@ export function buildGroupedAccountOptions(accounts: AccountDisplayOption[]): Sm
     .map((account) => ({
       id: account.id,
       label: account.selectorLabel,
-      subLabel: joinAccountSubLabel([account.subLabel]),
-      title: account.hoverTitle,
+      subLabel: buildOptionSubLabel(account.selectorLabel, [account.subLabel]),
+      // 所有人已经是分组表头，悬浮里不再重复（2026-10-18：只补行里看不到的）。
+      title: stripVisibleHoverParts(account.hoverTitle, [account.groupName]),
       parentId: `group:${account.groupId}`,
     }));
 
@@ -661,7 +771,7 @@ export function buildGroupedAccountOptions(accounts: AccountDisplayOption[]): Sm
     .map((account) => ({
       id: account.id,
       label: account.selectorLabel,
-      subLabel: joinAccountSubLabel([account.subLabel]),
+      subLabel: buildOptionSubLabel(account.selectorLabel, [account.subLabel]),
       title: account.hoverTitle,
     }));
 
@@ -685,12 +795,17 @@ export function buildFlatAccountOptions(
   return accounts.map((account) => ({
     id: account.id,
     label: account.selectorLabel ?? account.label,
-    subLabel: joinAccountSubLabel([account.groupName, account.subLabel]),
-    title: account.hoverTitle ?? account.title ?? formatAccountHoverTitle({
-      groupName: accountUsesOwnerInDisplay(account) ? account.groupName : null,
-      label: account.selectorLabel ?? account.label,
-      subLabel: account.subLabel,
-    }),
+    // 主标签里已有的元素（所有人/类型）不再重复到右侧。
+    subLabel: buildOptionSubLabel(account.selectorLabel ?? account.label, [account.groupName, account.subLabel]),
+    // 所有人已经在下拉右侧显示，悬浮里剔除（2026-10-18：只补行里看不到的）。
+    title: stripVisibleHoverParts(
+      account.hoverTitle ?? account.title ?? formatAccountHoverTitle({
+        groupName: accountUsesOwnerInDisplay(account) ? account.groupName : null,
+        label: account.selectorLabel ?? account.label,
+        subLabel: account.subLabel,
+      }),
+      [account.groupName],
+    ),
     kind: account.kind ?? null,
     investProductType: account.investProductType ?? null,
     liabilityDirection: account.liabilityDirection ?? null,

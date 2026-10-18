@@ -86,6 +86,7 @@ const ACCOUNT_LABEL_FIELD_OPTIONS: ReadonlyArray<{ value: AccountLabelField; lab
   { value: "name", labelKey: "settings.display.accountFormatField.name" },
   { value: "last4", labelKey: "settings.display.accountFormatField.last4" },
   { value: "kind", labelKey: "settings.display.accountFormatField.kind" },
+  { value: "currency", labelKey: "settings.display.accountFormatField.currency" },
 ];
 
 const ACCOUNT_FORMAT_PREVIEW_SAMPLES = [
@@ -97,6 +98,8 @@ const ACCOUNT_FORMAT_PREVIEW_SAMPLES = [
     accountName: "\u4e00\u5361\u901a",
     numberMasked: "8333",
     kind: "bank_debit",
+    // 本位币账户：勾了币种也不显示（示例用 CNY 让这一点可见）。
+    currency: "CNY",
   },
   {
     id: "fund",
@@ -106,6 +109,8 @@ const ACCOUNT_FORMAT_PREVIEW_SAMPLES = [
     accountName: "\u62db\u5546\u94f6\u884c\u57fa\u91d1\u00b7\u5f00\u653e\u5f0f\u57fa\u91d1",
     numberMasked: "",
     kind: "investment",
+    // 非本位币账户：勾了币种就显示「· USD」。
+    currency: "USD",
   },
 ] as const;
 
@@ -582,6 +587,8 @@ export default function DisplaySettingsPage() {
           numberMasked: sample.numberMasked,
           ownerName: sample.ownerName,
           kindLabelText: kindLabel(sample.kind, t),
+          currency: sample.currency,
+          baseCurrency: "CNY",
           fields: accountLabelFields,
         }),
       })),

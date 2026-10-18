@@ -23,7 +23,8 @@ import { BondEntryHost } from "@/components/BondEntryHost";
 import { createTransaction, editInvestment } from "@/lib/server/sidebar-actions/transaction-actions";
 import type { SmartSelectOption } from "@/components/SmartSelect";
 import type { CategorySmartSelectOption } from "@/components/categorySmartSelect";
-import { addWorkdaysUtc, formatDateUtc } from "@/lib/date-utils";
+import { formatDateUtc } from "@/lib/date-utils";
+import { fundConfirmDate } from "@/lib/fund/confirmDays";
 import type { AccountDisplayOption } from "@/lib/account-display";
 import { accountFilterGroupKey, accountFilterGroupLabel } from "@/lib/account-kinds";
 import { scheduledTaskTypeLabel, type LoanScheduledPlanRole, type ScheduledTaskType } from "@/lib/scheduled-task";
@@ -742,8 +743,9 @@ export function RegularInvestClient({
       executionDay: plan.executionDay == null ? null : Number(plan.executionDay),
       secondaryExecutionDay: plan.secondaryExecutionDay == null ? null : Number(plan.secondaryExecutionDay),
       feeRate: plan.feeRate == null ? null : Number(plan.feeRate),
-      confirmDays: plan.confirmDays == null ? null : Number(plan.confirmDays),
-      arrivalDays: plan.arrivalDays == null ? null : Number(plan.arrivalDays),
+      // 计划表不再保存 T+N；表单打开后从确认库读取。
+      confirmDays: null,
+      arrivalDays: null,
       executedCount: Number(plan.executedCount ?? 0),
       executedAmount: Number(plan.executedAmount ?? 0),
       confirmedCount: Number(plan.confirmedCount ?? 0),
@@ -1491,7 +1493,7 @@ export function RegularInvestClient({
     const payload: any = { id: editingRecord.id };
     if (editingRecord.date !== editingRecord._originalDate) {
       payload.date = editingRecord.date;
-      payload.fundConfirmDate = `${addWorkdaysUtc(editingRecord.date, editingRecord.confirmDays)}T00:00:00.000Z`;
+      payload.fundConfirmDate = `${fundConfirmDate(editingRecord.date, editingRecord.confirmDays)}T00:00:00.000Z`;
     } else if (editingRecord.fundConfirmDate !== editingRecord._originalConfirmDate) {
       payload.fundConfirmDate = `${editingRecord.fundConfirmDate}T00:00:00.000Z`;
     }
@@ -2053,8 +2055,8 @@ export function RegularInvestClient({
           executedRuns: editPlan.executedRuns ?? null,
           cashAccountId: editPlan.cashAccountId ?? null,
           feeRate: editPlan.feeRate ?? null,
-          confirmDays: editPlan.confirmDays ?? null,
-          arrivalDays: editPlan.arrivalDays ?? null,
+          confirmDays: null,
+          arrivalDays: null,
           annualRate: editPlan.taskAnnualRate ?? null,
           repaymentMethod: editPlan.taskRepaymentMethod ?? null,
           repaymentIntervalMonths: editPlan.taskRepaymentIntervalMonths ?? null,
@@ -2146,7 +2148,7 @@ export function RegularInvestClient({
                 <DateStepper
                   value={editingRecord.date}
                   onChange={(newDate) => {
-                    setEditingRecord((record: any) => ({ ...record, date: newDate, fundConfirmDate: addWorkdaysUtc(newDate, editingRecord.confirmDays) }));
+                    setEditingRecord((record: any) => ({ ...record, date: newDate, fundConfirmDate: fundConfirmDate(newDate, editingRecord.confirmDays) }));
                   }}
                   className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
                 />

@@ -1,14 +1,14 @@
 "use server";
 
 import { FundSubtype } from "@prisma/client";
-import { getFundArrivalDays, getFundConfirmDays } from "@/lib/fund/confirmDays";
+import { fundArrivalDate, resolveFundDates } from "@/lib/fund/confirmDays";
 import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
 import { getAccountFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 import { calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
 import { ensureFundTransactionCashFlowLinks, findFundTransactionForEntryId } from "@/lib/fund/transactions";
 import { getFundNav } from "@/lib/fund/navCache";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
-import { toNumber, addWorkdaysUtc } from "@/lib/date-utils";
+import { toNumber } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
 
 function ymdUtc(d: Date) {
@@ -30,9 +30,10 @@ export async function fillFundNavFromCache(formData: FormData) {
     if (!investmentAccId) return { ok: false as const, error: "该记录没有关联投资账户" };
 
     const applyDate = ymdUtc(fundTransaction.applyDate);
+    const resolvedDates = await resolveFundDates(investmentAccId, fundTransaction.fundCode, applyDate);
     const confirmDate = fundTransaction.confirmDate
       ? ymdUtc(fundTransaction.confirmDate)
-      : addWorkdaysUtc(applyDate, await getFundConfirmDays(investmentAccId, fundTransaction.fundCode));
+      : resolvedDates.confirmDate;
     const navDate = new Date(`${confirmDate}T00:00:00.000Z`);
     const navData = await getFundNav(fundTransaction.fundCode, navDate, investmentAccId);
 
@@ -47,8 +48,7 @@ export async function fillFundNavFromCache(formData: FormData) {
     const amount = Math.abs(toNumber(fundTransaction.grossAmount));
 
     // Look up the fee rate from the fee rate store (by confirm date)
-    const arrivalDays = await getFundArrivalDays(investmentAccId, fundTransaction.fundCode);
-    const arrivalDateStr = arrivalDays > 0 ? addWorkdaysUtc(confirmDate, arrivalDays) : confirmDate;
+    const arrivalDateStr = fundArrivalDate(confirmDate, resolvedDates.arrivalDays, resolvedDates.tradingCalendar);
     const arrivalDate = new Date(Date.UTC(parseInt(arrivalDateStr.slice(0, 4)), parseInt(arrivalDateStr.slice(5, 7)) - 1, parseInt(arrivalDateStr.slice(8, 10))));
     const feeType = isRedeemFill ? "redeem" : "buy";
     const feeRateRaw = await getFundFeeRateByDate(investmentAccId, fundTransaction.fundCode, navDate, feeType);

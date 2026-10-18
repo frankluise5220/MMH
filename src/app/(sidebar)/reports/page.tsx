@@ -285,6 +285,8 @@ export default async function ReportsPage({
     liabilityDirection: account.liabilityDirection,
     institutionId: account.institutionId,
     currency: account.currency,
+    // 多币种父账户不能记账：报表下钻编辑窗的落账候选要能过滤掉它。
+    isAggregate: account.isAggregate === true,
   }));
   const detailAccountOptions = allAccountRecords.map((account) => ({
     id: account.id,
@@ -339,9 +341,9 @@ export default async function ReportsPage({
     if (scopes.length === 0) return null;
     return accountRecords.map((account) => account.id).filter((id) => scopes.every((ids) => ids.includes(id)));
   })();
-  const cashAccounts = accounts.filter((account) => ["cash", "bank_debit", "ewallet"].includes(account.kind));
+  const cashAccounts = accounts.filter((account) => account.isAggregate !== true && ["cash", "bank_debit", "ewallet"].includes(account.kind));
   const cashAccountIds = new Set(cashAccounts.map((account) => account.id));
-  const investmentAccountRecords = allAccountRecords.filter(isPureInvestmentAccount);
+  const investmentAccountRecords = allAccountRecords.filter((account) => account.isAggregate !== true && isPureInvestmentAccount(account));
   const stockAccountRecords = investmentAccountRecords.filter((account) => account.investProductType === "stock");
   const investmentAccounts = investmentAccountRecords.map((account) => ({
     id: account.id,
@@ -369,7 +371,7 @@ export default async function ReportsPage({
   // 存款账户（kind = "deposit"，含 legacy investment + deposit）不算「纯投资账户」，
   // 不会出现在上面的 investmentAccounts 里。存款编辑窗必须单独拿到它们，否则
   // 「取出账户」下拉为空、存单列表也不请求（2026-10-17 报表下钻编辑取款报障）。
-  const depositAccountRecords = accountRecords.filter((account) => isDepositAccount(account));
+  const depositAccountRecords = accountRecords.filter((account) => account.isAggregate !== true && isDepositAccount(account));
   const depositAccounts = depositAccountRecords.map((account) => ({
     id: account.id,
     label: allAccountDisplayById.get(account.id)?.label ?? account.name,

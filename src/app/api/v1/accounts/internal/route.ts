@@ -156,6 +156,9 @@ export async function GET(request: Request) {
     );
     const liabilityDisplaySummary = await computeLiabilityDisplaySummary(ctx);
     const enrichedAccounts = accounts.map((a) => {
+      // 聚合账户（父账户）没有明细，按明细折叠会被算成 0；它的 `balance`
+      // 已经是子户折本位币之和，直接用列值。
+      if (a.isAggregate) return a;
       if (isPureInvestmentAccount(a)) {
         const detail = investBalByAccountId.get(a.id);
         if (detail) return { ...a, balance: detail.marketValue };
@@ -202,10 +205,17 @@ export async function GET(request: Request) {
       };
     });
 
+    // 总额只统计根账户：多币种子账户已被父账户折算代表，再计入就是双计
+    // （2026-10-18 用户裁定）。父账户余额本身是「子户折本位币之和」。
+    const totalConvertedBalance = convertedAccounts.reduce(
+      (sum, account) => (account.parentId || account.convertedBalance == null ? sum : sum + account.convertedBalance),
+      0,
+    );
+
     return NextResponse.json({
       ok: true,
       baseCurrency,
-      totalConvertedBalance: conversion.total,
+      totalConvertedBalance,
       missingFxCurrencies: conversion.missingCurrencies,
       rates: conversion.rates,
       accounts: convertedAccounts.map((account) => withRecordCounts(withAccountDisplayFields(account, accountLabelFields))),

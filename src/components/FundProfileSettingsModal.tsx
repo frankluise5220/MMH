@@ -175,7 +175,7 @@ export function FundProfileSettingsModal({ open, account, fundCode, fallbackFund
       const mergedConfirmRows = [...(confirmData.rows ?? [])];
       for (const item of fundItems) {
         if (!mergedConfirmRows.some((row) => row.fundCode === item.fundCode)) {
-          mergedConfirmRows.push({ fundCode: item.fundCode, fundName: item.fundName, days: 1, arrivalDays: 2, redeemCostDays: 1, effectiveDate: null });
+          mergedConfirmRows.push({ fundCode: item.fundCode, fundName: item.fundName, days: 0, arrivalDays: 2 });
         }
       }
       const mergedFeeRows = (feeData.rows ?? []).map((row) => ({ ...row, fundName: row.fundName ?? nameByCode.get(row.fundCode) ?? null }));

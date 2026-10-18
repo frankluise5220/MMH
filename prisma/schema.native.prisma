@@ -37,6 +37,10 @@ model Account {
   currency                                                   String                      @default("CNY")
   isActive                                                   Boolean                     @default(true)
   isPlaceholder                                              Boolean                     @default(false)
+  // 多币种父账户（2026-10-18）：父账户只参与统计、自身没有明细、不能直接记账；
+  // 子账户按币种拆分并承接全部流水。两列纯增量，存量行默认 NULL / false。
+  parentId                                                   String?
+  isAggregate                                                Boolean                     @default(false)
   isConsumerLoan                                             Boolean                     @default(false)
   loanType                                                   LoanType?
   loanCategoryId                                             String?
@@ -68,6 +72,8 @@ model Account {
   defaultFundQueryApiId                                      String?
   fundUnitsDecimals                                          Int                         @default(2)
   FundQueryApi                                               FundQueryApi?               @relation(fields: [defaultFundQueryApiId], references: [id], onDelete: SetNull)
+  Parent                                                     Account?                    @relation("AccountHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
+  Children                                                   Account[]                   @relation("AccountHierarchy")
   AccountGroup                                               AccountGroup                @relation(fields: [groupId], references: [id])
   Household                                                  Household                   @relation(fields: [householdId], references: [id])
   Institution                                                Institution?                @relation(fields: [institutionId], references: [id])
@@ -119,6 +125,9 @@ model Account {
   @@index([householdId, institutionId, creditBillMode])
   @@index([householdId, loanCategoryId])
   @@index([counterpartyId])
+  @@index([parentId])
+  // 同一父账户下每个币种只能有一个子户（SQLite 允许多个 NULL，根账户互不冲突）。
+  @@unique([parentId, currency])
 }
 
 model AccountAlias {
@@ -391,6 +400,9 @@ model FundConfirmDays {
   days           Int
   redeemCostDays Int      @default(1)
   arrivalDays    Int      @default(0)
+  /// 用户在「基金确认日」设置表里保存过后置 true：此后只有该表能再改这两个天数，
+  /// 投资交易表单、定投表单、导入、初始化等自动写入路径一律跳过。
+  manualOverride Boolean  @default(false)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @default(now()) @updatedAt
   effectiveDate  DateTime @default(now())

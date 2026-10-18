@@ -2984,6 +2984,20 @@ const MIGRATIONS = [
       }
     },
   },
+  {
+    // 多币种父账户（2026-10-18）：Account.parentId / isAggregate。
+    // 父账户只参与统计、自身没有明细；子账户按币种拆分并承接全部流水。
+    // 全新安装由 native-init.sql 依据 schema 建列，这里只补存量库。
+    version: "20261018_add_account_parent",
+    description: "Add Account.parentId / isAggregate: multi-currency parent (aggregate) accounts",
+    apply(db) {
+      if (!tableExists(db, "Account")) return;
+      addColumnIfMissing(db, "Account", "parentId", "TEXT");
+      addColumnIfMissing(db, "Account", "isAggregate", "BOOLEAN NOT NULL DEFAULT 0");
+      db.exec('CREATE INDEX IF NOT EXISTS "Account_parentId_idx" ON "Account"("parentId")');
+      db.exec('CREATE UNIQUE INDEX IF NOT EXISTS "Account_parentId_currency_key" ON "Account"("parentId","currency")');
+    },
+  },
 ];
 
 // 到期日「周年 − 1 天」→ 周年；返回 null 表示不是旧口径。

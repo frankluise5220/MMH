@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
-import { addWorkdaysUtc, isWithinRecentTradingDaysUtc } from "@/lib/date-utils";
+import { isWithinRecentTradingDaysUtc } from "@/lib/date-utils";
 import { getFundNav, getLatestFundNav, refreshLatestFundNav, setFundNav } from "@/lib/fund/navCache";
 import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
-import { getFundConfirmDays } from "@/lib/fund/confirmDays";
+import { resolveFundDates } from "@/lib/fund/confirmDays";
 import { getAccountFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 import { calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
 import { ensureFundTransactionCashFlowLinks, findFundTransactionForEntryId } from "@/lib/fund/transactions";
@@ -215,8 +215,8 @@ export async function POST(req: NextRequest) {
       confirmDateObj = utcDate(confirmDate);
     } else {
       // Query the confirm days from the confirm-days store (using the unified module)
-      const confirmDays = await getFundConfirmDays(accountId, fundCode);
-      confirmDate = addWorkdaysUtc(applyDate, confirmDays);
+      const resolvedDates = await resolveFundDates(accountId, fundCode, applyDate);
+      confirmDate = resolvedDates.confirmDate;
       confirmDateObj = utcDate(confirmDate);
     }
 

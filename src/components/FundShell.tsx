@@ -1433,7 +1433,7 @@ export function FundShell(props: Props) {
       fundCode: code,
       fundName: String(position?.name ?? code),
       fundUnits: position?.units != null ? toNumber(position.units) : null,
-      confirmDays: d.confirmDaysMap[code] ?? selectedAccount?.defaultConfirmDays ?? undefined,
+      confirmDays: d.confirmDaysMap[code] ?? undefined,
       feeRate: d.feeRateMap[`${code}:buy`] ?? null,
     };
     positionEntryDefaultsRef.current = nextDefaults;
@@ -1595,7 +1595,7 @@ export function FundShell(props: Props) {
   }, [selectedFundFirstBuyDate]);
   const showSelectedFundChart = Boolean(fundChartOpen && fundCode && !isMetalAccount && !isWealthAccount);
   const selectedFundNameForChart = selectedFundDisplayName || fundCode;
-  const selectedFundConfirmDays = Number(d.confirmDaysMap?.[fundCode] ?? selectedAccount?.defaultConfirmDays ?? 0) || 0;
+  const selectedFundConfirmDays = Number(d.confirmDaysMap?.[fundCode] ?? 0) || 0;
 
   useEffect(() => {
     if (!showSelectedFundChart) {
@@ -3177,7 +3177,7 @@ export function FundShell(props: Props) {
             accountId={selectedAccount?.id ?? ""}
             accountProductType={selectedAccount?.investProductType ?? null}
             defaults={{
-              confirmDays: d.confirmDaysMap[editableInvestmentEntry.fundCode ?? ""] ?? selectedAccount?.defaultConfirmDays ?? undefined,
+              confirmDays: d.confirmDaysMap[editableInvestmentEntry.fundCode ?? ""] ?? undefined,
               feeRate: d.feeRateMap[`${editableInvestmentEntry.fundCode ?? ""}:${editableInvestmentEntry.fundSubtype === "redeem" ? "redeem" : "buy"}`] ?? null,
             }}
             cashAccounts={cashAccounts}
@@ -3271,7 +3271,6 @@ export function FundShell(props: Props) {
     nestedFieldData,
     openDetailEdit,
     props.wealthHoldingOptions,
-    selectedAccount?.defaultConfirmDays,
     selectedAccount?.id,
     selectedAccount?.investProductType,
     singleDeletingIds,

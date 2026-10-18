@@ -55,6 +55,7 @@ import {
   isStockInvestmentAccount,
 } from "@/lib/account-institution-rules";
 import { normalizeCurrency } from "@/lib/currency";
+import { recomputeAggregateAccountBalance } from "@/lib/server/account-hierarchy";
 import { normalizeFixedAssetType } from "@/lib/fixed-asset";
 import { normalizeLiabilityDirection } from "@/lib/liability";
 import { normalizeLoanType } from "@/lib/loan-type";
@@ -480,6 +481,10 @@ export async function PUT(req: NextRequest) {
       const currencyInput = String(body.currency ?? "").trim();
       data.currency = normalizeCurrency(currencyInput || await getHouseholdBaseCurrency(householdId));
     }
+    // 多币种父账户是统计单元：它的币种就是账簿本位币，编辑时一律锁回本位币。
+    if (existing.isAggregate) {
+      data.currency = await getHouseholdBaseCurrency(householdId);
+    }
     // Edit guard: once an account has active records, currency and investment
     // product type stay locked. Kind may still change among fund/cash family
     // kinds (debit/cash/ewallet/settlement/credit/other); cross-family changes
@@ -497,7 +502,9 @@ export async function PUT(req: NextRequest) {
         requestedInvestProductType,
       });
     const kindChanging = requestedKind != null && requestedUserFacingKind !== existingUserFacingKind;
-    const kindChangeAllowed = !kindChanging || canChangeAccountKindWithRecords(existingUserFacingKind, requestedUserFacingKind);
+    // 父账户的类型必须与子户一致，因此多币种父账户不允许改类型。
+    const kindChangeAllowed = !kindChanging
+      || (!existing.isAggregate && canChangeAccountKindWithRecords(existingUserFacingKind, requestedUserFacingKind));
     let currencyChanging = false;
     if (body.currency !== undefined) {
       const currencyInput = String(body.currency ?? "").trim();
@@ -736,6 +743,65 @@ export async function PUT(req: NextRequest) {
       excludeId: existing.id,
     });
 
+    // —— 多币种父子层级（归属）：账户编辑里可以调整上级账户 ——
+    // 口径（2026-10-18）：父账户（isAggregate）是统计单元、只能是根；子账户是记账单元。
+    // 层级只有一层，且同一个父下同币种只允许一个子户（DB 上同样有唯一约束）。
+    const previousParentId = existing.parentId ?? null;
+    const nextParentId = body.parentId === undefined
+      ? previousParentId
+      : String(body.parentId ?? "").trim() || null;
+    const parentChanging = nextParentId !== previousParentId;
+    if (parentChanging) {
+      if (existing.isAggregate) {
+        return NextResponse.json(
+          { ok: false, code: "ACCOUNT_PARENT_IS_AGGREGATE", error: "A multi-currency parent account cannot be assigned to another account" },
+          { status: 400 },
+        );
+      }
+      if (nextParentId === id) {
+        return NextResponse.json(
+          { ok: false, code: "ACCOUNT_PARENT_SELF", error: "An account cannot be its own parent" },
+          { status: 400 },
+        );
+      }
+      if (nextParentId) {
+        const parentAccount = await prisma.account.findFirst({
+          where: { id: nextParentId, householdId },
+          select: { id: true, kind: true, isAggregate: true, parentId: true },
+        });
+        if (!parentAccount) {
+          return NextResponse.json(
+            { ok: false, code: "ACCOUNT_PARENT_NOT_FOUND", error: "Parent account not found in this household" },
+            { status: 404 },
+          );
+        }
+        if (!parentAccount.isAggregate || parentAccount.parentId) {
+          return NextResponse.json(
+            { ok: false, code: "ACCOUNT_PARENT_NOT_AGGREGATE", error: "The selected parent account is not a multi-currency parent" },
+            { status: 400 },
+          );
+        }
+        if (parentAccount.kind !== nextKind) {
+          return NextResponse.json(
+            { ok: false, code: "ACCOUNT_PARENT_KIND_MISMATCH", error: "A sub-account must have the same type as its parent account" },
+            { status: 400 },
+          );
+        }
+        const childCurrency = normalizeCurrency(String(data.currency ?? existing.currency));
+        const sibling = await prisma.account.findFirst({
+          where: { householdId, parentId: parentAccount.id, currency: childCurrency, NOT: { id } },
+          select: { id: true },
+        });
+        if (sibling) {
+          return NextResponse.json(
+            { ok: false, code: "ACCOUNT_PARENT_CURRENCY_CONFLICT", error: "The parent account already has a sub-account in this currency" },
+            { status: 409 },
+          );
+        }
+      }
+      data.parentId = nextParentId;
+    }
+
     const creditCycleRuleChanged =
       nextKind === "bank_credit" &&
       (
@@ -845,11 +911,24 @@ export async function PUT(req: NextRequest) {
         { deleteManualCycles: false },
       );
     }
+    // 归属变化后两个父账户的折合余额都要重算：旧父少了一个子户、新父多了一个。
+    // 失败不阻塞保存（余额列下次重算会自愈），但必须留日志。
+    if (parentChanging) {
+      if (previousParentId) {
+        await recomputeAggregateAccountBalance(prisma, previousParentId)
+          .catch(logger.catchLog("recompute previous parent balance after parent change failed", "accounts/route.ts"));
+      }
+      if (nextParentId) {
+        await recomputeAggregateAccountBalance(prisma, nextParentId)
+          .catch(logger.catchLog("recompute next parent balance after parent change failed", "accounts/route.ts"));
+      }
+    }
     revalidateAfterSettingsChange();
     return NextResponse.json({
       ok: true,
       data: {
         id: updated.id,
+        parentId: updated.parentId ?? null,
         kind: updated.kind,
         billingDay: finalBillingDay,
         repaymentDay: updated.repaymentDay,

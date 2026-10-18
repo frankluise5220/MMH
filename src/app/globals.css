@@ -200,6 +200,17 @@ html {
     cursor: text;
   }
 
+  /* 纯图标按钮（窗口右上角的 X、行内小图标按钮等）统一居中。
+     调用方常写成 `h-8 w-8` + `<X/>` 而漏掉 flex，SVG 作为行内元素会落在
+     按钮的文本基线上（贴着左上角），看起来 X 不在中间。`:has(> svg:only-child)`
+     只命中「按钮里只有图标」的情况，不影响图标+文字或纯文字按钮。 */
+  button:has(> svg:only-child),
+  [role="button"]:has(> svg:only-child) {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
   .app-modal-backdrop {
     @apply fixed inset-0 z-[1000] flex items-center justify-center overflow-y-auto bg-slate-950/20 p-2 sm:p-4;
   }

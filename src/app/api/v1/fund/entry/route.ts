@@ -3,8 +3,7 @@ import { prisma } from "@/lib/db/prisma";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { ensureFundTransactionCashFlowLinks, findFundTransactionForEntryId, getFundCashFlowDate } from "@/lib/fund/transactions";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
-import { getFundConfirmDays } from "@/lib/fund/confirmDays";
-import { addWorkdaysUtc } from "@/lib/date-utils";
+import { resolveFundDates } from "@/lib/fund/confirmDays";
 import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { revalidateAfterInvestChange } from "@/lib/server/revalidate";
@@ -49,10 +48,9 @@ export async function PUT(req: NextRequest) {
 
       // Auto-compute the confirm date
       if (autoCalcConfirmDate !== false) {
-        const confirmDays = await getFundConfirmDays(entry.fundAccountId, entry.fundCode);
         const dateStr = new Date(date).toISOString().slice(0, 10);
-        const newConfirmDateStr = addWorkdaysUtc(dateStr, confirmDays);
-        updateData.confirmDate = new Date(`${newConfirmDateStr}T00:00:00.000Z`);
+        const resolvedDates = await resolveFundDates(entry.fundAccountId, entry.fundCode, dateStr);
+        updateData.confirmDate = new Date(`${resolvedDates.confirmDate}T00:00:00.000Z`);
       }
     }
 

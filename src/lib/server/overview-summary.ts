@@ -53,6 +53,13 @@ export type AccountListRow = {
   fxRateDate: string | null;
   /** True when the account currency differs from the base currency and no rate was available. */
   fxRateMissing: boolean;
+  /**
+   * 多币种层级（2026-10-18）：`parentId` 非空的子账户不参与资产/净值合计 ——
+   * 它已经被父账户代表，重复计入就是双计。行本身仍留在列表里，方便下钻。
+   */
+  parentId?: string | null;
+  /** 父账户（聚合账户）：余额 = 子户按本位币折算合计，不来自明细。 */
+  isAggregate?: boolean;
 };
 
 export type CreditAccountRow = AccountListRow & {
@@ -238,6 +245,8 @@ function buildDistribution(rows: AccountListRow[], language: DisplayLanguage) {
   for (const kind of DAILY_KIND_ORDER) totals.set(kind, 0);
 
   for (const row of rows) {
+    // 子账户已由父账户代表，重复计入资产分布就是双计。
+    if (row.parentId) continue;
     totals.set(row.kind, (totals.get(row.kind) ?? 0) + (row.convertedBalance ?? 0));
   }
 
@@ -286,6 +295,9 @@ export async function computeOverviewSummary(
       institutionId: true,
       numberMasked: true,
       investProductType: true,
+      // 多币种层级：父账户代表子账户参与统计，子账户不进合计。
+      parentId: true,
+      isAggregate: true,
       Institution: { select: { name: true, shortName: true } },
       AccountGroup: { select: { name: true } },
     },
@@ -384,8 +396,11 @@ export async function computeOverviewSummary(
     );
 
     const accountCurrency = currencyOf(account);
-    const balance =
-      dailyAndLiabilityDisplayBalanceByAccountId.get(account.id) ?? toNumber(account.balance);
+    // 父账户没有明细：余额只能用子户折算后维护进去的 `balance`，
+    // 取明细口径的 display balance 会把它变成 0。
+    const balance = account.isAggregate
+      ? toNumber(account.balance)
+      : dailyAndLiabilityDisplayBalanceByAccountId.get(account.id) ?? toNumber(account.balance);
     const rate = fx.rateOf(accountCurrency);
 
     return {
@@ -400,6 +415,8 @@ export async function computeOverviewSummary(
       fxRate: rate?.rate ?? null,
       fxRateDate: rate?.rateDate ?? null,
       fxRateMissing: fx.isMissing(accountCurrency),
+      parentId: account.parentId ?? null,
+      isAggregate: account.isAggregate === true,
     };
   });
 
@@ -553,8 +570,11 @@ export async function computeOverviewSummary(
 
   // Aggregates are base-currency sums: amounts without a rate contribute 0 instead of
   // being added at face value, so a missing FX rate can never inflate net worth.
+  // 只统计根账户：子账户已经被父账户代表，再计入就是双计（2026-10-18 用户裁定）。
   const sumConverted = (rows: AccountListRow[], predicate: (row: AccountListRow) => boolean) =>
-    rows.filter(predicate).reduce((sum, row) => sum + (row.convertedBalance ?? 0), 0);
+    rows
+      .filter((row) => !row.parentId && predicate(row))
+      .reduce((sum, row) => sum + (row.convertedBalance ?? 0), 0);
 
   const cash = sumConverted(dailyAccountList, (account) => account.kind === AccountKind.cash);
   const bankDebit = sumConverted(dailyAccountList, (account) => account.kind === AccountKind.bank_debit);

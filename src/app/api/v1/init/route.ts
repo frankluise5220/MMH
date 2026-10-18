@@ -43,7 +43,8 @@ import { ENTRY_ORIGIN_MANUAL } from "@/lib/transaction-semantics";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { logger } from "@/lib/logger";
-import { setFundConfirmDaysInTx, setFundArrivalDaysInTx } from "@/lib/fund/confirmDays";
+import { resolveFundTradingCalendar, setFundDateRuleAutoInTx } from "@/lib/fund/confirmDays";
+import { countTradingDaysUtc } from "@/lib/date-utils";
 import { setFundFeeRateByDateInTx } from "@/lib/fund/feeRate";
 import { BALANCE_INITIALIZATION_SOURCE, encodeBalanceReconcileTarget } from "@/lib/balance-reconcile";
 import { isDepositAccount } from "@/lib/account-kind-utils";
@@ -251,8 +252,15 @@ export async function POST(req: NextRequest) {
             } else {
               const riTxDate = ri.txDate ? new Date(ri.txDate) : date;
               const riConfirmDate = ri.confirmDate ? new Date(ri.confirmDate) : riTxDate;
-              const confirmDays = ri.tPlusN != null ? Number(ri.tPlusN) : 0;
+              const riCalendar = resolveFundTradingCalendar(investAcc.tradingCalendar);
+              const confirmDays = ri.tPlusN != null
+                ? Number(ri.tPlusN)
+                : countTradingDaysUtc(riTxDate.toISOString().slice(0, 10), riConfirmDate.toISOString().slice(0, 10), riCalendar) ?? 0;
               const arrivalDate = ri.arrivalDate ? new Date(ri.arrivalDate) : null;
+              // 到账天数按交易日计（与确认库口径一致），不再用自然日差。
+              const arrivalDays = arrivalDate
+                ? countTradingDaysUtc(riConfirmDate.toISOString().slice(0, 10), arrivalDate.toISOString().slice(0, 10), riCalendar)
+                : null;
 
               await tx.regularInvestPlan.create({
                 data: {
@@ -270,20 +278,15 @@ export async function POST(req: NextRequest) {
                   nextRunDate: riTxDate,
                   status: RegularInvestStatus.active,
                   feeRate: ri.feeRate != null ? Number(ri.feeRate) : null,
-                  confirmDays,
-                  arrivalDays: arrivalDate
-                    ? Math.max(0, Math.round((arrivalDate.getTime() - riConfirmDate.getTime()) / 86400000))
-                    : null,
                 },
               });
 
-              // Write confirm days and the fee rate library in sync
+              // Write confirm days and the fee rate library in sync（设置页锁定过的行跳过）
               if (investAcc.id) {
-                await setFundConfirmDaysInTx(tx, investAcc.id, fundCode, confirmDays);
-              }
-              if (arrivalDate && investAcc.id) {
-                const arrivalDays = Math.max(0, Math.round((arrivalDate.getTime() - riConfirmDate.getTime()) / 86400000));
-                await setFundArrivalDaysInTx(tx, investAcc.id, fundCode, arrivalDays);
+                await setFundDateRuleAutoInTx(tx, investAcc.id, fundCode, {
+                  days: confirmDays,
+                  arrivalDays: arrivalDays != null ? Math.max(0, arrivalDays) : null,
+                });
               }
               if (ri.feeRate != null && investAcc.id) {
                 await setFundFeeRateByDateInTx(tx, investAcc.id, fundCode, Number(ri.feeRate), date, "buy");

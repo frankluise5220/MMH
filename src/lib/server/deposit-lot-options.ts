@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db/prisma";
+import { normalizeCurrency } from "@/lib/currency";
 import { depositCalendarDate, depositRedemptionPrincipal } from "@/lib/server/deposit-lot-balance";
 
 export type DepositLotOption = {
@@ -28,6 +29,16 @@ export type DepositLotOption = {
   latestInterestDate: string | null;
   depositAccountId: string;
   depositAccountName: string;
+  /**
+   * 存单币种。外币存单到期只能原币种入账原外币账户（2026-10-18 用户裁定），
+   * 取回弹窗要靠它把「入账资金账户」候选筛到同币种。
+   */
+  currency: string | null;
+  /**
+   * 存单存入时的资金来源账户（buy.accountId）。到期取回默认回到这张卡，
+   * 用户报障「外币存单到期只能选人民币账户」时，默认账户也不该被换成人民币卡。
+   */
+  cashAccountId: string | null;
 };
 
 function toIsoDate(value: Date | null) {
@@ -48,11 +59,12 @@ export async function loadDepositLotOptions(params: {
       OR: [{ kind: "deposit" }, { investProductType: "deposit" }],
       ...(requestedAccountIds.length > 0 ? { id: { in: requestedAccountIds } } : {}),
     },
-    select: { id: true, name: true },
+    select: { id: true, name: true, currency: true },
   });
   if (depositAccounts.length === 0) return [];
 
   const accountNameById = new Map(depositAccounts.map((account) => [account.id, account.name]));
+  const accountCurrencyById = new Map(depositAccounts.map((account) => [account.id, account.currency]));
   const depositAccountIds = depositAccounts.map((account) => account.id);
   const [buyRows, redemptionRows, interestRows] = await Promise.all([
     prisma.txRecord.findMany({
@@ -77,6 +89,8 @@ export async function loadDepositLotOptions(params: {
         depositProductId: true,
         DepositProduct: { select: { annualRate: true, name: true } },
         toAccountId: true,
+        accountId: true,
+        currency: true,
       },
       orderBy: [{ date: "asc" }, { createdAt: "asc" }],
     }),
@@ -172,6 +186,10 @@ export async function loadDepositLotOptions(params: {
         latestInterestDate: depositCalendarDate(interestDatesByLotId.get(row.id)),
         depositAccountId,
         depositAccountName: accountNameById.get(depositAccountId) ?? "",
+        // 存单自身币种优先：外币存单可能挂在迁移遗留的人民币存款账户上，用账户币种
+        // 会把到期入账候选筛成人民币账户（就是用户报障的那个现象）。
+        currency: normalizeCurrency(row.currency ?? accountCurrencyById.get(depositAccountId) ?? null),
+        cashAccountId: row.accountId ?? null,
       };
     })
     .filter((lot) => Boolean(lot.depositAccountId));

@@ -92,6 +92,15 @@ type AccountItem = {
   loanType?: string | null;
   investProductType?: string;
   fixedAssetType?: string | null;
+  /** 多币种层级：父账户 id（子账户才有）。 */
+  parentId?: string | null;
+  /** 聚合账户（父账户）：只参与统计，本身没有明细。 */
+  isAggregate?: boolean | null;
+  /**
+   * 多币种子账户。独立于 `children`：`children` 已被固定资产小类、
+   * 往来款汇总行等「分组节点」占用，混用会把那些节点也当账户行渲染出来。
+   */
+  subAccounts?: AccountItem[];
   children?: AccountItem[];
 };
 
@@ -217,8 +226,39 @@ function accountItemFilterHaystack(item: AccountItem) {
     .toLowerCase();
 }
 
+/**
+ * 把多币种子账户挂到父账户的 `subAccounts` 上（父账户行保持原位）。
+ * 父账户不存在时（父账户被筛掉/停用）子账户仍然平铺，不会被吞掉。
+ */
+function nestCurrencyChildAccounts(items: AccountItem[]): AccountItem[] {
+  if (!items.some((item) => item.parentId)) return items;
+  const byId = new Map<string, AccountItem>();
+  for (const item of items) {
+    if (item.id) byId.set(item.id, item);
+  }
+  const childrenByParentId = new Map<string, AccountItem[]>();
+  for (const item of items) {
+    const parentId = item.parentId ?? "";
+    if (!parentId || !byId.has(parentId)) continue;
+    const list = childrenByParentId.get(parentId) ?? [];
+    list.push(item);
+    childrenByParentId.set(parentId, list);
+  }
+  if (childrenByParentId.size === 0) return items;
+  return items
+    .filter((item) => !(item.parentId && byId.has(item.parentId)))
+    .map((item) => {
+      const subAccounts = item.id ? childrenByParentId.get(item.id) : undefined;
+      if (!subAccounts?.length) return item;
+      return {
+        ...item,
+        subAccounts: [...subAccounts].sort((a, b) => (a.currency ?? "").localeCompare(b.currency ?? "")),
+      };
+    });
+}
+
 function normalizeSidebarItems(items: AccountItem[], t: (key: string, params?: Record<string, string | number>) => string) {
-  const normalizedItems = items.map(normalizeSidebarAccountItem);
+  const normalizedItems = nestCurrencyChildAccounts(items.map(normalizeSidebarAccountItem));
   const propertyItems = normalizedItems.filter((item) => item.kind === "investment_property");
   // 按账户的 fixedAssetType 分组，每个类别生成一个小类节点，下面挂对应账户。
   const fixedAssetGroups: AccountItem[] = propertyItems.length > 0
@@ -301,27 +341,52 @@ function patchSidebarAccountBalances(items: AccountItem[], updates: ScopedAccoun
   let changed = false;
   const apply = (item: AccountItem): AccountItem => {
     const children = item.children?.map(apply);
+    const subAccounts = item.subAccounts?.map(apply);
     const childrenChanged = Boolean(children && children.some((child, index) => child !== item.children![index]));
+    const subAccountsChanged = Boolean(subAccounts && subAccounts.some((child, index) => child !== item.subAccounts![index]));
     const update = item.id ? byId.get(item.id) : undefined;
-    if (!update && !childrenChanged) return item;
+    if (!update && !childrenChanged && !subAccountsChanged) return item;
     changed = true;
-    if (!update) return { ...item, children };
-    const convertedBalance = update.convertedBalance == null ? null : Number(update.convertedBalance);
-    return {
-      ...item,
-      children,
-      balance: Number(update.balance ?? item.balance),
-      convertedBalance: convertedBalance != null && Number.isFinite(convertedBalance) ? convertedBalance : null,
-      currency: update.currency ?? item.currency,
-      baseCurrency: update.baseCurrency ?? item.baseCurrency,
-      fxRateMissing: !!update.fxRateMissing,
-    };
+    let next: AccountItem = update
+      ? {
+          ...item,
+          children,
+          subAccounts,
+          balance: Number(update.balance ?? item.balance),
+          convertedBalance: (() => {
+            const convertedBalance = update.convertedBalance == null ? null : Number(update.convertedBalance);
+            return convertedBalance != null && Number.isFinite(convertedBalance) ? convertedBalance : null;
+          })(),
+          currency: update.currency ?? item.currency,
+          baseCurrency: update.baseCurrency ?? item.baseCurrency,
+          fxRateMissing: !!update.fxRateMissing,
+        }
+      : { ...item, children, subAccounts };
+    // 父账户（聚合账户）自己没有明细：子账户余额变了，父行余额必须按
+    // 「子户折本位币之和」重算（与 `recomputeAggregateAccountBalance` 同口径），
+    // 否则父行会一直显示改动前的折合总额。
+    if (subAccountsChanged && subAccounts && subAccounts.length > 0) {
+      const convertedValues = subAccounts
+        .map((child) => child.convertedBalance)
+        .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
+      const allConverted = convertedValues.length === subAccounts.length;
+      const convertedTotal = convertedValues.reduce((sum, value) => sum + value, 0);
+      next = {
+        ...next,
+        balance: allConverted ? convertedTotal : subAccounts.reduce((sum, child) => sum + child.balance, 0),
+        convertedBalance: allConverted ? convertedTotal : null,
+        currency: allConverted ? (next.baseCurrency ?? item.currency) : (subAccounts[0]?.currency ?? item.currency),
+        fxRateMissing: !allConverted,
+      };
+    }
+    return next;
   };
   return { next: items.map(apply), changed };
 }
 
 function getSidebarItemSignature(item: AccountItem): string {
   const childSignature = item.children?.map(getSidebarItemSignature).join("\u0002") ?? "";
+  const subAccountSignature = item.subAccounts?.map(getSidebarItemSignature).join("\u0003") ?? "";
   return [
     item.id ?? "",
     item.name,
@@ -345,7 +410,10 @@ function getSidebarItemSignature(item: AccountItem): string {
     item.loanType ?? "",
     item.investProductType ?? "",
     item.fixedAssetType ?? "",
+    item.parentId ?? "",
+    item.isAggregate ? "1" : "0",
     childSignature,
+    subAccountSignature,
   ].join("\u0001");
 }
 
@@ -385,6 +453,8 @@ function toSidebarAccountItem(a: any, t: (key: string, params?: Record<string, s
     loanType: a.loanType ?? null,
     investProductType: a.investProductType || undefined,
     fixedAssetType: a.fixedAssetType ?? null,
+    parentId: a.parentId ?? null,
+    isAggregate: a.isAggregate === true,
   };
 }
 
@@ -448,6 +518,8 @@ export function SidebarClient({
   const [sidebarGroupBy, setSidebarGroupBy] = useState<"kind" | "institution">(() => initialPreferences?.sidebarGroupBy ?? getSidebarGroupPreference());
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set());
   const [collapsedAssetSubgroupKeys, setCollapsedAssetSubgroupKeys] = useState<Set<string>>(new Set());
+  // 多币种子账户默认展开；收起状态按父账户 id 记忆（本会话内）。
+  const [collapsedSubAccountParentIds, setCollapsedSubAccountParentIds] = useState<Set<string>>(new Set());
   const [switcherOpen, setSwitcherOpen] = useState(false);
   const [pendingSettings, setPendingSettings] = useState(false);
   const [hideFirstUseGuide, setHideFirstUseGuide] = useState(() => initialPreferences?.sidebarHideInitialData ?? getAppPreferences().sidebarHideInitialData);
@@ -489,7 +561,7 @@ export function SidebarClient({
   const [loggingOut, setLoggingOut] = useState(false);
   const householdId = household?.id ?? "";
   const ownerOptions = useMemo(
-    () => Array.from(new Set(items.flatMap((item) => (item.children?.length ? item.children : [item])
+    () => Array.from(new Set(items.flatMap((item) => (item.children?.length ? item.children : [item, ...(item.subAccounts ?? [])])
       .filter(isOwnerScopedSidebarItem)
       .map((child) => child.groupName || t("batchImport.ownerUnset")))))
       .filter((name) => name !== "未指定")
@@ -914,7 +986,16 @@ export function SidebarClient({
         }];
       }
       if ((item.kind !== "loan_summary" && item.kind !== REIMBURSEMENT_SUMMARY_KIND) || !item.children?.length) {
-        if (!matchesAccountFilter(item) && !(item.children ?? []).some(childMatchesAccountFilter)) return [];
+        const selfMatched = matchesAccountFilter(item);
+        const subAccounts = item.subAccounts?.filter(
+          (child) => passesCommonVisibility(child) && (selfMatched || childMatchesAccountFilter(child)),
+        );
+        if (!selfMatched && !(item.children ?? []).some(childMatchesAccountFilter) && !(item.subAccounts ?? []).some(childMatchesAccountFilter)) return [];
+        if (subAccounts?.length) {
+          // 父账户是统计单元、自己没有明细：只要还有可见子账户就保留折叠行，
+          // 否则「父账户余额为 0 / 被隐藏零」会把整个子账户树一起吞掉。
+          return [{ ...item, subAccounts }];
+        }
         return isVisibleLeaf(item) ? [item] : [];
       }
       const selfMatched = matchesAccountFilter(item);
@@ -1093,7 +1174,71 @@ export function SidebarClient({
       }
       return selectedView === "investproperty" && !selectedAccountId && !selectedAccount;
     }
-    return item.id ? selectedAccountId === item.id : !selectedAccountId && selectedAccount === item.name;
+    if (item.id ? selectedAccountId === item.id : !selectedAccountId && selectedAccount === item.name) return true;
+    // 选中的是多币种子账户时，父账户行、所属分区/子分组也必须算「选中」，
+    // 否则打开子账户后侧边栏会把当前分区折叠掉、滚动位置也找不到它。
+    return (item.subAccounts ?? []).some((child) =>
+      child.id ? selectedAccountId === child.id : !selectedAccountId && selectedAccount === child.name,
+    );
+  }
+
+  function sidebarItemHref(it: AccountItem) {
+    if (it.kind === FIXED_ASSET_SUMMARY_KIND) {
+      const type = it.id?.startsWith(`${FIXED_ASSET_SUMMARY_ID}:`)
+        ? it.id.slice(FIXED_ASSET_SUMMARY_ID.length + 1)
+        : "";
+      const q = new URLSearchParams();
+      q.set("view", "investproperty");
+      if (type) q.set("fixedAssetType", type);
+      return `/?${q.toString()}`;
+    }
+    if (it.kind === "loan_summary") return "/?view=liability";
+    if (it.kind === REIMBURSEMENT_SUMMARY_KIND) return "/reimbursements";
+    if (it.kind === "loan" || it.kind === "settlement") {
+      if (it.counterpartyReimbursable) {
+        return it.id ? `/reimbursements?accountId=${it.id}` : "/reimbursements";
+      }
+      const q = new URLSearchParams();
+      q.set("view", "liability");
+      const liabilityPersonKey = liabilityPersonKeyFor(it);
+      if (liabilityPersonKey) q.set("liabilityPerson", liabilityPersonKey);
+      return `/?${q.toString()}`;
+    }
+    const q = new URLSearchParams();
+    if (it.id) q.set("accountId", it.id);
+    else q.set("account", it.name);
+    const view = it.kind.startsWith("investment")
+      ? getInvestmentAccountView(it)
+      : it.kind === "deposit"
+        ? "deposit"
+        : it.kind === "insurance"
+          ? "insurance"
+          : (it.kind === "bank_credit" ? "bill" : "detail");
+    q.set("view", view);
+    return `/?${q.toString()}`;
+  }
+
+  function sidebarItemHoverTitle(it: AccountItem) {
+    return it.hoverTitle ?? [isSidebarSettlementLoan(it) ? "" : it.groupName, it.label, inlineKindLabel(it.kind)].filter(Boolean).join(" · ");
+  }
+
+  function sidebarItemRowLabel(it: AccountItem) {
+    return sidebarGroupBy === "institution" && it.kind !== "loan_summary" && it.kind !== REIMBURSEMENT_SUMMARY_KIND
+      ? it.kind === FIXED_ASSET_SUMMARY_KIND
+        ? it.label
+        : it.kind === "insurance"
+          ? (it.shortLabel || it.label)
+          : `${inlineKindLabel(it.kind)}·${it.shortLabel || it.label}`
+      : it.label;
+  }
+
+  // 子账户行只补「父行看不到的差异」：币种。账户名通常已带 ` · USD`（多币种子账户默认名），
+  // 不带时补一个 ISO 后缀，避免同一父账户下两行文字完全一样。
+  function sidebarSubAccountLabel(child: AccountItem) {
+    const name = child.name?.trim() || sidebarItemRowLabel(child);
+    const currency = (child.currency ?? "").trim();
+    if (!currency) return name;
+    return name.toUpperCase().includes(currency.toUpperCase()) ? name : `${name} · ${currency}`;
   }
 
   const activeSectionKind = sections.find((section) => {
@@ -1183,6 +1328,38 @@ export function SidebarClient({
       return new Set(allKeys.filter((groupKey) => groupKey !== key));
     });
   }
+
+  function subAccountParentKey(item: AccountItem) {
+    return item.id || `name:${item.name}`;
+  }
+
+  function toggleSubAccounts(item: AccountItem) {
+    const key = subAccountParentKey(item);
+    setCollapsedSubAccountParentIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
+  // 从别处（账户页、搜索、最近使用）跳到某个子账户时，父账户行不能还是收起状态，
+  // 否则选中的账户在侧边栏里根本看不到。
+  useEffect(() => {
+    if (!selectedAccountId) return;
+    setCollapsedSubAccountParentIds((prev) => {
+      if (prev.size === 0) return prev;
+      let next: Set<string> | null = null;
+      for (const item of items) {
+        const key = subAccountParentKey(item);
+        if (!prev.has(key)) continue;
+        if (!(item.subAccounts ?? []).some((child) => child.id === selectedAccountId)) continue;
+        next = next ?? new Set(prev);
+        next.delete(key);
+      }
+      return next ?? prev;
+    });
+  }, [items, selectedAccountId]);
 
   const userMenu = userMenuOpen && userMenuPosition ? (
     <div
@@ -1568,68 +1745,105 @@ export function SidebarClient({
                               ) : null}
                               {!isLoanTypeNode && (!hasSubgroups || !group.label || !subgroupCollapsed) && group.accounts.map((it, index) => {
                                 const active = isAccountItemActive(it);
-                                const href = (() => {
-                                  if (it.kind === FIXED_ASSET_SUMMARY_KIND) {
-                                    const type = it.id?.startsWith(`${FIXED_ASSET_SUMMARY_ID}:`)
-                                      ? it.id.slice(FIXED_ASSET_SUMMARY_ID.length + 1)
-                                      : "";
-                                    const q = new URLSearchParams();
-                                    q.set("view", "investproperty");
-                                    if (type) q.set("fixedAssetType", type);
-                                    return `/?${q.toString()}`;
-                                  }
-                                  if (it.kind === "loan_summary") return "/?view=liability";
-                                  if (it.kind === REIMBURSEMENT_SUMMARY_KIND) return "/reimbursements";
-                                  if (it.kind === "loan" || it.kind === "settlement") {
-                                    if (it.counterpartyReimbursable) {
-                                      return it.id ? `/reimbursements?accountId=${it.id}` : "/reimbursements";
-                                    }
-                                    const q = new URLSearchParams();
-                                    q.set("view", "liability");
-                                    const liabilityPersonKey = liabilityPersonKeyFor(it);
-                                    if (liabilityPersonKey) q.set("liabilityPerson", liabilityPersonKey);
-                                    return `/?${q.toString()}`;
-                                  }
-                                  const q = new URLSearchParams();
-                                  if (it.id) q.set("accountId", it.id);
-                                  else q.set("account", it.name);
-                                  const view = it.kind.startsWith("investment")
-                                    ? getInvestmentAccountView(it)
-                                    : it.kind === "deposit"
-                                      ? "deposit"
-                                      : it.kind === "insurance"
-                                        ? "insurance"
-                                        : (it.kind === "bank_credit" ? "bill" : "detail");
-                                  q.set("view", view);
-                                  return `/?${q.toString()}`;
-                                })();
-                                const itemTitle = it.hoverTitle ?? [isSidebarSettlementLoan(it) ? "" : it.groupName, it.label, inlineKindLabel(it.kind)].filter(Boolean).join(" · ");
+                                const href = sidebarItemHref(it);
+                                const itemTitle = sidebarItemHoverTitle(it);
+                                const subAccounts = it.subAccounts ?? [];
+                                const subAccountsCollapsed =
+                                  subAccounts.length > 0 &&
+                                  !accountFilterQuery &&
+                                  collapsedSubAccountParentIds.has(subAccountParentKey(it));
+                                // 只有一个子账户时，父子两层没有意义（侧边栏按本位币折算，
+                                // 父行和唯一子行显示的是同一个数字），直接把子账户当普通账户平铺：
+                                // 不缩进、不显示折叠箭头，也不额外占一行。
+                                const soloChild = subAccounts.length === 1 ? subAccounts[0] : null;
+                                const soloHref = soloChild ? sidebarItemHref(soloChild) : "";
+                                const soloTitle = soloChild ? sidebarItemHoverTitle(soloChild) : "";
+                                const soloActive = soloChild ? active || isAccountItemActive(soloChild) : false;
+                                // 本位币子户用父账户名（去掉「 · CNY」这类纯噪音）；外币子户保留币种。
+                                const soloLabel = soloChild
+                                  ? (String(soloChild.currency ?? "").toUpperCase() !== String(it.baseCurrency ?? "").toUpperCase()
+                                      ? sidebarSubAccountLabel(soloChild)
+                                      : sidebarItemRowLabel(it))
+                                  : "";
+                                const rowIndentCls = group.label ? "ml-3 pl-2.5 border-l border-slate-100 rounded-l-none" : "";
+                                const rowBorderCls = index > 0 ? "border-t border-slate-100/90" : "";
                                 return (
-                                  <Link
-                                    key={`${group.key}:${it.id}:${it.name}`}
-                                    href={href}
-                                    prefetch={false}
-                                    scroll={false}
-                                    title={itemTitle}
-                                    onMouseEnter={() => prefetchRoute(href)}
-                                    onFocus={() => prefetchRoute(href)}
-                                    onTouchStart={() => prefetchRoute(href)}
-                                    onClick={accountFilterOpen ? closeAccountFilter : undefined}
-                                    className={`${accountLinkCls(active)} ${group.label ? "ml-3 pl-2.5 border-l border-slate-100 rounded-l-none" : ""} ${index > 0 ? "border-t border-slate-100/90" : ""}`}
-                                  >
-                                    <span className="min-w-0 flex-1 pr-2">
-                                      <span className="text-fade-right block min-w-0" title={itemTitle}>
-                                      {sidebarGroupBy === "institution" && it.kind !== "loan_summary" && it.kind !== REIMBURSEMENT_SUMMARY_KIND
-                                        ? it.kind === FIXED_ASSET_SUMMARY_KIND
-                                          ? it.label
-                                        : it.kind === "insurance"
-                                          ? (it.shortLabel || it.label)
-                                          : `${inlineKindLabel(it.kind)}·${it.shortLabel || it.label}`
-                                        : it.label}
-                                      </span>
-                                    </span>
-                                    <span className={`shrink-0 pl-2 text-[11px] font-medium tabular-nums ${itemBalanceCls(it)}`}>{formatSidebarBalance(it)}</span>
-                                  </Link>
+                                  <div key={`${group.key}:${it.id}:${it.name}`} className="space-y-1">
+                                    {soloChild ? (
+                                      <Link
+                                        href={soloHref}
+                                        prefetch={false}
+                                        scroll={false}
+                                        title={soloTitle}
+                                        onMouseEnter={() => prefetchRoute(soloHref)}
+                                        onFocus={() => prefetchRoute(soloHref)}
+                                        onTouchStart={() => prefetchRoute(soloHref)}
+                                        onClick={accountFilterOpen ? closeAccountFilter : undefined}
+                                        className={`${accountLinkCls(soloActive)} ${rowIndentCls} ${rowBorderCls}`}
+                                      >
+                                        <span className="min-w-0 flex-1 pr-2">
+                                          <span className="text-fade-right block min-w-0" title={soloTitle}>{soloLabel}</span>
+                                        </span>
+                                        <span className={`shrink-0 pl-2 text-[11px] font-medium tabular-nums ${itemBalanceCls(soloChild)}`}>{formatSidebarBalance(soloChild)}</span>
+                                      </Link>
+                                    ) : subAccounts.length > 0 ? (
+                                      <button
+                                        type="button"
+                                        onClick={() => toggleSubAccounts(it)}
+                                        title={`${t(subAccountsCollapsed ? "common.expand" : "common.collapse")}：${itemTitle}`}
+                                        aria-expanded={!subAccountsCollapsed}
+                                        className={`${accountLinkCls(active)} ${rowIndentCls} ${rowBorderCls} w-full text-left`}
+                                      >
+                                        <span className="min-w-0 flex-1 pr-2">
+                                          <span className="text-fade-right block min-w-0" title={itemTitle}>{sidebarItemRowLabel(it)}</span>
+                                        </span>
+                                        <span className={`shrink-0 pl-2 text-[11px] font-medium tabular-nums ${itemBalanceCls(it)}`}>{formatSidebarBalance(it)}</span>
+                                        <ChevronDown size={14} className={`ml-1 shrink-0 text-slate-300 transition-transform ${subAccountsCollapsed ? "-rotate-90" : ""}`} />
+                                      </button>
+                                    ) : (
+                                      <Link
+                                        href={href}
+                                        prefetch={false}
+                                        scroll={false}
+                                        title={itemTitle}
+                                        onMouseEnter={() => prefetchRoute(href)}
+                                        onFocus={() => prefetchRoute(href)}
+                                        onTouchStart={() => prefetchRoute(href)}
+                                        onClick={accountFilterOpen ? closeAccountFilter : undefined}
+                                        className={`${accountLinkCls(active)} ${rowIndentCls} ${rowBorderCls}`}
+                                      >
+                                        <span className="min-w-0 flex-1 pr-2">
+                                          <span className="text-fade-right block min-w-0" title={itemTitle}>{sidebarItemRowLabel(it)}</span>
+                                        </span>
+                                        <span className={`shrink-0 pl-2 text-[11px] font-medium tabular-nums ${itemBalanceCls(it)}`}>{formatSidebarBalance(it)}</span>
+                                      </Link>
+                                    )}
+                                    {!soloChild && subAccounts.length > 0 && !subAccountsCollapsed
+                                      ? subAccounts.map((child) => {
+                                          const childHref = sidebarItemHref(child);
+                                          const childTitle = sidebarItemHoverTitle(child);
+                                          return (
+                                            <Link
+                                              key={`${group.key}:${child.id}:${child.name}`}
+                                              href={childHref}
+                                              prefetch={false}
+                                              scroll={false}
+                                              title={childTitle}
+                                              onMouseEnter={() => prefetchRoute(childHref)}
+                                              onFocus={() => prefetchRoute(childHref)}
+                                              onTouchStart={() => prefetchRoute(childHref)}
+                                              onClick={accountFilterOpen ? closeAccountFilter : undefined}
+                                              className={`${accountLinkCls(isAccountItemActive(child))} ml-6 rounded-l-none border-l border-slate-200 pl-2.5 text-[11px]`}
+                                            >
+                                              <span className="min-w-0 flex-1 pr-2">
+                                                <span className="text-fade-right block min-w-0" title={childTitle}>{sidebarSubAccountLabel(child)}</span>
+                                              </span>
+                                              <span className={`shrink-0 pl-2 text-[10px] font-medium tabular-nums ${itemBalanceCls(child)}`}>{formatSidebarBalance(child)}</span>
+                                            </Link>
+                                          );
+                                        })
+                                      : null}
+                                  </div>
                                 );
                               })}
                             </div>

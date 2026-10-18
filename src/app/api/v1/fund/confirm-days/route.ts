@@ -1,35 +1,34 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
-import { getFundConfirmRule, normalizeNonNegativeDays } from "@/lib/fund/confirmDays";
+import { getFundConfirmRule, normalizeNonNegativeDays, setFundDateRuleAuto } from "@/lib/fund/confirmDays";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 
 /**
- * Fund confirm-day rules (T+N for buy confirmation and fund arrival).
+ * 基金确认日规则（T+N）的唯一读写接口。
  *
  * GET /api/v1/fund/confirm-days
  * Query params:
  * - accountId: required. Investment account id.
- * - fundCode: optional. When present, returns the single rule for that fund
- *   (with account defaults as fallback).
+ * - fundCode: optional. When present, returns the single rule for that fund.
  * - list: "1". When present (and no fundCode), returns the full rule table for
- *   the account: every fund seen in transactions plus every stored rule, with
- *   fund name, days, arrivalDays, redeemCostDays and effectiveDate.
+ *   the account: every fund seen in transactions plus every stored rule.
  *
  * GET responses:
- * - single: { ok, days, redeemCostDays, arrivalDays }
- * - list: { ok, rows: [{ fundCode, fundName, days, arrivalDays, redeemCostDays, effectiveDate }] }
- * `days` and `arrivalDays` are trading-day counts from the application date.
- * `arrivalDays` drives the cash-arrival date directly and must skip weekends and fund holidays.
+ * - single: { ok, days, arrivalDays, manualOverride }
+ * - list: { ok, rows: [{ fundCode, fundName, days, arrivalDays, manualOverride }] }
+ * `days` 是从申请日算的确认交易日数，`arrivalDays` 是从确认日算的到账交易日数。
  *
  * POST /api/v1/fund/confirm-days
- * Body: { accountId, rows: [{ fundCode, days?, arrivalDays?, redeemCostDays?, effectiveDate? }] }
- * Saves rows as a batch (upsert per account+fundCode).
- * When `applyAccounts` is provided (array of investment account ids sharing the
- * same institution), the same rule values are copied to those accounts for the
- * same fundCode.
+ * Body: { accountId, rows: [{ fundCode, days?, arrivalDays? }], auto? }
+ * Saves rows as a batch (upsert per account+fundCode) and sets `manualOverride`:
+ * 这张表是唯一被授权改写 T+N 的入口，保存后其它界面（交易/定投/导入/初始化）
+ * 只能读，不能再覆盖。
+ * `auto: true` 是例外：交易表单保存时用它回写自己算出的天数——不置锁，
+ * 且该行已锁定时直接跳过。
  *
  * DELETE /api/v1/fund/confirm-days?accountId=...&fundCode=...
- * Deletes the single rule for the given accountId + fundCode pair.
+ * Deletes the single rule for the given accountId + fundCode pair. 删除即解锁，
+ * 自动写入路径可以重新建行。
  */
 export async function GET(req: NextRequest) {
   const { searchParams } = new URL(req.url);
@@ -45,27 +44,19 @@ export async function GET(req: NextRequest) {
     const ctx = await getHouseholdScope();
     const account = await prisma.account.findUnique({
       where: { id: accountId, ...ctx.hidFilter },
-      select: { id: true, defaultConfirmDays: true, defaultArrivalDays: true, institutionId: true },
+      select: { id: true },
     });
     if (!account) {
       return NextResponse.json({ ok: false, code: "ACCOUNT_NOT_FOUND", error: "Investment account not found." }, { status: 404 });
     }
 
     if (fundCode) {
-      const record = await prisma.fundConfirmDays.findUnique({
-        where: { accountId_fundCode: { accountId, fundCode } },
-        select: { redeemCostDays: true, effectiveDate: true },
-      });
-      const rule = await getFundConfirmRule(accountId, fundCode, {
-        days: account.defaultConfirmDays,
-        arrivalDays: account.defaultArrivalDays,
-      });
+      const rule = await getFundConfirmRule(accountId, fundCode);
       return NextResponse.json({
         ok: true,
         days: rule.days,
-        redeemCostDays: normalizeNonNegativeDays(record?.redeemCostDays, 1),
         arrivalDays: rule.arrivalDays,
-        effectiveDate: record?.effectiveDate ? record.effectiveDate.toISOString().slice(0, 10) : null,
+        manualOverride: rule.manualOverride,
       });
     }
 
@@ -80,7 +71,7 @@ export async function GET(req: NextRequest) {
         }),
         prisma.fundConfirmDays.findMany({
           where: { accountId },
-          select: { fundCode: true, days: true, arrivalDays: true, redeemCostDays: true, effectiveDate: true, updatedAt: true },
+          select: { fundCode: true, days: true, arrivalDays: true, manualOverride: true, updatedAt: true },
           orderBy: { updatedAt: "desc" },
         }),
       ]);
@@ -100,21 +91,15 @@ export async function GET(req: NextRequest) {
         return {
           fundCode: code,
           fundName: fundNameByCode.get(code) ?? null,
-          days: rule ? normalizeNonNegativeDays(rule.days, 0) : normalizeNonNegativeDays(account.defaultConfirmDays, 0),
-          arrivalDays: rule ? normalizeNonNegativeDays(rule.arrivalDays, 2) : normalizeNonNegativeDays(account.defaultArrivalDays, 2),
-          redeemCostDays: rule ? normalizeNonNegativeDays(rule.redeemCostDays, 1) : 1,
-          effectiveDate: rule?.effectiveDate ? rule.effectiveDate.toISOString().slice(0, 10) : null,
+          days: normalizeNonNegativeDays(rule?.days, 0),
+          arrivalDays: normalizeNonNegativeDays(rule?.arrivalDays, 2),
+          manualOverride: Boolean(rule?.manualOverride),
         };
       });
       return NextResponse.json({ ok: true, rows });
     }
 
-    return NextResponse.json({
-      ok: true,
-      days: normalizeNonNegativeDays(account.defaultConfirmDays, 0),
-      redeemCostDays: 1,
-      arrivalDays: normalizeNonNegativeDays(account.defaultArrivalDays, 2),
-    });
+    return NextResponse.json({ ok: true, days: 0, arrivalDays: 2 });
   } catch (e) {
     return NextResponse.json(
       { ok: false, code: "FETCH_FAILED", error: e instanceof Error ? e.message : "Failed to fetch confirm days." },
@@ -127,53 +112,39 @@ type ConfirmDayRowInput = {
   fundCode?: string;
   days?: number;
   arrivalDays?: number;
-  redeemCostDays?: number;
-  effectiveDate?: string | null;
 };
 
 function parseRowInput(row: ConfirmDayRowInput) {
-  const fundCode = String(row.fundCode ?? "").trim();
-  const hasEffectiveDate = Object.prototype.hasOwnProperty.call(row, "effectiveDate");
   return {
-    fundCode,
+    fundCode: String(row.fundCode ?? "").trim(),
     days: typeof row.days === "number" ? normalizeNonNegativeDays(row.days, 0) : undefined,
     arrivalDays: typeof row.arrivalDays === "number" ? normalizeNonNegativeDays(row.arrivalDays, 2) : undefined,
-    redeemCostDays: typeof row.redeemCostDays === "number" ? normalizeNonNegativeDays(row.redeemCostDays, 1) : undefined,
-    effectiveDate: hasEffectiveDate
-      ? typeof row.effectiveDate === "string" && row.effectiveDate.trim()
-        ? row.effectiveDate.trim()
-        : null
-      : undefined,
   };
 }
 
 async function upsertRule(accountId: string, input: ReturnType<typeof parseRowInput>) {
   const existing = await prisma.fundConfirmDays.findUnique({
     where: { accountId_fundCode: { accountId, fundCode: input.fundCode } },
+    select: { id: true },
   });
-  const data: Record<string, string | number | Date | null> = {};
+  const data: Record<string, number | boolean> = {};
   if (input.days !== undefined) data.days = input.days;
   if (input.arrivalDays !== undefined) data.arrivalDays = input.arrivalDays;
-  if (input.redeemCostDays !== undefined) data.redeemCostDays = input.redeemCostDays;
-  if (input.effectiveDate !== undefined) {
-    data.effectiveDate = input.effectiveDate ? new Date(`${input.effectiveDate}T00:00:00.000Z`) : null;
-  }
+  // 这张表是唯一被授权改写 T+N 的入口：保存即锁定，其它界面从此只读。
+  data.manualOverride = true;
   if (existing) {
-    if (Object.keys(data).length > 0) {
-      await prisma.fundConfirmDays.update({ where: { id: existing.id }, data });
-    }
-  } else {
-    await prisma.fundConfirmDays.create({
-      data: {
-        accountId,
-        fundCode: input.fundCode,
-        days: input.days ?? 0,
-        arrivalDays: input.arrivalDays ?? 2,
-        redeemCostDays: input.redeemCostDays ?? 1,
-        ...(input.effectiveDate ? { effectiveDate: new Date(`${input.effectiveDate}T00:00:00.000Z`) } : {}),
-      },
-    });
+    await prisma.fundConfirmDays.update({ where: { id: existing.id }, data });
+    return;
   }
+  await prisma.fundConfirmDays.create({
+    data: {
+      accountId,
+      fundCode: input.fundCode,
+      days: input.days ?? 0,
+      arrivalDays: input.arrivalDays ?? 2,
+      manualOverride: true,
+    },
+  });
 }
 
 async function deleteRule(accountId: string, fundCode: string) {
@@ -193,13 +164,11 @@ export async function POST(req: NextRequest) {
     const body = await req.json().catch(() => null) as {
       accountId?: string;
       rows?: ConfirmDayRowInput[];
-      applyAccounts?: string[];
-      institutionId?: string;
       fundCode?: string;
       days?: number;
       arrivalDays?: number;
-      redeemCostDays?: number;
-      effectiveDate?: string | null;
+      /** true = 自动写入（交易表单等）：不置 manualOverride，且锁定行会被跳过。 */
+      auto?: boolean;
     } | null;
     if (!body?.accountId) {
       return NextResponse.json({ ok: false, code: "MISSING_ACCOUNT_ID", error: "accountId is required." }, { status: 400 });
@@ -207,7 +176,7 @@ export async function POST(req: NextRequest) {
     const ctx = await getHouseholdScope();
     const account = await prisma.account.findUnique({
       where: { id: body.accountId, ...ctx.hidFilter },
-      select: { id: true, householdId: true, institutionId: true },
+      select: { id: true },
     });
     if (!account) {
       return NextResponse.json({ ok: false, code: "ACCOUNT_NOT_FOUND", error: "Investment account not found." }, { status: 404 });
@@ -220,37 +189,20 @@ export async function POST(req: NextRequest) {
             fundCode: body.fundCode,
             days: body.days,
             arrivalDays: body.arrivalDays,
-            redeemCostDays: body.redeemCostDays,
-            effectiveDate: body.effectiveDate,
           }]
         : [];
     for (const raw of rows) {
       const input = parseRowInput(raw);
       if (!input.fundCode) continue;
-      await upsertRule(body.accountId, input);
-    }
-
-    // Copy the same fund rules to other accounts (same institution), usually
-    // triggered from the "apply to institution funds" picker.
-    const applyAccounts = Array.isArray(body.applyAccounts) ? body.applyAccounts.filter(Boolean) : [];
-    if (applyAccounts.length > 0 && rows.length > 0) {
-      const validTargets = await prisma.account.findMany({
-        where: {
-          ...ctx.hidFilter,
-          id: { in: applyAccounts },
-          kind: "investment",
-        },
-        select: { id: true },
-      });
-      const targetIds = new Set(validTargets.map((target) => target.id));
-      for (const raw of rows) {
-        const input = parseRowInput(raw);
-        if (!input.fundCode) continue;
-        for (const targetId of targetIds) {
-          if (targetId === body.accountId) continue;
-          await upsertRule(targetId, input);
-        }
+      if (body.auto === true) {
+        // 交易表单等自动路径：设置页锁定过的行只读，也不做锁定。
+        await setFundDateRuleAuto(body.accountId, input.fundCode, {
+          days: input.days,
+          arrivalDays: input.arrivalDays,
+        });
+        continue;
       }
+      await upsertRule(body.accountId, input);
     }
 
     return NextResponse.json({ ok: true });

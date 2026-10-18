@@ -12,6 +12,7 @@ import { revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { toStatementMonth } from "@/lib/date-utils";
 import { allocateBuyFailedRefunds, getConfirmedBuyAmount } from "@/lib/fund/refund-link";
 import { getFundProfileNameMap, normalizeFundDisplayName } from "@/lib/fund/fundProfile";
+import { withFundDateRules } from "@/lib/fund/confirmDays";
 import { RegularInvestClient } from "./RegularInvestClient";
 import { MobileRegularInvest } from "@/components/mobile/MobileRegularInvest";
 import { resolveCreditCardRepaymentCategory } from "@/lib/default-categories";
@@ -236,7 +237,10 @@ export default async function RegularInvestPage() {
     }
   }
 
-  const accountOptions = accounts.map((account) => buildAccountDisplayOption(account, undefined, { fields: accountLabelFields }));
+  // 父账户（多币种聚合账户）不能记账：计划任务的资金/目标账户只到币种子账户一层。
+  const accountOptions = accounts
+    .filter((account) => account.isAggregate !== true)
+    .map((account) => buildAccountDisplayOption(account, undefined, { fields: accountLabelFields }));
   const accountById = new Map(accountOptions.map((account) => [account.id, account]));
   // 贷款是否"仍关联着"与负债视图同口径：|余额| > ACTIVE_LIABILITY_EPSILON 才算在贷，
   // 已结清/空壳账户按"无关联贷款"处理（提示可放心删除）。
@@ -373,7 +377,9 @@ export default async function RegularInvestPage() {
       .map((plan) => plan.fundCode),
   );
 
-  const plansData = plans.map((plan) => {
+  // 计划表不再保存 T+N：展示值一律按确认库解析。
+  const plansWithFundRules = await withFundDateRules(plans);
+  const plansData = plansWithFundRules.map((plan) => {
     const stats = statsByPlanId.get(plan.id) ?? { executedCount: 0, executedAmount: 0, confirmedCount: 0, confirmedAmount: 0 };
     const fundAccount = accountById.get(plan.accountId);
     const cashAccount = plan.cashAccountId ? accountById.get(plan.cashAccountId) : null;

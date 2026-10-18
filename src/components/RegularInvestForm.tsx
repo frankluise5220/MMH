@@ -511,6 +511,8 @@ export function RegularInvestForm({
   const confirmDaysTouchedRef = useRef(false);
   const arrivalDaysTouchedRef = useRef(false);
   const lastFundRuleKeyRef = useRef("");
+  // 设置页「基金确认日」保存过的基金：这里的 T+N 只读，不再覆盖。
+  const [confirmRuleLocked, setConfirmRuleLocked] = useState(false);
   // 编辑态「剩余次数」输入框是否被用户真正改过。未改动时必须原样回写存储的总期数：
   // 剩余次数 = totalRuns - executedRuns，若计划已执行完（剩余 = 0），
   // serializeTotalRunsFromRemaining("0") 会返回 null（= 无限期），
@@ -683,6 +685,7 @@ export function RegularInvestForm({
     arrivalDaysTouchedRef.current = false;
     lastFundRuleKeyRef.current = "";
     totalRunsTouchedRef.current = false;
+    setConfirmRuleLocked(false);
   }, [editData, mode]);
 
   useEffect(() => { setCashAccountList(cashAccounts ?? []); }, [cashAccounts]);
@@ -734,10 +737,7 @@ export function RegularInvestForm({
       lastFundRuleKeyRef.current = ruleKey;
     }
 
-    // Existing plan values remain authoritative while editing. New plans read
-    // the account+fund rule as soon as a complete code and account are known.
-    if (mode === "edit" && editData?.confirmDays != null) return;
-
+    // T+N 只有一个来源（确认库）：新建和编辑都按 account+fund 读取规则。
     let cancelled = false;
 
     fetch(`/api/v1/fund/confirm-days?accountId=${encodeURIComponent(investAccountId)}&fundCode=${encodeURIComponent(code)}`)
@@ -745,6 +745,7 @@ export function RegularInvestForm({
       .then(d => {
         if (cancelled) return;
         if (d.ok && d.days != null) {
+          setConfirmRuleLocked(Boolean(d.manualOverride));
           setFormData(f => ({
             ...f,
             confirmDays: confirmDaysTouchedRef.current ? f.confirmDays : String(d.days),
@@ -805,6 +806,7 @@ export function RegularInvestForm({
       .then(r => r.json())
       .then(d => {
         if (d.ok && d.days != null) {
+          setConfirmRuleLocked(Boolean(d.manualOverride));
           setFormData(f => ({
             ...f,
             confirmDays: confirmDaysTouchedRef.current ? f.confirmDays : String(d.days),
@@ -1747,6 +1749,7 @@ export function RegularInvestForm({
               )}
 
               {isFundTask && (
+                <>
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">{t("regularInvest.confirmDaysLabel")}</div>
@@ -1754,12 +1757,14 @@ export function RegularInvestForm({
                       inputMode="numeric"
                       min="0"
                       value={formData.confirmDays}
+                      disabled={confirmRuleLocked}
+                      title={confirmRuleLocked ? t("fundConfirmDays.manualLockHint") : undefined}
                       onChange={(e) => {
                         confirmDaysTouchedRef.current = true;
                         setFormData(d => ({ ...d, confirmDays: e.target.value }));
                       }}
                       placeholder="1"
-                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none disabled:bg-slate-50 disabled:text-slate-500"
                     />
                   </div>
                   <div className="space-y-1">
@@ -1768,15 +1773,21 @@ export function RegularInvestForm({
                       inputMode="numeric"
                       min="0"
                       value={formData.arrivalDays}
+                      disabled={confirmRuleLocked}
+                      title={confirmRuleLocked ? t("fundConfirmDays.manualLockHint") : undefined}
                       onChange={(e) => {
                         arrivalDaysTouchedRef.current = true;
                         setFormData(d => ({ ...d, arrivalDays: e.target.value }));
                       }}
                       placeholder="2"
-                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none disabled:bg-slate-50 disabled:text-slate-500"
                     />
                   </div>
                 </div>
+                {confirmRuleLocked ? (
+                  <div className="text-[11px] leading-4 text-slate-400">{t("fundConfirmDays.manualLockHint")}</div>
+                ) : null}
+                </>
               )}
 
               <div className={isOneTimeInterval ? "grid grid-cols-1 gap-3" : "grid grid-cols-[minmax(0,3fr)_minmax(0,3fr)_minmax(0,1fr)] gap-3"}>

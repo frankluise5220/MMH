@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { FundCashFlowKind, FundSubtype, IntervalUnit, RegularInvestStatus } from "@prisma/client";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
-import { getFundConfirmDays, getFundArrivalDays, normalizeNonNegativeDays } from "@/lib/fund/confirmDays";
+import { fundArrivalDate, fundConfirmDate, getFundDateContext } from "@/lib/fund/confirmDays";
 import { getFundFeeRate, getFundFeeRateByDate } from "@/lib/fund/feeRate";
 import { normalizeFundDisplayName, resolveFundName } from "@/lib/fund/fundProfile";
 import { createFundTransactionWithCashFlows } from "@/lib/fund/transactions";
@@ -15,7 +15,7 @@ import {
   regularInvestFailureNote,
   regularInvestRefundNote,
 } from "@/lib/fund/regular-invest-display";
-import { addWorkdaysUtc, formatDateUtc } from "@/lib/date-utils";
+import { formatDateUtc } from "@/lib/date-utils";
 import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { decodeScheduledTaskMemo } from "@/lib/scheduled-task";
@@ -238,13 +238,12 @@ export async function POST(req: NextRequest) {
     let skippedCount = 0;
 
     // ── Pre-compute NAV: filter out paused purchases and no-NAV gaps ──
-    const confirmDays = normalizeNonNegativeDays(plan.confirmDays ?? await getFundConfirmDays(plan.accountId, plan.fundCode), 0);
-    const arrivalDays = normalizeNonNegativeDays(plan.arrivalDays ?? await getFundArrivalDays(plan.accountId, plan.fundCode), 2);
+    const fundDateContext = await getFundDateContext(plan.accountId, plan.fundCode);
     const todayStr = formatDateUtc(now);
     const confirmDateStrFor = (runDateStr: string) => {
-      const confirmDateStr = addWorkdaysUtc(runDateStr, confirmDays);
+      const confirmDateStr = fundConfirmDate(runDateStr, fundDateContext.days, fundDateContext.tradingCalendar);
       if (confirmDateStr < runDateStr) {
-        logger.warn(`[pre-calc] confirmDate ${confirmDateStr} < runDate ${runDateStr}, confirmDays=${confirmDays}`, "batch-execute");
+        logger.warn(`[pre-calc] confirmDate ${confirmDateStr} < runDate ${runDateStr}, confirmDays=${fundDateContext.days}`, "batch-execute");
         return runDateStr;
       }
       return confirmDateStr;
@@ -316,7 +315,7 @@ export async function POST(req: NextRequest) {
         // QDII discloses one trading day later) → keep the date and create the record so the
         // NAV/units can be backfilled by /api/v1/fund/refresh-pending.
         const noNav = !cur || (!cur.hasNav && cur.sgzt !== "暂停申购");
-        const confirmDateStr = cur?.confirmDateStr ?? addWorkdaysUtc(ds, confirmDays);
+        const confirmDateStr = cur?.confirmDateStr ?? fundConfirmDate(ds, fundDateContext.days, fundDateContext.tradingCalendar);
         if (noNav && confirmDateStr < todayStr && navCoverageVerified && isConfirmedNavGap({ confirmDateStr, latestNavDateStr })) {
           skippedGap++;
           continue;
@@ -358,13 +357,13 @@ export async function POST(req: NextRequest) {
     }> = [];
     for (const runDate of datesToProcess) {
       const runDateStr = formatDateUtc(runDate);
-      let confirmDateStr = navResultMap.get(runDateStr)?.confirmDateStr ?? addWorkdaysUtc(runDateStr, confirmDays);
+      let confirmDateStr = navResultMap.get(runDateStr)?.confirmDateStr ?? fundConfirmDate(runDateStr, fundDateContext.days, fundDateContext.tradingCalendar);
       if (confirmDateStr < runDateStr) {
-        logger.warn(`[create] confirmDate ${confirmDateStr} < runDate ${runDateStr}, confirmDays=${confirmDays}`, "batch-execute");
+        logger.warn(`[create] confirmDate ${confirmDateStr} < runDate ${runDateStr}, confirmDays=${fundDateContext.days}`, "batch-execute");
         confirmDateStr = runDateStr;
       }
       const confirmDate = utcDate(confirmDateStr);
-      const arrivalDateStr = arrivalDays > 0 ? addWorkdaysUtc(confirmDateStr, arrivalDays) : confirmDateStr;
+      const arrivalDateStr = fundArrivalDate(confirmDateStr, fundDateContext.arrivalDays, fundDateContext.tradingCalendar);
       const arrivalDate = utcDate(arrivalDateStr);
       const foundNav = await getFundNavFromCacheOnly(plan.fundCode, confirmDate);
       const sgzt = foundNav?.sgzt ?? "";

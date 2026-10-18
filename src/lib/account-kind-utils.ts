@@ -11,6 +11,8 @@ export type AccountKindLike = {
   isConsumerLoan?: boolean | null;
   loanType?: string | null;
   institutionType?: string | null;
+  /** 多币种父账户（聚合账户）：只统计、不能记账，任何落账候选都必须排除。 */
+  isAggregate?: boolean | null;
   Institution?: { type?: string | null; name?: string | null; shortName?: string | null } | null;
 };
 
@@ -182,6 +184,8 @@ export function isInvestmentFundingAccount(account: AccountKindLike | null | und
 /** 普通收入/支出（含明细改账户）允许落到的账户。贷款、定期存款、基金/股票资金、基金持仓账户都不算。 */
 export function isIncomeExpensePostingAccount(account: AccountKindLike | null | undefined) {
   if (!account) return false;
+  // 多币种父账户（聚合账户）自身没有明细、不能记账：明细只能落到它的子账户上。
+  if (account.isAggregate === true) return false;
   if (account.kind === "loan") return false;
   if (isDepositAccount(account) || isPureInvestmentAccount(account) || isInvestmentFundingAccount(account)) return false;
   return true;
@@ -198,6 +202,8 @@ export const DEPOSIT_POSTING_EXPENSE_CATEGORY_NAMES = ["存款手续费", "利�
 /** 收入/支出弹窗的落账账户候选：普通账户全放行，存款账户也放行（分类在提交时校验白名单）。 */
 export function isIncomeExpensePostingOrDepositAccount(account: AccountKindLike | null | undefined) {
   if (!account) return false;
+  // 父账户即便是存款类也不能记账：这里不能只靠 isIncomeExpensePostingAccount 挡。
+  if (account.isAggregate === true) return false;
   if (isIncomeExpensePostingAccount(account)) return true;
   return isDepositAccount(account);
 }
@@ -238,6 +244,8 @@ export function isAdvanceFundingAccount(account: AccountKindLike | null | undefi
  */
 export function isTransferDropdownAccount(account: AccountKindLike | null | undefined) {
   if (!account) return false;
+  // 转账的转出/转入都必须是可记账账户，父账户只能通过它的币种子账户参与。
+  if (account.isAggregate === true) return false;
   return !isPureInvestmentAccount(account);
 }
 

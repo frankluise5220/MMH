@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/db/prisma";
-import { AccountKind, Prisma, TransactionType } from "@prisma/client";
+import { AccountKind, FundSubtype, Prisma, TransactionType } from "@prisma/client";
 import { toNumber } from "@/lib/date-utils";
 import { compareDetailEntriesAsc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
 import {
@@ -16,12 +16,21 @@ import { logger } from "@/lib/logger";
 import { rowWithLinkedInvestmentDisplayDate } from "@/lib/entry-reorder";
 import { depositRedemptionPrincipal } from "@/lib/server/deposit-lot-balance";
 import { loadEntryLinkedInvestmentDisplay } from "@/lib/server/entry-business-display";
+import {
+  recomputeAggregateAccountBalance,
+  refreshParentAggregateBalance,
+} from "@/lib/server/account-hierarchy";
 
 const FX_CONVERSION_SOURCE = "fx_conversion";
 const BALANCE_ENTRY_PAGE_SIZE = 5000;
 const BALANCE_WINDOW_MAX_ROWS = 20000;
 const BALANCE_WINDOW_DAYS = 31;
 const BALANCE_ANCHOR_MAX_ROWS = 2000;
+/**
+ * 资金侧交易日 = 到账日的投资动作。这些行的到账日只存在业务表
+ * （`fund_transactions` / `wealth_transactions`），TxRecord 上没有。
+ */
+const INVESTMENT_CASH_IN_SUBTYPES = [FundSubtype.redeem, FundSubtype.dividend_cash, FundSubtype.switch_out];
 
 export const BALANCE_ENTRY_SELECT = {
   id: true,
@@ -730,6 +739,7 @@ function buildBalanceWindowWhere(
 ) {
   const lowerBound = dateFromLocalKey(startKeyExclusive);
   const upperBound = dateFromLocalKey(addDaysToLocalKey(endKeyInclusive, 2));
+  const range = { gt: lowerBound, lte: upperBound };
   return {
     deletedAt: null,
     ...(hidFilter ?? {}),
@@ -737,9 +747,43 @@ function buildBalanceWindowWhere(
       txRecordAccountScopeWhere([accountId]),
       {
         OR: [
-          { date: { gt: lowerBound, lte: upperBound } },
-          { postedAt: { gt: lowerBound, lte: upperBound } },
-          { fundArrivalDate: { gt: lowerBound, lte: upperBound } },
+          { date: range },
+          { postedAt: range },
+          { fundArrivalDate: range },
+          // 赎回 / 现金分红 / 转出的资金侧交易日是到账日，而到账日只存在
+          // 业务表，TxRecord 上没有。窗口必须按到账日切：否则申请日在窗口 A、
+          // 到账日在窗口 B 的行，会在 A 被精筛丢弃、在 B 又被日期粗筛排除，
+          // 永远不计入余额（2026-10-18 用户报告：09-24 申请、10-08 到账的
+          // 14476.83 赎回被漏，账户余额少这笔）。
+          {
+            EntryBusinessLinkCash: {
+              some: {
+                deletedAt: null,
+                OR: [
+                  {
+                    FundTransaction: {
+                      is: {
+                        cashAccountId: accountId,
+                        deletedAt: null,
+                        fundSubtype: { in: INVESTMENT_CASH_IN_SUBTYPES },
+                        arrivalDate: range,
+                      },
+                    },
+                  },
+                  {
+                    WealthTransaction: {
+                      is: {
+                        cashAccountId: accountId,
+                        deletedAt: null,
+                        action: { in: INVESTMENT_CASH_IN_SUBTYPES },
+                        arrivalDate: range,
+                      },
+                    },
+                  },
+                ],
+              },
+            },
+          },
         ],
       },
     ],
@@ -1201,9 +1245,17 @@ export async function recalcAndSaveAccountBalance(accountId: string) {
       billingDay: true,
       balance: true,
       balanceRecomputedAt: true,
+      isAggregate: true,
+      parentId: true,
     },
   });
   if (!acc) return false;
+  // 多币种父账户没有自己的明细（2026-10-18）：余额 = 子户按本位币折算合计。
+  // 走下面的记录重算会把它冲成 0，所以这里直接交给聚合重算。
+  if (acc.isAggregate) {
+    await recomputeAggregateAccountBalance(prisma, accountId).catch(() => null);
+    return true;
+  }
   const todayKey = localDateKey(new Date());
   const asOf = endOfLocalDayKey(todayKey);
 
@@ -1239,7 +1291,12 @@ export async function recalcAndSaveAccountBalance(accountId: string) {
     });
   }
 
-  return writeAccountBalance(accountId, newBalance, asOf, acc.balanceRecomputedAt).catch(() => false);
+  const saved = await writeAccountBalance(accountId, newBalance, asOf, acc.balanceRecomputedAt).catch(() => false);
+  // 子户余额变了，父账户的折合余额必须跟着刷，否则统计口径停在旧值。
+  if (acc.parentId) {
+    await refreshParentAggregateBalance(prisma, [accountId]).catch(() => {});
+  }
+  return saved;
 }
 
 export async function applyEntryChangesToAccountBalances(changes: EntryBalanceChange[]) {
@@ -1273,6 +1330,7 @@ export async function applyEntryChangesToAccountBalances(changes: EntryBalanceCh
       billingDay: true,
       balance: true,
       balanceRecomputedAt: true,
+      isAggregate: true,
     },
   });
   const todayKey = localDateKey(new Date());
@@ -1299,6 +1357,8 @@ export async function applyEntryChangesToAccountBalances(changes: EntryBalanceCh
       : null;
 
   for (const account of accounts) {
+    // 多币种父账户没有明细，增量口径对它没有意义（余额来自子户折算）。
+    if (account.isAggregate) continue;
     const accountLike = {
       id: account.id,
       kind: account.kind,
@@ -1400,6 +1460,9 @@ export async function applyEntryChangesToAccountBalances(changes: EntryBalanceCh
     ).catch(() => false);
     if (!saved) await recalcAndSaveAccountBalance(account.id).catch(() => {});
   }
+
+  // 子户余额变动后把父账户的折合余额同步一遍（没有父账户时是一次空查询）。
+  await refreshParentAggregateBalance(prisma, accounts.map((account) => account.id)).catch(() => {});
 }
 
 export async function getMaintainedAccountBalances(

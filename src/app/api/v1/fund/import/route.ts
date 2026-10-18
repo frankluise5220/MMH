@@ -8,7 +8,7 @@ import {
   normalizeImportAccountMatchKey,
   resolveImportAccountIdFromList,
 } from "@/lib/account-import-match";
-import { getFundConfirmRule, normalizeNonNegativeDays, setFundConfirmRuleInTx } from "@/lib/fund/confirmDays";
+import { getFundConfirmRule } from "@/lib/fund/confirmDays";
 import { getFundFeeRate, getFundFeeRateByDate } from "@/lib/fund/feeRate";
 import { getFundNav, getLatestFundNav } from "@/lib/fund/navCache";
 import { resolveFundName } from "@/lib/fund/fundProfile";
@@ -52,8 +52,6 @@ type AccountLookupRow = {
   investProductType: string | null;
   tradingCalendar: string | null;
   billingDay: number | null;
-  defaultConfirmDays: number | null;
-  defaultArrivalDays: number | null;
   fundUnitsDecimals: number | null;
   numberMasked: string | null;
   Institution: { name: string | null; shortName?: string | null } | null;
@@ -130,14 +128,6 @@ type FundImportEnrichedItem = {
   issues: ImportIssue[];
 };
 
-type FundImportRuleOverride = {
-  fundAccountId?: string | null;
-  fundAccount?: string | null;
-  fundCode?: string | null;
-  confirmDays?: number | null;
-  arrivalDays?: number | null;
-};
-
 type FundImportRequestContext = {
   fundAccountId?: string | null;
   fundAccount?: string | null;
@@ -164,14 +154,6 @@ type ImportContext = {
   /** 同机构电子钱包缓存：institutionId -> 账户（null 表示该机构下暂无） */
   institutionCashAccountByInstitutionId: Map<string, AccountLookupRow | null>;
   requestContext: ResolvedFundImportRequestContext | null;
-};
-
-type ParsedRuleOverride = {
-  fundAccountId: string | null;
-  fundAccountKey: string | null;
-  fundCode: string;
-  confirmDays?: number;
-  arrivalDays?: number;
 };
 
 function corsHeaders() {
@@ -330,8 +312,6 @@ async function buildImportContext(): Promise<ImportContext> {
       investProductType: true,
       tradingCalendar: true,
       billingDay: true,
-      defaultConfirmDays: true,
-      defaultArrivalDays: true,
       fundUnitsDecimals: true,
       numberMasked: true,
       Institution: { select: { name: true, shortName: true } },
@@ -526,52 +506,9 @@ async function loadInferredCashAccountForFundAccount(
   return lookup;
 }
 
-function buildRuleOverrideMap(overrides: FundImportRuleOverride[] | undefined) {
-  const map = new Map<string, ParsedRuleOverride>();
-  for (const override of overrides ?? []) {
-    const fundCode = String(override.fundCode ?? "").trim();
-    if (!fundCode) continue;
-    const fundAccountId = String(override.fundAccountId ?? "").trim() || null;
-    const fundAccountKey = normalizeImportAccountMatchKey(String(override.fundAccount ?? "").trim()) || null;
-    if (!fundAccountId && !fundAccountKey) continue;
-    const key = `${fundAccountId ?? fundAccountKey}::${fundCode}`;
-    const next: ParsedRuleOverride = {
-      fundAccountId,
-      fundAccountKey,
-      fundCode,
-    };
-    if (override.confirmDays != null) {
-      next.confirmDays = normalizeNonNegativeDays(override.confirmDays, 0);
-    }
-    if (override.arrivalDays != null) {
-      next.arrivalDays = normalizeNonNegativeDays(override.arrivalDays, 2);
-    }
-    map.set(key, next);
-  }
-  return map;
-}
-
-function findRuleOverride(
-  overrideMap: Map<string, ParsedRuleOverride>,
-  fundAccountMeta: AccountLookupRow | null,
-  fundAccount: string,
-  fundCode: string,
-) {
-  const normalizedFundCode = String(fundCode ?? "").trim();
-  if (!normalizedFundCode) return null;
-  if (fundAccountMeta?.id) {
-    const matched = overrideMap.get(`${fundAccountMeta.id}::${normalizedFundCode}`);
-    if (matched) return matched;
-  }
-  const accountKey = normalizeImportAccountMatchKey(fundAccount);
-  if (!accountKey) return null;
-  return overrideMap.get(`${accountKey}::${normalizedFundCode}`) ?? null;
-}
-
 async function enrichImportItem(
   ctx: ImportContext,
   input: FundImportInput,
-  overrideMap: Map<string, ParsedRuleOverride>,
 ): Promise<FundImportEnrichedItem> {
   const sourceCalculatedFields = importCalculatedFieldSet(input);
   const calculatedFields = new Set<FundImportCalculatedField>();
@@ -678,20 +615,22 @@ async function enrichImportItem(
   const tags = parseTagNamesInput(input.tags).join(",");
 
   if (fundAccountMeta && fundCode && supportedFundCode && date) {
-    const override = findRuleOverride(overrideMap, fundAccountMeta, fundAccount, fundCode);
-    const confirmRule = await getFundConfirmRule(fundAccountMeta.id, fundCode, {
-      days: fundAccountMeta.defaultConfirmDays,
-      arrivalDays: fundAccountMeta.defaultArrivalDays,
-    });
-    confirmDays = override?.confirmDays ?? confirmRule.days;
-    arrivalDays = override?.arrivalDays ?? confirmRule.arrivalDays;
-    // 确认/净值日期留空按 T+0 处理（=交易日期当天）
+    const confirmRule = await getFundConfirmRule(fundAccountMeta.id, fundCode);
+    confirmDays = confirmRule.days;
+    arrivalDays = confirmRule.arrivalDays;
+    // 确认日留空按确认库 T+N 推算（不再固定 T+0）
     if (!confirmDate) {
-      confirmDate = normalizeImportDatePart(date);
+      confirmDate = addImportTradingDays(date, confirmDays, fundAccountMeta.tradingCalendar);
     }
-    // 到账日留空用系统值（账户到账规则推算），规则缺失兜底 T+2
-    if (!arrivalDate && date && (subtype === "buy" || (subtype === "buy_failed" && source === "regular_invest_refund") || subtype === "dividend_cash")) {
-      arrivalDate = addImportTradingDays(date, arrivalDays ?? 2, fundAccountMeta.tradingCalendar);
+    // 到账日留空按「确认日 + 到账天数」推算；买入、赎回、现金分红同一口径
+    if (!arrivalDate && confirmDate && (
+      subtype === "buy" ||
+      (subtype === "buy_failed" && source === "regular_invest_refund") ||
+      subtype === "redeem" ||
+      subtype === "switch_out" ||
+      subtype === "dividend_cash"
+    )) {
+      arrivalDate = addImportTradingDays(confirmDate, arrivalDays, fundAccountMeta.tradingCalendar);
     }
 
     if (fee == null && feeRateInput != null) {
@@ -808,8 +747,8 @@ async function createFundTransaction(tx: Prisma.TransactionClient, householdId: 
 
   const confirmDate = item.confirmDate ? toUtcDate(item.confirmDate) : null;
   const arrivalDate = item.arrivalDate ? toUtcDate(item.arrivalDate) : (
-    (subtype === "buy" || isBuyFailedRefund) && item.date
-      ? toUtcDate(addTradingDaysUtc(item.date, item.arrivalDays ?? 2, fundAccount.tradingCalendar))
+    item.confirmDate && (subtype === "buy" || isBuyFailedRefund || subtype === "redeem" || subtype === "switch_out" || subtype === "dividend_cash")
+      ? toUtcDate(addTradingDaysUtc(item.confirmDate, item.arrivalDays ?? 2, fundAccount.tradingCalendar))
       : null
   );
   const recordDate = toUtcDate(item.date);
@@ -884,7 +823,6 @@ export async function POST(req: Request) {
     const body = (await req.json().catch(() => null)) as null | {
       mode?: "preview" | "import";
       items?: FundImportInput[] | FundImportEnrichedItem[];
-      overrides?: FundImportRuleOverride[];
       context?: FundImportRequestContext | null;
       createFundInstitutionCashAccount?: boolean;
     };
@@ -897,7 +835,6 @@ export async function POST(req: Request) {
       );
     }
     const items = Array.isArray(body?.items) ? body.items : [];
-    const overrideMap = buildRuleOverrideMap(Array.isArray(body?.overrides) ? body.overrides : []);
     if (items.length === 0) {
       return NextResponse.json({ ok: false, code: "MISSING_IMPORT_ITEMS", error: "缺少导入记录" }, { status: 400, headers: corsHeaders() });
     }
@@ -908,7 +845,7 @@ export async function POST(req: Request) {
     const enrichedItems = await mapWithConcurrency(
       items as FundImportInput[],
       ENRICH_CONCURRENCY,
-      (item) => enrichImportItem(ctx, item, overrideMap),
+      (item) => enrichImportItem(ctx, item),
     );
 
     if (mode === "preview") {
@@ -930,7 +867,6 @@ export async function POST(req: Request) {
     const institutionCashAccountIdByName = new Map<string, string>();
     const created = await prisma.$transaction(async (tx) => {
       const rows: Array<Awaited<ReturnType<typeof createFundTransaction>>> = [];
-      const persistedRuleKeys = new Set<string>();
       for (const item of enrichedItems) {
         // 勾选「创建基金账户的同机构资金账户」时，先落地同机构电子钱包账户
         if (item.pendingInstitutionCashAccount && !item.cashAccountId) {
@@ -972,20 +908,6 @@ export async function POST(req: Request) {
           if (accountId) {
             item.cashAccountId = accountId;
             item.cashAccount = pending.name;
-          }
-        }
-        if (item.fundAccountId && item.fundCode) {
-          const ruleKey = `${item.fundAccountId}::${item.fundCode}`;
-          const override = overrideMap.get(ruleKey);
-          if (override && !persistedRuleKeys.has(ruleKey)) {
-            await setFundConfirmRuleInTx(
-              tx,
-              item.fundAccountId,
-              item.fundCode,
-              override.confirmDays ?? item.confirmDays ?? 0,
-              override.arrivalDays ?? item.arrivalDays ?? 2,
-            );
-            persistedRuleKeys.add(ruleKey);
           }
         }
         rows.push(await createFundTransaction(tx, householdId, item));

@@ -407,6 +407,3 @@ export function isWithinRecentTradingDaysUtc(
   return tradingDaysAfterTarget <= Math.trunc(maxTradingDays);
 }
 
-export function addWorkdaysUtc(dateStr: string, n: number) {
-  return addTradingDaysUtc(dateStr, n, "generic_weekday");
-}

@@ -3168,6 +3168,11 @@ export async function restoreHouseholdBackup(
           currency: item.currency == null ? "CNY" : String(item.currency),
           isActive: item.isActive == null ? true : Boolean(item.isActive),
           isPlaceholder: item.isPlaceholder == null ? false : Boolean(item.isPlaceholder),
+          // 多币种父账户（2026-10-18）：parentId 是自引用外键，父行可能排在子行
+          // 后面，createMany 里直接写会撞外键 —— 这里先全部建成根账户，紧接着的
+          // 补挂循环再按备份里的层级挂回去（漏挂等于层级静默丢失）。
+          parentId: null,
+          isAggregate: item.isAggregate == null ? false : Boolean(item.isAggregate),
           investProductType: item.investProductType == null ? null : (String(item.investProductType) as never),
           creditLimit: item.creditLimit == null ? null : String(item.creditLimit),
           billingDay: item.billingDay == null ? null : Number(item.billingDay),
@@ -3201,6 +3206,18 @@ export async function restoreHouseholdBackup(
           fundUnitsDecimals: item.fundUnitsDecimals == null ? 2 : Number(item.fundUnitsDecimals),
         })),
       });
+    }
+
+    // 多币种父账户层级补挂（见上面 createMany 里的注释）：父行必须已经存在，
+    // 且只认本次恢复进来的账户，指向不存在/自身的 parentId 一律按根账户处理。
+    if (data.accounts.length > 0) {
+      const importedAccountIds = new Set(data.accounts.map((item) => String(item.id)));
+      for (const item of data.accounts) {
+        const accountId = String(item.id);
+        const parentId = item.parentId == null ? "" : String(item.parentId);
+        if (!parentId || parentId === accountId || !importedAccountIds.has(parentId)) continue;
+        await tx.account.update({ where: { id: accountId }, data: { parentId } });
+      }
     }
 
     // 旧备份（2026-10-07 之前）没有贷款类别：补齐四个内置类别，并把没有类别的贷款按口径
@@ -3311,6 +3328,7 @@ export async function restoreHouseholdBackup(
             days: Number(item.days ?? 0),
             redeemCostDays: Number(item.redeemCostDays ?? 1),
             arrivalDays: Number(item.arrivalDays ?? 0),
+            manualOverride: Boolean(item.manualOverride),
             createdAt: item.createdAt ? new Date(String(item.createdAt)) : new Date(),
             updatedAt: item.updatedAt ? new Date(String(item.updatedAt)) : new Date(),
             effectiveDate: item.effectiveDate ? new Date(String(item.effectiveDate)) : new Date(),

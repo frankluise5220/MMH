@@ -55,6 +55,9 @@ export async function GET(req: Request) {
         investProductType: true,
         billingDay: true,
         currency: true,
+        // 多币种父子层级：父账户的余额是子户折本位币之和，不能按明细重算。
+        parentId: true,
+        isAggregate: true,
       },
     });
 
@@ -111,6 +114,7 @@ export async function GET(req: Request) {
     );
 
     const enriched = accounts.map((a) => {
+      if (a.isAggregate) return { ...a, balance: toNumber(a.balance) };
       const balance = isPureInvestmentAccount(a)
         ? investBalByAccountId.get(a.id)?.marketValue ?? 0
         : a.kind === AccountKind.insurance

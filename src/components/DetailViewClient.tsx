@@ -160,6 +160,14 @@ export type DetailEntry = {
    */
   bookAmount?: number | null;
   currency?: string | null;
+  /**
+   * 报表口径的展示值（本位币折算）：报表下钻的合计按本位币统计，
+   * 明细也必须同口径显示，否则会出现「合计是人民币、明细行标着 $」的矛盾。
+   * 只在报表下钻（`loadReportDetailEntries`）里填充；账户明细页保持原币。
+   */
+  displayAmount?: number | null;
+  displayRealizedProfit?: number | null;
+  displayCurrency?: string | null;
   runningBalance?: number | null;
   /** 对账锁定：非空 = 该记录已对账，不可删除 / 修改（编辑窗只读）。 */
   reconciledAt?: string | null;
@@ -365,8 +373,9 @@ function propertyIncomeExpenseType(entry: DetailEntry): "income" | "expense" | n
   return null;
 }
 
-function entryCurrency(entry: { currency?: string | null }) {
-  return String(entry.currency ?? "CNY").trim().toUpperCase() || "CNY";
+function entryCurrency(entry: { currency?: string | null; displayCurrency?: string | null }) {
+  // 报表下钻会带 `displayCurrency`（本位币折算口径）；账户明细页没有该字段，仍用原币。
+  return String(entry.displayCurrency ?? entry.currency ?? "CNY").trim().toUpperCase() || "CNY";
 }
 
 // Small provenance badge next to the amount: the original settlement amount in
@@ -382,9 +391,14 @@ function entryOriginalAmountBadge(entry: DetailEntry) {
   );
 }
 
-function formatEntryCurrencyMoney(amount: number, entry: { currency?: string | null }) {
+function formatEntryCurrencyMoney(amount: number, entry: { currency?: string | null; displayCurrency?: string | null }) {
   const currency = entryCurrency(entry);
   return formatCurrencyMoney(amount, currency);
+}
+
+/** 报表下钻的金额是折算后的本位币值；没有 displayAmount 时回退原币金额。 */
+function entryDisplayAbsAmount(entry: DetailEntry, fallbackAbsAmount: number) {
+  return entry.displayAmount == null ? fallbackAbsAmount : Math.abs(toNumber(entry.displayAmount));
 }
 
 function formatSelectedAmountsByCurrency(amounts: Map<string, number>) {
@@ -1337,7 +1351,7 @@ export function DetailViewClient({
           <span className={`whitespace-nowrap tabular-nums ${inflow !== null ? inflowCls : "text-slate-700"}`}>
             {inflow !== null ? (
               <>
-                {formatEntryCurrencyMoney(inflow, e)}
+                {formatEntryCurrencyMoney(entryDisplayAbsAmount(e, inflow), e)}
                 {entryOriginalAmountBadge(e)}
               </>
             ) : ""}
@@ -1371,7 +1385,7 @@ export function DetailViewClient({
           <span className={`whitespace-nowrap tabular-nums ${outflow !== null ? outflowCls : "text-slate-700"}`}>
             {outflow !== null ? (
               <>
-                {formatEntryCurrencyMoney(outflow, e)}
+                {formatEntryCurrencyMoney(entryDisplayAbsAmount(e, outflow), e)}
                 {entryOriginalAmountBadge(e)}
               </>
             ) : ""}
@@ -1512,7 +1526,8 @@ export function DetailViewClient({
       filterNumber: (e) => e.realizedProfit ?? null,
       sortValue: (e) => e.realizedProfit ?? null,
       render: (e: DetailEntry) => {
-        const profit = e.realizedProfit;
+        // 报表下钻用折算后的本位币收益，与左侧合计同口径。
+        const profit = e.displayRealizedProfit ?? e.realizedProfit;
         return <span className={`whitespace-nowrap tabular-nums ${profit == null ? "text-slate-300" : pnlColor(profit, colorScheme)}`}>{profit == null ? "" : formatEntryCurrencyMoney(profit, e)}</span>;
       },
     } satisfies AdvancedDataTableColumn<DetailEntry>,
@@ -1677,7 +1692,7 @@ export function DetailViewClient({
                       </span>
                       <span className="shrink-0 text-right">
                         <span className={`block text-sm font-semibold tabular-nums ${effectiveAmount >= 0 ? inflowCls : outflowCls}`}>
-                          {effectiveAmount >= 0 ? "+" : "-"}{formatEntryCurrencyMoney(Math.abs(effectiveAmount), entry)}
+                          {effectiveAmount >= 0 ? "+" : "-"}{formatEntryCurrencyMoney(entryDisplayAbsAmount(entry, Math.abs(effectiveAmount)), entry)}
                         </span>
                         {showRunningBalance && entry.runningBalance != null ? (
                           <span className="mt-0.5 block text-[11px] tabular-nums text-slate-400">{t("detailView.runningBalance", { amount: formatEntryCurrencyMoney(toNumber(entry.runningBalance), entry) })}</span>

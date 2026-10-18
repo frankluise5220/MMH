@@ -27,10 +27,57 @@ import { renewDeposit } from "@/lib/server/sidebar-actions/transaction-actions";
 import { resolveCategorySnapshot, SYSTEM_DEPOSIT_INTEREST_CATEGORY } from "@/lib/default-categories";
 import { ENTRY_ORIGIN_SCHEDULED_TASK } from "@/lib/transaction-semantics";
 import { toNumber } from "@/lib/date-utils";
+import { normalizeCurrency } from "@/lib/currency";
 import { loadDepositLotBalance } from "@/lib/server/deposit-lot-balance";
 
 const MAX_LOTS_PER_RUN = 200;
 const MAX_RENEW_ROUNDS_PER_LOT = 24;
+
+/** 到期/付息入账可以落到的资金账户类型（与录入表单的资金账户候选一致）。 */
+const MATURITY_CASH_ACCOUNT_KINDS = ["bank_debit", "cash", "ewallet"] as const;
+
+/**
+ * 到期（含利息转出）入账的资金账户：**必须同币种**（2026-10-18 用户裁定：
+ * 外币定期存单到期要用原币种入账原外币账户）。
+ *
+ * `buy.accountId` 是存单当初的资金来源账户，正常情况下就是原外币账户，优先沿用；
+ * 但外币存单也可能曾用人民币卡代付（跨币种存入），此时延用它会把外币金额记到
+ * 人民币卡上 —— 那就改找同币种的资金账户，同机构优先。
+ * 一个同币种账户都没有时退回原账户，至少不阻断到期处理。
+ */
+async function resolveMaturityCashAccount(params: {
+  householdId: string;
+  currency: string;
+  original: { id: string; name: string; currency: string | null; institutionId: string | null } | null;
+}): Promise<{ id: string; name: string } | null> {
+  const currency = normalizeCurrency(params.currency);
+  const original = params.original;
+  if (original && normalizeCurrency(original.currency) === currency) {
+    return { id: original.id, name: original.name };
+  }
+  const candidates = await prisma.account.findMany({
+    where: {
+      householdId: params.householdId,
+      isPlaceholder: { not: true },
+      isActive: true,
+      kind: { in: [...MATURITY_CASH_ACCOUNT_KINDS] },
+    },
+    select: { id: true, name: true, currency: true, kind: true, institutionId: true },
+    orderBy: { createdAt: "asc" },
+  });
+  const sameCurrency = candidates.filter((account) => normalizeCurrency(account.currency) === currency);
+  if (sameCurrency.length === 0) {
+    return original ? { id: original.id, name: original.name } : null;
+  }
+  // 同币种里仍优先借记卡，同机构优先（与录入弹窗的候选排序一致）。
+  const debitCards = sameCurrency.filter((account) => account.kind === "bank_debit");
+  const pool = debitCards.length > 0 ? debitCards : sameCurrency;
+  const sameInstitution = original?.institutionId
+    ? pool.find((account) => account.institutionId === original.institutionId) ?? null
+    : null;
+  const picked = sameInstitution ?? pool[0];
+  return { id: picked.id, name: picked.name };
+}
 
 export type DepositAutoMaturityDetail = {
   lotId: string;
@@ -389,9 +436,15 @@ async function autoAccruePeriodicInterest(
   });
   const cashAccount = await prisma.account.findUnique({
     where: { id: cashAccountId },
-    select: { id: true, name: true, currency: true },
+    select: { id: true, name: true, currency: true, institutionId: true },
   });
   if (!depositAccount || !cashAccount) return { status: "skipped", reason: "account not found" };
+  // 付息转出同样是「到期入账」：外币存单的利息只能进同币种资金账户。
+  const payoutCashAccount = (await resolveMaturityCashAccount({
+    householdId,
+    currency: buy.currency ?? depositAccount.currency ?? cashAccount.currency ?? "CNY",
+    original: cashAccount,
+  })) ?? { id: cashAccount.id, name: cashAccount.name };
 
   const startDate = buy.date;
   if (!startDate) return { status: "skipped", reason: "missing start date" };
@@ -559,8 +612,8 @@ async function autoAccruePeriodicInterest(
             type: TransactionType.transfer,
             accountId: depositAccount.id,
             accountName: depositAccount.name,
-            toAccountId: cashAccount.id,
-            toAccountName: cashAccount.name,
+            toAccountId: payoutCashAccount.id,
+            toAccountName: payoutCashAccount.name,
             amount: -accrued,
             currency,
             source: "deposit",
@@ -587,7 +640,7 @@ async function autoAccruePeriodicInterest(
 
   if (pairs > 0) {
     await recalcAndSaveAccountBalance(depositAccount.id).catch(() => {});
-    await recalcAndSaveAccountBalance(cashAccount.id).catch(() => {});
+    await recalcAndSaveAccountBalance(payoutCashAccount.id).catch(() => {});
     await syncIndependentBusinessTransactionFromTxRecord(prisma, { businessEntryId: buy.id }).catch((e) => {
       console.error("autoAccruePeriodicInterest sync buy projection:", e);
     });
@@ -623,9 +676,15 @@ export async function autoWithdrawAccruedInterestForLot(params: {
   if (!buy?.accountId || !buy.toAccountId) return { status: "skipped", reason: "missing accounts" };
   const [depositAccount, cashAccount] = await Promise.all([
     prisma.account.findUnique({ where: { id: buy.toAccountId }, select: { id: true, name: true, currency: true } }),
-    prisma.account.findUnique({ where: { id: buy.accountId }, select: { id: true, name: true, currency: true } }),
+    prisma.account.findUnique({ where: { id: buy.accountId }, select: { id: true, name: true, currency: true, institutionId: true } }),
   ]);
   if (!depositAccount || !cashAccount) return { status: "skipped", reason: "account not found" };
+  const recordCurrency = buy.currency ?? depositAccount.currency ?? cashAccount.currency ?? "CNY";
+  const payoutCashAccount = (await resolveMaturityCashAccount({
+    householdId: params.householdId,
+    currency: recordCurrency,
+    original: cashAccount,
+  })) ?? { id: cashAccount.id, name: cashAccount.name };
 
   const incomes = await prisma.txRecord.findMany({
     where: {
@@ -663,10 +722,10 @@ export async function autoWithdrawAccruedInterestForLot(params: {
         type: TransactionType.transfer,
         accountId: depositAccount.id,
         accountName: depositAccount.name,
-        toAccountId: cashAccount.id,
-        toAccountName: cashAccount.name,
+        toAccountId: payoutCashAccount.id,
+        toAccountName: payoutCashAccount.name,
         amount: -amount,
-        currency: buy.currency ?? depositAccount.currency ?? cashAccount.currency ?? "CNY",
+        currency: recordCurrency,
         source: "deposit",
         entryOrigin: ENTRY_ORIGIN_SCHEDULED_TASK,
         depositSourceEntryId: buy.id,
@@ -678,7 +737,7 @@ export async function autoWithdrawAccruedInterestForLot(params: {
     totalInterest += amount;
   }
   await recalcAndSaveAccountBalance(depositAccount.id).catch(() => {});
-  await recalcAndSaveAccountBalance(cashAccount.id).catch(() => {});
+  await recalcAndSaveAccountBalance(payoutCashAccount.id).catch(() => {});
   return { status: "accrued", pairs: pending.length, totalInterest: round2(totalInterest) };
 }
 
@@ -706,11 +765,19 @@ async function autoRedeemDeposit(buyId: string, householdId: string): Promise<Lo
   }
   const [depositAccount, cashAccount] = await Promise.all([
     prisma.account.findUnique({ where: { id: depositAccountId }, select: { id: true, name: true, currency: true } }),
-    prisma.account.findUnique({ where: { id: cashAccountId }, select: { id: true, name: true, currency: true } }),
+    prisma.account.findUnique({ where: { id: cashAccountId }, select: { id: true, name: true, currency: true, institutionId: true } }),
   ]);
   if (!depositAccount || !cashAccount) {
     return { status: "skipped", reason: "account not found", retryable: false };
   }
+  const recordCurrency = buy.currency ?? depositAccount.currency ?? cashAccount.currency ?? "CNY";
+  // 外币存单到期必须原币种入账原外币账户；跨币种存入留下的 buy.accountId 是人民币卡，
+  // 直接入账会把外币本息记到人民币账户上。
+  const arrivalCashAccount = (await resolveMaturityCashAccount({
+    householdId,
+    currency: recordCurrency,
+    original: cashAccount,
+  })) ?? { id: cashAccount.id, name: cashAccount.name };
 
   const maturityDate = buy.fundArrivalDate;
   if (!maturityDate) return { status: "skipped", reason: "missing maturity", retryable: false };
@@ -739,10 +806,10 @@ async function autoRedeemDeposit(buyId: string, householdId: string): Promise<Lo
       type: TransactionType.investment,
       accountId: depositAccount.id,
       accountName: depositAccount.name,
-      toAccountId: cashAccount.id,
-      toAccountName: cashAccount.name,
+      toAccountId: arrivalCashAccount.id,
+      toAccountName: arrivalCashAccount.name,
       amount: arrival,
-      currency: buy.currency ?? depositAccount.currency ?? "CNY",
+      currency: recordCurrency,
       fundName: buy.fundName,
       fundProductType: "deposit",
       fundSubtype: FundSubtype.redeem,
@@ -762,7 +829,7 @@ async function autoRedeemDeposit(buyId: string, householdId: string): Promise<Lo
     console.error("autoRedeemDeposit sync business transaction:", e);
   });
   await recalcAndSaveAccountBalance(depositAccount.id).catch(() => {});
-  await recalcAndSaveAccountBalance(cashAccount.id).catch(() => {});
+  await recalcAndSaveAccountBalance(arrivalCashAccount.id).catch(() => {});
   return { status: "redeemed", entryId: created.id };
 }
 

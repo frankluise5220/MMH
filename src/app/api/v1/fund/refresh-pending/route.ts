@@ -2,8 +2,8 @@ import { NextResponse } from "next/server";
 import { AccountKind, FundCashFlowKind, FundProductType, FundSubtype } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
-import { addWorkdaysUtc, toNumber } from "@/lib/date-utils";
-import { getFundConfirmDays } from "@/lib/fund/confirmDays";
+import { toNumber } from "@/lib/date-utils";
+import { fundConfirmDate, getFundConfirmDays } from "@/lib/fund/confirmDays";
 import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
 import { getFundNav, refreshHeldFundLatestNavs } from "@/lib/fund/navCache";
 import { calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
@@ -97,7 +97,7 @@ export async function POST() {
     const fundAccountIds = Array.from(new Set(candidateRows.map((row) => row.fundAccountId).filter(Boolean)));
     const accounts = await prisma.account.findMany({
       where: { id: { in: fundAccountIds }, householdId, kind: AccountKind.investment },
-      select: { id: true, investProductType: true, fundUnitsDecimals: true },
+      select: { id: true, investProductType: true, fundUnitsDecimals: true, tradingCalendar: true },
     });
     const accountById = new Map(accounts.filter((account) => isFundLikeProduct(account.investProductType)).map((account) => [account.id, account]));
 
@@ -119,7 +119,7 @@ export async function POST() {
         const applyDate = ymd(row.applyDate);
         const confirmDateStr = row.confirmDate
           ? ymd(row.confirmDate)
-          : addWorkdaysUtc(applyDate, await getFundConfirmDays(fundAccountId, row.fundCode));
+          : fundConfirmDate(applyDate, await getFundConfirmDays(fundAccountId, row.fundCode), account.tradingCalendar);
         if (confirmDateStr > todayStr) {
           skippedFuture++;
           continue;

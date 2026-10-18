@@ -77,6 +77,10 @@ type AccountOption = {
   isHeader?: boolean;
   isGroup?: boolean;
   parentId?: string;
+  /** 多币种层级里的父账户 id（注意与下拉分组头的 `parentId` 区分）。 */
+  accountParentId?: string | null;
+  /** 多币种父账户（聚合账户）标记：它自己不能记账。 */
+  isAggregate?: boolean | null;
 };
 
 type CategoryOption = {
@@ -1060,6 +1064,16 @@ export function TransactionFormModal({
   const txAccountCurrency = normalizeCurrencyLabel(accountMetaById.get(accountId)?.currency) || "CNY";
   const effectiveTxCurrency = txCurrency ? normalizeCurrencyLabel(txCurrency) : txAccountCurrency;
   const txPostingIsForeign = txType === "expense" && effectiveTxCurrency !== txAccountCurrency;
+  // Income has no editable "transaction currency": it always follows the posting account
+  // (deposit interest follows the selected certificate) and the server stores the same
+  // value. The dialog used to hide the currency and store null, so the detail table showed
+  // income on foreign-currency accounts as CNY (user report 2026-10-18).
+  const incomeLotCurrency = depositLotId
+    ? depositLotOptions.find((lot) => lot.id === depositLotId)?.currency ?? null
+    : null;
+  const incomeCurrency = txType === "income"
+    ? normalizeCurrencyLabel(incomeLotCurrency ?? accountMetaById.get(accountId)?.currency)
+    : effectiveTxCurrency;
   // 旧模型记录（currency 即外币、没有 originalCurrency）编辑时保持原语义，
   // 不强行升级成"本币入账 + 原币事实"。
   const showPostedAmount = txPostingIsForeign && fxPostingV2;
@@ -1959,6 +1973,86 @@ export function TransactionFormModal({
       return;
     }
 
+    // 转入外币到本币资金账户（2026-10-18 用户裁定）：币种不一致且转入账户是资金类
+    // 账户时，先问一句「是否为它创建一个对应币种的子账户」。确认后建好子账户并把
+    // 这笔转账落到子账户上，标准转账就变成同币种转账。
+    // 转入账户本身已是多币种子账户时不能再往下分层（用户 2026-10-18 口径）：这里
+    // 不自动建兄弟子户，直接拦下让用户自己改选账户。
+    let transferToAccountId = toAccountId;
+    if (txType === "transfer" && fromAccountId && toAccountId) {
+      const fromMeta = accountMetaById.get(fromAccountId);
+      const toMeta = accountMetaById.get(toAccountId);
+      const fromCurrency = normalizeCurrencyLabel(fromMeta?.currency);
+      const toCurrency = normalizeCurrencyLabel(toMeta?.currency);
+      const toKind = String(toMeta?.kind ?? "");
+      const toIsCashLike = toKind === "cash" || toKind === "bank_debit" || toKind === "ewallet";
+      const isChildTarget = !!String(toMeta?.accountParentId ?? "");
+      if (fromMeta && toMeta && fromCurrency !== toCurrency && toIsCashLike) {
+        if (isChildTarget) {
+          // 子账户不能再分子账户：请用户改选同币种账户，或改选一个独立账户
+          // （非子账户），由系统为它创建同币种子账户。
+          window.alert(t("txForm.alert.currencyChildPickSameCurrencyAccount", {
+            fromCurrency,
+            toCurrency,
+            name: toMeta.label || "",
+          }));
+          return;
+        }
+        const confirmed = await showConfirmDialog({
+          title: t("txForm.currencyChildTitle"),
+          message: t("txForm.currencyChildMessage", {
+            fromCurrency,
+            toCurrency,
+            name: toMeta.label || "",
+          }),
+        });
+        if (!confirmed) return;
+        try {
+          const response = await fetch(`/api/v1/accounts/${encodeURIComponent(toAccountId)}/currency-child`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ currency: fromCurrency }),
+          });
+          const payload = await response.json().catch(() => null) as
+            | { ok?: boolean; upgraded?: boolean; accountId?: string; accountName?: string; parentId?: string; error?: string }
+            | null;
+          const childId = String(payload?.accountId ?? "");
+          if (!response.ok || !payload?.ok || !childId) {
+            window.alert(payload?.error || t("txForm.currencyChildFailed"));
+            return;
+          }
+          transferToAccountId = childId;
+          setToAccountId(childId);
+          const childName = String(payload?.accountName ?? "");
+          // 子户始终挂在某个多币种父账户下：把父 id 带回候选列表，下次转入才能
+          // 认出「这是子账户」而不是再问一遍「是否创建子账户」。
+          const childParentId = String(payload?.parentId ?? "") || String(toMeta.accountParentId ?? "");
+          if (payload?.upgraded && childParentId) {
+            // 刚才那个账户已被原地升级成默认币种子户（id 不变），本地候选也要记住
+            // 它的父账户，否则下一次转入还会按「独立账户」提问。
+            setTransferAccountList((prev) => prev.map((item) => (
+              item.id === toAccountId ? { ...item, accountParentId: childParentId } : item
+            )));
+          }
+          setTransferAccountList((prev) => (
+            prev.some((item) => item.id === childId)
+              ? prev
+              : [...prev, {
+                  ...toMeta,
+                  id: childId,
+                  label: childName || toMeta.label,
+                  currency: fromCurrency,
+                  accountParentId: childParentId || null,
+                  isAggregate: false,
+                }]
+          ));
+        } catch (error) {
+          window.alert(String(error));
+          return;
+        }
+      }
+    }
+
     // 存款账户落账的分类白名单（2026-09-18）：收入只允许利息收入类，
     // 支出只允许利息支出/手续费类。其余分类请挂在普通资金账户上。
     if ((txType === "income" || txType === "expense") && accountId) {
@@ -2101,7 +2195,8 @@ export function TransactionFormModal({
       if (editEntryId) formData.set("entryId", editEntryId);
       if (txType === "transfer") {
         formData.set("fromAccountId", fromAccountId);
-        formData.set("toAccountId", toAccountId);
+        // 外币转账可能刚自动建了币种子账户，落账要用子账户 id。
+        formData.set("toAccountId", transferToAccountId);
         if (showDepositLotSelect) formData.set("depositSourceEntryId", depositLotId);
         } else if (txType === "income") {
           formData.set("accountId", accountId);
@@ -2627,7 +2722,9 @@ export function TransactionFormModal({
                     ? showPostedAmount
                       ? "grid grid-cols-[4.5rem_5.33rem_minmax(0,1fr)_minmax(0,1fr)_auto] items-end gap-3"
                       : "grid grid-cols-[4.5rem_5.33rem_minmax(0,1fr)] items-end gap-3"
-                    : "space-y-1"}>
+                    : txType === "income"
+                      ? "grid grid-cols-[5.33rem_minmax(0,1fr)] items-end gap-3"
+                      : "space-y-1"}>
                     {txType === "expense" ? (
                       <div className="space-y-1">
                         <div className="form-label">{t("txForm.fixedAssetToggle")}</div>
@@ -2685,6 +2782,14 @@ export function TransactionFormModal({
                           placeholder={t("txForm.txnCurrency")}
                           density="regular"
                         />
+                      </div>
+                    ) : null}
+                    {txType === "income" ? (
+                      <div className="min-w-0 space-y-1">
+                        <div className="form-label">{t("txForm.txnCurrency")}</div>
+                        <div className="flex h-9 items-center rounded-[10px] border border-slate-200 bg-slate-50 px-3 text-sm font-medium text-slate-600">
+                          {incomeCurrency}
+                        </div>
                       </div>
                     ) : null}
                     <div className="min-w-0 space-y-1">
@@ -3294,7 +3399,12 @@ export function TransactionFormModal({
             id,
             label: name,
             subLabel: [groupName, kindText].filter(Boolean).join(" · "),
-            title: formatAccountHoverTitle({ groupName: groupName ?? "", label: name, subLabel: kindText }),
+            // 悬浮只补行里看不到的：所有人/类型都在 subLabel 里，传进去让它自我去重。
+            title: formatAccountHoverTitle({
+              groupName: groupName ?? "",
+              label: name,
+              subLabel: [groupName, kindText].filter(Boolean).join(" · "),
+            }),
             kind,
             investProductType: "property",
             currency: extra?.currency,

@@ -5,9 +5,9 @@ import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { getFundProfileNameMap, normalizeFundDisplayName, resolveFundName } from "@/lib/fund/fundProfile";
 import { createFundTransactionWithCashFlows } from "@/lib/fund/transactions";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
-import { getFundConfirmDays, getFundArrivalDays, normalizeNonNegativeDays } from "@/lib/fund/confirmDays";
+import { fundArrivalDate, fundConfirmDate, getFundDateContext } from "@/lib/fund/confirmDays";
 import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
-import { addWorkdaysUtc, formatDateUtc } from "@/lib/date-utils";
+import { formatDateUtc } from "@/lib/date-utils";
 import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { fetchHistoricalNavList, getFundNavFromCacheOnly, preloadNavListToCache } from "@/lib/fund/navCache";
@@ -348,18 +348,14 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
       const cashAcc = plan.cashAccountId ? cashAccMap.get(plan.cashAccountId) ?? null : null;
       const runDate = skipWeekend(new Date(plan.nextRunDate));
       const runDateStr = formatDateUtc(runDate);
-      const confirmDays = normalizeNonNegativeDays(
-        plan.confirmDays ?? await getFundConfirmDays(plan.accountId, plan.fundCode),
-        0,
-      );
-      let confirmDateStr = addWorkdaysUtc(runDateStr, confirmDays);
+      const fundDateContext = await getFundDateContext(plan.accountId, plan.fundCode);
+      let confirmDateStr = fundConfirmDate(runDateStr, fundDateContext.days, fundDateContext.tradingCalendar);
       if (confirmDateStr < runDateStr) {
-        logger.warn(`confirmDate ${confirmDateStr} < runDate ${runDateStr}, confirmDays=${confirmDays}`, "auto-execute");
+        logger.warn(`confirmDate ${confirmDateStr} < runDate ${runDateStr}, confirmDays=${fundDateContext.days}`, "auto-execute");
         confirmDateStr = runDateStr;
       }
       const confirmDate = new Date(Date.UTC(parseInt(confirmDateStr.slice(0, 4)), parseInt(confirmDateStr.slice(5, 7)) - 1, parseInt(confirmDateStr.slice(8, 10))));
-      const arrivalDays = normalizeNonNegativeDays(plan.arrivalDays, 2);
-      const arrivalDateStr = arrivalDays > 0 ? addWorkdaysUtc(confirmDateStr, arrivalDays) : confirmDateStr;
+      const arrivalDateStr = fundArrivalDate(confirmDateStr, fundDateContext.arrivalDays, fundDateContext.tradingCalendar);
       const arrivalDate = new Date(Date.UTC(parseInt(arrivalDateStr.slice(0, 4)), parseInt(arrivalDateStr.slice(5, 7)) - 1, parseInt(arrivalDateStr.slice(8, 10))));
       const amountNum = parseFloat(String(plan.amount));
       const newExecutedRuns = plan.executedRuns + 1;
@@ -394,40 +390,6 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
         hasMoreDue: await hasMoreDuePlans(householdId, now),
         blockedPlanIds,
       };
-    }
-
-    // Batch fetch confirmDays & feeRates for all plans (parallel per unique (accountId, fundCode))
-    const confirmDaysKeys = [...new Set(execs.map(e => `${e.plan.accountId}:${e.plan.fundCode}`))];
-    const confirmDaysMap = new Map<string, number>();
-    for (const key of confirmDaysKeys) {
-      const [acctId, code] = key.split(":");
-      const matched = execs.find(e => e.plan.accountId === acctId && e.plan.fundCode === code);
-      const days = matched?.plan.confirmDays !== null && matched?.plan.confirmDays !== undefined ? matched.plan.confirmDays : await getFundConfirmDays(acctId, code);
-      confirmDaysMap.set(key, normalizeNonNegativeDays(days, 0));
-    }
-    // Update confirmDates & arrivalDates based on actual confirmDays & arrivalDays
-    const arrivalDaysKeys = [...new Set(execs.map(e => `${e.plan.accountId}:${e.plan.fundCode}`))];
-    const arrivalDaysMap = new Map<string, number>();
-    for (const key of arrivalDaysKeys) {
-      const [acctId, code] = key.split(":");
-      const matched = execs.find(e => e.plan.accountId === acctId && e.plan.fundCode === code);
-      const days = matched?.plan.arrivalDays !== null && matched?.plan.arrivalDays !== undefined ? matched.plan.arrivalDays : await getFundArrivalDays(acctId, code);
-      arrivalDaysMap.set(key, normalizeNonNegativeDays(days, 2));
-    }
-    for (const e of execs) {
-      const cDays = confirmDaysMap.get(`${e.plan.accountId}:${e.plan.fundCode}`) ?? normalizeNonNegativeDays(e.plan.confirmDays, 0);
-      const aDays = arrivalDaysMap.get(`${e.plan.accountId}:${e.plan.fundCode}`) ?? normalizeNonNegativeDays(e.plan.arrivalDays, 2);
-      // Always recompute confirmDate/arrivalDate from final confirmDays+arrivalDays
-      const runDateStr = formatDateUtc(e.runDate);
-      let cdStr = addWorkdaysUtc(runDateStr, cDays);
-      if (cdStr < runDateStr) {
-        logger.warn(`confirmDate ${cdStr} < runDate ${runDateStr}, cDays=${cDays}`, "auto-execute");
-        cdStr = runDateStr;
-      }
-      e.confirmDate = new Date(Date.UTC(parseInt(cdStr.slice(0, 4)), parseInt(cdStr.slice(5, 7)) - 1, parseInt(cdStr.slice(8, 10))));
-      e.confirmDateStr = cdStr;
-      const adStr = aDays > 0 ? addWorkdaysUtc(cdStr, aDays) : cdStr;
-      e.arrivalDate = new Date(Date.UTC(parseInt(adStr.slice(0, 4)), parseInt(adStr.slice(5, 7)) - 1, parseInt(adStr.slice(8, 10))));
     }
 
     // 判定「确认日是否真的没有净值」之前，先把本地缓存里缺失的确认日**回源补齐**：

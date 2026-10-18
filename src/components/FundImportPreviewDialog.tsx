@@ -90,16 +90,6 @@ type FundImportPreviewItem = FundImportUploadItem & {
   issues: FundImportPreviewIssue[];
 };
 
-type FundRuleEditorRow = {
-  key: string;
-  fundAccountId: string | null;
-  fundAccount: string;
-  fundCode: string;
-  fundName: string;
-  confirmDays: string;
-  arrivalDays: string;
-};
-
 type FundPreviewTableRow = FundImportPreviewItem & { idx: number };
 type FundPreviewBatchEditField = "fee" | "confirmDate" | "arrivalDate" | "fundAccount" | "cashAccount";
 type FundPreviewEditField =
@@ -682,37 +672,6 @@ function getFundImportSubtypeLabel(subtype: string, source: string, t: (key: str
   return subtype || "-";
 }
 
-function buildFundRuleEditorRows(_items: FundImportPreviewItem[]) {
-  return [];
-}
-
-function serializeFundRuleOverrides(rows: FundRuleEditorRow[], t: (key: string) => string) {
-  const invalidLabels: string[] = [];
-  const overrides = rows.flatMap((row) => {
-    const parseDays = (value: string, label: string) => {
-      const trimmed = value.trim();
-      if (!trimmed) return null;
-      const num = Number(trimmed);
-      if (!Number.isFinite(num) || num < 0) {
-        invalidLabels.push(`${row.fundCode} ${label}`);
-        return null;
-      }
-      return Math.trunc(num);
-    };
-    const confirmDays = parseDays(row.confirmDays, t("batchImport.fundPreview.confirmDays"));
-    const arrivalDays = parseDays(row.arrivalDays, t("batchImport.fundPreview.arrivalDays"));
-    if (!row.fundCode || (!row.fundAccountId && !row.fundAccount.trim())) return [];
-    return [{
-      fundAccountId: row.fundAccountId,
-      fundAccount: row.fundAccount,
-      fundCode: row.fundCode,
-      confirmDays,
-      arrivalDays,
-    }];
-  });
-  return { overrides, invalidLabels };
-}
-
 function hasBlockingIssue(item: FundImportPreviewItem | undefined) {
   return !!item?.issues.some((issue) => issue.level === "error");
 }
@@ -756,8 +715,6 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
   const [uploadItems, setUploadItems] = useState<FundImportUploadItem[]>([]);
   const [previewItems, setPreviewItems] = useState<FundImportPreviewItem[]>([]);
   const [bookAccounts, setBookAccounts] = useState<FundPreviewAccount[]>([]);
-  const [ruleRows, setRuleRows] = useState<FundRuleEditorRow[]>([]);
-  const [rulesDirty, setRulesDirty] = useState(false);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [uploading, setUploading] = useState(false);
   // 局部行重算进行中：不整表刷新，仅禁用编辑，保持表格渲染不动
@@ -946,19 +903,9 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
 
   const requestPreview = useCallback(async (
     sourceItems: FundImportUploadItem[],
-    rows: FundRuleEditorRow[],
     preserveSelection: boolean,
     fileInfo?: string,
   ) => {
-    const { overrides, invalidLabels } = serializeFundRuleOverrides(rows, t);
-    if (invalidLabels.length > 0) {
-      setMessage(formatText(t, "batchImport.fundPreview.invalidRules", {
-        items: invalidLabels.slice(0, 3).join("、"),
-        more: invalidLabels.length > 3 ? t("batchImport.importValidationMore") : "",
-      }));
-      return false;
-    }
-
     setUploading(true);
     try {
       const res = await fetch("/api/v1/fund/import", {
@@ -967,7 +914,6 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
         body: JSON.stringify({
           mode: "preview",
           items: sourceItems,
-          overrides,
           ...(requestContext ? { context: requestContext } : {}),
           ...(createInstitutionCashAccount ? { createFundInstitutionCashAccount: true } : {}),
         }),
@@ -977,8 +923,6 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
         throw new Error(data?.error || res.statusText || `HTTP ${res.status}`);
       }
       setPreviewItems(data.items);
-      setRuleRows(buildFundRuleEditorRows(data.items));
-      setRulesDirty(false);
       setSelected((prev) => preserveSelection
         ? new Set(Array.from(prev).filter((idx) => idx < data.items!.length))
         : selectableIndexes(data.items!));
@@ -987,7 +931,6 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
       return true;
     } catch (error) {
       setPreviewItems([]);
-      setRuleRows([]);
       setSelected(new Set());
       const reason = error instanceof Error ? error.message : String(error);
       setDebugMessage(formatText(t, "batchImport.readFailedDebug", { reason: reason || t("batchImport.unknownError"), fileInfo: fileInfo || "" }));
@@ -1003,14 +946,6 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
   const requestPreviewForRows = useCallback(async (patches: Array<{ index: number; item: FundImportUploadItem }>) => {
     const usable = patches.filter((entry) => entry.item);
     if (usable.length === 0) return false;
-    const { overrides, invalidLabels } = serializeFundRuleOverrides(ruleRows, t);
-    if (invalidLabels.length > 0) {
-      setMessage(formatText(t, "batchImport.fundPreview.invalidRules", {
-        items: invalidLabels.slice(0, 3).join("、"),
-        more: invalidLabels.length > 3 ? t("batchImport.importValidationMore") : "",
-      }));
-      return false;
-    }
     setRowPatching(true);
     try {
       const res = await fetch("/api/v1/fund/import", {
@@ -1019,7 +954,6 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
         body: JSON.stringify({
           mode: "preview",
           items: usable.map((entry) => entry.item),
-          overrides,
           ...(requestContext ? { context: requestContext } : {}),
           ...(createInstitutionCashAccount ? { createFundInstitutionCashAccount: true } : {}),
         }),
@@ -1046,7 +980,7 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
     } finally {
       setRowPatching(false);
     }
-  }, [createInstitutionCashAccount, requestContext, ruleRows, t]);
+  }, [createInstitutionCashAccount, requestContext, t]);
 
   const applyPreviewReplace = useCallback((field: FundPreviewBatchEditField, value: string) => {
     const selectedIndexes = new Set(Array.from(selected).filter((idx) => previewItems[idx]));
@@ -1133,8 +1067,6 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
       setUploadItems([]);
       setPreviewItems([]);
       setBookAccounts([]);
-      setRuleRows([]);
-      setRulesDirty(false);
       setSelected(new Set());
       setUploading(false);
       setImporting(false);
@@ -1160,8 +1092,6 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
       setDebugMessage(formatText(t, "batchImport.fileSelectedStart", { fileInfo }));
       setUploadItems([]);
       setPreviewItems([]);
-      setRuleRows([]);
-      setRulesDirty(false);
       setSelected(new Set());
       setEditingCell(null);
       setDraftValue("");
@@ -1178,7 +1108,7 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
           return;
         }
         setUploadItems(parsed);
-        await requestPreview(parsed, [], false, fileInfo);
+        await requestPreview(parsed, false, fileInfo);
       } catch (error) {
         if (cancelled) return;
         const reason = error instanceof Error ? error.message : String(error);
@@ -1209,11 +1139,6 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
       cancelled = true;
     };
   }, [open]);
-
-  const handleApplyRules = useCallback(async () => {
-    if (uploadItems.length === 0 || importing) return;
-    await requestPreview(uploadItems, ruleRows, true);
-  }, [importing, requestPreview, ruleRows, uploadItems]);
 
   const patchUploadItem = useCallback(async (idx: number, patch: Partial<FundImportUploadItem>) => {
     const currentItem = uploadItems[idx];
@@ -1535,13 +1460,6 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
     let importedRows = 0;
 
     try {
-      const { overrides, invalidLabels } = serializeFundRuleOverrides(ruleRows, t);
-      if (invalidLabels.length > 0) {
-        throw new Error(formatText(t, "batchImport.fundPreview.invalidRules", {
-          items: invalidLabels.slice(0, 3).join("、"),
-          more: invalidLabels.length > 3 ? t("batchImport.importValidationMore") : "",
-        }));
-      }
       const allAccountIds = new Set<string>();
       // Submit in sequential batches so each request finishes well before
       // reverse-proxy timeouts on slow NAS deployments; batching also keeps the
@@ -1556,7 +1474,6 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
           body: JSON.stringify({
             mode: "import",
             items: batchItems,
-            overrides,
             ...(requestContext ? { context: requestContext } : {}),
             ...(createInstitutionCashAccount ? { createFundInstitutionCashAccount: true } : {}),
           }),
@@ -1591,7 +1508,7 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
       setImporting(false);
       setImportProgress(null);
     }
-  }, [createInstitutionCashAccount, errorIssues, importIssues, importing, onClose, onImported, previewItems, requestContext, ruleRows, setImportProgress, selected, t]);
+  }, [createInstitutionCashAccount, errorIssues, importIssues, importing, onClose, onImported, previewItems, requestContext, setImportProgress, selected, t]);
 
   const columns = useMemo<AdvancedDataTableColumn<FundPreviewTableRow>[]>(() => [
     {
@@ -1704,69 +1621,6 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
             ) : null}
             <span className="italic text-slate-500">{t("viewImport.calculatedValueHint")}</span>
           </div>
-          {ruleRows.length > 0 ? (
-            <div className="mt-3 rounded-lg border border-slate-200 bg-white">
-              <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-3 py-2">
-                <div className="text-xs font-medium text-slate-700">{t("batchImport.fundPreview.ruleEditorTitle")}</div>
-                <button
-                  type="button"
-                  onClick={() => void handleApplyRules()}
-                  disabled={uploading || importing || ruleRows.length === 0}
-                  className="rounded-md border border-slate-300 px-2.5 py-1 text-xs font-medium text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {rulesDirty ? t("batchImport.fundPreview.applyRulesDirty") : t("batchImport.fundPreview.applyRules")}
-                </button>
-              </div>
-              <div className="max-h-40 overflow-auto">
-                <div className="grid grid-cols-[minmax(140px,1.2fr)_96px_minmax(160px,1fr)_110px_110px] gap-x-3 gap-y-2 px-3 py-2 text-[11px] text-slate-500">
-                  <div>{t("batchImport.template.fund.label.fundAccount")}</div>
-                  <div>{t("batchImport.template.fund.label.fundCode")}</div>
-                  <div>{t("batchImport.template.fund.label.fundName")}</div>
-                  <div>{t("batchImport.fundPreview.confirmRuleHeader")}</div>
-                  <div>{t("batchImport.fundPreview.arrivalRuleHeader")}</div>
-                </div>
-                <div className="space-y-2 border-t border-slate-100 px-3 py-2">
-                  {ruleRows.map((row) => (
-                    <div key={row.key} className="grid grid-cols-[minmax(140px,1.2fr)_96px_minmax(160px,1fr)_110px_110px] items-center gap-x-3 gap-y-2">
-                      <div className="truncate text-xs text-slate-700" title={row.fundAccount}>{row.fundAccount}</div>
-                      <div className="text-xs tabular-nums text-slate-700">{row.fundCode}</div>
-                      <div className="truncate text-xs text-slate-700" title={row.fundName}>{row.fundName}</div>
-                      <label className="flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-600">
-                        <span>T+</span>
-                        <input
-                          type="number"
-                          min={0}
-                          step={1}
-                          value={row.confirmDays}
-                          onChange={(event) => {
-                            const value = event.target.value;
-                            setRuleRows((prev) => prev.map((item) => item.key === row.key ? { ...item, confirmDays: value } : item));
-                            setRulesDirty(true);
-                          }}
-                          className="w-full bg-transparent text-right tabular-nums text-slate-700 outline-none"
-                        />
-                      </label>
-                      <label className="flex items-center gap-1 rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-600">
-                        <span>T+</span>
-                        <input
-                          type="number"
-                          min={0}
-                          step={1}
-                          value={row.arrivalDays}
-                          onChange={(event) => {
-                            const value = event.target.value;
-                            setRuleRows((prev) => prev.map((item) => item.key === row.key ? { ...item, arrivalDays: value } : item));
-                            setRulesDirty(true);
-                          }}
-                          className="w-full bg-transparent text-right tabular-nums text-slate-700 outline-none"
-                        />
-                      </label>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-          ) : null}
           {errorSummary ? (
             <div className="mt-2 text-xs text-red-700">
               <span className="font-medium text-red-800">{t("batchImport.fundPreview.blockingSummaryTitle")}</span>
@@ -1822,7 +1676,7 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
                     onChange={(event) => {
                       const next = event.target.checked;
                       setCreateInstitutionCashAccount(next);
-                      if (uploadItems.length > 0) void requestPreview(uploadItems, ruleRows, true);
+                      if (uploadItems.length > 0) void requestPreview(uploadItems, true);
                     }}
                   />
                   <span>{t("batchImport.fundPreview.createInstitutionCashAccount")}</span>
