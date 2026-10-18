@@ -467,6 +467,20 @@ export function normalizeSideNavTopOffsetPx(value: unknown): number {
   return Math.min(MAX_SIDE_NAV_TOP_OFFSET_PX, Math.max(MIN_SIDE_NAV_TOP_OFFSET_PX, Math.round(n)));
 }
 
+/** Stored offset, or null when the user never dragged the buttons. */
+export function getStoredSideNavTopOffset(scope: SideNavTopOffsetScope): number | null {
+  const key = sideNavTopOffsetKey(scope);
+  let raw: string | null = null;
+  try {
+    const stored = localStorage.getItem(key);
+    raw = stored == null || stored === "" ? parseCookieValue(key) : stored;
+  } catch {
+    raw = parseCookieValue(key);
+  }
+  if (raw == null || raw === "") return null;
+  return normalizeSideNavTopOffsetPx(raw);
+}
+
 export function getSideNavTopOffsetPreference(scope: SideNavTopOffsetScope): number {
   const key = sideNavTopOffsetKey(scope);
   try {

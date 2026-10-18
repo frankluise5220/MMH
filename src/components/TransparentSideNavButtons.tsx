@@ -5,6 +5,7 @@ import { ChevronLeft, ChevronRight } from "lucide-react";
 
 import {
   getSideNavTopOffsetPreference,
+  getStoredSideNavTopOffset,
   normalizeSideNavTopOffsetPx,
   setSideNavTopOffsetPreference,
   type SideNavTopOffsetScope,
@@ -20,6 +21,10 @@ type TransparentSideNavButtonsProps = {
   nextLabel: string;
   /** Which persisted preference stores the vertical offset. */
   scope: SideNavTopOffsetScope;
+  /** Center vertically in the panel until the user drags the buttons elsewhere. */
+  defaultCentered?: boolean;
+  /** Show the resting circles more clearly so the pager is discoverable. */
+  emphasized?: boolean;
 };
 
 /** Pointer travel (px) before a press counts as a drag instead of a click. */
@@ -39,24 +44,34 @@ export function TransparentSideNavButtons({
   previousLabel,
   nextLabel,
   scope,
+  defaultCentered = false,
+  emphasized = false,
 }: TransparentSideNavButtonsProps) {
   const { t } = useI18n();
-  const [topOffset, setTopOffset] = useState<number>(() => getSideNavTopOffsetPreference(scope));
+  // null = 未拖动过且要求默认居中：用 CSS 50% 定位，面板高度变化时仍保持居中。
+  const readOffset = useCallback((): number | null => {
+    const stored = getStoredSideNavTopOffset(scope);
+    if (stored != null) return stored;
+    return defaultCentered ? null : getSideNavTopOffsetPreference(scope);
+  }, [defaultCentered, scope]);
+  const [topOffset, setTopOffset] = useState<number | null>(readOffset);
   const offsetRef = useRef(topOffset);
   offsetRef.current = topOffset;
   const dragRef = useRef<{ pointerId: number; startY: number; startOffset: number; moved: boolean } | null>(null);
   const suppressClickRef = useRef(false);
 
   useEffect(() => {
-    setTopOffset(getSideNavTopOffsetPreference(scope));
-  }, [scope]);
+    setTopOffset(readOffset());
+  }, [readOffset]);
 
   const handlePointerDown = useCallback((event: ReactPointerEvent<HTMLButtonElement>) => {
     if (event.button !== 0) return;
+    // 居中模式下把当前的实际像素位置作为拖动起点，避免第一次拖动跳变。
+    const startOffset = offsetRef.current ?? event.currentTarget.offsetTop;
     dragRef.current = {
       pointerId: event.pointerId,
       startY: event.clientY,
-      startOffset: offsetRef.current,
+      startOffset,
       moved: false,
     };
     suppressClickRef.current = false;
@@ -100,15 +115,16 @@ export function TransparentSideNavButtons({
   }, []);
 
   const dragHint = t("common.dragVerticalHint");
-  const baseClassName = [
-    "absolute z-30 inline-flex h-12 w-12 -translate-y-1/2 touch-none cursor-grab items-center justify-center rounded-full",
-    // 默认约 95% 透明，悬停后再显现，避免挡内容
-    "bg-blue-500/10 text-blue-700 shadow-sm backdrop-blur-[1px] opacity-5 transition-all",
-    "hover:bg-blue-600/30 hover:text-blue-900 hover:opacity-100 hover:shadow-md",
-    "active:cursor-grabbing",
+  // emphasized：静止状态也保留一定可见度，便于发现可以翻页；默认为极低透明度。
+  const restingOpacity = emphasized ? "opacity-30" : "opacity-5";
+  const buttonClassName = (disabled: boolean) => [
+    "absolute z-30 inline-flex h-12 w-12 -translate-y-1/2 touch-none items-center justify-center rounded-full",
+    "bg-blue-500/10 text-blue-700 shadow-sm backdrop-blur-[1px] transition-all",
+    disabled
+      ? "cursor-not-allowed opacity-[0.06] hover:opacity-[0.1]"
+      : `${restingOpacity} cursor-grab hover:bg-blue-600/30 hover:text-blue-900 hover:opacity-100 hover:shadow-md active:cursor-grabbing`,
   ].join(" ");
-  const disabledClassName = "cursor-not-allowed opacity-[0.03] hover:opacity-[0.05]";
-  const positionStyle = { top: `${topOffset}px` } as const;
+  const positionStyle = topOffset == null ? ({ top: "50%" } as const) : ({ top: `${topOffset}px` } as const);
 
   const renderButton = (
     direction: "previous" | "next",
@@ -128,7 +144,7 @@ export function TransparentSideNavButtons({
         onPointerUp={finishDrag}
         onPointerCancel={finishDrag}
         aria-disabled={disabled || undefined}
-        className={`${baseClassName} ${sideClassName} ${disabled ? disabledClassName : ""}`}
+        className={`${buttonClassName(disabled)} ${sideClassName}`}
         style={positionStyle}
         title={title}
         aria-label={label}
