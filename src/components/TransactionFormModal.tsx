@@ -1004,6 +1004,10 @@ export function TransactionFormModal({
   }, [accountList, fixedAssetAccountList, localAccountSSOpts, localFixedAssetAccountSSOpts, localTransferAccountSSOpts, transferAccountList]);
   const selectedAccountIsCreditCard = accountMetaById.get(accountId)?.kind === "bank_credit"
     || (isCreditCardAccount && accountId === (defaultAccountId ?? accountId));
+  // 只有信用卡消费允许选择交易币种：现金、借记卡、电子钱包等账户一律跟随账户币种。
+  const selectedAccountKind = accountMetaById.get(accountId)?.kind ?? null;
+  const canChooseTxCurrency = txType === "expense"
+    && (selectedAccountKind ? selectedAccountKind === "bank_credit" : selectedAccountIsCreditCard);
   const fxFromCurrency = fromAccountId
     ? normalizeCurrencyLabel(accountMetaById.get(fromAccountId)?.currency)
     : fxFromCurrencyDraft;
@@ -1479,6 +1483,9 @@ export function TransactionFormModal({
     }
     setTxType(nextType);
     if (nextType !== "expense") {
+      // 交易币种只属于信用卡消费；切到其它类型时清空，避免残留外币语义。
+      setTxCurrency("");
+      setLocalAmount("");
       setFixedAssetLinked(false);
       setFixedAssetAccountId("");
       setFixedAssetAssetId("");
@@ -2596,7 +2603,13 @@ export function TransactionFormModal({
                           </div>
                           <div className={REQUIRED_FIELD_CLASS}>
                             <SmartSelect mode="single" value={accountId}
-                              onChange={(id: string) => { setAccountId(id); recordRecentAccount(id); }}
+                              onChange={(id: string) => {
+                                setAccountId(id);
+                                recordRecentAccount(id);
+                                // 换账户后交易币种跟随新账户，避免把信用卡外币选值带到现金/借记卡上。
+                                setTxCurrency("");
+                                setLocalAmount("");
+                              }}
                               options={displayAccountOptions} placeholder={t("txForm.selectPlaceholder")}
                               onCreateClick={() => { void openAccountCreate("account"); }}
                               onCycleOwnerFilter={cycleOwnerFilter}
@@ -2774,14 +2787,20 @@ export function TransactionFormModal({
                     {txType === "expense" ? (
                       <div className="min-w-0 space-y-1">
                         <div className="form-label">{t("txForm.txnCurrency")}</div>
-                        <CurrencySmartSelect
-                          value={effectiveTxCurrency}
-                          onChange={(code) => { setTxCurrency(code); setFxPostingV2(true); }}
-                          onSubmitted={(code) => { setTxCurrency(code); setFxPostingV2(true); }}
-                          labelSystem={(code) => t(`entityForm.currency.${code.toLowerCase()}`, { defaultValue: code })}
-                          placeholder={t("txForm.txnCurrency")}
-                          density="regular"
-                        />
+                        {canChooseTxCurrency ? (
+                          <CurrencySmartSelect
+                            value={effectiveTxCurrency}
+                            onChange={(code) => { setTxCurrency(code); setFxPostingV2(true); }}
+                            onSubmitted={(code) => { setTxCurrency(code); setFxPostingV2(true); }}
+                            labelSystem={(code) => t(`entityForm.currency.${code.toLowerCase()}`, { defaultValue: code })}
+                            placeholder={t("txForm.txnCurrency")}
+                            density="regular"
+                          />
+                        ) : (
+                          <div className="flex h-9 items-center rounded-[10px] border border-slate-200 bg-slate-50 px-3 text-sm font-medium text-slate-600">
+                            {effectiveTxCurrency}
+                          </div>
+                        )}
                       </div>
                     ) : null}
                     {txType === "income" ? (
