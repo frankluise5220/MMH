@@ -37,8 +37,10 @@ model Account {
   currency                                                   String                      @default("CNY")
   isActive                                                   Boolean                     @default(true)
   isPlaceholder                                              Boolean                     @default(false)
-  // 多币种父账户（2026-10-18）：父账户只参与统计、自身没有明细、不能直接记账；
-  // 子账户按币种拆分并承接全部流水。两列纯增量，存量行默认 NULL / false。
+  // 多币种父账户（2026-10-18 用户裁定）：`parentId` 指向父，`isAggregate = true`
+  // 表示这一级**只参与统计**、自身没有明细，也不能直接记账；明细只存在于按币种
+  // 拆出来的子账户上。父账户的 currency 固定为账簿本位币，余额 = 子户折合合计。
+  // 升级时不迁移任何流水：父是新行，原账户原地降级为默认币种子户。
   parentId                                                   String?
   isAggregate                                                Boolean                     @default(false)
   isConsumerLoan                                             Boolean                     @default(false)
@@ -126,7 +128,7 @@ model Account {
   @@index([householdId, loanCategoryId])
   @@index([counterpartyId])
   @@index([parentId])
-  // 同一父账户下每个币种只能有一个子户（SQLite 允许多个 NULL，根账户互不冲突）。
+  // 同一父账户下每个币种只能有一个子户（PG/SQLite 都允许多个 NULL，根账户互不冲突）。
   @@unique([parentId, currency])
 }
 
