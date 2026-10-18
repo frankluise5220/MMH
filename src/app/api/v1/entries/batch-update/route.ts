@@ -178,13 +178,19 @@ export async function POST(req: NextRequest) {
       );
     }
     let notFoundIds = ids.filter((id) => !existingMap.has(id));
+    const existingRecordIds = new Set(existingRecords.map((record) => record.id));
     const updateById = new Map(updates.map((item) => [String(item.id ?? "").trim(), item]));
+    // Independent fund rows without a cash leg (for example dividend reinvest) are addressed by
+    // FundTransaction.id, so the amount fields must resolve them too or the whole batch 404s.
     const directFundUpdateIds = notFoundIds.filter((id) => {
       const item = updateById.get(id);
       return item?.fundFee !== undefined
         || item?.feeRate !== undefined
         || item?.cashAccountId !== undefined
-        || item?.fundAccountId !== undefined;
+        || item?.fundAccountId !== undefined
+        || item?.amount !== undefined
+        || item?.inflow !== undefined
+        || item?.outflow !== undefined;
     });
     const directFundTransactions = directFundUpdateIds.length > 0
       ? await prisma.fundTransaction.findMany({
@@ -291,6 +297,8 @@ export async function POST(req: NextRequest) {
     const touchedRecordIds = new Set<string>();
     const balanceAccountIds = new Set<string>();
     const amountTouchedIds = new Set<string>();
+    const amountUpdateById = new Map<string, number>();
+    const directFundAmountUpdatedIds = new Set<string>();
     const fundFeeTouchedIds = new Set<string>();
     const feeRateTouchedIds = new Set<string>();
     const fundPositionRecalcRequests = new Map<string, Set<string>>();
@@ -587,6 +595,7 @@ export async function POST(req: NextRequest) {
         }
         changed.push({ id, date: ymd(existing.date), oldValue: String(baseAmount), newValue: String(absNew), field: amountField });
         amountTouchedIds.add(id);
+        amountUpdateById.set(id, absNew);
       }
 
       if ((data.type ?? existing.type) === TransactionType.investment) {
@@ -639,7 +648,13 @@ export async function POST(req: NextRequest) {
         || item.fundFee !== undefined
         || item.feeRate !== undefined
         || item.cashAccountId !== undefined
-        || item.fundAccountId !== undefined;
+        || item.fundAccountId !== undefined
+        // Amount edits must reach fund_transactions as well: the TxRecord under a fund entry id
+        // is only the cash leg, so updating its amount alone leaves grossAmount/arrivalAmount,
+        // units and the fund position untouched (and rows without a cash leg are not in
+        // TxRecord at all, which used to make the whole batch fail with RECORDS_NOT_FOUND).
+        || (amountField !== null
+          && (String(data.type ?? existing.type) === TransactionType.investment || !existingRecordIds.has(id)));
       const linkedFundTransaction = needsFundSync
         ? await findFundTransactionForEntryId(prisma, { id, householdId: ctx.householdId, syncLegacy: false }).catch(() => null)
         : null;
@@ -701,6 +716,60 @@ export async function POST(req: NextRequest) {
         addFundPositionRecalcRequest(fundAccountIdForDateRule, currentFundCode);
       }
 
+      // Amount edits on a fund row must land on the fund business row, its cash flow and its units:
+      // the TxRecord under this id is only the cash leg, so writing its amount alone left
+      // grossAmount / arrivalAmount, units and the recalculated position all unchanged.
+      const amountUpdateAbs = amountField !== null ? amountUpdateById.get(id) : undefined;
+      if (
+        linkedFundTransaction
+        && amountUpdateAbs != null
+        && currentProductType !== "metal"
+        && currentProductType !== "wealth"
+      ) {
+        const amountCashReceiptLike = currentSubtype === "redeem"
+          || currentSubtype === "switch_out"
+          || currentSubtype === "dividend_cash";
+        const fundAmountData: Record<string, unknown> = {};
+        if (amountCashReceiptLike) {
+          fundAmountData.arrivalAmount = amountUpdateAbs;
+        } else {
+          fundAmountData.grossAmount = amountUpdateAbs;
+          const nav = Number(linkedFundTransaction.nav ?? 0);
+          if (nav > 0) {
+            const fee = Math.max(0, Number(linkedFundTransaction.fee ?? 0));
+            const refundAmount = Math.max(0, Number(linkedFundTransaction.refundAmount ?? 0));
+            const fundUnitsDecimals = await getAccountFundUnitsDecimals(linkedFundTransaction.fundAccountId);
+            const nextUnits = calculateConfirmedBuyUnits({
+              grossAmount: amountUpdateAbs,
+              refundAmount,
+              fee,
+              nav,
+              roundUnits: (value) => roundFundUnits(value, fundUnitsDecimals),
+            });
+            if (nextUnits != null) {
+              fundAmountData.units = nextUnits;
+              data.fundUnits = nextUnits;
+            }
+          }
+        }
+        if (Object.keys(fundAmountData).length > 0) {
+          await prisma.fundTransaction.update({ where: { id: linkedFundTransaction.id }, data: fundAmountData });
+          const cashEntryIdsForFlow = Array.from(new Set(
+            [id, linkedFundTransaction.cashEntryId].filter((value): value is string => Boolean(value)),
+          ));
+          if (cashEntryIdsForFlow.length > 0) {
+            await prisma.fundTransactionCashFlow.updateMany({
+              where: { fundTransactionId: linkedFundTransaction.id, txRecordId: { in: cashEntryIdsForFlow } },
+              data: { amount: amountUpdateAbs },
+            });
+          }
+          if (amountCashReceiptLike) data.fundArrivalAmount = amountUpdateAbs;
+          addFundPositionRecalcRequest(linkedFundTransaction.fundAccountId, currentFundCode);
+          // Rows addressed by FundTransaction.id have no TxRecord update to count.
+          if (!existingRecordIds.has(id)) directFundAmountUpdatedIds.add(id);
+        }
+      }
+
       if (item.fundFee !== undefined || item.feeRate !== undefined || item.cashAccountId !== undefined || item.fundAccountId !== undefined) {
         const hasFeeUpdate = item.fundFee !== undefined || item.feeRate !== undefined;
         const feeSupported = !hasFeeUpdate || (
@@ -755,7 +824,7 @@ export async function POST(req: NextRequest) {
         if (linkedFundTransaction) {
           const nav = Number(linkedFundTransaction.nav ?? 0);
           const units = Number(linkedFundTransaction.units ?? 0);
-          const grossAmount = Math.max(0, Number(linkedFundTransaction.grossAmount ?? 0));
+          const grossAmount = Math.max(0, Number(amountUpdateAbs ?? linkedFundTransaction.grossAmount ?? 0));
           const refundAmount = Math.max(0, Number(linkedFundTransaction.refundAmount ?? 0));
           const feeBaseAmount = cashReceiptLike && nav > 0 && units > 0 ? nav * units : Math.max(0, grossAmount - refundAmount);
           const finalFee = requestedFee !== undefined
@@ -870,6 +939,8 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    updatedCount += directFundAmountUpdatedIds.size;
+
     if (updatedCount === 0) {
       return NextResponse.json(
         { ok: false, code: "RECORDS_NOT_FOUND", error: `未找到匹配的记录 (IDs: ${ids.slice(0, 3).join(", ")}${ids.length > 3 ? "..." : ""})` },
@@ -877,7 +948,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    if (touchedRecordIds.size > 0) {
+    if (touchedRecordIds.size > 0 || fundPositionRecalcRequests.size > 0) {
       const touched = await prisma.txRecord.findMany({
         where: { id: { in: Array.from(touchedRecordIds) }, deletedAt: null, ...hidFilter },
         select: {
