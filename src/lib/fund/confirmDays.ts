@@ -1,5 +1,14 @@
 import { prisma } from "@/lib/db/prisma";
-import { addTradingDaysUtc } from "@/lib/date-utils";
+import {
+  DEFAULT_FUND_REDEEM_COST_DAYS,
+  formatFundEffectiveDate,
+  fundArrivalDate,
+  fundConfirmDate,
+  normalizeNonNegativeDays,
+  resolveFundTradingCalendar,
+  type FundConfirmRule,
+  type FundDates,
+} from "./fund-dates";
 
 /**
  * 基金确认日/到账日（T+N）的唯一数据源：`FundConfirmDays`（accountId + fundCode）。
@@ -9,58 +18,12 @@ import { addTradingDaysUtc } from "@/lib/date-utils";
  *   `RegularInvestPlan.confirmDays/arrivalDays` 作为第二来源。
  * - 记账口径：确认日 = 申请日 + days 个交易日；到账日 = 确认日 + arrivalDays 个交易日。
  *   交易日按账户 `tradingCalendar`（缺省 `cn_fund`）计算，服务端与前端必须同一个算法。
+ * - 纯计算部分在 `./fund-dates`（无 prisma），客户端组件必须从那里 import，
+ *   否则会把 better-sqlite3 的原生依赖打进浏览器包（构建报 Can't resolve 'fs'）。
  */
 
-export type FundConfirmRule = {
-  days: number;
-  arrivalDays: number;
-  /** 设置页已保存过 → 其它界面不再能改。 */
-  manualOverride: boolean;
-};
-
-export type FundDates = {
-  days: number;
-  arrivalDays: number;
-  tradingCalendar: string;
-  confirmDate: string;
-  arrivalDate: string;
-};
-
-export const DEFAULT_FUND_TRADING_CALENDAR = "cn_fund";
-
-export function normalizeNonNegativeDays(value: unknown, fallback: number): number {
-  const days = Number(value);
-  if (!Number.isFinite(days)) return fallback;
-  return Math.max(0, Math.trunc(days));
-}
-
-export function fundUnitsProfitStartDate(
-  navDate: string | null | undefined,
-  tradingCalendar?: string | null,
-): string | null {
-  const date = String(navDate ?? "").trim();
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
-  return addTradingDaysUtc(date, 1, tradingCalendar ?? DEFAULT_FUND_TRADING_CALENDAR);
-}
-
-export function resolveFundTradingCalendar(value?: string | null): string {
-  const calendar = String(value ?? "").trim();
-  return calendar || DEFAULT_FUND_TRADING_CALENDAR;
-}
-
-/** 确认日：申请日 + N 个交易日。 */
-export function fundConfirmDate(applyDateYmd: string, days: number, tradingCalendar?: string | null): string {
-  const safeDays = normalizeNonNegativeDays(days, 0);
-  if (safeDays <= 0) return applyDateYmd;
-  return addTradingDaysUtc(applyDateYmd, safeDays, resolveFundTradingCalendar(tradingCalendar));
-}
-
-/** 到账日：确认日 + N 个交易日（买、卖、现金分红统一口径）。 */
-export function fundArrivalDate(confirmDateYmd: string, arrivalDays: number, tradingCalendar?: string | null): string {
-  const safeDays = normalizeNonNegativeDays(arrivalDays, 2);
-  if (safeDays <= 0) return confirmDateYmd;
-  return addTradingDaysUtc(confirmDateYmd, safeDays, resolveFundTradingCalendar(tradingCalendar));
-}
+// 纯函数/常量/类型仍从这里转出，服务端调用方的既有 import 不受影响。
+export * from "./fund-dates";
 
 export async function getFundConfirmDays(accountId: string, fundCode: string): Promise<number> {
   const record = await prisma.fundConfirmDays.findUnique({
@@ -81,12 +44,15 @@ export async function getFundArrivalDays(accountId: string, fundCode: string): P
 export async function getFundConfirmRule(accountId: string, fundCode: string): Promise<FundConfirmRule> {
   const record = await prisma.fundConfirmDays.findUnique({
     where: { accountId_fundCode: { accountId, fundCode } },
-    select: { days: true, arrivalDays: true, manualOverride: true },
+    select: { days: true, arrivalDays: true, redeemCostDays: true, effectiveDate: true, manualOverride: true },
   });
   return {
     days: normalizeNonNegativeDays(record?.days, 0),
     arrivalDays: normalizeNonNegativeDays(record?.arrivalDays, 2),
+    redeemCostDays: normalizeNonNegativeDays(record?.redeemCostDays, DEFAULT_FUND_REDEEM_COST_DAYS),
+    effectiveDate: formatFundEffectiveDate(record?.effectiveDate),
     manualOverride: Boolean(record?.manualOverride),
+    exists: record != null,
   };
 }
 
@@ -173,8 +139,9 @@ export type FundDateRuleWrite = {
 /**
  * 自动写入路径（投资交易表单、定投表单、导入、初始化）共用。
  *
- * 规则：一旦用户在设置页保存过该行（`manualOverride = true`），这里一律跳过，
- * 只有设置页的「基金确认日」表能再改这两个天数。行不存在时按需创建（未锁定）。
+ * 规则：**库里已有该 accountId + fundCode 的行就永不改写**——T+N 只在第一次
+ * 建行时赋值（首次赋值 = 表单里当时填的 T+N 或日期差），此后只有设置页
+ * 「基金确认日」表能改。交易表单于是只能改自己的记录日期，不会动全局 T+N。
  * 返回是否真的写入了。
  */
 async function applyFundDateRuleAuto(
@@ -195,15 +162,11 @@ async function applyFundDateRuleAuto(
   const where = { accountId_fundCode: { accountId, fundCode } };
   const existing = await client.fundConfirmDays.findUnique({
     where,
-    select: { manualOverride: true },
+    select: { id: true },
   });
-  // 设置页锁定过的行：静默跳过（也不能在这里抛错，否则会毒化外层事务）。
-  if (existing?.manualOverride) return false;
-  if (existing) {
-    await client.fundConfirmDays.update({ where, data });
-    return true;
-  }
-  // 不存在则建行；并发下用 upsert + 空 update，避免唯一键冲突把事务打挂。
+  // 已有行：静默跳过（不能抛错，否则会毒化外层事务）。
+  if (existing) return false;
+  // 不存在则建行（第一次、也是唯一一次赋值）；并发下用 upsert + 空 update，避免唯一键冲突把事务打挂。
   await client.fundConfirmDays.upsert({
     where,
     create: {

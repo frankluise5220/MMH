@@ -1,7 +1,7 @@
 "use client";
 import { ModalLayer } from "@/components/ModalLayer";
 
-import { DatabaseZap, Lock, Pencil, Plus, Repeat, Trash2 } from "lucide-react";
+import { DatabaseZap, Lock, Pencil, Plus, Repeat, Trash2, X } from "lucide-react";
 import { CalcInput } from "./CalcInput";
 import { ClearableNoteField } from "./ClearableNoteField";
 import { DateStepper } from "./DateStepper";
@@ -13,7 +13,7 @@ import { useAccountSSFilter } from "./accountSSFilter";
 /** FT 卡片弹窗外壳（等宽靠左页签 + 实体卡片 + 固定页脚）：规则集中在它，几何不变量见 FolderTabs 文件头。 */
 import { FolderTabsCard } from "@/components/FolderTabsCard";
 import { useI18n } from "@/lib/i18n";
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { recordRecentAccount, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
@@ -60,6 +60,89 @@ function addFundTradingDays(date: string, days: number) {
  */
 function formatNavHintDate(date: string) {
   return /^\d{4}-\d{2}-\d{2}$/.test(date) ? date.slice(5) : date;
+}
+
+/**
+ * 基金属性页锁定后的提示：用户手动改净值/到账日期时出现，由调用方计时关闭。
+ *
+ * 定位约束（用户要求）：**不许进入窗口内部、不许撑大窗口**。所以：
+ *  - portal 到 `document.body`：不参与弹窗布局（不撑高窗口），也不受弹窗内部滚动容器裁剪；
+ *  - `position: fixed` 始终浮在窗口（anchor = 弹窗面板）**上方**；
+ *  - 窗口太高、上方放不下时贴视口顶部（仍不进入窗口内容区），绝不改为塞进窗口里。
+ *
+ * 消失方式（用户要求）：**不自动消失**，只能点它自己的关闭按钮；
+ * 弹窗本身关闭时整个 portal 随 `open` 卸载，天然一起消失。
+ */
+function ConfirmRuleLockNotice({
+  visible,
+  text,
+  anchorRef,
+  onClose,
+}: {
+  visible: boolean;
+  text: string;
+  anchorRef: { current: HTMLElement | null };
+  onClose: () => void;
+}) {
+  const { t } = useI18n();
+  const boxRef = useRef<HTMLDivElement | null>(null);
+  const [pos, setPos] = useState<{ left: number; top: number } | null>(null);
+
+  useLayoutEffect(() => {
+    if (!visible) {
+      setPos(null);
+      return;
+    }
+    const place = () => {
+      const anchor = anchorRef.current;
+      const box = boxRef.current;
+      if (!anchor || !box) return;
+      const rect = anchor.getBoundingClientRect();
+      const width = box.offsetWidth;
+      const height = box.offsetHeight;
+      const gap = 10;
+      const margin = 8;
+      let left = rect.left + rect.width / 2 - width / 2;
+      left = Math.max(margin, Math.min(left, window.innerWidth - margin - width));
+      // 永远在窗口上方；上方空间不够就贴视口顶部，不落进窗口里。
+      const top = Math.max(margin, rect.top - height - gap);
+      setPos({ left, top });
+    };
+    place();
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  }, [visible, anchorRef, text]);
+
+  if (!visible || typeof document === "undefined") return null;
+  return createPortal(
+    <div
+      ref={boxRef}
+      role="status"
+      style={{
+        position: "fixed",
+        left: pos ? pos.left : -9999,
+        top: pos ? pos.top : -9999,
+        zIndex: 30000,
+      }}
+      className="pointer-events-auto flex w-[19rem] max-w-[calc(100vw-1rem)] items-start gap-1.5 rounded-md border border-amber-200 bg-amber-50 px-2 py-1.5 text-[11px] leading-4 text-amber-700 shadow-lg"
+    >
+      <span className="flex-1">{text}</span>
+      <button
+        type="button"
+        onClick={onClose}
+        aria-label={t("investForm.close")}
+        title={t("investForm.close")}
+        className="-mr-0.5 shrink-0 rounded p-0.5 text-amber-600 transition-colors hover:bg-amber-100 hover:text-amber-800"
+      >
+        <X className="h-3.5 w-3.5" />
+      </button>
+    </div>,
+    document.body,
+  );
 }
 
 function buildFundNavUrl(code: string, date: string, accountId?: string, applyDate?: string, subtype?: FundSubtype) {
@@ -413,9 +496,24 @@ export function InvestmentFormModal({
   }
   const [confirmDays, setConfirmDays] = useState(initConfirmDaysValue);
   const [confirmDaysEdited, setConfirmDaysEdited] = useState(false);
+  // 与 confirmDaysEdited 同步的 ref：查询规则的回调里要用最新值判断，
+  // 不能把「用户改过 T+N」当作跳过查询的条件（否则锁定状态永远刷不出来）。
+  const confirmDaysEditedRef = useRef(false);
   const [arrivalDays, setArrivalDays] = useState(2);
-  // 设置页「基金确认日」保存过该基金 → 这里的 T+N 只读（服务端同样不再覆盖）。
+  // 库里已有该 accountId + fundCode 的 T+N 行 → 这里的 T+N 只读，只能改日期
+  // （服务端自动写入路径同样只在建行时赋值，之后不再覆盖）。
   const [confirmRuleLocked, setConfirmRuleLocked] = useState(false);
+  // 只读态下用户手动改净值/到账日期时，提示「本次修改仅影响本页面」。
+  // 不自动消失：只能点浮层上的关闭按钮，或关掉记账窗口时随 portal 一起卸载。
+  const [confirmRuleHint, setConfirmRuleHint] = useState<"confirm" | "arrival" | null>(null);
+  // 规则查询三态：null = 还没查到 / false = 库里没有该基金的行 / true = 已锁定只读。
+  // 改日期时用它判定：只读框显示的必须是库里的 T+N，不能按日期反算。
+  const confirmRuleLockedRef = useRef<boolean | null>(null);
+  // 查询回来前就改过日期：先挂起，确认「库里没有行」后再补算 T+N。
+  const pendingDeriveConfirmRef = useRef<{ val: string; applyDate: string } | null>(null);
+  const pendingDeriveArrivalRef = useRef<{ val: string; base: string } | null>(null);
+  // 提示浮层的锚点 = 弹窗面板：浮层贴在面板外上方，不参与弹窗布局。
+  const panelRef = useRef<HTMLDivElement | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [editEntryId, setEditEntryId] = useState<string | null>(null);
   const [buyResultStatus, setBuyResultStatus] = useState<BuyResultStatus>(initHasRefund ? "refund" : "normal");
@@ -852,10 +950,80 @@ export function InvestmentFormModal({
     setApplyDate(val);
   }
 
+  // 锁定后用户手动改确认/到账日期只影响这笔记录：弹浮层提示，等用户点关闭按钮（不自动消失）。
+  function showConfirmRuleHint(field: "confirm" | "arrival") {
+    setConfirmRuleHint(field);
+  }
+
+  // 用户改日期时锁定状态可能还在路上（查询未返回）：先记下，规则回来确认已锁定再补提示，
+  // 否则「刚打开弹窗就改日期」会静默无提示。
+  const pendingConfirmHintRef = useRef<"confirm" | "arrival" | null>(null);
+  function flashLockedConfirmRuleHint(field: "confirm" | "arrival") {
+    // 结论已知且未锁定：库里没有该基金的 T+N，这次是在建规则，不提示。
+    if (confirmRuleLockedRef.current === false) {
+      pendingConfirmHintRef.current = null;
+      return;
+    }
+    if (confirmRuleLockedRef.current === true) {
+      pendingConfirmHintRef.current = null;
+      showConfirmRuleHint(field);
+      return;
+    }
+    // 还没拿到「库里是否有该基金」的答案：先挂起，等查询回来再决定是否提示。
+    pendingConfirmHintRef.current = field;
+  }
+
+  // 「用户在本页改过 T+N / 日期」：state 用于写库判定，ref 供查询回调读最新值。
+  function markConfirmDaysEdited() {
+    confirmDaysEditedRef.current = true;
+    setConfirmDaysEdited(true);
+  }
+
+  function clearConfirmDaysEdited() {
+    confirmDaysEditedRef.current = false;
+    setConfirmDaysEdited(false);
+  }
+
+  /** 锁定结论落地：ref 供事件回调在「查询竞态期」判定，state 供渲染（禁用输入框）。 */
+  function applyConfirmRuleState(locked: boolean) {
+    confirmRuleLockedRef.current = locked;
+    setConfirmRuleLocked(locked);
+  }
+
+  /**
+   * 库里还没有该基金行（首次赋值场景）：用「申请日 → 净值日」的交易日差推 T+N。
+   * 休市日来回换算不一致时只保留日期，不改 T+N。
+   */
+  function deriveConfirmDaysFromConfirmDate(val: string, applyDateYmd: string = applyDate) {
+    if (!val || !applyDateYmd) return;
+    const diff = countTradingDaysUtc(applyDateYmd, val, "cn_fund");
+    if (diff != null && addFundTradingDays(applyDateYmd, diff) === val) {
+      setConfirmDays(diff);
+      markConfirmDaysEdited();
+    }
+  }
+
+  /** 同理：库里没有行时，用「净值日 → 到账日」的交易日差推 arrivalDays。 */
+  function deriveArrivalDaysFromArrivalDate(val: string, baseDateYmd: string = confirmDate || applyDate) {
+    if (!val || !baseDateYmd) return;
+    const diff = countTradingDaysUtc(baseDateYmd, val, "cn_fund");
+    if (diff != null) setArrivalDays(diff);
+  }
+
   function changeConfirmDate(val: string) {
     enableEditAutoNav();
     clearUnavailableNav();
     setConfirmDate(val);
+    flashLockedConfirmRuleHint("confirm");
+    // 库里已写死 T+N → 只读框显示库里的值，改净值日期一律不动它（不再按日期反算）。
+    // 还没查到结论时也不能赌：先挂起，等规则回来说「库里没有行」再补算。
+    if (confirmRuleLockedRef.current !== false) {
+      if (confirmRuleLockedRef.current === null) {
+        pendingDeriveConfirmRef.current = { val, applyDate };
+      }
+      return;
+    }
+    deriveConfirmDaysFromConfirmDate(val);
   }
 
   function changeFundCode(val: string) {
@@ -942,7 +1110,12 @@ export function InvestmentFormModal({
     setFeeEdited(false);
     setFeeRateEdited(false);
     setConfirmDays(nextConfirmDays);
-    setConfirmDaysEdited(false);
+    clearConfirmDaysEdited();
+    // 重新载入一条记录：T+N 是否只读等这次规则查询的结论，别沿用上一条的。
+    confirmRuleLockedRef.current = null;
+    setConfirmRuleLocked(false);
+    pendingDeriveConfirmRef.current = null;
+    pendingDeriveArrivalRef.current = null;
     setMemo(editEntry.memo ?? editEntry.note ?? "");
     setSelectedTagIds(
       Array.isArray(editEntry.tags)
@@ -974,6 +1147,12 @@ export function InvestmentFormModal({
     if (open) return;
     lastResetSignatureRef.current = "";
     refundAmountEditedRef.current = false;
+    // 关闭后不留悬而未决的提示状态，避免下次打开被上一轮的编辑带出来。
+    pendingConfirmHintRef.current = null;
+    pendingDeriveConfirmRef.current = null;
+    pendingDeriveArrivalRef.current = null;
+    confirmRuleLockedRef.current = null;
+    setConfirmRuleHint(null);
   }, [open]);
 
   // Fetch fund name/rate/confirmDays when AI sets a fund code
@@ -989,12 +1168,25 @@ export function InvestmentFormModal({
       .catch(() => {})
       .finally(() => setNameLoading(false));
 
-    if (!confirmDaysEdited) {
-      fetch(`/api/v1/fund/confirm-days?accountId=${encodeURIComponent(toAccountId)}&fundCode=${encodeURIComponent(code)}`)
-        .then(r => r.json())
-        .then(d => { if (d.ok && d.days != null) { setConfirmRuleLocked(Boolean(d.manualOverride)); setConfirmDays(d.days); if (d.arrivalDays != null) setArrivalDays(d.arrivalDays); } })
-        .catch(() => {});
-    }
+    fetch(`/api/v1/fund/confirm-days?accountId=${encodeURIComponent(toAccountId)}&fundCode=${encodeURIComponent(code)}`)
+      .then(r => r.json())
+      .then(d => {
+        if (!d.ok) return;
+        // 有行即只读：T+N 已记录就不能在交易表单里改，只能改日期。
+        const locked = Boolean(d.exists ?? d.manualOverride);
+        applyConfirmRuleState(locked);
+        if (locked) {
+          // 只读框显示库里的值：覆盖本页任何反算结果。
+          if (d.days != null) setConfirmDays(d.days);
+          if (d.arrivalDays != null) setArrivalDays(d.arrivalDays);
+          clearConfirmDaysEdited();
+          return;
+        }
+        if (confirmDaysEditedRef.current || d.days == null) return;
+        setConfirmDays(d.days);
+        if (d.arrivalDays != null) setArrivalDays(d.arrivalDays);
+      })
+      .catch(() => {});
     if (mode === "create") {
       fetch(`/api/v1/fund/fee-rate?accountId=${encodeURIComponent(toAccountId)}&fundCode=${encodeURIComponent(code)}&feeType=${isRedeemLike(subtype) ? "redeem" : "buy"}`)
         .then(r => r.json())
@@ -1665,6 +1857,8 @@ export function InvestmentFormModal({
       setBuyResultStatus("normal");
       setLinkedRefundEntryId(null);
     }
+    // 提示讲的是当前页签这笔记录：切页签后字段已换，浮层不再有意义（它不自动消失）。
+    setConfirmRuleHint(null);
     selectSubtype(nextSubtype);
   }
 
@@ -1737,23 +1931,56 @@ export function InvestmentFormModal({
   }, [mode, open, toAccountId, fundCodeKey, cashAccounts, subtype, confirmDate]);
 
   useEffect(() => {
-    if (!open || !toAccountId || confirmDaysEdited) return;
+    if (!open) return;
+    // 换账户/换基金：上一条结论作废，等这次结果（期间改日期不会反算 T+N）。
+    // 账户还没选时也置空，避免拿上一条记录的锁定结论去禁用/提示。
+    confirmRuleLockedRef.current = null;
+    if (!toAccountId) return;
     const controller = new AbortController();
     const params = new URLSearchParams({ accountId: toAccountId });
     if (fundCodeKey) params.set("fundCode", fundCodeKey);
     fetch(`/api/v1/fund/confirm-days?${params.toString()}`, { signal: controller.signal })
       .then((r) => r.json())
       .then((d) => {
-        if (d.ok && d.days != null) {
-          // 确认库是唯一来源；同时记下是否已被设置页锁定（锁定后这里只读）。
-          setConfirmRuleLocked(Boolean(d.manualOverride));
-          setConfirmDays(d.days);
+        if (!d.ok) return;
+        // 只读标记与「用户是否改过 T+N」无关，必须每次都刷：
+        // 否则改过一次日期后，这里再也拿不到 exists，只读态和提示都会失效。
+        const locked = Boolean(d.exists ?? d.manualOverride);
+        applyConfirmRuleState(locked);
+        // 用户在规则返回前就改过日期：现在确认已锁定，把提示补上。
+        const pendingHint = pendingConfirmHintRef.current;
+        pendingConfirmHintRef.current = null;
+        if (locked && pendingHint) showConfirmRuleHint(pendingHint);
+        // 待补算的日期差在两种结论下都要取走，避免污染下一次查询。
+        const pendingConfirm = pendingDeriveConfirmRef.current;
+        const pendingArrival = pendingDeriveArrivalRef.current;
+        pendingDeriveConfirmRef.current = null;
+        pendingDeriveArrivalRef.current = null;
+        if (locked) {
+          // 库里有该基金 → T+N 是库里写死的值：无条件纠正（哪怕本页刚按日期反算过），
+          // 并清掉「用户改过 T+N」标记，避免只读框继续显示反算值。
+          if (d.days != null) setConfirmDays(d.days);
           if (d.arrivalDays != null) setArrivalDays(d.arrivalDays);
+          clearConfirmDaysEdited();
+          return;
         }
+        // 天数只在用户没手动改过时才回填，避免覆盖本页正在编辑的值。
+        if (!confirmDaysEditedRef.current && d.days != null) setConfirmDays(d.days);
+        if (d.arrivalDays != null) setArrivalDays(d.arrivalDays);
+        // 用户在结论回来前改过日期、且库里没有行：现在补算，行为与解锁时一致。
+        if (pendingConfirm) deriveConfirmDaysFromConfirmDate(pendingConfirm.val, pendingConfirm.applyDate);
+        if (pendingArrival) deriveArrivalDaysFromArrivalDate(pendingArrival.val, pendingArrival.base);
       })
       .catch(() => {});
     return () => controller.abort();
-  }, [mode, open, toAccountId, fundCodeKey, confirmDaysEdited]);
+    // derive* 是本次渲染内定义的纯回填函数，进依赖会无限重查。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, open, toAccountId, fundCodeKey]);
+
+  // 换基金/换账户后锁定状态可能变化：解锁了就把残留的浮层提示收掉。
+  useEffect(() => {
+    if (!confirmRuleLocked) setConfirmRuleHint(null);
+  }, [confirmRuleLocked, fundCodeKey, toAccountId]);
 
   // In edit mode, refresh the displayed fee rate after source fields change, but
   // never recalculate the saved fee unless the user edits the rate input itself.
@@ -2075,13 +2302,16 @@ export function InvestmentFormModal({
     setArrivalDate(val);
     arrivalDateEditedRef.current = true;
     arrivalDaysEditedRef.current = true;
-    // arrivalDate - confirmDate gives the arrival days on the fund trading calendar.
-    if (val && (confirmDate || applyDate)) {
-      const diff = countTradingDaysUtc(confirmDate || applyDate, val, "cn_fund");
-      if (diff != null) {
-        setArrivalDays(diff);
+    flashLockedConfirmRuleHint("arrival");
+    // 库里已写死 T+N → 只读：改到账日期不反推改写 arrivalDays（显示库里的值）。
+    // 查询还没回来时先挂起，等确认「库里没有行」再补算。
+    if (confirmRuleLockedRef.current !== false) {
+      if (confirmRuleLockedRef.current === null) {
+        pendingDeriveArrivalRef.current = { val, base: confirmDate || applyDate };
       }
+      return;
     }
+    deriveArrivalDaysFromArrivalDate(val);
   }
 
   // Held-fund flows restrict fund choices by application date; only create mode auto-fills redeem units.
@@ -2194,6 +2424,8 @@ export function InvestmentFormModal({
       setConfirmDays(nextConfirmDays);
       setConfirmDate(addFundTradingDays(today, nextConfirmDays));
       setFeeRateEdited(false);
+      // 新一轮填写从「没改过 T+N」开始：否则上一轮的编辑标记会让规则查询与锁定提示一直失效。
+      clearConfirmDaysEdited();
     }
     // Reset date, amount, units, NAV, fee, and memo.
     setApplyDate(today);
@@ -2383,14 +2615,17 @@ export function InvestmentFormModal({
     const shouldSubmitFundNavFields = !isDividend(subtype) || subtype === "dividend_reinvest";
 
     const isCreateMode = mode === "create";
+    // 库里已有该基金的 T+N（只读）：本页的日期调整只写这笔记录，连 auto 写入也不发。
+    // 只有「库里还没有行」时才可能首次赋值。
     const shouldWriteConfirmRule =
+      !confirmRuleLocked &&
       !isDividend(subtype) &&
       (isCreateMode || confirmDaysEdited || arrivalDaysEditedRef.current);
     const confirmRuleBody =
       productType !== "metal" && fundCode.trim() && confirmDays >= 0 && shouldWriteConfirmRule
         ? {
             accountId: toAccountId,
-            // 自动写入：设置页锁定过的基金不会被交易表单改写（服务端也会再判一次）。
+            // 自动写入：已有行不会被交易表单改写（服务端也会按行存在性再判一次）。
             auto: true,
             rows: [{
               fundCode: fundCode.trim(),
@@ -2550,7 +2785,7 @@ export function InvestmentFormModal({
           setMemo("");
           amountEditedRef.current = false;
           navEditedRef.current = false;
-          setConfirmDaysEdited(true);
+          markConfirmDaysEdited();
           arrivalDateEditedRef.current = false;
           arrivalDaysEditedRef.current = false;
           // Preserve amount and fund, clear nav/units (user re-fetches or enters nav for new date)
@@ -2674,7 +2909,7 @@ export function InvestmentFormModal({
           {/* 宽度 = 原 `max-w-2xl`(672px) 的 3/4 = 504px（移动端仍由 `.app-modal-panel` 的
               `max-width: 100vw` 覆盖成全屏，不受影响）。
               `app-modal-panel-fixed-height`：窗体高度固定（见 globals.css），切页签不位移。 */}
-          <div className="app-modal-panel app-modal-panel-fixed-height max-w-[31.5rem]">
+          <div ref={panelRef} className="app-modal-panel app-modal-panel-fixed-height max-w-[31.5rem]">
               <div className="modal-header shrink-0">
                 <div className="text-sm font-semibold text-slate-800">
                   {title}
@@ -2733,9 +2968,10 @@ export function InvestmentFormModal({
                       <div className="text-xs font-medium text-slate-600">{t("investForm.applyDate")}</div>
                       <DateStepper value={applyDate} onChange={changeApplyDate} />
                     </div>
-                    <div className="space-y-1">
+                    <div className="relative space-y-1">
                       <div className="text-xs font-medium text-slate-600">{t("investForm.arrivalDate")}</div>
                       <DateStepper value={arrivalDate} onChange={onArrivalDateChange} />
+                      <ConfirmRuleLockNotice anchorRef={panelRef} visible={confirmRuleHint === "arrival"} text={t("fundConfirmDays.localEditHint")} onClose={() => setConfirmRuleHint(null)} />
                     </div>
                   </div>
 
@@ -2876,12 +3112,12 @@ export function InvestmentFormModal({
                     <span>T+</span>
                     <input inputMode="numeric" value={confirmDays}
                       disabled={confirmRuleLocked}
-                      title={confirmRuleLocked ? t("fundConfirmDays.manualLockHint") : undefined}
+                      title={confirmRuleLocked ? t("fundConfirmDays.localEditHint") : undefined}
                       onChange={(e) => {
                         enableEditAutoNav();
                         const days = Number(e.target.value) || 0;
                         setConfirmDays(days);
-                        setConfirmDaysEdited(true);
+                        markConfirmDaysEdited();
                         if (applyDate) setConfirmDate(addFundTradingDays(applyDate, days));
                       }}
                       placeholder="0"
@@ -2889,12 +3125,16 @@ export function InvestmentFormModal({
                   </div>
                 )}
                 {showConfirmFor(subtype) && (
-                  <div className="space-y-1">
+                  <div className="relative space-y-1">
                     <div className="text-xs font-medium text-slate-600">{t("investForm.confirmDate")}</div>
                     <DateStepper value={confirmDate} onChange={changeConfirmDate} min={applyDate} />
                   </div>
                 )}
               </div>
+              {/* 提示是 portal + fixed 浮层，浮在窗口外上方，不占这一行的高度、不撑大窗口。 */}
+              {showConfirmFor(subtype) && (
+                <ConfirmRuleLockNotice anchorRef={panelRef} visible={confirmRuleHint === "confirm"} text={t("fundConfirmDays.localEditHint")} onClose={() => setConfirmRuleHint(null)} />
+              )}
 
               {redeemPanelMode ? (
                 <>
@@ -3086,9 +3326,10 @@ export function InvestmentFormModal({
                   </div>
 
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                    <div className="space-y-1">
+                    <div className="relative space-y-1">
                       <div className="text-xs font-medium text-slate-600">{t("investForm.arrivalDate")}</div>
                       <DateStepper value={arrivalDate} onChange={onArrivalDateChange} min={applyDate} />
+                      <ConfirmRuleLockNotice anchorRef={panelRef} visible={confirmRuleHint === "arrival"} text={t("fundConfirmDays.localEditHint")} onClose={() => setConfirmRuleHint(null)} />
                     </div>
                     <div className="space-y-1">
                       <div className="text-xs font-medium text-slate-600">{t("investForm.arrivalAmount")}</div>
@@ -3322,9 +3563,10 @@ export function InvestmentFormModal({
               )}
 
               <div className="grid grid-cols-1 gap-2 items-end sm:grid-cols-2">
-                <div className="space-y-1">
+                <div className="relative space-y-1">
                   <div className="text-xs font-medium text-slate-600">{t("investForm.arrivalDate")}</div>
                   <DateStepper value={arrivalDate} onChange={onArrivalDateChange} min={applyDate} />
+                  <ConfirmRuleLockNotice anchorRef={panelRef} visible={confirmRuleHint === "arrival"} text={t("fundConfirmDays.localEditHint")} onClose={() => setConfirmRuleHint(null)} />
                 </div>
                 <div className="space-y-1">
                   <div className="text-xs font-medium text-slate-600">{t("investForm.units")}</div>

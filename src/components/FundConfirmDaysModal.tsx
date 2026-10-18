@@ -3,14 +3,21 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Check, Loader2, Lock, Trash2 } from "lucide-react";
 
+import { DateStepper } from "@/components/DateStepper";
 import { useI18n } from "@/lib/i18n";
+
+const EFFECTIVE_DATE_INPUT_CLASS = "!min-h-0 !h-6 !w-32 !rounded !border-slate-200 !px-1.5 !text-xs tabular-nums";
 
 export type ConfirmDayRow = {
   fundCode: string;
   fundName: string | null;
   days: number;
   arrivalDays: number;
-  /** 已在设置页保存过：其它界面只读，不再覆盖这两个天数。 */
+  /** 赎回成本天数：赎回侧单独保存的天数，默认 1。 */
+  redeemCostDays: number;
+  /** 规则生效日期（YYYY-MM-DD）；规则尚未保存过时为空串。 */
+  effectiveDate: string;
+  /** 已在设置页保存过：其它界面只读，不再覆盖这些天数。 */
   manualOverride?: boolean;
 };
 
@@ -29,12 +36,23 @@ type ConfirmDayPayloadRow = {
   fundCode: string;
   days: number;
   arrivalDays: number;
+  redeemCostDays: number;
+  /** null = 清空生效日期（与重构前口径一致）。 */
+  effectiveDate: string | null;
 };
+
+const DEFAULT_REDEEM_COST_DAYS = 1;
 
 function normalizeDaysValue(value: string) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return 0;
   return Math.max(0, Math.trunc(parsed));
+}
+
+/** 接口返回的生效日期可能是 ISO 时间串，统一裁成 YYYY-MM-DD；非法值当空。 */
+function normalizeEffectiveDateInput(value?: string | null): string {
+  const text = String(value ?? "").trim().slice(0, 10);
+  return /^\d{4}-\d{2}-\d{2}$/.test(text) ? text : "";
 }
 
 function defaultConfirmDayRow(fundCode: string, fundName: string | null | undefined): ConfirmDayRow {
@@ -43,6 +61,8 @@ function defaultConfirmDayRow(fundCode: string, fundName: string | null | undefi
     fundName: fundName ?? null,
     days: 0,
     arrivalDays: 2,
+    redeemCostDays: DEFAULT_REDEEM_COST_DAYS,
+    effectiveDate: "",
     manualOverride: false,
   };
 }
@@ -53,6 +73,8 @@ function normalizeRow(row: ConfirmDayRow, fallbackFundName?: string | null): Con
     fundName: row.fundName ?? fallbackFundName ?? null,
     days: normalizeDaysValue(String(row.days)),
     arrivalDays: normalizeDaysValue(String(row.arrivalDays)),
+    redeemCostDays: normalizeDaysValue(String(row.redeemCostDays ?? DEFAULT_REDEEM_COST_DAYS)),
+    effectiveDate: normalizeEffectiveDateInput(row.effectiveDate),
     manualOverride: Boolean(row.manualOverride),
   };
 }
@@ -97,6 +119,8 @@ export function FundConfirmDaysPanel({
   const [draftFundCode, setDraftFundCode] = useState(initialFundCode ?? "");
   const [draftDays, setDraftDays] = useState("");
   const [draftArrivalDays, setDraftArrivalDays] = useState("");
+  const [draftRedeemCostDays, setDraftRedeemCostDays] = useState("");
+  const [draftEffectiveDate, setDraftEffectiveDate] = useState("");
 
   const applyRows = useCallback((list: ConfirmDayRow[]) => {
     let selected = initialFundCode
@@ -136,6 +160,8 @@ export function FundConfirmDaysPanel({
           ok?: boolean;
           days?: number;
           arrivalDays?: number;
+          redeemCostDays?: number;
+          effectiveDate?: string | null;
           manualOverride?: boolean;
           error?: string;
         } | null;
@@ -148,6 +174,8 @@ export function FundConfirmDaysPanel({
           fundName: fundName ?? null,
           days: data.days ?? 0,
           arrivalDays: data.arrivalDays ?? 2,
+          redeemCostDays: data.redeemCostDays ?? DEFAULT_REDEEM_COST_DAYS,
+          effectiveDate: normalizeEffectiveDateInput(data.effectiveDate),
           manualOverride: Boolean(data.manualOverride),
         }, fundName)]);
         return;
@@ -184,6 +212,8 @@ export function FundConfirmDaysPanel({
     fundCode: (fundCodeOverride ?? row.fundCode).trim(),
     days: normalizeDaysValue(String(row.days)),
     arrivalDays: normalizeDaysValue(String(row.arrivalDays)),
+    redeemCostDays: normalizeDaysValue(String(row.redeemCostDays ?? DEFAULT_REDEEM_COST_DAYS)),
+    effectiveDate: normalizeEffectiveDateInput(row.effectiveDate) || null,
   }), []);
 
   const saveRule = useCallback(async (nextRows: ConfirmDayRow[], row: ConfirmDayRow, rowKey: string) => {
@@ -259,13 +289,15 @@ export function FundConfirmDaysPanel({
       setError(t("fundConfirmDays.duplicateFund", { code }));
       return;
     }
-    if (!draftDays.trim() && !draftArrivalDays.trim()) return;
+    if (!draftDays.trim() && !draftArrivalDays.trim() && !draftRedeemCostDays.trim() && !draftEffectiveDate.trim()) return;
 
     const draftRow = normalizeRow({
       fundCode: code,
       fundName: initialFundCode ? fundName ?? null : null,
       days: draftDaysValue(draftDays, 0),
       arrivalDays: draftDaysValue(draftArrivalDays, 2),
+      redeemCostDays: draftDaysValue(draftRedeemCostDays, DEFAULT_REDEEM_COST_DAYS),
+      effectiveDate: normalizeEffectiveDateInput(draftEffectiveDate),
     }, fundName);
     const nextRows = [...rows.filter((row) => row.fundCode !== code), draftRow];
     void (async () => {
@@ -274,12 +306,14 @@ export function FundConfirmDaysPanel({
       setDraftFundCode(initialFundCode ?? "");
       setDraftDays("");
       setDraftArrivalDays("");
+      setDraftRedeemCostDays("");
+      setDraftEffectiveDate("");
     })();
-  }, [draftArrivalDays, draftDays, draftFundCode, fundName, initialFundCode, rows, saveRule, t]);
+  }, [draftArrivalDays, draftDays, draftEffectiveDate, draftFundCode, draftRedeemCostDays, fundName, initialFundCode, rows, saveRule, t]);
 
   const draftCanSave = Boolean(
     (initialFundCode ?? draftFundCode).trim()
-    && (draftDays.trim() || draftArrivalDays.trim()),
+    && (draftDays.trim() || draftArrivalDays.trim() || draftRedeemCostDays.trim() || draftEffectiveDate.trim()),
   );
   const anySaving = savingRowKey !== null;
 
@@ -297,6 +331,8 @@ export function FundConfirmDaysPanel({
                 ) : null}
                 <th className="border-b border-slate-200 px-2 py-1.5 text-right text-xs font-semibold text-slate-600">{t("fundConfirmDays.col.confirmDays")}</th>
                 <th className="border-b border-slate-200 px-2 py-1.5 text-right text-xs font-semibold text-slate-600">{t("fundConfirmDays.col.arrivalDays")}</th>
+                <th className="border-b border-slate-200 px-2 py-1.5 text-right text-xs font-semibold text-slate-600">{t("fundConfirmDays.col.redeemCostDays")}</th>
+                <th className="border-b border-slate-200 px-2 py-1.5 text-right text-xs font-semibold text-slate-600">{t("fundConfirmDays.col.effectiveDate")}</th>
                 <th className="w-40 border-b border-slate-200 px-2 py-1.5 text-right text-xs font-semibold text-slate-600">{t("detail.column.actions")}</th>
               </tr>
             </thead>
@@ -341,6 +377,23 @@ export function FundConfirmDaysPanel({
                         value={row.arrivalDays}
                         onChange={(e) => updateRow(index, { arrivalDays: normalizeDaysValue(e.target.value) })}
                         className="h-6 w-12 rounded border border-slate-200 px-1.5 text-right text-xs tabular-nums outline-none focus:border-blue-400"
+                      />
+                    </td>
+                    <td className="border-b border-slate-100 px-2 py-1 text-right">
+                      <input
+                        type="number"
+                        min={0}
+                        value={row.redeemCostDays}
+                        onChange={(e) => updateRow(index, { redeemCostDays: normalizeDaysValue(e.target.value) })}
+                        className="h-6 w-12 rounded border border-slate-200 px-1.5 text-right text-xs tabular-nums outline-none focus:border-blue-400"
+                      />
+                    </td>
+                    <td className="border-b border-slate-100 px-2 py-1 text-right">
+                      <DateStepper
+                        compact
+                        value={row.effectiveDate}
+                        onChange={(value) => updateRow(index, { effectiveDate: normalizeEffectiveDateInput(value) })}
+                        className={EFFECTIVE_DATE_INPUT_CLASS}
                       />
                     </td>
                     <td className="border-b border-slate-100 px-2 py-1 text-right">
@@ -397,6 +450,24 @@ export function FundConfirmDaysPanel({
                     value={draftArrivalDays}
                     onChange={(e) => setDraftArrivalDays(e.target.value)}
                     className="h-6 w-12 rounded border border-slate-200 bg-white px-1.5 text-right text-xs tabular-nums outline-none focus:border-blue-400"
+                  />
+                </td>
+                <td className="border-b border-slate-100 px-2 py-1 text-right">
+                  <input
+                    type="number"
+                    min={0}
+                    value={draftRedeemCostDays}
+                    placeholder={String(DEFAULT_REDEEM_COST_DAYS)}
+                    onChange={(e) => setDraftRedeemCostDays(e.target.value)}
+                    className="h-6 w-12 rounded border border-slate-200 bg-white px-1.5 text-right text-xs tabular-nums outline-none focus:border-blue-400"
+                  />
+                </td>
+                <td className="border-b border-slate-100 px-2 py-1 text-right">
+                  <DateStepper
+                    compact
+                    value={draftEffectiveDate}
+                    onChange={setDraftEffectiveDate}
+                    className={EFFECTIVE_DATE_INPUT_CLASS}
                   />
                 </td>
                 <td className="border-b border-slate-100 px-2 py-1 text-right">

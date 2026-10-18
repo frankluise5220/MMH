@@ -175,7 +175,7 @@ export function FundProfileSettingsModal({ open, account, fundCode, fallbackFund
       const mergedConfirmRows = [...(confirmData.rows ?? [])];
       for (const item of fundItems) {
         if (!mergedConfirmRows.some((row) => row.fundCode === item.fundCode)) {
-          mergedConfirmRows.push({ fundCode: item.fundCode, fundName: item.fundName, days: 0, arrivalDays: 2 });
+          mergedConfirmRows.push({ fundCode: item.fundCode, fundName: item.fundName, days: 0, arrivalDays: 2, redeemCostDays: 1, effectiveDate: "" });
         }
       }
       const mergedFeeRows = (feeData.rows ?? []).map((row) => ({ ...row, fundName: row.fundName ?? nameByCode.get(row.fundCode) ?? null }));
@@ -257,12 +257,12 @@ export function FundProfileSettingsModal({ open, account, fundCode, fallbackFund
   if (!open) return null;
 
   return (
-    <ModalLayer className="fixed inset-0 flex items-start justify-center overflow-y-auto bg-slate-950/40 p-2 sm:p-4" role="presentation"
+    <ModalLayer className="fixed inset-0 flex items-start justify-center overflow-y-auto bg-slate-950/40 p-2 sm:items-center sm:p-4" role="presentation"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) handleClose();
       }}>
       <div
-        className="app-modal-panel relative mt-2 w-full max-w-xl sm:mt-4"
+        className="app-modal-panel relative mt-2 w-full max-w-xl sm:mt-0"
         role="dialog"
         aria-modal="true"
         aria-labelledby="fund-profile-settings-title"
@@ -290,6 +290,8 @@ export function FundProfileSettingsModal({ open, account, fundCode, fallbackFund
         {hasFundNavigation ? (
           <TransparentSideNavButtons
             scope="fund"
+            defaultCentered
+            emphasized
             onPrevious={() => handleFundNavigate(previousFund)}
             onNext={() => handleFundNavigate(nextFund)}
             previousDisabled={!previousFund || editPlanOpen}

@@ -24,7 +24,7 @@ import { createTransaction, editInvestment } from "@/lib/server/sidebar-actions/
 import type { SmartSelectOption } from "@/components/SmartSelect";
 import type { CategorySmartSelectOption } from "@/components/categorySmartSelect";
 import { formatDateUtc } from "@/lib/date-utils";
-import { fundConfirmDate } from "@/lib/fund/confirmDays";
+import { fundConfirmDate } from "@/lib/fund/fund-dates";
 import type { AccountDisplayOption } from "@/lib/account-display";
 import { accountFilterGroupKey, accountFilterGroupLabel } from "@/lib/account-kinds";
 import { scheduledTaskTypeLabel, type LoanScheduledPlanRole, type ScheduledTaskType } from "@/lib/scheduled-task";

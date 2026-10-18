@@ -745,7 +745,8 @@ export function RegularInvestForm({
       .then(d => {
         if (cancelled) return;
         if (d.ok && d.days != null) {
-          setConfirmRuleLocked(Boolean(d.manualOverride));
+          // 有行即只读：T+N 已记录就不能在这里改。
+          setConfirmRuleLocked(Boolean(d.exists ?? d.manualOverride));
           setFormData(f => ({
             ...f,
             confirmDays: confirmDaysTouchedRef.current ? f.confirmDays : String(d.days),
@@ -806,7 +807,8 @@ export function RegularInvestForm({
       .then(r => r.json())
       .then(d => {
         if (d.ok && d.days != null) {
-          setConfirmRuleLocked(Boolean(d.manualOverride));
+          // 有行即只读：T+N 已记录就不能在这里改。
+          setConfirmRuleLocked(Boolean(d.exists ?? d.manualOverride));
           setFormData(f => ({
             ...f,
             confirmDays: confirmDaysTouchedRef.current ? f.confirmDays : String(d.days),
@@ -1758,7 +1760,7 @@ export function RegularInvestForm({
                       min="0"
                       value={formData.confirmDays}
                       disabled={confirmRuleLocked}
-                      title={confirmRuleLocked ? t("fundConfirmDays.manualLockHint") : undefined}
+                      title={confirmRuleLocked ? t("fundConfirmDays.localEditHint") : undefined}
                       onChange={(e) => {
                         confirmDaysTouchedRef.current = true;
                         setFormData(d => ({ ...d, confirmDays: e.target.value }));
@@ -1774,7 +1776,7 @@ export function RegularInvestForm({
                       min="0"
                       value={formData.arrivalDays}
                       disabled={confirmRuleLocked}
-                      title={confirmRuleLocked ? t("fundConfirmDays.manualLockHint") : undefined}
+                      title={confirmRuleLocked ? t("fundConfirmDays.localEditHint") : undefined}
                       onChange={(e) => {
                         arrivalDaysTouchedRef.current = true;
                         setFormData(d => ({ ...d, arrivalDays: e.target.value }));
@@ -1785,7 +1787,7 @@ export function RegularInvestForm({
                   </div>
                 </div>
                 {confirmRuleLocked ? (
-                  <div className="text-[11px] leading-4 text-slate-400">{t("fundConfirmDays.manualLockHint")}</div>
+                  <div className="text-[11px] leading-4 text-slate-400">{t("fundConfirmDays.localEditHint")}</div>
                 ) : null}
                 </>
               )}
