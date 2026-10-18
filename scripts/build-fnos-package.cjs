@@ -2998,6 +2998,18 @@ const MIGRATIONS = [
       db.exec('CREATE UNIQUE INDEX IF NOT EXISTS "Account_parentId_currency_key" ON "Account"("parentId","currency")');
     },
   },
+  {
+    // 基金确认日「人工锁定」标记（2026-10-18）：用户在「基金确认日」表里保存过之后置 true，
+    // 此后 days / arrivalDays 只允许这张表再改，交易表单 / 定投 / 批量导入 / 初始化等
+    // 自动写入路径一律跳过该行。全新安装由 native-init.sql 依据 schema 建列，这里只补存量库。
+    version: "20261018_fund_confirm_rule_manual_override",
+    description: "Add FundConfirmDays.manualOverride: after a manual save only the confirm-days table may change days",
+    apply(db) {
+      if (tableExists(db, "FundConfirmDays")) {
+        addColumnIfMissing(db, "FundConfirmDays", "manualOverride", "BOOLEAN NOT NULL DEFAULT 0");
+      }
+    },
+  },
 ];
 
 // 到期日「周年 − 1 天」→ 周年；返回 null 表示不是旧口径。

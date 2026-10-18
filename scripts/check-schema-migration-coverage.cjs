@@ -107,6 +107,9 @@ const releaseCriticalColumns = [
   ["reimbursements", "approvalDate", "20260927_reimbursement_approval_details", "20260927_reimbursement_approval_details"],
   ["reimbursements", "approvalNote", "20260927_reimbursement_approval_details", "20260927_reimbursement_approval_details"],
   ["reimbursement_settlements", "feeAmount", "20260927_add_reimbursement_settlement_fee", "20260927_add_reimbursement_settlement_fee"],
+  ["precious_metal_transactions", "arrivalDate", "20261017_add_metal_arrival_date", "20261017_add_metal_arrival_date"],
+  ["Account", "parentId", "20261018_add_account_parent", "20261018_add_account_parent"],
+  ["FundConfirmDays", "manualOverride", "20261018_fund_confirm_rule_manual_override", "20261018_fund_confirm_rule_manual_override"],
 ];
 for (const [table, column, migrationDir, migrationVersion] of releaseCriticalColumns) {
   const schemaHasIt = schema.includes(` ${column} `) || schema.includes(`${column} `);

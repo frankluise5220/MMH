@@ -902,6 +902,24 @@ ensure_user_household_fn_uid_unique() {
   return 1
 }
 
+ensure_account_parent_unique() {
+  # 0.1.75 added Account.parentId / Account.isAggregate plus
+  # @@unique([parentId, currency]). The Account table exists in every image
+  # since v0.1.52, so an unassisted push plans "A unique constraint covering the
+  # columns [parentId,currency] ... will be added" and
+  # push_would_change_existing_data() refuses to start (the same failure class
+  # as 0.1.66 and 0.1.67). Every legacy row keeps parentId NULL and PostgreSQL
+  # treats NULLs as distinct, so pre-creating the index cannot collide.
+  if ensure_unique_index "Account" \
+    'ALTER TABLE "Account" ADD COLUMN IF NOT EXISTS "parentId" TEXT; ALTER TABLE "Account" ADD COLUMN IF NOT EXISTS "isAggregate" BOOLEAN NOT NULL DEFAULT false;' \
+    'CREATE UNIQUE INDEX IF NOT EXISTS "Account_parentId_currency_key" ON "Account"("parentId","currency"); CREATE INDEX IF NOT EXISTS "Account_parentId_idx" ON "Account"("parentId");'; then
+    mmh_log "ensured Account.parentId/isAggregate columns and unique index"
+    return 0
+  fi
+  mmh_log "WARNING: could not ensure Account.parentId/currency unique index; schema sync may refuse to start on an upgraded database."
+  return 1
+}
+
 list_prisma_copy_tables() {
   psql_mmh -tAc "SELECT quote_ident(n.nspname) || '.' || quote_ident(c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relname ~* '_copy';"
 }
@@ -982,6 +1000,7 @@ ensure_account_balance_recomputed_at_column || true
 # unique constraint on an existing table needs its own ensure_*_unique call.
 ensure_reimbursement_payment_tx_unique || true
 ensure_user_household_fn_uid_unique || true
+ensure_account_parent_unique || true
 
 PUSH_OUTPUT="$(mktemp)"
 PUSH_OK=0

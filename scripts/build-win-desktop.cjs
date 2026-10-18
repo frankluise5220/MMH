@@ -408,6 +408,21 @@ function applyRuntimeMigrations(db) {
   // 漏掉这段：升级后的旧桌面库读明细会报 "no such column: reconciledAt"。
   addColumnIfMissing(db, "transactions", "reconciledAt", "DATETIME");
   addColumnIfMissing(db, "transactions", "reconciledBalance", "DECIMAL(18,2)");
+  // 2026-10-17 金属交易到账日。与 build-fnos-package.cjs 的
+  // 20261017_add_metal_arrival_date 同义（可空，读取侧回退到 date）。
+  // 0.1.74 漏了这段，升级后的桌面库查贵金属会报 "no such column: arrivalDate"。
+  addColumnIfMissing(db, "precious_metal_transactions", "arrivalDate", "DATETIME");
+  // 2026-10-18 多币种父账户：parentId / isAggregate 以及 (parentId, currency) 唯一索引。
+  // 与 build-fnos-package.cjs 的 20261018_add_account_parent 同义。
+  addColumnIfMissing(db, "Account", "parentId", "TEXT");
+  addColumnIfMissing(db, "Account", "isAggregate", "BOOLEAN NOT NULL DEFAULT 0");
+  if (columnExists(db, "Account", "parentId")) {
+    db.exec('CREATE INDEX IF NOT EXISTS "Account_parentId_idx" ON "Account"("parentId")');
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS "Account_parentId_currency_key" ON "Account"("parentId","currency")');
+  }
+  // 2026-10-18 基金确认日人工锁定。与 build-fnos-package.cjs 的
+  // 20261018_fund_confirm_rule_manual_override 同义。
+  addColumnIfMissing(db, "FundConfirmDays", "manualOverride", "BOOLEAN NOT NULL DEFAULT 0");
 }
 
 fs.mkdirSync(dataDir, { recursive: true });
