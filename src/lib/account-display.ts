@@ -666,8 +666,11 @@ export function buildAccountDisplayOption(
             });
 
   const subLabel = isFixedAsset ? FIXED_ASSET_EXPENSE_CATEGORY_NAME : kindLabel(displayKind);
-  // 币种文本：本位币、以及名称里已写币种的返回空串（不会出现「… · USD · USD」）。
-  const tableCurrencyText = resolveAccountCurrencyText(accountDisplayName, account.currency, baseCurrency);
+  // 币种文本（悬浮补全用）：只看「是不是本位币」，不看名称里写没写币种。
+  // 名称写的是中文（「美元现金」）时，行里并没有 ISO 代码，悬浮必须补上 `USD`，
+  // 否则用户看不出这笔钱记在哪个币种上；名称里已经带 `· USD` 的情况交给下面的
+  // `selectorVisibleText.includes` / `label.includes` 去重，不会渲染成两个 USD。
+  const tableCurrencyText = accountCurrencyLabelText(account.currency, baseCurrency);
   // 写死规则（2026-10-18 用户裁定，与 ADT 表格同一口径）：悬浮只补「行里看不到」
   // 的信息，已经显示出来的元素不再重复。
   // - 选择器行显示 `selectorLabel` + `subLabel`（类型/所有人可能已在其中）；
@@ -675,7 +678,11 @@ export function buildAccountDisplayOption(
   const selectorVisibleText = joinAccountSubLabel([selectorLabel, subLabel]);
   const hoverParts: string[] = [];
   if (showOwner && groupName && !selectorVisibleText.includes(groupName)) hoverParts.push(groupName);
-  if (tableCurrencyText && !selectorVisibleText.includes(tableCurrencyText)) hoverParts.push(tableCurrencyText);
+  // 名称里已经写着 `USD` 的不重复；只写中文（「美元现金」）的仍要补 ISO 代码。
+  const nameShowsCurrency = Boolean(tableCurrencyText) && accountDisplayName.includes(tableCurrencyText);
+  if (tableCurrencyText && !nameShowsCurrency && !selectorVisibleText.includes(tableCurrencyText)) {
+    hoverParts.push(tableCurrencyText);
+  }
   const hoverTitle = joinAccountSubLabel(hoverParts);
 
   // Table hover: show only what the configured label does not already show
@@ -690,7 +697,7 @@ export function buildAccountDisplayOption(
   if (!tableLabelFields.includes("kind") && subLabel) {
     tableHoverParts.push(subLabel);
   }
-  if (!tableLabelFields.includes("currency") && tableCurrencyText) {
+  if (!tableLabelFields.includes("currency") && tableCurrencyText && !nameShowsCurrency && !label.includes(tableCurrencyText)) {
     tableHoverParts.push(tableCurrencyText);
   }
   const tableHoverTitle = tableHoverParts.length > 0

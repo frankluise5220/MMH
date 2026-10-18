@@ -14,6 +14,7 @@ import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
 import { isCreditCardMonthEndBillingDay } from "@/lib/credit/rules";
 import { getMaintainedAccountBalances } from "@/lib/server/account-balance";
 import { createLiabilityTransaction } from "@/lib/server/sidebar-actions/liability-actions";
+import { getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { ACCOUNT_LABEL_FIELDS_COOKIE, accountLabelFieldsFromCookieValue } from "@/lib/server/account-label-fields";
 import { getServerT } from "@/lib/server/i18n";
@@ -97,7 +98,10 @@ export default async function LiabilitiesPage({
     cookieStore.get("mmh_credit_card_label_template")?.value,
     creditCardLabelMode,
   );
-  const { hidFilter } = await getHouseholdScope();
+  const householdScope = await getHouseholdScope();
+  const { hidFilter } = householdScope;
+  // hover 只补「行里看不到」的币种，判据需要本位币（见 resolveAccountCurrencyText）。
+  const baseCurrency = await getHouseholdBaseCurrency(householdScope.householdId);
   const [allAccounts, counterparties, institutions, groups] = await Promise.all([
     prisma.account.findMany({
       where: { isActive: true, isPlaceholder: { not: true }, ...hidFilter },
@@ -124,12 +128,13 @@ export default async function LiabilitiesPage({
       name: account.name,
       kind: account.kind,
       numberMasked: account.numberMasked,
+      currency: account.currency,
       groupId: account.groupId,
       investProductType: account.investProductType,
       Institution: account.Institution,
       AccountGroup: account.AccountGroup,
       Counterparty: account.Counterparty,
-    }, creditCardLabelTemplate, { fields: accountLabelFields });
+    }, creditCardLabelTemplate, { fields: accountLabelFields, baseCurrency });
     return {
       id: account.id,
       name: account.name,
@@ -265,11 +270,12 @@ export default async function LiabilitiesPage({
         name: account.name,
         kind: account.kind,
         numberMasked: account.numberMasked,
+        currency: account.currency,
         groupId: account.groupId,
         Institution: account.Institution,
         AccountGroup: account.AccountGroup,
         Counterparty: account.Counterparty,
-      }, creditCardLabelTemplate, { fields: accountLabelFields });
+      }, creditCardLabelTemplate, { fields: accountLabelFields, baseCurrency });
       return {
         id: account.id,
         label: display.label,
@@ -338,11 +344,12 @@ export default async function LiabilitiesPage({
       name: account.name,
       kind: account.kind,
       numberMasked: account.numberMasked,
+      currency: account.currency,
       groupId: account.groupId,
       Institution: account.Institution,
       AccountGroup: account.AccountGroup,
       Counterparty: account.Counterparty,
-    }, creditCardLabelTemplate, { fields: accountLabelFields });
+    }, creditCardLabelTemplate, { fields: accountLabelFields, baseCurrency });
     const institutionName = display.institutionName || t("liabilities.noCounterparty");
     const liabilityPersonKey = institutionName
       ? `institution:${account.institutionId ?? institutionName}`

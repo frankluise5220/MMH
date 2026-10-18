@@ -424,12 +424,13 @@ function toSidebarAccountItem(a: any, t: (key: string, params?: Record<string, s
     name: a.name,
     kind: a.kind,
     numberMasked: a.numberMasked,
+    currency: a.currency ?? null,
     groupId: a.groupId ?? "",
     investProductType: a.investProductType ?? null,
     Institution: a.Institution ?? null,
     AccountGroup: a.AccountGroup ?? null,
     Counterparty: a.Counterparty ?? null,
-  }, creditCardSidebarLabelTemplate);
+  }, creditCardSidebarLabelTemplate, { baseCurrency: a.baseCurrency ?? null });
   return {
     id: a.id,
     name: a.name,

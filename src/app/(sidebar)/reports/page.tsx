@@ -39,6 +39,7 @@ import { loadInvestmentProfitReport, type InvestmentProfitPeriod } from "@/lib/s
 import { loadCommonData, loadCachedStockHoldingReport, loadCachedFundHoldingReport } from "@/lib/server/cached-data";
 import { stockMarketLabel } from "@/lib/stock/market";
 import { systemCategoryLabel } from "@/lib/system-category-labels";
+import { getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { buildReportDetailEntryOverrides, loadReportDetailEntries } from "@/lib/server/report-detail-entries";
 import { getServerDisplayLanguage, getServerT } from "@/lib/server/i18n";
@@ -229,6 +230,8 @@ export default async function ReportsPage({
     creditCardLabelMode,
   );
   const ctx = await getHouseholdScope();
+  // hover 补币种需要本位币（本位币不显示，外币显示 ISO 代码）。
+  const baseCurrency = await getHouseholdBaseCurrency(ctx.householdId);
   const currentYear = now.getUTCFullYear();
   const currentMonth = now.getUTCMonth() + 1;
   const profitYear = parseYear(typeof params.profitYear === "string" ? params.profitYear : undefined) ?? currentYear;
@@ -260,12 +263,13 @@ export default async function ReportsPage({
       name: account.name,
       kind: account.kind,
       numberMasked: account.numberMasked,
+      currency: account.currency,
       groupId: account.groupId,
       investProductType: account.investProductType,
       Institution: account.Institution,
       AccountGroup: account.AccountGroup,
       Counterparty: account.Counterparty,
-    }, creditCardLabelTemplate, { fields: accountLabelFields }),
+    }, creditCardLabelTemplate, { fields: accountLabelFields, baseCurrency }),
   );
   const allAccountDisplayById = new Map(allAccountDisplayOptions.map((account) => [account.id, account]));
   const accountDisplayOptions = accountRecords.map((account) => allAccountDisplayById.get(account.id)!).filter(Boolean);

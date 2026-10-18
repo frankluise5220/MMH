@@ -16,6 +16,7 @@ import { pnlClassFromRedUp } from "@/lib/client/colors";
 import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
 import { isCreditCardMonthEndBillingDay } from "@/lib/credit/rules";
 import { getMaintainedAccountBalances } from "@/lib/server/account-balance";
+import { getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { ACCOUNT_LABEL_FIELDS_COOKIE, accountLabelFieldsFromCookieValue } from "@/lib/server/account-label-fields";
 import { getServerT } from "@/lib/server/i18n";
@@ -105,6 +106,10 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
       : "assets";
   const ctx = await getHouseholdScope();
   const { hidFilter } = ctx;
+  // 币种要进 hover：`buildAccountDisplayOption` 只有拿到账户币种与账簿本位币
+  // 才会补「非本位币」的 ISO 代码（见 resolveAccountCurrencyText），不传就永远
+  // 只有所有人/类型。本位币账户仍然不显示币种。
+  const baseCurrency = await getHouseholdBaseCurrency(ctx.householdId);
   const cookieStore = await cookies();
   const accountLabelFields = accountLabelFieldsFromCookieValue(cookieStore.get(ACCOUNT_LABEL_FIELDS_COOKIE)?.value);
   const creditCardLabelMode = cookieStore.get("mmh_credit_card_label_mode")?.value === "full_name" ? "full_name" : "short_last4";
@@ -165,12 +170,13 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
         name: account.name,
         kind: account.kind,
         numberMasked: account.numberMasked,
+        currency: account.currency,
         groupId: account.groupId,
         investProductType: account.investProductType,
         Institution: account.Institution,
         AccountGroup: account.AccountGroup,
         Counterparty: account.Counterparty,
-      }, creditCardLabelTemplate, { fields: accountLabelFields });
+      }, creditCardLabelTemplate, { fields: accountLabelFields, baseCurrency });
       return {
         id: account.id,
         name: display.label,
@@ -189,12 +195,13 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
         name: account.name,
         kind: account.kind,
         numberMasked: account.numberMasked,
+        currency: account.currency,
         groupId: account.groupId,
         investProductType: account.investProductType,
         Institution: account.Institution,
         AccountGroup: account.AccountGroup,
         Counterparty: account.Counterparty,
-      }, creditCardLabelTemplate, { fields: accountLabelFields });
+      }, creditCardLabelTemplate, { fields: accountLabelFields, baseCurrency });
       const cycle = cycleByAccountId.get(account.id);
       const balance = cycle
         ? creditCardDisplayBalanceFromCurrentCycle(cycle)

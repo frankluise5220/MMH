@@ -3,6 +3,7 @@ import Link from "next/link";
 import { Shield, Building2, UserRound, ArrowDownLeft, ArrowUpRight } from "lucide-react";
 
 import { prisma } from "@/lib/db/prisma";
+import { getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { buildAccountDisplayOption, normalizeCreditCardLabelTemplate } from "@/lib/account-display";
 import { formatMoney } from "@/lib/format";
@@ -79,7 +80,10 @@ function productTypeLabel(type: string | null, t: (key: string) => string) {
 
 export default async function InsurancePage() {
   const t = await getServerT();
-  const { hidFilter } = await getHouseholdScope();
+  const householdScope = await getHouseholdScope();
+  const { hidFilter } = householdScope;
+  // hover 补币种需要本位币（本位币不显示，外币显示 ISO 代码）。
+  const baseCurrency = await getHouseholdBaseCurrency(householdScope.householdId);
   const cookieStore = await cookies();
   const accountLabelFields = accountLabelFieldsFromCookieValue(cookieStore.get(ACCOUNT_LABEL_FIELDS_COOKIE)?.value);
   const creditCardLabelMode = cookieStore.get("mmh_credit_card_label_mode")?.value === "full_name" ? "full_name" : "short_last4";
@@ -129,11 +133,12 @@ export default async function InsurancePage() {
       name: account.name,
       kind: account.kind,
       numberMasked: account.numberMasked,
+      currency: account.currency,
       groupId: account.groupId,
       investProductType: account.investProductType,
       Institution: account.Institution,
       AccountGroup: account.AccountGroup,
-    }, creditCardLabelTemplate, { fields: accountLabelFields });
+    }, creditCardLabelTemplate, { fields: accountLabelFields, baseCurrency });
 
     const relatedEntries = entries.filter((entry) => entry.insuranceProductId === product.id);
     const balance = relatedEntries.reduce((sum, entry) => sum + insuranceCashValueDelta(entry), 0);

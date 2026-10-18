@@ -121,12 +121,15 @@ async function getSidebarData() {
       name: account.name,
       kind: account.kind,
       numberMasked: account.numberMasked,
+      currency: account.currency,
       groupId: account.groupId,
       investProductType: account.investProductType,
       Institution: account.Institution,
       AccountGroup: account.AccountGroup,
       Counterparty: account.Counterparty,
-    }, creditCardSidebarLabelTemplate);
+      // 悬浮提示要补「非本位币」的 ISO 代码：不传 currency / baseCurrency 时
+      // hoverTitle 只有所有人/类型，美元、港币账户的币种会整列消失。
+    }, creditCardSidebarLabelTemplate, { baseCurrency });
 
     return {
       id: account.id,

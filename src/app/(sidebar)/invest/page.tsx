@@ -8,6 +8,7 @@ import { formatMoneyYuan, formatPercent } from "@/lib/format";
 import { pnlClassFromRedUp } from "@/lib/client/colors";
 import { getInvestmentAccountView } from "@/lib/account-kind-utils";
 import { investProductTypeLabel } from "@/lib/account-kinds";
+import { getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { ACCOUNT_LABEL_FIELDS_COOKIE, accountLabelFieldsFromCookieValue } from "@/lib/server/account-label-fields";
 import { getServerT } from "@/lib/server/i18n";
@@ -45,6 +46,8 @@ export default async function InvestPage({ searchParams }: { searchParams: Promi
   const pnlClass = (n: number) => pnlClassFromRedUp(n, isRedUp);
   const ctx = await getHouseholdScope();
   const { hidFilter } = ctx;
+  // hover 补币种需要本位币（本位币不显示，外币显示 ISO 代码）。
+  const baseCurrency = await getHouseholdBaseCurrency(ctx.householdId);
 
   const accounts = await prisma.account.findMany({
     where: { kind: AccountKind.investment, isActive: true, ...hidFilter },
@@ -186,11 +189,12 @@ export default async function InvestPage({ searchParams }: { searchParams: Promi
       name: a.name,
       kind: a.kind,
       numberMasked: a.numberMasked,
+      currency: a.currency,
       groupId: a.groupId,
       investProductType: a.investProductType,
       Institution: a.Institution,
       AccountGroup: a.AccountGroup,
-    }, creditCardLabelTemplate, { fields: accountLabelFields });
+    }, creditCardLabelTemplate, { fields: accountLabelFields, baseCurrency });
     const label = display.label;
     const groupName = a.AccountGroup?.name?.trim() || t("invest.noOwner");
     const productTypeLabel = investProductTypeLabel(a.investProductType, t);

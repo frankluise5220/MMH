@@ -13,6 +13,7 @@ import { formatMoney, formatPercent } from "@/lib/format";
 import { pnlClassFromRedUp } from "@/lib/client/colors";
 import type { InvestBalanceDetail } from "@/lib/invest-balance";
 import { loadInvestBalances } from "@/lib/server/cached-data";
+import { getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { ACCOUNT_LABEL_FIELDS_COOKIE, accountLabelFieldsFromCookieValue } from "@/lib/server/account-label-fields";
 import { getServerT } from "@/lib/server/i18n";
@@ -53,6 +54,8 @@ export default async function InvestmentsPage({
   const groupBy = GROUP_MODES.some((mode) => mode.key === groupByParam) ? (groupByParam as GroupMode) : "group";
   const ctx = await getHouseholdScope();
   const { hidFilter } = ctx;
+  // hover 补币种需要本位币（本位币不显示，外币显示 ISO 代码）。
+  const baseCurrency = await getHouseholdBaseCurrency(ctx.householdId);
   const cookieStore = await cookies();
   const accountLabelFields = accountLabelFieldsFromCookieValue(cookieStore.get(ACCOUNT_LABEL_FIELDS_COOKIE)?.value);
   const isRedUp = (cookieStore.get("colorScheme")?.value ?? "red_up_green_down") === "red_up_green_down";
@@ -70,6 +73,7 @@ export default async function InvestmentsPage({
         id: true,
         name: true,
         kind: true,
+        currency: true,
         investProductType: true,
         AccountGroup: { select: { id: true, name: true, sortOrder: true } },
         Institution: { select: { id: true, name: true } },
@@ -90,11 +94,12 @@ export default async function InvestmentsPage({
       id: account.id,
       name: account.name,
       kind: account.kind,
+      currency: account.currency,
       groupId: account.AccountGroup?.id,
       investProductType: account.investProductType,
       Institution: account.Institution,
       AccountGroup: account.AccountGroup,
-    }, creditCardLabelTemplate, { fields: accountLabelFields });
+    }, creditCardLabelTemplate, { fields: accountLabelFields, baseCurrency });
     const accountLabel = display.label;
     const groupName = account.AccountGroup?.name?.trim() || t("investments.noOwner");
     const institutionName = display.institutionName || t("investments.noInstitution");
