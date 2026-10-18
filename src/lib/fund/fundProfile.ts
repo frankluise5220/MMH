@@ -1,6 +1,6 @@
 import { Prisma } from "@prisma/client";
 
-import { formatDateUtc, subtractTradingDaysUtc } from "@/lib/date-utils";
+import { formatDateUtc, isTradingClosedDate, subtractTradingDaysUtc } from "@/lib/date-utils";
 import { queryFundProfile, queryFundIdentity } from "@/lib/fund/queryApi";
 import { normalizeTradingCalendar, type TradingCalendarValue } from "@/lib/fund/trading-calendar";
 
@@ -95,12 +95,22 @@ export function fundNavTargetDateForOffset(params: {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(referenceDate)) {
     throw new Error("referenceDate must be a YYYY-MM-DD date.");
   }
+  const tradingCalendar = params.tradingCalendar ?? "cn_fund";
   const nowLocal = appLocalDateHour(params.now ?? new Date());
-  const beforePublicationCutoff = referenceDate === nowLocal.date && nowLocal.hour < 19 ? 1 : 0;
+  // The pre-19:00 cutoff only models "today's NAV is published at 19:00". A day
+  // that is closed on the fund's calendar has no NAV of its own, so subtracting
+  // an extra trading day there would hide the newest published NAV: on any
+  // weekend/holiday before 19:00 the whole app would show the previous trading
+  // day (e.g. Sunday shows Friday's fund as Thursday's NAV).
+  const beforePublicationCutoff = referenceDate === nowLocal.date
+    && nowLocal.hour < 19
+    && !isTradingClosedDate(referenceDate, tradingCalendar)
+    ? 1
+    : 0;
   return subtractTradingDaysUtc(
     referenceDate,
     normalizeNavDateOffset(params.navDateOffset) + beforePublicationCutoff,
-    params.tradingCalendar ?? "cn_fund",
+    tradingCalendar,
   );
 }
 
