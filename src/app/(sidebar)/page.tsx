@@ -3066,6 +3066,25 @@ export default async function Home({
         ?? cashAccountList[0]?.id
         ?? ""
       : cashAccountList[0]?.id ?? "";
+  // 新增投资交易的资金账户默认值：优先引用该投资账户最近一笔买入（含定投）实际使用的
+  // 付款账户（数据来自服务器，跨设备一致）；没有历史买入或原账户已被删除时，
+  // 再退回按机构匹配的默认资金账户。allEntries 已按申请日倒序返回。
+  const lastInvestBuyCashAccountId = (() => {
+    if (!isFundLikeInvestView) return "";
+    const cashAccountIds = new Set(cashAccountList.map((account) => account.id));
+    const investEntries = (currentInvestData?.allEntries ?? []) as Array<{
+      fundSubtype?: string | null;
+      accountId?: string | null;
+    }>;
+    const latestBuy = investEntries.find(
+      (entry) =>
+        (entry.fundSubtype === "buy" || entry.fundSubtype === "regular_invest")
+        && !!entry.accountId
+        && cashAccountIds.has(entry.accountId),
+    );
+    return latestBuy?.accountId ?? "";
+  })();
+  const defaultInvestCashAccountId = lastInvestBuyCashAccountId || defaultCashAccountForSelectedInstitution;
   const defaultStockCashAccountId = (() => {
     const stockAccount = stockAccountOptions.find((account) => account.id === defaultStockInvestmentAccountId) ?? null;
     const stockOwnerGroupId = (stockAccount?.groupId ?? "").trim();
@@ -3209,7 +3228,7 @@ export default async function Home({
                 }
                 context={{
                   defaultAccountId: selectedAccount?.id ?? accountId ?? "",
-                  defaultCashAccountId: defaultCashAccountForSelectedInstitution,
+                  defaultCashAccountId: defaultInvestCashAccountId,
                   defaultTransferFromAccountId: isBillAccount
                     ? (lastRepayFromAccountId ?? cashAccountList[0]?.id ?? "")
                     : view === "investstock"
