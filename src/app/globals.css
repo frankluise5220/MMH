@@ -601,9 +601,17 @@ html {
     border-top-right-radius: 18px;
   }
 
-  .mobile-transaction-modal form {
+  /* 收支记账弹窗的滚动区（字段区）：容器滚动不外溢。原先这条 5.5rem 底部留白挂在 `form` 上，
+     是给「保存按钮在滚动内容末尾」留出上滑空间；现在按钮改成了贴着窗口底边的固定页脚，
+     留白要挂在**滚动区**上（否则会出现在页脚下方，露出空白）。 */
+  .mobile-transaction-modal .tx-entry-scroll {
     overscroll-behavior: contain;
-    padding-bottom: max(5.5rem, calc(1rem + env(safe-area-inset-bottom)));
+    padding-bottom: max(2rem, calc(1rem + env(safe-area-inset-bottom)));
+  }
+
+  /* 固定页脚在移动端贴底，需要自己让开安全区 */
+  .mobile-transaction-modal .tx-entry-footer {
+    padding-bottom: max(0.75rem, calc(0.75rem + env(safe-area-inset-bottom)));
   }
 }
 

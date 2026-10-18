@@ -33,6 +33,8 @@ import {
   type SettingsDataChangedDetail,
 } from "@/lib/client/settingsCache";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
+/** 固定弹窗高度：支出/收入/转账/预支四个页签内容长短不同，锁定后切页签窗体不位移。 */
+import { useModalHeightLock } from "@/lib/client/useModalHeightLock";
 import { showConfirmDialog } from "@/lib/client/confirm-dialog";
 import { parseDateInputToUtc as dateInputToUtcDate } from "@/lib/date-utils";
 import {
@@ -403,6 +405,18 @@ export function TransactionFormModal({
   const [submitting, setSubmitting] = useState(false);
   const [requestId, setRequestId] = useState<string | null>(null);
   const [editEntryId, setEditEntryId] = useState<string | null>(null);
+  /**
+   * 弹窗高度锁定：支出/收入/转账/预支（以及外汇）子页内容长短不同，
+   * 未锁定时弹窗在遮罩的居中布局里会随内容上下位移。
+   * 锁定到这个弹窗**内容出现过的最大自然高度**后，短页签底部留白、长页签内部滚动，外框恒定。
+   * 只在「新增」态测量：编辑态会多出分期表、基金明细等临时区块，量进去会把之后
+   * 每一次新增记账的窗口都撑到那个高度（窗口底部一大片空白）；编辑态若已量到高度照常套用，
+   * 未量到就按内容自适应，不会反向污染缓存。
+   */
+  const { panelRef, scrollRef, fixedHeightProps } = useModalHeightLock<HTMLDivElement, HTMLDivElement>(
+    "transaction-form",
+    open && !editEntryId,
+  );
   const [editEntryOriginalType, setEditEntryOriginalType] = useState<TxType | null>(null);
   const [editEntryHasFundDetail, setEditEntryHasFundDetail] = useState(false);
   const [editOriginalTransferAccounts, setEditOriginalTransferAccounts] = useState<{ fromAccountId: string; toAccountId: string } | null>(null);
@@ -719,6 +733,25 @@ export function TransactionFormModal({
   const [locationId, setLocationId] = useState("");
   const [note, setNote] = useState("");
   const [selectedTagIds, setSelectedTagIds] = useState<string[]>([]);
+  /** 标签下拉选项与「就地新建」回调：收支页签与转账页签共用一套，避免两处各写一份新建逻辑。 */
+  const tagSelectOptions = useMemo(
+    () => tagList.map((tag) => ({ id: tag.id, label: tag.name, color: tag.color })),
+    [tagList],
+  );
+  async function createTagInline(name: string, color: string): Promise<SmartSelectOption> {
+    const res = await fetch("/api/v1/tags", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, color }),
+    });
+    const data = await res.json();
+    if (!data.ok || !data.tag) throw new Error(data.error ?? t("txForm.createFailed"));
+    return { id: data.tag.id, label: data.tag.name, color: data.tag.color };
+  }
+  function handleTagCreated(tag: SmartSelectOption) {
+    setTagList((prev) => [...prev, { id: tag.id, name: tag.label, color: tag.color ?? null }]);
+    setSelectedTagIds((prev) => (prev.includes(tag.id) ? prev : [...prev, tag.id]));
+  }
   const [pendingAttachmentFiles, setPendingAttachmentFiles] = useState<File[]>([]);
   const [isFromButton, setIsFromButton] = useState(false);
   const amountInputRef = useRef<HTMLInputElement>(null);
@@ -966,15 +999,21 @@ export function TransactionFormModal({
     () => filterIncomeExpenseInstitutions(localNestedFieldData?.institutionId ?? nestedFieldData?.institutionId ?? []),
     [localNestedFieldData, nestedFieldData],
   );
-  const compactAccountSelectBehavior = useMemo(() => ({
-    density: "compact" as const,
+  /**
+   * 弹窗内所有下拉共用的行为配置。**不要在这里设 `density: "compact"`**：
+   * compact 会把触发框压成 `h-8 / px-2 / text-xs / 圆角 8`，而同一行的日期、金额是
+   * `form-input` 的 `h-9 / px-3 / text-sm / 圆角 10`，两者并排时下拉矮 4px、文字小一号；
+   * 切换子标签（支出/收入/转账/预支）后同一位置换成另一种控件，字段会上下错位、宽度观感也不同。
+   * 故统一走默认尺寸，与 `form-input` 逐项对齐；只有弹层高度仍单独限制。
+   */
+  const accountSelectBehavior = useMemo(() => ({
     dropdownMaxHeight: 320,
   }), []);
   const fixedAssetAccountSelectBehavior = useMemo(() => ({
-    ...compactAccountSelectBehavior,
+    ...accountSelectBehavior,
     autoOpen: fixedAssetAccountAutoOpen,
     onDropdownClose: () => setFixedAssetAccountAutoOpen(false),
-  }), [compactAccountSelectBehavior, fixedAssetAccountAutoOpen]);
+  }), [accountSelectBehavior, fixedAssetAccountAutoOpen]);
 
   useEffect(() => {
     if (!open || txType !== "expense" || !fixedAssetLinked) return;
@@ -2331,7 +2370,11 @@ export function TransactionFormModal({
 
       {open ? createPortal(
         <ModalLayer className="app-modal-backdrop">
-          <div className="app-modal-panel mobile-transaction-modal max-w-xl">
+          <div
+            ref={panelRef}
+            className={`app-modal-panel mobile-transaction-modal max-w-xl ${fixedHeightProps.className ?? ""}`.trim()}
+            style={fixedHeightProps.style}
+          >
             <div className="modal-header shrink-0">
               <div className="text-sm font-semibold text-slate-800">
                 {txType === "fx"
@@ -2358,7 +2401,14 @@ export function TransactionFormModal({
             ) : null}
 
             <fieldset disabled={reconciledReadOnly} className="contents">
-            <form ref={formRef} className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4" onSubmit={onSubmit}>
+            <form
+              ref={formRef}
+              className="flex min-h-0 flex-1 flex-col"
+              onSubmit={onSubmit}
+            >
+            {/* 字段区（滚动）：窗口高度锁定后，短页签的余量留在**这里**，
+                由下面的固定页脚兜住窗口底边，不会出现「保存按钮下面一片空白」。 */}
+            <div ref={scrollRef} className="tx-entry-scroll min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
               {txType !== "fx" && lockedType ? (
                 <div className="flex flex-wrap justify-center gap-2">
                   <button
@@ -2543,9 +2593,23 @@ export function TransactionFormModal({
                 <div className="space-y-3">
                   {txType === "advance" ? (
                     <>
-                      <div className="space-y-1">
-                        <div className="form-label">{t("detail.column.date")}</div>
-                        <DateStepper name="date" value={date} onChange={setDate} />
+                      <div className="grid grid-cols-2 gap-3">
+                        <div className="space-y-1">
+                          <div className="form-label">{t("detail.column.date")}</div>
+                          <DateStepper name="date" value={date} onChange={setDate} />
+                        </div>
+                        <div className="space-y-1">
+                          <div className="form-label">{t("txForm.cashAccount")}</div>
+                          <div className={REQUIRED_FIELD_CLASS}>
+                            <SmartSelect mode="single" value={accountId}
+                              onChange={(id: string) => { setAccountId(id); recordRecentAccount(id); }}
+                              options={advanceCashAccountOptions} placeholder={t("txForm.selectPlaceholder")}
+                              onCreateClick={() => { void openAccountCreate("account"); }}
+                              onCycleOwnerFilter={cycleOwnerFilter}
+                              ownerFilterLabel={ownerFilterLabel}
+                              behavior={accountSelectBehavior} />
+                          </div>
+                        </div>
                       </div>
                       <div className="grid grid-cols-2 gap-3">
                         <div className="space-y-1">
@@ -2564,30 +2628,18 @@ export function TransactionFormModal({
                           />
                         </div>
                         <div className="space-y-1">
-                          <div className="form-label">{t("txForm.belongingAccount")}</div>
-                          <div className={REQUIRED_FIELD_CLASS}>
-                            <SmartSelect mode="single" value={accountId}
-                              onChange={(id: string) => { setAccountId(id); recordRecentAccount(id); }}
-                              options={advanceCashAccountOptions} placeholder={t("txForm.selectPlaceholder")}
-                              onCreateClick={() => { void openAccountCreate("account"); }}
-                              onCycleOwnerFilter={cycleOwnerFilter}
-                              ownerFilterLabel={ownerFilterLabel}
-                              behavior={compactAccountSelectBehavior} />
-                          </div>
+                          <div className="form-label">{t("txForm.advanceAccount")}</div>
+                          <SmartSelect
+                            mode="single"
+                            value={advanceAccountId}
+                            onChange={(id: string) => { advanceAccountPinnedRef.current = Boolean(id); setAdvanceAccountId(id); }}
+                            options={advanceAccountOptions.map((option) => ({ id: option.id, label: option.label, subLabel: option.subLabel }))}
+                            placeholder={advanceAccountPlaceholder}
+                            onCreateClick={() => { void openAccountCreate("advance"); }}
+                            createLabel={t("txForm.addAdvanceAccount")}
+                            behavior={{ ...accountSelectBehavior, clearable: true }}
+                          />
                         </div>
-                      </div>
-                      <div className="space-y-1">
-                        <div className="form-label">{t("txForm.advanceAccount")}</div>
-                        <SmartSelect
-                          mode="single"
-                          value={advanceAccountId}
-                          onChange={(id: string) => { advanceAccountPinnedRef.current = Boolean(id); setAdvanceAccountId(id); }}
-                          options={advanceAccountOptions.map((option) => ({ id: option.id, label: option.label, subLabel: option.subLabel }))}
-                          placeholder={advanceAccountPlaceholder}
-                          onCreateClick={() => { void openAccountCreate("advance"); }}
-                          createLabel={t("txForm.addAdvanceAccount")}
-                          behavior={{ ...compactAccountSelectBehavior, clearable: true }}
-                        />
                       </div>
                     </>
                   ) : (
@@ -2614,7 +2666,7 @@ export function TransactionFormModal({
                               onCreateClick={() => { void openAccountCreate("account"); }}
                               onCycleOwnerFilter={cycleOwnerFilter}
                               ownerFilterLabel={ownerFilterLabel}
-                              behavior={compactAccountSelectBehavior} />
+                              behavior={accountSelectBehavior} />
                           </div>
                         </div>
                       </div>
@@ -2661,7 +2713,6 @@ export function TransactionFormModal({
                           groupSelectOnDoubleClick: false,
                           minDropdownWidth: 560,
                           dropdownMaxHeight: 420,
-                          density: "compact",
                           expandedGroupColumns: 4,
                         }}
                       />
@@ -2670,21 +2721,9 @@ export function TransactionFormModal({
                       <div className="form-label">{t("detail.column.tags")}</div>
                       <SmartSelect mode="multi" value={selectedTagIds}
                         onChange={(ids) => setSelectedTagIds(ids)}
-                        options={tagList.map(t => ({ id: t.id, label: t.name, color: t.color }))} placeholder={t("txForm.selectTags")}
-                        onInlineCreate={async (name, color) => {
-                          const res = await fetch("/api/v1/tags", {
-                            method: "POST",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({ name, color }),
-                          });
-                          const data = await res.json();
-                          if (!data.ok || !data.tag) throw new Error(data.error ?? t("txForm.createFailed"));
-                          return { id: data.tag.id, label: data.tag.name, color: data.tag.color };
-                        }}
-                        onCreated={(tag) => {
-                          setTagList(prev => [...prev, { id: tag.id, name: tag.label, color: tag.color }]);
-                          setSelectedTagIds(prev => [...prev, tag.id]);
-                        }}
+                        options={tagSelectOptions} placeholder={t("txForm.selectTags")}
+                        onInlineCreate={createTagInline}
+                        onCreated={handleTagCreated}
                       />
                     </div>
                     {txType === "expense" ? (
@@ -2725,7 +2764,7 @@ export function TransactionFormModal({
                             ].filter(Boolean).join(" · "),
                           }))}
                           placeholder={depositLotsLoading ? t("common.loading") : t("txForm.selectPlaceholder")}
-                          behavior={{ ...compactAccountSelectBehavior, clearable: false }}
+                          behavior={{ ...accountSelectBehavior, clearable: false }}
                         />
                       </div>
                     </div>
@@ -3015,7 +3054,7 @@ export function TransactionFormModal({
                         placeholder={fxDirection === "sell" ? t("txForm.fxSellFromAccountPlaceholder") : t("txForm.fxFromAccountPlaceholder")}
                         onCreateClick={() => { void openAccountCreate("from"); }} createLabel={t("txForm.addDebitAccount")}
                         onCycleOwnerFilter={cycleOwnerFilter} ownerFilterLabel={ownerFilterLabel}
-                        behavior={compactAccountSelectBehavior} />
+                        behavior={accountSelectBehavior} />
                     </div>
                     <div className="space-y-1">
                       <div className="form-label">{t("txForm.fxToAccount")}</div>
@@ -3031,7 +3070,7 @@ export function TransactionFormModal({
                           : t("txForm.fxToAccountPlaceholder", { currency: fxToCurrencyDraft })}
                         onCreateClick={() => { void openAccountCreate("to"); }} createLabel={t("settings.accounts.add")}
                         onCycleOwnerFilter={cycleOwnerFilter} ownerFilterLabel={ownerFilterLabel}
-                        behavior={compactAccountSelectBehavior} />
+                        behavior={accountSelectBehavior} />
                     </div>
                   </div>
 
@@ -3049,7 +3088,7 @@ export function TransactionFormModal({
                           labelSystem={(code) => t(`entityForm.currency.${code.toLowerCase()}`, { defaultValue: code })}
                           excludeCodes={[BASE_CASH_CURRENCY]}
                           showRequestButton={false}
-                          density="compact"
+                          density="regular"
                         />
                       )}
                     </div>
@@ -3066,7 +3105,7 @@ export function TransactionFormModal({
                           labelSystem={(code) => t(`entityForm.currency.${code.toLowerCase()}`, { defaultValue: code })}
                           excludeCodes={[BASE_CASH_CURRENCY]}
                           showRequestButton={false}
-                          density="compact"
+                          density="regular"
                         />
                       )}
                     </div>
@@ -3166,7 +3205,7 @@ export function TransactionFormModal({
                             options={displayTransferOptions} placeholder={t("txForm.selectPlaceholder")}
                             onCreateClick={() => { void openAccountCreate("from"); }} createLabel={t("settings.accounts.add")}
                             onCycleOwnerFilter={cycleOwnerFilter} ownerFilterLabel={ownerFilterLabel}
-                            behavior={compactAccountSelectBehavior} />
+                            behavior={accountSelectBehavior} />
                         </div>
                       </div>
                       <div className="flex flex-col items-center pb-0.5">
@@ -3180,7 +3219,7 @@ export function TransactionFormModal({
                           <SmartSelect mode="single" value={toAccountId} onChange={(v) => { setToAccountId(v); recordRecentAccount(v); }}
                             options={stockTransferToOptions} placeholder={t("txForm.selectPlaceholder")}
                             onCycleOwnerFilter={cycleOwnerFilter} ownerFilterLabel={ownerFilterLabel}
-                            behavior={compactAccountSelectBehavior} />
+                            behavior={accountSelectBehavior} />
                         </div>
                       </div>
                     </div>
@@ -3193,7 +3232,7 @@ export function TransactionFormModal({
                             options={displayTransferOptions} placeholder={t("txForm.selectPlaceholder")}
                             onCreateClick={() => { void openAccountCreate("from"); }} createLabel={t("settings.accounts.add")}
                             onCycleOwnerFilter={cycleOwnerFilter} ownerFilterLabel={ownerFilterLabel}
-                            behavior={compactAccountSelectBehavior} />
+                            behavior={accountSelectBehavior} />
                         </div>
                       </div>
                       <div className="flex flex-col items-center pb-0.5">
@@ -3208,7 +3247,7 @@ export function TransactionFormModal({
                             options={displayTransferOptions} placeholder={t("txForm.selectPlaceholder")}
                             onCreateClick={() => { void openAccountCreate("to"); }} createLabel={t("settings.accounts.add")}
                             onCycleOwnerFilter={cycleOwnerFilter} ownerFilterLabel={ownerFilterLabel}
-                            behavior={compactAccountSelectBehavior} />
+                            behavior={accountSelectBehavior} />
                         </div>
                       </div>
                     </div>
@@ -3221,7 +3260,7 @@ export function TransactionFormModal({
                             options={displayTransferOptions} placeholder={t("txForm.selectPlaceholder")}
                             onCreateClick={() => { void openAccountCreate("from"); }} createLabel={t("settings.accounts.add")}
                             onCycleOwnerFilter={cycleOwnerFilter} ownerFilterLabel={ownerFilterLabel}
-                            behavior={compactAccountSelectBehavior} />
+                            behavior={accountSelectBehavior} />
                         </div>
                       </div>
                       <div className="flex items-center justify-center pb-0.5">
@@ -3235,7 +3274,7 @@ export function TransactionFormModal({
                             options={displayTransferOptions} placeholder={t("txForm.selectPlaceholder")}
                             onCreateClick={() => { void openAccountCreate("to"); }} createLabel={t("settings.accounts.add")}
                             onCycleOwnerFilter={cycleOwnerFilter} ownerFilterLabel={ownerFilterLabel}
-                            behavior={compactAccountSelectBehavior} />
+                            behavior={accountSelectBehavior} />
                         </div>
                       </div>
                     </div>
@@ -3255,13 +3294,13 @@ export function TransactionFormModal({
                             subLabel: [lot.startDate ?? "", lot.maturityDate ?? "", lot.remainingAmount.toLocaleString(language, { minimumFractionDigits: 2, maximumFractionDigits: 2 })].filter(Boolean).join(" · "),
                           }))}
                           placeholder={depositLotsLoading ? t("common.loading") : t("txForm.selectPlaceholder")}
-                          behavior={{ ...compactAccountSelectBehavior, clearable: false }}
+                          behavior={{ ...accountSelectBehavior, clearable: false }}
                         />
                       </div>
                     </div>
                   ) : null}
 
-                  {/* Row 3: posted date | amount */}
+                  {/* Row 3: posted date | tags */}
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1">
                       <div className="form-label">{t("detail.column.postedAt")}</div>
@@ -3275,12 +3314,23 @@ export function TransactionFormModal({
                       />
                     </div>
                     <div className="space-y-1">
-                      <div className="form-label">{t("txForm.amount")}</div>
-                      <CalcInput ref={amountInputRef} value={amount} onChange={setAmount} placeholder={t("txForm.amountExample")} label={t("txForm.amount")} precision={2} />
+                      <div className="form-label">{t("detail.column.tags")}</div>
+                      <SmartSelect mode="multi" value={selectedTagIds}
+                        onChange={(ids) => setSelectedTagIds(ids)}
+                        options={tagSelectOptions} placeholder={t("txForm.selectTags")}
+                        onInlineCreate={createTagInline}
+                        onCreated={handleTagCreated}
+                      />
                     </div>
                   </div>
 
-                  {/* Row 4: note + attachment */}
+                  {/* Row 4: amount（独占一行，排备注上方） */}
+                  <div className="space-y-1">
+                    <div className="form-label">{t("txForm.amount")}</div>
+                    <CalcInput ref={amountInputRef} value={amount} onChange={setAmount} placeholder={t("txForm.amountExample")} label={t("txForm.amount")} precision={2} />
+                  </div>
+
+                  {/* Row 5: note + attachment */}
                   <div className="space-y-1">
                     <div className="form-label">{t("detail.column.remark")}</div>
                     <div className="flex items-start gap-2">
@@ -3303,8 +3353,10 @@ export function TransactionFormModal({
               )}
 
               <input type="hidden" name="type" value={txType} />
+            </div>
 
-              <div className="flex items-center justify-end gap-2 pt-1">
+            {/* 固定页脚：贴着窗口底边，切页签/内容长短变化时按钮位置不动 */}
+            <div className="tx-entry-footer flex shrink-0 items-center justify-end gap-2 border-t border-slate-100 bg-white px-4 py-3">
                 {isFromButton && !editEntryId ? (
                   <button
                     type="button"
