@@ -5,11 +5,12 @@ import { buildAccountOwnerOptions } from "@/lib/account-owner-options";
 import { buildCategorySmartSelectOptions } from "@/components/categorySmartSelect";
 import { categoryOrderBy } from "@/lib/category-order";
 import { decodeScheduledTaskMemo, getLoanScheduledPlanRole, isSystemManagedScheduledTask, normalizeScheduledTaskType, scheduledTaskTypeLabel } from "@/lib/scheduled-task";
-import { ACTIVE_LIABILITY_EPSILON } from "@/lib/server/liability-view-data";
+import { ACTIVE_LIABILITY_EPSILON, buildLiabilityRepaymentScheduleRows } from "@/lib/server/liability-view-data";
 import { AccountKind, TransactionType } from "@prisma/client";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { revalidateAfterTxChange } from "@/lib/server/revalidate";
-import { toStatementMonth } from "@/lib/date-utils";
+import { formatDateUtc, toStatementMonth } from "@/lib/date-utils";
+import { listLoanRateAdjustmentsByAccountIds } from "@/lib/server/loan-rate-adjustments";
 import { allocateBuyFailedRefunds, getConfirmedBuyAmount } from "@/lib/fund/refund-link";
 import { getFundProfileNameMap, normalizeFundDisplayName } from "@/lib/fund/fundProfile";
 import { withFundDateRules } from "@/lib/fund/confirmDays";
@@ -249,6 +250,98 @@ export default async function RegularInvestPage() {
     const balance = accountBalanceById.get(accountId);
     return balance != null && Math.abs(balance) > ACTIVE_LIABILITY_EPSILON;
   };
+  // 「还款表」预览：计划任务页必须能看到自动扣款/账单制到底每期扣多少、扣到哪一期，
+  // 所以这里直接复用负债视图的推演函数（buildLiabilityRepaymentScheduleRows），
+  // 只补两类负债页有、计划页没有的输入：利率调整表和提前还款流水。
+  const loanSchedulePlans = plans.filter(
+    (plan) => normalizeScheduledTaskType(plan.taskType ?? scheduledTaskByPlanId.get(plan.id)?.type) === "loan_repayment",
+  );
+  const loanScheduleAccountIds = [...new Set(loanSchedulePlans.map((plan) => plan.accountId))];
+  const loanRateAdjustmentsByAccountId = loanScheduleAccountIds.length > 0
+    ? await listLoanRateAdjustmentsByAccountIds({ householdId, accountIds: loanScheduleAccountIds })
+    : new Map<string, Array<{ effectiveDate: string; annualRate: number }>>();
+  const loanPrepaymentEntries = loanScheduleAccountIds.length > 0
+    ? await prisma.txRecord.findMany({
+        where: {
+          ...hidFilter,
+          deletedAt: null,
+          source: "liability_prepay_out",
+          OR: [
+            { accountId: { in: loanScheduleAccountIds } },
+            { toAccountId: { in: loanScheduleAccountIds } },
+          ],
+        },
+        select: {
+          id: true,
+          date: true,
+          createdAt: true,
+          type: true,
+          amount: true,
+          principalAmount: true,
+          accountId: true,
+          toAccountId: true,
+          source: true,
+        },
+      })
+    : [];
+  const loanScheduleByPlanId = new Map<string, {
+    planRole: string | null;
+    rows: ReturnType<typeof buildLiabilityRepaymentScheduleRows>;
+    executedRuns: number;
+    totalRuns: number | null;
+    remainingRuns: number | null;
+    remainingPrincipal: number;
+    nextRunDate: string | null;
+    finalDate: string | null;
+    maxRuns: number;
+  }>();
+  for (const plan of loanSchedulePlans) {
+    const memo = scheduledTaskByPlanId.get(plan.id) ?? decodeScheduledTaskMemo(plan.memo);
+    const balance = accountBalanceById.get(plan.accountId) ?? 0;
+    const executedRuns = Math.max(0, plan.executedRuns ?? 0);
+    const remainingRuns = plan.totalRuns == null ? null : Math.max(0, plan.totalRuns - executedRuns);
+    // 期数上限与负债页完全一致：有总期数按剩余期数，自由还款（无总期数）只推 24 期，最多 360 期。
+    const maxRuns = Math.min(remainingRuns ?? 24, 360);
+    const rows = buildLiabilityRepaymentScheduleRows({
+      selectedLiabilityRow: {
+        net: balance,
+        accountIds: [plan.accountId],
+        loanStartDate: plan.startDate ? formatDateUtc(plan.startDate) : "",
+        loanRateAdjustments: loanRateAdjustmentsByAccountId.get(plan.accountId) ?? [],
+      },
+      selectedRepaymentPlan: {
+        id: plan.id,
+        accountId: plan.accountId,
+        cashAccountId: plan.cashAccountId,
+        amount: Number(plan.amount),
+        intervalUnit: plan.intervalUnit,
+        intervalValue: plan.intervalValue,
+        executionDay: plan.executionDay,
+        memo: plan.memo,
+        startDate: plan.startDate ?? plan.nextRunDate,
+        nextRunDate: plan.nextRunDate,
+        lastRunDate: plan.lastRunDate,
+        totalRuns: plan.totalRuns,
+        executedRuns: plan.executedRuns,
+        status: plan.status,
+      },
+      liabilityEntriesRaw: loanPrepaymentEntries,
+      selectedLiabilityAccountIds: new Set([plan.accountId]),
+      displayAccountId: plan.accountId,
+    });
+    const finalPaymentRow = [...rows].reverse().find((row) => row.rowType === "payment") ?? null;
+    loanScheduleByPlanId.set(plan.id, {
+      planRole: getLoanScheduledPlanRole(memo),
+      rows,
+      executedRuns,
+      totalRuns: plan.totalRuns,
+      remainingRuns,
+      remainingPrincipal: Number(Math.abs(balance).toFixed(2)),
+      nextRunDate: plan.nextRunDate && Number.isFinite(plan.nextRunDate.getTime()) ? formatDateUtc(plan.nextRunDate) : null,
+      finalDate: finalPaymentRow?.date ?? null,
+      maxRuns,
+    });
+  }
   // 系统计划（存款本金/生息/取息、债券本金/生息/取息）的关联真源：存单 = 计划 memo 的
   // depositSourceEntryId（或 depm_/depa_/depi_ 前缀），债券存单 = bondm_/bonda_/bondi_ 的存单 id
   // （债券与存款同为存单粒度：一笔买入 = 一张存单 = 一个持仓）。
@@ -412,6 +505,8 @@ export default async function RegularInvestPage() {
       taskLoanPlanRole: getLoanScheduledPlanRole(scheduledTask),
       isSystemTask: isSystemManagedScheduledTask(scheduledTask),
       taskLoanLinked: taskType === "loan_repayment" ? isLoanLinked(plan.accountId) : null,
+      // 贷款计划的逐期还款表（与负债视图同源推演）；非贷款计划为 null。
+      repaymentSchedule: taskType === "loan_repayment" ? loanScheduleByPlanId.get(plan.id) ?? null : null,
       taskSystemSource: systemPlanSourceByPlanId.get(plan.id) ?? null,
       balanceBlocked: balanceBlocks.has(plan.id),
       amount: Number(plan.amount),

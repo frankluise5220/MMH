@@ -1363,7 +1363,9 @@ export function buildLiabilityRepaymentScheduleRows({
   selectedLiabilityAccountIds,
   displayAccountId,
 }: {
-  selectedLiabilityRow: LiabilityViewRow | null;
+  // 只读取这四个字段，因此计划任务页可以用「贷款计划 + 账户余额 + 利率调整」
+  // 拼出一个最小行来复用同一套推演，而不必伪造完整的 LiabilityViewRow。
+  selectedLiabilityRow: Pick<LiabilityViewRow, "net" | "accountIds" | "loanStartDate" | "loanRateAdjustments"> | null;
   selectedRepaymentPlan: LiabilityViewPlan | null;
   liabilityEntriesRaw?: LiabilityMetricEntry[];
   selectedLiabilityAccountIds?: Set<string>;

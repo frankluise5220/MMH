@@ -26,6 +26,9 @@
  *   repayment plan or nothing is left to repay.
  *   repaymentAccountId is the cash account that repays this loan (the
  *   auto-debit plan's cashAccountId), so the repayment form can prefill it.
+ *   repaymentIntervalMonths is the repayment interval (in months) dictated by
+ *   the repayment plan/schedule; a new loan-repayment plan must adopt it
+ *   instead of asking the user for a custom cycle.
  * - All loan types carry prepay interest preview fields (利随本清，允许修改)：
  *   prepayInterest（自计息起点到该日期的按日应计利息）、
  *   prepayInterestFromDate、prepayInterestDays、prepayAnnualRate。
@@ -44,6 +47,7 @@ import { decodeScheduledTaskMemo, getLoanScheduledPlanRole, shouldPreferLoanAuto
 import {
   calcLoanRunPartsWithRateAdjustments,
   calcLoanScheduledAmountForPeriodStart,
+  hasLoanRateAdjustmentInPeriod,
 } from "@/lib/loan-repayment";
 import { inferMortgageLprDiscountFromRateAdjustments } from "@/lib/loan-lpr";
 import { resolveLoanRateAdjustments, listLoanRateAdjustmentsByAccountIds } from "@/lib/server/loan-rate-adjustments";
@@ -79,6 +83,8 @@ export async function GET(request: Request) {
   const url = new URL(request.url);
   const dateText = (url.searchParams.get("date") ?? "").trim();
   const excludeEntryId = (url.searchParams.get("excludeEntryId") ?? "").trim();
+  // includeSchedule=1：附带该贷款还款表里后续未还期次，供「选还款表」下拉逐期挑选。
+  const includeSchedule = (url.searchParams.get("includeSchedule") ?? "").trim() === "1";
   const asOfDate = parseDateInputToUtc(dateText);
   if (!asOfDate) {
     return NextResponse.json({ ok: false, code: "INVALID_DATE", error: "Invalid repayment date" }, { status: 400 });
@@ -182,6 +188,10 @@ export async function GET(request: Request) {
       currentUnpaidPeriod: number | null;
       currentPeriodPaid: boolean;
       repaymentAccountId: string | null;
+      repaymentIntervalMonths: number | null;
+      repaymentMethod: string | null;
+      annualRate: number | null;
+      schedule?: LoanSchedulePickRow[];
       prepayInterest?: number;
       prepayInterestFromDate?: string;
       prepayInterestDays?: number;
@@ -262,6 +272,7 @@ export async function GET(request: Request) {
           coverage = nextCoverage;
         }
         const autoDebitPlan = autoDebitPlanByAccountId.get(account.id);
+        const planMemo = plan ? decodeScheduledTaskMemo(plan.memo) : null;
         return {
           accountId: account.id,
           balance,
@@ -279,6 +290,35 @@ export async function GET(request: Request) {
             autoDebitPlan?.cashAccountId
             ?? plan?.cashAccountId
             ?? null,
+          // 还款周期由还款表决定：计划 memo 里的还款间隔月数优先，
+          // 老数据没有 memo 时退回「按月」计划的 intervalValue。
+          repaymentIntervalMonths: plan
+            ? (planMemo?.repaymentIntervalMonths
+              ?? (plan.intervalUnit === IntervalUnit.month ? plan.intervalValue : null))
+            : null,
+          // 还款方式与利率同样来自还款计划：还贷款计划不再让用户填这两项，
+          // 直接沿用该贷款的既有口径，避免新建计划把利率/方式改成默认值。
+          repaymentMethod: planMemo?.repaymentMethod ?? null,
+          annualRate: planMemo?.annualRate ?? null,
+          // 还款表后续未还期次：首行就是「最近一次未还」，金额用已扣减已还部分的剩余应还，
+          // 口径与 currentPayment 一致；后续行按同一套推演逐期滚动。
+          schedule: includeSchedule && plan && currentPeriod && coverage
+            ? buildUpcomingScheduleRows({
+                accountId: account.id,
+                balance,
+                planByAccountId,
+                rateAdjustmentsByAccountId,
+                startPeriod: currentPeriod.period,
+                previousDueDate: currentPeriod.previousDueDate,
+                firstRunDate: currentPeriod.dueDate,
+                firstPaidPrincipal: paid.principal,
+                currentRemaining: {
+                  principal: coverage.remainingPrincipal,
+                  interest: coverage.remainingInterest,
+                },
+                maxRows: 24,
+              })
+            : undefined,
         };
       })
       .filter((row) => row.balance < -ACTIVE_LIABILITY_EPSILON)
@@ -396,6 +436,128 @@ async function computePaidAmountsByPeriod(
   return totals;
 }
 
+/** 「选还款表」下拉的一行：真实期次 + 该期应还本息（已扣减已还部分）。 */
+type LoanSchedulePickRow = {
+  period: number;
+  date: string;
+  payment: number;
+  principal: number;
+  interest: number;
+  remainingPrincipal: number;
+};
+
+const roundPickMoney = (value: number) => Math.round((Number(value) || 0) * 100) / 100;
+
+/**
+ * 从「最近一次未还期次」开始，按当前余额、剩余期数与利率调整推演后续还款表。
+ * 首行用 coverage 的剩余应还覆盖，保证与 currentPayment 完全一致（本期可能已还过一部分）。
+ */
+function buildUpcomingScheduleRows(params: {
+  accountId: string;
+  balance: number;
+  planByAccountId: Map<string, RepaymentPlanRow>;
+  rateAdjustmentsByAccountId: Map<string, Array<{ effectiveDate: string; annualRate: number }>>;
+  startPeriod: number;
+  previousDueDate: Date;
+  firstRunDate: Date;
+  firstPaidPrincipal: number;
+  currentRemaining: { principal: number; interest: number };
+  maxRows: number;
+}): LoanSchedulePickRow[] {
+  const plan = params.planByAccountId.get(params.accountId);
+  if (!plan || plan.totalRuns == null || params.balance >= -ACTIVE_LIABILITY_EPSILON) return [];
+  const memo = decodeScheduledTaskMemo(plan.memo);
+  const annualRate = memo?.annualRate ?? null;
+  const intervalMonths = memo?.repaymentIntervalMonths
+    ?? (plan.intervalUnit === IntervalUnit.month ? plan.intervalValue : null);
+  const adjustments = params.rateAdjustmentsByAccountId.get(params.accountId) ?? null;
+  const totalRuns = plan.totalRuns;
+
+  let remainingPrincipalExact = Math.abs(params.balance) + Math.max(0, params.firstPaidPrincipal);
+  let previousRunDate = formatDateUtc(params.previousDueDate);
+  let runDate = params.firstRunDate;
+  let scheduledAmount = toNumber(plan.amount);
+  const rows: LoanSchedulePickRow[] = [];
+
+  for (let index = 0; index < params.maxRows; index += 1) {
+    const period = params.startPeriod + index;
+    const remainingRuns = Math.max(0, totalRuns - (period - 1));
+    if (remainingRuns <= 0 || remainingPrincipalExact <= ACTIVE_LIABILITY_EPSILON) break;
+    const runDateKey = formatDateUtc(runDate);
+
+    let principal: number;
+    let interest: number;
+    let payment: number;
+    let principalExact: number;
+    if (index === 0) {
+      principal = roundPickMoney(Math.max(0, params.currentRemaining.principal));
+      interest = roundPickMoney(Math.max(0, params.currentRemaining.interest));
+      payment = roundPickMoney(principal + interest);
+      principalExact = principal;
+    } else {
+      // 与还款表/执行器一致：只有跨过利率调整日的那期才重定价，其余期次沿用月供。
+      const rateChangedInPeriod = hasLoanRateAdjustmentInPeriod({
+        adjustments,
+        startDateExclusive: previousRunDate,
+        endDateInclusive: runDateKey,
+      });
+      const periodStartScheduledAmount = rateChangedInPeriod
+        ? calcLoanScheduledAmountForPeriodStart({
+            repaymentMethod: memo?.repaymentMethod,
+            baseAnnualRate: annualRate,
+            adjustments,
+            intervalMonths: intervalMonths ?? 1,
+            scheduledAmount,
+            remainingPrincipal: remainingPrincipalExact,
+            remainingRuns,
+            periodStartDate: previousRunDate,
+          })
+        : scheduledAmount;
+      const parts = calcLoanRunPartsWithRateAdjustments({
+        repaymentMethod: memo?.repaymentMethod,
+        baseAnnualRate: annualRate,
+        adjustments,
+        intervalMonths: intervalMonths ?? 1,
+        scheduledAmount: periodStartScheduledAmount,
+        preserveScheduledAmount: true,
+        remainingPrincipal: remainingPrincipalExact,
+        remainingRuns,
+        previousRunDate,
+        runDate: runDateKey,
+      });
+      scheduledAmount = parts.scheduledAmount;
+      principal = parts.principal;
+      interest = parts.interest;
+      payment = parts.payment;
+      principalExact = parts.principalExact ?? parts.principal;
+    }
+
+    remainingPrincipalExact = Math.max(0, remainingPrincipalExact - principalExact);
+    rows.push({
+      period,
+      date: runDateKey,
+      payment: roundPickMoney(payment),
+      principal: roundPickMoney(principal),
+      interest: roundPickMoney(interest),
+      remainingPrincipal: roundPickMoney(remainingPrincipalExact),
+    });
+
+    previousRunDate = runDateKey;
+    const nextRunDate = calcNextScheduledRunDate(
+      runDate,
+      plan.intervalUnit as IntervalUnit,
+      plan.intervalValue,
+      plan.executionDay,
+      false,
+      plan.secondaryExecutionDay,
+    );
+    if (!nextRunDate || nextRunDate <= runDate) break;
+    runDate = nextRunDate;
+  }
+
+  return rows;
+}
+
 function computeCurrentInstallment(
   accountId: string,
   balance: number,
@@ -429,22 +591,34 @@ function computeCurrentInstallment(
     mortgageLprDiscount: memo?.mortgageLprDiscount ?? inferMortgageLprDiscountFromRateAdjustments(rawLoanRateAdjustments, { skipOnOrBefore: loanStartDateKey }),
     loanStartDate: loanStartDateKey,
   });
-  const period = calcLoanScheduledAmountForPeriodStart({
-    repaymentMethod: memo?.repaymentMethod,
-    baseAnnualRate: annualRate,
+  // 重定价只在「本期区间内确实有一次利率调整」时发生；利率调整日之后的其他期次
+  // 沿用计划里锁定的月供（与还款表 buildLiabilityRepaymentScheduleRows、执行器
+  // preserveScheduledAmount 的口径一致）。否则只要执行利率 ≠ 合同基准利率，
+  // 每一期都会拿「当前余额 + 剩余期数」重摊一次，月供逐期漂移。
+  const rateChangedInPeriod = hasLoanRateAdjustmentInPeriod({
     adjustments: loanRateAdjustments,
-    intervalMonths: intervalMonths ?? 1,
-    scheduledAmount: toNumber(plan.amount),
-    remainingPrincipal: Math.abs(Number(balance)) + paidPrincipal,
-    remainingRuns,
-    periodStartDate: previousRunDateKey,
+    startDateExclusive: previousRunDateKey,
+    endDateInclusive: runDateKey,
   });
+  const period = rateChangedInPeriod
+    ? calcLoanScheduledAmountForPeriodStart({
+        repaymentMethod: memo?.repaymentMethod,
+        baseAnnualRate: annualRate,
+        adjustments: loanRateAdjustments,
+        intervalMonths: intervalMonths ?? 1,
+        scheduledAmount: toNumber(plan.amount),
+        remainingPrincipal: Math.abs(Number(balance)) + paidPrincipal,
+        remainingRuns,
+        periodStartDate: previousRunDateKey,
+      })
+    : toNumber(plan.amount);
   const parts = calcLoanRunPartsWithRateAdjustments({
     repaymentMethod: memo?.repaymentMethod,
     baseAnnualRate: annualRate,
     adjustments: loanRateAdjustments,
     intervalMonths: intervalMonths ?? 1,
     scheduledAmount: period,
+    preserveScheduledAmount: true,
     remainingPrincipal: Math.abs(Number(balance)) + paidPrincipal,
     remainingRuns,
     previousRunDate: previousRunDateKey,

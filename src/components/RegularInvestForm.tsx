@@ -33,12 +33,13 @@ const INTERVAL_LABELS: Record<string, string> = {
   year: "regularInvest.interval.year",
 };
 
-// Loan repayment is a system-level scheduled task: the repayment schedule is
-// derived from the loan and created automatically on loan setup, so it is not
-// offered as a user-manageable plan here.
+// 表单顶部页签 = 任务模板。还贷款的计划虽然由贷款账户的还款安排自动生成，
+// 但编辑它时表单必须有自己的一格来承接 activeTabId，否则上方没有任何激活标签
+// （点在「系统计划任务」里编辑还贷款，却看不到自己属于哪一类）。所以单列一项。
 const TASK_TYPE_OPTIONS: Array<{ value: ScheduledTaskType; labelKey: string }> = [
   { value: "fund_regular_invest", labelKey: "detailView.fundRegularInvest" },
   { value: "transfer", labelKey: "transaction.type.transfer" },
+  { value: "loan_repayment", labelKey: "regularInvest.taskType.loanRepayment" },
   { value: "insurance_premium", labelKey: "regularInvest.taskType.insurancePremium" },
   { value: "income", labelKey: "transaction.type.income" },
   { value: "expense", labelKey: "transaction.type.expense" },
@@ -368,6 +369,29 @@ interface RegularInvestFormData {
   skipPendingPreceding: boolean;
 }
 
+/** 「选还款表」下拉的一行：期次 / 应还日 / 该期应还本息。 */
+export type LoanSchedulePickRow = {
+  period: number;
+  date: string;
+  payment: number;
+  principal: number;
+  interest: number;
+  remainingPrincipal: number;
+};
+
+/** 还款表（服务端 buildLiabilityRepaymentScheduleRows 的输出）里本表单只关心支付行。 */
+export type LoanRepaymentScheduleLike = {
+  rows: Array<{
+    rowType: string;
+    period: number;
+    date: string;
+    payment: number;
+    principal: number;
+    interest: number;
+    remainingPrincipal: number;
+  }>;
+} | null;
+
 interface EditData {
   id: string;
   taskType?: ScheduledTaskType;
@@ -445,6 +469,7 @@ export function RegularInvestForm({
   mode = "create",
   editData,
   editAccountLabel,
+  repaymentSchedule,
   submitMethod = "api",
   onSuccess,
 }: {
@@ -493,6 +518,8 @@ export function RegularInvestForm({
   mode?: "create" | "edit";
   editData?: EditData;
   editAccountLabel?: string;
+  /** 贷款计划编辑时服务端推演好的还款表；还贷款金额只从这张表取，不再用手填的计划金额。 */
+  repaymentSchedule?: LoanRepaymentScheduleLike;
   submitMethod?: "serverAction" | "api";
   onSuccess?: (plan?: unknown) => void;
 }) {
@@ -518,6 +545,9 @@ export function RegularInvestForm({
   // serializeTotalRunsFromRemaining("0") 会返回 null（= 无限期），
   // 于是「改执行日/改金额」这种无关编辑会把总期数静默抹掉。
   const totalRunsTouchedRef = useRef(false);
+  // 新增还贷款计划时从还款表带出的「未还期次」列表（选哪一期就还哪一期）。
+  const [loanScheduleRows, setLoanScheduleRows] = useState<LoanSchedulePickRow[]>([]);
+  const [loanDueLoading, setLoanDueLoading] = useState(false);
 
   const { t } = useI18n();
 
@@ -860,6 +890,12 @@ export function RegularInvestForm({
     if (submitting) return;
 
     const finalAmount = parseFloat(formData.amount);
+    // 还贷款不是「像转账那样手填一笔金额」：必须选中还款表里的某一期，
+    // 金额/还款周期/执行日全部取自该期；取不到表就不允许创建。
+    if (isLoanTask && mode !== "edit" && (!selectedLoanScheduleRow || loanDueAmount == null)) {
+      window.alert(t("regularInvest.alert.loanDueMissing"));
+      return;
+    }
     if (!finalAmount || finalAmount <= 0) {
       window.alert(t("regularInvest.alert.validAmount"));
       return;
@@ -975,14 +1011,18 @@ export function RegularInvestForm({
         : Number.isFinite(touchedRemaining) && touchedRemaining > 0
           ? serializeTotalRunsFromRemaining(touchedTotalRunsRaw, storedExecutedRuns)
           : storedTotalRuns;
-      const effectiveTotalRuns = isOneTimeInterval
-        ? Math.max(0, mode === "edit" ? editData?.executedRuns ?? 0 : 0) + 1
-        : isStoredOneTime
-          ? storedTotalRuns
-          : totalRunsTouchedRef.current
-            ? editedTotalRuns
-            : storedTotalRuns;
-      const effectiveEndDate = isOneTimeInterval ? "" : formData.endDate;
+      // 还贷款的期数/结束时间由还款表剩余期次推演，表单不提供「停止日期 / 次数」：
+      // 新增态不限次，编辑态原样保留，避免把残留输入写进计划。
+      const effectiveTotalRuns = isLoanTask
+        ? (mode === "edit" ? storedTotalRuns : null)
+        : isOneTimeInterval
+          ? Math.max(0, mode === "edit" ? editData?.executedRuns ?? 0 : 0) + 1
+          : isStoredOneTime
+            ? storedTotalRuns
+            : totalRunsTouchedRef.current
+              ? editedTotalRuns
+              : storedTotalRuns;
+      const effectiveEndDate = isOneTimeInterval || isLoanTask ? "" : formData.endDate;
       // 展示类型口径：存款利息生成按收入模板、取息/本金取出按转账模板提交。
       const isOrdinaryTask = isOrdinaryTaskType(planFormDisplayTaskType(formData.taskType));
       const taskTypeTitle = formData.taskType === "income" ? t("transaction.type.income") : formData.taskType === "expense" ? t("transaction.type.expense") : scheduledTaskTypeLabel(formData.taskType);
@@ -1205,6 +1245,132 @@ export function RegularInvestForm({
   // when editing a loan plan: the repayment table is the source of truth and
   // auto-debit edits only allow funding account and next run date changes.
   const loanDerivedFieldsLocked = isLoanTask && mode === "edit";
+  // 还贷款不是「填一个计划金额」，而是「还还款表里的某一期」：
+  // 编辑态直接用服务端下发的 repaymentSchedule 第一行支付行（= 下一期），
+  // 新增态按所选贷款账户 + 还款日向后端取「最近一次未还期次」的应还本息。
+  const loanScheduleOptions: LoanSchedulePickRow[] = isLoanTask
+    ? (mode === "edit" && repaymentSchedule
+      ? repaymentSchedule.rows
+          .filter((row) => row.rowType === "payment")
+          .map((row) => ({
+            period: row.period,
+            date: row.date,
+            payment: row.payment,
+            principal: row.principal,
+            interest: row.interest,
+            remainingPrincipal: row.remainingPrincipal,
+          }))
+      : loanScheduleRows)
+    : [];
+  // 选还款表：下拉里的日期同时就是计划的「下次执行日」，选哪一期就还哪一期。
+  const selectedLoanScheduleRow = loanScheduleOptions.find((row) => row.date === formData.nextRunDate)
+    ?? loanScheduleOptions[0]
+    ?? null;
+  // 编辑态若服务端没下发还款表（例如从首页弹窗进入），退回计划金额展示，不阻塞保存；
+  // 新增态必须有表值，否则没有可执行的扣款金额。
+  const loanDueAmount = selectedLoanScheduleRow?.payment
+    ?? (mode === "edit" && isLoanTask && Number(formData.amount) > 0 ? Number(formData.amount) : null);
+  // 还贷款的还款周期只能来自还款表：周期、执行日、金额都由表里那一期决定，
+  // 不存在「手填周期」的降级路径（没有表就不允许创建，见 onSubmit 校验）。
+  const loanIntervalLocked = isLoanTask;
+  // 有还款表时，还款方式/利率/周期全部由表决定，表单里不再出现这些输入项。
+  const hasLoanSchedule = isLoanTask && loanScheduleOptions.length > 0;
+  // 利率也成功从还款表带回，才真正隐藏这些输入；老计划没有 memo 时仍保留输入，
+  // 否则用户既看不到利率也补不了，保存会被服务端卡住。
+  const hideLoanDerivedInputs = hasLoanSchedule && formData.annualRate.trim() !== "";
+
+  // 新增还贷款计划：金额不在表单里手填，而是按贷款账户拉还款表的后续未还期次
+  // （includeSchedule=1，与负债页还款窗口同源），供用户挑「还哪一期」。
+  useEffect(() => {
+    if (!isLoanTask || mode === "edit") {
+      setLoanScheduleRows([]);
+      return;
+    }
+    if (!actualOpen || !formData.accountId) {
+      setLoanScheduleRows([]);
+      return;
+    }
+    const controller = new AbortController();
+    const requestedAccountId = formData.accountId;
+    setLoanDueLoading(true);
+    void (async () => {
+      try {
+        const params = new URLSearchParams({ date: todayInput(), includeSchedule: "1" });
+        const res = await fetch(`/api/v1/liability/repayable-loan-accounts?${params.toString()}`, {
+          cache: "no-store",
+          signal: controller.signal,
+        });
+        const payload = res.ok ? await res.json() : null;
+        if (controller.signal.aborted) return;
+        const rows: Array<Record<string, unknown>> = Array.isArray(payload?.data) ? payload.data : [];
+        const row = rows.find((item) => item.accountId === requestedAccountId);
+        const rawSchedule = Array.isArray(row?.schedule) ? row.schedule as Array<Record<string, unknown>> : [];
+        const parsed: LoanSchedulePickRow[] = rawSchedule
+          .map((item) => ({
+            period: Number(item.period),
+            date: typeof item.date === "string" ? item.date : "",
+            payment: Number(item.payment),
+            principal: Number(item.principal),
+            interest: Number(item.interest),
+            remainingPrincipal: Number(item.remainingPrincipal),
+          }))
+          .filter((item) => Boolean(item.date) && Number.isFinite(item.period) && Number.isFinite(item.payment) && item.payment > 0);
+        if (parsed.length === 0) {
+          // 兼容旧回包：没有 schedule 时退化成接口给的「最近一次未还期次」。
+          const payment = Number(row?.currentPayment);
+          if (row && Number.isFinite(payment) && payment > 0 && typeof row.currentDueDate === "string") {
+            parsed.push({
+              period: Number(row.currentUnpaidPeriod) || 1,
+              date: row.currentDueDate,
+              payment,
+              principal: Number(row.currentPrincipal) || 0,
+              interest: Number(row.currentInterest) || 0,
+              remainingPrincipal: Math.abs(Number(row.balance) || 0),
+            });
+          }
+        }
+        setLoanScheduleRows(parsed);
+        if (parsed.length > 0) {
+          // 还款周期由还款表决定：新建计划不允许自定义周期，一律采用该贷款还款计划的间隔月数。
+          const scheduleIntervalMonths = Number(row?.repaymentIntervalMonths);
+          const intervalMonthsPatch = Number.isFinite(scheduleIntervalMonths) && scheduleIntervalMonths > 0
+            ? String(scheduleIntervalMonths)
+            : null;
+          // 还款方式与利率也由该贷款的还款计划决定，表单里不再让用户填。
+          const scheduleRepaymentMethod = typeof row?.repaymentMethod === "string" && row.repaymentMethod.trim()
+            ? normalizeLoanRepaymentMethod(row.repaymentMethod)
+            : null;
+          const scheduleAnnualRate = Number(row?.annualRate);
+          const annualRatePatch = Number.isFinite(scheduleAnnualRate) && scheduleAnnualRate >= 0 && row?.annualRate != null
+            ? String(scheduleAnnualRate)
+            : null;
+          setFormData((prev) => {
+            const picked = parsed.find((item) => item.date === prev.nextRunDate) ?? parsed[0];
+            return {
+              ...prev,
+              nextRunDate: picked.date,
+              // 开始日期默认取所选期次，用户仍可自行调整；执行日必须与期次一致。
+              startDate: picked.date,
+              monthlyExecutionDate: picked.date,
+              executionDay: parseDateInput(picked.date)?.getUTCDate().toString() ?? prev.executionDay,
+              ...(intervalMonthsPatch ? { repaymentIntervalMonths: intervalMonthsPatch } : {}),
+              ...(scheduleRepaymentMethod ? { repaymentMethod: scheduleRepaymentMethod } : {}),
+              ...(annualRatePatch ? { annualRate: annualRatePatch } : {}),
+              // 计划金额 = 还款表这一期应还本息，执行器后续按同一张表逐期推演。
+              amount: picked.payment.toFixed(2),
+              cashAccountId: prev.cashAccountId
+                || (typeof row?.repaymentAccountId === "string" ? row.repaymentAccountId : ""),
+            };
+          });
+        }
+      } catch {
+        if (!controller.signal.aborted) setLoanScheduleRows([]);
+      } finally {
+        if (!controller.signal.aborted) setLoanDueLoading(false);
+      }
+    })();
+    return () => controller.abort();
+  }, [actualOpen, formData.accountId, isLoanTask, mode]);
   const lockedEditInterval = mode === "edit" && editData
     ? normalizeBiweekFormData(editData.intervalUnit || "day", String(editData.intervalValue || 1))
     : null;
@@ -1218,7 +1384,9 @@ export function RegularInvestForm({
   // The "cycle" row flattens to 3 columns (unit / interval / execution day)
   // whenever the optional secondary execution day is not rendered; the 4th
   // column only appears for single-interval week/month/year in create mode.
+  // 还贷款每周期的执行日由还款表那一期唯一确定，不存在「第二执行日」。
   const showSecondaryExecutionDay = !isOneTimeInterval
+    && !isLoanTask
     && mode !== "edit"
     && positiveIntervalValue(formData.intervalValue) === 1
     && (displayedIntervalUnit === "week" || displayedIntervalUnit === "month" || displayedIntervalUnit === "year");
@@ -1618,7 +1786,28 @@ export function RegularInvestForm({
                   </div>
                 </div>
               ) : isLoanTask ? (
-                <div className="space-y-3">
+                <div className="grid grid-cols-2 gap-3">
+                  {/* 还贷款是「从资金账户扣款、偿还贷款账户」，两个账户缺一不可；
+                      贷款账户在编辑态只读 —— 还款表才是事实来源，见 loanDerivedFieldsLocked。 */}
+                  <div className="space-y-1">
+                    <div className="text-xs font-medium text-slate-600">{t("regularInvest.account.loanAccount")}</div>
+                    {mode === "edit" ? (
+                      <div className="h-9 w-full rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-600 flex items-center">
+                        {displayAccountLabel}
+                      </div>
+                    ) : (
+                      <div className={REQUIRED_FIELD_CLASS}>
+                        <SmartSelect mode="single" value={formData.accountId}
+                          onChange={(id) => { recordRecentAccount(id); setFormData(d => ({
+                            ...d,
+                            ...derivedNamePatch(d, loanOptions.find((item) => item.id === id)?.label ?? scheduledTaskTypeLabel("loan_repayment")),
+                            accountId: id,
+                          })); }}
+                          options={loanOptions}
+                          placeholder={t("regularInvest.placeholder.loanAccount")} />
+                      </div>
+                    )}
+                  </div>
                   {cashAccountList.length > 0 && (
                     <div className="space-y-1">
                       <div className="text-xs font-medium text-slate-600">{t("txForm.cashAccount")}</div>
@@ -1633,12 +1822,76 @@ export function RegularInvestForm({
                       </div>
                     </div>
                   )}
+                  {/* 选好贷款账户就自动带出还款表：期次决定金额、执行日与还款周期，
+                      这些都不再让用户填，只剩开始日期可选。 */}
+                  <div className="col-span-2 space-y-1">
+                    <div className="text-xs font-medium text-slate-600">{t("regularInvest.loanSchedulePick")}</div>
+                    <select
+                      value={selectedLoanScheduleRow?.date ?? ""}
+                      onChange={(event) => {
+                        const picked = loanScheduleOptions.find((row) => row.date === event.target.value);
+                        if (!picked) return;
+                        setFormData((prev) => ({
+                          ...prev,
+                          nextRunDate: picked.date,
+                          // 期次决定金额/执行日/周期；开始日期由用户自己选，不跟着变。
+                          monthlyExecutionDate: picked.date,
+                          executionDay: parseDateInput(picked.date)?.getUTCDate().toString() ?? prev.executionDay,
+                          amount: picked.payment.toFixed(2),
+                        }));
+                      }}
+                      disabled={loanScheduleOptions.length === 0}
+                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500"
+                    >
+                      {loanScheduleOptions.length === 0 ? (
+                        <option value="">
+                          {loanDueLoading ? t("regularInvest.loanCurrentDueLoading") : t("regularInvest.loanScheduleEmpty")}
+                        </option>
+                      ) : loanScheduleOptions.map((row) => (
+                        <option key={row.date} value={row.date}>
+                          {t("regularInvest.loanScheduleOption", {
+                            period: String(row.period),
+                            date: row.date,
+                            amount: row.payment.toFixed(2),
+                          })}
+                        </option>
+                      ))}
+                    </select>
+                    {mode !== "edit" && !loanDueLoading && loanScheduleOptions.length === 0 ? (
+                      <div className="text-[11px] text-amber-600">{t("regularInvest.loanScheduleRequiredHint")}</div>
+                    ) : null}
+                    <div className="flex items-center gap-2 pt-1">
+                      <span className="text-xs font-medium text-slate-600">{t("regularInvest.loanCurrentDue")}</span>
+                      <span className={`flex h-9 flex-1 items-center rounded-md border px-3 text-sm tabular-nums ${
+                        loanDueAmount != null
+                          ? "border-slate-200 bg-slate-50 text-slate-700"
+                          : "border-amber-200 bg-amber-50 text-amber-700"
+                      }`}>
+                        {loanDueAmount != null
+                          ? loanDueAmount.toFixed(2)
+                          : loanDueLoading
+                            ? t("regularInvest.loanCurrentDueLoading")
+                            : t("regularInvest.loanCurrentDueMissing")}
+                      </span>
+                    </div>
+                    <div className="text-[11px] text-slate-400">
+                      {selectedLoanScheduleRow
+                        ? t("regularInvest.loanCurrentDueHint", {
+                            period: String(selectedLoanScheduleRow.period),
+                            date: selectedLoanScheduleRow.date,
+                            amount: selectedLoanScheduleRow.payment.toFixed(2),
+                          })
+                        : mode === "edit"
+                          ? t("regularInvest.loanCurrentDueFallback", { amount: Number(formData.amount || 0).toFixed(2) })
+                          : t("regularInvest.loanCurrentDueSource")}
+                    </div>
+                  </div>
                 </div>
               ) : (
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">
-                      {isFundTask ? t("viewImport.fundAccount") : isLoanTask ? t("regularInvest.account.loanAccount") : isInsuranceTask ? t("settings.insuranceProducts") : t("regularInvest.account.targetAccount")}
+                      {isFundTask ? t("viewImport.fundAccount") : isInsuranceTask ? t("settings.insuranceProducts") : t("regularInvest.account.targetAccount")}
                     </div>
                     {isFundTask ? (
                       investmentAccountList.length > 0 ? (
@@ -1655,21 +1908,6 @@ export function RegularInvestForm({
                         <div className="h-9 w-full rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700 flex items-center">
                           {displayAccountLabel}
                         </div>
-                      )
-                    ) : isLoanTask ? (
-                      mode === "edit" ? (
-                        <div className="h-9 w-full rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-600 flex items-center">
-                          {displayAccountLabel}
-                        </div>
-                      ) : (
-                        <SmartSelect mode="single" value={formData.accountId}
-                          onChange={(id) => { recordRecentAccount(id); setFormData(d => ({
-                            ...d,
-                            ...derivedNamePatch(d, loanOptions.find((item) => item.id === id)?.label ?? scheduledTaskTypeLabel("loan_repayment")),
-                            accountId: id,
-                          })); }}
-                          options={loanOptions}
-                          placeholder={t("regularInvest.placeholder.loanAccount")} />
                       )
                     ) : mode === "edit" && isInsuranceTask ? (
                       <div className="h-9 w-full rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700 flex items-center">
@@ -1827,12 +2065,18 @@ export function RegularInvestForm({
                           )
                         : d.secondaryYearlyExecutionDate,
                       }))}
+                      // 还贷款里唯一可调的就是开始日期（默认取所选期次日期），
+                      // 金额、还款周期与执行日都由还款表固定。
                       disabled={startDateLocked}
                       className={REQUIRED_FIELD_CLASS}
                     />
-                  {startDateLocked ? <div className="text-[11px] text-slate-400">{t("regularInvest.startDateLockedHint")}</div> : null}
+                  {startDateLocked ? (
+                    <div className="text-[11px] text-slate-400">{t("regularInvest.startDateLockedHint")}</div>
+                  ) : isLoanTask ? (
+                    <div className="text-[11px] text-slate-400">{t("regularInvest.loanStartDateOptional")}</div>
+                  ) : null}
                 </div>
-                {!isOneTimeInterval && (
+                {!isOneTimeInterval && !isLoanTask && (
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">{t("regularInvest.stopDateOptional")}</div>
                     <DateStepper
@@ -1841,7 +2085,7 @@ export function RegularInvestForm({
                     />
                   </div>
                 )}
-                {!isOneTimeInterval && (
+                {!isOneTimeInterval && !isLoanTask && (
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">
                       {runsLabel}
@@ -1980,6 +2224,8 @@ export function RegularInvestForm({
                               value={mode === "edit" ? formData.nextRunDate : formData.monthlyExecutionDate}
                               min={monthlyBounds.min}
                               max={monthlyBounds.max}
+                              // 还贷款的执行日由所选还款表期次决定，新增态不允许另行自定义。
+                              disabled={loanIntervalLocked && mode !== "edit"}
                               onChange={(value) => setFormData(d => mode === "edit"
                                 ? { ...d, nextRunDate: value, executionDay: parseDateInput(value)?.getUTCDate().toString() ?? d.executionDay }
                                 : {
@@ -2074,57 +2320,76 @@ export function RegularInvestForm({
               )}
 
               {isLoanTask && (
-                <div className="space-y-1">
-                  <div className="grid grid-cols-3 gap-3 rounded-lg border border-slate-100 bg-slate-50/60 p-3">
-                    <div className="space-y-1">
-                      <div className="text-xs font-medium text-slate-600">{t("regularInvest.repaymentMethod")}</div>
-                      <select
-                        value={formData.repaymentMethod}
-                        onChange={(e) => setFormData(d => {
-                          const method = normalizeLoanRepaymentMethod(e.target.value);
-                          return {
-                            ...d,
-                            repaymentMethod: method,
-                            annualRate: allowsZeroAnnualRateRepaymentMethod(method) && parseLoanAnnualRateInput(d.annualRate, true) == null ? "0" : d.annualRate,
-                          };
-                        })}
-                        disabled={loanDerivedFieldsLocked}
-                        className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500"
-                      >
-                        {LOAN_REPAYMENT_METHOD_OPTIONS.map((method) => (
-                          <option key={method} value={method}>{t(LOAN_REPAYMENT_METHOD_LABEL_KEYS.get(method) ?? method)}</option>
-                        ))}
-                      </select>
+                hideLoanDerivedInputs ? (
+                  // 还款方式、利率、还款周期都由还款表决定，一律不再让用户填；
+                  // 这里只把周期信息只读交代清楚，表单里唯一可调的是开始日期。
+                  <div className="space-y-1 rounded-lg border border-slate-100 bg-slate-50/60 p-3">
+                    <div className="text-xs text-slate-600">
+                      {t("regularInvest.loanCycleSummary", {
+                        months: displayedIntervalValue,
+                        day: formData.executionDay || "-",
+                      })}
                     </div>
-                    <div className="space-y-1">
-                      <div className="text-xs font-medium text-slate-600">{t("txForm.annualRatePercent")}</div>
-                      <input
-                        inputMode="decimal"
-                        step="0.001"
-                        value={formData.annualRate}
-                        onChange={(e) => setFormData(d => ({ ...d, annualRate: e.target.value }))}
-                        disabled={loanDerivedFieldsLocked}
-                        placeholder={allowsZeroAnnualRateRepaymentMethod(formData.repaymentMethod) ? "0" : FIXED_LOAN_REPAYMENT_METHODS.has(formData.repaymentMethod) ? t("batchImport.required") : t("stockFee.optional")}
-                        className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500"
-                      />
-                    </div>
-                    <div className="space-y-1">
-                      <div className="text-xs font-medium text-slate-600">{t("regularInvest.repaymentIntervalMonths")}</div>
-                      <input
-                        inputMode="numeric"
-                        min="1"
-                        value={formData.repaymentIntervalMonths}
-                        onChange={(e) => setFormData(d => ({ ...d, repaymentIntervalMonths: e.target.value }))}
-                        disabled={mode === "edit"}
-                        placeholder="1"
-                        className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500"
-                      />
+                    <div className="text-[11px] text-slate-400">
+                      {mode === "edit" ? t("regularInvest.loanFieldsLockedHint") : t("regularInvest.loanIntervalFromSchedule")}
                     </div>
                   </div>
-                  {loanDerivedFieldsLocked ? (
-                    <div className="text-[11px] text-slate-400">{t("regularInvest.loanFieldsLockedHint")}</div>
-                  ) : null}
-                </div>
+                ) : (
+                  <div className="space-y-1">
+                    <div className="grid grid-cols-3 gap-3 rounded-lg border border-slate-100 bg-slate-50/60 p-3">
+                      <div className="space-y-1">
+                        <div className="text-xs font-medium text-slate-600">{t("regularInvest.repaymentMethod")}</div>
+                        <select
+                          value={formData.repaymentMethod}
+                          onChange={(e) => setFormData(d => {
+                            const method = normalizeLoanRepaymentMethod(e.target.value);
+                            return {
+                              ...d,
+                              repaymentMethod: method,
+                              annualRate: allowsZeroAnnualRateRepaymentMethod(method) && parseLoanAnnualRateInput(d.annualRate, true) == null ? "0" : d.annualRate,
+                            };
+                          })}
+                          disabled={loanDerivedFieldsLocked}
+                          className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500"
+                        >
+                          {LOAN_REPAYMENT_METHOD_OPTIONS.map((method) => (
+                            <option key={method} value={method}>{t(LOAN_REPAYMENT_METHOD_LABEL_KEYS.get(method) ?? method)}</option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="space-y-1">
+                        <div className="text-xs font-medium text-slate-600">{t("txForm.annualRatePercent")}</div>
+                        <input
+                          inputMode="decimal"
+                          step="0.001"
+                          value={formData.annualRate}
+                          onChange={(e) => setFormData(d => ({ ...d, annualRate: e.target.value }))}
+                          disabled={loanDerivedFieldsLocked}
+                          placeholder={allowsZeroAnnualRateRepaymentMethod(formData.repaymentMethod) ? "0" : FIXED_LOAN_REPAYMENT_METHODS.has(formData.repaymentMethod) ? t("batchImport.required") : t("stockFee.optional")}
+                          className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <div className="text-xs font-medium text-slate-600">{t("regularInvest.repaymentIntervalMonths")}</div>
+                        <input
+                          inputMode="numeric"
+                          min="1"
+                          value={formData.repaymentIntervalMonths}
+                          onChange={(e) => setFormData(d => ({ ...d, repaymentIntervalMonths: e.target.value }))}
+                          disabled={loanIntervalLocked}
+                          placeholder="1"
+                          className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500"
+                        />
+                        {loanIntervalLocked ? (
+                          <div className="text-[11px] text-slate-400">{t("regularInvest.loanIntervalFromSchedule")}</div>
+                        ) : null}
+                      </div>
+                    </div>
+                    {loanDerivedFieldsLocked ? (
+                      <div className="text-[11px] text-slate-400">{t("regularInvest.loanFieldsLockedHint")}</div>
+                    ) : null}
+                  </div>
+                )
               )}
 
               {isFundTask ? (
@@ -2153,7 +2418,7 @@ export function RegularInvestForm({
                     </div>
                   </div>
                 </div>
-              ) : (
+              ) : isLoanTask ? null : (
                 <div className="space-y-1">
                   <div className="text-xs font-medium text-slate-600">{t("regularInvest.planAmount")}</div>
                   <div className={REQUIRED_FIELD_CLASS}>
@@ -2163,7 +2428,6 @@ export function RegularInvestForm({
                         placeholder="0.00"
                         label={t("regularInvest.planAmount")}
                         precision={2}
-                        disabled={loanDerivedFieldsLocked}
                       />
                   </div>
                 </div>

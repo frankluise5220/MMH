@@ -98,6 +98,12 @@ export function recordMatchesRegularInvestPlan(taskType: string | null | undefin
   if (taskType === "bond_maturity" || taskType === "bond_interest_accrual" || taskType === "bond_interest_payout") {
     return entry.source === TRANSACTION_SOURCE_BOND;
   }
+  // 贷款：自动扣款写 scheduled_task（资金账户 → 贷款账户），账单制只写 loan_bill（不动现金）。
+  // 两者都是这个计划的执行产物，否则账单制贷款在计划任务页会显示成「从未执行过」。
+  // 与 scheduled-task-executor 的 getScheduledTaskSourceFilter("loan_repayment") 保持同一口径。
+  if (taskType === "loan_repayment") {
+    return entry.source === TRANSACTION_SOURCE_SCHEDULED_TASK || entry.source === "loan_bill";
+  }
   return entry.source === TRANSACTION_SOURCE_SCHEDULED_TASK;
 }
 
