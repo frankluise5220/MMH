@@ -10,6 +10,7 @@ import {
 } from "@/lib/server/entry-business-link";
 import { prisma } from "@/lib/db/prisma";
 import { getCashFlowDate } from "@/lib/cash-flow-date";
+import { investmentTargetText, isAutoInvestmentSourceNote } from "@/lib/investment-cash-note";
 
 type TxClient = Prisma.TransactionClient | typeof prisma;
 
@@ -100,10 +101,18 @@ export function stockCashAmount(row: Partial<StockCashFlowRow>) {
   return grossAmount + fees;
 }
 
-function buildStockCashFlowNote(row: StockCashFlowRow) {
+/**
+ * 资金侧备注：用户写了备注就用用户备注，否则「股票买入 代码 名称」。
+ *
+ * 股票业务行的 note 可能是系统自动写的「资金来源 账户名」（用户没写备注时），
+ * 那不是用户备注，不能把它当成资金侧备注，否则资金侧就看不到交易动作了。
+ */
+function buildStockCashFlowNote(row: StockCashFlowRow, cashAccountName?: string | null) {
   const label = stockActionLabel(row.action);
-  const targetName = row.stockName || row.stockCode;
-  return row.note?.trim() || `${label} ${targetName}`;
+  const customNote = isAutoInvestmentSourceNote(row.note, cashAccountName) ? "" : row.note?.trim();
+  if (customNote) return customNote;
+  const target = investmentTargetText(row.stockCode, row.stockName);
+  return target ? `${label} ${target}` : label;
 }
 
 export async function ensureStockTransactionCashFlow(
@@ -148,7 +157,7 @@ export async function ensureStockTransactionCashFlow(
       currency: params.cashAccount.currency ?? params.stockAccount.currency ?? "CNY",
       source: params.row.source ?? "manual",
       entryOrigin: params.row.entryOrigin ?? ENTRY_ORIGIN_MANUAL,
-      note: buildStockCashFlowNote(params.row),
+      note: buildStockCashFlowNote(params.row, params.cashAccount.name),
       fundCode: null,
       fundProductType: null,
       fundSubtype: null,

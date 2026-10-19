@@ -3,7 +3,11 @@
 import { useEffect, useRef } from "react";
 import { usePathname } from "next/navigation";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
-import { publishExecutionReceipt, type ReceiptSource } from "@/lib/client/notification-receipts";
+import {
+  addReceiptNavFilled,
+  publishExecutionReceipt,
+  type ReceiptSource,
+} from "@/lib/client/notification-receipts";
 import { summarizeAutoExecute } from "@/lib/notifications";
 
 let startupCheckStarted = false;
@@ -109,7 +113,10 @@ export function DailyTaskCheck() {
         // 0 条会在发布端被判为"没结果"直接丢掉（见 isReportableExecution）——没有数字
         // 可看，就不该占通知位；只因净值缺口 / 暂停申购没执行的计划由到期提醒报出来。
         const executionSummary = summarizeAutoExecute(planData);
-        if (executionSummary) publishExecutionReceipt({ source: getLoadSource(), summary: executionSummary });
+        // 先落档（回执不依赖后面的净值回填是否成功），拿到 id 后再把净值条数补进去。
+        const receiptId = executionSummary
+          ? publishExecutionReceipt({ source: getLoadSource(), summary: executionSummary })
+          : null;
 
         const pendingRes = await fetch("/api/v1/fund/refresh-pending", {
           method: "POST",
@@ -117,6 +124,8 @@ export function DailyTaskCheck() {
         });
         const pendingData = await pendingRes.json().catch(() => null);
         assertOkResponse(pendingRes, pendingData, "fund pending refresh");
+        // 待确认记录的净值也是这一轮"获取净值"的一部分：navFilled 是真正补上净值的记录条数。
+        if (isObject(pendingData)) addReceiptNavFilled(receiptId, Number(pendingData.navFilled ?? 0));
 
         const stockRes = await fetch("/api/v1/stocks/prices/refresh-daily", {
           method: "POST",

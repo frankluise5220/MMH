@@ -54,6 +54,56 @@ export function inferSignedAmountInflowSign(
   return positiveInflowVotes > negativeInflowVotes ? "positive" : "negative";
 }
 
+export type SignedAmountBalanceSample = {
+  amount: number | null | undefined;
+  /** 该行交易后的账户余额（余额列）；非流水余额列（额度/可用余额）会被差额校验过滤掉 */
+  balance: number | null | undefined;
+};
+
+/**
+ * 用「余额」列的相邻行差额反推「金额正负号 → 收支方向」的写法约定。
+ *
+ * 借记卡流水通常 正数=收入、负数=支出；信用卡流水通常 正数=支出、负数=还款入账。
+ * 只靠关键词（还款/退款/入账）判断时，没有这些字样的借记卡流水会被套用信用卡口径而整体反向
+ * （招商银行借记卡流水即如此：正数=转入/工资/汇入，负数=快捷支付/转账汇款/基金申购）。
+ * 余额差额是流水事实，与文案无关，故优先于关键词推断。
+ *
+ * 只统计 |余额差额| ≈ |金额| 的相邻行对（升序按下一行匹配，降序按本行匹配），
+ * 因此「余额」列若不是逐笔流水余额，差额对不上金额时不会投票。
+ */
+export function inferBalanceBasedInflowSign(
+  samples: readonly SignedAmountBalanceSample[],
+): SignedAmountInflowSign | null {
+  let positiveInflowVotes = 0;
+  let negativeInflowVotes = 0;
+  const tolerance = 0.011;
+  for (let index = 0; index + 1 < samples.length; index += 1) {
+    const current = samples[index];
+    const next = samples[index + 1];
+    const currentBalance = Number(current?.balance ?? NaN);
+    const nextBalance = Number(next?.balance ?? NaN);
+    if (!Number.isFinite(currentBalance) || !Number.isFinite(nextBalance)) continue;
+    const rawDelta = nextBalance - currentBalance;
+    if (Math.abs(rawDelta) < 0.005) continue;
+    const currentAmount = Number(current?.amount ?? 0);
+    const nextAmount = Number(next?.amount ?? 0);
+    const matchesNextRow = Number.isFinite(nextAmount) && nextAmount !== 0
+      && Math.abs(Math.abs(nextAmount) - Math.abs(rawDelta)) <= tolerance;
+    const matchesCurrentRow = Number.isFinite(currentAmount) && currentAmount !== 0
+      && Math.abs(Math.abs(currentAmount) - Math.abs(rawDelta)) <= tolerance;
+    if (!matchesNextRow && !matchesCurrentRow) continue;
+    // 升序：下一行金额即余额差额；降序（最新在前）：本行金额对应本次余额变化。
+    const pairedAmount = matchesNextRow ? nextAmount : currentAmount;
+    const pairedDelta = matchesNextRow ? rawDelta : -rawDelta;
+    if (pairedAmount === 0 || pairedDelta === 0) continue;
+    if ((pairedAmount > 0) === (pairedDelta > 0)) positiveInflowVotes += 1;
+    else negativeInflowVotes += 1;
+  }
+  if (positiveInflowVotes + negativeInflowVotes < 2) return null;
+  if (positiveInflowVotes === negativeInflowVotes) return null;
+  return positiveInflowVotes > negativeInflowVotes ? "positive" : "negative";
+}
+
 export function signedAmountDirection(
   amount: number | null | undefined,
   inflowSign: SignedAmountInflowSign | null,

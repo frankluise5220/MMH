@@ -2713,7 +2713,14 @@ export function InvestmentFormModal({
       if (shouldSubmitCashAccount && cashAccountId) formData.set("cashAccountId", cashAccountId);
       formData.set("date", effectiveDate);
       formData.set("amount", String(effectiveAmount));
-      formData.set("note", memo.trim() || finalFundName || finalFundCode);
+      // 基金/货币基金：备注留空就真的留空，让服务端生成「资金侧：基金买入 代码 名称」「基金侧：资金来源 账户」。
+      // 以前这里用基金名称顶替备注，会把自动文案覆盖成「只有基金名称」，并且被当成用户自定义备注。
+      // 其它产品（理财/存款/贵金属）保持原有「名称即备注」的行为。
+      const isFundLikeProduct = productType === "fund" || productType === "money";
+      formData.set(
+        "note",
+        memo.trim() || (isFundLikeProduct ? "" : (finalFundName || finalFundCode)),
+      );
       formData.set("fundProductType", productType);
       if (finalFundCode) formData.set("fundCode", finalFundCode);
       if (finalFundName) formData.set("fundName", finalFundName);

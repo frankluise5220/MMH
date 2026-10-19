@@ -2290,6 +2290,7 @@ export function EmailSettingsPanel({ embedded = false, onStatementPreviewOpened,
         description={t("settings.email.recognizedItems", { count: statementPreviewItems.length })}
         items={statementPreviewItems}
         defaultAccountName=""
+        sourceAccountId={importPreview?.statementAccountId ?? selectedId ?? null}
         busy={importing}
         onClose={() => {
           if (!importing) {

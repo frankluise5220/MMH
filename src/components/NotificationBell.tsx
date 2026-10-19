@@ -584,9 +584,9 @@ function OverdueHint({ count }: { count: number }) {
   const { t } = useI18n();
   if (count <= 0) return null;
   return (
-    <div className="mb-1.5 flex items-start gap-2 rounded-lg bg-rose-50 px-2 py-1.5 mx-3">
-      <AlertTriangle size={13} className="mt-0.5 shrink-0 text-rose-500" />
-      <p className="text-[11px] font-medium text-rose-700">
+    <div className="mx-3 flex items-start gap-1.5 py-1">
+      <AlertTriangle size={12} className="mt-0.5 shrink-0 text-rose-500" />
+      <p className="text-[11px] font-medium text-rose-600">
         {t("notification.reminder.overdueHint", { count })}
       </p>
     </div>
@@ -626,7 +626,7 @@ function ThisRunBlock({
         ? t("notification.thisRun.source.reload")
         : t("notification.thisRun.source.startup");
   return (
-    <div className="border-b border-slate-100 bg-slate-50/60">
+    <div className="border-b border-slate-100">
       <div className="flex items-center gap-1.5 px-3 pb-1 pt-2.5">
         <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-400">
           {t("notification.thisRun.section")}
@@ -665,6 +665,7 @@ function ThisRunBlock({
           )}
           <p className="mt-0.5 text-[10px] text-slate-400">
             {t("notification.thisRun.detail", {
+              nav: receipt.navFilled ?? 0,
               paused: receipt.skippedPaused,
               gap: receipt.skippedGap,
               rounds: receipt.rounds,
@@ -766,7 +767,7 @@ function ServerReceipt({
 function ReceiptBreakdown({ groups }: { groups: ExecutionReceiptGroup[] }) {
   const { t } = useI18n();
   return (
-    <ul className="mt-1.5 space-y-1.5 rounded-lg bg-slate-50 px-2 py-1.5">
+    <ul className="mt-1 space-y-1 border-l border-slate-100 pl-2">
       {groups.map((group) => (
         <li key={group.taskType}>
           <div className="flex items-baseline justify-between gap-2 text-[10px] font-semibold text-slate-600">
@@ -809,12 +810,13 @@ function ReminderRow({ item, onMarkRead }: { item: ReminderItem; onMarkRead: () 
       : urgency === "today"
         ? t("notification.reminder.today")
         : t("notification.reminder.daysUntil", { days: item.daysUntil });
+  // 扁平：时间紧迫度只用文字颜色表达，不再套一层彩底胶囊。
   const dueClass =
     urgency === "overdue"
-      ? "bg-rose-50 text-rose-600"
+      ? "text-rose-600"
       : urgency === "today"
-        ? "bg-amber-50 text-amber-600"
-        : "bg-slate-100 text-slate-500";
+        ? "text-amber-600"
+        : "text-slate-400";
   // An outflow reminder whose funding account is short: a colour (orange) and icon that
   // differ from the due-date urgency, so "this debit will not go through" is visible at a
   // glance in the list.
@@ -863,8 +865,8 @@ function ReminderRow({ item, onMarkRead }: { item: ReminderItem; onMarkRead: () 
   }
 
   return (
-    <li className={`flex items-start gap-2 px-3 py-2 ${blocked ? "bg-rose-50/40" : insufficient ? "bg-orange-50/50" : ""}`}>
-      <span className={`mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-[10px] font-semibold tabular-nums ${dueClass}`}>
+    <li className="flex items-start gap-2 px-3 py-2">
+      <span className={`mt-0.5 shrink-0 text-[10px] font-semibold tabular-nums ${dueClass}`}>
         {dueText}
       </span>
       <div className="min-w-0 flex-1">
@@ -873,13 +875,13 @@ function ReminderRow({ item, onMarkRead }: { item: ReminderItem; onMarkRead: () 
             {item.title}
           </span>
           {item.manualConfirm ? (
-            <span className="shrink-0 rounded bg-sky-50 px-1 py-0.5 text-[9px] font-medium text-sky-600">
+            <span className="shrink-0 text-[9px] font-medium text-sky-600">
               {t("notification.reminder.manual")}
             </span>
           ) : null}
           {blocked ? (
             <span
-              className="inline-flex shrink-0 items-center gap-0.5 rounded bg-rose-100 px-1 py-0.5 text-[9px] font-semibold text-rose-700"
+              className="inline-flex shrink-0 items-center gap-0.5 text-[9px] font-semibold text-rose-600"
               title={
                 item.fundingAccountName
                   ? t("notification.reminder.blockedHint", { account: item.fundingAccountName })
@@ -891,7 +893,7 @@ function ReminderRow({ item, onMarkRead }: { item: ReminderItem; onMarkRead: () 
             </span>
           ) : insufficient ? (
             <span
-              className="inline-flex shrink-0 items-center gap-0.5 rounded bg-orange-100 px-1 py-0.5 text-[9px] font-semibold text-orange-700"
+              className="inline-flex shrink-0 items-center gap-0.5 text-[9px] font-semibold text-orange-600"
               title={
                 item.fundingAccountName
                   ? t("notification.reminder.insufficientHint", { account: item.fundingAccountName })
@@ -955,7 +957,7 @@ function ReadRow({ entry }: { entry: ReadNotificationEntry }) {
 
   return (
     <li className="flex items-start gap-2 px-3 py-2">
-      <span className="mt-0.5 shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-500">
+      <span className="mt-0.5 shrink-0 text-[10px] font-medium text-slate-400">
         {label}
       </span>
       <div className="min-w-0 flex-1">

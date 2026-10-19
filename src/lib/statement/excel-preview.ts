@@ -6,6 +6,7 @@ import {
   rowsBeforeTemplateGuide,
 } from "@/lib/import-template-sample";
 import {
+  inferBalanceBasedInflowSign,
   inferSignedAmountInflowSign,
   isCreditCardRepaymentLikeText,
   isExpenseRefundLikeText,
@@ -73,6 +74,112 @@ export type StatementExcelPreviewItem = {
 };
 
 type StatementFieldHeaders = Record<StatementImportField, readonly string[]>;
+
+/**
+ * 「余额」列别名，只用于按余额差额反推收支方向（招行流水：「联机余额」）。
+ * 刻意不加入 STATEMENT_IMPORT_FIELD_HEADERS：它不是导入字段，避免预览/字段映射 UI 多出一列。
+ */
+const STATEMENT_BALANCE_HEADER_ALIASES = [
+  "余额",
+  "联机余额",
+  "账户余额",
+  "帐户余额",
+  "本次余额",
+  "当前余额",
+  "交易后余额",
+  "交易后账户余额",
+  "balance",
+  "runningbalance",
+  "残高",
+] as const;
+
+/**
+ * 银行流水「摘要」里的本行内部资金划转 / 投资申赎判定。
+ *
+ * 只在既没有「收支大类」列、也没有流入/流出列时启用：支付宝、微信、京东、财智等模板
+ * 归一化后自带类型列，模板给的类型优先，不会被摘要关键词改写。
+ * 招行借记卡流水就是典型场景——摘要「朝朝宝转入/转出」「转账汇款」其实是转账，
+ * 「基金申购/赎回」其实是投资，若按金额正负当成支出/收入，语义就丢了。
+ */
+/**
+ * 「转账汇款 / 行内转账 / 跨行转账 / 网银转账 / 手机银行转账」只是同一个词的不同包装，
+ * 摘要里出现「转账」即转账，不列举变体。唯一需要收窄的场景见 WHOLE_ROW_TRANSFER_RE。
+ */
+const BANK_TRANSFER_RE = /转账|转帐/;
+/** 同理：「基金申购 / 基金赎回 / 基金定投 / 基金认购」已被 申购/赎回/定投/认购 覆盖。 */
+const BANK_INVESTMENT_RE = /申购|赎回|认购|定投/;
+/**
+ * 没有摘要列时 remark 会退回整行文本，整行里含着「微信转账」「支付宝转账」这类对手方名称，
+ * 裸「转账」会把「快捷支付」误判成转账；这种兜底场景只认以「转账」开头的写法。
+ */
+const WHOLE_ROW_TRANSFER_RE = /^(?:转账|转帐)/;
+const BANK_FEE_REMARK_RE = /手续费|服务费|工本费|年费|短信费|账户管理费|挂失费/;
+
+/**
+ * 「X转入 / X转出」是各家银行对本行内部划转最通用的写法（朝朝宝、朝朝盈、理财、通知存款、
+ * 信用卡溢缴款…），所以按后缀模式识别，不枚举产品名——产品会下架、会改名，枚举必然漏。
+ */
+const SELF_TRANSFER_SUFFIX_RE = /^(.{2,12}?)\s*(转入|转出)$/;
+/** 这些前缀是收入语义（工资/汇入/结息…）或纯现金动作，虽然也以「转入/转出」结尾，但不是内部划转。 */
+const SELF_TRANSFER_NON_TRANSFER_PREFIX_RE = /^(工资|代发|代付|结息|利息|分红|收益|退款|退货|赔付|红包|补贴|报销|奖金|快捷支付|消费|付款|收款|充值|提现|缴费|还款|汇入|汇出|现金|存款|取款|存入|支取)/;
+/** 「行内转账转入」这类系统摘要不携带产品名，不能当对向账户。 */
+const SELF_TRANSFER_SYSTEM_PREFIX_RE = /^(行内|跨行|网银|手机银行|银行|转账|转帐|他行|本行|ATM|自动)/;
+
+type BankRemarkFlowType = "transfer" | "investment" | null;
+
+type SelfTransferRemark = {
+  /** 摘要前缀，通常就是被划转的产品名 / 账户名。 */
+  name: string;
+  inflow: boolean;
+};
+
+function parseSelfTransferRemark(remark: string): SelfTransferRemark | null {
+  const text = String(remark ?? "").trim();
+  const match = text.match(SELF_TRANSFER_SUFFIX_RE);
+  const name = (match?.[1] ?? "").trim();
+  if (!name || SELF_TRANSFER_NON_TRANSFER_PREFIX_RE.test(name)) return null;
+  return { name, inflow: match?.[2] === "转入" };
+}
+
+function inferBankRemarkFlowType(
+  remark: string,
+  options: { fromWholeRow?: boolean } = {},
+): BankRemarkFlowType {
+  const text = String(remark ?? "").trim();
+  if (!text) return null;
+  // 「转账手续费」「基金申购手续费」是费用支出，不是资金划转/申赎本身。
+  if (BANK_FEE_REMARK_RE.test(text)) return null;
+  if (parseSelfTransferRemark(text)) return "transfer";
+  if ((options.fromWholeRow ? WHOLE_ROW_TRANSFER_RE : BANK_TRANSFER_RE).test(text)) return "transfer";
+  if (BANK_INVESTMENT_RE.test(text)) return "investment";
+  return null;
+}
+
+/** 摘要前缀就是本行内部划转的对向产品名（对向账户由用户在预览里确认/批量替换）。 */
+function inferSelfTransferCounterAccount(remark: string) {
+  const selfTransfer = parseSelfTransferRemark(remark);
+  if (!selfTransfer || SELF_TRANSFER_SYSTEM_PREFIX_RE.test(selfTransfer.name)) return "";
+  return selfTransfer.name;
+}
+
+/** 「转账-张三」「汇款 李四」：有些行把对方名直接写在摘要里，可当对向账户的默认值。 */
+const TRANSFER_COUNTERPARTY_IN_REMARK_RE = /^(?:转账|转帐|汇款)[-—－·:：\s]+([^\s\-—－·:：]{2,16})$/;
+const TRANSFER_NON_NAME_RE = /手续费|服务费|退款|撤销|失败|利息/;
+
+function inferTransferCounterpartyFromRemark(remark: string) {
+  const name = String(remark ?? "").trim().match(TRANSFER_COUNTERPARTY_IN_REMARK_RE)?.[1]?.trim() ?? "";
+  if (!name || TRANSFER_NON_NAME_RE.test(name)) return "";
+  return name;
+}
+
+/**
+ * 银行流水的「对手信息」常是「名称 + 换行 + 账号」或「名称 卡号」。
+ * 只保留名称首行并去掉末尾账号，避免卡号混进机构/对手方字段参与匹配。
+ */
+function cleanStatementCounterparty(value: string) {
+  const firstLine = String(value ?? "").split(/\r?\n/).map((part) => part.trim()).find(Boolean) ?? "";
+  return firstLine.replace(/[\s\u3000]*\d{6,}[\d\s]*$/, "").trim();
+}
 
 function formatDateCell(value: unknown) {
   if (value instanceof Date && !Number.isNaN(value.getTime())) {
@@ -262,10 +369,11 @@ export function parseStatementTemplateRows(
   const postedIndex = spdbIndexes?.postingDate ?? reader.findFieldIndex("postedAt");
   const currencyIndex = spdbIndexes?.currency ?? -1;
   const originalAmountIndex = spdbIndexes?.originalAmount ?? -1;
+  const balanceIndex = reader.findIndex(STATEMENT_BALANCE_HEADER_ALIASES);
 
   if (dateIndex < 0 || (amountIndex < 0 && inflowIndex < 0 && outflowIndex < 0)) return [];
 
-  const signedAmountInflowSign = inferSignedAmountInflowSign(dataRows.flatMap((row) => {
+  const keywordInflowSign = inferSignedAmountInflowSign(dataRows.flatMap((row) => {
     const rawInflowText = inflowIndex >= 0 ? String(row[inflowIndex] ?? "").trim() : "";
     const rawOutflowText = outflowIndex >= 0 ? String(row[outflowIndex] ?? "").trim() : "";
     const hasExplicitFlow =
@@ -283,6 +391,13 @@ export function parseStatementTemplateRows(
       text: `${typeText} ${category} ${institution} ${remark} ${rowText(row)}`,
     }];
   }));
+  // 余额差额是流水事实，优先于关键词推断：借记卡「正数=收入」不会再被套用信用卡口径而整体反向。
+  const signedAmountInflowSign = balanceIndex >= 0
+    ? inferBalanceBasedInflowSign(dataRows.map((row) => ({
+      amount: amountIndex >= 0 ? parseAmount(row[amountIndex] ?? "") : null,
+      balance: parseAmount(row[balanceIndex] ?? ""),
+    }))) ?? keywordInflowSign
+    : keywordInflowSign;
 
   return dataRows.flatMap<StatementExcelPreviewItem>((row) => {
     const date = normalizeDate(row[dateIndex] ?? "");
@@ -310,25 +425,50 @@ export function parseStatementTemplateRows(
     const accountValue = legacyCardAccountMode
       ? cardAccountHint(knownInstitutionName, defaultAccountName, cardLast4)
       : rawAccountValue;
-    const counterAccount = counterIndex >= 0 ? String(row[counterIndex] ?? "").trim() : "";
     const category = String(row[categoryIndex] ?? "").trim();
-    const institution = String(row[merchantIndex] ?? "").trim();
+    const institution = cleanStatementCounterparty(String(row[merchantIndex] ?? "").trim());
     const tags = tagsIndex >= 0 ? String(row[tagsIndex] ?? "").trim() : "";
     const remark = String(row[remarkIndex] ?? "").trim() || tags || rowText(row);
+    // 无类型列、无流入/流出列的银行流水（招行借记卡即如此）按摘要判断资金性质：
+    // 「X转入/X转出」「转账汇款」是本行内部划转，「基金申购/赎回」是投资申赎。
+    // 摘要与对手信息分开判定：摘要可能是整行兜底（此时不能裸认「转账」），
+    // 对手信息则一律走严格模式——「微信转账」是商户名，不是转账动作。
+    const remarkFromColumn = remarkIndex >= 0 && Boolean(String(row[remarkIndex] ?? "").trim() || tags);
+    const remarkFlowType = !typeText && !hasExplicitFlow && !category
+      ? inferBankRemarkFlowType(remark, { fromWholeRow: !remarkFromColumn })
+        || inferBankRemarkFlowType(institution, { fromWholeRow: true })
+      : null;
     const postedDate = postedIndex >= 0 ? normalizeDate(row[postedIndex] ?? "") : undefined;
     const sourceText = `${typeText} ${category} ${institution} ${remark} ${rowText(row)}`;
-    const isRepayment = /转账|transfer|振替/.test(typeText) || isCreditCardRepaymentLikeText(sourceText);
+    const isRepayment = /转账|transfer|振替/.test(typeText)
+      || isCreditCardRepaymentLikeText(sourceText)
+      || remarkFlowType === "transfer";
     const isRefund = isExpenseRefundLikeText(sourceText);
     const isSignedInflow = signedDirection === "in";
     const isIncome = !isRefund && (/income|收入|収入/.test(typeText) || isSignedInflow);
+    const rawCounterAccount = counterIndex >= 0
+      ? cleanStatementCounterparty(String(row[counterIndex] ?? "").trim())
+      : "";
+    // 对向账户兜底：本行划转取摘要里的产品名（朝朝宝），对外转账取「对手信息」列的名称。
+    // 只给转账行兜底，普通收支不受影响；匹配不到时由用户在预览里批量补齐。
+    const counterAccount = rawCounterAccount
+      || (isRepayment
+        ? inferSelfTransferCounterAccount(remark)
+          || inferTransferCounterpartyFromRemark(remark)
+          || institution
+        : "");
 
     if (isRepayment) {
       const accountIsCurrent = normalizeHeader(accountValue) === normalizeHeader(defaultAccountName);
       const counterIsCurrent = normalizeHeader(counterAccount) === normalizeHeader(defaultAccountName);
       const accountSideIsPrimary = legacyCardAccountMode || accountIsCurrent || !counterIsCurrent;
+      // 方向以「收支列/金额正负号」为准：借记卡里的「信用卡还款」是转出，
+      // 不能因为摘要含「还款」就一律当成入账（那会把转出金额记成转入）。
       const transferIsInflow = explicitDirection
         ? explicitDirection === "in"
-        : isCreditCardRepaymentLikeText(sourceText) || signedDirection !== "out";
+        : signedDirection
+          ? signedDirection === "in"
+          : isCreditCardRepaymentLikeText(sourceText);
       const fromAccount = transferIsInflow
         ? accountSideIsPrimary ? counterAccount : accountValue
         : accountSideIsPrimary ? (accountValue || contextAccount) : (counterAccount || contextAccount);
@@ -348,6 +488,7 @@ export function parseStatementTemplateRows(
         transferDirection: transferIsInflow ? "in" as const : "out" as const,
         category,
         institution,
+        counterparty: institution || undefined,
         remark,
         postedDate,
         _meta: cardLast4 || knownInstitutionName ? {
@@ -358,7 +499,11 @@ export function parseStatementTemplateRows(
     }
 
     const account = accountValue || contextAccount;
-    const resolvedType = explicitDirection === "out" ? "expense" : isIncome ? "income" : "expense";
+    // 投资申赎在流水里只有「钱出去/钱回来」，标的（基金/产品）不在本表：先落成投资类型的
+    // 半截记录，账户仍是扣款账户，fundCode/fundName 留空由用户后续补充。
+    const resolvedType = remarkFlowType === "investment"
+      ? "investment" as const
+      : explicitDirection === "out" ? "expense" : isIncome ? "income" : "expense";
     const accountSideInflow = explicitDirection
       ? explicitDirection === "in"
       : isIncome || isRefund;

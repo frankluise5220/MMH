@@ -174,6 +174,13 @@ export type AutoExecuteSummary = {
   /** All skips reported by the server — includes "not due yet", so it must not
    *  be presented as "plans needing attention". */
   skippedTotal: number;
+  /**
+   * Records whose NAV was actually acquired by this run (auto-execute Phase 4
+   * backfill + the follow-up pending refresh). Unlike `executed`, this is a
+   * "what the system fetched for us" number, so it is shown next to the record
+   * count instead of being folded into it.
+   */
+  navFilled: number;
 };
 
 export type ReceiptLevel = "success" | "info" | "warning";
@@ -374,5 +381,6 @@ export function summarizeAutoExecute(data: unknown): AutoExecuteSummary | null {
     skippedPaused: toCount(d.skippedPaused),
     skippedGap: toCount(d.skippedGap),
     skippedTotal: toCount(d.skippedCount),
+    navFilled: toCount(d.navFilled),
   };
 }

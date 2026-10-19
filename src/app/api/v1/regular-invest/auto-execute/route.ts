@@ -51,6 +51,8 @@ type AutoExecuteRoundResult = {
   completedCount: number;
   skippedPaused: number;
   skippedGap: number;
+  /** Records whose NAV was actually acquired/backfilled by this round (0 when NAV is not published yet). */
+  navFilled: number;
   details: AutoExecuteRoundDetail[];
   hasMoreDue: boolean;
   /** Ids of plans withheld by the balance guard (insufficient balance → nothing booked). */
@@ -79,7 +81,7 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
     });
 
     if (allPlans.length === 0) {
-      return { ok: true, executedCount: 0, skippedCount: 0, completedCount: 0, skippedPaused: 0, skippedGap: 0, details: [], hasMoreDue: false, blockedPlanIds: [] };
+      return { ok: true, executedCount: 0, skippedCount: 0, completedCount: 0, skippedPaused: 0, skippedGap: 0, navFilled: 0, details: [], hasMoreDue: false, blockedPlanIds: [] };
     }
 
     // ── Phase 1: Filter & load all data in batch ──
@@ -117,7 +119,7 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
     }
 
     if (plansToRun.length === 0) {
-      return { ok: true, executedCount: 0, skippedCount: 0, completedCount: completed.length, skippedPaused: 0, skippedGap: 0, details: [], hasMoreDue: false, blockedPlanIds: [] };
+      return { ok: true, executedCount: 0, skippedCount: 0, completedCount: completed.length, skippedPaused: 0, skippedGap: 0, navFilled: 0, details: [], hasMoreDue: false, blockedPlanIds: [] };
     }
 
     // Balance guard (settings → scheduled tasks, off by default): a **due** plan whose
@@ -256,6 +258,7 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
         completedCount: completed.length,
         skippedPaused: 0,
         skippedGap: 0,
+        navFilled: 0,
         details: generalDetails,
         hasMoreDue: await hasMoreDuePlans(householdId, now),
         blockedPlanIds,
@@ -386,6 +389,7 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
         completedCount: completed.length,
         skippedPaused,
         skippedGap,
+        navFilled: 0,
         details: [...generalDetails, ...details],
         hasMoreDue: await hasMoreDuePlans(householdId, now),
         blockedPlanIds,
@@ -444,6 +448,8 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
     const generatedRecords: Array<{ id: string; fundCode: string; confirmDate: string; grossAmount: number; feeAmount: number; fundUnitsDecimals: number }> = [];
     const affectedFunds = new Set<string>();
     let skippedDuplicate = 0;
+    /** Records this round managed to stamp with a real NAV (Phase 4). */
+    let navFilled = 0;
 
     await prisma.$transaction(async (tx) => {
       const lockedPlanIds = [...new Set(execs.map((e) => e.plan.id))].sort();
@@ -714,6 +720,7 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
       });
       const updateResults = await Promise.all(updates);
       const updatedCount = updateResults.filter(Boolean).length;
+      navFilled = updatedCount;
       logger.info("Phase4 净值回填完成: " + updatedCount + "/" + generatedRecords.length + " 条, 耗时 " + (Date.now() - updateStart) + "ms", "auto-execute");
     }
 
@@ -744,12 +751,13 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
       completedCount: completed.length,
       skippedPaused,
       skippedGap,
+      navFilled,
       details: [...generalDetails, ...details],
       hasMoreDue: await hasMoreDuePlans(householdId, now),
       blockedPlanIds,
     };
   } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : "执行失败", executedCount: 0, skippedCount: 0, completedCount: 0, skippedPaused: 0, skippedGap: 0, details: [], hasMoreDue: false, blockedPlanIds: [] };
+    return { ok: false, error: e instanceof Error ? e.message : "执行失败", executedCount: 0, skippedCount: 0, completedCount: 0, skippedPaused: 0, skippedGap: 0, navFilled: 0, details: [], hasMoreDue: false, blockedPlanIds: [] };
   }
 }
 
@@ -781,6 +789,7 @@ export async function POST() {
       completedCount: 0,
       skippedPaused: 0,
       skippedGap: 0,
+      navFilled: 0,
       details: [] as AutoExecuteRoundDetail[],
     };
     const blockedPlanIds = new Set<string>();
@@ -798,6 +807,7 @@ export async function POST() {
       aggregated.completedCount += result.completedCount;
       aggregated.skippedPaused += result.skippedPaused;
       aggregated.skippedGap += result.skippedGap;
+      aggregated.navFilled += result.navFilled;
       aggregated.details.push(...result.details);
       for (const planId of result.blockedPlanIds) blockedPlanIds.add(planId);
       moreDue = result.hasMoreDue;
@@ -832,6 +842,7 @@ export async function POST() {
       completedCount: aggregated.completedCount,
       skippedPaused: aggregated.skippedPaused,
       skippedGap: aggregated.skippedGap,
+      navFilled: aggregated.navFilled,
       blockedCount: blockedPlanIds.size,
       blockedPlanIds: [...blockedPlanIds],
       rounds,

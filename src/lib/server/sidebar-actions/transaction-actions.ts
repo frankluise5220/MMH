@@ -41,6 +41,13 @@ import { getInvestmentCategoryName } from "@/lib/investment-category";
 import { calculateDepositAccruedInterest, depositSegmentInterest, round2 } from "@/lib/deposit-maturity";
 import { getCashFlowDate } from "@/lib/cash-flow-date";
 import { buildWealthCashFlowNote } from "@/lib/wealth-cash-note";
+import {
+  buildFundCashFlowNote,
+  buildInvestmentSourceNote,
+  isAutoInvestmentSourceNote,
+  isFundBuyLikeSubtype,
+  isLegacyFundNameNote,
+} from "@/lib/investment-cash-note";
 import { linkExpenseToFixedAsset, syncLinkedFixedAssetTransactionFromCashEntry } from "@/lib/property/transactions";
 import { normalizeCurrency, resolveSameCurrencyTransfer } from "@/lib/currency";
 import { resolveAdvanceTransfer } from "@/lib/advance-transfer";
@@ -1204,7 +1211,12 @@ export async function createTransaction(formData: FormData) {
               amount: signedAmount,
               currency: recordCurrency ?? cashAcc.currency ?? investAcc.currency ?? "CNY",
               source: sourceValue,
-              note: note || entryFundName || undefined,
+              // 资金侧自动备注「基金买入 代码 名称」；用户自己写了备注就只保留用户备注。
+              note: note || buildFundCashFlowNote({
+                subtype: finalFundSubtype,
+                fundCode: entryFundCode,
+                fundName: entryFundName,
+              }),
             });
           }
 
@@ -1254,7 +1266,12 @@ export async function createTransaction(formData: FormData) {
             fee: isDividendReinvest ? null : fundFee ?? null,
             nav: fundNav ?? null,
             units: roundedFundUnits ?? null,
-            note: note || null,
+            // 基金侧自动备注：买入写「资金来源 账户名」；没有资金腿的分红再投写「分红再投 代码 名称」。
+            note: note || (isFundBuyLikeSubtype(finalFundSubtype) && cashAcc && cashAcc.id !== investAcc.id
+              ? buildInvestmentSourceNote(cashAcc.name)
+              : isDividendReinvest
+                ? buildFundCashFlowNote({ subtype: finalFundSubtype, fundCode: entryFundCode, fundName: entryFundName })
+                : "") || null,
             cashFlows: fundCashFlows,
           });
           createdFundTransactionId = createdFund.fundTransaction.id;
@@ -2132,6 +2149,25 @@ export async function editInvestment(formData: FormData) {
           : (isDividendCash ? amountAbs : -amountAbs);
       const isMetalProduct = fundProductType === "metal";
       const isWealthProduct = fundProductType === "wealth";
+      // 基金手动买入的自动备注：资金侧「基金买入 代码 名称」，基金侧「资金来源 账户名」。
+      // 上一条资金腿的账户名快照用来识别「资金来源 X」是不是系统当初自动写的 ——
+      // 只有和它完全一致时才当作自动文案重算，用户改过的备注一律保留。
+      const isFundProductForNote =
+        !isMetalProduct &&
+        !isWealthProduct &&
+        fundProductType !== "deposit" &&
+        (!fundProductType || fundProductType === "fund" || fundProductType === "money" || fundProductType === "money_fund");
+      const previousCashAccountName = redeemLike || isDividendCash || isBuyFailedRefund
+        ? txRecord.toAccountName
+        : txRecord.accountName;
+      const noteFundName = wealthProduct?.name || depositProduct?.name || effectiveFundDisplayName || fundName || null;
+      // 历史数据：旧表单没填备注时把基金名称写进了 note，这里按「等于基金名称」识别为系统默认值，
+      // 保存时重算成「基金买入 代码 名称」/「资金来源 账户」，让老行也能自愈。
+      const customNote = memo
+        && !isAutoInvestmentSourceNote(memo, previousCashAccountName)
+        && !isLegacyFundNameNote(memo, noteFundName ?? txRecord.fundName)
+        ? memo
+        : "";
       const updateData: any = {
         date,
         fundCode: isMetalProduct || isWealthProduct ? null : fundCode,
@@ -2178,7 +2214,13 @@ export async function editInvestment(formData: FormData) {
         // 金属赎回同样保留到账日：资金账户侧明细用它当「生效日」（2026-10-17）。
         fundArrivalDate: fundArrivalDate ?? null,
         fundArrivalAmount: effectiveFundArrivalAmount ?? null,
-        note: memo || null,
+        note: (isFundProductForNote
+          ? customNote || buildFundCashFlowNote({
+              subtype: finalFundSubtype,
+              fundCode,
+              fundName: noteFundName,
+            })
+          : memo) || null,
       };
       if (
         !isMetalProduct &&
@@ -2259,7 +2301,12 @@ export async function editInvestment(formData: FormData) {
             fee: businessFee,
             nav: businessNav,
             units: businessUnits,
-            note: memo || null,
+            // 基金侧自动备注：买入写「资金来源 账户名」。
+            note: customNote || (isFundBuyLikeSubtype(finalFundSubtype)
+              && finalCashAccountId
+              && finalCashAccountId !== finalFundAccountId
+              ? buildInvestmentSourceNote(finalCashAccountName)
+              : "") || null,
           },
         });
         if (isDividendReinvest) {
@@ -2390,7 +2437,7 @@ export async function editInvestment(formData: FormData) {
             refundAmount,
             date,
             finalInvestmentAccountInfo?.currency ?? txRecord.currency ?? "CNY",
-            memo,
+            customNote,
           ),
         });
         if (refundResult) {
@@ -2455,7 +2502,7 @@ export async function editInvestment(formData: FormData) {
             refundAmount,
             date,
             finalInvestmentAccountInfo?.currency ?? txRecord.currency ?? "CNY",
-            memo,
+            customNote,
           ),
         });
         if (refundCashFlow) {

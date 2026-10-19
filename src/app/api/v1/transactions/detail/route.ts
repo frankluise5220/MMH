@@ -109,6 +109,7 @@ import {
 import { ensureSettlementTransferCategory, resolveCategorySnapshot, resolveCreditCardRepaymentCategory } from "@/lib/default-categories";
 import { getInvestmentCategoryName } from "@/lib/investment-category";
 import { buildWealthCashFlowNote } from "@/lib/wealth-cash-note";
+import { buildFundCashFlowNote, buildInvestmentSourceNote, isFundBuyLikeSubtype } from "@/lib/investment-cash-note";
 import { INCOME_EXPENSE_INSTITUTION_TYPES } from "@/lib/institution-rules";
 import { assertInstitutionDisplayNamesUnique } from "@/lib/server/institution-name-unique";
 import { findRecentManualTransactionDuplicate } from "@/lib/server/transaction-dedupe";
@@ -1333,6 +1334,7 @@ function linkedFundDetailFields(record: any, fundRow: any) {
       fundArrivalAmount: refundAmount,
       source: record.source ?? TRANSACTION_SOURCE_REGULAR_INVEST_REFUND,
       note: record.note ?? fundRow.note,
+      businessNote: fundRow.note ?? null,
     };
   }
   const isCashIn = isFundCashReceiptSubtype(fundRow.fundSubtype);
@@ -1368,7 +1370,10 @@ function linkedFundDetailFields(record: any, fundRow: any) {
     fundArrivalDate: fundRow.arrivalDate ? formatDateLocal(fundRow.arrivalDate) : null,
     fundArrivalAmount: fundRow.arrivalAmount == null ? null : toNumber(fundRow.arrivalAmount),
     source: fundRow.source ?? record.source,
-    note: fundRow.note ?? record.note,
+    // 备注以这条资金流水自己的备注为准（用户备注或系统生成的「基金买入 代码 名称」）；
+    // 基金侧的「资金来源 X」只作为兜底，否则资金侧会显示成来源说明。
+    note: record.note ?? fundRow.note,
+    businessNote: fundRow.note ?? null,
   };
 }
 
@@ -1740,7 +1745,8 @@ export async function GET(req: Request) {
           fundArrivalDate: linkedFundTransaction.arrivalDate ? formatDateLocal(linkedFundTransaction.arrivalDate) : null,
           fundArrivalAmount: linkedFundTransaction.arrivalAmount ? toNumber(linkedFundTransaction.arrivalAmount) : null,
           refundAmount: linkedFundTransaction.refundAmount ? toNumber(linkedFundTransaction.refundAmount) : 0,
-          note: linkedFundTransaction.note ?? record.note,
+          note: record.note ?? linkedFundTransaction.note,
+          businessNote: linkedFundTransaction.note ?? null,
           source: linkedFundTransaction.source,
         } : {}),
         ...buildEntryBusinessLinkSummary(record),
@@ -2918,7 +2924,12 @@ export async function POST(req: Request) {
               amount: cashFlowAmount,
               currency: cashAcc.currency ?? investAcc.currency ?? "CNY",
               source: sourceValue,
-              note: note || entryFundName || undefined,
+              // 资金侧自动备注「基金买入 代码 名称」；用户自己写了备注就只保留用户备注。
+              note: note || buildFundCashFlowNote({
+                subtype: finalFundSubtype,
+                fundCode: entryFundCode,
+                fundName: entryFundName,
+              }),
             });
           }
 
@@ -2968,7 +2979,12 @@ export async function POST(req: Request) {
             fee: isDividendReinvest ? null : fundFee ?? null,
             nav: fundNav ?? null,
             units: roundedFundUnits ?? null,
-            note: note || null,
+            // 基金侧自动备注：买入写「资金来源 账户名」；没有资金腿的分红再投写「分红再投 代码 名称」。
+            note: note || (isFundBuyLikeSubtype(finalFundSubtype) && cashAcc && cashAcc.id !== investAcc.id
+              ? buildInvestmentSourceNote(cashAcc.name)
+              : isDividendReinvest
+                ? buildFundCashFlowNote({ subtype: finalFundSubtype, fundCode: entryFundCode, fundName: entryFundName })
+                : "") || null,
             cashFlows: fundCashFlows,
           });
           createdFundTransactionId = createdFund.fundTransaction.id;
@@ -3036,7 +3052,10 @@ export async function POST(req: Request) {
                 amount: cashFlowAmount,
                 currency: cashAcc.currency ?? investAcc.currency ?? "CNY",
                 source: `${sourceValue || "manual"}_cash_flow`,
-                note: note || entryFundName || undefined,
+                // 基金买入的资金侧备注带动作和代码；其它产品保持「名称即备注」。
+                note: note || (isFundBuyLikeSubtype(finalFundSubtype)
+                  ? buildFundCashFlowNote({ subtype: finalFundSubtype, fundCode: entryFundCode, fundName: entryFundName })
+                  : entryFundName) || undefined,
                 householdId,
               },
             });

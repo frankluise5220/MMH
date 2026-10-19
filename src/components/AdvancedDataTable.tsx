@@ -30,10 +30,10 @@ const HORIZONTAL_SCROLL_TOLERANCE_PX = 4;
 const ROW_VIRTUALIZATION_THRESHOLD = 200;
 const HEADER_SORT_CLICK_DELAY_MS = 220;
 /**
- * 长按整行进入拖拽的触发时长。1 秒是刻意的：按住期间只做浅色高亮，不到点不起拖，
- * 既不会和「滑动列表 / 点开记录」抢手势，也让「长按拿起」像一次明确的主动动作。
+ * 长按整行进入拖拽的触发时长。600ms 是刻意取的值：短到不用刻意等，又长于普通点按/双击的间隔，
+ * 按住期间只做浅色高亮，不到点不起拖，不会和「滑动列表 / 点开记录」抢手势。
  */
-const ROW_LONG_PRESS_DRAG_DELAY_MS = 1000;
+const ROW_LONG_PRESS_DRAG_DELAY_MS = 600;
 /** 长按待触发期间允许的抖动；超过即视为滚动或选字，取消本次长按。 */
 const ROW_LONG_PRESS_MOVE_TOLERANCE_PX = 10;
 /** 拖拽中手指贴近视口上下边缘时自动滚动，避免长列表拖不动。 */
@@ -2047,7 +2047,7 @@ export function AdvancedDataTable<T>({
     window.addEventListener("pointermove", handlePointerMove, { passive: true });
     window.addEventListener("pointerup", handlePointerRelease, { passive: true });
     window.addEventListener("pointercancel", handlePointerRelease, { passive: true });
-    // 按住满 1 秒才起拖，中间这段时间足够移动端弹出自己的长按菜单（选中/复制），
+    // 按住满 600ms 才起拖，中间这段时间足够移动端弹出自己的长按菜单（选中/复制），
     // 一旦弹出，本次长按就废了，所以在待触发阶段就要把它按回去。
     const blockContextMenu = (event: Event) => event.preventDefault();
     window.addEventListener("scroll", cancelPending, true);
@@ -2118,7 +2118,7 @@ export function AdvancedDataTable<T>({
       stopAutoScroll();
       endPointerRowDrag(0, 0, false);
     };
-    // 手指已经按住 420ms 才进入拖拽，此时必须挡住页面继续滚动；
+    // 手指已经按住 600ms 才进入拖拽，此时必须挡住页面继续滚动；
     // 非 passive 的 touchmove 是唯一可靠的拦截点（触摸滚动无法用 pointer 事件取消）。
     const blockTouchScroll = (event: TouchEvent) => {
       if (event.cancelable) event.preventDefault();

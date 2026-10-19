@@ -51,7 +51,7 @@ export const STATEMENT_IMPORT_FIELD_HEADERS: Record<StatementImportField, readon
   transferCounterAccount: ["对向账户", "流向账户", "转入账户", "转出账户", "对方账户", "对手账户", "对方户名", "toAccount", "Counter Account", "相手口座"],
   remark: ["备注", "remark", "摘要", "说明", "交易摘要", "交易说明", "用途", "Remark", "Note", "備考", "メモ"],
   category: ["分类", "category", "Category", "カテゴリ"],
-  institution: ["收支机构", "机构", "商户", "商户名称", "交易商户", "收款方", "付款方", "交易对方", "institution", "merchant", "Counterparty", "Institution", "加盟店", "機関"],
+  institution: ["收支机构", "机构", "商户", "商户名称", "交易商户", "收款方", "付款方", "交易对方", "对手信息", "交易对手", "对方名称", "institution", "merchant", "Counterparty", "Institution", "加盟店", "機関"],
   tags: ["标签", "tags", "Tags", "タグ"],
   majorType: ["收支大类", "大类", "收支", "方向", "majorType", "Activity Type", "収支区分"],
   explicitType: ["类型", "原始类型", "交易类型", "业务类型", "收支类型", "借贷标志", "借贷方向", "type", "Type", "種類"],

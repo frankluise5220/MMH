@@ -1001,7 +1001,8 @@ export function DetailViewClient({
             confirmDate: e.fundConfirmDate?.slice(0, 10),
             type: e.type,
             amount: editAmount,
-            note: entryFundProductType === "wealth" ? e.businessNote ?? "" : e.note ?? "",
+            // 回填基金侧自己的备注（用户备注或「资金来源 X」）；资金侧备注是「基金买入 代码 名称」，不能拿来当基金备注。
+            note: entryFundProductType === "wealth" ? e.businessNote ?? "" : e.businessNote ?? e.note ?? "",
             fundCode: e.fundCode ?? undefined,
             fundName: e.fundName ?? undefined,
             wealthProductId: e.wealthProductId ?? null,

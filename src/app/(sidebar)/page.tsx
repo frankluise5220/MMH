@@ -2111,6 +2111,8 @@ export default async function Home({
     toAccountKind: linkedFundForDisplay ? (linkedFundIsCashIn ? linkedFundForDisplay.CashAccount?.kind ?? e.toAccount?.kind ?? null : linkedFundForDisplay.Account?.kind ?? null) : e.toAccount?.kind ?? null,
     toAccountLiabilityDirection: e.toAccount?.liabilityDirection ?? null,
     toAccountIsSettlementAccount: isSettlementLiabilityAccountId(linkedFundForDisplay ? (linkedFundIsCashIn ? linkedFundCashAccountId : linkedFundAccountId) : e.toAccountId),
+    // 资金侧备注以这条流水自己的备注为准（用户备注或「基金买入 代码 名称」）；
+    // 业务侧备注（基金「资金来源 X」）只是兜底，并单独放在 businessNote 里给编辑弹窗用。
     note: linkedWealth
       ? buildWealthCashFlowNote({
           action: linkedWealth.action,
@@ -2118,10 +2120,8 @@ export default async function Home({
           units: linkedWealth.units == null ? null : toNumber(linkedWealth.units),
           userNote: linkedWealth.note,
         })
-      : linkedFund
-        ? linkedFund.note ?? e.note
-      : e.note,
-    businessNote: linkedWealth?.note ?? null,
+      : e.note ?? linkedFund?.note ?? null,
+    businessNote: linkedWealth?.note ?? linkedFund?.note ?? null,
     toNote: e.toNote,
     fundSubtype: linkedWealth?.action ?? linkedFundForDisplay?.fundSubtype ?? e.fundSubtype,
     fundCode: linkedWealth ? null : linkedFund?.fundCode ?? e.fundCode,

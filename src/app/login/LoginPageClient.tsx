@@ -2142,6 +2142,15 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                                   <option key={user.id} value={user.id}>{getMmhUserLabel(user)}</option>
                                 ))}
                               </select>
+                            ) : createAuthMode === "mmh" ? (
+                              /* No MMH identity to verify against: the ledger this
+                                 page is filtered to holds none, so there is
+                                 nothing to pick and nothing to prove. Saying
+                                 "current account" here claimed a credential the
+                                 form cannot use. */
+                              <div className="rounded-md border border-dashed border-slate-300 bg-white px-3 py-2 text-xs text-slate-500">
+                                {t("login.noMmhUsers")}
+                              </div>
                             ) : createAuthMode === "local" && selectedHouseholdUsers.length > 0 ? (
                               <select
                                 value={createExistingUserId}

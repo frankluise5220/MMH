@@ -1101,6 +1101,7 @@ async function ensureAccountId(
   _meta?: ParsedItemMeta,
   options: ImportOptions = { autoCreateAccounts: true },
   counterKindHint?: ImportCounterAccountKind,
+  allowBarePersonSettlement?: boolean,
 ) {
   const name = normalizeAccountCell(accountName);
   if (!name) return null;
@@ -1108,14 +1109,14 @@ async function ensureAccountId(
   if (cache) {
     // Meta fields influence account matching (card last-4, bank, owner), so
     // different metas resolve independently instead of sharing one cached id.
-    const memoKey = `${name}|${_meta ? JSON.stringify(_meta) : ""}|${counterKindHint ?? ""}`;
+    const memoKey = `${name}|${_meta ? JSON.stringify(_meta) : ""}|${counterKindHint ?? ""}|${allowBarePersonSettlement ? 1 : 0}`;
     const cached = cache.resolvedAccountIdByName.get(memoKey);
     if (cached != null) return cached;
-    const resolved = await ensureAccountIdUncached(tx, householdId, name, _meta, options, counterKindHint);
+    const resolved = await ensureAccountIdUncached(tx, householdId, name, _meta, options, counterKindHint, allowBarePersonSettlement);
     if (resolved) cache.resolvedAccountIdByName.set(memoKey, resolved);
     return resolved;
   }
-  return ensureAccountIdUncached(tx, householdId, name, _meta, options, counterKindHint);
+  return ensureAccountIdUncached(tx, householdId, name, _meta, options, counterKindHint, allowBarePersonSettlement);
 }
 
 async function ensureAccountIdUncached(
@@ -1125,6 +1126,7 @@ async function ensureAccountIdUncached(
   _meta?: ParsedItemMeta,
   options: ImportOptions = { autoCreateAccounts: true },
   counterKindHint?: ImportCounterAccountKind,
+  allowBarePersonSettlement?: boolean,
 ) {
   const name = normalizeAccountCell(accountName);
   if (!name) return null;
@@ -1183,6 +1185,8 @@ async function ensureAccountIdUncached(
       createCounterparty: true,
       createAccount: true,
       createdAccounts: options.createdAccounts,
+      // 转账两侧的对向账户常直接写人名（「张珺」「付斌」），勾选后建往来款账户。
+      allowBarePersonName: allowBarePersonSettlement === true,
     });
     if (loosePersonAccountId) return loosePersonAccountId;
   }
@@ -1327,8 +1331,8 @@ async function createTransactionFromItem(tx: Db, householdId: string, item: Pars
     const toKindHint = item.transferDirection === "out" ? counterKindHint ?? undefined : undefined;
 
     const [fromAccountId, toAccountId] = await Promise.all([
-      ensureAccountId(tx, householdId, fromAccountName, undefined, transferAccountOptions, fromKindHint),
-      ensureAccountId(tx, householdId, toAccountName, undefined, transferAccountOptions, toKindHint),
+      ensureAccountId(tx, householdId, fromAccountName, undefined, transferAccountOptions, fromKindHint, true),
+      ensureAccountId(tx, householdId, toAccountName, undefined, transferAccountOptions, toKindHint, true),
     ]);
     if (item.type === "transfer" && (!fromAccountId || !toAccountId)) {
       throw new Error("转账账户未匹配，不能导入");

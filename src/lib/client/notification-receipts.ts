@@ -44,6 +44,12 @@ export type StoredReceipt = {
   skippedGap: number;
   skippedTotal: number;
   rounds: number;
+  /**
+   * NAV values this run actually obtained (auto-execute backfill + the pending
+   * refresh that follows it). Old receipts predate the field; `readReceipts`
+   * normalizes it to 0 so the panel never renders "获取净值 undefined 条".
+   */
+  navFilled: number;
 };
 
 function isReceipt(value: unknown): value is StoredReceipt {
@@ -65,7 +71,12 @@ export function readReceipts(): StoredReceipt[] {
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
     // 滤掉不该报的那种（含旧版本写下的），顺带在下一次写入时把它们从存储里清掉。
-    return parsed.filter(isReceipt).filter(isReportableExecution).slice(0, MAX_RECEIPTS);
+    // 老收据没有 navFilled，补 0，避免面板出现 undefined。
+    return parsed
+      .filter(isReceipt)
+      .filter(isReportableExecution)
+      .map((row) => ({ ...row, navFilled: num(row.navFilled) }))
+      .slice(0, MAX_RECEIPTS);
   } catch {
     return [];
   }
@@ -86,8 +97,8 @@ function writeReceipts(receipts: StoredReceipt[]) {
  * 不能因此留 3 条收据）。没什么可报的那种（0 条，不分来源）直接不写，
  * 见 `isReportableExecution`。
  */
-export function publishExecutionReceipt(input: { source: ReceiptSource; summary: AutoExecuteSummary }) {
-  if (typeof window === "undefined") return;
+export function publishExecutionReceipt(input: { source: ReceiptSource; summary: AutoExecuteSummary }): string | null {
+  if (typeof window === "undefined") return null;
   const at = Date.now();
   const id = `${input.source}:${Math.floor(at / 60_000)}`;
   const next: StoredReceipt = {
@@ -100,9 +111,30 @@ export function publishExecutionReceipt(input: { source: ReceiptSource; summary:
     skippedGap: num(input.summary.skippedGap),
     skippedTotal: num(input.summary.skippedTotal),
     rounds: num(input.summary.rounds),
+    navFilled: num(input.summary.navFilled),
   };
-  if (!isReportableExecution(next)) return;
+  if (!isReportableExecution(next)) return null;
   writeReceipts([next, ...readReceipts().filter((row) => row.id !== id)]);
+  return id;
+}
+
+/**
+ * 给已经落档的本次执行结果补上"获取净值"条数。
+ *
+ * 为什么要分两步：定投落账（auto-execute）和待确认净值回填（refresh-pending）是两个
+ * 接口，前者完成后先落档能保证回执不会因为后者失败而丢失；后者跑完再把净值条数加回去，
+ * 面板上那条「本次执行结果」就是完整的一轮，而不是只报落账、漏掉净值。
+ */
+export function addReceiptNavFilled(id: string | null, extra: number) {
+  if (typeof window === "undefined" || !id) return;
+  const add = num(extra);
+  if (add <= 0) return;
+  const rows = readReceipts();
+  const index = rows.findIndex((row) => row.id === id);
+  if (index < 0) return;
+  const next = rows.slice();
+  next[index] = { ...next[index], navFilled: next[index].navFilled + add };
+  writeReceipts(next);
 }
 
 export function useNotificationReceipts() {

@@ -12,6 +12,7 @@ import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit
 import { revalidateAfterInvestChange } from "@/lib/server/revalidate";
 import { loadCachedStockTransactions, serializeStockTransaction } from "@/lib/server/stock-transactions";
 import { ensureStockTransactionCashFlow } from "@/lib/stock/cashFlow";
+import { buildInvestmentSourceNote, isAutoInvestmentSourceNote } from "@/lib/investment-cash-note";
 import { calculateStockTransactionFeesByDate } from "@/lib/stock/feeRule";
 import { recalcStockPositions } from "@/lib/stock/recalcPosition";
 import { inferStockMarketFromCode, normalizeStockCode, normalizeStockMarket, normalizeUsableStockName, resolveOrCreateStockSecurity } from "@/lib/stock/securities";
@@ -384,7 +385,10 @@ export async function POST(req: NextRequest) {
           otherFee: decimalString(fees.otherFee),
           externalLinkId,
           brokerTradeId,
-          note: String(body.note ?? "").trim() || null,
+          // 用户没写备注时，股票侧自动备注资金来源（与资金侧「股票买入 代码 名称」配对）。
+          note: String(body.note ?? "").trim()
+            || (action === StockTransactionAction.buy && cashAccount ? buildInvestmentSourceNote(cashAccount.name) : "")
+            || null,
         },
       });
       const link = await ensureStockTransactionCashFlow(tx, {
@@ -540,6 +544,15 @@ export async function PATCH(req: NextRequest) {
         })()
       : { fee, commission, stampTax, transferFee, exchangeFee, regulatoryFee, otherFee };
 
+    // 股票侧备注：用户改过就保留；仍为空或仍是系统自动写的「资金来源 旧账户」时，
+    // 按新的资金账户重算，免得换了资金账户后备注还停在旧账户上。
+    const submittedNote = String(body.note ?? existing.note ?? "").trim();
+    const stockBusinessNote = (submittedNote && !isAutoInvestmentSourceNote(submittedNote, existing.CashAccount?.name)
+      ? submittedNote
+      : "")
+      || (action === StockTransactionAction.buy && cashAccount ? buildInvestmentSourceNote(cashAccount.name) : "")
+      || null;
+
     const updated = await prisma.$transaction(async (tx) => {
       const row = await tx.stockTransaction.update({
         where: { id },
@@ -568,7 +581,7 @@ export async function PATCH(req: NextRequest) {
           otherFee: decimalString(fees.otherFee),
           externalLinkId: String(body.externalLinkId ?? existing.externalLinkId ?? "").trim() || null,
           brokerTradeId: String(body.brokerTradeId ?? existing.brokerTradeId ?? "").trim() || null,
-          note: String(body.note ?? existing.note ?? "").trim() || null,
+          note: stockBusinessNote,
         },
       });
 

@@ -16,6 +16,7 @@ import {
   formatAccountTableLabel,
   formatAccountTableTitle,
   type AccountDisplayOption,
+  type AccountLabelField,
 } from "@/lib/account-display";
 import {
   createImportAccountMatcher,
@@ -24,6 +25,7 @@ import {
   normalizeImportAccountMatchKey,
   parseSettlementAccountName,
   parseImportAccountId,
+  parseImportBarePersonName,
   parseImportOwnedMoneyAccountCandidate,
   parseImportPersonAttributedCandidate,
   type ImportCounterAccountKind,
@@ -141,6 +143,12 @@ type StatementImportPreviewDialogProps = {
   description?: string;
   items: StatementImportPreviewItem[];
   defaultAccountName: string;
+  /** 发起导入的账户（视图已指定账户）：用它带出的所有人给同名账户消歧。 */
+  sourceAccountId?: string | null;
+  /** 导入来源直接指定的所有人（优先于账户与文件名推断）。 */
+  sourceOwnerName?: string | null;
+  /** 被解析的流水文件名：导出文件名常带「姜慧招商银行交易流水…」，可据此推断所有人。 */
+  sourceFileName?: string | null;
   busy?: boolean;
   /** 分批导入进度：宿主分批提交时传入，弹窗底部显示进度条 */
   importProgress?: { imported: number; total: number } | null;
@@ -289,6 +297,31 @@ function buildBookAccountDisplayOption(account: BookAccount, labelFields = getAc
   }, undefined, { fields: labelFields });
 }
 
+/** 「所有人」= 家庭成员 = AccountGroup；这些是占位分组，不参与所有人推断。 */
+const PLACEHOLDER_OWNER_NAMES = new Set(["未指定", "未分组", "默认", "无", "无分组"]);
+
+/**
+ * 还没匹配到台账账户时的占位显示：仍然走「账户显示格式」，用流水自带的
+ * 机构 / 所有人 / 币种兜底。之前这类行直接显示识别原文，于是账户列看起来
+ * 只有机构名，悬浮也补不出所有人。
+ */
+function buildUnmatchedAccountDisplay(
+  text: string,
+  meta: StatementImportPreviewItem["_meta"],
+  fields: AccountLabelField[],
+): AccountDisplayOption {
+  const institutionName = cleanText(meta?.institutionName);
+  const ownerName = cleanText(meta?.ownerName);
+  return buildAccountDisplayOption({
+    id: `unmatched:${text}`,
+    name: text,
+    kind: "",
+    currency: meta?.statementCurrency ?? null,
+    Institution: institutionName ? { name: institutionName, shortName: institutionName } : null,
+    AccountGroup: ownerName ? { id: "", name: ownerName } : null,
+  }, undefined, { fields });
+}
+
 function isTransferOut(item: StatementImportPreviewItem) {
   return previewTransferDirection(item) === "out";
 }
@@ -313,12 +346,20 @@ function liabilityCounterpartyNameFromAccount(value?: string | null) {
   return parseSettlementAccountName(cleanText(value) || "") ?? "";
 }
 
-function isCreatableLiabilityAccount(value: string | undefined | null, lookup: PreviewAccountLookup | null, options: PreviewCreationOptions) {
+function isCreatableLiabilityAccount(
+  value: string | undefined | null,
+  lookup: PreviewAccountLookup | null,
+  options: PreviewCreationOptions,
+  allowBarePersonName = false,
+) {
   if (!options.createLiabilityAccounts || !lookup) return false;
   const counterpartyName = liabilityCounterpartyNameFromAccount(value);
   if (counterpartyName) return true;
   // 非所有人「XX的YYY」（如财智的「付斌的招行3833」）→ 归属为往来对象 XX 的往来款账户
-  return Boolean(parseImportPersonAttributedCandidate(value, lookup.ownerNames));
+  if (parseImportPersonAttributedCandidate(value, lookup.ownerNames)) return true;
+  // 银行流水里**转账对向**常直接写人名（「张珺」），勾选后同样按往来对象建账户。
+  // 主账户不适用：服务端只在转账两侧开启这条路径。
+  return allowBarePersonName && Boolean(parseImportBarePersonName(value, lookup.ownerNames));
 }
 
 function isCreatableOwnedMoneyAccount(value: string | undefined | null, lookup: PreviewAccountLookup | null, options: PreviewCreationOptions) {
@@ -392,10 +433,11 @@ function isPreviewAccountResolvable(
   options: PreviewCreationOptions,
   meta?: StatementImportPreviewItem["_meta"],
   counterKindHint?: ImportCounterAccountKind | null,
+  allowBarePersonName = false,
 ) {
   return Boolean(
     findPreviewAccount(value, lookup, meta) ||
-    isCreatableLiabilityAccount(value, lookup, options) ||
+    isCreatableLiabilityAccount(value, lookup, options, allowBarePersonName) ||
     isCreatableOwnedMoneyAccount(value, lookup, options) ||
     // 财智活动类型提示的对向账户（信用卡还款→信用卡、网贷收回→贷款）：勾选"创建往来款账户"后由程序按类型创建
     (counterKindHint && options.createLiabilityAccounts && lookup)
@@ -449,7 +491,7 @@ export function statementImportMissingFields(
     const counterAccount = counterAccountValue(item);
     const counterKindHint = importCounterKindFromCategory(item.category);
     if (!primaryAccount || (lookup && !isPreviewAccountResolvable(primaryAccount, lookup, creationOptions, item._meta))) missing.push("account");
-    if (!counterAccount || (lookup && !isPreviewAccountResolvable(counterAccount, lookup, creationOptions, undefined, counterKindHint))) missing.push("counterAccount");
+    if (!counterAccount || (lookup && !isPreviewAccountResolvable(counterAccount, lookup, creationOptions, undefined, counterKindHint, true))) missing.push("counterAccount");
   } else {
     const primaryAccount = cleanText(item.account) || cleanText(defaultAccountName) || cleanText(item._meta?.institutionName);
     if (!primaryAccount || (lookup && !isPreviewAccountResolvable(primaryAccount, lookup, creationOptions, item._meta))) {
@@ -517,13 +559,15 @@ function missingLiabilityAccountNamesForRow(
   defaultAccountName: string,
   ownerNames: readonly string[] = [],
 ) {
-  // 往来归属候选（含非所有人「XX的YYY」）：返回将创建的账户原名。
+  // 往来归属候选（含非所有人「XX的YYY」与转账对向的纯人名）：返回将创建的账户原名。
+  const counterValue = cleanText(counterAccountValue(row.item));
   const names = missingAccountCandidateValuesForRow(row, defaultAccountName)
     .map((value) => {
       const text = cleanText(value);
       if (!text) return "";
       if (parseSettlementAccountName(text)) return text;
       if (parseImportPersonAttributedCandidate(text, ownerNames)) return text;
+      if (counterValue && text === counterValue && parseImportBarePersonName(text, ownerNames)) return text;
       return "";
     })
     .filter(Boolean);
@@ -537,6 +581,9 @@ export function StatementImportPreviewDialog({
   items,
   balanceAdjustments = [],
   defaultAccountName,
+  sourceAccountId = null,
+  sourceOwnerName = null,
+  sourceFileName = null,
   busy = false,
   importProgress = null,
   onClose,
@@ -577,10 +624,45 @@ export function StatementImportPreviewDialog({
     () => new Map(accountDisplayOptions.map((account) => [account.id, account])),
     [accountDisplayOptions],
   );
+  // 「同名不同所有人」的账户（如两个「朝朝宝」）不应该让用户逐行去选：导入来源本身
+  // 往往已经说明了所有人——发起导入的账户视图，或流水文件名（「姜慧招商银行交易流水…」）。
+  const contextOwnerName = useMemo(() => {
+    const explicit = sourceOwnerName?.trim() ?? "";
+    if (explicit) return explicit;
+    const accountOwner = sourceAccountId
+      ? bookAccounts.find((account) => account.id === sourceAccountId)?.AccountGroup?.name?.trim() ?? ""
+      : "";
+    if (accountOwner) return accountOwner;
+    const fileName = sourceFileName?.trim() ?? "";
+    if (!fileName) return "";
+    // 所有人 = 家庭成员 = 账户分组（AccountGroup）。「未指定」这类占位分组不是人，
+    // 参与文件名匹配只会误命中。
+    const owners = bookAccountGroups
+      .map((group) => group.name?.trim() ?? "")
+      .filter((name) => Boolean(name) && !PLACEHOLDER_OWNER_NAMES.has(name))
+      .sort((a, b) => b.length - a.length);
+    const ownerInFileName = owners.find((owner) => fileName.includes(owner));
+    if (ownerInFileName) return ownerInFileName;
+    // 文件名只写了账户名（「朝朝宝交易流水.xlsx」）时，用账户反推所有人；
+    // 只有该账户名在账本里唯一属于一个人时才采信，否则仍是歧义。
+    const ownersByAccountName = new Map<string, Set<string>>();
+    for (const account of activeBookAccounts) {
+      const name = account.name?.trim() ?? "";
+      const owner = account.AccountGroup?.name?.trim() ?? "";
+      if (!name || !owner || PLACEHOLDER_OWNER_NAMES.has(owner)) continue;
+      const set = ownersByAccountName.get(name) ?? new Set<string>();
+      set.add(owner);
+      ownersByAccountName.set(name, set);
+    }
+    const byAccountName = [...ownersByAccountName.entries()].sort((a, b) => b[0].length - a[0].length);
+    const hit = byAccountName.find(([name]) => fileName.includes(name));
+    if (hit && hit[1].size === 1) return [...hit[1]][0];
+    return "";
+  }, [activeBookAccounts, bookAccountGroups, bookAccounts, sourceAccountId, sourceFileName, sourceOwnerName]);
   const accountLookup = useMemo<PreviewAccountLookup | null>(
     () => {
       if (!settingsBootstrapLoaded) return null;
-      const matchAccount = createImportAccountMatcher(activeBookAccounts);
+      const matchAccount = createImportAccountMatcher(activeBookAccounts, { ownerName: contextOwnerName });
       return {
         accountById: new Map(activeBookAccounts.map((account) => [account.id, account])),
         resolveAccount: (accountName) => matchAccount(accountName).account,
@@ -596,7 +678,7 @@ export function StatementImportPreviewDialog({
         },
       };
     },
-    [bookAccountGroups, activeBookAccounts, bookCounterparties, settingsBootstrapLoaded],
+    [bookAccountGroups, activeBookAccounts, bookCounterparties, contextOwnerName, settingsBootstrapLoaded],
   );
   const accountResolveCacheRef = useRef(new Map<string, string>());
   useEffect(() => {
@@ -713,6 +795,19 @@ export function StatementImportPreviewDialog({
     return matchedId;
   }
 
+  // 同一段识别文本常在多行/多次渲染里重复出现，缓存以避免每格都重建显示对象。
+  const unmatchedDisplayCache = useMemo(() => {
+    const cache = new Map<string, AccountDisplayOption>();
+    return (text: string, meta?: StatementImportPreviewItem["_meta"]) => {
+      const key = [text, meta?.institutionName ?? "", meta?.ownerName ?? "", meta?.statementCurrency ?? ""].join("\u001f");
+      const cached = cache.get(key);
+      if (cached) return cached;
+      const display = buildUnmatchedAccountDisplay(text, meta, accountLabelFields);
+      cache.set(key, display);
+      return display;
+    };
+  }, [accountLabelFields]);
+
   function previewAccountSelectValue(value: string | undefined, meta?: StatementImportPreviewItem["_meta"]) {
     const text = cleanText(value);
     if (!text) return "";
@@ -742,8 +837,7 @@ export function StatementImportPreviewDialog({
     if (!text) return "";
     const matchedId = findPreviewAccountId(text, meta);
     const display = matchedId ? accountDisplayById.get(matchedId) : undefined;
-    if (display) return formatAccountTableLabel(display, text, accountLabelFields);
-    return text;
+    return formatAccountTableLabel(display ?? unmatchedDisplayCache(text, meta), text, accountLabelFields);
   }
 
   function previewAccountDisplayTitle(value: string | undefined, meta?: StatementImportPreviewItem["_meta"]) {
@@ -751,8 +845,7 @@ export function StatementImportPreviewDialog({
     if (!text) return t("statementImportPreview.doubleClickEdit", { field: t("batchImport.field.account") });
     const matchedId = findPreviewAccountId(text, meta);
     const display = matchedId ? accountDisplayById.get(matchedId) : undefined;
-    if (display) return formatAccountTableTitle(display, text, accountLabelFields);
-    return text;
+    return formatAccountTableTitle(display ?? unmatchedDisplayCache(text, meta), text, accountLabelFields);
   }
 
   function previewCategorySelectValue(categoryName: string | undefined, txType: StatementImportPreviewItem["type"]) {
@@ -833,14 +926,14 @@ export function StatementImportPreviewDialog({
     if (!createLiabilityAccounts || !accountLookup) return [];
     const accountValues = row.item.type === "transfer"
       ? [
-          { value: primaryAccountValue(row.item, defaultAccountName), meta: row.item._meta },
-          { value: counterAccountValue(row.item), meta: undefined },
+          { value: primaryAccountValue(row.item, defaultAccountName), meta: row.item._meta, allowBarePersonName: false },
+          { value: counterAccountValue(row.item), meta: undefined, allowBarePersonName: true },
         ]
-      : [{ value: primaryAccountValue(row.item, defaultAccountName), meta: row.item._meta }];
+      : [{ value: primaryAccountValue(row.item, defaultAccountName), meta: row.item._meta, allowBarePersonName: false }];
     // 保留原名口径：标签直接展示将创建的账户原名（类型=往来款）。
     const names = accountValues
       .filter(({ value, meta }) => cleanText(value) && !findPreviewAccount(value, accountLookup, meta))
-      .filter(({ value }) => isCreatableLiabilityAccount(value, accountLookup, { createLiabilityAccounts: true, forceCreateOwnedMoneyAccounts: false }))
+      .filter(({ value, allowBarePersonName }) => isCreatableLiabilityAccount(value, accountLookup, { createLiabilityAccounts: true, forceCreateOwnedMoneyAccounts: false }, allowBarePersonName))
       .map(({ value }) => cleanText(value))
       .filter(Boolean);
     return Array.from(new Set(names));

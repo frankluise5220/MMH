@@ -267,7 +267,10 @@ export type AccountTableDisplaySource = {
   tableHoverTitle?: string | null;
   title?: string | null;
   numberMasked?: string | null;
+  kind?: string | null;
+  currency?: string | null;
   Institution?: { name?: string | null; shortName?: string | null } | null;
+  AccountGroup?: { name?: string | null } | null;
 };
 
 function firstTrimmedText(parts: Array<string | null | undefined>) {
@@ -391,6 +394,9 @@ export function formatAccountSelectorLabel(input: {
   accountName: string;
   institution?: { name: string | null; shortName?: string | null } | null;
   numberMasked?: string | null;
+  /** 表格回退路径用它补齐所有人（下拉仍按自己的规则不传）。 */
+  ownerName?: string | null;
+  kindLabelText?: string | null;
   currency?: string | null;
   baseCurrency?: string | null;
   fields?: AccountLabelField[] | null;
@@ -401,6 +407,8 @@ export function formatAccountSelectorLabel(input: {
     accountName: input.accountName,
     institution: input.institution,
     numberMasked: input.numberMasked,
+    ownerName: input.ownerName,
+    kindLabelText: input.kindLabelText,
     currency: input.currency,
     baseCurrency: input.baseCurrency,
     fields: input.fields,
@@ -440,6 +448,12 @@ export function formatAccountTableLabel(
           }
         : null,
       numberMasked: account.numberMasked,
+      // 回退路径也要遵循配置：以前这里只传机构+名称，所有人/类型/币种全丢。
+      ownerName: account.AccountGroup?.name?.trim() ?? "",
+      kindLabelText: account.kind
+        ? kindLabel(normalizeUserFacingAccountKind({ kind: account.kind }))
+        : "",
+      currency: account.currency ?? null,
       fields,
     });
   }

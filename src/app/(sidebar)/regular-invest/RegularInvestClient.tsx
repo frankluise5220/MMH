@@ -1051,6 +1051,7 @@ export function RegularInvestClient({
         skippedPaused: 0,
         skippedGap: 0,
         skippedTotal: 0,
+        navFilled: 0,
       };
       for (let index = 0; index < activePlans.length; index += 1) {
         const plan = activePlans[index];
@@ -1079,6 +1080,7 @@ export function RegularInvestClient({
               receiptTotals.skippedPaused += summary.skippedPaused;
               receiptTotals.skippedGap += summary.skippedGap;
               receiptTotals.skippedTotal += summary.skippedTotal;
+              receiptTotals.navFilled += summary.navFilled;
             }
             updatePlanFromExecutionResult(plan.id, data);
             messages.push(t("regularInvest.client.execute.message", { name: getPlanDisplayName(plan), message: data.message || t("regularInvest.client.execute.done") }));

@@ -1155,6 +1155,8 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
   const [status, setStatus] = useState("");
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewItems, setPreviewItems] = useState<StatementImportPreviewItem[]>([]);
+  // 流水文件名常带所有人（「姜慧招商银行交易流水…」），预览里用它给同名账户消歧。
+  const [previewSourceFileName, setPreviewSourceFileName] = useState("");
   // 分批导入进度（数据量大时拆成多批顺序提交，避免单请求超时/卡死）
   const [importProgress, setImportProgress] = useState<{ imported: number; total: number } | null>(null);
   const [fundPreviewFile, setFundPreviewFile] = useState<File | null>(null);
@@ -1239,6 +1241,7 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
     });
     await waitForBrowserPaint();
     try {
+      setPreviewSourceFileName(file.name);
       const detectedKind = await detectImportFileKind(file, t);
 
       if (detectedKind === "stock") {
@@ -1604,6 +1607,8 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
         items={previewItems}
         balanceAdjustments={balanceAdjustments}
         defaultAccountName={statementDefaultAccountName(props)}
+        sourceAccountId={props.kind === "normal" ? props.accountId : null}
+        sourceFileName={previewSourceFileName}
         busy={busy}
         importProgress={importProgress}
         onClose={() => setPreviewOpen(false)}

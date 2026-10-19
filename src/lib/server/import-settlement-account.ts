@@ -1,5 +1,5 @@
 import { AccountKind, type Prisma } from "@prisma/client";
-import { parseSettlementAccountName, parseImportPersonAttributedCandidate } from "@/lib/account-import-match";
+import { parseSettlementAccountName, parseImportBarePersonName, parseImportPersonAttributedCandidate } from "@/lib/account-import-match";
 import { assertCounterpartyDisplayNamesUnique } from "@/lib/server/counterparty-name-unique";
 import { ensureInstitutionForCounterparty } from "@/lib/server/counterparty-sync";
 
@@ -21,6 +21,8 @@ type LiabilityResolveOptions = {
   createCounterparty?: boolean;
   createAccount?: boolean;
   createdAccounts?: CreatedImportAccount[];
+  /** 允许把「张珺」这类纯人名对向账户建成往来款账户（转账两侧才开启）。 */
+  allowBarePersonName?: boolean;
 };
 
 /**
@@ -163,10 +165,17 @@ export async function resolveSettlementAccountByLoosePersonName(
   accountName: string,
   options: LiabilityResolveOptions = {},
 ): Promise<string | null> {
-  const cacheKey = accountName;
+  // 缓存键要区分是否允许纯人名：同一个「付斌」在未勾选时算出 null，
+  // 若共用键会把 null 结果留给后续勾选了「创建往来款账户」的导入（模块级缓存跨请求存活）。
+  const cacheKey = options.allowBarePersonName ? `${accountName}\u001fperson` : accountName;
   const cached = liabilityResolveCacheGet(householdId, cacheKey);
   if (cached !== undefined) return cached.accountId;
-  const candidate = parseImportPersonAttributedCandidate(accountName, await loadHouseholdOwnerNames(tx, householdId));
+  const ownerNames = await loadHouseholdOwnerNames(tx, householdId);
+  const attributed = parseImportPersonAttributedCandidate(accountName, ownerNames);
+  const barePersonName = attributed || !options.allowBarePersonName
+    ? null
+    : parseImportBarePersonName(accountName, ownerNames);
+  const candidate = attributed ?? (barePersonName ? { personName: barePersonName, restName: "" } : null);
   if (!candidate) return null;
   const resolved = await resolveOrCreateSettlementForCounterparty(tx, householdId, cacheKey, candidate.personName, accountName.trim(), options);
   if (resolved) return resolved;

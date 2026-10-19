@@ -114,6 +114,32 @@ export function parseImportPersonAttributedCandidate(
   if (isOwner) return null;
   return { personName, restName };
 }
+/**
+ * 纯人名的对向账户：招行/工行流水里转账对手就直接写「张珺」「付斌」。
+ * 勾选「创建往来款账户」时，这类名字应按往来对象建结算账户（原名保留）。
+ *
+ * 只接受 2-4 个汉字的裸姓名，并排除机构/商户/动作词，避免把「美团」「利息」
+ * 这类短词建成往来款账户。所有人（owner）不在此列——他们走「所有人账户」。
+ */
+const BARE_PERSON_NAME_RE = /^[\u4e00-\u9fa5]{2,4}$/;
+const BARE_PERSON_NON_NAME_RE = /银行|信用社|农商|农信|信用卡|借记卡|储蓄卡|支付|钱包|商城|超市|商店|公司|集团|基金|证券|保险|营业部|支行|分行|现金|利息|手续费|服务费|管理费|工资|奖金|报销|退款|转账|汇款|还款|消费|购物|餐饮|酒店|旅行|医疗|教育|缴费|充值|提现|美团|饿了么|淘宝|天猫|京东|拼多多|抖音|快手|滴滴|携程|星巴克|肯德基|麦当劳/;
+
+export function parseImportBarePersonName(
+  value: string | undefined | null,
+  ownerNames: readonly string[],
+): string | null {
+  const raw = stripImportAccountScheduleSuffix(String(value ?? "").trim());
+  if (!BARE_PERSON_NAME_RE.test(raw)) return null;
+  if (BARE_PERSON_NON_NAME_RE.test(raw)) return null;
+  if (isImportBankLikeName(raw)) return null;
+  const key = normalizeImportAccountMatchKey(raw);
+  if (!key) return null;
+  const isOwner = ownerNames.some(
+    (name) => normalizeImportAccountMatchKey(String(name ?? "").trim()) === key,
+  );
+  return isOwner ? null : raw;
+}
+
 export function parseImportAccountId(value?: string) {
   const text = String(value ?? "").trim();
   return text.startsWith(IMPORT_ACCOUNT_ID_PREFIX) ? text.slice(IMPORT_ACCOUNT_ID_PREFIX.length).trim() : "";
@@ -273,6 +299,32 @@ function inferOwnedInvestmentProductType(value: string): ImportOwnedMoneyAccount
   if (/\u57fa\u91d1/.test(value)) return "fund";
   return null;
 }
+/**
+ * 取出「纯卡号/尾号」的账户文本，返回其中的数字串（没有则返回空串）。
+ * 银行流水导出常用「所有人 · 卡号/尾号」表示一个账户（如「墨斗鱼·2445」）：
+ * 尾号位数并不固定（3 位、4 位、6 位、8 位都见过，也可能写成完整卡号），
+ * 关键是所有人后面跟着一串数字，前缀词（尾号/卡号/账号/账户/卡）可有可无。
+ */
+function bareAccountTailDigits(value: string) {
+  const text = String(value ?? "")
+    .trim()
+    .replace(/[\s:：·•\-—_\u2014\u2013/／()[\]（）【】]/g, "")
+    .replace(/^(?:卡尾号|尾号|卡号|账号|账户|卡)/, "");
+  return /^\d{2,20}$/.test(text) ? text : "";
+}
+
+/**
+ * 账户部分只由数字/分隔符/掩码星号组成时（「****2222」「6222 0000 1111 2222」），
+ * 返回其中的数字串；含字母或汉字则返回空串（那种情况保留原名当账户名）。
+ */
+function cardNumberDigitsOnly(value: string) {
+  const text = String(value ?? "").trim();
+  if (!/\d/.test(text)) return "";
+  if (/[A-Za-z\u4e00-\u9fa5]/.test(text)) return "";
+  const digits = text.replace(/\D/g, "");
+  return /^\d{2,20}$/.test(digits) ? digits : "";
+}
+
 export function parseImportOwnedMoneyAccountCandidate(
   value: string | undefined | null,
   ownerNames: string[],
@@ -303,16 +355,30 @@ export function parseImportOwnedMoneyAccountCandidate(
   // "光大卡"这类表述：剥掉机构名后只剩"卡"字——银行名+卡的借记卡说法（无尾号、无类型词）
   const withoutInstitutionProbe = stripLeadingInstitutionName(accountPart, bankNames);
   const bareCardSuffix = withoutInstitutionProbe === "\u5361";
+  // 「所有人 + 一串数字」：没有机构名、没有类型词，但账户部分就是一串卡号/尾号
+  //（位数不限，3 位、6 位、完整卡号都算），按借记卡建账户。
+  const bareTailDigits = bareAccountTailDigits(accountPart);
   const kind = inferredKind === "cash" || inferredKind === "ewallet" || inferredKind === "bank_debit"
     ? inferredKind
     : inferredKind === "investment" && investProductType
       ? "investment"
       : hasBankHint && (last4 || bareCardSuffix)
         ? "bank_debit"
-        : null;
+        : bareTailDigits
+          ? "bank_debit"
+          : null;
   if (kind !== "bank_debit" && kind !== "cash" && kind !== "ewallet" && kind !== "investment") return null;
 
   const withoutInstitution = withoutInstitutionProbe;
+  // 纯尾号写法（「2445」「尾号2445」「卡号:6222 0000 1111 2222」）：
+  // 账户名收敛为这串数字；位数过长时（如完整卡号）只取末 4 位当名字，
+  // 完整数字仍写入 numberMasked，台账里不会出现一长串数字当账户名。
+  const bareTailOnly = !hasBankHint && Boolean(bareTailDigits);
+  const tailNameFor = (digits: string) => (digits.length > 8 ? digits.slice(-4) : digits);
+  const bareTailName = tailNameFor(bareTailDigits);
+  // 带机构名的卡号写法（「招商银行 6222 0000 1111 2222」「招行****2222」）：
+  // 剥掉机构名后只剩卡号，账户名同样收敛为尾号，完整数字进 numberMasked。
+  const withoutInstitutionDigits = cardNumberDigitsOnly(withoutInstitution);
   const fallbackName = kind === "bank_debit"
     ? "\u501f\u8bb0\u5361"
     : kind === "ewallet"
@@ -328,7 +394,13 @@ export function parseImportOwnedMoneyAccountCandidate(
         : "\u73b0\u91d1";
   // "光大卡"这类银行+卡原名整体保留为账户名（与建账保留财智原名的口径一致），
   // 下次导入同文本才能精确复用已建账户；剥离后只剩"卡"不能当账户名。
-  const accountName = bareCardSuffix ? accountPart : (withoutInstitution || fallbackName);
+  const accountName = bareCardSuffix
+    ? accountPart
+    : bareTailOnly
+      ? bareTailName
+      : withoutInstitutionDigits
+        ? tailNameFor(withoutInstitutionDigits)
+        : (withoutInstitution || fallbackName);
   return {
     originalName: raw,
     accountName,
@@ -337,7 +409,9 @@ export function parseImportOwnedMoneyAccountCandidate(
     investProductType: kind === "investment" ? investProductType ?? "fund" : undefined,
     institutionName: kind === "bank_debit" || kind === "ewallet" || kind === "investment" ? bankNames[0] : undefined,
     institutionDisplayName: kind === "bank_debit" || kind === "ewallet" || kind === "investment" ? bankDisplayName : undefined,
-    numberMasked: kind === "bank_debit" ? last4 || undefined : undefined,
+    numberMasked: kind === "bank_debit"
+      ? bareTailDigits || withoutInstitutionDigits || last4 || undefined
+      : undefined,
   };
 }
 
@@ -522,7 +596,20 @@ export function resolveImportAccountIdFromList(
   return resolveImportAccountFromList(accountName, accounts)?.id ?? null;
 }
 
-export function createImportAccountMatcher<T extends ImportAccountMatchSource>(accounts: T[]) {
+export type ImportAccountMatchContext = {
+  /**
+   * 导入来源已经确定的所有人：发起导入的账户视图（该账户的 AccountGroup），
+   * 或流水文件名里的「XX的流水」。只用来给「同名但不同所有人」的账户消歧；
+   * 文本自己写了所有人（「张珺的朝朝宝」）时以文本为准。
+   */
+  ownerName?: string | null;
+};
+
+export function createImportAccountMatcher<T extends ImportAccountMatchSource>(
+  accounts: T[],
+  context: ImportAccountMatchContext = {},
+) {
+  const contextOwnerKey = normalizeImportAccountMatchKey(context.ownerName ?? "");
   const indexed = accounts.map((account) => ({
     account,
     last4: accountLast4(account),
@@ -536,6 +623,13 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(a
       ...expandBankName(account.Institution?.shortName ?? ""),
     ].map(normalizeImportAccountMatchKey).filter(Boolean),
   }));
+  /**
+   * 所有人名（家庭组成员）不能当作账户识别键：它只用于收窄候选。
+   * 否则输入「墨斗鱼·2445」（尾号在账本里不存在）时，宽松匹配会命中
+   * 「墨斗鱼」这个 3 字键，把该所有人名下所有无尾号账户（信用卡/借记卡…）
+   * 全列成候选，提示变成"账户中有 11 个墨斗鱼·2445 账户"。
+   */
+  const ownerOnlyKeys = new Set(indexed.flatMap((item) => item.ownerKeys).filter(Boolean));
 
   function bankKeyMatches(item: (typeof indexed)[number], targetBankKeys: string[]) {
     if (targetBankKeys.length === 0) return true;
@@ -708,7 +802,7 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(a
     return null;
   }
 
-  return (accountName: string | undefined): ImportAccountMatchResult<T> => {
+  function matchAccount(accountName: string | undefined): ImportAccountMatchResult<T> {
     const raw = String(accountName ?? "").trim();
     if (!raw) return result(null, [], { targetKind: null, targetBankNames: [] });
 
@@ -724,6 +818,8 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(a
 
     const targetKeys = buildImportAccountInputCandidates(raw).map(normalizeImportAccountMatchKey).filter(Boolean);
     if (targetKeys.length === 0) return result(null, [], { targetKind, targetBankNames });
+    /** 用户输入的原文（归一化），用于「账户名与输入完全一致」的优先判断。 */
+    const inputKey = normalizeImportAccountMatchKey(raw);
 
     const last4 = extractImportAccountLast4(raw);
 
@@ -731,6 +827,29 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(a
       const exactMatches = indexed.filter((item) => item.keys.includes(targetKey));
       const compatibleExactMatches = exactMatches.filter((item) => hasCompatibleLast4(item, last4));
       if (compatibleExactMatches.length > 0) {
+        // 「账户名就是用户输入的文本」优先于「只有机构名/别名撞上」。
+        // 例子：账本里有「招商银行」(借记卡) 和「招商银行·朝朝宝」(投资)，
+        // 输入「招商银行」时只有前者是账户名，不该因为它同时也命中了
+        // 后者的机构别名就变成二选一。
+        let sameName = compatibleExactMatches.filter(
+          (item) => normalizeImportAccountMatchKey(item.account.name) === inputKey,
+        );
+        if (sameName.length > 1) {
+          const ownerFilterKeys = targetOwnerKeys.length > 0
+            ? targetOwnerKeys
+            : contextOwnerKey
+              ? [contextOwnerKey]
+              : [];
+          if (ownerFilterKeys.length > 0) {
+            const sameOwner = sameName.filter((item) =>
+              ownerFilterKeys.some((ownerKey) => item.ownerKeys.includes(ownerKey)),
+            );
+            if (sameOwner.length > 0) sameName = sameOwner;
+          }
+        }
+        if (sameName.length === 1) {
+          return result(sameName[0].account, [], { targetKind, targetBankNames });
+        }
         const narrowed = pickUnique(compatibleExactMatches, { last4, targetKind, targetBankKeys, targetOwnerKeys });
         if (narrowed) return result(narrowed, [], { targetKind, targetBankNames });
         if (
@@ -818,9 +937,16 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(a
     }
 
     for (const targetKey of targetKeys) {
+      // 纯所有人名两边都不参与"互相包含"匹配：它只能收窄，不能识别账户。
+      if (ownerOnlyKeys.has(targetKey)) continue;
       const partialMatches = indexed.filter((item) =>
-        item.keys.some((key) => key.length >= 3 && (targetKey.includes(key) || key.includes(targetKey))),
+        item.keys.some((key) =>
+          key.length >= 3 &&
+          !ownerOnlyKeys.has(key) &&
+          (targetKey.includes(key) || key.includes(targetKey)),
+        ),
       );
+
       const compatiblePartialMatches = partialMatches.filter((item) => {
         if (!hasCompatibleLast4(item, last4)) return false;
         if (targetKind && item.account.kind && item.account.kind !== targetKind) return false;
@@ -839,6 +965,20 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(a
     }
 
     return result(null, [], { targetKind, targetBankNames });
+  }
+
+  return (accountName: string | undefined): ImportAccountMatchResult<T> => {
+    const matched = matchAccount(accountName);
+    if (matched.account || !contextOwnerKey || matched.ambiguousAccounts.length < 2) return matched;
+    // 文本自己写了所有人时以文本为准（它已经在匹配阶段被用作收窄条件）。
+    if (inferTargetOwnerKeys(String(accountName ?? "")).length > 0) return matched;
+    const sameOwner = matched.ambiguousAccounts.filter((account) =>
+      accountOwnerKeys(account).includes(contextOwnerKey),
+    );
+    if (sameOwner.length === 0) return matched;
+    if (sameOwner.length === 1) return { ...matched, account: sameOwner[0], ambiguousAccounts: [] };
+    // 同一所有人下仍有多个：只保留这些候选，提示里不再混入别人的账户。
+    return { ...matched, ambiguousAccounts: sameOwner };
   };
 }
 
