@@ -434,6 +434,9 @@ export function TransactionFormModal({
   // edited (or was picked explicitly by the user). The auto-default effect
   // must not substitute the counterparty's first settlement account for it.
   const advanceAccountPinnedRef = useRef(false);
+  // 「对方账户」视角编辑转账：备注框里看到的是第二备注，保存时也只写第二备注，
+  // 第一备注保持原值（用户明确要求：默认一个备注，只有在这一侧编辑才分开存）。
+  const editNoteScopeRef = useRef<"" | "toNote">("");
   const [fromAccountIdEdited, setFromAccountIdEdited] = useState(false);
   const [categoryList, setCategoryList] = useState(expenseCategories);
   const [editCategoryFallback, setEditCategoryFallback] = useState<CategoryOption | null>(null);
@@ -1466,6 +1469,7 @@ export function TransactionFormModal({
     setEditEntryHasFundDetail(false);
     setEditOriginalTransferAccounts(null);
     editOriginalRef.current = null;
+    editNoteScopeRef.current = "";
     if (txType === "advance") {
       setAdvanceAccountId((current) => (advanceAccountOptions.some((option) => option.id === current) ? current : ""));
       setNote("");
@@ -1691,6 +1695,8 @@ export function TransactionFormModal({
         amount: number;
         note: string;
         toNote?: string;
+        /** "toNote" 表示当前在转账的对方（转入）账户里编辑，备注只写第二备注。 */
+        noteTarget?: "" | "toNote";
         accountId?: string;
         accountLabel?: string;
         categoryId?: string;
@@ -1728,6 +1734,7 @@ export function TransactionFormModal({
       setEditEntryId(detail.entryId);
       setEditEntryOriginalType(detail.type);
       setEditEntryHasFundDetail(detail.hasFundDetail ?? false);
+      editNoteScopeRef.current = detail.type === "transfer" && detail.noteTarget === "toNote" ? "toNote" : "";
       editOriginalRef.current = {
         type: detail.type,
         amountStored: Number(detail.amount),
@@ -1973,7 +1980,11 @@ export function TransactionFormModal({
         formData.set("date", date);
         if (txType === "expense" || txType === "income" || txType === "transfer") formData.set("postedAt", postedAt);
         formData.set("amount", String(dialogAmountToStoredAmount(txType, amount)));
-        formData.set("note", note);
+        // 默认一个备注：note 与 toNote 同值。
+        // 例外——在转账的对方账户里编辑时，备注只写第二备注，第一备注由服务端保留原值。
+        const toNoteOnly = txType === "transfer" && editNoteScopeRef.current === "toNote";
+        formData.set("noteScope", toNoteOnly ? "toNote" : "");
+        formData.set("note", toNoteOnly ? "" : note);
         formData.set("toNote", txType === "transfer" ? note : "");
         formData.set("entryId", editEntryId);
         formData.set("keepFundDetail", "true");

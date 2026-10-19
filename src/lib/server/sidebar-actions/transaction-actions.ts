@@ -3129,6 +3129,8 @@ export async function updateTransactionFromDialog(formData: FormData) {
   const amountAbs = Math.abs(amountRaw);
   const note = String(formData.get("note") ?? "").trim();
   const toNote = String(formData.get("toNote") ?? "").trim();
+  // 在「对方账户」里编辑转账时，备注只写第二备注（toNote），第一备注保持原值。
+  const noteScope = String(formData.get("noteScope") ?? "").trim();
   const counterpartyInstitutionId = String(formData.get("counterpartyInstitutionId") ?? "").trim();
   const tagIdsRaw = String(formData.get("tagIds") ?? "[]");
   const tagIds: string[] = JSON.parse(tagIdsRaw).filter((id: string) => typeof id === "string" && id.length > 0);
@@ -3266,8 +3268,9 @@ export async function updateTransactionFromDialog(formData: FormData) {
             type: TransactionType.transfer,
             counterpartyInstitutionId: counterpartyInstitution?.id ?? null,
             counterpartyInstitutionName: counterpartyInstitution?.name ?? null,
-            note: note || null,
-            toNote: (toNote || note) || null,
+            // 默认一个备注两端口径一致；只有在对方账户里改备注时才落到 toNote，第一备注原样保留。
+            note: noteScope === "toNote" ? (entry.note ?? null) : (note || null),
+            toNote: noteScope === "toNote" ? (note || null) : ((toNote || note) || null),
             currency: transferCurrency,
             source: liabilityMode ? `liability_${liabilityMode}` : transferAccountsUnchanged && entry.source ? entry.source : "manual",
             principalAmount: liabilityMode ? amountAbs : null,

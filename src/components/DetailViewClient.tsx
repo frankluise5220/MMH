@@ -305,6 +305,10 @@ function buildBasicEntryEditPayload(entry: DetailEntry, currentAccountId?: strin
     amount: dialogAmount,
     note: displayDetailRemark(entry, currentAccountId),
     toNote: entry.toNote ?? "",
+    // 当前就在转账的对方（转入）账户里：备注框显示的是第二备注，保存也只写第二备注。
+    noteTarget: entry.type === "transfer" && currentAccountId && entry.toAccountId === currentAccountId
+      ? "toNote" as const
+      : "" as const,
     categoryId: entry.categoryId ?? undefined,
     categoryName: entry.categoryName ?? undefined,
     accountId: (isAdvanceReturn ? entry.toAccountId : entry.accountId) ?? undefined,

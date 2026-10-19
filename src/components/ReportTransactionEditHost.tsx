@@ -106,6 +106,7 @@ export function ReportTransactionEditHost({
         counterpartyInstitutionId: formValue(formData, "counterpartyInstitutionId"),
         note: formValue(formData, "note"),
         toNote: formValue(formData, "toNote"),
+        noteScope: formValue(formData, "noteScope"),
         tagIds,
       }),
     });
