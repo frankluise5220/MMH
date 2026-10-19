@@ -15,6 +15,7 @@ import { NestedAddModal } from "./EntityCreateForm";
 import { useI18n } from "@/lib/i18n";
 import { scheduledTaskTypeLabel, type LoanScheduledPlanRole, type ScheduledTaskType } from "@/lib/scheduled-task";
 import { recordRecentAccount, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
+import { APP_PREFS_EVENT, getSidebarHideInitialDataPreference } from "@/lib/client/appPreferences";
 import { REQUIRED_FIELD_CLASS } from "@/lib/client/required-field";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
 import { formatDateUtc, lastDayOfMonthUtc } from "@/lib/date-utils";
@@ -548,6 +549,14 @@ export function RegularInvestForm({
   // 新增还贷款计划时从还款表带出的「未还期次」列表（选哪一期就还哪一期）。
   const [loanScheduleRows, setLoanScheduleRows] = useState<LoanSchedulePickRow[]>([]);
   const [loanDueLoading, setLoanDueLoading] = useState(false);
+  // 新手期（首次使用向导未关闭）才显示解释性文案；老用户只看字段本身。
+  const [showGuideHints, setShowGuideHints] = useState(false);
+  useEffect(() => {
+    const sync = () => setShowGuideHints(!getSidebarHideInitialDataPreference());
+    sync();
+    window.addEventListener(APP_PREFS_EVENT, sync);
+    return () => window.removeEventListener(APP_PREFS_EVENT, sync);
+  }, []);
 
   const { t } = useI18n();
 
@@ -1531,7 +1540,8 @@ export function RegularInvestForm({
     <EntryModalShell
         open={actualOpen}
         heightKey="regularInvest"
-        width="lg"
+        // 宽度和高度一样固定：页签切换不再变宽变窄。
+        width="md"
         title={title}
         onClose={() => setActualOpen(false)}
         closeLabel={t("table.close")}
@@ -1860,31 +1870,19 @@ export function RegularInvestForm({
                     {mode !== "edit" && !loanDueLoading && loanScheduleOptions.length === 0 ? (
                       <div className="text-[11px] text-amber-600">{t("regularInvest.loanScheduleRequiredHint")}</div>
                     ) : null}
-                    <div className="flex items-center gap-2 pt-1">
-                      <span className="text-xs font-medium text-slate-600">{t("regularInvest.loanCurrentDue")}</span>
-                      <span className={`flex h-9 flex-1 items-center rounded-md border px-3 text-sm tabular-nums ${
-                        loanDueAmount != null
-                          ? "border-slate-200 bg-slate-50 text-slate-700"
-                          : "border-amber-200 bg-amber-50 text-amber-700"
-                      }`}>
-                        {loanDueAmount != null
-                          ? loanDueAmount.toFixed(2)
-                          : loanDueLoading
-                            ? t("regularInvest.loanCurrentDueLoading")
-                            : t("regularInvest.loanCurrentDueMissing")}
-                      </span>
-                    </div>
-                    <div className="text-[11px] text-slate-400">
-                      {selectedLoanScheduleRow
-                        ? t("regularInvest.loanCurrentDueHint", {
-                            period: String(selectedLoanScheduleRow.period),
-                            date: selectedLoanScheduleRow.date,
-                            amount: selectedLoanScheduleRow.payment.toFixed(2),
-                          })
-                        : mode === "edit"
-                          ? t("regularInvest.loanCurrentDueFallback", { amount: Number(formData.amount || 0).toFixed(2) })
-                          : t("regularInvest.loanCurrentDueSource")}
-                    </div>
+                    {showGuideHints ? (
+                      <div className="text-[11px] text-slate-400">
+                        {selectedLoanScheduleRow
+                          ? t("regularInvest.loanCurrentDueHint", {
+                              period: String(selectedLoanScheduleRow.period),
+                              date: selectedLoanScheduleRow.date,
+                              amount: selectedLoanScheduleRow.payment.toFixed(2),
+                            })
+                          : mode === "edit"
+                            ? t("regularInvest.loanCurrentDueFallback", { amount: Number(formData.amount || 0).toFixed(2) })
+                            : t("regularInvest.loanCurrentDueSource")}
+                      </div>
+                    ) : null}
                   </div>
                 </div>
               ) : (
@@ -1948,7 +1946,8 @@ export function RegularInvestForm({
               )}
 
               {isFundTask && (
-                <div className="grid grid-cols-[1fr_auto_1fr] gap-2 items-end">
+                // 「基金代码」只占原来的三分之一宽度（1fr : 5fr），省下的空间全部给右侧的基金名称
+                <div className="grid grid-cols-[minmax(0,1fr)_auto_minmax(0,5fr)] gap-2 items-end">
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">{t("viewImport.fundCode")}</div>
                     {mode === "edit" ? (
@@ -2030,7 +2029,28 @@ export function RegularInvestForm({
                 </>
               )}
 
-              <div className={isOneTimeInterval ? "grid grid-cols-1 gap-3" : "grid grid-cols-[minmax(0,3fr)_minmax(0,3fr)_minmax(0,1fr)] gap-3"}>
+              <div className={isOneTimeInterval
+                ? "grid grid-cols-1 gap-3"
+                : isLoanTask
+                  // 还贷款只有「本期应还 + 开始日期」两个字段，并排一行即可。
+                  ? "grid grid-cols-2 gap-3"
+                  : "grid grid-cols-[minmax(0,3fr)_minmax(0,3fr)_minmax(0,1fr)] gap-3"}>
+                {isLoanTask && (
+                  <div className="space-y-1">
+                    <div className="text-xs font-medium text-slate-600">{t("regularInvest.loanCurrentDue")}</div>
+                    <div className={`flex h-9 items-center rounded-md border px-3 text-sm tabular-nums ${
+                      loanDueAmount != null
+                        ? "border-slate-200 bg-slate-50 text-slate-700"
+                        : "border-amber-200 bg-amber-50 text-amber-700"
+                    }`}>
+                      {loanDueAmount != null
+                        ? loanDueAmount.toFixed(2)
+                        : loanDueLoading
+                          ? t("regularInvest.loanCurrentDueLoading")
+                          : t("regularInvest.loanCurrentDueMissing")}
+                    </div>
+                  </div>
+                )}
                 <div className="space-y-1">
                   <div className="text-xs font-medium text-slate-600">{t("stockFee.effectiveDateLabel")}</div>
                   <DateStepper
@@ -2070,10 +2090,10 @@ export function RegularInvestForm({
                       disabled={startDateLocked}
                       className={REQUIRED_FIELD_CLASS}
                     />
-                  {startDateLocked ? (
-                    <div className="text-[11px] text-slate-400">{t("regularInvest.startDateLockedHint")}</div>
-                  ) : isLoanTask ? (
-                    <div className="text-[11px] text-slate-400">{t("regularInvest.loanStartDateOptional")}</div>
+                  {showGuideHints && (startDateLocked || isLoanTask) ? (
+                    <div className="text-[11px] text-slate-400">
+                      {startDateLocked ? t("regularInvest.startDateLockedHint") : t("regularInvest.loanStartDateOptional")}
+                    </div>
                   ) : null}
                 </div>
                 {!isOneTimeInterval && !isLoanTask && (
@@ -2110,8 +2130,9 @@ export function RegularInvestForm({
                     isOneTimeInterval
                       ? "grid grid-cols-1 gap-3"
                     : showSecondaryExecutionDay
-                      ? "grid grid-cols-4 gap-3"
-                      : "grid grid-cols-3 gap-3"
+                      // 「周期」「间隔」只占日期组件的一半宽度，剩余空间全部让给右侧的日期组件
+                      ? "grid grid-cols-[minmax(0,0.5fr)_minmax(0,0.5fr)_minmax(0,1fr)_minmax(0,1fr)] gap-3"
+                      : "grid grid-cols-[minmax(0,0.5fr)_minmax(0,0.5fr)_minmax(0,1fr)] gap-3"
                 }>
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">{t("regularInvest.intervalUnit")}</div>
@@ -2330,9 +2351,11 @@ export function RegularInvestForm({
                         day: formData.executionDay || "-",
                       })}
                     </div>
-                    <div className="text-[11px] text-slate-400">
-                      {mode === "edit" ? t("regularInvest.loanFieldsLockedHint") : t("regularInvest.loanIntervalFromSchedule")}
-                    </div>
+                    {showGuideHints ? (
+                      <div className="text-[11px] text-slate-400">
+                        {mode === "edit" ? t("regularInvest.loanFieldsLockedHint") : t("regularInvest.loanIntervalFromSchedule")}
+                      </div>
+                    ) : null}
                   </div>
                 ) : (
                   <div className="space-y-1">
@@ -2380,12 +2403,12 @@ export function RegularInvestForm({
                           placeholder="1"
                           className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500"
                         />
-                        {loanIntervalLocked ? (
+                        {showGuideHints && loanIntervalLocked ? (
                           <div className="text-[11px] text-slate-400">{t("regularInvest.loanIntervalFromSchedule")}</div>
                         ) : null}
                       </div>
                     </div>
-                    {loanDerivedFieldsLocked ? (
+                    {showGuideHints && loanDerivedFieldsLocked ? (
                       <div className="text-[11px] text-slate-400">{t("regularInvest.loanFieldsLockedHint")}</div>
                     ) : null}
                   </div>

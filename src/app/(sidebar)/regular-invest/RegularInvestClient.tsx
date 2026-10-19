@@ -81,10 +81,11 @@ const PLAN_SOURCE_TAB_ORDER = PLAN_SOURCE_TABS.map((tab) => tab.id);
  */
 function isSystemScheduledPlan(plan: RegularInvestPlanView): boolean {
   const taskType = getPlanTaskType(plan);
-  // 贷款还款计划全部由贷款模块生成（房贷/消费贷的自动扣款和账单制都是），所以整类归「系统计划任务」；
-  // 「用户计划任务」只留用户自己建的计划（基金定投、保险、自定义任务/转账）。
-  if (taskType === "loan_repayment") return true;
+  // 以服务端下发的 isSystemTask 为准：贷款里只有「账单制（bill）」才是系统计划，
+  // 用户在计划任务页自建的「自动扣款（auto_debit）」属于用户计划。
   if (typeof plan.isSystemTask === "boolean") return plan.isSystemTask;
+  // 旧回包兜底：贷款按角色判定，存款/债券三动作整类归系统。
+  if (taskType === "loan_repayment") return plan.taskLoanPlanRole === "bill";
   return taskType === "deposit_maturity"
     || taskType === "deposit_interest_accrual"
     || taskType === "deposit_interest_payout"
@@ -1908,10 +1909,9 @@ export function RegularInvestClient({
         </>
       );
     }
-    // Auto-debit loan transfer plans are editable but system-owned: they can
-    // now be deleted as a cleanup entry — the delete flow checks whether the
-    // loan still exists and warns that the loan and its repayment schedule go
-    // away with the plan (repayment records are kept).
+    // Auto-debit loan plans are user plans (auto_debit), editable and deletable;
+    // the delete flow checks whether the loan still exists and warns that the
+    // loan and its repayment schedule go away with the plan (records are kept).
     return (
       <>
         {plan.status === "active" && (
