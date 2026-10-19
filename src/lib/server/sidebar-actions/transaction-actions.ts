@@ -3270,7 +3270,7 @@ export async function updateTransactionFromDialog(formData: FormData) {
             counterpartyInstitutionName: counterpartyInstitution?.name ?? null,
             // 默认一个备注两端口径一致；只有在对方账户里改备注时才落到 toNote，第一备注原样保留。
             note: noteScope === "toNote" ? (entry.note ?? null) : (note || null),
-            toNote: noteScope === "toNote" ? (note || null) : ((toNote || note) || null),
+            toNote: noteScope === "toNote" ? (toNote || null) : ((toNote || note) || null),
             currency: transferCurrency,
             source: liabilityMode ? `liability_${liabilityMode}` : transferAccountsUnchanged && entry.source ? entry.source : "manual",
             principalAmount: liabilityMode ? amountAbs : null,

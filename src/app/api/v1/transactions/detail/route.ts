@@ -3512,7 +3512,7 @@ export async function PUT(req: Request) {
             counterpartyInstitutionName: null,
             // 在「对方账户」里编辑转账时，备注只写第二备注，第一备注保持原值。
             note: String(body.noteScope ?? "").trim() === "toNote" ? (entry.note ?? null) : (note || null),
-            toNote: String(body.noteScope ?? "").trim() === "toNote" ? (note || null) : ((toNote || note) || null),
+            toNote: String(body.noteScope ?? "").trim() === "toNote" ? (toNote || null) : ((toNote || note) || null),
             currency: transferCurrency,
             source: liabilityMode ? `liability_${liabilityMode}` : transferAccountsUnchanged && entry.source ? entry.source : "manual",
             fundCode: null,
