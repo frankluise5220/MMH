@@ -23,9 +23,13 @@ function navItems(t: TFunc) {
   ] as const;
 }
 
+/**
+ * 手机端快捷记账。用独立的移动端事件名，避免根路由上桌面 TransactionFormModal
+ * 与移动端底部表单同时响应、叠出两个「记一笔」弹窗。
+ */
 function openQuickEntry() {
   window.dispatchEvent(
-    new CustomEvent("mmh:create-transaction:open", {
+    new CustomEvent("mmh:mobile-transaction:open", {
       detail: {
         requestId: `mobile-${Date.now()}`,
         source: "launcher",

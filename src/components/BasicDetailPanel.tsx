@@ -344,13 +344,20 @@ export function BasicDetailPanel({
   const accountScopeKey = `${accountId}:${isInvestAccount ? "invest" : "detail"}`;
   const lastAccountScopeKeyRef = useRef(accountScopeKey);
   const lastFocusEntryIdRef = useRef(focusEntryId ?? "");
-  const paginationFetchSeqRef = useRef(0);
   const lastClientPaginationKeyRef = useRef("");
   const clientPaginationEnabled = !hasDetailFilters;
+  // 「当前在看哪一页」的标识。重取结果是否采用，看它是否仍等于当前页：
+  // 之前用的是单调递增的 seq —— 任何一次重取（包括马上被 abort 的那次）都会让
+  // 之前那笔仍然有效、数据更新的响应被判成过期丢掉，表现就是「记一笔保存成功，
+  // 表格里却没有新行」。同一个 key 的响应谁先到都能用，key 变了（翻页 / 改页大小）
+  // 才丢。
+  const detailPageKey = `${accountId}|${detailAll ? "all" : String(safePage)}|${pageSize}`;
+  const detailPageKeyRef = useRef(detailPageKey);
+  detailPageKeyRef.current = detailPageKey;
 
   const reloadDetailPage = useCallback((signal?: AbortSignal) => {
     if (!clientPaginationEnabled) return;
-    const seq = ++paginationFetchSeqRef.current;
+    const requestKey = `${accountId}|${detailAll ? "all" : String(safePage)}|${pageSize}`;
     const params = new URLSearchParams({
       accountId,
       page: detailAll ? "1" : String(safePage),
@@ -366,7 +373,7 @@ export function BasicDetailPanel({
         if (!response.ok || !payload?.ok) {
           throw new Error(payload?.error ?? t("basicDetail.loadFailed"));
         }
-        if (seq !== paginationFetchSeqRef.current) return;
+        if (requestKey !== detailPageKeyRef.current) return;
         const nextEntries = Array.isArray(payload.data?.entries) ? payload.data.entries : [];
         const nextTotalCount = Number(payload.data?.totalCount);
         setLocalEntries(nextEntries);
@@ -380,7 +387,7 @@ export function BasicDetailPanel({
         console.error("Load transaction detail page failed:", error);
       })
       .finally(() => {
-        if (seq === paginationFetchSeqRef.current) {
+        if (requestKey === detailPageKeyRef.current) {
           locatingDateRef.current = false;
           setIsPageLoading(false);
         }
@@ -532,6 +539,16 @@ export function BasicDetailPanel({
 
       const deletedEntryIds = detail.deletedEntryIds ?? [];
       if (deletedEntryIds.length === 0) {
+        // 新增（「记一笔」）：客户端分页打开时这里刻意不接收 RSC 传来的新
+        // entries（否则翻页会被冲回第 1 页），而「共 N 条」计数同样来自本地
+        // 快照 —— 只有按当前页重取一次，新行和计数才会一起出现。
+        // 没有这个分支时的表现：保存成功，但表格里看不到新行、计数不动，
+        // 用户以为「记一笔失败」。
+        const isCreateEvent = detail.reason === "transaction-save" && (detail.entryIds?.length ?? 0) === 0;
+        if (isCurrentAccountEvent && clientPaginationEnabled && refreshOnGlobalEvent && isCreateEvent) {
+          reloadDetailPage();
+          return;
+        }
         // 编辑类改动：常规视图交给 DetailViewClient 按当前页重取（不再整页刷新，
         // 服务端编辑保存也不再 purge 当前路由）。下面两种情形它补不了，只能
         // 整棵刷新：① 有明细筛选——数据由 RSC 的 entries prop 持有，客户端
@@ -569,7 +586,12 @@ export function BasicDetailPanel({
 
   useEffect(() => {
     const url = new URL(window.location.href);
-    url.searchParams.set("view", "detail");
+    // 全部资金明细（scope = __all_cash__）的规范 URL 是 view=allcash：根路由在
+    // URL 既没有 accountId/account/tagId、view 又不是 allcash/liability/… 时
+    // 会 redirect("/overview")。这里若把 view 写成 detail、又补不上 accountId，
+    // 之后任何一次服务端重渲染（保存后 router.refresh、刷新页面、分享链接）都会
+    // 把用户弹回概况页——保存一笔就「跳回首页」的真正来源。
+    url.searchParams.set("view", isAllCashDetailScope(accountId) ? "allcash" : "detail");
     url.searchParams.set("pageSize", String(pageSize));
     if (detailAll) {
       url.searchParams.set("detailAll", "1");

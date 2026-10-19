@@ -4,7 +4,7 @@ import { ModalLayer } from "@/components/ModalLayer";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeftRight, X } from "lucide-react";
 import { buildGroupedAccountOptions, buildAccountDisplayOption, type AccountDisplaySource } from "@/lib/account-display";
-import { isDepositAccount, isDepositPostingCategoryAllowed, isIncomeExpensePostingOrDepositAccount, isTransferDropdownAccount } from "@/lib/account-kind-utils";
+import { isCashLedgerAccount, isDepositAccount, isDepositPostingCategoryAllowed, isIncomeExpensePostingOrDepositAccount, isTransferDropdownAccount } from "@/lib/account-kind-utils";
 import { SmartSelect } from "@/components/SmartSelect";
 import { ClearableNoteField } from "@/components/ClearableNoteField";
 import { DateStepper } from "@/components/DateStepper";
@@ -57,17 +57,43 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
     () => categories.filter((category) => category.type === draft.type),
     [categories, draft.type],
   );
-  const accountOptions = useMemo(
-    () => {
-      const source = draft.type === "transfer"
-        ? accounts.filter((account) => isTransferDropdownAccount(account))
-        // Deposit accounts are also valid posting accounts (2026-09-18);
-        // category submission validates against the allowlist.
-        : accounts.filter((account) => isIncomeExpensePostingOrDepositAccount(account));
-      return buildGroupedAccountOptions(source.map((account) => buildAccountDisplayOption(account, undefined, { fields: getAccountLabelFieldsPreference() })));
-    },
-    [accounts, draft.type],
+  // Deposit accounts are also valid posting accounts (2026-09-18);
+  // category submission validates against the allowlist.
+  const postingAccountOptions = useMemo(
+    () => buildGroupedAccountOptions(
+      accounts
+        .filter((account) => isIncomeExpensePostingOrDepositAccount(account))
+        .map((account) => buildAccountDisplayOption(account, undefined, { fields: getAccountLabelFieldsPreference() })),
+    ),
+    [accounts],
   );
+  const accountOptions = useMemo(
+    () => (draft.type === "transfer"
+      ? buildGroupedAccountOptions(
+          accounts
+            .filter((account) => isTransferDropdownAccount(account))
+            .map((account) => buildAccountDisplayOption(account, undefined, { fields: getAccountLabelFieldsPreference() })),
+        )
+      : postingAccountOptions),
+    [accounts, draft.type, postingAccountOptions],
+  );
+  /**
+   * 快捷记账的预填账户：优先当前账户（列表页 / 明细页），否则落到第一个「可记账」
+   * 账户。不能用 accounts[0] —— 传入的账户列表含汇总账户/投资账户，它们不在
+   * 下拉选项里，直接提交会被服务端拒绝（表现为「记一笔失败」）。
+   */
+  const quickEntryAccountId = useMemo(() => {
+    const selectable = postingAccountOptions.filter((option) => !option.isHeader);
+    const selectableIds = new Set(selectable.map((option) => option.id));
+    if (defaultAccountId && selectableIds.has(defaultAccountId)) return defaultAccountId;
+    // 无默认账户（全部收支记录）时优先资金账户：按名称排序的第一个可记账账户
+    // 往往是往来款，静默落到那儿会记错账。信用卡排在借记卡/现金之后。
+    const selectableAccounts = accounts.filter((account) => selectableIds.has(account.id));
+    const firstCashAccount = selectableAccounts.find(
+      (account) => isCashLedgerAccount(account) && account.kind !== "bank_credit",
+    ) ?? selectableAccounts.find((account) => isCashLedgerAccount(account));
+    return firstCashAccount?.id ?? selectable[0]?.id ?? "";
+  }, [accounts, defaultAccountId, postingAccountOptions]);
   const transferAccountOptions = useMemo(
     () => accountOptions.filter((option) => option.isHeader || option.id !== draft.accountId),
     [accountOptions, draft.accountId],
@@ -95,11 +121,11 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
   }, [open]);
 
   const openCreate = useCallback(() => {
-    setDraft({ ...EMPTY_DRAFT, accountId: defaultAccountId || accounts[0]?.id || "" });
+    setDraft({ ...EMPTY_DRAFT, accountId: quickEntryAccountId });
     setPendingAttachmentFiles([]);
     setError("");
     setOpen(true);
-  }, [accounts, defaultAccountId]);
+  }, [quickEntryAccountId]);
 
   useEffect(() => {
     const url = new URL(window.location.href);
@@ -148,10 +174,13 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
         setError(cause instanceof Error ? cause.message : t("mobileTxForm.loadFailed"));
       }
     };
-    window.addEventListener("mmh:create-transaction:open", openCreate);
+    // 手机端底部「记一笔」走独立事件：`mmh:create-transaction:open` 由桌面
+    // TransactionFormModal 处理（它还带银证转账 / 固定资产等专业模式），根路由
+    // 两套表单同时挂载时不能对同一个事件各开一个弹窗。
+    window.addEventListener("mmh:mobile-transaction:open", openCreate);
     window.addEventListener("mmh:mobile-transaction:edit", openEdit);
     return () => {
-      window.removeEventListener("mmh:create-transaction:open", openCreate);
+      window.removeEventListener("mmh:mobile-transaction:open", openCreate);
       window.removeEventListener("mmh:mobile-transaction:edit", openEdit);
     };
   }, [openCreate, t]);

@@ -6,6 +6,7 @@ import { AccountKind, CreditCardInstallmentSourceType, FundCashFlowKind, Transac
 import { institutionTypeLabel, isSettlementCounterpartyType, isInstitutionTypeOf, LOAN_DIALOG_INSTITUTION_TYPE_VALUES, kindLabel } from "@/lib/account-kinds";
 import { getServerAccountDropdownRestrictType } from "@/lib/server/account-dropdown-restrict";
 import { TransactionFormModal } from "@/components/TransactionFormModal";
+import { MobileTransactionForm } from "@/components/mobile/MobileTransactionForm";
 import { InvestmentFormModal } from "@/components/InvestmentFormModal";
 import { StockTransactionFormModal } from "@/components/StockTransactionFormModal";
 import { StockHoldingsPanel } from "@/components/StockHoldingsPanel";
@@ -3359,6 +3360,35 @@ export default async function Home({
                 isCreditCardAccount={isBillAccount} showInvestment={isInvestAccount} action={createTransaction} editAction={updateTransactionFromDialog}
                 allTags={tags.map(t => ({ id: t.id, name: t.name, color: t.color }))}
                 hideTrigger
+              />
+              {/* 手机端底部「记一笔」：根路由 /（全部收支记录、账户明细）没有移动端表单时，
+                  事件无人接收，点了等于没反应。桌面弹窗与它是两套 UI，靠事件名区分（见 MobileNavigation）。
+                  只传显示所需字段：整行 Account 带 Decimal 余额，不能跨 Server/Client 边界。 */}
+              <MobileTransactionForm
+                accounts={accounts.map((item) => ({
+                  id: item.id,
+                  name: item.name,
+                  kind: String(item.kind),
+                  currency: item.currency,
+                  numberMasked: item.numberMasked,
+                  groupId: item.groupId,
+                  investProductType: item.investProductType,
+                  Institution: item.Institution
+                    ? { name: item.Institution.name, shortName: item.Institution.shortName, type: item.Institution.type }
+                    : null,
+                  AccountGroup: item.AccountGroup ? { id: item.AccountGroup.id, name: item.AccountGroup.name } : null,
+                  Counterparty: item.Counterparty
+                    ? { name: item.Counterparty.name, shortName: item.Counterparty.shortName }
+                    : null,
+                }))}
+                categories={categories.map((item) => ({
+                  id: item.id,
+                  name: item.name,
+                  type: String(item.type),
+                  sortOrder: item.sortOrder,
+                  isSystem: item.isSystem,
+                }))}
+                defaultAccountId={selectedAccount?.id ?? accountId ?? ""}
               />
               <StockTransactionFormModal
                 defaultStockAccountId={defaultStockInvestmentAccountId}
