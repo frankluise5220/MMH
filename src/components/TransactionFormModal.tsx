@@ -2246,7 +2246,11 @@ export function TransactionFormModal({
       formData.set("date", date);
       if (txType === "expense" || txType === "income" || txType === "transfer") formData.set("postedAt", postedAt);
       formData.set("amount", String(dialogAmountToStoredAmount(txType, amount)));
-      formData.set("note", note);
+      // 默认一个备注：note 与 toNote 同值。
+      // 例外——在转账的对方账户里编辑时，备注只写第二备注，第一备注由服务端保留原值。
+      const toNoteOnly = txType === "transfer" && editNoteScopeRef.current === "toNote";
+      formData.set("noteScope", toNoteOnly ? "toNote" : "");
+      formData.set("note", toNoteOnly ? "" : note);
       formData.set("toNote", txType === "transfer" ? note : "");
       formData.set("counterpartyInstitutionId", counterpartyInstitutionId);
       if (editEntryId) formData.set("entryId", editEntryId);
