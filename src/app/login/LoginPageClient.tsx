@@ -266,6 +266,11 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   // set a local ledger password (which is exactly what an MMH-created ledger
   // admin has).
   const mmhUserChoices = systemUsers.filter((user) => user.registrationPrincipalId && mmhAddress(user));
+  // The MMH tab of the "verify an existing account" card: an empty picker means
+  // there is no identity to choose, so the card must not ask for that identity's
+  // password either — a password field nothing can be checked against is the
+  // same dead end the login card already refuses to show.
+  const createExistingMmhUnavailable = createAuthMode === "mmh" && mmhUserChoices.length === 0;
   // The MMH tab gets the same "dead ledger" treatment as the local / fnOS tabs:
   // when the selected ledger links no MMH user, the card shows an amber notice
   // instead of letting the user type an email and password into MMH_USER_NOT_BOUND.
@@ -961,6 +966,9 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
     if (!trimmedLedgerName) { setError(t("login.error.ledgerNameRequired")); return; }
     if (createMethod === "existing") {
       // Existing-account creation reuses the current login credentials below.
+      // The MMH tab with an empty picker has no identity to verify, so say that
+      // instead of asking for a username and password the card never showed.
+      if (createExistingMmhUnavailable) { setError(t("login.noMmhUsers")); return; }
     } else if (createAuthMode === "local") {
       if (!trimmedAdminName) { setError(t("login.error.adminUsernameRequired")); return; }
       if (!initialLedgerSetup && !trimmedAdminEmail) { setError(t("login.error.adminEmailRequired")); return; }
@@ -2147,8 +2155,9 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                                  page is filtered to holds none, so there is
                                  nothing to pick and nothing to prove. Saying
                                  "current account" here claimed a credential the
-                                 form cannot use. */
-                              <div className="rounded-md border border-dashed border-slate-300 bg-white px-3 py-2 text-xs text-slate-500">
+                                 form cannot use. Amber, like the login card's
+                                 dead-ledger notices, not a neutral placeholder. */
+                              <div className="rounded-lg border border-amber-200 bg-amber-50/70 px-3 py-3 text-xs leading-5 text-amber-900">
                                 {t("login.noMmhUsers")}
                               </div>
                             ) : createAuthMode === "local" && selectedHouseholdUsers.length > 0 ? (
@@ -2172,19 +2181,23 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                             {/* The password belongs to the identity picked right
                                 above: choosing an account and proving it is one
                                 step, so it stays inside the same card instead of
-                                hanging below it as a separate block. */}
-                            <div className="space-y-1 border-t border-slate-200 pt-3">
-                              <div className="text-xs font-medium text-slate-600">验证密码</div>
-                              <input
-                                value={createExistingPassword}
-                                onChange={(event) => setCreateExistingPassword(event.target.value)}
-                                type="password"
-                                autoComplete="current-password"
-                                className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
-                                placeholder={t("login.passwordPlaceholder")}
-                                onKeyDown={(event) => { if (event.key === "Enter") void handleCreateLedger(); }}
-                              />
-                            </div>
+                                hanging below it as a separate block. With no
+                                identity to pick there is nothing to prove, so the
+                                field is not rendered at all. */}
+                            {!createExistingMmhUnavailable && (
+                              <div className="space-y-1 border-t border-slate-200 pt-3">
+                                <div className="text-xs font-medium text-slate-600">验证密码</div>
+                                <input
+                                  value={createExistingPassword}
+                                  onChange={(event) => setCreateExistingPassword(event.target.value)}
+                                  type="password"
+                                  autoComplete="current-password"
+                                  className="h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none"
+                                  placeholder={t("login.passwordPlaceholder")}
+                                  onKeyDown={(event) => { if (event.key === "Enter") void handleCreateLedger(); }}
+                                />
+                              </div>
+                            )}
                           </>
                         )}
                       </FolderTabs>
@@ -2238,7 +2251,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                   </FolderTabs>
                 </div>
               </>
-            ) : createMethod === "existing" ? (
+            ) : createMethod === "existing" && !createExistingMmhUnavailable ? (
               <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
                 新账簿管理员将使用当前验证账户：{existingCreateAdminAccountLabel()}
               </div>
