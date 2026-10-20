@@ -896,6 +896,15 @@ export function RegularInvestForm({
 
   async function onSubmit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    await savePlan(false);
+  }
+
+  /** 保存并再记一笔：保留任务类型、账户、产品/分类与执行周期，只清空金额（金额才是下一份计划要重填的）。 */
+  function resetAfterKeepAdding() {
+    setFormData((prev) => ({ ...prev, amount: "" }));
+  }
+
+  async function savePlan(keepAdding: boolean) {
     if (submitting) return;
 
     const finalAmount = parseFloat(formData.amount);
@@ -1161,8 +1170,13 @@ export function RegularInvestForm({
             window.alert(res.error);
             return;
           }
-          setActualOpen(false);
-          resetForm();
+          // 保存并再记一笔：窗口不关，保留计划主体，只清空金额
+          if (keepAdding) {
+            resetAfterKeepAdding();
+          } else {
+            setActualOpen(false);
+            resetForm();
+          }
         } else if (apiAction) {
           const payload = {
             accountId: formData.accountId,
@@ -1197,8 +1211,13 @@ export function RegularInvestForm({
             window.alert(getRegularInvestSaveErrorMessage(res, t));
             return;
           }
-          setActualOpen(false);
-          resetForm();
+          // 保存并再记一笔：窗口不关，保留计划主体，只清空金额
+          if (keepAdding) {
+            resetAfterKeepAdding();
+          } else {
+            setActualOpen(false);
+            resetForm();
+          }
         } else {
           window.alert(t("regularInvest.alert.noSaveEntry"));
         }
@@ -1557,13 +1576,25 @@ export function RegularInvestForm({
           if (mode === "create") handleTaskTypeChange(id as ScheduledTaskType);
         }}
         footer={(
-          <button
-            type="submit"
-            disabled={submitting}
-            className="primary-button h-9 px-4 text-sm disabled:opacity-50"
-          >
-            {submitting ? t("txForm.saving") : t("common.save")}
-          </button>
+          <>
+            {mode === "create" ? (
+              <button
+                type="button"
+                disabled={submitting}
+                onClick={() => { void savePlan(true); }}
+                className="secondary-button h-9 px-4 text-sm disabled:opacity-50"
+              >
+                {submitting ? t("txForm.saving") : t("txForm.saveAndRepeat")}
+              </button>
+            ) : null}
+            <button
+              type="submit"
+              disabled={submitting}
+              className="primary-button h-9 px-4 text-sm disabled:opacity-50"
+            >
+              {submitting ? t("txForm.saving") : t("common.save")}
+            </button>
+          </>
         )}
         overlays={
                   <>

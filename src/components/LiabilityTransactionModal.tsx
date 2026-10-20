@@ -1657,30 +1657,11 @@ export function LiabilityTransactionModal({
       }
       dispatchFinanceDataChanged({ reason: "liability-save" });
       if (keepAdding) {
+        // 保存并再记一笔：账户、利率、还款方式、日期保留，只清本笔金额类字段
         setPrincipal("");
         setInterest("");
         setPenalty("");
         setPrepayTotal("");
-        setPrepayTotalManual(false);
-        setPrepayStrategy(DEFAULT_LOAN_PREPAY_STRATEGY);
-        setAnnualRate("");
-        setMortgageLprDiscount("");
-        setRepaymentMethod(FREE_REPAYMENT_METHOD);
-        setAutoDebitCashAccountId(defaultCashAccountId ?? cashAccounts[0]?.id ?? "");
-        setRepaymentIntervalMonths("1");
-        setLoanTotalRuns("300");
-        setFirstRepaymentDate(addMonthsInput(today, 1));
-        setCreateHistoricalRepaymentRecords(false);
-        setShowHistoricalRates(false);
-        setHistoricalRateRows([]);
-        setHistoricalRatesOpen(false);
-        setLiabilityItemName("");
-        setNote("");
-        setSelectedTagIds([]);
-        setLoanPurposeCategoryId("");
-        setFixedAssetLinked(false);
-        setFixedAssetAccountId("");
-        setFixedAssetAssetId("");
       } else {
         setOpen(false);
         setHistoryConfirmOpen(false);

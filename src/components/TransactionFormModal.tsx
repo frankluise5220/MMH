@@ -756,7 +756,6 @@ export function TransactionFormModal({
     setSelectedTagIds((prev) => (prev.includes(tag.id) ? prev : [...prev, tag.id]));
   }
   const [pendingAttachmentFiles, setPendingAttachmentFiles] = useState<File[]>([]);
-  const [isFromButton, setIsFromButton] = useState(false);
   const amountInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -1444,24 +1443,19 @@ export function TransactionFormModal({
     resetDraft();
   });
 
+  /**
+   * 保存并再记一笔：记账类型、账户、分类、日期、备注、标签保留（同一天连记多笔是常态，日期不动）；
+   * 金额以及由金额派生出的分期/汇率/本币金额清空 —— 表单必须看得出已经换了一笔。
+   * 同时清掉本笔的会话态（requestId、编辑标识、已上传附件）。
+   */
   function repeatDraft() {
     setAmount("");
     setFxToAmount("");
     setFxRate("");
     setFxFeeAmount("");
-    setCreateInstallment(false);
+    setLocalAmount("");
     setInstallmentAmount("");
     setInstallmentAmountEdited(false);
-    setFixedAssetLinked(false);
-    setFixedAssetAccountId("");
-    setFixedAssetAssetId("");
-    setFixedAssetLinkLocked(false);
-    setFixedAssetAccountNestedOpen(false);
-    setFixedAssetAccountAutoOpen(false);
-    setTxCurrency("");
-    setLocationId("");
-    setLocalAmount("");
-    setFxPostingV2(true);
     setPendingAttachmentFiles([]);
     setRequestId(null);
     setEditEntryId(null);
@@ -1470,11 +1464,6 @@ export function TransactionFormModal({
     setEditOriginalTransferAccounts(null);
     editOriginalRef.current = null;
     editNoteScopeRef.current = "";
-    if (txType === "advance") {
-      setAdvanceAccountId((current) => (advanceAccountOptions.some((option) => option.id === current) ? current : ""));
-      setNote("");
-      setSelectedTagIds([]);
-    }
     if ((txType === "transfer" || txType === "fx") && !isCreditCardAccount && !fromAccountId && defaultAccountId) {
       setFromAccountId(defaultAccountId);
     }
@@ -1569,7 +1558,6 @@ export function TransactionFormModal({
 
       setRequestId(detail.requestId);
       setOpen(true);
-      setIsFromButton(detail.source === "launcher");
       setLockedType(detail.lockedType ?? null);
       setStockTransferMode(detail.stockTransferMode === true);
       setStockCashAccountId(detail.stockCashAccountId ?? "");
@@ -3372,7 +3360,7 @@ export function TransactionFormModal({
 
             {/* 固定页脚：贴着窗口底边，切页签/内容长短变化时按钮位置不动 */}
             <div className="tx-entry-footer flex shrink-0 items-center justify-end gap-2 border-t border-slate-100 bg-white px-4 py-3">
-                {isFromButton && !editEntryId ? (
+                {!editEntryId ? (
                   <button
                     type="button"
                     className="secondary-button h-9 px-3 border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100"
@@ -3382,7 +3370,7 @@ export function TransactionFormModal({
                     }}
                     disabled={submitting}
                   >
-                    {t("txForm.saveAndRepeat")}
+                    {submitting ? t("txForm.saving") : t("txForm.saveAndRepeat")}
                   </button>
                 ) : null}
                 <button

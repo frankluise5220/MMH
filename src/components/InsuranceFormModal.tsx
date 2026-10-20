@@ -633,6 +633,17 @@ export function InsuranceFormModal({
     setConfirmBatchGenerate(false);
   }
 
+  /**
+   * 保存并再记一笔：保单/产品、账户、日期保留（保单生效日不能自动改），
+   * 金额、保单号、备注清空，让用户看得出这是新的一笔。
+   */
+  function resetAfterKeepAdding() {
+    setAmount("");
+    setPolicyNo("");
+    setMemo("");
+    setRequestId(null);
+  }
+
   useEffect(() => setCashAccountList(cashAccounts), [cashAccounts]);
   useEffect(() => setLocalCashSSOpts(cashAccountSSOptions), [cashAccountSSOptions]);
 
@@ -766,7 +777,7 @@ export function InsuranceFormModal({
     return () => window.removeEventListener("mmh:insurance:create", onCreate as EventListener);
   }, [accountMetaById, defaultAccountId, today]);
 
-  async function submitInsurance(options: InsuranceSubmitOptions) {
+  async function submitInsurance(options: InsuranceSubmitOptions, keepAdding = false) {
     if (submitting) return;
 
     const amountValue = parseOptionalNumber(amount);
@@ -844,8 +855,12 @@ export function InsuranceFormModal({
       if (isEdit) {
         window.dispatchEvent(new CustomEvent("mmh:insurance:edit:success", { detail: { requestId } }));
       }
-      setOpen(false);
-      if (!isEdit) resetForm();
+      if (keepAdding && !isEdit) {
+        resetAfterKeepAdding();
+      } else {
+        setOpen(false);
+        if (!isEdit) resetForm();
+      }
       requestAnimationFrame(() => {
         dispatchFinanceDataChanged({ reason: "insurance-save" });
       });
@@ -921,13 +936,25 @@ export function InsuranceFormModal({
           if (!arrivalDateTouchedRef.current) setArrivalDate(date);
         }}
         footer={(
-          <button
-            type="submit"
-            disabled={submitting}
-            className={`h-9 rounded-[10px] px-4 text-sm text-white disabled:opacity-50 ${isRedeem ? "bg-orange-600 hover:bg-orange-700" : "primary-button"}`}
-          >
-            {submitting ? t("txForm.saving") : isEditingRecord ? t("txForm.saveChanges") : isRedeem ? t("insuranceFormModal.recordRedeem") : t("insuranceFormModal.recordBuy")}
-          </button>
+          <>
+            {!isEditingRecord ? (
+              <button
+                type="button"
+                onClick={() => { void submitInsurance({ createPremiumPlan: false, backfillPastRecords: false }, true); }}
+                className="secondary-button h-9 px-4 text-sm disabled:opacity-50"
+                disabled={submitting}
+              >
+                {submitting ? t("txForm.saving") : t("txForm.saveAndRepeat")}
+              </button>
+            ) : null}
+            <button
+              type="submit"
+              disabled={submitting}
+              className={`h-9 rounded-[10px] px-4 text-sm text-white disabled:opacity-50 ${isRedeem ? "bg-orange-600 hover:bg-orange-700" : "primary-button"}`}
+            >
+              {submitting ? t("txForm.saving") : isEditingRecord ? t("txForm.saveChanges") : isRedeem ? t("insuranceFormModal.recordRedeem") : t("insuranceFormModal.recordBuy")}
+            </button>
+          </>
         )}
         overlays={
             <>

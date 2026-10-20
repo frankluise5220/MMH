@@ -430,6 +430,11 @@ export function useHoldingEntryForm(options: UseHoldingEntryFormOptions) {
     domainResetRef.current?.();
   }
 
+  /**
+   * 保存并再记一笔：日期、产品、账户、利率、期限、所选持有项都留在原处；
+   * 金额与由金额派生的份额/净值/利息/到账，以及备注清空 —— 必须让用户看到表单确实变了。
+   * 只清理「这一笔」的会话态：已上传附件、requestId 与编辑态标识。
+   */
   function resetAfterKeepAdding() {
     setAmount("");
     setUnits("");
@@ -441,7 +446,10 @@ export function useHoldingEntryForm(options: UseHoldingEntryFormOptions) {
     setInterestEdited(false);
     setArrivalEdited(false);
     setMemo("");
-    if (isHoldingAction) setSelectedHoldingId("");
+    setPendingAttachmentFiles([]);
+    setRequestId(null);
+    setEditEntryId(null);
+    setEditBusinessTransactionId(null);
   }
 
   /** 动作页签切换：字段重置逻辑沿用原分段按钮，逐项照搬以保证行为不变。 */

@@ -831,9 +831,11 @@ export function StockTransactionFormModal({
     setOpen(false);
   }, [submitting]);
 
+  /**
+   * 保存并再记一笔：日期、股票账户、资金账户、股票都留在原处；
+   * 数量、单价、成交额、费用、备注清空，让用户清楚表单已经换了一笔。
+   */
   const repeatDraft = useCallback(() => {
-    setRequestId(null);
-    setEditingId(null);
     setQuantity("");
     setPrice("");
     setGrossAmount("");
@@ -843,9 +845,11 @@ export function StockTransactionFormModal({
     setFeeEstimateError("");
     setFeeEstimateStatus("");
     resetFeeDraft();
+    setNote("");
+    setRequestId(null);
+    setEditingId(null);
     setPendingAttachmentFiles([]);
     setAttachmentEntryId(null);
-    setNote("");
     submitModeRef.current = "close";
     autoCreateAttemptedRef.current = true;
     cashAccountTouchedRef.current = false;
@@ -1411,7 +1415,7 @@ export function StockTransactionFormModal({
                   formRef.current?.requestSubmit();
                 }}
               >
-                {t("txForm.saveAndRepeat")}
+                {submitting ? t("txForm.saving") : t("txForm.saveAndRepeat")}
               </button>
             ) : null}
             <button

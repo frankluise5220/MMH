@@ -1494,6 +1494,10 @@ export function DepositFormModal({
     setArrivalAmount(arrivalPreview > 0 ? arrivalPreview.toFixed(2) : "");
   }, [arrivalEdited, arrivalPreview, isRedeem]);
 
+  /**
+   * 保存并再记一笔：产品、账户、期限、利率、日期保留（起息日不能自动改），
+   * 金额/现金额/利息/到账/备注清空；赎回还要把所选存单清掉，避免同一张存单被重复赎回。
+   */
   function resetAfterKeepAdding() {
     setAmount("");
     setCashAmount("");
@@ -1503,9 +1507,8 @@ export function DepositFormModal({
     setArrivalEdited(false);
     setAmountEdited(false);
     setMemo("");
-    if (isRedeem) {
-      setSelectedRedeemLotId("");
-    }
+    if (isRedeem) setSelectedRedeemLotId("");
+    setRequestId(null);
   }
 
   async function saveDepositTransaction(keepAdding: boolean) {

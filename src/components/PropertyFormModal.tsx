@@ -179,6 +179,10 @@ export function PropertyFormModal({
 
   async function submit(event: FormEvent) {
     event.preventDefault();
+    await saveProperty(false);
+  }
+
+  async function saveProperty(keepAdding: boolean) {
     if (submitting) return;
     if (mode === "valuation") {
       if (!propertyAssetId) {
@@ -264,8 +268,18 @@ export function PropertyFormModal({
           entryIds: [data.data?.transaction?.cashEntryId ?? "", data.data?.transaction?.id ?? ""].filter(Boolean),
         });
       });
-      setOpen(false);
-      resetTransactionDraft();
+      if (keepAdding) {
+        // 保存并再记一笔：资产、地址、日期保留；金额/费用/税费/估值/备注清空，并清本笔 requestId
+        setAmount("");
+        setFee("");
+        setTax("");
+        setMarketValue("");
+        setNote("");
+        setRequestId("");
+      } else {
+        setOpen(false);
+        resetTransactionDraft();
+      }
     } catch (error) {
       window.alert(error instanceof Error ? error.message : t("propertyForm.alert.saveFailed"));
     } finally {
@@ -297,6 +311,16 @@ export function PropertyFormModal({
       footer={(
         <>
           <button type="button" onClick={close} className="secondary-button" disabled={submitting}>{t("ledgerSwitch.cancel")}</button>
+          {mode === "transaction" ? (
+            <button
+              type="button"
+              onClick={() => { void saveProperty(true); }}
+              className="secondary-button"
+              disabled={submitting}
+            >
+              {submitting ? t("txForm.saving") : t("txForm.saveAndRepeat")}
+            </button>
+          ) : null}
           <button type="submit" className="primary-button" disabled={submitting}>{submitting ? t("stockFee.saving") : t("common.save")}</button>
         </>
       )}
