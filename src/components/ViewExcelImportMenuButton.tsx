@@ -41,6 +41,8 @@ type ViewExcelImportExportItem = {
   href?: string;
   download?: string;
   onClick?: () => void;
+  /** 条件未满足时置灰占位，让入口始终可见。 */
+  disabled?: boolean;
 };
 
 type ExportCellValue = string | number | boolean | null | undefined;
@@ -1511,12 +1513,12 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
         <ChevronDown className="h-3 w-3" />
       </button>
       {open ? (
-        <div className="absolute right-0 top-8 z-50 w-44 overflow-hidden rounded-md border border-slate-200 bg-white py-1 shadow-lg">
+        <div className="absolute right-0 top-8 z-50 min-w-[180px] w-max max-w-[80vw] overflow-hidden rounded-md border border-slate-200 bg-white py-1 shadow-lg">
           {props.excelExport ? (
             <button
               type="button"
               onClick={openExcelExportDialog}
-              className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-slate-700 hover:bg-slate-50"
+              className="flex w-full items-center justify-start gap-2 whitespace-nowrap px-3 py-2 text-left text-xs text-slate-700 hover:bg-slate-50"
             >
               <FileSpreadsheet className="h-3.5 w-3.5" />
               {t("viewImport.exportExcel")}
@@ -1528,7 +1530,7 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
               href={item.href}
               download={item.download}
               onClick={() => setOpen(false)}
-              className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-slate-700 hover:bg-slate-50"
+              className="flex w-full items-center justify-start gap-2 whitespace-nowrap px-3 py-2 text-left text-xs text-slate-700 hover:bg-slate-50"
             >
               <Download className="h-3.5 w-3.5" />
               {item.label}
@@ -1537,11 +1539,13 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
             <button
               key={item.label}
               type="button"
+              disabled={item.disabled}
               onClick={() => {
+                if (item.disabled) return;
                 setOpen(false);
                 item.onClick?.();
               }}
-              className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-slate-700 hover:bg-slate-50"
+              className="flex w-full items-center justify-start gap-2 whitespace-nowrap px-3 py-2 text-left text-xs text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
             >
               <Download className="h-3.5 w-3.5" />
               {item.label}
@@ -1550,7 +1554,7 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
           <button
             type="button"
             onClick={() => void handleExportTemplate()}
-            className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-slate-700 hover:bg-slate-50"
+            className="flex w-full items-center justify-start gap-2 whitespace-nowrap px-3 py-2 text-left text-xs text-slate-700 hover:bg-slate-50"
           >
             <Download className="h-3.5 w-3.5" />
             {t("creditBill.exportTemplate")}
@@ -1561,7 +1565,7 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
               setOpen(false);
               inputRef.current?.click();
             }}
-            className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-slate-700 hover:bg-slate-50"
+            className="flex w-full items-center justify-start gap-2 whitespace-nowrap px-3 py-2 text-left text-xs text-slate-700 hover:bg-slate-50"
           >
             <FileSpreadsheet className="h-3.5 w-3.5" />
             {t("creditBill.importExcel")}
@@ -1574,7 +1578,7 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
                 setOpen(false);
                 setMailImportOpen(true);
               }}
-              className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-slate-700 hover:bg-slate-50"
+              className="flex w-full items-center justify-start gap-2 whitespace-nowrap px-3 py-2 text-left text-xs text-slate-700 hover:bg-slate-50"
             >
               <MailSearch className="h-3.5 w-3.5" />
               {t("creditBill.importMail")}
