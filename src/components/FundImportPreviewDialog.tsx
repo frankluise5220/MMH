@@ -428,9 +428,12 @@ function normalizeFundImportAction(rawAction: string) {
   // 红利再投 / 再投 must be checked before 分红 so reinvest is not misread as cash dividend.
   if (action.includes("\u7ea2\u5229\u518d\u6295") || action.includes("\u518d\u6295") || action.includes("\u518d\u6295\u8cc7") || action.includes("\u5206\u914d\u91d1\u518d\u6295\u8cc7")) return "dividend_reinvest";
   if (action.includes("\u73b0\u91d1\u5206\u7ea2") || action.includes("\u5206\u7ea2") || action.includes("\u914d\u5f53") || action.includes("\u73fe\u91d1\u5206\u914d")) return "dividend_cash";
+  // 买入退回（定投扣款失败/退款）必须早于「买入/申购」判断，否则会被误判为买入。
+  if (action.includes("\u9000\u56de") || action.includes("\u9000\u6b3e") || action.includes("\u8fd4\u9084") || action.includes("\u8fd4\u91d1")) return "buy_failed";
   if (action.includes("\u5b9a\u6295") || action.includes("\u7a4d\u7acb")) return "buy";
   if (action.includes("\u7533\u8d2d") || action.includes("\u8cb7\u5165") || action.includes("\u4e70\u5165") || action.includes("\u8cfc\u5165")) return "buy";
   if (action.includes("\u8d4e\u56de") || action.includes("\u8d16\u56de") || action.includes("\u5356\u51fa") || action.includes("\u89e3\u7d04")) return "redeem";
+  if (["buyfailed", "purchasefailed", "refund", "refunded", "reversal"].includes(action)) return "buy_failed";
   if (["buy", "purchase", "subscribe", "regularinvest", "recurringinvest", "recurringbuy"].includes(action)) return "buy";
   if (["redeem", "redemption", "sell"].includes(action)) return "redeem";
   if (["dividendcash", "cashdividend"].includes(action)) return "dividend_cash";

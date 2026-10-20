@@ -260,7 +260,7 @@ function firstUsableFundName(fundCode: string, ...values: unknown[]) {
 
 function normalizeSubtype(raw: string) {
   const value = String(raw ?? "").trim().toLowerCase();
-  const valid = new Set(["buy", "redeem", "dividend_cash", "dividend_reinvest"]);
+  const valid = new Set(["buy", "redeem", "dividend_cash", "dividend_reinvest", "buy_failed"]);
   return valid.has(value) ? value : "";
 }
 
@@ -272,6 +272,9 @@ function normalizeSource(raw: string, subtype: string, rawSubtype?: string) {
   let value = rawValue;
   if (value === "regular_invest_refund" && subtype !== "buy_failed") {
     value = "regular_invest";
+  }
+  if (subtype === "buy_failed" && (!value || value === "manual" || value === "regular_invest" || value === "regular_invest_refund")) {
+    return "regular_invest_refund";
   }
   if (isRefundAlias && (!value || value === "manual" || value === "regular_invest" || value === "regular_invest_refund")) {
     return "regular_invest_refund";
@@ -303,7 +306,9 @@ function indexAccountLookup(
 async function buildImportContext(): Promise<ImportContext> {
   const { householdId } = await getHouseholdScope();
   const accounts = await prisma.account.findMany({
-    where: { householdId, isPlaceholder: { not: true } },
+    // 多币种父账户（isAggregate）只是统计单位、不能记账，导入时直接排除，
+    // 否则把「宁波·0214」这类父账户名填进模板会静默记到父账户上。
+    where: { householdId, isPlaceholder: { not: true }, isAggregate: { not: true } },
     select: {
       id: true,
       name: true,
