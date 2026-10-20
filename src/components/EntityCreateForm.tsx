@@ -25,7 +25,7 @@ import {
 import { useI18n } from "@/lib/i18n";
 import { FIXED_ASSET_TYPES, isFixedAssetAccountLike } from "@/lib/fixed-asset";
 import { LOAN_TYPES } from "@/lib/loan-type";
-import { isDepositAccount } from "@/lib/account-kind-utils";
+import { isDepositAccount, supportsMultiCurrencyHierarchy } from "@/lib/account-kind-utils";
 
 /* ---- Types ---- */
 
@@ -58,6 +58,22 @@ type EntityCreatedExtra = {
     Institution?: { id?: string; name?: string | null; shortName?: string | null; type?: string | null } | null;
   } | null;
 };
+
+/**
+ * 「多币种父账户」创建模式下不展示的字段：父账户是统计单元，币种固定为账簿本位币，
+ * 也没有卡号/账单日/额度这些记账属性。
+ */
+const AGGREGATE_HIDDEN_ACCOUNT_FIELDS = [
+  "currency",
+  "numberMasked",
+  "billingDay",
+  "billingDayTxPeriod",
+  "repaymentDayMode",
+  "repaymentDay",
+  "repaymentOffsetDays",
+  "creditLimit",
+  "creditBillMode",
+] as const;
 
 type FieldDef = {
   key: string;
@@ -775,15 +791,47 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     return allowedTypes.length > 0 ? allowedTypes : undefined;
   }
 
+  // 勾选「多币种父账户」后，币种/卡号/账单日/期初余额都无意义（父账户不记账）。
+  // 只有资金账户（含信用卡）允许父子层级（2026-10-20 用户裁定）。
+  const aggregateAccountKind = form.kind || form.type || extraFields?.kind || defaultType;
+  const isAggregateMode =
+    entityType === "account" &&
+    form.isAggregate === "true" &&
+    supportsMultiCurrencyHierarchy(aggregateAccountKind);
   const shouldShowInitialBalanceFields =
     includeInitialBalanceFields &&
     entityType === "account" &&
+    !isAggregateMode &&
     (form.kind || form.type || defaultType) !== "investment" &&
     (form.kind || form.type || defaultType) !== "fixed_asset" &&
     !isDepositAccount({
       kind: form.kind || form.type || defaultType,
       investProductType: form.investProductType || extraFields?.investProductType,
     });
+  /**
+   * 直接建「多币种父账户」（2026-10-20 用户）：允许先建空父账户，之后再挂子账户。
+   * 勾选后币种锁定账簿本位币、隐藏卡号/账单/期初余额（父账户不记账）。
+   */
+  function renderAggregateToggle() {
+    if (entityType !== "account" || mode !== "full" || !supportsMultiCurrencyHierarchy(aggregateAccountKind)) return null;
+    return (
+      <div className="col-span-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 md:col-span-4">
+        <label className="flex cursor-pointer items-start gap-2">
+          <input
+            type="checkbox"
+            checked={isAggregateMode}
+            onChange={(event) => setForm((prev) => ({ ...prev, isAggregate: event.target.checked ? "true" : "" }))}
+            className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-sky-600"
+          />
+          <span className="min-w-0">
+            <span className="block text-xs font-medium text-slate-700">{t("settings.accounts.createAggregateLabel")}</span>
+            <span className="mt-0.5 block text-[11px] leading-4 text-slate-500">{t("settings.accounts.createAggregateHint")}</span>
+          </span>
+        </label>
+      </div>
+    );
+  }
+
   function renderInitialBalanceFields() {
     if (!shouldShowInitialBalanceFields) return null;
     // 独占一整行（col-span-full）：日期+金额成对出现，不与币种/卡号/备注混排。
@@ -958,13 +1006,20 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     setError("");
     try {
       const body: Record<string, string> = {};
+      const aggregateMode =
+        entityType === "account" &&
+        form.isAggregate === "true" &&
+        supportsMultiCurrencyHierarchy(aggregateAccountKind);
       for (const field of config.fullFields) {
         if (field.condition && !field.condition(form)) continue;
+        // 父账户不携带记账属性：币种由服务端锁为本位币，卡号/账单/额度一律不提交。
+        if (aggregateMode && (AGGREGATE_HIDDEN_ACCOUNT_FIELDS as readonly string[]).includes(field.key)) continue;
         const val = field.key === "name" ? name.trim() : form[field.key];
         if (val !== undefined && val !== "") {
           body[field.key] = val;
         }
       }
+      if (aggregateMode) body.isAggregate = "true";
       if (extraFields) {
         Object.entries(extraFields).forEach(([k, v]) => {
           if (v !== undefined && v !== "") body[k] = v;
@@ -1305,6 +1360,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     if (field.condition && !field.condition(form)) return false;
     if (hiddenFields?.includes(field.key)) return false;
     if (extraFields && field.key in extraFields && field.key !== "name") return false;
+    if (isAggregateMode && (AGGREGATE_HIDDEN_ACCOUNT_FIELDS as readonly string[]).includes(field.key)) return false;
     return true;
   });
 
@@ -1502,6 +1558,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                     </div>
                   );
                 })}
+                {renderAggregateToggle()}
                 {renderInitialBalanceFields()}
                 {visibleFields.slice(4).map(field => {
                   if (field.type === "text" || field.type === "date") {

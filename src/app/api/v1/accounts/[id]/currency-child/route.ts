@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { prisma } from "@/lib/db/prisma";
 import { normalizeCurrency } from "@/lib/currency";
+import { supportsMultiCurrencyHierarchy } from "@/lib/account-kind-utils";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import {
   recomputeAggregateAccountBalance,
@@ -39,13 +40,24 @@ export async function POST(req: NextRequest, context: RouteContext) {
 
     const account = await prisma.account.findUnique({
       where: { id: accountId },
-      select: { id: true, householdId: true, parentId: true, isAggregate: true },
+      select: { id: true, householdId: true, parentId: true, isAggregate: true, kind: true },
     });
     if (!account) {
       return NextResponse.json({ ok: false, code: "ACCOUNT_NOT_FOUND", error: "Account not found" }, { status: 404 });
     }
     if (account.householdId !== householdId) {
       return NextResponse.json({ ok: false, code: "FORBIDDEN", error: "Account belongs to another household" }, { status: 403 });
+    }
+    // 只有资金账户（含信用卡）允许父子层级（2026-10-20 用户裁定）。
+    if (!supportsMultiCurrencyHierarchy(account.kind)) {
+      return NextResponse.json(
+        {
+          ok: false,
+          code: "ACCOUNT_HIERARCHY_KIND_NOT_ALLOWED",
+          error: "Only cash, debit card, e-wallet and credit card accounts can have sub-accounts",
+        },
+        { status: 400 },
+      );
     }
 
     let parentId = account.isAggregate ? account.id : account.parentId ?? "";

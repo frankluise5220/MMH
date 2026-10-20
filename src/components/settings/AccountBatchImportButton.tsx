@@ -12,6 +12,7 @@ import { PRODUCT_TYPES } from "@/lib/investment-config";
 import { FIXED_ASSET_TYPES } from "@/lib/fixed-asset";
 import { TRADING_CALENDARS } from "@/lib/fund/trading-calendar";
 import { allowedInstitutionTypesForAccount } from "@/lib/account-institution-rules";
+import { supportsMultiCurrencyHierarchy } from "@/lib/account-kind-utils";
 import { COUNTERPARTY_TYPE_OPTIONS, institutionTypeLabel, institutionTypeOptions } from "@/lib/account-kinds";
 import { useI18n } from "@/lib/i18n";
 import { TAG_COLORS, TAG_COLOR_NAME_KEYS } from "@/lib/tag-colors";
@@ -33,6 +34,8 @@ type AccountBatchImportField =
   | "counterparty"
   | "owner"
   | "currency"
+  | "parent"
+  | "level"
   | "numberMasked"
   | "billingDay"
   | "repaymentDay"
@@ -85,6 +88,11 @@ type ImportAccountRow = {
   ownerName: string;
   ownerId: string;
   currency: string;
+  /** 账户级别：父账户自身不记账、余额由子户折算汇总，可以没有子户。 */
+  accountLevel: "normal" | "aggregate";
+  /** 多币种子户：父账户名称（只允许填已存在的多币种父账户）。 */
+  parentName: string;
+  parentAccountId: string;
   numberMasked: string;
   billingDay: string;
   repaymentDay: string;
@@ -127,6 +135,14 @@ type ImportSheetDefinition = {
 };
 
 type ExistingCategory = { id: string; name: string; type: string; parentId: string | null };
+type ExistingAccountRef = {
+  id: string;
+  name: string;
+  kind: string;
+  currency?: string | null;
+  parentId?: string | null;
+  isAggregate?: boolean;
+};
 type SheetGuideRowOptions = { firstValueOwnRow?: boolean };
 type SheetGuideRow = [AccountBatchImportField, string, string, SheetGuideRowOptions?];
 type GuideSwatch = { rgb: string; name?: string };
@@ -161,6 +177,8 @@ const HEADER_ALIASES: Record<AccountBatchImportField, string[]> = {
   counterparty: ["counterparty", "counterpartyName"],
   owner: ["owner", "ownerName", "groupId", "group"],
   currency: ["currency"],
+  parent: ["parent", "parentAccount", "parentAccountName", "parentName", "aggregateParent"],
+  level: ["level", "accountLevel", "hierarchy", "accountHierarchy", "isAggregate"],
   numberMasked: ["numberMasked", "last4", "cardLast4"],
   billingDay: ["billingDay", "statementDay"],
   repaymentDay: ["repaymentDay", "dueDay"],
@@ -191,6 +209,8 @@ const HEADER_LABELS: Record<AccountBatchImportField, (t: (key: string) => string
   counterparty: (t) => t("txForm.counterparty"),
   owner: (t) => t("settings.accounts.owner"),
   currency: (t) => t("settings.accounts.currency"),
+  parent: (t) => t("settings.accounts.parentAccount"),
+  level: (t) => t("settings.accounts.import.accountLevel"),
   numberMasked: (t) => t("settings.accounts.lastFourLabel"),
   billingDay: (t) => t("settings.accounts.billingDayLabel"),
   repaymentDay: (t) => t("settings.accounts.repaymentDayLabel"),
@@ -234,7 +254,7 @@ const SHEETS: ImportSheetDefinition[] = [
     type: "funding",
     sheetKey: "settings.accounts.import.sheet.fundingCredit",
     target: "account",
-    fields: ["name", "kind", "institution", "owner", "currency", "numberMasked", "billingDay", "repaymentDay", "creditLimit", "creditBillMode", "initialBalance", "initialBalanceDate", "note", "sample"],
+    fields: ["name", "kind", "institution", "owner", "currency", "parent", "numberMasked", "billingDay", "repaymentDay", "creditLimit", "creditBillMode", "initialBalance", "initialBalanceDate", "level", "note", "sample"],
   },
   {
     type: "settlement",
@@ -264,14 +284,14 @@ const LEGACY_IMPORT_SHEETS: ImportSheetDefinition[] = [
     type: "funding",
     sheetKey: "settings.accounts.import.sheet.funding",
     target: "account",
-    fields: ["name", "kind", "institution", "owner", "currency", "numberMasked", "initialBalance", "initialBalanceDate", "note", "sample"],
+    fields: ["name", "kind", "institution", "owner", "currency", "parent", "numberMasked", "initialBalance", "initialBalanceDate", "level", "note", "sample"],
   },
   {
     type: "credit",
     sheetKey: "settings.accounts.import.sheet.credit",
     target: "account",
     defaultKind: "bank_credit",
-    fields: ["name", "institution", "owner", "currency", "numberMasked", "billingDay", "repaymentDay", "creditLimit", "creditBillMode", "note", "sample"],
+    fields: ["name", "institution", "owner", "currency", "parent", "numberMasked", "billingDay", "repaymentDay", "creditLimit", "creditBillMode", "level", "note", "sample"],
   },
   {
     type: "familyMember",
@@ -329,7 +349,6 @@ const GUIDE_NOTE_COLUMN_START = 2;
 const GUIDE_NOTE_COLUMN_SPAN = 5;
 const GUIDE_NOTE_COLUMN_END = GUIDE_NOTE_COLUMN_START + GUIDE_NOTE_COLUMN_SPAN - 1;
 const GUIDE_COLUMN_COUNT = GUIDE_NOTE_COLUMN_END + 1;
-const GUIDE_TITLE_ROW_HEIGHT = 24;
 const GUIDE_NOTICE_ROW_HEIGHT = 42;
 const GENERIC_TYPE_FIELDS = new Set<AccountBatchImportField>([
   "institutionType",
@@ -662,6 +681,20 @@ function parseSheetRows(
     const initialBalanceDate = parseImportDate(valueAt("initialBalanceDate"));
     if (initialBalanceRaw && !initialBalanceDate) errors.push(t("settings.accounts.import.balanceDateInvalid"));
 
+    // 账户级别：只有资金账户（含信用卡）允许；父账户自身不记账，不能带期初余额、不能再有上级。
+    const rawAccountLevel = valueAt("level");
+    const parsedAccountLevel = definition.target === "account"
+      ? parseAccountLevel(rawAccountLevel, t)
+      : "";
+    const accountLevel: "normal" | "aggregate" = parsedAccountLevel === "aggregate" ? "aggregate" : "normal";
+    if (definition.target === "account" && rawAccountLevel && !parsedAccountLevel) {
+      errors.push(t("settings.accounts.import.invalidEnum"));
+    }
+    if (accountLevel === "aggregate") {
+      if (valueAt("parent")) errors.push(t("settings.accounts.import.aggregateNoParent"));
+      if (initialBalanceRaw) errors.push(t("settings.accounts.import.aggregateNoInitialBalance"));
+    }
+
     return [{
       key: `${definition.type}:${sheetName}:${sourceRow}`,
       sheetType: definition.type,
@@ -687,6 +720,9 @@ function parseSheetRows(
       ownerName: valueAt("owner"),
       ownerId: "",
       currency: definition.target === "account" ? normalizeCurrency(valueAt("currency") || baseCurrency) : "",
+      accountLevel,
+      parentName: definition.target === "account" ? valueAt("parent") : "",
+      parentAccountId: "",
       numberMasked: valueAt("numberMasked"),
       billingDay: parsedBillingDay ? String(parsedBillingDay) : "",
       repaymentDay: repaymentDayRaw ? String(Number(parseImportNumber(repaymentDayRaw))) : "",
@@ -749,6 +785,7 @@ function buildCategoryImportRow(params: {
     target: "category",
     name: params.name,
     color: "",
+    accountLevel: "normal",
     kind: "",
     institutionType: "",
     counterpartyType: "",
@@ -766,6 +803,8 @@ function buildCategoryImportRow(params: {
     ownerName: "",
     ownerId: "",
     currency: "",
+    parentName: "",
+    parentAccountId: "",
     numberMasked: "",
     billingDay: "",
     repaymentDay: "",
@@ -938,6 +977,8 @@ function validateReferences(
     institutions: Array<{ id: string; name: string; shortName?: string | null; type?: string | null }>;
     counterparties: Array<{ id: string; name: string; shortName?: string | null; type?: string | null }>;
     categories: ExistingCategory[];
+    accounts: ExistingAccountRef[];
+    baseCurrency: string;
     t: (key: string, params?: Record<string, string | number>) => string;
   },
 ) {
@@ -947,6 +988,7 @@ function validateReferences(
     let counterpartyId = "";
     let ownerId = "";
     let parentCategoryId = "";
+    let parentAccountId = "";
 
     if (row.target === "account") {
       const allowedTypes = allowedInstitutionTypesForAccount(row.kind, row.investProductType);
@@ -1035,6 +1077,50 @@ function validateReferences(
           }
         }
       }
+
+      // 多币种子户（2026-10-20）：父账户必须是「系统里已经存在」的多币种父账户，
+      // 不接受本批次新建账户当父级（顺序无关、避免歧义），并要求类型一致、同币种唯一。
+      // 只有资金账户（含信用卡）允许父子层级（2026-10-20 用户裁定）。
+      if (row.accountLevel === "aggregate" && !supportsMultiCurrencyHierarchy(row.kind)) {
+        errors.push(options.t("settings.accounts.import.accountLevelKindNotAllowed"));
+      }
+      if (row.parentName) {
+        const normalizedParentName = row.parentName.trim().toLowerCase();
+        const matchedParents = options.accounts.filter((item) => item.name.trim().toLowerCase() === normalizedParentName);
+        const parent = matchedParents[0];
+        if (matchedParents.length > 1) {
+          errors.push(options.t("settings.accounts.import.parentAccountAmbiguous"));
+        } else if (!parent) {
+          errors.push(options.t("settings.accounts.import.parentAccountNotFound", { name: row.parentName.trim() }));
+        } else if (parent.name.trim() === row.name.trim()) {
+          errors.push(options.t("settings.accounts.import.parentAccountSelf"));
+        } else if (!supportsMultiCurrencyHierarchy(row.kind)) {
+          errors.push(options.t("settings.accounts.import.parentAccountKindNotAllowed"));
+        } else if (!parent.isAggregate || parent.parentId) {
+          errors.push(options.t("settings.accounts.import.parentAccountNotAggregate"));
+        } else if (!supportsMultiCurrencyHierarchy(parent.kind)) {
+          // 历史遗留的非资金父账户不再接受新子户。
+          errors.push(options.t("settings.accounts.import.parentAccountKindNotAllowed"));
+        } else if (row.kind && parent.kind !== (row.kind === "fixed_asset" ? "investment" : row.kind)) {
+          errors.push(options.t("settings.accounts.import.parentAccountKindMismatch"));
+        } else {
+          const targetCurrency = normalizeCurrency(row.currency || options.baseCurrency);
+          const existingSibling = options.accounts.some((item) => (
+            item.parentId === parent.id && normalizeCurrency(item.currency || options.baseCurrency) === targetCurrency
+          ));
+          const pendingSibling = rows.some((other) => (
+            other.key !== row.key &&
+            other.target === "account" &&
+            other.parentName.trim().toLowerCase() === normalizedParentName &&
+            normalizeCurrency(other.currency || options.baseCurrency) === targetCurrency
+          ));
+          if (existingSibling || pendingSibling) {
+            errors.push(options.t("settings.accounts.import.parentAccountCurrencyConflict", { currency: targetCurrency }));
+          } else {
+            parentAccountId = parent.id;
+          }
+        }
+      }
     }
 
     if (row.target === "category" && row.parentCategoryName) {
@@ -1054,13 +1140,31 @@ function validateReferences(
       counterpartyId,
       ownerId,
       parentCategoryId,
+      parentAccountId,
       errors,
       selected: errors.length === 0,
     };
   });
 }
 
+const ACCOUNT_LEVEL_OPTIONS: AccountImportOption[] = [
+  { value: "normal", labelKey: "settings.accounts.import.accountLevelNormal" },
+  { value: "aggregate", labelKey: "settings.accounts.import.accountLevelAggregate" },
+];
+
+// 账户级别只有「子账户 / 父账户」两种；同时兼容旧模板写过的「普通账户」以及英文/日文关键字。
+function parseAccountLevel(value: string, t: (key: string) => string) {
+  const raw = normalizeImportHeader(value);
+  if (!raw) return "";
+  const parsed = parseImportEnum(value, ACCOUNT_LEVEL_OPTIONS, t);
+  if (parsed) return parsed;
+  if (/父|親|parent|aggregate/.test(raw)) return "aggregate";
+  if (/子|sub|child|normal|普通|通常/.test(raw)) return "normal";
+  return "";
+}
+
 const FIELD_SELECT_OPTIONS: Partial<Record<AccountBatchImportField, AccountImportOption[]>> = {
+  level: ACCOUNT_LEVEL_OPTIONS,
   color: TAG_COLOR_OPTIONS,
   kind: FUNDING_ACCOUNT_KIND_OPTIONS,
   institutionType: INSTITUTION_TYPE_OPTIONS,
@@ -1078,9 +1182,9 @@ const EDITABLE_CATEGORY_FIELDS = new Set<AccountBatchImportField>(["name", "cate
 const EDITABLE_TAG_FIELDS = new Set<AccountBatchImportField>(["name", "color"]);
 
 const EDITABLE_ACCOUNT_FIELDS_BY_SHEET: Partial<Record<ImportSheetType, AccountBatchImportField[]>> = {
-  funding: ["name", "kind", "institution", "owner", "currency", "numberMasked", "billingDay", "repaymentDay", "creditLimit", "creditBillMode", "initialBalance", "initialBalanceDate", "note"],
+  funding: ["name", "kind", "institution", "owner", "currency", "parent", "numberMasked", "billingDay", "repaymentDay", "creditLimit", "creditBillMode", "initialBalance", "initialBalanceDate", "level", "note"],
   settlement: ["name", "institution", "counterparty", "owner", "currency", "initialBalance", "initialBalanceDate", "note"],
-  credit: ["name", "institution", "owner", "currency", "numberMasked", "billingDay", "repaymentDay", "creditLimit", "creditBillMode", "note"],
+  credit: ["name", "institution", "owner", "currency", "parent", "numberMasked", "billingDay", "repaymentDay", "creditLimit", "creditBillMode", "level", "note"],
   investment: ["name", "investProductType", "institution", "owner", "currency", "fundUnitsDecimals", "costBasisMethod", "tradingCalendar", "note"],
   fixedAsset: ["name", "fixedAssetType", "owner", "currency", "note"],
 };
@@ -1098,6 +1202,8 @@ const FIELD_COLUMN_MIN_WIDTH: Partial<Record<AccountBatchImportField, number>> =
   fixedAssetType: 120,
   creditBillMode: 110,
   currency: 70,
+  parent: 130,
+  level: 110,
   numberMasked: 80,
   billingDay: 80,
   repaymentDay: 80,
@@ -1159,6 +1265,8 @@ function rowFieldValue(row: ImportAccountRow, field: AccountBatchImportField): s
     case "initialBalance": return row.initialBalance;
     case "initialBalanceDate": return row.initialBalanceDate;
     case "currency": return row.currency;
+    case "level": return row.accountLevel === "aggregate" ? "aggregate" : "normal";
+    case "parent": return row.parentName;
     case "color": return row.color;
     default: return "";
   }
@@ -1174,6 +1282,10 @@ function billingDayDisplayValue(day: string, t: Translate): string {
 
 function rowFieldDisplay(row: ImportAccountRow, field: AccountBatchImportField, t: Translate): string {
   switch (field) {
+    case "level":
+      return row.accountLevel === "aggregate"
+        ? t("settings.accounts.import.accountLevelAggregate")
+        : t("settings.accounts.import.accountLevelNormal");
     case "billingDay": return row.billingDay ? billingDayDisplayValue(row.billingDay, t) : "";
     case "color": {
       const colorLabelKey = TAG_COLOR_NAME_KEYS[row.color as keyof typeof TAG_COLOR_NAME_KEYS];
@@ -1205,6 +1317,8 @@ function applyRowEdit(row: ImportAccountRow, field: AccountBatchImportField, raw
     case "counterparty": next.counterpartyName = trimmed; next.counterpartyId = ""; break;
     case "owner": next.ownerName = trimmed; next.ownerId = ""; break;
     case "currency": next.currency = trimmed ? normalizeCurrency(trimmed) : ""; break;
+    case "level": next.accountLevel = trimmed === "aggregate" ? "aggregate" : "normal"; break;
+    case "parent": next.parentName = trimmed; next.parentAccountId = ""; break;
     case "numberMasked": next.numberMasked = trimmed; break;
     case "note": next.note = trimmed; break;
     case "parentCategory": next.parentCategoryName = trimmed; next.parentCategoryId = ""; break;
@@ -1260,6 +1374,8 @@ function revalidateRows(
     institutions: Array<{ id: string; name: string; shortName?: string | null; type?: string | null }>;
     counterparties: Array<{ id: string; name: string; shortName?: string | null; type?: string | null }>;
     categories: ExistingCategory[];
+    accounts: ExistingAccountRef[];
+    baseCurrency: string;
     t: (key: string, params?: Record<string, string | number>) => string;
   },
 ) {
@@ -1341,6 +1457,7 @@ const CLEARABLE_BATCH_FIELDS = new Set<AccountBatchImportField>([
   "tradingCalendar",
   "initialBalance",
   "initialBalanceDate",
+  "level",
   "parentCategory",
   "note",
 ]);
@@ -1603,6 +1720,28 @@ async function fetchLoanCategories(): Promise<Array<{ id: string; name: string; 
   return data?.ok && Array.isArray(data.categories) ? data.categories : [];
 }
 
+/** 父账户校验只认系统里已存在的账户，因此导入时必须先取一次账户清单。 */
+async function fetchExistingAccounts(): Promise<ExistingAccountRef[]> {
+  const response = await fetch("/api/v1/accounts", { cache: "no-store" });
+  const data = await response.json().catch(() => null) as { ok?: boolean; accounts?: unknown[] } | null;
+  if (!data?.ok || !Array.isArray(data.accounts)) return [];
+  return data.accounts.flatMap((item): ExistingAccountRef[] => {
+    if (!item || typeof item !== "object") return [];
+    const record = item as Record<string, unknown>;
+    const id = String(record.id ?? "");
+    const name = String(record.name ?? "");
+    if (!id || !name) return [];
+    return [{
+      id,
+      name,
+      kind: String(record.kind ?? ""),
+      currency: record.currency ? String(record.currency) : null,
+      parentId: record.parentId ? String(record.parentId) : null,
+      isAggregate: record.isAggregate === true,
+    }];
+  });
+}
+
 async function fetchExistingTags(): Promise<Array<{ id: string; name: string }>> {
   const response = await fetch("/api/v1/tags", { cache: "no-store" });
   const data = await response.json().catch(() => null) as { ok?: boolean; tags?: Array<{ id: string; name: string }> } | null;
@@ -1617,6 +1756,7 @@ function buildAccountImportRows(
     institutions: Array<{ id: string; name: string; shortName?: string | null; type?: string | null }>;
     counterparties: Array<{ id: string; name: string; shortName?: string | null; type?: string | null }>;
     categories: ExistingCategory[];
+    accounts: ExistingAccountRef[];
     baseCurrency: string;
   },
 ): Promise<ImportAccountRow[]> {
@@ -1693,9 +1833,8 @@ function appendSheetGuideRows(
   const rows = [
     ...dataRows,
     [],
-    guideWideRow([t("settings.accounts.import.sheetGuideTitle")]),
-    guideWideRow([t("settings.accounts.import.sheetGuideIgnoreNote")]),
-    guideWideRow([t("settings.accounts.import.guideNoRepeatImport")]),
+    // 说明区只占一行：标题 + 「以下数据会被忽略」+ 「未修改的 sheet 会被忽略」合并为一个单元格。
+    guideWideRow([t("settings.accounts.import.sheetGuideTitleCombined")]),
     guideWideRow([t("settings.accounts.import.guideField"), t("settings.accounts.import.guideValue"), t("settings.accounts.import.guideNote")]),
   ];
   for (const [field, allowedValues, note, options] of guideRows.filter(([field]) => fields.includes(field))) {
@@ -1761,7 +1900,7 @@ function appendStyledSheet(
     }
   });
   const guideStartRow = dataRows.length + 1;
-  const guideHeaderRow = guideStartRow + 3;
+  const guideHeaderRow = guideStartRow + 1;
   for (let rowIndex = guideStartRow; rowIndex < guideHeaderRow; rowIndex += 1) {
     const guideIntroCell = XLSX.utils.encode_cell({ r: rowIndex, c: 0 });
     if (sheet[guideIntroCell]) {
@@ -1775,9 +1914,7 @@ function appendStyledSheet(
   }
   // Merged cells do not auto-fit row height in Excel, so reserve space for guide notice rows.
   const guideRowHeights = sheet["!rows"] ?? [];
-  guideRowHeights[guideStartRow] = { hpt: GUIDE_TITLE_ROW_HEIGHT };
-  guideRowHeights[guideStartRow + 1] = { hpt: GUIDE_NOTICE_ROW_HEIGHT };
-  guideRowHeights[guideStartRow + 2] = { hpt: GUIDE_NOTICE_ROW_HEIGHT };
+  guideRowHeights[guideStartRow] = { hpt: GUIDE_NOTICE_ROW_HEIGHT };
   sheet["!rows"] = guideRowHeights;
   applyGuideMerges(sheet, guideStartRow, guideHeaderRow, allRows);
   for (let columnIndex = 0; columnIndex < GUIDE_COLUMN_COUNT; columnIndex += 1) {
@@ -1953,9 +2090,8 @@ function appendCategoryStyledSheet(
   const allRows = [
     ...dataRows,
     [],
-    guideWideRow([t("settings.accounts.import.sheetGuideTitle")]),
-    guideWideRow([t("settings.accounts.import.sheetGuideIgnoreNote")]),
-    guideWideRow([t("settings.accounts.import.guideNoRepeatImportCategory")]),
+    // 说明区只占一行（与账户各 sheet 一致）。
+    guideWideRow([t("settings.accounts.import.sheetGuideTitleCombinedCategory")]),
     guideWideRow([t("settings.accounts.import.guideField"), t("settings.accounts.import.guideValue"), t("settings.accounts.import.guideNote")]),
     ...guideDataRows,
   ];
@@ -1985,7 +2121,7 @@ function appendCategoryStyledSheet(
     }
   }
   const guideStartRow = dataRows.length + 1;
-  const guideHeaderRow = guideStartRow + 3;
+  const guideHeaderRow = guideStartRow + 1;
   for (let rowIndex = guideStartRow; rowIndex < guideHeaderRow; rowIndex += 1) {
     const guideIntroCell = XLSX.utils.encode_cell({ r: rowIndex, c: 0 });
     if (sheet[guideIntroCell]) {
@@ -1999,9 +2135,7 @@ function appendCategoryStyledSheet(
   }
   // Merged cells do not auto-fit row height in Excel, so reserve space for guide notice rows.
   const guideRowHeights = sheet["!rows"] ?? [];
-  guideRowHeights[guideStartRow] = { hpt: GUIDE_TITLE_ROW_HEIGHT };
-  guideRowHeights[guideStartRow + 1] = { hpt: GUIDE_NOTICE_ROW_HEIGHT };
-  guideRowHeights[guideStartRow + 2] = { hpt: GUIDE_NOTICE_ROW_HEIGHT };
+  guideRowHeights[guideStartRow] = { hpt: GUIDE_NOTICE_ROW_HEIGHT };
   sheet["!rows"] = guideRowHeights;
   applyGuideMerges(sheet, guideStartRow, guideHeaderRow, allRows);
   const requiredGuideLabels = new Set(guideRows.filter(([, , , required]) => required).map(([field]) => field));
@@ -2069,6 +2203,7 @@ export function AccountBatchImportButton({
   const [result, setResult] = useState<ImportResult | null>(null);
   const [activeSheet, setActiveSheet] = useState("");
   const [importCategories, setImportCategories] = useState<ExistingCategory[]>([]);
+  const [importAccounts, setImportAccounts] = useState<ExistingAccountRef[]>([]);
 
   const selectedRows = useMemo(() => rows.filter((row) => row.selected), [rows]);
 
@@ -2138,7 +2273,7 @@ export function AccountBatchImportButton({
   function updateRowField(key: string, field: AccountBatchImportField, raw: string) {
     setRows((current) => {
       const edited = current.map((row) => (row.key === key ? applyRowEdit(row, field, raw) : row));
-      return revalidateRows(edited, { groups, institutions, counterparties, categories: importCategories, t });
+      return revalidateRows(edited, { groups, institutions, counterparties, categories: importCategories, accounts: importAccounts, baseCurrency, t });
     });
   }
 
@@ -2150,7 +2285,7 @@ export function AccountBatchImportButton({
           ? { ...row, selected: keys.has(row.key), touchedSelection: true }
           : row
       ));
-      return revalidateRows(edited, { groups, institutions, counterparties, categories: importCategories, t });
+      return revalidateRows(edited, { groups, institutions, counterparties, categories: importCategories, accounts: importAccounts, baseCurrency, t });
     });
   }
 
@@ -2159,7 +2294,7 @@ export function AccountBatchImportButton({
     if (targetKeys.size === 0) throw new Error(t("statementImportPreview.selectRowsFirst"));
     setRows((current) => {
       const edited = current.map((row) => (targetKeys.has(row.key) ? applyRowEdit(row, field, raw) : row));
-      return revalidateRows(edited, { groups, institutions, counterparties, categories: importCategories, t });
+      return revalidateRows(edited, { groups, institutions, counterparties, categories: importCategories, accounts: importAccounts, baseCurrency, t });
     });
     return t("statementImportPreview.batchReplaceResult", {
       count: targetKeys.size,
@@ -2253,6 +2388,9 @@ export function AccountBatchImportButton({
         ["kind", optionList(FUNDING_ACCOUNT_KIND_OPTIONS, t), t("settings.accounts.import.guideFundingSheet")],
         ["institution", t("settings.accounts.import.guideInstitutionNameValue"), t("settings.accounts.import.guideFundingInstitution")],
         ...accountGuideRows.filter(([field]) => field !== "sample"),
+        // 只有资金账户（含信用卡）有父子层级：父账户 / 账户级别两列只出现在本表与信用卡表。
+        ["parent", t("settings.accounts.import.guideOptionalValue"), t("settings.accounts.import.guideParentAccount")],
+        ["level", t("settings.accounts.import.accountLevelValue"), `${t("settings.accounts.import.accountLevelGuide")} ${t("settings.accounts.import.accountLevelSampleNote")}`],
         ["billingDay", t("entityForm.billingDayPlaceholder"), t("settings.accounts.import.guideCreditFields")],
         ["repaymentDay", "1-31", t("settings.accounts.import.guideCreditFields")],
         ["creditLimit", t("settings.accounts.import.guideNumberValue"), t("settings.accounts.import.guideCreditFields")],
@@ -2275,6 +2413,8 @@ export function AccountBatchImportButton({
         ["institution", t("settings.accounts.import.guideInstitutionNameValue"), t("settings.accounts.import.guideCreditInstitution")],
         ["owner", t("settings.accounts.import.guideOwnerValue"), t("settings.accounts.import.guideOwner")],
         ["currency", t("settings.accounts.import.guideCurrencyValue"), t("settings.accounts.import.guideCurrency")],
+        ["parent", t("settings.accounts.import.guideOptionalValue"), t("settings.accounts.import.guideParentAccount")],
+        ["level", t("settings.accounts.import.accountLevelValue"), t("settings.accounts.import.accountLevelGuide")],
         ["numberMasked", t("settings.accounts.import.guideOptionalValue"), t("settings.accounts.import.guideCreditNumberMasked")],
         ["billingDay", t("entityForm.billingDayPlaceholder"), t("settings.accounts.import.guideCreditFields")],
         ["repaymentDay", "1-31", t("settings.accounts.import.guideCreditFields")],
@@ -2371,6 +2511,17 @@ export function AccountBatchImportButton({
         creditLimit: "50000",
         creditBillMode: t("entityForm.creditBillMode.separate"),
       },
+      // 多币种示例（2026-10-20）：父账户行币种留空（服务端锁本位币）、账户级别=父账户；
+      // 子账户行填上级账户名 + 子户币种。父账户必须先存在，所以两行要分两次导入。
+      { name: t("settings.accounts.importSampleMultiCurrencyParent"), kind: t("account.kind.cash"), owner, level: t("settings.accounts.import.accountLevelAggregate") },
+      {
+        name: t("settings.accounts.importSampleMultiCurrencyChild"),
+        kind: t("account.kind.cash"),
+        owner,
+        currency: "JPY",
+        parent: t("settings.accounts.importSampleMultiCurrencyParent"),
+        level: t("settings.accounts.import.accountLevelNormal"),
+      },
     ], guideRowsForSheet("funding"), t);
     appendStyledSheet(XLSX, workbook, t(settlementSheet.sheetKey), settlementSheet.type, settlementSheet.fields, [
       { name: t("settings.accounts.importSampleLoan"), loanCategory: t("loan.type.home"), counterparty, owner, currency: baseCurrency },
@@ -2411,8 +2562,10 @@ export function AccountBatchImportButton({
     setFileName(file.name);
     try {
       const categories = await fetchCategories();
-      const nextRows = await buildAccountImportRows(file, t, { groups, institutions, counterparties, categories, baseCurrency });
+      const accounts = await fetchExistingAccounts();
+      const nextRows = await buildAccountImportRows(file, t, { groups, institutions, counterparties, categories, accounts, baseCurrency });
       setImportCategories(categories);
+      setImportAccounts(accounts);
       if (nextRows.length === 0) {
         setRows([]);
         setActiveSheet("");
@@ -2535,8 +2688,22 @@ export function AccountBatchImportButton({
                 continue;
               }
             }
+            if (row.parentName && !row.parentAccountId) {
+              errors.push({
+                key: row.key,
+                sheet: row.sheet,
+                sourceRow: row.sourceRow,
+                name: row.name,
+                message: t("settings.accounts.import.parentAccountNotFound", { name: row.parentName }),
+              });
+              continue;
+            }
+            // 父账户是统计单元：不提交上级、币种（服务端锁本位币）、卡号/账单/额度/期初余额。
+            const aggregateRow = row.accountLevel === "aggregate";
             body = {
               name: row.name,
+              isAggregate: aggregateRow || undefined,
+              parentId: aggregateRow ? undefined : (row.parentAccountId || undefined),
               loanCategoryId: loanCategoryId || undefined,
               kind: row.kind === "fixed_asset" ? "investment" : row.kind,
               investProductType: row.kind === "fixed_asset" ? "property" : row.investProductType,
@@ -2544,17 +2711,17 @@ export function AccountBatchImportButton({
               institutionId,
               counterpartyId,
               groupId: ownerId,
-              currency: row.currency,
-              numberMasked: row.numberMasked,
-              billingDay: row.billingDay,
-              repaymentDay: row.repaymentDay,
-              creditLimit: row.creditLimit,
-              creditBillMode: row.creditBillMode,
+              currency: aggregateRow ? undefined : row.currency,
+              numberMasked: aggregateRow ? undefined : row.numberMasked,
+              billingDay: aggregateRow ? undefined : row.billingDay,
+              repaymentDay: aggregateRow ? undefined : row.repaymentDay,
+              creditLimit: aggregateRow ? undefined : row.creditLimit,
+              creditBillMode: aggregateRow ? undefined : row.creditBillMode,
               fundUnitsDecimals: row.fundUnitsDecimals,
               costBasisMethod: row.costBasisMethod,
               tradingCalendar: row.tradingCalendar,
-              initialBalance: row.initialBalance,
-              initialBalanceDate: row.initialBalanceDate,
+              initialBalance: aggregateRow ? undefined : row.initialBalance,
+              initialBalanceDate: aggregateRow ? undefined : row.initialBalanceDate,
               note: row.note,
             };
           }

@@ -37,6 +37,7 @@ import {
   accountRecordLockErrorKey,
   getInvestmentAccountView,
   isDepositAccount,
+  supportsMultiCurrencyHierarchy,
 } from "@/lib/account-kind-utils";
 import { FIXED_ASSET_TYPES, isFixedAssetAccountLike } from "@/lib/fixed-asset";
 import { supportsTradingCalendarForAccount, TRADING_CALENDARS } from "@/lib/fund/trading-calendar";
@@ -141,6 +142,8 @@ function accountParentErrorKey(code: string | undefined) {
     case "ACCOUNT_PARENT_SELF": return "settings.accounts.parentError.self";
     case "ACCOUNT_PARENT_CURRENCY_CONFLICT": return "settings.accounts.parentError.currencyConflict";
     case "ACCOUNT_PARENT_KIND_MISMATCH": return "settings.accounts.parentError.kindMismatch";
+    case "ACCOUNT_HIERARCHY_KIND_NOT_ALLOWED": return "settings.accounts.parentError.kindNotAllowed";
+    case "ACCOUNT_PARENT_KIND_NOT_ALLOWED": return "settings.accounts.parentError.kindNotAllowed";
     default: return "";
   }
 }
@@ -239,7 +242,8 @@ export default function SettingsAccountsPage() {
   // 所以编辑父账户时这个下拉不渲染；子账户可以改挂到别的父账户或解除归属。
   const parentAccountOptions = useMemo<Array<{ id: string; label: string; kind: string; subLabel: string }>>(
     () => accounts
-      .filter((account) => account.isAggregate === true && account.id !== editingId)
+      // 只有资金账户（含信用卡）能当父账户；历史遗留的非资金父账户不再作为新挂接候选。
+      .filter((account) => account.isAggregate === true && account.id !== editingId && supportsMultiCurrencyHierarchy(account.kind))
       .map((account) => ({
         id: account.id,
         label: account.name,
@@ -1510,6 +1514,9 @@ export default function SettingsAccountsPage() {
         const parentOptionsForKind = parentAccountOptions
           .filter((option) => option.kind === editKind)
           .map(({ id, label, subLabel }) => ({ id, label, subLabel }));
+        // 只有资金账户（含信用卡）允许父子层级（2026-10-20 用户裁定）。
+        // 历史数据里若已有归属，仍显示下拉以便解除，但不允许新挂接/升级。
+        const supportsHierarchy = supportsMultiCurrencyHierarchy(editKind);
         const settlementCounterparties = counterparties.filter((counterparty) => isSettlementCounterpartyType(counterparty.type));
         // Resolve the current account's object even when it is outside the
         // settlement-counterparty filter, such as a merchant fallback.
@@ -1578,7 +1585,8 @@ export default function SettingsAccountsPage() {
                       ? `${t("settings.accounts.hierarchyMultiCurrency")} · ${tf("settings.accounts.hierarchyChildCount", { count: subAccountCountByParentId.get(editingAccount.id) ?? 0 })}`
                       : tf("settings.accounts.hierarchyAggregateHint", { count: subAccountCountByParentId.get(editingAccount.id) ?? 0 })}
                   </div>
-                  {(subAccountCountByParentId.get(editingAccount.id) ?? 0) === 1 ? (
+                  {/* 0 个子户（可直接新建的空父账户）也能取消：后端会删掉父行。 */}
+                  {(subAccountCountByParentId.get(editingAccount.id) ?? 0) <= 1 ? (
                     <button
                       type="button"
                       onClick={() => void downgradeMultiCurrencyParent(editingAccount)}
@@ -1640,8 +1648,9 @@ export default function SettingsAccountsPage() {
                       onCreateClick={() => setNestedEntityType("group")} createLabel={t("settings.accounts.addOwner")} />
                   </div>
                 </div>
-                {/* 多币种归属：子账户可改挂到别的父账户或解除归属；父账户自己不能有上级。 */}
-                {!editingAccount.isAggregate && (
+                {/* 多币种归属：只有资金账户（含信用卡）才有上级账户；父账户自己不能有上级。
+                    历史数据已有归属时仍显示，方便解除。 */}
+                {!editingAccount.isAggregate && (supportsHierarchy || Boolean(editForm.parentId)) && (
                   <div>
                     <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.parentAccount")}</label>
                     <SmartSelect mode="single" value={editForm.parentId || ""}
@@ -1662,8 +1671,9 @@ export default function SettingsAccountsPage() {
                         {t("settings.accounts.parentAccountEmpty")}
                       </p>
                     ) : null}
-                    {/* 子账户不能再升级成父账户（服务端同样拒绝）：先解除归属保存后再升级。 */}
-                    {editForm.parentId ? null : (
+                    {/* 子账户不能再升级成父账户（服务端同样拒绝）：先解除归属保存后再升级。
+                        非资金账户不允许升级为多币种父账户。 */}
+                    {editForm.parentId || !supportsHierarchy ? null : (
                       <button
                         type="button"
                         onClick={() => void upgradeEditingAccountToMultiCurrency(editingAccount)}

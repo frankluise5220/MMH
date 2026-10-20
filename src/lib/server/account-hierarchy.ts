@@ -3,6 +3,7 @@ import type { Prisma, PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { normalizeCurrency } from "@/lib/currency";
 import { isAggregateAccount, multiCurrencyChildName } from "@/lib/account-hierarchy";
+import { supportsMultiCurrencyHierarchy } from "@/lib/account-kind-utils";
 import { convertCurrencyAmounts, getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
 
 type Db = Prisma.TransactionClient | PrismaClient;
@@ -205,6 +206,10 @@ export async function upgradeAccountToMultiCurrency(params: {
     if (!account) throw new Error("account not found");
     if (isAggregateAccount(account)) throw new Error("already multi-currency");
     if (account.parentId) throw new Error("child account cannot be upgraded");
+    // 只有资金账户（现金/借记卡/电子钱包/信用卡）能升级为多币种父账户（2026-10-20 用户裁定）。
+    if (!supportsMultiCurrencyHierarchy(account.kind)) {
+      throw new Error("only cash, debit card, e-wallet and credit card accounts can be multi-currency");
+    }
 
     const childCurrency = normalizeCurrency(account.currency);
     const parent = await tx.account.create({
@@ -253,6 +258,9 @@ export async function upgradeAccountToMultiCurrency(params: {
 /**
  * 降级：只在还剩一个子账户时允许。子户提升为根账户（keepName 决定是否改回原名），
  * 父行删除（`onDelete: SetNull` 会先解掉层级）。
+ *
+ * 空父账户（0 个子户，2026-10-20 起可直接创建）没有可提升的子户，取消多币种
+ * 等价于直接删除父行——否则用户建了空父账户就再也删不掉。
  */
 export async function downgradeMultiCurrencyAccount(params: {
   householdId: string;
@@ -263,6 +271,10 @@ export async function downgradeMultiCurrencyAccount(params: {
     select: { id: true, name: true, Children: { select: { id: true, name: true } } },
   });
   if (!parent) throw new Error("multi-currency account not found");
+  if (parent.Children.length === 0) {
+    await prisma.account.delete({ where: { id: parent.id } });
+    return { childId: "", childName: "" };
+  }
   if (parent.Children.length !== 1) throw new Error("only single-child parent can be downgraded");
 
   const child = parent.Children[0];

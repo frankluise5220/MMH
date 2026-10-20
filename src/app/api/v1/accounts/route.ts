@@ -25,6 +25,7 @@ import {
   isPureInvestmentAccount,
   normalizeUserFacingAccountKind,
   resolveRequestedUserFacingAccountKind,
+  supportsMultiCurrencyHierarchy,
 } from "@/lib/account-kind-utils";
 import { computeInvestBalances } from "@/lib/invest-balance";
 import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
@@ -164,9 +165,32 @@ export async function POST(req: NextRequest) {
     const investProductType = isInvestment ? normalizeFundProductType(body.investProductType) : null;
     const fixedAssetType = isInvestment && investProductType === "property" ? normalizeFixedAssetType(body.fixedAssetType) : null;
     const tradingCalendar = resolveTradingCalendarForAccount(kind, investProductType, body.tradingCalendar);
+    // 多币种父级账户可以直接创建（2026-10-20 用户裁定）：允许暂时没有子账户。
+    // 父账户是统计单元——币种固定为账簿本位币、不能有上级、不能带期初余额；
+    // 余额由子账户按本位币折算汇总（初始为 0）。
+    const createAggregate = body.isAggregate === true || String(body.isAggregate ?? "").trim().toLowerCase() === "true";
     const initialBalanceRaw = String(body.initialBalance ?? "").trim();
     const initialBalance = initialBalanceRaw ? Number(initialBalanceRaw) : null;
     const initialBalanceDate = initialBalanceRaw ? parseDateOnly(body.initialBalanceDate) : null;
+
+    if (createAggregate && initialBalanceRaw) {
+      return NextResponse.json(
+        { ok: false, code: "ACCOUNT_AGGREGATE_INITIAL_BALANCE_FORBIDDEN", error: "A multi-currency parent account has no initial balance of its own" },
+        { status: 400 },
+      );
+    }
+    // 只有资金账户（现金/借记卡/电子钱包/信用卡）允许父子层级（2026-10-20 用户裁定）。
+    // 存款、投资、固定资产、贷款、往来款、保险都不允许建父账户或挂上级。
+    if ((createAggregate || String(body.parentId ?? "").trim()) && !supportsMultiCurrencyHierarchy(kind)) {
+      return NextResponse.json(
+        {
+          ok: false,
+          code: "ACCOUNT_HIERARCHY_KIND_NOT_ALLOWED",
+          error: "Only cash, debit card, e-wallet and credit card accounts can have a parent account",
+        },
+        { status: 400 },
+      );
+    }
 
     if (isConsumerLoan && kind !== "loan") {
       return NextResponse.json({ ok: false, code: "CONSUMER_LOAN_KIND_REQUIRED", error: "Consumer loan accounts must use loan account kind" }, { status: 400 });
@@ -200,7 +224,66 @@ export async function POST(req: NextRequest) {
       isConsumerLoan = loanType === "consumer";
     }
     const currencyInput = String(body.currency ?? "").trim();
-    const currency = normalizeCurrency(currencyInput || await getHouseholdBaseCurrency(householdId));
+    // 父账户的币种就是统计币种：账簿本位币，忽略传入值（与升级/编辑同一口径）。
+    const currency = createAggregate
+      ? await getHouseholdBaseCurrency(householdId)
+      : normalizeCurrency(currencyInput || await getHouseholdBaseCurrency(householdId));
+
+    // 多币种父子层级（2026-10-18）：创建账户时允许指定已存在的父账户（isAggregate），
+    // 口径与 PATCH 完全一致——父账户必须是本账簿的多币种父账户、只能是根、类型一致，
+    // 且同一父账户下同币种只能有一个子户（DB 上同样有唯一约束）。
+    const requestedParentId = String(body.parentId ?? "").trim() || null;
+    if (requestedParentId && createAggregate) {
+      return NextResponse.json(
+        { ok: false, code: "ACCOUNT_AGGREGATE_CANNOT_HAVE_PARENT", error: "A multi-currency parent account cannot belong to another parent" },
+        { status: 400 },
+      );
+    }
+    if (requestedParentId) {
+      const parentAccount = await prisma.account.findFirst({
+        where: { id: requestedParentId, householdId },
+        select: { id: true, kind: true, isAggregate: true, parentId: true },
+      });
+      if (!parentAccount) {
+        return NextResponse.json(
+          { ok: false, code: "ACCOUNT_PARENT_NOT_FOUND", error: "Parent account not found in this household" },
+          { status: 404 },
+        );
+      }
+      if (!parentAccount.isAggregate || parentAccount.parentId) {
+        return NextResponse.json(
+          { ok: false, code: "ACCOUNT_PARENT_NOT_AGGREGATE", error: "The selected parent account is not a multi-currency parent" },
+          { status: 400 },
+        );
+      }
+      if (parentAccount.kind !== kind) {
+        return NextResponse.json(
+          { ok: false, code: "ACCOUNT_PARENT_KIND_MISMATCH", error: "A sub-account must have the same type as its parent account" },
+          { status: 400 },
+        );
+      }
+      // 父账户本身必须仍是资金账户：历史遗留的非资金父账户不能再挂新子户。
+      if (!supportsMultiCurrencyHierarchy(parentAccount.kind)) {
+        return NextResponse.json(
+          {
+            ok: false,
+            code: "ACCOUNT_PARENT_KIND_NOT_ALLOWED",
+            error: "Only cash, debit card, e-wallet and credit card accounts can be parents",
+          },
+          { status: 400 },
+        );
+      }
+      const existingSibling = await prisma.account.findFirst({
+        where: { householdId, parentId: parentAccount.id, currency, isPlaceholder: { not: true } },
+        select: { id: true },
+      });
+      if (existingSibling) {
+        return NextResponse.json(
+          { ok: false, code: "ACCOUNT_PARENT_CURRENCY_CONFLICT", error: "The parent account already has a sub-account in this currency" },
+          { status: 409 },
+        );
+      }
+    }
 
     const group = requestedGroupId
       ? await prisma.accountGroup.findFirst({ where: { id: requestedGroupId, householdId } })
@@ -320,6 +403,7 @@ export async function POST(req: NextRequest) {
     const requestedLiabilityDirection = body.liabilityDirection !== undefined ? normalizeLiabilityDirection(kind, body.liabilityDirection) : null;
     const supportsDefaultFundQueryApi = isInvestment && (investProductType === "fund" || investProductType === "money");
     const shouldCreateInitialBalance =
+      !createAggregate &&
       !isInvestment &&
       !isDepositAccount({ kind, investProductType }) &&
       initialBalance != null &&
@@ -347,6 +431,9 @@ export async function POST(req: NextRequest) {
           counterpartyId: kind === "settlement" || kind === "loan" ? counterparty?.id ?? null : null,
           userId: owner?.id ?? null,
           householdId,
+          ...(requestedParentId ? { parentId: requestedParentId } : {}),
+          // 多币种父账户：自身不记账，余额由子户折算汇总（初始 0）。
+          isAggregate: createAggregate,
           isActive: true,
           billingDay,
           repaymentDay,
@@ -415,6 +502,11 @@ export async function POST(req: NextRequest) {
     });
     if (shouldCreateInitialBalance) {
       await recalcAndSaveAccountBalance(account.id);
+    }
+    // 新子户挂到父账户后，父账户的折合余额必须立刻重算（否则统计页少一个子户）。
+    if (requestedParentId) {
+      await recomputeAggregateAccountBalance(prisma, requestedParentId)
+        .catch(logger.catchLog("recompute parent balance after account create failed", "accounts/route.ts"));
     }
     if (isCreditLike) {
       await syncCreditCardInstitutionSettings(prisma, {
@@ -784,6 +876,17 @@ export async function PUT(req: NextRequest) {
         if (parentAccount.kind !== nextKind) {
           return NextResponse.json(
             { ok: false, code: "ACCOUNT_PARENT_KIND_MISMATCH", error: "A sub-account must have the same type as its parent account" },
+            { status: 400 },
+          );
+        }
+        // 只有资金账户（含信用卡）允许父子层级（2026-10-20 用户裁定）。
+        if (!supportsMultiCurrencyHierarchy(nextKind) || !supportsMultiCurrencyHierarchy(parentAccount.kind)) {
+          return NextResponse.json(
+            {
+              ok: false,
+              code: "ACCOUNT_HIERARCHY_KIND_NOT_ALLOWED",
+              error: "Only cash, debit card, e-wallet and credit card accounts can have a parent account",
+            },
             { status: 400 },
           );
         }
@@ -1160,6 +1263,8 @@ export async function GET(req: Request) {
     .map((account) => ({
       id: account.id,
       name: account.name,
+      parentId: account.parentId ?? null,
+      isAggregate: account.isAggregate === true,
       balance: isPureInvestmentAccount(account)
         ? investBalByAccountId.get(account.id)?.marketValue ?? 0
         : account.kind === AccountKind.insurance

@@ -39,6 +39,17 @@ export function isFundCashAccountKind(kind: string | null | undefined): kind is 
   return FUND_CASH_ACCOUNT_KINDS.includes(String(kind ?? "") as FundCashAccountKind);
 }
 
+/**
+ * 多币种父/子层级只允许资金账户（含信用卡）（2026-10-20 用户裁定）：
+ * 现金、借记卡、电子钱包、信用卡。
+ * 存款、投资/基金/股票持仓、固定资产、贷款、往来款、保险都不允许挂上级或不设上级。
+ */
+export const MULTI_CURRENCY_HIERARCHY_KINDS = ["cash", "bank_debit", "ewallet", "bank_credit"] as const;
+
+export function supportsMultiCurrencyHierarchy(kind: string | null | undefined): boolean {
+  return (MULTI_CURRENCY_HIERARCHY_KINDS as readonly string[]).includes(String(kind ?? ""));
+}
+
 export function canChangeAccountKindWithRecords(
   fromKind: string | null | undefined,
   toKind: string | null | undefined,
