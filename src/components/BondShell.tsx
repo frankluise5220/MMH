@@ -17,6 +17,7 @@ import { ResizableVerticalSplit } from "./ResizableVerticalSplit";
 import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { amountToneClass as amountClass } from "@/lib/client/colors";
 import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
+import { useEntryReconcileState } from "@/lib/client/use-entry-reconcile-state";
 import { parseDepositInterestPayout } from "@/lib/deposit-interest-payout";
 import { formatMoney } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
@@ -147,6 +148,8 @@ export function BondShell({
     return entries.filter((entry) => relatedIds.has(entry.id));
   }, [entries, selectedLot]);
   const visibleEntryIds = useMemo(() => visibleEntries.map((entry) => entry.id), [visibleEntries]);
+  // 债券明细行就是背后的现金流水：现金明细页锁定的记录，这里同样要显示锁并能就地解锁。
+  const { isReconciled } = useEntryReconcileState(visibleEntryIds);
 
   useEffect(() => {
     setEntryPage(1);
@@ -171,7 +174,10 @@ export function BondShell({
   // 债券视图走服务端渲染 + router.refresh()，与存款视图同一刷新契约。
   useEffect(() => {
     const handler = (event: Event) => {
-      const detail = (event as CustomEvent<{ balanceChanged?: boolean }>).detail;
+      const detail = (event as CustomEvent<{ balanceChanged?: boolean; reason?: string }>).detail;
+      // 对账锁定/解锁只改 reconciledAt / reconciledBalance：业务明细不变，行内锁标记由
+      // `useEntryReconcileState` 就地更新；不重取服务端数据，避免整表替换。
+      if (detail?.reason === "entry-reconcile") return;
       if (detail?.balanceChanged === false) return;
       router.refresh();
     };
@@ -477,9 +483,11 @@ export function BondShell({
               selectAllScope="renderedRows"
               selectedKeys={selectedEntryIds}
               onSelectionChange={setSelectedEntryIds}
-              rowActions={(entry) => <EntryRowActions entryId={entry.id} edit={entry.edit} />}
-              rowActionsWidth={84}
-              rowActionsMinWidth={76}
+              rowActions={(entry) => (
+                <EntryRowActions entryId={entry.id} edit={entry.edit} reconciled={isReconciled(entry.id)} />
+              )}
+              rowActionsWidth={112}
+              rowActionsMinWidth={100}
               rowClassName={(entry) => (selectedEntryIds.has(entry.id) ? "bg-blue-50/70 hover:bg-blue-50/70" : "hover:bg-blue-50/40")}
               pagination={{
                 page: safePage,

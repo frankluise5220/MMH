@@ -19,6 +19,7 @@ import {
   usePruneBasicDetailSelection,
 } from "@/components/BasicDetailSelection";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { useEntryReconcileState } from "@/lib/client/use-entry-reconcile-state";
 import { formatDateDisplay } from "@/lib/date-utils";
 import { formatCurrencyMoney, formatPercent } from "@/lib/format";
 import { pnlClassFromRedUp } from "@/lib/client/colors";
@@ -250,6 +251,8 @@ function FixedAssetTransactionTable({
   const { selectedIds, setSelection } = useBasicDetailSelection();
   const currentEntryIds = useMemo(() => selectedEntries.map((entry) => entry.id), [selectedEntries]);
   usePruneBasicDetailSelection(currentEntryIds);
+  // 房产明细行就是背后的现金流水：现金明细页锁定的记录，这里同样要显示锁并能就地解锁。
+  const { isReconciled } = useEntryReconcileState(currentEntryIds);
   const normalizedAccountOptions = useMemo(
     () => accountOptions.map((account) => {
       const label = formatAccountTableLabel(account, account.name ?? "", getAccountLabelFieldsPreference());
@@ -362,11 +365,17 @@ function FixedAssetTransactionTable({
               <Paperclip className="h-3.5 w-3.5" />
             </button>
           ) : null}
-          {entry.cashEntryId ? <EntryRowActions entryId={entry.id} customEditEvent={buildPropertyEditEvent(entry)} /> : null}
+          {entry.cashEntryId ? (
+            <EntryRowActions
+              entryId={entry.id}
+              customEditEvent={buildPropertyEditEvent(entry)}
+              reconciled={isReconciled(entry.id)}
+            />
+          ) : null}
         </>
       )}
-      rowActionsWidth={112}
-      rowActionsMinWidth={92}
+      rowActionsWidth={140}
+      rowActionsMinWidth={116}
       pagination={{
         page: transactionPage,
         pageSize: transactionPageSize,

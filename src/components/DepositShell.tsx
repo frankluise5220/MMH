@@ -19,6 +19,7 @@ import { ProductLibraryModal } from "./ProductLibraryModal";
 import { ResizableVerticalSplit } from "./ResizableVerticalSplit";
 import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
+import { useEntryReconcileState } from "@/lib/client/use-entry-reconcile-state";
 import { amountToneClass as amountClass } from "@/lib/client/colors";
 import {
   isPeriodicDepositInterestPayout,
@@ -267,6 +268,9 @@ export function DepositShell({
       relatedIds.has(entry.id) || entry.depositSourceEntryId === selectedLot.id,
     );
   }, [entries, selectedLot]);
+  const visibleEntryIds = useMemo(() => visibleEntries.map((entry) => entry.id), [visibleEntries]);
+  // 存款明细行就是背后的现金流水：现金明细页锁定的记录，这里同样要显示锁并能就地解锁。
+  const { isReconciled } = useEntryReconcileState(visibleEntryIds);
 
   useEffect(() => {
     setEntryPage(1);
@@ -286,7 +290,10 @@ export function DepositShell({
   // (edits via EntryRowActions, batch operations, deposits created elsewhere).
   useEffect(() => {
     const handler = (event: Event) => {
-      const detail = (event as CustomEvent<{ balanceChanged?: boolean }>).detail;
+      const detail = (event as CustomEvent<{ balanceChanged?: boolean; reason?: string }>).detail;
+      // 对账锁定/解锁只改 reconciledAt / reconciledBalance：业务明细不变，行内锁标记由
+      // `useEntryReconcileState` 就地更新；不重取服务端数据，避免整表替换。
+      if (detail?.reason === "entry-reconcile") return;
       if (detail?.balanceChanged === false) return;
       router.refresh();
     };
@@ -742,12 +749,12 @@ export function DepositShell({
                         onClick={() => linkDepositCashFlow(entry)}
                       />
                     ) : null}
-                    <EntryRowActions entryId={entry.id} edit={entry.edit} />
+                    <EntryRowActions entryId={entry.id} edit={entry.edit} reconciled={isReconciled(entry.id)} />
                   </>
                 );
               }}
-              rowActionsWidth={112}
-              rowActionsMinWidth={92}
+              rowActionsWidth={140}
+              rowActionsMinWidth={116}
               pagination={{
                 page: safePage,
                 pageSize: entryPageSize,

@@ -24,3 +24,24 @@ export async function callReconcileEntries(body: {
   });
   return res.json();
 }
+
+export type EntryReconcileState = { reconciledAt: string; reconciledBalance: number | null };
+
+export type EntryReconcileStateResponse =
+  | { ok: true; data: { states: Record<string, EntryReconcileState> } }
+  | { ok: false; error: string; code?: string };
+
+/**
+ * 批量读取一批流水的对账锁定状态（只返回已锁定的 id）。
+ *
+ * 投资/资产类视图的业务明细行就是背后的现金流水，行内锁标记用它取状态；
+ * 解锁仍走 `callReconcileEntries({ action: "unlock" })`。
+ */
+export async function callEntryReconcileState(entryIds: string[]): Promise<EntryReconcileStateResponse> {
+  const res = await fetch("/api/v1/entries/reconcile-state", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ entryIds }),
+  });
+  return res.json();
+}

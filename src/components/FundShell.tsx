@@ -17,6 +17,9 @@ import { useOutsideClose } from "@/lib/client/useOutsideClose";
 import { toNumber } from "@/lib/date-utils";
 import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
+import { useEntryReconcileState } from "@/lib/client/use-entry-reconcile-state";
+import { setEntryModalReconciledReadOnly } from "@/lib/client/entryModalLock";
+import { BasicDetailReconcileLockButton } from "@/components/BasicDetailSelection";
 
 import { ChartLine, Download, Library, List, Pencil, Settings2, SlidersHorizontal, Trash2, X } from "lucide-react";
 
@@ -783,7 +786,10 @@ export function FundShell(props: Props) {
   const positionEntryDefaultsRef = useRef<any | null>(null);
   const [positionEntryOpenSignal, setPositionEntryOpenSignal] = useState(0);
   const [detailEditSignal, setDetailEditSignal] = useState<{ id: string; value: number } | null>(null);
+  // 对账锁状态由 `useEntryReconcileState` 异步取回；编辑入口需要同步读到最新值，走 ref。
+  const isReconciledRef = useRef<(entryId: string) => boolean>(() => false);
   const openDetailEdit = useCallback((entryId: string) => {
+    setEntryModalReconciledReadOnly(isReconciledRef.current(entryId));
     setDetailEditSignal({ id: entryId, value: Date.now() });
   }, []);
   const [columnWidths, setColumnWidths] = useState<Record<string, Record<string, number>>>({});
@@ -810,6 +816,16 @@ export function FundShell(props: Props) {
 
   // Shadow props with reactive local state
   const d = localData;
+
+  // 资金明细行就是背后的现金流水：现金明细页锁定的记录，基金/理财/贵金属侧同样显示锁并能就地解锁。
+  const detailReconcileIds = useMemo(
+    () => (d.allEntries || []).map((entry: any) => String(entry?.id ?? "")),
+    [d.allEntries],
+  );
+  const { isReconciled } = useEntryReconcileState(detailReconcileIds);
+  useEffect(() => {
+    isReconciledRef.current = isReconciled;
+  }, [isReconciled]);
 
   useEffect(() => {
     if (!detailEditSignal) return;
@@ -1091,11 +1107,27 @@ export function FundShell(props: Props) {
 
 
 
-  async function exportXlsx(scope?: "current" | "all") {
+  async function exportXlsx(scope?: "current" | "all" | "selectedFunds") {
 
-    const rows = (scope === "current" ? filtered : (allEntries || [])) as any[];
+    const rows = (scope === "current"
+      ? filtered
+      : scope === "selectedFunds"
+        ? [...(allEntries || [])]
+          .filter((e: any) => selectedFundCodes.has(entryAssetKey(e)))
+          .sort((a: any, b: any) => {
+            const byApplyDate = fundApplyDateOf(b).localeCompare(fundApplyDateOf(a));
+            if (byApplyDate !== 0) return byApplyDate;
+            const byCreatedAt = fmtDate(b.createdAt).localeCompare(fmtDate(a.createdAt));
+            if (byCreatedAt !== 0) return byCreatedAt;
+            return String(b.id ?? "").localeCompare(String(a.id ?? ""));
+          })
+        : (allEntries || [])) as any[];
 
-    const label = scope === "current" ? fundCode || "current" : "all";
+    const label = (scope === "current"
+      ? fundCode || "current"
+      : scope === "selectedFunds"
+        ? (Array.from(selectedFundCodes).slice(0, 6).join("-") || "selected")
+        : "all").replace(/[\\/:*?"<>|]/g, "_");
 
     const header = [
       t("fundShell.col.applyDate"),
@@ -1135,11 +1167,16 @@ export function FundShell(props: Props) {
 
       const subtype = fl(t, e.fundSubtype, e.source, e.fundProductType).label;
 
-      // redeem/dividend_cash: the cash receiver is toAccountId
+      // redeem/dividend_cash/regular-invest refund: the cash receiver is toAccountId
 
-      const isR = e.fundSubtype === "redeem" || e.fundSubtype === "dividend_cash";
+      const isR = e.fundSubtype === "redeem" || e.fundSubtype === "dividend_cash" || (e.fundSubtype === "buy_failed" && e.source === "regular_invest_refund");
 
-      const cashAccLabel = accountLabelByIdLocal.get(String(isR ? e.toAccountId : e.accountId)) ?? "";
+      const cashAccId = isR ? e.toAccountId : e.accountId;
+
+      // skip when the resolved id is the fund account itself (legacy rows without a cash leg)
+      const cashAccLabel = cashAccId && String(cashAccId) !== String(isR ? e.accountId : e.toAccountId)
+        ? (accountLabelByIdLocal.get(String(cashAccId)) ?? "")
+        : "";
 
       const cashAccName = cashAccLabel || "-";
 
@@ -1499,7 +1536,11 @@ export function FundShell(props: Props) {
 
   useEffect(() => {
     const onFundChanged = (event: Event) => {
-      const detail = (event as CustomEvent<{ balanceChanged?: boolean; accountIds?: string[] }>).detail;
+      const detail = (event as CustomEvent<{ balanceChanged?: boolean; accountIds?: string[]; reason?: string }>).detail;
+      // 对账锁定/解锁只改 reconciledAt / reconciledBalance：业务明细、持仓、备注都不会变，
+      // 行内锁标记由 `useEntryReconcileState` 就地更新。这里若重取整份 shell-data，
+      // 会把 allEntries 整体替换成接口版本（备注等文字闪烁/跳变），没有收益。
+      if (detail?.reason === "entry-reconcile") return;
       // Remark-only edits do not change holdings: skip the shell refresh.
       if (detail?.balanceChanged === false) return;
       // Scoped saves refresh only the affected accounts. When the event names
@@ -1551,6 +1592,16 @@ export function FundShell(props: Props) {
         return String(b.id ?? "").localeCompare(String(a.id ?? ""));
       });
   }, [d.allEntries, entryAssetKey, fundApplyDateOf, fundCode, isWealthAccount, showAllRecords]);
+  // 明细表勾选的行 → 去重后的基金（理财/贵金属按产品），供「导出选中基金」使用。
+  const selectedFundCodes = useMemo(() => {
+    const codes = new Set<string>();
+    for (const entry of filtered as any[]) {
+      if (!selectedIds.has(String(entry?.id ?? ""))) continue;
+      const key = entryAssetKey(entry);
+      if (key) codes.add(key);
+    }
+    return codes;
+  }, [filtered, selectedIds, entryAssetKey]);
   const selectedPosition = useMemo(
     () => (d.positions || []).find((p: any) => positionAssetKey(p) === fundCode) ?? null,
     [d.positions, fundCode, positionAssetKey],
@@ -3072,9 +3123,12 @@ export function FundShell(props: Props) {
       : null;
     const editableInvestmentEntry = linkedBuyForRefund ?? e;
     const isUnitsReconcile = isFundUnitsReconcileEntry(e);
+    // 该行背后的现金流水已「对账」锁定：行内显示锁标记，点它就地解锁（与资金明细页同一入口）。
+    const locked = isReconciled(String(e.id ?? ""));
 
     return (
       <div className="flex items-center justify-end gap-1">
+        <BasicDetailReconcileLockButton entryId={String(e.id ?? "")} reconciled={locked} />
         {!isUnitsReconcile && !isWealthAccount && e.fundCode && e.fundSubtype === "buy" && statusOf(e) !== "buy_failed" && (e.fundUnits == null || Number(e.fundUnits) === 0) ? <FillNavButton entryId={e.id} fundCode={e.fundCode} action={fillNavAction} onFilled={(data) => handleEntryNavFilled(e, data)} /> : null}
         {!isUnitsReconcile ? (
           e.fundProductType === "wealth" || e.fundProductType === "bond" ? (
@@ -3233,10 +3287,10 @@ export function FundShell(props: Props) {
         <button
           type="button"
           onClick={() => { void deleteDetailEntry(e); }}
-          disabled={singleDeletingIds.has(String(e.id ?? ""))}
+          disabled={singleDeletingIds.has(String(e.id ?? "")) || locked}
           className="flex h-6 w-6 items-center justify-center rounded border border-red-200 bg-white text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50"
-          title={singleDeletingIds.has(String(e.id ?? "")) ? t("stockPanel.deleting") : t("common.delete")}
-          aria-label={singleDeletingIds.has(String(e.id ?? "")) ? t("stockPanel.deleting") : t("common.delete")}
+          title={locked ? t("reconcile.lockedError") : singleDeletingIds.has(String(e.id ?? "")) ? t("stockPanel.deleting") : t("common.delete")}
+          aria-label={locked ? t("reconcile.lockedError") : singleDeletingIds.has(String(e.id ?? "")) ? t("stockPanel.deleting") : t("common.delete")}
         >
           <Trash2 className="h-3.5 w-3.5" />
         </button>
@@ -3261,6 +3315,7 @@ export function FundShell(props: Props) {
     fillNavAction,
     fundUnitsDecimals,
     handleEntryNavFilled,
+    isReconciled,
     isWealthAccount,
     investmentAccountSSOptions,
     investmentAccounts,
@@ -3374,10 +3429,24 @@ export function FundShell(props: Props) {
                 kind="fund"
                 accountId={accountId}
                 fundAccountName={selectedAccount?.name ?? t("viewImport.fundAccount")}
-                exportItems={[{
-                  label: t("fundShell.export.all"),
-                  onClick: () => void exportXlsx("all"),
-                }]}
+                exportItems={[
+                  {
+                    label: t("fundShell.export.currentDetail", { kind: t("txForm.fund") }),
+                    disabled: !fundCode,
+                    onClick: () => void exportXlsx("current"),
+                  },
+                  {
+                    label: selectedFundCodes.size > 0
+                      ? t("fundShell.export.selectedDetail", { kind: t("txForm.fund"), count: selectedFundCodes.size })
+                      : t("fundShell.export.selected", { kind: t("txForm.fund") }),
+                    disabled: selectedFundCodes.size === 0,
+                    onClick: () => void exportXlsx("selectedFunds"),
+                  },
+                  {
+                    label: t("fundShell.export.all"),
+                    onClick: () => void exportXlsx("all"),
+                  },
+                ]}
               />
             ) : null}
 
@@ -3793,6 +3862,17 @@ export function FundShell(props: Props) {
                   <Trash2 className="h-3.5 w-3.5" />
                 </button>
 
+                <button
+                  type="button"
+                  onClick={() => void exportXlsx("selectedFunds")}
+                  disabled={selectedFundCodes.size === 0}
+                  className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white text-slate-600 hover:bg-blue-50 hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-40"
+                  title={t("fundShell.export.selectedDetail", { kind: isWealthAccount ? t("fundShell.kind.wealth") : t("txForm.fund"), count: selectedFundCodes.size })}
+                  aria-label={t("fundShell.export.selectedDetail", { kind: isWealthAccount ? t("fundShell.kind.wealth") : t("txForm.fund"), count: selectedFundCodes.size })}
+                >
+                  <Download className="h-3.5 w-3.5" />
+                </button>
+
                 <span
                   className="h-6 rounded border border-blue-200 bg-blue-50 px-2 text-xs font-medium leading-6 tabular-nums text-blue-700"
                   title={t("fundShell.selectedTitle", { count: batchTargetIds.length })}
@@ -3933,23 +4013,33 @@ export function FundShell(props: Props) {
 
               {showExportMenu && (
 
-                <div className="absolute right-0 top-7 z-50 min-w-[160px] rounded-lg border border-slate-200 bg-white py-1 shadow-soft">
+                <div className="absolute right-0 top-7 z-50 min-w-[170px] w-max max-w-[80vw] rounded-lg border border-slate-200 bg-white py-1 shadow-soft">
 
-                  {fundCode && (
+                  <button onClick={() => { if (!fundCode) return; setShowExportMenu(false); void exportXlsx("current"); }}
 
-                    <button onClick={() => { setShowExportMenu(false); void exportXlsx("current"); }}
+                    disabled={!fundCode}
 
-                      className="w-full text-left px-3 py-1.5 text-xs text-slate-700 hover:bg-blue-50">
+                    className="w-full whitespace-nowrap px-3 py-1.5 text-left text-xs text-slate-700 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent">
 
-                      {t("fundShell.export.currentDetail", { kind: isWealthAccount ? t("fundShell.kind.wealth") : t("txForm.fund") })}
+                    {t("fundShell.export.currentDetail", { kind: isWealthAccount ? t("fundShell.kind.wealth") : t("txForm.fund") })}
 
-                    </button>
+                  </button>
 
-                  )}
+                  <button onClick={() => { if (selectedFundCodes.size === 0) return; setShowExportMenu(false); void exportXlsx("selectedFunds"); }}
+
+                    disabled={selectedFundCodes.size === 0}
+
+                    className="w-full whitespace-nowrap px-3 py-1.5 text-left text-xs text-slate-700 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent">
+
+                    {selectedFundCodes.size > 0
+                      ? t("fundShell.export.selectedDetail", { kind: isWealthAccount ? t("fundShell.kind.wealth") : t("txForm.fund"), count: selectedFundCodes.size })
+                      : t("fundShell.export.selected", { kind: isWealthAccount ? t("fundShell.kind.wealth") : t("txForm.fund") })}
+
+                  </button>
 
                   <button onClick={() => { setShowExportMenu(false); void exportXlsx("all"); }}
 
-                    className="w-full text-left px-3 py-1.5 text-xs text-slate-700 hover:bg-blue-50">
+                    className="w-full whitespace-nowrap px-3 py-1.5 text-left text-xs text-slate-700 hover:bg-blue-50">
 
                     {t("fundShell.export.allDetail", { kind: isWealthAccount ? t("fundShell.kind.wealth") : t("txForm.fund") })}
 
@@ -4005,6 +4095,7 @@ export function FundShell(props: Props) {
                   ? (businessLinkInfo.labels.length > 0 ? businessLinkInfo.labels.join("；") : t("fundShell.linkedCashFlow"))
                   : t("fundShell.notLinked");
                 const isUnitsReconcile = isFundUnitsReconcileEntry(e);
+                const locked = isReconciled(String(e.id ?? ""));
                 const unitsReconcileDeltaText = units != null
                   ? `${e.fundSubtype === "redeem" ? "-" : "+"}${formatFundUnits(Math.abs(toNumber(units)))}`
                   : "-";
@@ -4097,6 +4188,7 @@ export function FundShell(props: Props) {
                         {t("fundShell.select")}
                       </label>
                       <div className="flex items-center gap-1.5">
+                        <BasicDetailReconcileLockButton entryId={String(e.id ?? "")} reconciled={locked} asButton={false} />
                         {!isUnitsReconcile && !isWealthAccount && e.fundCode && e.fundSubtype === "buy" && (e.fundUnits == null || Number(e.fundUnits) === 0) ? (
                           <FillNavButton entryId={e.id} fundCode={e.fundCode} action={fillNavAction} onFilled={(data) => handleEntryNavFilled(e, data)} />
                         ) : null}
@@ -4133,10 +4225,10 @@ export function FundShell(props: Props) {
                         <button
                           type="button"
                           onClick={() => { void deleteDetailEntry(e); }}
-                          disabled={singleDeletingIds.has(String(e.id ?? ""))}
+                          disabled={singleDeletingIds.has(String(e.id ?? "")) || locked}
                           className="flex h-8 w-8 items-center justify-center rounded border border-red-200 bg-white text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50"
-                          title={singleDeletingIds.has(String(e.id ?? "")) ? t("stockPanel.deleting") : t("depositShell.deleteButton")}
-                          aria-label={singleDeletingIds.has(String(e.id ?? "")) ? t("stockPanel.deleting") : t("depositShell.deleteButton")}
+                          title={locked ? t("reconcile.lockedError") : singleDeletingIds.has(String(e.id ?? "")) ? t("stockPanel.deleting") : t("depositShell.deleteButton")}
+                          aria-label={locked ? t("reconcile.lockedError") : singleDeletingIds.has(String(e.id ?? "")) ? t("stockPanel.deleting") : t("depositShell.deleteButton")}
                         >
                           <Trash2 className="h-4 w-4" />
                         </button>
@@ -4171,8 +4263,8 @@ export function FundShell(props: Props) {
               if (!isFundUnitsReconcileEntry(entry)) openDetailEdit(entry.id);
             }}
             rowActions={detailRowActions}
-            rowActionsWidth={112}
-            rowActionsMinWidth={92}
+            rowActionsWidth={140}
+            rowActionsMinWidth={116}
             rowClassName={(entry) => (selectedIds.has(entry.id) ? "bg-blue-50/70 hover:bg-blue-50/70" : "hover:bg-blue-50/40")}
             fillHeight
             toolbarMode="none"

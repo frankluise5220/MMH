@@ -14,6 +14,7 @@ import {
   type InsuranceAction,
 } from "@/lib/insurance/transaction";
 import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
+import { useEntryReconcileState } from "@/lib/client/use-entry-reconcile-state";
 import { fetchSettingsAccountData } from "@/lib/client/settingsCache";
 import { amountToneClass as amountClass } from "@/lib/client/colors";
 import {
@@ -438,8 +439,8 @@ function InsuranceEntryRecordsTable({
       onSelectionChange={setSelection}
       onRowDoubleClick={onRowDoubleClick}
       rowActions={rowActions}
-      rowActionsWidth={112}
-      rowActionsMinWidth={92}
+      rowActionsWidth={140}
+      rowActionsMinWidth={116}
       batchActionSlot={
         <>
           <BasicDetailBatchReplaceButton
@@ -654,7 +655,10 @@ export function InsuranceShell({
 
   useEffect(() => {
     const handler = (event: Event) => {
-      const detail = (event as CustomEvent<{ balanceChanged?: boolean }>).detail;
+      const detail = (event as CustomEvent<{ balanceChanged?: boolean; reason?: string }>).detail;
+      // 对账锁定/解锁只改 reconciledAt / reconciledBalance：业务明细不变，行内锁标记由
+      // `useEntryReconcileState` 就地更新；不重取服务端数据，避免整表替换。
+      if (detail?.reason === "entry-reconcile") return;
       // Remark-only edits do not change holdings: skip the shell refresh.
       if (detail?.balanceChanged === false) return;
       void refreshInsuranceData();
@@ -768,6 +772,9 @@ export function InsuranceShell({
     const relatedIds = new Set(selectedHolding.relatedEntryIds);
     return currentEntries.filter((entry) => relatedIds.has(entry.id));
   }, [currentEntries, selectedHolding]);
+  // 保险明细行就是背后的现金流水：现金明细页锁定的记录，这里同样要显示锁并能就地解锁。
+  const visibleEntryIds = useMemo(() => visibleEntries.map((entry) => entry.id), [visibleEntries]);
+  const { isReconciled } = useEntryReconcileState(visibleEntryIds);
 
   const openInsurancePaymentModal = useCallback((insuranceAction: "premium" | "additional_premium") => {
     if (!selectedHolding) return;
@@ -1388,7 +1395,7 @@ export function InsuranceShell({
                         busy={linkingIds.has(entry.id)}
                         onClick={() => linkInsuranceCashFlow(entry)}
                       />
-                      <EntryRowActions entryId={entry.id} edit={entry.edit} />
+                      <EntryRowActions entryId={entry.id} edit={entry.edit} reconciled={isReconciled(entry.id)} />
                     </>
                   );
                 }}

@@ -25,6 +25,7 @@ import { useI18n } from "@/lib/i18n";
 import { pnlClassFromRedUp } from "@/lib/client/colors";
 import { showConfirmDialog } from "@/lib/client/confirm-dialog";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { useEntryReconcileState } from "@/lib/client/use-entry-reconcile-state";
 import {
   buildMortgageLprRateAdjustments,
   calcMortgageLprSpreadFromDiscount,
@@ -1803,6 +1804,8 @@ function LiabilityEntriesTable({
   const { selectedIds, setSelection } = useBasicDetailSelection();
   const currentEntryIds = useMemo(() => entries.map((entry) => entry.id), [entries]);
   usePruneBasicDetailSelection(currentEntryIds);
+  // 负债明细行就是背后的现金流水：现金明细页锁定的记录，这里同样要显示锁并能就地解锁。
+  const { isReconciled } = useEntryReconcileState(currentEntryIds);
   const normalizedAccountOptions = useMemo(
     () => accountOptions.map((account) => ({
       id: account.id,
@@ -1860,10 +1863,11 @@ function LiabilityEntriesTable({
           entryId={entry.id}
           edit={entry.edit}
           customEditEvent={getCustomEditEvent(entry)}
+          reconciled={isReconciled(entry.id)}
         />
       )}
-      rowActionsWidth={92}
-      rowActionsMinWidth={76}
+      rowActionsWidth={112}
+      rowActionsMinWidth={100}
       batchActionSlot={(
         <>
           <BasicDetailBatchReplaceButton

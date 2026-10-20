@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Pencil, Trash2 } from "lucide-react";
+import { BasicDetailReconcileLockButton } from "@/components/BasicDetailSelection";
 import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { setEntryModalReconciledReadOnly } from "@/lib/client/entryModalLock";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
@@ -143,19 +144,40 @@ export function EntryRowActions({
   entryId,
   edit,
   customEditEvent,
+  reconciled = false,
+  contextAccountId,
 }: {
   entryId: string;
   edit?: Omit<EditPayload, "entryId">;
   customEditEvent?: { name: string; detail: Record<string, unknown> };
+  /**
+   * 该记录背后的现金流水已「对账」锁定。
+   *
+   * 投资/资产类视图（基金、理财、债券、存款、房产、保险、负债）的明细行就是背后的
+   * 现金流水，锁定状态不一定在 `edit.reconciledReadOnly` 里，由调用方用
+   * `useEntryReconcileState` 查出来传进来；行内锁标记就是在这些视图里就地解锁的入口。
+   */
+  reconciled?: boolean;
+  contextAccountId?: string | null;
 }) {
   const [deleting, setDeleting] = useState(false);
   const { t } = useI18n();
   // 已「对账」锁定：编辑窗仍可打开（只读查看），但删除按钮禁用。
-  const locked = Boolean(edit?.reconciledReadOnly);
+  const locked = Boolean(edit?.reconciledReadOnly || reconciled);
   const actionButtonClass = "flex h-6 w-6 items-center justify-center rounded border bg-white transition-colors disabled:opacity-50";
 
   function onEdit() {
-    dispatchEntryEdit({ entryId, edit, customEditEvent });
+    // 锁定状态可能是调用方查出来的（投资/资产视图），一并带进编辑事件，让弹窗只读。
+    dispatchEntryEdit({
+      entryId,
+      edit: edit ? { ...edit, reconciledReadOnly: locked } : edit,
+      customEditEvent: customEditEvent
+        ? {
+            name: customEditEvent.name,
+            detail: { ...customEditEvent.detail, reconciledReadOnly: Boolean(customEditEvent.detail?.reconciledReadOnly || locked) },
+          }
+        : undefined,
+    });
   }
 
   async function onDelete() {
@@ -190,6 +212,13 @@ export function EntryRowActions({
 
   return (
     <div className="flex items-center gap-1">
+      {/*
+        只有调用方明确声明「已锁定」时才渲染锁标记：现金明细页（DetailViewClient）自己会渲染
+        行内锁，这里再渲染就会重复。`edit.reconciledReadOnly` 只用来禁用删除 / 只读编辑。
+      */}
+      {reconciled ? (
+        <BasicDetailReconcileLockButton entryId={entryId} reconciled contextAccountId={contextAccountId} />
+      ) : null}
       {edit || customEditEvent ? (
         <button
           className={`${actionButtonClass} border-slate-200 text-slate-700 hover:bg-slate-50`}
