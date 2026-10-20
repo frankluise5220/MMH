@@ -8,6 +8,7 @@ import { getInvestmentAccountView } from "@/lib/account-kind-utils";
 import { investProductTypeLabel } from "@/lib/account-kinds";
 import { prisma } from "@/lib/db/prisma";
 import { formatDateUtc } from "@/lib/date-utils";
+import { futureConfirmHoldingKey, loadFutureConfirmedBuyMap } from "@/lib/fund/future-confirm";
 import { signedFundAmount } from "@/lib/fund/transactions";
 import { formatMoney, formatPercent } from "@/lib/format";
 import { pnlClassFromRedUp } from "@/lib/client/colors";
@@ -128,7 +129,7 @@ export default async function InvestmentsPage({
     .map((account) => account.id);
   const chartStartDate = startDateForMobileChart();
 
-  const [fundHoldings, fundTransactions] = await Promise.all([
+  const [fundHoldings, fundTransactions, futureConfirmedBuys] = await Promise.all([
     fundLikeAccountIds.length > 0 ? prisma.fundHolding.findMany({
       where: { accountId: { in: fundLikeAccountIds } },
       orderBy: [{ accountId: "asc" }, { fundName: "asc" }, { fundCode: "asc" }],
@@ -141,6 +142,8 @@ export default async function InvestmentsPage({
       },
       orderBy: [{ applyDate: "desc" }, { createdAt: "desc" }],
     }) : Promise.resolve([]),
+    // 确认日在未来的买入份额不能算持仓，这里把它的金额改成在途。
+    loadFutureConfirmedBuyMap(fundLikeAccountIds),
   ]);
 
   const fundCodes = Array.from(new Set([
@@ -172,25 +175,29 @@ export default async function InvestmentsPage({
     const accountHoldings = fundHoldings.filter((holding) => holding.accountId === accountId);
     const holdingKeys = new Set(accountHoldings.map((holding) => holding.fundCode));
     const holdings = accountHoldings
-      .filter((holding) => toNumber(holding.units) > 0 || toNumber(holding.pendingCost) > 0 || toNumber(holding.cost) > 0)
       .map((holding) => {
         const nav = holding.nav == null ? null : toNumber(holding.nav);
-        const units = toNumber(holding.units);
-        const cost = toNumber(holding.cost);
-        const marketValue = nav == null ? cost : units * nav;
-        const floatingPnL = marketValue - cost;
+        const futureConfirmed = futureConfirmedBuys.get(futureConfirmHoldingKey(accountId, holding.fundCode));
+        const pendingFromFutureConfirm = futureConfirmed?.cost ?? 0;
+        // 确认日在未来的买入：份额未生效，金额记在途。
+        const units = Math.max(0, toNumber(holding.units) - (futureConfirmed?.units ?? 0));
+        const cost = Math.max(0, toNumber(holding.cost) - toNumber(holding.pendingCost) - pendingFromFutureConfirm);
+        const pendingCost = toNumber(holding.pendingCost) + pendingFromFutureConfirm;
+        const totalCost = cost + pendingCost;
+        const marketValue = (nav == null || units <= 0 ? cost : units * nav) + pendingCost;
+        const floatingPnL = marketValue - totalCost;
         const key = `${accountId}\u001f${holding.fundCode}`;
         return {
           fundCode: holding.fundCode,
           fundName: holding.fundName ?? "",
           units,
           avgCost: toNumber(holding.avgCost),
-          cost,
-          pendingCost: toNumber(holding.pendingCost),
+          cost: totalCost,
+          pendingCost,
           nav,
           marketValue,
           floatingPnL,
-          floatingRate: cost > 0 ? floatingPnL / cost : 0,
+          floatingRate: totalCost > 0 ? floatingPnL / totalCost : 0,
           historicalProfit: toNumber(holding.historicalProfit),
           entries: (entriesByAccountFund.get(key) ?? []).slice(0, 30).map((entry) => ({
             id: entry.id,
@@ -205,7 +212,8 @@ export default async function InvestmentsPage({
           })),
           chart: navByFundCode.get(holding.fundCode) ?? [],
         };
-      });
+      })
+      .filter((holding) => holding.units > 0 || holding.pendingCost > 0 || holding.cost > 0);
 
     const cleared = Array.from(entriesByAccountFund.entries())
       .filter(([key]) => key.startsWith(`${accountId}\u001f`))

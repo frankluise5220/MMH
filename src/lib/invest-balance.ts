@@ -14,6 +14,7 @@ import { AccountKind, FundCashFlowKind, FundSubtype, StockTransactionAction } fr
 import type { HouseholdContext } from "@/lib/server/household-scope";
 import { getEffectiveLatestFundNavMap } from "@/lib/fund/navCache";
 import { getFundProfileNameMap, normalizeFundDisplayName } from "@/lib/fund/fundProfile";
+import { futureConfirmHoldingKey, loadFutureConfirmedBuyMap } from "@/lib/fund/future-confirm";
 import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import { getMaintainedAccountBalances } from "@/lib/server/account-balance";
 import { optionalPrismaFindMany } from "@/lib/server/optional-prisma-delegate";
@@ -140,7 +141,7 @@ function roundMoney(value: number) {
 }
 
 function holdingKey(accountId: string, fundCode: string) {
-  return `${accountId}::${fundCode}`;
+  return futureConfirmHoldingKey(accountId, fundCode);
 }
 
 function dateOnlyString(value: Date | null | undefined) {
@@ -440,6 +441,8 @@ export const computeInvestBalances = cache(
 
   const fundCodes = [...new Set(allHoldings.map(h => h.fundCode))];
   const displayPendingByHoldingKey = await loadDisplayPendingCostByHoldingKey(ctx, fundAccountIds);
+  // 确认日在未来的买入即使已带份额也不能算持仓，读取时统一转为在途金额。
+  const futureConfirmedByHoldingKey = await loadFutureConfirmedBuyMap(fundAccountIds);
   const latestNavByCode = new Map<string, { nav: number; date: string }>();
   if (fundCodes.length > 0) {
     const caches = await getEffectiveLatestFundNavMap(fundCodes);
@@ -458,14 +461,16 @@ export const computeInvestBalances = cache(
     let totalCost = 0;
 
     for (const h of holdings) {
-      const units = toNumber(h.units);
+      const futureConfirmed = futureConfirmedByHoldingKey.get(holdingKey(h.accountId, h.fundCode));
+      const units = Math.max(0, toNumber(h.units) - (futureConfirmed?.units ?? 0));
       const storedCost = toNumber(h.cost);
       const storedPending = toNumber(h.pendingCost);
-      const displayPending = displayPendingByHoldingKey.get(holdingKey(h.accountId, h.fundCode)) ?? 0;
-      const displayCost = Math.max(0, storedCost - storedPending) + displayPending;
+      const pendingFromFutureConfirm = futureConfirmed?.cost ?? 0;
+      const displayPending = (displayPendingByHoldingKey.get(holdingKey(h.accountId, h.fundCode)) ?? 0) + pendingFromFutureConfirm;
+      const confirmedCost = Math.max(0, storedCost - storedPending - pendingFromFutureConfirm);
+      const displayCost = confirmedCost + displayPending;
       const navInfo = latestNavByCode.get(h.fundCode);
       const latestNav = navInfo?.nav ?? toNumber(h.nav ?? 0);
-      const confirmedCost = Math.max(0, storedCost - storedPending);
       const confirmedMV = latestNav > 0 && units > 0 ? units * latestNav : confirmedCost;
       marketValue += confirmedMV + displayPending;
       totalCost += displayCost;
@@ -1017,6 +1022,8 @@ export const computePositionDisplay = cache(
 
   const fundCodes = [...new Set(holdings.map(h => h.fundCode))];
   const displayPendingByHoldingKey = await loadDisplayPendingCostByHoldingKey(ctx, [accountId]);
+  // 确认日在未来的买入：份额已经写入，但还没到确认日，持仓里只应体现为在途金额。
+  const futureConfirmedByHoldingKey = await loadFutureConfirmedBuyMap([accountId]);
   // Account-level money classification is the default for legacy holdings, but
   // a fund transaction carries the more precise product type. This prevents a
   // misclassified money account from forcing an ordinary fund's NAV to 1.
@@ -1053,11 +1060,15 @@ export const computePositionDisplay = cache(
   const clearedPositions: ClearedPositionRow[] = [];
 
   for (const h of holdings) {
-    const units = toNumber(h.units);
+    const futureConfirmed = futureConfirmedByHoldingKey.get(holdingKey(h.accountId, h.fundCode));
+    const futureUnits = futureConfirmed?.units ?? 0;
+    const futureCost = futureConfirmed?.cost ?? 0;
+    const units = Math.max(0, toNumber(h.units) - futureUnits);
     const storedCost = toNumber(h.cost);
     const storedPending = toNumber(h.pendingCost);
-    const pending = displayPendingByHoldingKey.get(holdingKey(h.accountId, h.fundCode)) ?? 0;
-    const cost = Math.max(0, storedCost - storedPending) + pending;
+    const pending = (displayPendingByHoldingKey.get(holdingKey(h.accountId, h.fundCode)) ?? 0) + futureCost;
+    const confirmedCost = Math.max(0, storedCost - storedPending - futureCost);
+    const cost = confirmedCost + pending;
     const avgCost = toNumber(h.avgCost);
     const navInfo = latestNavByCode.get(h.fundCode);
     const isMoneyFund = isMoney && fundProductTypeByCode.get(h.fundCode) !== "fund";
@@ -1069,7 +1080,6 @@ export const computePositionDisplay = cache(
     const displayName = profileName || cachedNavName || storedName || h.fundCode;
     const historicalProfit = toNumber(h.historicalProfit);
 
-    const confirmedCost = Math.max(0, storedCost - storedPending);
     const confirmedMV = latestNav > 0 && units > 0 ? units * latestNav : confirmedCost;
     const marketValue = confirmedMV + pending;
     const floatingPnL = marketValue - cost;
