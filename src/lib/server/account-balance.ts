@@ -3,6 +3,7 @@ import { AccountKind, FundSubtype, Prisma, TransactionType } from "@prisma/clien
 import { toNumber } from "@/lib/date-utils";
 import { compareDetailEntriesAsc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
 import {
+  applyBalanceAnchorEntry,
   applyBalanceReconcileEntry,
   BALANCE_INITIALIZATION_SOURCE,
   BALANCE_RECONCILE_SOURCE,
@@ -155,7 +156,7 @@ function foldBalanceEntry(
     if (entry.type !== TransactionType.transfer) return runningBalance;
     return runningBalance + liabilityPrincipalForAccountSide(entry, account.id);
   }
-  return applyBalanceReconcileEntry(runningBalance, entry, account.id);
+  return applyBalanceAnchorEntry(runningBalance, entry, account.id);
 }
 
 function balanceEntryDelta(entry: BalanceEntryRow, account: AccountBalanceLike) {
@@ -508,7 +509,7 @@ export async function computeAccountDisplayBalances(
       let runningBalance = result.get(account.id) ?? 0;
       for (const entry of orderedRows) {
         if (isBalanceAnchorEntry(entry)) continue;
-        runningBalance = applyBalanceReconcileEntry(runningBalance, entry, account.id);
+        runningBalance = applyBalanceAnchorEntry(runningBalance, entry, account.id);
       }
       result.set(account.id, runningBalance);
     }
@@ -571,7 +572,7 @@ export async function computeAccountDisplayBalances(
           runningBalance += liabilityPrincipalForAccountSide(entry, account.id);
           continue;
         }
-        runningBalance = applyBalanceReconcileEntry(runningBalance, entry, account.id);
+        runningBalance = applyBalanceAnchorEntry(runningBalance, entry, account.id);
       }
       result.set(account.id, runningBalance);
     }
