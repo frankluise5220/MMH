@@ -118,6 +118,7 @@ import { ensureSettlementTransferCategory, resolveCategorySnapshot, resolveCredi
 import { getInvestmentCategoryName } from "@/lib/investment-category";
 import { getCashFlowDate } from "@/lib/cash-flow-date";
 import { buildWealthCashFlowNote } from "@/lib/wealth-cash-note";
+import { buildWealthHoldingOptions } from "@/lib/wealth-holdings";
 import { linkExpenseToFixedAsset, syncLinkedFixedAssetTransactionFromCashEntry } from "@/lib/property/transactions";
 import { normalizeCurrency, resolveSameCurrencyTransfer } from "@/lib/currency";
 import { shouldPreferLoanAutoDebitPlan, shouldPreferLoanScheduledPlan } from "@/lib/scheduled-task";
@@ -2565,126 +2566,12 @@ export default async function Home({
         ]
       : [];
 
-  function buildWealthHoldingOptions(sourceEntryPool: Array<any>) {
-    if (allWealthAccountIds.length === 0) return [];
-    const accountNameById = new Map(allWealthAccounts.map((account) => [account.id, account.label || account.name]));
-    const buckets = new Map<string, {
-      id: string;
-      label: string;
-      fundName: string;
-      wealthProductId: string | null;
-      wealthAccountId: string;
-      wealthAccountLabel: string;
-      remainingAmount: number;
-      remainingUnits: number;
-      hasUnits: boolean;
-      annualRate: number | null;
-      termDays: number | null;
-      firstDate: string;
-      movements: Array<{ date: string; delta: number }>;
-      unitMovements: Array<{ date: string; delta: number }>;
-    }>();
-
-    for (const entry of sourceEntryPool) {
-      if ((entry.fundProductType !== "wealth" && entry.fundProductType !== "bond") || entry.deletedAt) continue;
-      const amountValue = toNumber(entry.amount);
-      const principalAmountValue = entry.wealthPrincipalAmount != null ? toNumber(entry.wealthPrincipalAmount) : amountValue;
-      const isRedeemEntry =
-        entry.fundSubtype === "redeem" ||
-        entry.fundSubtype === "switch_out" ||
-        (amountValue > 0 && allWealthAccountIds.includes(entry.accountId ?? "") && entry.fundSubtype !== "dividend_cash");
-      const isDividendEntry = entry.fundSubtype === "dividend_cash";
-      const wealthAccountId = (isRedeemEntry ? entry.accountId : entry.toAccountId) ?? "";
-      if (!wealthAccountId || !allWealthAccountIds.includes(wealthAccountId)) continue;
-
-      // 产品条款：理财读 WealthProduct，债券读自己的 BondProduct（两类独立主数据）。
-      const productInfo = entry.WealthProduct ?? entry.BondProduct ?? null;
-      const productName = productInfo?.name ?? entry.fundName ?? t("sidebar.wealthHolding.unnamed");
-      const productLabel = productInfo?.shortName?.trim() || productName;
-      const productKey = entry.wealthProductId ? `product:${entry.wealthProductId}` : `name:${productName}`;
-      const key = `${wealthAccountId}\u001f${productKey}`;
-      const existing = buckets.get(key);
-      const annualRate =
-        entry.depositAnnualRate != null
-          ? toNumber(entry.depositAnnualRate)
-          : productInfo?.annualRate != null
-            ? toNumber(productInfo.annualRate)
-            : null;
-      const principalDelta = isRedeemEntry
-        ? -Math.abs(principalAmountValue)
-        : isDividendEntry
-          ? 0
-          : Math.abs(principalAmountValue);
-      const unitsValue = entry.fundUnits == null ? null : Math.abs(toNumber(entry.fundUnits));
-      const unitsDelta = unitsValue == null || isDividendEntry ? 0 : isRedeemEntry ? -unitsValue : unitsValue;
-      const movementDate = toYmdOrNull(entry.date) ?? "";
-
-      if (existing) {
-        existing.remainingAmount += principalDelta;
-        if (unitsValue != null) {
-          existing.hasUnits = true;
-          existing.remainingUnits += unitsDelta;
-        }
-        if (principalDelta !== 0 && movementDate) {
-          existing.movements.push({ date: movementDate, delta: Number(principalDelta.toFixed(2)) });
-        }
-        if (unitsValue != null && unitsDelta !== 0 && movementDate) {
-          existing.unitMovements.push({ date: movementDate, delta: Number(unitsDelta.toFixed(6)) });
-        }
-        if (existing.annualRate == null && annualRate != null) existing.annualRate = annualRate;
-        if (existing.termDays == null && productInfo?.termDays != null) existing.termDays = productInfo.termDays;
-      } else {
-        buckets.set(key, {
-          id: key,
-          label: productLabel,
-          fundName: productName,
-          wealthProductId: entry.wealthProductId ?? null,
-          wealthAccountId,
-          wealthAccountLabel: accountNameById.get(wealthAccountId) ?? entry.toAccountName ?? entry.accountName ?? t("sidebar.wealthAccount"),
-          remainingAmount: principalDelta,
-          remainingUnits: unitsDelta,
-          hasUnits: unitsValue != null,
-          annualRate,
-          termDays: productInfo?.termDays ?? null,
-          firstDate: movementDate,
-          movements: principalDelta !== 0 && movementDate ? [{ date: movementDate, delta: Number(principalDelta.toFixed(2)) }] : [],
-          unitMovements: unitsValue != null && unitsDelta !== 0 && movementDate ? [{ date: movementDate, delta: Number(unitsDelta.toFixed(6)) }] : [],
-        });
-      }
-    }
-
-    return Array.from(buckets.values())
-      .filter((holding) => holding.movements.some((movement) => movement.delta > 0))
-      .map((holding) => ({
-        id: holding.id,
-        label: holding.label,
-        subLabel: [
-          holding.wealthAccountLabel,
-          holding.annualRate != null ? t("sidebar.wealthHolding.annualRate", { rate: holding.annualRate }) : "",
-          holding.termDays ? t("sidebar.wealthHolding.termDays", { days: holding.termDays }) : "",
-          t("sidebar.wealthHolding.redeemable", { amount: formatMoney(holding.remainingAmount) }),
-          holding.hasUnits ? t("sidebar.wealthHolding.units", { units: holding.remainingUnits.toFixed(6) }) : "",
-        ].filter(Boolean).join(" · "),
-        fundName: holding.fundName,
-        wealthProductId: holding.wealthProductId,
-        wealthAccountId: holding.wealthAccountId,
-        wealthAccountLabel: holding.wealthAccountLabel,
-        remainingAmount: Number(holding.remainingAmount.toFixed(2)),
-        remainingUnits: Number(holding.remainingUnits.toFixed(6)),
-        hasUnits: holding.hasUnits,
-        annualRate: holding.annualRate,
-        termDays: holding.termDays,
-        firstDate: holding.firstDate,
-        movements: holding.movements,
-        unitMovements: holding.unitMovements,
-      }))
-      .sort((a, b) => {
-        if (a.wealthAccountLabel !== b.wealthAccountLabel) return a.wealthAccountLabel.localeCompare(b.wealthAccountLabel, "zh-Hans-CN");
-        return a.label.localeCompare(b.label, "zh-Hans-CN");
-      });
-  }
-
-  const wealthHoldingOptions = buildWealthHoldingOptions(allWealthEntries);
+  // 可赎回持仓与 `/api/v1/wealth/holdings` 共用同一份聚合（见 lib/wealth-holdings）。
+  const wealthHoldingOptions = buildWealthHoldingOptions({
+    entries: allWealthEntries,
+    accounts: allWealthAccounts,
+    unnamedFallback: t("sidebar.wealthHolding.unnamed"),
+  });
   // 债券弹窗的「存单」下拉：债券是存单粒度（一笔买入 = 一张存单 = 一个持仓），
   // 付息/赎回/核销必须指明所属存单，所以不能用理财那套按产品聚合的持仓。
   const bondLotOptions = allBondOnlyAccountIds.length > 0

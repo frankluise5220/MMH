@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 /** 记账弹窗整窗外壳：宽度/标题栏/表单/FT 页签卡片/固定页脚/高度锁定统一由它负责。 */
 import { EntryModalShell } from "@/components/EntryModalShell";
 import {
@@ -19,6 +19,7 @@ import { useI18n } from "@/lib/i18n";
 import { uploadEntryAttachmentFiles } from "./EntryAttachmentPanel";
 import { mergeProductOptions } from "@/lib/holding-entry/primitives";
 import { useHoldingEntryForm } from "@/lib/holding-entry/useHoldingEntryForm";
+import type { WealthHoldingOption } from "@/lib/wealth-holdings";
 
 type Entry = {
   id?: string;
@@ -71,23 +72,9 @@ type WealthProductOption = {
   firstPayoutDate?: string | null;
   note?: string | null;
 };
-type WealthHoldingOption = {
-  id: string;
-  label: string;
-  subLabel?: string;
-  fundName: string;
-  wealthProductId?: string | null;
-  wealthAccountId: string;
-  wealthAccountLabel?: string | null;
-  remainingAmount: number;
-  remainingUnits?: number | null;
-  hasUnits?: boolean;
-  annualRate?: number | null;
-  termDays?: number | null;
-  movements?: Array<{ date: string; delta: number }>;
-  unitMovements?: Array<{ date: string; delta: number }>;
-};
 type WealthSubtype = "buy" | "redeem" | "dividend_cash" | "write_off";
+/** 稳定引用：默认空持仓若用字面量 `[]`，每次渲染都是新数组，同步 effect 会自激成死循环。 */
+const EMPTY_WEALTH_HOLDING_OPTIONS: WealthHoldingOption[] = [];
 const TERM_PRESETS = [
   { labelKey: "wealthForm.term.3months", days: 90 },
   { labelKey: "wealthForm.term.halfYear", days: 180 },
@@ -107,7 +94,7 @@ export function WealthFormModal({
   investmentAccounts = [],
   cashAccountSSOptions,
   investmentAccountSSOptions,
-  wealthHoldingOptions = [],
+  wealthHoldingOptions = EMPTY_WEALTH_HOLDING_OPTIONS,
   nestedFieldData,
   createAction,
   editAction,
@@ -148,14 +135,32 @@ export function WealthFormModal({
   const [productError, setProductError] = useState("");
   const [wealthProducts, setWealthProducts] = useState<WealthProductOption[]>([]);
 
+  // 可赎回持仓：初次渲染用服务端 props，保存后由 /api/v1/wealth/holdings 重取。
+  // 理财保存只失效 tag、不重渲染当前路由（见 revalidateAfterFundShellChange），
+  // 所以不能只依赖 props，否则新增买入在赎回页签里看不到，必须手动刷新页面。
+  const [holdingOptions, setHoldingOptions] = useState<WealthHoldingOption[]>(wealthHoldingOptions);
+  useEffect(() => {
+    setHoldingOptions(wealthHoldingOptions);
+  }, [wealthHoldingOptions]);
+
   // 理财与债券是两类独立账户：理财弹窗只认理财账户上的持仓。
   const typedHoldingOptions = useMemo(
     () =>
-      wealthHoldingOptions.filter((holding) => {
-        const holdingAccount = investmentAccounts.find((account) => account.id === holding.wealthAccountId);
-        return holdingAccount?.investProductType === "wealth";
-      }),
-    [investmentAccounts, wealthHoldingOptions],
+      holdingOptions
+        .filter((holding) => {
+          const holdingAccount = investmentAccounts.find((account) => account.id === holding.wealthAccountId);
+          // 账户不在 props 里说明是本弹窗刚建的新理财账户（props 尚未重渲染），保留；
+          // 已知账户则只认理财：props 里同时带着债券持仓，不能混排进理财赎回。
+          return holdingAccount ? holdingAccount.investProductType === "wealth" : true;
+        })
+        // 账户展示名以账户下拉为准（接口只回原始账户名）。
+        .map((holding) => {
+          const holdingAccount = investmentAccounts.find((account) => account.id === holding.wealthAccountId);
+          return holdingAccount?.label && holdingAccount.label !== holding.wealthAccountLabel
+            ? { ...holding, wealthAccountLabel: holdingAccount.label }
+            : holding;
+        }),
+    [investmentAccounts, holdingOptions],
   );
 
   const wealthProductOptions: SmartSelectOption[] = useMemo(
@@ -214,7 +219,27 @@ export function WealthFormModal({
     selectSubtypeTab, unitsEditedRef,
   } = form;
 
+  // 可赎回持仓重取：打开弹窗时 + 每次保存成功后。页面 props 在理财保存后不会变，
+  // 只靠 props 会让赎回页签停留在旧快照（新增买入看不到可赎回份额）。
+  const holdingOptionsRequestRef = useRef(0);
+  const reloadHoldingOptions = useCallback(() => {
+    const requestSeq = holdingOptionsRequestRef.current + 1;
+    holdingOptionsRequestRef.current = requestSeq;
+    void fetch("/api/v1/wealth/holdings", { cache: "no-store" })
+      .then((res) => res.json())
+      .then((data) => {
+        // 只认最后一次请求，避免连续保存时旧响应覆盖新数据。
+        if (holdingOptionsRequestRef.current !== requestSeq) return;
+        if (!data?.ok || !Array.isArray(data.holdings)) return;
+        setHoldingOptions(data.holdings as WealthHoldingOption[]);
+      })
+      .catch(() => {});
+  }, []);
 
+  useEffect(() => {
+    if (!open) return;
+    reloadHoldingOptions();
+  }, [open, reloadHoldingOptions]);
 
   useEffect(() => {
     if (!open) return;
@@ -459,6 +484,8 @@ export function WealthFormModal({
         setOpen(false);
         if (mode === "create") reset();
       }
+      // 保存后立即重取可赎回持仓（连续新增/赎回时赎回页签与下一次赎回都要看到最新份额）。
+      reloadHoldingOptions();
       requestAnimationFrame(() => {
         dispatchFinanceDataChanged({
           reason: "wealth-save",
