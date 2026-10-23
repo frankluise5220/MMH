@@ -839,11 +839,11 @@ export default async function Home({
     isAllCashView ? cashLedgerFlowAccountId(e, cashLedgerIdSet) : accountId;
   // 明细表口径：全部交易记录里每行按「流出方」展示，有对手方（转账 / 投资买卖 / 赎回）
   // 的金额恒为负；普通收支保留原符号。排序、筛选、导出必须与表格列一致。
-  const detailFlowAmountOf = (e: { amount?: number | string | null; accountId?: string | null; toAccountId?: string | null }) =>
+  const detailFlowAmountOf = (e: { amount: unknown; accountId?: string | null; toAccountId?: string | null }) =>
     isAllCashView && e.toAccountId ? -Math.abs(toNumber(e.amount)) : effectiveAmountForAccount(e, flowAccountIdOf(e));
   // 明细表「账户」列用的那一侧：全部交易记录取流出方（与 DetailViewClient 同口径），
   // 其它视图仍是当前账户的资金侧。
-  const detailFlowAccountIdOf = (e: { amount?: number | string | null; accountId?: string | null; toAccountId?: string | null }) => {
+  const detailFlowAccountIdOf = (e: { amount: unknown; accountId?: string | null; toAccountId?: string | null }) => {
     if (!isAllCashView || !e.toAccountId) return flowAccountIdOf(e);
     const fromIsCash = !!e.accountId && cashLedgerIdSet.has(e.accountId);
     const toIsCash = !!e.toAccountId && cashLedgerIdSet.has(e.toAccountId);
