@@ -21,7 +21,6 @@ const CACHE_TTL = 5_000;
 const LOOKUP_TIMEOUT_MS = 1_200;
 
 const PUBLIC_PATHS = [
-  "/gridcheck",
   "/login",
   "/api/health",
   "/api/v1/auth",
