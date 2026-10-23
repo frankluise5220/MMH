@@ -89,7 +89,7 @@ type ImageSpeedResult = {
 
 // Step keys are matched against the step names emitted by the update API (data, not UI copy).
 const UPDATE_STEPS = ["拉取代码", "安装依赖", "生成 Prisma Client", "同步数据库", "构建项目"];
-const DOCKER_UPDATE_STEPS = ["同步部署文件", "检测镜像源", "拉取应用镜像", "重启服务"];
+const DOCKER_UPDATE_STEPS = ["更新前快照", "同步部署文件", "检测镜像源", "拉取应用镜像", "重启服务"];
 
 function updateStepLabel(key: string, t: (key: string) => string) {
   switch (key) {
@@ -98,6 +98,7 @@ function updateStepLabel(key: string, t: (key: string) => string) {
     case "生成 Prisma Client": return t("settings.systemUpdate.step.generatePrisma");
     case "同步数据库": return t("settings.systemUpdate.step.syncDb");
     case "构建项目": return t("settings.systemUpdate.step.build");
+    case "更新前快照": return t("settings.systemUpdate.step.takeSnapshot");
     case "同步部署文件": return t("settings.systemUpdate.step.syncFiles");
     case "检测镜像源": return t("settings.systemUpdate.step.detectMirror");
     case "拉取应用镜像": return t("settings.systemUpdate.step.pullImage");
@@ -238,6 +239,12 @@ export default function SystemUpdatePage() {
   const [updateDone, setUpdateDone] = useState(false);
   const [updateOk, setUpdateOk] = useState(false);
   const [updateError, setUpdateError] = useState("");
+  // Docker updates are executed by the host updater; the console panel mirrors
+  // its full log (commands included) so the page shows what actually ran
+  // instead of only a step label.
+  const [consoleLines, setConsoleLines] = useState<string[]>([]);
+  const [consoleCopied, setConsoleCopied] = useState(false);
+  const consoleRef = useRef<HTMLPreElement | null>(null);
   const [imageSourceDraft, setImageSourceDraft] = useState<ImageSourceDraft>({
     source: "auto",
     customAppImage: "",
@@ -288,6 +295,23 @@ export default function SystemUpdatePage() {
     window.addEventListener(APP_PREFS_EVENT, syncTimeZonePreference);
     return () => window.removeEventListener(APP_PREFS_EVENT, syncTimeZonePreference);
   }, []);
+
+  useEffect(() => {
+    const node = consoleRef.current;
+    if (!node) return;
+    node.scrollTop = node.scrollHeight;
+  }, [consoleLines]);
+
+  async function copyConsoleLog() {
+    if (!consoleLines.length) return;
+    try {
+      await navigator.clipboard.writeText(consoleLines.join("\n"));
+      setConsoleCopied(true);
+      setTimeout(() => setConsoleCopied(false), 2000);
+    } catch {
+      // Clipboard access can be denied (insecure context); the log stays visible.
+    }
+  }
 
   function initSteps() {
     return UPDATE_STEPS.map((key) => ({ key, label: updateStepLabel(key, t), status: "pending" as StepStatus, output: "" }));
@@ -352,6 +376,8 @@ export default function SystemUpdatePage() {
     setUpdateDone(false);
     setUpdateOk(false);
     setUpdateError("");
+    setConsoleLines([]);
+    setConsoleCopied(false);
     setSteps(versionInfo?.isDocker ? DOCKER_UPDATE_STEPS.map((key) => ({ key, label: updateStepLabel(key, t), status: "pending" as StepStatus, output: "" })) : initSteps());
 
     // The image source list is a draft until saved, but the updater only reads
@@ -469,12 +495,15 @@ export default function SystemUpdatePage() {
         };
         const current = task.currentStep || "";
         lastCurrentStep = current || lastCurrentStep;
-        const logs = (task.logs ?? []).slice(-8).join("\n");
+        // The updater echoes every command it runs, so the console panel shows
+        // the whole sequence instead of the last few lines of the current step.
+        const logs = Array.isArray(task.logs) ? task.logs : [];
+        setConsoleLines(logs);
         const currentIndex = DOCKER_UPDATE_STEPS.indexOf(current);
         setSteps((prev) =>
           prev.map((step) => {
-            if (step.key === current) return { ...step, status: "running", output: logs };
-            if (currentIndex >= 0 && DOCKER_UPDATE_STEPS.indexOf(step.key) < currentIndex) return { ...step, status: "completed", output: step.output || logs };
+            if (step.key === current) return { ...step, status: "running" };
+            if (currentIndex >= 0 && DOCKER_UPDATE_STEPS.indexOf(step.key) < currentIndex) return { ...step, status: "completed" };
             return step;
           }),
         );
@@ -483,18 +512,14 @@ export default function SystemUpdatePage() {
         // response after reconnect can be `idle` instead of `completed`.
         const updaterRestartedAfterApp = task.status === "idle" && lastCurrentStep === "重启服务";
         if (task.status === "completed" || updaterRestartedAfterApp) {
-          const completedOutput = logs || (updaterRestartedAfterApp ? t("settings.systemUpdate.serviceRestored") : "");
-          setSteps((prev) => prev.map((step) => ({ ...step, status: "completed", output: step.output || logs })));
+          setSteps((prev) => prev.map((step) => ({ ...step, status: "completed" })));
           setUpdateDone(true);
           setUpdateOk(true);
           setUpdating(false);
           shouldContinue = false;
-          if (updaterRestartedAfterApp) {
-            setSteps((prev) => prev.map((step) => (
-              step.key === "重启服务" ? { ...step, status: "completed", output: completedOutput } : step
-            )));
-          }
-          setTimeout(() => window.location.reload(), 2500);
+          // No auto-reload here on purpose: reloading would wipe the console
+          // panel the operator just asked for. The success card offers a manual
+          // reload button instead.
         } else if (task.status === "rolledback") {
           // The updater restored the previous application image and the database
           // snapshot, so the service this page is talking to is the old version
@@ -512,7 +537,6 @@ export default function SystemUpdatePage() {
           );
           setUpdating(false);
           shouldContinue = false;
-          setTimeout(() => window.location.reload(), 2500);
         } else if (task.status === "failed") {
           const rollbackError = task.rollback?.error;
           setUpdateDone(true);
@@ -980,6 +1004,28 @@ sudo docker compose -p mmh up -d app updater`}</pre>
             ))}
           </div>
 
+          {dockerManaged && (updating || consoleLines.length > 0) ? (
+            <div className="mt-4">
+              <div className="mb-1 flex items-center justify-between gap-2">
+                <div className="text-xs font-medium text-slate-600">{t("settings.systemUpdate.console")}</div>
+                <button
+                  type="button"
+                  onClick={copyConsoleLog}
+                  disabled={!consoleLines.length}
+                  className="rounded-md border border-slate-200 px-2 py-0.5 text-xs text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  {consoleCopied ? t("settings.systemUpdate.consoleCopied") : t("settings.systemUpdate.consoleCopy")}
+                </button>
+              </div>
+              <pre
+                ref={consoleRef}
+                className="max-h-72 overflow-auto whitespace-pre-wrap break-all rounded-md bg-slate-900 px-3 py-2 font-mono text-[11px] leading-relaxed text-slate-200"
+              >
+                {consoleLines.length ? consoleLines.join("\n") : t("settings.systemUpdate.consoleEmpty")}
+              </pre>
+            </div>
+          ) : null}
+
           {updateDone ? (
             <div className="mt-4">
               {updateOk ? (
@@ -1000,6 +1046,12 @@ sudo docker compose -p mmh up -d app updater`}</pre>
                     <div className="text-sm font-medium text-red-800">{t("settings.systemUpdate.updateFailed")}</div>
                     {updateError ? <div className="mt-1 break-all text-xs text-red-600">{updateError}</div> : null}
                   </div>
+                  <button
+                    onClick={() => window.location.reload()}
+                    className="ml-auto h-8 shrink-0 rounded-md border border-red-300 px-3 text-xs text-red-700 hover:bg-red-100"
+                  >
+                    {t("settings.systemUpdate.reloadPage")}
+                  </button>
                 </div>
               )}
             </div>

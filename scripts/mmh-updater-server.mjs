@@ -32,6 +32,10 @@ const rollbackImageTag = "mmh-rollback:previous";
 // Deterministic name for the staging database used by the restore swap, so a
 // leftover from a crashed rollback is cleaned up by the next attempt.
 const rollbackSwapSuffix = "_rollback_swap";
+// Timeline phase shown by the web update page while the pre-update snapshot
+// runs. Sub-step names stay in the console; this keeps the progress list honest
+// instead of stalling on "pending" during a slow pg_dump.
+const snapshotPhase = "更新前快照";
 
 const imageSources = {
   ghcr: { name: "GHCR", app: ghcrImage, updater: ghcrUpdaterImage },
@@ -103,9 +107,20 @@ function now() {
   return new Date().toISOString();
 }
 
+/**
+ * Append one console line.
+ *
+ * The web update page renders these verbatim inside a terminal panel, so the
+ * cap is what the browser can poll every 1.5s without hurting a low-power NAS
+ * (600 lines ≈ 60-90 KB) rather than a "keep everything" buffer. The command
+ * itself is echoed by `run()` below, so an operator can reconstruct the whole
+ * sequence from this log alone.
+ */
 function pushLog(line) {
-  task.logs.push(`[${now()}] ${line}`);
-  if (task.logs.length > 300) task.logs = task.logs.slice(-300);
+  const text = String(line ?? "").replace(/\s+$/, "");
+  if (!text) return;
+  task.logs.push(`[${now()}] ${text}`);
+  if (task.logs.length > 600) task.logs = task.logs.slice(-600);
   task.updatedAt = now();
 }
 
@@ -125,7 +140,11 @@ function authorized(req) {
 
 function run(command, step, options = {}) {
   return new Promise((resolve, reject) => {
-    task.currentStep = step;
+    // The web page shows this on a step timeline, while `$ <command>` below is
+    // what it prints in the console panel. Sub-steps therefore carry the parent
+    // phase so the timeline advances even though the console shows every detail.
+    task.currentStep = options.phase || step;
+    pushLog(`$ ${command}`);
     pushLog(`开始：${step}`);
     const child = spawn("sh", ["-lc", `git config --global --add safe.directory ${quotedWorkdir} >/dev/null 2>&1 || true; ${command}`], { cwd: workdir });
     child.stdout.on("data", (chunk) => pushLog(chunk.toString().trim()));
@@ -850,7 +869,8 @@ async function takePreUpdateSnapshot() {
   };
 
   pushLog(`更新前快照目录：${snapshot.hostDir}`);
-  await run(`mkdir -p ${JSON.stringify(dir)}`, "创建回滚快照目录");
+  task.currentStep = snapshotPhase;
+  await run(`mkdir -p ${JSON.stringify(dir)}`, "创建回滚快照目录", { phase: snapshotPhase });
 
   snapshot.appImageId = await captureDocker(["inspect", "mmh-app", "--format", "{{.Image}}"], 8000).catch(() => "");
   if (snapshot.appImageId) {
@@ -862,14 +882,14 @@ async function takePreUpdateSnapshot() {
   await run(
     `if [ -f ${JSON.stringify(composeFile)} ]; then cp -f ${JSON.stringify(composeFile)} ${JSON.stringify(`${dir}/docker-compose.yml`)}; fi`,
     "备份 docker-compose.yml",
-    { allowFailure: true },
+    { allowFailure: true, phase: snapshotPhase },
   );
   snapshot.composeBackedUp = await fileExists(`${dir}/docker-compose.yml`);
 
   await run(
     `if [ -f ${JSON.stringify(`${workdir}/.env`)} ]; then cp -f ${JSON.stringify(`${workdir}/.env`)} ${JSON.stringify(`${dir}/.env`)}; fi`,
     "备份 .env",
-    { allowFailure: true },
+    { allowFailure: true, phase: snapshotPhase },
   );
   snapshot.envBackedUp = await fileExists(`${dir}/.env`);
 
@@ -892,10 +912,12 @@ async function takePreUpdateSnapshot() {
     await run(
       `docker exec ${JSON.stringify(container)} pg_dump -Fc -U ${JSON.stringify(credentials.user)} -d ${JSON.stringify(credentials.database)} > ${JSON.stringify(dumpPath)}`,
       "导出数据库快照",
+      { phase: snapshotPhase },
     );
     await run(
       `if [ -s ${JSON.stringify(dumpPath)} ] && [ "$(head -c 5 ${JSON.stringify(dumpPath)})" = "PGDMP" ]; then echo "数据库快照校验通过"; else echo "数据库快照为空或格式不正确"; exit 1; fi`,
       "校验数据库快照",
+      { phase: snapshotPhase },
     );
     snapshot.dbDumped = true;
     snapshot.schemaVersion = await readSchemaVersionMarker(container, credentials);
