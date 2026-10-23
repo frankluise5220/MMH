@@ -38,6 +38,10 @@ export const MMH_BASE_PATH = (process.env.NEXT_PUBLIC_MMH_BASE_PATH || "").repla
  *    `replaceState`, `window.open`, a raw `<a href>` (next/link is not involved
  *    there) and image `src` (next/image adds no basePath to src either).
  *    `next.config.ts` basePath cannot reach any of those.
+ *  - A URL READ BACK from the browser (`window.location.pathname`) already
+ *    carries the prefix, so it must be stripped with `withoutBasePath()` before
+ *    being handed to a Next-managed navigation -- Next's `addBasePath` is not
+ *    idempotent and would produce `/app/mmh/app/mmh?...` (404).
  *
  * Layer 2 is the runtime shim in `src/app/layout.tsx`: it rewrites those
  * browser-level exits, so a forgotten call still works on fnOS instead of
@@ -51,4 +55,30 @@ export function withBasePath(path: string): string {
   const pathOnly = path.split(/[?#]/, 1)[0] ?? path;
   if (pathOnly === MMH_BASE_PATH || pathOnly.startsWith(`${MMH_BASE_PATH}/`)) return path;
   return `${MMH_BASE_PATH}${path}`;
+}
+
+/**
+ * Inverse of `withBasePath()`: drop the gateway prefix before a URL goes back
+ * into a Next-managed navigation (`router.push/replace`, `<Link href>`,
+ * `redirect()`).
+ *
+ * Why it is needed: `window.location.pathname` is the ADDRESS BAR path, so on
+ * fnOS it already starts with `/app/mmh`. Next's `addBasePath()` is not
+ * idempotent, so feeding that path to `router.replace()` yields
+ * `/app/mmh/app/mmh?...` and the gateway answers 404 -- reported in v0.1.73 as
+ * "记账保存后跳转 404, 地址里出现两次 /app/mmh" (credit-card bill page).
+ *
+ * Also idempotent, and the bare prefix collapses to `/` so a root route keeps
+ * the form Next expects (`/app/mmh?view=bill` -> `/?view=bill`). No-op on
+ * non-gateway builds and for paths that never carried the prefix.
+ */
+export function withoutBasePath(path: string): string {
+  if (!MMH_BASE_PATH) return path;
+  if (!path.startsWith("/") || path.startsWith("//")) return path;
+  const cut = path.search(/[?#]/);
+  const pathOnly = cut === -1 ? path : path.slice(0, cut);
+  const rest = cut === -1 ? "" : path.slice(cut);
+  if (pathOnly === MMH_BASE_PATH) return `/${rest}`;
+  if (pathOnly.startsWith(`${MMH_BASE_PATH}/`)) return `${pathOnly.slice(MMH_BASE_PATH.length)}${rest}`;
+  return path;
 }

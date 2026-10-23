@@ -3,6 +3,7 @@
 import { useEffect, useState, useTransition } from "react";
 import { RefreshCw } from "lucide-react";
 import { useRouter } from "next/navigation";
+import { withoutBasePath } from "@/lib/base-path";
 import { useI18n } from "@/lib/i18n";
 import {
   AccountScopeFilter,
@@ -76,7 +77,9 @@ export function InvestmentProfitFilterSelect({
       // ReportRefreshButton, which this button replaces on these views).
       await fetch("/api/v1/settings/revalidate", { method: "POST" }).catch(() => null);
       const href = buildHref(scope);
-      if (href === `${window.location.pathname}${window.location.search}`) {
+      // `href` is app-relative; the address bar carries the fnOS gateway prefix.
+      const currentHref = withoutBasePath(`${window.location.pathname}${window.location.search}`);
+      if (href === currentHref) {
         router.refresh();
       } else {
         router.push(href, { scroll: false });

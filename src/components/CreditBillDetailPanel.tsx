@@ -7,6 +7,7 @@ import { BasicDetailBatchDeleteMessage, BasicDetailSelectionProvider, type Basic
 import { DetailTablePaginationControls } from "@/components/DetailTablePaginationControls";
 import { DetailViewClient, type DetailEntry } from "@/components/DetailViewClient";
 import type { BatchReplaceField } from "@/lib/client/batchReplaceEntries";
+import { withoutBasePath } from "@/lib/base-path";
 import { CREDIT_BILL_DETAIL_SELECTION_EVENT, type CreditBillDetailSelectionDetail } from "@/lib/client/creditBillDetailSelection";
 import { useI18n } from "@/lib/i18n";
 import { FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
@@ -187,7 +188,12 @@ export function CreditBillDetailPanel({
       // use an older router URL and fall back to an empty/current bill scope.
       // Re-submit the URL currently visible in the address bar so the selected
       // bill month remains part of the server-render request.
-      const currentHref = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+      // The address bar already carries the fnOS gateway prefix, and
+      // router.replace() adds basePath itself -- without the strip a saving
+      // entry on the credit-card page navigated to /app/mmh/app/mmh?... (404).
+      const currentHref = withoutBasePath(
+        `${window.location.pathname}${window.location.search}${window.location.hash}`,
+      );
       router.replace(currentHref, { scroll: false });
     };
     window.addEventListener(FINANCE_DATA_CHANGED_EVENT, handleFinanceChange);
@@ -258,7 +264,8 @@ export function CreditBillDetailPanel({
     const url = new URL(window.location.href);
     url.searchParams.set("view", "bill");
     url.searchParams.set("billMonth", "all");
-    router.replace(`${url.pathname}${url.search}${url.hash}`, { scroll: false });
+    // Same double-prefix trap as above: url.pathname comes from the address bar.
+    router.replace(withoutBasePath(`${url.pathname}${url.search}${url.hash}`), { scroll: false });
   };
 
   const goPage = (nextPage: number) => {

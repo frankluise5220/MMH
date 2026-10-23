@@ -278,6 +278,25 @@ function loadWithBasePath(failures) {
   }
 }
 
+/** withoutBasePath() from src/lib/base-path.ts: strips the prefix for Next-navigation sinks. */
+function loadWithoutBasePath(failures) {
+  const file = GUARD_FILES.basePath;
+  const signature = "export function withoutBasePath(path: string): string {";
+  const block = sliceBetween(read(file), signature, "\n}", file, "withoutBasePath", failures);
+  if (!block) return null;
+  const plainJs = block.replace(signature, "function withoutBasePath(path) {");
+  if (!plainJs.startsWith("function withoutBasePath(path) {")) {
+    failures.push("withoutBasePath: signature changed shape; update check-fnos-gateway-guards.cjs to match.");
+    return null;
+  }
+  try {
+    return new Function("MMH_BASE_PATH", `${plainJs}; return withoutBasePath;`)(BASE);
+  } catch (error) {
+    failures.push(`withoutBasePath: extracted block does not evaluate (${error.message})`);
+    return null;
+  }
+}
+
 /** The local TCP compatibility port's injection inside the fnOS launcher. */
 function loadTcpInjector(failures) {
   const file = GUARD_FILES.launcher;
@@ -370,6 +389,13 @@ const BASE_PATH_EXIT_PATTERNS = [
 ];
 const RAW_ANCHOR_PATTERN = /<a\b[^>]*?\bhref=\{?\s*["'`]\/(?!\/)/g;
 const RAW_ANCHOR_LABEL = "raw <a href> with a bare root path (next/link prefixes itself; a raw anchor does not)";
+// The OPPOSITE direction: Next's router adds basePath itself (addPathPrefix is
+// not idempotent), so a URL that already carries the prefix -- anything read
+// back from the address bar -- must go through withoutBasePath() first.
+// v0.1.73: the credit-card bill page handed `window.location.pathname` to
+// router.replace() after saving an entry, producing /app/mmh/app/mmh?... (404).
+const ROUTER_NAV_PATTERN = /\brouter\s*\.\s*(?:push|replace)\s*\(/g;
+const ROUTER_NAV_DOUBLE_PREFIX_LABEL = "Next router navigation with an already-prefixed browser URL (router adds basePath itself; strip it with withoutBasePath())";
 // next/image gets no basePath from Next either, and `unoptimized` is what makes
 // the gateway path work (the /_next/image route itself is not prefixed), so every
 // image source has to be either already-prefixed or external. A variable or a
@@ -440,6 +466,7 @@ function scanBareUrlExitSource(relative, source) {
   };
 
   scanMatches(RAW_ANCHOR_PATTERN, RAW_ANCHOR_LABEL);
+  scanNextRouterHrefs(source, lines, lineNumberAt, push);
 
   const imageScanner = new RegExp(IMAGE_SRC_PATTERN.source, "g");
   let imageMatch;
@@ -456,6 +483,63 @@ function scanBareUrlExitSource(relative, source) {
   return hits;
 }
 
+/**
+ * First argument of the call whose "(" is at `openIndex`, by bracket matching.
+ * Null when the call is not closed inside `source`.
+ */
+function extractCallArgument(source, openIndex) {
+  let depth = 0;
+  let quote = null;
+  for (let i = openIndex; i < source.length; i += 1) {
+    const ch = source[i];
+    if (quote) {
+      if (ch === "\\") {
+        i += 1;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      quote = ch;
+      continue;
+    }
+    if (ch === "(") {
+      depth += 1;
+      continue;
+    }
+    if (ch === ")") {
+      depth -= 1;
+      if (depth === 0) return source.slice(openIndex + 1, i);
+    }
+  }
+  return null;
+}
+
+/**
+ * Flag `router.push/replace()` calls whose href is ALREADY prefixed: a
+ * `.pathname` read (address bar under the gateway) or an explicit
+ * withBasePath() wrap. Next prepends basePath to both, producing
+ * /app/mmh/app/mmh/... . The fix is withoutBasePath(), which the scan accepts.
+ */
+function scanNextRouterHrefs(source, lines, lineNumberAt, push) {
+  const scanner = new RegExp(ROUTER_NAV_PATTERN.source, "g");
+  let match;
+  while ((match = scanner.exec(source)) !== null) {
+    const line = lineNumberAt(match.index);
+    const arg = extractCallArgument(source, match.index + match[0].length - 1);
+    if (
+      arg !== null &&
+      !isUnscannableLine(lines[line - 1] ?? "") &&
+      !/withoutBasePath\s*\(/.test(arg) &&
+      (/\bwithBasePath\s*\(/.test(arg) || /\bpathname\b/.test(arg))
+    ) {
+      push(line, ROUTER_NAV_DOUBLE_PREFIX_LABEL);
+    }
+    if (scanner.lastIndex === match.index) scanner.lastIndex += 1;
+  }
+}
+
 /** Each sample is a URL exit that MUST be flagged, or a form that must NOT be. */
 const BARE_URL_EXIT_SAMPLES = [
   { source: 'window.location.assign("/regular-invest?create=1");', label: "location.assign/replace() with a bare root path" },
@@ -468,6 +552,9 @@ const BARE_URL_EXIT_SAMPLES = [
   { source: '<a href="/?accountId=1&view=detail">x</a>', label: RAW_ANCHOR_LABEL },
   { source: '<Image src={tier.qrUrl} alt="" unoptimized />', label: IMAGE_SRC_LABEL },
   { source: '<Image src={logo} alt="" unoptimized />', label: IMAGE_SRC_LABEL },
+  { source: "router.replace(`${url.pathname}${url.search}`, { scroll: false });", label: ROUTER_NAV_DOUBLE_PREFIX_LABEL },
+  { source: "router.push(`${window.location.pathname}?tab=1`);", label: ROUTER_NAV_DOUBLE_PREFIX_LABEL },
+  { source: 'router.replace(withBasePath("/reports?view=income"));', label: ROUTER_NAV_DOUBLE_PREFIX_LABEL },
 ];
 const BARE_URL_EXIT_CLEAN_SAMPLES = [
   'window.location.assign(withBasePath("/regular-invest?create=1"));',
@@ -482,6 +569,7 @@ const BARE_URL_EXIT_CLEAN_SAMPLES = [
   '<Link href="/reports?view=income">x</Link>',
   'router.push("/reports?view=income");',
   'router.replace(`/reports?view=${view}`);',
+  'router.replace(withoutBasePath(`${url.pathname}${url.search}`), { scroll: false });',
   'fetch("/api/v1/reports");',
   'window.location.href = item.url;',
   '// <a href="/legacy">x</a> -- fnos-basepath-allow: documentation sample',
@@ -511,6 +599,7 @@ function collectFnosGatewayGuardFailures() {
   const rewrite = loadLayoutShim(failures);
   const emittedShim = loadEmittedShim(failures);
   const withBasePath = loadWithBasePath(failures);
+  const withoutBasePath = loadWithoutBasePath(failures);
   const inject = loadTcpInjector(failures);
   const normalizeForwardedHost = loadForwardedHostNormalizer(failures);
 
@@ -588,6 +677,19 @@ function collectFnosGatewayGuardFailures() {
     expectOnePrefix("withBasePath must stay idempotent for `/accounts?tab=credit`", withBasePath(withBasePath("/accounts?tab=credit")));
     // The service-worker scope depends on the root keeping its trailing slash.
     expectEqual("withBasePath must keep the root slash (service-worker scope)", withBasePath("/"), `${BASE}/`);
+  }
+
+  if (withoutBasePath) {
+    expectEqual("withoutBasePath must strip the bare prefix", withoutBasePath(`${BASE}?view=allcash`), "/?view=allcash");
+    expectEqual("withoutBasePath must strip a prefixed route", withoutBasePath(`${BASE}/overview?_rsc=abc`), "/overview?_rsc=abc");
+    expectEqual("withoutBasePath must leave an app-relative path alone", withoutBasePath("/?view=allcash"), "/?view=allcash");
+    expectEqual("withoutBasePath must not strip a lookalike prefix", withoutBasePath("/app/mmhx?view=allcash"), "/app/mmhx?view=allcash");
+    if (withBasePath) {
+      // Round trip: the address bar always shows withBasePath(app path), and the
+      // app path is what a Next navigation must receive back.
+      expectEqual("withoutBasePath must undo withBasePath (root)", withoutBasePath(withBasePath("/?view=allcash")), "/?view=allcash");
+      expectEqual("withoutBasePath must undo withBasePath (route)", withoutBasePath(withBasePath("/accounts?tab=credit")), "/accounts?tab=credit");
+    }
   }
 
   if (inject) {
