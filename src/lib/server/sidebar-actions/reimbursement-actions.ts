@@ -721,9 +721,14 @@ export async function createReimbursement(formData: FormData): Promise<Reimburse
   const attachmentCountValue = attachmentCountRaw ? evaluateArithmeticExpression(attachmentCountRaw) : 0;
   const attachmentCount = attachmentCountValue == null ? Number.NaN : Math.round(attachmentCountValue);
   const items = parseItemInputs(formData.get("items")).filter((item) => toMoney(Math.abs(item.amount)) > 0);
-  const requestedTransactionIds = Array.from(new Set(
-    String(formData.get("transactionIds") ?? "").split(",").map((id) => id.trim()).filter(Boolean),
-  ));
+  // Document-level links come from both the explicit `transactionIds` field and the
+  // rows themselves: the detail-list entry point seeds one row per picked advance
+  // transaction and only sends `items`, so dropping the row ids would silently
+  // create the document with no 原始交易明细.
+  const requestedTransactionIds = Array.from(new Set([
+    ...String(formData.get("transactionIds") ?? "").split(",").map((id) => id.trim()).filter(Boolean),
+    ...items.map((item) => item.txRecordId).filter((id): id is string => Boolean(id)),
+  ]));
   if (!title) return { ok: false as const, error: "REIMBURSEMENT_TITLE_REQUIRED" };
   if (!counterpartyId) return { ok: false as const, error: "REIMBURSEMENT_OBJECT_REQUIRED" };
   if (!requestedAdvanceAccountId) return { ok: false as const, error: "REIMBURSEMENT_ADVANCE_ACCOUNT_REQUIRED" };

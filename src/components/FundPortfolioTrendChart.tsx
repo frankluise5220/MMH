@@ -92,13 +92,14 @@ const RANGE_LABEL_KEYS: Record<RangeKey, string> = {
 };
 
 function rangeStartMonth(range: RangeKey): string {
+  // 浏览器本地年月：UTC 月份在北京时间月初凌晨还是上个月。
   const now = new Date();
-  const y = now.getUTCFullYear();
-  const m = now.getUTCMonth();
-  const fmt = (d: Date) => `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
-  if (range === "12m") return fmt(new Date(Date.UTC(y, m - 11, 1)));
+  const y = now.getFullYear();
+  const m = now.getMonth();
+  const fmt = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+  if (range === "12m") return fmt(new Date(y, m - 11, 1));
   if (range === "ytd") return `${y}-01`;
-  if (range === "3y") return fmt(new Date(Date.UTC(y, m - 35, 1)));
+  if (range === "3y") return fmt(new Date(y, m - 35, 1));
   return "";
 }
 

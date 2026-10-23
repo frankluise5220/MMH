@@ -1593,12 +1593,15 @@ function findCmbTransactionHeaderIndexes(cells: string[]): CmbTransactionHeaderI
  * same line carries no number.
  */
 function extractCmbLabeledMoney(text: string, labels: string[]) {
-  const lines = stripHtml(text).split(/\r?\n/).map((line) => line.replace(/\s+/g, " ").trim()).filter(Boolean);
+  // 必须保留行结构：stripHtml 会把整封信压成一行，只要信里出现「最低还款」就会跳过所有标签。
+  const lines = htmlToLooseText(text).split(/\r?\n/).map((line) => line.replace(/\s+/g, " ").trim()).filter(Boolean);
   for (const label of labels) {
     const hasPreferredVariant = lines.some((line) => line.includes(label) && /本期|本账单/.test(line));
     for (let index = 0; index < lines.length; index += 1) {
       const line = lines[index];
-      if (!line.includes(label) || /最低还款|积分/.test(line)) continue;
+      if (!line.includes(label) || /积分/.test(line)) continue;
+      // 「最低还款额」本身含「最低还款」，不能把它自己一起排除。
+      if (!label.includes("最低还款") && /最低还款/.test(line)) continue;
       if (/上期|前期/.test(line)) continue;
       if (hasPreferredVariant && !/本期|本账单/.test(line)) continue;
       const after = line.slice(line.indexOf(label) + label.length);
@@ -1679,13 +1682,13 @@ function normalizeCmbDate(value: string | undefined, period: ReturnType<typeof e
 function extractCmbCreditCardMeta(text: string): ParsedItemMeta & { accountName?: string } {
   const plain = stripHtml(text);
   const period = extractCmbStatementPeriod(text);
-  const statementAmount = extractCmbLabeledMoney(plain, [
+  const statementAmount = extractCmbLabeledMoney(text, [
     "本期应还金额",
     "本期应还总额",
     "本期应还",
     "应还金额",
   ]);
-  const minimumPayment = extractCmbLabeledMoney(plain, ["最低还款额"]);
+  const minimumPayment = extractCmbLabeledMoney(text, ["最低还款额"]);
   const creditLimit = extractCreditLimit(plain);
   // CMB summary carries no masked card number; the card last-4 only appears in
   // the transaction rows (multi-card statements). Do not use the generic

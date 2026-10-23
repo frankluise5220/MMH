@@ -11,6 +11,7 @@ import { RegularInvestForm } from "@/components/RegularInvestForm";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
 import { SmartSelect, type SmartSelectOption } from "@/components/SmartSelect";
+import { todayDateLocalYmd } from "@/lib/date-utils";
 
 export type FundProfileSettingsData = {
   fundCode: string;
@@ -98,7 +99,7 @@ function toDateInput(value?: string | null): string {
 }
 
 function todayInput(): string {
-  return new Date().toISOString().slice(0, 10);
+  return todayDateLocalYmd();
 }
 
 function toOptionalInt(value: unknown): number | null {

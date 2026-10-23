@@ -5,7 +5,7 @@ import {
   BALANCE_RECONCILE_SOURCE,
   BALANCE_RECONCILE_TARGET_PREFIX,
 } from "@/lib/balance-reconcile";
-import { formatDateLocal } from "@/lib/date-utils";
+import { todayDateBusinessYmd } from "@/lib/date-utils";
 import { isLoanOrSettlementAccountKind } from "@/lib/liability";
 import { prisma } from "@/lib/db/prisma";
 
@@ -56,7 +56,10 @@ function buildOrderingCtesSql(args: {
   // 账户余额口径（account-balance.ts 的 isOnOrBeforeToday）以「今天」为截止，
   // 明细「余额」列必须用同一个截止日，否则未来日期的流水会把列表顶部的余额
   // 推到账户余额之外（例：借记卡页头 -89,161.66，列表首行却是 -49,161.66）。
-  const todayKey = formatDateLocal(new Date());
+  // 显式业务时区，不用进程时区：容器未设置 TZ 时进程时区是 UTC，
+  // 北京时间 00:00–08:00 会把「今天」算成昨天，导致当天刚记的流水被
+  // `visible` 过滤掉（页面上看不到、数据库里有）。
+  const todayKey = todayDateBusinessYmd();
   const accountScope = accountScopeSql(accountIds);
   const scopedColumns = Prisma.sql`
     t."id",
@@ -92,6 +95,22 @@ function buildOrderingCtesSql(args: {
   // 注意：只能用 CAST(... AS ...)，不能写 PG 专有的双冒号 —— fnOS / 群晖 包跑的是
   // SQLite（DATABASE_URL=file:.../mmh.db），双冒号会让整条 SQL 语法报错
   // （unrecognized token ":"），整页 500。
+  // 业务关联分支（理财 / 基金）的驱动方向：从 `entry_business_links` 出发，
+  // 再用流水主键回查 `transactions`。
+  //
+  // 反过来写（从已物化的 `scoped_base` 出发 JOIN 链表）会让 PG 把上万个 investment
+  // 流水当成 Nested Loop 的内表反复扫描：4.4 万行口径下实测 `Rows Removed by Join
+  // Filter: 1,149,318`，单这一层 7.3s，整个分页请求 14.5s。反转后同一个请求 0.63s
+  // （每一行关联都变成一次主键/索引查找），排序、筛选口径完全不变。
+  //
+  // `accountScope` 里的别名就是 t，可直接复用，保证账户范围与 `scoped_base` 一致。
+  const linkedInvestmentScopeSql = Prisma.sql`
+            t."deletedAt" IS NULL
+            AND t."householdId" = ${householdId}
+            AND t."type" = 'investment'
+            AND ${accountScope}
+  `;
+
   const scopedCtes = Prisma.sql`
         "scoped_base" AS (
           SELECT ${scopedColumns}
@@ -99,77 +118,77 @@ function buildOrderingCtesSql(args: {
         ),
         "wealth_candidates" AS (
           SELECT
-            s."id" AS "entryId",
+            t."id" AS "entryId",
             w."action" AS "wealthAction",
             w."arrivalDate" AS "wealthArrivalDate",
             w."cashAccountId" AS "wealthCashAccountId",
             0 AS "priority",
             l."id" AS "linkId"
-          FROM "scoped_base" s
-          INNER JOIN "entry_business_links" l
-            ON l."cashEntryId" = s."id"
-            AND l."deletedAt" IS NULL
-            AND l."wealthTransactionId" IS NOT NULL
+          FROM "entry_business_links" l
+          INNER JOIN "transactions" t
+            ON t."id" = l."cashEntryId"
+            AND ${linkedInvestmentScopeSql}
           INNER JOIN "wealth_transactions" w
             ON w."id" = l."wealthTransactionId"
             AND w."deletedAt" IS NULL
             AND w."householdId" = ${householdId}
-          WHERE s."type" = 'investment'
+          WHERE l."deletedAt" IS NULL
+            AND l."wealthTransactionId" IS NOT NULL
           UNION ALL
           SELECT
-            s."id" AS "entryId",
+            t."id" AS "entryId",
             w."action" AS "wealthAction",
             w."arrivalDate" AS "wealthArrivalDate",
             w."cashAccountId" AS "wealthCashAccountId",
             1 AS "priority",
             l."id" AS "linkId"
-          FROM "scoped_base" s
-          INNER JOIN "entry_business_links" l
-            ON l."businessEntryId" = s."id"
-            AND l."deletedAt" IS NULL
-            AND l."wealthTransactionId" IS NOT NULL
+          FROM "entry_business_links" l
+          INNER JOIN "transactions" t
+            ON t."id" = l."businessEntryId"
+            AND ${linkedInvestmentScopeSql}
           INNER JOIN "wealth_transactions" w
             ON w."id" = l."wealthTransactionId"
             AND w."deletedAt" IS NULL
             AND w."householdId" = ${householdId}
-          WHERE s."type" = 'investment'
+          WHERE l."deletedAt" IS NULL
+            AND l."wealthTransactionId" IS NOT NULL
         ),
         "fund_candidates" AS (
           SELECT
-            s."id" AS "entryId",
+            t."id" AS "entryId",
             f."fundSubtype" AS "fundSubtype",
             f."arrivalDate" AS "fundArrivalDate",
             f."cashAccountId" AS "fundCashAccountId",
             0 AS "priority",
             l."id" AS "linkId"
-          FROM "scoped_base" s
-          INNER JOIN "entry_business_links" l
-            ON l."cashEntryId" = s."id"
-            AND l."deletedAt" IS NULL
-            AND l."fundTransactionId" IS NOT NULL
+          FROM "entry_business_links" l
+          INNER JOIN "transactions" t
+            ON t."id" = l."cashEntryId"
+            AND ${linkedInvestmentScopeSql}
           INNER JOIN "fund_transactions" f
             ON f."id" = l."fundTransactionId"
             AND f."deletedAt" IS NULL
             AND f."householdId" = ${householdId}
-          WHERE s."type" = 'investment'
+          WHERE l."deletedAt" IS NULL
+            AND l."fundTransactionId" IS NOT NULL
           UNION ALL
           SELECT
-            s."id" AS "entryId",
+            t."id" AS "entryId",
             f."fundSubtype" AS "fundSubtype",
             f."arrivalDate" AS "fundArrivalDate",
             f."cashAccountId" AS "fundCashAccountId",
             1 AS "priority",
             l."id" AS "linkId"
-          FROM "scoped_base" s
-          INNER JOIN "entry_business_links" l
-            ON l."businessEntryId" = s."id"
-            AND l."deletedAt" IS NULL
-            AND l."fundTransactionId" IS NOT NULL
+          FROM "entry_business_links" l
+          INNER JOIN "transactions" t
+            ON t."id" = l."businessEntryId"
+            AND ${linkedInvestmentScopeSql}
           INNER JOIN "fund_transactions" f
             ON f."id" = l."fundTransactionId"
             AND f."deletedAt" IS NULL
             AND f."householdId" = ${householdId}
-          WHERE s."type" = 'investment'
+          WHERE l."deletedAt" IS NULL
+            AND l."fundTransactionId" IS NOT NULL
         ),
         "wealth_ranked" AS (
           SELECT
@@ -375,10 +394,14 @@ async function countEntries(accountIds: string[], householdId: string, sortAccou
     householdId,
     sortAccountId,
   });
+  // 数行只依赖 `visible`：`displayed` 只是多算两列、`ordered` / `ranked` 不增删行。
+  // 引用 `ranked` 会让数据库把 4 万行的 ROW_NUMBER 窗口排序也算一遍，而 PG 12+ /
+  // SQLite 对未被引用的 CTE 是惰性的，所以这里直接数 `visible` 就跳过了编号，
+  // 「全部收支」的分页请求能省掉一半的全量排序。
   const rows = await prisma.$queryRaw<Array<{ count: unknown }>>(Prisma.sql`
     ${orderingCtes}
     SELECT COUNT(*) AS "count"
-    FROM "ranked" r
+    FROM "visible" r
   `);
   const count = Number(rows[0]?.count ?? 0);
   return Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
@@ -416,13 +439,22 @@ export async function queryDetailPage(args: DetailPageQueryArgs): Promise<Detail
   });
 
   if (!args.includeRunningBalances || !args.sortAccountId) {
+    // 不需要逐笔余额（「全部收支」等）时不必给全部行编号：直接按同一套排序键
+    // `LIMIT/OFFSET` 取当前页，语义与 `rowNumber > offset AND <= offset + pageSize`
+    // 完全一致，但省掉一次 4 万行的 ROW_NUMBER 物化。`ranked` 因此不被引用，
+    // 数据库（PG 12+ / SQLite）不会执行它。
     const rows = await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
       ${orderingCtes}
-      SELECT r."id" AS "id"
-      FROM "ranked" r
-      WHERE r."rowNumber" > ${offset}
-        AND r."rowNumber" <= ${limit}
-      ORDER BY r."rowNumber" ASC
+      SELECT o."id" AS "id"
+      FROM "ordered" o
+      ORDER BY
+        o."dayKey" DESC,
+        o."isAnchor" DESC,
+        COALESCE(o."dayOrder", 0) DESC,
+        o."displayAt" DESC,
+        o."createdAt" DESC,
+        o."id" DESC
+      LIMIT ${pageSize} OFFSET ${offset}
     `);
     return {
       totalCount,

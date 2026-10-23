@@ -1,6 +1,6 @@
 import { AccountKind, type Prisma } from "@prisma/client";
 
-import { startOfDayUtc } from "@/lib/date-utils";
+import { startOfDayUtc, businessTodayUtcStart } from "@/lib/date-utils";
 import {
   CREDIT_CARD_BILLING_DAY_INITIAL_DATE,
   CREDIT_CARD_MANUAL_CYCLE_LOCK_SOURCE,
@@ -186,7 +186,7 @@ export async function recordCreditCardBillingDayChange(
   if (!billingDay || input.accountIds.length === 0) return;
   const effectiveDate = input.effectiveDate
     ? startOfDayUtc(input.effectiveDate)
-    : startOfDayUtc(new Date());
+    : businessTodayUtcStart();
 
   for (const accountId of uniqueAccountIds(input.accountIds)) {
     await writer.creditCardBillingDay.upsert({

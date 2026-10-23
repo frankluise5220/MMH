@@ -1,5 +1,4 @@
 "use client";
-import { ModalLayer } from "@/components/ModalLayer";
 
 import { ArrowLeftRight, ArrowRight, CheckCircle2, ChevronDown, Info, Plus, RefreshCw, Repeat } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
@@ -17,11 +16,13 @@ import { institutionTypeLabel, isSettlementCounterpartyType, isInstitutionTypeOf
 import { buildAccountDisplayOption, formatAccountHoverTitle } from "@/lib/account-display";
 import { recordRecentAccount, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
-/** 固定弹窗高度：切换贷款/还款/提前还款等模式时窗体尺寸与位置不变。 */
-import { useModalHeightLock } from "@/lib/client/useModalHeightLock";
+/** 整窗外壳（遮罩 / 标题栏 / 宽度档位 / 表单 / FT 页签与卡片 / 窗口底按钮行）：规则集中在它。 */
+import { EntryModalShell } from "@/components/EntryModalShell";
+import type { FolderTabsCardItem } from "@/components/FolderTabsCard";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { showConfirmDialog } from "@/lib/client/confirm-dialog";
-import { formatDateLocal as formatDateInput, parseDateInputToUtc as dateInputToUtcDate } from "@/lib/date-utils";
+import { formatDateUtc as formatDateInput, parseDateInputToUtc as dateInputToUtcDate } from "@/lib/date-utils";
+import { formatAmountDraft } from "@/lib/format";
 import {
   fetchSettingsAccountData,
   SETTINGS_DATA_CHANGED_EVENT,
@@ -58,7 +59,7 @@ import {
   shouldPreferLoanScheduledPlan,
 } from "@/lib/scheduled-task";
 import { useI18n } from "@/lib/i18n";
-import { getAccountLabelFieldsPreference } from "@/lib/client/appPreferences";
+import { readAccountDisplaySettings } from "@/lib/client/account-display-settings";
 import { restrictAccountsByType } from "@/lib/client/account-dropdown-filter";
 
 type LiabilityMode = "borrow_in" | "repay_out" | "prepay_out" | "lend_out" | "collect_in";
@@ -279,7 +280,7 @@ function accountMatchesLoanType(account: AccountOption, loanType: LoanTypeValue)
 }
 
 function settingsAccountToLiabilityOption(account: SettingsAccountRecord, t: (key: string, params?: Record<string, string | number>) => string): AccountOption {
-  const display = buildAccountDisplayOption(account as Parameters<typeof buildAccountDisplayOption>[0], undefined, { fields: getAccountLabelFieldsPreference() });
+  const display = buildAccountDisplayOption(account as Parameters<typeof buildAccountDisplayOption>[0], undefined, readAccountDisplaySettings());
   const counterpartyName = account.Counterparty?.shortName?.trim() || account.Counterparty?.name?.trim() || "";
   const institutionType = account.Institution?.type ?? null;
   const isInstitutionLoan = Boolean(account.kind === "loan" && !account.counterpartyId);
@@ -381,26 +382,23 @@ function FixedAssetCreateDialog({
   if (!open) return null;
   return (
     <>
-      <ModalLayer className="app-modal-backdrop">
-          <div className="app-modal-panel max-w-md">
-            <div className="modal-header shrink-0">
-              <div className="text-sm font-semibold text-slate-800">{t("txForm.createFixedAsset")}</div>
-              <button
-                type="button"
-                onClick={onClose}
-                className="secondary-button h-8 px-2"
-                disabled={submitting}
-              >
-                {t("table.close")}
-              </button>
-            </div>
-            <form
-              className="space-y-3 p-4"
-              onSubmit={(event) => {
-                event.preventDefault();
-                onSubmit();
-              }}
-            >
+      <EntryModalShell
+        open={open}
+        heightKey="liability-fixed-asset"
+        width="sm"
+        title={t("txForm.createFixedAsset")}
+        onClose={onClose}
+        closeLabel={t("table.close")}
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSubmit();
+        }}
+        footer={(
+          <button type="submit" className="primary-button h-9 px-3" disabled={submitting}>
+            {submitting ? t("txForm.saving") : t("txForm.createFixedAsset")}
+          </button>
+        )}
+      >
               <div className="space-y-1">
                 <div className="form-label">{t("txForm.fixedAssetAccount")}</div>
                 <SmartSelect
@@ -450,22 +448,7 @@ function FixedAssetCreateDialog({
                   />
                 </div>
               </div>
-              <div className="flex justify-end gap-2 pt-1">
-                <button
-                  type="button"
-                  className="secondary-button h-9 px-3"
-                  disabled={submitting}
-                  onClick={onClose}
-                >
-                  {t("common.cancel")}
-                </button>
-                <button type="submit" className="primary-button h-9 px-3" disabled={submitting}>
-                  {submitting ? t("txForm.saving") : t("txForm.createFixedAsset")}
-                </button>
-              </div>
-            </form>
-          </div>
-        </ModalLayer>
+      </EntryModalShell>
       {accountCreateForm}
     </>
   );
@@ -576,8 +559,6 @@ export function LiabilityTransactionModal({
   ) : undefined;
 
   const [open, setOpen] = useState(false);
-  /** 弹窗高度锁定（贷款/还款/提前还款等模式内容长短不同，锁定后窗体不位移） */
-  const { panelRef, scrollRef, fixedHeightProps } = useModalHeightLock<HTMLDivElement, HTMLFormElement>("liability-tx", open);
   const [submitting, setSubmitting] = useState(false);
   const [editingEntryId, setEditingEntryId] = useState("");
   // True when the open/edit event already carried repayment-plan defaults
@@ -1025,17 +1006,17 @@ export function LiabilityTransactionModal({
       else if (detail?.defaultCashAccountId) setAutoDebitCashAccountId(detail.defaultCashAccountId);
       if (detail?.defaultAutoDebit != null) setAutoDebit(detail.defaultAutoDebit);
       if (detail?.defaultPrincipal != null) {
-        const nextPrincipal = String(parseAbsMoneyText(String(detail.defaultPrincipal)));
+        const nextPrincipal = formatAmountDraft(parseAbsMoneyText(String(detail.defaultPrincipal)));
         setPrincipal(nextPrincipal);
         setOriginalPrincipalForEdit(nextPrincipal);
       }
       if (detail?.defaultRecalculateStartDate) setEditRecalculateStartDate(detail.defaultRecalculateStartDate);
       if (detail?.defaultInterest != null) {
-        setInterest(String(parseAbsMoneyText(String(detail.defaultInterest))));
+        setInterest(formatAmountDraft(parseAbsMoneyText(String(detail.defaultInterest))));
         if (detail?.mode === "prepay_out") setPrepayInterestManual(true);
       }
       if (detail?.defaultPenalty != null) {
-        const nextPenalty = String(parseAbsMoneyText(String(detail.defaultPenalty)));
+        const nextPenalty = formatAmountDraft(parseAbsMoneyText(String(detail.defaultPenalty)));
         setPenalty(nextPenalty);
         if (detail?.mode === "prepay_out") {
           const editInterest = detail.defaultInterest != null ? parseAbsMoneyText(String(detail.defaultInterest)) : 0;
@@ -1200,12 +1181,12 @@ export function LiabilityTransactionModal({
       ) {
         setCashAccountId(repaymentAccountId);
       }
-      setPrincipal(String(Math.round(scheduledPrincipal * 100) / 100));
+      setPrincipal(formatAmountDraft(Math.round(scheduledPrincipal * 100) / 100));
       // 还款模式的利息来自还款表期次拆分，与借款表单的还款方式状态无关
       //（repay 模式下 repaymentMethod 恒为 FREE，旧判据会拦掉利息带出）。
       if (showInterest) {
         setInterest(Number.isFinite(scheduledInterest)
-          ? String(Math.round(scheduledInterest * 100) / 100)
+          ? formatAmountDraft(Math.round(scheduledInterest * 100) / 100)
           : "");
       }
     } else if (row?.currentPeriodPaid) {
@@ -1242,7 +1223,7 @@ export function LiabilityTransactionModal({
     if (editingEntryId && !canSwitchLiabilityEditMode(mode, nextMode)) return;
     setMode(nextMode);
     if (!allowsLiabilityInterest(nextMode)) setInterest("");
-    if (principal.trim()) setPrincipal(String(parseAbsMoneyText(principal)));
+    if (principal.trim()) setPrincipal(formatAmountDraft(parseAbsMoneyText(principal)));
     if (isLoanDialog && (nextMode === "repay_out" || nextMode === "prepay_out")) {
       setActiveLoanTab("repay_out");
       if (nextMode === "repay_out") {
@@ -1711,6 +1692,46 @@ export function LiabilityTransactionModal({
   }
   const flowTab = mode === "repay_out" || mode === "collect_in" ? "repay" : "borrow";
   /**
+   * 窗口页签 = 原来摆在表单中段的两组 `segment-button`，改由 FT 页签在卡片顶部显示：
+   *  - 贷款还款窗：正常还款 / 提前还款；
+   *  - 往来款窗：借入借出 / 还款收款（id 与 `flowTab` 同口径）；
+   *  - 贷款借入窗：只有一种流向，不给页签（卡片顶边直接贴窗口顶部）。
+   */
+  const liabilityTabs = useMemo<FolderTabsCardItem[]>(() => {
+    if (isLoanRepaymentMode) {
+      return (["repay_out", "prepay_out"] as const).map((item) => ({
+        id: item,
+        label: t(MODE_LABELS[item]),
+        disabled: !!editingEntryId && !canSwitchLiabilityEditMode(mode, item),
+      }));
+    }
+    if (isLoanDialog) return [];
+    // 与 `resolveFlowMode` 同口径（借入/借出 ↔ 还回/还出），内联写是为了让 memo 依赖只看
+    // `liabilitySideIsOut`，不必把每次渲染都重建的函数放进依赖。
+    const borrowMode: LiabilityMode = liabilitySideIsOut ? "borrow_in" : "lend_out";
+    const repayMode: LiabilityMode = liabilitySideIsOut ? "collect_in" : "repay_out";
+    return [
+      {
+        id: "borrow",
+        label: t("liabilityTx.flow.borrow"),
+        disabled: !!editingEntryId && !canSwitchLiabilityEditMode(mode, borrowMode),
+      },
+      {
+        id: "repay",
+        label: t("liabilityTx.flow.repay"),
+        disabled: !!editingEntryId && !canSwitchLiabilityEditMode(mode, repayMode),
+      },
+    ];
+  }, [isLoanRepaymentMode, isLoanDialog, editingEntryId, mode, liabilitySideIsOut, t]);
+  const liabilityActiveTabId = isLoanRepaymentMode ? mode : flowTab;
+  function handleLiabilityTabChange(id: string) {
+    if (isLoanRepaymentMode) {
+      handleModeSelect(id as LiabilityMode);
+      return;
+    }
+    handleModeSelect(resolveFlowMode(id === "repay"));
+  }
+  /**
    * 交换「流出/流入」：只翻资金流方向，保留本金往来 vs 还本付息。
    * 借入↔借出、还回↔还出；不能靠利息有无改语义。
    */
@@ -1787,7 +1808,7 @@ export function LiabilityTransactionModal({
     const balance = selectedRepayableLoanRow?.balance;
     if (balance == null || !Number.isFinite(balance) || Math.abs(balance) <= 0.005) return;
     const outstanding = Math.round(Math.abs(balance) * 100) / 100;
-    setPrincipal((current) => (Math.abs(parseAbsMoneyText(current) - outstanding) > 0.005 ? String(outstanding) : current));
+    setPrincipal((current) => (Math.abs(parseAbsMoneyText(current) - outstanding) > 0.005 ? formatAmountDraft(outstanding) : current));
     setPrepayTotalManual(false);
   }, [open, mode, editingEntryId, prepayStrategy, selectedRepayableLoanRow]);
   const showLoanPurpose = isLoanBorrow && activeLoanTab === "consumer";
@@ -2783,31 +2804,39 @@ export function LiabilityTransactionModal({
         </button>
       ) : null}
 
-      {open
-        ? createPortal(
-            <ModalLayer className="app-modal-backdrop">
-              <div className={`app-modal-panel max-w-xl ${fixedHeightProps.className ?? ""}`} style={fixedHeightProps.style} ref={panelRef}>
-                  <div className="modal-header shrink-0">
-                    <div className="text-sm font-semibold text-slate-800">
-                      {editingEntryId
-                        ? (isLoanDialog ? t("liabilityTx.editLoan") : t("liabilityTx.editRepayment"))
-                        : isLoanDialog ? t("liabilityTx.loanTitle") : t("liabilityTx.title")}
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setOpen(false);
-                          resetDraft();
-                        }}
-                        className="secondary-button h-8 px-2"
-                      >
-                        {t("table.close")}
-                      </button>
-                    </div>
-                  </div>
-
-                  <form ref={scrollRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4" onSubmit={onSubmit}>
+      {open ? (
+        /* 整窗外壳 = `EntryModalShell`：遮罩、层级、标题栏、宽度档位、表单、FT 页签与卡片、
+           窗口底按钮行全部由它统一（页签几何见 `@/app/login/FolderTabs` 文件头）。
+           原来中段的两组 `segment-button`（正常还款/提前还款、借入借出/还款收款）已上移为页签。 */
+        <EntryModalShell
+          open={open}
+          heightKey="liability-tx"
+          heightMode="natural"
+          width="md"
+          title={editingEntryId
+            ? (isLoanDialog ? t("liabilityTx.editLoan") : t("liabilityTx.editRepayment"))
+            : isLoanDialog ? t("liabilityTx.loanTitle") : t("liabilityTx.title")}
+          onClose={() => {
+            setOpen(false);
+            resetDraft();
+          }}
+          closeLabel={t("table.close")}
+          onSubmit={onSubmit}
+          tabs={liabilityTabs}
+          activeTabId={liabilityActiveTabId}
+          onTabChange={handleLiabilityTabChange}
+          rulerLabels={liabilityTabs.map((tab) => tab.label)}
+          footer={(
+            <>
+              <button type="button" className="secondary-button h-9 px-3" disabled={submitting} onClick={() => saveLiabilityTransaction(true)}>
+                {submitting ? t("txForm.saving") : t("txForm.saveAndRepeat")}
+              </button>
+              <button type="submit" className="primary-button h-9 px-3" disabled={submitting}>
+                {submitting ? t("txForm.saving") : t("common.save")}
+              </button>
+            </>
+          )}
+        >
                     {isLoanDialog ? (
                       activeLoanTab === "repay_out" ? (
                         <div className="text-sm font-semibold text-slate-700">{t("liabilityTx.loanMode.repayment")}</div>
@@ -2870,40 +2899,9 @@ export function LiabilityTransactionModal({
                           {renderCashAccountField()}
                         </div>
                         {renderRepayableLoanAccountField()}
-                        <div className="grid grid-cols-2 gap-2">
-                          {(["repay_out", "prepay_out"] as const).map((item) => (
-                            <button
-                              key={item}
-                              type="button"
-                              onClick={() => handleModeSelect(item)}
-                              disabled={!!editingEntryId && !canSwitchLiabilityEditMode(mode, item)}
-                              className={`segment-button h-9 ${mode === item ? "segment-button-active" : ""}`}
-                            >
-                              {t(MODE_LABELS[item])}
-                            </button>
-                          ))}
-                        </div>
                       </>
                     ) : (
                       <>
-                        <div className="grid grid-cols-2 gap-2">
-                          <button
-                            type="button"
-                            onClick={() => handleModeSelect(resolveFlowMode(false))}
-                            disabled={!!editingEntryId && !canSwitchLiabilityEditMode(mode, resolveFlowMode(false))}
-                            className={`segment-button h-9 ${flowTab === "borrow" ? "segment-button-active" : ""}`}
-                          >
-                            {t("liabilityTx.flow.borrow")}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => handleModeSelect(resolveFlowMode(true))}
-                            disabled={!!editingEntryId && !canSwitchLiabilityEditMode(mode, resolveFlowMode(true))}
-                            className={`segment-button h-9 ${flowTab === "repay" ? "segment-button-active" : ""}`}
-                          >
-                            {t("liabilityTx.flow.repay")}
-                          </button>
-                        </div>
                         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                           {renderLiabilityObjectField()}
                           {renderDateField()}
@@ -3374,36 +3372,37 @@ export function LiabilityTransactionModal({
                       </>
                     ) : null}
 
-                    <div className="flex items-center justify-end gap-2 pt-1">
-                      <button type="button" className="secondary-button h-9 px-3" disabled={submitting} onClick={() => saveLiabilityTransaction(true)}>
-                        {submitting ? t("txForm.saving") : t("txForm.saveAndRepeat")}
-                      </button>
-                      <button type="submit" className="primary-button h-9 px-3" disabled={submitting}>
-                        {submitting ? t("txForm.saving") : t("common.save")}
-                      </button>
-                    </div>
-                  </form>
-              </div>
-            </ModalLayer>,
-            document.body,
-          )
-        : null}
-      {open && historyConfirmOpen
-        ? createPortal(
-            <ModalLayer className="app-modal-backdrop">
-              <div className="app-modal-panel max-w-lg">
-                <div className="modal-header shrink-0">
-                  <div className="text-sm font-semibold text-slate-800">{t("liabilityTx.historyConfirmTitle")}</div>
-                  <button
-                    type="button"
-                    onClick={() => setHistoryConfirmOpen(false)}
-                    className="secondary-button h-8 px-2"
-                    disabled={submitting}
-                  >
-                    {t("liabilityTx.back")}
-                  </button>
-                </div>
-                <div className="space-y-3 p-4 text-sm text-slate-700">
+        </EntryModalShell>
+      ) : null}
+      <EntryModalShell
+        open={open && historyConfirmOpen}
+        heightKey="liability-history-confirm"
+        heightMode="natural"
+        width="sm"
+        title={t("liabilityTx.historyConfirmTitle")}
+        onClose={() => setHistoryConfirmOpen(false)}
+        closeLabel={t("liabilityTx.back")}
+        onSubmit={(event) => {
+          event.preventDefault();
+          void confirmHistoricalPrompt();
+        }}
+        panelClassName="text-sm text-slate-700"
+        footer={(
+          <>
+            <button
+              type="button"
+              className="secondary-button h-9 px-3"
+              disabled={submitting}
+              onClick={() => setHistoryConfirmOpen(false)}
+            >
+              {t("liabilityTx.backToEdit")}
+            </button>
+            <button type="submit" className="primary-button h-9 px-3" disabled={submitting}>
+              {submitting ? t("txForm.saving") : t("liabilityTx.confirmSave")}
+            </button>
+          </>
+        )}
+      >
                   <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">
                     {t("liabilityTx.historyPrompt.warning", { date: firstRepaymentDate || "-" })}
                   </div>
@@ -3486,45 +3485,58 @@ export function LiabilityTransactionModal({
                     </div>
                   ) : null}
 
-                  <div className="flex justify-end gap-2 pt-1">
-                    <button
-                      type="button"
-                      className="secondary-button h-9 px-3"
-                      disabled={submitting}
-                      onClick={() => setHistoryConfirmOpen(false)}
-                    >
-                      {t("liabilityTx.backToEdit")}
-                    </button>
-                    <button
-                      type="button"
-                      className="primary-button h-9 px-3"
-                      disabled={submitting}
-                      onClick={() => { void confirmHistoricalPrompt(); }}
-                    >
-                      {submitting ? t("txForm.saving") : t("liabilityTx.confirmSave")}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </ModalLayer>,
-            document.body,
-          )
-        : null}
-      {open && historicalRatesOpen
-        ? createPortal(
-            <ModalLayer className="app-modal-backdrop">
-              <div className="app-modal-panel max-w-xl">
-                <div className="modal-header shrink-0">
-                  <div className="text-sm font-semibold text-slate-800">{t("liabilityShell.rateAdjustment")}</div>
-                  <button
-                    type="button"
-                    onClick={() => setHistoricalRatesOpen(false)}
-                    className="secondary-button h-8 px-2"
-                  >
-                    {t("table.close")}
-                  </button>
-                </div>
-                <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4 text-sm text-slate-700">
+      </EntryModalShell>
+      <EntryModalShell
+        open={open && historicalRatesOpen}
+        heightKey="liability-rate-adjust"
+        heightMode="natural"
+        width="md"
+        title={t("liabilityShell.rateAdjustment")}
+        onClose={() => setHistoricalRatesOpen(false)}
+        closeLabel={t("table.close")}
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (historicalRateRows.length === 0) {
+            setShowHistoricalRates(false);
+            setHistoricalRatesOpen(false);
+            return;
+          }
+          const result = serializeHistoricalRateRows(historicalRateRows, t);
+          if (!result.ok) {
+            window.alert(result.error);
+            return;
+          }
+          setHistoricalRatesOpen(false);
+        }}
+        panelClassName="text-sm text-slate-700"
+        footer={(
+          <div className="flex w-full items-center justify-between gap-2">
+            <button
+              type="button"
+              className="secondary-button h-9 px-3"
+              onClick={() => setHistoricalRateRows((prev) => [...prev, createHistoricalRateRow()])}
+            >
+              {t("liabilityTx.addRow")}
+            </button>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                className="secondary-button h-9 px-3 text-slate-500"
+                onClick={() => {
+                  setHistoricalRateRows([]);
+                  setShowHistoricalRates(false);
+                  setHistoricalRatesOpen(false);
+                }}
+              >
+                {t("table.clear")}
+              </button>
+              <button type="submit" className="primary-button h-9 px-3">
+                {t("table.confirm")}
+              </button>
+            </div>
+          </div>
+        )}
+      >
                   <div className="rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-xs leading-5 text-blue-800">
                     {t("liabilityTx.rateModal.hint")}
                   </div>
@@ -3575,53 +3587,7 @@ export function LiabilityTransactionModal({
                     </div>
                   </div>
 
-                  <div className="flex items-center justify-between gap-2 border-t border-slate-100 pt-3">
-                    <button
-                      type="button"
-                      className="secondary-button h-9 px-3"
-                      onClick={() => setHistoricalRateRows((prev) => [...prev, createHistoricalRateRow()])}
-                    >
-                      {t("liabilityTx.addRow")}
-                    </button>
-                    <div className="flex gap-2">
-                      <button
-                        type="button"
-                        className="secondary-button h-9 px-3 text-slate-500"
-                        onClick={() => {
-                          setHistoricalRateRows([]);
-                          setShowHistoricalRates(false);
-                          setHistoricalRatesOpen(false);
-                        }}
-                      >
-                        {t("table.clear")}
-                      </button>
-                      <button
-                        type="button"
-                        className="primary-button h-9 px-3"
-                        onClick={() => {
-                          if (historicalRateRows.length === 0) {
-                            setShowHistoricalRates(false);
-                            setHistoricalRatesOpen(false);
-                            return;
-                          }
-                          const result = serializeHistoricalRateRows(historicalRateRows, t);
-                          if (!result.ok) {
-                            window.alert(result.error);
-                            return;
-                          }
-                          setHistoricalRatesOpen(false);
-                        }}
-                      >
-                        {t("table.confirm")}
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </ModalLayer>,
-            document.body,
-          )
-        : null}
+      </EntryModalShell>
       {open && liabilityObjectNestedOpen
         ? createPortal(
             <EntityCreateForm

@@ -12,6 +12,7 @@ import {
 } from "@/lib/credit/billing-day-rules";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
+import { todayDateLocalYmd } from "@/lib/date-utils";
 
 type CreditCardBillingDayRulesTableProps = {
   accountId: string;
@@ -135,7 +136,7 @@ export function CreditCardBillingDayRulesTable({
                     onClick={() => {
                       setBillingDayRuleEditing("new");
                       setBillingDayRuleForm({
-                        effectiveDate: new Date().toISOString().slice(0, 10),
+                        effectiveDate: todayDateLocalYmd(),
                         billingDay: effectiveBillingDay ? String(effectiveBillingDay) : "",
                       });
                       setBillingDayRuleError("");

@@ -1,7 +1,6 @@
 "use client";
-import { ModalLayer } from "@/components/ModalLayer";
 
-import { DatabaseZap, Lock, Pencil, Plus, Repeat, Trash2, X } from "lucide-react";
+import { DatabaseZap, Pencil, Plus, Repeat, Trash2, X } from "lucide-react";
 import { CalcInput } from "./CalcInput";
 import { ClearableNoteField } from "./ClearableNoteField";
 import { DateStepper } from "./DateStepper";
@@ -10,8 +9,8 @@ import { HoldingPicker } from "./HoldingPicker";
 import { EntryTagsField } from "./EntryTagsField";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
-/** FT 卡片弹窗外壳（等宽靠左页签 + 实体卡片 + 固定页脚）：规则集中在它，几何不变量见 FolderTabs 文件头。 */
-import { FolderTabsCard } from "@/components/FolderTabsCard";
+/** 整窗外壳（遮罩 / 标题栏 / 宽度档位 / 表单 / FT 页签与卡片 / 窗口底按钮行）：规则集中在它。 */
+import { EntryModalShell } from "@/components/EntryModalShell";
 import { useI18n } from "@/lib/i18n";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
@@ -21,11 +20,12 @@ import { recordRecentAccount, sortByAccountUsage, useAccountUsage } from "@/lib/
 import { REQUIRED_FIELD_CLASS } from "@/lib/client/required-field";
 import { getColorSchemeFromCookie, pnlClassFromRedUp } from "@/lib/client/colors";
 import { compactFinanceAccountIds, dispatchFinanceDataChanged } from "@/lib/client/refresh";
-import { useEntryModalReconciledReadOnly, useResetEntryModalReconciledReadOnlyOnClose } from "@/lib/client/entryModalLock";
+import { useResetEntryModalReconciledReadOnlyOnClose } from "@/lib/client/entryModalLock";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
-import { addTradingDaysUtc, countTradingDaysUtc } from "@/lib/date-utils";
+import { addTradingDaysUtc, countTradingDaysUtc, todayDateLocalYmd } from "@/lib/date-utils";
 import { findLinkedEntries, type RefundLinkableEntry } from "@/lib/fund/refund-link";
 import { formatFundUnitsValue, normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision-core";
+import { formatAmountDraft } from "@/lib/format";
 import {
   type FundSubtype,
   type ProductType,
@@ -302,6 +302,10 @@ function inferNonNegativeDays(startDate?: string | null, endDate?: string | null
   return diff >= 0 ? diff : null;
 }
 
+// 同一页面可能同时挂载两个 edit 实例（全局宿主 + FundShell 内嵌）。
+// 绑定记录的那个负责，未绑定记录的全局实例在有多实例时让位，避免弹两次。
+const investmentEditInstances = new Set<object>();
+
 export function InvestmentFormModal({
   mode,
   accountId: defaultAccountId,
@@ -346,7 +350,8 @@ export function InvestmentFormModal({
   fundUnitsDecimals?: number | null;
 }) {
   const { t, language } = useI18n();
-  const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
+  const editInstanceKeyRef = useRef<object>({});
+  const today = todayDateLocalYmd();
   const fundUnitsDecimals = normalizeFundUnitsDecimals(fundUnitsDecimalsProp, 2);
   const formatUnits = (value: number) => formatFundUnitsValue(value, fundUnitsDecimals);
 
@@ -427,8 +432,7 @@ export function InvestmentFormModal({
   const initConfirmDaysValue = typeof initConfirmDays === "number" ? initConfirmDays : Number(initConfirmDays) || 0;
 
   const [open, setOpen] = useState(false);
-  // 已「对账」的记录：编辑窗照常打开，但整张表单禁用（可查看、不可改）。
-  const reconciledReadOnly = useEntryModalReconciledReadOnly();
+  // 已「对账」的记录：编辑窗照常打开，但整张表单禁用（可查看、不可改）——由 `EntryModalShell` 统一处理。
   useResetEntryModalReconciledReadOnlyOnClose(open);
   const [productType, setProductType] = useState<ProductType>(fixedProductType);
   const [subtype, setSubtype] = useState<FundSubtype>(initSubtype);
@@ -573,12 +577,24 @@ export function InvestmentFormModal({
 
   const currentEditEntry = mode === "edit" ? (eventEditEntry ?? entry ?? null) : null;
 
+  useEffect(() => {
+    if (mode !== "edit") return;
+    const key = editInstanceKeyRef.current;
+    investmentEditInstances.add(key);
+    return () => {
+      investmentEditInstances.delete(key);
+    };
+  }, [mode]);
+
   function shouldHandleInvestmentEdit(detail: InvestmentEditDetail) {
     if (mode !== "edit") return false;
-    if (entry?.id && entry.id !== detail.entryId && entry.transactionId !== detail.entryId) return false;
-    if (!defaultAccountId) return true;
-    const relatedAccountIds = [detail.accountId, detail.toAccountId, detail.cashAccountId].filter(Boolean);
-    return relatedAccountIds.length === 0 || relatedAccountIds.includes(defaultAccountId);
+    // 绑定到单条记录的实例（shell 内编辑）只响应自己那条。
+    if (entry?.id) return entry.id === detail.entryId || entry.transactionId === detail.entryId;
+    // 同一页面已有绑定记录的 edit 实例时交给它，避免两个弹窗同时弹出。
+    if (investmentEditInstances.size > 1) return false;
+    // 事件驱动实例（详情页 / 全部收支）不能按「当前选中账户」过滤：
+    // 跨账户列表里选中账户与记录所属账户经常不一致，过滤会把编辑事件静默吞掉。
+    return true;
   }
 
   // Linked buy/refund records for display in the edit modal.
@@ -1085,9 +1101,9 @@ export function InvestmentFormModal({
     const nextRefundAmount = editEntry.fundSubtype === "buy" ? Math.max(0, Number(editEntry.refundAmount) || 0) : 0;
     const nextArrivalAmount =
       editEntry.fundSubtype === "buy" && nextRefundAmount > 0
-        ? String(nextRefundAmount)
+        ? formatAmountDraft(nextRefundAmount)
         : editEntry.fundArrivalAmount != null
-          ? String(editEntry.fundArrivalAmount)
+          ? formatAmountDraft(editEntry.fundArrivalAmount)
           : "";
     const nextDisplayUnits = editEntry.displayFundUnits ?? editEntry.fundUnits;
     const nextCashAccountId = nextCashReceivingEntry ? (editEntry.toAccountId ?? "") : (editEntry.accountId ?? "");
@@ -1104,9 +1120,9 @@ export function InvestmentFormModal({
     setMetalUnitId(editEntry.metalUnitId ?? "");
     setNav(editEntry.fundNav != null ? String(editEntry.fundNav) : "");
     setUnits(nextDisplayUnits != null ? formatFundUnitsValue(Number(nextDisplayUnits), fundUnitsDecimals) : "");
-    setAmount(String(Math.abs(Number(editEntry.amount) || 0)));
+    setAmount(formatAmountDraft(Math.abs(Number(editEntry.amount) || 0)));
     setFeeRate(String(editEntry.feeRate ?? defaults?.feeRate ?? "0"));
-    setFee(editEntry.fundFee != null ? String(editEntry.fundFee) : "");
+    setFee(editEntry.fundFee != null ? formatAmountDraft(editEntry.fundFee) : "");
     setFeeEdited(false);
     setFeeRateEdited(false);
     setConfirmDays(nextConfirmDays);
@@ -1257,7 +1273,7 @@ export function InvestmentFormModal({
         setFundCode(fundCodeFromAi);
         pendingFundCodeFetchRef.current = fundCodeFromAi;
       }
-      if (amt > 0) setAmount(String(amt));
+      if (amt > 0) setAmount(formatAmountDraft(amt));
       if (note) setMemo(note);
 
       setOpen(true);
@@ -1295,7 +1311,7 @@ export function InvestmentFormModal({
       }
       if (detail.defaultDate) setApplyDate(detail.defaultDate);
       if (typeof detail.defaultAmount === "number" && detail.defaultAmount > 0) {
-        setAmount(String(detail.defaultAmount));
+        setAmount(formatAmountDraft(detail.defaultAmount));
       }
       if ("defaultAccountId" in detail) setToAccountId(detail.defaultAccountId ?? "");
       if ("defaultCashAccountId" in detail) setCashAccountId(detail.defaultCashAccountId ?? "");
@@ -1405,15 +1421,15 @@ export function InvestmentFormModal({
         setArrivalDate(linkedRefund ? normalizeYmd(linkedRefund.fundArrivalDate ?? linkedRefund.date) : detail.fundArrivalDate ?? "");
         setArrivalAmount(
           linkedRefund?.amount != null
-            ? String(Math.abs(Number(linkedRefund.amount)))
+            ? formatAmountDraft(Math.abs(Number(linkedRefund.amount)))
             : detailRefundAmount > 0
-              ? String(detailRefundAmount)
+              ? formatAmountDraft(detailRefundAmount)
               : "",
         );
         refundAmountEditedRef.current = false;
       }
       const numericAmount = Number(detail.amount);
-      setAmount(Number.isFinite(numericAmount) && numericAmount !== 0 ? String(Math.abs(numericAmount)) : "");
+      setAmount(Number.isFinite(numericAmount) && numericAmount !== 0 ? formatAmountDraft(Math.abs(numericAmount)) : "");
       setMemo(detail.note ?? "");
       setSelectedTagIds(
         Array.isArray(detail.tags)
@@ -1457,7 +1473,7 @@ export function InvestmentFormModal({
           : detail.displayFundUnits ?? detail.fundUnits;
       if (displayUnits != null) setUnits(formatUnits(Number(displayUnits)));
       if (detail.fundNav != null) setNav(String(detail.fundNav));
-      if (detail.fundFee != null) setFee(String(detail.fundFee));
+      if (detail.fundFee != null) setFee(formatAmountDraft(detail.fundFee));
       if (detail.fundName) setFundName(detail.fundName);
       setFeeRate(String(detail.feeRate ?? defaults?.feeRate ?? "0"));
       setFeeEdited(false);
@@ -2911,63 +2927,52 @@ export function InvestmentFormModal({
     <>
       {!hideTrigger ? triggerButton : null}
 
-      {open && typeof document !== "undefined" ? createPortal(
-        <ModalLayer className="app-modal-backdrop">
-          {/* 宽度 = 原 `max-w-2xl`(672px) 的 3/4 = 504px（移动端仍由 `.app-modal-panel` 的
-              `max-width: 100vw` 覆盖成全屏，不受影响）。
-              `app-modal-panel-fixed-height`：窗体高度固定（见 globals.css），切页签不位移。 */}
-          <div ref={panelRef} className="app-modal-panel app-modal-panel-fixed-height max-w-[31.5rem]">
-              <div className="modal-header shrink-0">
-                <div className="text-sm font-semibold text-slate-800">
-                  {title}
-                  <span className="ml-2 text-xs font-normal text-slate-500">{t(`investment.product.${productType}`)}</span>
-                </div>
-                <button type="button" onClick={() => { setOpen(false); if (mode === "create") resetForCreate(); }}
-                    className="secondary-button h-8 px-2">{t("investForm.close")}</button>
-              </div>
-
-              {/* 表单 = FT 卡片弹窗外壳 `FolderTabsCard`：等宽靠左页签（按最长标签定宽）、
-                  米色实心卡片、字段在卡片内滚动、保存按钮固定贴卡片底边。规则集中在该组件 +
-                  globals.css 的 `.ft-card-surface` / `.ft-card-footer`，弹窗这边只写字段。
-                  页签可见项由 `PRODUCT_SUBTYPES[productType]` 决定（存款/贵金属等只有买入赎回）。 */}
-              {reconciledReadOnly ? (
-                <div className="flex shrink-0 items-center gap-2 border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs font-medium text-amber-800">
-                  <Lock className="h-3.5 w-3.5 shrink-0" />
-                  <span>{t("reconcile.readOnlyNotice")}</span>
-                </div>
-              ) : null}
-              <fieldset disabled={reconciledReadOnly} className="contents">
-              <form className="flex min-h-0 flex-1 flex-col" onSubmit={onSubmit}>
-                <FolderTabsCard
-                  tabs={allSubtypes.map((item) => ({ id: item, label: subtypeLabel(item) }))}
-                  activeId={subtype}
-                  onChange={(id) => selectSubtypeOption(id as FundSubtype)}
-                  rulerLabels={allSubtypes.map((item) => subtypeLabel(item))}
-                  footer={(
-                    <>
-                      {mode === "create" && (
-                        <button
-                          type="button"
-                          disabled={submitting}
-                          onClick={(e) => {
-                            e.preventDefault();
-                            onSubmit(e as any, true);
-                          }}
-                          className="secondary-button h-9 px-4 text-blue-700 disabled:opacity-50"
-                        >
-                          {submitting ? t("stockFee.saving") : t("investForm.saveAndContinue")}
-                        </button>
-                      )}
-                      <button
-                        type="submit"
-                        disabled={submitting}
-                        className="primary-button h-9 disabled:opacity-50"
-                      >
-                        {submitting ? t("stockFee.saving") : t("common.save")}
-                      </button>
-                    </>
-                  )}
+      {open && typeof document !== "undefined" ? (
+        /* 整窗外壳 = `EntryModalShell`：遮罩、层级、标题栏、宽度档位、表单、
+           对账只读、FT 页签与卡片、窗口底按钮行全部由它统一（规则见 FolderTabsCard 头注释）。
+           `heightMode="natural"`：窗口底边跟着卡片高度走（切页签只伸缩下沿，上沿由 EMS 锚定
+           不动）——投资窗字段数随子类型差异大，锁高会在短页签下把按钮推离卡片。页签可见项由
+           `PRODUCT_SUBTYPES[productType]` 决定（存款/贵金属等只有买入赎回）。 */
+        <EntryModalShell
+          open={open}
+          heightKey="investment-form"
+          heightMode="natural"
+          width="sm"
+          title={title}
+          subtitle={t(`investment.product.${productType}`)}
+          onClose={() => { setOpen(false); if (mode === "create") resetForCreate(); }}
+          closeLabel={t("investForm.close")}
+          onSubmit={(event) => { void onSubmit(event); }}
+          tabs={allSubtypes.map((item) => ({ id: item, label: subtypeLabel(item) }))}
+          activeTabId={subtype}
+          onTabChange={(id) => selectSubtypeOption(id as FundSubtype)}
+          rulerLabels={allSubtypes.map((item) => subtypeLabel(item))}
+          panelRef={panelRef}
+          footer={(
+            <>
+              {mode === "create" && (
+                <button
+                  type="button"
+                  disabled={submitting}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    onSubmit(e as any, true);
+                  }}
+                  className="secondary-button h-9 px-4 text-blue-700 disabled:opacity-50"
                 >
+                  {submitting ? t("txForm.saving") : t("txForm.saveAndRepeat")}
+                </button>
+              )}
+              <button
+                type="submit"
+                disabled={submitting}
+                className="primary-button h-9 disabled:opacity-50"
+              >
+                {submitting ? t("txForm.saving") : t("common.save")}
+              </button>
+            </>
+          )}
+        >
               {isDividend(subtype) ? (
                 <>
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -3593,12 +3598,7 @@ export function InvestmentFormModal({
               </div>
               </>
               )}
-                </FolderTabsCard>
-              </form>
-              </fieldset>
-          </div>
-        </ModalLayer>,
-        document.body,
+        </EntryModalShell>
       ) : null}
       {nestedEntityType && typeof document !== "undefined" ? createPortal(
         <NestedAddModal

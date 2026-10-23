@@ -14,6 +14,8 @@ import {
   type InsuranceAction,
 } from "@/lib/insurance/transaction";
 import { useI18n } from "@/lib/i18n";
+import { todayDateLocalYmd } from "@/lib/date-utils";
+import { formatAmountDraft } from "@/lib/format";
 
 type AccountOption = {
   id: string;
@@ -40,12 +42,12 @@ type InsuranceEditEventDetail = {
 
 function toDateString(value: unknown) {
   const text = String(value ?? "").trim();
-  return text ? text.slice(0, 10) : new Date().toISOString().slice(0, 10);
+  return text ? text.slice(0, 10) : todayDateLocalYmd();
 }
 
 function toAmountString(value: unknown) {
   const amount = Math.abs(Number(value ?? 0));
-  return Number.isFinite(amount) && amount > 0 ? String(amount) : "";
+  return Number.isFinite(amount) && amount > 0 ? formatAmountDraft(amount) : "";
 }
 
 export function InsuranceEntryEditBridge({

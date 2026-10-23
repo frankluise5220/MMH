@@ -5,7 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { BondFormModal } from "@/components/BondFormModal";
 import type { SmartSelectOption } from "@/components/SmartSelect";
 import { buildAccountDisplayOption } from "@/lib/account-display";
-import { getAccountLabelFieldsPreference } from "@/lib/client/appPreferences";
+import { readAccountDisplaySettings } from "@/lib/client/account-display-settings";
 import { fetchSettingsAccountData } from "@/lib/client/settingsCache";
 
 /**
@@ -55,7 +55,7 @@ function toOption(account: SettingsAccountRecord): AccountOption {
   const display = buildAccountDisplayOption(
     account as Parameters<typeof buildAccountDisplayOption>[0],
     undefined,
-    { fields: getAccountLabelFieldsPreference() },
+    readAccountDisplaySettings(),
   );
   return {
     id: account.id,

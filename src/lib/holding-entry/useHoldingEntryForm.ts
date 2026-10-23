@@ -14,6 +14,7 @@ import { useAccountSSFilter } from "@/components/accountSSFilter";
 import { restrictAccountsByType } from "@/lib/client/account-dropdown-filter";
 import { useAccountUsage } from "@/lib/client/recentAccounts";
 import { useI18n } from "@/lib/i18n";
+import { formatAmountDraft } from "@/lib/format";
 import { parseNumber } from "@/lib/investment-config";
 import { isCashAccountAllowedForInvestAccount } from "@/lib/cash-invest-account-rules";
 import {
@@ -24,6 +25,7 @@ import {
   isRedeemArrivalAccount,
   parseSignedNumber,
 } from "./primitives";
+import { todayDateLocalYmd } from "@/lib/date-utils";
 import type {
   HoldingEntryAccountOption,
   HoldingEntryEditDetail,
@@ -97,7 +99,7 @@ export function useHoldingEntryForm(options: UseHoldingEntryFormOptions) {
     requiresUnitsOnBuy = true,
   } = options;
 
-  const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
+  const today = todayDateLocalYmd();
   const { t } = useI18n();
 
   const initIsDividend = mode === "edit" && entry?.fundSubtype === "dividend_cash";
@@ -107,7 +109,7 @@ export function useHoldingEntryForm(options: UseHoldingEntryFormOptions) {
       ? entry.fundSubtype === "redeem" || entry.fundSubtype === "switch_out"
       : entry.amount > 0
     : false;
-  const initAmount = mode === "edit" && entry ? String(inferRedeemPrincipalAmount(entry)) : "";
+  const initAmount = mode === "edit" && entry ? formatAmountDraft(inferRedeemPrincipalAmount(entry)) : "";
   const initDate = mode === "edit" && entry?.date ? entry.date.slice(0, 10) : today;
   const initArrivalDate = mode === "edit" && entry?.fundArrivalDate ? entry.fundArrivalDate.slice(0, 10) : initDate;
   const initName = mode === "edit" && entry?.fundName ? entry.fundName : "";
@@ -137,10 +139,10 @@ export function useHoldingEntryForm(options: UseHoldingEntryFormOptions) {
   const [annualRate, setAnnualRate] = useState("");
   const [termDays, setTermDays] = useState("");
   const [interestAmount, setInterestAmount] = useState(
-    mode === "edit" && initIsRedeem && entry?.depositInterest != null ? String(entry.depositInterest) : "",
+    mode === "edit" && initIsRedeem && entry?.depositInterest != null ? formatAmountDraft(entry.depositInterest) : "",
   );
   const [arrivalAmount, setArrivalAmount] = useState(
-    mode === "edit" && entry && entry.amount > 0 ? String(Math.abs(entry.amount)) : "",
+    mode === "edit" && entry && entry.amount > 0 ? formatAmountDraft(Math.abs(entry.amount)) : "",
   );
   const [interestEdited, setInterestEdited] = useState(false);
   const [arrivalEdited, setArrivalEdited] = useState(false);
@@ -528,14 +530,14 @@ export function useHoldingEntryForm(options: UseHoldingEntryFormOptions) {
     setArrivalDate(source.fundArrivalDate?.slice(0, 10) || baseDate);
     arrivalDateTouchedRef.current = true;
     const principal = inferRedeemPrincipalAmount(source);
-    setAmount(opts.keepZeroAmount ? String(principal) : principal ? String(principal) : "");
+    setAmount(opts.keepZeroAmount ? formatAmountDraft(principal) : principal ? formatAmountDraft(principal) : "");
     setUnits(source.fundUnits != null ? String(Math.abs(source.fundUnits)) : "");
     setNav(source.fundNav != null ? String(Math.abs(source.fundNav)) : "");
     unitsEditedRef.current = opts.nextSubtype === "redeem";
     setProductId(source.wealthProductId ?? "");
     setFundName(source.fundName ?? "");
-    setInterestAmount(opts.nextSubtype === "redeem" && source.depositInterest != null ? String(source.depositInterest) : "");
-    setArrivalAmount(opts.nextSubtype === "redeem" ? String(Math.abs(source.fundArrivalAmount ?? source.amount ?? 0)) : "");
+    setInterestAmount(opts.nextSubtype === "redeem" && source.depositInterest != null ? formatAmountDraft(source.depositInterest) : "");
+    setArrivalAmount(opts.nextSubtype === "redeem" ? formatAmountDraft(Math.abs(source.fundArrivalAmount ?? source.amount ?? 0)) : "");
     setInterestEdited(false);
     setArrivalEdited(false);
     setMemo(source.note ?? "");
@@ -664,7 +666,7 @@ export function useHoldingEntryForm(options: UseHoldingEntryFormOptions) {
       setHoldingFilterDate(nextDate);
       setArrivalDate(nextDate);
       arrivalDateTouchedRef.current = false;
-      if (typeof detail?.defaultAmount === "number" && detail.defaultAmount > 0) setAmount(String(detail.defaultAmount));
+      if (typeof detail?.defaultAmount === "number" && detail.defaultAmount > 0) setAmount(formatAmountDraft(detail.defaultAmount));
       const explicitAccountId = detail?.[defaultAccountKey];
       setToAccountId(
         resolveAccountForCashAccount(

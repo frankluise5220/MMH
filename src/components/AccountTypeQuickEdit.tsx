@@ -34,6 +34,7 @@ import { EQUAL_PAYMENT_REPAYMENT_METHOD,
 } from "@/lib/loan-repayment";
 import { isCollateralLoanType, isHomeLoanType, type LoanTypeValue } from "@/lib/loan-type";
 import { CurrencySmartSelect } from "@/components/CurrencySmartSelect";
+import { formatAmountDraft } from "@/lib/format";
 
 type AccountKindValue = "cash" | "bank_debit" | "bank_credit" | "ewallet" | "deposit" | "investment" | "fixed_asset" | "settlement" | "loan" | "other";
 type Institution = { id: string; name: string; shortName?: string | null; type?: string | null };
@@ -165,7 +166,7 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
     setForm({
       name: account.name, kind: nextKind, note: account.note ?? "", currency: normalizeCurrency(account.currency ?? "CNY"),
       groupId: account.groupId ?? "", institutionId: nextSupportsInstitution ? account.institutionId ?? "" : "", billingDay: account.billingDay == null ? "" : String(account.billingDay),
-      repaymentDay: account.repaymentDay == null ? "" : String(account.repaymentDay), creditLimit: account.creditLimit == null ? "" : String(account.creditLimit),
+      repaymentDay: account.repaymentDay == null ? "" : String(account.repaymentDay), creditLimit: account.creditLimit == null ? "" : formatAmountDraft(account.creditLimit),
       repaymentOffsetDays: account.repaymentOffsetDays == null ? "" : String(account.repaymentOffsetDays),
       repaymentDayMode: account.repaymentOffsetDays != null ? "offset" : "fixed",
       creditBillMode: account.creditBillMode === "consolidated" ? "consolidated" : "separate",       numberMasked: account.numberMasked ?? "",
@@ -186,7 +187,7 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
         : {}),
     });
     setLoanForm(loanDetails ? {
-      principal: String(Math.abs(Number(loanDetails.defaultPrincipal) || 0)),
+      principal: formatAmountDraft(Math.abs(Number(loanDetails.defaultPrincipal) || 0)),
       repaymentMethod: loanDetails.defaultRepaymentMethod || EQUAL_PAYMENT_REPAYMENT_METHOD,
       annualRate: loanDetails.defaultAnnualRate == null ? "0" : String(loanDetails.defaultAnnualRate),
       mortgageLprDiscount: loanDetails.defaultMortgageLprDiscount == null ? "" : String(loanDetails.defaultMortgageLprDiscount),

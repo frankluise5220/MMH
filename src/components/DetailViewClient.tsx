@@ -2,7 +2,7 @@
 
 import { useCallback, useState, useEffect, useLayoutEffect, useMemo, useRef, type ReactNode, type MouseEvent } from "react";
 import { Paperclip } from "lucide-react";
-import { formatDateDisplay, formatDateLocal as localDateKey, toNumber } from "@/lib/date-utils";
+import { formatDateDisplay, formatDateUtc as localDateKey, toNumber } from "@/lib/date-utils";
 import { formatCurrencyMoney } from "@/lib/format";
 import { getColorSchemeFromCookie, pnlColor } from "@/lib/client/colors";
 import { getInsuranceDetailCategoryName, getInsuranceDetailNote } from "@/lib/insurance/detail-display";
@@ -44,15 +44,16 @@ import {
 import { normalizeSettlementTransferCategoryName } from "@/lib/settlement-category-name";
 import { advanceDialogAmount } from "@/lib/advance-transfer";
 import {
-  DETAIL_ALL_PAGE_SIZE,
   normalizeDetailPage,
   normalizeDetailPageSize,
   readStoredDetailPreference,
 } from "@/lib/detail-pagination-preference";
+import { isAbortError, loadAllDetailEntries } from "@/lib/client/detail-all-entries";
 import { parseImportAccountId } from "@/lib/account-import-match";
 import { formatAccountTableLabel, formatAccountTableTitle } from "@/lib/account-display";
 import { systemCategoryLabel } from "@/lib/system-category-labels";
-import { APP_PREFS_EVENT, getAccountLabelFieldsPreference, getDateDisplayFormatPreference, getDetailDateBackgroundPreference, type DateDisplayFormat } from "@/lib/client/appPreferences";
+import { APP_PREFS_EVENT, getDateDisplayFormatPreference, getDetailDateBackgroundPreference, type DateDisplayFormat } from "@/lib/client/appPreferences";
+import { readAccountDisplaySettings } from "@/lib/client/account-display-settings";
 import { cashLedgerFlowAccountId, isAllCashDetailScope } from "@/lib/all-cash-entries";
 
 const LEGACY_BASIC_DETAIL_STORAGE_KEY = "mmh_basic_detail_table_v1";
@@ -118,6 +119,22 @@ function formatEntryAuditTimestamp(
   const mm = String(date.getMinutes()).padStart(2, "0");
   const ss = String(date.getSeconds()).padStart(2, "0");
   return `${dateText} ${hh}:${mm}:${ss}`;
+}
+
+/**
+ * 审计列（创建时间 / 最后修改时间）的筛选与排序键：本地 `YYYY-MM-DD HH:mm:ss`。
+ *
+ * 刻意不跟随用户的日期显示格式：列筛选是按字符串比较的（`dateRange` 取前 10 位当日期比较），
+ * 显示格式换成 `2026/10/21` 之后就比不出大小；排序同理，需要定长、可直接比较的键。
+ */
+function entryAuditSortKey(value: string | Date | null | undefined): string {
+  if (value == null || value === "") return "";
+  const date = value instanceof Date ? value : new Date(String(value).trim());
+  if (!Number.isFinite(date.getTime())) return String(value);
+  const hh = String(date.getHours()).padStart(2, "0");
+  const mm = String(date.getMinutes()).padStart(2, "0");
+  const ss = String(date.getSeconds()).padStart(2, "0");
+  return `${localDateKey(date)} ${hh}:${mm}:${ss}`;
 }
 
 /* Types */
@@ -732,8 +749,8 @@ export function DetailViewClient({
   const accountDisplayFallback = useCallback((accountId?: string | null, fallback?: string | null) => {
     const byId = accountId ? accountOptionById.get(accountId) : undefined;
     if (byId) {
-      const label = formatAccountTableLabel(byId, "", getAccountLabelFieldsPreference());
-      return { label, title: formatAccountTableTitle(byId, label, getAccountLabelFieldsPreference()) };
+      const label = formatAccountTableLabel(byId, "", readAccountDisplaySettings());
+      return { label, title: formatAccountTableTitle(byId, label, readAccountDisplaySettings()) };
     }
     const raw = String(fallback ?? "").trim();
     if (!raw) return { label: "", title: "" };
@@ -741,8 +758,8 @@ export function DetailViewClient({
     const directId = encodedId || (/^cm[a-z0-9]{8,}$/i.test(raw) ? raw : "");
     const byFallbackId = directId ? accountOptionById.get(directId) : undefined;
     if (byFallbackId) {
-      const label = formatAccountTableLabel(byFallbackId, "", getAccountLabelFieldsPreference());
-      return { label, title: formatAccountTableTitle(byFallbackId, label, getAccountLabelFieldsPreference()) };
+      const label = formatAccountTableLabel(byFallbackId, "", readAccountDisplaySettings());
+      return { label, title: formatAccountTableTitle(byFallbackId, label, readAccountDisplaySettings()) };
     }
     return { label: raw, title: raw };
   }, [accountOptionById]);
@@ -758,21 +775,70 @@ export function DetailViewClient({
     }
     return accountId;
   }, [accountId, accountColumnScopeIds]);
+  /**
+   * 金额口径：全部交易记录按「流出方」显示 —— 有对手方（转账 / 投资买卖 / 赎回）恒为负，
+   * 普通收支没有对手方，保持记录原符号。其它视图沿用账户视角金额。
+   * 账户列、关联账户列和金额必须同口径，否则会出现「账户是存款账户、金额却是流入」
+   * 的矛盾（2026-10-23 报障：存款利息转入）。
+   */
+  const detailFlowAmountOf = useCallback((entry: DetailEntry) => {
+    if (isAllCashDetailScope(accountId)) {
+      const amount = toNumber(entry.amount);
+      return entry.toAccountId ? -Math.abs(amount) : amount;
+    }
+    return effectiveAmountForAccount(entry, flowAccountIdOf(entry));
+  }, [accountId, flowAccountIdOf]);
   const accountColumnScopeIdList = useMemo(
     () => Array.from(accountColumnScopeIds),
     [accountColumnScopeIds],
   );
+  /**
+   * 全部交易记录里这一行的「流出方」：账户列显示它，金额按它取负，收入方进关联账户列。
+   * 存款 / 基金 / 往来款等非资金账户恒为流出方（利息转出、赎回、收回借款）；
+   * 两侧都是资金账户时（普通转账、换汇），金额为负的一侧（accountId）才是付款方。
+   */
+  const outflowAccountTarget = useCallback((entry: DetailEntry) => {
+    const accountIsCash = !!entry.accountId && accountColumnScopeIds.has(entry.accountId);
+    const toIsCash = !!entry.toAccountId && accountColumnScopeIds.has(entry.toAccountId);
+    if (entry.toAccountId && accountIsCash && toIsCash && toNumber(entry.amount) >= 0) {
+      return { id: entry.toAccountId, name: entry.toAccountName };
+    }
+    return { id: entry.accountId, name: entry.accountName };
+  }, [accountColumnScopeIds]);
+  /**
+   * 明细「账户」列属于哪一侧。
+   * - 全部交易记录：流出方（见 `outflowAccountTarget`）。
+   * - 单账户明细（含信用卡账单）：当前账户就是本行账户（转入行也要认作当前账户）。
+   */
+  const entryViewAccountTarget = useCallback((entry: DetailEntry) => {
+    if (isAllCashDetailScope(accountId) && accountColumnScopeIds.size > 0) {
+      return outflowAccountTarget(entry);
+    }
+    if (accountId && accountColumnScopeIds.has(accountId)) {
+      if (entry.accountId === accountId) return { id: entry.accountId, name: entry.accountName };
+      if (entry.toAccountId === accountId) return { id: accountId, name: entry.toAccountName };
+    }
+    return { id: entry.accountId, name: entry.accountName };
+  }, [accountColumnScopeIds, accountId, outflowAccountTarget]);
+  /**
+   * 「关联账户」= 账户列的另一侧：全部交易记录里通常是收入方 `toAccount`，
+   * 换汇等反向行则是 `accountId`。旧逻辑按 scope 推断方向，而首页把全部资金
+   * 账户都传进 scopeAccountIds，转账两侧都在 scope 内，会让同一账户显示两遍
+   * （2026-10-23 报障）。
+   */
   const relatedAccountTarget = useCallback((entry: DetailEntry) => {
-    const sourceInScope = !!entry.accountId && accountColumnScopeIds.has(entry.accountId);
-    const targetInScope = !!entry.toAccountId && accountColumnScopeIds.has(entry.toAccountId);
     if (!entry.toAccountId && (entry.relatedAccountId || entry.relatedAccountName)) {
       return { id: entry.relatedAccountId ?? null, name: entry.relatedAccountName ?? null };
     }
-    if (targetInScope && !sourceInScope) return { id: entry.accountId, name: entry.accountName };
-    if (sourceInScope && !targetInScope) return { id: entry.toAccountId, name: entry.toAccountName };
-    if (targetInScope) return { id: entry.accountId, name: entry.accountName };
-    return { id: entry.toAccountId, name: entry.toAccountName };
-  }, [accountColumnScopeIds]);
+    const own = entryViewAccountTarget(entry);
+    if (entry.toAccountId && own.id !== entry.toAccountId) {
+      return { id: entry.toAccountId, name: entry.toAccountName };
+    }
+    if (entry.accountId && own.id !== entry.accountId) {
+      return { id: entry.accountId, name: entry.accountName };
+    }
+    return { id: null, name: null };
+  }, [entryViewAccountTarget]);
   const accountColumnTarget = useCallback((entry: DetailEntry) => {
     if (accountColumnMode === "cardLast4") {
       if (entry.accountId && accountColumnScopeIds.has(entry.accountId)) {
@@ -782,8 +848,8 @@ export function DetailViewClient({
         return { id: entry.toAccountId, name: entry.toAccountName };
       }
     }
-    return { id: entry.accountId, name: entry.accountName };
-  }, [accountColumnMode, accountColumnScopeIds]);
+    return entryViewAccountTarget(entry);
+  }, [accountColumnMode, accountColumnScopeIds, entryViewAccountTarget]);
   const accountColumnDisplayFallback = useCallback((entry: DetailEntry) => {
     const target = accountColumnTarget(entry);
     if (accountColumnMode === "cardLast4") {
@@ -1065,6 +1131,35 @@ export function DetailViewClient({
     const baseEdit = e.type === "investment" ? investmentEditPayload : buildBasicEntryEditPayload(e, flowAccountIdOf(e));
     return { edit: baseEdit ? { ...baseEdit, reconciledReadOnly } : undefined };
   }, [accountId, accountOptionById, allowInvestmentEdit, entryProductTypeOf, flowAccountIdOf, linkedInvestmentCandidateEntries]);
+  /**
+   * 打开编辑窗。
+   *
+   * 明细列表返回的是瘦身行：产品 id、分期、金属、存款来源等只在编辑回填时用的
+   * 字段已经不在列表响应里，所以点编辑要先按 id 取一次完整记录（单条约 2KB），
+   * 再交给 `buildEntryEditRequest` 构造 payload。取失败时退回用行数据，基础编辑
+   * 窗至少能打开。
+   */
+  const openEntryEditor = useCallback(async (entry: DetailEntry, reconciledReadOnly = false) => {
+    let source = entry;
+    try {
+      const response = await fetch(`/api/v1/transactions/detail?id=${encodeURIComponent(entry.id)}`);
+      const payload = await response.json().catch(() => null);
+      if (response.ok && payload?.ok && payload.data) {
+        source = { ...entry, ...(payload.data as DetailEntry) };
+      }
+    } catch (error) {
+      if ((error as { name?: string } | null)?.name !== "AbortError") {
+        console.error("Load entry detail before edit failed:", error);
+      }
+    }
+    const { edit, customEditEvent } = buildEntryEditRequest(source);
+    const nextEdit = edit ? { ...edit, reconciledReadOnly } : edit;
+    const nextCustomEditEvent = customEditEvent
+      ? { ...customEditEvent, detail: { ...customEditEvent.detail, reconciledReadOnly } }
+      : undefined;
+    if (!nextEdit && !nextCustomEditEvent) return;
+    dispatchEntryEdit({ entryId: source.id, edit: nextEdit, customEditEvent: nextCustomEditEvent });
+  }, [buildEntryEditRequest]);
   const colorScheme =
     typeof document === "undefined"
       ? "red_up_green_down"
@@ -1081,7 +1176,7 @@ export function DetailViewClient({
     const outflowByCurrency = new Map<string, number>();
     for (const entry of entries) {
       if (!selectedIds.has(entry.id)) continue;
-      const amount = effectiveAmountForAccount(entry, flowAccountIdOf(entry));
+      const amount = detailFlowAmountOf(entry);
       const currency = entryCurrency(entry);
       if (!inflowByCurrency.has(currency)) inflowByCurrency.set(currency, 0);
       if (!outflowByCurrency.has(currency)) outflowByCurrency.set(currency, 0);
@@ -1095,7 +1190,7 @@ export function DetailViewClient({
       inflow: formatSelectedAmountsByCurrency(inflowByCurrency),
       outflow: formatSelectedAmountsByCurrency(outflowByCurrency),
     };
-  }, [accountId, entries, flowAccountIdOf, selectedIds]);
+  }, [detailFlowAmountOf, entries, selectedIds]);
   const selectedCategoryTypes = useMemo(() => {
     const types = new Set<string>();
     for (const entry of entries) {
@@ -1258,12 +1353,31 @@ export function DetailViewClient({
       const pageSize = normalizeDetailPageSize(
         url.searchParams.get("pageSize") ?? storedPagination?.pageSize ?? 20,
       );
+      const seq = ++detailRefreshSeqRef.current;
+      if (detailAll) {
+        // 「全部」视图必须走分块：一次要回几万行 / 几十 MB，浏览器会中途重置连接
+        // 或静默超时，而这里的 catch 是空的 —— 表现就是刷新后列表毫无变化。
+        // 分块结果一次性替换快照，不做逐块显示，免得列表先缩水再长回来。
+        void loadAllDetailEntries<DetailEntry>({
+          accountId,
+          errorMessage: t("basicDetail.loadFailed"),
+          isCurrent: () => seq === detailRefreshSeqRef.current,
+        })
+          .then((result) => {
+            if (result.stopped || seq !== detailRefreshSeqRef.current) return;
+            setRefreshedEntries({ accountId, entries: result.entries });
+            setSelection(new Set());
+          })
+          .catch((error) => {
+            if (isAbortError(error)) return;
+          });
+        return;
+      }
       const params = new URLSearchParams({
         accountId,
-        page: detailAll ? "1" : String(detailPage),
-        pageSize: detailAll ? String(DETAIL_ALL_PAGE_SIZE) : String(pageSize),
+        page: String(detailPage),
+        pageSize: String(pageSize),
       });
-      const seq = ++detailRefreshSeqRef.current;
       fetch(`/api/v1/transactions/detail?${params.toString()}`, { cache: "no-store" })
         .then((r) => r.json())
         .then((data) => {
@@ -1277,7 +1391,7 @@ export function DetailViewClient({
     };
     window.addEventListener(FINANCE_DATA_CHANGED_EVENT, handler);
     return () => window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, handler);
-  }, [accountColumnScopeIds, accountId, entries, refreshOnGlobalEvent, selectedAccountKind, setSelection]);
+  }, [accountColumnScopeIds, accountId, entries, refreshOnGlobalEvent, selectedAccountKind, setSelection, t]);
 
   const columns = useMemo<AdvancedDataTableColumn<DetailEntry>[]>(() => [
     {
@@ -1338,19 +1452,19 @@ export function DetailViewClient({
       align: "right",
       filterKind: "numberRange",
       filterText: (e) => {
-        const amount = effectiveAmountForAccount(e, flowAccountIdOf(e));
+        const amount = detailFlowAmountOf(e);
         return amount > 0 ? String(amount) : "";
       },
       filterNumber: (e) => {
-        const amount = effectiveAmountForAccount(e, flowAccountIdOf(e));
+        const amount = detailFlowAmountOf(e);
         return amount > 0 ? amount : null;
       },
       sortValue: (e) => {
-        const amount = effectiveAmountForAccount(e, flowAccountIdOf(e));
+        const amount = detailFlowAmountOf(e);
         return amount > 0 ? amount : null;
       },
       render: (e) => {
-        const effectiveAmount = effectiveAmountForAccount(e, flowAccountIdOf(e));
+        const effectiveAmount = detailFlowAmountOf(e);
         const inflow = effectiveAmount > 0 ? effectiveAmount : null;
         return (
           <span className={`whitespace-nowrap tabular-nums ${inflow !== null ? inflowCls : "text-slate-700"}`}>
@@ -1372,19 +1486,19 @@ export function DetailViewClient({
       align: "right",
       filterKind: "numberRange",
       filterText: (e) => {
-        const amount = effectiveAmountForAccount(e, flowAccountIdOf(e));
+        const amount = detailFlowAmountOf(e);
         return amount < 0 ? String(-amount) : "";
       },
       filterNumber: (e) => {
-        const amount = effectiveAmountForAccount(e, flowAccountIdOf(e));
+        const amount = detailFlowAmountOf(e);
         return amount < 0 ? -amount : null;
       },
       sortValue: (e) => {
-        const amount = effectiveAmountForAccount(e, flowAccountIdOf(e));
+        const amount = detailFlowAmountOf(e);
         return amount < 0 ? -amount : null;
       },
       render: (e) => {
-        const effectiveAmount = effectiveAmountForAccount(e, flowAccountIdOf(e));
+        const effectiveAmount = detailFlowAmountOf(e);
         const outflow = effectiveAmount < 0 ? -effectiveAmount : null;
         return (
           <span className={`whitespace-nowrap tabular-nums ${outflow !== null ? outflowCls : "text-slate-700"}`}>
@@ -1575,6 +1689,8 @@ export function DetailViewClient({
     // 审计列三项（创建时间 / 最后修改时间 / 创建来源）集中放在「表头设置」列表最下方，
     // 用紫色底色把这三项和普通数据列区分开（menuClassName 只影响设置列表项，不染表格）。
     // 都是 transient：默认隐藏，勾选只在当前表格一次性生效，不写进持久化配置。
+    // 创建时间 / 最后修改时间可按日期范围筛选（点表头漏斗），筛选值用不随显示格式变化的
+    // `YYYY-MM-DD HH:mm:ss` 键，顺带让这两列可以按时间排序（没有 sortValue 时表格用 filterText 排序）。
     {
       key: "createdAt",
       label: t("detail.column.createdAt"),
@@ -1584,6 +1700,8 @@ export function DetailViewClient({
       defaultHidden: true,
       transient: true,
       menuClassName: "bg-violet-50 hover:bg-violet-100",
+      filterKind: "dateRange",
+      filterText: (e) => entryAuditSortKey(e.createdAt),
       render: (e) => (
         <span className="whitespace-nowrap tabular-nums text-slate-500">
           {formatEntryAuditTimestamp(e.createdAt, dateDisplayFormat)}
@@ -1599,6 +1717,8 @@ export function DetailViewClient({
       defaultHidden: true,
       transient: true,
       menuClassName: "bg-violet-50 hover:bg-violet-100",
+      filterKind: "dateRange",
+      filterText: (e) => entryAuditSortKey(e.updatedAt),
       render: (e) => (
         <span className="whitespace-nowrap tabular-nums text-slate-500">
           {formatEntryAuditTimestamp(e.updatedAt, dateDisplayFormat)}
@@ -1620,7 +1740,7 @@ export function DetailViewClient({
         </span>
       ),
     },
-  ], [accountColumnDefaultHidden, accountColumnDisplayFallback, resolvedAccountColumnLabel, accountColumnMode, accountDisplayFallback, accountId, accountOptionById, dateDisplayFormat, detailCategoryLabel, entryProductTypeOf, flowAccountIdOf, inflowCls, outflowCls, relatedAccountDefaultHidden, relatedAccountTarget, renderNavigableAccountLabel, runningBalanceDefaultHidden, showAccountColumn, showRunningBalance, t]);
+  ], [accountColumnDefaultHidden, accountColumnDisplayFallback, resolvedAccountColumnLabel, accountColumnMode, accountDisplayFallback, accountId, accountOptionById, dateDisplayFormat, detailCategoryLabel, detailFlowAmountOf, entryProductTypeOf, flowAccountIdOf, inflowCls, outflowCls, relatedAccountDefaultHidden, relatedAccountTarget, renderNavigableAccountLabel, runningBalanceDefaultHidden, showAccountColumn, showRunningBalance, t]);
 
   const customToolbarLeft = toolbarMode === "custom" ? (
     <div className="flex min-w-0 items-center gap-2">
@@ -1660,7 +1780,7 @@ export function DetailViewClient({
               </div>
               <div className="divide-y divide-slate-100 bg-white">
                 {group.entries.map((entry, entryIndex) => {
-                  const effectiveAmount = effectiveAmountForAccount(entry, flowAccountIdOf(entry));
+                  const effectiveAmount = detailFlowAmountOf(entry);
                   const entryFundProductType = entryProductTypeOf(entry);
                   const category = detailCategoryLabel(entry) || t("txForm.uncategorized");
                   const note = displayDetailRemark(entry, flowAccountIdOf(entry));
@@ -1737,9 +1857,7 @@ export function DetailViewClient({
       selectedKeys={selectedIds}
       onSelectionChange={setSelection}
       onRowDoubleClick={(entry) => {
-        const { edit, customEditEvent } = buildEntryEditRequest(entry);
-        if (!edit && !customEditEvent) return;
-        dispatchEntryEdit({ entryId: entry.id, edit, customEditEvent });
+        void openEntryEditor(entry, isReconciledEntry(entry));
       }}
       draggableRows={draggableRows}
       rowDragDisabled={(entry) => !canManuallyReorderDetailEntry(entry)}
@@ -1773,6 +1891,7 @@ export function DetailViewClient({
               entryId={entry.id}
               edit={edit}
               customEditEvent={customEditEvent}
+              onEditRequest={({ reconciledReadOnly }) => openEntryEditor(entry, reconciledReadOnly)}
             />
           </>
         );

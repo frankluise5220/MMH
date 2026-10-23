@@ -1,5 +1,6 @@
 "use client";
 
+import { accountOptionFromParts } from "@/lib/account-display";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { X } from "lucide-react";
 
@@ -15,7 +16,7 @@ import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
 /** 记账弹窗整窗外壳：宽度/标题栏/表单/FT 页签卡片/固定页脚/高度锁定统一由它负责。 */
 import { EntryModalShell } from "@/components/EntryModalShell";
 import { recordRecentAccount, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
-import { formatMoneyWithCurrencyCode as formatMoney } from "@/lib/format";
+import { formatAmountDraft, formatMoneyWithCurrencyCode as formatMoney } from "@/lib/format";
 import { todayDateLocalYmd as todayDateInputValue } from "@/lib/date-utils";
 import { useI18n } from "@/lib/i18n";
 
@@ -284,8 +285,16 @@ function mergeOptions(primary: SmartSelectOption[] | undefined, secondary: Smart
 }
 
 function createdAccountToOption(account: NonNullable<CreatedAccountResponse["account"]>, t: (key: string) => string): AccountOption {
-  const institutionName = account.Institution?.shortName?.trim() || account.Institution?.name?.trim() || "";
-  const label = [institutionName, account.name].filter(Boolean).join("·") || account.name;
+  // 走统一入口：按「账户显示格式」渲染，不再手拼机构·名称。
+  const label = accountOptionFromParts({
+    id: account.id,
+    name: account.name,
+    kind: account.kind ?? "investment",
+    institutionName: account.Institution?.name,
+    institutionShortName: account.Institution?.shortName,
+    currency: account.currency,
+    groupName: account.AccountGroup?.name,
+  }).label;
   return {
     id: account.id,
     name: account.name,
@@ -343,7 +352,16 @@ function inferBrokerageNameFromStockAccount(account: AccountOption | null, defau
 }
 
 function investmentAccountToOption(account: NonNullable<InvestmentAccountsResponse["accounts"]>[number], t: (key: string) => string): AccountOption {
-  const label = [account.institutionName?.trim() ?? "", account.name].filter(Boolean).join("·") || account.name;
+  // 走统一入口：按「账户显示格式」渲染，不再手拼机构·名称。
+  const label = accountOptionFromParts({
+    id: account.id,
+    name: account.name,
+    kind: "investment",
+    institutionName: account.institutionName,
+    currency: account.currency,
+    groupName: account.groupName,
+    investProductType: "stock",
+  }).label;
   return {
     id: account.id,
     name: account.name,
@@ -810,8 +828,8 @@ export function StockTransactionFormModal({
     setSettleDate(tx.settleDate ?? "");
     setQuantity(tx.quantity == null ? "" : formatStockQuantity(Number(tx.quantity), language));
     setPrice(tx.price == null ? "" : String(Number(tx.price)));
-    setGrossAmount(tx.grossAmount == null ? "" : String(Number(tx.grossAmount)));
-    setNetAmount(tx.netAmount == null ? "" : String(Number(tx.netAmount)));
+    setGrossAmount(tx.grossAmount == null ? "" : formatAmountDraft(tx.grossAmount));
+    setNetAmount(tx.netAmount == null ? "" : formatAmountDraft(tx.netAmount));
     setStockLookupLoading(false);
     setFeeEstimate(null);
     setFeeEstimateLoading(false);
@@ -955,11 +973,20 @@ export function StockTransactionFormModal({
   }, [autoCreatingAccount, cashAccountId, defaultCashAccountId, localCashAccounts, localStockAccounts.length, t]);
 
   function handleStockAccountCreated(id: string, name: string, extra?: StockAccountCreatedExtra) {
-    const institutionName = extra?.institutionShortName?.trim() || extra?.institutionName?.trim() || "";
+    // 走统一入口：按「账户显示格式」渲染，不再手拼机构·名称。
+    const display = accountOptionFromParts({
+      id,
+      name,
+      kind: "investment",
+      institutionName: extra?.institutionName,
+      institutionShortName: extra?.institutionShortName,
+      currency: extra?.currency,
+      groupName: extra?.groupName,
+    });
     const option: AccountOption = {
       id,
       name,
-      label: [institutionName, name].filter(Boolean).join("·") || name,
+      label: display.label,
       subLabel: [extra?.groupName ?? "", t("stockPanel.stockAccountTitle")].filter(Boolean).join(" · "),
       kind: "investment",
       investProductType: "stock",

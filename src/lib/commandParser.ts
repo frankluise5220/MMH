@@ -1,3 +1,4 @@
+import { todayDateBusinessYmd } from "@/lib/date-utils";
 import { joinBaseUrl } from "@/lib/http";
 import type { AiApiMode } from "@/lib/ai/config";
 import { buildResponsesRequestBody, extractResponsesText } from "@/lib/ai/responses";
@@ -195,18 +196,21 @@ export function parseDateRange(text: string): ParsedDateRange | null {
     const m = Number(monthOnly[1]);
     if (m >= 1 && m <= 12) return { year: yy, startMonth: m };
   }
+  // 「上个月/本月」按业务时区解析：该解析器在服务端也会被调用，本地 getter
+  // 在容器 TZ=UTC 时会在北京时间月初凌晨算错月份。
+  const businessToday = todayDateBusinessYmd();
+  const businessYear = Number(businessToday.slice(0, 4));
+  const businessMonth = Number(businessToday.slice(5, 7));
   const relMonth = text.match(/(上+)个?\s*月/);
   if (relMonth) {
     const back = relMonth[1].length;
-    const now = new Date();
-    let m = now.getMonth() + 1 - back;
-    let y = now.getFullYear();
+    let m = businessMonth - back;
+    let y = businessYear;
     while (m <= 0) { m += 12; y--; }
     return { year: y, startMonth: m };
   }
   if (/这个月|本月/.test(text)) {
-    const now = new Date();
-    return { year: now.getFullYear(), startMonth: now.getMonth() + 1 };
+    return { year: businessYear, startMonth: businessMonth };
   }
   const yearOnly = text.match(/^(?:(\d{4})\s*年|今年)$/);
   if (yearOnly) return { year: yearOnly[1] ? Number(yearOnly[1]) : yy };

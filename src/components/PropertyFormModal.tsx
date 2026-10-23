@@ -12,6 +12,8 @@ import { SmartSelect, type SmartSelectOption } from "@/components/SmartSelect";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
 import { useI18n } from "@/lib/i18n";
+import { todayDateLocalYmd } from "@/lib/date-utils";
+import { formatAmountDraft } from "@/lib/format";
 
 type PropertyAction = "purchase" | "improvement" | "sale";
 type ModalMode = "transaction" | "valuation";
@@ -59,7 +61,7 @@ type Props = {
 };
 
 function todayYmd() {
-  return new Date().toISOString().slice(0, 10);
+  return todayDateLocalYmd();
 }
 
 function accountToOption(account: AccountOption): SmartSelectOption {
@@ -377,7 +379,7 @@ export function PropertyFormModal({
                   onChange={(value) => {
                     setPropertyAssetId(value);
                     const asset = propertyAssets.find((item) => item.id === value);
-                    if (asset?.marketValue != null && mode === "valuation") setMarketValue(String(asset.marketValue));
+                    if (asset?.marketValue != null && mode === "valuation") setMarketValue(formatAmountDraft(asset.marketValue));
                   }}
                   options={assetOptions}
                   placeholder={t("propertyForm.propertyPlaceholder")}

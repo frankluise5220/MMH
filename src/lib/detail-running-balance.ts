@@ -12,7 +12,7 @@
  * `tsx scripts/verify-detail-running-balance-recalc.ts` 做口径校验。
  */
 
-import { formatDateLocal, toNumber } from "@/lib/date-utils";
+import { formatDateUtc, toNumber, todayDateBusinessYmd } from "@/lib/date-utils";
 import { applyBalanceAnchorEntry, getBalanceAnchorTarget } from "@/lib/balance-reconcile";
 import { compareDetailEntriesAsc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
 import { liabilityPrincipalForAccountSide } from "@/lib/liability";
@@ -42,12 +42,17 @@ export type RunningBalanceEntry = {
 };
 
 function detailEntryDayKey(entry: RunningBalanceEntry, accountId: string) {
-  return formatDateLocal(getDetailEntryDisplayDate(entry, accountId));
+  // DB 日历日字段是 UTC 零点，必须用 UTC 格式化；本地 getter 会随进程/浏览器时区漂移。
+  return formatDateUtc(getDetailEntryDisplayDate(entry, accountId));
 }
 
-/** 入账日在今天之后的流水尚未发生：与服务端明细 SQL 口径一致，不改变余额。 */
+/**
+ * 入账日在今天之后的流水尚未发生：与服务端明细 SQL 口径一致，不改变余额。
+ * 「今天」必须用业务时区（服务端 SQL 用 `todayDateBusinessYmd`），
+ * 不能用浏览器本地日期，否则余额列与列表可见性会在跨时区/凌晨时分叉。
+ */
 function isFutureBalanceEntry(entry: RunningBalanceEntry, accountId: string) {
-  return detailEntryDayKey(entry, accountId) > formatDateLocal(new Date());
+  return detailEntryDayKey(entry, accountId) > todayDateBusinessYmd();
 }
 
 /** 贷款 / 往来款账户：只有 transfer 腿参与，本金带 source 决定的正负号（与 foldBalanceEntry 一致）。 */

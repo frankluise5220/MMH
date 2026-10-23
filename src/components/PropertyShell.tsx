@@ -28,7 +28,7 @@ import { normalizeFixedAssetType } from "@/lib/fixed-asset";
 import { buildLiabilityActivityEditEvent } from "@/lib/liability-entry-edit";
 import { formatAccountTableLabel, formatAccountTableTitle, type AccountTableDisplaySource } from "@/lib/account-display";
 import { systemCategoryLabel } from "@/lib/system-category-labels";
-import { getAccountLabelFieldsPreference } from "@/lib/client/appPreferences";
+import { readAccountDisplaySettings } from "@/lib/client/account-display-settings";
 
 type PropertyPosition = {
   fundCode: string;
@@ -255,11 +255,11 @@ function FixedAssetTransactionTable({
   const { isReconciled } = useEntryReconcileState(currentEntryIds);
   const normalizedAccountOptions = useMemo(
     () => accountOptions.map((account) => {
-      const label = formatAccountTableLabel(account, account.name ?? "", getAccountLabelFieldsPreference());
+      const label = formatAccountTableLabel(account, account.name ?? "", readAccountDisplaySettings());
       return {
         id: account.id,
         label: label || account.name?.trim() || account.id,
-        title: formatAccountTableTitle(account, label, getAccountLabelFieldsPreference()),
+        title: formatAccountTableTitle(account, label, readAccountDisplaySettings()),
       };
     }),
     [accountOptions],
@@ -792,8 +792,8 @@ export function PropertyShell({
   const transactionColumns = useMemo<AdvancedDataTableColumn<FixedAssetTransaction>[]>(() => {
     const accountDisplay = (id: string | null | undefined, fallback: string | null | undefined) => {
       const source = id ? accountOptionById.get(id) : undefined;
-      const label = source ? formatAccountTableLabel(source, fallback ?? "", getAccountLabelFieldsPreference()) : (fallback ?? "").trim();
-      return { label: label || "-", title: source ? formatAccountTableTitle(source, label, getAccountLabelFieldsPreference()) : label };
+      const label = source ? formatAccountTableLabel(source, fallback ?? "", readAccountDisplaySettings()) : (fallback ?? "").trim();
+      return { label: label || "-", title: source ? formatAccountTableTitle(source, label, readAccountDisplaySettings()) : label };
     };
     const currencyFor = (entry: FixedAssetTransaction) => entry.currency || displayCurrency;
     /**

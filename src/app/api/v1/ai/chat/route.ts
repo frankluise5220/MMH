@@ -32,6 +32,7 @@ import {
   parseFundTradeFromText,
   parseTransactionSuccessReminder,
 } from "@/lib/ai/parser";
+import { businessTodayUtcStart, todayDateBusinessYmd } from "@/lib/date-utils";
 import { enrichAiParsedItems } from "@/lib/statement/ai-import-enrichment";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { softDeleteEntriesByIds } from "@/lib/server/entry-delete";
@@ -1138,7 +1139,7 @@ export async function POST(req: Request) {
     const normalizedCommand = await callAiForCommand({
       text,
       fundContext: fundContext ?? null,
-      today: formatYmd(new Date()),
+      today: todayDateBusinessYmd(),
       modelName,
       baseUrl,
       apiKey,
@@ -1551,7 +1552,9 @@ export async function POST(req: Request) {
       return NextResponse.json(buildQueryNotRecordedResponse(text), { headers: corsHeaders() });
     }
 
-    const nowForPrompt = new Date();
+    // 提示词里的「当前日期」必须是业务时区今天；UTC 日期在北京时间凌晨会差一天，
+  // 会让 AI 把「今天」的账记到昨天。
+  const nowForPrompt = businessTodayUtcStart();
     const accountContext = await buildAccountContextText(householdId);
     const pre = preprocessBillText(text ?? "");
     const billHeaderCtx = buildBillHeaderContext(pre.header);

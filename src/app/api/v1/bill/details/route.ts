@@ -11,7 +11,7 @@ import { NextResponse } from "next/server";
 import { AccountKind, TransactionType, type Prisma } from "@prisma/client";
 import type { DetailEntry } from "@/components/DetailViewClient";
 import { prisma } from "@/lib/db/prisma";
-import { addDaysUtc, formatDateLocal, toNumber } from "@/lib/date-utils";
+import { addDaysUtc, toNumber, formatDateUtc } from "@/lib/date-utils";
 import { creditBillDateRangeWhere, cycleForStatementMonthWithBillingDayRules } from "@/lib/credit/billing";
 import { compareDetailEntriesDesc } from "@/lib/detail-entry-order";
 import { getCreditBillAccountIds } from "@/lib/server/credit-card-institution-settings";
@@ -41,7 +41,7 @@ function toIsoOrNull(value: unknown) {
 
 function toDateOnlyLocalOrNull(value: unknown) {
   const date = toValidDate(value);
-  return date ? formatDateLocal(date) : null;
+  return date ? formatDateUtc(date) : null;
 }
 
 function toYmdOrNull(value: unknown) {
@@ -318,9 +318,9 @@ export async function GET(req: Request) {
         cycle: cycle
           ? {
               statementMonth: cycle.statementMonth,
-              periodStart: formatDateLocal(cycle.start),
-              periodEnd: formatDateLocal(cycle.end),
-              dueDate: cycle.due ? formatDateLocal(cycle.due) : null,
+              periodStart: formatDateUtc(cycle.start),
+              periodEnd: formatDateUtc(cycle.end),
+              dueDate: cycle.due ? formatDateUtc(cycle.due) : null,
               periodLabel: `${mdUtcDots(cycle.start)} ~ ${mdUtcDots(cycle.end)}`,
               isCurrentCycle: cycle.isCurrentCycle,
             }

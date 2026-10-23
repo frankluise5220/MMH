@@ -3,7 +3,7 @@ import { z } from "zod";
 import { TransactionType, AccountKind } from "@prisma/client";
 import { createHash } from "node:crypto";
 import { prisma } from "@/lib/db/prisma";
-import { addDaysUtc, parseFlexibleDateToYmd, toStatementMonth } from "@/lib/date-utils";
+import { addDaysUtc, parseFlexibleDateToYmd, toStatementMonth, businessTodayUtcStart } from "@/lib/date-utils";
 import { getCurrentUser } from "@/lib/server/auth";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { normalizeDefaultCategoryHierarchyForHousehold, resolveCategorySnapshot, type CategorySnapshot, type DefaultCategoryType } from "@/lib/default-categories";
@@ -1511,9 +1511,10 @@ const BALANCE_RECONCILABLE_ACCOUNT_KINDS = [
 function parseBalanceReconcileDate(value?: string): Date {
   const raw = String(value ?? "").trim();
   const match = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
-  if (match) return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 23, 59, 59);
-  const now = new Date();
-  return new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
+  // 与余额校准接口一致：UTC 口径的当天末尾，不能本地构造。
+  if (match) return new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 23, 59, 59, 999));
+  const today = businessTodayUtcStart();
+  return new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate(), 23, 59, 59, 999));
 }
 
 /**

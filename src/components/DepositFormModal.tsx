@@ -27,6 +27,8 @@ import {
   TERM_UNIT_DAYS,
   type DepositTermUnit,
 } from "@/lib/deposit-term";
+import { todayDateLocalYmd } from "@/lib/date-utils";
+import { formatAmountDraft } from "@/lib/format";
 import {
   clampDepositInterestPayoutInterval,
   encodeDepositInterestPayout,
@@ -208,11 +210,11 @@ export function DepositFormModal({
    */
   renewAction?: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
 }) {
-  const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
+  const today = todayDateLocalYmd();
   const { t } = useI18n();
 
   const initIsRedeem = mode === "edit" && entry ? entry.amount > 0 : false;
-  const initAmount = mode === "edit" && entry ? String(Math.abs(entry.amount)) : "";
+  const initAmount = mode === "edit" && entry ? formatAmountDraft(Math.abs(entry.amount)) : "";
   const initDate = mode === "edit" && entry?.date ? entry.date.slice(0, 10) : today;
   const initName = mode === "edit" && entry?.fundName ? entry.fundName : "";
   const initDepositProductId = mode === "edit" && entry?.depositProductId ? entry.depositProductId : "";
@@ -278,7 +280,7 @@ export function DepositFormModal({
       : String(splitTermDays(DEFAULT_DEPOSIT_TERM_DAYS).count),
   );
   const [interestAmount, setInterestAmount] = useState("");
-  const [arrivalAmount, setArrivalAmount] = useState(mode === "edit" && entry && entry.amount > 0 ? String(Math.abs(entry.amount)) : "");
+  const [arrivalAmount, setArrivalAmount] = useState(mode === "edit" && entry && entry.amount > 0 ? formatAmountDraft(Math.abs(entry.amount)) : "");
   const [interestEdited, setInterestEdited] = useState(false);
   const [arrivalEdited, setArrivalEdited] = useState(false);
   // 取款本金「用户已手动编辑」标记：用户输入过金额后，不再被「选中存单时自动填剩余本金」覆盖，
@@ -938,7 +940,7 @@ export function DepositFormModal({
     });
     setRenewMode(nextMode);
     setDate(redeemYmd || today);
-    setAmount(nextPrincipal > 0 ? String(nextPrincipal) : "");
+    setAmount(nextPrincipal > 0 ? formatAmountDraft(nextPrincipal) : "");
     setFundName(detail.defaultRenewFundName ?? "");
     setDepositProductId(detail.defaultRenewProductId ?? "");
     setAnnualRate(rate > 0 ? String(rate) : "");
@@ -1139,16 +1141,16 @@ export function DepositFormModal({
         isRedeem && detail.amount
           ? Math.max(0, Math.abs(detail.amount) - detailInterestAmount)
           : Math.abs(detail.amount ?? 0);
-      setAmount(redeemPrincipalAmount > 0 ? String(redeemPrincipalAmount) : "");
+      setAmount(redeemPrincipalAmount > 0 ? formatAmountDraft(redeemPrincipalAmount) : "");
       setFundName(detail.fundName ?? "");
       setDepositProductId(detail.depositProductId ?? "");
       const detailAnnualRate = detail.depositAnnualRate ?? detail.fundNav ?? null;
       setAnnualRate(detailAnnualRate != null ? String(detailAnnualRate) : "");
       setMemo(detail.note ?? "");
-      setArrivalAmount(detail.amount ? String(Math.abs(detail.amount)) : "");
+      setArrivalAmount(detail.amount ? formatAmountDraft(Math.abs(detail.amount)) : "");
       setInterestAmount(
         detail.depositInterest != null && Number.isFinite(detail.depositInterest)
-          ? String(detail.depositInterest)
+          ? formatAmountDraft(detail.depositInterest)
           : "",
       );
       // 编辑既有记录：库里的利息/到账额是用户上次保存的真值，必须标成「已手改」，
@@ -1322,7 +1324,7 @@ export function DepositFormModal({
       setDate(detail?.defaultDate || today);
       setArrivalDate(detail?.defaultDate || today);
       arrivalDateTouchedRef.current = false;
-      if (typeof detail?.defaultAmount === "number" && detail.defaultAmount > 0) setAmount(String(detail.defaultAmount));
+      if (typeof detail?.defaultAmount === "number" && detail.defaultAmount > 0) setAmount(formatAmountDraft(detail.defaultAmount));
       setLockedSubtype(null);
       setRenewSource(null);
       if (isRenew) {
@@ -1939,7 +1941,7 @@ export function DepositFormModal({
                       title={rollInDisabledForRenew ? t("deposit.renew.rollInDisabledHint") : undefined}
                       onClick={() => {
                         setRenewMode("renew_principal_interest");
-                        setAmount(String(Number((renewSource.principal + renewSource.interest).toFixed(2))));
+                        setAmount(formatAmountDraft(renewSource.principal + renewSource.interest));
                       }}
                       className={`segment-button h-8 flex-1 text-xs ${renewMode === "renew_principal_interest" ? "segment-button-active font-medium" : ""} ${rollInDisabledForRenew ? "cursor-not-allowed opacity-50" : ""}`}
                     >
@@ -1949,7 +1951,7 @@ export function DepositFormModal({
                       type="button"
                       onClick={() => {
                         setRenewMode("renew_principal");
-                        setAmount(String(renewSource.principal));
+                        setAmount(formatAmountDraft(renewSource.principal));
                       }}
                       className={`segment-button h-8 flex-1 text-xs ${renewMode === "renew_principal" ? "segment-button-active font-medium" : ""}`}
                     >

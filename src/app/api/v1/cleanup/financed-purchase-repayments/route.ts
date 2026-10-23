@@ -2,7 +2,7 @@ import { IntervalUnit, RegularInvestStatus, TransactionType } from "@prisma/clie
 import { NextResponse } from "next/server";
 
 import { prisma } from "@/lib/db/prisma";
-import { formatDateUtc, startOfDayUtc, toNumber } from "@/lib/date-utils";
+import { formatDateUtc, startOfDayUtc, toNumber, businessTodayUtcStart } from "@/lib/date-utils";
 import { calcInitialScheduledRunDate, calcNextScheduledRunDate } from "@/lib/scheduled-task-date";
 import { logger } from "@/lib/logger";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
@@ -67,7 +67,7 @@ export async function POST(req: Request) {
     const body = await req.json().catch(() => ({}));
     const dryRun = body?.dryRun !== false;
     const mode = normalizeMode(body?.mode);
-    const cutoffDate = body?.cutoffDate ? parseDateOnlyUtc(body.cutoffDate) : startOfDayUtc(new Date());
+    const cutoffDate = body?.cutoffDate ? parseDateOnlyUtc(body.cutoffDate) : businessTodayUtcStart();
     const accountId = String(body?.accountId ?? "").trim();
     const planId = String(body?.planId ?? "").trim();
 

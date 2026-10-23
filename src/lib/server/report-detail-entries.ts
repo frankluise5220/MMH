@@ -1,6 +1,6 @@
 import type { DetailEntry } from "@/components/DetailViewClient";
 import { prisma } from "@/lib/db/prisma";
-import { formatDateLocal, toNumber } from "@/lib/date-utils";
+import { toNumber, formatDateUtc, formatDateInTimeZone } from "@/lib/date-utils";
 import { rowWithLinkedInvestmentDisplayDate } from "@/lib/entry-reorder";
 import { loadEntryLinkedInvestmentDisplay } from "@/lib/server/entry-business-display";
 import { buildEntryBusinessLinkSummary, entryBusinessLinkSummaryInclude } from "@/lib/server/entry-business-link";
@@ -178,8 +178,8 @@ export async function loadReportDetailEntries(
 
     return [record.id, {
     id: record.id,
-    date: formatDateLocal(record.date),
-    postedAt: record.postedAt ? formatDateLocal(record.postedAt) : null,
+    date: formatDateUtc(record.date),
+    postedAt: record.postedAt ? formatDateInTimeZone(record.postedAt) : null,
     createdAt: record.createdAt.toISOString(),
     updatedAt: record.updatedAt ? record.updatedAt.toISOString() : null,
     entryOrigin: record.entryOrigin ?? null,
@@ -249,8 +249,8 @@ export async function loadReportDetailEntries(
     depositSourceEntryId: record.depositSourceEntryId,
     fundSourceEntryId: record.fundSourceEntryId,
     fundFee: record.fundFee == null ? null : toNumber(record.fundFee),
-    fundConfirmDate: record.fundConfirmDate ? formatDateLocal(record.fundConfirmDate) : null,
-    fundArrivalDate: linkedRow.fundArrivalDate ? formatDateLocal(linkedRow.fundArrivalDate) : null,
+    fundConfirmDate: record.fundConfirmDate ? formatDateUtc(record.fundConfirmDate) : null,
+    fundArrivalDate: linkedRow.fundArrivalDate ? formatDateUtc(linkedRow.fundArrivalDate) : null,
     fundArrivalAmount: record.fundArrivalAmount == null ? null : toNumber(record.fundArrivalAmount),
     ...buildEntryBusinessLinkSummary(record),
     attachments: (record.Attachment || []).map((attachment) => ({

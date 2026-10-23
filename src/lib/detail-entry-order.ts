@@ -31,10 +31,12 @@ function toValidDate(value: Date | string | number | null | undefined) {
   return null;
 }
 
+// 名称沿用历史，口径是 UTC：DB 日历日字段都存 UTC 零点，用本地 getter 会随
+// 进程/浏览器时区漂移（容器 TZ=UTC 与北京时间的 8 小时差就是本 bug 来源）。
 function localDateKey(date: Date) {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, "0");
-  const d = String(date.getDate()).padStart(2, "0");
+  const y = date.getUTCFullYear();
+  const m = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(date.getUTCDate()).padStart(2, "0");
   return `${y}-${m}-${d}`;
 }
 

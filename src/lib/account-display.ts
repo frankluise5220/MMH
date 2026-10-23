@@ -10,6 +10,11 @@ export type AccountDisplaySource = {
   kind: string;
   /** 账户币种。只有非账簿本位币才出现在标签里，见 `accountCurrencyLabelText`。 */
   currency?: string | null;
+  /**
+   * 账簿本位币。调用方没有显式传 `options.baseCurrency` 时用它兜底，避免
+   * 「少传一个参数 → 非本位币既不显示也没有 hover」。
+   */
+  baseCurrency?: string | null;
   numberMasked?: string | null;
   groupId?: string | null;
   investProductType?: string | null;
@@ -426,10 +431,29 @@ export function formatAccountSelectorCoreLabel(input: {
   return parts.filter(Boolean).join("·").trim() || accountName;
 }
 
+/**
+ * 表格渲染设置：既接受旧的「字段数组」，也接受 `{ fields, baseCurrency }`。
+ * 后者是唯一正确的传参方式——只传字段数组时标签里不会渲染非本位币。
+ */
+type AccountTableRenderSettings = AccountLabelField[] | AccountRenderSettings | null | undefined;
+
+function normalizeTableRenderSettings(input: AccountTableRenderSettings): {
+  fields: AccountLabelField[];
+  baseCurrency: string | null;
+} {
+  if (Array.isArray(input)) {
+    return { fields: normalizeAccountLabelFields(input), baseCurrency: null };
+  }
+  return {
+    fields: normalizeAccountLabelFields(input?.fields ?? DEFAULT_ACCOUNT_LABEL_FIELDS),
+    baseCurrency: input?.baseCurrency ?? null,
+  };
+}
+
 export function formatAccountTableLabel(
   account: AccountTableDisplaySource,
   fallback = "",
-  fields?: AccountLabelField[] | null,
+  settings?: AccountTableRenderSettings,
 ) {
   // `listLabel` is the configured label and wins when present. `selectorLabel`
   // is the dropdown label: it follows the configured institution/name/last-four
@@ -439,6 +463,7 @@ export function formatAccountTableLabel(
   if (provided) return provided;
   const accountName = account.name?.trim();
   if (accountName) {
+    const { fields, baseCurrency } = normalizeTableRenderSettings(settings);
     return formatAccountSelectorLabel({
       accountName,
       institution: account.Institution
@@ -454,6 +479,7 @@ export function formatAccountTableLabel(
         ? kindLabel(normalizeUserFacingAccountKind({ kind: account.kind }))
         : "",
       currency: account.currency ?? null,
+      baseCurrency,
       fields,
     });
   }
@@ -463,9 +489,9 @@ export function formatAccountTableLabel(
 export function formatAccountTableTitle(
   account: AccountTableDisplaySource,
   fallback = "",
-  fields?: AccountLabelField[] | null,
+  settings?: AccountTableRenderSettings,
 ) {
-  const visibleLabel = formatAccountTableLabel(account, fallback, fields);
+  const visibleLabel = formatAccountTableLabel(account, fallback, settings);
   const title = firstTrimmedText([account.tableHoverTitle, account.hoverTitle, account.title, account.fullLabel, visibleLabel]);
   // 写死规则：hover 必须比可见标签多出信息；两者一样时返回空串，
   // 由调用方省略 title 属性，免得悬浮只是把同一句话再说一遍。
@@ -594,11 +620,12 @@ export function buildAccountDisplayOption(
     baseCurrency?: string | null;
   },
 ): AccountDisplayOption {
-  // `fields` is the global "account display format" setting. Sidebar callers do
-  // not pass it and keep the sidebar's own shape; every other list passes the
-  // configured fields so all of them render identically.
-  const labelFields = options?.fields ?? null;
-  const baseCurrency = options?.baseCurrency ?? null;
+  // `fields` is the global "account display format" setting. Callers that do not
+  // pass it MUST still follow the rule — falling back to a hand-joined
+  // `institution·name` is what produced "只显示名称/不按设置渲染" reports — so the
+  // fallback is the documented default field list, never a bespoke shape.
+  const labelFields = normalizeAccountLabelFields(options?.fields ?? DEFAULT_ACCOUNT_LABEL_FIELDS);
+  const baseCurrency = options?.baseCurrency ?? account.baseCurrency ?? null;
   const isFixedAsset = isFixedAssetAccountLike(account);
   // User-facing kind: legacy deposit (`investment` + `deposit`) and fixed assets
   // (`investment` + `property`) must render as their real type, not "investment",
@@ -627,24 +654,16 @@ export function buildAccountDisplayOption(
   const label =
     account.kind === "insurance" || isFixedAsset
       ? account.name.trim()
-      : labelFields
-        ? renderAccountLabel({
-            accountName: accountDisplayName,
-            institution: isFixedAsset ? null : account.Institution,
-            numberMasked: account.numberMasked,
-            ownerName: groupName,
-            kindLabelText: kindLabel(displayKind),
-            currency: account.currency,
-            baseCurrency,
-            fields: labelFields,
-          })
-        : account.kind === "bank_credit"
-          ? formatAccountSelectorLabel({
-              accountName: account.name,
-              institution: account.Institution,
-              numberMasked: account.numberMasked,
-            })
-          : formatAccountDisplayName(accountDisplayName, institutionName);
+      : renderAccountLabel({
+          accountName: accountDisplayName,
+          institution: isFixedAsset ? null : account.Institution,
+          numberMasked: account.numberMasked,
+          ownerName: groupName,
+          kindLabelText: kindLabel(displayKind),
+          currency: account.currency,
+          baseCurrency,
+          fields: labelFields,
+        });
 
   const selectorLabel = formatAccountSelectorLabel({
     accountName: account.name,
@@ -663,34 +682,39 @@ export function buildAccountDisplayOption(
       ? label
       : isFixedAsset
         ? joinAccountSubLabel([groupName, account.name, FIXED_ASSET_EXPENSE_CATEGORY_NAME])
-        : labelFields
-          ? joinAccountSubLabel([
-              // Owner and kind are already part of the configured label when
-              // selected, so appending them again would repeat the text.
-              labelFields.includes("owner") ? "" : groupName,
-              label,
-              labelFields.includes("kind") ? "" : kindLabel(displayKind),
-            ])
-          : formatOwnerQualifiedAccountLabel({
-              accountName: accountDisplayName,
-              kind: displayKind,
-              institution: account.Institution,
-              numberMasked: account.numberMasked,
-              ownerName: groupName,
-            });
+        : joinAccountSubLabel([
+            // Owner and kind are already part of the configured label when
+            // selected, so appending them again would repeat the text.
+            labelFields.includes("owner") ? "" : groupName,
+            label,
+            labelFields.includes("kind") ? "" : kindLabel(displayKind),
+          ]);
 
   const subLabel = isFixedAsset ? FIXED_ASSET_EXPENSE_CATEGORY_NAME : kindLabel(displayKind);
   // 币种文本（悬浮补全用）：只看「是不是本位币」，不看名称里写没写币种。
   // 名称写的是中文（「美元现金」）时，行里并没有 ISO 代码，悬浮必须补上 `USD`，
   // 否则用户看不出这笔钱记在哪个币种上；名称里已经带 `· USD` 的情况交给下面的
   // `selectorVisibleText.includes` / `label.includes` 去重，不会渲染成两个 USD。
-  const tableCurrencyText = accountCurrencyLabelText(account.currency, baseCurrency);
+  const tableCurrencyText =
+    accountCurrencyLabelText(account.currency, baseCurrency) ||
+    // 本位币未知时保守显示币种代码：漏传 baseCurrency 的调用方也会得到
+    // 「外币账户 hover 里有币种」，而不是彻底丢失这条线索。
+    (baseCurrency ? "" : (account.currency ?? "").trim());
+  // 机构是否已经在标签里（设置里选了机构字段，或名称本身就是「机构·卡名」）。
+  const institutionInLabel =
+    labelFields.includes("institution") || labelFields.includes("institutionShort");
+  const institutionInName = Boolean(institutionName) && accountDisplayName.includes(institutionName);
+  const institutionHoverText =
+    !isFixedAsset && institutionName && !institutionInLabel && !institutionInName ? institutionName : "";
   // 写死规则（2026-10-18 用户裁定，与 ADT 表格同一口径）：悬浮只补「行里看不到」
   // 的信息，已经显示出来的元素不再重复。
   // - 选择器行显示 `selectorLabel` + `subLabel`（类型/所有人可能已在其中）；
   // - 表格行显示 `listLabel` + 类型列。
   const selectorVisibleText = joinAccountSubLabel([selectorLabel, subLabel]);
   const hoverParts: string[] = [];
+  if (institutionHoverText && !selectorVisibleText.includes(institutionHoverText)) {
+    hoverParts.push(institutionHoverText);
+  }
   if (showOwner && groupName && !selectorVisibleText.includes(groupName)) hoverParts.push(groupName);
   // 名称里已经写着 `USD` 的不重复；只写中文（「美元现金」）的仍要补 ISO 代码。
   const nameShowsCurrency = Boolean(tableCurrencyText) && accountDisplayName.includes(tableCurrencyText);
@@ -705,13 +729,18 @@ export function buildAccountDisplayOption(
   // rendered account name.
   const tableLabelFields = labelFields ?? DEFAULT_ACCOUNT_LABEL_FIELDS;
   const tableHoverParts: string[] = [];
+  if (institutionHoverText && !label.includes(institutionHoverText)) {
+    tableHoverParts.push(institutionHoverText);
+  }
   if (!tableLabelFields.includes("owner") && showOwner && groupName) {
     tableHoverParts.push(groupName);
   }
   if (!tableLabelFields.includes("kind") && subLabel) {
     tableHoverParts.push(subLabel);
   }
-  if (!tableLabelFields.includes("currency") && tableCurrencyText && !nameShowsCurrency && !label.includes(tableCurrencyText)) {
+  // 不看 `fields` 是否含 currency，只看「标签里到底有没有」——本位币缺失时
+  // 标签不会渲染币种，此时必须由 hover 补上，否则外币账户彻底没有币种线索。
+  if (tableCurrencyText && !nameShowsCurrency && !label.includes(tableCurrencyText)) {
     tableHoverParts.push(tableCurrencyText);
   }
   const tableHoverTitle = tableHoverParts.length > 0
@@ -736,6 +765,79 @@ export function buildAccountDisplayOption(
     fullLabel: ownerQualifiedLabel,
     hoverTitle,
     tableHoverTitle,
+  };
+}
+
+export type AccountRenderSettings = {
+  fields?: AccountLabelField[] | null;
+  baseCurrency?: string | null;
+};
+
+/**
+ * 表格 / 列表单元格的唯一渲染入口。
+ *
+ * `label` 严格按「系统设置 - 显示 - 账户显示格式」渲染；`title` 只补行里看不到的
+ * 信息（所有人 / 类型 / 非本位币代码），没有增益时返回空串，调用方据此省略 `title`
+ * 属性。禁止在表格里自己拼 `机构·名称`——那正是「只显示名称、hover 没有机构/币种」
+ * 的来源。
+ */
+export function accountTableCell(account: AccountDisplaySource, settings?: AccountRenderSettings) {
+  const display = buildAccountDisplayOption(account, undefined, settings);
+  return { label: display.listLabel, title: display.tableHoverTitle };
+}
+
+/** 下拉 / 选择器行的唯一渲染入口：label、右侧说明、hover 使用同一份口径。 */
+export function accountOptionRow(account: AccountDisplaySource, settings?: AccountRenderSettings) {
+  const display = buildAccountDisplayOption(account, undefined, settings);
+  return {
+    label: display.selectorLabel,
+    subLabel: buildOptionSubLabel(display.selectorLabel, [display.subLabel]),
+    title: display.hoverTitle,
+  };
+}
+
+/**
+ * 给「只有零散字段」的调用方用（表单里刚创建/刚拉取的账户）：
+ * 不用自己拼 `机构·名称`，也不用构造 Institution 对象。
+ */
+export function accountOptionFromParts(
+  parts: {
+    id?: string | null;
+    name: string;
+    kind?: string | null;
+    institutionName?: string | null;
+    institutionShortName?: string | null;
+    numberMasked?: string | null;
+    currency?: string | null;
+    groupName?: string | null;
+    investProductType?: string | null;
+  },
+  settings?: AccountRenderSettings,
+) {
+  const institutionNameText = parts.institutionName?.trim() || parts.institutionShortName?.trim() || "";
+  const display = buildAccountDisplayOption(
+    {
+      id: parts.id ?? parts.name,
+      name: parts.name,
+      kind: parts.kind ?? "other",
+      numberMasked: parts.numberMasked ?? null,
+      currency: parts.currency,
+      groupId: null,
+      investProductType: parts.investProductType ?? null,
+      AccountGroup: parts.groupName ? { id: "", name: parts.groupName } : null,
+      Institution: institutionNameText
+        ? { name: institutionNameText, shortName: parts.institutionShortName ?? null }
+        : null,
+    },
+    undefined,
+    settings,
+  );
+  return {
+    label: display.selectorLabel,
+    subLabel: buildOptionSubLabel(display.selectorLabel, [display.subLabel]),
+    title: display.hoverTitle,
+    listLabel: display.listLabel,
+    tableHoverTitle: display.tableHoverTitle,
   };
 }
 
@@ -782,8 +884,9 @@ export function buildGroupedAccountOptions(accounts: AccountDisplayOption[]): Sm
       id: account.id,
       label: account.selectorLabel,
       subLabel: buildOptionSubLabel(account.selectorLabel, [account.subLabel]),
-      // 所有人已经是分组表头，悬浮里不再重复（2026-10-18：只补行里看不到的）。
-      title: stripVisibleHoverParts(account.hoverTitle, [account.groupName]),
+      // 悬浮必须能看到「所有人」：分组表头会被折叠/搜索过滤，平铺场景下更是看不到，
+      // 而 hoverTitle 已经按「行内可见文本才剔除」生成，直接使用即可。
+      title: account.hoverTitle,
       parentId: `group:${account.groupId}`,
     }));
 

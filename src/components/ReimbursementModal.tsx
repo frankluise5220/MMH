@@ -4,14 +4,14 @@ import { ModalLayer } from "@/components/ModalLayer";
 import { useEffect, useMemo, useState } from "react";
 import { Banknote, Check, Link2, Pencil, Plus, Printer, ReceiptText, Trash2 } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
-import { formatMoney, formatMoneyYuan } from "@/lib/format";
+import { formatAmountDraft, formatMoney, formatMoneyYuan } from "@/lib/format";
 import { todayDateLocalYmd } from "@/lib/date-utils";
 import { DateStepper } from "./DateStepper";
 import { AdvancedDataTable, type AdvancedDataTableColumn } from "@/components/AdvancedDataTable";
 import { reimbursementErrorMessage } from "@/lib/reimbursement-error";
-import { ReimbursementFormModal, type ReimbursementFormEntry, type ReimbursementObjectOption } from "@/components/ReimbursementFormModal";
+import { ReimbursementDocumentModal } from "@/components/ReimbursementDocumentModal";
+import type { ReimbursementFormEntry, ReimbursementObjectOption } from "@/components/ReimbursementFormModal";
 import { ReimbursementPreview, ReimbursementBatchPrintPortal } from "@/components/ReimbursementPreview";
-import { ReimbursementEditor } from "@/components/ReimbursementEditor";
 import { BatchReplacePopoverButton, type BatchReplaceFieldConfig } from "@/components/BatchReplacePopoverButton";
 import { CalcInput } from "@/components/CalcInput";
 import type {
@@ -997,7 +997,7 @@ export function ReimbursementWorkspace({
                                 onClick={(event) => {
                                   event.stopPropagation();
                                   setApprovalTarget(reimbursement);
-                                  setApprovedAmount(String(reimbursement.approvedAmount ?? reimbursement.totalAmount));
+                                  setApprovedAmount(formatAmountDraft(reimbursement.approvedAmount ?? reimbursement.totalAmount));
                                   setApprovalDate(reimbursement.approvalDate ?? todayDateLocalYmd());
                                   setApprovalNote(reimbursement.approvalNote ?? "");
                                 }}
@@ -1052,14 +1052,17 @@ export function ReimbursementWorkspace({
       </div>
 
       {showCreate ? (
-        <ReimbursementFormModal
+        <ReimbursementDocumentModal
+          mode="create"
           objectId={objectId || undefined}
           objectName={objectName || undefined}
           advanceAccountId={advanceAccountId}
           objectType={objectType}
           objectOptions={objectOptions}
           entries={createSeedEntries}
+          candidates={data?.candidates ?? []}
           batchId={selectedBatch?.id}
+          batches={data?.batches ?? []}
           actions={actions}
           onClose={() => {
             setSeedsConsumed(true);
@@ -1074,7 +1077,7 @@ export function ReimbursementWorkspace({
 
       {showCreateBatch || editingBatchId ? (
         <ModalLayer className="app-modal-backdrop">
-          <div className="app-modal-panel max-w-md">
+          <div className="app-modal-panel max-w-lg">
             <div className="modal-header shrink-0">
               <div className="text-sm font-semibold text-slate-800">{t(editingBatchId ? "reimburse.batch.edit" : "reimburse.batchCreate")}</div>
               <button type="button" onClick={() => { setShowCreateBatch(false); setEditingBatchId(null); setBatchTitle(""); setBatchNote(""); setBatchStartDate(""); setBatchEndDate(""); }} className="secondary-button h-8 px-2" disabled={busy}>{t("table.close")}</button>
@@ -1107,15 +1110,16 @@ export function ReimbursementWorkspace({
               </div>
               <div>
                 <label className="mb-1 block text-xs font-medium text-slate-600">{t("reimburse.batch.dateRange")}</label>
-                <div className="flex items-center gap-2">
-                  <DateStepper value={batchStartDate} onChange={setBatchStartDate} className="h-9 min-w-0 flex-1" />
-                  <span className="text-slate-400">~</span>
-                  <DateStepper value={batchEndDate} onChange={setBatchEndDate} className="h-9 min-w-0 flex-1" />
+                {/* 日期范围整行占满：窄屏两个日期各占一行，避免半宽输入框里日期文字压到日历/步进图标上。 */}
+                <div className="grid grid-cols-1 items-center gap-2 sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]">
+                  <DateStepper value={batchStartDate} onChange={setBatchStartDate} className="h-9 w-full" />
+                  <span className="hidden text-slate-400 sm:block">~</span>
+                  <DateStepper value={batchEndDate} onChange={setBatchEndDate} className="h-9 w-full" />
                 </div>
               </div>
             </div>
+            {/* 退出只走右上角关闭：底部不再重复「取消」，只留主操作靠右。 */}
             <div className="flex justify-end gap-2 border-t border-slate-100 p-3">
-              <button type="button" onClick={() => { setShowCreateBatch(false); setEditingBatchId(null); setBatchTitle(""); setBatchNote(""); setBatchStartDate(""); setBatchEndDate(""); }} className="secondary-button h-9 px-3" disabled={busy}>{t("common.cancel")}</button>
               <button type="button" onClick={() => void (editingBatchId ? submitEditBatch() : submitCreateBatch())} className="primary-button h-9 px-3" disabled={busy || !batchTitle.trim()}>{busy ? t("liabilityShell.saving") : t("common.save")}</button>
             </div>
           </div>
@@ -1233,9 +1237,6 @@ export function ReimbursementWorkspace({
               </div>
             </div>
             <div className="flex shrink-0 items-center justify-end gap-2 border-t border-slate-100 p-3">
-              <button type="button" onClick={() => setPaymentBatch(null)} className="secondary-button h-9 px-3" disabled={busy}>
-                {t("common.cancel")}
-              </button>
               <button type="button" onClick={() => { void submitBatchPayment(); }} className="primary-button h-9 px-3" disabled={busy || !reimburseCashAccountId || paymentBatchPayableCount === 0}>
                 {busy ? t("liabilityShell.saving") : t("reimburse.batch.reimburseConfirm")}
               </button>
@@ -1307,7 +1308,6 @@ export function ReimbursementWorkspace({
               </section>
             </div>
             <div className="flex justify-end gap-2 border-t border-slate-100 p-3">
-              <button type="button" onClick={() => { setLinkingReimbursementId(null); setLinkTransactionIds([]); }} className="secondary-button h-9 px-3" disabled={busy}>{t("common.cancel")}</button>
               <button
                 type="button"
                 onClick={() => { if (linkTransactionIds.length > 0) void linkTransactions(linkingReimbursement, linkTransactionIds); }}
@@ -1322,50 +1322,36 @@ export function ReimbursementWorkspace({
       ) : null}
 
       {approvalTarget || editingReimb ? (
-        <ModalLayer className="app-modal-backdrop">
-          <div
-            className="app-modal-panel resize"
-            style={{
-              width: "min(80rem, 92vw)",
-              height: "min(90vh, 58rem)",
-              minWidth: "min(720px, calc(100vw - 2rem))",
-              minHeight: "min(520px, calc(100vh - 2rem))",
-              maxWidth: "calc(100vw - 2rem)",
-            }}
-          >
-            <ReimbursementEditor
-              reimbursement={editorReimb!}
-              batches={data?.batches ?? []}
-              accountName={editorReimb!.advanceAccountName ?? accountName}
-              candidates={data?.candidates ?? []}
-              mode={approvalTarget ? "audit" : "edit"}
-              auditAmount={approvedAmount}
-              onAuditAmountChange={setApprovedAmount}
-              auditDate={approvalDate}
-              onAuditDateChange={setApprovalDate}
-              auditNote={approvalNote}
-              onAuditNoteChange={setApprovalNote}
-              onAuditSubmit={() => void submitApproval()}
-              onCancelApproval={() => void submitCancelApproval()}
-              canCancelApproval={approvalTarget?.approvedAmount != null && approvalTarget.status !== "reimbursed"}
-              auditBusy={busy}
-              actions={{
-                update: actions.update,
-                updateItem: actions.updateItem,
-                createItem: actions.createItem,
-                deleteItem: actions.deleteItem,
-                linkTransaction: actions.linkTransaction,
-                linkTransactions: actions.linkTransactions,
-                unlinkTransaction: actions.unlinkTransaction,
-              }}
-              onClose={() => {
-                setApprovalTarget(null);
-                setEditingReimbId(null);
-              }}
-              onSaved={async () => { await load(); }}
-            />
-          </div>
-        </ModalLayer>
+        <ReimbursementDocumentModal
+          reimbursement={editorReimb!}
+          batches={data?.batches ?? []}
+          candidates={data?.candidates ?? []}
+          mode={approvalTarget ? "audit" : "edit"}
+          auditAmount={approvedAmount}
+          onAuditAmountChange={setApprovedAmount}
+          auditDate={approvalDate}
+          onAuditDateChange={setApprovalDate}
+          auditNote={approvalNote}
+          onAuditNoteChange={setApprovalNote}
+          onAuditSubmit={() => void submitApproval()}
+          onCancelApproval={() => void submitCancelApproval()}
+          canCancelApproval={approvalTarget?.approvedAmount != null && approvalTarget.status !== "reimbursed"}
+          auditBusy={busy}
+          actions={{
+            update: actions.update,
+            updateItem: actions.updateItem,
+            createItem: actions.createItem,
+            deleteItem: actions.deleteItem,
+            linkTransaction: actions.linkTransaction,
+            linkTransactions: actions.linkTransactions,
+            unlinkTransaction: actions.unlinkTransaction,
+          }}
+          onClose={() => {
+            setApprovalTarget(null);
+            setEditingReimbId(null);
+          }}
+          onSaved={async () => { await load(); }}
+        />
       ) : null}
 
       {batchPrintDocs ? (
@@ -1420,7 +1406,6 @@ export function ReimbursementWorkspace({
               </div>
             </div>
             <div className="flex justify-end gap-2 border-t border-slate-100 p-3">
-              <button type="button" onClick={() => setBatchApproveOpen(false)} className="secondary-button h-9 px-3" disabled={busy}>{t("common.cancel")}</button>
               <button type="button" onClick={() => void submitBatchApprove()} className="primary-button h-9 px-3" disabled={busy || selectedPendingDocuments.length === 0}>
                 {busy ? t("liabilityShell.saving") : t("reimburse.document.audit")}
               </button>

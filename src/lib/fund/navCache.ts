@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db/prisma";
+import { todayDateBusinessYmd } from "@/lib/date-utils";
 import { queryFundNav } from "@/lib/fund/queryApi";
 import {
   ensureFundProfile,
@@ -89,7 +90,8 @@ export function findNavFallback(
   targetDate: string
 ): NavListItem | null {
   const targetTime = new Date(targetDate + "T00:00:00Z").getTime();
-  const nowDate = new Date().toISOString().slice(0, 10);
+  // 业务时区今天：净值日期是「交易日」日历日，UTC 日期在北京时间凌晨会差一天。
+  const nowDate = todayDateBusinessYmd();
   const nowTime = new Date(nowDate + "T00:00:00Z").getTime();
   // Don't fallback for today or future dates — the nav hasn't been published yet
   const recentThreshold = nowTime - 2 * 86400000; // 2 calendar days ago

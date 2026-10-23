@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
 import { buildAccountDisplayOption, buildFlatAccountOptions, buildGroupedAccountOptions } from "@/lib/account-display";
 import { buildAccountOwnerOptions } from "@/lib/account-owner-options";
 import { buildCategorySmartSelectOptions } from "@/components/categorySmartSelect";
@@ -116,6 +117,7 @@ export default async function RegularInvestPage() {
   const { hidFilter, householdId } = await getHouseholdScope();
   const t = await getServerT();
   const accountLabelFields = await getServerAccountLabelFields();
+  const baseCurrency = await getHouseholdBaseCurrency(householdId);
 
   const [plans, accounts, groups, institutions, insuranceProducts, categories] = await Promise.all([
     prisma.regularInvestPlan.findMany({
@@ -241,7 +243,7 @@ export default async function RegularInvestPage() {
   // 父账户（多币种聚合账户）不能记账：计划任务的资金/目标账户只到币种子账户一层。
   const accountOptions = accounts
     .filter((account) => account.isAggregate !== true)
-    .map((account) => buildAccountDisplayOption(account, undefined, { fields: accountLabelFields }));
+    .map((account) => buildAccountDisplayOption(account, undefined, { fields: accountLabelFields, baseCurrency }));
   const accountById = new Map(accountOptions.map((account) => [account.id, account]));
   // 贷款是否"仍关联着"与负债视图同口径：|余额| > ACTIVE_LIABILITY_EPSILON 才算在贷，
   // 已结清/空壳账户按"无关联贷款"处理（提示可放心删除）。

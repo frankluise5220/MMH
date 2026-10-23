@@ -24,8 +24,9 @@ import {
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { fetchSettingsBootstrap } from "@/lib/client/settingsCache";
 import { addTradingDaysUtc } from "@/lib/date-utils";
+import { formatAmountDraft } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
-import { getAccountLabelFieldsPreference } from "@/lib/client/appPreferences";
+import { readAccountDisplaySettings } from "@/lib/client/account-display-settings";
 import { restrictAccountsByType } from "@/lib/client/account-dropdown-filter";
 
 export type StockImportUploadItem = {
@@ -371,7 +372,7 @@ export function StockImportPreviewDialog({ open, items, context, onClose, onImpo
               name: account.AccountGroup.name ?? null,
             }
           : null,
-      }, undefined, { fields: getAccountLabelFieldsPreference() }))
+      }, undefined, readAccountDisplaySettings()))
       .sort((a, b) => a.selectorLabel.localeCompare(b.selectorLabel, "zh-Hans-CN")),
     [bookAccounts],
   );
@@ -413,7 +414,7 @@ export function StockImportPreviewDialog({ open, items, context, onClose, onImpo
               name: account.AccountGroup.name ?? null,
             }
           : null,
-      }, undefined, { fields: getAccountLabelFieldsPreference() }))
+      }, undefined, readAccountDisplaySettings()))
       .sort((a, b) => a.selectorLabel.localeCompare(b.selectorLabel, "zh-Hans-CN")),
     [bookAccounts],
   );
@@ -732,16 +733,16 @@ export function StockImportPreviewDialog({ open, items, context, onClose, onImpo
       case "stockCode": return row.stockCode || "";
       case "quantity": return row.quantity == null ? "" : String(row.quantity);
       case "price": return row.price == null ? "" : String(row.price);
-      case "grossAmount": return row.grossAmount == null ? "" : String(row.grossAmount);
-      case "netAmount": return row.netAmount == null ? "" : String(row.netAmount);
+      case "grossAmount": return row.grossAmount == null ? "" : formatAmountDraft(row.grossAmount);
+      case "netAmount": return row.netAmount == null ? "" : formatAmountDraft(row.netAmount);
       case "bankAccount": return row.bankAccount || "";
-      case "fee": return row.fee == null ? (row.totalFee ? String(row.totalFee) : "") : String(row.fee);
-      case "commission": return row.commission == null ? "" : String(row.commission);
-      case "stampTax": return row.stampTax == null ? "" : String(row.stampTax);
-      case "transferFee": return row.transferFee == null ? "" : String(row.transferFee);
-      case "exchangeFee": return row.exchangeFee == null ? "" : String(row.exchangeFee);
-      case "regulatoryFee": return row.regulatoryFee == null ? "" : String(row.regulatoryFee);
-      case "otherFee": return row.otherFee == null ? "" : String(row.otherFee);
+      case "fee": return row.fee == null ? (row.totalFee ? formatAmountDraft(row.totalFee) : "") : formatAmountDraft(row.fee);
+      case "commission": return row.commission == null ? "" : formatAmountDraft(row.commission);
+      case "stampTax": return row.stampTax == null ? "" : formatAmountDraft(row.stampTax);
+      case "transferFee": return row.transferFee == null ? "" : formatAmountDraft(row.transferFee);
+      case "exchangeFee": return row.exchangeFee == null ? "" : formatAmountDraft(row.exchangeFee);
+      case "regulatoryFee": return row.regulatoryFee == null ? "" : formatAmountDraft(row.regulatoryFee);
+      case "otherFee": return row.otherFee == null ? "" : formatAmountDraft(row.otherFee);
       case "note": return row.note || "";
       case "tags": return row.tags || "";
       default: return "";

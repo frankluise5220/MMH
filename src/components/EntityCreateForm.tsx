@@ -26,6 +26,8 @@ import { useI18n } from "@/lib/i18n";
 import { FIXED_ASSET_TYPES, isFixedAssetAccountLike } from "@/lib/fixed-asset";
 import { LOAN_TYPES } from "@/lib/loan-type";
 import { isDepositAccount, supportsMultiCurrencyHierarchy } from "@/lib/account-kind-utils";
+import { todayDateLocalYmd } from "@/lib/date-utils";
+import { formatAmountDraft } from "@/lib/format";
 
 /* ---- Types ---- */
 
@@ -281,7 +283,7 @@ const CREDIT_BILLING_DAY_TX_PERIOD_OPTIONS = [
 ];
 
 function todayStr() {
-  return new Date().toISOString().slice(0, 10);
+  return todayDateLocalYmd();
 }
 
 /* ---- ENTITY_CONFIG ---- */
@@ -568,7 +570,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
             repaymentDay: result.data.repaymentDay == null ? "" : String(result.data.repaymentDay),
             repaymentOffsetDays: offsetDays,
             repaymentDayMode: offsetDays ? "offset" : "fixed",
-            creditLimit: result.data.creditLimit == null ? "" : String(result.data.creditLimit),
+            creditLimit: result.data.creditLimit == null ? "" : formatAmountDraft(result.data.creditLimit),
             creditBillMode: result.data.creditBillMode === "consolidated" ? "consolidated" : "separate",
             billingDayTxPeriod: (result.data as { billingDayTxPeriod?: string }).billingDayTxPeriod === "next" ? "next" : "current",
           };

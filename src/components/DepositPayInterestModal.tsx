@@ -8,6 +8,7 @@ import { CalcInput } from "./CalcInput";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
+import { todayDateLocalYmd } from "@/lib/date-utils";
 
 export type PayInterestLotInfo = {
   id: string;
@@ -32,7 +33,7 @@ export function DepositPayInterestModal({
   payInterestAction: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
 }) {
   const { t } = useI18n();
-  const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
+  const today = todayDateLocalYmd();
 
   const [payoutDate, setPayoutDate] = useState(today);
   const [amount, setAmount] = useState("");

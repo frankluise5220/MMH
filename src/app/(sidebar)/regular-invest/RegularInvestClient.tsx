@@ -23,7 +23,7 @@ import { BondEntryHost } from "@/components/BondEntryHost";
 import { createTransaction, editInvestment } from "@/lib/server/sidebar-actions/transaction-actions";
 import type { SmartSelectOption } from "@/components/SmartSelect";
 import type { CategorySmartSelectOption } from "@/components/categorySmartSelect";
-import { formatDateUtc } from "@/lib/date-utils";
+import { formatDateUtc, todayDateLocalYmd } from "@/lib/date-utils";
 import { fundConfirmDate } from "@/lib/fund/fund-dates";
 import type { AccountDisplayOption } from "@/lib/account-display";
 import { accountFilterGroupKey, accountFilterGroupLabel } from "@/lib/account-kinds";
@@ -384,7 +384,7 @@ function toDateInput(value?: string | Date | null): string {
 }
 
 function todayInput(): string {
-  return new Date().toISOString().slice(0, 10);
+  return todayDateLocalYmd();
 }
 
 function formatScheduleRate(rate: number | null): string {

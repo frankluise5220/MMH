@@ -1220,7 +1220,7 @@ export function SidebarClient({
   }
 
   function sidebarItemHoverTitle(it: AccountItem) {
-    return it.hoverTitle ?? [isSidebarSettlementLoan(it) ? "" : it.groupName, it.label, inlineKindLabel(it.kind)].filter(Boolean).join(" · ");
+    return it.hoverTitle ?? [isSidebarSettlementLoan(it) ? "" : it.groupName, it.label, inlineKindLabel(it.kind), it.currency].filter(Boolean).join(" · ");
   }
 
   function sidebarItemRowLabel(it: AccountItem) {
@@ -1236,7 +1236,9 @@ export function SidebarClient({
   // 子账户行只补「父行看不到的差异」：币种。账户名通常已带 ` · USD`（多币种子账户默认名），
   // 不带时补一个 ISO 后缀，避免同一父账户下两行文字完全一样。
   function sidebarSubAccountLabel(child: AccountItem) {
-    const name = child.name?.trim() || sidebarItemRowLabel(child);
+    // 用服务端按「账户显示格式」渲染好的 label，而不是原始 name：
+    // 直接取 name 会在设置含机构/类型时只显示名称。
+    const name = child.label?.trim() || child.name?.trim() || sidebarItemRowLabel(child);
     const currency = (child.currency ?? "").trim();
     if (!currency) return name;
     return name.toUpperCase().includes(currency.toUpperCase()) ? name : `${name} · ${currency}`;

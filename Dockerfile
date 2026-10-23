@@ -92,6 +92,10 @@ ENV MMH_NODE_MAX_OLD_SPACE_MB=auto
 ENV PG_POOL_MAX=4
 ENV PORT=7777
 ENV HOSTNAME=0.0.0.0
+# 容器默认时区是 UTC：北京时间 00:00–08:00 期间「今天」会比本地日期晚一天，
+# 导致当天刚记的流水被明细页当成未来行隐藏、表单默认日期变成昨天。
+# 代码侧已用显式业务时区（date-utils.todayDateBusinessYmd），这里统一进程时区做双保险。
+ENV TZ=Asia/Shanghai
 
 RUN apt-get update \
   && apt-get install -y --no-install-recommends postgresql-client openssl ca-certificates gosu \

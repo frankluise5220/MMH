@@ -1,3 +1,4 @@
+import { todayDateBusinessYmd } from "@/lib/date-utils";
 // AI prompt templates used by the chat route
 
 export type FundContext = {
@@ -145,7 +146,7 @@ export function buildAiRecognitionUserPrompt(input: AiRecognitionPromptInput) {
 export function buildFundSystemPrompt(ctx: FundContext) {
   const fundLabel = ctx.fundName ? `${ctx.fundName}(${ctx.fundCode})` : ctx.fundCode;
   const cashLabel = ctx.cashAccountId ?? "(需用户手动选择)";
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayDateBusinessYmd();
   return `你是一个基金交易记录解析器。用户正在查看基金持仓页面。当前上下文:
 
 基金: ${fundLabel}

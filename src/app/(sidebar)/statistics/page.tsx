@@ -2,7 +2,7 @@ import { prisma } from "@/lib/db/prisma";
 import { cookies } from "next/headers";
 import { TransactionType } from "@prisma/client";
 import { computeInvestBalances } from "@/lib/invest-balance";
-import { toNumber } from "@/lib/date-utils";
+import { toNumber, businessTodayUtcStart } from "@/lib/date-utils";
 import { Suspense } from "react";
 import { ReportSelector } from "@/components/ReportSelector";
 import type { ReportItem } from "@/components/ReportSelector";
@@ -87,8 +87,8 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
   const colorScheme = cookieStore.get("colorScheme")?.value ?? "red_up_green_down";
   const isRedUp = colorScheme === "red_up_green_down";
 
-  const now = new Date();
-  const thisYear = now.getFullYear();
+  const now = businessTodayUtcStart();
+  const thisYear = now.getUTCFullYear();
   const selectedYear = typeof params?.year === "string" ? parseInt(params.year, 10) : thisYear;
   const year = Number.isFinite(selectedYear) && selectedYear >= 2000 && selectedYear <= 2100 ? selectedYear : thisYear;
   const level = params?.level === "month" ? "month" : "year";

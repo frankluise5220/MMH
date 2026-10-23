@@ -154,9 +154,89 @@ export function formatDateDisplay(
   return `${year}-${month}-${day}`;
 }
 
-/** Today's local date as YYYY-MM-DD (used for date-input defaults etc.). */
+/**
+ * 浏览器本地「今天」（YYYY-MM-DD），**只允许前端表单默认值使用**。
+ *
+ * 服务端（`src/lib/server/**`、`src/app/api/**`、服务端组件）禁止调用：
+ * 容器进程时区通常是 UTC，会与业务时区差 8 小时。服务端一律用
+ * `todayDateBusinessYmd()`。
+ */
 export function todayDateLocalYmd(): string {
   return formatDateLocal(new Date());
+}
+
+/**
+ * 业务默认时区。生产容器（Docker）通常没有设置 TZ，进程时区就是 UTC，
+ * 于是 `formatDateLocal(new Date())` 会在北京时间 00:00–08:00 返回「昨天」，
+ * 明细列表的「今天之前可见」过滤会把当天刚记的流水隐藏掉。
+ * 服务端判断「今天」必须走显式时区，而不是进程时区。
+ */
+export const DEFAULT_BUSINESS_TIME_ZONE = "Asia/Shanghai";
+
+export function resolveBusinessTimeZone(): string {
+  const configured = typeof process !== "undefined" ? process.env.MMH_TIME_ZONE?.trim() : "";
+  if (!configured) return DEFAULT_BUSINESS_TIME_ZONE;
+  try {
+    new Intl.DateTimeFormat("en-CA", { timeZone: configured }).format(new Date());
+    return configured;
+  } catch {
+    return DEFAULT_BUSINESS_TIME_ZONE;
+  }
+}
+
+/** 指定时区下的 YYYY-MM-DD（时区非法时回退到业务默认时区）。 */
+export function formatDateInTimeZone(d: Date, timeZone: string = resolveBusinessTimeZone()): string {
+  if (!Number.isFinite(d.getTime())) return "";
+  let parts: Intl.DateTimeFormatPart[];
+  try {
+    parts = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(d);
+  } catch {
+    return timeZone === DEFAULT_BUSINESS_TIME_ZONE
+      ? formatDateLocal(d)
+      : formatDateInTimeZone(d, DEFAULT_BUSINESS_TIME_ZONE);
+  }
+  const pick = (type: Intl.DateTimeFormatPartTypes) => parts.find((part) => part.type === type)?.value ?? "";
+  const year = pick("year");
+  const month = pick("month");
+  const day = pick("day");
+  if (!year || !month || !day) return formatDateLocal(d);
+  return `${year}-${month.padStart(2, "0")}-${day.padStart(2, "0")}`;
+}
+
+/**
+ * 业务时区下的「今天」（服务端专用，不依赖容器 TZ）。
+ * 前端表单默认值仍应使用 `todayDateLocalYmd()`，跟随浏览器本地时区。
+ */
+export function todayDateBusinessYmd(timeZone?: string): string {
+  return formatDateInTimeZone(new Date(), timeZone ?? resolveBusinessTimeZone());
+}
+
+/**
+ * 某一时刻在业务时区下的「当天」UTC 零点。
+ * 替换服务端所有 `startOfDayUtc(new Date())` / `utcDayStart(now)`：
+ * 那些取的是 UTC 今天，北京时间 00:00–08:00 会少一天。
+ */
+export function businessDayStartUtc(date: Date = new Date(), timeZone?: string): Date {
+  const tz = timeZone ?? resolveBusinessTimeZone();
+  return parseDateInputToUtc(formatDateInTimeZone(date, tz)) ?? startOfDayUtc(date);
+}
+
+/** 业务时区「今天」的 UTC 零点（Prisma 区间比较 / 日期落库用）。 */
+export function businessTodayUtcStart(timeZone?: string): Date {
+  return businessDayStartUtc(new Date(), timeZone);
+}
+
+/**
+ * 存储契约：DB 里所有「日历日」字段一律是 **UTC 零点**。
+ * 读回来必须用本函数（= `formatDateUtc`），不要用 `formatDateLocal`。
+ */
+export function businessDateKey(value: Date): string {
+  return formatDateUtc(value);
 }
 
 export function formatDateUtc(d: Date): string {
@@ -220,7 +300,8 @@ export function parseFlexibleDateToYmd(value: unknown): string | null {
   if (raw.length >= 8 && /\d{4}/.test(raw)) {
     const date = new Date(raw);
     if (!Number.isFinite(date.getTime())) return null;
-    return formatDateLocal(date);
+    // 统一 UTC 口径（与函数其它分支一致），不要用进程本地时区。
+    return formatDateUtc(date);
   }
   return null;
 }
@@ -387,7 +468,7 @@ export function countTradingDaysUtc(startDateStr: string, endDateStr: string, tr
  */
 export function isWithinRecentTradingDaysUtc(
   targetDateStr: string,
-  referenceDateStr: string = formatDateUtc(new Date()),
+  referenceDateStr: string = todayDateBusinessYmd(),
   maxTradingDays = 2,
   tradingCalendar?: string | null,
 ) {

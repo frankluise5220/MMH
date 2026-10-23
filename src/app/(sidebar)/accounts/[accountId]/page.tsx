@@ -5,11 +5,12 @@ import { MobileTransactionForm } from "@/components/mobile/MobileTransactionForm
 import { MobileTransactions, type MobileTransactionRow } from "@/components/mobile/MobileTransactions";
 import { prisma } from "@/lib/db/prisma";
 import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
-import { formatDateLocal, toNumber } from "@/lib/date-utils";
+import { toNumber, formatDateUtc } from "@/lib/date-utils";
 import { buildAccountDisplayOption, formatAccountTableLabel } from "@/lib/account-display";
 import { getMaintainedAccountBalances } from "@/lib/server/account-balance";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { getServerAccountLabelFields } from "@/lib/server/account-label-fields";
+import { getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
 import { getServerT } from "@/lib/server/i18n";
 import { txRecordAccountScopeWhere } from "@/lib/transaction-account-scope";
 import { categoryOrderBy } from "@/lib/category-order";
@@ -30,7 +31,9 @@ export default async function MobileAccountDetailPage({ params }: { params: Prom
   const { accountId } = await params;
   const t = await getServerT();
   const accountLabelFields = await getServerAccountLabelFields();
-  const { hidFilter } = await getHouseholdScope();
+  const { householdId, hidFilter } = await getHouseholdScope();
+  // 币种要进 label/hover：缺 baseCurrency 时非本位币只剩 ISO 代码也没有出处。
+  const baseCurrency = await getHouseholdBaseCurrency(householdId);
   const [account, accounts, categories] = await Promise.all([
     prisma.account.findFirst({
       where: { id: accountId, isPlaceholder: { not: true }, ...hidFilter },
@@ -43,6 +46,7 @@ export default async function MobileAccountDetailPage({ params }: { params: Prom
         id: true,
         name: true,
         kind: true,
+        currency: true,
         numberMasked: true,
         groupId: true,
         investProductType: true,
@@ -92,7 +96,7 @@ export default async function MobileAccountDetailPage({ params }: { params: Prom
 
   const accountDisplayById = new Map(
     accounts.map((item) => {
-      const option = buildAccountDisplayOption({ ...item, kind: String(item.kind) }, undefined, { fields: accountLabelFields });
+      const option = buildAccountDisplayOption({ ...item, kind: String(item.kind) }, undefined, { fields: accountLabelFields, baseCurrency });
       return [item.id, formatAccountTableLabel(option, "", accountLabelFields)] as const;
     }),
   );
@@ -100,7 +104,7 @@ export default async function MobileAccountDetailPage({ params }: { params: Prom
     const amount = toNumber(entry.amount);
     return {
       id: entry.id,
-      date: formatDateLocal(entry.date),
+      date: formatDateUtc(entry.date),
       amount,
       flowAmount: entry.accountId === accountId ? amount : -amount,
       type: entry.type,

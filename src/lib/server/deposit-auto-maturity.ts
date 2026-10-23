@@ -26,7 +26,7 @@ import { revalidateAfterInvestChange } from "@/lib/server/revalidate";
 import { renewDeposit } from "@/lib/server/sidebar-actions/transaction-actions";
 import { resolveCategorySnapshot, SYSTEM_DEPOSIT_INTEREST_CATEGORY } from "@/lib/default-categories";
 import { ENTRY_ORIGIN_SCHEDULED_TASK } from "@/lib/transaction-semantics";
-import { toNumber } from "@/lib/date-utils";
+import { businessDayStartUtc, toNumber } from "@/lib/date-utils";
 import { normalizeCurrency } from "@/lib/currency";
 import { loadDepositLotBalance } from "@/lib/server/deposit-lot-balance";
 
@@ -138,7 +138,8 @@ async function runAutoProcessMaturedDeposits(
     details: [],
   };
 
-  const today = utcDayStart(now);
+  // 业务时区的「今天」UTC 零点；`utcDayStart` 在北京时间 00:00–08:00 会少一天。
+  const today = businessDayStartUtc(now);
 
   // ── Scan 1: periodic-payout deposits still held — any accrued-but-unpaid
   // interest (payout date passed, no live income entry for it) is generated
@@ -286,12 +287,12 @@ async function lotAlreadyRedeemed(buyId: string, householdId: string): Promise<b
   return !balance || balance.settled;
 }
 
-/** Local-day key (the app stores dates as local midnight). Timezone-agnostic
+/** Day key in UTC (the app stores calendar days as UTC midnight). Timezone-agnostic
  *  comparison for payout scheduling — avoids UTC/local off-by-one days. */
 function localDayKey(date: Date): string {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, "0");
-  const d = String(date.getDate()).padStart(2, "0");
+  const y = date.getUTCFullYear();
+  const m = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(date.getUTCDate()).padStart(2, "0");
   return `${y}-${m}-${d}`;
 }
 

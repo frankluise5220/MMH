@@ -16,7 +16,7 @@ import {
   formatAccountTableLabel,
   formatAccountTableTitle,
   type AccountDisplayOption,
-  type AccountLabelField,
+  type AccountRenderSettings,
 } from "@/lib/account-display";
 import {
   createImportAccountMatcher,
@@ -45,7 +45,7 @@ import { statementPreviewCategorySyncKey } from "@/lib/statement/preview-categor
 import { uniqueStatementInfoTexts } from "@/lib/statement/preview-meta";
 import { systemCategoryLabel } from "@/lib/system-category-labels";
 import { useI18n } from "@/lib/i18n";
-import { getAccountLabelFieldsPreference } from "@/lib/client/appPreferences";
+import { readAccountDisplaySettings, useAccountDisplaySettings } from "@/lib/client/account-display-settings";
 
 type BookAccount = {
   id: string;
@@ -279,7 +279,10 @@ function flowAmountPatchForItem(item: StatementImportPreviewItem, side: "inflow"
     : { type: "expense", amount, inflow: undefined, outflow: amount };
 }
 
-function buildBookAccountDisplayOption(account: BookAccount, labelFields = getAccountLabelFieldsPreference()): AccountDisplayOption {
+function buildBookAccountDisplayOption(
+  account: BookAccount,
+  settings: AccountRenderSettings = readAccountDisplaySettings(),
+): AccountDisplayOption {
   return buildAccountDisplayOption({
     ...account,
     Institution: account.Institution
@@ -294,7 +297,7 @@ function buildBookAccountDisplayOption(account: BookAccount, labelFields = getAc
           name: account.AccountGroup.name ?? null,
         }
       : null,
-  }, undefined, { fields: labelFields });
+  }, undefined, settings);
 }
 
 /** 「所有人」= 家庭成员 = AccountGroup；这些是占位分组，不参与所有人推断。 */
@@ -308,7 +311,7 @@ const PLACEHOLDER_OWNER_NAMES = new Set(["未指定", "未分组", "默认", "�
 function buildUnmatchedAccountDisplay(
   text: string,
   meta: StatementImportPreviewItem["_meta"],
-  fields: AccountLabelField[],
+  settings: AccountRenderSettings,
 ): AccountDisplayOption {
   const institutionName = cleanText(meta?.institutionName);
   const ownerName = cleanText(meta?.ownerName);
@@ -319,7 +322,7 @@ function buildUnmatchedAccountDisplay(
     currency: meta?.statementCurrency ?? null,
     Institution: institutionName ? { name: institutionName, shortName: institutionName } : null,
     AccountGroup: ownerName ? { id: "", name: ownerName } : null,
-  }, undefined, { fields });
+  }, undefined, settings);
 }
 
 function isTransferOut(item: StatementImportPreviewItem) {
@@ -554,25 +557,11 @@ function missingAccountCandidateValuesForRow(row: ImportPreviewRow, defaultAccou
   return Array.from(new Set(candidates.map(cleanText).filter(Boolean)));
 }
 
-function missingLiabilityAccountNamesForRow(
-  row: ImportPreviewRow,
-  defaultAccountName: string,
-  ownerNames: readonly string[] = [],
-) {
-  // 往来归属候选（含非所有人「XX的YYY」与转账对向的纯人名）：返回将创建的账户原名。
-  const counterValue = cleanText(counterAccountValue(row.item));
-  const names = missingAccountCandidateValuesForRow(row, defaultAccountName)
-    .map((value) => {
-      const text = cleanText(value);
-      if (!text) return "";
-      if (parseSettlementAccountName(text)) return text;
-      if (parseImportPersonAttributedCandidate(text, ownerNames)) return text;
-      if (counterValue && text === counterValue && parseImportBarePersonName(text, ownerNames)) return text;
-      return "";
-    })
-    .filter(Boolean);
-  return Array.from(new Set(names));
-}
+// 预览表格高度 = 工具栏 + 表头 + 边框的固定部分，加上「最多 20 行 × 紧凑行高 30px」；
+// 高度跟着行数走，弹窗再按内容收缩，不会在表格下方留一大段空白。
+const PREVIEW_TABLE_CHROME_HEIGHT = 66;
+const PREVIEW_TABLE_ROW_HEIGHT = 30;
+const PREVIEW_TABLE_MAX_ROWS = 20;
 
 export function StatementImportPreviewDialog({
   open,
@@ -599,10 +588,9 @@ export function StatementImportPreviewDialog({
   const [settingsBootstrapLoaded, setSettingsBootstrapLoaded] = useState(false);
   const [createLiabilityAccounts, setCreateLiabilityAccounts] = useState(false);
   const [forceCreateOwnedMoneyAccounts, setForceCreateOwnedMoneyAccounts] = useState(false);
-  const autoCheckedLiabilityAccountsRef = useRef(false);
   const [categorySyncMessage, setCategorySyncMessage] = useState("");
   const { t, language } = useI18n();
-  const accountLabelFields = useMemo(() => getAccountLabelFieldsPreference(), []);
+  const accountDisplaySettings = useAccountDisplaySettings();
   const colorScheme = useMemo(
     () => getColorSchemeFromCookie(typeof document === "undefined" ? null : document.cookie),
     [],
@@ -616,9 +604,9 @@ export function StatementImportPreviewDialog({
   );
   const accountDisplayOptions = useMemo(
     () => activeBookAccounts
-      .map((account) => buildBookAccountDisplayOption(account, accountLabelFields))
+      .map((account) => buildBookAccountDisplayOption(account, accountDisplaySettings))
       .sort((a, b) => a.selectorLabel.localeCompare(b.selectorLabel, "zh-Hans-CN")),
-    [accountLabelFields, activeBookAccounts],
+    [accountDisplaySettings, activeBookAccounts],
   );
   const accountDisplayById = useMemo(
     () => new Map(accountDisplayOptions.map((account) => [account.id, account])),
@@ -695,14 +683,23 @@ export function StatementImportPreviewDialog({
   const {
     ownerFilterLabel,
     cycleOwnerFilter,
-    filteredOptions,
+    typeFilter,
     visibleOptionIds,
   } = useAccountSSFilter(accountSmartSelectOptions);
+  // 账户下拉必须保留「所有人」分组表头：useAccountSSFilter 返回的 filteredOptions 会把
+  // isHeader 全部剔除（它的用途是平铺列表），直接拿来渲染层级下拉就会丢掉分组标题。
   const displayAccountOptions = useMemo(() => {
-    const source = filteredOptions?.length ? filteredOptions : accountSmartSelectOptions;
-    if (!visibleOptionIds) return source;
-    return source.filter((option) => option.isHeader || visibleOptionIds.has(option.id));
-  }, [accountSmartSelectOptions, filteredOptions, visibleOptionIds]);
+    if (!typeFilter) return accountSmartSelectOptions;
+    const allowedIds = visibleOptionIds ?? new Set<string>();
+    const keptHeaderIds = new Set<string>();
+    for (const option of accountSmartSelectOptions) {
+      if (option.isHeader || !option.parentId) continue;
+      if (allowedIds.has(option.id)) keptHeaderIds.add(option.parentId);
+    }
+    return accountSmartSelectOptions.filter((option) =>
+      option.isHeader ? keptHeaderIds.has(option.id) : allowedIds.has(option.id),
+    );
+  }, [accountSmartSelectOptions, typeFilter, visibleOptionIds]);
   const categoryById = useMemo(
     () => new Map(bookCategories.map((category) => [category.id, category])),
     [bookCategories],
@@ -715,6 +712,12 @@ export function StatementImportPreviewDialog({
     () => uniqueStatementInfoTexts(rows.map((row) => row.item)),
     [rows],
   );
+  const statementInfoText = useMemo(
+    () => (statementInfoTexts.length > 0
+      ? t("statementImportPreview.statementInfo", { texts: statementInfoTexts.join(" / ") })
+      : ""),
+    [statementInfoTexts, t],
+  );
 
   useEffect(() => {
     if (!open) return;
@@ -726,11 +729,6 @@ export function StatementImportPreviewDialog({
       return;
     }
     const nextRows = buildPreviewRows(items, defaultAccountName, accountLookup, creationOptions);
-    if (!autoCheckedLiabilityAccountsRef.current && !createLiabilityAccounts && nextRows.some((row) => missingLiabilityAccountNamesForRow(row, defaultAccountName, accountLookup.ownerNames).length > 0)) {
-      autoCheckedLiabilityAccountsRef.current = true;
-      setCreateLiabilityAccounts(true);
-      return;
-    }
     setRows(nextRows);
     setSelectedKeys(new Set(nextRows.filter((row) => row.ready).map((row) => row.key)));
     setEditingPreviewCell(null);
@@ -740,7 +738,6 @@ export function StatementImportPreviewDialog({
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
-    autoCheckedLiabilityAccountsRef.current = false;
     setSettingsBootstrapLoaded(false);
     setCreateLiabilityAccounts(false);
     setForceCreateOwnedMoneyAccounts(false);
@@ -770,7 +767,6 @@ export function StatementImportPreviewDialog({
     setRows([]);
     setSelectedKeys(new Set());
     setEditingPreviewCell(null);
-    autoCheckedLiabilityAccountsRef.current = false;
     setSettingsBootstrapLoaded(false);
     setCreateLiabilityAccounts(false);
     setForceCreateOwnedMoneyAccounts(false);
@@ -802,11 +798,11 @@ export function StatementImportPreviewDialog({
       const key = [text, meta?.institutionName ?? "", meta?.ownerName ?? "", meta?.statementCurrency ?? ""].join("\u001f");
       const cached = cache.get(key);
       if (cached) return cached;
-      const display = buildUnmatchedAccountDisplay(text, meta, accountLabelFields);
+      const display = buildUnmatchedAccountDisplay(text, meta, accountDisplaySettings);
       cache.set(key, display);
       return display;
     };
-  }, [accountLabelFields]);
+  }, [accountDisplaySettings]);
 
   function previewAccountSelectValue(value: string | undefined, meta?: StatementImportPreviewItem["_meta"]) {
     const text = cleanText(value);
@@ -837,7 +833,7 @@ export function StatementImportPreviewDialog({
     if (!text) return "";
     const matchedId = findPreviewAccountId(text, meta);
     const display = matchedId ? accountDisplayById.get(matchedId) : undefined;
-    return formatAccountTableLabel(display ?? unmatchedDisplayCache(text, meta), text, accountLabelFields);
+    return formatAccountTableLabel(display ?? unmatchedDisplayCache(text, meta), text, accountDisplaySettings);
   }
 
   function previewAccountDisplayTitle(value: string | undefined, meta?: StatementImportPreviewItem["_meta"]) {
@@ -845,7 +841,7 @@ export function StatementImportPreviewDialog({
     if (!text) return t("statementImportPreview.doubleClickEdit", { field: t("batchImport.field.account") });
     const matchedId = findPreviewAccountId(text, meta);
     const display = matchedId ? accountDisplayById.get(matchedId) : undefined;
-    return formatAccountTableTitle(display ?? unmatchedDisplayCache(text, meta), text, accountLabelFields);
+    return formatAccountTableTitle(display ?? unmatchedDisplayCache(text, meta), text, accountDisplaySettings);
   }
 
   function previewCategorySelectValue(categoryName: string | undefined, txType: StatementImportPreviewItem["type"]) {
@@ -1241,11 +1237,11 @@ export function StatementImportPreviewDialog({
       { value: "", label: t("batchImport.unselected") },
       ...accountDisplayOptions.map((account) => ({
         value: account.id,
-        label: formatAccountTableLabel(account, "", accountLabelFields),
-        title: formatAccountTableTitle(account, "", accountLabelFields),
+        label: formatAccountTableLabel(account, "", accountDisplaySettings),
+        title: formatAccountTableTitle(account, "", accountDisplaySettings),
       })),
     ],
-    [accountDisplayOptions, accountLabelFields, t],
+    [accountDisplayOptions, accountDisplaySettings, t],
   );
 
   const previewReplaceFields = useMemo<BatchReplaceFieldConfig<PreviewEditField>[]>(
@@ -1673,6 +1669,9 @@ export function StatementImportPreviewDialog({
   const fallbackRows = rows;
   const fallbackSelectedKeys = selectedKeys;
   const previewReady = settingsBootstrapLoaded && rows.length > 0;
+  // 空结果（如筛选后无记录）时至少留 3 行高，避免空状态提示被压成一条。
+  const previewVisibleRowCount = Math.max(3, Math.min(fallbackRows.length, PREVIEW_TABLE_MAX_ROWS));
+  const previewTableHeight = previewVisibleRowCount * PREVIEW_TABLE_ROW_HEIGHT + PREVIEW_TABLE_CHROME_HEIGHT;
   const importReadySelectedCount = useMemo(
     () => fallbackRows.reduce((count, row) => count + (fallbackSelectedKeys.has(row.key) && row.ready ? 1 : 0), 0),
     [fallbackRows, fallbackSelectedKeys],
@@ -1682,15 +1681,21 @@ export function StatementImportPreviewDialog({
 
   return createPortal(
     <ModalLayer className="fixed inset-0 flex items-center justify-center bg-slate-900/40 px-4 py-6">
-      <div data-batch-popover-boundary data-smart-select-boundary className="flex h-[82vh] min-h-[420px] w-[72rem] min-w-0 max-w-[calc(100vw-2rem)] resize flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
+      <div data-batch-popover-boundary data-smart-select-boundary className="flex h-auto max-h-[82vh] w-[72rem] min-w-0 max-w-[calc(100vw-2rem)] resize flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
         <div className="flex items-start justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3">
           <div className="min-w-0">
-            <div className="text-sm font-semibold text-slate-800">{title}</div>
-            {description ? <div className="mt-0.5 text-xs text-slate-500">{description}</div> : null}
+            <div className="truncate text-sm font-semibold text-slate-800">{title}</div>
+            {description ? <div className="mt-0.5 truncate text-xs text-slate-500">{description}</div> : null}
+            {/* 账单信息（账单金额 + 账期 + 还款日 + 币种 + 额度）左对齐显示在标题下方。 */}
+            {statementInfoText ? (
+              <div className="mt-0.5 break-words text-xs leading-relaxed text-slate-500" title={statementInfoText}>
+                {statementInfoText}
+              </div>
+            ) : null}
           </div>
           <button
             type="button"
-            className="h-8 w-8 rounded-md border border-slate-300 text-slate-500 hover:bg-white disabled:opacity-50"
+            className="h-8 w-8 shrink-0 rounded-md border border-slate-300 text-slate-500 hover:bg-white disabled:opacity-50"
             onClick={closeDialog}
             disabled={busy}
             aria-label={t("table.close")}
@@ -1701,7 +1706,7 @@ export function StatementImportPreviewDialog({
 
         <div className="min-h-0 flex-1">
           {!settingsBootstrapLoaded ? (
-            <div role="status" aria-live="polite" className="flex h-full items-center justify-center bg-white px-4">
+            <div role="status" aria-live="polite" className="flex min-h-[320px] items-center justify-center bg-white px-4">
               <div className="flex items-start gap-3 rounded-lg border border-blue-100 bg-blue-50/60 px-4 py-3 text-sm text-slate-700">
                 <div className="mt-0.5 h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-blue-200 border-t-blue-600" />
                 <div className="min-w-0">
@@ -1711,78 +1716,79 @@ export function StatementImportPreviewDialog({
               </div>
             </div>
           ) : (
-            <AdvancedDataTable
-              storageKey="mmh_statement_import_preview_table_v2"
-              columns={columns}
-              rows={fallbackRows}
-              rowKey={(row) => row.key}
-              emptyText={t("batchImport.noRecordsForFilter")}
-              minTableWidth={1180}
-              selectable
-              selectAllScope="renderedRows"
-              selectAllPreferred={(row) => row.ready}
-              selectedKeys={fallbackSelectedKeys}
-              onSelectionChange={(keys) => {
-                if (busy || !previewReady) return;
-                // 未匹配行也允许勾选，便于筛选后批量改账户/分类再导入
-                const rowKeys = new Set(fallbackRows.map((row) => row.key));
-                setSelectedKeys(new Set(Array.from(keys).filter((key) => rowKeys.has(key))));
-              }}
-              batchActionSlot={(
-                <BatchReplacePopoverButton
-                  fields={previewReplaceFields}
-                  targetCount={previewReady ? fallbackSelectedKeys.size : 0}
-                  targetLabel={t("stockPanel.selected")}
-                  panelAlign="left"
-                  disabledTitle={t("statementImportPreview.selectRowsFirst")}
-                  buttonTitle={t("statementImportPreview.batchEditSelected", { count: fallbackSelectedKeys.size })}
-                  messageClassName="sr-only"
-                  onApply={applyPreviewReplace}
-                />
-              )}
-              toolbarTitle={t("statementImportPreview.previewTitle")}
-              toolbarRightContent={(
-                <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1 text-xs text-slate-500">
-                  <label className="inline-flex shrink-0 items-center gap-1.5 text-slate-600">
-                    <input
-                      type="checkbox"
-                      className="h-3.5 w-3.5 rounded border-slate-300 text-blue-600"
-                      checked={createLiabilityAccounts}
-                      disabled={busy || !settingsBootstrapLoaded}
-                      onChange={(event) => setCreateLiabilityAccounts(event.target.checked)}
-                    />
-                    <span>{t("statementImportPreview.createLiabilityAccounts")}</span>
-                  </label>
-                  <label className="inline-flex shrink-0 items-center gap-1.5 text-slate-600">
-                    <input
-                      type="checkbox"
-                      className="h-3.5 w-3.5 rounded border-slate-300 text-blue-600"
-                      checked={forceCreateOwnedMoneyAccounts}
-                      disabled={busy || !settingsBootstrapLoaded}
-                      onChange={(event) => setForceCreateOwnedMoneyAccounts(event.target.checked)}
-                    />
-                    <span>{t("statementImportPreview.forceCreateOwnedMoneyAccounts")}</span>
-                  </label>
-                  {statementInfoTexts.length > 0 ? <span>{t("statementImportPreview.statementInfo", { texts: statementInfoTexts.join(" / ") })}</span> : null}
-                  <span>{t("batchImport.totalCount", { total: fallbackRows.length })}</span>
-                  <span>{t("statementImportPreview.willImport", { count: importReadySelectedCount })}</span>
-                  {fallbackSelectedKeys.size > importReadySelectedCount ? (
-                    <span className="text-amber-700">
-                      {t("statementImportPreview.selectedNotReady", { count: fallbackSelectedKeys.size - importReadySelectedCount })}
-                    </span>
-                  ) : null}
-                </div>
-              )}
-              rowClassName={(row) => {
-                const creationStatus = previewCreationStatus(row);
-                if (creationStatus?.kind === "owned") return "bg-emerald-50/70";
-                if (creationStatus) return "bg-violet-50/70";
-                return fallbackSelectedKeys.has(row.key) ? "bg-blue-50/40" : row.ready ? "bg-white" : "bg-amber-50/40";
-              }}
-              fillHeight
-              compactRows
-              resetDisplayStateOnMount
-            />
+            // 表格高度按行数计算、最多 20 行（每行 30px），超出部分纵向滚动；弹窗被 82vh 限制时再按可用高度收缩。
+            <div className="min-h-0 max-h-full" style={{ height: previewTableHeight }}>
+              <AdvancedDataTable
+                storageKey="mmh_statement_import_preview_table_v2"
+                columns={columns}
+                rows={fallbackRows}
+                rowKey={(row) => row.key}
+                emptyText={t("batchImport.noRecordsForFilter")}
+                minTableWidth={1180}
+                selectable
+                selectAllScope="renderedRows"
+                selectAllPreferred={(row) => row.ready}
+                selectedKeys={fallbackSelectedKeys}
+                onSelectionChange={(keys) => {
+                  if (busy || !previewReady) return;
+                  // 未匹配行也允许勾选，便于筛选后批量改账户/分类再导入
+                  const rowKeys = new Set(fallbackRows.map((row) => row.key));
+                  setSelectedKeys(new Set(Array.from(keys).filter((key) => rowKeys.has(key))));
+                }}
+                batchActionSlot={(
+                  <BatchReplacePopoverButton
+                    fields={previewReplaceFields}
+                    targetCount={previewReady ? fallbackSelectedKeys.size : 0}
+                    targetLabel={t("stockPanel.selected")}
+                    panelAlign="left"
+                    disabledTitle={t("statementImportPreview.selectRowsFirst")}
+                    buttonTitle={t("statementImportPreview.batchEditSelected", { count: fallbackSelectedKeys.size })}
+                    messageClassName="sr-only"
+                    onApply={applyPreviewReplace}
+                  />
+                )}
+                toolbarRightContent={(
+                  <div className="flex items-center justify-end gap-x-3 whitespace-nowrap text-xs text-slate-500">
+                    <label className="inline-flex shrink-0 items-center gap-1.5 text-slate-600">
+                      <input
+                        type="checkbox"
+                        className="h-3.5 w-3.5 rounded border-slate-300 text-blue-600"
+                        checked={createLiabilityAccounts}
+                        disabled={busy || !settingsBootstrapLoaded}
+                        onChange={(event) => setCreateLiabilityAccounts(event.target.checked)}
+                      />
+                      <span>{t("statementImportPreview.createLiabilityAccounts")}</span>
+                    </label>
+                    <label className="inline-flex shrink-0 items-center gap-1.5 text-slate-600">
+                      <input
+                        type="checkbox"
+                        className="h-3.5 w-3.5 rounded border-slate-300 text-blue-600"
+                        checked={forceCreateOwnedMoneyAccounts}
+                        disabled={busy || !settingsBootstrapLoaded}
+                        onChange={(event) => setForceCreateOwnedMoneyAccounts(event.target.checked)}
+                      />
+                      <span>{t("statementImportPreview.forceCreateOwnedMoneyAccounts")}</span>
+                    </label>
+                    <span>{t("batchImport.totalCount", { total: fallbackRows.length })}</span>
+                    <span>{t("statementImportPreview.willImport", { count: importReadySelectedCount })}</span>
+                    {fallbackSelectedKeys.size > importReadySelectedCount ? (
+                      <span className="text-amber-700">
+                        {t("statementImportPreview.selectedNotReady", { count: fallbackSelectedKeys.size - importReadySelectedCount })}
+                      </span>
+                    ) : null}
+                  </div>
+                )}
+                rowClassName={(row) => {
+                  const creationStatus = previewCreationStatus(row);
+                  if (creationStatus?.kind === "owned") return "bg-emerald-50/70";
+                  if (creationStatus) return "bg-violet-50/70";
+                  return fallbackSelectedKeys.has(row.key) ? "bg-blue-50/40" : row.ready ? "bg-white" : "bg-amber-50/40";
+                }}
+                fillHeight
+                compactRows
+                resetDisplayStateOnMount
+              />
+            </div>
           )}
         </div>
 

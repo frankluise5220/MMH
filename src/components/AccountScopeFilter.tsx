@@ -4,6 +4,8 @@ import { ChevronDown } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useI18n } from "@/lib/i18n";
+import { accountTableCell } from "@/lib/account-display";
+import { useAccountDisplaySettings } from "@/lib/client/account-display-settings";
 import { accountFilterGroupKey, accountFilterGroupLabel } from "@/lib/account-kinds";
 import {
   FUND_COMPANY_INSTITUTION_PREFIX,
@@ -20,7 +22,10 @@ export type StatisticsAccountItem = {
   isPlaceholder?: boolean | null;
   groupId?: string;
   userId?: string | null;
-  Institution?: { id?: string; name: string } | null;
+  /** 币种/卡号用于按「账户显示格式」渲染并生成 hover。 */
+  currency?: string | null;
+  numberMasked?: string | null;
+  Institution?: { id?: string; name: string; shortName?: string | null } | null;
 };
 
 export type StatisticsInstitutionItem = { id: string; name: string; type?: string | null };
@@ -63,6 +68,7 @@ export function AccountScopeFilter({
   onChange,
 }: Props) {
   const { t } = useI18n();
+  const displaySettings = useAccountDisplaySettings();
   const [openMenu, setOpenMenu] = useState<"users" | "institutions" | "accounts" | null>(null);
   const menuAnchorRef = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
@@ -339,10 +345,30 @@ export function AccountScopeFilter({
     return labels.join(", ");
   }
 
+  // 筛选器也走「账户显示格式」：手拼 `机构·名称` 会忽略用户配置，也没有 hover。
+  function accountCell(account: StatisticsAccountItem | StatisticsUserItem | undefined) {
+    if (!account) return { label: "", title: "" };
+    if (!("Institution" in account)) return { label: account.name, title: "" };
+    return accountTableCell(
+      {
+        id: account.id,
+        name: account.name,
+        kind: account.kind ?? "other",
+        numberMasked: account.numberMasked,
+        currency: account.currency,
+        Institution: account.Institution,
+      },
+      displaySettings,
+    );
+  }
+
   function accountLabel(account: StatisticsAccountItem | StatisticsUserItem | undefined) {
-    if (!account) return "";
-    if (!('Institution' in account)) return account.name;
-    return account.Institution?.name ? `${account.Institution.name}·${account.name}` : account.name;
+    return accountCell(account).label;
+  }
+
+  function accountTitle(account: StatisticsAccountItem | StatisticsUserItem | undefined) {
+    const cell = accountCell(account);
+    return cell.title || cell.label;
   }
 
   const filterKinds = showAccountFilter
@@ -406,7 +432,7 @@ export function AccountScopeFilter({
             <div className="mb-1 px-2 text-[11px] font-medium text-slate-500">{isUsers ? t("statistics.allPeople") : isInstitutions ? t("statistics.allInstitutions") : t("reports.allAccounts")}</div>
             <button type="button" className="absolute right-2 top-2 text-[11px] text-blue-600 hover:text-blue-800" onClick={() => clearSelection(kind)}>{t("statistics.clearSelection")}</button>
             {items.length === 0 && <div className="px-2 py-2 text-xs text-slate-400">{t("table.empty")}</div>}
-            {isInstitutions ? Array.from(new Set(institutionOptions.map((institution) => institutionGroupKey(institution.type)))).map((type) => { const groupedItems = institutionOptions.filter((institution) => institutionGroupKey(institution.type) === type); return <div key={type} className="grid grid-cols-[96px_1fr] items-start gap-2 border-b border-slate-200 py-2 last:border-b-0"><label className="flex min-h-7 items-center gap-1.5 px-2 text-xs font-medium text-slate-600"><input type="checkbox" checked={groupedItems.every((institution) => draftInstitutionIds.includes(institution.id))} onChange={() => toggleInstitutionType(type)} />{institutionGroupLabel(type)}</label><div className="grid grid-cols-3 items-start gap-x-2 gap-y-1">{groupedItems.map((item) => <div key={item.id} className="flex min-h-7 min-w-0 items-center gap-1.5 rounded px-1 py-1 text-xs hover:bg-slate-50"><input type="checkbox" className="shrink-0" checked={draftInstitutionIds.includes(item.id)} onChange={() => toggleDraft("institutions", item.id)} /><button type="button" className="min-w-0 flex-1 truncate text-left" title={item.name} onClick={() => selectSingle("institutions", item.id)}>{item.name}</button></div>)}</div></div>; }) : !isUsers ? Array.from(new Set(accountOptions.map((account) => accountGroupKey(account)))).map((type) => { const groupedItems = accountOptions.filter((account) => accountGroupKey(account) === type); return <div key={type} className="grid grid-cols-[96px_1fr] items-start gap-2 border-b border-slate-200 py-2 last:border-b-0"><label className="flex min-h-7 items-center gap-1.5 px-2 text-xs font-medium text-slate-600"><input type="checkbox" checked={groupedItems.every((account) => draftAccountIds.includes(account.id))} onChange={() => toggleAccountType(type)} />{accountGroupLabel(type)}</label><div className="grid grid-cols-3 items-start gap-x-2 gap-y-1">{groupedItems.map((item) => <div key={item.id} className="flex min-h-7 min-w-0 items-center gap-1.5 rounded px-1 py-1 text-xs hover:bg-slate-50"><input type="checkbox" className="shrink-0" checked={draftAccountIds.includes(item.id)} onChange={() => toggleDraft("accounts", item.id)} /><button type="button" className="min-w-0 flex-1 truncate text-left" title={accountLabel(item)} onClick={() => selectSingle("accounts", item.id)}>{accountLabel(item)}</button></div>)}</div></div>; }) : items.map((item) => <div key={item.id} className="flex items-center gap-2 rounded px-2 py-1 text-xs hover:bg-slate-50">
+            {isInstitutions ? Array.from(new Set(institutionOptions.map((institution) => institutionGroupKey(institution.type)))).map((type) => { const groupedItems = institutionOptions.filter((institution) => institutionGroupKey(institution.type) === type); return <div key={type} className="grid grid-cols-[96px_1fr] items-start gap-2 border-b border-slate-200 py-2 last:border-b-0"><label className="flex min-h-7 items-center gap-1.5 px-2 text-xs font-medium text-slate-600"><input type="checkbox" checked={groupedItems.every((institution) => draftInstitutionIds.includes(institution.id))} onChange={() => toggleInstitutionType(type)} />{institutionGroupLabel(type)}</label><div className="grid grid-cols-3 items-start gap-x-2 gap-y-1">{groupedItems.map((item) => <div key={item.id} className="flex min-h-7 min-w-0 items-center gap-1.5 rounded px-1 py-1 text-xs hover:bg-slate-50"><input type="checkbox" className="shrink-0" checked={draftInstitutionIds.includes(item.id)} onChange={() => toggleDraft("institutions", item.id)} /><button type="button" className="min-w-0 flex-1 truncate text-left" title={item.name} onClick={() => selectSingle("institutions", item.id)}>{item.name}</button></div>)}</div></div>; }) : !isUsers ? Array.from(new Set(accountOptions.map((account) => accountGroupKey(account)))).map((type) => { const groupedItems = accountOptions.filter((account) => accountGroupKey(account) === type); return <div key={type} className="grid grid-cols-[96px_1fr] items-start gap-2 border-b border-slate-200 py-2 last:border-b-0"><label className="flex min-h-7 items-center gap-1.5 px-2 text-xs font-medium text-slate-600"><input type="checkbox" checked={groupedItems.every((account) => draftAccountIds.includes(account.id))} onChange={() => toggleAccountType(type)} />{accountGroupLabel(type)}</label><div className="grid grid-cols-3 items-start gap-x-2 gap-y-1">{groupedItems.map((item) => <div key={item.id} className="flex min-h-7 min-w-0 items-center gap-1.5 rounded px-1 py-1 text-xs hover:bg-slate-50"><input type="checkbox" className="shrink-0" checked={draftAccountIds.includes(item.id)} onChange={() => toggleDraft("accounts", item.id)} /><button type="button" className="min-w-0 flex-1 truncate text-left" title={accountTitle(item)} onClick={() => selectSingle("accounts", item.id)}>{accountLabel(item)}</button></div>)}</div></div>; }) : items.map((item) => <div key={item.id} className="flex items-center gap-2 rounded px-2 py-1 text-xs hover:bg-slate-50">
               <input type="checkbox" checked={draft.includes(item.id)} onChange={() => toggleDraft(kind, item.id)} />
               <button type="button" className="min-w-0 flex-1 truncate text-left" onClick={() => selectSingle(kind, item.id)}>{isUsers ? (allUsers.find((user) => user.id === item.id)?.name ?? item.id) : isInstitutions ? (institutionOptions.find((institution) => institution.id === item.id)?.name ?? item.id) : accountLabel(accountOptions.find((account) => account.id === item.id))}</button>
             </div>)}

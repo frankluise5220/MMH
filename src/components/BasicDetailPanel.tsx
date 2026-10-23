@@ -12,16 +12,16 @@ import { DetailViewClient, type DetailEntry } from "@/components/DetailViewClien
 import { removeEntriesAndUpdateRunningBalances } from "@/lib/detail-running-balance";
 import { ViewExcelImportMenuButton } from "@/components/ViewExcelImportMenuButton";
 import { FINANCE_DATA_CHANGED_EVENT, type FinanceDataChangedDetail } from "@/lib/client/refresh";
-import { formatDateLocal } from "@/lib/date-utils";
+import { formatDateUtc } from "@/lib/date-utils";
 import { getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
 import {
-  DETAIL_ALL_PAGE_SIZE,
   DETAIL_PAGE_SIZE_OPTIONS,
   clampDetailPage as clampPage,
   normalizeDetailPageSize,
   readStoredDetailPreference,
   writeStoredDetailPreference,
 } from "@/lib/detail-pagination-preference";
+import { isAbortError, loadAllDetailEntries } from "@/lib/client/detail-all-entries";
 import { useI18n } from "@/lib/i18n";
 import { isAllCashDetailScope } from "@/lib/all-cash-entries";
 
@@ -89,7 +89,7 @@ function detailPaginationFetchKey(accountId: string, pageSize: number, detailAll
 }
 
 function detailEntryDayKey(entry: DetailEntry, accountId: string) {
-  return formatDateLocal(getDetailEntryDisplayDate(entry, accountId));
+  return formatDateUtc(getDetailEntryDisplayDate(entry, accountId));
 }
 
 function findEntryIndexForDate(rows: DetailEntry[], dateYmd: string, accountId: string) {
@@ -329,6 +329,8 @@ export function BasicDetailPanel({
   const [detailAll, setDetailAll] = useState(initialDetailAll);
   const [autoFit, setAutoFit] = useState(initialAutoFit);
   const [isPageLoading, setIsPageLoading] = useState(false);
+  // 「全部」分块加载的进度（已回到本地的行数），仅用于加载提示文案。
+  const [allLoadedCount, setAllLoadedCount] = useState(0);
   const [displayedEntryIds, setDisplayedEntryIds] = useState<string[] | null>(null);
   const [guideOverlayOpen, setGuideOverlayOpen] = useState(showGuideOverlay);
   const [guideMetrics, setGuideMetrics] = useState<GuideMetrics | null>(null);
@@ -355,13 +357,52 @@ export function BasicDetailPanel({
   const detailPageKeyRef = useRef(detailPageKey);
   detailPageKeyRef.current = detailPageKey;
 
+  /**
+   * 「全部」模式：分块拉取并逐块追加（见 `loadAllDetailEntries`）。整份列表一次
+   * 要回几万行 / 几十 MB，浏览器会中途重置连接或静默超时，界面看起来就是「切到
+   * 全部没反应」，表头筛选也仍然只有原来那几十条可选，所以必须边到边显示。
+   */
+  const loadAllEntriesForScope = useCallback((isCurrent: () => boolean, signal?: AbortSignal) => (
+    loadAllDetailEntries<DetailEntry>({
+      accountId,
+      signal,
+      isCurrent,
+      errorMessage: t("basicDetail.loadFailed"),
+      onChunk: (loaded, nextTotalCount) => {
+        setLocalEntries([...loaded]);
+        setAllLoadedCount(loaded.length);
+        if (Number.isFinite(nextTotalCount)) {
+          setLocalTotalCount(nextTotalCount);
+          setLocalOriginalCount(nextTotalCount);
+        }
+      },
+    })
+  ), [accountId, t]);
+
   const reloadDetailPage = useCallback((signal?: AbortSignal) => {
     if (!clientPaginationEnabled) return;
     const requestKey = `${accountId}|${detailAll ? "all" : String(safePage)}|${pageSize}`;
+    const isCurrent = () => requestKey === detailPageKeyRef.current && !signal?.aborted;
+    if (detailAll) {
+      setIsPageLoading(true);
+      setAllLoadedCount(0);
+      void loadAllEntriesForScope(isCurrent, signal)
+        .catch((error) => {
+          if (isAbortError(error)) return;
+          console.error("Load all transaction detail entries failed:", error);
+        })
+        .finally(() => {
+          if (isCurrent()) {
+            locatingDateRef.current = false;
+            setIsPageLoading(false);
+          }
+        });
+      return;
+    }
     const params = new URLSearchParams({
       accountId,
-      page: detailAll ? "1" : String(safePage),
-      pageSize: detailAll ? String(DETAIL_ALL_PAGE_SIZE) : String(pageSize),
+      page: String(safePage),
+      pageSize: String(pageSize),
     });
     setIsPageLoading(true);
     fetch(`/api/v1/transactions/detail?${params.toString()}`, {
@@ -383,7 +424,7 @@ export function BasicDetailPanel({
         }
       })
       .catch((error) => {
-        if (error instanceof DOMException && error.name === "AbortError") return;
+        if (isAbortError(error)) return;
         console.error("Load transaction detail page failed:", error);
       })
       .finally(() => {
@@ -392,7 +433,7 @@ export function BasicDetailPanel({
           setIsPageLoading(false);
         }
       });
-  }, [accountId, clientPaginationEnabled, detailAll, pageSize, safePage]);
+  }, [accountId, clientPaginationEnabled, detailAll, loadAllEntriesForScope, pageSize, safePage]);
 
   useEffect(() => {
     if (showGuideOverlay) setGuideOverlayOpen(true);
@@ -554,7 +595,17 @@ export function BasicDetailPanel({
         // 整棵刷新：① 有明细筛选——数据由 RSC 的 entries prop 持有，客户端
         // 分页取数被禁用，且重取不带筛选条件会把筛选结果冲掉；
         // ② refreshOnGlobalEvent 关闭（标签视图）——子组件根本不监听。
-        if (isCurrentAccountEvent && (!clientPaginationEnabled || !refreshOnGlobalEvent)) router.refresh();
+        // ③「全部」视图——子组件的全量重取已交给父层分块（见 refreshOnGlobalEvent
+        //   的传参），编辑后必须由这里重取，否则改完一行列表不动。
+        if (isCurrentAccountEvent) {
+          // startup-check 是每日自动任务的例行提示，常在「切全部」的首次全量
+          // 加载途中到达；此时再取一份几十 MB 只会让表格更慢，跳过。
+          if (detailAll && clientPaginationEnabled && detail.reason !== "startup-check") {
+            reloadDetailPage();
+            return;
+          }
+          if (!clientPaginationEnabled || !refreshOnGlobalEvent) router.refresh();
+        }
         return;
       }
       const deletedSet = new Set(deletedEntryIds);
@@ -619,12 +670,13 @@ export function BasicDetailPanel({
   useEffect(() => {
     if (!clientPaginationEnabled) return;
     const key = detailPaginationFetchKey(accountId, pageSize, detailAll, safePage);
-    if (!lastClientPaginationKeyRef.current) {
-      lastClientPaginationKeyRef.current = key;
-      return;
-    }
-    if (lastClientPaginationKeyRef.current === key) return;
+    const isFirstRun = !lastClientPaginationKeyRef.current;
+    if (!isFirstRun && lastClientPaginationKeyRef.current === key) return;
     lastClientPaginationKeyRef.current = key;
+    // 首次进入且不是「全部」时，服务端 RSC 已经给了这一页，不必再取。
+    // 「全部」则必须立刻补：服务端现在只渲染一页（全量渲染 4 万行会产出上百 MB
+    // HTML），剩下的要靠这里按块拉回来，否则表格永远停在那一页。
+    if (isFirstRun && !detailAll) return;
 
     const controller = new AbortController();
     reloadDetailPage(controller.signal);
@@ -932,13 +984,20 @@ export function BasicDetailPanel({
           reconcileEnabled={showReconcile}
           // 有明细筛选时列表由 RSC 的 entries prop 持有，DetailViewClient 的
           // 重取不带筛选参数，会把筛选结果冲掉 —— 交给上面的整棵刷新。
-          refreshOnGlobalEvent={refreshOnGlobalEvent && clientPaginationEnabled}
+          // 「全部」同理：全量拉取由父层统一走分块（见 reloadDetailPage）。子组件
+          // 自己再拉一遍会并发两份额外的全量请求，几十 MB × 2，正是会被中途重置
+          // 的那种重复取数。
+          refreshOnGlobalEvent={refreshOnGlobalEvent && clientPaginationEnabled && !detailAll}
           draggableRows={draggableRows}
           sortable={sortable}
           onRowsFitChange={autoFit && !detailAll ? handleRowsFitChange : undefined}
           toolbarRightContent={
             <div className="flex items-center gap-2 text-xs">
-              <span className="text-xs text-slate-600">{t("creditBillDetail.recordCount", { count: localTotalCount })}{hasDetailFilters ? t("basicDetail.filteredSuffix", { count: localOriginalCount }) : ""}{isPageLoading ? t("basicDetail.loadingSuffix") : ""}</span>
+              <span className="text-xs text-slate-600">{t("creditBillDetail.recordCount", { count: localTotalCount })}{hasDetailFilters ? t("basicDetail.filteredSuffix", { count: localOriginalCount }) : ""}{isPageLoading ? (detailAll
+            ? allLoadedCount > 0
+              ? t("basicDetail.loadingAllSuffix", { count: localTotalCount, loaded: allLoadedCount })
+              : t("basicDetail.loadingAllPending", { count: localTotalCount })
+            : t("basicDetail.loadingSuffix")) : ""}</span>
               {showImportExport ? (
                 <>
                   <span className="text-slate-400">|</span>

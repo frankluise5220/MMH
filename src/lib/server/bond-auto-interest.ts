@@ -367,10 +367,10 @@ export async function autoWithdrawAccruedBondInterestForLot(params: {
   return { status: "accrued", pairs: entryIds.length, totalInterest, entryIds };
 }
 
-/** 本地日（YYYY-MM-DD）—— 与存款侧 localDayKey 同口径。 */
+/** 日键（YYYY-MM-DD），口径是 UTC：DB 日历日字段存 UTC 零点。 */
 function localDayKey(date: Date): string {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, "0");
-  const d = String(date.getDate()).padStart(2, "0");
+  const y = date.getUTCFullYear();
+  const m = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(date.getUTCDate()).padStart(2, "0");
   return `${y}-${m}-${d}`;
 }

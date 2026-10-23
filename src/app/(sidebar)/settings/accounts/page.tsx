@@ -29,7 +29,8 @@ import { CREDIT_CARD_MAX_REPAYMENT_OFFSET_DAYS } from "@/lib/credit/rules";
 import { SettingsActionButton, SettingsPageHeader, SettingsPrimaryAddButton, useHideSettingDescriptions } from "@/components/settings/SettingsPageScaffold";
 import { buildAccountDisplayOption } from "@/lib/account-display";
 import { accountOwnerNameById, buildAccountOwnerOptions } from "@/lib/account-owner-options";
-import { getAccountLabelFieldsPreference, getCreditCardLabelTemplatePreference } from "@/lib/client/appPreferences";
+import { getCreditCardLabelTemplatePreference } from "@/lib/client/appPreferences";
+import { readAccountDisplaySettings } from "@/lib/client/account-display-settings";
 import { fetchSettingsAccountData, getCachedSettingsAccountData, notifySettingsDataChanged } from "@/lib/client/settingsCache";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import {
@@ -707,7 +708,7 @@ export default function SettingsAccountsPage() {
         AccountGroup: account.AccountGroup,
         Counterparty: account.Counterparty,
       },
-      getCreditCardLabelTemplatePreference(), { fields: getAccountLabelFieldsPreference() }).label;
+      getCreditCardLabelTemplatePreference(), readAccountDisplaySettings()).label;
   };
 
   const normalizeSearchText = (value: string | null | undefined) => value?.trim().toLowerCase() ?? "";

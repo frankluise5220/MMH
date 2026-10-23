@@ -18,7 +18,8 @@ import { recordRecentAccount, sortByAccountUsage, useAccountUsage } from "@/lib/
 import { APP_PREFS_EVENT, getSidebarHideInitialDataPreference } from "@/lib/client/appPreferences";
 import { REQUIRED_FIELD_CLASS } from "@/lib/client/required-field";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
-import { formatDateUtc, lastDayOfMonthUtc } from "@/lib/date-utils";
+import { formatDateUtc, lastDayOfMonthUtc, todayDateLocalYmd } from "@/lib/date-utils";
+import { formatAmountDraft } from "@/lib/format";
 import { decodeYearlyExecutionDay, encodeYearlyExecutionDay, isYearlyExecutionDay } from "@/lib/scheduled-task-date";
 import {
   INSTALLMENT_REPAYMENT_METHOD,
@@ -110,7 +111,7 @@ function toDateInput(value?: string | Date | null): string {
 }
 
 function todayInput(): string {
-  return new Date().toISOString().slice(0, 10);
+  return todayDateLocalYmd();
 }
 
 function parseDateInput(value: string) {
@@ -631,7 +632,7 @@ export function RegularInvestForm({
         insuranceProductId: editData.taskInsuranceProductId || "",
         policyholderGroupId: insuranceProduct?.ownerGroupId || "",
         note: editData.taskNote || "",
-        amount: String(editData.amount || ""),
+        amount: editData.amount ? formatAmountDraft(editData.amount) : "",
         // 「一次性」只是**总期数**口径（totalRuns === 1），不代表存储周期本身是 once：
         // 存款到期/生息/取息系统计划就是 month/1 + totalRuns=1，且带 executionDay / endDate。
         // 因此编辑态一律按存储值回填，不再把周期、执行日、停用日期、总期数抹成 once / 空值 ——

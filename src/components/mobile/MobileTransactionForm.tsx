@@ -13,7 +13,9 @@ import { buildCategoryTreeOptions } from "@/components/categorySmartSelect";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { REQUIRED_FIELD_CLASS } from "@/lib/client/required-field";
 import { useI18n } from "@/lib/i18n";
-import { getAccountLabelFieldsPreference } from "@/lib/client/appPreferences";
+import { readAccountDisplaySettings } from "@/lib/client/account-display-settings";
+import { todayDateLocalYmd } from "@/lib/date-utils";
+import { formatAmountDraft } from "@/lib/format";
 
 type AccountOption = AccountDisplaySource;
 type CategoryOption = { id: string; name: string; type: string; sortOrder?: number; isSystem?: boolean };
@@ -35,7 +37,9 @@ type Props = {
 };
 
 const EMPTY_DRAFT: TransactionDraft = {
-  date: new Date().toISOString().slice(0, 10),
+  // 打开表单时再填本地日期（见 openCreate）；模块级 toISOString 会在
+  // 北京时间 00:00–08:00 得到「昨天」，且模块只加载一次、跨天不会更新。
+  date: "",
   amount: "",
   type: "expense",
   accountId: "",
@@ -63,7 +67,7 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
     () => buildGroupedAccountOptions(
       accounts
         .filter((account) => isIncomeExpensePostingOrDepositAccount(account))
-        .map((account) => buildAccountDisplayOption(account, undefined, { fields: getAccountLabelFieldsPreference() })),
+        .map((account) => buildAccountDisplayOption(account, undefined, readAccountDisplaySettings())),
     ),
     [accounts],
   );
@@ -72,7 +76,7 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
       ? buildGroupedAccountOptions(
           accounts
             .filter((account) => isTransferDropdownAccount(account))
-            .map((account) => buildAccountDisplayOption(account, undefined, { fields: getAccountLabelFieldsPreference() })),
+            .map((account) => buildAccountDisplayOption(account, undefined, readAccountDisplaySettings())),
         )
       : postingAccountOptions),
     [accounts, draft.type, postingAccountOptions],
@@ -121,7 +125,7 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
   }, [open]);
 
   const openCreate = useCallback(() => {
-    setDraft({ ...EMPTY_DRAFT, accountId: quickEntryAccountId });
+    setDraft({ ...EMPTY_DRAFT, date: todayDateLocalYmd(), accountId: quickEntryAccountId });
     setPendingAttachmentFiles([]);
     setError("");
     setOpen(true);
@@ -156,7 +160,7 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
           // Dialog sign mirrors desktop storedAmountToDialogAmount: expense
           // shows positive for outflow / negative for refund; income keeps
           // its stored sign; transfer is direction-less so show magnitude.
-          amount: String(
+          amount: formatAmountDraft(
             entry.type === "expense"
               ? -storedAmount
               : entry.type === "income"

@@ -6,6 +6,7 @@ import { Database, Plus } from "lucide-react";
 import { DateStepper } from "./DateStepper";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
+import { todayDateLocalYmd } from "@/lib/date-utils";
 
 type HoldingItem = {
   fundCode: string;
@@ -57,7 +58,7 @@ export function AddNavButton({
   const [fundCode, setFundCode] = useState(defaultHolding?.fundCode ?? "");
   // navDate may be "" for holdings without a NAV yet; fall back to today so the
   // date input is never empty.
-  const [date, setDate] = useState(defaultHolding?.navDate || new Date().toISOString().slice(0, 10));
+  const [date, setDate] = useState(defaultHolding?.navDate || todayDateLocalYmd());
   const [nav, setNav] = useState(wealthMode && defaultHolding?.navDate ? String(defaultHolding.nav ?? "") : "");
   const [loading, setLoading] = useState(false);
 
@@ -82,7 +83,7 @@ export function AddNavButton({
   function openDialog() {
     if (defaultHolding) {
       setFundCode(defaultHolding.fundCode);
-      setDate(defaultHolding.navDate || new Date().toISOString().slice(0, 10));
+      setDate(defaultHolding.navDate || todayDateLocalYmd());
       setNav(wealthMode && defaultHolding.navDate ? String(defaultHolding.nav ?? "") : "");
     }
     setOpen(true);

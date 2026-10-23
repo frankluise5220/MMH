@@ -36,6 +36,7 @@ import { prisma } from "@/lib/db/prisma";
 import { buildAccountDisplayOption } from "@/lib/account-display";
 import { getServerAccountLabelFields } from "@/lib/server/account-label-fields";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
 import { BALANCE_INITIALIZATION_SOURCE } from "@/lib/balance-reconcile";
 
 const CASH_LIKE_KINDS = ["cash", "bank_debit", "ewallet"] as const;
@@ -48,7 +49,8 @@ const DEFAULT_MONEY_ACCOUNT_KIND_ORDER = new Map<string, number>([
 export async function GET() {
   try {
     const { householdId, hidFilter } = await getHouseholdScope();
-  const accountLabelFields = await getServerAccountLabelFields();
+    const accountLabelFields = await getServerAccountLabelFields();
+    const baseCurrency = await getHouseholdBaseCurrency(householdId);
     const [household, defaultOwner, familyMemberCount, accounts] = await Promise.all([
       prisma.household.findUnique({ where: { id: householdId }, select: { name: true } }),
       prisma.accountGroup.findFirst({
@@ -67,6 +69,7 @@ export async function GET() {
           id: true,
           name: true,
           kind: true,
+          currency: true,
           numberMasked: true,
           groupId: true,
           investProductType: true,
@@ -87,7 +90,7 @@ export async function GET() {
       return a.name.localeCompare(b.name, "zh-CN");
     })[0] ?? null;
     const defaultMoneyAccountDisplay = defaultMoneyAccount
-      ? buildAccountDisplayOption(defaultMoneyAccount, undefined, { fields: accountLabelFields })
+      ? buildAccountDisplayOption(defaultMoneyAccount, undefined, { fields: accountLabelFields, baseCurrency })
       : null;
     const investmentAccountIds = accounts
       .filter((account) => account.kind === "investment")

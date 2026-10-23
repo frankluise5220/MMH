@@ -1,7 +1,6 @@
 "use client";
-import { ModalLayer } from "@/components/ModalLayer";
 
-import { ArrowLeftRight, ArrowRight, Lock, RefreshCw } from "lucide-react";
+import { ArrowLeftRight, ArrowRight, RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { CalcInput } from "./CalcInput";
@@ -10,6 +9,8 @@ import { CurrencySmartSelect } from "./CurrencySmartSelect";
 import { DateStepper } from "./DateStepper";
 import { EntityCreateForm, NestedAddModal } from "./EntityCreateForm";
 import { EntryAttachmentButton, uploadEntryAttachmentFiles } from "./EntryAttachmentPanel";
+import { EntryModalShell } from "./EntryModalShell";
+import type { FolderTabsCardItem } from "./FolderTabsCard";
 import { SmartSelect, SmartSelectOption } from "./SmartSelect";
 import { UnifiedEntryLauncher } from "./UnifiedEntryLauncher";
 import { useAccountSSFilter } from "./accountSSFilter";
@@ -18,7 +19,7 @@ import { restrictAccountsByType } from "@/lib/client/account-dropdown-filter";
 import { getCashTargetOperation, isAdvanceFundingAccount, isDepositAccount, isDepositPostingCategoryAllowed, isIncomeExpensePostingAccount, isIncomeExpensePostingOrDepositAccount, isLoanOrSettlementAccountKind, isTransferDropdownAccount } from "@/lib/account-kind-utils";
 import { buildAccountDisplayOption, buildGroupedAccountOptions, formatAccountHoverTitle } from "@/lib/account-display";
 import { recordRecentAccount, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
-import { useEntryModalReconciledReadOnly, useResetEntryModalReconciledReadOnlyOnClose } from "@/lib/client/entryModalLock";
+import { useResetEntryModalReconciledReadOnlyOnClose } from "@/lib/client/entryModalLock";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 /** 必填字段红框（统一实现，见该模块注释）。 */
 import { REQUIRED_FIELD_CLASS } from "@/lib/client/required-field";
@@ -33,10 +34,8 @@ import {
   type SettingsDataChangedDetail,
 } from "@/lib/client/settingsCache";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
-/** 固定弹窗高度：支出/收入/转账/预支四个页签内容长短不同，锁定后切页签窗体不位移。 */
-import { useModalHeightLock } from "@/lib/client/useModalHeightLock";
 import { showConfirmDialog } from "@/lib/client/confirm-dialog";
-import { parseDateInputToUtc as dateInputToUtcDate } from "@/lib/date-utils";
+import { parseDateInputToUtc as dateInputToUtcDate, todayDateLocalYmd } from "@/lib/date-utils";
 import {
   FIXED_ASSET_EXPENSE_CATEGORY_NAME,
   isFixedAssetAccountLike,
@@ -48,9 +47,10 @@ import {
   summarizeCreditCardInstallments,
   type CreditCardInstallmentRateType,
 } from "@/lib/credit/installment";
+import { formatAmountDraft } from "@/lib/format";
 import { filterIncomeExpenseInstitutions } from "@/lib/institution-rules";
 import { buildCategoryParentOptions, buildCategoryTreeOptions } from "@/components/categorySmartSelect";
-import { getAccountLabelFieldsPreference } from "@/lib/client/appPreferences";
+import { readAccountDisplaySettings } from "@/lib/client/account-display-settings";
 import { normalizeOptionalCurrency } from "@/lib/currency";
 
 type TxType = "expense" | "income" | "advance" | "transfer" | "fx" | "investment";
@@ -287,7 +287,7 @@ function buildCategoryOptionsFromSettings(categories: SettingsCategory[], type: 
 }
 
 function settingsAccountToOption(account: SettingsAccountRecord): AccountOption {
-  const display = buildAccountDisplayOption(account as Parameters<typeof buildAccountDisplayOption>[0], undefined, { fields: getAccountLabelFieldsPreference() });
+  const display = buildAccountDisplayOption(account as Parameters<typeof buildAccountDisplayOption>[0], undefined, readAccountDisplaySettings());
   return {
     id: account.id,
     label: display.selectorLabel || display.label,
@@ -303,7 +303,7 @@ function settingsAccountToOption(account: SettingsAccountRecord): AccountOption 
 }
 
 function buildGroupedOptionsFromSettingsAccounts(accounts: SettingsAccountRecord[]): SmartSelectOption[] {
-  const displayOptions = accounts.map((account) => buildAccountDisplayOption(account as Parameters<typeof buildAccountDisplayOption>[0], undefined, { fields: getAccountLabelFieldsPreference() }));
+  const displayOptions = accounts.map((account) => buildAccountDisplayOption(account as Parameters<typeof buildAccountDisplayOption>[0], undefined, readAccountDisplaySettings()));
   const metaById = new Map(accounts.map((account) => [account.id, settingsAccountToOption(account)]));
   return buildGroupedAccountOptions(displayOptions).map((option) => (
     option.isHeader || option.isGroup ? option : { ...option, ...metaById.get(option.id) }
@@ -395,8 +395,7 @@ export function TransactionFormModal({
   const { t, language } = useI18n();
   const quickEntryConsumedRef = useRef<string | null>(null);
   const [open, setOpen] = useState(false);
-  // 已「对账」的记录：编辑窗照常打开，但整张表单禁用（可查看、不可改）。
-  const reconciledReadOnly = useEntryModalReconciledReadOnly();
+  // 已「对账」的记录：编辑窗照常打开，但整张表单禁用（可查看、不可改）。由 `EntryModalShell` 统一处理。
   useResetEntryModalReconciledReadOnlyOnClose(open);
   const [txType, setTxType] = useState<TxType>("expense");
   const [lockedType, setLockedType] = useState<TxType | null>(null);
@@ -405,18 +404,6 @@ export function TransactionFormModal({
   const [submitting, setSubmitting] = useState(false);
   const [requestId, setRequestId] = useState<string | null>(null);
   const [editEntryId, setEditEntryId] = useState<string | null>(null);
-  /**
-   * 弹窗高度锁定：支出/收入/转账/预支（以及外汇）子页内容长短不同，
-   * 未锁定时弹窗在遮罩的居中布局里会随内容上下位移。
-   * 锁定到这个弹窗**内容出现过的最大自然高度**后，短页签底部留白、长页签内部滚动，外框恒定。
-   * 只在「新增」态测量：编辑态会多出分期表、基金明细等临时区块，量进去会把之后
-   * 每一次新增记账的窗口都撑到那个高度（窗口底部一大片空白）；编辑态若已量到高度照常套用，
-   * 未量到就按内容自适应，不会反向污染缓存。
-   */
-  const { panelRef, scrollRef, fixedHeightProps } = useModalHeightLock<HTMLDivElement, HTMLDivElement>(
-    "transaction-form",
-    open && !editEntryId,
-  );
   const [editEntryOriginalType, setEditEntryOriginalType] = useState<TxType | null>(null);
   const [editEntryHasFundDetail, setEditEntryHasFundDetail] = useState(false);
   const [editOriginalTransferAccounts, setEditOriginalTransferAccounts] = useState<{ fromAccountId: string; toAccountId: string } | null>(null);
@@ -616,7 +603,10 @@ export function TransactionFormModal({
     setCategoryId((current) => current && (nextCategoryList.some((c) => c.id === current) || fallback?.id === current) ? current : "");
   }, [currentCategoryType, editCategoryFallback, txType, incomeCategories, advanceCategories, expenseCategories]);
 
-  const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
+  // 用浏览器本地日期，不能用 toISOString：北京时间 00:00–08:00 的 UTC 日期还是昨天，
+  // 会让「点击记账」默认成昨天（并顺带把流水记到昨天）。每次渲染取当前日期，
+  // 页面跨天常驻时再打开弹窗也不会沿用旧值。
+  const today = todayDateLocalYmd();
 
   const [date, setDate] = useState(today);
   const [postedAt, setPostedAt] = useState(() => toDateInputValue(today));
@@ -1122,6 +1112,61 @@ export function TransactionFormModal({
   // 旧模型记录（currency 即外币、没有 originalCurrency）编辑时保持原语义，
   // 不强行升级成"本币入账 + 原币事实"。
   const showPostedAmount = txPostingIsForeign && fxPostingV2;
+  // 信用卡消费的「分期」开关放在金额输入框前面（金额行内占一列），不单独占一行。
+  const showInstallmentToggle = txType === "expense" && selectedAccountIsCreditCard && !editEntryId;
+  const expenseAmountRowClass = showInstallmentToggle
+    ? showPostedAmount
+      ? "grid grid-cols-[4.5rem_5.33rem_auto_minmax(0,1fr)_minmax(0,1fr)_auto] items-end gap-3"
+      : "grid grid-cols-[4.5rem_5.33rem_auto_minmax(0,1fr)] items-end gap-3"
+    : showPostedAmount
+      ? "grid grid-cols-[4.5rem_5.33rem_minmax(0,1fr)_minmax(0,1fr)_auto] items-end gap-3"
+      : "grid grid-cols-[4.5rem_5.33rem_minmax(0,1fr)] items-end gap-3";
+  // FT 页签（窗口顶部）：支出 / 收入 / 代付 / 转账。外汇窗没有页签；
+  // 从某类账户进来时类型被锁定，只保留当前一个页签（不可切换）。
+  const entryTabs = useMemo<FolderTabsCardItem[]>(() => {
+    if (txType === "fx") return [];
+    if (lockedType) {
+      const label =
+        lockedType === "transfer" ? t("transaction.type.transfer")
+          : lockedType === "income" ? t("transaction.type.income")
+            : lockedType === "advance" ? t("txForm.advance")
+              : t("transaction.type.expense");
+      return [{ id: lockedType, label, disabled: true }];
+    }
+    return [
+      { id: "expense", label: t("transaction.type.expense") },
+      { id: "income", label: t("transaction.type.income") },
+      { id: "advance", label: t("txForm.advance") },
+      { id: "transfer", label: t("transaction.type.transfer") },
+    ];
+  }, [lockedType, t, txType]);
+
+  // 窗口底按钮行：在 FT 卡片**外面**（卡片按内容高度收在备注下面），由 `FolderTabsCard` 贴窗口底边。
+  const entryFooter = (
+    <>
+      {!editEntryId ? (
+        <button
+          type="button"
+          className="secondary-button h-9 px-3 border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100"
+          onClick={() => {
+            submitModeRef.current = "repeat";
+            formRef.current?.requestSubmit();
+          }}
+          disabled={submitting}
+        >
+          {submitting ? t("txForm.saving") : t("txForm.saveAndRepeat")}
+        </button>
+      ) : null}
+      <button
+        type="submit"
+        className="primary-button h-9 px-3"
+        onClick={() => { submitModeRef.current = "close"; }}
+        disabled={submitting}
+      >
+        {submitting ? t("txForm.saving") : editEntryId ? t("txForm.saveChanges") : t("common.save")}
+      </button>
+    </>
+  );
 
   async function loadTxFxRate(refresh: boolean): Promise<number | null> {
     try {
@@ -1490,7 +1535,7 @@ export function TransactionFormModal({
     if ((nextType === "transfer" || nextType === "fx") && currentType !== "transfer" && currentType !== "fx") {
       setAmount((value) => {
         const numericValue = Number(String(value).replace(/,/g, ""));
-        return Number.isFinite(numericValue) && numericValue !== 0 ? String(Math.abs(numericValue)) : value;
+        return Number.isFinite(numericValue) && numericValue !== 0 ? formatAmountDraft(Math.abs(numericValue)) : value;
       });
       const currentAccountId = accountId || defaultAccountId || "";
       if (currentType === "income") {
@@ -1583,7 +1628,7 @@ export function TransactionFormModal({
       setPostedAtEdited(false);
 
       const num = typeof item.amount === "number" && Number.isFinite(item.amount) ? item.amount : 0;
-      setAmount(num > 0 ? String(num) : "");
+      setAmount(num > 0 ? formatAmountDraft(num) : "");
 
       const noteText = (item.remark ?? "").trim() || (item.counterparty ?? "").trim() || (item.rawText ?? "").trim();
       setNote(noteText);
@@ -1765,12 +1810,12 @@ export function TransactionFormModal({
         // New-model row: dialog shows the original settlement amount; the posted
         // local amount goes into the dedicated local-amount field.
         const originalNumericAbs = Number.isFinite(originalNumeric) && originalNumeric !== 0 ? Math.abs(originalNumeric) : 0;
-        setAmount(originalNumericAbs !== 0 ? String(originalNumericAbs) : "");
-        setLocalAmount(numericAmount !== 0 ? String(Math.abs(numericAmount)) : "");
+        setAmount(originalNumericAbs !== 0 ? formatAmountDraft(originalNumericAbs) : "");
+        setLocalAmount(numericAmount !== 0 ? formatAmountDraft(Math.abs(numericAmount)) : "");
       } else {
         setAmount(
           dialogAmount !== 0
-            ? String(dialogAmount)
+            ? formatAmountDraft(dialogAmount)
             : "",
         );
         setLocalAmount("");
@@ -2371,156 +2416,28 @@ export function TransactionFormModal({
         />
       ) : null}
 
-      {open ? createPortal(
-        <ModalLayer className="app-modal-backdrop">
-          <div
-            ref={panelRef}
-            className={`app-modal-panel mobile-transaction-modal max-w-xl ${fixedHeightProps.className ?? ""}`.trim()}
-            style={fixedHeightProps.style}
-          >
-            <div className="modal-header shrink-0">
-              <div className="text-sm font-semibold text-slate-800">
-                {txType === "fx"
-                  ? (fxDirection === "sell" ? t("txForm.fxSellTitle") : t("txForm.fxBuyTitle"))
-                  : editEntryId ? t("txForm.editEntry") : t("txForm.addEntry")}
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setOpen(false);
-                  resetDraft();
-                }}
-                className="secondary-button h-8 px-2"
-              >
-                {t("table.close")}
-              </button>
-            </div>
-
-            {reconciledReadOnly ? (
-              <div className="flex shrink-0 items-center gap-2 border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs font-medium text-amber-800">
-                <Lock className="h-3.5 w-3.5 shrink-0" />
-                <span>{t("reconcile.readOnlyNotice")}</span>
-              </div>
-            ) : null}
-
-            <fieldset disabled={reconciledReadOnly} className="contents">
-            <form
-              ref={formRef}
-              className="flex min-h-0 flex-1 flex-col"
-              onSubmit={onSubmit}
-            >
-            {/* 字段区（滚动）：窗口高度锁定后，短页签的余量留在**这里**，
-                由下面的固定页脚兜住窗口底边，不会出现「保存按钮下面一片空白」。 */}
-            <div ref={scrollRef} className="tx-entry-scroll min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
-              {txType !== "fx" && lockedType ? (
-                <div className="flex flex-wrap justify-center gap-2">
-                  <button
-                    type="button"
-                    className="segment-button h-9 flex-1 segment-button-active"
-                  >
-                    {lockedType === "transfer" ? t("transaction.type.transfer") : lockedType === "income" ? t("transaction.type.income") : lockedType === "advance" ? t("txForm.advance") : t("transaction.type.expense")}
-                  </button>
-                </div>
-              ) : txType !== "fx" ? (
-              <div className="flex flex-wrap justify-center gap-2">
-                {isCreditCardAccount ? (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => switchType("expense")}
-                      className={`segment-button h-9 flex-1 ${
-                        txType === "expense"
-                          ? "segment-button-active"
-                          : ""
-                      }`}
-                    >
-                      {t("transaction.type.expense")}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => switchType("income")}
-                      className={`segment-button h-9 flex-1 ${
-                        txType === "income"
-                          ? "segment-button-active"
-                          : ""
-                      }`}
-                    >
-                      {t("transaction.type.income")}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => switchType("advance")}
-                      className={`segment-button h-9 flex-1 ${
-                        txType === "advance"
-                          ? "segment-button-active"
-                          : ""
-                      }`}
-                    >
-                      {t("txForm.advance")}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => switchType("transfer")}
-                      className={`segment-button h-9 flex-1 ${
-                        txType === "transfer"
-                          ? "segment-button-active"
-                          : ""
-                      }`}
-                    >
-                      {t("transaction.type.transfer")}
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => switchType("expense")}
-                      className={`segment-button h-9 flex-1 ${
-                        txType === "expense"
-                          ? "segment-button-active"
-                          : ""
-                      }`}
-                    >
-                      {t("transaction.type.expense")}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => switchType("income")}
-                      className={`segment-button h-9 flex-1 ${
-                        txType === "income"
-                          ? "segment-button-active"
-                          : ""
-                      }`}
-                    >
-                      {t("transaction.type.income")}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => switchType("advance")}
-                      className={`segment-button h-9 flex-1 ${
-                        txType === "advance"
-                          ? "segment-button-active"
-                          : ""
-                      }`}
-                    >
-                      {t("txForm.advance")}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => switchType("transfer")}
-                      className={`segment-button h-9 flex-1 ${
-                        txType === "transfer"
-                          ? "segment-button-active"
-                          : ""
-                      }`}
-                    >
-                      {t("transaction.type.transfer")}
-                    </button>
-                  </>
-                )}
-              </div>
-              ) : null}
-
+      {open ? (
+        <EntryModalShell
+          open={open}
+          heightKey="transaction-form"
+          width="md"
+          panelClassName="mobile-transaction-modal"
+          title={txType === "fx"
+            ? (fxDirection === "sell" ? t("txForm.fxSellTitle") : t("txForm.fxBuyTitle"))
+            : editEntryId ? t("txForm.editEntry") : t("txForm.addEntry")}
+          onClose={() => {
+            setOpen(false);
+            resetDraft();
+          }}
+          onSubmit={onSubmit}
+          formRef={formRef}
+          tabs={entryTabs}
+          activeTabId={txType}
+          onTabChange={(id) => switchType(id as TxType)}
+          rulerLabels={entryTabs.map((tab) => tab.label)}
+          footer={entryFooter}
+        >
+            <div className="space-y-4">
               {txType === "investment" && (
                 <div className="space-y-2 pt-1">
                   <div className="text-xs font-medium text-slate-500 mb-1">{t("txForm.chooseInvestmentType")}</div>
@@ -2774,9 +2691,7 @@ export function TransactionFormModal({
                   ) : null}
 
                   <div className={txType === "expense"
-                    ? showPostedAmount
-                      ? "grid grid-cols-[4.5rem_5.33rem_minmax(0,1fr)_minmax(0,1fr)_auto] items-end gap-3"
-                      : "grid grid-cols-[4.5rem_5.33rem_minmax(0,1fr)] items-end gap-3"
+                    ? expenseAmountRowClass
                     : txType === "income"
                       ? "grid grid-cols-[5.33rem_minmax(0,1fr)] items-end gap-3"
                       : "space-y-1"}>
@@ -2836,6 +2751,8 @@ export function TransactionFormModal({
                             onSubmitted={(code) => { setTxCurrency(code); setFxPostingV2(true); }}
                             labelSystem={(code) => t(`entityForm.currency.${code.toLowerCase()}`, { defaultValue: code })}
                             placeholder={t("txForm.txnCurrency")}
+                            labelMode="code"
+                            minDropdownWidth={168}
                             density="regular"
                           />
                         ) : (
@@ -2853,13 +2770,52 @@ export function TransactionFormModal({
                         </div>
                       </div>
                     ) : null}
+                    {showInstallmentToggle ? (
+                      <div className="space-y-1">
+                        <div className="form-label">{t("txForm.installment")}</div>
+                        <button
+                          type="button"
+                          role="switch"
+                          aria-checked={createInstallment}
+                          aria-label={t("txForm.installment")}
+                          onClick={() => {
+                            const next = !createInstallment;
+                            setCreateInstallment(next);
+                            if (next && !installmentAmountEdited) {
+                              const numeric = Math.abs(Number(amount));
+                              setInstallmentAmount(Number.isFinite(numeric) && numeric > 0 ? formatAmountDraft(numeric) : "");
+                            }
+                          }}
+                          className={[
+                            "flex h-9 w-12 items-center justify-center rounded-[10px] border px-2 text-xs font-medium transition",
+                            createInstallment
+                              ? "border-blue-300 bg-blue-50 text-blue-700"
+                              : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50",
+                          ].join(" ")}
+                        >
+                          <span
+                            className={[
+                              "relative h-4 w-7 shrink-0 rounded-full transition",
+                              createInstallment ? "bg-blue-600" : "bg-slate-300",
+                            ].join(" ")}
+                          >
+                            <span
+                              className={[
+                                "absolute top-0.5 h-3 w-3 rounded-full bg-white shadow-sm transition",
+                                createInstallment ? "left-3.5" : "left-0.5",
+                              ].join(" ")}
+                            />
+                          </span>
+                        </button>
+                      </div>
+                    ) : null}
                     <div className="min-w-0 space-y-1">
                       <div className="form-label">{t("txForm.amount")}</div>
                       <CalcInput ref={amountInputRef} value={amount} onChange={(value) => {
                         setAmount(value);
                         if (createInstallment && !installmentAmountEdited) {
                           const numeric = Math.abs(Number(value));
-                          setInstallmentAmount(Number.isFinite(numeric) && numeric > 0 ? String(numeric) : "");
+                          setInstallmentAmount(Number.isFinite(numeric) && numeric > 0 ? formatAmountDraft(numeric) : "");
                         }
                       }} placeholder={txType === "expense" ? t("txForm.amountPlaceholderExpense") : t("txForm.amountPlaceholderIncome")} label={t("txForm.amount")} precision={2} />
                     </div>
@@ -2913,27 +2869,9 @@ export function TransactionFormModal({
                     </div>
                   ) : null}
 
-                  {txType === "expense" && selectedAccountIsCreditCard && !editEntryId ? (
+                  {showInstallmentToggle && createInstallment ? (
                     <div className="border-y border-slate-200 py-3 space-y-3">
-                      <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
-                        <input
-                          type="checkbox"
-                          checked={createInstallment}
-                          onChange={(event) => {
-                            const checked = event.target.checked;
-                            setCreateInstallment(checked);
-                            if (checked && !installmentAmountEdited) {
-                              const numeric = Math.abs(Number(amount));
-                              setInstallmentAmount(Number.isFinite(numeric) && numeric > 0 ? String(numeric) : "");
-                            }
-                          }}
-                          className="h-4 w-4 accent-slate-800"
-                        />
-                        {t("txForm.installment")}
-                      </label>
-                      {createInstallment ? (
-                        <>
-                          <div className="grid grid-cols-3 gap-3">
+                      <div className="grid grid-cols-3 gap-3">
                             <div className="space-y-1">
                               <div className="form-label">{t("txForm.installmentAmount")}</div>
                               <CalcInput value={installmentAmount} onChange={(value) => {
@@ -3009,8 +2947,6 @@ export function TransactionFormModal({
                               </table>
                             </div>
                           ) : null}
-                        </>
-                      ) : null}
                     </div>
                   ) : null}
 
@@ -3358,35 +3294,8 @@ export function TransactionFormModal({
               <input type="hidden" name="type" value={txType} />
             </div>
 
-            {/* 固定页脚：贴着窗口底边，切页签/内容长短变化时按钮位置不动 */}
-            <div className="tx-entry-footer flex shrink-0 items-center justify-end gap-2 border-t border-slate-100 bg-white px-4 py-3">
-                {!editEntryId ? (
-                  <button
-                    type="button"
-                    className="secondary-button h-9 px-3 border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100"
-                    onClick={() => {
-                      submitModeRef.current = "repeat";
-                      formRef.current?.requestSubmit();
-                    }}
-                    disabled={submitting}
-                  >
-                    {submitting ? t("txForm.saving") : t("txForm.saveAndRepeat")}
-                  </button>
-                ) : null}
-                <button
-                  type="submit"
-                  className="primary-button h-9 px-3"
-                  onClick={() => { submitModeRef.current = "close"; }}
-                  disabled={submitting}
-                >
-                  {submitting ? t("txForm.saving") : editEntryId ? t("txForm.saveChanges") : t("common.save")}
-                </button>
-              </div>
-            </form>
-            </fieldset>
-          </div>
-        </ModalLayer>
-      , document.body) : null}
+        </EntryModalShell>
+      ) : null}
     {open && categoryNestedOpen && createPortal(
       <NestedAddModal
         mode="compact"

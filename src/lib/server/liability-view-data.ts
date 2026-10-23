@@ -1,6 +1,6 @@
 import { AccountKind, LiabilityDirection, IntervalUnit, TransactionType } from "@prisma/client";
 
-import { toNumber, formatDateUtc, formatDateLocal, parseDateInputToUtc } from "@/lib/date-utils";
+import { toNumber, formatDateUtc, parseDateInputToUtc, todayDateBusinessYmd } from "@/lib/date-utils";
 import { liabilityPrincipalForAccountSide as canonicalLiabilityPrincipalForAccountSide } from "@/lib/liability";
 import { normalizeSettlementTransferCategoryName } from "@/lib/default-categories";
 import { compareDetailEntriesAsc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
@@ -21,6 +21,7 @@ import { normalizeLoanType, type LoanTypeValue } from "@/lib/loan-type";
 import {
   BALANCE_INITIALIZATION_SOURCE,
   BALANCE_RECONCILE_SOURCE,
+  getBalanceAnchorTarget,
   getBalanceReconcileTarget,
 } from "@/lib/balance-reconcile";
 
@@ -262,6 +263,8 @@ export type LiabilityMetricEntry = {
   principalAmount?: unknown;
   interestAmount?: unknown;
   feeAmount?: unknown;
+  /** 对账锁定钉住的本行事后余额；非空即该行是余额锚点。 */
+  reconciledBalance?: unknown;
   regularInvestPlanId?: string | null;
   installmentNo?: number | null;
   fundSubtype?: string | null;
@@ -270,9 +273,21 @@ export type LiabilityMetricEntry = {
   EntryTag?: Array<{ tagId?: string | null }>;
 };
 
+/** 「余额校准 / 期初余额」行（明细里显示为校准行、可再次编辑）。 */
 function getLiabilityBalanceReconcileTarget(entry: LiabilityMetricEntry) {
   if (entry.source !== BALANCE_RECONCILE_SOURCE && entry.source !== BALANCE_INITIALIZATION_SOURCE) return null;
   return getBalanceReconcileTarget(entry);
+}
+
+/**
+ * 明细「往来余额」的锚点与 `Account.balance`（`account-balance.ts` 的
+ * `foldBalanceEntry`）和明细页滚动余额（`detail-running-balance.ts`）保持同一口径：
+ * 除了「余额校准 / 期初余额」，**对账锁定**（`reconciledBalance` 非空）的行也是锚点。
+ * 只认前者时，已对账的行仍按本金继续叠加，于是页面顶部（读账户余额）与明细
+ * 「往来余额」出现两个数字。
+ */
+function getLiabilityBalanceAnchorTarget(entry: LiabilityMetricEntry) {
+  return getBalanceAnchorTarget(entry);
 }
 
 export function liabilityPrincipalForAccountSide(
@@ -589,7 +604,7 @@ export function buildLiabilityDetailEntriesViewData({
     liabilityFeeByPrincipalKey.set(key, (liabilityFeeByPrincipalKey.get(key) ?? 0) + Math.abs(toNumber(entry.amount)));
   }
   const filteredLiabilityPrincipalEntries = filteredLiabilityEntries.filter(
-    (entry) => entry.type === TransactionType.transfer || getLiabilityBalanceReconcileTarget(entry) != null,
+    (entry) => entry.type === TransactionType.transfer || getLiabilityBalanceAnchorTarget(entry) != null,
   );
   const liabilityBalanceByEntryId = new Map<string, number>();
   const liabilityDisplayAmountByEntryId = new Map<string, number>();
@@ -600,7 +615,9 @@ export function buildLiabilityDetailEntriesViewData({
     const displayAmount = reconcileTarget == null
       ? liabilityPrincipalForAccountSide(entry, selectedLiabilityAccountIds)
       : reconcileTarget - runningLiabilityBalance;
-    runningLiabilityBalance = reconcileTarget == null ? runningLiabilityBalance + displayAmount : reconcileTarget;
+    // 锚点行（含已对账锁定）把余额钉成目标值，前面流水的影响不再往后传。
+    const anchorTarget = getLiabilityBalanceAnchorTarget(entry);
+    runningLiabilityBalance = anchorTarget == null ? runningLiabilityBalance + displayAmount : anchorTarget;
     liabilityDisplayAmountByEntryId.set(entry.id, displayAmount);
     liabilityBalanceByEntryId.set(entry.id, runningLiabilityBalance);
     liabilityBalanceTimeline.push({
@@ -1392,7 +1409,8 @@ export function buildLiabilityRepaymentScheduleRows({
     }))
     .filter((item) => item.amount > ACTIVE_LIABILITY_EPSILON)
     .sort((a, b) => a.date.localeCompare(b.date));
-  const todayKey = formatDateLocal(new Date());
+  // 业务时区，不用进程时区（容器可能是 UTC，会晚 8 小时）。
+  const todayKey = todayDateBusinessYmd();
 
   let remainingPrincipal = Math.abs(selectedLiabilityRow.net);
   let runDate = selectedRepaymentPlan.nextRunDate;

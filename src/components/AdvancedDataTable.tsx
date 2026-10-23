@@ -867,6 +867,12 @@ export function AdvancedDataTable<T>({
     () => new Set(sortableColumnKeysSignature ? sortableColumnKeysSignature.split("\u001F") : []),
     [sortableColumnKeysSignature],
   );
+  // 临时列（transient）的显隐不持久化，它的筛选也不能持久化：否则列回到隐藏状态后
+  // 筛选仍然生效，用户看不到漏斗图标也取消不掉，表现成「表格里的行莫名少了」。
+  const persistedFilterKeys = useMemo(
+    () => new Set(Array.from(filterableColumnKeys).filter((key) => !transientColumnKeys.has(key))),
+    [filterableColumnKeys, transientColumnKeys],
+  );
   const filtersStorageKey = `${storageKey}:filters:v2`;
   const sortStorageKey = sortStorageKeyProp ?? `${storageKey}:sort:v1`;
 
@@ -911,7 +917,7 @@ export function AdvancedDataTable<T>({
     } else {
       const nextFilters = normalizeStoredFilters(
         readJson<Partial<Record<string, string[]>>>(filtersStorageKey, {}),
-        filterableColumnKeys,
+        persistedFilterKeys,
       );
       setFilters((prev) => {
         const prevKeys = Object.keys(prev);
@@ -939,7 +945,7 @@ export function AdvancedDataTable<T>({
     }
     setActiveFilterColumn(null);
     tableDisplayStateHydratedRef.current = true;
-  }, [defaultSort, filterableColumnKeys, filtersStorageKey, resetDisplayStateOnMount, sortable, sortStorageKey, sortableColumnKeys]);
+  }, [defaultSort, filtersStorageKey, persistedFilterKeys, resetDisplayStateOnMount, sortable, sortStorageKey, sortableColumnKeys]);
 
   useEffect(() => {
     if (!tableDisplayStateHydratedRef.current) return;
@@ -947,8 +953,12 @@ export function AdvancedDataTable<T>({
       skipNextFiltersWriteRef.current = false;
       return;
     }
-    writeJson(filtersStorageKey, filters);
-  }, [filters, filtersStorageKey]);
+    // 只落盘非临时列的筛选：临时列的筛选是会话级的，随列一起消失。
+    const persisted = Object.fromEntries(
+      Object.entries(filters).filter(([key]) => persistedFilterKeys.has(key)),
+    ) as Partial<Record<string, string[]>>;
+    writeJson(filtersStorageKey, persisted);
+  }, [filters, filtersStorageKey, persistedFilterKeys]);
 
   useEffect(() => {
     if (!tableDisplayStateHydratedRef.current) return;

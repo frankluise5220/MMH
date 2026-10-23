@@ -3,6 +3,7 @@
 import { useCallback, useMemo, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 
+import { renderAccountLabel } from "@/lib/account-display";
 import { formatCurrencyMoney, formatMoney, formatPercent } from "@/lib/format";
 import { pnlClassFromRedUp } from "@/lib/client/colors";
 import {
@@ -91,8 +92,12 @@ function compactDate(value: string | null) {
   return /^\d{4}-\d{2}-\d{2}$/.test(date) ? `${date.slice(5, 7)}.${date.slice(8, 10)}` : String(value ?? "");
 }
 
+// 分组标题也按「账户显示格式」渲染，手拼 `机构·名称` 会忽略用户设置。
 function accountText(row: { institutionName: string; accountName: string }) {
-  return row.institutionName ? `${row.institutionName}·${row.accountName}` : row.accountName;
+  return renderAccountLabel({
+    accountName: row.accountName,
+    institution: row.institutionName ? { name: row.institutionName } : null,
+  });
 }
 
 function sumBy<T>(items: T[], read: (item: T) => number) {

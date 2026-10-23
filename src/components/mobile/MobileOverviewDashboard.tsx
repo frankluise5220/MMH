@@ -202,7 +202,7 @@ export function MobileOverviewDashboard({
                       href={`/?accountId=${item.accountId}&view=investproperty`}
                       className="flex items-center justify-between gap-2 rounded-xl bg-slate-50 px-2.5 py-2"
                     >
-                      <span className="min-w-0 flex-1 truncate text-xs font-medium text-slate-900">{item.name}</span>
+                      <span title={item.hoverTitle || undefined} className="min-w-0 flex-1 truncate text-xs font-medium text-slate-900">{item.name}</span>
                       <span className={`shrink-0 text-xs font-semibold tabular-nums ${valueClass(item.convertedMarketValue ?? item.marketValue)}`}>{amount(item.convertedMarketValue ?? item.marketValue)}</span>
                     </Link>
                   ))}
@@ -221,7 +221,7 @@ export function MobileOverviewDashboard({
             <div className="mt-1.5 space-y-1">
               {creditCardsWithBills.map((account) => (
                 <Link key={account.id} href={`/accounts/${encodeURIComponent(account.id)}`} className="flex min-h-9 items-center gap-2 rounded-xl bg-rose-50/55 px-2.5 py-1.5 active:bg-rose-50">
-                  <span className="min-w-0 flex-1 truncate text-xs font-medium text-slate-900">{account.name}</span>
+                  <span title={account.hoverTitle || undefined} className="min-w-0 flex-1 truncate text-xs font-medium text-slate-900">{account.name}</span>
                   <span className={`shrink-0 text-xs font-semibold tabular-nums ${liabilityValueClass(account.currentBill)}`}>{amount(account.currentBill)}</span>
                   <span className="shrink-0 text-xs font-medium text-rose-600">{account.dueDate}</span>
                 </Link>

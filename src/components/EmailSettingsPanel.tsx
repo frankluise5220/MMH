@@ -39,7 +39,8 @@ import {
   uniqueStatementInfoTexts,
 } from "@/lib/statement/preview-meta";
 import { useI18n } from "@/lib/i18n";
-import { getAccountLabelFieldsPreference } from "@/lib/client/appPreferences";
+import { formatAmountDraft } from "@/lib/format";
+import { readAccountDisplaySettings } from "@/lib/client/account-display-settings";
 
 type I18nT = (key: string, params?: Record<string, string | number>) => string;
 
@@ -235,7 +236,7 @@ function buildBookAccountDisplayOption(account: BookAccount) {
           name: account.AccountGroup.name ?? null,
         }
       : null,
-  }, undefined, { fields: getAccountLabelFieldsPreference() });
+  }, undefined, readAccountDisplaySettings());
 }
 
 function isPlaceholderText(value?: string | null) {
@@ -300,7 +301,18 @@ type AccountCreateDraft = {
   repaymentDay: string;
 };
 
-export function EmailSettingsPanel({ embedded = false, onStatementPreviewOpened, onStatementPreviewClosed }: { embedded?: boolean; onStatementPreviewOpened?: () => void; onStatementPreviewClosed?: () => void }) {
+export function EmailSettingsPanel({
+  embedded = false,
+  onStatementPreviewOpened,
+  onStatementPreviewClosed,
+  contextAccountId,
+}: {
+  embedded?: boolean;
+  onStatementPreviewOpened?: () => void;
+  onStatementPreviewClosed?: () => void;
+  /** 发起导入的当前视图账户：账单无法精准定位到账户时用它兜底。 */
+  contextAccountId?: string;
+}) {
   const { t } = useI18n();
   const importPreviewFieldLabels = useMemo(() => IMPORT_PREVIEW_FIELD_LABELS(t), [t]);
   const previewTypeOptions = useMemo(() => PREVIEW_TYPE_OPTIONS(t), [t]);
@@ -1335,14 +1347,41 @@ export function EmailSettingsPanel({ embedded = false, onStatementPreviewOpened,
       bank && last4 ? `${bank}\u4fe1\u7528\u5361${last4}` : "",
     ].filter((value): value is string => Boolean(value?.trim()))));
     let found: BookAccount | null = null;
+    let looseFound: BookAccount | null = null;
     for (const candidate of candidates) {
       const matched = resolver(candidate);
       if (!matched) continue;
       if (credit && matched.kind !== "bank_credit") continue;
+      // 账单带卡号尾号时，账本账户尾号对不上（或压根没填）只能算「宽松命中」：
+      // 「机构名 + 通用账户名（信用卡）」拼出的键很容易撞上别的户主名下那种通用账户。
+      if (last4 && String(matched.numberMasked ?? "").trim() !== last4) {
+        looseFound = looseFound ?? matched;
+        continue;
+      }
       found = matched;
       break;
     }
+    // 不能精准定位时退而匹配当前视图的账户；只有不知道当前视图账户时才回退宽松命中。
+    if (!found) {
+      const contextAccount = resolveContextAccount(credit, last4);
+      if (contextAccount) found = contextAccount;
+      else if (!contextAccountId) found = looseFound;
+    }
     return { matchedAccountId: found?.id, selectedAccountId: found?.id };
+  }
+
+  /**
+   * 当前视图账户能否作为兜底：类型要对得上；两边卡号都明确不同时说明不是同一张卡，不能硬套。
+   */
+  function resolveContextAccount(credit: boolean, last4: string) {
+    const id = contextAccountId?.trim();
+    if (!id) return null;
+    const account = bookLookupsRef.current.accounts.find((row) => row.id === id) ?? null;
+    if (!account) return null;
+    if (credit && account.kind !== "bank_credit") return null;
+    const contextLast4 = String(account.numberMasked ?? "").trim();
+    if (last4 && contextLast4 && contextLast4 !== last4) return null;
+    return account;
   }
 
   function stripOwnerPrefix(value: string) {
@@ -1378,12 +1417,12 @@ export function EmailSettingsPanel({ embedded = false, onStatementPreviewOpened,
   const previewAccountDisplayLabelById = useCallback((accountId?: string | null) => {
     if (!accountId) return null;
     const account = previewAccountDisplayById.get(accountId);
-    return account ? formatAccountTableLabel(account, "", getAccountLabelFieldsPreference()) || null : null;
+    return account ? formatAccountTableLabel(account, "", readAccountDisplaySettings()) || null : null;
   }, [previewAccountDisplayById]);
   const previewAccountDisplayTitleById = useCallback((accountId?: string | null) => {
     if (!accountId) return null;
     const account = previewAccountDisplayById.get(accountId);
-    return account ? formatAccountTableTitle(account, "", getAccountLabelFieldsPreference()) || null : null;
+    return account ? formatAccountTableTitle(account, "", readAccountDisplaySettings()) || null : null;
   }, [previewAccountDisplayById]);
   const selectedPreviewAccountDisplayLabel = useCallback((row: ImportPreviewItem) => {
     const accountId = row.selectedAccountId ?? row.matchedAccountId ?? importPreview?.statementAccountId;
@@ -1400,7 +1439,7 @@ export function EmailSettingsPanel({ embedded = false, onStatementPreviewOpened,
     return [
       { value: "", label: t("batchImport.unselected") },
       ...previewAccountDisplayOptions
-        .map((account) => ({ value: account.id, label: formatAccountTableLabel(account, "", getAccountLabelFieldsPreference()), title: formatAccountTableTitle(account, "", getAccountLabelFieldsPreference()) })),
+        .map((account) => ({ value: account.id, label: formatAccountTableLabel(account, "", readAccountDisplaySettings()), title: formatAccountTableTitle(account, "", readAccountDisplaySettings()) })),
     ];
   }, [hasImportPreview, previewAccountDisplayOptions, t]);
   const previewDebitAccountReplaceOptions = useMemo<BatchReplaceOption[]>(() => {
@@ -1408,7 +1447,7 @@ export function EmailSettingsPanel({ embedded = false, onStatementPreviewOpened,
     return [
       { value: "", label: t("batchImport.unselected") },
       ...previewAccountDisplayOptions
-        .map((account) => ({ value: account.id, label: formatAccountTableLabel(account, "", getAccountLabelFieldsPreference()), title: formatAccountTableTitle(account, "", getAccountLabelFieldsPreference()) })),
+        .map((account) => ({ value: account.id, label: formatAccountTableLabel(account, "", readAccountDisplaySettings()), title: formatAccountTableTitle(account, "", readAccountDisplaySettings()) })),
     ];
   }, [hasImportPreview, previewAccountDisplayOptions, t]);
   const previewDebitAccountDisplayOptions = useMemo(
@@ -1428,7 +1467,7 @@ export function EmailSettingsPanel({ embedded = false, onStatementPreviewOpened,
         return {
           ...option,
           subLabel: undefined,
-          title: account ? formatAccountTableTitle(account, "", getAccountLabelFieldsPreference()) : option.title,
+          title: account ? formatAccountTableTitle(account, "", readAccountDisplaySettings()) : option.title,
         };
       });
     },
@@ -1762,7 +1801,7 @@ export function EmailSettingsPanel({ embedded = false, onStatementPreviewOpened,
       ownerName,
       userId: user?.id ?? "",
       numberMasked: item._meta?.cardNumberMasked ?? "",
-      creditLimit: item._meta?.creditLimit != null ? String(item._meta.creditLimit) : "",
+      creditLimit: item._meta?.creditLimit != null ? formatAmountDraft(item._meta.creditLimit) : "",
       billingDay: item._meta?.billingDay != null ? String(item._meta.billingDay) : "",
       repaymentDay: item._meta?.repaymentDay != null ? String(item._meta.repaymentDay) : "",
     });
@@ -2287,7 +2326,6 @@ export function EmailSettingsPanel({ embedded = false, onStatementPreviewOpened,
       <StatementImportPreviewDialog
         open={Boolean(importPreview)}
         title={t("viewImport.previewTitle")}
-        description={t("settings.email.recognizedItems", { count: statementPreviewItems.length })}
         items={statementPreviewItems}
         defaultAccountName=""
         sourceAccountId={importPreview?.statementAccountId ?? selectedId ?? null}

@@ -6,6 +6,7 @@ import {
   DEFAULT_CREDIT_CARD_LABEL_TEMPLATE,
   type AccountDisplaySource,
   type AccountLabelField,
+  type AccountRenderSettings,
 } from "@/lib/account-display";
 import { getMaintainedAccountBalances } from "@/lib/server/account-balance";
 import { addDaysUtc, formatDateUtc, startOfDayUtc, toNumber } from "@/lib/date-utils";
@@ -261,7 +262,7 @@ type NotificationAccountRow = Prisma.AccountGetPayload<{ select: typeof NOTIFICA
  */
 function renderNotificationAccountName(
   account: NotificationAccountRow | null | undefined,
-  fields: AccountLabelField[] | null,
+  settings: AccountRenderSettings,
   fallback = "",
 ) {
   if (!account) return fallback;
@@ -277,7 +278,7 @@ function renderNotificationAccountName(
     AccountGroup: account.AccountGroup ? { id: "", name: account.AccountGroup.name } : null,
     Counterparty: account.Counterparty,
   };
-  const label = buildAccountDisplayOption(source, DEFAULT_CREDIT_CARD_LABEL_TEMPLATE, { fields }).label;
+  const label = buildAccountDisplayOption(source, DEFAULT_CREDIT_CARD_LABEL_TEMPLATE, settings).label;
   return label || fallback;
 }
 
@@ -289,9 +290,14 @@ export async function loadNotificationFeed(params: {
    * 与别处不一致；缺省用默认格式。
    */
   accountLabelFields?: AccountLabelField[] | null;
+  /** 账簿本位币；缺了它非本位币既不显示也没有 hover。 */
+  baseCurrency?: string | null;
 }): Promise<NotificationFeed> {
   const now = params.now ?? new Date();
-  const accountLabelFields = params.accountLabelFields ?? null;
+  const accountDisplaySettings: AccountRenderSettings = {
+    fields: params.accountLabelFields ?? null,
+    baseCurrency: params.baseCurrency ?? null,
+  };
   const today = startOfDayUtc(now);
   const windowEnd = addDaysUtc(today, REMINDER_WINDOW_DAYS);
   const windowStart = addDaysUtc(today, -REMINDER_OVERDUE_DAYS);
@@ -426,7 +432,7 @@ export async function loadNotificationFeed(params: {
       manualConfirm: isManualConfirmReminderKind(kind),
       // 账户名按"账户显示格式"渲染，不直接把 Account.name 端上去。
       fundingAccountName:
-        renderNotificationAccountName(fundingAccount, accountLabelFields, fundingAccount?.name ?? "") || null,
+        renderNotificationAccountName(fundingAccount, accountDisplaySettings, fundingAccount?.name ?? "") || null,
       insufficient,
       blocked,
     };
@@ -526,7 +532,7 @@ export async function loadNotificationFeed(params: {
       // 而不是流水上记账时的名称快照（账户改名后快照就旧了）。
       const accountName = renderNotificationAccountName(
         accountId ? accountById.get(accountId) : undefined,
-        accountLabelFields,
+        accountDisplaySettings,
         row.accountName?.trim() ?? "",
       );
       const accountKey = accountId ?? `name:${accountName}`;

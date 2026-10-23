@@ -10,7 +10,7 @@ import { startTransition } from "react";
 import { CartesianGrid, Line, LineChart as RechartsLineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
 import { formatMoney, formatPercent } from "@/lib/format";
-import { formatDateLocal } from "@/lib/date-utils";
+import { formatDateUtc, todayDateLocalYmd } from "@/lib/date-utils";
 import { resolveAccountTableLabel, type AccountTableLabelLookup } from "@/lib/account-display";
 import { pnlClassFromRedUp } from "@/lib/client/colors";
 import { useOutsideClose } from "@/lib/client/useOutsideClose";
@@ -326,7 +326,7 @@ const FUND_CHART_RANGE_LABEL_KEYS: Record<FundChartRange, string> = {
   sinceBuy: "fundShell.chartRange.sinceBuy",
 };
 
-const localYmd = (date?: Date) => formatDateLocal(date ?? new Date());
+const localYmd = (date?: Date) => (date ? formatDateUtc(date) : todayDateLocalYmd());
 
 function parseYmdDay(value: string | null | undefined) {
   const raw = String(value ?? "").slice(0, 10);
@@ -1231,7 +1231,7 @@ export function FundShell(props: Props) {
 
     await exportRowsToXlsx(
       exportRows,
-      `${t("fundShell.entriesTitle")}_${label}_${new Date().toISOString().slice(0, 10)}.xlsx`,
+      `${t("fundShell.entriesTitle")}_${label}_${todayDateLocalYmd()}.xlsx`,
       t("fundShell.entriesTitle"),
     );
 

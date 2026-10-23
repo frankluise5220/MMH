@@ -21,6 +21,7 @@ import { BusinessLinkActionButton } from "@/components/BusinessLinkActionButton"
 import { DetailTablePaginationControls } from "@/components/DetailTablePaginationControls";
 import { StockHoldingRowActions } from "@/components/StockHoldingRowActions";
 import { ViewExcelImportMenuButton, exportRowsToXlsx } from "@/components/ViewExcelImportMenuButton";
+import { todayDateLocalYmd } from "@/lib/date-utils";
 
 type StockPosition = {
   stockCode: string;
@@ -537,7 +538,7 @@ export function StockHoldingsPanel({
           tx.otherFee ?? "",
           tx.note ?? "",
         ]),
-      ], `${t("viewImport.sheetStockTransactions")}_${accountLabel}_${new Date().toISOString().slice(0, 10)}.xlsx`, t("viewImport.sheetStockTransactions"));
+      ], `${t("viewImport.sheetStockTransactions")}_${accountLabel}_${todayDateLocalYmd()}.xlsx`, t("viewImport.sheetStockTransactions"));
       setRefreshMessage(t("viewImport.exportedCount", { count: rows.length }));
     } catch (error) {
       setRefreshMessage(error instanceof Error ? error.message : String(error));

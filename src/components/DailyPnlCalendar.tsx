@@ -3,6 +3,7 @@
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { useI18n } from "@/lib/i18n";
+import { todayDateLocalYmd } from "@/lib/date-utils";
 
 type DayPnl = { date: string; mv: number; pnl: number | null };
 type MonthSummary = { month: number; mv: number | null; pnl: number | null };
@@ -146,7 +147,7 @@ export function DailyPnlCalendar({ accountId, accountIds }: { accountId?: string
               {WEEKDAY_KEYS.map(w => <div key={w} className="text-center text-[11px] text-slate-400 py-0.5">{t(`investmentProfitReport.weekday.${w}`)}</div>)}
             </div>
             <div className="grid grid-cols-7 gap-[1px]">
-              {monthGrid.map((c, i) => renderDay(c, `md${i}`, c?.date === new Date().toISOString().slice(0, 10)))}
+              {monthGrid.map((c, i) => renderDay(c, `md${i}`, c?.date === todayDateLocalYmd()))}
             </div>
           </>
         ) : (

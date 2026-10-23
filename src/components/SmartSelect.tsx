@@ -25,6 +25,10 @@ export type SmartSelectOption = {
   id: string;
   label: string;
   subLabel?: string;
+  /** Short label used only inside the closed trigger (e.g. the ISO code in a
+   * narrow currency cell). The dropdown list keeps rendering `label`, so the
+   * list can stay in the UI language while the trigger stays compact. */
+  triggerLabel?: string;
   title?: string;
   color?: string | null;
   isHeader?: boolean;
@@ -506,7 +510,7 @@ export function SmartSelect(props: SmartSelectProps) {
   const selectedOption = mode === "single"
     ? effectiveOptions.find((option) => option.id === value)
     : undefined;
-  const selectedLabel = selectedOption ? stripIndent(selectedOption.label) : "";
+  const selectedLabel = selectedOption ? stripIndent(selectedOption.triggerLabel ?? selectedOption.label) : "";
   const selectedTitle = selectedOption
     ? (selectedOption.title || [selectedLabel, selectedOption.subLabel].filter(Boolean).join(" · "))
     : (placeholder || t("txForm.selectPlaceholder"));
@@ -1473,7 +1477,7 @@ export function SmartSelect(props: SmartSelectProps) {
         {mode === "single" ? (
           <span className={`${selectedLabel ? "text-slate-800" : "text-slate-400"} flex min-w-0 flex-1 items-center`} title={selectedTitle}>
             <span className="min-w-0 truncate">{selectedLabel || placeholder || t("txForm.selectPlaceholder")}</span>
-            {selectedOption?.subLabel && rowSubLabel(selectedOption) ? (
+            {selectedOption?.subLabel && rowSubLabel({ label: selectedLabel, subLabel: selectedOption.subLabel }) ? (
               <span className="ml-1 max-w-[42%] shrink-0 truncate text-[10px] text-slate-400">{selectedOption.subLabel}</span>
             ) : null}
           </span>

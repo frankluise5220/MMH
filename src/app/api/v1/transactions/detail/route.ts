@@ -64,7 +64,7 @@ import {
 import { creditBillEffectiveDate, creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
 import { fundArrivalDate as computeFundArrivalDate, resolveFundDates } from "@/lib/fund/confirmDays";
 import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
-import { toNumber, toStatementMonth, startOfDayUtc, formatDateLocal } from "@/lib/date-utils";
+import { toNumber, toStatementMonth, startOfDayUtc, formatDateUtc } from "@/lib/date-utils";
 import { logger } from "@/lib/logger";
 import { isAdvanceFundingAccount, isDepositAccount, isDepositPostingCategoryAllowed, isIncomeExpensePostingAccount, isInsuranceAccount, isLoanOrSettlementAccountKind, isPureInvestmentAccount, isSpecialCashTargetAccount } from "@/lib/account-kind-utils";
 import { ALL_CASH_DETAIL_SCOPE_ID, cashLedgerAccountIdsOf, isAllCashDetailScope } from "@/lib/all-cash-entries";
@@ -298,7 +298,7 @@ function toDateOrNull(val: unknown): Date | null {
 }
 
 function toDateOnlyLocal(value: Date | null | undefined): string | null {
-  return value ? formatDateLocal(value) : null;
+  return value ? formatDateUtc(value) : null;
 }
 
 function dateFromYmd(value: string | null | undefined): Date | null {
@@ -1033,7 +1033,7 @@ async function loadApiDetailRecord(entryId: string) {
   const linkedStockTransaction = linkedStockTransactionOf(entry);
   return {
     id: entry.id,
-    date: formatDateLocal(entry.date),
+    date: formatDateUtc(entry.date),
     postedAt: toDateOnlyLocal(entry.postedAt),
     entryOrigin: entry.entryOrigin ?? null,
     dayOrder: entry.dayOrder,
@@ -1084,8 +1084,8 @@ async function loadApiDetailRecord(entryId: string) {
     depositSourceEntryId: entry.depositSourceEntryId ?? null,
     fundUnits: entry.fundUnits ? toNumber(entry.fundUnits) : null,
     fundFee: entry.fundFee ? toNumber(entry.fundFee) : null,
-    fundConfirmDate: entry.fundConfirmDate ? formatDateLocal(entry.fundConfirmDate) : null,
-    fundArrivalDate: entry.fundArrivalDate ? formatDateLocal(entry.fundArrivalDate) : null,
+    fundConfirmDate: entry.fundConfirmDate ? formatDateUtc(entry.fundConfirmDate) : null,
+    fundArrivalDate: entry.fundArrivalDate ? formatDateUtc(entry.fundArrivalDate) : null,
     fundArrivalAmount: entry.fundArrivalAmount ? toNumber(entry.fundArrivalAmount) : null,
     source: entry.source,
     ...buildEntryBusinessLinkSummary(entry),
@@ -1147,7 +1147,7 @@ async function loadApiFundTransactionRecord(fundTransactionId: string) {
     id: row.cashEntryId ?? row.id,
     cashEntryId: row.cashEntryId ?? null,
     fundTransactionId: row.id,
-    date: formatDateLocal(row.applyDate),
+    date: formatDateUtc(row.applyDate),
     postedAt: primaryCashEntry?.postedAt ?? null,
     dayOrder: primaryCashEntry?.dayOrder ?? null,
     amount: signedFundTransactionAmount(row),
@@ -1184,8 +1184,8 @@ async function loadApiFundTransactionRecord(fundTransactionId: string) {
     fundUnits: row.units ? toNumber(row.units) : null,
     fundFee: row.fee ? toNumber(row.fee) : null,
     feeRate,
-    fundConfirmDate: row.confirmDate ? formatDateLocal(row.confirmDate) : null,
-    fundArrivalDate: row.arrivalDate ? formatDateLocal(row.arrivalDate) : null,
+    fundConfirmDate: row.confirmDate ? formatDateUtc(row.confirmDate) : null,
+    fundArrivalDate: row.arrivalDate ? formatDateUtc(row.arrivalDate) : null,
     fundArrivalAmount: row.arrivalAmount ? toNumber(row.arrivalAmount) : null,
     refundAmount: row.refundAmount ? toNumber(row.refundAmount) : 0,
     source: row.source,
@@ -1225,8 +1225,8 @@ function linkedStockDetailFields(stockRow: any) {
       stockCode: stockRow.stockCode ?? "",
       stockName: stockRow.stockName ?? null,
       action: stockRow.action,
-      tradeDate: stockRow.tradeDate ? formatDateLocal(stockRow.tradeDate) : "",
-      settleDate: stockRow.settleDate ? formatDateLocal(stockRow.settleDate) : null,
+      tradeDate: stockRow.tradeDate ? formatDateUtc(stockRow.tradeDate) : "",
+      settleDate: stockRow.settleDate ? formatDateUtc(stockRow.settleDate) : null,
       grossAmount: stockRow.grossAmount == null ? null : toNumber(stockRow.grossAmount),
       netAmount: stockRow.netAmount == null ? null : toNumber(stockRow.netAmount),
       quantity: stockRow.quantity == null ? null : toNumber(stockRow.quantity),
@@ -1268,8 +1268,8 @@ function linkedWealthDetailFields(record: any, wealthRow: any) {
     fundNav: wealthRow.nav == null ? null : toNumber(wealthRow.nav),
     fundUnits: wealthRow.units == null ? null : toNumber(wealthRow.units),
     fundFee: wealthRow.fee == null ? null : toNumber(wealthRow.fee),
-    fundConfirmDate: wealthRow.confirmDate ? formatDateLocal(wealthRow.confirmDate) : null,
-    fundArrivalDate: wealthRow.arrivalDate ? formatDateLocal(wealthRow.arrivalDate) : (record.fundArrivalDate ? formatDateLocal(record.fundArrivalDate) : null),
+    fundConfirmDate: wealthRow.confirmDate ? formatDateUtc(wealthRow.confirmDate) : null,
+    fundArrivalDate: wealthRow.arrivalDate ? formatDateUtc(wealthRow.arrivalDate) : (record.fundArrivalDate ? formatDateUtc(record.fundArrivalDate) : null),
     fundArrivalAmount: arrivalAmount,
     depositAnnualRate: wealthRow.annualRate == null ? wealthRow.WealthProduct?.annualRate ?? null : toNumber(wealthRow.annualRate),
     depositInterest: wealthRow.interest == null ? null : toNumber(wealthRow.interest),
@@ -1300,7 +1300,7 @@ function linkedFundDetailFields(record: any, fundRow: any) {
   // `amount` 是退款金额。若沿用买入口径（申请日 / 买入金额 / 现金→基金方向），
   // 资金侧会把它显示成申请日当天又一笔买入，退款到账当天看不到这笔收入。
   if (isFundBuyRefundCashLeg(record)) {
-    const refundDate = record.date ? formatDateLocal(record.date) : null;
+    const refundDate = record.date ? formatDateUtc(record.date) : null;
     const refundAmount = Math.abs(toNumber(record.amount));
     const cashAccount = fundRow.CashAccount ?? null;
     const fundAccount = fundRow.Account ?? null;
@@ -1343,7 +1343,7 @@ function linkedFundDetailFields(record: any, fundRow: any) {
   const fundAccountId = fundRow.fundAccountId ?? null;
   const cashAccountId = fundRow.cashAccountId ?? record.accountId;
   return {
-    date: fundRow.applyDate ? formatDateLocal(fundRow.applyDate) : record.date,
+    date: fundRow.applyDate ? formatDateUtc(fundRow.applyDate) : record.date,
     amount: signedFundTransactionAmount(fundRow),
     cashEntryId: fundRow.cashEntryId ?? record.id,
     businessTransactionId: fundRow.id,
@@ -1366,8 +1366,8 @@ function linkedFundDetailFields(record: any, fundRow: any) {
     fundUnits: fundRow.units == null ? null : toNumber(fundRow.units),
     fundNav: fundRow.nav == null ? null : toNumber(fundRow.nav),
     fundFee: fundRow.fee == null ? null : toNumber(fundRow.fee),
-    fundConfirmDate: fundRow.confirmDate ? formatDateLocal(fundRow.confirmDate) : null,
-    fundArrivalDate: fundRow.arrivalDate ? formatDateLocal(fundRow.arrivalDate) : null,
+    fundConfirmDate: fundRow.confirmDate ? formatDateUtc(fundRow.confirmDate) : null,
+    fundArrivalDate: fundRow.arrivalDate ? formatDateUtc(fundRow.arrivalDate) : null,
     fundArrivalAmount: fundRow.arrivalAmount == null ? null : toNumber(fundRow.arrivalAmount),
     source: fundRow.source ?? record.source,
     // 备注以这条资金流水自己的备注为准（用户备注或系统生成的「基金买入 代码 名称」）；
@@ -1460,6 +1460,117 @@ async function resolveOwnerGroupFromPersonInTx(input: {
   return created.id;
 }
 
+/**
+ * 列表口径字段白名单。
+ *
+ * 明细行有 85 个字段，其中两类对列表没用：
+ * 1. 值为 null 的（约 46%，`"xxx":null` 每行白背 1KB 上下）；
+ * 2. 只在编辑弹窗回填时用的产品 id / 分期 / 金属 / 存款编辑态字段 —— 列表既不渲染，
+ *    也不参与表头筛选、排序、合计。
+ *
+ * 所以列表响应只保留白名单内的键并丢掉 null；点开编辑时前端改用 `GET ?id=`
+ * 取完整记录（那条分支保持全字段），因此这里删字段不会让编辑窗回填变空。
+ *
+ * 留在白名单里的「非渲染字段」：
+ * - `businessTransactionId` / `insuranceProductId` / `insuranceAction`：行内
+ *   「业务关联」按钮要靠它们解析业务类型；
+ * - `reconciledAt` / `reconciledBalance`：行内锁标记与余额锚点；
+ * - `businessLinkCount` / `businessLinkLabels`：关联状态的悬浮提示。
+ */
+const DETAIL_LIST_ENTRY_FIELDS: ReadonlySet<string> = new Set([
+  "id",
+  "date",
+  "postedAt",
+  "createdAt",
+  "updatedAt",
+  "entryOrigin",
+  "dayOrder",
+  "amount",
+  "bookAmount",
+  "currency",
+  "displayAmount",
+  "displayCurrency",
+  "displayRealizedProfit",
+  "runningBalance",
+  "reconciledAt",
+  "reconciledBalance",
+  "type",
+  "source",
+  "fundSubtype",
+  "fundProductType",
+  "categoryId",
+  "categoryName",
+  "accountId",
+  "accountName",
+  "accountKind",
+  "accountLiabilityDirection",
+  "accountIsSettlementAccount",
+  "accountInstitutionName",
+  "toAccountId",
+  "toAccountName",
+  "toAccountKind",
+  "toAccountLiabilityDirection",
+  "toAccountIsSettlementAccount",
+  "toAccountInstitutionName",
+  "relatedAccountId",
+  "relatedAccountName",
+  "counterpartyInstitutionName",
+  "originalCurrency",
+  "originalAmount",
+  "locationName",
+  "note",
+  "toNote",
+  "businessNote",
+  "realizedProfit",
+  "fundCode",
+  "fundName",
+  "fundUnits",
+  "fundNav",
+  "fundFee",
+  "fundConfirmDate",
+  "fundArrivalDate",
+  "fundArrivalAmount",
+  "depositAnnualRate",
+  "depositInterest",
+  "metalTypeName",
+  "metalUnitName",
+  "metalQuantity",
+  "metalUnitPrice",
+  "metalFee",
+  "insuranceProductId",
+  "insuranceAction",
+  "insuranceProductName",
+  "principalAmount",
+  "interestAmount",
+  "feeAmount",
+  "installmentNo",
+  "installmentTotal",
+  "installmentPrincipal",
+  "installmentInterest",
+  "businessTransactionId",
+  "businessLinkCount",
+  "businessLinkLabels",
+  "attachments",
+  "entryTags",
+]);
+
+/**
+ * 列表行瘦身：只留白名单字段，并丢掉值为 null / undefined 的键。
+ *
+ * `undefined` 本来就会被 `JSON.stringify` 省略，null 则要显式剔除；前端读取这些
+ * 字段一律走 `?? null` / `?.`，键缺失与 null 完全等价。只在序列化这一层裁剪，
+ * 不改任何业务逻辑。仅用于分页列表；单条详情（`?id=`，编辑回填用）保持全字段。
+ */
+function pickListEntryFields<T extends Record<string, unknown>>(row: T): Partial<T> {
+  const picked: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(row)) {
+    if (value === null || value === undefined) continue;
+    if (!DETAIL_LIST_ENTRY_FIELDS.has(key)) continue;
+    picked[key] = value;
+  }
+  return picked as Partial<T>;
+}
+
 function mapEntryTags(entry: { EntryTag: Array<{ tagId: string; Tag: { name: string; color: string | null } | null }> }) {
   return entry.EntryTag.map((et) => ({
     tagId: et.tagId,
@@ -1495,10 +1606,10 @@ function mapFundLinkCandidate(entry: {
 }) {
   return {
     id: entry.id,
-    date: formatDateLocal(entry.date),
+    date: formatDateUtc(entry.date),
     createdAt: entry.createdAt.toISOString(),
-    fundConfirmDate: entry.fundConfirmDate ? formatDateLocal(entry.fundConfirmDate) : null,
-    fundArrivalDate: entry.fundArrivalDate ? formatDateLocal(entry.fundArrivalDate) : null,
+    fundConfirmDate: entry.fundConfirmDate ? formatDateUtc(entry.fundConfirmDate) : null,
+    fundArrivalDate: entry.fundArrivalDate ? formatDateUtc(entry.fundArrivalDate) : null,
     fundCode: entry.fundCode ?? "",
     fundSubtype: entry.fundSubtype ?? "",
     fundUnits: entry.fundUnits ? toNumber(entry.fundUnits) : null,
@@ -1646,7 +1757,7 @@ export async function GET(req: Request) {
       const linkedStockTransaction = linkedStockTransactionOf(record);
       const entry = {
         id: record.id,
-        date: formatDateLocal(record.date),
+        date: formatDateUtc(record.date),
         postedAt: toDateOnlyLocal(record.postedAt),
         createdAt: record.createdAt?.toISOString?.() ?? null,
         updatedAt: record.updatedAt?.toISOString?.() ?? null,
@@ -1705,8 +1816,8 @@ export async function GET(req: Request) {
         fundUnits: record.fundUnits ? toNumber(record.fundUnits) : null,
         fundFee: record.fundFee ? toNumber(record.fundFee) : null,
         feeRate: fundFeeRate,
-        fundConfirmDate: record.fundConfirmDate ? formatDateLocal(record.fundConfirmDate) : null,
-        fundArrivalDate: record.fundArrivalDate ? formatDateLocal(record.fundArrivalDate) : null,
+        fundConfirmDate: record.fundConfirmDate ? formatDateUtc(record.fundConfirmDate) : null,
+        fundArrivalDate: record.fundArrivalDate ? formatDateUtc(record.fundArrivalDate) : null,
         fundArrivalAmount: record.fundArrivalAmount ? toNumber(record.fundArrivalAmount) : null,
         creditCardInstallmentPlanId: record.creditCardInstallmentPlanId,
         installmentNo: record.installmentNo,
@@ -1718,7 +1829,7 @@ export async function GET(req: Request) {
         installmentSourceStatementMonth: record.CreditCardInstallmentPlan?.sourceStatementMonth ?? null,
         source: record.source,
         ...(linkedFundTransaction ? {
-          date: formatDateLocal(linkedFundTransaction.applyDate),
+          date: formatDateUtc(linkedFundTransaction.applyDate),
           amount: signedFundTransactionAmount(linkedFundTransaction),
           businessTransactionId: linkedFundTransaction.id,
           fundTransactionId: linkedFundTransaction.id,
@@ -1741,8 +1852,8 @@ export async function GET(req: Request) {
           fundNav: linkedFundTransaction.nav ? toNumber(linkedFundTransaction.nav) : null,
           fundFee: linkedFundTransaction.fee ? toNumber(linkedFundTransaction.fee) : null,
           feeRate: fundFeeRate,
-          fundConfirmDate: linkedFundTransaction.confirmDate ? formatDateLocal(linkedFundTransaction.confirmDate) : null,
-          fundArrivalDate: linkedFundTransaction.arrivalDate ? formatDateLocal(linkedFundTransaction.arrivalDate) : null,
+          fundConfirmDate: linkedFundTransaction.confirmDate ? formatDateUtc(linkedFundTransaction.confirmDate) : null,
+          fundArrivalDate: linkedFundTransaction.arrivalDate ? formatDateUtc(linkedFundTransaction.arrivalDate) : null,
           fundArrivalAmount: linkedFundTransaction.arrivalAmount ? toNumber(linkedFundTransaction.arrivalAmount) : null,
           refundAmount: linkedFundTransaction.refundAmount ? toNumber(linkedFundTransaction.refundAmount) : 0,
           note: record.note ?? linkedFundTransaction.note,
@@ -1900,7 +2011,7 @@ export async function GET(req: Request) {
       const linkedStockTransaction = linkedStockTransactionOf(e);
       return ({
       id: e.id,
-      date: formatDateLocal(e.date),
+      date: formatDateUtc(e.date),
       postedAt: toDateOnlyLocal(e.postedAt),
       createdAt: e.createdAt?.toISOString?.() ?? null,
       updatedAt: e.updatedAt?.toISOString?.() ?? null,
@@ -1963,8 +2074,8 @@ export async function GET(req: Request) {
       fundSourceEntryId: e.fundSourceEntryId ?? null,
       fundUnits: e.fundUnits ? toNumber(e.fundUnits) : null,
       fundFee: e.fundFee ? toNumber(e.fundFee) : null,
-      fundConfirmDate: e.fundConfirmDate ? formatDateLocal(e.fundConfirmDate) : null,
-      fundArrivalDate: e.fundArrivalDate ? formatDateLocal(e.fundArrivalDate) : null,
+      fundConfirmDate: e.fundConfirmDate ? formatDateUtc(e.fundConfirmDate) : null,
+      fundArrivalDate: e.fundArrivalDate ? formatDateUtc(e.fundArrivalDate) : null,
       fundArrivalAmount: e.fundArrivalAmount ? toNumber(e.fundArrivalAmount) : null,
       creditCardInstallmentPlanId: e.creditCardInstallmentPlanId,
       installmentNo: e.installmentNo,
@@ -1993,7 +2104,7 @@ export async function GET(req: Request) {
         totalCount: pageData.totalCount,
         page: pageData.page,
         pageSize,
-        entries,
+        entries: entries.map(pickListEntryFields),
       },
     });
   } catch (err) {
@@ -3216,7 +3327,7 @@ export async function POST(req: Request) {
           ok: true,
           data: {
             id: created.id,
-            date: formatDateLocal(created.date),
+            date: formatDateUtc(created.date),
             postedAt: toDateOnlyLocal(created.postedAt),
             createdAt: created.createdAt?.toISOString?.() ?? null,
             updatedAt: created.updatedAt?.toISOString?.() ?? null,
@@ -3253,8 +3364,8 @@ export async function POST(req: Request) {
             depositSourceEntryId: created.depositSourceEntryId ?? null,
             fundUnits: created.fundUnits ? toNumber(created.fundUnits) : null,
             fundFee: created.fundFee ? toNumber(created.fundFee) : null,
-            fundConfirmDate: created.fundConfirmDate ? formatDateLocal(created.fundConfirmDate) : null,
-            fundArrivalDate: created.fundArrivalDate ? formatDateLocal(created.fundArrivalDate) : null,
+            fundConfirmDate: created.fundConfirmDate ? formatDateUtc(created.fundConfirmDate) : null,
+            fundArrivalDate: created.fundArrivalDate ? formatDateUtc(created.fundArrivalDate) : null,
             fundArrivalAmount: created.fundArrivalAmount ? toNumber(created.fundArrivalAmount) : null,
             source: created.source,
             ...buildEntryBusinessLinkSummary(created),
@@ -4433,7 +4544,7 @@ return;
       ok: true,
       data: {
         id: updated.id,
-        date: formatDateLocal(updated.date),
+        date: formatDateUtc(updated.date),
         postedAt: toDateOnlyLocal(updated.postedAt),
         createdAt: updated.createdAt?.toISOString?.() ?? null,
         updatedAt: updated.updatedAt?.toISOString?.() ?? null,
@@ -4479,8 +4590,8 @@ return;
         depositSourceEntryId: updated.depositSourceEntryId ?? null,
         fundUnits: updated.fundUnits ? toNumber(updated.fundUnits) : null,
         fundFee: updated.fundFee ? toNumber(updated.fundFee) : null,
-        fundConfirmDate: updated.fundConfirmDate ? formatDateLocal(updated.fundConfirmDate) : null,
-        fundArrivalDate: updated.fundArrivalDate ? formatDateLocal(updated.fundArrivalDate) : null,
+        fundConfirmDate: updated.fundConfirmDate ? formatDateUtc(updated.fundConfirmDate) : null,
+        fundArrivalDate: updated.fundArrivalDate ? formatDateUtc(updated.fundArrivalDate) : null,
         fundArrivalAmount: updated.fundArrivalAmount ? toNumber(updated.fundArrivalAmount) : null,
         source: updated.source,
         ...buildEntryBusinessLinkSummary(updated),

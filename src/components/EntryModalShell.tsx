@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode, Ref } from "react";
+import type { CSSProperties, ReactNode, Ref } from "react";
 import { useEffect } from "react";
 import { createPortal } from "react-dom";
 import { Lock } from "lucide-react";
@@ -17,14 +17,26 @@ import { useI18n } from "@/lib/i18n";
 /**
  * 记账弹窗**整窗外壳**：所有「弹出记账窗口」共用的那一层。
  * 各类弹窗只提供「内容」（标题、页签项、字段、底部按钮），
- * **FT 卡片、窗体宽度档位、固定高度（切换页签不位移）、滚动区、固定页脚、遮罩层级**全部由这里统一。
+ * **FT 卡片、窗体宽度档位、高度（跟着内容走）、滚动区、窗口底按钮行、遮罩层级**全部由这里统一。
  *
  * 分层（自上而下，越下层越通用）：
- *  1. `EntryModalShell`（本文件）= 整窗：遮罩 + 面板 + 标题栏 + 表单 + 页签 + 内容板 + 页脚 + 高度锁定；
- *  2. `FolderTabsCard` = 「页签条 + FT 卡片 + 滚动区 + 固定页脚」的卡片壳（无遮罩/无标题栏）；
+ *  1. `EntryModalShell`（本文件）= 整窗：遮罩 + 面板 + 标题栏 + 表单 + 页签 + 内容板 + 按钮行 + 高度测量；
+ *  2. `FolderTabsCard` = 「页签条 + FT 卡片 + 滚动区 + 窗口底按钮行」的卡片壳（无遮罩/无标题栏）；
  *  3. `@/app/login/FolderTabs` = 页签几何不变量（`folderTabClass` / `FolderTabRuler` / 凹角 CSS）；
- *  4. `useModalHeightLock` + `.app-modal-panel-fixed-height` = 高度锁定规则；
+ *  4. `useModalHeightLock` + `.app-modal-panel-fixed-height` = 高度 = 当前内容高度（保证按钮行
+ *     与卡片、与窗口边缘的间距同值，见 `FolderTabsCard` 头注释）；同一个 hook 还给「上方位置
+ *     固定」的锚点（`--app-modal-anchor-top` + `.app-modal-panel-anchored`）；
  *  5. `.ft-card-surface` / `.ft-card-footer` / `REQUIRED_FIELD_CLASS` = 卡片外观与必填红框。
+ *
+ * 按钮行规则：退出窗口只有**一个**入口 —— 标题栏右上角的关闭按钮（`onClose`，
+ * 文字默认 `table.close`）。`footer` 只放本窗的主操作（保存 / 创建…），
+ * **不要再放「取消」**：下面再摆一个取消，和右上角的关闭是同一个动作，重复。
+ *
+ * **上方位置规则（硬要求）**：窗口顶边只在**首次打开时**定一次（取当时的居中位置），此后
+ * 切换页签、内容异步变长变矮，都**只让底边下移或上收** —— 整窗不再跟着垂直居中上下跳。
+ * 实现：`useModalHeightLock` 把首帧居中偏移写进 `--app-modal-anchor-top`，遮罩对带
+ * `.app-modal-panel-anchored` 的面板改用 `items-start` + `margin-top`；只有内容长到超出
+ * 可视区时顶边才被往上顶（保证底边不越界，超出部分在表单滚动区里滚）。
  *
  * 用法：
  *   <EntryModalShell
@@ -38,20 +50,28 @@ import { useI18n } from "@/lib/i18n";
  *     ...字段...
  *   </EntryModalShell>
  */
-export type EntryModalWidth = "sm" | "md" | "lg" | "xl";
+export type EntryModalWidth = "sm" | "md" | "lg" | "xl" | "2xl" | "3xl";
 
-/** 窗体宽度档位（统一在这里，避免各弹窗各写一个 max-w）：sm 34rem / md 38rem / lg 42rem / xl 48rem。 */
+/** 窗体宽度档位（统一在这里，避免各弹窗各写一个 max-w）：sm 34rem / md 38rem / lg 42rem / xl 48rem / 2xl 56rem / 3xl 80rem。
+ *  `2xl` 给「明细表列多」的弹窗（报销单：明细 7 列）用，等于原来的 `max-w-4xl`；
+ *  `3xl` 给需要在同一张表里容纳抬头 + 7 列明细的纸表单（报销单新建窗，与编辑/审核窗同宽）。 */
 const WIDTH_CLASS: Record<EntryModalWidth, string> = {
   sm: "max-w-[min(34rem,calc(100vw-1rem))]",
   md: "max-w-[min(38rem,calc(100vw-1rem))]",
   lg: "max-w-[min(42rem,calc(100vw-1rem))]",
   xl: "max-w-[min(48rem,calc(100vw-1rem))]",
+  "2xl": "max-w-[min(56rem,calc(100vw-1rem))]",
+  "3xl": "max-w-[min(80rem,calc(100vw-2rem))]",
 };
 
 export function EntryModalShell({
   open,
   heightKey,
   width = "md",
+  heightMode = "content",
+  panelClassName,
+  panelStyle,
+  panelRef,
   title,
   subtitle,
   onClose,
@@ -75,6 +95,21 @@ export function EntryModalShell({
   /** 高度锁定 + 会话缓存用的标识（同一弹窗多次打开共用），如 "bond" */
   heightKey: string;
   width?: EntryModalWidth;
+  /**
+   * 高度策略：
+   *  - `content`（默认）= 按当前内容量高并锁定；**顶边固定**，切换页签只让底边下移/上收；
+   *  - `natural` = 不测量、不锁定：窗口高度 = 当前页签内容的自然高度，底边跟着卡片走
+   *    （同样顶边固定；宽度/上限可直接用 `panelStyle` 给）。
+   *
+   * 两种模式的「上方位置」都由 `useModalHeightLock` 锚定（见文件头「上方位置规则」）。
+   */
+  heightMode?: "content" | "natural";
+  /** 外部读取面板节点（锚点浮层要拿面板矩形定位时用）；与内部高度测量共用同一个 DOM 节点。 */
+  panelRef?: Ref<HTMLDivElement>;
+  /** 面板附加类名（替代宽度档位时用）。 */
+  panelClassName?: string;
+  /** 面板内联尺寸；与高度锁定的 style 合并，宽度/上限都能在这里给。 */
+  panelStyle?: CSSProperties;
   title: ReactNode;
   /** 标题右侧的次要说明（如产品类型） */
   subtitle?: ReactNode;
@@ -107,7 +142,19 @@ export function EntryModalShell({
   children: ReactNode;
 }) {
   const { t } = useI18n();
-  const { panelRef, scrollRef, fixedHeightProps } = useModalHeightLock(heightKey, open);
+  // 只有 `content` 模式才测量并锁定高度；`natural` 让面板保持 `h-auto`（底边跟卡片）。
+  // 两种模式都会量「上方位置」锚点（顶边只在首次打开时定一次，之后不再上下跳）。
+  const { panelRef: innerPanelRef, scrollRef, anchorProps, fixedHeightProps } = useModalHeightLock<
+    HTMLDivElement,
+    HTMLDivElement
+  >(heightKey, open, heightMode === "content");
+  // 面板节点同时写进内部测量 ref 与调用方 ref（`ConfirmRuleLockNotice` 这类锚点浮层要用面板矩形定位）。
+  const setPanelNode = (node: HTMLDivElement | null) => {
+    innerPanelRef.current = node;
+    if (!panelRef) return;
+    if (typeof panelRef === "function") panelRef(node);
+    else (panelRef as { current: HTMLDivElement | null }).current = node;
+  };
   // 已「对账」的记录：编辑窗照常打开，但整张表单禁用（可查看、不可改）。
   const reconciledReadOnly = useEntryModalReconciledReadOnly();
   useResetEntryModalReconciledReadOnlyOnClose(open);
@@ -125,9 +172,11 @@ export function EntryModalShell({
     <ModalLayerProvider value={layerZIndex}>
       <div className={`app-modal-backdrop ${backdropClassName}`.trim()} style={{ zIndex: layerZIndex }}>
         <div
-          ref={panelRef}
-          className={`app-modal-panel ${WIDTH_CLASS[width]} ${fixedHeightProps.className ?? ""}`.trim()}
-          style={fixedHeightProps.style}
+          ref={setPanelNode}
+          className={`app-modal-panel ${WIDTH_CLASS[width]} ${anchorProps.className ?? ""} ${
+            heightMode === "content" ? (fixedHeightProps.className ?? "") : ""
+          } ${panelClassName ?? ""}`.trim()}
+          style={{ ...(anchorProps.style ?? null), ...(heightMode === "content" ? fixedHeightProps.style : null), ...panelStyle }}
         >
           <div className="modal-header shrink-0">
             <div className="text-sm font-semibold text-slate-800">

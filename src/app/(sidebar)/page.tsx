@@ -140,7 +140,7 @@ import { AccountTypeQuickEdit, type AccountQuickEditValue } from "@/components/A
 
 export const dynamic = "force-dynamic";
 
-import { formatDateLocal, formatDateUtc, toNumber, parseDateInputToUtc } from "@/lib/date-utils";
+import { formatDateUtc, toNumber, parseDateInputToUtc } from "@/lib/date-utils";
 import { parseDepositInterestPayout } from "@/lib/deposit-interest-payout";
 import { depositSegmentInterest } from "@/lib/deposit-maturity";
 
@@ -296,7 +296,7 @@ function toIsoOrNull(value: unknown) {
 
 function toDateOnlyLocalOrNull(value: unknown) {
   const date = toValidDate(value);
-  return date ? formatDateLocal(date) : null;
+  return date ? formatDateUtc(date) : null;
 }
 
 function toYmdOrNull(value: unknown) {
@@ -746,11 +746,14 @@ export default async function Home({
       : [];
   const insuranceProductIdsForAccount = insuranceProductsForAccount.map((product) => product.id);
 
+  // detailAll 也走分页查询：服务端只要一页，剩余的由客户端按块补齐
+  // （BasicDetailPanel 的 reloadDetailPage）。服务端若按 detailAll 全量渲染，
+  // 「全部收支记录」一次要塞 4 万多行 × 全部关联进 RSC payload —— 实测首页
+  // HTML 122MB、首屏 30s+，表现就是「点全部交易记录打不开/失败」。
   const usePagedDetailEntries =
     needsDetailEntries &&
     ((view === "detail" && !!accountId) || (isAllCashView && cashLedgerAccountIds.length > 0)) &&
-    !hasDetailFilters &&
-    !detailAll;
+    !hasDetailFilters;
   const focusedDetailLocation = usePagedDetailEntries && focusEntryId
     ? await locateDetailEntryPage({
         accountIds: isAllCashView ? cashLedgerAccountIds : [accountId],
@@ -834,6 +837,18 @@ export default async function Home({
     : [];
   const flowAccountIdOf = (e: { accountId?: string | null; toAccountId?: string | null }) =>
     isAllCashView ? cashLedgerFlowAccountId(e, cashLedgerIdSet) : accountId;
+  // 明细表口径：全部交易记录里每行按「流出方」展示，有对手方（转账 / 投资买卖 / 赎回）
+  // 的金额恒为负；普通收支保留原符号。排序、筛选、导出必须与表格列一致。
+  const detailFlowAmountOf = (e: { amount?: number | string | null; accountId?: string | null; toAccountId?: string | null }) =>
+    isAllCashView && e.toAccountId ? -Math.abs(toNumber(e.amount)) : effectiveAmountForAccount(e, flowAccountIdOf(e));
+  // 明细表「账户」列用的那一侧：全部交易记录取流出方（与 DetailViewClient 同口径），
+  // 其它视图仍是当前账户的资金侧。
+  const detailFlowAccountIdOf = (e: { amount?: number | string | null; accountId?: string | null; toAccountId?: string | null }) => {
+    if (!isAllCashView || !e.toAccountId) return flowAccountIdOf(e);
+    const fromIsCash = !!e.accountId && cashLedgerIdSet.has(e.accountId);
+    const toIsCash = !!e.toAccountId && cashLedgerIdSet.has(e.toAccountId);
+    return fromIsCash && toIsCash && toNumber(e.amount) >= 0 ? e.toAccountId : e.accountId;
+  };
   // 基金 / 理财独立交易的 TxRecord 上没有 fundSubtype / fundArrivalDate（业务事实
   // 只存在 fund_transactions / wealth_transactions），展示接口会回填这几个字段；
   // 明细排序、日期筛选与导出必须用同一份兜底，否则赎回行会按申请日而不是到账日排
@@ -887,7 +902,7 @@ export default async function Home({
   };
   const getDetailFilterColumnValue = (e: (typeof entries)[number], column: DetailFilterColumn) => {
     const amount = toNumber(e.amount);
-    const effectiveAmount = effectiveAmountForAccount(e, flowAccountIdOf(e));
+    const effectiveAmount = detailFlowAmountOf(e);
     const balanceTarget = getBalanceReconcileTarget(e);
     if (column === "date") return entryDisplayDate(e).toISOString().slice(0, 10);
     if (column === "flow" && balanceTarget != null && e.source === BALANCE_INITIALIZATION_SOURCE) return t("detailView.initialBalance");
@@ -922,8 +937,12 @@ export default async function Home({
       return getInsuranceDetailCategoryName(e) || t("detail.emptyValue");
     }
     if (column === "related") {
+      // 全部交易记录里「账户」列固定是流出方，关联账户固定是收入方 toAccount；
+      // 单账户明细才按当前账户判断本行属于哪一侧（与 DetailViewClient 同口径）。
       const flowId = flowAccountIdOf(e);
-      const related = flowId && e.toAccountId === flowId ? (e.accountName ?? "") : (e.toAccountName ?? "");
+      const related = isAllCashView
+        ? (e.toAccountName ?? "")
+        : (flowId && e.toAccountId === flowId ? (e.accountName ?? "") : (e.toAccountName ?? ""));
       return related.trim() || t("detail.emptyValue");
     }
     return getEntryDisplayNote(e) || t("detail.emptyValue");
@@ -969,7 +988,7 @@ export default async function Home({
     return true;
   }));
   const filteredEntries2 = filteredEntries.filter((e) => {
-    const effectiveAmount = effectiveAmountForAccount(e, flowAccountIdOf(e));
+    const effectiveAmount = detailFlowAmountOf(e);
     const inflow = effectiveAmount > 0 ? effectiveAmount : null;
     const outflow = effectiveAmount < 0 ? -effectiveAmount : null;
     if ((detailInFromN != null || detailInToN != null)) {
@@ -1023,10 +1042,10 @@ export default async function Home({
   ];
   const normalExportSourceEntries = filteredEntries2;
   const normalExportEntryRows = normalExportSourceEntries.map((e) => {
-    const effectiveAmount = effectiveAmountForAccount(e, flowAccountIdOf(e));
+    const effectiveAmount = detailFlowAmountOf(e);
     const outflow = effectiveAmount < 0 ? String(-effectiveAmount) : "";
     const inflow = effectiveAmount > 0 ? String(effectiveAmount) : "";
-    const isToSide = Boolean(flowAccountIdOf(e) && e.toAccountId === flowAccountIdOf(e));
+    const isToSide = Boolean(detailFlowAccountIdOf(e) && e.toAccountId === detailFlowAccountIdOf(e));
     const fromAccount = accountMetaById.get(e.accountId ?? "");
     const toAccount = accountMetaById.get(e.toAccountId ?? "");
     const accountLabel = isToSide
@@ -1757,6 +1776,7 @@ export default async function Home({
             principalAmount: true,
             interestAmount: true,
             feeAmount: true,
+            reconciledBalance: true,
             regularInvestPlanId: true,
             installmentNo: true,
             fundSubtype: true,
@@ -1786,7 +1806,19 @@ export default async function Home({
     liabilityAccounts.map((account) => [
       account.id,
       accountLabelById.get(account.id)
-        || (account.Institution?.name ? `${account.Institution.name}·${account.name}` : account.name),
+        || buildAccountDisplayOption(
+          {
+            id: account.id,
+            name: account.name,
+            kind: account.kind,
+            numberMasked: account.numberMasked,
+            groupId: account.groupId,
+            Institution: account.Institution,
+            AccountGroup: account.AccountGroup ? { id: "", name: account.AccountGroup.name } : null,
+          },
+          undefined,
+          { fields: accountLabelFields, baseCurrency },
+        ).listLabel,
     ]),
   );
   const liabilityDirectionByAccountId = new Map(
@@ -2078,7 +2110,7 @@ export default async function Home({
     cashEntryId: linkedWealth?.cashEntryId ?? linkedFund?.cashEntryId ?? e.id,
     businessTransactionId: linkedWealth?.id ?? linkedFund?.id ?? null,
     // 退款腿的 date 就是到账日（本地日），不能按 UTC 截断，否则首屏显示前一天。
-    date: isBuyRefundCashLeg ? formatDateLocal(e.date) : e.date.toISOString().slice(0, 10),
+    date: formatDateUtc(e.date),
     postedAt: toDateOnlyLocalOrNull(e.postedAt),
     createdAt: toIsoOrNull(e.createdAt),
     updatedAt: toIsoOrNull(e.updatedAt),
@@ -2152,7 +2184,7 @@ export default async function Home({
     fundFee: linkedWealth?.fee != null ? toNumber(linkedWealth.fee) : linkedFundForDisplay?.fee != null ? toNumber(linkedFundForDisplay.fee) : e.fundFee != null ? toNumber(e.fundFee) : null,
     fundConfirmDate: linkedWealth?.confirmDate ? toIsoOrNull(linkedWealth.confirmDate) : linkedFundForDisplay?.confirmDate ? toIsoOrNull(linkedFundForDisplay.confirmDate) : toIsoOrNull(e.fundConfirmDate),
     // 退款腿没有确认日，到账日就是这条流水自己的日期（本地日）。
-    fundArrivalDate: isBuyRefundCashLeg ? formatDateLocal(e.date) : linkedWealth?.arrivalDate ? toIsoOrNull(linkedWealth.arrivalDate) : linkedFundForDisplay?.arrivalDate ? toIsoOrNull(linkedFundForDisplay.arrivalDate) : toIsoOrNull(e.fundArrivalDate),
+    fundArrivalDate: isBuyRefundCashLeg ? formatDateUtc(e.date) : linkedWealth?.arrivalDate ? toIsoOrNull(linkedWealth.arrivalDate) : linkedFundForDisplay?.arrivalDate ? toIsoOrNull(linkedFundForDisplay.arrivalDate) : toIsoOrNull(e.fundArrivalDate),
     fundSourceEntryId: e.fundSourceEntryId ?? null,
     // 部分退款时 grossAmount 是买入额，退款腿的入账金额只能取流水本身。
     fundArrivalAmount: isBuyRefundCashLeg ? Math.abs(toNumber(e.amount)) : linkedWealthArrivalAmount ?? (linkedFundForDisplay?.arrivalAmount != null ? toNumber(linkedFundForDisplay.arrivalAmount) : e.fundArrivalAmount != null ? toNumber(e.fundArrivalAmount) : null),

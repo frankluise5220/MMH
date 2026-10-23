@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import Link from "next/link";
 import { ArrowDownLeft, ArrowUpRight, Library, Pencil, Plus, Shield, Trash2 } from "lucide-react";
 
-import { formatMoney } from "@/lib/format";
+import { formatAmountDraft, formatMoney } from "@/lib/format";
 import { resolveAccountTableLabel, type AccountTableLabelLookup } from "@/lib/account-display";
 import { useI18n } from "@/lib/i18n";
 import {
@@ -688,9 +688,9 @@ export function InsuranceShell({
         id: sourceEntry.id,
         date: detail.date,
         arrivalDate: detail.fundArrivalDate?.slice(0, 10) ?? sourceEntry.fundArrivalDate?.slice(0, 10) ?? detail.date,
-        amount: String(detail.amount),
+        amount: formatAmountDraft(detail.amount),
         cashAccountId: detail.cashAccountId ?? "",
-        coverageAmount: sourceEntry.coverageAmount == null ? "" : String(sourceEntry.coverageAmount),
+        coverageAmount: sourceEntry.coverageAmount == null ? "" : formatAmountDraft(sourceEntry.coverageAmount),
         paymentTermYears:
           sourceEntry.paymentTermYears == null ? "" : String(sourceEntry.paymentTermYears),
         note: detail.note ?? sourceEntry.note ?? "",

@@ -1,4 +1,5 @@
 "use client";
+import { accountOptionFromParts } from "@/lib/account-display";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 /** 记账弹窗整窗外壳：宽度/标题栏/表单/FT 页签卡片/固定页脚/高度锁定统一由它负责。 */
 import { EntryModalShell } from "@/components/EntryModalShell";
@@ -363,11 +364,19 @@ export function WealthFormModal({
         institutionType?: string | null;
         currency?: string | null;
       };
-      const institutionLabel = account.institutionShortName?.trim() || account.institutionName?.trim() || "";
-      const accountLabel = [institutionLabel, account.name].filter(Boolean).join("·");
+      // 走统一入口：按「账户显示格式」渲染，不再手拼机构·名称。
+      const accountOptionDisplay = accountOptionFromParts({
+        id: account.id,
+        name: account.name,
+        kind: account.kind,
+        institutionName: account.institutionName,
+        institutionShortName: account.institutionShortName,
+        currency: account.currency,
+        groupName: account.groupName,
+      });
       const accountOption: AccountOption = {
         id: account.id,
-        label: accountLabel || account.name,
+        label: accountOptionDisplay.label,
         subLabel: [account.groupName, accountLabelText].filter(Boolean).join(" · "),
         kind: account.kind,
         groupId: account.groupId ?? null,
@@ -550,9 +559,9 @@ export function WealthFormModal({
             <button
               type="submit"
               disabled={submitting}
-              className={`h-9 rounded-[10px] px-4 text-sm text-white disabled:opacity-50 ${isRedeem ? "bg-orange-600 hover:bg-orange-700" : isDividend ? "bg-emerald-600 hover:bg-emerald-700" : "primary-button"}`}
+              className={`h-9 rounded-[10px] px-4 text-sm text-white disabled:opacity-50 ${isRedeem ? "bg-orange-600 hover:bg-orange-700" : isDividend ? "bg-emerald-600 hover:bg-emerald-700" : isWriteOff ? "bg-slate-600 hover:bg-slate-700" : "primary-button"}`}
             >
-              {submitting ? t("txForm.saving") : mode === "edit" ? t("txForm.saveChanges") : isRedeem ? t("wealthForm.recordRedeem") : isDividend ? t("wealthForm.recordDividend") : t("wealthForm.recordBuy")}
+              {submitting ? t("txForm.saving") : mode === "edit" ? t("txForm.saveChanges") : isRedeem ? t("wealthForm.recordRedeem") : isDividend ? t("wealthForm.recordDividend") : isWriteOff ? t("wealthForm.recordWriteOff") : t("wealthForm.recordBuy")}
             </button>
           </>
         )}

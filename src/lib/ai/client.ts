@@ -1,5 +1,6 @@
 // LLM communication: fetch, classify, and account context building
 
+import { renderAccountLabel } from "@/lib/account-display";
 import { prisma } from "@/lib/db/prisma";
 import { joinBaseUrl } from "@/lib/http";
 import { CLASSIFY_PROMPT } from "@/lib/ai/prompts";
@@ -35,14 +36,14 @@ export async function buildAccountContextText(householdId?: string) {
     }
 
     const canonical = accounts.map((a) => {
-      const label = a.Institution?.name ? `${a.Institution.name}·${a.name}` : a.name;
+      const label = a.Institution?.name ? renderAccountLabel({ accountName: a.name, institution: a.Institution }) : a.name;
       const masked = a.numberMasked ? `|尾号=${a.numberMasked}` : "";
       return `${a.id}|${label}${masked}`;
     });
 
     const aliasLines = aliases
       .map((x) => {
-        const target = x.account.Institution?.name ? `${x.account.Institution.name}·${x.account.name}` : x.account.name;
+        const target = x.account.Institution?.name ? renderAccountLabel({ accountName: x.account.name, institution: x.account.Institution }) : x.account.name;
         return `${x.alias} => ${x.account.id}|${target}`;
       })
       .slice(0, 300);

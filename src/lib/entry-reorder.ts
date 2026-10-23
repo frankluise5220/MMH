@@ -5,7 +5,7 @@ import {
   isReconciledEntry,
 } from "@/lib/balance-reconcile";
 import { getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
-import { formatDateLocal, toNumber } from "@/lib/date-utils";
+import { toNumber, formatDateUtc } from "@/lib/date-utils";
 import { isFundBuyRefundCashLeg } from "@/lib/transaction-semantics";
 
 export type ReorderDisplayEntry = {
@@ -50,7 +50,7 @@ export type LinkedFundForReorder = {
 };
 
 export function entryReorderDayKey(entry: ReorderDisplayEntry, accountId?: string | null) {
-  return formatDateLocal(getDetailEntryDisplayDate(entry, accountId));
+  return formatDateUtc(getDetailEntryDisplayDate(entry, accountId));
 }
 
 export function isReorderBalanceAnchor(entry: { source?: string | null; toNote?: string | null; reconciledBalance?: unknown; reconciledAt?: unknown }) {

@@ -6,7 +6,7 @@ import {
   type AccountLabelField,
 } from "@/lib/account-display";
 import { normalizeCurrency } from "@/lib/currency";
-import { toNumber } from "@/lib/date-utils";
+import { toNumber, todayDateBusinessYmd } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
 import { isFixedAssetAccountLike } from "@/lib/fixed-asset";
 import { translate } from "@/lib/i18n-core";
@@ -37,6 +37,8 @@ export type AssetDistributionItem = {
 };
 
 export type AccountListRow = {
+  /** 行内看不到的信息（所有人/类型/非本位币），仅在非空时用于 title。 */
+  hoverTitle?: string;
   id: string;
   name: string;
   kind: string;
@@ -106,6 +108,8 @@ export type AccountTypeTotals = {
 };
 
 export type FixedAssetRow = {
+  /** 行内看不到的信息（所有人/类型/非本位币），仅在非空时用于 title。 */
+  hoverTitle?: string;
   accountId: string;
   name: string;
   assetType: string | null;
@@ -124,6 +128,8 @@ export type FixedAssetRow = {
 };
 
 export type TopPositionRow = {
+  /** 行内看不到的信息（所有人/类型/非本位币），仅在非空时用于 title。 */
+  hoverTitle?: string;
   accountId?: string;
   investProductType?: string | null;
   fundCode: string;
@@ -274,9 +280,12 @@ export async function computeOverviewSummary(
 ): Promise<OverviewSummary> {
   const { hidFilter } = ctx;
   const accountLabelFields = options?.accountLabelFields ?? null;
-  const now = new Date();
-  const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
-  const monthEnd = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1));
+  // 「本月/本年」按业务时区取：UTC getter 在北京时间月初 00:00–08:00 还停在上个月。
+  const businessToday = todayDateBusinessYmd();
+  const todayYear = Number(businessToday.slice(0, 4));
+  const todayMonth = Number(businessToday.slice(5, 7));
+  const monthStart = new Date(Date.UTC(todayYear, todayMonth - 1, 1));
+  const monthEnd = new Date(Date.UTC(todayYear, todayMonth, 1));
 
   const accounts = await prisma.account.findMany({
     where: { isActive: true, isPlaceholder: { not: true }, ...hidFilter },
@@ -392,7 +401,7 @@ export async function computeOverviewSummary(
         AccountGroup: account.AccountGroup ? { id: "", name: account.AccountGroup.name } : null,
       },
       creditCardLabelTemplate,
-      { fields: accountLabelFields },
+      { fields: accountLabelFields, baseCurrency: fx.baseCurrency },
     );
 
     const accountCurrency = currencyOf(account);
@@ -406,6 +415,7 @@ export async function computeOverviewSummary(
     return {
       id: account.id,
       name: display.label,
+      hoverTitle: display.tableHoverTitle,
       kind: account.summaryKind,
       balance,
       groupName: account.AccountGroup?.name?.trim() || translate(language, "invest.noOwner"),
@@ -485,7 +495,7 @@ export async function computeOverviewSummary(
         AccountGroup: storageAccount.AccountGroup ? { id: "", name: storageAccount.AccountGroup.name } : null,
       },
       creditCardLabelTemplate,
-      { fields: accountLabelFields },
+      { fields: accountLabelFields, baseCurrency: fx.baseCurrency },
     );
     const groupCurrency = currencyOf(storageAccount);
     const groupRate = fx.rateOf(groupCurrency);
@@ -544,7 +554,7 @@ export async function computeOverviewSummary(
         AccountGroup: account.AccountGroup ? { id: "", name: account.AccountGroup.name } : null,
       },
       creditCardLabelTemplate,
-      { fields: accountLabelFields },
+      { fields: accountLabelFields, baseCurrency: fx.baseCurrency },
     );
     const accountCurrency = currencyOf(account);
     const balance =
@@ -556,6 +566,7 @@ export async function computeOverviewSummary(
     return {
       id: account.id,
       name: display.label,
+      hoverTitle: display.tableHoverTitle,
       kind: account.kind,
       balance,
       groupName: display.groupName,
@@ -616,13 +627,14 @@ export async function computeOverviewSummary(
           AccountGroup: account.AccountGroup ? { id: "", name: account.AccountGroup.name } : null,
         },
         creditCardLabelTemplate,
-        { fields: accountLabelFields },
+        { fields: accountLabelFields, baseCurrency: fx.baseCurrency },
       );
       return {
         accountId: account.id,
         investProductType: account.investProductType,
         fundCode: "",
         name: display.label,
+        hoverTitle: display.tableHoverTitle,
         marketValue,
         floatingPnL,
         floatingPnLRate: totalCost > 0 ? floatingPnL / totalCost : 0,
@@ -689,7 +701,7 @@ export async function computeOverviewSummary(
 
   // Reuse the investment report engine to aggregate the current calendar year,
   // matching the daily-pnl year mode.
-  const thisYear = now.getUTCFullYear();
+  const thisYear = todayYear;
   const yearReport = await loadInvestmentProfitReport(ctx, {
     period: "month",
     year: thisYear,
@@ -718,11 +730,12 @@ export async function computeOverviewSummary(
           AccountGroup: account.AccountGroup ? { id: "", name: account.AccountGroup.name } : null,
         },
         creditCardLabelTemplate,
-        { fields: accountLabelFields },
+        { fields: accountLabelFields, baseCurrency: fx.baseCurrency },
       );
       return {
         accountId: account.id,
         name: display.label,
+        hoverTitle: display.tableHoverTitle,
         assetType: account.fixedAssetType ?? null,
         groupName: account.AccountGroup?.name?.trim() || translate(language, "invest.noOwner"),
         marketValue,

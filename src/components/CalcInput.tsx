@@ -43,6 +43,11 @@ export type CalcInputProps = {
   hideCalculator?: boolean;
   inputClassName?: string;
   ariaLabel?: string;
+  /**
+   * 表格单元格模式：不套 `form-input`（那个类自带圆角、边框、焦点阴影、min-height），
+   * 输入框完全由 `inputClassName` 决定，用来做「表格线即边界」的格内编辑。
+   */
+  bare?: boolean;
 };
 
 export const CalcInput = forwardRef<HTMLInputElement, CalcInputProps>(function CalcInput(
@@ -58,6 +63,7 @@ export const CalcInput = forwardRef<HTMLInputElement, CalcInputProps>(function C
   hideCalculator = false,
   inputClassName,
   ariaLabel,
+  bare = false,
   },
   ref,
 ) {
@@ -203,7 +209,11 @@ export const CalcInput = forwardRef<HTMLInputElement, CalcInputProps>(function C
         placeholder={placeholder}
         aria-label={ariaLabel}
         style={{ caretColor: "var(--foreground)" }}
-        className={`form-input ${hideCalculator ? "" : "pr-10"} font-mono placeholder:text-slate-300 caret-slate-800 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500 ${inputClassName ?? ""}`}
+        className={
+          bare
+            ? `h-full w-full min-w-0 rounded-none bg-transparent outline-none placeholder:text-slate-300 caret-slate-800 disabled:cursor-not-allowed disabled:bg-transparent disabled:text-slate-500 ${inputClassName ?? ""}`
+            : `form-input ${hideCalculator ? "" : "pr-10"} font-mono placeholder:text-slate-300 caret-slate-800 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500 ${inputClassName ?? ""}`
+        }
       />
 
       {/* 计算器按钮**内缩 1px**、尺寸减 2px：与输入框边框留出 1px 缝，
@@ -212,7 +222,7 @@ export const CalcInput = forwardRef<HTMLInputElement, CalcInputProps>(function C
           按钮**不带任何边框**（包括左侧分隔线）：内缩后这些边框会与输入框自身的边框平行贴在一起
           （右侧能看到两层描边 + 抗锯齿造成的“模糊重影”），而左侧一条竖线与整体外框不搭。
           外框（描边 + 红/蓝环）统一由输入框负责，图标本身就够区分按钮。 */}
-      {!hideCalculator && <div className="absolute right-px top-px">
+      {!bare && !hideCalculator && <div className="absolute right-px top-px">
         <button
           ref={triggerRef}
           type="button"

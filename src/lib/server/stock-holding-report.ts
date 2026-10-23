@@ -1,11 +1,16 @@
+import { buildAccountDisplayOption } from "@/lib/account-display";
 import { prisma } from "@/lib/db/prisma";
 import { toNumber } from "@/lib/date-utils";
+import { getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 
 export type StockHoldingReportRow = {
   id: string;
   accountId: string;
+  /** 按「账户显示格式」渲染好的标签（含机构），不是数据库裸名。 */
   accountName: string;
+  /** 行内看不到的信息（机构/币种/卡号），作为列 hover。 */
+  accountHoverTitle: string;
   securityId: string;
   market: string;
   stockCode: string;
@@ -67,10 +72,15 @@ export async function loadStockHoldingReport(
       id: true,
       name: true,
       currency: true,
+      numberMasked: true,
+      groupId: true,
+      Institution: { select: { name: true, shortName: true } },
     },
     orderBy: [{ name: "asc" }],
   });
   const accountById = new Map(accounts.map((account) => [account.id, account]));
+  // 非本位币要在标签/hover 里有出处：只传 fields 时币种会整条丢失。
+  const baseCurrency = await getHouseholdBaseCurrency(ctx.householdId);
   const accountIds = accounts.map((account) => account.id);
   if (accountIds.length === 0) {
     return {
@@ -100,6 +110,15 @@ export async function loadStockHoldingReport(
   const rows = holdings
     .map((item) => {
       const account = accountById.get(item.accountId);
+      const accountDisplay = buildAccountDisplayOption({
+        id: item.accountId,
+        name: account?.name ?? item.accountId,
+        kind: "investment",
+        numberMasked: account?.numberMasked,
+        currency: account?.currency,
+        groupId: account?.groupId,
+        Institution: account?.Institution,
+      }, undefined, { baseCurrency });
       const quantity = roundQuantity(toNumber(item.quantity));
       const cost = roundMoney(toNumber(item.cost));
       const marketValue = roundMoney(toNumber(item.marketValue));
@@ -108,7 +127,8 @@ export async function loadStockHoldingReport(
       return {
         id: item.id,
         accountId: item.accountId,
-        accountName: account?.name ?? item.accountId,
+        accountName: accountDisplay.listLabel,
+        accountHoverTitle: accountDisplay.tableHoverTitle,
         securityId: item.securityId,
         market: item.market,
         stockCode: item.stockCode,

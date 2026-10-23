@@ -75,6 +75,12 @@ function upsertCurrencyEntry(list: CurrencyEntry[] | null, entry: CurrencyEntry)
   return normalized.source === "system" ? [normalized, ...next] : [...next, normalized];
 }
 
+/** Strip the redundant trailing code from an i18n label such as "人民币 CNY". */
+function stripTrailingCode(label: string, code: string) {
+  const suffix = ` ${code}`;
+  return label.endsWith(suffix) ? label.slice(0, -suffix.length) : label;
+}
+
 /** The 19 built-in system currencies ship with the frontend bundle — render
  * them synchronously without waiting for the API (which only adds the small
  * user-approved currency list on top). */
@@ -142,6 +148,15 @@ type Props = {
   excludeCodes?: string[];
   /** SmartSelect density */
   density?: "regular" | "compact" | "dense" | "micro";
+  /**
+   * "name" (default) renders the localized currency name with the ISO code as
+   * the sub-label. "code" renders the ISO code only (e.g. "CNY"), for narrow
+   * cells where "人民币 CNY" would be clipped; the localized name stays
+   * searchable and is shown in the hover title.
+   */
+  labelMode?: "name" | "code";
+  /** Minimum dropdown panel width in px (the trigger itself may be narrower). */
+  minDropdownWidth?: number;
 };
 
 export function CurrencySmartSelect({
@@ -153,6 +168,8 @@ export function CurrencySmartSelect({
   showRequestButton = true,
   excludeCodes = [],
   density = "compact",
+  labelMode = "name",
+  minDropdownWidth,
 }: Props) {
   const { t, language } = useI18n();
   // Seed synchronously with the built-in system currencies (or the cached
@@ -197,23 +214,38 @@ export function CurrencySmartSelect({
     const excluded = new Set(excludeCodes.map((code) => code.toUpperCase()));
     return currencies.filter((c) => !excluded.has(c.code.toUpperCase())).map((c) => {
       const isSystem = c.source === "system";
+      const userName = (language === "zh-CN" ? c.nameZh : c.nameEn) || c.nameZh || c.nameEn;
       // System currencies use i18n labels; user-added currencies use saved names.
-      const label = isSystem
-        ? labelSystem(c.code)
-        : (language === "zh-CN" ? c.nameZh : c.nameEn) || c.nameZh || c.nameEn || c.code;
+      const localizedLabel = isSystem ? labelSystem(c.code) : userName || c.code;
+      if (labelMode === "code") {
+        const name = stripTrailingCode(localizedLabel, c.code);
+        // The dropdown stays in the UI language ("人民币 · CNY"); only the
+        // closed trigger falls back to the ISO code so it fits a narrow cell.
+        return {
+          id: c.code,
+          label: name || c.code,
+          subLabel: c.code,
+          triggerLabel: c.code,
+          title: [c.code, name !== c.code ? name : "", isSystem ? "" : c.countryZh ?? ""]
+            .filter(Boolean)
+            .join(" · "),
+          currency: c.code,
+          kind: c.source,
+        };
+      }
       const alternateLabel = language === "zh-CN" ? c.nameEn : c.nameZh;
       const subLabel = isSystem
         ? c.code
         : [alternateLabel, c.countryZh].filter(Boolean).join(" · ") || c.code;
       return {
         id: c.code,
-        label,
+        label: localizedLabel,
         subLabel,
         currency: c.code,
         kind: c.source,
       };
     });
-  }, [currencies, excludeCodes, labelSystem, language]);
+  }, [currencies, excludeCodes, labelMode, labelSystem, language]);
 
   return (
     <>
@@ -226,6 +258,7 @@ export function CurrencySmartSelect({
         behavior={{
           search: true,
           density,
+          minDropdownWidth,
           clearable: false,
           create: showRequestButton
             ? {

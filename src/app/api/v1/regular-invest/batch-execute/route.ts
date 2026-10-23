@@ -15,7 +15,7 @@ import {
   regularInvestFailureNote,
   regularInvestRefundNote,
 } from "@/lib/fund/regular-invest-display";
-import { formatDateUtc } from "@/lib/date-utils";
+import { formatDateUtc, todayDateBusinessYmd } from "@/lib/date-utils";
 import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { decodeScheduledTaskMemo } from "@/lib/scheduled-task";
@@ -239,7 +239,7 @@ export async function POST(req: NextRequest) {
 
     // ── Pre-compute NAV: filter out paused purchases and no-NAV gaps ──
     const fundDateContext = await getFundDateContext(plan.accountId, plan.fundCode);
-    const todayStr = formatDateUtc(now);
+    const todayStr = todayDateBusinessYmd();
     const confirmDateStrFor = (runDateStr: string) => {
       const confirmDateStr = fundConfirmDate(runDateStr, fundDateContext.days, fundDateContext.tradingCalendar);
       if (confirmDateStr < runDateStr) {

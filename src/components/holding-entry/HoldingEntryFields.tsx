@@ -1,5 +1,6 @@
 "use client";
 
+import { accountOptionFromParts } from "@/lib/account-display";
 import { DateStepper } from "@/components/DateStepper";
 import { ClearableNoteField } from "@/components/ClearableNoteField";
 import { SmartSelect } from "@/components/SmartSelect";
@@ -282,11 +283,19 @@ export function HoldingAccountCreateModal({
       onClose={() => setNestedEntityType(null)}
       onCreated={(id, name, extra) => {
         const kind = extra?.kind || "bank_debit";
-        const institutionLabel = extra?.institutionShortName?.trim() || extra?.institutionName?.trim() || "";
-        const label = [institutionLabel, name].filter(Boolean).join("·") || name;
+        // 走统一入口：按「账户显示格式」渲染，不再手拼机构·名称。
+        const display = accountOptionFromParts({
+          id,
+          name,
+          kind,
+          institutionName: extra?.institutionName,
+          institutionShortName: extra?.institutionShortName,
+          currency: extra?.currency,
+          groupName: extra?.groupName,
+        });
         const option = {
           id,
-          label,
+          label: display.label,
           subLabel: [
             extra?.groupName,
             isInvestAccount ? accountLabelText : kindLabel(kind),

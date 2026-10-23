@@ -2,12 +2,27 @@
 import { ModalLayer } from "@/components/ModalLayer";
 
 import { useI18n } from "@/lib/i18n";
-import { formatMoneyYuan } from "@/lib/format";
-import { Eraser, Link2, Plus, Save, Trash2, X } from "lucide-react";
+import { formatAmountDraft, formatMoneyYuan } from "@/lib/format";
+import { Eraser, Link2 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { DateStepper } from "./DateStepper";
 import { CalcInput, evaluateCalcInputExpression } from "./CalcInput";
+import { EntryModalShell } from "./EntryModalShell";
+import {
+  HEADER_CELL,
+  HEADER_DATE,
+  HEADER_EDIT,
+  HEADER_FIELD,
+  REIMBURSE_PANEL_STYLE,
+} from "./reimbursement-table-styles";
 import { reimbursementErrorMessage } from "@/lib/reimbursement-error";
+import {
+  MAX_EXPENSE_ROWS,
+  ReimbursementDocumentForm,
+  SOURCE_SCROLL_MAX_H,
+  type ReimbursementDraftHeader,
+  type ReimbursementDraftRow,
+} from "./ReimbursementDocumentForm";
 import type {
   ReimbursementBatchData,
   ReimbursementCandidateData,
@@ -17,6 +32,7 @@ import type {
 } from "@/lib/server/sidebar-actions/reimbursement-actions";
 
 // ─── Editable row state ──────────────────────────────────────────────────────
+
 type EditableItem = {
   id: string;
   txRecordId: string | null;
@@ -50,7 +66,6 @@ export function ReimbursementEditor({
   reimbursement,
   batches,
   candidates,
-  accountName,
   actions,
   mode = "edit",
   auditAmount,
@@ -69,7 +84,6 @@ export function ReimbursementEditor({
   reimbursement: ReimbursementData;
   batches: ReimbursementBatchData[];
   candidates: ReimbursementCandidateData[];
-  accountName: string;
   actions: {
     update: (formData: FormData) => Promise<{ ok: boolean; error?: string }>;
     updateItem: (formData: FormData) => Promise<{ ok: boolean; error?: string }>;
@@ -98,7 +112,8 @@ export function ReimbursementEditor({
   const isPending = reimbursement.status === "pending";
   const isAuditMode = mode === "audit";
   const isEditable = isPending && !isAuditMode;
-  const [kind, setKind] = useState<ReimbursementKindValue>(reimbursement.kind);
+  // 「代付」报销类型已废弃：历史 advance 单据按一般报销编辑。
+  const [kind, setKind] = useState<ReimbursementKindValue>(reimbursement.kind === "advance" ? "general" : reimbursement.kind);
   const isTravel = kind === "travel";
 
   // ── Header state ────────────────────────────────────────────────────────────
@@ -122,11 +137,11 @@ export function ReimbursementEditor({
       days: String(item.days ?? ""),
       fromPlace: item.fromPlace ?? "",
       toPlace: item.toPlace ?? "",
-      amount: String(item.amount),
-      outsideTransportAmount: String(item.outsideTransportAmount ?? 0),
-      cityTransportAmount: String(item.cityTransportAmount ?? 0),
-      subsidyAmount: String(item.subsidyAmount ?? 0),
-      lodgingAmount: String(item.lodgingAmount ?? 0),
+      amount: formatAmountDraft(item.amount),
+      outsideTransportAmount: formatAmountDraft(item.outsideTransportAmount ?? 0),
+      cityTransportAmount: formatAmountDraft(item.cityTransportAmount ?? 0),
+      subsidyAmount: formatAmountDraft(item.subsidyAmount ?? 0),
+      lodgingAmount: formatAmountDraft(item.lodgingAmount ?? 0),
       entryDate: item.entryDate,
       note: item.note,
     })),
@@ -154,7 +169,7 @@ export function ReimbursementEditor({
       note: reimbursement.note ?? "",
       attachmentCount: String(reimbursement.attachmentCount ?? ""),
     });
-    setKind(reimbursement.kind);
+    setKind(reimbursement.kind === "advance" ? "general" : reimbursement.kind);
     setItems(reimbursement.items.map((item) => ({
       id: item.id,
       txRecordId: item.txRecordId,
@@ -163,11 +178,11 @@ export function ReimbursementEditor({
       days: String(item.days ?? ""),
       fromPlace: item.fromPlace ?? "",
       toPlace: item.toPlace ?? "",
-      amount: String(item.amount),
-      outsideTransportAmount: String(item.outsideTransportAmount ?? 0),
-      cityTransportAmount: String(item.cityTransportAmount ?? 0),
-      subsidyAmount: String(item.subsidyAmount ?? 0),
-      lodgingAmount: String(item.lodgingAmount ?? 0),
+      amount: formatAmountDraft(item.amount),
+      outsideTransportAmount: formatAmountDraft(item.outsideTransportAmount ?? 0),
+      cityTransportAmount: formatAmountDraft(item.cityTransportAmount ?? 0),
+      subsidyAmount: formatAmountDraft(item.subsidyAmount ?? 0),
+      lodgingAmount: formatAmountDraft(item.lodgingAmount ?? 0),
       entryDate: item.entryDate,
       note: item.note,
     })));
@@ -185,7 +200,6 @@ export function ReimbursementEditor({
     });
   }, [items, isTravel]);
 
-  const totalAmount = useMemo(() => itemTotals.reduce((s, v) => s + v, 0), [itemTotals]);
   const auditAmountValue = evaluateCalcInputExpression(auditAmount ?? "", 0);
   const linkedTransactionTotal = useMemo(
     () => linkedTransactions.reduce((sum, item) => sum + item.amount, 0),
@@ -196,38 +210,6 @@ export function ReimbursementEditor({
   const availableCandidates = candidates.filter(
     (candidate) => candidate.advanceAccountId === reimbursement.advanceAccountId && !linkedTransactionIds.has(candidate.id),
   );
-  const travelColumnTotals = items.reduce((totals, item, index) => {
-    totals.outsideTransport += Math.round((evaluateCalcInputExpression(item.outsideTransportAmount, 0) ?? 0) * 100);
-    totals.cityTransport += Math.round((evaluateCalcInputExpression(item.cityTransportAmount, 0) ?? 0) * 100);
-    totals.allowance += Math.round((evaluateCalcInputExpression(item.subsidyAmount, 0) ?? 0) * 100);
-    totals.lodging += Math.round((evaluateCalcInputExpression(item.lodgingAmount, 0) ?? 0) * 100);
-    totals.subtotal += Math.round((itemTotals[index] ?? 0) * 100);
-    return totals;
-  }, { outsideTransport: 0, cityTransport: 0, allowance: 0, lodging: 0, subtotal: 0 });
-
-  // ── Patch helpers ───────────────────────────────────────────────────────────
-  const patchItem = (id: string, patch: Partial<EditableItem>) => {
-    setItems((cur) => cur.map((item) => (item.id === id ? { ...item, ...patch } : item)));
-  };
-
-  const renderTravelAmount = (
-    item: EditableItem,
-    expenseItem: ReimbursementExpenseItemValue,
-    field: "outsideTransportAmount" | "cityTransportAmount" | "subsidyAmount" | "lodgingAmount",
-  ) => {
-    if (!isEditable) return formatMoneyYuan(Number(item[field]) || 0);
-    return (
-      <CalcInput
-        value={item[field]}
-        onChange={(value) => patchItem(item.id, { [field]: value })}
-        precision={2}
-        hideCalculator
-        inputClassName={`${INPUT_STYLE} h-7 text-right font-sans`}
-        className="w-full"
-      />
-    );
-  };
-
   const buildItemFormData = (item: EditableItem, index: number) => {
     const fd = new FormData();
     fd.set("itemId", item.id);
@@ -375,448 +357,198 @@ export function ReimbursementEditor({
     }
   };
 
+  // 共用表单用「抬头对象 + patch」和「行 key + patch」接口：编辑窗的明细行以 id 作 key。
+  const patchDraftHeader = (patch: Partial<ReimbursementDraftHeader>) =>
+    setHeader((current) => ({ ...current, ...patch }));
+
+  const draftRows: ReimbursementDraftRow[] = items.map((item) => ({
+    key: item.id,
+    txRecordId: item.txRecordId,
+    expenseItem: item.expenseItem,
+    categoryName: item.categoryName,
+    entryDate: item.entryDate,
+    fromPlace: item.fromPlace,
+    toPlace: item.toPlace,
+    days: item.days,
+    amount: item.amount,
+    outsideTransportAmount: item.outsideTransportAmount,
+    cityTransportAmount: item.cityTransportAmount,
+    subsidyAmount: item.subsidyAmount,
+    lodgingAmount: item.lodgingAmount,
+    note: item.note,
+  }));
+
+  const patchDraftRow = (key: string, patch: Partial<ReimbursementDraftRow>) => {
+    setItems((current) => current.map((item) => (item.id === key ? { ...item, ...patch } : item)));
+  };
+
   const addItem = () => {
     if (!isEditable) return;
-    setItems((current) => [
-      ...current,
-      {
-        id: `draft-${Date.now()}-${current.length}`,
-        txRecordId: null,
-        categoryName: kind === "general" ? "" : null,
-        expenseItem: null,
-        days: "",
-        fromPlace: "",
-        toPlace: "",
-        amount: "0",
-        outsideTransportAmount: "0",
-        cityTransportAmount: "0",
-        subsidyAmount: "0",
-        lodgingAmount: "0",
-        entryDate: "",
-        note: "",
-      },
-    ]);
+    setItems((current) => {
+      if (current.length >= MAX_EXPENSE_ROWS) return current;
+      return [
+        ...current,
+        {
+          id: `draft-${Date.now()}-${current.length}`,
+          txRecordId: null,
+          categoryName: kind === "general" ? "" : null,
+          expenseItem: null,
+          days: "",
+          fromPlace: "",
+          toPlace: "",
+          amount: "0",
+          outsideTransportAmount: "0",
+          cityTransportAmount: "0",
+          subsidyAmount: "0",
+          lodgingAmount: "0",
+          entryDate: "",
+          note: "",
+        },
+      ];
+    });
   };
 
-  const changeKind = (nextKind: ReimbursementKindValue) => {
-    if (!isEditable || nextKind === kind) return;
-    setItems((current) => current.map((item, index) => {
-      if (nextKind === "travel" && kind !== "travel") {
-        const amount = evaluateCalcInputExpression(item.amount, 0) ?? 0;
-        return {
-          ...item,
-          expenseItem: item.expenseItem ?? "transport",
-          outsideTransportAmount: item.outsideTransportAmount === "0"
-            ? String(amount)
-            : item.outsideTransportAmount,
-        };
-      }
-      if (nextKind !== "travel" && kind === "travel") {
-        return { ...item, amount: String(itemTotals[index] ?? 0) };
-      }
-      return item;
-    }));
-    setKind(nextKind);
+  // 页签只示意单据类型：类型在创建时确定（差旅费报销 / 一般报销），
+  // 另一个页签禁用，编辑与审核都不能改到另一种类型。
+  const kindTabs = [
+    { id: "travel", label: t("reimburse.form.kindTravel"), disabled: kind !== "travel" },
+    { id: "general", label: t("reimburse.form.kindGeneral"), disabled: kind !== "general" },
+  ];
+
+  // 表单提交：审核态提交审批，编辑态保存单据，只读态什么也不做（按钮此时不渲染）。
+  const submitFromShell = () => {
+    if (isAuditMode) {
+      if (auditAmountValue != null) onAuditSubmit?.();
+      return;
+    }
+    if (isEditable) saveAll();
   };
 
-  // ─── Column widths for ADT table ────────────────────────────────────────────
-  // Column widths for the report detail table.
-  const COL_DATE = "8rem";
-  const COL_AMOUNT = "7rem";
-  const INPUT_STYLE =
-    "w-full border border-transparent bg-transparent px-1 py-0.5 text-xs text-slate-700 outline-none focus:border-blue-400 focus:bg-white rounded-sm transition";
-
+  // 窗口外壳：与新建窗同一个 `EntryModalShell` —— 标题栏、页签、卡片、按钮行、层级、高度全由它统一，
+  // 这里只提供内容（纸面表单 + 审核区 + 原始记录）与本窗的主操作。
   return (
-    <div className="flex min-h-0 flex-col" style={{ minHeight: "400px" }}>
-      {/* ── Toolbar ── */}
-      <div className="flex shrink-0 items-center justify-between border-b border-slate-200 bg-slate-50 px-4 py-2">
-        <div className="flex items-center gap-3">
-          <span className="text-sm font-semibold text-slate-700">{t(isAuditMode ? "reimburse.document.audit" : "reimburse.editor.title")}</span>
-          {savedMessage && (
-            <span className="text-xs text-emerald-600">{savedMessage}</span>
-          )}
-        </div>
-        <div className="flex items-center gap-2">
-          {isEditable && (
-            <button
-              type="button"
-              onClick={saveAll}
-              disabled={savingHeader || savingItems}
-              className="primary-button flex h-8 items-center gap-1.5 px-3 text-xs"
-            >
-              <Save className="h-3.5 w-3.5" />
-              {savingHeader ? "…" : t("common.save")}
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={onClose}
-            className="secondary-button flex h-8 w-8 shrink-0 items-center justify-center p-0 leading-none"
-            title={t("table.close")}
-          >
-            <X aria-hidden="true" className="h-4 w-4 shrink-0" strokeWidth={2.25} />
-          </button>
-        </div>
-      </div>
-
-      {/* ── Scrollable content ── */}
-      <div className="min-h-0 flex-1 overflow-auto bg-slate-100 p-4 md:p-6">
-        <article className="w-full border border-slate-300 bg-white px-3 py-4 shadow-sm md:px-5 md:py-5">
-          <header className="border-b-2 border-slate-700 pb-4 text-center">
-            <div className="text-lg font-semibold tracking-wide text-slate-800">{header.documentNumber || t("reimburse.form.titleFallback")}</div>
-            <div className="mt-1 text-xs text-slate-500">{accountName}</div>
-          </header>
-
-          <section className="mt-3 grid grid-cols-12 border-l border-t border-slate-300 text-xs">
-            <div className="col-span-3 border-b border-r border-slate-300 p-1.5">
-              <div className="text-slate-500">{t("reimburse.batch.belongsTo")}</div>
-              <select value={header.batchId} onChange={(event) => setHeader((current) => ({ ...current, batchId: event.target.value }))} disabled={!isEditable} className="mt-0.5 h-7 w-full border-b border-dotted border-slate-400 bg-transparent font-medium text-slate-800 outline-none disabled:appearance-none">
-                {batches.map((batch) => <option key={batch.id} value={batch.id}>{batch.title}</option>)}
-              </select>
-            </div>
-            <div className="col-span-3 border-b border-r border-slate-300 p-1.5">
-              <div className="text-slate-500">{t("reimburse.document.type")}</div>
-              {isEditable ? (
-                <select
-                  value={kind}
-                  onChange={(event) => changeKind(event.target.value as ReimbursementKindValue)}
-                  className="mt-0.5 h-7 w-full border-b border-dotted border-slate-400 bg-transparent font-medium text-slate-800 outline-none"
-                >
-                  <option value="travel">{t("reimburse.form.kindTravel")}</option>
-                  <option value="general">{t("reimburse.form.kindGeneral")}</option>
-                  <option value="advance">{t("reimburse.form.kindAdvance")}</option>
-                </select>
-              ) : (
-                <div className="mt-0.5 font-medium text-slate-800">
-                  {t(kind === "travel" ? "reimburse.form.kindTravel" : kind === "general" ? "reimburse.form.kindGeneral" : "reimburse.form.kindAdvance")}
-                </div>
-              )}
-            </div>
-            <div className="col-span-6 border-b border-r border-slate-300 p-1.5">
-              <div className="text-slate-500">{t("reimburse.document.number")}</div>
-              <input type="text" value={header.documentNumber} onChange={(e) => setHeader((h) => ({ ...h, documentNumber: e.target.value }))} disabled={!isEditable} className={`${INPUT_STYLE} mt-0.5 h-7 border-b border-dotted border-slate-400 text-slate-800 ${!isEditable ? "cursor-not-allowed" : ""}`} />
-            </div>
-            {isTravel && (
-              <>
-                <div className="col-span-12 border-b border-r border-slate-300 p-1.5 sm:col-span-5">
-                  <label className="block text-slate-500">{t("reimburse.form.travelDateRange")}</label>
-                  <div className="mt-0.5 flex min-w-0 items-center gap-1">
-                    <DateStepper
-                      value={header.travelStartDate}
-                      onChange={(v) => setHeader((h) => ({ ...h, travelStartDate: v }))}
-                      disabled={!isEditable}
-                      compact
-                      className="h-7 min-w-0 flex-1 border-b border-dotted border-slate-400 text-xs"
-                    />
-                    <span className="shrink-0 text-slate-400">~</span>
-                    <DateStepper
-                      value={header.travelEndDate}
-                      onChange={(v) => setHeader((h) => ({ ...h, travelEndDate: v }))}
-                      disabled={!isEditable}
-                      compact
-                      className="h-7 min-w-0 flex-1 border-b border-dotted border-slate-400 text-xs"
-                    />
-                  </div>
-                </div>
-                <div className="col-span-9 border-b border-r border-slate-300 p-1.5 sm:col-span-6">
-                  <label className="block text-slate-500">{t("reimburse.form.travelReason")}</label>
-                  <input
-                    type="text"
-                    value={header.travelReason}
-                    onChange={(e) => setHeader((h) => ({ ...h, travelReason: e.target.value }))}
-                    disabled={!isEditable}
-                    className={`${INPUT_STYLE} mt-0.5 h-7 border-b border-dotted border-slate-400 text-slate-800 ${!isEditable ? "cursor-not-allowed" : ""}`}
-                  />
-                </div>
-                <div className="col-span-3 border-b border-r border-slate-300 p-1 sm:col-span-1">
-                  <label className="block truncate text-slate-500">{t("reimburse.form.attachmentCount")}</label>
-                  <CalcInput
-                    value={header.attachmentCount}
-                    onChange={(value) => setHeader((h) => ({ ...h, attachmentCount: value }))}
-                    disabled={!isEditable}
-                    precision={0}
-                    hideCalculator
-                    inputClassName={`${INPUT_STYLE} mt-0.5 h-7 border-b border-dotted border-slate-400 text-slate-800 font-sans`}
-                    className="w-full"
-                  />
-                </div>
-              </>
-            )}
-            {!isTravel && kind === "advance" && (
-            <div className="col-span-12 border-b border-r border-slate-300 p-1.5">
-              <label className="block text-slate-500">{t("reimburse.form.attachmentCount")}</label>
-                <CalcInput
-                  value={header.attachmentCount}
-                  onChange={(value) => setHeader((h) => ({ ...h, attachmentCount: value }))}
-                  disabled={!isEditable}
-                  precision={0}
-                  hideCalculator
-                  inputClassName={`${INPUT_STYLE} mt-0.5 h-7 max-w-24 border-b border-dotted border-slate-400 text-slate-800 font-sans`}
-                  className="max-w-24"
-                />
-            </div>
-            )}
-          </section>
-
-        {/* ── ADT Table ── */}
-        <div className="mt-5 overflow-x-auto">
-          <table className="w-full table-fixed border-collapse text-xs">
-            <thead>
-              <tr className="bg-slate-100 text-slate-600">
-                <th className="border-b border-r border-slate-300 px-2 py-1.5 text-left font-medium" style={{ width: COL_DATE }}>
-                  {t("reimburse.colDate")}
-                </th>
-                {isTravel ? (
-                  <>
-                    <th className="border-b border-r border-slate-300 px-2 py-1.5 text-left font-medium">{t("reimburse.travel.routeVehicle")}</th>
-                    <th className="border-b border-r border-slate-300 px-1 py-1.5 text-right font-medium">{t("reimburse.travel.outsideTransport")}</th>
-                    <th className="border-b border-r border-slate-300 px-1 py-1.5 text-right font-medium">{t("reimburse.travel.cityTransport")}</th>
-                    <th className="border-b border-r border-slate-300 px-1 py-1.5 text-right font-medium">{t("reimburse.travel.days")}</th>
-                    <th className="border-b border-r border-slate-300 px-1 py-1.5 text-right font-medium">{t("reimburse.travel.allowance")}</th>
-                    <th className="border-b border-r border-slate-300 px-1 py-1.5 text-right font-medium">{t("reimburse.expenseItem.lodging")}</th>
-                  </>
-                ) : (
-                  <>
-                    <th className="border-b border-r border-slate-300 px-2 py-1.5 text-left font-medium">{t(kind === "general" ? "reimburse.form.generalReason" : "reimburse.colCategory")}</th>
-                    <th className="border-b border-r border-slate-300 px-2 py-1.5 text-right font-medium" style={{ width: COL_AMOUNT }}>{t("reimburse.colAmount")}</th>
-                  </>
-                )}
-                <th className="w-24 border-b border-r border-slate-300 px-2 py-1.5 text-right font-medium">{t("reimburse.editor.subtotal")}</th>
-                <th className="border-b border-r border-slate-300 px-2 py-1.5 text-left font-medium">{t("reimburse.colNote")}</th>
-                {isEditable ? (
-                  <th className="w-10 border-b border-r border-slate-300 px-1 text-center">
-                    <button
-                      type="button"
-                      onClick={addItem}
-                      className="inline-flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white text-slate-600 hover:border-blue-400 hover:text-blue-600"
-                      title={t("reimburse.item.add")}
-                      aria-label={t("reimburse.item.add")}
-                    >
-                      <Plus className="h-3.5 w-3.5" />
-                    </button>
-                  </th>
-                ) : null}
-              </tr>
-            </thead>
-            <tbody>
-              {items.map((item, i) => {
-                const itemTotal = itemTotals[i];
-                return (
-                  <tr key={item.id} className="hover:bg-blue-50/40">
-                    {/* Date */}
-                    <td className="border-b border-r border-slate-200 px-1 py-1">
-                      {isEditable ? (
-                        <DateStepper
-                          value={item.entryDate}
-                          onChange={(value) => patchItem(item.id, { entryDate: value })}
-                          className="h-7 w-[7.5rem] text-xs"
-                          compact
-                        />
-                      ) : (
-                        <span className="px-1 text-slate-600">{item.entryDate}</span>
-                      )}
-                    </td>
-
-                    {isTravel ? (
-                      <>
-                        <td className="border-b border-r border-slate-200 p-0.5 text-slate-600">
-                          {isEditable ? (
-                            <div className="grid grid-cols-2 gap-1">
-                              <input
-                                type="text"
-                                value={item.fromPlace}
-                                onChange={(event) => patchItem(item.id, { fromPlace: event.target.value })}
-                                placeholder={t("reimburse.travel.fromPlace")}
-                                className={`${INPUT_STYLE} h-7 min-w-0 border-b border-slate-200`}
-                              />
-                              <input
-                                type="text"
-                                value={item.toPlace}
-                                onChange={(event) => patchItem(item.id, { toPlace: event.target.value })}
-                                placeholder={t("reimburse.travel.toPlace")}
-                                className={`${INPUT_STYLE} h-7 min-w-0 border-b border-slate-200`}
-                              />
-                            </div>
-                          ) : (
-                            <>
-                              <div className="truncate" title={[item.fromPlace, item.toPlace].filter(Boolean).join(" -> ")}>
-                                {[item.fromPlace, item.toPlace].filter(Boolean).join(" -> ") || "-"}
-                              </div>
-                            </>
-                          )}
-                        </td>
-                        <td className="border-b border-r border-slate-200 p-0.5 text-right tabular-nums">{renderTravelAmount(item, "transport", "outsideTransportAmount")}</td>
-                        <td className="border-b border-r border-slate-200 p-0.5 text-right tabular-nums">{renderTravelAmount(item, "cityTransport", "cityTransportAmount")}</td>
-                        <td className="border-b border-r border-slate-200 px-1 py-0.5 text-right tabular-nums">
-                          {isEditable ? (
-                            <CalcInput
-                              value={item.days}
-                              onChange={(value) => patchItem(item.id, { days: value })}
-                              precision={0}
-                              hideCalculator
-                              inputClassName={`${INPUT_STYLE} h-7 text-right font-sans`}
-                              className="w-full"
-                            />
-                        ) : item.days ?? "-"}
-                        </td>
-                        <td className="border-b border-r border-slate-200 p-0.5 text-right tabular-nums">{renderTravelAmount(item, "subsidy", "subsidyAmount")}</td>
-                        <td className="border-b border-r border-slate-200 p-0.5 text-right tabular-nums">{renderTravelAmount(item, "lodging", "lodgingAmount")}</td>
-                      </>
-                    ) : (
-                      <>
-                        <td className="border-b border-r border-slate-200 px-1 py-1.5 text-slate-600">
-                          {isEditable && kind === "general" ? (
-                            <input
-                              type="text"
-                              value={item.categoryName ?? ""}
-                              onChange={(event) => patchItem(item.id, { categoryName: event.target.value })}
-                              placeholder={t("reimburse.form.generalReasonPlaceholder")}
-                              className={INPUT_STYLE}
-                            />
-                          ) : item.expenseItem ? t(`reimburse.expenseItem.${item.expenseItem}`) : item.categoryName ?? "-"}
-                        </td>
-                        <td className="border-b border-r border-slate-200 px-1 py-1 text-right">
-                          {isEditable ? (
-                            <CalcInput
-                              value={item.amount}
-                              onChange={(value) => patchItem(item.id, { amount: value })}
-                              precision={2}
-                              hideCalculator
-                              inputClassName={`${INPUT_STYLE} text-right font-sans`}
-                              className="w-full"
-                            />
-                          ) : formatMoneyYuan(itemTotal)}
-                        </td>
-                      </>
-                    )}
-                    <td className="border-b border-r border-slate-200 px-2 py-1.5 text-right font-medium tabular-nums text-slate-700">{formatMoneyYuan(itemTotal)}</td>
-                    <td className="border-b border-r border-slate-200 px-1 py-0.5 text-slate-500">
-                      {isEditable ? (
-                        <input
-                          type="text"
-                          value={item.note ?? ""}
-                          onChange={(event) => patchItem(item.id, { note: event.target.value })}
-                          className={INPUT_STYLE}
-                        />
-                      ) : item.note ?? "-"}
-                    </td>
-
-                    {/* Save row button */}
-                    {isEditable ? (
-                      <td className="border-b border-r border-slate-200 px-1 py-1 text-center">
-                        <div className="flex items-center justify-center gap-1">
-                          <button
-                            type="button"
-                            onClick={() => { void deleteItem(item.id); }}
-                            disabled={savingItems}
-                            className="inline-flex h-7 w-7 items-center justify-center rounded border border-slate-200 bg-white text-slate-600 hover:border-rose-400 hover:text-rose-600 disabled:opacity-40"
-                            title={t("reimburse.item.delete")}
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </button>
-                        </div>
-                      </td>
-                    ) : null}
-                  </tr>
-                );
-              })}
-
-              {/* ── Total row ── */}
-              <tr className="bg-slate-100 font-semibold">
-                <td className="border-t border-r border-slate-300 px-2 py-1.5 text-slate-600" colSpan={isTravel ? 2 : 2}>
-                  {t("reimburse.totalLabel")}
-                </td>
-                {isTravel ? (
-                  <>
-                    <td className="border-t border-r border-slate-300 px-1 py-1.5 text-right tabular-nums text-slate-800">{formatMoneyYuan(travelColumnTotals.outsideTransport / 100)}</td>
-                    <td className="border-t border-r border-slate-300 px-1 py-1.5 text-right tabular-nums text-slate-800">{formatMoneyYuan(travelColumnTotals.cityTransport / 100)}</td>
-                    <td className="border-t border-r border-slate-300" />
-                    <td className="border-t border-r border-slate-300 px-1 py-1.5 text-right tabular-nums text-slate-800">{formatMoneyYuan(travelColumnTotals.allowance / 100)}</td>
-                    <td className="border-t border-r border-slate-300 px-1 py-1.5 text-right tabular-nums text-slate-800">{formatMoneyYuan(travelColumnTotals.lodging / 100)}</td>
-                    <td className="border-t border-r border-slate-300 px-2 py-1.5 text-right tabular-nums text-slate-800">{formatMoneyYuan(travelColumnTotals.subtotal / 100)}</td>
-                    <td className="border-t border-r border-slate-300" />
-                  </>
-                ) : (
-                  <>
-                    <td className="border-t border-r border-slate-300 px-2 py-1.5 text-right tabular-nums text-slate-800">{formatMoneyYuan(totalAmount)}</td>
-                    <td className="border-t border-r border-slate-300 px-2 py-1.5 text-right tabular-nums text-slate-800">{formatMoneyYuan(totalAmount)}</td>
-                    <td className="border-t border-r border-slate-300" />
-                  </>
-                )}
-                {isEditable ? <td className="border-t border-r border-slate-300" /> : null}
-              </tr>
-            </tbody>
-          </table>
-        </div>
-
-        <section className={`mt-4 grid grid-cols-1 border-l border-t border-slate-300 text-xs ${isAuditMode ? "sm:grid-cols-1" : "sm:grid-cols-3"}`}>
-          {!isAuditMode ? (
-            <div className="border-b border-r border-slate-300 p-2">
-              <div className="text-slate-500">{t("reimburse.document.approvedAmount")}</div>
-              <div className="mt-1 text-right text-base font-semibold tabular-nums text-slate-800">{reimbursement.approvedAmount == null ? "-" : formatMoneyYuan(reimbursement.approvedAmount)}</div>
-            </div>
-          ) : null}
-          {!isAuditMode ? <div className="border-b border-r border-slate-300 p-2">
-            <div className="text-slate-500">{t("reimburse.reimburseDate")}</div>
-            <div className="mt-1 text-right font-medium tabular-nums text-slate-800">{reimbursement.reimbursedDate ?? "-"}</div>
-          </div> : null}
-        </section>
-
-        {isAuditMode ? (
-          <section className="mt-3 grid grid-cols-1 border-l border-t border-slate-300 text-xs sm:grid-cols-12">
-            <label className="border-b border-r border-slate-300 p-2 sm:col-span-3">
-              <span className="text-slate-500">{t("reimburse.document.approvalDate")}</span>
-              <DateStepper
-                value={auditDate ?? ""}
-                onChange={(value) => onAuditDateChange?.(value)}
-                className="mt-1 h-8 w-full"
-              />
-            </label>
-            <div className="border-b border-r border-slate-300 p-2 sm:col-span-2">
-              <span className="text-slate-500">{t("reimburse.reimburseDate")}</span>
-              <div className="mt-1 h-8 flex items-center justify-end font-medium tabular-nums text-slate-800">
-                {reimbursement.reimbursedDate ?? "-"}
-              </div>
-            </div>
-            <label className="border-b border-r border-slate-300 p-2 sm:col-span-2">
-              <span className="text-slate-500">{t("reimburse.document.approvedAmount")}</span>
-              <CalcInput
-                value={auditAmount ?? ""}
-                onChange={(value) => onAuditAmountChange?.(value)}
-                precision={2}
-                hideCalculator
-                inputClassName="mt-1 h-8 w-full text-right tabular-nums font-sans"
-                className="w-full"
-              />
-            </label>
-            <label className="border-b border-r border-slate-300 p-2 sm:col-span-3">
-              <span className="text-slate-500">{t("reimburse.document.approvalNote")}</span>
-              <input
-                type="text"
-                value={auditNote ?? ""}
-                onChange={(event) => onAuditNoteChange?.(event.target.value)}
-                className="mt-1 h-8 w-full rounded-sm border border-slate-300 px-2 text-sm font-normal text-slate-800"
-              />
-            </label>
-            <div className="flex items-end gap-1 border-b border-r border-slate-300 p-2 sm:col-span-2">
-              {canCancelApproval ? (
-                <button
-                  type="button"
-                  onClick={onCancelApproval}
-                  className="secondary-button h-8 flex-1 px-2 text-xs"
-                  disabled={auditBusy}
-                >
-                  {t("reimburse.document.cancelApproval")}
-                </button>
-              ) : null}
+    <EntryModalShell
+      open
+      heightKey="reimburse-document"
+      width="3xl"
+      heightMode="natural"
+      panelStyle={REIMBURSE_PANEL_STYLE}
+      title={
+        <>
+          {t(isAuditMode ? "reimburse.document.audit" : "reimburse.editor.title")}
+          {savedMessage ? <span className="ml-2 text-xs font-normal text-emerald-600">{savedMessage}</span> : null}
+        </>
+      }
+      onClose={onClose}
+      onSubmit={(event) => {
+        event.preventDefault();
+        submitFromShell();
+      }}
+      tabs={kindTabs}
+      activeTabId={kind === "travel" ? "travel" : "general"}
+      onTabChange={() => {}}
+      footer={
+        isAuditMode ? (
+          <>
+            {canCancelApproval ? (
               <button
                 type="button"
-                onClick={onAuditSubmit}
-                className="primary-button h-8 flex-1 px-3 text-xs"
-                disabled={auditBusy || auditAmountValue == null}
+                onClick={onCancelApproval}
+                className="secondary-button h-9 px-3"
+                disabled={auditBusy}
               >
-                {auditBusy ? t("liabilityShell.saving") : t("common.save")}
+                {t("reimburse.document.cancelApproval")}
               </button>
+            ) : null}
+            <button
+              type="submit"
+              className="primary-button h-9 px-3"
+              disabled={auditBusy || auditAmountValue == null}
+            >
+              {auditBusy ? t("liabilityShell.saving") : t("common.save")}
+            </button>
+          </>
+        ) : isEditable ? (
+          <button
+            type="submit"
+            className="primary-button h-9 px-3"
+            disabled={savingHeader || savingItems}
+          >
+            {savingHeader ? t("liabilityShell.saving") : t("common.save")}
+          </button>
+        ) : undefined
+      }
+    >
+        {/* 纸面表单：抬头 / 明细表 / 合计行与新建弹窗共用 `ReimbursementDocumentForm`。 */}
+        <ReimbursementDocumentForm
+          kind={kind}
+          header={header}
+          onHeaderChange={patchDraftHeader}
+          rows={draftRows}
+          onRowChange={patchDraftRow}
+          readOnly={!isEditable}
+          busy={savingItems}
+          batches={batches}
+          settledDate={reimbursement.reimbursedDate ?? null}
+          /* 详情 / 审核窗不显示备注格（备注只在新建时填写）。 */
+          hideNote
+          /* 不再显示「归属对象」格：对象已落在报销批次上，抬头由「归属批次」表达。 */
+          onAddRow={addItem}
+          onRemoveRow={(key) => void deleteItem(key)}
+          titleBlock={
+            /* 只留单据编号：归属对象已在抬头格里，这里再写一次是同一个名字重复两遍。 */
+            <header className="border-b-2 border-slate-700 pb-4 text-center">
+              <div className="text-lg font-semibold tracking-wide text-slate-800">
+                {header.documentNumber || t("reimburse.form.titleFallback")}
+              </div>
+            </header>
+          }
+        />
+
+        {isAuditMode ? (
+          <section className="mt-3 text-xs">
+            {/* 审核只开放这一块：可编辑格靠底色与控件本身表达，不写规则说明。 */}
+            <div className="grid grid-cols-1 border-l border-t border-slate-300 sm:grid-cols-12">
+              {/* 审批日期：可编辑 */}
+              <label className={`${HEADER_CELL} bg-amber-100/70 sm:col-span-4`}>
+                <span className="flex w-[4.5rem] shrink-0 items-center whitespace-nowrap border-r border-slate-300 px-2 text-[11px] font-medium text-amber-700">{t("reimburse.document.approvalDate")}</span>
+                <span className={HEADER_EDIT}>
+                  <DateStepper
+                    value={auditDate ?? ""}
+                    onChange={(value) => onAuditDateChange?.(value)}
+                    className={HEADER_DATE}
+                    compact
+                  />
+                </span>
+              </label>
+              {/* 到账日期已在抬头展示，这里不再重复。 */}
+              {/* 审批金额：可编辑 */}
+              <label className={`${HEADER_CELL} bg-amber-100/70 sm:col-span-2`}>
+                <span className="flex w-[4.5rem] shrink-0 items-center whitespace-nowrap border-r border-slate-300 px-2 text-[11px] font-medium text-amber-700">{t("reimburse.document.approvedAmount")}</span>
+                <span className={HEADER_EDIT}>
+                  <CalcInput
+                    bare
+                    value={auditAmount ?? ""}
+                    onChange={(value) => onAuditAmountChange?.(value)}
+                    precision={2}
+                    hideCalculator
+                    inputClassName={`${HEADER_FIELD} text-right tabular-nums font-sans`}
+                    className="h-full min-w-0 flex-1"
+                  />
+                </span>
+              </label>
+              {/* 审批备注：可编辑（占满右侧，保存按钮在窗口右下角，不占格） */}
+              <label className={`${HEADER_CELL} bg-amber-100/70 sm:col-span-6`}>
+                <span className="flex w-[4.5rem] shrink-0 items-center whitespace-nowrap border-r border-slate-300 px-2 text-[11px] font-medium text-amber-700">{t("reimburse.document.approvalNote")}</span>
+                <span className={HEADER_EDIT}>
+                  <input
+                    type="text"
+                    value={auditNote ?? ""}
+                    onChange={(event) => onAuditNoteChange?.(event.target.value)}
+                    className={HEADER_FIELD}
+                  />
+                </span>
+              </label>
             </div>
           </section>
         ) : null}
@@ -829,14 +561,14 @@ export function ReimbursementEditor({
         )}
 
         {/* ── Source entries reference ── */}
-          <div className="mt-3 rounded border border-slate-200 bg-slate-50 px-3 py-2">
+          <div className="mt-3 border border-slate-300 bg-slate-50 px-3 py-2">
             <div className="mb-2 flex items-center justify-between gap-3">
               <div className="text-xs font-medium text-slate-600">{t("reimburse.editor.sourceInfo")}</div>
               {isEditable && (
                 <button
                   type="button"
                   onClick={() => { setSelectedTransactionIds([]); setShowLinkDialog(true); }}
-                  className="secondary-button inline-flex h-7 items-center gap-1.5 px-2 text-xs"
+                  className="inline-flex h-7 items-center gap-1.5 border border-slate-300 bg-white px-2 text-xs text-slate-600 hover:border-slate-400 hover:text-slate-800"
                 >
                   <Link2 className="h-3.5 w-3.5" />
                   {t("reimburse.source.add")}
@@ -844,15 +576,15 @@ export function ReimbursementEditor({
               )}
             </div>
             {linkedTransactions.length > 0 ? (
-              <div className="overflow-x-auto rounded border border-slate-200 bg-white">
+              <div className={`overflow-auto border border-slate-300 bg-white ${SOURCE_SCROLL_MAX_H}`}>
                 <table className="w-full border-collapse text-xs">
                   <thead className="bg-slate-100 text-slate-600">
                     <tr>
-                      <th className="border-b border-r border-slate-200 px-2 py-1.5 text-left font-medium">{t("reimburse.source.date")}</th>
-                      <th className="border-b border-r border-slate-200 px-2 py-1.5 text-left font-medium">{t("reimburse.source.category")}</th>
-                      <th className="border-b border-r border-slate-200 px-2 py-1.5 text-right font-medium">{t("reimburse.source.amount")}</th>
-                      <th className="border-b border-r border-slate-200 px-2 py-1.5 text-left font-medium">{t("reimburse.source.note")}</th>
-                      {isEditable ? <th className="w-16 border-b border-slate-200" /> : null}
+                      <th className="sticky top-0 z-10 border-b border-r border-slate-200 bg-slate-100 px-2 py-1.5 text-left font-medium">{t("reimburse.source.date")}</th>
+                      <th className="sticky top-0 z-10 border-b border-r border-slate-200 bg-slate-100 px-2 py-1.5 text-left font-medium">{t("reimburse.source.category")}</th>
+                      <th className="sticky top-0 z-10 border-b border-r border-slate-200 bg-slate-100 px-2 py-1.5 text-right font-medium">{t("reimburse.source.amount")}</th>
+                      <th className="sticky top-0 z-10 border-b border-r border-slate-200 bg-slate-100 px-2 py-1.5 text-left font-medium">{t("reimburse.source.note")}</th>
+                      {isEditable ? <th className="sticky top-0 z-10 w-16 border-b border-slate-200 bg-slate-100" /> : null}
                     </tr>
                   </thead>
                   <tbody>
@@ -864,7 +596,7 @@ export function ReimbursementEditor({
                         <td className="max-w-[20rem] border-b border-r border-slate-100 px-2 py-1.5 text-slate-500">{item.note || "-"}</td>
                         {isEditable ? (
                           <td className="border-b border-slate-100 px-1 py-1 text-center">
-                            <button type="button" onClick={() => void clearTransaction(item.txRecordId)} disabled={linkingTransaction} className="inline-flex h-6 items-center justify-center rounded border border-slate-200 bg-white px-1.5 text-slate-600 hover:border-amber-300 hover:text-amber-700 disabled:opacity-50" title={t("reimburse.source.clear")}>
+                            <button type="button" onClick={() => void clearTransaction(item.txRecordId)} disabled={linkingTransaction} className="inline-flex h-6 items-center justify-center rounded-none border border-slate-300 bg-white px-1.5 text-slate-600 hover:border-amber-400 hover:text-amber-700 disabled:opacity-50" title={t("reimburse.source.clear")}>
                               <Eraser className="h-3 w-3" />
                             </button>
                           </td>
@@ -872,19 +604,17 @@ export function ReimbursementEditor({
                       </tr>
                     ))}
                     <tr className="bg-slate-50 font-semibold text-slate-700">
-                      <td className="border-r border-slate-200 px-2 py-1.5" colSpan={2}>{t("reimburse.source.summary", { count: linkedTransactions.length })}</td>
-                      <td className="border-r border-slate-200 px-2 py-1.5 text-right tabular-nums">{formatMoneyYuan(linkedTransactionTotal)}</td>
-                      <td className="border-slate-200 px-2 py-1.5" colSpan={isEditable ? 2 : 1} />
+                      <td className="sticky bottom-0 z-10 border-r border-slate-200 bg-slate-50 px-2 py-1.5" colSpan={2}>{t("reimburse.source.summary", { count: linkedTransactions.length })}</td>
+                      <td className="sticky bottom-0 z-10 border-r border-slate-200 bg-slate-50 px-2 py-1.5 text-right tabular-nums">{formatMoneyYuan(linkedTransactionTotal)}</td>
+                      <td className="sticky bottom-0 z-10 border-slate-200 bg-slate-50 px-2 py-1.5" colSpan={isEditable ? 2 : 1} />
                     </tr>
                   </tbody>
                 </table>
               </div>
             ) : (
-              <div className="border border-dashed border-slate-200 px-3 py-4 text-center text-xs text-slate-400">{t("reimburse.source.noLinkedTransactions")}</div>
+              <div className="border border-dashed border-slate-300 px-3 py-4 text-center text-xs text-slate-400">{t("reimburse.source.noLinkedTransactions")}</div>
             )}
           </div>
-        </article>
-      </div>
       {showLinkDialog ? (
         <ModalLayer className="app-modal-backdrop">
           <div className="app-modal-panel max-w-xl">
@@ -898,7 +628,7 @@ export function ReimbursementEditor({
               <section>
                 <div className="mb-1 text-xs font-medium text-slate-600">{t("reimburse.source.linkedTransactions")}</div>
                 {linkedTransactions.length > 0 ? (
-                  <div className="overflow-x-auto rounded border border-slate-200">
+                  <div className="overflow-x-auto border border-slate-300">
                     <table className="w-full border-collapse text-xs">
                       <thead className="bg-slate-50 text-slate-600"><tr>
                         <th className="border-b border-r border-slate-200 px-2 py-1 text-left font-medium">{t("reimburse.source.date")}</th>
@@ -913,17 +643,22 @@ export function ReimbursementEditor({
                           <td className="border-b border-r border-slate-100 px-2 py-1">{item.categoryName ?? "-"}</td>
                           <td className="border-b border-r border-slate-100 px-2 py-1 text-right tabular-nums">{formatMoneyYuan(item.amount)}</td>
                           <td className="max-w-[18rem] border-b border-r border-slate-100 px-2 py-1">{item.note || "-"}</td>
-                          <td className="border-b border-slate-100 px-1 py-1"><button type="button" className="secondary-button h-6 shrink-0 px-2 text-xs" disabled={linkingTransaction} onClick={() => void clearTransaction(item.txRecordId)}>{t("reimburse.source.clear")}</button></td>
+                          <td className="border-b border-slate-100 px-1 py-1"><button type="button" className="inline-flex h-6 shrink-0 items-center border border-slate-300 bg-white px-2 text-xs text-slate-600 hover:border-amber-400 hover:text-amber-700 disabled:opacity-40" disabled={linkingTransaction} onClick={() => void clearTransaction(item.txRecordId)}>{t("reimburse.source.clear")}</button></td>
                         </tr>
                       ))}<tr className="bg-slate-50 font-semibold"><td className="px-2 py-1.5" colSpan={2}>{t("reimburse.source.summary", { count: linkedTransactions.length })}</td><td className="px-2 py-1.5 text-right tabular-nums">{formatMoneyYuan(linkedTransactionTotal)}</td><td colSpan={2} /></tr></tbody>
                     </table>
                   </div>
-                ) : <div className="rounded border border-dashed border-slate-200 px-3 py-4 text-center text-xs text-slate-400">{t("reimburse.source.noLinkedTransactions")}</div>}
+                ) : <div className="border border-dashed border-slate-300 px-3 py-4 text-center text-xs text-slate-400">{t("reimburse.source.noLinkedTransactions")}</div>}
               </section>
               <section>
                 <div className="mb-1 text-xs font-medium text-slate-600">{t("reimburse.source.selectTransaction")}</div>
+                {/* 默认 3 行，勾选候选后再放开到 5 行——刚打开时不撑高对话框。 */}
                 {availableCandidates.length > 0 ? (
-                  <div className="max-h-64 overflow-y-auto rounded border border-slate-200">
+                  <div
+                    className={`overflow-y-auto border border-slate-300 transition-[max-height] duration-200 ease-out ${
+                      selectedTransactionIds.length > 0 ? "max-h-[9.125rem]" : "max-h-[5.5rem]"
+                    }`}
+                  >
                     {availableCandidates.map((candidate) => (
                       <label key={candidate.id} className="flex cursor-pointer items-start gap-2 border-b border-slate-100 px-2 py-1.5 text-xs last:border-b-0 hover:bg-slate-50">
                         <input
@@ -938,20 +673,17 @@ export function ReimbursementEditor({
                     ))}
                   </div>
                 ) : (
-                <div className="border border-dashed border-slate-200 px-3 py-5 text-center text-xs text-slate-400">
+                <div className="border border-dashed border-slate-300 px-3 py-5 text-center text-xs text-slate-400">
                   {t("reimburse.source.noCandidates")}
                 </div>
                 )}
               </section>
             </div>
-            <div className="flex justify-end gap-2 border-t border-slate-100 p-3">
-              <button type="button" onClick={() => setShowLinkDialog(false)} className="secondary-button h-9 px-3" disabled={linkingTransaction}>
-                {t("common.cancel")}
-              </button>
+            <div className="flex justify-end gap-2 border-t border-slate-200 p-3">
               <button
                 type="button"
                 onClick={() => { if (selectedTransactionIds.length > 0) void linkTransactions(selectedTransactionIds); }}
-                className="primary-button h-9 px-3"
+                className="inline-flex h-9 items-center bg-blue-600 px-3 text-xs font-medium text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-40"
                 disabled={linkingTransaction || selectedTransactionIds.length === 0}
               >
                 {linkingTransaction ? t("liabilityShell.saving") : t("reimburse.source.link")}
@@ -960,6 +692,6 @@ export function ReimbursementEditor({
           </div>
         </ModalLayer>
       ) : null}
-    </div>
+    </EntryModalShell>
   );
 }

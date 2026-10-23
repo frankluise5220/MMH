@@ -1,3 +1,4 @@
+import { renderAccountLabel } from "@/lib/account-display";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { z } from "zod";
@@ -131,7 +132,7 @@ export async function POST(req: NextRequest) {
 
   const accountById = new Map(accounts.map((a) => [a.id, a]));
   const accountByName = new Map(
-    accounts.map((a) => [`${a.Institution?.name ?? ""}·${a.name}`.replace(/^·/, ""), a]),
+    accounts.map((a) => [renderAccountLabel({ accountName: a.name, institution: a.Institution }).replace(/^·/, ""), a]),
   );
   const accountByAlias = new Map<string, (typeof accounts)[number]>();
   const requestAccount = requestAccountId ? accountById.get(requestAccountId) ?? null : null;
@@ -273,7 +274,7 @@ export async function POST(req: NextRequest) {
       (a.Institution?.name ?? "").toLowerCase().includes(lower) ||
       lower.includes(a.name.toLowerCase()) ||
       (!!a.numberMasked && lower.includes(a.numberMasked.toLowerCase())) ||
-      `${a.Institution?.name ?? ""}·${a.name}`.toLowerCase().includes(lower),
+      renderAccountLabel({ accountName: a.name, institution: a.Institution }).toLowerCase().includes(lower),
     );
 
     const narrowedByBank = bankKey
@@ -467,7 +468,7 @@ export async function POST(req: NextRequest) {
 
     accounts.push(created);
     accountById.set(created.id, created);
-    const key = `${created.Institution?.name ?? ""}·${created.name}`.replace(/^·/, "");
+    const key = renderAccountLabel({ accountName: created.name, institution: created.Institution }).replace(/^·/, "");
     accountByName.set(key, created);
     createdAccounts.push({
       id: created.id,
@@ -747,7 +748,7 @@ export async function POST(req: NextRequest) {
         }
 
         // User confirmation = positive example: persist alias + mark distillation log
-        if (item.account && item.account.trim() !== `${account.Institution?.name ?? ""}·${account.name}`.replace(/^·/, "")) {
+        if (item.account && item.account.trim() !== renderAccountLabel({ accountName: account.name, institution: account.Institution }).replace(/^·/, "")) {
           try {
             await prisma.accountAlias.upsert({
               where: { alias_accountId: { alias: item.account.trim(), accountId: account.id } },

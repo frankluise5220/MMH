@@ -27,7 +27,7 @@ import { ACCOUNT_LABEL_FIELDS_COOKIE, accountLabelFieldsFromCookieValue } from "
 import { kindLabel } from "@/lib/account-kinds";
 import { isDepositAccount, isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import { prisma } from "@/lib/db/prisma";
-import { formatDateUtc } from "@/lib/date-utils";
+import { formatDateUtc, businessTodayUtcStart } from "@/lib/date-utils";
 import type { ColorScheme } from "@/lib/client/colors";
 import {
   getIncomeExpenseReport,
@@ -176,7 +176,7 @@ export default async function ReportsPage({
   const params = await searchParams;
   const t = await getServerT();
   const language = await getServerDisplayLanguage();
-  const now = new Date();
+  const now = businessTodayUtcStart();
   const reportType: ReportType =
     params.report === "investment-profit" || params.report === "stock-holdings" || params.report === "fund-holdings"
       ? params.report
@@ -838,7 +838,7 @@ export default async function ReportsPage({
     // fund/money trend, independent of the row filters above. Prefetched with the
     // chart's default window (trailing 12 months); the chart can refetch other
     // ranges / benchmark indices client-side via the fund-trend API.
-    const now = new Date();
+    const now = businessTodayUtcStart();
     const trendStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 11, 1));
     const fundTrendData = await loadFundPortfolioTrendData(ctx, {
       startMonth: `${trendStart.getUTCFullYear()}-${String(trendStart.getUTCMonth() + 1).padStart(2, "0")}`,

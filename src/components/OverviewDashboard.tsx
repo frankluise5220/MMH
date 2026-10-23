@@ -33,6 +33,8 @@ export type AccountItem = {
   /** Balance in the account's own currency. */
   balance: number;
   currency?: string;
+  /** 行内看不到的信息（所有人/类型/非本位币），仅在非空时作为 title。 */
+  hoverTitle?: string;
   /** Same balance restated in the household base currency; null when no rate is available. */
   convertedBalance?: number | null;
   fxRateMissing?: boolean;
@@ -65,6 +67,8 @@ export type FixedAssetItem = {
   floatingPnL: number;
   floatingPnLRate: number;
   currency?: string;
+  /** 行内看不到的信息（所有人/类型/非本位币），仅在非空时作为 title。 */
+  hoverTitle?: string;
   convertedMarketValue?: number | null;
   fxRateMissing?: boolean;
 };
@@ -102,6 +106,8 @@ export type InvestmentOverviewItem = {
   floatingPnL: number;
   floatingPnLRate: number;
   currency?: string;
+  /** 行内看不到的信息（所有人/类型/非本位币），仅在非空时作为 title。 */
+  hoverTitle?: string;
   convertedMarketValue?: number | null;
   convertedFloatingPnL?: number | null;
   fxRateMissing?: boolean;
@@ -375,7 +381,7 @@ export function OverviewDashboard({
                       scroll={false}
                       className="grid grid-cols-[minmax(0,1fr)_96px] items-center gap-3 px-4 py-3 hover:bg-slate-50 sm:grid-cols-[minmax(0,1fr)_96px_96px_72px]"
                     >
-                      <div className="truncate text-sm font-semibold text-slate-800">{item.name}</div>
+                      <div title={item.hoverTitle || undefined} className="truncate text-sm font-semibold text-slate-800">{item.name}</div>
                       <div className={`text-right text-xs font-semibold tabular-nums ${directionalClass(item.convertedMarketValue ?? item.marketValue, isRedUp)}`}>{formatMoney(item.convertedMarketValue ?? item.marketValue)}</div>
                       <div className={`hidden text-right text-xs font-semibold tabular-nums sm:block ${directionalClass(item.convertedFloatingPnL ?? item.floatingPnL, isRedUp)}`}>{formatMoney(item.convertedFloatingPnL ?? item.floatingPnL)}</div>
                       <div className={`hidden text-right text-xs font-semibold tabular-nums sm:block ${directionalClass(item.floatingPnLRate, isRedUp)}`}>{formatRate(item.floatingPnLRate)}</div>
@@ -409,7 +415,7 @@ export function OverviewDashboard({
                 topAccounts.slice(0, 4).map((account) => (
                   <Link key={account.id} href={`/?accountId=${account.id}&view=detail`} scroll={false} className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-slate-50">
                     <div className="min-w-0">
-                      <div className="truncate text-sm font-semibold text-slate-800">{account.name}</div>
+                      <div title={account.hoverTitle || undefined} className="truncate text-sm font-semibold text-slate-800">{account.name}</div>
                       <div className="mt-1 truncate text-[11px] text-slate-400">
                         {account.kind}
                         {isForeign(account, baseCurrency) ? ` · ${t("overview.originalAmount", { amount: formatCurrencyMoney(account.balance, account.currency) })}` : ""}
@@ -448,7 +454,7 @@ export function OverviewDashboard({
                       className="grid grid-cols-[minmax(0,1fr)_96px] items-center gap-3 px-4 py-3 hover:bg-slate-50 sm:grid-cols-[minmax(0,1fr)_96px_96px_72px]"
                     >
                       <div className="min-w-0">
-                        <div className="truncate text-sm font-semibold text-slate-800">{item.name}</div>
+                        <div title={item.hoverTitle || undefined} className="truncate text-sm font-semibold text-slate-800">{item.name}</div>
                         <div className="mt-1 truncate text-[11px] text-slate-400">
                           {item.assetType ? t(`fixedAsset.type.${item.assetType}`) : t("account.kind.fixed_asset")}
                           {isForeign(item, baseCurrency) ? ` · ${t("overview.originalAmount", { amount: formatCurrencyMoney(item.marketValue, item.currency) })}` : ""}
@@ -490,7 +496,7 @@ export function OverviewDashboard({
                     className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-slate-50"
                   >
                     <div className="min-w-0">
-                      <div className="truncate text-sm font-semibold text-slate-800">{account.name}</div>
+                      <div title={account.hoverTitle || undefined} className="truncate text-sm font-semibold text-slate-800">{account.name}</div>
                     </div>
                     <div className={`shrink-0 text-sm font-semibold tabular-nums ${liabilityClass(creditBillOf(account), isRedUp)}`}>{formatMoney(creditBillOf(account))}</div>
                   </Link>
@@ -523,7 +529,7 @@ export function OverviewDashboard({
                     scroll={false}
                     className="rounded-lg border border-slate-100 bg-slate-50/80 px-3 py-3 transition-colors hover:border-rose-200 hover:bg-rose-50/30"
                   >
-                    <div className="line-clamp-2 min-h-[40px] text-sm font-semibold leading-5 text-slate-800">{account.name}</div>
+                    <div title={account.hoverTitle || undefined} className="line-clamp-2 min-h-[40px] text-sm font-semibold leading-5 text-slate-800">{account.name}</div>
                     <div className="mt-3 truncate text-[11px] text-slate-400">
                       {baseAmount(account) >= 0 ? t("overview.owedToMe") : t("overview.iOwe")}
                       {isForeign(account, baseCurrency) ? ` · ${t("overview.originalAmount", { amount: formatCurrencyMoney(account.balance, account.currency) })}` : ""}

@@ -23,6 +23,7 @@ import { FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
 import { FIRST_USE_GUIDE_OPEN_EVENT } from "@/lib/client/onboardingGuide";
 import { APP_PREFS_EVENT, getSidebarHideInitialDataPreference } from "@/lib/client/appPreferences";
 import { useI18n } from "@/lib/i18n";
+import { todayDateLocalYmd } from "@/lib/date-utils";
 
 type OnboardingStatus = {
   householdId: string;
@@ -66,7 +67,7 @@ type StepItem = {
 };
 
 function todayKey() {
-  return new Date().toISOString().slice(0, 10);
+  return todayDateLocalYmd();
 }
 
 function dismissedKey(householdId: string) {

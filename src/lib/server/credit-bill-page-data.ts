@@ -2,7 +2,7 @@ import { AccountKind, CreditCardInstallmentSourceType, TransactionType, type Cre
 import type { DetailEntry } from "@/components/DetailViewClient";
 import type { CreditBillSummaryRow } from "@/components/CreditBillSummaryTable";
 import { prisma } from "@/lib/db/prisma";
-import { addDaysUtc, formatDateLocal, toNumber } from "@/lib/date-utils";
+import { addDaysUtc, businessTodayUtcStart, toNumber, formatDateUtc } from "@/lib/date-utils";
 import {
   CREDIT_CARD_MANUAL_CYCLE_LOCK_SOURCE,
   CREDIT_CARD_STATEMENT_IMPORT_CYCLE_LOCK_SOURCE,
@@ -132,9 +132,9 @@ function toIsoOrNull(value: unknown) {
   return date ? date.toISOString() : null;
 }
 
-function toDateOnlyLocalOrNull(value: unknown) {
+function toDateOnlyUtcOrNull(value: unknown) {
   const date = toValidDate(value);
-  return date ? formatDateLocal(date) : null;
+  return date ? formatDateUtc(date) : null;
 }
 
 function toYmdOrNull(value: unknown) {
@@ -187,8 +187,10 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
       }
     : undefined;
 
-  const creditBillNow = new Date();
-  const todayUtcStart = new Date(Date.UTC(creditBillNow.getUTCFullYear(), creditBillNow.getUTCMonth(), creditBillNow.getUTCDate()));
+  // 账期判断用的「今天」必须是业务时区的今天：`new Date()` 取 UTC 日期会在
+  // 北京时间 00:00–08:00 把账期算成前一天（当期账单/还款日提示全错）。
+  const creditBillNow = businessTodayUtcStart();
+  const todayUtcStart = creditBillNow;
   const billingDayTxPeriod = normalizeBillingDayTxPeriod(selectedAccount?.billingDayTxPeriod);
   const shouldUseCreditBillingRules = isBillAccount && selectedAccount?.kind === AccountKind.bank_credit && billAccountIds.length > 0;
   if (shouldUseCreditBillingRules) {
@@ -419,7 +421,7 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
             ? (() => {
                 const persisted = persistedCycleByMonth.get(selectedBillMonth);
                 if (persisted) {
-                  const today = new Date(Date.UTC(creditBillNow.getUTCFullYear(), creditBillNow.getUTCMonth(), creditBillNow.getUTCDate()));
+                  const today = todayUtcStart;
                   return {
                     start: persisted.periodStart,
                     end: persisted.periodEnd,
@@ -1039,7 +1041,7 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
           const details: DetailEntry[] = cycleEntries.map((e) => ({
             id: e.id,
             date: toYmdOrNull(e.date) ?? "",
-            postedAt: toDateOnlyLocalOrNull(e.postedAt),
+            postedAt: toDateOnlyUtcOrNull(e.postedAt),
             createdAt: toIsoOrNull(e.createdAt),
             entryOrigin: e.entryOrigin ?? null,
             dayOrder: e.dayOrder ?? 0,

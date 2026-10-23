@@ -16,6 +16,7 @@
  * into the response so the chart can overlay it.
  */
 
+import { todayDateBusinessYmd, businessTodayUtcStart } from "@/lib/date-utils";
 import { FundProductType, FundSubtype, type Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { AccountKind } from "@prisma/client";
@@ -375,9 +376,9 @@ export async function loadFundPortfolioTrendData(
     select: { id: true, name: true, fundUnitsDecimals: true },
   });
   if (accounts.length === 0) {
-    const now = new Date();
-    const s = optStart ?? `${now.getUTCFullYear() - 1}-01`;
-    const e = optEnd ?? `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+    const currentYm = todayDateBusinessYmd().slice(0, 7);
+    const s = optStart ?? `${currentYm.slice(0, 4)}-01`;
+    const e = optEnd ?? currentYm;
     const bench = includeBenchmark ? await loadBenchmarkMonthly(s, e, resolvedBenchmarkCode) : [];
     return { points: [], emptyMonths: [], benchmark: bench, benchmarkCode: resolvedBenchmarkCode, rangeStart: s, rangeEnd: e };
   }
@@ -421,9 +422,9 @@ export async function loadFundPortfolioTrendData(
   });
 
   if (transactions.length === 0) {
-    const now = new Date();
-    const s = optStart ?? `${now.getUTCFullYear() - 1}-01`;
-    const e = optEnd ?? `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+    const currentYm = todayDateBusinessYmd().slice(0, 7);
+    const s = optStart ?? `${currentYm.slice(0, 4)}-01`;
+    const e = optEnd ?? currentYm;
     const bench = includeBenchmark ? await loadBenchmarkMonthly(s, e, resolvedBenchmarkCode) : [];
     return { points: [], emptyMonths: [], benchmark: bench, benchmarkCode: resolvedBenchmarkCode, rangeStart: s, rangeEnd: e };
   }
@@ -439,7 +440,7 @@ export async function loadFundPortfolioTrendData(
     const d = new Date(Date.UTC(y, m - 1, 1));
     if (d < minDate) minDate = d;
   }
-  const now = new Date();
+  const now = businessTodayUtcStart();
   if (maxDate < now) maxDate = now;
   if (optEnd) {
     const [y, m] = optEnd.split("-").map(Number);

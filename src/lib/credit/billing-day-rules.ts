@@ -1,4 +1,5 @@
 import { isCreditCardMonthEndBillingDay } from "@/lib/credit/rules";
+import { todayDateBusinessYmd } from "@/lib/date-utils";
 
 export type BillingDayRuleInitialLike = {
   id?: string | null;
@@ -60,7 +61,9 @@ export function currentBillingDayFromRules(rules: readonly CreditBillingDayRuleV
     .sort((a, b) => a.effectiveDate.localeCompare(b.effectiveDate));
   if (validRules.length === 0) return fallback;
 
-  const today = new Date().toISOString().slice(0, 10);
+  // 业务时区今天：UTC 日期在北京时间 00:00–08:00 还是昨天，会让「明天生效」的
+  // 账单日规则提前一天生效。
+  const today = todayDateBusinessYmd();
   let active = validRules[0]!;
   for (const rule of validRules) {
     if (rule.effectiveDate > today) break;

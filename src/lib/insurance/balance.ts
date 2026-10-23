@@ -1,11 +1,13 @@
 import { prisma } from "@/lib/db/prisma";
+import { todayDateBusinessYmd } from "@/lib/date-utils";
 import { isInsuranceBalanceMetric } from "@/lib/insurance/display";
 import { insuranceCashValueDelta } from "@/lib/insurance/transaction";
 
+// 口径是 UTC（名称沿用历史）：DB 日历日字段存 UTC 零点。
 function localDateKey(date: Date) {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, "0");
-  const d = String(date.getDate()).padStart(2, "0");
+  const y = date.getUTCFullYear();
+  const m = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(date.getUTCDate()).padStart(2, "0");
   return `${y}-${m}-${d}`;
 }
 
@@ -56,7 +58,7 @@ export async function computeInsuranceAccountDisplayBalances(
     },
   });
 
-  const todayKey = localDateKey(new Date());
+  const todayKey = todayDateBusinessYmd();
   const productAccountIdById = new Map(products.map((product) => [product.id, product.accountId]));
   for (const entry of entries) {
     if (localDateKey(entry.tradeDate) > todayKey) continue;

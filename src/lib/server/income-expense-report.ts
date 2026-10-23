@@ -1,7 +1,7 @@
 import { TransactionType } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
-import { addDaysUtc, formatDateUtc, startOfDayUtc, toNumber } from "@/lib/date-utils";
+import { addDaysUtc, businessTodayUtcStart, formatDateUtc, toNumber } from "@/lib/date-utils";
 import {
   normalizeDefaultCategoryHierarchyForHousehold,
   SYSTEM_BOND_PROFIT_CATEGORY,
@@ -230,7 +230,8 @@ export async function getIncomeExpenseReport(
   },
 ): Promise<IncomeExpenseReport> {
   const t = await getServerT();
-  const parsedStart = parseDateOnlyUtc(params.start) ?? startOfDayUtc(new Date());
+  // 缺省期间末 = 业务时区的今天（UTC 今天在北京时间 00:00–08:00 会漏掉当天）。
+  const parsedStart = parseDateOnlyUtc(params.start) ?? businessTodayUtcStart();
   const parsedEnd = parseDateOnlyUtc(params.end) ?? parsedStart;
   const rangeStart = parsedStart.getTime() <= parsedEnd.getTime() ? parsedStart : parsedEnd;
   const rangeEnd = parsedStart.getTime() <= parsedEnd.getTime() ? parsedEnd : parsedStart;

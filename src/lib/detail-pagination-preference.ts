@@ -1,5 +1,14 @@
 export const DETAIL_PAGE_SIZE_OPTIONS = [40, 80] as const;
 export const DETAIL_ALL_PAGE_SIZE = 50000;
+/**
+ * 「全部」模式的分块大小。整份列表一次要回来几万行、几十 MB JSON：请求会在传输
+ * 中途被浏览器重置，或者静默等到超时，而失败只写进 console —— 表格里一行都不变，
+ * 用户只看到「切全部没反应」，表头漏斗也仍然只有原来那几十条可选。所以「全部」
+ * 改成按块顺序拉取、逐块追加：首块先让列表长出来，剩下的边到边补。
+ * 5000 行 ≈ 10MB，覆盖绝大多数账户的整份明细（一次请求即完成）；更大的口径
+ * （全部收支 4 万+ 条）则分若干块渐进呈现。
+ */
+export const DETAIL_ALL_CHUNK_SIZE = 5000;
 
 export type DetailPaginationPreference = {
   pageSize: number;

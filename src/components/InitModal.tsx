@@ -12,8 +12,9 @@ import { buildAccountDisplayOption } from "@/lib/account-display";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { fetchSettingsAccountData } from "@/lib/client/settingsCache";
 import { useI18n } from "@/lib/i18n";
-import { getAccountLabelFieldsPreference } from "@/lib/client/appPreferences";
+import { readAccountDisplaySettings } from "@/lib/client/account-display-settings";
 import { isDepositAccount } from "@/lib/account-kind-utils";
+import { todayDateLocalYmd } from "@/lib/date-utils";
 
 /* Types */
 
@@ -60,7 +61,7 @@ type FundHoldingRow = {
 };
 
 function todayStr() {
-  return new Date().toISOString().slice(0, 10);
+  return todayDateLocalYmd();
 }
 
 export function InitModal({
@@ -108,7 +109,7 @@ export function InitModal({
       const data = await fetchSettingsAccountData();
       if (data.accounts) {
         const accounts: AccountOption[] = data.accounts.map((a: any) => {
-          const display = buildAccountDisplayOption(a, undefined, { fields: getAccountLabelFieldsPreference() });
+          const display = buildAccountDisplayOption(a, undefined, readAccountDisplaySettings());
           return { id: a.id, label: display.selectorLabel || display.label, kind: a.kind };
         });
         const cashAccounts = accounts.filter((a) => ["cash", "bank_debit", "ewallet"].includes(a.kind));

@@ -76,7 +76,11 @@ export function StockHoldingReport({ rows, totals, isRedUp }: Props) {
       className: "text-slate-600",
       filterText: (row) => row.accountName,
       sortValue: (row) => row.accountName,
-      render: (row) => <span className="block truncate" title={row.accountName}>{row.accountName}</span>,
+      render: (row) => (
+        <span className="block truncate" title={row.accountHoverTitle || row.accountName}>
+          {row.accountName}
+        </span>
+      ),
     },
     {
       key: "quantity",

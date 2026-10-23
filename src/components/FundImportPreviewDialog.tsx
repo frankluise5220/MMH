@@ -27,6 +27,7 @@ import {
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { fetchSettingsBootstrap } from "@/lib/client/settingsCache";
 import { addTradingDaysUtc, parseFlexibleDateToYmd } from "@/lib/date-utils";
+import { formatAmountDraft } from "@/lib/format";
 import { calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision-core";
 import {
@@ -36,7 +37,7 @@ import {
   rowsBeforeTemplateGuide,
 } from "@/lib/import-template-sample";
 import { useI18n } from "@/lib/i18n";
-import { getAccountLabelFieldsPreference } from "@/lib/client/appPreferences";
+import { readAccountDisplaySettings } from "@/lib/client/account-display-settings";
 import { restrictAccountsByType } from "@/lib/client/account-dropdown-filter";
 
 export type FundImportDialogContext = {
@@ -707,7 +708,7 @@ function buildPreviewAccountDisplayOption(account: FundPreviewAccount): AccountD
           name: account.AccountGroup.name ?? null,
         }
       : null,
-  }, undefined, { fields: getAccountLabelFieldsPreference() });
+  }, undefined, readAccountDisplaySettings());
 }
 
 export function FundImportPreviewDialog({ open, file, context, onClose, onImported }: Props) {
@@ -841,12 +842,12 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
 
   const previewAccountLabel = useCallback((accountId: string | null | undefined, fallback: string) => {
     const display = accountId ? accountDisplayById.get(accountId) : undefined;
-    return display ? formatAccountTableLabel(display, fallback, getAccountLabelFieldsPreference()) : fallback.trim() || "-";
+    return display ? formatAccountTableLabel(display, fallback, readAccountDisplaySettings()) : fallback.trim() || "-";
   }, [accountDisplayById]);
 
   const previewAccountTitle = useCallback((accountId: string | null | undefined, fallback: string) => {
     const display = accountId ? accountDisplayById.get(accountId) : undefined;
-    return display ? formatAccountTableTitle(display, fallback, getAccountLabelFieldsPreference()) : fallback.trim();
+    return display ? formatAccountTableTitle(display, fallback, readAccountDisplaySettings()) : fallback.trim();
   }, [accountDisplayById]);
 
   const previewReplaceFields = useMemo<BatchReplaceFieldConfig<FundPreviewBatchEditField>[]>(
@@ -1171,9 +1172,9 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
       case "cashAccount": return row.cashAccount || "";
       case "fundAccount": return row.fundAccount || "";
       case "fundCode": return row.fundCode || "";
-      case "amount": return row.amount == null ? "" : String(row.amount);
+      case "amount": return row.amount == null ? "" : formatAmountDraft(row.amount);
       case "feeRate": return row.feeRate == null ? "" : String(row.feeRate);
-      case "fee": return row.fee == null ? "" : String(row.fee);
+      case "fee": return row.fee == null ? "" : formatAmountDraft(row.fee);
       case "nav": return row.nav == null ? "" : String(row.nav);
       case "units": return row.units == null ? "" : String(row.units);
       case "confirmDate": return row.confirmDate || "";

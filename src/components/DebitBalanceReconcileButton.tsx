@@ -6,9 +6,11 @@ import { Scale } from "lucide-react";
 import { DateStepper } from "./DateStepper";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
+import { todayDateLocalYmd } from "@/lib/date-utils";
+import { formatAmountDraft } from "@/lib/format";
 
 function todayYmd() {
-  return new Date().toISOString().slice(0, 10);
+  return todayDateLocalYmd();
 }
 
 function formatMoneyValue(value: number, language: string) {
@@ -59,7 +61,7 @@ export function DebitBalanceReconcileButton({
       setOpen(true);
       setEditingEntryId(detail.entryId);
       setDate((detail.date ?? todayYmd()).slice(0, 10));
-      setReconcileAmount(detail.amount != null && Number.isFinite(detail.amount) ? String(detail.amount) : "");
+      setReconcileAmount(detail.amount != null && Number.isFinite(detail.amount) ? formatAmountDraft(detail.amount) : "");
       setError("");
       setInfo("");
     }

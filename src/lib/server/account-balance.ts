@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/db/prisma";
 import { AccountKind, FundSubtype, Prisma, TransactionType } from "@prisma/client";
-import { toNumber } from "@/lib/date-utils";
+import { toNumber, todayDateBusinessYmd } from "@/lib/date-utils";
 import { compareDetailEntriesAsc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
 import {
   applyBalanceAnchorEntry,
@@ -77,28 +77,31 @@ type AccountBalanceRecord = AccountBalanceLike & {
 
 type BalanceDbClient = Prisma.TransactionClient | typeof prisma;
 
+// ── 日历日键（沿用的历史函数名，口径是 UTC，不是进程本地时区） ──
+// 存储契约：DB 的「日历日」字段一律是 UTC 零点。所以日期键必须用 UTC getter，
+// 区间边界必须用 Date.UTC 构造。曾用本地 getter/`setHours`：容器 TZ=UTC 时
+// `endOfLocalDayKey` 会落到北京时间次日 07:59:59，余额窗口整体偏移一天。
 function localDateKey(date: Date) {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, "0");
-  const d = String(date.getDate()).padStart(2, "0");
+  const y = date.getUTCFullYear();
+  const m = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(date.getUTCDate()).padStart(2, "0");
   return `${y}-${m}-${d}`;
 }
 
 function dateFromLocalKey(key: string) {
   const [year, month, day] = key.split("-").map(Number);
-  return new Date(year, month - 1, day);
+  return new Date(Date.UTC(year, month - 1, day));
 }
 
 function addDaysToLocalKey(key: string, days: number) {
   const date = dateFromLocalKey(key);
-  date.setDate(date.getDate() + days);
+  date.setUTCDate(date.getUTCDate() + days);
   return localDateKey(date);
 }
 
 function endOfLocalDayKey(key: string) {
-  const date = dateFromLocalKey(key);
-  date.setHours(23, 59, 59, 999);
-  return date;
+  const [year, month, day] = key.split("-").map(Number);
+  return new Date(Date.UTC(year, month - 1, day, 23, 59, 59, 999));
 }
 
 function roundMoney(value: number) {
@@ -383,7 +386,8 @@ export async function computeAccountDisplayBalances(
   const accountIds = accounts.map((account) => account.id).filter(Boolean);
   const result = new Map<string, number>();
   if (accountIds.length === 0) return result;
-  const todayKey = localDateKey(new Date());
+  // 「今天」按业务时区算：容器未设置 TZ 时进程时区是 UTC，会比北京时间晚 8 小时。
+  const todayKey = todayDateBusinessYmd();
   const isOnOrBeforeToday = (date: Date) => localDateKey(date) <= todayKey;
   const depositAccountIds = accounts
     .filter((account) => account.kind === AccountKind.deposit || account.investProductType === "deposit")
@@ -923,7 +927,8 @@ async function foldAccountBalanceRange(
     maxWindows?: number;
   },
 ): Promise<BalanceFoldRangeResult> {
-  const todayKey = localDateKey(new Date());
+  // 「今天」按业务时区算：容器未设置 TZ 时进程时区是 UTC，会比北京时间晚 8 小时。
+  const todayKey = todayDateBusinessYmd();
   const targetKey = options?.toKeyInclusive && options.toKeyInclusive < todayKey
     ? options.toKeyInclusive
     : todayKey;
@@ -1038,7 +1043,7 @@ export async function foldAccountBalanceBatched(
 
 export async function loadLastBalanceAnchor(
   accountId: string,
-  todayKey = localDateKey(new Date()),
+  todayKey = todayDateBusinessYmd(),
   hidFilter?: { householdId?: string },
 ) {
   const where = {
@@ -1084,7 +1089,8 @@ export async function advanceStoredBalanceToToday(
     // timestamp with a full fold outside the user request.
     return storedBalance;
   }
-  const todayKey = localDateKey(new Date());
+  // 「今天」按业务时区算：容器未设置 TZ 时进程时区是 UTC，会比北京时间晚 8 小时。
+  const todayKey = todayDateBusinessYmd();
   const asOfKey = localDateKey(asOf);
   if (asOfKey >= todayKey) return storedBalance;
   return foldAccountBalanceBatched(account, hidFilter, {
@@ -1128,7 +1134,8 @@ async function advanceAccountBalanceStep(accountId: string, maxWindows = 1) {
   });
   if (!acc) return false;
 
-  const todayKey = localDateKey(new Date());
+  // 「今天」按业务时区算：容器未设置 TZ 时进程时区是 UTC，会比北京时间晚 8 小时。
+  const todayKey = todayDateBusinessYmd();
   const todayEnd = endOfLocalDayKey(todayKey);
   const account = {
     id: acc.id,
@@ -1257,7 +1264,8 @@ export async function recalcAndSaveAccountBalance(accountId: string) {
     await recomputeAggregateAccountBalance(prisma, accountId).catch(() => null);
     return true;
   }
-  const todayKey = localDateKey(new Date());
+  // 「今天」按业务时区算：容器未设置 TZ 时进程时区是 UTC，会比北京时间晚 8 小时。
+  const todayKey = todayDateBusinessYmd();
   const asOf = endOfLocalDayKey(todayKey);
 
   // Credit-bill accounts (bank_credit) always fold to a display balance of 0
@@ -1334,7 +1342,8 @@ export async function applyEntryChangesToAccountBalances(changes: EntryBalanceCh
       isAggregate: true,
     },
   });
-  const todayKey = localDateKey(new Date());
+  // 「今天」按业务时区算：容器未设置 TZ 时进程时区是 UTC，会比北京时间晚 8 小时。
+  const todayKey = todayDateBusinessYmd();
   const asOf = endOfLocalDayKey(todayKey);
   const changedEntryIds = changes.map((change) => change.entryId);
 
@@ -1513,7 +1522,8 @@ export async function bootstrapPendingAccountBalances(
   limit = 1,
   maxWindowsPerAccount = 1,
 ) {
-  const todayKey = localDateKey(new Date());
+  // 「今天」按业务时区算：容器未设置 TZ 时进程时区是 UTC，会比北京时间晚 8 小时。
+  const todayKey = todayDateBusinessYmd();
   const startOfToday = dateFromLocalKey(todayKey);
   const accounts = await prisma.account.findMany({
     where: {

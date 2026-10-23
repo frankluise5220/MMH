@@ -144,12 +144,18 @@ export function EntryRowActions({
   entryId,
   edit,
   customEditEvent,
+  onEditRequest,
   reconciled = false,
   contextAccountId,
 }: {
   entryId: string;
   edit?: Omit<EditPayload, "entryId">;
   customEditEvent?: { name: string; detail: Record<string, unknown> };
+  /**
+   * 明细列表返回的是瘦身行（不含编辑态字段），点编辑时由调用方先按 id 取完整记录、
+   * 再构造 payload。传了这个回调就完全交给它，不再用行上的 `edit` 直接开窗。
+   */
+  onEditRequest?: (options: { reconciledReadOnly: boolean }) => void | Promise<void>;
   /**
    * 该记录背后的现金流水已「对账」锁定。
    *
@@ -167,6 +173,12 @@ export function EntryRowActions({
   const actionButtonClass = "flex h-6 w-6 items-center justify-center rounded border bg-white transition-colors disabled:opacity-50";
 
   function onEdit() {
+    if (onEditRequest) {
+      void Promise.resolve(onEditRequest({ reconciledReadOnly: locked })).catch((error) => {
+        console.error("Load entry detail for edit failed:", error);
+      });
+      return;
+    }
     // 锁定状态可能是调用方查出来的（投资/资产视图），一并带进编辑事件，让弹窗只读。
     dispatchEntryEdit({
       entryId,

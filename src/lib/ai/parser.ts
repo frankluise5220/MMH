@@ -28,21 +28,22 @@ function isExpenseRefundLike(text: string) {
 
 // ── Date utilities (used by normalizeDate / parseItems) ──
 
+// 口径是 UTC：传入的基准日期一律是业务时区的 UTC 零点（见 businessTodayUtcStart）。
 export function formatYmd(d: Date) {
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}-${String(d.getUTCDate()).padStart(2, "0")}`;
 }
 
 function startOfWeekMonday(d: Date) {
   const x = new Date(d);
-  x.setHours(0, 0, 0, 0);
-  const day = (x.getDay() + 6) % 7;
-  x.setDate(x.getDate() - day);
+  x.setUTCHours(0, 0, 0, 0);
+  const day = (x.getUTCDay() + 6) % 7;
+  x.setUTCDate(x.getUTCDate() - day);
   return x;
 }
 
 function addDaysLocal(d: Date, days: number) {
   const x = new Date(d);
-  x.setDate(x.getDate() + days);
+  x.setUTCDate(x.getUTCDate() + days);
   return x;
 }
 
@@ -54,7 +55,7 @@ function hasRelativeDateToken(text: string) {
 
 function normalizeMonthDayDate(month: number, day: number, now: Date) {
   if (month < 1 || month > 12 || day < 1 || day > 31) return undefined;
-  const year = now.getFullYear();
+  const year = now.getUTCFullYear();
   return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
@@ -92,7 +93,7 @@ export function parseRelativeDateFromText(text: string, now: Date) {
 
     const candidate = addDaysLocal(base, weekdayIndex);
     const todayStart = new Date(now);
-    todayStart.setHours(0, 0, 0, 0);
+    todayStart.setUTCHours(0, 0, 0, 0);
     if (candidate.getTime() > todayStart.getTime()) return formatYmd(addDaysLocal(candidate, -7));
     return formatYmd(candidate);
   }

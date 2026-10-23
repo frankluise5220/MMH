@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { formatCurrencyMoney } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
+import { todayDateLocalYmd } from "@/lib/date-utils";
 
 type FxRateRow = {
   fromCurrency?: string | null;
@@ -47,7 +48,7 @@ function formatQuoteAmount(value: number, language: string) {
 }
 
 function getTodayText() {
-  return new Date().toISOString().slice(0, 10);
+  return todayDateLocalYmd();
 }
 
 export function AccountFxRateInline({

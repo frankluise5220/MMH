@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
-import { isWithinRecentTradingDaysUtc } from "@/lib/date-utils";
+import { isWithinRecentTradingDaysUtc, todayDateBusinessYmd } from "@/lib/date-utils";
 import { getFundNav, getLatestFundNav, refreshLatestFundNav, setFundNav } from "@/lib/fund/navCache";
 import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
 import { resolveFundDates } from "@/lib/fund/confirmDays";
@@ -137,7 +137,7 @@ export async function GET(req: NextRequest) {
         : null;
       const recentBuyWithoutExactNav = purpose === "buy" && !!applyDate && isWithinRecentTradingDaysUtc(
         applyDate,
-        new Date().toISOString().slice(0, 10),
+        todayDateBusinessYmd(),
         2,
         account?.tradingCalendar ?? "cn_fund",
       );

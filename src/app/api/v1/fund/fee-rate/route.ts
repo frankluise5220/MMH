@@ -1,3 +1,4 @@
+import { businessTodayUtcStart } from "@/lib/date-utils";
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { getFundFeeRate, getFundFeeRateByDate, replaceFundFeeRates, setFundFeeRateByDate, type FundFeeRateReplacementRow, type FundFeeRateType } from "@/lib/fund/feeRate";
@@ -262,8 +263,8 @@ function parseFeeType(value: unknown): FundFeeRateType {
 }
 
 function todayUtcDate(): Date {
-  const now = new Date();
-  return new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
+  const now = businessTodayUtcStart();
+  return now;
 }
 
 function utcDate(dateStr: string): Date {

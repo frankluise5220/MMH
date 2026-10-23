@@ -33,9 +33,13 @@ function withAccountDisplayFields<T extends {
   investProductType?: string | null;
   Institution?: { name: string | null; shortName?: string | null } | null;
   AccountGroup?: { id: string; name: string | null } | null;
-}>(account: T, fields?: AccountLabelField[] | null) {
+}>(account: T, settings?: { fields?: AccountLabelField[] | null; baseCurrency?: string | null }) {
   const normalized = normalizeReturnedAccountKind(account);
-  const display = buildAccountDisplayOption(normalized, undefined, { fields });
+  // 两个参数必须成对出现：只给 fields 时非本位币既不显示也没有 hover。
+  const display = buildAccountDisplayOption(normalized, undefined, {
+    fields: settings?.fields,
+    baseCurrency: settings?.baseCurrency,
+  });
   return {
     ...normalized,
     label: display.selectorLabel || display.label,
@@ -83,7 +87,7 @@ export async function GET() {
       accounts: accounts.map((account) => {
         const counts = recordCounts.get(account.id);
         return {
-          ...withAccountDisplayFields(account, accountLabelFields),
+          ...withAccountDisplayFields(account, { fields: accountLabelFields, baseCurrency }),
           recordCount: counts?.recordCount ?? 0,
           deletedRecordCount: counts?.deletedRecordCount ?? 0,
         };

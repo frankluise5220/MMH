@@ -48,7 +48,6 @@ type CreditBillMailImportDialogProps = {
 };
 
 export function CreditBillMailImportDialog({ open, onClose, accountId, accountName }: CreditBillMailImportDialogProps) {
-  void accountId;
   void accountName;
   const { t } = useI18n();
   const [previewOpen, setPreviewOpen] = useState(false);
@@ -87,6 +86,7 @@ export function CreditBillMailImportDialog({ open, onClose, accountId, accountNa
         <div className="min-h-0 flex-1 overflow-auto px-4 py-4">
           <EmailSettingsPanel
             embedded
+            contextAccountId={accountId}
             onStatementPreviewOpened={() => setPreviewOpen(true)}
             onStatementPreviewClosed={() => {
               // 预览关掉后要把外层恢复成可见可点（否则父级若保持 open=true，这里会一直是透明遮罩）。

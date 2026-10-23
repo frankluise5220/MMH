@@ -1513,15 +1513,15 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
         <ChevronDown className="h-3 w-3" />
       </button>
       {open ? (
-        <div className="absolute right-0 top-8 z-50 min-w-[180px] w-max max-w-[80vw] overflow-hidden rounded-md border border-slate-200 bg-white py-1 shadow-lg">
+        <div className="absolute left-0 top-8 z-50 w-max min-w-full max-w-[min(80vw,260px)] overflow-hidden rounded-md border border-slate-200 bg-white py-1 text-left shadow-lg">
           {props.excelExport ? (
             <button
               type="button"
               onClick={openExcelExportDialog}
               className="flex w-full items-center justify-start gap-2 whitespace-nowrap px-3 py-2 text-left text-xs text-slate-700 hover:bg-slate-50"
             >
-              <FileSpreadsheet className="h-3.5 w-3.5" />
-              {t("viewImport.exportExcel")}
+              <FileSpreadsheet className="h-3.5 w-3.5 shrink-0" />
+              <span className="min-w-0 truncate">{t("viewImport.exportExcel")}</span>
             </button>
           ) : null}
           {props.exportItems?.map((item) => item.href ? (
@@ -1532,8 +1532,8 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
               onClick={() => setOpen(false)}
               className="flex w-full items-center justify-start gap-2 whitespace-nowrap px-3 py-2 text-left text-xs text-slate-700 hover:bg-slate-50"
             >
-              <Download className="h-3.5 w-3.5" />
-              {item.label}
+              <Download className="h-3.5 w-3.5 shrink-0" />
+              <span className="min-w-0 truncate">{item.label}</span>
             </a>
           ) : (
             <button
@@ -1547,8 +1547,8 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
               }}
               className="flex w-full items-center justify-start gap-2 whitespace-nowrap px-3 py-2 text-left text-xs text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
             >
-              <Download className="h-3.5 w-3.5" />
-              {item.label}
+              <Download className="h-3.5 w-3.5 shrink-0" />
+              <span className="min-w-0 truncate">{item.label}</span>
             </button>
           ))}
           <button
@@ -1556,8 +1556,8 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
             onClick={() => void handleExportTemplate()}
             className="flex w-full items-center justify-start gap-2 whitespace-nowrap px-3 py-2 text-left text-xs text-slate-700 hover:bg-slate-50"
           >
-            <Download className="h-3.5 w-3.5" />
-            {t("creditBill.exportTemplate")}
+            <Download className="h-3.5 w-3.5 shrink-0" />
+            <span className="min-w-0 truncate">{t("creditBill.exportTemplate")}</span>
           </button>
           <button
             type="button"
@@ -1567,8 +1567,8 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
             }}
             className="flex w-full items-center justify-start gap-2 whitespace-nowrap px-3 py-2 text-left text-xs text-slate-700 hover:bg-slate-50"
           >
-            <FileSpreadsheet className="h-3.5 w-3.5" />
-            {t("creditBill.importExcel")}
+            <FileSpreadsheet className="h-3.5 w-3.5 shrink-0" />
+            <span className="min-w-0 truncate">{t("creditBill.importExcel")}</span>
           </button>
           {props.mailImport ? (
             <button
@@ -1580,8 +1580,8 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
               }}
               className="flex w-full items-center justify-start gap-2 whitespace-nowrap px-3 py-2 text-left text-xs text-slate-700 hover:bg-slate-50"
             >
-              <MailSearch className="h-3.5 w-3.5" />
-              {t("creditBill.importMail")}
+              <MailSearch className="h-3.5 w-3.5 shrink-0" />
+              <span className="min-w-0 truncate">{t("creditBill.importMail")}</span>
             </button>
           ) : null}
         </div>

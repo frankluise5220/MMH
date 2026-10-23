@@ -4,7 +4,7 @@ import { prisma } from "@/lib/db/prisma";
 import { getApiHouseholdScope } from "@/lib/server/api-auth";
 import { loadWealthStatisticSourceEntries } from "@/lib/server/investment-statistic-sources";
 import { TransactionType } from "@prisma/client";
-import { toNumber } from "@/lib/date-utils";
+import { toNumber, businessTodayUtcStart } from "@/lib/date-utils";
 import { getReportEntryDate, isReportEntryDateWithin } from "@/lib/report-entry-date";
 import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import {
@@ -60,8 +60,8 @@ export async function GET(req: NextRequest) {
     const { hidFilter, householdId } = ctx;
 
     const url = req.nextUrl;
-    const now = new Date();
-    const thisYear = now.getFullYear();
+    const now = businessTodayUtcStart();
+    const thisYear = now.getUTCFullYear();
     const rawYear = url.searchParams.get("year");
     const selectedYear = rawYear ? parseInt(rawYear, 10) : thisYear;
     const year = Number.isFinite(selectedYear) && selectedYear >= 2000 && selectedYear <= 2100 ? selectedYear : thisYear;

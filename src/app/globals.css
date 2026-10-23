@@ -225,13 +225,18 @@ html {
      几何不变量（页签高 34px、`pt-10`、凹角、`z-index` 层级）见 `@/app/login/FolderTabs` 文件头。 */
 
   /* 内容板（实体卡片）：压在页签之上（z-20 > 页签 z-10），圆角/边框/阴影 + 米色底，
-     与白色弹窗底形成卡片感；`--ft-card-bg` 可被色阶类覆盖。 */
+     与白色弹窗底形成卡片感；`--ft-card-bg` 可被色阶类覆盖。
+     `flex: 0 1 auto` = **高度跟着内容走**（最后一个字段下面就是卡片底边，不再撑满窗口），
+     只有内容超出窗口可用高度时才被压缩，此时字段在卡片内滚动（`min-height: 0` + 内层
+     `overflow-y-auto`）。写成 `1 1 0%` 会让卡片不论内容多少都拉满窗口，底部大片空底色。
+    报销单三窗（新建 / 编辑 / 审核）同样如此：窗口底边跟着卡片走，短页签（一般报销）
+    下面不会再留一片空白。 */
   .ft-card-surface {
     --ft-card-bg: #fbfaf7;
     position: relative;
     z-index: 20;
     display: flex;
-    flex: 1 1 0%;
+    flex: 0 1 auto;
     min-height: 0;
     flex-direction: column;
     overflow: hidden;
@@ -246,37 +251,55 @@ html {
     --ft-card-bg: #ffffff;
   }
 
-  /* 卡片页脚：**固定在卡片底边**（不是 sticky 吸附层，所以不会浮上去盖住最后一个字段），
-     内容超出时字段在卡片内滚动、按钮位置恒定。 */
+  /* FT 卡片页签的标签：**在页签里垂直居中**。
+     `folderTabClass` 给活动页签的内边距是有意不对称的（`pt-1.5` 6px / `pb-[3px]` 3px），那是登录页
+     「页签降 3px、标签也降 3px」的设计；搬进窗口卡片后，16px 标签贴在页签下沿、上面空一大截，
+     看上去不在中间（2026-10-23 用户反馈：报销单「差旅费 / 一般报销」文字不居中）。
+     这里改成上下 4 / 5：总高仍是 1px 边框 + 4 + 行高 24 + 5 = 34px，页签底与内容板顶的 −1px
+     接缝、`mt-[7px]` 等几何全不变（见 `FolderTabs.tsx` 头注释第 2 条）。
+     本文件手写规则排在 Tailwind 生成的 utilities 之后、同层同特异性，故能覆盖 `pt-1.5` / `pb-[3px]`。 */
+  .ft-card-tab-active {
+    padding-top: 4px;
+    padding-bottom: 5px;
+  }
+
+  /* 底部按钮行：**在卡片外面、窗口中**（2026-10-23 用户反馈「卡片到备注下面就结束，
+     保存按钮是在窗口里，不在卡片里」）。几何由 `FolderTabsCard` 的布局给出：
+     根是 `flex-col` + `gap-3`，本行 `mt-auto` 贴窗口底边（卡片矮时空白留在两者之间，
+     卡片高时由 `gap-3` 兜住最小间距）。
+     ⚠️ 内边距**只写在组件上**（`px-4 pt-3 pb-3 md:px-0`），这里不要再写 `padding`：
+     本层产物排在 utilities 之后，`md:px-0` 这类工具类覆盖不住，会变成桌面也留 16px。 */
   .ft-card-footer {
     display: flex;
     flex: none;
     justify-content: flex-end;
     gap: 8px;
-    border-top: 1px solid #f1f5f9;
-    background-color: rgba(255, 255, 255, 0.95);
-    padding: 12px 16px;
-    backdrop-filter: blur(8px);
   }
 
-  /* 投资记账弹窗（InvestmentFormModal，配 `app-modal-panel-fixed-height`）：**固定窗体尺寸**。
-     四个页签（买入 / 赎回 / 现金分红 / 红利再投）内容长短不同；若弹窗高度随内容变化，
-     在 `app-modal-backdrop` 的居中布局下整个弹窗会上下位移、底部保存按钮的位置也跟着跳。
-     固定高度后：内容短的页签在卡片底部留空白，内容长的页签在卡片内滚动，外框与按钮位置恒定。
-     高度贴着「最长页签（买入，新建态）」的**实测**自然高度（Chromium 量过，勿按估算改小）：
-       一字段行 = 标签 16（text-xs 行高）+ 4（space-y-1）+ 控件 36（form-input h-9）= 56
-       7 行 + 6×12（space-y-3）+ 32（p-4）= 496  ← 卡片滚动区内容
-       + 1（页脚上边框）+ 60（页脚 py-3 + h-9 按钮）= 557   ← 卡片
-       + 40（页签带 pt-10）= 597
-       + 56（弹窗标题）+ 1 = 654                            ← 弹窗总高
-     取 42rem(672px) 留 ~18px 余量：不出现内部滚动条，且不会像 44rem 那样明显偏高。
+  /* 弹窗高度 = **当前内容的自然高度**（变量由 `useModalHeightLock` 运行时量出来写进 style）。
+     窗口组件的统一要求（2026-10-23）：**内容块 ↔ 按钮行**的间距必须等于**按钮行 ↔ 窗口边缘**
+     的间距（都取 `FolderTabsCard` 的 `gap-3` / `md:px-3 md:pb-3` = 12px）。窗口比内容高的话，
+     多出来的空白只能塞在内容块下面（把按钮推远）或按钮下面（按钮不贴边），两种都不接受，
+     所以高度必须贴着内容。切页签时窗体高度会跟着变，这是有意接受的代价。
      ⚠️ 双类名用于提高优先级：同层同优先级下，写在后面的 `.app-modal-panel` 的 `h-auto` 会压过单类名。
      移动端不受影响：`@media (max-width: 767px)` 里那条 `.app-modal-panel` 是**层外**规则，
      层外样式优先级高于任何 `@layer`，会把高度重置回整屏 `100dvh`。 */
   .app-modal-panel.app-modal-panel-fixed-height {
-    /* `--app-modal-fixed-height` 由调用方按自己的内容高度指定；默认 42rem 是投资记账弹窗
-       （最长页签「买入」）的实测值。其它记账弹窗复用同一个类时只改这个变量即可。 */
-    height: min(var(--app-modal-fixed-height, 42rem), calc(100dvh - 2rem));
+    /* `--app-modal-fixed-height` = 面板实测的内容自然高度（像素），由 `useModalHeightLock` 给。
+       `calc(100dvh - 2rem)` 是安全上限：内容再高也只到视口内，超出部分在表单滚动区里滚。 */
+    height: min(var(--app-modal-fixed-height, 100dvh), calc(100dvh - 2rem));
+  }
+
+  /* EMS（`EntryModalShell`）窗口**上方位置固定**：面板顶边在首次打开时定下（取当时的居中偏移），
+     之后切换页签 / 内容变高变矮**只让底边下移或上收**，整窗不再跟着垂直居中重算。
+     `--app-modal-anchor-top` 由 `useModalHeightLock` 写入；遮罩对齐改 `items-start`，
+     用 `:has()` 挂在面板类上 —— 面板还没测量出锚点时不带这个类，仍按居中显示，避免闪一下。 */
+  .app-modal-backdrop:has(> .app-modal-panel-anchored) {
+    align-items: flex-start;
+  }
+
+  .app-modal-panel.app-modal-panel-anchored {
+    margin-top: var(--app-modal-anchor-top, 0px);
   }
 
   .app-modal-panel-dragging {
@@ -594,23 +617,10 @@ html {
     grid-template-columns: minmax(0, 1fr) !important;
   }
 
-  .mobile-transaction-modal {
-    height: min(86dvh, 44rem);
-    max-height: calc(100dvh - max(0.75rem, env(safe-area-inset-top)));
-    border-top-left-radius: 18px;
-    border-top-right-radius: 18px;
-  }
-
-  /* 收支记账弹窗的滚动区（字段区）：容器滚动不外溢。原先这条 5.5rem 底部留白挂在 `form` 上，
-     是给「保存按钮在滚动内容末尾」留出上滑空间；现在按钮改成了贴着窗口底边的固定页脚，
-     留白要挂在**滚动区**上（否则会出现在页脚下方，露出空白）。 */
-  .mobile-transaction-modal .tx-entry-scroll {
-    overscroll-behavior: contain;
-    padding-bottom: max(2rem, calc(1rem + env(safe-area-inset-bottom)));
-  }
-
-  /* 固定页脚在移动端贴底，需要自己让开安全区 */
-  .mobile-transaction-modal .tx-entry-footer {
+  /* 收支记账弹窗已改用「FT 页签 + 内容板 + 卡片外按钮行」外壳（`EntryModalShell` +
+     `FolderTabsCard`），窗口高度与卡片圆角由外壳统一处理，这里只保留上面的单列网格规则。
+     按钮行贴窗口底边，移动端需要自己让开手势条安全区。 */
+  .ft-card-footer {
     padding-bottom: max(0.75rem, calc(0.75rem + env(safe-area-inset-bottom)));
   }
 }

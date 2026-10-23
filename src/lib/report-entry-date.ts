@@ -35,15 +35,20 @@ export function getReportEntryDate(entry: ReportEntryDateInput): Date {
   return getDetailEntryDisplayDate(entry, entry.toAccountId ?? entry.accountId ?? "");
 }
 
-/** `getReportEntryDate` 的本地日期键（YYYY-MM-DD），用于按日/按月分组和期间过滤。 */
+/** `getReportEntryDate` 的日期键（YYYY-MM-DD），用于按日/按月分组和期间过滤。 */
 export function getReportEntryDateKey(entry: ReportEntryDateInput): string {
   return localDateKey(getReportEntryDate(entry));
 }
 
+/**
+ * 日期键，口径是 **UTC**：DB 的日历日字段一律存 UTC 零点。
+ * 名称沿用历史（曾用本地 getter），服务端容器 TZ=UTC 时本地口径会把
+ * 北京时间凌晨的记录归错日/月，所以这里必须用 UTC getter。
+ */
 export function localDateKey(date: Date): string {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, "0");
-  const d = String(date.getDate()).padStart(2, "0");
+  const y = date.getUTCFullYear();
+  const m = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(date.getUTCDate()).padStart(2, "0");
   return `${y}-${m}-${d}`;
 }
 

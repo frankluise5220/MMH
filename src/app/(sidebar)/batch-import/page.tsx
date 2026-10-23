@@ -59,7 +59,7 @@ import {
   isCreditCardRepaymentTargetAccountKind,
   type CreditCardRepaymentBusinessType,
 } from "@/lib/transaction-semantics";
-import { getAccountLabelFieldsPreference } from "@/lib/client/appPreferences";
+import { readAccountDisplaySettings } from "@/lib/client/account-display-settings";
 
 type ParsedItem = {
   rawText: string;
@@ -158,6 +158,8 @@ type AccountOption = {
   hoverTitle?: string | null;
   displaySubLabel?: string | null;
   numberMasked?: string | null;
+  /** 账户币种：回退渲染时也要能补出「非本位币」。 */
+  currency?: string | null;
   isActive?: boolean;
   Institution?: { id?: string; name: string | null; shortName?: string | null } | null;
   AccountGroup?: { id: string; name: string | null } | null;
@@ -1734,7 +1736,8 @@ export default function BatchImportPage() {
   }, [refreshCategoryRuleSamples]);
 
   const accountDisplayLabel = useCallback((account: AccountOption) => {
-    const provided = formatAccountTableLabel(account, "", getAccountLabelFieldsPreference());
+    const settings = readAccountDisplaySettings();
+    const provided = formatAccountTableLabel(account, "", settings);
     if (provided) return provided;
     return formatAccountSelectorLabel({
       accountName: account.name,
@@ -1745,12 +1748,14 @@ export default function BatchImportPage() {
         }
         : null,
       numberMasked: account.numberMasked,
-      fields: getAccountLabelFieldsPreference(),
+      currency: account.currency ?? null,
+      baseCurrency: settings.baseCurrency,
+      fields: settings.fields,
     });
   }, []);
 
   const accountHoverTitle = useCallback((account: AccountOption) => {
-    return formatAccountTableTitle(account, accountDisplayLabel(account), getAccountLabelFieldsPreference());
+    return formatAccountTableTitle(account, accountDisplayLabel(account), readAccountDisplaySettings());
   }, [accountDisplayLabel]);
 
   const activeAccountOptions = useMemo(

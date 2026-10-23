@@ -3,6 +3,7 @@ import { prisma } from "@/lib/db/prisma";
 import { getOrCreateMasterKey, decrypt, isEncrypted } from "@/lib/auth/encrypt";
 import { normalizeAiApiMode } from "@/lib/ai/config";
 import { buildResponsesRequestBody, extractResponsesText } from "@/lib/ai/responses";
+import { todayDateBusinessYmd } from "@/lib/date-utils";
 
 function joinBaseUrl(baseUrl: string, path: string) {
   const base = baseUrl.replace(/\/$/, "");
@@ -90,7 +91,7 @@ export async function POST() {
 
     const { baseUrl, apiKey, modelName, isOllama, apiMode } = config;
     const cleanUrl = baseUrl.replace(/\/$/, "");
-    const today = new Date().toISOString().slice(0, 10);
+    const today = todayDateBusinessYmd();
 
     // Clear old results
     await prisma.commandTestResult.deleteMany({});

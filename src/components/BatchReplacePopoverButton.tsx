@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { CalcInput } from "@/components/CalcInput";
 import { DateStepper } from "@/components/DateStepper";
+import { useDerivedLayerZIndex } from "@/components/ModalLayer";
 import { SmartSelect, type SmartSelectOption, type SmartSelectProps } from "@/components/SmartSelect";
 import { useI18n } from "@/lib/i18n";
 
@@ -77,6 +78,9 @@ export function BatchReplacePopoverButton<Field extends string>({
   const [submitting, setSubmitting] = useState(false);
   const [message, setMessage] = useState("");
   const [panelStyle, setPanelStyle] = useState<CSSProperties | null>(null);
+  // 面板 portal 到 body，层级必须从「所在弹窗层」派生：写死 z-[120] 会被 ModalLayer 的
+  // 遮罩（1000 起）压在下面，表现为「点了批量编辑没有任何反应」。
+  const zIndex = useDerivedLayerZIndex();
 
   const fieldConfig = useMemo(() => fields.find((item) => item.value === field) ?? fields[0], [field, fields]);
   const disabled = targetCount === 0 || fields.length === 0;
@@ -198,8 +202,11 @@ export function BatchReplacePopoverButton<Field extends string>({
         ? createPortal(
             <div
               ref={panelRef}
-              style={panelStyle ?? { position: "fixed", top: -9999, left: -9999, width: 320 }}
-              className="z-[120] overflow-y-auto rounded-lg border border-blue-100 bg-white p-3 text-xs shadow-lg"
+              style={{
+                ...(panelStyle ?? { position: "fixed", top: -9999, left: -9999, width: 320 }),
+                zIndex,
+              }}
+              className="overflow-y-auto rounded-lg border border-blue-100 bg-white p-3 text-xs shadow-lg"
             >
               <div className="mb-2 flex items-center justify-between gap-3">
                 <span className="font-medium text-slate-700">{t("batchReplace.panelTitle", { label: effectiveTargetLabel, count: targetCount })}</span>

@@ -8,6 +8,7 @@ import { Database, Settings2 } from "lucide-react";
 import { ManualGrabMark } from "@/components/AddNavButton";
 import { DateStepper } from "@/components/DateStepper";
 import { useI18n } from "@/lib/i18n";
+import { todayDateLocalYmd } from "@/lib/date-utils";
 
 type RowActionPosition = {
   securityId?: string | null;
@@ -38,7 +39,7 @@ const dialogLabelClassName = "text-xs font-medium text-slate-600";
 const dialogValueClassName = "rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700";
 
 function todayStr() {
-  return new Date().toISOString().slice(0, 10);
+  return todayDateLocalYmd();
 }
 
 /**

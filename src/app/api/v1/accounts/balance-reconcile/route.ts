@@ -12,7 +12,7 @@ import { NextResponse } from "next/server";
 import { AccountKind, TransactionType } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
-import { toNumber } from "@/lib/date-utils";
+import { toNumber, businessTodayUtcStart } from "@/lib/date-utils";
 import { computeAccountDisplayBalances, recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import {
@@ -36,10 +36,12 @@ function parseDateOnly(value?: string) {
   const raw = String(value ?? "").trim();
   const match = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
   if (match) {
-    return new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 23, 59, 59);
+    // 必须用 Date.UTC：本地构造在容器 TZ=UTC 时会落到次日 07:59:59，
+    // 使「截至今天」的余额锚点把当天记录排除在外。
+    return new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 23, 59, 59, 999));
   }
-  const now = new Date();
-  return new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
+  const today = businessTodayUtcStart();
+  return new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate(), 23, 59, 59, 999));
 }
 
 function money(value: number) {

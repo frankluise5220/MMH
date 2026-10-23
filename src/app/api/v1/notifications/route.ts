@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
 import { accountLabelFieldsFromRequest } from "@/lib/server/account-label-fields";
+import { getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { loadNotificationFeed } from "@/lib/server/notification-feed";
 import { logger } from "@/lib/logger";
@@ -20,9 +21,11 @@ import { logger } from "@/lib/logger";
 export async function GET(req: NextRequest) {
   try {
     const { householdId } = await getHouseholdScope();
+    const baseCurrency = await getHouseholdBaseCurrency(householdId);
     const feed = await loadNotificationFeed({
       householdId,
       accountLabelFields: accountLabelFieldsFromRequest(req),
+      baseCurrency,
     });
     return NextResponse.json({
       ok: true,

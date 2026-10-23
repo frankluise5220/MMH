@@ -32,7 +32,7 @@
 
 import { AccountKind, FundSubtype, StockTransactionAction, TransactionType } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
-import { toNumber } from "@/lib/date-utils";
+import { toNumber, todayDateBusinessYmd } from "@/lib/date-utils";
 import { depositRedemptionPrincipal } from "@/lib/server/deposit-lot-balance";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 import { applyBalanceReconcileEntry, getBalanceReconcileTarget } from "@/lib/balance-reconcile";
@@ -65,10 +65,11 @@ export type AssetFlowMonthEndLevel = {
 
 export type AssetFlowMonthEndLevels = Map<string, AssetFlowMonthEndLevel>;
 
+// 口径是 UTC（名称沿用历史）：DB 日历日字段存 UTC 零点。
 function localDateKey(date: Date) {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, "0");
-  const d = String(date.getDate()).padStart(2, "0");
+  const y = date.getUTCFullYear();
+  const m = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const d = String(date.getUTCDate()).padStart(2, "0");
   return `${y}-${m}-${d}`;
 }
 
@@ -78,9 +79,9 @@ function monthEndDayKey(month: string) {
   return `${month}-${String(lastDay).padStart(2, "0")}`;
 }
 
+// 「当前月」按业务时区：UTC getter 在北京时间 1 号 00:00–08:00 还停在上个月。
 function currentMonth() {
-  const now = new Date();
-  return `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`;
+  return todayDateBusinessYmd().slice(0, 7);
 }
 
 function round2(value: number) {
@@ -808,7 +809,7 @@ export async function loadAssetMonthEndLevels(
         if (list) list.push({ ...entry, accountId });
       }
 
-      const todayKey = localDateKey(new Date());
+      const todayKey = todayDateBusinessYmd();
       for (const account of insuranceAccounts) {
         const snapshots = new Array<number>(boundaries.length).fill(0);
         const walker = makeBoundaryWalker(boundaries);

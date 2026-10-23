@@ -1,7 +1,7 @@
 import { AccountKind, FundCashFlowKind, FundSubtype, PropertyTransactionAction, StockTransactionAction, TransactionType } from "@prisma/client";
 
 import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
-import { isTradingClosedDate, toNumber } from "@/lib/date-utils";
+import { isTradingClosedDate, toNumber, businessTodayUtcStart } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
 import {
   calculateFundPositionsFromEntries,
@@ -1433,8 +1433,7 @@ export async function loadInvestmentProfitReport(
   },
   language: DisplayLanguage = "zh-CN",
 ) {
-  const now = new Date();
-  const currentYear = now.getUTCFullYear();
+  const currentYear = businessTodayUtcStart().getUTCFullYear();
   const accountIds = Array.from(new Set(params.accountIds?.filter(Boolean) ?? []));
   const tagIds = Array.from(new Set(params.tagIds?.filter(Boolean) ?? []));
 

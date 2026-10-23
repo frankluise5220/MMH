@@ -7,7 +7,7 @@ import { createFundTransactionWithCashFlows } from "@/lib/fund/transactions";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { fundArrivalDate, fundConfirmDate, getFundDateContext } from "@/lib/fund/confirmDays";
 import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
-import { formatDateUtc } from "@/lib/date-utils";
+import { formatDateUtc, businessDayStartUtc, todayDateBusinessYmd } from "@/lib/date-utils";
 import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { fetchHistoricalNavList, getFundNavFromCacheOnly, preloadNavListToCache } from "@/lib/fund/navCache";
@@ -74,7 +74,7 @@ async function hasMoreDuePlans(householdId: string, now: Date) {
 
 async function executeAutoExecuteRound(householdId: string, now: Date): Promise<AutoExecuteRoundResult> {
   try {
-    const todayStr = formatDateUtc(now);
+    const todayStr = todayDateBusinessYmd();
 
     const allPlans = await prisma.regularInvestPlan.findMany({
       where: { householdId, status: RegularInvestStatus.active },
@@ -199,7 +199,7 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
           const hasExplicitAction = Boolean(plan.planAction);
           const result = lotId
             ? task.type === "bond_interest_payout" && hasExplicitAction
-              ? await (await import("@/lib/server/bond-auto-interest")).autoWithdrawAccruedBondInterestForLot({ householdId, lotId, today: now, planId: plan.id })
+              ? await (await import("@/lib/server/bond-auto-interest")).autoWithdrawAccruedBondInterestForLot({ householdId, lotId, today: businessDayStartUtc(now), planId: plan.id })
               : await autoAccrueBondPeriodicInterestForLot({ householdId, lotId, today: now, planId: plan.id, createTransfer: task.type !== "bond_interest_accrual" })
             : { status: "skipped" as const, reason: "计划行 id 不是存单级" };
           if (result.status === "accrued") {
