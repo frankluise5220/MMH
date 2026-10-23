@@ -228,6 +228,98 @@ function getPackageReleaseNotesI18n(pkg: { mmhReleaseNotesI18n?: unknown }) {
   return Object.keys(result).length > 0 ? result : undefined;
 }
 
+/**
+ * 远端「本版说明」：Docker / 源码部署里的 package.json 是**构建时**固化的一份，
+ * 用户改了 Release 正文再发布，镜像里那份不会变（除非重建镜像）。所以按当前运行
+ * 版本去 GitHub 取一次 Release 正文、抽出「本次更新」两节覆盖本地文本：改完正文
+ * 点发布，自托管实例最迟几分钟后就显示新说明。
+ *
+ * 失败一律静默回落本地文本：容器常常没有外网或访问 GitHub 很慢，超时 2.5 秒，
+ * 不能为此拖住设置页。`MMH_RELEASE_NOTES_REMOTE=off` 可彻底关掉这次请求。
+ */
+const RELEASE_NOTES_TTL_MS = 5 * 60 * 1000;
+// 取不到时不要每分钟重试一次：外网不通的容器每次都要等满超时，设置页会被拖慢。
+const RELEASE_NOTES_EMPTY_TTL_MS = 10 * 60 * 1000;
+const RELEASE_NOTES_TIMEOUT_MS = 2500;
+const RELEASE_NOTES_REPO =
+  String(process.env.MMH_RELEASE_REPO ?? "").trim() || "frankluise5220/MMH";
+const releaseNotesCache = new Map<string, { at: number; text: string }>();
+
+/** 与 `scripts/sync-notes-from-release.cjs` 的 NOTE_GROUPS 保持一致：只有这两节进商店/应用内文案。 */
+const RELEASE_NOTE_GROUPS = ["功能改进", "Bug 修复"];
+
+/**
+ * 从 Release 正文抽出 `## 本次更新` 里的 `### 功能改进` / `### Bug 修复` 两节，
+ * 输出形态与 `package.json.mmhReleaseNotesI18n["zh-CN"]` 完全相同（客户端按 `###` 渲染小标题）。
+ */
+function pickUpdateSections(body: string): string {
+  const kept: string[] = [];
+  let inUpdateSection = false;
+  let collecting = false;
+  for (const line of body.split(/\r?\n/)) {
+    const section = line.match(/^##\s+(.+?)\s*$/);
+    if (section) {
+      inUpdateSection = section[1].trim() === "本次更新";
+      collecting = false;
+      continue;
+    }
+    if (!inUpdateSection) continue;
+    const group = line.match(/^###\s+(.+?)\s*$/);
+    if (group) {
+      const name = group[1].trim();
+      collecting = RELEASE_NOTE_GROUPS.includes(name);
+      if (collecting) {
+        if (kept.length > 0 && kept[kept.length - 1] !== "") kept.push("");
+        kept.push(`### ${name}`);
+      }
+      continue;
+    }
+    if (!collecting) continue;
+    // 标题与首个条目之间的空行、以及连续空行都不留：正典形态是
+    // `### 组名\n- 条目…\n\n### 下一组`，多出来的空行会让客户端渲染出多余间距。
+    const last = kept[kept.length - 1] ?? "";
+    if (!line.trim() && (/^### /.test(last) || !last.trim())) continue;
+    kept.push(line.trimEnd());
+  }
+  return kept.join("\n").trim();
+}
+
+/** 按版本取远端正文里的更新两节；取不到（离线、404、超时）返回空串，由调用方回落本地。 */
+async function fetchReleaseNotesFromGitHub(version: string): Promise<string> {
+  if (!version || version === "unknown" || /^(dev|main)$/i.test(version)) return "";
+  if (String(process.env.MMH_RELEASE_NOTES_REMOTE ?? "").trim().toLowerCase() === "off") return "";
+  const cached = releaseNotesCache.get(version);
+  if (cached) {
+    const ttl = cached.text ? RELEASE_NOTES_TTL_MS : RELEASE_NOTES_EMPTY_TTL_MS;
+    if (Date.now() - cached.at < ttl) return cached.text;
+  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), RELEASE_NOTES_TIMEOUT_MS);
+  try {
+    const res = await fetch(
+      `https://api.github.com/repos/${RELEASE_NOTES_REPO}/releases/tags/v${version}`,
+      {
+        headers: { accept: "application/vnd.github+json", "user-agent": "mmh-release-notes" },
+        cache: "no-store",
+        signal: controller.signal,
+      },
+    );
+    if (!res.ok) {
+      releaseNotesCache.set(version, { at: Date.now(), text: "" });
+      return "";
+    }
+    const data = (await res.json()) as { body?: unknown };
+    const text = pickUpdateSections(String(data.body ?? ""));
+    releaseNotesCache.set(version, { at: Date.now(), text });
+    return text;
+  } catch {
+    releaseNotesCache.set(version, { at: Date.now(), text: "" });
+    return "";
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 function safeGitName(value: string | undefined, fallback: string) {
   const v = String(value ?? "").trim();
   if (!v || v.startsWith("-")) return fallback;
@@ -623,13 +715,21 @@ export async function GET(req: NextRequest) {
     const pkg = readLocalPackageJson(projectRoot);
     const localVersion = typeof pkg.version === "string" && pkg.version.trim() ? pkg.version.trim() : "unknown";
     const localReleaseNotes = getPackageReleaseNotes(pkg);
-    const localReleaseNotesI18n = getPackageReleaseNotesI18n(pkg);
+    let localReleaseNotesI18n = getPackageReleaseNotesI18n(pkg);
     let imageSourceConfig: ImageSourceConfig | null = null;
     const deploymentTarget = getDeploymentTarget();
     const dockerEnvironment = deploymentTarget === "docker";
     const fnosEnvironment = deploymentTarget === "fnos";
     const synologyEnvironment = deploymentTarget === "synology";
     const managedPackageEnvironment = fnosEnvironment || synologyEnvironment;
+    // 包管理之外（Docker 镜像 / 源码部署）的正文是构建期固化的，发布后再改 Release
+    // 正文不会进镜像，所以按运行版本取一次远端正文覆盖；取不到就用本地那份。
+    if (dockerEnvironment || deploymentTarget === "standalone") {
+      const remoteReleaseNotes = await fetchReleaseNotesFromGitHub(localVersion);
+      if (remoteReleaseNotes) {
+        localReleaseNotesI18n = { ...(localReleaseNotesI18n ?? {}), "zh-CN": remoteReleaseNotes };
+      }
+    }
     const updaterEnabled = getUpdaterConfig().enabled;
     // The image source config comes from the local updater; load it whenever the
     // updater is reachable so the settings panel is available on first load,
