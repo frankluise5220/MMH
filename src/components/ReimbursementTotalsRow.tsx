@@ -17,8 +17,13 @@ import { CELL_INPUT } from "./reimbursement-table-styles";
  * 宽度比例由列宽决定，因此不需要再写死百分比。
  */
 
-/** 大写金额格：内容不换行，超出部分省略，鼠标悬停看全文。 */
-const CELL_BODY = "flex min-w-0 items-center gap-2 px-2 py-1 text-xs";
+/**
+ * 这一行沿用抬头格的视觉：标签列 96px + 右侧一条竖线 + 值列。
+ * 「大写金额」「附件张数」标签右边因此有线，与上方抬头、明细的网格连成同一套。
+ */
+const CELL_ROW = "flex min-h-8 items-stretch";
+const CELL_LABEL = "flex w-24 shrink-0 items-center whitespace-nowrap border-r border-slate-300 px-2 text-slate-500";
+const CELL_VALUE = "flex min-w-0 flex-1 items-center px-2";
 
 export function ReimbursementTotalsRow({
   columnCount,
@@ -43,20 +48,23 @@ export function ReimbursementTotalsRow({
 
   return (
     <tr className="bg-white">
-      {/* 大写金额：右边界就是表格上方的某条列线，竖线因此连贯。 */}
+      {/* 大写金额：格右边界是表格上方的某条列线，标签右边也有一条自己的竖线。 */}
       <td colSpan={splitColumn} className="border-t border-r border-slate-300 p-0 align-middle">
-        <div className={CELL_BODY}>
-          <span className="shrink-0 text-slate-500">{t("reimburse.totalUpper")}</span>
-          <span className="min-w-0 truncate font-medium tracking-wide text-slate-800" title={upper}>
+        <div className={CELL_ROW}>
+          <span className={CELL_LABEL}>{t("reimburse.totalUpper")}</span>
+          <span
+            className={`${CELL_VALUE} truncate font-medium tracking-wide text-slate-800`}
+            title={upper}
+          >
             {upper}
           </span>
         </div>
       </td>
-      {/* 附件张数：占剩余列，右侧边线与表格外框连续。 */}
+      {/* 附件张数：右侧边线与表格外框连续，标签右边同样一条竖线。 */}
       <td colSpan={attachmentColumns} className="border-t border-r border-slate-300 p-0 align-middle">
-        <div className={CELL_BODY}>
-          <span className="shrink-0 text-slate-500">{t("reimburse.form.attachmentCount")}</span>
-          <div className="min-w-0 flex-1">
+        <div className={CELL_ROW}>
+          <span className={CELL_LABEL}>{t("reimburse.form.attachmentCount")}</span>
+          <div className={CELL_VALUE}>
             {editable && onAttachmentCountChange ? (
               <CalcInput
                 bare
@@ -68,7 +76,7 @@ export function ReimbursementTotalsRow({
                 className="h-8 w-full"
               />
             ) : (
-              <span className="block text-right font-medium tabular-nums text-slate-800">
+              <span className="block min-w-0 flex-1 text-right font-medium tabular-nums text-slate-800">
                 {attachmentCount || "-"}
               </span>
             )}
