@@ -3,7 +3,7 @@
 import { formatRmbUpper } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
 import { CalcInput } from "./CalcInput";
-import { CELL_INPUT } from "./reimbursement-table-styles";
+import { CELL_INPUT, COL_DATE_WIDTH, COL_TOTAL_WIDTH } from "./reimbursement-table-styles";
 
 /**
  * 单据「合计金额」行的下一行：左边大写金额、右边附件张数。
@@ -18,11 +18,13 @@ import { CELL_INPUT } from "./reimbursement-table-styles";
  */
 
 /**
- * 这一行沿用抬头格的视觉：标签列 96px + 右侧一条竖线 + 值列。
- * 「大写金额」「附件张数」标签右边因此有线，与上方抬头、明细的网格连成同一套。
+ * 这一行沿用抬头格的视觉：标签列 + 右侧一条竖线 + 值列。
+ *
+ * 标签列宽直接取上方明细的固定列宽，标签右边那条竖线因此落在真实列线上：
+ * 「大写金额」= 日期列宽，「附件张数」= 小计列宽。改列宽时两条线仍跟着走。
  */
 const CELL_ROW = "flex min-h-8 items-stretch";
-const CELL_LABEL = "flex w-24 shrink-0 items-center whitespace-nowrap border-r border-slate-300 px-2 text-slate-500";
+const CELL_LABEL = "flex shrink-0 items-center whitespace-nowrap border-r border-slate-300 px-2 text-slate-500";
 const CELL_VALUE = "flex min-w-0 flex-1 items-center px-2";
 
 export function ReimbursementTotalsRow({
@@ -51,7 +53,9 @@ export function ReimbursementTotalsRow({
       {/* 大写金额：格右边界是表格上方的某条列线，标签右边也有一条自己的竖线。 */}
       <td colSpan={splitColumn} className="border-t border-r border-slate-300 p-0 align-middle">
         <div className={CELL_ROW}>
-          <span className={CELL_LABEL}>{t("reimburse.totalUpper")}</span>
+          <span className={CELL_LABEL} style={{ width: COL_DATE_WIDTH }}>
+            {t("reimburse.totalUpper")}
+          </span>
           <span
             className={`${CELL_VALUE} truncate font-medium tracking-wide text-slate-800`}
             title={upper}
@@ -63,7 +67,9 @@ export function ReimbursementTotalsRow({
       {/* 附件张数：右侧边线与表格外框连续，标签右边同样一条竖线。 */}
       <td colSpan={attachmentColumns} className="border-t border-r border-slate-300 p-0 align-middle">
         <div className={CELL_ROW}>
-          <span className={CELL_LABEL}>{t("reimburse.form.attachmentCount")}</span>
+          <span className={CELL_LABEL} style={{ width: COL_TOTAL_WIDTH }}>
+            {t("reimburse.form.attachmentCount")}
+          </span>
           <div className={CELL_VALUE}>
             {editable && onAttachmentCountChange ? (
               <CalcInput

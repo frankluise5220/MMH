@@ -3,7 +3,7 @@ import { ModalLayer } from "@/components/ModalLayer";
 
 import { useI18n } from "@/lib/i18n";
 import { formatAmountDraft, formatMoneyYuan } from "@/lib/format";
-import { Eraser, Link2 } from "lucide-react";
+import { AlertTriangle, Eraser, Link2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { DateStepper } from "./DateStepper";
 import { CalcInput, evaluateCalcInputExpression } from "./CalcInput";
@@ -115,6 +115,10 @@ export function ReimbursementEditor({
   // 「代付」报销类型已废弃：历史 advance 单据按一般报销编辑。
   const [kind, setKind] = useState<ReimbursementKindValue>(reimbursement.kind === "advance" ? "general" : reimbursement.kind);
   const isTravel = kind === "travel";
+
+  // 校验失败、保存异常都用这层 MMH 提示窗，不再弹浏览器原生 alert：
+  // 原生弹窗在窗口叠层里会盖住整个应用，样式也和项目其它提示不一致。
+  const [notice, setNotice] = useState<string | null>(null);
 
   // ── Header state ────────────────────────────────────────────────────────────
   const [header, setHeader] = useState<EditableHeader>({
@@ -258,22 +262,32 @@ export function ReimbursementEditor({
       headerFormData.set("attachmentCount", header.attachmentCount);
       const headerResult = await actions.update(headerFormData);
       if (!headerResult.ok) {
-        window.alert(reimbursementErrorMessage(headerResult.error!, t));
+        setNotice(reimbursementErrorMessage(headerResult.error, t));
         return;
       }
 
       for (const [index, item] of items.entries()) {
         const itemResult = await saveItemData(item, index);
         if (!itemResult.ok) {
-          window.alert(reimbursementErrorMessage(itemResult.error!, t));
+          setNotice(reimbursementErrorMessage(itemResult.error, t));
           return;
         }
       }
 
-      setSavedMessage(t("reimburse.alert.saved"));
-      window.setTimeout(() => setSavedMessage(null), 2000);
       preserveLocalStateRef.current = true;
       await onSaved?.();
+      // 保存成功后关窗：列表已经刷新，停在旧窗口里看不到结果，还容易再点一次保存。
+      onClose();
+    } catch (error) {
+      // 服务端 action 被拦下（会话过期、只读账号、请求超时）时是**抛错**而不是返回
+      // ok:false。以前这里没有 catch，点了保存既没关窗也没提示，看起来像按钮没生效。
+      const message = error instanceof Error ? error.message : "";
+      console.error("[reimbursement] 保存失败", error);
+      setNotice(
+        message.startsWith("REIMBURSEMENT_")
+          ? reimbursementErrorMessage(message, t)
+          : t("reimburse.alert.updateFailed"),
+      );
     } finally {
       setSavingHeader(false);
     }
@@ -288,7 +302,7 @@ export function ReimbursementEditor({
       fd.set("txRecordIds", JSON.stringify(txRecordIds));
       const result = await actions.linkTransactions(fd);
       if (!result.ok) {
-        window.alert(reimbursementErrorMessage(result.error!, t));
+        setNotice(reimbursementErrorMessage(result.error, t));
         return;
       }
       const selectedCandidates = availableCandidates.filter((item) => txRecordIds.includes(item.id));
@@ -320,7 +334,7 @@ export function ReimbursementEditor({
       fd.set("txRecordId", txRecordId);
       const result = await actions.unlinkTransaction(fd);
       if (!result.ok) {
-        window.alert(reimbursementErrorMessage(result.error!, t));
+        setNotice(reimbursementErrorMessage(result.error, t));
         return;
       }
       setLinkedTransactions((current) => current.filter((item) => item.txRecordId !== txRecordId));
@@ -345,7 +359,7 @@ export function ReimbursementEditor({
       fd.set("itemId", itemId);
       const result = await actions.deleteItem(fd);
       if (!result.ok) {
-        window.alert(reimbursementErrorMessage(result.error!, t));
+        setNotice(reimbursementErrorMessage(result.error, t));
         return;
       }
       setItems((current) => current.filter((item) => item.id !== itemId));
@@ -426,7 +440,9 @@ export function ReimbursementEditor({
 
   // 窗口外壳：与新建窗同一个 `EntryModalShell` —— 标题栏、页签、卡片、按钮行、层级、高度全由它统一，
   // 这里只提供内容（纸面表单 + 审核区 + 原始记录）与本窗的主操作。
+  // 校验/保存失败提示用 `ModalLayer` 叠在本窗之上（层级由外壳自动推出，不比它低）。
   return (
+    <>
     <EntryModalShell
       open
       heightKey="reimburse-document"
@@ -693,5 +709,30 @@ export function ReimbursementEditor({
         </ModalLayer>
       ) : null}
     </EntryModalShell>
+
+    {notice ? (
+      <ModalLayer className="app-modal-backdrop">
+        <div className="app-modal-panel max-w-md">
+          <div className="modal-header">
+            <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
+              <AlertTriangle className="h-4 w-4 text-amber-500" />
+              {t("reimburse.alert.title")}
+            </div>
+            <button type="button" onClick={() => setNotice(null)} className="secondary-button h-8 px-2">
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+          <div className="px-4 py-5 text-sm leading-6 text-slate-700">{notice}</div>
+          <div className="shrink-0 border-t border-slate-100 bg-white/95 px-4 py-3">
+            <div className="flex items-center justify-end gap-2">
+              <button type="button" onClick={() => setNotice(null)} className="primary-button h-9 px-4">
+                {t("common.ok")}
+              </button>
+            </div>
+          </div>
+        </div>
+      </ModalLayer>
+    ) : null}
+    </>
   );
 }

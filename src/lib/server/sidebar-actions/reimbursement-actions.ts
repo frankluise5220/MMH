@@ -858,6 +858,14 @@ export async function createReimbursement(formData: FormData): Promise<Reimburse
           data: { householdId, advanceAccountId: requestedAdvanceAccountId, title },
           select: { id: true },
         });
+      // 同一报销批次内单据编号必须唯一：两张单子挂同一个号，出纳与审计会分不清。
+      if (documentNumber) {
+        const duplicate = await tx.reimbursement.findFirst({
+          where: { batchId: batch.id, householdId, documentNumber, deletedAt: null },
+          select: { id: true },
+        });
+        if (duplicate) throw new Error("REIMBURSEMENT_DOCUMENT_NUMBER_DUPLICATE");
+      }
       await tx.reimbursement.create({
         data: {
           householdId,
@@ -1472,18 +1480,24 @@ export async function updateReimbursement(formData: FormData): Promise<Reimburse
           select: { id: true, advanceAccountId: true },
         })
         : null;
+      // 明确指定了批次却查不到：批次被删或不属于本账簿，报错让前端刷新。
+      if (batchId && !batch) throw new Error("REIMBURSEMENT_BATCH_INVALID");
       if (!batch && !batchId && reimbursement.advanceAccountId) {
         batch = await tx.reimbursementBatch.create({
           data: { householdId, advanceAccountId: reimbursement.advanceAccountId, title },
           select: { id: true, advanceAccountId: true },
         });
       }
-      if (!batch) throw new Error("REIMBURSEMENT_BATCH_INVALID");
-      const batchReimbursements = await tx.reimbursement.findMany({
-        where: { batchId: batch.id, deletedAt: null },
-        select: { paymentTxRecordId: true },
-      });
-      if (batchReimbursements.length > 0) {
+      // 历史单据：既没有批次、也没有往来账户可以补建批次（批次必须有代付账户）。
+      // 这类单据以前每次保存都会抛 BATCH_INVALID，抬头与明细永远改不动；
+      // 批次不是这次编辑能补出来的东西，就不该拦住整张单据的保存，保留原归属即可。
+      const batchReimbursements = batch
+        ? await tx.reimbursement.findMany({
+          where: { batchId: batch.id, deletedAt: null },
+          select: { paymentTxRecordId: true },
+        })
+        : [];
+      if (batch && batchReimbursements.length > 0) {
         const paymentTxRecordIds = batchReimbursements
           .map((item) => item.paymentTxRecordId)
           .filter((id): id is string => Boolean(id));
@@ -1494,6 +1508,14 @@ export async function updateReimbursement(formData: FormData): Promise<Reimburse
         if (paymentTxRecordIds.length === batchReimbursements.length && validPaymentCount === uniquePaymentTxRecordIds.length) {
           throw new Error("REIMBURSEMENT_BATCH_ALREADY_PAID");
         }
+      }
+      // 同批次内改号也要避开同批次的其他单据（自己不算）。
+      if (batch && documentNumber) {
+        const duplicate = await tx.reimbursement.findFirst({
+          where: { batchId: batch.id, householdId, documentNumber, deletedAt: null, id: { not: reimbursementId } },
+          select: { id: true },
+        });
+        if (duplicate) throw new Error("REIMBURSEMENT_DOCUMENT_NUMBER_DUPLICATE");
       }
       await tx.reimbursement.update({
         where: { id: reimbursementId },
@@ -1506,8 +1528,8 @@ export async function updateReimbursement(formData: FormData): Promise<Reimburse
           travelReason: travelReason || null,
           note: note || null,
           attachmentCount,
-          batchId: batch.id,
-          advanceAccountId: reimbursement.advanceAccountId ?? batch.advanceAccountId,
+          batchId: batch?.id ?? reimbursement.batchId ?? null,
+          advanceAccountId: reimbursement.advanceAccountId ?? batch?.advanceAccountId ?? null,
         },
       });
     });

@@ -53,11 +53,12 @@ export const TRAVEL_COLUMN_COUNT = 10;
 export const GENERAL_COLUMN_COUNT = 6;
 
 /**
- * 合计行下方「大写金额 / 附件张数」的分栏位置：落在表格真实列边界上，
- * 竖线才能与上方连通。差旅落在「住宿」之后，一般报销落在「小计」之后。
+ * 合计行下方「大写金额 / 附件张数」的分栏位置：分界落在表格真实列边界上，
+ * 竖线才能与上方连通。附件张数格从「小计」列开头起算——差旅落在住宿列之后（第 7 列结束），
+ * 一般报销落在金额列之后（第 3 列结束），两处的「附件张数」都正好坐在小计那一列上。
  */
-export const TRAVEL_TOTALS_SPLIT = 6;
-export const GENERAL_TOTALS_SPLIT = 4;
+export const TRAVEL_TOTALS_SPLIT = 7;
+export const GENERAL_TOTALS_SPLIT = 3;
 
 /**
  * 报销单整窗尺寸：新建弹窗、单据编辑页、审核页共用一套（三处不再各写一套）。
