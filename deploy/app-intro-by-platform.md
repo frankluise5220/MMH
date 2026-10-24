@@ -31,7 +31,9 @@ MMH（MoneyMoneyHome）は、ローカルファーストの家庭向け家計・
 
 ## 群晖渲染版（同一份正文 + 【】小标题 + 全角空格留白）
 
-载体是 `deploy/fnstore/app/app.py` 的 `_synology_catalog()['description']`，按 DSM 语言分 `chs` / `cht` / `enu`。**套件中心把这串文字当纯文本渲染，没有可用的换行语法**：写 `\n` 会被折叠成一个空格（旧正文本来就带 5 个 `\n`，屏幕上仍连成一整段），写 `<br>` 会被转义并原样显示成字面量 `<br>`（2026-10-24 两次截图实测）。所以正文必须是**单行**，段落之间用两个全角空格 U+3000 留白（全角空格不会被折叠）加 `▌` 段首标记，行首保留 `【】` 小标题。正文逐字来自上面的中文正典——只有 `【记账】` 行把句首的「记账」二字换成了标签本身。
+载体是 `deploy/fnstore/app/app.py` 的 `_synology_catalog()['description']`，按 DSM 语言分 `chs` / `cht` / `enu`。**套件中心把这串文字当纯文本渲染，没有可用的换行语法**：写 `\n` 会被折叠成一个空格（旧正文本来就带 5 个 `\n`，屏幕上仍连成一整段），写 `<br>` 会被转义并原样显示成字面量 `<br>`（2026-10-24 两次截图实测）。群晖源的包对象只有 `desc` 一个说明字段（没有 `description`），SynoCommunity 的 38 个包 `desc` 也全是单行、零换行——主流第三方源同样放弃了在这个位置分行。
+
+所以正文必须是**单行**，段落之间用四个全角空格 U+3000 留白（U+3000 不会被折叠）加 `▌` 段首标记。**每段控制在 20～35 字**：句子一长，整块就又会读成一团（2026-10-24 第三次反馈后定稿）。正文是上面中文正典的精简版，保留记账 / 资产 / 功能 / 多端 / 版本 / 进行中六节，每节只留关键词，卸载、报销等细节让位给「新增功能」区和 GitHub。
 
 「新增功能」（`changelog`）是**另一个渲染区，按 HTML 渲染**：`<br/>` 生效，官方套件在这里还用了 `<b>` 小标题和有序列表；SynoCommunity 的 38 个包里有 13 个正是用 `1. …<br/>2. …` 断行的（2026-10-24 抓源确认）。所以 `app.py` 的 `_synology_plain_changelog()` 会按分号拆条，把「修复…」开头的条目归到 `<b>问题修复</b>`、其余归 `<b>功能更新</b>`，两组各自编号并用 `<br/>` 连接（官方套件同样是加粗小标题 + 有序列表）。不要把「说明」区和「新增功能」区的排版手段混用：前者纯文本，后者 HTML。
 
@@ -56,7 +58,7 @@ MMH 家庭财务工作台（MoneyMoneyHome）是本地优先的家庭记账与�
 | 3 | 软仓字段草案 | `deploy/fnos/repository/apps.example.json` · `apps[].description` | 同上 |
 | 4 | FnDepot / 飞牛应用源 | `deploy/fnos/repository/fnpack.json` · `apps.mmh.desc` + `i18n.zh-CN/en-US/ja-JP.desc` | **纯简介**（无 `【本版更新】` 段）：中/英/日正典各一份 |
 | 5 | 软仓 VPS 种子 | `deploy/fnos/selfhosted-source/data/fn-appstores.json` · `_manual.desc` | 同 #1（该目录被 `.gitignore` 忽略，但 `deploy.sh` 会把它推到 VPS 作种子） |
-| 6 | 群晖套件中心「说明」（**未安装**时，及「套件来源」列表） | `deploy/fnstore/app/app.py` · `description.chs/cht/enu` | 群晖渲染版（单行 + `【】` + 全角空格留白） |
+| 6 | 群晖套件中心「说明」（**未安装**时，及「套件来源」列表） | `deploy/fnstore/app/app.py` · `description.chs/cht/enu` | 群晖渲染版（单行 + `▌` + 四个全角空格） |
 | 6b | 群晖套件中心「说明」（**已安装**后，用户实际看到的那一页） | `scripts/build-synology-package.cjs` · `writeInfoFile()` 的 `description="…"` | 同一份简介压成**单行**：INFO 是 shell 键值对，值不能跨行。**改这一行必须重出 SPK 才生效**，服务端 `app.py` 改了也不会影响已安装套件的说明 |
 | 7 | README「各版本软件简介」 | `README.md` | 中文正典 + 安装形态对照表 |
 | 8 | 软仓 VPS 线上文件 | `/opt/fn-appstores-server/data/fn-appstores.json` · `_manual.desc` | 手工同步（见下） |
