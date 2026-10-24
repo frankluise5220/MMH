@@ -2017,9 +2017,13 @@ function dsmUiDirs() {
 }
 
 function copyIcons() {
-  const icon192 = path.join(root, "public", "branding", "mmh-logo-pageflip-192.png");
+  // Every icon size comes from the same master so Package Center, the Desktop
+  // shortcut and the fnOS soft-store listing (data/icons/mmh.PNG on the store
+  // host, byte-identical to PACKAGE_ICON_256.PNG) draw the same mark with the
+  // same margins. mmh-logo-pageflip-192.png is a separately exported crop and
+  // sat nearly edge-to-edge, which read as "a different icon" next to the 256.
   const icon512 = path.join(root, "public", "branding", "mmh-logo-pageflip-512.png");
-  copyIcon(icon192, path.join(stageDir, "PACKAGE_ICON.PNG"), 72);
+  copyIcon(icon512, path.join(stageDir, "PACKAGE_ICON.PNG"), 72);
   copyIcon(icon512, path.join(stageDir, "PACKAGE_ICON_256.PNG"), 256);
   for (const dir of dsmUiDirs()) {
     for (const size of dsmIconSizes) {
