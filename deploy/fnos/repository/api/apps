@@ -17,7 +17,7 @@
         "x86_64": "http://fnapp.floatingice.win/apps/mmh-0.1.77.fpk",
         "arm64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.77/mmh-fnos-v0.1.77-arm64.fpk"
       },
-      "icon": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-192.png.1.72",
+      "icon": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-512.png",
       "repo": "https://github.com/frankluise5220/MMH",
       "tags": "财务,记账",
       "changelog": "报销单统一为文档表单（新建/编辑/审核共用抬头、明细与合计布局，抬头固定四格：归属批次、单据类型、单据编号、到账日期，差旅单另有出差起止与事由）；账户名按「账户显示格式」全站统一渲染，改设置即时生效；明细「全部」视图改为整份加载，传输中断自动退回分批拉取；业务日期统一按 Asia/Shanghai 计算，修复容器 UTC 导致的凌晨日期差一天；记账弹窗窗口几何收敛，切换页签表单不再跳动；修复报销单抬头日期被日历图标遮挡、合计行分栏竖线断头与明细网格错位；修复部分表格账户名退化为裸账户名、悬停信息缺失；修复明细「全部」视图请求失败后静默无响应；修复飞牛（fnOS）网关下记账保存后跳转 404（/app/mmh 前缀被二次拼接）。完整说明见 GitHub Release v0.1.77",
