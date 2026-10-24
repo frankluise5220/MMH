@@ -29,9 +29,9 @@ MMH (MoneyMoneyHome) is a local-first home bookkeeping and full asset-management
 
 MMH（MoneyMoneyHome）は、ローカルファーストの家庭向け家計・資産管理ワークスペースです。アプリと帳簿データは自分のデバイスまたは NAS 上に保存され、第三者クラウドを経由しません。支出・収入・振替に加えて立替・借入・貸付・返済などの貸借取引の記録に対応し、複数帳簿・複数メンバー・多通貨・カテゴリ・タグ・金融機関・家族メンバー・取引先を管理できます。資産と負債は一つの帳簿で長期的に管理できます。クレジットカードの請求サイクルと分割払い、ローンの返済計画と再計算、投資信託の基準価額と積立、株式の売買と保有損益、預金と債券の証書と利息計算、理財商品と貴金属、不動産評価、保険証券に対応します。ほかに統計レポートと残高照合、定期タスクによる自動記帳、帳簿の取込と書出、AI 認識とアシスタント、添付ファイル、取消と復元、手動/自動バックアップを提供し、PC・モバイルブラウザ、Windows デスクトップアプリ、Android アプリ、オープン API から利用できます。精算・出張ワークフローは開発中で、一部の入力・閲覧機能を既に提供しています。飛牛 fnOS ネイティブパッケージ、Synology DSM パッケージ、Windows デスクトップ版、Docker イメージ、Android アプリの各版をご用意しています。
 
-## 群晖渲染版（同一份正文 + `<br>` + 【】小标题）
+## 群晖渲染版（同一份正文 + 【】小标题 + 全角空格留白）
 
-载体是 `deploy/fnstore/app/app.py` 的 `_synology_catalog()['description']`，按 DSM 语言分 `chs` / `cht` / `enu`。**必须用 HTML `<br>` 分行**：2026-10-15 曾误以为写 `\n` 就能换行，2026-10-24 实测确认套件中心会把 `\n` 折叠成一个空格——旧正文里本来就有 5 个 `\n`，屏幕上仍是连成一整段（用户反馈「没有换行」），现已全部改成 `<br>`。行首的 `【】` 只是排版标签，正文逐字来自上面的中文正典——只有 `【记账】` 行把句首的「记账」二字换成了标签本身。
+载体是 `deploy/fnstore/app/app.py` 的 `_synology_catalog()['description']`，按 DSM 语言分 `chs` / `cht` / `enu`。**套件中心把这串文字当纯文本渲染，没有可用的换行语法**：写 `\n` 会被折叠成一个空格（旧正文本来就带 5 个 `\n`，屏幕上仍连成一整段），写 `<br>` 会被转义并原样显示成字面量 `<br>`（2026-10-24 两次截图实测）。所以正文必须是**单行**，段落之间用两个全角空格 U+3000 留白（全角空格不会被折叠），行首保留 `【】` 小标题。正文逐字来自上面的中文正典——只有 `【记账】` 行把句首的「记账」二字换成了标签本身。
 
 ```
 MMH 家庭财务工作台（MoneyMoneyHome）是本地优先的家庭记账与全资产管理工具，程序和账本数据都保存在你自己的设备或 NAS 上，不经过第三方云端。
@@ -54,7 +54,7 @@ MMH 家庭财务工作台（MoneyMoneyHome）是本地优先的家庭记账与�
 | 3 | 软仓字段草案 | `deploy/fnos/repository/apps.example.json` · `apps[].description` | 同上 |
 | 4 | FnDepot / 飞牛应用源 | `deploy/fnos/repository/fnpack.json` · `apps.mmh.desc` + `i18n.zh-CN/en-US/ja-JP.desc` | **纯简介**（无 `【本版更新】` 段）：中/英/日正典各一份 |
 | 5 | 软仓 VPS 种子 | `deploy/fnos/selfhosted-source/data/fn-appstores.json` · `_manual.desc` | 同 #1（该目录被 `.gitignore` 忽略，但 `deploy.sh` 会把它推到 VPS 作种子） |
-| 6 | 群晖套件中心「说明」（**未安装**时，及「套件来源」列表） | `deploy/fnstore/app/app.py` · `description.chs/cht/enu` | 群晖渲染版（`<br>` + `【】`） |
+| 6 | 群晖套件中心「说明」（**未安装**时，及「套件来源」列表） | `deploy/fnstore/app/app.py` · `description.chs/cht/enu` | 群晖渲染版（单行 + `【】` + 全角空格留白） |
 | 6b | 群晖套件中心「说明」（**已安装**后，用户实际看到的那一页） | `scripts/build-synology-package.cjs` · `writeInfoFile()` 的 `description="…"` | 同一份简介压成**单行**：INFO 是 shell 键值对，值不能跨行。**改这一行必须重出 SPK 才生效**，服务端 `app.py` 改了也不会影响已安装套件的说明 |
 | 7 | README「各版本软件简介」 | `README.md` | 中文正典 + 安装形态对照表 |
 | 8 | 软仓 VPS 线上文件 | `/opt/fn-appstores-server/data/fn-appstores.json` · `_manual.desc` | 手工同步（见下） |
