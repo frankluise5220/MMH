@@ -13,7 +13,7 @@
 - **只有一份中性正文**：不点名安装形态（说「你自己的设备或 NAS」而不是「飞牛原生应用包」），末尾一次列全五个版本（飞牛 fnOS / 群晖 DSM / Windows / Docker / Android）。
 - **各渠道只做渲染适配，不改字**：
   - 单行载体（软仓 `desc` 的简介段、FnDepot `desc` / `i18n.*.desc`、`apps.example.json` / `api/apps` 的字段）：直接用下面的正典。
-  - **群晖套件中心**：同一份正典，在五个段首词（`记账：`/`资产：`/`功能：`/`多端：`/`版本：`）前各插一个 `▌` 和四个全角空格，用来分段——DSM 这块是纯文本面板，换行语法完全不可用。
+  - **群晖套件中心**：直接用正典原文，**一个字都不加**。DSM 说明区是纯文本面板、换行不可用；曾经在段首插「全角空格 + `▌`」凑分段，2026-10-24 明确取消——换行既然做不到，标记就只剩副作用，还让同一段话在不同渠道不再逐字相同。
   - **README**：用同一份口径复述（长文叙述 + 安装形态对照表），不另写一份商店简介。
 - 群晖的「版本：」行会列出「群晖 DSM」自己——这是统一正文的刻意结果，**不要为它开例外**、也不要给它单独写一份。
 
@@ -29,18 +29,19 @@ MMH is a local-first home bookkeeping and full asset-management tool; the app an
 
 MMH はローカルファーストの家計・資産管理ツールです。アプリと帳簿データは自分のデバイスまたは NAS にのみ保存され、第三者クラウドを経由しません。記帳：支出・収入・振替・立替・借入・貸出・返済、複数帳簿・多通貨・カテゴリ・タグ・メンバー。資産：カード分割払い、ローンの返済再計算、投資信託の積立、株式の保有損益、預金、理財商品、不動産、保険。機能：レポートと残高照合、定期自動記帳、取込と書出、AI 認識、添付、取消と復元、バックアップ。多端：PC・モバイルブラウザ、Windows、Android、オープン API。各版：飛牛 fnOS、Synology DSM、Windows、Docker、Android。
 
-## 群晖渲染版（正典 + `▌` 分段）
+## 群晖说明区（正典原文，无标记）
 
 载体是 `deploy/fnstore/app/app.py` 的 `_synology_catalog()['description']`，按 DSM 语言分 `chs` / `cht` / `enu`。**套件中心把这串文字当纯文本渲染，没有可用的换行语法**：写 `\n` 会被折叠成一个空格（旧正文本来就带 5 个 `\n`，屏幕上仍连成一整段），写 `<br>` 会被转义并原样显示成字面量 `<br>`（2026-10-24 两次截图实测）。群晖源的包对象只有 `desc` 一个说明字段（没有 `description`），SynoCommunity 的 38 个包 `desc` 也全是单行、零换行——主流第三方源同样放弃了这个位置分行。
 
-所以群晖版 = **正典原文一字不改**，只在五个段首词前插入 `四个全角空格 + ▌`（U+3000 不会被折叠）。整串 240 字左右，每段 25～45 字；再长整块又会读成一堵墙（2026-10-24 连缩两版后定稿，此前正典约 400 字）。
+所以群晖版 = **正典原文，一字不改、一个字符不加**（`chs` 对应中文正典、`cht` 对应繁体正典、`enu` 对应英文正典）。
+
+曾经试过在五个段首词前插「四个全角空格 + `▌`」硬凑分段，那是**为换行做的权宜之计**：换行既然本来就不可能实现，标记就只是污染正文——同一段话在不同渠道不再逐字相同，反而破坏了「一份正文」。2026-10-24 按用户要求全部移除，并加了断言（正文里出现 `▌` 或 U+3000 即失败）。
 
 ```
-MMH 家庭记账与全资产管理，本地优先，程序和账本数据只保存在你自己的设备或 NAS 上，不经过第三方云端。　　▌记账：支出、收入、转账、代付、借贷与还款，多账本、多币种、分类标签与成员。　　▌资产：信用卡分期、房贷重算、基金定投、股票盈亏、存款理财、房产保险。　　▌功能：报表对账、周期自动记账、导入导出、AI 识别、附件、撤销恢复与备份。　　▌多端：PC、手机浏览器、Windows、Android 与开放 API。　　▌版本：飞牛 fnOS、群晖 DSM、Windows、Docker、Android。
+MMH 家庭记账与全资产管理，本地优先，程序和账本数据只保存在你自己的设备或 NAS 上，不经过第三方云端。记账：支出、收入、转账、代付、借贷与还款，多账本、多币种、分类标签与成员。资产：信用卡分期、房贷重算、基金定投、股票盈亏、存款理财、房产保险。功能：报表对账、周期自动记账、导入导出、AI 识别、附件、撤销恢复与备份。多端：PC、手机浏览器、Windows、Android 与开放 API。版本：飞牛 fnOS、群晖 DSM、Windows、Docker、Android。
 ```
 
-- `cht`：繁体正典（`記賬/資產/功能/多端/版本`）加同样的标记，见 `app.py`。
-- `enu`：英文正典加 `Bookkeeping: / Assets: / Features: / Clients: / Packages:` 前的标记。
+代价与取舍：239 字在套件中心会渲染成一整段，读起来偏密。**要更短只能改正典本身**（所有渠道一起变），不能给群晖单独加标记或另写一份。
 
 「新增功能」（`changelog`）是**另一个渲染区，按 HTML 渲染**：`<br/>` 生效，官方套件在这里还用了 `<b>` 小标题和有序列表；SynoCommunity 的 38 个包里有 13 个正是用 `1. …<br/>2. …` 断行的（2026-10-24 抓源确认）。所以 `app.py` 的 `_synology_plain_changelog()` 会按分号拆条，把「修复…」开头的条目归到 `<b>问题修复</b>`、其余归 `<b>功能更新</b>`，两组各自编号并用 `<br/>` 连接（官方套件同样是加粗小标题 + 有序列表）。不要把「说明」区和「新增功能」区的排版手段混用：前者纯文本，后者 HTML。
 
@@ -53,7 +54,7 @@ MMH 家庭记账与全资产管理，本地优先，程序和账本数据只保�
 | 3 | 软仓字段草案 | `deploy/fnos/repository/apps.example.json` · `apps[].description` | 同上 |
 | 4 | FnDepot / 飞牛应用源 | `deploy/fnos/repository/fnpack.json` · `apps.mmh.desc` + `i18n.zh-CN/en-US/ja-JP.desc` | **纯简介**（无 `【本版更新】` 段）：中/英/日正典各一份 |
 | 5 | 软仓 VPS 种子 | `deploy/fnos/selfhosted-source/data/fn-appstores.json` · `_manual.desc` | 同 #1（该目录被 `.gitignore` 忽略，但 `deploy.sh` 会把它推到 VPS 作种子） |
-| 6 | 群晖套件中心「说明」（**未安装**时，及「套件来源」列表） | `deploy/fnstore/app/app.py` · `description.chs/cht/enu` | 群晖渲染版（正典 + `▌` + 四个全角空格） |
+| 6 | 群晖套件中心「说明」（**未安装**时，及「套件来源」列表） | `deploy/fnstore/app/app.py` · `description.chs/cht/enu` | 中文 / 繁体 / 英文正典原文（单行，**不加任何标记**） |
 | 6b | 群晖套件中心「说明」（**已安装**后，用户实际看到的那一页） | `scripts/build-synology-package.cjs` · `writeInfoFile()` 的 `description="…"` | 同一份中文正典压成**单行**（INFO 是 shell 键值对，值不能跨行）。**改这一行必须重出 SPK 才生效**，服务端 `app.py` 改了也不会影响已安装套件的说明 |
 | 7 | README | `README.md` | 同一份口径的叙述 + 安装形态对照表（无独立「商店简介」章节，不必逐字复制） |
 | 8 | 软仓 VPS 线上文件 | `/opt/fn-appstores-server/data/fn-appstores.json` · `_manual.desc` | 手工同步（见下） |
@@ -69,7 +70,7 @@ MMH 家庭记账与全资产管理，本地优先，程序和账本数据只保�
 5. 提交并推送 `main`：FnDepot 仓库靠 hourly cron 镜像本仓库的 `fnpack.json`，平台每天 UTC+8 00:00 读一次；必要时用 `fnos-fndepot-sync.yml` 的 workflow_dispatch 立即触发镜像。
 6. 验证：
    - 软仓：`curl -s http://fnapp.floatingice.win/api/apps` → `desc` 是**一整行**（`【本版更新】…<br><br>【软件简介】` + 统一正文，**不含真实 `\n`**）；客户端详情页应**不显示**「更新内容」面板，文案只在「应用介绍」出现一次；
-   - 群晖：`curl 'https://synology.floatingice.win/?arch=x86_64&build=64570&language=chs'` → 条目的 `desc` 是**单行**、含 5 个 `▌`、不含 `\n` 和 `<br>`；
+   - 群晖：`curl 'https://synology.floatingice.win/?arch=x86_64&build=64570&language=chs'` → 条目的 `desc` 与中文正典**逐字相同**（单行、无 `▌`、无 U+3000、无 `\n`、无 `<br>`）；
    - FnDepot：`gh api repos/frankluise5220/FnDepot/contents/fnpack.json --jq '.content' | base64 -d` → `apps.mmh.desc` 与 `i18n.*.desc` 是统一正文。
 
 ## 纪律
