@@ -298,7 +298,13 @@ function verifySourceFiles() {
   );
   expect(/WIZARD_UIFILES.*install_uifile/.test(packageScript) && /WIZARD_UIFILES.*uninstall_uifile/.test(packageScript), "Synology install and uninstall wizards must use the DSM WIZARD_UIFILES paths.");
   expect(/JSON\.stringify\(\[\{\s*step_title:/.test(packageScript), "Synology wizard definitions must use DSM's top-level step array format.");
-  expect(/description="家庭记账与财务管理应用/.test(packageScript), "Synology package description must explain MMH's purpose and local database behavior.");
+  // Package Center's "说明" tab renders INFO's `description`, NOT the source entry's
+  // `desc` — so this string is the one users actually read. It must carry the shared
+  // product intro (deploy/app-intro-by-platform.md), not the legacy SQLite blurb.
+  expect(
+    /description="MMH 家庭财务工作台/.test(packageScript) && /本地优先/.test(packageScript),
+    "Synology INFO description must carry the shared product intro, not the legacy '家庭记账与财务管理应用…SQLite' blurb.",
+  );
   expect(/function writeUninstallWizard\(\)/.test(packageScript) && /key: "wizard_delete_data"/.test(packageScript), "Synology package must provide an uninstall data-retention choice.");
   expect(/delete_flag="\\\$\{wizard_delete_data:-<unset>\}"/.test(packageScript) && /if \[ "\$delete_flag" = "true" \]/.test(packageScript) && /MMH database and settings retained/.test(packageScript), "Synology uninstall must preserve data unless deletion is explicitly selected.");
   expect(/for entry in "\$VAR_DIR"\/\* "\$VAR_DIR"\/\.\[!\.\]\* "\$VAR_DIR"\/\.\.\?\*/.test(packageScript), "Synology uninstall must clear only the MMH package data directory contents when requested.");

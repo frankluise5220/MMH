@@ -421,7 +421,7 @@ function writeInfoFile(options = {}) {
   write(path.join(stageDir, "INFO"), `package="${appName}"
 version="${version}"
 displayname="MMH"
-description="家庭记账与财务管理应用，使用本地 SQLite 数据库，无需 Docker 或 PostgreSQL。安装后通过浏览器访问；卸载时可选择保留或删除数据库与设置。"
+description="MMH 家庭财务工作台（MoneyMoneyHome）是本地优先的家庭记账与全资产管理工具，程序与账本数据保存在你自己的设备或 NAS 上，不经过第三方云端。覆盖记账、资产与负债、统计报表、周期入账、账单导入导出、AI 识别与助手、附件、撤销恢复与备份，并支持 PC 与手机浏览器、Windows 桌面端、Android App 与开放 API 多端访问。卸载时可选择保留或删除数据库与设置。"
 maintainer="frankluise5220"
 support_url="https://github.com/frankluise5220/MMH"
 dsmappname="${dsmAppName}"
@@ -2037,7 +2037,7 @@ function writeDsmAppConfig() {
     ".url": {
       [dsmAppName]: {
         title: "MMH",
-        desc: "家庭记账与财务管理应用",
+        desc: "本地优先的家庭记账与全资产管理工具",
         icon: "images/mmh-{0}.png",
         type: "url",
         protocol: "http",

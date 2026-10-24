@@ -124,6 +124,7 @@ release-artifacts/synology/mmh-synology-v0.1.x-arm64-spk-source.tgz
 
 - `.spk` 最外层必须是未压缩 tar 归档，根目录包含 `INFO`、`scripts/`、`conf/`、图标和 `package.tgz`。
 - `package.tgz` 是 `.spk` 内部的 gzip tar 归档，用来承载 `app/` 运行目录。
+- `INFO` 的 `description="…"` 就是套件中心「说明」页顶部那段正文（**不是**套件源条目的 `desc`，源里的六行简介只在未安装时出现）。它必须和 `deploy/app-intro-by-platform.md` 的中文正典同口径、压成单行（INFO 是 shell 键值对，值不能跨行），改了要**重出 SPK 并覆盖升级**才会在已安装设备上生效。
 - `INFO` 里应写 `os_min_ver="7.0-40000"`、`checksum="<package.tgz md5>"` 和 `extractsize="<package 解压后 KB>"`；不要仅因 DSM 7.2 更常见而主动收窄 7.0/7.1 用户的安装入口，DSM 7.2 及更新版本作为优先测试面。
 - `conf/privilege` 里应写 `"run-as": "package"`，不要写成无效的 `run_as`，否则 DSM 会判定套件以 root 权限运行并拒绝安装。
 - 最终 `.spk` tar header 里的生命周期脚本必须是可执行文件，`scripts/start-stop-status`、`config`、`preinst`、`postinst`、`preuninst`、`preupgrade`、`postupgrade` 使用 `0755`，普通元数据文件使用 `0644`，并以稳定的 numeric root ownership 归档。删除用户数据时，`preuninst` 只清空 `SYNOPKG_PKGVAR` 目录内容，不删除 DSM 创建的数据目录本身，避免套件用户因无权删除父目录而导致卸载失败。
