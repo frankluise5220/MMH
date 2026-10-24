@@ -87,6 +87,10 @@ function api(pathname) {
     https
       .get({ hostname: "api.github.com", path: pathname, headers }, (res) => {
         let body = "";
+        // 必须显式指定 utf8：默认 `body += chunk` 会在缓冲区边界把多字节汉字切成两半，
+        // 每半个字节序列解码成 U+FFFD 并被 --write 原样写进 package.json。
+        // 2026-10-24 在 v0.1.77 上实测到「裸账户名」被写成「裸��户名」，根因就是这里。
+        res.setEncoding("utf8");
         res.on("data", (chunk) => (body += chunk));
         res.on("end", () => {
           if (res.statusCode >= 200 && res.statusCode < 300) {
@@ -309,7 +313,13 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(`[error] ${error.message}`);
-  process.exit(1);
-});
+// 只在作为 CLI 执行时跑 main；被 release-publish.cjs import 时只取 compare / parseNoteGroups，
+// 发布闸门和回灌脚本共用同一份解析与比对，避免两边规则漂移。
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(`[error] ${error.message}`);
+    process.exit(1);
+  });
+}
+
+module.exports = { parseNoteGroups, renderI18n, compare };
