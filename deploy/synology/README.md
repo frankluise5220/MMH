@@ -200,15 +200,15 @@ npm run build:synology:app
 再按架构打包：
 
 ```bash
-SYNOLOGY_NODE_TARBALL=/path/to/node-v20.x-linux-x64.tar.gz npm run build:synology
-SYNOLOGY_TARGET_ARCH=arm64 SYNOLOGY_NODE_TARBALL=/path/to/node-v20.x-linux-arm64.tar.gz npm run build:synology
+SYNOLOGY_NODE_TARBALL=/path/to/node-v22.x-linux-x64.tar.gz npm run build:synology
+SYNOLOGY_TARGET_ARCH=arm64 SYNOLOGY_NODE_TARBALL=/path/to/node-v22.x-linux-arm64.tar.gz npm run build:synology
 ```
 
 只生成调试 stage 归档：
 
 ```bash
-SYNOLOGY_NODE_TARBALL=/path/to/node-v20.x-linux-x64.tar.gz npm run stage:synology
-SYNOLOGY_TARGET_ARCH=arm64 SYNOLOGY_NODE_TARBALL=/path/to/node-v20.x-linux-arm64.tar.gz npm run stage:synology
+SYNOLOGY_NODE_TARBALL=/path/to/node-v22.x-linux-x64.tar.gz npm run stage:synology
+SYNOLOGY_TARGET_ARCH=arm64 SYNOLOGY_NODE_TARBALL=/path/to/node-v22.x-linux-arm64.tar.gz npm run stage:synology
 ```
 
 打包前后校验：

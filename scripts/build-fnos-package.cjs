@@ -457,6 +457,29 @@ function requirePath(target, message) {
   }
 }
 
+// better-sqlite3 declares an engines range; a bundled runtime below it compiles
+// but fails at load time with no useful output. Check the range up front so a
+// Node major mismatch names itself instead of showing up as a bare exit code.
+function assertBundledNodeSatisfiesEngines(nodeBin, serverDir) {
+  const packagePath = path.join(serverDir, "node_modules", "better-sqlite3", "package.json");
+  if (!fs.existsSync(packagePath)) return;
+  const manifest = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+  const required = manifest.engines && manifest.engines.node;
+  if (!required) return;
+  const probed = run(nodeBin, ["-p", "process.versions.node"]);
+  const bundledVersion = (probed.stdout || "").trim();
+  if (probed.status !== 0 || !bundledVersion) {
+    throw new Error("Could not read the bundled Node runtime version.");
+  }
+  const minimumMajor = Number((required.match(/>=\s*(\d+)/) || [])[1] || 0);
+  const bundledMajor = Number(bundledVersion.split(".")[0]);
+  if (minimumMajor && bundledMajor < minimumMajor) {
+    throw new Error(
+      `better-sqlite3 ${manifest.version} requires Node ${required}, but the bundled runtime is ${bundledVersion}. Package a newer Node major.`,
+    );
+  }
+}
+
 function hashFileMd5(file) {
   const crypto = require("node:crypto");
   const hash = crypto.createHash("md5");
@@ -3960,6 +3983,7 @@ if (process.env.FNOS_SKIP_NATIVE_REBUILD === "1") {
   };
   const nodeTool = path.join(stagedNodeBinDir, "node");
   const npmTool = path.join(stagedNodeBinDir, "npm");
+  assertBundledNodeSatisfiesEngines(nodeTool, stagedServerDir);
   const nativeRebuild = run(nodeTool, [npmTool, "rebuild", "better-sqlite3", "--build-from-source"], {
     cwd: stagedServerDir,
     stdio: "inherit",
@@ -3974,7 +3998,7 @@ if (process.env.FNOS_SKIP_NATIVE_REBUILD === "1") {
     stdio: "inherit",
   });
   if (verifyNative.status !== 0) {
-    console.error("Node20 better-sqlite3 verification failed after native rebuild.");
+    console.error("better-sqlite3 could not be loaded by the bundled Node runtime after the native rebuild.");
     process.exit(verifyNative.status || 1);
   }
 }

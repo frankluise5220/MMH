@@ -298,6 +298,40 @@ function requirePath(targetPath, message) {
   if (!fs.existsSync(targetPath)) throw new Error(message);
 }
 
+// Node runtime/header tarballs unpack into a single `node-vX.Y.Z[-headers]`
+// directory. Derive it instead of hard-coding a version that goes stale the
+// moment the workflow's Node major moves.
+function singleExtractedDir(rootDir, label) {
+  const dirs = fs.readdirSync(rootDir, { withFileTypes: true }).filter((entry) => entry.isDirectory());
+  if (dirs.length !== 1) {
+    throw new Error(`${label} must extract to exactly one directory, found ${dirs.length}.`);
+  }
+  return path.join(rootDir, dirs[0].name);
+}
+
+// better-sqlite3 declares an engines range; a bundled runtime below it compiles
+// but fails at load time with no useful output. Check the range up front so a
+// Node major mismatch names itself instead of showing up as a bare exit code.
+function assertBundledNodeSatisfiesEngines(nodeBin, serverDir) {
+  const packagePath = path.join(serverDir, "node_modules", "better-sqlite3", "package.json");
+  if (!fs.existsSync(packagePath)) return;
+  const manifest = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+  const required = manifest.engines && manifest.engines.node;
+  if (!required) return;
+  const probed = run(nodeBin, ["-p", "process.versions.node"]);
+  const bundledVersion = (probed.stdout || "").trim();
+  if (probed.status !== 0 || !bundledVersion) {
+    throw new Error("Could not read the bundled Node runtime version.");
+  }
+  const minimumMajor = Number((required.match(/>=\s*(\d+)/) || [])[1] || 0);
+  const bundledMajor = Number(bundledVersion.split(".")[0]);
+  if (minimumMajor && bundledMajor < minimumMajor) {
+    throw new Error(
+      `better-sqlite3 ${manifest.version} requires Node ${required}, but the bundled runtime is ${bundledVersion}. Package a newer Node major.`,
+    );
+  }
+}
+
 function hashFileMd5(file) {
   const hash = crypto.createHash("md5");
   hash.update(fs.readFileSync(file));
@@ -2192,26 +2226,27 @@ function buildSpk() {
 
   const stagedServerDir = path.join(packageRoot, "app", "server");
   const nodeTarballRoot = path.join(stageDir, ".synology-node");
-  const node20BinDir = path.join(nodeTarballRoot, `node-v20.20.2-linux-${target.nodeArch}`, "bin");
-  const node20Bin = path.join(node20BinDir, "node");
-  const node20Npm = path.join(node20BinDir, "npm");
-  const node20HeadersRoot = path.join(stageDir, ".synology-node-headers");
+  const nodeHeadersRoot = path.join(stageDir, ".synology-node-headers");
   fs.rmSync(nodeTarballRoot, { recursive: true, force: true });
-  fs.rmSync(node20HeadersRoot, { recursive: true, force: true });
+  fs.rmSync(nodeHeadersRoot, { recursive: true, force: true });
   mkdirp(nodeTarballRoot);
-  mkdirp(node20HeadersRoot);
+  mkdirp(nodeHeadersRoot);
   const nodeExtract = run("tar", ["-xzf", nodeTarball, "-C", nodeTarballRoot]);
   if (nodeExtract.status !== 0) process.exit(nodeExtract.status || 1);
-  requirePath(node20Bin, "Synology packaging requires the bundled Node 20 runtime tarball.");
-  requirePath(node20Npm, "Synology packaging requires npm from the bundled Node 20 runtime tarball.");
+  const nodeRuntimeBinDir = path.join(singleExtractedDir(nodeTarballRoot, "SYNOLOGY_NODE_TARBALL"), "bin");
+  const nodeBin = path.join(nodeRuntimeBinDir, "node");
+  const nodeNpm = path.join(nodeRuntimeBinDir, "npm");
+  requirePath(nodeBin, "Synology packaging requires the bundled Node runtime tarball.");
+  requirePath(nodeNpm, "Synology packaging requires npm from the bundled Node runtime tarball.");
   const headersTarball = process.env.SYNOLOGY_NODE_HEADERS_TARBALL || "";
-  requirePath(headersTarball, "SYNOLOGY_NODE_HEADERS_TARBALL is required for the bundled Node 20 native rebuild.");
-  const headersExtract = run("tar", ["-xzf", headersTarball, "-C", node20HeadersRoot]);
+  requirePath(headersTarball, "SYNOLOGY_NODE_HEADERS_TARBALL is required for the bundled Node native rebuild.");
+  const headersExtract = run("tar", ["-xzf", headersTarball, "-C", nodeHeadersRoot]);
   if (headersExtract.status !== 0) process.exit(headersExtract.status || 1);
-  const nodeHeadersDir = path.join(node20HeadersRoot, "node-v20.20.2");
-  requirePath(path.join(nodeHeadersDir, "include", "node", "node.h"), "Node 20 headers are missing include/node/node.h.");
+  const nodeHeadersDir = singleExtractedDir(nodeHeadersRoot, "SYNOLOGY_NODE_HEADERS_TARBALL");
+  requirePath(path.join(nodeHeadersDir, "include", "node", "node.h"), "Node headers are missing include/node/node.h.");
   const sourceServerDir = root;
-  const nativeRebuild = run(node20Bin, [node20Npm, "rebuild", "better-sqlite3", "--build-from-source"], {
+  assertBundledNodeSatisfiesEngines(nodeBin, sourceServerDir);
+  const nativeRebuild = run(nodeBin, [nodeNpm, "rebuild", "better-sqlite3", "--build-from-source"], {
     cwd: sourceServerDir,
     stdio: "inherit",
     env: {
@@ -2223,15 +2258,18 @@ function buildSpk() {
   if (nativeRebuild.status !== 0) process.exit(nativeRebuild.status || 1);
   const sourceNativeModule = path.join(root, "node_modules", "better-sqlite3", "build", "Release", "better_sqlite3.node");
   const stagedNativeModule = path.join(stagedServerDir, "node_modules", "better-sqlite3", "build", "Release", "better_sqlite3.node");
-  requirePath(sourceNativeModule, "Node 20 native rebuild did not produce better_sqlite3.node in the source tree.");
+  requirePath(sourceNativeModule, "The bundled Node native rebuild did not produce better_sqlite3.node in the source tree.");
   copyFile(sourceNativeModule, stagedNativeModule);
-  const verifyNative = run(node20Bin, ["-e", "const Database=require('better-sqlite3'); const db=new Database(':memory:'); if (db.prepare('select 1 as ok').get().ok !== 1) process.exit(1); db.close();"], {
+  const verifyNative = run(nodeBin, ["-e", "const Database=require('better-sqlite3'); const db=new Database(':memory:'); if (db.prepare('select 1 as ok').get().ok !== 1) process.exit(1); db.close();"], {
     cwd: stagedServerDir,
     stdio: "inherit",
   });
-  if (verifyNative.status !== 0) process.exit(verifyNative.status || 1);
+  if (verifyNative.status !== 0) {
+    console.error("better-sqlite3 could not be loaded by the bundled Node runtime after the native rebuild.");
+    process.exit(verifyNative.status || 1);
+  }
   fs.rmSync(nodeTarballRoot, { recursive: true, force: true });
-  fs.rmSync(node20HeadersRoot, { recursive: true, force: true });
+  fs.rmSync(nodeHeadersRoot, { recursive: true, force: true });
 
   const packageTgz = path.join(stageDir, "package.tgz");
   fs.rmSync(packageTgz, { force: true });

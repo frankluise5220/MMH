@@ -29,13 +29,13 @@ jobs:
             fnpack_arch: amd64
             runner: ubuntu-22.04
             package_variant: bundled
-            node_major: 20
+            node_major: 22
           - target_arch: arm64
             node_arch: arm64
             fnpack_arch: arm64
             runner: ubuntu-22.04-arm
             package_variant: bundled
-            node_major: 20
+            node_major: 22
           - target_arch: x86
             node_arch: x64
             fnpack_arch: amd64

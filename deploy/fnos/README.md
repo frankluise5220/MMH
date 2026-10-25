@@ -68,8 +68,8 @@ mmh.db
 
 ```bash
 npm run build:fnos:app
-FNOS_NODE_TARBALL=/path/to/node-v20.x-linux-x64.tar.gz npm run build:fnos
-FNOS_TARGET_ARCH=arm64 FNOS_NODE_TARBALL=/path/to/node-v20.x-linux-arm64.tar.gz npm run build:fnos
+FNOS_NODE_TARBALL=/path/to/node-v22.x-linux-x64.tar.gz npm run build:fnos
+FNOS_TARGET_ARCH=arm64 FNOS_NODE_TARBALL=/path/to/node-v22.x-linux-arm64.tar.gz npm run build:fnos
 ```
 
 成功后生成：
