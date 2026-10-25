@@ -300,10 +300,17 @@ function verifySourceFiles() {
   expect(/JSON\.stringify\(\[\{\s*step_title:/.test(packageScript), "Synology wizard definitions must use DSM's top-level step array format.");
   // Package Center's "说明" tab renders INFO's `description`, NOT the source entry's
   // `desc` — so this string is the one users actually read. It must carry the shared
-  // product intro (deploy/app-intro-by-platform.md), not the legacy SQLite blurb.
+  // canonical intro (deploy/app-intro-by-platform.md), so compare against that file
+  // instead of a frozen copy: editing the intro must not require editing this check.
+  const canonicalIntro = (() => {
+    const introDoc = fs.readFileSync(path.join(root, "deploy", "app-intro-by-platform.md"), "utf8");
+    const headingIndex = introDoc.indexOf("### 中文正典");
+    if (headingIndex < 0) return "";
+    return (introDoc.slice(headingIndex).split("\n").slice(1).find((line) => line.trim() && !line.startsWith("#")) || "").trim();
+  })();
   expect(
-    /description="MMH 家庭财务工作台/.test(packageScript) && /本地优先/.test(packageScript),
-    "Synology INFO description must carry the shared product intro, not the legacy '家庭记账与财务管理应用…SQLite' blurb.",
+    canonicalIntro.length > 60 && packageScript.includes(`description="${canonicalIntro}"`),
+    "Synology INFO description must carry the canonical intro from deploy/app-intro-by-platform.md (中文正典).",
   );
   expect(/function writeUninstallWizard\(\)/.test(packageScript) && /key: "wizard_delete_data"/.test(packageScript), "Synology package must provide an uninstall data-retention choice.");
   expect(/delete_flag="\\\$\{wizard_delete_data:-<unset>\}"/.test(packageScript) && /if \[ "\$delete_flag" = "true" \]/.test(packageScript) && /MMH database and settings retained/.test(packageScript), "Synology uninstall must preserve data unless deletion is explicitly selected.");
