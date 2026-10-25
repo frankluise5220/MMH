@@ -52,21 +52,21 @@ expect(
   "Windows desktop build must re-inject the shared mmhFnosManifestChangelog and mmhReleaseNotes (plus the optional mmhReleaseNotesI18n) from the repo package.json into the staged runtime package.json.",
 );
 
-// 2026-10-07 在线更新源修正：electron-updater 必须走 GitHub Release feed。
-// 曾经的 generic 源 http://fnapp.floatingice.win:5660/mmh/ 是 FN 软仓服务端，
-// 只承载 fnOS .fpk，不承载 Windows latest.yml，导致自动更新从未生效（404）。
+// 2026-10-23 在线更新源定稿：更新源是自建下载站 https://dl.floatingice.win/，
+// GitHub Release 只放安装包给手动下载。客户端读该站点根目录的 latest.yml，
+// 下载同目录的 exe / <exe>.blockmap 做差分升级。
+// 历史坑：generic 源一旦指向 FN 软仓（fnapp.floatingice.win:5660/mmh），
+// 那里只有 .fpk 没有 latest.yml，自动更新恒 404。
 const builderYml = fs.readFileSync(path.join(root, "electron-builder.yml"), "utf8");
 expect(
-  /provider:\s*github/.test(builderYml) &&
-    /owner:\s*frankluise5220/.test(builderYml) &&
-    /repo:\s*MMH/.test(builderYml),
-  "electron-builder.yml publish must use the GitHub provider (frankluise5220/MMH), not the retired generic FN soft-store feed.",
+  /provider:\s*generic/.test(builderYml) &&
+    /url:\s*https:\/\/dl\.floatingice\.win/.test(builderYml),
+  "electron-builder.yml publish must be the generic provider pointing at https://dl.floatingice.win/ (the Windows update feed).",
 );
 expect(
-  /provider:\s*"github"/.test(buildScript) &&
-    /owner:\s*"frankluise5220"/.test(buildScript) &&
-    /repo:\s*"MMH"/.test(buildScript),
-  "build-win-desktop.cjs must write app-update.yml pointing at the GitHub provider feed.",
+  /provider:\s*"generic"/.test(buildScript) &&
+    /url:\s*"https:\/\/dl\.floatingice\.win\/"/.test(buildScript),
+  "build-win-desktop.cjs must write app-update.yml pointing at https://dl.floatingice.win/.",
 );
 expect(
   !/fnapp\.floatingice\.win:5660\/mmh/.test(builderYml) &&

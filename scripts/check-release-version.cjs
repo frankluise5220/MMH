@@ -140,9 +140,9 @@ for (const [file, key] of [
 }
 
 // FN 软仓「应用介绍」= `desc` / `description`（2026-10-16 用户决定「换成长清单逐条一行」）。
-// 客户端按 **HTML** 渲染（fn-appstores-client `apps.js:391` `descEl.innerHTML = app.desc`），
-// 所以逐条换行只能用 `<br>`；而同一个客户端还会把 `desc` 去标签后按**真实 `\n`** 拆行
-// （`apps.js:377-386`），`lines.length >= 2` 就渲染一个与「应用介绍」重复的「更新内容」面板
+// 客户端（fn-appstores-client 前端 JS）按 **HTML** 渲染 `desc`，所以逐条换行只能用 `<br>`；
+// 而同一个客户端又会把 `desc` 去标签后按**真实 `\n`** 拆行，行数 ≥ 2 就渲染一个与「应用介绍」
+// 重复的「更新内容」面板 —— 所以 `desc` 里一个真实换行都不能有。
 // —— 因此 `desc` 里**一个真实换行都不能有**。这两条互为表里，少一条就把旧的重复故障带回来。
 const storeUpdateBlock = storeChangelog.softstoreUpdateBlock(version);
 const storeDescPrefix = `${storeUpdateBlock}${storeChangelog.HTML_SEPARATOR}${storeChangelog.HTML_SEPARATOR}${storeChangelog.INTRO_MARKER}`;

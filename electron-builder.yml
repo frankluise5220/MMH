@@ -42,9 +42,10 @@ files:
   - "node_modules/sax/**"
 
 publish:
-  provider: github
-  owner: frankluise5220
-  repo: MMH
+  # 更新源是我们的下载站，不是 GitHub Release：Release 只放安装包给手动下载，
+  # 自动更新走 dl.floatingice.win 上的 latest.yml + blockmap（支持差分下载）。
+  provider: generic
+  url: https://dl.floatingice.win/
 
 extraResources:
   - from: release-artifacts/win/stage/app
@@ -71,7 +72,10 @@ nsis:
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: MMH
-  artifactName: MMH-Setup-${version}.${ext}
+  # 公开资产名与更新清单里的文件名必须一致，且只发这一个 exe：
+  # `latest.yml` 的 files[].url / path 由 electron-builder 按这里写入，
+  # 所以直接用友好名，避免再复制一份别名（曾因此让 Release 出现两个 164MB 的 exe）。
+  artifactName: mmh-win-setup-v${version}-x64.${ext}
   deleteAppDataOnUninstall: false
   # Branded wizard artwork. Generated into the buildResources directory by
   # scripts/generate-nsis-bitmaps.cjs on every build (24-bit BMP, the only

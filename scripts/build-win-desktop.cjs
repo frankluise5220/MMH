@@ -14,7 +14,7 @@
 //   7. copy portable Node into release-artifacts/win/stage/node
 //   8. rebuild better-sqlite3 with the bundled Node 20 (ABI must match)
 //   9. verify better-sqlite3 loads under the bundled Node
-//  10. electron-builder --win nsis -> release-artifacts/win/dist/MMH-Setup-*.exe
+//  10. electron-builder --win nsis -> release-artifacts/win/dist/mmh-win-setup-v<ver>-x64.exe (+ .blockmap + latest.yml)
 
 const fs = require("node:fs");
 const path = require("node:path");
@@ -37,12 +37,12 @@ const buildDir = path.join(artifacts, "build");
 const distDir = path.join(artifacts, "dist");
 const portableNodeRoot = path.join(artifacts, "node22", "node-v22.23.2-win-x64");
 // Update feed for the packaged app. Must match the `publish` block in
-// electron-builder.yml: the GitHub provider pulls `latest.yml` from the
-// frankluise5220/MMH Releases feed (no static HTTP host needed).
+// electron-builder.yml: 2026-10-23 起自动更新走自建下载站，GitHub Release 只放安装包。
+// generic provider 从 https://dl.floatingice.win/latest.yml 读版本清单，并按
+// <exe>.blockmap 做差分下载后覆盖安装。
 const UPDATE_FEED = {
-  provider: "github",
-  owner: "frankluise5220",
-  repo: "MMH",
+  provider: "generic",
+  url: "https://dl.floatingice.win/",
 };
 
 const nativeSchema = toArgvPath(path.join(root, "prisma", "schema.native.prisma"));
@@ -563,7 +563,7 @@ copyDir(path.join(stageAppDir, "node_modules"), path.join(unpackedAppDir, "node_
 step("write app-update.yml (update feed)");
 fs.writeFileSync(
   path.join(unpackedDir, "resources", "app-update.yml"),
-  "provider: " + UPDATE_FEED.provider + "\nowner: " + UPDATE_FEED.owner + "\nrepo: " + UPDATE_FEED.repo + "\n",
+  "provider: " + UPDATE_FEED.provider + "\nurl: " + UPDATE_FEED.url + "\n",
   "utf8",
 );
 
