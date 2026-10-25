@@ -94,10 +94,12 @@ export async function readLegacyAccessPassword(): Promise<string> {
  * the row's own fields in this fixed order, which MUST NOT be reordered:
  *
  *   1. **local** — a bcrypt `passwordHash` on the account itself.
- *   2. **fnOS** — a gateway-bound account with no local password is refused
- *      outright. The fnOS gateway exposes no password-verification API to
- *      third-party apps, so there is nothing to check; the only fix is to set a
- *      local password first. It must never fall through to MMH or to the
+ *   2. **fnOS** — the fnOS gateway exposes no password-verification API to
+ *      third-party apps, so a gateway session itself has no secret to confirm
+ *      with. What it does have is the ledger-local password the owner set for
+ *      exactly this purpose ("设置本地密码" in 用户管理): an account that carries
+ *      one is verified against it, and one that carries none is refused with
+ *      LOCAL_PASSWORD_REQUIRED. It must never fall through to MMH or to the
  *      deployment-wide legacy password.
  *   3. **MMH** — an MMH-only account is verified against the central
  *      registration service with its membership password.
@@ -146,7 +148,19 @@ export async function verifyUserCredential(
   }
 
   if (authMethod === "fnos") {
-    return { ok: false, code: "LOCAL_PASSWORD_REQUIRED", status: 400, attempted: "fnos" };
+    // A gateway session proves the fnOS identity but carries no secret MMH can
+    // re-check, so a sensitive operation has to confirm with the local password
+    // the account owns. Refusing unconditionally made every such dialog a dead
+    // end — the guidance it showed ("set a local password first") promised a fix
+    // that the verifier then ignored, because this branch never looked at the
+    // hash.
+    if (!subject.passwordHash) {
+      return { ok: false, code: "LOCAL_PASSWORD_REQUIRED", status: 400, attempted: "fnos" };
+    }
+    const matched = await verifyPassword(password, subject.passwordHash);
+    return matched
+      ? { ok: true, kind: "local" }
+      : { ok: false, code: "INVALID_PASSWORD", status: 401, attempted: "local" };
   }
 
   if (authMethod === "legacy") {

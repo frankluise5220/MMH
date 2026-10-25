@@ -138,8 +138,11 @@ export async function POST(request: NextRequest) {
       name: user.name,
       householdId: user.householdId,
       authVersion: user.authVersion,
-      // The gateway vouched for this identity, so a later credential check must
-      // not silently fall back to a local password on the same row.
+      // The gateway vouched for this identity, so the session itself is not a
+      // secret a later check can confirm. Marking it `fnos` makes the sensi-
+      // tive-operation verifier ask for the ledger-local password this account
+      // owns (never the MMH membership password, never the legacy deployment
+      // password), and refuse with LOCAL_PASSWORD_REQUIRED when it has none.
       authMethod: "fnos",
     },
     { sessionDays: await getUserSessionDays(user.id), req: request },

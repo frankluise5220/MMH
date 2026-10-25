@@ -19,7 +19,10 @@ export const runtime = "nodejs";
  * Returns null when the session predates the identity claim, so the caller
  * falls back to `credentialKindOf`.
  */
-function credentialKindForSession(authMethod: SessionAuthMethod | null): CredentialKind | null {
+function credentialKindForSession(
+  authMethod: SessionAuthMethod | null,
+  subject: { passwordHash: string | null },
+): CredentialKind | null {
   switch (authMethod) {
     case "local":
     // A legacy deployment password was migrated onto the account at login, so
@@ -29,7 +32,11 @@ function credentialKindForSession(authMethod: SessionAuthMethod | null): Credent
     case "mmh":
       return "mmh";
     case "fnos":
-      return "fnos";
+      // The gateway session has no secret of its own to re-present, so the
+      // confirmable one is the ledger-local password the account owns. With no
+      // hash there is nothing to ask for and the dialog shows the setup notice
+      // instead of an input — the same verdict `verifyUserCredential` returns.
+      return subject.passwordHash ? "local" : "fnos";
     default:
       return null;
   }
@@ -94,7 +101,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ ok: false, code: "USER_NOT_FOUND", error: "The signed-in user no longer exists." }, { status: 404 });
   }
 
-  const sessionKind = credentialKindForSession(user.authMethod);
+  const sessionKind = credentialKindForSession(user.authMethod, dbUser);
   return NextResponse.json({
     ok: true,
     credentialKind: sessionKind ?? credentialKindOf(dbUser),

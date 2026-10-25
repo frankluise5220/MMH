@@ -54,7 +54,6 @@ const externalNodeStartup = externalNode ? [
 ].join("\n") : "";
 const stageDir = path.join(outDir, `${target.stageDirName}${externalNode ? "-external-node" : ""}`);
 const nodeTarball = process.env.FNOS_NODE_TARBALL || "";
-const nodeHeadersTarball = process.env.FNOS_NODE_HEADERS_TARBALL || "";
 const isLinux = process.platform === "linux";
 const manualFpk = process.env.FNOS_MANUAL_FPK === "1";
 const prismaCli = path.join(root, "node_modules", "prisma", "build", "index.js");
@@ -457,20 +456,6 @@ function requirePath(target, message) {
   }
 }
 
-// Remove every compiled addon under a package directory so the only binding left
-// is the one this build produced.
-function removeNativeBindings(packageDir) {
-  if (!fs.existsSync(packageDir)) return;
-  for (const entry of fs.readdirSync(packageDir, { withFileTypes: true })) {
-    const fullPath = path.join(packageDir, entry.name);
-    if (entry.isDirectory()) {
-      removeNativeBindings(fullPath);
-    } else if (entry.name.endsWith(".node")) {
-      fs.rmSync(fullPath, { force: true });
-    }
-  }
-}
-
 // better-sqlite3 declares an engines range; a bundled runtime below it compiles
 // but fails at load time with no useful output. Check the range up front so a
 // Node major mismatch names itself instead of showing up as a bare exit code.
@@ -530,21 +515,6 @@ function findNodeHeadersDir() {
     "/usr",
   ];
   return candidates.find((candidate) => fs.existsSync(path.join(candidate, "include", "node", "node.h"))) || "";
-}
-
-function findExtractedNodeHeadersDir(rootDir) {
-  const queue = [rootDir];
-  while (queue.length > 0) {
-    const current = queue.shift();
-    if (!current || !fs.existsSync(current)) continue;
-    if (fs.existsSync(path.join(current, "include", "node", "node.h"))) {
-      return current;
-    }
-    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
-      if (entry.isDirectory()) queue.push(path.join(current, entry.name));
-    }
-  }
-  return "";
 }
 
 function assertCompatibleGlibc() {
@@ -3895,7 +3865,6 @@ try {
 }
 
 let stagedNodeBinDir = "";
-let stagedNodeHeadersDir = "";
 
 if (nodeTarball) {
   requirePath(nodeTarball, `FNOS_NODE_TARBALL does not exist: ${nodeTarball}`);
@@ -3958,76 +3927,28 @@ try {
 }
 
 const stagedServerDir = path.join(stageDir, "app", "server");
-if (process.env.FNOS_SKIP_NATIVE_REBUILD === "1") {
-  const verifyNative = run(stagedNodeRuntime, [
-    "-e",
-    "const Database=require('better-sqlite3'); const db=new Database(':memory:'); if (db.prepare('select 1 as ok').get().ok !== 1) process.exit(1); db.close();",
-  ], {
-    cwd: stagedServerDir,
-    stdio: "inherit",
-  });
-  if (verifyNative.status !== 0) {
-    console.error("FNOS_SKIP_NATIVE_REBUILD was set, but staged better-sqlite3 could not be loaded.");
-    process.exit(verifyNative.status || 1);
-  }
-} else {
-  if (!stagedNodeBinDir || !fs.existsSync(path.join(stagedNodeBinDir, "node")) || !fs.existsSync(path.join(stagedNodeBinDir, "npm"))) {
-    throw new Error("A Node runtime tarball containing both node and npm is required to rebuild fnOS native modules.");
-  }
-  if (!nodeHeadersTarball) {
-    throw new Error("FNOS_NODE_HEADERS_TARBALL is required so better-sqlite3 is compiled against the bundled Node ABI.");
-  }
-  requirePath(nodeHeadersTarball, `FNOS_NODE_HEADERS_TARBALL does not exist: ${nodeHeadersTarball}`);
-  const headersExtractRoot = path.join(stageDir, "app", ".fnos-node-headers");
-  fs.rmSync(headersExtractRoot, { recursive: true, force: true });
-  mkdirp(headersExtractRoot);
-  const headersExtract = run("tar", ["-xzf", nodeHeadersTarball, "-C", headersExtractRoot]);
-  if (headersExtract.status !== 0) {
-    console.error(headersExtract.stderr || headersExtract.stdout || "Failed to extract FNOS_NODE_HEADERS_TARBALL.");
-    process.exit(headersExtract.status || 1);
-  }
-  stagedNodeHeadersDir = findExtractedNodeHeadersDir(headersExtractRoot);
-  if (!stagedNodeHeadersDir) {
-    throw new Error("FNOS_NODE_HEADERS_TARBALL does not contain include/node/node.h.");
-  }
-  const rebuildEnv = {
-    npm_config_nodedir: stagedNodeHeadersDir,
-    npm_config_runtime: "node",
-    npm_config_build_from_source: "true",
-  };
-  const nodeTool = path.join(stagedNodeBinDir, "node");
-  const npmTool = path.join(stagedNodeBinDir, "npm");
-  assertBundledNodeSatisfiesEngines(nodeTool, stagedServerDir);
-  // Drop every binding the install step shipped: a leftover prebuilt would win
-  // module resolution and hide an ABI mismatch until the device loads it.
-  removeNativeBindings(path.join(stagedServerDir, "node_modules", "better-sqlite3"));
-  const nativeRebuild = run(nodeTool, [npmTool, "rebuild", "better-sqlite3", "--build-from-source"], {
-    cwd: stagedServerDir,
-    stdio: "inherit",
-    env: rebuildEnv,
-  });
-  if (nativeRebuild.status !== 0) process.exit(nativeRebuild.status || 1);
-  const verifyNative = run(nodeTool, [
-    "-e",
-    "const Database=require('better-sqlite3'); const db=new Database(':memory:'); if (db.prepare('select 1 as ok').get().ok !== 1) process.exit(1); db.close();",
-  ], {
-    cwd: stagedServerDir,
-    stdio: "inherit",
-  });
-  if (verifyNative.status !== 0) {
-    console.error("better-sqlite3 could not be loaded by the bundled Node runtime after the native rebuild.");
-    process.exit(verifyNative.status || 1);
-  }
+// better-sqlite3 declares no install/postinstall hook and ships N-API prebuilds,
+// so `npm rebuild` is a no-op and the binding npm ci produced is already the one
+// the bundled runtime loads. Prove it loads instead of pretending to rebuild it;
+// the bundled runtime's major is what has to satisfy the package's engines range.
+assertBundledNodeSatisfiesEngines(stagedNodeRuntime, stagedServerDir);
+const verifyNative = run(stagedNodeRuntime, [
+  "-e",
+  "const Database=require('better-sqlite3'); const db=new Database(':memory:'); if (db.prepare('select 1 as ok').get().ok !== 1) process.exit(1); db.close();",
+], {
+  cwd: stagedServerDir,
+  stdio: "inherit",
+});
+if (verifyNative.status !== 0) {
+  console.error("better-sqlite3 could not be loaded by the bundled Node runtime.");
+  process.exit(verifyNative.status || 1);
 }
 
 // Trim the staged runtime down to the file set Next's standalone tracing
 // produced (the Synology SPK ships exactly that set and runs fine on the same
-// hosts). This MUST run after the native rebuild above: `node-gyp` needs
-// better-sqlite3/deps, better-sqlite3/src and binding.gyp to compile, and it
-// regenerates better-sqlite3/build/ with object files and static archives.
-// Pruning afterwards leaves only build/Release/better_sqlite3.node plus lib/,
-// and drops the ~75 MB of @prisma/client/runtime query-compiler WASM for the
-// four database dialects this package never uses.
+// hosts). Everything the packaging step needs has already been copied in, so
+// pruning here drops the ~75 MB of @prisma/client/runtime query-compiler WASM
+// for the four database dialects this package never uses.
 pruneRuntimeToStandalone(path.join(stageDir, "app", "server"));
 
 // The native smoke test above runs before the prune, so prove the pruned tree
@@ -4050,7 +3971,6 @@ if (fs.existsSync(stagedNodeRuntime)) {
 if (hasNode && externalNode) {
   fs.rmSync(path.join(stageDir, "app", "bin"), { recursive: true, force: true });
 } else if (!stageOnly && hasNode) {
-  fs.rmSync(path.join(stageDir, "app", ".fnos-node-headers"), { recursive: true, force: true });
   fs.renameSync(path.join(stageDir, "app", "bin", "bin", "node"), path.join(stageDir, "app", "bin", "node"));
   for (const entry of fs.readdirSync(path.join(stageDir, "app", "bin"))) {
     if (entry === "node") continue;

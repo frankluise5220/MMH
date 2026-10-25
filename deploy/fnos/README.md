@@ -63,8 +63,8 @@ mmh.db
 
 正式包必须在 Linux/fnOS 打包环境中生成，因为 `better-sqlite3` 等原生依赖必须匹配目标平台。x86 包要在 Linux x64 runner 构建，ARM64 包要在 Linux arm64 runner 构建。fnOS 5.149 使用 GLIBC 2.36；打包环境也必须使用 GLIBC 2.36 或更低，推荐在 fnOS 机器或 Debian 12/bookworm builder 中执行，不要用 Ubuntu 24+/`ubuntu-latest` 直接发布包。
 
-打包脚本会在生成 `.fpk` 前检查 GLIBC 版本，并从源码重编 `better-sqlite3`，避免把高版本 GLIBC 编译出的原生 `.node` 文件放进飞牛包。
-如果在 fnOS 真机上复用已验证可加载的 Linux 原生依赖、且系统没有 `gcc/cc`，可以设置 `FNOS_SKIP_NATIVE_REBUILD=1`；脚本会先用包内 Node 实际加载 `better-sqlite3` 并执行内存库查询，验证失败时仍会中止打包。
+打包脚本会在生成 `.fpk` 前检查 GLIBC 版本，并用包内 Node 实际加载 `better-sqlite3`、执行一次内存库查询；加载失败时中止打包，避免把与包内运行时 ABI 不符的原生 `.node` 放进飞牛包。
+`better-sqlite3` 13 起不再提供 install 钩子、改为随包发布 N-API prebuild，`npm rebuild` 对它不生效，所以脚本直接用 `npm ci` 装出的 binding 做验证，不再源码重编；包内 Node 的主版本必须满足该依赖 `engines.node` 的下限，脚本会在编译前先比对并给出明确错误。
 
 ```bash
 npm run build:fnos:app

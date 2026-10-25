@@ -309,20 +309,6 @@ function singleExtractedDir(rootDir, label) {
   return path.join(rootDir, dirs[0].name);
 }
 
-// Remove every compiled addon under a package directory so the only binding left
-// is the one this build produced.
-function removeNativeBindings(packageDir) {
-  if (!fs.existsSync(packageDir)) return;
-  for (const entry of fs.readdirSync(packageDir, { withFileTypes: true })) {
-    const fullPath = path.join(packageDir, entry.name);
-    if (entry.isDirectory()) {
-      removeNativeBindings(fullPath);
-    } else if (entry.name.endsWith(".node")) {
-      fs.rmSync(fullPath, { force: true });
-    }
-  }
-}
-
 // better-sqlite3 declares an engines range; a bundled runtime below it compiles
 // but fails at load time with no useful output. Check the range up front so a
 // Node major mismatch names itself instead of showing up as a bare exit code.
@@ -2240,65 +2226,27 @@ function buildSpk() {
 
   const stagedServerDir = path.join(packageRoot, "app", "server");
   const nodeTarballRoot = path.join(stageDir, ".synology-node");
-  const nodeHeadersRoot = path.join(stageDir, ".synology-node-headers");
   fs.rmSync(nodeTarballRoot, { recursive: true, force: true });
-  fs.rmSync(nodeHeadersRoot, { recursive: true, force: true });
   mkdirp(nodeTarballRoot);
-  mkdirp(nodeHeadersRoot);
   const nodeExtract = run("tar", ["-xzf", nodeTarball, "-C", nodeTarballRoot]);
   if (nodeExtract.status !== 0) process.exit(nodeExtract.status || 1);
   const nodeRuntimeBinDir = path.join(singleExtractedDir(nodeTarballRoot, "SYNOLOGY_NODE_TARBALL"), "bin");
   const nodeBin = path.join(nodeRuntimeBinDir, "node");
-  const nodeNpm = path.join(nodeRuntimeBinDir, "npm");
   requirePath(nodeBin, "Synology packaging requires the bundled Node runtime tarball.");
-  requirePath(nodeNpm, "Synology packaging requires npm from the bundled Node runtime tarball.");
-  const headersTarball = process.env.SYNOLOGY_NODE_HEADERS_TARBALL || "";
-  requirePath(headersTarball, "SYNOLOGY_NODE_HEADERS_TARBALL is required for the bundled Node native rebuild.");
-  const headersExtract = run("tar", ["-xzf", headersTarball, "-C", nodeHeadersRoot]);
-  if (headersExtract.status !== 0) process.exit(headersExtract.status || 1);
-  const nodeHeadersDir = singleExtractedDir(nodeHeadersRoot, "SYNOLOGY_NODE_HEADERS_TARBALL");
-  requirePath(path.join(nodeHeadersDir, "include", "node", "node.h"), "Node headers are missing include/node/node.h.");
   const sourceServerDir = root;
   assertBundledNodeSatisfiesEngines(nodeBin, sourceServerDir);
-  const nativeRebuild = run(nodeBin, [nodeNpm, "rebuild", "better-sqlite3", "--build-from-source"], {
-    cwd: sourceServerDir,
-    stdio: "inherit",
-    env: {
-      npm_config_nodedir: nodeHeadersDir,
-      npm_config_runtime: "node",
-      npm_config_build_from_source: "true",
-    },
-  });
-  if (nativeRebuild.status !== 0) process.exit(nativeRebuild.status || 1);
-  // node-gyp writes build/Release, prebuildify-style layouts write
-  // prebuilds/<platform>-<arch>. Resolve whatever the rebuild produced instead
-  // of assuming one layout, then carry it to the same relative path in the stage.
-  const sourcePackageDir = path.join(root, "node_modules", "better-sqlite3");
-  const rebuiltNativeModule = [
-    path.join(sourcePackageDir, "build", "Release", "better_sqlite3.node"),
-    path.join(sourcePackageDir, "prebuilds", `${process.platform}-${process.arch}`, "better_sqlite3.node"),
-    path.join(sourcePackageDir, "prebuilds", `linux-${target.nodeArch}`, "better_sqlite3.node"),
-  ].find((candidate) => fs.existsSync(candidate));
-  if (!rebuiltNativeModule) {
-    throw new Error("The bundled Node native rebuild did not produce better_sqlite3.node in the source tree.");
-  }
-  const stagedPackageDir = path.join(stagedServerDir, "node_modules", "better-sqlite3");
-  // Drop every binding the install step shipped: a leftover prebuilt would win
-  // module resolution and hide an ABI mismatch until the device loads it.
-  removeNativeBindings(stagedPackageDir);
-  const stagedNativeModule = path.join(stagedPackageDir, path.relative(sourcePackageDir, rebuiltNativeModule));
-  mkdirp(path.dirname(stagedNativeModule));
-  copyFile(rebuiltNativeModule, stagedNativeModule);
+  // better-sqlite3 declares no install/postinstall hook and ships N-API prebuilds,
+  // so `npm rebuild` is a no-op and the binary npm ci produced is already the one
+  // the bundled runtime loads. Verify that instead of pretending to rebuild it.
   const verifyNative = run(nodeBin, ["-e", "const Database=require('better-sqlite3'); const db=new Database(':memory:'); if (db.prepare('select 1 as ok').get().ok !== 1) process.exit(1); db.close();"], {
     cwd: stagedServerDir,
     stdio: "inherit",
   });
   if (verifyNative.status !== 0) {
-    console.error("better-sqlite3 could not be loaded by the bundled Node runtime after the native rebuild.");
+    console.error("better-sqlite3 could not be loaded by the bundled Node runtime.");
     process.exit(verifyNative.status || 1);
   }
   fs.rmSync(nodeTarballRoot, { recursive: true, force: true });
-  fs.rmSync(nodeHeadersRoot, { recursive: true, force: true });
 
   const packageTgz = path.join(stageDir, "package.tgz");
   fs.rmSync(packageTgz, { force: true });
