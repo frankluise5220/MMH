@@ -2,8 +2,9 @@
 
 // Windows 桌面端 SQLite 升级路径的行为验证：
 // 从 scripts/build-win-desktop.cjs 里取出生成的 init-sqlite.cjs，在一份「旧桌面库」
-// （没有 LoanCategory 表、Account 没有 loanCategoryId、AccessKey 没有 scope）上真实执行，
-// 断言列补齐、四个内置类别播种、存量贷款映射与幂等。
+// （没有 LoanCategory 表、Account 没有 loanCategoryId、AccessKey 没有 scope、
+// User 没有 registrationEmail）上真实执行，断言列补齐、四个内置类别播种、
+// 存量贷款映射与幂等。
 //
 // better-sqlite3 是原生模块，必须用与它编译时一致的 Node（仓库里通常是 Node 20/22）。
 // ABI 不匹配时本脚本直接跳过（退出 0），静态断言由 verify-win-desktop.cjs 兜住。
@@ -55,6 +56,14 @@ fs.writeFileSync(
     'CREATE TABLE "Account" ("id" TEXT NOT NULL PRIMARY KEY, "householdId" TEXT NOT NULL, "kind" TEXT NOT NULL, "loanType" TEXT, "isConsumerLoan" BOOLEAN NOT NULL DEFAULT false, "loanCategoryId" TEXT);',
     'CREATE TABLE "LoanCategory" ("id" TEXT NOT NULL PRIMARY KEY, "householdId" TEXT NOT NULL, "name" TEXT NOT NULL, "baseType" TEXT NOT NULL, "sortOrder" INTEGER NOT NULL DEFAULT 0, "isSystem" BOOLEAN NOT NULL DEFAULT false, "isActive" BOOLEAN NOT NULL DEFAULT true, "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP);',
     'CREATE TABLE "AccessKey" ("id" TEXT NOT NULL PRIMARY KEY, "name" TEXT NOT NULL, "key" TEXT NOT NULL, "scope" TEXT NOT NULL DEFAULT \'write\');',
+    'CREATE TABLE "User" ("id" TEXT NOT NULL PRIMARY KEY, "householdId" TEXT, "fnosUid" TEXT, "registrationEmail" TEXT);',
+    // 存量库分支会按这份“全新安装结构”补建缺失的表；applyRuntimeMigrations 里给
+    // transactions / precious_metal_transactions / FundConfirmDays 补列时不判表存在，
+    // 所以这三张表必须在这里出现，否则校验脚本自己就会以 "no such table" 失败。
+    'CREATE TABLE "transactions" ("id" TEXT NOT NULL PRIMARY KEY, "source" TEXT);',
+    'CREATE TABLE "precious_metal_transactions" ("id" TEXT NOT NULL PRIMARY KEY, "date" DATETIME NOT NULL);',
+    'CREATE TABLE "FundConfirmDays" ("id" TEXT NOT NULL PRIMARY KEY);',
+    'CREATE TABLE "UserSettings" ("id" TEXT NOT NULL PRIMARY KEY, "sessionDays" INTEGER NOT NULL DEFAULT 30);',
   ].join("\n"),
   "utf8",
 );
@@ -62,7 +71,7 @@ fs.writeFileSync(
 // 旧库：缺 LoanCategory 表、缺 Account.loanCategoryId、缺 AccessKey.scope。
 const legacy = new Database(path.join(dataDir, "mmh.db"));
 legacy.exec('CREATE TABLE "Household" ("id" TEXT NOT NULL PRIMARY KEY, "name" TEXT NOT NULL)');
-legacy.exec('CREATE TABLE "Account" ("id" TEXT NOT NULL PRIMARY KEY, "householdId" TEXT NOT NULL, "kind" TEXT NOT NULL, "loanType" TEXT, "isConsumerLoan" BOOLEAN NOT NULL DEFAULT false)');
+legacy.exec('CREATE TABLE "Account" ("id" TEXT NOT NULL PRIMARY KEY, "householdId" TEXT NOT NULL, "kind" TEXT NOT NULL, "loanType" TEXT, "isConsumerLoan" BOOLEAN NOT NULL DEFAULT false, "currency" TEXT NOT NULL DEFAULT \'CNY\')');
 legacy.exec('CREATE TABLE "AccessKey" ("id" TEXT NOT NULL PRIMARY KEY, "name" TEXT NOT NULL, "key" TEXT NOT NULL)');
 legacy.exec('CREATE TABLE "User" ("id" TEXT NOT NULL PRIMARY KEY, "householdId" TEXT, "fnosUid" TEXT)');
 legacy.exec('CREATE TABLE "UserSettings" ("id" TEXT NOT NULL PRIMARY KEY)');
@@ -92,6 +101,12 @@ const columnsOf = (table) => db.prepare('PRAGMA table_info("' + table + '")').al
 
 expect(columnsOf("Account").includes("loanCategoryId"), "Account.loanCategoryId must be backfilled on upgraded databases.");
 expect(columnsOf("AccessKey").includes("scope"), "AccessKey.scope must be backfilled on upgraded databases.");
+// 登录账号查询 select 这一列：缺列会让 /api/v1/auth/password-status 抛
+// "no such column" 并降级成空账号列表，登录页因此显示「当前账簿没有本地账号」。
+expect(
+  columnsOf("User").includes("registrationEmail"),
+  "User.registrationEmail must be backfilled on upgraded databases (the login accounts query selects it).",
+);
 
 const categories = db.prepare('SELECT "id","baseType","name","isSystem" FROM "LoanCategory" ORDER BY "baseType"').all();
 expect(categories.length === 4, "Built-in loan categories must be seeded exactly once (got " + categories.length + ").");

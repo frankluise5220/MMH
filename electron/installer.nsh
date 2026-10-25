@@ -171,11 +171,52 @@ Var mmhTitleFont
 
 ; ------------------------------------------------------------------ Business logic (unchanged)
 
+; Only decide the default install directory for a *first* installation, and never
+; override an existing record.
+;
+; Why this matters (0.1.78 and earlier got it wrong):
+;   preInit runs at the very top of .onInit (templates/nsis/installer.nsi:55),
+;   *before* initMultiUser. initMultiUser decides per-user vs per-machine from
+;   HKCU/HKLM InstallLocation, and per-machine is what triggers the UAC elevation
+;   prompt. Unconditionally writing an HKCU record therefore made every install
+;   look like "for current user only" => no elevation => the wizard then tried to
+;   write into C:\Program Files\MMH without admin rights and NSIS aborted with
+;   "Cannot open file for writing ...\MMH.exe".
+;   Two more defects in the old version: `IfFileExists "D:\"` is always false for
+;   a bare drive root (NSIS needs a wildcard), so the D: branch never ran; and
+;   $PROGRAMFILES64 is not writable in a non-elevated per-user install.
 !macro preInit
-  IfFileExists "D:\" 0 +3
+  ReadRegStr $0 HKCU "${INSTALL_REGISTRY_KEY}" InstallLocation
+  StrCmp $0 "" mmhPreInitFirst mmhPreInitExisting
+
+  mmhPreInitExisting:
+  ; A previous version may have left an HKCU record pointing at Program Files.
+  ; Heal it only when that path is not writable right now (i.e. not elevated),
+  ; otherwise keep it untouched so upgrades stay in the same folder.
+  StrCmp $0 "$PROGRAMFILES64\MMH" 0 mmhPreInitDone
+  ClearErrors
+  FileOpen $2 "$0\mmh-write-test.tmp" w
+  IfErrors mmhPreInitHeal mmhPreInitWritable
+  mmhPreInitWritable:
+  FileClose $2
+  Delete "$0\mmh-write-test.tmp"
+  Goto mmhPreInitDone
+  mmhPreInitHeal:
+  WriteRegExpandStr HKCU "${INSTALL_REGISTRY_KEY}" InstallLocation "$LOCALAPPDATA\Programs\MMH"
+  Goto mmhPreInitDone
+
+  mmhPreInitFirst:
+  ; A per-machine record lives in HKLM and makes the installer request elevation;
+  ; in that case leave the registry alone so the wizard reads it back.
+  ReadRegStr $1 HKLM "${INSTALL_REGISTRY_KEY}" InstallLocation
+  StrCmp $1 "" 0 mmhPreInitDone
+  IfFileExists "D:\*.*" 0 mmhPreInitLocalAppData
   WriteRegExpandStr HKCU "${INSTALL_REGISTRY_KEY}" InstallLocation "D:\MMH"
-  Goto +2
-  WriteRegExpandStr HKCU "${INSTALL_REGISTRY_KEY}" InstallLocation "$PROGRAMFILES64\MMH"
+  Goto mmhPreInitDone
+  mmhPreInitLocalAppData:
+  WriteRegExpandStr HKCU "${INSTALL_REGISTRY_KEY}" InstallLocation "$LOCALAPPDATA\Programs\MMH"
+
+  mmhPreInitDone:
 !macroend
 
 !macro customUnInstall

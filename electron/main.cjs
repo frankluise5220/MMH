@@ -54,8 +54,13 @@ const projectRoot = path.join(__dirname, "..");
 const appDir = isPackaged
   ? path.join(resourcesDir, "app")
   : path.join(projectRoot, ".next", "standalone");
+// The standalone server and the SQLite bootstrap only need Node semantics, not
+// the Electron API. In a packaged build we therefore reuse Electron's own
+// binary in ELECTRON_RUN_AS_NODE mode instead of shipping a second ~83 MB Node
+// runtime under resources/node. This is only possible because better-sqlite3 is
+// now N-API based (v13 ships one platform binary that loads in both runtimes).
 const nodeExe = isPackaged
-  ? path.join(resourcesDir, "node", "node.exe")
+  ? process.execPath
   : path.join(
       projectRoot,
       "release-artifacts",
@@ -64,6 +69,7 @@ const nodeExe = isPackaged
       "node-v22.23.2-win-x64",
       "node.exe",
     );
+const nodeRuntimeEnv = isPackaged ? { ELECTRON_RUN_AS_NODE: "1" } : {};
 const iconPath = isPackaged
   ? path.join(resourcesDir, "icon.png")
   : path.join(projectRoot, "public", "branding", "mmh-logo-pwa-512.png");
@@ -193,6 +199,7 @@ function runInitSqlite() {
       cwd: appDir,
       env: {
         ...process.env,
+        ...nodeRuntimeEnv,
         DATABASE_URL: dbUrl(),
         MMH_DATA_DIR: userDataDir,
       },
@@ -227,6 +234,7 @@ function startServer() {
     }
     const env = {
       ...process.env,
+      ...nodeRuntimeEnv,
       NODE_ENV: "production",
       PORT: String(port),
       HOSTNAME: bindHost,

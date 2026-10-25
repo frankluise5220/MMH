@@ -11,10 +11,12 @@
 //   4. prisma generate (default pg schema) -> restore dev client
 //   5. stage standalone + static + public + prisma into release-artifacts/win/stage/app
 //   6. generate prisma/native-init.sql + scripts/init-sqlite.cjs in the stage
-//   7. copy portable Node into release-artifacts/win/stage/node
-//   8. rebuild better-sqlite3 with the bundled Node 20 (ABI must match)
-//   9. verify better-sqlite3 loads under the bundled Node
-//  10. electron-builder --win nsis -> release-artifacts/win/dist/mmh-win-setup-v<ver>-x64.exe (+ .blockmap + latest.yml)
+//   7. prune better-sqlite3 prebuilds to win32-x64 (N-API, one binary for both runtimes)
+//   8. verify better-sqlite3 loads under the build Node
+//   9. electron-builder --win nsis -> release-artifacts/win/dist/mmh-win-setup-v<ver>-x64.exe (+ .blockmap + latest.yml)
+//
+// No portable Node runtime is staged: the shell runs server.js on Electron's own
+// binary in ELECTRON_RUN_AS_NODE mode (see electron/main.cjs).
 
 const fs = require("node:fs");
 const path = require("node:path");
@@ -32,10 +34,8 @@ const toArgvPath = (p) => p.replace(/\\/g, "/");
 const artifacts = path.join(root, "release-artifacts", "win");
 const stageDir = path.join(artifacts, "stage");
 const stageAppDir = path.join(stageDir, "app");
-const stageNodeDir = path.join(stageDir, "node");
 const buildDir = path.join(artifacts, "build");
 const distDir = path.join(artifacts, "dist");
-const portableNodeRoot = path.join(artifacts, "node22", "node-v22.23.2-win-x64");
 // Update feed for the packaged app. Must match the `publish` block in
 // electron-builder.yml: 2026-10-23 起自动更新走自建下载站，GitHub Release 只放安装包。
 // generic provider 从 https://dl.floatingice.win/latest.yml 读版本清单，并按
@@ -92,7 +92,13 @@ function copyDir(src, dest) {
 // (dev agent logs, dev shared settings, runtime data dir, env files, build
 // cache). The desktop app keeps user data under %APPDATA%\MMH instead.
 function pruneStagedApp(dir) {
-  for (const name of [".codex-logs", "data", "shared", ".env", ".env.local", ".env.production", ".env.development"]) {
+  // `release-artifacts` is traced into .next/standalone because the repo root is
+  // the tracing root, and it can contain previous fnos/spk/win build outputs
+  // (~70 MB by itself, already-compressed payloads that NSIS cannot shrink).
+  // The packaged app never reads it: electron/main.cjs only falls back to
+  // <repo>/release-artifacts/win/node22 in dev mode, and a packaged run uses
+  // resources/node/node.exe instead.
+  for (const name of [".codex-logs", "release-artifacts", "data", "shared", ".env", ".env.local", ".env.production", ".env.development"]) {
     // These are non-runtime junk. On Windows a dev agent (e.g. a still-running
     // `next dev`) can hold a handle on files under `.codex-logs`, so rmSync can
     // throw EPERM even with force:true (force only ignores ENOENT). Skip the
@@ -391,6 +397,13 @@ function applyRuntimeMigrations(db) {
   // login/verify query throw "no such column" on upgraded desktop databases.
   addColumnIfMissing(db, "User", "authVersion", "INTEGER NOT NULL DEFAULT 1");
   addColumnIfMissing(db, "User", "registrationPrincipalId", "TEXT");
+  // 2026-10-13 MMH 会员邮箱（User.registrationEmail）。与 build-fnos-package.cjs 的
+  // 20261013_add_user_registration_email 同义（可空）。
+  // 漏掉这段的后果比别的列更致命：/api/v1/auth/password-status 的登录账号查询会
+  // select 这一列，缺列时整条查询抛 "no such column"，接口只能返回降级响应
+  // （users: []），登录页既不列账号也无法进入「新建账簿」，只显示
+  // 「当前账簿没有本地账号」——0.1.7x 升级上来的桌面库就这样卡死。
+  addColumnIfMissing(db, "User", "registrationEmail", "TEXT");
   addColumnIfMissing(db, "User", "fnosUid", "TEXT");
   if (columnExists(db, "User", "fnosUid")) {
     db.exec('CREATE UNIQUE INDEX IF NOT EXISTS "User_householdId_fnosUid_key" ON "User"("householdId", "fnosUid")');
@@ -467,46 +480,32 @@ try {
   "utf8",
 );
 
-// ---------------------------------------------------------------- stage node
-step("copy portable Node runtime");
-copyDir(portableNodeRoot, stageNodeDir);
-
-// ------------------------------------------------- better-sqlite3 ABI rebuild
-const stagedPortableNode = toArgvPath(path.join(stageNodeDir, "node.exe"));
-let portableNode = stagedPortableNode;
-let portableNodeVersion;
-try {
-  portableNodeVersion = require("node:child_process").execFileSync(stagedPortableNode, ["--version"]).toString().trim();
-} catch (error) {
-  // Some Windows build sandboxes refuse to execute a freshly copied binary
-  // and return EBUSY. The managed Node that launched this script has the same
-  // Node 22 ABI; use it for native-module rebuild/verification only. The
-  // staged portable runtime is still shipped unchanged in the installer.
-  if (error?.code !== "EBUSY") throw error;
-  portableNode = process.execPath;
-  portableNodeVersion = process.version;
-  console.warn("Staged portable Node could not execute in this build environment; using the build Node for native-module verification.");
+// ------------------------------------------------- better-sqlite3 (N-API)
+// No portable Node runtime is staged any more. better-sqlite3 v13 is N-API
+// based and ships precompiled binaries per platform, so a single win32-x64.node
+// loads in both the build Node and Electron's runtime. That lets the shell run
+// server.js on Electron itself (ELECTRON_RUN_AS_NODE) and keeps a second ~83 MB
+// Node runtime out of the installer.
+step("prune better-sqlite3 prebuilds (keep win32-x64)");
+const betterSqliteDir = path.join(stageAppDir, "node_modules", "better-sqlite3");
+const prebuildsDir = path.join(betterSqliteDir, "prebuilds");
+if (!fs.existsSync(prebuildsDir)) {
+  console.error(
+    "better-sqlite3 prebuilds/ not found. The desktop build requires >=13.x (N-API); reinstall dependencies.",
+  );
+  process.exit(1);
 }
-step("rebuild better-sqlite3 with bundled Node " + portableNodeVersion);
-const portableNpmCli = toArgvPath(path.join(stageNodeDir, "node_modules", "npm", "bin", "npm-cli.js"));
-const rebuild = spawnSync(portableNode, [portableNpmCli, "rebuild", "better-sqlite3"], {
-  cwd: stageAppDir,
-  stdio: "inherit",
-  env: {
-    ...process.env,
-    Path: `${stageNodeDir}${path.delimiter}${process.env.Path || process.env.PATH || ""}`,
-    PATH: `${stageNodeDir}${path.delimiter}${process.env.Path || process.env.PATH || ""}`,
-    npm_config_ignore_scripts: "false",
-  },
-  shell: false,
-});
-if (rebuild.status !== 0) {
-  console.error("better-sqlite3 rebuild failed. Try setting npm_config_better_sqlite3_binary_host or installing VS Build Tools.");
-  process.exit(rebuild.status || 1);
+for (const name of fs.readdirSync(prebuildsDir)) {
+  if (name !== "win32-x64.node") {
+    fs.rmSync(path.join(prebuildsDir, name), { recursive: true, force: true });
+  }
 }
+const betterSqliteVersion = JSON.parse(
+  fs.readFileSync(path.join(betterSqliteDir, "package.json"), "utf8"),
+).version;
 
 // ------------------------------------------------- verify native module load
-step("verify better-sqlite3 loads under bundled Node");
+step("verify better-sqlite3 loads under build Node " + process.version);
 const checkScript = path.join(artifacts, "_tmp_check_better_sqlite3.cjs");
 fs.writeFileSync(
   checkScript,
@@ -516,16 +515,16 @@ const Database = require(path.join(stageAppDir, "node_modules", "better-sqlite3"
 const db = new Database(":memory:");
 if (db.prepare("select 1 as ok").get().ok !== 1) process.exit(1);
 db.close();
-console.log("better-sqlite3 OK under Node " + process.version);
+console.log("better-sqlite3 " + ${JSON.stringify(betterSqliteVersion)} + " OK under Node " + process.version);
 `,
   "utf8",
 );
-const check = spawnSync(portableNode, [toArgvPath(checkScript)], {
+const check = spawnSync(process.execPath, [toArgvPath(checkScript)], {
   cwd: stageAppDir,
   stdio: "inherit",
 });
 if (check.status !== 0) {
-  console.error("better-sqlite3 could not be loaded by the bundled Node. ABI mismatch.");
+  console.error("better-sqlite3 could not be loaded by the build Node.");
   process.exit(check.status || 1);
 }
 fs.rmSync(checkScript, { force: true });
@@ -557,6 +556,35 @@ const unpackedDir = path.join(distDir, "win-unpacked");
 const unpackedAppDir = path.join(unpackedDir, "resources", "app");
 step("restore node_modules into unpacked app");
 copyDir(path.join(stageAppDir, "node_modules"), path.join(unpackedAppDir, "node_modules"));
+
+// The shipped server runs on Electron's own binary, so the native module must
+// also load there. N-API makes this runtime-agnostic, but verify it against the
+// real packaged Electron before spending minutes in NSIS.
+step("verify better-sqlite3 loads under packaged Electron");
+const electronCheckScript = path.join(artifacts, "_tmp_check_electron_sqlite3.cjs");
+fs.writeFileSync(
+  electronCheckScript,
+  `const path = require("node:path");
+const Database = require(path.join(${JSON.stringify(unpackedAppDir)}, "node_modules", "better-sqlite3"));
+const db = new Database(":memory:");
+db.exec("create table t(a integer)");
+db.prepare("insert into t values (?)").run(1);
+if (db.prepare("select count(*) c from t").get().c !== 1) process.exit(1);
+db.close();
+console.log("better-sqlite3 OK under Electron " + process.versions.electron);
+`,
+  "utf8",
+);
+const electronCheck = spawnSync(path.join(unpackedDir, "MMH.exe"), [toArgvPath(electronCheckScript)], {
+  cwd: unpackedAppDir,
+  stdio: "inherit",
+  env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+});
+fs.rmSync(electronCheckScript, { force: true });
+if (electronCheck.status !== 0) {
+  console.error("better-sqlite3 could not be loaded by Electron. N-API mismatch.");
+  process.exit(electronCheck.status || 1);
+}
 
 // electron-builder only writes app-update.yml during publish, but the desktop
 // app needs it at runtime. Keep it in sync with electron-builder.yml publish.

@@ -139,6 +139,28 @@ expect(
   "Windows SQLite init must call applyLoanCategoryMigration from applyRuntimeMigrations.",
 );
 
+// 2026-10-13 User.registrationEmail：这一列不只影响 MMH 会员标签，它进了
+// /api/v1/auth/password-status 的登录账号查询。旧桌面库缺列时整条查询抛
+// "no such column"，接口降级成 users: []，登录页既不列账号也没有「新建账簿」入口，
+// 只显示「当前账簿没有本地账号」（2026-10-25 用户反馈安装 Windows 版无法新建账簿）。
+expect(
+  /addColumnIfMissing\(db, "User", "registrationEmail", "TEXT"\)/.test(buildScript),
+  "Windows SQLite init must backfill User.registrationEmail for existing databases (login accounts query selects it).",
+);
+
+// 登录账号查询还会 select 这些列，任何一列缺失都会让登录页整体降级成空账号列表。
+for (const [table, column, type] of [
+  ["User", "authVersion", "INTEGER NOT NULL DEFAULT 1"],
+  ["User", "registrationPrincipalId", "TEXT"],
+  ["User", "fnosUid", "TEXT"],
+  ["UserSettings", "sessionDays", "INTEGER NOT NULL DEFAULT 30"],
+]) {
+  expect(
+    buildScript.includes(`addColumnIfMissing(db, "${table}", "${column}", "${type}")`),
+    `Windows SQLite init must backfill ${table}.${column} for existing databases (login page reads it).`,
+  );
+}
+
 if (failures.length > 0) {
   console.error("Windows desktop verification failed:");
   for (const failure of failures) console.error(" - " + failure);

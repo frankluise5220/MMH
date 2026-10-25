@@ -41,6 +41,8 @@ yarn-error.log*
 .env
 .env.local
 .env.*.local
+# 多库切换配置（含生产只读连接串）
+.envs/
 # allow the example template
 !.env.example
 

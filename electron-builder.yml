@@ -8,9 +8,11 @@ appId: com.mmh.desktop
 productName: MMH
 copyright: Copyright © 2026 MMH
 
-# The standalone server runs on the bundled portable Node (resources/node),
-# never on Electron's own runtime, so native modules must NOT be rebuilt for
-# Electron. They were already rebuilt for Node 22 ABI during staging.
+# The standalone server runs on Electron's own binary in ELECTRON_RUN_AS_NODE
+# mode (electron/main.cjs), so no second Node runtime is shipped and nothing
+# under extraResources is a native binary except better-sqlite3. That module is
+# N-API based (v13), so one prebuilt win32-x64.node loads in both runtimes and
+# no per-runtime rebuild is needed.
 npmRebuild: false
 
 directories:
@@ -50,10 +52,6 @@ publish:
 extraResources:
   - from: release-artifacts/win/stage/app
     to: app
-    filter:
-      - "**/*"
-  - from: release-artifacts/win/stage/node
-    to: node
     filter:
       - "**/*"
   - from: release-artifacts/win/build/icon.png
