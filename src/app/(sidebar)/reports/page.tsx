@@ -481,8 +481,12 @@ export default async function ReportsPage({
     const effectiveProfitStartYear = profitPeriod === "year" && profitStartYear
       ? Math.max(profitStartYear, investmentReport.dataFirstYear)
       : null;
+    // The prev/next arrows can step past the current year (e.g. 2026-12 → 2027-01),
+    // so the option list has to cover every reachable window; otherwise the select
+    // has no matching option and silently renders the first year instead.
+    const pickerYearEnd = Math.max(currentYear, profitYear);
     const pickerYears = Array.from(
-      { length: currentYear - investmentReport.dataFirstYear + 1 },
+      { length: pickerYearEnd - investmentReport.dataFirstYear + 1 },
       (_, index) => investmentReport.dataFirstYear + index,
     );
     const pickerBaseParams: Record<string, string> = {
@@ -513,11 +517,11 @@ export default async function ReportsPage({
       institutionIds: selectedInstitutionIds,
       accountIds: selectedInvestmentAccountIds,
     });
-    const rangeLabel = profitPeriod === "day"
-      ? t("reports.rangeLabelDay", { year: profitYear, month: profitMonth })
-      : profitPeriod === "month"
-        ? t("reports.rangeLabelMonth", { year: profitYear })
-        : t("reports.rangeLabelYear", { year: currentYear });
+    // Day/month views already spell the window out in the year/month selects, so
+    // no extra text label is rendered there (2026-10-25: 文本标签 + 年/月下拉并列，
+    // 读起来像两个互相打架的日期筛选). The yearly view has no arrows, so it keeps
+    // the end-of-range hint next to the "从哪一年起" select.
+    const rangeEndLabel = profitPeriod === "year" ? t("reports.rangeLabelYear", { year: currentYear }) : "";
     return (
       <div className="flex min-h-0 flex-1 flex-col">
         <header className="page-header">
@@ -552,35 +556,48 @@ export default async function ReportsPage({
                     </Link>
                   ))}
                 </div>
-                {profitPeriod !== "year" ? (
-                  <Link
-                    href={previousHref}
-                    scroll={false}
-                    className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 hover:text-slate-800"
-                    title={profitPeriod === "day" ? t("reports.prevMonth") : t("reports.prevYear")}
-                  >
-                    <ChevronLeft className="h-3.5 w-3.5" />
-                  </Link>
-                ) : null}
-                <span className="min-w-24 text-center text-xs font-medium text-slate-500">{rangeLabel}</span>
-                {profitPeriod !== "year" ? (
-                  <Link
-                    href={nextHref}
-                    scroll={false}
-                    className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 hover:text-slate-800"
-                    title={profitPeriod === "day" ? t("reports.nextMonth") : t("reports.nextYear")}
-                  >
-                    <ChevronRight className="h-3.5 w-3.5" />
-                  </Link>
-                ) : null}
-                <InvestmentProfitPeriodPicker
-                  period={profitPeriod}
-                  year={profitYear}
-                  month={profitMonth}
-                  startYear={effectiveProfitStartYear}
-                  availableYears={pickerYears}
-                  baseParams={pickerBaseParams}
-                />
+                {profitPeriod === "year" ? (
+                  <>
+                    <InvestmentProfitPeriodPicker
+                      period={profitPeriod}
+                      year={profitYear}
+                      month={profitMonth}
+                      startYear={effectiveProfitStartYear}
+                      availableYears={pickerYears}
+                      baseParams={pickerBaseParams}
+                    />
+                    {rangeEndLabel ? (
+                      <span className="text-xs font-medium text-slate-500">{rangeEndLabel}</span>
+                    ) : null}
+                  </>
+                ) : (
+                  <>
+                    <Link
+                      href={previousHref}
+                      scroll={false}
+                      className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 hover:text-slate-800"
+                      title={profitPeriod === "day" ? t("reports.prevMonth") : t("reports.prevYear")}
+                    >
+                      <ChevronLeft className="h-3.5 w-3.5" />
+                    </Link>
+                    <InvestmentProfitPeriodPicker
+                      period={profitPeriod}
+                      year={profitYear}
+                      month={profitMonth}
+                      startYear={effectiveProfitStartYear}
+                      availableYears={pickerYears}
+                      baseParams={pickerBaseParams}
+                    />
+                    <Link
+                      href={nextHref}
+                      scroll={false}
+                      className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 hover:text-slate-800"
+                      title={profitPeriod === "day" ? t("reports.nextMonth") : t("reports.nextYear")}
+                    >
+                      <ChevronRight className="h-3.5 w-3.5" />
+                    </Link>
+                  </>
+                )}
               </div>
               <InvestmentProfitFilterSelect
                 selectedUserIds={selectedUserIds}

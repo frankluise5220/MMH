@@ -725,7 +725,27 @@ function accountDailyNavDeltaProfit(params: {
       }
       continue;
     }
-    const fundProfit = units * (currentRow.nav - previousRow.nav);
+    // 在本行净值区间内起算的买入，份额是这一行才第一次参与收益，它当天的真实
+    // 收益是「收盘市值 − 实付金额」，而不是「份额 × 净值差」：申购费在成交那一刻
+    // 就已经损失，净值差永远算不出来。用净值差会把这笔手续费当成收益多算一遍
+    // （004206 的 10-20：313.51 份按净值差是 24.48，按市值−实付是 23.33，差
+    // 1.14 正好是申购费），导致日收益累加比浮动盈亏多出手续费总额。
+    // 调整量 = 新份额 × 上一行净值 − 实付，等价于把这部分换成市值−实付。
+    let newBuyUnits = 0;
+    let newBuyAmount = 0;
+    for (const entry of params.entries) {
+      if (entry.fundCode !== fundCode) continue;
+      if (entry.subtype !== "buy" && entry.subtype !== "switch_in") continue;
+      const calcDate = profitStartDateOf(entry);
+      if (!calcDate || calcDate <= previousRow.date || calcDate > currentRow.date) continue;
+      const boughtUnits = entry.units ?? 0;
+      if (boughtUnits <= 0) continue;
+      newBuyUnits += boughtUnits;
+      newBuyAmount += entry.netBuyAmount ?? Math.abs(toNumber(entry.amount));
+    }
+    const fundProfit = units * (currentRow.nav - previousRow.nav)
+      + newBuyUnits * previousRow.nav
+      - newBuyAmount;
     if (fundProfit !== 0) count += 1;
     profit += fundProfit;
   }
