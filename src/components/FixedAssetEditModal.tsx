@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { DateStepper } from "./DateStepper";
+import { CalcInput } from "./CalcInput";
 import { ClearableNoteField } from "./ClearableNoteField";
 import { useI18n } from "@/lib/i18n";
 /** 记账弹窗整窗外壳：宽度/标题栏/表单/卡片/固定页脚/高度锁定统一由它负责。 */
@@ -226,15 +227,16 @@ export function FixedAssetEditModal({
               </div>
               <div className="space-y-1">
                 <div className="form-label">{t("fixedAssetEdit.purchasePrice")}</div>
-                <input
+                <CalcInput
                   value={draft.purchasePrice}
-                  onChange={(event) => {
-                    const next = { ...draft, purchasePrice: event.target.value };
+                  onChange={(value) => {
+                    const next = { ...draft, purchasePrice: value };
                     setDraft(next);
                     onChange?.(next);
                   }}
-                  className="form-input"
+                  label={t("fixedAssetEdit.purchasePrice")}
                   placeholder={t("fixedAssetEdit.purchasePricePlaceholder")}
+                  precision={2}
                 />
               </div>
               <div className="col-span-2 space-y-1">

@@ -10,6 +10,7 @@ import { PRODUCT_TYPES, supportsCostBasisMethod } from "@/lib/investment-config"
 import { institutionTypeLabel, isSettlementCounterpartyType, kindIconName, kindColor, kindOrder } from "@/lib/account-kinds";
 import { AdvancedDataTable, type AdvancedDataTableColumn } from "@/components/AdvancedDataTable";
 import { EntityCreateForm } from "@/components/EntityCreateForm";
+import { CalcInput } from "@/components/CalcInput";
 import { ClearableNoteField } from "@/components/ClearableNoteField";
 import { FundConfirmDaysPanel } from "@/components/FundConfirmDaysModal";
 import { MultiSelectFilterDropdown } from "@/components/MultiSelectFilterDropdown";
@@ -1872,8 +1873,14 @@ export default function SettingsAccountsPage() {
                       )}
                       <div>
                         <label className="block text-xs text-slate-500 mb-1">{t("settings.accounts.creditLimitLabel")}</label>
-                        <input value={editForm.creditLimit || ""} onChange={e => setEditForm(f => ({ ...f, creditLimit: e.target.value }))}
-                          className="h-8 w-full rounded-md border border-slate-200 px-2 text-sm outline-none" />
+                        <CalcInput
+                          value={editForm.creditLimit || ""}
+                          onChange={(value) => setEditForm((f) => ({ ...f, creditLimit: value }))}
+                          label={t("settings.accounts.creditLimitLabel")}
+                          precision={2}
+                          compact
+                          inputClassName="h-8 w-full rounded-md border border-slate-200 pl-2 pr-6 text-sm outline-none"
+                        />
                       </div>
                     </>
                   )}

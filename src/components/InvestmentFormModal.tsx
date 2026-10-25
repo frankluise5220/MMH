@@ -3069,8 +3069,14 @@ export function InvestmentFormModal({
                       <EntryTagsField value={selectedTagIds} onChange={setSelectedTagIds} />
                       <div className="space-y-1">
                         <div className="text-xs font-medium text-slate-600">{t("investForm.dividendCashAmount")}</div>
-                        <input ref={dividendAmountRef} inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)}
-                          className="form-input" />
+                        <CalcInput
+                          ref={dividendAmountRef}
+                          value={amount}
+                          onChange={setAmount}
+                          placeholder="0.00"
+                          label={t("investForm.dividendCashAmount")}
+                          precision={2}
+                        />
                       </div>
                     </div>
                   )}
@@ -3319,18 +3325,20 @@ export function InvestmentFormModal({
                       </div>
                       <div className="space-y-1">
                         <div className="text-xs font-medium text-slate-600">{t("investForm.feeAmount")}</div>
-                        <input
-                          inputMode="decimal"
+                        <CalcInput
                           value={fee}
-                          onChange={(e) => {
+                          onChange={(v) => {
                             suppressFeeAutoCalcRef.current = false;
-                            setFee(e.target.value);
-                            setFeeEdited(true);
-                            calculateUnitsAfterFeeChange(e.target.value);
+                            // CalcInput 失焦会无条件回抛格式化结果（5 → 5.00），
+                            // 数值没变就不算用户改过手续费，否则之后改份额/净值
+                            // 时手续费不再按费率自动重算。
+                            if (v.trim() === "" || p(v) !== p(fee)) setFeeEdited(true);
+                            setFee(v);
+                            calculateUnitsAfterFeeChange(v);
                           }}
                           placeholder={computedFee || "0.00"}
-                          style={{ caretColor: "var(--foreground)" }}
-                          className="form-input caret-slate-800"
+                          label={t("investForm.feeAmount")}
+                          precision={2}
                         />
                       </div>
                     </div>
@@ -3560,15 +3568,17 @@ export function InvestmentFormModal({
                   </div>
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">{t("investForm.feeAmount")}</div>
-                    <input inputMode="decimal" value={fee}
-                      onChange={(e) => {
+                    <CalcInput value={fee}
+                      onChange={(v) => {
                         suppressFeeAutoCalcRef.current = false;
-                        setFee(e.target.value);
-                        setFeeEdited(true);
-                        calculateUnitsAfterFeeChange(e.target.value);
+                        // 同上：失焦重抛格式化值不算用户编辑。
+                        if (v.trim() === "" || p(v) !== p(fee)) setFeeEdited(true);
+                        setFee(v);
+                        calculateUnitsAfterFeeChange(v);
                       }}
                       placeholder={computedFee || "0.00"}
-                      className="form-input" />
+                      label={t("investForm.feeAmount")}
+                      precision={2} />
                   </div>
                   <EntryTagsField value={selectedTagIds} onChange={setSelectedTagIds} />
                 </div>

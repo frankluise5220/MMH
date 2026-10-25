@@ -8,6 +8,7 @@ import { Settings2, X } from "lucide-react";
 import { formatMoneyWithCurrencyCode as formatMoney } from "@/lib/format";
 import { todayDateLocalYmd as todayDateInputValue } from "@/lib/date-utils";
 import { useI18n } from "@/lib/i18n";
+import { CalcInput } from "@/components/CalcInput";
 import { ClearableNoteField } from "@/components/ClearableNoteField";
 import { DateStepper } from "@/components/DateStepper";
 
@@ -229,11 +230,11 @@ export function StockFeeRuleSettingsButton({
                   </div>
                   <div className="space-y-1">
                     <div className="form-label">{t("stockFee.amountLabel")}</div>
-                    <input value={amount} onChange={(event) => setAmount(event.target.value)} className="form-input" inputMode="decimal" placeholder={t("stockFee.optional")} />
+                    <CalcInput value={amount} onChange={setAmount} label={t("stockFee.amountLabel")} precision={2} placeholder={t("stockFee.optional")} />
                   </div>
                   <div className="space-y-1">
                     <div className="form-label">{t("stockFee.minAmountLabel")}</div>
-                    <input value={minAmount} onChange={(event) => setMinAmount(event.target.value)} className="form-input" inputMode="decimal" placeholder={t("stockFee.optional")} />
+                    <CalcInput value={minAmount} onChange={setMinAmount} label={t("stockFee.minAmountLabel")} precision={2} placeholder={t("stockFee.optional")} />
                   </div>
                   <div className="space-y-1">
                     <div className="form-label">{t("stockFee.noteLabel")}</div>

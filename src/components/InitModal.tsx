@@ -5,6 +5,7 @@ import { useState, useEffect, useRef, useMemo } from "react";
 import { createPortal } from "react-dom";
 import { X, Plus, Trash2, Database, TrendingUp } from "lucide-react";
 import { DateStepper } from "./DateStepper";
+import { CalcInput } from "./CalcInput";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { NestedAddModal } from "./EntityCreateForm";
 import { isSettlementCounterpartyType, kindLabel } from "@/lib/account-kinds";
@@ -528,7 +529,16 @@ export function InitModal({
                       </td>
                       <td className="px-3 py-1.5 border-b border-slate-100 text-xs text-slate-500">{kl}</td>
                       <td className="px-3 py-1.5 border-b border-slate-100 text-right">
-                        <input type="number" step="0.01" placeholder="0" value={row.balance} onChange={(e) => updateBalanceRow(row.tempId, { balance: e.target.value })} className="init-modal-number h-8 w-32 text-right rounded border border-slate-200 bg-white px-2 text-sm outline-none focus:border-blue-400" />
+                        <CalcInput
+                          value={row.balance}
+                          onChange={(value) => updateBalanceRow(row.tempId, { balance: value })}
+                          placeholder="0"
+                          label={t("initModal.col.balance")}
+                          precision={2}
+                          compact
+                          className="ml-auto w-32"
+                          inputClassName="init-modal-number h-8 w-full pl-2 pr-5 text-right rounded border border-slate-200 bg-white text-sm outline-none focus:border-blue-400"
+                        />
                       </td>
                       <td className="px-3 py-1.5 border-b border-slate-100">
                         <DateStepper value={row.date} onChange={(value) => updateBalanceRow(row.tempId, { date: value })} className="h-8 rounded border border-slate-200 bg-white px-2 text-sm outline-none focus:border-blue-400" />
@@ -658,7 +668,16 @@ export function InitModal({
                                   {u > 0 && n > 0 && a > 0 ? `${floatingProfit >= 0 ? "+" : ""}${floatingProfit.toFixed(2)}` : "--"}
                                 </td>
                                 <td className="px-1.5 py-1 border-b border-r border-slate-100 align-middle">
-                                  <input type="number" step="0.01" placeholder="0" value={row.historicalProfit} onChange={(e) => updateFundRow(row.tempId, { historicalProfit: e.target.value })} className="init-modal-number h-6 w-full rounded-none border-0 border-b border-slate-200 bg-transparent px-0 text-[13px] leading-6 font-medium tabular-nums text-right text-slate-800 outline-none focus:border-blue-400" />
+                                  <CalcInput
+                                    value={row.historicalProfit}
+                                    onChange={(value) => updateFundRow(row.tempId, { historicalProfit: value })}
+                                    placeholder="0"
+                                    label={t("initModal.col.historicalProfit")}
+                                    precision={2}
+                                    compact
+                                    className="w-full"
+                                    inputClassName="init-modal-number h-6 w-full rounded-none border-0 border-b border-slate-200 bg-transparent pl-0 pr-5 text-[13px] leading-6 font-medium tabular-nums text-right text-slate-800 outline-none focus:border-blue-400"
+                                  />
                                 </td>
                                 <td className="px-0 py-1 border-b border-slate-100 align-top text-center">
                                   <label className="inline-flex h-6.5 w-5 items-center justify-center cursor-pointer">
@@ -677,7 +696,16 @@ export function InitModal({
                                       <div className="overflow-x-auto">
                                         <div className="flex min-w-[802px] items-end gap-1.5">
                                           <div className="w-[148px] shrink-0 space-y-1"><label className="text-[11px] font-medium uppercase text-slate-500">{t("initModal.ri.deductAccount")}</label><SmartSelect mode="single" value={row.riCashAccountId} onChange={(id) => updateFundRow(row.tempId, { riCashAccountId: id })} options={cashSSOptions} placeholder={t("regularInvest.unlimited")} /></div>
-                                          <div className="w-[78px] shrink-0 space-y-1"><label className="text-[11px] font-medium uppercase text-slate-500">{t("initModal.ri.amountPerPeriod")}</label><input type="number" step="0.01" placeholder={t("txForm.amount")} value={row.riAmount} onChange={(e) => updateFundRow(row.tempId, { riAmount: e.target.value })} className="init-modal-number h-7 w-full rounded-none border-0 border-b border-slate-200 bg-transparent px-0 text-[13px] font-medium text-right text-slate-800 outline-none focus:border-blue-400" /></div>
+                                          <div className="w-[78px] shrink-0 space-y-1"><label className="text-[11px] font-medium uppercase text-slate-500">{t("initModal.ri.amountPerPeriod")}</label><CalcInput
+                                            value={row.riAmount}
+                                            onChange={(value) => updateFundRow(row.tempId, { riAmount: value })}
+                                            placeholder={t("txForm.amount")}
+                                            label={t("initModal.ri.amountPerPeriod")}
+                                            precision={2}
+                                            compact
+                                            className="w-full"
+                                            inputClassName="init-modal-number h-7 w-full rounded-none border-0 border-b border-slate-200 bg-transparent pl-0 pr-5 text-[13px] font-medium text-right text-slate-800 outline-none focus:border-blue-400"
+                                          /></div>
                                           <div className="w-[148px] shrink-0 space-y-1"><label className="text-[11px] font-medium uppercase text-slate-500">{t("regularInvest.interval")}</label>
                                             <div className="flex gap-1">
                                               <input type="number" min="1" placeholder="1" value={row.riIntervalValue} onChange={(e) => updateFundRow(row.tempId, { riIntervalValue: e.target.value })} className="h-7 w-9 rounded-none border-0 border-b border-slate-200 bg-transparent px-0 text-[13px] font-medium text-center text-slate-800 outline-none focus:border-blue-400" />

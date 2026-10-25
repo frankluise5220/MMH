@@ -3,6 +3,7 @@ import { ModalLayer } from "@/components/ModalLayer";
 
 import { useEffect, useState } from "react";
 import { DateStepper } from "./DateStepper";
+import { CalcInput } from "./CalcInput";
 import { useI18n } from "@/lib/i18n";
 
 type InsurancePolicyEditValue = {
@@ -156,15 +157,16 @@ export function InsurancePolicyEditModal({
               </div>
               <div className="space-y-1">
                 <div className="form-label">{t("insuranceOverview.totalCoverage")}</div>
-                <input
+                <CalcInput
                   value={draft.coverageAmount}
-                  onChange={(event) => {
-                    const next = { ...draft, coverageAmount: event.target.value };
+                  onChange={(value) => {
+                    const next = { ...draft, coverageAmount: value };
                     setDraft(next);
                     onChange?.(next);
                   }}
-                  className="form-input"
+                  label={t("insuranceOverview.totalCoverage")}
                   placeholder={t("insurancePolicy.coveragePlaceholder")}
+                  precision={2}
                 />
               </div>
             </div>

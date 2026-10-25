@@ -43,11 +43,17 @@ export type CalcInputProps = {
   hideCalculator?: boolean;
   inputClassName?: string;
   ariaLabel?: string;
+  autoFocus?: boolean;
   /**
    * 表格单元格模式：不套 `form-input`（那个类自带圆角、边框、焦点阴影、min-height），
    * 输入框完全由 `inputClassName` 决定，用来做「表格线即边界」的格内编辑。
    */
   bare?: boolean;
+  /**
+   * 紧凑模式（表格行内金额单元格用）：输入框样式同样交给 `inputClassName`，
+   * 但保留一个 20px 的小计算器按钮内嵌在右侧，避免整行被 36px 高的标准控件撑开。
+   */
+  compact?: boolean;
 };
 
 export const CalcInput = forwardRef<HTMLInputElement, CalcInputProps>(function CalcInput(
@@ -63,7 +69,9 @@ export const CalcInput = forwardRef<HTMLInputElement, CalcInputProps>(function C
   hideCalculator = false,
   inputClassName,
   ariaLabel,
+  autoFocus = false,
   bare = false,
+  compact = false,
   },
   ref,
 ) {
@@ -207,12 +215,17 @@ export const CalcInput = forwardRef<HTMLInputElement, CalcInputProps>(function C
         onKeyDown={handleInputKeyDown}
         onBlur={handleInputBlur}
         placeholder={placeholder}
+        autoFocus={autoFocus}
         aria-label={ariaLabel}
         style={{ caretColor: "var(--foreground)" }}
         className={
           bare
             ? `h-full w-full min-w-0 rounded-none bg-transparent outline-none placeholder:text-slate-300 caret-slate-800 disabled:cursor-not-allowed disabled:bg-transparent disabled:text-slate-500 ${inputClassName ?? ""}`
-            : `form-input ${hideCalculator ? "" : "pr-10"} font-mono placeholder:text-slate-300 caret-slate-800 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500 ${inputClassName ?? ""}`
+            : compact
+              // 紧凑模式：视觉完全由调用方（表格单元格样式）决定，这里只留
+              // 计算器按钮的右侧留白与禁用态。
+              ? `placeholder:text-slate-300 caret-slate-800 disabled:cursor-not-allowed disabled:text-slate-400 ${!hideCalculator ? "pr-5" : ""} ${inputClassName ?? ""}`
+              : `form-input ${hideCalculator ? "" : "pr-10"} font-mono placeholder:text-slate-300 caret-slate-800 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500 ${inputClassName ?? ""}`
         }
       />
 
@@ -222,7 +235,22 @@ export const CalcInput = forwardRef<HTMLInputElement, CalcInputProps>(function C
           按钮**不带任何边框**（包括左侧分隔线）：内缩后这些边框会与输入框自身的边框平行贴在一起
           （右侧能看到两层描边 + 抗锯齿造成的“模糊重影”），而左侧一条竖线与整体外框不搭。
           外框（描边 + 红/蓝环）统一由输入框负责，图标本身就够区分按钮。 */}
-      {!bare && !hideCalculator && <div className="absolute right-px top-px">
+      {compact && !hideCalculator && (
+        <div className="absolute right-0 top-1/2 -translate-y-1/2">
+          <button
+            ref={triggerRef}
+            type="button"
+            disabled={disabled}
+            onClick={() => setOpen(true)}
+            className="flex h-5 w-5 items-center justify-center rounded bg-transparent text-slate-400 hover:bg-blue-50 hover:text-blue-600 disabled:cursor-not-allowed disabled:text-slate-300"
+            title={label ? t("calcInput.titleWithLabel").replace("{label}", label) : t("calcInput.title")}
+          >
+            <Calculator className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
+
+      {!bare && !compact && !hideCalculator && <div className="absolute right-px top-px">
         <button
           ref={triggerRef}
           type="button"

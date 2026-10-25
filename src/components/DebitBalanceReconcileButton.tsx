@@ -4,6 +4,7 @@ import { ModalLayer } from "@/components/ModalLayer";
 import { useEffect, useState } from "react";
 import { Scale } from "lucide-react";
 import { DateStepper } from "./DateStepper";
+import { CalcInput } from "./CalcInput";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
 import { todayDateLocalYmd } from "@/lib/date-utils";
@@ -147,13 +148,14 @@ export function DebitBalanceReconcileButton({
                 </label>
                 <label className="block">
                   <span className="mb-1 block text-xs text-slate-500">{t("balanceReconcile.labelAmount")}</span>
-                  <input
+                  <CalcInput
                     value={reconcileAmount}
-                    onChange={(event) => setReconcileAmount(event.target.value)}
-                    inputMode="decimal"
+                    onChange={setReconcileAmount}
                     autoFocus
-                    className="h-9 w-full rounded-md border border-slate-300 px-2 text-right tabular-nums focus:border-amber-400 focus:outline-none focus:ring-2 focus:ring-amber-100"
+                    label={t("balanceReconcile.labelAmount")}
+                    precision={2}
                     placeholder="0.00"
+                    inputClassName="h-9 w-full rounded-md border border-slate-300 px-2 text-right tabular-nums focus:border-amber-400 focus:outline-none focus:ring-2 focus:ring-amber-100"
                   />
                 </label>
               </div>

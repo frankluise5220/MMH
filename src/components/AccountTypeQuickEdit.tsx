@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useI18n } from "@/lib/i18n";
 import { ClearableNoteField } from "@/components/ClearableNoteField";
+import { CalcInput } from "@/components/CalcInput";
 import { DateStepper } from "@/components/DateStepper";
 import { PRODUCT_TYPES, supportsCostBasisMethod } from "@/lib/investment-config";
 import { fetchSettingsAccountData, notifySettingsDataChanged } from "@/lib/client/settingsCache";
@@ -427,7 +428,7 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
               {isCredit && <Field label={t("settings.accounts.repaymentDayModeLabel")}><select value={form.repaymentDayMode || "fixed"} onChange={(event) => setField("repaymentDayMode", event.target.value)} className={inputClass}><option value="fixed">{t("entityForm.repaymentDayMode.fixed")}</option><option value="offset">{t("entityForm.repaymentDayMode.offset")}</option></select></Field>}
               {isCredit && form.repaymentDayMode !== "offset" && <Field label={t("settings.accounts.repaymentDayLabel")}><input value={form.repaymentDay ?? ""} onChange={(event) => setField("repaymentDay", event.target.value)} className={inputClass} inputMode="numeric" placeholder={t("entityForm.dayRangePlaceholder")} /></Field>}
               {isCredit && form.repaymentDayMode === "offset" && <Field label={t("settings.accounts.repaymentOffsetDaysLabel")}><input value={form.repaymentOffsetDays ?? ""} onChange={(event) => setField("repaymentOffsetDays", event.target.value)} className={inputClass} inputMode="numeric" placeholder={t("entityForm.repaymentOffsetDaysPlaceholder")} /></Field>}
-              {isCredit && <Field label={t("settings.accounts.creditLimitLabel")}><input value={form.creditLimit ?? ""} onChange={(event) => setField("creditLimit", event.target.value)} className={inputClass} /></Field>}
+              {isCredit && <Field label={t("settings.accounts.creditLimitLabel")}><CalcInput value={form.creditLimit ?? ""} onChange={(value) => setField("creditLimit", value)} label={t("settings.accounts.creditLimitLabel")} precision={2} inputClassName={inputClass} /></Field>}
               {supportsLastFour && <Field label={t("settings.accounts.lastFourLabel")}><input value={form.numberMasked ?? ""} onChange={(event) => setField("numberMasked", event.target.value)} className={inputClass} /></Field>}
               {isCredit && <Field label={t("settings.accounts.billMode")}><select value={form.creditBillMode || "separate"} onChange={(event) => setField("creditBillMode", event.target.value)} className={inputClass}><option value="separate">{t("settings.accounts.separateBill")}</option><option value="consolidated">{t("settings.accounts.consolidatedBill")}</option></select></Field>}
 
@@ -438,7 +439,7 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
                 <h3 className="mb-3 text-sm font-semibold text-slate-800">{t("accountTypeQuickEdit.loanDetails")}</h3>
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3">
                   <Field label={t("txForm.date")}><DateStepper value={loanDetails.defaultDate} disabled onChange={() => {}} className={`!h-8 !bg-slate-50 !text-slate-500 ${inputClass}`} /></Field>
-                  <Field label={t("liabilityTx.totalBorrowing")}><input value={loanForm.principal ?? ""} disabled={loanAccountEditLocked} onChange={(event) => setLoanField("principal", event.target.value)} className={inputClass} inputMode="decimal" /></Field>
+                  <Field label={t("liabilityTx.totalBorrowing")}><CalcInput value={loanForm.principal ?? ""} disabled={loanAccountEditLocked} onChange={(value) => setLoanField("principal", value)} label={t("liabilityTx.totalBorrowing")} precision={2} inputClassName={inputClass} /></Field>
                   <Field label={t("liabilityTx.repaymentMethod")}><select value={loanForm.repaymentMethod ?? ""} disabled={loanAccountEditLocked} onChange={(event) => setLoanField("repaymentMethod", event.target.value)} className={inputClass}><option value={EQUAL_PAYMENT_REPAYMENT_METHOD}>{t("liabilityTx.method.equalInstallment")}</option><option value={EQUAL_PRINCIPAL_REPAYMENT_METHOD}>{t("liabilityTx.method.equalPrincipal")}</option><option value={INSTALLMENT_REPAYMENT_METHOD}>{t("liabilityTx.method.interestFreeInstallment")}</option><option value={INTEREST_FIRST_REPAYMENT_METHOD}>{t("liabilityTx.method.interestFirstThenPrincipal")}</option></select></Field>
                   <Field label={t("liabilityTx.totalRuns")}><input value={loanForm.totalRuns ?? ""} disabled={loanAccountEditLocked} onChange={(event) => setLoanField("totalRuns", event.target.value)} className={inputClass} inputMode="numeric" /></Field>
                   <Field label={t("liabilityShell.rateAdjust.annualRateLabel")}><input value={loanForm.annualRate ?? ""} disabled={loanAccountEditLocked} onChange={(event) => setLoanField("annualRate", event.target.value)} className={inputClass} inputMode="decimal" /></Field>

@@ -8,6 +8,7 @@ import { COUNTERPARTY_TYPE_OPTIONS, FINANCIAL_INSTITUTION_TYPE_VALUES, instituti
 import { PRODUCT_TYPES, supportsCostBasisMethod } from "@/lib/investment-config";
 import { supportsTradingCalendarForAccount, TRADING_CALENDARS } from "@/lib/fund/trading-calendar";
 import { DateStepper } from "@/components/DateStepper";
+import { CalcInput } from "@/components/CalcInput";
 import { ClearableNoteField } from "@/components/ClearableNoteField";
 import { notifySmartSelectOptionCreated, SmartSelect, type SmartSelectOption } from "@/components/SmartSelect";
 import { CurrencySmartSelect } from "@/components/CurrencySmartSelect";
@@ -849,12 +850,13 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
         </div>
         <div>
           <label className="form-label mb-1 block">{t("detail.column.balance")}</label>
-          <input
+          <CalcInput
             value={form.initialBalance ?? ""}
-            onChange={(event) => setForm((prev) => ({ ...prev, initialBalance: event.target.value }))}
+            onChange={(value) => setForm((prev) => ({ ...prev, initialBalance: value }))}
             placeholder={t("entityForm.balancePlaceholder")}
-            className="form-input text-right tabular-nums"
-            inputMode="decimal"
+            label={t("detail.column.balance")}
+            precision={2}
+            inputClassName="text-right tabular-nums"
           />
         </div>
       </div>
@@ -915,6 +917,23 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
           rows={field.rows ?? 4}
           readOnly={readOnly}
           required={options?.required}
+        />
+      );
+    }
+
+    // 额度是金额字段：走计算框，避免与其它窗口的金额输入手感不一致。
+    if (field.key === "creditLimit") {
+      return (
+        <CalcInput
+          key={field.key}
+          value={value}
+          onChange={onChange}
+          placeholder={placeholder}
+          label={t(field.labelKey)}
+          precision={2}
+          disabled={readOnly}
+          className={options?.className}
+          inputClassName="text-right tabular-nums"
         />
       );
     }
@@ -1422,12 +1441,14 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                   onChange={(value) => setForm((prev) => ({ ...prev, initialBalanceDate: value }))}
                 />
               </div>
-              <input
+              <CalcInput
                 value={form.initialBalance ?? ""}
-                onChange={(event) => setForm((prev) => ({ ...prev, initialBalance: event.target.value }))}
+                onChange={(value) => setForm((prev) => ({ ...prev, initialBalance: value }))}
                 placeholder={t("detail.column.balance")}
-                className="form-input min-w-[120px] text-right tabular-nums"
-                inputMode="decimal"
+                label={t("detail.column.balance")}
+                precision={2}
+                className="min-w-[120px] flex-1"
+                inputClassName="text-right tabular-nums"
               />
             </>
           )}

@@ -1415,13 +1415,13 @@ export function ReimbursementWorkspace({
                   <div key={reimbursement.id} className="grid grid-cols-[minmax(0,1fr)_7rem_7rem] items-center gap-2 border-b border-slate-100 px-3 py-2 last:border-b-0">
                     <div className="min-w-0 truncate text-xs font-medium text-slate-700" title={reimbursement.title}>{reimbursement.documentNumber || reimbursement.title || "-"}</div>
                     <div className="text-right text-xs tabular-nums text-slate-600">{formatMoneyYuan(reimbursement.totalAmount)}</div>
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.01"
+                    <CalcInput
                       value={batchApproveAmounts[reimbursement.id] ?? String(reimbursement.totalAmount)}
-                      onChange={(event) => setBatchApproveAmounts((current) => ({ ...current, [reimbursement.id]: event.target.value }))}
-                      className="form-input h-8 w-full text-right text-xs"
+                      onChange={(value) => setBatchApproveAmounts((current) => ({ ...current, [reimbursement.id]: value }))}
+                      placeholder="0.00"
+                      label={t("reimburse.document.approvedAmount")}
+                      precision={2}
+                      inputClassName="text-right text-xs"
                     />
                   </div>
                 ))}

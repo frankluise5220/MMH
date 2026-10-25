@@ -7,6 +7,7 @@ import { buildGroupedAccountOptions, buildAccountDisplayOption, type AccountDisp
 import { isCashLedgerAccount, isDepositAccount, isDepositPostingCategoryAllowed, isIncomeExpensePostingOrDepositAccount, isTransferDropdownAccount } from "@/lib/account-kind-utils";
 import { SmartSelect } from "@/components/SmartSelect";
 import { ClearableNoteField } from "@/components/ClearableNoteField";
+import { CalcInput } from "@/components/CalcInput";
 import { DateStepper } from "@/components/DateStepper";
 import { EntryAttachmentButton, uploadEntryAttachmentFiles } from "@/components/EntryAttachmentPanel";
 import { buildCategoryTreeOptions } from "@/components/categorySmartSelect";
@@ -311,7 +312,15 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
           </label>
           <label className="block">
             <span className="text-xs text-slate-500">{t("mobileTxForm.amount")}</span>
-            <input className="form-input mt-1 text-right tabular-nums" inputMode="decimal" type="number" step="0.01" placeholder="0.00" value={draft.amount} onChange={(event) => update("amount", event.target.value)} />
+            <CalcInput
+              className="mt-1"
+              value={draft.amount}
+              onChange={(value) => update("amount", value)}
+              placeholder="0.00"
+              label={t("mobileTxForm.amount")}
+              precision={2}
+              inputClassName="text-right tabular-nums"
+            />
           </label>
         </div>
 
