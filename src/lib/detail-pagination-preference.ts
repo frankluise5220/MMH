@@ -9,6 +9,13 @@ export const DETAIL_ALL_PAGE_SIZE = 50000;
  * （全部收支 4 万+ 条）则分若干块渐进呈现。
  */
 export const DETAIL_ALL_CHUNK_SIZE = 5000;
+/**
+ * 「全部」模式的首屏页大小。切到「全部」时整份数据要几秒到几十秒，先取一小页
+ * （500 行 ≈ 1MB）立刻渲染：行数超过表格的虚拟化阈值（200 行）后虚拟滚动条
+ * 马上出现，剩下的全量在后台继续拉，取完再整份替换。用户不再盯着原来那一页
+ * 「自适应」行数干等。
+ */
+export const DETAIL_ALL_FIRST_PAGE_SIZE = 500;
 
 export type DetailPaginationPreference = {
   pageSize: number;

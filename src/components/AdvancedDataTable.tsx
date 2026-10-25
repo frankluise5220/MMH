@@ -39,6 +39,17 @@ const ROW_LONG_PRESS_MOVE_TOLERANCE_PX = 10;
 /** 拖拽中手指贴近视口上下边缘时自动滚动，避免长列表拖不动。 */
 const ROW_DRAG_AUTO_SCROLL_MARGIN_PX = 56;
 const ROW_DRAG_AUTO_SCROLL_MAX_STEP = 22;
+/**
+ * 表头列拖拽的悬浮提示时长：鼠标在表头上停留超过 500ms 才弹出「按住可拾起列」，
+ * 短于普通扫过表头的时间，又不用刻意等待，顺便把「表头可以拖」这件事告诉用户。
+ */
+const COLUMN_DRAG_HINT_DELAY_MS = 500;
+/**
+ * 表头长按拾起一列的触发时长，与行长按拖拽（600ms）取同一档：短到不用刻意等，
+ * 又长于普通点按的间隔；按住期间表头只做浅色高亮，不到点不起拖，点表头排序、
+ * 拉手柄改列宽的手势都不被抢。松手前移动超过容忍距离则本次长按作废。
+ */
+const COLUMN_LONG_PRESS_DRAG_DELAY_MS = 600;
 // Compact rows stay fixed; the user-facing row-height preference owns normal density.
 const COMPACT_ROW_HEIGHT = 30;
 const COMPACT_ROW_CONTENT_HEIGHT = 20;
@@ -206,12 +217,30 @@ type PointerDragSession = {
   lastY: number;
 };
 
-/** 长按拿起后跟随指针的「悬浮整行」，是原行的 DOM 克隆，不参与命中测试。 */
-type RowDragGhost = {
+/** 表头长按待触发：按住不动，满 `COLUMN_LONG_PRESS_DRAG_DELAY_MS` 才拾起该列。 */
+type PendingColumnLongPress = {
+  key: string;
+  pointerId: number;
+  startX: number;
+  startY: number;
+  timer: number | null;
+};
+
+/**
+ * 长按拿起后跟随指针的「悬浮卡片」（行 / 列共用），是源节点的 DOM 克隆，
+ * 不参与命中测试：落点判定仍然落在下面真实的表格行 / 表头单元格上。
+ */
+type DragGhost = {
   wrapper: HTMLDivElement;
   grabOffsetX: number;
   grabOffsetY: number;
 };
+
+/** 长按拿起后跟随指针的「悬浮整行」，是原行的 DOM 克隆，不参与命中测试。 */
+type RowDragGhost = DragGhost;
+
+/** 长按拿起后跟随指针的「悬浮表头列」，是原表头单元格的 DOM 克隆。 */
+type ColumnDragGhost = DragGhost;
 
 function reorderRowItems<T>(items: RowItem<T>[], sourceKey: string, targetKey: string, position: AdvancedDataTableDropPosition) {
   const sourceIndex = items.findIndex((item) => item.key === sourceKey);
@@ -365,6 +394,162 @@ function removeRowDragGhost(ghost: RowDragGhost | null) {
   wrapper.style.transition = "opacity 120ms ease-out";
   wrapper.style.opacity = "0";
   window.setTimeout(() => wrapper.remove(), 160);
+}
+
+// 悬浮卡片行 / 列共用一套搬运逻辑。
+const moveDragGhost = moveRowDragGhost;
+const removeDragGhost = removeRowDragGhost;
+
+/** 按列 key 取表头单元格（key 来自列定义，仍按属性选择器转义，杜绝注入）。 */
+/** 按列 key 取本表格表头里的单元格（key 来自列定义，仍按属性选择器转义，杜绝注入）。 */
+function headerCellOf(headerRoot: HTMLElement | null, key: string): HTMLElement | null {
+  if (!headerRoot) return null;
+  return headerRoot.querySelector<HTMLElement>(
+    `[data-advanced-table-header-cell="${key.replace(/["\\]/g, "\\$&")}"]`,
+  );
+}
+
+/**
+ * 长按拾起一列时指针应插入的位置：在表头行里找「离指针横向锚点最近」的可拖列，
+ * 锚点是该列的左 / 右边界（按指针落在单元格前半还是后半定），返回 before / after。
+ * 纵向放宽一整行表头的高度：按住后指针难免上下抖，不至于一抖就丢掉落点。
+ * 指针彻底离开表头区域时返回 null（松手即取消，不改变列序）。
+ */
+function resolveColumnDropTarget(
+  headerRoot: HTMLElement | null,
+  clientX: number,
+  clientY: number,
+  excludeKey: string | null,
+): { key: string; position: "before" | "after" } | null {
+  if (!headerRoot) return null;
+  const headerRow = headerRoot.querySelector<HTMLElement>("[data-advanced-table-header-row]");
+  if (!headerRow) return null;
+  const rowRect = headerRow.getBoundingClientRect();
+  const verticalSlack = Math.max(48, rowRect.height);
+  if (clientY < rowRect.top - verticalSlack || clientY > rowRect.bottom + verticalSlack) return null;
+  let best: { key: string; position: "before" | "after"; distance: number } | null = null;
+  for (const cell of Array.from(headerRow.querySelectorAll<HTMLElement>("[data-advanced-table-header-cell]"))) {
+    const key = cell.dataset.advancedTableHeaderCell;
+    if (!key || key === "__row_actions" || key === excludeKey) continue;
+    const rect = cell.getBoundingClientRect();
+    const position = clientX < rect.left + rect.width / 2 ? "before" : "after";
+    const anchorX = position === "before" ? rect.left : rect.right;
+    const distance = Math.abs(clientX - anchorX);
+    if (!best || distance < best.distance) best = { key, position, distance };
+  }
+  return best ? { key: best.key, position: best.position } : null;
+}
+
+/**
+ * 长按拾起一列：把表头单元格拷贝成一张跟随指针的「悬浮卡片」贴在 `body` 上。
+ * 与行拖拽同理用 DOM 克隆：列宽由表格布局实时算出，React 侧拿不到，而克隆能逐像素
+ * 保留原表头（文字、排序箭头、筛选图标）。`pointer-events: none` 让它不参与命中测试，
+ * 落点判定仍然落在下面真实的表头单元格上。
+ */
+function createColumnDragGhost(
+  sourceCell: HTMLElement,
+  hintText: string,
+  clientX: number,
+  clientY: number,
+): ColumnDragGhost {
+  const rect = sourceCell.getBoundingClientRect();
+
+  const wrapper = document.createElement("div");
+  wrapper.setAttribute("data-column-drag-ghost", "");
+  wrapper.style.cssText = [
+    "position:fixed",
+    "left:0",
+    "top:0",
+    "z-index:80",
+    "pointer-events:none",
+    `width:${rect.width}px`,
+    "will-change:transform",
+    `transform:translate3d(${rect.left}px, ${rect.top}px, 0)`,
+  ].join(";");
+
+  const surface = document.createElement("div");
+  surface.style.cssText = [
+    "position:relative",
+    `width:${rect.width}px`,
+    "border-radius:10px",
+    "background:transparent",
+    "overflow:visible",
+    "transform:scale(1.04)",
+    "transform-origin:center center",
+    "transition:transform 140ms ease-out",
+    // 卡片的「悬浮感」全靠这圈不透明的蓝色描边和外投影。
+    "box-shadow:0 18px 36px -14px rgba(15,23,42,0.4), 0 0 0 1px rgba(37,99,235,0.95), 0 0 0 4px rgba(37,99,235,0.14)",
+  ].join(";");
+
+  const table = document.createElement("table");
+  table.style.cssText = [
+    "table-layout:fixed",
+    `width:${rect.width}px`,
+    "border-collapse:separate",
+    "border-spacing:0",
+    // 底色几乎全透（只留一点表头米色纸面的色调）：拖起来的这一列必须能透出下面
+    // 表头上的蓝色插入竖线，否则正好盖住「会插在哪两条之间」。
+    "background:rgba(251,250,247,0.12)",
+    "border-radius:10px",
+    "overflow:hidden",
+  ].join(";");
+
+  const clone = sourceCell.cloneNode(true) as HTMLElement;
+  // 脱离原表后列宽会按内容重算，逐列锁定成源单元格的实际像素宽高。
+  clone.style.width = `${rect.width}px`;
+  clone.style.height = `${rect.height}px`;
+  clone.style.boxSizing = "border-box";
+  // 个别列可能自带底色（headerClassName），会盖住「近透明」的设定，用内联样式压掉。
+  clone.style.background = "transparent";
+  clone.removeAttribute("data-advanced-table-header-cell");
+  // 调整列宽的手柄在悬浮卡片里没有意义，去掉，免得出现一个悬空的小热区。
+  clone.querySelectorAll("[data-advanced-table-resize-handle]").forEach((node) => node.remove());
+  // CSS 会给裸 <tr> 生成匿名 row-group，显式补一个 <tbody> 更稳。
+  const tbody = document.createElement("tbody");
+  const row = document.createElement("tr");
+  row.appendChild(clone);
+  tbody.appendChild(row);
+  table.appendChild(tbody);
+  surface.appendChild(table);
+
+  const hint = document.createElement("div");
+  hint.textContent = hintText;
+  const hintAbove = rect.top > 44;
+  hint.style.cssText = [
+    "position:absolute",
+    "left:50%",
+    "transform:translateX(-50%)",
+    hintAbove ? "bottom:calc(100% + 8px)" : "top:calc(100% + 8px)",
+    "white-space:nowrap",
+    "padding:3px 10px",
+    "border-radius:9999px",
+    "background:#1e293b",
+    "color:#ffffff",
+    "font-size:12px",
+    "line-height:18px",
+    "font-weight:500",
+    "box-shadow:0 8px 18px -8px rgba(15,23,42,0.65)",
+  ].join(";");
+  surface.appendChild(hint);
+  wrapper.appendChild(surface);
+  document.body.appendChild(wrapper);
+
+  return { wrapper, grabOffsetX: clientX - rect.left, grabOffsetY: clientY - rect.top };
+}
+
+/** 指针贴近表体左右边缘时返回本帧应横向滚动的像素（带方向），否则 0。 */
+function getColumnDragAutoScrollDelta(viewport: HTMLElement, clientX: number) {
+  if (viewport.scrollWidth <= viewport.clientWidth) return 0;
+  const rect = viewport.getBoundingClientRect();
+  const stepFor = (distance: number) => Math.max(
+    4,
+    Math.min(ROW_DRAG_AUTO_SCROLL_MAX_STEP, Math.ceil(ROW_DRAG_AUTO_SCROLL_MAX_STEP * Math.min(1, distance / ROW_DRAG_AUTO_SCROLL_MARGIN_PX))),
+  );
+  const leftEdge = rect.left + ROW_DRAG_AUTO_SCROLL_MARGIN_PX;
+  const rightEdge = rect.right - ROW_DRAG_AUTO_SCROLL_MARGIN_PX;
+  if (clientX < leftEdge) return -stepFor(leftEdge - clientX);
+  if (clientX > rightEdge) return stepFor(clientX - rightEdge);
+  return 0;
 }
 
 /** 取出单元格渲染结果里的纯文本，用来判断 hover 是否只是把同一句话重复一遍。 */
@@ -785,6 +970,22 @@ export function AdvancedDataTable<T>({
   const pointerDragClickResetRef = useRef<number | null>(null);
   const [resizeGuide, setResizeGuide] = useState<ResizeGuide | null>(null);
   const [resizeSession, setResizeSession] = useState<ResizeSession | null>(null);
+  // 列顺序：表头长按拾起后左右拖动调整，落盘 `${storageKey}:order:v1`；空数组 = 列定义的默认顺序。
+  const [columnOrder, setColumnOrder] = useState<string[]>([]);
+  const [draggedColumnKey, setDraggedColumnKey] = useState<string | null>(null);
+  const [columnDropTarget, setColumnDropTarget] = useState<{ key: string; position: "before" | "after" } | null>(null);
+  // 表头长按拖拽：longPressColumnKey 是待触发高亮，pointerColumnDragActive 是已拾起。
+  const [longPressColumnKey, setLongPressColumnKey] = useState<string | null>(null);
+  const [pointerColumnDragActive, setPointerColumnDragActive] = useState(false);
+  const columnLongPressRef = useRef<PendingColumnLongPress | null>(null);
+  const columnPointerDragRef = useRef<PointerDragSession | null>(null);
+  const columnDragGhostRef = useRef<ColumnDragGhost | null>(null);
+  const columnDragClickResetRef = useRef<number | null>(null);
+  // 表头悬浮 0.5s 后出现的拖拽提示（fixed 定位的一枚小药丸）。
+  const [headerDragHint, setHeaderDragHint] = useState<{ top: number; left: number } | null>(null);
+  const headerDragHintTimerRef = useRef<number | null>(null);
+  // 拾起列松手后浏览器会在源表头补一个 click，屏蔽掉，别顺手触发排序。
+  const suppressHeaderSortClickRef = useRef(false);
   const suppressNextClickRef = useRef(false);
   const dragCancelledRef = useRef(false);
   const headerSortClickTimerRef = useRef<number | null>(null);
@@ -875,6 +1076,7 @@ export function AdvancedDataTable<T>({
   );
   const filtersStorageKey = `${storageKey}:filters:v2`;
   const sortStorageKey = sortStorageKeyProp ?? `${storageKey}:sort:v1`;
+  const columnOrderStorageKey = `${storageKey}:order:v1`;
 
   useEffect(() => {
     const storedWidths = readJson<Record<string, number>>(`${storageKey}:widths`, {});
@@ -899,6 +1101,17 @@ export function AdvancedDataTable<T>({
       return nextHiddenKeys;
     });
   }, [defaultHiddenKeys, hiddenStorageKey, hideableColumnKeys, storageKey, transientColumnKeys]);
+
+  useEffect(() => {
+    // 列顺序存档：只认当前存在的列（列被下线后键自动失效），「行操作」列不参与排序。
+    const stored = readJson<string[]>(columnOrderStorageKey, []);
+    const known = new Set(tableColumns.map((column) => column.key));
+    const next = stored.filter((key) => known.has(key) && key !== "__row_actions");
+    // 同值短路：调用方传入不稳定的 columns 引用会让本 effect 每渲染重跑。
+    setColumnOrder((prev) => (
+      prev.length === next.length && prev.every((key, index) => key === next[index]) ? prev : next
+    ));
+  }, [columnOrderStorageKey, tableColumns]);
 
   useEffect(() => {
     // 切换账户 / 数据集时清空临时列的勾选，让它们回到隐藏状态。
@@ -1162,12 +1375,36 @@ export function AdvancedDataTable<T>({
     return () => window.removeEventListener(columnVisibilityTriggerId, onTrigger);
   }, [columnVisibilityTriggerId]);
 
+  // 列顺序：用户拖过的列按 `columnOrder` 排，没拖过的列保持定义顺序跟在后面；
+  // 「行操作」列永远钉在最后。渲染顺序（表头 / 表体 / 汇总条 / 列宽布局）全部
+  // 由 `visibleColumns` 决定，所以只改这一处即可全表生效。
+  const fullColumnOrder = useMemo(() => {
+    const keys = tableColumns.map((column) => column.key).filter((key) => key !== "__row_actions");
+    const known = new Set(keys);
+    const stored = columnOrder.filter((key) => known.has(key));
+    const missing = keys.filter((key) => !stored.includes(key));
+    return [...stored, ...missing];
+  }, [columnOrder, tableColumns]);
+  // 拖拽会话里的 moveColumn 要走 ref 取最新顺序：调用方常传内联 columns 数组，
+  // 直接依赖 fullColumnOrder 会让 moveColumn 每次渲染都换引用，拖拽中的 effect
+  // 跟着反复重挂窗口监听。列序本身只在松手时变，ref 读数不会读到旧值。
+  const fullColumnOrderRef = useRef(fullColumnOrder);
+  fullColumnOrderRef.current = fullColumnOrder;
+  const orderedColumns = useMemo(() => {
+    const rank = new Map(fullColumnOrder.map((key, index) => [key, index]));
+    return [...tableColumns].sort((a, b) => {
+      const aActions = a.key === "__row_actions";
+      const bActions = b.key === "__row_actions";
+      if (aActions !== bActions) return aActions ? 1 : -1;
+      return (rank.get(a.key) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.key) ?? Number.MAX_SAFE_INTEGER);
+    });
+  }, [fullColumnOrder, tableColumns]);
   const visibleColumns = useMemo(
-    () => tableColumns.filter((column) => (
+    () => orderedColumns.filter((column) => (
       (!column.hideable || !hiddenKeys.has(column.key))
       && (!column.transient || transientShownKeys.has(column.key))
     )),
-    [hiddenKeys, tableColumns, transientShownKeys],
+    [hiddenKeys, orderedColumns, transientShownKeys],
   );
   const activeFilterMeta = useMemo(() => {
     const empty = {
@@ -1635,6 +1872,274 @@ export function AdvancedDataTable<T>({
     });
   }
 
+  /**
+   * 表头长按拾起一列：把 source 插到 target 列的前 / 后。以「当前完整顺序」
+   * （含没拖过的列）为基准整份重排，避免只存一半把其它列挤去默认序后面。
+   */
+  const moveColumn = useCallback((sourceKey: string, targetKey: string, position: "before" | "after") => {
+    if (sourceKey === targetKey) return;
+    const next = fullColumnOrderRef.current.filter((key) => key !== sourceKey);
+    const targetIndex = next.indexOf(targetKey);
+    if (targetIndex < 0) return;
+    next.splice(position === "before" ? targetIndex : targetIndex + 1, 0, sourceKey);
+    setColumnOrder(next);
+    writeJson(columnOrderStorageKey, next);
+  }, [columnOrderStorageKey]);
+
+  const clearHeaderDragHint = useCallback(() => {
+    if (headerDragHintTimerRef.current != null) {
+      window.clearTimeout(headerDragHintTimerRef.current);
+      headerDragHintTimerRef.current = null;
+    }
+    setHeaderDragHint((prev) => (prev ? null : prev));
+  }, []);
+
+  /** 鼠标在表头停留超过 0.5s：弹出「按住可拾起列」的拖拽提示，锚定在该列表头下方。 */
+  const scheduleHeaderDragHint = useCallback((element: HTMLElement) => {
+    clearHeaderDragHint();
+    headerDragHintTimerRef.current = window.setTimeout(() => {
+      headerDragHintTimerRef.current = null;
+      const rect = element.getBoundingClientRect();
+      // 表头可能已经随横向滚动移出可视区，量不到就不显示。
+      if (rect.width === 0 || rect.height === 0) return;
+      const centerX = rect.left + rect.width / 2;
+      const left = Math.min(Math.max(centerX, 90), Math.max(90, window.innerWidth - 90));
+      setHeaderDragHint({ top: rect.bottom + 6, left });
+    }, COLUMN_DRAG_HINT_DELAY_MS);
+  }, [clearHeaderDragHint]);
+
+  const clearPendingColumnLongPress = useCallback(() => {
+    const pending = columnLongPressRef.current;
+    if (pending?.timer != null) window.clearTimeout(pending.timer);
+    columnLongPressRef.current = null;
+    setLongPressColumnKey(null);
+  }, []);
+
+  const activateColumnLongPressDrag = useCallback((press: PendingColumnLongPress) => {
+    if (columnLongPressRef.current !== press) return;
+    columnLongPressRef.current = null;
+    setLongPressColumnKey(null);
+    columnPointerDragRef.current = {
+      key: press.key,
+      pointerId: press.pointerId,
+      lastX: press.startX,
+      lastY: press.startY,
+    };
+    // 长按结束时浏览器仍会补发一次 click（表头 click = 排序），提前吞掉。
+    suppressNextClickRef.current = true;
+    suppressHeaderSortClickRef.current = true;
+    // 「拾起」：表头拷贝成一张悬浮卡片跟着指针走，原表头留在原位当占位。
+    removeDragGhost(columnDragGhostRef.current);
+    columnDragGhostRef.current = null;
+    const sourceCell = headerCellOf(headerInnerRef.current, press.key);
+    if (sourceCell) {
+      columnDragGhostRef.current = createColumnDragGhost(
+        sourceCell,
+        t("advancedTable.longPressColumnDragHint"),
+        press.startX,
+        press.startY,
+      );
+    }
+    setPointerColumnDragActive(true);
+    setDraggedColumnKey(press.key);
+    setColumnDropTarget(null);
+    clearHeaderDragHint();
+    // 长按往往已经选中了文字，清掉再进入拖拽，否则会出现"拖着一段蓝色选字"的错觉。
+    try {
+      window.getSelection()?.removeAllRanges();
+    } catch {
+      // 无 Selection API 的环境直接跳过，不影响拖拽。
+    }
+    if (typeof navigator !== "undefined") {
+      const vibrate = (navigator as unknown as { vibrate?: (pattern: number | number[]) => boolean }).vibrate;
+      if (typeof vibrate === "function") {
+        try {
+          void vibrate.call(navigator, 12);
+        } catch {
+          // 震动只是反馈增强，失败也不影响拖拽。
+        }
+      }
+    }
+  }, [clearHeaderDragHint, t]);
+
+  const endPointerColumnDrag = useCallback((clientX: number, clientY: number, commit: boolean) => {
+    const session = columnPointerDragRef.current;
+    columnPointerDragRef.current = null;
+    removeDragGhost(columnDragGhostRef.current);
+    columnDragGhostRef.current = null;
+    setPointerColumnDragActive(false);
+    setDraggedColumnKey(null);
+    setColumnDropTarget(null);
+    if (commit && session) {
+      const target = resolveColumnDropTarget(headerInnerRef.current, clientX, clientY, session.key);
+      if (target) moveColumn(session.key, target.key, target.position);
+    }
+    // pointerup 与随后的 click 是两个任务，抑制标记要留到 click 之后才能放开。
+    suppressNextClickRef.current = true;
+    suppressHeaderSortClickRef.current = true;
+    if (columnDragClickResetRef.current != null) window.clearTimeout(columnDragClickResetRef.current);
+    columnDragClickResetRef.current = window.setTimeout(() => {
+      columnDragClickResetRef.current = null;
+      suppressNextClickRef.current = false;
+      suppressHeaderSortClickRef.current = false;
+    }, 400);
+  }, [moveColumn]);
+
+  function handleColumnPointerDown(event: ReactPointerEvent<HTMLElement>, key: string) {
+    // 「行操作」列固定在最右，不参与拖拽。
+    if (key === "__row_actions") return;
+    if (event.button !== 0) return;
+    if (columnPointerDragRef.current || columnLongPressRef.current) return;
+    // 调整列宽的手柄、筛选按钮等交互元素自己的手势优先，不长按。
+    if (event.target instanceof Element) {
+      if (event.target.closest("[data-advanced-table-resize-handle]")) return;
+      if (isInteractiveRowTarget(event.target)) return;
+    }
+    if (hasActiveTextSelection()) return;
+    const press: PendingColumnLongPress = {
+      key,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      timer: null,
+    };
+    columnLongPressRef.current = press;
+    setLongPressColumnKey(key);
+    press.timer = window.setTimeout(() => activateColumnLongPressDrag(press), COLUMN_LONG_PRESS_DRAG_DELAY_MS);
+  }
+
+  // 待触发阶段：一旦移动 / 滚动 / 松手就取消，保证点表头排序、拉手柄改列宽的手感不变。
+  useEffect(() => {
+    if (!longPressColumnKey) return;
+    const cancelPending = () => clearPendingColumnLongPress();
+    const handlePointerMove = (event: PointerEvent) => {
+      const press = columnLongPressRef.current;
+      if (!press || event.pointerId !== press.pointerId) return;
+      const moved = Math.hypot(event.clientX - press.startX, event.clientY - press.startY);
+      if (moved <= ROW_LONG_PRESS_MOVE_TOLERANCE_PX) return;
+      cancelPending();
+    };
+    const handlePointerRelease = (event: PointerEvent) => {
+      const press = columnLongPressRef.current;
+      if (!press || event.pointerId !== press.pointerId) return;
+      cancelPending();
+    };
+    window.addEventListener("pointermove", handlePointerMove, { passive: true });
+    window.addEventListener("pointerup", handlePointerRelease, { passive: true });
+    window.addEventListener("pointercancel", handlePointerRelease, { passive: true });
+    const blockContextMenu = (event: Event) => event.preventDefault();
+    window.addEventListener("scroll", cancelPending, true);
+    window.addEventListener("contextmenu", blockContextMenu, true);
+    window.addEventListener("dragstart", cancelPending, true);
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerRelease);
+      window.removeEventListener("pointercancel", handlePointerRelease);
+      window.removeEventListener("scroll", cancelPending, true);
+      window.removeEventListener("contextmenu", blockContextMenu, true);
+      window.removeEventListener("dragstart", cancelPending, true);
+    };
+  }, [clearPendingColumnLongPress, longPressColumnKey]);
+
+  // 拖拽阶段：跟手更新落点、贴边横向自动滚动，松手落位；Esc 取消。
+  useEffect(() => {
+    if (!pointerColumnDragActive) return;
+    let autoScrollFrame: number | null = null;
+
+    const stopAutoScroll = () => {
+      if (autoScrollFrame == null) return;
+      window.cancelAnimationFrame(autoScrollFrame);
+      autoScrollFrame = null;
+    };
+
+    const runAutoScroll = () => {
+      autoScrollFrame = null;
+      const session = columnPointerDragRef.current;
+      const viewport = viewportRef.current;
+      if (!session || !viewport) return;
+      const delta = getColumnDragAutoScrollDelta(viewport, session.lastX);
+      if (delta === 0) return;
+      viewport.scrollLeft += delta;
+      setColumnDropTarget(resolveColumnDropTarget(headerInnerRef.current, session.lastX, session.lastY, session.key));
+      autoScrollFrame = window.requestAnimationFrame(runAutoScroll);
+    };
+
+    const ensureAutoScroll = () => {
+      if (autoScrollFrame != null) return;
+      const session = columnPointerDragRef.current;
+      const viewport = viewportRef.current;
+      if (!session || !viewport) return;
+      if (getColumnDragAutoScrollDelta(viewport, session.lastX) === 0) return;
+      autoScrollFrame = window.requestAnimationFrame(runAutoScroll);
+    };
+
+    const handlePointerMove = (event: PointerEvent) => {
+      const session = columnPointerDragRef.current;
+      if (!session || event.pointerId !== session.pointerId) return;
+      session.lastX = event.clientX;
+      session.lastY = event.clientY;
+      moveDragGhost(columnDragGhostRef.current, event.clientX, event.clientY);
+      setColumnDropTarget(resolveColumnDropTarget(headerInnerRef.current, event.clientX, event.clientY, session.key));
+      ensureAutoScroll();
+    };
+    const handlePointerUp = (event: PointerEvent) => {
+      const session = columnPointerDragRef.current;
+      if (!session || event.pointerId !== session.pointerId) return;
+      // 阻止随后的 click / 长按菜单。
+      event.preventDefault();
+      stopAutoScroll();
+      endPointerColumnDrag(event.clientX, event.clientY, true);
+    };
+    const handlePointerCancel = () => {
+      if (!columnPointerDragRef.current) return;
+      stopAutoScroll();
+      endPointerColumnDrag(0, 0, false);
+    };
+    // 手指已经按住才进入拖拽，此时必须挡住页面继续滚动；
+    // 非 passive 的 touchmove 是唯一可靠的拦截点（触摸滚动无法用 pointer 事件取消）。
+    const blockTouchScroll = (event: TouchEvent) => {
+      if (event.cancelable) event.preventDefault();
+    };
+    const blockBrowserGesture = (event: Event) => event.preventDefault();
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      stopAutoScroll();
+      endPointerColumnDrag(0, 0, false);
+    };
+
+    window.addEventListener("pointermove", handlePointerMove, { passive: true });
+    window.addEventListener("pointerup", handlePointerUp);
+    window.addEventListener("pointercancel", handlePointerCancel);
+    window.addEventListener("touchmove", blockTouchScroll, { passive: false });
+    window.addEventListener("contextmenu", blockBrowserGesture, true);
+    window.addEventListener("selectstart", blockBrowserGesture, true);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      stopAutoScroll();
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+      window.removeEventListener("pointercancel", handlePointerCancel);
+      window.removeEventListener("touchmove", blockTouchScroll);
+      window.removeEventListener("contextmenu", blockBrowserGesture, true);
+      window.removeEventListener("selectstart", blockBrowserGesture, true);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [endPointerColumnDrag, pointerColumnDragActive]);
+
+  useEffect(() => () => {
+    if (headerDragHintTimerRef.current != null) {
+      window.clearTimeout(headerDragHintTimerRef.current);
+      headerDragHintTimerRef.current = null;
+    }
+    if (columnLongPressRef.current?.timer != null) window.clearTimeout(columnLongPressRef.current.timer);
+    if (columnDragClickResetRef.current != null) window.clearTimeout(columnDragClickResetRef.current);
+    columnDragGhostRef.current?.wrapper.remove();
+    columnLongPressRef.current = null;
+    columnPointerDragRef.current = null;
+    columnDragGhostRef.current = null;
+  }, []);
+
   function toggleAllRows(checked: boolean) {
     // 有全选优先集时，全选只选优先集（如"可导入行"）；优先集为空则全选所有可勾选行
     setSelection(checked ? new Set(preferredSelectableKeys) : new Set());
@@ -1656,6 +2161,12 @@ export function AdvancedDataTable<T>({
   }
 
   function handleHeaderSortClick(event: ReactMouseEvent<HTMLElement>, key: string, canOpenFilter: boolean) {
+    // 表头拖拽落幕后浏览器会在源表头补一个 click：吞掉，不触发排序。
+    if (suppressHeaderSortClickRef.current) {
+      suppressHeaderSortClickRef.current = false;
+      clearPendingHeaderSortClick();
+      return;
+    }
     if (!canOpenFilter) {
       toggleSort(key);
       return;
@@ -2196,7 +2707,7 @@ export function AdvancedDataTable<T>({
     <>
       <div className="mb-1 px-1 text-[11px] font-semibold text-slate-500">{t("table.visibleColumns")}</div>
       <div className="max-h-56 space-y-1 overflow-y-auto">
-        {tableColumns.filter((column) => column.key !== "__row_actions").map((column) => (
+        {orderedColumns.filter((column) => column.key !== "__row_actions").map((column) => (
           <label
             key={column.key}
             className={[
@@ -2278,7 +2789,9 @@ export function AdvancedDataTable<T>({
 
   const handleViewportScroll = useCallback((event: ReactUIEvent<HTMLDivElement>) => {
     syncHeaderToScrollLeft(event.currentTarget.scrollLeft);
-  }, [syncHeaderToScrollLeft]);
+    // 表格一滚动，锚定在表头上的提示就不再对准，收掉。
+    clearHeaderDragHint();
+  }, [clearHeaderDragHint, syncHeaderToScrollLeft]);
   const summaryAtFooter = summaryRow && summaryRowPlacement === "footer" ? summaryRow : null;
 
   return (
@@ -2406,8 +2919,25 @@ export function AdvancedDataTable<T>({
                     ) : null}
                   </th>
                 ) : null}
-                {visibleColumns.map((column) => (
-                  <th key={column.key} data-advanced-table-header-cell={column.key} className={["relative select-none border-b border-slate-200 text-center text-xs font-semibold text-slate-600", headerPaddingClass, column.headerClassName ?? ""].join(" ")}>
+                {visibleColumns.map((column) => {
+                  const isDraggedColumn = draggedColumnKey === column.key;
+                  const isLongPressPending = longPressColumnKey === column.key;
+                  const columnDrop = columnDropTarget?.key === column.key ? columnDropTarget : null;
+                  return (
+                  <th
+                    key={column.key}
+                    data-advanced-table-header-cell={column.key}
+                    // 按住表头 0.6s 拾起该列，左右拖动调整位置（「行操作」列钉在最右，不参与）。
+                    onPointerDown={(event) => handleColumnPointerDown(event, column.key)}
+                    onMouseEnter={(event) => {
+                      if (column.key !== "__row_actions") scheduleHeaderDragHint(event.currentTarget);
+                    }}
+                    onMouseLeave={clearHeaderDragHint}
+                    className={["relative select-none border-b border-slate-200 text-center text-xs font-semibold text-slate-600", headerPaddingClass, column.headerClassName ?? "", isDraggedColumn ? "opacity-40" : "", isLongPressPending ? "bg-blue-50/70" : ""].join(" ")}
+                    style={columnDrop
+                      ? { boxShadow: columnDrop.position === "before" ? "inset 2px 0 0 #3b82f6" : "inset -2px 0 0 #3b82f6" }
+                      : undefined}
+                  >
                     <div className="flex min-w-0 items-center justify-center gap-1">
                       {(column.sortValue || column.filterText) && sortable ? (
                         <span
@@ -2524,7 +3054,8 @@ export function AdvancedDataTable<T>({
                       onMouseDown={(event) => beginResize(event, column)}
                     />
                   </th>
-                ))}
+                  );
+                })}
               </tr>
             </thead>
           </table>
@@ -2782,6 +3313,16 @@ export function AdvancedDataTable<T>({
               </tbody>
             </table>
           </div>
+        </div>
+      ) : null}
+      {headerDragHint ? (
+        <div
+          data-advanced-table-column-drag-hint
+          className="pointer-events-none fixed z-50 flex items-center gap-1 whitespace-nowrap rounded-md bg-slate-800 px-2 py-1 text-[11px] font-medium text-white shadow-soft"
+          style={{ top: headerDragHint.top, left: headerDragHint.left, transform: "translateX(-50%)" }}
+        >
+          <GripVertical className="h-3 w-3" />
+          {t("advancedTable.columnDragHint")}
         </div>
       ) : null}
       {resizeGuide ? (

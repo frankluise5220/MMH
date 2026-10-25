@@ -81,6 +81,36 @@ function migrateLegacyBasicDetailLayout(storageKey: string) {
   }
 }
 
+/**
+ * 「全部收支记录」的「已实现收益」列默认可见。
+ *
+ * 列定义里 `defaultHidden: false` 只对没有存档的浏览器生效；老存档（该列上线初期
+ * 被隐藏过 / 用户手动隐藏过）会一直压着它。这里按 scope 一次性把指定列从隐藏存档
+ * 里剔除，之后用户再隐藏照常生效（marker 保证只跑一次）。
+ */
+function promoteDefaultVisibleColumns(storageKey: string, keys: readonly string[]) {
+  if (typeof window === "undefined") return;
+  if (!storageKey.startsWith(`${LEGACY_BASIC_DETAIL_STORAGE_KEY}:`)) return;
+  const hiddenKey = `${storageKey}:hidden:v2`;
+  const marker = `${storageKey}:default-visible-promoted`;
+  try {
+    if (window.localStorage.getItem(marker) === "1") return;
+    const raw = window.localStorage.getItem(hiddenKey);
+    if (raw != null) {
+      const hidden = JSON.parse(raw);
+      if (Array.isArray(hidden)) {
+        const next = hidden.filter((key) => !keys.includes(key));
+        if (next.length !== hidden.length) {
+          window.localStorage.setItem(hiddenKey, JSON.stringify(next));
+        }
+      }
+    }
+    window.localStorage.setItem(marker, "1");
+  } catch {
+    // localStorage may be unavailable; table still works with defaults.
+  }
+}
+
 /** 审计列「创建来源」：TxRecord.entryOrigin 的取值 → i18n key。 */
 const ENTRY_ORIGIN_LABEL_KEYS: Record<string, string> = {
   [ENTRY_ORIGIN_MANUAL]: "detail.entryOrigin.manual",
@@ -695,7 +725,11 @@ export function DetailViewClient({
   // useLayoutEffect runs before the child useEffect.
   useLayoutEffect(() => {
     migrateLegacyBasicDetailLayout(storageKey);
-  }, [storageKey]);
+    // 「已实现收益」在全部收支记录里默认显示（老存档可能压着它）。
+    if (isAllCashDetailScope(accountId)) {
+      promoteDefaultVisibleColumns(storageKey, ["profit"]);
+    }
+  }, [storageKey, accountId]);
   const [dateDisplayFormat, setDateDisplayFormat] = useState<DateDisplayFormat>("yyyy-mm-dd");
   const [detailDateBackground, setDetailDateBackground] = useState(false);
 
@@ -1355,9 +1389,10 @@ export function DetailViewClient({
       );
       const seq = ++detailRefreshSeqRef.current;
       if (detailAll) {
-        // 「全部」视图必须走分块：一次要回几万行 / 几十 MB，浏览器会中途重置连接
+        // 「全部」视图必须整份拉取：一次要回几万行 / 几十 MB，浏览器会中途重置连接
         // 或静默超时，而这里的 catch 是空的 —— 表现就是刷新后列表毫无变化。
-        // 分块结果一次性替换快照，不做逐块显示，免得列表先缩水再长回来。
+        // 先取一页小的立刻渲染（虚拟滚动条马上出现），再取全量整份替换；传输被重置
+        // 时自动退回分块。结果一次性替换快照，不做逐块显示，免得列表先缩水再长回来。
         void loadAllDetailEntries<DetailEntry>({
           accountId,
           errorMessage: t("basicDetail.loadFailed"),
