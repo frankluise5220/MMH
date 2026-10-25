@@ -225,7 +225,15 @@ export async function GET(req: NextRequest) {
           select: { id: true, name: true, fnosUid: true, householdId: true },
         })
       : Promise.resolve([]),
-  ]), STATUS_LOOKUP_TIMEOUT_MS);
+  ]).catch((error) => {
+    // Never swallow this silently: on a Windows desktop database that predates a
+    // column the login accounts query selects (User.registrationEmail, 2026-10-13),
+    // the whole lookup throws "no such column" and the login page degrades to an
+    // empty account list — it shows "当前账簿没有本地账号" and offers no way to
+    // create a ledger. Logging keeps that failure diagnosable in main.log.
+    logger.warn("password-status lookup failed, falling back to degraded login state", "auth/password-status", error);
+    return null;
+  }), STATUS_LOOKUP_TIMEOUT_MS);
 
   if (!status) {
     return degradedStatusResponse();
