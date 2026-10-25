@@ -2,6 +2,7 @@ import { AccountKind, FundCashFlowKind, FundSubtype, PropertyTransactionAction, 
 
 import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import { isTradingClosedDate, toNumber, businessTodayUtcStart } from "@/lib/date-utils";
+import { resolveHouseholdTimeZone } from "@/lib/server/business-time-zone";
 import { prisma } from "@/lib/db/prisma";
 import {
   calculateFundPositionsFromEntries,
@@ -398,18 +399,28 @@ function baselineDateFor(period: InvestmentProfitPeriod, year: number, month: nu
   return utcDay(firstYear, 0, 0);
 }
 
+/** 交易在基金份额登记上的日期（确认日优先，缺失才退回到账日）；仅作兜底，不是收益起算日。 */
 function calcDateOf(entry: FundPositionEntryLike) {
-  const subtype = entry.subtype ?? (entry.amount < 0 ? "buy" : "redeem");
-  return subtype === "buy" || subtype === "dividend_reinvest"
-    ? (entry.confirmDate ?? entry.arrivalDate ?? "")
-    : (entry.confirmDate ?? entry.arrivalDate ?? "");
+  return entry.confirmDate ?? entry.arrivalDate ?? "";
 }
 
 function profitStartDateOf(entry: FundPositionEntryLike) {
   const subtype = entry.subtype ?? (entry.amount < 0 ? "buy" : "redeem");
-  return subtype === "buy" || subtype === "dividend_reinvest"
-    ? (entry.unitsProfitStartDate ?? calcDateOf(entry))
-    : calcDateOf(entry);
+  // 一笔交易对持仓的影响，都从「确认日的下一个交易日」起生效：
+  // - 买入：按确认日净值成交，当天净值涨跌不属于新份额，份额从次日才计入收益；
+  // - 赎回：同样按确认日净值成交，这些份额在确认日当天仍然持有、吃到了当天
+  //   的净值涨跌，必须从次日才退出持仓；若在确认日当天就减掉，“卖出当天”
+  //   这段涨幅会凭空丢失（例如 10-08 确认的赎回，当天 +1.92% 的收益不见）。
+  // 注意：这里给出的只是「最早可以开始算收益」的日期，不是「一定这一天算」。
+  // 份额的实际统计要以该基金真实有净值的那一天为准 —— 有净值才能算出份额，
+  // 但「有净值的日子」和「份额开始统计的日子」是两件事；到账日更不能用来判断
+  // （008186 的到账日就等于确认日 10-15，017641 的到账日又晚到确认日后 4 天）。
+  // 日收益按 netValue 行日期比较（见 accountDailyNavDeltaProfit 中的 currentRow），
+  // 起算日若恰好没有净值行，会自动顺延到该基金的下一条净值行。
+  if (subtype === "buy" || subtype === "dividend_reinvest" || subtype === "redeem" || subtype === "switch_out") {
+    return entry.unitsProfitStartDate ?? calcDateOf(entry);
+  }
+  return calcDateOf(entry);
 }
 
 function toFundEntry(row: FundTxRow, refundAmountByBuyId: Map<string, number>): FundPositionEntryLike {
@@ -541,7 +552,9 @@ function shouldRequireExactNav(
   hasLaterNav: boolean,
 ) {
   if (dateKey >= todayKey) return false;
-  if (isTradingClosedDate(dateKey, tradingCalendar ?? "cn_fund")) return false;
+  // No fund publishes a NAV on a CN fund holiday (weekends included), so a
+  // QDII target date that lands on one is not a genuine mid-history gap.
+  if (isTradingClosedDate(dateKey, tradingCalendar ?? "cn_fund") || isTradingClosedDate(dateKey, "cn_fund")) return false;
   // Offshore NAVs publish after the relevant market trading day. Only flag a
   // missing date once the fund has published NAVs dated after it (a genuine
   // mid-history gap); trailing dates may simply not be published yet.
@@ -554,7 +567,7 @@ function addMissingNav(
   item: InvestmentProfitMissingNav,
   tradingCalendar?: string | null,
 ) {
-  if (isTradingClosedDate(item.date, tradingCalendar ?? "cn_fund")) return;
+  if (isTradingClosedDate(item.date, tradingCalendar ?? "cn_fund") || isTradingClosedDate(item.date, "cn_fund")) return;
   const key = `${item.fundCode}|${item.date}`;
   if (!missingNavByKey.has(key)) missingNavByKey.set(key, item);
 }
@@ -651,11 +664,24 @@ function accountDailyNavDeltaProfit(params: {
     const meta = params.fundMetaByCode.get(fundCode) ?? { isMoney: false, isQdii: false, tradingCalendar: null };
     const navRows = params.navByCode.get(fundCode) ?? [];
     const calendar = fundValuationCalendar(params.account, meta);
-    if (isTradingClosedDate(reportDateKey, calendar)) continue;
+    // FundNavCache rows are indexed by CN publication date: the whole table has
+    // zero rows on weekends or CN holidays (QDII included — an overseas move
+    // lands in the next CN publication day's row), and every CN trading day has
+    // at most one row per fund even when that fund's own market was closed.
+    // Both the "does this day get a profit row" gate and the target-date rewind
+    // therefore have to follow the CN calendar:
+    //  - gating on the fund's own calendar re-books the previous trading day's
+    //    delta on every overseas holiday (e.g. the Sep-30 delta repeated on each
+    //    National Day holiday);
+    //  - rewinding the target date on the fund's own calendar silently drops a
+    //    NAV that was actually published, because the market happened to be shut
+    //    that day: 2026-10-12 was a JP holiday, yet 摩根日本精选股票(QDII)C
+    //    published a NAV on it and its -21.39 delta vanished from the 10-12 row.
+    if (isTradingClosedDate(reportDateKey, "cn_fund")) continue;
     const dateKey = fundNavTargetDateForOffset({
       referenceDate: params.date,
       navDateOffset: params.navDateOffsetByCode?.get(fundCode) ?? 0,
-      tradingCalendar: calendar,
+      tradingCalendar: "cn_fund",
     });
     const currentIndex = navRowIndexOnOrBefore(navRows, dateKey);
     if (currentIndex < 1) continue;
@@ -671,6 +697,10 @@ function accountDailyNavDeltaProfit(params: {
         accountName: params.account.name,
       }, calendar);
     }
+    // 份额按「这一天真正用到的净值行日期」比较，而不是报表日期：份额起算日是
+    // 确认日后的下一个交易日，那天若该基金没有净值（QDII 缺数据、标的市场休市），
+    // 本行就不会把它算进来，等它出现下一条净值行时才统计 —— 有净值能算出份额，
+    // 不代表那天就已经统计份额。
     const entriesToPositionDate = params.entries.filter((entry) => {
       const calcDate = profitStartDateOf(entry);
       return entry.fundCode === fundCode && !!calcDate && calcDate <= currentRow.date;
@@ -1237,7 +1267,13 @@ async function applyFundValuationProfit(params: {
     const account = snapshotAccountById.get(accountId);
     const entry = toFundEntry(row, refundAmountByBuyId);
     if (!entry.fundCode) continue;
-    if (entry.confirmDate && (entry.subtype === FundSubtype.buy || entry.subtype === FundSubtype.dividend_reinvest)) {
+    if (
+      entry.confirmDate &&
+      (entry.subtype === FundSubtype.buy ||
+        entry.subtype === FundSubtype.dividend_reinvest ||
+        entry.subtype === FundSubtype.redeem ||
+        entry.subtype === FundSubtype.switch_out)
+    ) {
       entry.unitsProfitStartDate = fundUnitsProfitStartDate(entry.confirmDate, account?.tradingCalendar);
     }
     fundCodes.add(entry.fundCode);
@@ -1433,7 +1469,7 @@ export async function loadInvestmentProfitReport(
   },
   language: DisplayLanguage = "zh-CN",
 ) {
-  const currentYear = businessTodayUtcStart().getUTCFullYear();
+  const currentYear = businessTodayUtcStart(await resolveHouseholdTimeZone(ctx.hidFilter.householdId)).getUTCFullYear();
   const accountIds = Array.from(new Set(params.accountIds?.filter(Boolean) ?? []));
   const tagIds = Array.from(new Set(params.tagIds?.filter(Boolean) ?? []));
 
