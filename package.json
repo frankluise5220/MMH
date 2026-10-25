@@ -1,16 +1,20 @@
 {
   "name": "mmh",
-  "version": "0.1.77",
+  "version": "0.1.78",
   "private": true,
-  "mmhFnosManifestChangelog": "报销单统一为文档表单（新建/编辑/审核共用抬头、明细与合计布局，抬头固定四格：归属批次、单据类型、单据编号、到账日期，差旅单另有出差起止与事由）；账户名按「账户显示格式」全站统一渲染，改设置即时生效；明细「全部」视图改为整份加载，传输中断自动退回分批拉取；业务日期统一按 Asia/Shanghai 计算，修复容器 UTC 导致的凌晨日期差一天；记账弹窗窗口几何收敛，切换页签表单不再跳动；修复报销单抬头日期被日历图标遮挡、合计行分栏竖线断头与明细网格错位；修复部分表格账户名退化为裸账户名、悬停信息缺失；修复明细「全部」视图请求失败后静默无响应；修复飞牛（fnOS）网关下记账保存后跳转 404（/app/mmh 前缀被二次拼接）。完整说明见 GitHub Release v0.1.77",
-  "mmhReleaseNotes": "## 本次更新\n\n### 从 0.1.76 升级到 0.1.77\n\n### 功能改进\n\n- 报销模块继续优化：单统一成一张文档表单：新建、编辑、审核三个入口共用同一套抬头、明细与合计布局，切换单据类型时格子不再错位；抬头固定为归属批次、单据类型、单据编号、到账日期四格，差旅单另有出差起止与事由。\n- 账户名显示统一按设置里的「账户显示格式」渲染：所有人、账户类型、非本位币这些附加信息在一处配置、全站生效，改完设置立即刷新，不用重开页面。\n- 明细页「全部」视图改为整份加载：一次请求取全量；传输中断时自动退回分批拉取并边到边显示，不再出现点了没反应。\n- 业务日期统一按业务时区计算：容器固定 Asia/Shanghai，统计里的今天 / 本月 / 本年不再因为容器是 UTC 而差一天。\n- 记账弹窗窗口几何收敛：首次打开锚定顶边，之后切换页签只向下伸缩底边，页签文字垂直居中，表单不再上下跳动。\n\n### Bug 修复\n\n- 修复报销单抬头日期被日历图标压住：出差起止两格尤其明显，现在日期完整可见。\n- 修复报销单合计行下方分栏竖线断头，以及明细网格与合计行不对齐。\n- 修复部分表格里账户名退化成裸账户名或手拼机构名、悬停信息缺失。\n- 修复明细「全部」视图请求失败后静默无响应。\n- 修复飞牛（fnOS）网关下记账保存后跳转 404：地址栏里的 /app/mmh 前缀被页面再次拼接成 /app/mmh/app/mmh，信用卡账单明细与投资收益筛选的页面内跳转已改为先剥离前缀再交给路由。\n\n### 打包与部署\n\n- 本版没有数据库结构变更，Docker、飞牛、群晖升级都不需要额外迁移步骤，仍建议升级前先备份。\n- 本版重新构建并发布飞牛的 x86_64 / arm64 FPK、群晖的 x86_64 / arm64 SPK 与 NAS 源码 zip；Windows 与 Android 本版没有改动，不发安装器与 APK。\n- Docker 镜像把容器时区固定为 Asia/Shanghai，配合代码侧的业务日期口径，避免北京时间凌晨的「今天」晚一天。\n\n## 手机端使用建议\n\n- 手机用户可直接使用浏览器访问 MMH 服务地址。\n- 通过 fnOS 统一网关使用免密登录时，请从飞牛应用入口的 /app/mmh 地址进入；直接访问设备端口不会携带 X-Trim-* 身份头。\n- 手机端首次安装注册遵循免邀请码规则；后续新建账簿才填写邀请码。\n- 记账弹窗在手机上使用贴底固定页脚，连续记账与切换页签时表单高度保持稳定。\n\n## 安装 / 更新说明\n\n- Docker / GHCR：使用 0.1.77 或 latest 镜像，升级前请先备份；本版没有数据库结构变更，容器启动直接覆盖升级即可。正式公开后 GHCR 的 latest 与 0.1.77 标签会同步到本版。\n- 飞牛 fnOS：以下三种安装方式任选其一，均可安装或覆盖升级 MMH。\n  - 官方应用中心：目前 0.1.58 已经在官方应用中心上架，可以直接查询安装；最新版本仍需手动从 GitHub Release 下载对应架构的 x86_64 / arm64 FPK 后覆盖升级。\n  - FN 软仓安装：先下载 [FN 软仓客户端 2.9.2](https://gitee.com/hhxs2025/fn-appstores-client/releases/download/2.9.2/fn-appstores-client-2.9.2-all.fpk)，即可查询、安装 / 覆盖升级 MMH。FN 软仓更新做不到实时，可在软仓「源管理」里添加 [MMH 专用源](http://fnapp.floatingice.win:5660/)，发布后 1 小时内即可查看更新。\n  - Fndepot 仓库安装：先下载 [Fndepot 0.4.6](https://github.com/EWEDLCM/FnDepot/releases/download/v0.4.6/fndepot.v0.4.6.fpk)，即可查询安装 / 覆盖升级 MMH。\n- 群晖 DSM：已在套件中心建立自定义套件源 https://synology.floatingice.win ，可在「套件中心 → 设置 → 套件来源」添加后查询安装 / 覆盖升级 MMH；也可从本次 GitHub Release 下载对应架构的 x86_64 / arm64 SPK 手动安装。升级前先备份套件数据。\n- Windows：本版没有 Windows 侧改动，不发布安装器；Windows 用户保持 0.1.75 即可。\n- Android：本版没有 Android 侧改动，不单独发布 APK，Android 用户保持 0.1.74 即可。\n- NAS zip：随本版源码自动打包为 mmh-nas-v0.1.77.zip，可按 [NAS 安装手册](https://github.com/frankluise5220/MMH/blob/main/deploy/nas-install-manual.md) 配置并启动；本版未针对 NAS 做额外验证。",
+  "mmhFnosManifestChangelog": "显示偏好（语言、日期格式、时区、涨跌颜色、行高、侧栏分组、信用卡标签）改为存入账簿，换设备不再丢失；投资收益报表日期选择器重排，年份下拉覆盖可翻到的年份；投资收益计算修正申购费重复计入、QDII 休市日丢收益、缺失净值日重复计提；明细与报表加入关键字过滤与默认显示已实现收益；修复 Windows 安装器未提权时无法写入安装目录、旧数据库上登录页整块空白。完整说明见 GitHub Release v0.1.78",
+  "mmhReleaseNotes": "## 本次更新\n\n### 从 0.1.77 升级到 0.1.78\n\n### 功能改进\n\n- 显示偏好改存账簿里：显示语言、日期格式、时区、涨跌颜色、表格行高、侧栏分组方式、信用卡标签格式、账单隐藏零与已结清等设置，从只保存在浏览器改为写入账簿；换设备、换浏览器、清缓存后都还在，同一个账簿下看到的一致。时区同时成为服务端判断「今天 / 本月 / 本年」的依据。\n- 投资收益报表的日期切换更直接：日、月视图去掉与年月下拉重复的文字日期，前后箭头与下拉并排；年份下拉覆盖翻页能翻到的年份，12 月翻到次年 1 月不再跳回第一年。\n- 投资收益统计卡统一布局：月度、年度视图的五张卡片都按四列排布。\n- 投资收益计算更接近实际到手：区间内新买入的份额按「收盘市值 − 实付金额」计收益，申购费不再被当成收益多算一遍；基金日收益按内地披露日判断，QDII 休市日不再丢当天收益；每个净值行只参与一次计算，缺失净值日期不再重复计提。\n- 明细页：「全部」视图两段式加载，先整份拉取、超时再退回分批；默认显示已实现收益；表头长按可拖动调整列顺序。\n- 报销：关联记录支持关键字过滤；候选范围改为转入往来款账户的全部款项，直接抵扣与先还后转都能选到。\n- 金额字段统一用计算框：各业务窗口的金额输入都可以直接写算式。\n- 基金视图移除「资金明细」页签：该页签与基金明细重复，数据没有删除，仍在基金明细里查看。\n\n### Bug 修复\n\n- 修复 Windows 安装器装到 C:\\Program Files 却未申请管理员权限，最后报「无法写入 MMH.exe」：现在只在首次安装时决定默认目录，已有安装记录不再覆盖；D 盘检测改用通配符，D:\\MMH 分支真正生效。\n- 修复登录页在旧数据库上查不到密码状态时整块空白、也不提示建账簿：查询失败会写日志并降级显示，仍可注册本地账号。\n- 修复投资收益报表年份下拉在翻到次年时没有匹配项、显示成第一年的问题。\n- Windows 桌面端不再附带第二份 Node 运行时，服务直接用 Electron 自带的二进制启动；better-sqlite3 升到 13（N-API），两种运行时共用一份原生模块。\n- Windows 自动更新改从下载站获取安装包与差分块，安装包文件名统一为 mmh-win-setup-v<版本>-x64.exe。\n\n### 打包与部署\n\n- 本版有数据库结构变更：新增账簿级显示设置表 HouseholdPreference。Docker、飞牛、群晖升级时会自动建表；升级前仍建议先备份。\n- 本版重新构建并发布飞牛的 x86_64 / arm64 FPK、群晖的 x86_64 / arm64 SPK、Windows 安装器与 NAS 源码 zip。\n- Android 本版没有改动，不发 APK，保持 0.1.74 即可。\n\n## 手机端使用建议\n\n- 手机用户可直接使用浏览器访问 MMH 服务地址。\n- 通过 fnOS 统一网关使用免密登录时，请从飞牛应用入口的 /app/mmh 地址进入；直接访问设备端口不会携带 X-Trim-* 身份头。\n- 手机端首次安装注册遵循免邀请码规则；后续新建账簿才填写邀请码。\n- 记账弹窗在手机上使用贴底固定页脚，连续记账与切换页签时表单高度保持稳定。\n\n## 安装 / 更新说明\n\n- Docker / GHCR：使用 0.1.78 或 latest 镜像，升级前请先备份；本版会自动建表，容器启动直接覆盖升级即可。正式公开后 GHCR 的 latest 与 0.1.78 标签会同步到本版。\n- 飞牛 fnOS：以下三种安装方式任选其一，均可安装或覆盖升级 MMH。\n  - 官方应用中心：目前 0.1.58 已经在官方应用中心上架，可以直接查询安装；最新版本仍需手动从 GitHub Release 下载对应架构的 x86_64 / arm64 FPK 后覆盖升级。\n  - FN 软仓安装：先下载 [FN 软仓客户端 2.9.2](https://gitee.com/hhxs2025/fn-appstores-client/releases/download/2.9.2/fn-appstores-client-2.9.2-all.fpk)，即可查询、安装 / 覆盖升级 MMH。FN 软仓更新做不到实时，可在软仓「源管理」里添加 [MMH 专用源](http://fnapp.floatingice.win:5660/)，发布后 1 小时内即可查看更新。\n  - Fndepot 仓库安装：先下载 [Fndepot 0.4.6](https://github.com/EWEDLCM/FnDepot/releases/download/v0.4.6/fndepot.v0.4.6.fpk)，即可查询安装 / 覆盖升级 MMH。\n- 群晖 DSM：已在套件中心建立自定义套件源 https://synology.floatingice.win ，可在「套件中心 → 设置 → 套件来源」添加后查询安装 / 覆盖升级 MMH；也可从本次 GitHub Release 下载对应架构的 x86_64 / arm64 SPK 手动安装。升级前先备份套件数据。\n- Windows：本版更新了桌面端与安装器，请从本次 GitHub Release 下载 mmh-win-setup-v0.1.78-x64.exe 覆盖安装；装过 0.1.77 的机器可以直接升级，安装目录保持不变。\n- Android：本版没有 Android 侧改动，不单独发布 APK，Android 用户保持 0.1.74 即可。\n- NAS zip：随本版源码自动打包为 mmh-nas-v0.1.78.zip，可按 [NAS 安装手册](https://github.com/frankluise5220/MMH/blob/main/deploy/nas-install-manual.md) 配置并启动；本版未针对 NAS 做额外验证。",
   "mmhReleaseNotesI18n": {
     "zh-CN": "### 功能改进\n- 报销模块继续优化：单统一成一张文档表单：新建、编辑、审核三个入口共用同一套抬头、明细与合计布局，切换单据类型时格子不再错位；抬头固定为归属批次、单据类型、单据编号、到账日期四格，差旅单另有出差起止与事由。\n- 账户名显示统一按设置里的「账户显示格式」渲染：所有人、账户类型、非本位币这些附加信息在一处配置、全站生效，改完设置立即刷新，不用重开页面。\n- 明细页「全部」视图改为整份加载：一次请求取全量；传输中断时自动退回分批拉取并边到边显示，不再出现点了没反应。\n- 业务日期统一按业务时区计算：容器固定 Asia/Shanghai，统计里的今天 / 本月 / 本年不再因为容器是 UTC 而差一天。\n- 记账弹窗窗口几何收敛：首次打开锚定顶边，之后切换页签只向下伸缩底边，页签文字垂直居中，表单不再上下跳动。\n\n### Bug 修复\n- 修复报销单抬头日期被日历图标压住：出差起止两格尤其明显，现在日期完整可见。\n- 修复报销单合计行下方分栏竖线断头，以及明细网格与合计行不对齐。\n- 修复部分表格里账户名退化成裸账户名或手拼机构名、悬停信息缺失。\n- 修复明细「全部」视图请求失败后静默无响应。\n- 修复飞牛（fnOS）网关下记账保存后跳转 404：地址栏里的 /app/mmh 前缀被页面再次拼接成 /app/mmh/app/mmh，信用卡账单明细与投资收益筛选的页面内跳转已改为先剥离前缀再交给路由。"
   },
   "scripts": {
     "postinstall": "prisma generate",
-    "predev": "prisma migrate deploy && prisma generate",
+    "predev": "node scripts/db-env.cjs predev",
     "dev": "set \"NODE_OPTIONS=--max-old-space-size=8192\" && next dev -H 0.0.0.0 -p 7777 --webpack",
+    "dev:prod": "node scripts/db-env.cjs start prod",
+    "dev:stop": "node scripts/db-env.cjs stop",
+    "db:which": "node scripts/db-env.cjs which",
+    "db:migrate:dev": "node scripts/db-env.cjs migrate dev",
     "start:clean": "powershell -ExecutionPolicy Bypass -File start.ps1",
     "build": "next build --webpack",
     "start": "node scripts/start-standalone.cjs",
@@ -52,8 +56,9 @@
     "@tanstack/react-virtual": "^3.14.6",
     "ai": "^6.0.188",
     "bcryptjs": "^3.0.3",
-    "better-sqlite3": "^12.10.0",
+    "better-sqlite3": "^13.0.3",
     "dotenv": "^17.4.2",
+    "electron-updater": "^6.8.9",
     "imapflow": "^1.0.0",
     "lucide-react": "^1.16.0",
     "mailparser": "^3.7.4",
@@ -68,8 +73,7 @@
     "recharts": "^3.8.1",
     "xlsx": "^0.18.5",
     "xlsx-js-style": "^1.2.0",
-    "zod": "^4.4.3",
-    "electron-updater": "^6.8.9"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@playwright/test": "^1.62.1",
@@ -86,6 +90,9 @@
     "typescript": "^5",
     "electron": "^44.2.0",
     "electron-builder": "^26.15.3"
+  },
+  "overrides": {
+    "better-sqlite3": "$better-sqlite3"
   },
   "main": "electron/main.cjs"
 }
