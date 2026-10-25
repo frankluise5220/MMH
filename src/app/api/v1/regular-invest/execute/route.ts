@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
+import { getHouseholdTimeZone } from "@/lib/server/household-preferences";
 import { FundCashFlowKind, FundSubtype, Prisma, TransactionType, IntervalUnit, RegularInvestStatus } from "@prisma/client";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
@@ -134,7 +135,7 @@ export async function POST(req: NextRequest) {
     const runDateBase = overrideDate
       ? startOfDayUtc(new Date(overrideDate))
       : task.type === "fund_regular_invest"
-        ? businessTodayUtcStart()
+        ? businessTodayUtcStart(await getHouseholdTimeZone(householdId))
         : startOfDayUtc(new Date(plan.nextRunDate));
     const runDate = task.type === "fund_regular_invest" ? skipWeekend(runDateBase) : runDateBase;
     const amountNum = overrideAmount ? parseFloat(overrideAmount) : parseFloat(String(plan.amount));
@@ -149,7 +150,7 @@ export async function POST(req: NextRequest) {
         return NextResponse.json({ ok: false, code: "CASH_ACCOUNT_MISSING", error: "计划缺少资金账户" }, { status: 400 });
       }
 
-      const today = businessDayStartUtc(now);
+      const today = businessDayStartUtc(now, await getHouseholdTimeZone(householdId));
       const effectiveEndDate = plan.endDate && startOfDayUtc(plan.endDate) < today ? startOfDayUtc(plan.endDate) : today;
       const sourceFilter = getScheduledTaskSourceFilter(task.type as NonFundTaskType);
       const existingTxRecords = await prisma.txRecord.findMany({

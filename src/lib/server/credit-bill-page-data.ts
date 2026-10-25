@@ -3,6 +3,7 @@ import type { DetailEntry } from "@/components/DetailViewClient";
 import type { CreditBillSummaryRow } from "@/components/CreditBillSummaryTable";
 import { prisma } from "@/lib/db/prisma";
 import { addDaysUtc, businessTodayUtcStart, toNumber, formatDateUtc } from "@/lib/date-utils";
+import { getHouseholdTimeZone } from "@/lib/server/household-preferences";
 import {
   CREDIT_CARD_MANUAL_CYCLE_LOCK_SOURCE,
   CREDIT_CARD_STATEMENT_IMPORT_CYCLE_LOCK_SOURCE,
@@ -189,7 +190,7 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
 
   // 账期判断用的「今天」必须是业务时区的今天：`new Date()` 取 UTC 日期会在
   // 北京时间 00:00–08:00 把账期算成前一天（当期账单/还款日提示全错）。
-  const creditBillNow = businessTodayUtcStart();
+  const creditBillNow = businessTodayUtcStart(await getHouseholdTimeZone(householdId));
   const todayUtcStart = creditBillNow;
   const billingDayTxPeriod = normalizeBillingDayTxPeriod(selectedAccount?.billingDayTxPeriod);
   const shouldUseCreditBillingRules = isBillAccount && selectedAccount?.kind === AccountKind.bank_credit && billAccountIds.length > 0;

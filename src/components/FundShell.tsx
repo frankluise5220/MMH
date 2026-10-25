@@ -2402,9 +2402,8 @@ export function FundShell(props: Props) {
 
   // Auto-fit: the table reports how many rows fit the viewport; when auto mode
   // is on that count becomes the page size (the "自适应" option restores it).
-  // Callback identity changes with the detail scope / autoFit / show-all so the
-  // table re-measures once per view reopen, then stays frozen (same contract
-  // as BasicDetailPanel).
+  // 触发时机由表格一侧决定：视图重开 / 重新选自适应（这个回调的 identity 变化）、
+  // 行高偏好变化、视口高度变化都会重算；翻页与数据刷新不触发（同 BasicDetailPanel）。
   const lastFitRowCountRef = useRef<number | null>(null);
   const handleRowsFitChange = useCallback((rowCount: number) => {
     lastFitRowCountRef.current = rowCount;

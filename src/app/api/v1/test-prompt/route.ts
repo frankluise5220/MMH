@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
+import { getRequestTimeZone } from "@/lib/server/business-time-zone";
 import { getOrCreateMasterKey, decrypt, isEncrypted } from "@/lib/auth/encrypt";
 import { normalizeAiApiMode } from "@/lib/ai/config";
 import { buildResponsesRequestBody, extractResponsesText } from "@/lib/ai/responses";
@@ -91,7 +92,7 @@ export async function POST() {
 
     const { baseUrl, apiKey, modelName, isOllama, apiMode } = config;
     const cleanUrl = baseUrl.replace(/\/$/, "");
-    const today = todayDateBusinessYmd();
+    const today = todayDateBusinessYmd(await getRequestTimeZone());
 
     // Clear old results
     await prisma.commandTestResult.deleteMany({});

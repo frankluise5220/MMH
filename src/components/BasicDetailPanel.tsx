@@ -12,7 +12,8 @@ import { DetailViewClient, type DetailEntry } from "@/components/DetailViewClien
 import { removeEntriesAndUpdateRunningBalances } from "@/lib/detail-running-balance";
 import { ViewExcelImportMenuButton } from "@/components/ViewExcelImportMenuButton";
 import { FINANCE_DATA_CHANGED_EVENT, type FinanceDataChangedDetail } from "@/lib/client/refresh";
-import { formatDateUtc } from "@/lib/date-utils";
+import { formatDateUtc, todayDateBusinessYmd } from "@/lib/date-utils";
+import { getTimeZonePreference } from "@/lib/client/appPreferences";
 import { getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
 import {
   DETAIL_PAGE_SIZE_OPTIONS,
@@ -615,7 +616,13 @@ export function BasicDetailPanel({
       // 重算全程只动当前已渲染页的行，不发请求。只有本地确实推不出（被删的校准
       // 锚点行之前没有任何已加载行）才按当前页重取一次；且绝不走 detailAll 的
       // DETAIL_ALL_PAGE_SIZE(=50000) 全量拉取——那正是要避免的卡壳路径。
-      const result = removeEntriesAndUpdateRunningBalances(localEntries, deletedSet, accountId, accountKind);
+      const result = removeEntriesAndUpdateRunningBalances(
+        localEntries,
+        deletedSet,
+        accountId,
+        accountKind,
+        todayDateBusinessYmd(getTimeZonePreference()),
+      );
       const removedCount = localEntries.length - result.entries.length;
       if (removedCount > 0) {
         setLocalEntries(result.entries);
@@ -814,9 +821,9 @@ export function BasicDetailPanel({
 
   // Auto-fit: the table reports how many rows fit the viewport; when auto mode
   // is on that count becomes the page size (the "自适应" option restores it).
-  // 触发时机用这个回调的 identity 表达：accountScopeKey 变化（打开/切账户）或
-  // autoFit/detailAll 变化（重新选自适应）时会换一个新函数 → 表格据此重算一次；
-  // 之后本视图内冻结 —— 翻页、筛选输入、视口 resize 都不再重算。
+  // 触发时机由表格一侧决定：视图重开 / 重新选自适应（靠这个回调的 identity 变化）、
+  // 行高偏好变化、视口高度变化（窗口 resize、拖动分栏）都会重算。翻页、筛选、
+  // 数据刷新不触发；表格内部「行数没变就不上报」挡住了重复更新，不会来回抖。
   const lastFitRowCountRef = useRef<number | null>(null);
   const handleRowsFitChange = useCallback((rowCount: number) => {
     lastFitRowCountRef.current = rowCount;

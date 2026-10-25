@@ -16,6 +16,10 @@ import {
   type DateDisplayFormat,
 } from "@/lib/date-utils";
 import {
+  PREFERENCE_COOKIE_MIRROR,
+  type AppPreferences,
+} from "@/lib/preferences";
+import {
   normalizeRowHeightMode,
   type RowHeightMode,
 } from "@/lib/row-height";
@@ -32,7 +36,6 @@ export type { RowHeightMode } from "@/lib/row-height";
 export const SESSION_DAYS_COOKIE = "mmh_session_days";
 export const FUND_UNITS_DECIMALS_COOKIE = "mmh_fund_units_decimals";
 export const AI_PANEL_ENABLED_COOKIE = "mmh_ai_panel_enabled";
-export const TIME_ZONE_MODE_COOKIE = "mmh_time_zone_mode";
 export const TIME_ZONE_COOKIE = "mmh_time_zone";
 export const CREDIT_CARD_LABEL_MODE_COOKIE = "mmh_credit_card_label_mode";
 export const CREDIT_CARD_LABEL_TEMPLATE_COOKIE = "mmh_credit_card_label_template";
@@ -64,7 +67,6 @@ export const MIN_SIDE_NAV_TOP_OFFSET_PX = 72;
 export const MAX_SIDE_NAV_TOP_OFFSET_PX = 520;
 
 export type SidebarGroupMode = "kind" | "institution";
-export type TimeZoneMode = "system" | "specified";
 export type CreditCardLabelMode = "short_last4" | "full_name";
 export type DisplayLanguage = "zh-CN" | "en-US" | "ja-JP";
 
@@ -72,7 +74,6 @@ export type AppPreferencesSnapshot = {
   sessionDays: number;
   fundUnitsDecimals: number;
   aiPanelEnabled: boolean;
-  timeZoneMode: TimeZoneMode;
   timeZone: string;
   creditCardLabelMode: CreditCardLabelMode;
   creditCardLabelTemplate: string;
@@ -157,19 +158,14 @@ export function setAiPanelEnabledPreference(enabled: boolean) {
   emitPreferencesChanged();
 }
 
-export function getTimeZoneModePreference(): TimeZoneMode {
-  return parseCookieValue(TIME_ZONE_MODE_COOKIE) === "specified" ? "specified" : "system";
-}
-
 export function getTimeZonePreference(): string {
   return parseCookieValue(TIME_ZONE_COOKIE) || DEFAULT_TIME_ZONE;
 }
 
-export function setTimeZonePreference(mode: TimeZoneMode, timeZone: string) {
+/** 只写具体时区；「跟随系统」在服务端没有意义，已彻底移除。 */
+export function setTimeZonePreference(timeZone: string) {
   if (typeof document === "undefined") return;
-  const normalizedMode = mode === "specified" ? "specified" : "system";
   const normalizedTimeZone = timeZone.trim() || DEFAULT_TIME_ZONE;
-  document.cookie = `${TIME_ZONE_MODE_COOKIE}=${encodeURIComponent(normalizedMode)}; path=/; max-age=${60 * 60 * 24 * 365}; samesite=lax`;
   document.cookie = `${TIME_ZONE_COOKIE}=${encodeURIComponent(normalizedTimeZone)}; path=/; max-age=${60 * 60 * 24 * 365}; samesite=lax`;
   emitPreferencesChanged();
 }
@@ -536,7 +532,6 @@ export function getAppPreferences(): AppPreferencesSnapshot {
     sessionDays: getSessionDaysPreference(),
     fundUnitsDecimals: getFundUnitsDecimalsPreference(),
     aiPanelEnabled: getAiPanelEnabledPreference(),
-    timeZoneMode: getTimeZoneModePreference(),
     timeZone: getTimeZonePreference(),
     creditCardLabelMode: getCreditCardLabelModePreference(),
     creditCardLabelTemplate: getCreditCardLabelTemplatePreference(),
@@ -559,6 +554,20 @@ export function getAppPreferences(): AppPreferencesSnapshot {
     accountLabelFields: getAccountLabelFieldsPreference(),
     accountDropdownRestrictType: getAccountDropdownRestrictTypePreference(),
   };
+}
+
+/**
+ * 用服务端（DB）返回的设置覆盖本地 cookie 镜像。
+ *
+ * cookie 不再是真源：换浏览器、清缓存、换设备之后，`PreferencesSync` 调一次
+ * `GET /api/v1/settings/app-preferences` 就能把设置恢复到这台设备上。
+ */
+export function applyRemotePreferences(preferences: AppPreferences) {
+  if (typeof document === "undefined") return;
+  for (const { key, pick } of PREFERENCE_COOKIE_MIRROR) {
+    setCookieValue(key, pick(preferences));
+  }
+  emitPreferencesChanged();
 }
 
 const DEFAULT_ACCOUNT_DROPDOWN_RESTRICT_TYPE = true;

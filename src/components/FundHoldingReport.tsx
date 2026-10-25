@@ -48,6 +48,7 @@ type HoldingRow = GroupedRow & {
   subLabel: string;
   title: string;
   accountLabel: string;
+  accountTitle: string;
   units: number;
   avgCost: number | null;
   nav: number | null;
@@ -66,6 +67,7 @@ type ClearedRow = GroupedRow & {
   subLabel: string;
   title: string;
   accountLabel: string;
+  accountTitle: string;
   firstBuyDate: string;
   clearedDate: string;
   totalInvested: number;
@@ -92,12 +94,27 @@ function compactDate(value: string | null) {
   return /^\d{4}-\d{2}-\d{2}$/.test(date) ? `${date.slice(5, 7)}.${date.slice(8, 10)}` : String(value ?? "");
 }
 
+type AccountNameRow = {
+  institutionName: string;
+  accountName: string;
+  /** 服务端按当前请求设置渲染好的标签；有它就不用再猜。 */
+  accountLabel?: string;
+  accountHoverTitle?: string;
+};
+
 // 分组标题也按「账户显示格式」渲染，手拼 `机构·名称` 会忽略用户设置。
-function accountText(row: { institutionName: string; accountName: string }) {
+function accountText(row: AccountNameRow) {
+  const provided = row.accountLabel?.trim();
+  if (provided) return provided;
   return renderAccountLabel({
     accountName: row.accountName,
     institution: row.institutionName ? { name: row.institutionName } : null,
   });
+}
+
+/** 列 hover：补出行内看不到的机构/卡号/非本位币。 */
+function accountHover(row: AccountNameRow) {
+  return row.accountHoverTitle?.trim() || accountText(row);
 }
 
 function sumBy<T>(items: T[], read: (item: T) => number) {
@@ -231,6 +248,7 @@ export function FundHoldingReport({ rows, clearedRows, totals, isRedUp, groupMod
         subLabel: groupByCompany ? fundCountLabel(fundCount) : "",
         title: groupByCompany ? `${bucket.label} · ${fundCountLabel(fundCount)}` : bucket.accountLabel,
         accountLabel: groupByCompany ? accountCountLabel(accountCount) : bucket.accountLabel,
+        accountTitle: groupByCompany ? "" : items[0] ? accountHover(items[0]) : "",
         units,
         // Per-fund attributes are meaningless on an aggregated line.
         avgCost: null,
@@ -253,6 +271,7 @@ export function FundHoldingReport({ rows, clearedRows, totals, isRedUp, groupMod
         subLabel: row.fundCode && row.fundCode !== row.fundName ? row.fundCode : "",
         title: `${row.fundName}${row.fundCode ? ` ${row.fundCode}` : ""}`,
         accountLabel: groupByCompany ? accountText(row) : "",
+        accountTitle: groupByCompany ? accountHover(row) : "",
         units: row.units,
         avgCost: row.avgCost,
         nav: row.nav,
@@ -294,6 +313,7 @@ export function FundHoldingReport({ rows, clearedRows, totals, isRedUp, groupMod
         subLabel: groupByCompany ? fundCountLabel(fundCount) : "",
         title: groupByCompany ? `${bucket.label} · ${fundCountLabel(fundCount)}` : bucket.accountLabel,
         accountLabel: groupByCompany ? accountCountLabel(accountCount) : bucket.accountLabel,
+        accountTitle: groupByCompany ? "" : items[0] ? accountHover(items[0]) : "",
         firstBuyDate: firstBuys[0] ?? "",
         clearedDate: clearedDates[clearedDates.length - 1] ?? "",
         totalInvested,
@@ -312,6 +332,7 @@ export function FundHoldingReport({ rows, clearedRows, totals, isRedUp, groupMod
         subLabel: row.fundCode && row.fundCode !== row.fundName ? row.fundCode : "",
         title: `${row.fundName}${row.fundCode ? ` ${row.fundCode}` : ""}`,
         accountLabel: groupByCompany ? accountText(row) : "",
+        accountTitle: groupByCompany ? accountHover(row) : "",
         firstBuyDate: row.firstBuyDate,
         clearedDate: row.clearedDate,
         totalInvested: row.totalInvested,
@@ -370,7 +391,7 @@ export function FundHoldingReport({ rows, clearedRows, totals, isRedUp, groupMod
       filterText: (row) => row.accountLabel,
       sortValue: (row) => row.accountLabel,
       render: (row) => (
-        <span className="block truncate text-slate-600" title={row.accountLabel}>{row.accountLabel}</span>
+        <span className="block truncate text-slate-600" title={row.accountTitle || row.accountLabel}>{row.accountLabel}</span>
       ),
     },
     {
@@ -498,7 +519,7 @@ export function FundHoldingReport({ rows, clearedRows, totals, isRedUp, groupMod
       filterText: (row) => row.accountLabel,
       sortValue: (row) => row.accountLabel,
       render: (row) => (
-        <span className="block truncate text-slate-600" title={row.accountLabel}>{row.accountLabel}</span>
+        <span className="block truncate text-slate-600" title={row.accountTitle || row.accountLabel}>{row.accountLabel}</span>
       ),
     },
     {

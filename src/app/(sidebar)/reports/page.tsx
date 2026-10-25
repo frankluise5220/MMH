@@ -28,6 +28,7 @@ import { kindLabel } from "@/lib/account-kinds";
 import { isDepositAccount, isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import { prisma } from "@/lib/db/prisma";
 import { formatDateUtc, businessTodayUtcStart } from "@/lib/date-utils";
+import { getRequestTimeZone } from "@/lib/server/business-time-zone";
 import type { ColorScheme } from "@/lib/client/colors";
 import {
   getIncomeExpenseReport,
@@ -176,7 +177,7 @@ export default async function ReportsPage({
   const params = await searchParams;
   const t = await getServerT();
   const language = await getServerDisplayLanguage();
-  const now = businessTodayUtcStart();
+  const now = businessTodayUtcStart(await getRequestTimeZone());
   const reportType: ReportType =
     params.report === "investment-profit" || params.report === "stock-holdings" || params.report === "fund-holdings"
       ? params.report
@@ -272,6 +273,15 @@ export default async function ReportsPage({
     }, creditCardLabelTemplate, { fields: accountLabelFields, baseCurrency }),
   );
   const allAccountDisplayById = new Map(allAccountDisplayOptions.map((account) => [account.id, account]));
+  // 持仓类报表走 unstable_cache，缓存里不能读 cookie（账户显示格式），所以那里只能按
+  // 默认字段拼 accountName。这里按当前请求的设置重渲染一次，并补上列 hover。
+  function withAccountDisplay<T extends { accountId: string }>(rows: T[]) {
+    return rows.map((row) => {
+      const option = allAccountDisplayById.get(row.accountId);
+      if (!option) return row;
+      return { ...row, accountLabel: option.listLabel, accountHoverTitle: option.tableHoverTitle };
+    });
+  }
   const accountDisplayOptions = accountRecords.map((account) => allAccountDisplayById.get(account.id)!).filter(Boolean);
   const accountDisplayById = new Map(accountDisplayOptions.map((account) => [account.id, account]));
   const accounts = accountRecords.map((account) => ({
@@ -617,10 +627,14 @@ export default async function ReportsPage({
       if (scopes.length === 0) return null;
       return stockAccountRecords.map((account) => account.id).filter((id) => scopes.every((ids) => ids.includes(id)));
     })();
-    const stockReport = await loadCachedStockHoldingReport(
+    const stockReportSource = await loadCachedStockHoldingReport(
       JSON.stringify(ctx.hidFilter),
       JSON.stringify(stockScopedAccountIds ?? []),
     );
+    const stockReport = {
+      ...stockReportSource,
+      rows: withAccountDisplay(stockReportSource.rows),
+    };
     const stockFilterUsers = ownerFilterUsers(stockAccountRecords);
     const stockFilterInstitutions = commonData.institutions
       .filter((institution) => stockAccountRecords.some((account) => account.institutionId === institution.id))
@@ -653,7 +667,7 @@ export default async function ReportsPage({
         stockMarketLabel(row.market),
         row.stockCode,
         row.stockName,
-        row.accountName,
+        row.accountLabel ?? row.accountName,
         String(row.quantity),
         row.avgCost.toFixed(4),
         row.cost.toFixed(2),
@@ -750,11 +764,16 @@ export default async function ReportsPage({
       if (scopes.length === 0) return null;
       return fundAccountRecords.map((account) => account.id).filter((id) => scopes.every((ids) => ids.includes(id)));
     })();
-    const fundReport = await loadCachedFundHoldingReport(
+    const fundReportSource = await loadCachedFundHoldingReport(
       JSON.stringify(ctx.hidFilter),
       JSON.stringify(fundScopedAccountIds ?? []),
       JSON.stringify(selectedFundCompanies),
     );
+    const fundReport = {
+      ...fundReportSource,
+      rows: withAccountDisplay(fundReportSource.rows),
+      clearedRows: withAccountDisplay(fundReportSource.clearedRows),
+    };
     const fundFilterUsers = ownerFilterUsers(fundAccountRecords);
     const fundFilterInstitutions = commonData.institutions
       .filter((institution) => fundAccountRecords.some((account) => account.institutionId === institution.id))
@@ -793,7 +812,7 @@ export default async function ReportsPage({
       ...fundReport.rows.map((row) => [
         row.fundCode,
         row.fundName,
-        row.accountName,
+        row.accountLabel ?? row.accountName,
         row.institutionName,
         String(row.units),
         row.avgCost.toFixed(4),
@@ -822,7 +841,7 @@ export default async function ReportsPage({
       ...fundReport.clearedRows.map((row) => [
         row.fundCode,
         row.fundName,
-        row.accountName,
+        row.accountLabel ?? row.accountName,
         row.institutionName,
         row.firstBuyDate,
         row.clearedDate,
@@ -838,7 +857,7 @@ export default async function ReportsPage({
     // fund/money trend, independent of the row filters above. Prefetched with the
     // chart's default window (trailing 12 months); the chart can refetch other
     // ranges / benchmark indices client-side via the fund-trend API.
-    const now = businessTodayUtcStart();
+    const now = businessTodayUtcStart(await getRequestTimeZone());
     const trendStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 11, 1));
     const fundTrendData = await loadFundPortfolioTrendData(ctx, {
       startMonth: `${trendStart.getUTCFullYear()}-${String(trendStart.getUTCMonth() + 1).padStart(2, "0")}`,

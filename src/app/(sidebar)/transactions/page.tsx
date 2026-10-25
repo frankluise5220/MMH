@@ -61,19 +61,29 @@ export default async function TransactionsPage() {
   const accountDisplayById = new Map(
     accounts.map((account) => {
       const option = buildAccountDisplayOption({ ...account, kind: String(account.kind) }, undefined, { fields: accountLabelFields, baseCurrency });
-      return [account.id, formatAccountTableLabel(option, "", accountLabelFields)] as const;
+      return [account.id, {
+        label: formatAccountTableLabel(option, "", { fields: accountLabelFields, baseCurrency }),
+        // 行内看不到的机构/卡号/非本位币，留给 hover。
+        title: option.tableHoverTitle,
+      }] as const;
     }),
   );
-  const rows: MobileTransactionRow[] = entries.map((entry) => ({
-    id: entry.id,
-    date: formatDateUtc(entry.date),
-    amount: Number(entry.amount),
-    type: entry.type,
-    categoryName: entry.categoryName ?? "",
-    accountName: accountDisplayById.get(entry.accountId) ?? entry.accountName ?? "",
-    toAccountName: entry.toAccountId ? accountDisplayById.get(entry.toAccountId) ?? entry.toAccountName ?? "" : entry.toAccountName ?? "",
-    note: entry.note ?? "",
-  }));
+  const rows: MobileTransactionRow[] = entries.map((entry) => {
+    const account = accountDisplayById.get(entry.accountId);
+    const toAccount = entry.toAccountId ? accountDisplayById.get(entry.toAccountId) : undefined;
+    return {
+      id: entry.id,
+      date: formatDateUtc(entry.date),
+      amount: Number(entry.amount),
+      type: entry.type,
+      categoryName: entry.categoryName ?? "",
+      accountName: account?.label ?? entry.accountName ?? "",
+      accountHoverTitle: account?.title ?? "",
+      toAccountName: toAccount?.label ?? entry.toAccountName ?? "",
+      toAccountHoverTitle: toAccount?.title ?? "",
+      note: entry.note ?? "",
+    };
+  });
 
   return (
     <>

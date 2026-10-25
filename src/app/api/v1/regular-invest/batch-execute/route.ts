@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
+import { getHouseholdTimeZone } from "@/lib/server/household-preferences";
 import { FundCashFlowKind, FundSubtype, IntervalUnit, RegularInvestStatus } from "@prisma/client";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { fundArrivalDate, fundConfirmDate, getFundDateContext } from "@/lib/fund/confirmDays";
@@ -239,7 +240,7 @@ export async function POST(req: NextRequest) {
 
     // ── Pre-compute NAV: filter out paused purchases and no-NAV gaps ──
     const fundDateContext = await getFundDateContext(plan.accountId, plan.fundCode);
-    const todayStr = todayDateBusinessYmd();
+    const todayStr = todayDateBusinessYmd(await getHouseholdTimeZone(householdId));
     const confirmDateStrFor = (runDateStr: string) => {
       const confirmDateStr = fundConfirmDate(runDateStr, fundDateContext.days, fundDateContext.tradingCalendar);
       if (confirmDateStr < runDateStr) {

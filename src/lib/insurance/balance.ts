@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db/prisma";
 import { todayDateBusinessYmd } from "@/lib/date-utils";
+import { resolveHouseholdTimeZone } from "@/lib/server/business-time-zone";
 import { isInsuranceBalanceMetric } from "@/lib/insurance/display";
 import { insuranceCashValueDelta } from "@/lib/insurance/transaction";
 
@@ -58,7 +59,7 @@ export async function computeInsuranceAccountDisplayBalances(
     },
   });
 
-  const todayKey = todayDateBusinessYmd();
+  const todayKey = todayDateBusinessYmd(await resolveHouseholdTimeZone(hidFilter?.householdId));
   const productAccountIdById = new Map(products.map((product) => [product.id, product.accountId]));
   for (const entry of entries) {
     if (localDateKey(entry.tradeDate) > todayKey) continue;

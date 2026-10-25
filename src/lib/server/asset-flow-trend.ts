@@ -35,6 +35,7 @@ import { prisma } from "@/lib/db/prisma";
 import { toNumber, todayDateBusinessYmd } from "@/lib/date-utils";
 import { depositRedemptionPrincipal } from "@/lib/server/deposit-lot-balance";
 import type { HouseholdContext } from "@/lib/server/household-scope";
+import { getHouseholdTimeZone } from "@/lib/server/household-preferences";
 import { applyBalanceReconcileEntry, getBalanceReconcileTarget } from "@/lib/balance-reconcile";
 import { getDetailEntryDisplayDate, compareDetailEntriesAsc } from "@/lib/detail-entry-order";
 import { liabilityPrincipalForAccountSide } from "@/lib/liability";
@@ -80,8 +81,8 @@ function monthEndDayKey(month: string) {
 }
 
 // 「当前月」按业务时区：UTC getter 在北京时间 1 号 00:00–08:00 还停在上个月。
-function currentMonth() {
-  return todayDateBusinessYmd().slice(0, 7);
+function currentMonth(timeZone: string) {
+  return todayDateBusinessYmd(timeZone).slice(0, 7);
 }
 
 function round2(value: number) {
@@ -136,7 +137,7 @@ export async function loadAssetMonthEndLevels(
     fundPoints?: FundTrendPoint[];
   } = {},
 ): Promise<AssetFlowMonthEndLevels> {
-  const nowMonth = currentMonth();
+  const nowMonth = currentMonth(await getHouseholdTimeZone(ctx.householdId));
   const seen = new Set<string>();
   const months: string[] = [];
   for (const raw of options.months ?? []) {
@@ -809,7 +810,7 @@ export async function loadAssetMonthEndLevels(
         if (list) list.push({ ...entry, accountId });
       }
 
-      const todayKey = todayDateBusinessYmd();
+      const todayKey = todayDateBusinessYmd(await getHouseholdTimeZone(ctx.householdId));
       for (const account of insuranceAccounts) {
         const snapshots = new Array<number>(boundaries.length).fill(0);
         const walker = makeBoundaryWalker(boundaries);

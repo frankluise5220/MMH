@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { getFundFeeRate, getFundFeeRateByDate, replaceFundFeeRates, setFundFeeRateByDate, type FundFeeRateReplacementRow, type FundFeeRateType } from "@/lib/fund/feeRate";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { getRequestTimeZone } from "@/lib/server/business-time-zone";
 
 /**
  * Fund fee rates (buy / redeem, percent).
@@ -206,7 +207,7 @@ export async function POST(req: NextRequest) {
     const rows = Array.isArray(body.rows) ? body.rows : [];
     if (body.replace) {
       const scopeFundCode = typeof body.fundCode === "string" && body.fundCode.trim() ? body.fundCode.trim() : undefined;
-      const replacementRows = normalizeReplacementRows(rows, scopeFundCode);
+      const replacementRows = normalizeReplacementRows(rows, await getRequestTimeZone(), scopeFundCode);
       await replaceFundFeeRates(body.accountId, replacementRows, scopeFundCode);
       return NextResponse.json({ ok: true });
     }
@@ -241,8 +242,13 @@ export async function POST(req: NextRequest) {
   }
 }
 
-function normalizeReplacementRows(rows: FeeRateRowInput[], scopeFundCode?: string): FundFeeRateReplacementRow[] {
-  const fallbackDate = todayUtcDate();
+function normalizeReplacementRows(
+  rows: FeeRateRowInput[],
+  timeZone: string,
+  scopeFundCode?: string,
+): FundFeeRateReplacementRow[] {
+  const fallbackDate = todayUtcDate(timeZone);
+
   const normalized: FundFeeRateReplacementRow[] = [];
   for (const raw of rows) {
     const fundCode = String(raw.fundCode ?? scopeFundCode ?? "").trim();
@@ -262,8 +268,8 @@ function parseFeeType(value: unknown): FundFeeRateType {
   return value === "redeem" ? "redeem" : "buy";
 }
 
-function todayUtcDate(): Date {
-  const now = businessTodayUtcStart();
+function todayUtcDate(timeZone: string): Date {
+  const now = businessTodayUtcStart(timeZone);
   return now;
 }
 

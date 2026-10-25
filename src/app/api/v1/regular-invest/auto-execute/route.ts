@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
+import { getHouseholdTimeZone } from "@/lib/server/household-preferences";
 import { FundCashFlowKind, FundSubtype, IntervalUnit, RegularInvestStatus, type Prisma } from "@prisma/client";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { getFundProfileNameMap, normalizeFundDisplayName, resolveFundName } from "@/lib/fund/fundProfile";
@@ -74,7 +75,7 @@ async function hasMoreDuePlans(householdId: string, now: Date) {
 
 async function executeAutoExecuteRound(householdId: string, now: Date): Promise<AutoExecuteRoundResult> {
   try {
-    const todayStr = todayDateBusinessYmd();
+    const todayStr = todayDateBusinessYmd(await getHouseholdTimeZone(householdId));
 
     const allPlans = await prisma.regularInvestPlan.findMany({
       where: { householdId, status: RegularInvestStatus.active },
@@ -199,7 +200,7 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
           const hasExplicitAction = Boolean(plan.planAction);
           const result = lotId
             ? task.type === "bond_interest_payout" && hasExplicitAction
-              ? await (await import("@/lib/server/bond-auto-interest")).autoWithdrawAccruedBondInterestForLot({ householdId, lotId, today: businessDayStartUtc(now), planId: plan.id })
+              ? await (await import("@/lib/server/bond-auto-interest")).autoWithdrawAccruedBondInterestForLot({ householdId, lotId, today: businessDayStartUtc(now, await getHouseholdTimeZone(householdId)), planId: plan.id })
               : await autoAccrueBondPeriodicInterestForLot({ householdId, lotId, today: now, planId: plan.id, createTransfer: task.type !== "bond_interest_accrual" })
             : { status: "skipped" as const, reason: "计划行 id 不是存单级" };
           if (result.status === "accrued") {

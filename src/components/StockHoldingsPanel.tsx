@@ -220,6 +220,7 @@ export function StockHoldingsPanel({
   isRedUp,
   stockCashAccountId,
   stockCashAccountName,
+  accountOptions = [],
 }: {
   accountId: string;
   accountLabel: string;
@@ -233,8 +234,30 @@ export function StockHoldingsPanel({
   isRedUp: boolean;
   stockCashAccountId?: string;
   stockCashAccountName?: string | null;
+  /** 账户下拉/明细列统一走「账户显示格式」：这里只用来把交易行的账户 id 翻成标签。 */
+  accountOptions?: Array<{
+    id: string;
+    label: string;
+    listLabel?: string | null;
+    title?: string | null;
+    hoverTitle?: string | null;
+    tableHoverTitle?: string | null;
+  }>;
 }) {
   const { t } = useI18n();
+  const accountOptionById = useMemo(
+    () => new Map(accountOptions.map((option) => [option.id, option])),
+    [accountOptions],
+  );
+  // 交易明细里的「股票账户 / 资金账户」列：标签按设置渲染，hover 补出省略的信息（机构/卡号/非本位币）。
+  const accountColumnText = (id?: string | null, fallback?: string | null) => {
+    const option = id ? accountOptionById.get(id) : undefined;
+    return option?.listLabel || option?.label || fallback || "";
+  };
+  const accountColumnTitle = (id?: string | null, fallback?: string | null) => {
+    const option = id ? accountOptionById.get(id) : undefined;
+    return option?.tableHoverTitle || option?.hoverTitle || option?.title || accountColumnText(id, fallback);
+  };
   const [positions, setPositions] = useState<StockPosition[]>(initialPositions);
   const [clearedPositions, setClearedPositions] = useState<StockPosition[]>(initialClearedPositions);
   const [showCleared, setShowCleared] = useState(initialShowCleared);
@@ -552,9 +575,8 @@ export function StockHoldingsPanel({
 
   // Auto-fit: the table reports how many rows fit the viewport; when auto mode
   // is on that count becomes the page size (the "自适应" option restores it).
-  // Callback identity changes with the selected stock / autoFit / show-all so
-  // the table re-measures once per view reopen, then stays frozen (same
-  // contract as BasicDetailPanel).
+  // 触发时机由表格一侧决定：视图重开 / 重新选自适应（这个回调的 identity 变化）、
+  // 行高偏好变化、视口高度变化都会重算；翻页与数据刷新不触发（同 BasicDetailPanel）。
   const lastFitRowCountRef = useRef<number | null>(null);
   const handleRowsFitChange = useCallback((rowCount: number) => {
     lastFitRowCountRef.current = rowCount;
@@ -831,11 +853,13 @@ export function StockHoldingsPanel({
         minWidth: 118,
         hideable: true,
         defaultHidden: true,
-        filterText: (tx) => tx.stockAccountName || "",
-        sortValue: (tx) => tx.stockAccountName || null,
+        filterText: (tx) => accountColumnText(tx.stockAccountId, tx.stockAccountName),
+        sortValue: (tx) => accountColumnText(tx.stockAccountId, tx.stockAccountName) || null,
         truncate: true,
-        cellTitle: (tx) => tx.stockAccountName || "",
-        render: (tx) => tx.stockAccountName ? <span className="text-slate-600">{tx.stockAccountName}</span> : <span className="text-slate-300">-</span>,
+        cellTitle: (tx) => accountColumnTitle(tx.stockAccountId, tx.stockAccountName),
+        render: (tx) => accountColumnText(tx.stockAccountId, tx.stockAccountName)
+          ? <span className="text-slate-600">{accountColumnText(tx.stockAccountId, tx.stockAccountName)}</span>
+          : <span className="text-slate-300">-</span>,
       },
       {
         key: "cashAccount",
@@ -844,11 +868,13 @@ export function StockHoldingsPanel({
         minWidth: 118,
         hideable: true,
         defaultHidden: true,
-        filterText: (tx) => tx.cashAccountName || "",
-        sortValue: (tx) => tx.cashAccountName || null,
+        filterText: (tx) => accountColumnText(tx.cashAccountId, tx.cashAccountName),
+        sortValue: (tx) => accountColumnText(tx.cashAccountId, tx.cashAccountName) || null,
         truncate: true,
-        cellTitle: (tx) => tx.cashAccountName || "",
-        render: (tx) => tx.cashAccountName ? <span className="text-slate-600">{tx.cashAccountName}</span> : <span className="text-slate-300">-</span>,
+        cellTitle: (tx) => accountColumnTitle(tx.cashAccountId, tx.cashAccountName),
+        render: (tx) => accountColumnText(tx.cashAccountId, tx.cashAccountName)
+          ? <span className="text-slate-600">{accountColumnText(tx.cashAccountId, tx.cashAccountName)}</span>
+          : <span className="text-slate-300">-</span>,
       },
       {
         key: "action",

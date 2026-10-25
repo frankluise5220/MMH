@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 
 import SettingsSwitch from "@/components/settings/SettingsSwitch";
@@ -12,6 +12,7 @@ import {
   type AccountLabelField,
 } from "@/lib/account-display";
 import {
+  APP_PREFS_EVENT,
   getAccountLabelFieldsPreference,
   getAccountDropdownRestrictTypePreference,
   getDetailDateBackgroundPreference,
@@ -23,7 +24,6 @@ import {
   getSidebarShowFixedAssetsPreference,
   getSidebarShowAllCashEntriesPreference,
   getSidebarShowReimbursementsPreference,
-  getTimeZoneModePreference,
   getTimeZonePreference,
   DEFAULT_ROW_HEIGHT_MODE,
   ROW_HEIGHT_OPTIONS,
@@ -46,7 +46,6 @@ import {
   type DateDisplayFormat,
   type RowHeightMode,
   type SidebarGroupMode,
-  type TimeZoneMode,
 } from "@/lib/client/appPreferences";
 import { kindLabel } from "@/lib/account-kinds";
 import { CurrencySmartSelect } from "@/components/CurrencySmartSelect";
@@ -164,7 +163,6 @@ export default function DisplaySettingsPage() {
   const [displayLanguage, setDisplayLanguage] = useState<DisplayLanguage>(currentLanguage);
   const [dateDisplayFormat, setDateDisplayFormat] = useState<DateDisplayFormat>("yyyy-mm-dd");
   const [baseCurrency, setBaseCurrency] = useState("CNY");
-  const [timeZoneMode, setTimeZoneMode] = useState<TimeZoneMode>("system");
   const [timeZone, setTimeZone] = useState("Asia/Shanghai");
   const [accountLabelFields, setAccountLabelFieldsState] = useState<AccountLabelField[]>(DEFAULT_ACCOUNT_LABEL_FIELDS);
   const [sidebarGroupBy, setSidebarGroupBy] = useState<SidebarGroupMode>("kind");
@@ -185,9 +183,10 @@ export default function DisplaySettingsPage() {
   const [draggingAccountLabelField, setDraggingAccountLabelField] = useState<AccountLabelField | null>(null);
   const [dragOverAccountLabelField, setDragOverAccountLabelField] = useState<AccountLabelField | null>(null);
 
-  useEffect(() => {
-    const colorScheme = getColorSchemePreference();
-    setScheme(colorScheme);
+  // cookie 只是 DB 设置的镜像：新设备首次打开时镜像为空，
+  // 由 PreferencesSync 拉取真值后广播事件，这里跟着刷新一次。
+  const applyLocalPreferences = useCallback(() => {
+    setScheme(getColorSchemePreference());
     setSidebarGroupBy(getSidebarGroupPreference());
     setSidebarHideZero(getSidebarHideZeroPreference());
     setSidebarHideInitialData(getSidebarHideInitialDataPreference());
@@ -199,10 +198,15 @@ export default function DisplaySettingsPage() {
     setRowHeightMode(getRowHeightModePreference());
     setDisplayLanguage(getDisplayLanguagePreference());
     setDateDisplayFormat(getDateDisplayFormatPreference());
-    setTimeZoneMode(getTimeZoneModePreference());
     setTimeZone(getTimeZonePreference());
     setAccountLabelFieldsState(getAccountLabelFieldsPreference());
   }, []);
+
+  useEffect(() => {
+    applyLocalPreferences();
+    window.addEventListener(APP_PREFS_EVENT, applyLocalPreferences);
+    return () => window.removeEventListener(APP_PREFS_EVENT, applyLocalPreferences);
+  }, [applyLocalPreferences]);
 
   async function loadBaseCurrency() {
     try {
@@ -328,29 +332,28 @@ export default function DisplaySettingsPage() {
     }
   }
 
-  async function saveTimeZone(nextMode: TimeZoneMode, nextTimeZone: string) {
-    const prevMode = timeZoneMode;
+  async function saveTimeZone(nextTimeZone: string) {
     const prevTimeZone = timeZone;
-    setTimeZoneMode(nextMode);
     setTimeZone(nextTimeZone);
-    setTimeZonePreference(nextMode, nextTimeZone);
+    setTimeZonePreference(nextTimeZone);
     setSavingTimeZone(true);
     try {
       const res = await fetch("/api/v1/settings/app-preferences", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ timeZoneMode: nextMode, timeZone: nextTimeZone }),
+        body: JSON.stringify({ timeZone: nextTimeZone }),
       });
       const data = await res.json();
       if (!data.ok) {
-        setTimeZoneMode(prevMode);
         setTimeZone(prevTimeZone);
-        setTimeZonePreference(prevMode, prevTimeZone);
+        setTimeZonePreference(prevTimeZone);
+      } else if (typeof data.timeZone === "string") {
+        setTimeZone(data.timeZone);
+        setTimeZonePreference(data.timeZone);
       }
     } catch {
-      setTimeZoneMode(prevMode);
       setTimeZone(prevTimeZone);
-      setTimeZonePreference(prevMode, prevTimeZone);
+      setTimeZonePreference(prevTimeZone);
     } finally {
       setSavingTimeZone(false);
     }
@@ -415,14 +418,46 @@ export default function DisplaySettingsPage() {
     setDragOverAccountLabelField(null);
   }
 
-  function updateSidebarGroup(next: SidebarGroupMode) {
+  async function updateSidebarGroup(next: SidebarGroupMode) {
+    const prev = sidebarGroupBy;
     setSidebarGroupBy(next);
     setSidebarGroupPreference(next);
+    try {
+      const res = await fetch("/api/v1/settings/app-preferences", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sidebarGroupBy: next }),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        setSidebarGroupBy(prev);
+        setSidebarGroupPreference(prev);
+      }
+    } catch {
+      setSidebarGroupBy(prev);
+      setSidebarGroupPreference(prev);
+    }
   }
 
-  function updateSidebarHideZero(next: boolean) {
+  async function updateSidebarHideZero(next: boolean) {
+    const prev = sidebarHideZero;
     setSidebarHideZero(next);
     setSidebarHideZeroPreference(next);
+    try {
+      const res = await fetch("/api/v1/settings/app-preferences", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sidebarHideZero: next }),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        setSidebarHideZero(prev);
+        setSidebarHideZeroPreference(prev);
+      }
+    } catch {
+      setSidebarHideZero(prev);
+      setSidebarHideZeroPreference(prev);
+    }
   }
 
   async function updateSidebarHideInitialData(next: boolean) {
@@ -629,14 +664,14 @@ export default function DisplaySettingsPage() {
             <div className="flex gap-2">
               <button
                 type="button"
-                onClick={() => updateSidebarGroup("kind")}
+                onClick={() => void updateSidebarGroup("kind")}
                 className={`segment-button h-9 px-4 ${sidebarGroupBy === "kind" ? "segment-button-active font-medium" : ""}`}
               >
                 {t("settings.display.groupByKind")}
               </button>
               <button
                 type="button"
-                onClick={() => updateSidebarGroup("institution")}
+                onClick={() => void updateSidebarGroup("institution")}
                 className={`segment-button h-9 px-4 ${sidebarGroupBy === "institution" ? "segment-button-active font-medium" : ""}`}
               >
                 {t("settings.display.groupByInstitution")}
@@ -784,15 +819,11 @@ export default function DisplaySettingsPage() {
           </SettingRow>
           <SettingRow title={t("settings.display.timeZone")} desc={t("settings.display.timeZoneDesc")} hideDesc={hideSettingDescriptions}>
             <select
-              value={timeZoneMode === "system" ? "system" : timeZone}
-              onChange={(e) => {
-                const value = e.target.value;
-                void (value === "system" ? saveTimeZone("system", timeZone) : saveTimeZone("specified", value));
-              }}
+              value={timeZone}
+              onChange={(e) => void saveTimeZone(e.target.value)}
               disabled={savingTimeZone}
               className="form-input"
             >
-              <option value="system">{t("settings.display.timeZoneSystem")}</option>
               {timeZoneOptions.map((option) => (
                 <option key={option.value} value={option.value}>
                   {option.label}

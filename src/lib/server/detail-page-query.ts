@@ -8,6 +8,7 @@ import {
 import { todayDateBusinessYmd } from "@/lib/date-utils";
 import { isLoanOrSettlementAccountKind } from "@/lib/liability";
 import { prisma } from "@/lib/db/prisma";
+import { getHouseholdTimeZone } from "@/lib/server/household-preferences";
 
 const FX_CONVERSION_SOURCE = "fx_conversion";
 
@@ -47,11 +48,13 @@ function accountScopeSql(accountIds: string[]) {
 function buildOrderingCtesSql(args: {
   accountIds: string[];
   householdId: string;
+  /** 账簿业务时区，决定 `visible` 过滤的「今天」。 */
+  timeZone: string;
   sortAccountId?: string | null;
   /** 排序账户是贷款 / 往来款时，余额折叠走本金口径（见 liabilityPrincipalForAccountSide）。 */
   liabilityAccountMode?: boolean;
 }) {
-  const { accountIds, householdId, sortAccountId, liabilityAccountMode = false } = args;
+  const { accountIds, householdId, timeZone, sortAccountId, liabilityAccountMode = false } = args;
   const sortAccountIdValue = sortAccountId ?? null;
   // 账户余额口径（account-balance.ts 的 isOnOrBeforeToday）以「今天」为截止，
   // 明细「余额」列必须用同一个截止日，否则未来日期的流水会把列表顶部的余额
@@ -59,7 +62,7 @@ function buildOrderingCtesSql(args: {
   // 显式业务时区，不用进程时区：容器未设置 TZ 时进程时区是 UTC，
   // 北京时间 00:00–08:00 会把「今天」算成昨天，导致当天刚记的流水被
   // `visible` 过滤掉（页面上看不到、数据库里有）。
-  const todayKey = todayDateBusinessYmd();
+  const todayKey = todayDateBusinessYmd(timeZone);
   const accountScope = accountScopeSql(accountIds);
   const scopedColumns = Prisma.sql`
     t."id",
@@ -388,10 +391,16 @@ function buildOrderingCtesSql(args: {
   `;
 }
 
-async function countEntries(accountIds: string[], householdId: string, sortAccountId?: string | null) {
+async function countEntries(
+  accountIds: string[],
+  householdId: string,
+  timeZone: string,
+  sortAccountId?: string | null,
+) {
   const orderingCtes = buildOrderingCtesSql({
     accountIds,
     householdId,
+    timeZone,
     sortAccountId,
   });
   // 数行只依赖 `visible`：`displayed` 只是多算两列、`ordered` / `ranked` 不增删行。
@@ -418,7 +427,12 @@ export async function queryDetailPage(args: DetailPageQueryArgs): Promise<Detail
     };
   }
 
-  const totalCount = await countEntries(accountIds, args.householdId, args.sortAccountId);
+  const totalCount = await countEntries(
+    accountIds,
+    args.householdId,
+    await getHouseholdTimeZone(args.householdId),
+    args.sortAccountId,
+  );
   const pageSize = Math.max(1, Math.floor(args.pageSize) || 1);
   const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
   const page = Math.min(Math.max(1, Math.floor(args.page) || 1), totalPages);
@@ -434,6 +448,7 @@ export async function queryDetailPage(args: DetailPageQueryArgs): Promise<Detail
   const orderingCtes = buildOrderingCtesSql({
     accountIds,
     householdId: args.householdId,
+    timeZone: await getHouseholdTimeZone(args.householdId),
     sortAccountId: args.sortAccountId,
     liabilityAccountMode,
   });
@@ -543,6 +558,7 @@ export async function queryDetailRunningBalancesForEntries(args: {
   const orderingCtes = buildOrderingCtesSql({
     accountIds,
     householdId: args.householdId,
+    timeZone: await getHouseholdTimeZone(args.householdId),
     sortAccountId: args.sortAccountId,
     liabilityAccountMode,
   });
@@ -599,7 +615,9 @@ export async function locateDetailPage(args: {
 }) {
   const accountIds = normalizedAccountIds(args.accountIds);
   const pageSize = Math.max(1, Math.floor(args.pageSize) || 1);
-  const totalCount = accountIds.length > 0 ? await countEntries(accountIds, args.householdId, args.sortAccountId) : 0;
+  const totalCount = accountIds.length > 0
+    ? await countEntries(accountIds, args.householdId, await getHouseholdTimeZone(args.householdId), args.sortAccountId)
+    : 0;
   const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
   if (!/^\d{4}-\d{2}-\d{2}$/.test(args.dateYmd)) {
     return { totalCount, page: 1, index: 0 };
@@ -611,6 +629,7 @@ export async function locateDetailPage(args: {
   const orderingCtes = buildOrderingCtesSql({
     accountIds,
     householdId: args.householdId,
+    timeZone: await getHouseholdTimeZone(args.householdId),
     sortAccountId: args.sortAccountId,
   });
   const rows = await prisma.$queryRaw<Array<{ count: unknown }>>(Prisma.sql`
@@ -645,7 +664,9 @@ export async function locateDetailEntryPage(args: {
 }) {
   const accountIds = normalizedAccountIds(args.accountIds);
   const pageSize = Math.max(1, Math.floor(args.pageSize) || 1);
-  const totalCount = accountIds.length > 0 ? await countEntries(accountIds, args.householdId, args.sortAccountId) : 0;
+  const totalCount = accountIds.length > 0
+    ? await countEntries(accountIds, args.householdId, await getHouseholdTimeZone(args.householdId), args.sortAccountId)
+    : 0;
   const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
   const entryId = String(args.entryId ?? "").trim();
   if (!entryId || accountIds.length === 0) {
@@ -655,6 +676,7 @@ export async function locateDetailEntryPage(args: {
   const orderingCtes = buildOrderingCtesSql({
     accountIds,
     householdId: args.householdId,
+    timeZone: await getHouseholdTimeZone(args.householdId),
     sortAccountId: args.sortAccountId,
   });
   const rows = await prisma.$queryRaw<Array<{ rowNumber: unknown }>>(Prisma.sql`

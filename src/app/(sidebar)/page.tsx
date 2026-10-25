@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db/prisma";
+import { getRequestTimeZone } from "@/lib/server/business-time-zone";
 import { connection } from "next/server";
 import { cookies } from "next/headers";
 import { AccountKind, CreditCardInstallmentSourceType, FundCashFlowKind, TransactionType, FundSubtype, RegularInvestStatus } from "@prisma/client";
@@ -1743,7 +1744,11 @@ export default async function Home({
     }
     return accountName || "";
   })();
-  const repaymentScheduleRows = buildLiabilityRepaymentScheduleRows({ selectedLiabilityRow, selectedRepaymentPlan });
+  const repaymentScheduleRows = buildLiabilityRepaymentScheduleRows({
+    selectedLiabilityRow,
+    selectedRepaymentPlan,
+    timeZone: await getRequestTimeZone(),
+  });
 
   const loanRepaymentPlanIds = loanRepaymentPlans.map((plan) => plan.id);
   const liabilityEntriesRaw =
@@ -1790,6 +1795,21 @@ export default async function Home({
           take: 50000,
         })
       : [];
+  // 往来款明细要标出「这笔已被报销单关联」：关联表本身很小，按账本一次取全，
+  // 避免拿 5 万条流水 id 去拼 IN 查询。
+  const reimbursementLinkByEntryId = new Map<string, { id: string; title: string }>();
+  if (liabilityEntriesRaw.length > 0) {
+    const reimbursementLinks = await prisma.reimbursementTransaction.findMany({
+      where: { Reimbursement: { ...hid, deletedAt: null } },
+      select: { txRecordId: true, Reimbursement: { select: { id: true, title: true } } },
+    });
+    for (const link of reimbursementLinks) {
+      reimbursementLinkByEntryId.set(link.txRecordId, {
+        id: link.Reimbursement.id,
+        title: link.Reimbursement.title,
+      });
+    }
+  }
   applyLiabilityRowEntryMetrics({
     liabilityRows,
     liabilityEntriesRaw,
@@ -1841,6 +1861,7 @@ export default async function Home({
     accountTitleById,
     liabilityDirectionByAccountId,
     displayAccountId: accountId,
+    reimbursementLinkByEntryId,
   });
 
   // Query the most recently used cash account.
@@ -3859,6 +3880,7 @@ export default async function Home({
               isRedUp={isRedUp}
               stockCashAccountId={defaultStockCashAccountId}
               stockCashAccountName={defaultStockCashAccountName}
+              accountOptions={accountOptions}
             />
           ) : view === "investfund" && investfundData ? (
             <FundShell

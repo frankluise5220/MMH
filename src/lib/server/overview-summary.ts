@@ -7,6 +7,7 @@ import {
 } from "@/lib/account-display";
 import { normalizeCurrency } from "@/lib/currency";
 import { toNumber, todayDateBusinessYmd } from "@/lib/date-utils";
+import { resolveHouseholdTimeZone } from "@/lib/server/business-time-zone";
 import { prisma } from "@/lib/db/prisma";
 import { isFixedAssetAccountLike } from "@/lib/fixed-asset";
 import { translate } from "@/lib/i18n-core";
@@ -280,8 +281,8 @@ export async function computeOverviewSummary(
 ): Promise<OverviewSummary> {
   const { hidFilter } = ctx;
   const accountLabelFields = options?.accountLabelFields ?? null;
-  // 「本月/本年」按业务时区取：UTC getter 在北京时间月初 00:00–08:00 还停在上个月。
-  const businessToday = todayDateBusinessYmd();
+  // 「本月/本年」按账簿设置的时区取：UTC getter 在月初 00:00–08:00 还停在上个月。
+  const businessToday = todayDateBusinessYmd(await resolveHouseholdTimeZone(ctx.hidFilter.householdId));
   const todayYear = Number(businessToday.slice(0, 4));
   const todayMonth = Number(businessToday.slice(5, 7));
   const monthStart = new Date(Date.UTC(todayYear, todayMonth - 1, 1));

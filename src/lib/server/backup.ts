@@ -29,6 +29,8 @@ import {
   systemSettingKey,
 } from "@/lib/server/system-setting";
 import type { CurrentUser } from "@/lib/server/auth";
+import { preferenceRowData } from "@/lib/server/household-preferences";
+import { preferencesFromRow, type PreferenceRow } from "@/lib/preferences";
 
 export const BACKUP_FORMAT_VERSION = 4;
 const ENCRYPTED_BACKUP_PACKAGE_VERSION = 3;
@@ -131,6 +133,7 @@ function summaryRows(payload: HouseholdBackupPayload) {
     { field: "distillLogs", value: payload.counts.distillLogs },
     { field: "commandTestResults", value: payload.counts.commandTestResults },
     { field: "commandAliases", value: payload.counts.commandAliases },
+    { field: "householdPreferences", value: payload.counts.householdPreferences },
   ];
 }
 
@@ -1908,6 +1911,7 @@ export async function buildHouseholdBackupPayload(
     fundSnapshots,
     attachments,
     entryTags,
+    householdPreferences,
   ] = await Promise.all([
     userIds.length > 0
       ? prisma.userSettings.findMany({ where: { userId: { in: userIds } }, orderBy: [{ createdAt: "asc" }] })
@@ -1941,6 +1945,7 @@ export async function buildHouseholdBackupPayload(
       where: { transactions: { householdId } },
       orderBy: [{ entryId: "asc" }, { tagId: "asc" }],
     }),
+    prisma.householdPreference.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
   ]);
 
   const exportedAt = new Date();
@@ -1988,6 +1993,7 @@ export async function buildHouseholdBackupPayload(
       distillLogs: distillLogs.length,
       commandTestResults: commandTestResults.length,
       commandAliases: commandAliases.length,
+      householdPreferences: householdPreferences.length,
     },
     data: {
       household,
@@ -1997,6 +2003,7 @@ export async function buildHouseholdBackupPayload(
       aiModels,
       users,
       userSettings,
+      householdPreferences,
       accountGroups,
       institutions,
       counterparties,
@@ -2078,6 +2085,7 @@ export async function buildHouseholdBackupWorkbook(payload: HouseholdBackupPaylo
     ["SystemSettings", sheetRows(payload.data.systemSettings)],
     ["Users", sheetRows(payload.data.users)],
     ["UserSettings", sheetRows(payload.data.userSettings)],
+    ["HouseholdPreferences", sheetRows(payload.data.householdPreferences)],
     ["AccountGroups", sheetRows(payload.data.accountGroups)],
     ["Institutions", sheetRows(payload.data.institutions)],
     ["Counterparties", sheetRows(payload.data.counterparties)],
@@ -2308,6 +2316,7 @@ export function parseBackupPayload(raw: unknown) {
       aiModels: ensureArray(data.aiModels ?? [], "data.aiModels"),
       users: ensureArray(data.users ?? [], "data.users"),
       userSettings: ensureArray(data.userSettings ?? [], "data.userSettings"),
+      householdPreferences: ensureArray(data.householdPreferences ?? [], "data.householdPreferences"),
       accountGroups: ensureArray(data.accountGroups ?? [], "data.accountGroups"),
       institutions: ensureLiabilityArray(data.institutions ?? [], "data.institutions"),
       counterparties: ensureArray(data.counterparties ?? [], "data.counterparties"),
@@ -2718,6 +2727,11 @@ export async function restoreHouseholdBackup(
         importedUserSet.add(id);
       }
     }
+    // 老备份里没有 `householdPreferences`（该表 2026-10-24 才有）：这种备份
+    // 不碰目标账簿的显示设置，否则恢复一次旧包就把时区/语言全打回默认值。
+    if (data.householdPreferences.length > 0) {
+      await tx.householdPreference.deleteMany({ where: { householdId } });
+    }
     if (isSystemRestore) {
       await tx.fundNavCache.deleteMany({});
       await tx.commandAlias.deleteMany({});
@@ -2941,6 +2955,23 @@ export async function restoreHouseholdBackup(
             createdAt: item.createdAt ? new Date(String(item.createdAt)) : new Date(),
             updatedAt: item.updatedAt ? new Date(String(item.updatedAt)) : new Date(),
           })),
+      });
+    }
+
+    if (data.householdPreferences.length > 0) {
+      const source = data.householdPreferences[0];
+      // 走过一遍 `preferencesFromRow` 再写：老备份里可能缺字段或存着非法时区，
+      // 直接照抄会把无效 IANA 名写进库，业务日计算随之处处落空。
+      const preferences = preferencesFromRow(source as unknown as PreferenceRow);
+      await tx.householdPreference.createMany({
+        data: [
+          {
+            householdId,
+            ...preferenceRowData(preferences),
+            createdAt: source.createdAt ? new Date(String(source.createdAt)) : new Date(),
+            updatedAt: source.updatedAt ? new Date(String(source.updatedAt)) : new Date(),
+          },
+        ],
       });
     }
 

@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db/prisma";
 import { parseSettlementAgreementInput, upsertSettlementAgreementForAccount } from "@/lib/server/settlement-agreement";
 import { toNumber } from "@/lib/date-utils";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { getHouseholdTimeZone } from "@/lib/server/household-preferences";
 import { resolveLoanCategoryForWrite } from "@/lib/server/loan-category";
 import { isAdmin } from "@/lib/server/auth";
 import { getApiHouseholdScope } from "@/lib/server/api-auth";
@@ -533,6 +534,7 @@ export async function POST(req: NextRequest) {
           await recordCreditCardBillingDayChange(tx, {
             accountIds: institutionCardIds,
             billingDay: account.billingDay,
+            timeZone: await getHouseholdTimeZone(householdId),
           });
         }
         await syncCreditCardBillingDaysFromRules(tx, {

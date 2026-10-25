@@ -168,6 +168,8 @@ export type LiabilityDetailEntry = {
   relatedAccountLabel: string;
   relatedAccountTitle?: string;
   collateralLabel?: string | null;
+  /** 已被报销单关联的原始记录：往来款明细要能直接看出这笔已报销（悬停显示单据标题）。 */
+  reimbursementLink?: { id: string; title: string } | null;
   note: string;
   amount: number;
   principal: number;
@@ -533,6 +535,7 @@ export function buildLiabilityDetailEntriesViewData({
   displayAccountId,
   mortgagedAssetByLoanAccountId,
   collateralNameByLoanAccountId,
+  reimbursementLinkByEntryId,
 }: {
   liabilityEntriesRaw: LiabilityMetricEntry[];
   selectedLiabilityAccountIds: Set<string>;
@@ -547,6 +550,8 @@ export function buildLiabilityDetailEntriesViewData({
   displayAccountId?: string | null;
   mortgagedAssetByLoanAccountId?: Map<string, { accountId: string; id: string }>;
   collateralNameByLoanAccountId?: Map<string, string>;
+  /** txRecordId → 关联的报销单（标题用于悬停提示）。 */
+  reimbursementLinkByEntryId?: Map<string, { id: string; title: string }>;
 }) {
   const automaticRepaymentPlanIds = new Set<string>();
   if (selectedAutoDebitPlan?.id) automaticRepaymentPlanIds.add(selectedAutoDebitPlan.id);
@@ -714,6 +719,7 @@ export function buildLiabilityDetailEntriesViewData({
       relatedAccountLabel: isBalanceReconcile ? "-" : (accountLabelById.get(cashSideAccountId) ?? "-"),
       relatedAccountTitle: isBalanceReconcile ? "" : (accountTitleById?.get(cashSideAccountId) ?? ""),
       collateralLabel: collateralNameByLoanAccountId?.get(liabilitySideAccountId) ?? null,
+      reimbursementLink: reimbursementLinkByEntryId?.get(entry.id) ?? null,
       note: entry.note ?? "",
       amount: displayAmount,
       principal: cashFlowAmount,
@@ -1379,6 +1385,7 @@ export function buildLiabilityRepaymentScheduleRows({
   liabilityEntriesRaw = [],
   selectedLiabilityAccountIds,
   displayAccountId,
+  timeZone,
 }: {
   // 只读取这四个字段，因此计划任务页可以用「贷款计划 + 账户余额 + 利率调整」
   // 拼出一个最小行来复用同一套推演，而不必伪造完整的 LiabilityViewRow。
@@ -1387,6 +1394,8 @@ export function buildLiabilityRepaymentScheduleRows({
   liabilityEntriesRaw?: LiabilityMetricEntry[];
   selectedLiabilityAccountIds?: Set<string>;
   displayAccountId?: string | null;
+  /** 账簿业务时区：还款计划从「业务时区的今天」起算。 */
+  timeZone: string;
 }): LiabilityRepaymentScheduleRow[] {
   const selectedRepaymentMemo = selectedRepaymentPlan ? decodeScheduledTaskMemo(selectedRepaymentPlan.memo) : null;
   const selectedRemainingRuns = selectedRepaymentPlan?.totalRuns == null
@@ -1409,8 +1418,8 @@ export function buildLiabilityRepaymentScheduleRows({
     }))
     .filter((item) => item.amount > ACTIVE_LIABILITY_EPSILON)
     .sort((a, b) => a.date.localeCompare(b.date));
-  // 业务时区，不用进程时区（容器可能是 UTC，会晚 8 小时）。
-  const todayKey = todayDateBusinessYmd();
+  // 业务时区取账簿设置，不用进程时区（容器可能是 UTC，会晚 8 小时）。
+  const todayKey = todayDateBusinessYmd(timeZone);
 
   let remainingPrincipal = Math.abs(selectedLiabilityRow.net);
   let runDate = selectedRepaymentPlan.nextRunDate;

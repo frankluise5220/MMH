@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db/prisma";
+import { getRequestTimeZone } from "@/lib/server/business-time-zone";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
 import { buildAccountDisplayOption, buildFlatAccountOptions, buildGroupedAccountOptions } from "@/lib/account-display";
@@ -305,6 +306,7 @@ export default async function RegularInvestPage() {
     // 期数上限与负债页完全一致：有总期数按剩余期数，自由还款（无总期数）只推 24 期，最多 360 期。
     const maxRuns = Math.min(remainingRuns ?? 24, 360);
     const rows = buildLiabilityRepaymentScheduleRows({
+      timeZone: await getRequestTimeZone(),
       selectedLiabilityRow: {
         net: balance,
         accountIds: [plan.accountId],

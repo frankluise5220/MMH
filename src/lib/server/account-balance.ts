@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db/prisma";
 import { AccountKind, FundSubtype, Prisma, TransactionType } from "@prisma/client";
 import { toNumber, todayDateBusinessYmd } from "@/lib/date-utils";
+import { resolveHouseholdTimeZone } from "@/lib/server/business-time-zone";
 import { compareDetailEntriesAsc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
 import {
   applyBalanceAnchorEntry,
@@ -386,8 +387,8 @@ export async function computeAccountDisplayBalances(
   const accountIds = accounts.map((account) => account.id).filter(Boolean);
   const result = new Map<string, number>();
   if (accountIds.length === 0) return result;
-  // 「今天」按业务时区算：容器未设置 TZ 时进程时区是 UTC，会比北京时间晚 8 小时。
-  const todayKey = todayDateBusinessYmd();
+  // 「今天」按账簿设置的业务时区算，容器 TZ 只是兜底。
+  const todayKey = todayDateBusinessYmd(await resolveHouseholdTimeZone(hidFilter?.householdId));
   const isOnOrBeforeToday = (date: Date) => localDateKey(date) <= todayKey;
   const depositAccountIds = accounts
     .filter((account) => account.kind === AccountKind.deposit || account.investProductType === "deposit")
@@ -927,8 +928,8 @@ async function foldAccountBalanceRange(
     maxWindows?: number;
   },
 ): Promise<BalanceFoldRangeResult> {
-  // 「今天」按业务时区算：容器未设置 TZ 时进程时区是 UTC，会比北京时间晚 8 小时。
-  const todayKey = todayDateBusinessYmd();
+  // 「今天」按账簿设置的业务时区算，容器 TZ 只是兜底。
+  const todayKey = todayDateBusinessYmd(await resolveHouseholdTimeZone(hidFilter?.householdId));
   const targetKey = options?.toKeyInclusive && options.toKeyInclusive < todayKey
     ? options.toKeyInclusive
     : todayKey;
@@ -1043,9 +1044,10 @@ export async function foldAccountBalanceBatched(
 
 export async function loadLastBalanceAnchor(
   accountId: string,
-  todayKey = todayDateBusinessYmd(),
+  todayKey?: string,
   hidFilter?: { householdId?: string },
 ) {
+  const effectiveTodayKey = todayKey ?? (await resolveHouseholdTimeZone(hidFilter?.householdId));
   const where = {
     deletedAt: null,
     ...(hidFilter ?? {}),
@@ -1063,7 +1065,7 @@ export async function loadLastBalanceAnchor(
     if (page.length === 0) break;
     for (const row of page) {
       if (getBalanceAnchorTarget(row) == null) continue;
-      if (localDateKey(getDetailEntryDisplayDate(row, accountId)) > todayKey) continue;
+      if (localDateKey(getDetailEntryDisplayDate(row, accountId)) > effectiveTodayKey) continue;
       if (!lastAnchor || compareDetailEntriesAsc(lastAnchor, row, accountId) < 0) {
         lastAnchor = row;
       }
@@ -1090,7 +1092,7 @@ export async function advanceStoredBalanceToToday(
     return storedBalance;
   }
   // 「今天」按业务时区算：容器未设置 TZ 时进程时区是 UTC，会比北京时间晚 8 小时。
-  const todayKey = todayDateBusinessYmd();
+  const todayKey = todayDateBusinessYmd(await resolveHouseholdTimeZone(hidFilter?.householdId));
   const asOfKey = localDateKey(asOf);
   if (asOfKey >= todayKey) return storedBalance;
   return foldAccountBalanceBatched(account, hidFilter, {
@@ -1135,7 +1137,7 @@ async function advanceAccountBalanceStep(accountId: string, maxWindows = 1) {
   if (!acc) return false;
 
   // 「今天」按业务时区算：容器未设置 TZ 时进程时区是 UTC，会比北京时间晚 8 小时。
-  const todayKey = todayDateBusinessYmd();
+  const todayKey = todayDateBusinessYmd(await resolveHouseholdTimeZone(acc.householdId));
   const todayEnd = endOfLocalDayKey(todayKey);
   const account = {
     id: acc.id,
@@ -1265,7 +1267,7 @@ export async function recalcAndSaveAccountBalance(accountId: string) {
     return true;
   }
   // 「今天」按业务时区算：容器未设置 TZ 时进程时区是 UTC，会比北京时间晚 8 小时。
-  const todayKey = todayDateBusinessYmd();
+  const todayKey = todayDateBusinessYmd(await resolveHouseholdTimeZone(acc.householdId));
   const asOf = endOfLocalDayKey(todayKey);
 
   // Credit-bill accounts (bank_credit) always fold to a display balance of 0
@@ -1343,7 +1345,7 @@ export async function applyEntryChangesToAccountBalances(changes: EntryBalanceCh
     },
   });
   // 「今天」按业务时区算：容器未设置 TZ 时进程时区是 UTC，会比北京时间晚 8 小时。
-  const todayKey = todayDateBusinessYmd();
+  const todayKey = todayDateBusinessYmd(await resolveHouseholdTimeZone(accounts[0]?.householdId));
   const asOf = endOfLocalDayKey(todayKey);
   const changedEntryIds = changes.map((change) => change.entryId);
 
@@ -1522,14 +1524,15 @@ export async function bootstrapPendingAccountBalances(
   limit = 1,
   maxWindowsPerAccount = 1,
 ) {
-  // 「今天」按业务时区算：容器未设置 TZ 时进程时区是 UTC，会比北京时间晚 8 小时。
-  const todayKey = todayDateBusinessYmd();
-  const startOfToday = dateFromLocalKey(todayKey);
+  // 跨账簿的后台补偿任务，没有单一「今天」可用：这里用「24 小时内算过就不动」
+  // 的窗口挑候选，不受账簿时区影响；真正的余额推进在 advanceAccountBalanceStep
+  // 里按 account.householdId 的时区算。
+  const staleBefore = new Date(Date.now() - 24 * 60 * 60 * 1000);
   const accounts = await prisma.account.findMany({
     where: {
       OR: [
         { balanceRecomputedAt: null },
-        { balanceRecomputedAt: { lt: startOfToday } },
+        { balanceRecomputedAt: { lt: staleBefore } },
       ],
     },
     select: { id: true },

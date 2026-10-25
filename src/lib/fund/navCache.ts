@@ -87,11 +87,12 @@ export function findNavExact(
  */
 export function findNavFallback(
   navList: NavListItem[],
-  targetDate: string
+  targetDate: string,
+  todayKey: string = todayDateBusinessYmd()
 ): NavListItem | null {
   const targetTime = new Date(targetDate + "T00:00:00Z").getTime();
-  // 业务时区今天：净值日期是「交易日」日历日，UTC 日期在北京时间凌晨会差一天。
-  const nowDate = todayDateBusinessYmd();
+  // 「今天」由调用方按账簿时区传入；缺省时回落到部署默认值。
+  const nowDate = todayKey;
   const nowTime = new Date(nowDate + "T00:00:00Z").getTime();
   // Don't fallback for today or future dates — the nav hasn't been published yet
   const recentThreshold = nowTime - 2 * 86400000; // 2 calendar days ago

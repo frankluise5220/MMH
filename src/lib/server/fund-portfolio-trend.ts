@@ -17,6 +17,7 @@
  */
 
 import { todayDateBusinessYmd, businessTodayUtcStart } from "@/lib/date-utils";
+import { resolveHouseholdTimeZone } from "@/lib/server/business-time-zone";
 import { FundProductType, FundSubtype, type Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { AccountKind } from "@prisma/client";
@@ -359,6 +360,8 @@ export async function loadFundPortfolioTrendData(
 ): Promise<FundPortfolioTrendData> {
   const { startMonth: optStart, endMonth: optEnd, accountIds, includeBenchmark } = options;
   const resolvedBenchmarkCode = resolveBenchmarkCode(options.benchmarkCode);
+  // 「当前月份」按账簿设置的时区取，容器 TZ 只是兜底。
+  const timeZone = await resolveHouseholdTimeZone(ctx.hidFilter.householdId);
 
   // ── 1. Find all investment accounts ─────────────────────────────────────
   const accountFilter = accountIds && accountIds.length > 0
@@ -376,7 +379,7 @@ export async function loadFundPortfolioTrendData(
     select: { id: true, name: true, fundUnitsDecimals: true },
   });
   if (accounts.length === 0) {
-    const currentYm = todayDateBusinessYmd().slice(0, 7);
+    const currentYm = todayDateBusinessYmd(timeZone).slice(0, 7);
     const s = optStart ?? `${currentYm.slice(0, 4)}-01`;
     const e = optEnd ?? currentYm;
     const bench = includeBenchmark ? await loadBenchmarkMonthly(s, e, resolvedBenchmarkCode) : [];
@@ -422,7 +425,7 @@ export async function loadFundPortfolioTrendData(
   });
 
   if (transactions.length === 0) {
-    const currentYm = todayDateBusinessYmd().slice(0, 7);
+    const currentYm = todayDateBusinessYmd(timeZone).slice(0, 7);
     const s = optStart ?? `${currentYm.slice(0, 4)}-01`;
     const e = optEnd ?? currentYm;
     const bench = includeBenchmark ? await loadBenchmarkMonthly(s, e, resolvedBenchmarkCode) : [];
@@ -440,7 +443,7 @@ export async function loadFundPortfolioTrendData(
     const d = new Date(Date.UTC(y, m - 1, 1));
     if (d < minDate) minDate = d;
   }
-  const now = businessTodayUtcStart();
+  const now = businessTodayUtcStart(timeZone);
   if (maxDate < now) maxDate = now;
   if (optEnd) {
     const [y, m] = optEnd.split("-").map(Number);

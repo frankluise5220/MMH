@@ -17,6 +17,7 @@ import { NextResponse } from "next/server";
 import { AccountKind } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { getHouseholdTimeZone } from "@/lib/server/household-preferences";
 import { addDaysUtc, formatDateUtc, startOfDayUtc, toNumber, businessTodayUtcStart } from "@/lib/date-utils";
 import { revalidateAfterSettingsChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 import {
@@ -177,7 +178,7 @@ export async function PATCH(req: Request) {
       return NextResponse.json({ ok: false, code: "INVALID_REPAYMENT_OFFSET_DAYS", error: `还款日偏移天数应为 0-${CREDIT_CARD_MAX_REPAYMENT_OFFSET_DAYS} 之间的整数` }, { status: 400 });
     }
     const repaymentDay = dueDate && repaymentMode === "fixed" ? dueDate.getUTCDate() : null;
-    const today = businessTodayUtcStart();
+    const today = businessTodayUtcStart(await getHouseholdTimeZone(householdId));
 
     const adjustedCycles = cycles.map((cycle) => ({
       id: cycle.id,

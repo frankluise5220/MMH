@@ -289,3 +289,11 @@ __pycache__/
 /apps.json
 /logo/
 /start-dev.bat
+
+# 一次失败/对比构建留下的 .next 副本（只保留标准 .next/）
+/.next.*/
+# 本地比对用的临时补丁与 diff 落盘（tmp-*.patch / tmp-*.txt）
+/tmp-*.patch
+/tmp-*.txt
+# IDE 助手工作区状态（本地保留，不进仓库）
+/.codebuddy/

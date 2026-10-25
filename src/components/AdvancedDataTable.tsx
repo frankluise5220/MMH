@@ -1252,6 +1252,9 @@ export function AdvancedDataTable<T>({
 
   const onRowsFitChangeRef = useRef(onRowsFitChange);
   const lastReportedRowsFitRef = useRef<number | null>(null);
+  // 上一次上报是否来自「外推」（当前页全部放得下、按平均行高估的容量）。
+  // 外推是估计值：页大小落地后行数变了，用落地后的真实行高再复核一次。
+  const lastFitWasExtrapolatedRef = useRef(false);
   const rowsFitObserverTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
@@ -1267,48 +1270,63 @@ export function AdvancedDataTable<T>({
     const bodyRows = viewport.querySelectorAll<HTMLElement>("[data-advanced-table-body-row]");
     if (bodyRows.length === 0) return;
     const rowHeights: number[] = [];
-    let maxRowHeight = 0;
     for (const row of bodyRows) {
       const height = row.getBoundingClientRect().height;
       if (height <= 0) continue;
       rowHeights.push(height);
-      maxRowHeight = Math.max(maxRowHeight, height);
     }
     if (rowHeights.length === 0) return;
-    const headerRow = viewport.querySelector<HTMLElement>("[data-advanced-table-header-row]");
+    // 表头和 `summaryRowPlacement="footer"` 的汇总条都渲染在滚动容器**外面**，
+    // 是高 flex 列里的兄弟节点：它们的高度本来就不含在 viewport.clientHeight 里，
+    // 再减一次就是双重扣除。只有吸在视口内的 <tfoot> 汇总行同在容器内，占的是
+    // 同一份高度，必须减掉。
     const summaryRowElement = viewport.querySelector<HTMLElement>("[data-advanced-table-summary-row]");
-    const headerHeight = headerRow ? headerRow.getBoundingClientRect().height : 0;
     const summaryHeight = summaryRowElement ? summaryRowElement.getBoundingClientRect().height : 0;
-    const available = viewport.clientHeight - headerHeight - summaryHeight - ROW_BORDER_HEIGHT;
+    // 末尾再留 1px 余量：最后一行自带的 1px 下边框不贴死视口下沿，避免逼出
+    // 一根「差了不到一行」的内部滚动条。
+    const available = viewport.clientHeight - summaryHeight - ROW_BORDER_HEIGHT;
     if (available <= 0) return;
-    // Prefer the exact number of loaded rows that fit when heights are mixed.
-    // If every loaded row fits, extrapolate from their average height so one
-    // unusually tall row does not leave a large block of empty space.
+    // 行的实测高度（getBoundingClientRect）已含单元格自身的 1px 下边框，每行
+    // 占地就是它的高度，不能再补 +1。此前每行多算 1px、外推时再 +3px，页数系统
+    // 性偏小 1~3 行，表格底部永远空着一块——「自适应」名不副实。
     let usedHeight = 0;
     let count = 0;
     for (const height of rowHeights) {
-      if (usedHeight + height + ROW_BORDER_HEIGHT > available + 0.5) break;
-      usedHeight += height + ROW_BORDER_HEIGHT;
+      if (usedHeight + height > available + 0.5) break;
+      usedHeight += height;
       count += 1;
     }
     if (count === rowHeights.length) {
+      // 当前页全部放得下（初始页大小小于视口容量）：按平均行高外推还能再放几行，
+      // 免得首屏只显示 stored pageSize 那么点行、底部空一大片。混合行高下平均
+      // 值会偏保守（高行把均值抬上去），落地后的复核会再修一次。
       const averageRowHeight = usedHeight / rowHeights.length;
-      count = Math.max(
-        count,
-        Math.floor((available + 0.5) / (averageRowHeight + ROW_BORDER_HEIGHT + 2)),
-      );
+      const extrapolated = Math.max(count, Math.floor((available + 0.5) / averageRowHeight));
+      lastFitWasExtrapolatedRef.current = extrapolated > count;
+      count = extrapolated;
+    } else {
+      lastFitWasExtrapolatedRef.current = false;
     }
     count = Math.max(1, count);
     if (lastReportedRowsFitRef.current === count) return;
     lastReportedRowsFitRef.current = count;
     report(count);
-  }, [fillHeight]);
+    // `rowHeight` 变了（行高偏好加载/切换、compactRows 切换）必须重算：首帧渲染
+    // 用的是 DEFAULT_ROW_HEIGHT_MODE，偏好是挂载后才同步进来的，若只算一次就会
+    // 按错误行高冻结页数（实测 35px 档量出 21 行，偏好落到 31px 后能放 24 行）。
+  }, [fillHeight, rowHeight]);
 
-  // 自适应页数只在「挂载 / report 回调 identity 变化」时算一次：调用方用换一个新
-  // 的 report 函数来表达"视图重开或重新选自适应"（换账户、切回自适应都会换新）。
-  // 刻意不跟随每次渲染、也不跟随视口 resize —— 本视图内页大小冻结，直到重开。
+  // 自适应页数在三种时机重算：
+  //  1. 挂载 / report 回调 identity 变化 —— 调用方用换一个新的 report 函数来表达
+  //     "视图重开或重新选自适应"（换账户、切回自适应都会换新）；
+  //  2. 行高变化 —— measureRowsFit 依赖 rowHeight：行高偏好挂载后才同步进来
+  //     （首帧是 DEFAULT_ROW_HEIGHT_MODE）、用户在设置里切换、compactRows 切换，
+  //     都必须重算，否则会按错误行高把页数冻结住；
+  //  3. 视口高度变化（见下方 ResizeObserver）——「自适应」跟着视口走。
+  // 刻意不跟随每次渲染、也不跟随数据页变化：翻页、筛选、局部刷新不重算。
   useEffect(() => {
     lastReportedRowsFitRef.current = null;
+    lastFitWasExtrapolatedRef.current = false;
     measureRowsFit();
   }, [measureRowsFit, onRowsFitChange]);
 
@@ -1319,16 +1337,17 @@ export function AdvancedDataTable<T>({
     measureRowsFit();
   }, [measureRowsFit, rows.length]);
 
-  // 兜底：首次测量若因容器还没有尺寸而失败，等容器出现尺寸后再补测一次；
-  // 一旦成功上报过就不再跟随 resize（保持"打开时算一次"的语义）。
+  // 视口高度变化（窗口 resize、拖动分栏）后重算，防抖 250ms 等拖拽停当再量。
+  // 首帧若因容器还没有尺寸而量不到，这里补测。行数没变时测量函数直接早退，
+  // 不上报、不惊动调用方——所以平时的翻页 / 筛选 / 数据刷新都不会触发重算，
+  // 也不会和调用方的页大小来回抖动；分栏拖过头也就每跨一行边界才更新一次。
   useEffect(() => {
     if (!onRowsFitChange) return;
     const node = viewportRef.current;
     if (!node) return;
     const schedule = () => {
-      if (lastReportedRowsFitRef.current != null) return;
       if (rowsFitObserverTimerRef.current != null) window.clearTimeout(rowsFitObserverTimerRef.current);
-      rowsFitObserverTimerRef.current = window.setTimeout(() => measureRowsFit(), 150);
+      rowsFitObserverTimerRef.current = window.setTimeout(() => measureRowsFit(), 250);
     };
     const observer = new ResizeObserver(schedule);
     observer.observe(node);
@@ -1535,6 +1554,17 @@ export function AdvancedDataTable<T>({
     if (!draggedRowKey || !dragTarget) return rowItems;
     return reorderRowItems(rowItems, draggedRowKey, dragTarget.key, dragTarget.position);
   }, [dragTarget, draggedRowKey, rowItems]);
+  // 外推复核：上一次上报是外推值、且调用方已把它应用成页大小（渲染行数正好等于
+  // 上报值）时，用落地后的真实行高再量一次。估准了测量函数会直接早退（不上报、
+  // 不惊动调用方）；混合行高下平均值外推少算的那 ~1 行在这里补上。只补一次
+  // （标志先清），不会和调用方的页大小来回抖动。
+  useEffect(() => {
+    if (!onRowsFitChange) return;
+    if (!lastFitWasExtrapolatedRef.current) return;
+    if (rowItems.length !== lastReportedRowsFitRef.current) return;
+    lastFitWasExtrapolatedRef.current = false;
+    measureRowsFit();
+  }, [measureRowsFit, onRowsFitChange, rowItems.length]);
   const rowBackgroundClassByKey = useMemo(() => {
     const classByKey = new Map<string, string>();
     if (!rowBackgroundEnabled || !rowBackgroundGroupKey) return classByKey;

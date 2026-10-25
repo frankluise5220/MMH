@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
+import { getRequestTimeZone } from "@/lib/server/business-time-zone";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { isWithinRecentTradingDaysUtc, todayDateBusinessYmd } from "@/lib/date-utils";
 import { getFundNav, getLatestFundNav, refreshLatestFundNav, setFundNav } from "@/lib/fund/navCache";
@@ -137,7 +138,7 @@ export async function GET(req: NextRequest) {
         : null;
       const recentBuyWithoutExactNav = purpose === "buy" && !!applyDate && isWithinRecentTradingDaysUtc(
         applyDate,
-        todayDateBusinessYmd(),
+        todayDateBusinessYmd(await getRequestTimeZone()),
         2,
         account?.tradingCalendar ?? "cn_fund",
       );

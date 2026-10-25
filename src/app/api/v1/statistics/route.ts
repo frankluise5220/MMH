@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { prisma } from "@/lib/db/prisma";
 import { getApiHouseholdScope } from "@/lib/server/api-auth";
+import { getHouseholdTimeZone } from "@/lib/server/household-preferences";
 import { loadWealthStatisticSourceEntries } from "@/lib/server/investment-statistic-sources";
 import { TransactionType } from "@prisma/client";
 import { toNumber, businessTodayUtcStart } from "@/lib/date-utils";
@@ -60,7 +61,8 @@ export async function GET(req: NextRequest) {
     const { hidFilter, householdId } = ctx;
 
     const url = req.nextUrl;
-    const now = businessTodayUtcStart();
+    // 「本年」必须按账簿设置的时区取，否则跨时区/容器 UTC 会算错年份。
+    const now = businessTodayUtcStart(await getHouseholdTimeZone(householdId));
     const thisYear = now.getUTCFullYear();
     const rawYear = url.searchParams.get("year");
     const selectedYear = rawYear ? parseInt(rawYear, 10) : thisYear;

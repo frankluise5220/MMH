@@ -7,7 +7,7 @@ import { buildAccountDisplayOption, normalizeCreditCardLabelTemplate } from "@/l
 import { getInvestmentAccountView } from "@/lib/account-kind-utils";
 import { investProductTypeLabel } from "@/lib/account-kinds";
 import { prisma } from "@/lib/db/prisma";
-import { formatDateUtc } from "@/lib/date-utils";
+import { formatDateUtc, todayDateBusinessYmd } from "@/lib/date-utils";
 import { futureConfirmHoldingKey, loadFutureConfirmedBuyMap } from "@/lib/fund/future-confirm";
 import { signedFundAmount } from "@/lib/fund/transactions";
 import { formatMoney, formatPercent } from "@/lib/format";
@@ -16,6 +16,7 @@ import type { InvestBalanceDetail } from "@/lib/invest-balance";
 import { loadInvestBalances } from "@/lib/server/cached-data";
 import { getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { getRequestTimeZone } from "@/lib/server/business-time-zone";
 import { ACCOUNT_LABEL_FIELDS_COOKIE, accountLabelFieldsFromCookieValue } from "@/lib/server/account-label-fields";
 import { getServerT } from "@/lib/server/i18n";
 import { MobileInvestments, type MobileInvestmentAccountDetail } from "@/components/mobile/MobileInvestments";
@@ -128,6 +129,8 @@ export default async function InvestmentsPage({
     .filter((account) => FUND_LIKE_PRODUCT_TYPES.includes(account.investProductType as FundProductType))
     .map((account) => account.id);
   const chartStartDate = startDateForMobileChart();
+  // 「确认日是否在未来」按账簿业务时区判断，容器 TZ 只是兜底。
+  const businessTodayKey = todayDateBusinessYmd(await getRequestTimeZone());
 
   const [fundHoldings, fundTransactions, futureConfirmedBuys] = await Promise.all([
     fundLikeAccountIds.length > 0 ? prisma.fundHolding.findMany({
@@ -143,7 +146,7 @@ export default async function InvestmentsPage({
       orderBy: [{ applyDate: "desc" }, { createdAt: "desc" }],
     }) : Promise.resolve([]),
     // 确认日在未来的买入份额不能算持仓，这里把它的金额改成在途。
-    loadFutureConfirmedBuyMap(fundLikeAccountIds),
+    loadFutureConfirmedBuyMap(fundLikeAccountIds, businessTodayKey),
   ]);
 
   const fundCodes = Array.from(new Set([

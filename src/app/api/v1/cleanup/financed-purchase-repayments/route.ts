@@ -2,6 +2,7 @@ import { IntervalUnit, RegularInvestStatus, TransactionType } from "@prisma/clie
 import { NextResponse } from "next/server";
 
 import { prisma } from "@/lib/db/prisma";
+import { getHouseholdTimeZone } from "@/lib/server/household-preferences";
 import { formatDateUtc, startOfDayUtc, toNumber, businessTodayUtcStart } from "@/lib/date-utils";
 import { calcInitialScheduledRunDate, calcNextScheduledRunDate } from "@/lib/scheduled-task-date";
 import { logger } from "@/lib/logger";
@@ -67,7 +68,9 @@ export async function POST(req: Request) {
     const body = await req.json().catch(() => ({}));
     const dryRun = body?.dryRun !== false;
     const mode = normalizeMode(body?.mode);
-    const cutoffDate = body?.cutoffDate ? parseDateOnlyUtc(body.cutoffDate) : businessTodayUtcStart();
+    const cutoffDate = body?.cutoffDate
+      ? parseDateOnlyUtc(body.cutoffDate)
+      : businessTodayUtcStart(await getHouseholdTimeZone(scope.householdId));
     const accountId = String(body?.accountId ?? "").trim();
     const planId = String(body?.planId ?? "").trim();
 

@@ -97,11 +97,17 @@ export default async function MobileAccountDetailPage({ params }: { params: Prom
   const accountDisplayById = new Map(
     accounts.map((item) => {
       const option = buildAccountDisplayOption({ ...item, kind: String(item.kind) }, undefined, { fields: accountLabelFields, baseCurrency });
-      return [item.id, formatAccountTableLabel(option, "", accountLabelFields)] as const;
+      return [item.id, {
+        label: formatAccountTableLabel(option, "", { fields: accountLabelFields, baseCurrency }),
+        // 行内看不到的机构/卡号/非本位币，留给 hover。
+        title: option.tableHoverTitle,
+      }] as const;
     }),
   );
   const rows: MobileTransactionRow[] = entries.map((entry) => {
     const amount = toNumber(entry.amount);
+    const account = accountDisplayById.get(entry.accountId);
+    const toAccount = entry.toAccountId ? accountDisplayById.get(entry.toAccountId) : undefined;
     return {
       id: entry.id,
       date: formatDateUtc(entry.date),
@@ -109,8 +115,10 @@ export default async function MobileAccountDetailPage({ params }: { params: Prom
       flowAmount: entry.accountId === accountId ? amount : -amount,
       type: entry.type,
       categoryName: entry.categoryName ?? "",
-      accountName: accountDisplayById.get(entry.accountId) ?? entry.accountName ?? "",
-      toAccountName: entry.toAccountId ? accountDisplayById.get(entry.toAccountId) ?? entry.toAccountName ?? "" : entry.toAccountName ?? "",
+      accountName: account?.label ?? entry.accountName ?? "",
+      accountHoverTitle: account?.title ?? "",
+      toAccountName: toAccount?.label ?? entry.toAccountName ?? "",
+      toAccountHoverTitle: toAccount?.title ?? "",
       note: entry.note ?? "",
     };
   });

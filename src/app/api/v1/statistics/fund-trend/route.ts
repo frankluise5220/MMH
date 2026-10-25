@@ -2,6 +2,7 @@ import { todayDateBusinessYmd } from "@/lib/date-utils";
 import { NextRequest, NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/server/auth";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { getRequestTimeZone } from "@/lib/server/business-time-zone";
 import {
   loadFundPortfolioTrendData,
   ensureBenchmarkCache,
@@ -51,7 +52,7 @@ export async function GET(req: NextRequest) {
     if (benchmarkCode) {
       const now = new Date();
       const endMonthStr = endMonth
-        ?? todayDateBusinessYmd().slice(0, 7);
+        ?? todayDateBusinessYmd(await getRequestTimeZone()).slice(0, 7);
       const [ey, em] = endMonthStr.split("-").map(Number);
       const endDate = new Date(Date.UTC(ey, em, 0)).toISOString().slice(0, 10);
       let startMonthStr = startMonth;

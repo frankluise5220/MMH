@@ -27,6 +27,7 @@ import { renewDeposit } from "@/lib/server/sidebar-actions/transaction-actions";
 import { resolveCategorySnapshot, SYSTEM_DEPOSIT_INTEREST_CATEGORY } from "@/lib/default-categories";
 import { ENTRY_ORIGIN_SCHEDULED_TASK } from "@/lib/transaction-semantics";
 import { businessDayStartUtc, toNumber } from "@/lib/date-utils";
+import { getHouseholdTimeZone } from "@/lib/server/household-preferences";
 import { normalizeCurrency } from "@/lib/currency";
 import { loadDepositLotBalance } from "@/lib/server/deposit-lot-balance";
 
@@ -139,7 +140,7 @@ async function runAutoProcessMaturedDeposits(
   };
 
   // 业务时区的「今天」UTC 零点；`utcDayStart` 在北京时间 00:00–08:00 会少一天。
-  const today = businessDayStartUtc(now);
+  const today = businessDayStartUtc(now, await getHouseholdTimeZone(householdId));
 
   // ── Scan 1: periodic-payout deposits still held — any accrued-but-unpaid
   // interest (payout date passed, no live income entry for it) is generated

@@ -4,10 +4,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { CheckCircle2, Download, ExternalLink, Loader2, RefreshCw, XCircle } from "lucide-react";
 import {
   APP_PREFS_EVENT,
-  getTimeZoneModePreference,
   getTimeZonePreference,
   type DisplayLanguage,
-  type TimeZoneMode,
 } from "@/lib/client/appPreferences";
 import { useI18n } from "@/lib/i18n";
 
@@ -115,7 +113,7 @@ const FIXED_IMAGE_SOURCE_OPTIONS = [
   { value: "fnvps", label: "FN VPS", appImage: "fnapp.floatingice.win:5000/frankluise5220/mmh:latest", updaterImage: "fnapp.floatingice.win:5000/frankluise5220/mmh-updater:latest" },
 ];
 
-function formatVersionDate(value: string | undefined, timeZoneMode: TimeZoneMode, timeZone: string) {
+function formatVersionDate(value: string | undefined, timeZone: string) {
   if (!value) return "";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
@@ -128,7 +126,7 @@ function formatVersionDate(value: string | undefined, timeZoneMode: TimeZoneMode
     second: "2-digit",
     hour12: false,
   };
-  if (timeZoneMode === "specified") options.timeZone = timeZone;
+  options.timeZone = timeZone;
   return new Intl.DateTimeFormat("zh-CN", options).format(date).replace(/\//g, "-");
 }
 
@@ -141,23 +139,22 @@ function formatVersionLine(
   version: string | undefined,
   commit: string | undefined,
   date: string | undefined,
-  timeZoneMode: TimeZoneMode,
   timeZone: string,
 ) {
   const head = [
     cleanVersionPart(version),
     cleanVersionPart(commit),
   ].filter(Boolean).join(" ");
-  return [head, formatVersionDate(date, timeZoneMode, timeZone)].filter(Boolean).join(" · ");
+  return [head, formatVersionDate(date, timeZone)].filter(Boolean).join(" · ");
 }
 
-function formatImageVersion(result: ImageSpeedResult | undefined, timeZoneMode: TimeZoneMode, timeZone: string, t: (key: string) => string) {
+function formatImageVersion(result: ImageSpeedResult | undefined, timeZone: string, t: (key: string) => string) {
   if (!result) return "";
   if (!result.ok) return result.error || t("settings.systemUpdate.failed");
   const version = result.version?.version || "";
   const commit = result.version?.commit || "";
   const digest = result.version?.digestShort || "";
-  const date = formatVersionDate(result.version?.created, timeZoneMode, timeZone);
+  const date = formatVersionDate(result.version?.created, timeZone);
   const versionAndCommit = [version, commit].filter(Boolean).join(" ");
   if (versionAndCommit && date) return `${versionAndCommit} · ${date}`;
   if (versionAndCommit) return versionAndCommit;
@@ -258,7 +255,6 @@ export default function SystemUpdatePage() {
     && !imageSourceDraft.customAppImage.trim();
   const [testingImageSource, setTestingImageSource] = useState(false);
   const [imageSpeedResults, setImageSpeedResults] = useState<Record<string, ImageSpeedResult>>({});
-  const [timeZoneMode, setTimeZoneMode] = useState<TimeZoneMode>("system");
   const [timeZone, setTimeZone] = useState("Asia/Shanghai");
 
   const loadVersionInfo = useCallback(async (options?: { checkRemote?: boolean }) => {
@@ -288,7 +284,6 @@ export default function SystemUpdatePage() {
 
   useEffect(() => {
     function syncTimeZonePreference() {
-      setTimeZoneMode(getTimeZoneModePreference());
       setTimeZone(getTimeZonePreference());
     }
     syncTimeZonePreference();
@@ -628,7 +623,7 @@ export default function SystemUpdatePage() {
   const packageLabel = synologyManaged ? "SPK" : "FNOS";
   const currentVersionText = packageManaged
     ? `${cleanVersionPart(versionInfo?.localVersion) || "unknown"} ${packageLabel}`
-    : formatVersionLine(versionInfo?.localVersion, versionInfo?.localCommit, versionInfo?.localCommitDate, timeZoneMode, timeZone);
+    : formatVersionLine(versionInfo?.localVersion, versionInfo?.localCommit, versionInfo?.localCommitDate, timeZone);
   const localReleaseNotes = versionInfo?.localReleaseNotes?.trim() || "";
   // 「本版说明」按界面语言取正文，该语言没有就回落中文正文；两者都为空时整块不渲染。
   // `localReleaseNotes` 是各商店共用的单行短说明，`ReleaseNotesText` 按 `\n` 切行渲染，
@@ -640,7 +635,6 @@ export default function SystemUpdatePage() {
     versionInfo?.remoteVersion,
     versionInfo?.remoteCommit,
     versionInfo?.remoteCommitDate,
-    timeZoneMode,
     timeZone,
   );
   const remoteSourceText = [
@@ -908,14 +902,14 @@ sudo docker compose -p mmh up -d app updater`}</pre>
                           className={`min-w-0 text-right ${
                             speed?.ok ? "text-emerald-600" : speed ? "text-red-600" : "text-slate-400"
                           }`}
-                          title={speed ? formatImageVersion(speed, timeZoneMode, timeZone, t) : ""}
+                          title={speed ? formatImageVersion(speed, timeZone, t) : ""}
                         >
                           {speed ? (
                             speed.ok ? (
                               <span className="flex min-w-0 flex-col items-end leading-tight">
                                 <span>{speed.ms}ms</span>
                                 <span className="max-w-full truncate text-[10px] text-slate-500">
-                                  {formatImageVersion(speed, timeZoneMode, timeZone, t)}
+                                  {formatImageVersion(speed, timeZone, t)}
                                 </span>
                               </span>
                             ) : t("settings.systemUpdate.failed")

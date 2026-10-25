@@ -21,7 +21,10 @@ export type MobileTransactionRow = {
   type: string;
   categoryName: string;
   accountName: string;
+  /** 行内省略的机构/卡号/非本位币，作为 hover。 */
+  accountHoverTitle?: string;
   toAccountName: string;
+  toAccountHoverTitle?: string;
   note: string;
   flowAmount?: number;
 };
@@ -224,7 +227,12 @@ export function MobileTransactions({ entries, accountSummary }: { entries: Mobil
                           <span className="truncate text-sm font-semibold text-slate-900">{entry.categoryName || typeLabel(entry.type, t)}</span>
                           {entry.type === "transfer" ? <ArrowLeftRight size={13} className="shrink-0 text-blue-500" /> : null}
                         </div>
-                        <div className="mt-1 truncate text-xs text-slate-500">
+                        <div
+                          className="mt-1 truncate text-xs text-slate-500"
+                          title={entry.type === "transfer"
+                            ? [entry.accountHoverTitle, entry.toAccountHoverTitle].filter(Boolean).join(" -> ") || undefined
+                            : entry.accountHoverTitle || undefined}
+                        >
                           {entry.type === "transfer" ? `${entry.accountName} -> ${entry.toAccountName}` : entry.accountName}
                           {entry.note ? ` · ${entry.note}` : ""}
                         </div>

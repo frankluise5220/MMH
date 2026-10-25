@@ -9,7 +9,7 @@
 
 import { prisma } from "@/lib/db/prisma";
 import { cache } from "react";
-import { toNumber } from "@/lib/date-utils";
+import { toNumber, todayDateBusinessYmd } from "@/lib/date-utils";
 import { AccountKind, FundCashFlowKind, FundSubtype, StockTransactionAction } from "@prisma/client";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 import { getEffectiveLatestFundNavMap } from "@/lib/fund/navCache";
@@ -17,6 +17,7 @@ import { getFundProfileNameMap, normalizeFundDisplayName } from "@/lib/fund/fund
 import { futureConfirmHoldingKey, loadFutureConfirmedBuyMap } from "@/lib/fund/future-confirm";
 import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import { getMaintainedAccountBalances } from "@/lib/server/account-balance";
+import { resolveHouseholdTimeZone } from "@/lib/server/business-time-zone";
 import { optionalPrismaFindMany } from "@/lib/server/optional-prisma-delegate";
 
 export type InvestBalanceDetail = {
@@ -442,7 +443,10 @@ export const computeInvestBalances = cache(
   const fundCodes = [...new Set(allHoldings.map(h => h.fundCode))];
   const displayPendingByHoldingKey = await loadDisplayPendingCostByHoldingKey(ctx, fundAccountIds);
   // 确认日在未来的买入即使已带份额也不能算持仓，读取时统一转为在途金额。
-  const futureConfirmedByHoldingKey = await loadFutureConfirmedBuyMap(fundAccountIds);
+  const futureConfirmedByHoldingKey = await loadFutureConfirmedBuyMap(
+    fundAccountIds,
+    todayDateBusinessYmd(await resolveHouseholdTimeZone(ctx.householdId)),
+  );
   const latestNavByCode = new Map<string, { nav: number; date: string }>();
   if (fundCodes.length > 0) {
     const caches = await getEffectiveLatestFundNavMap(fundCodes);
@@ -1023,7 +1027,10 @@ export const computePositionDisplay = cache(
   const fundCodes = [...new Set(holdings.map(h => h.fundCode))];
   const displayPendingByHoldingKey = await loadDisplayPendingCostByHoldingKey(ctx, [accountId]);
   // 确认日在未来的买入：份额已经写入，但还没到确认日，持仓里只应体现为在途金额。
-  const futureConfirmedByHoldingKey = await loadFutureConfirmedBuyMap([accountId]);
+  const futureConfirmedByHoldingKey = await loadFutureConfirmedBuyMap(
+    [accountId],
+    todayDateBusinessYmd(await resolveHouseholdTimeZone(ctx.householdId)),
+  );
   // Account-level money classification is the default for legacy holdings, but
   // a fund transaction carries the more precise product type. This prevents a
   // misclassified money account from forcing an ordinary fund's NAV to 1.

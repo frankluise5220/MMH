@@ -1,7 +1,7 @@
 import { FundCashFlowKind, FundSubtype } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
-import { toNumber, todayDateLocalYmd } from "@/lib/date-utils";
+import { toNumber, todayDateBusinessYmd } from "@/lib/date-utils";
 
 /**
  * 已确认未到期的买入（确认日在未来）。
@@ -40,13 +40,15 @@ function netBuyCost(row: {
  */
 export async function loadFutureConfirmedBuyMap(
   accountIds: readonly string[],
+  todayKey: string = todayDateBusinessYmd(),
 ): Promise<Map<string, FutureConfirmedBuy>> {
   const ids = Array.from(new Set(accountIds.map((id) => String(id ?? "").trim()).filter(Boolean)));
   const result = new Map<string, FutureConfirmedBuy>();
   if (ids.length === 0) return result;
 
-  // 确认日按用户本地「今天」比较：库里的 confirmDate 存的是 UTC 零点。
-  const todayUtc = new Date(`${todayDateLocalYmd()}T00:00:00.000Z`);
+  // 确认日按账簿业务时区的「今天」比较：库里的 confirmDate 存的是 UTC 零点。
+  // 调用方（RSC / 服务端库）必须传业务日，缺省只兜底部署默认值。
+  const todayUtc = new Date(`${todayKey}T00:00:00.000Z`);
 
   const rows = await prisma.fundTransaction.findMany({
     where: {

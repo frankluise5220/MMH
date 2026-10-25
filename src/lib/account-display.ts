@@ -324,6 +324,20 @@ export function stripVisibleHoverParts(
  * 行的可见文本是 `label` + `subLabel`（下拉右侧那一列），所以 `label` 和
  * `subLabel` 本身绝不再重复；只有所有人不在可见范围里时才补上。
  */
+/**
+ * 可见文本里是否已经**成段**出现某个片段：按分隔符切开后整段相等才算。
+ *
+ * 逐字 `includes` 会把「张四的现金」误判成"行里已经显示所有人张四"，于是悬浮
+ * 永远补不出所有人（2026-10-24 用户报障）。所有人/机构这类标签必须整段比较。
+ */
+function visibleTextHasSegment(visibleText: string, segment: string | null | undefined) {
+  const target = String(segment ?? "").trim();
+  if (!target) return false;
+  return String(visibleText ?? "")
+    .split(ACCOUNT_LABEL_SEPARATOR)
+    .some((part) => part.trim() === target);
+}
+
 export function formatAccountHoverTitle(input: {
   label: string;
   groupName?: string | null;
@@ -331,7 +345,7 @@ export function formatAccountHoverTitle(input: {
 }) {
   const visible = joinAccountSubLabel([input.label, input.subLabel]);
   const groupName = input.groupName?.trim() ?? "";
-  if (!groupName || visible.includes(groupName)) return "";
+  if (!groupName || visibleTextHasSegment(visible, groupName)) return "";
   return groupName;
 }
 
@@ -715,7 +729,7 @@ export function buildAccountDisplayOption(
   if (institutionHoverText && !selectorVisibleText.includes(institutionHoverText)) {
     hoverParts.push(institutionHoverText);
   }
-  if (showOwner && groupName && !selectorVisibleText.includes(groupName)) hoverParts.push(groupName);
+  if (showOwner && groupName && !visibleTextHasSegment(selectorVisibleText, groupName)) hoverParts.push(groupName);
   // 名称里已经写着 `USD` 的不重复；只写中文（「美元现金」）的仍要补 ISO 代码。
   const nameShowsCurrency = Boolean(tableCurrencyText) && accountDisplayName.includes(tableCurrencyText);
   if (tableCurrencyText && !nameShowsCurrency && !selectorVisibleText.includes(tableCurrencyText)) {

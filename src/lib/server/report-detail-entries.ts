@@ -1,6 +1,7 @@
 import type { DetailEntry } from "@/components/DetailViewClient";
 import { prisma } from "@/lib/db/prisma";
 import { toNumber, formatDateUtc, formatDateInTimeZone } from "@/lib/date-utils";
+import { resolveHouseholdTimeZone } from "@/lib/server/business-time-zone";
 import { rowWithLinkedInvestmentDisplayDate } from "@/lib/entry-reorder";
 import { loadEntryLinkedInvestmentDisplay } from "@/lib/server/entry-business-display";
 import { buildEntryBusinessLinkSummary, entryBusinessLinkSummaryInclude } from "@/lib/server/entry-business-link";
@@ -129,6 +130,8 @@ export async function loadReportDetailEntries(
   // 展示币种，不能再折一次（2026-10-18 用户报障：原币 244 USD 的流水，报表里已是
   // ¥1633.97，明细却标着 $）。账户明细页不走这里，仍按记录原币展示。
   const displayCurrency = await getHouseholdBaseCurrency(ctx.householdId);
+  // 报表下钻的「时刻 → 日历日」按账簿时区换算，不能跟着容器 TZ 走。
+  const reportTimeZone = await resolveHouseholdTimeZone(ctx.householdId);
 
   const detailEntryById = new Map<string, DetailEntry>(records.map((record) => {
     const linkedRow = rowWithLinkedInvestmentDisplayDate(
@@ -179,7 +182,7 @@ export async function loadReportDetailEntries(
     return [record.id, {
     id: record.id,
     date: formatDateUtc(record.date),
-    postedAt: record.postedAt ? formatDateInTimeZone(record.postedAt) : null,
+    postedAt: record.postedAt ? formatDateInTimeZone(record.postedAt, reportTimeZone) : null,
     createdAt: record.createdAt.toISOString(),
     updatedAt: record.updatedAt ? record.updatedAt.toISOString() : null,
     entryOrigin: record.entryOrigin ?? null,

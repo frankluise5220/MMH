@@ -74,11 +74,11 @@ export function StockHoldingReport({ rows, totals, isRedUp }: Props) {
       minWidth: 120,
       headerClassName: "text-left",
       className: "text-slate-600",
-      filterText: (row) => row.accountName,
-      sortValue: (row) => row.accountName,
+      filterText: (row) => row.accountLabel ?? row.accountName,
+      sortValue: (row) => row.accountLabel ?? row.accountName,
       render: (row) => (
-        <span className="block truncate" title={row.accountHoverTitle || row.accountName}>
-          {row.accountName}
+        <span className="block truncate" title={row.accountHoverTitle || row.accountLabel || row.accountName}>
+          {row.accountLabel ?? row.accountName}
         </span>
       ),
     },

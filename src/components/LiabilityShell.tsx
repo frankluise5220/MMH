@@ -86,6 +86,8 @@ type LiabilityEntry = {
   relatedAccountLabel: string;
   relatedAccountTitle?: string;
   collateralLabel?: string | null;
+  /** 已被报销单关联：明细行显示「已报销」标识，悬停看到单据标题。 */
+  reimbursementLink?: { id: string; title: string } | null;
   note: string;
   amount: number;
   principal: number;
@@ -1316,7 +1318,29 @@ export function LiabilityShell({
   const entryColumns = useMemo<AdvancedDataTableColumn<LiabilityEntry>[]>(() => {
     const columns: AdvancedDataTableColumn<LiabilityEntry>[] = [
       { key: "date", label: t("detail.column.date"), width: 100, minWidth: 80, filterText: (entry) => entry.date, render: (entry) => <span className="tabular-nums text-slate-700">{entry.date}</span> },
-      { key: "type", label: t("liabilityShell.colType"), width: 90, minWidth: 70, filterText: (entry) => entry.typeLabel, render: (entry) => <span className="text-slate-700">{entry.typeLabel}</span> },
+      {
+        key: "type",
+        label: t("liabilityShell.colType"),
+        width: 110,
+        minWidth: 70,
+        // 标识也参与筛选，用户能直接搜「已报销」把这些行挑出来。
+        filterText: (entry) => entry.reimbursementLink
+          ? `${entry.typeLabel} ${t("liabilityShell.reimbursementLinked")}`
+          : entry.typeLabel,
+        render: (entry) => (
+          <span className="flex items-center gap-1 text-slate-700">
+            <span className="truncate">{entry.typeLabel}</span>
+            {entry.reimbursementLink ? (
+              <span
+                className="shrink-0 rounded border border-emerald-200 bg-emerald-50 px-1 text-[10px] leading-4 text-emerald-700"
+                title={t("liabilityShell.reimbursementLinkedHint", { title: entry.reimbursementLink.title })}
+              >
+                {t("liabilityShell.reimbursementLinked")}
+              </span>
+            ) : null}
+          </span>
+        ),
+      },
       { key: "relatedAccount", label: t("liabilityShell.colCashAccount"), width: 160, minWidth: 100, filterText: (entry) => entry.relatedAccountLabel, render: (entry) => <span className="block truncate text-slate-600" title={entry.relatedAccountTitle || undefined}>{entry.relatedAccountLabel || "-"}</span> },
     ];
     // 抵押物是抵押贷款专属字段：往来款/房贷/消费贷明细不展示该列。

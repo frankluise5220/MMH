@@ -6,6 +6,7 @@ import { ModalDragController } from "@/components/ModalDragController";
 import { PwaServiceWorkerRegistration } from "@/components/PwaServiceWorkerRegistration";
 import { ClientLogCollector } from "@/components/ClientLogCollector";
 import { I18nProvider } from "@/components/I18nProvider";
+import PreferencesSync from "@/components/PreferencesSync";
 import { DISPLAY_LANGUAGE_COOKIE } from "@/lib/server/i18n";
 import type { DisplayLanguage } from "@/lib/client/appPreferences";
 import { MMH_BASE_PATH, withBasePath } from "@/lib/base-path";
@@ -256,6 +257,7 @@ export default async function RootLayout({
           />
         ) : null}
         <I18nProvider initialLanguage={displayLanguage}>{children}</I18nProvider>
+        <PreferencesSync />
         <ModalDragController />
         <PwaServiceWorkerRegistration />
         <ClientLogCollector />

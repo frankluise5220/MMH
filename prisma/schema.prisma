@@ -1205,7 +1205,47 @@ model Household {
   Tag                       Tag[]
   User                      User[]
   WealthProduct             WealthProduct[]
+  Preference                HouseholdPreference?
   transactions              TxRecord[]
+}
+
+/// 账簿级显示/行为设置。**这里是唯一真源**；浏览器 cookie 只是它的读缓存
+/// （客户端组件需要同步读取，才不必把 20 多个组件改成异步）。
+/// 判断标准：凡是「设置页里用户能选、并且服务端也可能读到」的项，都放这里。
+/// 反例：侧边栏折叠态、导航按钮偏移、侧边栏 owner 过滤——那是设备和会话的
+/// 瞬时 UI 状态，入库反而会让多设备互相覆盖。
+model HouseholdPreference {
+  householdId                       String          @id
+  sessionDays                       Int             @default(30)
+  fundUnitsDecimals                 Int             @default(2)
+  aiPanelEnabled                    Boolean         @default(true)
+  /// IANA 时区名。业务日（今天/本月/本年）与时刻格式化都读它。
+  timeZone                          String          @default("Asia/Shanghai")
+  colorScheme                       String          @default("red_up_green_down")
+  creditCardLabelMode               String          @default("short_last4")
+  /// 为空表示「按 mode 推导默认模板」，不是「空模板」。
+  creditCardLabelTemplate           String?
+  creditCardSidebarLabelTemplate    String?
+  creditBillHideZero                Boolean         @default(false)
+  creditBillHideSettled             Boolean         @default(false)
+  creditBillShowRecentCycles        Boolean         @default(true)
+  displayLanguage                   String          @default("zh-CN")
+  dateDisplayFormat                 String          @default("yyyy-mm-dd")
+  sidebarGroupBy                    String          @default("kind")
+  sidebarHideZero                   Boolean         @default(false)
+  sidebarHideInitialData            Boolean         @default(false)
+  sidebarShowFixedAssets            Boolean         @default(true)
+  sidebarShowAllCashEntries         Boolean         @default(true)
+  sidebarShowReimbursements         Boolean         @default(true)
+  detailDateBackground              Boolean         @default(false)
+  rowHeightMode                     Int             @default(35)
+  /// account-display 的版本化序列化串；为空表示未配置，用默认字段集。
+  accountLabelFields                String?
+  accountDropdownRestrictType       Boolean         @default(true)
+  createdAt                         DateTime        @default(now())
+  updatedAt                         DateTime        @default(now()) @updatedAt
+
+  Household Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
 }
 
 model FxRate {

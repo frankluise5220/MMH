@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
+import { getHouseholdTimeZone } from "@/lib/server/household-preferences";
 import { Prisma, TransactionType } from "@prisma/client";
 import { corsHeaders, joinBaseUrl } from "@/lib/http";
 import { getHouseholdScope, type HouseholdContext } from "@/lib/server/household-scope";
@@ -158,7 +159,12 @@ function parseBillHeader(text: string): BillHeader {
   };
 }
 
-function preprocessBillText(raw: string) {
+/** 业务年：账单明细补年份、批量修改的默认年份都用它，不能跟着容器 TZ 走。 */
+async function businessYearFor(householdId: string): Promise<number> {
+  return Number(todayDateBusinessYmd(await getHouseholdTimeZone(householdId)).slice(0, 4));
+}
+
+function preprocessBillText(raw: string, currentYear: number = Number(todayDateBusinessYmd().slice(0, 4))) {
   const src = raw.replace(/\r/g, "");
   const cleaned = src
     .replace(/精彩推荐[\s\S]*?(?=本期账单交易明细|交易日\s*SOLD|$)/g, " ")
@@ -176,7 +182,8 @@ function preprocessBillText(raw: string) {
     const desc = m[3].trim();
     const amt = String(m[4]).replace(/,/g, "");
     const card4 = m[5];
-    const y = header.statementDate ? Number(header.statementDate.slice(0, 4)) : new Date().getFullYear();
+    // 明细只有 MM/DD，年份取账单日；没写账单日时才用业务年。
+    const y = header.statementDate ? Number(header.statementDate.slice(0, 4)) : currentYear;
     const soldIso = `${y}-${sold.slice(0,2)}-${sold.slice(3,5)}`;
     const postedIso = `${y}-${posted.slice(0,2)}-${posted.slice(3,5)}`;
     return `${soldIso}|${postedIso}|${desc}|${amt}|${card4}`;
@@ -268,11 +275,12 @@ async function enrichPreviewAccountNames(items: ParsedItem[], hidFilter: Record<
   });
 }
 
-function parseBatchEditCommand(text: string) {
+function parseBatchEditCommand(text: string, currentYear: number = Number(todayDateBusinessYmd().slice(0, 4))) {
   const t = text.trim();
   if (!/^修改/.test(t)) return null;
 
-  const year = new Date().getFullYear();
+  // 用户没写年份时，默认用业务年，而不是容器进程年。
+  const year = currentYear;
   let yearMatch = t.match(/(\d{4})年/);
   const targetYear = yearMatch ? Number(yearMatch[1]) : year;
 
@@ -1139,7 +1147,7 @@ export async function POST(req: Request) {
     const normalizedCommand = await callAiForCommand({
       text,
       fundContext: fundContext ?? null,
-      today: todayDateBusinessYmd(),
+      today: todayDateBusinessYmd(await getHouseholdTimeZone(householdId)),
       modelName,
       baseUrl,
       apiKey,
@@ -1210,7 +1218,7 @@ export async function POST(req: Request) {
       }
     }
 
-    const batchEditPlan = parseBatchEditCommand(text);
+    const batchEditPlan = parseBatchEditCommand(text, await businessYearFor(householdId));
     if (batchEditPlan) {
       try {
         const planToExecute = {
@@ -1362,7 +1370,7 @@ export async function POST(req: Request) {
       return NextResponse.json(result, { headers: corsHeaders() });
     }
 
-    const billPre = preprocessBillText(text);
+    const billPre = preprocessBillText(text, await businessYearFor(householdId));
     if (billPre.txLines.length > 0 && billPre.header.statementDate) {
       const issuer = extractBankKeywordFromBill(text);
       const billItems = parseBillTxLines(billPre.txLines, billPre.header, issuer);
@@ -1419,7 +1427,7 @@ export async function POST(req: Request) {
   }
 
   async function routeByType(inputType: string, text: string, now: Date) {
-    const pre = preprocessBillText(text);
+    const pre = preprocessBillText(text, await businessYearFor(householdId));
     if (inputType === "bill_statement") {
       if (pre.txLines.length > 0 && pre.header.statementDate) {
         const issuer = extractBankKeywordFromBill(text);
@@ -1554,12 +1562,14 @@ export async function POST(req: Request) {
 
     // 提示词里的「当前日期」必须是业务时区今天；UTC 日期在北京时间凌晨会差一天，
   // 会让 AI 把「今天」的账记到昨天。
-  const nowForPrompt = businessTodayUtcStart();
+  const nowForPrompt = businessTodayUtcStart(await getHouseholdTimeZone(householdId));
     const accountContext = await buildAccountContextText(householdId);
-    const pre = preprocessBillText(text ?? "");
+    const pre = preprocessBillText(text ?? "", await businessYearFor(householdId));
     const billHeaderCtx = buildBillHeaderContext(pre.header);
     const txCtx = pre.txLines.length ? `预抽取交易行：${pre.txLines.join(" || ")}` : "";
-    const systemPrompt = fundContext ? buildFundSystemPrompt(fundContext) : SYSTEM_PROMPT;
+    const systemPrompt = fundContext
+      ? buildFundSystemPrompt(fundContext, todayDateBusinessYmd(await getHouseholdTimeZone(householdId)))
+      : SYSTEM_PROMPT;
     let llmBody: Record<string, unknown>;
     if (imageDataUrl) {
       llmBody = {

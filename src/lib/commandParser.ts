@@ -1,5 +1,6 @@
 import { todayDateBusinessYmd } from "@/lib/date-utils";
 import { joinBaseUrl } from "@/lib/http";
+import { getRequestTimeZone } from "@/lib/server/business-time-zone";
 import type { AiApiMode } from "@/lib/ai/config";
 import { buildResponsesRequestBody, extractResponsesText } from "@/lib/ai/responses";
 
@@ -173,7 +174,7 @@ export type ParsedUpdateCommand = {
   replaceAccountEverywhere?: boolean;
 };
 
-export function parseDateRange(text: string): ParsedDateRange | null {
+export function parseDateRange(text: string, todayKey: string = todayDateBusinessYmd()): ParsedDateRange | null {
   const fullRange = text.match(/(\d{4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*[号日](?:开始)?\s*(?:到|至|-|~)\s*(?:\d{4}\s*年\s*)?(\d{1,2})\s*月\s*(\d{1,2})\s*[号日]?/);
   if (fullRange) {
     return { year: Number(fullRange[1]), startMonth: Number(fullRange[2]), startDay: Number(fullRange[3]), endMonth: Number(fullRange[4]), endDay: Number(fullRange[5]) };
@@ -190,15 +191,14 @@ export function parseDateRange(text: string): ParsedDateRange | null {
   if (withYear) {
     return { year: Number(withYear[1]), startMonth: Number(withYear[2]), startDay: withYear[3] ? Number(withYear[3]) : undefined };
   }
-  const yy = new Date().getFullYear();
+  const yy = Number(todayKey.slice(0, 4));
   const monthOnly = text.match(/^(\d{1,2})\s*月(?:份)?$/);
   if (monthOnly) {
     const m = Number(monthOnly[1]);
     if (m >= 1 && m <= 12) return { year: yy, startMonth: m };
   }
-  // 「上个月/本月」按业务时区解析：该解析器在服务端也会被调用，本地 getter
-  // 在容器 TZ=UTC 时会在北京时间月初凌晨算错月份。
-  const businessToday = todayDateBusinessYmd();
+  // 「上个月/本月」按调用方给的业务日解析：服务端传账簿时区，缺省才回落部署默认值。
+  const businessToday = todayKey;
   const businessYear = Number(businessToday.slice(0, 4));
   const businessMonth = Number(businessToday.slice(5, 7));
   const relMonth = text.match(/(上+)个?\s*月/);
@@ -220,6 +220,8 @@ export function parseDateRange(text: string): ParsedDateRange | null {
 export async function parseUpdateCommand(text: string): Promise<ParsedUpdateCommand | null> {
   const t = normalizeOperationText(text);
   if (!t) return null;
+  // 只在服务端请求上下文里被调用（AI chat / query-intent），时区取账簿设置。
+  const todayKey = todayDateBusinessYmd(await getRequestTimeZone());
 
   const sqlStyleMatch = t.match(/^replace\s+(.+?)\s+with\s+(.+?)\s+for\s+(.+?)$/i);
   if (sqlStyleMatch) {
@@ -239,7 +241,7 @@ export async function parseUpdateCommand(text: string): Promise<ParsedUpdateComm
     const rangeText = accountReplaceMatch[1].trim();
     const oldAccountName = accountReplaceMatch[2].trim();
     const newAccountName = accountReplaceMatch[3].trim();
-    const dateRange = parseDateRange(rangeText);
+    const dateRange = parseDateRange(rangeText, todayKey);
     if (dateRange && oldAccountName && newAccountName && /(?:卡|账户|银行|\d{3,})/.test(oldAccountName)) {
       return {
         remarkKeyword: "",
@@ -265,7 +267,7 @@ export async function parseUpdateCommand(text: string): Promise<ParsedUpdateComm
     const subtypeRaw = updateWithRange[2]?.trim();
     const targetField = updateWithRange[3].trim();
     const newValue = updateWithRange[4].trim();
-    const dateRange = parseDateRange(rangeText);
+    const dateRange = parseDateRange(rangeText, todayKey);
     const fundSubtype = subtypeRaw ? (subtypeAliases.find(a => a.key === subtypeRaw)?.value ?? subtypeRaw) : undefined;
     const targetCanonical = targetAliases.find(a => a.key === targetField)?.value ?? "account";
     return {

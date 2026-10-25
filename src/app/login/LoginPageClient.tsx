@@ -1559,7 +1559,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
             {/* 登录方式 = 文件卡片页签；卡片内容 = 用户名 / 密码 / 忘记密码 / 进入账簿 */}
             {/* 重置密码不再是「另一张卡片」：它就在本卡片里、在「进入」下方就地展开，
                 页签条与登录表单都保持可见，用户随时能收起或换页签。 */}
-            <div className="relative pt-10">
+            <div className="relative">
               <div className={FOLDER_TAB_STRIP}>
                 <button
                   type="button"
@@ -2011,7 +2011,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
         {mode === "create" && (
           <div className="space-y-4 p-6">
             {!initialLedgerSetup && (
-              <div className="relative pt-10">
+              <div className="relative">
                 <div className={FOLDER_TAB_STRIP}>
                   <button
                     type="button"

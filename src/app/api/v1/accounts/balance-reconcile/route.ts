@@ -13,6 +13,7 @@ import { AccountKind, TransactionType } from "@prisma/client";
 import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
 import { toNumber, businessTodayUtcStart } from "@/lib/date-utils";
+import { getRequestTimeZone } from "@/lib/server/business-time-zone";
 import { computeAccountDisplayBalances, recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import {
@@ -32,7 +33,7 @@ const BodySchema = z.object({
   date: z.string().optional(),
 });
 
-function parseDateOnly(value?: string) {
+function parseDateOnly(value: string | undefined, timeZone: string) {
   const raw = String(value ?? "").trim();
   const match = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
   if (match) {
@@ -40,7 +41,7 @@ function parseDateOnly(value?: string) {
     // 使「截至今天」的余额锚点把当天记录排除在外。
     return new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 23, 59, 59, 999));
   }
-  const today = businessTodayUtcStart();
+  const today = businessTodayUtcStart(timeZone);
   return new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate(), 23, 59, 59, 999));
 }
 
@@ -64,6 +65,8 @@ export async function POST(req: Request) {
   }
 
   const { hidFilter } = await getHouseholdScope();
+  // 未指定日期时，「今天」必须按账簿时区取。
+  const reconcileTimeZone = await getRequestTimeZone();
   const account = await prisma.account.findFirst({
     where: {
       id: parsed.data.accountId,
@@ -97,7 +100,7 @@ export async function POST(req: Request) {
   const anchorData = (source: string | null | undefined) => ({
     householdId: hidFilter.householdId,
     type: TransactionType.income,
-    date: parseDateOnly(parsed.data.date),
+    date: parseDateOnly(parsed.data.date, reconcileTimeZone),
     amount: 0,
     accountId: account.id,
     accountName: account.name,

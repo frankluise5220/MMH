@@ -34,6 +34,9 @@ export type FundHoldingReportRow = {
   id: string;
   accountId: string;
   accountName: string;
+  /** 调用方（按当前请求的 cookie 设置）补的展示标签与 hover，优先于 `accountName`。 */
+  accountLabel?: string;
+  accountHoverTitle?: string;
   institutionName: string;
   fundCompany: string;
   fundCode: string;
@@ -57,6 +60,9 @@ export type FundClearedReportRow = {
   id: string;
   accountId: string;
   accountName: string;
+  /** 调用方（按当前请求的 cookie 设置）补的展示标签与 hover，优先于 `accountName`。 */
+  accountLabel?: string;
+  accountHoverTitle?: string;
   institutionName: string;
   fundCompany: string;
   fundCode: string;

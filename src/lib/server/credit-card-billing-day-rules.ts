@@ -18,6 +18,8 @@ type BillingDayRuleInput = {
   accountIds: readonly string[];
   billingDay: number | null | undefined;
   effectiveDate?: Date | null;
+  /** 账簿业务时区；调用方在请求内应显式传入，缺省回落到部署默认值。 */
+  timeZone?: string;
 };
 
 type BillingDayRuleRow = {
@@ -186,7 +188,7 @@ export async function recordCreditCardBillingDayChange(
   if (!billingDay || input.accountIds.length === 0) return;
   const effectiveDate = input.effectiveDate
     ? startOfDayUtc(input.effectiveDate)
-    : businessTodayUtcStart();
+    : businessTodayUtcStart(input.timeZone);
 
   for (const accountId of uniqueAccountIds(input.accountIds)) {
     await writer.creditCardBillingDay.upsert({

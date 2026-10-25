@@ -2,7 +2,7 @@
 
 import { useCallback, useState, useEffect, useLayoutEffect, useMemo, useRef, type ReactNode, type MouseEvent } from "react";
 import { Paperclip } from "lucide-react";
-import { formatDateDisplay, formatDateUtc as localDateKey, toNumber } from "@/lib/date-utils";
+import { formatDateDisplay, formatDateUtc as localDateKey, toNumber, todayDateBusinessYmd } from "@/lib/date-utils";
 import { formatCurrencyMoney } from "@/lib/format";
 import { getColorSchemeFromCookie, pnlColor } from "@/lib/client/colors";
 import { getInsuranceDetailCategoryName, getInsuranceDetailNote } from "@/lib/insurance/detail-display";
@@ -52,7 +52,7 @@ import { isAbortError, loadAllDetailEntries } from "@/lib/client/detail-all-entr
 import { parseImportAccountId } from "@/lib/account-import-match";
 import { formatAccountTableLabel, formatAccountTableTitle } from "@/lib/account-display";
 import { systemCategoryLabel } from "@/lib/system-category-labels";
-import { APP_PREFS_EVENT, getDateDisplayFormatPreference, getDetailDateBackgroundPreference, type DateDisplayFormat } from "@/lib/client/appPreferences";
+import { APP_PREFS_EVENT, getDateDisplayFormatPreference, getDetailDateBackgroundPreference, getTimeZonePreference, type DateDisplayFormat } from "@/lib/client/appPreferences";
 import { readAccountDisplaySettings } from "@/lib/client/account-display-settings";
 import { cashLedgerFlowAccountId, isAllCashDetailScope } from "@/lib/all-cash-entries";
 
@@ -1370,7 +1370,13 @@ export function DetailViewClient({
         detailRefreshSeqRef.current += 1;
         setRefreshedEntries((current) => {
           const currentEntries = current?.accountId === accountId ? current.entries : entries;
-          const result = removeEntriesAndUpdateRunningBalances(currentEntries, deletedSet, accountId, selectedAccountKind);
+          const result = removeEntriesAndUpdateRunningBalances(
+            currentEntries,
+            deletedSet,
+            accountId,
+            selectedAccountKind,
+            todayDateBusinessYmd(getTimeZonePreference()),
+          );
           return { accountId, entries: result.entries };
         });
         setSelection(new Set());
@@ -1432,8 +1438,10 @@ export function DetailViewClient({
     {
       key: "date",
       label: t("detail.column.date"),
-      width: 96,
-      minWidth: 78,
+      // 与「入账日期」列同宽：两列显示的都是同格式日期（YYYY-MM-DD），
+      // 原来 96/78 在列多时会被压缩到 minWidth 触发换行，132/110 与 postedAt 对齐。
+      width: 132,
+      minWidth: 110,
       filterKind: "dateRange",
       filterText: (e) => localDateKey(getDetailEntryDisplayDate(e, flowAccountIdOf(e))),
       sortValue: (e) => getDetailEntryDisplayDate(e, flowAccountIdOf(e)).getTime(),

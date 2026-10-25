@@ -51,8 +51,8 @@ function detailEntryDayKey(entry: RunningBalanceEntry, accountId: string) {
  * 「今天」必须用业务时区（服务端 SQL 用 `todayDateBusinessYmd`），
  * 不能用浏览器本地日期，否则余额列与列表可见性会在跨时区/凌晨时分叉。
  */
-function isFutureBalanceEntry(entry: RunningBalanceEntry, accountId: string) {
-  return detailEntryDayKey(entry, accountId) > todayDateBusinessYmd();
+function isFutureBalanceEntry(entry: RunningBalanceEntry, accountId: string, todayKey: string) {
+  return detailEntryDayKey(entry, accountId) > todayKey;
 }
 
 /** 贷款 / 往来款账户：只有 transfer 腿参与，本金带 source 决定的正负号（与 foldBalanceEntry 一致）。 */
@@ -65,8 +65,9 @@ export function applyEntryToRunningBalance(
   entry: RunningBalanceEntry,
   accountId: string,
   accountKind?: string | null,
+  todayKey: string = todayDateBusinessYmd(),
 ) {
-  if (isFutureBalanceEntry(entry, accountId)) return runningBalance;
+  if (isFutureBalanceEntry(entry, accountId, todayKey)) return runningBalance;
   if (isLiabilityBalanceAccountKind(accountKind)) {
     if (getBalanceAnchorTarget(entry) != null) return applyBalanceAnchorEntry(runningBalance, entry, accountId);
     if (entry.type !== "transfer") return runningBalance;
@@ -79,8 +80,9 @@ export function runningBalanceContribution(
   entry: RunningBalanceEntry,
   accountId: string,
   accountKind?: string | null,
+  todayKey: string = todayDateBusinessYmd(),
 ) {
-  if (isFutureBalanceEntry(entry, accountId)) return 0;
+  if (isFutureBalanceEntry(entry, accountId, todayKey)) return 0;
   if (isLiabilityBalanceAccountKind(accountKind)) {
     if (getBalanceAnchorTarget(entry) != null) return applyBalanceAnchorEntry(0, entry, accountId);
     return entry.type === "transfer" ? liabilityPrincipalForAccountSide(entry, accountId) : 0;
@@ -92,22 +94,24 @@ export function canRecalculateRunningBalanceFromLoadedEntries(
   entries: RunningBalanceEntry[],
   accountId: string,
   accountKind?: string | null,
+  todayKey: string = todayDateBusinessYmd(),
 ) {
   const ascEntries = [...entries].sort((a, b) => compareDetailEntriesAsc(a, b, accountId));
   const firstEntry = ascEntries[0];
   if (!firstEntry || firstEntry.runningBalance == null) return false;
-  return Math.abs(toNumber(firstEntry.runningBalance) - runningBalanceContribution(firstEntry, accountId, accountKind)) < 0.005;
+  return Math.abs(toNumber(firstEntry.runningBalance) - runningBalanceContribution(firstEntry, accountId, accountKind, todayKey)) < 0.005;
 }
 
 export function recalculateLoadedRunningBalances(
   entries: RunningBalanceEntry[],
   accountId: string,
   accountKind?: string | null,
+  todayKey: string = todayDateBusinessYmd(),
 ): RunningBalanceEntry[] {
   const runningBalanceById = new Map<string, number>();
   let runningBalance = 0;
   for (const entry of [...entries].sort((a, b) => compareDetailEntriesAsc(a, b, accountId))) {
-    runningBalance = applyEntryToRunningBalance(runningBalance, entry, accountId, accountKind);
+    runningBalance = applyEntryToRunningBalance(runningBalance, entry, accountId, accountKind, todayKey);
     runningBalanceById.set(entry.id, runningBalance);
   }
   return entries.map((entry) => ({ ...entry, runningBalance: runningBalanceById.get(entry.id) ?? entry.runningBalance ?? null }));
@@ -137,14 +141,15 @@ export function removeEntriesAndUpdateRunningBalances<T extends RunningBalanceEn
   deletedSet: Set<string>,
   accountId: string,
   accountKind?: string | null,
+  todayKey: string = todayDateBusinessYmd(),
 ): RunningBalanceDeleteResult<T> {
   const deletedEntries = entries.filter((entry) => deletedSet.has(entry.id));
   if (deletedEntries.length === 0) return { entries, complete: true };
   const remainingEntries = entries.filter((entry) => !deletedSet.has(entry.id));
   // ① 当前列表就是账户全部历史（起点可推导）时，从头整段重折叠：天然覆盖锚点，
   //    也覆盖「删的是锚点行」这种情况。
-  if (canRecalculateRunningBalanceFromLoadedEntries(remainingEntries, accountId, accountKind)) {
-    return { entries: recalculateLoadedRunningBalances(remainingEntries, accountId, accountKind) as T[], complete: true };
+  if (canRecalculateRunningBalanceFromLoadedEntries(remainingEntries, accountId, accountKind, todayKey)) {
+    return { entries: recalculateLoadedRunningBalances(remainingEntries, accountId, accountKind, todayKey) as T[], complete: true };
   }
 
   // ②③ 增量修正：O(当前页行数) 的本地算术。
@@ -181,14 +186,14 @@ export function removeEntriesAndUpdateRunningBalances<T extends RunningBalanceEn
       }
       if (anchorIndex < 0) {
         for (const deleted of segment) {
-          accumulated += runningBalanceContribution(deleted, accountId, accountKind);
+          accumulated += runningBalanceContribution(deleted, accountId, accountKind, todayKey);
         }
       } else if (previousRemaining && previousRemaining.runningBalance != null) {
         const anchor = segment[anchorIndex]!;
         const target = getBalanceAnchorTarget(anchor)!;
         accumulated += target - toNumber(previousRemaining.runningBalance);
         for (let index = anchorIndex + 1; index < segment.length; index += 1) {
-          accumulated += runningBalanceContribution(segment[index]!, accountId, accountKind);
+          accumulated += runningBalanceContribution(segment[index]!, accountId, accountKind, todayKey);
         }
       } else {
         // 被删的锚点行之前没有任何已加载行：拿不到它之前的余额基准，只能交回

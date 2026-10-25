@@ -6,6 +6,7 @@ import { prisma } from "@/lib/db/prisma";
 import { addDaysUtc, parseFlexibleDateToYmd, toStatementMonth, businessTodayUtcStart } from "@/lib/date-utils";
 import { getCurrentUser } from "@/lib/server/auth";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { getHouseholdTimeZone } from "@/lib/server/household-preferences";
 import { normalizeDefaultCategoryHierarchyForHousehold, resolveCategorySnapshot, type CategorySnapshot, type DefaultCategoryType } from "@/lib/default-categories";
 import { normalizeCurrency, resolveSameCurrencyTransfer } from "@/lib/currency";
 import {
@@ -1508,12 +1509,12 @@ const BALANCE_RECONCILABLE_ACCOUNT_KINDS = [
 ];
 
 /** 余额校准锚点日期：当天 23:59:59（与余额校准接口一致，锚点位于当天末尾）。 */
-function parseBalanceReconcileDate(value?: string): Date {
+function parseBalanceReconcileDate(value: string | undefined, timeZone: string): Date {
   const raw = String(value ?? "").trim();
   const match = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
   // 与余额校准接口一致：UTC 口径的当天末尾，不能本地构造。
   if (match) return new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 23, 59, 59, 999));
-  const today = businessTodayUtcStart();
+  const today = businessTodayUtcStart(timeZone);
   return new Date(Date.UTC(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate(), 23, 59, 59, 999));
 }
 
@@ -1723,7 +1724,7 @@ export async function POST(req: Request) {
       for (const adjust of parse.data.balanceAdjustments) {
         const balance = Number(adjust.balance);
         if (!Number.isFinite(balance)) continue;
-        const adjustDate = parseBalanceReconcileDate(adjust.date);
+        const adjustDate = parseBalanceReconcileDate(adjust.date, await getHouseholdTimeZone(householdId));
         const existing = await prisma.txRecord.findFirst({
           where: {
             householdId,

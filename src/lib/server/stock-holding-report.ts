@@ -9,6 +9,8 @@ export type StockHoldingReportRow = {
   accountId: string;
   /** 按「账户显示格式」渲染好的标签（含机构），不是数据库裸名。 */
   accountName: string;
+  /** 调用方（按当前请求的 cookie 设置）重渲染后的标签，优先于 `accountName`。 */
+  accountLabel?: string;
   /** 行内看不到的信息（机构/币种/卡号），作为列 hover。 */
   accountHoverTitle: string;
   securityId: string;
@@ -118,6 +120,8 @@ export async function loadStockHoldingReport(
         currency: account?.currency,
         groupId: account?.groupId,
         Institution: account?.Institution,
+        // 这里在 unstable_cache 里跑，读不到 cookie（账户显示格式），只能按默认字段渲染；
+        // 报表页会用当前请求的设置重新渲染 accountLabel/accountHoverTitle 覆盖。
       }, undefined, { baseCurrency });
       const quantity = roundQuantity(toNumber(item.quantity));
       const cost = roundMoney(toNumber(item.cost));

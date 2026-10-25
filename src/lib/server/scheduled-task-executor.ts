@@ -1,6 +1,7 @@
 import { AccountKind, Prisma, RegularInvestStatus, TransactionType, type IntervalUnit, type RegularInvestPlan } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { businessDayStartUtc, formatDateUtc, startOfDayUtc, toNumber, toStatementMonth } from "@/lib/date-utils";
+import { getHouseholdTimeZone } from "@/lib/server/household-preferences";
 import { logger } from "@/lib/logger";
 import {
   calcLoanRunPartsWithRateAdjustments,
@@ -181,7 +182,7 @@ export async function executeNonFundScheduledTaskPlan(params: {
     }
   } else {
     // 计划补跑截止到「业务时区的今天」，不是 UTC 今天。
-    const today = businessDayStartUtc(params.now ?? new Date());
+    const today = businessDayStartUtc(params.now ?? new Date(), await getHouseholdTimeZone(householdId));
     const effectiveEndDate = plan.endDate && startOfDayUtc(plan.endDate) < today ? startOfDayUtc(plan.endDate) : today;
     let currentDate = startOfDayUtc(plan.nextRunDate);
     let guard = 0;

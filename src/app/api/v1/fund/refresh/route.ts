@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { FundCashFlowKind, FundProductType, FundSubtype } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
+import { getRequestTimeZone } from "@/lib/server/business-time-zone";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { isWithinRecentTradingDaysUtc, todayDateBusinessYmd } from "@/lib/date-utils";
 import { fundConfirmDate, getFundConfirmDays } from "@/lib/fund/confirmDays";
@@ -86,7 +87,7 @@ export async function POST(req: NextRequest) {
     });
 
     const now = new Date();
-    const todayDate = todayDateBusinessYmd();
+    const todayDate = todayDateBusinessYmd(await getRequestTimeZone());
 
     for (const entry of unconfirmedEntries) {
       if (!entry.fundCode) continue;

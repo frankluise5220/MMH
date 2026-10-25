@@ -806,8 +806,9 @@ export function PropertyShell({
       {
         key: "date",
         label: t("detail.column.date"),
-        width: 96,
-        minWidth: 78,
+        // 与「入账日期」列同宽，避免同格式日期列宽不一致、被压缩后换行。
+        width: 132,
+        minWidth: 110,
         filterKind: "dateRange",
         filterText: (entry) => entry.date,
         sortValue: (entry) => entry.date,
