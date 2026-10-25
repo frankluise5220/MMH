@@ -8,6 +8,7 @@ import { useI18n } from "@/lib/i18n";
 import { formatAmountDraft, formatMoneyYuan } from "@/lib/format";
 import { todayDateLocalYmd } from "@/lib/date-utils";
 import { reimbursementErrorMessage } from "@/lib/reimbursement-error";
+import { filterReimbursementCandidates } from "@/lib/reimbursement-candidates";
 import { REIMBURSE_PANEL_STYLE } from "./reimbursement-table-styles";
 import {
   MAX_EXPENSE_ROWS,
@@ -136,6 +137,8 @@ export function ReimbursementFormModal({
   );
   const [linkPickerOpen, setLinkPickerOpen] = useState(false);
   const [pickedLinkIds, setPickedLinkIds] = useState<string[]>([]);
+  /** 候选列表关键字：口径放开后单账户可能有上百条，靠它定位（日期 / 分类 / 备注 / 金额）。 */
+  const [candidateQuery, setCandidateQuery] = useState("");
 
   const isTravel = kind === "travel";
   const isGeneral = kind === "general";
@@ -183,6 +186,8 @@ export function ReimbursementFormModal({
       (!resolvedAdvanceAccountId || candidate.advanceAccountId === resolvedAdvanceAccountId) &&
       !linkedSources.some((item) => item.id === candidate.id),
   );
+  /** 关键字过滤只影响列表展示，勾选结果仍按 `pickedLinkIds` 取。 */
+  const visibleLinkCandidates = filterReimbursementCandidates(linkCandidates, candidateQuery);
 
   /** 明细剩余可填行数：只用于提示「哪些交易不会补行」，不限制能关联几笔。 */
   const remainingRowSlots = Math.max(0, MAX_EXPENSE_ROWS - rows.length);
@@ -429,6 +434,7 @@ export function ReimbursementFormModal({
             type="button"
             onClick={() => {
               setPickedLinkIds([]);
+              setCandidateQuery("");
               setLinkPickerOpen((current) => !current);
             }}
             className="inline-flex h-7 items-center gap-1.5 border border-slate-300 bg-white px-2 text-xs text-slate-600 hover:border-slate-400 hover:text-slate-800"
@@ -502,15 +508,24 @@ export function ReimbursementFormModal({
         )}
         {linkPickerOpen ? (
           <div className="mt-2 border border-slate-300 bg-white p-2">
-            <div className="mb-1 text-xs font-medium text-slate-600">{t("reimburse.source.selectTransaction")}</div>
+            <div className="mb-1 flex items-center gap-2">
+              <div className="text-xs font-medium text-slate-600">{t("reimburse.source.selectTransaction")}</div>
+              <input
+                type="search"
+                value={candidateQuery}
+                onChange={(event) => setCandidateQuery(event.target.value)}
+                placeholder={t("reimburse.source.searchPlaceholder")}
+                className="ml-auto h-6 w-44 border border-slate-300 bg-white px-2 text-xs text-slate-700 placeholder:text-slate-400 focus:border-slate-400 focus:outline-none"
+              />
+            </div>
             {/* 默认 3 行，勾选候选后再放开到 5 行——刚展开时不撑高弹窗。 */}
-            {linkCandidates.length > 0 ? (
+            {visibleLinkCandidates.length > 0 ? (
               <div
                 className={`overflow-y-auto border border-slate-300 bg-white transition-[max-height] duration-200 ease-out ${
                   pickedLinkIds.length > 0 ? "max-h-[9.125rem]" : "max-h-[5.5rem]"
                 }`}
               >
-                {linkCandidates.map((candidate) => (
+                {visibleLinkCandidates.map((candidate) => (
                   <label
                     key={candidate.id}
                     className="flex cursor-pointer items-start gap-2 border-b border-slate-100 px-2 py-1.5 text-xs last:border-b-0 hover:bg-slate-50"

@@ -16,6 +16,7 @@ import {
   REIMBURSE_PANEL_STYLE,
 } from "./reimbursement-table-styles";
 import { reimbursementErrorMessage } from "@/lib/reimbursement-error";
+import { filterReimbursementCandidates } from "@/lib/reimbursement-candidates";
 import {
   MAX_EXPENSE_ROWS,
   ReimbursementDocumentForm,
@@ -156,6 +157,8 @@ export function ReimbursementEditor({
   const [linkingTransaction, setLinkingTransaction] = useState(false);
   const [showLinkDialog, setShowLinkDialog] = useState(false);
   const [selectedTransactionIds, setSelectedTransactionIds] = useState<string[]>([]);
+  /** 候选列表关键字：单账户可能有上百条候选，靠它定位（日期 / 分类 / 备注 / 金额）。 */
+  const [candidateQuery, setCandidateQuery] = useState("");
   const [savedMessage, setSavedMessage] = useState<string | null>(null);
   const [linkedTransactions, setLinkedTransactions] = useState(reimbursement.linkedTransactions);
   const preserveLocalStateRef = useRef(false);
@@ -214,6 +217,8 @@ export function ReimbursementEditor({
   const availableCandidates = candidates.filter(
     (candidate) => candidate.advanceAccountId === reimbursement.advanceAccountId && !linkedTransactionIds.has(candidate.id),
   );
+  /** 关键字过滤只影响列表展示，勾选结果仍按 `selectedTransactionIds` 取。 */
+  const visibleCandidates = filterReimbursementCandidates(availableCandidates, candidateQuery);
   const buildItemFormData = (item: EditableItem, index: number) => {
     const fd = new FormData();
     fd.set("itemId", item.id);
@@ -583,7 +588,7 @@ export function ReimbursementEditor({
               {isEditable && (
                 <button
                   type="button"
-                  onClick={() => { setSelectedTransactionIds([]); setShowLinkDialog(true); }}
+                  onClick={() => { setSelectedTransactionIds([]); setCandidateQuery(""); setShowLinkDialog(true); }}
                   className="inline-flex h-7 items-center gap-1.5 border border-slate-300 bg-white px-2 text-xs text-slate-600 hover:border-slate-400 hover:text-slate-800"
                 >
                   <Link2 className="h-3.5 w-3.5" />
@@ -667,15 +672,24 @@ export function ReimbursementEditor({
                 ) : <div className="border border-dashed border-slate-300 px-3 py-4 text-center text-xs text-slate-400">{t("reimburse.source.noLinkedTransactions")}</div>}
               </section>
               <section>
-                <div className="mb-1 text-xs font-medium text-slate-600">{t("reimburse.source.selectTransaction")}</div>
+                <div className="mb-1 flex items-center gap-2">
+                  <div className="text-xs font-medium text-slate-600">{t("reimburse.source.selectTransaction")}</div>
+                  <input
+                    type="search"
+                    value={candidateQuery}
+                    onChange={(event) => setCandidateQuery(event.target.value)}
+                    placeholder={t("reimburse.source.searchPlaceholder")}
+                    className="ml-auto h-6 w-44 border border-slate-300 bg-white px-2 text-xs text-slate-700 placeholder:text-slate-400 focus:border-slate-400 focus:outline-none"
+                  />
+                </div>
                 {/* 默认 3 行，勾选候选后再放开到 5 行——刚打开时不撑高对话框。 */}
-                {availableCandidates.length > 0 ? (
+                {visibleCandidates.length > 0 ? (
                   <div
                     className={`overflow-y-auto border border-slate-300 transition-[max-height] duration-200 ease-out ${
                       selectedTransactionIds.length > 0 ? "max-h-[9.125rem]" : "max-h-[5.5rem]"
                     }`}
                   >
-                    {availableCandidates.map((candidate) => (
+                    {visibleCandidates.map((candidate) => (
                       <label key={candidate.id} className="flex cursor-pointer items-start gap-2 border-b border-slate-100 px-2 py-1.5 text-xs last:border-b-0 hover:bg-slate-50">
                         <input
                           type="checkbox"

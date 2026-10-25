@@ -9,6 +9,7 @@ import { todayDateLocalYmd } from "@/lib/date-utils";
 import { DateStepper } from "./DateStepper";
 import { AdvancedDataTable, type AdvancedDataTableColumn } from "@/components/AdvancedDataTable";
 import { reimbursementErrorMessage } from "@/lib/reimbursement-error";
+import { filterReimbursementCandidates } from "@/lib/reimbursement-candidates";
 import { ReimbursementDocumentModal } from "@/components/ReimbursementDocumentModal";
 import type { ReimbursementFormEntry, ReimbursementObjectOption } from "@/components/ReimbursementFormModal";
 import { ReimbursementPreview, ReimbursementBatchPrintPortal } from "@/components/ReimbursementPreview";
@@ -113,6 +114,8 @@ export function ReimbursementWorkspace({
   const [printTarget, setPrintTarget] = useState<ReimbursementData | null>(null);
   const [linkingReimbursementId, setLinkingReimbursementId] = useState<string | null>(null);
   const [linkTransactionIds, setLinkTransactionIds] = useState<string[]>([]);
+  /** 候选列表关键字：单账户可能有上百条候选，靠它定位（日期 / 分类 / 备注 / 金额）。 */
+  const [linkCandidateQuery, setLinkCandidateQuery] = useState("");
   // ADT state: which reimbursement is selected to show items
   const [selectedBatchId, setSelectedBatchId] = useState<string | null>(null);
   // Editor state: which reimbursement is being edited
@@ -159,6 +162,16 @@ export function ReimbursementWorkspace({
   const linkingReimbursement = useMemo(
     () => (data?.reimbursements ?? []).find((reimbursement) => reimbursement.id === linkingReimbursementId) ?? null,
     [data, linkingReimbursementId],
+  );
+  /** 关联窗的候选：同往来款账户、未被本单关联，再按关键字过滤。 */
+  const linkCandidateOptions = useMemo(
+    () => filterReimbursementCandidates(
+      (data?.candidates ?? []).filter(
+        (candidate) => candidate.advanceAccountId === linkingReimbursement?.advanceAccountId,
+      ),
+      linkCandidateQuery,
+    ),
+    [data, linkingReimbursement, linkCandidateQuery],
   );
   const selectedBatch = useMemo(
     () => (data?.batches ?? []).find((batch) => batch.id === selectedBatchId) ?? data?.batches[0] ?? null,
@@ -1030,7 +1043,7 @@ export function ReimbursementWorkspace({
                               className={`${reimbursementActionButtonClass} text-slate-600 hover:bg-slate-50 hover:text-blue-600`}
                               title={t("reimburse.source.add")}
                               aria-label={t("reimburse.source.add")}
-                            onClick={(event) => { event.stopPropagation(); setLinkTransactionIds([]); setLinkingReimbursementId(reimbursement.id); }}
+                            onClick={(event) => { event.stopPropagation(); setLinkTransactionIds([]); setLinkCandidateQuery(""); setLinkingReimbursementId(reimbursement.id); }}
                             >
                               <Link2 className="h-3.5 w-3.5" />
                             </button>
@@ -1287,9 +1300,18 @@ export function ReimbursementWorkspace({
                 ) : <div className="rounded border border-dashed border-slate-200 px-3 py-4 text-center text-xs text-slate-400">{t("reimburse.source.noLinkedTransactions")}</div>}
               </section>
               <section>
-                <div className="mb-1 text-xs font-medium text-slate-600">{t("reimburse.source.selectTransaction")}</div>
+                <div className="mb-1 flex items-center gap-2">
+                  <div className="text-xs font-medium text-slate-600">{t("reimburse.source.selectTransaction")}</div>
+                  <input
+                    type="search"
+                    value={linkCandidateQuery}
+                    onChange={(event) => setLinkCandidateQuery(event.target.value)}
+                    placeholder={t("reimburse.source.searchPlaceholder")}
+                    className="ml-auto h-6 w-44 rounded border border-slate-200 bg-white px-2 text-xs text-slate-700 placeholder:text-slate-400 focus:border-slate-400 focus:outline-none"
+                  />
+                </div>
                 <div className="max-h-64 overflow-y-auto rounded border border-slate-200">
-                  {(data?.candidates ?? []).filter((candidate) => candidate.advanceAccountId === linkingReimbursement.advanceAccountId).map((candidate) => (
+                  {linkCandidateOptions.map((candidate) => (
                     <label key={candidate.id} className="flex cursor-pointer items-start gap-2 border-b border-slate-100 px-2 py-1.5 text-xs last:border-b-0 hover:bg-slate-50">
                       <input
                         type="checkbox"
@@ -1301,7 +1323,7 @@ export function ReimbursementWorkspace({
                       <span className="min-w-0 text-slate-600">{candidate.date} · {candidate.categoryName ?? "-"} · <span className="tabular-nums">{formatMoneyYuan(candidate.amount)}</span>{candidate.note ? ` · ${candidate.note}` : ""}</span>
                     </label>
                   ))}
-                  {(data?.candidates ?? []).filter((candidate) => candidate.advanceAccountId === linkingReimbursement.advanceAccountId).length === 0 ? (
+                  {linkCandidateOptions.length === 0 ? (
                     <div className="px-3 py-4 text-center text-xs text-slate-400">{t("reimburse.source.noCandidates")}</div>
                   ) : null}
                 </div>

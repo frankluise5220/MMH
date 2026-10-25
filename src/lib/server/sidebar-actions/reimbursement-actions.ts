@@ -17,6 +17,21 @@ import {
 // Stored transfer note for reimbursement settlement entries (reimbursement collected).
 const REIMBURSEMENT_COLLECT_NOTE = "\u62a5\u9500\u5230\u8d26";
 
+/**
+ * 「关联记录」的取数口径：**转入**该往来对象应收往来款账户的全部款项。
+ *
+ * - 只看方向（`toAccountId` = 该应收往来款账户），不按 `source` 区分：垫付（`advance`）、
+ *   往来款借出（`liability_lend_out`）、手工 / 导入转账（`manual`）对往来款账户的效果
+ *   完全一样 —— 应收增加、钱从自己的账户出去，因此都可以被报销单关联
+ *   （2026-10-24 用户口径：往来款里录的借款必须能进「关联记录」）。
+ *   反向的收回 / 还款是 `accountId` = 该账户，天然不命中。
+ * - 排除「转出账户也是往来款 / 贷款账户」的账户间调拨：这类记录两边各有一笔、家庭整体
+ *   没有实际支出，若计入垫付会被报销一次。
+ */
+const REIMBURSABLE_TRANSFER_SCOPE = {
+  account: { kind: { notIn: [AccountKind.settlement, AccountKind.loan] } },
+} satisfies Prisma.TxRecordWhereInput;
+
 type Db = Prisma.TransactionClient | typeof prisma;
 
 export type ReimbursementActionResult =
@@ -397,12 +412,12 @@ export async function getReimbursementOverview(
         where: {
           deletedAt: null,
           householdId,
-          source: "advance",
+          ...REIMBURSABLE_TRANSFER_SCOPE,
           toAccountId: { in: advanceAccountIds },
           ...(usedIds.length > 0 ? { id: { notIn: usedIds } } : {}),
         },
         orderBy: [{ date: "asc" }, { createdAt: "asc" }],
-        select: { id: true, date: true, amount: true, categoryName: true, note: true, toAccountId: true },
+        select: { id: true, date: true, amount: true, principalAmount: true, categoryName: true, note: true, toAccountId: true },
         })
       : [];
 
@@ -527,7 +542,8 @@ export async function getReimbursementOverview(
     candidates: records.map((record) => ({
       id: record.id,
       date: record.date.toISOString().slice(0, 10),
-      amount: toMoney(Math.abs(Number(record.amount))),
+      // 与核销取数一致：有本金用本金（借出记录 amount 是含手续费的现金流），否则取转账金额绝对值。
+      amount: reimbursementLinkedTransactionAmount(record.amount, record.principalAmount),
       categoryName: record.categoryName,
       note: record.note,
       advanceAccountId: record.toAccountId ?? "",
@@ -610,7 +626,7 @@ export async function getReimbursementOverview(
         return record ? [{
           txRecordId: record.id,
           date: record.date.toISOString().slice(0, 10),
-          amount: toMoney(Math.abs(Number(record.amount))),
+          amount: reimbursementLinkedTransactionAmount(record.amount, record.principalAmount),
           categoryName: record.categoryName,
           note: record.note,
         }] : [];
@@ -775,7 +791,7 @@ export async function createReimbursement(formData: FormData): Promise<Reimburse
           id: usedIds.length > 0 ? { in: linkedIds, notIn: usedIds } : { in: linkedIds },
           householdId,
           deletedAt: null,
-          source: "advance",
+          ...REIMBURSABLE_TRANSFER_SCOPE,
           toAccountId: requestedAdvanceAccountId,
         },
         select: { id: true, date: true, categoryName: true, note: true, accountId: true, toAccountId: true },
@@ -941,7 +957,7 @@ export async function reimburseReimbursement(
             id: { in: linkedRecordIds },
             householdId,
             deletedAt: null,
-            source: "advance",
+            ...REIMBURSABLE_TRANSFER_SCOPE,
             toAccountId: reimbursement.advanceAccountId ?? undefined,
           },
           select: { id: true, amount: true, principalAmount: true, categoryId: true, categoryName: true },
@@ -1696,7 +1712,7 @@ export async function linkReimbursementTransaction(formData: FormData): Promise<
           id: txRecordId,
           householdId,
           deletedAt: null,
-          source: "advance",
+          ...REIMBURSABLE_TRANSFER_SCOPE,
           toAccountId: reimbursement.advanceAccountId,
         },
         select: { id: true, date: true, amount: true, categoryName: true, note: true, accountId: true, toAccountId: true },
@@ -1739,7 +1755,7 @@ export async function linkReimbursementTransactions(formData: FormData): Promise
           id: { in: txRecordIds },
           householdId,
           deletedAt: null,
-          source: "advance",
+          ...REIMBURSABLE_TRANSFER_SCOPE,
           toAccountId: reimbursement.advanceAccountId,
         },
         select: { id: true },
