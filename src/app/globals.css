@@ -13,6 +13,46 @@
   --surface-muted: #f8fafc;
   --line-soft: rgba(15, 23, 42, 0.08);
   --line-strong: rgba(15, 23, 42, 0.12);
+
+  /* ── FT 页签垂直几何：一套只依赖字号的公式（配套 `src/app/login/FolderTabs.tsx`）──
+     **唯一自由变量 = 字号 `--ft-tab-font`**，其余全部是「字号 × 系数」，系数按 16px
+     标定（系数 × 16 = 注释里的 px），所以默认字号下渲染与逐像素手调版完全一致；
+     改字号则整条页签等比收放：行距、上下留白、层次、抬起、藏深一起跟着变
+     （2026-10-25 用户：「行高实际上应该跟着字号的大小，上下加上一定的边距…大字的
+     边距也要加大」→「目前的渲染效果是对的，我们要做的是把它公式化」）。
+
+     公式用 `calc(font × k)` 而**不是 `em`**：`--ft-tab-height / strip / filter-h` 会被
+     页签之外的元素引用（FundShell 工具栏 `h-[var(--ft-tab-height)]`、筛选按钮），`em` 会在
+     那个元素上按**它自己的**字号解析、算出另一个值；乘 `--ft-tab-font` 则谁引用都一样。
+
+     ⚠️ 全表唯一的绝对值是 **1px**：边框 / 接缝（`-mb-px`）是发丝线，不能跟着字号放大，
+        否则 DPR 2 上会变粗一倍、卡片顶边出现双线。 */
+  --ft-tab-font: 1rem;                  /* 自由变量：活动页签字号 = 16px */
+  --ft-tab-font-sm: calc(var(--ft-tab-font) * 0.75);   /* 12px  非活动页签字号 */
+  --ft-tab-leading: 1.5;                /* 无单位倍率：行高 = 各自字号 × 1.5（两种页签共用一个） */
+
+  /* ① 活动页签（被内容板的盒模型完全决定：1px 上边框 + 上下内边距 + 行高） */
+  --ft-tab-line: calc(var(--ft-tab-font) * var(--ft-tab-leading)); /* 24px 行高 */
+  --ft-tab-pad-top: calc(var(--ft-tab-font) * 0.375);              /*  6px 上内边距（故意与下不对称） */
+  --ft-tab-pad-bottom: calc(var(--ft-tab-font) * 0.1875);          /*  3px 下内边距 */
+  --ft-tab-pad-sum: calc(var(--ft-tab-pad-top) + var(--ft-tab-pad-bottom)); /* 9px */
+  --ft-tab-height: calc(1px + var(--ft-tab-pad-sum) + var(--ft-tab-line));  /* 34px */
+
+  /* ② 页签条（流内高度 = 活动页签外沿 − 1px 接缝） */
+  --ft-tab-top: calc(var(--ft-tab-font) * 0.4375);     /* 7px  活动页签距条顶 */
+  --ft-tab-strip: calc(var(--ft-tab-top) + var(--ft-tab-height) - 1px); /* 40px 条高 */
+
+  /* ③ 非活动页签（下沉 step、hover 抬起 lift、底边藏进卡片 bury，三条硬约束见 FolderTabs 第 2 条）
+        lift(0.125) < step(0.375)：抬起后仍低 4px，永不高过活动页签；
+        bury(0.375) > lift(0.125)：藏得比抬得多，hover 时不露卡片上边框。 */
+  --ft-tab-step: calc(var(--ft-tab-font) * 0.375);     /* 6px  层次：非活动页签比活动页签低 */
+  --ft-tab-rise: calc(var(--ft-tab-top) + var(--ft-tab-step)); /* 13px 非活动页签下沉 */
+  --ft-tab-lift: calc(var(--ft-tab-font) * 0.125);     /* 2px  hover 抬起量 */
+  --ft-tab-bury: calc(var(--ft-tab-font) * 0.375);     /* 6px  底边藏进卡片后的深度（视觉无关） */
+
+  /* ④ 挂在页签条右侧的筛选按钮：高 = 活动页签高 − 层次 = 露出区 + 1px = 28px，
+        与 `pt-[var(--ft-tab-rise)]` 顶对齐后正好落在非活动页签的竖向范围内 */
+  --ft-tab-filter-h: calc(var(--ft-tab-height) - var(--ft-tab-step)); /* 28px */
 }
 
 html {
@@ -222,7 +262,7 @@ html {
 
   /* ── FT 卡片外壳（配套组件 `src/components/FolderTabsCard.tsx`）────────────────────────
      记账弹窗里「FT 页签 + 内容板 + 固定页脚」的两层外观集中在这里，弹窗只写字段。
-     几何不变量（页签高 34px、`pt-10`、凹角、`z-index` 层级）见 `@/app/login/FolderTabs` 文件头。 */
+     几何不变量（页签高 34px、流内页签条、凹角、`z-index` 层级）见 `@/app/login/FolderTabs` 文件头。 */
 
   /* 内容板（实体卡片）：压在页签之上（z-20 > 页签 z-10），圆角/边框/阴影 + 米色底，
      与白色弹窗底形成卡片感；`--ft-card-bg` 可被色阶类覆盖。
@@ -251,16 +291,31 @@ html {
     --ft-card-bg: #ffffff;
   }
 
+  /* 填满变体：卡片撑满容器（`flex: 1 1 0%`）。给**容器高度固定、卡片就该铺满**的调用方用 ——
+     基金页 FundShell 的上窗格是用户可拖拽的固定高度：卡片不填满就会在窗格底部留一片空白，
+     页签条（铺满窗格那版）里的非活动页签还会顺着空白伸出卡片（2026-10-25 用户反馈
+     「卡片高度不够时标签页穿出了卡片」，见 `FOLDER_TAB_STRIP` 注释）。
+     默认 `.ft-card-surface` 的 `flex: 0 1 auto`（高度跟内容走）是给记账弹窗用的：
+     弹窗窗口贴着内容，卡片在最后一个字段下面收尾。两者只差 flex，外观规则完全相同。
+     ⚠️ 本文件手写规则排在 Tailwind utilities 之后，调用方在元素上补 `flex-1` 工具类
+     压不住这里的 `flex: 0 1 auto`，必须挂这个类（同类名在后，同特异性后者胜）。 */
+  .ft-card-surface-fill {
+    flex: 1 1 0%;
+  }
+
   /* FT 卡片页签的标签：**在页签里垂直居中**。
-     `folderTabClass` 给活动页签的内边距是有意不对称的（`pt-1.5` 6px / `pb-[3px]` 3px），那是登录页
-     「页签降 3px、标签也降 3px」的设计；搬进窗口卡片后，16px 标签贴在页签下沿、上面空一大截，
-     看上去不在中间（2026-10-23 用户反馈：报销单「差旅费 / 一般报销」文字不居中）。
-     这里改成上下 4 / 5：总高仍是 1px 边框 + 4 + 行高 24 + 5 = 34px，页签底与内容板顶的 −1px
-     接缝、`mt-[7px]` 等几何全不变（见 `FolderTabs.tsx` 头注释第 2 条）。
-     本文件手写规则排在 Tailwind 生成的 utilities 之后、同层同特异性，故能覆盖 `pt-1.5` / `pb-[3px]`。 */
+     `folderTabClass` 给活动页签的内边距是有意不对称的（`--ft-tab-pad-top` 6px /
+     `--ft-tab-pad-bottom` 3px），那是登录页「页签降 3px、标签也降 3px」的设计；搬进窗口卡片后，
+     16px 标签贴在页签下沿、上面空一大截，看上去不在中间（2026-10-23 用户反馈：报销单
+     「差旅费 / 一般报销」文字不居中）。
+     这里把同一份 `--ft-tab-pad-sum`（9px）**均分**成 4 / 5，总高仍是
+     1px 边框 + 9 + 行高 = 34px，页签底与内容板顶的 −1px 接缝、`--ft-tab-strip` 等几何全不变
+     （见 `FolderTabs.tsx` 头注释第 2 条）。不写字面 4/5：改令牌时这里自动跟着走。
+     本文件手写规则排在 Tailwind 生成的 utilities 之后、同层同特异性，故能覆盖页签上的
+     `pt-[var(--ft-tab-pad-top)]` / `pb-[var(--ft-tab-pad-bottom)]`。 */
   .ft-card-tab-active {
-    padding-top: 4px;
-    padding-bottom: 5px;
+    padding-top: calc((var(--ft-tab-pad-sum) - 1px) / 2);
+    padding-bottom: calc((var(--ft-tab-pad-sum) + 1px) / 2);
   }
 
   /* 底部按钮行：**在卡片外面、窗口中**（2026-10-23 用户反馈「卡片到备注下面就结束，

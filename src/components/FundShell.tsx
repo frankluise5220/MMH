@@ -3350,9 +3350,11 @@ export function FundShell(props: Props) {
         stackLowerFirstOnMobile={false}
       >
 
-      {/* FT 卡片：页签条绝对定位铺满容器（页签组靠左、等宽），内容板 z-20 压在页签之上。
-          容器 `pt-10` 决定内容板顶位置，改页签高度时不要动它（见 FolderTabs 文件头第 2 条）。 */}
-      <div className="relative flex h-full min-h-0 flex-col pt-10">
+      {/* FT 卡片：页签条是**流内**元素（`FOLDER_TAB_STRIP`，高 = 页签内容，底边 = 卡片上缘、
+          不随窗格伸缩），页签组靠左、等宽，内容板 z-20 压在页签之上。
+          容器**不给 `pt-10`**：流内页签条自己顶出卡片位置，任何字号 / 缩放下都对得上
+          （见 FolderTabs 文件头第 1、2 条）。 */}
+      <div className="relative flex h-full min-h-0 flex-col">
 
         <div className={FOLDER_TAB_STRIP}>
 
@@ -3390,9 +3392,10 @@ export function FundShell(props: Props) {
 
         </div>
 
-        {/* 工具栏（刷新净值 / 导入导出 / 产品库 / 列设置）移出卡片，占与页签同一条 40px 顶部带
-            （页签 7..41px，故这里 top-7px + h-34px，垂直中心与页签一致）并靠右。 */}
-        <div className="absolute right-0 top-[7px] z-30 flex h-[34px] items-center gap-2 pr-1">
+        {/* 工具栏（刷新净值 / 导入导出 / 产品库 / 列设置）移出卡片，`absolute` 贴在容器顶部、
+            与活动页签同顶同高 —— 直接引用 `--ft-tab-top` / `--ft-tab-height` 令牌，
+            **不写 7 / 34**：改页签几何时这里自动跟上（见 FolderTabs 文件头第 2、13 条）。 */}
+        <div className="absolute right-0 top-[var(--ft-tab-top)] z-30 flex h-[var(--ft-tab-height)] items-center gap-2 pr-1">
 
           <div className="flex items-center gap-2">
             <InvestmentFormModal
@@ -3518,12 +3521,16 @@ export function FundShell(props: Props) {
         </div>
 
         {/* 内容板（FT 卡片）：外观规则统一在 globals.css 的 `.ft-card-surface`
-            （z-20 压在页签之下、圆角/边框/阴影、米色底；卡片顶边由容器 `pt-10` 决定）。
+            （z-20 压在页签之下、圆角/边框/阴影、米色底；卡片顶边 = 流内页签条的底边，
+            不靠容器 padding 定位）。
             **卡片 / 页签 / 表头同色**：活动页签不刷白（不挂 `ft-tab-fillet-white`），保持 `#fbfaf7`；
             表头取 `ADVANCED_TABLE_HEAD_SURFACE_CLASS`（同一个 `#fbfaf7`），与页签接缝无色差；
             表格内部（表体）改用 `ADVANCED_TABLE_BODY_SURFACE_CLASS`（白），靠明度差区分数据区。
-            汇总行不再吸在表内，而是卡片底边一条浅灰独立条（`summaryRowPlacement="footer"`）。 */}
-        <div className="ft-card-surface">
+            汇总行不再吸在表内，而是卡片底边一条浅灰独立条（`summaryRowPlacement="footer"`）。
+            挂 `ft-card-surface-fill`（flex 撑满）：本窗格高度由用户拖拽决定（固定值），卡片必须
+            铺满窗格、表格在卡片内滚动；「高度跟内容走」那套（默认 `flex: 0 1 auto`）是给记账
+            弹窗用的。不填满时窗格底部会留一片空白，页签也曾顺着空白伸出卡片（见 FolderTabs 文件头第 9 条）。 */}
+        <div className="ft-card-surface ft-card-surface-fill">
 
         <div className="flex-1 min-h-0 overflow-hidden">
           <div className="block h-full overflow-y-auto overscroll-contain px-3 pb-4 pt-2 md:hidden">

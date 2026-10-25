@@ -7,7 +7,10 @@ import { FOLDER_TAB_STRIP, FolderTabRuler, folderTabClass, folderTabNeighbors } 
  * FT 卡片（文件卡片式页签 + 内容板 + 窗口底按钮行）——**各处记账弹窗的统一外壳**。
  *
  * 这里集中了「弹窗里用 FT 页签」的全部规则，调用方只写字段，不再各写一遍：
- *   1. 外层 `pt-10`：40px 顶部带给页签用，页签底 41px 与内容板顶 40px 恒接缝 −1px
+ *   1. 页签条是**流内**元素（`FOLDER_TAB_STRIP`，高 = 页签内容，底边 = 卡片上缘），
+ *      外层**不给 `pt-10`**、条本身也**没有 `h-10`**：卡片顶边由条的实际高度顶出来，
+ *      接缝 −1px 由活动页签的 `-mb-px` 结构保证。不随窗口高度伸缩 —— 任何卡片高度、
+ *      任何字号下标签页都到不了卡片上缘以下，不会穿出卡片
  *      （几何不变量见 `@/app/login/FolderTabs` 文件头，改样式前必读）；
  *   2. 页签组靠左、**等宽**：靠 `FolderTabRuler` 隐形量尺按最长标签定宽（等宽但只占最长标签的宽度，
  *      不铺满整行）；页签组整宽 = N × 最长标签 + 边距，窄容器下等比例收缩并省略号裁切；
@@ -85,20 +88,24 @@ export function FolderTabsCard({
     //     留在窗口底边（2026-10-23 用户反馈「卡片到备注下面就结束，保存按钮在窗口里」）。
     //     报销单三窗的窗口高度改成跟内容走（`heightMode="natural"`）后没有多余空白可推，
     //     按钮行就紧贴卡片右下角（2026-10-23 用户反馈「下面空太多，保存应在右下角」）。
-    //   卡片区（默认 `0 1 auto`，不撑满）= 页签条 + 卡片。页签条是 `absolute ... bottom-0`，
-    //     它的包含块必须落在**卡片区**上：挂在外层的话条会一直铺到按钮行底下，非活动页签的
-    //     `self-stretch` 跟着拉长，在卡片之外露出一条灰底的「假页签」。
+    //   卡片区（默认 `0 1 auto`，不撑满）= 页签条 + 卡片。页签条是**流内**元素
+    //     （`FOLDER_TAB_STRIP`，高 = 页签内容，见 `FolderTabs` 文件头第 1、2 条）：卡片顶边
+    //     由页签条实际高度顶出来，全链路没有写死的高度数，放大 / 改字号都不会错位；
+    //     流内元素天然落在外层 `md:px-3` 的 padding 盒里，页签与卡片左右自然对齐。
+    //     （历史：页签条曾是 `absolute`，先后用过 `bottom-0` 铺满层（挂外层时会铺到按钮行底下，
+    //     非活动页签跟着拉长露出灰底「假页签」）和 `h-10` 固定 40px 带（不穿出但 40 写死，
+    //     放大失灵）——2026-10-25 用户两轮反馈后定为流内内容高。）
     // `md:px-3 md:pb-3`：卡片（页签条、按钮行一并）与窗口边缘留 12px 呼吸空间，否则卡片左右
     //   直接压在 `.app-modal-panel` 的边框上（2026-10-23 用户反馈「FT 卡片与窗口边缘基本重合」）。
-    //   外层给了 padding 之后，`absolute inset-x-0` 的页签条自动跟着缩进，不必再单独 `mx-3`。
+    //   外层给了 padding 之后，流内页签条自动落在缩进后的盒子里，不必再单独 `mx-3`。
     //   只从 `md`（768px，= `.app-modal-panel` 退出全屏的断点）起生效：移动端弹窗满屏白底、
     //   卡片本来就该贴边，留白反而多出一圈白边。
     <div className="relative flex min-h-0 flex-1 flex-col gap-3 md:px-3 md:pb-3">
-      <div className={`relative flex min-h-0 flex-col ${hasTabs ? "pt-10" : ""}`}>
+      <div className="relative flex min-h-0 flex-col">
         {hasTabs ? (
           <div className={FOLDER_TAB_STRIP}>
             {/* 页签组不设 `w-full`：宽度 = N × 最长标签 + 边距 → 等宽且靠左。 */}
-            <div className="flex h-full items-start gap-1.5">
+            <div className="flex items-start gap-1.5">
               {tabs.map((tab, index) => {
                 const active = tab.id === activeId;
                 const disabled = !!tab.disabled;

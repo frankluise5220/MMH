@@ -1,6 +1,6 @@
 "use client";
 import { ModalLayer } from "@/components/ModalLayer";
-import { FolderTabRuler, folderTabClass, folderTabNeighbors } from "@/app/login/FolderTabs";
+import { FOLDER_TAB_STRIP, FolderTabRuler, folderTabClass, folderTabNeighbors } from "@/app/login/FolderTabs";
 
 import {
   useEffect,
@@ -2019,16 +2019,18 @@ export function RegularInvestClient({
             </div>
           </header>
 
-          {/* FT 结构：容器 `pt-10`（页签带 40px），页签条绝对定位到**卡片底部**，
-              于是非活动页签（z-10）往卡片下面延伸的那截被卡片（z-20）盖住，只露出顶部一截，
-              和登录页一样是「从卡片后面探出来的标签」；若页签条只到 40px，非活动页签就成了一个
-              悬在卡片上方的完整圆角长方形。 */}
-          <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden pt-10">
+          {/* FT 结构：页签条是**流内**元素（`FOLDER_TAB_STRIP`，高 = 页签内容，底边 = 卡片上缘）；
+              非活动页签（z-10）靠 `self-stretch` 撑到条底，底边直角、无下边框，由卡片那 1px
+              上边框切断 —— 仍是「从卡片后面探出的标签」剪影，且任何卡片高度都不会伸出卡片
+              （2026-10-25 用户要求「标签高度写死」；此前条是 `bottom-0` 铺满容器，靠卡片盖住
+              往下的部分，容器比卡片高时就会露出灰底假页签）。容器这里**不给 `pt-10`**：
+              流内页签条自己顶出卡片位置（见 FolderTabs 文件头第 1、2 条）。 */}
+          <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
             {/* 页签组的 stretch 变体本身带 `flex-1 basis-0`，条撑满 left-0 right-0 后两个页签会各占半屏，
                 所以逐个追加 `flex-none!` 把宽度收回到「文字 + px-4」（Tailwind v4 的 important 是后缀）。
                 宽度下限由 `FolderTabRuler` 的四字探针托住。条本身仍撑满左右，
                 好让右侧的标题/汇总/隐藏已结束/执行全部用 ml-auto 贴到卡片右边缘。 */}
-            <div className="absolute left-0 right-0 top-0 bottom-0 flex items-start gap-1.5">
+            <div className={FOLDER_TAB_STRIP}>
               {PLAN_SOURCE_TABS.map((tab, index) => {
                 const active = tab.id === sourceTab;
                 return (
@@ -2051,12 +2053,13 @@ export function RegularInvestClient({
                   </button>
                 );
               })}
-              {/* 计划类型 + 账户筛选接在页签后面，与页签同一条 40px 水平带：h-10 固定高、
-                  垂直居中，所以不参与页签的 self-stretch（页签要伸到卡片下面被盖住）。
-                  下拉按钮组件内写死 h-8，在 40px 里居中会顶到 y=4，比非活动页签顶边(6px)还高一点，
-                  看着像从标签里冒出来；压到 h-7 后是 y=6..34，与非活动页签顶边齐平，
-                  整体落在活动页签(0..41)之内。 */}
-              <div className="flex h-10 shrink-0 items-center gap-1.5 pl-2 [&>div>button]:h-7">
+              {/* 计划类型 + 账户筛选接在页签后面，高度 = `--ft-tab-strip`（条高），
+                  不参与页签的 self-stretch —— 页签要伸到卡片下面被盖住。
+                  下拉按钮组件内写死 h-8，居中会浮到 y=4，比非活动页签顶边还高、看着像从标签里
+                  冒出来；压到 `--ft-tab-filter-h`（= 活动页签高 − 层次 = 28px，见 globals.css 公式
+                  ④）并**顶对齐 + `pt-[var(--ft-tab-rise)]`**，正好与非活动页签顶边齐平，整体落在
+                  活动页签之内 —— 字号变了整排跟着收放，不再写死 28。 */}
+              <div className="flex h-[var(--ft-tab-strip)] shrink-0 items-start gap-1.5 pl-2 pt-[var(--ft-tab-rise)] [&>div>button]:h-[var(--ft-tab-filter-h)]">
                 <MultiSelectFilterDropdown
                   options={SCHEDULED_TASK_TYPES}
                   selectedValues={selectedTypes}
@@ -2080,7 +2083,8 @@ export function RegularInvestClient({
                 />
               </div>
               {/* 计划标题、汇总、逾期、隐藏已结束、执行全部也挤在页签这一行的右侧（ml-auto），
-                  不再单独占一行：整页只有「页签带」这一条 40px 横条承载所有页级控件。 */}
+                  不再单独占一行：整页只有页签条那一条（40px 高，由页签算出）横条承载所有
+                  页级控件。 */}
               <div className="ml-auto flex h-10 shrink-0 items-center gap-3 pl-3">
                 <div className="flex min-w-0 items-center gap-2.5 text-sm">
                   <span className="whitespace-nowrap font-semibold text-slate-800">{t("nav.scheduledTasks")}</span>

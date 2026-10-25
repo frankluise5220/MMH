@@ -11,29 +11,63 @@ import type { ReactNode } from "react";
  * 从登录页抽出的可复用组件，供「登录方式页签」和「建账方式页签」共用。
  * 核心不变量（改样式前必读，均有几何/像素探针守护）：
  *
- *  1. 页签条 `inset-x-0`（不能 `inset-x-3`，否则整条右移 12px）；
- *  2. 页签条 `top-0 bottom-0` + `items-start`（顶对齐）：容器 `pt-10`（40px）决定内容板顶位置——
- *     **改页签高度时不要动它**，动了内容板会跟着上下移。页签靠 `mt` 从条顶往下收：
- *     活动页签 `mt-[7px]`（7px），高 = 1px 上边框 + `pt-1.5`(6px) + `pb-[3px]`(3px) + `text-base`
- *     行高 24px = 34px，页签底 = 7 + 34 = 41px = 内容板顶 40px + 1px，接缝恒 −1px。
- *     上下内边距**不对称**（6 / 3）是有意的：让标签跟着页签顶一起下移 3px，而不是随高度收缩
- *     上下各让 1.5px（用户明确要求「页签降 3px、活动页签的标签也降 3px」）。
- *     ⚠️ 只适用于登录页这种独立页签条：搬进窗口卡片（`FolderTabsCard`）时标签会贴住页签下沿，
- *     故那里用 `.ft-card-tab-active` 覆盖成上 4 / 下 5（总高仍 34px，接缝几何不变）。
- *     非活动页签 `mt-[13px]`（13px），比活动页签多 6px —— 保持「活动页签高出 6px」的层次；
- *     它 `self-stretch`、标签靠 `pt-[5px]` 在**露出区**内视觉居中（露出区 = 页签顶 → 内容板顶；
- *     中文字形墨迹微偏上，故 pt 略补 0.5px）；`mx-0.75`（左右各 3px）让相邻两个非活动页签间距 =
- *     3+3+gap(6px) = 12px。**紧邻活动页签的那一侧收到 1px**（见第 7 条），让「非活动 → 活动」的
- *     间距 = gap(6px) + 1px = 7px，与凹角方块宽度一致（页签顶下移时用 `pt` 反补，**不能**用
- *     `items-center`，见第 10 条）。
- *     只改上下内边距而不同步改 `mt`，页签底会离开内容板顶露出「白缝」。
- *     `bottom-0` 让条铺满容器高度、非活动页签才能 `self-stretch` 对齐内容板底部，
- *     `items-start` 才能让活动页签「顶部固定、不增高」；
- *  3. 页签条**不能带 z-index**（position:absolute + 非 auto z-index 会新建层叠上下文，
- *     把活动页签的 z-30 困在条内，导致内容板 1px 上边框画在活动页签之上）；
- *  4. 活动页签 z-30（盖内容板顶边框、与内容板连体），非活动页签 z-10（低于内容板 z-20，
- *     往下延伸部分被内容板盖住、只露标签头）——绝不能把非活动页签 z 提到内容板之上，
- *     否则会盖住内容板里的表单标签；
+ *  1. 页签条是**流内**元素（不是 absolute、不写高度）：高度由页签内容撑开（= 最高页签的外沿高），
+ *     内容板紧跟其后。**全链路没有任何写死的高度数**——没有 `pt-10`、没有 `h-10`、没有
+ *     `bottom-0`：页签与卡片的相对几何全部由内容算出，字号 / 浏览器缩放 / 系统显示缩放
+ *     怎么变都跟着走，不会错位（2026-10-25 用户：「如果放大，这个 40 就没效了」——
+ *     所以 40 这类数不许再以任何形式回来）。流内元素天然落在容器内边距盒里
+ *     （如 `FolderTabsCard` 的 `md:px-3`），页签与卡片左右自然对齐，不需要 inset 计算；
+ *  2. **垂直几何是一套只依赖字号的公式，不是一堆拍出来的常数**（2026-10-25 用户：
+ *     「目前的渲染效果是对的，我们要做的是把它公式化」）。唯一自由变量是 `globals.css
+ *     :root` 的 `--ft-tab-font`（活动页签字号）；其余每个数都是 `font × k` 或几个这样的
+ *     项相加，k 按 16px 标定（k × 16 = 行尾 px）。默认字号下与逐像素手调版完全一致；
+ *     改字号则整条页签等比收放 —— 行距、上下留白（用户：「大字的边距也要加大」）、
+ *     层次、抬起、藏深一起变，没有一处要手改。
+ *
+ *       ① 活动页签（盒模型自洽：1px 上边框 + 上下内边距 + 行高）
+ *          `--ft-tab-line`        = font × leading(1.5)      = 24px   行高
+ *          `--ft-tab-pad-top`     = font × 0.375             =  6px   上内边距（故意不对称：
+ *          `--ft-tab-pad-bottom`  = font × 0.1875            =  3px   标签跟页签顶一起下移 3px）
+ *          `--ft-tab-pad-sum`     = pad-top + pad-bottom     =  9px
+ *          `--ft-tab-height`      = 1px + pad-sum + line     = 34px
+ *       ② 页签条（流内；高 = 活动页签外沿 − 1px 接缝）
+ *          `--ft-tab-top`         = font × 0.4375            =  7px   活动页签距条顶
+ *          `--ft-tab-strip`       = top + height − 1px       = 40px
+ *       ③ 非活动页签（层次 / 抬起 / 藏深，两条硬约束在公式里天然成立）
+ *          `--ft-tab-step`        = font × 0.375             =  6px   层次：比活动页签低多少
+ *          `--ft-tab-rise`        = top + step               = 13px   下沉量
+ *          `--ft-tab-lift`        = font × 0.125             =  2px   hover 抬起量
+ *          `--ft-tab-bury`        = font × 0.375             =  6px   底边藏进卡片后的深度
+ *       ④ 字号派生 / 复用点
+ *          `--ft-tab-font-sm`     = font × 0.75              = 12px   非活动页签字号
+ *          `--ft-tab-leading`     1.5（无单位）→ 两种页签都写 `leading-[var(--ft-tab-leading)]`
+ *          `--ft-tab-filter-h`    = height − step            = 28px   条右侧筛选按钮高
+ *
+ *     **全表唯一的绝对值是 1px**（边框、`-mb-px` 接缝）：发丝线跟着字号放大会在 DPR 2 上
+ *     变粗一倍、卡片顶边出双线。比例一律写 `calc(font × k)` 而**不写 `em`**：`height /
+ *     strip / filter-h` 会被页签之外的元素引用（FundShell 工具栏、筛选按钮），`em` 在那些
+ *     元素上按各自字号解析，会得到另一个值。
+ *     接缝 −1px 是**结构保证**：活动页签挂 `-mb-px` → 条高 = top + height − 1，内容板顶 = 条底。
+ *
+ *     非活动页签 = `mt-[var(--ft-tab-rise)]` + `self-stretch` + `-mb-[var(--ft-tab-bury)]`：
+ *     高 = strip − rise + bury，**露出区 = strip − rise = 27px @16px**（与 bury 无关），底边落在
+ *     卡片上缘以下 bury，被卡片（z-20 > 页签 z-10）整块盖住。
+ *     a) `bury > lift`（0.375 > 0.125）：hover 抬起后底边仍在卡片后面，接缝永远露不出卡片
+ *        上边框（曾出过「鼠标移上来下面露出底部线条了」）。这截深度不影响任何可见像素，
+ *        2 / 4 / 10px 看起来完全一样（用户：「都会藏在卡片标题栏的后面」）。
+ *     b) `lift < step`（0.125 < 0.375）：抬起后仍比活动页签低 `step − lift`，**永不高过它**
+ *        （用户：「以前的非活动标签更低，即使鼠标移上去，也不会比活动标签高」）。
+ *     文字在露出区内居中不写 `pt`：`items-center` + `pb-[var(--ft-tab-bury)]`
+ *     （下内边距把内容盒还原成露出区），行高变化时自动重新居中（见第 10 条）。
+ *     `mx-0.75`（左右各 3px）让相邻两个非活动页签间距 = 3+3+gap(6px) = 12px；
+ *     **紧邻活动页签的那一侧收到 1px**（见第 7 条），让「非活动 → 活动」的间距 =
+ *     gap(6px) + 1px = 7px，与凹角方块宽度一致。
+ *     `items-start` 让活动页签「顶部固定、不增高」；
+ *  3. 页签条**不设 position / z-index**：流内元素的 z-index 无效，也不会新建层叠上下文，
+ *     活动页签的 z-30 与内容板的 z-20 在同一个层叠上下文里直接比较（见第 4 条）；
+ *  4. 活动页签 z-30（盖内容板顶边框、与内容板连体），非活动页签 z-10（低于内容板 z-20：
+ *     它底边那一格被内容板 1px 上边框压住，才读出「藏进卡片后面」的剪影，见第 9 条）——
+ *     绝不能把非活动页签 z 提到内容板之上，否则会盖住内容板里的表单标签；
  *  5. 活动页签外阴影只能「向上」（负 offset + 小 blur），否则向下溢出把内容板顶部压暗；
  *  6. 内容板**四角恒为 12px 圆角**（`rounded-xl`），任何时候都不去圆角：活动页签无论排首位还是
  *     末位，都与内容板左右边缘留出 18px（见第 7 条），内容板两上角必然露在页签外侧——去掉任一
@@ -48,10 +82,21 @@ import type { ReactNode } from "react";
  *  8. 非活动页签的**外侧边**（排在首位 / 末位，该侧就是内容板左右边缘）缩进 12px
  *     （`ml-3`/`mr-3`，= 内容板倒角半径），不压住内容板上角的圆弧；其余各边默认 3px
  *     （`ml-0.75`/`mr-0.75`），紧邻活动页签的一侧收到 1px（见第 7 条）；
- *  9. 非活动页签 `self-stretch`：拉伸到页签条（=容器）高度、底部恰好对齐内容板下缘、被
- *     内容板完全覆盖——不能固定 `pb-24` 往下延，否则内容板矮（如飞牛页签）时会超出下缘；
- * 10. 非活动页签必须 `flex items-start justify-center`：`self-stretch` 后 button 默认垂直
- *     居中内容，标签文字会被推到内容板后面（z-10 < z-20）而不可见——顶对齐才能露在卡片上方；
+ *  9. 非活动页签 `self-stretch` + `-mb-[var(--ft-tab-bury)]`：在页签条（内容高，= 活动页签
+ *     外沿高）内拉伸，再把底边往卡片后面送 `--ft-tab-bury`（6px）→ 可见底边**恒等于内容板顶**，
+ *     多出的 6px 被卡片盖住（hover 抬起 2px 后仍藏 4px，这就是不露缝的原因，见第 2 条）。
+ *     **底边必须是直角、且不带下边框**（`rounded-t-[8px] border-b-0`，见 `folderTabClass`
+ *     体内注释）：内容板那 1px 上边框（z-20 > 页签 z-10）横在页签底边上把它「切断」，
+ *     读作页签继续藏进卡片后面 —— 这就是「从卡片后面探出的标签」的剪影。
+ *     ⚠️ 不要改成四角圆角 + 全边框：那会变成一枚悬在卡片上缘的圆角矩形，
+ *     2026-10-25 用户明确否决（原话「标签页变成圆角矩形了…视觉上象是藏在卡片后面」）。
+ *     **页签条是流内内容高、页签只是被卡片盖住**——「标签页穿出卡片」（旧版 `bottom-0`
+ *     铺满容器、非活动页签拉到容器底露灰底假页签）从此不可能发生；
+ * 10. 非活动页签用 `flex items-center justify-center` + `pb-[var(--ft-tab-bury)]`：
+ *     页签被拉伸到（露出区 + 藏进卡片的 6px），下内边距抵掉它，内容盒正好回到露出区，
+ *     居中即「文字在露出区视觉居中」—— 这是**自动版 pt**：行高随字号变大时不用重算任何数
+ *     （旧版 `items-start + pt-[5px]` 是手算的 (27 − 1 − 16) / 2，字号一变就偏）。
+ *     ⚠️ 不要改成 `items-start` 而不同步 `pt`，文字会贴在露出区顶部；
  * 11. stretch 变体必须带 `min-w-0`：flex 项默认 `min-width:auto`，活动页签字号大（text-base）
  *     且标签长时会被内容撑宽、挤窄其他页签（宽度随文字缩放）——`min-w-0` 才能严格等宽平分；
  *     `overflow-hidden` 兜底只加在**非活动页签**与活动页签的**内层 span** 上（活动页签自身
@@ -64,10 +109,38 @@ import type { ReactNode } from "react";
  *     的内容板上边框抹掉，否则「圆弧落在一段多余横线上」，接不上卡片的大倒角圆弧。
  *     因此活动页签**不能** `overflow:hidden`（会裁掉按钮盒外的伪元素）——超长标签的裁切
  *     改由内层 `<span class="overflow-hidden">` 承担。
+ * 13. 数值只有两处源头，**别处一律引用、不再手写**：
+ *     a) **垂直几何 = `globals.css` 的那一套公式**（见第 2 条的完整表）：自由变量只有
+ *        `--ft-tab-font`，其余 `font-sm / leading / line / pad-top / pad-bottom / pad-sum /
+ *        height / top / strip / step / rise / lift / bury / filter-h` 全是它的 `calc()` 派生。
+ *        类名里出现的 `var(--ft-tab-*)` 就是这些，源码里**没有第二个自由数字**（除 1px 发丝线）。
+ *        改字号即整体收放：行距、上下留白、层次、抬起、藏深、条高、露出区、文字居中全部跟着走。
+ *     b) **水平 / 圆角是设计度量，保留字面 px（且应该保留）**：`gap-1.5`(6px)、
+ *        `mx-0.75`(3px)、`ml-px`(1px)、外侧缩进 12px（= 内容板圆角）、
+ *        活动页签外侧缩进 18px（= 12 + 凹角半径 6）、页签上圆角 8px、凹角方块 7px、
+ *        内容板圆角 12px（`rounded-xl`）。这些跟字形大小无关 —— 跟着放大反而会让凹角与
+ *        内容板圆角错位（接缝出折角），所以它们**不**进令牌。
+ *     c) 派生但不需要令牌的（结构自动）：条高由活动页签外沿顶出、非活动页签高度由
+ *        `self-stretch` 得出、内容盒由 `pb` 还原成露出区。
  */
 
-/** 页签条容器类名。 */
-export const FOLDER_TAB_STRIP = "absolute inset-x-0 top-0 bottom-0 flex items-start gap-1.5";
+/**
+ * 页签条容器类名。
+ *
+ * **流内元素，高度由页签内容撑开**（= 最高页签——活动页签——的外沿高），内容板紧跟其后。
+ * 不写高度、不 absolute、不 `bottom-0`：全链路没有魔法数，字号 / 缩放变化时页签与卡片的
+ * 相对几何由内容算出，不会错位（2026-10-25 用户：「如果放大，这个 40 就没效了」）。
+ *
+ * 历史包袱（都别再改回来）：
+ *  - `absolute ... bottom-0` 铺满容器：容器比卡片高时（基金页可拖拽窗格、卡片内容比窗格矮），
+ *    非活动页签的 `self-stretch` 会拉到容器底，在卡片下面露出一整条灰底「假页签」
+ *    （用户反馈「标签页穿出了卡片」）；
+ *  - `absolute ... h-10` 固定 40px 带：不穿出了，但 40 是写死的——放大 / 改字号就失灵，
+ *    且非活动页签会变成一枚悬在卡片上缘的圆角矩形（用户否决）。
+ * 现在：页签条内容高 → 非活动页签底边恒 = 卡片上缘（被卡片 1px 上边框切断，
+ * 见第 9 条），活动页签用 `-mb-px` 把接缝 −1px 变成结构保证（见 `folderTabClass`）。
+ */
+export const FOLDER_TAB_STRIP = "flex items-start gap-1.5";
 
 /** 内容板基础类名（圆角由 folderTabPanelClass 按活动页签位置追加）。 */
 export const FOLDER_TAB_PANEL =
@@ -124,14 +197,16 @@ export function folderTabClass(
       // 改由 `ft-tab-fillet` 的两个伪元素画「外扩凹角」，把竖边向外侧接到内容板上沿横线
       // （几何与色值见 globals.css 的 .ft-tab-fillet 注释）。
       // 凹角必须画到按钮盒外，故这里**不能** overflow-hidden（超长标签改由内层 span 裁切）。
-      // 页签高 = 1px 边框 + `pt-1.5`(6px) + `pb-[3px]`(3px) + `text-base` 行高 24px = 34px；
-      // `mt-[7px]` 把它从条顶往下收 7px（内容板不动），页签底 = 7 + 34 = 41px = 内容板顶
-      // （容器 `pt-10` = 40px）+ 1px，接缝恒 −1px。
+      // 页签高 / 顶距 / 上下内边距全部来自 `--ft-tab-*` 令牌（见文件头第 2 条），
+      // 类名里不再写字面 px；改令牌即可，这里不用动。
+      // **接缝 −1px 靠 `-mb-px`（下边距 −1px）结构保证**：页签条是流内内容高
+      // （= `--ft-tab-top` + `--ft-tab-height` − 1），内容板顶 = 页签条底 → 页签底恒比板顶低
+      // 1px，与字号无关（旧版靠 `pt-10`(40) 对 `mt-7+34=41` 凑等式，放大就露白缝；
+      // 2026-10-25 用户：「如果放大，这个 40 就没效了」）。
       // 上下内边距不对称（6 / 3）是有意的：让标签跟着页签顶下移 3px，而不是随高度收缩各让 1.5px。
-      // 改高度时必须同步改 `mt`（见文件头第 2 条），否则页签底会离开内容板顶露出白缝。
       // 底色 = 内容板底色 = 表头底色：#fbfaf7，三处必须一致（表头那份由 AdvancedDataTable 的
       // `ADVANCED_TABLE_HEAD_SURFACE_CLASS` 提供，这里不 import 它是为了不把 ADT 带进登录页的包）。
-      `relative z-30 mt-[7px] ${width} rounded-t-[8px] border border-b-0 border-slate-300 bg-[#fbfaf7] px-4 pt-1.5 pb-[3px] text-base font-semibold text-slate-800 shadow-[0_-2px_3px_rgba(15,23,42,0.06)]`,
+      `relative z-30 mt-[var(--ft-tab-top)] -mb-px ${width} rounded-t-[8px] border border-b-0 border-slate-300 bg-[#fbfaf7] px-4 pt-[var(--ft-tab-pad-top)] pb-[var(--ft-tab-pad-bottom)] text-[length:var(--ft-tab-font)] leading-[var(--ft-tab-leading)] font-semibold text-slate-800 shadow-[0_-2px_3px_rgba(15,23,42,0.06)]`,
       "ft-tab-fillet",
       // 排首位/末位时的缩进 = 内容板倒角半径(12px) + 页签凹角半径(6px) = 18px。
       // 凹角外端正好落在内容板上圆角弧的起点上，两条弧相切、不会打架；
@@ -141,12 +216,16 @@ export function folderTabClass(
       atEnd ? "mr-4.5" : "",
     ].filter(Boolean).join(" ");
   }
-  // 非活动页签 `mt-[13px]`（13px）= 活动页签 `mt-[7px]`（7px）+ 6px —— 与活动页签一起下移，
-  // 保持「活动页签高出 6px」的层次；顶部这 13px 是唯一露出区（其余被内容板 z-20 盖住）。
-  // `pt-[5px]` 让标签文字在**露出区**内视觉居中：露出区 = 页签顶 → 内容板顶 = 27px，文字行高 16px。
-  // 纯理论居中（行盒 5.5/5.5）会因中文字形 ascender 空间大、墨迹微偏上约 0.5px，故 `pt` 取 5px
-  // 把墨迹质心拉回正中（像素质心实测偏移 ≈ 0）。**不能**用 `items-center`：页签是 `self-stretch`
-  // （高到内容板下缘），居中会把文字推到内容板后面。
+  // 非活动页签 `mt-[var(--ft-tab-rise)]` = 活动页签 `--ft-tab-top` **+ `--ft-tab-step`(6px)**：
+  // 跟随关系，靠这 6px 表达层次（旧版登录页就是 13 对 7，用户：「以前的非活动标签更低，
+  // 即使鼠标移上去，也不会比活动标签高」）。条高由活动页签外沿顶出，故 `self-stretch` 得
+  // 「`--ft-tab-strip` − `--ft-tab-rise`」，再挂 `-mb-[var(--ft-tab-bury)]` 把底边**送进卡片
+  // 后面 6px**，被卡片（z-20）盖住：hover 抬起 `--ft-tab-lift`(2px) 后仍藏 4px，接缝处露不出
+  // 卡片上边框那条线（2026-10-25 用户：移上来「下面露出底部线条了」）。藏深与抬起量**解耦** ——
+  // 藏多深都不影响外观（用户：「2px、4px、10px，效果其实都一样，因为都会藏在卡片后面」），
+  // 只要 bury > lift；而 lift 必须 < step，否则 hover 会追平活动页签、层次失效。
+  // 文字居中不写 `pt`：`items-center` + `pb-[var(--ft-tab-bury)]` 把内容盒还原成露出区，
+  // 行高（`--ft-tab-line` 用 rem）变了自动重新居中；句柄是「内边距抵消多出的那截」。
   // 左右 margin：默认各 3px（`ml-0.75`/`mr-0.75`），相邻两个**非活动**页签的间距 =
   // 3 + gap(6px) + 3 = 12px。
   // ⚠️ 但**紧邻活动页签的那一侧必须收到 1px（`ml-px`/`mr-px`）**：活动页签两侧的凹角方块只有
@@ -162,7 +241,16 @@ export function folderTabClass(
       ? `${neighbors.prevActive ? "ml-px" : atStart ? "ml-3" : "ml-0.75"} ${neighbors.nextActive ? "mr-px" : atEnd ? "mr-3" : "mr-0.75"}`
       : "mx-0.75";
   return [
-    `relative z-10 mt-[13px] self-stretch ${width} flex items-start justify-center overflow-hidden whitespace-nowrap rounded-[8px] border border-slate-300 bg-slate-200 ${sideMargin} px-4 pt-[5px] text-xs font-medium text-slate-500 shadow-[0_2px_4px_rgba(15,23,42,0.08)] hover:-translate-y-0.5 hover:bg-slate-100`,
+    // 底边**直角、且不带下边框**（`rounded-t-[8px] border-b-0`）：内容板那 1px 上边框
+    // （z-20，压在页签 z-10 之上）正好横在页签底边上，把页签「切断」——读作页签继续藏进
+    // 卡片后面，与登录页沿用多年的「从卡片后面探出的标签」同一剪影（2026-10-25 与原版
+    // 并排实测：像素级一致）。
+    // ⚠️ 不要改回「四角圆角 + 全边框」：那会变成一枚悬在卡片上缘的完整圆角矩形 ——
+    // 2026-10-25 用户明确否决（「标签页变成圆角矩形了…视觉上象是藏在卡片后面」：
+    // 要的是「象是藏在后面」的剪影，不是一枚圆角小签）。
+    // 页签高度、下沉量、hover 抬起 / 藏进卡片的量全部是变量派生（`--ft-tab-rise` /
+    // `--ft-tab-lift` / `--ft-tab-bury`），任何卡片高度、任何字号下都只藏 bury，也不会穿出卡片。
+    `relative z-10 mt-[var(--ft-tab-rise)] -mb-[var(--ft-tab-bury)] self-stretch ${width} flex items-center justify-center overflow-hidden whitespace-nowrap rounded-t-[8px] border border-b-0 border-slate-300 bg-slate-200 ${sideMargin} px-4 pb-[var(--ft-tab-bury)] text-[length:var(--ft-tab-font-sm)] leading-[var(--ft-tab-leading)] font-medium text-slate-500 shadow-[0_2px_4px_rgba(15,23,42,0.08)] hover:-translate-y-[var(--ft-tab-lift)] hover:bg-slate-100`,
   ].join(" ");
 }
 
@@ -204,7 +292,7 @@ const RULER_MIN_PROBE = "宽度量尺";
 
 export function FolderTabRuler({ labels }: { labels: readonly ReactNode[] }) {
   return (
-    <span className="grid h-0 grid-cols-[minmax(0,max-content)] overflow-hidden text-base font-semibold" aria-hidden="true">
+    <span className="grid h-0 grid-cols-[minmax(0,max-content)] overflow-hidden text-[length:var(--ft-tab-font)] leading-[var(--ft-tab-leading)] font-semibold" aria-hidden="true">
       <span className="col-start-1 row-start-1 whitespace-nowrap">{RULER_MIN_PROBE}</span>
       {labels.map((label, index) => (
         <span key={index} className="col-start-1 row-start-1 whitespace-nowrap">{label}</span>
@@ -227,8 +315,9 @@ export function FolderTabRuler({ labels }: { labels: readonly ReactNode[] }) {
  *     ...内容板里的表单...
  *   </FolderTabs>
  *
- * 注意：`variant="stretch"` 时页签条需要占满宽度；页签条容器自带 `pt-10`（内容板顶位置，
- * 与页签高无关，见文件头第 2 条）由调用方控制显示与否（重置/注册子态要收起页签条时，调用方自行判断，见登录页的 showReset 分支）。
+ * 注意：页签条是**流内**元素（`FOLDER_TAB_STRIP`，高 = 页签内容，见文件头第 1、2 条），
+ * 内容板跟在它后面——这里不再有 `pt-10`，卡片顶边由页签条实际高度决定；
+ * 重置/注册子态要收起页签条时，由调用方自行判断是否渲染这一层（见登录页的 showReset 分支）。
  */
 export function FolderTabs({
   tabs,
@@ -251,7 +340,7 @@ export function FolderTabs({
 }) {
   const lastIndex = tabs.length - 1;
   return (
-    <div className="relative pt-10">
+    <div className="relative">
       <div className={`${FOLDER_TAB_STRIP} ${stripClassName}`.trim()}>
         {tabs.map((tab, index) => {
           const active = tab.id === activeId;
