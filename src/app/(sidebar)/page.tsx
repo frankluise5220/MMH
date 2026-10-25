@@ -472,7 +472,6 @@ export default async function Home({
     fundPageSize?: string;
     fundPage?: string;
     showCleared?: string;
-    showCashflow?: string;
     fixedAssetType?: string;
     liabilityPerson?: string;
     loanType?: string;
@@ -603,7 +602,6 @@ export default async function Home({
   const fundPageParam = typeof params?.fundPage === "string" ? parseInt(params.fundPage, 10) : 1;
   const fundPage = Number.isFinite(fundPageParam) && fundPageParam >= 1 ? fundPageParam : 1;
   const showCleared = params?.showCleared === "1";
-  const showCashflow = params?.showCashflow === "1";
 
   // Read the up/down color scheme.
   const colorScheme = (cookieStore.get("colorScheme")?.value ?? "red_up_green_down") as "red_up_green_down" | "green_up_red_down";
@@ -3774,9 +3772,6 @@ export default async function Home({
               confirmDaysMap={investmoneyData.confirmDaysMap}
               feeRateMap={investmoneyData.feeRateMap}
               initialShowCleared={showCleared}
-              initialShowCashflow={showCashflow}
-              accountLabelById={accountLabelRecords}
-              accountTitleById={accountTitleRecords}
               baseQuery={baseQuery.toString()}
               accountId={accountId}
               selectedAccount={JSON.parse(JSON.stringify(selectedAccount ?? {}))}
@@ -3825,9 +3820,6 @@ export default async function Home({
               confirmDaysMap={investwealthData.confirmDaysMap}
               feeRateMap={investwealthData.feeRateMap}
               initialShowCleared={showCleared}
-              initialShowCashflow={showCashflow}
-              accountLabelById={accountLabelRecords}
-              accountTitleById={accountTitleRecords}
               baseQuery={baseQuery.toString()}
               accountId={accountId}
               selectedAccount={JSON.parse(JSON.stringify(selectedAccount ?? {}))}
@@ -3896,9 +3888,6 @@ export default async function Home({
               confirmDaysMap={investfundData.confirmDaysMap}
               feeRateMap={investfundData.feeRateMap}
               initialShowCleared={showCleared}
-              initialShowCashflow={showCashflow}
-              accountLabelById={accountLabelRecords}
-              accountTitleById={accountTitleRecords}
               baseQuery={baseQuery.toString()}
               accountId={accountId}
               selectedAccount={JSON.parse(JSON.stringify(selectedAccount ?? {}))}

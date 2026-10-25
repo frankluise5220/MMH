@@ -11,7 +11,6 @@ import { CartesianGrid, Line, LineChart as RechartsLineChart, ResponsiveContaine
 
 import { formatMoney, formatPercent } from "@/lib/format";
 import { formatDateUtc, todayDateLocalYmd } from "@/lib/date-utils";
-import { resolveAccountTableLabel, type AccountTableLabelLookup } from "@/lib/account-display";
 import { pnlClassFromRedUp } from "@/lib/client/colors";
 import { useOutsideClose } from "@/lib/client/useOutsideClose";
 import { toNumber } from "@/lib/date-utils";
@@ -155,11 +154,6 @@ type FundColumnSpec = readonly [string, number];
 const FUND_TABLE_WIDTHS_KEY = "mmh_fund_shell_column_widths_v1";
 const FUND_POSITION_HIDDEN_COLUMNS_KEY = "mmh_fund_shell_position_hidden_columns_v1";
 const FUND_DETAIL_HIDDEN_COLUMNS_KEY = "mmh_fund_shell_detail_hidden_columns_v1";
-/**
- * 资金明细表（ADT，`toolbarMode="none"`）没有内置工具栏按钮，表头设置由卡片底部自绘按钮
- * 派发事件、复用 ADT 自己的菜单（列显隐 + 恢复默认列宽）。
- */
-const FUND_CASHFLOW_COLUMN_MENU_EVENT = "mmh:fund-cashflow-column-menu";
 /** 持仓 / 明细表也是 ADT，但工具栏关闭、列设置由自绘菜单管理，列宽重置同样靠事件回到表格内部。 */
 const FUND_POSITION_RESET_WIDTHS_EVENT = "mmh:fund-position-reset-widths";
 const FUND_DETAIL_RESET_WIDTHS_EVENT = "mmh:fund-detail-reset-widths";
@@ -657,13 +651,9 @@ export function FundShell(props: Props) {
 
     totalMarketValue, totalCost, totalHistoricalProfit,
 
-    confirmDaysMap, feeRateMap, initialShowCleared, initialShowCashflow, baseQuery,
+    confirmDaysMap, feeRateMap, initialShowCleared, baseQuery,
 
     accountId, selectedAccount, accountOptions,
-
-    // 表格账户列（资金明细的付款方 / 收款方）必须走「系统设置 - 显示 - 账户显示格式」，
-    // 由服务端按该设置预渲染好标签 / hover 后以映射传进来。
-    accountLabelById, accountTitleById,
 
     cashAccounts, investmentAccounts, cashAccountSSOptions, investmentAccountSSOptions, metalTypes, metalUnits, nestedFieldData, createAction, editAction,
 
@@ -689,10 +679,8 @@ export function FundShell(props: Props) {
   const positionTabItems = useMemo(() => {
     const items: { id: string; label: string }[] = [{ id: "held", label: holdingTabLabel }];
     if (!isMetalAccount) items.push({ id: "cleared", label: clearedTabLabel });
-    // 资金明细只对基金 / 货基账户有意义：贵金属没有资金流水概念，理财走理财产品模型。
-    if (!isMetalAccount && !isWealthAccount) items.push({ id: "cashflow", label: t("fundShell.cashflow.tab") });
     return items;
-  }, [clearedTabLabel, holdingTabLabel, isMetalAccount, isWealthAccount, t]);
+  }, [clearedTabLabel, holdingTabLabel, isMetalAccount]);
   const chooseHoldingText = isWealthAccount ? t("fundShell.selectHoldingFirst.wealth") : t("fundShell.selectHoldingFirst.fund");
   const investmentAccountLabel = isWealthAccount ? t("fundShell.account.wealth") : t("viewImport.fundAccount");
   const fundAccountOptions = useMemo(() => investmentAccounts.filter((account: any) => isFundLikeInvestmentAccount(account)), [investmentAccounts]);
@@ -737,24 +725,9 @@ export function FundShell(props: Props) {
   }, []);
 
   const [showCleared, setShowCleared] = useState(initialShowCleared);
-  /** 「资金明细」页签：与持仓 / 清仓并列的第三个上窗格视图，只切上窗格内容。 */
-  const [showCashflow, setShowCashflow] = useState(!!initialShowCashflow);
 
-  /** FT 卡片当前页签 id（贵金属账户只有持仓；理财账户没有资金明细）。 */
-  const activePositionTabId = showCashflow && !isMetalAccount && !isWealthAccount
-    ? "cashflow"
-    : showCleared && !isMetalAccount
-      ? "cleared"
-      : "held";
-
-  /* 资金明细页签：资金流水（transactions 视角）分页取数状态。 */
-  const [cashflowEntries, setCashflowEntries] = useState<any[]>([]);
-  const [cashflowTotal, setCashflowTotal] = useState(0);
-  const [cashflowPage, setCashflowPage] = useState(1);
-  const [cashflowPageSize, setCashflowPageSize] = useState(40);
-  const [cashflowLoading, setCashflowLoading] = useState(false);
-  const [cashflowError, setCashflowError] = useState("");
-  const cashflowReqSeq = useRef(0);
+  /** FT 卡片当前页签 id（贵金属账户只有持仓）。 */
+  const activePositionTabId = showCleared && !isMetalAccount ? "cleared" : "held";
 
   const [fundPage, setFundPage] = useState(1);
 
@@ -931,13 +904,12 @@ export function FundShell(props: Props) {
     });
     setFundCode(initialFundCode || "");
     setShowCleared(initialShowCleared);
-    setShowCashflow(!!initialShowCashflow);
     setShowAllRecords(!initialFundCode);
     setFundPage(1);
     setFundChartOpen(false);
     setSelectedIds(new Set());
     setDetailTableRowCount(0);
-  }, [accountId, allEntries, clearedPositions, confirmDaysMap, feeRateMap, initialFundCode, initialShowCashflow, initialShowCleared, positions, totalCost, totalHistoricalProfit, totalMarketValue, view]);
+  }, [accountId, allEntries, clearedPositions, confirmDaysMap, feeRateMap, initialFundCode, initialShowCleared, positions, totalCost, totalHistoricalProfit, totalMarketValue, view]);
 
 
 
@@ -1334,7 +1306,6 @@ export function FundShell(props: Props) {
   function toggleCleared(on: boolean) {
 
     setShowCleared(on);
-    setShowCashflow(false);
     setFundChartOpen(false);
     // 切 tab（持仓 / 清仓）都回到「全部明细」默认范围
     setShowAllRecords(true);
@@ -1353,26 +1324,9 @@ export function FundShell(props: Props) {
 
   }
 
-  /** 上窗格页签统一入口：持仓 / 清仓 / 资金明细。 */
+  /** 上窗格页签统一入口：持仓 / 清仓。 */
   function switchPositionTab(tabId: string) {
-    if (tabId !== "cashflow") {
-      toggleCleared(tabId === "cleared");
-      return;
-    }
-    setShowCleared(false);
-    setShowCashflow(true);
-    setFundChartOpen(false);
-    setShowAllRecords(true);
-    setFundCode("");
-    setCashflowPage(1);
-
-    const q = new URLSearchParams(baseQuery);
-    q.set("view", view);
-    q.set("showCashflow", "1");
-    q.delete("showCleared");
-    q.delete("fundCode");
-    q.delete("wealthProductId");
-    window.history.replaceState(null, "", withBasePath(`/?${q.toString()}`));
+    toggleCleared(tabId === "cleared");
   }
 
   // Listen for fund data refresh event from modals (stable handler with debounce)
@@ -2072,139 +2026,6 @@ export function FundShell(props: Props) {
       },
     };
   }, [d.positions.length, d.totalCost, d.totalMarketValue, d.positionHistoricalProfit, pnl, t]);
-
-  /* ── 资金明细页签：列表列 + 取数 ── */
-
-  /**
-   * 资金明细按「本账户视角」定符号：钱进本账户为正（流入），出本账户为负。
-   * detail 接口返回的是流水在**记账账户**上的原始金额——买入行记在付款账户上
-   * 是负数，直接展示会把「基金账户收到的钱」显示成 -400。
-   */
-  const cashflowAmountOf = useCallback((row: any) => {
-    const raw = toNumber(row?.amount);
-    if (row?.toAccountId && row.toAccountId === accountId) return Math.abs(raw);
-    if (row?.type === "income") return Math.abs(raw);
-    if (row?.accountId === accountId && row?.toAccountId) return -Math.abs(raw);
-    return raw;
-  }, [accountId]);
-
-  /**
-   * 表格账户单元格的唯一解析入口（同 `resolveAccountTableLabel` 的约定）：
-   * 标签和 hover 都来自按「系统设置 - 显示 - 账户显示格式」预渲染好的映射，
-   * 查不到才退回接口给的原始账户名。不要在列里手拼机构名。
-   */
-  const accountTableLabelLookup = useMemo<AccountTableLabelLookup>(
-    () => ({ labels: accountLabelById ?? null, titles: accountTitleById ?? null }),
-    [accountLabelById, accountTitleById],
-  );
-
-  const cashflowAccountCell = useCallback((row: any, side: "from" | "to") => {
-    const id = side === "from" ? row?.accountId : row?.toAccountId;
-    const name = side === "from" ? row?.accountName : row?.toAccountName;
-    return resolveAccountTableLabel(id, name, accountTableLabelLookup);
-  }, [accountTableLabelLookup]);
-
-  /**
-   * 资金流水的「对手方」：本账户视角下另一侧的账户（本账户是付款方就是收款方，反之亦然）。
-   * 表格默认只显示这一列——本账户名对用户没有信息量；付款方 / 收款方两列降级为表头设置
-   * 里的备选列，默认隐藏，勾选后仍然能看到完整的两侧账户。
-   */
-  const cashflowCounterpartyCell = useCallback((row: any) => {
-    const thisAccountIsPayer = String(row?.accountId ?? "") === String(accountId ?? "");
-    return cashflowAccountCell(row, thisAccountIsPayer ? "to" : "from");
-  }, [accountId, cashflowAccountCell]);
-
-  const cashflowColumns = useMemo<AdvancedDataTableColumn<any>[]>(() => [
-    {
-      key: "date",
-      label: t("fundShell.cashflow.col.date"),
-      width: 104,
-      hideable: true,
-      className: "tabular-nums text-slate-600",
-      sortValue: (r) => String(r.date ?? ""),
-      render: (r) => r.date,
-    },
-    {
-      key: "amount",
-      label: t("fundShell.cashflow.col.amount"),
-      width: 118,
-      align: "right",
-      hideable: true,
-      className: "tabular-nums",
-      sortValue: (r) => cashflowAmountOf(r),
-      render: (r) => {
-        const amount = cashflowAmountOf(r);
-        return <span className={pnl(amount)}>{formatMoney(amount)}</span>;
-      },
-    },
-    {
-      key: "counterparty",
-      label: t("fundShell.cashflow.col.counterparty"),
-      width: 190,
-      hideable: true,
-      filterText: (r) => cashflowCounterpartyCell(r).label,
-      render: (r) => {
-        const { label, title } = cashflowCounterpartyCell(r);
-        // title 为空表示 hover 不比可见文字多信息，直接不挂 title（否则悬浮只是重复一遍）。
-        return <span className="block truncate" title={title || undefined}>{label || "-"}</span>;
-      },
-    },
-    {
-      key: "from",
-      label: t("fundShell.cashflow.col.from"),
-      width: 150,
-      hideable: true,
-      defaultHidden: true,
-      filterText: (r) => cashflowAccountCell(r, "from").label,
-      render: (r) => {
-        const { label, title } = cashflowAccountCell(r, "from");
-        return <span className="block truncate" title={title || undefined}>{label || "-"}</span>;
-      },
-    },
-    {
-      key: "to",
-      label: t("fundShell.cashflow.col.to"),
-      width: 150,
-      hideable: true,
-      defaultHidden: true,
-      filterText: (r) => cashflowAccountCell(r, "to").label,
-      render: (r) => {
-        const { label, title } = cashflowAccountCell(r, "to");
-        return <span className="block truncate" title={title || undefined}>{label || "-"}</span>;
-      },
-    },
-    {
-      key: "note",
-      label: t("fundShell.cashflow.col.note"),
-      width: 280,
-      hideable: true,
-      render: (r) => <span className="block truncate text-slate-500" title={r.note ?? ""}>{r.note || "-"}</span>,
-    },
-  ], [cashflowAccountCell, cashflowAmountOf, cashflowCounterpartyCell, pnl, t]);
-
-  useEffect(() => {
-    if (!showCashflow || !accountId) return;
-    const seq = ++cashflowReqSeq.current;
-    setCashflowLoading(true);
-    setCashflowError("");
-    fetch(withBasePath(`/api/v1/transactions/detail?accountId=${encodeURIComponent(accountId)}&page=${cashflowPage}&pageSize=${cashflowPageSize}`))
-      .then((res) => res.json())
-      .then((json) => {
-        if (seq !== cashflowReqSeq.current) return;
-        if (!json?.ok) throw new Error(json?.error ?? t("fundShell.cashflow.loadFailed"));
-        setCashflowEntries(Array.isArray(json.data?.entries) ? json.data.entries : []);
-        setCashflowTotal(toNumber(json.data?.totalCount));
-      })
-      .catch((err) => {
-        if (seq !== cashflowReqSeq.current) return;
-        setCashflowEntries([]);
-        setCashflowTotal(0);
-        setCashflowError(err instanceof Error ? err.message : t("fundShell.cashflow.loadFailed"));
-      })
-      .finally(() => {
-        if (seq === cashflowReqSeq.current) setCashflowLoading(false);
-      });
-  }, [accountId, cashflowPage, cashflowPageSize, showCashflow, t]);
 
   const clearedAdvancedColumns = useMemo<AdvancedDataTableColumn<any>[]>(() => [
     {
@@ -3332,8 +3153,7 @@ export function FundShell(props: Props) {
     statusOf,
     t,
   ]);
-  // 资金明细页签整页展示：下窗格的业务明细不再显示，上窗格占满整个卡片。
-  const showDetailPane = !showCashflow && Boolean(fundCode || isWealthAccount || (showAllRecords && (d.allEntries?.length ?? 0) > 0));
+  const showDetailPane = Boolean(fundCode || isWealthAccount || (showAllRecords && (d.allEntries?.length ?? 0) > 0));
 
   return (
 
@@ -3422,7 +3242,7 @@ export function FundShell(props: Props) {
 
           <div className="flex items-center gap-2 text-xs text-slate-500 min-h-[24px]">
 
-            {!showCleared && !showCashflow && !isMetalAccount && !isWealthAccount && d.positions.length > 0 ? (
+            {!showCleared && !isMetalAccount && !isWealthAccount && d.positions.length > 0 ? (
               <RefreshNavButton accountId={accountId} symbols={d.positions.map((p: any) => p.fundCode).filter(Boolean)} />
             ) : null}
 
@@ -3464,7 +3284,7 @@ export function FundShell(props: Props) {
               </button>
             ) : null}
 
-            {!showCleared && !showCashflow ? (
+            {!showCleared ? (
               <div className="relative hidden md:block order-last" ref={positionColumnMenuRef}>
                 <button
                   type="button"
@@ -3533,43 +3353,7 @@ export function FundShell(props: Props) {
 
         <div className="flex-1 min-h-0 overflow-hidden">
           <div className="block h-full overflow-y-auto overscroll-contain px-3 pb-4 pt-2 md:hidden">
-            {showCashflow ? (
-              <div className="space-y-2.5">
-                {cashflowError ? (
-                  <div className="rounded-lg border border-dashed border-rose-300 bg-white px-4 py-10 text-center text-sm text-rose-500">{cashflowError}</div>
-                ) : cashflowEntries.length === 0 ? (
-                  <div className="rounded-lg border border-dashed border-slate-300 bg-white px-4 py-10 text-center text-sm text-slate-500">
-                    {cashflowLoading ? t("fundShell.cashflow.loading") : t("fundShell.cashflow.empty")}
-                  </div>
-                ) : (
-                  cashflowEntries.map((row: any) => {
-                    const from = cashflowAccountCell(row, "from");
-                    const to = cashflowAccountCell(row, "to");
-                    const amount = cashflowAmountOf(row);
-                    return (
-                      <article key={row.id} className="rounded-lg border border-slate-200 bg-white px-3 py-3 shadow-sm">
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="min-w-0 flex-1">
-                            <div
-                              className="truncate text-sm font-semibold text-slate-900"
-                              // 只有 hover 比可见文字多信息时才挂 title，否则不弹。
-                              title={from.title || to.title
-                                ? `${from.title || from.label || "-"} → ${to.title || to.label || "-"}`
-                                : undefined}
-                            >
-                              {from.label || "-"} → {to.label || "-"}
-                            </div>
-                            <div className="mt-1 text-[11px] tabular-nums text-slate-400">{row.date}</div>
-                          </div>
-                          <div className={`shrink-0 text-right text-base font-semibold tabular-nums ${pnl(amount)}`}>{formatMoney(amount)}</div>
-                        </div>
-                        {row.note ? <div className="mt-2 break-words text-xs text-slate-500">{row.note}</div> : null}
-                      </article>
-                    );
-                  })
-                )}
-              </div>
-            ) : !showCleared ? (
+            {!showCleared ? (
               sortedPositions.length === 0 ? (
                 <div className="rounded-lg border border-dashed border-slate-300 bg-white px-4 py-10 text-center text-sm text-slate-500">{t("fundShell.empty.positions")}</div>
               ) : (
@@ -3664,55 +3448,7 @@ export function FundShell(props: Props) {
 
           <div className="hidden h-full md:block">
 
-          {showCashflow ? (
-
-            <div className="flex h-full min-h-0 flex-col">
-              <div className="min-h-0 flex-1">
-                <AdvancedDataTable
-                  storageKey="mmh_fund_shell_cashflow_advanced_v1"
-                  columns={cashflowColumns}
-                  rows={cashflowEntries}
-                  rowKey={(r, index) => r.id || String(index)}
-                  emptyText={cashflowError || (cashflowLoading ? t("fundShell.cashflow.loading") : t("fundShell.cashflow.empty"))}
-                  minTableWidth={760}
-                  showFilters={false}
-                  fillHeight
-                  toolbarMode="none"
-                  draggableRows={false}
-                  columnVisibilityTriggerId={FUND_CASHFLOW_COLUMN_MENU_EVENT}
-                />
-              </div>
-              <div className="flex shrink-0 items-center justify-between gap-2 border-t border-slate-100 px-3 py-1">
-                <button
-                  type="button"
-                  onClick={(event) => {
-                    const rect = event.currentTarget.getBoundingClientRect();
-                    window.dispatchEvent(new CustomEvent(FUND_CASHFLOW_COLUMN_MENU_EVENT, {
-                      detail: { anchorRect: { left: rect.left, right: rect.right, bottom: rect.bottom } },
-                    }));
-                  }}
-                  className="secondary-button h-7 px-2 text-xs"
-                  title={t("table.columnSettings")}
-                  aria-label={t("table.columnSettings")}
-                >
-                  <SlidersHorizontal className="h-3.5 w-3.5" />
-                </button>
-                <DetailTablePaginationControls
-                  pageSize={cashflowPageSize}
-                  pageSizeOptions={[40, 80, 200]}
-                  detailAll={false}
-                  safePage={cashflowPage}
-                  totalPages={Math.max(1, Math.ceil(cashflowTotal / Math.max(1, cashflowPageSize)))}
-                  canPrev={cashflowPage > 1}
-                  canNext={cashflowPage * cashflowPageSize < cashflowTotal}
-                  onPageSizeChange={(size) => { setCashflowPageSize(size); setCashflowPage(1); }}
-                  onShowAll={() => { setCashflowPageSize(200); setCashflowPage(1); }}
-                  onPageChange={setCashflowPage}
-                />
-              </div>
-            </div>
-
-          ) : !showCleared ? (
+          {!showCleared ? (
 
             <AdvancedDataTable
               storageKey={`mmh_fund_shell_positions_advanced_v1:${isWealthAccount ? "wealth" : isMetalAccount ? "metal" : "fund"}`}
