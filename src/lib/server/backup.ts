@@ -3154,22 +3154,36 @@ export async function restoreHouseholdBackup(
       );
     }
 
+    // 内置贷款类别的 id 是 `lc_<householdId>_<baseType>` 派生值（见 loan-category.ts），
+    // 备份里存的是**来源账簿**的派生值。若原样写入本账簿，本账簿的派生 id 在库里不存在，
+    // 下面 `ensureBuiltinLoanCategories` 会判定四个类别全缺、按名字再插一遍，撞上
+    // (householdId, name) 唯一索引 → P2002 让整个恢复事务回滚（跨账簿恢复必现）。
+    // 所以写入时就把内置行重算到目标账簿；用户自建类别保持原 id。
+    const loanCategoryIdMap = new Map<string, string>();
     if (data.loanCategories.length > 0) {
-      await tx.loanCategory.createMany({
-        data: data.loanCategories.map((item) => ({
-          id: String(item.id),
+      const usedLoanCategoryIds = new Set<string>();
+      const loanCategoryRows = data.loanCategories.map((item) => {
+        const payloadId = String(item.id);
+        const baseType = String(item.baseType ?? "other");
+        const isBuiltin = item.isSystem == null ? false : Boolean(item.isSystem);
+        const preferredId = isBuiltin ? builtinLoanCategoryId(householdId, baseType as never) : payloadId;
+        const id = usedLoanCategoryIds.has(preferredId) ? payloadId : preferredId;
+        usedLoanCategoryIds.add(id);
+        loanCategoryIdMap.set(payloadId, id);
+        return {
+          id,
           householdId,
           name: String(item.name ?? ""),
-          baseType: String(item.baseType ?? "other") as never,
+          baseType: baseType as never,
           sortOrder: Number(item.sortOrder ?? 0),
-          isSystem: item.isSystem == null ? false : Boolean(item.isSystem),
+          isSystem: isBuiltin,
           isActive: item.isActive == null ? true : Boolean(item.isActive),
           createdAt: item.createdAt ? new Date(String(item.createdAt)) : new Date(),
           updatedAt: item.updatedAt ? new Date(String(item.updatedAt)) : new Date(),
-        })),
+        };
       });
+      await tx.loanCategory.createMany({ data: loanCategoryRows });
     }
-    const importedLoanCategoryIds = new Set(data.loanCategories.map((item) => String(item.id)));
 
     if (data.accounts.length > 0) {
       await tx.account.createMany({
@@ -3186,9 +3200,7 @@ export async function restoreHouseholdBackup(
           loanType: item.loanType == null ? null : (String(item.loanType) as never),
           isConsumerLoan: item.isConsumerLoan == null ? false : Boolean(item.isConsumerLoan),
           loanCategoryId:
-            item.loanCategoryId && importedLoanCategoryIds.has(String(item.loanCategoryId))
-              ? String(item.loanCategoryId)
-              : null,
+            item.loanCategoryId == null ? null : (loanCategoryIdMap.get(String(item.loanCategoryId)) ?? null),
           collateralAssetId: item.collateralAssetId == null ? null : String(item.collateralAssetId),
           fixedAssetType: item.fixedAssetType == null ? null : (String(item.fixedAssetType) as never),
           repaymentOffsetDays: item.repaymentOffsetDays == null ? null : Number(item.repaymentOffsetDays),
@@ -3262,10 +3274,21 @@ export async function restoreHouseholdBackup(
       where: { householdId, kind: "loan", loanType: null },
       data: { loanType: "home" },
     });
+    // 回填用的类别 id 以库里实际存在的行为准：上面的写入已把内置行重算到本账簿，
+    // 但老库里可能残留同名不同 id 的内置行（ensure 不会再插），此时按派生 id 写会指向
+    // 不存在的行，触发外键错误。
+    const builtinLoanCategoryRows = await tx.loanCategory.findMany({
+      where: { householdId, baseType: { in: BUILTIN_LOAN_CATEGORIES.map((category) => category.baseType) } },
+      select: { id: true, baseType: true },
+      orderBy: { sortOrder: "asc" },
+    });
     for (const builtinCategory of BUILTIN_LOAN_CATEGORIES) {
+      const loanCategoryId =
+        builtinLoanCategoryRows.find((row) => row.baseType === builtinCategory.baseType)?.id ??
+        builtinLoanCategoryId(householdId, builtinCategory.baseType);
       await tx.account.updateMany({
         where: { householdId, kind: "loan", loanCategoryId: null, loanType: builtinCategory.baseType },
-        data: { loanCategoryId: builtinLoanCategoryId(householdId, builtinCategory.baseType) },
+        data: { loanCategoryId },
       });
     }
 

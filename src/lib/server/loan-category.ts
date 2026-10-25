@@ -78,10 +78,19 @@ export async function resolveLoanCategoryForWrite(
  * 保证每个 household 至少有这四项（不要去重写用户自建类别）。
  */
 export async function ensureBuiltinLoanCategories(writer: LoanCategoryWriter, householdId: string) {
-  const existing = await writer.loanCategory.findMany({ where: { householdId }, select: { id: true } });
+  const existing = await writer.loanCategory.findMany({
+    where: { householdId },
+    select: { id: true, name: true },
+  });
   const existingIds = new Set(existing.map((row) => row.id));
+  const existingNames = new Set(existing.map((row) => row.name));
+  // 派生 id 只是约定，唯一约束在 (householdId, name) 上：库里可能已经有一行同名、
+  // 但 id 不是派生值的内置类别（跨账簿备份恢复带进来的行、早期 db push 生成的行）。
+  // 只按 id 判断会把它再插一遍，撞唯一索引 → P2002 把调用方整个事务回滚。名字在用即视为已有。
   const missing = BUILTIN_LOAN_CATEGORIES.filter(
-    (category) => !existingIds.has(builtinLoanCategoryId(householdId, category.baseType)),
+    (category) =>
+      !existingIds.has(builtinLoanCategoryId(householdId, category.baseType)) &&
+      !existingNames.has(category.name),
   );
   if (missing.length === 0) return;
   await writer.loanCategory.createMany({

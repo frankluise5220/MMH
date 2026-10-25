@@ -309,6 +309,23 @@ function singleExtractedDir(rootDir, label) {
   return path.join(rootDir, dirs[0].name);
 }
 
+// better-sqlite3 13 ships one prebuild per platform (linux/linuxmusl/darwin/win32
+// x x64/arm64). Only the glibc build for the target arch can ever load on the
+// appliance, so drop the rest instead of shipping ~15 MB of dead binaries; a
+// missing target prebuild is a hard error because the package would not boot.
+function trimForeignPrebuilds(serverDir, nodeArch) {
+  const prebuildsDir = path.join(serverDir, "node_modules", "better-sqlite3", "prebuilds");
+  if (!fs.existsSync(prebuildsDir)) return;
+  const keep = `linux-${nodeArch}.node`;
+  for (const entry of fs.readdirSync(prebuildsDir, { withFileTypes: true })) {
+    if (entry.name === keep) continue;
+    fs.rmSync(path.join(prebuildsDir, entry.name), { recursive: true, force: true });
+  }
+  if (!fs.existsSync(path.join(prebuildsDir, keep))) {
+    throw new Error(`better-sqlite3 prebuilds/${keep} is missing; SQLite would not load on the target.`);
+  }
+}
+
 // better-sqlite3 declares an engines range; a bundled runtime below it compiles
 // but fails at load time with no useful output. Check the range up front so a
 // Node major mismatch names itself instead of showing up as a bare exit code.
@@ -2225,6 +2242,7 @@ function buildSpk() {
   }
 
   const stagedServerDir = path.join(packageRoot, "app", "server");
+  trimForeignPrebuilds(stagedServerDir, target.nodeArch);
   const nodeTarballRoot = path.join(stageDir, ".synology-node");
   fs.rmSync(nodeTarballRoot, { recursive: true, force: true });
   mkdirp(nodeTarballRoot);
