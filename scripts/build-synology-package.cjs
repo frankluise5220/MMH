@@ -309,6 +309,20 @@ function singleExtractedDir(rootDir, label) {
   return path.join(rootDir, dirs[0].name);
 }
 
+// Remove every compiled addon under a package directory so the only binding left
+// is the one this build produced.
+function removeNativeBindings(packageDir) {
+  if (!fs.existsSync(packageDir)) return;
+  for (const entry of fs.readdirSync(packageDir, { withFileTypes: true })) {
+    const fullPath = path.join(packageDir, entry.name);
+    if (entry.isDirectory()) {
+      removeNativeBindings(fullPath);
+    } else if (entry.name.endsWith(".node")) {
+      fs.rmSync(fullPath, { force: true });
+    }
+  }
+}
+
 // better-sqlite3 declares an engines range; a bundled runtime below it compiles
 // but fails at load time with no useful output. Check the range up front so a
 // Node major mismatch names itself instead of showing up as a bare exit code.
@@ -2256,10 +2270,25 @@ function buildSpk() {
     },
   });
   if (nativeRebuild.status !== 0) process.exit(nativeRebuild.status || 1);
-  const sourceNativeModule = path.join(root, "node_modules", "better-sqlite3", "build", "Release", "better_sqlite3.node");
-  const stagedNativeModule = path.join(stagedServerDir, "node_modules", "better-sqlite3", "build", "Release", "better_sqlite3.node");
-  requirePath(sourceNativeModule, "The bundled Node native rebuild did not produce better_sqlite3.node in the source tree.");
-  copyFile(sourceNativeModule, stagedNativeModule);
+  // node-gyp writes build/Release, prebuildify-style layouts write
+  // prebuilds/<platform>-<arch>. Resolve whatever the rebuild produced instead
+  // of assuming one layout, then carry it to the same relative path in the stage.
+  const sourcePackageDir = path.join(root, "node_modules", "better-sqlite3");
+  const rebuiltNativeModule = [
+    path.join(sourcePackageDir, "build", "Release", "better_sqlite3.node"),
+    path.join(sourcePackageDir, "prebuilds", `${process.platform}-${process.arch}`, "better_sqlite3.node"),
+    path.join(sourcePackageDir, "prebuilds", `linux-${target.nodeArch}`, "better_sqlite3.node"),
+  ].find((candidate) => fs.existsSync(candidate));
+  if (!rebuiltNativeModule) {
+    throw new Error("The bundled Node native rebuild did not produce better_sqlite3.node in the source tree.");
+  }
+  const stagedPackageDir = path.join(stagedServerDir, "node_modules", "better-sqlite3");
+  // Drop every binding the install step shipped: a leftover prebuilt would win
+  // module resolution and hide an ABI mismatch until the device loads it.
+  removeNativeBindings(stagedPackageDir);
+  const stagedNativeModule = path.join(stagedPackageDir, path.relative(sourcePackageDir, rebuiltNativeModule));
+  mkdirp(path.dirname(stagedNativeModule));
+  copyFile(rebuiltNativeModule, stagedNativeModule);
   const verifyNative = run(nodeBin, ["-e", "const Database=require('better-sqlite3'); const db=new Database(':memory:'); if (db.prepare('select 1 as ok').get().ok !== 1) process.exit(1); db.close();"], {
     cwd: stagedServerDir,
     stdio: "inherit",

@@ -457,6 +457,20 @@ function requirePath(target, message) {
   }
 }
 
+// Remove every compiled addon under a package directory so the only binding left
+// is the one this build produced.
+function removeNativeBindings(packageDir) {
+  if (!fs.existsSync(packageDir)) return;
+  for (const entry of fs.readdirSync(packageDir, { withFileTypes: true })) {
+    const fullPath = path.join(packageDir, entry.name);
+    if (entry.isDirectory()) {
+      removeNativeBindings(fullPath);
+    } else if (entry.name.endsWith(".node")) {
+      fs.rmSync(fullPath, { force: true });
+    }
+  }
+}
+
 // better-sqlite3 declares an engines range; a bundled runtime below it compiles
 // but fails at load time with no useful output. Check the range up front so a
 // Node major mismatch names itself instead of showing up as a bare exit code.
@@ -3984,6 +3998,9 @@ if (process.env.FNOS_SKIP_NATIVE_REBUILD === "1") {
   const nodeTool = path.join(stagedNodeBinDir, "node");
   const npmTool = path.join(stagedNodeBinDir, "npm");
   assertBundledNodeSatisfiesEngines(nodeTool, stagedServerDir);
+  // Drop every binding the install step shipped: a leftover prebuilt would win
+  // module resolution and hide an ABI mismatch until the device loads it.
+  removeNativeBindings(path.join(stagedServerDir, "node_modules", "better-sqlite3"));
   const nativeRebuild = run(nodeTool, [npmTool, "rebuild", "better-sqlite3", "--build-from-source"], {
     cwd: stagedServerDir,
     stdio: "inherit",
