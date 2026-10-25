@@ -1301,6 +1301,7 @@ refresh_app_paths () {
   fi
   SERVER_DIR="$APP_DEST/server"
   NODE_BIN="$APP_DEST/bin/node"
+  BUNDLED_NODE_BIN="$NODE_BIN"
 }
 
 refresh_app_paths
@@ -1339,6 +1340,7 @@ SESSION_SECRET_FILE="$DATA_ROOT/mmh-session-secret.txt"
 PASSWORD_RESET_SECRET_FILE="$DATA_ROOT/mmh-password-reset-secret.txt"
   SERVER_DIR="$APP_DEST/server"
   NODE_BIN="$APP_DEST/bin/node"
+  BUNDLED_NODE_BIN="$NODE_BIN"
 PID_FILE="$DATA_DEST/mmh.pid"
 LOG_FILE="$DATA_DEST/mmh.log"
 
@@ -1388,6 +1390,39 @@ resolve_node_bin () {
   candidate="$(command -v node 2>/dev/null || true)"
   [ -n "$candidate" ] && [ -x "$candidate" ] && { printf '%s' "$candidate"; return 0; }
   return 1
+}
+
+node_major_version () {
+  local bin="$1" raw
+  [ -x "$bin" ] || return 1
+  raw="$("$bin" -v 2>/dev/null || true)"
+  raw="\${raw#v}"
+  case "$raw" in
+    [0-9]*.[0-9]*) ;;
+    *) return 1 ;;
+  esac
+  printf '%s' "\${raw%%.*}"
+}
+
+# Prefer the Node.js the user installed (major >= MMH_MIN_NODE_MAJOR, default 22);
+# fall back to the bundled runtime when there is none, or when the installed one is
+# too old for the better-sqlite3 prebuild. An explicit MMH_NODE_BIN still wins, and
+# external-node payloads (no bundled runtime) keep using discovery alone.
+select_node_bin () {
+  local preferred major minimum="\${MMH_MIN_NODE_MAJOR:-22}"
+  preferred="$(resolve_node_bin 2>/dev/null || true)"
+  if [ -n "$preferred" ] && [ "$preferred" != "\${BUNDLED_NODE_BIN:-}" ]; then
+    major="$(node_major_version "$preferred" || true)"
+    if [ -n "$major" ] && [ "$major" -ge "$minimum" ] 2>/dev/null; then
+      printf '%s' "$preferred"
+      return 0
+    fi
+  fi
+  if [ -n "\${BUNDLED_NODE_BIN:-}" ] && [ -x "$BUNDLED_NODE_BIN" ]; then
+    printf '%s' "$BUNDLED_NODE_BIN"
+    return 0
+  fi
+  printf '%s' "$preferred"
 }
 
 generate_system_password () {
@@ -1665,11 +1700,16 @@ start_app () {
     fi
     refresh_app_paths
   fi
-${externalNode ? '  NODE_BIN="$(resolve_node_bin 2>/dev/null || true)"' : ''}
+  NODE_BIN="$(select_node_bin)"
   ensure_runtime_settings
   apply_node_memory_limit
+  echo "MMH node runtime: $NODE_BIN" >>"$LOG_FILE"
   if [ ! -x "$NODE_BIN" ]; then
-    echo "MMH requires external Node.js 22. Install Node.js v22, then set MMH_NODE_BIN in the MMH application settings." >&2
+    if [ -n "\${BUNDLED_NODE_BIN:-}" ]; then
+      echo "MMH bundled Node runtime is missing: $BUNDLED_NODE_BIN" >&2
+    else
+      echo "MMH requires external Node.js 22. Install Node.js v22, then set MMH_NODE_BIN in the MMH application settings." >&2
+    fi
     exit 1
   fi
 ${externalNodeStartup}

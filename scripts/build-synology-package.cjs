@@ -992,7 +992,8 @@ function writeStartStopStatus() {
 PACKAGE="mmh"
 APP_DIR="\${SYNOPKG_PKGDEST:-/var/packages/$PACKAGE/target}"
 SERVER_DIR="$APP_DIR/app/server"
-NODE_BIN="$APP_DIR/app/bin/node"
+BUNDLED_NODE_BIN="$APP_DIR/app/bin/node"
+NODE_BIN="$BUNDLED_NODE_BIN"
 VAR_DIR="\${SYNOPKG_PKGVAR:-/var/packages/$PACKAGE/var}"
 LEGACY_VAR_DIR="$APP_DIR/var"
 DATA_DIR="$VAR_DIR/data"
@@ -1022,6 +1023,62 @@ read_env_value() {
         ;;
     esac
   done < "$ENV_FILE"
+}
+
+node_major_version() {
+  bin="$1"
+  [ -x "$bin" ] || return 1
+  raw="$("$bin" -v 2>/dev/null || true)"
+  raw="\${raw#v}"
+  case "$raw" in
+    [0-9]*.[0-9]*) ;;
+    *) return 1 ;;
+  esac
+  printf '%s' "\${raw%%.*}"
+}
+
+resolve_external_node() {
+  configured="\${MMH_NODE_BIN:-$(read_env_value MMH_NODE_BIN 2>/dev/null || true)}"
+  if [ -n "$configured" ]; then
+    case "$configured" in
+      */*)
+        [ -x "$configured" ] && { printf '%s' "$configured"; return 0; }
+        ;;
+      *)
+        candidate="$(command -v "$configured" 2>/dev/null || true)"
+        [ -n "$candidate" ] && [ -x "$candidate" ] && { printf '%s' "$candidate"; return 0; }
+        ;;
+    esac
+  fi
+  for candidate in \
+    /var/packages/Node.js_v22/target/bin/node \
+    /var/packages/Node.js_v22/target/usr/local/bin/node \
+    /usr/local/bin/node \
+    /usr/bin/node; do
+    [ -x "$candidate" ] && { printf '%s' "$candidate"; return 0; }
+  done
+  candidate="$(command -v node 2>/dev/null || true)"
+  [ -n "$candidate" ] && [ -x "$candidate" ] && { printf '%s' "$candidate"; return 0; }
+  return 1
+}
+
+# Prefer the Node.js the user installed (major >= 22); fall back to the bundled
+# runtime when there is none, or when the installed one is too old for the
+# better-sqlite3 prebuild. An explicit MMH_NODE_BIN still wins.
+select_node_bin() {
+  preferred="$(resolve_external_node 2>/dev/null || true)"
+  if [ -n "$preferred" ] && [ "$preferred" != "$BUNDLED_NODE_BIN" ]; then
+    major="$(node_major_version "$preferred" || true)"
+    if [ -n "$major" ] && [ "$major" -ge 22 ] 2>/dev/null; then
+      printf '%s' "$preferred"
+      return 0
+    fi
+  fi
+  if [ -x "$BUNDLED_NODE_BIN" ]; then
+    printf '%s' "$BUNDLED_NODE_BIN"
+    return 0
+  fi
+  printf '%s' "$preferred"
 }
 
 generate_system_password() {
@@ -1416,11 +1473,12 @@ migrate_legacy_var_dir() {
 start_app() {
   mkdir -p "$VAR_DIR" "$DATA_DIR"
   migrate_legacy_var_dir
+  NODE_BIN="$(select_node_bin)"
   ensure_runtime_settings
   apply_node_memory_limit
   append_log "MMH start requested: app=$APP_DIR var=$VAR_DIR data=$DATA_DIR user=$(id -u 2>/dev/null || echo unknown):$(id -g 2>/dev/null || echo unknown) port=\${PORT:-7777}"
   if [ ! -x "$NODE_BIN" ]; then
-    fail_start "Bundled Linux Node runtime is missing or not executable: $NODE_BIN"
+    fail_start "No usable Node.js runtime (need 22 or newer): $NODE_BIN"
   fi
   if [ ! -f "$SERVER_DIR/server.js" ]; then
     fail_start "Next standalone server is missing: $SERVER_DIR/server.js"
@@ -1432,9 +1490,9 @@ start_app() {
   export MMH_DATA_DIR="$DATA_DIR"
   export DATABASE_URL="file:$DATA_DIR/mmh.db"
   export PRISMA_SCHEMA_PATH="$SERVER_DIR/prisma/schema.native.prisma"
-  append_log "Testing bundled Node runtime: $NODE_BIN"
+  append_log "Testing Node runtime: $NODE_BIN"
   if ! "$NODE_BIN" -v >>"$LOG_FILE" 2>&1; then
-    append_log "Bundled Node runtime failed to execute; ldd output follows when available."
+    append_log "Node runtime failed to execute; ldd output follows when available."
     if command -v ldd >/dev/null 2>&1; then
       ldd "$NODE_BIN" >>"$LOG_FILE" 2>&1 || true
     fi
