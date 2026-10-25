@@ -3010,6 +3010,50 @@ const MIGRATIONS = [
       }
     },
   },
+  {
+    // 账簿级显示/行为设置（2026-10-24）：设置项从 cookie-only 改为 HouseholdPreference
+    // 入库，cookie 降为读缓存；时区、语言、日期格式需要服务端也读得到。
+    // 全新安装由 native-init.sql 依据 schema 建表，这里只补存量库。
+    version: "20261024_add_household_preference",
+    description: "Add HouseholdPreference: household display/behavior settings become server-side",
+    apply(db) {
+      if (tableExists(db, "HouseholdPreference")) return;
+      db.exec(
+        [
+          "CREATE TABLE \\"HouseholdPreference\\" (",
+          "  \\"householdId\\" TEXT NOT NULL,",
+          "  \\"sessionDays\\" INTEGER NOT NULL DEFAULT 30,",
+          "  \\"fundUnitsDecimals\\" INTEGER NOT NULL DEFAULT 2,",
+          "  \\"aiPanelEnabled\\" BOOLEAN NOT NULL DEFAULT 1,",
+          "  \\"timeZone\\" TEXT NOT NULL DEFAULT 'Asia/Shanghai',",
+          "  \\"colorScheme\\" TEXT NOT NULL DEFAULT 'red_up_green_down',",
+          "  \\"creditCardLabelMode\\" TEXT NOT NULL DEFAULT 'short_last4',",
+          "  \\"creditCardLabelTemplate\\" TEXT,",
+          "  \\"creditCardSidebarLabelTemplate\\" TEXT,",
+          "  \\"creditBillHideZero\\" BOOLEAN NOT NULL DEFAULT 0,",
+          "  \\"creditBillHideSettled\\" BOOLEAN NOT NULL DEFAULT 0,",
+          "  \\"creditBillShowRecentCycles\\" BOOLEAN NOT NULL DEFAULT 1,",
+          "  \\"displayLanguage\\" TEXT NOT NULL DEFAULT 'zh-CN',",
+          "  \\"dateDisplayFormat\\" TEXT NOT NULL DEFAULT 'yyyy-mm-dd',",
+          "  \\"sidebarGroupBy\\" TEXT NOT NULL DEFAULT 'kind',",
+          "  \\"sidebarHideZero\\" BOOLEAN NOT NULL DEFAULT 0,",
+          "  \\"sidebarHideInitialData\\" BOOLEAN NOT NULL DEFAULT 0,",
+          "  \\"sidebarShowFixedAssets\\" BOOLEAN NOT NULL DEFAULT 1,",
+          "  \\"sidebarShowAllCashEntries\\" BOOLEAN NOT NULL DEFAULT 1,",
+          "  \\"sidebarShowReimbursements\\" BOOLEAN NOT NULL DEFAULT 1,",
+          "  \\"detailDateBackground\\" BOOLEAN NOT NULL DEFAULT 0,",
+          "  \\"rowHeightMode\\" INTEGER NOT NULL DEFAULT 35,",
+          "  \\"accountLabelFields\\" TEXT,",
+          "  \\"accountDropdownRestrictType\\" BOOLEAN NOT NULL DEFAULT 1,",
+          "  \\"createdAt\\" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,",
+          "  \\"updatedAt\\" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,",
+          "  CONSTRAINT \\"HouseholdPreference_pkey\\" PRIMARY KEY (\\"householdId\\"),",
+          "  CONSTRAINT \\"HouseholdPreference_householdId_fkey\\" FOREIGN KEY (\\"householdId\\") REFERENCES \\"Household\\"(\\"id\\") ON DELETE CASCADE ON UPDATE CASCADE",
+          ")",
+        ].join("\\n"),
+      );
+    },
+  },
 ];
 
 // 到期日「周年 − 1 天」→ 周年；返回 null 表示不是旧口径。
