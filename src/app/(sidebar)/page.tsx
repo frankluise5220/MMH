@@ -119,6 +119,8 @@ import { txRecordAccountScopeWhere } from "@/lib/transaction-account-scope";
 import {
   DETAIL_ALL_FIRST_VIEWPORT_PAGE_SIZE,
   DETAIL_ALL_PAGE_SIZE,
+  DETAIL_LAST_FIT_ROWS_COOKIE,
+  DETAIL_PAGED_FIRST_FETCH_ROWS,
   decodeDetailPaginationPreference,
   detailPaginationCookieName,
   normalizeDetailPage,
@@ -548,9 +550,24 @@ export default async function Home({
   const detailPaginationPref = decodeDetailPaginationPreference(
     cookieStore.get(detailPaginationCookieName(isAllCashViewParam ? ALL_CASH_DETAIL_SCOPE_ID : accountId))?.value,
   );
-  const pageSizeParam = typeof params?.pageSize === "string"
-    ? parseInt(params.pageSize, 10)
-    : detailPaginationPref?.pageSize ?? 40;
+  // 该账户还没有自己的落地值时（新账户 / 清过 cookie），用这台设备最近一次
+  // 自适应量到的行数当首屏兜底。同一窗口里所有账户能放的行数是一样的，比写死
+  // 的 40 接近得多：1080p 窗口下 40 行会先溢小半屏，等浏览器量完才收缩。
+  const lastFitRowsFallback = Math.min(
+    Math.max(
+      normalizeDetailPageSize(cookieStore.get(DETAIL_LAST_FIT_ROWS_COOKIE)?.value, 40),
+      8,
+    ),
+    120,
+  );
+  // 「自适应」下 URL 里的 `pageSize` 只是历史遗留（旧版本会把落地值写进地址栏）：
+  // 它不反映当前窗口，照它铺首屏就会先多出/少掉一截。自适应时以 cookie 里的
+  // 落地值为准（其次用这台设备最近一次量到的行数），只有手选固定行数时才认 URL。
+  const autoFitMode = detailPaginationPref?.autoFit !== false;
+  const urlPageSizeParam = typeof params?.pageSize === "string" ? parseInt(params.pageSize, 10) : NaN;
+  const pageSizeParam = !autoFitMode && Number.isFinite(urlPageSizeParam)
+    ? urlPageSizeParam
+    : detailPaginationPref?.pageSize ?? lastFitRowsFallback;
   const pageSize = normalizeDetailPageSize(pageSizeParam);
   const detailPageParam = typeof params?.detailPage === "string"
     ? parseInt(params.detailPage, 10)
@@ -787,6 +804,14 @@ export default async function Home({
   const pagedDetailPageSize = detailAll
     ? Math.max(pageSize, DETAIL_ALL_FIRST_VIEWPORT_PAGE_SIZE)
     : pageSize;
+  // 分页模式首屏同样至少取一屏半（`DETAIL_PAGED_FIRST_FETCH_ROWS`）：页码 /
+  // 总数仍按 pageSize 算，多取的行只让客户端有东西可显示 —— 「自适应」的落地
+  // 行数要等浏览器量完才知道，服务端只能按 cookie 里的旧值取数，窗口变大后
+  // 那个旧值偏小，首屏就会空一大片，只能等一次重取。多取几行后客户端本地切片
+  // 即可，第一帧就铺满。
+  const pagedDetailFetchRows = detailAll
+    ? pagedDetailPageSize
+    : Math.max(pageSize, DETAIL_PAGED_FIRST_FETCH_ROWS);
   const pagedDetailData = usePagedDetailEntries
     ? await loadEntriesPageForAccount(
         isAllCashView ? cashLedgerAccountIds : accountId,
@@ -794,6 +819,7 @@ export default async function Home({
         pagedDetailPage,
         pagedDetailPageSize,
         initialDetailRangeStr,
+        pagedDetailFetchRows,
       )
     : null;
 

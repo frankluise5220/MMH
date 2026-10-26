@@ -6,6 +6,7 @@ import {
   BALANCE_RECONCILE_TARGET_PREFIX,
 } from "@/lib/balance-reconcile";
 import { todayDateBusinessYmd } from "@/lib/date-utils";
+import { DETAIL_ALL_PAGE_SIZE } from "@/lib/detail-pagination-preference";
 import { isLoanOrSettlementAccountKind } from "@/lib/liability";
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdTimeZone } from "@/lib/server/household-preferences";
@@ -27,6 +28,13 @@ type DetailPageQueryArgs = {
   householdId: string;
   page: number;
   pageSize: number;
+  /**
+   * 从 `page` 起点**最多**取多少行（默认等于 `pageSize`）。
+   * 只影响返回的行数，不影响页码 / 总数的口径：OFFSET 仍按 `pageSize` 算。
+   * 首屏用它一次多取一屏半，交给客户端按视口行数切片（见
+   * `DETAIL_PAGED_FIRST_FETCH_ROWS`），免得「自适应」落地前底部空一大片。
+   */
+  fetchRows?: number;
   sortAccountId?: string | null;
   includeRunningBalances?: boolean;
   /** 服务端筛选谓词（表头漏斗下推），作用在 `visible` 层。 */
@@ -471,6 +479,16 @@ export async function queryDetailPage(args: DetailPageQueryArgs): Promise<Detail
   }
 
   const pageSize = Math.max(1, Math.floor(args.pageSize) || 1);
+  // 首屏可以多取几行（`fetchRows`），页码语义仍按 pageSize：OFFSET 一律是
+  // (page - 1) * pageSize，多取的部分正好是这一页之后的连续行，客户端按视口
+  // 行数切片即可，不会把下一页的行错认成这一页。
+  const fetchRows = Math.max(
+    1,
+    Math.min(
+      Math.floor(Number(args.fetchRows ?? pageSize)) || pageSize,
+      Math.max(pageSize, DETAIL_ALL_PAGE_SIZE),
+    ),
+  );
   const requestedPage = Math.max(1, Math.floor(args.page) || 1);
   // 只有「单账户 + 逐笔余额」这一条路径需要知道账户类别：贷款 / 往来款的余额
   // 按本金口径折叠，与 account-balance.ts 的 foldBalanceEntry 保持一致。
@@ -511,7 +529,7 @@ export async function queryDetailPage(args: DetailPageQueryArgs): Promise<Detail
       SELECT o."id" AS "id", COUNT(*) OVER () AS "totalCount"
       FROM "ordered" o
       ORDER BY ${orderBySql}
-      LIMIT ${pageSize} OFFSET ${pageOffset}
+      LIMIT ${fetchRows} OFFSET ${pageOffset}
     `;
     const requestedOffset = (requestedPage - 1) * pageSize;
     let rows = await prisma.$queryRaw<Array<{ id: string; totalCount: unknown }>>(buildPageSql(requestedOffset));
@@ -552,7 +570,7 @@ export async function queryDetailPage(args: DetailPageQueryArgs): Promise<Detail
   const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
   const page = Math.min(requestedPage, totalPages);
   const offset = (page - 1) * pageSize;
-  const limit = offset + pageSize;
+  const limit = offset + fetchRows;
   const rows = await prisma.$queryRaw<Array<{ id: string; runningBalance: unknown }>>(Prisma.sql`
     ${orderingCtes},
     "grouped" AS (

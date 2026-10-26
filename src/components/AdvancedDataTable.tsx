@@ -27,6 +27,15 @@ import {
   type RowHeightMode,
 } from "@/lib/client/appPreferences";
 
+/**
+ * 「页数自适应」的测量必须在**浏览器绘制之前**完成，否则用户会先看到一帧
+ * 按旧页大小渲染的表格，再跳到正确行数 —— 表现就是「自适应判断得太靠后 /
+ * 打开账户先多出半屏，等一下才收缩」。客户端用 useLayoutEffect（commit 后、
+ * paint 前，setState 会同步重渲染，中间态不会被画出来）；服务端渲染阶段没有
+ * 布局可测，退回 useEffect 即可。
+ */
+const usePaintEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
+
 const HORIZONTAL_SCROLL_TOLERANCE_PX = 4;
 const ROW_VIRTUALIZATION_THRESHOLD = 200;
 const HEADER_SORT_CLICK_DELAY_MS = 220;
@@ -1042,7 +1051,10 @@ export function AdvancedDataTable<T>({
   const paginationOnPageChange = pagination?.onPageChange;
   const paginationOnRowCountChange = pagination?.onRowCountChange;
 
-  useEffect(() => {
+  // 行高偏好在 paint 前就位：首帧（服务端同样用默认行高）与随后的自适应测量
+  // 必须在同一个绘制周期里统一，否则会先按 35px 量一次、再按 31px 量一次，
+  // 页数连着跳两下。
+  usePaintEffect(() => {
     const syncRowSizing = () => {
       setRowHeightMode(getRowHeightModePreference());
     };
@@ -1325,6 +1337,10 @@ export function AdvancedDataTable<T>({
   // 外推是估计值：页大小落地后行数变了，用落地后的真实行高再复核一次。
   const lastFitWasExtrapolatedRef = useRef(false);
   const rowsFitObserverTimerRef = useRef<number | null>(null);
+  // 「容器还没尺寸」时的自我重试（见 measureRowsFit）：定时器 + 次数上限。
+  const rowsFitRetryTimerRef = useRef<number | null>(null);
+  const rowsFitRetryCountRef = useRef(0);
+  const measureRowsFitRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     onRowsFitChangeRef.current = onRowsFitChange;
@@ -1334,17 +1350,41 @@ export function AdvancedDataTable<T>({
     if (!fillHeight) return;
     const report = onRowsFitChangeRef.current;
     if (!report) return;
+    // 容器还没有尺寸 / 行还没渲染出来时不能就此放弃：这两种「早退」若没人再来
+    // 叫一次，页数就永远停在上一次的值上（实测：打开账户时视口 clientHeight
+    // 还是 0，测了一轮直接返回，之后既没有行数变化也没有 ResizeObserver 回调，
+    // 表格就一直按 cookie 里的旧页大小铺满/溢出，看起来就是「自适应判断得太
+    // 靠后、根本没生效」）。这里自己排一次短重试，最多 ~4 秒，拿到有效尺寸为止。
+    const retry = () => {
+      if (rowsFitRetryTimerRef.current != null) return;
+      if (rowsFitRetryCountRef.current >= 40) return;
+      rowsFitRetryCountRef.current += 1;
+      rowsFitRetryTimerRef.current = window.setTimeout(() => {
+        rowsFitRetryTimerRef.current = null;
+        measureRowsFitRef.current?.();
+      }, 100);
+    };
     const viewport = viewportRef.current;
-    if (!viewport || viewport.clientHeight <= 0) return;
+    if (!viewport || viewport.clientHeight <= 0) {
+      retry();
+      return;
+    }
     const bodyRows = viewport.querySelectorAll<HTMLElement>("[data-advanced-table-body-row]");
-    if (bodyRows.length === 0) return;
+    if (bodyRows.length === 0) {
+      retry();
+      return;
+    }
     const rowHeights: number[] = [];
     for (const row of bodyRows) {
       const height = row.getBoundingClientRect().height;
       if (height <= 0) continue;
       rowHeights.push(height);
     }
-    if (rowHeights.length === 0) return;
+    if (rowHeights.length === 0) {
+      retry();
+      return;
+    }
+    rowsFitRetryCountRef.current = 0;
     // 表头和 `summaryRowPlacement="footer"` 的汇总条都渲染在滚动容器**外面**，
     // 是高 flex 列里的兄弟节点：它们的高度本来就不含在 viewport.clientHeight 里，
     // 再减一次就是双重扣除。只有吸在视口内的 <tfoot> 汇总行同在容器内，占的是
@@ -1384,6 +1424,14 @@ export function AdvancedDataTable<T>({
     // 用的是 DEFAULT_ROW_HEIGHT_MODE，偏好是挂载后才同步进来的，若只算一次就会
     // 按错误行高冻结页数（实测 35px 档量出 21 行，偏好落到 31px 后能放 24 行）。
   }, [fillHeight, rowHeight]);
+  measureRowsFitRef.current = measureRowsFit;
+
+  useEffect(() => () => {
+    if (rowsFitRetryTimerRef.current != null) {
+      window.clearTimeout(rowsFitRetryTimerRef.current);
+      rowsFitRetryTimerRef.current = null;
+    }
+  }, []);
 
   // 自适应页数在三种时机重算：
   //  1. 挂载 / report 回调 identity 变化 —— 调用方用换一个新的 report 函数来表达
@@ -1393,7 +1441,7 @@ export function AdvancedDataTable<T>({
   //     都必须重算，否则会按错误行高把页数冻结住；
   //  3. 视口高度变化（见下方 ResizeObserver）——「自适应」跟着视口走。
   // 刻意不跟随每次渲染、也不跟随数据页变化：翻页、筛选、局部刷新不重算。
-  useEffect(() => {
+  usePaintEffect(() => {
     lastReportedRowsFitRef.current = null;
     lastFitWasExtrapolatedRef.current = false;
     measureRowsFit();
@@ -1408,8 +1456,29 @@ export function AdvancedDataTable<T>({
   // ResizeObserver 不会补测，于是一直卡在过大的页数上、表格底部出现滚动条。
   // 外推后的第一页数据到位时重量一次即可收敛，且 count 相同时 measureRowsFit
   // 直接早退，不会来回抖动。
-  useEffect(() => {
+  usePaintEffect(() => {
     if (lastReportedRowsFitRef.current != null && !lastFitWasExtrapolatedRef.current) return;
+    measureRowsFit();
+  }, [measureRowsFit, rows.length]);
+
+  // 页大小「落地」之后再复核一次。
+  //
+  // 上报值一旦被调用方接受，表格渲染的行数就等于它（`rows.length ===
+  // lastReportedRowsFitRef`）。此刻重量一遍几乎不花钱（同值直接早退），却能兜住
+  // 「上报时视口还不是最终高度」这类一次性偏差 —— 实测表现就是「打开账户只铺
+  // 28 行、底部留一大片，重新选一次『自适应』才填满」：手动切换会换一个新的
+  // report identity 强制重测，而自动路径只在 ResizeObserver 看到尺寸变化时才补
+  // 测，错过那一次变化（挂在观察者注册之前的布局抖动、行高偏好晚一帧落地…）
+  // 就永远停在偏小的页数上。
+  //
+  // 只复核「新落实的行数」一次（`landedFitRowsRef` 记账），翻页/刷新拿到同样
+  // 行数时直接跳过，不会和数据页来回抖动。
+  const landedFitRowsRef = useRef<number | null>(null);
+  usePaintEffect(() => {
+    const reported = lastReportedRowsFitRef.current;
+    if (reported == null || rows.length !== reported) return;
+    if (landedFitRowsRef.current === rows.length) return;
+    landedFitRowsRef.current = rows.length;
     measureRowsFit();
   }, [measureRowsFit, rows.length]);
 
@@ -1417,7 +1486,7 @@ export function AdvancedDataTable<T>({
   // 首帧若因容器还没有尺寸而量不到，这里补测。行数没变时测量函数直接早退，
   // 不上报、不惊动调用方——所以平时的翻页 / 筛选 / 数据刷新都不会触发重算，
   // 也不会和调用方的页大小来回抖动；分栏拖过头也就每跨一行边界才更新一次。
-  useEffect(() => {
+  usePaintEffect(() => {
     if (!onRowsFitChange) return;
     const node = viewportRef.current;
     if (!node) return;

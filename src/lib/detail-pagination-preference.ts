@@ -28,6 +28,20 @@ export const DETAIL_ALL_FIRST_PAGE_SIZE = 500;
  * 再多没有意义（首屏每一行都要带上账户 / 标签 / 附件摘要，RSC payload 会变大）。
  */
 export const DETAIL_ALL_FIRST_VIEWPORT_PAGE_SIZE = 60;
+/**
+ * 分页模式首屏（服务端直出的那一页）最少取多少行。
+ *
+ * 「自适应」的落地页大小只有浏览器量得出来，服务端首屏只能用 cookie 里上一次
+ * 的测量值。窗口变大（换显示器、关掉侧边栏、浏览器全屏）后那个值就偏小：首屏
+ * 只铺十几行、下面空一大片，要等「表格测量 → 改页大小 → 重新取数」这一趟往返
+ * 才补齐（大账户上实测数秒），用户看到的就是「自适应没在最初始生效」。
+ *
+ * 所以首屏按 `max(pageSize, 60)` 取数，客户端量出真实行数后**本地切片**显示
+ * （`BasicDetailPanel` 的 `pageEntries`），第一帧就有足够行铺满视口，不再有那
+ * 段空档。多取的行只是白拿的 RSC payload —— 覆盖范围与「全部」首屏相同，60 行
+ * 在 31px 紧凑行高下 1860px、41px 行高下 2460px，够铺到 4K 全屏。
+ */
+export const DETAIL_PAGED_FIRST_FETCH_ROWS = 60;
 
 type DetailPaginationPreference = {
   pageSize: number;
@@ -48,6 +62,16 @@ export function normalizeDetailPage(value: unknown, fallback = 1) {
   const parsed = typeof value === "number" ? value : parseInt(String(value ?? ""), 10);
   return Number.isFinite(parsed) && parsed >= 1 ? Math.floor(parsed) : fallback;
 }
+
+/**
+ * 「最近一次自适应量到的行数」，**不分账户**。
+ *
+ * 每个账户的落地值存在自己的 cookie 里，新账户（或刚清过 cookie 的账户）没有，
+ * 服务端首屏只能退回写死的 40 行 —— 1080p 窗口下会先铺 40 行、溢出小半屏，
+ * 等浏览器量完才收缩。而一台设备上一次量出来的行数对同一窗口里的所有账户都
+ * 成立，拿它当首屏兜底，新账户的第一帧就基本正确。
+ */
+export const DETAIL_LAST_FIT_ROWS_COOKIE = "mmh_detail_last_fit_rows";
 
 export function detailPaginationCookieName(accountId: string) {
   const safeAccountId = String(accountId ?? "").replace(/[^A-Za-z0-9_-]/g, "_");
@@ -122,4 +146,9 @@ export function writeStoredDetailPreference(
   });
   window.sessionStorage.setItem(cookieName, value);
   document.cookie = `${cookieName}=${value}; path=/; max-age=31536000; SameSite=Lax`;
+  // 只有「自适应」的落地值才代表这台设备这个窗口能放多少行；手选的固定行数
+  // 不能拿去给别的账户当首屏兜底。
+  if (autoFit === true) {
+    document.cookie = `${DETAIL_LAST_FIT_ROWS_COOKIE}=${normalizeDetailPageSize(pageSize)}; path=/; max-age=31536000; SameSite=Lax`;
+  }
 }

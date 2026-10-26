@@ -160,6 +160,12 @@ async function _loadEntriesPageForAccount(
    * ——时间轴就没掌控住总数和行数。
    */
   rangeStr = "",
+  /**
+   * 首屏多取的行数（默认等于 `pageSizeValue`）：页码仍按 `pageSizeValue` 算，
+   * 多出来的行供客户端按「自适应」落地行数切片显示，见
+   * `DETAIL_PAGED_FIRST_FETCH_ROWS`。
+   */
+  fetchRowsValue?: number,
 ) {
   const hidFilter = JSON.parse(hidFilterStr) as { householdId: string };
   const hid = { householdId: hidFilter.householdId };
@@ -172,6 +178,7 @@ async function _loadEntriesPageForAccount(
     householdId: hidFilter.householdId,
     page: pageValue,
     pageSize,
+    fetchRows: fetchRowsValue,
     sortAccountId,
     includeRunningBalances: !!sortAccountId,
     dateRange: rangeStr ? parseDetailDateRange(rangeStr) : null,

@@ -399,6 +399,16 @@ export function BasicDetailPanel({
   const [pageSize, setPageSize] = useState(normalizedInitialPageSize);
   const [detailAll, setDetailAll] = useState(initialDetailAll);
   const [autoFit, setAutoFit] = useState(initialAutoFit);
+  /**
+   * 表格最近一次量出的「视口能放几行」。
+   *
+   * 页大小（`pageSize`）要落到 cookie / URL 上，改一次就得等一次重取才看得见
+   * 结果；这个值只用于**本地切片**：首屏服务端多取了
+   * `DETAIL_PAGED_FIRST_FETCH_ROWS` 行，量完立刻按它切到正好一屏，打开账户的
+   * 第一帧就填满，不再空一截等重取回来。null = 还没量过（服务端首屏），此时
+   * 原样显示已取的行，宁可多一行滚动条也不留白。
+   */
+  const [fittedRowCount, setFittedRowCount] = useState<number | null>(null);
   const [isPageLoading, setIsPageLoading] = useState(false);
   // 「全部」分块加载的进度（已回到本地的行数），仅用于加载提示文案。
   const [allLoadedCount, setAllLoadedCount] = useState(0);
@@ -762,6 +772,8 @@ export function BasicDetailPanel({
       const nextAutoFit = nextFocusEntryId ? initialAutoFit : storedPreference?.autoFit ?? initialAutoFit;
       const nextTotalPages = Math.max(1, Math.ceil(totalCount / nextPageSize));
       setPageSize(nextPageSize);
+      // 换账户 / 换作用域：上一份视口行数不再适用，等表格量完新容器再切片。
+      setFittedRowCount(null);
       setDetailAll(nextDetailAll);
       setAutoFit(nextAutoFit);
       setPage(nextDetailAll ? 1 : clampPage(storedPreference?.detailPage ?? initialPage, nextTotalPages));
@@ -882,7 +894,16 @@ export function BasicDetailPanel({
     // 之后任何一次服务端重渲染（保存后 router.refresh、刷新页面、分享链接）都会
     // 把用户弹回概况页——保存一笔就「跳回首页」的真正来源。
     url.searchParams.set("view", isAllCashDetailScope(accountId) ? "allcash" : "detail");
-    url.searchParams.set("pageSize", String(pageSize));
+    // 「自适应」的落地行数是**这台设备这个窗口**的属性，不是这一页的内容：
+    // 写进地址栏只会把上一次的行数固化成显式参数 —— 下次用旧链接打开（换了
+    // 窗口、换了屏幕）时，服务端只能照这个旧值铺首屏，比不做还糟；而它本身
+    // 也没有任何分享价值。所以自适应时只落 cookie（服务端照样读得到），地址栏
+    // 保持干净；只有用户手选了固定行数，才把数字写进 URL。
+    if (autoFit) {
+      url.searchParams.delete("pageSize");
+    } else {
+      url.searchParams.set("pageSize", String(pageSize));
+    }
     if (detailAll) {
       url.searchParams.set("detailAll", "1");
       url.searchParams.delete("detailPage");
@@ -964,7 +985,25 @@ export function BasicDetailPanel({
     setPage(1);
   }, []);
 
-  const pageEntries = useMemo(() => localEntries, [localEntries]);
+  /**
+   * 当前页要显示的行：
+   * - 「全部」整份都在本地，不切；
+   * - 自适应：量出行数后切到正好一屏（首屏多取的那几十行就是备料）；
+   * - 手动选了固定行数：切到那个行数（首屏也可能多取了）。
+   * 还没量过（服务端直出 / 首帧）时原样显示 —— 那样第一帧就铺满视口，不会
+   * 出现「打开账户空一大格、选自适应才补上」。
+   */
+  const pageEntries = useMemo(() => {
+    if (detailAll) return localEntries;
+    // 量出行数之前（服务端直出 / 首帧）先按 cookie 里的页大小显示 —— 那是上一次
+    // 的落地值，窗口没变时正好是一屏；不拿「多取的那 60 行」铺出去，否则页面
+    // 先多出半屏、等表格量完才收缩，看起来就是「自适应判断得太靠后」。真正的
+    // 行数在 hydration 的绘制前测量里立即落到 `fittedRowCount`，这一帧不会被
+    // 用户看到。
+    const visibleRows = autoFit ? fittedRowCount ?? pageSize : pageSize;
+    if (localEntries.length <= visibleRows) return localEntries;
+    return localEntries.slice(0, visibleRows);
+  }, [autoFit, detailAll, fittedRowCount, localEntries, pageSize]);
   const displayRowsRef = useRef<DetailEntry[]>([]);
   const locateDateSeqRef = useRef(0);
   const pendingCenterDateRef = useRef<string | null>(null);
@@ -1022,13 +1061,15 @@ export function BasicDetailPanel({
     });
   }, []);
   const visibleNormalExportRows = useMemo(() => {
-    if (!normalExportRowsByEntryId || displayedEntryIds === null || displayedEntryIds.length === pageEntries.length) return normalExportRows;
+    // 一律按「表格实际显示的行」重建：首屏为了自适应会多取
+    // `DETAIL_PAGED_FIRST_FETCH_ROWS` 行，切片后多出来的备料不能跟着导出。
+    if (!normalExportRowsByEntryId || displayedEntryIds === null || displayedEntryIds.length === 0) return normalExportRows;
     const [header = []] = normalExportRows;
     const rows = displayedEntryIds
       .map((id) => normalExportRowsByEntryId[id])
       .filter((row): row is string[] => Array.isArray(row));
     return [header, ...rows];
-  }, [displayedEntryIds, normalExportRows, normalExportRowsByEntryId, pageEntries.length]);
+  }, [displayedEntryIds, normalExportRows, normalExportRowsByEntryId]);
 
   const applyPageSizeKeepingCenter = (nextPageSize: number) => {
     const centerDate = readCenteredDetailDate();
@@ -1106,7 +1147,7 @@ export function BasicDetailPanel({
   // 页大小跟着视口走；页大小一变，页码以「原页中间行」为锚点换算，窗口缩小后仍
   // 停在同一批记录上（逻辑见 useRowsFitPageAnchor，所有 ADT 表格共用）。服务端
   // 分页时页码写在 URL 上、由定位逻辑负责，这里只改页大小。
-  const { onRowsFitChange: handleRowsFitChange, lastFitRowCountRef } = useRowsFitPageAnchor({
+  const { onRowsFitChange: applyRowsFitPageSize, lastFitRowCountRef } = useRowsFitPageAnchor({
     scopeKey: accountScopeKey,
     pageSize,
     page: safePage,
@@ -1117,12 +1158,26 @@ export function BasicDetailPanel({
     setPage,
     isBusy: () => locatingDateRef.current,
   });
+  /**
+   * 表格量完先更新「显示行数」，再交给共享 hook 改页大小。
+   *
+   * 顺序很重要：改页大小要等一次重取才换上新的一页行，而切片是同步的 —— 先落
+   * 切片，用户看到的表格当帧就填满；重取回来时长这样，不再有肉眼可见的空档。
+   * 回调 identity 仍只跟作用域 / 开关走（依赖里只有 applyRowsFitPageSize），
+   * ADT 不会因为这次包装而每帧重测。
+   */
+  const handleRowsFitChange = useCallback((rows: number) => {
+    setFittedRowCount(rows);
+    applyRowsFitPageSize(rows);
+  }, [applyRowsFitPageSize]);
 
   const enableAutoFitRows = () => {
     // Same contract as picking a concrete size: leave show-all mode first.
     setDetailAll(false);
     setAutoFit(true);
     const fitCount = lastFitRowCountRef.current;
+    // 先按最近一次测量值切片，表格当帧就填满；ADT 随后还会为新 identity 重测一次。
+    if (fitCount != null) setFittedRowCount(fitCount);
     applyPageSizeKeepingCenter(fitCount ?? pageSize);
   };
 
