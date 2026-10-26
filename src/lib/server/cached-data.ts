@@ -32,6 +32,7 @@ import { loadReadableTagsByRecentUse } from "@/lib/server/tag-scope";
 import { categoryOrderBy } from "@/lib/category-order";
 import { DETAIL_ALL_PAGE_SIZE } from "@/lib/detail-pagination-preference";
 import { queryDetailPage } from "@/lib/server/detail-page-query";
+import { parseDetailDateRange } from "@/lib/server/detail-query-filters";
 
 // ── Types ──
 
@@ -156,6 +157,12 @@ async function _loadEntriesPageForAccount(
   hidFilterStr: string,
   pageValue: number,
   pageSizeValue: number,
+  /**
+   * 显示范围（`from~to`）。首屏必须带上它：明细默认只看最近 5 年，若 RSC 这一页
+   * 按全量口径取，「共 N 条」会先显示 4 万多、chip 却写着近 5 年，一切以全量为准
+   * ——时间轴就没掌控住总数和行数。
+   */
+  rangeStr = "",
 ) {
   const hidFilter = JSON.parse(hidFilterStr) as { householdId: string };
   const hid = { householdId: hidFilter.householdId };
@@ -170,6 +177,7 @@ async function _loadEntriesPageForAccount(
     pageSize,
     sortAccountId,
     includeRunningBalances: !!sortAccountId,
+    dateRange: rangeStr ? parseDetailDateRange(rangeStr) : null,
   });
   const pageRows = pageData.pageIds.length > 0
     ? await prisma.txRecord.findMany({

@@ -117,6 +117,42 @@ export function recalculateLoadedRunningBalances(
   return entries.map((entry) => ({ ...entry, runningBalance: runningBalanceById.get(entry.id) ?? entry.runningBalance ?? null }));
 }
 
+/**
+ * 按调用方给的顺序（服务端顺序：新 → 旧）折叠出每行的余额。
+ *
+ * 与服务端 `balanced` CTE 等价：锚点行把余额钉到目标值并重新开始累加，
+ * 锚点之前的行不影响之后（见 `applyBalanceAnchorEntry`）。
+ *
+ * 不能复用 `recalculateLoadedRunningBalances`：那个会先用客户端的
+ * `compareDetailEntriesAsc` 重排，而明细顺序必须与 SQL 的
+ * `dayKey DESC, isAnchor DESC, dayOrder DESC, displayAt DESC, createdAt DESC, id DESC`
+ * 逐键一致；只要同一天有多行、客户端少一个次级键，整段余额就会错开
+ * （实测同一账户 2064 行里会有 99 行对不上，最大差 2 万多）。
+ *
+ * 现在的用法是：一行数据只在「全部收支」缓存里存一份，单账户视图按
+ * accountId/toAccountId 筛出来，顺序天然是那份缓存（服务端已排好）的子序列，
+ * 再在这里补余额——所以顺序必须是**传进来的顺序**，不能重排。
+ */
+export function foldRunningBalancesInDescOrder<T extends RunningBalanceEntry>(
+  entries: readonly T[],
+  accountId: string,
+  accountKind?: string | null,
+  todayKey: string = todayDateBusinessYmd(),
+): T[] {
+  const runningBalanceById = new Map<string, number>();
+  let runningBalance = 0;
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (!entry) continue;
+    runningBalance = applyEntryToRunningBalance(runningBalance, entry, accountId, accountKind, todayKey);
+    runningBalanceById.set(entry.id, runningBalance);
+  }
+  return entries.map((entry) => ({
+    ...entry,
+    runningBalance: runningBalanceById.get(entry.id) ?? entry.runningBalance ?? null,
+  }));
+}
+
 export type RunningBalanceDeleteResult<T extends RunningBalanceEntry = RunningBalanceEntry> = {
   entries: T[];
   /**

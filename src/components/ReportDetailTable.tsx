@@ -12,6 +12,7 @@ import { formatMoney } from "@/lib/format";
 import { FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
 import { getColorSchemeFromCookie, pnlColor } from "@/lib/client/colors";
 import { useI18n } from "@/lib/i18n";
+import { useRowsFitPageAnchor } from "@/lib/client/use-rows-fit-page-anchor";
 
 type AccountOption = {
   id: string;
@@ -95,12 +96,16 @@ export function ReportDetailTable({
   // Callback identity changes with resetKey / autoFit / showAll so the table
   // re-measures once per view reopen, then stays frozen (same contract as
   // BasicDetailPanel).
-  const lastFitRowCountRef = useRef<number | null>(null);
-  const handleRowsFitChange = useCallback((rowCount: number) => {
-    lastFitRowCountRef.current = rowCount;
-    if (!autoFit || showAll) return;
-    setPageSize((prev) => (prev === rowCount ? prev : rowCount));
-  }, [resetKey, autoFit, showAll]);
+  const { onRowsFitChange: handleRowsFitChange, lastFitRowCountRef } = useRowsFitPageAnchor({
+    scopeKey: resetKey,
+    pageSize,
+    page: safePage,
+    totalCount: displayEntries.length,
+    enabled: autoFit && !showAll,
+    anchorPage: !showAll,
+    setPageSize,
+    setPage,
+  });
 
   const enableAutoFitRows = () => {
     setShowAll(false);

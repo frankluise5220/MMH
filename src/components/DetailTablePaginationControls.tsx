@@ -9,6 +9,12 @@ type DetailTablePaginationControlsProps = {
   pageSize: number;
   pageSizeOptions?: readonly number[];
   detailAll: boolean;
+  /**
+   * 「全部」仍按页浏览：总数超过本地全量阈值时改由服务端分页，下拉照样显示
+   * 「全部」（不回跳成 40），但页码 / 前后翻页必须保留 —— 否则用户选了全部
+   * 只能看到当前这一页，看起来就是「没生效」。
+   */
+  paged?: boolean;
   safePage: number;
   totalPages: number;
   canPrev: boolean;
@@ -36,6 +42,7 @@ export function DetailTablePaginationControls({
   pageSize,
   pageSizeOptions = [40, 80],
   detailAll,
+  paged = !detailAll,
   safePage,
   totalPages,
   canPrev,
@@ -60,7 +67,7 @@ export function DetailTablePaginationControls({
     const parsed = parseInt(pageInput.trim(), 10);
     const clamped = Number.isFinite(parsed) ? Math.min(Math.max(1, parsed), totalPages) : safePage;
     setPageInput(String(safePage));
-    if (!detailAll && clamped !== safePage) onPageChange(clamped);
+    if (paged && clamped !== safePage) onPageChange(clamped);
   };
 
   // 键盘分段修改已选日期时，每敲一位都是一次「完整日期」变更（如把 2026 改成
@@ -117,15 +124,15 @@ export function DetailTablePaginationControls({
           </option>
         ))}
       </select>
-      {!detailAll ? <span className="text-slate-500">{t("pagination.items")}</span> : null}
+      {paged ? <span className="text-slate-500">{t("pagination.items")}</span> : null}
       <span className="mx-0.5 text-slate-300">|</span>
-      <button type="button" onClick={() => onPageChange(1)} disabled={!canPrev} className={pageButtonClass(canPrev, "muted")} title={detailAll ? t("pagination.allMode") : t("creditBill.firstPage")}>
+      <button type="button" onClick={() => onPageChange(1)} disabled={!canPrev} className={pageButtonClass(canPrev, "muted")} title={paged ? t("creditBill.firstPage") : t("pagination.allMode")}>
         <ChevronsLeft className="h-3.5 w-3.5" />
       </button>
-      <button type="button" onClick={() => onPageChange(safePage - 1)} disabled={!canPrev} className={pageButtonClass(canPrev)} title={detailAll ? t("pagination.allMode") : t("creditBill.prevPage")}>
+      <button type="button" onClick={() => onPageChange(safePage - 1)} disabled={!canPrev} className={pageButtonClass(canPrev)} title={paged ? t("creditBill.prevPage") : t("pagination.allMode")}>
         <ChevronLeft className="h-3.5 w-3.5" />
       </button>
-      {!detailAll ? (
+      {paged ? (
         <>
           <input
             type="text"
@@ -146,10 +153,10 @@ export function DetailTablePaginationControls({
           <span className="text-slate-400">/ {totalPages}</span>
         </>
       ) : null}
-      <button type="button" onClick={() => onPageChange(safePage + 1)} disabled={!canNext} className={pageButtonClass(canNext)} title={detailAll ? t("pagination.allMode") : t("creditBill.nextPage")}>
+      <button type="button" onClick={() => onPageChange(safePage + 1)} disabled={!canNext} className={pageButtonClass(canNext)} title={paged ? t("creditBill.nextPage") : t("pagination.allMode")}>
         <ChevronRight className="h-3.5 w-3.5" />
       </button>
-      <button type="button" onClick={() => onPageChange(totalPages)} disabled={!canNext} className={pageButtonClass(canNext, "muted")} title={detailAll ? t("pagination.allMode") : t("creditBill.lastPage")}>
+      <button type="button" onClick={() => onPageChange(totalPages)} disabled={!canNext} className={pageButtonClass(canNext, "muted")} title={paged ? t("creditBill.lastPage") : t("pagination.allMode")}>
         <ChevronsRight className="h-3.5 w-3.5" />
       </button>
       {onLocateDate ? (

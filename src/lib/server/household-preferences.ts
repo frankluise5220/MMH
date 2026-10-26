@@ -57,6 +57,7 @@ export function preferenceRowData(prefs: AppPreferences) {
     sidebarShowAllCashEntries: prefs.sidebarShowAllCashEntries,
     sidebarShowReimbursements: prefs.sidebarShowReimbursements,
     detailDateBackground: prefs.detailDateBackground,
+    detailWindowYears: prefs.detailWindowYears,
     rowHeightMode: prefs.rowHeightMode,
     accountLabelFields: serializeAccountLabelFields(prefs.accountLabelFields),
     accountDropdownRestrictType: prefs.accountDropdownRestrictType,

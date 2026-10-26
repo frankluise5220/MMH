@@ -9,6 +9,16 @@ import { todayDateBusinessYmd } from "@/lib/date-utils";
 import { isLoanOrSettlementAccountKind } from "@/lib/liability";
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdTimeZone } from "@/lib/server/household-preferences";
+import {
+  DETAIL_FACET_COLUMNS,
+  buildDetailDateRangeSql,
+  buildDetailFilterSql,
+  buildDetailOrderBySql,
+  omitDetailDateFilter,
+  type DetailDateRange,
+  type DetailFilters,
+  type DetailSortState,
+} from "@/lib/server/detail-query-filters";
 
 const FX_CONVERSION_SOURCE = "fx_conversion";
 
@@ -19,6 +29,12 @@ export type DetailPageQueryArgs = {
   pageSize: number;
   sortAccountId?: string | null;
   includeRunningBalances?: boolean;
+  /** 服务端筛选谓词（表头漏斗下推），作用在 `visible` 层。 */
+  filters?: DetailFilters | null;
+  /** 时间范围（工具栏双滑块）：数据范围限定，与 `filters.date` 独立。 */
+  dateRange?: DetailDateRange | null;
+  /** 服务端单列排序；仅多账户（无逐笔余额）视图生效。 */
+  sort?: DetailSortState | null;
 };
 
 export type DetailPageQueryResult = {
@@ -53,8 +69,15 @@ function buildOrderingCtesSql(args: {
   sortAccountId?: string | null;
   /** 排序账户是贷款 / 往来款时，余额折叠走本金口径（见 liabilityPrincipalForAccountSide）。 */
   liabilityAccountMode?: boolean;
+  /** 服务端筛选谓词，注入 `visible` 层，保证计数与分页同口径。 */
+  filters?: DetailFilters | null;
+  /**
+   * 时间范围（工具栏双滑块）：先把数据集裁到区间，与 `filters.date` 无关。
+   * 注入同一层 `visible`，计数 / 分页 / 漏斗计数一次口径。
+   */
+  dateRange?: DetailDateRange | null;
 }) {
-  const { accountIds, householdId, timeZone, sortAccountId, liabilityAccountMode = false } = args;
+  const { accountIds, householdId, timeZone, sortAccountId, liabilityAccountMode = false, filters, dateRange } = args;
   const sortAccountIdValue = sortAccountId ?? null;
   // 账户余额口径（account-balance.ts 的 isOnOrBeforeToday）以「今天」为截止，
   // 明细「余额」列必须用同一个截止日，否则未来日期的流水会把列表顶部的余额
@@ -69,11 +92,16 @@ function buildOrderingCtesSql(args: {
     t."date",
     t."postedAt",
     t."createdAt",
+    t."updatedAt",
     t."dayOrder",
     t."type",
     t."amount",
     t."accountId",
+    t."accountName",
     t."toAccountId",
+    t."categoryName",
+    t."note",
+    t."currency",
     t."toNote",
     t."source",
     t."principalAmount",
@@ -296,6 +324,12 @@ function buildOrderingCtesSql(args: {
             THEN ABS(COALESCE(c."fundArrivalAmount", c."amount"))
           ELSE c."amount"`;
 
+  // 表头漏斗 / 列排序下推（百万行不可能把全量拉到浏览器过滤）。
+  // 谓词作用在 `visible`，且必须包在原有的 (A OR B) 外面，否则 `AND` 会抢走 OR 的结合。
+  const filterSql = buildDetailFilterSql(filters);
+  // 时间范围先裁数据集，再叠列筛选（两者是 AND，语义上「范围内挑值」）。
+  const dateRangeSql = buildDetailDateRangeSql(dateRange);
+
   return Prisma.sql`
     WITH ${scopedCtes},
     "classified" AS (
@@ -333,7 +367,8 @@ function buildOrderingCtesSql(args: {
     "visible" AS (
       SELECT c.*
       FROM "classified" c
-      WHERE CAST(DATE(c."displayAt") AS TEXT) <= ${todayKey}
+      WHERE (
+        CAST(DATE(c."displayAt") AS TEXT) <= ${todayKey}
         -- 投资资金到账腿（赎回 / 现金分红 / 买入退回）即使到账日在今天之后也要列出来：
         -- 金额和到账日都已确认，用户要在资金侧按到账日看到这一行。它的余额贡献仍是 0
         -- （见 effectiveAmountCase 里 displayAt > today 的分支），所以列表顶部余额不会
@@ -346,6 +381,9 @@ function buildOrderingCtesSql(args: {
             OR c."source" = 'regular_invest_refund'
           )
         )
+      )
+      ${filterSql}
+      ${dateRangeSql}
     ),
     "displayed" AS (
       SELECT
@@ -396,22 +434,27 @@ async function countEntries(
   householdId: string,
   timeZone: string,
   sortAccountId?: string | null,
+  filters?: DetailFilters | null,
+  dateRange?: DetailDateRange | null,
 ) {
   const orderingCtes = buildOrderingCtesSql({
     accountIds,
     householdId,
     timeZone,
     sortAccountId,
+    filters,
+    dateRange,
   });
   // 数行只依赖 `visible`：`displayed` 只是多算两列、`ordered` / `ranked` 不增删行。
   // 引用 `ranked` 会让数据库把 4 万行的 ROW_NUMBER 窗口排序也算一遍，而 PG 12+ /
   // SQLite 对未被引用的 CTE 是惰性的，所以这里直接数 `visible` 就跳过了编号，
   // 「全部收支」的分页请求能省掉一半的全量排序。
-  const rows = await prisma.$queryRaw<Array<{ count: unknown }>>(Prisma.sql`
+  const countSql = Prisma.sql`
     ${orderingCtes}
     SELECT COUNT(*) AS "count"
     FROM "visible" r
-  `);
+  `;
+  const rows = await prisma.$queryRaw<Array<{ count: unknown }>>(countSql);
   const count = Number(rows[0]?.count ?? 0);
   return Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
 }
@@ -427,17 +470,8 @@ export async function queryDetailPage(args: DetailPageQueryArgs): Promise<Detail
     };
   }
 
-  const totalCount = await countEntries(
-    accountIds,
-    args.householdId,
-    await getHouseholdTimeZone(args.householdId),
-    args.sortAccountId,
-  );
   const pageSize = Math.max(1, Math.floor(args.pageSize) || 1);
-  const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
-  const page = Math.min(Math.max(1, Math.floor(args.page) || 1), totalPages);
-  const offset = (page - 1) * pageSize;
-  const limit = offset + pageSize;
+  const requestedPage = Math.max(1, Math.floor(args.page) || 1);
   // 只有「单账户 + 逐笔余额」这一条路径需要知道账户类别：贷款 / 往来款的余额
   // 按本金口径折叠，与 account-balance.ts 的 foldBalanceEntry 保持一致。
   const liabilityAccountMode = args.includeRunningBalances && args.sortAccountId
@@ -451,6 +485,8 @@ export async function queryDetailPage(args: DetailPageQueryArgs): Promise<Detail
     timeZone: await getHouseholdTimeZone(args.householdId),
     sortAccountId: args.sortAccountId,
     liabilityAccountMode,
+    filters: args.filters,
+    dateRange: args.dateRange,
   });
 
   if (!args.includeRunningBalances || !args.sortAccountId) {
@@ -458,19 +494,44 @@ export async function queryDetailPage(args: DetailPageQueryArgs): Promise<Detail
     // `LIMIT/OFFSET` 取当前页，语义与 `rowNumber > offset AND <= offset + pageSize`
     // 完全一致，但省掉一次 4 万行的 ROW_NUMBER 物化。`ranked` 因此不被引用，
     // 数据库（PG 12+ / SQLite）不会执行它。
-    const rows = await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
-      ${orderingCtes}
-      SELECT o."id" AS "id"
-      FROM "ordered" o
-      ORDER BY
+    // 服务端单列排序（表头点击）只在这一条路径生效：它没有逐笔余额，
+    // 排序键可以自由替换；单账户带余额的路径必须按时间顺序折叠，忽略 sort。
+    const orderBySql = buildDetailOrderBySql(args.sort) ?? Prisma.sql`
         o."dayKey" DESC,
         o."isAnchor" DESC,
         COALESCE(o."dayOrder", 0) DESC,
         o."displayAt" DESC,
         o."createdAt" DESC,
-        o."id" DESC
-      LIMIT ${pageSize} OFFSET ${offset}
-    `);
+        o."id" DESC`;
+    // 一次扫描同时拿「总数」和「当前页」：COUNT(*) OVER () 跟着这 200 行走，
+    // 省掉一次完整 CTE。百万行时那一趟单独就是 10 秒量级，翻页感受差别很大。
+    // 页码越界（前端带着过期页码）时窗口取不到行，再回退一次计数并夹到最后一页。
+    const buildPageSql = (pageOffset: number) => Prisma.sql`
+      ${orderingCtes}
+      SELECT o."id" AS "id", COUNT(*) OVER () AS "totalCount"
+      FROM "ordered" o
+      ORDER BY ${orderBySql}
+      LIMIT ${pageSize} OFFSET ${pageOffset}
+    `;
+    const requestedOffset = (requestedPage - 1) * pageSize;
+    let rows = await prisma.$queryRaw<Array<{ id: string; totalCount: unknown }>>(buildPageSql(requestedOffset));
+    let totalCount = rows.length > 0 ? Number(rows[0].totalCount ?? 0) : 0;
+    let page = Math.min(requestedPage, Math.max(1, Math.ceil(totalCount / pageSize)));
+    if (rows.length === 0) {
+      totalCount = await countEntries(
+        accountIds,
+        args.householdId,
+        await getHouseholdTimeZone(args.householdId),
+        args.sortAccountId,
+        args.filters,
+        args.dateRange,
+      );
+      page = Math.min(requestedPage, Math.max(1, Math.ceil(totalCount / pageSize)));
+      const retryOffset = (page - 1) * pageSize;
+      if (retryOffset !== requestedOffset) {
+        rows = await prisma.$queryRaw<Array<{ id: string; totalCount: unknown }>>(buildPageSql(retryOffset));
+      }
+    }
     return {
       totalCount,
       page,
@@ -479,6 +540,19 @@ export async function queryDetailPage(args: DetailPageQueryArgs): Promise<Detail
     };
   }
 
+  // 单账户逐笔余额路径必须对全部行编号，没法用窗口顺带取总数，先单独计数。
+  const totalCount = await countEntries(
+    accountIds,
+    args.householdId,
+    await getHouseholdTimeZone(args.householdId),
+    args.sortAccountId,
+    args.filters,
+    args.dateRange,
+  );
+  const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
+  const page = Math.min(requestedPage, totalPages);
+  const offset = (page - 1) * pageSize;
+  const limit = offset + pageSize;
   const rows = await prisma.$queryRaw<Array<{ id: string; runningBalance: unknown }>>(Prisma.sql`
     ${orderingCtes},
     "grouped" AS (
@@ -612,11 +686,13 @@ export async function locateDetailPage(args: {
   dateYmd: string;
   pageSize: number;
   sortAccountId?: string | null;
+  filters?: DetailFilters | null;
+  dateRange?: DetailDateRange | null;
 }) {
   const accountIds = normalizedAccountIds(args.accountIds);
   const pageSize = Math.max(1, Math.floor(args.pageSize) || 1);
   const totalCount = accountIds.length > 0
-    ? await countEntries(accountIds, args.householdId, await getHouseholdTimeZone(args.householdId), args.sortAccountId)
+    ? await countEntries(accountIds, args.householdId, await getHouseholdTimeZone(args.householdId), args.sortAccountId, args.filters, args.dateRange)
     : 0;
   const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
   if (!/^\d{4}-\d{2}-\d{2}$/.test(args.dateYmd)) {
@@ -631,6 +707,8 @@ export async function locateDetailPage(args: {
     householdId: args.householdId,
     timeZone: await getHouseholdTimeZone(args.householdId),
     sortAccountId: args.sortAccountId,
+    filters: args.filters,
+    dateRange: args.dateRange,
   });
   const rows = await prisma.$queryRaw<Array<{ count: unknown }>>(Prisma.sql`
     ${orderingCtes}
@@ -661,11 +739,13 @@ export async function locateDetailEntryPage(args: {
   entryId: string;
   pageSize: number;
   sortAccountId?: string | null;
+  filters?: DetailFilters | null;
+  dateRange?: DetailDateRange | null;
 }) {
   const accountIds = normalizedAccountIds(args.accountIds);
   const pageSize = Math.max(1, Math.floor(args.pageSize) || 1);
   const totalCount = accountIds.length > 0
-    ? await countEntries(accountIds, args.householdId, await getHouseholdTimeZone(args.householdId), args.sortAccountId)
+    ? await countEntries(accountIds, args.householdId, await getHouseholdTimeZone(args.householdId), args.sortAccountId, args.filters, args.dateRange)
     : 0;
   const totalPages = Math.max(1, Math.ceil(totalCount / pageSize));
   const entryId = String(args.entryId ?? "").trim();
@@ -678,6 +758,8 @@ export async function locateDetailEntryPage(args: {
     householdId: args.householdId,
     timeZone: await getHouseholdTimeZone(args.householdId),
     sortAccountId: args.sortAccountId,
+    filters: args.filters,
+    dateRange: args.dateRange,
   });
   const rows = await prisma.$queryRaw<Array<{ rowNumber: unknown }>>(Prisma.sql`
     ${orderingCtes}
@@ -696,5 +778,126 @@ export async function locateDetailEntryPage(args: {
     totalCount,
     page: Math.min(totalPages, Math.floor(index / pageSize) + 1),
     index,
+  };
+}
+
+/** 表头漏斗的单个候选值。 */
+export type DetailFacetOption = { value: string; count: number };
+
+/** 表头漏斗 + 时间筛选器的时间轴两端（`YYYY-MM-DD`，按业务时区取日历日）。 */
+export type DetailFacetsResult = {
+  facets: Record<string, DetailFacetOption[]>;
+  dateBounds: { min: string; max: string } | null;
+};
+
+/**
+ * 只要时间轴两端（`YYYY-MM-DD`，按业务时区取日历日）。
+ *
+ * 双滑块的可拖范围与「当前页有多少行」无关：分页模式下前端只有几十行，自己
+ * 推导会把范围压成几天；也不能受时间范围 / 日期列筛选影响，否则拖一次就缩到
+ * 刚选的区间、再也拖不回去。只算 min/max，比拉整份 facets（6 次 GROUP BY）便宜。
+ */
+export async function queryDetailDateBounds(args: {
+  accountIds: string[];
+  householdId: string;
+}): Promise<{ min: string; max: string } | null> {
+  const accountIds = normalizedAccountIds(args.accountIds);
+  if (accountIds.length === 0) return null;
+  const timeZone = await getHouseholdTimeZone(args.householdId);
+  const ctes = buildOrderingCtesSql({
+    accountIds,
+    householdId: args.householdId,
+    timeZone,
+    filters: null,
+    dateRange: null,
+  });
+  // 只读到 `classified`（`displayAt` 已经算完的那一层），不碰 `visible/displayed/
+  // ordered/ranked`：未引用的 CTE 不会被物化，省掉全量逐笔余额的窗口计算 —— 那
+  // 一趟在 4 万多行上要好几秒，而时间轴只需要最早/最晚一天。
+  //
+  // 代价：`visible` 额外放行的「投资资金到账腿（到账日在今天之后）」不计入 max，
+  // 所以滑块右端可能比实际最后一行早几天。用户点「全部时间」时范围是空的，数据
+  // 一条不少，只是刻度略窄 —— 比让弹层等 8 秒好。
+  const todayKey = todayDateBusinessYmd(timeZone);
+  const rows = await prisma.$queryRaw<Array<{ min: unknown; max: unknown }>>(Prisma.sql`
+    ${ctes}
+    SELECT
+      MIN(CAST(DATE(c."displayAt") AS TEXT)) AS "min",
+      MAX(CAST(DATE(c."displayAt") AS TEXT)) AS "max"
+    FROM "classified" c
+    WHERE CAST(DATE(c."displayAt") AS TEXT) <= ${todayKey}
+  `);
+  const min = rows[0]?.min ? String(rows[0].min) : "";
+  const max = rows[0]?.max ? String(rows[0].max) : "";
+  return min && max ? { min, max } : null;
+}
+
+/**
+ * 表头漏斗候选值（服务端 distinct）。
+ *
+ * 必须走服务端：AdvancedDataTable 原本从内存 `rows` 去重生成候选值，百万行下
+ * 前端只有当前一页，漏斗就只剩这几十个值可选（正是「切到全部没反应」的成因）。
+ *
+ * 每个候选列一条 `GROUP BY` 聚合，互不联动（联动需要 N×M 次聚合，百万行不可接受）；
+ * 单个候选值上限 200，够用且能兜住「备注」这类高基数列。
+ *
+ * 顺带取一次 `displayAt` 的最小/最大值：表头时间筛选器的双滑块要用全量时间轴，
+ * 前端在服务端分页下只有当前一页，自己算会把可拖范围压成一页的跨度。
+ */
+export async function queryDetailFacets(args: {
+  accountIds: string[];
+  householdId: string;
+  sortAccountId?: string | null;
+  filters?: DetailFilters | null;
+  /** 时间范围：漏斗计数落在范围内（范围内还有哪些分类可选）。 */
+  dateRange?: DetailDateRange | null;
+}): Promise<DetailFacetsResult> {
+  const accountIds = normalizedAccountIds(args.accountIds);
+  if (accountIds.length === 0) return { facets: {}, dateBounds: null };
+  const orderingCtes = buildOrderingCtesSql({
+    accountIds,
+    householdId: args.householdId,
+    timeZone: await getHouseholdTimeZone(args.householdId),
+    sortAccountId: args.sortAccountId,
+    filters: args.filters,
+    dateRange: args.dateRange,
+  });
+  const result: Record<string, DetailFacetOption[]> = {};
+  for (const column of DETAIL_FACET_COLUMNS) {
+    const rows = await prisma.$queryRaw<Array<{ value: unknown; count: unknown }>>(Prisma.sql`
+      ${orderingCtes}
+      SELECT ${column.expression} AS "value", COUNT(*) AS "count"
+      FROM "visible" c
+      GROUP BY 1
+      ORDER BY 2 DESC
+      LIMIT 200
+    `);
+    result[column.key] = rows
+      .map((row) => ({ value: String(row.value ?? ""), count: Number(row.count ?? 0) }))
+      .filter((option) => option.value !== "" && Number.isFinite(option.count));
+  }
+  // 时间轴的边界要按「去掉日期筛选、也不套时间范围」的全量算：否则用户拖一次
+  // 区间，滑轨就收缩到刚选的范围，再也拖不回更早的日期（典型表现是「怎么拉都
+  // 只有最近三个月」）。范围本身更不能进边界 —— 它就是从这根滑轨上取的值。
+  const boundsCtes = buildOrderingCtesSql({
+    accountIds,
+    householdId: args.householdId,
+    timeZone: await getHouseholdTimeZone(args.householdId),
+    sortAccountId: args.sortAccountId,
+    filters: omitDetailDateFilter(args.filters),
+  });
+  const boundsRows = await prisma.$queryRaw<Array<{ min: unknown; max: unknown }>>(Prisma.sql`
+    ${boundsCtes}
+    SELECT
+      MIN(CAST(DATE(c."displayAt") AS TEXT)) AS "min",
+      MAX(CAST(DATE(c."displayAt") AS TEXT)) AS "max"
+    FROM "visible" c
+  `);
+  const min = boundsRows[0]?.min ? String(boundsRows[0].min) : "";
+  const max = boundsRows[0]?.max ? String(boundsRows[0].max) : "";
+  return {
+    facets: result,
+    // 只有一天的数据也返回，滑块会被禁用，但 chip 仍能显示这一天。
+    dateBounds: min && max ? { min, max } : null,
   };
 }

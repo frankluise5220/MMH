@@ -27,6 +27,7 @@ import {
 } from "@/lib/deposit-interest-payout";
 import { formatMoney } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
+import { useRowsFitPageAnchor } from "@/lib/client/use-rows-fit-page-anchor";
 
 type DepositEntry = {
   id: string;
@@ -312,12 +313,16 @@ export function DepositShell({
   // is on that count becomes the page size (the "自适应" option restores it).
   // Callback identity changes with autoFit / show-all so the table re-measures
   // once per mode switch, then stays frozen (same contract as BasicDetailPanel).
-  const lastFitRowCountRef = useRef<number | null>(null);
-  const handleRowsFitChange = useCallback((rowCount: number) => {
-    lastFitRowCountRef.current = rowCount;
-    if (!entryAutoFit || entryAll) return;
-    setEntryPageSize((prev) => (prev === rowCount ? prev : rowCount));
-  }, [entryAutoFit, entryAll]);
+  const { onRowsFitChange: handleRowsFitChange, lastFitRowCountRef } = useRowsFitPageAnchor({
+    scopeKey: "deposit",
+    pageSize: entryPageSize,
+    page: safePage,
+    totalCount: entryRowCount,
+    enabled: entryAutoFit && !entryAll,
+    anchorPage: !entryAll,
+    setPageSize: setEntryPageSize,
+    setPage: setEntryPage,
+  });
 
   const enableAutoFitEntryRows = useCallback(() => {
     setEntryAutoFit(true);

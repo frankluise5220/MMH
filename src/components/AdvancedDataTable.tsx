@@ -16,6 +16,7 @@ import {
 } from "react";
 import { GripVertical, SlidersHorizontal, Trash2 } from "lucide-react";
 import { DateRangeColumnFilter, NumberRangeColumnFilter, TableColumnFilter, TextColumnFilter } from "./TableColumnFilter";
+import { DateRangeSliderFilter } from "./DateRangeSliderFilter";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useI18n } from "@/lib/i18n";
 import {
@@ -729,6 +730,59 @@ export type AdvancedDataTableProps<T> = {
    * auto-fit page size. Requires a height-constrained viewport (fillHeight).
    */
   onRowsFitChange?: (rows: number) => void;
+  /**
+   * 服务端模式：筛选与排序由调用方下推到 SQL，本地不再对 `rows` 过滤/排序，
+   * 只渲染当前这一页。
+   *
+   * 为什么需要：明细的「全部」视图原本把整份数据拉进浏览器，在内存里做漏斗和
+   * 列排序；数据量到百万行时这个前提不成立（整份 JSON 约 700 MB），只能服务端
+   * 分页取数，漏斗与排序随之退化为 SQL 查询。
+   */
+  serverMode?: boolean;
+  /** 服务端模式：内部筛选状态变化时通知调用方重取（含清空）。 */
+  onFiltersChange?: (filters: Partial<Record<string, string[]>>) => void;
+  /** 服务端模式：内部排序状态变化时通知调用方重取（null 表示恢复默认排序）。 */
+  onSortChange?: (sortState: AdvancedDataTableSortState | null) => void;
+  /**
+   * 服务端模式：表头漏斗候选值。缺省时仍按当前 `rows` 去重，那在服务端分页下
+   * 只覆盖当前页，用户会看到「昨天还能选的分类今天不见了」。
+   */
+  serverFilterOptions?: Record<string, {
+    options: string[];
+    counts?: Record<string, number>;
+    titles?: Record<string, string>;
+    searchText?: Record<string, string>;
+  }>;
+  /**
+   * 表头的时间筛选器（双滑块）。开启后在工具栏右侧增加一枚 chip。
+   *
+   * 它是**数据范围**，不是日期列的取值筛选：值只走 `dateRange` / `onDateRangeChange`，
+   * 绝不写进 `filters.date`。写进去的话，用户改一次日期列漏斗就把滑块范围冲掉，
+   * 拖一次滑块又看起来像改了日期列筛选 —— 两个控件互相踩。
+   */
+  showDateRangeFilter?: boolean;
+  /** 受控的时间范围。给了就完全受控（父层负责重取数据），不给则组件内部自管。 */
+  dateRange?: { from: string; to: string };
+  /** 非受控时的初始范围（如「默认只看最近 5 年」）。 */
+  initialDateRange?: { from: string; to: string };
+  /** 时间范围变化：父层据此按范围重取（服务端下推），不是本地筛一行两行。 */
+  onDateRangeChange?: (next: { from: string; to: string }) => void;
+  /**
+   * 时间轴两端。调用方一旦接管（传 `null` 表示「还在取」），就绝不退回用 `rows`
+   * 推导 —— 分页模式下 `rows` 只有当前一页，推导出来的时间轴只有几天。
+   * 完全不传（`undefined`）时才会从当前 `rows` 推导。
+   */
+  dateRangeBounds?: { min: string; max: string } | null;
+  /** 时间轴两端还在取数：chip 照常显示，弹层里提示「正在读取时间轴」。 */
+  dateRangeBoundsLoading?: boolean;
+  /**
+   * 挂载时的初始筛选（如「默认只看最近 5 年」）。
+   *
+   * 只作为 `filters` 的初值注入、不进 effect：曾用 effect 写默认值，父级收到
+   * 筛选后重取 → props 变化 → 组件重挂 → effect 再写一次，直接把页面刷成
+   * 「Maximum update depth exceeded」。初值注入没有这个回头路。
+   */
+  initialFilters?: Partial<Record<string, string[]>>;
 };
 
 // Center a row inside the table viewport without scrolling ancestor containers.
@@ -917,6 +971,17 @@ export function AdvancedDataTable<T>({
   resetDisplayStateOnMount = false,
   scrollToRowKey,
   onRowsFitChange,
+  serverMode = false,
+  onFiltersChange,
+  onSortChange,
+  serverFilterOptions,
+  showDateRangeFilter = false,
+  dateRange,
+  initialDateRange,
+  onDateRangeChange,
+  dateRangeBounds,
+  dateRangeBoundsLoading = false,
+  initialFilters,
 }: AdvancedDataTableProps<T>) {
   const { t } = useI18n();
   const tf = (key: string, values: Record<string, string | number>) => {
@@ -947,7 +1012,11 @@ export function AdvancedDataTable<T>({
   const [transientShownKeys, setTransientShownKeys] = useState<Set<string>>(new Set());
   const [menuOpen, setMenuOpen] = useState(false);
   const [externalColumnMenuAnchor, setExternalColumnMenuAnchor] = useState<ColumnMenuAnchor | null>(null);
-  const [filters, setFilters] = useState<Partial<Record<string, string[]>>>({});
+  const [filters, setFilters] = useState<Partial<Record<string, string[]>>>(() => ({ ...initialFilters }));
+  /** hydration 里要用初值兜底，但初值不能进依赖：调用方传内联对象会让 effect 每渲染重跑。 */
+  const initialFiltersRef = useRef(initialFilters);
+  /** 已经 hydrate 过的 storage key，保证回填只做一次。 */
+  const hydratedDisplayStateKeyRef = useRef<string | null>(null);
   const [activeFilterColumn, setActiveFilterColumn] = useState<string | null>(null);
   const [sortState, setSortState] = useState<AdvancedDataTableSortState | null>(null);
   const [rowHeightMode, setRowHeightMode] = useState<RowHeightMode>(DEFAULT_ROW_HEIGHT_MODE);
@@ -1068,11 +1137,26 @@ export function AdvancedDataTable<T>({
     () => new Set(sortableColumnKeysSignature ? sortableColumnKeysSignature.split("\u001F") : []),
     [sortableColumnKeysSignature],
   );
+  /**
+   * 时间筛选器（工具栏双滑块）落到哪一列：优先主日期列 `date`，否则取第一个
+   * 日期区间列。它只用来读这一列的显示文本（本地模式下裁行），**不再**用这一列
+   * 存范围值 —— 范围值走独立的 `dateRange`。
+   */
+  const dateRangeColumnKey = useMemo(() => {
+    const dateColumns = tableColumns.filter((column) => column.filterKind === "dateRange");
+    return dateColumns.find((column) => column.key === "date")?.key ?? dateColumns[0]?.key ?? null;
+  }, [tableColumns]);
   // 临时列（transient）的显隐不持久化，它的筛选也不能持久化：否则列回到隐藏状态后
   // 筛选仍然生效，用户看不到漏斗图标也取消不掉，表现成「表格里的行莫名少了」。
+  // 同理：开了工具栏时间滑块时，日期列上不再有「取值筛选」的意义，旧存档里那条
+  // （历史版本把滑块范围写进 `filters.date`）必须随读取一起丢掉，否则升级后
+  // 日期列凭空多出一个筛选，而 chip 却显示「全部时间」。
   const persistedFilterKeys = useMemo(
-    () => new Set(Array.from(filterableColumnKeys).filter((key) => !transientColumnKeys.has(key))),
-    [filterableColumnKeys, transientColumnKeys],
+    () => new Set(Array.from(filterableColumnKeys).filter((key) => (
+      !transientColumnKeys.has(key)
+      && !(showDateRangeFilter && key === dateRangeColumnKey)
+    ))),
+    [dateRangeColumnKey, filterableColumnKeys, showDateRangeFilter, transientColumnKeys],
   );
   const filtersStorageKey = `${storageKey}:filters:v2`;
   const sortStorageKey = sortStorageKeyProp ?? `${storageKey}:sort:v1`;
@@ -1119,6 +1203,13 @@ export function AdvancedDataTable<T>({
   }, [resetKey, storageKey]);
 
   useEffect(() => {
+    // 只在首次挂载或 storage key 变化（换账户 / 数据集）时回填一次。调用方的
+    // defaultSort、columns 传内联对象时本 effect 会每渲染重跑，没有这道门的话
+    // 每次渲染都拿初值覆盖 filters：刚点的「全部时间」被瞬间写回，再配上新对象
+    // 触发渲染，就是「Maximum update depth exceeded」+ 页面一直闪。
+    const hydrationKey = `${filtersStorageKey}|${sortStorageKey}|${resetDisplayStateOnMount ? "1" : "0"}`;
+    if (hydratedDisplayStateKeyRef.current === hydrationKey) return;
+    hydratedDisplayStateKeyRef.current = hydrationKey;
     tableDisplayStateHydratedRef.current = false;
     skipNextFiltersWriteRef.current = true;
     skipNextSortWriteRef.current = true;
@@ -1128,10 +1219,15 @@ export function AdvancedDataTable<T>({
       writeJson(sortStorageKey, null);
       writeJson(filtersStorageKey, {});
     } else {
-      const nextFilters = normalizeStoredFilters(
+      const storedFilters = normalizeStoredFilters(
         readJson<Partial<Record<string, string[]>>>(filtersStorageKey, {}),
         persistedFilterKeys,
       );
+      // 没有任何存档筛选时落回调用方给的初值（默认只看最近 5 年）。不这样做，
+      // 这次 hydration 会用空对象把刚注入的默认值直接抹掉，chip 又显示「全部时间」。
+      const nextFilters = Object.keys(storedFilters).length === 0
+        ? normalizeStoredFilters(initialFiltersRef.current ?? {}, persistedFilterKeys)
+        : storedFilters;
       setFilters((prev) => {
         const prevKeys = Object.keys(prev);
         const nextKeys = Object.keys(nextFilters);
@@ -1332,8 +1428,15 @@ export function AdvancedDataTable<T>({
 
   // Async pages can arrive after the first fit measurement. Retry only until
   // the first successful report so normal row changes do not churn page size.
+  //
+  // 例外：上次上报是「外推」的要再复核一次。外推发生在首帧，那时视口可能还是
+  // 「整屏高度」（同页其它面板尚未压缩它），会按大高度估出一个远大于真实容量的
+  // 页数（实测 435px 的视口被报成 40 行）；页大小落地后视口高度不再变化，
+  // ResizeObserver 不会补测，于是一直卡在过大的页数上、表格底部出现滚动条。
+  // 外推后的第一页数据到位时重量一次即可收敛，且 count 相同时 measureRowsFit
+  // 直接早退，不会来回抖动。
   useEffect(() => {
-    if (lastReportedRowsFitRef.current != null) return;
+    if (lastReportedRowsFitRef.current != null && !lastFitWasExtrapolatedRef.current) return;
     measureRowsFit();
   }, [measureRowsFit, rows.length]);
 
@@ -1434,6 +1537,17 @@ export function AdvancedDataTable<T>({
       searchText: undefined as Record<string, string> | undefined,
     };
     if (!activeFilterColumn) return empty;
+    // 服务端模式：候选值来自服务端 distinct（覆盖全量），不再从当前页去重。
+    const serverOptions = serverFilterOptions?.[activeFilterColumn];
+    if (serverOptions) {
+      return {
+        columnKey: activeFilterColumn,
+        options: serverOptions.options,
+        counts: serverOptions.counts,
+        titles: serverOptions.titles,
+        searchText: serverOptions.searchText,
+      };
+    }
     const column = tableColumns.find((item) => item.key === activeFilterColumn);
     if (!column?.filterText) return empty;
     if (column.filterKind === "dateRange" || column.filterKind === "numberRange" || column.filterKind === "text") {
@@ -1472,25 +1586,89 @@ export function AdvancedDataTable<T>({
         Object.entries(searchTextParts).map(([value, parts]) => [value, Array.from(parts).join(" ")]),
       ),
     };
-  }, [activeFilterColumn, filters, rows, showFilters, tableColumns]);
+  }, [activeFilterColumn, filters, rows, serverFilterOptions, showFilters, tableColumns]);
+  /**
+   * 时间筛选器的滑块刻度。
+   *
+   * 只要调用方接管了边界（`dateRangeBounds` 不是 `undefined`，哪怕现在是 `null`
+   * 表示「服务端还没给」），就一律以它为准，绝不退回用 `rows` 推导：分页模式下
+   * `rows` 只有当前一页，推导出来的时间轴只有几天，手感就是「范围被钉死、想选回
+   * 全部却拉不到」—— 这跟 ADT 自己怎么翻页、怎么筛选毫无关系。
+   */
+  const effectiveDateRangeBounds = useMemo(() => {
+    if (dateRangeBounds?.min && dateRangeBounds?.max) return dateRangeBounds;
+    if (dateRangeBounds !== undefined) return null;
+    // 服务端分页下 rows 只有当前一页，据此推导出来的时间轴是一页的跨度（常见表现
+    // 是「共 5 天」），宁可先不给、把 chip 置灰，等 facets 把全量边界送过来。
+    if (serverMode) return null;
+    const dateColumn = tableColumns.find((column) => column.filterKind === "dateRange" && column.filterText);
+    if (!dateColumn?.filterText) return null;
+    let min = "";
+    let max = "";
+    for (const row of rows) {
+      const match = String(dateColumn.filterText(row) ?? "").match(/^\d{4}-\d{2}-\d{2}/);
+      if (!match) continue;
+      const ymd = match[0];
+      if (!min || ymd < min) min = ymd;
+      if (!max || ymd > max) max = ymd;
+    }
+    return min && max && max > min ? { min, max } : null;
+  }, [dateRangeBounds, rows, serverMode, tableColumns]);
+  // 时间范围是独立状态：受控时以父层为准（父层负责按范围重取数据），非受控时内部自管。
+  const [innerDateRange, setInnerDateRange] = useState(() => initialDateRange ?? { from: "", to: "" });
+  const activeDateRange = dateRange ?? innerDateRange;
+  const hasActiveDateRange = !!(activeDateRange.from || activeDateRange.to);
+  const applyDateRange = (next: { from: string; to: string }) => {
+    setInnerDateRange(next);
+    onDateRangeChange?.(next);
+  };
+  /**
+   * 本地模式下先把行裁到时间范围内。
+   *
+   * 服务端模式已经由 SQL 下推，不能再筛一遍（会变成页内二次筛选）；本地模式
+   * （如明细分页视图）在这里生效，同时父层也会按同一范围重取，两处结果一致。
+   */
+  const rowsInDateRange = useMemo(() => {
+    if (!hasActiveDateRange) return rows;
+    const column = tableColumns.find((item) => item.key === dateRangeColumnKey);
+    const readText = column?.filterText;
+    if (!readText) return rows;
+    const { from, to } = activeDateRange;
+    return rows.filter((row) => {
+      const ymd = String(readText(row) ?? "").match(/^\d{4}-\d{2}-\d{2}/)?.[0] ?? "";
+      if (!ymd) return false;
+      if (from && ymd < from) return false;
+      if (to && ymd > to) return false;
+      return true;
+    });
+  }, [activeDateRange, dateRangeColumnKey, hasActiveDateRange, rows, tableColumns]);
   const filteredRows = useMemo(() => {
-    if (!showFilters) return rows;
-    if (filterRows) return filterRows(rows, filters, tableColumns);
+    // 服务端模式：rows 已经是查询结果（范围与列筛选都下推过），本地再筛会变成
+    // 「页内二次筛选」，表现为翻页后筛选结果忽多忽少。
+    if (serverMode) return rows;
+    const scoped = rowsInDateRange;
+    if (!showFilters) return scoped;
+    if (filterRows) return filterRows(scoped, filters, tableColumns);
     const activeFilters = Object.entries(filters).filter(([, values]) => (values?.length ?? 0) > 0);
-    if (activeFilters.length === 0) return rows;
-    return rows.filter((row) => rowMatchesFilters(row, tableColumns, filters));
-  }, [filterRows, filters, rows, showFilters, tableColumns]);
+    if (activeFilters.length === 0) return scoped;
+    return scoped.filter((row) => rowMatchesFilters(row, tableColumns, filters));
+  }, [dateRangeColumnKey, filterRows, filters, rows, rowsInDateRange, serverMode, showFilters, tableColumns]);
 
   useEffect(() => {
     if (!showFilters || filteredRows.length > 0) return;
+    // 范围不同、口径也不同：范围把当前页筛空了不代表列筛选写错了，
+    // 不能顺手把用户的列筛选清掉。
+    if (hasActiveDateRange) return;
     const activeValues = Object.values(filters).filter((values) => (values?.length ?? 0) > 0);
     if (activeValues.length === 0) return;
     if (activeValues.some((values) => values?.includes("__NO_MATCH__"))) return;
     setFilters({});
     setActiveFilterColumn(null);
-  }, [filteredRows.length, filters, rows.length, showFilters]);
+  }, [filteredRows.length, filters, hasActiveDateRange, rows.length, showFilters]);
 
   const orderedRows = useMemo(() => {
+    // 服务端模式：排序键已下推 SQL，全局有序的是整份数据而不是这一页。
+    if (serverMode) return filteredRows;
     if (!sortable || !sortState) return filteredRows;
     if (sortRows) {
       // Returning null/undefined lets this column fall through to the default
@@ -1518,7 +1696,7 @@ export function AdvancedDataTable<T>({
           : sortState.direction === "asc" ? compared : -compared;
       })
       .map((item) => item.row);
-  }, [filteredRows, sortRows, sortState, sortable, tableColumns]);
+  }, [filteredRows, serverMode, sortRows, sortState, sortable, tableColumns]);
   const orderedRowsRef = useRef(orderedRows);
   useEffect(() => {
     const changed = orderedRowsRef.current !== orderedRows;
@@ -1526,6 +1704,26 @@ export function AdvancedDataTable<T>({
     if (!changed) return;
     onDisplayRowsChange?.(orderedRows);
   }, [onDisplayRowsChange, orderedRows]);
+  // 服务端模式：内部筛选 / 排序状态一变就通知调用方按新条件重取。首次渲染只是
+  // 落地初始状态，不该额外发一次请求（RSC 已经把首屏数据带下来了）。
+  const serverFiltersEchoRef = useRef<Partial<Record<string, string[]>> | null>(null);
+  useEffect(() => {
+    if (!serverMode || !onFiltersChange) return;
+    if (serverFiltersEchoRef.current === filters) return;
+    const isFirst = serverFiltersEchoRef.current === null;
+    serverFiltersEchoRef.current = filters;
+    if (isFirst) return;
+    onFiltersChange(filters);
+  }, [filters, onFiltersChange, serverMode]);
+  const serverSortEchoRef = useRef<AdvancedDataTableSortState | null | undefined>(undefined);
+  useEffect(() => {
+    if (!serverMode || !onSortChange) return;
+    if (serverSortEchoRef.current === sortState) return;
+    const isFirst = serverSortEchoRef.current === undefined;
+    serverSortEchoRef.current = sortState;
+    if (isFirst) return;
+    onSortChange(sortState);
+  }, [onSortChange, serverMode, sortState]);
   const hasPagination = paginationPage != null && !!paginationOnPageChange;
   const pageSize = paginationAll ? Math.max(1, orderedRows.length) : paginationPageSize && paginationPageSize > 0 ? paginationPageSize : orderedRows.length || 1;
   const pageCount = paginationAll ? 1 : Math.max(1, Math.ceil(orderedRows.length / pageSize));
@@ -2884,6 +3082,22 @@ export function AdvancedDataTable<T>({
             )}
           </div>
           <div data-advanced-table-toolbar-actions className="flex shrink-0 items-center gap-2">
+            {/*
+              「显示范围」常驻渲染：它的出现时机不能挂在 `effectiveDateRangeBounds` 上，
+              否则时间轴还没到（表格已经画完了）这一格才补出来，工具栏整体右移一下；
+              而且那一刻值看起来像是「ADT 算完才有的」。范围值只来自父层受控 props，
+              这里不读 rows、不读筛选、不读分页。
+            */}
+            {showDateRangeFilter ? (
+              <DateRangeSliderFilter
+                from={activeDateRange.from}
+                to={activeDateRange.to}
+                min={effectiveDateRangeBounds?.min ?? ""}
+                max={effectiveDateRangeBounds?.max ?? ""}
+                boundsLoading={dateRangeBoundsLoading}
+                onChange={applyDateRange}
+              />
+            ) : null}
             {toolbarRightContent}
             {showColumnVisibilityButton ? (
               <div ref={columnMenuRef} className="relative">

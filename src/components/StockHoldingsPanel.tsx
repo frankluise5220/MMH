@@ -9,6 +9,7 @@ import { showBlockingLoading } from "@/lib/client/blocking-loading";
 import { showConfirmDialog } from "@/lib/client/confirm-dialog";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
+import { useRowsFitPageAnchor } from "@/lib/client/use-rows-fit-page-anchor";
 import { ResizableVerticalSplit } from "@/components/ResizableVerticalSplit";
 import { StockFeeRuleSettingsButton } from "@/components/StockFeeRuleSettingsButton";
 import {
@@ -577,12 +578,16 @@ export function StockHoldingsPanel({
   // is on that count becomes the page size (the "自适应" option restores it).
   // 触发时机由表格一侧决定：视图重开 / 重新选自适应（这个回调的 identity 变化）、
   // 行高偏好变化、视口高度变化都会重算；翻页与数据刷新不触发（同 BasicDetailPanel）。
-  const lastFitRowCountRef = useRef<number | null>(null);
-  const handleRowsFitChange = useCallback((rowCount: number) => {
-    lastFitRowCountRef.current = rowCount;
-    if (!detailAutoFit || detailAll) return;
-    setDetailPageSize((prev) => (prev === rowCount ? prev : rowCount));
-  }, [selectedPosition?.stockCode, detailAutoFit, detailAll]);
+  const { onRowsFitChange: handleRowsFitChange, lastFitRowCountRef } = useRowsFitPageAnchor({
+    scopeKey: selectedPosition?.stockCode ?? "",
+    pageSize: detailPageSize,
+    page: detailSafePage,
+    totalCount: detailTableRowCount,
+    enabled: detailAutoFit && !detailAll,
+    anchorPage: !detailAll,
+    setPageSize: setDetailPageSize,
+    setPage: setDetailPage,
+  });
 
   const enableAutoFitDetailRows = useCallback(() => {
     setDetailAutoFit(true);

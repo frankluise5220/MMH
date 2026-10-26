@@ -449,17 +449,7 @@ export function PropertyShell({
     setTransactionRowCount(selectedEntries.length);
   }, [selectedAssetId, selectedEntries.length]);
 
-  // Auto-fit: the table reports how many rows fit the viewport; when auto mode
-  // is on that count becomes the page size (the "自适应" option restores it).
-  // Callback identity changes with the selected asset / autoFit / show-all so
-  // the table re-measures once per view reopen, then stays frozen (same
-  // contract as BasicDetailPanel).
-  const lastFitRowCountRef = useRef<number | null>(null);
-  const handleRowsFitChange = useCallback((rowCount: number) => {
-    lastFitRowCountRef.current = rowCount;
-    if (!transactionAutoFit || transactionPageAll) return;
-    setTransactionPageSize((prev) => (prev === rowCount ? prev : rowCount));
-  }, [selectedAssetId, transactionAutoFit, transactionPageAll]);
+
 
   const enableAutoFitRows = () => {
     setTransactionPageAll(false);
@@ -473,6 +463,20 @@ export function PropertyShell({
   const transactionSafePage = transactionPageAll
     ? 1
     : Math.min(Math.max(1, transactionPage), transactionTotalPages);
+
+  // Auto-fit：表格回报「视口能放几行」，自适应模式下它就是这个页签的页大小；
+  // 页大小一变，页码按原页中间行换算（点「自适应」时用缓存的上次测量值先落地）。
+  // identity 跟资产/开关走，换资产后表格重测一次就冻结。
+  const { onRowsFitChange: handleRowsFitChange, lastFitRowCountRef } = useRowsFitPageAnchor({
+    scopeKey: selectedAssetId ?? "",
+    pageSize: transactionPageSize,
+    page: transactionSafePage,
+    totalCount: transactionRowCount,
+    enabled: transactionAutoFit && !transactionPageAll,
+    anchorPage: !transactionPageAll,
+    setPageSize: setTransactionPageSize,
+    setPage: setTransactionPage,
+  });
 
   function selectPosition(position: PropertyPosition) {
     const assetId = position.propertyAssetId ?? position.fundCode;

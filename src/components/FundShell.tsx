@@ -60,6 +60,7 @@ import { subtypeDisplay } from "@/lib/investment-config";
 import { isFundLikeInvestmentAccount } from "@/lib/account-kind-utils";
 import { TRANSACTION_SOURCE_FUND_UNITS_RECONCILE, isFundUnitsReconcileEntry } from "@/lib/transaction-semantics";
 import { useI18n } from "@/lib/i18n";
+import { useRowsFitPageAnchor } from "@/lib/client/use-rows-fit-page-anchor";
 import { withBasePath } from "@/lib/base-path";
  
 
@@ -2225,12 +2226,16 @@ export function FundShell(props: Props) {
   // is on that count becomes the page size (the "自适应" option restores it).
   // 触发时机由表格一侧决定：视图重开 / 重新选自适应（这个回调的 identity 变化）、
   // 行高偏好变化、视口高度变化都会重算；翻页与数据刷新不触发（同 BasicDetailPanel）。
-  const lastFitRowCountRef = useRef<number | null>(null);
-  const handleRowsFitChange = useCallback((rowCount: number) => {
-    lastFitRowCountRef.current = rowCount;
-    if (!fundAutoFit || fundDetailAll) return;
-    setFundPageSize((prev) => (prev === rowCount ? prev : rowCount));
-  }, [accountId, fundCode, showAllRecords, showCleared, fundAutoFit, fundDetailAll]);
+  const { onRowsFitChange: handleRowsFitChange, lastFitRowCountRef } = useRowsFitPageAnchor({
+    scopeKey: `${accountId}|${fundCode}|${showAllRecords}|${showCleared}`,
+    pageSize: fundPageSize,
+    page: safePage,
+    totalCount: effectiveFundRowCount,
+    enabled: fundAutoFit && !fundDetailAll,
+    anchorPage: !fundDetailAll,
+    setPageSize: setFundPageSize,
+    setPage: setFundPage,
+  });
 
   const enableAutoFitFundRows = useCallback(() => {
     setFundDetailAll(false);
@@ -2238,7 +2243,7 @@ export function FundShell(props: Props) {
     const fitCount = lastFitRowCountRef.current;
     if (fitCount != null && fitCount !== fundPageSize) setFundPageSize(fitCount);
     setFundPage(1);
-  }, [fundPageSize]);
+  }, [fundPageSize, lastFitRowCountRef]);
 
   const showAllFundDetailRows = useCallback(() => {
     setFundDetailAll(true);
@@ -3986,7 +3991,7 @@ export function FundShell(props: Props) {
             </div>
           )}
         </div>
-        <div className="hidden flex-1 min-h-0 pb-10 md:block">
+        <div className="hidden flex-1 min-h-0 md:block">
 
           <AdvancedDataTable
             storageKey="mmh_fund_shell_detail_advanced_table_v1"

@@ -47,6 +47,11 @@ import {
   type RowHeightMode,
   type SidebarGroupMode,
 } from "@/lib/client/appPreferences";
+import {
+  DEFAULT_DETAIL_WINDOW_YEARS,
+  DETAIL_WINDOW_YEAR_OPTIONS,
+  normalizeDetailWindowYears,
+} from "@/lib/preferences";
 import { kindLabel } from "@/lib/account-kinds";
 import { CurrencySmartSelect } from "@/components/CurrencySmartSelect";
 import { useI18n } from "@/lib/i18n";
@@ -174,6 +179,9 @@ export default function DisplaySettingsPage() {
   const [detailDateBackground, setDetailDateBackground] = useState(false);
   const [accountDropdownRestrictType, setAccountDropdownRestrictType] = useState(true);
   const [rowHeightMode, setRowHeightMode] = useState<RowHeightMode>(DEFAULT_ROW_HEIGHT_MODE);
+  // 明细默认观测窗口（年）。0 = 不限；只作用于服务端首次取数，不进 cookie 镜像。
+  const [detailWindowYears, setDetailWindowYears] = useState<number>(DEFAULT_DETAIL_WINDOW_YEARS);
+  const [savingDetailWindowYears, setSavingDetailWindowYears] = useState(false);
   const [savingScheme, setSavingScheme] = useState(false);
   const [savingBaseCurrency, setSavingBaseCurrency] = useState(false);
   const [savingTimeZone, setSavingTimeZone] = useState(false);
@@ -220,6 +228,25 @@ export default function DisplaySettingsPage() {
 
   useEffect(() => {
     void loadBaseCurrency();
+  }, []);
+
+  // 观测窗口只有服务端取数用，没进 cookie 镜像，所以这里读一次真值。
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch("/api/v1/settings/app-preferences", { cache: "no-store" });
+        const data = await res.json();
+        if (!cancelled && data?.ok && data.detailWindowYears != null) {
+          setDetailWindowYears(normalizeDetailWindowYears(data.detailWindowYears));
+        }
+      } catch {
+        // 读不到就先按默认值显示；保存时会写回真值。
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   async function saveScheme(next: ColorScheme) {
@@ -611,6 +638,34 @@ export default function DisplaySettingsPage() {
     }
   }
 
+  async function updateDetailWindowYears(next: number) {
+    const normalized = normalizeDetailWindowYears(next);
+    const prev = detailWindowYears;
+    setDetailWindowYears(normalized);
+    setSavingDetailWindowYears(true);
+    try {
+      const res = await fetch("/api/v1/settings/app-preferences", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ detailWindowYears: normalized }),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        setDetailWindowYears(prev);
+      } else {
+        const saved = normalizeDetailWindowYears(data.detailWindowYears ?? normalized);
+        setDetailWindowYears(saved);
+        // 首屏窗口是 RSC 算的（见 page.tsx 的 initialDetailDateRange），
+        // 不刷这一棵路由就还用着旧窗口。
+        router.refresh();
+      }
+    } catch {
+      setDetailWindowYears(prev);
+    } finally {
+      setSavingDetailWindowYears(false);
+    }
+  }
+
   const accountFormatPreviews = useMemo(
     () =>
       ACCOUNT_FORMAT_PREVIEW_SAMPLES.map((sample) => ({
@@ -758,6 +813,23 @@ export default function DisplaySettingsPage() {
             onCheckedChange={(next) => void updateDetailDateBackground(next)}
             label={t("settings.display.detailDateBackground")}
           />
+        </SettingRow>
+        <SettingRow title={t("settings.display.detailWindow")} desc={t("settings.display.detailWindowDesc")} hideDesc={hideSettingDescriptions}>
+          <select
+            value={String(detailWindowYears)}
+            onChange={(e) => void updateDetailWindowYears(Number(e.target.value))}
+            disabled={savingDetailWindowYears}
+            className="form-input"
+            aria-label={t("settings.display.detailWindow")}
+          >
+            {DETAIL_WINDOW_YEAR_OPTIONS.map((years) => (
+              <option key={years} value={years}>
+                {years === 0
+                  ? t("settings.display.detailWindowAll")
+                  : t("settings.display.detailWindowYears", { years })}
+              </option>
+            ))}
+          </select>
         </SettingRow>
         <SettingRow title={t("settings.display.rowHeight")} desc={t("settings.display.rowHeightDesc")} hideDesc={hideSettingDescriptions}>
           <div className="w-full max-w-md space-y-2">

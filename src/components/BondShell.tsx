@@ -21,6 +21,7 @@ import { useEntryReconcileState } from "@/lib/client/use-entry-reconcile-state";
 import { parseDepositInterestPayout } from "@/lib/deposit-interest-payout";
 import { formatMoney } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
+import { useRowsFitPageAnchor } from "@/lib/client/use-rows-fit-page-anchor";
 
 /**
  * 债券视图。
@@ -190,10 +191,16 @@ export function BondShell({
   const safePage = Math.min(entryPage, totalPages);
 
   // 自适应：表格回报视口能放几行，该行数即页大小（与 BasicDetailPanel 同一契约）。
-  const handleRowsFitChange = useCallback((rowCount: number) => {
-    if (!entryAutoFit || entryAll) return;
-    setEntryPageSize((prev) => (prev === rowCount ? prev : rowCount));
-  }, [entryAutoFit, entryAll]);
+  const { onRowsFitChange: handleRowsFitChange } = useRowsFitPageAnchor({
+    scopeKey: "bond",
+    pageSize: entryPageSize,
+    page: safePage,
+    totalCount: entryRowCount,
+    enabled: entryAutoFit && !entryAll,
+    anchorPage: !entryAll,
+    setPageSize: setEntryPageSize,
+    setPage: setEntryPage,
+  });
 
   const enableAutoFitEntryRows = useCallback(() => {
     setEntryAutoFit(true);

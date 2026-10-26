@@ -45,6 +45,7 @@
  * - cookie session (browser users)
  * - X-Api-Key header (Android client, password verified)
  */
+import { createHash } from "node:crypto";
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { AccountKind, FundCashFlowKind, TransactionType, FundSubtype, IntervalUnit, Prisma, RegularInvestStatus } from "@prisma/client";
@@ -125,7 +126,8 @@ import { txRecordAccountScopeWhere } from "@/lib/transaction-account-scope";
 import { upsertStatementCategoryRuleFromSavedRecord } from "@/lib/statement/category-rules";
 import { upsertStatementInstitutionRuleFromUserEdit } from "@/lib/statement/recognition-rules";
 import { DETAIL_ALL_PAGE_SIZE } from "@/lib/detail-pagination-preference";
-import { locateDetailPage, queryDetailPage } from "@/lib/server/detail-page-query";
+import { locateDetailPage, queryDetailDateBounds, queryDetailFacets, queryDetailPage } from "@/lib/server/detail-page-query";
+import { normalizeDetailFilters, parseDetailDateRange, parseDetailSort } from "@/lib/server/detail-query-filters";
 import { isDepositRedemptionDateAllowed, loadLatestDepositInterestDate } from "@/lib/server/deposit-lot-balance";
 import { ensureDepositPlansForLot } from "@/lib/server/deposit-plan-tasks";
 
@@ -1680,6 +1682,115 @@ async function getFundLinkCandidateEntries(record: {
   return entries.map(mapFundLinkCandidate);
 }
 
+/* ────────────────── ETag：让刷新不再重算整份明细 ────────────────── */
+
+/**
+ * 明细列表数据的版本指纹。
+ *
+ * 刷新页面时浏览器带着 `If-None-Match` 回来：版本没变就 304、直接用本地那份 JSON。
+ * 「全部」一次要传十几 MB，而真正贵的是服务端每次重排逐笔余额 —— 304 把这笔
+ * 开销整个省掉。
+ *
+ * 指纹取「条目数 + 最新 updatedAt + 最新 createdAt + 标签数 + 附件数」：
+ * - 条目数覆盖新增 / 软删除；
+ * - `updatedAt` 覆盖改金额、改日期、改分类、对账钉余额、重排 dayOrder —— 这些
+ *   都走 Prisma 写入，`@updatedAt` 会自动刷新；
+ * - 标签 / 附件是关联表、没有 updatedAt，只能按条数近似。
+ *
+ * 已知盲区（写在这里，免得以后当成缓存 bug 排查）：Tag 改名、附件内容替换。
+ * 这两类改动不改变明细里的数值，容忍度可以接受；要更严就把它们的时间戳也拼进来。
+ */
+function detailEtagOf(parts: Array<string | number | null | undefined>) {
+  return `W/"${createHash("sha256").update(parts.map((part) => String(part ?? "")).join("|")).digest("base64url").slice(0, 40)}"`;
+}
+
+async function detailRowsVersion(accountIds: string[], householdId: string) {
+  if (accountIds.length === 0) return "empty";
+  const entryScope: Prisma.TxRecordWhereInput = {
+    householdId,
+    deletedAt: null,
+    OR: [{ accountId: { in: accountIds } }, { toAccountId: { in: accountIds } }],
+  };
+  const [agg, tagCount, attachmentAgg] = await Promise.all([
+    prisma.txRecord.aggregate({
+      where: entryScope,
+      _count: { _all: true },
+      _max: { updatedAt: true, createdAt: true },
+    }),
+    prisma.entryTag.count({ where: { transactions: entryScope } }),
+    prisma.attachment.aggregate({
+      where: { transactions: entryScope },
+      _count: { _all: true },
+      _max: { updatedAt: true },
+    }),
+  ]);
+  return [
+    agg._count._all,
+    agg._max.updatedAt?.toISOString() ?? "",
+    agg._max.createdAt?.toISOString() ?? "",
+    tagCount,
+    attachmentAgg._count._all,
+    attachmentAgg._max.updatedAt?.toISOString() ?? "",
+  ].join("|");
+}
+
+/** 统一的缓存头。`private`：明细是私有数据，中间层不得缓存。 */
+function detailCacheHeaders(etag: string) {
+  return {
+    ETag: etag,
+    // 每次都回源校验（不发 body 的前提是没变），避免刚记完账刷新看到旧数。
+    "Cache-Control": "private, max-age=0, must-revalidate",
+    Vary: "Cookie, Accept-Language",
+  };
+}
+
+function detailNotModifiedResponse(etag: string) {
+  return new NextResponse(null, { status: 304, headers: detailCacheHeaders(etag) });
+}
+
+function detailCacheResponse(req: Request, etag: string, body: () => NextResponse) {
+  if ((req.headers.get("if-none-match") ?? "") === etag) {
+    return detailNotModifiedResponse(etag);
+  }
+  const response = body();
+  Object.entries(detailCacheHeaders(etag)).forEach(([key, value]) => response.headers.set(key, value));
+  return response;
+}
+
+/**
+ * 列表响应的 ETag。
+ *
+ * 必须能在**跑分页查询之前**算出来：否则刷新「全部」时每个分块（5000 行、
+ * 十几 MB）都要先整份 SQL 重算一遍才回 304 —— 传输省了、CPU 一点没省，
+ * 用户看到的仍然是 6 个请求串行各等一两秒。
+ *
+ * 指纹只由「数据版本 + 请求参数」决定，不掺 `totalCount`：条目数增减已经
+ * 体现在 `detailRowsVersion` 的计数里，掺进来只会让提前判定与最终响应
+ * 两处的 etag 无法一致。
+ */
+async function detailListEtag(parts: {
+  accountIds: string[];
+  householdId: string;
+  accountId: string;
+  page: number;
+  pageSize: number;
+  sortAccountId?: string;
+  sort: string;
+  filters: unknown;
+  dateRange: { from?: string | null; to?: string | null } | null;
+}) {
+  return detailEtagOf([
+    await detailRowsVersion(parts.accountIds, parts.householdId),
+    parts.accountId,
+    String(parts.page),
+    String(parts.pageSize),
+    parts.sortAccountId ?? "",
+    parts.sort,
+    JSON.stringify(parts.filters),
+    `${parts.dateRange?.from ?? ""}~${parts.dateRange?.to ?? ""}`,
+  ]);
+}
+
 /* ────────────────── GET ────────────────── */
 
 export async function GET(req: Request) {
@@ -1688,6 +1799,22 @@ export async function GET(req: Request) {
   const entryId = (url.searchParams.get("id") ?? "").trim();
   const page = Math.max(1, parseInt(url.searchParams.get("page") ?? "1", 10) || 1);
   const pageSize = Math.min(Math.max(1, parseInt(url.searchParams.get("pageSize") ?? "20", 10) || 20), DETAIL_ALL_PAGE_SIZE);
+  // 表头漏斗 / 列排序下推：`filters` 是 JSON，`sort` 是 `key:asc|desc`。
+  // 两者都只认白名单 key（见 detail-query-filters），非法输入静默丢弃。
+  const detailFilters = (() => {
+    const raw = url.searchParams.get("filters");
+    if (!raw) return {};
+    try {
+      return normalizeDetailFilters(JSON.parse(raw));
+    } catch {
+      return {};
+    }
+  })();
+  const detailSort = parseDetailSort(url.searchParams.get("sort"));
+  // 工具栏「时间范围」双滑块 = 数据范围（`range=from~to`），与 `filters.date`
+  // （日期列的取值筛选）互不影响：范围先裁数据集，列筛选在范围之内再挑。
+  const detailDateRange = parseDetailDateRange(url.searchParams.get("range"));
+  const wantsFacets = url.searchParams.get("facets") === "1";
 
   try {
     const { hidFilter } = await getApiHouseholdScope(req);
@@ -1929,6 +2056,8 @@ export async function GET(req: Request) {
         dateYmd: locateDateParam,
         pageSize,
         sortAccountId,
+        filters: detailFilters,
+        dateRange: detailDateRange,
       });
       return NextResponse.json({
         ok: true,
@@ -1944,6 +2073,62 @@ export async function GET(req: Request) {
       });
     }
 
+    // 只要时间轴两端（双滑块）。与筛选、范围都无关：滑轨代表「这份数据最早/最晚
+    // 到哪天」，受范围或日期筛选影响就会缩成刚选的那段，再也拖不回去。
+    if (url.searchParams.get("bounds") === "1") {
+      const bounds = await queryDetailDateBounds({
+        accountIds: normalizedListAccountIds,
+        householdId: hidFilter.householdId ?? "",
+      });
+      return NextResponse.json({
+        ok: true,
+        data: {
+          accountId: allCashScope ? ALL_CASH_DETAIL_SCOPE_ID : account!.id,
+          dateBounds: bounds,
+        },
+      });
+    }
+
+    // 表头漏斗候选值（服务端 distinct）。只返回候选值，不重复算总数：调用方
+    // 与分页请求并行发出，两边的筛选口径一致（同一个 `detailFilters`）。
+    if (wantsFacets) {
+      const facetResult = await queryDetailFacets({
+        accountIds: normalizedListAccountIds,
+        householdId: hidFilter.householdId ?? "",
+        sortAccountId,
+        filters: detailFilters,
+        dateRange: detailDateRange,
+      });
+      return NextResponse.json({
+        ok: true,
+        data: {
+          accountId: allCashScope ? ALL_CASH_DETAIL_SCOPE_ID : account!.id,
+          facets: facetResult.facets,
+          dateBounds: facetResult.dateBounds,
+        },
+      });
+    }
+
+    // 提前 304：只算数据版本，不跑分页查询。刷新「全部」时浏览器会并发回校验
+    // 6 个分块，命中 304 就应该是「几十毫秒返回」，而不是每个分块先把整份
+    // 余额 + 关联明细重算一遍再丢掉。
+    // 放在 bounds / facets / locateDate 之后：那三种请求的 body 形状不同，
+    // 不能让它们共用列表的 ETag。
+    const listEtag = await detailListEtag({
+      accountIds: normalizedListAccountIds,
+      householdId: hidFilter.householdId ?? "",
+      accountId,
+      page,
+      pageSize,
+      sortAccountId,
+      sort: url.searchParams.get("sort") ?? "",
+      filters: detailFilters,
+      dateRange: detailDateRange,
+    });
+    if ((req.headers.get("if-none-match") ?? "") === listEtag) {
+      return detailNotModifiedResponse(listEtag);
+    }
+
     const pageData = await queryDetailPage({
       accountIds: normalizedListAccountIds,
       householdId: hidFilter.householdId ?? "",
@@ -1951,6 +2136,9 @@ export async function GET(req: Request) {
       pageSize,
       sortAccountId,
       includeRunningBalances: !allCashScope,
+      filters: detailFilters,
+      dateRange: detailDateRange,
+      sort: detailSort,
     });
     const pageRows = pageData.pageIds.length > 0
       ? await prisma.txRecord.findMany({
@@ -2096,7 +2284,10 @@ export async function GET(req: Request) {
     });
     const accountDisplayBalance = await accountDisplayBalancePromise;
 
-    return NextResponse.json({
+    // 列表响应带 ETag：同一账户 + 同一范围/筛选/排序/页码，数据没变就回 304，
+    // 浏览器直接拿本地那份（「全部」一次十几 MB，省下的是整份 SQL 重算 + 传输）。
+    // ETag 已在上面（跑分页查询之前）算好，这里直接复用，两处口径必须完全相同。
+    return detailCacheResponse(req, listEtag, () => NextResponse.json({
       ok: true,
       data: {
         accountId: allCashScope ? ALL_CASH_DETAIL_SCOPE_ID : account!.id,
@@ -2106,7 +2297,7 @@ export async function GET(req: Request) {
         pageSize,
         entries: entries.map(pickListEntryFields),
       },
-    });
+    }));
   } catch (err) {
     console.error("GET /api/v1/transactions/detail error:", err);
     return NextResponse.json({ ok: false, code: "INTERNAL_ERROR", error: "服务器错误" }, { status: 500 });

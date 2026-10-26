@@ -10,6 +10,7 @@ import type { BatchReplaceField } from "@/lib/client/batchReplaceEntries";
 import { withoutBasePath } from "@/lib/base-path";
 import { CREDIT_BILL_DETAIL_SELECTION_EVENT, type CreditBillDetailSelectionDetail } from "@/lib/client/creditBillDetailSelection";
 import { useI18n } from "@/lib/i18n";
+import { useRowsFitPageAnchor } from "@/lib/client/use-rows-fit-page-anchor";
 import { FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
 import {
   DETAIL_PAGE_SIZE_OPTIONS,
@@ -244,12 +245,16 @@ export function CreditBillDetailPanel({
   // Callback identity changes with the scope / autoFit / detailAll so the table
   // re-measures once per view reopen, then stays frozen (same contract as
   // BasicDetailPanel).
-  const lastFitRowCountRef = useRef<number | null>(null);
-  const handleRowsFitChange = useCallback((rowCount: number) => {
-    lastFitRowCountRef.current = rowCount;
-    if (!autoFit || detailAll) return;
-    setPageSize((prev) => (prev === rowCount ? prev : rowCount));
-  }, [propScopeKey, autoFit, detailAll]);
+  const { onRowsFitChange: handleRowsFitChange, lastFitRowCountRef } = useRowsFitPageAnchor({
+    scopeKey: propScopeKey,
+    pageSize,
+    page: safePage,
+    totalCount: localEntries.length,
+    enabled: autoFit && !detailAll,
+    anchorPage: !detailAll,
+    setPageSize,
+    setPage,
+  });
 
   const enableAutoFitRows = () => {
     setDetailAll(false);

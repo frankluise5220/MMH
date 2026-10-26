@@ -33,6 +33,9 @@ export const DEFAULT_FUND_UNITS_DECIMALS = 2;
 export const DEFAULT_DISPLAY_LANGUAGE: DisplayLanguage = "zh-CN";
 export const DEFAULT_COLOR_SCHEME: ColorScheme = "red_up_green_down";
 export const DEFAULT_CREDIT_CARD_LABEL_MODE: CreditCardLabelMode = "short_last4";
+/** 明细默认观测窗口（年）；0 = 不限，「全部」就真的是全部时间。 */
+export const DEFAULT_DETAIL_WINDOW_YEARS = 5;
+export const DETAIL_WINDOW_YEAR_OPTIONS = [1, 2, 3, 5, 10, 0] as const;
 
 /** DB 行形状（全部可空，便于兼容老数据与手写迁移）。 */
 export type PreferenceRow = {
@@ -56,6 +59,7 @@ export type PreferenceRow = {
   sidebarShowAllCashEntries?: boolean | null;
   sidebarShowReimbursements?: boolean | null;
   detailDateBackground?: boolean | null;
+  detailWindowYears?: number | null;
   rowHeightMode?: number | string | null;
   accountLabelFields?: string | null;
   accountDropdownRestrictType?: boolean | null;
@@ -82,6 +86,7 @@ export type AppPreferences = {
   sidebarShowAllCashEntries: boolean;
   sidebarShowReimbursements: boolean;
   detailDateBackground: boolean;
+  detailWindowYears: number;
   rowHeightMode: RowHeightMode;
   accountLabelFields: AccountLabelField[];
   accountDropdownRestrictType: boolean;
@@ -97,6 +102,19 @@ export function normalizeFundUnitsDecimals(input: unknown): number {
   const n = Number(input);
   if (!Number.isFinite(n)) return DEFAULT_FUND_UNITS_DECIMALS;
   return Math.min(Math.max(Math.round(n), 0), 6);
+}
+
+/**
+ * 明细观测窗口年数：0 = 不限，其余落在 1–30 年。
+ *
+ * 这个值直接进 SQL 的日期下界，非法值必须回退到默认 5 年，不能原样透传。
+ */
+export function normalizeDetailWindowYears(input: unknown): number {
+  const n = Number(input);
+  if (!Number.isFinite(n)) return DEFAULT_DETAIL_WINDOW_YEARS;
+  const rounded = Math.round(n);
+  if (rounded <= 0) return 0;
+  return Math.min(rounded, 30);
 }
 
 export function normalizeBoolean(input: unknown, fallback: boolean): boolean {
@@ -179,6 +197,7 @@ export function preferencesFromRow(row: PreferenceRow | null | undefined): AppPr
     sidebarShowAllCashEntries: normalizeBoolean(row?.sidebarShowAllCashEntries, true),
     sidebarShowReimbursements: normalizeBoolean(row?.sidebarShowReimbursements, true),
     detailDateBackground: normalizeBoolean(row?.detailDateBackground, false),
+    detailWindowYears: normalizeDetailWindowYears(row?.detailWindowYears ?? DEFAULT_DETAIL_WINDOW_YEARS),
     rowHeightMode: normalizeRowHeightMode(row?.rowHeightMode ?? DEFAULT_ROW_HEIGHT_MODE),
     accountLabelFields: row?.accountLabelFields
       ? parseAccountLabelFields(row.accountLabelFields)

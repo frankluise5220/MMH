@@ -675,6 +675,17 @@ export function DetailViewClient({
   batchExtraActions,
   reconcileEnabled = false,
   reconcileContextAccountId,
+  serverMode = false,
+  onServerFiltersChange,
+  onServerSortChange,
+  serverFilterOptions,
+  showDateRangeFilter = false,
+  dateRange,
+  onDateRangeChange,
+  dateRangeBounds,
+  dateRangeBoundsLoading = false,
+  detailQueryRange,
+  initialFilters,
 }: {
   accountId: string;
   isInvestAccount: boolean;
@@ -710,6 +721,32 @@ export function DetailViewClient({
   sortable?: boolean;
   onDisplayRowsChange?: (rows: DetailEntry[]) => void;
   onRowsFitChange?: (rows: number) => void;
+  /** 服务端模式：筛选/排序已下推 SQL，本地不再全量过滤（百万行明细）。 */
+  serverMode?: boolean;
+  onServerFiltersChange?: (filters: Partial<Record<string, string[]>>) => void;
+  onServerSortChange?: (sortState: { key: string; direction: "asc" | "desc" } | null) => void;
+  serverFilterOptions?: Record<string, {
+    options: string[];
+    counts?: Record<string, number>;
+    titles?: Record<string, string>;
+    searchText?: Record<string, string>;
+  }>;
+  /** 表头时间筛选器（双滑块）。它是数据范围，独立于 `filters.date`。 */
+  showDateRangeFilter?: boolean;
+  /** 受控的时间范围（父层持有并负责按范围重取）。 */
+  dateRange?: { from: string; to: string };
+  onDateRangeChange?: (next: { from: string; to: string }) => void;
+  /**
+   * 当前生效的时间范围（`from~to`）。finance:changed 后的自动重取要带上它，
+   * 否则一次入账事件就会把页面换回范围外的数据。
+   */
+  detailQueryRange?: string;
+  /** 时间轴两端；由 `bounds=1` 接口给出全量边界（与筛选、范围都无关）。 */
+  dateRangeBounds?: { min: string; max: string } | null;
+  /** 时间轴两端还在取数（chip 照常显示，弹层提示读取中）。 */
+  dateRangeBoundsLoading?: boolean;
+  /** 挂载时的初始筛选（默认只看最近 5 年），仅作初值，不进 effect。 */
+  initialFilters?: Partial<Record<string, string[]>>;
   /** Extra batch actions rendered next to the built-in replace/delete buttons.
    * Receives the exact rows the table is rendering, so selection keys always
    * resolve against the same array the user sees. */
@@ -809,51 +846,60 @@ export function DetailViewClient({
     }
     return accountId;
   }, [accountId, accountColumnScopeIds]);
-  /**
-   * 金额口径：全部交易记录按「流出方」显示 —— 有对手方（转账 / 投资买卖 / 赎回）恒为负，
-   * 普通收支没有对手方，保持记录原符号。其它视图沿用账户视角金额。
-   * 账户列、关联账户列和金额必须同口径，否则会出现「账户是存款账户、金额却是流入」
-   * 的矛盾（2026-10-23 报障：存款利息转入）。
-   */
-  const detailFlowAmountOf = useCallback((entry: DetailEntry) => {
-    if (isAllCashDetailScope(accountId)) {
-      const amount = toNumber(entry.amount);
-      return entry.toAccountId ? -Math.abs(amount) : amount;
-    }
-    return effectiveAmountForAccount(entry, flowAccountIdOf(entry));
-  }, [accountId, flowAccountIdOf]);
   const accountColumnScopeIdList = useMemo(
     () => Array.from(accountColumnScopeIds),
     [accountColumnScopeIds],
   );
   /**
-   * 全部交易记录里这一行的「流出方」：账户列显示它，金额按它取负，收入方进关联账户列。
-   * 存款 / 基金 / 往来款等非资金账户恒为流出方（利息转出、赎回、收回借款）；
-   * 两侧都是资金账户时（普通转账、换汇），金额为负的一侧（accountId）才是付款方。
+   * 全部交易记录里这一行以哪一侧作为「本行账户」：账户列显示它，金额按它的视角算，
+   * 另一侧进「关联账户」列。
+   *
+   * 规则（2026-10-26 用户口径）：**只要一方是资金账户，资金账户就在前**。
+   * - 转出方是往来款 / 贷款、转入方是借记卡（收回借款、放款到账）：账户列是借记卡，
+   *   往来款退到「关联账户」——不能因为"钱是从往来款出去的"就把往来款摆在账户列。
+   * - 两侧都是资金账户（普通转账、换汇）：付款方（金额为负的一侧）为账户列；
+   *   换汇的正向行由转入方承担。
+   * - 两侧都不是资金账户（基金 → 存款利息）：沿用原规则，以 `accountId` 为本行账户。
    */
-  const outflowAccountTarget = useCallback((entry: DetailEntry) => {
+  const primaryAccountTarget = useCallback((entry: DetailEntry) => {
     const accountIsCash = !!entry.accountId && accountColumnScopeIds.has(entry.accountId);
     const toIsCash = !!entry.toAccountId && accountColumnScopeIds.has(entry.toAccountId);
+    if (toIsCash && !accountIsCash) {
+      return { id: entry.toAccountId, name: entry.toAccountName };
+    }
     if (entry.toAccountId && accountIsCash && toIsCash && toNumber(entry.amount) >= 0) {
       return { id: entry.toAccountId, name: entry.toAccountName };
     }
     return { id: entry.accountId, name: entry.accountName };
   }, [accountColumnScopeIds]);
   /**
+   * 金额口径：按「本行账户」（`outflowAccountTarget`）的视角算流入 / 流出。
+   *
+   * 以前全部交易记录一律「有对手方就取负」，于是资金账户在转入方时会出现
+   * 「账户是借记卡、金额却是流出」的矛盾；账户列、关联账户列、金额三处必须同口径。
+   * 其它视图沿用账户视角金额（不变）。
+   */
+  const detailFlowAmountOf = useCallback((entry: DetailEntry) => {
+    if (isAllCashDetailScope(accountId)) {
+      return effectiveAmountForAccount(entry, primaryAccountTarget(entry).id);
+    }
+    return effectiveAmountForAccount(entry, flowAccountIdOf(entry));
+  }, [accountId, flowAccountIdOf, primaryAccountTarget]);
+  /**
    * 明细「账户」列属于哪一侧。
-   * - 全部交易记录：流出方（见 `outflowAccountTarget`）。
+   * - 全部交易记录：资金账户那一侧（见 `primaryAccountTarget`）。
    * - 单账户明细（含信用卡账单）：当前账户就是本行账户（转入行也要认作当前账户）。
    */
   const entryViewAccountTarget = useCallback((entry: DetailEntry) => {
     if (isAllCashDetailScope(accountId) && accountColumnScopeIds.size > 0) {
-      return outflowAccountTarget(entry);
+      return primaryAccountTarget(entry);
     }
     if (accountId && accountColumnScopeIds.has(accountId)) {
       if (entry.accountId === accountId) return { id: entry.accountId, name: entry.accountName };
       if (entry.toAccountId === accountId) return { id: accountId, name: entry.toAccountName };
     }
     return { id: entry.accountId, name: entry.accountName };
-  }, [accountColumnScopeIds, accountId, outflowAccountTarget]);
+  }, [accountColumnScopeIds, accountId, primaryAccountTarget]);
   /**
    * 「关联账户」= 账户列的另一侧：全部交易记录里通常是收入方 `toAccount`，
    * 换汇等反向行则是 `accountId`。旧逻辑按 scope 推断方向，而首页把全部资金
@@ -1419,6 +1465,8 @@ export function DetailViewClient({
         page: String(detailPage),
         pageSize: String(pageSize),
       });
+      // 自动重取也要落在同一个时间范围里，否则一次入账事件就把范围外的行换回来。
+      if (detailQueryRange) params.set("range", detailQueryRange);
       fetch(`/api/v1/transactions/detail?${params.toString()}`, { cache: "no-store" })
         .then((r) => r.json())
         .then((data) => {
@@ -1432,7 +1480,7 @@ export function DetailViewClient({
     };
     window.addEventListener(FINANCE_DATA_CHANGED_EVENT, handler);
     return () => window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, handler);
-  }, [accountColumnScopeIds, accountId, entries, refreshOnGlobalEvent, selectedAccountKind, setSelection, t]);
+  }, [accountColumnScopeIds, accountId, detailQueryRange, entries, refreshOnGlobalEvent, selectedAccountKind, setSelection, t]);
 
   const columns = useMemo<AdvancedDataTableColumn<DetailEntry>[]>(() => [
     {
@@ -1891,6 +1939,16 @@ export function DetailViewClient({
       resetKey={tableResetKey}
       columns={columns}
       rows={entries}
+      serverMode={serverMode}
+      onFiltersChange={onServerFiltersChange}
+      onSortChange={onServerSortChange}
+      serverFilterOptions={serverFilterOptions}
+      showDateRangeFilter={showDateRangeFilter}
+      dateRange={dateRange}
+      onDateRangeChange={onDateRangeChange}
+      dateRangeBounds={dateRangeBounds}
+      dateRangeBoundsLoading={dateRangeBoundsLoading}
+      initialFilters={initialFilters}
       rowKey={(entry) => entry.id}
       minTableWidth={1160}
       emptyText={resolvedEmptyText}

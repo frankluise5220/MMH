@@ -8,6 +8,7 @@ import {
   normalizeBoolean,
   normalizeColorScheme,
   normalizeCreditCardLabelMode,
+  normalizeDetailWindowYears,
   normalizeDisplayLanguage,
   normalizeFundUnitsDecimals,
   normalizeSessionDays,
@@ -116,6 +117,7 @@ export async function PUT(req: NextRequest) {
       patch.sidebarShowReimbursements = normalizeBoolean(body.sidebarShowReimbursements, true);
     }
     if (has("detailDateBackground")) patch.detailDateBackground = normalizeBoolean(body.detailDateBackground, false);
+    if (has("detailWindowYears")) patch.detailWindowYears = normalizeDetailWindowYears(body.detailWindowYears);
     if (has("rowHeightMode")) patch.rowHeightMode = normalizeRowHeightMode(body.rowHeightMode);
     if (has("accountLabelFields")) {
       patch.accountLabelFields = normalizeAccountLabelFieldsSetting(body.accountLabelFields);

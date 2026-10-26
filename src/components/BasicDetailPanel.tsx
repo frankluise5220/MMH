@@ -4,12 +4,12 @@ import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties }
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { X } from "lucide-react";
-import { BasicDetailBatchDeleteMessage, BasicDetailReimbursementButton, BasicDetailSelectionProvider } from "@/components/BasicDetailSelection";
+import { BasicDetailBatchDeleteMessage, BasicDetailSelectionProvider } from "@/components/BasicDetailSelection";
 import type { BasicDetailBatchCategoryOption } from "@/components/BasicDetailSelection";
 import { DebitBalanceReconcileButton } from "@/components/DebitBalanceReconcileButton";
 import { DetailTablePaginationControls } from "@/components/DetailTablePaginationControls";
 import { DetailViewClient, type DetailEntry } from "@/components/DetailViewClient";
-import { removeEntriesAndUpdateRunningBalances } from "@/lib/detail-running-balance";
+import { foldRunningBalancesInDescOrder, removeEntriesAndUpdateRunningBalances } from "@/lib/detail-running-balance";
 import { ViewExcelImportMenuButton } from "@/components/ViewExcelImportMenuButton";
 import { FINANCE_DATA_CHANGED_EVENT, type FinanceDataChangedDetail } from "@/lib/client/refresh";
 import { formatDateUtc, todayDateBusinessYmd } from "@/lib/date-utils";
@@ -22,9 +22,67 @@ import {
   readStoredDetailPreference,
   writeStoredDetailPreference,
 } from "@/lib/detail-pagination-preference";
-import { isAbortError, loadAllDetailEntries } from "@/lib/client/detail-all-entries";
+import { isAbortError } from "@/lib/client/detail-all-entries";
+import {
+  detailAllCacheKey,
+  detailRangeCovers,
+  dropDetailAllCache,
+  ensureDetailAll,
+  filterEntriesByRange,
+  invalidateDetailAll,
+  peekDetailAll,
+  subscribeDetailAll,
+  type DetailAllSnapshot,
+} from "@/lib/client/detail-all-store";
 import { useI18n } from "@/lib/i18n";
-import { isAllCashDetailScope } from "@/lib/all-cash-entries";
+import { useRowsFitPageAnchor } from "@/lib/client/use-rows-fit-page-anchor";
+import { ALL_CASH_DETAIL_SCOPE_ID, isAllCashDetailScope } from "@/lib/all-cash-entries";
+
+/** 一页明细分页请求的结果：只保留渲染真正需要的两样。 */
+type DetailPagePayload = {
+  entries: DetailEntry[];
+  totalCount: number | null;
+};
+
+/**
+ * 取一页明细（`/api/v1/transactions/detail`）。
+ *
+ * 分页取数与下一页预取共用同一段解析：两边各写一份，迟早一边忘了读 `totalCount`，
+ * 表现就是翻页后「共 N 条」忽然变回当前页行数。
+ */
+async function loadDetailPagePayload(
+  url: string,
+  signal: AbortSignal | undefined,
+  errorMessage: string,
+): Promise<DetailPagePayload> {
+  const response = await fetch(url, { signal });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || !payload?.ok) throw new Error(payload?.error ?? errorMessage);
+  const entries = Array.isArray(payload.data?.entries) ? (payload.data.entries as DetailEntry[]) : [];
+  const totalCount = Number(payload.data?.totalCount);
+  return { entries, totalCount: Number.isFinite(totalCount) ? totalCount : null };
+}
+
+/**
+ * 缓存是不是已经把「当前时间窗口」这份数据取全了。
+ *
+ * 两层判断，缺一不可：
+ * 1. 缓存是按哪个范围拉的 —— 按「最近 5 年」拉完的缓存，遇到「最近 10 年」的窗口
+ *    依然不够（`detailRangeCovers`）。
+ * 2. 那次加载本身跑完了没有 —— 没跑完时，缓存从最新往回拉，所以只要已加载到的最旧
+ *    一天不晚于窗口起点，窗口内的行就已经齐了。
+ */
+function detailCacheCoversWindow<T extends { date?: string | null }>(
+  snapshot: DetailAllSnapshot<T>,
+  range: string | undefined,
+): boolean {
+  if (!detailRangeCovers(snapshot.range, range)) return false;
+  if (snapshot.done) return true;
+  const from = String(range ?? "").split("~")[0]?.trim() ?? "";
+  if (!from) return false;
+  const oldest = String(snapshot.entries[snapshot.entries.length - 1]?.date ?? "").slice(0, 10);
+  return !!oldest && oldest <= from;
+}
 
 type BasicDetailPanelProps = {
   accountId: string;
@@ -35,6 +93,12 @@ type BasicDetailPanelProps = {
   hasDetailFilters: boolean;
   initialPage: number;
   initialPageSize: number;
+  /**
+   * 「显示范围」的初值（服务端已经按它查了这一页）。必须由 RSC 传进来：默认的
+   * 近 5 年窗口要同时作用在首屏行、`共 N 条`、页码总数上，客户端自己算一个范围
+   * 去重取的话，表头会先闪一遍全量数字。
+   */
+  initialDateRange?: { from: string; to: string };
   initialDetailAll: boolean;
   initialAutoFit?: boolean;
   normalExportFilename: string;
@@ -75,14 +139,19 @@ type BasicDetailPanelProps = {
   sortable?: boolean;
   showPagination?: boolean;
   scopeAccountIds?: string[];
+  /**
+   * 该账户属于「全部收支」的账户集合（现金 / 借记卡 / 电子钱包 / 信用卡）。
+   *
+   * 为 true 时行数据不再单独拉一份：直接复用 `__all_cash__` 那份缓存，
+   * 本地筛出本账户的行并补算余额。
+   */
+  deriveFromAllCashCache?: boolean;
   accountKind?: string | null;
   accountName?: string;
   accountLabel?: string;
   currentBalance?: number;
   focusEntryId?: string;
   showGuideOverlay?: boolean;
-  /** Advance accounts whose counterparty is flagged as reimbursable (gates the toolbar entry). */
-  reimbursementAllowedAdvanceAccountIds?: string[];
 };
 
 function detailPaginationFetchKey(accountId: string, pageSize: number, detailAll: boolean, detailPage: number) {
@@ -144,6 +213,23 @@ type GuideBoxStyle = CSSProperties & {
 
 const GUIDE_TOOLTIP_WIDTH = 268;
 const GUIDE_TOOLTIP_GAP = 8;
+
+/**
+ * 「全部」= 整份拉到本地，**不再按数据量切换成服务端分页**。
+ *
+ * 曾经有一条 2 万行的阈值：超过就切成「每页自适应」的分页浏览（表头还写着「全部」）。
+ * 结果只要在「全部」里动一次时间轴、总量跨过阈值，表格就从「一屏滚动看全部」变回
+ * 自适应的二三十行 —— 表头说全部、实际是分页，用户会认为「全部」失效了。
+ *
+ * 现在把语义定死：选中「全部」就一直是一屏滚动的全部（虚拟滚动 + 分块加载，加载
+ * 期间照样能滚）。代价是大范围要等分块取完（有进度提示），这比「悄悄变成另一种
+ * 模式」可预期得多。
+ *
+ * 服务端分页那一整套（`serverPagedAll` 分支、filters/sort 下推、facets）保留着不用：
+ * 数据规模真的到几十万行时，唯一可行的仍然是分页 + 下推，届时把下面这条阈值恢复
+ * 成 `detailAll && localTotalCount > THRESHOLD` 即可。
+ */
+// const SERVER_PAGED_ALL_THRESHOLD = 20000;
 
 function visibleGuideRect(element: Element | null, rootRect: DOMRect): GuideRect | null {
   if (!(element instanceof HTMLElement)) return null;
@@ -291,6 +377,7 @@ export function BasicDetailPanel({
   hasDetailFilters,
   initialPage,
   initialPageSize,
+  initialDateRange,
   initialDetailAll,
   initialAutoFit = true,
   normalExportFilename,
@@ -312,13 +399,13 @@ export function BasicDetailPanel({
   sortable = true,
   showPagination = true,
   scopeAccountIds,
+  deriveFromAllCashCache = false,
   accountKind = null,
   accountName = "",
   accountLabel = "",
   currentBalance = 0,
   focusEntryId,
   showGuideOverlay = false,
-  reimbursementAllowedAdvanceAccountIds,
 }: BasicDetailPanelProps) {
   const router = useRouter();
   const { t } = useI18n();
@@ -339,11 +426,56 @@ export function BasicDetailPanel({
   const panelRef = useRef<HTMLDivElement>(null);
 
   const totalPages = Math.max(1, Math.ceil(localTotalCount / pageSize));
+  // 「全部」超过阈值后走服务端分页：detailAll 的产品语义不变（就是要看全部），
+  // 但数据改成按页取，漏斗与排序下推 SQL（见 detail-query-filters）。
+  // 只在没有 RSC 侧筛选时启用，避免和 URL 筛选两套口径打架。
+  const [serverSort, setServerSort] = useState<{ key: string; direction: "asc" | "desc" } | null>(null);
+  const [serverFacets, setServerFacets] = useState<Record<string, Array<{ value: string; count: number }>> | null>(null);
+  /** 「显示范围」滑轨两端（全量数据的最早/最晚一天）。 */
+  const [serverDateBounds, setServerDateBounds] = useState<{ min: string; max: string } | null>(null);
+  /** 时间轴两端还在取数：弹层里提示「正在读取时间轴」，chip 本身照常显示。 */
+  const [serverDateBoundsLoading, setServerDateBoundsLoading] = useState(true);
+  // 恒为 false：见 SERVER_PAGED_ALL_THRESHOLD 的说明 —— 「全部」始终整份拉到本地，
+  // 不再因为时间轴把总量推过阈值就偷偷切成「每页自适应」的分页浏览。
+  //
+  // 为什么不按「进入全部那一刻的总量」做快照：快照同样会撞上同一个矛盾 —— 默认
+  // 窗口（2.1 万行）点「全部」得到的是分页浏览，表头却写着「全部」。
+  const serverPagedAll = false;
+  const [serverFilters, setServerFilters] = useState<Partial<Record<string, string[]>>>({});
+  const serverFilterKey = JSON.stringify(serverFilters);
+  /**
+   * 显示范围（工具栏双滑块）。变化即按范围重取，与日期列筛选无关（走独立的
+   * `range` 参数下推 SQL，不写进 `filters.date`）。
+   *
+   * 初值 = 最近 5 年：这是产品设定的**起始观测窗口**（十年老账不该在首屏铺满），
+   * 不是用户筛出来的条件。所以只在挂载时用惰性初始化算一次，绝不放进 effect
+   * 重算 —— 否则跨天或一次重渲染就会让用户没动过的区间自己往后滚一天。
+   * 之后能改它的只有弹层里的「确认」。
+   */
+  const [detailDateRange, setDetailDateRange] = useState<{ from: string; to: string }>(() => {
+    // 初值一律用服务端算好的那份（RSC 已经按它查了首屏那一页、总数和页码）。
+    // 客户端不再自己算「今天 − 5 年」：两边各算一次迟早差一天，chip 与表头就会
+    // 互相矛盾。没有传（其它调用点）时按「全部时间」处理，不偷偷缩小范围。
+    if (initialDateRange) return { from: initialDateRange.from, to: initialDateRange.to };
+    return { from: "", to: "" };
+  });
+  const serverDateRangeKey = `${detailDateRange.from}~${detailDateRange.to}`;
+  const hasDetailDateRange = !!(detailDateRange.from || detailDateRange.to);
+  // 观测窗口改设置后 RSC 会带着新的 `initialDateRange` 重渲染。只在**服务端那份
+  // 真的变了**时应用：用户自己拖滑轨改的范围不能因为一次 router.refresh 就被重置。
+  const lastInitialRangeKeyRef = useRef(initialDateRange ? `${initialDateRange.from}~${initialDateRange.to}` : "");
+  useEffect(() => {
+    const nextKey = initialDateRange ? `${initialDateRange.from}~${initialDateRange.to}` : "";
+    if (nextKey === lastInitialRangeKeyRef.current) return;
+    lastInitialRangeKeyRef.current = nextKey;
+    setDetailDateRange(initialDateRange ? { from: initialDateRange.from, to: initialDateRange.to } : { from: "", to: "" });
+  }, [initialDateRange]);
+  const serverSortKey = serverSort ? `${serverSort.key}:${serverSort.direction}` : "";
   const [page, setPage] = useState(() => initialDetailAll ? 1 : clampPage(initialPage, totalPages));
   const locatingDateRef = useRef(false);
   // Do not clamp the target page to 1 using stale totalPages while locating a date;
   // otherwise the pagination effect will fetch page 1 again.
-  const safePage = detailAll ? 1 : locatingDateRef.current ? Math.max(1, page) : clampPage(page, totalPages);
+  const safePage = detailAll && !serverPagedAll ? 1 : locatingDateRef.current ? Math.max(1, page) : clampPage(page, totalPages);
   const accountScopeKey = `${accountId}:${isInvestAccount ? "invest" : "detail"}`;
   const lastAccountScopeKeyRef = useRef(accountScopeKey);
   const lastFocusEntryIdRef = useRef(focusEntryId ?? "");
@@ -354,50 +486,122 @@ export function BasicDetailPanel({
   // 之前那笔仍然有效、数据更新的响应被判成过期丢掉，表现就是「记一笔保存成功，
   // 表格里却没有新行」。同一个 key 的响应谁先到都能用，key 变了（翻页 / 改页大小）
   // 才丢。
-  const detailPageKey = `${accountId}|${detailAll ? "all" : String(safePage)}|${pageSize}`;
+  const detailPageKey = `${accountId}|${detailAll && !serverPagedAll ? "all" : String(safePage)}|${pageSize}|${serverPagedAll ? `${serverFilterKey}|${serverSortKey}` : ""}|${serverDateRangeKey}`;
   const detailPageKeyRef = useRef(detailPageKey);
   detailPageKeyRef.current = detailPageKey;
 
   /**
-   * 「全部」模式：分块拉取并逐块追加（见 `loadAllDetailEntries`）。整份列表一次
-   * 要回几万行 / 几十 MB，浏览器会中途重置连接或静默超时，界面看起来就是「切到
-   * 全部没反应」，表头筛选也仍然只有原来那几十条可选，所以必须边到边显示。
+   * 「全部」模式：整份明细由模块级仓库（`detail-all-store`）持有，分块进度、完成
+   * 结果都留在那里。组件只负责「订阅 + 渲染」：
+   * - 换页面再回来（组件重挂载）拿的是仓库里的当前进度，不会从头再拉；
+   * - 在途任务不会因为卸载而作废，也不会被重复发起第二份。
    */
-  const loadAllEntriesForScope = useCallback((isCurrent: () => boolean, signal?: AbortSignal) => (
-    loadAllDetailEntries<DetailEntry>({
-      accountId,
-      signal,
-      isCurrent,
-      errorMessage: t("basicDetail.loadFailed"),
-      onChunk: (loaded, nextTotalCount) => {
-        setLocalEntries([...loaded]);
-        setAllLoadedCount(loaded.length);
-        if (Number.isFinite(nextTotalCount)) {
-          setLocalTotalCount(nextTotalCount);
-          setLocalOriginalCount(nextTotalCount);
-        }
-      },
-    })
-  ), [accountId, t]);
+  /**
+   * 行数据只有一份。
+   *
+   * 现金类账户（`deriveFromAllCashCache`）不再单独拉自己的明细，而是复用
+   * `__all_cash__` 那份缓存：两者的行只差一个筛选条件（本账户 / 作为收款侧，
+   * 外加排除外币转换行），字段逐行相同，顺序也是同一套排序键的子序列。
+   * 余额不在缓存里，筛出来之后本地补（`foldRunningBalancesInDescOrder`，
+   * 与服务端 `balanced` CTE 等价，实测逐分一致）。
+   *
+   * 非现金账户（贷款 / 往来款 / 存款 / 保险 / 基金理财）不在那份集合里，
+   * 仍然按自己的 accountId 各存一份。
+   */
+  const detailCacheScopeId = deriveFromAllCashCache ? ALL_CASH_DETAIL_SCOPE_ID : accountId;
+  const detailAllKey = detailAllCacheKey(detailCacheScopeId);
+  const detailAllRangeKey = hasDetailDateRange ? serverDateRangeKey : undefined;
+  const businessTodayKey = todayDateBusinessYmd(getTimeZonePreference());
+
+  /** 让共享缓存的行变成「本视图口径」：筛出本账户的行 + 补算余额。 */
+  const scopeEntriesOf = useCallback((shared: DetailEntry[]) => {
+    if (!deriveFromAllCashCache) return shared;
+    const own = shared.filter(
+      (entry) => entry.accountId === accountId
+        || (entry.toAccountId === accountId && entry.source !== "fx_conversion"),
+    );
+    return foldRunningBalancesInDescOrder(own, accountId, accountKind, businessTodayKey);
+  }, [accountId, accountKind, businessTodayKey, deriveFromAllCashCache]);
+
+  const lastAppliedAllRef = useRef<{ entries: DetailEntry[] | null; range: string | undefined }>({ entries: null, range: undefined });
+
+  /**
+   * 把仓库快照落到表格上（「全部」模式）。
+   *
+   * 仓库里那份永远是「全部时间」的整份明细，所以时间轴怎么改都不需要重新请求：
+   * 这里按当前窗口本地裁掉窗口外的行（`filterEntriesByRange`）即可。
+   */
+  const applyDetailAllSnapshot = useCallback((snapshot: DetailAllSnapshot<DetailEntry>) => {
+    const last = lastAppliedAllRef.current;
+    const rows = filterEntriesByRange(scopeEntriesOf(snapshot.entries), detailAllRangeKey);
+    if (snapshot.entries !== last.entries || detailAllRangeKey !== last.range) {
+      lastAppliedAllRef.current = { entries: snapshot.entries, range: detailAllRangeKey };
+      setLocalEntries(rows);
+    }
+    if (snapshot.done) {
+      // 计数必须是「当前窗口内」的行数：窗口从 5 年收到 3 年，表头不能还报 5 年的总数。
+      setAllLoadedCount(rows.length);
+      setLocalTotalCount(rows.length);
+      setLocalOriginalCount(rows.length);
+      locatingDateRef.current = false;
+      setIsPageLoading(false);
+    } else {
+      setAllLoadedCount(snapshot.loadedCount);
+      if (Number.isFinite(snapshot.totalCount)) {
+        setLocalTotalCount(snapshot.totalCount);
+        setLocalOriginalCount(snapshot.totalCount);
+      }
+      setIsPageLoading(true);
+    }
+  }, [detailAllRangeKey, scopeEntriesOf]);
+
+  /**
+   * 整份明细缓存（`detail-all-store`，按账户）是**唯一数据源**。
+   *
+   * 以前是「分页模式按页去服务端取、切到全部才整份拉」两条路：翻一页一次往返
+   * （300-430ms），缩一下时间轴又要重取一次，两套缓存各管一半。现在只有一份缓存，
+   * 永远拉「全部时间」那份，不随窗口变；时间轴只是显示层的窗口 ——
+   * 范围怎么改都在本地裁、翻到第几页都在本地切，一次请求都不发。
+   * 只有当窗口内的行还没到齐（刚进页面那一两秒）时才退回按页取一次。
+   */
+  const readCachedDetailPage = useCallback((pageNo: number, size: number): DetailPagePayload | null => {
+    const snapshot = peekDetailAll<DetailEntry>(detailAllKey);
+    if (!snapshot || snapshot.entries.length === 0) return null;
+    if (!detailCacheCoversWindow(snapshot, detailAllRangeKey)) return null;
+    const windowed = filterEntriesByRange(scopeEntriesOf(snapshot.entries), detailAllRangeKey);
+    const start = (pageNo - 1) * size;
+    // 页码落在还没拉回来的那一段：交给按页取数兜底，别显示空页。
+    if (start >= windowed.length && windowed.length > 0) return null;
+    return { entries: windowed.slice(start, start + size), totalCount: windowed.length };
+  }, [detailAllKey, detailAllRangeKey, scopeEntriesOf]);
 
   const reloadDetailPage = useCallback((signal?: AbortSignal) => {
     if (!clientPaginationEnabled) return;
-    const requestKey = `${accountId}|${detailAll ? "all" : String(safePage)}|${pageSize}`;
-    const isCurrent = () => requestKey === detailPageKeyRef.current && !signal?.aborted;
-    if (detailAll) {
-      setIsPageLoading(true);
-      setAllLoadedCount(0);
-      void loadAllEntriesForScope(isCurrent, signal)
-        .catch((error) => {
-          if (isAbortError(error)) return;
-          console.error("Load all transaction detail entries failed:", error);
-        })
-        .finally(() => {
-          if (isCurrent()) {
-            locatingDateRef.current = false;
-            setIsPageLoading(false);
-          }
-        });
+    const requestKey = `${accountId}|${detailAll && !serverPagedAll ? "all" : String(safePage)}|${pageSize}|${serverPagedAll ? `${serverFilterKey}|${serverSortKey}` : ""}|${serverDateRangeKey}`;
+    if (detailAll && !serverPagedAll) {
+      // 「全部」= 窗口内整份：缓存里已经有了，只取快照，不发请求。
+      const snapshot = ensureDetailAll<DetailEntry>({
+        key: detailAllKey,
+        accountId: detailCacheScopeId,
+        range: detailAllRangeKey,
+        errorMessage: t("basicDetail.loadFailed"),
+      });
+      // 空快照 = 刚发起的任务还没有数据，别把已有列表清空。
+      if (snapshot.entries.length > 0 || snapshot.done) applyDetailAllSnapshot(snapshot);
+      return;
+    }
+    // 缓存优先：窗口内数据齐了就从本地切这一页。
+    const cached = readCachedDetailPage(safePage, pageSize);
+    if (cached) {
+      if (requestKey !== detailPageKeyRef.current) return;
+      setLocalEntries(cached.entries);
+      // 缓存只知道这一页时总数是 null（窗口还没回填），这时别把已有计数清零，沿用旧值。
+      if (cached.totalCount != null) {
+        setLocalTotalCount(cached.totalCount);
+        setLocalOriginalCount(cached.totalCount);
+      }
+      locatingDateRef.current = false;
+      setIsPageLoading(false);
       return;
     }
     const params = new URLSearchParams({
@@ -405,36 +609,70 @@ export function BasicDetailPanel({
       page: String(safePage),
       pageSize: String(pageSize),
     });
+    // 窗口还没齐（刚进页面）：照旧按页取一次，范围无条件下推。
+    if (hasDetailDateRange) params.set("range", serverDateRangeKey);
+    if (serverPagedAll) {
+      if (serverFilterKey !== "{}") params.set("filters", serverFilterKey);
+      if (serverSortKey) params.set("sort", serverSortKey);
+    }
+    // 不带 `no-store`：接口发了 ETag，刷新/重进时浏览器会带 If-None-Match 回来，
+    // 没变就 304 用本地副本。
     setIsPageLoading(true);
-    fetch(`/api/v1/transactions/detail?${params.toString()}`, {
-      cache: "no-store",
-      signal,
-    })
-      .then(async (response) => {
-        const payload = await response.json().catch(() => null);
-        if (!response.ok || !payload?.ok) {
-          throw new Error(payload?.error ?? t("basicDetail.loadFailed"));
-        }
-        if (requestKey !== detailPageKeyRef.current) return;
-        const nextEntries = Array.isArray(payload.data?.entries) ? payload.data.entries : [];
-        const nextTotalCount = Number(payload.data?.totalCount);
-        setLocalEntries(nextEntries);
-        if (Number.isFinite(nextTotalCount)) {
-          setLocalTotalCount(nextTotalCount);
-          setLocalOriginalCount(nextTotalCount);
-        }
-      })
-      .catch((error) => {
+    void (async () => {
+      let payload: DetailPagePayload;
+      try {
+        payload = await loadDetailPagePayload(
+          `/api/v1/transactions/detail?${params.toString()}`,
+          signal,
+          t("basicDetail.loadFailed"),
+        );
+      } catch (error) {
         if (isAbortError(error)) return;
         console.error("Load transaction detail page failed:", error);
-      })
-      .finally(() => {
         if (requestKey === detailPageKeyRef.current) {
           locatingDateRef.current = false;
           setIsPageLoading(false);
         }
-      });
-  }, [accountId, clientPaginationEnabled, detailAll, loadAllEntriesForScope, pageSize, safePage]);
+        return;
+      }
+      // 期间又翻页 / 改了条件：这份结果已经不是用户要看的那一页。
+      if (requestKey !== detailPageKeyRef.current) return;
+      setLocalEntries(payload.entries);
+      if (payload.totalCount != null) {
+        setLocalTotalCount(payload.totalCount);
+        setLocalOriginalCount(payload.totalCount);
+      }
+      locatingDateRef.current = false;
+      setIsPageLoading(false);
+    })();
+  }, [accountId, applyDetailAllSnapshot, clientPaginationEnabled, detailAll, detailAllKey, detailAllRangeKey, detailCacheScopeId, hasDetailDateRange, pageSize, readCachedDetailPage, safePage, serverDateRangeKey, serverFilterKey, serverPagedAll, serverSortKey, t]);
+
+  // 后台按「当前窗口」（默认就是设置里的观测年数）把整份明细读进缓存，与页码无关：
+  // 之后翻到哪一页、把窗口缩小都只在本地切，不再产生请求。窗口放大到超出已拉范围时
+  // 才重新拉一份更宽的 —— 缩窗永远不丢缓存。任务归 detail-all-store 所有，
+  // 切页面、组件卸载都不会中断它。
+  useEffect(() => {
+    if (!clientPaginationEnabled) return;
+    ensureDetailAll<DetailEntry>({
+      key: detailAllKey,
+      accountId: detailCacheScopeId,
+      range: detailAllRangeKey,
+      errorMessage: t("basicDetail.loadFailed"),
+    });
+  }, [clientPaginationEnabled, detailAllKey, detailAllRangeKey, detailCacheScopeId, t]);
+
+  // 「全部」的加载由仓库推进，这里只订阅：整份到齐才重建表格（并发分块阶段
+  // 只滚进度数字，不为每一块重建两万行），完成时收掉加载态。
+  // 组件卸载只取消订阅，任务继续在后台跑完（下次回来直接是成品）。
+  useEffect(() => {
+    if (!detailAll || serverPagedAll || !clientPaginationEnabled) return;
+    const unsubscribe = subscribeDetailAll<DetailEntry>(detailAllKey, applyDetailAllSnapshot);
+    // 订阅只在「有新块到达」时回调；范围刚变（重挂载 / 改窗口）时先拿现有快照
+    // 按新范围重渲染一次 —— 这一刻不该有任何请求。
+    const current = peekDetailAll<DetailEntry>(detailAllKey);
+    if (current) applyDetailAllSnapshot(current);
+    return unsubscribe;
+  }, [applyDetailAllSnapshot, clientPaginationEnabled, detailAll, detailAllKey, serverPagedAll]);
 
   useEffect(() => {
     if (showGuideOverlay) setGuideOverlayOpen(true);
@@ -552,6 +790,10 @@ export function BasicDetailPanel({
     const handleFinanceChange = (event: Event) => {
       const detail = (event as CustomEvent<FinanceDataChangedDetail>).detail ?? {};
       const eventAccountIds = detail.accountIds ?? [];
+      // 已落地的「全部」结果可能已经过期：只作废缓存，不碰在途任务 —— 在途那
+      // 份拉的是服务端最新数据，中途打断它才是真正的「又从头加载几万条」。
+      // startup-check 只是每日任务的例行提示，数据没变，连缓存都不用丢。
+      if (detail.reason !== "startup-check") dropDetailAllCache();
       const isCurrentAccountEvent = eventAccountIds.length === 0
         || eventAccountIds.includes(accountId)
         || (isAllCashDetailScope(accountId) && (scopeAccountIds?.some((id) => eventAccountIds.includes(id)) ?? true));
@@ -560,6 +802,7 @@ export function BasicDetailPanel({
         detail.reason === "view-normal-excel-import" &&
         isCurrentAccountEvent
       ) {
+        invalidateDetailAll();
         reloadDetailPage();
         return;
       }
@@ -574,6 +817,7 @@ export function BasicDetailPanel({
       ) {
         // 有明细筛选时 localEntries 由 RSC 的 entries prop 持有，客户端分页
         // 取数路径是禁用的，只能整棵刷新。
+        invalidateDetailAll();
         if (clientPaginationEnabled) reloadDetailPage();
         else router.refresh();
         return;
@@ -588,6 +832,7 @@ export function BasicDetailPanel({
         // 用户以为「记一笔失败」。
         const isCreateEvent = detail.reason === "transaction-save" && (detail.entryIds?.length ?? 0) === 0;
         if (isCurrentAccountEvent && clientPaginationEnabled && refreshOnGlobalEvent && isCreateEvent) {
+          if (detailAll) invalidateDetailAll();
           reloadDetailPage();
           return;
         }
@@ -599,9 +844,14 @@ export function BasicDetailPanel({
         // ③「全部」视图——子组件的全量重取已交给父层分块（见 refreshOnGlobalEvent
         //   的传参），编辑后必须由这里重取，否则改完一行列表不动。
         if (isCurrentAccountEvent) {
-          // startup-check 是每日自动任务的例行提示，常在「切全部」的首次全量
-          // 加载途中到达；此时再取一份几十 MB 只会让表格更慢，跳过。
-          if (detailAll && clientPaginationEnabled && detail.reason !== "startup-check") {
+          // 「全部」整份重拉要十几秒，只有**确实改到具体条目**的事件才值得。
+          // 后台例行刷新（行情、净值、定投自动执行、startup-check、通知触发…）
+          // 不带 entryIds，以前一律 invalidate + 重拉，用户看到的就是「明明没动，
+          // 几万条又在转圈」。这些事件前面已经 dropDetailAllCache()，下次进入会重取。
+          const touchesEntries =
+            (detail.entryIds?.length ?? 0) > 0 || (detail.deletedEntryIds?.length ?? 0) > 0;
+          if (detailAll && clientPaginationEnabled && touchesEntries) {
+            invalidateDetailAll();
             reloadDetailPage();
             return;
           }
@@ -676,20 +926,113 @@ export function BasicDetailPanel({
 
   useEffect(() => {
     if (!clientPaginationEnabled) return;
-    const key = detailPaginationFetchKey(accountId, pageSize, detailAll, safePage);
+    // 筛选 / 排序 / 时间范围都拼进 key：条件一变就必须重取，否则只是本地这份
+    // page 上又筛了一遍。
+    // `detailAll && !serverPagedAll` 才是「整份拉到本地」：服务端分页的「全部」
+    // 仍然一页一页取，key 里必须带页码，否则翻页时 key 不变、表格永远停在第一页。
+    const key = `${detailPaginationFetchKey(accountId, pageSize, detailAll && !serverPagedAll, safePage)}|${serverPagedAll ? `${serverFilterKey}|${serverSortKey}` : ""}|${serverDateRangeKey}`;
     const isFirstRun = !lastClientPaginationKeyRef.current;
     if (!isFirstRun && lastClientPaginationKeyRef.current === key) return;
     lastClientPaginationKeyRef.current = key;
     // 首次进入且不是「全部」时，服务端 RSC 已经给了这一页，不必再取。
     // 「全部」则必须立刻补：服务端现在只渲染一页（全量渲染 4 万行会产出上百 MB
     // HTML），剩下的要靠这里按块拉回来，否则表格永远停在那一页。
-    if (isFirstRun && !detailAll) return;
+    //
+    // 默认观测窗口也由 RSC 带上了（`initialDateRange`）：首屏那页、`共 N 条`、页码
+    // 总数都是范围口径，客户端不必再按同一个范围重复取一遍。只有 URL 筛选或
+    // 服务端分页的筛选/排序下推才需要另取。
+    if (isFirstRun && serverPagedAll && serverFilterKey === "{}" && !serverSort && !hasDetailDateRange) return;
+    if (isFirstRun && !detailAll && (initialDateRange || !hasDetailDateRange)) return;
 
     const controller = new AbortController();
     reloadDetailPage(controller.signal);
 
     return () => controller.abort();
-  }, [accountId, clientPaginationEnabled, detailAll, pageSize, reloadDetailPage, safePage]);
+  }, [accountId, clientPaginationEnabled, detailAll, hasDetailDateRange, initialDateRange, pageSize, reloadDetailPage, safePage, serverDateRangeKey, serverFilterKey, serverPagedAll, serverSortKey]);
+
+  // 服务端模式：表头漏斗的候选值来自服务端 distinct。缺了这一步，百万行下
+  // 漏斗只能从当前页去重出几十个值，用户会以为「分类只剩这几个」。
+  useEffect(() => {
+    if (!serverPagedAll) {
+      setServerFacets(null);
+      return;
+    }
+    const controller = new AbortController();
+    const params = new URLSearchParams({ accountId, facets: "1" });
+    if (serverFilterKey !== "{}") params.set("filters", serverFilterKey);
+    if (hasDetailDateRange) params.set("range", serverDateRangeKey);
+    fetch(`/api/v1/transactions/detail?${params.toString()}`, {
+      cache: "no-store",
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        const payload = await response.json().catch(() => null);
+        if (!response.ok || !payload?.ok) return;
+        const facets = payload.data?.facets;
+        if (facets && typeof facets === "object") setServerFacets(facets);
+      })
+      .catch((error) => {
+        if (isAbortError(error)) return;
+        console.error("Load transaction detail facets failed:", error);
+      });
+    return () => controller.abort();
+  }, [accountId, hasDetailDateRange, serverDateRangeKey, serverFilterKey, serverPagedAll]);
+
+  // 时间轴两端（双滑块的可拖范围）永远取自**全量**数据：不受时间范围本身、也不受
+  // 日期列筛选、URL 筛选影响，否则拖一次区间滑轨就缩到刚选的范围，再也拖不回更早
+  // 的日期。分页模式下当前页只有几十行，从 rows 推导出来只有几天，所以任何模式下
+  // 都取一次；拿到之前 chip 保持置灰，绝不拿一页的跨度冒充整条时间轴。
+  useEffect(() => {
+    const controller = new AbortController();
+    const params = new URLSearchParams({ accountId, bounds: "1" });
+    setServerDateBoundsLoading(true);
+    fetch(`/api/v1/transactions/detail?${params.toString()}`, {
+      cache: "no-store",
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        const payload = await response.json().catch(() => null);
+        if (!response.ok || !payload?.ok) return;
+        const bounds = payload.data?.dateBounds;
+        if (bounds && typeof bounds.min === "string" && typeof bounds.max === "string") {
+          setServerDateBounds({ min: bounds.min, max: bounds.max });
+        }
+      })
+      .catch((error) => {
+        if (isAbortError(error)) return;
+        console.error("Load transaction detail date bounds failed:", error);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setServerDateBoundsLoading(false);
+      });
+    return () => controller.abort();
+  }, [accountId]);
+
+  const serverFilterOptions = useMemo(() => {
+    if (!serverFacets) return undefined;
+    const mapped: Record<string, { options: string[]; counts?: Record<string, number> }> = {};
+    for (const [key, list] of Object.entries(serverFacets)) {
+      if (!Array.isArray(list) || list.length === 0) continue;
+      const counts: Record<string, number> = {};
+      for (const item of list) counts[item.value] = item.count;
+      mapped[key] = { options: list.map((item) => item.value), counts };
+    }
+    return mapped;
+  }, [serverFacets]);
+
+  const handleServerFiltersChange = useCallback((next: Partial<Record<string, string[]>>) => {
+    setServerFilters(next);
+    setPage(1);
+  }, []);
+  /** 时间范围变化 = 数据范围变化：回到第 1 页并重新取数（不是本地筛当前页）。 */
+  const handleDetailDateRangeChange = useCallback((next: { from: string; to: string }) => {
+    setDetailDateRange(next);
+    setPage(1);
+  }, []);
+  const handleServerSortChange = useCallback((next: { key: string; direction: "asc" | "desc" } | null) => {
+    setServerSort(next);
+    setPage(1);
+  }, []);
 
   const pageEntries = useMemo(() => localEntries, [localEntries]);
   const displayRowsRef = useRef<DetailEntry[]>([]);
@@ -772,6 +1115,8 @@ export function BasicDetailPanel({
       locateDate: centerDate,
       pageSize: String(nextPageSize),
     });
+    // 定位/换页大小也在同一个数据范围内算页码，否则定位结果与表格不一致。
+    if (hasDetailDateRange) params.set("range", serverDateRangeKey);
     fetch(`/api/v1/transactions/detail?${params.toString()}`, { cache: "no-store" })
       .then(async (response) => {
         const payload = await response.json().catch(() => null);
@@ -815,7 +1160,8 @@ export function BasicDetailPanel({
   };
 
   const goPage = (nextPage: number) => {
-    if (detailAll) return;
+    // 服务端分页的「全部」仍然要能翻页（数据在服务端，一页一页取）。
+    if (detailAll && !serverPagedAll) return;
     setPage(clampPage(nextPage, totalPages));
   };
 
@@ -824,12 +1170,27 @@ export function BasicDetailPanel({
   // 触发时机由表格一侧决定：视图重开 / 重新选自适应（靠这个回调的 identity 变化）、
   // 行高偏好变化、视口高度变化（窗口 resize、拖动分栏）都会重算。翻页、筛选、
   // 数据刷新不触发；表格内部「行数没变就不上报」挡住了重复更新，不会来回抖。
-  const lastFitRowCountRef = useRef<number | null>(null);
-  const handleRowsFitChange = useCallback((rowCount: number) => {
-    lastFitRowCountRef.current = rowCount;
-    if (!autoFit || detailAll || locatingDateRef.current) return;
-    setPageSize((prev) => (prev === rowCount ? prev : rowCount));
-  }, [accountScopeKey, autoFit, detailAll]);
+  //
+  // 「全部」要看是哪一种：超过阈值时它其实是服务端分页浏览，一次只取 pageSize
+  // 行、表格里也只有这一页，页大小照样必须跟着视口走，否则底部会空出几行 ——
+  // 这里刻意不看 autoFit：进「全部」之前手动选过的每页行数（18/40…）只在分页
+  // 模式下有意义，「全部」下没有「每页多少条」可选，页大小必须自适应填满。
+  // 只有本地全量的「全部」（整份列表一次渲染完）才真的没有页大小可调。
+  const rowsFitEnabled = detailAll ? serverPagedAll : autoFit;
+  // 页大小跟着视口走；页大小一变，页码以「原页中间行」为锚点换算，窗口缩小后仍
+  // 停在同一批记录上（逻辑见 useRowsFitPageAnchor，所有 ADT 表格共用）。服务端
+  // 分页时页码写在 URL 上、由定位逻辑负责，这里只改页大小。
+  const { onRowsFitChange: handleRowsFitChange, lastFitRowCountRef } = useRowsFitPageAnchor({
+    scopeKey: accountScopeKey,
+    pageSize,
+    page: safePage,
+    totalCount: localTotalCount,
+    enabled: rowsFitEnabled,
+    anchorPage: clientPaginationEnabled,
+    setPageSize,
+    setPage,
+    isBusy: () => locatingDateRef.current,
+  });
 
   const enableAutoFitRows = () => {
     // Same contract as picking a concrete size: leave show-all mode first.
@@ -841,7 +1202,7 @@ export function BasicDetailPanel({
 
   const handleLocateDate = (dateYmd: string) => {
     if (!clientPaginationEnabled || !dateYmd) return;
-    if (detailAll) {
+    if (detailAll && !serverPagedAll) {
       // Show-all mode: the loaded list is fully rendered (virtualized beyond
       // ROW_VIRTUALIZATION_THRESHOLD rows), so locating is a client-side
       // viewport scroll — center the first entry of the requested date, or the
@@ -866,6 +1227,7 @@ export function BasicDetailPanel({
       locateDate: dateYmd,
       pageSize: String(locatePageSize),
     });
+    if (hasDetailDateRange) params.set("range", serverDateRangeKey);
     fetch(`/api/v1/transactions/detail?${params.toString()}`, { cache: "no-store" })
       .then(async (response) => {
         const payload = await response.json().catch(() => null);
@@ -916,8 +1278,8 @@ export function BasicDetailPanel({
       });
   };
 
-  const canPrev = !detailAll && safePage > 1;
-  const canNext = !detailAll && safePage < totalPages;
+  const canPrev = (!detailAll || serverPagedAll) && safePage > 1;
+  const canNext = (!detailAll || serverPagedAll) && safePage < totalPages;
   const selectionResetKey = accountScopeKey;
   const tableResetKey = selectionResetKey;
   const closeGuideOverlay = () => {
@@ -943,11 +1305,12 @@ export function BasicDetailPanel({
               pageSize={pageSize}
               pageSizeOptions={DETAIL_PAGE_SIZE_OPTIONS}
               detailAll={detailAll}
+              paged={!detailAll || serverPagedAll}
               safePage={safePage}
               totalPages={totalPages}
               canPrev={canPrev}
               canNext={canNext}
-              autoFit={autoFit}
+              autoFit={autoFit || serverPagedAll}
               onAutoFit={enableAutoFitRows}
               onPageSizeChange={setPagedSize}
               onShowAll={showAll}
@@ -968,19 +1331,6 @@ export function BasicDetailPanel({
           investmentProductTypeByAccountId={investmentProductTypeByAccountId}
           compactRows={compactRows}
           resetKey={tableResetKey}
-          batchExtraActions={(renderedEntries) => (
-            <BasicDetailReimbursementButton
-              entries={renderedEntries.map((entry) => ({
-                id: entry.id,
-                date: entry.date,
-                amount: Math.abs(entry.amount),
-                categoryName: entry.categoryName,
-                note: entry.note,
-                advanceAccountId: entry.toAccountId,
-              }))}
-              allowedAdvanceAccountIds={reimbursementAllowedAdvanceAccountIds}
-            />
-          )}
           focusEntryId={focusEntryId}
           scrollToRowKey={locateScrollKey}
           showAccountColumn={showAccountColumn}
@@ -988,19 +1338,33 @@ export function BasicDetailPanel({
           toolbarMode="custom"
           toolbarTitle={t("basicDetail.entriesTitle")}
           showRunningBalance={showRunningBalance ?? !isInvestAccount}
+          serverMode={serverPagedAll}
+          onServerFiltersChange={serverPagedAll ? handleServerFiltersChange : undefined}
+          onServerSortChange={serverPagedAll ? handleServerSortChange : undefined}
+          serverFilterOptions={serverPagedAll ? serverFilterOptions : undefined}
+          // 时间筛选器在两种模式下都开：滑轨两端取全量边界（bounds=1），与当前
+          // 页有多少行、以及范围/日期列筛选都无关。
+          showDateRangeFilter
+          dateRange={detailDateRange}
+          dateRangeBounds={serverDateBounds}
+          dateRangeBoundsLoading={serverDateBoundsLoading}
+          onDateRangeChange={handleDetailDateRangeChange}
+          detailQueryRange={hasDetailDateRange ? serverDateRangeKey : undefined}
           reconcileEnabled={showReconcile}
           // 有明细筛选时列表由 RSC 的 entries prop 持有，DetailViewClient 的
           // 重取不带筛选参数，会把筛选结果冲掉 —— 交给上面的整棵刷新。
-          // 「全部」同理：全量拉取由父层统一走分块（见 reloadDetailPage）。子组件
-          // 自己再拉一遍会并发两份额外的全量请求，几十 MB × 2，正是会被中途重置
-          // 的那种重复取数。
+          // 「全部」也全部交给父层（reloadDetailPage）：父层知道当前是服务端分页
+          // 还是本地分块，子组件只会无脑 loadAllDetailEntries（先 500 条再一次性
+          // 拉五万条）。两边同时订阅 finance:changed 的后果是——父层刚按分页摆好
+          // 40 行，子层又塞回整份五万行，下一次父层刷新再摆回 40 行，表格看起来
+          // 一直在闪，工具栏还长时间停在「已加载 500 条」。
           refreshOnGlobalEvent={refreshOnGlobalEvent && clientPaginationEnabled && !detailAll}
           draggableRows={draggableRows}
           sortable={sortable}
-          onRowsFitChange={autoFit && !detailAll ? handleRowsFitChange : undefined}
+          onRowsFitChange={rowsFitEnabled ? handleRowsFitChange : undefined}
           toolbarRightContent={
             <div className="flex items-center gap-2 text-xs">
-              <span className="text-xs text-slate-600">{t("creditBillDetail.recordCount", { count: localTotalCount })}{hasDetailFilters ? t("basicDetail.filteredSuffix", { count: localOriginalCount }) : ""}{isPageLoading ? (detailAll
+              <span className="text-xs text-slate-600">{t("creditBillDetail.recordCount", { count: localTotalCount })}{hasDetailFilters ? t("basicDetail.filteredSuffix", { count: localOriginalCount }) : ""}{isPageLoading ? (detailAll && !serverPagedAll
             ? allLoadedCount > 0
               ? t("basicDetail.loadingAllSuffix", { count: localTotalCount, loaded: allLoadedCount })
               : t("basicDetail.loadingAllPending", { count: localTotalCount })
@@ -1043,6 +1407,7 @@ export function BasicDetailPanel({
                     pageSize={pageSize}
                     pageSizeOptions={DETAIL_PAGE_SIZE_OPTIONS}
                     detailAll={detailAll}
+                    paged={!detailAll || serverPagedAll}
                     safePage={safePage}
                     totalPages={totalPages}
                     canPrev={canPrev}

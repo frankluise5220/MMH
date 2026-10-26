@@ -59,6 +59,7 @@ import { createFundTransactionWithCashFlows, detachFundTransactionCashFlow, find
 import { regularInvestRefundNote } from "@/lib/fund/regular-invest-display";
 import { syncIndependentBusinessTransactionFromTxRecord } from "@/lib/server/business-transactions";
 import { getCachedHouseholdScope, getHouseholdScope } from "@/lib/server/household-scope";
+import { getHouseholdPreferences } from "@/lib/server/household-preferences";
 import { attachEntryTags, replaceEntryTags } from "@/lib/server/entry-tags";
 import { buildEntryBusinessLinkSummary, entryBusinessLinkSummaryInclude, upsertEntryBusinessCashFlowLink } from "@/lib/server/entry-business-link";
 import {
@@ -74,6 +75,7 @@ import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance"
 import { insuranceCashValueDelta } from "@/lib/insurance/transaction";
 import { loadCommonData, loadSelectedAccount, loadEntriesForAccount, loadEntriesPageForAccount, loadInvestAccountData, loadInvestBalances, loadFixedAssetPositionDisplay, loadFixedAssetTransactionEntries } from "@/lib/server/cached-data";
 import { locateDetailEntryPage } from "@/lib/server/detail-page-query";
+import { parseDetailDateRange } from "@/lib/server/detail-query-filters";
 import { loadBondShellData, loadBondLotOptions, bondSubtypeLabelKey } from "@/lib/server/bond-shell-data";
 import { computePositionDisplay } from "@/lib/invest-balance";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
@@ -89,7 +91,7 @@ import {
   resolveAccountTableLabel,
   stripVisibleHoverParts,
 } from "@/lib/account-display";
-import { getInvestmentAccountView, isDepositAccount, isIncomeExpensePostingAccount, isIncomeExpensePostingOrDepositAccount, isLoanOrSettlementAccountKind, isPureInvestmentAccount, isSpecialCashTargetAccount, isTransferDropdownAccount } from "@/lib/account-kind-utils";
+import { getInvestmentAccountView, isCashLedgerAccount, isDepositAccount, isIncomeExpensePostingAccount, isIncomeExpensePostingOrDepositAccount, isLoanOrSettlementAccountKind, isPureInvestmentAccount, isSpecialCashTargetAccount, isTransferDropdownAccount } from "@/lib/account-kind-utils";
 import { ALL_CASH_DETAIL_SCOPE_ID, cashLedgerAccountIdsOf, cashLedgerFlowAccountId } from "@/lib/all-cash-entries";
 import { normalizeLoanType, resolveLoanTypeValue } from "@/lib/loan-type";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
@@ -142,7 +144,7 @@ import { AccountTypeQuickEdit, type AccountQuickEditValue } from "@/components/A
 
 export const dynamic = "force-dynamic";
 
-import { formatDateUtc, toNumber, parseDateInputToUtc } from "@/lib/date-utils";
+import { formatDateUtc, toNumber, parseDateInputToUtc, todayDateBusinessYmd } from "@/lib/date-utils";
 import { parseDepositInterestPayout } from "@/lib/deposit-interest-payout";
 import { depositSegmentInterest } from "@/lib/deposit-maturity";
 
@@ -633,6 +635,8 @@ export default async function Home({
   const ctx = await getCachedHouseholdScope();
   const { hidFilter, householdId } = ctx;
   const baseCurrency = await getHouseholdBaseCurrency(householdId);
+  // 明细默认观测窗口（设置 → 显示，单位年；0 = 不限）。
+  const { detailWindowYears } = await getHouseholdPreferences(householdId);
   // Color helper.
   const pnlCls = (n: number) => pnlClassFromRedUp(n, isRedUp);
   // Common data: shared across accounts, cached across requests.
@@ -754,6 +758,22 @@ export default async function Home({
     needsDetailEntries &&
     ((view === "detail" && !!accountId) || (isAllCashView && cashLedgerAccountIds.length > 0)) &&
     !hasDetailFilters;
+  // 明细的默认观测窗口：`设置 → 显示 → 明细默认观测窗口`（年，0 = 不限）。
+  // 这不是 URL 筛选，但必须**在服务端就算进查询**：首屏那一页、`共 N 条`、页码
+  // 总数都要是范围口径，否则 chip 说「近 3 年」、表头却报全量 4 万多条，进「全部」
+  // 还会按全量去拉块 —— 时间轴就等于没掌控住全局。
+  // 有 URL 筛选时不再叠加默认范围（用户明确要看哪一段就看哪一段）。
+  const initialDetailDateRange = (() => {
+    if (hasDetailFilters) return null;
+    if (detailWindowYears <= 0) return null;
+    const [year, month, day] = todayDateBusinessYmd().split("-");
+    // 「N 年前的今天」可能不存在（2 月 29 日），落到 2 月 28 日。
+    const from = `${Number(year) - detailWindowYears}-${month}-${day === "02-29" ? "28" : day}`;
+    return { from, to: "" };
+  })();
+  const initialDetailRangeStr = initialDetailDateRange
+    ? `${initialDetailDateRange.from}~${initialDetailDateRange.to}`
+    : "";
   // 「全部」不定位页码（下面固定第 1 页），少跑一次定位查询；定位到具体记录由
   // 客户端在全量列表里滚动完成（`focusEntryId` → DetailViewClient）。
   const focusedDetailLocation = usePagedDetailEntries && focusEntryId && !detailAll
@@ -763,6 +783,7 @@ export default async function Home({
         entryId: focusEntryId,
         pageSize,
         sortAccountId: isAllCashView ? undefined : accountId,
+        dateRange: parseDetailDateRange(initialDetailRangeStr),
       })
     : null;
   // 「全部」的首屏页永远是第 1 页：客户端进入「全部」后按第 1 页（`rowNumber`
@@ -786,6 +807,7 @@ export default async function Home({
         JSON.stringify(hidFilter),
         pagedDetailPage,
         pagedDetailPageSize,
+        initialDetailRangeStr,
       )
     : null;
 
@@ -1518,13 +1540,6 @@ export default async function Home({
   const liabilityTransferAccountSSOptions = buildAccountSSOptions(a => a.isAggregate !== true && (a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet" || a.kind === "bank_credit"));
   // 不是所有往来对象都能当「往来款对象」—— 常用商户（merchant）排除
   const liabilityCounterpartyOptions = counterparties.filter((counterparty) => isSettlementCounterpartyType(counterparty.type));
-  // Only receivable accounts linked to explicitly reimbursable counterparties expose reimbursement.
-  const reimbursableCounterpartyOptions = liabilityCounterpartyOptions.filter((counterparty) => counterparty.isReimbursable === true);
-  const reimbursableCounterpartyIdSet = new Set(reimbursableCounterpartyOptions.map((counterparty) => counterparty.id));
-  // The detail-list action is gated by the selected rows' reimbursement-enabled accounts.
-  const reimbursementAllowedAdvanceAccountIds = accounts
-    .filter((account) => !!account.counterpartyId && reimbursableCounterpartyIdSet.has(account.counterpartyId))
-    .map((account) => account.id);
   const loanSourceInstitutions = institutions.filter((institution) => isInstitutionTypeOf(institution.type, LOAN_DIALOG_INSTITUTION_TYPE_VALUES));
   const liabilityObjectOptions: SSOpt[] = liabilityCounterpartyOptions.length > 0
     ? [
@@ -3935,6 +3950,7 @@ export default async function Home({
                   hasDetailFilters={hasDetailFilters}
                   initialPage={safeDetailPage}
                   initialPageSize={pageSize}
+                  initialDateRange={initialDetailDateRange ?? undefined}
                   initialDetailAll={detailAll}
                   initialAutoFit={detailPaginationPref?.autoFit !== false}
                   normalExportFilename={normalExportFilename}
@@ -3967,13 +3983,21 @@ export default async function Home({
                   showPagination={!tagIdParam}
                   showImportExport={!tagIdParam && !isAllCashView}
                   scopeAccountIds={cashLedgerAccountIds}
+                  // 现金类账户的明细不再单独拉一份：复用「全部收支」那份缓存，
+                  // 本地筛出本账户的行并补算余额（一行数据只存一份）。
+                  // 贷款 / 往来款 / 存款 / 保险 / 基金理财不在那份集合里，仍各存一份。
+                  deriveFromAllCashCache={
+                    !tagIdParam &&
+                    !isAllCashView &&
+                    !isInvestAccount &&
+                    isCashLedgerAccount(selectedAccount)
+                  }
                   accountKind={selectedAccount?.kind ?? null}
                   accountName={selectedAccount?.name ?? ""}
                   accountLabel={selectedAccountLabel}
                   currentBalance={selectedAccountRawBalanceValue}
                   focusEntryId={focusEntryId}
                   showGuideOverlay={guideParam === "daily-table"}
-                  reimbursementAllowedAdvanceAccountIds={reimbursementAllowedAdvanceAccountIds}
                 />
               </div>
             </div>
