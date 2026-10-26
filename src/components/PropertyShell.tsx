@@ -1,7 +1,7 @@
 "use client";
 
 import { Boxes, Paperclip, Pencil, RefreshCcw } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { AdvancedDataTable, type AdvancedDataTableColumn } from "@/components/AdvancedDataTable";
 import { FixedAssetEditModal, type FixedAssetEditMeta, type FixedAssetEditValue } from "@/components/FixedAssetEditModal";
@@ -20,6 +20,7 @@ import {
 } from "@/components/BasicDetailSelection";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useEntryReconcileState } from "@/lib/client/use-entry-reconcile-state";
+import { useRowsFitPageAnchor } from "@/lib/client/use-rows-fit-page-anchor";
 import { formatDateDisplay } from "@/lib/date-utils";
 import { formatCurrencyMoney, formatPercent } from "@/lib/format";
 import { pnlClassFromRedUp } from "@/lib/client/colors";
