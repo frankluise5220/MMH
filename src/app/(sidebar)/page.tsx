@@ -127,6 +127,7 @@ import { convertCurrencyAmounts, getHouseholdBaseCurrency } from "@/lib/server/f
 import { findRecentManualTransactionDuplicate } from "@/lib/server/transaction-dedupe";
 import { txRecordAccountScopeWhere } from "@/lib/transaction-account-scope";
 import {
+  DETAIL_ALL_FIRST_VIEWPORT_PAGE_SIZE,
   DETAIL_ALL_PAGE_SIZE,
   decodeDetailPaginationPreference,
   detailPaginationCookieName,
@@ -753,7 +754,9 @@ export default async function Home({
     needsDetailEntries &&
     ((view === "detail" && !!accountId) || (isAllCashView && cashLedgerAccountIds.length > 0)) &&
     !hasDetailFilters;
-  const focusedDetailLocation = usePagedDetailEntries && focusEntryId
+  // 「全部」不定位页码（下面固定第 1 页），少跑一次定位查询；定位到具体记录由
+  // 客户端在全量列表里滚动完成（`focusEntryId` → DetailViewClient）。
+  const focusedDetailLocation = usePagedDetailEntries && focusEntryId && !detailAll
     ? await locateDetailEntryPage({
         accountIds: isAllCashView ? cashLedgerAccountIds : [accountId],
         householdId,
@@ -762,15 +765,27 @@ export default async function Home({
         sortAccountId: isAllCashView ? undefined : accountId,
       })
     : null;
-  const pagedDetailPage = focusedDetailLocation && focusedDetailLocation.index >= 0
-    ? focusedDetailLocation.page
-    : detailPage;
+  // 「全部」的首屏页永远是第 1 页：客户端进入「全部」后按第 1 页（`rowNumber`
+  // 区间）开始补全量，页码偏好（cookie 里的 detailPage）在「全部」下没有意义。
+  // 这里若跟着 detailPage=3 取第 3 页，首屏显示的就是第 121~180 行，和客户端随后
+  // 补上的全量列表对不上，会先闪一下别的行。
+  const pagedDetailPage = detailAll
+    ? 1
+    : focusedDetailLocation && focusedDetailLocation.index >= 0
+      ? focusedDetailLocation.page
+      : detailPage;
+  // 「全部」首屏（服务端直出那一页）必须够填满一屏：分块补全量要几秒，若这一页
+  // 只有 URL 里的 pageSize=18 行，底部就会空出几行白块（见
+  // `DETAIL_ALL_FIRST_VIEWPORT_PAGE_SIZE`）。分页模式仍然严格按 pageSize 取。
+  const pagedDetailPageSize = detailAll
+    ? Math.max(pageSize, DETAIL_ALL_FIRST_VIEWPORT_PAGE_SIZE)
+    : pageSize;
   const pagedDetailData = usePagedDetailEntries
     ? await loadEntriesPageForAccount(
         isAllCashView ? cashLedgerAccountIds : accountId,
         JSON.stringify(hidFilter),
         pagedDetailPage,
-        pageSize,
+        pagedDetailPageSize,
       )
     : null;
 

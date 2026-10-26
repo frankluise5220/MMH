@@ -16,6 +16,18 @@ export const DETAIL_ALL_CHUNK_SIZE = 5000;
  * 「自适应」行数干等。
  */
 export const DETAIL_ALL_FIRST_PAGE_SIZE = 500;
+/**
+ * 「全部」首屏（服务端直出的那一页）最少要有多少行。
+ *
+ * 「全部」里没有「每页多少条」这回事：URL / 偏好里的 `pageSize`（用户手动选的
+ * 18/40，或自适应落地值）只对分页模式有意义。而服务端只直出这一页、剩下的由
+ * 客户端分块补 —— 几千行一个块，往返要几百毫秒到数秒。若这一页比一屏还少，
+ * 分块回来之前表格底部就空着几行白块，看起来像「全部只有 18 条」。
+ *
+ * 60 行在 31px 紧凑行高下能铺 1860px、41px 行高下 2460px，覆盖到 4K 全屏；
+ * 再多没有意义（首屏每一行都要带上账户 / 标签 / 附件摘要，RSC payload 会变大）。
+ */
+export const DETAIL_ALL_FIRST_VIEWPORT_PAGE_SIZE = 60;
 
 export type DetailPaginationPreference = {
   pageSize: number;
