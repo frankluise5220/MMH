@@ -2077,6 +2077,27 @@ export async function buildHouseholdBackupPayload(
   };
 }
 
+/**
+ * Excel caps sheet names at 31 characters and rejects `[]:*?/\`. Model names
+ * such as `ReimbursementSettlementTransactions` are longer than that, and
+ * `book_append_sheet` throws, which used to fail the whole table export with
+ * "Sheet names cannot exceed 31 chars". Clamp + de-duplicate here so adding a
+ * long model later truncates a header instead of breaking the export.
+ */
+function excelSheetName(name: string, used: Set<string>) {
+  const cleaned = name.replace(/[[\]:*?/\\]/g, "-");
+  const base = cleaned.slice(0, 31) || "Sheet";
+  let candidate = base;
+  let suffix = 2;
+  while (used.has(candidate)) {
+    const marker = `~${suffix}`;
+    candidate = `${base.slice(0, 31 - marker.length)}${marker}`;
+    suffix += 1;
+  }
+  used.add(candidate);
+  return candidate;
+}
+
 export async function buildHouseholdBackupWorkbook(payload: HouseholdBackupPayload) {
   const XLSX = await import("xlsx");
   const workbook = XLSX.utils.book_new();
@@ -2154,9 +2175,10 @@ export async function buildHouseholdBackupWorkbook(payload: HouseholdBackupPaylo
     ["EmailAccounts", sheetRows(payload.data.emailAccounts)],
   ];
 
+  const usedSheetNames = new Set<string>();
   for (const [sheetName, rows] of sheets) {
     const worksheet = XLSX.utils.json_to_sheet(rows.length > 0 ? rows : [{ empty: "" }]);
-    XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
+    XLSX.utils.book_append_sheet(workbook, worksheet, excelSheetName(sheetName, usedSheetNames));
   }
 
   return XLSX.write(workbook, { type: "buffer", bookType: "xlsx" }) as Buffer;
@@ -2244,9 +2266,10 @@ export async function buildHouseholdTableExportWorkbook(payload: HouseholdBackup
     ["EntryTags", sheetRows(payload.data.entryTags)],
   ];
 
+  const usedSheetNames = new Set<string>();
   for (const [sheetName, rows] of sheets) {
     const worksheet = XLSX.utils.json_to_sheet(rows.length > 0 ? rows : [{ empty: "" }]);
-    XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
+    XLSX.utils.book_append_sheet(workbook, worksheet, excelSheetName(sheetName, usedSheetNames));
   }
 
   return XLSX.write(workbook, { type: "buffer", bookType: "xlsx" }) as Buffer;
