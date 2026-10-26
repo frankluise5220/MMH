@@ -1,11 +1,12 @@
-import { buildBackupFileName, encryptBackupPayload, serializeEncryptedBackupPackage, type HouseholdBackupPayload } from "@/lib/server/backup";
+import { buildBackupFileName, encryptBackupPayload, type HouseholdBackupPayload } from "@/lib/server/backup";
+import { encodeBackupPackage } from "@/lib/server/backup-package";
 import { buildMmhBackupPayloadFromCaizhi } from "@/lib/importers/caizhi/mapper";
 import { parseCaizhiBackupBuffer } from "@/lib/importers/caizhi/parser";
 import type { CaizhiConversionOptions, CaizhiConversionSummary } from "@/lib/importers/caizhi/types";
 
 export type CaizhiBackupExportResult = {
   fileName: string;
-  json: string;
+  bytes: Buffer;
   summary: CaizhiConversionSummary;
 };
 
@@ -31,7 +32,7 @@ export async function convertCaizhiBackupToMmhBackup(
 
   return {
     fileName,
-    json: serializeEncryptedBackupPackage(encryptedPayload),
+    bytes: encodeBackupPackage(encryptedPayload),
     summary: converted.summary,
   };
 }

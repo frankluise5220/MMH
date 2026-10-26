@@ -19,9 +19,9 @@ import {
   encryptBackupPayload,
   ensureSqliteRestoreCompatibilitySchema,
   restoreHouseholdBackup,
-  serializeEncryptedBackupPackage,
   type RestoreHouseholdBackupProgress,
 } from "@/lib/server/backup";
+import { decodeBackupPackage, encodeBackupPackage } from "@/lib/server/backup-package";
 import {
   createSqliteSnapshotBuffer,
   isSqliteFileDatabase,
@@ -108,7 +108,7 @@ async function runRestoreTask(
   passphrase: string,
   fallbackAdmin: RestoreFallbackAdmin,
 ) {
-  let rawText: string | null = null;
+  let uploadedBytes: Buffer | null = null;
   let rawPayload: unknown = null;
   let payload: unknown = null;
   let packagePassphrase = passphrase;
@@ -124,9 +124,10 @@ async function runRestoreTask(
       }),
     });
 
-    rawText = await fs.promises.readFile(uploadedFilePath, "utf8");
-    rawPayload = JSON.parse(rawText);
-    rawText = null;
+    // 读取与解包都走 backup-package.ts：gzip 包按魔数识别，老的明文包照原样解析。
+    uploadedBytes = await fs.promises.readFile(uploadedFilePath);
+    rawPayload = decodeBackupPackage(uploadedBytes);
+    uploadedBytes = null;
 
     const rawObject = rawPayload as Record<string, unknown> | null;
     const packageType = String(rawObject?.packageType ?? "");
@@ -219,7 +220,7 @@ async function runRestoreTask(
       }),
     });
   } finally {
-    rawText = null;
+    uploadedBytes = null;
     rawPayload = null;
     payload = null;
     packagePassphrase = "";
@@ -364,10 +365,10 @@ async function exportBackupPackage(req: NextRequest) {
         { passphrase },
       );
       const fileName = buildBackupFileName(householdName, exportedAt, "mmh-backup");
-      return new Response(serializeEncryptedBackupPackage(encryptedPayload), {
+      return new Response(new Uint8Array(encodeBackupPackage(encryptedPayload)), {
         status: 200,
         headers: {
-          "Content-Type": "application/json; charset=utf-8",
+          "Content-Type": "application/octet-stream",
           "Content-Disposition": attachmentDisposition(fileName),
           "Cache-Control": "no-store",
         },
@@ -381,10 +382,10 @@ async function exportBackupPackage(req: NextRequest) {
     );
     const encryptedPayload = await encryptBackupPayload(payload, { passphrase });
     const fileName = buildBackupFileName(payload.scope.householdName, payload.exportedAt, "mmh-backup");
-    return new Response(serializeEncryptedBackupPackage(encryptedPayload), {
+    return new Response(new Uint8Array(encodeBackupPackage(encryptedPayload)), {
       status: 200,
       headers: {
-        "Content-Type": "application/json; charset=utf-8",
+        "Content-Type": "application/octet-stream",
         "Content-Disposition": attachmentDisposition(fileName),
         "Cache-Control": "no-store",
       },

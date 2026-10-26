@@ -3,6 +3,7 @@ const path = require("node:path");
 
 const root = path.resolve(__dirname, "..");
 const backupSource = fs.readFileSync(path.join(root, "src", "lib", "server", "backup.ts"), "utf8");
+const backupPackageSource = fs.readFileSync(path.join(root, "src", "lib", "server", "backup-package.ts"), "utf8");
 const schemaSource = fs.readFileSync(path.join(root, "prisma", "schema.prisma"), "utf8");
 const restoreRouteSource = fs.readFileSync(path.join(root, "src", "app", "api", "v1", "settings", "backup", "route.ts"), "utf8");
 const nextConfigSource = fs.readFileSync(path.join(root, "next.config.ts"), "utf8");
@@ -79,8 +80,10 @@ expect(
 );
 
 expect(
-  backupSource.includes("export function serializeEncryptedBackupPackage"),
-  "Encrypted backup packages must be serialized through serializeEncryptedBackupPackage.",
+  backupPackageSource.includes("export function encodeBackupPackage") &&
+  backupPackageSource.includes("export function decodeBackupPackage") &&
+  !backupSource.includes("export function serializeEncryptedBackupPackage"),
+  "Backup package bytes must be encoded/decoded only through src/lib/server/backup-package.ts (gzip, legacy plain JSON still readable).",
 );
 expect(
   backupSource.includes("function importBatchesForBackup") &&
@@ -109,11 +112,13 @@ expect(
 );
 expect(
   restoreRouteSource.includes("RESTORE_UPLOAD_LIMIT_BYTES") &&
-  restoreRouteSource.includes("serializeEncryptedBackupPackage") &&
+  restoreRouteSource.includes("encodeBackupPackage(") &&
+  restoreRouteSource.includes("decodeBackupPackage(") &&
+  !restoreRouteSource.includes('readFile(uploadedFilePath, "utf8")') &&
   restoreRouteSource.includes("file.size > RESTORE_UPLOAD_LIMIT_BYTES") &&
   restoreRouteSource.includes("writeRestoreUploadToTemp") &&
   !restoreRouteSource.includes("128 * 1024 * 1024"),
-  "Restore route must use the shared 512MB limit, compact export JSON, file.size check, and disk-backed upload.",
+  "Restore route must use the shared 512MB limit, read packages through decodeBackupPackage, file.size check, and disk-backed upload.",
 );
 
 // Bond (bond products + bond certificates) must stay wired into every backup

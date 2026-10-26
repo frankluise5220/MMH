@@ -64,10 +64,10 @@ export async function POST(req: NextRequest) {
       householdName,
     });
 
-    return new Response(result.json, {
+    return new Response(new Uint8Array(result.bytes), {
       status: 200,
       headers: {
-        "Content-Type": "application/json; charset=utf-8",
+        "Content-Type": "application/octet-stream",
         "Content-Disposition": attachmentDisposition(result.fileName),
         "Cache-Control": "no-store",
         "X-MMH-Caizhi-Summary": encodeURIComponent(JSON.stringify(result.summary)),

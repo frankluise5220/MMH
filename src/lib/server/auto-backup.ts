@@ -8,8 +8,8 @@ import {
   buildHouseholdBackupPayload,
   encryptBackupBytes,
   encryptBackupPayload,
-  serializeEncryptedBackupPackage,
 } from "@/lib/server/backup";
+import { encodeBackupPackage } from "@/lib/server/backup-package";
 import { createSqliteSnapshotBuffer, isSqliteFileDatabase } from "@/lib/server/sqlite-snapshot";
 import { readJsonSystemSetting, writeJsonSystemSetting } from "@/lib/server/system-setting";
 
@@ -343,7 +343,7 @@ export async function runAutoBackupNow(
       { passphrase: resolved.passphrase, useSystemKeyWhenNoPassphrase: true },
     );
     const fileName = backupFileName("system", exportedAt);
-    fs.writeFileSync(path.join(targetDir, fileName), serializeEncryptedBackupPackage(packageObject), { mode: 0o600 });
+    fs.writeFileSync(path.join(targetDir, fileName), encodeBackupPackage(packageObject), { mode: 0o600 });
     files.push(fileName);
   } else {
     const households = await prisma.household.findMany({ orderBy: { createdAt: "asc" } });
@@ -357,7 +357,7 @@ export async function runAutoBackupNow(
         useSystemKeyWhenNoPassphrase: true,
       });
       const fileName = backupFileName(household.name, exportedAt);
-      fs.writeFileSync(path.join(targetDir, fileName), serializeEncryptedBackupPackage(packageObject), { mode: 0o600 });
+      fs.writeFileSync(path.join(targetDir, fileName), encodeBackupPackage(packageObject), { mode: 0o600 });
       files.push(fileName);
     }
   }

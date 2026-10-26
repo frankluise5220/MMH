@@ -18,6 +18,11 @@ import {
   ensureBuiltinLoanCategories,
 } from "@/lib/server/loan-category";
 import { normalizeRestoreIdentity } from "@/lib/server/restore-identity";
+import {
+  BACKUP_PAYLOAD_ENCODING,
+  decodeBackupPayloadJson,
+  encodeBackupPayloadJson,
+} from "@/lib/server/backup-package";
 import { extractStatementLearningKeyword, normalizeStatementKeywordText } from "@/lib/statement/import-normalization";
 import { DEFAULT_SESSION_DAYS, normalizeSessionDays } from "@/lib/session-days";
 import {
@@ -33,8 +38,13 @@ import type { CurrentUser } from "@/lib/server/auth";
 import { preferenceRowData } from "@/lib/server/household-preferences";
 import { preferencesFromRow, type PreferenceRow } from "@/lib/preferences";
 
-export const BACKUP_FORMAT_VERSION = 4;
-const ENCRYPTED_BACKUP_PACKAGE_VERSION = 3;
+/**
+ * 5：备份文件一律 gzip（见 src/lib/server/backup-package.ts）。包内结构未变，
+ * 恢复两种编码都能读，所以 4 → 5 只是文件编码升级，不是数据迁移。
+ */
+export const BACKUP_FORMAT_VERSION = 5;
+/** 4：密文内容是 gzip 载荷（compress-then-encrypt）；3 及更早是明文 JSON 密文。 */
+const ENCRYPTED_BACKUP_PACKAGE_VERSION = 4;
 const ENCRYPTED_BACKUP_ALGORITHM = "aes-256-gcm";
 const BACKUP_PACKAGE_KEY_SETTING = "backup_package_encryption_key";
 const BACKUP_PASSPHRASE_KEY_SOURCE = "passphrase";
@@ -685,6 +695,19 @@ const TRANSACTION_RESTORE_COLUMNS = [
   { name: "originalAmount", select: "NULLIF(x.\"originalAmount\", '')::numeric" },
   { name: "locationId", select: 'x."locationId"' },
   { name: "locationName", select: 'x."locationName"' },
+  // 债券 / 报销差额 / 对账锁定：PostgreSQL 的快速插入路径是**独立的列白名单**，
+  // 迁移映射补了字段却漏了这里，恢复照样静默丢列。
+  { name: "bondSubtype", select: 'x."bondSubtype"::"FundSubtype"' },
+  { name: "bondName", select: 'x."bondName"' },
+  { name: "bondAnnualRate", select: "NULLIF(x.\"bondAnnualRate\", '')::numeric" },
+  { name: "bondInterest", select: "NULLIF(x.\"bondInterest\", '')::numeric" },
+  { name: "bondArrivalDate", select: "NULLIF(x.\"bondArrivalDate\", '')::timestamptz" },
+  { name: "bondConfirmDate", select: "NULLIF(x.\"bondConfirmDate\", '')::timestamptz" },
+  { name: "bondFee", select: "NULLIF(x.\"bondFee\", '')::numeric" },
+  { name: "reimbursementDifferenceAmount", select: "NULLIF(x.\"reimbursementDifferenceAmount\", '')::numeric" },
+  { name: "reimbursementDifferenceCategoryName", select: 'x."reimbursementDifferenceCategoryName"' },
+  { name: "reconciledAt", select: "NULLIF(x.\"reconciledAt\", '')::timestamptz" },
+  { name: "reconciledBalance", select: "NULLIF(x.\"reconciledBalance\", '')::numeric" },
 ] as const;
 
 const TRANSACTION_RESTORE_INSERT_SQL = `INSERT INTO "transactions" (${TRANSACTION_RESTORE_COLUMNS
@@ -1449,16 +1472,15 @@ export async function encryptBackupPayload(
   const iv = crypto.randomBytes(12);
   const { key, metadata } = await getBackupEncryptionKey(options);
   const cipher = crypto.createCipheriv(ENCRYPTED_BACKUP_ALGORITHM, key, iv);
-  const ciphertext = Buffer.concat([
-    cipher.update(JSON.stringify(payload), "utf8"),
-    cipher.final(),
-  ]);
+  // 先压缩再加密：反过来密文是高熵字节，gzip 只能省掉 base64 的 33%（实测 120MB vs 6MB）。
+  const ciphertext = Buffer.concat([cipher.update(encodeBackupPayloadJson(payload)), cipher.final()]);
 
   return {
     app: "MMH" as const,
     packageType: "encrypted-backup" as const,
     packageVersion: ENCRYPTED_BACKUP_PACKAGE_VERSION,
     encrypted: true,
+    payloadEncoding: BACKUP_PAYLOAD_ENCODING,
     exportedAt: payload.exportedAt,
     scope: payload.scope,
     encryption: {
@@ -1494,8 +1516,12 @@ export async function decryptBackupPackage(
     const ciphertext = Buffer.from(String(packageObject.ciphertext ?? ""), "base64");
     const decipher = crypto.createDecipheriv(ENCRYPTED_BACKUP_ALGORITHM, key, iv);
     decipher.setAuthTag(authTag);
-    const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString("utf8");
-    return JSON.parse(plaintext) as unknown;
+    const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+    // 新包是「先压缩后加密」；没有 payloadEncoding 的是老包，密文里直接就是 JSON。
+    if (packageObject.payloadEncoding === BACKUP_PAYLOAD_ENCODING) {
+      return decodeBackupPayloadJson(plaintext);
+    }
+    return JSON.parse(plaintext.toString("utf8")) as unknown;
   } catch {
     if (String(encryption.keySource ?? "") === BACKUP_PASSPHRASE_KEY_SOURCE) {
       restoreError("Backup passphrase does not match. Check the passphrase set when the backup was created; legacy backups without one used the user password.");
@@ -1643,9 +1669,11 @@ export function buildBackupFileName(householdName: string, exportedAt: Date, for
   return `${safeFilePart(householdName)}-backup-${exportedAt.toISOString().replace(/[:.]/g, "-")}.${suffix}`;
 }
 
-export function serializeEncryptedBackupPackage(payload: unknown) {
-  return JSON.stringify(payload);
-}
+/**
+ * 包文件字节一律由 src/lib/server/backup-package.ts 生成（gzip）。
+ * 这里保留一个薄封装只是为了让调用方无需关心编码细节；**不要**在这里改回 JSON 字符串，
+ * scripts/check-backup-package.cjs 会把绕过编码器的写法判红。
+ */
 
 function importBatchesForBackup<T extends { rawText?: string | null }>(importBatches: T[]) {
   return importBatches.map((item) => ({
@@ -3825,6 +3853,29 @@ export async function restoreHouseholdBackup(
                 restoredCounterpartyNameById,
                 item.locationName,
               ),
+              // 债券专用列：此前导出有值、恢复却整列不写，恢复后债券交易会丢掉期限/利率/费用。
+              bondSubtype: item.bondSubtype == null ? null : (String(item.bondSubtype) as never),
+              bondName: item.bondName == null ? null : String(item.bondName),
+              bondAnnualRate: item.bondAnnualRate == null ? null : String(item.bondAnnualRate),
+              bondInterest: item.bondInterest == null ? null : String(item.bondInterest),
+              bondArrivalDate:
+                item.bondArrivalDate == null ? null : new Date(String(item.bondArrivalDate)),
+              bondConfirmDate:
+                item.bondConfirmDate == null ? null : new Date(String(item.bondConfirmDate)),
+              bondFee: item.bondFee == null ? null : String(item.bondFee),
+              // 报销差额：恢复后报销差额字段为空的同一类静默丢字段。
+              reimbursementDifferenceAmount:
+                item.reimbursementDifferenceAmount == null
+                  ? null
+                  : String(item.reimbursementDifferenceAmount),
+              reimbursementDifferenceCategoryName:
+                item.reimbursementDifferenceCategoryName == null
+                  ? null
+                  : String(item.reimbursementDifferenceCategoryName),
+              // 对账锁定：reconciledAt 非空表示已对账（不可删改），reconciledBalance 是余额折叠的锚点。
+              reconciledAt: item.reconciledAt == null ? null : new Date(String(item.reconciledAt)),
+              reconciledBalance:
+                item.reconciledBalance == null ? null : String(item.reconciledBalance),
             };
           },
         {
