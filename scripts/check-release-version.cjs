@@ -73,7 +73,8 @@ expect(new RegExp(`完整说明见 GitHub Release v${version.replace(/\./g, "\\.
 expect(!/fn-appstores-client-2\.5\.2-x86\.fpk/.test(releaseNotes), "mmhReleaseNotes must not revive the retired FN 软仓客户端 2.5.2 x86 link.");
 expect(!/名称自定义/.test(releaseNotes), "mmhReleaseNotes must not revive the retired 名称自定义 dedicated-source phrasing.");
 expect(!/fn-appstores-client-2\.8\.4-x86\.fpk/.test(releaseNotes), "mmhReleaseNotes must not revive the retired FN 软仓客户端 2.8.4 x86 link (HTTP 404).");
-expect(/fn-appstores-client-2\.9\.2-all\.fpk/.test(releaseNotes), "mmhReleaseNotes must keep the FN 软仓客户端 2.9.2 all.fpk link.");
+expect(!/fn-appstores-client-2\.9\.2-all\.fpk/.test(releaseNotes), "mmhReleaseNotes must not revive the retired FN 软仓客户端 2.9.2 all.fpk link (superseded by 2.9.5).");
+expect(/fn-appstores-client-2\.9\.5-all\.fpk/.test(releaseNotes), "mmhReleaseNotes must keep the FN 软仓客户端 2.9.5 all.fpk link.");
 expect(/fnapp\.floatingice\.win:5660\//.test(releaseNotes), "mmhReleaseNotes dedicated source URL must keep the trailing slash.");
 
 // mmhReleaseNotesI18n 是**可选**的界面语言译文载体：应用内「本版说明」按界面语言取
