@@ -18,6 +18,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
+      # The verification steps below run repository scripts, and check:backup
+      # ends with a .ts harness that needs `tsx`. Without an install step the
+      # runner has no node_modules and the job dies on `sh: 1: tsx: not found`
+      # (first v0.1.78 attempt, 2026-10-26).
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --ignore-scripts
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
