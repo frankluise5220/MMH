@@ -403,13 +403,73 @@ function normalizeRestoreProgress(progress: RestoreProgressState | undefined, fa
   };
 }
 
+/** 进行中的恢复任务 id 存在 sessionStorage：刷新页面（或误关标签页再回来）还能接着看进度。 */
+const RESTORE_TASK_STORAGE_KEY = "mmh:restore-task-id";
+const RESTORE_POLL_INTERVAL_MS = 1_200;
+/** 单次状态查询的等待上限。恢复期间服务端可能整段时间不响应（同步 SQLite 事务占满事件循环）。 */
+const RESTORE_POLL_TIMEOUT_MS = 20_000;
+/** 恢复的硬上限：5 万多条交易的账簿实测 15 分钟，留足余量。 */
+const RESTORE_POLL_DEADLINE_MS = 90 * 60 * 1000;
+
+function readStoredRestoreId() {
+  try {
+    return window.sessionStorage.getItem(RESTORE_TASK_STORAGE_KEY)?.trim() ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function storeRestoreId(restoreId: string) {
+  try {
+    window.sessionStorage.setItem(RESTORE_TASK_STORAGE_KEY, restoreId);
+  } catch {
+    /* 隐私模式下 sessionStorage 可能不可用，忽略即可 */
+  }
+}
+
+function clearStoredRestoreId() {
+  try {
+    window.sessionStorage.removeItem(RESTORE_TASK_STORAGE_KEY);
+  } catch {
+    /* 同上 */
+  }
+}
+
+type RestoreTaskStatus = NonNullable<RestoreResponse["task"]>;
+
+type RestoreStatusLookup =
+  | { kind: "task"; task: RestoreTaskStatus }
+  /** 任务已过期或不属于当前用户：重试没有意义 */
+  | { kind: "gone" }
+  /** 超时 / 网络错误：服务端大概还在写，继续等 */
+  | { kind: "unreachable" };
+
+async function fetchRestoreStatus(restoreId: string): Promise<RestoreStatusLookup> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), RESTORE_POLL_TIMEOUT_MS);
+  try {
+    const res = await fetch(
+      `/api/v1/settings/backup?mode=restore-status&id=${encodeURIComponent(restoreId)}`,
+      { cache: "no-store", signal: controller.signal },
+    );
+    if (res.status === 401 || res.status === 403 || res.status === 404) return { kind: "gone" };
+    const data = (await res.json().catch(() => null)) as RestoreResponse | null;
+    if (!res.ok || !data?.ok || !data.task) return { kind: "unreachable" };
+    return { kind: "task", task: data.task };
+  } catch {
+    // AbortError（20 秒没响应）和网络抖动走同一条路：这是恢复期的正常现象，不是失败。
+    return { kind: "unreachable" };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function pollRestoreTask(
   restoreId: string,
   onProgress: (progress: RestoreProgressState) => void,
   t: I18nT,
 ): Promise<RestoreResponse> {
-  const deadline = Date.now() + 30 * 60 * 1000;
-  let failedPolls = 0;
+  const deadline = Date.now() + RESTORE_POLL_DEADLINE_MS;
   let lastProgress: RestoreProgressState = {
     stage: "preparing",
     percent: 35,
@@ -418,41 +478,32 @@ async function pollRestoreTask(
   };
 
   while (Date.now() < deadline) {
-    await delay(1000);
-    try {
-      const res = await fetch(
-        `/api/v1/settings/backup?mode=restore-status&id=${encodeURIComponent(restoreId)}`,
-        { cache: "no-store" },
-      );
-      const data = (await res.json().catch(() => null)) as RestoreResponse | null;
-      if (!res.ok || !data?.ok || !data.task) {
-        throw new Error(data?.error || t("settings.database.restoreStatusFailedHttp", { status: res.status }));
-      }
-      failedPolls = 0;
-      lastProgress = normalizeRestoreProgress(data.task.progress, lastProgress);
-      onProgress(lastProgress);
+    await delay(RESTORE_POLL_INTERVAL_MS);
+    const result = await fetchRestoreStatus(restoreId);
 
-      if (data.task.status === "success") {
-        return {
-          ok: true,
-          message: t("settings.database.restoreComplete"),
-          summary: data.task.summary,
-          task: data.task,
-          restoreId,
-        };
-      }
-      if (data.task.status === "error") {
-        throw new Error(data.task.error || data.task.progress?.detail || t("settings.database.restoreFailed"));
-      }
-    } catch (error) {
-      failedPolls += 1;
-      if (failedPolls >= 5) {
-        throw error instanceof Error ? error : new Error(t("settings.database.restoreQueryFailed"));
-      }
-      onProgress({
-        ...lastProgress,
-        detail: t("settings.database.waitingServerDetail"),
-      });
+    if (result.kind === "gone") {
+      throw new Error(t("settings.database.restoreTaskGone"));
+    }
+    if (result.kind === "unreachable") {
+      // 服务端正在写库，这段时间任何请求都可能不返回。不把它当失败，只换一行提示。
+      onProgress({ ...lastProgress, detail: t("settings.database.waitingServerDetail") });
+      continue;
+    }
+
+    lastProgress = normalizeRestoreProgress(result.task.progress, lastProgress);
+    onProgress(lastProgress);
+
+    if (result.task.status === "success") {
+      return {
+        ok: true,
+        message: t("settings.database.restoreComplete"),
+        summary: result.task.summary,
+        task: result.task,
+        restoreId,
+      };
+    }
+    if (result.task.status === "error") {
+      throw new Error(result.task.error || result.task.progress?.detail || t("settings.database.restoreFailed"));
     }
   }
 
@@ -516,10 +567,14 @@ function restoreDataBackup(
           label: t("settings.database.waitingRestore"),
         }));
       }
+      // 先落盘任务 id，再开始轮询：这中间的刷新/关页面都能靠它接回去。
+      storeRestoreId(restoreId);
       try {
         resolve(await pollRestoreTask(restoreId, onProgress, t));
       } catch (error) {
         reject(error);
+      } finally {
+        clearStoredRestoreId();
       }
     };
 
@@ -685,6 +740,59 @@ export default function DatabaseSettingsPage() {
 
   useEffect(() => {
     void loadAutoBackupSettings();
+  }, []);
+
+  // 刷新页面或误关标签页后接着看进度：服务端任务还在跑，界面就不该表现得像什么都没发生。
+  // 恢复期间服务端可能整段不响应 HTTP，所以这里只读 sessionStorage 里的任务 id，不阻塞首屏。
+  useEffect(() => {
+    const storedId = readStoredRestoreId();
+    if (!storedId) return;
+    let cancelled = false;
+    const fallback: RestoreProgressState = {
+      stage: "preparing",
+      percent: 35,
+      label: t("settings.database.waitingRestore"),
+      detail: t("settings.database.resumeRestoreDetail"),
+    };
+    setRestoring(true);
+    setRestoreProgress(fallback);
+
+    void (async () => {
+      try {
+        const first = await fetchRestoreStatus(storedId);
+        if (cancelled) return;
+        if (first.kind !== "task") {
+          // 任务已结束或服务重启过，别把用户留在假进度条上。
+          clearStoredRestoreId();
+          setRestoring(false);
+          setRestoreProgress(RESTORE_PROGRESS_IDLE);
+          return;
+        }
+        setRestoreProgress(normalizeRestoreProgress(first.task.progress, fallback));
+        const data = await pollRestoreTask(
+          storedId,
+          (progress) => {
+            if (!cancelled) setRestoreProgress(progress);
+          },
+          t,
+        );
+        if (cancelled) return;
+        clearStoredRestoreId();
+        setRestoring(false);
+        setRestoreMessage(data.message ?? t("settings.database.restoreComplete"));
+        window.setTimeout(() => window.location.reload(), 1200);
+      } catch (error) {
+        if (cancelled) return;
+        clearStoredRestoreId();
+        setRestoring(false);
+        setRestoreProgress(RESTORE_PROGRESS_IDLE);
+        setRestoreError(error instanceof Error ? error.message : t("settings.database.restoreFailed"));
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   async function loadAutoBackupSettings() {
@@ -1386,6 +1494,14 @@ export default function DatabaseSettingsPage() {
   return (
     <div className="space-y-4">
       <h2 className="text-sm font-semibold text-slate-800">{t("settings.database")}</h2>
+
+      {restoring && restoreProgress.stage !== "idle" ? (
+        <section className="rounded-lg border border-blue-200 bg-blue-50/60 p-4">
+          <div className="text-sm font-medium text-slate-800">{t("settings.database.restoreRunningTitle")}</div>
+          <RestoreProgressView progress={restoreProgress} />
+          <div className="mt-2 text-xs text-slate-500">{t("settings.database.resumeRestoreDetail")}</div>
+        </section>
+      ) : null}
 
       <section className="rounded-lg border border-slate-200 bg-white p-4">
         <div className="grid gap-4 lg:grid-cols-[1fr_auto]">

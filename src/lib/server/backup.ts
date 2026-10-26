@@ -37,6 +37,7 @@ import {
   systemSettingKey,
 } from "@/lib/server/system-setting";
 import type { CurrentUser } from "@/lib/server/auth";
+import { logger } from "@/lib/logger";
 import { preferenceRowData } from "@/lib/server/household-preferences";
 import { preferencesFromRow, type PreferenceRow } from "@/lib/preferences";
 
@@ -497,10 +498,56 @@ async function createManyRecords(
 ) {
   if (records.length === 0) return;
   const target = delegate as { createMany: (args: { data: Record<string, unknown>[] }) => Promise<unknown> };
-  await target.createMany({ data: records.map((record) => normalizeRecordDates(record, nullDateKeys)) });
+  const normalized = records.map((record) => normalizeRecordDates(record, nullDateKeys));
+  for (let index = 0; index < normalized.length; index += RESTORE_CREATE_MANY_BATCH_SIZE) {
+    await target.createMany({ data: normalized.slice(index, index + RESTORE_CREATE_MANY_BATCH_SIZE) });
+    await yieldToEventLoop();
+  }
 }
 
 const RESTORE_CREATE_MANY_BATCH_SIZE = 500;
+
+/** 交易明细走 `insertTransactionsViaJson`（一条 JSON 语句写一批）时的每批行数。 */
+const RESTORE_FAST_INSERT_BATCH_SIZE = 2_000;
+
+/**
+ * 整个恢复是一个事务：从清空到写完关联数据，5 万多条交易的账簿实测要跑十几分钟。
+ *
+ * 旧代码写死的 `timeout: 300_000` 在 SQLite 上从来没生效过——事件循环被占死，计时器根本
+ * 不会跑（实测跑满 14 分钟也没被掐断）。分段让步之后计时器会真的触发，所以必须给足时间，
+ * 否则恢复会在第 5 分钟被 Prisma 主动回滚。需要调整时用 `MMH_RESTORE_TX_TIMEOUT_MS`。
+ */
+const RESTORE_TRANSACTION_TIMEOUT_MS = (() => {
+  const parsed = Number(process.env.MMH_RESTORE_TX_TIMEOUT_MS ?? "");
+  return Number.isFinite(parsed) && parsed >= 60_000 ? parsed : 30 * 60_000;
+})();
+
+/**
+ * 把执行权交还给事件循环（切一次宏任务）。
+ *
+ * 恢复跑在**一个**大事务里，而 SQLite 走 better-sqlite3 同步驱动：每个 `await` 都由微任务
+ * 立刻兑现，从不回到宏任务队列。一次 6 万条交易的恢复会让整个进程 15 分钟无法响应任何
+ * HTTP 请求 —— 前端轮询拿不到新进度（界面定在最后一个百分比）、Prisma 的事务超时计时器
+ * 也不会触发。分段写入后显式让出一次事件循环，轮询和定时器才有机会执行。
+ */
+function yieldToEventLoop() {
+  return new Promise<void>((resolve) => {
+    setImmediate(resolve);
+  });
+}
+
+/**
+ * 按时间节流的事件循环让步：清库这种「很多条小语句」的阶段不必每条都切一次宏任务。
+ */
+function createYieldTicker(intervalMs = 75) {
+  let lastYieldAt = Date.now();
+  return async () => {
+    const now = Date.now();
+    if (now - lastYieldAt < intervalMs) return;
+    lastYieldAt = now;
+    await yieldToEventLoop();
+  };
+}
 
 type RawExecuteClient = {
   $executeRawUnsafe: (query: string, ...values: unknown[]) => Promise<unknown>;
@@ -534,6 +581,7 @@ async function createMappedRecordsInChunks<T>(
     }
     batch = [];
     await options.afterChunk?.(completed, records.length);
+    await yieldToEventLoop();
   };
 
   for (const record of records) {
@@ -2532,7 +2580,18 @@ async function restoreSingleHouseholdBackup(
     skipGlobalReset?: boolean;
   },
 ) {
+  const startedAt = Date.now();
+  let lastLoggedPercent = -1;
   const reportProgress = async (progress: RestoreHouseholdBackupProgress) => {
+    // SQLite 上整个导入是一个阻塞事件循环的大事务，这行日志是事后唯一能回答
+    // 「时间花在哪个阶段」的证据；每 5 个百分点记一次，避免日志被交易分块刷爆。
+    if (progress.percent >= 100 || progress.percent - lastLoggedPercent >= 5) {
+      lastLoggedPercent = progress.percent;
+      logger.info(
+        `restore ${progress.percent}% ${progress.label}${progress.detail ? ` (${progress.detail})` : ""} +${Math.round((Date.now() - startedAt) / 1000)}s`,
+        "backup-restore",
+      );
+    }
     await options.onProgress?.(progress);
   };
   await reportProgress({ stage: "preparing", percent: 45, label: "读取备份", detail: "正在校验备份结构" });
@@ -2654,6 +2713,8 @@ async function restoreSingleHouseholdBackup(
     data.entryBusinessLinks.some((item) => item.stockTransactionId != null);
 
   await prisma.$transaction(async (tx) => {
+    // 事务内是同步 SQLite 驱动：不显式让出事件循环，这个事务会独占到提交为止。
+    const yieldRestoreLoop = createYieldTicker();
     await reportProgress({ stage: "clearing", percent: 55, label: "清空当前账簿", detail: "正在移除当前账簿旧数据" });
     const currentUsers = await tx.user.findMany({
       where: { householdId },
@@ -2687,9 +2748,11 @@ async function restoreSingleHouseholdBackup(
     } else {
       await deleteHouseholdScopedSettings(householdId, tx);
     }
+    await yieldRestoreLoop();
     await tx.attachment.deleteMany({ where: { transactions: { householdId } } });
     await tx.entryTag.deleteMany({ where: { transactions: { householdId } } });
     await tx.entryBusinessLink.deleteMany({ where: { householdId } });
+    await yieldRestoreLoop();
     await tx.fundTransactionCashFlow.deleteMany({ where: { FundTransaction: { householdId } } });
     await tx.fxConversion.deleteMany({ where: { householdId } });
     await tx.fundTransaction.deleteMany({ where: { householdId } });
@@ -2698,6 +2761,7 @@ async function restoreSingleHouseholdBackup(
     await tx.depositTransaction.deleteMany({ where: { householdId } });
     await tx.bondTransaction.deleteMany({ where: { householdId } });
     await tx.preciousMetalTransaction.deleteMany({ where: { householdId } });
+    await yieldRestoreLoop();
     const stockTransactionsDeleted = await optionalPrismaDeleteMany(
       tx,
       "stockTransaction",
@@ -2771,6 +2835,7 @@ async function restoreSingleHouseholdBackup(
     ) {
       restoreError("当前系统版本不支持股票数据，请先更新并完成数据库迁移后再恢复。");
     }
+    await yieldRestoreLoop();
     await tx.creditCardInstallmentPlan.deleteMany({ where: { householdId } });
     await tx.loanRateAdjustment.deleteMany({ where: { householdId } });
     await tx.settlementAgreement.deleteMany({ where: { householdId } });
@@ -2783,6 +2848,7 @@ async function restoreSingleHouseholdBackup(
     await tx.reimbursement.deleteMany({ where: { householdId } });
     // Reimbursements are gone by now, so the batch rows they pointed at are safe to drop.
     await tx.reimbursementBatch.deleteMany({ where: { householdId } });
+    await yieldRestoreLoop();
 
     if (currentAccountIds.length > 0) {
       await tx.fundSnapshot.deleteMany({ where: { accountId: { in: currentAccountIds } } });
@@ -2816,8 +2882,10 @@ async function restoreSingleHouseholdBackup(
     // history is cleared even when the current database has no accounts left.
     await tx.creditCardBillingDay.deleteMany({ where: { Account: { householdId } } });
 
+    await yieldRestoreLoop();
     await tx.undoOperation.deleteMany({ where: { householdId } });
     await tx.txRecord.deleteMany({ where: { householdId } });
+    await yieldRestoreLoop();
     await tx.account.deleteMany({ where: { householdId } });
     // 账户先删（账户引用类别，链上 onDelete: SetNull 会静默置空，所以顺序反过来删更干净）
     await tx.loanCategory.deleteMany({ where: { householdId } });
@@ -2842,6 +2910,7 @@ async function restoreSingleHouseholdBackup(
     await tx.counterparty.deleteMany({ where: { householdId } });
     await tx.institution.deleteMany({ where: { householdId } });
     await tx.accountGroup.deleteMany({ where: { householdId } });
+    await yieldRestoreLoop();
 
     if (isSystemRestore) {
       if (currentUserIds.length > 0) {
@@ -2883,6 +2952,7 @@ async function restoreSingleHouseholdBackup(
       await tx.distillLog.deleteMany({});
       await tx.commandTestResult.deleteMany({});
     }
+    await yieldRestoreLoop();
     await reportProgress({ stage: "importing", percent: 60, label: "导入基础数据", detail: "正在写入用户、账户和分类" });
 
     // 多账簿系统包里「其余账簿」可能在目标设备上还不存在（换机恢复），
@@ -3960,7 +4030,10 @@ async function restoreSingleHouseholdBackup(
           ...(isSqliteRuntime()
             ? {}
             : {
-                batchSize: Math.max(data.transactions.length, 1),
+                // 一次 5.6 万行拼进单条 INSERT 会同时做三件慢事：映射 5.6 万个对象、
+                // 拼出几十 MB 的 JSON 参数、再让数据库一次吃下整条语句（实测这一条语句
+                // 占掉了整个恢复 143 秒里的 100 秒，中间事件循环完全没法呼吸）。
+                batchSize: RESTORE_FAST_INSERT_BATCH_SIZE,
                 fastInsert: (batch: Record<string, unknown>[]) =>
                   insertTransactionsViaJson(tx as RawExecuteClient, batch),
               }),
@@ -4623,7 +4696,7 @@ async function restoreSingleHouseholdBackup(
         },
       });
     }
-  }, { maxWait: 10_000, timeout: 300_000 });
+  }, { maxWait: 30_000, timeout: RESTORE_TRANSACTION_TIMEOUT_MS });
 
   await reportProgress({ stage: "finalizing", percent: 96, label: "收尾处理", detail: "正在刷新恢复后的加密缓存" });
   const { clearMasterKeyCache } = await import("@/lib/auth/encrypt");

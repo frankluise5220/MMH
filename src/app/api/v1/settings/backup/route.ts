@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { cookies } from "next/headers";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -7,6 +8,11 @@ import { pipeline } from "node:stream/promises";
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { getCurrentUser, isAdmin } from "@/lib/server/auth";
+import {
+  USER_ID_COOKIE,
+  VERIFIED_COOKIE,
+  verifyVerifiedSessionValue,
+} from "@/lib/server/session-cookies";
 import { verifySensitiveOperationPassword } from "@/lib/server/sensitive-operation-auth";
 import {
   buildBackupFileName,
@@ -304,21 +310,44 @@ function restoreFailureMessage(error: unknown) {
  * Use `POST ?mode=table-export` to export a non-restorable Excel workbook.
  */
 export async function GET(req: NextRequest) {
+  const mode = req.nextUrl.searchParams.get("mode");
+  // 恢复进度必须绕开 `getCurrentUser()`：SQLite 上整个导入是一个事务，数据库连接被它占着，
+  // 任何一次用户查询都要排在事务后面 —— 那正是「进度停在 36%」的成因。这里只验签会话
+  // cookie（不查库），再用任务上记录的 userId 做归属判断。
+  if (mode === "restore-status") {
+    return restoreStatusResponse(req);
+  }
   const currentUser = await getCurrentUser();
   if (!currentUser) {
     return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "Sign in required." }, { status: 401 });
   }
   cleanupRestoreTasks();
-  const mode = req.nextUrl.searchParams.get("mode");
-  if (mode === "restore-status") {
-    const id = String(req.nextUrl.searchParams.get("id") ?? "");
-    const task = restoreTasks.get(id);
-    if (!task) {
-      return NextResponse.json({ ok: false, code: "RESTORE_TASK_NOT_FOUND", error: "The restore task does not exist or has expired." }, { status: 404 });
-    }
-    return NextResponse.json({ ok: true, task: publicRestoreTask(task) });
-  }
   return NextResponse.json({ ok: false, code: "METHOD_NOT_ALLOWED", error: "Use POST to export a backup, export tables, or restore a backup." }, { status: 405 });
+}
+
+/**
+ * 只读恢复进度：不碰数据库，因此在大事务进行中也能立刻返回。
+ *
+ * 鉴权用签名的会话 cookie（HMAC + 过期时间 + 用户 id 比对），再要求任务属于同一个用户，
+ * 所以别人拿不到别人发起的恢复进度。
+ */
+async function restoreStatusResponse(req: NextRequest) {
+  cleanupRestoreTasks();
+  const cookieStore = await cookies();
+  const sessionUserId = cookieStore.get(USER_ID_COOKIE)?.value ?? "";
+  const verified = verifyVerifiedSessionValue(cookieStore.get(VERIFIED_COOKIE)?.value, sessionUserId);
+  if (!verified.ok) {
+    return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "Sign in required." }, { status: 401 });
+  }
+  const id = String(req.nextUrl.searchParams.get("id") ?? "");
+  const task = restoreTasks.get(id);
+  if (!task) {
+    return NextResponse.json({ ok: false, code: "RESTORE_TASK_NOT_FOUND", error: "The restore task does not exist or has expired." }, { status: 404 });
+  }
+  if (task.userId && task.userId !== verified.userId) {
+    return NextResponse.json({ ok: false, code: "FORBIDDEN", error: "This restore task belongs to another user." }, { status: 403 });
+  }
+  return NextResponse.json({ ok: true, task: publicRestoreTask(task) });
 }
 
 async function exportBackupPackage(req: NextRequest) {
