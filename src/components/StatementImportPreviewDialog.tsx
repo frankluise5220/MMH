@@ -559,6 +559,23 @@ function missingAccountCandidateValuesForRow(row: ImportPreviewRow, defaultAccou
 const PREVIEW_TABLE_CHROME_HEIGHT = 66;
 const PREVIEW_TABLE_ROW_HEIGHT = 30;
 const PREVIEW_TABLE_MAX_ROWS = 20;
+// 弹窗被 `max-h-[82vh]` 夹住之后，表格之外还要占掉的高度：标题栏 + 底部按钮栏 + 边框。
+// 取实测值再加一点余量（1366×768 下标题 63 + 底部 50 + 边框 2 ≈ 115）。
+const PREVIEW_DIALOG_NON_TABLE_HEIGHT = 132;
+// 分批导入进度条（含说明文字）出现时额外占掉的高度。
+const PREVIEW_IMPORT_PROGRESS_HEIGHT = 56;
+
+/** 视口高度：小屏/缩放后要让表格跟着收缩，不能只在挂载时量一次。 */
+function useViewportHeight() {
+  const [height, setHeight] = useState(0);
+  useEffect(() => {
+    const update = () => setHeight(window.innerHeight);
+    update();
+    window.addEventListener("resize", update);
+    return () => window.removeEventListener("resize", update);
+  }, []);
+  return height;
+}
 
 export function StatementImportPreviewDialog({
   open,
@@ -1669,6 +1686,18 @@ export function StatementImportPreviewDialog({
   // 空结果（如筛选后无记录）时至少留 3 行高，避免空状态提示被压成一条。
   const previewVisibleRowCount = Math.max(3, Math.min(fallbackRows.length, PREVIEW_TABLE_MAX_ROWS));
   const previewTableHeight = previewVisibleRowCount * PREVIEW_TABLE_ROW_HEIGHT + PREVIEW_TABLE_CHROME_HEIGHT;
+  // 表格按行数算出的高度只是**上限**：弹窗被 `max-h-[82vh]` 夹住以后，若表格仍按
+  // 20 行铺满（666px），在 1366×768 / 125% 缩放下会高出弹窗一百多像素，被弹窗的
+  // overflow-hidden 直接裁掉，而且表格内部的滚动条也一起被裁 —— 用户看到的是
+  // 「弹窗显示不完整、只剩一大片灰色遮罩」。这里按视口高度给出真正的可用高度。
+  const viewportHeight = useViewportHeight();
+  const previewTableMaxHeight = Math.max(
+    120,
+    Math.round((viewportHeight || 900) * 0.82)
+      - PREVIEW_DIALOG_NON_TABLE_HEIGHT
+      - (importProgress && importProgress.total > 0 ? PREVIEW_IMPORT_PROGRESS_HEIGHT : 0),
+  );
+  const previewTableHeightValue = Math.min(previewTableHeight, previewTableMaxHeight);
   const importReadySelectedCount = useMemo(
     () => fallbackRows.reduce((count, row) => count + (fallbackSelectedKeys.has(row.key) && row.ready ? 1 : 0), 0),
     [fallbackRows, fallbackSelectedKeys],
@@ -1679,7 +1708,7 @@ export function StatementImportPreviewDialog({
   return createPortal(
     <ModalLayer className="fixed inset-0 flex items-center justify-center bg-slate-900/40 px-4 py-6">
       <div data-batch-popover-boundary data-smart-select-boundary className="flex h-auto max-h-[82vh] w-[72rem] min-w-0 max-w-[calc(100vw-2rem)] resize flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
-        <div className="flex items-start justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3">
+        <div className="flex shrink-0 items-start justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3">
           <div className="min-w-0">
             <div className="truncate text-sm font-semibold text-slate-800">{title}</div>
             {description ? <div className="mt-0.5 truncate text-xs text-slate-500">{description}</div> : null}
@@ -1701,7 +1730,7 @@ export function StatementImportPreviewDialog({
           </button>
         </div>
 
-        <div className="min-h-0 flex-1">
+        <div className="min-h-0 flex-1 overflow-hidden">
           {!settingsBootstrapLoaded ? (
             <div role="status" aria-live="polite" className="flex min-h-[320px] items-center justify-center bg-white px-4">
               <div className="flex items-start gap-3 rounded-lg border border-blue-100 bg-blue-50/60 px-4 py-3 text-sm text-slate-700">
@@ -1713,8 +1742,9 @@ export function StatementImportPreviewDialog({
               </div>
             </div>
           ) : (
-            // 表格高度按行数计算、最多 20 行（每行 30px），超出部分纵向滚动；弹窗被 82vh 限制时再按可用高度收缩。
-            <div className="min-h-0 max-h-full" style={{ height: previewTableHeight }}>
+            // 表格高度按行数计算、最多 20 行（每行 30px），超出部分纵向滚动；
+            // 弹窗被 82vh 限制时取可用高度，避免行被弹窗直接裁掉。
+            <div className="min-h-0" style={{ height: previewTableHeightValue }}>
               <AdvancedDataTable
                 storageKey="mmh_statement_import_preview_table_v2"
                 columns={columns}
@@ -1803,7 +1833,7 @@ export function StatementImportPreviewDialog({
           </div>
         ) : null}
 
-        <div className="flex items-center justify-between gap-3 border-t border-slate-200 bg-slate-50 px-4 py-3">
+        <div className="flex shrink-0 items-center justify-between gap-3 border-t border-slate-200 bg-slate-50 px-4 py-3">
           <div className="flex min-w-0 items-center gap-3 text-xs">
             <span className="shrink-0 text-slate-500">{t("statementImportPreview.willImport", { count: importReadySelectedCount })}</span>
             {fallbackSelectedKeys.size > importReadySelectedCount ? (
