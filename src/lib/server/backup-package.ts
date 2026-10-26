@@ -91,6 +91,25 @@ export function decodeBackupPackage(bytes: Buffer | Uint8Array): unknown {
   }
 }
 
+/**
+ * 二进制快照（SQLite 整库）在**加密之前**先压缩。
+ *
+ * 这条路径以前是把快照 base64 塞进信封再让外层 gzip 压，顺序反了：
+ * 密文是高熵字节，外层 gzip 只能消掉 base64 的 33%。实测 77.8MB 的库
+ * 「先加密后压」出包约 78MB，「先压后加密」约 13MB。
+ */
+export function encodeBackupSnapshotBytes(bytes: Buffer): Buffer {
+  return zlib.gzipSync(bytes, { level: BACKUP_GZIP_LEVEL });
+}
+
+export function decodeBackupSnapshotBytes(bytes: Buffer): Buffer {
+  try {
+    return zlib.gunzipSync(bytes);
+  } catch {
+    throw new Error("备份包快照解压失败，文件可能已损坏");
+  }
+}
+
 /** 明文文本入口，仅用于测试与历史数据；业务代码一律用 decodeBackupPackage。 */
 export function decodeBackupPackageText(text: string): unknown {
   return JSON.parse(text);

@@ -19,8 +19,10 @@ import {
   BACKUP_FILE_GZIP_MAGIC,
   decodeBackupPackage,
   decodeBackupPayloadJson,
+  decodeBackupSnapshotBytes,
   encodeBackupPackage,
   encodeBackupPayloadJson,
+  encodeBackupSnapshotBytes,
   isGzipBackupPackage,
 } from "@/lib/server/backup-package";
 
@@ -125,6 +127,26 @@ function main() {
       "密文是高熵字节，若先加密再压缩，125MB 的账簿仍是 120MB（实测），必须先压缩后加密。",
   );
   log(`加密载荷压缩比 ${payloadRatio.toFixed(1)} 倍（同一份数据，先压后加密）`);
+
+  // 3c. 整库快照（SQLite 系统备份）：同样必须先压缩再加密，往返逐字节一致。
+  //     77.8MB 的库先加密后压是 ~78MB，先压后加密是 ~13MB，这条防的是顺序被改回去。
+  const snapshot = Buffer.concat([
+    Buffer.from("SQLite format 3\u0000", "binary"),
+    Buffer.from(Array.from({ length: 8192 }, (_, index) => index % 251)),
+  ]);
+  const snapshotPacked = encodeBackupSnapshotBytes(snapshot);
+  assert.ok(isGzipBackupPackage(snapshotPacked), "SQLite 快照必须先 gzip 再加密（compress-then-encrypt）。");
+  assert.deepEqual(
+    decodeBackupSnapshotBytes(snapshotPacked),
+    snapshot,
+    "快照压缩往返必须逐字节一致：这里丢一个字节就等于整库损坏。",
+  );
+  assert.throws(
+    () => decodeBackupSnapshotBytes(Buffer.from("not a gzip payload", "utf8")),
+    /损坏/,
+    "损坏的快照必须抛出可读错误，而不是 zlib 的原始异常。",
+  );
+  log(`整库快照：${snapshot.length}B 先压后加密，往返逐字节一致`);
 
   // 4. 坏包必须有可读的报错。
   const corrupted = Buffer.from(encoded);

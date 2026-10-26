@@ -21,7 +21,9 @@ import { normalizeRestoreIdentity } from "@/lib/server/restore-identity";
 import {
   BACKUP_PAYLOAD_ENCODING,
   decodeBackupPayloadJson,
+  decodeBackupSnapshotBytes,
   encodeBackupPayloadJson,
+  encodeBackupSnapshotBytes,
 } from "@/lib/server/backup-package";
 import { extractStatementLearningKeyword, normalizeStatementKeywordText } from "@/lib/statement/import-normalization";
 import { DEFAULT_SESSION_DAYS, normalizeSessionDays } from "@/lib/session-days";
@@ -41,8 +43,10 @@ import { preferencesFromRow, type PreferenceRow } from "@/lib/preferences";
 /**
  * 5：备份文件一律 gzip（见 src/lib/server/backup-package.ts）。包内结构未变，
  * 恢复两种编码都能读，所以 4 → 5 只是文件编码升级，不是数据迁移。
+ * 6：系统备份可携带 `households[]`（多账簿）。单账簿包的 `data` 结构一字未改，
+ * 因此 5 及更早的包照旧能读，只是没有 `households` 那一段。
  */
-export const BACKUP_FORMAT_VERSION = 5;
+export const BACKUP_FORMAT_VERSION = 6;
 /** 4：密文内容是 gzip 载荷（compress-then-encrypt）；3 及更早是明文 JSON 密文。 */
 const ENCRYPTED_BACKUP_PACKAGE_VERSION = 4;
 const ENCRYPTED_BACKUP_ALGORITHM = "aes-256-gcm";
@@ -52,7 +56,7 @@ const BACKUP_PASSPHRASE_KDF = "pbkdf2-sha256";
 const BACKUP_PASSPHRASE_KDF_ITERATIONS = 210_000;
 
 type ExportedBy = Pick<CurrentUser, "id" | "name" | "role"> | null;
-export type BackupScope = "system" | "household";
+type BackupScope = "system" | "household";
 type BackupPackageEncryptionOptions = {
   passphrase?: string | null;
   /**
@@ -63,7 +67,22 @@ type BackupPackageEncryptionOptions = {
   useSystemKeyWhenNoPassphrase?: boolean;
 };
 
-export type HouseholdBackupPayload = Awaited<ReturnType<typeof buildHouseholdBackupPayload>>;
+/**
+ * 多账簿系统备份里的一本「其余账簿」：结构与单账簿包的 `scope/counts/data` 完全一致，
+ * 所以恢复端对每一组复用同一套写入逻辑，不需要第二份映射表。
+ */
+export type HouseholdBackupGroup = Pick<
+  Awaited<ReturnType<typeof buildHouseholdBackupPayload>>,
+  "scope" | "counts" | "data"
+>;
+
+export type HouseholdBackupPayload = Awaited<ReturnType<typeof buildHouseholdBackupPayload>> & {
+  /**
+   * 6 起：系统备份携带的其余账簿（当前账簿仍在 `data` 里）。
+   * 单账簿包没有这个字段，恢复端按「一本账簿」处理，老包因此无需迁移。
+   */
+  households?: HouseholdBackupGroup[];
+};
 export type RestoreHouseholdBackupProgress = {
   stage: "preparing" | "clearing" | "importing" | "restoring" | "finalizing" | "done";
   percent: number;
@@ -1556,7 +1575,9 @@ export async function encryptBackupBytes(
   const iv = crypto.randomBytes(12);
   const { key, metadata } = await getBackupEncryptionKey(options);
   const cipher = crypto.createCipheriv(ENCRYPTED_BACKUP_ALGORITHM, key, iv);
-  const ciphertext = Buffer.concat([cipher.update(bytes), cipher.final()]);
+  // 先压再加密：快照是整库文件，直接加密后外层 gzip 只能省掉 base64 的 33%
+  //（77.8MB 的库出包仍有 ~78MB）；先压后加密是 ~13MB。
+  const ciphertext = Buffer.concat([cipher.update(encodeBackupSnapshotBytes(bytes)), cipher.final()]);
 
   return {
     app: "MMH" as const,
@@ -1565,6 +1586,8 @@ export async function encryptBackupBytes(
     encrypted: true,
     exportedAt,
     scope,
+    /** 密文里是 gzip 过的快照；老包没有这个字段，密文里是裸快照。 */
+    payloadEncoding: BACKUP_PAYLOAD_ENCODING,
     encryption: {
       algorithm: ENCRYPTED_BACKUP_ALGORITHM,
       ...metadata,
@@ -1606,7 +1629,11 @@ export async function decryptBackupBytes(
     const ciphertext = Buffer.from(String(packageObject.ciphertext ?? ""), "base64");
     const decipher = crypto.createDecipheriv(ENCRYPTED_BACKUP_ALGORITHM, key, iv);
     decipher.setAuthTag(authTag);
-    return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+    const plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+    // 新包是「先压缩后加密」；没有 payloadEncoding 的是老包，密文里直接就是快照字节。
+    return packageObject.payloadEncoding === BACKUP_PAYLOAD_ENCODING
+      ? decodeBackupSnapshotBytes(plaintext)
+      : plaintext;
   } catch {
     if (String(encryption.keySource ?? "") === BACKUP_PASSPHRASE_KEY_SOURCE) {
       restoreError("Backup passphrase does not match. Check the passphrase set when the backup was created; legacy backups without one used the user password.");
@@ -1640,6 +1667,7 @@ function settingsForBackup(
   settings: Array<{ key: string }>,
   backupScope: BackupScope,
   householdId: string,
+  includeGlobals = true,
 ) {
   // The installation id identifies THIS deployment, so it is excluded even from
   // a full system backup: restoring that backup onto another deployment would
@@ -1648,10 +1676,11 @@ function settingsForBackup(
   const exportable = settings.filter(
     (setting) => setting.key !== INSTALLATION_ID_SETTING_KEY && !belongsToAnotherHousehold(setting.key, householdId),
   );
-  if (backupScope === "system") return exportable;
+  if (backupScope === "system" && includeGlobals) return exportable;
   const householdKeys = new Set(householdScopedSettingKeys(householdId));
   return exportable.filter(
-    (setting) => RESTORABLE_GLOBAL_SYSTEM_SETTING_KEYS.has(setting.key) || householdKeys.has(setting.key),
+    (setting) =>
+      householdKeys.has(setting.key) || (includeGlobals && RESTORABLE_GLOBAL_SYSTEM_SETTING_KEYS.has(setting.key)),
   );
 }
 
@@ -1694,10 +1723,16 @@ export async function buildHouseholdBackupPayload(
     backupScope?: BackupScope;
     omitImportBatchRawText?: boolean;
     omitTransactionDisplayNames?: boolean;
+    /**
+     * 多账簿系统备份里的「其余账簿」分组：带上自己的用户和账簿级设置，
+     * 但不重复带全局表（行情缓存、命令别名、系统设置……由主组带一次就够）。
+     */
+    groupOnly?: boolean;
   } = {},
 ) {
   const backupScope: BackupScope = options.backupScope === "system" ? "system" : "household";
   const isSystemBackup = backupScope === "system";
+  const includeGlobals = isSystemBackup && options.groupOnly !== true;
   const household = await prisma.household.findUnique({
     where: { id: householdId },
   });
@@ -1813,7 +1848,7 @@ export async function buildHouseholdBackupPayload(
       orderBy: [{ createdAt: "asc" }],
     }),
     prisma.fundQueryApi.findMany({
-      where: isSystemBackup
+      where: includeGlobals
         ? { OR: [{ householdId }, { householdId: null }] }
         : { householdId },
       orderBy: [{ createdAt: "asc" }],
@@ -1892,10 +1927,10 @@ export async function buildHouseholdBackupPayload(
       { tableNames: ["property_transactions"] },
     ),
     prisma.entryBusinessLink.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
-    isSystemBackup
+    includeGlobals
       ? prisma.fundNavCache.findMany({ orderBy: [{ fundCode: "asc" }, { navDate: "asc" }] })
       : Promise.resolve([]),
-    isSystemBackup
+    includeGlobals
       ? optionalPrismaFindMany<Record<string, unknown>>(
           prisma,
           "stockBrokerageCatalog",
@@ -1903,27 +1938,27 @@ export async function buildHouseholdBackupPayload(
           { tableNames: ["stock_brokerage_catalog"] },
         )
       : Promise.resolve([]),
-    isSystemBackup
+    includeGlobals
       ? prisma.distillLog.findMany({ orderBy: [{ createdAt: "asc" }] })
       : Promise.resolve([]),
-    isSystemBackup
+    includeGlobals
       ? prisma.commandTestResult.findMany({ orderBy: [{ createdAt: "asc" }] })
       : Promise.resolve([]),
-    isSystemBackup
+    includeGlobals
       ? prisma.commandAlias.findMany({ orderBy: [{ category: "asc" }, { key: "asc" }] })
       : Promise.resolve([]),
-    isSystemBackup
+    includeGlobals
       ? prisma.approvedCurrency.findMany({ orderBy: [{ code: "asc" }] })
       : Promise.resolve([]),
-    isSystemBackup
+    includeGlobals
       ? prisma.customCurrencyRequest.findMany({ orderBy: [{ createdAt: "asc" }] })
       : Promise.resolve([]),
     prisma.systemSetting.findMany({ orderBy: [{ key: "asc" }] }),
-    prisma.accessKey.findMany({ orderBy: [{ createdAt: "asc" }] }),
-    prisma.aiChannel.findMany({ orderBy: [{ createdAt: "asc" }] }),
-    prisma.aiModel.findMany({ orderBy: [{ createdAt: "asc" }] }),
+    includeGlobals ? prisma.accessKey.findMany({ orderBy: [{ createdAt: "asc" }] }) : Promise.resolve([]),
+    includeGlobals ? prisma.aiChannel.findMany({ orderBy: [{ createdAt: "asc" }] }) : Promise.resolve([]),
+    includeGlobals ? prisma.aiModel.findMany({ orderBy: [{ createdAt: "asc" }] }) : Promise.resolve([]),
   ]);
-  const exportedSystemSettings = settingsForBackup(systemSettings, backupScope, householdId);
+  const exportedSystemSettings = settingsForBackup(systemSettings, backupScope, householdId, includeGlobals);
 
   const userIds = users.map((item) => item.id);
   const accountIds = accounts.map((item) => item.id);
@@ -2106,6 +2141,33 @@ export async function buildHouseholdBackupPayload(
 }
 
 /**
+ * 系统备份：当前账簿 + 其余全部账簿 + 全局表。
+ *
+ * 为什么不能只有一本账簿：系统备份的语义是「把这台设备整体搬回来」，
+ * 多账簿部署换机时若只带当前账簿，其余账簿就得一本一本手动导出再导入，
+ * 而且用户、行情缓存、命令别名、系统设置这些全局数据也没人承载。
+ *
+ * 全局表只在主组（当前账簿，仍在 `data` 里）出现一次，其余账簿各自成组放进
+ * `households[]`，只带自己的流水与账簿级设置 —— 否则一份 1216 行的行情缓存
+ * 会被复制 N 遍。
+ */
+export async function buildSystemBackupPayload(householdId: string, exportedBy: ExportedBy) {
+  const households = await prisma.household.findMany({ orderBy: [{ createdAt: "asc" }] });
+  const primary = await buildHouseholdBackupPayload(householdId, exportedBy, { backupScope: "system" });
+  const groups: HouseholdBackupGroup[] = [];
+  for (const household of households) {
+    if (household.id === householdId) continue;
+    const group = await buildHouseholdBackupPayload(household.id, exportedBy, {
+      backupScope: "system",
+      ensureBackupPackageKey: false,
+      groupOnly: true,
+    });
+    groups.push({ scope: group.scope, counts: group.counts, data: group.data });
+  }
+  return { ...primary, households: groups };
+}
+
+/**
  * Excel caps sheet names at 31 characters and rejects `[]:*?/\`. Model names
  * such as `ReimbursementSettlementTransactions` are longer than that, and
  * `book_append_sheet` throws, which used to fail the whole table export with
@@ -2126,7 +2188,7 @@ function excelSheetName(name: string, used: Set<string>) {
   return candidate;
 }
 
-export async function buildHouseholdBackupWorkbook(payload: HouseholdBackupPayload) {
+async function buildHouseholdBackupWorkbook(payload: HouseholdBackupPayload) {
   const XLSX = await import("xlsx");
   const workbook = XLSX.utils.book_new();
 
@@ -2447,7 +2509,15 @@ export function parseBackupPayload(raw: unknown) {
   };
 }
 
-export async function restoreHouseholdBackup(
+/**
+ * 恢复「一组」账簿数据：单账簿包就是全部内容，多账簿系统包则由
+ * `restoreHouseholdBackup` 逐组调用。
+ *
+ * `skipGlobalReset` 为真时只清本账簿的数据与账簿级设置，不碰全局表 ——
+ * 全局表（行情缓存、命令别名、系统设置、accessKey、AI 通道）只在主组里存在，
+ * 每组都清一遍会把上一组刚写进去的内容删掉。
+ */
+async function restoreSingleHouseholdBackup(
   rawPayload: unknown,
   options: {
     householdId: string;
@@ -2459,6 +2529,7 @@ export async function restoreHouseholdBackup(
       passwordHash?: string | null;
     } | null;
     onProgress?: (progress: RestoreHouseholdBackupProgress) => void | Promise<void>;
+    skipGlobalReset?: boolean;
   },
 ) {
   const reportProgress = async (progress: RestoreHouseholdBackupProgress) => {
@@ -2599,7 +2670,7 @@ export async function restoreHouseholdBackup(
     const propertyValuationDelegate = getOptionalPrismaDelegate<OptionalPrismaRestoreDelegate>(tx, "propertyValuation");
     const propertyTransactionDelegate = getOptionalPrismaDelegate<OptionalPrismaRestoreDelegate>(tx, "propertyTransaction");
 
-    if (isSystemRestore) {
+    if (isSystemRestore && !options.skipGlobalReset) {
       // The installation id is this deployment's own identity, not backup data,
       // so preserve the LOCAL value across the wipe: it is never taken from the
       // file (that id belongs to the deployment the backup came from), and a
@@ -2756,7 +2827,7 @@ export async function restoreHouseholdBackup(
     await tx.depositProduct.deleteMany({ where: { householdId } });
     await tx.bondProduct.deleteMany({ where: { householdId } });
     await tx.importBatch.deleteMany({ where: { householdId } });
-    if (isSystemRestore) {
+    if (isSystemRestore && !options.skipGlobalReset) {
       await tx.fundQueryApi.deleteMany({ where: { OR: [{ householdId }, { householdId: null }] } });
     } else {
       await tx.fundQueryApi.deleteMany({ where: { householdId } });
@@ -2788,7 +2859,7 @@ export async function restoreHouseholdBackup(
     if (data.householdPreferences.length > 0) {
       await tx.householdPreference.deleteMany({ where: { householdId } });
     }
-    if (isSystemRestore) {
+    if (isSystemRestore && !options.skipGlobalReset) {
       await tx.fundNavCache.deleteMany({});
       await tx.commandAlias.deleteMany({});
       await optionalPrismaDeleteMany(
@@ -2814,9 +2885,16 @@ export async function restoreHouseholdBackup(
     }
     await reportProgress({ stage: "importing", percent: 60, label: "导入基础数据", detail: "正在写入用户、账户和分类" });
 
-    await tx.household.update({
+    // 多账簿系统包里「其余账簿」可能在目标设备上还不存在（换机恢复），
+    // 所以这里用 upsert：同名 id 存在就改名/改本位币，不存在就按原 id 建一本。
+    await tx.household.upsert({
       where: { id: householdId },
-      data: {
+      create: {
+        id: householdId,
+        name: String(data.household.name ?? payload.scope.householdName ?? "恢复账簿"),
+        baseCurrency: String(data.household.baseCurrency ?? "CNY"),
+      },
+      update: {
         name: String(data.household.name ?? payload.scope.householdName ?? "恢复账簿"),
         baseCurrency: String(data.household.baseCurrency ?? "CNY"),
       },
@@ -4565,5 +4643,105 @@ export async function restoreHouseholdBackup(
       emailAccounts: data.emailAccounts.length,
       regularInvestPlans: data.regularInvestPlans.length,
     },
+  };
+}
+
+/**
+ * 恢复入口。
+ *
+ * 单账簿包（没有 `households` 字段）就是一组，行为和以前完全一致；
+ * 多账簿系统包则逐组恢复：第一组（`data`）并入当前账簿，其余各按包内原 id 落库。
+ *
+ * 为什么其余账簿保留原 id 而不是重新分配：系统备份是「整机搬迁」语义，
+ * 账簿 id 已经写进了附件路径、用户、跨账簿引用里，换 id 等于让它们全部失联；
+ * 目标设备上有同 id 就覆盖，没有就新建（写入阶段的 `household.upsert`）。
+ */
+export async function restoreHouseholdBackup(
+  rawPayload: unknown,
+  options: {
+    householdId: string;
+    fallbackAdmin?: {
+      name: string;
+      role: string;
+      isSystem: boolean;
+      email?: string | null;
+      passwordHash?: string | null;
+    } | null;
+    onProgress?: (progress: RestoreHouseholdBackupProgress) => void | Promise<void>;
+  },
+) {
+  const primary = parseBackupPayload(rawPayload);
+  // 逐组跑 `parseBackupPayload`（它做完整校验），所以这里只负责搬运，类型跟随解析结果。
+  type RestoreGroup = {
+    scope: typeof primary.scope;
+    counts: typeof primary.counts;
+    data: typeof primary.data;
+    primary: boolean;
+  };
+  const groups: RestoreGroup[] = [
+    { scope: primary.scope, counts: primary.counts, data: primary.data, primary: true },
+  ];
+
+  const rawHouseholds = (rawPayload as { households?: unknown } | null)?.households;
+  if (rawHouseholds != null) {
+    if (!Array.isArray(rawHouseholds)) restoreError("data.households 不是数组");
+    rawHouseholds.forEach((item, index) => {
+      if (!item || typeof item !== "object") restoreError(`data.households[${index}] 不是对象`);
+      const group = item as { scope?: Record<string, unknown>; counts?: unknown; data?: unknown };
+      const groupHouseholdId = String(group.scope?.householdId ?? "");
+      if (!groupHouseholdId) restoreError(`data.households[${index}] 缺少账簿 ID`);
+      groups.push({
+        scope: {
+          householdId: groupHouseholdId,
+          householdName: String(group.scope?.householdName ?? `账簿 ${index + 2}`),
+          backupScope: primary.scope.backupScope,
+        },
+        counts: (group.counts ?? {}) as RestoreGroup["counts"],
+        data: (group.data ?? {}) as RestoreGroup["data"],
+        primary: false,
+      });
+    });
+  }
+
+  // 同一个 id 在包里出现两次时只恢复一次，否则后一组会先把前一组写好的数据删掉。
+  const seen = new Set<string>();
+  const queue = groups.filter((group) => {
+    if (seen.has(group.scope.householdId)) return false;
+    seen.add(group.scope.householdId);
+    return true;
+  });
+
+  let totalTransactions = 0;
+  let primaryName = primary.scope.householdName;
+  for (const [index, group] of queue.entries()) {
+    const targetHouseholdId = group.primary ? options.householdId : group.scope.householdId;
+    const summary = await restoreSingleHouseholdBackup(
+      { ...primary, scope: group.scope, counts: group.counts, data: group.data },
+      {
+        ...options,
+        householdId: targetHouseholdId,
+        skipGlobalReset: !group.primary,
+        // 每组内部进度都是 45→100，直接透传会让进度条恢复一本归零一次；
+        // 按组数切成均等的窗口，界面看到的是一条只往前的进度。
+        onProgress: options.onProgress
+          ? async (progress) => {
+              const local = Math.max(0, Math.min(100, progress.percent)) / 100;
+              const percent = Math.min(100, Math.round(((index + local) / queue.length) * 100));
+              const label =
+                queue.length > 1 && !group.primary
+                  ? `恢复账簿 ${index + 1}/${queue.length}：${progress.label}`
+                  : progress.label;
+              await options.onProgress?.({ ...progress, percent, label });
+            }
+          : undefined,
+      },
+    );
+    totalTransactions += summary.counts.transactions;
+    if (group.primary) primaryName = summary.householdName;
+  }
+
+  return {
+    householdName: queue.length > 1 ? `${primaryName} 等 ${queue.length} 本账簿` : primaryName,
+    counts: { transactions: totalTransactions },
   };
 }

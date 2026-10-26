@@ -56,7 +56,31 @@ expect(
 // 2. 格式版本
 const versionMatch = /export const BACKUP_FORMAT_VERSION = (\d+)/.exec(backupSource);
 const version = versionMatch ? Number(versionMatch[1]) : 0;
-expect(version >= 5, `BACKUP_FORMAT_VERSION 必须 ≥ 5（当前 ${version}）：5 起包文件一律 gzip，改格式必须抬版本号。`);
+expect(version >= 6, `BACKUP_FORMAT_VERSION 必须 ≥ 6（当前 ${version}）：5 起包文件一律 gzip，6 起系统备份可携带 households[]，改格式必须抬版本号。`);
+
+// 2b. 系统备份必须带上全部账簿：只带当前账簿等于「换机时其余账簿没备份」。
+expect(
+  backupSource.includes("export async function buildSystemBackupPayload"),
+  "backup.ts 必须导出 buildSystemBackupPayload：系统备份的语义是整机搬迁，不能只有当前账簿。",
+);
+expect(
+  routeSource.includes("buildSystemBackupPayload("),
+  "导出路由的 system 分支必须调用 buildSystemBackupPayload，否则多账簿部署换机时其余账簿没有备份。",
+);
+expect(
+  backupSource.includes("households 不是数组") && backupSource.includes("household.upsert"),
+  "恢复端必须读取 households[] 并允许按原 id 新建账簿：否则多账簿系统包只能恢复第一本。",
+);
+
+// 2c. SQLite 系统备份：快照必须先压缩再加密，顺序反了 78MB 的包只降到 78MB。
+expect(
+  /cipher\.update\(encodeBackupSnapshotBytes\(bytes\)\)/.test(backupSource),
+  "SQLite 快照必须在加密前 gzip（encodeBackupSnapshotBytes）：先加密后压省不掉体积。",
+);
+expect(
+  backupSource.includes("decodeBackupSnapshotBytes(plaintext)"),
+  "恢复端必须按 payloadEncoding 决定是否解压快照：老包密文里是裸快照，不能无条件 gunzip。",
+);
 
 // 3. 写入路径
 expect(

@@ -12,6 +12,7 @@ import {
   buildBackupFileName,
   buildHouseholdBackupPayload,
   buildHouseholdTableExportWorkbook,
+  buildSystemBackupPayload,
   buildTableExportFileName,
   decryptBackupBytes,
   decryptBackupPackage,
@@ -375,11 +376,12 @@ async function exportBackupPackage(req: NextRequest) {
       });
     }
 
-    const payload = await buildHouseholdBackupPayload(
-      householdId,
-      user ? { id: user.id, name: user.name, role: user.role } : null,
-      { backupScope },
-    );
+    // 系统备份要带上所有账簿（多账簿部署换机时才不用一本一本手动导），
+    // 账簿备份只带当前这一本。
+    const exportedBy = user ? { id: user.id, name: user.name, role: user.role } : null;
+    const payload = backupScope === "system"
+      ? await buildSystemBackupPayload(householdId, exportedBy)
+      : await buildHouseholdBackupPayload(householdId, exportedBy, { backupScope });
     const encryptedPayload = await encryptBackupPayload(payload, { passphrase });
     const fileName = buildBackupFileName(payload.scope.householdName, payload.exportedAt, "mmh-backup");
     return new Response(new Uint8Array(encodeBackupPackage(encryptedPayload)), {
@@ -559,8 +561,10 @@ export async function POST(req: NextRequest) {
     return restoreUploadTooLargeResponse();
   }
 
-  if (activeRestoreHouseholds.has(householdId)) {
-    return NextResponse.json({ ok: false, code: "RESTORE_ALREADY_RUNNING", error: "A restore task is already running for this book. Wait for it to finish and retry." }, { status: 409 });
+  // 系统备份可能包含多本账簿，一次恢复会改写不止当前这一本，所以这里是全站互斥：
+  // 别的账簿正在恢复时也拒绝，避免两个任务交替删写同一批表。
+  if (activeRestoreHouseholds.size > 0) {
+    return NextResponse.json({ ok: false, code: "RESTORE_ALREADY_RUNNING", error: "A restore task is already running. Wait for it to finish and retry." }, { status: 409 });
   }
 
   let uploadedFilePath: string;
