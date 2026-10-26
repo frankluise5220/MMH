@@ -1241,6 +1241,8 @@ model HouseholdPreference {
   sidebarShowAllCashEntries         Boolean         @default(true)
   sidebarShowReimbursements         Boolean         @default(true)
   detailDateBackground              Boolean         @default(false)
+  /// 明细默认观测窗口（年）。0 = 不限（全部时间）。「全部」视图与首屏都按它裁数据。
+  detailWindowYears                 Int             @default(5)
   rowHeightMode                     Int             @default(35)
   /// account-display 的版本化序列化串；为空表示未配置，用默认字段集。
   accountLabelFields                String?

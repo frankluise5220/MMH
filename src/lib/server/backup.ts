@@ -12,6 +12,7 @@ import {
   type OptionalPrismaRestoreDelegate,
 } from "@/lib/server/optional-prisma-delegate";
 import { createManySkipDuplicatesCompat } from "@/lib/server/prisma-create-many";
+import { createSqliteBulkInserter } from "@/lib/server/sqlite-bulk-insert";
 import {
   BUILTIN_LOAN_CATEGORIES,
   builtinLoanCategoryId,
@@ -495,14 +496,42 @@ async function createManyRecords(
   delegate: unknown,
   records: Record<string, unknown>[],
   nullDateKeys = new Set<string>(),
+  tableName?: string,
 ) {
   if (records.length === 0) return;
   const target = delegate as { createMany: (args: { data: Record<string, unknown>[] }) => Promise<unknown> };
   const normalized = records.map((record) => normalizeRecordDates(record, nullDateKeys));
+  const writeChunk = tableName ? createChunkedBulkInserter(tableName, target) : null;
   for (let index = 0; index < normalized.length; index += RESTORE_CREATE_MANY_BATCH_SIZE) {
-    await target.createMany({ data: normalized.slice(index, index + RESTORE_CREATE_MANY_BATCH_SIZE) });
+    const chunk = normalized.slice(index, index + RESTORE_CREATE_MANY_BATCH_SIZE);
+    if (writeChunk) {
+      await writeChunk(chunk);
+    } else {
+      await target.createMany({ data: chunk });
+    }
     await yieldToEventLoop();
   }
+}
+
+/**
+ * 一批行优先走 SQLite 原生写入，失败则退回 Prisma 的 `createMany`。
+ *
+ * 原生路径每次失败都用 SAVEPOINT 回滚掉本批，所以回退不会撞主键。
+ */
+function createChunkedBulkInserter(tableName: string, delegate: unknown) {
+  const bulkInsert = createSqliteBulkInserter(tableName);
+  const target = delegate as { createMany: (args: { data: Record<string, unknown>[] }) => Promise<unknown> };
+  return async (chunk: Record<string, unknown>[]) => {
+    try {
+      if (bulkInsert(chunk)) return;
+    } catch (error) {
+      logger.warn(
+        `恢复：${tableName} 原生批量写入失败，回退 createMany`,
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+    await target.createMany({ data: chunk });
+  };
 }
 
 const RESTORE_CREATE_MANY_BATCH_SIZE = 500;
@@ -1845,11 +1874,14 @@ export async function buildHouseholdBackupPayload(
     entryBusinessLinks,
     fundNavCaches,
     stockBrokerageCatalogs,
-    approvedCurrencies,
-    customCurrencyRequests,
+    // 这 5 个名字必须与下面 Promise.all 的查询顺序一一对应（蒸馏日志 → 命令测试结果 →
+    // 命令别名 → 自选币种 → 币种申请）。错开两格会让包里的全局表互相串位，
+    // 恢复时报 `Argument \`code\` is missing`（0.1.79 及更早版本踩过）。
     distillLogs,
     commandTestResults,
     commandAliases,
+    approvedCurrencies,
+    customCurrencyRequests,
     systemSettings,
     accessKeys,
     aiChannels,
@@ -2451,6 +2483,113 @@ function ensureLiabilityArray(value: unknown, label: string) {
   return ensureArray(value, label).map((row) => normalizeLegacyLiabilityRecord(row) as Record<string, unknown>);
 }
 
+type GlobalTableSlot =
+  | "approvedCurrencies"
+  | "customCurrencyRequests"
+  | "distillLogs"
+  | "commandTestResults"
+  | "commandAliases";
+
+const GLOBAL_TABLE_SLOTS: GlobalTableSlot[] = [
+  "approvedCurrencies",
+  "customCurrencyRequests",
+  "distillLogs",
+  "commandTestResults",
+  "commandAliases",
+];
+
+/**
+ * 每张全局表的「字段指纹」：用来判断包里的某个数组到底属于哪张表。
+ *
+ * `forbidden` 是必需的：自选币种和币种申请都有 code/nameZh/nameEn，
+ * 只有 requesterId 能把它们区分开。
+ */
+const GLOBAL_TABLE_SHAPE: Record<GlobalTableSlot, { required: string[]; forbidden?: string[] }> = {
+  approvedCurrencies: { required: ["code", "nameZh", "nameEn"], forbidden: ["requesterId"] },
+  customCurrencyRequests: { required: ["code", "nameZh", "requesterId"] },
+  distillLogs: { required: ["rawInput", "source"] },
+  commandTestResults: { required: ["index", "rawResponse", "input"] },
+  commandAliases: { required: ["key", "value", "category"] },
+};
+
+function arrayFitsGlobalTableSlot(rows: Record<string, unknown>[], slot: GlobalTableSlot) {
+  const shape = GLOBAL_TABLE_SHAPE[slot];
+  return rows.every((row) =>
+    shape.required.every((field) => field in row) &&
+    (shape.forbidden ?? []).every((field) => !(field in row)),
+  );
+}
+
+/**
+ * 修正旧版本导出的「全局表串位」备份包。
+ *
+ * 0.1.79 及更早的导出让出顺序和解构变量错开了两格，导致自选币种、币种申请、蒸馏日志、
+ * 命令测试结果、命令别名这 5 张全局表的数组被写到了彼此相邻的键上。这类包直接恢复会在
+ * `approvedCurrency.createMany()` 上炸掉（Argument `code` is missing），可用户手里可能
+ * 只有这一份包，所以按字段指纹把数组认领回正确的表，而不是让他重新导出。
+ *
+ * 只有在「当前键的数组明显不属于这个键」且「正确归属唯一」时才重排；有歧义就报错，
+ * 不猜。
+ */
+function reconcileLegacyGlobalTableShift<T extends Record<string, unknown>>(data: T): T {
+  const arrays = {} as Record<GlobalTableSlot, Record<string, unknown>[]>;
+  for (const slot of GLOBAL_TABLE_SLOTS) {
+    const value = data[slot];
+    arrays[slot] = Array.isArray(value) ? (value as Record<string, unknown>[]) : [];
+  }
+
+  const misaligned = GLOBAL_TABLE_SLOTS.some((slot) => !arrayFitsGlobalTableSlot(arrays[slot], slot));
+  if (!misaligned) return data;
+
+  const sources = GLOBAL_TABLE_SLOTS.filter((slot) => arrays[slot].length > 0);
+  const candidates = new Map<GlobalTableSlot, GlobalTableSlot[]>();
+  for (const source of sources) {
+    candidates.set(
+      source,
+      GLOBAL_TABLE_SLOTS.filter((target) => arrayFitsGlobalTableSlot(arrays[source], target)),
+    );
+  }
+
+  const taken = new Set<GlobalTableSlot>();
+  const current: Array<[GlobalTableSlot, GlobalTableSlot]> = [];
+  let solutionCount = 0;
+  let solution: Array<[GlobalTableSlot, GlobalTableSlot]> = [];
+  const search = (index: number) => {
+    if (solutionCount > 1) return;
+    if (index === sources.length) {
+      solutionCount += 1;
+      solution = [...current];
+      return;
+    }
+    for (const target of candidates.get(sources[index]) ?? []) {
+      if (taken.has(target)) continue;
+      taken.add(target);
+      current.push([sources[index], target]);
+      search(index + 1);
+      current.pop();
+      taken.delete(target);
+    }
+  };
+  search(0);
+
+  if (solutionCount !== 1) {
+    restoreError(
+      "备份包里的全局数据（自选币种、币种申请、蒸馏日志、命令测试结果、命令别名）字段与目标表不匹配，可能来自有问题的旧版本导出，请升级后用同一套数据重新导出再恢复。",
+    );
+  }
+
+  const repaired = {} as Record<GlobalTableSlot, Record<string, unknown>[]>;
+  for (const slot of GLOBAL_TABLE_SLOTS) repaired[slot] = [];
+  for (const [source, target] of solution) repaired[target] = arrays[source];
+
+  logger.warn(
+    "备份包里的全局表串位（旧版本导出缺陷），已按字段指纹修正",
+    solution.map(([source, target]) => `${source}->${target}`).join(", "),
+  );
+
+  return { ...data, ...repaired };
+}
+
 export function parseBackupPayload(raw: unknown) {
   const payload = ensureObject(raw, "payload");
   if (payload.app !== "MMH") {
@@ -2470,7 +2609,7 @@ export function parseBackupPayload(raw: unknown) {
       backupScope: scope.backupScope === "household" ? "household" : "system",
     },
     counts: ensureObject(payload.counts ?? {}, "counts"),
-    data: {
+    data: reconcileLegacyGlobalTableShift({
       household: ensureObject(data.household ?? {}, "data.household"),
       systemSettings: ensureArray(data.systemSettings ?? [], "data.systemSettings"),
       accessKeys: ensureArray(data.accessKeys ?? [], "data.accessKeys"),
@@ -2553,7 +2692,7 @@ export function parseBackupPayload(raw: unknown) {
       attachments: ensureArray(data.attachments ?? [], "data.attachments"),
       entryTags: ensureArray(data.entryTags ?? [], "data.entryTags"),
       emailAccounts: ensureArray(data.emailAccounts ?? [], "data.emailAccounts"),
-    },
+    }),
   };
 }
 
@@ -4028,7 +4167,13 @@ async function restoreSingleHouseholdBackup(
           },
         {
           ...(isSqliteRuntime()
-            ? {}
+            ? {
+                // SQLite 走原生预编译语句：Prisma 的 createMany 在这一层是「逐行建 query
+                // graph」，实测 900 行/秒，5.6 万条要 62 秒；换成 better-sqlite3 直接 bind
+                // 后同样数据 1 秒级。写失败则回退 createMany，不赌正确性。
+                batchSize: RESTORE_FAST_INSERT_BATCH_SIZE,
+                fastInsert: createChunkedBulkInserter("transactions", tx.txRecord),
+              }
             : {
                 // 一次 5.6 万行拼进单条 INSERT 会同时做三件慢事：映射 5.6 万个对象、
                 // 拼出几十 MB 的 JSON 参数、再让数据库一次吃下整条语句（实测这一条语句
@@ -4090,7 +4235,7 @@ async function restoreSingleHouseholdBackup(
       await createManyRecords(
         tx.fundTransaction,
         legacyFundTransactions,
-        new Set(["confirmDate", "arrivalDate", "deletedAt"]),
+        new Set(["confirmDate", "arrivalDate", "deletedAt"]), "fund_transactions",
       );
       for (const item of legacyFundTransactions) importedFundTransactions.add(String(item.id));
 
@@ -4119,7 +4264,7 @@ async function restoreSingleHouseholdBackup(
         })),
       ].filter((item) => importedFundTransactions.has(String(item.fundTransactionId)));
 
-      await createManyRecords(tx.fundTransactionCashFlow, legacyCashFlows);
+      await createManyRecords(tx.fundTransactionCashFlow, legacyCashFlows, new Set(), "fund_transaction_cash_flows");
 
       const refundSummary = new Map<string, { amount: number; arrivalDate: Date | null }>();
       for (const refund of legacyRefundRows) {
@@ -4198,7 +4343,7 @@ async function restoreSingleHouseholdBackup(
               : null,
           regularInvestPlanId: item.regularInvestPlanId == null ? null : String(item.regularInvestPlanId),
         })),
-      new Set(["confirmDate", "arrivalDate", "deletedAt"]),
+      new Set(["confirmDate", "arrivalDate", "deletedAt"]), "fund_transactions",
     );
 
     await createManyRecords(
@@ -4221,7 +4366,7 @@ async function restoreSingleHouseholdBackup(
               ? String(item.cashEntryId)
               : null,
         })),
-      new Set(["postedAt", "arrivalDate", "deletedAt"]),
+      new Set(["postedAt", "arrivalDate", "deletedAt"]), "insurance_transactions",
     );
 
     await createManyRecords(
@@ -4244,7 +4389,7 @@ async function restoreSingleHouseholdBackup(
               ? String(item.wealthProductId)
               : null,
         })),
-      new Set(["confirmDate", "arrivalDate", "deletedAt"]),
+      new Set(["confirmDate", "arrivalDate", "deletedAt"]), "wealth_transactions",
     );
 
     await createManyRecords(
@@ -4271,7 +4416,7 @@ async function restoreSingleHouseholdBackup(
               ? String(item.depositProductId)
               : null,
         })),
-      new Set(["maturityDate", "arrivalDate", "deletedAt"]),
+      new Set(["maturityDate", "arrivalDate", "deletedAt"]), "deposit_transactions",
     );
 
     await createManyRecords(
@@ -4298,7 +4443,7 @@ async function restoreSingleHouseholdBackup(
               ? String(item.bondProductId)
               : null,
         })),
-      new Set(["tradeDate", "confirmDate", "arrivalDate", "maturityDate", "firstPayoutDate", "deletedAt"]),
+      new Set(["tradeDate", "confirmDate", "arrivalDate", "maturityDate", "firstPayoutDate", "deletedAt"]), "bond_transactions",
     );
 
     await createManyRecords(
@@ -4322,7 +4467,7 @@ async function restoreSingleHouseholdBackup(
               ? String(item.cashEntryId)
               : null,
         })),
-      new Set(["deletedAt"]),
+      new Set(["deletedAt"]), "precious_metal_transactions",
     );
 
     await createManyRecords(
@@ -4371,7 +4516,7 @@ async function restoreSingleHouseholdBackup(
           brokerTradeId: item.brokerTradeId == null ? null : String(item.brokerTradeId),
           note: item.note == null ? null : String(item.note),
         })),
-      new Set(["settleDate", "deletedAt"]),
+      new Set(["settleDate", "deletedAt"]), "stock_transactions",
     );
 
     if (propertyTransactionDelegate) {
@@ -4424,6 +4569,8 @@ async function restoreSingleHouseholdBackup(
               ? String(item.accountId)
               : null,
         })),
+      new Set(),
+      "fund_transaction_cash_flows",
     );
 
     await reportProgress({ stage: "importing", percent: 86, label: "导入关联数据", detail: "正在写入交易关联和附件" });
@@ -4478,6 +4625,7 @@ async function restoreSingleHouseholdBackup(
             : null,
       })),
       new Set(["deletedAt"]),
+      "entry_business_links",
     );
 
     if (data.attachments.length > 0) {
@@ -4496,6 +4644,7 @@ async function restoreSingleHouseholdBackup(
             updatedAt: item.updatedAt ? new Date(String(item.updatedAt)) : new Date(),
               }
             : null,
+        { fastInsert: createChunkedBulkInserter("Attachment", tx.attachment) },
       );
     }
 
@@ -4510,6 +4659,7 @@ async function restoreSingleHouseholdBackup(
             tagId: String(item.tagId),
               }
             : null,
+        { fastInsert: createChunkedBulkInserter("EntryTag", tx.entryTag) },
       );
     }
 
