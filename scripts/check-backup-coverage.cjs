@@ -44,9 +44,6 @@ const INTENTIONAL_EXCLUSIONS = new Map(
   Object.entries({
     Household:
       "The household row itself is the restore target, not snapshot content (rebuilt/renamed by the restore flow).",
-    User:
-      "Restored only for system backups via the fallbackAdmin path; household members are rebuilt from the target instance.",
-    UserSettings: "Tied to User rows, which are not part of a household snapshot.",
     PasswordResetToken: "Security token; restore explicitly clears it instead of importing it.",
     RegistrationCode: "Invite/registration codes are instance-scoped, never part of a household snapshot.",
     SponsorTipIntent: "Instance-scoped sponsor state, not household data.",

@@ -1634,7 +1634,7 @@ export async function decryptBackupPackage(
  */
 export async function encryptBackupBytes(
   bytes: Buffer,
-  scope: HouseholdBackupPayload["scope"],
+  scope: HouseholdBackupPayload["scope"] & { container?: "sqlite-snapshot" },
   exportedAt: Date,
   options: BackupPackageEncryptionOptions = {},
 ) {
@@ -1887,9 +1887,10 @@ export async function buildHouseholdBackupPayload(
     aiChannels,
     aiModels,
   ] = await Promise.all([
-    isSystemBackup
-      ? prisma.user.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] })
-      : Promise.resolve([]),
+    // 成员是账簿的一部分，账簿备份也带（以前只带系统备份的成员，恢复完成员全丢）。
+    // 「恢复后谁还能登录」不在这里决定：恢复端会保留目标机的当前登录用户，
+    // 见 restoreHouseholdBackup 的清空分支与整库快照路径的 login-user 保留。
+    prisma.user.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.accountGroup.findMany({ where: { householdId }, orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }] }),
     prisma.institution.findMany({ where: { householdId }, orderBy: [{ name: "asc" }] }),
     prisma.counterparty.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
@@ -3254,8 +3255,12 @@ async function restoreSingleHouseholdBackup(
     }
 
     if (data.users.length > 0) {
-      await tx.user.createMany({
-        data: data.users.map((item) => ({
+      // 账簿恢复不清空现有用户（见上面的 else 分支）：包里的成员落在现有用户旁边，
+      // 目标机的当前登录用户因此还能继续用。同机恢复时包里的成员 id 与现有用户相同，
+      // 用容错写入把它当成「同一个人」跳过，不能让一条重复主键把整次恢复打断。
+      await createManySkipDuplicatesCompat(
+        tx.user,
+        data.users.map((item) => ({
           id: String(item.id),
           name: String(item.name ?? "user"),
           email: item.email == null ? null : String(item.email),
@@ -3268,12 +3273,13 @@ async function restoreSingleHouseholdBackup(
           createdAt: item.createdAt ? new Date(String(item.createdAt)) : new Date(),
           updatedAt: item.updatedAt ? new Date(String(item.updatedAt)) : new Date(),
         })),
-      });
+      );
     }
 
     if (data.userSettings.length > 0) {
-      await tx.userSettings.createMany({
-        data: data.userSettings
+      await createManySkipDuplicatesCompat(
+        tx.userSettings,
+        data.userSettings
           .filter((item) => importedUserSet.has(String(item.userId)))
           .map((item) => ({
             id: String(item.id),
@@ -3298,7 +3304,7 @@ async function restoreSingleHouseholdBackup(
             createdAt: item.createdAt ? new Date(String(item.createdAt)) : new Date(),
             updatedAt: item.updatedAt ? new Date(String(item.updatedAt)) : new Date(),
           })),
-      });
+      );
     }
 
     if (data.householdPreferences.length > 0) {

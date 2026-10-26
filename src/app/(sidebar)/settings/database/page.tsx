@@ -94,6 +94,8 @@ type WindowWithFilePickers = Window & {
 type BackupSaveResult = {
   fileName: string;
   pickedLocation: boolean;
+  /** 单账簿部署导出的包是整库快照，恢复时换文件而不是逐行插入。 */
+  container?: "sqlite-snapshot" | "portable";
 };
 
 type BackupOptions = {
@@ -303,6 +305,8 @@ async function saveDataBackup(options: BackupOptions, t: I18nT): Promise<BackupS
     throw new Error(data?.error || t("settings.database.backupFailedHttp", { status: res.status }));
   }
   const blob = await res.blob();
+  const container =
+    res.headers.get("x-mmh-backup-container") === "sqlite-snapshot" ? "sqlite-snapshot" : "portable";
   const fileName =
     filenameFromDisposition(res.headers.get("content-disposition")) ||
     `mmh-backup-${Date.now()}.mmh-backup`;
@@ -316,7 +320,7 @@ async function saveDataBackup(options: BackupOptions, t: I18nT): Promise<BackupS
       const writable = await handle.createWritable();
       await writable.write(blob);
       await writable.close();
-      return { fileName: handle.name || fileName, pickedLocation: true };
+      return { fileName: handle.name || fileName, pickedLocation: true, container };
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return null;
       throw error;
@@ -331,7 +335,7 @@ async function saveDataBackup(options: BackupOptions, t: I18nT): Promise<BackupS
   link.click();
   link.remove();
   window.URL.revokeObjectURL(url);
-  return { fileName, pickedLocation: false };
+  return { fileName, pickedLocation: false, container };
 }
 
 async function saveDataTableExport(t: I18nT): Promise<BackupSaveResult | null> {
@@ -689,8 +693,13 @@ export default function DatabaseSettingsPage() {
   const [restoreUserPassword, setRestoreUserPassword] = useState("");
   const [restorePassphrase, setRestorePassphrase] = useState("");
   const [restoreBackupScope, setRestoreBackupScope] = useState<"system" | "household" | null>(null);
+  /** 载荷是整库文件：恢复靠换文件，仍然要求用户确认覆盖。 */
+  const [restoreBackupContainer, setRestoreBackupContainer] = useState<"sqlite-snapshot" | null>(null);
   const [restoreBackupEncryption, setRestoreBackupEncryption] = useState<"passphrase" | "system" | "plain" | null>(null);
   const [restoreConfirmSystemOverwrite, setRestoreConfirmSystemOverwrite] = useState(false);
+  /** 整库覆盖：系统还原，或容器为整库文件的账簿快照。两者都要用户明确确认。 */
+  const restoreOverwritesEverything =
+    restoreBackupScope === "system" || restoreBackupContainer === "sqlite-snapshot";
   const [restoreOptionsDialogOpen, setRestoreOptionsDialogOpen] = useState(false);
   const [restoring, setRestoring] = useState(false);
   const [restoreMessage, setRestoreMessage] = useState("");
@@ -1264,10 +1273,12 @@ export default function DatabaseSettingsPage() {
       setBackupPassphrase("");
       setBackupEncrypt(false);
       setBackupScope("household");
+      const notice =
+        result.container === "sqlite-snapshot" ? ` ${t("settings.database.backupSnapshotNotice")}` : "";
       setBackupMessage(
-        result.pickedLocation
+        (result.pickedLocation
           ? t("settings.database.backupSaved", { name: result.fileName })
-          : t("settings.database.backupDownloading", { name: result.fileName }),
+          : t("settings.database.backupDownloading", { name: result.fileName })) + notice,
       );
     } catch (error) {
       setBackupError(error instanceof Error ? error.message : t("settings.database.backupFailed"));
@@ -1297,12 +1308,13 @@ export default function DatabaseSettingsPage() {
 
   async function inspectBackupFile(file: File): Promise<{
     scope: "system" | "household";
+    container: "sqlite-snapshot" | null;
     encryption: "passphrase" | "system" | "plain" | null;
   }> {
     try {
       const text = await file.text();
       const parsed = JSON.parse(text) as {
-        scope?: { backupScope?: unknown };
+        scope?: { backupScope?: unknown; container?: unknown };
         encrypted?: unknown;
         encryption?: { keySource?: unknown };
       };
@@ -1310,10 +1322,11 @@ export default function DatabaseSettingsPage() {
       const keySource = typeof parsed?.encryption?.keySource === "string" ? parsed.encryption.keySource : "";
       return {
         scope: parsed?.scope?.backupScope === "household" ? "household" : "system",
+        container: parsed?.scope?.container === "sqlite-snapshot" ? "sqlite-snapshot" : null,
         encryption: !encrypted ? "plain" : keySource === "passphrase" ? "passphrase" : "system",
       };
     } catch {
-      return { scope: "system", encryption: null };
+      return { scope: "system", container: null, encryption: null };
     }
   }
 
@@ -1323,6 +1336,7 @@ export default function DatabaseSettingsPage() {
     setRestorePassphrase("");
     const inspection = nextFile ? await inspectBackupFile(nextFile) : null;
     setRestoreBackupScope(inspection?.scope ?? null);
+    setRestoreBackupContainer(inspection?.container ?? null);
     setRestoreBackupEncryption(inspection?.encryption ?? null);
     setRestoreConfirmSystemOverwrite(false);
     setRestoreOptionsDialogOpen(false);
@@ -1379,8 +1393,12 @@ export default function DatabaseSettingsPage() {
       setRestoreError(t("settings.database.encryptionPassphraseRequired"));
       return;
     }
-    if (restoreBackupScope === "system" && !restoreConfirmSystemOverwrite) {
-      setRestoreError(t("settings.database.systemBackupConfirm"));
+    if (restoreOverwritesEverything && !restoreConfirmSystemOverwrite) {
+      setRestoreError(
+        restoreBackupScope === "system"
+          ? t("settings.database.systemBackupConfirm")
+          : t("settings.database.snapshotBackupConfirm"),
+      );
       return;
     }
     if (restoreFile.size > RESTORE_UPLOAD_LIMIT_BYTES) {
@@ -1939,7 +1957,9 @@ export default function DatabaseSettingsPage() {
             <div className="mt-3 rounded-md bg-slate-50 px-2 py-1 text-[11px] text-slate-500">
               {restoreBackupScope === "system"
                 ? t("settings.database.systemBackupDetected")
-                : t("settings.database.householdBackupDetected")}
+                : restoreBackupContainer === "sqlite-snapshot"
+                  ? t("settings.database.householdSnapshotDetected")
+                  : t("settings.database.householdBackupDetected")}
             </div>
             {restoreBackupEncryption === "passphrase" ? (
               <div className="mt-2 rounded-md bg-amber-50 px-2 py-1 text-[11px] text-amber-800">
@@ -1954,7 +1974,7 @@ export default function DatabaseSettingsPage() {
                 {t("settings.database.backupPlaintextDetected")}
               </div>
             ) : null}
-            {restoreBackupScope === "system" ? (
+            {restoreOverwritesEverything ? (
               <label className="mt-2 flex items-center gap-2 text-xs text-red-700">
                 <input
                   type="checkbox"
@@ -1965,7 +1985,9 @@ export default function DatabaseSettingsPage() {
                   }}
                   className="h-4 w-4 rounded border-slate-300 text-red-600 focus:ring-red-400"
                 />
-                {t("settings.database.confirmSystemOverwrite")}
+                {restoreBackupScope === "system"
+                  ? t("settings.database.confirmSystemOverwrite")
+                  : t("settings.database.confirmSnapshotOverwrite")}
               </label>
             ) : null}
             {restoreBackupEncryption === "passphrase" ? (
@@ -2026,7 +2048,7 @@ export default function DatabaseSettingsPage() {
                 disabled={
                   restoring ||
                   (restoreBackupEncryption === "passphrase" && restorePassphrase.trim().length === 0) ||
-                  (restoreBackupScope === "system" && !restoreConfirmSystemOverwrite)
+                  (restoreOverwritesEverything && !restoreConfirmSystemOverwrite)
                 }
                 className="h-9 rounded-md bg-red-600 px-3 text-sm text-white hover:bg-red-700 disabled:opacity-50"
               >

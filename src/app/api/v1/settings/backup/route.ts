@@ -30,10 +30,15 @@ import {
 } from "@/lib/server/backup";
 import { decodeBackupPackage, encodeBackupPackage } from "@/lib/server/backup-package";
 import {
+  alignRestoredSnapshotHousehold,
+  captureSnapshotLoginUser,
   createSqliteSnapshotBuffer,
   isSqliteFileDatabase,
+  reinstateSnapshotLoginUser,
   restoreSqliteSnapshotBuffer,
 } from "@/lib/server/sqlite-snapshot";
+import { INSTALLATION_ID_SETTING_KEY } from "@/lib/server/installation-id";
+import { getSystemSetting, setSystemSetting } from "@/lib/server/system-setting";
 import {
   RESTORE_UPLOAD_LIMIT_BYTES,
   RESTORE_UPLOAD_LIMIT_LABEL,
@@ -138,9 +143,11 @@ async function runRestoreTask(
 
     const rawObject = rawPayload as Record<string, unknown> | null;
     const packageType = String(rawObject?.packageType ?? "");
-    const scopeName = String(
-      (rawObject?.scope as Record<string, unknown> | undefined)?.householdName ?? "current book",
-    );
+    const scopeObject = (rawObject?.scope as Record<string, unknown> | undefined) ?? {};
+    const scopeName = String(scopeObject.householdName ?? "current book");
+    // 账簿备份（哪怕容器是整库快照）恢复后仍用本机的账号登录；系统还原才是整机克隆，
+    // 用户与配置全部来自备份机。
+    const replacesAccounts = scopeObject.backupScope !== "household";
 
     if (packageType === "encrypted-sqlite-backup" || packageType === "sqlite-backup") {
       updateRestoreTask(task, {
@@ -156,6 +163,14 @@ async function runRestoreTask(
       rawPayload = null;
       packagePassphrase = "";
 
+      // The snapshot carries the exporter's installation id; keeping the local
+      // one is what stops two deployments from being registered as one ledger
+      // inventory after a restore onto different hardware.
+      const localInstallationId = await getSystemSetting(INSTALLATION_ID_SETTING_KEY);
+
+      // 账簿恢复：换文件会把本机用户整张表换成导出方的，先把当前登录用户留一份。
+      const loginUser = replacesAccounts ? null : await captureSnapshotLoginUser(task.userId);
+
       const result = await restoreSqliteSnapshotBuffer(bytes, (progress) => {
         updateRestoreTask(task, { progress: restoreProgress(progress) });
       });
@@ -165,6 +180,34 @@ async function runRestoreTask(
       // releases, so backfill the live schema in-process right after the file
       // swap; otherwise the running app queries fail until the next restart.
       await ensureSqliteRestoreCompatibilitySchema();
+
+      // 整包进来之后再处理归属：快照里的 householdId 属于导出方，同机恢复时相同
+      // （零成本），跨机/跨账簿恢复时整表改写成本账簿的 id。
+      updateRestoreTask(task, {
+        progress: restoreProgress({
+          stage: "restoring",
+          percent: 92,
+          label: "Attributing snapshot",
+          detail: "Moving the snapshot's rows into the current ledger",
+        }),
+      });
+      const alignment = await alignRestoredSnapshotHousehold(task.householdId);
+
+      // 成员整个来自快照；本机登录用户补回去，会话与密码都不用重来。
+      const loginUserState = loginUser
+        ? await reinstateSnapshotLoginUser(loginUser, task.householdId)
+        : null;
+
+      if (localInstallationId) {
+        await setSystemSetting(INSTALLATION_ID_SETTING_KEY, localInstallationId);
+      }
+      if (alignment.renamed) {
+        console.info("恢复整库快照：账簿 id 已改写", {
+          from: alignment.from,
+          to: alignment.to,
+          tables: alignment.tables,
+        });
+      }
 
       updateRestoreTask(task, {
         status: "success",
@@ -176,7 +219,11 @@ async function runRestoreTask(
           stage: "done",
           percent: 100,
           label: "Restore complete",
-          detail: "Data has been restored to the backup point; the page will refresh",
+          detail: loginUserState === "skipped"
+            ? "Data has been restored; the local account could not be kept, sign in with an account from the backup"
+            : replacesAccounts
+              ? "Data and accounts have been restored from the backup machine; the page will refresh"
+              : "Data and members have been restored; your local account still works. The page will refresh",
         }),
       });
       return;
@@ -386,11 +433,21 @@ async function exportBackupPackage(req: NextRequest) {
       );
     }
 
-    if (isSqliteFileDatabase() && backupScope === "system") {
+    // 单账簿部署里「这本账簿」和「整台设备」是同一批行，快照就是最忠实的账簿备份：
+    // 一份文件、恢复时换文件（秒级），行情缓存和 AI 通道也一起带走。
+    // 多账簿部署不能这么做——快照会带上别人的账簿，仍走逐行的可移植包。
+    // 快照比可移植包多带 deployment 级的数据（installationId、迁移记录），所以这条
+    // 捷径只对管理员开放，普通用户仍然拿逐行包。
+    const snapshotCoversEverything =
+      backupScope === "system"
+      || (isAdmin(currentUser) && (await prisma.household.count()) === 1);
+    if (isSqliteFileDatabase() && snapshotCoversEverything) {
       const snapshotBytes = await createSqliteSnapshotBuffer();
       const encryptedPayload = await encryptBackupBytes(
         snapshotBytes,
-        { householdId, householdName, backupScope: "system" },
+        // `backupScope` 保留用户的选择：它决定恢复端「成员来自哪里、你还用哪个账号」。
+        // `container` 说明载荷是整库文件，恢复端据此要求整库覆盖确认。
+        { householdId, householdName, backupScope, container: "sqlite-snapshot" },
         exportedAt,
         { passphrase },
       );
@@ -401,6 +458,8 @@ async function exportBackupPackage(req: NextRequest) {
           "Content-Type": "application/octet-stream",
           "Content-Disposition": attachmentDisposition(fileName),
           "Cache-Control": "no-store",
+          // 让界面说清楚这个包是整库快照，不是只含一本账簿的逐行包。
+          "X-MMH-Backup-Container": "sqlite-snapshot",
         },
       });
     }
