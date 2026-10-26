@@ -17,6 +17,7 @@ import {
   builtinLoanCategoryId,
   ensureBuiltinLoanCategories,
 } from "@/lib/server/loan-category";
+import { normalizeRestoreIdentity } from "@/lib/server/restore-identity";
 import { extractStatementLearningKeyword, normalizeStatementKeywordText } from "@/lib/statement/import-normalization";
 import { DEFAULT_SESSION_DAYS, normalizeSessionDays } from "@/lib/session-days";
 import {
@@ -2416,6 +2417,10 @@ export async function restoreHouseholdBackup(
   const payload = parseBackupPayload(rawPayload);
   const data = payload.data;
   const householdId = options.householdId;
+  // 便携性契约：备份来自另一个版本/另一台设备时，任何「从来源环境派生」的标识都必须在
+  // 写入前重算成目标环境的标识（见 restore-identity.ts）。放在这里而不是写入现场，
+  // 是为了让下面的写入阶段只做逐列映射，兼容性判断不散落在各处。
+  normalizeRestoreIdentity(payload, householdId);
   await reportProgress({ stage: "preparing", percent: 48, label: "兼容检查", detail: "正在检查数据库表结构" });
   await ensureSqliteRestoreCompatibilitySchema();
   await reportProgress({ stage: "preparing", percent: 50, label: "准备导入", detail: "正在建立恢复索引" });
@@ -3154,35 +3159,21 @@ export async function restoreHouseholdBackup(
       );
     }
 
-    // 内置贷款类别的 id 是 `lc_<householdId>_<baseType>` 派生值（见 loan-category.ts），
-    // 备份里存的是**来源账簿**的派生值。若原样写入本账簿，本账簿的派生 id 在库里不存在，
-    // 下面 `ensureBuiltinLoanCategories` 会判定四个类别全缺、按名字再插一遍，撞上
-    // (householdId, name) 唯一索引 → P2002 让整个恢复事务回滚（跨账簿恢复必现）。
-    // 所以写入时就把内置行重算到目标账簿；用户自建类别保持原 id。
-    const loanCategoryIdMap = new Map<string, string>();
     if (data.loanCategories.length > 0) {
-      const usedLoanCategoryIds = new Set<string>();
-      const loanCategoryRows = data.loanCategories.map((item) => {
-        const payloadId = String(item.id);
-        const baseType = String(item.baseType ?? "other");
-        const isBuiltin = item.isSystem == null ? false : Boolean(item.isSystem);
-        const preferredId = isBuiltin ? builtinLoanCategoryId(householdId, baseType as never) : payloadId;
-        const id = usedLoanCategoryIds.has(preferredId) ? payloadId : preferredId;
-        usedLoanCategoryIds.add(id);
-        loanCategoryIdMap.set(payloadId, id);
-        return {
-          id,
+      // 内置类别的 id 已由 normalizeRestoreIdentity 重算到目标账簿，这里只做逐列映射。
+      await tx.loanCategory.createMany({
+        data: data.loanCategories.map((item) => ({
+          id: String(item.id),
           householdId,
           name: String(item.name ?? ""),
-          baseType: baseType as never,
+          baseType: String(item.baseType ?? "other") as never,
           sortOrder: Number(item.sortOrder ?? 0),
-          isSystem: isBuiltin,
+          isSystem: item.isSystem == null ? false : Boolean(item.isSystem),
           isActive: item.isActive == null ? true : Boolean(item.isActive),
           createdAt: item.createdAt ? new Date(String(item.createdAt)) : new Date(),
           updatedAt: item.updatedAt ? new Date(String(item.updatedAt)) : new Date(),
-        };
+        })),
       });
-      await tx.loanCategory.createMany({ data: loanCategoryRows });
     }
 
     if (data.accounts.length > 0) {
@@ -3199,8 +3190,7 @@ export async function restoreHouseholdBackup(
           // 信用卡还款偏移与账单日口径也一起被清掉。备份里有的值必须原样带回来。
           loanType: item.loanType == null ? null : (String(item.loanType) as never),
           isConsumerLoan: item.isConsumerLoan == null ? false : Boolean(item.isConsumerLoan),
-          loanCategoryId:
-            item.loanCategoryId == null ? null : (loanCategoryIdMap.get(String(item.loanCategoryId)) ?? null),
+          loanCategoryId: item.loanCategoryId == null ? null : String(item.loanCategoryId),
           collateralAssetId: item.collateralAssetId == null ? null : String(item.collateralAssetId),
           fixedAssetType: item.fixedAssetType == null ? null : (String(item.fixedAssetType) as never),
           repaymentOffsetDays: item.repaymentOffsetDays == null ? null : Number(item.repaymentOffsetDays),

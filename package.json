@@ -46,7 +46,8 @@
     "codex:git": "node scripts/codex-git.cjs",
     "codex:rg": "node scripts/codex-rg.cjs",
     "codex:prisma": "node scripts/codex-prisma-run.cjs",
-    "caizhi:convert": "tsx scripts/caizhi/convert-caizhi-backup.ts"
+    "caizhi:convert": "tsx scripts/caizhi/convert-caizhi-backup.ts",
+    "check:restore-compat": "tsx scripts/verify-restore-compat.ts"
   },
   "dependencies": {
     "@ai-sdk/openai": "^3.0.64",
