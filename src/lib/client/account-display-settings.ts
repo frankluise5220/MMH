@@ -11,7 +11,7 @@ import { getCachedSettingsAccountData, SETTINGS_DATA_CHANGED_EVENT } from "@/lib
  * 设置缓存。两个值缺一都会让渲染退化（缺 fields → 不按设置，缺 baseCurrency →
  * 非本位币既不显示也没有 hover），所以统一在这里一次读齐。
  */
-export type AccountDisplaySettings = {
+type AccountDisplaySettings = {
   fields: AccountLabelField[];
   baseCurrency: string | null;
 };

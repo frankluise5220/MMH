@@ -47,22 +47,6 @@ export type HoldingEntryAccountOption = {
   currency?: string | null;
 };
 
-export type HoldingEntryProductOption = {
-  id: string;
-  name: string;
-  shortName?: string | null;
-  institutionId?: string | null;
-  institutionName?: string | null;
-  currency?: string | null;
-  annualRate?: number | null;
-  termDays?: number | null;
-  productType?: string | null;
-  maturityDate?: string | null;
-  payoutFrequency?: string | null;
-  interestCalcBasis?: string | null;
-  firstPayoutDate?: string | null;
-  note?: string | null;
-};
 
 export type HoldingEntryHoldingOption = {
   id: string;

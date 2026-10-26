@@ -5,7 +5,7 @@ import {
   normalizeStockMarket,
 } from "@/lib/stock/market";
 
-export type StockIdentityResult = {
+type StockIdentityResult = {
   market: string;
   stockCode: string;
   stockName: string;
@@ -14,7 +14,7 @@ export type StockIdentityResult = {
   source: string;
 } | null;
 
-export type StockClosePriceResult = {
+type StockClosePriceResult = {
   market: string;
   stockCode: string;
   closePrice: number;
@@ -399,7 +399,7 @@ export async function queryStockClosePriceByDate(marketRaw: unknown, stockCodeRa
   return null;
 }
 
-export type StockClosePriceListResult = {
+type StockClosePriceListResult = {
   market: string;
   stockCode: string;
   currency: string;

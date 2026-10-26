@@ -14,7 +14,7 @@ type PairingWriter = typeof prisma | Prisma.TransactionClient;
  * members by the pairing self-heal. Kept in sync with the constants in
  * `src/lib/server/advance-account.ts`.
  */
-export const NON_PERSON_OWNER_GROUP_NAMES = ["往来款", "借入/借出", "负债", "未指定", "默认"] as const;
+const NON_PERSON_OWNER_GROUP_NAMES = ["往来款", "借入/借出", "负债", "未指定", "默认"] as const;
 
 function isNonPersonGroupName(name: string | null | undefined): boolean {
   const trimmed = typeof name === "string" ? name.trim() : "";

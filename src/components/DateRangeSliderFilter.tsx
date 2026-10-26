@@ -53,7 +53,7 @@ function clamp(value: number, lower: number, upper: number) {
   return Math.min(upper, Math.max(lower, value));
 }
 
-export type DateRangeSliderFilterProps = {
+type DateRangeSliderFilterProps = {
   from: string;
   to: string;
   /** 时间轴左端（数据里最早的一天）。 */

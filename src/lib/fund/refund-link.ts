@@ -152,9 +152,6 @@ export function allocateBuyFailedRefunds(entries: RefundLinkableEntry[]) {
   return { refundAmountByBuyId, matchedRefundIds, refundIdsByBuyId, buyIdsByRefundId };
 }
 
-export function getNetBuyAmount(entryId: string, grossAmount: number, refundAmountByBuyId: Map<string, number>) {
-  return getConfirmedBuyAmount(grossAmount, refundAmountByBuyId.get(entryId) ?? 0);
-}
 
 export function getEffectiveBuyUnits(storedUnits: number | null | undefined) {
   const units = Math.max(0, Number(storedUnits) || 0);

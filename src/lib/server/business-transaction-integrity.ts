@@ -1,4 +1,4 @@
-import { FundSubtype, TransactionType } from "@prisma/client";
+import {  TransactionType } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
 import { ensureFundTransactionCashFlowLinks, syncFundTransactionsFromTxRecords } from "@/lib/fund/transactions";

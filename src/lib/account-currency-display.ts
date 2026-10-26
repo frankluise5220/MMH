@@ -1,9 +1,9 @@
 import { normalizeCurrency } from "@/lib/currency";
 import { isDisplayZeroMoney } from "@/lib/format";
 
-export type AccountCurrencyDisplayMode = "converted" | "original";
+type AccountCurrencyDisplayMode = "converted" | "original";
 
-export type AccountCurrencyDisplayInput = {
+type AccountCurrencyDisplayInput = {
   balance?: number | string | null;
   convertedBalance?: number | string | null;
   currency?: string | null;
@@ -11,7 +11,7 @@ export type AccountCurrencyDisplayInput = {
   fxRateMissing?: boolean | null;
 };
 
-export type AccountCurrencyDisplayValue = {
+type AccountCurrencyDisplayValue = {
   value: number | null;
   currency: string;
   missingFxRate: boolean;

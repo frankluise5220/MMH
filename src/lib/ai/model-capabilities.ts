@@ -9,7 +9,7 @@
 // the settings page happily stored as vision-capable was rejected at upload time
 // with VISION_NOT_SUPPORTED. Keep a single source of truth here.
 
-export type ModelCategory = "vision" | "embedding" | "audio" | "image" | "text";
+type ModelCategory = "vision" | "embedding" | "audio" | "image" | "text";
 
 /** Substrings that only appear in vision-capable model families. */
 const VISION_MODEL_KEYWORDS = [
@@ -67,7 +67,7 @@ export function modelSupportsVision(modelName: string, raw?: unknown): boolean {
   return declaresVision(raw) || modelNameSupportsVision(modelName);
 }
 
-export function detectModelCategory(modelName: string, raw?: unknown): ModelCategory {
+function detectModelCategory(modelName: string, raw?: unknown): ModelCategory {
   if (modelSupportsVision(modelName, raw)) return "vision";
   const lower = (modelName ?? "").toLowerCase();
   if (/embed|embedding/.test(lower)) return "embedding";

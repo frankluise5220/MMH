@@ -27,7 +27,7 @@ export function setEntryModalReconciledReadOnly(value: boolean) {
   emit();
 }
 
-export function getEntryModalReconciledReadOnly() {
+function getEntryModalReconciledReadOnly() {
   return reconciledReadOnly;
 }
 

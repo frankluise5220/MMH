@@ -47,7 +47,7 @@ export function resetCredentialKindCache(householdId?: string) {
   else credentialKindCache.delete(householdId);
 }
 
-export function useCredentialKind(householdId?: string): CredentialKind | null {
+function useCredentialKind(householdId?: string): CredentialKind | null {
   const [kind, setKind] = useState<CredentialKind | null>(null);
   useEffect(() => {
     let mounted = true;

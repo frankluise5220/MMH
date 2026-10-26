@@ -34,7 +34,7 @@ export type CreditCardLabelMode = "short_last4" | "full_name";
  * Selectable pieces of a non-sidebar account display label. The stored order is
  * the render order: the user builds the label by clicking fields in sequence.
  */
-export const ACCOUNT_LABEL_FIELD_KEYS = [
+const ACCOUNT_LABEL_FIELD_KEYS = [
   "owner",
   "institution",
   "institutionShort",
@@ -48,13 +48,13 @@ export const ACCOUNT_LABEL_FIELD_KEYS = [
 
 export type AccountLabelField = (typeof ACCOUNT_LABEL_FIELD_KEYS)[number];
 
-export const ACCOUNT_LABEL_SEPARATOR = "·";
+const ACCOUNT_LABEL_SEPARATOR = "·";
 /**
  * Legacy cookie value emitted before empty selections were migrated to the
  * default fields. It is kept only so older browsers get the default format
  * instead of a name-only label.
  */
-export const EMPTY_ACCOUNT_LABEL_FIELDS_VALUE = "__empty";
+const EMPTY_ACCOUNT_LABEL_FIELDS_VALUE = "__empty";
 
 /**
  * Default selection matches the documented non-sidebar format:
@@ -140,7 +140,7 @@ export function parseAccountLabelFields(value: unknown): AccountLabelField[] {
   return result;
 }
 
-export type AccountLabelRenderInput = {
+type AccountLabelRenderInput = {
   accountName: string;
   institution?: { name: string | null; shortName?: string | null } | null;
   numberMasked?: string | null;
@@ -399,7 +399,7 @@ export function counterpartyQualifiedAccountName(
   return `${counterpartyName}${ACCOUNT_LABEL_SEPARATOR}${name}`;
 }
 
-export function formatDisplayInstitutionName(
+function formatDisplayInstitutionName(
   institution?: { name: string | null; shortName?: string | null } | null,
   preferShort = true,
 ) {
@@ -434,7 +434,7 @@ export function formatAccountSelectorLabel(input: {
   });
 }
 
-export function formatAccountSelectorCoreLabel(input: {
+function formatAccountSelectorCoreLabel(input: {
   accountName: string;
   numberMasked?: string | null;
 }) {
@@ -567,7 +567,7 @@ export function formatOwnerQualifiedAccountLabel(input: {
   return [ownerName, accountLabel, accountType].filter(Boolean).join("·") || accountLabel;
 }
 
-export function creditCardLabelTemplateFromMode(mode: CreditCardLabelMode = "short_last4") {
+function creditCardLabelTemplateFromMode(mode: CreditCardLabelMode = "short_last4") {
   return mode === "full_name" ? FULL_NAME_CREDIT_CARD_LABEL_TEMPLATE : DEFAULT_CREDIT_CARD_LABEL_TEMPLATE;
 }
 
@@ -580,49 +580,6 @@ export function normalizeCreditCardLabelTemplate(
   return value.slice(0, 120);
 }
 
-export function formatCreditCardDisplayName(input: {
-  accountName: string;
-  institution?: { name: string | null; shortName?: string | null } | null;
-  numberMasked?: string | null;
-  ownerName?: string | null;
-  template?: string | null;
-  mode?: CreditCardLabelMode;
-  /** @deprecated Duplicate last-four suppression is now always on for credit cards. */
-  suppressDuplicateLast4?: boolean;
-}) {
-  const accountName = input.accountName.trim();
-  const shortInstitutionNameRaw = input.institution?.shortName?.trim() ?? "";
-  const fullInstitutionName = input.institution?.name?.trim() ?? "";
-  const shortInstitutionName = shortInstitutionNameRaw || fullInstitutionName;
-  const institutionName = fullInstitutionName || shortInstitutionNameRaw;
-  const ownerName = input.ownerName?.trim() ?? "";
-  const last4Raw = (input.numberMasked ?? "").trim();
-  const last4 = last4Raw && accountName.includes(last4Raw) ? "" : last4Raw;
-  const template = normalizeCreditCardLabelTemplate(input.template, input.mode);
-
-  const rendered = template
-    .replaceAll("{机构简称}", shortInstitutionName)
-    .replaceAll("{机构全称}", institutionName)
-    .replaceAll("{机构名称}", institutionName)
-    .replaceAll("{\u6240\u6709\u4eba}", ownerName)
-    .replaceAll("{信用卡名称}", accountName)
-    .replaceAll("{账户名称}", accountName)
-    .replaceAll("{信用卡后4位}", last4)
-    .replaceAll("{后4位}", last4)
-    .replace(/[·]{2,}/g, "·")
-    .replace(/(^[·\s]+|[·\s]+$)/g, "")
-    .replace(/\s{2,}/g, " ")
-    .trim();
-
-  if (rendered) return rendered;
-
-  if (input.mode === "short_last4") {
-    if (shortInstitutionName && last4) return `${shortInstitutionName}·${last4}`;
-    return accountName || shortInstitutionName || institutionName;
-  }
-
-  return formatAccountDisplayName(accountName, institutionName);
-}
 
 export function buildAccountDisplayOption(
   account: AccountDisplaySource,
@@ -859,7 +816,7 @@ export function accountOptionFromParts(
  * 下拉右侧的 `subLabel`：剔除主标签里已经出现的元素（类型/所有人/币种），
  * 保证同一个元素在一个选项行里只出现一次（2026-10-18 与 ADT 表格同口径）。
  */
-export function buildOptionSubLabel(
+function buildOptionSubLabel(
   label: string | null | undefined,
   parts: Array<string | null | undefined>,
 ): string {

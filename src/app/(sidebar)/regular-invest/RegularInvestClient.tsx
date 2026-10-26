@@ -94,7 +94,7 @@ function isSystemScheduledPlan(plan: RegularInvestPlanView): boolean {
     || taskType === "bond_interest_payout";
 }
 
-export type AccountFilterOption = {
+type AccountFilterOption = {
   id: string;
   label: string;
   kind: string;
@@ -128,7 +128,7 @@ type RegularInvestColumnKey =
   | "executedCount";
 
 /** 贷款计划「还款表」的一行：与负债视图 buildLiabilityRepaymentScheduleRows 的输出同形。 */
-export type LoanRepaymentScheduleRowView = {
+type LoanRepaymentScheduleRowView = {
   rowType: "payment" | "rate_adjustment";
   status?: "paid" | "planned";
   eventType?: "repayment" | "prepayment" | "rate_adjustment";
@@ -146,7 +146,7 @@ export type LoanRepaymentScheduleRowView = {
  * 与负债视图共用同一套算法，不落库。计划任务页用它把自动扣款/账单制的每期金额
  * 和进度直接展示出来，避免"任务到底执行了什么"变成黑箱。
  */
-export type LoanRepaymentScheduleView = {
+type LoanRepaymentScheduleView = {
   /** bill = 账单制（只生成应还账单）；auto_debit = 自动扣款（资金账户 → 贷款账户）。 */
   planRole: string | null;
   rows: LoanRepaymentScheduleRowView[];

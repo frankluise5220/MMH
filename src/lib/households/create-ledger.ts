@@ -10,7 +10,7 @@ type LedgerWriter = typeof prisma | Prisma.TransactionClient;
 
 export const LEDGER_CREATION_INVITE_CODE_KEY = "ledger_creation_invite_code";
 
-export type CreateLedgerInput = {
+type CreateLedgerInput = {
   name: string;
   adminName: string;
   adminPassword?: string;

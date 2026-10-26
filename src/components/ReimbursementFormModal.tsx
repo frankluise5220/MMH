@@ -42,7 +42,7 @@ export type ReimbursementObjectOption = {
   advanceAccountIds?: string[];
 };
 
-export type ReimbursementFormActions = {
+type ReimbursementFormActions = {
   create: (formData: FormData) => Promise<ReimbursementActionResult>;
 };
 

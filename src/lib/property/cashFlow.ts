@@ -12,7 +12,7 @@ import { getCashFlowDate } from "@/lib/cash-flow-date";
 
 type TxClient = Prisma.TransactionClient | typeof prisma;
 
-export type PropertyCashFlowRow = {
+type PropertyCashFlowRow = {
   id: string;
   householdId: string;
   accountId: string;
@@ -37,20 +37,20 @@ type AccountSnapshot = {
   currency?: string | null;
 };
 
-export function propertyActionLabel(action: PropertyTransactionAction | string) {
+function propertyActionLabel(action: PropertyTransactionAction | string) {
   if (action === PropertyTransactionAction.sale || action === "sale") return "房产出售";
   if (action === PropertyTransactionAction.improvement || action === "improvement") return "装修投入";
   return "房产购入";
 }
 
-export function propertyCashFlowDirection(action: PropertyTransactionAction | string): EntryCashFlowDirection {
+function propertyCashFlowDirection(action: PropertyTransactionAction | string): EntryCashFlowDirection {
   if (action === PropertyTransactionAction.sale || action === "sale") return "inflow";
   if (action === PropertyTransactionAction.purchase || action === "purchase") return "outflow";
   if (action === PropertyTransactionAction.improvement || action === "improvement") return "outflow";
   return "none";
 }
 
-export function propertyCashAmount(row: Partial<PropertyCashFlowRow>) {
+function propertyCashAmount(row: Partial<PropertyCashFlowRow>) {
   const action = row.action;
   if (!action || propertyCashFlowDirection(action) === "none") return 0;
   const amount = Math.abs(toNumber(row.amount));

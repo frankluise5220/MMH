@@ -60,10 +60,10 @@ export { credentialKindOf, type CredentialKind };
 /** Deployment-wide password of installations that predate per-user hashes. */
 export const LEGACY_ACCESS_PASSWORD_KEY = "access_password";
 
-export type CredentialFailureCode = "INVALID_PASSWORD" | "LOCAL_PASSWORD_REQUIRED" | "PASSWORD_NOT_SET" | "MMH_IDENTITY_UNRECORDED";
+type CredentialFailureCode = "INVALID_PASSWORD" | "LOCAL_PASSWORD_REQUIRED" | "PASSWORD_NOT_SET" | "MMH_IDENTITY_UNRECORDED";
 
 /** Which branch the verifier tried, so callers can pick context-correct wording. */
-export type CredentialAttempt = "local" | "fnos" | "mmh" | "legacy" | "none";
+type CredentialAttempt = "local" | "fnos" | "mmh" | "legacy" | "none";
 
 export type CredentialVerification =
   | { ok: true; kind: "local" | "mmh" | "legacy" }

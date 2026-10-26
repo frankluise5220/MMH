@@ -1350,7 +1350,6 @@ async function createTransactionFromItem(tx: Db, householdId: string, item: Pars
 
     // For investment type, query account kinds to determine fund fields
     let fundCode: string | null = null;
-    let fundSubtype: string | null = null;
     let investAccId: string | null = null;
     let investAccName: string | null = null;
 
@@ -1364,11 +1363,8 @@ async function createTransactionFromItem(tx: Db, householdId: string, item: Pars
       const isToInvest = toAccKind?.kind === "investment";
       investAccId = isToInvest ? toAccountId : isFromInvest ? fromAccountId : null;
       investAccName = isToInvest ? toAccountName : isFromInvest ? fromAccountName : null;
-      const isRedeem = /赎回|卖出/.test(rawText);
-      fundSubtype = isRedeem ? "redeem" : "buy";
     }
 
-    const displayFundCode = investAccId && investAccName ? (fundCode || investAccName) : null;
     const txRecord = await tx.txRecord.create({
       data: {
         type: item.type as any,
@@ -1425,7 +1421,6 @@ async function createTransactionFromItem(tx: Db, householdId: string, item: Pars
 
   // For investment type, query account kind to determine fund fields
   let fundCode: string | null = null;
-  let fundSubtype: string | null = null;
   let isInvestAccount = false;
   let investAccountName: string | null = null;
 
@@ -1436,11 +1431,8 @@ async function createTransactionFromItem(tx: Db, householdId: string, item: Pars
     const acc = await tx.account.findUnique({ where: { id: accountId }, select: { kind: true, name: true } });
     isInvestAccount = acc?.kind === "investment";
     investAccountName = acc?.name ?? null;
-    const isRedeem = /赎回|卖出/.test(rawText);
-    fundSubtype = isRedeem ? "redeem" : "buy";
   }
 
-  const displayFundCode = isInvestAccount && investAccountName ? (fundCode || investAccountName) : null;
   const txRecord = await tx.txRecord.create({
     data: {
       type: item.type as any,

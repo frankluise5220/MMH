@@ -5,7 +5,7 @@ import { parseFlexibleDateToYmd } from "@/lib/date-utils";
 
 type Db = typeof prisma | Parameters<Parameters<typeof prisma.$transaction>[0]>[0];
 
-export type SettlementAgreementValues = {
+type SettlementAgreementValues = {
   annualRate: number | null;
   termValue: number | null;
   dueDate: Date | null;

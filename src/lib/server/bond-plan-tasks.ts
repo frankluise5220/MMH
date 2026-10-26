@@ -16,9 +16,6 @@ const BOND_ACTION_ACCRUAL = "interest_accrual";
 const BOND_ACTION_PAYOUT = "interest_withdrawal";
 
 /** 债券的两类计划行 fundCode —— 执行器只读跳过、不自动落账。 */
-export function isBondPlanFundCode(code: string | null | undefined): boolean {
-  return code === BOND_MATURITY_PLAN_FUND_CODE || code === BOND_ACCRUAL_PLAN_FUND_CODE || code === BOND_PAYOUT_PLAN_FUND_CODE;
-}
 
 function payoutMemoText(name: string) {
   return encodeScheduledTaskMemo({
@@ -38,7 +35,7 @@ const CLEAR_ACTIONS = new Set<string>([FundSubtype.redeem, FundSubtype.switch_ou
  *   bondm_<存单id> / bonda_<存单id> / bondi_<存单id>
  * 而不是产品级。
  */
-export type BondLotPlanSource = {
+type BondLotPlanSource = {
   lotId: string;
   householdId: string;
   accountId: string;
@@ -61,10 +58,6 @@ function addDaysUtc(date: Date, days: number): Date {
   return new Date(date.getTime() + days * 86400000);
 }
 
-function weekdayExecutionDay(date: Date): number {
-  const day = date.getUTCDay();
-  return day === 0 ? 7 : day;
-}
 
 /** 载入存单及其条款（存单快照优先，缺失回退债单主数据）。 */
 export async function loadBondLotPlanSource(params: {

@@ -65,7 +65,7 @@ export type ScheduledTaskPayload = {
 
 const SCHEDULED_TASK_MEMO_PREFIX = "MMH_SCHEDULED_TASK:";
 
-export const SCHEDULED_TASK_TYPE_LABEL: Record<ScheduledTaskType, string> = {
+const SCHEDULED_TASK_TYPE_LABEL: Record<ScheduledTaskType, string> = {
   fund_regular_invest: "基金定投",
   loan_repayment: "还贷款",
   transfer: "转账",
@@ -104,7 +104,7 @@ export function encodeScheduledTaskMemo(payload: ScheduledTaskPayload) {
   return `${SCHEDULED_TASK_MEMO_PREFIX}${JSON.stringify(payload)}`;
 }
 
-export function normalizeLoanScheduledPlanRole(value: unknown, autoDebit?: boolean | null): LoanScheduledPlanRole {
+function normalizeLoanScheduledPlanRole(value: unknown, autoDebit?: boolean | null): LoanScheduledPlanRole {
   if (value === "bill" || value === "auto_debit") return value;
   return autoDebit === false ? "bill" : "auto_debit";
 }

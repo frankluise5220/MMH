@@ -244,7 +244,7 @@ export async function replaceFundFeeRates(
   });
 }
 
-export async function replaceFundFeeRatesInTx(
+async function replaceFundFeeRatesInTx(
   tx: any,
   accountId: string,
   rows: FundFeeRateReplacementRow[],

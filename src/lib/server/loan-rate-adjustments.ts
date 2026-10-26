@@ -27,14 +27,6 @@ function formatDateOnly(date: Date) {
   return `${year}-${month}-${day}`;
 }
 
-export function loanRateAdjustmentRowsToPayload(rows: Pick<LoanRateAdjustmentRow, "effectiveDate" | "annualRate">[]) {
-  return normalizeLoanRateAdjustments(
-    rows.map((row) => ({
-      effectiveDate: formatDateOnly(row.effectiveDate),
-      annualRate: Number(row.annualRate),
-    })),
-  );
-}
 
 export function resolveLoanRateAdjustments(params: {
   tableAdjustments?: LoanRateAdjustment[] | null;

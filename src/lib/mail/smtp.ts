@@ -51,7 +51,7 @@ function parseBool(v: string | undefined, defaultValue: boolean) {
   return defaultValue;
 }
 
-export function getSmtpConfig(): SmtpConfig | null {
+function getSmtpConfig(): SmtpConfig | null {
   const host = (process.env.SMTP_HOST ?? "").trim();
   const port = Number(process.env.SMTP_PORT ?? "");
   const secure = parseBool(process.env.SMTP_SECURE, port === 465);
@@ -174,9 +174,6 @@ async function resolveSmtpConfigs(householdId?: string | null): Promise<SmtpConf
   return candidates;
 }
 
-export function hasSmtpConfig(): boolean {
-  return getSmtpConfig() !== null;
-}
 
 export async function hasAnySmtpConfig(householdId?: string | null): Promise<boolean> {
   return (await resolveSmtpConfigs(householdId)).length > 0;

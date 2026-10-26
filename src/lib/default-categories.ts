@@ -39,7 +39,7 @@ import {
 export type DefaultCategoryType = "expense" | "income" | "advance" | "transfer" | "investment";
 type CategoryMainType = DefaultCategoryType;
 
-export type DefaultCategoryTemplate = {
+type DefaultCategoryTemplate = {
   type: DefaultCategoryType;
   name: string;
   isSystem?: boolean;
@@ -76,20 +76,19 @@ export const SYSTEM_BOND_PROFIT_CATEGORY = "债券收益";
 export const SYSTEM_BOND_LOSS_CATEGORY = "债券亏损";
 export const SYSTEM_DEPOSIT_INTEREST_CATEGORY = "存款利息";
 export const SYSTEM_DEPOSIT_FEE_CATEGORY = "存款手续费";
-export const SYSTEM_BAD_DEBT_EXPENSE_CATEGORY = "坏账";
+const SYSTEM_BAD_DEBT_EXPENSE_CATEGORY = "坏账";
 export const SYSTEM_INVESTMENT_DIVIDEND_CATEGORY = "投资分红";
 export const SYSTEM_REIMBURSEMENT_INCOME_CATEGORY = "报销";
 export const SYSTEM_REIMBURSEMENT_ALLOWANCE_CATEGORY = "津贴补贴";
 export const SYSTEM_REIMBURSEMENT_TRAVEL_SHORTFALL_CATEGORY = "交通出行";
 export const SYSTEM_REIMBURSEMENT_GENERAL_SHORTFALL_CATEGORY = "工作经营";
 export const SYSTEM_OTHER_MISC_EXPENSE_CATEGORY = "其他杂项支出";
-export const SYSTEM_INVESTMENT_PROFIT_CATEGORY = SYSTEM_FUND_PROFIT_CATEGORY;
 export const SYSTEM_INVESTMENT_LOSS_CATEGORY = "投资亏损";
 export const SYSTEM_INSURANCE_RETURN_CATEGORY = "保险回款";
 export const SYSTEM_INSURANCE_EXPENSE_CATEGORY = "保险支出";
-export const SYSTEM_MORTGAGE_FUND_CATEGORY = "资金账户";
+const SYSTEM_MORTGAGE_FUND_CATEGORY = "资金账户";
 export const SYSTEM_BANK_INSTALLMENT_EXPENSE_CATEGORY = "银行分期";
-export const SYSTEM_INSTALLMENT_FEE_EXPENSE_CATEGORY = "分期手续费";
+const SYSTEM_INSTALLMENT_FEE_EXPENSE_CATEGORY = "分期手续费";
 export const SYSTEM_FINANCE_INVESTMENT_INCOME_CATEGORY = "金融及投资收入";
 
 const systemCategoryTemplateNames: Record<DefaultCategoryType, Set<string>> = {
@@ -180,12 +179,6 @@ export function resolveCreditCardRepaymentCategory(writer: CategoryWriter, house
   });
 }
 
-export function resolveSettlementTransferCategory(writer: CategoryWriter, householdId: string) {
-  return resolveCategorySnapshot(writer, householdId, {
-    categoryName: SYSTEM_SETTLEMENT_TRANSFER_CATEGORY,
-    type: "transfer",
-  });
-}
 
 export async function ensureSettlementTransferCategory(writer: CategoryWriter, householdId: string) {
   const root = await ensureDefaultCategory(writer, householdId, "transfer", "转账", null, true);
@@ -249,7 +242,7 @@ const categoryTypeFallbackNames: Record<CategoryMainType, string> = {
   investment: "投资记录",
 };
 
-export const defaultCategoryTemplates: DefaultCategoryTemplate[] = [
+const defaultCategoryTemplates: DefaultCategoryTemplate[] = [
   {
     type: "expense",
     name: "餐饮费",

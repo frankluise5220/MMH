@@ -256,27 +256,3 @@ export function SettingsRowActions({ children }: { children: React.ReactNode }) 
   return <div className="flex items-center justify-end gap-1.5">{children}</div>;
 }
 
-export function SettingsPreferencePanel({
-  title,
-  description,
-  children,
-}: {
-  title: string;
-  description?: string;
-  children: React.ReactNode;
-}) {
-  const hideDescriptions = useHideSettingDescriptions();
-  const showDescription = Boolean(description) && !hideDescriptions;
-
-  return (
-    <section className="panel-surface overflow-hidden">
-      <div className="panel-header">
-        <div title={description && hideDescriptions ? description : undefined}>
-          <div className="text-sm font-medium text-slate-800">{title}</div>
-          {showDescription ? <div className="mt-1 text-xs text-slate-500">{description}</div> : null}
-        </div>
-      </div>
-      <div className="p-4">{children}</div>
-    </section>
-  );
-}

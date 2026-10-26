@@ -13,9 +13,9 @@ import { parseClipboardBill } from "@/lib/client/clipboard-bill-parser";
  * 捕获来源是剪贴板：回到前台时试读一次（见 ClipboardBillListener），命中才写草稿。
  */
 
-export const AUTO_DRAFT_CHANGED_EVENT = "mmh:auto-draft:changed";
-export const AUTO_DRAFT_STORAGE_KEY = "mmh_auto_draft";
-export const AUTO_DRAFT_ENABLED_KEY = "mmh_auto_draft_enabled";
+const AUTO_DRAFT_CHANGED_EVENT = "mmh:auto-draft:changed";
+const AUTO_DRAFT_STORAGE_KEY = "mmh_auto_draft";
+const AUTO_DRAFT_ENABLED_KEY = "mmh_auto_draft_enabled";
 /** 待确认账单面板 → AI 面板：把账单原文预填进输入框并展开。 */
 export const AI_PREFILL_EVENT = "mmh:ai:prefill";
 
@@ -85,7 +85,7 @@ export function isAutoDraftEnabled(): boolean {
   }
 }
 
-export function setAutoDraftEnabled(value: boolean) {
+function setAutoDraftEnabled(value: boolean) {
   if (typeof window === "undefined") return;
   try {
     window.localStorage.setItem(AUTO_DRAFT_ENABLED_KEY, value ? "1" : "0");
@@ -164,9 +164,6 @@ export function useAutoDrafts() {
 }
 
 /** 供确认入账后调用：删除对应草稿（与 Android 保存后删草稿对齐）。 */
-export function useDeleteDraft() {
-  return useCallback((id: string) => deleteDraft(id), []);
-}
 
 /**
  * 把一条草稿还原成一段「账单原文」，供 AI 面板解析。AI 的 parseStatement 依赖

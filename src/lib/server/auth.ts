@@ -11,9 +11,8 @@ import { resolveSessionUser, sessionMatchesAuthVersion, type SessionUserRow } fr
 
 export type CurrentUser = SessionUserRow;
 
-export const USER_ROLE_ADMIN = "admin";
-export const USER_ROLE_USER = "user";
-export const USER_ROLE_VIEWER = "viewer";
+const USER_ROLE_ADMIN = "admin";
+const USER_ROLE_VIEWER = "viewer";
 
 const USER_LOOKUP_TIMEOUT_MS = 8000;
 

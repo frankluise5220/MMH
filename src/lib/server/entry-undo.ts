@@ -21,7 +21,7 @@ type UndoSnapshot = Record<string, unknown>;
 export const ENTRY_UNDO_HISTORY_LIMIT = 5;
 const ENTRY_UNDO_PREVIEW_LIMIT = 5;
 
-export type EntryUndoPreviewItem = {
+type EntryUndoPreviewItem = {
   id: string;
   date: string;
   type: string;
@@ -35,13 +35,13 @@ export type EntryUndoPreviewItem = {
   note: string;
 };
 
-export type EntryUndoPreview = {
+type EntryUndoPreview = {
   count: number;
   hiddenCount: number;
   items: EntryUndoPreviewItem[];
 };
 
-export type PreparedEntryUndo = {
+type PreparedEntryUndo = {
   snapshots: UndoSnapshot[];
   entryIds: string[];
 } | null;

@@ -9,17 +9,17 @@
 
 type Movement = { date: string; delta: number };
 
-export type HoldingAmountLike = {
+type HoldingAmountLike = {
   remainingAmount: number;
   movements?: Movement[];
 };
 
-export type HoldingUnitsLike = {
+type HoldingUnitsLike = {
   remainingUnits?: number | null;
   unitMovements?: Movement[];
 };
 
-export type ArrivalAccountLike = {
+type ArrivalAccountLike = {
   kind?: string | null;
   institutionId?: string | null;
 };

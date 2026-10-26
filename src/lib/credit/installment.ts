@@ -3,7 +3,7 @@ import { toStatementMonth } from "@/lib/date-utils";
 
 export type CreditCardInstallmentRateType = "annual_interest" | "period_fee";
 
-export type CreditCardInstallmentScheduleRow = {
+type CreditCardInstallmentScheduleRow = {
   installmentNo: number;
   statementMonth: string;
   date: Date;

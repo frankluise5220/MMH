@@ -30,7 +30,7 @@ type FundQueryApiConfig = {
   householdId: string | null;
 };
 
-export type FundIdentityResult = {
+type FundIdentityResult = {
   code: string;
   name: string;
   fullName?: string;
@@ -259,7 +259,7 @@ const PARSERS: Record<string, (data: any) => NavResult> = {
   alipay: parseAlipay,
 };
 
-export type FundProfileResult = {
+type FundProfileResult = {
   code: string;
   name?: string;
   fundCompany?: string;
@@ -359,7 +359,7 @@ function isAlipayInstitutionText(text: string) {
  * @param rangeDays How many days to extend the range backward; defaults to 90 (covers a quarter)
  * @returns NAV info (including the actual NAV date) or null
  */
-export async function queryHistoricalNav(
+async function queryHistoricalNav(
   fundCode: string,
   targetDate: string,
   rangeDays: number = 90

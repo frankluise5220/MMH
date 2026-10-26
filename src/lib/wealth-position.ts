@@ -7,7 +7,7 @@ import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-prec
 const MONEY_EPS = 0.005;
 const UNITS_EPS = 0.000001;
 
-export type WealthPositionEntryLike = {
+type WealthPositionEntryLike = {
   id: string;
   cashEntryId?: string | null;
   productKey: string | null;
@@ -22,14 +22,14 @@ export type WealthPositionEntryLike = {
   fee?: unknown | null;
 };
 
-export type WealthBucket = {
+type WealthBucket = {
   cost: number;
   units: number;
   cycleHasUnits: boolean;
   historicalProfit: number;
 };
 
-export type WealthPositionCalcResult = {
+type WealthPositionCalcResult = {
   holdings: Map<string, WealthBucket>;
   realizedProfitByTransactionId: Map<string, number>;
 };

@@ -17,19 +17,19 @@
  * 筛选与写入沿用分组 id，不因展示名变化而改变。
  */
 
-export type AccountOwnerGroupLike = {
+type AccountOwnerGroupLike = {
   id: string;
   name: string;
   /** `AccountGroup.institutionId`：配对家庭成员的 id */
   institutionId?: string | null;
 };
 
-export type AccountOwnerMemberLike = {
+type AccountOwnerMemberLike = {
   id: string;
   name: string;
 };
 
-export type AccountOwnerOption = {
+type AccountOwnerOption = {
   /** `AccountGroup.id` */
   id: string;
   /** 展示名：配对家庭成员的姓名（兜底：分组名） */

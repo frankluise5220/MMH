@@ -69,7 +69,7 @@ export function investProductTypeLabel(p: string | null, t?: I18nT): string {
   return INVEST_PRODUCT_TYPE_LABEL_FALLBACK[p ?? ""] ?? t?.("account.kind.investment") ?? "投资";
 }
 
-export type AccountFilterGroupSource = {
+type AccountFilterGroupSource = {
   kind?: string | null;
   investProductType?: string | null;
 };
@@ -109,18 +109,6 @@ export function kindColor(k: string): string {
   return "bg-slate-50 text-slate-700 border-slate-200";
 }
 
-export function kindHex(k: string): string {
-  if (k === "bank_credit") return "#F59E0B";
-  if (k === "bank_debit") return "#94A3B8";
-  if (k === "ewallet") return "#3B82F6";
-  if (k === "cash") return "#10B981";
-  if (k === "deposit") return "#06B6D4";
-  if (k === "investment") return "#8B5CF6";
-  if (k === "fixed_asset") return "#F97316";
-  if (k === "loan" || k === "settlement") return "#EF4444";
-  if (k === "insurance") return "#6366F1";
-  return "#64748B";
-}
 
 export function kindIconName(k: string): string {
   if (k === "bank_credit") return "credit-card";
@@ -153,7 +141,7 @@ export const INSTITUTION_TYPE_VALUES = [
   "other",
 ] as const;
 
-export const INSTITUTION_TYPE_LABEL_KEYS: Record<string, string> = {
+const INSTITUTION_TYPE_LABEL_KEYS: Record<string, string> = {
   family_member: "institution.type.family_member",
   person: "institution.type.person",
   organization: "institution.type.organization",
@@ -223,7 +211,7 @@ export const COUNTERPARTY_TYPE_OPTIONS = institutionTypeOptions(COUNTERPARTY_TYP
  * 能当「往来款对象」的类型：**不含常用商户**（用户定版）。
  * 所有「往来对象」下拉/列表都必须用它过滤，禁止各处再写 `!== "merchant"`（黑名单会漏 company 这类非法类型）。
  */
-export const SETTLEMENT_COUNTERPARTY_TYPE_VALUES = ["person", "organization"] as const;
+const SETTLEMENT_COUNTERPARTY_TYPE_VALUES = ["person", "organization"] as const;
 export function isSettlementCounterpartyType(type: string | null | undefined): boolean {
   return (SETTLEMENT_COUNTERPARTY_TYPE_VALUES as readonly string[]).includes(type ?? "");
 }
@@ -240,16 +228,6 @@ export function institutionTypeLabel(type: string | null | undefined, t: I18nT):
   return INSTITUTION_TYPE_LABEL_FALLBACK[type ?? "other"] ?? type ?? INSTITUTION_TYPE_LABEL_FALLBACK.other;
 }
 
-export function institutionTypeIconName(t: string | null): string {
-  if (t === "bank") return "landmark";
-  if (t === "insurance") return "shield";
-  if (t === "brokerage") return "building-2";
-  if (t === "fund_company") return "building-2";
-  if (t === "payment") return "credit-card";
-  if (t === "provident_fund") return "landmark";
-  if (t === "lender") return "hand-coins";
-  return "building-2";
-}
 
 export const kindOrder: string[] = [
   "cash",

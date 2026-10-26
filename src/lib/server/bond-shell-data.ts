@@ -20,7 +20,7 @@ import { loadBondTransactionEntryLike } from "@/lib/server/business-transaction-
  */
 
 /** 债券存单（持仓）投影 —— 视图与录入弹窗共用同一份口径。 */
-export type BondLotProjection = {
+type BondLotProjection = {
   /** 存单 id = 买入行 bond_transactions.id。 */
   id: string;
   /** 存单所属债券账户。 */
@@ -47,7 +47,7 @@ export type BondLotProjection = {
 
 export type BondShellLot = Omit<BondLotProjection, "accountId" | "bondProductId">;
 
-export type BondShellData = {
+type BondShellData = {
   account: {
     id: string;
     name: string;

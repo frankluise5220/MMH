@@ -14,7 +14,7 @@
  * It is a `role="switch"` button, not a checkbox: the pages own the state, and a
  * button keeps one implementation for every caller.
  */
-export type SettingsSwitchProps = {
+type SettingsSwitchProps = {
   checked: boolean;
   onCheckedChange: (next: boolean) => void;
   /** Accessible name — pass the visible setting label. */

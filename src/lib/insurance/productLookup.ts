@@ -1,6 +1,6 @@
 import crypto from "crypto";
 
-export type InsuranceLookupResult = {
+type InsuranceLookupResult = {
   title: string;
   url: string;
   snippet: string;
@@ -12,7 +12,7 @@ export type InsuranceLookupResult = {
   structuredTermsNo?: string | null;
 };
 
-export type InsuranceOfficialProduct = {
+type InsuranceOfficialProduct = {
   name: string;
   institutionName: string;
   status: string;
@@ -21,7 +21,7 @@ export type InsuranceOfficialProduct = {
   source: string;
 };
 
-export type InsuranceProductCandidate = {
+type InsuranceProductCandidate = {
   name: string;
   institutionName: string | null;
   productType: string | null;
@@ -35,14 +35,14 @@ export type InsuranceProductCandidate = {
   reason: string;
 };
 
-export type InsuranceLookupSuggestion = {
+type InsuranceLookupSuggestion = {
   productType: string | null;
   institutionName: string | null;
   confidence: "low" | "medium" | "high";
   reason: string;
 };
 
-export type InsuranceProductLookup = {
+type InsuranceProductLookup = {
   query: string;
   institutionName: string | null;
   candidates: InsuranceProductCandidate[];
@@ -530,7 +530,7 @@ async function crawlPublicResultPages(results: InsuranceLookupResult[], query: s
   return crawled;
 }
 
-export function buildOfficialInsuranceSources(query: string): InsuranceLookupResult[] {
+function buildOfficialInsuranceSources(query: string): InsuranceLookupResult[] {
   return [
     {
       title: "中国保险行业协会人身保险产品信息库",

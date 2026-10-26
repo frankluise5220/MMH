@@ -12,7 +12,7 @@
  */
 import { formatDateUtc, toNumber } from "@/lib/date-utils";
 
-export type WealthHoldingMovement = { date: string; delta: number };
+type WealthHoldingMovement = { date: string; delta: number };
 
 export type WealthHoldingOption = {
   id: string;
@@ -32,7 +32,7 @@ export type WealthHoldingOption = {
   unitMovements: WealthHoldingMovement[];
 };
 
-export type WealthHoldingAccount = {
+type WealthHoldingAccount = {
   id: string;
   name: string;
   /** 账户展示名（含机构等）；缺省时用 `name`。 */
@@ -40,7 +40,7 @@ export type WealthHoldingAccount = {
 };
 
 /** 业务记录（`loadWealthTransactionEntryLike` 的投影），字段按需读取。 */
-export type WealthHoldingEntry = Record<string, any>;
+type WealthHoldingEntry = Record<string, any>;
 
 function toYmdOrNull(value: unknown): string | null {
   if (value == null) return null;

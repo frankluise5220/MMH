@@ -30,10 +30,6 @@ function parseIPv4(value: string) {
   return nums;
 }
 
-function isPrivateIPv4(parts: number[]) {
-  const [a, b] = parts;
-  return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
-}
 
 function isLoopbackIPv4(parts: number[]) {
   return parts[0] === 127;

@@ -981,7 +981,6 @@ export default async function ReportsPage({
       })),
   };
 
-  const selectedAccount = accounts.find((account) => account.id === selectedAccountId) ?? null;
   let availableYears: number[] = [];
   if (groupBy === "year") {
     const bounds = await prisma.txRecord.aggregate({

@@ -48,7 +48,6 @@ import {
   normalizeDetailPageSize,
   readStoredDetailPreference,
 } from "@/lib/detail-pagination-preference";
-import { isAbortError, loadAllDetailEntries } from "@/lib/client/detail-all-entries";
 import { parseImportAccountId } from "@/lib/account-import-match";
 import { formatAccountTableLabel, formatAccountTableTitle } from "@/lib/account-display";
 import { systemCategoryLabel } from "@/lib/system-category-labels";
@@ -675,10 +674,6 @@ export function DetailViewClient({
   batchExtraActions,
   reconcileEnabled = false,
   reconcileContextAccountId,
-  serverMode = false,
-  onServerFiltersChange,
-  onServerSortChange,
-  serverFilterOptions,
   showDateRangeFilter = false,
   dateRange,
   onDateRangeChange,
@@ -721,16 +716,6 @@ export function DetailViewClient({
   sortable?: boolean;
   onDisplayRowsChange?: (rows: DetailEntry[]) => void;
   onRowsFitChange?: (rows: number) => void;
-  /** 服务端模式：筛选/排序已下推 SQL，本地不再全量过滤（百万行明细）。 */
-  serverMode?: boolean;
-  onServerFiltersChange?: (filters: Partial<Record<string, string[]>>) => void;
-  onServerSortChange?: (sortState: { key: string; direction: "asc" | "desc" } | null) => void;
-  serverFilterOptions?: Record<string, {
-    options: string[];
-    counts?: Record<string, number>;
-    titles?: Record<string, string>;
-    searchText?: Record<string, string>;
-  }>;
   /** 表头时间筛选器（双滑块）。它是数据范围，独立于 `filters.date`。 */
   showDateRangeFilter?: boolean;
   /** 受控的时间范围（父层持有并负责按范围重取）。 */
@@ -1094,7 +1079,6 @@ export function DetailViewClient({
     // 报表下钻把赎回本金抹成 0（本金不计收支），编辑窗必须用记账原值，
     // 否则取出本金 / 到账金额都是空的。
     const editAmount = amount === 0 && e.bookAmount != null ? toNumber(e.bookAmount) : amount;
-    const linkedBusinessLabels = e.businessLinkLabels ?? [];
     const linkedStockTransaction = e.stockTransaction ?? null;
     if (linkedStockTransaction || e.stockTransactionId) {
       if (!linkedStockTransaction) return {};
@@ -1430,9 +1414,6 @@ export function DetailViewClient({
       }
       const url = new URL(window.location.href);
       const storedPagination = readStoredDetailPreference(accountId);
-      const detailAll = url.searchParams.has("detailAll")
-        ? url.searchParams.get("detailAll") === "1"
-        : storedPagination?.detailAll ?? false;
       const detailPage = normalizeDetailPage(
         url.searchParams.get("detailPage") ?? storedPagination?.detailPage ?? 1,
       );
@@ -1440,26 +1421,8 @@ export function DetailViewClient({
         url.searchParams.get("pageSize") ?? storedPagination?.pageSize ?? 20,
       );
       const seq = ++detailRefreshSeqRef.current;
-      if (detailAll) {
-        // 「全部」视图必须整份拉取：一次要回几万行 / 几十 MB，浏览器会中途重置连接
-        // 或静默超时，而这里的 catch 是空的 —— 表现就是刷新后列表毫无变化。
-        // 先取一页小的立刻渲染（虚拟滚动条马上出现），再取全量整份替换；传输被重置
-        // 时自动退回分块。结果一次性替换快照，不做逐块显示，免得列表先缩水再长回来。
-        void loadAllDetailEntries<DetailEntry>({
-          accountId,
-          errorMessage: t("basicDetail.loadFailed"),
-          isCurrent: () => seq === detailRefreshSeqRef.current,
-        })
-          .then((result) => {
-            if (result.stopped || seq !== detailRefreshSeqRef.current) return;
-            setRefreshedEntries({ accountId, entries: result.entries });
-            setSelection(new Set());
-          })
-          .catch((error) => {
-            if (isAbortError(error)) return;
-          });
-        return;
-      }
+      // 「全部」由父层（BasicDetailPanel + detail-all-store）持有整份数据，
+      // 这里只负责分页视图的整页重取（父层在 detailAll 时不会打开本开关）。
       const params = new URLSearchParams({
         accountId,
         page: String(detailPage),
@@ -1872,7 +1835,6 @@ export function DetailViewClient({
               <div className="divide-y divide-slate-100 bg-white">
                 {group.entries.map((entry, entryIndex) => {
                   const effectiveAmount = detailFlowAmountOf(entry);
-                  const entryFundProductType = entryProductTypeOf(entry);
                   const category = detailCategoryLabel(entry) || t("txForm.uncategorized");
                   const note = displayDetailRemark(entry, flowAccountIdOf(entry));
                   const related = relatedAccountTarget(entry);
@@ -1939,10 +1901,6 @@ export function DetailViewClient({
       resetKey={tableResetKey}
       columns={columns}
       rows={entries}
-      serverMode={serverMode}
-      onFiltersChange={onServerFiltersChange}
-      onSortChange={onServerSortChange}
-      serverFilterOptions={serverFilterOptions}
       showDateRangeFilter={showDateRangeFilter}
       dateRange={dateRange}
       onDateRangeChange={onDateRangeChange}

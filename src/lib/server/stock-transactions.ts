@@ -18,7 +18,7 @@ type StockTransactionListRow = Prisma.StockTransactionGetPayload<{
   include: typeof STOCK_TRANSACTION_LIST_INCLUDE;
 }>;
 
-export type StockTransactionListItem = {
+type StockTransactionListItem = {
   id: string;
   linkId: string | null;
   linkIds: string[];

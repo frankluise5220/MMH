@@ -87,9 +87,6 @@ async function resolveResendConfig(): Promise<ResendConfig | null> {
   return getEnvResendConfig();
 }
 
-export function hasResendConfig(): boolean {
-  return getEnvResendConfig() !== null;
-}
 
 export async function hasAnyResendConfig(): Promise<boolean> {
   return (await resolveResendConfig()) !== null;

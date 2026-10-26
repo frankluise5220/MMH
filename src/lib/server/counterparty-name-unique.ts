@@ -9,7 +9,7 @@ type CounterpartyNameStore = {
   };
 };
 
-export class CounterpartyNameUniqueError extends Error {
+class CounterpartyNameUniqueError extends Error {
   status = 409;
 
   constructor(message: string) {
@@ -22,17 +22,17 @@ export function isCounterpartyNameUniqueError(error: unknown): error is Counterp
   return error instanceof CounterpartyNameUniqueError;
 }
 
-export function normalizeCounterpartyDisplayName(value: unknown) {
+function normalizeCounterpartyDisplayName(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
 }
 
-export function counterpartyNameCandidates(name: unknown, shortName?: unknown) {
+function counterpartyNameCandidates(name: unknown, shortName?: unknown) {
   const fullName = normalizeCounterpartyDisplayName(name);
   const short = normalizeCounterpartyDisplayName(shortName);
   return Array.from(new Set([fullName, short].filter(Boolean)));
 }
 
-export async function findCounterpartyDisplayNameConflict(
+async function findCounterpartyDisplayNameConflict(
   store: CounterpartyNameStore,
   input: {
     householdId: string;

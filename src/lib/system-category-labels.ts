@@ -267,9 +267,6 @@ const SYSTEM_CATEGORY_LABEL_KEYS: Record<string, string> = {
   "租金收入": "systemCategory.rentalIncome",
 };
 
-export function isSystemCategoryName(name?: string | null): boolean {
-  return !!name && Object.prototype.hasOwnProperty.call(SYSTEM_CATEGORY_LABEL_KEYS, name);
-}
 
 /**
  * Returns the localized display label for a system category name.

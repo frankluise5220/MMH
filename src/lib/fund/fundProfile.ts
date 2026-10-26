@@ -12,7 +12,7 @@ import { normalizeTradingCalendar, type TradingCalendarValue } from "@/lib/fund/
  * fund code (upsert), so repeated NAV fetches do not duplicate rows.
  */
 
-export type FundProfileRecord = {
+type FundProfileRecord = {
   fundCode: string;
   fundName: string | null;
   fundCompany: string | null;
@@ -22,9 +22,9 @@ export type FundProfileRecord = {
   tradingCalendar: TradingCalendarValue | null;
 };
 
-export type FundNavDateOffset = 0 | 1;
+type FundNavDateOffset = 0 | 1;
 
-export type FundProfileUpdate = {
+type FundProfileUpdate = {
   fundName?: string | null;
   fundCompany?: string | null;
   custodian?: string | null;
@@ -33,7 +33,7 @@ export type FundProfileUpdate = {
   tradingCalendar?: TradingCalendarValue | null;
 };
 
-export type FundProfileContext = {
+type FundProfileContext = {
   householdId?: string | null;
 };
 
@@ -511,7 +511,7 @@ export async function getFundProfileNameMap(fundCodes: Iterable<string>): Promis
 }
 
 /** Ensure that a valid fund code has a FundProfile row before external lookup. */
-export async function ensureFundProfileRecord(fundCode: string): Promise<FundProfileRecord | null> {
+async function ensureFundProfileRecord(fundCode: string): Promise<FundProfileRecord | null> {
   const code = fundCode.trim();
   if (!/^\d{6}$/.test(code)) return null;
   const existing = await getFundProfile(code);
@@ -572,14 +572,6 @@ export async function getFundNavDateOffsets(fundCodes: Iterable<string>) {
 /**
  * Set a fund's NAV date offset used by investment profit statistics.
  */
-export async function setFundNavDateOffset(fundCode: string, offset: number) {
-  const code = fundCode.trim();
-  if (!/^\d{6}$/.test(code)) throw new Error("fundCode must be a six-digit fund code.");
-  if (offset !== 0 && offset !== 1) {
-    throw new Error("navDateOffset must be 0 or 1.");
-  }
-  return updateFundProfile(code, { navDateOffset: normalizeNavDateOffset(offset) });
-}
 
 /**
  * Resolve a fund's display name by fund code.

@@ -59,7 +59,7 @@ function normalizeMonthDayDate(month: number, day: number, now: Date) {
   return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
-export function parseRelativeDateFromText(text: string, now: Date) {
+function parseRelativeDateFromText(text: string, now: Date) {
   const t = text.trim();
   if (!t) return null;
 
@@ -169,7 +169,7 @@ export function normalizeDate(dateInput: unknown, rawText: string, now: Date) {
 
 // ── LLM response extraction ──
 
-export function extractItemsFromText(text: string): ParsedItem[] | null {
+function extractItemsFromText(text: string): ParsedItem[] | null {
   const patterns = [
     /```json\s*([\s\S]*?)\s*```/i,
     /```\s*([\s\S]*?)\s*```/,
@@ -202,7 +202,7 @@ export function extractItemsFromText(text: string): ParsedItem[] | null {
   return null;
 }
 
-export function parseAmountLoose(value: unknown, fallbackText: string) {
+function parseAmountLoose(value: unknown, fallbackText: string) {
   if (typeof value === "number" && Number.isFinite(value)) return Math.abs(value);
   if (typeof value === "string") {
     const m = value.replace(/,/g, "").match(/-?\d+(?:\.\d+)?/);

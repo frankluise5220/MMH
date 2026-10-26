@@ -37,9 +37,9 @@ export function builtinLoanCategoryId(householdId: string, baseType: LoanTypeVal
 }
 
 /** 与 default-categories 同一写法：普通客户端和事务客户端都能传进来。 */
-export type LoanCategoryWriter = typeof prisma | Prisma.TransactionClient;
+type LoanCategoryWriter = typeof prisma | Prisma.TransactionClient;
 
-export type ResolvedLoanCategory = {
+type ResolvedLoanCategory = {
   loanCategoryId: string;
   loanType: LoanTypeValue;
 };

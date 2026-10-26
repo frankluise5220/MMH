@@ -8,15 +8,6 @@
 import { prisma } from "@/lib/db/prisma";
 
 /** 已对账锁定的流水 id。 */
-export async function findReconciledEntryIds(entryIds: string[]): Promise<string[]> {
-  const ids = Array.from(new Set(entryIds.map((id) => String(id ?? "").trim()).filter(Boolean)));
-  if (ids.length === 0) return [];
-  const rows = await prisma.txRecord.findMany({
-    where: { id: { in: ids }, reconciledAt: { not: null } },
-    select: { id: true },
-  });
-  return rows.map((row) => row.id);
-}
 
 /** 单条记录是否已对账锁定。 */
 export async function isEntryReconciled(entryId: string): Promise<boolean> {

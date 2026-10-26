@@ -113,7 +113,7 @@ export function isLedgerInviteCodeExpired(record: LedgerInviteCodeRecord, now: D
   return time <= now.getTime();
 }
 
-export function isLedgerInviteCodeRedeemable(record: LedgerInviteCodeRecord, now: Date = new Date()) {
+function isLedgerInviteCodeRedeemable(record: LedgerInviteCodeRecord, now: Date = new Date()) {
   return !record.usedAt && !isLedgerInviteCodeExpired(record, now);
 }
 
@@ -134,7 +134,7 @@ export function findLedgerInviteCodeRecord(records: LedgerInviteCodeRecord[], co
  * depends on the server's timezone — the browser already converted the user's
  * `datetime-local` pick into an absolute instant.
  */
-export type LedgerInviteCodeMetadataIssue =
+type LedgerInviteCodeMetadataIssue =
   | { kind: "note-too-long"; code: string; length: number; max: number }
   | { kind: "expiry-invalid"; code: string; value: string };
 
@@ -164,18 +164,6 @@ export function normalizeLedgerInviteCodeMetadata(
 }
 
 /** Applies an issuer edit (note / expiry) to one record. Pass `null` to clear. */
-export function updateLedgerInviteCodeRecord(
-  records: LedgerInviteCodeRecord[],
-  code: string,
-  patch: { note?: string | null; expiresAt?: string | null },
-) {
-  const target = cleanText(code);
-  return normalizeInviteRecords(records.map((record) => (
-    record.code === target
-      ? { ...record, note: patch.note, expiresAt: patch.expiresAt }
-      : record
-  )));
-}
 
 /**
  * Attributes an admin to the records that are genuinely new in this save.

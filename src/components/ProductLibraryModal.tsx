@@ -3,7 +3,7 @@ import { ModalLayer } from "@/components/ModalLayer";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { AlertTriangle, Check, ChevronDown, Loader2, Plus, Search, Trash2, X } from "lucide-react";
+import { AlertTriangle,  ChevronDown, Loader2, Plus, Search, Trash2, X } from "lucide-react";
 
 import { useI18n } from "@/lib/i18n";
 import { CredentialPasswordField } from "@/components/CredentialPasswordField";
@@ -22,7 +22,7 @@ import { useDerivedLayerZIndex } from "@/components/ModalLayer";
  *   服务端走余额安全的级联清理（见 `src/lib/server/product-master-delete.ts`）。
  */
 
-export type ProductLibraryFamily = "deposit" | "wealth" | "bond" | "insurance";
+type ProductLibraryFamily = "deposit" | "wealth" | "bond" | "insurance";
 
 type FieldKind = "text" | "number" | "currency" | "date" | "select" | "note" | "institution";
 

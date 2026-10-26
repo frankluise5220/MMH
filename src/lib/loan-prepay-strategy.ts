@@ -14,9 +14,6 @@ export function encodeLoanPrepayStrategy(value: unknown) {
   return `${PAYLOAD_PREFIX}${JSON.stringify({ strategy: normalizeLoanPrepayStrategy(value) })}`;
 }
 
-export function isEncodedLoanPrepayStrategy(value?: string | null) {
-  return String(value ?? "").trim().startsWith(PAYLOAD_PREFIX);
-}
 
 export function parseLoanPrepayStrategy(value?: string | null): LoanPrepayStrategy | null {
   const text = String(value ?? "").trim();

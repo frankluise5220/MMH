@@ -57,7 +57,7 @@ export type PositionDisplayRow = {
   historicalProfit: number;
 };
 
-export type ClearedPositionRow = {
+type ClearedPositionRow = {
   fundCode: string;
   accountId?: string | null;
   stockCode?: string | null;
@@ -83,7 +83,7 @@ export type ClearedPositionRow = {
   totalRedeemAmount: number;
 };
 
-export type PositionDisplayResult = {
+type PositionDisplayResult = {
   positions: PositionDisplayRow[];
   clearedPositions: ClearedPositionRow[];
   totalMarketValue: number;

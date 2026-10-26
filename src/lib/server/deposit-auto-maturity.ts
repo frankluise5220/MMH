@@ -80,7 +80,7 @@ async function resolveMaturityCashAccount(params: {
   return { id: picked.id, name: picked.name };
 }
 
-export type DepositAutoMaturityDetail = {
+type DepositAutoMaturityDetail = {
   lotId: string;
   action: string;
   status: "redeemed" | "renewed" | "skipped" | "accrued";
@@ -90,7 +90,7 @@ export type DepositAutoMaturityDetail = {
   reason?: string;
 };
 
-export type DepositAutoMaturityResult = {
+type DepositAutoMaturityResult = {
   ok: boolean;
   processedCount: number;
   redeemedCount: number;

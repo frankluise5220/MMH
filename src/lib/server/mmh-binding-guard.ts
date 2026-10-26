@@ -1,6 +1,6 @@
 import type { SessionAuthMethod } from "@/lib/server/session-cookies";
 
-export type MmhBindingChangeRefusal = {
+type MmhBindingChangeRefusal = {
   ok: false;
   code: "MMH_BINDING_CHANGE_REQUIRES_LOCAL";
   error: string;

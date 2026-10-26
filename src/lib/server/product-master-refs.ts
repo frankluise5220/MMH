@@ -17,7 +17,7 @@ import type { HouseholdContext } from "@/lib/server/household-scope";
  */
 export type ProductFamily = "deposit" | "wealth" | "bond";
 
-export type ProductRefSummary = {
+type ProductRefSummary = {
   /** 引用该产品的明细记录数（TxRecord，未软删） */
   entryCount: number;
   /** 引用该产品的业务表行数（deposit_transactions / wealth_transactions / bond_transactions，未软删） */

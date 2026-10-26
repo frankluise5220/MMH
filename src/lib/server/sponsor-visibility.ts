@@ -8,19 +8,19 @@ import { getCachedHouseholdScope } from "@/lib/server/household-scope";
  * While this is false the entry is never revealed on any surface, no matter
  * what the data-driven conditions below say.
  */
-export const SPONSOR_ENTRY_ENABLED = true;
+const SPONSOR_ENTRY_ENABLED = true;
 
 /**
  * Minimum number of non-deleted transaction records before the sponsor
  * (tip) entry is revealed in the settings UI.
  */
-export const SPONSOR_RECORD_THRESHOLD = 5000;
+const SPONSOR_RECORD_THRESHOLD = 5000;
 
 /**
  * Minimum system age (in days) before the sponsor (tip) entry is revealed.
  * The earliest household creation time is used as the installation proxy.
  */
-export const SPONSOR_MIN_INSTALL_DAYS = 30;
+const SPONSOR_MIN_INSTALL_DAYS = 30;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 

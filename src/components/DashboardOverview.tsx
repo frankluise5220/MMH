@@ -24,8 +24,6 @@ export function DashboardOverview({
   isRedUp = true,
   createAction
 }: DashboardOverviewProps) {
-  const pnlCls = monthGrowth > 0 ? (isRedUp ? "text-accent-green" : "text-accent-clay") : (isRedUp ? "text-accent-clay" : "text-accent-green");
-  const pnlBgCls = monthGrowth > 0 ? "bg-accent-green/10 border-accent-green/10" : "bg-accent-clay/10 border-accent-clay/10";
 
   return (
     <div className="flex-1 min-w-0 bg-[#F8F8FF]/50 overflow-y-auto custom-scrollbar relative">

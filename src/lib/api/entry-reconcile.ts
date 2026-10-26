@@ -6,9 +6,9 @@
  * 解锁 = 点锁标记，清掉这两列。
  */
 
-export type EntryReconcileAction = "lock" | "unlock";
+type EntryReconcileAction = "lock" | "unlock";
 
-export type EntryReconcileResponse =
+type EntryReconcileResponse =
   | { ok: true; action: EntryReconcileAction; count: number; accountIds: string[] }
   | { ok: false; error: string; code?: string; reconciledIds?: string[] };
 
@@ -27,7 +27,7 @@ export async function callReconcileEntries(body: {
 
 export type EntryReconcileState = { reconciledAt: string; reconciledBalance: number | null };
 
-export type EntryReconcileStateResponse =
+type EntryReconcileStateResponse =
   | { ok: true; data: { states: Record<string, EntryReconcileState> } }
   | { ok: false; error: string; code?: string };
 

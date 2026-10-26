@@ -11,7 +11,7 @@ function formatUnits(value: number | null | undefined) {
  * 债券有自己的文案组（`buildBondCashFlowNote`，在 bond-transactions.ts），
  * 不再借用这里的 isBond 分支——债券已经不走理财链路。
  */
-export function wealthActionLabel(action: FundSubtype | string | null | undefined) {
+function wealthActionLabel(action: FundSubtype | string | null | undefined) {
   if (action === FundSubtype.redeem || action === FundSubtype.switch_out) return "理财赎回";
   if (action === FundSubtype.dividend_cash) return "理财分红";
   if (action === FundSubtype.write_off) return "理财核销";

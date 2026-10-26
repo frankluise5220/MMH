@@ -5,7 +5,7 @@ import {
   type DepositInterestPayoutFrequency,
 } from "@/lib/deposit-interest-payout";
 
-export type BondTermLike = {
+type BondTermLike = {
   annualRate?: number | null;
   termDays?: number | null;
   maturityDate?: Date | string | null;
@@ -15,7 +15,7 @@ export type BondTermLike = {
   interestCalcBasis?: string | null;
 };
 
-export type BondPayoutExpectation = {
+type BondPayoutExpectation = {
   frequency: DepositInterestPayoutFrequency;
   expectedDates: string[];
   nextPayoutDate: string | null;

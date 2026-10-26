@@ -8,6 +8,3 @@ export type CreditBillDetailSelectionDetail = {
   href: string;
 };
 
-export function dispatchCreditBillDetailSelection(detail: CreditBillDetailSelectionDetail) {
-  window.dispatchEvent(new CustomEvent<CreditBillDetailSelectionDetail>(CREDIT_BILL_DETAIL_SELECTION_EVENT, { detail }));
-}

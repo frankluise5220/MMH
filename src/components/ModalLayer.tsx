@@ -4,9 +4,9 @@ import { createContext, useContext, useEffect, useRef, useState, type CSSPropert
 import { createPortal } from "react-dom";
 
 /** 顶层窗口的基准层级：不在任何窗口内时，第一个窗口从这里起算。 */
-export const BASE_MODAL_Z_INDEX = 1000;
+const BASE_MODAL_Z_INDEX = 1000;
 /** 每嵌套一层窗口，层级递增的步长。 */
-export const MODAL_LAYER_STEP = 10;
+const MODAL_LAYER_STEP = 10;
 
 /** 当前所在窗口层的 z-index；0 = 不在任何窗口内（顶层）。 */
 const ModalLayerContext = createContext(0);
@@ -28,7 +28,7 @@ function isFullViewportOverlay(el: Element) {
  * 后者是给**还没迁移**的窗口兜底的：它们只要 portal 到 body 且是整屏遮罩，
  * 从它里面开出的新窗口依然能自动压在它上面。
  */
-export function peekOpenLayerZIndex(): number {
+function peekOpenLayerZIndex(): number {
   let max = 0;
   openLayerZIndexes.forEach((z) => {
     if (z > max) max = z;
@@ -57,7 +57,7 @@ export function registerOpenLayerZIndex(z: number): () => void {
  * 「我现在在哪一层」：0 = 顶层；其余为所在窗口层的 z-index。
  * 窗口靠它推导自己的层级，**不需要**由调用方声明「我该在哪一层」。
  */
-export function useModalLayerZIndex() {
+function useModalLayerZIndex() {
   return useContext(ModalLayerContext);
 }
 
@@ -79,7 +79,7 @@ export function useDerivedLayerZIndex(explicitZIndex?: number) {
 }
 
 /** 由父层推导子层：顶层 → 基准层；窗口内 → 父层 + 步长。 */
-export function getNextModalLayerZIndex(parentZIndex: number) {
+function getNextModalLayerZIndex(parentZIndex: number) {
   return parentZIndex > 0 ? parentZIndex + MODAL_LAYER_STEP : BASE_MODAL_Z_INDEX;
 }
 

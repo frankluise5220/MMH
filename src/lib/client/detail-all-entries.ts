@@ -2,7 +2,7 @@
 
 import { DETAIL_ALL_CHUNK_SIZE, DETAIL_ALL_FIRST_PAGE_SIZE } from "@/lib/detail-pagination-preference";
 
-export type ChunkedDetailLoadOptions<T> = {
+type ChunkedDetailLoadOptions<T> = {
   accountId: string;
   signal?: AbortSignal;
   /** Return false to stop early, e.g. because the account / page / scope changed. */
@@ -23,7 +23,7 @@ export type ChunkedDetailLoadOptions<T> = {
   range?: string;
 };
 
-export type ChunkedDetailLoadResult<T> = {
+type ChunkedDetailLoadResult<T> = {
   entries: T[];
   totalCount: number;
   /** True when `isCurrent()` asked the loop to stop before the end. */

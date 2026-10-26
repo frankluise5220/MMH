@@ -50,7 +50,7 @@ import { useI18n } from "@/lib/i18n";
  *     ...字段...
  *   </EntryModalShell>
  */
-export type EntryModalWidth = "sm" | "md" | "lg" | "xl" | "2xl" | "3xl";
+type EntryModalWidth = "sm" | "md" | "lg" | "xl" | "2xl" | "3xl";
 
 /** 窗体宽度档位（统一在这里，避免各弹窗各写一个 max-w）：sm 34rem / md 38rem / lg 42rem / xl 48rem / 2xl 56rem / 3xl 80rem。
  *  `2xl` 给「明细表列多」的弹窗（报销单：明细 7 列）用，等于原来的 `max-w-4xl`；

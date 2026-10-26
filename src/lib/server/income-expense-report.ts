@@ -27,7 +27,7 @@ const REIMBURSEMENT_INCOME_CATEGORY = "\u62a5\u9500";
 
 export type IncomeExpenseGroupBy = "month" | "year";
 
-export type IncomeExpenseReportColumn = {
+type IncomeExpenseReportColumn = {
   key: string;
   label: string;
 };
@@ -42,7 +42,7 @@ export type IncomeExpenseReportRow = {
   values: number[];
 };
 
-export type IncomeExpenseReportSection = {
+type IncomeExpenseReportSection = {
   type: "income" | "expense";
   label: string;
   count: number;
@@ -54,7 +54,7 @@ export type IncomeExpenseReportSection = {
 
 export type IncomeExpenseReportDetailType = "income" | "expense" | "net";
 
-export type IncomeExpenseReportDetailRow = {
+type IncomeExpenseReportDetailRow = {
   id: string;
   entryId: string;
   canEdit: boolean;

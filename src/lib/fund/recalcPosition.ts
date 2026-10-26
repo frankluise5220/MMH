@@ -45,13 +45,13 @@ function buyAvailableDate(e: FundPositionEntryLike): string {
   return e.confirmDate ?? e.arrivalDate ?? "";
 }
 
-export type FundHoldingCalc = { units: number; cost: number; pendingCost: number; historicalProfit: number };
+type FundHoldingCalc = { units: number; cost: number; pendingCost: number; historicalProfit: number };
 
 function emptyHolding(): FundHoldingCalc {
   return { units: 0, cost: 0, pendingCost: 0, historicalProfit: 0 };
 }
 
-export type FundPositionCalcResult = {
+type FundPositionCalcResult = {
   holdings: Map<string, FundHoldingCalc>;
   realizedProfitByEntryId: Map<string, number>;
 };

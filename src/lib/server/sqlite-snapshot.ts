@@ -5,7 +5,7 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import { prisma } from "@/lib/db/prisma";
 
-export type RestoreSqliteSnapshotProgress = {
+type RestoreSqliteSnapshotProgress = {
   stage: "restoring" | "done";
   percent: number;
   label: string;
@@ -48,7 +48,7 @@ export async function createSqliteSnapshotBuffer(): Promise<Buffer> {
   }
 }
 
-export function validateSqliteSnapshotFile(filePath: string): void {
+function validateSqliteSnapshotFile(filePath: string): void {
   let db: Database | null = null;
   try {
     db = new Database(filePath, { readonly: true, fileMustExist: true });

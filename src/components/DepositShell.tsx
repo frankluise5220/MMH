@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo,  useState, type ReactNode } from "react";
 import { ArrowDownLeft, ArrowUpRight, Coins, Landmark, Library, Repeat, SlidersHorizontal, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 

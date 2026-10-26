@@ -17,7 +17,7 @@ type StatementAccountLike = {
   readonly billingDayTxPeriod?: string | null;
 };
 
-export const ENTRY_ORIGIN_VALUES = [
+const ENTRY_ORIGIN_VALUES = [
   ENTRY_ORIGIN_MANUAL,
   ENTRY_ORIGIN_AI_IMPORT,
   ENTRY_ORIGIN_EXCEL_IMPORT,
@@ -25,23 +25,19 @@ export const ENTRY_ORIGIN_VALUES = [
   ENTRY_ORIGIN_EMAIL_IMPORT,
 ] as const;
 
-export type EntryOrigin = (typeof ENTRY_ORIGIN_VALUES)[number];
+type EntryOrigin = (typeof ENTRY_ORIGIN_VALUES)[number];
 
-export function isEntryOrigin(value: unknown): value is EntryOrigin {
+function isEntryOrigin(value: unknown): value is EntryOrigin {
   return ENTRY_ORIGIN_VALUES.includes(value as EntryOrigin);
 }
 
-export function normalizeEntryOrigin(value: string | null | undefined): EntryOrigin {
-  return isEntryOrigin(value) ? value : ENTRY_ORIGIN_MANUAL;
-}
 
 export const TRANSACTION_SOURCE_MANUAL = "manual" as const;
 export const TRANSACTION_SOURCE_INSURANCE = "insurance" as const;
-export const TRANSACTION_SOURCE_REGULAR_INVEST = "regular_invest" as const;
+const TRANSACTION_SOURCE_REGULAR_INVEST = "regular_invest" as const;
 export const TRANSACTION_SOURCE_REGULAR_INVEST_REFUND = "regular_invest_refund" as const;
 export const TRANSACTION_SOURCE_FUND_UNITS_RECONCILE = "fund_units_reconcile" as const;
-export const TRANSACTION_SOURCE_SCHEDULED_TASK = "scheduled_task" as const;
-export const TRANSACTION_SOURCE_STATEMENT_IMPORT = "statement_import" as const;
+const TRANSACTION_SOURCE_SCHEDULED_TASK = "scheduled_task" as const;
 /**
  * 债券执行器（买入/付息/赎回）写入的流水 source。
  * 与存款侧的 "deposit" 同构：由业务执行器写、不走通用 scheduled_task 分支，
@@ -80,9 +76,6 @@ export function isFundUnitsReconcileEntry(entry: { source?: string | null }) {
   return entry.source === TRANSACTION_SOURCE_FUND_UNITS_RECONCILE;
 }
 
-export function isGeneratedScheduledRecord(entry: { source?: string | null; entryOrigin?: string | null; regularInvestPlanId?: string | null }) {
-  return entry.entryOrigin === ENTRY_ORIGIN_SCHEDULED_TASK || entry.source === TRANSACTION_SOURCE_SCHEDULED_TASK;
-}
 
 export function recordMatchesRegularInvestPlan(taskType: string | null | undefined, entry: { source?: string | null }) {
   if (taskType === "fund_regular_invest") return entry.source === TRANSACTION_SOURCE_REGULAR_INVEST;
@@ -118,7 +111,7 @@ export function isCreditCardRepaymentBusinessType(value: unknown) {
   return value === CREDIT_CARD_REPAYMENT_BUSINESS_TYPE;
 }
 
-export function isCreditCardRepaymentSourceAccountKind(kind: string | null | undefined) {
+function isCreditCardRepaymentSourceAccountKind(kind: string | null | undefined) {
   return REPAYMENT_SOURCE_ACCOUNT_KINDS.has(kind ?? "");
 }
 
@@ -178,7 +171,7 @@ export function isLiabilityAccountKind(kind?: string | null) {
  * 返回 `null` 表示"两端都没有拿到账户 kind、无法判定"，由调用方维持原行为，避免信息缺失时
  * 静默改变统计口径。
  */
-export function isLiabilityActivityByAccount(
+function isLiabilityActivityByAccount(
   entry: { accountKind?: string | null; toAccountKind?: string | null } | null | undefined,
 ) {
   if (!entry) return null;
@@ -198,7 +191,7 @@ const LIABILITY_PRINCIPAL_SOURCES = new Set([
   "scheduled_task",
 ]);
 
-export function isLiabilityPrincipalSource(source?: string | null) {
+function isLiabilityPrincipalSource(source?: string | null) {
   return LIABILITY_PRINCIPAL_SOURCES.has(source ?? "");
 }
 

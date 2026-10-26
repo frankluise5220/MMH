@@ -1,7 +1,7 @@
 import { showBlockingLoading } from "@/lib/client/blocking-loading";
 import { showChoiceDialog, showConfirmDialog } from "@/lib/client/confirm-dialog";
 
-export type EntriesDeleteRequest = {
+type EntriesDeleteRequest = {
   entryIds: string[];
   linkedAction?: "deleteBusiness" | "keepBusiness";
   checkOnly?: boolean;
@@ -25,7 +25,7 @@ export type EntryBusinessDeleteImpact = {
   businessDisplayRowCount?: number;
 };
 
-export type EntriesDeleteResponse =
+type EntriesDeleteResponse =
   | {
       ok: true;
       message: string;

@@ -4,7 +4,6 @@
  * one parameter, so several `in` clauses in the same query (for example an OR
  * containing repeated `{ in: ids }`) add up quickly for batch operations.
  */
-export const IN_LIST_PARAM_LIMIT = 999;
 
 /**
  * Target chunk size for each `in` clause. Keep enough headroom for queries

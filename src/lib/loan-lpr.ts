@@ -3,21 +3,21 @@ import { normalizeLoanRateAdjustments, type LoanRateAdjustment } from "./loan-re
 export const MORTGAGE_BASE_BENCHMARK_RATE = 4.9;
 export const MORTGAGE_LPR_CONVERSION_BASE_RATE = 4.8;
 
-export type LprQuote = {
+type LprQuote = {
   date: string;
   fiveYearRate: number;
 };
 
-export type MortgageBankExecutionRate = {
+type MortgageBankExecutionRate = {
   date: string;
   rate: number;
   source: "benchmark" | "lpr";
 };
 
-export type MortgageLprAdjustmentBasis = "annual_reprice" | "lpr_quote";
+type MortgageLprAdjustmentBasis = "annual_reprice" | "lpr_quote";
 
 // PBOC RMB loan benchmark rates, over-5-year term. Used for pre-LPR mortgage loans.
-export const MORTGAGE_BENCHMARK_RATE_HISTORY: MortgageBankExecutionRate[] = [
+const MORTGAGE_BENCHMARK_RATE_HISTORY: MortgageBankExecutionRate[] = [
   { date: "2010-10-20", rate: 6.14, source: "benchmark" },
   { date: "2010-12-26", rate: 6.4, source: "benchmark" },
   { date: "2011-02-09", rate: 6.6, source: "benchmark" },

@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowLeftRight, ArrowRight, CalendarPlus, ChevronDown, ChevronUp } from "lucide-react";
+import { ArrowLeftRight, ArrowRight,  ChevronDown, ChevronUp } from "lucide-react";
 import { useState, useEffect, useRef, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { CalcInput } from "./CalcInput";
@@ -382,7 +382,7 @@ export type LoanSchedulePickRow = {
 };
 
 /** 还款表（服务端 buildLiabilityRepaymentScheduleRows 的输出）里本表单只关心支付行。 */
-export type LoanRepaymentScheduleLike = {
+type LoanRepaymentScheduleLike = {
   rows: Array<{
     rowType: string;
     period: number;

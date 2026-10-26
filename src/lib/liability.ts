@@ -1,6 +1,6 @@
-export type LiabilityDirectionValue = "payable" | "receivable";
+type LiabilityDirectionValue = "payable" | "receivable";
 
-export const LIABILITY_DIRECTION_LABELS: Record<LiabilityDirectionValue, string> = {
+const LIABILITY_DIRECTION_LABELS: Record<LiabilityDirectionValue, string> = {
   payable: "我欠别人",
   receivable: "别人欠我",
 };
@@ -23,21 +23,9 @@ export function normalizeLiabilityDirection(
   return value === "receivable" ? "receivable" : "payable";
 }
 
-export function liabilityDirectionLabel(raw: string | null | undefined) {
-  return raw === "receivable" ? LIABILITY_DIRECTION_LABELS.receivable : LIABILITY_DIRECTION_LABELS.payable;
-}
 
-export function liabilityActionLabel(params: {
-  direction: string | null | undefined;
-  isLiabilityAccountFromSide: boolean;
-}) {
-  if (params.direction === "receivable") {
-    return params.isLiabilityAccountFromSide ? "收回" : "出借";
-  }
-  return params.isLiabilityAccountFromSide ? "借入" : "还款";
-}
 
-export type LiabilityActivityMode = "borrow_in" | "repay_out" | "prepay_out" | "lend_out" | "collect_in";
+type LiabilityActivityMode = "borrow_in" | "repay_out" | "prepay_out" | "lend_out" | "collect_in";
 
 /** 还回/还出/提前还款才允许利息；借入/借出没有利息。 */
 export function allowsLiabilityInterest(mode: string | null | undefined) {
@@ -71,7 +59,7 @@ export function swapLiabilityFlowDirection(mode: LiabilityActivityMode): Liabili
   return mode;
 }
 
-export type LiabilityPrincipalEntryLike = {
+type LiabilityPrincipalEntryLike = {
   amount: unknown;
   principalAmount?: unknown;
   source?: string | null;

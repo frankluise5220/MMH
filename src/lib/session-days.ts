@@ -15,6 +15,3 @@ export function normalizeSessionDays(input: unknown, fallback = DEFAULT_SESSION_
   return Math.min(Math.max(Math.round(n), 1), 365);
 }
 
-export function sessionDaysToMaxAge(input: unknown) {
-  return normalizeSessionDays(input) * 24 * 60 * 60;
-}

@@ -3,7 +3,7 @@ import type { IntervalUnit } from "@prisma/client";
 import { formatDateUtc, startOfDayUtc } from "@/lib/date-utils";
 import { calcInitialScheduledRunDate, calcNextScheduledRunDate } from "@/lib/scheduled-task-date";
 
-export type LoanRepaymentPeriodPlan = {
+type LoanRepaymentPeriodPlan = {
   startDate: Date;
   intervalUnit: IntervalUnit;
   intervalValue: number;
@@ -12,7 +12,7 @@ export type LoanRepaymentPeriodPlan = {
   totalRuns?: number | null;
 };
 
-export type LoanRepaymentPeriod = {
+type LoanRepaymentPeriod = {
   period: number;
   dueDate: Date;
   previousDueDate: Date;
@@ -82,10 +82,4 @@ export function resolveLoanRepaymentCoverage(params: {
   };
 }
 
-export function loanRepaymentPeriodKey(planId: string, period: number) {
-  return `${planId}:${period}`;
-}
 
-export function isSameLoanRepaymentDueDate(left: Date, right: Date) {
-  return formatDateUtc(left) === formatDateUtc(right);
-}

@@ -14,7 +14,7 @@ import { attachEntryTags } from "@/lib/server/entry-tags";
 
 type InstallmentWriter = Prisma.TransactionClient;
 
-export type CreateCreditCardInstallmentInput = {
+type CreateCreditCardInstallmentInput = {
   householdId: string;
   account: { id: string; name: string };
   sourceType: CreditCardInstallmentSourceType;

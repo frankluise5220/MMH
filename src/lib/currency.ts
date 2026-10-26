@@ -25,7 +25,6 @@ export const CURRENCY_OPTIONS = [
   { value: "MOP" },
 ] as const;
 
-export type SystemCurrencyCode = (typeof CURRENCY_OPTIONS)[number]["value"];
 
 /**
  * Country (Chinese) → ISO currency code mapping.
@@ -125,7 +124,7 @@ export function normalizeOptionalCurrency(value: unknown) {
  * **入库的账户名一律用 ISO 代码**（`张四的现金 · USD`），不能把「美元」写进
  * `Account.name`，否则切到英文界面这个名字永远不会变。
  */
-export const CURRENCY_LOCAL_NAMES: Record<string, { zh: string; en: string }> = {
+const CURRENCY_LOCAL_NAMES: Record<string, { zh: string; en: string }> = {
   CNY: { zh: "人民币", en: "Chinese yuan" },
   USD: { zh: "美元", en: "US dollar" },
   JPY: { zh: "日元", en: "Japanese yen" },

@@ -27,7 +27,7 @@ import { getHouseholdScope } from "@/lib/server/household-scope";
 import { attachEntryTags, replaceEntryTags } from "@/lib/server/entry-tags";
 import { upsertEntryBusinessCashFlowLink } from "@/lib/server/entry-business-link";
 import { revalidateAfterFundShellChange, revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
-import { isAdvanceFundingAccount, isDepositAccount, isDepositPostingCategoryAllowed, isIncomeExpensePostingAccount, isIncomeExpensePostingOrDepositAccount, isLoanOrSettlementAccountKind, isPureInvestmentAccount, isSpecialCashTargetAccount } from "@/lib/account-kind-utils";
+import { isAdvanceFundingAccount, isDepositAccount, isDepositPostingCategoryAllowed, isIncomeExpensePostingAccount,  isLoanOrSettlementAccountKind, isPureInvestmentAccount, isSpecialCashTargetAccount } from "@/lib/account-kind-utils";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 import { resolveOrCreateDepositAccount } from "@/lib/server/deposit-account";
 import { resolveOrCreateDepositProduct } from "@/lib/server/deposit-product";
@@ -56,7 +56,6 @@ import { getServerT } from "@/lib/server/i18n";
 import { touchAccountUsage } from "@/lib/server/account-usage";
 import { creditBillEffectiveDate } from "@/lib/credit/billing";
 import { toStatementMonth, toNumber } from "@/lib/date-utils";
-import { decodeScheduledTaskMemo } from "@/lib/scheduled-task";
 import {
   isPeriodicDepositInterestPayout,
   normalizeDepositInterestPayoutInput,
@@ -708,7 +707,6 @@ export async function createTransaction(formData: FormData) {
       if (!accountId) return { ok: false as const, error: t("investForm.selectCashAccount") };
       if (!counterpartyInstitutionId) return { ok: false as const, error: t("liabilityTx.placeholder.selectCounterparty") };
 
-      let advanceAccountId = "";
       await prisma.$transaction(async (tx) => {
         const [acc, cat] = await Promise.all([
           tx.account.findUnique({ where: { id: accountId }, include: { Institution: true } }),
@@ -724,7 +722,6 @@ export async function createTransaction(formData: FormData) {
         });
         const advanceAccount = resolvedAdvance.account;
         if (advanceAccount.id === acc.id) throw new Error(t("sidebar.action.cashAccountSameAsSettlement"));
-        advanceAccountId = advanceAccount.id;
         const transfer = resolveAdvanceTransfer({ amount: amountRaw, cashAccount: acc, advanceAccount });
         const statementMonth = statementMonthForTransfer(date, transfer.fromAccount, transfer.toAccount);
 

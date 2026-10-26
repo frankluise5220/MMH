@@ -36,7 +36,7 @@ function normalizeTemplateHeaderText(value: unknown) {
   return String(value ?? "").trim().replace(/\s+/g, "").toLowerCase();
 }
 
-export function isTemplateSampleRowValue(value: unknown) {
+function isTemplateSampleRowValue(value: unknown) {
   return TEMPLATE_SAMPLE_ROW_VALUES.has(normalizeTemplateText(value));
 }
 
@@ -47,7 +47,7 @@ export function findTemplateSampleColumnIndex(headers: readonly unknown[]) {
   );
 }
 
-export function isTemplateGuideTitleCell(value: unknown, guideTitle: string) {
+function isTemplateGuideTitleCell(value: unknown, guideTitle: string) {
   const title = normalizeTemplateText(guideTitle);
   if (!title) return false;
   return normalizeTemplateText(value).startsWith(title);

@@ -14,7 +14,7 @@ export type SettingsCatalogItem = {
   apiRefs?: string[];
 };
 
-export type SettingsCatalogGroup = {
+type SettingsCatalogGroup = {
   id: string;
   label: string;
   description: string;
@@ -31,7 +31,7 @@ export type SettingsCatalog = {
 
 type TranslateFn = (key: string, params?: Record<string, string | number>) => string;
 
-export const settingsCatalog = rawCatalog as SettingsCatalog;
+const settingsCatalog = rawCatalog as SettingsCatalog;
 
 // Settings catalog entries hidden by default: they do not appear on the
 // settings home or the sidebar nav unless explicitly revealed, while their
@@ -86,14 +86,6 @@ export function getSettingsCatalogWithoutHiddenItems(revealHiddenIds?: string[])
   };
 }
 
-export function findSettingsItem(id: string, surface?: SettingsSurface, revealHiddenIds?: string[]) {
-  const groups = surface ? getSettingsCatalogForSurface(surface, revealHiddenIds).groups : settingsCatalog.groups;
-  for (const group of groups) {
-    const item = group.items.find((entry) => entry.id === id);
-    if (item) return item;
-  }
-  return null;
-}
 
 // ── Basic-data nav merge ─────────────────────────────────────────────────────
 // On web, the four master-data entries below collapse into a single
@@ -101,7 +93,7 @@ export function findSettingsItem(id: string, surface?: SettingsSurface, revealHi
 // home. The four pages stay reachable through their direct URLs and the
 // sub-tabs rendered on each basic-data page.
 const BASIC_DATA_SECONDARY_IDS = new Set(["family-members", "counterparties", "institutions", "tags"]);
-export const BASIC_DATA_PRIMARY_HREF = "/settings/family-members";
+const BASIC_DATA_PRIMARY_HREF = "/settings/family-members";
 
 const BASIC_DATA_NAV_PATHS = new Set([
   "/settings/family-members",
@@ -228,7 +220,7 @@ export function localizeSettingsItem(t: TranslateFn, item: SettingsCatalogItem):
   };
 }
 
-export function localizeSettingsGroup(t: TranslateFn, group: SettingsCatalogGroup): SettingsCatalogGroup {
+function localizeSettingsGroup(t: TranslateFn, group: SettingsCatalogGroup): SettingsCatalogGroup {
   return {
     ...group,
     label: localize(t, SETTINGS_GROUP_LABEL_KEYS[group.id], group.label),

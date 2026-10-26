@@ -7,7 +7,7 @@ type AccountWriter = typeof prisma | Prisma.TransactionClient;
 const CREDIT_BILL_MODE_SEPARATE: CreditBillMode = "separate";
 const CREDIT_BILL_MODE_CONSOLIDATED: CreditBillMode = "consolidated";
 
-export type CreditCardInstitutionDefaults = {
+type CreditCardInstitutionDefaults = {
   billingDay: number | null;
   repaymentDay: number | null;
   repaymentOffsetDays: number | null;

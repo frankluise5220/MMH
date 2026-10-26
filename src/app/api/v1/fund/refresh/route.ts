@@ -86,7 +86,6 @@ export async function POST(req: NextRequest) {
       orderBy: { createdAt: "asc" },
     });
 
-    const now = new Date();
     const todayDate = todayDateBusinessYmd(await getRequestTimeZone());
 
     for (const entry of unconfirmedEntries) {

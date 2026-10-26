@@ -49,7 +49,7 @@ function withCreatedAt(record: LedgerInviteCodeRecord): LedgerInviteCodeRecord {
   return createdAt ? { ...record, createdAt } : { ...record, createdAt: new Date().toISOString() };
 }
 
-export function signLedgerInviteCodeRecord(
+function signLedgerInviteCodeRecord(
   record: LedgerInviteCodeRecord,
   issuerHouseholdId: string,
 ): LedgerInviteCodeRecord {
@@ -70,7 +70,7 @@ export function signLedgerInviteCodeRecord(
  * empty value cannot be used to forge or replay a code. Callers that want a
  * complete record should use `signLedgerInviteCodeRecord`, which backfills it.
  */
-export function isLedgerInviteCodeRecordAuthentic(record: LedgerInviteCodeRecord) {
+function isLedgerInviteCodeRecordAuthentic(record: LedgerInviteCodeRecord) {
   const issuer = record.issuerHouseholdId?.trim() ?? "";
   const signature = record.signature?.trim() ?? "";
   if (!record.code.trim() || !issuer || !signature) return false;
@@ -101,7 +101,7 @@ export function isLedgerInviteCodeSigningAvailable() {
 }
 
 /** Tri-state signature verdict used by the admin UI and the redemption guards. */
-export type LedgerInviteCodeSignatureState = "valid" | "invalid" | "unavailable";
+type LedgerInviteCodeSignatureState = "valid" | "invalid" | "unavailable";
 
 export function ledgerInviteCodeSignatureState(record: LedgerInviteCodeRecord): LedgerInviteCodeSignatureState {
   if (!isLedgerInviteCodeSigningAvailable()) return "unavailable";

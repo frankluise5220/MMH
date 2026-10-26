@@ -16,14 +16,14 @@ import type { StatementWorkbookSheetRows } from "@/lib/statement/alipay-template
  * [9]  \u5907\u6ce8 (visible remark)
  * [10] \u7b2c\u4e8c\u5907\u6ce8 (match remark)
  */
-export type NormalizedWechatWorkbookRows = {
+type NormalizedWechatWorkbookRows = {
   rows: string[][];
   sourceDataRowCount: number;
   includedSheetCount: number;
   profile: "wechat";
 };
 
-export type WechatImportTemplate = {
+type WechatImportTemplate = {
   key: "wechat";
   title: string;
   description: string;

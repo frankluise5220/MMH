@@ -70,7 +70,7 @@ const PRINT_PORTAL_RULES = `
 // panel and 277mm print sheet alike) and dragged row heights (px, per detail-table
 // row index). Plain layout values, so they flow into window.print() unchanged.
 // Grips never touch the table's outer left/right borders.
-export type ReimbursementPrintAdjust = {
+type ReimbursementPrintAdjust = {
   detailCols?: number[] | null;
   rowHeights?: Record<number, number> | null;
 };
@@ -109,7 +109,7 @@ const thCell = "relative border border-slate-500 bg-slate-100 px-2 py-2 text-lef
 const tdCell = "border border-slate-500 px-2 py-2";
 
 /** One A4-landscape printable reimbursement sheet; shared by single preview and batch print. */
-export function ReimbursementPrintArticle({
+function ReimbursementPrintArticle({
   reimbursement,
   counterpartyName,
   adjust = {},

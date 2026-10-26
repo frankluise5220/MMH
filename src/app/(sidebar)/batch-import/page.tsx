@@ -1186,13 +1186,6 @@ function getFundImportSubtypeLabel(subtype: string, source: string, t: (key: str
   return subtype || "-";
 }
 
-function getFundImportSourceLabel(source: string, t: (key: string) => string) {
-  if (source === "regular_invest") return t("batchImport.fundSource.regularInvest");
-  if (source === "regular_invest_refund") return t("batchImport.fundSource.regularInvestRefund");
-  if (source === "manual") return t("batchImport.fundSource.manual");
-  if (source === "dividend") return t("batchImport.fundSource.dividend");
-  return source || "-";
-}
 
 function hasFundBlockingIssue(item: FundImportPreviewItem | undefined) {
   return !!item?.issues.some((issue) => issue.level === "error");

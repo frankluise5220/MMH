@@ -13,10 +13,10 @@ import { FundSubtype, type Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { toNumber } from "@/lib/date-utils";
 
-export type InvestmentFlowDateBasis = "apply" | "confirm";
-export type InvestmentFlowSubtype = "buy" | "sell" | "all";
-export type InvestmentFlowProductType = "fund" | "money" | "all";
-export type InvestmentFlowGroupBy = "none" | "fund" | "account";
+type InvestmentFlowDateBasis = "apply" | "confirm";
+type InvestmentFlowSubtype = "buy" | "sell" | "all";
+type InvestmentFlowProductType = "fund" | "money" | "all";
+type InvestmentFlowGroupBy = "none" | "fund" | "account";
 
 export type InvestmentFlowInput = {
   householdId: string;
@@ -28,7 +28,7 @@ export type InvestmentFlowInput = {
   groupBy?: InvestmentFlowGroupBy;
 };
 
-export type InvestmentFlowBucket = {
+type InvestmentFlowBucket = {
   totalAmount: number;
   count: number;
   regularInvestAmount?: number;
@@ -43,7 +43,7 @@ export type InvestmentFlowBucket = {
   }>;
 };
 
-export type InvestmentFlowResult = {
+type InvestmentFlowResult = {
   from: string;
   to: string;
   dateBasis: InvestmentFlowDateBasis;

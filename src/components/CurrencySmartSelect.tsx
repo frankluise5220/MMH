@@ -21,7 +21,7 @@ import {
 import { SmartSelect, type SmartSelectOption } from "@/components/SmartSelect";
 import { COUNTRY_TO_CURRENCY, CURRENCY_OPTIONS } from "@/lib/currency";
 
-export type CurrencyEntry = {
+type CurrencyEntry = {
   code: string;
   nameZh: string;
   nameEn: string;
@@ -128,10 +128,6 @@ async function fetchCurrencies(force = false): Promise<CurrencyEntry[]> {
   }
 }
 
-export function invalidateCurrencyCache() {
-  CACHE.list = null;
-  CACHE.updatedAt = 0;
-}
 
 type Props = {
   value: string;

@@ -14,7 +14,7 @@ import { investmentTargetText, isAutoInvestmentSourceNote } from "@/lib/investme
 
 type TxClient = Prisma.TransactionClient | typeof prisma;
 
-export type StockCashFlowRow = {
+type StockCashFlowRow = {
   id: string;
   householdId: string;
   stockAccountId: string;
@@ -84,7 +84,7 @@ export function isStockCashOutAction(action: StockTransactionAction | string) {
   );
 }
 
-export function stockCashFlowDirection(action: StockTransactionAction | string): EntryCashFlowDirection {
+function stockCashFlowDirection(action: StockTransactionAction | string): EntryCashFlowDirection {
   if (isStockCashInAction(action)) return "inflow";
   if (isStockCashOutAction(action)) return "outflow";
   return "none";

@@ -30,7 +30,7 @@ const NON_FUND_SCHEDULED_TASK_TRANSACTION_OPTIONS = {
   timeout: 60_000,
 };
 
-export type NonFundScheduledTaskResult = {
+type NonFundScheduledTaskResult = {
   ok: true;
   taskType: NonFundTaskType;
   generatedCount: number;

@@ -50,7 +50,6 @@ export async function GET(req: NextRequest) {
   try {
     // If benchmark requested, make sure the cache covers the window (best-effort).
     if (benchmarkCode) {
-      const now = new Date();
       const endMonthStr = endMonth
         ?? todayDateBusinessYmd(await getRequestTimeZone()).slice(0, 7);
       const [ey, em] = endMonthStr.split("-").map(Number);

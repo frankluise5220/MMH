@@ -9,7 +9,7 @@
  */
 export type CredentialKind = "local" | "mmh" | "fnos" | "none";
 
-export type CredentialKindSubject = {
+type CredentialKindSubject = {
   passwordHash: string | null;
   fnosUid: string | null;
   registrationPrincipalId: string | null;

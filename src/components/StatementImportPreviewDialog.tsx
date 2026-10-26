@@ -480,7 +480,7 @@ function canonicalizePreviewItemAccounts(
       };
 }
 
-export function statementImportMissingFields(
+function statementImportMissingFields(
   item: StatementImportPreviewItem,
   defaultAccountName: string,
   lookup: PreviewAccountLookup | null = null,
@@ -504,9 +504,6 @@ export function statementImportMissingFields(
   return Array.from(new Set(missing));
 }
 
-export function isStatementImportReady(item: StatementImportPreviewItem, defaultAccountName: string) {
-  return statementImportMissingFields(item, defaultAccountName).length === 0;
-}
 
 function buildCategoryOptions(categories: BookCategory[], txType: StatementImportPreviewItem["type"] | undefined, t: (key: string) => string): BatchReplaceOption[] {
   const options: BatchReplaceOption[] = [{ value: "", label: t("statementImportPreview.clearCategory") }];

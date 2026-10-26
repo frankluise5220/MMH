@@ -22,13 +22,13 @@
  * anchored at their last used moment.
  */
 
-export const ACCOUNT_USAGE_RECENT_WINDOW_DAYS = 5;
+const ACCOUNT_USAGE_RECENT_WINDOW_DAYS = 5;
 
 /** Weight per day-ago inside the recent window (index 0 = today). */
-export const ACCOUNT_USAGE_RECENT_WINDOW_DAY_WEIGHTS: readonly number[] = [1, 0.8, 0.6, 0.4, 0.2];
+const ACCOUNT_USAGE_RECENT_WINDOW_DAY_WEIGHTS: readonly number[] = [1, 0.8, 0.6, 0.4, 0.2];
 
 /** How many days of history the daily histogram keeps (bounded storage). */
-export const ACCOUNT_USAGE_DAILY_HISTORY_DAYS = 30;
+const ACCOUNT_USAGE_DAILY_HISTORY_DAYS = 30;
 
 /** Max score contributed by the all-time count tiebreaker (min(count,100) × 0.1). */
 const ALL_TIME_BONUS_MAX = 10;
@@ -48,7 +48,7 @@ export type AccountUsageStat = {
 export type AccountUsageMap = Record<string, AccountUsageStat>;
 
 /** Local-timezone `YYYY-MM-DD` key used by the daily histogram. */
-export function accountUsageDayKey(date: Date): string {
+function accountUsageDayKey(date: Date): string {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const day = String(date.getDate()).padStart(2, "0");
@@ -56,7 +56,7 @@ export function accountUsageDayKey(date: Date): string {
 }
 
 /** Drops histogram entries older than the kept history window (string compare works on YYYY-MM-DD). */
-export function pruneAccountUsageDaily(
+function pruneAccountUsageDaily(
   daily: Record<string, number> | undefined,
   now: number,
 ): Record<string, number> | undefined {
@@ -101,7 +101,7 @@ function recentWindowScore(stat: AccountUsageStat, now: number): number {
  * Scale: 1 operation today ≈ 100; recency bonus spans 0..50; all-time count
  * spans 0..10 — in-window activity always outweighs history of the same size.
  */
-export function computeAccountUsageScore(
+function computeAccountUsageScore(
   stat: AccountUsageStat | undefined,
   now: number = Date.now(),
 ): number {

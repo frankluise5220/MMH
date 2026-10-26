@@ -72,7 +72,7 @@ async function runInventoryReportTick() {
   }
 }
 
-export function registerNodeRuntime() {
+function registerNodeRuntime() {
   if (systemTaskInterval) return;
   if (String(process.env.MMH_SYSTEM_TASKS_DISABLED ?? "") === "1") return;
 

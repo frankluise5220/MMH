@@ -13,7 +13,7 @@
 // When a finance event carries `accountIds`, callers must use
 // `fetchScopedAccountBalances` instead of the full household recompute.
 
-export type InternalAccountBalancesPayload = {
+type InternalAccountBalancesPayload = {
   ok?: boolean;
   baseCurrency?: string;
   totalConvertedBalance?: number;
@@ -33,7 +33,7 @@ export type ScopedAccountBalance = {
   fxRateMissing?: boolean;
 };
 
-export type ScopedAccountBalancesPayload = {
+type ScopedAccountBalancesPayload = {
   ok: true;
   baseCurrency: string;
   data: ScopedAccountBalance[];
@@ -83,7 +83,7 @@ export function seedConvertedBalances(items: ConvertedSeedItem[], totalConverted
   seedTotalConvertedBalance(totalConvertedBalance);
 }
 
-export function applyScopedConvertedBalanceDelta(accounts: ScopedAccountBalance[]): number | null {
+function applyScopedConvertedBalanceDelta(accounts: ScopedAccountBalance[]): number | null {
   if (seededTotalConvertedBalance == null) return null;
   if (accounts.some((account) => !convertedBalanceById.has(account.id))) return null;
   let nextTotal = seededTotalConvertedBalance;

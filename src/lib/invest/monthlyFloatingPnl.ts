@@ -11,7 +11,7 @@ import { fundUnitsProfitStartDate } from "@/lib/fund/confirmDays";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 
-export type SnapshotPosition = {
+type SnapshotPosition = {
   fundCode: string;
   fundName: string | null;
   units: number;
@@ -35,13 +35,13 @@ export type AccountSnapshot = {
   positions: SnapshotPosition[];
 };
 
-export type MonthlyBuySummary = {
+type MonthlyBuySummary = {
   amount: number;
   units: number;
   count: number;
 };
 
-export type AccountMonthlyFloatingPnl = {
+type AccountMonthlyFloatingPnl = {
   accountId: string;
   accountName: string;
   baseline: AccountSnapshot;
@@ -51,7 +51,7 @@ export type AccountMonthlyFloatingPnl = {
   monthlyBuy: MonthlyBuySummary;
 };
 
-export type MonthlyFloatingPnlResult = {
+type MonthlyFloatingPnlResult = {
   month: string;
   baselineDate: string;
   endDate: string;

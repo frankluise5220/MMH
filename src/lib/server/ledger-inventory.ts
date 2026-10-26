@@ -33,7 +33,7 @@ import {
   type InstallationInventory,
 } from "@/lib/server/registration-client";
 
-export type LedgerInventoryReason =
+type LedgerInventoryReason =
   | "ledger-created"
   | "ledger-deleted"
   | "mmh-bound"
@@ -51,7 +51,7 @@ const HEARTBEAT_INTERVAL_MS = 6 * 60 * 60 * 1000;
 let lastReportAttemptedAt = 0;
 
 /** Set MMH_INSTALLATION_REPORT_DISABLED=1 to keep the inventory local. */
-export function ledgerInventoryReportingDisabled(): boolean {
+function ledgerInventoryReportingDisabled(): boolean {
   return (process.env.MMH_INSTALLATION_REPORT_DISABLED ?? "").trim() === "1";
 }
 
@@ -141,7 +141,7 @@ async function buildInventory(installationId: string): Promise<InstallationInven
 }
 
 /** Sends one inventory snapshot. Never throws. */
-export async function reportLedgerInventory(reason: LedgerInventoryReason): Promise<void> {
+async function reportLedgerInventory(reason: LedgerInventoryReason): Promise<void> {
   if (ledgerInventoryReportingDisabled()) return;
   if (!isRegistrationConfigured()) return;
 

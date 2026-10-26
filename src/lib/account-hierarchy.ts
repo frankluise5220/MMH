@@ -8,7 +8,7 @@ import { normalizeCurrency } from "@/lib/currency";
  * - **子账户 = 记账单元**：按币种拆分，明细（`TxRecord`）只挂在子账户上；
  * - 父账户自身没有明细，也**不能直接记账**（`isPostableAccount` 为 false）。
  */
-export type AccountHierarchyLike = {
+type AccountHierarchyLike = {
   id: string;
   name?: string | null;
   currency?: string | null;
@@ -22,21 +22,15 @@ export function isAggregateAccount(account?: AccountHierarchyLike | null): boole
 }
 
 /** 可记账账户：子账户或未升级的普通账户。写入路径必须落到这一级。 */
-export function isPostableAccount(account?: AccountHierarchyLike | null): boolean {
-  return !!account && !isAggregateAccount(account);
-}
 
 /**
  * 统计单元：没有父账户的那一级。子账户已经被父账户代表，再计入就是双计，
  * 所以资产/净值/账户合计一律先过这一层过滤。
  */
-export function isStatisticAccount(account?: AccountHierarchyLike | null): boolean {
+function isStatisticAccount(account?: AccountHierarchyLike | null): boolean {
   return !!account && !account.parentId;
 }
 
-export function filterStatisticAccounts<T extends AccountHierarchyLike>(accounts: T[]): T[] {
-  return accounts.filter(isStatisticAccount);
-}
 
 /**
  * 币种子账户的默认名：`原名 · 币种`（2026-10-18 用户裁定）。
@@ -49,6 +43,3 @@ export function multiCurrencyChildName(parentName: string | null | undefined, cu
 }
 
 /** 升/降级时同步 `TxRecord` 的账户名快照（与账户合并路由同一套做法）。 */
-export function accountNameSnapshotFields(accountName: string) {
-  return { accountName, toAccountName: accountName };
-}

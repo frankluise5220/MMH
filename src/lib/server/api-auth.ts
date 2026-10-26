@@ -10,9 +10,9 @@ import { getApiKeyPolicyDecision } from "@/lib/api-key-policy";
 import { getHouseholdScope, type HouseholdContext } from "@/lib/server/household-scope";
 import { verifyAccessKey } from "@/lib/server/access-key-auth";
 
-export type ApiAuthMethod = "session" | "accessKey";
+type ApiAuthMethod = "session" | "accessKey";
 
-export type ApiHouseholdContext = HouseholdContext & {
+type ApiHouseholdContext = HouseholdContext & {
   authMethod: ApiAuthMethod;
   accessKey?: {
     id: string;

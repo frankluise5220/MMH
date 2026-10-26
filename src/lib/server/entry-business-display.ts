@@ -20,9 +20,9 @@ type EntryBusinessDisplayClient = Prisma.TransactionClient | typeof prisma;
  * 同一条 TxRecord 若同时挂在 link 的 cashEntryId 与 businessEntryId 上，
  * 优先取 cashEntryId 那一侧（与 detail-page-query 的 wealth/fund candidates 优先级一致）。
  */
-export type EntryLinkedFundDisplay = LinkedFundForReorder;
+type EntryLinkedFundDisplay = LinkedFundForReorder;
 
-export async function loadEntryLinkedFundDisplay(
+async function loadEntryLinkedFundDisplay(
   entryIds: Array<string | null | undefined>,
   householdId: string | null | undefined,
   client: EntryBusinessDisplayClient = prisma,
@@ -75,7 +75,7 @@ export async function loadEntryLinkedFundDisplay(
   return map;
 }
 
-export type EntryLinkedWealthDisplay = LinkedWealthForReorder;
+type EntryLinkedWealthDisplay = LinkedWealthForReorder;
 
 /**
  * 理财侧的同一份回填数据源（`wealth_transactions`）。
@@ -85,7 +85,7 @@ export type EntryLinkedWealthDisplay = LinkedWealthForReorder;
  * 按申请日而不是入账日排序 / 显示 / 计息（detail-page-query 的 wealth_candidates
  * 只覆盖了 SQL 一侧）。
  */
-export async function loadEntryLinkedWealthDisplay(
+async function loadEntryLinkedWealthDisplay(
   entryIds: Array<string | null | undefined>,
   householdId: string | null | undefined,
   client: EntryBusinessDisplayClient = prisma,
@@ -138,7 +138,7 @@ export async function loadEntryLinkedWealthDisplay(
   return map;
 }
 
-export type EntryLinkedInvestmentDisplay = {
+type EntryLinkedInvestmentDisplay = {
   fund: Map<string, EntryLinkedFundDisplay>;
   wealth: Map<string, EntryLinkedWealthDisplay>;
 };

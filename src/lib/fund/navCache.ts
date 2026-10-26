@@ -15,7 +15,7 @@ const NAV_HEADERS = {
   Referer: "http://fundf10.eastmoney.com/",
 };
 
-export interface NavListItem {
+interface NavListItem {
   date: string;
   nav: number;
   cumNav: number;
@@ -73,44 +73,10 @@ export async function fetchHistoricalNavList(
 /**
  * Find the NAV for the target date in a preloaded NAV list (exact match).
  */
-export function findNavExact(
-  navList: NavListItem[],
-  targetDate: string
-): NavListItem | null {
-  const exact = navList.find(item => item.date === targetDate);
-  if (exact && exact.nav > 0) return exact;
-  return null;
-}
 
 /**
  * Find the NAV for the target date or the most recent trading day before it (fallback lookup).
  */
-export function findNavFallback(
-  navList: NavListItem[],
-  targetDate: string,
-  todayKey: string = todayDateBusinessYmd()
-): NavListItem | null {
-  const targetTime = new Date(targetDate + "T00:00:00Z").getTime();
-  // 「今天」由调用方按账簿时区传入；缺省时回落到部署默认值。
-  const nowDate = todayKey;
-  const nowTime = new Date(nowDate + "T00:00:00Z").getTime();
-  // Don't fallback for today or future dates — the nav hasn't been published yet
-  const recentThreshold = nowTime - 2 * 86400000; // 2 calendar days ago
-  const isRecent = targetTime > recentThreshold;
-
-  const sorted = [...navList].sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-  for (const item of sorted) {
-    const itemTime = new Date(item.date + "T00:00:00Z").getTime();
-    if (itemTime <= targetTime) {
-      // For recent dates, only use exact match (don't use stale fallback)
-      if (isRecent && itemTime < targetTime) continue;
-      return item;
-    }
-  }
-  // No fallback for recent dates
-  if (isRecent) return null;
-  return sorted[0] ?? null;
-}
 
 /**
  * Write a historical NAV list into the cache table in bulk (including purchase status).
@@ -144,7 +110,7 @@ export type FundNavCacheRangeRequest = {
   endDate: string;
 };
 
-export type FundNavCacheRangeRefreshResult = {
+type FundNavCacheRangeRefreshResult = {
   requested: number;
   rangeCount: number;
   fundCount: number;
@@ -342,7 +308,7 @@ export async function getFundNav(
  * @param navDate NAV date (must be built with utcDate, ensuring T00:00:00Z)
  * @returns NAV info (nav, cumNav, name, sgzt) or null when not cached
  */
-export interface NavCacheEntry {
+interface NavCacheEntry {
   nav: number;
   cumNav: number | null;
   name: string | null;
@@ -373,7 +339,7 @@ export async function getFundNavFromCacheOnly(
  */
 const PURCHASE_LIMIT_CACHE = new Map<string, number | null>();
 
-export async function fetchPurchaseLimit(fundCode: string): Promise<number | null> {
+async function fetchPurchaseLimit(fundCode: string): Promise<number | null> {
   if (PURCHASE_LIMIT_CACHE.has(fundCode)) return PURCHASE_LIMIT_CACHE.get(fundCode) ?? null;
   try {
     const res = await fetch(`http://fundf10.eastmoney.com/jjjz_${fundCode}.html`, {
@@ -429,38 +395,6 @@ export async function setFundNav(
  * @param name Fund name (optional)
  * @param sgzt Purchase status (optional)
  */
-export async function setFundNavInTx(
-  tx: any,
-  fundCode: string,
-  navDate: Date,
-  nav: number,
-  cumNav?: number | null,
-  name?: string | null,
-  sgzt?: string | null
-): Promise<void> {
-  await tx.fundNavCache.upsert({
-    where: {
-      fundCode_navDate: {
-        fundCode,
-        navDate,
-      },
-    },
-    create: {
-      fundCode,
-      navDate,
-      nav,
-      cumNav,
-      name,
-      sgzt,
-    },
-    update: {
-      nav,
-      cumNav,
-      name,
-      sgzt,
-    },
-  });
-}
 
 /**
  * Query a fund's latest NAV.
@@ -488,7 +422,7 @@ export async function getLatestFundNav(
   };
 }
 
-export async function getLatestFundNavOnOrBefore(
+async function getLatestFundNavOnOrBefore(
   fundCode: string,
   navDate: Date,
 ): Promise<{ id: string; nav: number; cumNav: number | null; navDate: Date; name: string | null } | null> {
@@ -641,7 +575,7 @@ export async function refreshLatestFundNav(
   return getLatestFundNavOnOrBefore(fundCode, targetNavDate);
 }
 
-export type RefreshHeldFundLatestNavsResult = {
+type RefreshHeldFundLatestNavsResult = {
   checked: number;
   latestNavAvailable: number;
   nameFixed: number;

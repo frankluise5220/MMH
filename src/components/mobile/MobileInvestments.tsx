@@ -7,7 +7,7 @@ import { formatMoneyYuan, formatPercent } from "@/lib/format";
 import { pnlClassFromRedUp } from "@/lib/client/colors";
 import { useI18n } from "@/lib/i18n";
 
-export type MobileInvestmentFundEntry = {
+type MobileInvestmentFundEntry = {
   id: string;
   date: string;
   subtype: string;
@@ -19,13 +19,13 @@ export type MobileInvestmentFundEntry = {
   realizedProfit: number | null;
 };
 
-export type MobileInvestmentFundChartPoint = {
+type MobileInvestmentFundChartPoint = {
   date: string;
   nav: number;
   cumNav: number | null;
 };
 
-export type MobileInvestmentFundPosition = {
+type MobileInvestmentFundPosition = {
   fundCode: string;
   fundName: string;
   units: number;
@@ -41,7 +41,7 @@ export type MobileInvestmentFundPosition = {
   chart: MobileInvestmentFundChartPoint[];
 };
 
-export type MobileInvestmentClearedPosition = {
+type MobileInvestmentClearedPosition = {
   fundCode: string;
   fundName: string;
   buyAmount: number;

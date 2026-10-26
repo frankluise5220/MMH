@@ -503,13 +503,6 @@ export async function POST(req: NextRequest) {
     return exactMatches.length === 1 ? exactMatches[0] : null;
   }
 
-  function upsertTag(name: string, householdId: string | undefined) {
-    return prisma.tag.upsert({
-      where: { id: name },
-      create: { id: name, name, householdId },
-      update: {},
-    });
-  }
 
   let createdCount = 0;
   const errors: Array<{ index: number; rawText: string; error: string }> = [];
@@ -577,8 +570,6 @@ export async function POST(req: NextRequest) {
         const fundSubtypeValue = isRedeem ? "redeem" : "buy";
         const productType = fundContext.fundProductType ?? (fundContext.fundCode?.startsWith("5") ? "money_fund" : "fund");
 
-        const statementMonth =
-          (fundAcc.kind === "bank_credit" || fundAcc.kind === "loan") && fundAcc.billingDay ? toStatementMonth(date, fundAcc.billingDay, fundAcc.billingDayTxPeriod) : null;
 
         await createFundTransactionWithCashFlows(prisma, {
           householdId,
@@ -661,19 +652,8 @@ export async function POST(req: NextRequest) {
 
         const rawText = item.rawText ?? "";
         const fundCode = extractFundCode({ rawText, remark: item.remark, counterparty: item.counterparty, category: item.category });
-        const investAccount = [from, to].find(a => a?.kind === "investment") ?? null;
         const cashAccount = [from, to].find(a => a?.kind !== "investment") ?? null;
-        const fundSubtypeValue = detectFundSubtype(rawText, item.remark);
-        const productType = (fundCode ? detectFundProductType(fundCode) : "fund") as any;
 
-        // Look up fund name from nav cache if we have a fund code
-        let fundName: string | null = null;
-        if (fundCode) {
-          try {
-            const latestNav = await getLatestFundNav(fundCode);
-            fundName = latestNav?.name ?? null;
-          } catch { /* nav lookup best-effort */ }
-        }
 
         if (!from || !to) {
           const single = from ?? to ?? firstAccount;

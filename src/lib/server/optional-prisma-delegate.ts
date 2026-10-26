@@ -19,7 +19,7 @@ export function getOptionalPrismaDelegate<T extends object>(client: unknown, del
   return delegate as T;
 }
 
-export function isMissingOptionalPrismaModelError(error: unknown, tableNames: string[] = []) {
+function isMissingOptionalPrismaModelError(error: unknown, tableNames: string[] = []) {
   const message = error instanceof Error ? error.message : String(error);
   if (message.includes("Cannot read properties of undefined")) return true;
   if (message.includes("P2021") || message.includes("P2022")) return true;

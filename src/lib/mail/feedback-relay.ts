@@ -3,7 +3,7 @@ import type { MailAttachment } from "@/lib/mail/types";
 const DEFAULT_FEEDBACK_RELAY_URL = "https://feedback.floatingice.win/v1/feedback";
 const RELAY_TIMEOUT_MS = 30_000;
 
-export type FeedbackRelayResult =
+type FeedbackRelayResult =
   | { ok: true }
   | {
       ok: false;
@@ -19,7 +19,7 @@ export type FeedbackRelayResult =
  * An unset variable uses the built-in public relay. Setting the variable to an
  * empty string disables the relay fallback for private deployments.
  */
-export function getFeedbackRelayUrl(): string | null {
+function getFeedbackRelayUrl(): string | null {
   const configured = process.env.MMH_FEEDBACK_RELAY_URL;
   if (configured !== undefined) {
     return configured.trim() || null;

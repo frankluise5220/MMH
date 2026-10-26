@@ -4,7 +4,7 @@ import { buildMmhBackupPayloadFromCaizhi } from "@/lib/importers/caizhi/mapper";
 import { parseCaizhiBackupBuffer } from "@/lib/importers/caizhi/parser";
 import type { CaizhiConversionOptions, CaizhiConversionSummary } from "@/lib/importers/caizhi/types";
 
-export type CaizhiBackupExportResult = {
+type CaizhiBackupExportResult = {
   fileName: string;
   bytes: Buffer;
   summary: CaizhiConversionSummary;

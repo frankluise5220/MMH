@@ -47,100 +47,10 @@ export function isDepositPlanTask(type: string | null | undefined): boolean {
  * Both maturity and payout plans depend on the lot's current principal, so
  * each run synchronizes their amount and status.
  */
-export async function ensureDepositPlansForHeldLots(params: {
-  householdId: string;
-}): Promise<number> {
-  const lots = await prisma.txRecord.findMany({
-    where: {
-      householdId: params.householdId,
-      deletedAt: null,
-      type: "investment",
-      fundProductType: "deposit",
-      fundSubtype: "buy",
-    },
-    select: {
-      id: true,
-      date: true,
-      fundArrivalDate: true,
-      depositMaturityAction: true,
-      depositInterestPayoutFrequency: true,
-    },
-  });
-  if (lots.length === 0) return 0;
-  const ids = lots.map((lot) => lot.id);
-  const existing = await prisma.regularInvestPlan.findMany({
-    where: {
-      householdId: params.householdId,
-      id: { in: [...ids.map((id) => `depm_${id}`), ...ids.map((id) => `depa_${id}`), ...ids.map((id) => `depi_${id}`)] },
-    },
-    select: { id: true, memo: true },
-  });
-  const existingIds = new Set(existing.map((row) => row.id));
-  const payoutPlansByLotId = new Map(
-    existing
-      .filter((row) => row.id.startsWith("depi_"))
-      .map((row) => {
-        const task = decodeScheduledTaskMemo(row.memo);
-        const lotId = task.depositSourceEntryId || row.id.slice(5);
-        return [lotId, row.id] as const;
-      })
-      .filter((item): item is [string, string] => Boolean(item[0])),
-  );
-  if (payoutPlansByLotId.size > 0) {
-    const linkedRows = await prisma.txRecord.findMany({
-      where: {
-        householdId: params.householdId,
-        deletedAt: null,
-        source: "deposit",
-        type: { in: ["income", "transfer"] },
-        depositSourceEntryId: { in: [...payoutPlansByLotId.keys()] },
-      },
-      select: { id: true, depositSourceEntryId: true, regularInvestPlanId: true },
-    });
-    const adoptIdsByPlanId = new Map<string, string[]>();
-    for (const row of linkedRows) {
-      const planId = row.depositSourceEntryId ? payoutPlansByLotId.get(row.depositSourceEntryId) : null;
-      if (!planId || row.regularInvestPlanId === planId) continue;
-      const ids = adoptIdsByPlanId.get(planId);
-      if (ids) ids.push(row.id);
-      else adoptIdsByPlanId.set(planId, [row.id]);
-    }
-    await Promise.all([...adoptIdsByPlanId].map(([planId, ids]) =>
-      prisma.txRecord.updateMany({ where: { id: { in: ids } }, data: { regularInvestPlanId: planId } }),
-    ));
-  }
-  // 老计划行可能缺少存单关联（memo 里没有 depositSourceEntryId）→ 一并刷新。
-  const staleLinkedIds = new Set(
-    existing
-      .filter((row) => {
-        const task = decodeScheduledTaskMemo(row.memo);
-        return !task.depositSourceEntryId;
-      })
-      .map((row) => row.id),
-  );
-  let created = 0;
-  for (const lot of lots) {
-    // 不跳过「缺日期」的存单：要素不全的存单虽然建不出计划行，但**已结清**的存单
-    // 必须在这里被收尾（ensureDepositPlansForLot 内部先判结清、再校验日期）。
-    const needsRefresh = !!lot.depositMaturityAction
-      || isPeriodicDepositInterestPayout(lot.depositInterestPayoutFrequency)
-      || !existingIds.has(`depm_${lot.id}`)
-      || !existingIds.has(`depa_${lot.id}`)
-      || !existingIds.has(`depi_${lot.id}`)
-      || (!lot.depositMaturityAction && existingIds.has(`depm_${lot.id}`))
-      || staleLinkedIds.has(`depm_${lot.id}`)
-      || staleLinkedIds.has(`depa_${lot.id}`)
-      || staleLinkedIds.has(`depi_${lot.id}`);
-    if (!needsRefresh) continue;
-    const result = await ensureDepositPlansForLot({ householdId: params.householdId, lotId: lot.id }).catch(() => null);
-    if (result) created += 1;
-  }
-  return created;
-}
 
-export const DEPOSIT_MATURITY_PLAN_FUND_CODE = "deposit_maturity";
-export const DEPOSIT_ACCRUAL_PLAN_FUND_CODE = "deposit_interest_accrual";
-export const DEPOSIT_PAYOUT_PLAN_FUND_CODE = "deposit_interest_payout";
+const DEPOSIT_MATURITY_PLAN_FUND_CODE = "deposit_maturity";
+const DEPOSIT_ACCRUAL_PLAN_FUND_CODE = "deposit_interest_accrual";
+const DEPOSIT_PAYOUT_PLAN_FUND_CODE = "deposit_interest_payout";
 
 const DEPOSIT_PLAN_GROUP_PREFIX = "deposit:";
 const DEPOSIT_ACTION_PRINCIPAL = "principal_withdrawal";
@@ -480,7 +390,7 @@ function nextPayoutDateUtc(
   return depositPayoutAnchorUtc(after, frequency, 1);
 }
 
-export type DepositPlanExecutionResult = {
+type DepositPlanExecutionResult = {
   executed: boolean;
   pairs: number;
   message: string;

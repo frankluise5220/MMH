@@ -2,9 +2,9 @@ import { appendFile, mkdir } from "node:fs/promises";
 import path from "node:path";
 import { logger } from "@/lib/logger";
 
-export type ImportDebugValue = string | number | boolean | null;
+type ImportDebugValue = string | number | boolean | null;
 
-export type ImportDebugEntry = {
+type ImportDebugEntry = {
   traceId: string;
   event: string;
   householdId: string;

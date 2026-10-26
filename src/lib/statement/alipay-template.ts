@@ -3,7 +3,7 @@ export type StatementWorkbookSheetRows = {
   rows: string[][];
 };
 
-export type NormalizedStatementWorkbookRows = {
+type NormalizedStatementWorkbookRows = {
   rows: string[][];
   sourceDataRowCount: number;
   includedSheetCount: number;

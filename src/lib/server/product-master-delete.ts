@@ -7,13 +7,13 @@ import {
   type ProductFamily,
 } from "@/lib/server/product-master-refs";
 
-export type ProductDeleteOutcome = {
+type ProductDeleteOutcome = {
   status: number;
   payload: Record<string, unknown>;
 };
 
 /** 按产品家族取产品主数据行（存款 / 理财 / 债券共用）。 */
-export async function findProductRow(
+async function findProductRow(
   family: ProductFamily,
   householdId: string,
   productId: string,

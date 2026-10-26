@@ -22,7 +22,7 @@ import {
 
 const FX_CONVERSION_SOURCE = "fx_conversion";
 
-export type DetailPageQueryArgs = {
+type DetailPageQueryArgs = {
   accountIds: string[];
   householdId: string;
   page: number;
@@ -37,7 +37,7 @@ export type DetailPageQueryArgs = {
   sort?: DetailSortState | null;
 };
 
-export type DetailPageQueryResult = {
+type DetailPageQueryResult = {
   totalCount: number;
   page: number;
   pageIds: string[];
@@ -782,10 +782,10 @@ export async function locateDetailEntryPage(args: {
 }
 
 /** 表头漏斗的单个候选值。 */
-export type DetailFacetOption = { value: string; count: number };
+type DetailFacetOption = { value: string; count: number };
 
 /** 表头漏斗 + 时间筛选器的时间轴两端（`YYYY-MM-DD`，按业务时区取日历日）。 */
-export type DetailFacetsResult = {
+type DetailFacetsResult = {
   facets: Record<string, DetailFacetOption[]>;
   dateBounds: { min: string; max: string } | null;
 };

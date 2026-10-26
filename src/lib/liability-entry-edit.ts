@@ -12,14 +12,14 @@ import { DEFAULT_LOAN_PREPAY_STRATEGY, parseLoanPrepayStrategy } from "@/lib/loa
 
 export type LiabilityMode = "borrow_in" | "repay_out" | "prepay_out" | "lend_out" | "collect_in";
 
-export type LiabilityActivityAccountOption = {
+type LiabilityActivityAccountOption = {
   id: string;
   kind?: string | null;
   liabilityDirection?: string | null;
   isSettlementAccount?: boolean | null;
 };
 
-export type LiabilityActivityEntryLike = {
+type LiabilityActivityEntryLike = {
   id: string;
   type: string;
   source: string | null;
@@ -34,7 +34,7 @@ export type LiabilityActivityEntryLike = {
   toAccountIsSettlementAccount?: boolean | null;
 };
 
-export type LiabilityActivityEditFacts = {
+type LiabilityActivityEditFacts = {
   date: string;
   amount: number;
   categoryId?: string | null;

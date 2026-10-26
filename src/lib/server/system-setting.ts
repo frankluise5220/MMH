@@ -11,7 +11,7 @@ import { EMAIL_IMPORT_KEYWORD_SETTING_NAME } from "@/lib/mail/email-import-setti
  * when `DATABASE_URL` is unset, which would break server components (they import
  * this module transitively) during build.
  */
-export type SystemSettingDb = Prisma.TransactionClient | PrismaClient;
+type SystemSettingDb = Prisma.TransactionClient | PrismaClient;
 
 export const CATEGORY_HIERARCHY_SETTING_NAME = "category_hierarchy_normalized";
 export const DELETED_DEFAULT_CATEGORY_SETTING_NAME = "category_deleted_default_templates";
@@ -36,7 +36,7 @@ export const HOUSEHOLD_SCOPED_SETTING_NAMES = [
   SCHEDULED_TASK_BALANCE_GUARD_SETTING_NAME,
 ] as const;
 
-export type SystemSettingOptions = {
+type SystemSettingOptions = {
   /** When set, the key becomes `<name>:<householdId>`. Omit for global settings. */
   householdId?: string | null;
   /** Pass a transaction client to keep the write inside the caller's transaction. */

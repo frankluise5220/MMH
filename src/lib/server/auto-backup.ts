@@ -26,8 +26,8 @@ import { readJsonSystemSetting, writeJsonSystemSetting } from "@/lib/server/syst
  * `backup_package_encryption_key`, so they can be restored without a passphrase
  * on the same deployment.
  */
-export const AUTO_BACKUP_CONFIG_KEY = "auto_backup_config";
-export const AUTO_BACKUP_STATUS_KEY = "auto_backup_status";
+const AUTO_BACKUP_CONFIG_KEY = "auto_backup_config";
+const AUTO_BACKUP_STATUS_KEY = "auto_backup_status";
 
 export type AutoBackupFrequencyType = "daily" | "weekly" | "interval";
 
@@ -58,7 +58,7 @@ export type AutoBackupStatus = {
   nextRunAt: string | null;
 };
 
-export type AutoBackupRunResult = {
+type AutoBackupRunResult = {
   scope: AutoBackupConfig["scope"];
   files: string[];
 };
@@ -80,7 +80,7 @@ function configError(message: string): never {
   throw new Error(message);
 }
 
-export function normalizeAutoBackupConfig(raw: unknown): AutoBackupConfig {
+function normalizeAutoBackupConfig(raw: unknown): AutoBackupConfig {
   const obj = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
   const frequencyType = obj.frequencyType === "weekly" || obj.frequencyType === "interval" ? obj.frequencyType : "daily";
   const time = /^([01]\d|2[0-3]):[0-5]\d$/.test(String(obj.time ?? "")) ? String(obj.time) : DEFAULT_CONFIG.time;
@@ -108,7 +108,7 @@ export function defaultAutoBackupDir(): string {
   return path.join(dataDir, "backups");
 }
 
-export type DiskInfo = {
+type DiskInfo = {
   freeBytes: number;
   totalBytes: number;
 };
@@ -235,7 +235,7 @@ export function computeNextRunAt(config: AutoBackupConfig, now: Date, lastRunAt:
   return candidate;
 }
 
-export function isAutoBackupDue(config: AutoBackupConfig, status: AutoBackupStatus, now: Date): boolean {
+function isAutoBackupDue(config: AutoBackupConfig, status: AutoBackupStatus, now: Date): boolean {
   if (!config.enabled) return false;
   if (!status.nextRunAt) return false;
   const nextRunAt = new Date(status.nextRunAt).getTime();
@@ -247,7 +247,7 @@ function backupFileName(name: string, exportedAt: Date): string {
   return buildBackupFileName(name, exportedAt, "mmh-backup");
 }
 
-export function cleanupOldBackups(targetDir: string, keepCount: number): void {
+function cleanupOldBackups(targetDir: string, keepCount: number): void {
   let entries: fs.Dirent[] = [];
   try {
     entries = fs.readdirSync(targetDir, { withFileTypes: true });
@@ -277,7 +277,7 @@ export function cleanupOldBackups(targetDir: string, keepCount: number): void {
   }
 }
 
-export function getLatestAutoBackupFileMtime(targetDir: string): Date | null {
+function getLatestAutoBackupFileMtime(targetDir: string): Date | null {
   let entries: fs.Dirent[] = [];
   try {
     entries = fs.readdirSync(targetDir, { withFileTypes: true });
@@ -298,7 +298,7 @@ export function getLatestAutoBackupFileMtime(targetDir: string): Date | null {
   return latest > 0 ? new Date(latest) : null;
 }
 
-export function isAutoBackupFileStale(targetDir: string, now: Date, staleMs = WINDOWS_STARTUP_BACKUP_STALE_MS): boolean {
+function isAutoBackupFileStale(targetDir: string, now: Date, staleMs = WINDOWS_STARTUP_BACKUP_STALE_MS): boolean {
   const latest = getLatestAutoBackupFileMtime(targetDir);
   if (!latest) return true;
   return now.getTime() - latest.getTime() >= staleMs;

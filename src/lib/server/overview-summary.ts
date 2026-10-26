@@ -22,7 +22,7 @@ import { isLegacyDepositAccount, isPureInvestmentAccount } from "@/lib/account-k
 import { getIncomeExpenseStatisticAmount } from "@/lib/transaction-statistics";
 import type { DisplayLanguage } from "@/lib/client/appPreferences";
 
-export const DAILY_KIND_ORDER: string[] = [
+const DAILY_KIND_ORDER: string[] = [
   AccountKind.cash,
   AccountKind.bank_debit,
   AccountKind.ewallet,
@@ -30,14 +30,14 @@ export const DAILY_KIND_ORDER: string[] = [
   AccountKind.other,
 ];
 
-export type AssetDistributionItem = {
+type AssetDistributionItem = {
   kind: string;
   label: string;
   value: number;
   pct: number;
 };
 
-export type AccountListRow = {
+type AccountListRow = {
   /** 行内看不到的信息（所有人/类型/非本位币），仅在非空时用于 title。 */
   hoverTitle?: string;
   id: string;
@@ -65,7 +65,7 @@ export type AccountListRow = {
   isAggregate?: boolean;
 };
 
-export type CreditAccountRow = AccountListRow & {
+type CreditAccountRow = AccountListRow & {
   creditLimit: number;
   availableLimit: number;
   billingDay: number | null;
@@ -108,7 +108,7 @@ export type AccountTypeTotals = {
   totalNetWorth: number;
 };
 
-export type FixedAssetRow = {
+type FixedAssetRow = {
   /** 行内看不到的信息（所有人/类型/非本位币），仅在非空时用于 title。 */
   hoverTitle?: string;
   accountId: string;
@@ -128,7 +128,7 @@ export type FixedAssetRow = {
   fxRateMissing: boolean;
 };
 
-export type TopPositionRow = {
+type TopPositionRow = {
   /** 行内看不到的信息（所有人/类型/非本位币），仅在非空时用于 title。 */
   hoverTitle?: string;
   accountId?: string;
@@ -147,7 +147,7 @@ export type TopPositionRow = {
   fxRateMissing?: boolean;
 };
 
-export type OverviewSummary = {
+type OverviewSummary = {
   netWorth: number;
   floatingPnL: number;
   totalCost: number;
@@ -193,7 +193,7 @@ function dateToIso(date: Date | null | undefined) {
   return date ? date.toISOString().slice(0, 10) : null;
 }
 
-export type FxConverter = {
+type FxConverter = {
   baseCurrency: string;
   /** Restate an amount into the base currency; null when no rate is available (never 1:1). */
   convert: (amount: number, currency?: string | null) => number | null;

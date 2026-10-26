@@ -19,7 +19,7 @@ export type ColorScheme = "red_up_green_down" | "green_up_red_down";
  * - muted: default colors but neutral slate-500
  * - strongMuted: strong colors but neutral slate-500
  */
-export const PNL_PALETTES = {
+const PNL_PALETTES = {
   default: { up: "text-red-600", down: "text-emerald-700", neutral: "text-slate-600" },
   soft: { up: "text-red-600", down: "text-emerald-600", neutral: "text-slate-600" },
   softMuted: { up: "text-red-600", down: "text-emerald-600", neutral: "text-slate-500" },
@@ -29,7 +29,7 @@ export const PNL_PALETTES = {
   strongMuted: { up: "text-red-700", down: "text-emerald-700", neutral: "text-slate-500" },
 } as const;
 
-export type PnlPaletteName = keyof typeof PNL_PALETTES;
+type PnlPaletteName = keyof typeof PNL_PALETTES;
 
 /** Return the color class for a value and scheme. */
 export function pnlColor(n: number, scheme: ColorScheme, palette: PnlPaletteName = "default"): string {
@@ -71,8 +71,8 @@ export function amountToneClass(value: number): string {
   return "text-slate-500";
 }
 
-export type ImportPreviewAmountKind = "income" | "expense" | "transfer" | "investment" | string;
-export type ImportPreviewFlowItem = {
+type ImportPreviewAmountKind = "income" | "expense" | "transfer" | "investment" | string;
+type ImportPreviewFlowItem = {
   type?: ImportPreviewAmountKind | null;
   amount?: number | null;
   inflow?: number | null;
@@ -84,7 +84,7 @@ export type ImportPreviewFlowItem = {
  * The bill import preview shows fund direction, not whether a category is good or bad.
  * Income = inflow, expense = outflow; under red-up/green-down settings, expenses render green.
  */
-export function importPreviewAmountColor(type: ImportPreviewAmountKind, scheme: ColorScheme): string {
+function importPreviewAmountColor(type: ImportPreviewAmountKind, scheme: ColorScheme): string {
   if (type === "income") return pnlColor(1, scheme);
   if (type === "expense") return pnlColor(-1, scheme);
   return pnlColor(0, scheme);
@@ -95,7 +95,7 @@ function positiveAmount(value: unknown) {
   return Number.isFinite(amount) ? amount : 0;
 }
 
-export function importPreviewFlowAmountKind(item: ImportPreviewFlowItem): ImportPreviewAmountKind {
+function importPreviewFlowAmountKind(item: ImportPreviewFlowItem): ImportPreviewAmountKind {
   const inflow = positiveAmount(item.inflow);
   const outflow = positiveAmount(item.outflow);
   if (inflow > 0 && outflow <= 0) return "income";

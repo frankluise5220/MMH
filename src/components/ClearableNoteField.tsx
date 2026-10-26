@@ -3,7 +3,7 @@
 import { X } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 
-export type ClearableNoteFieldProps = {
+type ClearableNoteFieldProps = {
   value: string;
   onValueChange: (value: string) => void;
   placeholder?: string;

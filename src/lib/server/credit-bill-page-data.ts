@@ -42,7 +42,7 @@ type SelectedBillAccount = {
   billingDayTxPeriod?: CreditBillingDayTxPeriod | null;
 };
 
-export type CreditBillingDayRuleRow = {
+type CreditBillingDayRuleRow = {
   id: string;
   accountId: string;
   effectiveDate: string;
@@ -50,7 +50,7 @@ export type CreditBillingDayRuleRow = {
   isInitial: boolean;
 };
 
-export type CreditBillPageData = {
+type CreditBillPageData = {
   creditCardBill: {
     start: Date;
     end: Date;

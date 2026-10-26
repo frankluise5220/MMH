@@ -5,7 +5,7 @@ import type { Readable } from "stream";
 import { extractPdfText } from "@/lib/mail/pdf";
 import { extractSpreadsheetText } from "@/lib/mail/spreadsheet";
 
-export type ImapConfig = {
+type ImapConfig = {
   host: string;
   port: number;
   secure: boolean;
@@ -14,7 +14,7 @@ export type ImapConfig = {
   mailbox?: string;
 };
 
-export type MailListItem = { uid: number; subject: string; from: string; date: string; hash: string };
+type MailListItem = { uid: number; subject: string; from: string; date: string; hash: string };
 export type MailAttachment = { id: string; filename: string; contentType: string; size: number; text?: string; parseError?: string };
 export type MailDetail = { uid: number; subject: string; from: string; date: string; text: string; html: string; attachments: MailAttachment[] };
 export type MailListMeta = {

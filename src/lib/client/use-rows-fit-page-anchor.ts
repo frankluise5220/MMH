@@ -14,7 +14,7 @@ import { useCallback, useRef } from "react";
  * 所有接了 `onRowsFitChange` 的表格都该用这个 hook，否则各表行为不一致：改了一处
  * 只有那一张表会跟着窗口走。
  */
-export type RowsFitPageAnchorOptions = {
+type RowsFitPageAnchorOptions = {
   /**
    * 「换页」的作用域（账户 id、资产 id、页签……）。它变化时回调 identity 必须变，
    * ADT 会把它当成「父层要我重新测量」重新量一次；量完再保持稳定，避免反复测。

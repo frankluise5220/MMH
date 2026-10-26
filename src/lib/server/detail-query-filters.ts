@@ -15,7 +15,7 @@ import { Prisma } from "@prisma/client";
  */
 
 /** 可下推的筛选列。key 与前端明细列的 `key` 保持一致，路由层无需再翻译。 */
-export const DETAIL_FILTER_KEYS = [
+const DETAIL_FILTER_KEYS = [
   "date",
   "postedAt",
   "createdAt",
@@ -30,11 +30,11 @@ export const DETAIL_FILTER_KEYS = [
   "outflow",
 ] as const;
 
-export type DetailFilterKey = (typeof DETAIL_FILTER_KEYS)[number];
+type DetailFilterKey = (typeof DETAIL_FILTER_KEYS)[number];
 export type DetailFilters = Partial<Record<DetailFilterKey, string[]>>;
 
 /** 可下推的排序列。date 是默认排序（按生效日），其余为单列覆盖。 */
-export const DETAIL_SORT_KEYS = [
+const DETAIL_SORT_KEYS = [
   "date",
   "postedAt",
   "amount",
@@ -50,7 +50,7 @@ export const DETAIL_SORT_KEYS = [
   "entryOrigin",
 ] as const;
 
-export type DetailSortKey = (typeof DETAIL_SORT_KEYS)[number];
+type DetailSortKey = (typeof DETAIL_SORT_KEYS)[number];
 export type DetailSortState = { key: DetailSortKey; direction: "asc" | "desc" };
 
 /** 单个筛选列最多保留多少个候选值（表头漏斗是枚举多选）。 */
@@ -81,9 +81,6 @@ export function normalizeDetailFilters(raw: unknown): DetailFilters {
   return result;
 }
 
-export function hasActiveDetailFilters(filters: DetailFilters | null | undefined) {
-  return !!filters && Object.values(filters).some((values) => (values?.length ?? 0) > 0);
-}
 
 /**
  * 去掉日期区间筛选。
@@ -114,7 +111,7 @@ export type DetailDateRange = { from: string; to: string };
 
 const DATE_YMD = /^\d{4}-\d{2}-\d{2}$/;
 
-export function normalizeDetailDateRange(fromRaw: unknown, toRaw: unknown): DetailDateRange | null {
+function normalizeDetailDateRange(fromRaw: unknown, toRaw: unknown): DetailDateRange | null {
   const from = DATE_YMD.test(String(fromRaw ?? "").trim()) ? String(fromRaw).trim() : "";
   const to = DATE_YMD.test(String(toRaw ?? "").trim()) ? String(toRaw).trim() : "";
   if (!from && !to) return null;
@@ -131,10 +128,6 @@ export function parseDetailDateRange(raw: string | null | undefined): DetailDate
   return normalizeDetailDateRange(fromRaw, toRaw);
 }
 
-export function serializeDetailDateRange(range: DetailDateRange | null | undefined) {
-  if (!range || (!range.from && !range.to)) return "";
-  return `${range.from}~${range.to}`;
-}
 
 /**
  * 范围谓词。别名与 `buildDetailFilterSql` 一致（`c`），同样注入 `visible` 层，
@@ -158,10 +151,6 @@ export function parseDetailSort(raw: string | null | undefined): DetailSortState
   return { key: key as DetailSortKey, direction: dir === "asc" ? "asc" : "desc" };
 }
 
-export function serializeDetailSort(sort: DetailSortState | null | undefined) {
-  if (!sort) return "";
-  return `${sort.key}:${sort.direction}`;
-}
 
 /** `2024-01-01~2024-12-31`、`2024-01-01`、`~2024-12-31` 三种写法。 */
 function parseDateRange(value: string) {

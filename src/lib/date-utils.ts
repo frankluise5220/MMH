@@ -24,13 +24,6 @@ export function addCalendarYearsUtc(date: Date, years: number) {
  * 的现行口径不一致；两者必须同口径（`depositTermMaturityUtc` 是存单主路径，
  * 本函数是等价的按天入口）。
  */
-export function addDepositTermUtc(date: Date, termDays: number) {
-  const normalizedDays = Math.trunc(termDays);
-  if (normalizedDays >= 365 && normalizedDays % 365 === 0) {
-    return addCalendarYearsUtc(date, normalizedDays / 365);
-  }
-  return addDaysUtc(date, normalizedDays);
-}
 
 export function addMonthsUtc(date: Date, months: number) {
   const d = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
@@ -171,7 +164,7 @@ export function todayDateLocalYmd(): string {
  * 明细列表的「今天之前可见」过滤会把当天刚记的流水隐藏掉。
  * 服务端判断「今天」必须走显式时区，而不是进程时区。
  */
-export const DEFAULT_BUSINESS_TIME_ZONE = "Asia/Shanghai";
+const DEFAULT_BUSINESS_TIME_ZONE = "Asia/Shanghai";
 
 export function resolveBusinessTimeZone(): string {
   const configured = typeof process !== "undefined" ? process.env.MMH_TIME_ZONE?.trim() : "";

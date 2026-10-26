@@ -11,7 +11,7 @@ type PasswordResetEmailParams = {
   householdName?: string | null;
 };
 
-export type SendEmailResult = {
+type SendEmailResult = {
   ok: boolean;
   error?: string;
 };

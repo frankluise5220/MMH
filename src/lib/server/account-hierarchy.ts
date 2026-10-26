@@ -89,38 +89,6 @@ export async function resolveCurrencyChildAccount(
  * - 普通账户 → 原样返回（不做隐式升级：记录币种与账户币种不一致的历史行为
  *   仍然有效，比如信用卡的境外消费）。
  */
-export async function resolveAccountForCurrency(
-  db: Db,
-  params: {
-    householdId: string;
-    accountId: string;
-    currency: string;
-    createChildIfMissing?: boolean;
-  },
-): Promise<{ account: HierarchyAccount; created: boolean }> {
-  const account = await db.account.findFirst({
-    where: { id: params.accountId, householdId: params.householdId },
-    select: ACCOUNT_SELECT,
-  });
-  if (!account) throw new Error("account not found");
-
-  const parentId = isAggregateAccount(account) ? account.id : account.parentId;
-  if (!parentId) return { account, created: false };
-
-  const currency = normalizeCurrency(params.currency);
-  if (normalizeCurrency(account.currency) === currency && !isAggregateAccount(account)) {
-    return { account, created: false };
-  }
-  if (params.createChildIfMissing === false) {
-    const existing = await db.account.findFirst({
-      where: { householdId: params.householdId, parentId, currency },
-      select: ACCOUNT_SELECT,
-    });
-    if (!existing) throw new Error(`missing ${currency} child account`);
-    return { account: existing, created: false };
-  }
-  return resolveCurrencyChildAccount(db, { householdId: params.householdId, parentId, currency });
-}
 
 /**
  * 父账户余额 = 子户按**账簿本位币**折算合计（用户裁定：外币统一按系统默认币种
@@ -175,7 +143,7 @@ export async function refreshParentAggregateBalance(
   }
 }
 
-export type UpgradeMultiCurrencyResult = {
+type UpgradeMultiCurrencyResult = {
   parentId: string;
   parentName: string;
   childId: string;

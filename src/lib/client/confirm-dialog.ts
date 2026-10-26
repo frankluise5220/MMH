@@ -2,7 +2,7 @@
 
 type ConfirmDialogTone = "default" | "danger";
 
-export type ConfirmDialogOptions = {
+type ConfirmDialogOptions = {
   title: string;
   message: string;
   confirmLabel?: string;
@@ -10,13 +10,13 @@ export type ConfirmDialogOptions = {
   tone?: ConfirmDialogTone;
 };
 
-export type ChoiceDialogOption<T extends string> = {
+type ChoiceDialogOption<T extends string> = {
   value: T;
   label: string;
   tone?: ConfirmDialogTone;
 };
 
-export type ChoiceDialogOptions<T extends string> = {
+type ChoiceDialogOptions<T extends string> = {
   title: string;
   message: string;
   choices: ChoiceDialogOption<T>[];

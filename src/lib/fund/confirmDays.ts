@@ -33,13 +33,6 @@ export async function getFundConfirmDays(accountId: string, fundCode: string): P
   return normalizeNonNegativeDays(record?.days, 0);
 }
 
-export async function getFundArrivalDays(accountId: string, fundCode: string): Promise<number> {
-  const record = await prisma.fundConfirmDays.findUnique({
-    where: { accountId_fundCode: { accountId, fundCode } },
-    select: { arrivalDays: true },
-  });
-  return normalizeNonNegativeDays(record?.arrivalDays, 2);
-}
 
 export async function getFundConfirmRule(accountId: string, fundCode: string): Promise<FundConfirmRule> {
   const record = await prisma.fundConfirmDays.findUnique({
@@ -56,7 +49,7 @@ export async function getFundConfirmRule(accountId: string, fundCode: string): P
   };
 }
 
-export type FundDateContext = {
+type FundDateContext = {
   days: number;
   arrivalDays: number;
   tradingCalendar: string;
@@ -131,7 +124,7 @@ export async function withFundDateRules<T extends { accountId: string; fundCode:
   });
 }
 
-export type FundDateRuleWrite = {
+type FundDateRuleWrite = {
   days?: number | null;
   arrivalDays?: number | null;
 };

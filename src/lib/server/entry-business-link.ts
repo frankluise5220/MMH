@@ -8,7 +8,7 @@ import type { HouseholdContext } from "@/lib/server/household-scope";
 
 type TxClient = Prisma.TransactionClient | typeof prisma;
 
-export type EntryBusinessLinkMetadata = Record<string, Prisma.InputJsonValue | null>;
+type EntryBusinessLinkMetadata = Record<string, Prisma.InputJsonValue | null>;
 
 export function mergeEntryBusinessLinkMetadata(
   metadata: Prisma.JsonValue | null | undefined,
@@ -240,7 +240,7 @@ export function classifyEntryBusinessType(entry: BusinessEntryLike): EntryBusine
   return "other_investment";
 }
 
-export function classifyEntryCashFlowDirection(entry: BusinessEntryLike): EntryCashFlowDirection {
+function classifyEntryCashFlowDirection(entry: BusinessEntryLike): EntryCashFlowDirection {
   if (entry.fundSubtype === "dividend_reinvest") return "internal";
   const amount = toNumber(entry.amount);
   if (amount < 0) return "outflow";

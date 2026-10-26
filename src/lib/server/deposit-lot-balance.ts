@@ -15,7 +15,7 @@ export function isDepositRedemptionDateAllowed(
   return !redemptionKey || !latestInterestKey || redemptionKey >= latestInterestKey;
 }
 
-export type DepositLotBalance = {
+type DepositLotBalance = {
   originalPrincipal: number;
   redeemedPrincipal: number;
   remainingPrincipal: number;

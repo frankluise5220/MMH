@@ -6,11 +6,6 @@ type ProductIntro = {
   highlights: string[];
 };
 
-export const PRODUCT_INTROS = {
-  "zh-CN": { languageLabel: "\u4e2d\u6587" },
-  "en-US": { languageLabel: "English" },
-  "ja-JP": { languageLabel: "\u65e5\u672c\u8a9e" },
-} as const;
 
 type Translate = (key: string) => string;
 

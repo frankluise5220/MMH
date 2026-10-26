@@ -348,7 +348,7 @@ function templateFor(props: ViewExcelImportMenuButtonProps, t: TranslateFn): Tem
   };
 }
 
-export async function exportViewImportTemplate(spec: TemplateSpec, t: TranslateFn) {
+async function exportViewImportTemplate(spec: TemplateSpec, t: TranslateFn) {
   const XLSX = await import("xlsx-js-style");
   const workbook = XLSX.utils.book_new();
   const layout = buildTemplateLayout(spec, t);
@@ -794,9 +794,6 @@ export async function exportRowsToXlsx(rows: ExportCellValue[][], filename: stri
   XLSX.writeFile(workbook, filename, { compression: true });
 }
 
-export async function exportNormalAccountImportTemplate(accountName: string, t: TranslateFn) {
-  await exportViewImportTemplate(templateFor({ kind: "normal", accountId: "", accountName }, t), t);
-}
 
 function normalizeHeaderText(value: unknown) {
   return String(value ?? "").trim().replace(/\s+/g, " ").toLowerCase();

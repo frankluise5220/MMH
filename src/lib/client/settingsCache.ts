@@ -5,9 +5,9 @@ import { normalizeEmailImportKeyword } from "@/lib/mail/email-import-settings";
 export type SettingsAccountGroup = { id: string; name: string; sortOrder?: number };
 export type SettingsInstitution = { id: string; name: string; shortName?: string | null; type?: string | null };
 export type SettingsCounterparty = { id: string; name: string; shortName?: string | null; type?: string | null; isReimbursable?: boolean | null };
-export type SettingsUser = { id: string; name: string };
+type SettingsUser = { id: string; name: string };
 export type SettingsCategory = { id: string; name: string; type: string; parentId?: string | null; sortOrder?: number; isSystem?: boolean };
-export type SettingsAccountData = {
+type SettingsAccountData = {
   baseCurrency?: string;
   accounts: unknown[];
   groups: SettingsAccountGroup[];
@@ -15,8 +15,8 @@ export type SettingsAccountData = {
   counterparties?: SettingsCounterparty[];
   users?: SettingsUser[];
 };
-export type SettingsTag = { id: string; name: string; color: string | null };
-export type SettingsBootstrapData = SettingsAccountData & {
+type SettingsTag = { id: string; name: string; color: string | null };
+type SettingsBootstrapData = SettingsAccountData & {
   users: SettingsUser[];
   categories: SettingsCategory[];
   tags: SettingsTag[];
@@ -26,7 +26,7 @@ export type SettingsDataChangedDetail = {
   scope: SettingsDataScope;
   reason?: string;
 };
-export type SettingsDataChangeOptions = {
+type SettingsDataChangeOptions = {
   scope?: SettingsDataScope;
   reason?: string;
   prefetch?: boolean;
@@ -208,10 +208,6 @@ export async function fetchSettingsBootstrap(options?: { force?: boolean }) {
   return promise;
 }
 
-export function warmSettingsBootstrap(options?: { force?: boolean }) {
-  void fetchSettingsBootstrap(options).catch(() => null);
-  warmEmailSettings();
-}
 
 function scopeTouchesAccounts(scope: SettingsDataScope) {
   return scope === "accounts" || scope === "all";
@@ -225,7 +221,7 @@ function scopeTouchesTags(scope: SettingsDataScope) {
   return scope === "tags" || scope === "all";
 }
 
-export function invalidateSettingsData(scope: SettingsDataScope = "all") {
+function invalidateSettingsData(scope: SettingsDataScope = "all") {
   if (scopeTouchesAccounts(scope)) {
     cache.delete(ACCOUNT_DATA_KEY);
     clearPersistedAccountData();
@@ -376,7 +372,7 @@ export function setSettingsTags(next: SettingsTag[]) {
   cache.delete(BOOTSTRAP_KEY);
 }
 
-export type EmailAccountRow = Record<string, unknown>;
+type EmailAccountRow = Record<string, unknown>;
 
 export function getCachedEmailAccounts<T = EmailAccountRow>() {
   const entry = cache.get(EMAIL_ACCOUNTS_KEY) as CacheEntry<unknown[]> | undefined;
@@ -418,9 +414,6 @@ export async function fetchEmailAccounts<T = EmailAccountRow>(options?: { force?
   return startEmailAccountsFetch(entry) as Promise<T[]>;
 }
 
-export function invalidateEmailAccounts() {
-  cache.delete(EMAIL_ACCOUNTS_KEY);
-}
 
 export function getCachedEmailImportKeyword() {
   const entry = cache.get(EMAIL_IMPORT_KEYWORD_KEY) as CacheEntry<string> | undefined;
@@ -470,6 +463,3 @@ export function setEmailImportKeyword(next: string) {
   setCacheValue(EMAIL_IMPORT_KEYWORD_KEY, next);
 }
 
-export function invalidateEmailImportKeyword() {
-  cache.delete(EMAIL_IMPORT_KEYWORD_KEY);
-}

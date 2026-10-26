@@ -12,7 +12,7 @@ import { queryStockClosePriceByDate, queryStockClosePriceList } from "@/lib/stoc
 
 type TxClient = Prisma.TransactionClient | typeof prisma;
 
-export type StockClosePriceLookupItem = {
+type StockClosePriceLookupItem = {
   market: string;
   stockCode: string;
   closePrice: number;
@@ -114,7 +114,7 @@ export async function getStockClosePriceByDate(
   return external;
 }
 
-export type RefreshHeldStockClosePricesResult = {
+type RefreshHeldStockClosePricesResult = {
   checked: number;
   refreshed: number;
   failed: number;

@@ -30,17 +30,17 @@ import { ensureSystemSetting, getSystemSetting, setSystemSetting } from "@/lib/s
 export const INSTALLATION_ID_SETTING_KEY = "mmh_installation_id";
 
 /** Where the deployment's advertised public key lives. Same backup rules as the id. */
-export const INSTALLATION_PUBLIC_KEY_SETTING_KEY = "mmh_installation_public_key";
+const INSTALLATION_PUBLIC_KEY_SETTING_KEY = "mmh_installation_public_key";
 
 /** The installation id allocated by the registration service for this deployment. */
-export const CENTRAL_INSTALLATION_ID_SETTING_KEY = "mmh_central_installation_id";
+const CENTRAL_INSTALLATION_ID_SETTING_KEY = "mmh_central_installation_id";
 
 /**
  * Returns the deployment's installation id, creating it on first call.
  * Returns null when the setting cannot be read or written — callers must treat
  * reporting as best-effort and never fail a user flow over it.
  */
-export async function getInstallationId(): Promise<string | null> {
+async function getInstallationId(): Promise<string | null> {
   try {
     const stored = (await getSystemSetting(INSTALLATION_ID_SETTING_KEY))?.trim();
     if (stored) return stored;
@@ -98,7 +98,7 @@ export async function getInstallationPublicKey(): Promise<string | null> {
  *
  * Null until this deployment has registered at least once.
  */
-export async function getCentralInstallationId(): Promise<string | null> {
+async function getCentralInstallationId(): Promise<string | null> {
   try {
     const stored = (await getSystemSetting(CENTRAL_INSTALLATION_ID_SETTING_KEY))?.trim();
     return stored || null;

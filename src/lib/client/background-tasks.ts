@@ -2,7 +2,7 @@
 
 export const BACKGROUND_TASK_PROGRESS_EVENT = "mmh:background-task:progress";
 
-export type BackgroundTaskStatus = "running" | "done" | "error";
+type BackgroundTaskStatus = "running" | "done" | "error";
 
 export type BackgroundTaskProgressDetail = {
   id: string;

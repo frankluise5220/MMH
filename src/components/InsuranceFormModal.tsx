@@ -111,11 +111,6 @@ type InternalAccountRow = {
   AccountGroup?: { id?: string | null; name?: string | null } | null;
 };
 
-type OwnerOption = {
-  id: string;
-  label: string;
-  subLabel?: string;
-};
 
 const PRODUCT_TYPE_OPTIONS = [
   { value: "savings", labelKey: "insuranceProduct.type.savings" },
@@ -156,9 +151,6 @@ function productTypeLabel(t: (key: string) => string, type?: string | null) {
   return labelKey ? t(labelKey) : t("insuranceFormModal.insurance");
 }
 
-function accountingTypeForProductType(type?: string | null) {
-  return PRODUCT_ACCOUNTING_TYPE[String(type ?? "").trim()] ?? "asset";
-}
 
 function parseOptionalNumber(input: string) {
   const trimmed = String(input ?? "").trim();
@@ -183,12 +175,6 @@ function formatDateOnly(date: Date) {
   return date.toISOString().slice(0, 10);
 }
 
-function addYearsClamped(date: Date, years: number) {
-  const next = new Date(Date.UTC(date.getUTCFullYear() + years, date.getUTCMonth(), 1));
-  const maxDay = new Date(Date.UTC(next.getUTCFullYear(), next.getUTCMonth() + 1, 0)).getUTCDate();
-  next.setUTCDate(Math.min(date.getUTCDate(), maxDay));
-  return next;
-}
 
 function addMonthsKeepingAnchorDay(date: Date, months: number, anchorDay?: number | null) {
   const interval = Number.isFinite(months) && months > 0 ? months : 12;

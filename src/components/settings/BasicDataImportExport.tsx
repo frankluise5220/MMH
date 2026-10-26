@@ -114,7 +114,7 @@ export function BasicDataImportExport({
   );
 }
 
-export function BasicDataTabs() {
+function BasicDataTabs() {
   const pathname = usePathname();
   const { t } = useI18n();
 

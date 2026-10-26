@@ -1,6 +1,6 @@
-export type ImportProgressPhase = "preparing" | "writing" | "recalculating" | "done" | "failed";
+type ImportProgressPhase = "preparing" | "writing" | "recalculating" | "done" | "failed";
 
-export type ImportProgressSnapshot = {
+type ImportProgressSnapshot = {
   traceId: string;
   total: number;
   processed: number;

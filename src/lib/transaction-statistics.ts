@@ -40,7 +40,7 @@ export function getIncomeExpenseStatisticAmount(
   throw new Error(`Unsupported income/expense statistics type: ${type}`);
 }
 
-export type InvestmentStatisticType = "income" | "expense";
+type InvestmentStatisticType = "income" | "expense";
 
 type InvestmentProductKind = "fund" | "wealth" | "deposit" | "bond" | "liability";
 
@@ -71,7 +71,7 @@ export type InvestmentStatisticEntryLike = {
   fundName?: string | null;
 };
 
-export type InvestmentStatisticItem = {
+type InvestmentStatisticItem = {
   idSuffix: string;
   type: InvestmentStatisticType;
   productKind: InvestmentProductKind;
@@ -81,25 +81,25 @@ export type InvestmentStatisticItem = {
   label: string;
 };
 
-export type StatisticCategoryType = "income" | "expense";
+type StatisticCategoryType = "income" | "expense";
 
-export type StatisticCategoryLike = {
+type StatisticCategoryLike = {
   id: string;
   name: string;
   type: string;
 };
 
-export type StatisticCategoryRef = {
+type StatisticCategoryRef = {
   id: string | null;
   name: string;
   type: StatisticCategoryType;
 };
 
-export type StatisticCategoryBucket = StatisticCategoryRef & {
+type StatisticCategoryBucket = StatisticCategoryRef & {
   value: number;
 };
 
-export const INVESTMENT_STATISTIC_CATEGORY_NAMES = [
+const INVESTMENT_STATISTIC_CATEGORY_NAMES = [
   SYSTEM_FUND_PROFIT_CATEGORY,
   SYSTEM_FUND_DIVIDEND_CATEGORY,
   SYSTEM_FUND_LOSS_CATEGORY,
@@ -137,28 +137,6 @@ export function isBondInterestIncomeEntry(entry: {
   );
 }
 
-export function buildStatisticCategoryItems(
-  categoryMap: Map<string, number>,
-  total: number,
-  limit = 8,
-) {
-  const sorted = Array.from(categoryMap.entries()).sort((a, b) => b[1] - a[1]);
-  const picked = sorted.slice(0, limit);
-  const pickedNames = new Set(picked.map(([name]) => name));
-
-  for (const name of INVESTMENT_STATISTIC_CATEGORY_NAMES) {
-    if (!pickedNames.has(name) && categoryMap.has(name)) {
-      picked.push([name, categoryMap.get(name) ?? 0]);
-      pickedNames.add(name);
-    }
-  }
-
-  return picked.map(([name, value]) => ({
-    name,
-    value,
-    pct: total > 0 ? (value / total) * 100 : 0,
-  }));
-}
 
 export function createStatisticCategoryResolver(categories: StatisticCategoryLike[]) {
   const byId = new Map(categories.map((category) => [category.id, category]));
@@ -214,13 +192,13 @@ export function addStatisticCategoryBucket(
   }
 }
 
-export type NamedStatisticBucket = {
+type NamedStatisticBucket = {
   id: string | null;
   name: string;
   value: number;
 };
 
-export function addNamedStatisticBucket(
+function addNamedStatisticBucket(
   bucketMap: Map<string, NamedStatisticBucket>,
   item: { id: string | null; name: string },
   amount: number,
@@ -235,7 +213,7 @@ export function addNamedStatisticBucket(
   }
 }
 
-export function buildNamedStatisticItemsFromBuckets(
+function buildNamedStatisticItemsFromBuckets(
   bucketMap: Map<string, NamedStatisticBucket>,
   limit = 8,
 ) {
@@ -249,17 +227,17 @@ export function buildNamedStatisticItemsFromBuckets(
   }));
 }
 
-export const UNTAGGED_STATISTIC_TAG_ID = "__untagged__";
-export const UNTAGGED_STATISTIC_TAG_COLOR = "#94A3B8";
+const UNTAGGED_STATISTIC_TAG_ID = "__untagged__";
+const UNTAGGED_STATISTIC_TAG_COLOR = "#94A3B8";
 
-export type StatisticTagBucket = {
+type StatisticTagBucket = {
   id: string;
   name: string;
   color: string;
   value: number;
 };
 
-export type StatisticTagLike = {
+type StatisticTagLike = {
   tagId: string;
   Tag: { id: string; name: string; color: string | null };
 };
@@ -324,7 +302,7 @@ export function buildStatisticTagItemsFromBuckets(
   }));
 }
 
-export type StatisticDistributionEntryLike = {
+type StatisticDistributionEntryLike = {
   accountId?: string | null;
   toAccountId?: string | null;
   locationId?: string | null;

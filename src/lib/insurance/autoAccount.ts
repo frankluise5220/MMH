@@ -3,24 +3,8 @@ import { getOrCreateDefaultAccountGroupId } from "@/lib/server/account-group-def
 
 type Db = typeof prisma | Parameters<Parameters<typeof prisma.$transaction>[0]>[0];
 
-export async function resolveInsuranceOwnerGroupId(
-  db: Db,
-  householdId: string,
-  ownerGroupId?: string | null,
-) {
-  const requested = ownerGroupId?.trim();
-  if (requested) {
-    const group = await db.accountGroup.findFirst({
-      where: { id: requested, householdId },
-      select: { id: true },
-    });
-    if (!group) throw new Error("投保人不存在");
-    return group.id;
-  }
-  return getOrCreateDefaultAccountGroupId(db, householdId);
-}
 
-export async function findInsuranceAccountByOwner(
+async function findInsuranceAccountByOwner(
   db: Db,
   ownerGroupId: string,
   householdId: string,

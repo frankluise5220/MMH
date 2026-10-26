@@ -10,7 +10,7 @@
  * 账户名完全一致」来判定它仍是系统文案，可以随资金账户变化重算；用户改过的
  * 备注永远不会被这套判定吞掉。
  */
-export const INVESTMENT_SOURCE_NOTE_LABEL = "资金来源";
+const INVESTMENT_SOURCE_NOTE_LABEL = "资金来源";
 
 export function buildInvestmentSourceNote(cashAccountName: string | null | undefined) {
   const name = String(cashAccountName ?? "").trim();
@@ -55,7 +55,7 @@ export function isFundBuyLikeSubtype(subtype: string | null | undefined) {
   return !subtype || subtype === "buy" || subtype === "switch_in" || subtype === "regular_invest";
 }
 
-export function fundActionLabel(subtype: string | null | undefined) {
+function fundActionLabel(subtype: string | null | undefined) {
   if (subtype === "redeem" || subtype === "switch_out") return "基金赎回";
   if (subtype === "dividend_cash") return "基金分红";
   if (subtype === "dividend_reinvest") return "分红再投";

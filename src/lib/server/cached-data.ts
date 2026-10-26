@@ -36,11 +36,8 @@ import { parseDetailDateRange } from "@/lib/server/detail-query-filters";
 
 // ── Types ──
 
-export type CommonData = Awaited<ReturnType<typeof _loadCommonData>>;
+type CommonData = Awaited<ReturnType<typeof _loadCommonData>>;
 
-export type BaseData = CommonData & {
-  selectedAccount: Awaited<ReturnType<typeof loadSelectedAccount>>;
-};
 
 // ── Common base data (shared across accounts, cached across requests) ──
 
@@ -79,7 +76,7 @@ async function _loadCommonData(hidFilter: { householdId: string }) {
 // Bump the cache key whenever serialized object fields are added or removed;
 // otherwise old objects may lack a field and make `field === true` always false
 // (observed with isReimbursable on 2026-09-21).
-export const COMMON_DATA_CACHE_VERSION = "2026-09-21-counterparty-is-reimbursable-v1";
+const COMMON_DATA_CACHE_VERSION = "2026-09-21-counterparty-is-reimbursable-v1";
 export const loadCommonData = unstable_cache(
   _loadCommonData,
   ["common-data", CATEGORY_HIERARCHY_NORMALIZATION_VERSION, COMMON_DATA_CACHE_VERSION],

@@ -10,7 +10,7 @@
  * listed ETF whose NAV history mirrors the index on eastmoney's
  * f10/lsjz endpoint (the index itself has no fund NAV feed there).
  */
-export type BenchmarkOption = {
+type BenchmarkOption = {
   /** BenchmarkCache code */
   code: string;
   /** ETF whose NAV history mirrors the index (eastmoney fund code) */

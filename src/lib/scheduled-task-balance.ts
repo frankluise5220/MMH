@@ -10,7 +10,7 @@ import { getLoanScheduledPlanRole, type ScheduledTaskPayload, type ScheduledTask
  * splits the two rules (the notification panel warns about a balance the executor
  * happily overdraws).
  */
-export const OUTFLOW_SCHEDULED_TASK_TYPES: readonly ScheduledTaskType[] = [
+const OUTFLOW_SCHEDULED_TASK_TYPES: readonly ScheduledTaskType[] = [
   "fund_regular_invest",
   "loan_repayment",
   "transfer",
@@ -20,12 +20,12 @@ export const OUTFLOW_SCHEDULED_TASK_TYPES: readonly ScheduledTaskType[] = [
 
 const OUTFLOW_SCHEDULED_TASK_TYPE_SET = new Set<string>(OUTFLOW_SCHEDULED_TASK_TYPES);
 
-export function isOutflowScheduledTaskType(type: ScheduledTaskType | string | null | undefined): boolean {
+function isOutflowScheduledTaskType(type: ScheduledTaskType | string | null | undefined): boolean {
   return typeof type === "string" && OUTFLOW_SCHEDULED_TASK_TYPE_SET.has(type);
 }
 
 /** Money epsilon: half a cent short is not an insufficient balance. */
-export const SCHEDULED_TASK_BALANCE_EPSILON = 0.005;
+const SCHEDULED_TASK_BALANCE_EPSILON = 0.005;
 
 /**
  * Whether the amount to withdraw exceeds the available balance.

@@ -2,7 +2,7 @@ import { prisma } from "@/lib/db/prisma";
 import { toNumber } from "@/lib/date-utils";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 
-export type InsuranceOverviewCategoryKey = "critical_illness" | "medical" | "accident" | "life_annuity" | "other";
+type InsuranceOverviewCategoryKey = "critical_illness" | "medical" | "accident" | "life_annuity" | "other";
 
 export type InsuranceOverviewCategoryRow = {
   key: InsuranceOverviewCategoryKey;
@@ -22,7 +22,7 @@ export type InsuranceOverviewPersonRow = {
   categories: InsuranceOverviewCategoryRow[];
 };
 
-export type InsuranceOverviewSummary = {
+type InsuranceOverviewSummary = {
   productCount: number;
   insuredPersonCount: number;
   totalPremium: number;

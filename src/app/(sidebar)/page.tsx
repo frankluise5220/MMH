@@ -3,7 +3,7 @@ import { prisma } from "@/lib/db/prisma";
 import { getRequestTimeZone } from "@/lib/server/business-time-zone";
 import { connection } from "next/server";
 import { cookies } from "next/headers";
-import { AccountKind, CreditCardInstallmentSourceType, FundCashFlowKind, TransactionType, FundSubtype, RegularInvestStatus } from "@prisma/client";
+import { AccountKind,   TransactionType, FundSubtype, RegularInvestStatus } from "@prisma/client";
 import { institutionTypeLabel, isSettlementCounterpartyType, isInstitutionTypeOf, LOAN_DIALOG_INSTITUTION_TYPE_VALUES, kindLabel } from "@/lib/account-kinds";
 import { getServerAccountDropdownRestrictType } from "@/lib/server/account-dropdown-restrict";
 import { TransactionFormModal } from "@/components/TransactionFormModal";
@@ -34,11 +34,8 @@ import { CreditBillDetailPanel } from "@/components/CreditBillDetailPanel";
 import { ResizableVerticalSplit } from "@/components/ResizableVerticalSplit";
 
 
-import { recalcFundPositions } from "@/lib/fund/recalcPosition";
-import { calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
-import { recalcPreciousMetalPositions } from "@/lib/metal/recalcPosition";
 import { calculateWealthCashDividendProfit, recalcWealthPositions } from "@/lib/wealth-position";
-import { getMaintainedAccountBalances, recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
+import { getMaintainedAccountBalances } from "@/lib/server/account-balance";
 import { computeLiabilityDisplaySummary } from "@/lib/server/liability-display-summary";
 import {
   applyLiabilityRowEntryMetrics,
@@ -47,21 +44,17 @@ import {
   buildLiabilityRowsViewData,
 } from "@/lib/server/liability-view-data";
 import { loadCreditBillPageData } from "@/lib/server/credit-bill-page-data";
-import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
 import { prepareEntryUndo, saveEntryUndo } from "@/lib/server/entry-undo";
 import { getCreditBillAccountIds } from "@/lib/server/credit-card-institution-settings";
-import { setFundFeeRateByDate } from "@/lib/fund/feeRate";
 import { formatCurrencyMoney, formatMoney } from "@/lib/format";
 import { pnlClassFromRedUp } from "@/lib/client/colors";
 import { LiveAccountBalance } from "@/components/LiveAccountBalance";
 import { AccountFxRateInline } from "@/components/AccountFxRateInline";
 import { createFundTransactionWithCashFlows, detachFundTransactionCashFlow, findFundTransactionForEntryId, syncFundTransactionsFromTxRecords, upsertFundTransactionRefundCashFlow, type FundCashFlowInput } from "@/lib/fund/transactions";
-import { regularInvestRefundNote } from "@/lib/fund/regular-invest-display";
-import { syncIndependentBusinessTransactionFromTxRecord } from "@/lib/server/business-transactions";
-import { getCachedHouseholdScope, getHouseholdScope } from "@/lib/server/household-scope";
+import { getCachedHouseholdScope } from "@/lib/server/household-scope";
 import { getHouseholdPreferences } from "@/lib/server/household-preferences";
 import { attachEntryTags, replaceEntryTags } from "@/lib/server/entry-tags";
-import { buildEntryBusinessLinkSummary, entryBusinessLinkSummaryInclude, upsertEntryBusinessCashFlowLink } from "@/lib/server/entry-business-link";
+import { buildEntryBusinessLinkSummary, entryBusinessLinkSummaryInclude } from "@/lib/server/entry-business-link";
 import {
   loadBondTransactionEntryLike,
   loadDepositTransactionDetailLike,
@@ -91,13 +84,10 @@ import {
   resolveAccountTableLabel,
   stripVisibleHoverParts,
 } from "@/lib/account-display";
-import { getInvestmentAccountView, isCashLedgerAccount, isDepositAccount, isIncomeExpensePostingAccount, isIncomeExpensePostingOrDepositAccount, isLoanOrSettlementAccountKind, isPureInvestmentAccount, isSpecialCashTargetAccount, isTransferDropdownAccount } from "@/lib/account-kind-utils";
+import { getInvestmentAccountView, isCashLedgerAccount, isDepositAccount, isIncomeExpensePostingAccount, isIncomeExpensePostingOrDepositAccount, isLoanOrSettlementAccountKind, isPureInvestmentAccount,  isTransferDropdownAccount } from "@/lib/account-kind-utils";
 import { ALL_CASH_DETAIL_SCOPE_ID, cashLedgerAccountIdsOf, cashLedgerFlowAccountId } from "@/lib/all-cash-entries";
 import { normalizeLoanType, resolveLoanTypeValue } from "@/lib/loan-type";
-import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
-import { resolveOrCreateDepositAccount } from "@/lib/server/deposit-account";
-import { resolveOrCreateWealthAccount } from "@/lib/server/wealth-account";
-import { createCreditCardInstallmentPlan } from "@/lib/server/credit-card-installment";
+import { normalizeFundUnitsDecimals } from "@/lib/fund/unit-precision";
 import { regularInvestFormAction } from "@/lib/server/sidebar-actions/regular-invest-actions";
 import { fillFundNavFromCache } from "@/lib/server/sidebar-actions/fund-actions";
 import { createLiabilityTransaction } from "@/lib/server/sidebar-actions/liability-actions";
@@ -116,17 +106,15 @@ import {
 } from "@/lib/server/loan-rate-adjustments";
 import { getInsuranceDisplayTypeLabel, getInsuranceMetricLabel, getInsuranceMetricMode } from "@/lib/insurance/display";
 import { BALANCE_INITIALIZATION_SOURCE, BALANCE_RECONCILE_SOURCE, applyBalanceReconcileEntry, effectiveAmountForAccount, getBalanceReconcileTarget } from "@/lib/balance-reconcile";
-import { ENTRY_ORIGIN_MANUAL, isCreditCardRepaymentTransfer, isFundBuyRefundCashLeg, statementMonthForTransfer } from "@/lib/transaction-semantics";
+import {  isCreditCardRepaymentTransfer, isFundBuyRefundCashLeg } from "@/lib/transaction-semantics";
 import { ensureSettlementTransferCategory, resolveCategorySnapshot, resolveCreditCardRepaymentCategory } from "@/lib/default-categories";
 import { getInvestmentCategoryName } from "@/lib/investment-category";
-import { getCashFlowDate } from "@/lib/cash-flow-date";
 import { buildWealthCashFlowNote } from "@/lib/wealth-cash-note";
 import { buildWealthHoldingOptions } from "@/lib/wealth-holdings";
 import { linkExpenseToFixedAsset, syncLinkedFixedAssetTransactionFromCashEntry } from "@/lib/property/transactions";
-import { normalizeCurrency, resolveSameCurrencyTransfer } from "@/lib/currency";
+import { normalizeCurrency } from "@/lib/currency";
 import { shouldPreferLoanAutoDebitPlan, shouldPreferLoanScheduledPlan } from "@/lib/scheduled-task";
 import { convertCurrencyAmounts, getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
-import { findRecentManualTransactionDuplicate } from "@/lib/server/transaction-dedupe";
 import { txRecordAccountScopeWhere } from "@/lib/transaction-account-scope";
 import {
   DETAIL_ALL_FIRST_VIEWPORT_PAGE_SIZE,
@@ -136,10 +124,8 @@ import {
   normalizeDetailPage,
   normalizeDetailPageSize,
 } from "@/lib/detail-pagination-preference";
-import type { CreditCardInstallmentRateType } from "@/lib/credit/installment";
 import { ACCOUNT_LABEL_FIELDS_COOKIE, accountLabelFieldsFromCookieValue } from "@/lib/server/account-label-fields";
 import { getServerT } from "@/lib/server/i18n";
-import { touchAccountUsage } from "@/lib/server/account-usage";
 import { AccountTypeQuickEdit, type AccountQuickEditValue } from "@/components/AccountTypeQuickEdit";
 
 export const dynamic = "force-dynamic";
@@ -1515,10 +1501,6 @@ export default async function Home({
     selectedAccount && isPureInvestmentAccount(selectedAccount) && selectedAccount.investProductType === "property"
       ? selectedAccount.id
       : propertyAccountOptions[0]?.id ?? "";
-  const defaultInvestmentCreateAccountId =
-    selectedAccount && isPureInvestmentAccount(selectedAccount)
-      ? selectedAccount.id
-      : (defaultFundInvestmentAccountId || (investmentAccountOptions.find((account) => account.investProductType !== "deposit")?.id ?? ""));
 
   // Pre-computed hierarchical SS options for modal props
   const allAccountSSOptions = buildAccountSSOptions(); // all accounts for transfer dropdown
@@ -2795,7 +2777,6 @@ export default async function Home({
     for (const dividend of depositDividendEntries) {
       const dividendDate = toYmdOrNull(dividend.date);
       const dividendAccountId = dividend.accountId ?? "";
-      const dividendName = (dividend.fundName ?? dividend.fundCode ?? "").trim();
       for (const lot of allLots) {
         if (lot.depositAccountId !== dividendAccountId) continue;
         if (lot.fundName !== dividend.fundName && !dividend.depositSourceEntryId) continue;

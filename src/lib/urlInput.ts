@@ -65,12 +65,3 @@ export const PORT_SUGGESTIONS: { value: string; labelKey: string }[] = [
  * Build a clean form-data object from a set of filled-in parsed fields.
  * For merging when saving externally.
  */
-export function assembledBaseUrl<T extends Record<string, unknown>>(
-  partial: ParsedUrl,
-  extra: Omit<T, "baseUrl"> & { baseUrl?: string },
-): T & { baseUrl: string } {
-  return {
-    ...extra,
-    baseUrl: buildBaseUrl(partial),
-  } as unknown as T & { baseUrl: string };
-}

@@ -5,7 +5,7 @@ import { prisma } from "@/lib/db/prisma";
 
 export const ATTACHMENT_MAX_BYTES = 5 * 1024 * 1024;
 
-export type StoredAttachment = {
+type StoredAttachment = {
   id: string;
   name: string | null;
   mimeType: string | null;
@@ -23,11 +23,11 @@ function attachmentRoot() {
   return path.resolve(process.env.MMH_ATTACHMENT_DIR || path.join(dataDir, "attachments"));
 }
 
-export function attachmentFilePath(id: string) {
+function attachmentFilePath(id: string) {
   return path.join(attachmentRoot(), `${id}.bin`);
 }
 
-export function attachmentDownloadUrl(id: string) {
+function attachmentDownloadUrl(id: string) {
   return `/api/v1/attachments/${encodeURIComponent(id)}`;
 }
 
@@ -57,7 +57,7 @@ const ATTACHMENT_BLOCKED_MIME_TYPES = new Set([
  * type (browsers and attackers can send any Content-Type they like).
  * Mirrors Go's http.DetectContentType for the signatures that matter here.
  */
-export function detectAttachmentMimeType(bytes: Uint8Array): string {
+function detectAttachmentMimeType(bytes: Uint8Array): string {
   const startsWith = (signature: number[], offset = 0) =>
     signature.every((byte, index) => bytes.length > offset + index && bytes[offset + index] === byte);
   const startsWithAscii = (text: string, offset = 0) => {
@@ -104,7 +104,7 @@ export function detectAttachmentMimeType(bytes: Uint8Array): string {
   return "application/octet-stream";
 }
 
-export function validateSniffedAttachmentMimeType(mimeType: string) {
+function validateSniffedAttachmentMimeType(mimeType: string) {
   if (ATTACHMENT_BLOCKED_MIME_TYPES.has(mimeType)) {
     throw new Error("FILE_TYPE_NOT_ALLOWED");
   }

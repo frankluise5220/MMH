@@ -36,11 +36,11 @@ export function isInstitutionNameUniqueError(error: unknown): error is Instituti
   return error instanceof InstitutionNameUniqueError;
 }
 
-export function normalizeInstitutionDisplayName(value: unknown) {
+function normalizeInstitutionDisplayName(value: unknown) {
   return typeof value === "string" ? value.trim() : "";
 }
 
-export function institutionNameCandidates(name: unknown, shortName?: unknown) {
+function institutionNameCandidates(name: unknown, shortName?: unknown) {
   const fullName = normalizeInstitutionDisplayName(name);
   const short = normalizeInstitutionDisplayName(shortName);
   return Array.from(new Set([fullName, short].filter(Boolean)));

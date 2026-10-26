@@ -27,7 +27,7 @@ function isUniqueConstraintError(error: unknown) {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
 }
 
-export function hasUsableStockName(value: unknown, stockCode: string) {
+function hasUsableStockName(value: unknown, stockCode: string) {
   const name = String(value ?? "").trim();
   return Boolean(name && name !== stockCode);
 }

@@ -81,7 +81,7 @@ export type LiabilityViewAccount = {
   } | null;
 };
 
-export type LiabilityViewPlan = {
+type LiabilityViewPlan = {
   id: string;
   accountId: string;
   amount: unknown;
@@ -98,7 +98,7 @@ export type LiabilityViewPlan = {
   status: string;
 };
 
-export type LiabilityViewRow = {
+type LiabilityViewRow = {
   key: string;
   name: string;
   objectType: string;
@@ -148,7 +148,7 @@ export type LiabilityViewRow = {
   isLoan: boolean;
 };
 
-export type LiabilityRepaymentScheduleRow = {
+type LiabilityRepaymentScheduleRow = {
   rowType: "payment" | "rate_adjustment";
   status?: "paid" | "planned";
   eventType?: "repayment" | "prepayment" | "rate_adjustment";
@@ -161,7 +161,7 @@ export type LiabilityRepaymentScheduleRow = {
   annualRate: number | null;
 };
 
-export type LiabilityDetailEntry = {
+type LiabilityDetailEntry = {
   id: string;
   date: string;
   typeLabel: string;
@@ -299,7 +299,7 @@ export function liabilityPrincipalForAccountSide(
   return canonicalLiabilityPrincipalForAccountSide(entry, liabilityAccountIds);
 }
 
-export function liabilityCashFlowForAccountSide(
+function liabilityCashFlowForAccountSide(
   entry: { amount: unknown; principalAmount?: unknown; source?: string | null; accountId?: string | null; toAccountId?: string | null },
   liabilityAccountIds: Set<string>,
 ) {
@@ -313,7 +313,7 @@ export function liabilityCashFlowForAccountSide(
   return liabilityAccountIds.has(entry.accountId ?? "") ? -amount : amount;
 }
 
-export function liabilityPaymentTotal(
+function liabilityPaymentTotal(
   entry: { amount: unknown; principalAmount?: unknown; interestAmount?: unknown; feeAmount?: unknown },
   fallbackInterest = 0,
   fallbackFee = 0,

@@ -56,7 +56,7 @@ export function getBalanceReconcileTarget(entry: BalanceReconcileEntryLike) {
  * 它之前流水的变化不再影响它及之后的行（与「余额校准」同一套语义）。
  * 与源标记（`source` + `toNote` 前缀）那套锚点**并存**：两者都算锚点。
  */
-export function getReconciledAnchorTarget(entry: { reconciledBalance?: unknown }) {
+function getReconciledAnchorTarget(entry: { reconciledBalance?: unknown }) {
   const raw = entry.reconciledBalance;
   if (raw == null) return null;
   const value = toNumber(raw);

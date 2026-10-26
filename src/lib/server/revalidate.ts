@@ -1,6 +1,6 @@
 import { revalidatePath, revalidateTag } from "next/cache";
 
-export type RevalidateOptions = {
+type RevalidateOptions = {
   /**
    * true = 不 purge 首页路由 "/"。
    *

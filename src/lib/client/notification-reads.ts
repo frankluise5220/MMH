@@ -22,7 +22,7 @@ import { NOTIFICATIONS_CHANGED_EVENT } from "@/lib/client/notification-receipts"
  * 现在被忽略——它只影响一个红点，迁移过来反而要凭空造快照，不值得。
  */
 
-export const NOTIFICATION_READS_KEY = "mmh_notification_reads";
+const NOTIFICATION_READS_KEY = "mmh_notification_reads";
 
 /** 上限：已读存档是"回看"，不是审计日志，超出的按标记时间淘汰。 */
 const MAX_READ_ENTRIES = 200;
@@ -54,7 +54,7 @@ function isReportableEntry(entry: ReadNotificationEntry) {
   return entry.item.type !== "execution" || isReportableExecution(entry.item);
 }
 
-export function readReadEntries(): ReadNotificationEntry[] {
+function readReadEntries(): ReadNotificationEntry[] {
   if (typeof window === "undefined") return [];
   try {
     const raw = window.localStorage.getItem(NOTIFICATION_READS_KEY);
@@ -99,19 +99,19 @@ function markRead(ids: string[], items: NotificationItem[]) {
 }
 
 /** 标记一条通知已读；已读的重复标记是幂等的（时间戳会被刷新）。 */
-export function markNotificationRead(item: NotificationItem) {
+function markNotificationRead(item: NotificationItem) {
   markRead([item.id], [item]);
 }
 
 /** 标记一批通知已读（"全部已读"）；同一步里用同一个时间戳，页签里看起来是一次操作。 */
-export function markNotificationsRead(items: NotificationItem[]) {
+function markNotificationsRead(items: NotificationItem[]) {
   markRead(
     items.map((item) => item.id),
     items,
   );
 }
 
-export function clearReadNotifications() {
+function clearReadNotifications() {
   writeReadEntries([]);
 }
 

@@ -1,6 +1,6 @@
-export type ImportAccountKind = "bank_debit" | "bank_credit" | "loan" | "cash" | "ewallet" | "investment" | "other" | string;
+type ImportAccountKind = "bank_debit" | "bank_credit" | "loan" | "cash" | "ewallet" | "investment" | "other" | string;
 
-export type ImportAccountMatchSource = {
+type ImportAccountMatchSource = {
   id: string;
   name: string;
   kind?: ImportAccountKind | null;
@@ -10,14 +10,14 @@ export type ImportAccountMatchSource = {
   AccountAlias?: Array<{ alias: string }> | null;
 };
 
-export type ImportAccountMatchResult<T extends ImportAccountMatchSource> = {
+type ImportAccountMatchResult<T extends ImportAccountMatchSource> = {
   account: T | null;
   ambiguousAccounts: T[];
   targetKind: ImportAccountKind | null;
   targetBankNames: string[];
 };
 
-export type ImportOwnedMoneyAccountCandidate = {
+type ImportOwnedMoneyAccountCandidate = {
   originalName: string;
   accountName: string;
   ownerName: string;
@@ -28,7 +28,7 @@ export type ImportOwnedMoneyAccountCandidate = {
   numberMasked?: string;
 };
 
-export type ImportAccountIdentityConflictKind =
+type ImportAccountIdentityConflictKind =
   | "account"
   | "ambiguous"
   | "kind"
@@ -60,7 +60,7 @@ export function parseSettlementAccountName(v: string): string | null {
 }
 
 /** 判断名字是否银行/机构名（如「招商银行」「京东」）——这类前缀不能当往来对象人名。 */
-export function isImportBankLikeName(value: string): boolean {
+function isImportBankLikeName(value: string): boolean {
   const key = normalizeImportAccountMatchKey(value);
   if (!key) return false;
   return BANK_ALIASES.some((item) =>
@@ -70,7 +70,7 @@ export function isImportBankLikeName(value: string): boolean {
   );
 }
 
-export type ImportPersonAttributedCandidate = {
+type ImportPersonAttributedCandidate = {
   personName: string;
   restName: string;
 };
@@ -198,12 +198,12 @@ export function normalizeImportAccountMatchKey(value?: string | null) {
     .toLowerCase();
 }
 
-export function extractImportAccountLast4(value?: string) {
+function extractImportAccountLast4(value?: string) {
   const matches = Array.from(String(value ?? "").matchAll(/\d{4}(?!\d)/g));
   return matches.length > 0 ? matches[matches.length - 1][0] : "";
 }
 
-export function isImportPaymentTailHint(value?: string | null) {
+function isImportPaymentTailHint(value?: string | null) {
   return /^(?:付款|扣款|还款)?尾号[:：]?\s*\d{2,8}$/.test(String(value ?? "").trim());
 }
 
@@ -215,7 +215,7 @@ export function isImportPaymentTailSourceHint(value?: string | null) {
   return /(?:付款|扣款|还款|银联转账|银联入账|自动扣款|自动还款|转账).*尾号[:：]?\s*\d{2,8}/.test(text);
 }
 
-export function isImportUnionPayDebitTailSourceHint(value?: string | null) {
+function isImportUnionPayDebitTailSourceHint(value?: string | null) {
   const text = String(value ?? "").trim();
   if (!text) return false;
   return /银联入账|银联转账|银联代扣|银联支付|云闪付/i.test(text) && /\d{4}(?!\d)/.test(text);
@@ -424,13 +424,6 @@ function bankKeyMatchesAccount(account: ImportAccountMatchSource, targetBankName
   );
 }
 
-export function getImportAccountIdentityConflict<T extends ImportAccountMatchSource>(
-  selectedAccount: T | null | undefined,
-  originalText: string | undefined,
-  accounts: T[],
-): ImportAccountIdentityConflict | null {
-  return createImportAccountIdentityConflictChecker(accounts)(selectedAccount, originalText);
-}
 
 export function createImportAccountIdentityConflictChecker<T extends ImportAccountMatchSource>(accounts: T[]) {
   const matchImportAccount = createImportAccountMatcher(accounts);
@@ -596,7 +589,7 @@ export function resolveImportAccountIdFromList(
   return resolveImportAccountFromList(accountName, accounts)?.id ?? null;
 }
 
-export type ImportAccountMatchContext = {
+type ImportAccountMatchContext = {
   /**
    * 导入来源已经确定的所有人：发起导入的账户视图（该账户的 AccountGroup），
    * 或流水文件名里的「XX的流水」。只用来给「同名但不同所有人」的账户消歧；

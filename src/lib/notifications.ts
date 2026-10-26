@@ -30,7 +30,7 @@ export type ReminderKind =
   | "bond_maturity"
   | "bond_interest_payout";
 
-export const REMINDER_KINDS: readonly ReminderKind[] = [
+const REMINDER_KINDS: readonly ReminderKind[] = [
   "fund_regular_invest",
   "loan_repayment",
   "transfer",
@@ -43,9 +43,6 @@ export const REMINDER_KINDS: readonly ReminderKind[] = [
   "bond_interest_payout",
 ];
 
-export function isReminderKind(value: unknown): value is ReminderKind {
-  return typeof value === "string" && (REMINDER_KINDS as readonly string[]).includes(value);
-}
 
 /**
  * Kinds worth warning about *before* they fall due — the "一周内到期的存单/债券/保险等"
@@ -100,7 +97,7 @@ export function isOutflowReminderKind(kind: ReminderKind): boolean {
  * presented as "the system failed to run it", or every bond maturity would look
  * permanently broken.
  */
-export const MANUAL_CONFIRM_REMINDER_KINDS: readonly ReminderKind[] = ["bond_maturity"];
+const MANUAL_CONFIRM_REMINDER_KINDS: readonly ReminderKind[] = ["bond_maturity"];
 
 const MANUAL_CONFIRM_REMINDER_KIND_SET = new Set<string>(MANUAL_CONFIRM_REMINDER_KINDS);
 
@@ -153,7 +150,7 @@ export type ReminderItem = {
   blocked?: boolean;
 };
 
-export type ReminderUrgency = "overdue" | "today" | "upcoming";
+type ReminderUrgency = "overdue" | "today" | "upcoming";
 
 /** Bucket a reminder by how far away its date is. */
 export function reminderUrgency(daysUntil: number): ReminderUrgency {
@@ -183,7 +180,7 @@ export type AutoExecuteSummary = {
   navFilled: number;
 };
 
-export type ReceiptLevel = "success" | "info" | "warning";
+type ReceiptLevel = "success" | "info" | "warning";
 
 /**
  * Level policy — this is the whole point of the receipt: never report success
@@ -193,11 +190,6 @@ export type ReceiptLevel = "success" | "info" | "warning";
  * - success: at least one record generated.
  * - info: nothing to do this time.
  */
-export function receiptLevel(summary: AutoExecuteSummary): ReceiptLevel {
-  if (summary.executed > 0) return "success";
-  if (summary.skippedPaused + summary.skippedGap > 0) return "warning";
-  return "info";
-}
 
 /**
  * Per-account split inside one task-type group — "A账户 3 条定投记录，B账户 …".
@@ -255,9 +247,6 @@ export type ExecutionReceipt = {
  * `receiptLevel`: an empty window is normal (a monthly plan simply is not due),
  * so it must not be dressed up as a warning.
  */
-export function receiptLevelFromFeed(receipt: ExecutionReceipt): ReceiptLevel {
-  return receipt.lastRunCount > 0 ? "success" : "info";
-}
 
 /**
  * 这次执行值不值得当成一条"执行结果"报出来。
@@ -285,8 +274,8 @@ export function isReportableExecution(input: { source: string; executed: number 
  * 15 分钟：定投补跑多轮 + 多只基金回源净值时，整段响应可能跑好几分钟。
  * 反向留 2 分钟容差，容忍 DB 与浏览器的时钟偏差。
  */
-export const SAME_BATCH_MAX_LAG_MS = 15 * 60 * 1000;
-export const SAME_BATCH_MAX_LEAD_MS = 2 * 60 * 1000;
+const SAME_BATCH_MAX_LAG_MS = 15 * 60 * 1000;
+const SAME_BATCH_MAX_LEAD_MS = 2 * 60 * 1000;
 
 /**
  * 「本次执行结果」（本地收据）与「系统执行情况」（服务端回执）是否在说**同一批落账**。

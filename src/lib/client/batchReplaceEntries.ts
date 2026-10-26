@@ -1,6 +1,6 @@
 export type BatchReplaceField = "date" | "postedAt" | "type" | "amount" | "inflow" | "outflow" | "account" | "viewAccount" | "toAccount" | "categoryId" | "institution" | "tagId" | "remark";
 
-export type BatchReplaceRequest = {
+type BatchReplaceRequest = {
   ids: string[];
   field: BatchReplaceField;
   value: string;
@@ -8,7 +8,7 @@ export type BatchReplaceRequest = {
   contextAccountIds?: string[];
 };
 
-export type BatchReplaceResult = {
+type BatchReplaceResult = {
   ok: boolean;
   updatedCount?: number;
   changed?: Array<{ id: string; date: string; oldValue: string; newValue: string; field: string }>;

@@ -14,7 +14,7 @@ import { getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
  *
  * expense / income 用 `postedAt`（入账日），其余行用 `date`。
  */
-export type ReportEntryDateInput = {
+type ReportEntryDateInput = {
   id: string;
   date: Date | string | number | null | undefined;
   postedAt?: Date | string | number | null | undefined;
@@ -36,9 +36,6 @@ export function getReportEntryDate(entry: ReportEntryDateInput): Date {
 }
 
 /** `getReportEntryDate` 的日期键（YYYY-MM-DD），用于按日/按月分组和期间过滤。 */
-export function getReportEntryDateKey(entry: ReportEntryDateInput): string {
-  return localDateKey(getReportEntryDate(entry));
-}
 
 /**
  * 日期键，口径是 **UTC**：DB 的日历日字段一律存 UTC 零点。

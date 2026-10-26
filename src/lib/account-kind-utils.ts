@@ -16,15 +16,15 @@ export type AccountKindLike = {
   Institution?: { type?: string | null; name?: string | null; shortName?: string | null } | null;
 };
 
-export type CashTargetOperation = "transfer" | "investment" | "wealth" | "deposit" | "liability";
+type CashTargetOperation = "transfer" | "investment" | "wealth" | "deposit" | "liability";
 
-export type InvestmentAccountView = "investfund" | "investmoney" | "investwealth" | "investbond" | "investstock" | "investproperty" | "detail";
+type InvestmentAccountView = "investfund" | "investmoney" | "investwealth" | "investbond" | "investstock" | "investproperty" | "detail";
 
 /**
  * Fund/cash family kinds that may still change among themselves after an
  * account already has active records. Cross-family changes stay locked.
  */
-export const FUND_CASH_ACCOUNT_KINDS = [
+const FUND_CASH_ACCOUNT_KINDS = [
   "bank_debit",
   "cash",
   "ewallet",
@@ -33,9 +33,9 @@ export const FUND_CASH_ACCOUNT_KINDS = [
   "other",
 ] as const;
 
-export type FundCashAccountKind = (typeof FUND_CASH_ACCOUNT_KINDS)[number];
+type FundCashAccountKind = (typeof FUND_CASH_ACCOUNT_KINDS)[number];
 
-export function isFundCashAccountKind(kind: string | null | undefined): kind is FundCashAccountKind {
+function isFundCashAccountKind(kind: string | null | undefined): kind is FundCashAccountKind {
   return FUND_CASH_ACCOUNT_KINDS.includes(String(kind ?? "") as FundCashAccountKind);
 }
 
@@ -44,7 +44,7 @@ export function isFundCashAccountKind(kind: string | null | undefined): kind is 
  * 现金、借记卡、电子钱包、信用卡。
  * 存款、投资/基金/股票持仓、固定资产、贷款、往来款、保险都不允许挂上级或不设上级。
  */
-export const MULTI_CURRENCY_HIERARCHY_KINDS = ["cash", "bank_debit", "ewallet", "bank_credit"] as const;
+const MULTI_CURRENCY_HIERARCHY_KINDS = ["cash", "bank_debit", "ewallet", "bank_credit"] as const;
 
 export function supportsMultiCurrencyHierarchy(kind: string | null | undefined): boolean {
   return (MULTI_CURRENCY_HIERARCHY_KINDS as readonly string[]).includes(String(kind ?? ""));
@@ -154,7 +154,7 @@ export function isInsuranceAccount(account: AccountKindLike) {
   return account.kind === "insurance";
 }
 
-export function isConsumerLoanAccount(account: AccountKindLike | null | undefined) {
+function isConsumerLoanAccount(account: AccountKindLike | null | undefined) {
   return account?.kind === "loan" && account.isConsumerLoan === true;
 }
 
@@ -177,7 +177,7 @@ export function isSpendableAccount(account: AccountKindLike | null | undefined) 
 
 const INVESTMENT_FUNDING_INSTITUTION_TYPES = new Set(["brokerage", "fund_company"]);
 
-export function accountInstitutionType(account: AccountKindLike | null | undefined) {
+function accountInstitutionType(account: AccountKindLike | null | undefined) {
   return account?.institutionType ?? account?.Institution?.type ?? null;
 }
 
@@ -185,7 +185,7 @@ export function accountInstitutionType(account: AccountKindLike | null | undefin
  * 基金资金 / 股票资金：挂在证券或基金公司名下的现金、借记卡、电子钱包。
  * 这类账户只走银证转账/申赎资金，不参与普通收支记账。
  */
-export function isInvestmentFundingAccount(account: AccountKindLike | null | undefined) {
+function isInvestmentFundingAccount(account: AccountKindLike | null | undefined) {
   if (!account) return false;
   const kind = account.kind;
   if (kind !== "cash" && kind !== "bank_debit" && kind !== "ewallet") return false;
@@ -207,8 +207,8 @@ export function isIncomeExpensePostingAccount(account: AccountKindLike | null | 
  * 收入侧只能「存款利息」（利息收入）；支出侧「存款手续费」「利息支出」。
  * 转账不受此限制——资金侧来回转账走 isTransferDropdownAccount 已放行。
  */
-export const DEPOSIT_POSTING_INCOME_CATEGORY_NAMES = ["存款利息", "利息"];
-export const DEPOSIT_POSTING_EXPENSE_CATEGORY_NAMES = ["存款手续费", "利息支出", "手续费"];
+const DEPOSIT_POSTING_INCOME_CATEGORY_NAMES = ["存款利息", "利息"];
+const DEPOSIT_POSTING_EXPENSE_CATEGORY_NAMES = ["存款手续费", "利息支出", "手续费"];
 
 /** 收入/支出弹窗的落账账户候选：普通账户全放行，存款账户也放行（分类在提交时校验白名单）。 */
 export function isIncomeExpensePostingOrDepositAccount(account: AccountKindLike | null | undefined) {
@@ -260,9 +260,6 @@ export function isTransferDropdownAccount(account: AccountKindLike | null | unde
   return !isPureInvestmentAccount(account);
 }
 
-export function isBillLikeAccount(account: Pick<AccountKindLike, "kind"> & { billingDay?: number | null }) {
-  return account.kind === "bank_credit" && !!account.billingDay;
-}
 
 export function getCashTargetOperation(account: AccountKindLike | null | undefined): CashTargetOperation {
   if (!account) return "transfer";

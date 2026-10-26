@@ -4,7 +4,7 @@ import { getRequestTimeZone } from "@/lib/server/business-time-zone";
 import type { AiApiMode } from "@/lib/ai/config";
 import { buildResponsesRequestBody, extractResponsesText } from "@/lib/ai/responses";
 
-export const CMD_ANALYZER_PROMPT = `你是一个专业的家庭理财记账专家。分析用户的自然语言，转化成对应的操作指令。
+const CMD_ANALYZER_PROMPT = `你是一个专业的家庭理财记账专家。分析用户的自然语言，转化成对应的操作指令。
 
 请从用户输入中提取下列信息，以JSON返回：
 
@@ -44,8 +44,6 @@ export const OP_MAP_CN: Record<string, string> = {
   "乘": "multiply", "乘以": "multiply", "加倍": "multiply", "翻倍": "multiply",
   "加": "add", "增加": "add",
 };
-export function cnField(f: string | undefined) { return f ? (FIELD_MAP_CN[f] ?? "amount") : "amount"; }
-export function cnOp(o: string | undefined) { return o ? (OP_MAP_CN[o] ?? "replace") : "replace"; }
 
 export type AnalyzedCommand = {
   action?: string;
@@ -57,16 +55,8 @@ export type AnalyzedCommand = {
   time?: string | null;
 };
 
-export function buildAnalyzerPrompt(opts: {
-  text: string;
-  fundContext?: { fundCode: string; fundName?: string; accountId: string } | null;
-  today: string; rolePrompt?: string;
-}) {
-  const parts = buildAnalyzerPromptParts(opts);
-  return `${parts.systemPrompt}\n\n${parts.userMessage}`;
-}
 
-export function buildAnalyzerPromptParts(opts: {
+function buildAnalyzerPromptParts(opts: {
   text: string;
   fundContext?: { fundCode: string; fundName?: string; accountId: string } | null;
   today: string; rolePrompt?: string;

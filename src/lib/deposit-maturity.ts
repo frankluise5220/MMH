@@ -72,7 +72,7 @@ export function depositInterestDaysUtc(start: Date, maturity: Date): number {
  * untouched: their `−1 天` form is the legacy 到期日 convention and is handled by
  * the interest-day logic, not by this month-term normaliser.
  */
-export function normalizeDepositMonthTermEndUtc(start: Date, end: Date): Date {
+function normalizeDepositMonthTermEndUtc(start: Date, end: Date): Date {
   const spanMonths =
     (end.getUTCFullYear() - start.getUTCFullYear()) * 12 + (end.getUTCMonth() - start.getUTCMonth());
   if (spanMonths <= 0 || spanMonths % 12 === 0) return end;
@@ -85,7 +85,7 @@ export function normalizeDepositMonthTermEndUtc(start: Date, end: Date): Date {
  * months after `start` (month-end starts clamp, so 2026-01-31 → 2026-02-28
  * reads as 1 month), otherwise null.
  */
-export function depositWholeMonthsUtc(start: Date, end: Date): number | null {
+function depositWholeMonthsUtc(start: Date, end: Date): number | null {
   if (!(end.getTime() > start.getTime())) return null;
   const months =
     (end.getUTCFullYear() - start.getUTCFullYear()) * 12 + (end.getUTCMonth() - start.getUTCMonth());
@@ -254,6 +254,3 @@ export function depositRenewRoundsNeeded(params: {
 }
 
 /** Unit-day approximation used only for maturity pacing (day=1, week=7, month=30, year=365). */
-export function payoutUnitDaysForMaturityPace(unit: DepositInterestPayoutUnit): number {
-  return unit === "day" ? 1 : unit === "week" ? 7 : unit === "month" ? 30 : 365;
-}

@@ -2,7 +2,7 @@ import { prisma } from "@/lib/db/prisma";
 
 type Db = typeof prisma | Parameters<Parameters<typeof prisma.$transaction>[0]>[0];
 
-export async function resolveDefaultAccountGroupName(householdId: string) {
+async function resolveDefaultAccountGroupName(householdId: string) {
   const admin = await prisma.user.findFirst({
     where: { householdId, role: "admin" },
     select: { name: true },

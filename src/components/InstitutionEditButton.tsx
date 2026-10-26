@@ -4,7 +4,7 @@ import { ModalLayer } from "@/components/ModalLayer";
 import { useState, type FormEvent } from "react";
 import { SettingsActionButton } from "@/components/settings/SettingsPageScaffold";
 import { notifySettingsDataChanged } from "@/lib/client/settingsCache";
-import { INSTITUTION_TYPE_VALUES, institutionTypeLabel, type I18nT } from "@/lib/account-kinds";
+import { INSTITUTION_TYPE_VALUES, institutionTypeLabel } from "@/lib/account-kinds";
 import { useI18n } from "@/lib/i18n";
 
 // Derive institution types from the complete account-kinds table so new types

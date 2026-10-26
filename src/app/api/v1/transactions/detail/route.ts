@@ -122,7 +122,6 @@ import {
   type EntryBusinessType,
 } from "@/lib/server/entry-business-link";
 import { syncIndependentBusinessTransactionFromTxRecord } from "@/lib/server/business-transactions";
-import { txRecordAccountScopeWhere } from "@/lib/transaction-account-scope";
 import { upsertStatementCategoryRuleFromSavedRecord } from "@/lib/statement/category-rules";
 import { upsertStatementInstitutionRuleFromUserEdit } from "@/lib/statement/recognition-rules";
 import { DETAIL_ALL_PAGE_SIZE } from "@/lib/detail-pagination-preference";
@@ -2399,7 +2398,6 @@ export async function POST(req: Request) {
       if (!accountId || !counterpartyInstitutionId) {
         return NextResponse.json({ ok: false, code: "MISSING_ACCOUNT_OR_COUNTERPARTY", error: !accountId ? "请选择资金账户" : "请选择往来对象" }, { status: 400 });
       }
-      let advanceAccountId = "";
       await prisma.$transaction(async (tx) => {
         const [acc, cat] = await Promise.all([
           tx.account.findUnique({ where: { id: accountId } }),
@@ -2413,7 +2411,6 @@ export async function POST(req: Request) {
           liabilityObjectId: counterpartyInstitutionId,
           preferredAccountId: preferredAdvanceAccountId,
         });
-        advanceAccountId = resolvedAdvance.account.id;
         const transfer = resolveAdvanceTransfer({ amount: amountRaw, cashAccount: acc, advanceAccount: resolvedAdvance.account });
         const statementMonth = statementMonthForTransfer(date, transfer.fromAccount, transfer.toAccount);
         const created = await tx.txRecord.create({

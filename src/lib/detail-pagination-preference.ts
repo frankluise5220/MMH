@@ -29,7 +29,7 @@ export const DETAIL_ALL_FIRST_PAGE_SIZE = 500;
  */
 export const DETAIL_ALL_FIRST_VIEWPORT_PAGE_SIZE = 60;
 
-export type DetailPaginationPreference = {
+type DetailPaginationPreference = {
   pageSize: number;
   detailPage: number;
   detailAll: boolean;
@@ -54,7 +54,7 @@ export function detailPaginationCookieName(accountId: string) {
   return `mmh_detail_pagination_${safeAccountId}`;
 }
 
-export function encodeDetailPaginationPreference(pref: DetailPaginationPreference) {
+function encodeDetailPaginationPreference(pref: DetailPaginationPreference) {
   return encodeURIComponent(JSON.stringify({
     pageSize: normalizeDetailPageSize(pref.pageSize),
     detailPage: normalizeDetailPage(pref.detailPage),

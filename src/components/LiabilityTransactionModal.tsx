@@ -50,7 +50,7 @@ import {
 } from "@/lib/loan-repayment";
 import { formatLoanRecalculateSuccessMessage } from "@/lib/loan-repayment-recalculate-result";
 import { DEFAULT_LOAN_PREPAY_STRATEGY, type LoanPrepayStrategy } from "@/lib/loan-prepay-strategy";
-import { isHomeLoanType, LOAN_TYPES, resolveLoanTypeValue, type LoanTypeValue } from "@/lib/loan-type";
+import { isHomeLoanType,  resolveLoanTypeValue, type LoanTypeValue } from "@/lib/loan-type";
 import { allowsLiabilityInterest, swapLiabilityFlowDirection } from "@/lib/liability";
 import {
   decodeScheduledTaskMemo,

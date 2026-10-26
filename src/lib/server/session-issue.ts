@@ -21,7 +21,7 @@ import {
  * refreshed `mmh_session_days`. Everything funnels through here now.
  */
 
-export type SessionIssueTarget = {
+type SessionIssueTarget = {
   userId: string;
   name: string;
   householdId: string | null;

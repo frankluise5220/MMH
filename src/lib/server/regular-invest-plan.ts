@@ -30,7 +30,7 @@ type RegularInvestPlanSchedule = {
   secondaryExecutionDay?: number | null;
 };
 
-export function getRegularInvestPlanRecordSources(taskType: string | null | undefined): string[] {
+function getRegularInvestPlanRecordSources(taskType: string | null | undefined): string[] {
   const normalizedTaskType = normalizeScheduledTaskType(taskType);
   if (normalizedTaskType === "fund_regular_invest") return ["regular_invest"];
   if (normalizedTaskType === "insurance_premium") return ["insurance"];

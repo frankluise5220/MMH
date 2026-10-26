@@ -30,20 +30,8 @@ async function loadCache(): Promise<Map<string, Map<string, string>>> {
 }
 
 /** Look up the canonical value by alias (cached). */
-export async function resolveAlias(category: string, key: string): Promise<string | null> {
-  const c = await loadCache();
-  return c.get(category)?.get(key) ?? null;
-}
 
 /** Reverse lookup: find all aliases for a canonical value. */
-export async function resolveAliasReverse(category: string, value: string): Promise<string[]> {
-  const c = await loadCache();
-  const keys: string[] = [];
-  for (const [k, v] of c.get(category) ?? []) {
-    if (v === value) keys.push(k);
-  }
-  return keys;
-}
 
 /** Set an alias. */
 export async function setAlias(category: string, key: string, value: string): Promise<void> {

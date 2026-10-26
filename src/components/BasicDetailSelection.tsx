@@ -148,40 +148,7 @@ export function BasicDetailSelectionProvider({
   return <SelectionContext.Provider value={value}>{children}</SelectionContext.Provider>;
 }
 
-export function BasicDetailSelectAll({ ids }: { ids: string[] }) {
-  const { selectedIds, toggleAll } = useBasicDetailSelection();
-  const { t } = useI18n();
-  const checked = ids.length > 0 && ids.every((id) => selectedIds.has(id));
-  const indeterminate = !checked && ids.some((id) => selectedIds.has(id));
 
-  return (
-    <input
-      type="checkbox"
-      checked={checked}
-      ref={(input) => {
-        if (input) input.indeterminate = indeterminate;
-      }}
-      onChange={() => toggleAll(ids)}
-      className="h-3.5 w-3.5 accent-blue-600"
-      aria-label={t("basicDetailSelection.selectAllAria")}
-    />
-  );
-}
-
-export function BasicDetailRowCheckbox({ id }: { id: string }) {
-  const { selectedIds, toggleOne } = useBasicDetailSelection();
-  const { t } = useI18n();
-
-  return (
-    <input
-      type="checkbox"
-      checked={selectedIds.has(id)}
-      onChange={() => toggleOne(id)}
-      className="h-3.5 w-3.5 accent-blue-600"
-      aria-label={t("basicDetailSelection.selectRowAria")}
-    />
-  );
-}
 
 export function BasicDetailBatchReplaceButton({
   accountOptions,
@@ -498,67 +465,6 @@ export function BasicDetailBatchDeleteMessage() {
  * - Without any selection: opens the same hub showing the account's reimbursement
  *   status (pending / reimbursed) with no create form popped.
  */
-export function BasicDetailReimbursementButton({
-  entries,
-  allowedAdvanceAccountIds,
-}: {
-  entries: ReimbursementFormEntry[];
-  /**
-   * Advance accounts whose counterparty is flagged as reimbursable. When provided, rows settling
-   * against an unflagged object are not reimbursable, and the button is not rendered at
-   * all unless the visible rows contain at least one reimbursable row.
-   */
-  allowedAdvanceAccountIds?: string[];
-}) {
-  const { t } = useI18n();
-  const { selectedIds } = useBasicDetailSelection();
-  const router = useRouter();
-  const selectedCount = selectedIds.size;
-  const selectedEntries = useMemo(
-    () => entries.filter((entry) => selectedIds.has(entry.id)),
-    [entries, selectedIds],
-  );
-  const allowedSet = useMemo(
-    () => (allowedAdvanceAccountIds ? new Set(allowedAdvanceAccountIds) : null),
-    [allowedAdvanceAccountIds],
-  );
-  const isEntryAllowed = (entry: ReimbursementFormEntry) =>
-    !allowedSet || (!!entry.advanceAccountId && allowedSet.has(entry.advanceAccountId));
-  // Render the reimbursement button only when a visible row belongs to a reimbursable
-  // counterparty; hide it when no visible advance row is eligible.
-  if (!entries.some(isEntryAllowed)) return null;
-  const blockedSelection = selectedEntries.some((entry) => !isEntryAllowed(entry));
-  // Resolve the account scope from the selection, or from the visible rows when none are selected.
-  const scopeEntry = selectedEntries.find(isEntryAllowed) ?? entries.find(isEntryAllowed);
-  const selectedAdvanceAccountIds = new Set(
-    selectedEntries.map((entry) => entry.advanceAccountId).filter((id): id is string => Boolean(id)),
-  );
-  const accountSelectionBlocked = showSelectionBlocked(selectedCount, selectedEntries, blockedSelection, selectedAdvanceAccountIds);
-  // Selection semantics: with rows picked the create form pops pre-seeded; without, the
-  // hub only shows the account's reimbursement status.
-  const showCreateOnMount = selectedCount > 0 && !accountSelectionBlocked && selectedEntries.length > 0;
-
-  return (
-    <>
-      <button
-        type="button"
-        onClick={() => {
-          if (showCreateOnMount) {
-            window.sessionStorage.setItem("mmh:reimbursement:createEntries", JSON.stringify(selectedEntries));
-          }
-          const advanceAccountId = scopeEntry?.advanceAccountId ?? "";
-          router.push(`/reimbursements?accountId=${encodeURIComponent(advanceAccountId)}${showCreateOnMount ? "&create=1" : ""}`);
-        }}
-        disabled={accountSelectionBlocked}
-        className="flex h-6 w-6 items-center justify-center rounded border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-40"
-        title={accountSelectionBlocked ? t(selectedAdvanceAccountIds.size > 1 ? "reimburse.entryMultipleAccounts" : "reimburse.entryNotAllowed") : t("reimburse.entry")}
-        aria-label={t("reimburse.entry")}
-      >
-        <ReceiptText className="h-3.5 w-3.5" />
-      </button>
-    </>
-  );
-}
 
 function showSelectionBlocked(
   selectedCount: number,

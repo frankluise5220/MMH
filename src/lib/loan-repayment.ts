@@ -12,7 +12,7 @@ export type LoanRateAdjustment = {
   annualRate: number;
 };
 
-export type LoanRepaymentSchedulePreviewRow = {
+type LoanRepaymentSchedulePreviewRow = {
   period: number;
   date: string;
   payment: number;
@@ -27,7 +27,7 @@ export const EQUAL_PAYMENT_REPAYMENT_METHOD = "\u7b49\u989d\u672c\u606f";
 export const EQUAL_PRINCIPAL_REPAYMENT_METHOD = "\u7b49\u989d\u672c\u91d1";
 export const INSTALLMENT_REPAYMENT_METHOD = "\u5206\u671f\u8fd8\u6b3e";
 export const INTEREST_FIRST_REPAYMENT_METHOD = "\u5148\u8fd8\u5229\u606f\u4e00\u6b21\u6027\u8fd8\u672c";
-export const LEGACY_INTEREST_FREE_INSTALLMENT_REPAYMENT_METHOD = "\u514d\u606f\u5206\u671f\u8fd8\u672c";
+const LEGACY_INTEREST_FREE_INSTALLMENT_REPAYMENT_METHOD = "\u514d\u606f\u5206\u671f\u8fd8\u672c";
 
 export function normalizeLoanRepaymentMethod(method?: string | null) {
   const value = String(method ?? "").trim();
@@ -91,7 +91,7 @@ export function hasLoanRateAdjustmentInPeriod(params: {
   );
 }
 
-export function calcLoanPeriodInterestByDailyRate(params: {
+function calcLoanPeriodInterestByDailyRate(params: {
   principal: number;
   baseAnnualRate?: number | null;
   adjustments?: LoanRateAdjustment[] | null;
@@ -119,7 +119,7 @@ export function calcLoanPeriodInterestByDailyRate(params: {
   return roundLoanMoney(interest);
 }
 
-export type LoanPrincipalAdjustmentInPeriod = {
+type LoanPrincipalAdjustmentInPeriod = {
   date: string;
   amount: number;
 };
@@ -175,7 +175,7 @@ export function calcLoanAccruedInterestBetweenDates(params: {
   return roundLoanMoney(interest);
 }
 
-export function calcLoanPeriodInterestByDailyRateWithPrincipalAdjustments(params: {
+function calcLoanPeriodInterestByDailyRateWithPrincipalAdjustments(params: {
   principal: number;
   baseAnnualRate?: number | null;
   adjustments?: LoanRateAdjustment[] | null;
@@ -338,7 +338,7 @@ export function estimateLoanEqualPaymentRemainingRuns(params: {
   return naturalRuns <= 1200 ? naturalRuns : null;
 }
 
-export function calcLoanRunParts(params: {
+function calcLoanRunParts(params: {
   repaymentMethod?: string | null;
   annualRate?: number | null;
   intervalMonths?: number | null;

@@ -9,10 +9,10 @@ import type { SmartSelectOption } from "./SmartSelect";
  * The dropdown's cycle button (Repeat icon) filters the dropdown to one bucket
  * at a time, cycling through: 资金账户 → 投资账户 → 信用卡 → 其他账户.
  */
-export type AccountTypeBucket = "fund" | "invest" | "credit" | "other";
+type AccountTypeBucket = "fund" | "invest" | "credit" | "other";
 
 /** Buckets in the canonical cycle order (empty selection "全部" sits before these). */
-export const ACCOUNT_TYPE_BUCKET_ORDER: ReadonlyArray<AccountTypeBucket> = [
+const ACCOUNT_TYPE_BUCKET_ORDER: ReadonlyArray<AccountTypeBucket> = [
   "fund",
   "invest",
   "credit",
@@ -25,7 +25,7 @@ const INVEST_KINDS = new Set(["investment"]);
 const CREDIT_KINDS = new Set(["bank_credit"]);
 
 /** Maps an account kind to its bucket, or null for unknown/missing kind. */
-export function accountTypeBucketOfKind(kind?: string | null): AccountTypeBucket | null {
+function accountTypeBucketOfKind(kind?: string | null): AccountTypeBucket | null {
   if (!kind) return null;
   if (FUND_KINDS.has(kind)) return "fund";
   if (INVEST_KINDS.has(kind)) return "invest";
@@ -33,12 +33,6 @@ export function accountTypeBucketOfKind(kind?: string | null): AccountTypeBucket
   return "other";
 }
 
-export const ACCOUNT_TYPE_BUCKET_LABEL_KEYS: Record<AccountTypeBucket, string> = {
-  fund: "accountTypeBucket.fund",
-  invest: "accountTypeBucket.invest",
-  credit: "accountTypeBucket.credit",
-  other: "accountTypeBucket.other",
-};
 
 /**
  * Shared account SmartSelect filtering driven by the account-type cycle.

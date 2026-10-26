@@ -51,7 +51,7 @@ import { loadFundPortfolioTrendData, type FundTrendPoint } from "@/lib/server/fu
 import { convertCurrencyAmounts, getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
 import { normalizeCurrency } from "@/lib/currency";
 
-export type AssetFlowMonthEndLevel = {
+type AssetFlowMonthEndLevel = {
   netAssetCost: number;
   netAssetMarketValue: number;
   /** Insurance cash value included in both net totals. */
@@ -64,7 +64,7 @@ export type AssetFlowMonthEndLevel = {
   settlement: number;
 };
 
-export type AssetFlowMonthEndLevels = Map<string, AssetFlowMonthEndLevel>;
+type AssetFlowMonthEndLevels = Map<string, AssetFlowMonthEndLevel>;
 
 // 口径是 UTC（名称沿用历史）：DB 日历日字段存 UTC 零点。
 function localDateKey(date: Date) {

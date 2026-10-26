@@ -26,7 +26,7 @@ import {
   resolveLoanRateAdjustments,
 } from "@/lib/server/loan-rate-adjustments";
 
-export type LoanPrepayInterestPreview = {
+type LoanPrepayInterestPreview = {
   /** 应计利息金额（元，保留两位） */
   interest: number;
   /** 计息起点 YYYY-MM-DD（借款日或最近一次已结息日） */

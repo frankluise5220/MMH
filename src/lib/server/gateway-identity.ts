@@ -16,7 +16,7 @@
  * 判定顺序固定：先按用户名匹配，未命中再退回数字 UID。
  */
 
-export interface GatewayFnosIdentity {
+interface GatewayFnosIdentity {
   /** 数字 UID（`X-Trim-Userid`），缺失时为空串。 */
   uid: string;
   /** 登录用户名（`X-Trim-Username`），缺失时为空串。 */

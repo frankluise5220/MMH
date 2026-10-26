@@ -7,7 +7,7 @@ import { normalizeFundUnitsDecimals } from "@/lib/fund/unit-precision";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 import type { InvestmentStatisticEntryLike } from "@/lib/transaction-statistics";
 
-export type InvestmentStatisticSourceEntry = InvestmentStatisticEntryLike & {
+type InvestmentStatisticSourceEntry = InvestmentStatisticEntryLike & {
   entryId: string;
   canEdit: boolean;
   date: Date;

@@ -1,6 +1,6 @@
 import { inferKnownStatementMerchant } from "@/lib/statement/merchant-inference";
 
-export type StatementImportItemLike = {
+type StatementImportItemLike = {
   rawText?: string | null;
   type: string;
   date?: string | null;
@@ -14,7 +14,7 @@ export type StatementImportItemLike = {
   remark?: string | null;
 };
 
-export type StatementCategoryOption = {
+type StatementCategoryOption = {
   name: string;
   type: string;
 };
@@ -521,7 +521,7 @@ function matchExistingCategoryName(
   return undefined;
 }
 
-export function alignStatementCategoriesToLedger<T extends StatementImportItemLike>(
+function alignStatementCategoriesToLedger<T extends StatementImportItemLike>(
   items: T[],
   categories: StatementCategoryOption[],
   historicalSamples: StatementHistoricalCategorySample[] = [],

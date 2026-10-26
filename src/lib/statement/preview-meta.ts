@@ -6,7 +6,7 @@
  * duplicate this implementation; it is unified here so the display stays consistent.
  */
 
-export type StatementPreviewMeta = {
+type StatementPreviewMeta = {
   statementAmount?: number | string | null;
   statementPeriodStart?: string | null;
   statementPeriodEnd?: string | null;

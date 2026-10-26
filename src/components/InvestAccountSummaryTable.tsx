@@ -33,7 +33,7 @@ export type InvestAccountSummaryRow = {
   detailHref: string;
 };
 
-export type InvestAccountSummaryTotals = {
+type InvestAccountSummaryTotals = {
   totalCost: number;
   marketValue: number;
   floatingPnL: number;

@@ -19,7 +19,7 @@ export function parseTagNamesInput(value: unknown) {
   ));
 }
 
-export async function resolveOrCreateTagIdsByNames(
+async function resolveOrCreateTagIdsByNames(
   tx: Prisma.TransactionClient,
   householdId: string | null | undefined,
   names: readonly string[],
@@ -65,7 +65,7 @@ export async function attachEntryTagsByNames(input: {
   });
 }
 
-export function normalizeTagIds(tagIds: readonly string[]) {
+function normalizeTagIds(tagIds: readonly string[]) {
   return Array.from(new Set(
     tagIds
       .map((id) => String(id ?? "").trim())

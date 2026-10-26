@@ -88,7 +88,6 @@ export const showFeeFor = (s: FundSubtype, pt: ProductType): boolean =>
  * Whether the NAV field is shown.
  * Cash dividends are cash received directly and do not involve NAV.
  */
-export const showNavFor = (s: FundSubtype): boolean => (isBuyLike(s) || isRedeemLike(s)) && !isDividend(s);
 
 /**
  * Whether the T+N confirmation days and confirmation date are shown.
@@ -101,7 +100,6 @@ export const showConfirmFor = (s: FundSubtype): boolean => (isBuyLike(s) || isRe
  * Buy-like transactions have an arrival date; redeem-like funds arrive on the redeem
  * confirmation date, so no extra arrivalDate is needed.
  */
-export const showArrivalFor = (s: FundSubtype): boolean => isBuyLike(s) && !isDividend(s);
 
 /**
  * Whether the account selector area is shown (cash account + fund account).
@@ -115,7 +113,7 @@ export const showAccountSelectorsFor = (s: FundSubtype): boolean => (isBuyLike(s
  * All labels, colors, and text colors for every fundSubtype + source combination
  * are defined here. Pages and components retrieve them via subtypeDisplay(subtype, source).
  */
-export type SubtypeDisplay = {
+type SubtypeDisplay = {
   labelKey: string;
   cls: string;           // Label background color class
   textCls?: string;      // Amount text color class (e.g. dividend green)

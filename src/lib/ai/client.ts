@@ -93,7 +93,7 @@ export async function buildAccountContextText(householdId?: string) {
 
 export type Classification = { inputType: string; confidence: number; reason: string };
 
-export function extractInputType(raw: string): Classification | null {
+function extractInputType(raw: string): Classification | null {
   for (const pat of [/```json\s*([\s\S]*?)\s*```/i, /```\s*([\s\S]*?)\s*```/, /(\{[\s\S]*\})/]) {
     const m = raw.match(pat);
     if (m) {
@@ -164,98 +164,3 @@ export async function classifyInput(
 }
 
 /** Unified LLM chat call. Handles both Ollama and OpenAI-compatible APIs. */
-export async function callLlmChat(params: {
-  modelName: string;
-  baseUrl: string;
-  apiKey: string;
-  isOllama: boolean;
-  systemPrompt: string;
-  userMessage: string | Array<{ type: string; text?: string; image_url?: { url: string } }>;
-  ollamaImages?: string[];
-  temperature?: number;
-  apiMode?: AiApiMode;
-}): Promise<string> {
-  const { modelName, baseUrl, apiKey, isOllama, systemPrompt, userMessage, ollamaImages, temperature } = params;
-  const apiMode = normalizeAiApiMode(params.apiMode);
-  const cleanUrl = baseUrl.replace(/\/$/, "");
-  const temp = temperature ?? 0.1;
-
-  if (isOllama) {
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
-    const key = (apiKey ?? "").trim();
-    if (key) headers.Authorization = `Bearer ${key}`;
-
-    const ollamaBody: Record<string, unknown> = {
-      model: modelName,
-      stream: false,
-      messages: [
-        { role: "system", content: systemPrompt },
-        typeof userMessage === "string"
-          ? { role: "user", content: userMessage }
-          : { role: "user", content: typeof (userMessage as any)?.[0]?.text === "string" ? (userMessage as any)[0].text : "", images: ollamaImages ?? [] },
-      ],
-    };
-
-    const llmRes = await fetch(joinBaseUrl(cleanUrl, "/api/chat"), {
-      method: "POST",
-      headers,
-      body: JSON.stringify(ollamaBody),
-    });
-
-    if (!llmRes.ok) {
-      const errText = await llmRes.text().catch(() => "");
-      throw new Error(`LLM 调用失败 (${llmRes.status}): ${errText.slice(0, 300)}`);
-    }
-
-    const llmData = (await llmRes.json().catch(() => null)) as
-      | { message?: { content?: string | null } }
-      | { response?: string | null }
-      | null;
-
-    return (llmData as any)?.message?.content ?? (llmData as any)?.response ?? "";
-  } else {
-    const headers: Record<string, string> = { "Content-Type": "application/json" };
-    const key = (apiKey ?? "").trim();
-    if (key) headers.Authorization = `Bearer ${key}`;
-
-    const llmBody: Record<string, unknown> = apiMode === "responses"
-      ? buildResponsesRequestBody({
-          modelName,
-          instructions: systemPrompt,
-          userMessage,
-          temperature: temp,
-        })
-      : {
-          model: modelName,
-          messages: [
-            { role: "system", content: systemPrompt },
-            { role: "user", content: userMessage },
-          ],
-          temperature: temp,
-        };
-
-    const llmRes = await fetch(joinBaseUrl(cleanUrl, apiMode === "responses" ? "/v1/responses" : "/v1/chat/completions"), {
-      method: "POST",
-      headers,
-      body: JSON.stringify(llmBody),
-    });
-
-    if (!llmRes.ok) {
-      const errText = await llmRes.text().catch(() => "");
-      throw new Error(`LLM 调用失败 (${llmRes.status}): ${errText.slice(0, 300)}`);
-    }
-
-    const llmData = (await llmRes.json().catch(() => null)) as {
-      choices?: Array<{ message?: { content?: string | null } }>;
-      error?: { message?: string };
-    } | null;
-
-    if (llmData?.error) {
-      throw new Error(`LLM 错误: ${llmData.error.message ?? "未知错误"}`);
-    }
-
-    return apiMode === "responses"
-      ? extractResponsesText(llmData)
-      : llmData?.choices?.[0]?.message?.content ?? "";
-  }
-}

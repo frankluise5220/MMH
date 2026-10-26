@@ -19,7 +19,6 @@ export async function GET(req: Request) {
     const fundCodeParam = url.searchParams.get("fundCode") || undefined;
     const wealthProductIdParam = url.searchParams.get("wealthProductId") || undefined;
     const entryScope = url.searchParams.get("entryScope") === "account" ? "account" : "fund";
-    const showCleared = url.searchParams.get("showCleared") === "1";
 
     if (!accountId) {
       return NextResponse.json({ ok: false, code: "MISSING_ACCOUNT_ID", error: "缺少 accountId" }, { status: 400 });

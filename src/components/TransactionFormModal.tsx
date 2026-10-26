@@ -16,7 +16,7 @@ import { UnifiedEntryLauncher } from "./UnifiedEntryLauncher";
 import { useAccountSSFilter } from "./accountSSFilter";
 import { isSettlementCounterpartyType, kindLabel } from "@/lib/account-kinds";
 import { restrictAccountsByType } from "@/lib/client/account-dropdown-filter";
-import { getCashTargetOperation, isAdvanceFundingAccount, isDepositAccount, isDepositPostingCategoryAllowed, isIncomeExpensePostingAccount, isIncomeExpensePostingOrDepositAccount, isLoanOrSettlementAccountKind, isTransferDropdownAccount } from "@/lib/account-kind-utils";
+import { getCashTargetOperation, isAdvanceFundingAccount, isDepositAccount, isDepositPostingCategoryAllowed,  isIncomeExpensePostingOrDepositAccount, isLoanOrSettlementAccountKind, isTransferDropdownAccount } from "@/lib/account-kind-utils";
 import { buildAccountDisplayOption, buildGroupedAccountOptions, formatAccountHoverTitle } from "@/lib/account-display";
 import { recordRecentAccount, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
 import { useResetEntryModalReconciledReadOnlyOnClose } from "@/lib/client/entryModalLock";

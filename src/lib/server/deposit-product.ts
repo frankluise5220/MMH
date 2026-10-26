@@ -3,7 +3,7 @@ import { normalizeCurrency, normalizeOptionalCurrency } from "@/lib/currency";
 
 type Db = typeof prisma | Parameters<Parameters<typeof prisma.$transaction>[0]>[0];
 
-export type ResolveDepositProductInput = {
+type ResolveDepositProductInput = {
   householdId: string;
   productId?: string | null;
   name?: string | null;

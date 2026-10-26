@@ -6,8 +6,24 @@ import { createPortal } from "react-dom";
 import { evaluateArithmeticExpression } from "@/lib/arithmetic-expression";
 import { useI18n } from "@/lib/i18n";
 
-export function sanitizeCalcInputValue(raw: string) {
-  return raw.replace(/[^\d+\-*/().\s]/g, "");
+/**
+ * 全角字符 → 半角：中文输入法在「全角标点」状态下打出的是全角句点（．/。）和
+ * 全角数字（１２３），必须先归一化，否则会被下面的白名单整段清掉——用户看到的
+ * 现象就是「小数点打不进去、只剩整数」。千分位逗号（, 或 ，）不做等价换算，
+ * 直接丢弃（1,234.56 → 1234.56）。
+ */
+const HALF_WIDTH_MAP: Record<string, string> = {
+  "０": "0", "１": "1", "２": "2", "３": "3", "４": "4",
+  "５": "5", "６": "6", "７": "7", "８": "8", "９": "9",
+  "．": ".", "。": ".",
+  "＋": "+", "－": "-", "＊": "*", "／": "/",
+  "（": "(", "）": ")", "　": " ",
+};
+
+function sanitizeCalcInputValue(raw: string) {
+  return raw
+    .replace(/[０-９．。＋－＊／（）　]/g, (ch) => HALF_WIDTH_MAP[ch] ?? ch)
+    .replace(/[^\d+\-*/().\s]/g, "");
 }
 
 export function evaluateCalcInputExpression(expression: string, currentValue = 0) {
@@ -31,7 +47,7 @@ function isPlainSignedNumber(raw: string) {
   return /^[+-]?\d+(\.\d+)?$/.test(raw);
 }
 
-export type CalcInputProps = {
+type CalcInputProps = {
   value: string;
   onChange: (v: string) => void;
   onBlur?: () => void;

@@ -6,7 +6,7 @@ import { cookies } from "next/headers";
 
 export const ACCOUNT_DROPDOWN_RESTRICT_TYPE_COOKIE = "mmh_account_dropdown_restrict_type";
 
-export function accountDropdownRestrictTypeFromCookieValue(value: string | undefined): boolean {
+function accountDropdownRestrictTypeFromCookieValue(value: string | undefined): boolean {
   if (value === undefined) return true;
   return value === "true" || value === "1";
 }
@@ -19,6 +19,3 @@ export async function getServerAccountDropdownRestrictType(): Promise<boolean> {
 type CookieReader = { cookies: { get: (name: string) => { value?: string } | undefined } };
 
 /** Route-handler flavour: reads the preference from a request's cookies. */
-export function accountDropdownRestrictTypeFromRequest(req: CookieReader): boolean {
-  return accountDropdownRestrictTypeFromCookieValue(req.cookies.get(ACCOUNT_DROPDOWN_RESTRICT_TYPE_COOKIE)?.value);
-}

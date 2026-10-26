@@ -99,14 +99,14 @@ export function travelRowSubtotal(row: ReimbursementDraftRow) {
 }
 
 /** 一行在小计列上显示的金额（元）。 */
-export function rowSubtotal(row: ReimbursementDraftRow, kind: ReimbursementKindValue) {
+function rowSubtotal(row: ReimbursementDraftRow, kind: ReimbursementKindValue) {
   return kind === "travel"
     ? travelRowSubtotal(row)
     : Math.abs(parseReimbursementAmount(row.amount));
 }
 
 /** 明细金额合计（元）。 */
-export function rowsTotal(rows: ReimbursementDraftRow[], kind: ReimbursementKindValue) {
+function rowsTotal(rows: ReimbursementDraftRow[], kind: ReimbursementKindValue) {
   return rows.reduce((sum, row) => sum + rowSubtotal(row, kind), 0);
 }
 

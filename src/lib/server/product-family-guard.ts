@@ -16,9 +16,9 @@ import type { Prisma } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
 
-export const INSURER_INSTITUTION_TYPES = ["insurance"] as const;
+const INSURER_INSTITUTION_TYPES = ["insurance"] as const;
 
-export type ProductFamilyGuardError = {
+type ProductFamilyGuardError = {
   ok: false;
   code: string;
   error: string;

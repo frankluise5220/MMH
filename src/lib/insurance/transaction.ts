@@ -52,10 +52,4 @@ export function getInsuranceProductName(entry: InsuranceEntryLike) {
   return (entry.insuranceProductName ?? entry.fundName ?? "").trim();
 }
 
-export function insuranceActionToLegacyFundSubtype(action: InsuranceAction) {
-  return action === "refund" ? "redeem" : "buy";
-}
 
-export function legacyFundSubtypeToInsuranceAction(fundSubtype?: string | null): InsuranceAction {
-  return fundSubtype === "redeem" || fundSubtype === "switch_out" ? "refund" : "premium";
-}

@@ -165,7 +165,7 @@ function normalizeYmd(value: string | Date | null | undefined): string {
 }
 
 // Entry data for edit mode.
-export type InvestmentEntry = {
+type InvestmentEntry = {
   id: string;
   transactionId: string;
   date: string;
@@ -204,7 +204,7 @@ export type InvestmentEntry = {
 };
 
 // Default values for create mode.
-export type InvestmentDefaults = {
+type InvestmentDefaults = {
   fundCode?: string;
   fundName?: string;
   fundUnits?: number | null;
@@ -676,10 +676,6 @@ export function InvestmentFormModal({
   const flatCashAccountOptions = useMemo<SmartSelectOption[]>(
     () => localCashAccountList.map((account) => ({ id: account.id, label: account.label })),
     [localCashAccountList],
-  );
-  const flatInvestmentAccountOptions = useMemo<SmartSelectOption[]>(
-    () => localInvestmentAccountList.map((account) => ({ id: account.id, label: account.label })),
-    [localInvestmentAccountList],
   );
   const investmentAccountMatchesProductType = (account: AccountOption) => {
     if (productType === "metal") return account.investProductType === "metal";

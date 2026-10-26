@@ -8,7 +8,7 @@ import { buildEntryBusinessLinkSummary, entryBusinessLinkSummaryInclude } from "
 import { getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 
-export type ReportDetailEntryOverrides = {
+type ReportDetailEntryOverrides = {
   categoryByEntryId: ReadonlyMap<string, string>;
   realizedProfitByEntryId: ReadonlyMap<string, number | null>;
   accountByEntryId: ReadonlyMap<string, { accountId: string; accountName: string }>;

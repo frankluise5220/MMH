@@ -9,7 +9,7 @@ import { useDerivedLayerZIndex } from "@/components/ModalLayer";
 import { SmartSelect, type SmartSelectOption, type SmartSelectProps } from "@/components/SmartSelect";
 import { useI18n } from "@/lib/i18n";
 
-export type BatchReplaceInputKind = "date" | "text" | "number" | "select" | "smartSelect";
+type BatchReplaceInputKind = "date" | "text" | "number" | "select" | "smartSelect";
 
 export type BatchReplaceOption = {
   value: string;

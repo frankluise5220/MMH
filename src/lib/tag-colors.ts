@@ -9,7 +9,7 @@ export const TAG_COLORS = [
   "#64748B", "#0EA5E9",
 ] as const;
 
-export type TagColor = (typeof TAG_COLORS)[number];
+type TagColor = (typeof TAG_COLORS)[number];
 
 /** 每个预设色的颜色名 i18n key（导入模板说明等需要文字描述颜色的场景共用）。 */
 export const TAG_COLOR_NAME_KEYS: Record<TagColor, string> = {

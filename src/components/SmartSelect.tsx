@@ -41,7 +41,7 @@ export type SmartSelectOption = {
   currency?: string | null;
 };
 
-export type SmartSelectCycleAction = {
+type SmartSelectCycleAction = {
   onClick: () => void;
   label?: string;
   title?: string;

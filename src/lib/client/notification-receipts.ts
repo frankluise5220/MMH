@@ -21,7 +21,7 @@ import { isReportableExecution, type AutoExecuteSummary } from "@/lib/notificati
  */
 
 export const NOTIFICATIONS_CHANGED_EVENT = "mmh:notifications:changed";
-export const NOTIFICATION_RECEIPTS_KEY = "mmh_notification_receipts";
+const NOTIFICATION_RECEIPTS_KEY = "mmh_notification_receipts";
 
 const MAX_RECEIPTS = 10;
 
@@ -63,7 +63,7 @@ function num(value: unknown) {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
 }
 
-export function readReceipts(): StoredReceipt[] {
+function readReceipts(): StoredReceipt[] {
   if (typeof window === "undefined") return [];
   try {
     const raw = window.localStorage.getItem(NOTIFICATION_RECEIPTS_KEY);

@@ -20,7 +20,7 @@ import { ReimbursementFormModal } from "./ReimbursementFormModal";
 type CreateProps = ComponentProps<typeof ReimbursementFormModal>;
 type EditorProps = Omit<ComponentProps<typeof ReimbursementEditor>, "mode">;
 
-export type ReimbursementDocumentModalProps =
+type ReimbursementDocumentModalProps =
   | ({ mode: "create" } & CreateProps)
   | ({ mode: "edit" | "audit" } & EditorProps);
 

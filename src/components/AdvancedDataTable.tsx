@@ -138,7 +138,7 @@ export type AdvancedDataTableColumn<T> = {
   render: (row: T, index: number) => ReactNode;
 };
 
-export type AdvancedDataTableBatchAction = {
+type AdvancedDataTableBatchAction = {
   label: string;
   onClick: () => void;
   disabled?: boolean;
@@ -157,12 +157,12 @@ export type AdvancedDataTableSummaryRow = {
 
 export type AdvancedDataTableDropPosition = "before" | "after";
 export type AdvancedDataTableSortState = { key: string; direction: "asc" | "desc" };
-export type AdvancedDataTableRowDropTarget<T> = {
+type AdvancedDataTableRowDropTarget<T> = {
   row: T;
   index: number;
 };
 
-export type AdvancedDataTablePagination = {
+type AdvancedDataTablePagination = {
   page: number;
   pageSize: number;
   all?: boolean;
@@ -649,7 +649,7 @@ function computeResizeFrame(
   return { colWidths, columnsTotal };
 }
 
-export type AdvancedDataTableProps<T> = {
+type AdvancedDataTableProps<T> = {
   storageKey: string;
   sortStorageKey?: string;
   columns: AdvancedDataTableColumn<T>[];
@@ -730,29 +730,6 @@ export type AdvancedDataTableProps<T> = {
    * auto-fit page size. Requires a height-constrained viewport (fillHeight).
    */
   onRowsFitChange?: (rows: number) => void;
-  /**
-   * 服务端模式：筛选与排序由调用方下推到 SQL，本地不再对 `rows` 过滤/排序，
-   * 只渲染当前这一页。
-   *
-   * 为什么需要：明细的「全部」视图原本把整份数据拉进浏览器，在内存里做漏斗和
-   * 列排序；数据量到百万行时这个前提不成立（整份 JSON 约 700 MB），只能服务端
-   * 分页取数，漏斗与排序随之退化为 SQL 查询。
-   */
-  serverMode?: boolean;
-  /** 服务端模式：内部筛选状态变化时通知调用方重取（含清空）。 */
-  onFiltersChange?: (filters: Partial<Record<string, string[]>>) => void;
-  /** 服务端模式：内部排序状态变化时通知调用方重取（null 表示恢复默认排序）。 */
-  onSortChange?: (sortState: AdvancedDataTableSortState | null) => void;
-  /**
-   * 服务端模式：表头漏斗候选值。缺省时仍按当前 `rows` 去重，那在服务端分页下
-   * 只覆盖当前页，用户会看到「昨天还能选的分类今天不见了」。
-   */
-  serverFilterOptions?: Record<string, {
-    options: string[];
-    counts?: Record<string, number>;
-    titles?: Record<string, string>;
-    searchText?: Record<string, string>;
-  }>;
   /**
    * 表头的时间筛选器（双滑块）。开启后在工具栏右侧增加一枚 chip。
    *
@@ -971,10 +948,6 @@ export function AdvancedDataTable<T>({
   resetDisplayStateOnMount = false,
   scrollToRowKey,
   onRowsFitChange,
-  serverMode = false,
-  onFiltersChange,
-  onSortChange,
-  serverFilterOptions,
   showDateRangeFilter = false,
   dateRange,
   initialDateRange,
@@ -1537,17 +1510,6 @@ export function AdvancedDataTable<T>({
       searchText: undefined as Record<string, string> | undefined,
     };
     if (!activeFilterColumn) return empty;
-    // 服务端模式：候选值来自服务端 distinct（覆盖全量），不再从当前页去重。
-    const serverOptions = serverFilterOptions?.[activeFilterColumn];
-    if (serverOptions) {
-      return {
-        columnKey: activeFilterColumn,
-        options: serverOptions.options,
-        counts: serverOptions.counts,
-        titles: serverOptions.titles,
-        searchText: serverOptions.searchText,
-      };
-    }
     const column = tableColumns.find((item) => item.key === activeFilterColumn);
     if (!column?.filterText) return empty;
     if (column.filterKind === "dateRange" || column.filterKind === "numberRange" || column.filterKind === "text") {
@@ -1586,7 +1548,7 @@ export function AdvancedDataTable<T>({
         Object.entries(searchTextParts).map(([value, parts]) => [value, Array.from(parts).join(" ")]),
       ),
     };
-  }, [activeFilterColumn, filters, rows, serverFilterOptions, showFilters, tableColumns]);
+  }, [activeFilterColumn, filters, rows, showFilters, tableColumns]);
   /**
    * 时间筛选器的滑块刻度。
    *
@@ -1598,9 +1560,6 @@ export function AdvancedDataTable<T>({
   const effectiveDateRangeBounds = useMemo(() => {
     if (dateRangeBounds?.min && dateRangeBounds?.max) return dateRangeBounds;
     if (dateRangeBounds !== undefined) return null;
-    // 服务端分页下 rows 只有当前一页，据此推导出来的时间轴是一页的跨度（常见表现
-    // 是「共 5 天」），宁可先不给、把 chip 置灰，等 facets 把全量边界送过来。
-    if (serverMode) return null;
     const dateColumn = tableColumns.find((column) => column.filterKind === "dateRange" && column.filterText);
     if (!dateColumn?.filterText) return null;
     let min = "";
@@ -1613,7 +1572,7 @@ export function AdvancedDataTable<T>({
       if (!max || ymd > max) max = ymd;
     }
     return min && max && max > min ? { min, max } : null;
-  }, [dateRangeBounds, rows, serverMode, tableColumns]);
+  }, [dateRangeBounds, rows, tableColumns]);
   // 时间范围是独立状态：受控时以父层为准（父层负责按范围重取数据），非受控时内部自管。
   const [innerDateRange, setInnerDateRange] = useState(() => initialDateRange ?? { from: "", to: "" });
   const activeDateRange = dateRange ?? innerDateRange;
@@ -1643,16 +1602,13 @@ export function AdvancedDataTable<T>({
     });
   }, [activeDateRange, dateRangeColumnKey, hasActiveDateRange, rows, tableColumns]);
   const filteredRows = useMemo(() => {
-    // 服务端模式：rows 已经是查询结果（范围与列筛选都下推过），本地再筛会变成
-    // 「页内二次筛选」，表现为翻页后筛选结果忽多忽少。
-    if (serverMode) return rows;
     const scoped = rowsInDateRange;
     if (!showFilters) return scoped;
     if (filterRows) return filterRows(scoped, filters, tableColumns);
     const activeFilters = Object.entries(filters).filter(([, values]) => (values?.length ?? 0) > 0);
     if (activeFilters.length === 0) return scoped;
     return scoped.filter((row) => rowMatchesFilters(row, tableColumns, filters));
-  }, [dateRangeColumnKey, filterRows, filters, rows, rowsInDateRange, serverMode, showFilters, tableColumns]);
+  }, [dateRangeColumnKey, filterRows, filters, rows, rowsInDateRange, showFilters, tableColumns]);
 
   useEffect(() => {
     if (!showFilters || filteredRows.length > 0) return;
@@ -1667,8 +1623,6 @@ export function AdvancedDataTable<T>({
   }, [filteredRows.length, filters, hasActiveDateRange, rows.length, showFilters]);
 
   const orderedRows = useMemo(() => {
-    // 服务端模式：排序键已下推 SQL，全局有序的是整份数据而不是这一页。
-    if (serverMode) return filteredRows;
     if (!sortable || !sortState) return filteredRows;
     if (sortRows) {
       // Returning null/undefined lets this column fall through to the default
@@ -1696,7 +1650,7 @@ export function AdvancedDataTable<T>({
           : sortState.direction === "asc" ? compared : -compared;
       })
       .map((item) => item.row);
-  }, [filteredRows, serverMode, sortRows, sortState, sortable, tableColumns]);
+  }, [filteredRows, sortRows, sortState, sortable, tableColumns]);
   const orderedRowsRef = useRef(orderedRows);
   useEffect(() => {
     const changed = orderedRowsRef.current !== orderedRows;
@@ -1704,26 +1658,6 @@ export function AdvancedDataTable<T>({
     if (!changed) return;
     onDisplayRowsChange?.(orderedRows);
   }, [onDisplayRowsChange, orderedRows]);
-  // 服务端模式：内部筛选 / 排序状态一变就通知调用方按新条件重取。首次渲染只是
-  // 落地初始状态，不该额外发一次请求（RSC 已经把首屏数据带下来了）。
-  const serverFiltersEchoRef = useRef<Partial<Record<string, string[]>> | null>(null);
-  useEffect(() => {
-    if (!serverMode || !onFiltersChange) return;
-    if (serverFiltersEchoRef.current === filters) return;
-    const isFirst = serverFiltersEchoRef.current === null;
-    serverFiltersEchoRef.current = filters;
-    if (isFirst) return;
-    onFiltersChange(filters);
-  }, [filters, onFiltersChange, serverMode]);
-  const serverSortEchoRef = useRef<AdvancedDataTableSortState | null | undefined>(undefined);
-  useEffect(() => {
-    if (!serverMode || !onSortChange) return;
-    if (serverSortEchoRef.current === sortState) return;
-    const isFirst = serverSortEchoRef.current === undefined;
-    serverSortEchoRef.current = sortState;
-    if (isFirst) return;
-    onSortChange(sortState);
-  }, [onSortChange, serverMode, sortState]);
   const hasPagination = paginationPage != null && !!paginationOnPageChange;
   const pageSize = paginationAll ? Math.max(1, orderedRows.length) : paginationPageSize && paginationPageSize > 0 ? paginationPageSize : orderedRows.length || 1;
   const pageCount = paginationAll ? 1 : Math.max(1, Math.ceil(orderedRows.length / pageSize));

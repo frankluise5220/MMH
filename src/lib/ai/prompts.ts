@@ -1,6 +1,6 @@
 // AI prompt templates used by the chat route
 
-export type FundContext = {
+type FundContext = {
   fundCode: string;
   fundName?: string;
   accountId: string;
@@ -15,7 +15,7 @@ export type BillHeader = {
   currency?: "CNY" | "USD";
 };
 
-export type AiRecognitionPromptInput = {
+type AiRecognitionPromptInput = {
   currentDate: string;
   accountContext: string;
   billHeaderContext?: string;
@@ -108,38 +108,6 @@ export const CLASSIFY_PROMPT = `你是 MMH 系统的输入分类器。你的任�
 
 只输出 JSON，不要解释，不要 markdown。`;
 
-export function buildAiRecognitionUserPrompt(input: AiRecognitionPromptInput) {
-  const fieldRequirements = [
-    "系统字段前置要求：",
-    "- operation 只能是 create/delete/update/restore/query/stats。",
-    "- create.items[] 只能使用 rawText、type、date、postedAt、amount、accountId、account、fromAccount、toAccount、institution、counterparty、remark 等事实字段。",
-    "- type 只能是 expense/income/transfer/investment；消费、刷卡、付款默认 expense，退款/冲正仍为 expense 且 amount 用负数。",
-    "- date 是交易发生日期；postedAt 是实际入账日期。文本没有明确入账日期时，postedAt 返回 null 或省略。",
-    "- accountId 必须来自账户上下文；只有唯一匹配时才填写。account 保留用户文本里能看见的账户名、卡尾或渠道文本。",
-    "- transfer 必须尽量填写 fromAccount 和 toAccount；不能确定时不要编造。",
-    "- institution/counterparty 只保留原始商户、支付平台、银行或可见渠道文本，不要归一化成最终机构。",
-    "- 不要输出 category、categoryId、institutionId；分类和最终机构由 MMH 规则库在模型返回后补齐。",
-    "- rawText 和 remark 要尽量保留原始交易说明、商户名、支付渠道、卡尾和商品说明，方便后处理学习。",
-  ].join("\n");
-
-  const contextLines = [
-    `当前日期：${input.currentDate}`,
-    fieldRequirements,
-    `账户上下文：\n${input.accountContext || "（暂无可用账户上下文）"}`,
-    input.billHeaderContext ? `账单头部预识别：${input.billHeaderContext}` : "",
-    input.transactionLines?.length ? `预抽取交易行：${input.transactionLines.join(" || ")}` : "",
-  ].filter(Boolean);
-
-  const sourceText = input.image
-    ? "输入载体：账单或交易截图。请结合图片内容解析。"
-    : `用户原始输入：\n${input.text ?? ""}`;
-
-  return [
-    ...contextLines,
-    sourceText,
-    "只输出严格 JSON，不要解释文字，不要 markdown。",
-  ].join("\n\n");
-}
 
 /** Build fund-specific system prompt when user is viewing a fund's holdings page */
 export function buildFundSystemPrompt(ctx: FundContext, today: string) {

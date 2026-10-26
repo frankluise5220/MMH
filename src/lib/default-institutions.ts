@@ -3,16 +3,16 @@ import { prisma } from "@/lib/db/prisma";
 import { findInstitutionDisplayNameConflict } from "@/lib/server/institution-name-unique";
 import { defaultFundCompanyNames } from "@/lib/default-fund-companies";
 
-export type DefaultInstitutionType = "bank" | "insurance" | "brokerage" | "fund_company" | "payment" | "lender" | "other";
+type DefaultInstitutionType = "bank" | "insurance" | "brokerage" | "fund_company" | "payment" | "lender" | "other";
 
-export type DefaultInstitutionTemplate = {
+type DefaultInstitutionTemplate = {
   name: string;
   type: DefaultInstitutionType;
 };
 
 type InstitutionWriter = typeof prisma | Prisma.TransactionClient;
 
-export const defaultInstitutionTemplates: DefaultInstitutionTemplate[] = [
+const defaultInstitutionTemplates: DefaultInstitutionTemplate[] = [
   { name: "支付宝", type: "payment" },
   { name: "微信支付", type: "payment" },
   { name: "银联", type: "payment" },

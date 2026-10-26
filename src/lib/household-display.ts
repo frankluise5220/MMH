@@ -3,7 +3,7 @@ type HouseholdLike = {
   name?: string | null;
 };
 
-export function looksLikeInternalHouseholdId(value: string | null | undefined) {
+function looksLikeInternalHouseholdId(value: string | null | undefined) {
   const trimmed = value?.trim();
   if (!trimmed) return false;
   return /^c[a-z0-9]{8,}$/i.test(trimmed);

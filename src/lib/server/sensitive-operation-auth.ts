@@ -7,7 +7,7 @@ import {
   type CredentialVerification,
 } from "@/lib/server/verify-credential";
 
-export type SensitiveOperationVerification = {
+type SensitiveOperationVerification = {
   ok: boolean;
   code?: string;
   error?: string;

@@ -35,9 +35,9 @@ import type { LoanTypeValue } from "@/lib/loan-type";
  */
 
 /** 备份里的一条记录：解析后是松散对象，列映射由写入阶段负责。 */
-export type BackupRow = Record<string, unknown>;
+type BackupRow = Record<string, unknown>;
 
-export type RestoreIdentityPayload = {
+type RestoreIdentityPayload = {
   scope: { householdId: string };
   data: {
     loanCategories: BackupRow[];
@@ -45,7 +45,7 @@ export type RestoreIdentityPayload = {
   };
 };
 
-export type RestoreIdentity = {
+type RestoreIdentity = {
   /** 备份里的贷款类别 id → 目标账簿里的贷款类别 id。 */
   loanCategories: Map<string, string>;
 };

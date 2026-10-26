@@ -30,7 +30,7 @@ import {
  * - the manual entry points (`/api/v1/regular-invest/execute`, `/batch-execute`)
  *   never look at the balance, so "force generate" needs no new endpoint.
  */
-export type ScheduledTaskBalanceGuardPlan = {
+type ScheduledTaskBalanceGuardPlan = {
   id: string;
   accountId: string;
   cashAccountId: string | null;
@@ -50,7 +50,7 @@ export type ScheduledTaskBalanceBlock = {
   balance: number;
 };
 
-export async function isScheduledTaskBalanceGuardEnabled(householdId: string): Promise<boolean> {
+async function isScheduledTaskBalanceGuardEnabled(householdId: string): Promise<boolean> {
   const stored = await getSystemSetting(SCHEDULED_TASK_BALANCE_GUARD_SETTING_NAME, { householdId });
   return stored === "true" || stored === "1";
 }

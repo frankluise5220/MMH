@@ -16,7 +16,7 @@ export type StatementImportField =
   | "explicitType"
   | "secondRemark";
 
-export type StatementFieldRecognitionSample = {
+type StatementFieldRecognitionSample = {
   targetType?: string | null;
   fieldName?: string | null;
   matchText?: string | null;
@@ -33,7 +33,7 @@ export type SpdbCreditCardTransactionField =
   | "amount"
   | "originalAmount";
 
-export type StatementHeaderProfile<TField extends string> = {
+type StatementHeaderProfile<TField extends string> = {
   institutionName: string;
   minValidSampleRows: number;
   requiredHeaders: Record<TField, readonly string[]>;
@@ -177,11 +177,11 @@ export const CREDIT_CARD_HTML_TRANSACTION_FIELD_HEADERS = {
   ],
 } as const;
 
-export function isStatementImportField(value: string): value is StatementImportField {
+function isStatementImportField(value: string): value is StatementImportField {
   return Object.prototype.hasOwnProperty.call(STATEMENT_IMPORT_FIELD_HEADERS, value);
 }
 
-export function normalizeStatementHeader(value: string) {
+function normalizeStatementHeader(value: string) {
   return value.replace(/\s+/g, "").replace(/[：:]/g, "").trim().toLowerCase();
 }
 
@@ -212,7 +212,7 @@ export function buildStatementImportFieldHeaders(
   return merged;
 }
 
-export function findStatementHeaderIndex(headers: readonly string[], aliases: readonly string[]) {
+function findStatementHeaderIndex(headers: readonly string[], aliases: readonly string[]) {
   const aliasSet = new Set(aliases.map(normalizeStatementHeader));
   const matchedIndexes = headers
     .map((header, index) => aliasSet.has(normalizeStatementHeader(header)) ? index : -1)

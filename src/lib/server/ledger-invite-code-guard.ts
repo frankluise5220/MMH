@@ -14,7 +14,7 @@ import { ledgerInviteCodeSignatureState } from "@/lib/server/ledger-invite-code-
  * in settings while the redeemer is told it may already be used. Each cause now
  * carries its own code + message, and the settings page shows the same verdict.
  */
-export type LedgerInviteCodeRejectionCode =
+type LedgerInviteCodeRejectionCode =
   | "INVITE_CODE_NOT_FOUND"
   | "INVITE_CODE_USED"
   | "INVITE_CODE_FOREIGN"
@@ -22,13 +22,13 @@ export type LedgerInviteCodeRejectionCode =
   | "INVITE_CODE_ISSUER_MISSING"
   | "INVITE_CODE_SIGNING_UNAVAILABLE";
 
-export type LedgerInviteCodeRejection = {
+type LedgerInviteCodeRejection = {
   code: LedgerInviteCodeRejectionCode;
   message: string;
   status: number;
 };
 
-export type LedgerInviteCodeInspection =
+type LedgerInviteCodeInspection =
   | { ok: true; record: LedgerInviteCodeRecord }
   | { ok: false; rejection: LedgerInviteCodeRejection };
 

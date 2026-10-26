@@ -7,7 +7,7 @@ import { TransactionType } from "@prisma/client";
 import { normalizeOperationText } from "@/lib/commandParser";
 import { extractBankKeywordFromBill } from "@/lib/ai/parser";
 
-export type StatsPlan = {
+type StatsPlan = {
   metric: "count" | "sum";
   type: TransactionType;
   year?: number;
@@ -81,7 +81,7 @@ export function parseStatsCommand(text: string, now: Date = new Date()): StatsPl
   return { metric: metric as "count" | "sum", type, year, month, accountKeyword };
 }
 
-export const QUERY_NOT_RECORDED_HINT =
+const QUERY_NOT_RECORDED_HINT =
   "这句话看起来是在查询已有数据，已按查询处理，没有记成流水。目前支持的说法例如：「统计本月支出总额」「统计10月收入」「这个月支出多少」「查看回收站最近5条」。";
 
 export function buildQueryNotRecordedResponse(text: string) {

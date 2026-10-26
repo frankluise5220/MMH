@@ -25,7 +25,7 @@ import { ENTRY_ORIGIN_SCHEDULED_TASK, TRANSACTION_SOURCE_BOND } from "@/lib/tran
  * （本金到账时间/金额不确定，且有核销），本模块只管付息。
  */
 
-export type BondInterestAccrualResult = {
+type BondInterestAccrualResult = {
   status: "accrued" | "skipped";
   pairs?: number;
   totalInterest?: number;

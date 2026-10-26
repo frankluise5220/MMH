@@ -36,7 +36,7 @@ import {
   enrichKnownStatementMerchantForImport,
 } from "@/lib/statement/import-normalization";
 
-export type StatementExcelPreviewItem = {
+type StatementExcelPreviewItem = {
   rawText: string;
   type: "expense" | "income" | "transfer" | "investment";
   date?: string;
@@ -251,7 +251,7 @@ function cardAccountHint(institutionName: string | undefined, defaultAccountName
   return `${defaultName}(${cardTail})`;
 }
 
-export function isKnownCreditCardStatementRows(rows: string[][]) {
+function isKnownCreditCardStatementRows(rows: string[][]) {
   for (const [index, row] of rows.entries()) {
     const indexes = matchStatementHeaderProfile(row, SPDB_CREDIT_CARD_TRANSACTION_REPORT_PROFILE);
     if (!indexes) continue;
@@ -536,7 +536,7 @@ export function parseStatementTemplateRows(
   });
 }
 
-export type ReadStatementWorkbookResult = {
+type ReadStatementWorkbookResult = {
   rows: string[][];
   text: string;
   /** 检测为财智8格式时为标准化后的行（含 MMH 标准表头，可直接交 parseStatementTemplateRows）；否则 undefined */

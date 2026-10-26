@@ -24,24 +24,24 @@ export type CreditBillSummary = {
   isCurrentCycle: boolean;
 };
 
-export type CreditBillCascadeRow = {
+type CreditBillCascadeRow = {
   month: string;
   bill: number;
   billDelta?: number;
   paid: number;
 };
 
-export type CreditBillOverrideInput = {
+type CreditBillOverrideInput = {
   statementMonth?: string | null;
   amount: number;
 };
 
-export type CreditBillCumulative = {
+type CreditBillCumulative = {
   cumulativeRemain: number;
   cumulativeOverpaid: number;
 };
 
-export type CreditBillFlowEntry = {
+type CreditBillFlowEntry = {
   accountId?: string | null;
   toAccountId?: string | null;
   amount?: unknown;
@@ -51,7 +51,7 @@ export type CreditBillFlowEntry = {
   postedAt?: Date | null;
 };
 
-export type CreditCardCyclePersistRow = {
+type CreditCardCyclePersistRow = {
   statementMonth: string;
   periodStart: Date;
   periodEnd: Date;
@@ -68,7 +68,7 @@ export type CreditCardCyclePersistRow = {
   lockSource: string | null;
 };
 
-export type CreditCardBillingDayRule = {
+type CreditCardBillingDayRule = {
   effectiveDate: Date;
   billingDay: number;
 };
@@ -85,7 +85,7 @@ export function normalizeBillingDayTxPeriod(value: unknown): BillingDayTxPeriod 
   return String(value ?? "").trim() === "next" ? "next" : "current";
 }
 
-export type CreditBillCycleDefinition = {
+type CreditBillCycleDefinition = {
   start: Date;
   end: Date;
   due: Date | null;
@@ -126,7 +126,7 @@ function roundMoney(value: number) {
   return Math.round((value + Number.EPSILON) * 100) / 100;
 }
 
-export function nextCreditBillStatementMonth(statementMonth: string) {
+function nextCreditBillStatementMonth(statementMonth: string) {
   const match = statementMonth.match(/^(\d{4})-(\d{2})$/);
   if (!match) return null;
   const year = Number(match[1]);
@@ -136,7 +136,7 @@ export function nextCreditBillStatementMonth(statementMonth: string) {
   return `${nextDate.getUTCFullYear()}-${String(nextDate.getUTCMonth() + 1).padStart(2, "0")}`;
 }
 
-export function paidFromNextCycleIncome(
+function paidFromNextCycleIncome(
   statementMonth: string,
   incomeByMonth: ReadonlyMap<string, number>,
 ) {
@@ -301,7 +301,7 @@ function cycleEndForMonth(year: number, monthIndex: number, billingDay: number, 
   return txPeriod === "next" ? addDaysUtc(statementDate, -1) : statementDate;
 }
 
-export function isCreditCardMonthEndDate(date: Date) {
+function isCreditCardMonthEndDate(date: Date) {
   const normalized = startOfDayUtc(date);
   const nextDay = addDaysUtc(normalized, 1);
   return nextDay.getUTCDate() === 1;
@@ -327,7 +327,7 @@ export function creditCardCycleEndDateForStatementMonth(
   );
 }
 
-export function normalizeCreditCardRepaymentOffsetDays(value: unknown) {
+function normalizeCreditCardRepaymentOffsetDays(value: unknown) {
   if (value == null || String(value).trim() === "") return null;
   const days = Number(value);
   return Number.isInteger(days) && days >= 0 && days <= CREDIT_CARD_MAX_REPAYMENT_OFFSET_DAYS ? days : null;
@@ -507,30 +507,6 @@ export function cycleForStatementMonthWithBillingDayRules(params: {
   }).get(params.statementMonth) ?? null;
 }
 
-export function statementMonthForDateWithBillingDayRules(params: {
-  date: Date;
-  billingDayRules: readonly CreditCardBillingDayRule[];
-  now: Date;
-  fallbackBillingDay?: number | null;
-  billingDayTxPeriod?: BillingDayTxPeriod | null;
-}) {
-  const date = startOfDayUtc(params.date);
-  const months = [
-    monthKey(date.getUTCFullYear(), date.getUTCMonth()),
-    monthKey(date.getUTCFullYear(), date.getUTCMonth() + 1),
-  ];
-  const definitions = buildCreditBillCycleDefinitionsFromBillingDayRules({
-    months,
-    billingDayRules: params.billingDayRules,
-    now: params.now,
-    fallbackBillingDay: params.fallbackBillingDay,
-    billingDayTxPeriod: params.billingDayTxPeriod,
-  });
-  const timestamp = date.getTime();
-  return Array.from(definitions.entries()).find(([, cycle]) => (
-    timestamp >= cycle.start.getTime() && timestamp < addDaysUtc(cycle.end, 1).getTime()
-  ))?.[0] ?? null;
-}
 
 export function fillMissingCreditBillSummaries(params: {
   months: string[];

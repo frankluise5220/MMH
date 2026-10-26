@@ -8,7 +8,7 @@ import { getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
 import { toNumber, formatDateUtc } from "@/lib/date-utils";
 import { isFundBuyRefundCashLeg } from "@/lib/transaction-semantics";
 
-export type ReorderDisplayEntry = {
+type ReorderDisplayEntry = {
   id: string;
   date: Date | string | number | null | undefined;
   postedAt?: Date | string | number | null | undefined;
@@ -59,11 +59,11 @@ export function isReorderBalanceAnchor(entry: { source?: string | null; toNote?:
   return getBalanceAnchorTarget(entry) != null || isReconciledEntry(entry);
 }
 
-export function isWealthCashReceiptAction(action?: string | null) {
+function isWealthCashReceiptAction(action?: string | null) {
   return action === "redeem" || action === "dividend_cash" || action === "switch_out";
 }
 
-export function rowWithLinkedWealthDisplayDate<T extends ReorderDisplayEntry>(
+function rowWithLinkedWealthDisplayDate<T extends ReorderDisplayEntry>(
   row: T,
   wealthRow?: LinkedWealthForReorder | null,
 ): T {

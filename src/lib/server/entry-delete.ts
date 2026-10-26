@@ -96,7 +96,7 @@ type IndependentBusinessDeleteResult = {
   touchedInvestment: boolean;
 };
 
-export type EntryDeleteResult = {
+type EntryDeleteResult = {
   deletedCount: number;
   keptBusinessCount: number;
   deletedEntryIds: string[];

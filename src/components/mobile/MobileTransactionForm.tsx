@@ -404,6 +404,3 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
   );
 }
 
-export function openMobileTransactionEdit(entryId: string) {
-  window.dispatchEvent(new CustomEvent("mmh:mobile-transaction:edit", { detail: { entryId } }));
-}

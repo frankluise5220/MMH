@@ -1,5 +1,5 @@
 export type SignedAmountInflowSign = "positive" | "negative";
-export type MoneyDirection = "in" | "out";
+type MoneyDirection = "in" | "out";
 
 const TOKEN_SEPARATOR = "[\\s/\\\\|,.;:(){}\\-_+\\u3000\\uff0c\\u3001\\uff1b\\uff1a\\uff08\\uff09\\u3010\\u3011]";
 const STANDALONE_REPAYMENT_RE = new RegExp(
@@ -31,7 +31,7 @@ export function isCreditCardCreditAdjustmentLikeText(text: string) {
   return /\u5237\u5361\u91d1|\u62b5\u6263|\u51b2\u62b5|\u51cf\u514d|\u4f18\u60e0|\u8fd4\u73b0|\u9000\u6b3e|\u9000\u8d27|\u9000\u56de|\u64a4\u9500|\u51b2\u6b63|\u5206\u671f\u8f6c\u5206\u671f\u4ed8\u6b3e|Credit|Refund|Return|Reversal/i.test(normalized);
 }
 
-export function isDefiniteCreditCardInflowText(text: string) {
+function isDefiniteCreditCardInflowText(text: string) {
   return isCreditCardRepaymentLikeText(text) ||
     isExpenseRefundLikeText(text) ||
     isCreditCardCreditAdjustmentLikeText(text);
@@ -54,7 +54,7 @@ export function inferSignedAmountInflowSign(
   return positiveInflowVotes > negativeInflowVotes ? "positive" : "negative";
 }
 
-export type SignedAmountBalanceSample = {
+type SignedAmountBalanceSample = {
   amount: number | null | undefined;
   /** 该行交易后的账户余额（余额列）；非流水余额列（额度/可用余额）会被差额校验过滤掉 */
   balance: number | null | undefined;

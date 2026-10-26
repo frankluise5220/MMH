@@ -1,13 +1,13 @@
 import type { StatementWorkbookSheetRows } from "@/lib/statement/alipay-template";
 
-export type NormalizedJdWorkbookRows = {
+type NormalizedJdWorkbookRows = {
   rows: string[][];
   sourceDataRowCount: number;
   includedSheetCount: number;
   profile: "jd";
 };
 
-export type JdImportTemplate = {
+type JdImportTemplate = {
   key: "jd";
   title: string;
   description: string;

@@ -8,7 +8,7 @@ import {
 } from "@/lib/client/appPreferences";
 import { translate } from "@/lib/i18n-core";
 
-export type I18nValue = {
+type I18nValue = {
   language: DisplayLanguage;
   t: (key: string, params?: Record<string, string | number>) => string;
 };
@@ -52,6 +52,3 @@ export function I18nProvider({
   return <I18nContext.Provider value={value}>{children}</I18nContext.Provider>;
 }
 
-export function useI18nContext() {
-  return useContext(I18nContext);
-}

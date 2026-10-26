@@ -34,43 +34,43 @@ export {
 export type { RowHeightMode } from "@/lib/row-height";
 
 export const SESSION_DAYS_COOKIE = "mmh_session_days";
-export const FUND_UNITS_DECIMALS_COOKIE = "mmh_fund_units_decimals";
-export const AI_PANEL_ENABLED_COOKIE = "mmh_ai_panel_enabled";
-export const TIME_ZONE_COOKIE = "mmh_time_zone";
-export const CREDIT_CARD_LABEL_MODE_COOKIE = "mmh_credit_card_label_mode";
-export const CREDIT_CARD_LABEL_TEMPLATE_COOKIE = "mmh_credit_card_label_template";
-export const CREDIT_CARD_SIDEBAR_LABEL_TEMPLATE_COOKIE = "mmh_credit_card_sidebar_label_template";
-export const CREDIT_BILL_HIDE_ZERO_COOKIE = "mmh_credit_hide_zero_bills";
-export const CREDIT_BILL_HIDE_SETTLED_COOKIE = "mmh_credit_hide_settled_bills";
-export const CREDIT_BILL_RECENT_CYCLES_COOKIE = "mmh_credit_recent_cycles";
+const FUND_UNITS_DECIMALS_COOKIE = "mmh_fund_units_decimals";
+const AI_PANEL_ENABLED_COOKIE = "mmh_ai_panel_enabled";
+const TIME_ZONE_COOKIE = "mmh_time_zone";
+const CREDIT_CARD_LABEL_MODE_COOKIE = "mmh_credit_card_label_mode";
+const CREDIT_CARD_LABEL_TEMPLATE_COOKIE = "mmh_credit_card_label_template";
+const CREDIT_CARD_SIDEBAR_LABEL_TEMPLATE_COOKIE = "mmh_credit_card_sidebar_label_template";
+const CREDIT_BILL_HIDE_ZERO_COOKIE = "mmh_credit_hide_zero_bills";
+const CREDIT_BILL_HIDE_SETTLED_COOKIE = "mmh_credit_hide_settled_bills";
+const CREDIT_BILL_RECENT_CYCLES_COOKIE = "mmh_credit_recent_cycles";
 export const DISPLAY_LANGUAGE_COOKIE = "mmh_display_language";
-export const DATE_DISPLAY_FORMAT_COOKIE = "mmh_date_display_format";
-export const SIDEBAR_GROUP_BY_KEY = "sidebar_group_by";
-export const SIDEBAR_HIDE_ZERO_KEY = "sidebar_hide_zero";
-export const SIDEBAR_HIDE_INITIAL_DATA_KEY = "sidebar_hide_initial_data";
-export const SIDEBAR_SHOW_FIXED_ASSETS_KEY = "sidebar_show_fixed_assets";
-export const SIDEBAR_SHOW_ALL_CASH_ENTRIES_KEY = "sidebar_show_all_cash_entries";
-export const SIDEBAR_SHOW_REIMBURSEMENTS_KEY = "sidebar_show_reimbursements";
-export const DETAIL_DATE_BACKGROUND_KEY = "detail_date_background";
-export const ROW_HEIGHT_MODE_KEY = "advanced_data_table_row_height_mode";
+const DATE_DISPLAY_FORMAT_COOKIE = "mmh_date_display_format";
+const SIDEBAR_GROUP_BY_KEY = "sidebar_group_by";
+const SIDEBAR_HIDE_ZERO_KEY = "sidebar_hide_zero";
+const SIDEBAR_HIDE_INITIAL_DATA_KEY = "sidebar_hide_initial_data";
+const SIDEBAR_SHOW_FIXED_ASSETS_KEY = "sidebar_show_fixed_assets";
+const SIDEBAR_SHOW_ALL_CASH_ENTRIES_KEY = "sidebar_show_all_cash_entries";
+const SIDEBAR_SHOW_REIMBURSEMENTS_KEY = "sidebar_show_reimbursements";
+const DETAIL_DATE_BACKGROUND_KEY = "detail_date_background";
+const ROW_HEIGHT_MODE_KEY = "advanced_data_table_row_height_mode";
 export const ACCOUNT_LABEL_FIELDS_COOKIE = "mmh_account_label_fields";
 export const ACCOUNT_DROPDOWN_RESTRICT_TYPE_COOKIE = "mmh_account_dropdown_restrict_type";
-export const SIDEBAR_COLLAPSED_KEY = "sidebar_collapsed";
-export const SIDEBAR_OWNER_FILTER_KEY = "sidebar_owner_filter";
-export const AI_PANEL_COLLAPSED_KEY = "mmh_ai_panel_collapsed";
-export const SIDE_NAV_TOP_OFFSET_FUND_KEY = "mmh_side_nav_top_offset_fund";
-export const SIDE_NAV_TOP_OFFSET_ACCOUNT_KEY = "mmh_side_nav_top_offset_account";
+const SIDEBAR_COLLAPSED_KEY = "sidebar_collapsed";
+const SIDEBAR_OWNER_FILTER_KEY = "sidebar_owner_filter";
+const AI_PANEL_COLLAPSED_KEY = "mmh_ai_panel_collapsed";
+const SIDE_NAV_TOP_OFFSET_FUND_KEY = "mmh_side_nav_top_offset_fund";
+const SIDE_NAV_TOP_OFFSET_ACCOUNT_KEY = "mmh_side_nav_top_offset_account";
 export const APP_PREFS_EVENT = "mmh:app-preferences";
 export type SideNavTopOffsetScope = "fund" | "account";
-export const DEFAULT_SIDE_NAV_TOP_OFFSET_PX = 160;
-export const MIN_SIDE_NAV_TOP_OFFSET_PX = 72;
-export const MAX_SIDE_NAV_TOP_OFFSET_PX = 520;
+const DEFAULT_SIDE_NAV_TOP_OFFSET_PX = 160;
+const MIN_SIDE_NAV_TOP_OFFSET_PX = 72;
+const MAX_SIDE_NAV_TOP_OFFSET_PX = 520;
 
 export type SidebarGroupMode = "kind" | "institution";
 export type CreditCardLabelMode = "short_last4" | "full_name";
 export type DisplayLanguage = "zh-CN" | "en-US" | "ja-JP";
 
-export type AppPreferencesSnapshot = {
+type AppPreferencesSnapshot = {
   sessionDays: number;
   fundUnitsDecimals: number;
   aiPanelEnabled: boolean;
@@ -119,44 +119,27 @@ function emitPreferencesChanged() {
   window.dispatchEvent(new CustomEvent(APP_PREFS_EVENT, { detail: getAppPreferences() }));
 }
 
-export function getSessionDaysPreference(): number {
+function getSessionDaysPreference(): number {
   const raw = parseCookieValue(SESSION_DAYS_COOKIE);
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0) return DEFAULT_SESSION_DAYS;
   return Math.min(Math.round(n), 365);
 }
 
-export function setSessionDaysPreference(days: number) {
-  if (typeof document === "undefined") return;
-  const normalized = Math.min(Math.max(Math.round(days), 1), 365);
-  document.cookie = `${SESSION_DAYS_COOKIE}=${encodeURIComponent(String(normalized))}; path=/; max-age=${60 * 60 * 24 * 365}; samesite=lax`;
-  emitPreferencesChanged();
-}
 
-export function getFundUnitsDecimalsPreference(): number {
+function getFundUnitsDecimalsPreference(): number {
   const raw = parseCookieValue(FUND_UNITS_DECIMALS_COOKIE);
   const n = Number(raw);
   if (!Number.isFinite(n)) return DEFAULT_FUND_UNITS_DECIMALS;
   return Math.min(Math.max(Math.round(n), 0), 6);
 }
 
-export function setFundUnitsDecimalsPreference(decimals: number) {
-  if (typeof document === "undefined") return;
-  const normalized = Math.min(Math.max(Math.round(decimals), 0), 6);
-  document.cookie = `${FUND_UNITS_DECIMALS_COOKIE}=${encodeURIComponent(String(normalized))}; path=/; max-age=${60 * 60 * 24 * 365}; samesite=lax`;
-  emitPreferencesChanged();
-}
 
 export function getAiPanelEnabledPreference(): boolean {
   const raw = parseCookieValue(AI_PANEL_ENABLED_COOKIE);
   return raw === null ? true : raw === "true" || raw === "1";
 }
 
-export function setAiPanelEnabledPreference(enabled: boolean) {
-  if (typeof document === "undefined") return;
-  document.cookie = `${AI_PANEL_ENABLED_COOKIE}=${encodeURIComponent(String(enabled))}; path=/; max-age=${60 * 60 * 24 * 365}; samesite=lax`;
-  emitPreferencesChanged();
-}
 
 export function getTimeZonePreference(): string {
   return parseCookieValue(TIME_ZONE_COOKIE) || DEFAULT_TIME_ZONE;
@@ -170,46 +153,24 @@ export function setTimeZonePreference(timeZone: string) {
   emitPreferencesChanged();
 }
 
-export function getCreditCardLabelModePreference(): CreditCardLabelMode {
+function getCreditCardLabelModePreference(): CreditCardLabelMode {
   return parseCookieValue(CREDIT_CARD_LABEL_MODE_COOKIE) === "full_name" ? "full_name" : DEFAULT_CREDIT_CARD_LABEL_MODE;
 }
 
-export function setCreditCardLabelModePreference(mode: CreditCardLabelMode) {
-  if (typeof document === "undefined") return;
-  const normalized = mode === "full_name" ? "full_name" : DEFAULT_CREDIT_CARD_LABEL_MODE;
-  document.cookie = `${CREDIT_CARD_LABEL_MODE_COOKIE}=${encodeURIComponent(normalized)}; path=/; max-age=${60 * 60 * 24 * 365}; samesite=lax`;
-  document.cookie = `${CREDIT_CARD_LABEL_TEMPLATE_COOKIE}=${encodeURIComponent(
-    normalized === "full_name" ? FULL_NAME_CREDIT_CARD_LABEL_TEMPLATE : DEFAULT_CREDIT_CARD_LABEL_TEMPLATE,
-  )}; path=/; max-age=${60 * 60 * 24 * 365}; samesite=lax`;
-  emitPreferencesChanged();
-}
 
 export function getCreditCardLabelTemplatePreference(): string {
   const mode = getCreditCardLabelModePreference();
   return normalizeCreditCardLabelTemplate(parseCookieValue(CREDIT_CARD_LABEL_TEMPLATE_COOKIE), mode);
 }
 
-export function getCreditCardSidebarLabelTemplatePreference(): string {
+function getCreditCardSidebarLabelTemplatePreference(): string {
   const value = parseCookieValue(CREDIT_CARD_SIDEBAR_LABEL_TEMPLATE_COOKIE);
   return value ? normalizeCreditCardLabelTemplate(value, "short_last4") : SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE;
 }
 
-export function setCreditCardLabelTemplatePreference(template: string) {
-  if (typeof document === "undefined") return;
-  const mode = getCreditCardLabelModePreference();
-  const normalized = normalizeCreditCardLabelTemplate(template, mode);
-  document.cookie = `${CREDIT_CARD_LABEL_TEMPLATE_COOKIE}=${encodeURIComponent(normalized)}; path=/; max-age=${60 * 60 * 24 * 365}; samesite=lax`;
-  emitPreferencesChanged();
-}
 
-export function setCreditCardSidebarLabelTemplatePreference(template: string) {
-  if (typeof document === "undefined") return;
-  const normalized = normalizeCreditCardLabelTemplate(template || SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE, "short_last4");
-  document.cookie = `${CREDIT_CARD_SIDEBAR_LABEL_TEMPLATE_COOKIE}=${encodeURIComponent(normalized)}; path=/; max-age=${60 * 60 * 24 * 365}; samesite=lax`;
-  emitPreferencesChanged();
-}
 
-export function getCreditBillHideZeroPreference(): boolean {
+function getCreditBillHideZeroPreference(): boolean {
   const raw = parseCookieValue(CREDIT_BILL_HIDE_ZERO_COOKIE);
   return raw === "1" || raw === "true";
 }
@@ -220,7 +181,7 @@ export function setCreditBillHideZeroPreference(value: boolean) {
   emitPreferencesChanged();
 }
 
-export function getCreditBillHideSettledPreference(): boolean {
+function getCreditBillHideSettledPreference(): boolean {
   const raw = parseCookieValue(CREDIT_BILL_HIDE_SETTLED_COOKIE);
   return raw === "1" || raw === "true";
 }
@@ -231,7 +192,7 @@ export function setCreditBillHideSettledPreference(value: boolean) {
   emitPreferencesChanged();
 }
 
-export function getCreditBillShowRecentCyclesPreference(): boolean {
+function getCreditBillShowRecentCyclesPreference(): boolean {
   const raw = parseCookieValue(CREDIT_BILL_RECENT_CYCLES_COOKIE);
   if (raw == null) return true;
   return raw === "1" || raw === "true";

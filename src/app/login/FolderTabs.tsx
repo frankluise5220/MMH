@@ -143,7 +143,7 @@ import type { ReactNode } from "react";
 export const FOLDER_TAB_STRIP = "flex items-start gap-1.5";
 
 /** 内容板基础类名（圆角由 folderTabPanelClass 按活动页签位置追加）。 */
-export const FOLDER_TAB_PANEL =
+const FOLDER_TAB_PANEL =
   "relative z-20 rounded-xl border border-slate-300 bg-[#fbfaf7] p-4 shadow-[0_10px_24px_rgba(15,23,42,0.10)]";
 
 type TabVariant = "stretch" | "min";
@@ -151,7 +151,7 @@ type TabVariant = "stretch" | "min";
 /**
  * 邻居页签是否活动。手写调用点（不用 <FolderTabs> 组件时）用 folderTabNeighbors 计算。
  */
-export type FolderTabNeighbors = {
+type FolderTabNeighbors = {
   /** 左邻页签是否为活动页签。 */
   prevActive?: boolean;
   /** 右邻页签是否为活动页签。 */
@@ -265,7 +265,7 @@ export function folderTabPanelClass() {
   return FOLDER_TAB_PANEL;
 }
 
-export type FolderTabsItem = {
+type FolderTabsItem = {
   id: string;
   label: ReactNode;
 };

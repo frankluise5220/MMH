@@ -60,7 +60,7 @@ export const BALANCE_ENTRY_SELECT = {
   reconciledBalance: true,
 } as const;
 
-export type BalanceEntryRow = Prisma.TxRecordGetPayload<{ select: typeof BALANCE_ENTRY_SELECT }>;
+type BalanceEntryRow = Prisma.TxRecordGetPayload<{ select: typeof BALANCE_ENTRY_SELECT }>;
 export type EntryBalanceChange = { entryId: string; previous?: BalanceEntryRow | null };
 
 type AccountBalanceLike = {
@@ -70,11 +70,6 @@ type AccountBalanceLike = {
   billingDay?: number | null;
 };
 
-type AccountBalanceRecord = AccountBalanceLike & {
-  householdId?: string;
-  balance?: unknown;
-  balanceRecomputedAt?: Date | null;
-};
 
 type BalanceDbClient = Prisma.TransactionClient | typeof prisma;
 
@@ -1042,7 +1037,7 @@ export async function foldAccountBalanceBatched(
   return result.balance;
 }
 
-export async function loadLastBalanceAnchor(
+async function loadLastBalanceAnchor(
   accountId: string,
   todayKey?: string,
   hidFilter?: { householdId?: string },
@@ -1076,7 +1071,7 @@ export async function loadLastBalanceAnchor(
   return lastAnchor;
 }
 
-export async function advanceStoredBalanceToToday(
+async function advanceStoredBalanceToToday(
   account: AccountBalanceLike,
   storedBalance: number,
   asOf: Date | null | undefined,

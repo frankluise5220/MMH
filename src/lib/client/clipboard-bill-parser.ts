@@ -9,9 +9,9 @@
  * 与 Android 端保持同一套关键词/正则口径，避免两端对同一段账单给出不同结果。
  */
 
-export type BillDirection = "expense" | "income" | "transfer";
+type BillDirection = "expense" | "income" | "transfer";
 
-export interface CapturedBill {
+interface CapturedBill {
   amount: number;
   direction: BillDirection;
   merchant: string | null;

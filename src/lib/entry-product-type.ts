@@ -13,7 +13,7 @@
  * 的根因（关联后靠业务标签推出 deposit，关联前推出 NULL 落到基金窗）。
  */
 
-export type EntryProductType =
+type EntryProductType =
   | "fund"
   | "money"
   | "wealth"

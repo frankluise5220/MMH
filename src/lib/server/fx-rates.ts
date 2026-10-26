@@ -17,7 +17,7 @@ function parseRate(value: unknown) {
   return Number.isFinite(rate) && rate > 0 ? rate : null;
 }
 
-export type CurrencyAmount = {
+type CurrencyAmount = {
   amount: number;
   currency?: string | null;
 };
@@ -244,22 +244,6 @@ export async function getConversionRate(params: {
   return { fromCurrency, toCurrency, rate: null, rateDate: null, source: null, missing: true };
 }
 
-export async function convertCurrencyAmount(params: {
-  householdId: string;
-  amount: number;
-  fromCurrency?: string | null;
-  toCurrency: string;
-  refreshMissing?: boolean;
-}) {
-  const rate = await getConversionRate({
-    householdId: params.householdId,
-    fromCurrency: params.fromCurrency ?? "CNY",
-    toCurrency: params.toCurrency,
-    refreshMissing: params.refreshMissing,
-  });
-  if (rate.rate == null) return { amount: null as number | null, rate };
-  return { amount: params.amount * rate.rate, rate };
-}
 
 export async function convertCurrencyAmounts(params: {
   householdId: string;

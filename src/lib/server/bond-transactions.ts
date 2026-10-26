@@ -2,7 +2,6 @@ import { FundSubtype, TransactionType } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
 import { normalizeCurrency } from "@/lib/currency";
-import { toNumber } from "@/lib/date-utils";
 import { resolveCategorySnapshot } from "@/lib/default-categories";
 import { getInvestmentCategoryName } from "@/lib/investment-category";
 import { recalcWealthPositions } from "@/lib/wealth-position";
@@ -29,7 +28,7 @@ import { resolveOrCreateWealthAccount } from "@/lib/server/wealth-account";
  *     缺省回退债单主数据 BondProduct —— 付息因此按存单各自产生；
  *   - 付息/赎回/核销用 sourceBondTransactionId 指回所属存单。
  */
-export type BondEntryInput = {
+type BondEntryInput = {
   householdId: string;
   date: Date;
   subtype: FundSubtype;
@@ -138,7 +137,7 @@ export function bondEntryInputFromFormData(
   };
 }
 
-export function isBondCashInSubtype(subtype: string) {
+function isBondCashInSubtype(subtype: string) {
   return CASH_IN_SUBTYPES.has(subtype);
 }
 

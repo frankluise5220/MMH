@@ -33,7 +33,7 @@ export type McpToolContext = {
   scope: "read" | "write";
 };
 
-export type McpTool = {
+type McpTool = {
   name: string;
   title: string;
   description: string;

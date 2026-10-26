@@ -20,7 +20,7 @@ import { isStockCashInAction, isStockCashOutAction, stockCashAmount, totalStockF
 import { getInvestmentStatisticItems, type InvestmentStatisticEntryLike } from "@/lib/transaction-statistics";
 
 export type InvestmentProfitPeriod = "day" | "month" | "year";
-export type InvestmentProfitKind = "fund" | "stock" | "wealth" | "deposit" | "fixedAsset";
+type InvestmentProfitKind = "fund" | "stock" | "wealth" | "deposit" | "fixedAsset";
 
 export type InvestmentProfitReportRow = {
   key: string;

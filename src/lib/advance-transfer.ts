@@ -1,4 +1,4 @@
-export type AdvanceTransferAccountLike = {
+type AdvanceTransferAccountLike = {
   id: string;
   name: string;
   kind?: string | null;

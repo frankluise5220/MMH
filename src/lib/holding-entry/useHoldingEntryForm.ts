@@ -36,7 +36,7 @@ import type {
   HoldingEntrySubtype,
 } from "./types";
 
-export type UseHoldingEntryFormOptions = {
+type UseHoldingEntryFormOptions = {
   mode?: "create" | "edit";
   entry?: HoldingEntryEntry;
   defaultAccountId: string;

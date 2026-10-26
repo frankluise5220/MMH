@@ -14,7 +14,7 @@ import { toNumber, todayDateBusinessYmd } from "@/lib/date-utils";
  * 所以读持仓的地方统一调用这里，按今天的日期把未来确认的份额扣掉，
  * 并把对应的净申购金额转成在途金额（pendingCost）。
  */
-export type FutureConfirmedBuy = { units: number; cost: number };
+type FutureConfirmedBuy = { units: number; cost: number };
 
 /** 与 invest-balance 内 holdingKey 相同的口径：accountId + fundCode。 */
 export function futureConfirmHoldingKey(accountId: string, fundCode: string) {

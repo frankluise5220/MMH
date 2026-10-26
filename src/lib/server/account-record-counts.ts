@@ -12,7 +12,7 @@ import { prisma } from "@/lib/db/prisma";
  * A transfer between two in-house accounts is counted once per account side,
  * which matches what the delete-confirm dialog reports.
  */
-export type AccountRecordCount = {
+type AccountRecordCount = {
   recordCount: number;
   deletedRecordCount: number;
 };

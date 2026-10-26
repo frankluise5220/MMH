@@ -2,7 +2,7 @@ export const ROW_HEIGHT_OPTIONS = [41, 39, 37, 35, 33, 31] as const;
 
 export type RowHeightMode = (typeof ROW_HEIGHT_OPTIONS)[number];
 
-export type RowHeightPreset = {
+type RowHeightPreset = {
   height: RowHeightMode;
   content: number;
   padding: number;

@@ -30,7 +30,7 @@ export type CaizhiBalanceAdjustRow = {
   remark: string;
 };
 
-export type NormalizedCaizhiWorkbookRows = {
+type NormalizedCaizhiWorkbookRows = {
   rows: string[][];
   sourceDataRowCount: number;
   includedSheetCount: number;
@@ -86,14 +86,6 @@ type CaizhiColumnIndex = {
 
 type CaizhiColumnKey = keyof CaizhiColumnIndex;
 
-const CAIZHI_COLUMN_INDEX: CaizhiColumnIndex = {
-  date: -1,
-  inflow: -1,
-  outflow: -1,
-  activityType: -1,
-  remark: -1,
-  balance: -1,
-};
 
 const BALANCE_ADJUST_KEYWORDS = [
   "\u4f59\u989d\u8c03\u6574",
@@ -102,18 +94,6 @@ const BALANCE_ADJUST_KEYWORDS = [
   "\u7ed3\u606f",
 ];
 
-const TRANSFER_PREFIXES = new Set([
-  "\u8f6c\u5165",
-  "\u8f6c\u51fa",
-  "\u501f\u51fa",
-  "\u501f\u5165",
-  "\u6536\u56de",
-  "\u8fd4\u8fd8",
-  "\u5f00\u653e\u5f0f\u57fa\u91d1\u8d4e\u56de",
-  "\u5f00\u653e\u5f0f\u57fa\u91d1\u7533\u8d2d",
-  "\u57fa\u91d1\u8d4e\u56de",
-  "\u57fa\u91d1\u7533\u8d2d",
-]);
 
 function normalizeHeader(value: string): string {
   return String(value ?? "").trim().replace(/\s+/g, "");
@@ -344,19 +324,9 @@ const CAIZHI_FUND_IMPORT_HEADERS = [
   "\u5907\u6ce8",
 ];
 
-export type CaizhiFundImportConversion = {
-  /** 转换后的 MMH 基金导入行（含表头），可直接写入 xlsx 交给基金预览导入窗口 */
-  rows: string[][];
-  /** 参与转换的数据行数（不含余额调整剔除行） */
-  rowCount: number;
-  /** 余额调整剔除行数（余额校准转换另行处理） */
-  excludedBalanceAdjustCount: number;
-  /** 基金账户名（取自文件名） */
-  accountName: string;
-};
 
 /** 判断表头是否为财智基金账户明细：同时有「活动类型」与「基金名称」列。 */
-export function detectCaizhiFundDetailHeaders(headerRow: string[]): boolean {
+function detectCaizhiFundDetailHeaders(headerRow: string[]): boolean {
   const normalized = headerRow.map(normalizeHeader);
   const hasActivityType = normalized.some((h) => h === "\u6d3b\u52a8\u7c7b\u578b" || h === "\u7c7b\u578b" || h === "\u4ea4\u6613\u7c7b\u578b");
   const hasFundName = normalized.includes("\u57fa\u91d1\u540d\u79f0");
@@ -416,7 +386,7 @@ function caizhiFundActionFor(activityType: string): { action: CaizhiFundAction; 
  * 将财智基金明细 sheets 转换为 MMH 基金导入行（含 CAIZHI_FUND_IMPORT_HEADERS 表头）。
  * 未识别的活动类型行跳过并计数；余额调整行剔除计数。
  */
-export function normalizeCaizhiFundImportRows(
+function normalizeCaizhiFundImportRows(
   sheets: CaizhiWorkbookSheetRows[],
   accountName: string,
 ): { rows: string[][]; rowCount: number; excludedBalanceAdjustCount: number; skippedUnknownCount: number } | undefined {

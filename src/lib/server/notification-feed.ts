@@ -41,25 +41,25 @@ import {
  */
 
 /** 提醒窗口：今天起 7 天内到期。 */
-export const REMINDER_WINDOW_DAYS = 7;
+const REMINDER_WINDOW_DAYS = 7;
 /**
  * 逾期回溯上限。自动执行类计划逾期 = 系统本该落账却没落账，是最需要暴露的信号；
  * 但也不能无限回溯，否则长期卡住的僵尸计划会永久霸占面板。
  */
-export const REMINDER_OVERDUE_DAYS = 30;
+const REMINDER_OVERDUE_DAYS = 30;
 /**
  * 回执回溯窗口（天）：只用来（a）找出最近一批落账，（b）回答"近 N 天什么都没落账"。
  * **不是**用来累加条数的——面板只报最近一批的条数，窗口累计会把"本次生成 20 条"
  * 的标题和一大堆数字搅在一起。
  */
-export const RECEIPT_WINDOW_DAYS = 7;
+const RECEIPT_WINDOW_DAYS = 7;
 /**
  * 同一批执行写在同一个事务里，createdAt 几乎相同。用分钟级窗口把"最近一次执行"
  * 从流水里切出来，避免把整周的执行都算成"刚刚"。
  */
 const LAST_BATCH_WINDOW_MS = 5 * 60 * 1000;
 
-export type NotificationFeed = {
+type NotificationFeed = {
   reminders: ReminderItem[];
   receipt: ExecutionReceipt;
   /** 逾期未落账的**自动**计划数（手工确认类不计入）。 */

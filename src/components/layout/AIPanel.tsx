@@ -968,17 +968,6 @@ export function AIPanel({
     return null;
   }
 
-  async function fetchRemoteModels(baseUrl: string, apiKey: string, channelType: string) {
-    const modelsUrl = getModelsUrl(channelType);
-    const res = await fetch("/api/v1/ai/models", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ baseUrl, apiKey, modelsUrl }),
-    });
-    const data = await res.json();
-    if (!data.ok) throw new Error(data.error ?? t("settings.ai.client.fetchModelsFailed"));
-    return data.modelInfos ?? data.models ?? [];
-  }
 
   async function fetchModelsForAdd() {
     if (!addChannelForm.baseUrl.trim()) return;
@@ -1125,7 +1114,6 @@ export function AIPanel({
     const filteredIds = filteredTargets.map((target) => targetIdOf(target)).filter(Boolean);
     const selectedIds = deletePreviewDialog.selectedTargetIds ?? new Set<string>();
     const allFilteredSelected = filteredIds.length > 0 && filteredIds.every((id) => selectedIds.has(id));
-    const accountOptions = deletePreviewAccountOptions(deletePreviewDialog);
 
     return createPortal(
       <ModalLayer className="fixed inset-0 flex items-center justify-center bg-slate-950/40 px-4 py-6 backdrop-blur-[2px]">

@@ -22,7 +22,7 @@ function parseMortgageLprDiscountFromText(value?: string | null) {
   return Number.isFinite(discount) && discount > 0 ? discount : null;
 }
 
-export type LiabilityDisplaySummary = {
+type LiabilityDisplaySummary = {
   /** Balances in each account's own currency. */
   balanceByAccountId: Map<string, number>;
   /** Totals in the household base currency when an `fx` converter is supplied, otherwise raw sums. */
@@ -31,7 +31,7 @@ export type LiabilityDisplaySummary = {
   net: number;
 };
 
-export type LiabilityDisplayFxConverter = {
+type LiabilityDisplayFxConverter = {
   /** Restate an amount into the base currency; missing-rate amounts must contribute 0, not 1:1. */
   convertForTotal: (amount: number, currency?: string | null) => number;
 };

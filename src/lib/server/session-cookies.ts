@@ -174,7 +174,7 @@ function requestProtocol(context?: CookieRequestContext | URL | string) {
   return normalizeProtocol(forwardedProto) ?? normalizeProtocol(context.nextUrl?.protocol);
 }
 
-export function shouldUseSecureCookies(context?: CookieRequestContext | URL | string) {
+function shouldUseSecureCookies(context?: CookieRequestContext | URL | string) {
   if (process.env.NODE_ENV !== "production") return false;
   if (process.env.MMH_INSECURE_COOKIES === "1") return false;
   const protocol = requestProtocol(context);

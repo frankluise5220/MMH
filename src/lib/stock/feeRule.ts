@@ -98,7 +98,7 @@ const OFFICIAL_CN_A_SHARE_FEE_DEFAULTS: Array<{
   },
 ];
 
-export type StockFeeDraft = {
+type StockFeeDraft = {
   fee: number | null;
   commission: number | null;
   stampTax: number | null;
@@ -281,7 +281,7 @@ export async function getStockFeeRuleByDate(
     [0]?.rule ?? null;
 }
 
-export async function getStockMarketFeeRuleByDate(
+async function getStockMarketFeeRuleByDate(
   params: {
     householdId?: string | null;
     feeType: StockFeeType | string;

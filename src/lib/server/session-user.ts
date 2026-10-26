@@ -34,7 +34,7 @@ export type SessionUserRow = {
   authMethod: SessionAuthMethod | null;
 };
 
-export const SESSION_USER_SELECT = {
+const SESSION_USER_SELECT = {
   id: true,
   name: true,
   role: true,
@@ -47,7 +47,7 @@ export const SESSION_USER_SELECT = {
   authVersion: true,
 } as const;
 
-export type SessionUserCandidates = {
+type SessionUserCandidates = {
   /** Verified user id from the signed session cookie. */
   userId?: string | null;
   /** `mmh_username` cookie (user name, not necessarily an email). */
@@ -58,9 +58,9 @@ export type SessionUserCandidates = {
   authMethod?: SessionAuthMethod | null;
 };
 
-export type SessionUserMatchedBy = "id" | "username" | "system" | "household-admin" | "household-member" | "single-user";
+type SessionUserMatchedBy = "id" | "username" | "system" | "household-admin" | "household-member" | "single-user";
 
-export type SessionUserResolution =
+type SessionUserResolution =
   | { user: SessionUserRow; matchedBy: SessionUserMatchedBy }
   | { user: null; reason: "not-found" | "ambiguous" | "lookup-timeout" };
 

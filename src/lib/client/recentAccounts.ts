@@ -8,9 +8,9 @@ import {
   type AccountUsageStat,
 } from "@/lib/account-usage-score";
 
-export const RECENT_ACCOUNTS_KEY = "mmh_recent_accounts";
-export const ACCOUNT_USAGE_KEY = "mmh_account_usage";
-export const RECENT_ACCOUNTS_EVENT = "mmh:recent-account-changed";
+const RECENT_ACCOUNTS_KEY = "mmh_recent_accounts";
+const ACCOUNT_USAGE_KEY = "mmh_account_usage";
+const RECENT_ACCOUNTS_EVENT = "mmh:recent-account-changed";
 
 export type { AccountUsageMap, AccountUsageStat };
 
@@ -41,7 +41,7 @@ function normalizeAccountUsage(raw: unknown): AccountUsageMap {
   return next;
 }
 
-export function readRecentAccountIds(): string[] {
+function readRecentAccountIds(): string[] {
   if (typeof window === "undefined") return [];
   try {
     const raw = window.localStorage.getItem(RECENT_ACCOUNTS_KEY);
@@ -51,7 +51,7 @@ export function readRecentAccountIds(): string[] {
   }
 }
 
-export function readAccountUsage(): AccountUsageMap {
+function readAccountUsage(): AccountUsageMap {
   if (typeof window === "undefined") return {};
   try {
     const raw = window.localStorage.getItem(ACCOUNT_USAGE_KEY);
@@ -103,22 +103,6 @@ export function recordRecentAccount(accountId: string) {
   }
 }
 
-export function useRecentAccountIds() {
-  const [recentIds, setRecentIds] = useState<string[]>([]);
-
-  useEffect(() => {
-    const sync = () => setRecentIds(readRecentAccountIds());
-    sync();
-    window.addEventListener(RECENT_ACCOUNTS_EVENT, sync as EventListener);
-    window.addEventListener("storage", sync);
-    return () => {
-      window.removeEventListener(RECENT_ACCOUNTS_EVENT, sync as EventListener);
-      window.removeEventListener("storage", sync);
-    };
-  }, []);
-
-  return recentIds;
-}
 
 export function useAccountUsage() {
   const [usage, setUsage] = useState<AccountUsageMap>({});

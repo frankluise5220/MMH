@@ -27,7 +27,7 @@ export type FundCashFlowInput = {
   regularInvestPlanId?: string | null;
 };
 
-export type CreateFundTransactionWithCashFlowsParams = {
+type CreateFundTransactionWithCashFlowsParams = {
   householdId: string;
   fundAccountId: string;
   cashAccountId?: string | null;
@@ -528,7 +528,7 @@ export async function upsertFundTransactionRefundCashFlow(
   };
 }
 
-export function fundCashFlowDirectionForKind(kind: FundCashFlowKind): "outflow" | "inflow" | "internal" | "none" {
+function fundCashFlowDirectionForKind(kind: FundCashFlowKind): "outflow" | "inflow" | "internal" | "none" {
   if (kind === FundCashFlowKind.buy_out || kind === FundCashFlowKind.switch_in) return "outflow";
   if (kind === FundCashFlowKind.refund_in || kind === FundCashFlowKind.redeem_in || kind === FundCashFlowKind.dividend_in || kind === FundCashFlowKind.switch_out) return "inflow";
   if (kind === FundCashFlowKind.dividend_reinvest_internal) return "internal";

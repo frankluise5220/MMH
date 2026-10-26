@@ -1,4 +1,4 @@
-export const DEFAULT_ALLOWED_ACCESS_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
+const DEFAULT_ALLOWED_ACCESS_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
 
 export function normalizeAccessHostname(value: string) {
   const raw = value.trim().toLowerCase();

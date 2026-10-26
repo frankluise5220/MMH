@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/db/prisma";
 import { hashPassword, verifyPassword } from "@/lib/auth/password";
 
-export const ACCESS_KEY_HASH_PREFIX = "bcrypt-sha256-v1:";
+const ACCESS_KEY_HASH_PREFIX = "bcrypt-sha256-v1:";
 
 type AccessKeyRow = {
   id: string;
@@ -10,7 +10,7 @@ type AccessKeyRow = {
   scope: string;
 };
 
-export type AccessKeyAuthResult = {
+type AccessKeyAuthResult = {
   id: string;
   name: string;
   /** "read" keys may query; only "write" keys may create or delete records. */
@@ -26,7 +26,7 @@ function plainTextEquals(a: string, b: string) {
   return diff === 0;
 }
 
-export function accessKeyPreview(plain: string) {
+function accessKeyPreview(plain: string) {
   const normalized = plain.trim();
   if (!normalized) return "****";
   const suffix = normalized.slice(-4);

@@ -15,7 +15,7 @@
  * it here in the same change; when you remove one, drop it here too.
  */
 
-export type ApiKeyPolicyDecision = {
+type ApiKeyPolicyDecision = {
   ok: boolean;
   code?: string;
   error?: string;

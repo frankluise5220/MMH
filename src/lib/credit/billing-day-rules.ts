@@ -1,7 +1,7 @@
 import { isCreditCardMonthEndBillingDay } from "@/lib/credit/rules";
 import { todayDateLocalYmd } from "@/lib/date-utils";
 
-export type BillingDayRuleInitialLike = {
+type BillingDayRuleInitialLike = {
   id?: string | null;
   effectiveDate: Date | string | number;
 };
@@ -30,17 +30,6 @@ export function markInitialBillingDayRules<T extends BillingDayRuleInitialLike>(
   return rows.map((row, index) => ({ ...row, isInitial: index === initialIndex }));
 }
 
-export function isInitialBillingDayRule<T extends BillingDayRuleInitialLike>(
-  rows: readonly T[],
-  target: { id?: string | null; effectiveDate?: Date | string | number | null },
-) {
-  return markInitialBillingDayRules(rows).some((row) => {
-    if (!row.isInitial) return false;
-    if (target.id) return row.id === target.id;
-    if (target.effectiveDate == null) return false;
-    return timeOfDate(row.effectiveDate) === timeOfDate(target.effectiveDate);
-  });
-}
 
 export type CreditBillingDayRuleView = {
   id?: string;

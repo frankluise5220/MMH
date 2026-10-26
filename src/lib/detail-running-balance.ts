@@ -56,11 +56,11 @@ function isFutureBalanceEntry(entry: RunningBalanceEntry, accountId: string, tod
 }
 
 /** 贷款 / 往来款账户：只有 transfer 腿参与，本金带 source 决定的正负号（与 foldBalanceEntry 一致）。 */
-export function isLiabilityBalanceAccountKind(accountKind?: string | null) {
+function isLiabilityBalanceAccountKind(accountKind?: string | null) {
   return accountKind === "loan" || accountKind === "settlement";
 }
 
-export function applyEntryToRunningBalance(
+function applyEntryToRunningBalance(
   runningBalance: number,
   entry: RunningBalanceEntry,
   accountId: string,
@@ -76,7 +76,7 @@ export function applyEntryToRunningBalance(
   return applyBalanceAnchorEntry(runningBalance, entry, accountId);
 }
 
-export function runningBalanceContribution(
+function runningBalanceContribution(
   entry: RunningBalanceEntry,
   accountId: string,
   accountKind?: string | null,
@@ -90,7 +90,7 @@ export function runningBalanceContribution(
   return applyBalanceAnchorEntry(0, entry, accountId);
 }
 
-export function canRecalculateRunningBalanceFromLoadedEntries(
+function canRecalculateRunningBalanceFromLoadedEntries(
   entries: RunningBalanceEntry[],
   accountId: string,
   accountKind?: string | null,
@@ -153,7 +153,7 @@ export function foldRunningBalancesInDescOrder<T extends RunningBalanceEntry>(
   }));
 }
 
-export type RunningBalanceDeleteResult<T extends RunningBalanceEntry = RunningBalanceEntry> = {
+type RunningBalanceDeleteResult<T extends RunningBalanceEntry = RunningBalanceEntry> = {
   entries: T[];
   /**
    * false = 本地推导不出（被删的锚点行之前没有任何已加载行，拿不到它之前的

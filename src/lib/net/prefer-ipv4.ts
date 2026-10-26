@@ -24,7 +24,7 @@ import dns from "node:dns";
  */
 let applied = false;
 
-export function preferIpv4Dns() {
+function preferIpv4Dns() {
   if (applied) return;
   applied = true;
   try {

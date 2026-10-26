@@ -108,16 +108,6 @@ type CommandScope = {
   type?: "expense" | "income" | "transfer" | "investment";
 };
 
-function buildScopeSummary(scope: CommandScope) {
-  return {
-    operation: scope.operation,
-    timeRange: scope.timeRange,
-    amountRange: scope.amountRange,
-    accountRange: scope.accountRange,
-    remarkCondition: scope.remarkCondition,
-    type: scope.type,
-  };
-}
 
 
 
@@ -1143,7 +1133,6 @@ export async function POST(req: Request) {
   const apiMode = isOllama ? "chat" : normalizeAiApiMode(parse.data.apiMode);
 
   if (text) {
-    const startMs = Date.now();
     const normalizedCommand = await callAiForCommand({
       text,
       fundContext: fundContext ?? null,

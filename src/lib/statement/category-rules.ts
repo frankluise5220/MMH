@@ -26,7 +26,7 @@ type StatementCategoryRuleInput = {
   note?: string | null;
 };
 
-export type StatementCategoryLearningRecord = {
+type StatementCategoryLearningRecord = {
   householdId?: string | null;
   type?: string | null;
   categoryId?: string | null;
@@ -53,9 +53,6 @@ function buildRuleMatchText(input: Pick<StatementCategoryRuleInput, "note" | "co
   );
 }
 
-export function normalizeStatementCategoryRuleText(input: Pick<StatementCategoryRuleInput, "note" | "counterpartyInstitutionName">) {
-  return normalizeStatementRecognitionText(buildRuleMatchText(input));
-}
 
 export async function upsertStatementCategoryRuleFromTx(client: RawSqlClient, input: StatementCategoryRuleInput) {
   const householdId = cleanText(input.householdId);
@@ -92,9 +89,6 @@ export async function upsertStatementCategoryRuleFromSavedRecord(
   });
 }
 
-export async function ensureDefaultStatementCategoryRules(client: RawSqlClient, householdId: string) {
-  return ensureDefaultStatementRecognitionRules(client, householdId);
-}
 
 export async function loadStatementCategoryRuleSamples(
   client: RawSqlClient,

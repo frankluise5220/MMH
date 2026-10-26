@@ -196,7 +196,7 @@ type FullModeProps = {
   defaultCurrency?: string;
 };
 
-export type EntityCreateFormProps = CompactModeProps | FullModeProps;
+type EntityCreateFormProps = CompactModeProps | FullModeProps;
 
 /* ---- Institution type options ---- */
 

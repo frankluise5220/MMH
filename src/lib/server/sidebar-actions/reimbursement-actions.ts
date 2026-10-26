@@ -55,7 +55,7 @@ export type ReimbursementExpenseItemValue =
   | "phone"
   | "other";
 
-export type ReimbursementItemData = {
+type ReimbursementItemData = {
   id: string;
   txRecordId: string | null;
   amount: number;
@@ -75,7 +75,7 @@ export type ReimbursementItemData = {
   invoiceAmount: number | null;
 };
 
-export type ReimbursementLinkedTransactionData = {
+type ReimbursementLinkedTransactionData = {
   txRecordId: string;
   date: string;
   amount: number;
@@ -113,7 +113,7 @@ export type ReimbursementData = {
   linkedTransactions: ReimbursementLinkedTransactionData[];
 };
 
-export type ReimbursementSettlementData = {
+type ReimbursementSettlementData = {
   id: string;
   amount: number;
   feeAmount: number;
@@ -144,7 +144,7 @@ export type ReimbursementBatchData = {
 };
 
 /** One editable row submitted by the reimbursement form. */
-export type ReimbursementItemInput = {
+type ReimbursementItemInput = {
   txRecordId?: string | null;
   advanceAccountId?: string | null;
   expenseItem?: string | null;

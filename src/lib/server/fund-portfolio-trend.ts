@@ -52,7 +52,7 @@ export type BenchmarkPoint = {
   rawNav: number;
 };
 
-export type FundPortfolioTrendData = {
+type FundPortfolioTrendData = {
   points: FundTrendPoint[];
   /** Months where no transaction happened at all (cost/marketValue repeat) */
   emptyMonths: string[];
@@ -157,7 +157,7 @@ function parseYmd(s: string): Date | null {
  * pages are fetched in parallel (hard-capped ≈ 3.2 years of rows).
  * Failures are silently dropped so callers can serve cached data.
  */
-export async function refreshBenchmarkCache(
+async function refreshBenchmarkCache(
   startDate: string,
   endDate: string,
   mirrorCode = "510300",
@@ -270,7 +270,7 @@ export async function ensureBenchmarkCache(
  * Load monthly-end NAV data for a benchmark index from BenchmarkCache.
  * Returns normalized nav so first month = 1.0.
  */
-export async function loadBenchmarkMonthly(
+async function loadBenchmarkMonthly(
   startMonth: string,
   endMonth: string,
   code = DEFAULT_BENCHMARK_CODE,

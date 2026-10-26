@@ -29,7 +29,7 @@ export type FundDates = {
   arrivalDate: string;
 };
 
-export const DEFAULT_FUND_TRADING_CALENDAR = "cn_fund";
+const DEFAULT_FUND_TRADING_CALENDAR = "cn_fund";
 export const DEFAULT_FUND_REDEEM_COST_DAYS = 1;
 
 export function normalizeNonNegativeDays(value: unknown, fallback: number): number {

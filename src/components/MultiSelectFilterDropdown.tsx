@@ -34,7 +34,7 @@ type PanelCommonProps = {
   emptyLabel?: string;
 };
 
-export type MultiSelectFilterDropdownProps = PanelCommonProps & {
+type MultiSelectFilterDropdownProps = PanelCommonProps & {
   options: string[];
   selectedValues: string[];
   onChange: (next: string[]) => void;
@@ -45,7 +45,7 @@ export type MultiSelectFilterDropdownProps = PanelCommonProps & {
   groups?: MultiSelectFilterGroup[];
 };
 
-export type SingleSelectFilterDropdownProps = PanelCommonProps & {
+type SingleSelectFilterDropdownProps = PanelCommonProps & {
   options: string[];
   value: string;
   onChange: (next: string) => void;
@@ -283,69 +283,3 @@ export function MultiSelectFilterDropdown({
   );
 }
 
-export function SingleSelectFilterDropdown({
-  options,
-  value,
-  onChange,
-  labelFor,
-  title,
-  emptyLabel,
-  renderOptionLeading,
-  panelWidth,
-}: SingleSelectFilterDropdownProps) {
-  const [open, setOpen] = useState(false);
-  const resolvedWidth = panelWidth ?? SINGLE_PANEL_WIDTH;
-  const { anchorRef, panelRef, position, mounted } = useAnchoredPanel(open, resolvedWidth);
-  useCloseOnOutsidePointer(open, () => setOpen(false), anchorRef, panelRef);
-
-  const label = labelFor(value);
-  const emptyText = emptyLabel ?? "";
-
-  return (
-    <div className="relative shrink-0">
-      <button
-        ref={anchorRef}
-        type="button"
-        title={label}
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        className="inline-flex h-8 min-w-40 max-w-56 items-center justify-between gap-2 rounded-md border border-slate-300 bg-white px-2.5 text-left text-xs text-slate-700 shadow-sm hover:border-slate-400"
-        onClick={() => setOpen((current) => !current)}
-      >
-        <span className="truncate">{label}</span>
-        <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-slate-400 transition-transform ${open ? "rotate-180" : ""}`} />
-      </button>
-      {open && mounted ? (
-        <PanelShell position={position} panelRef={panelRef} width={resolvedWidth}>
-          <PanelHeader title={title ?? label} />
-          {options.length === 0 ? (
-            <div className="px-2 py-2 text-xs text-slate-400">{emptyText}</div>
-          ) : (
-            <div className="space-y-1">
-              {options.map((option) => {
-                const selected = option === value;
-                return (
-                  <button
-                    key={option}
-                    type="button"
-                    role="option"
-                    aria-selected={selected}
-                    className={`flex min-h-8 w-full items-center gap-2 rounded px-2 py-1 text-left text-xs hover:bg-slate-50 ${selected ? "text-blue-700" : "text-slate-700"}`}
-                    onClick={() => {
-                      onChange(option);
-                      setOpen(false);
-                    }}
-                  >
-                    <Check className={`h-3.5 w-3.5 shrink-0 ${selected ? "text-blue-600" : "text-transparent"}`} />
-                    {renderOptionLeading ? renderOptionLeading(option) : null}
-                    <span className="min-w-0 flex-1 truncate">{labelFor(option)}</span>
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </PanelShell>
-      ) : null}
-    </div>
-  );
-}

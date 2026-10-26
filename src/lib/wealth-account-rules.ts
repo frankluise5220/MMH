@@ -4,7 +4,6 @@ import {
 } from "./cash-invest-account-rules";
 
 /** @deprecated 使用 isThirdPartyInstitutionType；保留旧名供既有理财代码引用。 */
-export const isThirdPartyWealthInstitutionType = isThirdPartyInstitutionType;
 
 /**
  * @deprecated 使用 isCashAccountAllowedForInvestAccount（中性名）。

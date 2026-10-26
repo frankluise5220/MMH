@@ -27,7 +27,7 @@ import { prisma } from "@/lib/db/prisma";
  * family-member / institution delete guard mirrors the ownership rule.
  */
 
-export type AccountLinkRow = {
+type AccountLinkRow = {
   id: string;
   institutionId: string | null;
   counterpartyId?: string | null;
@@ -36,15 +36,15 @@ export type AccountLinkRow = {
   AccountGroup?: { name?: string | null; institutionId?: string | null } | null;
 };
 
-export type InstitutionLinkRow = {
+type InstitutionLinkRow = {
   id: string;
   name: string;
   type?: string | null;
 };
 
-export type CounterpartyLinkRow = { id: string; sourceInstitutionId?: string | null };
+type CounterpartyLinkRow = { id: string; sourceInstitutionId?: string | null };
 
-export type InsuranceProductLinkRow = {
+type InsuranceProductLinkRow = {
   accountId: string;
   institutionId?: string | null;
   policyholderPersonId?: string | null;
@@ -63,13 +63,6 @@ export const INSURANCE_PRODUCT_LINK_SELECT = {
  * the mirrored institution. Used by the delete guard so it cannot reject/allow
  * differently from the count shown in the settings list.
  */
-export function counterpartyLinkedAccountsWhere(counterparty: CounterpartyLinkRow) {
-  const or = [{ counterpartyId: counterparty.id }] as NonNullable<Prisma.AccountWhereInput["OR"]>;
-  if (counterparty.sourceInstitutionId) {
-    or.push({ institutionId: counterparty.sourceInstitutionId });
-  }
-  return { OR: or } satisfies Prisma.AccountWhereInput;
-}
 
 const ACCOUNT_LINK_SELECT = {
   id: true,

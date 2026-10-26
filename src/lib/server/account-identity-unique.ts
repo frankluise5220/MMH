@@ -23,7 +23,7 @@ type AccountIdentityStore = {
   };
 };
 
-export class AccountIdentityUniqueError extends Error {
+class AccountIdentityUniqueError extends Error {
   status = 409;
 
   constructor(message: string) {

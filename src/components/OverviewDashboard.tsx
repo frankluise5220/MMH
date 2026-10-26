@@ -19,7 +19,7 @@ import { getInvestmentAccountView } from "@/lib/account-kind-utils";
 import { MobileOverviewDashboard } from "@/components/mobile/MobileOverviewDashboard";
 import { useI18n } from "@/lib/i18n";
 
-export type AssetDistItem = {
+type AssetDistItem = {
   kind: string;
   label: string;
   value: number;
@@ -45,7 +45,7 @@ function baseAmount(item: { balance: number; convertedBalance?: number | null })
   return item.convertedBalance ?? item.balance;
 }
 
-export type CreditAccountItem = AccountItem & {
+type CreditAccountItem = AccountItem & {
   creditLimit: number;
   availableLimit: number;
   currentBill: number;
@@ -58,7 +58,7 @@ export type CreditAccountItem = AccountItem & {
   convertedCurrentAmount?: number | null;
 };
 
-export type FixedAssetItem = {
+type FixedAssetItem = {
   accountId: string;
   name: string;
   assetType?: string | null;
@@ -97,7 +97,7 @@ export type AccountTypeTotals = {
   totalNetWorth: number;
 };
 
-export type InvestmentOverviewItem = {
+type InvestmentOverviewItem = {
   accountId?: string;
   investProductType?: string | null;
   fundCode: string;

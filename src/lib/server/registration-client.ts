@@ -57,12 +57,12 @@ const REGISTRATION_ERROR_MESSAGES: Record<string, string> = {
 };
 
 /** Localizes a registration-service error code to Chinese, else returns null. */
-export function localizeRegistrationError(code: string | undefined): string | null {
+function localizeRegistrationError(code: string | undefined): string | null {
   if (!code) return null;
   return REGISTRATION_ERROR_MESSAGES[code] ?? null;
 }
 
-export interface RegistrationConfig {
+interface RegistrationConfig {
   baseUrl: string;
   apiToken: string;
 }
@@ -94,12 +94,12 @@ function readRegistrationEnv(key: string): string {
 }
 
 /** Explicit opt-out, because blanking the two values now falls back to defaults. */
-export function isRegistrationDisabled(): boolean {
+function isRegistrationDisabled(): boolean {
   const raw = readRegistrationEnv("MMH_REGISTRATION_DISABLED").toLowerCase();
   return raw === "1" || raw === "true" || raw === "yes" || raw === "on";
 }
 
-export function getRegistrationConfig(): RegistrationConfig {
+function getRegistrationConfig(): RegistrationConfig {
   if (isRegistrationDisabled()) return { baseUrl: "", apiToken: "" };
   const baseUrl = (readRegistrationEnv("MMH_REGISTRATION_API_URL") || DEFAULT_REGISTRATION_BASE_URL).replace(/\/+$/, "");
   const apiToken = readRegistrationEnv("MMH_REGISTRATION_API_TOKEN") || DEFAULT_REGISTRATION_API_TOKEN;
@@ -112,7 +112,7 @@ export function isRegistrationConfigured(): boolean {
   return baseUrl.length > 0 && apiToken.length > 0;
 }
 
-export interface RegisterEmailPrincipalResult {
+interface RegisterEmailPrincipalResult {
   ok: boolean;
   principalId?: string;
   identityId?: string | null;
@@ -254,7 +254,7 @@ export async function registerEmailPrincipal(params: {
   };
 }
 
-export interface VerifyEmailPrincipalResult {
+interface VerifyEmailPrincipalResult {
   ok: boolean;
   principalId?: string;
   status?: number;
@@ -363,7 +363,7 @@ export async function setEmailPrincipalPassword(params: {
   return postRegistrationAuth("set-password", params);
 }
 
-export type RegistrationCodePurpose = "registration" | "password-reset";
+type RegistrationCodePurpose = "registration" | "password-reset";
 
 /**
  * Maps the MMH display-language cookie value (`zh-CN` / `en-US` / `ja-JP`,
@@ -376,7 +376,7 @@ export function resolveTemplateLang(displayLanguage: string | undefined | null):
   return displayLanguage === "zh-CN" ? "zh" : "en";
 }
 
-export interface RegistrationCodeResult {
+interface RegistrationCodeResult {
   ok: boolean;
   status?: number;
   code?: string;
@@ -485,7 +485,7 @@ export async function verifyRegistrationCode(params: {
 }
 
 /** One ledger inside an installation inventory report. Ids and counts only. */
-export interface InstallationInventoryHousehold {
+interface InstallationInventoryHousehold {
   /** Household.id — the user-facing ledger name is deliberately never sent. */
   householdId: string;
   createdAt: string;
@@ -538,7 +538,7 @@ export interface InstallationInventory {
   principals: Array<{ principalId: string; userCount: number; householdIds: string[] }>;
 }
 
-export interface InstallationReportResult {
+interface InstallationReportResult {
   ok: boolean;
   status?: number;
   code?: string;

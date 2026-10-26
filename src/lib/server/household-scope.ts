@@ -12,15 +12,10 @@ export type HouseholdContext = {
   user: CurrentUser | null;
 };
 
-export function belongsToHousehold(record: { householdId?: string | null } | null | undefined, ctx: HouseholdContext): boolean {
+function belongsToHousehold(record: { householdId?: string | null } | null | undefined, ctx: HouseholdContext): boolean {
   return !!record && record.householdId === ctx.householdId;
 }
 
-export function assertBelongsToHousehold(record: { householdId?: string | null } | null | undefined, ctx: HouseholdContext, label = "record") {
-  if (!record) return { ok: false as const, error: `${label} not found`, status: 404 };
-  if (!belongsToHousehold(record, ctx)) return { ok: false as const, error: `${label} does not belong to the current household`, status: 403 };
-  return { ok: true as const };
-}
 
 /**
  * Read householdId from the cookie and verify access against the current user:

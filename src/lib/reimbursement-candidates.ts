@@ -1,7 +1,7 @@
 import { formatMoneyYuan } from "@/lib/format";
 
 /** 「关联记录」候选的最小字段集（新建窗 / 单据编辑 / 单据关联三处共用）。 */
-export type ReimbursementCandidateSearchable = {
+type ReimbursementCandidateSearchable = {
   date: string;
   amount: number;
   categoryName?: string | null;
