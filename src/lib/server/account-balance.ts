@@ -16,7 +16,7 @@ import { liabilityPrincipalForAccountSide } from "@/lib/liability";
 import { txRecordAccountScopeWhere } from "@/lib/transaction-account-scope";
 import { logger } from "@/lib/logger";
 import { rowWithLinkedInvestmentDisplayDate } from "@/lib/entry-reorder";
-import { depositRedemptionPrincipal } from "@/lib/server/deposit-lot-balance";
+import { computeDepositCashValueByAccount } from "@/lib/server/deposit-lot-balance";
 import { loadEntryLinkedInvestmentDisplay } from "@/lib/server/entry-business-display";
 import {
   recomputeAggregateAccountBalance,
@@ -116,10 +116,6 @@ function isDepositDividendEntry(entry: Pick<BalanceEntryRow, "fundSubtype">) {
   return entry.fundSubtype === "dividend_cash" || entry.fundSubtype === "dividend_reinvest";
 }
 
-function isDepositRedemptionEntry(entry: Pick<BalanceEntryRow, "fundSubtype">) {
-  return entry.fundSubtype === "redeem" || entry.fundSubtype === "switch_out";
-}
-
 function isDepositPrincipalEntry(
   entry: Pick<BalanceEntryRow, "type" | "fundProductType" | "fundSubtype">,
 ) {
@@ -128,12 +124,6 @@ function isDepositPrincipalEntry(
     entry.fundProductType === "deposit" &&
     !isDepositDividendEntry(entry)
   );
-}
-
-function isLiveBalanceEntry(
-  entry: BalanceEntryRow | null | undefined,
-): entry is BalanceEntryRow {
-  return !!entry && !entry.deletedAt;
 }
 
 function foldBalanceEntry(
@@ -165,165 +155,6 @@ function balanceEntryDelta(entry: BalanceEntryRow, account: AccountBalanceLike) 
     return liabilityPrincipalForAccountSide(entry, account.id);
   }
   return applyBalanceReconcileEntry(0, entry, account.id);
-}
-
-async function computeDepositPrincipalBalanceAsOf(
-  accountId: string,
-  asOfKey: string,
-  householdId: string,
-) {
-  const asOf = endOfLocalDayKey(asOfKey);
-  const rows = await prisma.$queryRaw<Array<{ principal: unknown }>>(Prisma.sql`
-    SELECT COALESCE(
-      SUM(
-        GREATEST(
-          ABS(COALESCE(b."fundArrivalAmount", b."amount"))
-          - COALESCE((
-            SELECT SUM(
-              ABS(COALESCE(r."fundArrivalAmount", r."amount"))
-              - GREATEST(COALESCE(r."depositInterest", 0), 0)
-            )
-            FROM "transactions" r
-            WHERE r."deletedAt" IS NULL
-              AND r."householdId" = ${householdId}
-              AND r."type" = ${TransactionType.investment}
-              AND r."fundProductType" = 'deposit'
-              AND r."accountId" = ${accountId}
-              AND r."depositSourceEntryId" = b."id"
-              AND r."fundSubtype" IN ('redeem', 'switch_out')
-              AND r."date" <= ${asOf}
-          ), 0),
-          0
-        )
-      ),
-      0
-    ) AS "principal"
-    FROM "transactions" b
-    WHERE b."deletedAt" IS NULL
-      AND b."householdId" = ${householdId}
-      AND b."type" = ${TransactionType.investment}
-      AND b."fundProductType" = 'deposit'
-      AND b."toAccountId" = ${accountId}
-      AND b."fundSubtype" NOT IN ('redeem', 'switch_out', 'dividend_cash', 'dividend_reinvest')
-      AND b."date" <= ${asOf}
-  `);
-  return Math.max(0, toNumber(rows[0]?.principal));
-}
-
-type DepositPrincipalChangeRow = {
-  change: EntryBalanceChange;
-  current: BalanceEntryRow | null;
-};
-
-function depositPrincipalBalanceFromRows(
-  lots: Map<string, BalanceEntryRow>,
-  redemptions: Map<string, BalanceEntryRow>,
-  accountId: string,
-  asOfKey: string,
-) {
-  const asOf = endOfLocalDayKey(asOfKey);
-  const redeemedByLotId = new Map<string, number>();
-  for (const redemption of redemptions.values()) {
-    if (!isLiveBalanceEntry(redemption) || !isDepositRedemptionEntry(redemption)) continue;
-    if (!redemption.depositSourceEntryId || redemption.date > asOf) continue;
-    const current = redeemedByLotId.get(redemption.depositSourceEntryId) ?? 0;
-    redeemedByLotId.set(redemption.depositSourceEntryId, current + depositRedemptionPrincipal(redemption));
-  }
-
-  let principal = 0;
-  for (const lot of lots.values()) {
-    if (!isLiveBalanceEntry(lot) || !isDepositPrincipalEntry(lot)) continue;
-    if (isDepositRedemptionEntry(lot)) continue;
-    if (lot.toAccountId !== accountId || lot.date > asOf) continue;
-    principal += Math.max(
-      0,
-      Math.abs(toNumber(lot.fundArrivalAmount ?? lot.amount))
-        - (redeemedByLotId.get(lot.id) ?? 0),
-    );
-  }
-  return roundMoney(principal);
-}
-
-async function computeDepositPrincipalChangeDelta(
-  rows: DepositPrincipalChangeRow[],
-  accountId: string,
-  householdId: string,
-  asOfKey: string,
-) {
-  const lotIds = new Set<string>();
-  for (const { change, current } of rows) {
-    for (const entry of [change.previous ?? null, current]) {
-      if (!entry || !isDepositPrincipalEntry(entry)) continue;
-      if (isDepositRedemptionEntry(entry)) {
-        if (entry.accountId === accountId && entry.depositSourceEntryId) {
-          lotIds.add(entry.depositSourceEntryId);
-        }
-      } else if (entry.toAccountId === accountId) {
-        lotIds.add(entry.id);
-      }
-    }
-  }
-  if (lotIds.size === 0) return 0;
-
-  const ids = Array.from(lotIds);
-  const lots = await prisma.txRecord.findMany({
-    where: {
-      id: { in: ids },
-      householdId,
-      deletedAt: null,
-      type: TransactionType.investment,
-      fundProductType: "deposit",
-    },
-    select: BALANCE_ENTRY_SELECT,
-  });
-  const redemptions = await prisma.txRecord.findMany({
-    where: {
-      householdId,
-      deletedAt: null,
-      type: TransactionType.investment,
-      fundProductType: "deposit",
-      accountId,
-      depositSourceEntryId: { in: ids },
-      fundSubtype: { in: ["redeem", "switch_out"] },
-    },
-    select: BALANCE_ENTRY_SELECT,
-  });
-
-  const afterLots = new Map(lots.map((entry) => [entry.id, entry]));
-  const afterRedemptions = new Map(redemptions.map((entry) => [entry.id, entry]));
-  for (const { current } of rows) {
-    if (!current) continue;
-    if (isDepositPrincipalEntry(current) && !isDepositRedemptionEntry(current)) {
-      afterLots.set(current.id, current);
-    } else {
-      afterLots.delete(current.id);
-    }
-    if (isDepositRedemptionEntry(current)) {
-      afterRedemptions.set(current.id, current);
-    } else {
-      afterRedemptions.delete(current.id);
-    }
-  }
-
-  const beforeLots = new Map(afterLots);
-  const beforeRedemptions = new Map(afterRedemptions);
-  for (const { change } of rows) {
-    const previous = change.previous ?? null;
-    if (previous && isDepositPrincipalEntry(previous) && !isDepositRedemptionEntry(previous)) {
-      beforeLots.set(previous.id, previous);
-    } else {
-      beforeLots.delete(change.entryId);
-    }
-    if (previous && isDepositRedemptionEntry(previous)) {
-      beforeRedemptions.set(previous.id, previous);
-    } else {
-      beforeRedemptions.delete(change.entryId);
-    }
-  }
-
-  const after = depositPrincipalBalanceFromRows(afterLots, afterRedemptions, accountId, asOfKey);
-  const before = depositPrincipalBalanceFromRows(beforeLots, beforeRedemptions, accountId, asOfKey);
-  return roundMoney(after - before);
 }
 
 function entryTouchesAccount(entry: Pick<BalanceEntryRow, "accountId" | "toAccountId" | "source">, accountId: string) {
@@ -388,7 +219,6 @@ export async function computeAccountDisplayBalances(
   const depositAccountIds = accounts
     .filter((account) => account.kind === AccountKind.deposit || account.investProductType === "deposit")
     .map((account) => account.id);
-  const depositAccountIdSet = new Set(depositAccountIds);
 
   const txWhere = {
     deletedAt: null,
@@ -396,8 +226,10 @@ export async function computeAccountDisplayBalances(
   };
 
   if (depositAccountIds.length > 0) {
-    // TxRecord is the source of truth for deposit principal. The
-    // DepositTransaction table is a projection and does not participate here.
+    // 存款账户的余额就是存单的现金价值：未结清存单的剩余本金合计。
+    // 口径与存款视图「持有/失效」列表共用 computeDepositCashValueByAccount，
+    // 不再叠加该账户上的普通收支 —— 那些钱没有对应存单，叠进来就会出现
+    // 「没有存单却有余额」（2026-10-27 用户裁定：余额就是余额，存单的现金价值）。
     const depositEntries = await prisma.txRecord.findMany({
       where: {
         ...txWhere,
@@ -411,107 +243,27 @@ export async function computeAccountDisplayBalances(
       select: {
         id: true,
         date: true,
-        createdAt: true,
         accountId: true,
         toAccountId: true,
         amount: true,
         fundArrivalAmount: true,
         depositInterest: true,
         fundSubtype: true,
+        fundName: true,
+        fundCode: true,
+        fundArrivalDate: true,
         depositSourceEntryId: true,
       },
       orderBy: [{ date: "asc" }, { createdAt: "asc" }, { id: "asc" }],
     });
 
-    const remainingByLotId = new Map<string, { depositAccountId: string; amount: number }>();
-    for (const entry of depositEntries) {
-      if (!isOnOrBeforeToday(entry.date)) continue;
-      // Interest payout / reinvest rows are cash flows, not principal lots:
-      // they must neither open a lot nor close the source one.
-      const isRedeem = entry.fundSubtype === "redeem" || entry.fundSubtype === "switch_out";
-      const isDividend = entry.fundSubtype === "dividend_cash" || entry.fundSubtype === "dividend_reinvest";
-      if (isDividend) continue;
-      const depositAccountId = isRedeem ? entry.accountId : entry.toAccountId;
-      if (!depositAccountId || !depositAccountIdSet.has(depositAccountId)) continue;
-
-      if (!isRedeem) {
-        remainingByLotId.set(entry.id, {
-          depositAccountId,
-          amount: Math.abs(toNumber(entry.fundArrivalAmount ?? entry.amount)),
-        });
-        continue;
-      }
-
-      if (entry.depositSourceEntryId) {
-        const lot = remainingByLotId.get(entry.depositSourceEntryId);
-        if (lot) {
-          lot.amount = Math.max(0, lot.amount - depositRedemptionPrincipal(entry));
-        }
-      }
-    }
-
-    for (const id of depositAccountIds) result.set(id, 0);
-    for (const lot of remainingByLotId.values()) {
-      result.set(lot.depositAccountId, (result.get(lot.depositAccountId) ?? 0) + lot.amount);
-    }
-
-    // Deposit accounts may also carry ordinary income/expense and transfers.
-    // Deposit principal was handled above from TxRecord lots, so only
-    // non-deposit TxRecords are layered on top here to avoid double counting.
-    const depositTxRows = await prisma.txRecord.findMany({
-      where: {
-        ...txWhere,
-        ...txRecordAccountScopeWhere(depositAccountIds),
-        NOT: {
-          type: TransactionType.investment,
-          fundProductType: "deposit",
-        },
-      },
-      select: {
-        id: true,
-        date: true,
-        postedAt: true,
-        createdAt: true,
-        dayOrder: true,
-        type: true,
-        amount: true,
-        accountId: true,
-        toAccountId: true,
-        toNote: true,
-        source: true,
-        principalAmount: true,
-        fundSubtype: true,
-        fundConfirmDate: true,
-        fundArrivalDate: true,
-        reconciledBalance: true,
-      },
+    const cashValue = computeDepositCashValueByAccount({
+      entries: depositEntries,
+      asOfKey: todayKey,
+      accountIds: depositAccountIds,
     });
-
-    const depositTxByAccountId = new Map<string, typeof depositTxRows>();
-    for (const accountId of depositAccountIds) {
-      depositTxByAccountId.set(accountId, []);
-    }
-    for (const entry of depositTxRows) {
-      if (entry.accountId && depositTxByAccountId.has(entry.accountId)) {
-        depositTxByAccountId.get(entry.accountId)?.push(entry);
-      }
-      if (entry.source !== FX_CONVERSION_SOURCE && entry.toAccountId && depositTxByAccountId.has(entry.toAccountId)) {
-        depositTxByAccountId.get(entry.toAccountId)?.push(entry);
-      }
-    }
-
-    for (const account of accounts) {
-      if (!depositAccountIdSet.has(account.id)) continue;
-      const rows = depositTxByAccountId.get(account.id) ?? [];
-      const orderedRows = rows
-        .filter((entry) => isOnOrBeforeToday(getDetailEntryDisplayDate(entry, account.id)))
-        .sort((a, b) => compareDetailEntriesAsc(a, b, account.id));
-      let runningBalance = result.get(account.id) ?? 0;
-      for (const entry of orderedRows) {
-        if (isBalanceAnchorEntry(entry)) continue;
-        runningBalance = applyBalanceAnchorEntry(runningBalance, entry, account.id);
-      }
-      result.set(account.id, runningBalance);
+    for (const id of depositAccountIds) {
+      result.set(id, cashValue.byAccountId.get(id) ?? 0);
     }
   }
 
@@ -578,6 +330,63 @@ export async function computeAccountDisplayBalances(
     }
   }
 
+  return result;
+}
+
+/**
+ * 存款账户上的「非存单款项」净额：普通收支、转账、利息等不构成存单的流水。
+ *
+ * 余额口径已经裁定为「存单的现金价值」，这些钱不再计入余额；但它们不能凭空
+ * 消失，存款视图要能提示「该账户另有 ¥X 非存单款项未计入余额」，否则用户只会
+ * 看到余额变小。折叠口径与旧版本一致（`foldBalanceEntry` 在存款账户上本来就
+ * 跳过存单本金行），因此这里的金额正是新旧口径的差额来源。
+ */
+export async function computeDepositNonCertificateBalances(
+  accounts: AccountBalanceLike[],
+  hidFilter?: { householdId?: string },
+) {
+  const result = new Map<string, number>();
+  const depositAccounts = accounts.filter((account) => isDepositAccountLike(account));
+  if (depositAccounts.length === 0) return result;
+  const accountIds = depositAccounts.map((account) => account.id);
+  const todayKey = todayDateBusinessYmd(await resolveHouseholdTimeZone(hidFilter?.householdId));
+  const isOnOrBeforeToday = (date: Date) => localDateKey(date) <= todayKey;
+
+  const rows = await prisma.txRecord.findMany({
+    where: {
+      deletedAt: null,
+      ...(hidFilter ?? {}),
+      ...txRecordAccountScopeWhere(accountIds),
+    },
+    select: BALANCE_ENTRY_SELECT,
+  });
+
+  const displayRows = await decorateBalanceRowsWithInvestmentDisplay(prisma, hidFilter, rows);
+  const displayRowById = new Map(displayRows.map((row) => [row.id, row]));
+
+  const rowsByAccountId = new Map<string, typeof rows>();
+  for (const accountId of accountIds) rowsByAccountId.set(accountId, []);
+  for (const entry of rows) {
+    if (entry.accountId && rowsByAccountId.has(entry.accountId)) {
+      rowsByAccountId.get(entry.accountId)?.push(entry);
+    }
+    if (entry.source !== FX_CONVERSION_SOURCE && entry.toAccountId && rowsByAccountId.has(entry.toAccountId)) {
+      rowsByAccountId.get(entry.toAccountId)?.push(entry);
+    }
+  }
+
+  for (const account of depositAccounts) {
+    const orderedRows = (rowsByAccountId.get(account.id) ?? [])
+      .map((entry) => displayRowById.get(entry.id) ?? entry)
+      .filter((entry) => isOnOrBeforeToday(getDetailEntryDisplayDate(entry, account.id)))
+      .sort((a, b) => compareDetailEntriesAsc(a, b, account.id));
+    let runningBalance = 0;
+    for (const entry of orderedRows) {
+      if (isBalanceAnchorEntry(entry)) continue;
+      runningBalance = foldBalanceEntry(runningBalance, entry, account);
+    }
+    result.set(account.id, roundMoney(runningBalance));
+  }
   return result;
 }
 
@@ -1163,64 +972,8 @@ async function advanceAccountBalanceStep(accountId: string, maxWindows = 1) {
   const asOfKey = localDateKey(acc.balanceRecomputedAt);
   if (asOfKey >= todayKey) return false;
 
+  // 存款账户在上面的 isDepositAccountLike 分支已经整体重算并返回，这里只剩普通账户。
   const hidFilter = { householdId: acc.householdId };
-  if (isDepositAccountLike(account)) {
-    const anchor = await loadLastBalanceAnchor(accountId, todayKey, hidFilter);
-    const anchorDay = anchor ? localDateKey(getDetailEntryDisplayDate(anchor, accountId)) : null;
-    if (anchor && anchorDay && anchorDay > asOfKey) {
-      const ordinary = await foldAccountBalanceRange(account, hidFilter, {
-        fromKeyExclusive: anchorDay,
-        toKeyInclusive: todayKey,
-        startingBalance: 0,
-        maxWindows,
-      });
-      const principalAtAnchor = await computeDepositPrincipalBalanceAsOf(
-        accountId,
-        anchorDay,
-        acc.householdId,
-      );
-      const principalAtEnd = await computeDepositPrincipalBalanceAsOf(
-        accountId,
-        ordinary.asOfKey,
-        acc.householdId,
-      );
-      const nextBalance =
-        (getBalanceAnchorTarget(anchor) ?? 0) +
-        ordinary.balance +
-        principalAtEnd -
-        principalAtAnchor;
-      return writeAccountBalance(
-        accountId,
-        nextBalance,
-        endOfLocalDayKey(ordinary.asOfKey),
-        acc.balanceRecomputedAt,
-      ).catch(() => false);
-    }
-
-    const ordinary = await foldAccountBalanceRange(account, hidFilter, {
-      fromKeyExclusive: asOfKey,
-      toKeyInclusive: todayKey,
-      startingBalance: toNumber(acc.balance),
-      maxWindows,
-    });
-    const principalAtStart = await computeDepositPrincipalBalanceAsOf(
-      accountId,
-      asOfKey,
-      acc.householdId,
-    );
-    const principalAtEnd = await computeDepositPrincipalBalanceAsOf(
-      accountId,
-      ordinary.asOfKey,
-      acc.householdId,
-    );
-    return writeAccountBalance(
-      accountId,
-      ordinary.balance + principalAtEnd - principalAtStart,
-      endOfLocalDayKey(ordinary.asOfKey),
-      acc.balanceRecomputedAt,
-    ).catch(() => false);
-  }
-
   const ordinary = await foldAccountBalanceRange(account, hidFilter, {
     fromKeyExclusive: asOfKey,
     toKeyInclusive: todayKey,
@@ -1377,15 +1130,18 @@ export async function applyEntryChangesToAccountBalances(changes: EntryBalanceCh
       continue;
     }
 
-    const isDeposit = isDepositAccountLike(accountLike);
-    if (isDeposit && !account.balanceRecomputedAt) {
+    if (isDepositAccountLike(accountLike)) {
+      // 存款账户的余额就是存单的现金价值。存单、取回、取息都可能跨行影响同一张
+      // 存单（取回行缺 depositSourceEntryId 时还要按产品名+到期日兜底匹配），增量
+      // 口径无法安全维护，而且极易和「持有/失效」列表分叉，所以一律整体重算。
+      // 存单数量是个位数量级，重算只扫该账户的存款流水。
       await recalcAndSaveAccountBalance(account.id).catch(() => {});
       continue;
     }
 
-    const anchor = isDeposit
-      ? null
-      : await loadLastBalanceAnchor(account.id, todayKey, { householdId: account.householdId });
+    const anchor = await loadLastBalanceAnchor(account.id, todayKey, {
+      householdId: account.householdId,
+    });
     let previousDelta = 0;
     let currentDelta = 0;
     let requiresFullFold = false;
@@ -1395,17 +1151,11 @@ export async function applyEntryChangesToAccountBalances(changes: EntryBalanceCh
       const previousActive = previous && !previous.deletedAt && entryAffectsBalance(previous, account.id, anchor, todayKey);
       const currentActive = currentDisplay && !currentDisplay.deletedAt && entryAffectsBalance(currentDisplay, account.id, anchor, todayKey);
       if (previousActive && previous) {
-        if (isDeposit && isDepositPrincipalEntry(previous)) {
-          continue;
-        }
         const delta = balanceEntryDelta(previous, accountLike);
         if (delta == null) requiresFullFold = true;
         else previousDelta += delta;
       }
       if (currentActive && currentDisplay) {
-        if (isDeposit && isDepositPrincipalEntry(currentDisplay)) {
-          continue;
-        }
         const delta = balanceEntryDelta(currentDisplay, accountLike);
         if (delta == null) requiresFullFold = true;
         else currentDelta += delta;
@@ -1430,26 +1180,17 @@ export async function applyEntryChangesToAccountBalances(changes: EntryBalanceCh
     }
 
     const asOfKey = localDateKey(account.balanceRecomputedAt);
-    if (isDeposit && asOfKey < todayKey) {
-      // Rebuild stale deposit balances from certificates and ordinary flows.
-      await recalcAndSaveAccountBalance(account.id).catch(() => {});
-      continue;
-    }
     let previousIncludedDelta = 0;
     for (const { change } of currentRows) {
       const previous = displayBalanceEntry(change.previous ?? null);
       if (!previous || previous.deletedAt) continue;
       if (!entryAffectsBalance(previous, account.id, anchor, todayKey)) continue;
-      if (isDeposit && isDepositPrincipalEntry(previous)) continue;
       const previousDay = localDateKey(getDetailEntryDisplayDate(previous, account.id));
       if (previousDay > asOfKey) continue;
       const delta = balanceEntryDelta(previous, accountLike);
       if (delta != null) previousIncludedDelta += delta;
     }
-    const depositDelta = isDeposit
-      ? await computeDepositPrincipalChangeDelta(currentRows, account.id, account.householdId, todayKey)
-      : 0;
-    const delta = currentDelta - previousIncludedDelta + depositDelta;
+    const delta = currentDelta - previousIncludedDelta;
     if (Math.abs(delta) < 0.005 && asOfKey >= todayKey) continue;
 
     const baseBalance = await advanceStoredBalanceToToday(

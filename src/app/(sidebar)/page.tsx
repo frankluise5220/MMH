@@ -35,7 +35,7 @@ import { ResizableVerticalSplit } from "@/components/ResizableVerticalSplit";
 
 
 import { calculateWealthCashDividendProfit, recalcWealthPositions } from "@/lib/wealth-position";
-import { getMaintainedAccountBalances } from "@/lib/server/account-balance";
+import { computeDepositNonCertificateBalances, getMaintainedAccountBalances } from "@/lib/server/account-balance";
 import { computeLiabilityDisplaySummary } from "@/lib/server/liability-display-summary";
 import {
   applyLiabilityRowEntryMetrics,
@@ -133,6 +133,7 @@ import { AccountTypeQuickEdit, type AccountQuickEditValue } from "@/components/A
 export const dynamic = "force-dynamic";
 
 import { formatDateUtc, toNumber, parseDateInputToUtc, todayDateBusinessYmd } from "@/lib/date-utils";
+import { resolveHouseholdTimeZone } from "@/lib/server/business-time-zone";
 import { parseDepositInterestPayout } from "@/lib/deposit-interest-payout";
 import { depositSegmentInterest } from "@/lib/deposit-maturity";
 
@@ -2273,10 +2274,31 @@ export default async function Home({
       : t("creditBill.detailTitle");
 
   const allDepositAccounts = accounts.filter((account) => isDepositAccount(account));
+  // 存款视图的账户范围 = 所选账户 + 它的子户。余额是这些账户存单的现金价值，
+  // 明细、存单列表、顶部数字必须共用同一个集合，否则「表内合计 ≠ 顶部余额」。
+  const depositSubtreeAccountIds = (() => {
+    const ids = new Set<string>();
+    if (view !== "deposit" || !selectedAccount || !isDepositAccount(selectedAccount)) return ids;
+    const childrenByParentId = new Map<string, string[]>();
+    for (const account of accounts) {
+      if (!account.parentId) continue;
+      const siblings = childrenByParentId.get(account.parentId);
+      if (siblings) siblings.push(account.id);
+      else childrenByParentId.set(account.parentId, [account.id]);
+    }
+    const pending = [selectedAccount.id];
+    while (pending.length > 0) {
+      const accountId = pending.pop() as string;
+      if (ids.has(accountId)) continue;
+      ids.add(accountId);
+      for (const childId of childrenByParentId.get(accountId) ?? []) pending.push(childId);
+    }
+    return ids;
+  })();
   const selectedDepositAccountIds =
     view === "deposit" && selectedAccount
       ? isDepositAccount(selectedAccount)
-        ? [selectedAccount.id]
+        ? Array.from(depositSubtreeAccountIds)
         : selectedAccount.institutionId
           ? allDepositAccounts
               .filter((account) => account.institutionId === selectedAccount.institutionId)
@@ -2667,12 +2689,17 @@ export default async function Home({
     ? await loadBondLotOptions({ householdId, accountIds: allBondOnlyAccountIds })
     : [];
 
+  // 存款账户余额与存单列表共用同一个业务日边界：未来的存入/取回行不参与今天的
+  // 现金价值，否则表格会先把存单算成「已失效」，余额却仍挂着本金。
+  const depositAsOfKey = todayDateBusinessYmd(await resolveHouseholdTimeZone(householdId));
+
   function buildDepositLots(sourceEntryPool: Array<any>, activeDepositAccountIds: Set<string>, sortAccountId?: string | null, ordinaryInterestPool?: Array<any>) {
     if (activeDepositAccountIds.size === 0) return [];
     const sourceEntries = sourceEntryPool.filter(
       (entry) =>
         entry.fundProductType === "deposit" &&
         !entry.deletedAt &&
+        String(entry.date).slice(0, 10) <= depositAsOfKey &&
         ((entry.accountId && activeDepositAccountIds.has(entry.accountId)) ||
           (entry.toAccountId && activeDepositAccountIds.has(entry.toAccountId))),
     );
@@ -2962,11 +2989,10 @@ export default async function Home({
       });
   }
 
-  const activeDepositAccountIds = new Set<string>();
-  if (selectedAccount) {
-    if (isDepositAccount(selectedAccount)) {
-      activeDepositAccountIds.add(selectedAccount.id);
-    }
+  // 存单范围必须和头部余额对齐：余额 = 所选账户（含子户）存单的现金价值。
+  const activeDepositAccountIds = new Set<string>(depositSubtreeAccountIds);
+  if (selectedAccount && depositSubtreeAccountIds.size === 0) {
+    // 非存款账户（例如银行存款/现金账户）进入存款视图时，才按机构扩散。
     if (selectedAccount.institutionId) {
       for (const account of allDepositAccounts) {
         if (account.institutionId === selectedAccount.institutionId) {
@@ -2991,6 +3017,20 @@ export default async function Home({
     allDetailEntries,
   );
   const allDepositLots = buildDepositLots(allDepositEntries, new Set(allDepositAccountIds), undefined, allDetailEntries);
+  // 余额只算存单的现金价值，存款账户上的普通收支（转账、利息等）不计入。这些钱不能
+  // 凭空消失，所以在头部提示「另有 ¥X 非存单款项未计入余额」，否则用户只会看到余额变小。
+  const depositNonCertificateByAccountId =
+    view === "deposit" && selectedAccount && isDepositAccount(selectedAccount)
+      ? await computeDepositNonCertificateBalances(allDepositAccounts, { householdId })
+      : new Map<string, number>();
+  const depositNonCertificateAmount = (() => {
+    if (depositNonCertificateByAccountId.size === 0) return 0;
+    let total = 0;
+    for (const accountId of depositSubtreeAccountIds) {
+      total += depositNonCertificateByAccountId.get(accountId) ?? 0;
+    }
+    return Math.round(total * 100) / 100;
+  })();
   const scopedOpenDepositLots = depositLots.filter((lot) => lot.status === "open" && lot.remainingAmount > 0.0001);
   const globalOpenDepositLots = allDepositLots.filter((lot) => lot.status === "open" && lot.remainingAmount > 0.0001);
   const redeemLotSource = scopedOpenDepositLots.length > 0 ? scopedOpenDepositLots : globalOpenDepositLots;
@@ -3153,6 +3193,13 @@ export default async function Home({
                   accountDisplayMode="original"
                 />
               )}
+              {view === "deposit" && selectedAccount && depositNonCertificateAmount > 0.005 ? (
+                <span className="text-xs text-amber-700" title={t("depositShell.nonCertificateNoticeTitle")}>
+                  {t("depositShell.nonCertificateNotice", {
+                    amount: formatCurrencyMoney(depositNonCertificateAmount, selectedAccountCurrency),
+                  })}
+                </span>
+              ) : null}
               {showSelectedAccountFxInline ? (
                 <AccountFxRateInline
                   fromCurrency={selectedAccountCurrency}
