@@ -6,6 +6,7 @@ import { ArrowDownLeft, ArrowLeft, ArrowLeftRight, ArrowUpRight, MoreHorizontal,
 import { formatMoneyYuan } from "@/lib/format";
 import { showConfirmDialog } from "@/lib/client/confirm-dialog";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { recordRecentAccounts } from "@/lib/client/recentAccounts";
 import { useI18n } from "@/lib/i18n";
 import {
   APP_PREFS_EVENT,
@@ -95,7 +96,14 @@ export function MobileTransactions({ entries, accountSummary }: { entries: Mobil
     if (expandedId === id) setExpandedId(null);
     if (menuId === id) setMenuId(null);
     if (swipedId === id) setSwipedId(null);
-    dispatchFinanceDataChanged({ reason: "mobile-entry-delete", deletedEntryIds: [id], entryIds: [id] });
+    const deletedAccountIds: string[] = Array.isArray(result?.accountIds) ? result.accountIds : [];
+    recordRecentAccounts(deletedAccountIds);
+    dispatchFinanceDataChanged({
+      reason: "mobile-entry-delete",
+      accountIds: deletedAccountIds,
+      deletedEntryIds: [id],
+      entryIds: [id],
+    });
   }
 
   function beginCardPointer(entryId: string, event: PointerEvent<HTMLElement>) {

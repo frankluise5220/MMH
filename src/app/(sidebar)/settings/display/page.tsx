@@ -15,6 +15,7 @@ import {
   APP_PREFS_EVENT,
   getAccountLabelFieldsPreference,
   getAccountDropdownRestrictTypePreference,
+  getAccountUsageSortEnabledPreference,
   getDetailDateBackgroundPreference,
   getDateDisplayFormatPreference,
   getDisplayLanguagePreference,
@@ -31,6 +32,7 @@ import {
   normalizeRowHeightMode,
   setAccountLabelFieldsPreference,
   setAccountDropdownRestrictTypePreference,
+  setAccountUsageSortEnabledPreference,
   setRowHeightModePreference,
   setDetailDateBackgroundPreference,
   setDateDisplayFormatPreference,
@@ -178,6 +180,7 @@ export default function DisplaySettingsPage() {
   const [sidebarShowReimbursements, setSidebarShowReimbursements] = useState(true);
   const [detailDateBackground, setDetailDateBackground] = useState(false);
   const [accountDropdownRestrictType, setAccountDropdownRestrictType] = useState(true);
+  const [accountUsageSortEnabled, setAccountUsageSortEnabled] = useState(true);
   const [rowHeightMode, setRowHeightMode] = useState<RowHeightMode>(DEFAULT_ROW_HEIGHT_MODE);
   // 明细默认观测窗口（年）。0 = 不限；只作用于服务端首次取数，不进 cookie 镜像。
   const [detailWindowYears, setDetailWindowYears] = useState<number>(DEFAULT_DETAIL_WINDOW_YEARS);
@@ -203,6 +206,7 @@ export default function DisplaySettingsPage() {
     setSidebarShowReimbursements(getSidebarShowReimbursementsPreference());
     setDetailDateBackground(getDetailDateBackgroundPreference());
     setAccountDropdownRestrictType(getAccountDropdownRestrictTypePreference());
+    setAccountUsageSortEnabled(getAccountUsageSortEnabledPreference());
     setRowHeightMode(getRowHeightModePreference());
     setDisplayLanguage(getDisplayLanguagePreference());
     setDateDisplayFormat(getDateDisplayFormatPreference());
@@ -613,6 +617,31 @@ export default function DisplaySettingsPage() {
     }
   }
 
+  async function updateAccountUsageSortEnabled(next: boolean) {
+    const prev = accountUsageSortEnabled;
+    setAccountUsageSortEnabled(next);
+    setAccountUsageSortEnabledPreference(next);
+    try {
+      const res = await fetch("/api/v1/settings/app-preferences", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accountUsageSortEnabled: next }),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        setAccountUsageSortEnabled(prev);
+        setAccountUsageSortEnabledPreference(prev);
+      } else {
+        const saved = data.accountUsageSortEnabled !== false;
+        setAccountUsageSortEnabled(saved);
+        setAccountUsageSortEnabledPreference(saved);
+      }
+    } catch {
+      setAccountUsageSortEnabled(prev);
+      setAccountUsageSortEnabledPreference(prev);
+    }
+  }
+
   async function updateRowHeightMode(next: RowHeightMode) {
     const prev = rowHeightMode;
     setRowHeightMode(next);
@@ -766,6 +795,13 @@ export default function DisplaySettingsPage() {
               checked={accountDropdownRestrictType}
               onCheckedChange={(next) => void updateAccountDropdownRestrictType(next)}
               label={t("settings.display.accountDropdownRestrictType")}
+            />
+          </SettingRow>
+          <SettingRow title={t("settings.display.accountUsageSort")} desc={t("settings.display.accountUsageSortDesc")} hideDesc={hideSettingDescriptions}>
+            <SettingsSwitch
+              checked={accountUsageSortEnabled}
+              onCheckedChange={(next) => void updateAccountUsageSortEnabled(next)}
+              label={t("settings.display.accountUsageSort")}
             />
           </SettingRow>
           <SettingRow

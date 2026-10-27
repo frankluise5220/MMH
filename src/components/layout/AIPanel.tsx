@@ -11,6 +11,7 @@ import { callDeleteEntries, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds
 import { AI_CONFIG_CHANGED_EVENT, dispatchAiConfigChanged, loadActiveModel, saveActiveModel } from "@/lib/client/aiConfig";
 import { AI_PREFILL_EVENT } from "@/lib/client/clipboard-drafts";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { recordRecentAccounts } from "@/lib/client/recentAccounts";
 import { showConfirmDialog } from "@/lib/client/confirm-dialog";
 import { TableColumnFilter } from "@/components/TableColumnFilter";
 import {
@@ -693,7 +694,9 @@ export function AIPanel({
         setMessages((m) => [...m, { role: "assistant", text: data.message || t("aiPanel.deleted", { count: entryIds.length }) }]);
         setConfirmDialog(null);
         const refreshEntryIds = getDeleteRefreshEntryIds(data, entryIds);
-        dispatchFinanceDataChanged({ reason: "ai-entry-delete", accountIds: getDeleteRefreshAccountIds(data), deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
+        const aiDeleteAccountIds = getDeleteRefreshAccountIds(data);
+        recordRecentAccounts(aiDeleteAccountIds);
+        dispatchFinanceDataChanged({ reason: "ai-entry-delete", accountIds: aiDeleteAccountIds, deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
         return;
       }
       const src = String(confirmDialog.payload.sourceText ?? "").trim();

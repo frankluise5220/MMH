@@ -12,6 +12,7 @@ import { DateStepper } from "@/components/DateStepper";
 import { EntryAttachmentButton, uploadEntryAttachmentFiles } from "@/components/EntryAttachmentPanel";
 import { buildCategoryTreeOptions } from "@/components/categorySmartSelect";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { recordRecentAccounts } from "@/lib/client/recentAccounts";
 import { REQUIRED_FIELD_CLASS } from "@/lib/client/required-field";
 import { useI18n } from "@/lib/i18n";
 import { readAccountDisplaySettings } from "@/lib/client/account-display-settings";
@@ -264,9 +265,11 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
         }
       }
       setOpen(false);
+      const savedAccountIds = [draft.accountId, draft.toAccountId].filter((id): id is string => Boolean(id));
+      recordRecentAccounts(savedAccountIds);
       dispatchFinanceDataChanged({
         reason: "mobile-transaction-save",
-        accountIds: [draft.accountId, draft.toAccountId].filter((id): id is string => Boolean(id)),
+        accountIds: savedAccountIds,
         entryIds: savedEntryId ? [savedEntryId] : undefined,
       });
     } catch (cause) {

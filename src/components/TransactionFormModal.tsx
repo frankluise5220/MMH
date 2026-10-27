@@ -18,7 +18,7 @@ import { isSettlementCounterpartyType, kindLabel } from "@/lib/account-kinds";
 import { restrictAccountsByType } from "@/lib/client/account-dropdown-filter";
 import { getCashTargetOperation, isAdvanceFundingAccount, isDepositAccount, isDepositPostingCategoryAllowed,  isIncomeExpensePostingOrDepositAccount, isLoanOrSettlementAccountKind, isTransferDropdownAccount } from "@/lib/account-kind-utils";
 import { buildAccountDisplayOption, buildGroupedAccountOptions, formatAccountHoverTitle } from "@/lib/account-display";
-import { recordRecentAccount, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
+import { recordRecentAccounts, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
 import { useResetEntryModalReconciledReadOnlyOnClose } from "@/lib/client/entryModalLock";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 /** 必填字段红框（统一实现，见该模块注释）。 */
@@ -2029,7 +2029,9 @@ export function TransactionFormModal({
             return;
           }
           requestAnimationFrame(() => {
-            dispatchFinanceDataChanged(currentFinanceRefreshDetail());
+            const refreshDetail = currentFinanceRefreshDetail();
+            recordRecentAccounts(refreshDetail.accountIds ?? []);
+            dispatchFinanceDataChanged(refreshDetail);
           });
           resetDraft();
         } catch (err) {
@@ -2245,7 +2247,9 @@ export function TransactionFormModal({
         }
         void notifySettingsDataChanged({ scope: "accounts", reason: "fx:auto-account", prefetch: true });
         requestAnimationFrame(() => {
-          dispatchFinanceDataChanged(currentFinanceRefreshDetail());
+          const refreshDetail = currentFinanceRefreshDetail();
+          recordRecentAccounts(refreshDetail.accountIds ?? []);
+          dispatchFinanceDataChanged(refreshDetail);
         });
         if (submitModeRef.current === "repeat" && !editEntryId) {
           repeatDraft();
@@ -2369,7 +2373,9 @@ export function TransactionFormModal({
         );
       }
       requestAnimationFrame(() => {
-        dispatchFinanceDataChanged(currentFinanceRefreshDetail());
+        const refreshDetail = currentFinanceRefreshDetail();
+        recordRecentAccounts(refreshDetail.accountIds ?? []);
+        dispatchFinanceDataChanged(refreshDetail);
       });
       if (submitModeRef.current === "repeat" && !editEntryId) {
         repeatDraft();
@@ -2522,7 +2528,7 @@ export function TransactionFormModal({
                           <div className="form-label">{t("txForm.cashAccount")}</div>
                           <div className={REQUIRED_FIELD_CLASS}>
                             <SmartSelect mode="single" value={accountId}
-                              onChange={(id: string) => { setAccountId(id); recordRecentAccount(id); }}
+                              onChange={(id: string) => { setAccountId(id); }}
                               options={advanceCashAccountOptions} placeholder={t("txForm.selectPlaceholder")}
                               onCreateClick={() => { void openAccountCreate("account"); }}
                               onCycleOwnerFilter={cycleOwnerFilter}
@@ -2577,7 +2583,6 @@ export function TransactionFormModal({
                             <SmartSelect mode="single" value={accountId}
                               onChange={(id: string) => {
                                 setAccountId(id);
-                                recordRecentAccount(id);
                                 // 换账户后交易币种跟随新账户，避免把信用卡外币选值带到现金/借记卡上。
                                 setTxCurrency("");
                                 setLocalAmount("");
@@ -2856,7 +2861,6 @@ export function TransactionFormModal({
                         onChange={(id: string) => {
                           setFixedAssetAccountId(id);
                           setFixedAssetAssetId("");
-                          recordRecentAccount(id);
                         }}
                         options={displayFixedAssetAccountOptions}
                         placeholder={t("txForm.selectFixedAssetAccount")}
@@ -2987,7 +2991,6 @@ export function TransactionFormModal({
                         const currency = normalizeCurrencyLabel(accountMetaById.get(v)?.currency);
                         if (currency) setFxFromCurrencyDraft(currency);
                         if (v && v === toAccountId) setToAccountId("");
-                        recordRecentAccount(v);
                       }}
                         options={fxFromAccountOptions}
                         placeholder={fxDirection === "sell" ? t("txForm.fxSellFromAccountPlaceholder") : t("txForm.fxFromAccountPlaceholder")}
@@ -3001,7 +3004,6 @@ export function TransactionFormModal({
                         setToAccountId(v);
                         const currency = normalizeCurrencyLabel(accountMetaById.get(v)?.currency);
                         if (currency) setFxToCurrencyDraft(currency);
-                        recordRecentAccount(v);
                       }}
                         options={fxToAccountOptions}
                         placeholder={fxDirection === "sell"
@@ -3140,7 +3142,7 @@ export function TransactionFormModal({
                       <div className="space-y-1">
                         <div className="form-label">{t("txForm.transferFrom")}</div>
                         <div className={REQUIRED_FIELD_CLASS}>
-                          <SmartSelect mode="single" value={fromAccountId} onChange={v => { setFromAccountId(v); setFromAccountIdEdited(true); recordRecentAccount(v); }}
+                          <SmartSelect mode="single" value={fromAccountId} onChange={v => { setFromAccountId(v); setFromAccountIdEdited(true); }}
                             options={displayTransferOptions} placeholder={t("txForm.selectPlaceholder")}
                             onCreateClick={() => { void openAccountCreate("from"); }} createLabel={t("settings.accounts.add")}
                             onCycleOwnerFilter={cycleOwnerFilter} ownerFilterLabel={ownerFilterLabel}
@@ -3155,7 +3157,7 @@ export function TransactionFormModal({
                       <div className="space-y-1">
                         <div className="form-label">{t("txForm.transferTo")}</div>
                         <div className={REQUIRED_FIELD_CLASS}>
-                          <SmartSelect mode="single" value={toAccountId} onChange={(v) => { setToAccountId(v); recordRecentAccount(v); }}
+                          <SmartSelect mode="single" value={toAccountId} onChange={(v) => { setToAccountId(v); }}
                             options={stockTransferToOptions} placeholder={t("txForm.selectPlaceholder")}
                             onCycleOwnerFilter={cycleOwnerFilter} ownerFilterLabel={ownerFilterLabel}
                             behavior={accountSelectBehavior} />
@@ -3167,7 +3169,7 @@ export function TransactionFormModal({
                       <div className="space-y-1">
                         <div className="form-label">{t("txForm.transferFrom")}</div>
                         <div className={REQUIRED_FIELD_CLASS}>
-                          <SmartSelect mode="single" value={fromAccountId} onChange={v => { setFromAccountId(v); setFromAccountIdEdited(true); recordRecentAccount(v); }}
+                          <SmartSelect mode="single" value={fromAccountId} onChange={v => { setFromAccountId(v); setFromAccountIdEdited(true); }}
                             options={displayTransferOptions} placeholder={t("txForm.selectPlaceholder")}
                             onCreateClick={() => { void openAccountCreate("from"); }} createLabel={t("settings.accounts.add")}
                             onCycleOwnerFilter={cycleOwnerFilter} ownerFilterLabel={ownerFilterLabel}
@@ -3182,7 +3184,7 @@ export function TransactionFormModal({
                       <div className="space-y-1">
                         <div className="form-label">{t("txForm.transferTo")}</div>
                         <div className={REQUIRED_FIELD_CLASS}>
-                          <SmartSelect mode="single" value={toAccountId} onChange={(v) => { setToAccountId(v); recordRecentAccount(v); }}
+                          <SmartSelect mode="single" value={toAccountId} onChange={(v) => { setToAccountId(v); }}
                             options={displayTransferOptions} placeholder={t("txForm.selectPlaceholder")}
                             onCreateClick={() => { void openAccountCreate("to"); }} createLabel={t("settings.accounts.add")}
                             onCycleOwnerFilter={cycleOwnerFilter} ownerFilterLabel={ownerFilterLabel}
@@ -3195,7 +3197,7 @@ export function TransactionFormModal({
                       <div className="space-y-1">
                         <div className="form-label">{t("txForm.transferFrom")}</div>
                         <div className={REQUIRED_FIELD_CLASS}>
-                          <SmartSelect mode="single" value={fromAccountId} onChange={(v) => { setFromAccountId(v); recordRecentAccount(v); }}
+                          <SmartSelect mode="single" value={fromAccountId} onChange={(v) => { setFromAccountId(v); }}
                             options={displayTransferOptions} placeholder={t("txForm.selectPlaceholder")}
                             onCreateClick={() => { void openAccountCreate("from"); }} createLabel={t("settings.accounts.add")}
                             onCycleOwnerFilter={cycleOwnerFilter} ownerFilterLabel={ownerFilterLabel}
@@ -3209,7 +3211,7 @@ export function TransactionFormModal({
                       <div className="space-y-1">
                         <div className="form-label">{t("txForm.transferTo")}</div>
                         <div className={REQUIRED_FIELD_CLASS}>
-                          <SmartSelect mode="single" value={toAccountId} onChange={(v) => { setToAccountId(v); recordRecentAccount(v); }}
+                          <SmartSelect mode="single" value={toAccountId} onChange={(v) => { setToAccountId(v); }}
                             options={displayTransferOptions} placeholder={t("txForm.selectPlaceholder")}
                             onCreateClick={() => { void openAccountCreate("to"); }} createLabel={t("settings.accounts.add")}
                             onCycleOwnerFilter={cycleOwnerFilter} ownerFilterLabel={ownerFilterLabel}

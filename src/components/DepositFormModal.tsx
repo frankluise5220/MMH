@@ -11,7 +11,7 @@ import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
 import { NestedAddModal } from "./EntityCreateForm";
 import { kindLabel } from "@/lib/account-kinds";
-import { recordRecentAccount, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
+import { recordRecentAccounts, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
 /** 记账弹窗整窗外壳：宽度/标题栏/表单/FT 页签卡片/固定页脚/高度锁定统一由它负责。 */
 import { EntryModalShell } from "@/components/EntryModalShell";
@@ -1625,6 +1625,7 @@ export function DepositFormModal({
         if (mode === "create") reset();
       }
       requestAnimationFrame(() => {
+        recordRecentAccounts([cashAccountId, depositAccountId]);
         dispatchFinanceDataChanged({ reason: "deposit-save" });
       });
     } catch (err) {
@@ -1997,7 +1998,7 @@ export function DepositFormModal({
                       <SmartSelect
                         mode="single"
                         value={cashAccountId}
-                        onChange={(id) => { setCashAccountId(id); recordRecentAccount(id); }}
+                        onChange={(id) => { setCashAccountId(id); }}
                         options={redeemCashOptions}
                         placeholder={redeemCashOptions.length > 0 ? t("depositForm.selectArrivalDebit") : t("wealthForm.noDebitInInstitution")}
                         behavior={{ hierarchy: false, search: "auto", clearable: false }}
@@ -2332,7 +2333,7 @@ export function DepositFormModal({
                     <SmartSelect
                       mode="single"
                       value={cashAccountId}
-                      onChange={(id) => { setCashAccountId(id); recordRecentAccount(id); }}
+                      onChange={(id) => { setCashAccountId(id); }}
                       options={visibleCashOptions}
                       placeholder={t("depositForm.selectCashAccount")}
                       behavior={{

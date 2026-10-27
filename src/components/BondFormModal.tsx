@@ -15,7 +15,7 @@ import {
   HoldingMemoField,
   HoldingProductModal,
 } from "@/components/holding-entry/HoldingEntryFields";
-import { recordRecentAccount, sortByAccountUsage } from "@/lib/client/recentAccounts";
+import { recordRecentAccounts, sortByAccountUsage } from "@/lib/client/recentAccounts";
 import { compactFinanceAccountIds, dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
 import { depositTermMaturityUtc, type DepositTermUnit } from "@/lib/deposit-term";
@@ -755,9 +755,11 @@ export function BondFormModal({
         if (mode === "create") reset();
       }
       requestAnimationFrame(() => {
+        const accountIds = compactFinanceAccountIds([toAccountId, cashAccountId]);
+        recordRecentAccounts(accountIds);
         dispatchFinanceDataChanged({
           reason: "bond-save",
-          accountIds: compactFinanceAccountIds([toAccountId, cashAccountId]),
+          accountIds,
         });
       });
     } catch (err) {
@@ -925,7 +927,7 @@ export function BondFormModal({
                       <SmartSelect
                         mode="single"
                         value={cashAccountId}
-                        onChange={(id) => { setCashAccountId(id); recordRecentAccount(id); }}
+                        onChange={(id) => { setCashAccountId(id); }}
                         options={sortByAccountUsage(redeemCashOptions, accountUsage)}
                         placeholder={
                           redeemCashOptions.length > 0
@@ -973,7 +975,7 @@ export function BondFormModal({
                       <SmartSelect
                         mode="single"
                         value={cashAccountId}
-                        onChange={(id) => { setCashAccountId(id); recordRecentAccount(id); }}
+                        onChange={(id) => { setCashAccountId(id); }}
                         options={sortByAccountUsage(cashSelectOptions, accountUsage)}
                         placeholder={t("wealthForm.selectAccount")}
                         onCreateClick={() => setNestedEntityType("cash-account")}
@@ -990,7 +992,7 @@ export function BondFormModal({
                       <SmartSelect
                         mode="single"
                         value={toAccountId}
-                        onChange={(id) => { setToAccountId(id); recordRecentAccount(id); }}
+                        onChange={(id) => { setToAccountId(id); }}
                         options={sortByAccountUsage(bondSelectOptions, accountUsage)}
                         placeholder={bondSelectOptions.length > 0 ? t("wealthForm.selectSameInstitutionOrPayment") : t("wealthForm.autoCreateAfterAddProduct")}
                         onCreateClick={openBondAccountModal}

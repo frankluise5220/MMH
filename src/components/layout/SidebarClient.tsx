@@ -48,6 +48,7 @@ import {
 } from "@/lib/client/account-balances-fetch";
 import {
   APP_PREFS_EVENT,
+  getAccountUsageSortEnabledPreference,
   getAppPreferences,
   getSidebarCollapsedPreference,
   getSidebarGroupPreference,
@@ -62,7 +63,8 @@ import {
   setSidebarOwnerFilterPreference,
 } from "@/lib/client/appPreferences";
 import { useI18n } from "@/lib/i18n";
-import { recordRecentAccount, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
+import { sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
+import { accountUsageScore } from "@/lib/account-usage-score";
 import { UndoLastOperationButton } from "@/components/UndoLastOperationButton";
 import { getInvestmentAccountView, resolveLoanType } from "@/lib/account-kind-utils";
 import { FIXED_ASSET_TYPES } from "@/lib/fixed-asset";
@@ -778,10 +780,6 @@ export function SidebarClient({
   }, [pathname]);
 
   useEffect(() => {
-    if (pathname === "/" && selectedAccountId) recordRecentAccount(selectedAccountId);
-  }, [pathname, selectedAccountId]);
-
-  useEffect(() => {
     const clearPrefetchMarkers = () => {
       prefetchedHrefRef.current.clear();
     };
@@ -1015,17 +1013,26 @@ export function SidebarClient({
   }, [items, hideZero, selectedOwnerFilter, showFixedAssets, baseCurrency, accountFilterQuery, displayBalance, displayBalanceValue, t]);
 
   const sections = useMemo(() => {
+    // 「设置 → 显示 → 按使用频率调整账户顺序」关掉后保持账户原始顺序。
+    // accountUsage 在开关切换时会被 useAccountUsage 置空，所以这个 memo 会重算。
+    const usageSortEnabled = getAccountUsageSortEnabledPreference();
     const sortAccountsByUsage = (accounts: AccountItem[]) =>
-      accounts.length >= SIDEBAR_USAGE_SORT_MIN_GROUP_SIZE
+      usageSortEnabled && accounts.length >= SIDEBAR_USAGE_SORT_MIN_GROUP_SIZE
         ? sortByAccountUsage(accounts, accountUsage)
         : accounts;
+    // 机构分组内同样走统一打分（长期习惯分 + 起步阻尼），不再用裸使用次数，
+    // 否则一次操作就能把账户从第 10 位顶到第 1 位。
+    const usageNow = Date.now();
     const compareAccountUsage = (a: AccountItem, b: AccountItem) => {
+      if (!usageSortEnabled) return 0;
       const aStat = a.id ? accountUsage[a.id] : undefined;
       const bStat = b.id ? accountUsage[b.id] : undefined;
-      const countDiff = (bStat?.count ?? 0) - (aStat?.count ?? 0);
-      if (countDiff !== 0) return countDiff;
+      const scoreDiff = accountUsageScore(bStat, usageNow) - accountUsageScore(aStat, usageNow);
+      if (scoreDiff !== 0) return scoreDiff;
       const recencyDiff = (bStat?.lastUsedAt ?? 0) - (aStat?.lastUsedAt ?? 0);
       if (recencyDiff !== 0) return recencyDiff;
+      const countDiff = (bStat?.count ?? 0) - (aStat?.count ?? 0);
+      if (countDiff !== 0) return countDiff;
       return a.label.localeCompare(b.label, "zh-Hans-CN");
     };
     const buildLoanSubgroups = (loanItems: AccountItem[]): SidebarSubgroup[] => {

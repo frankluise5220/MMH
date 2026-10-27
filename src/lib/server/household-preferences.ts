@@ -61,6 +61,7 @@ export function preferenceRowData(prefs: AppPreferences) {
     rowHeightMode: prefs.rowHeightMode,
     accountLabelFields: serializeAccountLabelFields(prefs.accountLabelFields),
     accountDropdownRestrictType: prefs.accountDropdownRestrictType,
+    accountUsageSortEnabled: prefs.accountUsageSortEnabled,
   };
 }
 

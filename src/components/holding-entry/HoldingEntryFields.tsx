@@ -8,7 +8,7 @@ import { EntryAttachmentButton } from "@/components/EntryAttachmentPanel";
 import { ModalLayer } from "@/components/ModalLayer";
 import { NestedAddModal } from "@/components/EntityCreateForm";
 import { kindLabel } from "@/lib/account-kinds";
-import { recordRecentAccount, sortByAccountUsage } from "@/lib/client/recentAccounts";
+import { sortByAccountUsage } from "@/lib/client/recentAccounts";
 import { useI18n } from "@/lib/i18n";
 import type { HoldingEntryFormApi } from "@/lib/holding-entry/useHoldingEntryForm";
 import type { HoldingEntryNestedFieldData } from "@/lib/holding-entry/types";
@@ -83,7 +83,7 @@ export function HoldingHoldingFields({
           <SmartSelect
             mode="single"
             value={toAccountId}
-            onChange={(id) => { setToAccountId(id); recordRecentAccount(id); }}
+            onChange={(id) => { setToAccountId(id); }}
             options={sortByAccountUsage(selectOptions, accountUsage)}
             placeholder={accountPlaceholder}
             onCycleOwnerFilter={cycleOwnerFilter}

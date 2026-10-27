@@ -6,6 +6,7 @@ import { BasicDetailReconcileLockButton } from "@/components/BasicDetailSelectio
 import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { setEntryModalReconciledReadOnly } from "@/lib/client/entryModalLock";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { recordRecentAccounts } from "@/lib/client/recentAccounts";
 import { useI18n } from "@/lib/i18n";
 
 export type EditPayload = {
@@ -170,7 +171,9 @@ export function EntryRowActions({
   const { t } = useI18n();
   // 已「对账」锁定：编辑窗仍可打开（只读查看），但删除按钮禁用。
   const locked = Boolean(edit?.reconciledReadOnly || reconciled);
-  const actionButtonClass = "flex h-6 w-6 items-center justify-center rounded border bg-white transition-colors disabled:opacity-50";
+  // 行内操作按钮统一 20px 方块 + shrink-0：操作列宽度有限，缺了 shrink-0 时
+  // flex 会把其中一部分按钮压窄（与带 shrink-0 的锁/附件图标长短不一）。
+  const actionButtonClass = "flex h-5 w-5 shrink-0 items-center justify-center rounded border bg-white transition-colors disabled:opacity-50";
 
   function onEdit() {
     if (onEditRequest) {
@@ -207,7 +210,9 @@ export function EntryRowActions({
         throw new Error(data?.error ?? t("entryRowActions.deleteFailed"));
       }
       const refreshEntryIds = getDeleteRefreshEntryIds(data, [entryId]);
-      dispatchFinanceDataChanged({ reason: "entry-delete", accountIds: getDeleteRefreshAccountIds(data), deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
+      const deleteAccountIds = getDeleteRefreshAccountIds(data);
+      recordRecentAccounts(deleteAccountIds);
+      dispatchFinanceDataChanged({ reason: "entry-delete", accountIds: deleteAccountIds, deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
 
     } catch (e) {
       const msg =
@@ -223,7 +228,7 @@ export function EntryRowActions({
   }
 
   return (
-    <div className="flex items-center gap-1">
+    <div className="flex shrink-0 items-center gap-1">
       {/*
         只有调用方明确声明「已锁定」时才渲染锁标记：现金明细页（DetailViewClient）自己会渲染
         行内锁，这里再渲染就会重复。`edit.reconciledReadOnly` 只用来禁用删除 / 只读编辑。
@@ -239,7 +244,7 @@ export function EntryRowActions({
           title={locked ? t("reconcile.readOnlyNotice") : t("insuranceShell.editButton")}
           aria-label={t("insuranceShell.editButton")}
         >
-          <Pencil className="h-3.5 w-3.5" />
+          <Pencil className="h-3 w-3" />
         </button>
       ) : null}
       <button
@@ -250,7 +255,7 @@ export function EntryRowActions({
         title={locked ? t("reconcile.lockedError") : deleting ? t("ledgerSwitch.deleting") : t("depositShell.deleteButton")}
         aria-label={locked ? t("reconcile.lockedError") : deleting ? t("ledgerSwitch.deleting") : t("depositShell.deleteButton")}
       >
-        <Trash2 className="h-3.5 w-3.5" />
+        <Trash2 className="h-3 w-3" />
       </button>
     </div>
   );

@@ -15,7 +15,7 @@ import { useI18n } from "@/lib/i18n";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
-import { recordRecentAccount, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
+import { recordRecentAccounts, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
 /** 必填字段红框（统一实现：申请日期 / 基金代码 / 买入金额 / 份额）。 */
 import { REQUIRED_FIELD_CLASS } from "@/lib/client/required-field";
 import { getColorSchemeFromCookie, pnlClassFromRedUp } from "@/lib/client/colors";
@@ -813,7 +813,6 @@ export function InvestmentFormModal({
     cashAccountTouchedRef.current = true;
     cashAccountAutoRef.current = false;
     setCashAccountId(id);
-    recordRecentAccount(id);
   }
 
   function renderCashAccountSelect(placeholder = t("investForm.selectCashAccount")) {
@@ -844,7 +843,6 @@ export function InvestmentFormModal({
         onChange={(id) => {
           investmentAccountTouchedRef.current = true;
           setToAccountId(id);
-          recordRecentAccount(id);
         }}
         options={visibleInvestmentAccountOptions}
         placeholder={placeholder}
@@ -2838,18 +2836,22 @@ export function InvestmentFormModal({
           }
         }
         requestAnimationFrame(() => {
+          const accountIds = compactFinanceAccountIds([toAccountId, cashAccountId]);
+          recordRecentAccounts(accountIds);
           dispatchFinanceDataChanged({
             reason: "investment-save",
-            accountIds: compactFinanceAccountIds([toAccountId, cashAccountId]),
+            accountIds,
           });
         });
       } else {
         setOpen(false);
         if (mode === "create") resetForCreate();
         requestAnimationFrame(() => {
+          const accountIds = compactFinanceAccountIds([toAccountId, cashAccountId]);
+          recordRecentAccounts(accountIds);
           dispatchFinanceDataChanged({
             reason: "investment-save",
-            accountIds: compactFinanceAccountIds([toAccountId, cashAccountId]),
+            accountIds,
           });
         });
       }
@@ -2872,7 +2874,9 @@ export function InvestmentFormModal({
       }
       requestAnimationFrame(() => {
         const refreshEntryIds = getDeleteRefreshEntryIds(data, [entry.id]);
-        dispatchFinanceDataChanged({ reason: "investment-delete", accountIds: getDeleteRefreshAccountIds(data), deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
+        const accountIds = getDeleteRefreshAccountIds(data);
+        recordRecentAccounts(accountIds);
+        dispatchFinanceDataChanged({ reason: "investment-delete", accountIds, deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
       });
     } catch {
       window.alert(t("investForm.alert.deleteFailed"));

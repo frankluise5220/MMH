@@ -14,7 +14,7 @@ import { DateStepper } from "./DateStepper";
 import { CalcInput } from "./CalcInput";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
-import { recordRecentAccount, sortByAccountUsage } from "@/lib/client/recentAccounts";
+import { recordRecentAccounts, sortByAccountUsage } from "@/lib/client/recentAccounts";
 import { compactFinanceAccountIds, dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
 import { uploadEntryAttachmentFiles } from "./EntryAttachmentPanel";
@@ -496,9 +496,11 @@ export function WealthFormModal({
       // 保存后立即重取可赎回持仓（连续新增/赎回时赎回页签与下一次赎回都要看到最新份额）。
       reloadHoldingOptions();
       requestAnimationFrame(() => {
+        const accountIds = compactFinanceAccountIds([toAccountId, cashAccountId]);
+        recordRecentAccounts(accountIds);
         dispatchFinanceDataChanged({
           reason: "wealth-save",
-          accountIds: compactFinanceAccountIds([toAccountId, cashAccountId]),
+          accountIds,
         });
       });
     } catch (err) {
@@ -650,7 +652,7 @@ export function WealthFormModal({
                       <SmartSelect
                         mode="single"
                         value={cashAccountId}
-                        onChange={(id) => { setCashAccountId(id); recordRecentAccount(id); }}
+                        onChange={(id) => { setCashAccountId(id); }}
                         options={sortByAccountUsage(redeemCashOptions, accountUsage)}
                         placeholder={
                           redeemCashOptions.length > 0
@@ -742,7 +744,7 @@ export function WealthFormModal({
                       <SmartSelect
                         mode="single"
                         value={cashAccountId}
-                        onChange={(id) => { setCashAccountId(id); recordRecentAccount(id); }}
+                        onChange={(id) => { setCashAccountId(id); }}
                         options={sortByAccountUsage(cashSelectOptions, accountUsage)}
                         placeholder={t("wealthForm.selectAccount")}
                         onCreateClick={() => setNestedEntityType("cash-account")}
@@ -759,7 +761,7 @@ export function WealthFormModal({
                       <SmartSelect
                         mode="single"
                         value={toAccountId}
-                        onChange={(id) => { setToAccountId(id); recordRecentAccount(id); }}
+                        onChange={(id) => { setToAccountId(id); }}
                         options={sortByAccountUsage(wealthSelectOptions, accountUsage)}
                         placeholder={wealthSelectOptions.length > 0 ? t("wealthForm.selectSameInstitutionOrPayment") : t("wealthForm.autoCreateAfterAddProduct")}
                         onCreateClick={openWealthAccountModal}

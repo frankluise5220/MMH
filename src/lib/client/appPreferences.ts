@@ -16,6 +16,7 @@ import {
   type DateDisplayFormat,
 } from "@/lib/date-utils";
 import {
+  DEFAULT_ACCOUNT_USAGE_SORT_ENABLED,
   PREFERENCE_COOKIE_MIRROR,
   type AppPreferences,
 } from "@/lib/preferences";
@@ -55,6 +56,7 @@ const DETAIL_DATE_BACKGROUND_KEY = "detail_date_background";
 const ROW_HEIGHT_MODE_KEY = "advanced_data_table_row_height_mode";
 export const ACCOUNT_LABEL_FIELDS_COOKIE = "mmh_account_label_fields";
 export const ACCOUNT_DROPDOWN_RESTRICT_TYPE_COOKIE = "mmh_account_dropdown_restrict_type";
+export const ACCOUNT_USAGE_SORT_KEY = "mmh_account_usage_sort";
 const SIDEBAR_COLLAPSED_KEY = "sidebar_collapsed";
 const SIDEBAR_OWNER_FILTER_KEY = "sidebar_owner_filter";
 const AI_PANEL_COLLAPSED_KEY = "mmh_ai_panel_collapsed";
@@ -95,6 +97,7 @@ type AppPreferencesSnapshot = {
   sidebarCollapsed: boolean;
   accountLabelFields: AccountLabelField[];
   accountDropdownRestrictType: boolean;
+  accountUsageSortEnabled: boolean;
 };
 
 const DEFAULT_SESSION_DAYS = 30;
@@ -514,6 +517,7 @@ export function getAppPreferences(): AppPreferencesSnapshot {
     sidebarCollapsed: getSidebarCollapsedPreference(),
     accountLabelFields: getAccountLabelFieldsPreference(),
     accountDropdownRestrictType: getAccountDropdownRestrictTypePreference(),
+    accountUsageSortEnabled: getAccountUsageSortEnabledPreference(),
   };
 }
 
@@ -547,5 +551,33 @@ export function setAccountDropdownRestrictTypePreference(value: boolean) {
     localStorage.setItem(ACCOUNT_DROPDOWN_RESTRICT_TYPE_COOKIE, String(value));
   } catch {}
   setCookieValue(ACCOUNT_DROPDOWN_RESTRICT_TYPE_COOKIE, String(value));
+  emitPreferencesChanged();
+}
+
+/**
+ * 侧边栏 / 账户下拉是否按「最近一个月的记账频率」重排。
+ * 关掉后所有账户选择器保持账户原始顺序（不再是按次数 / 最近使用乱跳）。
+ *
+ * 这是走数据库的正式设置，读的时候以 cookie 镜像为准（PreferencesSync 用
+ * GET 的结果校准它）；localStorage 只作为镜像彻底不可用时的兜底。
+ */
+export function getAccountUsageSortEnabledPreference(): boolean {
+  let raw = parseCookieValue(ACCOUNT_USAGE_SORT_KEY);
+  if (!raw) {
+    try {
+      raw = localStorage.getItem(ACCOUNT_USAGE_SORT_KEY);
+    } catch {
+      raw = null;
+    }
+  }
+  if (!raw) return DEFAULT_ACCOUNT_USAGE_SORT_ENABLED;
+  return raw === "1" || raw === "true";
+}
+
+export function setAccountUsageSortEnabledPreference(value: boolean) {
+  try {
+    localStorage.setItem(ACCOUNT_USAGE_SORT_KEY, value ? "1" : "0");
+  } catch {}
+  setCookieValue(ACCOUNT_USAGE_SORT_KEY, value ? "1" : "0");
   emitPreferencesChanged();
 }

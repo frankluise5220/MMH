@@ -125,6 +125,9 @@ export async function PUT(req: NextRequest) {
     if (has("accountDropdownRestrictType")) {
       patch.accountDropdownRestrictType = normalizeBoolean(body.accountDropdownRestrictType, true);
     }
+    if (has("accountUsageSortEnabled")) {
+      patch.accountUsageSortEnabled = normalizeBoolean(body.accountUsageSortEnabled, true);
+    }
 
     const preferences = await updateHouseholdPreferences(householdId, patch);
     revalidateAfterSettingsChange();

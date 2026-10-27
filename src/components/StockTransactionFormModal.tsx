@@ -15,7 +15,7 @@ import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
 /** 记账弹窗整窗外壳：宽度/标题栏/表单/FT 页签卡片/固定页脚/高度锁定统一由它负责。 */
 import { EntryModalShell } from "@/components/EntryModalShell";
-import { recordRecentAccount, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
+import { recordRecentAccounts, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
 import { formatAmountDraft, formatMoneyWithCurrencyCode as formatMoney } from "@/lib/format";
 import { todayDateLocalYmd as todayDateInputValue } from "@/lib/date-utils";
 import { useI18n } from "@/lib/i18n";
@@ -1378,9 +1378,11 @@ export function StockTransactionFormModal({
         window.dispatchEvent(new CustomEvent(editingId ? "mmh:stock:edit:success" : "mmh:stock:create:success", { detail: { requestId } }));
       }
       requestAnimationFrame(() => {
+        const accountIds = Array.from(new Set([stockAccountId, selectedCashAccount?.id].filter((id): id is string => Boolean(id))));
+        recordRecentAccounts(accountIds);
         dispatchFinanceDataChanged({
           reason: editingId ? "stock-transaction-update" : "stock-transaction-save",
-          accountIds: Array.from(new Set([stockAccountId, selectedCashAccount?.id].filter((id): id is string => Boolean(id)))),
+          accountIds,
           entryIds: [lastData?.data?.transaction?.cashEntryId ?? "", lastData?.data?.transaction?.id ?? ""].filter(Boolean),
         });
       });
@@ -1526,7 +1528,6 @@ export function StockTransactionFormModal({
                     onChange={(value) => {
                       cashAccountTouchedRef.current = true;
                       setCashAccountId(value);
-                      recordRecentAccount(value);
                     }}
                     options={sortByAccountUsage(eligibleCashAccountOptions, accountUsage)}
                     placeholder={eligibleCashAccountOptions.length > 0 ? t("stockTx.selectCashAccount") : t("stockTx.addCashAccount")}

@@ -63,7 +63,11 @@ export type PreferenceRow = {
   rowHeightMode?: number | string | null;
   accountLabelFields?: string | null;
   accountDropdownRestrictType?: boolean | null;
+  accountUsageSortEnabled?: boolean | null;
 };
+
+/** 默认按使用频率排序，与引入开关之前的行为一致。 */
+export const DEFAULT_ACCOUNT_USAGE_SORT_ENABLED = true;
 
 export type AppPreferences = {
   sessionDays: number;
@@ -90,6 +94,8 @@ export type AppPreferences = {
   rowHeightMode: RowHeightMode;
   accountLabelFields: AccountLabelField[];
   accountDropdownRestrictType: boolean;
+  /** 是否按最近一个月的记账频率给侧边栏和账户下拉排序。 */
+  accountUsageSortEnabled: boolean;
 };
 
 export function normalizeSessionDays(input: unknown): number {
@@ -203,6 +209,7 @@ export function preferencesFromRow(row: PreferenceRow | null | undefined): AppPr
       ? parseAccountLabelFields(row.accountLabelFields)
       : [...DEFAULT_ACCOUNT_LABEL_FIELDS],
     accountDropdownRestrictType: normalizeBoolean(row?.accountDropdownRestrictType, true),
+    accountUsageSortEnabled: normalizeBoolean(row?.accountUsageSortEnabled, DEFAULT_ACCOUNT_USAGE_SORT_ENABLED),
   };
 }
 
@@ -237,4 +244,5 @@ export const PREFERENCE_COOKIE_MIRROR = [
   { key: "advanced_data_table_row_height_mode", pick: (p: AppPreferences) => String(p.rowHeightMode) },
   { key: "mmh_account_label_fields", pick: (p: AppPreferences) => serializeAccountLabelFields(p.accountLabelFields) },
   { key: "mmh_account_dropdown_restrict_type", pick: (p: AppPreferences) => (p.accountDropdownRestrictType ? "1" : "0") },
+  { key: "mmh_account_usage_sort", pick: (p: AppPreferences) => (p.accountUsageSortEnabled ? "1" : "0") },
 ] as const;

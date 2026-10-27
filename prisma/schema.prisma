@@ -1244,6 +1244,8 @@ model HouseholdPreference {
   /// account-display 的版本化序列化串；为空表示未配置，用默认字段集。
   accountLabelFields                String?
   accountDropdownRestrictType       Boolean         @default(true)
+  /// 侧边栏 / 账户下拉是否按最近一个月的记账频率排序；关闭后保持账户原始顺序。
+  accountUsageSortEnabled           Boolean         @default(true)
   createdAt                         DateTime        @default(now())
   updatedAt                         DateTime        @default(now()) @updatedAt
 

@@ -25,6 +25,7 @@ import {
   type AccountDisplayOption,
 } from "@/lib/account-display";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { recordRecentAccounts } from "@/lib/client/recentAccounts";
 import { fetchSettingsBootstrap } from "@/lib/client/settingsCache";
 import { addTradingDaysUtc, parseFlexibleDateToYmd } from "@/lib/date-utils";
 import { formatAmountDraft } from "@/lib/format";
@@ -1494,6 +1495,7 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
       const accountIds = allAccountIds.size > 0
         ? Array.from(allAccountIds)
         : Array.from(new Set(selectedItems.map((item) => item.fundAccountId).filter((id): id is string => Boolean(id))));
+      recordRecentAccounts(accountIds);
       dispatchFinanceDataChanged({ reason: "fund-excel-import", accountIds });
       onImported?.({ count: created, accountIds });
       onClose();

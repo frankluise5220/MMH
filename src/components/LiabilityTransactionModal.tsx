@@ -14,7 +14,7 @@ import { useAccountSSFilter } from "./accountSSFilter";
 import { buildCategoryTreeOptions, type CategorySource } from "./categorySmartSelect";
 import { institutionTypeLabel, isSettlementCounterpartyType, isInstitutionTypeOf, LOAN_DIALOG_INSTITUTION_TYPE_VALUES } from "@/lib/account-kinds";
 import { buildAccountDisplayOption, formatAccountHoverTitle } from "@/lib/account-display";
-import { recordRecentAccount, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
+import { recordRecentAccounts, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
 /** 整窗外壳（遮罩 / 标题栏 / 宽度档位 / 表单 / FT 页签与卡片 / 窗口底按钮行）：规则集中在它。 */
 import { EntryModalShell } from "@/components/EntryModalShell";
@@ -1322,7 +1322,6 @@ export function LiabilityTransactionModal({
     setFixedAssetAssetId(id);
     const asset = fixedAssetAssets.find((item) => item.id === id);
     setFixedAssetAccountId(asset?.accountId ?? "");
-    if (asset?.accountId) recordRecentAccount(asset.accountId);
   }
 
   function getPendingRepaymentLprAdjustment() {
@@ -1636,6 +1635,7 @@ export function LiabilityTransactionModal({
           }
         }
       }
+      recordRecentAccounts([cashAccountId, fixedAssetAccountId]);
       dispatchFinanceDataChanged({ reason: "liability-save" });
       if (keepAdding) {
         // 保存并再记一笔：账户、利率、还款方式、日期保留，只清本笔金额类字段
@@ -2489,7 +2489,6 @@ export function LiabilityTransactionModal({
         onChange={isLoanBorrowEditLocked ? () => {} : (id: string) => {
           setFixedAssetAccountId(id);
           setFixedAssetAssetId("");
-          recordRecentAccount(id);
         }}
         options={fixedAssetAccountOptions}
         placeholder={t("txForm.selectFixedAssetAccount")}

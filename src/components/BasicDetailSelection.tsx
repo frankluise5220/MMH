@@ -9,6 +9,7 @@ import type { ReimbursementFormEntry } from "@/components/ReimbursementFormModal
 import { callReconcileEntries } from "@/lib/api/entry-reconcile";
 import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { recordRecentAccounts } from "@/lib/client/recentAccounts";
 import { showConfirmDialog } from "@/lib/client/confirm-dialog";
 import { batchReplaceEntries, type BatchReplaceField } from "@/lib/client/batchReplaceEntries";
 import { translate, useI18n } from "@/lib/i18n";
@@ -276,7 +277,9 @@ export function BasicDetailBatchDeleteButton({ recordLabel }: { recordLabel?: st
       setDeleteMessage(data.message ?? t("fundShell.deletedCount", { count: entryIds.length }));
       clear();
       const refreshEntryIds = getDeleteRefreshEntryIds(data, entryIds);
-      dispatchFinanceDataChanged({ reason: "entry-batch-delete", accountIds: getDeleteRefreshAccountIds(data), deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
+      const deleteAccountIds = getDeleteRefreshAccountIds(data);
+      recordRecentAccounts(deleteAccountIds);
+      dispatchFinanceDataChanged({ reason: "entry-batch-delete", accountIds: deleteAccountIds, deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
     } catch {
       setDeleteMessage(t("stockPanel.error.batchDeleteFailed"));
     } finally {
@@ -413,9 +416,9 @@ export function BasicDetailReconcileLockButton({
   }
 
   const lockClassName =
-    "flex h-6 w-6 shrink-0 items-center justify-center rounded border border-amber-300 bg-amber-50 text-amber-700 transition-colors hover:bg-amber-100";
+    "flex h-5 w-5 shrink-0 items-center justify-center rounded border border-amber-300 bg-amber-50 text-amber-700 transition-colors hover:bg-amber-100";
   const lockTitle = t("reconcile.unlockTitle");
-  const lockIcon = <Lock className="h-3.5 w-3.5" />;
+  const lockIcon = <Lock className="h-3 w-3" />;
 
   // 整行是可点的 <button>：只当图标用，点它不能顺带打开编辑窗。
   if (!asButton) {
