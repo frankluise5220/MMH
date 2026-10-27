@@ -3,7 +3,7 @@ import { ModalLayer } from "@/components/ModalLayer";
 
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Power, PowerOff, CreditCard, Wallet, Building2, Landmark, PiggyBank, Banknote, Trash2, X, CornerDownRight } from "lucide-react";
+import { Power, PowerOff, CreditCard, Wallet, Building2, Landmark, PiggyBank, Banknote, Trash2, X, CornerDownRight, Plus, Pencil, SlidersHorizontal, Check } from "lucide-react";
 import { TransparentSideNavButtons } from "@/components/TransparentSideNavButtons";
 import type { AccountKind } from "@prisma/client";
 import { PRODUCT_TYPES, supportsCostBasisMethod } from "@/lib/investment-config";
@@ -23,11 +23,12 @@ import {
   type StatisticsInstitutionItem,
   type StatisticsUserItem,
 } from "@/components/AccountScopeFilter";
-import { AccountBatchImportButton } from "@/components/settings/AccountBatchImportButton";
 import { CreditCardBillingDayRulesTable } from "@/components/CreditCardBillingDayRulesTable";
 import { currentBillingDayFromRules, type CreditBillingDayRuleView } from "@/lib/credit/billing-day-rules";
 import { CREDIT_CARD_MAX_REPAYMENT_OFFSET_DAYS } from "@/lib/credit/rules";
 import { SettingsActionButton, SettingsPageHeader, SettingsPrimaryAddButton, useHideSettingDescriptions } from "@/components/settings/SettingsPageScaffold";
+import { SwipeActionRow, type SwipeActionItem } from "@/components/SwipeActionRow";
+import SettingsSwitch from "@/components/settings/SettingsSwitch";
 import { buildAccountDisplayOption } from "@/lib/account-display";
 import { accountOwnerNameById, buildAccountOwnerOptions } from "@/lib/account-owner-options";
 import { getCreditCardLabelTemplatePreference } from "@/lib/client/appPreferences";
@@ -57,6 +58,29 @@ import {
   isStockInvestmentAccount,
 } from "@/lib/account-institution-rules";
 import { isCreditCardMonthEndBillingDay } from "@/lib/credit/rules";
+
+/* ---- 移动端筛选抽屉用的小组件 ---- */
+function FilterChip({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      className={[
+        "inline-flex h-9 max-w-full items-center gap-1 rounded-full px-3 text-[13px] transition-colors",
+        active ? "bg-slate-900 font-medium text-white" : "bg-white text-slate-600 ring-1 ring-slate-200 active:bg-slate-50",
+      ].join(" ")}
+    >
+      {active ? <Check className="h-3.5 w-3.5 shrink-0" /> : null}
+      <span className="truncate">{children}</span>
+    </button>
+  );
+}
+
+/** 多选切换：保持点击顺序（与 AccountScopeFilter 的选择语义一致）。 */
+function toggleFilterId(list: string[], id: string) {
+  return list.includes(id) ? list.filter((item) => item !== id) : [...list, id];
+}
 
 /* ---- Render icon from kindIconName ---- */
 function kindIcon(k: string) {
@@ -226,6 +250,12 @@ export default function SettingsAccountsPage() {
   const [scope, setScope] = useState<AccountScopeValue>({ userIds: [], institutionIds: [], accountIds: [] });
   const [selectedAccountKinds, setSelectedAccountKinds] = useState<string[]>([]);
   const [hideInactiveAccounts, setHideInactiveAccounts] = useState(false);
+  const [swipedAccountId, setSwipedAccountId] = useState<string | null>(null);
+  // 移动端：类型页签（单选，"all" = 全部）+ 筛选抽屉开关。桌面端的类型多选下拉不受影响。
+  const [mobileKindTab, setMobileKindTab] = useState("all");
+  const [mobileFilterOpen, setMobileFilterOpen] = useState(false);
+  const [mobileInstitutionQuery, setMobileInstitutionQuery] = useState("");
+  const mobileListRef = useRef<HTMLDivElement | null>(null);
   const [baseCurrency, setBaseCurrency] = useState("CNY");
   const [accountNameQuery, setAccountNameQuery] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -696,21 +726,21 @@ export default function SettingsAccountsPage() {
     return counts;
   }, [accounts]);
 
-  const accountDisplayName = (account: Account) => {
-    return buildAccountDisplayOption(
-      {
-        id: account.id,
-        name: account.name,
-        kind: account.kind,
-        numberMasked: account.numberMasked,
-        groupId: account.groupId,
-        investProductType: account.investProductType,
-        Institution: account.Institution,
-        AccountGroup: account.AccountGroup,
-        Counterparty: account.Counterparty,
-      },
-      getCreditCardLabelTemplatePreference(), readAccountDisplaySettings()).label;
-  };
+  const accountDisplayOption = (account: Account) => buildAccountDisplayOption(
+    {
+      id: account.id,
+      name: account.name,
+      kind: account.kind,
+      numberMasked: account.numberMasked,
+      groupId: account.groupId,
+      investProductType: account.investProductType,
+      Institution: account.Institution,
+      AccountGroup: account.AccountGroup,
+      Counterparty: account.Counterparty,
+    },
+    getCreditCardLabelTemplatePreference(), readAccountDisplaySettings());
+
+  const accountDisplayName = (account: Account) => accountDisplayOption(account).label;
 
   const normalizeSearchText = (value: string | null | undefined) => value?.trim().toLowerCase() ?? "";
   const accountMatchesNameQuery = (account: Account, query: string) => {
@@ -849,11 +879,90 @@ export default function SettingsAccountsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [accounts, scope, selectedAccountKinds, hideInactiveAccounts, accountNameQuery]);
 
+  // ---- 移动端：类型页签（单选） + 按类型分组 ----
+  // 页签与桌面端的 selectedAccountKinds（多选下拉）互不影响：移动端是「浏览分组」，
+  // 桌面端是「精细多选」，共用一个 state 会让两边互相打架。
+  const mobileKindTabs = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const account of filteredAccounts) {
+      const kind = normalizedAccountKind(account);
+      counts.set(kind, (counts.get(kind) ?? 0) + 1);
+    }
+    return [
+      { key: "all", label: t("common.all"), count: filteredAccounts.length },
+      ...kindOrder
+        .filter((kind) => counts.has(kind))
+        .map((kind) => ({ key: kind, label: accountKindLabel(kind), count: counts.get(kind) ?? 0 })),
+    ];
+  }, [filteredAccounts, t, accountKindLabel]);
+
+  // 搜索或筛选把当前页签的类型清空后回落「全部」，否则页面会停在一个空分组上。
+  useEffect(() => {
+    if (mobileKindTab === "all") return;
+    if (mobileKindTabs.some((tab) => tab.key === mobileKindTab)) return;
+    setMobileKindTab("all");
+  }, [mobileKindTab, mobileKindTabs]);
+
+  const mobileAccounts = useMemo(
+    () => (mobileKindTab === "all"
+      ? filteredAccounts
+      : filteredAccounts.filter((account) => normalizedAccountKind(account) === mobileKindTab)),
+    [filteredAccounts, mobileKindTab],
+  );
+
+  const mobileAccountGroups = useMemo(() => {
+    if (mobileKindTab !== "all") return [{ kind: mobileKindTab, items: mobileAccounts }];
+    const buckets = new Map<string, Account[]>();
+    for (const account of mobileAccounts) {
+      const kind = normalizedAccountKind(account);
+      const bucket = buckets.get(kind);
+      if (bucket) bucket.push(account);
+      else buckets.set(kind, [account]);
+    }
+    return kindOrder
+      .filter((kind) => buckets.has(kind))
+      .map((kind) => ({ kind, items: buckets.get(kind) ?? [] }));
+  }, [mobileAccounts, mobileKindTab]);
+
+  // 筛选抽屉的机构选项：口径与 filteredAccounts 一致（真实机构 id，无机构归「现金」）。
+  const mobileScopeInstitutionOptions = useMemo(() => {
+    const nameById = new Map(institutions.map((item) => [item.id, item.shortName?.trim() || item.name]));
+    const names = new Map<string, string>();
+    for (const account of accounts) {
+      const id = account.Institution?.id ?? account.institutionId ?? CASH_INSTITUTION_ID;
+      if (names.has(id)) continue;
+      names.set(id, id === CASH_INSTITUTION_ID
+        ? t("statistics.cashInstitution")
+        : (nameById.get(id) ?? account.Institution?.name ?? ""));
+    }
+    return Array.from(names, ([id, name]) => ({ id, name }))
+      .filter((item) => item.name)
+      .sort((left, right) => left.name.localeCompare(right.name, "zh-CN"));
+  }, [accounts, institutions, t]);
+
+  const mobileScopeInstitutions = useMemo(() => {
+    const query = mobileInstitutionQuery.trim().toLowerCase();
+    if (!query) return mobileScopeInstitutionOptions;
+    return mobileScopeInstitutionOptions.filter((item) => item.name.toLowerCase().includes(query));
+  }, [mobileInstitutionQuery, mobileScopeInstitutionOptions]);
+
+  const mobileActiveFilterCount =
+    (scope.userIds.length > 0 ? 1 : 0)
+    + (scope.institutionIds.length > 0 ? 1 : 0)
+    + (hideInactiveAccounts ? 1 : 0);
+
+  // 关抽屉时回到列表顶部：筛选后条数变化很大，停在原来的滚动位置容易看见空白。
+  const closeMobileFilter = () => {
+    setMobileFilterOpen(false);
+    mobileListRef.current?.scrollTo({ top: 0 });
+  };
+
   // ---- ADT 表格 ----
   const navigationAccountsState = displayRows.length > 0 ? displayRows : filteredAccounts;
 
-  const handleDeleteClick = useCallback(async (event: React.MouseEvent, a: Account) => {
-    event.stopPropagation();
+  // event 可为 null：移动端卡片列表的删除按钮不走「行点击冒泡」这一层，无需 stopPropagation。
+  const handleDeleteClick = useCallback(async (event: React.MouseEvent | null, a: Account) => {
+    event?.stopPropagation();
     // 删除影响预检（preview=1 不删除）：展示级联范围——
     // 计划任务（还款/定投等）及其已生成的记录会一并删除。
     let impact: { recordCount: number; toRecordCount: number; planCount: number; planGeneratedRecordCount: number } | null = null;
@@ -1304,6 +1413,299 @@ export default function SettingsAccountsPage() {
 
   return (
     <div className="flex h-full w-full min-w-0 flex-col overflow-hidden">
+      {/* ===== 移动端：单列卡片 =====
+          ADT 表格最小宽 1430px、13 列、正文 12px —— 手机上只能横向滚，字号小到看不清。
+          窄屏改为卡片列表：标题仍走 accountDisplayName 这一唯一入口（账户显示格式设置生效），
+          副标题给类型/币种/归属/停用态，操作收到卡片底部，热区 36px 起。 */}
+      <div
+        ref={mobileListRef}
+        className="h-full min-h-0 overflow-y-auto bg-slate-100 px-3 py-2 md:hidden"
+        onScroll={() => { if (swipedAccountId) setSwipedAccountId(null); }}
+      >
+        <div className="space-y-2.5">
+          <div className="flex items-end justify-between gap-2">
+            <h2 className="text-lg font-semibold leading-tight text-slate-900">{t("settings.accounts.title")}</h2>
+            <span className="shrink-0 pb-0.5 text-xs tabular-nums text-slate-500">
+              {t("settings.scaffold.itemCount", { count: filteredAccounts.length })}
+            </span>
+          </div>
+
+          <input
+            value={accountNameQuery}
+            onChange={(event) => setAccountNameQuery(event.target.value)}
+            placeholder={t("settings.accounts.searchPlaceholder")}
+            className="h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-[15px] outline-none transition focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+          />
+
+          {/* 类型页签：手机上替代桌面端的「类型多选下拉」——一眼看到有哪些类型、
+              各有多少个账户，点一下就在该类型内浏览（列表同时按类型分组）。 */}
+          <div
+            className="-mx-3 flex gap-2 overflow-x-auto px-3 pb-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+            role="tablist"
+            aria-label={t("settings.accounts.type")}
+          >
+            {mobileKindTabs.map((tab) => {
+              const active = mobileKindTab === tab.key;
+              return (
+                <button
+                  key={tab.key}
+                  type="button"
+                  role="tab"
+                  aria-selected={active}
+                  onClick={() => {
+                    setMobileKindTab(tab.key);
+                    setSwipedAccountId(null);
+                    mobileListRef.current?.scrollTo({ top: 0 });
+                  }}
+                  className={[
+                    "inline-flex h-8 shrink-0 items-center gap-1 rounded-full px-3 text-[13px] transition-colors",
+                    active ? "bg-slate-900 font-medium text-white" : "bg-white text-slate-600 ring-1 ring-slate-200 active:bg-slate-50",
+                  ].join(" ")}
+                >
+                  {tab.label}
+                  <span className={`tabular-nums text-[11px] ${active ? "text-white/60" : "text-slate-400"}`}>{tab.count}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setMobileFilterOpen(true)}
+              className="inline-flex h-11 shrink-0 items-center gap-1.5 rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-700 active:bg-slate-50"
+            >
+              <SlidersHorizontal className="h-4 w-4 text-slate-500" />
+              {t("settings.accounts.mobileFilter")}
+              {mobileActiveFilterCount > 0 ? (
+                <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-blue-600 px-1 text-[11px] font-medium tabular-nums text-white">
+                  {mobileActiveFilterCount}
+                </span>
+              ) : null}
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowCreateAccount(true)}
+              className="inline-flex h-11 flex-1 items-center justify-center gap-1.5 rounded-xl bg-blue-600 text-sm font-medium text-white active:bg-blue-700"
+            >
+              <Plus className="h-4 w-4" />
+              {t("settings.accounts.add")}
+            </button>
+          </div>
+
+          {mobileAccounts.length === 0 ? (
+            <div className="rounded-xl bg-white px-4 py-10 text-center text-sm text-slate-400 ring-1 ring-slate-200">
+              {loadingAccounts ? t("common.loading") : t("settings.accounts.empty")}
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {mobileAccountGroups.map((group) => (
+                <div key={group.kind} data-kind-group={group.kind} className="space-y-2">
+                  {mobileKindTab === "all" ? (
+                    <div className="flex items-center gap-1.5 px-0.5 text-[11px] font-medium text-slate-500">
+                      <span className={`flex h-5 w-5 items-center justify-center rounded border ${kindColor(group.kind)}`}>{kindIcon(group.kind)}</span>
+                      <span>{accountKindLabel(group.kind)}</span>
+                      <span className="tabular-nums text-slate-400">{group.items.length}</span>
+                    </div>
+                  ) : null}
+                  {group.items.map((a) => {
+                    const kind = normalizedAccountKind(a);
+                    const display = accountDisplayOption(a);
+                    const isSubAccount = Boolean(a.parentId);
+                    const parentName = isSubAccount ? accountNameById.get(a.parentId ?? "") ?? "" : "";
+                    const childCount = subAccountCountByParentId.get(a.id) ?? 0;
+                    // 名称里已经写出来的字段不再重复一遍：显示格式常含币种/尾号，子账户名也常以父账户名开头。
+                    // 本位币也不显示（满屏 CNY 只是噪音），只有外币、尾号、子账户数、停用态才占副行。
+                    const metaParts: string[] = [];
+                    if (!a.isAggregate && a.currency !== baseCurrency && !display.label.includes(a.currency)) {
+                      metaParts.push(a.currency);
+                    }
+                    if (a.numberMasked && !display.label.includes(a.numberMasked)) metaParts.push(a.numberMasked);
+                    if (childCount > 0) metaParts.push(t("settings.accounts.hierarchyChildCount", { count: childCount }));
+                    if (parentName && !display.label.includes(parentName)) {
+                      metaParts.push(`${t("settings.accounts.colHierarchy")} ${parentName}`);
+                    }
+                    if (!a.isActive) metaParts.push(t("common.disabled"));
+
+                    const swipeActions: SwipeActionItem[] = [];
+                if (!a.isPlaceholder) {
+                  swipeActions.push({
+                    key: "toggle",
+                    label: a.isActive ? t("common.disabled") : t("common.enabled"),
+                    icon: a.isActive ? <PowerOff className="h-4 w-4" /> : <Power className="h-4 w-4" />,
+                    tone: "neutral",
+                    onAction: () => void toggleActive(a.id),
+                  });
+                  swipeActions.push({
+                    key: "edit",
+                    label: t("common.edit"),
+                    icon: <Pencil className="h-4 w-4" />,
+                    tone: "primary",
+                    onAction: () => openEdit(a),
+                  });
+                }
+                swipeActions.push({
+                  key: "delete",
+                  label: t("common.delete"),
+                  icon: <Trash2 className="h-4 w-4" />,
+                  tone: "danger",
+                  onAction: () => void handleDeleteClick(null, a),
+                });
+
+                return (
+                  <SwipeActionRow
+                    key={a.id}
+                    actions={swipeActions}
+                    swipeOpen={swipedAccountId === a.id}
+                    onSwipeOpenChange={(open) => setSwipedAccountId(open ? a.id : null)}
+                    onContentClick={() => {
+                      setSwipedAccountId(null);
+                      if (!a.isPlaceholder) openEdit(a);
+                    }}
+                    className={[
+                      a.isPlaceholder ? "opacity-50" : "",
+                      !a.isActive ? "opacity-70" : "",
+                      // 子账户整行右缩进：父子同名同类型时靠位置区分，不用再把父账户名重复写在副行。
+                      isSubAccount ? "ml-5" : "",
+                    ].join(" ")}
+                  >
+                    <div className="flex items-center gap-2.5 px-3 py-2.5">
+                      <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border ${kindColor(kind)}`}>
+                        {kindIcon(kind)}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div
+                          className="truncate text-[15px] font-semibold leading-5 text-slate-900"
+                          title={display.tableHoverTitle || undefined}
+                        >
+                          {display.label}
+                        </div>
+                        {metaParts.length > 0 ? (
+                          <div className="mt-0.5 truncate text-xs leading-4 text-slate-500 tabular-nums">
+                            {metaParts.join(" · ")}
+                          </div>
+                        ) : null}
+                        {a.note ? <div className="mt-1 truncate text-xs leading-4 text-slate-400">{a.note}</div> : null}
+                      </div>
+                    </div>
+                  </SwipeActionRow>
+                );
+                  })}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* 筛选抽屉：人员 / 机构 / 停用开关。这三项挤在标题下会把列表压到看不见，
+              收进底部抽屉后主界面只留「搜索 + 类型页签 + 筛选 + 新增」。 */}
+          {mobileFilterOpen ? (
+            <ModalLayer
+              className="fixed inset-0 flex items-end justify-center bg-slate-900/40"
+              onClick={closeMobileFilter}
+            >
+              <div
+                role="dialog"
+                aria-modal="true"
+                aria-label={t("settings.accounts.mobileFilter")}
+                className="flex max-h-[85vh] w-full max-w-lg flex-col overflow-hidden rounded-t-2xl bg-white shadow-xl"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <div className="flex shrink-0 items-center justify-between border-b border-slate-100 px-4 py-3">
+                  <h3 className="text-base font-semibold text-slate-900">{t("settings.accounts.mobileFilter")}</h3>
+                  <button
+                    type="button"
+                    onClick={closeMobileFilter}
+                    aria-label={t("common.close")}
+                    className="flex h-8 w-8 items-center justify-center rounded-full text-slate-400 active:bg-slate-100"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                </div>
+
+                <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-3">
+                  <div>
+                    <div className="mb-1.5 text-xs font-medium text-slate-500">{t("settings.accounts.owner")}</div>
+                    <div className="flex flex-wrap gap-2">
+                      <FilterChip active={scope.userIds.length === 0} onClick={() => setScope({ ...scope, userIds: [] })}>
+                        {t("common.all")}
+                      </FilterChip>
+                      {statisticsUsers.map((user) => (
+                        <FilterChip
+                          key={user.id}
+                          active={scope.userIds.includes(user.id)}
+                          onClick={() => setScope({ ...scope, userIds: toggleFilterId(scope.userIds, user.id) })}
+                        >
+                          {user.name}
+                        </FilterChip>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="mb-1.5 text-xs font-medium text-slate-500">{t("settings.accounts.institution")}</div>
+                    <input
+                      value={mobileInstitutionQuery}
+                      onChange={(event) => setMobileInstitutionQuery(event.target.value)}
+                      placeholder={t("settings.accounts.mobileInstitutionSearch")}
+                      className="mb-2 h-9 w-full rounded-lg border border-slate-200 bg-slate-50 px-3 text-sm outline-none focus:border-blue-400 focus:bg-white"
+                    />
+                    <div className="flex max-h-56 flex-wrap content-start gap-2 overflow-y-auto">
+                      <FilterChip active={scope.institutionIds.length === 0} onClick={() => setScope({ ...scope, institutionIds: [] })}>
+                        {t("common.all")}
+                      </FilterChip>
+                      {mobileScopeInstitutions.map((institution) => (
+                        <FilterChip
+                          key={institution.id}
+                          active={scope.institutionIds.includes(institution.id)}
+                          onClick={() => setScope({ ...scope, institutionIds: toggleFilterId(scope.institutionIds, institution.id) })}
+                        >
+                          {institution.name}
+                        </FilterChip>
+                      ))}
+                      {mobileScopeInstitutions.length === 0 ? (
+                        <span className="py-1 text-xs text-slate-400">{t("table.empty")}</span>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-3 rounded-xl bg-slate-50 px-3 py-2.5">
+                    <span className="text-sm text-slate-700">{t("settings.accounts.hideInactiveAccounts")}</span>
+                    <SettingsSwitch
+                      checked={hideInactiveAccounts}
+                      onCheckedChange={setHideInactiveAccounts}
+                      label={t("settings.accounts.hideInactiveAccounts")}
+                    />
+                  </div>
+                </div>
+
+                <div className="flex shrink-0 gap-2 border-t border-slate-100 px-4 pt-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)]">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setScope({ userIds: [], institutionIds: [], accountIds: [] });
+                      setHideInactiveAccounts(false);
+                      setMobileInstitutionQuery("");
+                    }}
+                    className="inline-flex h-11 flex-1 items-center justify-center rounded-xl border border-slate-200 bg-white text-sm text-slate-600 active:bg-slate-50"
+                  >
+                    {t("settings.accounts.mobileFilterClear")}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={closeMobileFilter}
+                    className="inline-flex h-11 flex-[1.4] items-center justify-center rounded-xl bg-blue-600 text-sm font-medium text-white active:bg-blue-700"
+                  >
+                    {t("settings.accounts.mobileFilterDone")}
+                  </button>
+                </div>
+              </div>
+            </ModalLayer>
+          ) : null}
+        </div>
+      </div>
+
+      {/* ===== 桌面端：ADT 表格 ===== */}
+      <div className="hidden h-full min-h-0 w-full min-w-0 flex-col overflow-hidden md:flex">
       <div className="shrink-0">
       <SettingsPageHeader
         title={t("settings.accounts.title")}
@@ -1352,13 +1754,6 @@ export default function SettingsAccountsPage() {
             <span>{t("settings.accounts.hideInactiveAccounts")}</span>
           </label>
           <div className="ml-auto flex items-center gap-2">
-            <AccountBatchImportButton
-              groups={statisticsUsers}
-              institutions={institutions}
-              counterparties={counterparties}
-              baseCurrency={baseCurrency}
-              onImported={() => void refreshSettingsAccounts("account:import")}
-            />
             <SettingsPrimaryAddButton onClick={() => setShowCreateAccount(true)}>{t("settings.accounts.add")}</SettingsPrimaryAddButton>
           </div>
           </>
@@ -1387,6 +1782,7 @@ export default function SettingsAccountsPage() {
           rowActionsMinWidth={104}
           toolbarMode="default"
         />
+      </div>
       </div>
 
       <EntityCreateForm
@@ -1477,11 +1873,11 @@ export default function SettingsAccountsPage() {
               autoFocus
             />
             {deleteError && <div className="text-xs text-red-500 mt-1">{deleteError}</div>}
-            <div className="flex justify-end gap-2 mt-3">
+            <div className="mt-3 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
               <button onClick={() => { setDeleteTarget(null); setDeleteError(""); }}
-                className="h-8 px-3 rounded-md border border-slate-200 bg-white text-xs text-slate-600 hover:bg-slate-50">{t("common.cancel")}</button>
+                className="inline-flex h-11 w-full items-center justify-center rounded-xl border border-slate-200 bg-white text-sm text-slate-600 active:bg-slate-50 sm:h-8 sm:w-auto sm:rounded-md sm:px-3 sm:text-xs sm:hover:bg-slate-50">{t("common.cancel")}</button>
               <button onClick={() => void submitDeleteWithPassword()}
-                className="h-8 px-3 rounded-md bg-red-600 text-white text-xs hover:bg-red-700">{t("settings.accounts.confirmDelete")}</button>
+                className="inline-flex h-11 w-full items-center justify-center rounded-xl bg-red-600 text-sm font-medium text-white active:bg-red-700 sm:h-8 sm:w-auto sm:rounded-md sm:px-3 sm:text-xs sm:hover:bg-red-700">{t("settings.accounts.confirmDelete")}</button>
             </div>
           </div>
         </ModalLayer>
@@ -1540,9 +1936,9 @@ export default function SettingsAccountsPage() {
           setEditFormBaseline({});
         };
         return (
-          <ModalLayer className="fixed inset-0 flex items-start justify-center overflow-y-auto bg-black/30 p-4 backdrop-blur-[1px]" onMouseDown={closeEditModal}>
+          <ModalLayer className="fixed inset-0 flex items-start justify-center overflow-y-auto bg-black/30 p-0 backdrop-blur-[1px] md:p-4" onMouseDown={closeEditModal}>
             <div
-              className="app-modal-panel relative mt-16 !w-[720px] max-w-[calc(100vw-2rem)] sm:mt-20"
+              className="app-modal-panel relative mt-0 w-full max-w-[calc(100vw-2rem)] md:mt-20 md:!w-[720px] md:max-h-[calc(100dvh-7rem)]"
               role="dialog"
               aria-modal="true"
               onMouseDown={e => e.stopPropagation()}
@@ -1959,25 +2355,30 @@ export default function SettingsAccountsPage() {
                 </div>
               ) : null}
 
-              <div className="mt-4 flex items-center justify-end gap-2 border-t border-slate-100 pt-3">
-                {editError ? <div className="mr-auto text-xs text-red-600">{editError}</div> : null}
-                <>
-                  <button
-                    type="button"
-                    onClick={() => void saveEdit({ closeAfter: false })}
-                    className="h-8 rounded-md border border-blue-200 bg-blue-50 px-3 text-xs font-medium text-blue-700 hover:bg-blue-100"
-                  >
-                    {t("common.save")}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void saveEdit({ closeAfter: true })}
-                    className="h-8 rounded-md bg-blue-600 px-4 text-xs font-medium text-white hover:bg-blue-700"
-                  >
-                    {t("settings.accounts.saveAndClose")}
-                  </button>
-                </>
               </div>
+              {/* 按钮行移出滚动区：移动端整屏弹窗里，保存按钮要贴底不动，
+                  不能跟着长表单（备注、基金规则、账单日历史）滚到看不见的地方。
+                  桌面端仍是内容末尾的一行小按钮，视觉与改动前一致。 */}
+              <div className="shrink-0 border-t border-slate-100 bg-white px-4 pt-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] md:px-4 md:pb-4">
+                <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-end">
+                  {editError ? <div className="text-xs text-red-600 md:mr-auto">{editError}</div> : null}
+                  <div className="flex gap-2 md:justify-end">
+                    <button
+                      type="button"
+                      onClick={() => void saveEdit({ closeAfter: false })}
+                      className="inline-flex h-11 flex-1 items-center justify-center rounded-xl border border-slate-200 bg-white text-sm font-medium text-slate-700 active:bg-slate-100 md:h-8 md:flex-none md:rounded-md md:border-blue-200 md:bg-blue-50 md:px-3 md:text-xs md:text-blue-700 md:hover:bg-blue-100"
+                    >
+                      {t("common.save")}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void saveEdit({ closeAfter: true })}
+                      className="inline-flex h-11 flex-[1.4] items-center justify-center rounded-xl bg-blue-600 text-sm font-medium text-white active:bg-blue-700 md:h-8 md:flex-none md:rounded-md md:px-4 md:text-xs md:hover:bg-blue-700"
+                    >
+                      {t("settings.accounts.saveAndClose")}
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
           </ModalLayer>
@@ -2045,10 +2446,10 @@ export default function SettingsAccountsPage() {
                 })}
               </div>
               {mergeError && <div className="text-xs text-red-500 mt-2">{mergeError}</div>}
-              <div className="flex justify-end gap-2 mt-4">
+              <div className="mt-4 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
                 <button type="button" disabled={mergeBusy}
                   onClick={() => setMergeModalOpen(false)}
-                  className="h-8 px-3 rounded-md border border-slate-200 bg-white text-xs text-slate-600 hover:bg-slate-50 disabled:opacity-60">
+                  className="inline-flex h-11 w-full items-center justify-center rounded-xl border border-slate-200 bg-white text-sm text-slate-600 active:bg-slate-50 disabled:opacity-60 sm:h-8 sm:w-auto sm:rounded-md sm:px-3 sm:text-xs sm:hover:bg-slate-50">
                   {t("common.cancel")}
                 </button>
                 <button type="button" disabled={mergeBusy || !mergeKeepId}
@@ -2056,7 +2457,7 @@ export default function SettingsAccountsPage() {
                     const mergeId = mergeSelectedIds.find((id) => id !== mergeKeepId) ?? "";
                     if (mergeKeepId && mergeId) void submitMerge(mergeKeepId, mergeId);
                   }}
-                  className="h-8 px-3 rounded-md bg-blue-600 text-white text-xs font-medium hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60">
+                  className="inline-flex h-11 w-full items-center justify-center rounded-xl bg-blue-600 text-sm font-medium text-white active:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-60 sm:h-8 sm:w-auto sm:rounded-md sm:px-3 sm:text-xs sm:hover:bg-blue-700">
                   {mergeBusy ? "..." : t("settings.accounts.merge.confirm")}
                 </button>
               </div>
@@ -2183,18 +2584,18 @@ export default function SettingsAccountsPage() {
                   </table>
                 )}
               </div>
-              <div className="flex shrink-0 items-center justify-between gap-2 border-t border-slate-100 px-4 py-3">
+              <div className="flex shrink-0 flex-col gap-2 border-t border-slate-100 px-4 pt-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] sm:flex-row sm:items-center sm:justify-between sm:pb-3">
                 <div className="min-w-0 text-[11px] text-slate-400">
                   {trashTruncated ? tf("settings.accounts.trash.truncated", { count: trashRecords.length }) : ""}
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
                   {trashError && trashRecords.length > 0 ? <div className="text-xs text-red-600">{trashError}</div> : null}
-                  <span className="text-xs text-slate-500">{tf("table.selectedCount", { count: trashSelectedIds.length })}</span>
+                  <span className="shrink-0 text-xs text-slate-500">{tf("table.selectedCount", { count: trashSelectedIds.length })}</span>
                   <button
                     type="button"
                     disabled={trashBusy || trashSelectedIds.length === 0}
                     onClick={() => void purgeTrashRecords(trashSelectedIds)}
-                    className="h-8 rounded-md bg-red-600 px-3 text-xs font-medium text-white transition hover:bg-red-700 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400"
+                    className="inline-flex h-11 flex-1 items-center justify-center rounded-xl bg-red-600 text-sm font-medium text-white transition active:bg-red-700 disabled:cursor-not-allowed disabled:bg-slate-200 disabled:text-slate-400 sm:h-8 sm:flex-none sm:rounded-md sm:px-3 sm:text-xs sm:hover:bg-red-700"
                   >
                     {tf("settings.accounts.trash.deleteSelected", { count: trashSelectedIds.length })}
                   </button>

@@ -114,15 +114,17 @@ function NamedSlicePie({
         {items.length === 0 ? (
           <div className="h-64 flex items-center justify-center text-xs text-slate-400">{emptyText}</div>
         ) : (
-          <div className="flex items-center">
-            <ResponsiveContainer width="55%" height={240}>
-              <PieChart>
-                <Pie data={items} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={45} outerRadius={80} paddingAngle={2} label={renderPieLabel} labelLine={false}>
-                  {items.map((item, i) => <Cell key={item.id ?? `${item.name}-${i}`} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
-                </Pie>
-                <Tooltip content={<CustomTooltip />} />
-              </PieChart>
-            </ResponsiveContainer>
+          <div className="flex flex-col md:flex-row md:items-center">
+            <div className="w-full shrink-0 md:w-[55%]">
+              <ResponsiveContainer width="100%" height={240}>
+                <PieChart>
+                  <Pie data={items} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={45} outerRadius={80} paddingAngle={2} label={renderPieLabel} labelLine={false}>
+                    {items.map((item, i) => <Cell key={item.id ?? `${item.name}-${i}`} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
+                  </Pie>
+                  <Tooltip content={<CustomTooltip />} />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
             <div className="flex-1 space-y-1.5">
               {items.slice(0, 8).map((item, i) => (
                 <div key={item.id ?? `${item.name}-${i}`} className="flex items-center gap-1.5 text-xs">
@@ -230,15 +232,17 @@ export default function StatisticsCharts({
             {incomeCats.length === 0 ? (
               <div className="h-64 flex items-center justify-center text-xs text-slate-400">{t("stats.noIncomeData")}</div>
             ) : (
-              <div className="flex items-center">
-                <ResponsiveContainer width="55%" height={240}>
-                  <PieChart>
-                    <Pie data={incomeCats} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={45} outerRadius={80} paddingAngle={2} label={renderPieLabel} labelLine={false}>
-                      {incomeCats.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
-                    </Pie>
-                    <Tooltip content={<CustomTooltip />} />
-                  </PieChart>
-                </ResponsiveContainer>
+              <div className="flex flex-col md:flex-row md:items-center">
+                <div className="w-full shrink-0 md:w-[55%]">
+                  <ResponsiveContainer width="100%" height={240}>
+                    <PieChart>
+                      <Pie data={incomeCats} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={45} outerRadius={80} paddingAngle={2} label={renderPieLabel} labelLine={false}>
+                        {incomeCats.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
+                      </Pie>
+                      <Tooltip content={<CustomTooltip />} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
                 <div className="flex-1 space-y-1.5">
                   {incomeCats.map((c, i) => (
                     <div key={c.name} className="flex items-center gap-1.5 text-xs">
@@ -262,15 +266,17 @@ export default function StatisticsCharts({
             {expenseCats.length === 0 ? (
               <div className="h-64 flex items-center justify-center text-xs text-slate-400">{t("stats.noExpenseData")}</div>
             ) : (
-              <div className="flex items-center">
-                <ResponsiveContainer width="55%" height={240}>
-                  <PieChart>
-                    <Pie data={expenseCats} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={45} outerRadius={80} paddingAngle={2} label={renderPieLabel} labelLine={false}>
-                      {expenseCats.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
-                    </Pie>
-                    <Tooltip content={<CustomTooltip />} />
-                  </PieChart>
-                </ResponsiveContainer>
+              <div className="flex flex-col md:flex-row md:items-center">
+                <div className="w-full shrink-0 md:w-[55%]">
+                  <ResponsiveContainer width="100%" height={240}>
+                    <PieChart>
+                      <Pie data={expenseCats} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={45} outerRadius={80} paddingAngle={2} label={renderPieLabel} labelLine={false}>
+                        {expenseCats.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
+                      </Pie>
+                      <Tooltip content={<CustomTooltip />} />
+                    </PieChart>
+                  </ResponsiveContainer>
+                </div>
                 <div className="flex-1 space-y-1.5">
                   {expenseCats.map((c, i) => (
                     <div key={c.name} className="flex items-center gap-1.5 text-xs">
@@ -328,15 +334,17 @@ export default function StatisticsCharts({
               {incomeTagGroups.length === 0 ? (
                 <div className="h-64 flex items-center justify-center text-xs text-slate-400">{t("stats.noIncomeTagData")}</div>
               ) : (
-                <div className="flex items-center">
-                  <ResponsiveContainer width="55%" height={240}>
-                    <PieChart>
-                      <Pie data={incomeTagGroups} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={45} outerRadius={80} paddingAngle={2} label={renderPieLabel} labelLine={false}>
-                        {incomeTagGroups.map((t) => <Cell key={t.id} fill={t.color} />)}
-                      </Pie>
-                      <Tooltip content={<CustomTooltip />} />
-                    </PieChart>
-                  </ResponsiveContainer>
+                <div className="flex flex-col md:flex-row md:items-center">
+                  <div className="w-full shrink-0 md:w-[55%]">
+                    <ResponsiveContainer width="100%" height={240}>
+                      <PieChart>
+                        <Pie data={incomeTagGroups} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={45} outerRadius={80} paddingAngle={2} label={renderPieLabel} labelLine={false}>
+                          {incomeTagGroups.map((t) => <Cell key={t.id} fill={t.color} />)}
+                        </Pie>
+                        <Tooltip content={<CustomTooltip />} />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  </div>
                   <div className="flex-1 space-y-1.5">
                     {incomeTagGroups.slice(0, 6).map((t) => (
                       <div key={t.id} className="flex items-center gap-1.5 text-xs">
@@ -360,15 +368,17 @@ export default function StatisticsCharts({
               {expenseTagGroups.length === 0 ? (
                 <div className="h-64 flex items-center justify-center text-xs text-slate-400">{t("stats.noExpenseTagData")}</div>
               ) : (
-                <div className="flex items-center">
-                  <ResponsiveContainer width="55%" height={240}>
-                    <PieChart>
-                      <Pie data={expenseTagGroups} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={45} outerRadius={80} paddingAngle={2} label={renderPieLabel} labelLine={false}>
-                        {expenseTagGroups.map((t) => <Cell key={t.id} fill={t.color} />)}
-                      </Pie>
-                      <Tooltip content={<CustomTooltip />} />
-                    </PieChart>
-                  </ResponsiveContainer>
+                <div className="flex flex-col md:flex-row md:items-center">
+                  <div className="w-full shrink-0 md:w-[55%]">
+                    <ResponsiveContainer width="100%" height={240}>
+                      <PieChart>
+                        <Pie data={expenseTagGroups} dataKey="value" nameKey="name" cx="50%" cy="50%" innerRadius={45} outerRadius={80} paddingAngle={2} label={renderPieLabel} labelLine={false}>
+                          {expenseTagGroups.map((t) => <Cell key={t.id} fill={t.color} />)}
+                        </Pie>
+                        <Tooltip content={<CustomTooltip />} />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  </div>
                   <div className="flex-1 space-y-1.5">
                     {expenseTagGroups.slice(0, 6).map((t) => (
                       <div key={t.id} className="flex items-center gap-1.5 text-xs">
@@ -394,7 +404,9 @@ export default function StatisticsCharts({
         {pnlList.length === 0 ? (
           <div className="px-4 py-8 text-xs text-slate-400 text-center">{t("stats.noRealizedRecords")}</div>
         ) : (
-          <div className="overflow-x-auto max-h-[360px] overflow-y-auto">
+          <>
+          {/* 桌面：表格（6 列） */}
+          <div className="hidden overflow-x-auto max-h-[360px] overflow-y-auto md:block">
             <table className="w-full table-fixed border-separate border-spacing-0">
               <thead className="sticky top-0 bg-white z-10">
                 <tr>
@@ -439,6 +451,40 @@ export default function StatisticsCharts({
               </tfoot>
             </table>
           </div>
+          {/* 移动端：卡片（每条两行：日期+类型+金额 / 基金+盈亏+收益率） */}
+          <div className="divide-y divide-slate-100 md:hidden">
+            {pnlList.map((e) => (
+              <div key={e.id} className="px-3 py-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="shrink-0 text-xs tabular-nums text-slate-500">{e.date}</span>
+                  <span className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-medium ${pnlTypeBadge(e)}`}>
+                    {e.subtype || (e.profit >= 0 ? t("stats.investProfit") : t("stats.investLoss"))}
+                  </span>
+                  <span className="ml-auto shrink-0 text-xs tabular-nums text-slate-600">{formatMoney(Math.abs(e.amount))}</span>
+                </div>
+                <div className="mt-1 flex min-w-0 items-center justify-between gap-2">
+                  <span className="min-w-0 truncate text-sm text-slate-800">
+                    {e.fundName || e.fundCode}{e.fundName && e.fundCode && e.fundName !== e.fundCode && <span className="ml-1 text-xs text-slate-400">{e.fundCode}</span>}
+                  </span>
+                  <span className="flex shrink-0 items-center gap-1.5">
+                    <span className={`text-sm tabular-nums font-medium ${e.profit >= 0 ? pnlClsText : lossClsText}`}>
+                      {e.profit >= 0 ? "+" : ""}{formatMoney(e.profit)}
+                    </span>
+                    <span className={`text-xs tabular-nums ${e.profit >= 0 ? pnlClsText : lossClsText}`}>
+                      {e.profitRate !== 0 ? `${(e.profitRate * 100).toFixed(2)}%` : "-"}
+                    </span>
+                  </span>
+                </div>
+              </div>
+            ))}
+            <div className="flex items-center justify-between bg-slate-50 px-3 py-2.5">
+              <span className="text-xs font-semibold text-slate-700">{t("common.total")}</span>
+              <span className={`text-sm tabular-nums font-semibold ${pnlCls(pnlList.reduce((s, e) => s + e.profit, 0))}`}>
+                {(() => { const t = pnlList.reduce((s, e) => s + e.profit, 0); return (t >= 0 ? "+" : "") + formatMoney(t); })()}
+              </span>
+            </div>
+          </div>
+          </>
         )}
       </div>
     </div>

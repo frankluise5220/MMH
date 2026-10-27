@@ -1569,7 +1569,7 @@ export async function POST(req: Request) {
       forceCreateOwnedMoneyAccounts: z.boolean().optional().default(false),
       mailSource: MailSourceSchema.optional(),
       manualRecordConflictPolicy: z.enum(["overwrite", "keep"]).optional(),
-      // 客户端把导入拆成 10 批顺序提交（见 ViewExcelImportMenuButton）。余额重算只在
+      // 客户端把导入拆成 10 批顺序提交。余额重算只在
       // 末批做一次 —— 每批都算会把同一批账户的流水重复扫 10 遍。缺省为 true：单次
       // 调用方（邮件导入、脚本）不传这个字段，也必须重算。
       isLastBatch: z.boolean().optional().default(true),

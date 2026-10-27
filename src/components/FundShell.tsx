@@ -16,6 +16,7 @@ import { useOutsideClose } from "@/lib/client/useOutsideClose";
 import { toNumber } from "@/lib/date-utils";
 import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
+import { recordRecentAccounts } from "@/lib/client/recentAccounts";
 import { useEntryReconcileState } from "@/lib/client/use-entry-reconcile-state";
 import { setEntryModalReconciledReadOnly } from "@/lib/client/entryModalLock";
 import { BasicDetailReconcileLockButton } from "@/components/BasicDetailSelection";
@@ -50,9 +51,9 @@ import { RefreshNavButton } from "@/components/RefreshNavButton";
 
 import { AddNavButton } from "@/components/AddNavButton";
 
-import { AdvancedDataTable, type AdvancedDataTableColumn, type AdvancedDataTableSummaryRow } from "@/components/AdvancedDataTable";
-import { DetailTablePaginationControls } from "@/components/DetailTablePaginationControls";
+import { AdvancedDataTable, ROW_ACTION_BUTTON_BOX_CLASS, type AdvancedDataTableColumn, type AdvancedDataTableSummaryRow } from "@/components/AdvancedDataTable";
 import { ViewExcelImportMenuButton, exportRowsToXlsx } from "@/components/ViewExcelImportMenuButton";
+import { DetailTablePaginationControls } from "@/components/DetailTablePaginationControls";
 
 
 
@@ -60,7 +61,7 @@ import { subtypeDisplay } from "@/lib/investment-config";
 import { isFundLikeInvestmentAccount } from "@/lib/account-kind-utils";
 import { TRANSACTION_SOURCE_FUND_UNITS_RECONCILE, isFundUnitsReconcileEntry } from "@/lib/transaction-semantics";
 import { useI18n } from "@/lib/i18n";
-import { useRowsFitPageAnchor } from "@/lib/client/use-rows-fit-page-anchor";
+import { useDetailPagination } from "@/lib/client/use-detail-pagination";
 import { withBasePath } from "@/lib/base-path";
  
 
@@ -102,13 +103,14 @@ function LinkStatusIcon({ active, title }: { active: boolean; title?: string }) 
     <span
       title={title}
       className={[
-        "inline-flex h-4 w-4 items-center justify-center rounded-full border",
+        // 圆环与图标都从按钮尺寸派生（0.7 / 0.42），不另写一套尺寸。
+        "inline-flex h-[calc(var(--mmh-row-action-btn,20px)*0.7)] w-[calc(var(--mmh-row-action-btn,20px)*0.7)] items-center justify-center rounded-full border",
         active
           ? "border-sky-300 bg-sky-100 text-sky-700 shadow-[0_0_0_2px_rgba(14,165,233,0.08)]"
           : "border-slate-200 bg-transparent text-slate-300",
       ].join(" ")}
     >
-      <svg viewBox="0 0 24 24" aria-hidden="true" className="h-2.5 w-2.5">
+      <svg viewBox="0 0 24 24" aria-hidden="true" className="h-[calc(var(--mmh-row-action-btn,20px)*0.42)] w-[calc(var(--mmh-row-action-btn,20px)*0.42)]">
         <path
           d="M9.5 7.5h-2a4.5 4.5 0 0 0 0 9h2m5-9h2a4.5 4.5 0 0 1 0 9h-2M8 12h8"
           fill="none"
@@ -730,15 +732,17 @@ export function FundShell(props: Props) {
   /** FT 卡片当前页签 id（贵金属账户只有持仓）。 */
   const activePositionTabId = showCleared && !isMetalAccount ? "cleared" : "held";
 
-  const [fundPage, setFundPage] = useState(1);
-
-  const [fundPageSize, setFundPageSize] = useState(40);
-  const [fundDetailAll, setFundDetailAll] = useState(false);
-  const [fundAutoFit, setFundAutoFit] = useState(true);
   const [detailTableRowCount, setDetailTableRowCount] = useState(0);
+  /**
+   * 分页状态点的 `goPage` 转发。
+   *
+   * 页签切换、筛选变化这些「回到第一页」的调用点散在组件上半部分，而状态点要等
+   * 数据依赖都就绪才能声明（在下面）。ref 转发让上半部分拿到稳定的同一份函数，
+   * 也不会把这些 effect 的依赖写成「每次渲染都变的 pager 对象」。
+   */
+  const goFundPageRef = useRef<(page: number) => void>(() => {});
 
   const [showExportMenu, setShowExportMenu] = useState(false);
-
   const exportRef = useRef<HTMLDivElement>(null);
 
   const [adjustedNavByCode, setAdjustedNavByCode] = useState<Record<string, { nav: number; date: string }>>({});
@@ -906,7 +910,7 @@ export function FundShell(props: Props) {
     setFundCode(initialFundCode || "");
     setShowCleared(initialShowCleared);
     setShowAllRecords(!initialFundCode);
-    setFundPage(1);
+    goFundPageRef.current(1);
     setFundChartOpen(false);
     setSelectedIds(new Set());
     setDetailTableRowCount(0);
@@ -1268,7 +1272,7 @@ export function FundShell(props: Props) {
     setFundCode(code);
     // 选中某只持仓 → 明细回到「只看该持仓」，退出全部记录模式
     setShowAllRecords(false);
-    setFundPage(1);
+    goFundPageRef.current(1);
 
     const q = new URLSearchParams(baseQuery);
 
@@ -1292,7 +1296,7 @@ export function FundShell(props: Props) {
     setShowAllRecords(true);
     setFundCode("");
     setFundChartOpen(false);
-    setFundPage(1);
+    goFundPageRef.current(1);
     setSelectedIds(new Set());
 
     const q = new URLSearchParams(baseQuery);
@@ -1321,7 +1325,7 @@ export function FundShell(props: Props) {
 
     setFundCode("");
 
-    setFundPage(1);
+    goFundPageRef.current(1);
 
   }
 
@@ -1706,7 +1710,7 @@ export function FundShell(props: Props) {
     if (isWealthAccount) {
       if (fundCode && !available.includes(fundCode)) {
         setFundCode("");
-        setFundPage(1);
+        goFundPageRef.current(1);
         q.delete("wealthProductId");
       } else if (fundCode) {
         q.set("wealthProductId", fundCode);
@@ -1729,7 +1733,7 @@ export function FundShell(props: Props) {
       setFundCode("");
       setFundChartOpen(false);
 
-      setFundPage(1);
+      goFundPageRef.current(1);
 
       q.delete("fundCode");
       q.delete("wealthProductId");
@@ -1779,11 +1783,11 @@ export function FundShell(props: Props) {
                 event.stopPropagation();
                 openFundSettings(p.fundCode || positionKey, p.name);
               }}
-              className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 transition-colors hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
+              className={`${ROW_ACTION_BUTTON_BOX_CLASS} border-slate-200 bg-white text-slate-500 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700`}
               title={t("fundSettings.title")}
               aria-label={t("fundSettings.title")}
               >
-              <Settings2 className="h-3.5 w-3.5" />
+              <Settings2 />
             </button> : null}
             {!isWealthAccount ? (
               <button
@@ -1794,7 +1798,7 @@ export function FundShell(props: Props) {
                   switchFund(positionKey || p.fundCode);
                   setFundChartOpen(true);
                 }}
-                className={`inline-flex h-6 w-6 items-center justify-center rounded-md border transition-colors ${
+                className={`${ROW_ACTION_BUTTON_BOX_CLASS} ${
                   active && fundChartOpen
                     ? "border-blue-300 bg-blue-50 text-blue-700"
                     : "border-slate-200 bg-white text-slate-500 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
@@ -2205,59 +2209,19 @@ export function FundShell(props: Props) {
     setDetailTableRowCount(filteredByColumns.length);
   }, [filteredByColumns.length]);
 
+  /** 总行数：表格回报的数字优先（内部可能过滤了隐藏的已清仓行）。 */
   const effectiveFundRowCount = detailTableRowCount || filteredByColumns.length;
 
-  const effectiveFundPageSize = fundDetailAll ? Math.max(1, effectiveFundRowCount) : fundPageSize;
-
-  const totalPages = Math.max(1, Math.ceil(effectiveFundRowCount / effectiveFundPageSize));
-
-  const safePage = Math.min(fundPage, totalPages);
-
-  const paged = fundDetailAll ? filteredByColumns : filteredByColumns.slice((safePage - 1) * effectiveFundPageSize, safePage * effectiveFundPageSize);
-
-  const setPagedFundPageSize = useCallback((nextPageSize: number) => {
-    setFundDetailAll(false);
-    setFundAutoFit(false);
-    setFundPageSize(nextPageSize);
-    setFundPage(1);
-  }, []);
-
-  // Auto-fit: the table reports how many rows fit the viewport; when auto mode
-  // is on that count becomes the page size (the "自适应" option restores it).
-  // 触发时机由表格一侧决定：视图重开 / 重新选自适应（这个回调的 identity 变化）、
-  // 行高偏好变化、视口高度变化都会重算；翻页与数据刷新不触发（同 BasicDetailPanel）。
-  const { onRowsFitChange: handleRowsFitChange, lastFitRowCountRef } = useRowsFitPageAnchor({
+  // 页码 / 每页行数 / 全部只有这一个状态点（与存款、债券、房产、持仓视图同一实现）。
+  // 「自适应」是页大小的来源而不是独立开关：手选固定行数后，表格再回报容量也不会
+  // 把手选值改掉。
+  const fundPager = useDetailPagination({
     scopeKey: `${accountId}|${fundCode}|${showAllRecords}|${showCleared}`,
-    pageSize: fundPageSize,
-    page: safePage,
-    totalCount: effectiveFundRowCount,
-    enabled: fundAutoFit && !fundDetailAll,
-    anchorPage: !fundDetailAll,
-    setPageSize: setFundPageSize,
-    setPage: setFundPage,
+    rowCount: effectiveFundRowCount,
   });
 
-  const enableAutoFitFundRows = useCallback(() => {
-    setFundDetailAll(false);
-    setFundAutoFit(true);
-    const fitCount = lastFitRowCountRef.current;
-    if (fitCount != null && fitCount !== fundPageSize) setFundPageSize(fitCount);
-    setFundPage(1);
-  }, [fundPageSize, lastFitRowCountRef]);
-
-  const showAllFundDetailRows = useCallback(() => {
-    setFundDetailAll(true);
-    setFundPage(1);
-  }, []);
-
-  const goFundPage = useCallback((nextPage: number) => {
-    if (fundDetailAll) return;
-    setFundPage(Math.min(Math.max(1, nextPage), totalPages));
-  }, [fundDetailAll, totalPages]);
-
-  const canPrevFundPage = !fundDetailAll && safePage > 1;
-
-  const canNextFundPage = !fundDetailAll && safePage < totalPages;
+  goFundPageRef.current = fundPager.goPage;
+  const paged = fundPager.slice(filteredByColumns);
 
 
 
@@ -2485,7 +2449,9 @@ export function FundShell(props: Props) {
       });
 
       const refreshEntryIds = getDeleteRefreshEntryIds(data, ids);
-      dispatchFinanceDataChanged({ reason: "entry-batch-delete", accountIds: getDeleteRefreshAccountIds(data), deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
+      const batchDeleteAccountIds = getDeleteRefreshAccountIds(data);
+      recordRecentAccounts(batchDeleteAccountIds);
+      dispatchFinanceDataChanged({ reason: "entry-batch-delete", accountIds: batchDeleteAccountIds, deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
 
     } catch {
 
@@ -2523,7 +2489,9 @@ export function FundShell(props: Props) {
         next.delete(id);
         return next;
       });
-      dispatchFinanceDataChanged({ reason: "entry-delete", accountIds: getDeleteRefreshAccountIds(data), deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
+      const deleteAccountIds = getDeleteRefreshAccountIds(data);
+      recordRecentAccounts(deleteAccountIds);
+      dispatchFinanceDataChanged({ reason: "entry-delete", accountIds: deleteAccountIds, deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
     } catch {
       setBatchDeleteMessage(t("fundShell.deleteFailed"));
     } finally {
@@ -2952,7 +2920,7 @@ export function FundShell(props: Props) {
     const locked = isReconciled(String(e.id ?? ""));
 
     return (
-      <div className="flex items-center justify-end gap-1">
+      <div className="flex shrink-0 items-center justify-end gap-1">
         <BasicDetailReconcileLockButton entryId={String(e.id ?? "")} reconciled={locked} />
         {!isUnitsReconcile && !isWealthAccount && e.fundCode && e.fundSubtype === "buy" && statusOf(e) !== "buy_failed" && (e.fundUnits == null || Number(e.fundUnits) === 0) ? <FillNavButton entryId={e.id} fundCode={e.fundCode} action={fillNavAction} onFilled={(data) => handleEntryNavFilled(e, data)} /> : null}
         {!isUnitsReconcile ? (
@@ -3085,7 +3053,8 @@ export function FundShell(props: Props) {
               }}
               disabled={isLinked || linkingIds.has(String(e.id ?? ""))}
               className={[
-                "flex h-6 w-6 items-center justify-center rounded border bg-white transition-colors disabled:cursor-default",
+                ROW_ACTION_BUTTON_BOX_CLASS,
+                "bg-white disabled:cursor-default",
                 isLinked
                   ? "border-slate-200 text-slate-500"
                   : "border-amber-200 text-amber-700 hover:bg-amber-50 disabled:opacity-60",
@@ -3101,11 +3070,11 @@ export function FundShell(props: Props) {
                 ev.stopPropagation();
                 openDetailEdit(e.id);
               }}
-              className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white text-slate-600 transition-colors hover:bg-slate-50"
+              className={`${ROW_ACTION_BUTTON_BOX_CLASS} border-slate-200 bg-white text-slate-600 hover:bg-slate-50`}
               title={t("common.edit")}
               aria-label={t("common.edit")}
             >
-              <Pencil className="h-3.5 w-3.5" />
+              <Pencil />
             </button>
           </>
         ) : null}
@@ -3113,11 +3082,11 @@ export function FundShell(props: Props) {
           type="button"
           onClick={() => { void deleteDetailEntry(e); }}
           disabled={singleDeletingIds.has(String(e.id ?? "")) || locked}
-          className="flex h-6 w-6 items-center justify-center rounded border border-red-200 bg-white text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50"
+          className={`${ROW_ACTION_BUTTON_BOX_CLASS} border-red-200 bg-white text-red-600 hover:bg-red-50 disabled:opacity-50`}
           title={locked ? t("reconcile.lockedError") : singleDeletingIds.has(String(e.id ?? "")) ? t("stockPanel.deleting") : t("common.delete")}
           aria-label={locked ? t("reconcile.lockedError") : singleDeletingIds.has(String(e.id ?? "")) ? t("stockPanel.deleting") : t("common.delete")}
         >
-          <Trash2 className="h-3.5 w-3.5" />
+          <Trash2 />
         </button>
       </div>
     );
@@ -3803,19 +3772,7 @@ export function FundShell(props: Props) {
 
               <span className="text-slate-300">|</span>
 
-              <DetailTablePaginationControls
-                pageSize={fundPageSize}
-                detailAll={fundDetailAll}
-                safePage={safePage}
-                totalPages={totalPages}
-                canPrev={canPrevFundPage}
-                canNext={canNextFundPage}
-                autoFit={fundAutoFit}
-                onAutoFit={enableAutoFitFundRows}
-                onPageSizeChange={setPagedFundPageSize}
-                onShowAll={showAllFundDetailRows}
-                onPageChange={goFundPage}
-              />
+              <DetailTablePaginationControls pager={fundPager} />
 
             </div>
           </div>
@@ -3934,7 +3891,8 @@ export function FundShell(props: Props) {
                         />
                         {t("fundShell.select")}
                       </label>
-                      <div className="flex items-center gap-1.5">
+                      {/* 手机卡片的操作栏整体放大到 32px：只重写同一组比例变量，按钮本身不写尺寸。 */}
+                      <div className="flex items-center gap-1.5 [--mmh-row-action-btn:32px] [--mmh-row-action-icon:19px]">
                         <BasicDetailReconcileLockButton entryId={String(e.id ?? "")} reconciled={locked} asButton={false} />
                         {!isUnitsReconcile && !isWealthAccount && e.fundCode && e.fundSubtype === "buy" && (e.fundUnits == null || Number(e.fundUnits) === 0) ? (
                           <FillNavButton entryId={e.id} fundCode={e.fundCode} action={fillNavAction} onFilled={(data) => handleEntryNavFilled(e, data)} />
@@ -3948,7 +3906,8 @@ export function FundShell(props: Props) {
                               }}
                               disabled={businessLinkInfo.active || linkingIds.has(String(e.id ?? ""))}
                               className={[
-                                "flex h-8 w-8 items-center justify-center rounded border bg-white transition-colors disabled:cursor-default",
+                                ROW_ACTION_BUTTON_BOX_CLASS,
+                                "bg-white disabled:cursor-default",
                                 businessLinkInfo.active
                                   ? "border-slate-200 text-slate-500"
                                   : "border-amber-200 text-amber-700 hover:bg-amber-50 disabled:opacity-60",
@@ -3961,11 +3920,11 @@ export function FundShell(props: Props) {
                             <button
                               type="button"
                               onClick={() => openDetailEdit(e.id)}
-                              className="flex h-8 w-8 items-center justify-center rounded border border-slate-200 bg-white text-slate-600 transition-colors hover:bg-slate-50"
+                              className={`${ROW_ACTION_BUTTON_BOX_CLASS} border-slate-200 bg-white text-slate-600 hover:bg-slate-50`}
                               title={t("insuranceShell.editButton")}
                               aria-label={t("insuranceShell.editButton")}
                             >
-                              <Pencil className="h-4 w-4" />
+                              <Pencil />
                             </button>
                           </>
                         ) : null}
@@ -3973,11 +3932,11 @@ export function FundShell(props: Props) {
                           type="button"
                           onClick={() => { void deleteDetailEntry(e); }}
                           disabled={singleDeletingIds.has(String(e.id ?? "")) || locked}
-                          className="flex h-8 w-8 items-center justify-center rounded border border-red-200 bg-white text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50"
+                          className={`${ROW_ACTION_BUTTON_BOX_CLASS} border-red-200 bg-white text-red-600 hover:bg-red-50 disabled:opacity-50`}
                           title={locked ? t("reconcile.lockedError") : singleDeletingIds.has(String(e.id ?? "")) ? t("stockPanel.deleting") : t("depositShell.deleteButton")}
                           aria-label={locked ? t("reconcile.lockedError") : singleDeletingIds.has(String(e.id ?? "")) ? t("stockPanel.deleting") : t("depositShell.deleteButton")}
                         >
-                          <Trash2 className="h-4 w-4" />
+                          <Trash2 />
                         </button>
                       </div>
                     </div>
@@ -4020,13 +3979,13 @@ export function FundShell(props: Props) {
             resetWidthsTriggerId={FUND_DETAIL_RESET_WIDTHS_EVENT}
             sortable
             pagination={{
-              page: safePage,
-              pageSize: fundPageSize,
-              all: fundDetailAll,
-              onPageChange: goFundPage,
+              page: fundPager.safePage,
+              pageSize: fundPager.rows,
+              all: fundPager.all,
+              onPageChange: fundPager.goPage,
               onRowCountChange: setDetailTableRowCount,
             }}
-            onRowsFitChange={fundAutoFit && !fundDetailAll ? handleRowsFitChange : undefined}
+            onRowsFitChange={fundPager.autoFit ? fundPager.fit : undefined}
           />
 
         </div>

@@ -35,7 +35,12 @@ import {
   type DetailAllSnapshot,
 } from "@/lib/client/detail-all-store";
 import { useI18n } from "@/lib/i18n";
-import { useRowsFitPageAnchor } from "@/lib/client/use-rows-fit-page-anchor";
+import {
+  invalidateDetailOpeningBalance,
+  loadDetailOpeningBalance,
+  peekDetailOpeningBalance,
+} from "@/lib/client/detail-opening-balance";
+import { useDetailPagination } from "@/lib/client/use-detail-pagination";
 import { ALL_CASH_DETAIL_SCOPE_ID, isAllCashDetailScope } from "@/lib/all-cash-entries";
 
 /** 一页明细分页请求的结果：只保留渲染真正需要的两样。 */
@@ -396,19 +401,9 @@ export function BasicDetailPanel({
   const [localEntries, setLocalEntries] = useState(entries);
   const [localTotalCount, setLocalTotalCount] = useState(totalCount);
   const [localOriginalCount, setLocalOriginalCount] = useState(originalCount);
-  const [pageSize, setPageSize] = useState(normalizedInitialPageSize);
-  const [detailAll, setDetailAll] = useState(initialDetailAll);
-  const [autoFit, setAutoFit] = useState(initialAutoFit);
-  /**
-   * 表格最近一次量出的「视口能放几行」。
-   *
-   * 页大小（`pageSize`）要落到 cookie / URL 上，改一次就得等一次重取才看得见
-   * 结果；这个值只用于**本地切片**：首屏服务端多取了
-   * `DETAIL_PAGED_FIRST_FETCH_ROWS` 行，量完立刻按它切到正好一屏，打开账户的
-   * 第一帧就填满，不再空一截等重取回来。null = 还没量过（服务端首屏），此时
-   * 原样显示已取的行，宁可多一行滚动条也不留白。
-   */
-  const [fittedRowCount, setFittedRowCount] = useState<number | null>(null);
+  // 页码 / 每页行数 / 全部只有一个状态点（见下方 detailPager）。「自适应」是页大小
+  // 的来源而不是独立开关，「视口能放几行」也不再单独存一份副本：它就是自适应模式
+  // 下的每页行数，还没量过时等于服务端给的首屏页大小。
   const [isPageLoading, setIsPageLoading] = useState(false);
   // 「全部」分块加载的进度（已回到本地的行数），仅用于加载提示文案。
   const [allLoadedCount, setAllLoadedCount] = useState(0);
@@ -418,7 +413,6 @@ export function BasicDetailPanel({
   const [guidePortalHost, setGuidePortalHost] = useState<HTMLElement | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
 
-  const totalPages = Math.max(1, Math.ceil(localTotalCount / pageSize));
   /** 「显示范围」滑轨两端（全量数据的最早/最晚一天）。 */
   const [serverDateBounds, setServerDateBounds] = useState<{ min: string; max: string } | null>(null);
   /** 时间轴两端还在取数：弹层里提示「正在读取时间轴」，chip 本身照常显示。 */
@@ -450,16 +444,96 @@ export function BasicDetailPanel({
     lastInitialRangeKeyRef.current = nextKey;
     setDetailDateRange(initialDateRange ? { from: initialDateRange.from, to: initialDateRange.to } : { from: "", to: "" });
   }, [initialDateRange]);
-  const [page, setPage] = useState(() => initialDetailAll ? 1 : clampPage(initialPage, totalPages));
   const locatingDateRef = useRef(false);
-  // Do not clamp the target page to 1 using stale totalPages while locating a date;
-  // otherwise the pagination effect will fetch page 1 again.
-  const safePage = detailAll ? 1 : locatingDateRef.current ? Math.max(1, page) : clampPage(page, totalPages);
   const accountScopeKey = `${accountId}:${isInvestAccount ? "invest" : "detail"}`;
   const lastAccountScopeKeyRef = useRef(accountScopeKey);
   const lastFocusEntryIdRef = useRef(focusEntryId ?? "");
   const lastClientPaginationKeyRef = useRef("");
   const clientPaginationEnabled = !hasDetailFilters;
+  /**
+   * 页码 / 每页行数 / 全部 / 自适应——**唯一**的状态点。三个事件推动它：
+   *
+   *  - `fit(n)`    表格量出视口能放几行（窗口高度、行高偏好变化都走这里）
+   *  - `select(n)` 用户手选 40 / 80（要按视口中心那天重新定位，见 onCommit）
+   *  - `showAll()` 全部（分块回填）
+   *
+   * URL 与 cookie 都是它的镜像，只在 onPersist 里写一次；别处不再各自 setState。
+   */
+  const detailPager = useDetailPagination({
+    scopeKey: accountScopeKey,
+    rowCount: localTotalCount,
+    serverPaged: !clientPaginationEnabled,
+    isBusy: () => locatingDateRef.current,
+    initial: {
+      mode: initialDetailAll ? "all" : initialAutoFit ? "fit" : "manual",
+      rows: normalizedInitialPageSize,
+      page: initialPage,
+    },
+    onCommit: (next, _previous, reason) => {
+      // 手选 / 回到自适应：页大小要落到服务端，得按「视口中心那一天」重新定位
+      // 页码（客户端只持有一页数据，算不出目标页），交给下面那个方法做完再落地。
+      // `reset`（换账户整份替换）与 `locate`（下面那个方法算好页码回填）不拦，
+      // 否则会「拦 → 重新定位 → 再 replace → 再拦」自己转圈。
+      if (reason !== "select" && reason !== "restore") return false;
+      applyPageSizeKeepingCenter(next.rows, reason === "select" ? "manual" : "fit");
+      return true;
+    },
+    // 进入「全部」前记住「此刻视口中心是哪一天」，全部渲染完再滚回去。
+    onBeforeShowAll: () => {
+      const centerDate = readCenteredDetailDate();
+      if (centerDate) pendingCenterDateRef.current = centerDate;
+    },
+    onPersist: (state, nextSafePage) => {
+      const url = new URL(window.location.href);
+      // 全部资金明细（scope = __all_cash__）的规范 URL 是 view=allcash：根路由在
+      // URL 既没有 accountId/account/tagId、view 又不是 allcash/liability/… 时
+      // 会 redirect("/overview")。这里若把 view 写成 detail、又补不上 accountId，
+      // 之后任何一次服务端重渲染（保存后 router.refresh、刷新页面、分享链接）都会
+      // 把用户弹回概况页——保存一笔就「跳回首页」的真正来源。
+      url.searchParams.set("view", isAllCashDetailScope(accountId) ? "allcash" : "detail");
+      // 「自适应」的落地行数是**这台设备这个窗口**的属性，不是这一页的内容：
+      // 写进地址栏只会把上一次的行数固化成显式参数 —— 下次用旧链接打开（换了
+      // 窗口、换了屏幕）时，服务端只能照这个旧值铺首屏，比不做还糟；而它本身
+      // 也没有任何分享价值。所以自适应时只落 cookie（服务端照样读得到），地址栏
+      // 保持干净；只有用户手选了固定行数，才把数字写进 URL。
+      if (state.mode === "fit") {
+        url.searchParams.delete("pageSize");
+      } else {
+        url.searchParams.set("pageSize", String(state.rows));
+      }
+      if (state.mode === "all") {
+        url.searchParams.set("detailAll", "1");
+        url.searchParams.delete("detailPage");
+      } else {
+        url.searchParams.delete("detailAll");
+        url.searchParams.set("detailPage", String(nextSafePage));
+      }
+      writeStoredDetailPreference(accountId, state.rows, state.mode === "all", nextSafePage, state.mode === "fit");
+      const nextHref = `${url.pathname}${url.search}${url.hash}`;
+      const currentHref = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+      if (nextHref !== currentHref) {
+        if (clientPaginationEnabled) {
+          // Next 16: must pass null, not window.history.state — reusing the
+          // router's internal state object breaks canonicalUrl sync, so later
+          // router.refresh() calls re-render from the OLD URL (dropping
+          // detailAll=1) and overwrite the client-fetched full list.
+          window.history.replaceState(null, "", nextHref);
+        } else {
+          router.replace(nextHref, { scroll: false });
+        }
+      }
+    },
+  });
+  /** 下面这些是派生别名，只读；写入口只有上面的 detailPager。 */
+  // 稳定的方法解构出来单独引用：effect / useCallback 依赖里只列它，
+  // 既满足 exhaustive-deps，又不会因为「对象每次渲染都新」而在每帧重置页码。
+  const { goPage: goDetailPage, replace: replaceDetailPagination } = detailPager;
+  const pageSize = detailPager.rows;
+  const detailAll = detailPager.all;
+  const page = detailPager.page;
+  // 定位某一天时 page 可能暂时大于旧的 totalPages：不要把它夹回 1，
+  // 否则分页 effect 会立刻又取一次第 1 页。
+  const safePage = detailAll ? 1 : locatingDateRef.current ? Math.max(1, page) : detailPager.safePage;
   // 「当前在看哪一页」的标识。重取结果是否采用，看它是否仍等于当前页：
   // 之前用的是单调递增的 seq —— 任何一次重取（包括马上被 abort 的那次）都会让
   // 之前那笔仍然有效、数据更新的响应被判成过期丢掉，表现就是「记一笔保存成功，
@@ -492,15 +566,63 @@ export function BasicDetailPanel({
   const detailAllRangeKey = hasDetailDateRange ? serverDateRangeKey : undefined;
   const businessTodayKey = todayDateBusinessYmd(getTimeZonePreference());
 
+  /**
+   * 窗口化取数缺的那一段余额起点（期初余额）。
+   *
+   * 余额要在**全量账本**上折叠，而缓存只按窗口拉（省流量）：差的那一段向服务端要
+   * **一个数字**（列表同一条折叠链算出的「截至窗口起点前一天的账户余额」），
+   * 于是「期初余额 + 窗口内本地折叠」=「服务端整表折叠」，网络上却只多一个数字。
+   *
+   * 只有现金类账户走本地折叠（`deriveFromAllCashCache`）才需要；非现金账户那份缓存
+   * 是各自 accountId 拉的，行里本来就带着服务端算好的余额。
+   */
+  const openingBalanceFrom = deriveFromAllCashCache ? detailDateRange.from : "";
+  const openingBalanceKey = openingBalanceFrom ? `${accountId}|${openingBalanceFrom}` : "";
+  const [openingBalanceState, setOpeningBalanceState] = useState<{ key: string; value: number }>({ key: "", value: 0 });
+  // key 不匹配时按 0 处理（换账户 / 改窗口起点的那一帧），拿到值后自动重折一次。
+  const openingBalance = openingBalanceState.key === openingBalanceKey ? openingBalanceState.value : 0;
+  /**
+   * 期初余额还没到：这一刻折出来的余额是错的，先**别把表格换成这份**（沿用上一份 /
+   * 首屏那份服务端算好的余额），等数字到了再整体换，用户不会看到一闪而过的错值。
+   */
+  const openingBalancePending = !!openingBalanceKey && openingBalanceState.key !== openingBalanceKey;
+  useEffect(() => {
+    if (!openingBalanceKey) return;
+    const cached = peekDetailOpeningBalance(accountId, openingBalanceFrom);
+    if (cached != null) {
+      setOpeningBalanceState({ key: openingBalanceKey, value: cached });
+      return;
+    }
+    const controller = new AbortController();
+    loadDetailOpeningBalance(accountId, openingBalanceFrom, controller.signal)
+      .then((value) => {
+        setOpeningBalanceState({ key: openingBalanceKey, value });
+      })
+      .catch((error) => {
+        if (isAbortError(error)) return;
+        console.error("Load detail opening balance failed:", error);
+        // 拿不到就按 0 继续（等价于窗口内自折叠），绝不能让表格一直停在「等期初余额」。
+        setOpeningBalanceState({ key: openingBalanceKey, value: 0 });
+      });
+    return () => controller.abort();
+  }, [accountId, openingBalanceFrom, openingBalanceKey]);
+
   /** 让共享缓存的行变成「本视图口径」：筛出本账户的行 + 补算余额。 */
   const scopeEntriesOf = useCallback((shared: DetailEntry[]) => {
     if (!deriveFromAllCashCache) return shared;
-    const own = shared.filter(
-      (entry) => entry.accountId === accountId
-        || (entry.toAccountId === accountId && entry.source !== "fx_conversion"),
-    );
-    return foldRunningBalancesInDescOrder(own, accountId, accountKind, businessTodayKey);
-  }, [accountId, accountKind, businessTodayKey, deriveFromAllCashCache]);
+    const fromDay = detailDateRange.from;
+    const own = shared.filter((entry) => {
+      if (
+        entry.accountId !== accountId
+        && !(entry.toAccountId === accountId && entry.source !== "fx_conversion")
+      ) return false;
+      // 折叠集合必须与期初余额的切分同一口径（都按**生效日**）：窗口起点之前入账的
+      // 行已经算进期初余额里，再折一次就重复计。
+      if (!fromDay) return true;
+      return formatDateUtc(getDetailEntryDisplayDate(entry, accountId)) >= fromDay;
+    });
+    return foldRunningBalancesInDescOrder(own, accountId, accountKind, businessTodayKey, openingBalance);
+  }, [accountId, accountKind, businessTodayKey, deriveFromAllCashCache, detailDateRange.from, openingBalance]);
 
   const lastAppliedAllRef = useRef<{
     /**
@@ -523,8 +645,13 @@ export function BasicDetailPanel({
    * 这里按当前窗口本地裁掉窗口外的行（`filterEntriesByRange`）即可。
    */
   const applyDetailAllSnapshot = useCallback((snapshot: DetailAllSnapshot<DetailEntry>) => {
+    // 期初余额还没到：这一刻本地折出来的余额是错的，先不动表格 —— 沿用上一份（或首屏
+    // 那份服务端算好的）余额，也不收掉加载态，等数字到了再整体换一次。
+    if (openingBalancePending) return;
     const last = lastAppliedAllRef.current;
-    const scopeKey = `${detailAllKey}|${accountId}`;
+    // 期初余额要进 scopeKey：它比整份明细晚到（一个数字 vs 几万行），不进来就会被
+    // 「同一份快照已经落过」的守卫吞掉，表格停在起点为 0 的那一份余额上。
+    const scopeKey = `${detailAllKey}|${accountId}|${openingBalance}`;
     const rows = filterEntriesByRange(scopeEntriesOf(snapshot.entries), detailAllRangeKey);
     if (
       scopeKey !== last.scopeKey
@@ -549,7 +676,7 @@ export function BasicDetailPanel({
       }
       setIsPageLoading(true);
     }
-  }, [accountId, detailAllKey, detailAllRangeKey, scopeEntriesOf]);
+  }, [accountId, detailAllKey, detailAllRangeKey, openingBalance, openingBalancePending, scopeEntriesOf]);
 
   /**
    * 整份明细缓存（`detail-all-store`，按账户）是**唯一数据源**。
@@ -564,12 +691,14 @@ export function BasicDetailPanel({
     const snapshot = peekDetailAll<DetailEntry>(detailAllKey);
     if (!snapshot || snapshot.entries.length === 0) return null;
     if (!detailCacheCoversWindow(snapshot, detailAllRangeKey)) return null;
+    // 期初余额没到时这份缓存折出来的余额是错的：交给按页取数兜底（服务端算好的）。
+    if (openingBalancePending) return null;
     const windowed = filterEntriesByRange(scopeEntriesOf(snapshot.entries), detailAllRangeKey);
     const start = (pageNo - 1) * size;
     // 页码落在还没拉回来的那一段：交给按页取数兜底，别显示空页。
     if (start >= windowed.length && windowed.length > 0) return null;
     return { entries: windowed.slice(start, start + size), totalCount: windowed.length };
-  }, [detailAllKey, detailAllRangeKey, scopeEntriesOf]);
+  }, [detailAllKey, detailAllRangeKey, openingBalancePending, scopeEntriesOf]);
 
   const reloadDetailPage = useCallback((signal?: AbortSignal) => {
     if (!clientPaginationEnabled) return;
@@ -771,14 +900,16 @@ export function BasicDetailPanel({
       const nextDetailAll = nextFocusEntryId ? initialDetailAll : storedPreference?.detailAll ?? initialDetailAll;
       const nextAutoFit = nextFocusEntryId ? initialAutoFit : storedPreference?.autoFit ?? initialAutoFit;
       const nextTotalPages = Math.max(1, Math.ceil(totalCount / nextPageSize));
-      setPageSize(nextPageSize);
-      // 换账户 / 换作用域：上一份视口行数不再适用，等表格量完新容器再切片。
-      setFittedRowCount(null);
-      setDetailAll(nextDetailAll);
-      setAutoFit(nextAutoFit);
-      setPage(nextDetailAll ? 1 : clampPage(storedPreference?.detailPage ?? initialPage, nextTotalPages));
+      // 换账户 / 换作用域：整份替换这一个状态点；视口行数清空（等表格量完新容器
+      // 再切片），所以 fitRows 显式置 null。
+      replaceDetailPagination({
+        mode: nextDetailAll ? "all" : nextAutoFit ? "fit" : "manual",
+        rows: nextPageSize,
+        page: nextDetailAll ? 1 : clampPage(storedPreference?.detailPage ?? initialPage, nextTotalPages),
+        fitRows: null,
+      });
     }
-  }, [accountId, accountScopeKey, clientPaginationEnabled, entries, focusEntryId, initialAutoFit, initialDetailAll, initialPage, normalizedInitialPageSize, originalCount, totalCount]);
+  }, [accountId, accountScopeKey, clientPaginationEnabled, entries, focusEntryId, initialAutoFit, initialDetailAll, initialPage, normalizedInitialPageSize, originalCount, replaceDetailPagination, totalCount]);
 
   useEffect(() => {
     const handleFinanceChange = (event: Event) => {
@@ -797,6 +928,7 @@ export function BasicDetailPanel({
         isCurrentAccountEvent
       ) {
         invalidateDetailAll();
+        invalidateDetailOpeningBalance();
         reloadDetailPage();
         return;
       }
@@ -812,6 +944,7 @@ export function BasicDetailPanel({
         // 有明细筛选时 localEntries 由 RSC 的 entries prop 持有，客户端分页
         // 取数路径是禁用的，只能整棵刷新。
         invalidateDetailAll();
+        invalidateDetailOpeningBalance();
         if (clientPaginationEnabled) reloadDetailPage();
         else router.refresh();
         return;
@@ -827,6 +960,7 @@ export function BasicDetailPanel({
         const isCreateEvent = detail.reason === "transaction-save" && (detail.entryIds?.length ?? 0) === 0;
         if (isCurrentAccountEvent && clientPaginationEnabled && refreshOnGlobalEvent && isCreateEvent) {
           if (detailAll) invalidateDetailAll();
+          invalidateDetailOpeningBalance();
           reloadDetailPage();
           return;
         }
@@ -846,6 +980,7 @@ export function BasicDetailPanel({
             (detail.entryIds?.length ?? 0) > 0 || (detail.deletedEntryIds?.length ?? 0) > 0;
           if (detailAll && clientPaginationEnabled && touchesEntries) {
             invalidateDetailAll();
+            invalidateDetailOpeningBalance();
             reloadDetailPage();
             return;
           }
@@ -866,6 +1001,7 @@ export function BasicDetailPanel({
         accountId,
         accountKind,
         todayDateBusinessYmd(getTimeZonePreference()),
+        openingBalance,
       );
       const removedCount = localEntries.length - result.entries.length;
       if (removedCount > 0) {
@@ -879,54 +1015,17 @@ export function BasicDetailPanel({
     return () => {
       window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, handleFinanceChange);
     };
-  }, [accountId, accountKind, clientPaginationEnabled, detailAll, localEntries, refreshOnGlobalEvent, reloadDetailPage, router, scopeAccountIds]);
+  }, [accountId, accountKind, clientPaginationEnabled, detailAll, localEntries, openingBalance, refreshOnGlobalEvent, reloadDetailPage, router, scopeAccountIds]);
 
-  useEffect(() => {
-    if (detailAll || page === safePage || locatingDateRef.current) return;
-    setPage(safePage);
-  }, [detailAll, page, safePage]);
+  // 取数实现放进 ref：下面这个 effect 只在「页码 / 页大小 / 时间范围」变的那一刻重取。
+  // 不能把 reloadDetailPage 当依赖 —— 它随 openingBalancePending、缓存快照、期初余额换
+  // 身份，换一次就会 abort 掉刚发出的那次取数；而 abort 之后的 re-run 又被 key 守卫挡
+  // 回，切到缓存还没覆盖的窗口（缓存正在加载、期初余额刚发起）就会一直停在旧窗口的行和
+  // 「共 N 条」上。abort 只应发生在 key 真的变了的时候。
+  const reloadDetailPageRef = useRef(reloadDetailPage);
+  reloadDetailPageRef.current = reloadDetailPage;
 
-  useEffect(() => {
-    const url = new URL(window.location.href);
-    // 全部资金明细（scope = __all_cash__）的规范 URL 是 view=allcash：根路由在
-    // URL 既没有 accountId/account/tagId、view 又不是 allcash/liability/… 时
-    // 会 redirect("/overview")。这里若把 view 写成 detail、又补不上 accountId，
-    // 之后任何一次服务端重渲染（保存后 router.refresh、刷新页面、分享链接）都会
-    // 把用户弹回概况页——保存一笔就「跳回首页」的真正来源。
-    url.searchParams.set("view", isAllCashDetailScope(accountId) ? "allcash" : "detail");
-    // 「自适应」的落地行数是**这台设备这个窗口**的属性，不是这一页的内容：
-    // 写进地址栏只会把上一次的行数固化成显式参数 —— 下次用旧链接打开（换了
-    // 窗口、换了屏幕）时，服务端只能照这个旧值铺首屏，比不做还糟；而它本身
-    // 也没有任何分享价值。所以自适应时只落 cookie（服务端照样读得到），地址栏
-    // 保持干净；只有用户手选了固定行数，才把数字写进 URL。
-    if (autoFit) {
-      url.searchParams.delete("pageSize");
-    } else {
-      url.searchParams.set("pageSize", String(pageSize));
-    }
-    if (detailAll) {
-      url.searchParams.set("detailAll", "1");
-      url.searchParams.delete("detailPage");
-    } else {
-      url.searchParams.delete("detailAll");
-      url.searchParams.set("detailPage", String(safePage));
-    }
-    writeStoredDetailPreference(accountId, pageSize, detailAll, safePage, autoFit);
-    const nextHref = `${url.pathname}${url.search}${url.hash}`;
-    const currentHref = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-    if (nextHref !== currentHref) {
-      if (clientPaginationEnabled) {
-        // Next 16: must pass null, not window.history.state — reusing the
-        // router's internal state object breaks canonicalUrl sync, so later
-        // router.refresh() calls re-render from the OLD URL (dropping
-        // detailAll=1) and overwrite the client-fetched full list.
-        window.history.replaceState(null, "", nextHref);
-      } else {
-        router.replace(nextHref, { scroll: false });
-      }
-    }
-  }, [accountId, autoFit, clientPaginationEnabled, detailAll, pageSize, router, safePage]);
-
+  // 页码写回与 URL / cookie 同步都收进 detailPager（onPersist）：这里不再有第二份。
   useEffect(() => {
     if (!clientPaginationEnabled) return;
     // 页码 / 页大小 / 时间范围都拼进 key：条件一变就必须重取，否则只是本地这份
@@ -944,10 +1043,10 @@ export function BasicDetailPanel({
     if (isFirstRun && !detailAll && (initialDateRange || !hasDetailDateRange)) return;
 
     const controller = new AbortController();
-    reloadDetailPage(controller.signal);
+    reloadDetailPageRef.current(controller.signal);
 
     return () => controller.abort();
-  }, [accountId, clientPaginationEnabled, detailAll, hasDetailDateRange, initialDateRange, pageSize, reloadDetailPage, safePage, serverDateRangeKey]);
+  }, [accountId, clientPaginationEnabled, detailAll, hasDetailDateRange, initialDateRange, pageSize, safePage, serverDateRangeKey]);
 
   // 时间轴两端（双滑块的可拖范围）永远取自**全量**数据：不受时间范围本身、也不受
   // 日期列筛选、URL 筛选影响，否则拖一次区间滑轨就缩到刚选的范围，再也拖不回更早
@@ -982,8 +1081,8 @@ export function BasicDetailPanel({
   /** 时间范围变化 = 数据范围变化：回到第 1 页并重新取数（不是本地筛当前页）。 */
   const handleDetailDateRangeChange = useCallback((next: { from: string; to: string }) => {
     setDetailDateRange(next);
-    setPage(1);
-  }, []);
+    goDetailPage(1);
+  }, [goDetailPage]);
 
   /**
    * 当前页要显示的行：
@@ -998,12 +1097,12 @@ export function BasicDetailPanel({
     // 量出行数之前（服务端直出 / 首帧）先按 cookie 里的页大小显示 —— 那是上一次
     // 的落地值，窗口没变时正好是一屏；不拿「多取的那 60 行」铺出去，否则页面
     // 先多出半屏、等表格量完才收缩，看起来就是「自适应判断得太靠后」。真正的
-    // 行数在 hydration 的绘制前测量里立即落到 `fittedRowCount`，这一帧不会被
+    // 行数由 detailPager 在 hydration 的绘制前测量里立刻落地，这一帧不会被
     // 用户看到。
-    const visibleRows = autoFit ? fittedRowCount ?? pageSize : pageSize;
+    const visibleRows = pageSize;
     if (localEntries.length <= visibleRows) return localEntries;
     return localEntries.slice(0, visibleRows);
-  }, [autoFit, detailAll, fittedRowCount, localEntries, pageSize]);
+  }, [detailAll, localEntries, pageSize]);
   const displayRowsRef = useRef<DetailEntry[]>([]);
   const locateDateSeqRef = useRef(0);
   const pendingCenterDateRef = useRef<string | null>(null);
@@ -1060,6 +1159,7 @@ export function BasicDetailPanel({
       return nextIds;
     });
   }, []);
+
   const visibleNormalExportRows = useMemo(() => {
     // 一律按「表格实际显示的行」重建：首屏为了自适应会多取
     // `DETAIL_PAGED_FIRST_FETCH_ROWS` 行，切片后多出来的备料不能跟着导出。
@@ -1071,11 +1171,10 @@ export function BasicDetailPanel({
     return [header, ...rows];
   }, [displayedEntryIds, normalExportRows, normalExportRowsByEntryId]);
 
-  const applyPageSizeKeepingCenter = (nextPageSize: number) => {
+  const applyPageSizeKeepingCenter = (nextPageSize: number, mode: "manual" | "fit") => {
     const centerDate = readCenteredDetailDate();
     if (!clientPaginationEnabled || !centerDate) {
-      setPageSize(nextPageSize);
-      setPage(1);
+      detailPager.replace({ mode, rows: nextPageSize, page: 1 }, "locate");
       return;
     }
     pendingCenterDateRef.current = centerDate;
@@ -1102,84 +1201,32 @@ export function BasicDetailPanel({
           setLocalOriginalCount(nextTotalCount);
         }
         const pages = Math.max(1, Math.ceil((Number.isFinite(nextTotalCount) ? nextTotalCount : localTotalCount) / nextPageSize));
-        setPageSize(nextPageSize);
-        setPage(Number.isFinite(locatePage) && locatePage >= 1 ? clampPage(locatePage, pages) : 1);
+        detailPager.replace({
+          mode,
+          rows: nextPageSize,
+          page: Number.isFinite(locatePage) && locatePage >= 1 ? clampPage(locatePage, pages) : 1,
+        }, "locate");
       })
       .catch((error) => {
         if (seq !== locateDateSeqRef.current) return;
         console.error("Keep centered date after page-size change failed:", error);
         pendingCenterDateRef.current = null;
-        setPageSize(nextPageSize);
-        setPage(1);
+        detailPager.replace({ mode, rows: nextPageSize, page: 1 }, "locate");
       })
       .finally(() => {
         if (seq === locateDateSeqRef.current) setIsLocatingDate(false);
       });
   };
 
-  const setPagedSize = (nextPageSize: number) => {
-    setDetailAll(false);
-    setAutoFit(false);
-    applyPageSizeKeepingCenter(nextPageSize);
-  };
-
-  const showAll = () => {
-    const centerDate = readCenteredDetailDate();
-    if (centerDate) pendingCenterDateRef.current = centerDate;
-    setDetailAll(true);
-    setPage(1);
-  };
-
-  const goPage = (nextPage: number) => {
-    // 「全部」整份都在本地，没有翻页。
-    if (detailAll) return;
-    setPage(clampPage(nextPage, totalPages));
-  };
-
-  // Auto-fit: the table reports how many rows fit the viewport; when auto mode
-  // is on that count becomes the page size (the "自适应" option restores it).
-  // 触发时机由表格一侧决定：视图重开 / 重新选自适应（靠这个回调的 identity 变化）、
-  // 行高偏好变化、视口高度变化（窗口 resize、拖动分栏）都会重算。翻页、筛选、
-  // 数据刷新不触发；表格内部「行数没变就不上报」挡住了重复更新，不会来回抖。
-  //
-  // 「全部」整份列表一次渲染完，没有页大小可调，不需要自适应测量。
-  const rowsFitEnabled = !detailAll && autoFit;
-  // 页大小跟着视口走；页大小一变，页码以「原页中间行」为锚点换算，窗口缩小后仍
-  // 停在同一批记录上（逻辑见 useRowsFitPageAnchor，所有 ADT 表格共用）。服务端
-  // 分页时页码写在 URL 上、由定位逻辑负责，这里只改页大小。
-  const { onRowsFitChange: applyRowsFitPageSize, lastFitRowCountRef } = useRowsFitPageAnchor({
-    scopeKey: accountScopeKey,
-    pageSize,
-    page: safePage,
-    totalCount: localTotalCount,
-    enabled: rowsFitEnabled,
-    anchorPage: clientPaginationEnabled,
-    setPageSize,
-    setPage,
-    isBusy: () => locatingDateRef.current,
-  });
+  // 「全部」：整份列表一次渲染完，没有页大小可调，所以不测自适应。
+  const rowsFitEnabled = detailPager.autoFit;
   /**
-   * 表格量完先更新「显示行数」，再交给共享 hook 改页大小。
+   * 表格量出视口容量 → 唯一状态点。
    *
-   * 顺序很重要：改页大小要等一次重取才换上新的一页行，而切片是同步的 —— 先落
-   * 切片，用户看到的表格当帧就填满；重取回来时长这样，不再有肉眼可见的空档。
-   * 回调 identity 仍只跟作用域 / 开关走（依赖里只有 applyRowsFitPageSize），
-   * ADT 不会因为这次包装而每帧重测。
+   * 切片是同步的、改页大小要等一次重取：hook 落地后 `pageSize` 当帧就变，
+   * 表格当帧填满，重取回来的行数与之一致，没有肉眼可见的空档。
    */
-  const handleRowsFitChange = useCallback((rows: number) => {
-    setFittedRowCount(rows);
-    applyRowsFitPageSize(rows);
-  }, [applyRowsFitPageSize]);
-
-  const enableAutoFitRows = () => {
-    // Same contract as picking a concrete size: leave show-all mode first.
-    setDetailAll(false);
-    setAutoFit(true);
-    const fitCount = lastFitRowCountRef.current;
-    // 先按最近一次测量值切片，表格当帧就填满；ADT 随后还会为新 identity 重测一次。
-    if (fitCount != null) setFittedRowCount(fitCount);
-    applyPageSizeKeepingCenter(fitCount ?? pageSize);
-  };
+  const handleRowsFitChange = detailPager.fit;
 
   const handleLocateDate = (dateYmd: string) => {
     if (!clientPaginationEnabled || !dateYmd) return;
@@ -1246,7 +1293,7 @@ export function BasicDetailPanel({
           return;
         }
         pendingCenterDateRef.current = dateYmd;
-        setPage(nextPage);
+        detailPager.forcePage(nextPage);
       })
       .catch((error) => {
         if (seq === locateDateSeqRef.current) {
@@ -1259,8 +1306,6 @@ export function BasicDetailPanel({
       });
   };
 
-  const canPrev = !detailAll && safePage > 1;
-  const canNext = !detailAll && safePage < totalPages;
   const selectionResetKey = accountScopeKey;
   const tableResetKey = selectionResetKey;
   const closeGuideOverlay = () => {
@@ -1283,19 +1328,8 @@ export function BasicDetailPanel({
           {showPagination ? (
             <DetailTablePaginationControls
               key={accountScopeKey}
-              pageSize={pageSize}
+              pager={detailPager}
               pageSizeOptions={DETAIL_PAGE_SIZE_OPTIONS}
-              detailAll={detailAll}
-              paged={!detailAll}
-              safePage={safePage}
-              totalPages={totalPages}
-              canPrev={canPrev}
-              canNext={canNext}
-              autoFit={autoFit}
-              onAutoFit={enableAutoFitRows}
-              onPageSizeChange={setPagedSize}
-              onShowAll={showAll}
-              onPageChange={goPage}
               onLocateDate={clientPaginationEnabled ? handleLocateDate : undefined}
               locateDateBusy={isLocatingDate}
             />
@@ -1381,19 +1415,8 @@ export function BasicDetailPanel({
                   <span className="text-slate-400">|</span>
                   <DetailTablePaginationControls
                     key={accountScopeKey}
-                    pageSize={pageSize}
+                    pager={detailPager}
                     pageSizeOptions={DETAIL_PAGE_SIZE_OPTIONS}
-                    detailAll={detailAll}
-                    paged={!detailAll}
-                    safePage={safePage}
-                    totalPages={totalPages}
-                    canPrev={canPrev}
-                    canNext={canNext}
-                    autoFit={autoFit}
-                    onAutoFit={enableAutoFitRows}
-                    onPageSizeChange={setPagedSize}
-                    onShowAll={showAll}
-                    onPageChange={goPage}
                     onLocateDate={clientPaginationEnabled ? handleLocateDate : undefined}
                     locateDateBusy={isLocatingDate}
                   />

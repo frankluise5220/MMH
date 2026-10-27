@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import {  useEffect, useMemo,  useState } from "react";
+import { useEffect, useState } from "react";
 
 import { BasicDetailBatchDeleteMessage, BasicDetailSelectionProvider } from "@/components/BasicDetailSelection";
 import type { BasicDetailBatchCategoryOption } from "@/components/BasicDetailSelection";
@@ -12,7 +12,7 @@ import { formatMoney } from "@/lib/format";
 import { FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
 import { getColorSchemeFromCookie, pnlColor } from "@/lib/client/colors";
 import { useI18n } from "@/lib/i18n";
-import { useRowsFitPageAnchor } from "@/lib/client/use-rows-fit-page-anchor";
+import { useDetailPagination } from "@/lib/client/use-detail-pagination";
 
 type AccountOption = {
   id: string;
@@ -41,10 +41,6 @@ const REPORT_BATCH_REPLACE_FIELDS: BatchReplaceField[] = [
   "tagId",
   "remark",
 ];
-
-function clampPage(page: number, totalPages: number) {
-  return Math.min(Math.max(1, page), totalPages);
-}
 
 export function ReportDetailTable({
   accountId,
@@ -78,55 +74,26 @@ export function ReportDetailTable({
   const colorScheme = typeof document === "undefined"
     ? "red_up_green_down"
     : getColorSchemeFromCookie(document.cookie ?? null);
-  const [pageSize, setPageSize] = useState(40);
-  const [autoFit, setAutoFit] = useState(true);
-  const [page, setPage] = useState(1);
-  const [showAll, setShowAll] = useState(false);
   const [displayEntries, setDisplayEntries] = useState(entries);
   const { t } = useI18n();
-  const totalPages = Math.max(1, Math.ceil(displayEntries.length / pageSize));
-  const safePage = showAll ? 1 : clampPage(page, totalPages);
-  const pageEntries = useMemo(
-    () => showAll ? displayEntries : displayEntries.slice((safePage - 1) * pageSize, safePage * pageSize),
-    [displayEntries, pageSize, safePage, showAll],
-  );
-
-  // Auto-fit: the table reports how many rows fit the viewport; when auto mode
-  // is on that count becomes the page size (the "自适应" option restores it).
-  // Callback identity changes with resetKey / autoFit / showAll so the table
-  // re-measures once per view reopen, then stays frozen (same contract as
-  // BasicDetailPanel).
-  const { onRowsFitChange: handleRowsFitChange, lastFitRowCountRef } = useRowsFitPageAnchor({
+  // 页码 / 每页行数 / 全部只有这一个状态点；上报行数不是单独的状态，
+  // 是否采纳由 hook 根据来源判断。
+  const detailPager = useDetailPagination({
     scopeKey: resetKey,
-    pageSize,
-    page: safePage,
-    totalCount: displayEntries.length,
-    enabled: autoFit && !showAll,
-    anchorPage: !showAll,
-    setPageSize,
-    setPage,
+    rowCount: displayEntries.length,
   });
-
-  const enableAutoFitRows = () => {
-    setShowAll(false);
-    setAutoFit(true);
-    const fitCount = lastFitRowCountRef.current;
-    if (fitCount != null && fitCount !== pageSize) setPageSize(fitCount);
-    setPage(1);
-  };
+  const pageEntries = detailPager.slice(displayEntries);
 
   useEffect(() => {
     setDisplayEntries(entries);
   }, [entries]);
 
+  // 换账期 / 换视图：退出「全部」并回到第一页（每页行数保持用户当前的选择）。
+  const { leaveAll: leaveAllRows, goPage: goDetailPage } = detailPager;
   useEffect(() => {
-    setPage(1);
-    setShowAll(false);
-  }, [resetKey]);
-
-  useEffect(() => {
-    if (!showAll && page !== safePage) setPage(safePage);
-  }, [page, safePage, showAll]);
+    leaveAllRows();
+    goDetailPage(1);
+  }, [resetKey, leaveAllRows, goDetailPage]);
 
   useEffect(() => {
     let timer: number | null = null;
@@ -178,7 +145,7 @@ export function ReportDetailTable({
           refreshOnGlobalEvent={false}
           toolbarMode="custom"
           batchReplaceFields={REPORT_BATCH_REPLACE_FIELDS}
-          onRowsFitChange={autoFit && !showAll ? handleRowsFitChange : undefined}
+          onRowsFitChange={detailPager.autoFit ? detailPager.fit : undefined}
           toolbarTitle={(
             <span className="flex min-w-0 items-center">
               <span className="truncate text-xs font-normal text-slate-600" title={title}>{title}</span>
@@ -193,31 +160,7 @@ export function ReportDetailTable({
                 <Link href={clearHref} className="text-blue-600 hover:text-blue-800 hover:underline">{t("reportDetail.clearDetails")}</Link>
               ) : null}
               <span className="text-slate-300">|</span>
-              <DetailTablePaginationControls
-                pageSize={pageSize}
-                pageSizeOptions={PAGE_SIZE_OPTIONS}
-                detailAll={showAll}
-                safePage={safePage}
-                totalPages={totalPages}
-                canPrev={!showAll && safePage > 1}
-                canNext={!showAll && safePage < totalPages}
-                autoFit={autoFit}
-                onAutoFit={enableAutoFitRows}
-                onPageSizeChange={(nextPageSize) => {
-                  setAutoFit(false);
-                  setPageSize(nextPageSize);
-                  setPage(1);
-                  setShowAll(false);
-                }}
-                onShowAll={() => {
-                  setShowAll(true);
-                  setPage(1);
-                }}
-                onPageChange={(nextPage) => {
-                  if (showAll) return;
-                  setPage(clampPage(nextPage, totalPages));
-                }}
-              />
+              <DetailTablePaginationControls pager={detailPager} pageSizeOptions={PAGE_SIZE_OPTIONS} />
             </div>
           )}
           resetKey={resetKey}

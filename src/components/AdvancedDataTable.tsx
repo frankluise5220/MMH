@@ -10,6 +10,7 @@ import {
   useState,
   type MouseEvent as ReactMouseEvent,
   type DragEvent as ReactDragEvent,
+  type CSSProperties,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
   type UIEvent as ReactUIEvent,
@@ -75,9 +76,12 @@ export const ADVANCED_TABLE_HEAD_SURFACE_CLASS = "bg-[#fbfaf7]";
  * 内置在组件里，调用方不必再给 `<tbody>` 传底色。
  */
 export const ADVANCED_TABLE_BODY_SURFACE_CLASS = "bg-white";
-const ROW_ACTIONS_COMPACT_CLASS =
-  " [&_button]:h-5 [&_button]:w-5 [&_button]:min-h-0 [&_svg]:h-3 [&_svg]:w-3";
-const ROW_ACTIONS_SIZE_CLASS: Record<RowHeightMode, string> = {
+const ROW_ACTIONS_COMPACT_CLASS = " [&_button]:min-h-0 [&_button]:max-h-5";
+/**
+ * 兜底上限：只约束**没走比例等式**的按钮（如设置页的 SettingsActionButton 自带
+ * 移动端 40px 触达尺寸），别让它们撑破行高。按比例算出来的按钮永远小于这些上限。
+ */
+const ROW_ACTIONS_MAX_HEIGHT_CLASS: Record<RowHeightMode, string> = {
   41: " [&_button]:max-h-7",
   39: " [&_button]:max-h-[27px]",
   37: " [&_button]:max-h-[26px]",
@@ -85,6 +89,31 @@ const ROW_ACTIONS_SIZE_CLASS: Record<RowHeightMode, string> = {
   33: " [&_button]:max-h-6",
   31: " [&_button]:max-h-[22px]",
 };
+/**
+ * 行操作按钮的**比例等式**（与页签那套一致：只有行内容高一个自由变量）。
+ *
+ *   按钮边长 = 行内容高 × 0.85
+ *   图标边长 = 按钮边长 × 0.6（≈ 行内容高 × 0.51）
+ *
+ * 行内容高来自用户的「表格行高」偏好（41/39/37/35/33/31 → 28/27/26/26/24/22，
+ * 紧凑行固定 20），所以行距放大按钮同比放大、行距收窄同比收窄，永远是正方形，
+ * 不会出现「有的 24 有的 20」那种长短不一。
+ *
+ * 具体 px 由组件按当前行高算出来，以 CSS 变量 `--mmh-row-action-btn / -icon`
+ * 挂在行操作单元格上，按钮通过 `ROW_ACTION_BUTTON_BOX_CLASS` 消费。
+ * 刻意**不在容器上**用 `[&_button]:h-* w-*` 硬压：操作列里还可能有带文字的胶囊
+ * 按钮（如「份额核对」是 `px-2 text-xs`），压成正方形会把文字挤没。
+ */
+const ROW_ACTION_BUTTON_RATIO = 0.85;
+const ROW_ACTION_ICON_RATIO = 0.6;
+/**
+ * 行操作按钮的统一外盒：正方形、尺寸取上面的比例变量（不在表格里时回落到 20px），
+ * 图标由 `[&>svg]` 一起缩放。`shrink-0` 是硬约束：操作列再窄也不许把按钮压小，
+ * 宁可让按钮占掉单元格内边距。
+ */
+export const ROW_ACTION_BUTTON_BOX_CLASS =
+  "flex h-[var(--mmh-row-action-btn,20px)] w-[var(--mmh-row-action-btn,20px)] shrink-0 items-center justify-center rounded border transition-colors [&>svg]:h-[var(--mmh-row-action-icon,12px)] [&>svg]:w-[var(--mmh-row-action-icon,12px)]";
+
 const HEADER_PADDING_CLASS: Record<RowHeightMode, string> = {
   41: "px-3 py-1.5",
   39: "px-3 py-[5px]",
@@ -1008,7 +1037,15 @@ export function AdvancedDataTable<T>({
     ? Math.max(2, Math.floor((COMPACT_ROW_HEIGHT - COMPACT_ROW_CONTENT_HEIGHT - ROW_BORDER_HEIGHT) / 2))
     : rowHeightPreset.padding;
   const rowCellPaddingStyle = { paddingTop: rowPaddingY, paddingBottom: rowPaddingY };
-  const rowActionsSizeClass = ROW_ACTIONS_SIZE_CLASS[rowHeightMode];
+  // 行操作按钮尺寸：按比例等式从当前行内容高算出来（见 ROW_ACTION_BUTTON_RATIO）。
+  const rowContentHeight = compactRows ? COMPACT_ROW_CONTENT_HEIGHT : rowHeightPreset.content;
+  const rowActionButtonSize = Math.max(16, Math.round(rowContentHeight * ROW_ACTION_BUTTON_RATIO));
+  const rowActionIconSize = Math.max(10, Math.round(rowActionButtonSize * ROW_ACTION_ICON_RATIO));
+  const rowActionsSizeStyle = useMemo(() => ({
+    "--mmh-row-action-btn": `${rowActionButtonSize}px`,
+    "--mmh-row-action-icon": `${rowActionIconSize}px`,
+  } as CSSProperties), [rowActionButtonSize, rowActionIconSize]);
+  const rowActionsMaxHeightClass = ROW_ACTIONS_MAX_HEIGHT_CLASS[rowHeightMode];
   const [internalSelectedKeys, setInternalSelectedKeys] = useState<Set<string>>(new Set());
   const [draggedRowKey, setDraggedRowKey] = useState<string | null>(null);
   const [dragTarget, setDragTarget] = useState<{ key: string; position: AdvancedDataTableDropPosition } | null>(null);
@@ -1084,7 +1121,7 @@ export function AdvancedDataTable<T>({
           <div
             data-row-double-click-ignore
             data-advanced-table-row-actions
-            className={`flex items-center justify-end gap-1${compactRows ? ROW_ACTIONS_COMPACT_CLASS : rowActionsSizeClass}`}
+            className={`flex items-center justify-end gap-1${compactRows ? ROW_ACTIONS_COMPACT_CLASS : rowActionsMaxHeightClass}`}
             onClick={(event) => event.stopPropagation()}
           >
             {rowActions(row, index)}
@@ -1092,7 +1129,7 @@ export function AdvancedDataTable<T>({
         ),
       },
     ];
-  }, [columns, compactRows, rowActions, rowActionsMinWidth, rowActionsSizeClass, rowActionsWidth]);
+  }, [columns, compactRows, rowActions, rowActionsMaxHeightClass, rowActionsMinWidth, rowActionsWidth]);
   const hiddenStorageKey = `${storageKey}:hidden:v2`;
   const hideableColumnKeys = useMemo(
     () => new Set(tableColumns.filter((column) => column.hideable).map((column) => column.key)),
@@ -1332,10 +1369,13 @@ export function AdvancedDataTable<T>({
   }, [fillHeight, hiddenKeys, minTableWidth, selectable, tableColumns, viewportWidth, rows.length]);
 
   const onRowsFitChangeRef = useRef(onRowsFitChange);
+  /** 最近一次上报的行数：同值不上报，避免和调用方的页大小来回抖动。 */
   const lastReportedRowsFitRef = useRef<number | null>(null);
-  // 上一次上报是否来自「外推」（当前页全部放得下、按平均行高估的容量）。
-  // 外推是估计值：页大小落地后行数变了，用落地后的真实行高再复核一次。
-  const lastFitWasExtrapolatedRef = useRef(false);
+  /**
+   * 「落地复核」记过账的行数：同一个行数只补测一次（见下方 rowItems.length 那条
+   * 统一的补测效应）。没有它，25 → 26 → 25 这类跨 1 行的摆动会无限往返。
+   */
+  const landedFitRowsRef = useRef<number | null>(null);
   const rowsFitObserverTimerRef = useRef<number | null>(null);
   // 「容器还没尺寸」时的自我重试（见 measureRowsFit）：定时器 + 次数上限。
   const rowsFitRetryTimerRef = useRef<number | null>(null);
@@ -1408,13 +1448,10 @@ export function AdvancedDataTable<T>({
     if (count === rowHeights.length) {
       // 当前页全部放得下（初始页大小小于视口容量）：按平均行高外推还能再放几行，
       // 免得首屏只显示 stored pageSize 那么点行、底部空一大片。混合行高下平均
-      // 值会偏保守（高行把均值抬上去），落地后的复核会再修一次。
+      // 值会偏保守（高行把均值抬上去），落地后的复核（下面 rowItems.length 那条
+      // 补测效应）会用真实行高再修一次。
       const averageRowHeight = usedHeight / rowHeights.length;
-      const extrapolated = Math.max(count, Math.floor((available + 0.5) / averageRowHeight));
-      lastFitWasExtrapolatedRef.current = extrapolated > count;
-      count = extrapolated;
-    } else {
-      lastFitWasExtrapolatedRef.current = false;
+      count = Math.max(count, Math.floor((available + 0.5) / averageRowHeight));
     }
     count = Math.max(1, count);
     if (lastReportedRowsFitRef.current === count) return;
@@ -1440,47 +1477,13 @@ export function AdvancedDataTable<T>({
   //     （首帧是 DEFAULT_ROW_HEIGHT_MODE）、用户在设置里切换、compactRows 切换，
   //     都必须重算，否则会按错误行高把页数冻结住；
   //  3. 视口高度变化（见下方 ResizeObserver）——「自适应」跟着视口走。
-  // 刻意不跟随每次渲染、也不跟随数据页变化：翻页、筛选、局部刷新不重算。
+  // 另外「渲染行数变化」只走下面那一条统一通道，避免几条效应同时叫测量函数互相抢。
+  // 刻意不跟随每次渲染：翻页、筛选、局部刷新不重算。
   usePaintEffect(() => {
     lastReportedRowsFitRef.current = null;
-    lastFitWasExtrapolatedRef.current = false;
+    landedFitRowsRef.current = null;
     measureRowsFit();
   }, [measureRowsFit, onRowsFitChange]);
-
-  // Async pages can arrive after the first fit measurement. Retry only until
-  // the first successful report so normal row changes do not churn page size.
-  //
-  // 例外：上次上报是「外推」的要再复核一次。外推发生在首帧，那时视口可能还是
-  // 「整屏高度」（同页其它面板尚未压缩它），会按大高度估出一个远大于真实容量的
-  // 页数（实测 435px 的视口被报成 40 行）；页大小落地后视口高度不再变化，
-  // ResizeObserver 不会补测，于是一直卡在过大的页数上、表格底部出现滚动条。
-  // 外推后的第一页数据到位时重量一次即可收敛，且 count 相同时 measureRowsFit
-  // 直接早退，不会来回抖动。
-  usePaintEffect(() => {
-    if (lastReportedRowsFitRef.current != null && !lastFitWasExtrapolatedRef.current) return;
-    measureRowsFit();
-  }, [measureRowsFit, rows.length]);
-
-  // 页大小「落地」之后再复核一次。
-  //
-  // 上报值一旦被调用方接受，表格渲染的行数就等于它（`rows.length ===
-  // lastReportedRowsFitRef`）。此刻重量一遍几乎不花钱（同值直接早退），却能兜住
-  // 「上报时视口还不是最终高度」这类一次性偏差 —— 实测表现就是「打开账户只铺
-  // 28 行、底部留一大片，重新选一次『自适应』才填满」：手动切换会换一个新的
-  // report identity 强制重测，而自动路径只在 ResizeObserver 看到尺寸变化时才补
-  // 测，错过那一次变化（挂在观察者注册之前的布局抖动、行高偏好晚一帧落地…）
-  // 就永远停在偏小的页数上。
-  //
-  // 只复核「新落实的行数」一次（`landedFitRowsRef` 记账），翻页/刷新拿到同样
-  // 行数时直接跳过，不会和数据页来回抖动。
-  const landedFitRowsRef = useRef<number | null>(null);
-  usePaintEffect(() => {
-    const reported = lastReportedRowsFitRef.current;
-    if (reported == null || rows.length !== reported) return;
-    if (landedFitRowsRef.current === rows.length) return;
-    landedFitRowsRef.current = rows.length;
-    measureRowsFit();
-  }, [measureRowsFit, rows.length]);
 
   // 视口高度变化（窗口 resize、拖动分栏）后重算，防抖 250ms 等拖拽停当再量。
   // 首帧若因容器还没有尺寸而量不到，这里补测。行数没变时测量函数直接早退，
@@ -1755,17 +1758,35 @@ export function AdvancedDataTable<T>({
     if (!draggedRowKey || !dragTarget) return rowItems;
     return reorderRowItems(rowItems, draggedRowKey, dragTarget.key, dragTarget.position);
   }, [dragTarget, draggedRowKey, rowItems]);
-  // 外推复核：上一次上报是外推值、且调用方已把它应用成页大小（渲染行数正好等于
-  // 上报值）时，用落地后的真实行高再量一次。估准了测量函数会直接早退（不上报、
-  // 不惊动调用方）；混合行高下平均值外推少算的那 ~1 行在这里补上。只补一次
-  // （标志先清），不会和调用方的页大小来回抖动。
-  useEffect(() => {
-    if (!onRowsFitChange) return;
-    if (!lastFitWasExtrapolatedRef.current) return;
-    if (rowItems.length !== lastReportedRowsFitRef.current) return;
-    lastFitWasExtrapolatedRef.current = false;
+  // 自适应行数的**唯一**「行数变化」通道。这里同时承担两件事：
+  //
+  //  1. 首帧还没成功上报过（`reported == null`）：异步数据到位时渲染行数从 0 变起来，
+  //     补测一次。
+  //  2. 页大小「落地」后再复核一次：上报值一旦被调用方接受，表格渲染的行数就等于它
+  //     （`rowItems.length === lastReportedRowsFitRef`）。此刻重量一遍几乎不花钱
+  //     （同值直接早退），却能兜住「上报时视口还不是最终高度」这类一次性偏差 ——
+  //     实测表现就是「打开账户只铺 28 行、底部留一大片，重新选一次『自适应』才填满」：
+  //     手动切换会换一个新的 report identity 强制重测，而这条自动路径补了视图重开那一次。
+  //     外推值（首帧按平均行高估的容量、那时视口可能还是整屏高度）也在这里收敛：
+  //     它落地后渲染行数等于上报值，用真实行高再量一遍即可。
+  //
+  // 只复核「新落实的行数」一次（`landedFitRowsRef` 记账），翻页 / 刷新拿到同样行数时
+  // 直接跳过，不会和调用方的页大小来回抖动。
+  //
+  // 依赖必须是**真实渲染出来的行数**（`rowItems.length`），不是 `rows.length`：
+  // 走表格内置分页的那几张表（基金 / 存款 / 房产 / 国债 / 持仓）传入的是整份数据，
+  // 渲染行数还受 pageSize 与页码裁剪；明细这类调用方自己切好的两种口径才相等。
+  usePaintEffect(() => {
+    const reported = lastReportedRowsFitRef.current;
+    if (reported == null) {
+      measureRowsFit();
+      return;
+    }
+    if (rowItems.length !== reported) return;
+    if (landedFitRowsRef.current === rowItems.length) return;
+    landedFitRowsRef.current = rowItems.length;
     measureRowsFit();
-  }, [measureRowsFit, onRowsFitChange, rowItems.length]);
+  }, [measureRowsFit, rowItems.length]);
   const rowBackgroundClassByKey = useMemo(() => {
     const classByKey = new Map<string, string>();
     if (!rowBackgroundEnabled || !rowBackgroundGroupKey) return classByKey;
@@ -3028,6 +3049,9 @@ export function AdvancedDataTable<T>({
   return (
     <div
       className={fillHeight ? "flex h-full min-h-0 flex-col" : "min-h-0"}
+      // 行操作按钮的比例变量挂在整张表上：行内按钮无论画在 rowActions 还是普通列里，
+      // 都按同一个「行内容高 × 0.85」显示。
+      style={rowActionsSizeStyle}
     >
       {showToolbar ? (
         <div

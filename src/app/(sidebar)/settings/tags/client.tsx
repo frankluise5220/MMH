@@ -7,6 +7,8 @@ import { useRouter } from "next/navigation";
 import {
   SettingsActionButton,
   SettingsEmptyRow,
+  SettingsMobileList,
+  SettingsMobileRow,
   SettingsPrimaryAddButton,
   SettingsRowActions,
   SettingsSection,
@@ -89,15 +91,57 @@ export default function SettingsTagsClient({
     void notifySettingsDataChanged({ scope: "tags", reason: input.id ? "tag:update" : "tag:create", prefetch: true });
   }
 
+  // 桌面是双击行、手机是单击卡片：同一条跳转只在函数里写一次。
+  function openTagDetail(tag: Tag) {
+    const params = new URLSearchParams({ view: "detail", tagId: tag.id, detailAll: "1" });
+    router.push(`/?${params.toString()}`);
+  }
+
   return (
     <div className="space-y-4">
-      <BasicDataSubmenuHeader onImported={() => void fetchTags()} />
+      <BasicDataSubmenuHeader />
 
       <SettingsSection
         title={t("settings.tags.listTitle")}
         count={tags.length}
         actions={<SettingsPrimaryAddButton onClick={() => setEditing({ id: "", name: "", color: TAG_COLORS[6] })}>{t("settings.tags.add")}</SettingsPrimaryAddButton>}
+        mobileActions={<SettingsPrimaryAddButton onClick={() => setEditing({ id: "", name: "", color: TAG_COLORS[6] })}>{t("settings.tags.add")}</SettingsPrimaryAddButton>}
       >
+        <SettingsMobileList>
+          {tags.length ? tags.map((tag) => (
+            <SettingsMobileRow
+              key={tag.id}
+              onPress={() => openTagDetail(tag)}
+              title={tag.name}
+              meta={(
+                <>
+                  <span className="h-3 w-3 rounded-full" style={{ backgroundColor: tag.color || "#64748B" }} />
+                  <span className="font-mono text-[11px] text-slate-500">{tag.color || "#64748B"}</span>
+                  <span className="text-slate-300">·</span>
+                  <span>{t("settings.tags.tapForRecords")}</span>
+                </>
+              )}
+              actions={(
+                <>
+                  <SettingsActionButton
+                    label={t("settings.tags.edit")}
+                    variant="edit"
+                    onClick={() => setEditing(tag)}
+                  />
+                  <SettingsActionButton
+                    label={t("settings.tags.delete")}
+                    variant="delete"
+                    onClick={() => void handleDelete(tag.id)}
+                  />
+                </>
+              )}
+            />
+          )) : (
+            <div className="px-4 py-10 text-center text-sm text-slate-400">{t("settings.tags.empty")}</div>
+          )}
+        </SettingsMobileList>
+
+        <div className="hidden md:block">
         <SettingsTable minWidth={640}>
           <thead className="sticky top-0 z-10">
             <tr>
@@ -111,14 +155,7 @@ export default function SettingsTagsClient({
               <tr
                 key={tag.id}
                 className="cursor-pointer hover:bg-slate-50"
-                onDoubleClick={() => {
-                  const params = new URLSearchParams({
-                    view: "detail",
-                    tagId: tag.id,
-                    detailAll: "1",
-                  });
-                  router.push(`/?${params.toString()}`);
-                }}
+                onDoubleClick={() => openTagDetail(tag)}
               >
                 <SettingsTd className="text-sm font-medium text-slate-800">{tag.name}</SettingsTd>
                 <SettingsTd>
@@ -147,6 +184,7 @@ export default function SettingsTagsClient({
             )}
           </tbody>
         </SettingsTable>
+        </div>
       </SettingsSection>
 
       {editing ? (

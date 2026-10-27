@@ -19,6 +19,7 @@ import { fetchSettingsAccountData } from "@/lib/client/settingsCache";
 import { amountToneClass as amountClass } from "@/lib/client/colors";
 import {
   AdvancedDataTable,
+  ROW_ACTION_BUTTON_BOX_CLASS,
   type AdvancedDataTableColumn,
   type AdvancedDataTableSummaryRow,
 } from "./AdvancedDataTable";
@@ -1114,7 +1115,7 @@ export function InsuranceShell({
           <div className="flex items-center justify-end gap-1" onClick={(event) => event.stopPropagation()}>
             <button
               type="button"
-              className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-slate-200 bg-white text-slate-700 transition-colors hover:bg-slate-50 hover:text-blue-600"
+              className={`${ROW_ACTION_BUTTON_BOX_CLASS} border-slate-200 bg-white text-slate-700 hover:bg-slate-50 hover:text-blue-600`}
               onClick={() => {
                 setPolicyEditValue({
                   id: holding.id,
@@ -1145,7 +1146,7 @@ export function InsuranceShell({
             </button>
             <button
               type="button"
-              className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-red-200 bg-white text-red-700 transition-colors hover:bg-red-50 hover:text-red-700"
+              className={`${ROW_ACTION_BUTTON_BOX_CLASS} border-red-200 bg-white text-red-700 hover:bg-red-50 hover:text-red-700`}
               onClick={() => {
                 setDeletePolicyValue({
                   id: holding.id,

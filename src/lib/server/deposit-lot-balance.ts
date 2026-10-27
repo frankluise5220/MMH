@@ -146,6 +146,8 @@ export type DepositCashValueLot = {
   lotId: string;
   depositAccountId: string;
   remainingPrincipal: number;
+  /** 扣减到这张存单上的取回 / 转出行 id（存单故事的组成部分）。 */
+  redemptionEntryIds: string[];
 };
 
 /**
@@ -200,6 +202,7 @@ export function computeDepositCashValueByAccount(params: {
       lotId: entry.id,
       depositAccountId: entry.toAccountId,
       remainingPrincipal: depositLotOriginalPrincipal(entry),
+      redemptionEntryIds: [],
     };
     lots.push(lot);
     const key = depositLotBucketKey(lot.depositAccountId, entry, dateKey);
@@ -227,6 +230,7 @@ export function computeDepositCashValueByAccount(params: {
         0,
         Number((lot.remainingPrincipal - amount).toFixed(2)),
       );
+      lot.redemptionEntryIds.push(entry.id);
       break;
     }
   }

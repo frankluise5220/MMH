@@ -326,7 +326,79 @@ export function IncomeExpenseReportClient({
   return (
     <ReportResizableSplit hasDetails={hasDetails}>
       <div className="panel-surface flex h-full min-h-0 flex-col overflow-hidden">
-        <div className="min-h-0 flex-1 overflow-auto">
+        {/* ===== 移动端：类别卡片（类别×月份交叉表在手机上只能横向滚、看不清）。
+             汇总三卡 + 类别树；金额仍走 AmountButton 下钻明细。 */}
+        <div className="min-h-0 flex-1 overflow-y-auto md:hidden">
+          <div className="grid grid-cols-3 gap-2 p-2">
+            {[
+              { key: "income", label: t("incomeExpense.incomeTotal"), value: report.income.total, count: report.income.count, detail: { type: "income" as const }, cls: pnlColor(report.income.total, colorScheme) },
+              { key: "expense", label: t("incomeExpense.expenseTotal"), value: report.expense.total, count: report.expense.count, detail: { type: "expense" as const }, cls: pnlColor(-report.expense.total, colorScheme) },
+              { key: "net", label: t("stats.netIncome"), value: report.netTotal, count: report.income.count + report.expense.count, detail: { type: "net" as const }, cls: pnlColor(report.netTotal, colorScheme) },
+            ].map((card) => (
+              <div key={card.key} className="rounded-lg border border-slate-200 bg-white px-2 py-2">
+                <div className="truncate text-[11px] text-slate-500">{card.label}</div>
+                <div className={`mt-0.5 truncate text-sm font-semibold tabular-nums ${card.cls}`}>
+                  <AmountButton
+                    value={card.value}
+                    count={card.count}
+                    detail={card.detail}
+                    loadingKey={loadingKey}
+                    onSelect={selectDetail}
+                  />
+                </div>
+              </div>
+            ))}
+          </div>
+
+          {[
+            { key: "income-section", title: t("incomeExpense.incomeTotal"), rowCls: incomeSectionStyle.row, titleCls: colorScheme === "red_up_green_down" ? "text-red-700" : "text-emerald-700", rows: visibleIncomeRows, type: "income" as const, sign: 1 },
+            { key: "expense-section", title: t("incomeExpense.expenseTotal"), rowCls: expenseSectionStyle.row, titleCls: colorScheme === "red_up_green_down" ? "text-emerald-700" : "text-red-700", rows: visibleExpenseRows, type: "expense" as const, sign: -1 },
+          ].map((section) => (
+            <div key={section.key}>
+              <div className={`px-3 py-1.5 text-xs font-semibold ${section.rowCls} ${section.titleCls}`}>
+                {section.title}
+              </div>
+              {section.rows.map(({ row, canToggle, expanded }) => (
+                <div
+                  key={row.key}
+                  className="flex items-center gap-1 border-b border-slate-100 bg-white pl-3 pr-3"
+                >
+                  <button
+                    type="button"
+                    disabled={!canToggle}
+                    onClick={canToggle ? () => toggleCategoryRow(row.key) : undefined}
+                    className={`flex h-11 w-6 shrink-0 items-center justify-center rounded ${canToggle ? "text-slate-400 active:bg-slate-100" : ""}`}
+                    aria-label={canToggle ? (expanded ? t("incomeExpense.collapseCategory") : t("incomeExpense.expandCategory")) : undefined}
+                  >
+                    {canToggle ? <ChevronDown className={`h-3.5 w-3.5 transition-transform ${expanded ? "" : "-rotate-90"}`} /> : null}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!canToggle}
+                    onClick={canToggle ? () => toggleCategoryRow(row.key) : undefined}
+                    className={`min-w-0 flex-1 truncate py-3 text-left text-sm ${row.depth === 0 ? "font-semibold text-slate-800" : "text-slate-700"}`}
+                    style={{ paddingLeft: row.depth * 12 }}
+                  >
+                    {row.name}
+                  </button>
+                  <span className="shrink-0 text-sm font-medium tabular-nums">
+                    <AmountButton
+                      value={row.total}
+                      count={row.count}
+                      className={pnlColor(section.sign * row.total, colorScheme)}
+                      detail={{ type: section.type, categoryKey: row.key }}
+                      loadingKey={loadingKey}
+                      onSelect={selectDetail}
+                    />
+                  </span>
+                </div>
+              ))}
+            </div>
+          ))}
+        </div>
+
+        {/* ===== 桌面：交叉表 ===== */}
+        <div className="hidden min-h-0 flex-1 overflow-auto md:block">
           <table
             className="w-full table-fixed border-separate border-spacing-0"
           >

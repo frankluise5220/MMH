@@ -121,6 +121,16 @@ function sumBy<T>(items: T[], read: (item: T) => number) {
   return items.reduce((sum, item) => sum + read(item), 0);
 }
 
+/** 移动端卡片里的小指标格：label 一行 + 数值一行。 */
+function MobileMetric({ label, value, className }: { label: string; value: string; className?: string }) {
+  return (
+    <div className="min-w-0">
+      <div className="text-[11px] leading-4 text-slate-500">{label}</div>
+      <div className={`truncate text-xs font-medium leading-5 tabular-nums ${className ?? "text-slate-700"}`}>{value}</div>
+    </div>
+  );
+}
+
 /**
  * Sorting for a grouped (tree) table: detail rows always stay attached to their
  * group, and groups are ordered by the group header's own value for the column.
@@ -668,8 +678,8 @@ export function FundHoldingReport({ rows, clearedRows, totals, isRedUp, groupMod
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-slate-200 bg-white">
-        <div className="flex shrink-0 items-center justify-between gap-3 border-b border-slate-100 px-3 py-2">
-          <div className="text-sm font-medium text-slate-800">{t("fundHoldingReport.holdingsTitle")}</div>
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b border-slate-100 px-3 py-2">
+          <div className="shrink-0 whitespace-nowrap text-sm font-medium text-slate-800">{t("fundHoldingReport.holdingsTitle")}</div>
           <div className="flex min-w-0 items-center gap-3">
             <div className="truncate text-xs text-slate-500">
               {best
@@ -686,7 +696,75 @@ export function FundHoldingReport({ rows, clearedRows, totals, isRedUp, groupMod
             {holdingGroups.length > 0 ? expandAllButton(holdings.allExpanded, holdings.toggleAll) : null}
           </div>
         </div>
-        <div className="min-h-0 flex-1">
+        {/* 移动端：分组卡片（11 列表格 minTableWidth=1280；展开状态与桌面表格共用同一 hook） */}
+        <div className="min-h-0 flex-1 divide-y divide-slate-100 overflow-y-auto md:hidden">
+          {holdingGroups.length === 0 ? (
+            <div className="px-4 py-10 text-center text-sm text-slate-400">{t("fundHoldingReport.empty")}</div>
+          ) : holdingGroups.map((group) => {
+            const open = holdings.expanded.has(group.header.groupId);
+            return (
+              <div key={group.header.id}>
+                <button
+                  type="button"
+                  onClick={() => holdings.toggle(group.header.groupId)}
+                  className="flex w-full items-center gap-2 px-3 py-2.5 text-left active:bg-slate-50"
+                >
+                  {open ? <ChevronDown className="h-3.5 w-3.5 shrink-0 text-slate-400" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0 text-slate-400" />}
+                  <span className="min-w-0 flex-1" title={group.header.title}>
+                    <span className="block truncate text-sm font-medium text-slate-800">
+                      {groupByCompany ? group.header.label : group.header.accountLabel}
+                    </span>
+                    <span className="block truncate text-[11px] text-slate-500">
+                      {groupByCompany
+                        ? [group.header.subLabel, group.header.accountLabel].filter(Boolean).join(" · ")
+                        : group.header.label}
+                    </span>
+                  </span>
+                  <span className="shrink-0 text-right">
+                    <span className="block text-sm font-semibold tabular-nums text-slate-900">
+                      {formatCurrencyMoney(group.header.marketValue, group.header.currency)}
+                    </span>
+                    <span className={`block text-xs tabular-nums ${valueClass(group.header.floatingPnL, isRedUp)}`}>
+                      {signedMoney(group.header.floatingPnL, group.header.currency)} · {formatPercent(group.header.floatingPnLRate)}
+                    </span>
+                  </span>
+                </button>
+                {open ? group.details.map((row) => (
+                  <div key={row.id} className="bg-slate-50/60 px-3 pb-2.5 pl-9 pt-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="min-w-0 truncate text-sm text-slate-800" title={row.title}>
+                        {row.label}
+                        {row.subLabel ? <span className="ml-1 text-[11px] text-slate-500">{row.subLabel}</span> : null}
+                      </span>
+                      <span className="shrink-0 text-xs tabular-nums text-slate-700">{formatCurrencyMoney(row.marketValue, row.currency)}</span>
+                    </div>
+                    {row.accountLabel ? (
+                      <div className="mt-0.5 truncate text-xs text-slate-500" title={row.accountTitle || row.accountLabel}>{row.accountLabel}</div>
+                    ) : null}
+                    <div className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-1">
+                      <MobileMetric label={t("fundHoldingReport.colUnits")} value={`${formatMoney(row.units)}${row.avgCost == null ? "" : ` × ${formatMoney(row.avgCost)}`} `} />
+                      <MobileMetric label={t("fundHoldingReport.colNav")} value={row.nav == null ? "-" : `${formatMoney(row.nav)}${row.navDate ? ` (${compactDate(row.navDate)})` : ""}`} />
+                      <MobileMetric label={t("fundHoldingReport.colCost")} value={formatCurrencyMoney(row.cost, row.currency)} />
+                      <MobileMetric label={t("fundHoldingReport.colFloatingPnL")} value={`${signedMoney(row.floatingPnL, row.currency)} (${formatPercent(row.floatingPnLRate)})`} className={valueClass(row.floatingPnL, isRedUp)} />
+                      <MobileMetric label={t("fundHoldingReport.colRealized")} value={signedMoney(row.historicalProfit, row.currency)} className={valueClass(row.historicalProfit, isRedUp)} />
+                      <MobileMetric label={t("fundHoldingReport.colTotalPnL")} value={signedMoney(row.totalProfit, row.currency)} className={valueClass(row.totalProfit, isRedUp)} />
+                    </div>
+                  </div>
+                )) : null}
+              </div>
+            );
+          })}
+          {holdingGroups.length > 0 ? (
+            <div className="flex items-center justify-between bg-slate-50 px-3 py-2.5">
+              <span className="text-xs font-semibold text-slate-700">{t("common.total")}</span>
+              <span className="flex items-center gap-2">
+                <span className="text-xs tabular-nums text-slate-700">{formatCurrencyMoney(totals.marketValue, currency)}</span>
+                <span className={`text-sm font-semibold tabular-nums ${valueClass(totals.totalProfit, isRedUp)}`}>{signedMoney(totals.totalProfit, currency)}</span>
+              </span>
+            </div>
+          ) : null}
+        </div>
+        <div className="hidden min-h-0 flex-1 md:block">
           <AdvancedDataTable
             storageKey={`mmh_fund_report_holdings_v2:${groupMode}`}
             columns={holdingColumns}
@@ -708,14 +786,80 @@ export function FundHoldingReport({ rows, clearedRows, totals, isRedUp, groupMod
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-slate-200 bg-white">
-        <div className="flex shrink-0 items-center justify-between gap-3 border-b border-slate-100 px-3 py-2">
-          <div className="text-sm font-medium text-slate-800">{t("fundHoldingReport.clearedTitle")}</div>
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b border-slate-100 px-3 py-2">
+          <div className="shrink-0 whitespace-nowrap text-sm font-medium text-slate-800">{t("fundHoldingReport.clearedTitle")}</div>
           <div className="flex min-w-0 items-center gap-3">
             <div className="text-xs text-slate-500">{t("fundHoldingReport.clearedCount", { count: totals.clearedCount })}</div>
             {clearedGroups.length > 0 ? expandAllButton(cleared.allExpanded, cleared.toggleAll) : null}
           </div>
         </div>
-        <div className="min-h-0 flex-1">
+        {/* 移动端：已清仓分组卡片 */}
+        <div className="min-h-0 flex-1 divide-y divide-slate-100 overflow-y-auto md:hidden">
+          {clearedGroups.length === 0 ? (
+            <div className="px-4 py-10 text-center text-sm text-slate-400">{t("fundHoldingReport.noCleared")}</div>
+          ) : clearedGroups.map((group) => {
+            const open = cleared.expanded.has(group.header.groupId);
+            return (
+              <div key={group.header.id}>
+                <button
+                  type="button"
+                  onClick={() => cleared.toggle(group.header.groupId)}
+                  className="flex w-full items-center gap-2 px-3 py-2.5 text-left active:bg-slate-50"
+                >
+                  {open ? <ChevronDown className="h-3.5 w-3.5 shrink-0 text-slate-400" /> : <ChevronRight className="h-3.5 w-3.5 shrink-0 text-slate-400" />}
+                  <span className="min-w-0 flex-1" title={group.header.title}>
+                    <span className="block truncate text-sm font-medium text-slate-800">
+                      {groupByCompany ? group.header.label : group.header.accountLabel}
+                    </span>
+                    <span className="block truncate text-[11px] text-slate-500">
+                      {groupByCompany
+                        ? [group.header.subLabel, group.header.accountLabel].filter(Boolean).join(" · ")
+                        : group.header.label}
+                    </span>
+                  </span>
+                  <span className="shrink-0 text-right">
+                    <span className="block text-sm font-semibold tabular-nums text-slate-900">
+                      {formatCurrencyMoney(group.header.totalInvested, group.header.currency)}
+                    </span>
+                    <span className={`block text-xs tabular-nums ${valueClass(group.header.historicalProfit, isRedUp)}`}>
+                      {signedMoney(group.header.historicalProfit, group.header.currency)} · {formatPercent(group.header.returnRate)}
+                    </span>
+                  </span>
+                </button>
+                {open ? group.details.map((row) => (
+                  <div key={row.id} className="bg-slate-50/60 px-3 pb-2.5 pl-9 pt-1">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="min-w-0 truncate text-sm text-slate-800" title={row.title}>
+                        {row.label}
+                        {row.subLabel ? <span className="ml-1 text-[11px] text-slate-500">{row.subLabel}</span> : null}
+                      </span>
+                      <span className={`shrink-0 text-xs font-medium tabular-nums ${valueClass(row.historicalProfit, isRedUp)}`}>
+                        {signedMoney(row.historicalProfit, row.currency)}
+                      </span>
+                    </div>
+                    {row.accountLabel ? (
+                      <div className="mt-0.5 truncate text-xs text-slate-500" title={row.accountTitle || row.accountLabel}>{row.accountLabel}</div>
+                    ) : null}
+                    <div className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-1">
+                      <MobileMetric label={t("fundHoldingReport.colFirstBuy")} value={compactDate(row.firstBuyDate) || "-"} />
+                      <MobileMetric label={t("fundHoldingReport.colClearedDate")} value={compactDate(row.clearedDate) || "-"} />
+                      <MobileMetric label={t("fundHoldingReport.colTotalInvested")} value={formatCurrencyMoney(row.totalInvested, row.currency)} />
+                      <MobileMetric label={t("fundHoldingReport.colRedeemAmount")} value={formatCurrencyMoney(row.totalRedeemAmount, row.currency)} />
+                      <MobileMetric label={t("fundHoldingReport.colReturnRate")} value={formatPercent(row.returnRate)} className={valueClass(row.returnRate, isRedUp)} />
+                    </div>
+                  </div>
+                )) : null}
+              </div>
+            );
+          })}
+          {clearedGroups.length > 0 ? (
+            <div className="flex items-center justify-between bg-slate-50 px-3 py-2.5">
+              <span className="text-xs font-semibold text-slate-700">{t("common.total")}</span>
+              <span className={`text-sm font-semibold tabular-nums ${valueClass(totals.clearedHistoricalProfit, isRedUp)}`}>{signedMoney(totals.clearedHistoricalProfit, currency)}</span>
+            </div>
+          ) : null}
+        </div>
+        <div className="hidden min-h-0 flex-1 md:block">
           <AdvancedDataTable
             storageKey={`mmh_fund_report_cleared_v2:${groupMode}`}
             columns={clearedColumns}

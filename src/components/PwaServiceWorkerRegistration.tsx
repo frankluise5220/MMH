@@ -16,6 +16,10 @@ const INSTALL_HINT_DISMISSED_KEY = "mmh_pwa_install_hint_dismissed";
 const SW_SCOPE = withBasePath("/");
 const SW_SCRIPT = withBasePath("/sw.js");
 const SW_SCOPE_BASE = SW_SCOPE.replace(/\/+$/, "");
+// Cache names created by public/sw.js are `${SW_VERSION}-shell`, and SW_VERSION
+// is always `mmh-pwa-<n>`; sw.js itself drops every other `mmh-pwa-` key on
+// activate. Dev cleanup uses the same prefix so storage never outlives the worker.
+const SW_CACHE_PREFIX = "mmh-pwa-";
 
 function isIosDevice() {
   const ua = navigator.userAgent;
@@ -30,6 +34,17 @@ function isSafariBrowser() {
 function isStandaloneMode() {
   const nav = navigator as Navigator & { standalone?: boolean };
   return window.matchMedia("(display-mode: standalone)").matches || nav.standalone === true;
+}
+
+// A mounted client component can already be past `load` (slow hydration, restored
+// tab, bfcache); a bare `load` listener would then never run. Both callers below
+// must always execute exactly once.
+function whenLoaded(run: () => void) {
+  if (document.readyState === "complete") {
+    run();
+    return;
+  }
+  window.addEventListener("load", run, { once: true });
 }
 
 function hasDismissedInstallHint() {
@@ -52,10 +67,37 @@ export function PwaServiceWorkerRegistration() {
   const [isSafari, setIsSafari] = useState(false);
 
   useEffect(() => {
-    if (process.env.NODE_ENV !== "production") return;
     if (!("serviceWorker" in navigator)) return;
 
-    window.addEventListener("load", () => {
+    if (process.env.NODE_ENV !== "production") {
+      // `next dev` never registers a worker, but an earlier production build on the
+      // same origin may have left one behind. Its scope is "/" exactly like this
+      // build's, so the production-only cleanup below (which keeps scope matches)
+      // would never touch it. sw.js answers /_next/ cache-first, and dev chunk
+      // paths are stable (no content hash), so that leftover worker keeps feeding
+      // the browser pre-edit JS/CSS: the server is fixed, the page is not.
+      // No worker is legitimate in dev, so drop them all and their shell caches.
+      whenLoaded(() => {
+        navigator.serviceWorker
+          .getRegistrations()
+          .then((registrations) => Promise.all(registrations.map((registration) => registration.unregister())))
+          .catch(() => undefined);
+
+        if ("caches" in window) {
+          caches
+            .keys()
+            .then((keys) =>
+              Promise.all(
+                keys.filter((key) => key.startsWith(SW_CACHE_PREFIX)).map((key) => caches.delete(key)),
+              ),
+            )
+            .catch(() => undefined);
+        }
+      });
+      return;
+    }
+
+    whenLoaded(() => {
       // Drop service workers left behind by a different deployment shape on the
       // same origin: an IP:port that used to serve the fnOS package registered
       // our worker with scope /app/mmh, and that registration survives the
@@ -87,7 +129,7 @@ export function PwaServiceWorkerRegistration() {
       }).catch((error) => {
         console.warn("MMH service worker registration failed:", error);
       });
-    }, { once: true });
+    });
   }, []);
 
   useEffect(() => {

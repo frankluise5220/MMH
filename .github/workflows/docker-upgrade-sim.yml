@@ -28,7 +28,7 @@ jobs:
     runs-on: ubuntu-latest
     if: >-
       github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.conclusion == 'success'
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -61,6 +61,12 @@ jobs:
             image_tag="${tag#refs/tags/}"
             image_tag="${image_tag#v}"
             echo "target_tag=${image_tag}" >> "$GITHUB_OUTPUT"
+            # The target image is the `sha-<commit>` build, not the version tag:
+            # since 2026-10-27 a v* tag push only produces sha-/main snapshots,
+            # and `latest` + `0.1.x` are written by the `release: published`
+            # build. Pulling `mmh:${image_tag}` here would fail (tag absent) and
+            # the gate would go red for the wrong reason.
+            echo "target_image=ghcr.io/${{ github.repository_owner }}/mmh:sha-${head_sha:0:7}" >> "$GITHUB_OUTPUT"
             floor="0.1.52"
             bases="${floor}"
             # Resolve the previous published release from the remote tag list:
@@ -95,6 +101,7 @@ jobs:
         run: |
           TARGET_TAG="${{ steps.resolve.outputs.target_tag }}" \
           BASE_TAGS="${{ steps.resolve.outputs.base_tags }}" \
+          MMH_TARGET_IMAGE="${{ steps.resolve.outputs.target_image }}" \
             bash scripts/docker-upgrade-sim.sh 2>&1 | tee /tmp/mmh-upgrade-sim.log
 
       - name: Upload simulation log

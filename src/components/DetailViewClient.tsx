@@ -7,7 +7,7 @@ import { formatCurrencyMoney } from "@/lib/format";
 import { getColorSchemeFromCookie, pnlColor } from "@/lib/client/colors";
 import { getInsuranceDetailCategoryName, getInsuranceDetailNote } from "@/lib/insurance/detail-display";
 import { dispatchEntryEdit, EntryRowActions, type EditPayload } from "./EntryRowActions";
-import { AdvancedDataTable, type AdvancedDataTableColumn, type AdvancedDataTableDropPosition } from "./AdvancedDataTable";
+import { AdvancedDataTable, ROW_ACTION_BUTTON_BOX_CLASS, type AdvancedDataTableColumn, type AdvancedDataTableDropPosition } from "./AdvancedDataTable";
 import { BusinessLinkActionButton } from "./BusinessLinkActionButton";
 import { EntryAttachmentWindow } from "./EntryAttachmentWindow";
 import { BasicDetailBatchDeleteButton,
@@ -310,7 +310,7 @@ function EntryAttachmentIndicator({
   const attachments = entry.attachments ?? [];
   if (attachments.length === 0) return null;
   const names = attachments.map((item) => item.name).join("、");
-  const content = <Paperclip className="h-3.5 w-3.5" />;
+  const content = <Paperclip />;
   const handleClick = (event: MouseEvent) => {
     event.stopPropagation();
     onClick();
@@ -318,7 +318,7 @@ function EntryAttachmentIndicator({
   // Boxed style consistent with the adjacent row action icons (BusinessLinkActionButton,
   // EntryRowActions): visible border, white background, amber accent for attachments.
   const className =
-    "flex h-6 w-6 shrink-0 items-center justify-center rounded border border-amber-200 bg-white text-amber-600 transition-colors hover:border-amber-300 hover:bg-amber-50";
+    `${ROW_ACTION_BUTTON_BOX_CLASS} border-amber-200 bg-white text-amber-600 hover:border-amber-300 hover:bg-amber-50`;
   // The mobile entry row is itself a <button>, so the indicator must not render a nested
   // button there (invalid HTML and a React hydration error). Render a span instead.
   if (!asButton) {

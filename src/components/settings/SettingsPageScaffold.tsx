@@ -79,9 +79,9 @@ export function SettingsPrimaryAddButton({
     <button
       type="button"
       onClick={onClick}
-      className="inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-md border border-blue-200 bg-blue-50 px-2.5 text-xs font-medium text-blue-700 transition-colors hover:bg-blue-100"
+      className="inline-flex h-10 w-full shrink-0 items-center justify-center gap-1.5 rounded-xl border border-blue-200 bg-blue-50 px-3 text-sm font-medium text-blue-700 transition-colors active:bg-blue-100 md:h-8 md:w-auto md:rounded-md md:px-2.5 md:text-xs md:hover:bg-blue-100"
     >
-      <Plus className="h-3.5 w-3.5" />
+      <Plus className="h-4 w-4 md:h-3.5 md:w-3.5" />
       {children}
     </button>
   );
@@ -126,8 +126,13 @@ export function SettingsActionButton({
       aria-label={props["aria-label"] ?? label}
       {...props}
       className={[
-        "inline-flex shrink-0 items-center justify-center rounded-md border text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50",
-        size === "sm" ? "h-6 w-6 border-transparent bg-transparent" : "h-7 w-7 border-slate-200 bg-white",
+        "inline-flex shrink-0 items-center justify-center text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50",
+        // 移动端图标按钮放大到 40px 触摸热区；桌面表格行内仍是 28px 小图标。
+        size === "sm"
+          ? "h-6 w-6 rounded-md border border-transparent bg-transparent"
+          : "h-10 w-10 rounded-lg border border-slate-200 bg-white md:h-7 md:w-7 md:rounded-md",
+        // 图标跟着按钮走：手机 16px，桌面回到原来的 14px。
+        "[&>svg]:h-4 [&>svg]:w-4 md:[&>svg]:h-3.5 md:[&>svg]:w-3.5",
         toneClass,
         className ?? "",
       ].join(" ")}
@@ -143,12 +148,15 @@ export function SettingsSection({
   description,
   count,
   actions,
+  mobileActions,
   children,
 }: {
   title: string;
   description?: string;
   count?: number | string;
   actions?: React.ReactNode;
+  /** 手机端的同组操作（筛选、新增…），整行显示；桌面隐藏，仍用 `actions`。 */
+  mobileActions?: React.ReactNode;
   children: React.ReactNode;
 }) {
   const hideDescriptions = useHideSettingDescriptions();
@@ -164,10 +172,73 @@ export function SettingsSection({
           </div>
           {showDescription ? <div className="mt-1 text-xs text-slate-500">{description}</div> : null}
         </div>
-        {actions ? <div className="flex shrink-0 items-center gap-2">{actions}</div> : null}
+        {actions ? (
+          // 传了 mobileActions 的页面，表头操作只在桌面出现；没传的页面行为不变。
+          <div className={`${mobileActions ? "hidden md:flex" : "flex"} shrink-0 items-center gap-2`}>{actions}</div>
+        ) : null}
       </div>
+      {/* 手机端：表头放不下的筛选/新增单独占一行，整行满宽才好按 */}
+      {mobileActions ? (
+        <div className="flex flex-col gap-2 border-b border-slate-100 px-3 pb-3 md:hidden">{mobileActions}</div>
+      ) : null}
       {children}
     </section>
+  );
+}
+
+/**
+ * 移动端列表容器：设置页里的表格在小屏上既挤又没有点击热区，
+ * 用「一行一张卡」代替（`md:hidden`，桌面表格照旧）。
+ * 卡片内容由调用方决定，这里只统一分隔线与卡片内边距。
+ */
+export function SettingsMobileList({ children }: { children: React.ReactNode }) {
+  return <div className="divide-y divide-slate-100 md:hidden">{children}</div>;
+}
+
+/** 移动端列表里的一行：左侧选择框 + 主副信息 + 右侧操作。 */
+export function SettingsMobileRow({
+  selected,
+  onToggleSelect,
+  onPress,
+  selectLabel,
+  title,
+  meta,
+  actions,
+}: {
+  selected?: boolean;
+  onToggleSelect?: (next: boolean) => void;
+  /** 整行点击（例如标签页的「双击进明细」，手机上改成单点）。 */
+  onPress?: () => void;
+  selectLabel?: string;
+  title: React.ReactNode;
+  meta?: React.ReactNode;
+  actions?: React.ReactNode;
+}) {
+  return (
+    <div
+      className={`flex items-start gap-3 px-3 py-3 ${onPress ? "cursor-pointer active:bg-slate-50" : ""}`}
+      onClick={onPress}
+      role={onPress ? "button" : undefined}
+    >
+      {onToggleSelect ? (
+        <input
+          type="checkbox"
+          checked={selected}
+          onChange={(event) => onToggleSelect(event.target.checked)}
+          aria-label={selectLabel}
+          className="mt-2 h-5 w-5 shrink-0 accent-blue-600"
+        />
+      ) : null}
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-sm font-medium text-slate-900">{title}</div>
+        {meta ? <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs text-slate-500">{meta}</div> : null}
+      </div>
+      {actions ? (
+        <div className="flex shrink-0 items-center gap-1" onClick={(event) => event.stopPropagation()}>
+          {actions}
+        </div>
+      ) : null}
+    </div>
   );
 }
 

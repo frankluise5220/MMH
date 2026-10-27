@@ -467,7 +467,7 @@ function normalizeCaizhiFundImportRows(
 /**
  * 尝试将财智基金明细文件转换为 MMH 基金导入文件（xlsx）。
  * 非财智基金明细（表头无「活动类型+基金名称」）返回 null。
- * 返回的 File 可直接交给基金预览导入窗口（FundImportPreviewDialog）。
+ * 返回的 File 即 MMH 基金导入格式，可交给基金导入接口。
  */
 export async function convertCaizhiFundImportFile(
   file: File,

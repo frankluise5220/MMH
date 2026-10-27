@@ -33,6 +33,9 @@ const basePath = (process.env.MMH_BASE_PATH || "").trim().replace(/\/+$/, "");
 
 const nextConfig: NextConfig = {
   output: "standalone",
+  // 左下角的 dev 浮标（圆形 N）会压在移动端弹窗底部按钮上，实测遮住「保存」文字。
+  // 它只在 dev 出现，生产构建不受影响。
+  devIndicators: false,
   // 允许并行跑第二个 dev 实例（例如「开发库 7777 + 生产库 7778」同时开着）。
   // 两个 next dev 若共用 .next，webpack 缓存与产物会互相覆盖，表现为随机
   // 编译错误或页面返回别的环境的数据。npm run dev:prod 会注入

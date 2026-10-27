@@ -7,6 +7,8 @@ import { InstitutionEditButton } from "@/components/InstitutionEditButton";
 import { SettingsDeleteButton } from "@/components/SettingsDeleteButton";
 import {
   SettingsEmptyRow,
+  SettingsMobileList,
+  SettingsMobileRow,
   SettingsPrimaryAddButton,
   SettingsRowActions,
   SettingsSection,
@@ -147,9 +149,78 @@ export function SettingsInstitutionsClient({
     }
   }
 
+  // 行内操作在表格和手机卡片里是同一套，抽出来避免两份 props 走样。
+  const renderItemActions = (item: Institution) => (
+    <>
+      <InstitutionEditButton
+        institution={item}
+        action={updateAction}
+        title={editTitle}
+        nameLabel={createNameLabel}
+        allowedTypes={[...allowedTypes]}
+        showReimbursementToggle={mode === "counterparty"}
+        onSaved={() => {
+          void notifySettingsDataChanged({ scope: "accounts", reason: `${mode}:update`, prefetch: true });
+          void refreshList({ force: true });
+        }}
+      />
+      <SettingsDeleteButton
+        label={`${deleteLabel}: ${item.name}`}
+        entity={mode === "counterparty" ? "counterparty" : "institution"}
+        id={item.id}
+        onDeleted={() => {
+          setInstitutions((prev) => prev.filter((row) => row.id !== item.id));
+          setSelectedIds((current) => {
+            const next = new Set(current);
+            next.delete(item.id);
+            return next;
+          });
+        }}
+      />
+    </>
+  );
+
+  const toggleSelect = (id: string, next: boolean) => setSelectedIds((current) => {
+    const draft = new Set(current);
+    if (next) draft.add(id);
+    else draft.delete(id);
+    return draft;
+  });
+
+  // 表头操作：桌面在标题右侧一行，手机在标题下方整行（由 SettingsSection 的 mobileActions 承载）。
+  const filterControl = mode === "institution" ? (
+    <label className="flex w-full items-center gap-2 text-xs text-slate-500 md:w-auto md:flex-none">
+      <span className="hidden shrink-0 md:inline">{t("settings.institutions.filterLabel")}</span>
+      <select
+        value={typeFilter}
+        onChange={(event) => setTypeFilter(event.target.value)}
+        className="h-10 w-full rounded-lg border border-slate-200 bg-white px-3 text-sm text-slate-700 outline-none focus:border-blue-400 md:h-8 md:w-auto md:rounded-md md:px-2 md:text-xs"
+      >
+        <option value="all">{t("settings.institutions.allTypes")}</option>
+        {allowedTypes.map((type) => <option key={type} value={type}>{typeLabel(type)}</option>)}
+      </select>
+    </label>
+  ) : null;
+
+  const batchControls = selectedIds.size > 0 ? (
+    <div className="flex w-full items-center justify-between gap-2 md:w-auto md:justify-end">
+      <span className="text-xs text-slate-500">{t("settings.institutions.selectedCount", { count: selectedIds.size })}</span>
+      <button
+        type="button"
+        disabled={batchDeleting}
+        onClick={() => void handleBatchDelete()}
+        className="inline-flex h-10 items-center rounded-xl border border-red-200 bg-red-50 px-3 text-sm font-medium text-red-600 transition-colors active:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50 md:h-8 md:rounded-md md:text-xs md:hover:bg-red-100"
+      >
+        {t("settings.batchDelete.title")}
+      </button>
+    </div>
+  ) : null;
+
+  const addButton = <SettingsPrimaryAddButton onClick={() => setShowCreate(true)}>{createTitle}</SettingsPrimaryAddButton>;
+
   return (
     <div className="space-y-4">
-      <BasicDataSubmenuHeader onImported={() => void refreshList({ force: true })} />
+      <BasicDataSubmenuHeader />
 
       <EntityCreateForm
         mode="full"
@@ -169,30 +240,44 @@ export function SettingsInstitutionsClient({
       <SettingsSection
         title={listTitle}
         count={visibleInstitutions.length}
-        actions={<div className="flex flex-wrap items-center justify-end gap-2">
-          {mode === "institution" ? (
-            <label className="flex items-center gap-2 text-xs text-slate-500">
-              <span>{t("settings.institutions.filterLabel")}</span>
-              <select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)} className="h-8 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 outline-none focus:border-blue-400">
-                <option value="all">{t("settings.institutions.allTypes")}</option>
-                {allowedTypes.map((type) => <option key={type} value={type}>{typeLabel(type)}</option>)}
-              </select>
-            </label>
-          ) : null}
-          {selectedIds.size > 0 ? <span className="text-xs text-slate-500">{t("settings.institutions.selectedCount", { count: selectedIds.size })}</span> : null}
-          {selectedIds.size > 0 ? (
-            <button
-              type="button"
-              disabled={batchDeleting}
-              onClick={() => void handleBatchDelete()}
-              className="inline-flex h-8 items-center rounded-md border border-red-200 bg-red-50 px-3 text-xs font-medium text-red-600 transition-colors hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {t("settings.batchDelete.title")}
-            </button>
-          ) : null}
-          <SettingsPrimaryAddButton onClick={() => setShowCreate(true)}>{createTitle}</SettingsPrimaryAddButton>
-        </div>}
+        actions={<>{filterControl}{batchControls}{addButton}</>}
+        mobileActions={<>{filterControl}{batchControls}{addButton}</>}
       >
+        {/* 手机端：一行一张卡（表格 780px 宽在小屏上只能横向拖动，没法用） */}
+        <SettingsMobileList>
+          {visibleInstitutions.length ? visibleInstitutions.map((item) => (
+            <SettingsMobileRow
+              key={item.id}
+              selected={selectedIds.has(item.id)}
+              onToggleSelect={(next) => toggleSelect(item.id, next)}
+              selectLabel={t("settings.institutions.selectRow", { name: item.name })}
+              title={item.name}
+              meta={(
+                <>
+                  {/* 家庭页里每一行都是「家庭成员」，类型不必再说一遍 */}
+                  {mode !== "family" ? (<><span>{typeLabel(item.type)}</span><span className="text-slate-300">·</span></>) : null}
+                  {item.shortName?.trim() ? (<><span className="truncate">{item.shortName.trim()}</span><span className="text-slate-300">·</span></>) : null}
+                  <span className={(item.accountCount ?? 0) > 0 ? "tabular-nums text-slate-600" : "tabular-nums text-slate-400"}>
+                    {t("settings.institutions.accountCount", { count: item.accountCount ?? 0 })}
+                  </span>
+                  {mode === "counterparty" ? (
+                    <>
+                      <span className="text-slate-300">·</span>
+                      <span className={item.isReimbursable ? "text-slate-600" : "text-slate-400"}>
+                        {`${t("settings.counterparties.reimbursable")}：${item.isReimbursable ? t("settings.counterparties.reimbursableYes") : t("settings.counterparties.reimbursableNo")}`}
+                      </span>
+                    </>
+                  ) : null}
+                </>
+              )}
+              actions={renderItemActions(item)}
+            />
+          )) : (
+            <div className="px-4 py-10 text-center text-sm text-slate-400">{emptyText}</div>
+          )}
+        </SettingsMobileList>
+
+        <div className="hidden md:block">
         <SettingsTable minWidth={mode === "counterparty" ? 900 : 780}>
             <thead className="sticky top-0 z-10">
               <tr>
@@ -254,33 +339,7 @@ export function SettingsInstitutionsClient({
                     </span>
                   </SettingsTd>
                   <SettingsTd align="right">
-                    <SettingsRowActions>
-                      <InstitutionEditButton
-                        institution={item}
-                        action={updateAction}
-                        title={editTitle}
-                        nameLabel={createNameLabel}
-                        allowedTypes={[...allowedTypes]}
-                        showReimbursementToggle={mode === "counterparty"}
-                        onSaved={() => {
-                          void notifySettingsDataChanged({ scope: "accounts", reason: `${mode}:update`, prefetch: true });
-                          void refreshList({ force: true });
-                        }}
-                      />
-                      <SettingsDeleteButton
-                        label={`${deleteLabel}: ${item.name}`}
-                        entity={mode === "counterparty" ? "counterparty" : "institution"}
-                        id={item.id}
-                        onDeleted={() => {
-                          setInstitutions((prev) => prev.filter((row) => row.id !== item.id));
-                          setSelectedIds((current) => {
-                            const next = new Set(current);
-                            next.delete(item.id);
-                            return next;
-                          });
-                        }}
-                      />
-                    </SettingsRowActions>
+                    <SettingsRowActions>{renderItemActions(item)}</SettingsRowActions>
                   </SettingsTd>
                 </tr>
               )) : (
@@ -288,6 +347,7 @@ export function SettingsInstitutionsClient({
               )}
             </tbody>
         </SettingsTable>
+        </div>
       </SettingsSection>
     </div>
   );

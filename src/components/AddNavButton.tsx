@@ -3,6 +3,7 @@ import { ModalLayer } from "@/components/ModalLayer";
 
 import { useState } from "react";
 import { Database, Plus } from "lucide-react";
+import { ROW_ACTION_BUTTON_BOX_CLASS } from "@/components/AdvancedDataTable";
 import { DateStepper } from "./DateStepper";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
@@ -131,7 +132,7 @@ export function AddNavButton({
         event.stopPropagation();
         openDialog();
       }}
-      className="relative inline-flex h-6 w-6 items-center justify-center rounded-md border border-amber-200 bg-amber-50 text-amber-700 hover:border-amber-300 hover:bg-amber-100"
+      className={`${ROW_ACTION_BUTTON_BOX_CLASS} relative border-amber-200 bg-amber-50 text-amber-700 hover:border-amber-300 hover:bg-amber-100`}
       title={t(wealthMode ? "addNav.wealthNavTitle" : "addNav.addNavTitle")}
     >
       <Database className="absolute left-1 top-1 h-3.5 w-3.5 opacity-80" />

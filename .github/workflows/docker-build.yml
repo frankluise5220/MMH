@@ -5,6 +5,16 @@ on:
     branches: [main]
     tags:
       - "v*"
+  # Publishing the release (not pushing the tag) is what makes an image
+  # pullable: v0.1.78 shipped `latest` + `0.1.78` from the tag push on
+  # 2026-10-25 22:48, ~27 hours before the release was published, and the
+  # commits in between had no HouseholdPreference.detailWindowYears. Every
+  # Docker user who pulled in that window recorded schema_version=0.1.78
+  # against a table missing the column, and the real 0.1.78 image then
+  # skipped `prisma db push` (same version string) and served P2022
+  # ColumnNotFound on every preference read (reported 2026-10-27).
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -59,10 +69,14 @@ jobs:
         run: npm run check:backup
 
       # Tag ownership rules:
-      # - Release refs (v* tags, dispatched by the release process) own the
-      #   `latest` tag and the plain version tag (0.1.x).
-      # - Main-branch pushes are development snapshots: they must never move
-      #   `latest` (production web updaters track it) and must never write a
+      # - ONLY `release: published` writes `latest` and the plain version tag
+      #   (0.1.x). A draft may be tagged and built for days before the user
+      #   confirms it; those builds must not be pullable by name, or users
+      #   upgrade to an intermediate commit whose schema is not the shipped one
+      #   (v0.1.78, 2026-10-27 incident).
+      # - v* tag pushes are pre-release snapshots: `sha-<commit>` only.
+      # - Main-branch pushes are development snapshots: `main` + `sha-<commit>`,
+      #   never `latest` (production web updaters track it) and never a
       #   package.json version tag (main's version does not bump per release,
       #   so it would clobber historical release images).
       - name: Compute app image tags
@@ -71,10 +85,10 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository_owner }}/mmh
           tags: |
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            type=raw,value=main,enable=${{ endsWith(github.ref, '/heads/main') }}
-            type=sha,prefix=sha-
+            type=raw,value=latest,enable=${{ github.event_name == 'release' }}
+            type=semver,pattern={{version}},enable=${{ github.event_name == 'release' }}
+            type=raw,value=main,enable=${{ github.event_name == 'push' && endsWith(github.ref, '/heads/main') }}
+            type=sha,prefix=sha-,format=short
 
       - name: Build and push
         uses: docker/build-push-action@v6
@@ -96,10 +110,10 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository_owner }}/mmh-updater
           tags: |
-            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            type=raw,value=main,enable=${{ endsWith(github.ref, '/heads/main') }}
-            type=sha,prefix=sha-
+            type=raw,value=latest,enable=${{ github.event_name == 'release' }}
+            type=semver,pattern={{version}},enable=${{ github.event_name == 'release' }}
+            type=raw,value=main,enable=${{ github.event_name == 'push' && endsWith(github.ref, '/heads/main') }}
+            type=sha,prefix=sha-,format=short
 
       - name: Build and push updater
         uses: docker/build-push-action@v6

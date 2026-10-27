@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation";
 import {
   ADVANCED_TABLE_HEAD_SURFACE_CLASS,
   AdvancedDataTable,
+  ROW_ACTION_BUTTON_BOX_CLASS,
   type AdvancedDataTableColumn,
   type AdvancedDataTableSummaryRow,
 } from "./AdvancedDataTable";
@@ -27,7 +28,7 @@ import {
 } from "@/lib/deposit-interest-payout";
 import { formatMoney } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
-import { useRowsFitPageAnchor } from "@/lib/client/use-rows-fit-page-anchor";
+import { useDetailPagination } from "@/lib/client/use-detail-pagination";
 
 type DepositEntry = {
   id: string;
@@ -125,10 +126,7 @@ export function DepositShell({
   const [payInterestLot, setPayInterestLot] = useState<PayInterestLotInfo | null>(null);
   const [selectedEntryIds, setSelectedEntryIds] = useState<Set<string>>(new Set());
   const [linkingIds, setLinkingIds] = useState<Set<string>>(new Set());
-  const [entryPage, setEntryPage] = useState(1);
-  const [entryPageSize, setEntryPageSize] = useState(40);
   const [entryRowCount, setEntryRowCount] = useState(0);
-  const [entryAutoFit, setEntryAutoFit] = useState(true);
 
   const { t } = useI18n();
   const router = useRouter();
@@ -273,9 +271,7 @@ export function DepositShell({
   // 存款明细行就是背后的现金流水：现金明细页锁定的记录，这里同样要显示锁并能就地解锁。
   const { isReconciled } = useEntryReconcileState(visibleEntryIds);
 
-  useEffect(() => {
-    setEntryPage(1);
-  }, [selectedLotId]);
+  // 换一张存单要回到第一页，effect 挪到分页状态点之后声明（见下方 entryPager）。
 
   // Prune selections that no longer exist after data refreshes.
   useEffect(() => {
@@ -305,33 +301,18 @@ export function DepositShell({
   // Pagination state is owned here for the header controls; the actual slicing
   // happens INSIDE AdvancedDataTable (rows must be the FULL set, exactly like
   // StockHoldingsPanel — slicing here too would collapse ADT's pageCount to 1).
-  const entryAll = entryPageSize === 0;
-  const totalPages = Math.max(1, Math.ceil(entryRowCount / (entryPageSize > 0 ? entryPageSize : Math.max(1, entryRowCount))));
-  const safePage = Math.min(entryPage, totalPages);
-
-  // Auto-fit: the table reports how many rows fit the viewport; when auto mode
-  // is on that count becomes the page size (the "自适应" option restores it).
-  // Callback identity changes with autoFit / show-all so the table re-measures
-  // once per mode switch, then stays frozen (same contract as BasicDetailPanel).
-  const { onRowsFitChange: handleRowsFitChange, lastFitRowCountRef } = useRowsFitPageAnchor({
+  // 页码 / 每页行数 / 全部只有这一个状态点：自适应由表格回报的容量推动，
+  // 手选与「全部」是用户事件，三者共用同一个写入口（见 useDetailPagination）。
+  const entryPager = useDetailPagination({
     scopeKey: "deposit",
-    pageSize: entryPageSize,
-    page: safePage,
-    totalCount: entryRowCount,
-    enabled: entryAutoFit && !entryAll,
-    anchorPage: !entryAll,
-    setPageSize: setEntryPageSize,
-    setPage: setEntryPage,
+    rowCount: entryRowCount,
   });
 
-  const enableAutoFitEntryRows = useCallback(() => {
-    setEntryAutoFit(true);
-    if (!entryAll) {
-      const fitCount = lastFitRowCountRef.current;
-      if (fitCount != null && fitCount !== entryPageSize) setEntryPageSize(fitCount);
-    }
-    setEntryPage(1);
-  }, [entryAll, entryPageSize]);
+  // 换一张存单：回到第一页（每页行数保持用户或视口当前的选择）。
+  const goEntryPage = entryPager.goPage;
+  useEffect(() => {
+    goEntryPage(1);
+  }, [selectedLotId, goEntryPage]);
 
   const batchFields = useMemo<BatchReplaceFieldConfig<DepositBatchField>[]>(() => [
     { value: "date", label: t("detail.column.date"), kind: "date" },
@@ -599,7 +580,7 @@ export function DepositShell({
               onRowClick={(lot) => setSelectedLotId((current) => current === lot.id ? null : lot.id)}
               rowClassName={(lot) => `cursor-pointer ${selectedLotId === lot.id ? "bg-blue-50 hover:bg-blue-50" : "hover:bg-slate-50"}`}
               rowActions={lotTab === "held" ? (lot) => (
-                <div className="flex items-center gap-1">
+                <div className="flex shrink-0 items-center gap-1">
                   {payInterestAction && isPeriodicDepositInterestPayout(lot.interestPayoutFrequency) ? (
                     <button
                       type="button"
@@ -608,7 +589,7 @@ export function DepositShell({
                         event.stopPropagation();
                         openPayInterestModal(lot);
                       }}
-                      className="flex h-6 w-6 items-center justify-center rounded border border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-40"
+                      className={`${ROW_ACTION_BUTTON_BOX_CLASS} border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-40`}
                       title={t("deposit.payInterest.title")}
                       aria-label={t("deposit.payInterest.title")}
                     >
@@ -623,7 +604,7 @@ export function DepositShell({
                         event.stopPropagation();
                         openRenewModal(lot);
                       }}
-                      className="flex h-6 w-6 items-center justify-center rounded border border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-40"
+                      className={`${ROW_ACTION_BUTTON_BOX_CLASS} border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 disabled:cursor-not-allowed disabled:opacity-40`}
                       title={t("deposit.renew.title")}
                       aria-label={t("deposit.renew.title")}
                     >
@@ -637,7 +618,7 @@ export function DepositShell({
                       event.stopPropagation();
                       openRedeemModal(lot);
                     }}
-                    className="flex h-6 w-6 items-center justify-center rounded border border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-40"
+                    className={`${ROW_ACTION_BUTTON_BOX_CLASS} border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-40`}
                     title={t("deposit.redeem.title")}
                     aria-label={t("deposit.redeem.title")}
                   >
@@ -687,19 +668,7 @@ export function DepositShell({
             </div>
             <div className="flex shrink-0 items-center gap-1 text-xs text-slate-400">
               <span className="mx-1 h-4 w-px bg-slate-200" />
-              <DetailTablePaginationControls
-                pageSize={entryPageSize}
-                detailAll={entryAll}
-                safePage={safePage}
-                totalPages={totalPages}
-                canPrev={!entryAll && safePage > 1}
-                canNext={!entryAll && safePage < totalPages}
-                autoFit={entryAutoFit}
-                onAutoFit={enableAutoFitEntryRows}
-                onPageSizeChange={(nextPageSize) => { setEntryPageSize(nextPageSize); setEntryPage(1); }}
-                onShowAll={() => { setEntryPageSize(0); setEntryPage(1); }}
-                onPageChange={setEntryPage}
-              />
+              <DetailTablePaginationControls pager={entryPager} />
               <span className="text-slate-300">|</span>
               <button
                 type="button"
@@ -761,13 +730,13 @@ export function DepositShell({
               rowActionsWidth={140}
               rowActionsMinWidth={116}
               pagination={{
-                page: safePage,
-                pageSize: entryPageSize,
-                all: entryPageSize === 0,
-                onPageChange: setEntryPage,
+                page: entryPager.safePage,
+                pageSize: entryPager.rows,
+                all: entryPager.all,
+                onPageChange: entryPager.goPage,
                 onRowCountChange: setEntryRowCount,
               }}
-              onRowsFitChange={entryAutoFit && !entryAll ? handleRowsFitChange : undefined}
+              onRowsFitChange={entryPager.autoFit ? entryPager.fit : undefined}
             />
           </div>
         </section>

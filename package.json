@@ -33,6 +33,7 @@
     "check:single-writer": "node scripts/check-single-writer.cjs",
     "check:account-balance": "tsx scripts/verify-account-balance-window.ts",
     "check:running-balance": "tsx scripts/verify-detail-running-balance-recalc.ts",
+    "check:detail-balance": "tsx scripts/verify-detail-balance-window-independent.ts",
     "check:docker": "node scripts/verify-docker-entrypoint.cjs",
     "check:fnos-gateway": "node scripts/check-fnos-gateway-guards.cjs",
     "check:fnos": "node scripts/verify-fnos-package.cjs",

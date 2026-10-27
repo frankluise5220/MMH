@@ -117,11 +117,114 @@ function now() {
  * sequence from this log alone.
  */
 function pushLog(line) {
+  // Anything still buffered on the current terminal line belongs to the output
+  // that produced it, so it is committed before an unrelated line is appended.
+  flushConsoleLine();
   const text = String(line ?? "").replace(/\s+$/, "");
   if (!text) return;
   task.logs.push(`[${now()}] ${text}`);
   if (task.logs.length > 600) task.logs = task.logs.slice(-600);
   task.updatedAt = now();
+}
+
+// ---------------------------------------------------------------------------
+// Terminal-style console buffering
+//
+// `docker pull` emits one progress frame per layer per status change, e.g.
+//   `1f65021ea76b: Extracting [====>    ] 12MB/50MB`
+// Under a TTY those frames are separated by CR (repaint the same line), but the
+// updater runs the command through a pipe, so Docker prints one line per frame
+// instead - a single layer can write hundreds of near-identical rows. Appended
+// verbatim (the previous behaviour) that floods the 600-line window and pushes
+// the commands that actually ran out of view. The buffer below replays terminal
+// semantics: CR repaints the line being written, and successive frames of the
+// same layer collapse onto one row.
+// ---------------------------------------------------------------------------
+const ANSI_ESCAPE_PATTERN =
+  /\x1b\[[0-9;?]*[ -\/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[@-Z\\-_]/g;
+
+/** Bytes written since the last CR/LF, i.e. the terminal line in progress. */
+let pendingConsoleLine = "";
+/** True once that terminal line already occupies the last entry of `task.logs`. */
+let pendingConsoleLive = false;
+
+function stripAnsiEscapes(value) {
+  return String(value ?? "").replace(ANSI_ESCAPE_PATTERN, "");
+}
+
+function timestampPrefixOf(line) {
+  if (typeof line === "string" && line.startsWith("[")) {
+    const end = line.indexOf("]");
+    if (end > 0) return line.slice(0, end + 1);
+  }
+  return `[${now()}]`;
+}
+
+function textOfLogLine(line) {
+  return String(line ?? "").replace(/^\[[^\]]*\]\s?/, "");
+}
+
+/**
+ * Identity of the terminal line a frame belongs to, or "" when the line is a
+ * standalone message. Layer progress frames share the layer digest, so every
+ * frame of one layer collapses onto a single row that is repainted in place -
+ * which is exactly what a terminal does with `docker pull`.
+ */
+function consoleLineIdentity(text) {
+  const match = /([0-9a-f]{12,}):\s/.exec(String(text ?? ""));
+  return match ? `layer:${match[1]}` : "";
+}
+
+function commitConsoleLine(text, overwrite) {
+  const clean = String(text ?? "").replace(/\s+$/, "");
+  if (!clean) return;
+  const last = task.logs.length > 0 ? task.logs[task.logs.length - 1] : "";
+  const identity = consoleLineIdentity(clean);
+  const sameLine = Boolean(identity) && consoleLineIdentity(textOfLogLine(last)) === identity;
+  if ((overwrite || sameLine) && last) {
+    // Keep the original timestamp: a repainted line is the same terminal line
+    // being updated, not a new event.
+    const prefix = timestampPrefixOf(last);
+    task.logs[task.logs.length - 1] = `${prefix} ${clean}`;
+  } else {
+    task.logs.push(`[${now()}] ${clean}`);
+    if (task.logs.length > 600) task.logs = task.logs.slice(-600);
+  }
+  task.updatedAt = now();
+}
+
+/** Feed one stdout/stderr chunk of a running command through the line buffer. */
+function writeConsoleChunk(chunk) {
+  const text = stripAnsiEscapes(chunk.toString());
+  let start = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (char !== "\n" && char !== "\r") continue;
+    pendingConsoleLine += text.slice(start, index);
+    start = index + 1;
+    if (char === "\n") {
+      commitConsoleLine(pendingConsoleLine, false);
+      pendingConsoleLine = "";
+      pendingConsoleLive = false;
+    } else {
+      // CR: repaint the current terminal line (or emit it the first time).
+      commitConsoleLine(pendingConsoleLine, pendingConsoleLive);
+      pendingConsoleLine = "";
+      pendingConsoleLive = true;
+    }
+  }
+  pendingConsoleLine += text.slice(start);
+}
+
+/** Commit a line that ended without a trailing newline (e.g. a final frame). */
+function flushConsoleLine() {
+  if (!pendingConsoleLine) {
+    pendingConsoleLive = false;
+    return;
+  }
+  commitConsoleLine(pendingConsoleLine, pendingConsoleLive);
+  pendingConsoleLine = "";
+  pendingConsoleLive = false;
 }
 
 function sendJson(res, status, data) {
@@ -147,9 +250,13 @@ function run(command, step, options = {}) {
     pushLog(`$ ${command}`);
     pushLog(`开始：${step}`);
     const child = spawn("sh", ["-lc", `git config --global --add safe.directory ${quotedWorkdir} >/dev/null 2>&1 || true; ${command}`], { cwd: workdir });
-    child.stdout.on("data", (chunk) => pushLog(chunk.toString().trim()));
-    child.stderr.on("data", (chunk) => pushLog(chunk.toString().trim()));
+    // Stream through the terminal line buffer so progress output (docker pull)
+    // repaints one line instead of appending a row per frame.
+    child.stdout.on("data", (chunk) => writeConsoleChunk(chunk));
+    child.stderr.on("data", (chunk) => writeConsoleChunk(chunk));
     child.on("close", (code) => {
+      // The command is gone: commit whatever it left on the current line.
+      flushConsoleLine();
       if (code === 0) {
         pushLog(`完成：${step}`);
         resolve();
@@ -1184,6 +1291,10 @@ async function runUpdatePipeline() {
 
 async function startUpdate() {
   if (task.running) return false;
+  // A new run starts from an empty terminal: no half-written line may leak
+  // from the previous task into the new console.
+  pendingConsoleLine = "";
+  pendingConsoleLive = false;
   task = {
     running: true,
     status: "running",

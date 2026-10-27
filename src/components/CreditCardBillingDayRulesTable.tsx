@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { Check, Pencil, Plus, Trash2, X } from "lucide-react";
+import { ROW_ACTION_BUTTON_BOX_CLASS } from "@/components/AdvancedDataTable";
 import { DateStepper } from "@/components/DateStepper";
 import {
   billingDayDisplayValue,
@@ -187,7 +188,7 @@ export function CreditCardBillingDayRulesTable({
                                   type="button"
                                   onClick={() => void saveBillingDayRule("edit")}
                                   disabled={billingDayRuleSaving}
-                                  className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-slate-200 bg-white text-emerald-600 transition-colors hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-50"
+                                  className={`${ROW_ACTION_BUTTON_BOX_CLASS} border-slate-200 bg-white text-emerald-600 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-50`}
                                   title={t("common.save")}
                                   aria-label={t("common.save")}
                                 >
@@ -197,7 +198,7 @@ export function CreditCardBillingDayRulesTable({
                                   type="button"
                                   onClick={resetBillingDayRuleEditor}
                                   disabled={billingDayRuleSaving}
-                                  className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-slate-200 bg-white text-slate-500 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                                  className={`${ROW_ACTION_BUTTON_BOX_CLASS} border-slate-200 bg-white text-slate-500 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50`}
                                   title={t("common.cancel")}
                                   aria-label={t("common.cancel")}
                                 >
@@ -223,7 +224,7 @@ export function CreditCardBillingDayRulesTable({
                                     setBillingDayRuleError("");
                                   }}
                                   disabled={billingDayRuleSaving}
-                                  className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-slate-200 bg-white text-slate-600 transition-colors hover:bg-slate-50 hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
+                                  className={`${ROW_ACTION_BUTTON_BOX_CLASS} border-slate-200 bg-white text-slate-600 hover:bg-slate-50 hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-50`}
                                   title={t("common.edit")}
                                   aria-label={t("creditBill.billingDayRuleEdit")}
                                 >
@@ -233,7 +234,7 @@ export function CreditCardBillingDayRulesTable({
                                   type="button"
                                   onClick={() => void deleteBillingDayRule(rule)}
                                   disabled={billingDayRuleSaving || rule.isInitial}
-                                  className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-slate-200 bg-white text-rose-600 transition-colors hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50"
+                                  className={`${ROW_ACTION_BUTTON_BOX_CLASS} border-slate-200 bg-white text-rose-600 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50`}
                                   title={rule.isInitial ? t("creditBill.billingDayRuleDeleteInitialHint") : t("common.delete")}
                                   aria-label={t("creditBill.billingDayRuleDelete")}
                                 >
@@ -267,7 +268,7 @@ export function CreditCardBillingDayRulesTable({
                                 type="button"
                                 onClick={() => void saveBillingDayRule("create")}
                                 disabled={billingDayRuleSaving}
-                                className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-slate-200 bg-white text-emerald-600 transition-colors hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-50"
+                                className={`${ROW_ACTION_BUTTON_BOX_CLASS} border-slate-200 bg-white text-emerald-600 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-50`}
                                 title={t("common.save")}
                                 aria-label={t("common.save")}
                               >
@@ -277,7 +278,7 @@ export function CreditCardBillingDayRulesTable({
                                 type="button"
                                 onClick={resetBillingDayRuleEditor}
                                 disabled={billingDayRuleSaving}
-                                className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-slate-200 bg-white text-slate-500 transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                                className={`${ROW_ACTION_BUTTON_BOX_CLASS} border-slate-200 bg-white text-slate-500 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50`}
                                 title={t("common.cancel")}
                                 aria-label={t("common.cancel")}
                               >

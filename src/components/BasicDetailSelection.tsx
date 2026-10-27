@@ -3,6 +3,7 @@
 import { Lock, ReceiptText, ShieldCheck, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import { ROW_ACTION_BUTTON_BOX_CLASS } from "@/components/AdvancedDataTable";
 import { BatchReplacePopoverButton, type BatchReplaceFieldConfig, type BatchReplaceOption } from "@/components/BatchReplacePopoverButton";
 import { CATEGORY_SMART_SELECT_BEHAVIOR } from "@/components/categorySmartSelect";
 import type { ReimbursementFormEntry } from "@/components/ReimbursementFormModal";
@@ -416,9 +417,9 @@ export function BasicDetailReconcileLockButton({
   }
 
   const lockClassName =
-    "flex h-5 w-5 shrink-0 items-center justify-center rounded border border-amber-300 bg-amber-50 text-amber-700 transition-colors hover:bg-amber-100";
+    `${ROW_ACTION_BUTTON_BOX_CLASS} border-amber-300 bg-amber-50 text-amber-700 hover:bg-amber-100`;
   const lockTitle = t("reconcile.unlockTitle");
-  const lockIcon = <Lock className="h-3 w-3" />;
+  const lockIcon = <Lock />;
 
   // 整行是可点的 <button>：只当图标用，点它不能顺带打开编辑窗。
   if (!asButton) {

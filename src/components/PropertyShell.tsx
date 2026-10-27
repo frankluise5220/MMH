@@ -3,7 +3,7 @@
 import { Boxes, Paperclip, Pencil, RefreshCcw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { AdvancedDataTable, type AdvancedDataTableColumn } from "@/components/AdvancedDataTable";
+import { AdvancedDataTable, ROW_ACTION_BUTTON_BOX_CLASS, type AdvancedDataTableColumn } from "@/components/AdvancedDataTable";
 import { FixedAssetEditModal, type FixedAssetEditMeta, type FixedAssetEditValue } from "@/components/FixedAssetEditModal";
 import { ResizableVerticalSplit } from "@/components/ResizableVerticalSplit";
 import { EntryAttachmentWindow } from "@/components/EntryAttachmentWindow";
@@ -20,7 +20,7 @@ import {
 } from "@/components/BasicDetailSelection";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useEntryReconcileState } from "@/lib/client/use-entry-reconcile-state";
-import { useRowsFitPageAnchor } from "@/lib/client/use-rows-fit-page-anchor";
+import { useDetailPagination, type DetailPagination } from "@/lib/client/use-detail-pagination";
 import { formatDateDisplay } from "@/lib/date-utils";
 import { formatCurrencyMoney, formatPercent } from "@/lib/format";
 import { pnlClassFromRedUp } from "@/lib/client/colors";
@@ -205,20 +205,9 @@ type FixedAssetTransactionTableProps = {
   accountOptions: Array<AccountTableDisplaySource & { id: string }>;
   categoryOptions: BasicDetailBatchCategoryOption[];
   tagOptions: BasicDetailBatchCategoryOption[];
-  transactionPage: number;
-  transactionPageSize: number;
-  transactionPageAll: boolean;
-  transactionAutoFit: boolean;
-  transactionSafePage: number;
-  transactionTotalPages: number;
-  setTransactionPage: (page: number) => void;
-  setTransactionPageSize: (pageSize: number) => void;
-  setTransactionPageAll: (all: boolean) => void;
-  setTransactionAutoFit: (autoFit: boolean) => void;
+  /** 页码 / 每页行数 / 全部 / 自适应：父层持有的唯一状态点，子层只读。 */
+  transactionPager: DetailPagination;
   setTransactionRowCount: (count: number) => void;
-  /** Auto-fit: the table reports how many rows fit the viewport. */
-  onRowsFitChange?: (rowCount: number) => void;
-  enableAutoFitRows: () => void;
   onAttachmentView: (entryId: string) => void;
   buildPropertyEditEvent: (entry: FixedAssetTransaction) => { name: string; detail: Record<string, unknown> };
 };
@@ -232,19 +221,8 @@ function FixedAssetTransactionTable({
   accountOptions,
   categoryOptions,
   tagOptions,
-  transactionPage,
-  transactionPageSize,
-  transactionPageAll,
-  transactionAutoFit,
-  transactionSafePage,
-  transactionTotalPages,
-  setTransactionPage,
-  setTransactionPageSize,
-  setTransactionPageAll,
-  setTransactionAutoFit,
+  transactionPager,
   setTransactionRowCount,
-  onRowsFitChange,
-  enableAutoFitRows,
   onAttachmentView,
   buildPropertyEditEvent,
 }: FixedAssetTransactionTableProps) {
@@ -305,31 +283,7 @@ function FixedAssetTransactionTable({
         </div>
       )}
       toolbarRightContent={(
-        <DetailTablePaginationControls
-          pageSize={transactionPageSize}
-          detailAll={transactionPageAll}
-          safePage={transactionSafePage}
-          totalPages={transactionTotalPages}
-          canPrev={!transactionPageAll && transactionSafePage > 1}
-          canNext={!transactionPageAll && transactionSafePage < transactionTotalPages}
-          autoFit={transactionAutoFit}
-          onAutoFit={enableAutoFitRows}
-          onPageSizeChange={(pageSize) => {
-            setTransactionPageSize(pageSize);
-            setTransactionPageAll(false);
-            setTransactionAutoFit(false);
-            setTransactionPage(1);
-          }}
-          onShowAll={() => {
-            setTransactionPageAll(true);
-            setTransactionPage(1);
-          }}
-          onPageChange={(page) => {
-            setTransactionPageAll(false);
-            setTransactionAutoFit(false);
-            setTransactionPage(page);
-          }}
-        />
+        <DetailTablePaginationControls pager={transactionPager} />
       )}
       batchActionSlot={(
         <>
@@ -361,9 +315,9 @@ function FixedAssetTransactionTable({
               }}
               title={entry.attachments.map((attachment) => attachment.name).join(", ") || t("attachments.title")}
               aria-label={t("attachments.title")}
-              className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-amber-200 bg-white text-amber-600 transition-colors hover:border-amber-300 hover:bg-amber-50"
+              className={`${ROW_ACTION_BUTTON_BOX_CLASS} border-amber-200 bg-white text-amber-600 hover:border-amber-300 hover:bg-amber-50`}
             >
-              <Paperclip className="h-3.5 w-3.5" />
+              <Paperclip />
             </button>
           ) : null}
           {entry.cashEntryId ? (
@@ -378,13 +332,13 @@ function FixedAssetTransactionTable({
       rowActionsWidth={140}
       rowActionsMinWidth={116}
       pagination={{
-        page: transactionPage,
-        pageSize: transactionPageSize,
-        all: transactionPageAll,
-        onPageChange: setTransactionPage,
+        page: transactionPager.safePage,
+        pageSize: transactionPager.rows,
+        all: transactionPager.all,
+        onPageChange: transactionPager.goPage,
         onRowCountChange: setTransactionRowCount,
       }}
-      onRowsFitChange={onRowsFitChange}
+      onRowsFitChange={transactionPager.autoFit ? transactionPager.fit : undefined}
       sortable
     />
   );
@@ -418,10 +372,6 @@ export function PropertyShell({
   const [editMeta, setEditMeta] = useState<FixedAssetEditMeta | null>(null);
   const [savingEdit, setSavingEdit] = useState(false);
   const [attachmentViewEntryId, setAttachmentViewEntryId] = useState<string | null>(null);
-  const [transactionPage, setTransactionPage] = useState(1);
-  const [transactionPageSize, setTransactionPageSize] = useState(40);
-  const [transactionPageAll, setTransactionPageAll] = useState(false);
-  const [transactionAutoFit, setTransactionAutoFit] = useState(true);
   const [transactionRowCount, setTransactionRowCount] = useState(entries.length);
   const accountOptionById = useMemo(
     () => new Map((accountOptions ?? []).map((account) => [account.id, account])),
@@ -444,40 +394,19 @@ export function PropertyShell({
     [entries, selectedAssetId],
   );
 
-  useEffect(() => {
-    setTransactionPage(1);
-    setTransactionPageAll(false);
-    setTransactionRowCount(selectedEntries.length);
-  }, [selectedAssetId, selectedEntries.length]);
-
-
-
-  const enableAutoFitRows = () => {
-    setTransactionPageAll(false);
-    setTransactionAutoFit(true);
-    const fitCount = lastFitRowCountRef.current;
-    if (fitCount != null && fitCount !== transactionPageSize) setTransactionPageSize(fitCount);
-    setTransactionPage(1);
-  };
-
-  const transactionTotalPages = Math.max(1, Math.ceil(transactionRowCount / transactionPageSize));
-  const transactionSafePage = transactionPageAll
-    ? 1
-    : Math.min(Math.max(1, transactionPage), transactionTotalPages);
-
-  // Auto-fit：表格回报「视口能放几行」，自适应模式下它就是这个页签的页大小；
-  // 页大小一变，页码按原页中间行换算（点「自适应」时用缓存的上次测量值先落地）。
-  // identity 跟资产/开关走，换资产后表格重测一次就冻结。
-  const { onRowsFitChange: handleRowsFitChange, lastFitRowCountRef } = useRowsFitPageAnchor({
+  // 分页状态点（页码 / 每页行数 / 全部 / 自适应）：与存款、债券视图同一实现。
+  const transactionPager = useDetailPagination({
     scopeKey: selectedAssetId ?? "",
-    pageSize: transactionPageSize,
-    page: transactionSafePage,
-    totalCount: transactionRowCount,
-    enabled: transactionAutoFit && !transactionPageAll,
-    anchorPage: !transactionPageAll,
-    setPageSize: setTransactionPageSize,
-    setPage: setTransactionPage,
+    rowCount: transactionRowCount,
   });
+
+  // 换资产：回到第一页，并同步行数（表格的 onRowCountChange 要等一次渲染才回报）。
+  // 原来这里还会强制退出「全部」，现在用户的选择优先——切资产不动来源。
+  const goTransactionPage = transactionPager.goPage;
+  useEffect(() => {
+    goTransactionPage(1);
+    setTransactionRowCount(selectedEntries.length);
+  }, [selectedAssetId, selectedEntries.length, goTransactionPage]);
 
   function selectPosition(position: PropertyPosition) {
     const assetId = position.propertyAssetId ?? position.fundCode;
@@ -743,7 +672,7 @@ export function PropertyShell({
       render: (position) => {
         const assetId = position.propertyAssetId ?? position.fundCode;
         return (
-          <div className="flex items-center justify-end gap-1">
+          <div className="flex shrink-0 items-center justify-end gap-1">
             <button
               type="button"
               onClick={(event) => {
@@ -752,9 +681,9 @@ export function PropertyShell({
               }}
               title={t("fixedAssetEdit.editButton")}
               aria-label={t("fixedAssetEdit.editButton")}
-              className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-slate-200 bg-white text-slate-700 transition-colors hover:bg-slate-50 hover:text-blue-600"
+              className={`${ROW_ACTION_BUTTON_BOX_CLASS} border-slate-200 bg-white text-slate-700 hover:bg-slate-50 hover:text-blue-600`}
             >
-              <Pencil className="h-3.5 w-3.5" />
+              <Pencil />
             </button>
             <button
               type="button"
@@ -769,11 +698,11 @@ export function PropertyShell({
                   },
                 }));
               }}
-              className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-slate-200 bg-white text-slate-700 transition-colors hover:bg-slate-50 hover:text-blue-600"
+              className={`${ROW_ACTION_BUTTON_BOX_CLASS} border-slate-200 bg-white text-slate-700 hover:bg-slate-50 hover:text-blue-600`}
               title={t("propertyShell.updateValuation")}
               aria-label={t("propertyShell.updateValuation")}
             >
-              <RefreshCcw className="h-3.5 w-3.5" />
+              <RefreshCcw />
             </button>
           </div>
         );
@@ -1022,19 +951,8 @@ export function PropertyShell({
                   accountOptions={accountOptions}
                   categoryOptions={categoryOptions}
                   tagOptions={tagOptions}
-                  transactionPage={transactionPage}
-                  transactionPageSize={transactionPageSize}
-                  transactionPageAll={transactionPageAll}
-                  transactionAutoFit={transactionAutoFit}
-                  transactionSafePage={transactionSafePage}
-                  transactionTotalPages={transactionTotalPages}
-                  setTransactionPage={setTransactionPage}
-                  setTransactionPageSize={setTransactionPageSize}
-                  setTransactionPageAll={setTransactionPageAll}
-                  setTransactionAutoFit={setTransactionAutoFit}
+                  transactionPager={transactionPager}
                   setTransactionRowCount={setTransactionRowCount}
-                  onRowsFitChange={transactionAutoFit && !transactionPageAll ? handleRowsFitChange : undefined}
-                  enableAutoFitRows={enableAutoFitRows}
                   onAttachmentView={setAttachmentViewEntryId}
                   buildPropertyEditEvent={buildPropertyEditEvent}
                 />

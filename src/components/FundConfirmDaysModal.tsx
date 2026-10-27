@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Check, Loader2, Lock, Trash2 } from "lucide-react";
 
+import { ROW_ACTION_BUTTON_BOX_CLASS } from "@/components/AdvancedDataTable";
 import { DateStepper } from "@/components/DateStepper";
 import { useI18n } from "@/lib/i18n";
 
@@ -411,7 +412,7 @@ export function FundConfirmDaysPanel({
                           type="button"
                           onClick={() => void deleteRule(index)}
                           disabled={anySaving || !canDelete}
-                          className="inline-flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white text-slate-400 hover:border-red-200 hover:bg-red-50 hover:text-red-600 disabled:opacity-40"
+                          className={`${ROW_ACTION_BUTTON_BOX_CLASS} border-slate-200 bg-white text-slate-400 hover:border-red-200 hover:bg-red-50 hover:text-red-600 disabled:opacity-40`}
                           title={canDelete ? t("common.delete") : t("fundConfirmDays.keepOneRecord")}
                           aria-label={canDelete ? t("common.delete") : t("fundConfirmDays.keepOneRecord")}
                         >

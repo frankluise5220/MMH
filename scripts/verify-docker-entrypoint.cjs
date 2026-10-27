@@ -207,6 +207,17 @@ expect(
 );
 
 expect(
+  /schema_drift_kind\(\)/.test(entrypoint) &&
+    /--from-config-datasource/.test(entrypoint) &&
+    /--to-schema prisma\/schema\.prisma/.test(entrypoint) &&
+    /SCHEMA_DRIFT_ADDITIVE/.test(entrypoint) &&
+    /SCHEMA_DRIFT_DESTRUCTIVE/.test(entrypoint) &&
+    /running prisma db push to converge/.test(entrypoint) &&
+    entrypoint.indexOf("schema_drift_kind()") < entrypoint.indexOf("schema already at $build_version; skipping prisma db push."),
+  "Docker entrypoint must verify real schema drift before skipping prisma db push on a matching schema_version: a build whose version string reached 0.1.78 before HouseholdPreference.detailWindowYears existed recorded schema_version=0.1.78, so the real 0.1.78 image skipped push forever and every /overview page died with P2022 ColumnNotFound (2026-10-27). Additive drift must still push; destructive drift must keep skipping so the container can boot.",
+);
+
+expect(
   /leaving nonempty Prisma leftover table/.test(entrypoint) &&
     /refusing to drop it/.test(entrypoint) &&
     /nonempty Prisma leftover copy tables exist; refusing to run schema sync/.test(entrypoint) &&
@@ -295,9 +306,9 @@ expect(
 
 expect(/npm run check:docker/.test(workflow), "Docker image workflow must run check:docker before publishing images.");
 expect(/tags:\s*\n\s*-\s*"v\*"/.test(workflow), "Docker image workflow must run on v* tag pushes.");
-expect(/type=raw,value=latest,enable=\$\{\{\s*startsWith\(github\.ref,\s*'refs\/tags\/v'\)\s*\}\}/.test(workflow), "Docker workflow must publish latest only from v* release tags.");
-expect(/type=semver,pattern=\{\{version\}\},enable=\$\{\{\s*startsWith\(github\.ref,\s*'refs\/tags\/v'\)\s*\}\}/.test(workflow), "Docker workflow must publish the version tag only from v* release tags.");
-expect(/type=raw,value=main,enable=\$\{\{\s*endsWith\(github\.ref,\s*'\/heads\/main'\)\s*\}\}/.test(workflow), "Docker workflow must publish main snapshots without moving latest.");
+// Since 2026-10-27 `latest` / the version tag belong to `release: published`
+// only; see the tag-ownership expectation further down for the v0.1.78 reason.
+expect(/type=raw,value=main,enable=\$\{\{\s*github\.event_name == 'push' &&\s*endsWith\(github\.ref,\s*'\/heads\/main'\)\s*\}\}/.test(workflow), "Docker workflow must publish main snapshots without moving latest.");
 
 expect(
   /\/releases\/latest/.test(systemUpdateRoute) &&
@@ -380,6 +391,27 @@ expect(
     /"settings.systemUpdate.rolledBackPartial"/.test(i18nCore) &&
     /"settings.systemUpdate.rollbackFailed"/.test(i18nCore),
   "The settings page must render the rolledback status, and the rollback strings must exist in every locale.",
+);
+
+// Image tag ownership: a v* tag push may build, but it must never make an
+// image pullable by name before the release is published. v0.1.78 shipped
+// `latest` + `0.1.78` from the tag push on 2026-10-25 22:48, ~27h before
+// publication, and commits in between had no HouseholdPreference.detailWindowYears;
+// every Docker user who pulled then recorded schema_version=0.1.78 against a
+// table missing the column, and the real 0.1.78 image then skipped
+// `prisma db push` (same version string) and served P2022 ColumnNotFound.
+expect(
+  /release:\s*\n\s*types:\s*\[published\]/.test(workflow) &&
+    !/type=raw,value=latest,enable=\$\{\{ startsWith\(github\.ref, 'refs\/tags\/v'\) \}\}/.test(workflow) &&
+    /type=raw,value=latest,enable=\$\{\{ github\.event_name == 'release' \}\}/.test(workflow) &&
+    /type=semver,pattern=\{\{version\}\},enable=\$\{\{ github\.event_name == 'release' \}\}/.test(workflow) &&
+    (workflow.match(/type=raw,value=latest,enable=\$\{\{ github\.event_name == 'release' \}\}/g) || []).length === 2,
+  "docker-build.yml must only write `latest` / the version tag on `release: published`; a v* tag push may build sha-<commit> snapshots only. Otherwise a draft-stage image becomes pullable by name and users upgrade to an intermediate commit whose schema is not the shipped one (v0.1.78, 2026-10-27).",
+);
+expect(
+  /target_image=ghcr\.io\/\$\{\{ github\.repository_owner \}\}\/mmh:sha-\$\{head_sha:0:7\}/.test(upgradeSim) &&
+    /MMH_TARGET_IMAGE="\$\{\{ steps\.resolve\.outputs\.target_image \}\}"/.test(upgradeSim),
+  "docker-upgrade-sim.yml must pull the sha-<commit> image built by the tag push (the version tag no longer exists before publication), otherwise the pre-release Docker gate goes red for the wrong reason.",
 );
 
 if (failures.length > 0) {

@@ -416,7 +416,8 @@ export function AccountScopeFilter({
   );
 
   return (
-    <div className="flex min-w-max items-center gap-3">
+    // 窄屏换行：三个触发器各 min-w-40，单行至少 480px，375 屏必然溢出被裁。
+    <div className="flex flex-wrap items-center gap-2 md:min-w-max md:gap-3">
       {filterKinds.map((kind) => {
         const isUsers = kind === "users";
         const isInstitutions = kind === "institutions";
@@ -424,7 +425,7 @@ export function AccountScopeFilter({
         const draft = isUsers ? draftUserIds : isInstitutions ? draftInstitutionIds : draftAccountIds;
         const items = isUsers ? userOptions : isInstitutions ? institutionOptions : accountOptions;
         return <div key={kind} className="relative shrink-0">
-          <button type="button" title={selectionLabel(kind, selected)} aria-haspopup="listbox" aria-expanded={openMenu === kind} className="inline-flex h-8 min-w-40 max-w-56 items-center justify-between gap-2 rounded-md border border-slate-300 bg-white px-2.5 text-left text-xs text-slate-700 shadow-sm hover:border-slate-400" onClick={(event) => toggleMenu(kind, event.currentTarget)}>
+          <button type="button" title={selectionLabel(kind, selected)} aria-haspopup="listbox" aria-expanded={openMenu === kind} className="inline-flex h-9 min-w-0 flex-1 items-center justify-between gap-2 rounded-md border border-slate-300 bg-white px-2.5 text-left text-xs text-slate-700 shadow-sm hover:border-slate-400 md:h-8 md:min-w-40 md:max-w-56 md:flex-none" onClick={(event) => toggleMenu(kind, event.currentTarget)}>
             <span className="truncate">{selectionLabel(kind, selected)}</span>
             <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-slate-400 transition-transform ${openMenu === kind ? "rotate-180" : ""}`} />
           </button>

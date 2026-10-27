@@ -8,13 +8,15 @@ import { pnlClassFromRedUp } from "@/lib/client/colors";
 import { showBlockingLoading } from "@/lib/client/blocking-loading";
 import { showConfirmDialog } from "@/lib/client/confirm-dialog";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { recordRecentAccounts } from "@/lib/client/recentAccounts";
 import { useI18n } from "@/lib/i18n";
-import { useRowsFitPageAnchor } from "@/lib/client/use-rows-fit-page-anchor";
+import { useDetailPagination } from "@/lib/client/use-detail-pagination";
 import { ResizableVerticalSplit } from "@/components/ResizableVerticalSplit";
 import { StockFeeRuleSettingsButton } from "@/components/StockFeeRuleSettingsButton";
 import {
   ADVANCED_TABLE_HEAD_SURFACE_CLASS,
   AdvancedDataTable,
+  ROW_ACTION_BUTTON_BOX_CLASS,
   type AdvancedDataTableColumn,
 } from "@/components/AdvancedDataTable";
 import { BatchReplacePopoverButton, type BatchReplaceFieldConfig } from "@/components/BatchReplacePopoverButton";
@@ -274,11 +276,10 @@ export function StockHoldingsPanel({
   const [deletingIds, setDeletingIds] = useState<Set<string>>(new Set());
   const [batchDeleting, setBatchDeleting] = useState(false);
   const [deleteMessage, setDeleteMessage] = useState("");
-  const [detailPage, setDetailPage] = useState(1);
-  const [detailPageSize, setDetailPageSize] = useState(40);
   const [detailTableRowCount, setDetailTableRowCount] = useState(0);
-  const [detailAutoFit, setDetailAutoFit] = useState(true);
   const transactionCacheRef = useRef(new Map<string, StockTransaction[]>());
+  // detailPager 在下方声明，稳定方法走 ref 转发，避免 useCallback 依赖抖动。
+  const goDetailPageRef = useRef<(page: number) => void>(() => {});
 
   useEffect(() => {
     setPositions(initialPositions);
@@ -316,13 +317,13 @@ export function StockHoldingsPanel({
       setTransactionsLoading(false);
       setTransactionsError("");
       setSelectedIds(new Set());
-      setDetailPage(1);
+      goDetailPageRef.current(1);
       return;
     }
     setTransactionsLoading(true);
     setTransactionsError("");
     setSelectedIds(new Set());
-    setDetailPage(1);
+    goDetailPageRef.current(1);
     try {
       const params = new URLSearchParams({
         accountId,
@@ -424,6 +425,7 @@ export function StockHoldingsPanel({
       if (!res.ok || !data?.ok) throw new Error(data?.error ?? t("stockPanel.error.deleteFailed"));
       setTransactions((prev) => prev.filter((tx) => tx.id !== id));
       setDeleteMessage(t("stockPanel.deletedSingle"));
+      recordRecentAccounts([accountId]);
       dispatchFinanceDataChanged({ reason: "stock-transaction-delete", accountIds: [accountId] });
       void reloadHoldings().catch(() => undefined);
       if (selectedPosition) void loadTransactions(selectedPosition, true);
@@ -467,6 +469,7 @@ export function StockHoldingsPanel({
       });
       const deletedCount = data.data?.count ?? deletedIds.length;
       setDeleteMessage(t("stockPanel.deletedCount", { count: deletedCount }));
+      recordRecentAccounts([accountId]);
       dispatchFinanceDataChanged({ reason: "stock-transaction-batch-delete", accountIds: [accountId] });
       void reloadHoldings().catch(() => undefined);
       if (selectedPosition) void loadTransactions(selectedPosition, true);
@@ -569,34 +572,13 @@ export function StockHoldingsPanel({
     }
   }
 
-  const detailTotalPages = Math.max(1, Math.ceil(detailTableRowCount / detailPageSize));
-  const detailSafePage = Math.min(detailPage, detailTotalPages);
-  const allDetailPageSize = Math.max(1, detailTableRowCount);
-  const detailAll = detailPageSize >= allDetailPageSize && detailTableRowCount > 0;
-
-  // Auto-fit: the table reports how many rows fit the viewport; when auto mode
-  // is on that count becomes the page size (the "自适应" option restores it).
-  // 触发时机由表格一侧决定：视图重开 / 重新选自适应（这个回调的 identity 变化）、
-  // 行高偏好变化、视口高度变化都会重算；翻页与数据刷新不触发（同 BasicDetailPanel）。
-  const { onRowsFitChange: handleRowsFitChange, lastFitRowCountRef } = useRowsFitPageAnchor({
+  // 页码 / 每页行数 / 全部只有这一个状态点。「全部」以前用
+  // 「pageSize >= 总行数」隐式表达，现在改成显式的来源，与存款 / 债券视图一致。
+  const detailPager = useDetailPagination({
     scopeKey: selectedPosition?.stockCode ?? "",
-    pageSize: detailPageSize,
-    page: detailSafePage,
-    totalCount: detailTableRowCount,
-    enabled: detailAutoFit && !detailAll,
-    anchorPage: !detailAll,
-    setPageSize: setDetailPageSize,
-    setPage: setDetailPage,
+    rowCount: detailTableRowCount,
   });
-
-  const enableAutoFitDetailRows = useCallback(() => {
-    setDetailAutoFit(true);
-    if (!detailAll) {
-      const fitCount = lastFitRowCountRef.current;
-      if (fitCount != null && fitCount !== detailPageSize) setDetailPageSize(fitCount);
-    }
-    setDetailPage(1);
-  }, [detailAll, detailPageSize]);
+  goDetailPageRef.current = detailPager.goPage;
 
   function switchPositionTab(nextShowCleared: boolean) {
     setShowCleared(nextShowCleared);
@@ -604,7 +586,7 @@ export function StockHoldingsPanel({
     setTransactions([]);
     setTransactionsError("");
     setSelectedIds(new Set());
-    setDetailPage(1);
+    detailPager.goPage(1);
     const url = new URL(window.location.href);
     if (nextShowCleared) url.searchParams.set("showCleared", "1");
     else url.searchParams.delete("showCleared");
@@ -1065,7 +1047,7 @@ export function StockHoldingsPanel({
       ? t("stockPanel.linkedTitle", { labels: linkLabels.join("、") || t("stockPanel.businessCashFlow") })
       : t("stockPanel.unlinkedTitle");
     return (
-      <div className="flex items-center justify-end gap-1">
+      <div className="flex shrink-0 items-center justify-end gap-1">
         <BusinessLinkActionButton
           active={hasBusinessLink}
           title={linkTitle}
@@ -1074,21 +1056,21 @@ export function StockHoldingsPanel({
         <button
           type="button"
           onClick={() => openEditTransaction(tx)}
-          className="flex h-7 w-7 items-center justify-center rounded border border-slate-200 bg-white text-slate-600 transition-colors hover:bg-slate-50"
+          className={`${ROW_ACTION_BUTTON_BOX_CLASS} border-slate-200 bg-white text-slate-600 hover:bg-slate-50`}
           title={t("stockPanel.editTransaction")}
           aria-label={t("stockPanel.editTransaction")}
         >
-          <Pencil className="h-3.5 w-3.5" />
+          <Pencil />
         </button>
         <button
           type="button"
           onClick={() => { void deleteTransaction(tx.id); }}
           disabled={deleting}
-          className="flex h-7 w-7 items-center justify-center rounded border border-red-200 bg-white text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50"
+          className={`${ROW_ACTION_BUTTON_BOX_CLASS} border-red-200 bg-white text-red-600 hover:bg-red-50 disabled:opacity-50`}
           title={deleting ? t("stockPanel.deleting") : t("stockPanel.deleteTransaction")}
           aria-label={deleting ? t("stockPanel.deleting") : t("stockPanel.deleteTransaction")}
         >
-          <Trash2 className="h-3.5 w-3.5" />
+          <Trash2 />
         </button>
       </div>
     );
@@ -1241,19 +1223,7 @@ export function StockHoldingsPanel({
                 {deleteMessage ? <span className="text-[11px] text-slate-500">{deleteMessage}</span> : null}
                 <div className="flex items-center gap-1">
                   <span className="text-slate-300">|</span>
-                  <DetailTablePaginationControls
-                    pageSize={detailPageSize}
-                    detailAll={detailAll}
-                    safePage={detailSafePage}
-                    totalPages={detailTotalPages}
-                    canPrev={!detailAll && detailSafePage > 1}
-                    canNext={!detailAll && detailSafePage < detailTotalPages}
-                    autoFit={detailAutoFit}
-                    onAutoFit={enableAutoFitDetailRows}
-                    onPageSizeChange={(nextPageSize) => { setDetailPageSize(nextPageSize); setDetailPage(1); }}
-                    onShowAll={() => { setDetailPageSize(allDetailPageSize); setDetailPage(1); }}
-                    onPageChange={setDetailPage}
-                  />
+                  <DetailTablePaginationControls pager={detailPager} />
                   <span className="text-slate-300">|</span>
                   <button
                     type="button"
@@ -1304,12 +1274,13 @@ export function StockHoldingsPanel({
                   columnVisibilityTriggerId={STOCK_DETAIL_COLUMN_SETTINGS_EVENT}
                   sortable
                   pagination={{
-                    page: detailSafePage,
-                    pageSize: detailPageSize,
-                    onPageChange: setDetailPage,
+                    page: detailPager.safePage,
+                    pageSize: detailPager.rows,
+                    all: detailPager.all,
+                    onPageChange: detailPager.goPage,
                     onRowCountChange: setDetailTableRowCount,
                   }}
-                  onRowsFitChange={detailAutoFit && !detailAll ? handleRowsFitChange : undefined}
+                  onRowsFitChange={detailPager.autoFit ? detailPager.fit : undefined}
                 />
               )}
             </div>

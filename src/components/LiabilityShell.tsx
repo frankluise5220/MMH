@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { AccountTypeQuickEdit, type AccountQuickEditValue, type LoanQuickEditValue } from "./AccountTypeQuickEdit";
-import { AdvancedDataTable, type AdvancedDataTableColumn, type AdvancedDataTableSortState } from "./AdvancedDataTable";
+import { AdvancedDataTable, ROW_ACTION_BUTTON_BOX_CLASS, type AdvancedDataTableColumn, type AdvancedDataTableSortState } from "./AdvancedDataTable";
 import { DateStepper } from "./DateStepper";
 import { DebitBalanceReconcileButton } from "./DebitBalanceReconcileButton";
 import { dispatchEntryEdit, EntryRowActions } from "./EntryRowActions";
@@ -876,7 +876,7 @@ export function LiabilityShell({
                           <button
                             type="button"
                             onClick={() => saveRateDraftRow(item.id)}
-                            className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-slate-200 bg-white text-emerald-600 transition-colors hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-50"
+                            className={`${ROW_ACTION_BUTTON_BOX_CLASS} border-slate-200 bg-white text-emerald-600 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-50`}
                             disabled={rateSaving}
                             title={t("common.save")}
                             aria-label={t("common.save")}
@@ -887,7 +887,7 @@ export function LiabilityShell({
                           <button
                             type="button"
                             onClick={() => updateRateDraft(item.id, { isEditing: true })}
-                            className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-slate-200 bg-white text-slate-600 transition-colors hover:bg-slate-50 hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
+                            className={`${ROW_ACTION_BUTTON_BOX_CLASS} border-slate-200 bg-white text-slate-600 hover:bg-slate-50 hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-50`}
                             disabled={rateSaving}
                             title={t("common.edit")}
                             aria-label={t("common.edit")}
@@ -898,7 +898,7 @@ export function LiabilityShell({
                         <button
                           type="button"
                           onClick={() => { void openRebuildDialogForDate(item.effectiveDate); }}
-                          className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-slate-200 bg-white text-blue-700 transition-colors hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50"
+                          className={`${ROW_ACTION_BUTTON_BOX_CLASS} border-slate-200 bg-white text-blue-700 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-50`}
                           disabled={rebuildBusy || rateSaving}
                           title={t("liabilityShell.rebuild.buttonTitle")}
                           aria-label={t("liabilityShell.recalc")}
@@ -908,7 +908,7 @@ export function LiabilityShell({
                         <button
                           type="button"
                           onClick={() => deleteRateDraft(item.id)}
-                          className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-slate-200 bg-white text-rose-600 transition-colors hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50"
+                          className={`${ROW_ACTION_BUTTON_BOX_CLASS} border-slate-200 bg-white text-rose-600 hover:bg-rose-50 disabled:cursor-not-allowed disabled:opacity-50`}
                           disabled={rateSaving || item.isInitial}
                           title={item.isInitial ? t("liabilityShell.rateAdjust.initialDeleteDisabled") : t("common.delete")}
                           aria-label={t("common.delete")}
@@ -1305,7 +1305,7 @@ export function LiabilityShell({
               }}
               title={t("liabilityShell.editRow")}
               aria-label={t("liabilityShell.editRow")}
-              className="flex h-6 w-6 shrink-0 items-center justify-center rounded border border-slate-200 bg-white text-slate-600 transition-colors hover:bg-slate-50 hover:text-blue-600"
+              className={`${ROW_ACTION_BUTTON_BOX_CLASS} border-slate-200 bg-white text-slate-600 hover:bg-slate-50 hover:text-blue-600`}
             >
               <Pencil className="h-3.5 w-3.5" />
             </button>

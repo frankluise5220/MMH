@@ -93,13 +93,14 @@ export function StatisticsFilterPanel({ allAccounts, allInstitutions = [], allUs
   }
 
   return (
-    <div className="flex min-w-max items-center gap-3">
+    // 移动端允许换行堆叠（min-w-max 只在 md+ 生效）：控件全在一行时窄屏必然溢出。
+    <div className="flex flex-wrap items-center gap-2 md:min-w-max md:gap-3">
       {!hideRange && <span className="text-xs font-medium text-slate-500">{t("statistics.range")}</span>}
-      {!hideRange && <select value={level} onChange={(event) => setLevel(event.target.value as "year" | "month")} className="h-8 w-20 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700">
+      {!hideRange && <select value={level} onChange={(event) => setLevel(event.target.value as "year" | "month")} className="h-9 w-20 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 md:h-8">
         <option value="year">{t("reports.year")}</option>
         <option value="month">{t("reports.month")}</option>
       </select>}
-      {!hideRange && level === "month" ? <><input type="month" value={startMonth} onChange={(event) => setStartMonth(event.target.value)} className="h-8 w-[132px] rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700" /><input type="month" value={endMonth} onChange={(event) => setEndMonth(event.target.value)} className="h-8 w-[132px] rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700" /></> : <><select value={startYear} onChange={(event) => setStartYear(event.target.value)} className="h-8 w-24 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700">{(availableYears.length > 0 ? availableYears : [year]).map((value) => <option key={`start-${value}`}>{value}</option>)}</select><select value={endYear} onChange={(event) => setEndYear(event.target.value)} className="h-8 w-24 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700">{(availableYears.length > 0 ? availableYears : [year]).map((value) => <option key={`end-${value}`}>{value}</option>)}</select></>}
+      {!hideRange && level === "month" ? <><input type="month" value={startMonth} onChange={(event) => setStartMonth(event.target.value)} className="h-9 w-[132px] rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 md:h-8" /><input type="month" value={endMonth} onChange={(event) => setEndMonth(event.target.value)} className="h-9 w-[132px] rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 md:h-8" /></> : <><select value={startYear} onChange={(event) => setStartYear(event.target.value)} className="h-9 w-24 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 md:h-8">{(availableYears.length > 0 ? availableYears : [year]).map((value) => <option key={`start-${value}`}>{value}</option>)}</select><select value={endYear} onChange={(event) => setEndYear(event.target.value)} className="h-9 w-24 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 md:h-8">{(availableYears.length > 0 ? availableYears : [year]).map((value) => <option key={`end-${value}`}>{value}</option>)}</select></>}
       <AccountScopeFilter
         allAccounts={allAccounts}
         allInstitutions={allInstitutions}
@@ -107,9 +108,9 @@ export function StatisticsFilterPanel({ allAccounts, allInstitutions = [], allUs
         value={scopeValue}
         onChange={handleScopeChange}
       />
-      <button type="button" onClick={() => generate()} className="h-8 rounded-md bg-slate-900 px-3 text-xs font-medium text-white hover:bg-slate-700">{t("reports.refresh")}</button>
-      <button type="button" onClick={clearFilters} className="h-8 rounded-md border border-slate-200 bg-white px-3 text-xs text-slate-600 hover:bg-slate-50">{t("statistics.clearFilters")}</button>
-      {exportHref && <a href={exportHref} download={exportFilename ?? "export.csv"} className="h-8 rounded-md border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-600 hover:bg-blue-50">{t("reports.export")}</a>}
+      <button type="button" onClick={() => generate()} className="h-9 rounded-md bg-slate-900 px-3 text-xs font-medium text-white hover:bg-slate-700 md:h-8">{t("reports.refresh")}</button>
+      <button type="button" onClick={clearFilters} className="h-9 rounded-md border border-slate-200 bg-white px-3 text-xs text-slate-600 hover:bg-slate-50 md:h-8">{t("statistics.clearFilters")}</button>
+      {exportHref && <a href={exportHref} download={exportFilename ?? "export.csv"} className="inline-flex h-9 items-center rounded-md border border-slate-200 bg-white px-3 text-xs text-slate-600 hover:bg-blue-50 md:h-8">{t("reports.export")}</a>}
     </div>
   );
 }

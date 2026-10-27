@@ -466,7 +466,7 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
-      <header className="page-header flex items-center justify-between gap-3 px-6 py-3">
+      <header className="page-header flex items-center justify-between gap-3 px-3 py-3 md:px-6">
         <h1 className="text-lg page-title">{t("statistics.title")}</h1>
         <ReportSelector
           currentType="cash-statistics"
@@ -474,7 +474,7 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
         />
       </header>
 
-      <div className="shrink-0 px-6 pt-3">
+      <div className="shrink-0 px-3 pt-3 md:px-6">
         <div className="flex min-h-10 items-center overflow-visible border-b border-slate-200 bg-white px-1">
           <Suspense fallback={<div className="text-xs text-slate-400">{t("statistics.loadingFilter")}</div>}>
             <StatisticsFilterPanel
@@ -486,7 +486,7 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
           </Suspense>
         </div>
       </div>
-      <div className="flex-1 min-h-0 overflow-y-auto p-6">
+      <div className="flex-1 min-h-0 overflow-y-auto p-3 md:p-6">
         <StatisticsCharts
           monthData={monthData}
           incomeCats={incomeCats}

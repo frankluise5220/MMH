@@ -4,30 +4,31 @@ import { useEffect, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { DateStepper } from "@/components/DateStepper";
+import type { DetailPagination } from "@/lib/client/use-detail-pagination";
 
+/**
+ * 控件只认一个东西：那个唯一的分页状态点。页码 / 页大小 / 是否全部 / 是否自适应
+ * 和对应事件全部从 `pager` 上取，不再由 9 个调用点各抄一遍十几行 props ——
+ * 抄一遍就多一处可以传错的映射。
+ */
 type DetailTablePaginationControlsProps = {
-  pageSize: number;
+  pager: Pick<
+    DetailPagination,
+    | "rows" | "all" | "safePage" | "totalPages" | "canPrev" | "canNext" | "autoFit"
+    | "select" | "showAll" | "goPage" | "restoreFit"
+  >;
   pageSizeOptions?: readonly number[];
-  detailAll: boolean;
   /**
    * 「全部」仍按页浏览：总数超过本地全量阈值时改由服务端分页，下拉照样显示
    * 「全部」（不回跳成 40），但页码 / 前后翻页必须保留 —— 否则用户选了全部
    * 只能看到当前这一页，看起来就是「没生效」。
+   *
+   * 缺省 = 不在「全部」模式，与 `pager.all` 反相。
    */
   paged?: boolean;
-  safePage: number;
-  totalPages: number;
-  canPrev: boolean;
-  canNext: boolean;
-  onPageSizeChange: (pageSize: number) => void;
-  onShowAll: () => void;
-  onPageChange: (page: number) => void;
   /** Optional: jump to the page containing the given date (YYYY-MM-DD). */
   onLocateDate?: (dateYmd: string) => void;
   locateDateBusy?: boolean;
-  /** Auto-fit mode: page size follows the viewport height. */
-  autoFit?: boolean;
-  onAutoFit?: () => void;
 };
 
 function pageButtonClass(enabled: boolean, tone: "muted" | "normal" = "normal") {
@@ -39,22 +40,26 @@ function pageButtonClass(enabled: boolean, tone: "muted" | "normal" = "normal") 
 }
 
 export function DetailTablePaginationControls({
-  pageSize,
+  pager,
   pageSizeOptions = [40, 80],
-  detailAll,
-  paged = !detailAll,
-  safePage,
-  totalPages,
-  canPrev,
-  canNext,
-  onPageSizeChange,
-  onShowAll,
-  onPageChange,
+  paged = !pager.all,
   onLocateDate,
   locateDateBusy = false,
-  autoFit = false,
-  onAutoFit,
 }: DetailTablePaginationControlsProps) {
+  // 只做一次改名，下面整块渲染逻辑不用跟着改。
+  const {
+    rows: pageSize,
+    all: detailAll,
+    safePage,
+    totalPages,
+    canPrev,
+    canNext,
+    autoFit,
+    select: onPageSizeChange,
+    showAll: onShowAll,
+    goPage: onPageChange,
+    restoreFit: onAutoFit,
+  } = pager;
   const { t } = useI18n();
   const [pageInput, setPageInput] = useState(() => String(safePage));
   const [locateDate, setLocateDate] = useState("");
@@ -105,7 +110,7 @@ export function DetailTablePaginationControls({
             return;
           }
           if (value === "auto") {
-            onAutoFit?.();
+            onAutoFit();
             return;
           }
           const nextSize = parseInt(value, 10);
@@ -115,7 +120,7 @@ export function DetailTablePaginationControls({
         aria-label={t("pagination.perPage")}
         className="h-7 rounded border border-slate-200 bg-white px-1 text-slate-700 hover:bg-slate-50"
       >
-        {onAutoFit ? <option value="auto">{t("pagination.autoFit")}</option> : null}
+        <option value="auto">{t("pagination.autoFit")}</option>
         <option value="all">{t("common.all")}</option>
         {!detailAll && !autoFit && !pageSizeOptions.includes(pageSize) ? <option value={String(pageSize)}>{pageSize}</option> : null}
         {pageSizeOptions.map((n) => (

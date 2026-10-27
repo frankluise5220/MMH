@@ -125,7 +125,13 @@ import { syncIndependentBusinessTransactionFromTxRecord } from "@/lib/server/bus
 import { upsertStatementCategoryRuleFromSavedRecord } from "@/lib/statement/category-rules";
 import { upsertStatementInstitutionRuleFromUserEdit } from "@/lib/statement/recognition-rules";
 import { DETAIL_ALL_PAGE_SIZE } from "@/lib/detail-pagination-preference";
-import { locateDetailPage, queryDetailDateBounds, queryDetailFacets, queryDetailPage } from "@/lib/server/detail-page-query";
+import {
+  locateDetailPage,
+  queryDetailDateBounds,
+  queryDetailFacets,
+  queryDetailOpeningBalanceBefore,
+  queryDetailPage,
+} from "@/lib/server/detail-page-query";
 import { normalizeDetailFilters, parseDetailDateRange, parseDetailSort } from "@/lib/server/detail-query-filters";
 import { isDepositRedemptionDateAllowed, loadLatestDepositInterestDate } from "@/lib/server/deposit-lot-balance";
 import { ensureDepositPlansForLot } from "@/lib/server/deposit-plan-tasks";
@@ -2040,6 +2046,32 @@ export async function GET(req: Request) {
 
     const sortAccountId = allCashScope ? undefined : accountId;
     const normalizedListAccountIds = Array.isArray(listAccountIds) ? listAccountIds : [listAccountIds];
+
+    // 只问「截至 YYYY-MM-DD 收盘的账户余额」（明细窗口的期初余额）。
+    //
+    // 余额必须在**全量账本**上折叠，可列表只拉窗口内的行 —— 与其为此把整份流水拉回来，
+    // 不如单独问一个数字：客户端拿它当本地折叠的起点，窗口化取数省下的流量不吐回去。
+    // 口径与列表逐分一致（同一条 `ledger_balanced` 折叠链）。
+    // 合并视图（__all_cash__）没有唯一的「本行余额」，不给期初值。
+    const openingBalanceBeforeParam = (url.searchParams.get("openingBalanceBefore") ?? "").trim();
+    if (openingBalanceBeforeParam) {
+      const openingBalance = allCashScope
+        ? 0
+        : await queryDetailOpeningBalanceBefore({
+          accountIds: normalizedListAccountIds,
+          householdId: hidFilter.householdId ?? "",
+          sortAccountId: accountId,
+          beforeYmd: openingBalanceBeforeParam,
+        });
+      return NextResponse.json({
+        ok: true,
+        data: {
+          accountId,
+          openingBalanceBefore: openingBalanceBeforeParam,
+          openingBalance,
+        },
+      });
+    }
 
     const accountDisplayBalancePromise = account
       ? resolveAccountDisplayBalance(account, hidFilter)

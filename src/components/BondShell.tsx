@@ -17,11 +17,12 @@ import { ResizableVerticalSplit } from "./ResizableVerticalSplit";
 import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { amountToneClass as amountClass } from "@/lib/client/colors";
 import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
+import { recordRecentAccounts } from "@/lib/client/recentAccounts";
 import { useEntryReconcileState } from "@/lib/client/use-entry-reconcile-state";
 import { parseDepositInterestPayout } from "@/lib/deposit-interest-payout";
 import { formatMoney } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
-import { useRowsFitPageAnchor } from "@/lib/client/use-rows-fit-page-anchor";
+import { useDetailPagination } from "@/lib/client/use-detail-pagination";
 
 /**
  * 债券视图。
@@ -96,10 +97,7 @@ export function BondShell({
   const [selectedLotId, setSelectedLotId] = useState<string | null>(null);
   const [productLibraryOpen, setProductLibraryOpen] = useState(false);
   const [lotTab, setLotTab] = useState<LotTab>("held");
-  const [entryPage, setEntryPage] = useState(1);
-  const [entryPageSize, setEntryPageSize] = useState(40);
   const [entryRowCount, setEntryRowCount] = useState(0);
-  const [entryAutoFit, setEntryAutoFit] = useState(true);
   const [selectedEntryIds, setSelectedEntryIds] = useState<Set<string>>(new Set());
 
   const { t } = useI18n();
@@ -152,9 +150,7 @@ export function BondShell({
   // 债券明细行就是背后的现金流水：现金明细页锁定的记录，这里同样要显示锁并能就地解锁。
   const { isReconciled } = useEntryReconcileState(visibleEntryIds);
 
-  useEffect(() => {
-    setEntryPage(1);
-  }, [selectedLotId]);
+  // 换一只债券要回到第一页，effect 挪到分页状态点之后声明（见下方 entryPager）。
 
   useEffect(() => {
     setSelectedEntryIds(new Set());
@@ -186,26 +182,19 @@ export function BondShell({
     return () => window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, handler);
   }, [router]);
 
-  const entryAll = entryPageSize === 0;
-  const totalPages = Math.max(1, Math.ceil(entryRowCount / (entryPageSize > 0 ? entryPageSize : Math.max(1, entryRowCount))));
-  const safePage = Math.min(entryPage, totalPages);
-
-  // 自适应：表格回报视口能放几行，该行数即页大小（与 BasicDetailPanel 同一契约）。
-  const { onRowsFitChange: handleRowsFitChange } = useRowsFitPageAnchor({
+  // 页码 / 每页行数 / 全部只有这一个状态点（与存款视图同一实现）。
+  // 「自适应」是页大小的来源，不是独立开关，所以手选固定行数后表格再回报容量
+  // 也不会把手选值改掉。
+  const entryPager = useDetailPagination({
     scopeKey: "bond",
-    pageSize: entryPageSize,
-    page: safePage,
-    totalCount: entryRowCount,
-    enabled: entryAutoFit && !entryAll,
-    anchorPage: !entryAll,
-    setPageSize: setEntryPageSize,
-    setPage: setEntryPage,
+    rowCount: entryRowCount,
   });
 
-  const enableAutoFitEntryRows = useCallback(() => {
-    setEntryAutoFit(true);
-    setEntryPage(1);
-  }, []);
+  // 换一只债券：回到第一页（每页行数保持用户或视口当前的选择）。
+  const goEntryPage = entryPager.goPage;
+  useEffect(() => {
+    goEntryPage(1);
+  }, [selectedLotId, goEntryPage]);
 
   async function batchDeleteEntries() {
     if (selectedEntryIds.size === 0) return;
@@ -222,7 +211,9 @@ export function BondShell({
     }
     setSelectedEntryIds(new Set());
     const refreshEntryIds = getDeleteRefreshEntryIds(data, entryIds);
-    dispatchFinanceDataChanged({ reason: "entry-batch-delete", accountIds: getDeleteRefreshAccountIds(data), deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
+    const batchDeleteAccountIds = getDeleteRefreshAccountIds(data);
+    recordRecentAccounts(batchDeleteAccountIds);
+    dispatchFinanceDataChanged({ reason: "entry-batch-delete", accountIds: batchDeleteAccountIds, deletedEntryIds: refreshEntryIds, entryIds: refreshEntryIds });
   }
 
   const moneyCell = useCallback((value: number | null, tone?: string) => (
@@ -441,19 +432,7 @@ export function BondShell({
             </div>
             <div className="flex shrink-0 items-center gap-1 text-xs text-slate-400">
               <span className="mx-1 h-4 w-px bg-slate-200" />
-              <DetailTablePaginationControls
-                pageSize={entryPageSize}
-                detailAll={entryAll}
-                safePage={safePage}
-                totalPages={totalPages}
-                canPrev={!entryAll && safePage > 1}
-                canNext={!entryAll && safePage < totalPages}
-                autoFit={entryAutoFit}
-                onAutoFit={enableAutoFitEntryRows}
-                onPageSizeChange={(nextPageSize) => { setEntryPageSize(nextPageSize); setEntryPage(1); }}
-                onShowAll={() => { setEntryPageSize(0); setEntryPage(1); }}
-                onPageChange={setEntryPage}
-              />
+              <DetailTablePaginationControls pager={entryPager} />
               <span className="text-slate-300">|</span>
               <button
                 type="button"
@@ -497,13 +476,13 @@ export function BondShell({
               rowActionsMinWidth={100}
               rowClassName={(entry) => (selectedEntryIds.has(entry.id) ? "bg-blue-50/70 hover:bg-blue-50/70" : "hover:bg-blue-50/40")}
               pagination={{
-                page: safePage,
-                pageSize: entryPageSize,
-                all: entryPageSize === 0,
-                onPageChange: setEntryPage,
+                page: entryPager.safePage,
+                pageSize: entryPager.rows,
+                all: entryPager.all,
+                onPageChange: entryPager.goPage,
                 onRowCountChange: setEntryRowCount,
               }}
-              onRowsFitChange={entryAutoFit && !entryAll ? handleRowsFitChange : undefined}
+              onRowsFitChange={entryPager.autoFit ? entryPager.fit : undefined}
             />
           </div>
         </section>

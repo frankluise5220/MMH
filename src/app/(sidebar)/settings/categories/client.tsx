@@ -4,7 +4,6 @@ import { useEffect, useState, useRef, type DragEvent } from "react";
 import { ArrowRight, ChevronRight, ChevronDown, GripVertical, Plus, Save, X } from "lucide-react";
 import { EntityCreateForm } from "@/components/EntityCreateForm";
 import { SmartSelect, type SmartSelectOption } from "@/components/SmartSelect";
-import { BasicDataImportExport } from "@/components/settings/BasicDataImportExport";
 import { SettingsActionButton } from "@/components/settings/SettingsPageScaffold";
 import { fetchSettingsCategories, getCachedSettingsCategories, notifySettingsDataChanged, setSettingsCategories } from "@/lib/client/settingsCache";
 import { useI18n } from "@/lib/i18n";
@@ -657,12 +656,10 @@ export default function SettingsCategoriesClient({
     ?? "";
   const hasPendingMoveTarget = !!selectedCategory && moveParentValue !== currentMoveParentValue;
 
+  // 顶部那条「导出模板 / 导入」工具栏下线后，桌面不必再给它留 3rem，否则底部空一大截；
+  // 手机上仍按原值预留，避免被底部导航遮住。
   return (
-    <div className="flex flex-col" style={{ height: "calc(100vh - 8.5rem)" }}>
-      {/* 工具栏：基本资料导出模板 / 导入（与账户页同一个组件，模板内含分类 sheet） */}
-      <div className="flex items-center justify-end gap-2 px-4 py-2 border-b border-slate-200 bg-white shrink-0">
-        <BasicDataImportExport onImported={() => void refreshCategories({ force: true })} />
-      </div>
+    <div className="flex h-[calc(100vh-8.5rem)] flex-col md:h-[calc(100vh-4rem)]">
       <div className="flex flex-1 min-h-0">
       {/* Left: category tree */}
       <div className="w-64 flex flex-col shrink-0 border-r border-slate-200 bg-white">

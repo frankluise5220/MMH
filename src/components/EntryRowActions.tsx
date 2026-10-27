@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Pencil, Trash2 } from "lucide-react";
+import { ROW_ACTION_BUTTON_BOX_CLASS } from "@/components/AdvancedDataTable";
 import { BasicDetailReconcileLockButton } from "@/components/BasicDetailSelection";
 import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { setEntryModalReconciledReadOnly } from "@/lib/client/entryModalLock";
@@ -171,9 +172,8 @@ export function EntryRowActions({
   const { t } = useI18n();
   // 已「对账」锁定：编辑窗仍可打开（只读查看），但删除按钮禁用。
   const locked = Boolean(edit?.reconciledReadOnly || reconciled);
-  // 行内操作按钮统一 20px 方块 + shrink-0：操作列宽度有限，缺了 shrink-0 时
-  // flex 会把其中一部分按钮压窄（与带 shrink-0 的锁/附件图标长短不一）。
-  const actionButtonClass = "flex h-5 w-5 shrink-0 items-center justify-center rounded border bg-white transition-colors disabled:opacity-50";
+  // 行内操作按钮：尺寸跟随 ADT 行高档位（20/22/24），始终正方形且不许被压窄。
+  const actionButtonClass = `${ROW_ACTION_BUTTON_BOX_CLASS} bg-white disabled:opacity-50`;
 
   function onEdit() {
     if (onEditRequest) {
@@ -244,7 +244,7 @@ export function EntryRowActions({
           title={locked ? t("reconcile.readOnlyNotice") : t("insuranceShell.editButton")}
           aria-label={t("insuranceShell.editButton")}
         >
-          <Pencil className="h-3 w-3" />
+          <Pencil />
         </button>
       ) : null}
       <button
@@ -255,7 +255,7 @@ export function EntryRowActions({
         title={locked ? t("reconcile.lockedError") : deleting ? t("ledgerSwitch.deleting") : t("depositShell.deleteButton")}
         aria-label={locked ? t("reconcile.lockedError") : deleting ? t("ledgerSwitch.deleting") : t("depositShell.deleteButton")}
       >
-        <Trash2 className="h-3 w-3" />
+        <Trash2 />
       </button>
     </div>
   );

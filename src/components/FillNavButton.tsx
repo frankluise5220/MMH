@@ -2,6 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { DatabaseZap } from "lucide-react";
+import { ROW_ACTION_BUTTON_BOX_CLASS } from "@/components/AdvancedDataTable";
 import { useI18n } from "@/lib/i18n";
 
 export function FillNavButton({
@@ -65,11 +66,11 @@ export function FillNavButton({
       type="button"
       onClick={fill}
       disabled={pending}
-      className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-amber-200 bg-amber-50 text-amber-700 hover:border-amber-300 hover:bg-amber-100 disabled:opacity-50"
+      className={`${ROW_ACTION_BUTTON_BOX_CLASS} border-amber-200 bg-amber-50 text-amber-700 hover:border-amber-300 hover:bg-amber-100 disabled:opacity-50`}
       title={t("fillNav.fetchNavTitle")}
       aria-label={t("fillNav.fetchFundAria", { code: fundCode })}
     >
-      <DatabaseZap className={"h-3.5 w-3.5 shrink-0" + (pending ? " animate-pulse" : "")} />
+      <DatabaseZap className={" shrink-0" + (pending ? " animate-pulse" : "")} />
     </button>
   );
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import {  useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 
 import { BasicDetailBatchDeleteMessage, BasicDetailSelectionProvider, type BasicDetailBatchCategoryOption } from "@/components/BasicDetailSelection";
@@ -10,7 +10,7 @@ import type { BatchReplaceField } from "@/lib/client/batchReplaceEntries";
 import { withoutBasePath } from "@/lib/base-path";
 import { CREDIT_BILL_DETAIL_SELECTION_EVENT, type CreditBillDetailSelectionDetail } from "@/lib/client/creditBillDetailSelection";
 import { useI18n } from "@/lib/i18n";
-import { useRowsFitPageAnchor } from "@/lib/client/use-rows-fit-page-anchor";
+import { useDetailPagination } from "@/lib/client/use-detail-pagination";
 import { FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
 import {
   DETAIL_PAGE_SIZE_OPTIONS,
@@ -94,19 +94,42 @@ export function CreditBillDetailPanel({
   const { t } = useI18n();
   const normalizedInitialPageSize = normalizeDetailPageSize(initialPageSize);
   const [localEntries, setLocalEntries] = useState(entries);
-  const [pageSize, setPageSize] = useState(normalizedInitialPageSize);
-  const [detailAll, setDetailAll] = useState(initialDetailAll);
-  const [autoFit, setAutoFit] = useState(initialAutoFit);
   const [isSwitchLoading, setIsSwitchLoading] = useState(false);
   const [clientTitle, setClientTitle] = useState(title);
   const [clientScopeKey, setClientScopeKey] = useState(resetKey || `${accountId}:credit-bill-detail`);
-  const totalPages = Math.max(1, Math.ceil(localEntries.length / pageSize));
-  const [page, setPage] = useState(() => initialDetailAll ? 1 : clampPage(initialPage, totalPages));
-  const safePage = detailAll ? 1 : clampPage(page, totalPages);
   const propScopeKey = resetKey || `${accountId}:credit-bill-detail`;
   const scopeKey = clientScopeKey;
   const lastScopeKeyRef = useRef(scopeKey);
   const selectionFetchSeqRef = useRef(0);
+  // 页码 / 每页行数 / 全部只有一个状态点：初值来自服务端 props，之后换账户、
+  // 换账单月都走 `replace`，用户操作走 `select` / `showAll` / `restoreFit`。
+  // URL 与 cookie 是它的镜像，只在下面这一处写。
+  const billPager = useDetailPagination({
+    scopeKey: propScopeKey,
+    rowCount: localEntries.length,
+    initial: {
+      mode: initialDetailAll ? "all" : initialAutoFit ? "fit" : "manual",
+      rows: normalizedInitialPageSize,
+      page: initialPage,
+    },
+    onPersist: (state, safePage) => {
+      const url = new URL(window.location.href);
+      url.searchParams.set("view", "bill");
+      url.searchParams.set("pageSize", String(state.rows));
+      if (state.mode === "all") {
+        url.searchParams.set("detailAll", "1");
+        url.searchParams.delete("detailPage");
+      } else {
+        url.searchParams.delete("detailAll");
+        url.searchParams.set("detailPage", String(safePage));
+      }
+      writeStoredDetailPreference(accountId, state.rows, state.mode === "all", safePage, state.mode === "fit");
+      const nextHref = `${url.pathname}${url.search}${url.hash}`;
+      const currentHref = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+      if (nextHref !== currentHref) window.history.replaceState(window.history.state, "", nextHref);
+    },
+  });
+  const { replace: replaceBillPagination } = billPager;
 
   useEffect(() => {
     setLocalEntries(entries);
@@ -121,12 +144,13 @@ export function CreditBillDetailPanel({
       const isAllScope = /:all:credit-bill-detail$/.test(propScopeKey);
       const nextDetailAll = isAllScope ? (storedPreference?.detailAll ?? initialDetailAll) : false;
       const nextTotalPages = Math.max(1, Math.ceil(entries.length / nextPageSize));
-      setPageSize(nextPageSize);
-      setDetailAll(nextDetailAll);
-      setAutoFit(storedPreference?.autoFit ?? initialAutoFit);
-      setPage(nextDetailAll ? 1 : clampPage(storedPreference?.detailPage ?? initialPage, nextTotalPages));
+      replaceBillPagination({
+        mode: nextDetailAll ? "all" : (storedPreference?.autoFit ?? initialAutoFit) ? "fit" : "manual",
+        rows: nextPageSize,
+        page: nextDetailAll ? 1 : clampPage(storedPreference?.detailPage ?? initialPage, nextTotalPages),
+      });
     }
-  }, [accountId, entries, initialAutoFit, initialDetailAll, initialPage, normalizedInitialPageSize, propScopeKey, selectedBillMonth, title]);
+  }, [accountId, entries, initialAutoFit, initialDetailAll, initialPage, normalizedInitialPageSize, propScopeKey, replaceBillPagination, selectedBillMonth, title]);
 
   useEffect(() => {
     const handleSelection = (event: Event) => {
@@ -145,7 +169,7 @@ export function CreditBillDetailPanel({
           if (seq !== selectionFetchSeqRef.current) return;
           const nextEntries = Array.isArray(payload.data?.entries) ? payload.data.entries : [];
           const storedPreference = readStoredDetailPreference(accountId);
-          const nextPageSize = storedPreference?.pageSize ?? pageSize;
+          const nextPageSize = storedPreference?.pageSize ?? billPager.rows;
           // Switching to a specific bill month should show that month's
           // details, not the persisted "show all" preference. Only the page
           // size preference carries over; detailAll resets to false so the
@@ -153,10 +177,11 @@ export function CreditBillDetailPanel({
           const nextDetailAll = false;
           const nextTotalPages = Math.max(1, Math.ceil(nextEntries.length / nextPageSize));
           setLocalEntries(nextEntries);
-          setPageSize(nextPageSize);
-          setDetailAll(nextDetailAll);
-          setAutoFit(storedPreference?.autoFit ?? autoFit);
-          setPage(nextDetailAll ? 1 : clampPage(storedPreference?.detailPage ?? 1, nextTotalPages));
+          replaceBillPagination({
+            mode: nextDetailAll ? "all" : (storedPreference?.autoFit ?? billPager.autoFit) ? "fit" : "manual",
+            rows: nextPageSize,
+            page: nextDetailAll ? 1 : clampPage(storedPreference?.detailPage ?? 1, nextTotalPages),
+          });
           setClientScopeKey(`${accountId}:${billMonth}:credit-bill-detail`);
           if (payload.data?.showAllDetails) {
             setClientTitle(t("creditBill.allDetails"));
@@ -176,7 +201,7 @@ export function CreditBillDetailPanel({
     };
     window.addEventListener(CREDIT_BILL_DETAIL_SELECTION_EVENT, handleSelection as EventListener);
     return () => window.removeEventListener(CREDIT_BILL_DETAIL_SELECTION_EVENT, handleSelection as EventListener);
-  }, [accountId, autoFit, detailAll, pageSize, router, t]);
+  }, [accountId, billPager.autoFit, billPager.rows, replaceBillPagination, router, t]);
 
   useEffect(() => {
     const handleFinanceChange = (event: Event) => {
@@ -201,68 +226,7 @@ export function CreditBillDetailPanel({
     return () => window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, handleFinanceChange);
   }, [accountId, router]);
 
-  useEffect(() => {
-    if (detailAll || page === safePage) return;
-    setPage(safePage);
-  }, [detailAll, page, safePage]);
-
-  useEffect(() => {
-    const url = new URL(window.location.href);
-    url.searchParams.set("view", "bill");
-    url.searchParams.set("pageSize", String(pageSize));
-    if (detailAll) {
-      url.searchParams.set("detailAll", "1");
-      url.searchParams.delete("detailPage");
-    } else {
-      url.searchParams.delete("detailAll");
-      url.searchParams.set("detailPage", String(safePage));
-    }
-    writeStoredDetailPreference(accountId, pageSize, detailAll, safePage, autoFit);
-    const nextHref = `${url.pathname}${url.search}${url.hash}`;
-    const currentHref = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-    if (nextHref !== currentHref) window.history.replaceState(window.history.state, "", nextHref);
-  }, [accountId, autoFit, detailAll, pageSize, safePage]);
-
-  const pageEntries = useMemo(
-    () => detailAll ? localEntries : localEntries.slice((safePage - 1) * pageSize, safePage * pageSize),
-    [detailAll, localEntries, pageSize, safePage],
-  );
-
-  const setPagedSize = (nextPageSize: number) => {
-    setDetailAll(false);
-    setAutoFit(false);
-    setPageSize(nextPageSize);
-    setPage(1);
-  };
-
-  const showAll = () => {
-    setDetailAll(true);
-    setPage(1);
-  };
-
-  // Auto-fit: the table reports how many rows fit the viewport; when auto mode
-  // is on that count becomes the page size (the "自适应" option restores it).
-  // Callback identity changes with the scope / autoFit / detailAll so the table
-  // re-measures once per view reopen, then stays frozen (same contract as
-  // BasicDetailPanel).
-  const { onRowsFitChange: handleRowsFitChange, lastFitRowCountRef } = useRowsFitPageAnchor({
-    scopeKey: propScopeKey,
-    pageSize,
-    page: safePage,
-    totalCount: localEntries.length,
-    enabled: autoFit && !detailAll,
-    anchorPage: !detailAll,
-    setPageSize,
-    setPage,
-  });
-
-  const enableAutoFitRows = () => {
-    setDetailAll(false);
-    setAutoFit(true);
-    const fitCount = lastFitRowCountRef.current;
-    if (fitCount != null && fitCount !== pageSize) setPageSize(fitCount);
-    setPage(1);
-  };
+  const pageEntries = billPager.slice(localEntries);
 
   const showAllBillDetails = () => {
     if (!selectedBillMonth) return;
@@ -273,13 +237,6 @@ export function CreditBillDetailPanel({
     router.replace(withoutBasePath(`${url.pathname}${url.search}${url.hash}`), { scroll: false });
   };
 
-  const goPage = (nextPage: number) => {
-    if (detailAll) return;
-    setPage(clampPage(nextPage, totalPages));
-  };
-
-  const canPrev = !detailAll && safePage > 1;
-  const canNext = !detailAll && safePage < totalPages;
   const tableResetKey = scopeKey;
 
   return (
@@ -307,7 +264,7 @@ export function CreditBillDetailPanel({
           refreshOnGlobalEvent={false}
           toolbarMode="custom"
           batchReplaceFields={CREDIT_BILL_BATCH_REPLACE_FIELDS}
-          onRowsFitChange={autoFit && !detailAll ? handleRowsFitChange : undefined}
+          onRowsFitChange={billPager.autoFit ? billPager.fit : undefined}
           toolbarTitle={clientTitle}
           toolbarRightContent={
             <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 text-xs text-slate-500 tabular-nums">
@@ -327,20 +284,7 @@ export function CreditBillDetailPanel({
                 {t("creditBillDetail.recordCount", { count: localEntries.length })}
                 {isSwitchLoading ? t("basicDetail.loadingSuffix") : ""}
               </span>
-              <DetailTablePaginationControls
-                pageSize={pageSize}
-                pageSizeOptions={DETAIL_PAGE_SIZE_OPTIONS}
-                detailAll={detailAll}
-                safePage={safePage}
-                totalPages={totalPages}
-                canPrev={canPrev}
-                canNext={canNext}
-                autoFit={autoFit}
-                onAutoFit={enableAutoFitRows}
-                onPageSizeChange={setPagedSize}
-                onShowAll={showAll}
-                onPageChange={goPage}
-              />
+              <DetailTablePaginationControls pager={billPager} pageSizeOptions={DETAIL_PAGE_SIZE_OPTIONS} />
             </div>
           }
           emptyText={t("detail.empty")}

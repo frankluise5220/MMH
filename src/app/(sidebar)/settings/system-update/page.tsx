@@ -240,8 +240,6 @@ export default function SystemUpdatePage() {
   // its full log (commands included) so the page shows what actually ran
   // instead of only a step label.
   const [consoleLines, setConsoleLines] = useState<string[]>([]);
-  const [consoleCopied, setConsoleCopied] = useState(false);
-  const consoleRef = useRef<HTMLPreElement | null>(null);
   const [imageSourceDraft, setImageSourceDraft] = useState<ImageSourceDraft>({
     source: "auto",
     customAppImage: "",
@@ -290,23 +288,6 @@ export default function SystemUpdatePage() {
     window.addEventListener(APP_PREFS_EVENT, syncTimeZonePreference);
     return () => window.removeEventListener(APP_PREFS_EVENT, syncTimeZonePreference);
   }, []);
-
-  useEffect(() => {
-    const node = consoleRef.current;
-    if (!node) return;
-    node.scrollTop = node.scrollHeight;
-  }, [consoleLines]);
-
-  async function copyConsoleLog() {
-    if (!consoleLines.length) return;
-    try {
-      await navigator.clipboard.writeText(consoleLines.join("\n"));
-      setConsoleCopied(true);
-      setTimeout(() => setConsoleCopied(false), 2000);
-    } catch {
-      // Clipboard access can be denied (insecure context); the log stays visible.
-    }
-  }
 
   function initSteps() {
     return UPDATE_STEPS.map((key) => ({ key, label: updateStepLabel(key, t), status: "pending" as StepStatus, output: "" }));
@@ -372,7 +353,6 @@ export default function SystemUpdatePage() {
     setUpdateOk(false);
     setUpdateError("");
     setConsoleLines([]);
-    setConsoleCopied(false);
     setSteps(versionInfo?.isDocker ? DOCKER_UPDATE_STEPS.map((key) => ({ key, label: updateStepLabel(key, t), status: "pending" as StepStatus, output: "" })) : initSteps());
 
     // The image source list is a draft until saved, but the updater only reads
@@ -1000,23 +980,7 @@ sudo docker compose -p mmh up -d app updater`}</pre>
 
           {dockerManaged && (updating || consoleLines.length > 0) ? (
             <div className="mt-4">
-              <div className="mb-1 flex items-center justify-between gap-2">
-                <div className="text-xs font-medium text-slate-600">{t("settings.systemUpdate.console")}</div>
-                <button
-                  type="button"
-                  onClick={copyConsoleLog}
-                  disabled={!consoleLines.length}
-                  className="rounded-md border border-slate-200 px-2 py-0.5 text-xs text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  {consoleCopied ? t("settings.systemUpdate.consoleCopied") : t("settings.systemUpdate.consoleCopy")}
-                </button>
-              </div>
-              <pre
-                ref={consoleRef}
-                className="max-h-72 overflow-auto whitespace-pre-wrap break-all rounded-md bg-slate-900 px-3 py-2 font-mono text-[11px] leading-relaxed text-slate-200"
-              >
-                {consoleLines.length ? consoleLines.join("\n") : t("settings.systemUpdate.consoleEmpty")}
-              </pre>
+              <UpdateConsole lines={consoleLines} running={updating} t={t} />
             </div>
           ) : null}
 
@@ -1052,6 +1016,177 @@ sudo docker compose -p mmh up -d app updater`}</pre>
           ) : null}
         </section>
       ) : null}
+    </div>
+  );
+}
+
+/** `[2026-10-27T01:07:41.638Z] 拉取应用镜像` → timestamp + message. */
+function splitConsoleLine(line: string) {
+  const match = /^\[([^\]]+)\]\s?([\s\S]*)$/.exec(line);
+  return match ? { time: match[1], text: match[2] } : { time: "", text: line };
+}
+
+/** Cheap log highlighting: command echo, step boundaries, failures, warnings. */
+function consoleLineClass(text: string) {
+  if (text.startsWith("$ ")) return "text-cyan-300";
+  if (text.startsWith("开始")) return "text-sky-300";
+  if (/^完成|更新完成|已就绪|已保存|已回滚/.test(text)) return "text-emerald-300";
+  if (/失败|错误|fatal/i.test(text)) return "text-red-300";
+  if (/警告|warn/i.test(text)) return "text-amber-300";
+  return "text-slate-300";
+}
+
+/**
+ * Terminal window for the host updater log.
+ *
+ * `docker pull` emits its progress as CR-separated frames; the updater replays
+ * them with terminal semantics (CR repaints the current line) so what arrives is
+ * a clean line list. The window adds what a raw <pre> could not: a viewport that
+ * stops auto-following while the operator scrolls back, and an expanded mode for
+ * long runs.
+ */
+function UpdateConsole({
+  lines,
+  running,
+  t,
+}: {
+  lines: string[];
+  running: boolean;
+  t: (key: string, params?: Record<string, string | number>) => string;
+}) {
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const [follow, setFollow] = useState(true);
+  const [expanded, setExpanded] = useState(false);
+  const [copied, setCopied] = useState(false);
+
+  useEffect(() => {
+    const node = viewportRef.current;
+    if (!node || !follow) return;
+    node.scrollTop = node.scrollHeight;
+  }, [lines, follow, expanded]);
+
+  useEffect(() => {
+    if (!expanded) return;
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setExpanded(false);
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [expanded]);
+
+  function handleScroll() {
+    const node = viewportRef.current;
+    if (!node) return;
+    // Auto-scroll only while the operator is already at the bottom: scrolling
+    // up to read an earlier command must not be yanked back by the next line.
+    const atBottom = node.scrollHeight - node.scrollTop - node.clientHeight <= 24;
+    setFollow(atBottom);
+  }
+
+  function scrollToBottom() {
+    const node = viewportRef.current;
+    if (!node) return;
+    node.scrollTop = node.scrollHeight;
+    setFollow(true);
+  }
+
+  async function copyLog() {
+    if (!lines.length) return;
+    try {
+      await navigator.clipboard.writeText(lines.join("\n"));
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard access can be denied (insecure context); the log stays visible.
+    }
+  }
+
+  const header = (
+    <div className="flex h-9 shrink-0 items-center gap-2 border-b border-slate-700/80 bg-slate-800/80 px-3">
+      <span className={`h-2 w-2 shrink-0 rounded-full ${running ? "animate-pulse bg-emerald-400" : "bg-slate-500"}`} />
+      <span className="text-xs font-medium text-slate-200">{t("settings.systemUpdate.console")}</span>
+      <span className="text-[11px] text-slate-400">
+        {t("settings.systemUpdate.consoleLineCount", { count: lines.length })}
+      </span>
+      <div className="ml-auto flex items-center gap-1.5">
+        {!follow ? (
+          <button
+            type="button"
+            onClick={scrollToBottom}
+            className="rounded border border-slate-600 px-2 py-0.5 text-[11px] text-slate-200 hover:bg-slate-700"
+          >
+            {t("settings.systemUpdate.consoleBottom")}
+          </button>
+        ) : null}
+        <button
+          type="button"
+          onClick={() => setFollow(!follow)}
+          className={`rounded border px-2 py-0.5 text-[11px] ${
+            follow
+              ? "border-emerald-500/60 bg-emerald-500/10 text-emerald-300"
+              : "border-slate-600 text-slate-300 hover:bg-slate-700"
+          }`}
+        >
+          {t("settings.systemUpdate.consoleFollow")}
+        </button>
+        <button
+          type="button"
+          onClick={copyLog}
+          disabled={!lines.length}
+          className="rounded border border-slate-600 px-2 py-0.5 text-[11px] text-slate-200 hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          {copied ? t("settings.systemUpdate.consoleCopied") : t("settings.systemUpdate.consoleCopy")}
+        </button>
+        <button
+          type="button"
+          onClick={() => setExpanded(!expanded)}
+          className="rounded border border-slate-600 px-2 py-0.5 text-[11px] text-slate-200 hover:bg-slate-700"
+        >
+          {expanded ? t("settings.systemUpdate.consoleCollapse") : t("settings.systemUpdate.consoleExpand")}
+        </button>
+      </div>
+    </div>
+  );
+
+  const viewport = (
+    <div
+      ref={viewportRef}
+      onScroll={handleScroll}
+      className={`min-h-0 overflow-auto whitespace-pre-wrap break-all px-3 py-2 font-mono text-[11px] leading-relaxed ${
+        expanded ? "flex-1" : "h-72"
+      }`}
+    >
+      {lines.length ? (
+        lines.map((line, index) => {
+          const { time, text } = splitConsoleLine(line);
+          return (
+            <div key={index} className="flex gap-2">
+              {time ? <span className="shrink-0 text-slate-500">{time}</span> : null}
+              <span className={`min-w-0 ${consoleLineClass(text)}`}>{text}</span>
+            </div>
+          );
+        })
+      ) : (
+        <div className="text-slate-500">{t("settings.systemUpdate.consoleEmpty")}</div>
+      )}
+    </div>
+  );
+
+  if (expanded) {
+    return (
+      <div className="fixed inset-0 z-[60] flex flex-col bg-slate-950/70 p-3 sm:p-6">
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-slate-700 bg-slate-900 shadow-2xl">
+          {header}
+          {viewport}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="overflow-hidden rounded-md border border-slate-700 bg-slate-900">
+      {header}
+      {viewport}
     </div>
   );
 }

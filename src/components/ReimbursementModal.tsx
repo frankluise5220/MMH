@@ -7,7 +7,7 @@ import { useI18n } from "@/lib/i18n";
 import { formatAmountDraft, formatMoney, formatMoneyYuan } from "@/lib/format";
 import { todayDateLocalYmd } from "@/lib/date-utils";
 import { DateStepper } from "./DateStepper";
-import { AdvancedDataTable, type AdvancedDataTableColumn } from "@/components/AdvancedDataTable";
+import { AdvancedDataTable, ROW_ACTION_BUTTON_BOX_CLASS, type AdvancedDataTableColumn } from "@/components/AdvancedDataTable";
 import { reimbursementErrorMessage } from "@/lib/reimbursement-error";
 import { filterReimbursementCandidates } from "@/lib/reimbursement-candidates";
 import { ReimbursementDocumentModal } from "@/components/ReimbursementDocumentModal";
@@ -31,7 +31,7 @@ export type ReimbursementCashAccountOption = {
   currency?: string | null;
 };
 
-const reimbursementActionButtonClass = "flex h-6 w-6 shrink-0 items-center justify-center rounded border border-slate-200 bg-white transition-colors disabled:cursor-not-allowed disabled:opacity-50";
+const reimbursementActionButtonClass = `${ROW_ACTION_BUTTON_BOX_CLASS} border-slate-200 bg-white disabled:cursor-not-allowed disabled:opacity-50`;
 
 // Fields that can be batch-replaced across selected pending documents (document header level).
 type ReimbursementBatchEditField = "kind" | "travelStartDate" | "travelEndDate" | "travelReason" | "note";

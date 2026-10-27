@@ -9,7 +9,7 @@ import {
   type ReactNode,
 } from "react";
 import { Pause, Pencil, Play, RefreshCw, Square, Trash2 } from "lucide-react";
-import { AdvancedDataTable, type AdvancedDataTableColumn, type AdvancedDataTableSortState } from "@/components/AdvancedDataTable";
+import { AdvancedDataTable, ROW_ACTION_BUTTON_BOX_CLASS, type AdvancedDataTableColumn, type AdvancedDataTableSortState } from "@/components/AdvancedDataTable";
 import { DateStepper } from "@/components/DateStepper";
 import {
   MultiSelectFilterDropdown,
@@ -1886,7 +1886,7 @@ export function RegularInvestClient({
           <span className="inline-flex h-6 items-center rounded border border-slate-200 bg-slate-50 px-1.5 text-[10px] text-slate-400" title={t("regularInvest.client.systemTask.title")}>
             {t("regularInvest.client.systemTask.short")}
           </span>
-          <button onClick={() => handleDelete(plan.id)} title={t("common.delete")} className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-red-200 hover:bg-red-50">
+          <button onClick={() => handleDelete(plan.id)} title={t("common.delete")} className={`${ROW_ACTION_BUTTON_BOX_CLASS} border-slate-200 bg-white hover:border-red-200 hover:bg-red-50`}>
             <Trash2 className="h-3 w-3 text-red-500" />
           </button>
         </>
@@ -1900,10 +1900,10 @@ export function RegularInvestClient({
           <span className="inline-flex h-6 items-center rounded border border-slate-200 bg-slate-50 px-1.5 text-[10px] text-slate-400" title={t("regularInvest.client.systemTask.title")}>
             {t("regularInvest.client.systemTask.short")}
           </span>
-          <button onClick={() => { setEditPlan(plan); setEditOpen(true); }} title={t("regularInvest.client.action.edit")} className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-blue-200 hover:bg-blue-50">
+          <button onClick={() => { setEditPlan(plan); setEditOpen(true); }} title={t("regularInvest.client.action.edit")} className={`${ROW_ACTION_BUTTON_BOX_CLASS} border-slate-200 bg-white hover:border-blue-200 hover:bg-blue-50`}>
             <Pencil className="h-3 w-3 text-blue-600" />
           </button>
-          <button onClick={() => handleDelete(plan.id)} title={t("common.delete")} className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-red-200 hover:bg-red-50">
+          <button onClick={() => handleDelete(plan.id)} title={t("common.delete")} className={`${ROW_ACTION_BUTTON_BOX_CLASS} border-slate-200 bg-white hover:border-red-200 hover:bg-red-50`}>
             <Trash2 className="h-3 w-3 text-red-500" />
           </button>
         </>
@@ -1920,27 +1920,27 @@ export function RegularInvestClient({
               onClick={() => handleBatchExecute(plan.id)}
               disabled={executionBusy}
               title={t("regularInvest.client.execute.title")}
-              className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-purple-200 hover:bg-purple-50 disabled:cursor-not-allowed disabled:opacity-40"
+              className={`${ROW_ACTION_BUTTON_BOX_CLASS} border-slate-200 bg-white hover:border-purple-200 hover:bg-purple-50 disabled:cursor-not-allowed disabled:opacity-40`}
             >
               <RefreshCw className={`h-3 w-3 text-purple-600 ${executionBusy && runningExecution?.planId === plan.id ? "animate-spin" : ""}`} />
             </button>
-            <button onClick={() => handleAction(plan.id, "pause")} title={t("fundShell.plan.pause")} className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-yellow-200 hover:bg-yellow-50">
+            <button onClick={() => handleAction(plan.id, "pause")} title={t("fundShell.plan.pause")} className={`${ROW_ACTION_BUTTON_BOX_CLASS} border-slate-200 bg-white hover:border-yellow-200 hover:bg-yellow-50`}>
               <Pause className="h-3 w-3 text-yellow-600" />
             </button>
-            <button onClick={() => handleAction(plan.id, "stop")} title={t("regularInvest.client.action.stop")} className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-red-200 hover:bg-red-50">
+            <button onClick={() => handleAction(plan.id, "stop")} title={t("regularInvest.client.action.stop")} className={`${ROW_ACTION_BUTTON_BOX_CLASS} border-slate-200 bg-white hover:border-red-200 hover:bg-red-50`}>
               <Square className="h-3 w-3 text-red-600" />
             </button>
           </>
         )}
         {plan.status === "paused" && (
-          <button onClick={() => handleAction(plan.id, "resume")} title={t("fundShell.plan.resume")} className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-green-200 hover:bg-green-50">
+          <button onClick={() => handleAction(plan.id, "resume")} title={t("fundShell.plan.resume")} className={`${ROW_ACTION_BUTTON_BOX_CLASS} border-slate-200 bg-white hover:border-green-200 hover:bg-green-50`}>
             <Play className="h-3 w-3 text-green-600" />
           </button>
         )}
-        <button onClick={() => { setEditPlan(plan); setEditOpen(true); }} title={t("regularInvest.client.action.edit")} className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-blue-200 hover:bg-blue-50">
+        <button onClick={() => { setEditPlan(plan); setEditOpen(true); }} title={t("regularInvest.client.action.edit")} className={`${ROW_ACTION_BUTTON_BOX_CLASS} border-slate-200 bg-white hover:border-blue-200 hover:bg-blue-50`}>
           <Pencil className="h-3 w-3 text-blue-600" />
         </button>
-        <button onClick={() => handleDelete(plan.id)} title={t("common.delete")} className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-red-200 hover:bg-red-50">
+        <button onClick={() => handleDelete(plan.id)} title={t("common.delete")} className={`${ROW_ACTION_BUTTON_BOX_CLASS} border-slate-200 bg-white hover:border-red-200 hover:bg-red-50`}>
           <Trash2 className="h-3 w-3 text-red-500" />
         </button>
       </>
@@ -2247,10 +2247,10 @@ export function RegularInvestClient({
                               </td>
                               <td className="px-3 py-1.5 text-center">
                                 <div className="flex items-center justify-center gap-1">
-                                  <button onClick={(e) => { e.stopPropagation(); openEditRecord(record); }} title={t("regularInvest.client.recordsCol.editDate")} className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-blue-200 hover:bg-blue-50">
+                                  <button onClick={(e) => { e.stopPropagation(); openEditRecord(record); }} title={t("regularInvest.client.recordsCol.editDate")} className={`${ROW_ACTION_BUTTON_BOX_CLASS} border-slate-200 bg-white hover:border-blue-200 hover:bg-blue-50`}>
                                     <Pencil className="h-3 w-3 text-blue-600" />
                                   </button>
-                                  <button onClick={(e) => { e.stopPropagation(); handleDeleteRecord(record.id); }} title={t("common.delete")} className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white hover:border-red-200 hover:bg-red-50">
+                                  <button onClick={(e) => { e.stopPropagation(); handleDeleteRecord(record.id); }} title={t("common.delete")} className={`${ROW_ACTION_BUTTON_BOX_CLASS} border-slate-200 bg-white hover:border-red-200 hover:bg-red-50`}>
                                     <Trash2 className="h-3 w-3 text-red-500" />
                                   </button>
                                 </div>

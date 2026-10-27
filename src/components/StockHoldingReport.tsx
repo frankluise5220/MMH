@@ -34,6 +34,16 @@ function compactDate(value: string | null) {
   return /^\d{4}-\d{2}-\d{2}$/.test(date) ? `${date.slice(5, 7)}.${date.slice(8, 10)}` : String(value ?? "");
 }
 
+/** 移动端卡片里的小指标格：label 一行 + 数值一行。 */
+function MobileMetric({ label, value, className }: { label: string; value: string; className?: string }) {
+  return (
+    <div className="min-w-0">
+      <div className="text-[11px] leading-4 text-slate-500">{label}</div>
+      <div className={`truncate text-xs font-medium leading-5 tabular-nums ${className ?? "text-slate-700"}`}>{value}</div>
+    </div>
+  );
+}
+
 function renderReportStockNameCode(row: StockHoldingReportRow) {
   const displayName = String(row.stockName || row.stockCode || "-").trim() || "-";
   const code = [stockMarketLabel(row.market), row.stockCode].filter(Boolean).join(" ");
@@ -231,9 +241,9 @@ export function StockHoldingReport({ rows, totals, isRedUp }: Props) {
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-slate-200 bg-white">
-        <div className="flex shrink-0 items-center justify-between border-b border-slate-100 px-3 py-2">
-          <div className="text-sm font-medium text-slate-800">{t("stockHoldingReport.title")}</div>
-          <div className="text-xs text-slate-500">
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-x-2 border-b border-slate-100 px-3 py-2">
+          <div className="shrink-0 whitespace-nowrap text-sm font-medium text-slate-800">{t("stockHoldingReport.title")}</div>
+          <div className="min-w-0 text-xs text-slate-500">
             {best
               ? t("stockHoldingReport.bestHolding")
                   .replace("{name}", best.stockName)
@@ -246,7 +256,48 @@ export function StockHoldingReport({ rows, totals, isRedUp }: Props) {
               : ""}
           </div>
         </div>
-        <div className="min-h-0 flex-1">
+        {/* 移动端：持仓卡片（11 列表格 minTableWidth=1280，手机横向滚看不清） */}
+        {rows.length === 0 ? (
+          <div className="md:hidden">{emptyText}</div>
+        ) : (
+          <div className="min-h-0 flex-1 divide-y divide-slate-100 overflow-y-auto md:hidden">
+            {rows.map((row) => (
+              <div key={row.id} className="px-3 py-2.5">
+                <div className="flex items-center justify-between gap-2">
+                  {renderReportStockNameCode(row)}
+                  <span className="shrink-0 text-sm font-semibold tabular-nums text-slate-900">
+                    {formatCurrencyMoney(row.marketValue, row.currency)}
+                  </span>
+                </div>
+                <div className="mt-0.5 flex min-w-0 items-center gap-1 text-xs text-slate-500">
+                  <span className="min-w-0 truncate" title={row.accountHoverTitle || row.accountLabel || row.accountName}>
+                    {row.accountLabel ?? row.accountName}
+                  </span>
+                  <span className="shrink-0 text-slate-300">·</span>
+                  <span className="shrink-0 tabular-nums">
+                    {formatMoney(row.quantity)} × {formatMoney(row.avgCost)}
+                  </span>
+                </div>
+                <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1.5">
+                  <MobileMetric label={t("stockHoldingReport.colCost")} value={formatCurrencyMoney(row.cost, row.currency)} className="text-slate-700" />
+                  <MobileMetric label={t("stockHoldingReport.colClosePrice")} value={row.latestPrice == null ? "-" : `${formatMoney(row.latestPrice)}${row.latestPriceDate ? ` (${compactDate(row.latestPriceDate)})` : ""}`} className="text-slate-700" />
+                  <MobileMetric
+                    label={t("stockHoldingReport.colFloatingPnL")}
+                    value={`${signedMoney(row.floatingPnL, row.currency)} (${formatRate(row.floatingPnLRate)})`}
+                    className={valueClass(row.floatingPnL, isRedUp)}
+                  />
+                  <MobileMetric label={t("stockHoldingReport.colRealized")} value={signedMoney(row.historicalProfit, row.currency)} className={valueClass(row.historicalProfit, isRedUp)} />
+                  <MobileMetric label={t("stockHoldingReport.colTotalPnL")} value={signedMoney(row.totalProfit, row.currency)} className={valueClass(row.totalProfit, isRedUp)} />
+                </div>
+              </div>
+            ))}
+            <div className="flex items-center justify-between bg-slate-50 px-3 py-2.5">
+              <span className="text-xs font-semibold text-slate-700">{t("common.total")}</span>
+              <span className={`text-sm font-semibold tabular-nums ${valueClass(totals.totalProfit, isRedUp)}`}>{signedMoney(totals.totalProfit, currency)}</span>
+            </div>
+          </div>
+        )}
+        <div className="hidden min-h-0 flex-1 md:block">
           <AdvancedDataTable
             storageKey="mmh_stock_holding_report_v1"
             columns={columns}

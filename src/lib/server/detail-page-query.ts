@@ -1,4 +1,4 @@
-import { Prisma } from "@prisma/client";
+import { AccountKind, Prisma } from "@prisma/client";
 
 import {
   BALANCE_INITIALIZATION_SOURCE,
@@ -69,6 +69,89 @@ function accountScopeSql(accountIds: string[]) {
   `;
 }
 
+/**
+ * 单账户明细的余额口径开关。
+ *
+ * 贷款 / 往来款按本金折叠；存款账户按存单本金折叠。两者都必须与
+ * `account-balance.ts` 的账户余额同口径，否则「页头余额」与「明细首行余额」会分叉。
+ */
+async function loadAccountBalanceModes(accountId: string | null | undefined) {
+  const row = accountId
+    ? await prisma.account.findUnique({
+      where: { id: accountId },
+      select: { kind: true, investProductType: true },
+    })
+    : null;
+  return {
+    liabilityAccountMode: isLoanOrSettlementAccountKind(row?.kind),
+    depositAccountMode: row?.kind === AccountKind.deposit || row?.investProductType === "deposit",
+  };
+}
+
+/** CTE 名是标识符：`Prisma.sql` 会把字符串插值成 `$1`，必须用 raw 拼。 */
+function cteRef(name: string) {
+  return Prisma.raw(`"${name}"`);
+}
+
+/**
+ * 「锚点目标值 + 本行对余额的贡献」这两列。
+ *
+ * 显示集合与折叠集合各要一份，两份的列名与 CASE 必须逐字相同（否则余额会随展示
+ * 条件分叉），所以抽成模板，只换 CTE 名与来源。
+ */
+function buildDisplayedCte(name: string, source: string, effectiveAmountCase: Prisma.Sql) {
+  return Prisma.sql`
+    ${cteRef(name)} AS (
+      SELECT
+        c.*,
+        CASE
+          -- 已「对账」锁定行的目标余额直接读列；余额校准 / 期初余额行仍从备注前缀取。
+          WHEN c."reconciledBalance" IS NOT NULL
+            THEN CAST(c."reconciledBalance" AS DECIMAL)
+          WHEN c."isAnchor" = 1
+            THEN CAST(
+              SUBSTR(
+                TRIM(COALESCE(c."toNote", '')),
+                ${BALANCE_RECONCILE_TARGET_PREFIX.length + 1}
+              ) AS DECIMAL
+            )
+          ELSE NULL
+        END AS "anchorTarget",
+        CASE
+          ${effectiveAmountCase}
+        END AS "effectiveAmount"
+      FROM ${cteRef(source)} c
+    )`;
+}
+
+function buildOrderedCte(name: string, source: string) {
+  return Prisma.sql`
+    ${cteRef(name)} AS (
+      SELECT
+        d.*,
+        DATE(d."displayAt") AS "dayKey"
+      FROM ${cteRef(source)} d
+    )`;
+}
+
+function buildRankedCte(name: string, source: string) {
+  return Prisma.sql`
+    ${cteRef(name)} AS (
+      SELECT
+        o.*,
+        ROW_NUMBER() OVER (
+          ORDER BY
+            o."dayKey" DESC,
+            o."isAnchor" DESC,
+            COALESCE(o."dayOrder", 0) DESC,
+            o."displayAt" DESC,
+            o."createdAt" DESC,
+            o."id" DESC
+        ) AS "rowNumber"
+      FROM ${cteRef(source)} o
+    )`;
+}
+
 function buildOrderingCtesSql(args: {
   accountIds: string[];
   householdId: string;
@@ -77,6 +160,11 @@ function buildOrderingCtesSql(args: {
   sortAccountId?: string | null;
   /** 排序账户是贷款 / 往来款时，余额折叠走本金口径（见 liabilityPrincipalForAccountSide）。 */
   liabilityAccountMode?: boolean;
+  /**
+   * 排序账户是存款账户时，余额列按存单本金折叠（与 `computeDepositCashValueByAccount`
+   * 同口径），而不是把存入/取回的现金流逐笔累加 —— 后者方向是反的。
+   */
+  depositAccountMode?: boolean;
   /** 服务端筛选谓词，注入 `visible` 层，保证计数与分页同口径。 */
   filters?: DetailFilters | null;
   /**
@@ -85,7 +173,16 @@ function buildOrderingCtesSql(args: {
    */
   dateRange?: DetailDateRange | null;
 }) {
-  const { accountIds, householdId, timeZone, sortAccountId, liabilityAccountMode = false, filters, dateRange } = args;
+  const {
+    accountIds,
+    householdId,
+    timeZone,
+    sortAccountId,
+    liabilityAccountMode = false,
+    depositAccountMode = false,
+    filters,
+    dateRange,
+  } = args;
   const sortAccountIdValue = sortAccountId ?? null;
   // 账户余额口径（account-balance.ts 的 isOnOrBeforeToday）以「今天」为截止，
   // 明细「余额」列必须用同一个截止日，否则未来日期的流水会把列表顶部的余额
@@ -117,6 +214,7 @@ function buildOrderingCtesSql(args: {
     t."fundSubtype",
     t."fundArrivalDate",
     t."fundArrivalAmount",
+    t."depositInterest",
     t."reconciledBalance"
   `;
   const scopedSource = Prisma.sql`
@@ -282,7 +380,32 @@ function buildOrderingCtesSql(args: {
 
   // 每笔流水对「余额」列的贡献。必须与 account-balance.ts 的 foldBalanceEntry 逐条对齐，
   // 否则明细余额列会与账户余额不一致。
-  const effectiveAmountCase = liabilityAccountMode
+  //
+  // 存款账户单独一套：余额 = 未结清存单的剩余本金合计（`computeDepositCashValueByAccount`）。
+  // 这里**不能**沿用现金流方向 —— 存单取回行的 `amount` 是正数（钱从存款账户流出），
+  // 按 `ELSE c."amount"` 折叠会把它当成增加项，200,000 + 300,000 + 220,400 + 329,700
+  // 直接叠出 1,050,100 的假余额（2026-10-27 用户报障）。
+  const depositAmountCase = Prisma.sql`
+          WHEN c."isAnchor" = 1 THEN 0
+          WHEN CAST(DATE(c."displayAt") AS TEXT) > ${todayKey} THEN 0
+          -- 存入行：本金增加。
+          WHEN c."type" = 'investment'
+            AND c."fundProductType" = 'deposit'
+            AND c."fundSubtype" = 'buy'
+            THEN ABS(COALESCE(c."fundArrivalAmount", c."amount"))
+          -- 取回行：只扣本金，已付利息不算本金减少。
+          WHEN c."type" = 'investment'
+            AND c."fundProductType" = 'deposit'
+            AND c."fundSubtype" IN ('redeem', 'switch_out')
+            THEN -(
+              ABS(COALESCE(c."fundArrivalAmount", c."amount"))
+              - COALESCE(c."depositInterest", 0)
+            )
+          -- 付息行既不开存单也不关存单；非存单款项同样不进余额（页头已剔除）。
+          ELSE 0`;
+  const effectiveAmountCase = depositAccountMode
+    ? depositAmountCase
+    : liabilityAccountMode
     ? Prisma.sql`
           WHEN c."isAnchor" = 1 THEN 0
           WHEN CAST(DATE(
@@ -337,6 +460,11 @@ function buildOrderingCtesSql(args: {
   const filterSql = buildDetailFilterSql(filters);
   // 时间范围先裁数据集，再叠列筛选（两者是 AND，语义上「范围内挑值」）。
   const dateRangeSql = buildDetailDateRangeSql(dateRange);
+  // 没有任何显示条件时，显示集合就是折叠集合：`paged` 退化成一次投影，省掉第二遍
+  // 全量 ROW_NUMBER（这是不带范围时唯一的新增成本）。
+  const hasDisplayPredicate = Object.values(filters ?? {}).some(
+    (values) => Array.isArray(values) && values.length > 0,
+  ) || !!(dateRange?.from || dateRange?.to);
 
   return Prisma.sql`
     WITH ${scopedCtes},
@@ -353,11 +481,10 @@ function buildOrderingCtesSql(args: {
               OR (${linkedBusinessSubtypeSql} = 'buy_failed' AND s."source" = 'regular_invest_refund')
             )
             THEN COALESCE(${linkedBusinessArrivalSql}, s."date")
-          WHEN s."type" = 'investment'
-            AND s."fundProductType" = 'deposit'
-            AND s."fundSubtype" = 'buy'
-            AND s."toAccountId" = CAST(${sortAccountIdValue} AS TEXT)
-            THEN COALESCE(s."fundArrivalDate", s."date")
+          -- 存款存入行按**存入日**展示，不按到期日：到期日是存单的期限终点，拿它
+          -- 当生效日会让「已存入但未到期」的存单被判成未来行、整行被 visible 滤掉
+          -- （2026-10-27 用户报障：4 月存入的两张存单在明细里根本不出现，明细余额
+          -- 也就永远缺这笔本金）。到期日只用于存单列表的到期排序与提醒。
           ELSE s."date"
         END AS "displayAt",
         CASE
@@ -372,7 +499,11 @@ function buildOrderingCtesSql(args: {
         END AS "isAnchor"
       FROM "scoped" s
     ),
-    "visible" AS (
+    -- ① 余额折叠集合：账户全量流水，只受「今天」截断。
+    --    时间范围 / 列筛选**一律不进这里** —— 余额是账户的状态量（截至本笔的账户
+    --    余额），不是区间的统计量；把窗口条件带进来会让同一笔流水在不同范围下算出
+    --    不同的余额（用户报告：时间轴取值范围不同，同一时间段的余额不一致）。
+    "ledger_visible" AS (
       SELECT c.*
       FROM "classified" c
       WHERE (
@@ -390,36 +521,18 @@ function buildOrderingCtesSql(args: {
           )
         )
       )
+    ),
+    -- ② 显示集合：折叠集合 ∩ 时间范围 ∩ 列筛选。只决定「列出哪些行 / 共几条 / 分几页」，
+    --    不参与余额折叠。
+    "visible" AS (
+      SELECT c.*
+      FROM "ledger_visible" c
+      WHERE 1=1
       ${filterSql}
       ${dateRangeSql}
     ),
-    "displayed" AS (
-      SELECT
-        c.*,
-        CASE
-          -- 已「对账」锁定行的目标余额直接读列；余额校准 / 期初余额行仍从备注前缀取。
-          WHEN c."reconciledBalance" IS NOT NULL
-            THEN CAST(c."reconciledBalance" AS DECIMAL)
-          WHEN c."isAnchor" = 1
-            THEN CAST(
-              SUBSTR(
-                TRIM(COALESCE(c."toNote", '')),
-                ${BALANCE_RECONCILE_TARGET_PREFIX.length + 1}
-              ) AS DECIMAL
-            )
-          ELSE NULL
-        END AS "anchorTarget",
-        CASE
-          ${effectiveAmountCase}
-        END AS "effectiveAmount"
-      FROM "visible" c
-    ),
-    "ordered" AS (
-      SELECT
-        d.*,
-        DATE(d."displayAt") AS "dayKey"
-      FROM "displayed" d
-    ),
+    ${buildDisplayedCte("displayed", "visible", effectiveAmountCase)},
+    ${buildOrderedCte("ordered", "displayed")},
     "ranked" AS (
       SELECT
         o.*,
@@ -433,6 +546,51 @@ function buildOrderingCtesSql(args: {
             o."id" DESC
         ) AS "rowNumber"
       FROM "ordered" o
+    ),
+    -- ③ 折叠链（只在要余额时被引用，其余路径数据库不会执行它）：
+    --    ledger_displayed → ledger_ordered → ledger_ranked → ledger_grouped → ledger_balanced，
+    --    与原来的 displayed / ordered / ranked / grouped / balanced 逐字同口径。
+    ${buildDisplayedCte("ledger_displayed", "ledger_visible", effectiveAmountCase)},
+    ${buildOrderedCte("ledger_ordered", "ledger_displayed")},
+    ${buildRankedCte("ledger_ranked", "ledger_ordered")},
+    "ledger_grouped" AS (
+      SELECT
+        r.*,
+        SUM(r."isAnchor") OVER (
+          ORDER BY r."rowNumber" DESC
+          ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        ) AS "anchorGroup"
+      FROM "ledger_ranked" r
+    ),
+    "ledger_balanced" AS (
+      SELECT
+        g.*,
+        SUM(
+          CASE WHEN g."isAnchor" = 1 THEN 0 ELSE g."effectiveAmount" END
+        ) OVER (
+          PARTITION BY g."anchorGroup"
+          ORDER BY g."rowNumber" DESC
+          ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+        ) AS "groupBalance",
+        MAX(
+          CASE WHEN g."isAnchor" = 1 THEN g."anchorTarget" ELSE NULL END
+        ) OVER (
+          PARTITION BY g."anchorGroup"
+        ) AS "anchorBalance"
+      FROM "ledger_grouped" g
+    ),
+    -- ④ 显示行的页码：显示集合是折叠集合的子序列，所以**直接在折叠编号上套显示
+    --    条件**重排一次即可 —— 既不用拿 6 个排序键把窗口内的行再排一遍，也不用
+    --    JOIN 回 visible 再扫一遍 ledger（实测那会多花约三成时间）。
+    --    别名必须是 c：filterSql / dateRangeSql 里的谓词就是按这个别名写的。
+    "paged" AS (
+      SELECT
+        c."id" AS "id",
+        ${hasDisplayPredicate
+    ? Prisma.sql`ROW_NUMBER() OVER (ORDER BY c."rowNumber" ASC)`
+    : Prisma.sql`c."rowNumber"`} AS "rowNumber"
+      FROM "ledger_ranked" c
+      ${hasDisplayPredicate ? Prisma.sql`WHERE 1=1 ${filterSql} ${dateRangeSql}` : Prisma.empty}
     )
   `;
 }
@@ -491,18 +649,19 @@ export async function queryDetailPage(args: DetailPageQueryArgs): Promise<Detail
   );
   const requestedPage = Math.max(1, Math.floor(args.page) || 1);
   // 只有「单账户 + 逐笔余额」这一条路径需要知道账户类别：贷款 / 往来款的余额
-  // 按本金口径折叠，与 account-balance.ts 的 foldBalanceEntry 保持一致。
-  const liabilityAccountMode = args.includeRunningBalances && args.sortAccountId
-    ? isLoanOrSettlementAccountKind(
-      (await prisma.account.findUnique({ where: { id: args.sortAccountId }, select: { kind: true } }))?.kind,
-    )
-    : false;
+  // 按本金口径折叠、存款账户按存单本金折叠，都与 account-balance.ts 的
+  // foldBalanceEntry / computeDepositCashValueByAccount 保持一致。
+  const { liabilityAccountMode, depositAccountMode } =
+    args.includeRunningBalances && args.sortAccountId
+      ? await loadAccountBalanceModes(args.sortAccountId)
+      : { liabilityAccountMode: false, depositAccountMode: false };
   const orderingCtes = buildOrderingCtesSql({
     accountIds,
     householdId: args.householdId,
     timeZone: await getHouseholdTimeZone(args.householdId),
     sortAccountId: args.sortAccountId,
     liabilityAccountMode,
+    depositAccountMode,
     filters: args.filters,
     dateRange: args.dateRange,
   });
@@ -571,41 +730,18 @@ export async function queryDetailPage(args: DetailPageQueryArgs): Promise<Detail
   const page = Math.min(requestedPage, totalPages);
   const offset = (page - 1) * pageSize;
   const limit = offset + fetchRows;
+  // 余额取折叠集合（全量账本）算出的值，页码取显示集合的编号：范围 / 筛选只影响
+  // 「列出哪些行」，不影响「每行余额是多少」。
   const rows = await prisma.$queryRaw<Array<{ id: string; runningBalance: unknown }>>(Prisma.sql`
-    ${orderingCtes},
-    "grouped" AS (
-      SELECT
-        r.*,
-        SUM(r."isAnchor") OVER (
-          ORDER BY r."rowNumber" DESC
-          ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-        ) AS "anchorGroup"
-      FROM "ranked" r
-    ),
-    "balanced" AS (
-      SELECT
-        g.*,
-        SUM(
-          CASE WHEN g."isAnchor" = 1 THEN 0 ELSE g."effectiveAmount" END
-        ) OVER (
-          PARTITION BY g."anchorGroup"
-          ORDER BY g."rowNumber" DESC
-          ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-        ) AS "groupBalance",
-        MAX(
-          CASE WHEN g."isAnchor" = 1 THEN g."anchorTarget" ELSE NULL END
-        ) OVER (
-          PARTITION BY g."anchorGroup"
-        ) AS "anchorBalance"
-      FROM "grouped" g
-    )
+    ${orderingCtes}
     SELECT
-      b."id" AS "id",
-      (COALESCE(b."anchorBalance", 0) + b."groupBalance") AS "runningBalance"
-    FROM "balanced" b
-    WHERE b."rowNumber" > ${offset}
-      AND b."rowNumber" <= ${limit}
-    ORDER BY b."rowNumber" ASC
+      p."id" AS "id",
+      (COALESCE(lb."anchorBalance", 0) + lb."groupBalance") AS "runningBalance"
+    FROM "paged" p
+    INNER JOIN "ledger_balanced" lb ON lb."id" = p."id"
+    WHERE p."rowNumber" > ${offset}
+      AND p."rowNumber" <= ${limit}
+    ORDER BY p."rowNumber" ASC
   `);
 
   const runningBalanceById: Record<string, number> = {};
@@ -642,51 +778,25 @@ export async function queryDetailRunningBalancesForEntries(args: {
   const entryIds = Array.from(new Set(args.entryIds.map((id) => String(id ?? "").trim()).filter(Boolean)));
   if (accountIds.length === 0 || entryIds.length === 0) return {};
 
-  const liabilityAccountMode = args.sortAccountId
-    ? isLoanOrSettlementAccountKind(
-      (await prisma.account.findUnique({ where: { id: args.sortAccountId }, select: { kind: true } }))?.kind,
-    )
-    : false;
+  const { liabilityAccountMode, depositAccountMode } =
+    await loadAccountBalanceModes(args.sortAccountId);
   const orderingCtes = buildOrderingCtesSql({
     accountIds,
     householdId: args.householdId,
     timeZone: await getHouseholdTimeZone(args.householdId),
     sortAccountId: args.sortAccountId,
     liabilityAccountMode,
+    depositAccountMode,
   });
 
+  // 与列表同一条折叠链（`ledger_balanced`）：本函数不带筛选 / 范围，显示集合本来就
+  // 等于折叠集合，直接用折叠链省掉一次全量编号。
   const rows = await prisma.$queryRaw<Array<{ id: string; runningBalance: unknown }>>(Prisma.sql`
-    ${orderingCtes},
-    "grouped" AS (
-      SELECT
-        r.*,
-        SUM(r."isAnchor") OVER (
-          ORDER BY r."rowNumber" DESC
-          ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-        ) AS "anchorGroup"
-      FROM "ranked" r
-    ),
-    "balanced" AS (
-      SELECT
-        g.*,
-        SUM(
-          CASE WHEN g."isAnchor" = 1 THEN 0 ELSE g."effectiveAmount" END
-        ) OVER (
-          PARTITION BY g."anchorGroup"
-          ORDER BY g."rowNumber" DESC
-          ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-        ) AS "groupBalance",
-        MAX(
-          CASE WHEN g."isAnchor" = 1 THEN g."anchorTarget" ELSE NULL END
-        ) OVER (
-          PARTITION BY g."anchorGroup"
-        ) AS "anchorBalance"
-      FROM "grouped" g
-    )
+    ${orderingCtes}
     SELECT
       b."id" AS "id",
       (COALESCE(b."anchorBalance", 0) + b."groupBalance") AS "runningBalance"
-    FROM "balanced" b
+    FROM "ledger_balanced" b
     WHERE b."id" IN (${Prisma.join(entryIds)})
   `);
 
@@ -696,6 +806,49 @@ export async function queryDetailRunningBalancesForEntries(args: {
     if (Number.isFinite(value)) runningBalanceById[String(row.id)] = value;
   }
   return runningBalanceById;
+}
+
+/**
+ * 「截至某一天收盘」的账户余额 —— 明细按时间窗口展示时的**期初余额**。
+ *
+ * 客户端只拉窗口内的行，本地折叠就缺一个起点；这个起点必须由**列表同一条折叠链**
+ * 给出（`ledger_balanced` 上 `dayKey < beforeYmd` 的最新一行的事后余额），否则
+ * 「期初余额 + 窗口内本地折叠」会与「服务端整表折叠」各算一套、逐分对不上。
+ *
+ * 只返回一个数字，不拉任何流水行：窗口化取数省下的流量不会因为补余额又吐回去。
+ */
+export async function queryDetailOpeningBalanceBefore(args: {
+  accountIds: string[];
+  householdId: string;
+  sortAccountId: string;
+  beforeYmd: string;
+}): Promise<number> {
+  const accountIds = normalizedAccountIds(args.accountIds);
+  const beforeYmd = String(args.beforeYmd ?? "").trim();
+  if (accountIds.length === 0 || !/^\d{4}-\d{2}-\d{2}$/.test(beforeYmd)) return 0;
+
+  const { liabilityAccountMode, depositAccountMode } =
+    await loadAccountBalanceModes(args.sortAccountId);
+  const orderingCtes = buildOrderingCtesSql({
+    accountIds,
+    householdId: args.householdId,
+    timeZone: await getHouseholdTimeZone(args.householdId),
+    sortAccountId: args.sortAccountId,
+    liabilityAccountMode,
+    depositAccountMode,
+  });
+  // rowNumber 越小越新：窗口之前最新的那一行，它的事后余额就是窗口的期初余额。
+  const rows = await prisma.$queryRaw<Array<{ runningBalance: unknown }>>(Prisma.sql`
+    ${orderingCtes}
+    SELECT
+      (COALESCE(lb."anchorBalance", 0) + lb."groupBalance") AS "runningBalance"
+    FROM "ledger_balanced" lb
+    WHERE CAST(lb."dayKey" AS TEXT) < ${beforeYmd}
+    ORDER BY lb."rowNumber" ASC
+    LIMIT 1
+  `);
+  const value = Number(rows[0]?.runningBalance);
+  return Number.isFinite(value) ? value : 0;
 }
 
 export async function locateDetailPage(args: {

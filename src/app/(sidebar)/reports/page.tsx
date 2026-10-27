@@ -884,8 +884,10 @@ export default async function ReportsPage({
           </div>
         </header>
 
-        <div className="min-h-0 flex-1 overflow-hidden p-4 md:p-5">
-          <div className="flex h-full min-h-0 flex-col gap-3">
+        {/* 窄屏：整页纵向滚动。趋势图 shrink-0 高约 680px，若沿用 overflow-hidden + h-full
+            会把下面的持仓卡片彻底挤出可视区（且无法滚动）。md+ 保持原来的分屏高度锁定。 */}
+        <div className="min-h-0 flex-1 overflow-y-auto p-4 md:overflow-hidden md:p-5">
+          <div className="flex min-h-0 flex-col gap-3 md:h-full">
             <div className="flex min-h-10 shrink-0 flex-wrap items-center gap-3 border-b border-slate-200 bg-white px-1 pb-2">
               <FundGroupModeFilter
                 groupMode={fundGroupMode}

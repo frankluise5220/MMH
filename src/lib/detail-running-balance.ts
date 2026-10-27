@@ -7,6 +7,11 @@
  * - 校准口径必须严格一致：期初余额 / 余额校准（下称「锚点」）把余额钉成 target，
  *   它之前的流水影响不到它之后的行；锚点行自己被删时，其后所有行整体平移一个
  *   常量（锚点前一条未删行的余额 − target）。
+ * - 折叠起点 `startingBalance`：明细按时间窗口展示时，客户端手上只有窗口内的行，
+ *   起点必须来自服务端的「期初余额」（`openingBalanceBefore`，与列表同一条折叠链
+ *   算出来的一个数），**不能默认 0** —— 从 0 折等于「窗口首行重新开户」，窗口一变
+ *   同一笔流水的余额就变。窗口内出现锚点时锚点会把余额重新钉住，起点只影响首个
+ *   锚点之前的行，两者不冲突。
  *
  * 单独成文件（而不是放在 DetailViewClient 里）是为了能脱离 React 直接用
  * `tsx scripts/verify-detail-running-balance-recalc.ts` 做口径校验。
@@ -37,6 +42,8 @@ export type RunningBalanceEntry = {
   fundArrivalDate?: string | null;
   principalAmount?: number | null;
   fundArrivalAmount?: number | null;
+  /** 存单取回行已付利息：只扣本金，利息不算本金减少。 */
+  depositInterest?: number | null;
   /** 对账锁定钉住的本行事后余额；非空即该行是锚点（等价「余额校准」）。 */
   reconciledBalance?: number | null;
 };
@@ -60,6 +67,31 @@ function isLiabilityBalanceAccountKind(accountKind?: string | null) {
   return accountKind === "loan" || accountKind === "settlement";
 }
 
+/** 存款账户：余额 = 未结清存单的剩余本金合计（与 computeDepositCashValueByAccount 一致）。 */
+function isDepositBalanceAccountKind(accountKind?: string | null) {
+  return accountKind === "deposit";
+}
+
+/**
+ * 存款账户里单笔流水对余额的贡献。
+ *
+ * 不能沿用现金流方向：存单取回行的 `amount` 是正数（钱从存款账户流出），
+ * 按现金折叠会把它当增加项。这里只认本金：存入 +本金，取回 −（金额 − 已付利息），
+ * 付息行与非存单款项一律 0（页头余额同样不含它们）。
+ */
+function depositBalanceContribution(entry: RunningBalanceEntry, accountId: string) {
+  if (entry.type !== "investment" || entry.fundProductType !== "deposit") return 0;
+  if (entry.fundSubtype === "buy") {
+    if (entry.toAccountId && entry.toAccountId !== accountId) return 0;
+    return Math.abs(toNumber(entry.fundArrivalAmount ?? entry.amount));
+  }
+  if (entry.fundSubtype === "redeem" || entry.fundSubtype === "switch_out") {
+    if (entry.accountId && entry.accountId !== accountId) return 0;
+    return -(Math.abs(toNumber(entry.fundArrivalAmount ?? entry.amount)) - Math.abs(toNumber(entry.depositInterest)));
+  }
+  return 0;
+}
+
 function applyEntryToRunningBalance(
   runningBalance: number,
   entry: RunningBalanceEntry,
@@ -72,6 +104,10 @@ function applyEntryToRunningBalance(
     if (getBalanceAnchorTarget(entry) != null) return applyBalanceAnchorEntry(runningBalance, entry, accountId);
     if (entry.type !== "transfer") return runningBalance;
     return runningBalance + liabilityPrincipalForAccountSide(entry, accountId);
+  }
+  if (isDepositBalanceAccountKind(accountKind)) {
+    if (getBalanceAnchorTarget(entry) != null) return applyBalanceAnchorEntry(runningBalance, entry, accountId);
+    return runningBalance + depositBalanceContribution(entry, accountId);
   }
   return applyBalanceAnchorEntry(runningBalance, entry, accountId);
 }
@@ -87,6 +123,10 @@ function runningBalanceContribution(
     if (getBalanceAnchorTarget(entry) != null) return applyBalanceAnchorEntry(0, entry, accountId);
     return entry.type === "transfer" ? liabilityPrincipalForAccountSide(entry, accountId) : 0;
   }
+  if (isDepositBalanceAccountKind(accountKind)) {
+    if (getBalanceAnchorTarget(entry) != null) return applyBalanceAnchorEntry(0, entry, accountId);
+    return depositBalanceContribution(entry, accountId);
+  }
   return applyBalanceAnchorEntry(0, entry, accountId);
 }
 
@@ -95,11 +135,15 @@ function canRecalculateRunningBalanceFromLoadedEntries(
   accountId: string,
   accountKind?: string | null,
   todayKey: string = todayDateBusinessYmd(),
+  startingBalance = 0,
 ) {
   const ascEntries = [...entries].sort((a, b) => compareDetailEntriesAsc(a, b, accountId));
   const firstEntry = ascEntries[0];
   if (!firstEntry || firstEntry.runningBalance == null) return false;
-  return Math.abs(toNumber(firstEntry.runningBalance) - runningBalanceContribution(firstEntry, accountId, accountKind, todayKey)) < 0.005;
+  return Math.abs(
+    toNumber(firstEntry.runningBalance)
+      - (startingBalance + runningBalanceContribution(firstEntry, accountId, accountKind, todayKey)),
+  ) < 0.005;
 }
 
 export function recalculateLoadedRunningBalances(
@@ -107,9 +151,10 @@ export function recalculateLoadedRunningBalances(
   accountId: string,
   accountKind?: string | null,
   todayKey: string = todayDateBusinessYmd(),
+  startingBalance = 0,
 ): RunningBalanceEntry[] {
   const runningBalanceById = new Map<string, number>();
-  let runningBalance = 0;
+  let runningBalance = startingBalance;
   for (const entry of [...entries].sort((a, b) => compareDetailEntriesAsc(a, b, accountId))) {
     runningBalance = applyEntryToRunningBalance(runningBalance, entry, accountId, accountKind, todayKey);
     runningBalanceById.set(entry.id, runningBalance);
@@ -138,9 +183,10 @@ export function foldRunningBalancesInDescOrder<T extends RunningBalanceEntry>(
   accountId: string,
   accountKind?: string | null,
   todayKey: string = todayDateBusinessYmd(),
+  startingBalance = 0,
 ): T[] {
   const runningBalanceById = new Map<string, number>();
-  let runningBalance = 0;
+  let runningBalance = startingBalance;
   for (let index = entries.length - 1; index >= 0; index -= 1) {
     const entry = entries[index];
     if (!entry) continue;
@@ -178,14 +224,15 @@ export function removeEntriesAndUpdateRunningBalances<T extends RunningBalanceEn
   accountId: string,
   accountKind?: string | null,
   todayKey: string = todayDateBusinessYmd(),
+  startingBalance = 0,
 ): RunningBalanceDeleteResult<T> {
   const deletedEntries = entries.filter((entry) => deletedSet.has(entry.id));
   if (deletedEntries.length === 0) return { entries, complete: true };
   const remainingEntries = entries.filter((entry) => !deletedSet.has(entry.id));
   // ① 当前列表就是账户全部历史（起点可推导）时，从头整段重折叠：天然覆盖锚点，
   //    也覆盖「删的是锚点行」这种情况。
-  if (canRecalculateRunningBalanceFromLoadedEntries(remainingEntries, accountId, accountKind, todayKey)) {
-    return { entries: recalculateLoadedRunningBalances(remainingEntries, accountId, accountKind, todayKey) as T[], complete: true };
+  if (canRecalculateRunningBalanceFromLoadedEntries(remainingEntries, accountId, accountKind, todayKey, startingBalance)) {
+    return { entries: recalculateLoadedRunningBalances(remainingEntries, accountId, accountKind, todayKey, startingBalance) as T[], complete: true };
   }
 
   // ②③ 增量修正：O(当前页行数) 的本地算术。

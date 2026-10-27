@@ -35,6 +35,7 @@ import { ResizableVerticalSplit } from "@/components/ResizableVerticalSplit";
 
 
 import { calculateWealthCashDividendProfit, recalcWealthPositions } from "@/lib/wealth-position";
+import { computeDepositCashValueByAccount } from "@/lib/server/deposit-lot-balance";
 import { computeDepositNonCertificateBalances, getMaintainedAccountBalances } from "@/lib/server/account-balance";
 import { computeLiabilityDisplaySummary } from "@/lib/server/liability-display-summary";
 import {
@@ -2711,43 +2712,6 @@ export default async function Home({
       compareDetailEntriesAsc(a, b, sortAccountId ?? undefined),
     );
 
-    const lotBuckets = new Map<
-      string,
-      Array<{
-        id: string;
-        fundName: string;
-        depositProductId?: string | null;
-        maturityDate: string | null;
-        maturityAction: string | null;
-        interestPayoutFrequency: string | null;
-        interestCalcBasis?: string | null;
-        remainingAmount: number;
-        depositAccountId: string;
-        depositAccountName: string;
-        relatedEntryIds: string[];
-        /** 存单币种（决定到期取回可用的资金账户）。 */
-        currency: string | null;
-        /** 存入行的资金账户（到期取回的默认入账账户）。 */
-        cashAccountId: string | null;
-      }>
-    >();
-
-    const allLots: Array<{
-      id: string;
-      fundName: string;
-      depositProductId?: string | null;
-      maturityDate: string | null;
-      maturityAction: string | null;
-      interestPayoutFrequency: string | null;
-      interestCalcBasis?: string | null;
-      remainingAmount: number;
-      depositAccountId: string;
-      depositAccountName: string;
-      relatedEntryIds: string[];
-      currency: string | null;
-      cashAccountId: string | null;
-    }> = [];
-
     // Interest payouts do not open or close lots, but they belong to the lot's
     // detail story: attach each payout to the matching lot (same deposit
     // account + product, payout date within the lot's span) so selecting the
@@ -2756,72 +2720,41 @@ export default async function Home({
       (entry) => !entry.deletedAt && (entry.fundSubtype === "dividend_cash" || entry.fundSubtype === "dividend_reinvest"),
     );
 
-    for (const entry of depositSourceEntries) {
-      const fundName = (entry.fundName ?? entry.fundCode ?? "").trim() || t("sidebar.deposit.unnamed");
-      const maturityDate = toYmdOrNull(entry.fundArrivalDate);
-      const isRedeemEntry = entry.fundSubtype === "redeem" || entry.fundSubtype === "switch_out";
-      const isDividendEntry = entry.fundSubtype === "dividend_cash" || entry.fundSubtype === "dividend_reinvest";
-      if (isDividendEntry) continue;
-      // 取回/转出留到第二遍再扣减 —— 见下面「第二遍」的注释（提前取回时排序会颠倒）。
-      if (isRedeemEntry) continue;
-      const amountValue = Math.abs(toNumber(entry.fundArrivalAmount ?? entry.amount));
-      const depositAccountId = (
-        isRedeemEntry ? entry.accountId : entry.toAccountId
-      ) ?? "";
-      const depositAccountName = accountNameById.get(depositAccountId) ?? entry.toAccountName ?? entry.accountName ?? t("sidebar.deposit.fallbackName");
-      const lotKey = `${depositAccountId}\u001f${fundName}\u001f${maturityDate ?? ""}`;
+    // 存单的剩余本金只走 `computeDepositCashValueByAccount` —— 页头余额、明细余额、
+    // 存单列表三处共用同一条算法。这里曾经自己扫两遍扣减，与 account-balance.ts 那份
+    // 各自演化，结果就是「存单列表合计」和「页头余额」能对不上。
+    const cashValue = computeDepositCashValueByAccount({
+      entries: sourceEntries,
+      asOfKey: depositAsOfKey,
+      accountIds: activeDepositAccountIds,
+      dateKey: (value) => toYmdOrNull(value),
+    });
 
-      const lot = {
-        id: entry.id,
+    const allLots = cashValue.lots.map((lot) => {
+      const source = sourceEntryById.get(lot.lotId);
+      const fundName = (source?.fundName ?? source?.fundCode ?? "").trim() || t("sidebar.deposit.unnamed");
+      return {
+        id: lot.lotId,
         fundName,
-        depositProductId: entry.depositProductId ?? null,
-        maturityDate,
-        maturityAction: entry.depositMaturityAction ?? null,
-        interestPayoutFrequency: entry.depositInterestPayoutFrequency ?? null,
-        interestCalcBasis: entry.depositInterestCalcBasis ?? null,
-        remainingAmount: amountValue,
-        depositAccountId,
-        depositAccountName,
-        relatedEntryIds: [entry.id],
+        depositProductId: source?.depositProductId ?? null,
+        maturityDate: toYmdOrNull(source?.fundArrivalDate),
+        maturityAction: source?.depositMaturityAction ?? null,
+        interestPayoutFrequency: source?.depositInterestPayoutFrequency ?? null,
+        interestCalcBasis: source?.depositInterestCalcBasis ?? null,
+        remainingAmount: lot.remainingPrincipal,
+        depositAccountId: lot.depositAccountId,
+        depositAccountName:
+          accountNameById.get(lot.depositAccountId)
+          ?? source?.toAccountName
+          ?? source?.accountName
+          ?? t("sidebar.deposit.fallbackName"),
+        relatedEntryIds: [lot.lotId, ...lot.redemptionEntryIds],
         // 存入行自身币种（外币存单即使挂在遗留的人民币存款账户上也要按外币入账），
         // 以及存入时的资金账户 —— 到期取回默认回到这张卡、只列同币种账户。
-        currency: normalizeCurrency(entry.currency ?? null),
-        cashAccountId: entry.accountId ?? null,
+        currency: normalizeCurrency(source?.currency ?? null),
+        cashAccountId: source?.accountId ?? null,
       };
-      const bucket = lotBuckets.get(lotKey);
-      if (bucket) bucket.push(lot);
-      else lotBuckets.set(lotKey, [lot]);
-      allLots.push(lot);
-    }
-
-    // 第二遍：取回 / 转出按已建好的存单扣减剩余本金。
-    // 必须两遍 —— 明细的展示排序把「存款存入行」按**到期日**排（getDetailEntryDisplayDate），
-    // 提前取回时「取回日 < 到期日」，取回行会排在存入行之前；一遍扫描会因为存单还没建
-    // 而漏扣，表现为「已提前取回的存单仍留在持有中、剩余本金不减、取回下拉里还能再选它」
-    // （2026-10-01 实测：未到期存单取回保存成功后，存单列表毫无变化）。
-    for (const entry of depositSourceEntries) {
-      const isRedeemEntry = entry.fundSubtype === "redeem" || entry.fundSubtype === "switch_out";
-      if (!isRedeemEntry) continue;
-      const fundName = (entry.fundName ?? entry.fundCode ?? "").trim() || t("sidebar.deposit.unnamed");
-      const maturityDate = toYmdOrNull(entry.fundArrivalDate);
-      const amountValue = Math.max(
-        0,
-        Math.abs(toNumber(entry.fundArrivalAmount ?? entry.amount)) - Math.max(0, toNumber(entry.depositInterest)),
-      );
-      const depositAccountId = entry.accountId ?? "";
-      const lotKey = `${depositAccountId}\u001f${fundName}\u001f${maturityDate ?? ""}`;
-
-      const linkedBucket = entry.depositSourceEntryId
-        ? allLots.filter((lot) => lot.id === entry.depositSourceEntryId)
-        : [];
-      const bucket = linkedBucket.length > 0 ? linkedBucket : (lotBuckets.get(lotKey) ?? []);
-      for (const lot of bucket) {
-        if (lot.remainingAmount <= 0) continue;
-        lot.relatedEntryIds.push(entry.id);
-        lot.remainingAmount = Math.max(0, Number((lot.remainingAmount - amountValue).toFixed(2)));
-        break;
-      }
-    }
+    });
 
     // Attach interest records to the matching lot so selecting the lot shows
     // the full story (存入 / 利息收入 + 转出 / 赎回). Legacy payouts are
@@ -3193,11 +3126,23 @@ export default async function Home({
                   accountDisplayMode="original"
                 />
               )}
-              {view === "deposit" && selectedAccount && depositNonCertificateAmount > 0.005 ? (
-                <span className="text-xs text-amber-700" title={t("depositShell.nonCertificateNoticeTitle")}>
-                  {t("depositShell.nonCertificateNotice", {
-                    amount: formatCurrencyMoney(depositNonCertificateAmount, selectedAccountCurrency),
-                  })}
+              {view === "deposit" && selectedAccount && Math.abs(depositNonCertificateAmount) > 0.005 ? (
+                <span
+                  className="text-xs text-amber-700"
+                  title={t(
+                    depositNonCertificateAmount > 0
+                      ? "depositShell.nonCertificateNoticeTitle"
+                      : "depositShell.nonCertificateOutflowNoticeTitle",
+                  )}
+                >
+                  {t(
+                    depositNonCertificateAmount > 0
+                      ? "depositShell.nonCertificateNotice"
+                      : "depositShell.nonCertificateOutflowNotice",
+                    {
+                      amount: formatCurrencyMoney(Math.abs(depositNonCertificateAmount), selectedAccountCurrency),
+                    },
+                  )}
                 </span>
               ) : null}
               {showSelectedAccountFxInline ? (

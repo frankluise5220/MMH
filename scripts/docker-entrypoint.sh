@@ -966,13 +966,70 @@ push_would_change_existing_data() {
   grep -Eq "about to drop|will be dropped|would be dropped|would be recreated|which is not empty|which still contains|non-null values|it is not possible to execute this step|dropped_variants|invalid input value for enum" "$1"
 }
 
+# 「库 → 镜像 schema」的差异种类：决定版本号相同时能不能跳过 push。
+# 只看版本号相等是不够的 —— 0.1.78 曾有一支「版本号已经写成 0.1.78、schema 里
+# 还没有 HouseholdPreference.detailWindowYears」的构建，它把 schema_version 记成
+# 0.1.78 之后，正式 0.1.78 启动就跳过 push，列永远补不上，页面直接
+# P2022 ColumnNotFound（2026-10-27 用户升级报错）。四种结果四种处置：
+#   NONE        库与镜像一致          -> 跳过（保留原来的快启动路径）
+#   ADDITIVE    只差补列 / 补表        -> 照常 push，这正是要修的故障
+#   DESTRUCTIVE 镜像会删改库里的对象    -> 保持跳过。这类差异通常是用户库里遗留的
+#               备份表（_bak_*）或更高版本镜像写过的对象；真去 push 会被
+#               push_would_change_existing_data 拦成 exit 78，容器直接起不来，
+#               比「少一列」更难恢复。
+#   UNKNOWN     拿不到差异            -> 保守跳过，日志写明无法验证。
+SCHEMA_DRIFT_NONE=0
+SCHEMA_DRIFT_ADDITIVE=1
+SCHEMA_DRIFT_DESTRUCTIVE=2
+SCHEMA_DRIFT_UNKNOWN=3
+
+schema_drift_kind() {
+  local out statements
+  out="$(mktemp "${TMPDIR:-/tmp}/mmh-schema-drift.XXXXXX")"
+  if ! ./node_modules/.bin/prisma migrate diff \
+    --from-config-datasource \
+    --to-schema prisma/schema.prisma \
+    --script >"$out" 2>&1; then
+    rm -f "$out"
+    return "$SCHEMA_DRIFT_UNKNOWN"
+  fi
+  # 空差异时 Prisma 只打印一行注释（-- This is an empty migration.），
+  # 所以「没有语句」= 一致。
+  statements="$(grep -Ev '^[[:space:]]*(--.*)?$' "$out" || true)"
+  rm -f "$out"
+  if [ -z "$statements" ]; then
+    return "$SCHEMA_DRIFT_NONE"
+  fi
+  if printf '%s\n' "$statements" | grep -Eqi 'DROP |TRUNCATE |SET DATA TYPE|SET NOT NULL'; then
+    return "$SCHEMA_DRIFT_DESTRUCTIVE"
+  fi
+  return "$SCHEMA_DRIFT_ADDITIVE"
+}
+
 should_skip_schema_push() {
   build_version="$(get_build_version)"
   stored_version="$(read_schema_version || true)"
   drop_empty_prisma_copy_tables
   if [ -n "$build_version" ] && [ -n "$stored_version" ] && [ "$stored_version" = "$build_version" ]; then
-    mmh_log "schema already at $build_version; skipping prisma db push."
-    return 0
+    drift_kind="$SCHEMA_DRIFT_NONE"
+    schema_drift_kind || drift_kind=$?
+    case "$drift_kind" in
+      "$SCHEMA_DRIFT_ADDITIVE")
+        mmh_log "schema_version is $build_version but the database still lacks additive changes from this image; running prisma db push to converge."
+        ;;
+      "$SCHEMA_DRIFT_DESTRUCTIVE")
+        mmh_log "WARNING: schema_version is $build_version, but this image would drop or rewrite existing database objects; skipping prisma db push so the container can start. If pages report missing columns, reconcile the schema by hand and record the version again."
+        return 0
+        ;;
+      "$SCHEMA_DRIFT_UNKNOWN")
+        mmh_log "WARNING: could not verify schema drift (prisma migrate diff failed); trusting schema_version $build_version and skipping prisma db push."
+        return 0
+        ;;
+      *)
+        mmh_log "schema already at $build_version; skipping prisma db push."
+        return 0
+        ;;
+    esac
   fi
   if has_nonempty_prisma_copy_tables; then
     mmh_log "ERROR: nonempty Prisma leftover copy tables exist; refusing to run schema sync to avoid dropping user data or running out of memory."

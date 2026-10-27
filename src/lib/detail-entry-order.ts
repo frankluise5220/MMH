@@ -70,18 +70,13 @@ export function getDetailEntryDisplayDate(entry: DetailEntryLike, accountId?: st
   const cashInDate = investmentCashInDate(entry, accountId);
   if (cashInDate) return cashInDate;
 
-  // 存款买入行的业务生效日是到期/入账日 fundArrivalDate，而不是
-  // 创建交易时记录的 date。账户余额、未来流水过滤和明细排序必须使用同一口径。
-  const isDepositBuyIntoAccount =
-    entry.type === "investment" &&
-    accountId &&
-    entry.toAccountId === accountId &&
-    entry.fundProductType === "deposit" &&
-    entry.fundSubtype === "buy";
-  if (isDepositBuyIntoAccount) {
-    return toValidDate(entry.fundArrivalDate) ?? toValidDate(entry.date) ?? new Date(0);
-  }
-
+  // 存款买入行按**存入日**生效，不按到期日。到期日是存单期限的终点，拿它当生效日
+  // 会让「已存入、未到期」的存单被判成未来行：明细里整行被滤掉、余额也永远缺这笔
+  // 本金（2026-10-27 报障：4 月存入的两张存单在明细里不出现）。到期日只用于存单
+  // 列表的到期排序与提醒。
+  //
+  // 账户余额口径见 account-balance.ts 的 computeDepositCashValueByAccount（同样按
+  // date）；明细 SQL 侧同口径见 detail-page-query.ts 的 depositAmountCase。
   return toValidDate(entry.date) ?? new Date(0);
 }
 

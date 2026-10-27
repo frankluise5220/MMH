@@ -5,6 +5,7 @@ import { useState } from "react";
 import { createPortal } from "react-dom";
 import { Database, Settings2 } from "lucide-react";
 
+import { ROW_ACTION_BUTTON_BOX_CLASS } from "@/components/AdvancedDataTable";
 import { ManualGrabMark } from "@/components/AddNavButton";
 import { DateStepper } from "@/components/DateStepper";
 import { useI18n } from "@/lib/i18n";
@@ -173,7 +174,7 @@ export function StockHoldingRowActions({
   const triggerButtons = (
     <div
       data-row-double-click-ignore
-      className="flex items-center justify-end gap-0.5"
+      className="flex shrink-0 items-center justify-end gap-1"
       onClick={(event) => event.stopPropagation()}
       onDoubleClick={(event) => event.stopPropagation()}
     >
@@ -183,7 +184,7 @@ export function StockHoldingRowActions({
           event.stopPropagation();
           openPriceDialog();
         }}
-        className="relative inline-flex h-6 w-6 items-center justify-center rounded-md border border-amber-200 bg-amber-50 text-amber-700 hover:border-amber-300 hover:bg-amber-100"
+        className={`${ROW_ACTION_BUTTON_BOX_CLASS} relative border-amber-200 bg-amber-50 text-amber-700 hover:border-amber-300 hover:bg-amber-100`}
         title={t("stockPanel.manualPriceTitle")}
         aria-label={t("stockPanel.manualPriceTitle")}
       >
@@ -199,7 +200,7 @@ export function StockHoldingRowActions({
           event.stopPropagation();
           openSettingsDialog();
         }}
-        className="inline-flex h-6 w-6 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 transition-colors hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700"
+        className={`${ROW_ACTION_BUTTON_BOX_CLASS} border-slate-200 bg-white text-slate-500 hover:border-blue-200 hover:bg-blue-50 hover:text-blue-700`}
         title={t("stockSecurity.title")}
         aria-label={t("stockSecurity.title")}
       >

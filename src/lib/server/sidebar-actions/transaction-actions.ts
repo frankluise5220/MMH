@@ -991,8 +991,11 @@ export async function createTransaction(formData: FormData) {
             lotId: sourceLot.id,
             client: tx,
           });
-          const redemptionPrincipal = depositPrincipalAmount ?? amountAbs;
-          if (!lotBalance || redemptionPrincipal <= 0 || redemptionPrincipal > lotBalance.remainingPrincipal + 0.0001) {
+          if (!lotBalance) throw new Error(t("depositForm.alert.principalExceedsRemaining"));
+          // 没填本金时不能拿「取回金额」当本金：取回金额通常含息，当本金会多扣。
+          // 存单剩余本金是本金的上限，取两者较小值才能把利息留给 `depositInterest`。
+          const redemptionPrincipal = depositPrincipalAmount ?? Math.min(amountAbs, lotBalance.remainingPrincipal);
+          if (redemptionPrincipal <= 0 || redemptionPrincipal > lotBalance.remainingPrincipal + 0.0001) {
             throw new Error(t("depositForm.alert.principalExceedsRemaining"));
           }
           const startDate = sourceLot.fundConfirmDate ?? sourceLot.date;
