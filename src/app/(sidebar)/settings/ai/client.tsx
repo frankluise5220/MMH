@@ -16,7 +16,7 @@ import {
 } from "@/components/settings/SettingsPageScaffold";
 import { AI_API_MODES, CHANNEL_TYPES, getModelsUrl, normalizeAiApiMode, type AiApiMode } from "@/lib/ai/config";
 import { detectModelInfo } from "@/lib/ai/model-capabilities";
-import { dispatchAiConfigChanged } from "@/lib/client/aiConfig";
+import { dispatchAiConfigChanged, loadActiveModel, saveActiveModel } from "@/lib/client/aiConfig";
 import { parseBaseUrl, buildBaseUrl, PROTOCOL_OPTIONS, PORT_SUGGESTIONS } from "@/lib/urlInput";
 import type { ParsedUrl } from "@/lib/urlInput";
 import { useI18n } from "@/lib/i18n";
@@ -45,7 +45,6 @@ export type InitialAiChannel = {
 };
 
 const MODELS_KEY = "mmh_ai_models";
-const ACTIVE_MODEL_KEY = "mmh_ai_active_model";
 
 function genId() { return Math.random().toString(36).slice(2, 10); }
 
@@ -69,12 +68,6 @@ function loadModels(): ModelEntry[] {
 }
 function saveModels(models: ModelEntry[]) {
   try { localStorage.setItem(MODELS_KEY, JSON.stringify(models)); } catch {}
-}
-function loadActiveModel(): string {
-  try { return localStorage.getItem(ACTIVE_MODEL_KEY) ?? ""; } catch { return ""; }
-}
-function saveActiveModel(name: string) {
-  try { localStorage.setItem(ACTIVE_MODEL_KEY, name); } catch {}
 }
 
 function buildModelsFromServer(channels: InitialAiChannel[]): ModelEntry[] {

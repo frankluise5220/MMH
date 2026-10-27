@@ -8,7 +8,7 @@ import { PanelRightClose, PanelRightOpen, Send, X, Wand2, ImagePlus, Plus, Setti
 import { formatMoney } from "@/lib/format";
 import { AI_API_MODES, CHANNEL_TYPES, getModelsUrl, normalizeAiApiMode, type AiApiMode } from "@/lib/ai/config";
 import { callDeleteEntries, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
-import { AI_CONFIG_CHANGED_EVENT } from "@/lib/client/aiConfig";
+import { AI_CONFIG_CHANGED_EVENT, dispatchAiConfigChanged, loadActiveModel, saveActiveModel } from "@/lib/client/aiConfig";
 import { AI_PREFILL_EVENT } from "@/lib/client/clipboard-drafts";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { showConfirmDialog } from "@/lib/client/confirm-dialog";
@@ -289,9 +289,7 @@ export function AIPanel({
   const [deletePreviewColumnFilters, setDeletePreviewColumnFilters] = useState<Partial<Record<DeletePreviewColumn, string[]>>>({});
   const [activeDeletePreviewFilterColumn, setActiveDeletePreviewFilterColumn] = useState<DeletePreviewColumn | null>(null);
 
-  const [activeModel, setActiveModel] = useState(() => {
-    try { return localStorage.getItem("mmh_ai_active_model") ?? ""; } catch { return ""; }
-  });
+  const [activeModel, setActiveModel] = useState(() => loadActiveModel());
   const [modelNames, setModelNames] = useState<string[]>([]);
   const [modelConfigs, setModelConfigs] = useState<Record<string, { baseUrl: string; apiKey: string; model: string; apiMode: AiApiMode }>>({});
   const [modelIdsByName, setModelIdsByName] = useState<Record<string, string>>({});
@@ -442,9 +440,9 @@ export function AIPanel({
         setModelConfigs(dbResult.configs);
         setModelIdsByName(dbResult.idsByName);
         setActiveModel((current) => {
-          const saved = current || localStorage.getItem("mmh_ai_active_model") || "";
+          const saved = current || loadActiveModel();
           const next = saved && dbResult.configs[saved] ? saved : dbResult.active;
-          try { localStorage.setItem("mmh_ai_active_model", next); } catch { /* ignore */ }
+          saveActiveModel(next);
           return next;
         });
       }
@@ -1312,7 +1310,19 @@ export function AIPanel({
                       <button
                         onClick={() => {
                           setActiveModel(name);
-                          try { localStorage.setItem("mmh_ai_active_model", name); } catch { /* ignore */ }
+                          saveActiveModel(name);
+                          const modelId = modelIdsByName[name];
+                          if (modelId) {
+                            void fetch("/api/v1/settings/ai-config", {
+                              method: "PUT",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({ activeModelId: modelId }),
+                            })
+                              .then((res) => {
+                                if (res.ok) dispatchAiConfigChanged();
+                              })
+                              .catch(() => {});
+                          }
                           setModelDropdownOpen(false);
                         }}
                         className={`text-[11px] truncate min-w-0 flex-1 text-left ${isActive ? "font-bold text-accent-green" : "text-foreground/70"}`}

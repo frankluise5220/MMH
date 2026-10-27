@@ -272,12 +272,14 @@ export default async function RootLayout({
                     if (value === null || value === undefined) return;
                     document.cookie = key + "=" + encodeURIComponent(value) + "; path=/; max-age=31536000; samesite=lax";
                   };
+                  // 只补「纯设备状态」的 cookie：它们的 cookie 仅由用户操作时写入
+                  // （appPreferences.setXxx），cookie 被清后没有别的写者会补回来。
                   persist("sidebar_collapsed", localStorage.getItem("sidebar_collapsed"));
-                  persist("sidebar_group_by", localStorage.getItem("sidebar_group_by"));
-                  persist("sidebar_hide_zero", localStorage.getItem("sidebar_hide_zero"));
-                  persist("sidebar_hide_initial_data", localStorage.getItem("sidebar_hide_initial_data"));
                   persist("sidebar_owner_filter", localStorage.getItem("sidebar_owner_filter"));
                   persist("mmh_ai_panel_collapsed", localStorage.getItem("mmh_ai_panel_collapsed"));
+                  // sidebar_group_by / sidebar_hide_zero / sidebar_hide_initial_data 不在这里补：
+                  // 它们的 cookie 由 PreferencesSync 每次加载用数据库值覆盖，这段写完就被盖掉，
+                  // 既不改变本次渲染（SSR 已经出 HTML），也不会留到下一次请求。
                 } catch (error) {}
                 const perf = window.performance;
                 if (!perf || typeof perf.measure !== "function" || perf.__mmhMeasureGuard) return;

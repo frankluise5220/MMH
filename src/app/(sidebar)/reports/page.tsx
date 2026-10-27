@@ -75,12 +75,6 @@ function parseYear(value: string | undefined) {
   return Number.isInteger(year) && year >= 1900 && year <= 2200 ? year : null;
 }
 
-const PROFIT_SCOPE_ALL = "all";
-function normalizeProfitScope(value: string | undefined) {
-  const raw = String(value ?? "").trim();
-  return raw || PROFIT_SCOPE_ALL;
-}
-
 function rowCsv(section: "income" | "expense", row: IncomeExpenseReportRow, t: (key: string) => string) {
   return [
     section === "income" ? t("reports.income") : t("reports.expense"),
@@ -114,7 +108,6 @@ function buildReportHref(
   profitPeriod?: InvestmentProfitPeriod,
   profitYear?: number,
   profitMonth?: number,
-  profitScope?: string,
 ) {
   const query = new URLSearchParams();
   if (reportType === "investment-profit") {
@@ -122,13 +115,9 @@ function buildReportHref(
     query.set("profitPeriod", profitPeriod ?? "day");
     if (profitYear) query.set("profitYear", String(profitYear));
     if (profitMonth) query.set("profitMonth", String(profitMonth));
-    const normalizedScope = normalizeProfitScope(profitScope);
-    if (normalizedScope !== PROFIT_SCOPE_ALL) query.set("profitScope", normalizedScope);
   }
   if (reportType === "stock-holdings" || reportType === "fund-holdings") {
     query.set("report", reportType);
-    const normalizedScope = normalizeProfitScope(profitScope);
-    if (normalizedScope !== PROFIT_SCOPE_ALL) query.set("profitScope", normalizedScope);
   }
   return `/reports${query.toString() ? `?${query.toString()}` : ""}`;
 }
@@ -450,8 +439,8 @@ export default async function ReportsPage({
     institutionIds: selectedInstitutionIds,
     accountIds: selectedInvestmentAccountIds,
   });
-  const currentStockHref = buildReportHref("stock-holdings", undefined, undefined, undefined, PROFIT_SCOPE_ALL);
-  const currentFundHref = buildReportHref("fund-holdings", undefined, undefined, undefined, PROFIT_SCOPE_ALL);
+  const currentStockHref = buildReportHref("stock-holdings");
+  const currentFundHref = buildReportHref("fund-holdings");
   const currentStatisticsHref = buildStatisticsHref(profitYear);
   const investmentFilterUsers = ownerFilterUsers(investmentAccountRecords);
   const investmentFilterInstitutions = commonData.institutions
