@@ -100,6 +100,15 @@ expect(
     /sha512/.test(buildScript),
   "build-win-desktop.cjs must emit the app payload zip + mmh-app-latest.json manifest (sha512) for the file-level update channel.",
 );
+// 2026-10-28 实测事故：PATH 里 Git Bash 的 GNU tar 排在前面时，`tar -a -c -f x.zip`
+// 不认 zip，只吐一个未压缩的 tar 却仍叫 .zip（93.7 MB payload -> 96.8 MB，且
+// Expand-Archive 打不开）。必须用 System32 的 bsdtar，并校验 PK 头。
+expect(
+  /path\.join\(process\.env\.SystemRoot, "System32", "tar\.exe"\)/.test(buildScript) &&
+    /0x50/.test(buildScript) &&
+    /0x4b/.test(buildScript),
+  "build-win-desktop.cjs must pack the payload with System32 bsdtar and reject a non-PK archive (GNU tar writes a plain tar named .zip).",
+);
 expect(
   /requiresInstaller/.test(appUpdater) && /必须重新安装客户端/.test(electronMain),
   "A release that cannot be delivered as files must fall back to the installer channel and say it requires reinstalling.",

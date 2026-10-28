@@ -632,11 +632,37 @@ step("pack file-level update (resources/app zip + manifest)");
   const zipName = "mmh-app-v" + version + "-x64.zip";
   const zipPath = path.join(distDir, zipName);
   fs.rmSync(zipPath, { force: true });
-  const packed = spawnSync("tar", ["-a", "-c", "-f", zipPath, "-C", shippedAppDir, "."], {
+  // Resolve Windows' own tar by absolute path. Git Bash's GNU tar is not a zip
+  // writer: with it on PATH first, `tar -a -c -f x.zip` silently emits an
+  // *uncompressed tar* named .zip (93.7 MB payload -> 96.8 MB "zip" instead of
+  // 29.4 MB), which Expand-Archive cannot open either. Pinning System32\bsdtar
+  // keeps the payload a real, deflated zip no matter what PATH the caller has.
+  const systemTar = process.env.SystemRoot
+    ? path.join(process.env.SystemRoot, "System32", "tar.exe")
+    : "";
+  const tarExe = systemTar && fs.existsSync(systemTar) ? systemTar : "tar";
+  const packed = spawnSync(tarExe, ["-a", "-c", "-f", zipPath, "-C", shippedAppDir, "."], {
     encoding: "utf8",
   });
   if (packed.status !== 0) {
     console.error("Packing the app payload failed: " + (packed.stderr || packed.error || ""));
+    process.exit(1);
+  }
+  // Hard gate: a "zip" that is not a zip (PK\x03\x04) would ship a 3x larger
+  // payload that the updater's PowerShell fallback cannot extract.
+  const magic = Buffer.alloc(4);
+  const magicFd = fs.openSync(zipPath, "r");
+  try {
+    fs.readSync(magicFd, magic, 0, 4, 0);
+  } finally {
+    fs.closeSync(magicFd);
+  }
+  if (magic[0] !== 0x50 || magic[1] !== 0x4b) {
+    console.error(
+      "App payload is not a zip archive (" +
+        tarExe +
+        " produced a plain tar). Refusing to publish a mislabeled payload.",
+    );
     process.exit(1);
   }
   const zipSize = fs.statSync(zipPath).size;
