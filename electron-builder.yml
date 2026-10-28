@@ -21,7 +21,13 @@ directories:
 
 files:
   - electron/main.cjs
+  - electron/app-updater.cjs
   - electron/preload.cjs
+  # Update-download window: a static local page + its own narrow bridge. It must
+  # ship as-is (loadFile), not be generated, or a packaged build has no progress
+  # UI while the installer downloads.
+  - electron/update-window.html
+  - electron/update-preload.cjs
   - "!node_modules/**"
   - "!**/node_modules/**"
   # electron-updater and its runtime deps (the standalone server keeps its

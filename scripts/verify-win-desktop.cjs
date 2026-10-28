@@ -74,6 +74,41 @@ expect(
   "The retired generic update feed (fnapp.floatingice.win:5660/mmh) must not be reintroduced as the Windows update source.",
 );
 
+// 2026-10-28 文件级更新（用户要求：重启后不再跑安装程序）。
+// 「下载 → 重启」必须只替换 resources\app；安装器只保留给必须换 Electron 的版本。
+const appUpdater = fs.readFileSync(path.join(root, "electron", "app-updater.cjs"), "utf8");
+expect(
+  /electron\/app-updater\.cjs/.test(builderYml),
+  "electron-builder.yml files must include electron/app-updater.cjs, otherwise the packaged app cannot require the file-level updater.",
+);
+expect(
+  /renameSync\(appDir, backupDir\)/.test(appUpdater) &&
+    /renameSync\(stageDir, appDir\)/.test(appUpdater) &&
+    /function rollback\(/.test(appUpdater) &&
+    /function recoverOnBoot\(/.test(appUpdater),
+  "The file-level updater must swap resources/app by directory rename and be able to roll back / recover an interrupted swap.",
+);
+expect(
+  /app\.relaunch\(\)/.test(electronMain) &&
+    /commitStaged\(/.test(electronMain) &&
+    /restorePreviousPayload\(/.test(electronMain),
+  "Electron must apply the staged payload and relaunch (no installer) and restore the previous payload when it cannot boot.",
+);
+expect(
+  /requiresInstaller: false/.test(buildScript) &&
+    /mmh-app-latest\.json/.test(buildScript) &&
+    /sha512/.test(buildScript),
+  "build-win-desktop.cjs must emit the app payload zip + mmh-app-latest.json manifest (sha512) for the file-level update channel.",
+);
+expect(
+  /requiresInstaller/.test(appUpdater) && /必须重新安装客户端/.test(electronMain),
+  "A release that cannot be delivered as files must fall back to the installer channel and say it requires reinstalling.",
+);
+expect(
+  /function checkInstallerFeed\(/.test(electronMain) && /no app manifest/.test(electronMain),
+  "A missing app manifest must fall back to the installer feed; reporting 'already latest' would strand every client while the feed does have a new version.",
+);
+
 // 2026-10-07 手动"检查更新"入口：preload 桥必须被打包，且 main.cjs 在
 // 沙箱下挂载它（contextIsolation + preload），否则设置页的更新按钮静默失效。
 expect(
@@ -91,6 +126,41 @@ expect(
     /mmh:get-version/.test(electronMain) &&
     /mmh:update-status/.test(electronMain),
   "Electron must expose mmh:check-for-updates / mmh:get-version / mmh:update-status IPC for the settings update button.",
+);
+
+// 2026-10-28 下载过程必须有窗口：选「下载」后原来是静默传输整个安装包，用户既看不到
+// 进度也没法中断，只能等第二个对话框。窗口 = 静态页面 + 独立 preload +
+// CancellationToken，任何一环没打包进 asar，桌面版就退回「点完下载就没反应」。
+const updatePreload = fs.readFileSync(path.join(root, "electron", "update-preload.cjs"), "utf8");
+
+expect(
+  /electron\/update-window\.html/.test(builderYml) && /electron\/update-preload\.cjs/.test(builderYml),
+  "electron-builder.yml files must include electron/update-window.html + electron/update-preload.cjs (the download window).",
+);
+expect(
+  /function startInstallerDownload\(/.test(electronMain) &&
+    /autoUpdater\s*\.\s*downloadUpdate\(token\)/.test(electronMain),
+  "The installer fallback must call autoUpdater.downloadUpdate(token) so the update window can abort the transfer.",
+);
+expect(
+  !/autoUpdater\.downloadUpdate\(\)/.test(electronMain),
+  "Never call autoUpdater.downloadUpdate() without a token: the update window could not cancel the download.",
+);
+expect(
+  /loadFile\(updateWindowHtmlPath\)/.test(electronMain) &&
+    /preload:\s*updateWindowPreloadPath/.test(electronMain) &&
+    /sandbox:\s*true/.test(electronMain) &&
+    /mmh:update-window-state/.test(electronMain) &&
+    /mmh:update-window-state/.test(updatePreload),
+  "The update window must loadFile(updateWindowHtmlPath) with its own sandboxed preload and receive mmh:update-window-state.",
+);
+expect(
+  /mmh:update-cancel/.test(electronMain) &&
+    /mmh:update-cancel/.test(updatePreload) &&
+    /mmh:update-install/.test(electronMain) &&
+    /mmh:update-install/.test(updatePreload) &&
+    /quitAndInstall/.test(electronMain),
+  "The update window must be able to cancel the download and restart into the installer (mmh:update-cancel / mmh:update-install).",
 );
 
 function expect(condition, message) {
@@ -146,6 +216,37 @@ expect(
 expect(
   /addColumnIfMissing\(db, "User", "registrationEmail", "TEXT"\)/.test(buildScript),
   "Windows SQLite init must backfill User.registrationEmail for existing databases (login accounts query selects it).",
+);
+
+// 2026-10-26/27 HouseholdPreference 新列：household-preferences.ts 全列 findUnique，
+// 缺列会让首屏/侧边栏抛 "no such column"，用户看到的是「账簿没了 / 首页空了」。
+for (const [column, type] of [
+  ["detailWindowYears", "INTEGER NOT NULL DEFAULT 5"],
+  ["accountUsageSortEnabled", "BOOLEAN NOT NULL DEFAULT 1"],
+]) {
+  expect(
+    buildScript.includes(`addColumnIfMissing(db, "HouseholdPreference", "${column}", "${type}")`),
+    `Windows SQLite init must backfill HouseholdPreference.${column} for existing databases (first-screen/sidebar query reads every column).`,
+  );
+}
+
+// cookie / localStorage / 磁盘缓存挂在 sessionData 上，不挂在 userData 上。
+// 只重定向 userData 时，用户会重新在 C:\Users\...\AppData\Roaming\MMH 里看到
+// 一整套 Chromium 配置目录（Network\Cookies、Local Storage、Cache）。
+expect(
+  /app\.setPath\("sessionData", userDataDir\)/.test(electronMain),
+  "Electron must redirect sessionData as well, so cookies and the Chromium profile live in the data directory instead of C:\\Users\\...\\AppData.",
+);
+
+// 2026-10-28 数据目录切换（安装目录变了）后必须能把旧库找回来：只认 %APPDATA%\MMH
+// 会让换目录安装的用户得到一个空库，旧账簿还在旧安装目录里但看不见。
+expect(
+  /function findBestLegacyDatabase\(/.test(electronMain) &&
+    /function legacyDataCandidates\(/.test(electronMain) &&
+    /Programs", "MMH", "data"/.test(electronMain) &&
+    /MMH-data-backup/.test(electronMain) &&
+    /\.bak-/.test(electronMain),
+  "Electron must discover an existing mmh.db in the previous install directory / uninstall stash and import it (keeping a .bak of the current file).",
 );
 
 // 登录账号查询还会 select 这些列，任何一列缺失都会让登录页整体降级成空账号列表。

@@ -7,16 +7,22 @@ import {
   getTimeZonePreference,
   type DisplayLanguage,
 } from "@/lib/client/appPreferences";
+import {
+  getDesktopBridge,
+  type DesktopUpdateStatus,
+  type MmhDesktopBridge,
+} from "@/lib/client/desktop-bridge";
 import { useI18n } from "@/lib/i18n";
 
 type VersionInfo = {
   ok: boolean;
-  deploymentTarget?: "docker" | "fnos" | "synology" | "standalone";
+  deploymentTarget?: "docker" | "fnos" | "synology" | "windows" | "standalone";
   isDocker?: boolean;
   isFnos?: boolean;
   isSynology?: boolean;
+  isWindows?: boolean;
   updaterEnabled?: boolean;
-  updateMode?: "git" | "fnos" | "synology";
+  updateMode?: "git" | "fnos" | "synology" | "desktop";
   versionSource?: "git" | "env";
   localVersion: string;
   localCommit: string;
@@ -255,6 +261,19 @@ export default function SystemUpdatePage() {
   const [imageSpeedResults, setImageSpeedResults] = useState<Record<string, ImageSpeedResult>>({});
   const [timeZone, setTimeZone] = useState("Asia/Shanghai");
 
+  // Windows 桌面版自更新（Electron）。这条通道和下面的 git / 镜像更新完全独立：
+  // 页面只发指令（检查 / 下载 / 重启），实际下载由主进程的更新窗口负责。
+  const [bridge, setBridge] = useState<MmhDesktopBridge | null>(null);
+  const [desktopVersion, setDesktopVersion] = useState("");
+  const [desktopPhase, setDesktopPhase] = useState<
+    "idle" | "checking" | "available" | "upToDate" | "downloading" | "downloaded" | "error"
+  >("idle");
+  const [desktopAvailable, setDesktopAvailable] = useState("");
+  const [desktopPercent, setDesktopPercent] = useState(0);
+  // A release that changes the Electron runtime cannot be delivered by replacing
+  // resources\app: the app must be reinstalled and the page has to say so.
+  const [desktopRequiresInstaller, setDesktopRequiresInstaller] = useState(false);
+
   const loadVersionInfo = useCallback(async (options?: { checkRemote?: boolean }) => {
     setLoadingVersion(true);
     try {
@@ -288,6 +307,86 @@ export default function SystemUpdatePage() {
     window.addEventListener(APP_PREFS_EVENT, syncTimeZonePreference);
     return () => window.removeEventListener(APP_PREFS_EVENT, syncTimeZonePreference);
   }, []);
+
+  // Desktop bridge: one mount-time subscription. `progress` events arrive from
+  // the download window, so this page's state follows a download started
+  // anywhere in the app (startup check, 桌面端 page, update window itself).
+  useEffect(() => {
+    const current = getDesktopBridge();
+    if (!current) return;
+    setBridge(current);
+    let unsub: (() => void) | undefined;
+    current
+      .getVersion()
+      .then((value) => {
+        if (value) setDesktopVersion(value);
+      })
+      .catch(() => {});
+    unsub = current.onUpdateStatus((status: DesktopUpdateStatus) => {
+      if (status.type === "available") {
+        setDesktopAvailable(status.version);
+        setDesktopPhase((prev) =>
+          prev === "downloading" || prev === "downloaded" ? prev : "available",
+        );
+      } else if (status.type === "not-available") {
+        setDesktopPhase((prev) =>
+          prev === "downloading" || prev === "downloaded" ? prev : "upToDate",
+        );
+      } else if (status.type === "progress") {
+        setDesktopPercent(status.percent);
+        setDesktopPhase("downloading");
+      } else if (status.type === "downloaded") {
+        setDesktopAvailable(status.version);
+        setDesktopPhase("downloaded");
+      } else if (status.type === "error") {
+        setDesktopPhase((prev) => (prev === "downloading" ? "error" : prev));
+      }
+    });
+    return () => unsub && unsub();
+  }, []);
+
+  async function checkDesktopUpdate() {
+    if (!bridge || desktopPhase === "checking" || desktopPhase === "downloading") return;
+    setDesktopPhase("checking");
+    try {
+      const result = await bridge.checkForUpdates();
+      if (!result.ok) {
+        setDesktopPhase("error");
+      } else if (result.upToDate) {
+        setDesktopRequiresInstaller(false);
+        setDesktopPhase("upToDate");
+      } else {
+        setDesktopRequiresInstaller(Boolean(result.requiresInstaller));
+        if (result.version) setDesktopAvailable(result.version);
+        setDesktopPhase("available");
+      }
+    } catch {
+      setDesktopPhase("error");
+    }
+  }
+
+  // The main process re-checks, then opens the download window and streams
+  // progress into it; this page only mirrors the phase.
+  async function downloadDesktopUpdate() {
+    if (!bridge) return;
+    setDesktopPhase("downloading");
+    setDesktopPercent(0);
+    try {
+      const result = await bridge.downloadUpdate();
+      if (result.upToDate) {
+        setDesktopPhase("upToDate");
+        return;
+      }
+      if (!result.ok) {
+        setDesktopPhase("error");
+        return;
+      }
+      setDesktopRequiresInstaller(Boolean(result.requiresInstaller));
+      if (result.version) setDesktopAvailable(result.version);
+    } catch {
+      setDesktopPhase("error");
+    }
+  }
 
   function initSteps() {
     return UPDATE_STEPS.map((key) => ({ key, label: updateStepLabel(key, t), status: "pending" as StepStatus, output: "" }));
@@ -600,10 +699,15 @@ export default function SystemUpdatePage() {
   const synologyManaged = Boolean(versionInfo?.isSynology || versionInfo?.deploymentTarget === "synology");
   const fnosManaged = Boolean(versionInfo?.isFnos || versionInfo?.deploymentTarget === "fnos");
   const packageManaged = fnosManaged || synologyManaged;
+  // Windows 桌面版：自更新由 Electron 负责。本页在这条通道上只做遥控器，
+  // git / 镜像那套（远端 commit、更新步骤、镜像源、控制台）一律不出现。
+  const windowsManaged = Boolean(versionInfo?.isWindows || versionInfo?.deploymentTarget === "windows");
   const packageLabel = synologyManaged ? "SPK" : "FNOS";
-  const currentVersionText = packageManaged
-    ? `${cleanVersionPart(versionInfo?.localVersion) || "unknown"} ${packageLabel}`
-    : formatVersionLine(versionInfo?.localVersion, versionInfo?.localCommit, versionInfo?.localCommitDate, timeZone);
+  const currentVersionText = windowsManaged
+    ? cleanVersionPart(desktopVersion) || cleanVersionPart(versionInfo?.localVersion) || "unknown"
+    : packageManaged
+      ? `${cleanVersionPart(versionInfo?.localVersion) || "unknown"} ${packageLabel}`
+      : formatVersionLine(versionInfo?.localVersion, versionInfo?.localCommit, versionInfo?.localCommitDate, timeZone);
   const localReleaseNotes = versionInfo?.localReleaseNotes?.trim() || "";
   // 「本版说明」按界面语言取正文，该语言没有就回落中文正文；两者都为空时整块不渲染。
   // `localReleaseNotes` 是各商店共用的单行短说明，`ReleaseNotesText` 按 `\n` 切行渲染，
@@ -631,7 +735,9 @@ export default function SystemUpdatePage() {
       ? t("settings.systemUpdate.isLatest")
       : t("settings.systemUpdate.unconfirmed");
   const canStartUpdate = !packageManaged && needsUpdate && (!dockerManaged || versionInfo.updaterEnabled);
-  const updateActionPanel = !updating && !updateDone && versionInfo?.ok && !canStartUpdate ? (
+  // Gated on !windowsManaged: that build has no remote git commit to compare, so
+  // the generic branch below would only ever say "无法确认远端版本".
+  const updateActionPanel = !windowsManaged && !updating && !updateDone && versionInfo?.ok && !canStartUpdate ? (
     <div className="border-t border-slate-100 pt-3">
       {isLatest ? (
         <div className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-700">
@@ -660,6 +766,91 @@ sudo docker compose -p mmh up -d app updater`}</pre>
       ) : !canCheckUpdate ? (
         <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-700">
           {t("settings.systemUpdate.cannotCheckRemote")}
+        </div>
+      ) : null}
+    </div>
+  ) : null;
+
+  // Windows 桌面版更新面板。检查 / 下载 / 重启三件事都在 Electron 主进程里完成：
+  // 「下载」会打开独立的更新窗口（进度、速率、取消），下载完成后在这个窗口点重启。
+  const desktopStatusText =
+    desktopPhase === "checking"
+      ? t("settings.desktop.update.checking")
+      : desktopPhase === "available"
+        ? t("settings.desktop.update.available", { version: desktopAvailable })
+        : desktopPhase === "upToDate"
+          ? t("settings.desktop.update.upToDate")
+          : desktopPhase === "downloading"
+            ? t("settings.systemUpdate.downloadingPercent", { percent: desktopPercent })
+            : desktopPhase === "downloaded"
+              ? t("settings.desktop.update.downloaded")
+              : desktopPhase === "error"
+                ? t("settings.desktop.update.error")
+                : "";
+  const desktopStatusClass =
+    desktopPhase === "error"
+      ? "text-red-600"
+      : desktopPhase === "available"
+        ? "text-amber-700"
+        : desktopPhase === "downloaded" || desktopPhase === "upToDate"
+          ? "text-emerald-600"
+          : "text-slate-500";
+  const windowsUpdatePanel = windowsManaged ? (
+    <div className="rounded-md border border-slate-200 bg-slate-50/70 px-4 py-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-sm font-medium text-slate-800">{t("settings.systemUpdate.softwareUpdate")}</div>
+          <p className="mt-1 text-xs leading-5 text-slate-500">{t("settings.systemUpdate.desktopUpdateHint")}</p>
+        </div>
+        <div className="flex shrink-0 flex-wrap items-center gap-2">
+          {desktopPhase === "available" ? (
+            <button
+              type="button"
+              onClick={downloadDesktopUpdate}
+              className="inline-flex h-8 items-center gap-1.5 rounded-md bg-blue-600 px-3 text-xs font-medium text-white hover:bg-blue-700"
+            >
+              <Download className="h-3.5 w-3.5" />
+              {t("settings.systemUpdate.downloadUpdate")}
+            </button>
+          ) : null}
+          {desktopPhase === "downloading" ? (
+            <button
+              type="button"
+              onClick={() => void bridge?.showDownloadWindow()}
+              className="inline-flex h-8 items-center gap-1.5 rounded-md bg-blue-600 px-3 text-xs font-medium text-white hover:bg-blue-700"
+            >
+              <Download className="h-3.5 w-3.5" />
+              {t("settings.systemUpdate.showDownload", { percent: desktopPercent })}
+            </button>
+          ) : null}
+          {desktopPhase === "downloaded" ? (
+            <button
+              type="button"
+              onClick={() => void bridge?.installUpdate()}
+              className="inline-flex h-8 items-center gap-1.5 rounded-md bg-emerald-600 px-3 text-xs font-medium text-white hover:bg-emerald-700"
+            >
+              {t("settings.systemUpdate.restartToInstall")}
+            </button>
+          ) : null}
+          <button
+            type="button"
+            onClick={checkDesktopUpdate}
+            disabled={!bridge || desktopPhase === "checking" || desktopPhase === "downloading"}
+            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-slate-200 bg-white px-3 text-xs text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+          >
+            <RefreshCw className={`h-3.5 w-3.5 ${desktopPhase === "checking" ? "animate-spin" : ""}`} />
+            {t("settings.desktop.update.check")}
+          </button>
+        </div>
+      </div>
+      {desktopStatusText ? (
+        <div className={`mt-2 text-xs ${desktopStatusClass}`}>{desktopStatusText}</div>
+      ) : (
+        <div className="mt-2 text-xs text-slate-500">{t("settings.systemUpdate.desktopIdleHint")}</div>
+      )}
+      {desktopRequiresInstaller ? (
+        <div className="mt-2 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">
+          {t("settings.systemUpdate.requiresInstallerHint")}
         </div>
       ) : null}
     </div>
@@ -737,10 +928,12 @@ sudo docker compose -p mmh up -d app updater`}</pre>
                 </div>
               </div>
 
-              <div className="text-slate-500">{packageManaged ? t("settings.systemUpdate.updateMethod") : needsUpdate ? t("settings.systemUpdate.availableVersion") : t("settings.systemUpdate.remoteVersion")}</div>
+              <div className="text-slate-500">{packageManaged || windowsManaged ? t("settings.systemUpdate.updateMethod") : needsUpdate ? t("settings.systemUpdate.availableVersion") : t("settings.systemUpdate.remoteVersion")}</div>
               <div className="min-w-0">
                 {packageManaged ? (
                   <span className="text-slate-600">{synologyManaged ? t("settings.systemUpdate.managedBySynology") : t("settings.systemUpdate.managedByFnos")}</span>
+                ) : windowsManaged ? (
+                  <span className="text-slate-600">{t("settings.systemUpdate.managedByDesktop")}</span>
                 ) : canCheckUpdate ? (
                   <>
                     <span className="font-semibold text-slate-900">{availableVersionText || versionInfo.remoteCommit}</span>
@@ -769,7 +962,9 @@ sudo docker compose -p mmh up -d app updater`}</pre>
               </div>
             ) : null}
 
-            {!packageManaged && !isLatest ? (
+            {windowsUpdatePanel}
+
+            {!packageManaged && !windowsManaged && !isLatest ? (
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="flex flex-wrap items-center gap-2">
                   <span
@@ -799,7 +994,7 @@ sudo docker compose -p mmh up -d app updater`}</pre>
               </div>
             ) : null}
 
-            {!packageManaged && !canCheckUpdate && (versionInfo.fetchError || versionInfo.githubFetchError) ? (
+            {!packageManaged && !windowsManaged && !canCheckUpdate && (versionInfo.fetchError || versionInfo.githubFetchError) ? (
               <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
                 {t("settings.systemUpdate.fetchRemoteFailed", { error: versionInfo.fetchError || versionInfo.githubFetchError || "" })}
               </div>
@@ -941,7 +1136,7 @@ sudo docker compose -p mmh up -d app updater`}</pre>
         )}
       </section>
 
-      {(updating || updateDone) && steps.length > 0 ? (
+      {!windowsManaged && (updating || updateDone) && steps.length > 0 ? (
         <section className="rounded-lg border border-slate-200 bg-white p-4">
           <div className="mb-3 text-sm font-medium text-slate-800">{t("settings.systemUpdate.updateProgress")}</div>
 

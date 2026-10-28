@@ -2,28 +2,8 @@
 
 import { useEffect, useState } from "react";
 import SettingsSwitch from "@/components/settings/SettingsSwitch";
+import { getDesktopBridge, type MmhDesktopBridge } from "@/lib/client/desktop-bridge";
 import { useI18n } from "@/lib/i18n";
-
-// Electron preload bridge (see electron/preload.cjs). Only present when the
-// app runs inside the desktop shell.
-type UpdateStatus =
-  | { type: "available"; version: string }
-  | { type: "not-available"; version: string }
-  | { type: "progress"; percent: number }
-  | { type: "downloaded"; version: string }
-  | { type: "error"; message: string };
-
-type MmhDesktopBridge = {
-  checkForUpdates: () => Promise<{ ok: boolean; version?: string; upToDate?: boolean; error?: string }>;
-  getVersion: () => Promise<string>;
-  onUpdateStatus: (cb: (s: UpdateStatus) => void) => () => void;
-};
-
-declare global {
-  interface Window {
-    mmhDesktop?: MmhDesktopBridge;
-  }
-}
 
 export default function DesktopSettingsClient() {
   const { t } = useI18n();
@@ -32,11 +12,13 @@ export default function DesktopSettingsClient() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
+  // Electron preload bridge (see electron/preload.cjs); null on web builds.
+  const [bridge, setBridge] = useState<MmhDesktopBridge | null>(null);
   const [version, setVersion] = useState("");
   const [checking, setChecking] = useState(false);
   const [updateMsg, setUpdateMsg] = useState<{ kind: "upToDate" | "available" | "downloaded" | "error"; version?: string } | null>(null);
 
-  const isDesktop = typeof window !== "undefined" && !!window.mmhDesktop;
+  const isDesktop = bridge !== null;
 
   useEffect(() => {
     fetch("/api/desktop/config")
@@ -50,19 +32,22 @@ export default function DesktopSettingsClient() {
       .catch(() => setLoaded(true));
   }, []);
 
-  // Read the app version and subscribe to update lifecycle events.
+  // Read the app version and subscribe to update lifecycle events. Runs once:
+  // the bridge cannot appear after hydration in a window that lacks it.
   useEffect(() => {
-    if (!isDesktop) return;
+    const current = getDesktopBridge();
+    if (!current) return;
+    setBridge(current);
     let unsub: (() => void) | undefined;
-    window.mmhDesktop!.getVersion().then((v) => setVersion(v)).catch(() => {});
-    unsub = window.mmhDesktop!.onUpdateStatus((s) => {
+    current.getVersion().then((v) => setVersion(v)).catch(() => {});
+    unsub = current.onUpdateStatus((s) => {
       if (s.type === "available") setUpdateMsg({ kind: "available", version: s.version });
       else if (s.type === "not-available") setUpdateMsg({ kind: "upToDate" });
       else if (s.type === "downloaded") setUpdateMsg({ kind: "downloaded", version: s.version });
       else if (s.type === "error") setUpdateMsg({ kind: "error" });
     });
     return () => unsub && unsub();
-  }, [isDesktop]);
+  }, []);
 
   async function toggle(next: boolean) {
     setSaving(true);
@@ -84,11 +69,11 @@ export default function DesktopSettingsClient() {
   }
 
   async function checkUpdate() {
-    if (!isDesktop || checking) return;
+    if (!bridge || checking) return;
     setChecking(true);
     setUpdateMsg(null);
     try {
-      const r = await window.mmhDesktop!.checkForUpdates();
+      const r = await bridge.checkForUpdates();
       if (!r.ok) {
         setUpdateMsg({ kind: "error" });
       } else if (r.upToDate) {

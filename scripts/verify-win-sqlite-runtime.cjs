@@ -64,6 +64,10 @@ fs.writeFileSync(
     'CREATE TABLE "precious_metal_transactions" ("id" TEXT NOT NULL PRIMARY KEY, "date" DATETIME NOT NULL);',
     'CREATE TABLE "FundConfirmDays" ("id" TEXT NOT NULL PRIMARY KEY);',
     'CREATE TABLE "UserSettings" ("id" TEXT NOT NULL PRIMARY KEY, "sessionDays" INTEGER NOT NULL DEFAULT 30);',
+    // 2026-10-26/27 的新列：HouseholdPreference 在旧库里没有这两列，
+    // household-preferences.ts 全列 findUnique，缺列直接让首屏/侧边栏报错。
+    // 表本身存在，所以这里给的是"缺列"形态。
+    'CREATE TABLE "HouseholdPreference" ("id" TEXT NOT NULL PRIMARY KEY, "householdId" TEXT NOT NULL);',
   ].join("\n"),
   "utf8",
 );
@@ -107,6 +111,15 @@ expect(
   columnsOf("User").includes("registrationEmail"),
   "User.registrationEmail must be backfilled on upgraded databases (the login accounts query selects it).",
 );
+
+// 2026-10-26/27 HouseholdPreference 新列：全列 findUnique 的读取方缺列即报错，
+// 用户看到的是「首页/侧边栏空了」。
+for (const column of ["detailWindowYears", "accountUsageSortEnabled"]) {
+  expect(
+    columnsOf("HouseholdPreference").includes(column),
+    "HouseholdPreference." + column + " must be backfilled on upgraded databases.",
+  );
+}
 
 const categories = db.prepare('SELECT "id","baseType","name","isSystem" FROM "LoanCategory" ORDER BY "baseType"').all();
 expect(categories.length === 4, "Built-in loan categories must be seeded exactly once (got " + categories.length + ").");

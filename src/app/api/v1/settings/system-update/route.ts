@@ -133,11 +133,16 @@ function isDockerEnvironment(): boolean {
   return process.env.DOCKER_CONTAINER === "true";
 }
 
-function getDeploymentTarget(): "docker" | "fnos" | "synology" | "standalone" {
+function getDeploymentTarget(): "docker" | "fnos" | "synology" | "windows" | "standalone" {
   if (isDockerEnvironment()) return "docker";
   const target = String(process.env.MMH_DEPLOY_TARGET ?? "").trim().toLowerCase();
   if (target === "fnos") return "fnos";
   if (target === "synology") return "synology";
+  // Windows desktop (Electron shell sets MMH_DEPLOY_TARGET=windows). It has no
+  // git checkout and must never fall into the git/Docker update paths: its
+  // updates come from electron-updater, driven by the settings page through the
+  // preload bridge (下载 → 更新窗口 → 重启).
+  if (target === "windows") return "windows";
   return "standalone";
 }
 
@@ -721,10 +726,12 @@ export async function GET(req: NextRequest) {
     const dockerEnvironment = deploymentTarget === "docker";
     const fnosEnvironment = deploymentTarget === "fnos";
     const synologyEnvironment = deploymentTarget === "synology";
+    const windowsEnvironment = deploymentTarget === "windows";
     const managedPackageEnvironment = fnosEnvironment || synologyEnvironment;
-    // 包管理之外（Docker 镜像 / 源码部署）的正文是构建期固化的，发布后再改 Release
-    // 正文不会进镜像，所以按运行版本取一次远端正文覆盖；取不到就用本地那份。
-    if (dockerEnvironment || deploymentTarget === "standalone") {
+    // 包管理之外（Docker 镜像 / 源码部署 / Windows 桌面）的正文是构建期固化的，
+    // 发布后再改 Release 正文不会进安装包，所以按运行版本取一次远端正文覆盖；
+    // 取不到就用本地那份。
+    if (dockerEnvironment || windowsEnvironment || deploymentTarget === "standalone") {
       const remoteReleaseNotes = await fetchReleaseNotesFromGitHub(localVersion);
       if (remoteReleaseNotes) {
         localReleaseNotesI18n = { ...(localReleaseNotesI18n ?? {}), "zh-CN": remoteReleaseNotes };
@@ -798,6 +805,13 @@ export async function GET(req: NextRequest) {
           fetchError: github.githubFetchError,
         };
       }
+    } else if (checkRemote && windowsEnvironment) {
+      // The Windows build has no git checkout to compare against: its remote
+      // version lives in the update feed's latest.yml and is judged by the
+      // Electron main process, which reports through the preload bridge. Doing
+      // a git ls-remote / GitHub commit comparison here would only produce a
+      // permanent "无法确认远端版本" on a machine that updates fine.
+      versionInfo = { ...localOnlyVersionInfo, fetchError: undefined };
     } else if (checkRemote && !managedPackageEnvironment) {
       versionInfo = await getGitVersionInfo(projectRoot);
     }
@@ -808,7 +822,8 @@ export async function GET(req: NextRequest) {
       isDocker: dockerEnvironment,
       isFnos: fnosEnvironment,
       isSynology: synologyEnvironment,
-      updateMode: managedPackageEnvironment ? deploymentTarget : "git",
+      isWindows: windowsEnvironment,
+      updateMode: windowsEnvironment ? "desktop" : managedPackageEnvironment ? deploymentTarget : "git",
       updaterEnabled,
       imageSourceConfig,
       localVersion,
@@ -849,6 +864,20 @@ export async function POST(req: NextRequest) {
   if (deploymentTarget === "synology") {
     return NextResponse.json(
       { ok: false, code: "SYNOLOGY_UPDATE_NOT_SUPPORTED", error: "Synology DSM package builds must be updated through Package Center or by installing a newer SPK." },
+      { status: 409 },
+    );
+  }
+  // The Windows build updates through electron-updater (下载 → 更新窗口 → 重启),
+  // never by pulling source and rebuilding: the staged app has no git checkout,
+  // no dev dependencies and no build toolchain. Refusing here also guarantees a
+  // stale tab can never start `git fetch` / `npm install` inside an install dir.
+  if (deploymentTarget === "windows") {
+    return NextResponse.json(
+      {
+        ok: false,
+        code: "WINDOWS_UPDATE_NOT_SUPPORTED",
+        error: "Windows 桌面版请在「设置 → 系统更新」使用桌面更新（检查更新 → 下载 → 重启应用），不支持在应用内拉取源码更新。",
+      },
       { status: 409 },
     );
   }

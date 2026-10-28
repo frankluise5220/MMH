@@ -20,6 +20,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+const crypto = require("node:crypto");
 const { spawnSync } = require("node:child_process");
 
 const root = path.resolve(__dirname, "..");
@@ -296,6 +297,11 @@ function columnExists(db, table, column) {
 }
 
 function addColumnIfMissing(db, table, column, definition) {
+  // A missing table is not an error: columnExists already reports the column as
+  // absent, and ALTERing a non-existent table would throw "no such table" and
+  // abort the whole bootstrap. Callers may therefore name tables that only newer
+  // databases have (e.g. HouseholdPreference on an old desktop database).
+  if (!tableExists(db, table)) return;
   if (!columnExists(db, table, column)) {
     db.exec("ALTER TABLE \\"" + table.replace(/\\"/g, "\\"\\"") + "\\" ADD COLUMN \\"" + column.replace(/\\"/g, "\\"\\"") + "\\" " + definition);
   }
@@ -436,6 +442,11 @@ function applyRuntimeMigrations(db) {
   // 2026-10-18 基金确认日人工锁定。与 build-fnos-package.cjs 的
   // 20261018_fund_confirm_rule_manual_override 同义。
   addColumnIfMissing(db, "FundConfirmDays", "manualOverride", "BOOLEAN NOT NULL DEFAULT 0");
+  // 2026-10-26/27 明细时间窗与账户排序开关。src/lib/server/household-preferences.ts
+  // 用的是不带 select 的 findUnique（全列），缺任一列都会让首屏与侧边栏抛
+  // "no such column"，用户看到的就是「升级后账簿/首页都空了」。
+  addColumnIfMissing(db, "HouseholdPreference", "detailWindowYears", "INTEGER NOT NULL DEFAULT 5");
+  addColumnIfMissing(db, "HouseholdPreference", "accountUsageSortEnabled", "BOOLEAN NOT NULL DEFAULT 1");
 }
 
 fs.mkdirSync(dataDir, { recursive: true });
@@ -597,6 +608,70 @@ fs.writeFileSync(
 
 step("electron-builder nsis (prepackaged)");
 run("npx", ["electron-builder", "--win", "nsis", "--x64", "--prepackaged", toArgvPath(unpackedDir)], packageEnv());
+
+// File-level update payload (2026-10-28).
+//
+// The desktop app updates by replacing resources\app and relaunching, so this
+// zip IS the normal update, not a developer extra: without it every client falls
+// back to the "该版本必须重新安装" installer channel. Contents are the shipped
+// resources\app (server.js + .next + node_modules + .mmh-version), zipped with
+// its own entries at the root so extraction needs no path fiddling.
+//
+// Packed with tar (bsdtar, ships with Windows 10 1803+) on purpose: PowerShell's
+// Compress-Archive silently skips dotfiles, which would drop both .next and
+// .mmh-version and produce an unrunnable payload.
+step("pack file-level update (resources/app zip + manifest)");
+{
+  const pkgJson = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+  const version = String(pkgJson.version || "").trim();
+  const shippedAppDir = path.join(unpackedDir, "resources", "app");
+  if (!fs.existsSync(path.join(shippedAppDir, "server.js"))) {
+    console.error("No packaged resources/app found at " + shippedAppDir + "; cannot build the file-level update.");
+    process.exit(1);
+  }
+  const zipName = "mmh-app-v" + version + "-x64.zip";
+  const zipPath = path.join(distDir, zipName);
+  fs.rmSync(zipPath, { force: true });
+  const packed = spawnSync("tar", ["-a", "-c", "-f", zipPath, "-C", shippedAppDir, "."], {
+    encoding: "utf8",
+  });
+  if (packed.status !== 0) {
+    console.error("Packing the app payload failed: " + (packed.stderr || packed.error || ""));
+    process.exit(1);
+  }
+  const zipSize = fs.statSync(zipPath).size;
+  const sha512 = crypto.createHash("sha512").update(fs.readFileSync(zipPath)).digest("hex");
+  const electronVersion = JSON.parse(
+    fs.readFileSync(path.join(root, "node_modules", "electron", "package.json"), "utf8"),
+  ).version;
+  const manifest = {
+    appId: "com.mmh.desktop",
+    version,
+    electron: electronVersion,
+    // false = replacing resources\app is enough. Flip to true only for a release
+    // that changes the Electron/Chromium runtime itself.
+    requiresInstaller: false,
+    url: UPDATE_FEED.url + zipName,
+    size: zipSize,
+    sha512,
+    generatedAt: new Date().toISOString(),
+  };
+  fs.writeFileSync(
+    path.join(distDir, "mmh-app-latest.json"),
+    JSON.stringify(manifest, null, 2) + "\n",
+    "utf8",
+  );
+  console.log(
+    "\nFile-level update ready: " +
+      zipPath +
+      " (" +
+      (zipSize / 1024 / 1024).toFixed(1) +
+      " MB, sha512 " +
+      sha512.slice(0, 16) +
+      "…)\nUpload it together with mmh-app-latest.json to " +
+      UPDATE_FEED.url,
+  );
+}
 
 const exeFiles = fs.existsSync(distDir)
   ? fs.readdirSync(distDir).filter((f) => f.toLowerCase().endsWith(".exe"))

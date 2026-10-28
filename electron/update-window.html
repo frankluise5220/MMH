@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"
+    />
+    <title>MMH 更新</title>
+    <style>
+      /* A local, static page — no remote assets, so everything is inlined. */
+      :root {
+        --bg: #ffffff;
+        --fg: #0f172a;
+        --muted: #64748b;
+        --track: #e2e8f0;
+        --accent: #2563eb;
+        --accent-strong: #1d4ed8;
+        --ok: #059669;
+        --err: #b91c1c;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+      body {
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        padding: 20px 24px;
+        background: var(--bg);
+        color: var(--fg);
+        font-family: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+        font-size: 13px;
+        -webkit-font-smoothing: antialiased;
+        user-select: none;
+        overflow: hidden;
+      }
+      h1 {
+        margin: 0;
+        font-size: 17px;
+        font-weight: 600;
+        letter-spacing: 0.2px;
+      }
+      .note {
+        margin: 5px 0 0;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 18px;
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+      }
+      .track {
+        position: relative;
+        height: 8px;
+        margin: 20px 0 10px;
+        border-radius: 999px;
+        background: var(--track);
+        overflow: hidden;
+      }
+      .fill {
+        height: 100%;
+        width: 0;
+        border-radius: 999px;
+        background: var(--accent);
+        transition:
+          width 180ms linear,
+          background-color 200ms linear;
+      }
+      /* Unknown total size: a moving stripe instead of a frozen 0% bar. */
+      .track.indeterminate .fill {
+        width: 35% !important;
+        animation: slide 1.15s ease-in-out infinite;
+      }
+      @keyframes slide {
+        0% {
+          transform: translateX(-100%);
+        }
+        100% {
+          transform: translateX(300%);
+        }
+      }
+      .metrics {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
+        font-variant-numeric: tabular-nums;
+      }
+      .percent {
+        font-size: 15px;
+        font-weight: 600;
+      }
+      .detail {
+        flex: 1;
+        text-align: right;
+        color: var(--muted);
+        font-size: 12px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      .actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 10px;
+        margin-top: 22px;
+      }
+      button {
+        min-width: 96px;
+        height: 32px;
+        padding: 0 16px;
+        border-radius: 8px;
+        border: 1px solid transparent;
+        font-family: inherit;
+        font-size: 13px;
+        font-weight: 500;
+        cursor: pointer;
+        transition:
+          background-color 150ms linear,
+          border-color 150ms linear,
+          color 150ms linear;
+      }
+      button:focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+      .btn-primary {
+        background: var(--accent);
+        color: #ffffff;
+      }
+      .btn-primary:hover {
+        background: var(--accent-strong);
+      }
+      .btn-ghost {
+        background: #ffffff;
+        border-color: #cbd5e1;
+        color: #334155;
+      }
+      .btn-ghost:hover {
+        background: #f1f5f9;
+      }
+      button[hidden] {
+        display: none;
+      }
+      .state-ok .fill {
+        background: var(--ok);
+      }
+      .state-ok .percent {
+        color: var(--ok);
+      }
+      .state-err .fill {
+        background: var(--err);
+      }
+      .state-err .note {
+        color: var(--err);
+      }
+    </style>
+  </head>
+  <body>
+    <h1 id="title">正在下载更新</h1>
+    <p class="note" id="note">下载完成后重启应用即可完成更新，记账数据不受影响。</p>
+
+    <div class="track" id="track"><div class="fill" id="fill"></div></div>
+
+    <div class="metrics">
+      <span class="percent" id="percent">0%</span>
+      <span class="detail" id="detail">正在连接更新服务器…</span>
+    </div>
+
+    <div class="actions">
+      <button type="button" class="btn-ghost" id="primary">取消下载</button>
+      <button type="button" class="btn-ghost" id="secondary" hidden>稍后</button>
+    </div>
+
+    <script>
+      (function () {
+        const el = {
+          title: document.getElementById("title"),
+          note: document.getElementById("note"),
+          track: document.getElementById("track"),
+          fill: document.getElementById("fill"),
+          percent: document.getElementById("percent"),
+          detail: document.getElementById("detail"),
+          primary: document.getElementById("primary"),
+          secondary: document.getElementById("secondary"),
+        };
+
+        // All four phases share the same layout; only copy and the action set
+        // differ, so the window never resizes between states.
+        const COPY = {
+          downloading: {
+            title: "正在下载更新",
+            note: "下载完成后重启应用即可完成更新，记账数据不受影响。",
+            primary: "取消下载",
+            primaryStyle: "btn-ghost",
+          },
+          downloaded: {
+            title: "更新已就绪",
+            note: "重启应用即可生效，不会再运行安装程序，记账数据不受影响。",
+            primary: "立即重启",
+            primaryStyle: "btn-primary",
+            secondary: "稍后",
+          },
+          cancelled: {
+            title: "已取消下载",
+            note: "可以稍后从「设置 → 桌面端 → 检查更新」重新下载。",
+            primary: "关闭",
+            primaryStyle: "btn-ghost",
+          },
+          error: {
+            title: "下载失败",
+            note: "请稍后重试，或从官网手动下载安装包覆盖安装。",
+            primary: "关闭",
+            primaryStyle: "btn-ghost",
+          },
+        };
+
+        let state = { phase: "downloading", percent: 0, transferred: 0, total: 0, bytesPerSecond: 0 };
+
+        function mb(bytes) {
+          return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+        }
+
+        function eta(remaining, speed) {
+          if (!speed || speed <= 0 || remaining <= 0) return "";
+          const seconds = Math.round(remaining / speed);
+          if (seconds < 60) return seconds + " 秒";
+          const minutes = Math.floor(seconds / 60);
+          const rest = seconds % 60;
+          return rest ? minutes + " 分 " + rest + " 秒" : minutes + " 分";
+        }
+
+        function render() {
+          const phase = COPY[state.phase] ? state.phase : "downloading";
+          const copy = COPY[phase];
+
+          document.body.className =
+            phase === "downloaded" ? "state-ok" : phase === "error" ? "state-err" : "";
+
+          el.title.textContent = copy.title;
+
+          // The error message is the only useful thing to show when a download
+          // dies, so it replaces the generic note (full text in the tooltip).
+          if (phase === "error" && state.message) {
+            el.note.textContent = state.message;
+            el.note.title = state.message;
+          } else {
+            el.note.textContent =
+              (state.version && phase !== "cancelled" ? "MMH " + state.version + " · " : "") + copy.note;
+            el.note.title = "";
+          }
+
+          el.primary.textContent = copy.primary;
+          el.primary.className = copy.primaryStyle;
+          el.secondary.hidden = !copy.secondary;
+          el.secondary.textContent = copy.secondary || "";
+
+          const total = state.total || 0;
+          const transferred = state.transferred || 0;
+          const speed = state.bytesPerSecond || 0;
+
+          if (phase === "downloading") {
+            el.percent.textContent = (state.percent || 0) + "%";
+            el.fill.style.width = (state.percent || 0) + "%";
+            el.track.classList.toggle("indeterminate", total <= 0);
+            // Nothing transferred yet: "0.0 MB" would read like a stall, so the
+            // connecting message stays until the first byte lands.
+            if (transferred <= 0) {
+              el.detail.textContent = "正在连接更新服务器…";
+              return;
+            }
+            const parts = [];
+            parts.push(total > 0 ? mb(transferred) + " / " + mb(total) : mb(transferred));
+            if (speed > 0) parts.push(mb(speed) + "/s");
+            const rest = eta(total - transferred, speed);
+            if (rest) parts.push("剩余约 " + rest);
+            el.detail.textContent = parts.join(" · ");
+            return;
+          }
+
+          el.track.classList.remove("indeterminate");
+          el.fill.style.width = phase === "downloaded" ? "100%" : "0%";
+          el.percent.textContent = phase === "downloaded" ? "100%" : "--";
+          el.detail.textContent =
+            phase === "downloaded" ? "下载完成" : phase === "cancelled" ? "已停止下载" : "下载未完成";
+        }
+
+        el.primary.addEventListener("click", function () {
+          if (state.phase === "downloaded") window.mmhUpdate.install();
+          else if (state.phase === "downloading") window.mmhUpdate.cancel();
+          else window.mmhUpdate.close();
+        });
+
+        el.secondary.addEventListener("click", function () {
+          window.mmhUpdate.close();
+        });
+
+        if (!window.mmhUpdate) {
+          el.detail.textContent = "更新组件未加载";
+          el.primary.disabled = true;
+          return;
+        }
+
+        window.mmhUpdate.onState(function (next) {
+          state = Object.assign({}, state, next);
+          render();
+        });
+
+        // The window may be opened while a download is already running.
+        window.mmhUpdate
+          .getState()
+          .then(function (current) {
+            if (current && current.phase && current.phase !== "idle") {
+              state = Object.assign({}, state, current);
+            }
+            render();
+          })
+          .catch(function () {
+            render();
+          });
+
+        render();
+      })();
+    </script>
+  </body>
+</html>
