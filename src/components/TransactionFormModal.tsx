@@ -50,6 +50,7 @@ import {
 import { formatAmountDraft } from "@/lib/format";
 import { filterIncomeExpenseInstitutions } from "@/lib/institution-rules";
 import { buildCategoryParentOptions, buildCategoryTreeOptions } from "@/components/categorySmartSelect";
+import { buildCategoryQuickPickGroups, useCategoryUsage } from "@/lib/client/category-usage";
 import { readAccountDisplaySettings } from "@/lib/client/account-display-settings";
 import { normalizeOptionalCurrency } from "@/lib/currency";
 
@@ -660,6 +661,20 @@ export function TransactionFormModal({
     });
     return filtered.length > 0 ? filtered : options;
   }, [categoryList, t, txType, selectedAccountIsDeposit]);
+  /**
+   * 分类下拉搜索框下方的快捷分类：第一排「最近使用」前 5 个、第二排「常用分类」
+   * 次数最多的若干（已排除第一排，保证两排不重复）。都限定在当前可见分类内，
+   * 所以切换支出/收入、或存款账户白名单过滤后不会出现选不到的分类。
+   */
+  const categoryUsage = useCategoryUsage(open);
+  const categoryQuickPicks = useMemo(
+    () => buildCategoryQuickPickGroups({
+      usage: categoryUsage,
+      availableIds: categorySSOptions.map((option) => option.id),
+      labels: { recent: t("categoryQuickPick.recent"), frequent: t("categoryQuickPick.frequent") },
+    }),
+    [categorySSOptions, categoryUsage, t],
+  );
   const [fromAccountId, setFromAccountId] = useState(isCreditCardAccount ? (lastRepayFromAccountId ?? defaultAccountId ?? "") : "");
   const [toAccountId, setToAccountId] = useState(isCreditCardAccount ? (defaultAccountId ?? "") : "");
   const selectedTransferDepositAccountIds = useMemo(
@@ -2639,6 +2654,7 @@ export function TransactionFormModal({
                           minDropdownWidth: 560,
                           dropdownMaxHeight: 420,
                           expandedGroupColumns: 4,
+                          quickPicks: categoryQuickPicks,
                         }}
                       />
                     </div>

@@ -49,6 +49,16 @@ type SmartSelectCycleAction = {
   icon?: ReactNode;
 };
 
+/** 搜索框下方的快捷选择行（如「最近使用」「常用分类」）。点一下即选中并关闭。 */
+export type SmartSelectQuickPickGroup = {
+  /** React key，也用于区分不同行。 */
+  key: string;
+  /** 行首标签。 */
+  label: string;
+  /** 按显示顺序排列的 option id；不在 options 里的 id 会被忽略，重复 id 只保留一次。 */
+  optionIds: string[];
+};
+
 const SMART_SELECT_CREATED_EVENT = "mmh:smart-select:created";
 
 function mergeSmartSelectOptions(base: SmartSelectOption[], extra: SmartSelectOption[]) {
@@ -98,6 +108,8 @@ type SmartSelectSharedBehavior = {
 };
 
 type SmartSelectSingleBehavior = SmartSelectSharedBehavior & {
+  /** 搜索框下方的快捷选择行；搜索中自动隐藏。 */
+  quickPicks?: SmartSelectQuickPickGroup[];
   create?: {
     type: "button";
     onClick: () => void;
@@ -568,6 +580,31 @@ export function SmartSelect(props: SmartSelectProps) {
   }, [visible]);
   const groupedSingleHierarchy = !!singleGridColumns && hierarchy && search.trim().length === 0;
 
+  const quickPicks = mode === "single" ? props.behavior?.quickPicks : undefined;
+  const quickPickGroups = useMemo(() => {
+    if (!quickPicks?.length) return [];
+    const optionById = new Map(effectiveOptions.map((option) => [option.id, option]));
+    return quickPicks
+      .map((group) => {
+        const seen = new Set<string>();
+        const options: SmartSelectOption[] = [];
+        for (const id of group.optionIds) {
+          if (seen.has(id)) continue;
+          const option = optionById.get(id);
+          if (!option) continue;
+          seen.add(id);
+          options.push(option);
+        }
+        return { key: group.key, label: group.label, options };
+      })
+      .filter((group) => group.options.length > 0);
+  }, [effectiveOptions, quickPicks]);
+  // 快捷选择行的高度只用于下拉定位估算：每行最多放 5 个 chip，超出会换行。
+  const quickPickHeight = quickPickGroups.reduce(
+    (total, group) => total + Math.ceil(group.options.length / 5) * 22 + 4,
+    0,
+  ) + (quickPickGroups.length > 0 ? 6 : 0);
+
   const closeDropdown = useCallback(() => {
     setOpen(false);
     setSearch("");
@@ -622,6 +659,7 @@ export function SmartSelect(props: SmartSelectProps) {
     const left = Math.min(Math.max(boundaryLeft, rect.left), Math.max(boundaryLeft, boundaryRight - width));
     const estimatedHeight = (searchable ? headerHeight : 0)
       + ((isSingleCreateButton || isMultiInlineCreate) ? headerHeight : 0)
+      + (search.trim().length > 0 ? 0 : quickPickHeight)
       + Math.min(
         visible.length || effectiveOptions.length || 1,
         Math.max(4, Math.floor(resolvedDropdownMaxHeight / rowHeight)),
@@ -635,7 +673,7 @@ export function SmartSelect(props: SmartSelectProps) {
     const rawTop = openAbove ? rect.top - maxHeight - 4 : rect.bottom + 4;
     const top = Math.min(Math.max(boundaryTop, rawTop), Math.max(boundaryTop, boundaryBottom - maxHeight));
     setDropdownPos({ top, left, width, minWidth: width, maxHeight });
-  }, [dense, effectiveOptions, fitContent, headerHeight, isMultiInlineCreate, isSingleCreateButton, minDropdownWidth, resolvedDropdownMaxHeight, rowHeight, searchable, singleGridColumns, visible.length]);
+  }, [dense, effectiveOptions, fitContent, headerHeight, isMultiInlineCreate, isSingleCreateButton, minDropdownWidth, quickPickHeight, resolvedDropdownMaxHeight, rowHeight, search, searchable, singleGridColumns, visible.length]);
 
   const openDropdown = useCallback((preferredIndex?: "first" | "last") => {
     const nextCollapsed = initialCollapsedGroups(
@@ -1085,13 +1123,48 @@ export function SmartSelect(props: SmartSelectProps) {
     );
   }
 
+  function renderGroupedHeaderRow(option: SmartSelectOption) {
+    const index = visibleIndexById.get(option.id) ?? 0;
+    const collapsed = collapsedGroups.has(option.id) && search.trim().length === 0;
+    return (
+      <div
+        key={option.id}
+        style={fullGridRowStyle}
+        className={`flex ${micro ? "h-4 px-1.5" : dense ? "h-6 px-2" : compact ? "h-7 px-2" : "h-8 px-3"} w-full items-center justify-between text-xs font-medium transition-colors ${
+          index === focusedIndex ? "bg-blue-50 text-blue-700" : "hover:bg-slate-50"
+        }`}
+        onMouseEnter={() => setFocusedIndex(index)}
+      >
+        <button
+          type="button"
+          onClick={() => hierarchy && collapsibleGroups && toggleGroup(option.id)}
+          className="flex min-w-0 flex-1 items-center gap-1.5 py-1 pl-0.5 text-left text-slate-600"
+        >
+          <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded">
+            {hierarchy && collapsibleGroups ? (
+              collapsed
+                ? <ChevronRight className="h-4 w-4 shrink-0 text-slate-400" />
+                : <ChevronDown className="h-4 w-4 shrink-0 text-slate-400" />
+            ) : null}
+          </span>
+          <span className="truncate">{option.label}</span>
+        </button>
+        {!search.trim() && hierarchy && showGroupCounts ? (
+          <span className="shrink-0 rounded px-1.5 py-0.5 text-[10px] text-slate-400">
+            {groupChildCounts.get(option.id) ?? 0}
+          </span>
+        ) : null}
+      </div>
+    );
+  }
+
   function renderGroupedChildrenPanel(parent: SmartSelectOption, depth = 0): ReactNode {
     if (!isGroupedPanelParent(parent)) return null;
     const children = visibleChildrenByParentId.get(parent.id) ?? [];
     return (
       <div
         key={`${parent.id}:children`}
-        style={depth === 0 ? fullGridRowStyle : { gridColumn: "1 / -1" }}
+        style={fullGridRowStyle}
         className={[
           "my-0.5 rounded-md border p-1.5",
           depth === 0
@@ -1103,65 +1176,63 @@ export function SmartSelect(props: SmartSelectProps) {
           className="grid gap-1"
           style={{ gridTemplateColumns: `repeat(${singleGridColumns ?? 2}, minmax(0, 1fr))` }}
         >
-          {children.map((child) => {
-            if (child.isHeader) return null;
-            if (child.isGroup) {
-              return [
-                renderSingleGroupOption(child, true),
-                renderGroupedChildrenPanel(child, depth + 1),
-              ];
-            }
-            return renderSingleLeafOption(child, true);
-          })}
+          {renderGridRows(children, singleGridColumns ?? 2, depth + 1)}
         </div>
       </div>
     );
   }
 
-  function renderGroupedSingleOptions() {
-    return visible.map((option, index) => {
-      if (hasGroupedPanelAncestor(option)) return null;
+  /**
+   * 把一组合法选项按「行」分桶渲染成网格节点。
+   *
+   * 展开面板是整行宽（grid-column: 1 / -1），如果紧跟被展开的那一格插入，
+   * 浏览器只能把它排到下一行，于是同一行里后面的兄弟格被挤到更下面 ——
+   * 用户看到的就是「第二排展开后，这一排后面还有第三排」。
+   * 所以先把整行的格子全部渲染完，再把这一行里展开的面板接在行尾：
+   * 同级分类位置不动，下一级分类在本行下方展开。
+   */
+  function renderGridRows(options: SmartSelectOption[], columns: number, depth: number): ReactNode[] {
+    const nodes: ReactNode[] = [];
+    let row: SmartSelectOption[] = [];
+
+    const flushRow = () => {
+      if (row.length === 0) return;
+      const cells = row;
+      row = [];
+      const insidePanel = depth > 0;
+      for (const option of cells) {
+        nodes.push(option.isGroup
+          ? renderSingleGroupOption(option, insidePanel)
+          : renderSingleLeafOption(option, insidePanel));
+      }
+      for (const option of cells) {
+        if (!option.isGroup) continue;
+        const panel = renderGroupedChildrenPanel(option, depth);
+        if (panel) nodes.push(panel);
+      }
+    };
+
+    for (const option of options) {
       if (option.isHeader) {
-        const collapsed = collapsedGroups.has(option.id) && search.trim().length === 0;
-        return (
-          <div
-            key={option.id}
-            style={fullGridRowStyle}
-            className={`flex ${micro ? "h-4 px-1.5" : dense ? "h-6 px-2" : compact ? "h-7 px-2" : "h-8 px-3"} w-full items-center justify-between text-xs font-medium transition-colors ${
-              index === focusedIndex ? "bg-blue-50 text-blue-700" : "hover:bg-slate-50"
-            }`}
-            onMouseEnter={() => setFocusedIndex(index)}
-          >
-            <button
-              type="button"
-              onClick={() => hierarchy && collapsibleGroups && toggleGroup(option.id)}
-              className="flex min-w-0 flex-1 items-center gap-1.5 py-1 pl-0.5 text-left text-slate-600"
-            >
-              <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded">
-                {hierarchy && collapsibleGroups ? (
-                  collapsed
-                    ? <ChevronRight className="h-4 w-4 shrink-0 text-slate-400" />
-                    : <ChevronDown className="h-4 w-4 shrink-0 text-slate-400" />
-                ) : null}
-              </span>
-              <span className="truncate">{option.label}</span>
-            </button>
-            {!search.trim() && hierarchy && showGroupCounts ? (
-              <span className="shrink-0 rounded px-1.5 py-0.5 text-[10px] text-slate-400">
-                {groupChildCounts.get(option.id) ?? 0}
-              </span>
-            ) : null}
-          </div>
-        );
+        // 类型分组头只在顶层出现；面板内的子项没有分组头。
+        if (depth > 0) continue;
+        flushRow();
+        nodes.push(renderGroupedHeaderRow(option));
+        continue;
       }
-      if (option.isGroup) {
-        return [
-          renderSingleGroupOption(option),
-          renderGroupedChildrenPanel(option),
-        ];
-      }
-      return renderSingleLeafOption(option);
-    });
+      row.push(option);
+      if (row.length >= columns) flushRow();
+    }
+    flushRow();
+    return nodes;
+  }
+
+  function renderGroupedSingleOptions() {
+    return renderGridRows(
+      visible.filter((option) => !hasGroupedPanelAncestor(option)),
+      singleGridColumns ?? 1,
+      0,
+    );
   }
 
   const dropdown = (
@@ -1218,6 +1289,40 @@ export function SmartSelect(props: SmartSelectProps) {
                 {renderCycleActionButton(cycleAction, t)}
                 {headerExtra}
               </div>
+            </div>
+          ) : null}
+
+          {quickPickGroups.length > 0 && search.trim().length === 0 ? (
+            <div data-smart-select-quick-picks="true" className="space-y-1 border-b border-slate-200/70 px-2 py-1.5">
+              {quickPickGroups.map((group) => (
+                <div key={group.key} data-quick-pick-group={group.key} className="flex min-w-0 items-start gap-1.5">
+                  <span className="w-[3.25rem] shrink-0 truncate pt-0.5 text-[10px] leading-4 text-slate-400" title={group.label}>
+                    {group.label}
+                  </span>
+                  <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">
+                    {group.options.map((option) => {
+                      const chipLabel = stripIndent(option.label);
+                      const active = option.id === value;
+                      return (
+                        <button
+                          key={option.id}
+                          type="button"
+                          tabIndex={-1}
+                          title={option.title || chipLabel}
+                          onClick={() => selectSingle(option.id)}
+                          className={`max-w-[11rem] truncate rounded-[6px] border px-1.5 py-0.5 text-[11px] leading-4 transition-colors ${
+                            active
+                              ? "border-blue-300 bg-blue-50 font-medium text-blue-700"
+                              : "border-slate-200 bg-slate-50 text-slate-600 hover:border-blue-300 hover:bg-blue-50 hover:text-blue-700"
+                          }`}
+                        >
+                          {chipLabel}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
             </div>
           ) : null}
 

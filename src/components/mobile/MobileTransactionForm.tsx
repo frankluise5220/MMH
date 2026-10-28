@@ -11,6 +11,7 @@ import { CalcInput } from "@/components/CalcInput";
 import { DateStepper } from "@/components/DateStepper";
 import { EntryAttachmentButton, uploadEntryAttachmentFiles } from "@/components/EntryAttachmentPanel";
 import { buildCategoryTreeOptions } from "@/components/categorySmartSelect";
+import { buildCategoryQuickPickGroups, useCategoryUsage } from "@/lib/client/category-usage";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { recordRecentAccounts } from "@/lib/client/recentAccounts";
 import { REQUIRED_FIELD_CLASS } from "@/lib/client/required-field";
@@ -110,6 +111,17 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
       ...buildCategoryTreeOptions(availableCategories, t),
     ],
     [availableCategories, t],
+  );
+  /** 搜索框下方的快捷分类：最近使用 5 个 + 常用分类（与第一排去重）。 */
+  const categoryUsage = useCategoryUsage(open);
+  const categoryQuickPicks = useMemo(
+    () => buildCategoryQuickPickGroups({
+      usage: categoryUsage,
+      availableIds: categoryOptions.filter((option) => option.id).map((option) => option.id),
+      labels: { recent: t("categoryQuickPick.recent"), frequent: t("categoryQuickPick.frequent") },
+      frequentLimit: 5,
+    }),
+    [categoryOptions, categoryUsage, t],
   );
 
   useEffect(() => {
@@ -380,7 +392,7 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
                 onChange={(value) => update("categoryId", value)}
                 options={categoryOptions}
                 placeholder={t("mobileTxForm.uncategorized")}
-                behavior={{ search: true, density: "regular", minDropdownWidth: 340, dropdownMaxHeight: 320 }}
+                behavior={{ search: true, density: "regular", minDropdownWidth: 340, dropdownMaxHeight: 320, quickPicks: categoryQuickPicks }}
               />
             </div>
           </label>
