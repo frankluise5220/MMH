@@ -52,7 +52,7 @@ import { RefreshNavButton } from "@/components/RefreshNavButton";
 import { AddNavButton } from "@/components/AddNavButton";
 
 import { AdvancedDataTable, ROW_ACTION_BUTTON_BOX_CLASS, type AdvancedDataTableColumn, type AdvancedDataTableSummaryRow } from "@/components/AdvancedDataTable";
-import { ViewExcelImportMenuButton, exportRowsToXlsx } from "@/components/ViewExcelImportMenuButton";
+import { HANDSET_HIDDEN_CLASS, ViewExcelImportMenuButton, exportRowsToXlsx } from "@/components/ViewExcelImportMenuButton";
 import { DetailTablePaginationControls } from "@/components/DetailTablePaginationControls";
 
 
@@ -3222,6 +3222,7 @@ export function FundShell(props: Props) {
 
             {!isMetalAccount && !isWealthAccount ? (
               <ViewExcelImportMenuButton
+                className={HANDSET_HIDDEN_CLASS}
                 kind="fund"
                 accountId={accountId}
                 fundAccountName={selectedAccount?.name ?? t("viewImport.fundAccount")}
@@ -3582,7 +3583,7 @@ export function FundShell(props: Props) {
                   type="button"
                   onClick={() => void exportXlsx("selectedFunds")}
                   disabled={selectedFundCodes.size === 0}
-                  className="flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white text-slate-600 hover:bg-blue-50 hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-40"
+                  className={`flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white text-slate-600 hover:bg-blue-50 hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-40 ${HANDSET_HIDDEN_CLASS}`}
                   title={t("fundShell.export.selectedDetail", { kind: isWealthAccount ? t("fundShell.kind.wealth") : t("txForm.fund"), count: selectedFundCodes.size })}
                   aria-label={t("fundShell.export.selectedDetail", { kind: isWealthAccount ? t("fundShell.kind.wealth") : t("txForm.fund"), count: selectedFundCodes.size })}
                 >
@@ -3719,7 +3720,7 @@ export function FundShell(props: Props) {
             </div>
 
             {isMetalAccount || isWealthAccount ? (
-            <div className="relative" ref={exportRef}>
+            <div className={`relative ${HANDSET_HIDDEN_CLASS}`} ref={exportRef}>
 
               <button onClick={() => setShowExportMenu(!showExportMenu)} className="h-6 px-2 rounded border border-slate-200 bg-white text-slate-500 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-1" title={t("viewImport.exportExcel")}>
 
@@ -3793,7 +3794,6 @@ export function FundShell(props: Props) {
                 const profit = e.realizedProfit != null && (e.fundSubtype === "redeem" || e.fundSubtype === "dividend_cash")
                   ? toNumber(e.realizedProfit)
                   : null;
-                const selected = selectedIds.has(e.id);
                 const businessLinkInfo = entryBusinessLinkInfo(e);
                 const businessLinkTitle = businessLinkInfo.active
                   ? (businessLinkInfo.labels.length > 0 ? businessLinkInfo.labels.join("；") : t("fundShell.linkedCashFlow"))
@@ -3808,15 +3808,7 @@ export function FundShell(props: Props) {
                 return (
                   <article
                     key={e.id}
-                    className={`rounded-lg border bg-white shadow-sm transition-colors ${
-                      selected ? "border-blue-200 bg-blue-50/70" : "border-slate-200"
-                    }`}
-                    onClick={() => setSelectedIds((prev) => {
-                      const next = new Set(prev);
-                      if (next.has(e.id)) next.delete(e.id);
-                      else next.add(e.id);
-                      return next;
-                    })}
+                    className="rounded-lg border border-slate-200 bg-white shadow-sm transition-colors"
                     onDoubleClick={() => {
                       if (!isUnitsReconcile) openDetailEdit(e.id);
                     }}
@@ -3872,25 +3864,11 @@ export function FundShell(props: Props) {
                     </div>
 
                     <div
-                      className="mt-3 flex items-center justify-between border-t border-slate-100 px-3 py-2"
+                      className="mt-3 flex items-center justify-end border-t border-slate-100 px-3 py-2"
                       onClick={(ev) => ev.stopPropagation()}
                       onDoubleClick={(ev) => ev.stopPropagation()}
                     >
-                      <label className="flex h-8 items-center gap-2 text-xs text-slate-500">
-                        <input
-                          type="checkbox"
-                          checked={selected}
-                          onChange={() => setSelectedIds((prev) => {
-                            const next = new Set(prev);
-                            if (next.has(e.id)) next.delete(e.id);
-                            else next.add(e.id);
-                            return next;
-                          })}
-                          className="h-4 w-4 accent-blue-600"
-                          aria-label={t("fundShell.selectDetailAria", { kind: isWealthAccount ? t("fundShell.kind.wealth") : t("txForm.fund") })}
-                        />
-                        {t("fundShell.select")}
-                      </label>
+                      {/* 手机卡片不提供多选：批量编辑/删除按钮挂在面板顶部工具条，滚到卡片时看不到任何反馈。 */}
                       {/* 手机卡片的操作栏整体放大到 32px：只重写同一组比例变量，按钮本身不写尺寸。 */}
                       <div className="flex items-center gap-1.5 [--mmh-row-action-btn:32px] [--mmh-row-action-icon:19px]">
                         <BasicDetailReconcileLockButton entryId={String(e.id ?? "")} reconciled={locked} asButton={false} />

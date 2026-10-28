@@ -10,17 +10,19 @@ import { DebitBalanceReconcileButton } from "@/components/DebitBalanceReconcileB
 import { DetailTablePaginationControls } from "@/components/DetailTablePaginationControls";
 import { DetailViewClient, type DetailEntry } from "@/components/DetailViewClient";
 import { foldRunningBalancesInDescOrder, removeEntriesAndUpdateRunningBalances } from "@/lib/detail-running-balance";
-import { ViewExcelImportMenuButton } from "@/components/ViewExcelImportMenuButton";
+import { HANDSET_HIDDEN_CLASS, ViewExcelImportMenuButton } from "@/components/ViewExcelImportMenuButton";
 import { FINANCE_DATA_CHANGED_EVENT, type FinanceDataChangedDetail } from "@/lib/client/refresh";
 import { formatDateUtc, todayDateBusinessYmd } from "@/lib/date-utils";
 import { getTimeZonePreference } from "@/lib/client/appPreferences";
 import { getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
 import {
   DETAIL_PAGE_SIZE_OPTIONS,
+  DETAIL_PRELOAD_IDLE_DELAY_MS,
   clampDetailPage as clampPage,
   normalizeDetailPageSize,
   readStoredDetailPreference,
   writeStoredDetailPreference,
+  writeStoredDetailRangePreference,
 } from "@/lib/detail-pagination-preference";
 import { isAbortError } from "@/lib/client/detail-all-entries";
 import {
@@ -437,18 +439,33 @@ export function BasicDetailPanel({
   const hasDetailDateRange = !!(detailDateRange.from || detailDateRange.to);
   // 观测窗口改设置后 RSC 会带着新的 `initialDateRange` 重渲染。只在**服务端那份
   // 真的变了**时应用：用户自己拖滑轨改的范围不能因为一次 router.refresh 就被重置。
-  const lastInitialRangeKeyRef = useRef(initialDateRange ? `${initialDateRange.from}~${initialDateRange.to}` : "");
+  const initialRangeKey = initialDateRange ? `${initialDateRange.from}~${initialDateRange.to}` : "";
+  const lastInitialRangeKeyRef = useRef(initialRangeKey);
   useEffect(() => {
     const nextKey = initialDateRange ? `${initialDateRange.from}~${initialDateRange.to}` : "";
     if (nextKey === lastInitialRangeKeyRef.current) return;
     lastInitialRangeKeyRef.current = nextKey;
-    setDetailDateRange(initialDateRange ? { from: initialDateRange.from, to: initialDateRange.to } : { from: "", to: "" });
-  }, [initialDateRange]);
+    const nextRange = initialDateRange ? { from: initialDateRange.from, to: initialDateRange.to } : { from: "", to: "" };
+    setDetailDateRange(nextRange);
+    // 服务端默认观测窗口改了：这是全局意图，所有视图都跟着重置，并把落盘的那份
+    // 一起更新 —— 否则下次进这个账户又会被旧范围顶回去。
+    writeStoredDetailRangePreference(accountId, nextRange.from || nextRange.to ? nextRange : null);
+  }, [accountId, initialDateRange]);
   const locatingDateRef = useRef(false);
   const accountScopeKey = `${accountId}:${isInvestAccount ? "invest" : "detail"}`;
   const lastAccountScopeKeyRef = useRef(accountScopeKey);
   const lastFocusEntryIdRef = useRef(focusEntryId ?? "");
   const lastClientPaginationKeyRef = useRef("");
+  /**
+   * RSC 直出的那一页是「谁」：账户 + 观测窗口 + 行数 + 首行 id。
+   *
+   * 「自适应」的页大小要等表格量完才知道，服务端按 cookie 里的旧值取数（至少
+   * `DETAIL_PAGED_FIRST_FETCH_ROWS` 行），量完往往差几行。以前页大小一变就当成
+   * 「窗口变了」重新请求一次 `page=1&pageSize=N`——首屏已经显示出来了，这一次
+   * 往返纯粹是白花：它占着服务端去重算整条账本 CTE，用户紧接着切下一个账户时
+   * RSC 渲染就得排队。只要当前窗口还能在这份行里本地切片，就不再发请求。
+   */
+  const rscPageWindowRef = useRef<{ accountId: string; rangeKey: string; count: number; headId: string } | null>(null);
   const clientPaginationEnabled = !hasDetailFilters;
   /**
    * 页码 / 每页行数 / 全部 / 自适应——**唯一**的状态点。三个事件推动它：
@@ -550,18 +567,27 @@ export function BasicDetailPanel({
    * - 在途任务不会因为卸载而作废，也不会被重复发起第二份。
    */
   /**
-   * 行数据只有一份。
+   * 行数据的缓存范围：**先读当前账户**。
    *
-   * 现金类账户（`deriveFromAllCashCache`）不再单独拉自己的明细，而是复用
-   * `__all_cash__` 那份缓存：两者的行只差一个筛选条件（本账户 / 作为收款侧，
-   * 外加排除外币转换行），字段逐行相同，顺序也是同一套排序键的子序列。
-   * 余额不在缓存里，筛出来之后本地补（`foldRunningBalancesInDescOrder`，
-   * 与服务端 `balanced` CTE 等价，实测逐分一致）。
+   * 曾经的做法是「现金类账户一律复用 `__all_cash__` 那份缓存」：行只差一个筛选
+   * 条件（本账户 / 作为收款侧，外加排除外币转换行），字段逐行相同，能省一份内存。
+   * 代价是打开一个只有几条记录的零钱 / 钱包账户，也要把整个「全部收支」集合
+   * （十万级行）分三块并发拉一遍再本地筛 —— 小账户被大集合拖死。
    *
-   * 非现金账户（贷款 / 往来款 / 存款 / 保险 / 基金理财）不在那份集合里，
-   * 仍然按自己的 accountId 各存一份。
+   * 现在只有那份缓存**已经整份到齐**（用户先看过「全部收支」）才顺手复用；否则
+   * 一律按本账户自己的 `accountId` 取数。语义完全一样（本账户的行就是同一批行、
+   * 同一套排序键的子序列），但小账户只查自己的几十行；「全部」按钮在单账户视图
+   * 里本来就意味着「本账户的全部」，不需要全账簿。
+   *
+   * 走到复用分支时才需要本地筛 + 折余额（余额不在共享缓存里），见 `scopeEntriesOf`。
    */
-  const detailCacheScopeId = deriveFromAllCashCache ? ALL_CASH_DETAIL_SCOPE_ID : accountId;
+  const reuseSharedAllCash = useMemo(() => {
+    if (!deriveFromAllCashCache) return false;
+    const shared = peekDetailAll<DetailEntry>(ALL_CASH_DETAIL_SCOPE_ID);
+    return !!shared?.done;
+    // accountId 参与依赖：切换账户时要重新判断一次（同一实例会被复用）。
+  }, [accountId, deriveFromAllCashCache]);
+  const detailCacheScopeId = reuseSharedAllCash ? ALL_CASH_DETAIL_SCOPE_ID : accountId;
   const detailAllKey = detailAllCacheKey(detailCacheScopeId);
   const detailAllRangeKey = hasDetailDateRange ? serverDateRangeKey : undefined;
   const businessTodayKey = todayDateBusinessYmd(getTimeZonePreference());
@@ -573,10 +599,11 @@ export function BasicDetailPanel({
    * **一个数字**（列表同一条折叠链算出的「截至窗口起点前一天的账户余额」），
    * 于是「期初余额 + 窗口内本地折叠」=「服务端整表折叠」，网络上却只多一个数字。
    *
-   * 只有现金类账户走本地折叠（`deriveFromAllCashCache`）才需要；非现金账户那份缓存
-   * 是各自 accountId 拉的，行里本来就带着服务端算好的余额。
+   * 只有复用「全部收支」那份共享缓存（`reuseSharedAllCash`）才需要：它的行不带
+   * 本账户余额，要在本地折。按自己 accountId 拉的那份，行里本来就带着服务端算好的
+   * 余额，不需要期初余额，也不需要这一趟请求。
    */
-  const openingBalanceFrom = deriveFromAllCashCache ? detailDateRange.from : "";
+  const openingBalanceFrom = reuseSharedAllCash ? detailDateRange.from : "";
   const openingBalanceKey = openingBalanceFrom ? `${accountId}|${openingBalanceFrom}` : "";
   const [openingBalanceState, setOpeningBalanceState] = useState<{ key: string; value: number }>({ key: "", value: 0 });
   // key 不匹配时按 0 处理（换账户 / 改窗口起点的那一帧），拿到值后自动重折一次。
@@ -607,9 +634,15 @@ export function BasicDetailPanel({
     return () => controller.abort();
   }, [accountId, openingBalanceFrom, openingBalanceKey]);
 
-  /** 让共享缓存的行变成「本视图口径」：筛出本账户的行 + 补算余额。 */
+  /**
+   * 让缓存的行变成「本视图口径」。
+   *
+   * 按自己 accountId 拉的（`reuseSharedAllCash === false`）已经是本账户口径、余额
+   * 也由服务端算好，原样返回；复用 `__all_cash__` 那份时才需要筛出本账户的行并
+   * 本地补算余额。
+   */
   const scopeEntriesOf = useCallback((shared: DetailEntry[]) => {
-    if (!deriveFromAllCashCache) return shared;
+    if (!reuseSharedAllCash) return shared;
     const fromDay = detailDateRange.from;
     const own = shared.filter((entry) => {
       if (
@@ -622,7 +655,7 @@ export function BasicDetailPanel({
       return formatDateUtc(getDetailEntryDisplayDate(entry, accountId)) >= fromDay;
     });
     return foldRunningBalancesInDescOrder(own, accountId, accountKind, businessTodayKey, openingBalance);
-  }, [accountId, accountKind, businessTodayKey, deriveFromAllCashCache, detailDateRange.from, openingBalance]);
+  }, [accountId, accountKind, businessTodayKey, detailDateRange.from, openingBalance, reuseSharedAllCash]);
 
   const lastAppliedAllRef = useRef<{
     /**
@@ -772,15 +805,30 @@ export function BasicDetailPanel({
   // 之后翻到哪一页、把窗口缩小都只在本地切，不再产生请求。窗口放大到超出已拉范围时
   // 才重新拉一份更宽的 —— 缩窗永远不丢缓存。任务归 detail-all-store 所有，
   // 切页面、组件卸载都不会中断它。
+  //
+  // 但**分页模式**下这份整份明细只是备料：首屏那一页已由 RSC 直出，翻页/缩窗没它
+  // 也能按页取。以前它和首屏同时发起（3924 这种账户一次就是「500 行 + 5000 行」两
+  // 个整表查询），服务端 CPU 被自己占住，用户紧接着切下一个账户时 RSC 渲染就得排队
+  // ——实测同一个切换动作会从 1.3s 变成 2.3-3.2s。所以分页模式推后到首帧之后的空档
+  // 再拉；「全部」模式没有别的数据来源，仍然立刻开始。
   useEffect(() => {
     if (!clientPaginationEnabled) return;
-    ensureDetailAll<DetailEntry>({
-      key: detailAllKey,
-      accountId: detailCacheScopeId,
-      range: detailAllRangeKey,
-      errorMessage: t("basicDetail.loadFailed"),
-    });
-  }, [clientPaginationEnabled, detailAllKey, detailAllRangeKey, detailCacheScopeId, t]);
+    const start = () => {
+      ensureDetailAll<DetailEntry>({
+        key: detailAllKey,
+        accountId: detailCacheScopeId,
+        range: detailAllRangeKey,
+        errorMessage: t("basicDetail.loadFailed"),
+      });
+    };
+    if (detailAll) {
+      start();
+      return;
+    }
+    const timer = window.setTimeout(start, DETAIL_PRELOAD_IDLE_DELAY_MS);
+    // 期间又切了账户：这一份备料已经没人要了，别再压到服务端上。
+    return () => window.clearTimeout(timer);
+  }, [clientPaginationEnabled, detailAll, detailAllKey, detailAllRangeKey, detailCacheScopeId, t]);
 
   // 「全部」的加载由仓库推进，这里只订阅：整份到齐才重建表格（并发分块阶段
   // 只滚进度数字，不为每一块重建两万行），完成时收掉加载态。
@@ -891,6 +939,14 @@ export function BasicDetailPanel({
       setLocalEntries(entries);
       setLocalTotalCount(totalCount);
       setLocalOriginalCount(originalCount);
+      // 记下「这一份行是谁给的」：RSC 直出的首屏页按它自己的观测窗口取数，
+      // 客户端量出真实页大小后只要能在这份行里切片，就不该再问服务端要一次。
+      rscPageWindowRef.current = {
+        accountId,
+        rangeKey: initialDateRange ? `${initialDateRange.from}~${initialDateRange.to}` : "",
+        count: entries.length,
+        headId: entries[0]?.id ?? "",
+      };
     }
     if (accountScopeChanged || focusEntryChanged) {
       lastAccountScopeKeyRef.current = accountScopeKey;
@@ -900,6 +956,13 @@ export function BasicDetailPanel({
       const nextDetailAll = nextFocusEntryId ? initialDetailAll : storedPreference?.detailAll ?? initialDetailAll;
       const nextAutoFit = nextFocusEntryId ? initialAutoFit : storedPreference?.autoFit ?? initialAutoFit;
       const nextTotalPages = Math.max(1, Math.ceil(totalCount / nextPageSize));
+      // 时间轴范围也按视图各自一份：换账户后不能沿用上一个账户选的那段，要恢复
+      // 这个账户自己存的范围；没存过就用服务端给这个视图算的默认观测窗口。
+      // 顺带把 `lastInitialRangeKeyRef` 对齐，免得上面那个 effect 再把默认值盖回来。
+      const nextRange = storedPreference?.range
+        ?? (initialDateRange ? { from: initialDateRange.from, to: initialDateRange.to } : { from: "", to: "" });
+      lastInitialRangeKeyRef.current = initialRangeKey;
+      setDetailDateRange(nextRange);
       // 换账户 / 换作用域：整份替换这一个状态点；视口行数清空（等表格量完新容器
       // 再切片），所以 fitRows 显式置 null。
       replaceDetailPagination({
@@ -909,7 +972,7 @@ export function BasicDetailPanel({
         fitRows: null,
       });
     }
-  }, [accountId, accountScopeKey, clientPaginationEnabled, entries, focusEntryId, initialAutoFit, initialDetailAll, initialPage, normalizedInitialPageSize, originalCount, replaceDetailPagination, totalCount]);
+  }, [accountId, accountScopeKey, clientPaginationEnabled, entries, focusEntryId, initialAutoFit, initialDateRange, initialDetailAll, initialPage, initialRangeKey, normalizedInitialPageSize, originalCount, replaceDetailPagination, totalCount]);
 
   useEffect(() => {
     const handleFinanceChange = (event: Event) => {
@@ -1041,12 +1104,28 @@ export function BasicDetailPanel({
     // 默认观测窗口也由 RSC 带上了（`initialDateRange`）：首屏那页、`共 N 条`、页码
     // 总数都是范围口径，客户端不必再按同一个范围重复取一遍。
     if (isFirstRun && !detailAll && (initialDateRange || !hasDetailDateRange)) return;
+    // 首屏那份行还在、还是同一个账户同一个观测窗口、而且第 1 页能整页切片出来：
+    // 量出来的页大小（比如 22）只是「一屏放几行」，RSC 给的行数够用，直接在本地切。
+    // 只有真的要换窗口（翻页到第 2 页、拉宽观测范围、行已被别的取数替换）才发请求。
+    const rscPage = rscPageWindowRef.current;
+    if (
+      !detailAll
+      && safePage === 1
+      && rscPage != null
+      && rscPage.accountId === accountId
+      && rscPage.rangeKey === serverDateRangeKey
+      && rscPage.count >= Math.min(pageSize, localTotalCount)
+      && localEntries.length === rscPage.count
+      && (localEntries[0]?.id ?? "") === rscPage.headId
+    ) {
+      return;
+    }
 
     const controller = new AbortController();
     reloadDetailPageRef.current(controller.signal);
 
     return () => controller.abort();
-  }, [accountId, clientPaginationEnabled, detailAll, hasDetailDateRange, initialDateRange, pageSize, safePage, serverDateRangeKey]);
+  }, [accountId, clientPaginationEnabled, detailAll, hasDetailDateRange, initialDateRange, localEntries, localTotalCount, pageSize, safePage, serverDateRangeKey]);
 
   // 时间轴两端（双滑块的可拖范围）永远取自**全量**数据：不受时间范围本身、也不受
   // 日期列筛选、URL 筛选影响，否则拖一次区间滑轨就缩到刚选的范围，再也拖不回更早
@@ -1056,33 +1135,42 @@ export function BasicDetailPanel({
     const controller = new AbortController();
     const params = new URLSearchParams({ accountId, bounds: "1" });
     setServerDateBoundsLoading(true);
-    fetch(`/api/v1/transactions/detail?${params.toString()}`, {
-      cache: "no-store",
-      signal: controller.signal,
-    })
-      .then(async (response) => {
-        const payload = await response.json().catch(() => null);
-        if (!response.ok || !payload?.ok) return;
-        const bounds = payload.data?.dateBounds;
-        if (bounds && typeof bounds.min === "string" && typeof bounds.max === "string") {
-          setServerDateBounds({ min: bounds.min, max: bounds.max });
-        }
+    // 这一趟（整表 min/max，`no-store`）只给时间轴滑轨用，首屏一行都用不上；和首屏
+    // 同时发等于替下一次「切账户」的 RSC 渲染争 CPU，所以推到首帧之后。
+    const timer = window.setTimeout(() => {
+      fetch(`/api/v1/transactions/detail?${params.toString()}`, {
+        cache: "no-store",
+        signal: controller.signal,
       })
-      .catch((error) => {
-        if (isAbortError(error)) return;
-        console.error("Load transaction detail date bounds failed:", error);
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setServerDateBoundsLoading(false);
-      });
-    return () => controller.abort();
+        .then(async (response) => {
+          const payload = await response.json().catch(() => null);
+          if (!response.ok || !payload?.ok) return;
+          const bounds = payload.data?.dateBounds;
+          if (bounds && typeof bounds.min === "string" && typeof bounds.max === "string") {
+            setServerDateBounds({ min: bounds.min, max: bounds.max });
+          }
+        })
+        .catch((error) => {
+          if (isAbortError(error)) return;
+          console.error("Load transaction detail date bounds failed:", error);
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) setServerDateBoundsLoading(false);
+        });
+    }, DETAIL_PRELOAD_IDLE_DELAY_MS);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
   }, [accountId]);
 
   /** 时间范围变化 = 数据范围变化：回到第 1 页并重新取数（不是本地筛当前页）。 */
   const handleDetailDateRangeChange = useCallback((next: { from: string; to: string }) => {
     setDetailDateRange(next);
+    // 按视图落盘：下次回到这个账户 / 刷新页面，首屏仍按这段范围取数。
+    writeStoredDetailRangePreference(accountId, next.from || next.to ? next : null);
     goDetailPage(1);
-  }, [goDetailPage]);
+  }, [accountId, goDetailPage]);
 
   /**
    * 当前页要显示的行：
@@ -1382,8 +1470,9 @@ export function BasicDetailPanel({
             : t("basicDetail.loadingSuffix")) : ""}</span>
               {showImportExport ? (
                 <>
-                  <span className="text-slate-400">|</span>
+                  <span className={`${HANDSET_HIDDEN_CLASS} text-slate-400`}>|</span>
                   <ViewExcelImportMenuButton
+                    className={HANDSET_HIDDEN_CLASS}
                     kind="normal"
                     accountId={accountId}
                     accountName={accountName || accountLabel || t("basicDetail.currentAccount")}

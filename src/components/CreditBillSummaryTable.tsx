@@ -10,7 +10,7 @@ import { DateStepper } from "@/components/DateStepper";
 import { CreditCardBillingDaySettingsDialog } from "@/components/CreditCardBillingDaySettingsDialog";
 import { currentBillingDayFromRules, type CreditBillingDayRuleView } from "@/lib/credit/billing-day-rules";
 import EditBillAmount from "@/components/EditBillAmount";
-import { ViewExcelImportMenuButton, exportRowsToXlsx } from "@/components/ViewExcelImportMenuButton";
+import { HANDSET_HIDDEN_CLASS, ViewExcelImportMenuButton, exportRowsToXlsx } from "@/components/ViewExcelImportMenuButton";
 import { formatMoney } from "@/lib/format";
 import {
   buildCreditCardInstallmentSchedule,
@@ -728,6 +728,7 @@ export function CreditBillSummaryTable({
                 {t("creditBillSummary.installment")}
               </button>
               <ViewExcelImportMenuButton
+                className={HANDSET_HIDDEN_CLASS}
                 kind="normal"
                 accountId={accountId}
                 accountName={accountName}

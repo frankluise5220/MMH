@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { ChevronRight, Loader2, Settings } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
+import { useIsMobileDevice } from "@/components/DeviceKindProvider";
 import { SettingsCatalogIcon } from "@/components/settings/SettingsCatalogIcon";
 import { getSettingsItemsForSurface, isBasicDataSettingsPath, localizeSettingsItem, mergeBasicDataNavItems, type SettingsCatalogItem } from "@/lib/settings/catalog";
 
@@ -15,6 +16,9 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
   const [pendingHref, setPendingHref] = useState<string | null>(null);
   const [navItems, setNavItems] = useState<SettingsCatalogItem[]>(staticNavItems);
   const { t } = useI18n();
+  // 设置目录用「设备」决定形态：手机走「我的」目录页 + 子页返回条，
+  // 桌面设备保留左侧导航（窗口窄也保留，不再退化成移动版）。
+  const isMobileDevice = useIsMobileDevice();
 
   // Refresh the nav from the catalog API after mount so conditionally hidden
   // entries (e.g. the sponsor page) appear when the server unlocks them.
@@ -43,8 +47,9 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
 
   return (
     <div className="flex-1 flex min-h-0 min-w-0">
-      {/* Left navigation */}
-      <nav className="hidden w-44 shrink-0 flex-col border-r border-slate-200 bg-white md:flex">
+      {/* Left navigation：桌面形态专属，手机端用「我的」目录页代替 */}
+      {isMobileDevice ? null : (
+      <nav className="flex w-44 shrink-0 flex-col border-r border-slate-200 bg-white">
         <div className="h-12 flex items-center px-4 border-b border-slate-100 shrink-0">
           <Settings className="w-4 h-4 text-slate-500 mr-2" />
           <span className="font-semibold text-sm text-slate-800">{t("nav.settings")}</span>
@@ -84,12 +89,13 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
           })}
         </div>
       </nav>
+      )}
 
       {/* Right content */}
       <div className="flex-1 min-w-0 overflow-auto bg-slate-50">
         {/* h-full：让账户管理等 fillHeight 表格页拿到确定视口高度（内部滚动+虚拟化）；
             其余页面内容自然撑高时 overflow-auto 兜底滚动。 */}
-        <div className="flex h-full min-h-0 flex-col p-3 md:p-4">
+        <div className={`flex h-full min-h-0 flex-col ${isMobileDevice ? "p-3" : "p-4"}`}>
           {children}
         </div>
       </div>

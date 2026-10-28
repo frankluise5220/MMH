@@ -227,6 +227,8 @@ backup-deleted-*.json
 *~RF*.TMP
 
 # local probes / test data
+.tmp/
+.mmh-verify/
 .tmp-chrome-mobile/
 .tmp_mmh149_*
 .tmp-*

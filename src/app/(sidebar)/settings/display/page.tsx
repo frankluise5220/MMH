@@ -1,8 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 
+import { useIsMobileDevice } from "@/components/DeviceKindProvider";
 import SettingsSwitch from "@/components/settings/SettingsSwitch";
 
 import {
@@ -57,7 +59,7 @@ import {
 import { kindLabel } from "@/lib/account-kinds";
 import { CurrencySmartSelect } from "@/components/CurrencySmartSelect";
 import { useI18n } from "@/lib/i18n";
-import { GripVertical, X } from "lucide-react";
+import { ChevronLeft, GripVertical, X } from "lucide-react";
 
 type ColorScheme = "red_up_green_down" | "green_up_red_down";
 
@@ -156,9 +158,68 @@ function SettingRow({
         <div className="text-sm font-medium text-slate-800">{title}</div>
         {showDesc ? <div className="mt-1 text-xs text-slate-500">{desc}</div> : null}
       </div>
-      <div className={wide ? "min-w-0 flex-1 lg:max-w-none" : "min-w-0 lg:min-w-[280px] lg:max-w-xl"}>
+      {/* 右侧控件一律贴右：原来的 min-w-[280px] 在窄栏里撑破行宽，控件停在容器左端，
+          看起来像"跑到左边"；flex-1 + justify-end 让它跟着行右边界走。 */}
+      <div
+        className={
+          wide
+            ? "min-w-0 flex-1 @container lg:max-w-none"
+            : "min-w-0 lg:flex lg:flex-1 lg:max-w-xl lg:items-center lg:justify-end"
+        }
+      >
         {children}
       </div>
+    </div>
+  );
+}
+
+/**
+ * 手机端设置页的卡片分组：大圆角 + 浅色分组标题，和「我的」目录页保持同一套外观。
+ * 桌面端用 `panel-surface` 列表，两者不共用，避免一边改动影响另一边。
+ */
+function MobileSettingGroup({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section className="overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-slate-200/70">
+      <h3 className="border-b border-slate-100 px-4 py-2.5 text-xs font-semibold text-slate-500">{title}</h3>
+      <div className="divide-y divide-slate-100">{children}</div>
+    </section>
+  );
+}
+
+/**
+ * 手机端的一行设置。`inline` 用于开关这类右侧控件，其余（下拉、滑块、多选芯片）
+ * 铺满整行宽度 —— 手机上用手指点，横向挤在右侧按不准。
+ */
+function MobileSettingRow({
+  title,
+  desc,
+  hideDesc = false,
+  inline = false,
+  children,
+}: {
+  title: string;
+  desc?: string;
+  hideDesc?: boolean;
+  inline?: boolean;
+  children: ReactNode;
+}) {
+  const showDesc = Boolean(desc) && !hideDesc;
+  if (inline) {
+    return (
+      <div className="flex min-h-14 items-center justify-between gap-3 px-4 py-3">
+        <div className="min-w-0">
+          <div className="text-sm font-medium text-slate-900">{title}</div>
+          {showDesc ? <div className="mt-0.5 text-xs leading-5 text-slate-500">{desc}</div> : null}
+        </div>
+        <div className="shrink-0">{children}</div>
+      </div>
+    );
+  }
+  return (
+    <div className="px-4 py-3.5">
+      <div className="text-sm font-medium text-slate-900">{title}</div>
+      {showDesc ? <div className="mt-0.5 text-xs leading-5 text-slate-500">{desc}</div> : null}
+      <div className="mt-2.5">{children}</div>
     </div>
   );
 }
@@ -734,9 +795,233 @@ export default function DisplaySettingsPage() {
   ];
   const selectedColorOption = colorOptions.find((opt) => opt.value === scheme) ?? colorOptions[0];
   const rowHeightSliderIndex = Math.max(0, ROW_HEIGHT_OPTIONS.indexOf(rowHeightMode));
+  // 手机端下拉：44px 高，刚好一个手指的点击热区。
+  const mobileSelectClass = "h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm text-slate-800 disabled:opacity-60";
+  // 两套 UI 树按「设备」二选一，不按窗口宽度 —— md: 断点只负责几何细节，
+  // 桌面浏览器把窗口拉窄仍然是下面那套 panel 列表，不会变成手机版。
+  const isMobileDevice = useIsMobileDevice();
 
   return (
-    <div className="space-y-5">
+    <>
+      {/* 手机端专版：独立外壳（返回条 + 分组卡片 + 大号触摸控件）。
+          桌面端仍是下面那套 panel 列表，两套共用同一批状态与保存函数，不会各存一份。 */}
+      {isMobileDevice ? (
+      <div className="space-y-3 pb-6">
+        <header className="sticky top-0 z-20 -mx-3 -mt-3 flex h-12 items-center gap-1 border-b border-slate-200 bg-white/95 pl-1 pr-2 backdrop-blur">
+          <Link
+            href="/settings"
+            prefetch={false}
+            className="flex h-9 items-center gap-0.5 rounded-lg px-1.5 text-sm font-medium text-blue-600 active:bg-slate-100"
+          >
+            <ChevronLeft className="h-5 w-5" aria-hidden="true" />
+            {t("settings.display.mobile.backToProfile")}
+          </Link>
+          <span className="min-w-0 flex-1 truncate text-center text-sm font-semibold text-slate-900">
+            {t("settings.display.title")}
+          </span>
+          <span className="w-[64px] shrink-0" aria-hidden="true" />
+        </header>
+
+        <MobileSettingGroup title={t("settings.display.mobile.appearance")}>
+          <MobileSettingRow title={t("settings.display.colorScheme")} desc={t("settings.display.colorSchemeDesc")} hideDesc={hideSettingDescriptions}>
+            <select
+              value={scheme}
+              onChange={(e) => void saveScheme(e.target.value as ColorScheme)}
+              disabled={savingScheme}
+              className={mobileSelectClass}
+              aria-label={t("settings.display.colorScheme")}
+            >
+              {colorOptions.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+            <div className="mt-1.5 flex items-center gap-1 text-xs text-slate-500" aria-live="polite">
+              <span className={`font-medium ${selectedColorOption.preview.up}`}>+1.23%</span>
+              <span className="text-slate-400">/</span>
+              <span className={`font-medium ${selectedColorOption.preview.down}`}>-0.56%</span>
+              {savingScheme ? <span className="ml-2 text-slate-400">{t("settings.display.applying")}</span> : null}
+            </div>
+          </MobileSettingRow>
+
+          <MobileSettingRow
+            title={t("settings.display.detailDateBackground")}
+            desc={t("settings.display.detailDateBackgroundDesc")}
+            hideDesc={hideSettingDescriptions}
+            inline
+          >
+            <SettingsSwitch
+              checked={detailDateBackground}
+              onCheckedChange={(next) => void updateDetailDateBackground(next)}
+              label={t("settings.display.detailDateBackground")}
+            />
+          </MobileSettingRow>
+
+        </MobileSettingGroup>
+
+        <MobileSettingGroup title={t("settings.display.mobile.language")}>
+          <MobileSettingRow title={t("settings.display.language")} desc={t("settings.display.languageDesc")} hideDesc={hideSettingDescriptions}>
+            <select
+              value={displayLanguage}
+              onChange={(e) => saveDisplayLanguage(e.target.value as DisplayLanguage)}
+              disabled={savingDisplayLanguage}
+              className={mobileSelectClass}
+              aria-label={t("settings.display.language")}
+            >
+              {DISPLAY_LANGUAGE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {t(option.labelKey)}
+                </option>
+              ))}
+            </select>
+          </MobileSettingRow>
+
+          <MobileSettingRow title={t("settings.display.dateFormat")} desc={t("settings.display.dateFormatDesc")} hideDesc={hideSettingDescriptions}>
+            <select
+              value={dateDisplayFormat}
+              onChange={(e) => void saveDateDisplayFormat(e.target.value as DateDisplayFormat)}
+              disabled={savingDateDisplayFormat}
+              className={mobileSelectClass}
+              aria-label={t("settings.display.dateFormat")}
+            >
+              {DATE_DISPLAY_FORMAT_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {t(option.labelKey)}
+                </option>
+              ))}
+            </select>
+          </MobileSettingRow>
+
+          <MobileSettingRow title={t("settings.display.baseCurrency")} desc={t("settings.display.baseCurrencyDesc")} hideDesc={hideSettingDescriptions}>
+            {/* SmartSelect 触发器默认 36px，比这一页其它下拉矮；只用 aria-haspopup 命中触发器，
+                不动旁边那个 28px 的「新增货币」小按钮。 */}
+            <div className="[&_[aria-haspopup]]:h-11">
+              <CurrencySmartSelect
+                value={baseCurrency}
+                onChange={(code) => void saveBaseCurrency(code)}
+                labelSystem={(code) => t(`entityForm.currency.${code.toLowerCase()}`, { defaultValue: code })}
+                placeholder={t("settings.display.baseCurrencyPlaceholder")}
+              />
+            </div>
+            {savingBaseCurrency ? <p className="mt-1 text-[11px] text-slate-400">{t("common.loading")}</p> : null}
+          </MobileSettingRow>
+
+          <MobileSettingRow title={t("settings.display.timeZone")} desc={t("settings.display.timeZoneDesc")} hideDesc={hideSettingDescriptions}>
+            <select
+              value={timeZone}
+              onChange={(e) => void saveTimeZone(e.target.value)}
+              disabled={savingTimeZone}
+              className={mobileSelectClass}
+              aria-label={t("settings.display.timeZone")}
+            >
+              {timeZoneOptions.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </MobileSettingRow>
+
+          <MobileSettingRow title={t("settings.display.accountFormat")} desc={t("settings.display.accountFormatDesc")} hideDesc={hideSettingDescriptions}>
+            <div className="flex flex-wrap gap-1.5">
+              {accountLabelFields.map((field) => {
+                const option = ACCOUNT_LABEL_FIELD_OPTIONS.find((item) => item.value === field);
+                if (!option) return null;
+                return (
+                  <button
+                    key={field}
+                    type="button"
+                    onClick={() => toggleAccountLabelField(field)}
+                    aria-label={t("settings.display.accountFormatRemove")}
+                    className="inline-flex h-9 items-center gap-1 rounded-lg border border-blue-200 bg-blue-50 px-2.5 text-xs font-medium text-blue-700 active:bg-blue-100"
+                  >
+                    {t(option.labelKey)}
+                    <X className="h-3.5 w-3.5 text-blue-400" aria-hidden="true" />
+                  </button>
+                );
+              })}
+            </div>
+            {unselectedAccountLabelFields.length > 0 ? (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                {unselectedAccountLabelFields.map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => toggleAccountLabelField(option.value)}
+                    className="inline-flex h-9 items-center rounded-lg border border-slate-200 bg-white px-2.5 text-xs text-slate-600 active:bg-slate-50"
+                  >
+                    + {t(option.labelKey)}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+            <div className="mt-2 flex items-center gap-3 text-xs text-slate-500">
+              <button
+                type="button"
+                onClick={() => void saveAccountLabelFields(DEFAULT_ACCOUNT_LABEL_FIELDS)}
+                className="text-blue-600 active:underline"
+              >
+                {t("settings.display.accountFormatReset")}
+              </button>
+              {savingAccountLabelFields ? <span className="text-slate-400">{t("settings.display.applying")}</span> : null}
+            </div>
+            <div className="mt-2.5 space-y-1 rounded-xl bg-slate-50 px-3 py-2">
+              <div className="text-[11px] text-slate-500">{t("settings.display.preview")}</div>
+              {accountFormatPreviews.map((preview) => (
+                <div key={preview.id} className="flex items-baseline justify-between gap-3">
+                  <span className="shrink-0 text-[11px] text-slate-400">{preview.label}</span>
+                  <span className="truncate text-xs text-slate-800" title={preview.text}>{preview.text}</span>
+                </div>
+              ))}
+            </div>
+          </MobileSettingRow>
+        </MobileSettingGroup>
+
+        <MobileSettingGroup title={t("settings.display.mobile.detailGroup")}>
+          <MobileSettingRow title={t("settings.display.detailWindow")} desc={t("settings.display.detailWindowDesc")} hideDesc={hideSettingDescriptions}>
+            <select
+              value={String(detailWindowYears)}
+              onChange={(e) => void updateDetailWindowYears(Number(e.target.value))}
+              disabled={savingDetailWindowYears}
+              className={mobileSelectClass}
+              aria-label={t("settings.display.detailWindow")}
+            >
+              {DETAIL_WINDOW_YEAR_OPTIONS.map((years) => (
+                <option key={years} value={years}>
+                  {years === 0 ? t("settings.display.detailWindowAll") : t("settings.display.detailWindowYears", { years })}
+                </option>
+              ))}
+            </select>
+          </MobileSettingRow>
+        </MobileSettingGroup>
+
+        {/* 只留手机上真的会变的选项：侧边栏分组、隐藏零余额、固定/收支/报销入口、
+            使用向导都只画在桌面侧边栏，表格行高只作用于桌面表格，手机上一律没有效果。 */}
+        <MobileSettingGroup title={t("settings.display.mobile.entryGroup")}>
+          <MobileSettingRow
+            title={t("settings.display.accountDropdownRestrictType")}
+            desc={t("settings.display.accountDropdownRestrictTypeDesc")}
+            hideDesc={hideSettingDescriptions}
+            inline
+          >
+            <SettingsSwitch
+              checked={accountDropdownRestrictType}
+              onCheckedChange={(next) => void updateAccountDropdownRestrictType(next)}
+              label={t("settings.display.accountDropdownRestrictType")}
+            />
+          </MobileSettingRow>
+          <MobileSettingRow title={t("settings.display.accountUsageSort")} desc={t("settings.display.accountUsageSortDesc")} hideDesc={hideSettingDescriptions} inline>
+            <SettingsSwitch
+              checked={accountUsageSortEnabled}
+              onCheckedChange={(next) => void updateAccountUsageSortEnabled(next)}
+              label={t("settings.display.accountUsageSort")}
+            />
+          </MobileSettingRow>
+        </MobileSettingGroup>
+      </div>
+      ) : (
+      <div className="space-y-5">
       <div>
         <h2 className="text-sm font-semibold text-slate-800">{t("settings.display.title")}</h2>
         <p className="mt-1 text-xs text-slate-500">{t("settings.display.description")}</p>
@@ -959,7 +1244,9 @@ export default function DisplaySettingsPage() {
       <section className="panel-surface overflow-hidden">
         <div>
           <SettingRow title={t("settings.display.accountFormat")} desc={t("settings.display.accountFormatDesc")} hideDesc={hideSettingDescriptions} wide>
-            <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:gap-4 xl:gap-6">
+            {/* 横排与否看容器宽度，不看视口：1280 视口下这一栏只有约 200px 可用，
+                `lg:` 按视口命中会把字段芯片压成竖排。 */}
+            <div className="flex flex-col gap-3 @3xl:flex-row @3xl:items-start @3xl:gap-4 @4xl:gap-6">
               <div className="min-w-0 flex-1">
                 <div className="flex min-h-8 flex-nowrap items-center gap-2 overflow-x-auto pb-1">
                   {accountLabelFields.length === 0 ? (
@@ -1048,7 +1335,7 @@ export default function DisplaySettingsPage() {
                   {savingAccountLabelFields ? <span className="text-slate-400">{t("settings.display.applying")}</span> : null}
                 </div>
               </div>
-              <div className="w-full shrink-0 rounded-[10px] border border-slate-200 bg-slate-50/70 px-3 py-2 lg:w-64 xl:w-72">
+              <div className="w-full shrink-0 rounded-[10px] border border-slate-200 bg-slate-50/70 px-3 py-2 @3xl:w-64 @4xl:w-72">
                 <div className="text-xs text-slate-500">{t("settings.display.preview")}</div>
                 <div className="mt-1 space-y-1">
                   {accountFormatPreviews.map((preview) => (
@@ -1063,6 +1350,8 @@ export default function DisplaySettingsPage() {
           </SettingRow>
         </div>
       </section>
-    </div>
+      </div>
+      )}
+    </>
   );
 }

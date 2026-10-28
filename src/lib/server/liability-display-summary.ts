@@ -1,4 +1,5 @@
 import { AccountKind, RegularInvestStatus } from "@prisma/client";
+import { cache } from "react";
 
 import { formatDateUtc, toNumber } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
@@ -36,7 +37,7 @@ type LiabilityDisplayFxConverter = {
   convertForTotal: (amount: number, currency?: string | null) => number;
 };
 
-export async function computeLiabilityDisplaySummary(
+async function _computeLiabilityDisplaySummary(
   ctx: Pick<HouseholdContext, "householdId" | "hidFilter">,
   fx?: LiabilityDisplayFxConverter | null,
 ): Promise<LiabilityDisplaySummary> {
@@ -228,3 +229,14 @@ export async function computeLiabilityDisplaySummary(
     net: totalReceivable - totalPayable,
   };
 }
+
+/**
+ * 请求级去重（React `cache`）。
+ *
+ * 侧栏（layout）和页面（`app/(sidebar)/page.tsx`）在同一次 RSC 渲染里都要这份
+ * 「应付 / 应收」汇总，两边传进来的 `ctx` 本来就是 `getCachedHouseholdScope()`
+ * 的同一个引用 —— 以前各算一遍（实测 187ms × 2，来回扫贷款 / 往来款全量流水）。
+ * 加上 `cache` 后同一次渲染只算一次；跨请求不复用，数据新鲜度不变。
+ * 带 `fx` 转换器的调用方（概况页）传的是各自的闭包，identity 不同，照旧各算一份。
+ */
+export const computeLiabilityDisplaySummary = cache(_computeLiabilityDisplaySummary);

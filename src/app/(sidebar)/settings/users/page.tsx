@@ -1393,7 +1393,7 @@ export default function UsersPage() {
           ) : null
         }
       >
-        <SettingsTable minWidth={820} maxWidth="full">
+        <SettingsTable minWidth={820} maxWidth="full" className="hidden md:block">
           {/* 列宽：状态列要放下「系统 / 本地用户 / 飞牛免密 / MMH 用户」四枚胶囊，
               是这一行里最长的内容，所以从用户/邮箱/登录保留各让出一点给它。 */}
           <colgroup>
@@ -1558,6 +1558,137 @@ export default function UsersPage() {
             )}
           </tbody>
         </SettingsTable>
+
+        {/* 手机：每条用户一张卡片 —— 六列表格在窄屏会把列头和操作按钮挤成竖排 */}
+        <ul className="divide-y divide-slate-100 overflow-hidden rounded-md border border-slate-200 bg-white md:hidden">
+          {users.length > 0 ? (
+            users.map((u) => (
+              <li key={u.id} className="px-3 py-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="truncate text-sm font-medium text-slate-800">{u.name}</div>
+                    <div className="truncate text-xs text-slate-500">{u.email || "—"}</div>
+                  </div>
+                  <span className={`shrink-0 rounded-full px-2 py-0.5 text-[11px] ${u.role === "admin"
+                    ? "bg-blue-50 text-blue-700"
+                    : u.role === "viewer"
+                      ? "bg-amber-50 text-amber-700"
+                      : "bg-slate-100 text-slate-500"
+                  }`}>
+                    {u.role === "admin"
+                      ? t("settings.users.role.admin")
+                      : u.role === "viewer"
+                        ? t("settings.users.role.viewer")
+                        : t("settings.users.role.user")}
+                  </span>
+                </div>
+                <div className="mt-2 flex flex-wrap items-center gap-1">
+                  {u.isSystem ? (
+                    <span className="rounded-full border border-emerald-700 bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-800">{t("settings.users.status.system")}</span>
+                  ) : null}
+                  <span className={`rounded-full border px-2 py-0.5 text-[11px] font-medium ${u.hasPassword
+                    ? "border-slate-700 bg-slate-100 text-slate-800"
+                    : "border-dashed border-slate-400 bg-white text-slate-400"
+                  }`}>
+                    {t("settings.users.status.local")}
+                  </span>
+                  {isFnosEnvironment ? (
+                    <span className={`rounded-full border px-2 py-0.5 text-[11px] font-medium ${u.fnosUid
+                      ? "border-sky-700 bg-sky-50 text-sky-800"
+                      : "border-dashed border-sky-300 bg-white text-sky-400"
+                    }`}>
+                      {t("settings.users.status.fnos")}
+                    </span>
+                  ) : null}
+                  {mmhEnabled ? (
+                    <span
+                      className={`rounded-full border px-2 py-0.5 text-[11px] font-medium ${u.registrationPrincipalId
+                        ? "border-violet-700 bg-violet-50 text-violet-800"
+                        : "border-dashed border-violet-300 bg-white text-violet-400"
+                      }`}
+                      title={mmhStatusHint(u)}
+                    >
+                      {t("settings.users.status.mmh")}
+                    </span>
+                  ) : null}
+                </div>
+                <div className="mt-2 flex items-center justify-between gap-2">
+                  <select
+                    value={u.sessionDays ?? 30}
+                    onChange={(event) => void saveUserSessionDays(u, Number(event.target.value))}
+                    disabled={!canManageUsers || savingSessionUserId === u.id}
+                    className="h-7 w-24 shrink-0 rounded-md border border-slate-200 bg-white px-1.5 text-[11px] text-slate-700 outline-none disabled:opacity-60"
+                    title={t("settings.users.sessionDaysTitle")}
+                  >
+                    {SESSION_DAY_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                  {canManageUsers ? (
+                    <div className="flex flex-wrap items-center justify-end gap-1.5">
+                      <SettingsActionButton
+                        label={t("settings.users.edit")}
+                        variant="edit"
+                        onClick={() => { setEditingUser(u); setShowModal(true); }}
+                      />
+                      {mmhEnabled && (
+                        <SettingsActionButton
+                          label={t(u.registrationPrincipalId
+                            ? "settings.users.rebind"
+                            : "settings.users.register")}
+                          variant="default"
+                          icon={<UserRoundPlus className="h-3.5 w-3.5" />}
+                          onClick={() => setRegisterTarget(u)}
+                        />
+                      )}
+                      {!u.hasPassword && (
+                        <SettingsActionButton
+                          label={t("settings.users.bindLocal")}
+                          variant="default"
+                          icon={<KeyRound className="h-3.5 w-3.5" />}
+                          onClick={() => setPasswordSetTarget(u)}
+                        />
+                      )}
+                      {isFnosEnvironment && !u.fnosUid && (
+                        <SettingsActionButton
+                          label={t("settings.users.register.bindFnid")}
+                          variant="default"
+                          icon={<UserRoundCheck className="h-3.5 w-3.5" />}
+                          onClick={() => setFnosBindTarget(u)}
+                        />
+                      )}
+                      {mmhEnabled && u.registrationPrincipalId && (
+                        <SettingsActionButton
+                          label={t("settings.users.unbind")}
+                          variant="delete"
+                          icon={<Unlink className="h-3.5 w-3.5" />}
+                          onClick={() => {
+                            setUnbindTarget(u);
+                            setUnbindPassword("");
+                            setUnbindError("");
+                          }}
+                        />
+                      )}
+                      {!u.isSystem ? (
+                        <SettingsActionButton
+                          label={t("settings.users.delete")}
+                          variant="delete"
+                          onClick={() => {
+                            setDeleteTarget(u);
+                            setDeletePassword("");
+                            setDeleteError("");
+                          }}
+                        />
+                      ) : null}
+                    </div>
+                  ) : null}
+                </div>
+              </li>
+            ))
+          ) : (
+            <li className="px-4 py-10 text-center text-sm text-slate-400">{t("settings.users.empty")}</li>
+          )}
+        </ul>
       </SettingsSection>
 
       {showModal && (

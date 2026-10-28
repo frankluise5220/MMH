@@ -6,7 +6,9 @@ import { ModalDragController } from "@/components/ModalDragController";
 import { PwaServiceWorkerRegistration } from "@/components/PwaServiceWorkerRegistration";
 import { ClientLogCollector } from "@/components/ClientLogCollector";
 import { I18nProvider } from "@/components/I18nProvider";
+import { DeviceKindProvider } from "@/components/DeviceKindProvider";
 import PreferencesSync from "@/components/PreferencesSync";
+import { getDeviceKind } from "@/lib/server/device-kind";
 import { DISPLAY_LANGUAGE_COOKIE } from "@/lib/server/i18n";
 import type { DisplayLanguage } from "@/lib/client/appPreferences";
 import { MMH_BASE_PATH, withBasePath } from "@/lib/base-path";
@@ -242,9 +244,12 @@ export default async function RootLayout({
   const store = await cookies();
   const raw = store.get(DISPLAY_LANGUAGE_COOKIE)?.value;
   const displayLanguage: DisplayLanguage = raw === "en-US" || raw === "ja-JP" ? raw : "zh-CN";
+  // 设备形态在服务端一次定好：子树里的客户端组件据此选 UI 树，形如
+  // `<html data-device="mobile">` 也让纯 CSS 场景能跟着切。
+  const deviceKind = await getDeviceKind();
 
   return (
-    <html lang={displayLanguage} suppressHydrationWarning>
+    <html lang={displayLanguage} data-device={deviceKind} suppressHydrationWarning>
       <body
         suppressHydrationWarning
         className="antialiased h-screen overflow-x-hidden overflow-y-hidden"
@@ -256,7 +261,9 @@ export default async function RootLayout({
             dangerouslySetInnerHTML={{ __html: gatewayPrefixScript }}
           />
         ) : null}
-        <I18nProvider initialLanguage={displayLanguage}>{children}</I18nProvider>
+        <DeviceKindProvider value={deviceKind}>
+          <I18nProvider initialLanguage={displayLanguage}>{children}</I18nProvider>
+        </DeviceKindProvider>
         <PreferencesSync />
         <ModalDragController />
         <PwaServiceWorkerRegistration />

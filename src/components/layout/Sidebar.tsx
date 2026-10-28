@@ -6,9 +6,9 @@ import { AccountKind } from "@prisma/client";
 import { SidebarClient } from "@/components/layout/SidebarClient";
 import { buildAccountDisplayOption, SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE, normalizeCreditCardLabelTemplate } from "@/lib/account-display";
 import { prisma } from "@/lib/db/prisma";
-import { computeInvestBalances } from "@/lib/invest-balance";
 import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
 import { getMaintainedAccountBalances } from "@/lib/server/account-balance";
+import { loadInvestBalances } from "@/lib/server/cached-data";
 import { computeLiabilityDisplaySummary } from "@/lib/server/liability-display-summary";
 import { getCachedHouseholdScope } from "@/lib/server/household-scope";
 import { isDepositAccount, isLoanOrSettlementAccountKind, isPureInvestmentAccount } from "@/lib/account-kind-utils";
@@ -38,7 +38,7 @@ async function getSidebarData() {
     "short_last4",
   );
 
-  const [household, accounts, investBalByAccountId] = await Promise.all([
+  const [household, accounts, investBalances] = await Promise.all([
     prisma.household.findUnique({
       where: { id: householdId },
       select: { id: true, name: true, baseCurrency: true },
@@ -60,8 +60,11 @@ async function getSidebarData() {
       },
       orderBy: [{ name: "asc" }],
     }),
-    computeInvestBalances(ctx),
+    // 与明细页共用同一份跨请求缓存（`invest-balances` tag，写操作会 revalidate）：
+    // 以前这里每次导航都重算一遍（实测 142ms），而且和页面上那份可能不是一个数。
+    loadInvestBalances(JSON.stringify(hidFilter)),
   ]);
+  const investBalByAccountId = new Map(Object.entries(investBalances));
 
   const cashBalanceAccounts = accounts
     .filter((account) => !isPureInvestmentAccount(account))

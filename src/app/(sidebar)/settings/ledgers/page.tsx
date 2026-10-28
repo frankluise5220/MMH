@@ -314,17 +314,17 @@ export default function LedgerSettingsPage() {
       ) : null}
 
       <section className="panel-surface overflow-hidden">
-        <div className="panel-header">
+        <div className="panel-header flex-wrap gap-2">
           <div>
             <div className="text-sm font-medium text-slate-800">{t("settings.ledgers.current")}</div>
             <div className="mt-1 text-xs text-slate-500">{active ? activeName : t("settings.ledgers.loading")}</div>
           </div>
-          <div className="flex shrink-0 items-center gap-2">
+          <div className="flex w-full flex-wrap items-center justify-end gap-2 md:w-auto md:flex-nowrap">
             <button
               type="button"
               onClick={() => loadHouseholds()}
               disabled={loading}
-              className="secondary-button h-8 gap-1.5 px-2.5 text-xs disabled:opacity-50"
+              className="secondary-button h-8 shrink-0 gap-1.5 whitespace-nowrap px-2.5 text-xs disabled:opacity-50"
             >
               <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
               {t("settings.ledgers.refresh")}
@@ -341,7 +341,8 @@ export default function LedgerSettingsPage() {
           </div>
         </div>
 
-        <div className="overflow-x-auto">
+        {/* 桌面：表格 */}
+        <div className="hidden overflow-x-auto md:block">
           <table className="w-full table-fixed text-sm">
             <thead>
               <tr className="border-b border-slate-200 bg-slate-50 text-xs font-medium text-slate-500">
@@ -459,6 +460,106 @@ export default function LedgerSettingsPage() {
             </tbody>
           </table>
         </div>
+
+        {/* 手机：每条账簿一张卡片 —— 四列表格在窄屏会把列头和操作按钮挤成竖排 */}
+        <ul className="divide-y divide-slate-100 bg-white md:hidden">
+          {loading ? (
+            <li className="px-4 py-8 text-center text-sm text-slate-500">{t("settings.ledgers.loadingRows")}</li>
+          ) : households.length === 0 ? (
+            <li className="px-4 py-8 text-center text-sm text-slate-500">{t("settings.ledgers.empty")}</li>
+          ) : (
+            households.map((household) => {
+              const isActive = household.id === activeId;
+              const isEditing = editingId === household.id;
+              const displayName = getHouseholdDisplayName(household);
+              const rowBusy = busy?.endsWith(household.id);
+              return (
+                <li key={household.id} className={`px-4 py-3 ${isActive ? "bg-blue-50/40" : ""}`}>
+                  {isEditing ? (
+                    <div className="flex items-center gap-2">
+                      <input
+                        value={editName}
+                        onChange={(event) => setEditName(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") void renameLedger(household.id);
+                          if (event.key === "Escape") {
+                            setEditingId(null);
+                            setEditName("");
+                          }
+                        }}
+                        autoFocus
+                        className="form-input h-8 min-w-0 flex-1"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => renameLedger(household.id)}
+                        disabled={rowBusy}
+                        className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white text-emerald-700 hover:bg-slate-50 disabled:opacity-50"
+                        title={t("common.save")}
+                      >
+                        <Check className="h-4 w-4" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingId(null);
+                          setEditName("");
+                        }}
+                        disabled={rowBusy}
+                        className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 hover:bg-slate-50 disabled:opacity-50"
+                        title={t("common.cancel")}
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="min-w-0 truncate text-sm font-medium text-slate-800">{displayName}</div>
+                      {isActive ? (
+                        <span className="inline-flex h-5 shrink-0 items-center rounded-full bg-blue-100 px-2 text-[11px] font-medium text-blue-700">{t("settings.ledgers.currentBadge")}</span>
+                      ) : (
+                        <span className="shrink-0 text-[11px] text-slate-400">{t("settings.ledgers.switchable")}</span>
+                      )}
+                    </div>
+                  )}
+                  <div className="mt-1 text-[11px] text-slate-500">{formatDate(household.createdAt)}</div>
+                  <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => startSwitch(household)}
+                      disabled={isActive || rowBusy}
+                      className="h-8 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                    >
+                      {t("settings.ledgers.switch")}
+                    </button>
+                    {isAdmin ? (
+                      <SettingsActionButton
+                        label={t("settings.ledgers.editName")}
+                        variant="edit"
+                        onClick={() => {
+                          setEditingId(household.id);
+                          setEditName(displayName);
+                        }}
+                        disabled={rowBusy}
+                      />
+                    ) : null}
+                    {isSystem ? (
+                      <SettingsActionButton
+                        label={isActive ? t("settings.ledgers.deleteDisabledHint") : t("settings.ledgers.delete")}
+                        variant="delete"
+                        onClick={() => {
+                          setError("");
+                          setDeleteForm({ householdId: household.id, confirmName: "", dbPassword: "" });
+                        }}
+                        disabled={isActive || households.length <= 1 || rowBusy}
+                      />
+                    ) : null}
+                  </div>
+                </li>
+              );
+            })
+          )}
+        </ul>
       </section>
 
       {showCreate ? (

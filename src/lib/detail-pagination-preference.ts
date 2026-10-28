@@ -42,6 +42,16 @@ export const DETAIL_ALL_FIRST_VIEWPORT_PAGE_SIZE = 60;
  * 在 31px 紧凑行高下 1860px、41px 行高下 2460px，够铺到 4K 全屏。
  */
 export const DETAIL_PAGED_FIRST_FETCH_ROWS = 60;
+/**
+ * 分页模式下「整份窗口预取」推迟多久开始（毫秒）。
+ *
+ * 首屏那一页由 RSC 直出，整份预取只是翻页 / 缩窗时的备料；和首屏同时发起只会把
+ * 服务端 CPU 占满，让用户紧接着的下一次「切账户」（又一次 RSC 渲染）排队 ——
+ * 实测同一次切换从 1.3s 掉到 2.3-3.2s。留出一帧渲染 + 一个空档再开始。
+ */
+export const DETAIL_PRELOAD_IDLE_DELAY_MS = 1500;
+
+export type DetailDateRangePreference = { from: string; to: string };
 
 type DetailPaginationPreference = {
   pageSize: number;
@@ -49,7 +59,34 @@ type DetailPaginationPreference = {
   detailAll: boolean;
   /** Auto-fit rows to the viewport height; manual size choice turns it off. */
   autoFit?: boolean;
+  /**
+   * 时间轴「显示范围」，**按视图（账户 / 全部收支）各自一份**。
+   *
+   * `null` = 用户没动过，用服务端算的默认观测窗口（`设置 → 显示 → 明细默认观测
+   * 窗口`）。以前范围只活在这个视图的组件状态里：切去别的账户再回来、或者刷新
+   * 一次页面就回落到默认窗口 —— 用户明明改过，看起来就是「被改回去了」。
+   */
+  range?: DetailDateRangePreference | null;
 };
+
+const DETAIL_DATE_PART_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** 空串 = 「该端不限」，合法日期串原样返回，别的一律当没写。 */
+export function normalizeDetailDatePart(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  return DETAIL_DATE_PART_RE.test(trimmed) ? trimmed : null;
+}
+
+/** 两端都为空（不限）时返回 null —— 与「没存过」等价，都走服务端默认窗口。 */
+export function normalizeDetailDateRange(from: unknown, to: unknown): DetailDateRangePreference | null {
+  const nextFrom = normalizeDetailDatePart(from);
+  const nextTo = normalizeDetailDatePart(to);
+  if (nextFrom === null || nextTo === null) return null;
+  if (!nextFrom && !nextTo) return null;
+  return { from: nextFrom, to: nextTo };
+}
 
 export function normalizeDetailPageSize(value: unknown, fallback = 40) {
   const parsed = typeof value === "number" ? value : parseInt(String(value ?? ""), 10);
@@ -79,23 +116,30 @@ export function detailPaginationCookieName(accountId: string) {
 }
 
 function encodeDetailPaginationPreference(pref: DetailPaginationPreference) {
+  const range = normalizeDetailDateRange(pref.range?.from, pref.range?.to);
   return encodeURIComponent(JSON.stringify({
     pageSize: normalizeDetailPageSize(pref.pageSize),
     detailPage: normalizeDetailPage(pref.detailPage),
     detailAll: pref.detailAll === true,
     autoFit: pref.autoFit !== false,
+    // 没存过范围时不写这两个键：cookie 保持原样，默认窗口口径也不会被空串占位。
+    ...(range ? { rangeFrom: range.from, rangeTo: range.to } : {}),
   }));
 }
 
 export function decodeDetailPaginationPreference(value: string | null | undefined): DetailPaginationPreference | null {
   if (!value) return null;
   try {
-    const parsed = JSON.parse(decodeURIComponent(value)) as Partial<DetailPaginationPreference>;
+    const parsed = JSON.parse(decodeURIComponent(value)) as Partial<DetailPaginationPreference> & {
+      rangeFrom?: unknown;
+      rangeTo?: unknown;
+    };
     return {
       pageSize: normalizeDetailPageSize(parsed.pageSize),
       detailPage: normalizeDetailPage(parsed.detailPage),
       detailAll: parsed.detailAll === true,
       autoFit: parsed.autoFit !== false,
+      range: normalizeDetailDateRange(parsed.rangeFrom, parsed.rangeTo),
     };
   } catch {
     return null;
@@ -143,12 +187,43 @@ export function writeStoredDetailPreference(
     detailAll,
     detailPage,
     autoFit: autoFit ?? previous?.autoFit,
+    // 翻页 / 改行数不该顺手把用户选的时间轴范围抹掉：cookie 是一个整体，重写
+    // 时必须把没参与的字段带上。
+    range: previous?.range ?? null,
   });
-  window.sessionStorage.setItem(cookieName, value);
-  document.cookie = `${cookieName}=${value}; path=/; max-age=31536000; SameSite=Lax`;
+  persistPreference(cookieName, value);
   // 只有「自适应」的落地值才代表这台设备这个窗口能放多少行；手选的固定行数
   // 不能拿去给别的账户当首屏兜底。
   if (autoFit === true) {
     document.cookie = `${DETAIL_LAST_FIT_ROWS_COOKIE}=${normalizeDetailPageSize(pageSize)}; path=/; max-age=31536000; SameSite=Lax`;
   }
+}
+
+/**
+ * 时间轴的「显示范围」按视图单独落盘（sessionStorage + cookie）。
+ *
+ * 每次导航都会重新挂载面板，而服务端首屏按 cookie 里的这份范围取数（见
+ * `app/(sidebar)/page.tsx` 的 `initialDetailDateRange`）——两边共用同一个 cookie，
+ * 切走再回来、刷新页面都还是用户选的那段，不会「被改回去」。
+ * `null` 表示恢复默认观测窗口。
+ */
+export function writeStoredDetailRangePreference(accountId: string, range: DetailDateRangePreference | null) {
+  if (typeof window === "undefined") return;
+  const cookieName = detailPaginationCookieName(accountId);
+  const previous = decodeDetailPaginationPreference(
+    window.sessionStorage.getItem(cookieName) ?? readCookieValue(cookieName),
+  );
+  const value = encodeDetailPaginationPreference({
+    pageSize: previous?.pageSize ?? 40,
+    detailPage: previous?.detailPage ?? 1,
+    detailAll: previous?.detailAll === true,
+    autoFit: previous?.autoFit,
+    range,
+  });
+  persistPreference(cookieName, value);
+}
+
+function persistPreference(cookieName: string, value: string) {
+  window.sessionStorage.setItem(cookieName, value);
+  document.cookie = `${cookieName}=${value}; path=/; max-age=31536000; SameSite=Lax`;
 }

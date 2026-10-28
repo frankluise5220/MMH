@@ -2,6 +2,18 @@
 @import "tailwindcss" source(none);
 @source "../**/*.{js,ts,jsx,tsx,mdx}";
 
+/* ── 设备形态变体（`mobile:` / `desktop:`）───────────────────────────────
+   服务端在 `<html data-device>` 上写死判定结果（UA + Client Hints，见
+   `src/lib/server/device-kind.ts`），所以这两个变体在首帧 HTML 就命中，不依赖水合。
+
+   与 `md:` 的分工要分清：
+   · `mobile:` / `desktop:` —— 决定「渲染哪一套 UI 树」（底部导航 vs 侧边栏、
+     卡片列表 vs 表格）。这是设备事实，桌面浏览器拉窄窗口不应改变它。
+   · `md:` —— 只用于同一套 UI 内的几何收缩（列数、内边距、按钮堆叠）。
+     那是宽度事实，跟设备无关。 */
+@custom-variant mobile (&:where(html[data-device="mobile"], html[data-device="mobile"] *));
+@custom-variant desktop (&:where(html[data-device="desktop"], html[data-device="desktop"] *));
+
 :root {
   --background: #f4f7fb;
   --foreground: #18212f;

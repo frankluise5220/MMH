@@ -76,7 +76,7 @@ export function MobileNavigation() {
 
   return (
     <>
-      <nav className="fixed inset-x-0 bottom-0 z-50 h-[calc(5.75rem+env(safe-area-inset-bottom))] pb-[env(safe-area-inset-bottom)] md:hidden">
+      <nav className="fixed inset-x-0 bottom-0 z-50 h-[calc(5.75rem+env(safe-area-inset-bottom))] pb-[env(safe-area-inset-bottom)]">
         <div className="absolute inset-x-0 bottom-0 grid h-[calc(4.5rem+env(safe-area-inset-bottom))] grid-cols-[1fr_1fr_0.72fr_1fr_1fr] border-t border-slate-200 bg-white/97 px-1 pb-[env(safe-area-inset-bottom)] backdrop-blur">
           <MobileNavLink item={navItemsList[0]} active={isActive(navItemsList[0].href)} />
           <MobileNavLink item={navItemsList[1]} active={isActive(navItemsList[1].href) || (pathname === "/" && !isRootInvestmentView)} />

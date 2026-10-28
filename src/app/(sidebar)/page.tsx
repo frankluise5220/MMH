@@ -770,6 +770,11 @@ export default async function Home({
   // 有 URL 筛选时不再叠加默认范围（用户明确要看哪一段就看哪一段）。
   const initialDetailDateRange = (() => {
     if (hasDetailFilters) return null;
+    // 用户在时间轴里选过的范围（按视图单独存，见 `detailPaginationPref`）优先：
+    // 刷新页面、切走再回来都按这段取首屏，不会「先按默认窗口取一页、客户端再
+    // 重取一次」那种闪烁。
+    const storedRange = detailPaginationPref?.range;
+    if (storedRange) return { from: storedRange.from, to: storedRange.to };
     if (detailWindowYears <= 0) return null;
     const [year, month, day] = todayDateBusinessYmd().split("-");
     // 「N 年前的今天」可能不存在（2 月 29 日），落到 2 月 28 日。
@@ -3083,7 +3088,6 @@ export default async function Home({
   const selectedAccountEditData = selectedAccount
     ? toAccountQuickEditValue(selectedAccount)
     : null;
-
   return (
     <div className="flex h-full w-full bg-transparent">
       <div className="relative flex min-w-0 flex-1 flex-col">

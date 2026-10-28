@@ -100,7 +100,9 @@ const ROW_ACTIONS_MAX_HEIGHT_CLASS: Record<RowHeightMode, string> = {
  * 不会出现「有的 24 有的 20」那种长短不一。
  *
  * 具体 px 由组件按当前行高算出来，以 CSS 变量 `--mmh-row-action-btn / -icon`
- * 挂在行操作单元格上，按钮通过 `ROW_ACTION_BUTTON_BOX_CLASS` 消费。
+ * 挂在**整张表的根节点**上（不只是操作列），好让画在普通列里的行内按钮也一样，
+ * 按钮通过 `ROW_ACTION_BUTTON_BOX_CLASS` 消费。需要更大尺寸的局部（如手机卡片
+ * 的 32px 操作栏）只重写这两个变量，不给按钮本身写尺寸。
  * 刻意**不在容器上**用 `[&_button]:h-* w-*` 硬压：操作列里还可能有带文字的胶囊
  * 按钮（如「份额核对」是 `px-2 text-xs`），压成正方形会把文字挤没。
  */

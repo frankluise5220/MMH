@@ -925,7 +925,29 @@ async function writeAccountBalance(
   return updated.count > 0;
 }
 
-async function advanceAccountBalanceStep(accountId: string, maxWindows = 1) {
+/**
+ * Mark accounts whose cached `Account.balance` can no longer be trusted.
+ *
+ * `balanceRecomputedAt = null` is the single "not verified against the ledger"
+ * signal: the background maintenance pass treats it as a full-recompute
+ * request instead of adopting the stored number as a baseline. Anything that
+ * fails to update the cached balance (incremental apply, optimistic-lock loss,
+ * a non-final import batch) must call this, otherwise the error becomes
+ * permanent — the old advance-only pass could never look back at history.
+ */
+export async function markAccountBalancesDirty(accountIds: Iterable<string | null | undefined>) {
+  const ids = Array.from(new Set(Array.from(accountIds).filter((id): id is string => Boolean(id))));
+  if (ids.length === 0) return 0;
+  const updated = await prisma.account
+    .updateMany({ where: { id: { in: ids } }, data: { balanceRecomputedAt: null } })
+    .catch(() => ({ count: 0 }));
+  if (updated.count === 0) {
+    logger.warn("failed to mark account balances dirty", "account-balance", { accountIds: ids });
+  }
+  return updated.count;
+}
+
+async function advanceAccountBalanceStep(accountId: string) {
   const acc = await prisma.account.findUnique({
     where: { id: accountId },
     select: {
@@ -960,32 +982,14 @@ async function advanceAccountBalanceStep(accountId: string, maxWindows = 1) {
     return recalcAndSaveAccountBalance(accountId).catch(() => false);
   }
 
-  if (!acc.balanceRecomputedAt) {
-    // Accounts upgraded from a release before balanceRecomputedAt already have
-    // a maintained Account.balance. Adopt it as the baseline instead of
-    // starting a full ledger scan from the system task. The explicit
-    // recalculate/reconcile actions remain available when a full rebuild is
-    // requested.
-    return writeAccountBalance(accountId, toNumber(acc.balance), todayEnd, null).catch(() => false);
-  }
-
-  const asOfKey = localDateKey(acc.balanceRecomputedAt);
-  if (asOfKey >= todayKey) return false;
-
-  // 存款账户在上面的 isDepositAccountLike 分支已经整体重算并返回，这里只剩普通账户。
-  const hidFilter = { householdId: acc.householdId };
-  const ordinary = await foldAccountBalanceRange(account, hidFilter, {
-    fromKeyExclusive: asOfKey,
-    toKeyInclusive: todayKey,
-    startingBalance: toNumber(acc.balance),
-    maxWindows,
-  });
-  return writeAccountBalance(
-    accountId,
-    ordinary.balance,
-    endOfLocalDayKey(ordinary.asOfKey),
-    acc.balanceRecomputedAt,
-  ).catch(() => false);
+  // 普通账户：每次维护都做一次全量重算，而不是「拿现有的存储值当基线往后推」。
+  //
+  // 后者的问题在于：只要增量维护漏过一次（写流水时失败、导入不是末批、
+  // 历史数据直接写库），存储值就永久带着那次误差，而且每轮维护都把这个错值
+  // 当起点继续往前折叠——它永远不会被纠正，页头余额于是长期和明细首行不一致。
+  // 全量重算把「存储值」重新拉回账本证据上，任何漏账最多在下一次维护时自愈。
+  if (acc.balanceRecomputedAt && localDateKey(acc.balanceRecomputedAt) >= todayKey) return false;
+  return recalcAndSaveAccountBalance(accountId).catch(() => false);
 }
 
 /**
@@ -1051,6 +1055,9 @@ export async function recalcAndSaveAccountBalance(accountId: string) {
   }
 
   const saved = await writeAccountBalance(accountId, newBalance, asOf, acc.balanceRecomputedAt).catch(() => false);
+  // 乐观锁输给并发写入时不重试，但要标脏：否则这一轮的「正确值」被丢掉，而
+  // 存储列里留下的是别人基于旧基线算出来的数，误差就永久固化了。
+  if (!saved) await markAccountBalancesDirty([accountId]);
   // 子户余额变了，父账户的折合余额必须跟着刷，否则统计口径停在旧值。
   if (acc.parentId) {
     await refreshParentAggregateBalance(prisma, [accountId]).catch(() => {});
@@ -1060,6 +1067,26 @@ export async function recalcAndSaveAccountBalance(accountId: string) {
 
 export async function applyEntryChangesToAccountBalances(changes: EntryBalanceChange[]) {
   if (changes.length === 0) return;
+  // 增量维护允许失败，但失败必须留痕：把涉及的账户标脏，交给后台全量重算。
+  // 所有调用点都写成 `void applyEntryChangesToAccountBalances(...).catch(() => {})`，
+  // 异常在那里被完全吞掉——这正是「存储余额长期落后于账本，却没有任何补偿
+  // 路径」的根源。有了这道兜底，漏一次最多到下一轮维护就被纠正。
+  const dirtyCandidates = new Set<string>();
+  for (const change of changes) {
+    const previous = change.previous ?? null;
+    if (!previous) continue;
+    if (previous.accountId) dirtyCandidates.add(previous.accountId);
+    if (previous.toAccountId && previous.source !== FX_CONVERSION_SOURCE) dirtyCandidates.add(previous.toAccountId);
+  }
+  try {
+    await applyEntryChangesWithLoadedRows(changes);
+  } catch (error) {
+    logger.warn("account balance incremental apply failed; marking accounts dirty", "account-balance", { error });
+    await markAccountBalancesDirty(dirtyCandidates);
+  }
+}
+
+async function applyEntryChangesWithLoadedRows(changes: EntryBalanceChange[]) {
   const currentRows = await Promise.all(
     changes.map(async (change) => ({
       change,
@@ -1167,15 +1194,10 @@ export async function applyEntryChangesToAccountBalances(changes: EntryBalanceCh
     }
 
     if (!account.balanceRecomputedAt) {
-      // Preserve the legacy persisted balance as the upgrade baseline. The
-      // background bootstrap will replace it with a fully verified fold.
-      const updated = await prisma.account.updateMany({
-        where: { id: account.id, balanceRecomputedAt: null },
-        data: {
-          balance: roundMoney(toNumber(account.balance) + currentDelta - previousDelta).toFixed(2),
-        },
-      }).catch(() => ({ count: 0 }));
-      if (updated.count === 0) await recalcAndSaveAccountBalance(account.id).catch(() => {});
+      // 没有「已校验到哪一天」的时间戳 = 存储值不可信（升级前遗留，或被标脏）。
+      // 这里不能再「沿用现有 balance + 本次增量」——那正好把不可信的旧值当成
+      // 基线固化成新的存储余额。直接全量重算。
+      await recalcAndSaveAccountBalance(account.id).catch(() => {});
       continue;
     }
 

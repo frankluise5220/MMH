@@ -36,6 +36,15 @@ import {
 } from "@/lib/statement/excel-preview";
 import { convertCaizhiFundImportFile } from "@/lib/statement/caizhi-template";
 
+/**
+ * 手持设备上隐藏导入导出入口的类名（唯一写入点，四处入口共用）。
+ *
+ * 判据是**设备**而不是宽度：`@media (pointer: coarse)` 只在主指针是手指（手机 / 平板 /
+ * PWA standalone）时命中，与屏幕宽度无关 —— iPhone 横屏 844~932px 依然隐藏，桌面窗口
+ * 拖到 700px 也不会误伤（鼠标是 `fine`）。带触摸屏的笔记本主指针仍是鼠标，同上。
+ */
+export const HANDSET_HIDDEN_CLASS = "pointer-coarse:hidden";
+
 type ViewExcelImportExportItem = {
   label: string;
   href?: string;

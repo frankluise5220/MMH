@@ -101,7 +101,7 @@ export function MobilePullToRefresh() {
 
   return (
     <div
-      className={`pointer-events-none fixed inset-x-0 top-[calc(env(safe-area-inset-top)+0.35rem)] z-[70] flex justify-center transition-opacity duration-150 md:hidden ${visible ? "opacity-100" : "opacity-0"}`}
+      className={`pointer-events-none fixed inset-x-0 top-[calc(env(safe-area-inset-top)+0.35rem)] z-[70] flex justify-center transition-opacity duration-150 ${visible ? "opacity-100" : "opacity-0"}`}
       style={{ transform: `translateY(${translate}px)` }}
       aria-hidden={!visible}
     >

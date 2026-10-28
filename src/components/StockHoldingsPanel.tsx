@@ -23,7 +23,7 @@ import { BatchReplacePopoverButton, type BatchReplaceFieldConfig } from "@/compo
 import { BusinessLinkActionButton } from "@/components/BusinessLinkActionButton";
 import { DetailTablePaginationControls } from "@/components/DetailTablePaginationControls";
 import { StockHoldingRowActions } from "@/components/StockHoldingRowActions";
-import { ViewExcelImportMenuButton, exportRowsToXlsx } from "@/components/ViewExcelImportMenuButton";
+import { HANDSET_HIDDEN_CLASS, ViewExcelImportMenuButton, exportRowsToXlsx } from "@/components/ViewExcelImportMenuButton";
 import { todayDateLocalYmd } from "@/lib/date-utils";
 
 type StockPosition = {
@@ -1115,6 +1115,7 @@ export function StockHoldingsPanel({
           </div>
           <div className="flex min-w-0 max-w-[66vw] items-center gap-1 overflow-x-auto whitespace-nowrap pb-0.5 text-xs md:max-w-none md:overflow-visible [&>*]:shrink-0">
             <ViewExcelImportMenuButton
+              className={HANDSET_HIDDEN_CLASS}
               kind="stock"
               accountId={accountId}
               stockAccountName={accountLabel}

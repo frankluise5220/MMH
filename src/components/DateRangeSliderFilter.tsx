@@ -15,6 +15,7 @@ import {
 import { CalendarRange, ChevronDown } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { useOutsideClose } from "@/lib/client/useOutsideClose";
+import { DateStepper } from "./DateStepper";
 
 /**
  * 「显示范围」：一枚 chip + 双滑块弹层。
@@ -37,6 +38,10 @@ const DAY_MS = 86_400_000;
 const YMD_RE = /^\d{4}-\d{2}-\d{2}$/;
 // 与表头列筛选弹层（FilterPopover 默认 256）同属一套弹层：太宽会和它并排时
 // 明显不是一个体系，太窄滑块又不好拖，取 288。
+//
+// 五个快捷区间要排成一行，靠的是把文案压到两个字（`30 天` / `90 天` / `今年` /
+// `去年` / `全部`）并把按钮左右内边距归零：288 时每格 51px，最长的一条
+// （英文 `This year` 47px + 描边 2px）刚好放得下，不需要为了这一行加宽弹层。
 const POPOVER_WIDTH = 288;
 
 function dayIndexOf(ymd: string) {
@@ -51,6 +56,16 @@ function ymdOfDayIndex(index: number) {
 
 function clamp(value: number, lower: number, upper: number) {
   return Math.min(upper, Math.max(lower, value));
+}
+
+/**
+ * 只有真实存在的日历日才算数：`2026-02-30` 会被 `Date.UTC` 滚到 3 月 2 日，
+ * 那种输入必须挡掉，不能悄悄改成另一天。
+ */
+function resolveDayIndex(ymd: string) {
+  const index = dayIndexOf(ymd);
+  if (index == null) return null;
+  return ymdOfDayIndex(index) === ymd ? index : null;
 }
 
 type DateRangeSliderFilterProps = {
@@ -92,6 +107,9 @@ export function DateRangeSliderFilter({
   const [popoverStyle, setPopoverStyle] = useState<CSSProperties>({ visibility: "hidden" });
   const [draftFrom, setDraftFrom] = useState(from);
   const [draftTo, setDraftTo] = useState(to);
+  /** 编辑中的原文：不回写成夹取后的值，避免打断原生日期框的分段编辑。 */
+  const [fromInput, setFromInput] = useState<string | null>(null);
+  const [toInput, setToInput] = useState<string | null>(null);
 
   const minIdx = dayIndexOf(min);
   const maxIdx = dayIndexOf(max);
@@ -104,6 +122,8 @@ export function DateRangeSliderFilter({
     if (!open) return;
     setDraftFrom(from);
     setDraftTo(to);
+    setFromInput(null);
+    setToInput(null);
   }, [from, open, to]);
 
   // 外部筛选可能落在时间轴之外（例如 URL 里写着 2020 年、而本页数据只有最近几天）：
@@ -199,6 +219,25 @@ export function DateRangeSliderFilter({
     const ratio = clamp((clientX - rect.left) / rect.width, 0, 1);
     return Math.round((minIdx as number) + ratio * span);
   }, [minIdx, span]);
+
+  /**
+   * 日期框 → 草稿。走和拖动同一条 `applyIndex` 通道（夹到时间轴内、保持
+   * from ≤ to、顶到两端归一成「不限制」），所以点日历、按年月日分段改、
+   * 拖手柄三种改法产生的 `from/to` 口径一致。
+   */
+  const applyTypedDate = useCallback((handle: "from" | "to", next: string) => {
+    const index = resolveDayIndex(next);
+    if (index == null) return;
+    applyIndex(handle, index);
+  }, [applyIndex]);
+
+  /** 日期框内按 Enter 直接确认，省一次鼠标移动。 */
+  const handleTypedKeyDown = useCallback((event: { key: string; preventDefault: () => void }) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    setOpen(false);
+    startTransition(() => submitDraft());
+  }, [submitDraft]);
 
   const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!hasTrack) return;
@@ -386,10 +425,55 @@ export function DateRangeSliderFilter({
           </div>
           {hasTrack ? (
             <>
-              <div className="mb-1 flex items-center justify-between gap-2 text-xs tabular-nums text-slate-600">
-                <span>{draftFrom || min}</span>
-                <span className="text-slate-300">~</span>
-                <span>{draftTo || max}</span>
+              {/*
+                起止日期可以直接改：滑块负责「拉宽 / 收窄」，但要精确落到某一天
+                （对账单日、报销周期）时，拖到手柄附近再去抠那 1px 没有必要。
+
+                这里用的就是全站同一个日期组件 `DateStepper`：原生日期输入，
+                双击年份只改年份、双击月份只改月份，右边还有日历按钮。之前自己
+                写过一个「只收数字、自动补 `-`」的文本框，代价是整串一起变 ——
+                想只改年份也得把整串重打，反而不如原生分段编辑。
+
+                两处细节：
+                1. **不传 min / max**。原生日期框一旦把范围写进 `min`/`max`，
+                    逐位输入年份时中间值（`0002`、`0020`）会被判成越界直接拒绝，
+                    表现就是「敲了一个数字就跳到月份」；
+                2. 编辑中的原文留在 `fromInput/toInput` 里，不立刻用夹取后的值
+                    回写 `value`，否则每敲一个数字 React 重写一次 value，分段
+                    焦点被重置，只能整串重打。
+
+                改完的值仍然走和拖动同一条 `applyIndex` 通道：夹到时间轴之内、
+                保持 from ≤ to、顶到两端归一成「不限制」。失焦时把输入框回写成
+                夹取后的值，越界的输入不会留在框里。
+              */}
+              <div className="mb-1 flex items-center gap-1.5 text-slate-600">
+                <div className="min-w-0 flex-1" title={t("table.from")}>
+                  <DateStepper
+                    compact
+                    value={fromInput ?? (draftFrom || min)}
+                    onChange={(next) => {
+                      setFromInput(next);
+                      applyTypedDate("from", next);
+                    }}
+                    onBlur={() => setFromInput(null)}
+                    onKeyDown={handleTypedKeyDown}
+                    className="!h-7 !rounded !pl-1.5 !pr-6 !text-xs tabular-nums"
+                  />
+                </div>
+                <span className="shrink-0 text-slate-300">~</span>
+                <div className="min-w-0 flex-1" title={t("table.to")}>
+                  <DateStepper
+                    compact
+                    value={toInput ?? (draftTo || max)}
+                    onChange={(next) => {
+                      setToInput(next);
+                      applyTypedDate("to", next);
+                    }}
+                    onBlur={() => setToInput(null)}
+                    onKeyDown={handleTypedKeyDown}
+                    className="!h-7 !rounded !pl-1.5 !pr-6 !text-xs tabular-nums"
+                  />
+                </div>
               </div>
               <div
                 ref={trackRef}
@@ -441,12 +525,15 @@ export function DateRangeSliderFilter({
               {boundsLoading ? t("advancedTable.dateRangeLoading") : t("advancedTable.dateRangeEmpty")}
             </p>
           )}
-          <div className="mt-2 grid grid-cols-3 gap-1 text-center">
-            <button type="button" onClick={() => applyQuickRange("all")} disabled={!hasTrack} className="rounded border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300 disabled:hover:bg-white">{t("advancedTable.dateRangeAll")}</button>
-            <button type="button" onClick={() => applyQuickRange("last30")} disabled={!hasTrack} className="rounded border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300 disabled:hover:bg-white">{t("advancedTable.dateRangeLast30")}</button>
-            <button type="button" onClick={() => applyQuickRange("last90")} disabled={!hasTrack} className="rounded border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300 disabled:hover:bg-white">{t("advancedTable.dateRangeLast90")}</button>
-            <button type="button" onClick={() => applyQuickRange("thisYear")} disabled={!hasTrack} className="rounded border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300 disabled:hover:bg-white">{t("advancedTable.dateRangeThisYear")}</button>
-            <button type="button" onClick={() => applyQuickRange("lastYear")} disabled={!hasTrack} className="rounded border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300 disabled:hover:bg-white">{t("advancedTable.dateRangeLastYear")}</button>
+          {/* 五个快捷区间排一行，按跨度从窄到宽：30 天 / 90 天 / 今年 / 去年 / 全部。
+              两行会把弹层撑高，而它们只是「一眼就能点」的次要入口。左右内边距归零，
+              288px 里五等分每格 51px，最长的一条文案刚好放得下、不折行。 */}
+          <div className="mt-2 grid grid-cols-5 gap-1 text-center">
+            <button type="button" onClick={() => applyQuickRange("last30")} disabled={!hasTrack} className="whitespace-nowrap rounded border border-slate-200 px-0 py-1 text-[11px] text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300 disabled:hover:bg-white">{t("advancedTable.dateRangeLast30")}</button>
+            <button type="button" onClick={() => applyQuickRange("last90")} disabled={!hasTrack} className="whitespace-nowrap rounded border border-slate-200 px-0 py-1 text-[11px] text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300 disabled:hover:bg-white">{t("advancedTable.dateRangeLast90")}</button>
+            <button type="button" onClick={() => applyQuickRange("thisYear")} disabled={!hasTrack} className="whitespace-nowrap rounded border border-slate-200 px-0 py-1 text-[11px] text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300 disabled:hover:bg-white">{t("advancedTable.dateRangeThisYear")}</button>
+            <button type="button" onClick={() => applyQuickRange("lastYear")} disabled={!hasTrack} className="whitespace-nowrap rounded border border-slate-200 px-0 py-1 text-[11px] text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300 disabled:hover:bg-white">{t("advancedTable.dateRangeLastYear")}</button>
+            <button type="button" onClick={() => applyQuickRange("all")} disabled={!hasTrack} className="whitespace-nowrap rounded border border-slate-200 px-0 py-1 text-[11px] text-slate-600 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300 disabled:hover:bg-white">{t("advancedTable.dateRangeAllShort")}</button>
           </div>
           <div className="mt-2 flex items-center justify-between gap-2">
             {/* 收窄/放宽只是微调，用和「清空」同层的文字按钮，别在同一个弹层里
