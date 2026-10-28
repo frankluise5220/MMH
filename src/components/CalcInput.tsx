@@ -7,6 +7,17 @@ import { evaluateArithmeticExpression } from "@/lib/arithmetic-expression";
 import { useI18n } from "@/lib/i18n";
 
 /**
+ * 计算器按钮占用的右侧留白：按钮宽度 + 与文字之间的空隙。
+ * **必须写进内联样式，不能用 `pr-10` 之类的工具类**：`globals.css` 里的 `.form-input`
+ * 把 `padding-inline` 声明在同一个 `@layer utilities` 里，且排在 Tailwind 生成的
+ * 工具类之后——同层同优先级下后者胜，实测 `pr-10` 算出来仍是 12px。于是按钮
+ * （右侧内缩 1px、宽 34px）会盖住输入框右端约 23px 的文字；左对齐时不明显，
+ * 余额校准弹窗的金额是 `text-right`，被压住的就是小数部分。
+ */
+const TRIGGER_RESERVED_PX = 40; // 默认：1px 内缩 + 34px 按钮 + 5px 间隙
+const TRIGGER_RESERVED_COMPACT_PX = 20; // 紧凑：20px 按钮正好贴右边缘
+
+/**
  * 全角字符 → 半角：中文输入法在「全角标点」状态下打出的是全角句点（．/。）和
  * 全角数字（１２３），必须先归一化，否则会被下面的白名单整段清掉——用户看到的
  * 现象就是「小数点打不进去、只剩整数」。千分位逗号（, 或 ，）不做等价换算，
@@ -233,15 +244,20 @@ export const CalcInput = forwardRef<HTMLInputElement, CalcInputProps>(function C
         placeholder={placeholder}
         autoFocus={autoFocus}
         aria-label={ariaLabel}
-        style={{ caretColor: "var(--foreground)" }}
+        style={{
+          caretColor: "var(--foreground)",
+          ...(bare || hideCalculator
+            ? {}
+            : { paddingRight: compact ? TRIGGER_RESERVED_COMPACT_PX : TRIGGER_RESERVED_PX }),
+        }}
         className={
           bare
             ? `h-full w-full min-w-0 rounded-none bg-transparent outline-none placeholder:text-slate-300 caret-slate-800 disabled:cursor-not-allowed disabled:bg-transparent disabled:text-slate-500 ${inputClassName ?? ""}`
             : compact
               // 紧凑模式：视觉完全由调用方（表格单元格样式）决定，这里只留
-              // 计算器按钮的右侧留白与禁用态。
-              ? `placeholder:text-slate-300 caret-slate-800 disabled:cursor-not-allowed disabled:text-slate-400 ${!hideCalculator ? "pr-5" : ""} ${inputClassName ?? ""}`
-              : `form-input ${hideCalculator ? "" : "pr-10"} font-mono placeholder:text-slate-300 caret-slate-800 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500 ${inputClassName ?? ""}`
+              // 计算器按钮的右侧留白（`style.paddingRight`）与禁用态。
+              ? `placeholder:text-slate-300 caret-slate-800 disabled:cursor-not-allowed disabled:text-slate-400 ${inputClassName ?? ""}`
+              : `form-input font-mono placeholder:text-slate-300 caret-slate-800 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500 ${inputClassName ?? ""}`
         }
       />
 
