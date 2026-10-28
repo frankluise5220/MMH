@@ -1824,7 +1824,7 @@ export function DetailViewClient({
 
   return (
     <>
-    <div className="h-full overflow-y-auto bg-slate-100 md:hidden">
+    <div className="h-full overflow-y-auto bg-slate-100 desktop:hidden">
       {mobileGroups.length > 0 ? (
         <div className="pb-4">
           {mobileGroups.map((group, groupIndex) => (
@@ -1895,7 +1895,7 @@ export function DetailViewClient({
         <div className="flex h-40 items-center justify-center text-sm text-slate-400">{resolvedEmptyText}</div>
       )}
     </div>
-    <div className="hidden h-full md:block">
+    <div className="hidden h-full desktop:block">
     <AdvancedDataTable
       storageKey={storageKey}
       resetKey={tableResetKey}

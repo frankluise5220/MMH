@@ -63,7 +63,7 @@ export function InsuranceOverviewCard({
       <div className="border-t border-slate-100 px-4 pb-4">
         {insuranceRows.length > 0 && coverageColumns.length > 0 ? (
           <>
-          <div className="divide-y divide-slate-100 sm:hidden">
+          <div className="divide-y divide-slate-100 desktop:hidden">
             {insuranceRows.slice(0, 8).map((person) => (
               <div key={person.insuredPersonKey} className="py-3">
                 <div className="flex items-center justify-between gap-3">
@@ -85,7 +85,7 @@ export function InsuranceOverviewCard({
               </div>
             ))}
           </div>
-          <div className="hidden overflow-x-auto sm:block">
+          <div className="hidden overflow-x-auto desktop:block">
             <table className="w-full table-fixed border-separate border-spacing-0 text-xs">
               <thead>
                 <tr className="text-slate-500">

@@ -583,10 +583,10 @@ export default async function RegularInvestPage() {
 
   return (
     <>
-      <div className="h-full md:hidden">
+      <div className="h-full desktop:hidden">
         <MobileRegularInvest plans={plansData} />
       </div>
-      <div className="hidden h-full md:block">
+      <div className="hidden h-full desktop:block">
         <RegularInvestClient
       initialPlans={plansData}
       investmentAccounts={investmentAccounts}

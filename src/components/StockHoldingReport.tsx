@@ -258,9 +258,9 @@ export function StockHoldingReport({ rows, totals, isRedUp }: Props) {
         </div>
         {/* 移动端：持仓卡片（11 列表格 minTableWidth=1280，手机横向滚看不清） */}
         {rows.length === 0 ? (
-          <div className="md:hidden">{emptyText}</div>
+          <div className="desktop:hidden">{emptyText}</div>
         ) : (
-          <div className="min-h-0 flex-1 divide-y divide-slate-100 overflow-y-auto md:hidden">
+          <div className="min-h-0 flex-1 divide-y divide-slate-100 overflow-y-auto desktop:hidden">
             {rows.map((row) => (
               <div key={row.id} className="px-3 py-2.5">
                 <div className="flex items-center justify-between gap-2">
@@ -297,7 +297,7 @@ export function StockHoldingReport({ rows, totals, isRedUp }: Props) {
             </div>
           </div>
         )}
-        <div className="hidden min-h-0 flex-1 md:block">
+        <div className="hidden min-h-0 flex-1 desktop:block">
           <AdvancedDataTable
             storageKey="mmh_stock_holding_report_v1"
             columns={columns}

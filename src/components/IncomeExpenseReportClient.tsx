@@ -328,7 +328,7 @@ export function IncomeExpenseReportClient({
       <div className="panel-surface flex h-full min-h-0 flex-col overflow-hidden">
         {/* ===== 移动端：类别卡片（类别×月份交叉表在手机上只能横向滚、看不清）。
              汇总三卡 + 类别树；金额仍走 AmountButton 下钻明细。 */}
-        <div className="min-h-0 flex-1 overflow-y-auto md:hidden">
+        <div className="min-h-0 flex-1 overflow-y-auto desktop:hidden">
           <div className="grid grid-cols-3 gap-2 p-2">
             {[
               { key: "income", label: t("incomeExpense.incomeTotal"), value: report.income.total, count: report.income.count, detail: { type: "income" as const }, cls: pnlColor(report.income.total, colorScheme) },
@@ -398,7 +398,7 @@ export function IncomeExpenseReportClient({
         </div>
 
         {/* ===== 桌面：交叉表 ===== */}
-        <div className="hidden min-h-0 flex-1 overflow-auto md:block">
+        <div className="hidden min-h-0 flex-1 overflow-auto desktop:block">
           <table
             className="w-full table-fixed border-separate border-spacing-0"
           >

@@ -33,8 +33,12 @@ export default async function SidebarLayout({
   return (
     <div className="flex h-dvh overflow-x-hidden overflow-y-hidden" data-device={deviceKind}>
       <BackgroundTaskStatusBar />
+      {/* 两层判断各管一件事：`isMobileDevice` 决定「有没有侧边栏这种形态」，
+          `md:block` 只决定「这么窄的窗口还塞不塞得下 288px 侧边栏」。
+          桌面浏览器把窗口拉到 390px 时侧边栏让位，但内容仍是桌面 panel/表格，
+          不会因为变窄就换成手机的卡片列表。 */}
       {isMobileDevice ? null : (
-        <div className="h-dvh shrink-0">
+        <div className="hidden h-dvh shrink-0 md:block">
           <Suspense
             fallback={
               <div

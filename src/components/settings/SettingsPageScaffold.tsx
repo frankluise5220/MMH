@@ -174,12 +174,12 @@ export function SettingsSection({
         </div>
         {actions ? (
           // 传了 mobileActions 的页面，表头操作只在桌面出现；没传的页面行为不变。
-          <div className={`${mobileActions ? "hidden md:flex" : "flex"} shrink-0 items-center gap-2`}>{actions}</div>
+          <div className={`${mobileActions ? "hidden desktop:flex" : "flex"} shrink-0 items-center gap-2`}>{actions}</div>
         ) : null}
       </div>
       {/* 手机端：表头放不下的筛选/新增单独占一行，整行满宽才好按 */}
       {mobileActions ? (
-        <div className="flex flex-col gap-2 border-b border-slate-100 px-3 pb-3 md:hidden">{mobileActions}</div>
+        <div className="flex flex-col gap-2 border-b border-slate-100 px-3 pb-3 desktop:hidden">{mobileActions}</div>
       ) : null}
       {children}
     </section>
@@ -188,11 +188,11 @@ export function SettingsSection({
 
 /**
  * 移动端列表容器：设置页里的表格在小屏上既挤又没有点击热区，
- * 用「一行一张卡」代替（`md:hidden`，桌面表格照旧）。
+ * 用「一行一张卡」代替（`desktop:hidden`，桌面表格照旧）。
  * 卡片内容由调用方决定，这里只统一分隔线与卡片内边距。
  */
 export function SettingsMobileList({ children }: { children: React.ReactNode }) {
-  return <div className="divide-y divide-slate-100 md:hidden">{children}</div>;
+  return <div className="divide-y divide-slate-100 desktop:hidden">{children}</div>;
 }
 
 /** 移动端列表里的一行：左侧选择框 + 主副信息 + 右侧操作。 */

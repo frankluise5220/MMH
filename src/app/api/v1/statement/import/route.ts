@@ -23,7 +23,7 @@ import { assertAccountIdentityUnique } from "@/lib/server/account-identity-uniqu
 import { resolveSettlementAccountByCounterpartyName, resolveSettlementAccountByLoosePersonName } from "@/lib/server/import-settlement-account";
 import { importCounterKindFromCategory, type ImportCounterAccountKind } from "@/lib/account-import-match";
 import { BALANCE_RECONCILE_SOURCE, encodeBalanceReconcileTarget } from "@/lib/balance-reconcile";
-import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
+import { markAccountBalancesDirty, recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { getCreditBillAccountIds } from "@/lib/server/credit-card-institution-settings";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
 import { refreshCreditCardCycleCachesForAccountIds } from "@/lib/server/credit-bill-page-data";
@@ -1762,17 +1762,25 @@ export async function POST(req: Request) {
   //
   // 为什么必须做：顶部/侧边栏的「上余额」读的是 Account.balance 存储列
   // （getMaintainedAccountBalances 只回读，不现算），而导入只写 TxRecord。
-  // 不重算的话，余额要等 system-task 每 10 分钟补算 1 个账户才慢慢追上 ——
+  // 不重算的话，余额要等 system-task 的后台全量重算轮到它才追上 ——
   // 用户看到的就是「导入完了余额还是旧的」。明细页行内的「左余额」由明细接口
   // 现算（截断在余额锚点），不需要重算，但需要客户端重新取数。
   let recalculatedAccountCount = 0;
-  if (parse.data.isLastBatch && touchedAccountIds.size > 0) {
-    for (const accountId of touchedAccountIds) {
-      const saved = await recalcAndSaveAccountBalance(accountId).catch((error) => {
-        console.error("Failed to recalculate balance after statement import:", error);
-        return false;
-      });
-      if (saved) recalculatedAccountCount += 1;
+  if (touchedAccountIds.size > 0) {
+    if (parse.data.isLastBatch) {
+      for (const accountId of touchedAccountIds) {
+        const saved = await recalcAndSaveAccountBalance(accountId).catch((error) => {
+          console.error("Failed to recalculate balance after statement import:", error);
+          return false;
+        });
+        if (saved) recalculatedAccountCount += 1;
+      }
+    } else {
+      // 非末批：流水已经落库，但不能假定后面一定还有一批提交成功的「末批」。
+      // 上传中断、最后一批校验失败、用户关页面都会让账户永远等不到重算，而旧的
+      // 后台任务只从「已算到哪天」往后推，看不见这批补录的历史行——余额就永久
+      // 停在导入前的值。这里统一标脏，交给后台全量重算，末批再直接算一遍。
+      await markAccountBalancesDirty(touchedAccountIds);
     }
   }
 

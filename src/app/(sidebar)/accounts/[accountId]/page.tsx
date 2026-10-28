@@ -129,7 +129,7 @@ export default async function MobileAccountDetailPage({ params }: { params: Prom
 
   return (
     <>
-      <div className="h-full md:hidden">
+      <div className="h-full desktop:hidden">
         <MobileTransactions
           entries={rows}
           accountSummary={{
@@ -146,7 +146,7 @@ export default async function MobileAccountDetailPage({ params }: { params: Prom
           defaultAccountId={account.id}
         />
       </div>
-      <div className="hidden h-full items-center justify-center md:flex">
+      <div className="hidden h-full items-center justify-center desktop:flex">
         <div className="text-sm text-slate-500">{t("mobile.detail.desktopHint")}</div>
       </div>
     </>

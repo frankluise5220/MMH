@@ -406,7 +406,7 @@ export default function StatisticsCharts({
         ) : (
           <>
           {/* 桌面：表格（6 列） */}
-          <div className="hidden overflow-x-auto max-h-[360px] overflow-y-auto md:block">
+          <div className="hidden overflow-x-auto max-h-[360px] overflow-y-auto desktop:block">
             <table className="w-full table-fixed border-separate border-spacing-0">
               <thead className="sticky top-0 bg-white z-10">
                 <tr>
@@ -452,7 +452,7 @@ export default function StatisticsCharts({
             </table>
           </div>
           {/* 移动端：卡片（每条两行：日期+类型+金额 / 基金+盈亏+收益率） */}
-          <div className="divide-y divide-slate-100 md:hidden">
+          <div className="divide-y divide-slate-100 desktop:hidden">
             {pnlList.map((e) => (
               <div key={e.id} className="px-3 py-2.5">
                 <div className="flex items-center justify-between gap-2">

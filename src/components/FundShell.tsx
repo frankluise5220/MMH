@@ -3260,7 +3260,7 @@ export function FundShell(props: Props) {
             ) : null}
 
             {!showCleared ? (
-              <div className="relative hidden md:block order-last" ref={positionColumnMenuRef}>
+              <div className="relative hidden desktop:block order-last" ref={positionColumnMenuRef}>
                 <button
                   type="button"
                   onClick={() => setPositionColumnMenuOpen((open) => !open)}
@@ -3327,7 +3327,7 @@ export function FundShell(props: Props) {
         <div className="ft-card-surface ft-card-surface-fill">
 
         <div className="flex-1 min-h-0 overflow-hidden">
-          <div className="block h-full overflow-y-auto overscroll-contain px-3 pb-4 pt-2 md:hidden">
+          <div className="block h-full overflow-y-auto overscroll-contain px-3 pb-4 pt-2 desktop:hidden">
             {!showCleared ? (
               sortedPositions.length === 0 ? (
                 <div className="rounded-lg border border-dashed border-slate-300 bg-white px-4 py-10 text-center text-sm text-slate-500">{t("fundShell.empty.positions")}</div>
@@ -3421,7 +3421,7 @@ export function FundShell(props: Props) {
             )}
           </div>
 
-          <div className="hidden h-full md:block">
+          <div className="hidden h-full desktop:block">
 
           {!showCleared ? (
 
@@ -3780,7 +3780,7 @@ export function FundShell(props: Props) {
 
         </div>
 
-        <div className="block flex-1 min-h-0 overflow-y-auto overscroll-contain px-3 pb-28 pt-2 md:hidden">
+        <div className="block flex-1 min-h-0 overflow-y-auto overscroll-contain px-3 pb-28 pt-2 desktop:hidden">
           {paged.length > 0 ? (
             <div className="space-y-2.5">
               {paged.map((e: any) => {
@@ -3928,7 +3928,7 @@ export function FundShell(props: Props) {
             </div>
           )}
         </div>
-        <div className="hidden flex-1 min-h-0 md:block">
+        <div className="hidden flex-1 min-h-0 desktop:block">
 
           <AdvancedDataTable
             storageKey="mmh_fund_shell_detail_advanced_table_v1"

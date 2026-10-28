@@ -1419,7 +1419,7 @@ export default function SettingsAccountsPage() {
           副标题给类型/币种/归属/停用态，操作收到卡片底部，热区 36px 起。 */}
       <div
         ref={mobileListRef}
-        className="h-full min-h-0 overflow-y-auto bg-slate-100 px-3 py-2 md:hidden"
+        className="h-full min-h-0 overflow-y-auto bg-slate-100 px-3 py-2 desktop:hidden"
         onScroll={() => { if (swipedAccountId) setSwipedAccountId(null); }}
       >
         <div className="space-y-2.5">
@@ -1705,7 +1705,7 @@ export default function SettingsAccountsPage() {
       </div>
 
       {/* ===== 桌面端：ADT 表格 ===== */}
-      <div className="hidden h-full min-h-0 w-full min-w-0 flex-col overflow-hidden md:flex">
+      <div className="hidden h-full min-h-0 w-full min-w-0 flex-col overflow-hidden desktop:flex">
       <div className="shrink-0">
       <SettingsPageHeader
         title={t("settings.accounts.title")}

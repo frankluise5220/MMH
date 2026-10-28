@@ -141,7 +141,7 @@ export default function SettingsTagsClient({
           )}
         </SettingsMobileList>
 
-        <div className="hidden md:block">
+        <div className="hidden desktop:block">
         <SettingsTable minWidth={640}>
           <thead className="sticky top-0 z-10">
             <tr>

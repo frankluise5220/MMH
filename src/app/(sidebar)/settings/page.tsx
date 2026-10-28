@@ -41,7 +41,7 @@ export default async function SettingsPage() {
 
   return (
     <>
-      <div className="h-full overflow-y-auto bg-slate-100 px-3 py-2 md:hidden">
+      <div className="h-full overflow-y-auto bg-slate-100 px-3 py-2 desktop:hidden">
         <div className="space-y-3 pb-4">
           <section className="rounded-2xl bg-gradient-to-br from-slate-950 to-indigo-700 px-4 py-4 text-white shadow-sm">
             <div className="text-lg font-semibold">{t("mobileNav.profile")}</div>
@@ -79,7 +79,7 @@ export default async function SettingsPage() {
         </div>
       </div>
 
-      <div className="mx-auto hidden max-w-4xl space-y-3 md:block md:space-y-4">
+      <div className="mx-auto hidden max-w-4xl space-y-3 desktop:block md:space-y-4">
         <div className="rounded-xl border border-slate-200 bg-white px-4 py-4">
           <h2 className="text-sm font-semibold text-slate-800">{catalog.title}</h2>
           {hideDescriptions ? null : <p className="mt-1 text-xs text-slate-500">

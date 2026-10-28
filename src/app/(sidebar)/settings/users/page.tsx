@@ -1393,7 +1393,7 @@ export default function UsersPage() {
           ) : null
         }
       >
-        <SettingsTable minWidth={820} maxWidth="full" className="hidden md:block">
+        <SettingsTable minWidth={820} maxWidth="full" className="hidden desktop:block">
           {/* 列宽：状态列要放下「系统 / 本地用户 / 飞牛免密 / MMH 用户」四枚胶囊，
               是这一行里最长的内容，所以从用户/邮箱/登录保留各让出一点给它。 */}
           <colgroup>
@@ -1560,7 +1560,7 @@ export default function UsersPage() {
         </SettingsTable>
 
         {/* 手机：每条用户一张卡片 —— 六列表格在窄屏会把列头和操作按钮挤成竖排 */}
-        <ul className="divide-y divide-slate-100 overflow-hidden rounded-md border border-slate-200 bg-white md:hidden">
+        <ul className="divide-y divide-slate-100 overflow-hidden rounded-md border border-slate-200 bg-white desktop:hidden">
           {users.length > 0 ? (
             users.map((u) => (
               <li key={u.id} className="px-3 py-3">

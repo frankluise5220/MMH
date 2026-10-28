@@ -509,7 +509,7 @@ export async function POST(req: NextRequest) {
   const createdAccounts: Array<{ id: string; name: string; kind: string; institutionName?: string | null }> = [];
   // 本次真正写入了记录的账户。导入只写 TxRecord，而顶部/侧边栏的「上余额」读的是
   // Account.balance 存储列，所以结束时必须对它们做一次重算，否则余额要等
-  // system-task 每 10 分钟补算 1 个账户才慢慢追上。
+  // system-task 的后台全量重算轮到它才慢慢追上。
   const touchedAccountIds = new Set<string>();
   const defaultAcc = (defaultAccountName ?? "").trim();
   const defaultContextAccount = (() => {

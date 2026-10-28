@@ -697,7 +697,7 @@ export function FundHoldingReport({ rows, clearedRows, totals, isRedUp, groupMod
           </div>
         </div>
         {/* 移动端：分组卡片（11 列表格 minTableWidth=1280；展开状态与桌面表格共用同一 hook） */}
-        <div className="min-h-0 flex-1 divide-y divide-slate-100 overflow-y-auto md:hidden">
+        <div className="min-h-0 flex-1 divide-y divide-slate-100 overflow-y-auto desktop:hidden">
           {holdingGroups.length === 0 ? (
             <div className="px-4 py-10 text-center text-sm text-slate-400">{t("fundHoldingReport.empty")}</div>
           ) : holdingGroups.map((group) => {
@@ -764,7 +764,7 @@ export function FundHoldingReport({ rows, clearedRows, totals, isRedUp, groupMod
             </div>
           ) : null}
         </div>
-        <div className="hidden min-h-0 flex-1 md:block">
+        <div className="hidden min-h-0 flex-1 desktop:block">
           <AdvancedDataTable
             storageKey={`mmh_fund_report_holdings_v2:${groupMode}`}
             columns={holdingColumns}
@@ -794,7 +794,7 @@ export function FundHoldingReport({ rows, clearedRows, totals, isRedUp, groupMod
           </div>
         </div>
         {/* 移动端：已清仓分组卡片 */}
-        <div className="min-h-0 flex-1 divide-y divide-slate-100 overflow-y-auto md:hidden">
+        <div className="min-h-0 flex-1 divide-y divide-slate-100 overflow-y-auto desktop:hidden">
           {clearedGroups.length === 0 ? (
             <div className="px-4 py-10 text-center text-sm text-slate-400">{t("fundHoldingReport.noCleared")}</div>
           ) : clearedGroups.map((group) => {
@@ -859,7 +859,7 @@ export function FundHoldingReport({ rows, clearedRows, totals, isRedUp, groupMod
             </div>
           ) : null}
         </div>
-        <div className="hidden min-h-0 flex-1 md:block">
+        <div className="hidden min-h-0 flex-1 desktop:block">
           <AdvancedDataTable
             storageKey={`mmh_fund_report_cleared_v2:${groupMode}`}
             columns={clearedColumns}

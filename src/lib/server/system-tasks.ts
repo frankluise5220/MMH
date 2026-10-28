@@ -35,7 +35,10 @@ export async function runDueSystemTasks(): Promise<{
   if (materializedInstallments > 0) {
     logger.info(`system task materialized ${materializedInstallments} installment rows`, "system-task");
   }
-  const bootstrappedAccountBalances = await bootstrapPendingAccountBalances(1).catch((error) => {
+  // 每轮 4 个账户做全量重算：与「只往前推进」不同，全量重算能纠正任何漏账，
+  // 所以这一轮的吞吐直接决定错误最长存活时间。10 分钟 4 个 ≈ 每天 576 个，
+  // 足够覆盖单账簿几百个账户的一天一轮。
+  const bootstrappedAccountBalances = await bootstrapPendingAccountBalances(4).catch((error) => {
     logger.error("account balance bootstrap failed", "system-task", { error });
     return 0;
   });

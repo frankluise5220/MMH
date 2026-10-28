@@ -20,7 +20,12 @@ function matchesValue(value: unknown, condition: unknown, links?: LinkRow[]): bo
     if ("lt" in c && !(t < (c.lt as Date).getTime())) return false;
     return true;
   }
-  if ("is" in c) return matchesWhere(value as Row, c.is, links);
+  if ("is" in c) {
+    // 一对一关系的 `is: null` 在真实 Prisma 里就是「关系不存在」，这里必须
+    // 先处理空值，否则会拿 null 当行去匹配，脚本自己崩掉。
+    if (value === null || value === undefined) return c.is === null || c.is === undefined;
+    return matchesWhere(value as Row, c.is, links);
+  }
   if ("not" in c) return value !== c.not;
   return false;
 }

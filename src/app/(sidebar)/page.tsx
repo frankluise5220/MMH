@@ -3165,7 +3165,7 @@ export default async function Home({
                 </span>
               ) : null}
             </div>
-            <div className={`flex shrink-0 flex-wrap items-center justify-end gap-2 ${currentInvestData ? "hidden md:flex" : ""}`}>
+            <div className={`flex shrink-0 flex-wrap items-center justify-end gap-2 ${currentInvestData ? "hidden desktop:flex" : ""}`}>
               <UnifiedEntryLauncher
                 defaultAction={
                   isDepositView

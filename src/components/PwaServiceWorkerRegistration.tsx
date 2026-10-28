@@ -147,7 +147,7 @@ export function PwaServiceWorkerRegistration() {
   if (!showInstallHint) return null;
 
   return (
-    <div className="fixed inset-x-3 bottom-[calc(5.75rem+env(safe-area-inset-bottom)+0.75rem)] z-[70] md:hidden">
+    <div className="fixed inset-x-3 bottom-[calc(5.75rem+env(safe-area-inset-bottom)+0.75rem)] z-[70] desktop:hidden">
       <div className="rounded-xl border border-slate-200 bg-white/95 p-3 text-slate-800 shadow-[0_16px_36px_rgba(15,23,42,0.18)] backdrop-blur">
         <div className="flex items-start gap-3">
           <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-indigo-50 text-indigo-700">

@@ -1411,7 +1411,7 @@ export function BasicDetailPanel({
     <BasicDetailSelectionProvider resetKey={selectionResetKey}>
       <BasicDetailBatchDeleteMessage />
       <div ref={panelRef} className="relative flex-1 min-h-0 overflow-hidden">
-        <div className="flex min-h-12 items-center justify-between gap-2 border-b border-slate-200 bg-white px-3 md:hidden">
+        <div className="flex min-h-12 items-center justify-between gap-2 border-b border-slate-200 bg-white px-3 desktop:hidden">
           <span className="text-xs text-slate-500">{t("creditBillDetail.recordCount", { count: localTotalCount })}</span>
           {showPagination ? (
             <DetailTablePaginationControls
@@ -1516,7 +1516,7 @@ export function BasicDetailPanel({
           onDisplayRowsChange={handleDisplayRowsChange}
         />
         {guideOverlayOpen && guidePortalHost ? createPortal((
-          <div className="pointer-events-none fixed inset-0 z-[80] hidden overflow-hidden md:block" aria-live="polite">
+          <div className="pointer-events-none fixed inset-0 z-[80] hidden overflow-hidden desktop:block" aria-live="polite">
             <div className="absolute inset-0 bg-slate-900/[0.02]" />
             <GuideHotspot
               rect={guideMetrics?.entryButton ?? null}

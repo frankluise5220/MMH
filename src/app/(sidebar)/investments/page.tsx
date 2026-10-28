@@ -301,7 +301,7 @@ export default async function InvestmentsPage({
 
   return (
     <>
-    <div className="h-full md:hidden">
+    <div className="h-full desktop:hidden">
       <MobileInvestments
         rows={rows}
         details={mobileDetails}
@@ -311,7 +311,7 @@ export default async function InvestmentsPage({
         isRedUp={isRedUp}
       />
     </div>
-    <div className="hidden h-full md:block">
+    <div className="hidden h-full desktop:block">
     <div className="flex-1 min-h-0 overflow-auto bg-transparent p-4 md:p-5">
       <div className="mx-auto flex max-w-5xl flex-col gap-4">
         <div className="flex flex-wrap items-center justify-between gap-3">

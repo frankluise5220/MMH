@@ -79,7 +79,7 @@ export default async function OverviewPage() {
       missingFxCurrencies={summary.missingFxCurrencies}
       isRedUp={isRedUp}
     />
-    <div className="md:hidden">
+    <div className="desktop:hidden">
       <MobileTransactionForm
         accounts={accounts.map((account) => ({ ...account, kind: String(account.kind) }))}
         categories={categories}

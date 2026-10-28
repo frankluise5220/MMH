@@ -248,7 +248,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
 
   return (
     <>
-    <div className="h-full md:hidden">
+    <div className="h-full desktop:hidden">
       <MobileAccounts
         assetTotal={assetTotal}
         groups={groupedMoneyAccounts.map((group) => ({
@@ -263,7 +263,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
         isRedUp={isRedUp}
       />
     </div>
-    <div className="hidden h-full md:flex md:flex-col">
+    <div className="hidden h-full desktop:flex desktop:flex-col">
     <div className="flex-1 min-h-0 overflow-auto bg-slate-50">
       <header className="page-header">
         <div className="flex min-h-14 flex-wrap items-center justify-between gap-2 px-4 py-2 md:px-5">

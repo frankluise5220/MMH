@@ -956,7 +956,6 @@ async function advanceAccountBalanceStep(accountId: string) {
       kind: true,
       investProductType: true,
       billingDay: true,
-      balance: true,
       balanceRecomputedAt: true,
     },
   });
@@ -1087,6 +1086,9 @@ export async function applyEntryChangesToAccountBalances(changes: EntryBalanceCh
 }
 
 async function applyEntryChangesWithLoadedRows(changes: EntryBalanceChange[]) {
+  // 单账户重算失败不能静默跳过：标脏，让后台维护重新折叠一次。
+  const recalcOrMarkDirty = (accountId: string) =>
+    recalcAndSaveAccountBalance(accountId).catch(() => markAccountBalancesDirty([accountId]));
   const currentRows = await Promise.all(
     changes.map(async (change) => ({
       change,
@@ -1153,7 +1155,7 @@ async function applyEntryChangesWithLoadedRows(changes: EntryBalanceChange[]) {
       billingDay: account.billingDay,
     };
     if (account.kind === AccountKind.bank_credit) {
-      await recalcAndSaveAccountBalance(account.id).catch(() => {});
+      await recalcOrMarkDirty(account.id);
       continue;
     }
 
@@ -1162,7 +1164,7 @@ async function applyEntryChangesWithLoadedRows(changes: EntryBalanceChange[]) {
       // 存单（取回行缺 depositSourceEntryId 时还要按产品名+到期日兜底匹配），增量
       // 口径无法安全维护，而且极易和「持有/失效」列表分叉，所以一律整体重算。
       // 存单数量是个位数量级，重算只扫该账户的存款流水。
-      await recalcAndSaveAccountBalance(account.id).catch(() => {});
+      await recalcOrMarkDirty(account.id);
       continue;
     }
 
@@ -1228,7 +1230,7 @@ async function applyEntryChangesWithLoadedRows(changes: EntryBalanceChange[]) {
       asOf,
       account.balanceRecomputedAt,
     ).catch(() => false);
-    if (!saved) await recalcAndSaveAccountBalance(account.id).catch(() => {});
+    if (!saved) await recalcOrMarkDirty(account.id);
   }
 
   // 子户余额变动后把父账户的折合余额同步一遍（没有父账户时是一次空查询）。
@@ -1273,19 +1275,23 @@ export async function getMaintainedAccountBalances(
 }
 
 /**
- * Upgrade-path bootstrap and stale-cache maintenance for account balances.
+ * Background reconciliation of the cached `Account.balance` column.
+ *
  * Keep this off request paths and process a small batch per system-task tick.
- * Legacy rows adopt their existing balance as the baseline; stale rows advance
- * by at most `maxWindowsPerAccount` bounded windows before the next tick.
+ * Every candidate is fully re-folded from its ledger (see
+ * `advanceAccountBalanceStep`), so a stale or silently-missed update is always
+ * corrected within one maintenance round instead of being carried forward.
+ * Dirty accounts (`balanceRecomputedAt = null`) go first because their cached
+ * value is known to be wrong; the rest rotate by how long they have been
+ * unverified.
  */
-export async function bootstrapPendingAccountBalances(
-  limit = 1,
-  maxWindowsPerAccount = 1,
-) {
-  // 跨账簿的后台补偿任务，没有单一「今天」可用：这里用「24 小时内算过就不动」
-  // 的窗口挑候选，不受账簿时区影响；真正的余额推进在 advanceAccountBalanceStep
-  // 里按 account.householdId 的时区算。
-  const staleBefore = new Date(Date.now() - 24 * 60 * 60 * 1000);
+export async function bootstrapPendingAccountBalances(limit = 4) {
+  // 跨账簿的后台补偿任务，没有单一「今天」可用：这里用「半天内算过就不动」的
+  // 窗口挑候选，不受账簿时区影响；真正的重算在 advanceAccountBalanceStep 里按
+  // account.householdId 的时区算，同一天重复命中会直接返回 false。
+  // 窗口必须短于一天：重算写入的 asOf 是「今天 23:59:59」，用 24 小时窗口会让
+  // 账户隔一天才再次成为候选（约 48 小时一轮），把错误的最长存活时间翻倍。
+  const staleBefore = new Date(Date.now() - 12 * 60 * 60 * 1000);
   const accounts = await prisma.account.findMany({
     where: {
       OR: [
@@ -1294,13 +1300,16 @@ export async function bootstrapPendingAccountBalances(
       ],
     },
     select: { id: true },
-    orderBy: { updatedAt: "asc" },
+    orderBy: [
+      { balanceRecomputedAt: { sort: "asc", nulls: "first" } },
+      { updatedAt: "asc" },
+    ],
     take: Math.max(1, Math.floor(limit)),
   });
   let bootstrapped = 0;
   for (const account of accounts) {
     try {
-      if (await advanceAccountBalanceStep(account.id, maxWindowsPerAccount)) {
+      if (await advanceAccountBalanceStep(account.id)) {
         bootstrapped++;
       } else {
         logger.warn(`account balance maintenance did not persist ${account.id}`, "account-balance");

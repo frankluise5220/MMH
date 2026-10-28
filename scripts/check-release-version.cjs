@@ -250,9 +250,16 @@ if (legacyApp) {
 const dockerWorkflow = read(".github/workflows/docker-build.yml");
 expect(/tags:\s*\n\s*-\s*"v\*"/.test(dockerWorkflow), "Docker workflow must run on v* tag pushes so release images can be published from the release tag.");
 expect(/npm run check:docker/.test(dockerWorkflow), "Docker workflow must run check:docker before publishing images.");
-expect(/type=raw,value=latest,enable=\$\{\{\s*startsWith\(github\.ref,\s*'refs\/tags\/v'\)\s*\}\}/.test(dockerWorkflow), "Docker workflow must publish latest only from v* release tags.");
-expect(/type=semver,pattern=\{\{version\}\},enable=\$\{\{\s*startsWith\(github\.ref,\s*'refs\/tags\/v'\)\s*\}\}/.test(dockerWorkflow), "Docker workflow must publish the package version tag only from v* release tags.");
-expect(/type=raw,value=main,enable=\$\{\{\s*endsWith\(github\.ref,\s*'\/heads\/main'\)\s*\}\}/.test(dockerWorkflow), "Docker workflow must publish main snapshots without moving latest.");
+// Tag ownership moved on 2026-10-27: a v* tag push builds sha-<commit>
+// snapshots only, and `latest` / the package version tag are written by the
+// `release: published` build. v0.1.78 leaked `latest` from the tag push ~27h
+// before publication, and a Docker user upgraded to a commit whose schema had
+// no HouseholdPreference.detailWindowYears (P2022 ColumnNotFound afterwards).
+expect(/release:\s*\n\s*types:\s*\[published\]/.test(dockerWorkflow), "Docker workflow must also run on `release: published`, which is the only event allowed to write the public image tags.");
+expect(/type=raw,value=latest,enable=\$\{\{\s*github\.event_name == 'release'\s*\}\}/.test(dockerWorkflow), "Docker workflow must publish latest only from the `release: published` build, never from a tag push (a draft may be tagged for days before the user confirms it).");
+expect(/type=semver,pattern=\{\{version\}\},enable=\$\{\{\s*github\.event_name == 'release'\s*\}\}/.test(dockerWorkflow), "Docker workflow must publish the package version tag only from the `release: published` build.");
+expect(/type=raw,value=main,enable=\$\{\{\s*github\.event_name == 'push' &&\s*endsWith\(github\.ref,\s*'\/heads\/main'\)\s*\}\}/.test(dockerWorkflow), "Docker workflow must publish main snapshots without moving latest.");
+expect(!/type=raw,value=latest,enable=\$\{\{\s*startsWith\(github\.ref, 'refs\/tags\/v'\)/.test(dockerWorkflow), "Docker workflow must not go back to publishing latest on tag pushes.");
 
 for (const file of [".github/workflows/fnos-release.yml", ".github/workflows/fnos-stage.yml"]) {
   const workflow = read(file);

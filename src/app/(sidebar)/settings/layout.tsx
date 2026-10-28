@@ -49,7 +49,7 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
     <div className="flex-1 flex min-h-0 min-w-0">
       {/* Left navigation：桌面形态专属，手机端用「我的」目录页代替 */}
       {isMobileDevice ? null : (
-      <nav className="flex w-44 shrink-0 flex-col border-r border-slate-200 bg-white">
+      <nav className="hidden w-44 shrink-0 flex-col border-r border-slate-200 bg-white md:flex">
         <div className="h-12 flex items-center px-4 border-b border-slate-100 shrink-0">
           <Settings className="w-4 h-4 text-slate-500 mr-2" />
           <span className="font-semibold text-sm text-slate-800">{t("nav.settings")}</span>

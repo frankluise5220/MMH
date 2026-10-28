@@ -277,7 +277,7 @@ export function SettingsInstitutionsClient({
           )}
         </SettingsMobileList>
 
-        <div className="hidden md:block">
+        <div className="hidden desktop:block">
         <SettingsTable minWidth={mode === "counterparty" ? 900 : 780}>
             <thead className="sticky top-0 z-10">
               <tr>

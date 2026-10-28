@@ -342,7 +342,7 @@ export default function LedgerSettingsPage() {
         </div>
 
         {/* 桌面：表格 */}
-        <div className="hidden overflow-x-auto md:block">
+        <div className="hidden overflow-x-auto desktop:block">
           <table className="w-full table-fixed text-sm">
             <thead>
               <tr className="border-b border-slate-200 bg-slate-50 text-xs font-medium text-slate-500">
@@ -462,7 +462,7 @@ export default function LedgerSettingsPage() {
         </div>
 
         {/* 手机：每条账簿一张卡片 —— 四列表格在窄屏会把列头和操作按钮挤成竖排 */}
-        <ul className="divide-y divide-slate-100 bg-white md:hidden">
+        <ul className="divide-y divide-slate-100 bg-white desktop:hidden">
           {loading ? (
             <li className="px-4 py-8 text-center text-sm text-slate-500">{t("settings.ledgers.loadingRows")}</li>
           ) : households.length === 0 ? (

@@ -25,9 +25,10 @@ model Account {
   id                                                         String                      @id @default(cuid())
   name                                                       String
   balance                                                    Decimal                     @default(0) @db.Decimal(18, 2)
-  // As-of day for which `balance` has been maintained. Null means the cached
-  // value predates incremental balance maintenance and will be adopted as the
-  // baseline on the next background maintenance pass.
+  // Last day the cached `balance` was verified to include. Null means the
+  // cached value cannot be trusted (never computed, or marked dirty by a failed
+  // incremental update / an interrupted import batch); the background
+  // maintenance pass fully re-folds the ledger instead of adopting it.
   balanceRecomputedAt                                        DateTime?
   kind                                                       AccountKind                 @default(other)
   liabilityDirection                                         LiabilityDirection?

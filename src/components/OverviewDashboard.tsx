@@ -283,7 +283,7 @@ export function OverviewDashboard({
 
   return (
     <>
-    <div className="h-full md:hidden">
+    <div className="h-full desktop:hidden">
       <MobileOverviewDashboard
         netWorth={netWorth}
         accountTypeTotals={accountTypeTotals}
@@ -312,7 +312,7 @@ export function OverviewDashboard({
         isRedUp={isRedUp}
       />
     </div>
-    <div className="hidden h-full md:flex md:flex-col">
+    <div className="hidden h-full desktop:flex desktop:flex-col">
     <div className="page-body bg-transparent">
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-4 px-4 py-4 md:px-5 md:py-5">
         <section className="panel-surface overflow-hidden">
