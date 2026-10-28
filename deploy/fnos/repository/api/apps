@@ -11,7 +11,7 @@
         "arm"
       ],
       "author": "frankluise5220",
-      "desc": "【本版更新】<br>【功能改进】<br>• 桌面浏览器把窗口拉窄后不再切换成手机样式：底部导航与卡片列表只出现在真正的手机形态，窄窗口只收起侧边栏，表格与面板仍是桌面形态。<br>• 余额重算改为后台全量重算：导入或批量改动后不再当场同步重算，由后台任务每轮取 4 个账户全量重算（没算过的优先、半天窗口），漏账最多约半天自动纠正，不再长期停留在错误值。<br>【Bug 修复】<br>• 修复 Docker 升级到 0.1.78 后打开首屏或侧边栏报 `The column 'HouseholdPreference.detailWindowYears' does not exist in the current database`：容器启动时除了比对版本号，还会实测数据库与镜像的 schema 差异，缺列、缺表会自动补上；此前只比对版本号字符串，同版本重装会跳过同步，缺的列永远补不上。<br>完整说明见 GitHub Release v0.1.79<br><br>【软件简介】MMH 家庭记账与全资产管理，本地优先，程序和账本数据只保存在你自己的设备或 NAS 上，不经过第三方云端。记账：支出、收入、转账、代付、借贷与还款，多账本、多币种、分类标签与成员。资产：信用卡分期、房贷重算、基金定投、股票盈亏、存款理财、房产保险。功能：报表对账、周期自动记账、导入导出、AI 识别、附件、撤销恢复与备份。多端：PC、手机浏览器、Windows、Android 与开放 API。版本：飞牛 fnOS、群晖 DSM、Windows、Docker、Android。",
+      "desc": "【本版更新】<br>【功能改进】<br>• 桌面浏览器把窗口拉窄后不再切换成手机样式：底部导航与卡片列表只出现在真正的手机形态，窄窗口只收起侧边栏，表格与面板仍是桌面形态。<br>• 继续优化10万条记录量级的显示逻辑、调整余额重算：导入或批量改动后不再当场同步重算。<br>【Bug 修复】<br>• 修复 Docker 升级到 0.1.78 后打开首屏或侧边栏报 `The column 'HouseholdPreference.detailWindowYears' does not exist in the current database`：容器启动时除了比对版本号，还会实测数据库与镜像的 schema 差异，缺列、缺表会自动补上；此前只比对版本号字符串，同版本重装会跳过同步，缺的列永远补不上。<br>完整说明见 GitHub Release v0.1.79<br><br>【软件简介】MMH 家庭记账与全资产管理，本地优先，程序和账本数据只保存在你自己的设备或 NAS 上，不经过第三方云端。记账：支出、收入、转账、代付、借贷与还款，多账本、多币种、分类标签与成员。资产：信用卡分期、房贷重算、基金定投、股票盈亏、存款理财、房产保险。功能：报表对账、周期自动记账、导入导出、AI 识别、附件、撤销恢复与备份。多端：PC、手机浏览器、Windows、Android 与开放 API。版本：飞牛 fnOS、群晖 DSM、Windows、Docker、Android。",
       "download_url": "http://fnapp.floatingice.win/apps/mmh-0.1.79.fpk",
       "download_urls": {
         "x86_64": "http://fnapp.floatingice.win/apps/mmh-0.1.79.fpk",
@@ -20,7 +20,7 @@
       "icon": "https://raw.githubusercontent.com/frankluise5220/MMH/main/public/branding/mmh-logo-pageflip-512.png",
       "repo": "https://github.com/frankluise5220/MMH",
       "tags": "财务,记账",
-      "changelog": "桌面窄窗口保持桌面形态、余额改后台全量重算；修复 Docker 升级后偏好设置表缺列导致首屏报错。完整说明见 GitHub Release v0.1.79",
+      "changelog": "桌面窄窗口保持桌面形态、继续优化10万条记录量级的显示逻辑并调整余额重算；修复 Docker 升级后偏好设置表缺列导致首屏报错。完整说明见 GitHub Release v0.1.79",
       "type": "原生",
       "updated_at": "2026-10-28",
       "downloads": 0,
