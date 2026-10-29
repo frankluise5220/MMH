@@ -30,6 +30,12 @@ import { DateStepper } from "./DateStepper";
  *
  * chip 的宽度自适应内容：日期是等宽数字，截断会把截止日的后两位吃掉。
  *
+ * 选中块（蓝块）**不是纯比例**：块宽先按时间比例算，再夹一个像素下限
+ * （`MIN_BLOCK_PX`），窄区间向中点两侧撑开、靠边时贴边。按比例画时，五年跨度
+ * 的轴上选三天只有 1px 宽，鼠标没有落点，两端手柄也叠成一个点，看起来像坏了。
+ * 块的几何（`measureBlock`）同时供渲染和指针命中使用，所以「看着多宽」就等于
+ * 「能按住多宽」；拖动一律按指针位移换算，撑宽后的手柄不会一按就把区间弹走。
+ *
  * 日期一律按 `YYYY-MM-DD` 日历日处理：换算成「UTC 天序号」做滑块刻度，绝不用
  * 本地时区的 Date(y, m, d)，否则东八区凌晨会整体偏一天。
  */
@@ -43,6 +49,20 @@ const YMD_RE = /^\d{4}-\d{2}-\d{2}$/;
 // `去年` / `全部`）并把按钮左右内边距归零：288 时每格 51px，最长的一条
 // （英文 `This year` 47px + 描边 2px）刚好放得下，不需要为了这一行加宽弹层。
 const POPOVER_WIDTH = 288;
+
+/**
+ * 选中块的最小像素宽度。
+ *
+ * 浮块是「整块平移」的唯一抓手，而块宽只按时间比例算时，五年的轴上选三天
+ * 只有 1px 宽 —— 指针根本落不进去，两端手柄也叠成一个点，看起来像坏了。
+ * 所以块宽先按比例算、再夹一个像素下限（不按天数夹，否则不同跨度的轴上手感
+ * 差别巨大），位置以真实区间的中点为心，靠边时贴边。命中判定与渲染共用
+ * `measureBlock`，块看着有多宽就能按多宽。
+ */
+const MIN_BLOCK_PX = 44;
+
+/** 手柄的抓取半径（像素）：块被撑宽后手柄落在块的两端，半径保持不变。 */
+const HANDLE_HIT_SLOP = 9;
 
 function dayIndexOf(ymd: string) {
   if (!YMD_RE.test(ymd)) return null;
@@ -66,6 +86,29 @@ function resolveDayIndex(ymd: string) {
   const index = dayIndexOf(ymd);
   if (index == null) return null;
   return ymdOfDayIndex(index) === ymd ? index : null;
+}
+
+/**
+ * 选中块在轨道里的像素几何：`left + width`（相对轨道左端）。
+ *
+ * 渲染和指针命中都用这一份结果 —— 分开算就会出现「块看着 44px、实际只有
+ * 1px 能按」的错位。轨道宽度还没测出来（首帧）时返回 null，调用方退回按
+ * 百分比画。
+ */
+function measureBlock(
+  trackWidth: number,
+  fromIdx: number,
+  toIdx: number,
+  minIdx: number,
+  span: number,
+): { left: number; width: number } | null {
+  if (!Number.isFinite(trackWidth) || trackWidth <= 0 || span <= 0) return null;
+  const fromPx = ((fromIdx - minIdx) / span) * trackWidth;
+  const toPx = ((toIdx - minIdx) / span) * trackWidth;
+  const width = Math.min(trackWidth, Math.max(MIN_BLOCK_PX, toPx - fromPx));
+  // 中心不动：窄区间向两侧对称撑开，比只往右边长更接近用户的心理位置。
+  const left = clamp((fromPx + toPx - width) / 2, 0, Math.max(0, trackWidth - width));
+  return { left, width };
 }
 
 type DateRangeSliderFilterProps = {
@@ -101,9 +144,16 @@ export function DateRangeSliderFilter({
   const trackRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<"from" | "to" | "move" | null>(null);
   const draftRef = useRef({ fromIdx: 0, toIdx: 0 });
-  /** 整块平移的起点：按下时的指针位置与当时的区间，避免逐帧累加误差。 */
-  const moveStartRef = useRef<{ clientX: number; fromIdx: number; toIdx: number } | null>(null);
+  /**
+   * 拖动的起点：按下时的指针位置与当时的区间。
+   *
+   * 平移和改大小都按「位移」换算而不是「指针下的日期」—— 块被撑到最小宽度
+   * 之后，手柄离真实日期本身就有距离，用绝对位置会一按就把区间拽走一大段。
+   */
+  const dragStartRef = useRef<{ clientX: number; fromIdx: number; toIdx: number } | null>(null);
   const [open, setOpen] = useState(false);
+  /** 轨道像素宽度：决定选中块按比例画多宽、以及最小宽度的夹取。 */
+  const [trackWidth, setTrackWidth] = useState(0);
   const [popoverStyle, setPopoverStyle] = useState<CSSProperties>({ visibility: "hidden" });
   const [draftFrom, setDraftFrom] = useState(from);
   const [draftTo, setDraftTo] = useState(to);
@@ -170,6 +220,24 @@ export function DateRangeSliderFilter({
       document.removeEventListener("scroll", updatePosition, true);
     };
   }, [open]);
+
+  /**
+   * 量轨道宽度：选中块的像素下限要靠它才能算出来（比例和像素之间只能换算，
+   * 不能只靠 CSS 的 `min-width` —— 那样块的实际位置就和命中判定分家了）。
+   * 弹层会跟着窗口缩放，所以用 ResizeObserver 而不是只量一次。
+   */
+  useLayoutEffect(() => {
+    if (!open) return;
+    const track = trackRef.current;
+    if (!track) return;
+    const measure = () => setTrackWidth(track.getBoundingClientRect().width);
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(track);
+    return () => observer.disconnect();
+    // 弹层宽度由上一支 effect 定（首帧是 `visibility: hidden` 的自适应宽度）：
+    // 宽度落定后必须重量一次，否则浮块会先按错误的轨道宽度画一帧。
+  }, [hasTrack, open, popoverStyle.width]);
 
   /**
    * 把草稿的下标区间翻译成对外的 `from/to` 并下发。
@@ -242,41 +310,45 @@ export function DateRangeSliderFilter({
   const handlePointerDown = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (!hasTrack) return;
     event.preventDefault();
-    const index = indexFromClientX(event.clientX);
     const current = draftRef.current;
-    const track = trackRef.current;
-    const rect = track?.getBoundingClientRect();
-    const pointerPx = rect ? event.clientX - rect.left : 0;
-    const pxPerDay = rect && span > 0 ? rect.width / span : 0;
-    const fromPx = pxPerDay * (current.fromIdx - (minIdx as number));
-    const toPx = pxPerDay * (current.toIdx - (minIdx as number));
-    const hitSlop = 9;
-    // 三档：靠近两端手柄 → 改大小；落在选中块内部 → 整块平移；
-    // 其余空白轨道 → 就近抓一根手柄（轨道窄时不必精确点在小圆点上）。
+    const rect = trackRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const block = measureBlock(rect.width, current.fromIdx, current.toIdx, minIdx as number, span);
+    if (!block) return;
+    const pointerPx = event.clientX - rect.left;
+    const blockRight = block.left + block.width;
+    // 三档，判定的边界就是块的像素边界（含最小宽度）：靠近块两端 → 改大小；
+    // 落在块内 → 整块平移（区间再窄也撑到了可抓宽度，这段永远存在）；
+    // 其余空白轨道 → 就近抓一根手柄（不必精确点在把手上）。
     let handle: "from" | "to" | "move";
-    if (pointerPx >= fromPx - hitSlop && pointerPx <= fromPx + hitSlop) {
+    /** 落在空白轨道上：这一下是「落点」，直接把就近的手柄挪到指针所在的那天。 */
+    let snapToPointer = false;
+    if (pointerPx >= block.left - HANDLE_HIT_SLOP && pointerPx <= block.left + HANDLE_HIT_SLOP) {
       handle = "from";
-    } else if (pointerPx >= toPx - hitSlop && pointerPx <= toPx + hitSlop) {
+    } else if (pointerPx >= blockRight - HANDLE_HIT_SLOP && pointerPx <= blockRight + HANDLE_HIT_SLOP) {
       handle = "to";
-    } else if (pointerPx > fromPx + hitSlop && pointerPx < toPx - hitSlop) {
+    } else if (pointerPx > block.left + HANDLE_HIT_SLOP && pointerPx < blockRight - HANDLE_HIT_SLOP) {
       // 块心一律平移：即使已经全选（跨度等于时间轴）也走这里，夹取后原地不动，
       // 不会因为点了一下中间就把某端手柄拽到别处。
       handle = "move";
     } else {
+      const index = indexFromClientX(event.clientX);
       handle = Math.abs(index - current.fromIdx) <= Math.abs(index - current.toIdx) ? "from" : "to";
+      snapToPointer = true;
     }
     dragRef.current = handle;
     event.currentTarget.setPointerCapture(event.pointerId);
-    if (handle === "move") {
-      moveStartRef.current = { clientX: event.clientX, fromIdx: current.fromIdx, toIdx: current.toIdx };
-      return;
+    dragStartRef.current = { clientX: event.clientX, fromIdx: current.fromIdx, toIdx: current.toIdx };
+    if (handle === "move") return;
+    // 点在块自身的端点上时先不动，等位移说话（见 dragStartRef 的注释）。
+    if (snapToPointer) {
+      draftRef.current = applyIndex(handle, indexFromClientX(event.clientX));
+      dragStartRef.current = { clientX: event.clientX, fromIdx: draftRef.current.fromIdx, toIdx: draftRef.current.toIdx };
     }
-    moveStartRef.current = null;
-    draftRef.current = applyIndex(handle, index);
   };
 
   const moveRangeTo = (clientX: number) => {
-    const start = moveStartRef.current;
+    const start = dragStartRef.current;
     const track = trackRef.current;
     if (!start || !track || span <= 0) return;
     const width = track.getBoundingClientRect().width;
@@ -291,26 +363,39 @@ export function DateRangeSliderFilter({
     setDraftTo(nextTo >= (maxIdx as number) ? "" : ymdOfDayIndex(nextTo));
   };
 
+  /** 改大小：同样按指针位移换算，块被撑宽时不会出现「一按就跳一大段」。 */
+  const resizeRangeTo = (handle: "from" | "to", clientX: number) => {
+    const start = dragStartRef.current;
+    const track = trackRef.current;
+    if (!start || !track || span <= 0) return;
+    const width = track.getBoundingClientRect().width;
+    if (width <= 0) return;
+    const delta = Math.round(((clientX - start.clientX) / width) * span);
+    const base = handle === "from" ? start.fromIdx : start.toIdx;
+    draftRef.current = applyIndex(handle, base + delta);
+  };
+
   const handlePointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!dragRef.current) return;
+    const handle = dragRef.current;
+    if (!handle) return;
     event.preventDefault();
-    if (dragRef.current === "move") {
+    if (handle === "move") {
       moveRangeTo(event.clientX);
       return;
     }
-    applyIndex(dragRef.current, indexFromClientX(event.clientX));
+    resizeRangeTo(handle, event.clientX);
   };
 
   const handlePointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
     const handle = dragRef.current;
     if (!handle) return;
     dragRef.current = null;
-    moveStartRef.current = null;
     if (handle === "move") {
       moveRangeTo(event.clientX);
     } else {
-      draftRef.current = applyIndex(handle, indexFromClientX(event.clientX));
+      resizeRangeTo(handle, event.clientX);
     }
+    dragStartRef.current = null;
     // 松手只落草稿；下发在「确认」。
   };
 
@@ -381,6 +466,10 @@ export function DateRangeSliderFilter({
   const dayCount = hasTrack ? draftToIdx - draftFromIdx + 1 : 0;
   const fromPercent = hasTrack ? ((draftFromIdx - (minIdx as number)) / span) * 100 : 0;
   const toPercent = hasTrack ? ((draftToIdx - (minIdx as number)) / span) * 100 : 100;
+  // 浮块和两根手柄都按这份像素几何摆位：块宽有下限，手柄跟着块的两端走，
+  // 所以「块看起来有多宽」和「哪里能按住」永远是同一个数。
+  // 轨道还没量到时（首帧）退回百分比，layout effect 会在绘制前补上。
+  const blockRect = hasTrack ? measureBlock(trackWidth, draftFromIdx, draftToIdx, minIdx as number, span) : null;
 
   return (
     <div ref={rootRef} className={`relative ${className}`}>
@@ -481,13 +570,19 @@ export function DateRangeSliderFilter({
                 onPointerDown={handlePointerDown}
                 onPointerMove={handlePointerMove}
                 onPointerUp={handlePointerUp}
-                onPointerCancel={() => { dragRef.current = null; }}
+                onPointerCancel={() => { dragRef.current = null; dragStartRef.current = null; }}
               >
                 <div className="absolute inset-x-0 top-1/2 h-1.5 -translate-y-1/2 rounded-full bg-slate-200" />
-                {/* 选中的时间段画成一块可抓的浮块：按住块心整体平移，抓两端手柄改大小。 */}
+                {/*
+                  选中的时间段画成一块可抓的浮块：按住块心整体平移，抓两端手柄改大小。
+                  宽度有像素下限（MIN_BLOCK_PX），窄区间向中点两侧撑开 —— 纯按比例画
+                  时几年跨度上选几天只有 1px，鼠标根本没地方按。
+                */}
                 <div
                   className="absolute top-1/2 h-6 -translate-y-1/2 cursor-grab rounded-md border border-blue-400/60 bg-blue-400/25 active:cursor-grabbing"
-                  style={{ left: `${fromPercent}%`, right: `${100 - toPercent}%` }}
+                  style={blockRect
+                    ? { left: blockRect.left, width: blockRect.width }
+                    : { left: `${fromPercent}%`, right: `${100 - toPercent}%` }}
                   title={t("advancedTable.dateRangeDragHint")}
                 />
                 <div
@@ -500,7 +595,7 @@ export function DateRangeSliderFilter({
                   aria-valuetext={draftFrom || min}
                   onKeyDown={handleKeyDown("from")}
                   className="absolute top-1/2 h-5 w-2 -translate-x-1/2 -translate-y-1/2 cursor-ew-resize rounded-[3px] border-2 border-white bg-blue-600 shadow-[0_1px_4px_rgba(15,23,42,0.35)] outline-none focus-visible:ring-2 focus-visible:ring-blue-300"
-                  style={{ left: `${fromPercent}%` }}
+                  style={{ left: blockRect ? blockRect.left : `${fromPercent}%` }}
                 />
                 <div
                   role="slider"
@@ -512,7 +607,7 @@ export function DateRangeSliderFilter({
                   aria-valuetext={draftTo || max}
                   onKeyDown={handleKeyDown("to")}
                   className="absolute top-1/2 h-5 w-2 -translate-x-1/2 -translate-y-1/2 cursor-ew-resize rounded-[3px] border-2 border-white bg-blue-600 shadow-[0_1px_4px_rgba(15,23,42,0.35)] outline-none focus-visible:ring-2 focus-visible:ring-blue-300"
-                  style={{ left: `${toPercent}%` }}
+                  style={{ left: blockRect ? blockRect.left + blockRect.width : `${toPercent}%` }}
                 />
               </div>
               <div className="mt-1 flex items-center justify-between text-xs tabular-nums text-slate-400">
