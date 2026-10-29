@@ -23,6 +23,7 @@ import { prisma } from "@/lib/db/prisma";
 import { AccountKind } from "@prisma/client";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision-core";
+import { getLatestFundNavOnOrBefore } from "@/lib/fund/navCache";
 import { BENCHMARK_OPTIONS, DEFAULT_BENCHMARK_CODE, resolveBenchmarkCode } from "@/lib/benchmark-options";
 
 export type FundTrendPoint = {
@@ -332,11 +333,8 @@ async function getNavOnOrBeforeMonthEnd(
 ): Promise<{ nav: number; navDate: Date } | null> {
   const [y, m] = month.split("-").map(Number);
   const monthEnd = new Date(Date.UTC(y, m - 1 + 1, 0)); // last day of month
-  const row = await prisma.fundNavCache.findFirst({
-    where: { fundCode, navDate: { lte: monthEnd } },
-    orderBy: { navDate: "desc" },
-    select: { nav: true, navDate: true },
-  });
+  // 历史净值只经 navCache 的共享口径取值（≤ 月末最近一条）。
+  const row = await getLatestFundNavOnOrBefore(fundCode, monthEnd);
   if (!row || Number(row.nav) <= 0) return null;
   return { nav: Number(row.nav), navDate: row.navDate };
 }

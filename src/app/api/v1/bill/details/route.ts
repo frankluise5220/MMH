@@ -12,7 +12,11 @@ import { AccountKind, TransactionType, type Prisma } from "@prisma/client";
 import type { DetailEntry } from "@/components/DetailViewClient";
 import { prisma } from "@/lib/db/prisma";
 import { addDaysUtc, toNumber, formatDateUtc } from "@/lib/date-utils";
-import { creditBillDateRangeWhere, cycleForStatementMonthWithBillingDayRules } from "@/lib/credit/billing";
+import {
+  creditBillDateRangeWhere,
+  cycleForStatementMonthWithBillingDayRules,
+} from "@/lib/credit/billing";
+import { loadConsistentCreditCycles } from "@/lib/server/credit-cycles";
 import { compareDetailEntriesDesc } from "@/lib/detail-entry-order";
 import { getCreditBillAccountIds } from "@/lib/server/credit-card-institution-settings";
 import { reconcileCreditCardBillingDayRulesFromAccounts } from "@/lib/server/credit-card-billing-day-rules";
@@ -198,20 +202,26 @@ export async function GET(req: Request) {
     const cycle = showAllDetails
       ? null
       : await (async () => {
-          const persisted = await prisma.creditCardCycle.findUnique({
-            where: {
-              accountId_statementMonth: {
-                accountId: storageAccountId,
-                statementMonth: billMonth,
-              },
-            },
+          // 账单期只从唯一入口读：库里的坏周期（结束日落在邻月）会被丢掉并在下面
+          // 按账单日规则重算，否则按它取明细会把邻月的流水当成这一期的。
+          const { cycles } = await loadConsistentCreditCycles<{
+            statementMonth: string;
+            periodStart: Date;
+            periodEnd: Date;
+            dueDate: Date | null;
+            isCurrentCycle: boolean;
+          }>(prisma, {
+            where: { accountId: storageAccountId, statementMonth: billMonth },
             select: {
+              statementMonth: true,
               periodStart: true,
               periodEnd: true,
               dueDate: true,
               isCurrentCycle: true,
             },
+            billingDayTxPeriod: account.billingDayTxPeriod,
           });
+          const persisted = cycles[0] ?? null;
           if (persisted) {
             return {
               statementMonth: billMonth,

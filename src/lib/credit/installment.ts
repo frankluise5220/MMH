@@ -1,7 +1,27 @@
 import { calcLoanScheduledAmountExact } from "@/lib/loan-repayment";
 import { toStatementMonth } from "@/lib/date-utils";
+import { billingDayAtDate, type BillingDayTxPeriod, type CreditCardBillingDayRule } from "@/lib/credit/billing";
 
 export type CreditCardInstallmentRateType = "annual_interest" | "period_fee";
+
+/**
+ * 分期条目的账单月归属 —— 唯一实现。
+ *
+ * 账单月由**账单日规则链**决定，历史月份要按「该笔日期那一刻的账单日」回溯：
+ * - 用账户当前账单日，会把改账单日之前的历史条目搬到新口径；
+ * - 用建计划时的账单日快照，则新生成的期供行与已归一化的老条目分属两个月。
+ * 两者都会让同一分期计划的期供行散落在不同账单月，账单表与计划总额对不上。
+ */
+export function creditInstallmentStatementMonthForDate(params: {
+  date: Date;
+  billingDayRules?: readonly CreditCardBillingDayRule[] | null;
+  fallbackBillingDay?: number | null;
+  billingDayTxPeriod?: BillingDayTxPeriod | string | null;
+}) {
+  const billingDay = billingDayAtDate(params.billingDayRules ?? [], params.date, params.fallbackBillingDay ?? null);
+  if (billingDay == null) return null;
+  return toStatementMonth(params.date, billingDay, params.billingDayTxPeriod as BillingDayTxPeriod | null | undefined);
+}
 
 type CreditCardInstallmentScheduleRow = {
   installmentNo: number;

@@ -3,6 +3,7 @@ import { AccountKind } from "@prisma/client";
 import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import { toNumber } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
+import { getFundNavMapOnOrBefore } from "@/lib/fund/navCache";
 import {
   calculateFundPositionsFromEntries,
   type FundPositionEntryLike,
@@ -149,18 +150,11 @@ function toEntryLike(row: {
 }
 
 async function findNavOnOrBefore(fundCodes: string[], targetDate: Date) {
-  const rows = await prisma.fundNavCache.findMany({
-    where: {
-      fundCode: { in: fundCodes },
-      navDate: { lte: targetDate },
-    },
-    orderBy: [{ fundCode: "asc" }, { navDate: "desc" }],
-    select: { fundCode: true, navDate: true, nav: true, name: true },
-  });
+  // 统一走 navCache 的批量口径（≤ 目标日取最近一条），不要自己查表。
+  const rows = await getFundNavMapOnOrBefore(fundCodes, targetDate);
   const result = new Map<string, { nav: number; navDate: string; name: string | null }>();
-  for (const row of rows) {
-    if (result.has(row.fundCode)) continue;
-    result.set(row.fundCode, {
+  for (const [fundCode, row] of rows) {
+    result.set(fundCode, {
       nav: toNumber(row.nav),
       navDate: ymd(row.navDate),
       name: row.name ?? null,

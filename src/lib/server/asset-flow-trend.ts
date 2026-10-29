@@ -32,6 +32,7 @@
 
 import { AccountKind, FundSubtype, StockTransactionAction, TransactionType } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
+import { partitionCreditCycles } from "@/lib/server/credit-cycles";
 import { toNumber, todayDateBusinessYmd } from "@/lib/date-utils";
 import { depositRedemptionPrincipal } from "@/lib/server/deposit-lot-balance";
 import type { HouseholdContext } from "@/lib/server/household-scope";
@@ -155,7 +156,7 @@ export async function loadAssetMonthEndLevels(
   // ── Accounts ──────────────────────────────────────────────────────────────
   const accounts = await prisma.account.findMany({
     where: { ...ctx.hidFilter, isActive: true, isPlaceholder: { not: true } },
-    select: { id: true, kind: true, currency: true, investProductType: true },
+    select: { id: true, kind: true, currency: true, investProductType: true, billingDayTxPeriod: true },
   });
 
   const plainAccounts = accounts.filter((account) =>
@@ -838,17 +839,33 @@ export async function loadAssetMonthEndLevels(
       where: { accountId: { in: creditAccounts.map((account) => account.id) } },
       select: {
         accountId: true,
+        statementMonth: true,
+        periodStart: true,
         periodEnd: true,
         cumulativeRemain: true,
         cumulativeOverpaid: true,
       },
       orderBy: { periodEnd: "asc" },
     });
+    // 账单期必须经唯一入口校验：结束日写坏的周期会把曲线锚点放到错误的月份，
+    // 所以按账户各自的归属期口径丢掉不自洽的行。
+    const cycleRowsByAccount = new Map<string, typeof cycleRows>();
     for (const row of cycleRows) {
-      const outstanding = Math.max(0, toNumber(row.cumulativeRemain) - toNumber(row.cumulativeOverpaid));
-      const series = creditLiabilitySeries.get(row.accountId) ?? [];
-      series.push({ dayKey: localDateKey(row.periodEnd), value: outstanding });
-      creditLiabilitySeries.set(row.accountId, series);
+      const rows = cycleRowsByAccount.get(row.accountId) ?? [];
+      rows.push(row);
+      cycleRowsByAccount.set(row.accountId, rows);
+    }
+    for (const account of creditAccounts) {
+      const { accepted } = partitionCreditCycles(
+        cycleRowsByAccount.get(account.id) ?? [],
+        account.billingDayTxPeriod,
+      );
+      for (const row of accepted) {
+        const outstanding = Math.max(0, toNumber(row.cumulativeRemain) - toNumber(row.cumulativeOverpaid));
+        const series = creditLiabilitySeries.get(row.accountId) ?? [];
+        series.push({ dayKey: localDateKey(row.periodEnd), value: outstanding });
+        creditLiabilitySeries.set(row.accountId, series);
+      }
     }
   }
 

@@ -23,6 +23,7 @@ import { ensureBankInstallmentExpenseCategory } from "@/lib/default-categories";
 import { toStatementMonth } from "@/lib/date-utils";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
+import { loadConsistentCreditCycles } from "@/lib/server/credit-cycles";
 import { getCreditBillAccountIds } from "@/lib/server/credit-card-institution-settings";
 import { createCreditCardInstallmentPlan } from "@/lib/server/credit-card-installment";
 import { getHouseholdScope } from "@/lib/server/household-scope";
@@ -123,13 +124,29 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, code: "BILLING_DAY_MISSING", error: "信用卡缺少账单日，无法创建账单分期" }, { status: 400 });
     }
     const storageAccountId = billAccountIds[0] ?? account.id;
-    const cycle = await prisma.creditCardCycle.findFirst({
-      where: {
-        accountId: storageAccountId,
-        periodStart: { lte: installmentDate },
-        periodEnd: { gte: installmentDate },
+    // 账单期只从唯一入口读：库里结束日写坏的周期（落在邻月）会被丢掉，不能拿它
+    // 反推分期日期归属的账单月，否则分期计划会挂到错误的 sourceStatementMonth 上，
+    // 连带让「同账单月已分期」的去重失效。
+    const { cycles: consistentCycles } = await loadConsistentCreditCycles<{
+      statementMonth: string;
+      periodStart: Date;
+      periodEnd: Date;
+      isCurrentCycle: boolean;
+      effectiveBill: unknown;
+      paid: unknown;
+    }>(prisma, {
+      where: { accountId: storageAccountId },
+      select: {
+        statementMonth: true,
+        periodStart: true,
+        periodEnd: true,
+        isCurrentCycle: true,
+        effectiveBill: true,
+        paid: true,
       },
+      billingDayTxPeriod: account.billingDayTxPeriod,
     });
+    const cycle = consistentCycles.find((row) => dateInCycle(installmentDate, row)) ?? null;
     if (!cycle) {
       return NextResponse.json({ ok: false, code: "STATEMENT_CYCLE_NOT_FOUND", error: "这一期账单尚未生成，请先打开账单列表" }, { status: 404 });
     }

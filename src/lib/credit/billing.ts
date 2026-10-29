@@ -68,7 +68,7 @@ type CreditCardCyclePersistRow = {
   lockSource: string | null;
 };
 
-type CreditCardBillingDayRule = {
+export type CreditCardBillingDayRule = {
   effectiveDate: Date;
   billingDay: number;
 };
@@ -325,6 +325,98 @@ export function creditCardCycleEndDateForStatementMonth(
     billingDay,
     normalizeBillingDayTxPeriod(billingDayTxPeriod),
   );
+}
+
+/**
+ * 一条账单周期的结束日必须落在它自己的账单月里。
+ *
+ * 账单月 M 的周期按账单日在 M 月内结束（账单日为 31/月末时取该月最后一天）；
+ * `billingDayTxPeriod = "next"` 只是提前一天，所以只有「账单日为 1 号」时结束日
+ * 会落在上个月最后一天。结束日跑到别的月份，意味着这条周期的日期属于邻月账单：
+ * 邻月被重复覆盖，本月却没有任何周期能覆盖自己的流水（用户看到的正是
+ * 「2017-06 = 05.01 ~ 05.31、2017-07 = 06.01 ~ 07.31」这种两月一期）。
+ */
+export function isCreditCyclePeriodInStatementMonth(params: {
+  statementMonth: string;
+  periodEnd: Date | string | null | undefined;
+  billingDayTxPeriod?: BillingDayTxPeriod | null;
+}) {
+  const parsed = parseStatementMonth(params.statementMonth);
+  if (!parsed || params.periodEnd == null) return false;
+  const raw = params.periodEnd instanceof Date ? params.periodEnd : new Date(params.periodEnd);
+  if (Number.isNaN(raw.getTime())) return false;
+  const end = startOfDayUtc(raw);
+  const firstDay = new Date(Date.UTC(parsed.year, parsed.monthIndex, 1));
+  const lastDay = new Date(Date.UTC(parsed.year, parsed.monthIndex + 1, 0));
+  const previousMonthLastDay = new Date(Date.UTC(parsed.year, parsed.monthIndex, 0));
+  if (end >= firstDay && end <= lastDay) return true;
+  return (
+    normalizeBillingDayTxPeriod(params.billingDayTxPeriod) === "next" &&
+    end.getTime() === previousMonthLastDay.getTime()
+  );
+}
+
+/**
+ * 从持久化的账单周期里挑出「自洽」的那些，其余交给账单日规则重算。
+ *
+ * 判定分两步，按账单月升序逐条进行：
+ * 1. 结束日必须落在自己的账单月（见 `isCreditCyclePeriodInStatementMonth`）；
+ * 2. 与上一条**相邻月份**的周期必须首尾相接（本期开始 = 上期结束 + 1 天），并且
+ *    上一条的结束日本身可信。否则说明上一条周期的结束日被写坏、本条是顺着那个
+ *    坏日期推出来的，必须一起重算。
+ *
+ * 手工改期与对账单导入仍然有效：只要它们落在自己的账单月并且接得上上一期，
+ * 就会被保留（这正是用户手工修正账单周期的用途）。
+ */
+export function selectConsistentPersistedCycles<T extends {
+  statementMonth: string;
+  periodStart: Date | string;
+  periodEnd: Date | string;
+}>(cycles: readonly T[], billingDayTxPeriod?: BillingDayTxPeriod | null) {
+  const sorted = cycles
+    .filter((cycle) => /^\d{4}-\d{2}$/.test(cycle.statementMonth))
+    .slice()
+    .sort((a, b) => a.statementMonth.localeCompare(b.statementMonth));
+  const accepted: T[] = [];
+  const rejected: T[] = [];
+  const rejectedMonths = new Set<string>();
+  let previousMonth: string | null = null;
+  let previousEnd: Date | null = null;
+  let previousEndTrusted = false;
+
+  for (const cycle of sorted) {
+    const start = startOfDayUtc(cycle.periodStart instanceof Date ? cycle.periodStart : new Date(cycle.periodStart));
+    const end = startOfDayUtc(cycle.periodEnd instanceof Date ? cycle.periodEnd : new Date(cycle.periodEnd));
+    const validDates = !Number.isNaN(start.getTime()) && !Number.isNaN(end.getTime()) && start <= end;
+    const endInStatementMonth = validDates && isCreditCyclePeriodInStatementMonth({
+      statementMonth: cycle.statementMonth,
+      periodEnd: end,
+      billingDayTxPeriod,
+    });
+    const afterPreviousMonth = previousMonth != null
+      && nextCreditBillStatementMonth(previousMonth) === cycle.statementMonth;
+    // 相邻月份的周期必须首尾相接；上一期的结束日已经不可信时，本期的开始日就是
+    // 从那个坏日期推出来的，同样不能采纳（否则会把邻月的区间重复覆盖一遍）。
+    const contiguous = !afterPreviousMonth
+      || (
+        previousEnd != null
+        && previousEndTrusted
+        && start.getTime() === addDaysUtc(previousEnd, 1).getTime()
+      );
+
+    previousMonth = cycle.statementMonth;
+    previousEnd = end;
+    previousEndTrusted = endInStatementMonth;
+
+    if (!endInStatementMonth || !contiguous) {
+      rejectedMonths.add(cycle.statementMonth);
+      rejected.push(cycle);
+      continue;
+    }
+    accepted.push(cycle);
+  }
+
+  return { accepted, rejected, rejectedMonths };
 }
 
 function normalizeCreditCardRepaymentOffsetDays(value: unknown) {

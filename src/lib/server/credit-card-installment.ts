@@ -6,8 +6,10 @@ import {
 
 import {
   buildCreditCardInstallmentSchedule,
+  creditInstallmentStatementMonthForDate,
   type CreditCardInstallmentRateType,
 } from "@/lib/credit/installment";
+import type { CreditCardBillingDayRule } from "@/lib/credit/billing";
 import { formatDateUtc, toStatementMonth } from "@/lib/date-utils";
 import { ensureInstallmentFeeExpenseCategory } from "@/lib/default-categories";
 import { attachEntryTags } from "@/lib/server/entry-tags";
@@ -35,6 +37,27 @@ type CreateCreditCardInstallmentInput = {
   label: string;
   tagIds?: string[];
 };
+
+/** 分期归属口径需要的账单日规则历史（按账户分组），两个入口共用。 */
+async function loadBillingDayRulesByAccountIds(
+  db: InstallmentWriter,
+  accountIds: readonly string[],
+) {
+  const ids = Array.from(new Set(accountIds.filter(Boolean)));
+  const byAccountId = new Map<string, CreditCardBillingDayRule[]>();
+  if (ids.length === 0) return byAccountId;
+  const rows = await db.creditCardBillingDay.findMany({
+    where: { accountId: { in: ids } },
+    select: { accountId: true, effectiveDate: true, billingDay: true },
+    orderBy: [{ effectiveDate: "asc" }],
+  });
+  for (const row of rows) {
+    const list = byAccountId.get(row.accountId) ?? [];
+    list.push({ effectiveDate: row.effectiveDate, billingDay: row.billingDay });
+    byAccountId.set(row.accountId, list);
+  }
+  return byAccountId;
+}
 
 export async function normalizeCreditCardInstallmentStatementMonths(
   tx: InstallmentWriter,
@@ -74,6 +97,7 @@ export async function normalizeCreditCardInstallmentStatementMonths(
     },
     select: {
       id: true,
+      accountId: true,
       date: true,
       statementMonth: true,
       creditCardInstallmentPlanId: true,
@@ -81,12 +105,22 @@ export async function normalizeCreditCardInstallmentStatementMonths(
     },
   });
 
+  // 归属口径与 materializeDueInstallmentPayments 共用
+  // creditInstallmentStatementMonthForDate：按「该笔日期那一刻的账单日」回溯规则历史。
+  const billingDayRulesByAccountId = await loadBillingDayRulesByAccountIds(tx, accountIds);
+
   let updatedEntries = 0;
   const sourceStatementMonthByPlanId = new Map<string, string>();
   const firstPaymentMonthByPlanId = new Map<string, string>();
 
   for (const entry of entries) {
-    const expectedMonth = toStatementMonth(entry.date, input.billingDay, input.billingDayTxPeriod);
+    const expectedMonth = creditInstallmentStatementMonthForDate({
+      date: entry.date,
+      billingDayRules: entry.accountId ? billingDayRulesByAccountId.get(entry.accountId) : null,
+      fallbackBillingDay: input.billingDay,
+      billingDayTxPeriod: input.billingDayTxPeriod,
+    });
+    if (!expectedMonth) continue;
     if (entry.statementMonth !== expectedMonth) {
       await tx.txRecord.updateMany({
         where: {
@@ -302,6 +336,12 @@ export async function materializeDueInstallmentPayments(
   });
   if (plans.length === 0) return { materialized: 0 };
 
+  // 归属口径与 normalizeCreditCardInstallmentStatementMonths 共用同一个纯函数。
+  const billingDayRulesByAccountId = await loadBillingDayRulesByAccountIds(
+    db,
+    plans.map((plan) => plan.accountId),
+  );
+
   let materialized = 0;
   for (const plan of plans) {
     const billingDay = plan.billingDay ?? plan.Account?.billingDay ?? 1;
@@ -321,7 +361,12 @@ export async function materializeDueInstallmentPayments(
       .map((row) => ({
         installmentNo: row.installmentNo,
         date: row.date,
-        statementMonth: toStatementMonth(row.date, billingDay, plan.Account?.billingDayTxPeriod),
+        statementMonth: creditInstallmentStatementMonthForDate({
+          date: row.date,
+          billingDayRules: billingDayRulesByAccountId.get(plan.accountId) ?? null,
+          fallbackBillingDay: plan.billingDay ?? plan.Account?.billingDay ?? null,
+          billingDayTxPeriod: plan.Account?.billingDayTxPeriod,
+        }) ?? toStatementMonth(row.date, billingDay, plan.Account?.billingDayTxPeriod),
         principal: row.principal,
         interest: row.interest,
       }));

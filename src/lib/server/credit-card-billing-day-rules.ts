@@ -7,7 +7,9 @@ import {
   CREDIT_CARD_STATEMENT_IMPORT_CYCLE_LOCK_SOURCE,
   creditCardBillingDayFromCycleEndDate,
   hasCreditCardCycleLockSource,
+  type BillingDayTxPeriod,
 } from "@/lib/credit/billing";
+import { partitionCreditCycles } from "@/lib/server/credit-cycles";
 
 const MIN_BILLING_DAY = 1;
 const MAX_BILLING_DAY = 31;
@@ -33,6 +35,7 @@ type BillingDayRuleRow = {
 type CreditCardBillingDayEvidenceAccount = {
   id: string;
   billingDay: number | null;
+  billingDayTxPeriod?: BillingDayTxPeriod | null;
 };
 
 function uniqueAccountIds(accountIds: readonly string[]) {
@@ -101,6 +104,7 @@ async function inferBillingDayEffectiveDatesFromLockedCycles(
     },
     select: {
       accountId: true,
+      statementMonth: true,
       periodStart: true,
       periodEnd: true,
       lockSource: true,
@@ -108,16 +112,31 @@ async function inferBillingDayEffectiveDatesFromLockedCycles(
     orderBy: [{ accountId: "asc" }, { periodStart: "asc" }],
   });
 
-  const inferred = new Map<string, Date>();
+  // 账单期只从唯一入口读：结束日写进邻月的周期不能拿来推断账单日生效日，
+  // 否则会把一个历史账单日「搬」到错误的日期上。
+  const cyclesByAccountId = new Map<string, typeof cycles>();
   for (const cycle of cycles) {
-    if (inferred.has(cycle.accountId) || !hasLockedCycleEvidence(cycle.lockSource)) continue;
-    const targetBillingDay = targetBillingDayByAccountId.get(cycle.accountId);
-    if (targetBillingDay == null) continue;
-    const periodStart = startOfDayUtc(cycle.periodStart);
-    const periodEnd = startOfDayUtc(cycle.periodEnd);
-    if (periodStart.getTime() > periodEnd.getTime()) continue;
-    if (creditCardBillingDayFromCycleEndDate(periodEnd) !== targetBillingDay) continue;
-    inferred.set(cycle.accountId, periodStart);
+    const rows = cyclesByAccountId.get(cycle.accountId) ?? [];
+    rows.push(cycle);
+    cyclesByAccountId.set(cycle.accountId, rows);
+  }
+
+  const inferred = new Map<string, Date>();
+  for (const account of accounts) {
+    const rows = (cyclesByAccountId.get(account.id) ?? [])
+      .slice()
+      .sort((a, b) => a.periodStart.getTime() - b.periodStart.getTime());
+    const { accepted } = partitionCreditCycles(rows, account.billingDayTxPeriod);
+    for (const cycle of accepted) {
+      if (inferred.has(cycle.accountId) || !hasLockedCycleEvidence(cycle.lockSource)) continue;
+      const targetBillingDay = targetBillingDayByAccountId.get(cycle.accountId);
+      if (targetBillingDay == null) continue;
+      const periodStart = startOfDayUtc(cycle.periodStart);
+      const periodEnd = startOfDayUtc(cycle.periodEnd);
+      if (periodStart.getTime() > periodEnd.getTime()) continue;
+      if (creditCardBillingDayFromCycleEndDate(periodEnd) !== targetBillingDay) continue;
+      inferred.set(cycle.accountId, periodStart);
+    }
   }
   return inferred;
 }
@@ -281,7 +300,7 @@ export async function reconcileCreditCardBillingDayRulesFromAccounts(
       householdId: input.householdId,
       kind: AccountKind.bank_credit,
     },
-    select: { id: true, billingDay: true },
+    select: { id: true, billingDay: true, billingDayTxPeriod: true },
   });
   if (accounts.length === 0) return { repairedRules: 0, syncedAccounts: 0 };
 

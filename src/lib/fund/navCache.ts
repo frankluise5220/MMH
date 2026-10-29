@@ -422,7 +422,12 @@ export async function getLatestFundNav(
   };
 }
 
-async function getLatestFundNavOnOrBefore(
+/**
+ * 「某个日期（含）之前最近一条净值」—— 历史估值的唯一取值口径。
+ * 报表、曲线、月度浮动盈亏都必须经由这里（或它的批量版
+ * `getFundNavMapOnOrBefore`），不要各自 `fundNavCache.findFirst({ lte })`。
+ */
+export async function getLatestFundNavOnOrBefore(
   fundCode: string,
   navDate: Date,
 ): Promise<{ id: string; nav: number; cumNav: number | null; navDate: Date; name: string | null } | null> {
@@ -493,6 +498,35 @@ export async function getLatestFundNavMap(
     });
   }
 
+  return result;
+}
+
+/**
+ * 批量版「≤ 目标日 的最近一条净值」：一次查询按基金分组取首条。
+ * `fund-portfolio-trend` / 月度浮动盈亏等按月末估值的地方统一走它。
+ */
+export async function getFundNavMapOnOrBefore(
+  fundCodes: readonly string[],
+  navDate: Date,
+): Promise<Map<string, { nav: number; cumNav: number | null; navDate: Date; name: string | null }>> {
+  const codes = [...new Set(fundCodes.map((code) => code.trim()).filter(Boolean))];
+  const result = new Map<string, { nav: number; cumNav: number | null; navDate: Date; name: string | null }>();
+  if (codes.length === 0) return result;
+
+  const rows = await prisma.fundNavCache.findMany({
+    where: { fundCode: { in: codes }, navDate: { lte: navDate } },
+    orderBy: [{ fundCode: "asc" }, { navDate: "desc" }],
+    select: { fundCode: true, navDate: true, nav: true, cumNav: true, name: true },
+  });
+  for (const row of rows) {
+    if (result.has(row.fundCode)) continue;
+    result.set(row.fundCode, {
+      nav: Number(row.nav),
+      cumNav: row.cumNav == null ? null : Number(row.cumNav),
+      navDate: row.navDate,
+      name: row.name ?? null,
+    });
+  }
   return result;
 }
 

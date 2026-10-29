@@ -25,6 +25,7 @@ import {
   classifyCreditBillFlowSide,
   summarizeCreditBillSignedFlows,
 } from "@/lib/credit/billing";
+import { partitionCreditCycles } from "@/lib/server/credit-cycles";
 import { markInitialBillingDayRules } from "@/lib/credit/billing-day-rules";
 import { compareDetailEntriesDesc } from "@/lib/detail-entry-order";
 import { normalizeCreditCardInstallmentStatementMonths, materializeDueInstallmentPayments } from "@/lib/server/credit-card-installment";
@@ -307,7 +308,15 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
         orderBy: { statementMonth: "desc" },
       })
     : [];
-  const persistedCycleByMonth = new Map(persistedCyclesInitial.map((cycle) => [cycle.statementMonth, cycle]));
+  // 持久化周期不一定可信：手工改期/对账单导入会按提交值落库，一旦某期结束日
+  // 落在邻月（例如 2017-06 被写成 05.01 ~ 05.31），相邻月份就会被挤成「两个月
+  // 一期」，而这一期自己的流水没有周期可落。这类周期一律丢弃，按账单日规则重算，
+  // 并通过下面的 stale 判断触发一次回写，把库里的坏周期改回来。
+  const { accepted: consistentPersistedCycles, rejectedMonths: repairedCycleMonths } = partitionCreditCycles(
+    persistedCyclesInitial,
+    billingDayTxPeriod,
+  );
+  const persistedCycleByMonth = new Map(consistentPersistedCycles.map((cycle) => [cycle.statementMonth, cycle]));
   const latestBillTxUpdatedAt = isBillAccount && selectedAccount && billScope
     ? await prisma.txRecord.findFirst({
         where: { AND: [billScope] },
@@ -360,6 +369,7 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
       latestCycleUpdatedAt < creditBillSummaryLogicUpdatedAt ||
       latestCycleUpdatedAt < todayUtcStart ||
       (!!latestBillingDayRuleUpdatedAt && latestBillingDayRuleUpdatedAt > latestCycleUpdatedAt) ||
+      repairedCycleMonths.size > 0 ||
       importedStatementCycleNeedsRecalc ||
       (!!latestBillTxUpdatedAt?.updatedAt && latestBillTxUpdatedAt.updatedAt > latestCycleUpdatedAt) ||
       (!!latestOverrideUpdatedAt && latestOverrideUpdatedAt > latestCycleUpdatedAt)

@@ -1,4 +1,5 @@
 import { prisma } from "@/lib/db/prisma";
+import { getLatestFundNavMap } from "@/lib/fund/navCache";
 import { FundCashFlowKind, FundSubtype, type Prisma } from "@prisma/client";
 import { toNumber } from "@/lib/date-utils";
 import { allocateBuyFailedRefunds, getEffectiveBuyUnits } from "@/lib/fund/refund-link";
@@ -403,16 +404,14 @@ export async function recalcFundPositions(
     }
   }
 
-  const navCaches = await client.fundNavCache.findMany({
-    where: { fundCode: { in: codesToCalc } },
-    orderBy: { navDate: "desc" },
-  });
+  // 最新净值只经 navCache 的共享入口取（每基金一条），不再整表拉下来自己挑。
+  const latestNavByCode = await getLatestFundNavMap(codesToCalc);
   const navCacheMap = new Map<string, number>();
   const navNameMap = new Map<string, string>();
-  for (const c of navCaches) {
-    if (!navCacheMap.has(c.fundCode)) navCacheMap.set(c.fundCode, toNum(c.nav));
-    const name = (c.name ?? "").trim();
-    if (name && name !== c.fundCode && !navNameMap.has(c.fundCode)) navNameMap.set(c.fundCode, name);
+  for (const [code, row] of latestNavByCode) {
+    navCacheMap.set(code, toNum(row.nav));
+    const name = (row.name ?? "").trim();
+    if (name && name !== code) navNameMap.set(code, name);
   }
 
   const entryNameMap = new Map<string, string>();

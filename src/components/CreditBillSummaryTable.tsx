@@ -24,7 +24,6 @@ import {
   setCreditBillShowRecentCyclesPreference,
 } from "@/lib/client/appPreferences";
 import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
-import { notifySettingsDataChanged } from "@/lib/client/settingsCache";
 import { useI18n } from "@/lib/i18n";
 
 export type { CreditBillingDayRuleView } from "@/lib/credit/billing-day-rules";
@@ -128,10 +127,6 @@ export function CreditBillSummaryTable({
   const [localSelectedBillMonth, setLocalSelectedBillMonth] = useState(selectedBillMonth);
   const [billingDaySettingsOpen, setBillingDaySettingsOpen] = useState(false);
   const [billingDayRulesLocal, setBillingDayRulesLocal] = useState<CreditBillingDayRuleView[]>(billingDayRules ?? []);
-  const [editingCycle, setEditingCycle] = useState<CreditBillSummaryRow | null>(null);
-  const [cycleForm, setCycleForm] = useState({ periodStart: "", periodEnd: "", dueDate: "" });
-  const [cycleSaving, setCycleSaving] = useState(false);
-  const [cycleError, setCycleError] = useState("");
   const [installmentOpen, setInstallmentOpen] = useState(false);
   const [installmentForm, setInstallmentForm] = useState({
     amount: "",
@@ -303,16 +298,6 @@ export function CreditBillSummaryTable({
   const installmentAvailable = installmentAvailableAmount(installmentSourceRow);
   const installmentBlocked = Boolean(installmentSourceRow && (installmentSourceRow.isCurrentCycle || installmentSourceRow.statementInstallmentPrincipal != null));
 
-  function openCycleEditor(row: CreditBillSummaryRow) {
-    setEditingCycle(row);
-    setCycleForm({
-      periodStart: row.periodStart,
-      periodEnd: row.periodEnd,
-      dueDate: row.dueDate || "",
-    });
-    setCycleError("");
-  }
-
   function openStatementInstallment() {
     const seedRow = defaultInstallmentRow;
     setInstallmentForm({
@@ -381,56 +366,6 @@ export function CreditBillSummaryTable({
       setInstallmentError(error instanceof Error ? error.message : t("creditBillSummary.alert.createInstallmentFailed"));
     } finally {
       setInstallmentSaving(false);
-    }
-  }
-
-  async function saveCycle() {
-    if (!editingCycle || cycleSaving) return;
-    setCycleSaving(true);
-    setCycleError("");
-    try {
-      const res = await fetch("/api/v1/bill/cycle", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          accountId,
-          statementMonth: editingCycle.month,
-          periodStart: cycleForm.periodStart,
-          periodEnd: cycleForm.periodEnd,
-          dueDate: cycleForm.dueDate || null,
-        }),
-      });
-      const data = await res.json().catch(() => null) as {
-        ok?: boolean;
-        error?: string;
-        data?: {
-          billAccountIds?: string[];
-          updatedRows?: Array<Partial<CreditBillSummaryRow> & { month: string }>;
-        };
-      } | null;
-      if (!data?.ok) throw new Error(data?.error ?? t("creditBill.updateCycleFailed"));
-      const updatedRows = Array.isArray(data.data?.updatedRows) ? data.data.updatedRows : [];
-      if (updatedRows.length > 0) {
-        const updatedByMonth = new Map(updatedRows.map((row) => [row.month, row]));
-        setLocalRows((current) =>
-          current.map((row) => {
-            const updated = updatedByMonth.get(row.month);
-            return updated ? { ...row, ...updated } : row;
-          }),
-        );
-      }
-      setEditingCycle(null);
-      void notifySettingsDataChanged({ scope: "accounts", reason: "bill-cycle", prefetch: true });
-      dispatchFinanceDataChanged({
-        reason: "bill-cycle",
-        accountIds: data.data?.billAccountIds?.length ? data.data.billAccountIds : [accountId],
-        statementMonth: editingCycle.month,
-      });
-      router.refresh();
-    } catch (error) {
-      setCycleError(error instanceof Error ? error.message : t("creditBill.updateCycleFailed"));
-    } finally {
-      setCycleSaving(false);
     }
   }
 
@@ -567,23 +502,15 @@ export function CreditBillSummaryTable({
       width: 150,
       minWidth: 128,
       hideable: true,
-      render: (row) => {
-        return (
-          <button type="button" onClick={(event) => { event.stopPropagation(); selectBillMonth(row.month); }} className="block text-left">
-            <span
-              onDoubleClick={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                openCycleEditor(row);
-              }}
-              className="inline-flex cursor-text whitespace-nowrap rounded px-1 tabular-nums text-slate-700 hover:bg-amber-50 hover:text-amber-700"
-              title={t("creditBill.editCycleHint")}
-            >
-              {row.periodLabel}
-            </span>
-          </button>
-        );
-      },
+      render: (row) => (
+        <button
+          type="button"
+          onClick={(event) => { event.stopPropagation(); selectBillMonth(row.month); }}
+          className="block whitespace-nowrap text-left tabular-nums text-slate-700"
+        >
+          {row.periodLabel}
+        </button>
+      ),
     },
     {
       key: "expense",
@@ -1038,51 +965,6 @@ export function CreditBillSummaryTable({
                 disabled={installmentSaving || !installmentPreview || installmentBlocked}
               >
                 {installmentSaving ? t("creditBill.saving") : t("creditBillSummary.createInstallment")}
-              </button>
-            </div>
-          </div>
-        </ModalLayer>
-      ) : null}
-      {editingCycle ? (
-        <ModalLayer className="fixed inset-0 flex items-center justify-center bg-slate-900/20 px-4">
-          <div className="w-full max-w-md rounded-xl border border-slate-200 bg-white shadow-xl">
-            <div className="border-b border-slate-100 px-4 py-3">
-              <div className="text-sm font-semibold text-slate-800">{t("creditBill.editCycleTitle", { month: editingCycle.month })}</div>
-              <div className="mt-1 text-xs text-slate-500">{t("creditBill.editCycleDesc")}</div>
-            </div>
-            <div className="space-y-3 px-4 py-4">
-              <label className="block">
-                <span className="mb-1 block text-xs font-medium text-slate-600">{t("creditBill.periodStart")}</span>
-                <DateStepper
-                  value={cycleForm.periodStart}
-                  onChange={(value) => setCycleForm((prev) => ({ ...prev, periodStart: value }))}
-                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
-                />
-              </label>
-              <label className="block">
-                <span className="mb-1 block text-xs font-medium text-slate-600">{t("creditBill.periodEnd")}</span>
-                <DateStepper
-                  value={cycleForm.periodEnd}
-                  onChange={(value) => setCycleForm((prev) => ({ ...prev, periodEnd: value }))}
-                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
-                />
-              </label>
-              <label className="block">
-                <span className="mb-1 block text-xs font-medium text-slate-600">{t("creditBill.dueDate")}</span>
-                <DateStepper
-                  value={cycleForm.dueDate}
-                  onChange={(value) => setCycleForm((prev) => ({ ...prev, dueDate: value }))}
-                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm"
-                />
-              </label>
-              {cycleError ? <div className="rounded-lg bg-red-50 px-3 py-2 text-xs text-red-700">{cycleError}</div> : null}
-            </div>
-            <div className="flex justify-end gap-2 border-t border-slate-100 px-4 py-3">
-              <button type="button" onClick={() => setEditingCycle(null)} className="secondary-button h-8 px-3 text-xs" disabled={cycleSaving}>
-                {t("common.cancel")}
-              </button>
-              <button type="button" onClick={saveCycle} className="primary-button h-8 px-3 text-xs" disabled={cycleSaving}>
-                {cycleSaving ? t("creditBill.saving") : t("common.save")}
               </button>
             </div>
           </div>

@@ -12,6 +12,10 @@
  * the following existing cycles from that month onward using the new
  * billing day / repayment day.
  * Accepted entity types: Account.id + CreditCardCycle.statementMonth
+ *
+ * 注意：账单列表里「双击周期修改账单日」的 UI 入口已移除（它允许把某一期写成
+ * 邻月的日期，进而把相邻月份挤成两个月一期）。账单日改由「账单日设置」与
+ * 账户编辑维护。本接口保留给对账单导入/数据修复使用，并继续做周期一致性校验。
  */
 import { NextResponse } from "next/server";
 import { AccountKind } from "@prisma/client";
@@ -42,6 +46,7 @@ import {
   mergeCreditCardCycleLockSources,
   summarizeCreditBillSignedFlows,
   creditBillDateRangeWhere,
+  isCreditCyclePeriodInStatementMonth,
   type CreditBillSummary,
 } from "@/lib/credit/billing";
 
@@ -155,6 +160,43 @@ export async function PATCH(req: Request) {
     });
     if (!cycles.some((cycle) => cycle.statementMonth === statementMonth)) {
       return NextResponse.json({ ok: false, code: "CYCLE_NOT_FOUND", error: "账单周期不存在，请先生成账单列表" }, { status: 404 });
+    }
+
+    // 一期账单的周期必须「在自己这个账单月内结束」并且「紧接上一期」。旧实现直接
+    // 采纳提交值再向下顺推，一旦把某期写成了邻月的日期（例如 2017-06 提交成
+    // 05.01 ~ 05.31），邻月就被重复覆盖、本月流水没有周期可落，后面每期还会跟着
+    // 被挤成跨两个月的一期。这里在写库前挡住这种提交。
+    if (!isCreditCyclePeriodInStatementMonth({
+      statementMonth,
+      periodEnd,
+      billingDayTxPeriod: account.billingDayTxPeriod,
+    })) {
+      const parsedMonth = statementMonthDate(statementMonth)!;
+      return NextResponse.json({
+        ok: false,
+        code: "CYCLE_END_OUT_OF_STATEMENT_MONTH",
+        error: `${statementMonth} 的周期必须在 ${parsedMonth.monthIndex + 1} 月内结束（账单日为月末时取该月最后一天），请检查周期结束日期`,
+      }, { status: 400 });
+    }
+    const cycleIndex = cycles.findIndex((cycle) => cycle.statementMonth === statementMonth);
+    const previousCycle = cycleIndex > 0 ? cycles[cycleIndex - 1]! : null;
+    const parsedStatementMonth = statementMonthDate(statementMonth)!;
+    const previousMonthKey = (() => {
+      const date = new Date(Date.UTC(parsedStatementMonth.year, parsedStatementMonth.monthIndex - 1, 1));
+      return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
+    })();
+    // 只有「上一期就是上一个月」时才要求首尾相接：中间缺月份（例如历史账单没生成）
+    // 时，开始日本来就不该由上一期推出来。
+    if (previousCycle && previousCycle.statementMonth === previousMonthKey) {
+      const previousEnd = startOfDayUtc(previousCycle.periodEnd);
+      const expectedStart = addDaysUtc(previousEnd, 1);
+      if (startOfDayUtc(periodStart).getTime() !== expectedStart.getTime()) {
+        return NextResponse.json({
+          ok: false,
+          code: "CYCLE_START_NOT_CONTIGUOUS",
+          error: `周期开始日期必须紧接上一期结束日（${formatDateUtc(previousEnd)}）的次日，即 ${formatDateUtc(expectedStart)}`,
+        }, { status: 400 });
+      }
     }
 
     // The billing day is the closing date of the cycle, i.e. periodEnd. When
