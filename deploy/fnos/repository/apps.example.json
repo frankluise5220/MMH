@@ -4,20 +4,20 @@
       "id": "mmh",
       "name": "MMH",
       "display_name": "MMH 家庭财务工作台",
-      "version": "0.1.79",
+      "version": "0.1.80",
       "platform": "x86",
       "platforms": [
         "x86",
         "arm"
       ],
-      "description": "【本版更新】<br>【功能改进】<br>• 桌面浏览器把窗口拉窄后不再切换成手机样式：底部导航与卡片列表只出现在真正的手机形态，窄窗口只收起侧边栏，表格与面板仍是桌面形态。<br>• 继续优化10万条记录量级的显示逻辑、调整余额重算：导入或批量改动后不再当场同步重算。<br>【Bug 修复】<br>• 修复 Docker 升级到 0.1.78 后打开首屏或侧边栏报 `The column 'HouseholdPreference.detailWindowYears' does not exist in the current database`：容器启动时除了比对版本号，还会实测数据库与镜像的 schema 差异，缺列、缺表会自动补上；此前只比对版本号字符串，同版本重装会跳过同步，缺的列永远补不上。<br>完整说明见 GitHub Release v0.1.79<br><br>【软件简介】MMH 家庭记账与全资产管理，本地优先，程序和账本数据只保存在你自己的设备或 NAS 上，不经过第三方云端。记账：支出、收入、转账、代付、借贷与还款，多账本、多币种、分类标签与成员。资产：信用卡分期、房贷重算、基金定投、股票盈亏、存款理财、房产保险。功能：报表对账、周期自动记账、导入导出、AI 识别、附件、撤销恢复与备份。多端：PC、手机浏览器、Windows、Android 与开放 API。版本：飞牛 fnOS、群晖 DSM、Windows、Docker、Android。",
-      "download_url": "http://fnapp.floatingice.win/apps/mmh-0.1.79.fpk",
+      "description": "【本版更新】<br>【Bug 修复】<br>• 修复 Windows 版升级/卸载会把账簿数据一起删掉的问题：数据目录 `<安装目录>\\data` 从此是只读资产，安装、覆盖升级、卸载都不会移动、删除或改写它。此前卸载器用跨盘符的目录重命名做备份，重命名失败后整个安装目录被递归删除，`data\\mmh.db` 连同历史账簿一起消失，重装后表现为提示新建账簿。<br>• 从 0.1.79 及更早版本升级到本版时，安装器会先把现有 `data` 复制到临时目录兜底，装完再放回，升级不会丢数据。<br>• 桌面版不再按文件大小挑选并静默覆盖数据库：只有在数据目录完全没有数据库、且你亲自在提示框里选定文件时才会导入，原文件只复制不移动，选择结果记录在 `legacy-import.json`。<br>完整说明见 GitHub Release v0.1.80<br><br>【软件简介】MMH 家庭记账与全资产管理，本地优先，程序和账本数据只保存在你自己的设备或 NAS 上，不经过第三方云端。记账：支出、收入、转账、代付、借贷与还款，多账本、多币种、分类标签与成员。资产：信用卡分期、房贷重算、基金定投、股票盈亏、存款理财、房产保险。功能：报表对账、周期自动记账、导入导出、AI 识别、附件、撤销恢复与备份。多端：PC、手机浏览器、Windows、Android 与开放 API。版本：飞牛 fnOS、群晖 DSM、Windows、Docker、Android。",
+      "download_url": "http://fnapp.floatingice.win/apps/mmh-0.1.80.fpk",
       "download_urls": {
-        "x86_64": "http://fnapp.floatingice.win/apps/mmh-0.1.79.fpk",
-        "arm64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.79/mmh-fnos-v0.1.79-arm64.fpk"
+        "x86_64": "http://fnapp.floatingice.win/apps/mmh-0.1.80.fpk",
+        "arm64": "https://github.com/frankluise5220/MMH/releases/download/v0.1.80/mmh-fnos-v0.1.80-arm64.fpk"
       },
       "homepage": "https://github.com/frankluise5220/MMH",
-      "changelog": "桌面窄窗口保持桌面形态、继续优化10万条记录量级的显示逻辑并调整余额重算；修复 Docker 升级后偏好设置表缺列导致首屏报错。完整说明见 GitHub Release v0.1.79",
+      "changelog": "修复 Windows 版升级或卸载时把账簿数据一起删除的问题：数据目录在安装、覆盖升级、卸载时都不再被移动或删除。完整说明见 GitHub Release v0.1.80",
       "tags": [
         "finance",
         "bookkeeping"
