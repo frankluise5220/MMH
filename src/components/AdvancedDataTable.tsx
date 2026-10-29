@@ -11,6 +11,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type DragEvent as ReactDragEvent,
   type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
   type UIEvent as ReactUIEvent,
@@ -765,6 +766,14 @@ type AdvancedDataTableProps<T> = {
   resetDisplayStateOnMount?: boolean;
   scrollToRowKey?: string | null;
   /**
+   * 键盘 PageUp / PageDown 的翻页入口：页码由调用方自己管（如明细页，页数据是
+   * 调用方切好/取好再传进来的）时提供它。返回 true 表示这一下已翻页。
+   *
+   * 只要传了它，PageUp / PageDown 就归调用方所有（到头返回 false 时不动作）；
+   * 想保留「翻一屏」的场合（如「全部」模式）就别传。表格内置分页（`pagination`）优先。
+   */
+  onPageStep?: (delta: 1 | -1) => boolean;
+  /**
    * Report how many body rows fit the current viewport height (fillHeight mode).
    * Fired only when the integer count changes; parents can use it as the
    * auto-fit page size. Requires a height-constrained viewport (fillHeight).
@@ -807,6 +816,22 @@ function scrollViewportToRowCenter(viewport: HTMLElement, target: HTMLElement) {
   const viewportRect = viewport.getBoundingClientRect();
   const targetRect = target.getBoundingClientRect();
   viewport.scrollTop += targetRect.top - viewportRect.top - Math.max(0, (viewportRect.height - targetRect.height) / 2);
+}
+
+/**
+ * 键盘导航把活动行滚进视口时**只贴边滚动**，不做居中：连按 ↓ 时表格不会每走一行
+ * 就重新居中一次，视觉上和原生列表逐行跟进的手感一致。
+ */
+function scrollViewportToRowNearest(viewport: HTMLElement, target: HTMLElement) {
+  const viewportRect = viewport.getBoundingClientRect();
+  const targetRect = target.getBoundingClientRect();
+  const topOverflow = targetRect.top - viewportRect.top;
+  if (topOverflow < 0) {
+    viewport.scrollTop += topOverflow;
+    return;
+  }
+  const bottomOverflow = targetRect.bottom - viewportRect.bottom;
+  if (bottomOverflow > 0) viewport.scrollTop += bottomOverflow;
 }
 
 function alignClass(align?: "left" | "center" | "right") {
@@ -987,6 +1012,7 @@ export function AdvancedDataTable<T>({
   resetKey,
   resetDisplayStateOnMount = false,
   scrollToRowKey,
+  onPageStep,
   onRowsFitChange,
   showDateRangeFilter = false,
   dateRange,
@@ -1032,6 +1058,26 @@ export function AdvancedDataTable<T>({
   const hydratedDisplayStateKeyRef = useRef<string | null>(null);
   const [activeFilterColumn, setActiveFilterColumn] = useState<string | null>(null);
   const [sortState, setSortState] = useState<AdvancedDataTableSortState | null>(null);
+  /**
+   * 键盘导航的「活动行」：一次只在行之间移动一枚高亮，不把每一行都变成 Tab 停靠点
+   * （几百行会变成几百次 Tab）。焦点在滚动容器上时由 ↑ / ↓ / Home / End 驱动。
+   */
+  const [activeRowKey, setActiveRowKey] = useState<string | null>(null);
+  /** 焦点是否在表体滚动容器内（含行内按钮）：只有这时才画活动行的高亮环。 */
+  const [tableViewportFocused, setTableViewportFocused] = useState(false);
+  /** Shift+方向键扩展选区的锚点行（不是 Shift 导航时为 null）。 */
+  const keyboardSelectionAnchorRef = useRef<string | null>(null);
+  /**
+   * 键盘翻页后要在新页落哪个活动行：往后翻落首行、往前翻落末行（等新页渲染出来再落）。
+   * `page` 有值 = 表格内置分页，等页码到位；为 null = 调用方翻页（`onPageStep`），
+   * 等行的首尾键真的变了才落点。
+   */
+  const pendingPageLandingRef = useRef<{
+    page: number | null;
+    landing: "first" | "last";
+    beforeFirstKey?: string | null;
+    beforeLastKey?: string | null;
+  } | null>(null);
   const [rowHeightMode, setRowHeightMode] = useState<RowHeightMode>(DEFAULT_ROW_HEIGHT_MODE);
   const rowHeightPreset = ROW_HEIGHT_PRESETS[rowHeightMode];
   const rowHeight = compactRows ? COMPACT_ROW_HEIGHT : rowHeightPreset.height;
@@ -1885,6 +1931,90 @@ export function AdvancedDataTable<T>({
     const target = viewport?.querySelector<HTMLElement>(`[data-advanced-row-key="${CSS.escape(scrollToRowKey)}"]`);
     if (viewport && target) scrollViewportToRowCenter(viewport, target);
   }, [displayRowItems, rowVirtualizer, scrollToRowKey, shouldVirtualizeRows]);
+
+  /** 活动行在**当前显示行**里的下标；行被筛选/翻页挤掉时回落成 -1（没有活动行）。 */
+  const activeRowIndex = useMemo(
+    () => (activeRowKey ? displayRowItems.findIndex((item) => item.key === activeRowKey) : -1),
+    [activeRowKey, displayRowItems],
+  );
+  /** 键盘走到哪一行就把它拉进视口；同一个活动行只滚一次，数据刷新不会把视口拽回去。 */
+  const scrolledActiveRowKeyRef = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    if (!activeRowKey) {
+      scrolledActiveRowKeyRef.current = null;
+      return;
+    }
+    if (scrolledActiveRowKeyRef.current === activeRowKey) return;
+    if (activeRowIndex < 0) return;
+    scrolledActiveRowKeyRef.current = activeRowKey;
+    if (shouldVirtualizeRows) {
+      rowVirtualizer.scrollToIndex(activeRowIndex, { align: "auto" });
+      return;
+    }
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const target = viewport.querySelector<HTMLElement>(`[data-advanced-row-key="${CSS.escape(activeRowKey)}"]`);
+    if (target) scrollViewportToRowNearest(viewport, target);
+  }, [activeRowIndex, activeRowKey, rowVirtualizer, shouldVirtualizeRows]);
+
+  /**
+   * 键盘翻页（PageUp/PageDown）后把活动行落到新页：往后翻落在首行、往前翻落在末行，
+   * 这样连按 PageDown 就是「一页一页往下走」，活动行不会停在上一页被裁掉的行上。
+   * 页码在调用方手里，所以必须等新页的行真正渲染出来：内置分页看页码，外部翻页
+   * 看行的首尾键是否真的换了。条件不满足就继续等，中途改筛选/刷新数据不会被误触发。
+   */
+  useEffect(() => {
+    const pending = pendingPageLandingRef.current;
+    if (!pending || displayRowItems.length === 0) return;
+    const firstKey = displayRowItems[0].key;
+    const lastKey = displayRowItems[displayRowItems.length - 1].key;
+    if (pending.page != null) {
+      if (currentPage !== pending.page) return;
+    } else if (firstKey === pending.beforeFirstKey && lastKey === pending.beforeLastKey) {
+      // 调用方还没换掉这一页的行（请求还在路上），等它回来。
+      return;
+    }
+    pendingPageLandingRef.current = null;
+    setActiveRowKey(pending.landing === "first" ? firstKey : lastKey);
+  }, [currentPage, displayRowItems]);
+
+  /**
+   * 焦点进出表体用**原生** focusin / focusout 跟踪。
+   *
+   * 不用 React 的 `onFocus` / `onBlur`：本项目的 React 19.2 + Next 16 dev 下
+   * `focusin` 能一路冒泡到 document（原生监听可见），却不会进 `onFocus`（同一元素上的
+   * `onClick` / `onKeyDown` 都正常），实测键盘焦点进表后高亮永远不出现。原生监听对
+   * 这件事只需要「焦点在不在容器里」，不依赖 React 的事件委托，dev 与生产一致。
+   */
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const markFocused = (target: EventTarget | null) => {
+      setTableViewportFocused(true);
+      // 焦点落在行内的按钮 / 输入框上时只标记「表内有焦点」，不动活动行。
+      if (target !== viewport) return;
+      // 用 Tab 进来时先给一行落高亮，用户立刻知道方向键会从这里开始走。
+      const firstRowKey = viewport.querySelector<HTMLElement>("[data-advanced-row-key]")?.dataset.advancedRowKey ?? null;
+      setActiveRowKey((current) => current ?? firstRowKey);
+    };
+    const handleFocusIn = (event: FocusEvent) => markFocused(event.target);
+    const handleFocusOut = (event: FocusEvent) => {
+      const next = event.relatedTarget;
+      // 焦点只是走进行内的按钮 / 勾选框时，表格仍然「在焦点内」，高亮别闪掉。
+      if (next instanceof Node && viewport.contains(next)) return;
+      setTableViewportFocused(false);
+      keyboardSelectionAnchorRef.current = null;
+    };
+    viewport.addEventListener("focusin", handleFocusIn);
+    viewport.addEventListener("focusout", handleFocusOut);
+    // 挂载时焦点已经在表里（页面刷新后浏览器恢复焦点、或水合晚于用户 Tab）：
+    // focusin 那次已经错过了，这里按当前 activeElement 补一次初始化。
+    if (viewport.contains(document.activeElement)) markFocused(document.activeElement);
+    return () => {
+      viewport.removeEventListener("focusin", handleFocusIn);
+      viewport.removeEventListener("focusout", handleFocusOut);
+    };
+  }, []);
 
   const layout = useMemo(() => {
     const controlWidth = selectable ? (draggableRows ? 58 : 38) : (draggableRows ? 30 : 0);
@@ -3046,6 +3176,168 @@ export function AdvancedDataTable<T>({
     // 表格一滚动，锚定在表头上的提示就不再对准，收掉。
     clearHeaderDragHint();
   }, [clearHeaderDragHint, syncHeaderToScrollLeft]);
+
+  /**
+   * 键盘操作（行导航）。
+   *
+   *    ↑ / ↓            上一行 / 下一行（首帧没有活动行时，↓ 落到第一行、↑ 落到最后一行）
+   *    Home / End       第一行 / 最后一行
+   *    PageUp/PageDown  上一页 / 下一页（内置分页或调用方给了 `onPageStep` 时翻页；
+   *                     两者都没有时才按视口高度翻一屏）
+   *    Shift + 上述     从锚点行扩展选区（勾选，仅 selectable）
+   *    Enter            等同「点这一行」：需要时先勾选，再触发 onRowClick
+   *    空格             只勾选，不打开
+   *    Esc              收起活动行（焦点仍留在表里，Tab 可继续离开）
+   *
+   * 只在按键**落在滚动容器本身**时处理：焦点在行内的按钮 / 输入框 / 勾选框上时，
+   * 方向键和空格属于那个控件，表格不抢。
+   */
+  function handleViewportKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (event.defaultPrevented) return;
+    if (event.target !== event.currentTarget) return;
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
+    // 拖拽进行中（行长按拾起、列长按拾起）键盘不是当前手势，别插一脚。
+    if (draggedRowKey || longPressRowKey || longPressColumnKey) return;
+    const rowCount = displayRowItems.length;
+    if (rowCount === 0) return;
+
+    const currentIndex = activeRowIndex;
+    const currentItem = currentIndex >= 0 ? displayRowItems[currentIndex] : null;
+    // 不分页的表格（明细这类由调用方自己切页）没有「下一页」可翻，退化成翻一屏。
+    const pageStep = (() => {
+      const viewportHeight = viewportRef.current?.clientHeight ?? 0;
+      if (viewportHeight <= 0) return 10;
+      return Math.max(1, Math.floor(viewportHeight / Math.max(1, rowHeight)) - 1);
+    })();
+    const canFlipPage = hasPagination && pageCount > 1;
+    const flipPage = (delta: 1 | -1) => {
+      const nextPage = Math.min(pageCount, Math.max(1, currentPage + delta));
+      if (nextPage === currentPage) return;
+      // 页码在调用方手里，等活动页的行真正渲染出来再落活动行（见 pendingPageLanding 的 effect）。
+      pendingPageLandingRef.current = { page: nextPage, landing: delta > 0 ? "first" : "last" };
+      paginationOnPageChange?.(nextPage);
+    };
+    // 外部翻页（明细页这类自己管页码的表）：记下翻页前的首尾行，等新页数据到了再落活动行。
+    const requestExternalPageStep = (delta: 1 | -1) => {
+      const beforeFirstKey = displayRowItems[0]?.key ?? null;
+      const beforeLastKey = displayRowItems[displayRowItems.length - 1]?.key ?? null;
+      const handled = onPageStep?.(delta) ?? false;
+      if (!handled) return;
+      pendingPageLandingRef.current = {
+        page: null,
+        landing: delta > 0 ? "first" : "last",
+        beforeFirstKey,
+        beforeLastKey,
+      };
+    };
+
+    const focusRow = (targetIndex: number, options?: { extendSelection?: boolean }) => {
+      const clamped = Math.max(0, Math.min(rowCount - 1, targetIndex));
+      const item = displayRowItems[clamped];
+      if (!item) return;
+      if (options?.extendSelection && selectable) {
+        const anchorKey = keyboardSelectionAnchorRef.current
+          ?? (currentIndex >= 0 ? displayRowItems[currentIndex]?.key : null)
+          ?? item.key;
+        const anchorIndex = displayRowItems.findIndex((entry) => entry.key === anchorKey);
+        if (anchorIndex >= 0) {
+          keyboardSelectionAnchorRef.current = anchorKey;
+          const [from, to] = anchorIndex <= clamped ? [anchorIndex, clamped] : [clamped, anchorIndex];
+          const nextKeys = new Set(effectiveSelectedKeys);
+          for (let index = from; index <= to; index += 1) {
+            const entry = displayRowItems[index];
+            if (entry && (rowSelectable?.(entry.row, entry.index) ?? true)) nextKeys.add(entry.key);
+          }
+          setSelection(nextKeys);
+        }
+      } else {
+        keyboardSelectionAnchorRef.current = null;
+      }
+      setActiveRowKey(item.key);
+    };
+
+    const extendSelection = event.shiftKey;
+    switch (event.key) {
+      case "ArrowDown":
+        event.preventDefault();
+        focusRow(currentIndex < 0 ? 0 : currentIndex + 1, { extendSelection });
+        return;
+      case "ArrowUp":
+        event.preventDefault();
+        focusRow(currentIndex < 0 ? rowCount - 1 : currentIndex - 1, { extendSelection });
+        return;
+      case "Home":
+        event.preventDefault();
+        focusRow(0, { extendSelection });
+        return;
+      case "End":
+        event.preventDefault();
+        focusRow(rowCount - 1, { extendSelection });
+        return;
+      case "PageDown":
+        event.preventDefault();
+        if (canFlipPage) {
+          flipPage(1);
+          return;
+        }
+        // 调用方接管分页时，到头就停（不再退化成翻一屏）。
+        if (onPageStep) {
+          requestExternalPageStep(1);
+          return;
+        }
+        focusRow((currentIndex < 0 ? 0 : currentIndex) + pageStep, { extendSelection });
+        return;
+      case "PageUp":
+        event.preventDefault();
+        if (canFlipPage) {
+          flipPage(-1);
+          return;
+        }
+        if (onPageStep) {
+          requestExternalPageStep(-1);
+          return;
+        }
+        focusRow((currentIndex < 0 ? 0 : currentIndex) - pageStep, { extendSelection });
+        return;
+      case "Enter": {
+        event.preventDefault();
+        if (!currentItem) {
+          focusRow(0);
+          return;
+        }
+        // 与鼠标点行完全同一条路径：需要先勾选的外层（selectOnRowClick）先勾选，再打开。
+        const isSelectableRow = selectable && (rowSelectable?.(currentItem.row, currentItem.index) ?? true);
+        if (isSelectableRow && selectOnRowClick) {
+          toggleRow(currentItem.key, !effectiveSelectedKeys.has(currentItem.key));
+        }
+        onRowClick?.(currentItem.row, currentIndex);
+        return;
+      }
+      case " ":
+      case "Spacebar": {
+        if (!currentItem) {
+          event.preventDefault();
+          focusRow(0);
+          return;
+        }
+        const isSelectableRow = selectable && (rowSelectable?.(currentItem.row, currentItem.index) ?? true);
+        if (!isSelectableRow) return;
+        // 空格默认会滚动视口，勾选时必须吃掉。
+        event.preventDefault();
+        toggleRow(currentItem.key, !effectiveSelectedKeys.has(currentItem.key));
+        return;
+      }
+      case "Escape":
+        if (!activeRowKey) return;
+        event.preventDefault();
+        keyboardSelectionAnchorRef.current = null;
+        setActiveRowKey(null);
+        return;
+      default:
+        return;
+    }
+  }
+
   const summaryAtFooter = summaryRow && summaryRowPlacement === "footer" ? summaryRow : null;
 
   return (
@@ -3337,10 +3629,16 @@ export function AdvancedDataTable<T>({
       <div
         ref={viewportRef}
         onScroll={handleViewportScroll}
+        // 键盘入口：表体滚动容器本身是一个 Tab 停靠点（行内的按钮/输入框照旧各自成停靠点），
+        // 进来后方向键在行间移动活动行，不再额外给每一行加 tabIndex。
+        tabIndex={displayRowItems.length > 0 ? 0 : -1}
+        role="region"
+        aria-label={t("advancedTable.keyboardNav")}
+        onKeyDown={handleViewportKeyDown}
         className={
           fillHeight
-            ? `advanced-table-viewport ${ADVANCED_TABLE_BODY_SURFACE_CLASS} ${hasHorizontalScroll ? "overflow-x-auto" : "overflow-x-hidden"} min-h-0 flex-1 overflow-y-scroll [scrollbar-gutter:stable]`
-            : `advanced-table-viewport ${ADVANCED_TABLE_BODY_SURFACE_CLASS} ${hasHorizontalScroll ? "overflow-x-auto" : "overflow-x-hidden"} overflow-y-scroll [scrollbar-gutter:stable]`
+            ? `advanced-table-viewport outline-none ${ADVANCED_TABLE_BODY_SURFACE_CLASS} ${hasHorizontalScroll ? "overflow-x-auto" : "overflow-x-hidden"} min-h-0 flex-1 overflow-y-scroll [scrollbar-gutter:stable]`
+            : `advanced-table-viewport outline-none ${ADVANCED_TABLE_BODY_SURFACE_CLASS} ${hasHorizontalScroll ? "overflow-x-auto" : "overflow-x-hidden"} overflow-y-scroll [scrollbar-gutter:stable]`
         }
       >
         <table className="table-fixed border-separate border-spacing-0 [&_td]:border-r [&_td]:border-slate-100" style={{ width: tableWidthStyle }}>
@@ -3369,6 +3667,8 @@ export function AdvancedDataTable<T>({
                 ? canDropOnRow(row, index, key, dragDisabled, dragTarget.position)
                 : false;
               const isBlockedDropTarget = isDragging && !isDraggedRow && !isAllowedDropTarget;
+              // 键盘活动行：只在表格真的有焦点时画环，鼠标点完就去别处时不会留一圈「幽灵高亮」。
+              const isKeyboardActive = tableViewportFocused && activeRowKey === key;
               const toggleCurrentRow = () => {
                 if (!isSelectableRow || !selectOnRowClick) return;
                 toggleRow(key, !isSelected);
@@ -3399,6 +3699,8 @@ export function AdvancedDataTable<T>({
                       return;
                     }
                     if (hasActiveTextSelection()) return;
+                    // 点过哪一行，Tab 回表格时方向键就从哪一行继续走。
+                    setActiveRowKey(key);
                     toggleCurrentRow();
                     onRowClick?.(row, displayIndex);
                   }}
@@ -3422,6 +3724,9 @@ export function AdvancedDataTable<T>({
                         // 整行已被「拿起」悬浮在指针下面，原位留一个空的蓝色虚线槽位，明确标出「松手插这里」。
                         ? "relative z-10 select-none bg-blue-50/70 outline outline-2 outline-dashed outline-blue-500 outline-offset-[-2px] [&>td>*]:invisible"
                         : "relative z-10 bg-blue-50/80 outline outline-2 outline-blue-500 outline-offset-[-2px] shadow-[inset_0_0_0_1px_#2563eb]")
+                      : "",
+                    isKeyboardActive
+                      ? "relative z-[2] outline outline-2 outline-blue-600 outline-offset-[-2px]"
                       : "",
                     isSelected
                       ? "relative z-[1] bg-blue-50/75 hover:bg-blue-100/80"

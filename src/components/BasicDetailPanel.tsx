@@ -551,6 +551,17 @@ export function BasicDetailPanel({
   // 定位某一天时 page 可能暂时大于旧的 totalPages：不要把它夹回 1，
   // 否则分页 effect 会立刻又取一次第 1 页。
   const safePage = detailAll ? 1 : locatingDateRef.current ? Math.max(1, page) : detailPager.safePage;
+  /**
+   * 键盘 PageUp / PageDown：明细页的页码由这里持有（页数据是切好/取好再传给表格的），
+   * 表格自己算不出下一页，所以由这里翻页。返回 true = 已翻页，表格据此把活动行落到
+   * 新页首/末行；到首页/末页返回 false，表格就不动。
+   */
+  const handleKeyboardPageStep = useCallback((delta: 1 | -1) => {
+    if (detailAll) return false;
+    if (delta > 0 ? !detailPager.canNext : !detailPager.canPrev) return false;
+    goDetailPage(detailPager.safePage + delta);
+    return true;
+  }, [detailAll, detailPager.canNext, detailPager.canPrev, detailPager.safePage, goDetailPage]);
   // 「当前在看哪一页」的标识。重取结果是否采用，看它是否仍等于当前页：
   // 之前用的是单调递增的 seq —— 任何一次重取（包括马上被 abort 的那次）都会让
   // 之前那笔仍然有效、数据更新的响应被判成过期丢掉，表现就是「记一笔保存成功，
@@ -1514,6 +1525,9 @@ export function BasicDetailPanel({
             </div>
           }
           onDisplayRowsChange={handleDisplayRowsChange}
+          // 只有真的分页时才接管 PageUp/PageDown：「全部」模式没有页可翻，
+          // 不传这个入口，表格就退回「翻一屏」（几万行的虚拟列表更好用）。
+          onPageStep={showPagination && !detailAll ? handleKeyboardPageStep : undefined}
         />
         {guideOverlayOpen && guidePortalHost ? createPortal((
           <div className="pointer-events-none fixed inset-0 z-[80] hidden overflow-hidden desktop:block" aria-live="polite">

@@ -671,6 +671,7 @@ export function DetailViewClient({
   sortable = true,
   onDisplayRowsChange,
   onRowsFitChange,
+  onPageStep,
   batchExtraActions,
   reconcileEnabled = false,
   reconcileContextAccountId,
@@ -716,6 +717,8 @@ export function DetailViewClient({
   sortable?: boolean;
   onDisplayRowsChange?: (rows: DetailEntry[]) => void;
   onRowsFitChange?: (rows: number) => void;
+  /** 键盘 PageUp / PageDown 的翻页入口（页码由 BasicDetailPanel 的 pager 持有）。 */
+  onPageStep?: (delta: 1 | -1) => boolean;
   /** 表头时间筛选器（双滑块）。它是数据范围，独立于 `filters.date`。 */
   showDateRangeFilter?: boolean;
   /** 受控的时间范围（父层持有并负责按范围重取）。 */
@@ -1992,6 +1995,7 @@ export function DetailViewClient({
       }}
       onDisplayRowsChange={onDisplayRowsChange}
       onRowsFitChange={onRowsFitChange}
+      onPageStep={onPageStep}
       scrollToRowKey={scrollToRowKey}
     />
     </div>
