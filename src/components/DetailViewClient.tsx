@@ -23,7 +23,7 @@ import { useI18n } from "@/lib/i18n";
 import { BALANCE_INITIALIZATION_SOURCE, BALANCE_RECONCILE_SOURCE, effectiveAmountForAccount, getBalanceReconcileTarget, isReconciledEntry } from "@/lib/balance-reconcile";
 import { compareDetailEntriesAsc, compareDetailEntriesDesc, getDetailEntryDisplayDate, getDetailEntryTradeDate } from "@/lib/detail-entry-order";
 import { removeEntriesAndUpdateRunningBalances } from "@/lib/detail-running-balance";
-import { rebaseRunningBalancesAfterSameDayReorder, startOfDayRunningBalanceSeed } from "@/lib/entry-reorder";
+import { normalizeSameDayOrders, rebaseRunningBalancesAfterSameDayReorder, startOfDayRunningBalanceSeed } from "@/lib/entry-reorder";
 import { buildLiabilityActivityEditEvent, inferLiabilityMode, isLiabilityActivityEntry, type LiabilityMode } from "@/lib/liability-entry-edit";
 import { resolveAccountProductType, resolveEntryProductType, toBusinessLinkType } from "@/lib/entry-product-type";
 import { parseLoanPrepayStrategy } from "@/lib/loan-prepay-strategy";
@@ -523,6 +523,34 @@ function reorderEntriesToTarget(entries: DetailEntry[], sourceId: string, target
   next.splice(position === "after" ? targetIndexAfterRemoval + 1 : targetIndexAfterRemoval, 0, moving);
   if (next.every((entry, index) => entry.id === entries[index]?.id)) return entries;
   return next;
+}
+
+/**
+ * 本地改序时同步重编当天各行的 `dayOrder`，口径与服务端 `normalizeSameDayOrders`
+ * 完全一致（新→旧编号，越靠前越大；余额锚点不参与）。
+ *
+ * 「按日期排序」时同一天内部的顺序读的是 `dayOrder`，数组顺序本身不参与排序，
+ * 所以只把数组挪一下的话松手后行会立刻弹回原位——排序开着就等于拖不动。
+ */
+function applyLocalSameDayOrders(
+  entries: DetailEntry[],
+  dayKey: string,
+  flowAccountIdOf: (entry: DetailEntry) => string,
+) {
+  const sameDay = entries.filter((entry) => (
+    canManuallyReorderDetailEntry(entry)
+    && detailEntryDayKey(entry, flowAccountIdOf(entry)) === dayKey
+  ));
+  if (sameDay.length < 2) return entries;
+  const orders = normalizeSameDayOrders(sameDay);
+  let changed = false;
+  const next = entries.map((entry) => {
+    const order = orders.get(entry.id);
+    if (order == null || entry.dayOrder === order) return entry;
+    changed = true;
+    return { ...entry, dayOrder: order };
+  });
+  return changed ? next : entries;
 }
 
 function applyServerEntryOrder(entries: DetailEntry[], orderedEntryIds: string[]) {
@@ -1335,11 +1363,13 @@ export function DetailViewClient({
     const nextWithBalances = showRunningBalance
       ? rebaseRunningBalancesAfterSameDayReorder(nextEntries, accountId, dayKey, seed)
       : nextEntries;
+    // 排序开着时同日顺序由 dayOrder 决定，必须把编号一起改掉（与数组顺序改动同一帧提交）。
+    const nextWithOrders = applyLocalSameDayOrders(nextWithBalances, dayKey, flowAccountIdOf);
     const gen = ++reorderGenRef.current;
     reorderAbortPersistRef.current = false;
     detailRefreshSeqRef.current += 1;
-    entriesRef.current = nextWithBalances;
-    setRefreshedEntries({ accountId, entries: nextWithBalances });
+    entriesRef.current = nextWithOrders;
+    setRefreshedEntries({ accountId, entries: nextWithOrders });
     reorderPersistChainRef.current = reorderPersistChainRef.current
       .catch(() => undefined)
       .then(async () => {
@@ -1355,8 +1385,10 @@ export function DetailViewClient({
             : rebaseRunningBalancesAfterSameDayReorder(orderedEntries, accountId, dayKey, seed))
           : orderedEntries;
         if (gen !== reorderGenRef.current) return;
-        entriesRef.current = confirmed;
-        setRefreshedEntries({ accountId, entries: confirmed });
+        // 服务端返回的落位可能与本地乐观结果不同，编号要跟着最终数组再对一次。
+        const confirmedWithOrders = applyLocalSameDayOrders(confirmed, dayKey, flowAccountIdOf);
+        entriesRef.current = confirmedWithOrders;
+        setRefreshedEntries({ accountId, entries: confirmedWithOrders });
       })
       .catch((error) => {
         reorderAbortPersistRef.current = true;

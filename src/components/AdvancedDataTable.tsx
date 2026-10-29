@@ -707,6 +707,11 @@ type AdvancedDataTableProps<T> = {
   rowDragDisabled?: (row: T, index: number) => boolean;
   rowDropAllowed?: (sourceRow: T, targetRow: T, sourceIndex: number, targetIndex: number, position: AdvancedDataTableDropPosition) => boolean;
   rowDropTargetAtEnd?: (sourceRow: T, sourceIndex: number, orderedRows: T[]) => AdvancedDataTableRowDropTarget<T> | null;
+  /**
+   * `position` 是相对 `rows` **原顺序**的落点：排序只改变显示顺序，落点会按显示顺序
+   * 与 `rows` 顺序的对应关系换算（日期升序时「放到目标上方」= 原数组里「放到目标之后」）。
+   * `sourceIndex` / `targetIndex` 仍是显示（orderedRows）下标，调用方通常只用 row 本身。
+   */
   onRowReorder?: (sourceRow: T, targetRow: T, sourceIndex: number, targetIndex: number, position: AdvancedDataTableDropPosition) => void | Promise<void>;
   onDisplayRowsChange?: (rows: T[]) => void;
   selectable?: boolean;
@@ -1801,6 +1806,40 @@ export function AdvancedDataTable<T>({
     if (paginationPage !== currentPage) paginationOnPageChange(currentPage);
   }, [currentPage, paginationOnPageChange, paginationPage]);
   const allRowKeys = useMemo(() => orderedRows.map((row, index) => rowKey(row, index)), [orderedRows, rowKey]);
+  // 排序只决定「怎么看」，不该决定「能不能拖」。落点提示用的是显示顺序，但
+  // `onRowReorder` 的 before / after 是相对调用方的 `rows` 原顺序落位的；日期升序
+  // 这类排序会把当天的整段顺序完全倒过来，同一个「放到目标上方」在原数组里其实是
+  // 「放到目标之后」——不翻这一下，松手后行会落到相反的一侧。
+  const rowDisplayIndexByKey = useMemo(() => {
+    const map = new Map<string, number>();
+    orderedRows.forEach((row, index) => {
+      const key = rowKey(row, index);
+      if (!map.has(key)) map.set(key, index);
+    });
+    return map;
+  }, [orderedRows, rowKey]);
+  const rowRawIndexByKey = useMemo(() => {
+    const map = new Map<string, number>();
+    rows.forEach((row, index) => {
+      const key = rowKey(row, index);
+      if (!map.has(key)) map.set(key, index);
+    });
+    return map;
+  }, [rows, rowKey]);
+  const resolveRawDropPosition = useCallback((
+    sourceKey: string,
+    targetKey: string,
+    position: AdvancedDataTableDropPosition,
+  ): AdvancedDataTableDropPosition => {
+    const sourceDisplay = rowDisplayIndexByKey.get(sourceKey);
+    const targetDisplay = rowDisplayIndexByKey.get(targetKey);
+    const sourceRaw = rowRawIndexByKey.get(sourceKey);
+    const targetRaw = rowRawIndexByKey.get(targetKey);
+    if (sourceDisplay == null || targetDisplay == null || sourceRaw == null || targetRaw == null) return position;
+    const inverted = (sourceDisplay > targetDisplay) !== (sourceRaw > targetRaw);
+    if (!inverted) return position;
+    return position === "before" ? "after" : "before";
+  }, [rowDisplayIndexByKey, rowRawIndexByKey]);
   const rowItems = useMemo(
     () => paginatedRows.map((row, index) => {
       const globalIndex = pageStartIndex + index;
@@ -2679,7 +2718,7 @@ export function AdvancedDataTable<T>({
     if (!draggedRowKey) return null;
     const target = getGlobalDragTarget(clientX, clientY);
     if (target) {
-      const dragDisabled = (sortable && sortState != null) || (rowDragDisabled?.(target.row, target.index) ?? false);
+      const dragDisabled = rowDragDisabled?.(target.row, target.index) ?? false;
       if (canDropOnRow(target.row, target.index, target.key, dragDisabled, target.position)) return target;
     }
     if (!rowDropTargetAtEnd) return null;
@@ -2693,10 +2732,10 @@ export function AdvancedDataTable<T>({
       viewportRef.current?.querySelectorAll<HTMLElement>("[data-advanced-row-key]") ?? [],
     ).find((element) => element.dataset.advancedRowKey === tailKey);
     if (!tailElement || clientY < tailElement.getBoundingClientRect().bottom) return null;
-    const dragDisabled = (sortable && sortState != null) || (rowDragDisabled?.(tailTarget.row, tailTarget.index) ?? false);
+    const dragDisabled = rowDragDisabled?.(tailTarget.row, tailTarget.index) ?? false;
     if (!canDropOnRow(tailTarget.row, tailTarget.index, tailKey, dragDisabled, "after")) return null;
     return { ...tailTarget, key: tailKey, position: "after" as const };
-  }, [canDropOnRow, draggedRowKey, getGlobalDragTarget, orderedRows, rowDropTargetAtEnd, rowDragDisabled, rowKey, sortState, sortable]);
+  }, [canDropOnRow, draggedRowKey, getGlobalDragTarget, orderedRows, rowDropTargetAtEnd, rowDragDisabled, rowKey]);
 
   const updateGlobalDragTarget = useCallback((clientX: number, clientY: number) => {
     const target = getAllowedGlobalDragTarget(clientX, clientY);
@@ -2733,9 +2772,15 @@ export function AdvancedDataTable<T>({
     const targetDragDisabled = rowDragDisabled?.(targetRow, targetIndex) ?? false;
     if (targetDragDisabled) return false;
     if (!(rowDropAllowed?.(orderedRows[sourceIndex], targetRow, sourceIndex, targetIndex, dragTarget.position) ?? true)) return false;
-    void onRowReorder?.(orderedRows[sourceIndex], targetRow, sourceIndex, targetIndex, dragTarget.position);
+    void onRowReorder?.(
+      orderedRows[sourceIndex],
+      targetRow,
+      sourceIndex,
+      targetIndex,
+      resolveRawDropPosition(sourceKey, dragTarget.key, dragTarget.position),
+    );
     return true;
-  }, [dragTarget, onRowReorder, orderedRows, rowDropAllowed, rowDragDisabled, rowKey]);
+  }, [dragTarget, onRowReorder, orderedRows, resolveRawDropPosition, rowDropAllowed, rowDragDisabled, rowKey]);
 
   const dropOnResolvedTarget = useCallback((
     sourceKey: string,
@@ -2744,12 +2789,18 @@ export function AdvancedDataTable<T>({
     const sourceIndex = orderedRows.findIndex((row, index) => rowKey(row, index) === sourceKey);
     if (sourceIndex < 0 || sourceIndex === target.index) return false;
     const sourceRow = orderedRows[sourceIndex];
-    const targetDragDisabled = (sortable && sortState != null) || (rowDragDisabled?.(target.row, target.index) ?? false);
+    const targetDragDisabled = rowDragDisabled?.(target.row, target.index) ?? false;
     if (targetDragDisabled) return false;
     if (!(rowDropAllowed?.(sourceRow, target.row, sourceIndex, target.index, target.position) ?? true)) return false;
-    void onRowReorder?.(sourceRow, target.row, sourceIndex, target.index, target.position);
+    void onRowReorder?.(
+      sourceRow,
+      target.row,
+      sourceIndex,
+      target.index,
+      resolveRawDropPosition(sourceKey, target.key, target.position),
+    );
     return true;
-  }, [onRowReorder, orderedRows, rowDropAllowed, rowDragDisabled, rowKey, sortState, sortable]);
+  }, [onRowReorder, orderedRows, resolveRawDropPosition, rowDropAllowed, rowDragDisabled, rowKey]);
 
   function handleRowDrop(event: ReactDragEvent<HTMLTableRowElement>, targetRow: T, targetIndex: number, targetKey: string, dragDisabled: boolean) {
     if (!draggableRows || dragDisabled) return;
@@ -2785,7 +2836,13 @@ export function AdvancedDataTable<T>({
     if (sourceIndex < 0) return;
     if (!(rowDropAllowed?.(orderedRows[sourceIndex], targetRow, sourceIndex, targetIndex, position) ?? true)) return;
     handleRowDragEnd();
-    void onRowReorder?.(orderedRows[sourceIndex], targetRow, sourceIndex, targetIndex, position);
+    void onRowReorder?.(
+      orderedRows[sourceIndex],
+      targetRow,
+      sourceIndex,
+      targetIndex,
+      resolveRawDropPosition(sourceKey, targetKey, position),
+    );
   }
 
   useEffect(() => {
@@ -3667,7 +3724,7 @@ export function AdvancedDataTable<T>({
               const hasSelectedNextRow = displayIndex < displayRowItems.length - 1
                 && effectiveSelectedKeys.has(displayRowItems[displayIndex + 1]?.key ?? "");
               const isSelectableRow = selectable && (rowSelectable?.(row, index) ?? true);
-              const dragDisabled = (sortable && sortState != null) || (rowDragDisabled?.(row, index) ?? false);
+              const dragDisabled = rowDragDisabled?.(row, index) ?? false;
               const isDragging = draggedRowKey != null;
               const isDraggedRow = draggedRowKey === key;
               const isLongPressPending = longPressRowKey === key;
