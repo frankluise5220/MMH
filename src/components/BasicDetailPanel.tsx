@@ -415,8 +415,13 @@ export function BasicDetailPanel({
   const [guidePortalHost, setGuidePortalHost] = useState<HTMLElement | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
 
-  /** 「显示范围」滑轨两端（全量数据的最早/最晚一天）。 */
-  const [serverDateBounds, setServerDateBounds] = useState<{ min: string; max: string } | null>(null);
+  /**
+   * 「显示范围」滑轨两端（全量数据的最早/最晚一天）。
+   * `futureMax` = 今天之后还有记账时的最晚一天，滑轨右端伸到那里。
+   */
+  const [serverDateBounds, setServerDateBounds] = useState<
+    { min: string; max: string; futureMax?: string | null } | null
+  >(null);
   /** 时间轴两端还在取数：弹层里提示「正在读取时间轴」，chip 本身照常显示。 */
   const [serverDateBoundsLoading, setServerDateBoundsLoading] = useState(true);
   /**
@@ -1142,38 +1147,81 @@ export function BasicDetailPanel({
   // 日期列筛选、URL 筛选影响，否则拖一次区间滑轨就缩到刚选的范围，再也拖不回更早
   // 的日期。分页模式下当前页只有几十行，从 rows 推导出来只有几天，所以任何模式下
   // 都取一次；拿到之前 chip 保持置灰，绝不拿一页的跨度冒充整条时间轴。
-  useEffect(() => {
+  const dateBoundsControllerRef = useRef<AbortController | null>(null);
+  const dateBoundsLoadedAtRef = useRef(0);
+  const dateBoundsRequestedAtRef = useRef(0);
+  /** 已经拿到的边界（给 silent 补取判断「还没取到过」用，避免把 loading 藏掉）。 */
+  const serverDateBoundsRef = useRef<{ min: string; max: string; futureMax?: string | null } | null>(null);
+  /**
+   * 取时间轴两端。
+   *
+   * 挂载后空闲时取一次就够 —— 边界是「这份数据最早/最晚到哪天」，不是每次打开
+   * 弹层都要重算的派生值。唯一的例外是刚记了一笔未来流水：那会改变右端，所以
+   * 「显示范围」打开时会静默补取一次（不显示读取中、3 秒内不重复发）。取到的值
+   * 与手上的一致时不再 setState，避免无意义地重渲染整张表。
+   */
+  const loadServerDateBounds = useCallback((options?: { silent?: boolean }) => {
+    const now = Date.now();
+    if (options?.silent) {
+      // 刚取过 / 正在取：点开弹层不该再打一趟接口。
+      if (now - dateBoundsLoadedAtRef.current < 3000) return;
+      if (now - dateBoundsRequestedAtRef.current < 3000) return;
+    }
+    dateBoundsRequestedAtRef.current = now;
+    dateBoundsControllerRef.current?.abort();
     const controller = new AbortController();
+    dateBoundsControllerRef.current = controller;
     const params = new URLSearchParams({ accountId, bounds: "1" });
-    setServerDateBoundsLoading(true);
+    // 还没取到过边界时，即使是打开弹层触发的也要显示「读取中」，否则弹层只会是一句
+    // 「没有可用的日期范围」。
+    if (!options?.silent || serverDateBoundsRef.current == null) setServerDateBoundsLoading(true);
+    fetch(`/api/v1/transactions/detail?${params.toString()}`, {
+      cache: "no-store",
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        const payload = await response.json().catch(() => null);
+        if (!response.ok || !payload?.ok) return;
+        const bounds = payload.data?.dateBounds;
+        if (!bounds || typeof bounds.min !== "string" || typeof bounds.max !== "string") return;
+        const next = {
+          min: bounds.min,
+          max: bounds.max,
+          futureMax: typeof bounds.futureMax === "string" && bounds.futureMax > bounds.max
+            ? bounds.futureMax
+            : null,
+        };
+        dateBoundsLoadedAtRef.current = Date.now();
+        serverDateBoundsRef.current = next;
+        setServerDateBounds((current) => (
+          current && current.min === next.min && current.max === next.max && current.futureMax === next.futureMax
+            ? current
+            : next
+        ));
+      })
+      .catch((error) => {
+        if (isAbortError(error)) return;
+        console.error("Load transaction detail date bounds failed:", error);
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setServerDateBoundsLoading(false);
+      });
+  }, [accountId]);
+
+  /** 弹层打开时的补取：静默（不显示读取中）、3 秒内不重复发。 */
+  const refreshServerDateBounds = useCallback(() => {
+    loadServerDateBounds({ silent: true });
+  }, [loadServerDateBounds]);
+
+  useEffect(() => {
     // 这一趟（整表 min/max，`no-store`）只给时间轴滑轨用，首屏一行都用不上；和首屏
     // 同时发等于替下一次「切账户」的 RSC 渲染争 CPU，所以推到首帧之后。
-    const timer = window.setTimeout(() => {
-      fetch(`/api/v1/transactions/detail?${params.toString()}`, {
-        cache: "no-store",
-        signal: controller.signal,
-      })
-        .then(async (response) => {
-          const payload = await response.json().catch(() => null);
-          if (!response.ok || !payload?.ok) return;
-          const bounds = payload.data?.dateBounds;
-          if (bounds && typeof bounds.min === "string" && typeof bounds.max === "string") {
-            setServerDateBounds({ min: bounds.min, max: bounds.max });
-          }
-        })
-        .catch((error) => {
-          if (isAbortError(error)) return;
-          console.error("Load transaction detail date bounds failed:", error);
-        })
-        .finally(() => {
-          if (!controller.signal.aborted) setServerDateBoundsLoading(false);
-        });
-    }, DETAIL_PRELOAD_IDLE_DELAY_MS);
+    const timer = window.setTimeout(loadServerDateBounds, DETAIL_PRELOAD_IDLE_DELAY_MS);
     return () => {
       window.clearTimeout(timer);
-      controller.abort();
+      dateBoundsControllerRef.current?.abort();
     };
-  }, [accountId]);
+  }, [loadServerDateBounds]);
 
   /** 时间范围变化 = 数据范围变化：回到第 1 页并重新取数（不是本地筛当前页）。 */
   const handleDetailDateRangeChange = useCallback((next: { from: string; to: string }) => {
@@ -1457,6 +1505,7 @@ export function BasicDetailPanel({
           showDateRangeFilter
           dateRange={detailDateRange}
           dateRangeBounds={serverDateBounds}
+          onDateRangeBoundsRefresh={refreshServerDateBounds}
           dateRangeBoundsLoading={serverDateBoundsLoading}
           onDateRangeChange={handleDetailDateRangeChange}
           detailQueryRange={hasDetailDateRange ? serverDateRangeKey : undefined}

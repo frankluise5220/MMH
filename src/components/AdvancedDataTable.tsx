@@ -797,8 +797,13 @@ type AdvancedDataTableProps<T> = {
    * 时间轴两端。调用方一旦接管（传 `null` 表示「还在取」），就绝不退回用 `rows`
    * 推导 —— 分页模式下 `rows` 只有当前一页，推导出来的时间轴只有几天。
    * 完全不传（`undefined`）时才会从当前 `rows` 推导。
+   *
+   * `max` 是默认上界（到今天为止），`futureMax` 是今天之后还有记账时的最晚一天：
+   * 只有后者存在时，滑轨右端才会伸进未来，用户把截止日拖过去才能看到未来记账。
    */
-  dateRangeBounds?: { min: string; max: string } | null;
+  dateRangeBounds?: { min: string; max: string; futureMax?: string | null } | null;
+  /** 「显示范围」弹层打开时回调：调用方据此刷新边界（刚记的未来流水也要能拖到）。 */
+  onDateRangeBoundsRefresh?: () => void;
   /** 时间轴两端还在取数：chip 照常显示，弹层里提示「正在读取时间轴」。 */
   dateRangeBoundsLoading?: boolean;
   /**
@@ -1019,6 +1024,7 @@ export function AdvancedDataTable<T>({
   initialDateRange,
   onDateRangeChange,
   dateRangeBounds,
+  onDateRangeBoundsRefresh,
   dateRangeBoundsLoading = false,
   initialFilters,
 }: AdvancedDataTableProps<T>) {
@@ -3415,7 +3421,9 @@ export function AdvancedDataTable<T>({
                 to={activeDateRange.to}
                 min={effectiveDateRangeBounds?.min ?? ""}
                 max={effectiveDateRangeBounds?.max ?? ""}
+                futureMax={effectiveDateRangeBounds?.futureMax ?? undefined}
                 boundsLoading={dateRangeBoundsLoading}
+                onOpen={onDateRangeBoundsRefresh}
                 onChange={applyDateRange}
               />
             ) : null}

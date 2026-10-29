@@ -7,6 +7,8 @@
  *
  * 1. 任意窗口 / 任意列筛选下，重叠行（同 id）的余额与「全量」逐分相等；
  * 2. 每个窗口列出的行，恰好等于「全量行 ∩ 该窗口」—— 范围只裁剪行，不改值；
+ *    唯一的增量例外是「截止日推到今天之后」：那一段把未来记账也列出来，但它们的
+ *    余额必须停在今天为止的最新余额上（未来行对余额的贡献恒为 0）；
  * 3. 窗口内最新一行余额 == 服务端算出的账户余额（列表顶部不能与页头分叉）；
  * 4. `queryDetailOpeningBalanceBefore`（窗口期初余额）== 窗口前最后一行的余额；
  * 5. 对每个窗口：「期初余额 + 窗口内本地折叠」== 服务端余额 —— 客户端只拉窗口内的
@@ -61,6 +63,12 @@ function shiftMonths(ymd: string, months: number) {
   const nextMonth = (total % 12 + 12) % 12 + 1;
   const lastDayOfMonth = new Date(Date.UTC(nextYear, nextMonth, 0)).getUTCDate();
   return formatYmd(nextYear, nextMonth, Math.min(day, lastDayOfMonth));
+}
+
+/** 今天之后 N 天：用来构造「截止日在未来」的显示范围。 */
+function shiftDays(ymd: string, days: number) {
+  const { year, month, day } = parseYmd(ymd);
+  return new Date(Date.UTC(year, month - 1, day + days)).toISOString().slice(0, 10);
 }
 
 function dayStartUtc(ymd: string) {
@@ -258,6 +266,12 @@ async function verifyAccount(account: AccountRow, deps: Deps) {
     { label: `跨 6 月区间（${shiftMonths(midDay, -6)} ~ ${midDay}）`, dateRange: { from: shiftMonths(midDay, -6), to: midDay } },
     { label: `单日（${midDay}）`, dateRange: { from: midDay, to: midDay } },
     { label: "未来窗口（无数据）", dateRange: { from: shiftYears(todayKey, -1), to: "" } },
+    // 截止日主动推到今天之后：这是唯一会列出「未来记账」的口径。默认（`to` 为空或
+    // ≤ 今天）仍然整行隐藏 —— 未来行不改变余额，也不该在默认视图里出现。
+    {
+      label: `含未来（≤ ${shiftDays(todayKey, 365)}）`,
+      dateRange: { from: shiftYears(todayKey, 1), to: shiftDays(todayKey, 365) },
+    },
   ];
   const filterSpecs: Array<{ label: string; filters: unknown }> = [
     { label: "列筛选 type=expense", filters: { type: ["expense"] } },
@@ -271,11 +285,27 @@ async function verifyAccount(account: AccountRow, deps: Deps) {
   console.log(`全量：${baseline.ids.length} 行`);
 
   let overlaps = 0;
+  let futureRows = 0;
+  /** 默认口径（截止到今天为止）的最新一行余额：未来行的余额必须停在它上面。 */
+  const defaultTopBalance = baseline.balanceById[baseline.ids[0]!];
   const checkOne = (label: string, result: { ids: string[]; balanceById: Record<string, number> }, range?: { from: string; to: string } | null) => {
     for (const id of result.ids) {
       const expected = baseline.balanceById[id];
-      if (expected == null) continue;
       const actual = result.balanceById[id];
+      if (expected == null) {
+        // 全量口径里没有的行只可能是「未来记账」（截止日推到今天之后才放行）。
+        // 它们对余额的贡献必须是 0：显示的余额要停在今天为止的最新余额上，
+        // 不能把自己叠上去，否则「未来转账」会偷偷改变列表里的余额列。
+        if ((dayKeyById.get(id) ?? "") <= todayKey) continue;
+        if (defaultTopBalance == null) continue;
+        assert.ok(actual != null, `${label}：未来行 ${id} 缺少余额`);
+        assert.ok(
+          Math.abs(actual - defaultTopBalance) < TOLERANCE,
+          `${label}：未来行改了余额：${id} 当前 ${actual} vs 今日余额 ${defaultTopBalance}`,
+        );
+        futureRows += 1;
+        continue;
+      }
       assert.ok(actual != null, `${label}：${id} 缺少余额`);
       assert.ok(
         Math.abs(expected - actual) < TOLERANCE,
@@ -284,9 +314,11 @@ async function verifyAccount(account: AccountRow, deps: Deps) {
       overlaps += 1;
     }
     // 行集合：窗口列出的行必须恰好是「全量行 ∩ 该范围」（范围只裁剪行，不多不少）。
+    // 例外只有一条：截止日 > 今天时，今天之后、且在截止日内的行也应当出现。
     if (range === undefined) return;
-    const expectedIds = new Set(
-      baseline.ids.filter((id) => {
+    const futureCutoff = range?.to && range.to > todayKey ? range.to : "";
+    const expectedIds = new Set<string>([
+      ...baseline.ids.filter((id) => {
         const day = dayKeyById.get(id);
         if (!day) return false;
         if (!range) return true;
@@ -294,7 +326,12 @@ async function verifyAccount(account: AccountRow, deps: Deps) {
         if (range.to && day > range.to) return false;
         return true;
       }),
-    );
+      ...(futureCutoff
+        ? [...dayKeyById.entries()]
+          .filter(([, day]) => day > todayKey && day <= futureCutoff && (!range?.from || day >= range.from))
+          .map(([id]) => id)
+        : []),
+    ]);
     const missing = [...expectedIds].filter((id) => !result.ids.includes(id));
     const extra = result.ids.filter((id) => !expectedIds.has(id));
     assert.equal(missing.length, 0, `${label} 少了 ${missing.length} 行（例：${missing[0]}）`);
@@ -314,6 +351,7 @@ async function verifyAccount(account: AccountRow, deps: Deps) {
   assert.ok(overlaps > 0, "窗口与全量没有重叠行，校验没有真正跑到");
   console.log(
     `断言 1/2 通过：${windows.length - 1} 个窗口 + ${filterSpecs.length} 组筛选，共 ${overlaps} 行余额一致`
+      + `，${futureRows} 行未来记账余额停在今日余额`
       + (hasInvestment ? "（行集合精确性跳过：含投资流）" : "且行集合精确"),
   );
 

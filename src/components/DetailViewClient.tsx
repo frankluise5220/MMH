@@ -679,6 +679,7 @@ export function DetailViewClient({
   dateRange,
   onDateRangeChange,
   dateRangeBounds,
+  onDateRangeBoundsRefresh,
   dateRangeBoundsLoading = false,
   detailQueryRange,
   initialFilters,
@@ -729,8 +730,13 @@ export function DetailViewClient({
    * 否则一次入账事件就会把页面换回范围外的数据。
    */
   detailQueryRange?: string;
-  /** 时间轴两端；由 `bounds=1` 接口给出全量边界（与筛选、范围都无关）。 */
-  dateRangeBounds?: { min: string; max: string } | null;
+  /**
+   * 时间轴两端；由 `bounds=1` 接口给出全量边界（与筛选、范围都无关）。
+   * `futureMax` 是今天之后还有记账时的最晚一天，滑轨右端据此伸进未来。
+   */
+  dateRangeBounds?: { min: string; max: string; futureMax?: string | null } | null;
+  /** 「显示范围」弹层打开时重新取一次时间轴两端（刚记的未来流水要能拖到）。 */
+  onDateRangeBoundsRefresh?: () => void;
   /** 时间轴两端还在取数（chip 照常显示，弹层提示读取中）。 */
   dateRangeBoundsLoading?: boolean;
   /** 挂载时的初始筛选（默认只看最近 5 年），仅作初值，不进 effect。 */
@@ -1908,6 +1914,7 @@ export function DetailViewClient({
       dateRange={dateRange}
       onDateRangeChange={onDateRangeChange}
       dateRangeBounds={dateRangeBounds}
+      onDateRangeBoundsRefresh={onDateRangeBoundsRefresh}
       dateRangeBoundsLoading={dateRangeBoundsLoading}
       initialFilters={initialFilters}
       rowKey={(entry) => entry.id}

@@ -1,6 +1,7 @@
 "use client";
 
 import { isAbortError, loadAllDetailEntries } from "@/lib/client/detail-all-entries";
+import { todayDateBusinessYmd } from "@/lib/date-utils";
 
 /**
  * 「全部」视图的分块加载任务仓库（模块级，跟组件生命周期解耦）。
@@ -70,25 +71,45 @@ function parseDetailRange(range: string | undefined | null): ParsedDetailRange {
   return { from: from.trim(), to: to.trim() };
 }
 
-/** `loaded` 的范围是否覆盖 `wanted`（更宽或相同）；空串表示该端无界。 */
+/**
+ * `loaded` 的范围是否覆盖 `wanted`（更宽或相同）。
+ *
+ * 两端的「空」不是同一种无界：
+ * - 起点为空 = 最早的那一天，可以覆盖任何起点；
+ * - 截止为空 **不再是「到数据末端」，而是「到今天为止」**（未来记账默认不列出，
+ *   见 `detail-page-query.ts` 的 `ledger_visible`）。所以拿一份 `to` 为空的缓存去
+ *   覆盖一个「截止日在今天之后」的窗口是错的：缓存里根本没有未来那几行，界面会
+ *   出现「滑轨已经到 10-31、列表里却没有那笔账」。这种情况必须重取。
+ */
 export function detailRangeCovers(loaded: string | undefined, wanted: string | undefined): boolean {
   if (loaded === wanted) return true;
   const a = parseDetailRange(loaded);
   const b = parseDetailRange(wanted);
+  const todayKey = todayDateBusinessYmd();
+  // 截止日两端都按「空 = 今天」展开，再比大小：这样「开着含未来时缓存的整份」
+  // 可以覆盖「关掉含未来」的窗口（多出来的未来行在本地裁掉即可），反过来不行。
+  const loadedTo = a.to || todayKey;
+  const wantedTo = b.to || todayKey;
   const lowerOk = !a.from || (!!b.from && b.from >= a.from);
-  const upperOk = !a.to || (!!b.to && b.to <= a.to);
+  const upperOk = wantedTo <= loadedTo;
   return lowerOk && upperOk;
 }
 
-/** 按数据范围裁掉已加载的行（本地过滤，不发请求）。 */
+/**
+ * 按数据范围裁掉已加载的行（本地过滤，不发请求）。
+ *
+ * 截止为空 = **到今天为止**，不是「到数据末端」：缓存里可能带着未来那几行（用户
+ * 之前打开过「含未来」），关掉开关后必须在这里把它们裁掉，否则列表会跟界面上的
+ * 范围对不上。
+ */
 export function filterEntriesByRange<T extends { date?: string | null }>(entries: T[], range: string | undefined): T[] {
   const { from, to } = parseDetailRange(range);
-  if (!from && !to) return entries;
+  const upper = to || todayDateBusinessYmd();
   return entries.filter((entry) => {
     const date = String(entry.date ?? "").slice(0, 10);
     if (!date) return true;
     if (from && date < from) return false;
-    if (to && date > to) return false;
+    if (upper && date > upper) return false;
     return true;
   });
 }

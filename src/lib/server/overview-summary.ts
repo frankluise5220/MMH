@@ -287,6 +287,12 @@ export async function computeOverviewSummary(
   const todayMonth = Number(businessToday.slice(5, 7));
   const monthStart = new Date(Date.UTC(todayYear, todayMonth - 1, 1));
   const monthEnd = new Date(Date.UTC(todayYear, todayMonth, 1));
+  // 本月收支只能算到今天：未来记账（预约的转账 / 还没到发生的收支）不是已实现的
+  // 统计，提前计入会让「本月收入/支出」比余额先动 —— 同一笔钱在余额里不存在、
+  // 在统计里却已经发生。余额口径（computeAccountDisplayBalances）本来就截到今天。
+  const [capYear, capMonth, capDay] = businessToday.split("-").map(Number);
+  const businessTomorrow = new Date(Date.UTC(capYear, capMonth - 1, capDay + 1));
+  const monthQueryEnd = businessTomorrow < monthEnd ? businessTomorrow : monthEnd;
 
   const accounts = await prisma.account.findMany({
     where: { isActive: true, isPlaceholder: { not: true }, ...hidFilter },
@@ -365,7 +371,7 @@ export async function computeOverviewSummary(
       where: {
         deletedAt: null,
         ...hidFilter,
-        date: { gte: monthStart, lt: monthEnd },
+        date: { gte: monthStart, lt: monthQueryEnd },
         OR: [{ accountId: { in: dailyAccountIds } }, { toAccountId: { in: dailyAccountIds } }],
       },
       select: { type: true, amount: true, accountId: true, toAccountId: true },

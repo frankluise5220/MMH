@@ -116,9 +116,27 @@ type DateRangeSliderFilterProps = {
   to: string;
   /** 时间轴左端（数据里最早的一天）。 */
   min: string;
-  /** 时间轴右端（数据里最晚的一天）。 */
+  /**
+   * 默认上界：到今天为止的最晚一天。
+   *
+   * `to` 为空就是「到这个上界为止」——界面上显示的也是它，而不是可拖范围的最右端。
+   */
   max: string;
+  /**
+   * 今天之后还有记账时的最晚一天：滑轨右端会伸到这里。
+   *
+   * 只有用户主动把截止日拖进这一段（`to` > `max`），明细才会列出未来记账；
+   * 未来记账不改变余额、也不进统计，所以默认必须停在 `max`。
+   */
+  futureMax?: string;
   onChange: (next: { from: string; to: string }) => void;
+  /**
+   * 弹层刚要打开：调用方可以借此刷新时间轴两端。
+   *
+   * 刚记了一笔未来流水时，边界还是旧的 —— 不刷新的话滑轨右端不会多出未来那一段，
+   * 用户拖到头也看不到那笔账。
+   */
+  onOpen?: () => void;
   /**
    * 时间轴两端还在取数（服务端全量 min/max 通常比首屏分页慢几秒）。
    *
@@ -135,7 +153,9 @@ export function DateRangeSliderFilter({
   to,
   min,
   max,
+  futureMax,
   onChange,
+  onOpen,
   boundsLoading = false,
   className = "",
 }: DateRangeSliderFilterProps) {
@@ -162,9 +182,29 @@ export function DateRangeSliderFilter({
   const [toInput, setToInput] = useState<string | null>(null);
 
   const minIdx = dayIndexOf(min);
+  /** 默认上界：`to` 为空时的数据截止日（今天为止的最晚一天）。 */
   const maxIdx = dayIndexOf(max);
-  const hasTrack = minIdx != null && maxIdx != null && maxIdx > minIdx;
-  const span = hasTrack ? (maxIdx as number) - (minIdx as number) : 0;
+  /** 今天之后还有记账时的最晚一天；没有就与默认上界同一个值。 */
+  const futureMaxIdx = dayIndexOf(futureMax ?? "");
+  /** 滑轨右端：可拖范围伸到未来最晚一天，但「不限制」仍然只到 `max`。 */
+  const axisMaxIdx = maxIdx != null && futureMaxIdx != null && futureMaxIdx > maxIdx
+    ? futureMaxIdx
+    : maxIdx;
+  const hasTrack = minIdx != null && axisMaxIdx != null && axisMaxIdx > minIdx;
+  const span = hasTrack ? (axisMaxIdx as number) - (minIdx as number) : 0;
+  const hasFutureZone = hasTrack && maxIdx != null && axisMaxIdx != null && axisMaxIdx > maxIdx;
+
+  /**
+   * `to` 的归一化：停在**默认上界**（今天为止的最后一天）等价于「不限制」，留空。
+   * 更左是显式收窄，更右（伸进未来那一段）是显式要看到未来记账。
+   *
+   * 必须用 `===` 而不是 `>=`：`>=` 会把拖到最右端的未来日期也归一成空值，
+   * 于是服务端按「到今天为止」取数，未来记账永远显示不出来。
+   */
+  const toValueOf = useCallback(
+    (index: number) => (maxIdx != null && index === maxIdx ? "" : ymdOfDayIndex(index)),
+    [maxIdx],
+  );
 
   // 打开时才把外部状态搬进草稿：拖动中的草稿不能跟着外部 props 回写，
   // 否则松手提交 → 父级重取 → props 更新会让手柄跳一下。
@@ -177,15 +217,16 @@ export function DateRangeSliderFilter({
   }, [from, open, to]);
 
   // 外部筛选可能落在时间轴之外（例如 URL 里写着 2020 年、而本页数据只有最近几天）：
-  // 位置一律夹到两端，否则浮块会被画到轨道外面去。
+  // 位置一律夹到两端，否则浮块会被画到轨道外面去。`to` 为空表示「到默认上界为止」，
+  // 也就是 `max`（今天），不是可拖范围的最右端 —— 未来那一段必须显式拖过去。
   const draftFromIdx = useMemo(() => {
     const parsed = dayIndexOf(draftFrom);
-    return clamp(parsed ?? (minIdx as number), minIdx as number, maxIdx as number);
-  }, [draftFrom, maxIdx, minIdx]);
+    return clamp(parsed ?? (minIdx as number), minIdx as number, axisMaxIdx as number);
+  }, [axisMaxIdx, draftFrom, minIdx]);
   const draftToIdx = useMemo(() => {
     const parsed = dayIndexOf(draftTo);
-    return clamp(parsed ?? (maxIdx as number), minIdx as number, maxIdx as number);
-  }, [draftTo, maxIdx, minIdx]);
+    return clamp(parsed ?? (maxIdx as number), minIdx as number, axisMaxIdx as number);
+  }, [axisMaxIdx, draftTo, maxIdx, minIdx]);
 
   useEffect(() => {
     draftRef.current = { fromIdx: draftFromIdx, toIdx: draftToIdx };
@@ -244,13 +285,17 @@ export function DateRangeSliderFilter({
    *
    * 顶到时间轴两端等价于「不限制」，直接留空，避免把 2016-01-01 这种边界值
    * 写进筛选后、后来补录了更早的流水却筛不到。
+   *
+   * 右端有例外：滑轨为了容纳未来记账会伸到 `futureMax`，但「不限制」的口径是
+   * **到今天为止**（`max`）。所以只有正好停在 `max` 才是空值，再往右就是显式的
+   * 未来截止日 —— 那正是「主动调大显示范围才能看到未来记账」的开关。
    */
   const emitRange = useCallback((fromIdx: number, toIdx: number) => {
     onChange({
       from: minIdx != null && fromIdx <= minIdx ? "" : ymdOfDayIndex(fromIdx),
-      to: maxIdx != null && toIdx >= maxIdx ? "" : ymdOfDayIndex(toIdx),
+      to: toValueOf(toIdx),
     });
-  }, [maxIdx, minIdx, onChange]);
+  }, [minIdx, onChange, toValueOf]);
 
   /**
    * 「确认」下发草稿 —— 时间轴上的任何改动（拖动、平移、收窄/放宽、快捷区间、
@@ -273,11 +318,11 @@ export function DateRangeSliderFilter({
       setDraftFrom(nextFrom <= (minIdx as number) ? "" : ymdOfDayIndex(nextFrom));
       return draftRef.current;
     }
-    const nextTo = clamp(index, current.fromIdx, maxIdx as number);
+    const nextTo = clamp(index, current.fromIdx, axisMaxIdx as number);
     draftRef.current = { fromIdx: current.fromIdx, toIdx: nextTo };
-    setDraftTo(nextTo >= (maxIdx as number) ? "" : ymdOfDayIndex(nextTo));
+    setDraftTo(toValueOf(nextTo));
     return draftRef.current;
-  }, [maxIdx, minIdx]);
+  }, [axisMaxIdx, minIdx, toValueOf]);
 
   const indexFromClientX = useCallback((clientX: number) => {
     const track = trackRef.current;
@@ -356,11 +401,11 @@ export function DateRangeSliderFilter({
     const rangeWidth = start.toIdx - start.fromIdx;
     const delta = Math.round(((clientX - start.clientX) / width) * span);
     // 平移保持跨度不变，只在时间轴内滑动，所以夹住左端即可。
-    const nextFrom = clamp(start.fromIdx + delta, minIdx as number, (maxIdx as number) - rangeWidth);
+    const nextFrom = clamp(start.fromIdx + delta, minIdx as number, (axisMaxIdx as number) - rangeWidth);
     const nextTo = nextFrom + rangeWidth;
     draftRef.current = { fromIdx: nextFrom, toIdx: nextTo };
     setDraftFrom(nextFrom <= (minIdx as number) ? "" : ymdOfDayIndex(nextFrom));
-    setDraftTo(nextTo >= (maxIdx as number) ? "" : ymdOfDayIndex(nextTo));
+    setDraftTo(toValueOf(nextTo));
   };
 
   /** 改大小：同样按指针位移换算，块被撑宽时不会出现「一按就跳一大段」。 */
@@ -421,7 +466,7 @@ export function DateRangeSliderFilter({
       const end = clamp(dayIndexOf(`${year}-12-31`) as number, minValue, maxValue);
       draftRef.current = { fromIdx: start, toIdx: end };
       setDraftFrom(start <= minValue ? "" : ymdOfDayIndex(start));
-      setDraftTo(end >= maxValue ? "" : ymdOfDayIndex(end));
+      setDraftTo(toValueOf(end));
       return;
     }
     const days = kind === "last30" ? 30 : 90;
@@ -437,10 +482,10 @@ export function DateRangeSliderFilter({
     const { fromIdx, toIdx } = draftRef.current;
     const center = (fromIdx + toIdx) / 2;
     const half = Math.max(1, ((toIdx - fromIdx) / 2) * factor);
-    const nextFrom = clamp(Math.round(center - half), minIdx as number, maxIdx as number);
-    const nextTo = clamp(Math.round(center + half), nextFrom + 1, maxIdx as number);
+    const nextFrom = clamp(Math.round(center - half), minIdx as number, axisMaxIdx as number);
+    const nextTo = clamp(Math.round(center + half), nextFrom + 1, axisMaxIdx as number);
     setDraftFrom(nextFrom <= (minIdx as number) ? "" : ymdOfDayIndex(nextFrom));
-    setDraftTo(nextTo >= (maxIdx as number) ? "" : ymdOfDayIndex(nextTo));
+    setDraftTo(toValueOf(nextTo));
     draftRef.current = { fromIdx: nextFrom, toIdx: nextTo };
   };
 
@@ -466,6 +511,20 @@ export function DateRangeSliderFilter({
   const dayCount = hasTrack ? draftToIdx - draftFromIdx + 1 : 0;
   const fromPercent = hasTrack ? ((draftFromIdx - (minIdx as number)) / span) * 100 : 0;
   const toPercent = hasTrack ? ((draftToIdx - (minIdx as number)) / span) * 100 : 100;
+  /** 「到今天为止」在轨道上的位置：右边的未来区从这条线开始。 */
+  const softMaxPercent = hasTrack && maxIdx != null ? ((maxIdx - (minIdx as number)) / span) * 100 : 100;
+
+  /** 「未来」开关：打开 = 截止日推到未来那段（列出未来记账），关掉 = 回到今天为止。 */
+  const futureIncluded = hasTrack && maxIdx != null && draftToIdx > maxIdx;
+  const toggleFuture = () => {
+    if (!hasTrack || maxIdx == null || axisMaxIdx == null) return;
+    const nextToIdx = futureIncluded ? maxIdx : axisMaxIdx;
+    // 关掉时截止日被拉回今天，起点若落在它之后要跟着收回，否则区间会反过来。
+    const nextFromIdx = Math.min(draftRef.current.fromIdx, nextToIdx);
+    draftRef.current = { fromIdx: nextFromIdx, toIdx: nextToIdx };
+    setDraftFrom(nextFromIdx <= (minIdx as number) ? "" : ymdOfDayIndex(nextFromIdx));
+    setDraftTo(toValueOf(nextToIdx));
+  };
   // 浮块和两根手柄都按这份像素几何摆位：块宽有下限，手柄跟着块的两端走，
   // 所以「块看起来有多宽」和「哪里能按住」永远是同一个数。
   // 轨道还没量到时（首帧）退回百分比，layout effect 会在绘制前补上。
@@ -477,6 +536,8 @@ export function DateRangeSliderFilter({
         type="button"
         onClick={(event) => {
           event.stopPropagation();
+          // 打开时先让调用方刷一次时间轴两端：刚记的未来流水也算进可拖范围。
+          if (!open) onOpen?.();
           setOpen((current) => !current);
         }}
         // 与工具栏右端的日期定位输入框（DateStepper：h-7 / rounded / text-xs /
@@ -574,6 +635,23 @@ export function DateRangeSliderFilter({
               >
                 <div className="absolute inset-x-0 top-1/2 h-1.5 -translate-y-1/2 rounded-full bg-slate-200" />
                 {/*
+                  今天之后的一段单独标出来：它不是「更多历史」，而是「还没发生的账」。
+                  颜色深一档 + 一条竖线分隔，提示截止日拖过这条线才会把它们列出来。
+                */}
+                {hasFutureZone ? (
+                  <>
+                    <div
+                      className="absolute top-1/2 h-1.5 -translate-y-1/2 rounded-r-full bg-slate-300"
+                      style={{ left: `${softMaxPercent}%`, right: 0 }}
+                      title={t("advancedTable.dateRangeFutureHint", { date: max })}
+                    />
+                    <div
+                      className="absolute top-1/2 h-3 w-px -translate-y-1/2 bg-slate-400"
+                      style={{ left: `${softMaxPercent}%` }}
+                    />
+                  </>
+                ) : null}
+                {/*
                   选中的时间段画成一块可抓的浮块：按住块心整体平移，抓两端手柄改大小。
                   宽度有像素下限（MIN_BLOCK_PX），窄区间向中点两侧撑开 —— 纯按比例画
                   时几年跨度上选几天只有 1px，鼠标根本没地方按。
@@ -590,7 +668,7 @@ export function DateRangeSliderFilter({
                   tabIndex={0}
                   aria-label={t("table.from")}
                   aria-valuemin={minIdx as number}
-                  aria-valuemax={maxIdx as number}
+                  aria-valuemax={axisMaxIdx as number}
                   aria-valuenow={draftFromIdx}
                   aria-valuetext={draftFrom || min}
                   onKeyDown={handleKeyDown("from")}
@@ -602,7 +680,7 @@ export function DateRangeSliderFilter({
                   tabIndex={0}
                   aria-label={t("table.to")}
                   aria-valuemin={minIdx as number}
-                  aria-valuemax={maxIdx as number}
+                  aria-valuemax={axisMaxIdx as number}
                   aria-valuenow={draftToIdx}
                   aria-valuetext={draftTo || max}
                   onKeyDown={handleKeyDown("to")}
@@ -612,7 +690,7 @@ export function DateRangeSliderFilter({
               </div>
               <div className="mt-1 flex items-center justify-between text-xs tabular-nums text-slate-400">
                 <span>{min}</span>
-                <span>{max}</span>
+                <span>{hasFutureZone ? futureMax : max}</span>
               </div>
             </>
           ) : (
@@ -636,6 +714,28 @@ export function DateRangeSliderFilter({
             <div className="flex items-center gap-2 text-xs text-slate-500">
               <button type="button" onClick={() => zoomRange(0.5)} disabled={!hasTrack} className="hover:text-slate-700 disabled:cursor-not-allowed disabled:text-slate-300" title={t("advancedTable.dateRangeNarrow")}>{t("advancedTable.dateRangeNarrow")}</button>
               <button type="button" onClick={() => zoomRange(2)} disabled={!hasTrack} className="hover:text-slate-700 disabled:cursor-not-allowed disabled:text-slate-300" title={t("advancedTable.dateRangeWiden")}>{t("advancedTable.dateRangeWiden")}</button>
+              <span className="h-3 w-px shrink-0 bg-slate-200" aria-hidden />
+              {/*
+                「含未来」开关：未来记账不在默认口径里（不计余额、不进统计），所以
+                不放进滑轨的可选区间里让用户猜，而是紧挨着「收窄 / 放宽」的一个显式
+                开关 —— 打开就把截止日推到未来那段，关掉就回到今天为止。
+                口径说明放在 title 里（悬停才出现），界面上不铺一段常驻文案。
+              */}
+              <button
+                type="button"
+                role="switch"
+                aria-checked={futureIncluded}
+                aria-label={t("advancedTable.dateRangeIncludeFuture")}
+                title={t("advancedTable.dateRangeFutureHint", { date: max })}
+                onClick={toggleFuture}
+                disabled={!hasFutureZone}
+                className="inline-flex items-center gap-1.5 rounded-full text-xs text-slate-500 outline-none focus-visible:ring-2 focus-visible:ring-blue-300 disabled:cursor-not-allowed disabled:text-slate-300"
+              >
+                <span className={`relative h-4 w-7 shrink-0 rounded-full transition-colors ${futureIncluded ? "bg-blue-500" : "bg-slate-300"}`}>
+                  <span className={`absolute top-0.5 h-3 w-3 rounded-full bg-white shadow-sm transition-all ${futureIncluded ? "left-3.5" : "left-0.5"}`} />
+                </span>
+                <span className={futureIncluded ? "text-blue-600" : ""}>{t("advancedTable.dateRangeIncludeFuture")}</span>
+              </button>
             </div>
             <div className="flex items-center gap-2">
               <button

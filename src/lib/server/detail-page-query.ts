@@ -191,6 +191,14 @@ function buildOrderingCtesSql(args: {
   // 北京时间 00:00–08:00 会把「今天」算成昨天，导致当天刚记的流水被
   // `visible` 过滤掉（页面上看不到、数据库里有）。
   const todayKey = todayDateBusinessYmd(timeZone);
+  // 「未来记账」的显示开关：只有用户把显示范围的截止日主动推到今天之后，才把
+  // 今天之后的行放进列表。默认（`to` 为空或 ≤ 今天）行为不变：未来行整行隐藏。
+  // 放行只影响「列出哪些行」——未来行的余额贡献恒为 0（见 effectiveAmountCase
+  // 的 `displayAt > today` 分支），也不会被当成锚点（见 ledger_grouped）。
+  const futureToKey = dateRange?.to && dateRange.to > todayKey ? dateRange.to : null;
+  const futureRangeSql = futureToKey
+    ? Prisma.sql`OR CAST(DATE(c."displayAt") AS TEXT) <= ${futureToKey}`
+    : Prisma.empty;
   const accountScope = accountScopeSql(accountIds);
   const scopedColumns = Prisma.sql`
     t."id",
@@ -520,6 +528,9 @@ function buildOrderingCtesSql(args: {
             OR c."source" = 'regular_invest_refund'
           )
         )
+        -- 显示范围截止日被推到今天之后时，把「未来记账」也纳入可见集合。
+        -- 它们仍然不改变余额（effectiveAmount = 0、锚点不参与分组），只是能看见。
+        ${futureRangeSql}
       )
     ),
     -- ② 显示集合：折叠集合 ∩ 时间范围 ∩ 列筛选。只决定「列出哪些行 / 共几条 / 分几页」，
@@ -556,7 +567,14 @@ function buildOrderingCtesSql(args: {
     "ledger_grouped" AS (
       SELECT
         r.*,
-        SUM(r."isAnchor") OVER (
+        -- 未来行（显示范围推到今天之后才可见）**不能**当锚点：锚点会把整组更早的
+        -- 行重新定基，一笔还没发生的未来对账行就能改掉今天之前所有行的余额。
+        SUM(
+          CASE
+            WHEN r."isAnchor" = 1 AND CAST(r."dayKey" AS TEXT) <= ${todayKey} THEN 1
+            ELSE 0
+          END
+        ) OVER (
           ORDER BY r."rowNumber" DESC
           ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
         ) AS "anchorGroup"
@@ -573,7 +591,10 @@ function buildOrderingCtesSql(args: {
           ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
         ) AS "groupBalance",
         MAX(
-          CASE WHEN g."isAnchor" = 1 THEN g."anchorTarget" ELSE NULL END
+          CASE
+            WHEN g."isAnchor" = 1 AND CAST(g."dayKey" AS TEXT) <= ${todayKey} THEN g."anchorTarget"
+            ELSE NULL
+          END
         ) OVER (
           PARTITION BY g."anchorGroup"
         ) AS "anchorBalance"
@@ -995,11 +1016,16 @@ type DetailFacetsResult = {
  * 双滑块的可拖范围与「当前页有多少行」无关：分页模式下前端只有几十行，自己
  * 推导会把范围压成几天；也不能受时间范围 / 日期列筛选影响，否则拖一次就缩到
  * 刚选的区间、再也拖不回去。只算 min/max，比拉整份 facets（6 次 GROUP BY）便宜。
+ *
+ * 返回值里 `max` 是「到今天为止的最晚一天」（列表的默认上界），`futureMax` 是今天
+ * 之后还有记账时的最晚一天 —— 滑轨右端伸到那里，用户主动把截止日拖过去才能看到
+ * 未来记账。两个值分开，是因为「默认口径」和「可拖范围」不是一回事：导出默认区间、
+ * 「全部时间」都必须停在 `max`。
  */
 export async function queryDetailDateBounds(args: {
   accountIds: string[];
   householdId: string;
-}): Promise<{ min: string; max: string } | null> {
+}): Promise<{ min: string; max: string; futureMax: string | null } | null> {
   const accountIds = normalizedAccountIds(args.accountIds);
   if (accountIds.length === 0) return null;
   const timeZone = await getHouseholdTimeZone(args.householdId);
@@ -1014,21 +1040,30 @@ export async function queryDetailDateBounds(args: {
   // ordered/ranked`：未引用的 CTE 不会被物化，省掉全量逐笔余额的窗口计算 —— 那
   // 一趟在 4 万多行上要好几秒，而时间轴只需要最早/最晚一天。
   //
-  // 代价：`visible` 额外放行的「投资资金到账腿（到账日在今天之后）」不计入 max，
-  // 所以滑块右端可能比实际最后一行早几天。用户点「全部时间」时范围是空的，数据
-  // 一条不少，只是刻度略窄 —— 比让弹层等 8 秒好。
+  // 代价：`visible` 额外放行的「投资资金到账腿（到账日在今天之后）」不计入 `max`，
+  // 所以滑轨的默认上界可能比实际最后一行早几天。用户点「全部时间」时范围是空的，
+  // 数据一条不少，只是刻度略窄 —— 比让弹层等 8 秒好。这类行同样会抬高 `futureMax`，
+  // 于是它们也能被显式的时间范围覆盖。
   const todayKey = todayDateBusinessYmd(timeZone);
-  const rows = await prisma.$queryRaw<Array<{ min: unknown; max: unknown }>>(Prisma.sql`
+  const rows = await prisma.$queryRaw<Array<{ min: unknown; max: unknown; dataMax: unknown }>>(Prisma.sql`
     ${ctes}
     SELECT
-      MIN(CAST(DATE(c."displayAt") AS TEXT)) AS "min",
-      MAX(CAST(DATE(c."displayAt") AS TEXT)) AS "max"
+      MIN(CASE WHEN CAST(DATE(c."displayAt") AS TEXT) <= ${todayKey}
+        THEN CAST(DATE(c."displayAt") AS TEXT) END) AS "min",
+      MAX(CASE WHEN CAST(DATE(c."displayAt") AS TEXT) <= ${todayKey}
+        THEN CAST(DATE(c."displayAt") AS TEXT) END) AS "max",
+      MAX(CAST(DATE(c."displayAt") AS TEXT)) AS "dataMax"
     FROM "classified" c
-    WHERE CAST(DATE(c."displayAt") AS TEXT) <= ${todayKey}
   `);
   const min = rows[0]?.min ? String(rows[0].min) : "";
   const max = rows[0]?.max ? String(rows[0].max) : "";
-  return min && max ? { min, max } : null;
+  const dataMax = rows[0]?.dataMax ? String(rows[0].dataMax) : "";
+  if (!min || !max) return null;
+  // `max` 仍是「到今天为止的最晚一天」——列表默认口径就用它。今天之后还有记账时
+  // 额外给出 `futureMax`，滑轨右端可以伸到那里：把那一段拉进显示范围，明细里才
+  // 会列出未来记账（余额列仍然不因此改变）。
+  const futureMax = dataMax && dataMax > todayKey ? dataMax : null;
+  return { min, max, futureMax };
 }
 
 /**
