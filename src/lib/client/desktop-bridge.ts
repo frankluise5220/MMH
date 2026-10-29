@@ -43,6 +43,13 @@ export type MmhDesktopBridge = {
   downloadUpdate: () => Promise<DesktopDownloadResult>;
   installUpdate: () => Promise<{ ok: boolean }>;
   showDownloadWindow: () => Promise<{ ok: boolean }>;
+  /**
+   * Clear the persisted session cookies in the Electron session and flush them
+   * to disk. The HTTP logout route alone can leave a stale cookie on disk when
+   * the window is closed immediately afterwards, which made the next launch
+   * open straight into the overview instead of /login.
+   */
+  clearSession: () => Promise<{ ok: boolean }>;
   onUpdateStatus: (callback: (status: DesktopUpdateStatus) => void) => () => void;
 };
 

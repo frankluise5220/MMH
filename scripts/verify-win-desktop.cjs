@@ -18,6 +18,9 @@ const root = path.resolve(__dirname, "..");
 const failures = [];
 const buildScript = fs.readFileSync(path.join(root, "scripts", "build-win-desktop.cjs"), "utf8");
 const electronMain = fs.readFileSync(path.join(root, "electron", "main.cjs"), "utf8");
+const installerNsh = fs.readFileSync(path.join(root, "electron", "installer.nsh"), "utf8");
+const electronPreload = fs.readFileSync(path.join(root, "electron", "preload.cjs"), "utf8");
+const sidebarClient = fs.readFileSync(path.join(root, "src", "components", "layout", "SidebarClient.tsx"), "utf8");
 
 // Cross-channel base-path contract: only the fnOS gateway package carries a
 // prefix (/app/mmh). Every other channel is served from the ORIGIN ROOT, and
@@ -247,15 +250,82 @@ expect(
   "Electron must redirect sessionData as well, so cookies and the Chromium profile live in the data directory instead of C:\\Users\\...\\AppData.",
 );
 
-// 2026-10-28 数据目录切换（安装目录变了）后必须能把旧库找回来：只认 %APPDATA%\MMH
-// 会让换目录安装的用户得到一个空库，旧账簿还在旧安装目录里但看不见。
+// 2026-10-28 数据事故：自动导入旧库时静默覆盖了当前库，用户看到「账簿被换掉了」。
+// 现在只允许「当前目录没有库 + 用户明确选择」这一条路径；已存在的库永不改写。
 expect(
-  /function findBestLegacyDatabase\(/.test(electronMain) &&
-    /function legacyDataCandidates\(/.test(electronMain) &&
+  /function legacyDataCandidates\(/.test(electronMain) &&
+    /function findLegacyDatabases\(/.test(electronMain) &&
     /Programs", "MMH", "data"/.test(electronMain) &&
-    /MMH-data-backup/.test(electronMain) &&
-    /\.bak-/.test(electronMain),
-  "Electron must discover an existing mmh.db in the previous install directory / uninstall stash and import it (keeping a .bak of the current file).",
+    /MMH-data-backup/.test(electronMain),
+  "Electron must still be able to discover an mmh.db in a previous install directory / uninstall stash (to offer it to the user).",
+);
+expect(
+  /function migrateLegacyData\(\) \{\s*\n\s*if \(fs\.existsSync\(dbFile\)\) return;/.test(electronMain),
+  "Legacy import must never touch an existing mmh.db: return as soon as the file exists (2026-10-28 silent-overwrite incident).",
+);
+expect(
+  /if \(!isPackaged\) \{[\s\S]{0,200}?not importing automatically[\s\S]{0,80}?return;/.test(electronMain),
+  "Legacy import must not run automatically in dev/CI builds.",
+);
+expect(
+  /dialog\.showMessageBoxSync\(\{[\s\S]{0,1200}?buttons: \[\.\.\.options\.map/.test(electronMain) &&
+    /defaultId: options\.length/.test(electronMain),
+  "Legacy import must ask the user (dialog listing the candidates) and default to skipping, never copy silently.",
+);
+expect(
+  !/currentSize >= 64 \* 1024\) return;/.test(electronMain) &&
+    !/findBestLegacyDatabase\(/.test(electronMain) &&
+    !/\.bak-"\s*\+\s*Date\.now\(\)/.test(electronMain),
+  "The old silent path (size-threshold overwrite / largest-db wins / .bak-then-overwrite) must stay removed.",
+);
+
+// 2026-10-28 数据丢失事故（真实账簿被卸载器删除）：数据目录是 <installDir>\data，
+// 用户明确要求「永远不要动 data 目录下的数据」。旧的保护逻辑用
+// Rename "$INSTDIR\data" "$TEMP\MMH-data-backup"（D 盘 -> C 盘），NSIS 的 Rename
+// 底层 MoveFile 不能跨卷移动目录，静默失败后 `RMDir /r $INSTDIR` 把库一起删了。
+expect(
+  !/^[ \t]*Rename\s+"\$INSTDIR\\data"\s+"\$TEMP/m.test(installerNsh),
+  'Uninstaller must never move <installDir>\\data with Rename: the target $TEMP is on another volume, MoveFile cannot move a directory across volumes, the rename fails silently and the following RMDir /r $INSTDIR deletes the database. (2026-10-28 incident)',
+);
+expect(
+  /!macro customRemoveFiles/.test(installerNsh) && /StrCmp \$R8 "data" mmhRemoveNext/.test(installerNsh),
+  "electron-builder's file cleanup must be replaced by customRemoveFiles, which skips the data directory (upgrades and manual uninstalls both use it).",
+);
+expect(
+  /!macro customInstall[\s\S]{0,1200}?MMH-data-safe/.test(installerNsh) &&
+    /MMH-data-safe[\s\S]{0,400}?robocopy/.test(installerNsh),
+  "The installer must copy <installDir>\\data to a TEMP stash before electron-builder runs the OLD uninstaller (which still deletes it) and restore it after installation.",
+);
+expect(
+  /IfFileExists "D:\\MMH\\data\\\*\.\*"/.test(installerNsh) &&
+    /IfFileExists "\$LOCALAPPDATA\\Programs\\MMH\\data\\\*\.\*"/.test(installerNsh),
+  "The pre-install data stash must not depend on the registry InstallLocation alone: on 0.1.78/0.1.79 that value is empty, which would silently skip the backup and let the old uninstaller delete the database.",
+);
+expect(
+  !/RMDir \/r "\$INSTDIR"/.test(installerNsh),
+  "No recursive delete of $INSTDIR anywhere in the NSIS customization: it would take the data directory with it.",
+);
+
+// 2026-10-29「点退出登录 → 停在 /login → 关窗重开直接进概览」：Web 登出接口只把
+// cookie 从 Chromium 内存里删掉，没落盘就被关掉进程，下次启动又从 Network\Cookies
+// 恢复旧会话。主进程必须清 + flush，并把退出延后到 flush 之后。
+expect(
+  /ipcMain\.handle\("mmh:end-session"/.test(electronMain) &&
+    /clearStorageData\(\{ storages: \["cookies"\] \}\)/.test(electronMain) &&
+    /flushStorageData\(\)/.test(electronMain),
+  "Electron must clear and flush session cookies on logout (mmh:end-session) so a logout survives an app restart.",
+);
+expect(
+  /event\.preventDefault\(\)[\s\S]{0,400}?flushStorageData\(\)[\s\S]{0,200}?app\.quit\(\)/.test(electronMain),
+  "before-quit must defer the quit once and flush the cookie store, otherwise the deleted session cookie is restored from disk on restart.",
+);
+expect(
+  /clearSession: \(\) => ipcRenderer\.invoke\("mmh:end-session"\)/.test(electronPreload),
+  "The preload bridge must expose clearSession() for the desktop logout path.",
+);
+expect(
+  /getDesktopBridge\(\)[\s\S]{0,300}?clearSession\(\)/.test(sidebarClient),
+  "The sidebar logout handler must ask the desktop shell to clear the persisted session before redirecting to /login.",
 );
 
 // 登录账号查询还会 select 这些列，任何一列缺失都会让登录页整体降级成空账号列表。

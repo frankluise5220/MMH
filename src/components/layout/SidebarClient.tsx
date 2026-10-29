@@ -70,6 +70,7 @@ import { getInvestmentAccountView, resolveLoanType } from "@/lib/account-kind-ut
 import { FIXED_ASSET_TYPES } from "@/lib/fixed-asset";
 import { LOAN_TYPES, type LoanTypeValue } from "@/lib/loan-type";
 import { dispatchFirstUseGuideOpen } from "@/lib/client/onboardingGuide";
+import { getDesktopBridge } from "@/lib/client/desktop-bridge";
 
 type AccountItem = {
   id?: string | null;
@@ -606,6 +607,17 @@ export function SidebarClient({
       const data = await res.json().catch(() => null) as { ok?: boolean; error?: string } | null;
       if (!res.ok || data?.ok !== true) {
         throw new Error(data?.error || `Logout API returned ${res.status}`);
+      }
+      // Desktop shell: the HTTP route only clears cookies in Chromium's memory.
+      // Ask the main process to clear + flush them, otherwise closing the window
+      // right now lets the old cookie come back from disk on the next launch.
+      const desktop = getDesktopBridge();
+      if (desktop) {
+        try {
+          await desktop.clearSession();
+        } catch {
+          // The cookies are already cleared over HTTP; never block the redirect.
+        }
       }
       window.location.assign(withBasePath("/login"));
     } catch (error) {

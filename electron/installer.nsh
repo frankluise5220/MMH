@@ -1,12 +1,15 @@
 ; MMH NSIS customization.
 ;
-; Business logic (unchanged from the original):
+; Business logic:
 ;   1. Default install directory: D:\MMH when the D: drive exists, otherwise
 ;      Program Files (x64). Written into the registry key electron-builder reads
 ;      during .onInit to override the default INSTALL_ROOT.
-;   2. Uninstall keeps user data: the app stores its database under
-;      $INSTDIR\data. electron-builder removes $INSTDIR recursively, so we move
-;      data aside before that and restore it afterwards.
+;   2. **$INSTDIR\data is user property and is never touched.** The database lives
+;      there (the user wants it next to the app so it is easy to back up).
+;      Installation, upgrade and uninstall must not move, delete or rewrite it —
+;      2026-10-28 a cross-volume `Rename` silently failed and the uninstaller's
+;      `RMDir /r $INSTDIR` destroyed a real book that way. See the "用户数据" notes
+;      on preInit / customInstall / customRemoveFiles below.
 ;
 ; Visual customization (2026-10-07): the welcome / finish pages are replaced
 ; with custom nsDialogs pages that draw a full-bleed dark brand background
@@ -169,7 +172,7 @@ Var mmhTitleFont
 
 !macroend
 
-; ------------------------------------------------------------------ Business logic (unchanged)
+; ------------------------------------------------------------------ Business logic
 
 ; Only decide the default install directory for a *first* installation, and never
 ; override an existing record.
@@ -217,19 +220,99 @@ Var mmhTitleFont
   WriteRegExpandStr HKCU "${INSTALL_REGISTRY_KEY}" InstallLocation "$LOCALAPPDATA\Programs\MMH"
 
   mmhPreInitDone:
+
+  ; ---------------------------------------------------------------- 用户数据兜底
+  ;
+  ; 2026-10-28 事故：<= 0.1.79 的卸载器用
+  ;   Rename "$INSTDIR\data" "$TEMP\MMH-data-backup"
+  ; 备份数据目录。$INSTDIR 在 D:\MMH（D 盘）、$TEMP 在 C 盘，而 NSIS 的 Rename
+  ; 底层是 MoveFile，**不能跨卷移动目录** —— 这一步静默失败（宏里也没有 IfErrors），
+  ; data 留在原地，随后 electron-builder 的 `RMDir /r $INSTDIR` 把它连同整个安装
+  ; 目录一起删掉，"移回" section 又因为备份不存在而跳过。用户的账簿就此消失。
+  ;
+  ; 升级时 electron-builder 是「先静默运行旧卸载器，再铺新文件」
+  ; (installUtil.nsh:245 ExecWait '... /S /KEEP_APP_DATA ... /updated _?=<dir>')，
+  ; 所以新安装器必须在 .onInit 最前面把现有数据复制到 $TEMP 兜住，装完再放回。
+  ; 复制（而不是移动）本身跨卷安全，旧卸载器删的是原目录，TEMP 里的不受影响。
+  ; 定位现有的数据目录。**不能只信注册表**：实测 0.1.78/0.1.79 的卸载记录里
+  ; InstallLocation 是空的，只看它就会跳过备份、让旧卸载器把数据删掉。
+  ; 注册表拿不到时按安装器的三个默认位置兜底。
+  StrCpy $3 ""
+  ReadRegStr $3 HKCU "${INSTALL_REGISTRY_KEY}" InstallLocation
+  StrCmp $3 "" 0 mmhPreInitLocate
+  ReadRegStr $3 HKLM "${INSTALL_REGISTRY_KEY}" InstallLocation
+  mmhPreInitLocate:
+  StrCmp $3 "" mmhPreInitTryD
+  IfFileExists "$3\data\*.*" mmhPreInitBackup
+  mmhPreInitTryD:
+  IfFileExists "D:\MMH\data\*.*" 0 mmhPreInitTryLocal
+  StrCpy $3 "D:\MMH"
+  Goto mmhPreInitBackup
+  mmhPreInitTryLocal:
+  IfFileExists "$LOCALAPPDATA\Programs\MMH\data\*.*" 0 mmhPreInitTryPf
+  StrCpy $3 "$LOCALAPPDATA\Programs\MMH"
+  Goto mmhPreInitBackup
+  mmhPreInitTryPf:
+  IfFileExists "$PROGRAMFILES64\MMH\data\*.*" 0 mmhPreInitNoData
+  StrCpy $3 "$PROGRAMFILES64\MMH"
+  mmhPreInitBackup:
+  RMDir /r "$TEMP\MMH-data-safe"
+  nsExec::ExecToLog 'robocopy "$3\data" "$TEMP\MMH-data-safe" /E /NFL /NDL /NJH /NJS /R:1 /W:1'
+  Pop $4
+  DetailPrint "MMH: 已备份现有数据 $3\data -> $TEMP\MMH-data-safe (robocopy rc=$4)"
+  mmhPreInitNoData:
 !macroend
 
-!macro customUnInstall
-  IfFileExists "$INSTDIR\data\*.*" 0 +3
-  Rename "$INSTDIR\data" "$TEMP\MMH-data-backup"
-  Goto +1
+; 装完把 preInit 兜住的数据放回。只在新目录还没有 data 时恢复，避免覆盖。
+!macro customInstall
+  IfFileExists "$TEMP\MMH-data-safe\*.*" 0 mmhInstallNoData
+  IfFileExists "$INSTDIR\data\*.*" mmhInstallNoData mmhInstallRestore
+  mmhInstallRestore:
+  nsExec::ExecToLog 'robocopy "$TEMP\MMH-data-safe" "$INSTDIR\data" /E /NFL /NDL /NJH /NJS /R:1 /W:1'
+  Pop $4
+  IfFileExists "$INSTDIR\data\*.*" 0 mmhInstallNoData
+  RMDir /r "$TEMP\MMH-data-safe"
+  DetailPrint "MMH: 用户数据已恢复到 $INSTDIR\data"
+  mmhInstallNoData:
 !macroend
 
-!macro customUnInstallSection
-  Section "-MMH user data"
-    IfFileExists "$TEMP\MMH-data-backup\*.*" 0 +3
-    CreateDirectory "$INSTDIR"
-    Rename "$TEMP\MMH-data-backup" "$INSTDIR\data"
-    Goto +1
-  SectionEnd
+; 接管 electron-builder 的文件清理（自定义宏优先于内置的
+; un.atomicRMDir / `RMDir /r $INSTDIR` 两条分支，**升级和手动卸载都走这里**）。
+;
+; 契约：$INSTDIR\data 是用户资产，安装/卸载/升级永远不移动、不删除、不改写它。
+; 其余条目逐个删除；如果还有删不掉的（MMH 正在运行），中止卸载而不是硬删。
+!macro customRemoveFiles
+  FindFirst $R7 $R8 "$INSTDIR\*.*"
+  mmhRemoveLoop:
+    StrCmp $R8 "" mmhRemoveDone
+    StrCmp $R8 "." mmhRemoveNext
+    StrCmp $R8 ".." mmhRemoveNext
+    StrCmp $R8 "data" mmhRemoveNext
+    RMDir /r "$INSTDIR\$R8"
+    Delete "$INSTDIR\$R8"
+    mmhRemoveNext:
+      FindNext $R7 $R8
+      Goto mmhRemoveLoop
+  mmhRemoveDone:
+    FindClose $R7
+
+  ; 残留检查：被占用的文件 Delete 会静默失败，绝不能当作已删干净就继续。
+  FindFirst $R7 $R8 "$INSTDIR\*.*"
+  mmhRemoveVerifyLoop:
+    StrCmp $R8 "" mmhRemoveVerifyDone
+    StrCmp $R8 "." mmhRemoveVerifyNext
+    StrCmp $R8 ".." mmhRemoveVerifyNext
+    StrCmp $R8 "data" mmhRemoveVerifyNext
+    IfFileExists "$INSTDIR\$R8" 0 mmhRemoveVerifyNext
+    FindClose $R7
+    MessageBox MB_OK|MB_ICONSTOP "无法删除：$INSTDIR\$R8$\r$\n请先退出 MMH（任务管理器结束 MMH.exe）后重新卸载。你的数据目录 data 不会被删除。" /SD IDOK
+    Abort
+    mmhRemoveVerifyNext:
+      FindNext $R7 $R8
+      Goto mmhRemoveVerifyLoop
+  mmhRemoveVerifyDone:
+    FindClose $R7
+
+  ; 目录本身只在 data 不存在时才会空，否则保留（里面只剩 data）。
+  RMDir "$INSTDIR"
 !macroend

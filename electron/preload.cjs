@@ -17,6 +17,11 @@ contextBridge.exposeInMainWorld("mmhDesktop", {
   downloadUpdate: () => ipcRenderer.invoke("mmh:download-update"),
   // Restart into the installer that was already downloaded.
   installUpdate: () => ipcRenderer.invoke("mmh:update-install"),
+  // End the desktop session: clears the persisted session cookies immediately
+  // (and flushes them to disk) so a logout survives closing the app. The web
+  // logout route alone can lose the deletion before Chromium writes its cookie
+  // store, which made the next launch go straight back into the overview.
+  clearSession: () => ipcRenderer.invoke("mmh:end-session"),
   // Bring the download window back to the front (user closed it earlier).
   showDownloadWindow: () => ipcRenderer.invoke("mmh:open-update-window"),
   // Subscribe to update lifecycle events pushed from the main process.

@@ -12,7 +12,7 @@
 //
 // The Next.js application code is untouched; this shell only hosts it.
 
-const { app, BrowserWindow, dialog, ipcMain } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, session: electronSession } = require("electron");
 const { spawn } = require("child_process");
 const path = require("path");
 const fs = require("fs");
@@ -158,16 +158,15 @@ function dbUrl() {
   return "file:" + dbFile.replace(/\\/g, "/");
 }
 
-// Candidate locations of an existing MMH database, best first.
+// Where an MMH database from a previous install directory may still live.
 //
 // The data directory is `<installDir>\data` for a packaged build, so installing
 // to a different folder (or reinstalling after the installer's default moved
-// between D:\MMH and %LOCALAPPDATA%\Programs\MMH) silently produced an empty
-// database: the old books were still on disk, just in the *previous* install
-// directory. The user-visible symptom was "新装之后看不到以前的账簿" while the app
-// happily auto-created a "默认" household. Only %APPDATA%\MMH was ever checked,
-// which is the pre-<installDir>\data location and therefore misses every
-// install-dir move.
+// between D:\MMH and %LOCALAPPDATA%\Programs\MMH) produced an empty database
+// while the old books were still on disk, just in the *previous* install
+// directory ("新装之后看不到以前的账簿"). These paths are therefore read-only
+// *candidates* to offer the user — see migrateLegacyData for why nothing here is
+// ever picked automatically.
 function legacyDataCandidates() {
   const localAppData =
     process.env.LOCALAPPDATA || path.join(app.getPath("home"), "AppData", "Local");
@@ -183,66 +182,156 @@ function legacyDataCandidates() {
   return list.filter((dir) => path.resolve(dir) !== path.resolve(userDataDir));
 }
 
-// Largest database wins: a real book-keeping database is hundreds of KB at the
-// very least, while a freshly initialised shell is much smaller. Reading the
-// size also avoids opening (and thus locking) any of the candidates.
-function findBestLegacyDatabase() {
+// A real book-keeping database is hundreds of KB at the very least (the native
+// schema alone is far bigger), while a freshly initialised shell is much
+// smaller. Reading the size also avoids opening (and thus locking) a candidate.
+const MIN_REAL_DB_SIZE = 64 * 1024;
+
+function formatStamp(ms) {
+  const date = new Date(ms);
+  const pad = (value) => String(value).padStart(2, "0");
+  return (
+    date.getFullYear() +
+    "-" +
+    pad(date.getMonth() + 1) +
+    "-" +
+    pad(date.getDate()) +
+    " " +
+    pad(date.getHours()) +
+    ":" +
+    pad(date.getMinutes())
+  );
+}
+
+function describeLegacyDatabase(item) {
+  return (
+    item.file + " (" + Math.round(item.size / 1024) + " KB, 修改于 " + formatStamp(item.mtime) + ")"
+  );
+}
+
+// Every existing database in the candidate directories, most recently written
+// first. Recency — not size — is what identifies the book the user was actually
+// working in: a stale copy can easily be the bigger one (more history), so
+// "largest wins" is exactly the wrong heuristic and must not decide anything.
+function findLegacyDatabases() {
   const found = [];
   for (const dir of legacyDataCandidates()) {
     const candidate = path.join(dir, "mmh.db");
     try {
       const stat = fs.statSync(candidate);
-      if (stat.isFile() && stat.size > 0) {
+      if (stat.isFile() && stat.size >= MIN_REAL_DB_SIZE) {
         found.push({ dir, file: candidate, size: stat.size, mtime: stat.mtimeMs });
       }
     } catch {
       // Not there; keep scanning.
     }
   }
-  found.sort((a, b) => b.size - a.size || b.mtime - a.mtime);
-  return found[0] || null;
+  found.sort((a, b) => b.mtime - a.mtime || b.size - a.size);
+  return found;
 }
 
-// One-time migration: pull an existing database into the current data directory
-// when the current one is missing or still an empty shell. A copy is used (the
-// source is left untouched) and the previous file is kept as a .bak so nothing
-// is ever destroyed.
+// 2026-10-28 incident: this used to *silently* copy the largest candidate over
+// the current database whenever the current file was missing or still an empty
+// shell. With two install directories the two copies fought over one book: the
+// install that started first imported a stale copy from the other directory and
+// the books the user was actually working in disappeared ("数据被换掉了").
+//
+// Rules from now on, no exceptions:
+//   1. An existing database file is authoritative and is NEVER touched, not even
+//      when it looks small or empty — anything unexpected is reported, not
+//      "repaired" by overwriting it.
+//   2. Import happens only when the current data directory has no database at
+//      all, and only after the user explicitly picks a file, and only in a
+//      packaged build (dev/CI never blocks on a dialog).
+//   3. The source file is copied, never moved, and the choice is recorded in
+//      legacy-import.json so a later "where did my books go" is answerable.
 function migrateLegacyData() {
-  let currentSize = 0;
-  try {
-    currentSize = fs.statSync(dbFile).size;
-  } catch {
-    currentSize = 0;
+  if (fs.existsSync(dbFile)) return; // Rule 1: never touch a database that exists.
+  const found = findLegacyDatabases();
+  if (found.length === 0) return;
+
+  for (const item of found) {
+    log("Database found outside the data directory: " + describeLegacyDatabase(item));
   }
-  // < 64 KB means "schema not even initialised" — the full native schema alone
-  // is far bigger, so an empty DB cannot be mistaken for a real one.
-  if (currentSize >= 64 * 1024) return;
-  const best = findBestLegacyDatabase();
-  if (!best || best.size < 64 * 1024) return;
+  if (!isPackaged) {
+    log("Dev build: not importing automatically. Copy one of the files above to " + dbFile + " manually if you want it.");
+    return;
+  }
+
+  const options = found.slice(0, 3);
+  const skipLabel = "跳过（使用新的空账簿）";
+  let choice = -1;
   try {
-    if (currentSize > 0) {
-      fs.copyFileSync(dbFile, dbFile + ".bak-" + Date.now());
-    }
-    fs.copyFileSync(best.file, dbFile);
-    for (const name of ["mmh-session-secret", "desktop-config.json"]) {
-      const from = path.join(best.dir, name);
-      const to = path.join(userDataDir, name);
-      try {
-        if (fs.existsSync(from) && !fs.existsSync(to)) fs.copyFileSync(from, to);
-      } catch {
-        // Optional companions; the database is what matters.
-      }
-    }
-    log(
-      "Imported existing database from " +
-        best.file +
-        " (" +
-        Math.round(best.size / 1024) +
-        " KB) into " +
-        dbFile,
-    );
+    choice = dialog.showMessageBoxSync({
+      type: "question",
+      title: "发现已有账簿数据",
+      message: "当前数据目录里还没有数据库文件。",
+      detail:
+        "在下列位置发现了已有的 mmh.db（按修改时间从新到旧）：\n\n" +
+        options
+          .map((item, index) => `${index + 1}. ${item.file}\n    ${Math.round(item.size / 1024)} KB，修改于 ${formatStamp(item.mtime)}`)
+          .join("\n\n") +
+        "\n\n选中的文件会被【复制】到：\n" +
+        dbFile +
+        "\n\n原文件保持不动；如果你不确定，请选择跳过，然后再手动确认。",
+      buttons: [...options.map((_, index) => `导入第 ${index + 1} 份`), skipLabel],
+      defaultId: options.length, // Default to the safe answer, not to an import.
+      cancelId: options.length,
+      noLink: true,
+    });
   } catch (error) {
-    log("Database migration failed: " + (error && error.message ? error.message : error));
+    log("Legacy import prompt failed: " + (error && error.message ? error.message : error));
+    return;
+  }
+  if (choice < 0 || choice >= options.length) {
+    log("User skipped the legacy database import.");
+    return;
+  }
+
+  const chosen = options[choice];
+  try {
+    // Re-check right before copying: the server may already have created one,
+    // and creating a database is never a reason to overwrite it.
+    if (fs.existsSync(dbFile)) {
+      log("Aborted legacy import: " + dbFile + " appeared while the prompt was open.");
+      return;
+    }
+    fs.copyFileSync(chosen.file, dbFile);
+    // The session secret travels with the database so existing logins keep
+    // working. desktop-config.json is deliberately NOT copied: allowLan is a
+    // per-install network exposure decision, not book data.
+    try {
+      const secretFrom = path.join(chosen.dir, "mmh-session-secret");
+      const secretTo = path.join(userDataDir, "mmh-session-secret");
+      if (fs.existsSync(secretFrom) && !fs.existsSync(secretTo)) {
+        fs.copyFileSync(secretFrom, secretTo);
+      }
+    } catch {
+      // Optional companion; the database is what matters.
+    }
+    try {
+      fs.writeFileSync(
+        path.join(userDataDir, "legacy-import.json"),
+        JSON.stringify(
+          {
+            importedAt: new Date().toISOString(),
+            copiedFrom: chosen.file,
+            copiedTo: dbFile,
+            bytes: chosen.size,
+            sourceModifiedAt: new Date(chosen.mtime).toISOString(),
+            candidates: found.map((item) => describeLegacyDatabase(item)),
+          },
+          null,
+          2,
+        ),
+        "utf8",
+      );
+    } catch {
+      // An audit trail is nice to have; a failed write must not abort startup.
+    }
+    log("Imported database on user request: " + chosen.file + " -> " + dbFile + " (" + Math.round(chosen.size / 1024) + " KB)");
+  } catch (error) {
+    log("Database import failed: " + (error && error.message ? error.message : error));
   }
 }
 
@@ -425,6 +514,24 @@ function createWindow() {
   mainWindow.on("closed", () => {
     mainWindow = null;
   });
+}
+
+// End the desktop session for real.
+//
+// The web logout route only clears the four session cookies over HTTP, and
+// Chromium keeps cookie mutations in memory before flushing them to
+// `Network\Cookies`. When the user logs out and closes the window right away,
+// the deletion can be lost: the next launch reads the old cookie from disk and
+// goes straight to the overview (reported 2026-10-29 — "点退出登录停在 /login，
+// 关窗重开直接进概览"). Clearing the default session here and flushing
+// immediately makes the logout survive an app restart.
+async function endDesktopSession() {
+  const target = electronSession.defaultSession;
+  if (!target) return { ok: false };
+  await target.clearStorageData({ storages: ["cookies"] });
+  await target.flushStorageData();
+  log("Desktop session cleared (logout).");
+  return { ok: true };
 }
 
 // Push an update lifecycle event to the renderer (settings page), if open.
@@ -965,6 +1072,24 @@ function setupAutoUpdater() {
 app.whenReady().then(async () => {
   try {
     fs.mkdirSync(userDataDir, { recursive: true });
+    // Logout bridge (electron/preload.cjs → sidebar 用户菜单「退出登录」).
+    ipcMain.handle("mmh:end-session", async () => {
+      try {
+        return await endDesktopSession();
+      } catch (error) {
+        log("Failed to clear desktop session: " + (error && error.message ? error.message : error));
+        return { ok: false };
+      }
+    });
+    // Always record which database this launch is about to use. "数据不见了"
+    // reports are unanswerable without it, and it makes an accidental data-dir
+    // switch obvious in logs/main.log.
+    try {
+      const stat = fs.statSync(dbFile);
+      log("Using database " + dbFile + " (" + Math.round(stat.size / 1024) + " KB, 修改于 " + formatStamp(stat.mtimeMs) + ")");
+    } catch {
+      log("No database at " + dbFile + " yet; it will be created empty.");
+    }
     migrateLegacyData();
     // Repair an interrupted file-level update before anything else runs: it may
     // have left resources\app renamed away, in which case nothing can start.
@@ -999,8 +1124,26 @@ app.on("window-all-closed", () => {
   app.quit();
 });
 
-app.on("before-quit", () => {
+let storageFlushed = false;
+
+app.on("before-quit", (event) => {
   quitting = true;
+  // Cookie/storage mutations (a logout, most importantly) live in Chromium's
+  // memory until they are flushed to `Network\Cookies`. Quitting immediately
+  // after a logout lets the deleted session cookie come back from disk on the
+  // next launch, which is exactly the 2026-10-29 report ("退出登录后关窗重开
+  // 直接进概览"). Defer the real quit once, so the flush has time to reach disk.
+  if (!storageFlushed && electronSession.defaultSession) {
+    event.preventDefault();
+    storageFlushed = true;
+    try {
+      electronSession.defaultSession.flushStorageData();
+    } catch {
+      // Never block quitting.
+    }
+    setTimeout(() => app.quit(), 400);
+    return;
+  }
   if (serverProc && serverProc.pid) {
     try {
       if (process.platform === "win32") {
