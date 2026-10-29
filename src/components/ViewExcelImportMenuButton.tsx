@@ -68,6 +68,21 @@ type ViewExcelRangeExportSpec = {
   title?: string;
   description?: string;
   dateColumnIndex?: number;
+  /**
+   * 弹窗里交易日期范围的初值。
+   *
+   * 必须是**视图内最早 / 最晚一条记录**，不能从 `rows` 推：`rows` 是表格当前显示
+   * 的那部分（分页 / 显示范围都会裁掉），拿它当初值就等于「只导出眼前这一段」。
+   * 缺省时才回退到 `rows` 的跨度。
+   */
+  defaultDateRange?: { start: string; end: string };
+  /**
+   * 按用户选的区间向服务端重新取数（含表头）。
+   *
+   * 有它时导出内容不再受表格显示范围 / 分页限制：用户选的是「账户 / 筛选视图 ×
+   * 交易日期范围」，导出的就是那个区间里整份明细，而不是当前这一页。
+   */
+  loadRows?: (range: { start: string; end: string }) => Promise<ExportCellValue[][]>;
 };
 
 type ViewExcelImportMenuButtonBaseProps = {
@@ -1447,8 +1462,8 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
     const dateColumnIndex = spec.dateColumnIndex ?? 0;
     const bounds = exportDateBounds(spec.rows, dateColumnIndex);
     setOpen(false);
-    setExcelExportStart(bounds.start);
-    setExcelExportEnd(bounds.end);
+    setExcelExportStart(parseExportDate(spec.defaultDateRange?.start) || bounds.start);
+    setExcelExportEnd(parseExportDate(spec.defaultDateRange?.end) || bounds.end);
     setExcelExportError("");
     setExcelExportOpen(true);
   }
@@ -1461,21 +1476,26 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
       setExcelExportError(t("viewImport.dateRangeInvalid"));
       return;
     }
-    const [header = [], ...bodyRows] = spec.rows;
-    const filteredRows = bodyRows.filter((row) => {
-      const date = parseExportDate(row[dateColumnIndex]);
-      if (!date) return false;
-      if (excelExportStart && date < excelExportStart) return false;
-      if (excelExportEnd && date > excelExportEnd) return false;
-      return true;
-    });
-    if (filteredRows.length === 0) {
-      setExcelExportError(t("viewImport.noRowsInRange"));
-      return;
-    }
     setBusy(true);
     setExcelExportError("");
     try {
+      // 有 `loadRows` 就以服务端按区间重取的那份为准：表格里的 `rows` 只是当前
+      // 显示范围 / 当前页，拿它导出会漏掉区间内的历史记录。
+      const sourceRows = spec.loadRows
+        ? await spec.loadRows({ start: excelExportStart, end: excelExportEnd })
+        : spec.rows;
+      const [header = [], ...bodyRows] = sourceRows;
+      const filteredRows = bodyRows.filter((row) => {
+        const date = parseExportDate(row[dateColumnIndex]);
+        if (!date) return false;
+        if (excelExportStart && date < excelExportStart) return false;
+        if (excelExportEnd && date > excelExportEnd) return false;
+        return true;
+      });
+      if (filteredRows.length === 0) {
+        setExcelExportError(t("viewImport.noRowsInRange"));
+        return;
+      }
       await exportRowsToXlsx(
         [header, ...filteredRows],
         filenameWithDateRange(spec.filename, excelExportStart, excelExportEnd, t("creditBill.all")),

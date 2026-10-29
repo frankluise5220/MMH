@@ -4,7 +4,7 @@ import { getRequestTimeZone } from "@/lib/server/business-time-zone";
 import { connection } from "next/server";
 import { cookies } from "next/headers";
 import { AccountKind,   TransactionType, FundSubtype, RegularInvestStatus } from "@prisma/client";
-import { institutionTypeLabel, isSettlementCounterpartyType, isInstitutionTypeOf, LOAN_DIALOG_INSTITUTION_TYPE_VALUES, kindLabel } from "@/lib/account-kinds";
+import { institutionTypeLabel, isSettlementCounterpartyType, isInstitutionTypeOf, LOAN_DIALOG_INSTITUTION_TYPE_VALUES } from "@/lib/account-kinds";
 import { getServerAccountDropdownRestrictType } from "@/lib/server/account-dropdown-restrict";
 import { TransactionFormModal } from "@/components/TransactionFormModal";
 import { MobileTransactionForm } from "@/components/mobile/MobileTransactionForm";
@@ -80,7 +80,6 @@ import {
   SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE,
   buildAccountDisplayOption,
   buildFlatAccountOptions,
-  counterpartyQualifiedAccountName,
   normalizeCreditCardLabelTemplate,
   resolveAccountTableLabel,
   stripVisibleHoverParts,
@@ -137,6 +136,14 @@ import { formatDateUtc, toNumber, parseDateInputToUtc, todayDateBusinessYmd } fr
 import { resolveHouseholdTimeZone } from "@/lib/server/business-time-zone";
 import { parseDepositInterestPayout } from "@/lib/deposit-interest-payout";
 import { depositSegmentInterest } from "@/lib/deposit-maturity";
+import {
+  buildCategoryExportLabels,
+  buildDetailExportRows,
+  detailExportHeader,
+  exportAccountLabel,
+  formatTransactionTypeLabel as formatType,
+  type DetailExportEntryLike,
+} from "@/lib/detail-export-rows";
 
 /**
  * 投资族视图（由账户的 investProductType 决定的那几个）。
@@ -153,15 +160,6 @@ const INVEST_FAMILY_VIEWS = new Set<string>([
 
 
 
-
-function formatType(t: (key: string, params?: Record<string, string | number>) => string, type: string) {
-  if (type === "expense") return t("transaction.type.expense");
-  if (type === "income") return t("transaction.type.income");
-  if (type === "advance") return t("txForm.advance");
-  if (type === "transfer") return t("transaction.type.transfer");
-  if (type === "investment") return t("transaction.type.investment");
-  return type;
-}
 
 function parseMortgageLprDiscountFromText(value?: string | null) {
   const text = String(value ?? "").trim();
@@ -345,93 +343,6 @@ function buildCategoryPathLabels(categories: Array<{ id: string; name: string; t
   return labelById;
 }
 
-function buildCategoryExportLabels(
-  t: (key: string, params?: Record<string, string | number>) => string,
-  categories: Array<{ id: string; name: string; type: string; parentId: string | null }>,
-) {
-  const byId = new Map(categories.map((c) => [c.id, c]));
-  const memo = new Map<string, string[]>();
-  // Root category names are user data stored in the DB; keep the Chinese names for matching.
-  const rootLabels = new Set(["支出", "收入", "转账", "代付", "投资"]);
-
-  function pathNames(id: string): string[] {
-    const cached = memo.get(id);
-    if (cached) return cached;
-    const c = byId.get(id);
-    if (!c) return [];
-    const seen = new Set<string>();
-    const names: string[] = [];
-    let cur: typeof c | undefined = c;
-    while (cur) {
-      if (seen.has(cur.id)) break;
-      seen.add(cur.id);
-      names.push(cur.name);
-      if (!cur.parentId) break;
-      const parent = byId.get(cur.parentId);
-      if (!parent) break;
-      if (parent.type !== cur.type) break;
-      cur = parent;
-    }
-    names.reverse();
-    memo.set(id, names);
-    return names;
-  }
-
-  const labelById = new Map<string, string>();
-  for (const c of categories) {
-    const names = pathNames(c.id);
-    const exportNames = [...names];
-    if (exportNames[0] === formatType(t, c.type) || rootLabels.has(exportNames[0] ?? "")) {
-      exportNames.shift();
-    }
-    labelById.set(c.id, exportNames.map((name) => systemCategoryLabel(name, t)).join("."));
-  }
-  return labelById;
-}
-
-type ExportAccountLike = {
-  name?: string | null;
-  kind?: string | null;
-  numberMasked?: string | null;
-  Institution?: { name?: string | null; shortName?: string | null } | null;
-  AccountGroup?: { name?: string | null } | null;
-  Counterparty?: { name?: string | null; shortName?: string | null } | null;
-} | null | undefined;
-
-function exportAccountLabel(account: ExportAccountLike, fallbackName?: string | null) {
-  const owner = account?.kind === "loan" ? "" : account?.AccountGroup?.name?.trim() || "";
-  const institution = account?.Institution?.shortName?.trim() || account?.Institution?.name?.trim() || "";
-  const accountName = account?.name?.trim() || fallbackName?.trim() || "";
-  const isSettlementOrLoan = account?.kind === "loan" || account?.kind === "settlement";
-  const qualifiedName = isSettlementOrLoan ? counterpartyQualifiedAccountName(accountName, account?.Counterparty) : accountName;
-  const tailOrName = account?.numberMasked?.trim() || qualifiedName;
-  const accountType = account?.kind ? kindLabel(account.kind) : "";
-  return [owner, institution, tailOrName, accountType].filter(Boolean).join("·");
-}
-
-type DetailExportEntryLike = {
-  readonly type?: string | null;
-  readonly accountId?: string | null;
-  readonly toAccountId?: string | null;
-  readonly categoryId?: string | null;
-  readonly categoryName?: string | null;
-  readonly fundProductType?: string | null;
-  readonly fundSubtype?: string | null;
-  readonly fundName?: string | null;
-  readonly insuranceProductId?: string | null;
-  readonly insuranceAction?: string | null;
-  readonly insuranceProductName?: string | null;
-  readonly source?: string | null;
-  readonly note?: string | null;
-  readonly toNote?: string | null;
-  readonly account?: { readonly kind?: string | null } | null;
-  readonly toAccount?: { readonly kind?: string | null } | null;
-};
-
-function stripExportCategoryRootLabel(value?: string | null) {
-  const text = value?.trim() ?? "";
-  return ["支出", "收入", "转账", "代付", "投资"].includes(text) ? "" : text;
-}
 
 
 
@@ -1069,73 +980,19 @@ export default async function Home({
     ? 1
     : Math.min(focusDetailPage ?? pagedDetailData?.page ?? detailPage, detailTotalPages);
   const categoryLabels = buildCategoryPathLabels(categories);
-  const exportCategoryLabels = buildCategoryExportLabels(t, categories);
-  const getExportCategoryName = (e: DetailExportEntryLike) => {
-    if (isCreditCardRepaymentForDisplay(e)) return t("transaction.category.creditCardRepayment");
-    if (e.categoryId) return exportCategoryLabels.get(e.categoryId) ?? systemCategoryLabel(stripExportCategoryRootLabel(e.categoryName), t);
-    if (e.type === TransactionType.investment) {
-      if (e.source === "insurance") return getInsuranceDetailCategoryName(e);
-      return systemCategoryLabel(stripExportCategoryRootLabel(e.categoryName), t) || systemCategoryLabel(getInvestmentCategoryName(e), t) || "";
-    }
-    if (e.categoryName) return systemCategoryLabel(stripExportCategoryRootLabel(e.categoryName), t);
-    if (e.type === TransactionType.income && e.source === "advance") {
-      return t("systemCategory.reimbursement");
-    }
-    return systemCategoryLabel(stripExportCategoryRootLabel(e.categoryName), t);
-  };
-  const normalExportHeader = [
-    t("detail.column.date"),
-    t("detailView.column.type"),
-    t("detail.column.category"),
-    t("detail.column.outflow"),
-    t("detail.column.inflow"),
-    t("common.account"),
-    t("batchImport.field.counterAccount"),
-    t("detail.column.counterparty"),
-    t("detail.column.tags"),
-    t("detail.column.remark"),
-  ];
-  const normalExportSourceEntries = filteredEntries2;
-  const normalExportEntryRows = normalExportSourceEntries.map((e) => {
-    const effectiveAmount = detailFlowAmountOf(e);
-    const outflow = effectiveAmount < 0 ? String(-effectiveAmount) : "";
-    const inflow = effectiveAmount > 0 ? String(effectiveAmount) : "";
-    const isToSide = Boolean(detailFlowAccountIdOf(e) && e.toAccountId === detailFlowAccountIdOf(e));
-    const fromAccount = accountMetaById.get(e.accountId ?? "");
-    const toAccount = accountMetaById.get(e.toAccountId ?? "");
-    const accountLabel = isToSide
-      ? exportAccountLabel(toAccount)
-      : exportAccountLabel(fromAccount);
-    const counterAccountLabel = e.type === TransactionType.transfer || e.type === TransactionType.investment
-      ? isToSide
-        ? exportAccountLabel(fromAccount)
-        : exportAccountLabel(toAccount)
-      : "";
-    const tagsText = (e.EntryTag || [])
-      .map((entryTag) => entryTag.Tag?.name?.trim() || "")
-      .filter(Boolean)
-      .join("、");
-    return {
-      id: e.id,
-      row: [
-        entryDisplayDate(e).toISOString().slice(0, 10),
-        e.source === "insurance"
-          ? getInsuranceDetailCategoryName(e)
-          : (e.source === "advance" || e.source === "reimbursement") && e.type !== TransactionType.expense
-            ? t("txForm.advance")
-            : formatType(t, e.type),
-        getExportCategoryName(e),
-        outflow,
-        inflow,
-        accountLabel,
-        counterAccountLabel,
-        e.counterpartyInstitutionName ?? "",
-        tagsText,
-        getEntryDisplayNote(e),
-      ],
-    };
+  // 导出行的唯一生成点（`@/lib/detail-export-rows`）：按交易日期范围重新取数的那条
+  // 导出路径也走同一个生成器，两条路径的列必须逐字一致。
+  const normalExportEntryRows = buildDetailExportRows(filteredEntries2, {
+    t,
+    categoryExportLabels: buildCategoryExportLabels(t, categories),
+    isCreditCardRepayment: isCreditCardRepaymentForDisplay,
+    flowAccountIdOf,
+    tableAccountIdOf: detailFlowAccountIdOf,
+    flowAmountOf: detailFlowAmountOf,
+    dateOf: (e) => entryDisplayDate(e).toISOString().slice(0, 10),
+    accountLabelOf: (id) => exportAccountLabel(accountMetaById.get(id ?? "")),
   });
-  const normalExportRows = [normalExportHeader, ...normalExportEntryRows.map((item) => item.row)];
+  const normalExportRows = [detailExportHeader(t), ...normalExportEntryRows.map((item) => item.row)];
   const normalExportRowsByEntryId = Object.fromEntries(normalExportEntryRows.map((item) => [item.id, item.row]));
   const normalExportFilename = t("sidebar.export.filename", {
     name: isAllCashView ? t("nav.allCashEntries") : selectedAccount?.name || accountName || t("statistics.allAccounts"),
@@ -3959,6 +3816,9 @@ export default async function Home({
                   normalExportFilename={normalExportFilename}
                   normalExportRows={normalExportRows}
                   normalExportRowsByEntryId={normalExportRowsByEntryId}
+                  // 首屏行是服务端分页口径时，导出按所选日期区间重新取整份明细，
+                  // 不再只有当前页 / 当前显示范围那一段。
+                  fullRangeExport={usePagedDetailEntries}
                   // 明细表的「账户 / 相关账户」列可以指向任何类型的账户（基金、股票、保险、
                   // 定期、固定资产…），所以这里的显示选项必须是全量账户，否则列里只剩原始
                   // 账户名（例如只显示「基金」），既没有机构也没有 hover。批替换下拉仍然只

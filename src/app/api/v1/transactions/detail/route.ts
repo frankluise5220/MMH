@@ -80,6 +80,8 @@ import { resolveOrCreateAdvanceAccount } from "@/lib/server/advance-account";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
 import { materializeDueInstallmentPayments } from "@/lib/server/credit-card-installment";
 import { prepareEntryUndo, saveEntryUndo } from "@/lib/server/entry-undo";
+import { buildDetailExportRowsForScope } from "@/lib/server/detail-export-rows";
+import { getServerT } from "@/lib/server/i18n";
 import { encodeScheduledTaskMemo } from "@/lib/scheduled-task";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { touchAccountUsage } from "@/lib/server/account-usage";
@@ -2116,6 +2118,26 @@ export async function GET(req: Request) {
         data: {
           accountId: allCashScope ? ALL_CASH_DETAIL_SCOPE_ID : account!.id,
           dateBounds: bounds,
+        },
+      });
+    }
+
+    // 导出资金明细：按 `range` 把**整个视图**重新读一遍，不受分页 / 显示范围影响。
+    // 与列表同一套生效日与排序口径，行内容由 `@/lib/detail-export-rows` 统一生成，
+    // 与表格直接导出逐列一致。只在没有表头筛选时被调用（有筛选时用 RSC 那份行）。
+    if (url.searchParams.get("export") === "1") {
+      const exportRows = await buildDetailExportRowsForScope({
+        scopeAccountId: allCashScope ? ALL_CASH_DETAIL_SCOPE_ID : accountId,
+        householdId: hidFilter.householdId ?? "",
+        dateRange: detailDateRange,
+        t: await getServerT(),
+      });
+      return NextResponse.json({
+        ok: true,
+        data: {
+          accountId: allCashScope ? ALL_CASH_DETAIL_SCOPE_ID : account!.id,
+          rows: exportRows,
+          count: Math.max(0, exportRows.length - 1),
         },
       });
     }

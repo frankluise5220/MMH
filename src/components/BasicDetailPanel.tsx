@@ -112,6 +112,14 @@ type BasicDetailPanelProps = {
   normalExportRows?: string[][];
   normalExportRowsByEntryId?: Record<string, string[]>;
   /**
+   * 导出按所选交易日期范围向服务端重取整份明细（而不是只导表格当前显示的那些行）。
+   *
+   * 只在首屏行是「服务端分页」口径时打开：明细 / 全部收支、且没有 URL 筛选。
+   * 有表头筛选时 `normalExportRows` 本来就是完整筛选结果（不受分页影响），不需要
+   * 也不应该再按区间重取（那条路径不带筛选条件）。
+   */
+  fullRangeExport?: boolean;
+  /**
    * 账户单元格的显示来源，必须是**全量**账户（含投资 / 保险 / 定期 / 固定资产等），
    * 否则明细表的「账户 / 相关账户」列只能回退到原始账户名，丢了机构和 hover。
    */
@@ -373,6 +381,7 @@ export function BasicDetailPanel({
   normalExportFilename,
   normalExportRows = [],
   normalExportRowsByEntryId,
+  fullRangeExport = false,
   accountOptions,
   batchReplaceAccountOptions,
   categoryOptions = [],
@@ -1547,6 +1556,26 @@ export function BasicDetailPanel({
                       title: t("basicDetail.exportExcelTitle"),
                       description: accountKind === "bank_credit" ? t("basicDetail.exportCreditDesc") : t("basicDetail.exportNormalDesc"),
                       dateColumnIndex: 0,
+                      // 初值取「这个账户最早 / 最晚的一条记录」（`bounds=1`，与时间轴
+                      // 双滑块同源），不受表格显示范围与分页影响。还没取到就回退到
+                      // 表格当前这段（`rows` 推导），不会给出空的日期框。
+                      defaultDateRange: fullRangeExport && serverDateBounds
+                        ? { start: serverDateBounds.min, end: serverDateBounds.max }
+                        : undefined,
+                      // 有它，导出内容才是「账户 / 视图 × 所选日期区间」的整份明细，
+                      // 而不是表格当前显示的那几十行。
+                      loadRows: fullRangeExport
+                        ? async ({ start, end }) => {
+                          const params = new URLSearchParams({ accountId, export: "1" });
+                          if (start || end) params.set("range", `${start}~${end}`);
+                          const response = await fetch(`/api/v1/transactions/detail?${params.toString()}`, { cache: "no-store" });
+                          const payload = await response.json().catch(() => null);
+                          if (!response.ok || !payload?.ok) {
+                            throw new Error(payload?.error ?? t("basicDetail.loadFailed"));
+                          }
+                          return Array.isArray(payload.data?.rows) ? (payload.data.rows as string[][]) : [];
+                        }
+                        : undefined,
                     }}
                     dataBasicDetailImport
                   />
