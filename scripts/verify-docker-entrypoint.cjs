@@ -218,6 +218,11 @@ expect(
 );
 
 expect(
+  /2>"\$err"/.test(entrypoint) && !/--script >"\$out" 2>&1/.test(entrypoint),
+  "Docker entrypoint drift detection must not merge prisma migrate diff stderr into the SQL stream: the CLI prints 'Loaded Prisma config from ...' on stderr, which used to count as a statement and turn an empty diff into a false ADDITIVE drift. Every restart then re-ran prisma db push instead of the fast skip path (2026-10-30 upgrade simulation timed out waiting for 'skipping prisma db push').",
+);
+
+expect(
   /leaving nonempty Prisma leftover table/.test(entrypoint) &&
     /refusing to drop it/.test(entrypoint) &&
     /nonempty Prisma leftover copy tables exist; refusing to run schema sync/.test(entrypoint) &&

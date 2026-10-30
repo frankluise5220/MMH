@@ -984,18 +984,27 @@ SCHEMA_DRIFT_DESTRUCTIVE=2
 SCHEMA_DRIFT_UNKNOWN=3
 
 schema_drift_kind() {
-  local out statements
+  local out err statements
   out="$(mktemp "${TMPDIR:-/tmp}/mmh-schema-drift.XXXXXX")"
+  err="$(mktemp "${TMPDIR:-/tmp}/mmh-schema-drift-err.XXXXXX")"
+  # stderr 必须单独收：Prisma CLI 把 "Loaded Prisma config from ..." /
+  # "Prisma schema loaded from ..." 这类提示写到 stderr。之前用 2>&1 合并，
+  # 这些提示行被当成 SQL 语句，导致空差异也判成 ADDITIVE —— 每次重启都白跑
+  # 一遍 prisma db push，且永不打印 "skipping prisma db push"（2026-10-30
+  # 升级演练第二次启动超时，就是被这行假差异卡住）。
   if ! ./node_modules/.bin/prisma migrate diff \
     --from-config-datasource \
     --to-schema prisma/schema.prisma \
-    --script >"$out" 2>&1; then
-    rm -f "$out"
+    --script >"$out" 2>"$err"; then
+    mmh_log "WARNING: prisma migrate diff failed: $(head -n 2 "$err" | tr '\n' ' ')"
+    rm -f "$out" "$err"
     return "$SCHEMA_DRIFT_UNKNOWN"
   fi
+  rm -f "$err"
   # 空差异时 Prisma 只打印一行注释（-- This is an empty migration.），
-  # 所以「没有语句」= 一致。
-  statements="$(grep -Ev '^[[:space:]]*(--.*)?$' "$out" || true)"
+  # 所以「没有语句」= 一致。再把 CLI 日志行滤掉，防止 Prisma 版本变更后
+  # 把这些提示改到 stdout 又制造一次假 ADDITIVE。
+  statements="$(grep -Ev '^[[:space:]]*(--.*)?$' "$out" | grep -Ev '^(Loaded|Prisma|Environment variables loaded)' || true)"
   rm -f "$out"
   if [ -z "$statements" ]; then
     return "$SCHEMA_DRIFT_NONE"
