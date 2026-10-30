@@ -4,6 +4,7 @@ import { TransactionType } from "@prisma/client";
 import { computeInvestBalances } from "@/lib/invest-balance";
 import { toNumber, businessTodayUtcStart } from "@/lib/date-utils";
 import { getRequestTimeZone } from "@/lib/server/business-time-zone";
+import { loadHouseholdAvailableYears } from "@/lib/server/available-years";
 import { Suspense } from "react";
 import { ReportSelector } from "@/components/ReportSelector";
 import type { ReportItem } from "@/components/ReportSelector";
@@ -110,7 +111,7 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
 
   await normalizeDefaultCategoryHierarchyForHousehold(prisma, ctx.householdId);
 
-  const [allAccounts, accountKindRows, categories, allInstitutions, ownerGroups, ownerMembers] = await Promise.all([
+  const [allAccounts, accountKindRows, categories, allInstitutions, ownerGroups, ownerMembers, availableYears] = await Promise.all([
     prisma.account.findMany({
       where: { ...hidFilter, isActive: true, counterpartyId: null, kind: { not: "insurance" } },
       select: { id: true, name: true, kind: true, userId: true, groupId: true, counterpartyId: true, numberMasked: true, Institution: { select: { id: true, name: true, type: true } } },
@@ -130,6 +131,8 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
     prisma.institution.findMany({ where: { householdId: ctx.householdId, Account: { some: { ...hidFilter, isActive: true, counterpartyId: null, kind: { not: "insurance" } } } }, select: { id: true, name: true, type: true }, orderBy: { name: "asc" } }),
     prisma.accountGroup.findMany({ where: { householdId: ctx.householdId, Account: { some: { ...hidFilter, isActive: true, counterpartyId: null, kind: { not: "insurance" } } } }, select: { id: true, name: true, institutionId: true }, orderBy: { name: "asc" } }),
     prisma.institution.findMany({ where: { householdId: ctx.householdId, type: "family_member" }, select: { id: true, name: true } }),
+    // 年份下拉候选范围：本家庭全部流水的数据首年 → 当前年。
+    loadHouseholdAvailableYears(hidFilter, thisYear),
   ]);
 
   // 「账户所有人」一律按配对家庭成员的姓名展示（见 src/lib/account-owner-options.ts）。
@@ -482,6 +485,8 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
               allInstitutions={allInstitutions}
               allUsers={allUsers}
               year={year}
+              month={month}
+              availableYears={availableYears}
             />
           </Suspense>
         </div>

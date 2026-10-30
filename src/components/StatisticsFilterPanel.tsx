@@ -22,6 +22,7 @@ type Props = {
   allInstitutions?: StatisticsInstitutionItem[];
   allUsers?: StatisticsUserItem[];
   year: number;
+  month?: number;
   reportPath?: string;
   exportHref?: string;
   exportFilename?: string;
@@ -34,11 +35,16 @@ type Props = {
   hideRange?: boolean;
 };
 
-export function StatisticsFilterPanel({ allAccounts, allInstitutions = [], allUsers = [], year, reportPath = "/statistics", exportHref, exportFilename, start, end, availableYears = [], baseParams = {}, accountParam, periodParam, hideRange = false }: Props) {
+export function StatisticsFilterPanel({ allAccounts, allInstitutions = [], allUsers = [], year, month, reportPath = "/statistics", exportHref, exportFilename, start, end, availableYears = [], baseParams = {}, accountParam, periodParam, hideRange = false }: Props) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { t } = useI18n();
-  const [level, setLevel] = useState<"year" | "month">(searchParams.get(periodParam ?? "groupBy") === "month" || searchParams.get("level") === "month" ? "month" : "year");
+  const isReports = reportPath === "/reports";
+  const [level, setLevel] = useState<"year" | "month">(
+    isReports
+      ? searchParams.get(periodParam ?? "groupBy") === "month" ? "month" : "year"
+      : searchParams.get("level") === "month" ? "month" : "year",
+  );
   const [accountId, setAccountId] = useState(searchParams.get(accountParam ?? "accounts") ?? "");
   const [institutionId, setInstitutionId] = useState(searchParams.get("institutionIds") ?? searchParams.get("institutionId") ?? "");
   const [userIds, setUserIds] = useState<string[]>(searchParams.get("userIds")?.split(",").filter(Boolean) ?? (searchParams.get("userId") ? [searchParams.get("userId")!] : []));
@@ -46,6 +52,9 @@ export function StatisticsFilterPanel({ allAccounts, allInstitutions = [], allUs
   const [endMonth, setEndMonth] = useState(searchParams.get("endMonth") ?? end?.slice(0, 7) ?? `${year}-12`);
   const [startYear, setStartYear] = useState(searchParams.get("startYear") ?? start?.slice(0, 4) ?? String(year));
   const [endYear, setEndYear] = useState(searchParams.get("endYear") ?? end?.slice(0, 4) ?? String(year));
+  // 统计图表页（/statistics）没有区间概念：服务端只认 year (+ month)。
+  const [statYear, setStatYear] = useState(String(year));
+  const [statMonth, setStatMonth] = useState(String(month ?? 1));
 
   const scopeValue: AccountScopeValue = {
     userIds,
@@ -59,15 +68,18 @@ export function StatisticsFilterPanel({ allAccounts, allInstitutions = [], allUs
     const nextAccountId = overrides.nextAccountId ?? accountId;
     const params = new URLSearchParams();
     Object.entries(baseParams).forEach(([key, value]) => params.set(key, value));
-    params.set("year", searchParams.get("year") ?? String(year));
-    if (periodParam) params.set(periodParam, level === "month" ? "month" : "year");
-    if (reportPath === "/reports") {
+    if (isReports) {
+      params.set("year", searchParams.get("year") ?? String(year));
+      if (periodParam) params.set(periodParam, level === "month" ? "month" : "year");
       params.set("groupBy", level);
       if (level === "month") { params.set("startMonth", startMonth); params.set("endMonth", endMonth); }
       else { params.set("startYear", startYear); params.set("endYear", endYear); }
     } else {
+      // /statistics：服务端只认 year (+ month)。此前这里写的是 startMonth/
+      // endMonth（服务端从不读取），且 year 永远不变，导致年份切不回去。
       params.set("level", level);
-      if (level === "month") { params.set("startMonth", startMonth); params.set("endMonth", endMonth); }
+      params.set("year", statYear);
+      if (level === "month") params.set("month", statMonth);
     }
     if (nextAccountId) params.set(accountParam ?? (reportPath === "/reports" ? "accountId" : "accounts"), nextAccountId);
     if (nextInstitutionId) {
@@ -100,7 +112,13 @@ export function StatisticsFilterPanel({ allAccounts, allInstitutions = [], allUs
         <option value="year">{t("reports.year")}</option>
         <option value="month">{t("reports.month")}</option>
       </select>}
-      {!hideRange && level === "month" ? <><input type="month" value={startMonth} onChange={(event) => setStartMonth(event.target.value)} className="h-9 w-[132px] rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 md:h-8" /><input type="month" value={endMonth} onChange={(event) => setEndMonth(event.target.value)} className="h-9 w-[132px] rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 md:h-8" /></> : <><select value={startYear} onChange={(event) => setStartYear(event.target.value)} className="h-9 w-24 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 md:h-8">{(availableYears.length > 0 ? availableYears : [year]).map((value) => <option key={`start-${value}`}>{value}</option>)}</select><select value={endYear} onChange={(event) => setEndYear(event.target.value)} className="h-9 w-24 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 md:h-8">{(availableYears.length > 0 ? availableYears : [year]).map((value) => <option key={`end-${value}`}>{value}</option>)}</select></>}
+      {!hideRange && isReports && level === "month" ? <><input type="month" value={startMonth} onChange={(event) => setStartMonth(event.target.value)} className="h-9 w-[132px] rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 md:h-8" /><input type="month" value={endMonth} onChange={(event) => setEndMonth(event.target.value)} className="h-9 w-[132px] rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 md:h-8" /></> : null}
+      {!hideRange && isReports && level === "year" ? <><select value={startYear} onChange={(event) => setStartYear(event.target.value)} className="h-9 w-24 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 md:h-8">{(availableYears.length > 0 ? availableYears : [year]).map((value) => <option key={`start-${value}`}>{value}</option>)}</select><select value={endYear} onChange={(event) => setEndYear(event.target.value)} className="h-9 w-24 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 md:h-8">{(availableYears.length > 0 ? availableYears : [year]).map((value) => <option key={`end-${value}`}>{value}</option>)}</select></> : null}
+      {/* 统计图表页：单年（年视图）或 年+月（月视图），提交到 year/month 参数 */}
+      {!hideRange && !isReports ? <>
+        <select value={statYear} onChange={(event) => setStatYear(event.target.value)} className="h-9 w-24 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 md:h-8">{(availableYears.length > 0 ? availableYears : [year]).map((value) => <option key={`stat-year-${value}`}>{value}</option>)}</select>
+        {level === "month" && <select value={statMonth} onChange={(event) => setStatMonth(event.target.value)} className="h-9 w-20 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 md:h-8">{Array.from({ length: 12 }, (_, index) => String(index + 1).padStart(2, "0")).map((value) => <option key={`stat-month-${value}`}>{value}</option>)}</select>}
+      </> : null}
       <AccountScopeFilter
         allAccounts={allAccounts}
         allInstitutions={allInstitutions}

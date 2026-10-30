@@ -27,6 +27,7 @@ import { ACCOUNT_LABEL_FIELDS_COOKIE, accountLabelFieldsFromCookieValue } from "
 import { kindLabel } from "@/lib/account-kinds";
 import { isDepositAccount, isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import { prisma } from "@/lib/db/prisma";
+import { loadHouseholdAvailableYears } from "@/lib/server/available-years";
 import { formatDateUtc, businessTodayUtcStart } from "@/lib/date-utils";
 import { getRequestTimeZone } from "@/lib/server/business-time-zone";
 import type { ColorScheme } from "@/lib/client/colors";
@@ -972,23 +973,16 @@ export default async function ReportsPage({
       })),
   };
 
-  let availableYears: number[] = [];
+  // 年份候选范围与粒度无关：此前只在 groupBy === "year" 时查询，导致默认
+  // 「月」视图下 availableYears 为空、年份下拉退化为只剩当前年，用户无法
+  // 选到 2025 等历史年份。这里始终计算，起始/截止年份的归一化仍只在年视图生效。
+  const availableYears = await loadHouseholdAvailableYears(ctx.hidFilter, now.getUTCFullYear(), {
+    types: [TransactionType.income, TransactionType.expense, TransactionType.investment],
+    accountIds: scopedIncomeAccountIds,
+  });
+  const firstYear = availableYears[0];
+  const lastYear = availableYears[availableYears.length - 1];
   if (groupBy === "year") {
-    const bounds = await prisma.txRecord.aggregate({
-      where: {
-        ...ctx.hidFilter,
-        deletedAt: null,
-        type: { in: [TransactionType.income, TransactionType.expense, TransactionType.investment] },
-        ...(scopedIncomeAccountIds && scopedIncomeAccountIds.length
-          ? { OR: [{ accountId: { in: scopedIncomeAccountIds } }, { toAccountId: { in: scopedIncomeAccountIds } }] }
-          : {}),
-      },
-      _min: { date: true },
-      _max: { date: true },
-    });
-    const firstYear = bounds._min.date?.getUTCFullYear() ?? now.getUTCFullYear();
-    const lastYear = bounds._max.date?.getUTCFullYear() ?? firstYear;
-    availableYears = Array.from({ length: lastYear - firstYear + 1 }, (_, index) => firstYear + index);
     const selectedStartYear = Math.min(lastYear, Math.max(firstYear, parseYear(rawStartYear) ?? firstYear));
     const selectedEndYear = Math.min(lastYear, Math.max(firstYear, parseYear(rawEndYear) ?? lastYear));
     const rangeStartYear = Math.min(selectedStartYear, selectedEndYear);
@@ -1077,7 +1071,7 @@ export default async function ReportsPage({
             accountParam="accountId"
             start={report.start}
             end={report.end}
-            availableYears={availableYears.length > 0 ? availableYears : [currentYear]}
+            availableYears={availableYears}
             exportHref={exportHref}
             exportFilename={exportFilename}
             baseParams={{ report: "income-expense" }}
