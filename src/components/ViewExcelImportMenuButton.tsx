@@ -37,7 +37,8 @@ import {
 } from "@/lib/statement/excel-preview";
 import { convertCaizhiFundImportFile } from "@/lib/statement/caizhi-template";
 import { readStatementSheetRows } from "@/lib/statement/statement-sheet-reader";
-import { excludeFundTradeRows, routeAlipayFundBill } from "@/lib/statement/alipay-fund-import-file";
+import { routeAlipayFundBill } from "@/lib/statement/alipay-fund-bill";
+import { excludeFundTradeRows } from "@/lib/statement/fund-trade-split";
 
 /**
  * 手持设备上隐藏导入导出入口的类名（唯一写入点，四处入口共用）。

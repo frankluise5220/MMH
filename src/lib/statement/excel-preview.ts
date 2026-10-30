@@ -21,10 +21,7 @@ import {
   parseSpdbOriginalAmount,
   type StatementImportField,
 } from "@/lib/statement/header-catalog";
-import {
-  guessAlipayOwnerFromFilename,
-  normalizeAlipayWorkbookRows,
-} from "@/lib/statement/alipay-template";
+import { normalizeAlipayWorkbookRows } from "@/lib/statement/alipay-template";
 import {
   guessCaizhiAccountNameFromFilename,
   normalizeCaizhiWorkbookRows,
@@ -35,6 +32,8 @@ import {
 import { normalizeJdWorkbookRows } from "@/lib/statement/jd-template";
 import { normalizeWechatWorkbookRows } from "@/lib/statement/wechat-template";
 import { readStatementSheetRows } from "@/lib/statement/statement-sheet-reader";
+import { guessOwnerFromFilename } from "@/lib/statement/owner-from-filename";
+import { normalizeStatementHeader as normalizeHeader } from "@/lib/statement/header-utils";
 import {
   alignStatementIncomeRefunds,
   enrichKnownStatementMerchantForImport,
@@ -185,9 +184,6 @@ function cleanStatementCounterparty(value: string) {
   return firstLine.replace(/[\s\u3000]*\d{6,}[\d\s]*$/, "").trim();
 }
 
-function normalizeHeader(value: string) {
-  return value.replace(/\s+/g, "").replace(/[：:]/g, "").trim().toLowerCase();
-}
 
 function normalizeDate(value: string) {
   const raw = value.trim().replace(/\s+/g, " ");
@@ -550,7 +546,7 @@ export function normalizeStatementSheetsRows(
   const jdRows = normalizeJdWorkbookRows(sheetRows);
   // 「张四.支付宝交易明细(...).csv」这类文件名前缀代表账本里的实际所有人，
   // 优先于账单内部写的导出者姓名。
-  const alipayRows = normalizeAlipayWorkbookRows(sheetRows, guessAlipayOwnerFromFilename(sourceFileName));
+  const alipayRows = normalizeAlipayWorkbookRows(sheetRows, guessOwnerFromFilename(sourceFileName));
   const wechatRows = normalizeWechatWorkbookRows(sheetRows);
 
   // 优先检测财智8格式（需要从文件名猜账户名）

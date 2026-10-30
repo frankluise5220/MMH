@@ -1,4 +1,4 @@
-import { decodeTextFile } from "@/lib/client/decode-text-file";
+import { decodeTextFile } from "@/lib/text/decode-text-file";
 
 export type StatementSheetRows = {
   sheetName: string;

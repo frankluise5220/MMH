@@ -9,6 +9,15 @@
 // （见 /api/v1/fund/resolve-by-names），查不到的在预览里由用户补一次，
 // 导入成功后本地就有该基金资料，下次自动匹配。
 
+import {
+  cleanStatementText as cleanText,
+  findStatementHeaderIndex as findHeaderIndex,
+  normalizeStatementDate,
+  normalizeStatementHeader as normalizeHeader,
+  parseStatementAmount,
+  readStatementCell as readCell,
+} from "@/lib/statement/header-utils";
+
 type AlipayFundTradeSubtype = "buy" | "redeem" | "buy_failed";
 
 export type AlipayFundTrade = {
@@ -29,30 +38,9 @@ const ALIPAY_FUND_INSTITUTION_KEYS = [
   "\u9500\u552e",
 ];
 
-function cleanText(value: unknown) {
-  return String(value ?? "").trim();
-}
-
-function normalizeHeader(value: string) {
-  return cleanText(value).replace(/\s+/g, "").replace(/[\uff1a:]/g, "").toLowerCase();
-}
-
-function findHeaderIndex(headers: readonly string[], aliases: readonly string[]) {
-  const normalizedHeaders = headers.map(normalizeHeader);
-  for (const alias of aliases) {
-    const index = normalizedHeaders.indexOf(normalizeHeader(alias));
-    if (index >= 0) return index;
-  }
-  return -1;
-}
-
-function readCell(row: string[], index: number) {
-  return index >= 0 ? cleanText(row[index]) : "";
-}
-
+/** 与共性解析同源，只是这里要数值（0 表示没有金额）。 */
 function parseAmount(value: string) {
-  const amount = Number(cleanText(value).replace(/[,\uff0c\uffe5\u00a5\s]/g, ""));
-  return Number.isFinite(amount) && amount > 0 ? amount : 0;
+  return Number(parseStatementAmount(value));
 }
 
 /**
@@ -104,18 +92,9 @@ function detectSubtype(product: string): AlipayFundTradeSubtype | null {
   return null;
 }
 
+/** 基金买卖只按日入账，时间部分丢掉。 */
 function normalizeAlipayDate(value: string) {
-  const raw = cleanText(value).replace(/\s+/g, " ");
-  const yearFirst = raw.match(/^(\d{4})[\/.-](\d{1,2})[\/.-](\d{1,2})/);
-  if (yearFirst) {
-    const year = Number(yearFirst[1]);
-    const month = Number(yearFirst[2]);
-    const day = Number(yearFirst[3]);
-    if (month >= 1 && month <= 12 && day >= 1 && day <= 31) {
-      return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-    }
-  }
-  return raw;
+  return normalizeStatementDate(value, { keepTime: false });
 }
 
 function isFundDistributor(value: string) {

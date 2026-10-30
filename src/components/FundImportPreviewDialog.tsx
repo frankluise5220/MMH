@@ -28,7 +28,7 @@ import {
 } from "@/lib/account-display";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { recordRecentAccounts } from "@/lib/client/recentAccounts";
-import { decodeTextFile } from "@/lib/client/decode-text-file";
+import { decodeTextFile } from "@/lib/text/decode-text-file";
 import { fetchSettingsBootstrap } from "@/lib/client/settingsCache";
 import { addTradingDaysUtc, parseFlexibleDateToYmd } from "@/lib/date-utils";
 import { formatAmountDraft } from "@/lib/format";

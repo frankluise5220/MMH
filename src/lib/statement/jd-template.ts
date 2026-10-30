@@ -1,4 +1,12 @@
 import type { StatementWorkbookSheetRows } from "@/lib/statement/alipay-template";
+import {
+  cleanStatementText as cleanText,
+  findStatementHeaderIndex as findHeaderIndex,
+  normalizeStatementDate as normalizeJdDate,
+  normalizeStatementHeader as normalizeHeader,
+  parseStatementAmount,
+  readStatementCell as readCell,
+} from "@/lib/statement/header-utils";
 
 type NormalizedJdWorkbookRows = {
   rows: string[][];
@@ -70,27 +78,6 @@ const JD_OWNER_HEADERS = [
   "\u59d3\u540d",
 ];
 
-function cleanText(value: unknown) {
-  return String(value ?? "").replace(/^\ufeff/, "").trim();
-}
-
-function normalizeHeader(value: string) {
-  return cleanText(value).replace(/\s+/g, "").replace(/[\uff1a:]/g, "").toLowerCase();
-}
-
-function findHeaderIndex(headers: readonly string[], aliases: readonly string[]) {
-  const normalizedHeaders = headers.map(normalizeHeader);
-  for (const alias of aliases) {
-    const index = normalizedHeaders.indexOf(normalizeHeader(alias));
-    if (index >= 0) return index;
-  }
-  return -1;
-}
-
-function readCell(row: string[], index: number) {
-  return index >= 0 ? cleanText(row[index]) : "";
-}
-
 function compactJoin(parts: Array<string | undefined>) {
   return parts.map((part) => cleanText(part)).filter(Boolean).join(" / ");
 }
@@ -100,32 +87,8 @@ function stripJdAmountStatusText(value: string) {
 }
 
 function parseAmount(value: string) {
-  const amount = Number(stripJdAmountStatusText(value).replace(/[,\uff0c\uffe5\u00a5\s]/g, ""));
-  return Number.isFinite(amount) && amount > 0 ? String(amount) : "";
-}
-
-function normalizeJdDate(value: string) {
-  const raw = cleanText(value).replace(/\s+/g, " ");
-  const match = raw.match(/^(\d{4})[/.\-\u5e74](\d{1,2})[/.\-\u6708](\d{1,2})\u65e5?(?:\s+(\d{1,2}:\d{2}(?::\d{2})?))?/);
-  if (!match) {
-    const shortDateMatch = raw.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})(?:\s+(\d{1,2}:\d{2}(?::\d{2})?))?/);
-    if (!shortDateMatch) return raw;
-    const shortYear = shortDateMatch[3] ?? "";
-    const year = shortYear.length === 2 ? 2000 + Number(shortYear) : Number(shortYear);
-    const month = Number(shortDateMatch[1]);
-    const day = Number(shortDateMatch[2]);
-    if (!Number.isFinite(year) || month < 1 || month > 12 || day < 1 || day > 31) return raw;
-    const datePart = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-    const timePart = shortDateMatch[4]?.trim();
-    return timePart ? `${datePart} ${timePart}` : datePart;
-  }
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const day = Number(match[3]);
-  if (!Number.isFinite(year) || month < 1 || month > 12 || day < 1 || day > 31) return raw;
-  const datePart = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-  const timePart = match[4]?.trim();
-  return timePart ? `${datePart} ${timePart}` : datePart;
+  // 京东金额列会带「（已全额退款）」，剥掉再交给共性解析。
+  return parseStatementAmount(stripJdAmountStatusText(value));
 }
 
 function normalizeJdText(value: string) {

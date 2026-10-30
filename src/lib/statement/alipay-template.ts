@@ -1,3 +1,12 @@
+import {
+  cleanStatementText as cleanText,
+  findStatementHeaderIndex as findHeaderIndex,
+  normalizeStatementDate,
+  normalizeStatementHeader as normalizeHeader,
+  parseStatementAmount as parseAmount,
+  readStatementCell as readCell,
+} from "@/lib/statement/header-utils";
+
 export type StatementWorkbookSheetRows = {
   sheetName: string;
   rows: string[][];
@@ -52,23 +61,6 @@ const ALIPAY_OWNER_HEADERS = [
   "\u8d26\u6237\u540d",
 ];
 
-function cleanText(value: unknown) {
-  return String(value ?? "").trim();
-}
-
-function normalizeHeader(value: string) {
-  return cleanText(value).replace(/\s+/g, "").replace(/[\uff1a:]/g, "").toLowerCase();
-}
-
-function findHeaderIndex(headers: readonly string[], aliases: readonly string[]) {
-  const normalizedHeaders = headers.map(normalizeHeader);
-  for (const alias of aliases) {
-    const index = normalizedHeaders.indexOf(normalizeHeader(alias));
-    if (index >= 0) return index;
-  }
-  return -1;
-}
-
 function findAlipayHeaderRow(rows: string[][]) {
   // 支付宝导出的回单头部有「导出信息 / 特别提示 / 电子客户回单」等说明行，
   // 表头通常落在第 20 行以后，扫描窗口必须比 25 行更宽。
@@ -98,30 +90,9 @@ function findAlipayHeaderRow(rows: string[][]) {
   return -1;
 }
 
+/** 支付宝交易明细只按日入账，时间部分丢掉；新旧两种日期写法由共性解析器兼容。 */
 function normalizeAlipayDate(value: string) {
-  const raw = cleanText(value).replace(/\s+/g, " ");
-  // 支付宝导出的是「年-月-日 时:分:秒」（如 2026-10-28 16:34:22），
-  // 旧版导出另有「月/日/年」写法，两种都要识别，否则日期会原样透传。
-  const yearFirst = raw.match(/^(\d{4})[\/.-](\d{1,2})[\/.-](\d{1,2})(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?/);
-  if (yearFirst) {
-    const year = Number(yearFirst[1]);
-    const month = Number(yearFirst[2]);
-    const day = Number(yearFirst[3]);
-    if (!Number.isFinite(year) || month < 1 || month > 12 || day < 1 || day > 31) return raw;
-    return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-  }
-  const match = raw.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?/);
-  if (!match) return raw;
-  const year = match[3].length === 2 ? 2000 + Number(match[3]) : Number(match[3]);
-  const month = Number(match[1]);
-  const day = Number(match[2]);
-  if (!Number.isFinite(year) || month < 1 || month > 12 || day < 1 || day > 31) return raw;
-  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-}
-
-function parseAmount(value: string) {
-  const amount = Number(cleanText(value).replace(/[,\uff0c\uffe5\u00a5\s]/g, ""));
-  return Number.isFinite(amount) && amount > 0 ? String(amount) : "";
+  return normalizeStatementDate(value, { keepTime: false });
 }
 
 function unwrapHeaderValue(value: string) {
@@ -279,10 +250,6 @@ function fallbackAlipayFlow() {
   return { majorType: "\u652f\u51fa", outflow: true, inflow: false, requiresReview: true, isTransfer: false };
 }
 
-function readCell(row: string[], index: number) {
-  return index >= 0 ? cleanText(row[index]) : "";
-}
-
 function normalizeAlipayCounterparty(value: string) {
   const normalized = cleanText(value).replace(/\/$/, "").trim();
   return /^[-\u2013\u2014?/]+$/.test(normalized) ? "" : normalized;
@@ -422,20 +389,6 @@ function normalizeAlipaySheetRows(sheet: StatementWorkbookSheetRows, ownerOverri
     rows: normalizedRows,
     sourceDataRowCount: dataRows.length,
   };
-}
-
-/**
- * 账单文件名里的「所有人」前缀，如「张四.支付宝交易明细(20260728-20261028).csv」→ 张四。
- * 导出文件里写的是导出者本人的姓名（付斌），但账可能是记在别人名下的账本里，
- * 这时以文件名前缀为准；没有前缀（普通导出名）就回退到账单内部的姓名。
- */
-export function guessAlipayOwnerFromFilename(filename: string): string {
-  const base = String(filename ?? "")
-    .replace(/\.(csv|xls|xlsx)$/i, "")
-    .trim();
-  const ownerPrefix = base.match(/^([^.\s\-_()\u4e2d]{1,12})[.\u3002\uff0e]\s*(?:\u652f\u4ed8\u5b9d|\u5fae\u4fe1)/);
-  if (ownerPrefix) return ownerPrefix[1];
-  return "";
 }
 
 export function normalizeAlipayWorkbookRows(

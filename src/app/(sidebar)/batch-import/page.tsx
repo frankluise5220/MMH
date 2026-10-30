@@ -23,7 +23,7 @@ import {
 } from "@/lib/account-import-match";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { fetchSettingsAccountData, fetchSettingsBootstrap } from "@/lib/client/settingsCache";
-import { decodeTextFile } from "@/lib/client/decode-text-file";
+import { decodeTextFile } from "@/lib/text/decode-text-file";
 import { parseFlexibleDateToYmd } from "@/lib/date-utils";
 import { NAV_BACKFILL_DELAYS_MS, mergeNavBackfillRows, shouldBackfillNav } from "@/lib/fund/previewNavMerge";
 import { systemCategoryLabel } from "@/lib/system-category-labels";
@@ -36,11 +36,10 @@ import {
   matchStatementHeaderProfile,
   type StatementImportField,
 } from "@/lib/statement/header-catalog";
-import {
-  guessAlipayOwnerFromFilename,
-  normalizeAlipayWorkbookRows,
-} from "@/lib/statement/alipay-template";
-import { excludeFundTradeRows, routeAlipayFundBill } from "@/lib/statement/alipay-fund-import-file";
+import { normalizeAlipayWorkbookRows } from "@/lib/statement/alipay-template";
+import { routeAlipayFundBill } from "@/lib/statement/alipay-fund-bill";
+import { excludeFundTradeRows } from "@/lib/statement/fund-trade-split";
+import { guessOwnerFromFilename } from "@/lib/statement/owner-from-filename";
 import { buildJdImportTemplate, normalizeJdWorkbookRows } from "@/lib/statement/jd-template";
 import { buildWechatImportTemplate, normalizeWechatWorkbookRows } from "@/lib/statement/wechat-template";
 import { parseStatementCsv } from "@/lib/statement/statement-sheet-reader";
@@ -923,7 +922,7 @@ function normalizeKnownPaymentWorkbookRows(
   }
 
   // 「张四.支付宝交易明细(...).csv」的文件名前缀是账本里的实际所有人，优先于账单内部姓名。
-  const alipayRows = normalizeAlipayWorkbookRows(rawSheetRows, guessAlipayOwnerFromFilename(sourceFileName));
+  const alipayRows = normalizeAlipayWorkbookRows(rawSheetRows, guessOwnerFromFilename(sourceFileName));
   if (alipayRows) {
     return {
       rows: alipayRows.rows,

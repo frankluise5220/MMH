@@ -17,13 +17,11 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 
-import { decodeTextBytes } from "../src/lib/client/decode-text-file";
-import {
-  guessAlipayOwnerFromFilename,
-  normalizeAlipayWorkbookRows,
-} from "../src/lib/statement/alipay-template";
+import { decodeTextBytes } from "../src/lib/text/decode-text-file";
+import { normalizeAlipayWorkbookRows } from "../src/lib/statement/alipay-template";
 import { extractAlipayFundName, extractAlipayFundTrades } from "../src/lib/statement/alipay-fund-trade";
-import { excludeFundTradeRows } from "../src/lib/statement/alipay-fund-import-file";
+import { excludeFundTradeRows } from "../src/lib/statement/fund-trade-split";
+import { guessOwnerFromFilename } from "../src/lib/statement/owner-from-filename";
 import {
   matchFundNameToCode,
   splitFundShareClass,
@@ -188,12 +186,12 @@ assert.equal(repayment.rows[1][9], "花呗自动还款-2026年10月账单", "pro
 //    场景：同一份账单（内部「姓名：付斌」）被命名为「张四.支付宝交易明细(...).csv」，
 //    表示这本账要记在张四名下，账户就得是「张四支付宝xxx」而不是「付斌支付宝xxx」。
 assert.equal(
-  guessAlipayOwnerFromFilename("\u5f20\u56db.\u652f\u4ed8\u5b9d\u4ea4\u6613\u660e\u7ec6(20260728-20261028) .csv"),
+  guessOwnerFromFilename("\u5f20\u56db.\u652f\u4ed8\u5b9d\u4ea4\u6613\u660e\u7ec6(20260728-20261028) .csv"),
   "\u5f20\u56db",
   "owner prefix in the filename must win over the bill content",
 );
 assert.equal(
-  guessAlipayOwnerFromFilename("\u652f\u4ed8\u5b9d\u4ea4\u6613\u660e\u7ec6(20260728-20261028).csv"),
+  guessOwnerFromFilename("\u652f\u4ed8\u5b9d\u4ea4\u6613\u660e\u7ec6(20260728-20261028).csv"),
   "",
   "filename without an owner prefix must fall back to the bill content",
 );
