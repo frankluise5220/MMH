@@ -25,6 +25,13 @@ const NORMALIZED_HEADERS = [
 ];
 
 const ALIPAY_INSTITUTION = "\u652f\u4ed8\u5b9d";
+const ALIPAY_TIME_HEADERS = [
+  "\u4ea4\u6613\u65f6\u95f4",
+  "\u4ea4\u6613\u521b\u5efa\u65f6\u95f4",
+  "\u4ed8\u6b3e\u65f6\u95f4",
+];
+const ALIPAY_AMOUNT_HEADERS = ["\u91d1\u989d", "\u91d1\u989d\uff08\u5143\uff09", "\u91d1\u989d(\u5143)"];
+const ALIPAY_DESCRIPTION_HEADERS = ["\u5546\u54c1\u8bf4\u660e", "\u5546\u54c1\u540d\u79f0", "\u5546\u54c1"];
 const ALIPAY_PAYMENT_ACCOUNT_HEADERS = [
   "\u6536/\u4ed8\u6b3e\u65b9\u5f0f",
   "\u6536\u4ed8\u6b3e\u65b9\u5f0f",
@@ -63,13 +70,28 @@ function findHeaderIndex(headers: readonly string[], aliases: readonly string[])
 }
 
 function findAlipayHeaderRow(rows: string[][]) {
-  for (const [index, row] of rows.slice(0, 25).entries()) {
-    const timeIndex = findHeaderIndex(row, ["\u4ea4\u6613\u65f6\u95f4"]);
+  // 支付宝导出的回单头部有「导出信息 / 特别提示 / 电子客户回单」等说明行，
+  // 表头通常落在第 20 行以后，扫描窗口必须比 25 行更宽。
+  for (const [index, row] of rows.slice(0, 60).entries()) {
+    const timeIndex = findHeaderIndex(row, ALIPAY_TIME_HEADERS);
     const flowIndex = findHeaderIndex(row, ["\u6536/\u652f", "\u6536\u652f"]);
-    const amountIndex = findHeaderIndex(row, ["\u91d1\u989d", "\u91d1\u989d\uff08\u5143\uff09", "\u91d1\u989d(\u5143)"]);
-    const accountIndex = findHeaderIndex(row, ALIPAY_PAYMENT_ACCOUNT_HEADERS);
+    const amountIndex = findHeaderIndex(row, ALIPAY_AMOUNT_HEADERS);
     const statusIndex = findHeaderIndex(row, ["\u4ea4\u6613\u72b6\u6001"]);
-    if (timeIndex >= 0 && flowIndex >= 0 && amountIndex >= 0 && accountIndex >= 0 && statusIndex >= 0) {
+    const counterpartyIndex = findHeaderIndex(row, ["\u4ea4\u6613\u5bf9\u65b9"]);
+    const descriptionIndex = findHeaderIndex(row, ALIPAY_DESCRIPTION_HEADERS);
+    // 京东用「商户名称 + 交易说明」，微信用「支付方式」，都不属于支付宝表头：
+    // 出现这两列就跳过，避免京东 / 微信账单被支付宝模板抢走（两者都有「交易状态」「交易分类」）。
+    if (findHeaderIndex(row, ["\u5546\u6237\u540d\u79f0"]) >= 0) continue;
+    if (findHeaderIndex(row, ["\u652f\u4ed8\u65b9\u5f0f"]) >= 0) continue;
+    // 「收/付款方式」只出现在资金明细导出里，交易明细导出没有这一列，
+    // 因此账户列不是命中条件；「交易对方 / 商品说明」才是支付宝的专属特征。
+    if (
+      timeIndex >= 0 &&
+      flowIndex >= 0 &&
+      amountIndex >= 0 &&
+      statusIndex >= 0 &&
+      (counterpartyIndex >= 0 || descriptionIndex >= 0)
+    ) {
       return index;
     }
   }
@@ -78,6 +100,16 @@ function findAlipayHeaderRow(rows: string[][]) {
 
 function normalizeAlipayDate(value: string) {
   const raw = cleanText(value).replace(/\s+/g, " ");
+  // 支付宝导出的是「年-月-日 时:分:秒」（如 2026-10-28 16:34:22），
+  // 旧版导出另有「月/日/年」写法，两种都要识别，否则日期会原样透传。
+  const yearFirst = raw.match(/^(\d{4})[\/.-](\d{1,2})[\/.-](\d{1,2})(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?/);
+  if (yearFirst) {
+    const year = Number(yearFirst[1]);
+    const month = Number(yearFirst[2]);
+    const day = Number(yearFirst[3]);
+    if (!Number.isFinite(year) || month < 1 || month > 12 || day < 1 || day > 31) return raw;
+    return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  }
   const match = raw.match(/^(\d{1,2})[\/.-](\d{1,2})[\/.-](\d{2,4})(?:\s+\d{1,2}:\d{2}(?::\d{2})?)?/);
   if (!match) return raw;
   const year = match[3].length === 2 ? 2000 + Number(match[3]) : Number(match[3]);
@@ -144,8 +176,12 @@ function normalizePaymentAccount(value: string, ownerHint: string) {
   const raw = cleanText(value);
   if (!raw) return "";
   const [primary, ...rest] = raw.split(/[&\uff0b+]/).map((part) => part.trim()).filter(Boolean);
-  if (primary && rest.join(" ").match(/\u7acb\u51cf|\u4f18\u60e0|\u7ea2\u5305|\u62b5\u6263/)) return primary;
-  const normalized = /^\u82b1\u5457\u5206\u671f/.test(raw) ? "\u82b1\u5457" : raw;
+  // 「花呗&优惠」这类组合写法只取主渠道，但所有人前缀要与普通写法一致，
+  // 否则同一个花呗账户会在 MMH 里冒出「花呗」和「张四支付宝花呗」两个名字。
+  const hasDiscountSuffix = Boolean(primary && rest.join(" ").match(/\u7acb\u51cf|\u4f18\u60e0|\u7ea2\u5305|\u62b5\u6263/));
+  const normalized = hasDiscountSuffix && primary
+    ? (/^\u82b1\u5457\u5206\u671f/.test(primary) ? "\u82b1\u5457" : primary)
+    : (/^\u82b1\u5457\u5206\u671f/.test(raw) ? "\u82b1\u5457" : raw);
   if (ownerHint && isAlipayOwnedPaymentAccount(normalized)) {
     return `${ownerHint}${ALIPAY_INSTITUTION}${normalized.replace(/^\u652f\u4ed8\u5b9d/, "")}`;
   }
@@ -165,6 +201,34 @@ function isInvestmentLikeText(value: string) {
   return /\u6295\u8d44\u7406\u8d22|\u8682\u8681\u8d22\u5bcc|\u57fa\u91d1|\u7406\u8d22|\u4e70\u5165|\u5356\u51fa|\u8d4e\u56de|\u8f6c\u51fa\u81f3|\u4efd\u989d\u786e\u8ba4/.test(value);
 }
 
+/**
+ * 花呗 / 借呗 / 信用卡的自动还款。支付宝把它们记为「不计收支」，
+ * 但语义是花钱从付款账户（余额宝 / 余额 / 银行卡）划去还账单，
+ * 落到 MMH 应该是转账，不是支出。
+ */
+function isRepaymentLikeText(value: string) {
+  return /\u82b1\u5457|\u501f\u5457|\u5907\u7528\u91d1|\u7f51\u5546\u8d37|\u8fd8\u6b3e|\u8fd8\u5457|\u5206\u671f/.test(value);
+}
+
+/**
+ * 基金公司直接打过来的收益：货币基金每日把收益发放到余额宝
+ * （如「余额宝-2026.07.28-收益发放」，交易对方是基金公司）。
+ * 支付宝记成「不计收支」，但这不是自己账户之间搬家，而是真金白银的进账，
+ * 因此记收入，也不需要「对向账户」（基金公司不是账本里的账户）。
+ */
+function isFundYieldPayoutText(value: string) {
+  return /\u6536\u76ca\u53d1\u653e|\u6536\u76ca\u7ed3\u8f6c|\u4e07\u4efd\u6536\u76ca/.test(value);
+}
+
+/**
+ * 基金 / 理财里的「钱回来」：基金分红、卖出赎回、买入退款、转出到银行卡。
+ * 这些要走转账的反向（基金 → 资金账户），其余 fund flows 一律按买入方向。
+ * 收益发放不在这里：它走上面的收入规则。
+ */
+function isFundRedemptionLikeText(value: string) {
+  return /\u5206\u7ea2|\u5356\u51fa|\u8d4e\u56de|\u8f6c\u51fa\u5230\u94f6\u884c\u5361|\u9000\u6b3e/.test(value);
+}
+
 function classifyAlipayFlow(params: {
   flow: string;
   category: string;
@@ -174,8 +238,8 @@ function classifyAlipayFlow(params: {
   counterparty: string;
   counterpartyAccount: string;
 }) {
-  if (params.flow === "\u652f\u51fa") return { majorType: "\u652f\u51fa", outflow: true, inflow: false, requiresReview: false };
-  if (params.flow === "\u6536\u5165") return { majorType: "\u6536\u5165", outflow: false, inflow: true, requiresReview: false };
+  if (params.flow === "\u652f\u51fa") return { majorType: "\u652f\u51fa", outflow: true, inflow: false, requiresReview: false, isTransfer: false };
+  if (params.flow === "\u6536\u5165") return { majorType: "\u6536\u5165", outflow: false, inflow: true, requiresReview: false, isTransfer: false };
 
   const source = [
     params.category,
@@ -185,15 +249,34 @@ function classifyAlipayFlow(params: {
     params.counterparty,
     params.counterpartyAccount,
   ].join(" ");
+  // 基金公司发的收益（余额宝每日益等）：真进账，记收入，不需要对向账户。
+  if (params.flow === "\u4e0d\u8ba1\u6536\u652f" && isFundYieldPayoutText(source)) {
+    return { majorType: "\u6536\u5165", outflow: false, inflow: true, requiresReview: false, isTransfer: false };
+  }
   if (params.flow === "\u4e0d\u8ba1\u6536\u652f" && isRefundLikeText(source) && !isInvestmentLikeText(source)) {
-    return { majorType: "\u652f\u51fa", outflow: false, inflow: true, requiresReview: false };
+    return { majorType: "\u652f\u51fa", outflow: false, inflow: true, requiresReview: false, isTransfer: false };
+  }
+  // 花呗 / 信用卡自动还款：付款方式账户 → 被还款的账户（交易对方），是转账。
+  if (
+    params.flow === "\u4e0d\u8ba1\u6536\u652f" &&
+    isRepaymentLikeText(`${params.category} ${source}`) &&
+    !isInvestmentLikeText(source)
+  ) {
+    return { majorType: "\u8f6c\u8d26", outflow: true, inflow: false, requiresReview: false, isTransfer: true };
+  }
+  // 基金申购 / 理财：钱在余额宝和基金之间走，按用户的口径记成转账。
+  // 方向以买入为准（资金 → 基金销售机构），只有「卖出赎回 / 退款 /
+  // 转出到银行卡」这类钱回来的才反向。没有基金代码可用，基金名留在备注里。
+  if (params.flow === "\u4e0d\u8ba1\u6536\u652f" && isInvestmentLikeText(source)) {
+    const inflow = isFundRedemptionLikeText(source);
+    return { majorType: "\u8f6c\u8d26", outflow: !inflow, inflow, requiresReview: false, isTransfer: true };
   }
 
   return null;
 }
 
 function fallbackAlipayFlow() {
-  return { majorType: "\u652f\u51fa", outflow: true, inflow: false, requiresReview: true };
+  return { majorType: "\u652f\u51fa", outflow: true, inflow: false, requiresReview: true, isTransfer: false };
 }
 
 function readCell(row: string[], index: number) {
@@ -202,7 +285,7 @@ function readCell(row: string[], index: number) {
 
 function normalizeAlipayCounterparty(value: string) {
   const normalized = cleanText(value).replace(/\/$/, "").trim();
-  return /^[-\u2013\u2014?]+$/.test(normalized) ? "" : normalized;
+  return /^[-\u2013\u2014?/]+$/.test(normalized) ? "" : normalized;
 }
 
 function compactJoin(parts: Array<string | undefined>) {
@@ -236,15 +319,15 @@ function buildAlipayVisibleRemark(params: {
   return compactJoin(parts) || params.category;
 }
 
-function normalizeAlipaySheetRows(sheet: StatementWorkbookSheetRows) {
+function normalizeAlipaySheetRows(sheet: StatementWorkbookSheetRows, ownerOverride = "") {
   const compactRows = sheet.rows.filter((row) => row.some((cell) => cleanText(cell)));
   const headerRowIndex = findAlipayHeaderRow(compactRows);
   if (headerRowIndex < 0) return null;
 
   const headers = compactRows[headerRowIndex] ?? [];
   const dataRows = compactRows.slice(headerRowIndex + 1);
-  const ownerHint = findAlipayOwnerHint(compactRows, headerRowIndex);
-  const timeIndex = findHeaderIndex(headers, ["\u4ea4\u6613\u65f6\u95f4"]);
+  const ownerHint = cleanText(ownerOverride) || findAlipayOwnerHint(compactRows, headerRowIndex);
+  const timeIndex = findHeaderIndex(headers, ALIPAY_TIME_HEADERS);
   const categoryIndex = findHeaderIndex(headers, ["\u4ea4\u6613\u5206\u7c7b"]);
   const counterpartyIndex = (() => {
     const explicit = findHeaderIndex(headers, ["\u4ea4\u6613\u5bf9\u65b9"]);
@@ -253,9 +336,9 @@ function normalizeAlipaySheetRows(sheet: StatementWorkbookSheetRows) {
     return categoryIndex >= 0 && flowIndex > categoryIndex + 1 ? categoryIndex + 1 : -1;
   })();
   const counterpartyAccountIndex = findHeaderIndex(headers, ["\u5bf9\u65b9\u8d26\u53f7"]);
-  const descriptionIndex = findHeaderIndex(headers, ["\u5546\u54c1\u8bf4\u660e", "\u5546\u54c1\u540d\u79f0"]);
+  const descriptionIndex = findHeaderIndex(headers, ALIPAY_DESCRIPTION_HEADERS);
   const flowIndex = findHeaderIndex(headers, ["\u6536/\u652f", "\u6536\u652f"]);
-  const amountIndex = findHeaderIndex(headers, ["\u91d1\u989d", "\u91d1\u989d\uff08\u5143\uff09", "\u91d1\u989d(\u5143)"]);
+  const amountIndex = findHeaderIndex(headers, ALIPAY_AMOUNT_HEADERS);
   const accountIndex = findHeaderIndex(headers, ALIPAY_PAYMENT_ACCOUNT_HEADERS);
   const statusIndex = findHeaderIndex(headers, ["\u4ea4\u6613\u72b6\u6001"]);
   const orderIndex = findHeaderIndex(headers, ["\u4ea4\u6613\u8ba2\u5355\u53f7"]);
@@ -287,7 +370,15 @@ function normalizeAlipaySheetRows(sheet: StatementWorkbookSheetRows) {
       counterparty,
       counterpartyAccount,
     }) ?? fallbackAlipayFlow();
-    const requiresReview = classifiedFlow.requiresReview || isIgnoredStatus(status, flow);
+    const transferCounterAccount = classifiedFlow.isTransfer
+      ? normalizePaymentAccount(counterparty, ownerHint)
+      : "";
+    // 转账缺了对向账户就没法落库，仍然要人工确认。
+    const requiresReview =
+      classifiedFlow.requiresReview ||
+      isIgnoredStatus(status, flow) ||
+      accountIndex < 0 ||
+      (classifiedFlow.isTransfer && !counterparty);
 
     const visibleRemark = buildAlipayVisibleRemark({
       description,
@@ -297,7 +388,11 @@ function normalizeAlipaySheetRows(sheet: StatementWorkbookSheetRows) {
       category,
     });
     const matchRemark = compactJoin([
-      requiresReview ? `\u5bfc\u5165\u515c\u5e95:\u8bf7\u786e\u8ba4\u7c7b\u578b\u548c\u8d26\u6237` : "",
+      requiresReview
+        ? classifiedFlow.requiresReview
+          ? `\u5bfc\u5165\u515c\u5e95:\u8bf7\u786e\u8ba4\u7c7b\u578b\u548c\u8d26\u6237`
+          : `\u5bfc\u5165\u515c\u5e95:\u8bf7\u786e\u8ba4\u8d26\u6237`
+        : "",
       flow && requiresReview ? `\u539f\u6536\u652f:${flow}` : "",
       counterparty ? `\u5546\u6237:${counterparty}` : "",
       rawRemark && !containsRemarkPart(visibleRemark, rawRemark) ? `\u539f\u5907\u6ce8:${rawRemark}` : "",
@@ -315,7 +410,7 @@ function normalizeAlipaySheetRows(sheet: StatementWorkbookSheetRows) {
       classifiedFlow.inflow ? amount : "",
       amount,
       requiresReview ? "" : account,
-      "",
+      requiresReview ? "" : transferCounterAccount,
       "",
       ALIPAY_INSTITUTION,
       visibleRemark,
@@ -329,11 +424,26 @@ function normalizeAlipaySheetRows(sheet: StatementWorkbookSheetRows) {
   };
 }
 
+/**
+ * 账单文件名里的「所有人」前缀，如「张四.支付宝交易明细(20260728-20261028).csv」→ 张四。
+ * 导出文件里写的是导出者本人的姓名（付斌），但账可能是记在别人名下的账本里，
+ * 这时以文件名前缀为准；没有前缀（普通导出名）就回退到账单内部的姓名。
+ */
+export function guessAlipayOwnerFromFilename(filename: string): string {
+  const base = String(filename ?? "")
+    .replace(/\.(csv|xls|xlsx)$/i, "")
+    .trim();
+  const ownerPrefix = base.match(/^([^.\s\-_()\u4e2d]{1,12})[.\u3002\uff0e]\s*(?:\u652f\u4ed8\u5b9d|\u5fae\u4fe1)/);
+  if (ownerPrefix) return ownerPrefix[1];
+  return "";
+}
+
 export function normalizeAlipayWorkbookRows(
   sheetRows: readonly StatementWorkbookSheetRows[],
+  ownerOverride = "",
 ): NormalizedStatementWorkbookRows | null {
   const normalizedSheets = sheetRows
-    .map(normalizeAlipaySheetRows)
+    .map((sheet) => normalizeAlipaySheetRows(sheet, ownerOverride))
     .filter((sheet): sheet is { rows: string[][]; sourceDataRowCount: number } => Boolean(sheet));
   if (normalizedSheets.length === 0) return null;
 

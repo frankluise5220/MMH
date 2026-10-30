@@ -2,7 +2,7 @@
 
 import type { ButtonHTMLAttributes, TdHTMLAttributes } from "react";
 import { useEffect, useState } from "react";
-import { Copy, Eye, EyeOff, Pencil, Plus, PlusCircle, Star, Trash2 } from "lucide-react";
+import { Copy, Eye, EyeOff, Info, Pencil, Plus, PlusCircle, Star, Trash2 } from "lucide-react";
 import { APP_PREFS_EVENT, getSidebarHideInitialDataPreference } from "@/lib/client/appPreferences";
 import { useI18n } from "@/lib/i18n";
 
@@ -65,6 +65,25 @@ export function SettingsPageHeader({
       </div>
       {toolbar ? <div className="mt-3 flex flex-wrap items-center gap-2">{toolbar}</div> : null}
     </div>
+  );
+}
+
+/**
+ * 悬浮说明：把「解释性长句」从表单里收进一个 i 图标，鼠标悬浮/键盘聚焦才显示。
+ * 用原生 title（不参与布局，也不会被弹窗的滚动容器裁掉）。
+ */
+export function SettingsInfoHint({ text, className }: { text: string; className?: string }) {
+  if (!text) return null;
+  return (
+    <span
+      role="note"
+      tabIndex={0}
+      aria-label={text}
+      title={text}
+      className={`inline-flex shrink-0 cursor-help items-center text-slate-300 outline-none transition-colors hover:text-slate-500 focus-visible:text-slate-500 ${className ?? ""}`}
+    >
+      <Info className="h-3.5 w-3.5" />
+    </span>
   );
 }
 

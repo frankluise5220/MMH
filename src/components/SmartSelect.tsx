@@ -49,6 +49,23 @@ type SmartSelectCycleAction = {
   icon?: ReactNode;
 };
 
+/**
+ * 下拉底部的操作行：不属于「选项」，而是与这份选择相关的一个动作
+ * （例如账户编辑里的「改为多币种父账户…」）。点击先关闭下拉再执行，
+ * 避免下拉遮挡后续弹出的确认框。
+ */
+export type SmartSelectFooterAction = {
+  label: string;
+  /** 行内一行小字：说明这个动作会造成什么，别把长文案写到表单里。 */
+  hint?: string;
+  /** 悬浮说明（默认回落到 hint）：完整后果写在这里，不占行内空间。 */
+  title?: string;
+  icon?: ReactNode;
+  tone?: "default" | "accent";
+  disabled?: boolean;
+  onClick: () => void;
+};
+
 /** 搜索框下方的快捷选择行（如「最近使用」「常用分类」）。点一下即选中并关闭。 */
 export type SmartSelectQuickPickGroup = {
   /** React key，也用于区分不同行。 */
@@ -95,6 +112,8 @@ type SmartSelectSharedBehavior = {
   cycleSelectionWithArrowKeys?: boolean;
   headerExtra?: ReactNode;
   cycleAction?: SmartSelectCycleAction;
+  /** 下拉底部的相关动作（见 SmartSelectFooterAction）。 */
+  footerAction?: SmartSelectFooterAction;
   minDropdownWidth?: number;
   /** Expand the dropdown to the smallest width that fits its option labels. */
   fitContent?: boolean;
@@ -402,6 +421,7 @@ function normalizeSingleBehavior(props: SingleModeProps, options: SmartSelectOpt
     selectableGroups: behavior?.selectableGroups ?? true,
     headerExtra: behavior?.headerExtra ?? props.headerExtra,
     cycleAction,
+    footerAction: behavior?.footerAction,
     minDropdownWidth: behavior?.minDropdownWidth,
     fitContent: behavior?.fitContent ?? false,
     dropdownMaxHeight: behavior?.dropdownMaxHeight,
@@ -440,6 +460,7 @@ function normalizeMultiBehavior(props: MultiModeProps, options: SmartSelectOptio
     selectableGroups: behavior?.selectableGroups ?? true,
     headerExtra: behavior?.headerExtra,
     cycleAction: behavior?.cycleAction,
+    footerAction: behavior?.footerAction,
     minDropdownWidth: behavior?.minDropdownWidth,
     fitContent: behavior?.fitContent ?? false,
     dropdownMaxHeight: behavior?.dropdownMaxHeight,
@@ -493,6 +514,7 @@ export function SmartSelect(props: SmartSelectProps) {
     selectableGroups,
     headerExtra,
     cycleAction,
+    footerAction,
     minDropdownWidth,
     fitContent,
     dropdownMaxHeight,
@@ -517,6 +539,9 @@ export function SmartSelect(props: SmartSelectProps) {
 
   const isSingleCreateButton = mode === "single" && create?.type === "button" ? create : undefined;
   const isMultiInlineCreate = mode === "multi" && create?.type === "inline" ? create : undefined;
+  // 底部动作行占位高度（只取尺寸，不把整个对象放进 calcPosition 依赖：
+  // 调用方通常内联传对象，字面量每次渲染都是新引用，会把定位 effect 拖成每帧重算）。
+  const footerActionHeight = footerAction ? (footerAction.hint ? 48 : 32) : 0;
 
   const listId = useId();
   const selectedOption = mode === "single"
@@ -660,6 +685,8 @@ export function SmartSelect(props: SmartSelectProps) {
     const estimatedHeight = (searchable ? headerHeight : 0)
       + ((isSingleCreateButton || isMultiInlineCreate) ? headerHeight : 0)
       + (search.trim().length > 0 ? 0 : quickPickHeight)
+      // 底部动作行也要占位，否则列表会被它挤得过窄（有说明文字时更高）。
+      + footerActionHeight
       + Math.min(
         visible.length || effectiveOptions.length || 1,
         Math.max(4, Math.floor(resolvedDropdownMaxHeight / rowHeight)),
@@ -673,7 +700,7 @@ export function SmartSelect(props: SmartSelectProps) {
     const rawTop = openAbove ? rect.top - maxHeight - 4 : rect.bottom + 4;
     const top = Math.min(Math.max(boundaryTop, rawTop), Math.max(boundaryTop, boundaryBottom - maxHeight));
     setDropdownPos({ top, left, width, minWidth: width, maxHeight });
-  }, [dense, effectiveOptions, fitContent, headerHeight, isMultiInlineCreate, isSingleCreateButton, minDropdownWidth, quickPickHeight, resolvedDropdownMaxHeight, rowHeight, search, searchable, singleGridColumns, visible.length]);
+  }, [dense, effectiveOptions, fitContent, footerActionHeight, headerHeight, isMultiInlineCreate, isSingleCreateButton, minDropdownWidth, quickPickHeight, resolvedDropdownMaxHeight, rowHeight, search, searchable, singleGridColumns, visible.length]);
 
   const openDropdown = useCallback((preferredIndex?: "first" | "last") => {
     const nextCollapsed = initialCollapsedGroups(
@@ -1235,6 +1262,37 @@ export function SmartSelect(props: SmartSelectProps) {
     );
   }
 
+  // 底部相关动作：和「选中某项」区分开（分隔线 + 一行小字），先关下拉再执行。
+  const footerActionNode = footerAction ? (
+    <div className="shrink-0 border-t border-slate-200/70 p-1">
+      <button
+        type="button"
+        title={footerAction.title || footerAction.hint || footerAction.label}
+        aria-label={footerAction.label}
+        disabled={footerAction.disabled}
+        onClick={() => {
+          closeDropdown();
+          footerAction.onClick();
+        }}
+        className={`flex w-full min-w-0 items-start gap-1.5 rounded-[6px] px-2 py-1.5 text-left transition-colors disabled:cursor-not-allowed disabled:text-slate-300 ${
+          footerAction.tone === "accent"
+            ? "text-blue-700 hover:bg-blue-50"
+            : "text-slate-600 hover:bg-slate-50"
+        }`}
+      >
+        {footerAction.icon ? <span className="mt-px shrink-0">{footerAction.icon}</span> : null}
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-xs font-medium">{footerAction.label}</span>
+          {footerAction.hint ? (
+            <span className="mt-0.5 block whitespace-normal text-[10px] leading-4 text-slate-400">
+              {footerAction.hint}
+            </span>
+          ) : null}
+        </span>
+      </button>
+    </div>
+  ) : null;
+
   const dropdown = (
     <div
       ref={dropdownRef}
@@ -1401,7 +1459,9 @@ export function SmartSelect(props: SmartSelectProps) {
                 </button>
               );
             })}
-            {visible.length === 0 ? (
+            {/* 没有可选项但底部有动作行时不再写「暂无选项」：空列表本身就是空状态，
+                与其说没有选项，不如让底部那个动作成为唯一焦点（搜索中仍提示无匹配）。 */}
+            {visible.length === 0 && (search.trim().length > 0 || !footerAction) ? (
               <div
                 style={fullGridRowStyle}
                 className="px-3 py-4 text-center text-xs text-slate-400"
@@ -1410,6 +1470,7 @@ export function SmartSelect(props: SmartSelectProps) {
               </div>
             ) : null}
           </div>
+          {footerActionNode}
         </>
       ) : (
         <>
@@ -1561,6 +1622,7 @@ export function SmartSelect(props: SmartSelectProps) {
               </button>
             </div>
           ) : null}
+          {footerActionNode}
         </>
       )}
     </div>

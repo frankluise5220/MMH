@@ -71,6 +71,13 @@ type CreditCardCyclePersistRow = {
 export type CreditCardBillingDayRule = {
   effectiveDate: Date;
   billingDay: number;
+  /**
+   * 固定还款日（1-31）。银行改账单日时还款日通常一起改，所以还款日跟着
+   * 同一条生效日期的记录走；为空表示这条记录不覆盖还款日，回退账户级设置。
+   */
+  repaymentDay?: number | null;
+  /** 「账单日后 N 天」的 N；与 repaymentDay 互斥（同时存在时按 offset 生效）。 */
+  repaymentOffsetDays?: number | null;
 };
 
 /**
@@ -465,17 +472,50 @@ function dueForCycle(
   });
 }
 
+function normalizeRuleRepaymentDay(value: unknown) {
+  if (value == null || String(value).trim() === "") return null;
+  const day = Number(value);
+  return Number.isInteger(day) && day >= 1 && day <= 31 ? day : null;
+}
+
+/**
+ * 一条账单日记录实际生效的还款日口径：
+ * 记录自己写了（固定日 / 账单日后 N 天）就用记录的，否则回退账户级设置。
+ * 两者都写时按「账单日后 N 天」生效（与 creditCardDueDateForStatementMonth 一致），
+ * 但绝不能同时把账户级 offset 和记录级固定日混着传下去。
+ */
+function ruleRepaymentSpec(
+  rule: { repaymentDay?: number | null; repaymentOffsetDays?: number | null },
+  fallback: { repaymentDay?: number | null; repaymentOffsetDays?: number | null },
+) {
+  const offsetDays = normalizeCreditCardRepaymentOffsetDays(rule.repaymentOffsetDays);
+  if (offsetDays != null) return { repaymentDay: null, repaymentOffsetDays: offsetDays };
+  const repaymentDay = normalizeRuleRepaymentDay(rule.repaymentDay);
+  if (repaymentDay != null) return { repaymentDay, repaymentOffsetDays: null };
+  return {
+    repaymentDay: normalizeRuleRepaymentDay(fallback.repaymentDay),
+    repaymentOffsetDays: normalizeCreditCardRepaymentOffsetDays(fallback.repaymentOffsetDays),
+  };
+}
+
 function normalizeBillingDayRules(rules: readonly CreditCardBillingDayRule[], fallbackBillingDay?: number | null) {
   const validRules = rules
     .map((rule) => ({
       effectiveDate: startOfDayUtc(rule.effectiveDate),
       billingDay: Math.trunc(rule.billingDay),
+      repaymentDay: normalizeRuleRepaymentDay(rule.repaymentDay),
+      repaymentOffsetDays: normalizeCreditCardRepaymentOffsetDays(rule.repaymentOffsetDays),
     }))
     .filter((rule) => Number.isFinite(rule.billingDay) && rule.billingDay >= 1 && rule.billingDay <= 31)
     .sort((a, b) => a.effectiveDate.getTime() - b.effectiveDate.getTime());
 
   if (validRules.length === 0 && fallbackBillingDay) {
-    return [{ effectiveDate: new Date(Date.UTC(1900, 0, 1)), billingDay: fallbackBillingDay }];
+    return [{
+      effectiveDate: new Date(Date.UTC(1900, 0, 1)),
+      billingDay: fallbackBillingDay,
+      repaymentDay: null,
+      repaymentOffsetDays: null,
+    }];
   }
   return validRules;
 }
@@ -566,10 +606,12 @@ export function buildCreditBillCycleDefinitionsFromBillingDayRules(params: {
     previousEnd = end;
     if (monthIndexAbs < firstMonthIndex) continue;
     const isCurrentCycle = today.getTime() >= start.getTime() && today.getTime() < addDaysUtc(end, 1).getTime();
+    // 还款日按「该账单月生效的那条记录」取：记录里没写就回退账户级设置。
+    const repayment = ruleRepaymentSpec(activeRule, params);
     definitions.set(statementMonth, {
       start,
       end,
-      due: dueForCycle(year, monthIndex, activeRule.billingDay, params.repaymentDay, params.repaymentOffsetDays),
+      due: dueForCycle(year, monthIndex, activeRule.billingDay, repayment.repaymentDay, repayment.repaymentOffsetDays),
       today,
       isCurrentCycle,
       billingDay: activeRule.billingDay,

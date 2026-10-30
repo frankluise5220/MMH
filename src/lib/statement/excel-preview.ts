@@ -21,7 +21,10 @@ import {
   parseSpdbOriginalAmount,
   type StatementImportField,
 } from "@/lib/statement/header-catalog";
-import { normalizeAlipayWorkbookRows } from "@/lib/statement/alipay-template";
+import {
+  guessAlipayOwnerFromFilename,
+  normalizeAlipayWorkbookRows,
+} from "@/lib/statement/alipay-template";
 import {
   guessCaizhiAccountNameFromFilename,
   normalizeCaizhiWorkbookRows,
@@ -31,6 +34,7 @@ import {
 } from "@/lib/statement/caizhi-template";
 import { normalizeJdWorkbookRows } from "@/lib/statement/jd-template";
 import { normalizeWechatWorkbookRows } from "@/lib/statement/wechat-template";
+import { readStatementSheetRows } from "@/lib/statement/statement-sheet-reader";
 import {
   alignStatementIncomeRefunds,
   enrichKnownStatementMerchantForImport,
@@ -179,20 +183,6 @@ function inferTransferCounterpartyFromRemark(remark: string) {
 function cleanStatementCounterparty(value: string) {
   const firstLine = String(value ?? "").split(/\r?\n/).map((part) => part.trim()).find(Boolean) ?? "";
   return firstLine.replace(/[\s\u3000]*\d{6,}[\d\s]*$/, "").trim();
-}
-
-function formatDateCell(value: unknown) {
-  if (value instanceof Date && !Number.isNaN(value.getTime())) {
-    const datePart = `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
-    const hour = value.getHours();
-    const minute = value.getMinutes();
-    const second = value.getSeconds();
-    if (hour || minute || second) {
-      return `${datePart} ${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}:${String(second).padStart(2, "0")}`;
-    }
-    return datePart;
-  }
-  return String(value ?? "").trim();
 }
 
 function normalizeHeader(value: string) {
@@ -547,30 +537,24 @@ type ReadStatementWorkbookResult = {
 
 export { guessCaizhiAccountNameFromFilename } from "@/lib/statement/caizhi-template";
 
-export async function readStatementWorkbookRowsAndText(
-  file: File,
+/**
+ * 已经读出来（甚至已经被过滤过）的原始工作表行 → 账单标准行。
+ * 与 `readStatementWorkbookRowsAndText` 共用同一套模板识别，只是不碰文件。
+ */
+export function normalizeStatementSheetsRows(
+  readonlySheetRows: readonly { sheetName: string; rows: string[][] }[],
+  sourceFileName: string,
   fieldHeaders: StatementFieldHeaders = STATEMENT_IMPORT_FIELD_HEADERS,
-): Promise<ReadStatementWorkbookResult> {
-  const XLSX = await import("xlsx");
-  const data = await file.arrayBuffer();
-  const workbook = XLSX.read(data, { type: "array", cellDates: true });
-  const sheetRows = workbook.SheetNames.map((sheetName) => {
-    const sheet = workbook.Sheets[sheetName];
-    const rows = XLSX.utils.sheet_to_json<Array<string | number | boolean | Date | null>>(sheet, {
-      header: 1,
-      defval: "",
-      raw: false,
-      dateNF: "yyyy-mm-dd",
-    }).map((row) => row.map(formatDateCell).map((cell) => cell.trim()));
-    return { sheetName, rows };
-  });
-
+): ReadStatementWorkbookResult {
+  const sheetRows = readonlySheetRows.map((sheet) => ({ sheetName: sheet.sheetName, rows: sheet.rows }));
   const jdRows = normalizeJdWorkbookRows(sheetRows);
-  const alipayRows = normalizeAlipayWorkbookRows(sheetRows);
+  // 「张四.支付宝交易明细(...).csv」这类文件名前缀代表账本里的实际所有人，
+  // 优先于账单内部写的导出者姓名。
+  const alipayRows = normalizeAlipayWorkbookRows(sheetRows, guessAlipayOwnerFromFilename(sourceFileName));
   const wechatRows = normalizeWechatWorkbookRows(sheetRows);
 
   // 优先检测财智8格式（需要从文件名猜账户名）
-  const accountNameFromFile = guessCaizhiAccountNameFromFilename(file.name);
+  const accountNameFromFile = guessCaizhiAccountNameFromFilename(sourceFileName);
   const caizhiRows = normalizeCaizhiWorkbookRows(sheetRows as CaizhiWorkbookSheetRows[], accountNameFromFile);
 
   const rows = caizhiRows?.rows
@@ -592,13 +576,24 @@ export async function readStatementWorkbookRowsAndText(
   };
 }
 
+export async function readStatementWorkbookRowsAndText(
+  file: File,
+  fieldHeaders: StatementFieldHeaders = STATEMENT_IMPORT_FIELD_HEADERS,
+): Promise<ReadStatementWorkbookResult> {
+  return normalizeStatementSheetsRows(await readStatementSheetRows(file), file.name, fieldHeaders);
+}
+
 export async function parseStatementExcelFile(
   file: File,
   defaultAccountName: string,
   fieldHeaders: StatementFieldHeaders = STATEMENT_IMPORT_FIELD_HEADERS,
   guideTitle = "",
+  /** 已经读过（可能还剔过基金买卖行）的工作表行；不传则自己读文件。 */
+  sheetRows?: readonly { sheetName: string; rows: string[][] }[],
 ) {
-  const { rows, text } = await readStatementWorkbookRowsAndText(file, fieldHeaders);
+  const { rows, text } = sheetRows
+    ? normalizeStatementSheetsRows(sheetRows, file.name, fieldHeaders)
+    : await readStatementWorkbookRowsAndText(file, fieldHeaders);
   const localItems = normalizeStatementExcelParsedItems(
     parseStatementTemplateRows(rows, defaultAccountName, fieldHeaders, guideTitle),
   );

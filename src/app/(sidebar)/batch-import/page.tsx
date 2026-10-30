@@ -1,5 +1,6 @@
 "use client";
 import { ModalLayer } from "@/components/ModalLayer";
+import { ImportPreviewTabs } from "@/components/ImportPreviewTabs";
 
 import { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import type { WorkBook } from "xlsx";
@@ -22,7 +23,9 @@ import {
 } from "@/lib/account-import-match";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { fetchSettingsAccountData, fetchSettingsBootstrap } from "@/lib/client/settingsCache";
+import { decodeTextFile } from "@/lib/client/decode-text-file";
 import { parseFlexibleDateToYmd } from "@/lib/date-utils";
+import { NAV_BACKFILL_DELAYS_MS, mergeNavBackfillRows, shouldBackfillNav } from "@/lib/fund/previewNavMerge";
 import { systemCategoryLabel } from "@/lib/system-category-labels";
 import { useI18n } from "@/lib/i18n";
 import {
@@ -33,9 +36,14 @@ import {
   matchStatementHeaderProfile,
   type StatementImportField,
 } from "@/lib/statement/header-catalog";
-import { normalizeAlipayWorkbookRows } from "@/lib/statement/alipay-template";
+import {
+  guessAlipayOwnerFromFilename,
+  normalizeAlipayWorkbookRows,
+} from "@/lib/statement/alipay-template";
+import { excludeFundTradeRows, routeAlipayFundBill } from "@/lib/statement/alipay-fund-import-file";
 import { buildJdImportTemplate, normalizeJdWorkbookRows } from "@/lib/statement/jd-template";
 import { buildWechatImportTemplate, normalizeWechatWorkbookRows } from "@/lib/statement/wechat-template";
+import { parseStatementCsv } from "@/lib/statement/statement-sheet-reader";
 import {
   inferSignedAmountInflowSign,
   isCreditCardCreditAdjustmentLikeText,
@@ -203,6 +211,11 @@ type ServerImportProgress = {
 };
 type ImportFileParseResult = {
   rows: string[][];
+  /**
+   * 模板归一化之前的原始行：账单自己的表头（交易时间 / 商品说明 / 收-支 / …）还在。
+   * 基金买卖抽取必须用原始行 —— 归一化后已经是 MMH 标准列，认不出来了。
+   */
+  sourceRows: string[][];
   sourceDataRowCount: number;
   workbook?: {
     sheetCount: number;
@@ -547,40 +560,7 @@ async function buildTemplateWorkbook(
   return { XLSX, workbook };
 }
 
-function parseCsv(text: string): string[][] {
-  const rows: string[][] = [];
-  let row: string[] = [];
-  let cell = "";
-  let inQuotes = false;
 
-  for (let i = 0; i < text.length; i++) {
-    const char = text[i];
-    const next = text[i + 1];
-    if (char === '"') {
-      if (inQuotes && next === '"') {
-        cell += '"';
-        i++;
-      } else {
-        inQuotes = !inQuotes;
-      }
-    } else if (char === "," && !inQuotes) {
-      row.push(cell.trim());
-      cell = "";
-    } else if ((char === "\n" || char === "\r") && !inQuotes) {
-      if (char === "\r" && next === "\n") i++;
-      row.push(cell.trim());
-      if (row.some(Boolean)) rows.push(row);
-      row = [];
-      cell = "";
-    } else {
-      cell += char;
-    }
-  }
-
-  row.push(cell.trim());
-  if (row.some(Boolean)) rows.push(row);
-  return rows;
-}
 
 function parseMoney(value: string) {
   const normalized = value.replace(/[,，￥¥\s]/g, "");
@@ -923,10 +903,13 @@ function trimWorkbookRowsToImportHeader(rows: string[][], fieldHeaders: Statemen
   return bestScore > 0 ? compactRows.slice(bestIndex) : compactRows;
 }
 
+
+
 function normalizeKnownPaymentWorkbookRows(
   rawSheetRows: Array<{ sheetName: string; rows: string[][] }>,
   sheetCount: number,
-): ImportFileParseResult | null {
+  sourceFileName = "",
+): Omit<ImportFileParseResult, "sourceRows"> | null {
   const jdRows = normalizeJdWorkbookRows(rawSheetRows);
   if (jdRows) {
     return {
@@ -939,7 +922,8 @@ function normalizeKnownPaymentWorkbookRows(
     };
   }
 
-  const alipayRows = normalizeAlipayWorkbookRows(rawSheetRows);
+  // 「张四.支付宝交易明细(...).csv」的文件名前缀是账本里的实际所有人，优先于账单内部姓名。
+  const alipayRows = normalizeAlipayWorkbookRows(rawSheetRows, guessAlipayOwnerFromFilename(sourceFileName));
   if (alipayRows) {
     return {
       rows: alipayRows.rows,
@@ -970,12 +954,13 @@ function mergeWorkbookRows(
   XLSX: typeof import("xlsx"),
   workbook: WorkBook,
   fieldHeaders: StatementFieldHeaders = STATEMENT_IMPORT_FIELD_HEADERS,
-): ImportFileParseResult {
+  sourceFileName = "",
+): Omit<ImportFileParseResult, "sourceRows"> {
   const rawSheetRows = workbook.SheetNames
     .map((sheetName) => ({ sheetName, rows: worksheetRows(XLSX, workbook, sheetName) }))
     .filter((item) => item.rows.length > 0);
 
-  const knownRows = normalizeKnownPaymentWorkbookRows(rawSheetRows, workbook.SheetNames.length);
+  const knownRows = normalizeKnownPaymentWorkbookRows(rawSheetRows, workbook.SheetNames.length, sourceFileName);
   if (knownRows) return knownRows;
 
   const sheetRows = rawSheetRows
@@ -1021,6 +1006,23 @@ function mergeWorkbookRows(
   };
 }
 
+/** 把原始行按账单模板归一化；传进来的行已经剔过基金买卖时也用这个入口。 */
+function parseImportRows(
+  rows: string[][],
+  fileName: string,
+  fieldHeaders: StatementFieldHeaders = STATEMENT_IMPORT_FIELD_HEADERS,
+): ImportFileParseResult {
+  const rawSheetRows = [{ sheetName: fileName, rows }];
+  const knownRows = normalizeKnownPaymentWorkbookRows(rawSheetRows, 1, fileName);
+  if (knownRows) return { ...knownRows, sourceRows: rows };
+  const trimmedRows = trimWorkbookRowsToImportHeader(rows, fieldHeaders);
+  return {
+    rows: trimmedRows,
+    sourceRows: rows,
+    sourceDataRowCount: Math.max(0, trimmedRows.length - 1),
+  };
+}
+
 async function parseImportFile(
   file: File,
   fieldHeaders: StatementFieldHeaders = STATEMENT_IMPORT_FIELD_HEADERS,
@@ -1029,15 +1031,18 @@ async function parseImportFile(
   if (ext === "xlsx" || ext === "xls") {
     const XLSX = await import("xlsx");
     const data = await file.arrayBuffer();
-    return mergeWorkbookRows(XLSX, XLSX.read(data, { type: "array", cellDates: true }), fieldHeaders);
+    const merged = mergeWorkbookRows(
+      XLSX,
+      XLSX.read(data, { type: "array", cellDates: true }),
+      fieldHeaders,
+      file.name,
+    );
+    return { ...merged, sourceRows: merged.rows };
   }
-  const rows = parseCsv(await file.text());
-  const rawSheetRows = [{ sheetName: file.name, rows }];
-  const knownRows = normalizeKnownPaymentWorkbookRows(rawSheetRows, 1);
-  if (knownRows) return knownRows;
-  const trimmedRows = trimWorkbookRowsToImportHeader(rows, fieldHeaders);
-  return { rows: trimmedRows, sourceDataRowCount: Math.max(0, trimmedRows.length - 1) };
+  return parseImportRows(parseStatementCsv(await decodeTextFile(file)), file.name, fieldHeaders);
 }
+
+
 
 function waitForBrowserPaint() {
   return new Promise<void>((resolve) => {
@@ -1987,6 +1992,52 @@ export default function BatchImportPage() {
     URL.revokeObjectURL(url);
   }, [t]);
 
+  // —— 净值异步回填（与 FundImportPreviewDialog 同一套规则）——
+  // 服务端预览最多等 1.2s 就先返回明细，没抓到的净值后台继续抓；这里隔几秒静默再问一次，
+  // 只补还没有净值的行（规则在 @/lib/fund/previewNavMerge）。
+  const fundNavBackfillTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const fundPreviewSourceRef = useRef<{ items: FundImportUploadItem[]; context: FundImportContext | null } | null>(null);
+
+  const clearFundNavBackfill = useCallback(() => {
+    for (const timer of fundNavBackfillTimersRef.current) clearTimeout(timer);
+    fundNavBackfillTimersRef.current = [];
+  }, []);
+
+  const runFundNavBackfill = useCallback(async () => {
+    const source = fundPreviewSourceRef.current;
+    if (!source || source.items.length === 0) return;
+    try {
+      const requestContext = normalizeFundImportContext(source.context);
+      const res = await fetch("/api/v1/fund/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode: "preview",
+          items: source.items,
+          ...(requestContext ? { context: requestContext } : {}),
+        }),
+      });
+      const data = await res.json().catch(() => null) as { ok?: boolean; items?: FundImportPreviewItem[] } | null;
+      if (!res.ok || !data?.ok || !Array.isArray(data.items)) return;
+      setFundPreviewItems((prev) => mergeNavBackfillRows(prev, data.items!));
+    } catch {
+      // 静默优化：失败就保持空白，用户仍可手填
+    }
+  }, []);
+
+  const scheduleFundNavBackfill = useCallback((
+    sourceItems: FundImportUploadItem[],
+    context: FundImportContext | null,
+  ) => {
+    fundPreviewSourceRef.current = { items: sourceItems, context };
+    clearFundNavBackfill();
+    for (const delay of NAV_BACKFILL_DELAYS_MS) {
+      fundNavBackfillTimersRef.current.push(setTimeout(() => { void runFundNavBackfill(); }, delay));
+    }
+  }, [clearFundNavBackfill, runFundNavBackfill]);
+
+  useEffect(() => () => clearFundNavBackfill(), [clearFundNavBackfill]);
+
   const requestFundPreview = useCallback(async (
     sourceItems: FundImportUploadItem[],
     preserveSelection: boolean,
@@ -2006,7 +2057,7 @@ export default function BatchImportPage() {
           ...(requestContext ? { context: requestContext } : {}),
         }),
       });
-      const data = await res.json().catch(() => null) as { ok?: boolean; error?: string; items?: FundImportPreviewItem[] } | null;
+      const data = await res.json().catch(() => null) as { ok?: boolean; error?: string; items?: FundImportPreviewItem[]; navMissingCount?: number } | null;
       if (!res.ok || !data?.ok || !Array.isArray(data.items)) {
         throw new Error(data?.error || res.statusText || `HTTP ${res.status}`);
       }
@@ -2018,6 +2069,11 @@ export default function BatchImportPage() {
       }
       setUploadDebug(null);
       setMessage(null);
+      // 明细已经出来了；还有净值在路上就排两次静默回填
+      clearFundNavBackfill();
+      if (shouldBackfillNav(data.navMissingCount)) {
+        scheduleFundNavBackfill(sourceItems, context ?? fundImportContext);
+      }
       return true;
     } catch (error) {
       setFundPreviewItems([]);
@@ -2029,7 +2085,7 @@ export default function BatchImportPage() {
     } finally {
       setUploading(false);
     }
-  }, [formatText, fundImportContext, t]);
+  }, [clearFundNavBackfill, formatText, fundImportContext, scheduleFundNavBackfill, t]);
 
   const handleNormalCsvFile = useCallback(async (file: File) => {
     const traceId = createImportTraceId();
@@ -2048,7 +2104,9 @@ export default function BatchImportPage() {
     });
     flushSync(() => {
       setActiveImportKind("normal");
-      setUploadDebug(`${formatText("batchImport.fileSelectedStart", { fileInfo })}\n${traceLabel}`);
+      // 状态只保留「正在读取文件：…」一条；「已选择文件，开始读取。文件：…；类型：…」
+      // 与它重复（用户 2026-10-30），文件名/类型/大小留给失败与读取完成时的 debug 行。
+      setUploadDebug(traceLabel);
       setMessage(formatText("batchImport.readingFileName", { name: file.name }));
       setImportedCount(0);
       setUploading(true);
@@ -2066,20 +2124,36 @@ export default function BatchImportPage() {
     try {
       const latestCategoryRuleSamples = await refreshCategoryRuleSamples().catch(() => categoryRuleSamples);
       const parseResult = await parseImportFile(file, statementFieldHeaders);
-      const rows = parseResult.rows;
-      if (looksLikeFundImportFile(rows)) {
+      if (looksLikeFundImportFile(parseResult.rows)) {
         // A fund transaction workbook (fund code/account/amount columns) must go
         // through the fund recognition channel, not the bill channel.
         routedToFund = true;
         await handleFundFileRef.current?.(file);
         return;
       }
+      // 支付宝 / 微信账单里的基金买卖被记成「不计收支」，走流水只能落成转账，
+      // 投资资产就不可见了。这类行改由基金链路单独成页签（真正的买入 / 赎回）。
+      // 必须用原始行（parseResult.sourceRows）：rows 已被支付宝模板归一化成
+      // MMH 标准列，「商品说明 / 交易分类」这些判定依据已经没了。
+      const fundRoute = await routeAlipayFundBill(
+        [{ sheetName: file.name, rows: parseResult.sourceRows }],
+        file.name,
+      );
+      // 资金收支页签剔除已归入基金买卖的行，避免同一笔钱记两次。
+      const billParse = fundRoute
+        ? parseImportRows(
+            excludeFundTradeRows(parseResult.sourceRows, fundRoute.trades),
+            file.name,
+            statementFieldHeaders,
+          )
+        : parseResult;
+      const rows = billParse.rows;
       const importMode = detectBillImportMode(rows, isCreditAccountText, statementFieldHeaders);
       setActiveBillMode(importMode);
-      const workbookDetail = parseResult.workbook
+      const workbookDetail = billParse.workbook
         ? formatText("batchImport.workbookReadDetail", {
-            sheetCount: parseResult.workbook.sheetCount,
-            includedSheetCount: parseResult.workbook.includedSheetCount,
+            sheetCount: billParse.workbook.sheetCount,
+            includedSheetCount: billParse.workbook.includedSheetCount,
           })
         : "";
       setUploadDebug([
@@ -2093,25 +2167,31 @@ export default function BatchImportPage() {
         bookCategories,
         latestCategoryRuleSamples,
       );
-      const skippedCount = Math.max(0, parseResult.sourceDataRowCount - parsed.length);
+      const skippedCount = Math.max(0, billParse.sourceDataRowCount - parsed.length);
       const recognitionDetail = formatText("batchImport.recognitionDetail", {
-        sourceCount: parseResult.sourceDataRowCount,
+        sourceCount: billParse.sourceDataRowCount,
         recognizedCount: parsed.length,
         skippedCount,
       });
       postImportDebugLog(traceId, "parse_completed", {
         importKind: "bill",
         billMode: importMode,
-        sheetCount: parseResult.workbook?.sheetCount ?? 1,
-        includedSheetCount: parseResult.workbook?.includedSheetCount ?? 1,
+        sheetCount: billParse.workbook?.sheetCount ?? 1,
+        includedSheetCount: billParse.workbook?.includedSheetCount ?? 1,
         mergedRowCount: rows.length,
-        sourceDataRowCount: parseResult.sourceDataRowCount,
+        sourceDataRowCount: billParse.sourceDataRowCount,
         recognizedCount: parsed.length,
         skippedCount,
         categoryRuleCount: latestCategoryRuleSamples.length,
         durationMs: Math.round(performance.now() - startedAt),
       });
       if (parsed.length === 0) {
+        if (fundRoute) {
+          // 整张账单都是基金买卖：只有一个页签，直接进基金预览。
+          await handleFundFileRef.current?.(fundRoute.file);
+          setActiveImportKind("fund");
+          return;
+        }
         const headers = rows[0]?.join("、") || t("batchImport.headersNotRead");
         setItems([]);
         setFundUploadItems([]);
@@ -2126,17 +2206,26 @@ export default function BatchImportPage() {
         return;
       }
       sessionStorage.setItem(BATCH_IMPORT_ITEMS_STORAGE_KEY, JSON.stringify(parsed));
+      // 基金页签要先准备（handleFundFile 会清空 items），再回填流水页签。
+      if (fundRoute) {
+        await handleFundFileRef.current?.(fundRoute.file);
+      }
       setItems(parsed);
-      setFundUploadItems([]);
-      setFundPreviewItems([]);
-      setFundImportContext(null);
       setDrafts({});
       setSelected(new Set());
-      setFundSelected(new Set());
       setEditingCell(null);
       setShowImportIssuesOnly(false);
       setUploadDebug(null);
       setMessage(null);
+      if (fundRoute) {
+        // 同一张账单拆成两个页签：资金收支 / 基金买卖，默认停在资金收支。
+        setActiveImportKind("normal");
+      } else {
+        setFundUploadItems([]);
+        setFundPreviewItems([]);
+        setFundImportContext(null);
+        setFundSelected(new Set());
+      }
     } catch (error) {
       setItems([]);
       setFundUploadItems([]);
@@ -2176,7 +2265,8 @@ export default function BatchImportPage() {
     });
     flushSync(() => {
       setActiveImportKind("fund");
-      setUploadDebug(formatText("batchImport.fileSelectedStart", { fileInfo }));
+      // 与上面账单入口同理：状态只留「正在读取文件：…」一条，避免重复。
+      setUploadDebug(null);
       setMessage(formatText("batchImport.readingFileName", { name: file.name }));
       setUploading(true);
       setImporting(false);
@@ -3785,6 +3875,17 @@ export default function BatchImportPage() {
     (activeImportKind === "normal" && items.length === 0) ||
     (activeImportKind === "fund" && fundPreviewItems.length === 0)
   );
+  // 一张账单拆成两个页签：资金收支（已剔除基金行）/ 基金买卖。
+  const previewTabs = (
+    <ImportPreviewTabs
+      tabs={[
+        { key: "normal", label: t("batchImport.previewTab.cashFlow"), count: items.length },
+        { key: "fund", label: t("batchImport.previewTab.fundTrades"), count: fundPreviewItems.length },
+      ]}
+      active={activeImportKind}
+      onChange={(key) => setActiveImportKind(key === "fund" ? "fund" : "normal")}
+    />
+  );
 
   useEffect(() => {
     if (!pendingFileChecked || hasVisibleImportWork) return;
@@ -3953,9 +4054,17 @@ export default function BatchImportPage() {
         </section>
       </div>
 
-      {activeImportKind === "normal" && (items.length > 0 || (uploading && !showUploadProcessingOverlay)) && (
-        <ModalLayer className="fixed inset-0 bg-slate-900/40 p-4 flex items-center justify-center">
+      {(items.length > 0 || (uploading && !showUploadProcessingOverlay)) && (
+        <ModalLayer
+          className="fixed inset-0 bg-slate-900/40 p-4 flex items-center justify-center"
+          // 两个页签共用这一批窗口：切页签只切 display，不卸载重建
+          //（重建会让表格重挂、滚动位置与勾选丢失，还会因 modal 首帧空白整页闪一下）。
+          style={activeImportKind === "normal" ? undefined : { display: "none" }}
+        >
           <div data-smart-select-boundary className="h-[82vh] min-h-[420px] w-[80rem] min-w-[720px] max-w-[calc(100vw-2rem)] resize overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl flex flex-col">
+            {/* 标题栏在卡片**外面**（与两个导入预览弹窗一致）：卡片内第一行若是一条带
+                `border-b` 的标题栏，那条横线正好横在活动页签底下，看起来就是
+                「页签与卡片被一条线隔开」。页签条必须紧接 FT 卡片（几何见 FolderTabs 文件头）。 */}
             <div className="shrink-0 px-4 py-3 border-b border-slate-200 flex items-center justify-between gap-3">
               <div>
                 <div className="text-base font-semibold text-slate-800">{t("batchImport.previewTitle")}</div>
@@ -3970,180 +4079,194 @@ export default function BatchImportPage() {
                 ×
               </button>
             </div>
-            {message && (
-              <div className="shrink-0 border-b border-blue-100 bg-blue-50 px-4 py-2 text-sm text-blue-700">
-                {message}
-              </div>
-            )}
-            {importProgress && (
-              <div className="shrink-0 border-b border-blue-100 bg-white px-4 py-2 text-xs text-slate-600">
-                <div className="mb-1 flex items-center justify-between gap-3">
-                  <span>{importProgressText}</span>
-                  <span className="font-medium text-slate-700">{importProgressPercent}%</span>
-                </div>
-                <div className="h-1.5 overflow-hidden rounded-full bg-slate-100">
-                  <div className="h-full rounded-full bg-blue-500 transition-[width] duration-300" style={{ width: `${importProgressPercent}%` }} />
-                </div>
-              </div>
-            )}
-            {uploadDebug && (
-              <div className="shrink-0 max-h-24 overflow-auto border-b border-amber-100 bg-amber-50 px-4 py-2 text-xs text-amber-800 whitespace-pre-wrap">
-                {uploadDebug}
-              </div>
-            )}
-            <div className="shrink-0 border-b border-slate-200 bg-slate-50 px-4 py-3 space-y-3">
-              {activeBillMode === "credit_card" ? (
-                <div className="flex flex-wrap items-center gap-3 rounded-md border border-blue-100 bg-blue-50 px-3 py-2">
-                  <span className="text-xs font-medium text-slate-700">{t("batchImport.creditMode.statementAccount")}</span>
-                  <div className="w-80 max-w-full">
-                    <SmartSelect
-                      mode="single"
-                      value={accountSelectValue(creditStatementAccount, "credit")}
-                      onChange={(selectedId) => updateCreditStatementAccount(accountSelectTextById(selectedId))}
-                      options={accountSmartSelectOptionsFor(creditStatementAccount, "credit")}
-                      placeholder={t("batchImport.unselected")}
-                      behavior={{ hierarchy: false, search: true, clearable: false, density: "micro", dropdownMaxHeight: 180, minDropdownWidth: 156, resizableDropdown: true }}
-                    />
+            <div className="relative flex min-h-0 flex-1 flex-col p-3">
+              <div className="relative flex min-h-0 flex-col">
+                {previewTabs}
+                <div className="ft-card-surface ft-card-surface-fill">
+                  <div className="flex min-h-0 flex-1 flex-col">
+                    {message && (
+                      <div className="shrink-0 border-b border-blue-100 bg-blue-50 px-4 py-2 text-sm text-blue-700">
+                        {message}
+                      </div>
+                    )}
+                    {importProgress && (
+                      <div className="shrink-0 border-b border-blue-100 bg-white px-4 py-2 text-xs text-slate-600">
+                        <div className="mb-1 flex items-center justify-between gap-3">
+                          <span>{importProgressText}</span>
+                          <span className="font-medium text-slate-700">{importProgressPercent}%</span>
+                        </div>
+                        <div className="h-1.5 overflow-hidden rounded-full bg-slate-100">
+                          <div className="h-full rounded-full bg-blue-500 transition-[width] duration-300" style={{ width: `${importProgressPercent}%` }} />
+                        </div>
+                      </div>
+                    )}
+                    {uploadDebug && (
+                      <div className="shrink-0 max-h-24 overflow-auto border-b border-amber-100 bg-amber-50 px-4 py-2 text-xs text-amber-800 whitespace-pre-wrap">
+                        {uploadDebug}
+                      </div>
+                    )}
+                    {/* 卡片内首块不能带灰底：它会成为页签正下方那条「隔开的线」的邻居。
+                        去掉底色后页签与卡片同色连成一体，分区线留在工具栏下沿。 */}
+                    <div className="shrink-0 border-b border-slate-200 px-4 py-3 space-y-3">
+                      {activeBillMode === "credit_card" ? (
+                        <div className="flex flex-wrap items-center gap-3 rounded-md border border-blue-100 bg-blue-50 px-3 py-2">
+                          <span className="text-xs font-medium text-slate-700">{t("batchImport.creditMode.statementAccount")}</span>
+                          <div className="w-80 max-w-full">
+                            <SmartSelect
+                              mode="single"
+                              value={accountSelectValue(creditStatementAccount, "credit")}
+                              onChange={(selectedId) => updateCreditStatementAccount(accountSelectTextById(selectedId))}
+                              options={accountSmartSelectOptionsFor(creditStatementAccount, "credit")}
+                              placeholder={t("batchImport.unselected")}
+                              behavior={{ hierarchy: false, search: true, clearable: false, density: "micro", dropdownMaxHeight: 180, minDropdownWidth: 156, resizableDropdown: true }}
+                            />
+                          </div>
+                          <span className="text-xs text-slate-500">{t("batchImport.creditMode.statementAccountHint")}</span>
+                        </div>
+                      ) : null}
+                      <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
+                        <span className="font-medium text-slate-700">
+                          {showImportIssuesOnly ? t("batchImport.filterResult") : t("batchImport.recordTotal")}
+                        </span>
+                        <span>
+                          {showImportIssuesOnly
+                            ? formatText("batchImport.filteredCount", { filtered: normalPreviewRows.length, total: items.length })
+                            : formatText("batchImport.totalCount", { total: items.length })}
+                        </span>
+                        {previewValidationRunning && (
+                          <span className="rounded bg-blue-50 px-2 py-0.5 font-medium text-blue-700">
+                            {formatText("batchImport.previewChecking", {
+                              checked: previewValidationProgress?.checked ?? 0,
+                              total: previewValidationProgress?.total ?? items.length,
+                            })}
+                          </span>
+                        )}
+                        {!previewValidationRunning && items.length > 0 && previewErrorRows.length === 0 && previewWarningRows.length === 0 && (
+                          <span className="rounded bg-emerald-50 px-2 py-0.5 font-medium text-emerald-700">
+                            {t("batchImport.previewPassed")}
+                          </span>
+                        )}
+                        {previewErrorRows.length > 0 && (
+                          <span className="rounded bg-red-50 px-2 py-0.5 font-medium text-red-700">
+                            {formatText("batchImport.previewBlockingBadge", { count: previewErrorRows.length })}
+                          </span>
+                        )}
+                        {previewWarningRows.length > 0 && (
+                          <span className="rounded bg-amber-50 px-2 py-0.5 font-medium text-amber-700">
+                            {formatText("batchImport.previewWarningBadge", { count: previewWarningRows.length })}
+                          </span>
+                        )}
+                        {previewIssueRowIndexes.size > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShowImportIssuesOnly((value) => !value);
+                            }}
+                            className="h-8 px-2 rounded border border-amber-200 bg-white text-xs font-medium text-amber-700 hover:bg-amber-50"
+                          >
+                            {showImportIssuesOnly ? t("batchImport.showAllRows") : t("batchImport.showIssueRows")}
+                          </button>
+                        )}
+                      </div>
+                      {previewErrorRows.length > 0 && (
+                        <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                          <div className="font-semibold">{t("batchImport.previewBlockingHint")}</div>
+                          <div className="mt-1 leading-5">
+                            {previewErrorPreviewText}
+                            {previewErrorRows.length > 6
+                              ? formatText("batchImport.previewBlockingMore", { count: previewErrorRows.length - 6 })
+                              : ""}
+                          </div>
+                        </div>
+                      )}
+                      {previewWarningRows.length > 0 && (
+                        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                          <div className="font-semibold">{t("batchImport.previewWarningHint")}</div>
+                          <div className="mt-1 leading-5">
+                            {previewWarningPreviewText}
+                            {previewWarningGroupCount > 6
+                              ? formatText("batchImport.previewWarningMore", { count: previewWarningGroupCount - 6 })
+                              : ""}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex-1 min-h-0">
+                      <AdvancedDataTable
+                        storageKey="mmh_batch_import_normal_preview_table_v1"
+                        columns={normalPreviewColumns}
+                        rows={uploading ? [] : normalPreviewRows}
+                        rowKey={(row) => String(row.idx)}
+                        emptyText={uploading ? t("batchImport.previewParsing") : t("batchImport.noRecordsForFilter")}
+                        minTableWidth={1820}
+                        selectable
+                        selectAllScope="renderedRows"
+                        selectedKeys={selectedNormalPreviewKeys}
+                        onSelectionChange={(keys) => {
+                          setSelected(new Set(Array.from(keys).map((key) => Number(key)).filter((idx) => Number.isInteger(idx))));
+                        }}
+                        batchActionSlot={(
+                          <BatchReplacePopoverButton
+                            fields={replaceFields}
+                            targetCount={batchTargetIndexes.length}
+                            targetLabel={t("batchImport.selectedTargetLabel")}
+                            panelAlign="left"
+                            disabledTitle={t("batchImport.selectFirstHint")}
+                            buttonTitle={formatText("batchImport.batchEditTitle", { count: batchTargetIndexes.length })}
+                            messageClassName="sr-only"
+                            onApply={applyReplaceToTargets}
+                          />
+                        )}
+                        toolbarTitle={t("batchImport.previewTitle")}
+                        toolbarRightContent={(
+                          <div className="flex items-center gap-3 text-xs text-slate-500">
+                            <span>{formatText("batchImport.selectedSummary", { selected: importTargetCount, total: items.length })}</span>
+                            {showImportIssuesOnly ? <span>{formatText("batchImport.filteredCount", { filtered: normalPreviewRows.length, total: items.length })}</span> : null}
+                          </div>
+                        )}
+                        rowClassName={(row) => {
+                          const rowIssues = previewIssuesByRow.get(row.idx) ?? [];
+                          const rowHasError = rowIssues.some((issue) => issue.level === "error");
+                          const rowHasWarning = rowIssues.some((issue) => issue.level === "warning");
+                          return rowHasError ? "bg-red-50 hover:bg-red-100/80" : rowHasWarning ? "bg-amber-50 hover:bg-amber-100/80" : "hover:bg-slate-50";
+                        }}
+                        fillHeight
+                        compactRows
+                        showFilters={false}
+                        sortable={false}
+                        resetDisplayStateOnMount
+                      />
+                    </div>
+                    <div className="flex items-center justify-between gap-3 border-t border-slate-200 bg-slate-50 px-4 py-3">
+                      <div className="flex min-w-0 items-center gap-3 text-xs">
+                        <span className="shrink-0 text-slate-500">{formatText("batchImport.selectedSummary", { selected: importTargetCount, total: items.length })}</span>
+                        {previewErrorRows.length > 0 ? <span className="shrink-0 font-medium text-red-600">{formatText("batchImport.errorCount", { count: previewErrorRows.length })}</span> : null}
+                        {previewWarningRowCount > 0 ? <span className="shrink-0 font-medium text-amber-600">{formatText("batchImport.warningCount", { count: previewWarningRowCount })}</span> : null}
+                      </div>
+                      <div className="flex items-center justify-end">
+                        <button
+                          type="button"
+                          onClick={handleImport}
+                          disabled={Boolean(importCompletion) || uploading || importing || previewValidationRunning || importTargetCount === 0 || importErrorIssues.length > 0}
+                          className="h-9 rounded-md bg-blue-600 px-4 text-sm text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {importing ? t("batchImport.importing") : t("batchImport.confirmSelectedImport")}
+                        </button>
+                      </div>
+                    </div>
                   </div>
-                  <span className="text-xs text-slate-500">{t("batchImport.creditMode.statementAccountHint")}</span>
                 </div>
-              ) : null}
-              <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
-                <span className="font-medium text-slate-700">
-                  {showImportIssuesOnly ? t("batchImport.filterResult") : t("batchImport.recordTotal")}
-                </span>
-                <span>
-                  {showImportIssuesOnly
-                    ? formatText("batchImport.filteredCount", { filtered: normalPreviewRows.length, total: items.length })
-                    : formatText("batchImport.totalCount", { total: items.length })}
-                </span>
-                {previewValidationRunning && (
-                  <span className="rounded bg-blue-50 px-2 py-0.5 font-medium text-blue-700">
-                    {formatText("batchImport.previewChecking", {
-                      checked: previewValidationProgress?.checked ?? 0,
-                      total: previewValidationProgress?.total ?? items.length,
-                    })}
-                  </span>
-                )}
-                {!previewValidationRunning && items.length > 0 && previewErrorRows.length === 0 && previewWarningRows.length === 0 && (
-                  <span className="rounded bg-emerald-50 px-2 py-0.5 font-medium text-emerald-700">
-                    {t("batchImport.previewPassed")}
-                  </span>
-                )}
-                {previewErrorRows.length > 0 && (
-                  <span className="rounded bg-red-50 px-2 py-0.5 font-medium text-red-700">
-                    {formatText("batchImport.previewBlockingBadge", { count: previewErrorRows.length })}
-                  </span>
-                )}
-                {previewWarningRows.length > 0 && (
-                  <span className="rounded bg-amber-50 px-2 py-0.5 font-medium text-amber-700">
-                    {formatText("batchImport.previewWarningBadge", { count: previewWarningRows.length })}
-                  </span>
-                )}
-                {previewIssueRowIndexes.size > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowImportIssuesOnly((value) => !value);
-                    }}
-                    className="h-8 px-2 rounded border border-amber-200 bg-white text-xs font-medium text-amber-700 hover:bg-amber-50"
-                  >
-                    {showImportIssuesOnly ? t("batchImport.showAllRows") : t("batchImport.showIssueRows")}
-                  </button>
-                )}
-              </div>
-              {previewErrorRows.length > 0 && (
-                <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
-                  <div className="font-semibold">{t("batchImport.previewBlockingHint")}</div>
-                  <div className="mt-1 leading-5">
-                    {previewErrorPreviewText}
-                    {previewErrorRows.length > 6
-                      ? formatText("batchImport.previewBlockingMore", { count: previewErrorRows.length - 6 })
-                      : ""}
-                  </div>
-                </div>
-              )}
-              {previewWarningRows.length > 0 && (
-                <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-                  <div className="font-semibold">{t("batchImport.previewWarningHint")}</div>
-                  <div className="mt-1 leading-5">
-                    {previewWarningPreviewText}
-                    {previewWarningGroupCount > 6
-                      ? formatText("batchImport.previewWarningMore", { count: previewWarningGroupCount - 6 })
-                      : ""}
-                  </div>
-                </div>
-              )}
-            </div>
-            <div className="flex-1 min-h-0">
-              <AdvancedDataTable
-                storageKey="mmh_batch_import_normal_preview_table_v1"
-                columns={normalPreviewColumns}
-                rows={uploading ? [] : normalPreviewRows}
-                rowKey={(row) => String(row.idx)}
-                emptyText={uploading ? t("batchImport.previewParsing") : t("batchImport.noRecordsForFilter")}
-                minTableWidth={1820}
-                selectable
-                selectAllScope="renderedRows"
-                selectedKeys={selectedNormalPreviewKeys}
-                onSelectionChange={(keys) => {
-                  setSelected(new Set(Array.from(keys).map((key) => Number(key)).filter((idx) => Number.isInteger(idx))));
-                }}
-                batchActionSlot={(
-                  <BatchReplacePopoverButton
-                    fields={replaceFields}
-                    targetCount={batchTargetIndexes.length}
-                    targetLabel={t("batchImport.selectedTargetLabel")}
-                    panelAlign="left"
-                    disabledTitle={t("batchImport.selectFirstHint")}
-                    buttonTitle={formatText("batchImport.batchEditTitle", { count: batchTargetIndexes.length })}
-                    messageClassName="sr-only"
-                    onApply={applyReplaceToTargets}
-                  />
-                )}
-                toolbarTitle={t("batchImport.previewTitle")}
-                toolbarRightContent={(
-                  <div className="flex items-center gap-3 text-xs text-slate-500">
-                    <span>{formatText("batchImport.selectedSummary", { selected: importTargetCount, total: items.length })}</span>
-                    {showImportIssuesOnly ? <span>{formatText("batchImport.filteredCount", { filtered: normalPreviewRows.length, total: items.length })}</span> : null}
-                  </div>
-                )}
-                rowClassName={(row) => {
-                  const rowIssues = previewIssuesByRow.get(row.idx) ?? [];
-                  const rowHasError = rowIssues.some((issue) => issue.level === "error");
-                  const rowHasWarning = rowIssues.some((issue) => issue.level === "warning");
-                  return rowHasError ? "bg-red-50 hover:bg-red-100/80" : rowHasWarning ? "bg-amber-50 hover:bg-amber-100/80" : "hover:bg-slate-50";
-                }}
-                fillHeight
-                compactRows
-                showFilters={false}
-                sortable={false}
-                resetDisplayStateOnMount
-              />
-            </div>
-            <div className="flex items-center justify-between gap-3 border-t border-slate-200 bg-slate-50 px-4 py-3">
-              <div className="flex min-w-0 items-center gap-3 text-xs">
-                <span className="shrink-0 text-slate-500">{formatText("batchImport.selectedSummary", { selected: importTargetCount, total: items.length })}</span>
-                {previewErrorRows.length > 0 ? <span className="shrink-0 font-medium text-red-600">{formatText("batchImport.errorCount", { count: previewErrorRows.length })}</span> : null}
-                {previewWarningRowCount > 0 ? <span className="shrink-0 font-medium text-amber-600">{formatText("batchImport.warningCount", { count: previewWarningRowCount })}</span> : null}
-              </div>
-              <div className="flex items-center justify-end">
-                <button
-                  type="button"
-                  onClick={handleImport}
-                  disabled={Boolean(importCompletion) || uploading || importing || previewValidationRunning || importTargetCount === 0 || importErrorIssues.length > 0}
-                  className="h-9 rounded-md bg-blue-600 px-4 text-sm text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {importing ? t("batchImport.importing") : t("batchImport.confirmSelectedImport")}
-                </button>
               </div>
             </div>
           </div>
         </ModalLayer>
       )}
 
-      {activeImportKind === "fund" && (fundPreviewItems.length > 0 || (uploading && !showUploadProcessingOverlay)) && (
-        <ModalLayer className="fixed inset-0 bg-slate-900/40 p-4 flex items-center justify-center">
+      {(fundPreviewItems.length > 0 || (uploading && !showUploadProcessingOverlay)) && (
+        <ModalLayer
+          className="fixed inset-0 bg-slate-900/40 p-4 flex items-center justify-center"
+          style={activeImportKind === "fund" ? undefined : { display: "none" }}
+        >
           <div data-smart-select-boundary className="h-[82vh] min-h-[420px] w-[80rem] min-w-[720px] max-w-[calc(100vw-2rem)] resize overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl flex flex-col">
             <div className="shrink-0 px-4 py-3 border-b border-slate-200 flex items-center justify-between gap-3">
               <div>
@@ -4161,83 +4284,92 @@ export default function BatchImportPage() {
                 ×
               </button>
             </div>
-            {message && (
-              <div className="shrink-0 border-b border-blue-100 bg-blue-50 px-4 py-2 text-sm text-blue-700">
-                {message}
-              </div>
-            )}
-            {uploadDebug && (
-              <div className="shrink-0 max-h-24 overflow-auto border-b border-amber-100 bg-amber-50 px-4 py-2 text-xs text-amber-800 whitespace-pre-wrap">
-                {uploadDebug}
-              </div>
-            )}
-            <div className="shrink-0 border-b border-slate-200 bg-slate-50 px-4 py-3">
-              <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600">
-                <span className="font-medium text-slate-700">{formatText("batchImport.selectedSummary", { selected: fundSelected.size, total: fundPreviewItems.length })}</span>
-                {fundImportErrorIssues.length > 0 && (
-                  <span className="font-medium text-red-600">{formatText("batchImport.errorCount", { count: fundImportErrorIssues.length })}</span>
-                )}
-                {fundImportWarningIssues.length > 0 && (
-                  <span className="font-medium text-amber-600">{formatText("batchImport.warningCount", { count: fundImportWarningIssues.length })}</span>
-                )}
-              </div>
-              {fundPreviewWarningSummary && (
-                <div className="mt-2 text-xs text-amber-700">
-                  <span className="font-medium text-amber-800">{t("batchImport.fundPreview.warningSummaryTitle")}</span>
-                  <span className="ml-1">{fundPreviewWarningSummary}</span>
-                </div>
-              )}
-            </div>
-            <div className="flex-1 min-h-0">
-              <AdvancedDataTable
-                storageKey="mmh_batch_import_fund_preview_table_v1"
-                columns={fundPreviewColumns}
-                rows={uploading ? [] : fundPreviewRows}
-                rowKey={(row) => String(row.idx)}
-                emptyText={uploading ? t("batchImport.previewParsing") : t("batchImport.noRecordsForFilter")}
-                minTableWidth={1760}
-                selectable
-                selectAllScope="renderedRows"
-                selectedKeys={selectedFundPreviewKeys}
-                onSelectionChange={(keys) => {
-                  setFundSelected(new Set(Array.from(keys).map((key) => Number(key)).filter((idx) => Number.isInteger(idx))));
-                }}
-                toolbarTitle={t("batchImport.previewFundTitle")}
-                toolbarRightContent={(
-                  <div className="flex items-center gap-3 text-xs text-slate-500">
-                    <span>{formatText("batchImport.selectedSummary", { selected: fundSelected.size, total: fundPreviewItems.length })}</span>
-                    {fundImportErrorIssues.length > 0 ? <span className="font-medium text-red-600">{formatText("batchImport.errorCount", { count: fundImportErrorIssues.length })}</span> : null}
-                    {fundImportWarningIssues.length > 0 ? <span className="font-medium text-amber-600">{formatText("batchImport.warningCount", { count: fundImportWarningIssues.length })}</span> : null}
+            <div className="relative flex min-h-0 flex-1 flex-col p-3">
+              <div className="relative flex min-h-0 flex-col">
+                {previewTabs}
+                <div className="ft-card-surface ft-card-surface-fill">
+                  <div className="flex min-h-0 flex-1 flex-col">
+                    {message && (
+                      <div className="shrink-0 border-b border-blue-100 bg-blue-50 px-4 py-2 text-sm text-blue-700">
+                        {message}
+                      </div>
+                    )}
+                    {uploadDebug && (
+                      <div className="shrink-0 max-h-24 overflow-auto border-b border-amber-100 bg-amber-50 px-4 py-2 text-xs text-amber-800 whitespace-pre-wrap">
+                        {uploadDebug}
+                      </div>
+                    )}
+                    <div className="shrink-0 border-b border-slate-200 px-4 py-3">
+                      <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600">
+                        <span className="font-medium text-slate-700">{formatText("batchImport.selectedSummary", { selected: fundSelected.size, total: fundPreviewItems.length })}</span>
+                        {fundImportErrorIssues.length > 0 && (
+                          <span className="font-medium text-red-600">{formatText("batchImport.errorCount", { count: fundImportErrorIssues.length })}</span>
+                        )}
+                        {fundImportWarningIssues.length > 0 && (
+                          <span className="font-medium text-amber-600">{formatText("batchImport.warningCount", { count: fundImportWarningIssues.length })}</span>
+                        )}
+                      </div>
+                      {fundPreviewWarningSummary && (
+                        <div className="mt-2 text-xs text-amber-700">
+                          <span className="font-medium text-amber-800">{t("batchImport.fundPreview.warningSummaryTitle")}</span>
+                          <span className="ml-1">{fundPreviewWarningSummary}</span>
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex-1 min-h-0">
+                      <AdvancedDataTable
+                        storageKey="mmh_batch_import_fund_preview_table_v1"
+                        columns={fundPreviewColumns}
+                        rows={uploading ? [] : fundPreviewRows}
+                        rowKey={(row) => String(row.idx)}
+                        emptyText={uploading ? t("batchImport.previewParsing") : t("batchImport.noRecordsForFilter")}
+                        minTableWidth={1760}
+                        selectable
+                        selectAllScope="renderedRows"
+                        selectedKeys={selectedFundPreviewKeys}
+                        onSelectionChange={(keys) => {
+                          setFundSelected(new Set(Array.from(keys).map((key) => Number(key)).filter((idx) => Number.isInteger(idx))));
+                        }}
+                        toolbarTitle={t("batchImport.previewFundTitle")}
+                        toolbarRightContent={(
+                          <div className="flex items-center gap-3 text-xs text-slate-500">
+                            <span>{formatText("batchImport.selectedSummary", { selected: fundSelected.size, total: fundPreviewItems.length })}</span>
+                            {fundImportErrorIssues.length > 0 ? <span className="font-medium text-red-600">{formatText("batchImport.errorCount", { count: fundImportErrorIssues.length })}</span> : null}
+                            {fundImportWarningIssues.length > 0 ? <span className="font-medium text-amber-600">{formatText("batchImport.warningCount", { count: fundImportWarningIssues.length })}</span> : null}
+                          </div>
+                        )}
+                        rowClassName={(row) => {
+                          const rowHasError = row.issues.some((issue) => issue.level === "error");
+                          const rowHasWarning = row.issues.some((issue) => issue.level === "warning");
+                          return rowHasError ? "bg-red-50 hover:bg-red-100/80" : rowHasWarning ? "bg-amber-50 hover:bg-amber-100/80" : "hover:bg-slate-50";
+                        }}
+                        fillHeight
+                        compactRows
+                        showFilters={false}
+                        sortable={false}
+                        showColumnVisibilityButton={false}
+                        resetDisplayStateOnMount
+                      />
+                    </div>
+                    <div className="flex items-center justify-between gap-3 border-t border-slate-200 bg-slate-50 px-4 py-3">
+                      <div className="flex min-w-0 items-center gap-3 text-xs">
+                        <span className="shrink-0 text-slate-500">{formatText("batchImport.selectedSummary", { selected: fundSelected.size, total: fundPreviewItems.length })}</span>
+                        {fundImportErrorIssues.length > 0 ? <span className="shrink-0 font-medium text-red-600">{formatText("batchImport.errorCount", { count: fundImportErrorIssues.length })}</span> : null}
+                        {fundImportWarningIssues.length > 0 ? <span className="shrink-0 font-medium text-amber-600">{formatText("batchImport.warningCount", { count: fundImportWarningIssues.length })}</span> : null}
+                      </div>
+                      <div className="flex items-center justify-end">
+                        <button
+                          type="button"
+                          onClick={handleFundImport}
+                          disabled={Boolean(importCompletion) || uploading || importing || fundImportReadySelectedCount === 0}
+                          className="h-9 rounded-md bg-blue-600 px-4 text-sm text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          {importing ? t("batchImport.importing") : formatText("batchImport.confirmImport", { count: fundImportReadySelectedCount })}
+                        </button>
+                      </div>
+                    </div>
                   </div>
-                )}
-                rowClassName={(row) => {
-                  const rowHasError = row.issues.some((issue) => issue.level === "error");
-                  const rowHasWarning = row.issues.some((issue) => issue.level === "warning");
-                  return rowHasError ? "bg-red-50 hover:bg-red-100/80" : rowHasWarning ? "bg-amber-50 hover:bg-amber-100/80" : "hover:bg-slate-50";
-                }}
-                fillHeight
-                compactRows
-                showFilters={false}
-                sortable={false}
-                showColumnVisibilityButton={false}
-                resetDisplayStateOnMount
-              />
-            </div>
-            <div className="flex items-center justify-between gap-3 border-t border-slate-200 bg-slate-50 px-4 py-3">
-              <div className="flex min-w-0 items-center gap-3 text-xs">
-                <span className="shrink-0 text-slate-500">{formatText("batchImport.selectedSummary", { selected: fundSelected.size, total: fundPreviewItems.length })}</span>
-                {fundImportErrorIssues.length > 0 ? <span className="shrink-0 font-medium text-red-600">{formatText("batchImport.errorCount", { count: fundImportErrorIssues.length })}</span> : null}
-                {fundImportWarningIssues.length > 0 ? <span className="shrink-0 font-medium text-amber-600">{formatText("batchImport.warningCount", { count: fundImportWarningIssues.length })}</span> : null}
-              </div>
-              <div className="flex items-center justify-end">
-                <button
-                  type="button"
-                  onClick={handleFundImport}
-                  disabled={Boolean(importCompletion) || uploading || importing || fundImportReadySelectedCount === 0}
-                  className="h-9 rounded-md bg-blue-600 px-4 text-sm text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  {importing ? t("batchImport.importing") : formatText("batchImport.confirmImport", { count: fundImportReadySelectedCount })}
-                </button>
+                </div>
               </div>
             </div>
           </div>

@@ -11,10 +11,12 @@ import {
   type FocusEvent as ReactFocusEvent,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
+  type ReactNode,
 } from "react";
 import type { WorkBook } from "xlsx";
 import { AdvancedDataTable, type AdvancedDataTableColumn } from "@/components/AdvancedDataTable";
 import { BatchReplacePopoverButton, type BatchReplaceFieldConfig } from "@/components/BatchReplacePopoverButton";
+import { ImportPreviewHeader } from "@/components/ImportPreviewHeader";
 import { evaluateCalcInputExpression } from "@/components/CalcInput";
 import { SmartSelect } from "@/components/SmartSelect";
 import {
@@ -26,9 +28,11 @@ import {
 } from "@/lib/account-display";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { recordRecentAccounts } from "@/lib/client/recentAccounts";
+import { decodeTextFile } from "@/lib/client/decode-text-file";
 import { fetchSettingsBootstrap } from "@/lib/client/settingsCache";
 import { addTradingDaysUtc, parseFlexibleDateToYmd } from "@/lib/date-utils";
 import { formatAmountDraft } from "@/lib/format";
+import { NAV_BACKFILL_DELAYS_MS, mergeNavBackfillRows, shouldBackfillNav } from "@/lib/fund/previewNavMerge";
 import { calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision-core";
 import {
@@ -38,6 +42,7 @@ import {
   rowsBeforeTemplateGuide,
 } from "@/lib/import-template-sample";
 import { useI18n } from "@/lib/i18n";
+import { parseStatementCsv } from "@/lib/statement/statement-sheet-reader";
 import { readAccountDisplaySettings } from "@/lib/client/account-display-settings";
 import { restrictAccountsByType } from "@/lib/client/account-dropdown-filter";
 
@@ -93,7 +98,31 @@ type FundImportPreviewItem = FundImportUploadItem & {
 };
 
 type FundPreviewTableRow = FundImportPreviewItem & { idx: number };
-type FundPreviewBatchEditField = "fee" | "confirmDate" | "arrivalDate" | "fundAccount" | "cashAccount";
+type FundPreviewBatchEditField =
+  | "fee"
+  | "feeRate"
+  | "nav"
+  | "fundCode"
+  | "fundSubtype"
+  | "date"
+  | "confirmDate"
+  | "arrivalDate"
+  | "fundAccount"
+  | "cashAccount";
+
+/** 批量调整结果消息里的字段名：与下拉里的叫法保持一致（同一份 i18n key）。 */
+const FUND_PREVIEW_BATCH_FIELD_LABEL_KEYS: Record<FundPreviewBatchEditField, string> = {
+  fundAccount: "batchImport.template.fund.label.fundAccount",
+  cashAccount: "batchImport.template.fund.label.cashAccount",
+  fundCode: "batchImport.template.fund.label.fundCode",
+  fundSubtype: "batchImport.template.fund.label.fundSubtype",
+  date: "batchImport.fundPreview.applicationDateOffset",
+  fee: "batchImport.template.fund.label.fee",
+  feeRate: "batchImport.template.fund.label.feeRate",
+  nav: "batchImport.template.fund.label.nav",
+  confirmDate: "batchImport.fundPreview.confirmDateOffset",
+  arrivalDate: "batchImport.fundPreview.arrivalDateOffset",
+};
 type FundPreviewEditField =
   | "date"
   | "fundSubtype"
@@ -158,6 +187,18 @@ type Props = {
   open: boolean;
   file: File | null;
   context?: FundImportDialogContext | null;
+  /** 顶部页签条（同一张账单的「资金收支 / 基金买卖」切换）：由宿主渲染，弹窗只负责摆位置。 */
+  tabs?: ReactNode;
+  /**
+   * 给人看的来源文件名。账单里的基金买卖是先抽出来拼成一份临时 CSV 再交给这个弹窗的，
+   * 那份文件并不在磁盘上 —— 直接显示它的名字会让用户去找一个不存在的文件。
+   */
+  sourceLabel?: string;
+  /**
+   * 页签已切走：窗口**保留挂载**，只是不显示。
+   * 卸载再挂载要重新解析文件、重建表格（预览先空一拍），切页签时看着整页闪一下。
+   */
+  hidden?: boolean;
   onClose: () => void;
   onImported?: (result: { count: number; accountIds: string[] }) => void;
 };
@@ -243,48 +284,17 @@ function fundIssueMessage(issue: FundImportPreviewIssue, t: TranslateFn) {
   }
   if (issue.code === "WILL_CREATE_INSTITUTION_CASH_ACCOUNT") {
     const accountName = String(issue.message ?? "").split(":").slice(1).join(":").trim();
-    return `${t("batchImport.fundPreview.createInstitutionCashAccount")}：${accountName}`;
+    return `${t("batchImport.fundPreview.willCreateInstitutionCashAccount")}：${accountName}`;
+  }
+  if (issue.code === "WILL_CREATE_INSTITUTION_FUND_ACCOUNT") {
+    const accountName = String(issue.message ?? "").split(":").slice(1).join(":").trim();
+    return `${t("batchImport.fundPreview.willCreateInstitutionFundAccount")}：${accountName}`;
   }
   return issue.message;
 }
 
 function normalizeFundHeaderText(value: string) {
   return value.trim().toLowerCase().replace(/\s+/g, "");
-}
-
-function parseCsv(text: string) {
-  const rows: string[][] = [];
-  let row: string[] = [];
-  let cell = "";
-  let inQuotes = false;
-
-  for (let i = 0; i < text.length; i += 1) {
-    const char = text[i];
-    const next = text[i + 1];
-    if (char === "\"") {
-      if (inQuotes && next === "\"") {
-        cell += "\"";
-        i += 1;
-      } else {
-        inQuotes = !inQuotes;
-      }
-    } else if (char === "," && !inQuotes) {
-      row.push(cell.trim());
-      cell = "";
-    } else if ((char === "\n" || char === "\r") && !inQuotes) {
-      if (char === "\r" && next === "\n") i += 1;
-      row.push(cell.trim());
-      if (row.some(Boolean)) rows.push(row);
-      row = [];
-      cell = "";
-    } else {
-      cell += char;
-    }
-  }
-
-  row.push(cell.trim());
-  if (row.some(Boolean)) rows.push(row);
-  return rows;
 }
 
 function parseLooseNumber(value: string) {
@@ -536,7 +546,7 @@ async function parseFundImportFile(file: File): Promise<FundImportFileParseResul
     const data = await file.arrayBuffer();
     return mergeFundWorkbookRows(XLSX, XLSX.read(data, { type: "array", cellDates: true }));
   }
-  const rows = parseCsv(await file.text());
+  const rows = parseStatementCsv(await decodeTextFile(file));
   return { rows, sourceDataRowCount: Math.max(0, rows.length - 1) };
 }
 
@@ -638,7 +648,8 @@ function extractImportDatePart(value: string | null | undefined) {
 }
 
 function applyFundDateOffset(
-  item: FundImportPreviewItem,
+  // 只看 date：预览行与上传行（批量调整时用的是后者）都满足。
+  item: Pick<FundImportPreviewItem, "date">,
   value: string,
   tradingCalendar?: string | null,
 ) {
@@ -712,11 +723,12 @@ function buildPreviewAccountDisplayOption(account: FundPreviewAccount): AccountD
   }, undefined, readAccountDisplaySettings());
 }
 
-export function FundImportPreviewDialog({ open, file, context, onClose, onImported }: Props) {
+export function FundImportPreviewDialog({ open, file, context, tabs = null, sourceLabel = "", hidden = false, onClose, onImported }: Props) {
   const { t } = useI18n();
   const requestContext = useMemo(() => normalizeFundImportContext(context), [context]);
-  // 创建基金账户的同机构资金账户：缺资金账户的行复用/创建基金账户同机构的电子钱包
-  const [createInstitutionCashAccount, setCreateInstitutionCashAccount] = useState(false);
+  // 缺少账户时在同机构下自动创建：缺基金账户 → 在资金账户所属机构（支付宝）下建基金账户；
+  // 缺资金账户 → 复用/创建基金账户同机构的电子钱包。
+  const [autoCreateInstitutionAccounts, setAutoCreateInstitutionAccounts] = useState(false);
   const [uploadItems, setUploadItems] = useState<FundImportUploadItem[]>([]);
   const [previewItems, setPreviewItems] = useState<FundImportPreviewItem[]>([]);
   const [bookAccounts, setBookAccounts] = useState<FundPreviewAccount[]>([]);
@@ -732,6 +744,8 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
   const [draftValue, setDraftValue] = useState("");
   const [draftOriginalValue, setDraftOriginalValue] = useState("");
   const skipNextEditCommitRef = useRef(false);
+  /** 已经解析过的文件：切页签回来不重跑（重跑要再等一次服务端识别）。 */
+  const loadedFileRef = useRef<File | null>(null);
 
   const previewRows = useMemo<FundPreviewTableRow[]>(
     () => previewItems.map((item, idx) => ({ ...item, idx })),
@@ -884,10 +898,42 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
         allowEmpty: true,
       },
       {
+        value: "fundCode",
+        label: t("batchImport.template.fund.label.fundCode"),
+        kind: "text" as const,
+      },
+      {
+        value: "fundSubtype",
+        label: t("batchImport.template.fund.label.fundSubtype"),
+        kind: "select" as const,
+        options: FUND_PREVIEW_SUBTYPES.map((subtype) => ({
+          value: subtype,
+          label: getFundImportSubtypeLabel(subtype, "manual", t),
+        })),
+      },
+      {
+        value: "feeRate",
+        label: t("batchImport.template.fund.label.feeRate"),
+        kind: "number",
+        placeholder: t("batchImport.numberExpressionPlaceholder"),
+      },
+      {
+        value: "nav",
+        label: t("batchImport.template.fund.label.nav"),
+        kind: "number",
+        placeholder: t("batchImport.numberExpressionPlaceholder"),
+      },
+      {
         value: "fee",
         label: t("batchImport.template.fund.label.fee"),
         kind: "number",
         placeholder: t("batchImport.numberExpressionPlaceholder"),
+      },
+      {
+        value: "date",
+        label: t("batchImport.fundPreview.applicationDateOffset"),
+        kind: "number",
+        placeholder: t("batchImport.fundPreview.dateOffsetPlaceholder"),
       },
       {
         value: "confirmDate",
@@ -906,6 +952,40 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
   );
 
 
+  // —— 净值异步回填 ——
+  // 服务端预览最多等 1.2s 抓净值就先返回明细，剩下的继续后台抓（用户 2026-10-30：
+  // 「明细要 1 秒内出来」）。这里在 3s / 9s 各静默问一次，只补「还没有净值」的行：
+  // 不动勾选、不动用户已经改过的行、不改用户手填的净值/份额。
+  const navBackfillTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
+  const lastPreviewRequestRef = useRef<FundImportUploadItem[] | null>(null);
+
+  const clearNavBackfillTimers = useCallback(() => {
+    for (const timer of navBackfillTimersRef.current) clearTimeout(timer);
+    navBackfillTimersRef.current = [];
+  }, []);
+
+  const runNavBackfill = useCallback(async () => {
+    const sourceItems = lastPreviewRequestRef.current;
+    if (!open || !sourceItems || sourceItems.length === 0) return;
+    try {
+      const res = await fetch("/api/v1/fund/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          mode: "preview",
+          items: sourceItems,
+          ...(requestContext ? { context: requestContext } : {}),
+          ...(autoCreateInstitutionAccounts ? { createInstitutionAccounts: true } : {}),
+        }),
+      });
+      const data = await res.json().catch(() => null) as { ok?: boolean; items?: FundImportPreviewItem[] } | null;
+      if (!res.ok || !data?.ok || !Array.isArray(data.items)) return;
+      setPreviewItems((prev) => mergeNavBackfillRows(prev, data.items!));
+    } catch {
+      // 回填是静默优化：失败就保持空白，用户仍可手填
+    }
+  }, [autoCreateInstitutionAccounts, open, requestContext]);
+
   const requestPreview = useCallback(async (
     sourceItems: FundImportUploadItem[],
     preserveSelection: boolean,
@@ -920,10 +1000,10 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
           mode: "preview",
           items: sourceItems,
           ...(requestContext ? { context: requestContext } : {}),
-          ...(createInstitutionCashAccount ? { createFundInstitutionCashAccount: true } : {}),
+          ...(autoCreateInstitutionAccounts ? { createInstitutionAccounts: true } : {}),
         }),
       });
-      const data = await res.json().catch(() => null) as { ok?: boolean; error?: string; items?: FundImportPreviewItem[] } | null;
+      const data = await res.json().catch(() => null) as { ok?: boolean; error?: string; items?: FundImportPreviewItem[]; navMissingCount?: number; navPending?: boolean } | null;
       if (!res.ok || !data?.ok || !Array.isArray(data.items)) {
         throw new Error(data?.error || res.statusText || `HTTP ${res.status}`);
       }
@@ -933,6 +1013,14 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
         : selectableIndexes(data.items!));
       setDebugMessage(null);
       setMessage(null);
+      // 明细已经出来了；还有净值在路上就排两次静默回填。
+      lastPreviewRequestRef.current = sourceItems;
+      clearNavBackfillTimers();
+      if (shouldBackfillNav(data.navMissingCount)) {
+        for (const delay of NAV_BACKFILL_DELAYS_MS) {
+          navBackfillTimersRef.current.push(setTimeout(() => { void runNavBackfill(); }, delay));
+        }
+      }
       return true;
     } catch (error) {
       setPreviewItems([]);
@@ -944,7 +1032,7 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
     } finally {
       setUploading(false);
     }
-  }, [createInstitutionCashAccount, requestContext, t]);
+  }, [autoCreateInstitutionAccounts, clearNavBackfillTimers, requestContext, runNavBackfill, t]);
 
   // 局部预览：只把改动的行发给服务端重算（账户匹配/净值/份额/确认到账日都是逐行无状态计算），
   // 响应按行号写回，避免大数据量时每次单元格编辑都全表重发导致界面卡顿。
@@ -960,7 +1048,7 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
           mode: "preview",
           items: usable.map((entry) => entry.item),
           ...(requestContext ? { context: requestContext } : {}),
-          ...(createInstitutionCashAccount ? { createFundInstitutionCashAccount: true } : {}),
+          ...(autoCreateInstitutionAccounts ? { createInstitutionAccounts: true } : {}),
         }),
       });
       const data = await res.json().catch(() => null) as { ok?: boolean; error?: string; items?: FundImportPreviewItem[] } | null;
@@ -985,7 +1073,7 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
     } finally {
       setRowPatching(false);
     }
-  }, [createInstitutionCashAccount, requestContext, t]);
+  }, [autoCreateInstitutionAccounts, requestContext, t]);
 
   const applyPreviewReplace = useCallback((field: FundPreviewBatchEditField, value: string) => {
     const selectedIndexes = new Set(Array.from(selected).filter((idx) => previewItems[idx]));
@@ -1015,6 +1103,66 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
           ? t("batchImport.template.fund.label.fundAccount")
           : t("batchImport.template.fund.label.cashAccount"),
         invalidSuffix: "",
+      });
+    }
+
+    // 代码 / 交易类型 / 费率 / 净值 / 申请日期：改完都要重新算净值、份额、确认到账日与阻断项，
+    // 只把改动的行发给服务端重算（服务端净值已按基金批量预取过，是缓存命中，不会逐行联网）。
+    if (field === "fundCode" || field === "fundSubtype" || field === "feeRate" || field === "nav" || field === "date") {
+      const raw = value.trim();
+      const patches: Array<{ index: number; item: FundImportUploadItem }> = [];
+      let invalid = 0;
+      const nextUploadItems = uploadItems.map((item, index) => {
+        if (!selectedIndexes.has(index)) return item;
+        let nextItem: FundImportUploadItem | null = null;
+        if (field === "fundCode") {
+          const code = raw.replace(/\s+/g, "");
+          if (!/^\d{6}$/.test(code)) {
+            invalid += 1;
+            return item;
+          }
+          // 换了基金，名称 / 净值 / 份额都不再成立，交给服务端按新代码重算。
+          nextItem = { ...item, fundCode: code, nav: null, units: null };
+        } else if (field === "fundSubtype") {
+          if (!(FUND_PREVIEW_SUBTYPES as readonly string[]).includes(raw)) {
+            invalid += 1;
+            return item;
+          }
+          nextItem = { ...item, fundSubtype: raw };
+        } else if (field === "feeRate") {
+          const rate = evaluateCalcInputExpression(raw, item.feeRateInput ?? 0);
+          if (rate == null || rate < 0) {
+            invalid += 1;
+            return item;
+          }
+          nextItem = { ...item, feeRateInput: rate, fee: null };
+        } else if (field === "nav") {
+          const nextNav = evaluateCalcInputExpression(raw, item.nav ?? 0);
+          if (nextNav == null || !(nextNav > 0)) {
+            invalid += 1;
+            return item;
+          }
+          nextItem = { ...item, nav: nextNav, units: null };
+        } else {
+          const fundAccount = item.fundAccountId ? accountById.get(item.fundAccountId) : undefined;
+          const nextDate = applyFundDateOffset(item, raw, fundAccount?.tradingCalendar);
+          if (nextDate === undefined) {
+            invalid += 1;
+            return item;
+          }
+          nextItem = { ...item, date: nextDate };
+        }
+        patches.push({ index, item: nextItem });
+        return nextItem;
+      });
+      setUploadItems(nextUploadItems);
+      void requestPreviewForRows(patches);
+      return t("batchImport.fundPreview.batchReplaceResult", {
+        count: patches.length,
+        field: t(FUND_PREVIEW_BATCH_FIELD_LABEL_KEYS[field]),
+        invalidSuffix: invalid > 0
+          ? t("batchImport.fundPreview.invalidNumberSkipped", { count: invalid })
+          : "",
       });
     }
 
@@ -1058,17 +1206,14 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
       : "";
     return t("batchImport.fundPreview.batchReplaceResult", {
       count: changed,
-      field: field === "confirmDate"
-        ? t("batchImport.fundPreview.confirmDateOffset")
-        : field === "arrivalDate"
-          ? t("batchImport.fundPreview.arrivalDateOffset")
-          : t("batchImport.template.fund.label.fee"),
+      field: t(FUND_PREVIEW_BATCH_FIELD_LABEL_KEYS[field]),
       invalidSuffix,
     });
   }, [accountById, cashAccountDisplayById, fundAccountDisplayById, previewItems, requestPreviewForRows, selected, t, uploadItems]);
 
   useEffect(() => {
-    if (!open || !file) {
+    if (!file) {
+      loadedFileRef.current = null;
       setUploadItems([]);
       setPreviewItems([]);
       setBookAccounts([]);
@@ -1082,6 +1227,11 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
       setDraftOriginalValue("");
       return;
     }
+    // 只是切到另一个页签（open 变 false）时不要清空：切回来还要再解析 + 再请求一遍，
+    // 期间表格是空的，看起来就是「数据全没了」。
+    if (!open) return;
+    if (loadedFileRef.current === file) return;
+    loadedFileRef.current = file;
 
     let cancelled = false;
     const fileInfo = formatText(t, "batchImport.fileInfo", {
@@ -1093,8 +1243,10 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
     async function load() {
       setUploading(true);
       setImporting(false);
-      setMessage(formatText(t, "batchImport.readingFileName", { name: file!.name }));
-      setDebugMessage(formatText(t, "batchImport.fileSelectedStart", { fileInfo }));
+      // 只保留这一条状态（正在读取文件：…）；「已选择文件，开始读取。文件：…；类型：…」
+      // 与它重复（用户 2026-10-30），文件名/类型/大小的诊断信息留给失败时的 debug 行。
+      setDebugMessage(null);
+      setMessage(formatText(t, "batchImport.readingFileName", { name: sourceLabel || file!.name }));
       setUploadItems([]);
       setPreviewItems([]);
       setSelected(new Set());
@@ -1108,7 +1260,7 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
         if (parsed.length === 0) {
           const headers = parseResult.rows[0]?.join("、") || t("batchImport.headersNotRead");
           setDebugMessage(formatText(t, "batchImport.noRecordsRecognizedDebug", { headers, fileInfo }));
-          setMessage(formatText(t, "batchImport.noRecordsRecognizedMessage", { name: file!.name, headers }));
+          setMessage(formatText(t, "batchImport.noRecordsRecognizedMessage", { name: sourceLabel || file!.name, headers }));
           setUploading(false);
           return;
         }
@@ -1126,8 +1278,10 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
     void load();
     return () => {
       cancelled = true;
+      // 换文件 / 关窗口 / 卸载：把还没跑的回填定时器清掉，别再打一遍接口。
+      clearNavBackfillTimers();
     };
-  }, [file, open, requestPreview, t]);
+  }, [clearNavBackfillTimers, file, open, requestPreview, sourceLabel, t]);
 
   useEffect(() => {
     if (!open) return;
@@ -1154,6 +1308,23 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
     setDraftValue("");
     setDraftOriginalValue("");
     await requestPreviewForRows([{ index: idx, item: nextItem }]);
+  }, [requestPreviewForRows, uploadItems]);
+
+  // 同一个基金名只需要认一次：一次请求把补丁打到所有同名行，
+  // 避免「逐行 PATCH」在几百行账单上刷屏。
+  const patchUploadItems = useCallback(async (
+    patches: Array<{ idx: number; patch: Partial<FundImportUploadItem> }>,
+  ) => {
+    if (patches.length === 0) return;
+    const byIndex = new Map<number, FundImportUploadItem>();
+    for (const entry of patches) {
+      const currentItem = uploadItems[entry.idx];
+      if (!currentItem) continue;
+      byIndex.set(entry.idx, { ...currentItem, ...entry.patch });
+    }
+    if (byIndex.size === 0) return;
+    setUploadItems((prev) => prev.map((item, index) => byIndex.get(index) ?? item));
+    await requestPreviewForRows(Array.from(byIndex, ([index, item]) => ({ index, item })));
   }, [requestPreviewForRows, uploadItems]);
 
   const editFieldLabel = useCallback((field: FundPreviewEditField) => t(FUND_PREVIEW_FIELD_LABEL_KEYS[field]), [t]);
@@ -1224,9 +1395,29 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
       case "fundAccount":
         patch = { fundAccount: value, fundAccountId: null };
         break;
-      case "fundCode":
+      case "fundCode": {
         patch = { fundCode: value };
+        // 账单里同一只基金会出现几十次，改一次就同步到所有同名行，
+        // 不用重复手填同一个代码。
+        const currentRow = previewRows.find((item) => item.idx === current.idx);
+        const siblings = value && currentRow?.fundName
+          ? previewRows.filter((item) => item.idx !== current.idx
+            && item.fundName === currentRow.fundName
+            && !item.fundCode)
+          : [];
+        if (siblings.length > 0
+          && window.confirm(formatText(t, "batchImport.fundCodeSyncConfirm", { count: siblings.length }))) {
+          await patchUploadItems([
+            { idx: current.idx, patch },
+            ...siblings.map((item) => ({ idx: item.idx, patch: { fundCode: value } })),
+          ]);
+          setEditingCell(null);
+          setDraftValue("");
+          setDraftOriginalValue("");
+          return;
+        }
         break;
+      }
       case "amount":
         patch = { amount: parseEditableNumber(value) ?? 0 };
         break;
@@ -1264,7 +1455,7 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
       return;
     }
     await patchUploadItem(current.idx, patch);
-  }, [draftOriginalValue, draftValue, editingCell, patchUploadItem]);
+  }, [draftOriginalValue, draftValue, editingCell, patchUploadItem, patchUploadItems, previewRows, t]);
 
   function cancelDraftEdit() {
     skipNextEditCommitRef.current = true;
@@ -1480,7 +1671,7 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
             mode: "import",
             items: batchItems,
             ...(requestContext ? { context: requestContext } : {}),
-            ...(createInstitutionCashAccount ? { createFundInstitutionCashAccount: true } : {}),
+            ...(autoCreateInstitutionAccounts ? { createInstitutionAccounts: true } : {}),
           }),
         });
         const data = await res.json().catch(() => null) as { ok?: boolean; error?: string; createdCount?: number; accountIds?: string[] } | null;
@@ -1514,7 +1705,7 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
       setImporting(false);
       setImportProgress(null);
     }
-  }, [createInstitutionCashAccount, errorIssues, importIssues, importing, onClose, onImported, previewItems, requestContext, setImportProgress, selected, t]);
+  }, [autoCreateInstitutionAccounts, errorIssues, importIssues, importing, onClose, onImported, previewItems, requestContext, setImportProgress, selected, t]);
 
   const columns = useMemo<AdvancedDataTableColumn<FundPreviewTableRow>[]>(() => [
     {
@@ -1572,27 +1763,29 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
   if (!open || !file) return null;
 
   return (
-    <ModalLayer className="fixed inset-0 flex items-center justify-center bg-slate-900/40 p-4">
-      <div data-smart-select-boundary data-batch-popover-boundary className="flex h-[82vh] min-h-[420px] w-[80rem] min-w-[720px] max-w-[calc(100vw-2rem)] resize flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl">
-        <div className="shrink-0 border-b border-slate-200 px-4 py-3">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <div className="text-base font-semibold text-slate-800">{t("batchImport.previewFundTitle")}</div>
-              <div className="mt-1 text-xs text-slate-500">
-                {uploading ? t("batchImport.previewParsing") : formatText(t, "batchImport.previewFundHint", { count: previewItems.length })}
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={onClose}
-              disabled={importing}
-              className="h-8 w-8 rounded-md border border-slate-300 text-slate-500 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
-              aria-label={t("table.close")}
-            >
-              ×
-            </button>
-          </div>
-        </div>
+    <ModalLayer
+      className="fixed inset-0 flex items-center justify-center bg-slate-900/40 p-4"
+      style={hidden ? { display: "none" } : undefined}
+    >
+      <div data-smart-select-boundary data-batch-popover-boundary className="flex h-[82vh] min-h-[420px] w-[80rem] min-w-[720px] max-w-[calc(100vw-2rem)] resize flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
+        {/* 窗口标题栏在卡片**外面**：外框只有这一个，页签 / 卡片都在它里面。
+            与账单预览共用 `ImportPreviewHeader`（原先这里的标题是 text-base、说明是 mt-1
+            且不截断，切到账单页签时字号和高度都变，看起来像闪一下）。 */}
+        <ImportPreviewHeader
+          title={t("batchImport.previewFundTitle")}
+          description={uploading ? t("batchImport.previewParsing") : formatText(t, "batchImport.previewFundHint", { count: previewItems.length })}
+          onClose={onClose}
+          closeDisabled={importing}
+          closeLabel={t("table.close")}
+        />
+        {/* FT 卡片：页签条是流内元素，卡片顶边由它撑出来，活动页签的 -mb-px
+            正好压在卡片 1px 上边框上（几何同 FolderTabsCard，容器是固定高度所以用
+            ft-card-surface-fill）。 */}
+        <div className="relative flex min-h-0 flex-1 flex-col p-3">
+          <div className="relative flex min-h-0 flex-col">
+            {tabs}
+            <div className="ft-card-surface ft-card-surface-fill">
+              <div className="flex min-h-0 flex-1 flex-col">
         {message ? (
           <div className="shrink-0 border-b border-blue-100 bg-blue-50 px-4 py-2 text-sm text-blue-700">
             {message}
@@ -1616,7 +1809,9 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
             {debugMessage}
           </div>
         ) : null}
-        <div className="shrink-0 border-b border-slate-200 bg-slate-50 px-4 py-3">
+        {/* 卡片内首块不能带灰底：它紧贴活动页签，灰底 + border-b 看着就是「页签与
+            卡片之间被一条线隔开」。留白区改用卡片底色，分区线停在它下沿。 */}
+        <div className="shrink-0 border-b border-slate-200 px-4 py-3">
           <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600">
             <span className="font-medium text-slate-700">{formatText(t, "batchImport.selectedSummary", { selected: selected.size, total: previewItems.length })}</span>
             {errorIssues.length > 0 ? (
@@ -1677,11 +1872,11 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
                   <input
                     type="checkbox"
                     className="h-3.5 w-3.5 rounded border-slate-300 text-blue-600"
-                    checked={createInstitutionCashAccount}
+                    checked={autoCreateInstitutionAccounts}
                     disabled={uploading || importing}
                     onChange={(event) => {
                       const next = event.target.checked;
-                      setCreateInstitutionCashAccount(next);
+                      setAutoCreateInstitutionAccounts(next);
                       if (uploadItems.length > 0) void requestPreview(uploadItems, true);
                     }}
                   />
@@ -1722,6 +1917,10 @@ export function FundImportPreviewDialog({ open, file, context, onClose, onImport
             >
               {importing ? t("batchImport.importing") : formatText(t, "batchImport.confirmImport", { count: importReadySelectedCount })}
             </button>
+          </div>
+        </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>

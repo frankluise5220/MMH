@@ -3699,6 +3699,13 @@ async function restoreSingleHouseholdBackup(
             accountId: String(item.accountId),
             effectiveDate: new Date(String(item.effectiveDate)),
             billingDay: Number(item.billingDay ?? 0),
+            // 还款日跟着账单日记录一起走；旧备份没有这两列 → null（回退账户级设置）。
+            repaymentDay: item.repaymentDay == null || String(item.repaymentDay).trim() === ""
+              ? null
+              : Number(item.repaymentDay),
+            repaymentOffsetDays: item.repaymentOffsetDays == null || String(item.repaymentOffsetDays).trim() === ""
+              ? null
+              : Number(item.repaymentOffsetDays),
             createdAt: item.createdAt ? new Date(String(item.createdAt)) : new Date(),
             updatedAt: item.updatedAt ? new Date(String(item.updatedAt)) : new Date(),
           })),

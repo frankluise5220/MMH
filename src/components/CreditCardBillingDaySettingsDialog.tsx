@@ -220,6 +220,8 @@ export function CreditCardBillingDaySettingsDialog({
                 rules={rules}
                 onRulesChanged={onRulesChanged}
                 billingDay={billingDay}
+                repaymentDay={repaymentDay ?? null}
+                repaymentOffsetDays={repaymentOffsetDays ?? null}
               />
             </div>
           </div>

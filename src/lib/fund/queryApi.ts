@@ -44,9 +44,20 @@ const headers = {
 
 const MAX_FUND_QUERY_API_ATTEMPTS = 3;
 
+/**
+ * 单次净值请求的超时。
+ *
+ * 这些接口是第三方站点，没有超时的 `fetch` 会一直挂在 socket 上（undici 默认
+ * headersTimeout 300s）：批量导入时一行一次、一次最多试 3 个接口，任何一家抽风
+ * 都会让「预览」几分钟出不来。宁可放弃这一行（净值留空让用户补），也不要拖住整批。
+ */
+const NAV_FETCH_TIMEOUT_MS = 8_000;
+
 async function fetchFromUrl(url: string, parser: (data: any) => NavResult): Promise<NavResult> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), NAV_FETCH_TIMEOUT_MS);
   try {
-    const res = await fetch(url, { headers, cache: "no-store" });
+    const res = await fetch(url, { headers, cache: "no-store", signal: controller.signal });
     if (!res.ok) return null;
     const text = await res.text();
     let data: any;
@@ -59,6 +70,8 @@ async function fetchFromUrl(url: string, parser: (data: any) => NavResult): Prom
     return parser(data);
   } catch {
     return null;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -375,8 +388,10 @@ async function queryHistoricalNav(
   // Query the eastmoney_history API (wider date range)
   const url = `http://api.fund.eastmoney.com/f10/lsjz?fundCode=${fundCode}&pageIndex=1&pageSize=50&startDate=${startStr}&endDate=${endStr}`;
 
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), NAV_FETCH_TIMEOUT_MS);
   try {
-    const res = await fetch(url, { headers, cache: "no-store" });
+    const res = await fetch(url, { headers, cache: "no-store", signal: controller.signal });
     if (!res.ok) return null;
     const text = await res.text();
     let data: any;
@@ -415,6 +430,8 @@ async function queryHistoricalNav(
     return null;
   } catch {
     return null;
+  } finally {
+    clearTimeout(timer);
   }
 }
 

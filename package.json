@@ -26,6 +26,7 @@
     "build:synology": "node scripts/build-synology-package.cjs",
     "stage:synology": "node scripts/build-synology-package.cjs --stage-only",
     "check:encoding": "node scripts/check-encoding.cjs",
+    "check:csv-import": "tsx scripts/verify-csv-import-encoding.ts",
     "check:backup": "node scripts/verify-backup-completeness.cjs && node scripts/check-backup-coverage.cjs && node scripts/check-restore-field-coverage.cjs && node scripts/check-backup-package.cjs && tsx scripts/verify-backup-package.ts",
     "check:timezone": "node scripts/check-date-timezone.cjs",
     "check:account-label": "node scripts/check-account-label.cjs",

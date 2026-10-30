@@ -312,14 +312,22 @@ model CreditCardCycle {
   @@index([statementMonth])
 }
 
+/// 账单日 / 还款日的变更记录：银行改账单日时还款日通常同时改，所以两者
+/// 按同一个生效日期存放。两条还款日用「固定日 / 账单日后 N 天」两种表达，
+/// 各自可空：留空表示该时期沿用账户级设置（Account.repaymentDay /
+/// repaymentOffsetDays），保证老数据与未填写的记录行为不变。
 model CreditCardBillingDay {
-  id            String   @id @default(cuid())
-  accountId     String
-  effectiveDate DateTime
-  billingDay    Int
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-  Account       Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  id                  String   @id @default(cuid())
+  accountId           String
+  effectiveDate       DateTime
+  billingDay          Int
+  /// 固定还款日（1-31）；与 repaymentOffsetDays 互斥，都为空则回退账户级设置。
+  repaymentDay        Int?
+  /// 「账单日后 N 天」的 N（0-62）；与 repaymentDay 互斥。
+  repaymentOffsetDays Int?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  Account             Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
 
   @@unique([accountId, effectiveDate])
   @@index([accountId])

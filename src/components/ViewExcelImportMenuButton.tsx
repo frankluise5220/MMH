@@ -8,6 +8,7 @@ import { CreditBillMailImportDialog, prefetchMailImportPanel } from "@/component
 import { DateStepper } from "@/components/DateStepper";
 import { FundImportPreviewDialog, type FundImportDialogContext } from "@/components/FundImportPreviewDialog";
 import { StatementImportPreviewDialog, type StatementImportPreviewItem } from "@/components/StatementImportPreviewDialog";
+import { ImportPreviewTabs } from "@/components/ImportPreviewTabs";
 import { StockImportPreviewDialog, type StockImportDialogContext, type StockImportUploadItem } from "@/components/StockImportPreviewDialog";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { parseFlexibleDateToYmd } from "@/lib/date-utils";
@@ -35,6 +36,8 @@ import {
   readStatementWorkbookRowsAndText,
 } from "@/lib/statement/excel-preview";
 import { convertCaizhiFundImportFile } from "@/lib/statement/caizhi-template";
+import { readStatementSheetRows } from "@/lib/statement/statement-sheet-reader";
+import { excludeFundTradeRows, routeAlipayFundBill } from "@/lib/statement/alipay-fund-import-file";
 
 /**
  * 手持设备上隐藏导入导出入口的类名（唯一写入点，四处入口共用）。
@@ -997,14 +1000,10 @@ function statementHeaderDetectionScore(headers: unknown[]) {
   return score;
 }
 
-async function detectImportFileKind(file: File, t: TranslateFn): Promise<DetectedImportKind> {
-  const XLSX = await import("xlsx");
-  const workbook = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: true });
+async function detectImportFileKind(sheets: readonly { rows: string[][] }[], t: TranslateFn): Promise<DetectedImportKind> {
   let bestKind: DetectedImportKind = "statement";
   let bestScore = 0;
-  for (const sheetName of workbook.SheetNames) {
-    const sheet = workbook.Sheets[sheetName];
-    const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, raw: false, defval: "" });
+  for (const { rows } of sheets) {
     for (const row of rows.slice(0, 8)) {
       const statementScore = statementHeaderDetectionScore(row ?? []);
       if (statementScore > bestScore) {
@@ -1047,14 +1046,11 @@ function normalizeStockImportAction(raw: string, t: TranslateFn) {
 }
 
 async function parseStockImportFile(file: File, t: TranslateFn): Promise<StockImportItem[]> {
-  const XLSX = await import("xlsx");
-  const workbook = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: true });
+  const sheets = await readStatementSheetRows(file);
   let bestRows: unknown[][] = [];
   let bestHeaderRow: unknown[] = [];
   let bestHeader = new Map<StockImportHeaderField, number>();
-  for (const sheetName of workbook.SheetNames) {
-    const sheet = workbook.Sheets[sheetName];
-    const rows = XLSX.utils.sheet_to_json<unknown[]>(sheet, { header: 1, raw: false, defval: "" });
+  for (const { rows } of sheets) {
     for (let index = 0; index < Math.min(rows.length, 8); index++) {
       const header = buildStockHeaderIndex(rows[index] ?? [], t);
       const score = ["tradeDate", "action"].filter((field) => header.has(field as StockImportHeaderField)).length + (header.has("stockCode") || header.has("bankAccount") ? 1 : 0) + header.size / 100;
@@ -1183,6 +1179,9 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
   // 分批导入进度（数据量大时拆成多批顺序提交，避免单请求超时/卡死）
   const [importProgress, setImportProgress] = useState<{ imported: number; total: number } | null>(null);
   const [fundPreviewFile, setFundPreviewFile] = useState<File | null>(null);
+  // 同一张账单可能拆成两个页签（资金收支 / 基金买卖），这里记当前停在哪个。
+  const [previewTab, setPreviewTab] = useState<"statement" | "fund">("statement");
+  const [fundTradeCount, setFundTradeCount] = useState(0);
   // 财智余额调整行（余额校准）：随导入确认一起提交
   const [balanceAdjustments, setBalanceAdjustments] = useState<Array<{ date?: string; balance: number }>>([]);
   const [fundPreviewContext, setFundPreviewContext] = useState<FundImportDialogContext | null>(null);
@@ -1261,11 +1260,17 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
       setBusy(true);
       setProcessingFile(true);
       setStatus(t("viewImport.importing"));
+      // 上一次导入的基金页签不能留到这一次。
+      setFundPreviewFile(null);
+      setFundPreviewContext(null);
+      setFundTradeCount(0);
+      setPreviewTab("statement");
     });
     await waitForBrowserPaint();
     try {
       setPreviewSourceFileName(file.name);
-      const detectedKind = await detectImportFileKind(file, t);
+      const billSheets = await readStatementSheetRows(file);
+      const detectedKind = await detectImportFileKind(billSheets, t);
 
       if (detectedKind === "stock") {
         const items = await parseStockImportFile(file, t);
@@ -1283,6 +1288,17 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
         setStatus("");
         return;
       }
+
+      // 支付宝账单里的基金买卖（「蚂蚁财富-摩根标普500指数(QDII)A-买入」）被记成
+      // 「不计收支」，走普通流水只能落成转账，投资资产因此不可见。同一张账单拆成
+      // 两个页签：资金收支（剔除这些行）/ 基金买卖（走真正的买入 / 赎回链路）。
+      const fundRoute = await routeAlipayFundBill(billSheets, file.name);
+      const billSheetsForStatement = fundRoute
+        ? billSheets.map((sheet) => ({
+            ...sheet,
+            rows: excludeFundTradeRows(sheet.rows, fundRoute.trades),
+          }))
+        : billSheets;
 
       {
         // 财智8检测：文件名含 "财智"，或命中财智导出命名「XXX的YYY_明细_YYYY-MM-DD」。
@@ -1335,6 +1351,7 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
           statementDefaultAccountName(props),
           latestFieldHeaders,
           t("settings.accounts.import.sheetGuideTitle"),
+          billSheetsForStatement,
         );
         let serverError: unknown = null;
         const serverItems = preferServerRecognition || !hasImportableStatementRows(localItems)
@@ -1355,9 +1372,23 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
           latestRecognitionSamples,
         );
         const items = recognizedItems.filter((item) => item.date && Number(item.amount) > 0);
-        if (items.length === 0) throw new Error(t("viewImport.noRows"));
+        if (fundRoute) {
+          setFundPreviewContext(fundImportContextFromProps(props));
+          setFundPreviewFile(fundRoute.file);
+          setFundTradeCount(fundRoute.count);
+        }
+        if (items.length === 0) {
+          // 整张账单都是基金买卖：流水页签是空的，直接停在基金页签。
+          if (!fundRoute) throw new Error(t("viewImport.noRows"));
+          setPreviewItems([]);
+          setPreviewOpen(false);
+          setPreviewTab("fund");
+          setStatus(t("viewImport.recognizedCount", { count: fundRoute.count }));
+          return;
+        }
         setPreviewItems(items);
         setPreviewOpen(true);
+        setPreviewTab("statement");
         setStatus(t("viewImport.recognizedCount", { count: items.length }));
         return;
       }
@@ -1435,6 +1466,8 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
       setBalanceAdjustments([]);
       setPreviewOpen(false);
       setPreviewItems([]);
+      // 流水导完还有基金页签在等：直接切过去，别把用户关在门外。
+      if (fundPreviewFile) setPreviewTab("fund");
       dispatchFinanceDataChanged({
         reason: "statement-excel-import",
         accountIds: refreshedAccountIds.size > 0 ? Array.from(refreshedAccountIds) : [props.accountId],
@@ -1509,6 +1542,18 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
       setBusy(false);
     }
   }
+
+  // 一张账单拆成两个页签：资金收支（已剔除基金行）/ 基金买卖。
+  const importPreviewTabs = fundPreviewFile && previewItems.length > 0 ? (
+    <ImportPreviewTabs
+      tabs={[
+        { key: "statement", label: t("batchImport.previewTab.cashFlow"), count: previewItems.length },
+        { key: "fund", label: t("batchImport.previewTab.fundTrades"), count: fundTradeCount },
+      ]}
+      active={previewTab}
+      onChange={(key) => setPreviewTab(key === "fund" ? "fund" : "statement")}
+    />
+  ) : null;
 
   return (
     <div ref={menuRef} className={["relative inline-flex items-center", props.className ?? ""].filter(Boolean).join(" ")}>
@@ -1632,6 +1677,8 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
       ) : null}
       <StatementImportPreviewDialog
         open={previewOpen}
+        // 切到「基金买卖」时只隐藏、不卸载：卸载会重新拉账本、重建表格，整页闪一下。
+        hidden={previewTab !== "statement"}
         title={t("viewImport.previewTitle")}
         description={t("viewImport.previewDescription")}
         items={previewItems}
@@ -1641,16 +1688,23 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
         sourceFileName={previewSourceFileName}
         busy={busy}
         importProgress={importProgress}
+        tabs={importPreviewTabs}
         onClose={() => setPreviewOpen(false)}
         onConfirm={confirmImport}
       />
       <FundImportPreviewDialog
         open={Boolean(fundPreviewFile)}
+        // 与「收支明细」窗口并存：切页签只切显示，基金预览保持已解析状态（切回去不用再等）。
+        hidden={previewTab !== "fund"}
         file={fundPreviewFile}
         context={fundPreviewContext}
+        tabs={importPreviewTabs}
+        sourceLabel={previewSourceFileName}
         onClose={() => {
           setFundPreviewFile(null);
           setFundPreviewContext(null);
+          setFundTradeCount(0);
+          setPreviewTab("statement");
         }}
         onImported={({ count }) => {
           setStatus(t("batchImport.fundImportSuccess", { count, redirectNote: "" }));

@@ -1,10 +1,11 @@
 "use client";
 import { ModalLayer } from "@/components/ModalLayer";
 
-import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { AdvancedDataTable, type AdvancedDataTableColumn } from "@/components/AdvancedDataTable";
 import { BatchReplacePopoverButton, type BatchReplaceFieldConfig, type BatchReplaceOption } from "@/components/BatchReplacePopoverButton";
+import { ImportPreviewHeader } from "@/components/ImportPreviewHeader";
 import { evaluateCalcInputExpression } from "@/components/CalcInput";
 import { DateStepper } from "@/components/DateStepper";
 import { SmartSelect, type SmartSelectOption } from "@/components/SmartSelect";
@@ -130,6 +131,8 @@ type PreviewEditField =
 
 type ImportPreviewRow = {
   key: string;
+  /** 原始序号（items 里的下标）：预览表格第一列显示用，与基金预览的序号对齐。 */
+  idx: number;
   item: StatementImportPreviewItem;
   ready: boolean;
   missingFields: string[];
@@ -152,6 +155,13 @@ type StatementImportPreviewDialogProps = {
   busy?: boolean;
   /** 分批导入进度：宿主分批提交时传入，弹窗底部显示进度条 */
   importProgress?: { imported: number; total: number } | null;
+  /** 顶部页签条（同一张账单的「资金收支 / 基金买卖」切换）：由宿主渲染，弹窗只负责摆位置。 */
+  tabs?: ReactNode;
+  /**
+   * 页签已切走：窗口**保留挂载**，只是不显示。
+   * 卸载再挂载会重新拉账本、重建表格（表格先空一拍），切页签时看着整页闪一下。
+   */
+  hidden?: boolean;
   onClose: () => void;
   onConfirm: (
     items: StatementImportPreviewItem[],
@@ -536,6 +546,7 @@ function buildPreviewRows(
     const missingFields = statementImportMissingFields(normalizedItem, defaultAccountName, lookup, creationOptions);
     return {
       key: `statement-${index}-${normalizedItem.date ?? ""}-${normalizedItem.amount ?? 0}-${normalizedItem.rawText ?? ""}`,
+      idx: index,
       item: normalizedItem,
       missingFields,
       ready: missingFields.length === 0,
@@ -589,10 +600,14 @@ export function StatementImportPreviewDialog({
   sourceFileName = null,
   busy = false,
   importProgress = null,
+  tabs = null,
+  hidden = false,
   onClose,
   onConfirm,
 }: StatementImportPreviewDialogProps) {
   const [rows, setRows] = useState<ImportPreviewRow[]>([]);
+  /** 已经构建成 rows 的那份 items：同一份数据不重复构建，否则会覆盖用户的手工修改。 */
+  const builtFromRef = useRef<StatementImportPreviewItem[] | null>(null);
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
   const [editingPreviewCell, setEditingPreviewCell] = useState<{ rowKey: string; field: PreviewEditField } | null>(null);
   const [bookAccounts, setBookAccounts] = useState<BookAccount[]>([]);
@@ -736,12 +751,17 @@ export function StatementImportPreviewDialog({
   useEffect(() => {
     if (!open) return;
     if (!settingsBootstrapLoaded || !accountLookup) {
+      builtFromRef.current = null;
       setRows([]);
       setSelectedKeys(new Set());
       setEditingPreviewCell(null);
       setCategorySyncMessage("");
       return;
     }
+    // 同一份导入数据只构建一次：用户在预览里改过的行存在 `rows` 里，
+    // 而 `items` 还是原始数据 —— 切页签（open 变化）再重新 build 会把修改全冲掉。
+    if (builtFromRef.current === items) return;
+    builtFromRef.current = items;
     const nextRows = buildPreviewRows(items, defaultAccountName, accountLookup, creationOptions);
     setRows(nextRows);
     setSelectedKeys(new Set(nextRows.filter((row) => row.ready).map((row) => row.key)));
@@ -751,10 +771,12 @@ export function StatementImportPreviewDialog({
 
   useEffect(() => {
     if (!open) return;
-    let cancelled = false;
-    setSettingsBootstrapLoaded(false);
     setCreateLiabilityAccounts(false);
     setForceCreateOwnedMoneyAccounts(false);
+    // 账本数据已经加载过（例如从「基金买卖」页签切回「收支明细」）：保留现有预览行，
+    // 不要再清空重拉 —— 重拉期间 rows 是空的，用户会以为「数据全没了」。
+    if (settingsBootstrapLoaded) return;
+    let cancelled = false;
     setRows([]);
     setSelectedKeys(new Set());
     fetchSettingsBootstrap()
@@ -775,9 +797,10 @@ export function StatementImportPreviewDialog({
         setSettingsBootstrapLoaded(true);
       });
     return () => { cancelled = true; };
-  }, [open]);
+  }, [open, settingsBootstrapLoaded]);
 
   function closeDialog() {
+    builtFromRef.current = null;
     setRows([]);
     setSelectedKeys(new Set());
     setEditingPreviewCell(null);
@@ -1390,6 +1413,17 @@ export function StatementImportPreviewDialog({
 
   const columns = useMemo<AdvancedDataTableColumn<ImportPreviewRow>[]>(() => [
     {
+      // 序号列：与基金预览第一列同款（用户 2026-10-30：「基金买卖导入预览有序号，
+      // 收支明细也要有」）。注意导入时按勾选行提交，序号只是预览里的行号定位。
+      key: "index",
+      label: "#",
+      width: 42,
+      minWidth: 36,
+      align: "center",
+      filterText: () => "",
+      render: (row) => <span className="text-[11px] text-slate-400">{row.idx + 1}</span>,
+    },
+    {
       key: "date",
       label: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.date),
       width: 100,
@@ -1706,29 +1740,37 @@ export function StatementImportPreviewDialog({
   if (!open || typeof document === "undefined") return null;
 
   return createPortal(
-    <ModalLayer className="fixed inset-0 flex items-center justify-center bg-slate-900/40 px-4 py-6">
-      <div data-batch-popover-boundary data-smart-select-boundary className="flex h-auto max-h-[82vh] w-[72rem] min-w-0 max-w-[calc(100vw-2rem)] resize flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
-        <div className="flex shrink-0 items-start justify-between gap-3 border-b border-slate-200 bg-slate-50 px-4 py-3">
-          <div className="min-w-0">
-            <div className="truncate text-sm font-semibold text-slate-800">{title}</div>
-            {description ? <div className="mt-0.5 truncate text-xs text-slate-500">{description}</div> : null}
-            {/* 账单信息（账单金额 + 账期 + 还款日 + 币种 + 额度）左对齐显示在标题下方。 */}
-            {statementInfoText ? (
-              <div className="mt-0.5 break-words text-xs leading-relaxed text-slate-500" title={statementInfoText}>
-                {statementInfoText}
-              </div>
-            ) : null}
-          </div>
-          <button
-            type="button"
-            className="h-8 w-8 shrink-0 rounded-md border border-slate-300 text-slate-500 hover:bg-white disabled:opacity-50"
-            onClick={closeDialog}
-            disabled={busy}
-            aria-label={t("table.close")}
-          >
-            ×
-          </button>
-        </div>
+    <ModalLayer
+      className="fixed inset-0 flex items-center justify-center bg-slate-900/40 px-4 py-6"
+      style={hidden ? { display: "none" } : undefined}
+    >
+      <div data-batch-popover-boundary data-smart-select-boundary className="flex h-[82vh] min-h-[420px] w-[80rem] min-w-[720px] max-w-[calc(100vw-2rem)] resize flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
+        {/* 窗口标题栏在卡片**外面**：外框只有这一个，切换页签时窗口尺寸不变。
+            标题栏与基金预览共用 `ImportPreviewHeader`：字号 / 行高 / 高度完全一致，
+            两个窗口互相切换时页签条不会上下跳。账单信息（账单金额 + 账期 + 还款日 +
+            币种 + 额度）不再放标题栏第三行 —— 那会让基金侧空一行、账单侧高一行，
+            切换时页签条又跳 —— 挪进下面卡片内部顶部，只在账单侧出现。 */}
+        <ImportPreviewHeader
+          title={title}
+          description={description}
+          onClose={closeDialog}
+          closeDisabled={busy}
+          closeLabel={t("table.close")}
+        />
+        {/* FT 卡片：页签条流内撑出卡片顶边，活动页签的 -mb-px 压在卡片 1px 上边框上
+            （几何同 FolderTabsCard；弹窗是固定高度，故用 ft-card-surface-fill）。 */}
+        <div className="relative flex min-h-0 flex-1 flex-col p-3">
+          <div className="relative flex min-h-0 flex-col">
+            {tabs}
+            <div className="ft-card-surface ft-card-surface-fill">
+              <div className="flex min-h-0 flex-1 flex-col">
+                {/* 账单信息（账单金额 + 账期 + 还款日 + 币种 + 额度）：从标题栏挪进卡片
+                    顶部，只在账单侧出现；标题栏两边保持同样的两行，切换页签不会跳。 */}
+                {statementInfoText ? (
+                  <div className="shrink-0 truncate border-b border-slate-100 px-4 py-2 text-xs leading-4 text-slate-500" title={statementInfoText}>
+                    {statementInfoText}
+                  </div>
+                ) : null}
 
         <div className="min-h-0 flex-1 overflow-hidden">
           {!settingsBootstrapLoaded ? (
@@ -1860,6 +1902,10 @@ export function StatementImportPreviewDialog({
             >
               {busy ? t("batchImport.importing") : t("batchImport.confirmImport", { count: importReadySelectedCount })}
             </button>
+          </div>
+        </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>

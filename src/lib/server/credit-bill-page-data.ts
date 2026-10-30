@@ -207,7 +207,17 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
   const billingDayRules = shouldUseCreditBillingRules
     ? await prisma.creditCardBillingDay.findMany({
         where: { accountId: { in: billAccountIds } },
-        select: { id: true, accountId: true, effectiveDate: true, billingDay: true, createdAt: true, updatedAt: true },
+        select: {
+          id: true,
+          accountId: true,
+          effectiveDate: true,
+          billingDay: true,
+          // 还款日跟着同一条记录走：记录里没写才回退账户级设置。
+          repaymentDay: true,
+          repaymentOffsetDays: true,
+          createdAt: true,
+          updatedAt: true,
+        },
         orderBy: [{ effectiveDate: "asc" }, { createdAt: "asc" }, { id: "asc" }],
       })
     : [];
@@ -224,6 +234,8 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
         accountId: rule.accountId,
         effectiveDate: ymdUtc(rule.effectiveDate),
         billingDay: rule.billingDay,
+        repaymentDay: rule.repaymentDay,
+        repaymentOffsetDays: rule.repaymentOffsetDays,
       })),
   );
   const currentBillingDay = billingDayAtDate(billingDayRules, creditBillNow);

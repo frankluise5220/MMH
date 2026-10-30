@@ -4,6 +4,7 @@ import { startOfDayUtc, businessTodayUtcStart } from "@/lib/date-utils";
 import {
   CREDIT_CARD_BILLING_DAY_INITIAL_DATE,
   CREDIT_CARD_MANUAL_CYCLE_LOCK_SOURCE,
+  CREDIT_CARD_MAX_REPAYMENT_OFFSET_DAYS,
   CREDIT_CARD_STATEMENT_IMPORT_CYCLE_LOCK_SOURCE,
   creditCardBillingDayFromCycleEndDate,
   hasCreditCardCycleLockSource,
@@ -20,6 +21,12 @@ type BillingDayRuleInput = {
   accountIds: readonly string[];
   billingDay: number | null | undefined;
   effectiveDate?: Date | null;
+  /**
+   * 这条记录同时记录的还款日：固定日与「账单日后 N 天」互斥。
+   * `undefined` = 不改动该记录的还款日（初始化/自愈路径），`null` = 显式清空。
+   */
+  repaymentDay?: number | null;
+  repaymentOffsetDays?: number | null;
   /** 账簿业务时区；调用方在请求内应显式传入，缺省回落到部署默认值。 */
   timeZone?: string;
 };
@@ -29,8 +36,22 @@ type BillingDayRuleRow = {
   accountId: string;
   effectiveDate: Date;
   billingDay: number;
+  repaymentDay?: number | null;
+  repaymentOffsetDays?: number | null;
   updatedAt?: Date;
 };
+
+function normalizeRuleRepaymentDay(value: number | null | undefined) {
+  if (value == null) return null;
+  const day = Math.trunc(value);
+  return day >= MIN_BILLING_DAY && day <= MAX_BILLING_DAY ? day : null;
+}
+
+function normalizeRuleRepaymentOffsetDays(value: number | null | undefined) {
+  if (value == null) return null;
+  const days = Math.trunc(value);
+  return days >= 0 && days <= CREDIT_CARD_MAX_REPAYMENT_OFFSET_DAYS ? days : null;
+}
 
 type CreditCardBillingDayEvidenceAccount = {
   id: string;
@@ -48,7 +69,7 @@ export function normalizeCreditCardBillingDay(value: number | null | undefined) 
   return day >= MIN_BILLING_DAY && day <= MAX_BILLING_DAY ? day : null;
 }
 
-function activeBillingDayFromRows(
+function activeRuleFromRows(
   rows: readonly BillingDayRuleRow[],
   asOf: Date,
 ) {
@@ -56,8 +77,15 @@ function activeBillingDayFromRows(
     .map((row) => ({
       effectiveDate: startOfDayUtc(row.effectiveDate),
       billingDay: normalizeCreditCardBillingDay(row.billingDay),
+      repaymentDay: normalizeRuleRepaymentDay(row.repaymentDay),
+      repaymentOffsetDays: normalizeRuleRepaymentOffsetDays(row.repaymentOffsetDays),
     }))
-    .filter((row): row is { effectiveDate: Date; billingDay: number } => row.billingDay != null)
+    .filter((row): row is {
+      effectiveDate: Date;
+      billingDay: number;
+      repaymentDay: number | null;
+      repaymentOffsetDays: number | null;
+    } => row.billingDay != null)
     .sort((a, b) => a.effectiveDate.getTime() - b.effectiveDate.getTime());
   if (normalized.length === 0) return null;
 
@@ -67,7 +95,14 @@ function activeBillingDayFromRows(
     if (row.effectiveDate.getTime() > target) break;
     active = row;
   }
-  return active.billingDay;
+  return active;
+}
+
+function activeBillingDayFromRows(
+  rows: readonly BillingDayRuleRow[],
+  asOf: Date,
+) {
+  return activeRuleFromRows(rows, asOf)?.billingDay ?? null;
 }
 
 function sameUtcDay(a: Date, b: Date) {
@@ -174,12 +209,24 @@ async function moveLaterMatchingRuleToEvidenceDate(
   return true;
 }
 
+/**
+ * 还款日补丁：只有调用方显式给了还款日口径时才写；
+ * 固定日与「账单日后 N 天」互斥，给了其中一个就把另一个清空。
+ */
+function repaymentPatch(input: BillingDayRuleInput) {
+  if (input.repaymentDay === undefined && input.repaymentOffsetDays === undefined) return null;
+  const offsetDays = normalizeRuleRepaymentOffsetDays(input.repaymentOffsetDays);
+  if (offsetDays != null) return { repaymentDay: null, repaymentOffsetDays: offsetDays };
+  return { repaymentDay: normalizeRuleRepaymentDay(input.repaymentDay), repaymentOffsetDays: null };
+}
+
 export async function ensureInitialCreditCardBillingDayRules(
   writer: Writer,
   input: BillingDayRuleInput,
 ) {
   const billingDay = normalizeCreditCardBillingDay(input.billingDay);
   if (!billingDay || input.accountIds.length === 0) return;
+  const repayment = repaymentPatch(input);
 
   for (const accountId of uniqueAccountIds(input.accountIds)) {
     await writer.creditCardBillingDay.upsert({
@@ -193,6 +240,7 @@ export async function ensureInitialCreditCardBillingDayRules(
         accountId,
         effectiveDate: CREDIT_CARD_BILLING_DAY_INITIAL_DATE,
         billingDay,
+        ...(repayment ?? {}),
       },
       update: {},
     });
@@ -208,6 +256,7 @@ export async function recordCreditCardBillingDayChange(
   const effectiveDate = input.effectiveDate
     ? startOfDayUtc(input.effectiveDate)
     : businessTodayUtcStart(input.timeZone);
+  const repayment = repaymentPatch(input);
 
   for (const accountId of uniqueAccountIds(input.accountIds)) {
     await writer.creditCardBillingDay.upsert({
@@ -221,9 +270,11 @@ export async function recordCreditCardBillingDayChange(
         accountId,
         effectiveDate,
         billingDay,
+        ...(repayment ?? {}),
       },
       update: {
         billingDay,
+        ...(repayment ?? {}),
       },
     });
   }
@@ -243,17 +294,15 @@ export async function syncCreditCardBillingDaysFromRules(
   const [accounts, rows] = await Promise.all([
     writer.account.findMany({
       where: { id: { in: accountIds }, kind: AccountKind.bank_credit },
-      select: { id: true, billingDay: true },
+      select: { id: true, billingDay: true, repaymentDay: true, repaymentOffsetDays: true },
     }),
     writer.creditCardBillingDay.findMany({
       where: { accountId: { in: accountIds } },
-      select: { accountId: true, effectiveDate: true, billingDay: true },
+      select: { accountId: true, effectiveDate: true, billingDay: true, repaymentDay: true, repaymentOffsetDays: true },
       orderBy: [{ accountId: "asc" }, { effectiveDate: "asc" }],
     }),
   ]);
-  const currentBillingDayByAccountId = new Map(
-    accounts.map((account) => [account.id, account.billingDay] as const),
-  );
+  const accountById = new Map(accounts.map((account) => [account.id, account] as const));
   const rowsByAccountId = new Map<string, BillingDayRuleRow[]>();
   for (const row of rows) {
     const accountRows = rowsByAccountId.get(row.accountId) ?? [];
@@ -263,20 +312,46 @@ export async function syncCreditCardBillingDaysFromRules(
 
   const billingDayByAccountId = new Map<string, number | null>();
   const accountIdsByBillingDay = new Map<number | null, string[]>();
+  const repaymentUpdates: Array<{
+    accountId: string;
+    repaymentDay: number | null;
+    repaymentOffsetDays: number | null;
+  }> = [];
   for (const accountId of accountIds) {
-    const billingDay = activeBillingDayFromRows(rowsByAccountId.get(accountId) ?? [], asOf);
+    const activeRule = activeRuleFromRows(rowsByAccountId.get(accountId) ?? [], asOf);
+    const billingDay = activeRule?.billingDay ?? null;
     billingDayByAccountId.set(accountId, billingDay);
-    if (!currentBillingDayByAccountId.has(accountId)) continue;
-    if ((currentBillingDayByAccountId.get(accountId) ?? null) === billingDay) continue;
-    const grouped = accountIdsByBillingDay.get(billingDay) ?? [];
-    grouped.push(accountId);
-    accountIdsByBillingDay.set(billingDay, grouped);
+    const account = accountById.get(accountId);
+    if (!account) continue;
+    if ((account.billingDay ?? null) !== billingDay) {
+      const grouped = accountIdsByBillingDay.get(billingDay) ?? [];
+      grouped.push(accountId);
+      accountIdsByBillingDay.set(billingDay, grouped);
+    }
+    // 还款日跟着当前生效的那条记录走（只有记录里显式写了才覆盖账户级默认值）。
+    if (!activeRule) continue;
+    const nextRepaymentDay = activeRule.repaymentDay ?? null;
+    const nextRepaymentOffsetDays = activeRule.repaymentOffsetDays ?? null;
+    if (nextRepaymentDay == null && nextRepaymentOffsetDays == null) continue;
+    if (
+      (account.repaymentDay ?? null) === nextRepaymentDay &&
+      (account.repaymentOffsetDays ?? null) === nextRepaymentOffsetDays
+    ) {
+      continue;
+    }
+    repaymentUpdates.push({ accountId, repaymentDay: nextRepaymentDay, repaymentOffsetDays: nextRepaymentOffsetDays });
   }
 
   for (const [billingDay, ids] of accountIdsByBillingDay) {
     await writer.account.updateMany({
       where: { id: { in: ids }, kind: AccountKind.bank_credit },
       data: { billingDay },
+    });
+  }
+  for (const update of repaymentUpdates) {
+    await writer.account.update({
+      where: { id: update.accountId },
+      data: { repaymentDay: update.repaymentDay, repaymentOffsetDays: update.repaymentOffsetDays },
     });
   }
 

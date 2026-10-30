@@ -3118,6 +3118,18 @@ const MIGRATIONS = [
       );
     },
   },
+  {
+    // 账单日 / 还款日变更记录（2026-10-29）：银行改账单日时还款日通常一起改，
+    // 所以记录行里同时存两种还款日表达（固定日 / 账单日后 N 天），都为空则回退账户级设置。
+    // 全新安装由 native-init.sql 依据 schema 建列，这里只补存量库。
+    version: "20261029_credit_billing_repayment_day",
+    description: "Add CreditCardBillingDay.repaymentDay / repaymentOffsetDays: repayment day travels with the billing-day record",
+    apply(db) {
+      if (!tableExists(db, "CreditCardBillingDay")) return;
+      addColumnIfMissing(db, "CreditCardBillingDay", "repaymentDay", "INTEGER");
+      addColumnIfMissing(db, "CreditCardBillingDay", "repaymentOffsetDays", "INTEGER");
+    },
+  },
 ];
 
 // 到期日「周年 − 1 天」→ 周年；返回 null 表示不是旧口径。

@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, useEffect, useRef, useState, type CSSProperties, type HTMLAttributes, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, useSyncExternalStore, type CSSProperties, type HTMLAttributes, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 
 /** 顶层窗口的基准层级：不在任何窗口内时，第一个窗口从这里起算。 */
@@ -88,11 +88,18 @@ export function ModalLayerProvider({ value, children }: { value: number; childre
   return <ModalLayerContext.Provider value={value}>{children}</ModalLayerContext.Provider>;
 }
 
-/** SSR 与首帧渲染期间 `document` 不可用，客户端挂载后再补一次。 */
+/**
+ * 是否已经在客户端。
+ *
+ * ⚠️ 不能写成 `useState(false)` + `useEffect(() => setState(true))`：那样**每次挂载**的
+ * 第一帧都返回 `null`（窗口不存在），第二帧才 portal 出遮罩。用户切页签时窗口是
+ * 「卸载一个、挂载另一个」，于是整页会闪一下（遮罩消失一帧、背景页露出来）。
+ * `useSyncExternalStore` 的 server snapshot 恒 false（SSR/hydration 不 mismatch），
+ * hydration 一结束立刻变 true；之后**新挂载的窗口首帧就是 true**，没有空帧。
+ */
+const subscribeNever = () => () => {};
 function useIsClient() {
-  const [isClient, setIsClient] = useState(false);
-  useEffect(() => setIsClient(true), []);
-  return isClient;
+  return useSyncExternalStore(subscribeNever, () => true, () => false);
 }
 
 /**

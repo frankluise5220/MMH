@@ -36,6 +36,10 @@ export type CreditBillingDayRuleView = {
   accountId?: string;
   effectiveDate: string;
   billingDay: number;
+  /** 这条记录自带的固定还款日（1-31）；为空表示沿用账户级设置。 */
+  repaymentDay?: number | null;
+  /** 这条记录自带的「账单日后 N 天」；与 repaymentDay 互斥。 */
+  repaymentOffsetDays?: number | null;
   isInitial: boolean;
 };
 

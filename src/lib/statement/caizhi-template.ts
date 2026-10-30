@@ -9,9 +9,11 @@
  * 3. Balance-adjustment rows are excluded because MMH balance reconciliation
  *    should handle opening balances without polluting income statistics.
  *
- * Input: SheetJS-parsed rows.
+ * Input: SheetJS-parsed rows (or a text/CSV file read through the shared reader).
  * Output: MMH standard statement rows without the header.
  */
+
+import { readStatementSheetRows } from "@/lib/statement/statement-sheet-reader";
 export type CaizhiWorkbookSheetRows = {
   sheetName: string;
   rows: string[][];
@@ -473,16 +475,7 @@ export async function convertCaizhiFundImportFile(
   file: File,
 ): Promise<{ file: File; rowCount: number; excludedBalanceAdjustCount: number; accountName: string } | null> {
   const XLSX = await import("xlsx");
-  const workbook = XLSX.read(await file.arrayBuffer(), { type: "array", cellDates: true });
-  const sheets: CaizhiWorkbookSheetRows[] = workbook.SheetNames.map((sheetName) => ({
-    sheetName,
-    rows: XLSX.utils.sheet_to_json<Array<string | number | boolean | Date | null>>(workbook.Sheets[sheetName], {
-      header: 1,
-      defval: "",
-      raw: false,
-      dateNF: "yyyy-mm-dd",
-    }).map((row) => row.map((cell) => String(cell ?? "").trim())),
-  }));
+  const sheets: CaizhiWorkbookSheetRows[] = await readStatementSheetRows(file);
   const hasFundSheet = sheets.some((sheet) => sheet.rows.length > 0 && detectCaizhiFundDetailHeaders(sheet.rows[0] ?? []));
   if (!hasFundSheet) return null;
   const accountName = guessCaizhiAccountNameFromFilename(file.name);

@@ -83,6 +83,33 @@ function parseRepaymentOffsetDays(value: unknown) {
     : undefined;
 }
 
+/** 记录级的固定还款日（1-31）：空/null 表示这条记录不覆盖还款日。 */
+function parseRuleRepaymentDay(value: unknown) {
+  if (value === undefined) return undefined;
+  const raw = String(value ?? "").trim();
+  if (!raw) return null;
+  const day = Number(raw);
+  return Number.isInteger(day) && day >= 1 && day <= 31 ? day : undefined;
+}
+
+type RuleRepaymentInput =
+  | { ok: true; repaymentDay: number | null | undefined; repaymentOffsetDays: number | null | undefined }
+  | { ok: false; error: string };
+
+/** 一条记录同时只有一个还款日口径：固定日 或 账单日后 N 天。 */
+function resolveRuleRepaymentInput(body: Record<string, unknown> | null): RuleRepaymentInput {
+  const repaymentDay = parseRuleRepaymentDay(body?.repaymentDay);
+  const repaymentOffsetDays = parseRepaymentOffsetDays(body?.repaymentOffsetDays);
+  if (repaymentDay === undefined) return { ok: false, error: "还款日应为 1-31 的整数" };
+  if (repaymentOffsetDays === undefined) {
+    return { ok: false, error: `账单日后天数应为 0-${CREDIT_CARD_MAX_REPAYMENT_OFFSET_DAYS} 之间的整数` };
+  }
+  if (repaymentDay != null && repaymentOffsetDays != null) {
+    return { ok: false, error: "还款日与「账单日后天数」只能填一个" };
+  }
+  return { ok: true, repaymentDay, repaymentOffsetDays };
+}
+
 function normalizeRepaymentDayMode(value: unknown, fallbackOffsetDays?: number | null) {
   const raw = String(value ?? "").trim();
   if (raw === "offset") return "offset";
@@ -115,6 +142,8 @@ type RuleRow = {
   accountId: string;
   effectiveDate: Date;
   billingDay: number;
+  repaymentDay: number | null;
+  repaymentOffsetDays: number | null;
   createdAt: Date;
   updatedAt: Date;
 };
@@ -135,6 +164,8 @@ function serializeRules(rows: RuleRow[]) {
         accountId: row.accountId,
         effectiveDate: row.effectiveDate.toISOString().slice(0, 10),
         billingDay: row.billingDay,
+        repaymentDay: row.repaymentDay,
+        repaymentOffsetDays: row.repaymentOffsetDays,
       })),
   );
 }
@@ -142,7 +173,16 @@ function serializeRules(rows: RuleRow[]) {
 async function loadRuleRows(accountId: string, billAccountIds: string[]): Promise<RuleRow[]> {
   const rows = await prisma.creditCardBillingDay.findMany({
     where: { accountId: { in: billAccountIds.length > 0 ? billAccountIds : [accountId] } },
-    select: { id: true, accountId: true, effectiveDate: true, billingDay: true, createdAt: true, updatedAt: true },
+    select: {
+      id: true,
+      accountId: true,
+      effectiveDate: true,
+      billingDay: true,
+      repaymentDay: true,
+      repaymentOffsetDays: true,
+      createdAt: true,
+      updatedAt: true,
+    },
     orderBy: [{ effectiveDate: "asc" }, { createdAt: "asc" }, { id: "asc" }],
   });
   return rows;
@@ -187,6 +227,10 @@ export async function POST(req: Request) {
     if (!accountId) return NextResponse.json({ ok: false, code: "MISSING_ACCOUNT_ID", error: "缺少账户" }, { status: 400 });
     if (!effectiveDate) return NextResponse.json({ ok: false, code: "INVALID_EFFECTIVE_DATE", error: "生效日期格式不正确" }, { status: 400 });
     if (!billingDay) return NextResponse.json({ ok: false, code: "INVALID_BILLING_DAY", error: "账单日应为 1-31 的整数（31 表示月底）" }, { status: 400 });
+    const repayment = resolveRuleRepaymentInput(body);
+    if (!repayment.ok) {
+      return NextResponse.json({ ok: false, code: "INVALID_REPAYMENT_DAY", error: repayment.error }, { status: 400 });
+    }
 
     const group = await resolveBillGroup(householdId, accountId);
     if (!group) return NextResponse.json({ ok: false, code: "CREDIT_ACCOUNT_NOT_FOUND", error: "信用卡账户不存在" }, { status: 404 });
@@ -196,6 +240,8 @@ export async function POST(req: Request) {
         accountIds: group.billAccountIds,
         effectiveDate,
         billingDay,
+        repaymentDay: repayment.repaymentDay,
+        repaymentOffsetDays: repayment.repaymentOffsetDays,
       });
       await syncCreditCardBillingDaysFromRules(tx, {
         accountIds: group.billAccountIds,
@@ -221,6 +267,10 @@ export async function PUT(req: Request) {
     if (!accountId) return NextResponse.json({ ok: false, code: "MISSING_ACCOUNT_ID", error: "缺少账户" }, { status: 400 });
     if (!originalEffectiveDate || !effectiveDate) return NextResponse.json({ ok: false, code: "INVALID_EFFECTIVE_DATE", error: "生效日期格式不正确" }, { status: 400 });
     if (!billingDay) return NextResponse.json({ ok: false, code: "INVALID_BILLING_DAY", error: "账单日应为 1-31 的整数（31 表示月底）" }, { status: 400 });
+    const repayment = resolveRuleRepaymentInput(body);
+    if (!repayment.ok) {
+      return NextResponse.json({ ok: false, code: "INVALID_REPAYMENT_DAY", error: repayment.error }, { status: 400 });
+    }
 
     const group = await resolveBillGroup(householdId, accountId);
     if (!group) return NextResponse.json({ ok: false, code: "CREDIT_ACCOUNT_NOT_FOUND", error: "信用卡账户不存在" }, { status: 404 });
@@ -246,6 +296,8 @@ export async function PUT(req: Request) {
         accountIds: group.billAccountIds,
         effectiveDate,
         billingDay,
+        repaymentDay: repayment.repaymentDay,
+        repaymentOffsetDays: repayment.repaymentOffsetDays,
       });
       await syncCreditCardBillingDaysFromRules(tx, {
         accountIds: group.billAccountIds,

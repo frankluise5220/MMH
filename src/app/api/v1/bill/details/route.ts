@@ -189,7 +189,7 @@ export async function GET(req: Request) {
     );
     const billingDayRules = await prisma.creditCardBillingDay.findMany({
       where: { accountId: { in: billAccountIds } },
-      select: { effectiveDate: true, billingDay: true },
+      select: { effectiveDate: true, billingDay: true, repaymentDay: true, repaymentOffsetDays: true },
       orderBy: [{ effectiveDate: "asc" }],
     });
     const billScope: Prisma.TxRecordWhereInput = {

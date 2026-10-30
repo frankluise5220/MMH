@@ -28,9 +28,10 @@ model Account {
   id                                                         String                      @id @default(cuid())
   name                                                       String
   balance                                                    Decimal                     @default(0)
-  // As-of day for which `balance` has been maintained. Null means the cached
-  // value predates incremental balance maintenance and will be adopted as the
-  // baseline on the next background maintenance pass.
+  // Last day the cached `balance` was verified to include. Null means the
+  // cached value cannot be trusted (never computed, or marked dirty by a failed
+  // incremental update / an interrupted import batch); the background
+  // maintenance pass fully re-folds the ledger instead of adopting it.
   balanceRecomputedAt                                        DateTime?
   kind                                                       AccountKind                 @default(other)
   liabilityDirection                                         LiabilityDirection?
@@ -314,14 +315,22 @@ model CreditCardCycle {
   @@index([statementMonth])
 }
 
+/// 账单日 / 还款日的变更记录：银行改账单日时还款日通常同时改，所以两者
+/// 按同一个生效日期存放。两条还款日用「固定日 / 账单日后 N 天」两种表达，
+/// 各自可空：留空表示该时期沿用账户级设置（Account.repaymentDay /
+/// repaymentOffsetDays），保证老数据与未填写的记录行为不变。
 model CreditCardBillingDay {
-  id            String   @id @default(cuid())
-  accountId     String
-  effectiveDate DateTime
-  billingDay    Int
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
-  Account       Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  id                  String   @id @default(cuid())
+  accountId           String
+  effectiveDate       DateTime
+  billingDay          Int
+  /// 固定还款日（1-31）；与 repaymentOffsetDays 互斥，都为空则回退账户级设置。
+  repaymentDay        Int?
+  /// 「账单日后 N 天」的 N（0-62）；与 repaymentDay 互斥。
+  repaymentOffsetDays Int?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  Account             Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
 
   @@unique([accountId, effectiveDate])
   @@index([accountId])
@@ -1247,6 +1256,8 @@ model HouseholdPreference {
   /// account-display 的版本化序列化串；为空表示未配置，用默认字段集。
   accountLabelFields                String?
   accountDropdownRestrictType       Boolean         @default(true)
+  /// 侧边栏 / 账户下拉是否按最近一个月的记账频率排序；关闭后保持账户原始顺序。
+  accountUsageSortEnabled           Boolean         @default(true)
   createdAt                         DateTime        @default(now())
   updatedAt                         DateTime        @default(now()) @updatedAt
 

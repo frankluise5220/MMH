@@ -989,6 +989,44 @@ export function resolveImportAccountFromList<T extends ImportAccountMatchSource>
   return createImportAccountResolver(accounts)(accountName);
 }
 
+/**
+ * 导入解析的最后一道兜底：账户名片段出现在导入文本里（或反过来）。
+ *
+ * 只认**唯一且具体**的命中：
+ * - 跳过「机构名 / 机构+类型」这类泛化键（「支付宝」「支付宝投资账户」）——
+ *   它们不包含账户自身的名字，任何以机构名开头的未识别文本都会被第一个
+ *   同机构账户吞掉；
+ * - 多个账户命中时不猜，留给用户在预览里选。
+ *
+ * 旧实现是「谁先命中就返回谁」：支付宝账单里的「张四支付宝基金」被同机构
+ * 第一个投资账户「理财账户1100」匹配走，交易就记到了错误的账户上。
+ */
+export function findSoleFallbackImportAccount<T extends ImportAccountMatchSource>(
+  accountName: string | undefined,
+  accounts: readonly T[],
+): T | null {
+  const targetKey = normalizeImportAccountMatchKey(accountName);
+  if (targetKey.length < 3) return null;
+
+  const hits = new Map<string, T>();
+  for (const account of accounts) {
+    const specificKeys = [account.name, ...(account.AccountAlias?.map((alias) => alias.alias) ?? [])]
+      .map((value) => normalizeImportAccountMatchKey(value))
+      .filter((key) => key.length >= 3);
+    if (specificKeys.length === 0) continue;
+    // 候选键必须由账户自身的名字/别名派生（含它），纯机构键「支付宝」不算：
+    // 否则「张四支付宝基金」会被「墨支付宝基金」的机构前缀撞上。
+    const isSpecificKey = (key: string) => specificKeys.some((specific) => key.includes(specific));
+    const matched = buildImportAccountCandidates(account)
+      .map((candidate) => normalizeImportAccountMatchKey(candidate))
+      .filter((key) => key.length >= 3 && isSpecificKey(key))
+      .some((key) => targetKey.includes(key) || key.includes(targetKey));
+    if (matched) hits.set(account.id, account);
+  }
+
+  return hits.size === 1 ? Array.from(hits.values())[0] : null;
+}
+
 function inferAccountKind(value: string): ImportAccountKind | null {
   const key = normalizeImportAccountMatchKey(value);
   for (const item of ACCOUNT_KIND_ALIASES) {

@@ -551,11 +551,31 @@ html {
 
   /* 填充层：7×7 方块挖掉 1/4 圆（圆心在方块外上角、半径 6.5px），剩下的「角」补成页签底色。
        左方块：M6.5 0 A6.5 6.5 0 0 1 0 6.5 L0 7 L7 7 L7 0 Z
-       右方块（左右镜像 → sweep 取反）：M0.5 0 A6.5 6.5 0 0 0 7 6.5 L7 7 L0 7 L0 0 Z */
+       右方块（左右镜像 → sweep 取反）：M0.5 0 A6.5 6.5 0 0 0 7 6.5 L7 7 L0 7 L0 0 Z
+
+     第三层是**接缝补带**（2026-10-30 用户第 N 次反馈「活动页签下面的横线还是没去掉」）：
+       活动页签靠 `folderTabClass` 的 `-mb-px` 把内容板那 1px 上边框压在底下，覆盖量正好
+       1px —— 整数 DPR（1 / 1.5 / 2）下严丝合缝，但 **125% / 175% 这类非整数缩放（DPR 1.25）
+       下页签底边落在设备像素中间，背景按抗锯齿混合，内容板上边框就从页签正下方透出一条
+       1px 灰线**（实测 1.25 下该行 rgb≈239，正常应是页签底色 251）。所以这里在页签正下方
+       补一条「与页签同色」的实色带：盒高 8 + `bottom:-1px`（盒顶不变，弧线几何不动），
+       带子铺在盒底 3px = 纵向 [页签底 − 2px, 页签底 + 1px]，把取整残留整块盖住；带子上下
+       沿都落在同色像素上（上面是页签本身、下面是内容板），本身不产生任何可见边。
+       横向**只铺页签自身宽度**（`calc(100% - 14px)` + 起点 7px）：左右各 7px 的「翅膀」里是
+       内容板上边框本体，铺过去会把那条线挖出一段断口。
+       颜色由 `--ft-tab-seam-fill` 给，必须恒等于页签底色：白 / amber 色阶在各自 `::before`
+       里覆盖该变量（见下方两条规则），别在这里再写第三个色值。 */
   .ft-tab-fillet::before {
+    --ft-tab-seam-fill: #fbfaf7;
+    bottom: -1px;
+    height: 8px;
     background-image:
       url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='7' height='7' viewBox='0 0 7 7'%3E%3Cpath d='M6.5 0A6.5 6.5 0 0 1 0 6.5L0 7L7 7L7 0Z' fill='%23fbfaf7'/%3E%3C/svg%3E"),
-      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='7' height='7' viewBox='0 0 7 7'%3E%3Cpath d='M0.5 0A6.5 6.5 0 0 0 7 6.5L7 7L0 7L0 0Z' fill='%23fbfaf7'/%3E%3C/svg%3E");
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='7' height='7' viewBox='0 0 7 7'%3E%3Cpath d='M0.5 0A6.5 6.5 0 0 0 7 6.5L7 7L0 7L0 0Z' fill='%23fbfaf7'/%3E%3C/svg%3E"),
+      linear-gradient(var(--ft-tab-seam-fill), var(--ft-tab-seam-fill));
+    background-size: 7px 7px, 7px 7px, calc(100% - 14px) 3px;
+    background-position: 0 0, 100% 0, 7px 100%;
+    background-repeat: no-repeat, no-repeat, no-repeat;
   }
 
   /* 描边层：半径 6.5px 的 1/4 圆弧，stroke-width 1px → 环带落在半径 [6, 7]；stroke-linecap
@@ -583,10 +603,14 @@ html {
     background-color: #ffffff;
   }
 
+  /* ⚠️ 第三层是接缝补带（见 `.ft-tab-fillet::before` 注释）：覆盖 `background-image` 必须把
+     它一起带上，否则白页签下面又会透出内容板的 1px 上边框。 */
   .ft-tab-fillet-white::before {
+    --ft-tab-seam-fill: #ffffff;
     background-image:
       url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='7' height='7' viewBox='0 0 7 7'%3E%3Cpath d='M6.5 0A6.5 6.5 0 0 1 0 6.5L0 7L7 7L7 0Z' fill='%23ffffff'/%3E%3C/svg%3E"),
-      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='7' height='7' viewBox='0 0 7 7'%3E%3Cpath d='M0.5 0A6.5 6.5 0 0 0 7 6.5L7 7L0 7L0 0Z' fill='%23ffffff'/%3E%3C/svg%3E");
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='7' height='7' viewBox='0 0 7 7'%3E%3Cpath d='M0.5 0A6.5 6.5 0 0 0 7 6.5L7 7L0 7L0 0Z' fill='%23ffffff'/%3E%3C/svg%3E"),
+      linear-gradient(var(--ft-tab-seam-fill), var(--ft-tab-seam-fill));
   }
 
   /* 「未绑定」警示色阶：活动页签 + 凹角整体刷成浅黄（amber），与内容板里的 amber notice
@@ -601,10 +625,13 @@ html {
     border-color: #fde68a;
   }
 
+  /* ⚠️ 第三层是接缝补带（见 `.ft-tab-fillet::before` 注释），覆盖 `background-image` 时别丢。 */
   .ft-tab-fillet-amber::before {
+    --ft-tab-seam-fill: #fffbeb;
     background-image:
       url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='7' height='7' viewBox='0 0 7 7'%3E%3Cpath d='M6.5 0A6.5 6.5 0 0 1 0 6.5L0 7L7 7L7 0Z' fill='%23fffbeb'/%3E%3C/svg%3E"),
-      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='7' height='7' viewBox='0 0 7 7'%3E%3Cpath d='M0.5 0A6.5 6.5 0 0 0 7 6.5L7 7L0 7L0 0Z' fill='%23fffbeb'/%3E%3C/svg%3E");
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='7' height='7' viewBox='0 0 7 7'%3E%3Cpath d='M0.5 0A6.5 6.5 0 0 0 7 6.5L7 7L0 7L0 0Z' fill='%23fffbeb'/%3E%3C/svg%3E"),
+      linear-gradient(var(--ft-tab-seam-fill), var(--ft-tab-seam-fill));
   }
 
   .ft-tab-fillet-amber::after {

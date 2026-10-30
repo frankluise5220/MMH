@@ -137,6 +137,7 @@ function isYmd(value: string) {
  */
 export async function refreshFundNavCacheRanges(
   requests: FundNavCacheRangeRequest[],
+  options?: { concurrency?: number },
 ): Promise<FundNavCacheRangeRefreshResult> {
   const grouped = new Map<string, { fundCode: string; startDate: string; endDate: string; requested: number }>();
 
@@ -160,35 +161,45 @@ export async function refreshFundNavCacheRanges(
   let fetched = 0;
   let written = 0;
   let failed = 0;
-  const ranges: FundNavCacheRangeRefreshResult["ranges"] = [];
+  const queue = Array.from(grouped.values());
+  const ranges: FundNavCacheRangeRefreshResult["ranges"] = new Array(queue.length);
 
-  for (const range of grouped.values()) {
-    try {
-      const navList = await fetchHistoricalNavList(range.fundCode, range.startDate, range.endDate);
-      const rangeWritten = navList.length > 0 ? await preloadNavListToCache(range.fundCode, navList) : 0;
-      fetched += navList.length;
-      written += rangeWritten;
-      ranges.push({
-        fundCode: range.fundCode,
-        startDate: range.startDate,
-        endDate: range.endDate,
-        fetched: navList.length,
-        written: rangeWritten,
-        ok: true,
-      });
-    } catch (error) {
-      failed++;
-      ranges.push({
-        fundCode: range.fundCode,
-        startDate: range.startDate,
-        endDate: range.endDate,
-        fetched: 0,
-        written: 0,
-        ok: false,
-        error: error instanceof Error ? error.message : "Fetch failed",
-      });
+  // 逐支串行时，一个账单的十几支基金要排完才能出预览（每支还可能翻好几页）。
+  // 这里按基金并发，默认 4 —— 已经是第三方接口，再高容易被限流。
+  const concurrency = Math.max(1, Math.min(options?.concurrency ?? 4, queue.length || 1));
+  let cursor = 0;
+  await Promise.all(Array.from({ length: concurrency }, async () => {
+    while (cursor < queue.length) {
+      const index = cursor;
+      cursor += 1;
+      const range = queue[index];
+      try {
+        const navList = await fetchHistoricalNavList(range.fundCode, range.startDate, range.endDate);
+        const rangeWritten = navList.length > 0 ? await preloadNavListToCache(range.fundCode, navList) : 0;
+        fetched += navList.length;
+        written += rangeWritten;
+        ranges[index] = {
+          fundCode: range.fundCode,
+          startDate: range.startDate,
+          endDate: range.endDate,
+          fetched: navList.length,
+          written: rangeWritten,
+          ok: true,
+        };
+      } catch (error) {
+        failed++;
+        ranges[index] = {
+          fundCode: range.fundCode,
+          startDate: range.startDate,
+          endDate: range.endDate,
+          fetched: 0,
+          written: 0,
+          ok: false,
+          error: error instanceof Error ? error.message : "Fetch failed",
+        };
+      }
     }
-  }
+  }));
 
   return {
     requested: requests.length,
@@ -197,7 +208,7 @@ export async function refreshFundNavCacheRanges(
     fetched,
     written,
     failed,
-    ranges,
+    ranges: ranges.filter(Boolean),
   };
 }
 
@@ -252,6 +263,8 @@ export async function getFundNav(
   fundCode: string,
   navDate: Date,
   accountId?: string,
+  /** `network: false` → 只读缓存，未命中直接返回 null（导入预览要秒出明细时用）。 */
+  options?: { network?: boolean },
 ): Promise<{ nav: number; cumNav: number | null; name: string | null; dateMatch: boolean; actualDate?: string } | null> {
   // 1. Query the cache table first
   const cached = await getFundNavFromCacheOnly(fundCode, navDate);
@@ -262,6 +275,8 @@ export async function getFundNav(
     void ensureFundProfileForAccount(fundCode, accountId).catch(() => {});
     return { ...cached, dateMatch: true }; // Cache dates always match
   }
+
+  if (options?.network === false) return null;
 
   // 2. Cache miss: fetch from the external API (trying configured priorities)
   const dateStr = navDate.toISOString().slice(0, 10);
