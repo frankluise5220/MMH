@@ -85,23 +85,48 @@ expect(
   "electron-builder.yml files must include electron/app-updater.cjs, otherwise the packaged app cannot require the file-level updater.",
 );
 expect(
-  /renameSync\(appDir, backupDir\)/.test(appUpdater) &&
-    /renameSync\(stageDir, appDir\)/.test(appUpdater) &&
+  /renameWithRetry\(appDir, backupDir/.test(appUpdater) &&
+    /renameWithRetry\(stageDir, appDir/.test(appUpdater) &&
+    /async function commitStaged\(/.test(appUpdater) &&
     /function rollback\(/.test(appUpdater) &&
     /function recoverOnBoot\(/.test(appUpdater),
-  "The file-level updater must swap resources/app by directory rename and be able to roll back / recover an interrupted swap.",
+  "The file-level updater must swap resources/app by directory rename (retrying a busy directory) and be able to roll back / recover an interrupted swap.",
 );
 expect(
   /app\.relaunch\(\)/.test(electronMain) &&
-    /commitStaged\(/.test(electronMain) &&
+    /await appUpdater\.commitStaged\(/.test(electronMain) &&
     /restorePreviousPayload\(/.test(electronMain),
   "Electron must apply the staged payload and relaunch (no installer) and restore the previous payload when it cannot boot.",
 );
+
+// 2026-10-31 实测事故（0.1.79，Windows）：下载结束后点「立即重启」，报
+//   ebusy:resource busy or locked, rename 'D:\MMH\resources\app' '...app.old-0.1.78-...'
+// resources\app 是本地 Next.js 服务的 cwd，better_sqlite3.node 也映射在它里面，
+// 只要服务还活着 Windows 就不允许重命名该目录。所以「先停服务、再换目录」是
+// 硬顺序，不是优化：缺了它，文件级更新在任何 Windows 机器上都不可能成功。
 expect(
-  /requiresInstaller: false/.test(buildScript) &&
-    /mmh-app-latest\.json/.test(buildScript) &&
-    /sha512/.test(buildScript),
+  /async function stopServerForUpdate\(/.test(electronMain) &&
+    /await stopServerForUpdate\(\)/.test(electronMain) &&
+    /await waitForServerExit\(/.test(electronMain) &&
+    /\btaskkill\b/.test(electronMain) &&
+    /BUSY_CODES/.test(appUpdater),
+  "installUpdateNow must stop the bundled server (kill the tree, wait for exit and port release) BEFORE renaming resources/app, and the rename must retry a busy directory.",
+);
+expect(
+  /if \(quitting \|\| serverStopping\) return;/.test(electronMain) &&
+    /function restartServerAfterStop\(/.test(electronMain),
+  "A deliberate stop for the swap must not be reported as a server crash, and a refused swap must bring the local server back.",
+);
+expect(
+  /mmh-app-latest\.json/.test(buildScript) && /sha512/.test(buildScript) && /requiresInstaller,/.test(buildScript),
   "build-win-desktop.cjs must emit the app payload zip + mmh-app-latest.json manifest (sha512) for the file-level update channel.",
+);
+// 清单默认必须是文件级（requiresInstaller=false），只有显式设置
+// MMH_REQUIRES_INSTALLER=1 才切成整包安装。理由：换目录的代码跑在【已安装那个
+// 版本的 asar 里】，坏掉的壳只能被 NSIS 安装包换掉 —— 0.1.79 就是这样。
+expect(
+  /const requiresInstaller = [^;]*MMH_REQUIRES_INSTALLER/.test(buildScript),
+  "mmh-app-latest.json must default to the file-level channel and only force the installer channel via MMH_REQUIRES_INSTALLER (the escape hatch for a shell whose own swap is broken, e.g. 0.1.79).",
 );
 // 2026-10-28 实测事故：PATH 里 Git Bash 的 GNU tar 排在前面时，`tar -a -c -f x.zip`
 // 不认 zip，只吐一个未压缩的 tar 却仍叫 .zip（93.7 MB payload -> 96.8 MB，且

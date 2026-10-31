@@ -13,7 +13,7 @@
 // The Next.js application code is untouched; this shell only hosts it.
 
 const { app, BrowserWindow, dialog, ipcMain, session: electronSession } = require("electron");
-const { spawn } = require("child_process");
+const { spawn, spawnSync } = require("child_process");
 const path = require("path");
 const fs = require("fs");
 const http = require("http");
@@ -131,6 +131,12 @@ const port = Number(process.env.MMH_PORT || 17777);
 let serverProc = null;
 let mainWindow = null;
 let quitting = false;
+// A deliberate stop (file-level update) is not a crash: the exit handler must
+// not show「MMH 服务已停止」or try to roll the payload back while we swap it.
+let serverStopping = false;
+// One swap at a time: a second「立即重启」click while the directories are being
+// renamed would fight the first one.
+let applyingUpdate = false;
 
 // Update-download window state (see the "Update window" section below).
 let updateWindow = null;
@@ -453,19 +459,18 @@ function startServer() {
     serverProc.on("error", reject);
     serverProc.on("exit", (code, signal) => {
       log("Server exited code=" + code + " signal=" + signal);
-      if (!quitting) {
-        // A payload that cannot boot right after an update must not leave the
-        // user with a dead app: restore the previous resources\app and retry
-        // once (rollback() refuses a second run via the state file).
-        if (isPackaged && restorePreviousPayload("server exited")) return;
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          dialog.showErrorBox(
-            "MMH 服务已停止",
-            "本地服务异常退出（code=" + code + "），应用将关闭。请重新打开 MMH 重试。",
-          );
-        }
-        app.quit();
+      if (quitting || serverStopping) return;
+      // A payload that cannot boot right after an update must not leave the
+      // user with a dead app: restore the previous resources\app and retry
+      // once (rollback() refuses a second run via the state file).
+      if (isPackaged && restorePreviousPayload("server exited")) return;
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        dialog.showErrorBox(
+          "MMH 服务已停止",
+          "本地服务异常退出（code=" + code + "），应用将关闭。请重新打开 MMH 重试。",
+        );
       }
+      app.quit();
     });
     waitForReady(resolve, reject, 45000);
   });
@@ -492,6 +497,107 @@ function waitForReady(resolve, reject, timeoutMs) {
     });
   };
   ping();
+}
+
+function waitForServerExit(proc, timeoutMs) {
+  if (!proc || proc.exitCode !== null || proc.signalCode !== null) return Promise.resolve(true);
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      proc.removeListener("exit", onExit);
+      resolve(false);
+    }, timeoutMs);
+    function onExit() {
+      clearTimeout(timer);
+      resolve(true);
+    }
+    proc.once("exit", onExit);
+  });
+}
+
+function waitForPortFree(timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  return new Promise((resolve) => {
+    const tick = async () => {
+      if (!(await isPortInUse())) {
+        resolve(true);
+        return;
+      }
+      if (Date.now() > deadline) {
+        resolve(false);
+        return;
+      }
+      setTimeout(tick, 200);
+    };
+    tick();
+  });
+}
+
+// Windows will not rename `resources\app` while the bundled Next.js server runs
+// out of it: the directory is that process's working directory (rename fails
+// with EBUSY) and better_sqlite3.node is mapped into it (EPERM/EACCES). 0.1.79
+// applied the swap without stopping the server first, so "立即重启" always died
+// with `EBUSY: resource busy or locked, rename '...\resources\app' ->
+// '...\app.old-0.1.78-...'` and the update could never land — a file-level
+// update had never actually worked on Windows.
+//
+// Killing the tree is safe for the books: the shell already does exactly this
+// on a normal quit (taskkill /T /F), and SQLite is crash-safe — a killed process
+// leaves a hot journal / WAL that the next open rolls back.
+// Returns { ok, serverGone, error }. `serverGone` says whether this app still
+// has (or could get back) its own server: only then is restarting it sensible.
+async function stopServerForUpdate() {
+  const proc = serverProc;
+  if (!proc || !proc.pid) return { ok: true, serverGone: true };
+  serverStopping = true;
+  log("Stopping the local server (pid " + proc.pid + ") before swapping resources\\app");
+  try {
+    if (process.platform === "win32") {
+      spawnSync("taskkill", ["/pid", String(proc.pid), "/T", "/F"], { windowsHide: true });
+    } else {
+      proc.kill();
+    }
+  } catch (error) {
+    log("Failed to signal the local server: " + (error && error.message ? error.message : error));
+  }
+  serverProc = null;
+  if (!(await waitForServerExit(proc, 10000))) {
+    return {
+      ok: false,
+      serverGone: false,
+      error: "无法停止本地服务（pid " + proc.pid + "），请关闭 MMH 后重新打开再更新",
+    };
+  }
+  // Handles are released asynchronously after the process is gone; a listener
+  // that survives its owner means another MMH instance owns the install.
+  if (!(await waitForPortFree(5000))) {
+    return {
+      ok: false,
+      serverGone: false,
+      error: "端口 " + port + " 仍被其他 MMH 进程占用，请关闭 MMH 后重新打开再更新",
+    };
+  }
+  return { ok: true, serverGone: true };
+}
+
+// The swap was refused (the directory is still locked, permissions, …). The
+// server we stopped for it has to come back, otherwise a failed update leaves
+// the user with an app whose UI cannot reach its own API.
+function restartServerAfterStop() {
+  serverStopping = false;
+  if (serverProc) return;
+  log("Restarting the local server after the update was not applied");
+  startServer()
+    .then(() => log("Local server is back; the update can be retried"))
+    .catch((error) => {
+      log("Local server did not come back: " + (error && error.message ? error.message : error));
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        dialog.showErrorBox(
+          "MMH 服务未启动",
+          "更新未应用，本地服务也没能重新启动。请关闭 MMH 后重新打开。",
+        );
+      }
+      app.quit();
+    });
 }
 
 function createWindow() {
@@ -767,31 +873,61 @@ function cancelUpdateDownload() {
 // File-level: the staged payload is swapped into resources\app and the app
 // relaunches itself — no installer runs, which is the whole point of the
 // channel. Installer channel: electron-updater hands over to NSIS as before.
-function installUpdateNow() {
-  if (pendingAppUpdate) {
-    const staged = pendingAppUpdate;
-    const result = appUpdater.commitStaged({
-      resourcesDir: resourcesDir,
-      stageDir: staged.stageDir,
-      fromVersion: runtimeVersion,
-      toVersion: staged.version,
-      userDataDir: userDataDir,
-    });
-    if (!result.ok) {
-      log("Applying app update failed: " + result.error);
-      pushUpdateWindowState({ phase: "error", version: staged.version, message: result.error });
-      return;
-    }
-    log("App update " + staged.version + " applied; relaunching");
-    pendingAppUpdate = null;
-    quitting = true;
-    app.relaunch();
-    app.exit(0);
+//
+// Order matters, and it is the whole bug this function used to have: the server
+// has to be gone before the renaming starts (stopServerForUpdate), because a
+// running server keeps resources\app busy by definition.
+async function installUpdateNow() {
+  if (!pendingAppUpdate) {
+    log("Restarting to install update " + downloadVersion + " (installer)");
+    // Let the current IPC turn finish before the windows are torn down.
+    setImmediate(() => autoUpdater.quitAndInstall());
     return;
   }
-  log("Restarting to install update " + downloadVersion + " (installer)");
-  // Let the current IPC turn finish before the windows are torn down.
-  setImmediate(() => autoUpdater.quitAndInstall());
+  if (applyingUpdate) return;
+  applyingUpdate = true;
+  const staged = pendingAppUpdate;
+  log("Applying app update " + staged.version + " (stop server → swap → relaunch)");
+  pushUpdateWindowState({ phase: "applying", version: staged.version });
+  setTaskbarProgress(1);
+
+  const stopped = await stopServerForUpdate();
+  if (!stopped.ok) {
+    applyingUpdate = false;
+    log("Applying app update failed: " + stopped.error);
+    setTaskbarProgress(-1);
+    pushUpdateWindowState({ phase: "apply-error", version: staged.version, message: stopped.error });
+    sendUpdateStatus({ type: "error", message: stopped.error });
+    // Only a server we actually own can be brought back: if the port is held
+    // by another process, spawning a second one would just fail to bind.
+    if (stopped.serverGone) restartServerAfterStop();
+    return;
+  }
+
+  const result = await appUpdater.commitStaged({
+    resourcesDir: resourcesDir,
+    stageDir: staged.stageDir,
+    fromVersion: runtimeVersion,
+    toVersion: staged.version,
+    userDataDir: userDataDir,
+    log: log,
+  });
+  if (!result.ok) {
+    applyingUpdate = false;
+    log("Applying app update failed: " + result.error);
+    setTaskbarProgress(-1);
+    pushUpdateWindowState({ phase: "apply-error", version: staged.version, message: result.error });
+    sendUpdateStatus({ type: "error", message: result.error });
+    restartServerAfterStop();
+    return;
+  }
+  log("App update " + staged.version + " applied; relaunching");
+  pendingAppUpdate = null;
+  quitting = true;
+  // app.exit skips before-quit on purpose: the server is already stopped, and
+  // the cookie flush that before-quit defers would only delay the relaunch.
+  app.relaunch();
+  app.exit(0);
 }
 
 // Put the previous resources\app back when the freshly swapped payload cannot
@@ -1026,7 +1162,16 @@ function setupAutoUpdater() {
   // Update window actions (electron/update-preload.cjs).
   ipcMain.handle("mmh:update-cancel", () => ({ ok: cancelUpdateDownload() }));
   ipcMain.handle("mmh:update-install", () => {
-    installUpdateNow();
+    // Answer at once (the swap and the relaunch take seconds), but never let a
+    // rejection escape as an unhandled promise.
+    installUpdateNow().catch((error) => {
+      log("Applying app update failed: " + (error && error.message ? error.message : error));
+      pushUpdateWindowState({
+        phase: "apply-error",
+        version: downloadVersion,
+        message: error && error.message ? error.message : String(error),
+      });
+    });
     return { ok: true };
   });
   ipcMain.handle("mmh:update-close", () => {
@@ -1148,8 +1293,7 @@ app.on("before-quit", (event) => {
     try {
       if (process.platform === "win32") {
         // Kill the whole process tree so the standalone server cannot linger
-        // as an orphan holding the port after the app exits.
-        const { spawnSync } = require("child_process");
+        // as an orphan holding the port (and resources\app) after the app exits.
         spawnSync("taskkill", ["/pid", String(serverProc.pid), "/T", "/F"], {
           windowsHide: true,
         });

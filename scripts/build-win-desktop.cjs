@@ -670,18 +670,29 @@ step("pack file-level update (resources/app zip + manifest)");
   const electronVersion = JSON.parse(
     fs.readFileSync(path.join(root, "node_modules", "electron", "package.json"), "utf8"),
   ).version;
+  // false = replacing resources\app is enough. True when the Electron/Chromium
+  // runtime itself changes, and also via MMH_REQUIRES_INSTALLER for the one
+  // release that has to drag 0.1.79 off its own broken swap: the swap code runs
+  // from the *installed* asar, so no payload can ever fix it — 0.1.79 must be
+  // moved by the NSIS installer (see electron/main.cjs stopServerForUpdate).
+  const requiresInstaller = /^(1|true|yes)$/i.test(String(process.env.MMH_REQUIRES_INSTALLER || ""));
   const manifest = {
     appId: "com.mmh.desktop",
     version,
     electron: electronVersion,
-    // false = replacing resources\app is enough. Flip to true only for a release
-    // that changes the Electron/Chromium runtime itself.
-    requiresInstaller: false,
+    requiresInstaller,
     url: UPDATE_FEED.url + zipName,
     size: zipSize,
     sha512,
     generatedAt: new Date().toISOString(),
   };
+  if (requiresInstaller) {
+    console.log(
+      "Manifest mode: installer — clients will download mmh-win-setup-v" +
+        version +
+        "-x64.exe, so latest.yml + the .blockmap MUST be on the update feed too.",
+    );
+  }
   fs.writeFileSync(
     path.join(distDir, "mmh-app-latest.json"),
     JSON.stringify(manifest, null, 2) + "\n",

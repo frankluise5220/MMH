@@ -19,6 +19,13 @@
 //   * No file is ever deleted until the new payload has booted once. The old
 //     `app` directory is renamed (not removed) to `app.old-<from>-<ts>`, and is
 //     restored if the server fails to start after the swap.
+//   * The caller stops every process running out of `app` BEFORE commitStaged is
+//     called. Windows refuses to rename a directory that is a live process's
+//     working directory (EBUSY) or that has a file open below it (EPERM) — the
+//     bundled server has both (cwd = `app`, better_sqlite3.node mapped), so
+//     swapping while it runs can only ever fail with
+//     `EBUSY: resource busy or locked, rename '...\resources\app' -> '...app.old'`
+//     (the 0.1.79 report).
 //   * The runtime version lives in `resources\app\.mmh-version`, not in
 //     `app.getVersion()` — the asar keeps the version of the shell that shipped
 //     the installer, which stops matching once only the payload is replaced.
@@ -170,6 +177,63 @@ function removeDir(dir) {
   } catch {
     // A locked leftover only wastes disk space; never fail the update over it.
   }
+}
+
+// Windows returns these while a directory is still busy. EBUSY is Node's
+// mapping of ERROR_SHARING_VIOLATION (a live process has the directory as its
+// cwd), EPERM/EACCES of ERROR_ACCESS_DENIED (a file below it is still open or
+// mapped), ENOTEMPTY of a half-released tree. All of them are transient once
+// the owning process has started dying: handles are released asynchronously,
+// and an antivirus scan of the freshly extracted payload keeps a share lock for
+// a moment after the process is gone.
+const BUSY_CODES = new Set(["EBUSY", "EPERM", "EACCES", "ENOTEMPTY"]);
+
+function isBusyError(error) {
+  return Boolean(error && BUSY_CODES.has(String(error.code || "").toUpperCase()));
+}
+
+/**
+ * Rename a directory, waiting out a busy tree.
+ *
+ * `fs.renameSync` is the right primitive (both paths live on the same volume, so
+ * the swap is atomic and there is never a half-copied `app`), but it is the one
+ * call in the update that has to compete with Windows' handle release. Eight
+ * attempts with linear backoff cover roughly four seconds — long enough for a
+ * killed process to be reaped and for Defender to finish, short enough that a
+ * genuinely stuck directory (a second MMH instance) is reported instead of
+ * hanging the update window.
+ */
+async function renameWithRetry(from, to, options = {}) {
+  const attempts = Math.max(1, Number(options.attempts) || 8);
+  const baseDelayMs = Math.max(10, Number(options.baseDelayMs) || 150);
+  const maxDelayMs = Math.max(baseDelayMs, Number(options.maxDelayMs) || 1200);
+  const log = typeof options.log === "function" ? options.log : () => {};
+  let lastError = null;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      fs.renameSync(from, to);
+      return { ok: true, attempts: attempt };
+    } catch (error) {
+      lastError = error;
+      if (!isBusyError(error) || attempt === attempts) break;
+      const wait = Math.min(maxDelayMs, baseDelayMs * attempt);
+      log("Rename of " + from + " blocked (" + error.code + "); retry " + attempt + "/" + attempts + " in " + wait + "ms");
+      await new Promise((resolve) => setTimeout(resolve, wait));
+    }
+  }
+  return { ok: false, error: lastError };
+}
+
+function describeRenameFailure(error) {
+  const code = String((error && error.code) || "");
+  const message = (error && error.message) || String(error);
+  if (BUSY_CODES.has(code)) {
+    return (
+      message +
+      "（程序目录仍被占用：请确认没有其他 MMH 进程在运行，并暂时关闭安全软件的实时扫描后重试）"
+    );
+  }
+  return message;
 }
 
 async function downloadToFile(url, destFile, { onProgress, isCancelled, timeoutMs = 30000 }) {
@@ -330,27 +394,33 @@ async function stageUpdate({ manifest, resourcesDir, onProgress, isCancelled }) 
  * Swap the staged payload in. Both steps are directory renames on the same
  * volume, so there is no window where a half-copied `app` exists: either the old
  * directory or the new one is in place.
+ *
+ * Async because a busy directory is waited out (see renameWithRetry). The caller
+ * must have stopped every process that runs out of `app` first — main.cjs does
+ * that in stopServerForUpdate(); renaming a directory that is a live process's
+ * cwd (or that has a mapped .node below it) can only fail.
  */
-function commitStaged({ resourcesDir, stageDir, fromVersion, toVersion, userDataDir }) {
+async function commitStaged({ resourcesDir, stageDir, fromVersion, toVersion, userDataDir, log, retry }) {
   const appDir = path.join(resourcesDir, "app");
   const backupDir = path.join(resourcesDir, BACKUP_PREFIX + fromVersion + "-" + Date.now());
   if (!fs.existsSync(path.join(stageDir, "server.js"))) {
     return { ok: false, error: "更新包已丢失，请重新下载" };
   }
-  try {
-    fs.renameSync(appDir, backupDir);
-  } catch (error) {
-    return { ok: false, error: "无法替换安装文件：" + (error.message || error) };
+  const moved = await renameWithRetry(appDir, backupDir, { ...(retry || {}), log });
+  if (!moved.ok) {
+    return { ok: false, error: "无法替换安装文件：" + describeRenameFailure(moved.error) };
   }
-  try {
-    fs.renameSync(stageDir, appDir);
-  } catch (error) {
-    try {
-      fs.renameSync(backupDir, appDir);
-    } catch {
-      // Nothing more we can do in-process; recoverOnBoot handles a missing app.
-    }
-    return { ok: false, error: "无法启用新版本：" + (error.message || error) };
+  const applied = await renameWithRetry(stageDir, appDir, { ...(retry || {}), log });
+  if (!applied.ok) {
+    const restored = await renameWithRetry(backupDir, appDir, { ...(retry || {}), log });
+    // Nothing more we can do in-process; recoverOnBoot handles a missing app.
+    return {
+      ok: false,
+      error:
+        "无法启用新版本：" +
+        describeRenameFailure(applied.error) +
+        (restored.ok ? "" : "（旧版本未能复位，重启应用会自动修复）"),
+    };
   }
   writeState(userDataDir, {
     phase: "applied",
@@ -439,9 +509,12 @@ module.exports = {
   MANIFEST_URL,
   APP_ID,
   MIN_USEFUL_DB_BYTES,
+  BUSY_CODES,
   compareVersions,
   readRuntimeVersion,
   readState,
+  isBusyError,
+  renameWithRetry,
   fetchManifest,
   evaluateManifest,
   stageUpdate,

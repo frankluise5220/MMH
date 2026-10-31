@@ -40,7 +40,7 @@
     "check:docker": "node scripts/verify-docker-entrypoint.cjs",
     "check:fnos-gateway": "node scripts/check-fnos-gateway-guards.cjs",
     "check:fnos": "node scripts/verify-fnos-package.cjs",
-    "check:win": "node scripts/verify-win-desktop.cjs && node scripts/verify-win-sqlite-runtime.cjs",
+    "check:win": "node scripts/verify-win-desktop.cjs && node scripts/verify-win-sqlite-runtime.cjs && node scripts/verify-app-updater-swap.cjs",
     "check:synology": "node scripts/verify-synology-package.cjs",
     "check:migration-coverage": "node scripts/check-schema-migration-coverage.cjs",
     "check:release-version": "node scripts/check-release-version.cjs",

@@ -192,7 +192,7 @@
           secondary: document.getElementById("secondary"),
         };
 
-        // All four phases share the same layout; only copy and the action set
+        // Every phase shares the same layout; only copy and the action set
         // differ, so the window never resizes between states.
         const COPY = {
           downloading: {
@@ -208,6 +208,15 @@
             primaryStyle: "btn-primary",
             secondary: "稍后",
           },
+          // Between the click and the relaunch: the server is being stopped and
+          // resources\app renamed, so there is nothing to click and no way back
+          // — the buttons must disappear instead of inviting a second click.
+          applying: {
+            title: "正在应用更新",
+            note: "正在替换程序文件并重新启动，请不要关闭应用。",
+            primary: "",
+            primaryStyle: "btn-ghost",
+          },
           cancelled: {
             title: "已取消下载",
             note: "可以稍后从「设置 → 桌面端 → 检查更新」重新下载。",
@@ -219,6 +228,16 @@
             note: "请稍后重试，或从官网手动下载安装包覆盖安装。",
             primary: "关闭",
             primaryStyle: "btn-ghost",
+          },
+          // The download succeeded but the swap was refused (directory still
+          // busy, permissions). Distinct from "下载失败": the file is already
+          // on disk, so a retry re-runs the swap instead of the download.
+          "apply-error": {
+            title: "更新未能应用",
+            note: "已下载的更新还在，可以重试；如果仍然失败，请关闭 MMH 后重新打开再试，或从官网下载安装包覆盖安装。",
+            primary: "重试",
+            primaryStyle: "btn-primary",
+            secondary: "关闭",
           },
         };
 
@@ -242,13 +261,18 @@
           const copy = COPY[phase];
 
           document.body.className =
-            phase === "downloaded" ? "state-ok" : phase === "error" ? "state-err" : "";
+            phase === "downloaded"
+              ? "state-ok"
+              : phase === "error" || phase === "apply-error"
+                ? "state-err"
+                : "";
 
           el.title.textContent = copy.title;
 
           // The error message is the only useful thing to show when a download
-          // dies, so it replaces the generic note (full text in the tooltip).
-          if (phase === "error" && state.message) {
+          // (or the swap) dies, so it replaces the generic note (full text in
+          // the tooltip).
+          if ((phase === "error" || phase === "apply-error") && state.message) {
             el.note.textContent = state.message;
             el.note.title = state.message;
           } else {
@@ -259,6 +283,7 @@
 
           el.primary.textContent = copy.primary;
           el.primary.className = copy.primaryStyle;
+          el.primary.hidden = !copy.primary;
           el.secondary.hidden = !copy.secondary;
           el.secondary.textContent = copy.secondary || "";
 
@@ -286,14 +311,27 @@
           }
 
           el.track.classList.remove("indeterminate");
-          el.fill.style.width = phase === "downloaded" ? "100%" : "0%";
-          el.percent.textContent = phase === "downloaded" ? "100%" : "--";
+          // The bar is about the transfer: once the file is on disk it stays at
+          // 100% for every later phase, including a refused swap.
+          const settled = phase === "downloaded" || phase === "applying" || phase === "apply-error";
+          el.fill.style.width = settled ? "100%" : "0%";
+          el.percent.textContent = settled ? "100%" : "--";
           el.detail.textContent =
-            phase === "downloaded" ? "下载完成" : phase === "cancelled" ? "已停止下载" : "下载未完成";
+            phase === "downloaded"
+              ? "下载完成"
+              : phase === "applying"
+                ? "正在写入新版本…"
+                : phase === "apply-error"
+                  ? "文件未替换"
+                  : phase === "cancelled"
+                    ? "已停止下载"
+                    : "下载未完成";
         }
 
         el.primary.addEventListener("click", function () {
-          if (state.phase === "downloaded") window.mmhUpdate.install();
+          // "重试" after a refused swap: the staged payload is still there, so
+          // install() swaps it again instead of downloading 100 MB once more.
+          if (state.phase === "downloaded" || state.phase === "apply-error") window.mmhUpdate.install();
           else if (state.phase === "downloading") window.mmhUpdate.cancel();
           else window.mmhUpdate.close();
         });
