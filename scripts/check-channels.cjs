@@ -5,6 +5,7 @@
  * 为什么必须有它：`release: published` 只完成 GitHub Release 这一个面。其余渠道各自
  * 独立、各自静默失败，谁都不会向上报错——
  *   - FN 软仓：fnVPS `sync.sh` 每小时跑一次，没跑到就看不到新版本；
+ *   - 软仓客户端公告：5660 的 JSON 监听要在 `sync.sh` 重启前醒来，否则首页公告停在旧版本；
  *   - FnDepot：两跳（本仓库 fnpack.json 回填 → FnDepot 镜像），GitHub 对镜像的
  *     scheduled cron 节流到 4–6 小时，平台再每天 00:00（UTC+8）读一次仓库；
  *   - 群晖套件源：只认 fnVPS `data/downloads/` 里的 SPK 文件名，与 Release 无关；
@@ -26,6 +27,7 @@ const DEFAULT_REPO = "frankluise5220/MMH";
 const FNDEPOT_REPO = "frankluise5220/FnDepot";
 const TIMEOUT_MS = 20000;
 const FN_SOFTSTORE_API = "http://fnapp.floatingice.win/api/apps";
+const FN_SOFTSTORE_NOTICE_API = "http://fnapp.floatingice.win/api/notice";
 const SYNOLOGY_PROTOCOL =
   "https://synology.floatingice.win/?arch=x86_64&build=64570&language=chs";
 
@@ -60,7 +62,6 @@ function expectedReleaseAssets(version) {
     `mmh-fnos-v${version}-arm64.fpk`,
     `mmh-synology-v${version}-x86_64.spk`,
     `mmh-synology-v${version}-arm64.spk`,
-    `mmh-nas-v${version}.zip`,
   ];
 }
 
@@ -207,6 +208,33 @@ function createChecks({ version, repo }) {
         if (!desc.startsWith("【本版更新】")) throw new Error("desc 缺少【本版更新】段");
         if (desc.includes("\n")) throw new Error("desc 含真实换行，会把「更新内容」面板顶出来");
         return `${version}，desc 为单行【本版更新】`;
+      },
+    },
+    {
+      label: "软仓客户端公告",
+      async run() {
+        // notice.json 的 records 由 5660 的「JSON 监听」在 fn-appstores.json 变化后追加，
+        // 不是构建产物：写文件后立刻重启容器会让它错过变化（0.1.73~0.1.80 断档 8 版的成因）。
+        const payload = await getJson(FN_SOFTSTORE_NOTICE_API);
+        const records = Array.isArray(payload?.records) ? payload.records : [];
+        const announced = records.some((item) =>
+          `${item?.title || ""}${item?.content || ""}`.includes(`v${version}`),
+        );
+        if (!announced) {
+          throw new Error(
+            `records 里没有 v${version}（5660 的 JSON 监听未追加，`
+              + "或 sync.sh 在监听器醒来前就重启了容器）",
+          );
+        }
+        const carousel = Array.isArray(payload?.carousel) ? payload.carousel : [];
+        const hardcoded = [...carousel, String(payload?.content || "")].some((value) =>
+          /:5660\b/.test(String(value)),
+        );
+        if (hardcoded) {
+          throw new Error("carousel/content 里有写死 :5660 的地址，应走无端口入口");
+        }
+        const carouselText = carousel.length ? `${carousel.length} 张轮播图` : "无轮播图";
+        return `已公告 v${version}，${carouselText}`;
       },
     },
     {
