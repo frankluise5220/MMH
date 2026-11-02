@@ -62,6 +62,20 @@ export function StatisticsFilterPanel({ allAccounts, allInstitutions = [], allUs
     accountIds: accountId.split(",").filter(Boolean),
   };
 
+  function handleLevelChange(nextLevel: "year" | "month") {
+    if (nextLevel === level) return;
+    if (isReports) {
+      if (nextLevel === "month") {
+        setStartMonth(`${startYear}-01`);
+        setEndMonth(`${endYear}-12`);
+      } else {
+        setStartYear(startMonth.slice(0, 4));
+        setEndYear(endMonth.slice(0, 4));
+      }
+    }
+    setLevel(nextLevel);
+  }
+
   function generate(overrides: { nextUserIds?: string[]; nextInstitutionId?: string; nextAccountId?: string } = {}) {
     const nextUserIds = overrides.nextUserIds ?? userIds;
     const nextInstitutionId = overrides.nextInstitutionId ?? institutionId;
@@ -108,7 +122,7 @@ export function StatisticsFilterPanel({ allAccounts, allInstitutions = [], allUs
     // 移动端允许换行堆叠（min-w-max 只在 md+ 生效）：控件全在一行时窄屏必然溢出。
     <div className="flex flex-wrap items-center gap-2 md:min-w-max md:gap-3">
       {!hideRange && <span className="text-xs font-medium text-slate-500">{t("statistics.range")}</span>}
-      {!hideRange && <select value={level} onChange={(event) => setLevel(event.target.value as "year" | "month")} className="h-9 w-20 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 md:h-8">
+      {!hideRange && <select value={level} onChange={(event) => handleLevelChange(event.target.value as "year" | "month")} className="h-9 w-20 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 md:h-8">
         <option value="year">{t("reports.year")}</option>
         <option value="month">{t("reports.month")}</option>
       </select>}
