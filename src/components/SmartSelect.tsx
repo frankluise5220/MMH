@@ -550,7 +550,9 @@ export function SmartSelect(props: SmartSelectProps) {
 
   const listId = useId();
   const selectedOption = mode === "single"
-    ? effectiveOptions.find((option) => option.id === value)
+    ? value
+      ? effectiveOptions.find((option) => option.id === value)
+      : undefined
     : undefined;
   const selectedLabel = selectedOption ? stripIndent(selectedOption.triggerLabel ?? selectedOption.label) : "";
   const selectedTitle = selectedOption
@@ -565,7 +567,14 @@ export function SmartSelect(props: SmartSelectProps) {
   const [search, setSearch] = useState("");
   const [focusedIndex, setFocusedIndex] = useState(-1);
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
-  const [dropdownPos, setDropdownPos] = useState({ top: 0, left: 0, width: 0, minWidth: 0, maxHeight: 0 });
+  const [dropdownPos, setDropdownPos] = useState({
+    top: 0,
+    bottom: null as number | null,
+    left: 0,
+    width: 0,
+    minWidth: 0,
+    maxHeight: 0,
+  });
   // Multi-mode draft: checkbox/keyboard edits land here; committing happens
   // on confirm button, label click (single-select), or outside click.
   const [multiDraft, setMultiDraft] = useState<string[] | null>(null);
@@ -702,11 +711,14 @@ export function SmartSelect(props: SmartSelectProps) {
     const above = Math.max(48, rect.top - boundaryTop - 4);
     const openAbove = below < estimatedHeight && above > below;
     const availableHeight = openAbove ? above : below;
-    const maxHeight = Math.max(48, Math.min(estimatedHeight, availableHeight));
+    const maxHeight = resizableDropdown
+      ? Math.max(48, Math.min(resolvedDropdownMaxHeight, availableHeight))
+      : Math.max(48, Math.min(estimatedHeight, availableHeight));
     const rawTop = openAbove ? rect.top - maxHeight - 4 : rect.bottom + 4;
     const top = Math.min(Math.max(boundaryTop, rawTop), Math.max(boundaryTop, boundaryBottom - maxHeight));
-    setDropdownPos({ top, left, width, minWidth: width, maxHeight });
-  }, [dense, effectiveOptions, fitContent, footerActionHeight, headerHeight, isMultiInlineCreate, isSingleCreateButton, maxDropdownWidth, minDropdownWidth, quickPickHeight, resolvedDropdownMaxHeight, rowHeight, search, searchable, singleGridColumns, visible.length]);
+    const bottom = openAbove ? Math.max(8, window.innerHeight - rect.top + 4) : null;
+    setDropdownPos({ top, bottom, left, width, minWidth: width, maxHeight });
+  }, [dense, effectiveOptions, fitContent, footerActionHeight, headerHeight, isMultiInlineCreate, isSingleCreateButton, maxDropdownWidth, minDropdownWidth, quickPickHeight, resizableDropdown, resolvedDropdownMaxHeight, rowHeight, search, searchable, singleGridColumns, visible.length]);
 
   const openDropdown = useCallback((preferredIndex?: "first" | "last") => {
     const nextCollapsed = initialCollapsedGroups(
@@ -1307,7 +1319,8 @@ export function SmartSelect(props: SmartSelectProps) {
       className={`flex flex-col overflow-hidden ${resizableDropdown ? "resize" : ""} ${compact ? "rounded-[10px]" : "rounded-[12px]"} border border-slate-200/80 bg-surface-white shadow-[0_18px_40px_rgba(15,23,42,0.12)]`}
       style={{
         position: "fixed",
-        top: dropdownPos.top,
+        top: dropdownPos.bottom === null ? dropdownPos.top : undefined,
+        bottom: dropdownPos.bottom ?? undefined,
         left: dropdownPos.left,
         width: dropdownPos.width,
         minWidth: resizableDropdown ? dropdownPos.minWidth : dropdownPos.width,
@@ -1394,7 +1407,7 @@ export function SmartSelect(props: SmartSelectProps) {
             ref={listRef}
             id={listId}
             role="listbox"
-            className={`min-h-0 flex-1 overflow-y-auto ${singleGridColumns ? "grid gap-1 p-1" : ""}`}
+            className={`min-h-0 flex-1 overflow-y-auto ${singleGridColumns ? "grid content-start gap-1 p-1" : ""}`}
             style={{
               maxHeight: resizableDropdown ? undefined : resolvedDropdownMaxHeight,
               ...(singleGridColumns ? { gridTemplateColumns: `repeat(${singleGridColumns}, minmax(0, 1fr))` } : {}),
