@@ -41,6 +41,42 @@ const target = normalizeFnosTarget(process.env.FNOS_TARGET_ARCH || process.env.F
 const outDir = path.join(root, "release-artifacts", "fnos");
 const stageOnly = process.argv.includes("--stage-only");
 const externalNode = process.env.FNOS_EXTERNAL_NODE === "1";
+// 应用名：manifest 的 display_name 是应用中心列表 / 详情页显示的名字，app/ui/config
+// 的 title 是桌面入口标题。`appname` 仍然是 mmh 且不能改——改了就不再是同一个应用，
+// 覆盖升级链路和 @appcenter/mmh 数据目录都会断。
+// 2026-11-02 用户定名：显示名从「MMH」改为「MMH 记账」（MMH 与「记账」之间留一个空格），
+// 飞牛的包标记（appname=mmh）保持不变。
+const displayName = externalNode ? "MMH 记账（外部 Node.js）" : "MMH 记账";
+// 应用介绍：全渠道同一份通用简介（群晖套件中心、软仓、FnDepot 用的都是它）。
+// 飞牛官方 2026-11-02 确认：应用商店详情页的简介就封装在 fpk 的 manifest（desc=）
+// 里，商店后台与飞书申请表都改不动它——只有重新打包、重新提交才会变。此前这里是
+// 硬编码的一句话（「一套本地部署、致力于化繁为简的家庭账务管理系统。」），所以官方
+// 商店只有一句话，和有 240 字通用简介的其它渠道对不上。
+// 正典是 deploy/app-intro-by-platform.md 的中文单行正文；机器可读副本在
+// deploy/fnos/repository/fnpack.json（软仓那几份由 npm run sync:store-desc 同步），
+// 这里直接读它，不再抄第二份。
+const STORE_INTRO_SOURCE = path.join(root, "deploy", "fnos", "repository", "fnpack.json");
+const STORE_INTRO_FALLBACK = "一套本地部署、致力于化繁为简的家庭账务管理系统。";
+
+function resolveStoreIntro() {
+  if (!fs.existsSync(STORE_INTRO_SOURCE)) return STORE_INTRO_FALLBACK;
+  const source = JSON.parse(fs.readFileSync(STORE_INTRO_SOURCE, "utf8"));
+  const app = (source && source.apps ? source.apps[appName] : null) || {};
+  const localized = (app.i18n && app.i18n["zh-CN"]) || {};
+  const text = String(localized.desc || app.desc || "").trim();
+  if (!text) {
+    throw new Error(
+      "fnpack.json is missing the shared Chinese intro for apps.mmh (apps.mmh.i18n['zh-CN'].desc); the fnOS manifest desc must be that shared intro.",
+    );
+  }
+  // manifest 是 INI 键值对：值里的真实换行会把后面的键整段吃掉。
+  if (/[\r\n]/.test(text)) {
+    throw new Error("The shared Chinese intro for the fnOS manifest desc must be a single line; real newlines truncate the INI manifest.");
+  }
+  return text;
+}
+
+const storeIntro = resolveStoreIntro();
 const externalNodeStartup = externalNode ? [
   "  NODE_MAJOR=\"$($NODE_BIN -p 'process.versions.node.split(\\\".\\\")[0]' 2>/dev/null || true)\"",
   "  if [ \"$NODE_MAJOR\" != \"22\" ]; then",
@@ -709,8 +745,8 @@ if (generatedSchema.status !== 0) process.exit(generatedSchema.status || 1);
 write(path.join(stageDir, "manifest"), `
 appname=${appName}
 version=${version}
-desc=${externalNode ? "一套本地部署、依赖外部 Node.js 运行时的家庭账务管理系统。" : "一套本地部署、致力于化繁为简的家庭账务管理系统。"}
-display_name=${externalNode ? "MMH（外部 Node.js）" : "MMH"}
+desc=${externalNode ? "一套本地部署、依赖外部 Node.js 运行时的家庭账务管理系统。" : storeIntro}
+display_name=${displayName}
 arch=${target.manifestArch}
 platform=${target.manifestPlatform}
 source=thirdparty
@@ -819,7 +855,7 @@ write(path.join(stageDir, "wizard", "uninstall"), JSON.stringify([
 write(path.join(stageDir, "app", "ui", "config"), JSON.stringify({
   ".url": {
     "mmh.Application": {
-      title: "MMH",
+      title: displayName,
       icon: "images/icon_{0}.png",
       type: "url",
       protocol: "",
@@ -3128,6 +3164,32 @@ const MIGRATIONS = [
       if (!tableExists(db, "CreditCardBillingDay")) return;
       addColumnIfMissing(db, "CreditCardBillingDay", "repaymentDay", "INTEGER");
       addColumnIfMissing(db, "CreditCardBillingDay", "repaymentOffsetDays", "INTEGER");
+    },
+  },
+  {
+    // Access Key 最近一次通过校验的时间（2026-10-31）：用来回答「这个 Key 还在用吗」，
+    // 以及 Key 泄露后的可追溯性。可空且不回填 —— null 就是「这列上线后没用过」。
+    // 全新安装由 native-init.sql 依据 schema 建列，这里只补存量库。
+    version: "20261031_add_access_key_last_used_at",
+    description: "Add AccessKey.lastUsedAt: last successful authentication time per API key",
+    apply(db) {
+      if (!tableExists(db, "AccessKey")) return;
+      // Nullable, no default, no backfill: an old database keeps answering
+      // "never used since this column shipped" instead of inventing a time.
+      addColumnIfMissing(db, "AccessKey", "lastUsedAt", "DATETIME");
+    },
+  },
+  {
+    // 国债逆回购复用 bond_transactions 的「存单」语义（2026-11-02）：借出 = buy 行、
+    // 到期回款 = redeem 子行，用 instrumentKind 把逆回购（repo）与债券（bond）分流，
+    // 否则债券视图会把逆回购当成债券、逆回购视图也读不到自己的行。
+    // 老数据全部是债券，默认值 'bond' 即为正确归属，无需回填。
+    // 全新安装由 native-init.sql 依据 schema 建列，这里只补存量库。
+    version: "20261102_add_bond_instrument_kind",
+    description: "Add bond_transactions.instrumentKind: split treasury reverse repo (repo) from bonds (bond)",
+    apply(db) {
+      if (!tableExists(db, "bond_transactions")) return;
+      addColumnIfMissing(db, "bond_transactions", "instrumentKind", "TEXT NOT NULL DEFAULT 'bond'");
     },
   },
 ];

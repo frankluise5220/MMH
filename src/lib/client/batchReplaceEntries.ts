@@ -13,6 +13,7 @@ type BatchReplaceResult = {
   updatedCount?: number;
   changed?: Array<{ id: string; date: string; oldValue: string; newValue: string; field: string }>;
   notFoundIds?: string[];
+  code?: string;
   error?: string;
 };
 

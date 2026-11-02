@@ -24,6 +24,8 @@ type EntryKind =
   | "metal"
   | "wealth"
   | "bond"
+  | "bond-repo-lend"
+  | "bond-repo-redeem"
   | "deposit"
   | "deposit-buy"
   | "deposit-redeem"
@@ -304,6 +306,22 @@ function dispatchEntryAction(kind: EntryKind, context?: Props["context"], loanTy
           detail: {
             requestId,
             defaultCashAccountId: context?.defaultCashAccountId ?? context?.defaultAccountId ?? "",
+            defaultWealthAccountId: context?.defaultBondAccountId ?? "",
+          },
+        }),
+      );
+      return;
+    // 逆回购是债券账户上的动作，入口只在胶囊里：同开 BondFormModal，直接落到「逆回购」页签。
+    case "bond-repo-lend":
+    case "bond-repo-redeem":
+      window.dispatchEvent(
+        new CustomEvent("mmh:bond:create", {
+          detail: {
+            requestId,
+            defaultSubtype: "repo",
+            defaultRepoMode: kind === "bond-repo-redeem" ? "redeem" : "lend",
+            defaultCashAccountId: context?.defaultCashAccountId ?? context?.defaultAccountId ?? "",
+            defaultBondAccountId: context?.defaultBondAccountId ?? "",
             defaultWealthAccountId: context?.defaultBondAccountId ?? "",
           },
         }),

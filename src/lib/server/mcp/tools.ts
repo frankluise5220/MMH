@@ -21,8 +21,11 @@ import {
   DELETE as txDetailDELETE,
   GET as txDetailGET,
   POST as txDetailPOST,
+  PUT as txDetailPUT,
 } from "@/app/api/v1/transactions/detail/route";
 import { queryInvestmentFlow, type InvestmentFlowInput } from "@/lib/server/mcp/investment-flow";
+import { isEntryReconciled } from "@/lib/server/entry-reconcile";
+import { formatDateUtc } from "@/lib/date-utils";
 
 export type McpToolContext = {
   /** Origin of the incoming MCP request, used to build internal URLs. */
@@ -46,7 +49,7 @@ type McpTool = {
 type RouteHandler = (req: NextRequest) => Promise<Response>;
 
 type CallInit = {
-  method?: "GET" | "POST" | "DELETE";
+  method?: "GET" | "POST" | "PUT" | "DELETE";
   query?: Record<string, string | undefined>;
   body?: Record<string, unknown>;
 };
@@ -227,9 +230,10 @@ export const MCP_TOOLS: McpTool[] = [
     write: false,
     description: [
       "Read ledger rows for one account, page by page. This is the fallback atomic query.",
-      "Important limit: there is no date-range filter, so it cannot answer \"this month\" questions",
-      "without paging through the whole account. Use mmh_get_monthly_summary or",
-      "mmh_query_investment_flow for those instead of scanning rows.",
+      "dateFrom / dateTo narrow the on-screen range the same way the detail slider does (both bounds",
+      "inclusive, each side optional), so \"this month so far\" is one call: dateFrom = first day of the",
+      "month and no dateTo. Rows outside the range never appear, and totalCount follows the range.",
+      "For monthly totals and category breakdowns prefer mmh_get_monthly_summary instead of summing rows.",
       "Rows carry id, date, postedAt, type, amount, accountName, toAccountName, categoryName, note.",
       "Amounts are signed: expense negative, income positive.",
     ].join("\n"),
@@ -237,6 +241,8 @@ export const MCP_TOOLS: McpTool[] = [
       type: "object",
       properties: {
         accountId: { type: "string", description: "Account id" },
+        dateFrom: { type: "string", description: "YYYY-MM-DD, inclusive lower bound of the display range" },
+        dateTo: { type: "string", description: "YYYY-MM-DD, inclusive upper bound; omit for no upper bound" },
         page: { type: "integer", minimum: 1, default: 1 },
         pageSize: { type: "integer", minimum: 1, maximum: 100, default: 20 },
         locateDate: { type: "string", description: "YYYY-MM-DD; jump to the page near this date (alternative to page)" },
@@ -244,9 +250,16 @@ export const MCP_TOOLS: McpTool[] = [
       additionalProperties: false,
     },
     async invoke(args, ctx) {
+      const dateFrom = str(args, "dateFrom");
+      const dateTo = str(args, "dateTo");
+      // The detail handler takes the slider range as `from~to`, with either side
+      // omittable. Passing it here (instead of filtering rows afterwards) keeps
+      // totalCount, paging and the header balance on the same window.
+      const range = dateFrom || dateTo ? `${dateFrom ?? ""}~${dateTo ?? ""}` : undefined;
       return callRoute(txDetailGET, ctx, "/api/v1/transactions/detail", {
         query: {
           accountId: str(args, "accountId"),
+          range,
           page: num(args, "page") !== undefined ? String(num(args, "page")) : undefined,
           pageSize: num(args, "pageSize") !== undefined ? String(num(args, "pageSize")) : undefined,
           locateDate: str(args, "locateDate"),
@@ -494,6 +507,87 @@ export const MCP_TOOLS: McpTool[] = [
           categoryId,
           postedAt: str(args, "postedAt"),
           note: str(args, "note"),
+        },
+      });
+    },
+  },
+
+  {
+    name: "mmh_update_transaction",
+    title: "Update a transaction",
+    write: true,
+    description: [
+      "Correct an existing expense or income row: note, category and tags only.",
+      "Amount, date, type and account are deliberately NOT editable here. Changing them can detach the row",
+      "from a reimbursement batch, a business link or a fund / deposit certificate, and the edit endpoint",
+      "would do that silently. Use the Web UI for those, where the impact is listed and can be confirmed.",
+      "Fields you omit keep their current value, so pass only what you want to change.",
+      "A row locked by reconciliation cannot be edited; unlock it in the Web UI first.",
+      "Read the row first with mmh_list_transactions to confirm the id.",
+    ].join("\n"),
+    inputSchema: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "Ledger row id" },
+        note: { type: "string", description: "New note; omit to keep the current one" },
+        categoryId: { type: "string" },
+        categoryName: { type: "string", description: "Exact category name; the category must already exist" },
+        tagIds: { type: "array", items: { type: "string" }, description: "Replace the tag list; omit to keep the current tags" },
+      },
+      required: ["id"],
+      additionalProperties: false,
+    },
+    async invoke(args, ctx) {
+      const id = str(args, "id");
+      if (!id) throw new Error("MISSING_ID: pass the ledger row id to update.");
+
+      const entry = await prisma.txRecord.findFirst({
+        where: { id, householdId: ctx.householdId, deletedAt: null },
+        select: {
+          id: true,
+          type: true,
+          date: true,
+          amount: true,
+          accountId: true,
+          categoryId: true,
+          note: true,
+        },
+      });
+      if (!entry) {
+        throw new Error(`No ledger row with id "${id}" in this ledger. Call mmh_list_transactions to find it.`);
+      }
+      if (entry.type !== "expense" && entry.type !== "income") {
+        throw new Error(
+          `UNSUPPORTED_TYPE: this row is "${entry.type}". Only expense and income rows can be edited here; ` +
+            "transfers and investment rows carry positions and must be edited in the Web UI.",
+        );
+      }
+      if (await isEntryReconciled(id)) {
+        throw new Error("RECONCILED: this row is locked by reconciliation. Unlock it in the Web UI before editing.");
+      }
+
+      const categoryId =
+        str(args, "categoryId") ?? (await resolveCategoryIdByName(ctx, str(args, "categoryName"), entry.type));
+      const tagIds =
+        idList(args, "tagIds") ??
+        (await prisma.entryTag.findMany({ where: { entryId: id }, select: { tagId: true } })).map((row) => row.tagId);
+      // `str()` drops empty strings, so read `note` directly: passing "" must clear it.
+      const noteArg = typeof args.note === "string" ? args.note : undefined;
+
+      // PUT replaces the whole row: an omitted date becomes today, omitted tags
+      // become `[]`, an omitted note becomes null. Send the current values back for
+      // everything the caller did not ask to change.
+      return callRoute(txDetailPUT, ctx, "/api/v1/transactions/detail", {
+        method: "PUT",
+        body: {
+          id,
+          type: entry.type,
+          date: formatDateUtc(entry.date),
+          amount: Math.abs(Number(entry.amount)),
+          accountId: entry.accountId,
+          categoryId: categoryId ?? entry.categoryId ?? null,
+          note: noteArg ?? entry.note ?? "",
+          tagIds,
         },
       });
     },

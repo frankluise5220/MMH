@@ -1,17 +1,27 @@
-import {  NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { getRequestTimeZone } from "@/lib/server/business-time-zone";
 import { getOrCreateMasterKey, decrypt, isEncrypted } from "@/lib/auth/encrypt";
 import { normalizeAiApiMode } from "@/lib/ai/config";
 import { buildResponsesRequestBody, extractResponsesText } from "@/lib/ai/responses";
 import { todayDateBusinessYmd } from "@/lib/date-utils";
+import { getCurrentUser, isAdmin } from "@/lib/server/auth";
+import { aiFetch } from "@/lib/ai/errors";
+import { joinBaseUrl } from "@/lib/http";
 
-function joinBaseUrl(baseUrl: string, path: string) {
-  const base = baseUrl.replace(/\/$/, "");
-  const p = path.startsWith("/") ? path : `/${path}`;
-  if (base.endsWith("/v1") && p.startsWith("/v1/")) return `${base}${p.slice(3)}`;
-  if (base.endsWith("/v1") && p.startsWith("/api/")) return `${base.slice(0, -3)}${p}`;
-  return `${base}${p}`;
+/**
+ * Prompt-regression harness. It was callable without a session, which let
+ * anyone burn the household's AI quota; it is an admin-only tool.
+ */
+async function requireAdmin(): Promise<NextResponse | null> {
+  const user = await getCurrentUser();
+  if (!user) {
+    return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "请先登录" }, { status: 401 });
+  }
+  if (!isAdmin(user)) {
+    return NextResponse.json({ ok: false, code: "FORBIDDEN", error: "仅管理员可操作" }, { status: 403 });
+  }
+  return null;
 }
 
 const TESTS: string[] = [];
@@ -86,6 +96,8 @@ async function getActiveModel() {
 }
 
 export async function POST() {
+  const auth = await requireAdmin();
+  if (auth) return auth;
   try {
     const config = await getActiveModel();
     if (!config) return NextResponse.json({ ok: false, error: "没有活跃的 AI 模型" }, { status: 400 });
@@ -141,7 +153,11 @@ export async function POST() {
         const h: Record<string, string> = { "Content-Type": "application/json" };
         if (!isOllama && apiKey) h.Authorization = `Bearer ${apiKey}`;
 
-        const res = await fetch(url, { method: "POST", headers: h, body: JSON.stringify(body) });
+        const res = await aiFetch(
+          url,
+          { method: "POST", headers: h, body: JSON.stringify(body) },
+          { timeout: "classify" },
+        );
         if (!res.ok) { error = `HTTP ${res.status}`; failCount++; }
         else {
           const data = await res.json().catch(() => null) as any;
@@ -187,6 +203,8 @@ export async function POST() {
 }
 
 export async function GET() {
+  const auth = await requireAdmin();
+  if (auth) return auth;
   const results = await prisma.commandTestResult.findMany({
     orderBy: { index: "asc" },
   });

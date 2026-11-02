@@ -2,6 +2,7 @@ import { AccountKind, FundSubtype, Prisma, RegularInvestStatus } from "@prisma/c
 
 import { prisma } from "@/lib/db/prisma";
 import {
+  accountRenderSettings,
   buildAccountDisplayOption,
   DEFAULT_CREDIT_CARD_LABEL_TEMPLATE,
   type AccountDisplaySource,
@@ -294,10 +295,10 @@ export async function loadNotificationFeed(params: {
   baseCurrency?: string | null;
 }): Promise<NotificationFeed> {
   const now = params.now ?? new Date();
-  const accountDisplaySettings: AccountRenderSettings = {
-    fields: params.accountLabelFields ?? null,
-    baseCurrency: params.baseCurrency ?? null,
-  };
+  const accountDisplaySettings: AccountRenderSettings = accountRenderSettings(
+    params.accountLabelFields,
+    params.baseCurrency,
+  );
   const today = startOfDayUtc(now);
   const windowEnd = addDaysUtc(today, REMINDER_WINDOW_DAYS);
   const windowStart = addDaysUtc(today, -REMINDER_OVERDUE_DAYS);

@@ -420,6 +420,11 @@ function applyRuntimeMigrations(db) {
   // 与 scripts/build-fnos-package.cjs 的 20261006_add_access_key_scope 同义；
   // 漏掉这段：升级后的旧桌面库打开「设置 → API」会报 "no such column: scope"。
   addColumnIfMissing(db, "AccessKey", "scope", "TEXT NOT NULL DEFAULT 'write'");
+  // 2026-10-31 Access Key 最近使用时间。与 build-fnos-package.cjs 的
+  // 20261031_add_access_key_last_used_at 同义（可空，不回填）。
+  // 漏掉这段不会让页面报错（写入侧是 catch 掉的 fire-and-forget），
+  // 但升级后的桌面库 lastUsedAt 会永远为空，「这个 Key 还在用吗」就永远答不了。
+  addColumnIfMissing(db, "AccessKey", "lastUsedAt", "DATETIME");
   applyLoanCategoryMigration(db);
   // 2026-10-13 流水「对账」锁定：reconciledAt / reconciledBalance。
   // 与 prisma/migrations/20261013_add_entry_reconcile、scripts/docker-entrypoint.sh 以及
@@ -447,6 +452,12 @@ function applyRuntimeMigrations(db) {
   // "no such column"，用户看到的就是「升级后账簿/首页都空了」。
   addColumnIfMissing(db, "HouseholdPreference", "detailWindowYears", "INTEGER NOT NULL DEFAULT 5");
   addColumnIfMissing(db, "HouseholdPreference", "accountUsageSortEnabled", "BOOLEAN NOT NULL DEFAULT 1");
+  // 2026-10-29 账单日 / 还款日变更记录。与 build-fnos-package.cjs 的
+  // 20261029_credit_billing_repayment_day 同义（两列可空，读取侧回退账户级设置）。
+  // 漏掉这段：升级后的桌面库打开账户 / 负债 / 账单页会报
+  // "no such column: repaymentOffsetDays"（23 个文件在读这两列）。
+  addColumnIfMissing(db, "CreditCardBillingDay", "repaymentDay", "INTEGER");
+  addColumnIfMissing(db, "CreditCardBillingDay", "repaymentOffsetDays", "INTEGER");
 }
 
 fs.mkdirSync(dataDir, { recursive: true });

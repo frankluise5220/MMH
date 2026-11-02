@@ -3,6 +3,7 @@ import { lookup } from "node:dns/promises";
 import net from "node:net";
 import { getCurrentUser, isAdmin } from "@/lib/server/auth";
 import { detectModelInfo } from "@/lib/ai/model-capabilities";
+import { joinBaseUrl } from "@/lib/http";
 
 const MODEL_LIST_TIMEOUT_MS = 10_000;
 const MODEL_LIST_MAX_BYTES = 1024 * 1024;
@@ -13,14 +14,6 @@ const METADATA_HOSTNAMES = new Set([
   "metadata.google.internal",
   "metadata.google.internal.",
 ]);
-
-function joinBaseUrl(baseUrl: string, path: string) {
-  const base = baseUrl.replace(/\/$/, "");
-  const p = path.startsWith("/") ? path : `/${path}`;
-  if (base.endsWith("/v1") && p.startsWith("/v1/")) return `${base}${p.slice(3)}`;
-  if (base.endsWith("/v1") && p.startsWith("/api/")) return `${base.slice(0, -3)}${p}`;
-  return `${base}${p}`;
-}
 
 function parseIPv4(value: string) {
   const parts = value.split(".");

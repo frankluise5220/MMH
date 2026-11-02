@@ -55,7 +55,12 @@ export async function findRecentManualTransactionDuplicate(
   params: Parameters<typeof findRecentTransactionDuplicate>[1],
 ) {
   const source = textOrNull(params.source) ?? "manual";
-  if (source !== "manual") return null;
+  const isManualCreateSource =
+    source === "manual" ||
+    source === "manual_transfer" ||
+    source === "ordinary_transfer_explicit" ||
+    source.startsWith("liability_");
+  if (!isManualCreateSource) return null;
   const duplicate = await findRecentTransactionDuplicate(tx, { ...params, source });
   if (!duplicate) return null;
   // Manual create dedupe only protects against an immediate double submit, so

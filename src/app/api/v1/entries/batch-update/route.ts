@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { AccountKind, TransactionType } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
+import { evaluateAmountFieldExpression, type AmountFieldReferenceValues } from "@/lib/amount-field-expression";
 import { evaluateArithmeticExpression } from "@/lib/arithmetic-expression";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
@@ -84,15 +85,8 @@ function ymd(value: Date) {
   return value.toISOString().slice(0, 10);
 }
 
-function parseAmountUpdate(raw: string, baseAmountAbs: number) {
-  const normalized = raw.replace(/[,，￥¥%％\s]/g, "");
-  if (!normalized) return null;
-  if (!/^[\d.+\-*/()]+$/.test(normalized)) return null;
-
-  let expr = normalized;
-  if (/^[+\-*/]/.test(expr)) expr = `${baseAmountAbs}${expr}`;
-
-  const computed = evaluateArithmeticExpression(expr);
+function parseAmountUpdate(raw: string, baseAmountAbs: number, referenceValues?: AmountFieldReferenceValues) {
+  const computed = evaluateAmountFieldExpression(raw, baseAmountAbs, referenceValues);
   return typeof computed === "number" && Number.isFinite(computed) ? Math.abs(computed) : null;
 }
 
@@ -558,8 +552,13 @@ export async function POST(req: NextRequest) {
           : amountField === "outflow"
             ? Math.max(-effectiveOldN, 0)
             : Math.abs(oldN);
-        const absNew = parseAmountUpdate(v, baseAmount);
-        if (absNew == null) return NextResponse.json({ ok: false, code: "INVALID_AMOUNT", error: "金额必须是数字或运算式，如 100、*2、+10、-5、/2" }, { status: 400 });
+        const inflowAmount = Math.max(effectiveOldN, 0);
+        const outflowAmount = Math.max(-effectiveOldN, 0);
+        const absNew = parseAmountUpdate(v, baseAmount, {
+          inflow: inflowAmount,
+          outflow: outflowAmount,
+        });
+        if (absNew == null) return NextResponse.json({ ok: false, code: "INVALID_AMOUNT", error: "Invalid amount expression" }, { status: 400 });
         const finalTypeForAmount = String(data.type ?? existing.type);
         if (amountField === "amount") {
           const signed = finalTypeForAmount === TransactionType.transfer

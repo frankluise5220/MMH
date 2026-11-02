@@ -7,7 +7,9 @@ import {
   insurerInstitutionError,
   listInsurerInstitutionIds,
   notInsurerOwnedFilter,
+  personalInstitutionError,
 } from "@/lib/server/product-family-guard";
+import { isPersonalInstitutionType } from "@/lib/institution-rules";
 import { normalizeCurrency, normalizeOptionalCurrency } from "@/lib/currency";
 import { loadWealthHoldingCounts } from "@/lib/server/product-holding-counts";
 
@@ -23,7 +25,8 @@ function parsePositiveNumber(raw: unknown) {
  * Returns the bank wealth product master data for the current household.
  *
  * Query:
- * - institutionId?: string filter by institution
+ * - institutionId?: string filter by institution; 「不指定机构」的通用产品始终包含在内
+ *   （与债券产品同口径：留空机构 = 所有机构的账户都能选购）
  *
  * 家族口径：**只返回理财产品**，挂保险公司（type=insurance）名下的产品一律不返回，
  * 与保险家族「承保机构必须是保险公司」互为反向守卫。
@@ -40,12 +43,18 @@ export async function GET(req: NextRequest) {
     // （筛选片段含 NULL 机构放行，语义见 `notInsurerOwnedFilter`）。
     const insurerIds = await listInsurerInstitutionIds(householdId);
 
+    // 两组过滤都用 OR 表达，不能平铺展开（同名键会互相覆盖，保险产品就会漏进理财下拉），
+    // 因此统一塞进 AND 数组。
+    const scopeFilters = [
+      ...(institutionId ? [{ OR: [{ institutionId }, { institutionId: null }] }] : []),
+      notInsurerOwnedFilter(insurerIds),
+    ].filter((filter) => Object.keys(filter).length > 0);
+
     const rows = await prisma.wealthProduct.findMany({
       where: {
         householdId,
         isActive: true,
-        ...(institutionId ? { institutionId } : {}),
-        ...notInsurerOwnedFilter(insurerIds),
+        ...(scopeFilters.length > 0 ? { AND: scopeFilters } : {}),
       },
       include: { Institution: { select: { id: true, name: true, shortName: true } } },
       orderBy: [{ institutionId: "asc" }, { name: "asc" }],
@@ -136,6 +145,8 @@ export async function POST(req: NextRequest) {
         const institution = await prisma.institution.findFirst({ where: { id: institutionId, householdId } });
         if (!institution) return NextResponse.json({ ok: false, code: "INSTITUTION_NOT_FOUND", error: "机构不存在" }, { status: 400 });
         if (isInsurerInstitution(institution)) return NextResponse.json(insurerInstitutionError(), { status: 400 });
+        // 往来人员 / 往来组织 / 家庭成员不是理财产品的发行方。
+        if (isPersonalInstitutionType(institution.type)) return NextResponse.json(personalInstitutionError(), { status: 400 });
       }
       const duplicate = await prisma.wealthProduct.findFirst({ where: { householdId, institutionId, name } });
       if (duplicate) return NextResponse.json({ ok: false, code: "PRODUCT_EXISTS", error: "同一机构下已有同名理财产品" }, { status: 409 });

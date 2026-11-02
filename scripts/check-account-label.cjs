@@ -11,6 +11,10 @@
  *
  * 手工拼 `机构·名称`、裸渲染 `account.name`、或调用只吃两个字符串的
  * `formatAccountDisplayName` 都会让设置失效、hover 丢失，一律视为错误。
+ *
+ * 分工：`fields` 与 `baseCurrency` 必须成对、且只能来自两条读设置入口，这一条
+ * 已由 `AccountRenderSettings` 的私有 brand 在编译期保证（见 account-display.ts），
+ * 不在本脚本里重复检查。本脚本只负责类型系统管不到的部分：字符串拼接与裸字段。
  */
 const fs = require("node:fs");
 const path = require("node:path");
@@ -57,59 +61,10 @@ const LINE_RULES = [
 const ALLOW = new Set([path.join(SRC, "lib", "account-display.ts")]);
 
 /**
- * 「`fields` 与 `baseCurrency` 必须成对传」的守卫。
- *
- * 只传 `fields` 时，非本位币账户的币种既不会出现在标签里，也不会出现在 hover 里
- * （`resolveAccountCurrencyText` 拿不到本位币就直接返回空串），用户看不出这笔钱
- * 记在哪个币种上。这类调用必须报错，不能靠人肉 review。
+ * 注：「只传 fields 没传 baseCurrency」曾经需要在这里做括号配平扫描。
+ * 现在 `AccountRenderSettings` 带私有 brand，只能由 `accountRenderSettings()`
+ * 构造，手拼对象会直接编译失败 —— 那条规则已由类型系统接管，故删除。
  */
-const RENDER_CALL_NAMES = [
-  "buildAccountDisplayOption(",
-  "accountTableCell(",
-  "accountOptionRow(",
-  "accountOptionFromParts(",
-  "formatAccountTableLabel(",
-  "formatAccountTableTitle(",
-];
-
-function extractCall(source, startIndex, openParenIndex) {
-  let depth = 1;
-  let cursor = openParenIndex + 1;
-  while (cursor < source.length && depth > 0) {
-    const ch = source[cursor];
-    if (ch === "(") depth += 1;
-    else if (ch === ")") depth -= 1;
-    cursor += 1;
-  }
-  return source.slice(startIndex, cursor);
-}
-
-function checkRenderSettingsCalls(source, abs) {
-  const found = [];
-  for (const name of RENDER_CALL_NAMES) {
-    let index = 0;
-    while ((index = source.indexOf(name, index)) >= 0) {
-      const before = source.slice(Math.max(0, index - 40), index);
-      // 跳过定义本身（`function foo(` / `export function foo(`）。
-      if (/function\s+$/.test(before)) {
-        index += name.length;
-        continue;
-      }
-      const call = extractCall(source, index, index + name.length - 1);
-      index += name.length;
-      const hasFields = /\bfields\s*[:,}]/.test(call);
-      const hasBaseCurrency = /\bbaseCurrency\b/.test(call);
-      if (!hasFields || hasBaseCurrency) continue;
-      found.push({
-        file: path.relative(ROOT, abs),
-        line: lineOf(source, index - name.length),
-        text: call.replace(/\s+/g, " ").trim().slice(0, 90),
-        hint: "只传了 fields 没传 baseCurrency：外币账户的币种会从标签和 hover 里彻底消失。传 { fields, baseCurrency }（服务端用 getHouseholdBaseCurrency，客户端用 readAccountDisplaySettings / useAccountDisplaySettings）",
-      });
-    }
-  }
-  return found;
-}
 
 /**
  * 迁移中：这些位置的数据源只有账户名快照，没有机构/币种，无法按设置渲染。
@@ -157,9 +112,6 @@ for (const abs of walk(SRC)) {
       };
       (WARN_ONLY.has(abs) ? warnings : errors).push(item);
     }
-  }
-  for (const item of checkRenderSettingsCalls(source, abs)) {
-    errors.push(item);
   }
   source.split("\n").forEach((line, index) => {
     for (const rule of LINE_RULES) {

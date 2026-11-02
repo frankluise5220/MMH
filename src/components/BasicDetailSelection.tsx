@@ -193,9 +193,9 @@ export function BasicDetailBatchReplaceButton({
       date: { value: "date", label: fieldLabels.date, kind: "date" },
       postedAt: { value: "postedAt", label: fieldLabels.postedAt, kind: "date", allowEmpty: true },
       type: { value: "type", label: fieldLabels.type, kind: "select", options: typeOptions },
-      amount: { value: "amount", label: fieldLabels.amount, kind: "number", placeholder: t("basicDetailSelection.amountPlaceholder") },
-      inflow: { value: "inflow", label: fieldLabels.inflow, kind: "number", placeholder: t("basicDetailSelection.inflowPlaceholder") },
-      outflow: { value: "outflow", label: fieldLabels.outflow, kind: "number", placeholder: t("basicDetailSelection.outflowPlaceholder") },
+      amount: { value: "amount", label: fieldLabels.amount, kind: "number", placeholder: t("basicDetailSelection.amountPlaceholder"), allowAmountFieldReferences: true },
+      inflow: { value: "inflow", label: fieldLabels.inflow, kind: "number", placeholder: t("basicDetailSelection.inflowPlaceholder"), allowAmountFieldReferences: true },
+      outflow: { value: "outflow", label: fieldLabels.outflow, kind: "number", placeholder: t("basicDetailSelection.outflowPlaceholder"), allowAmountFieldReferences: true },
       account: {
         value: "account",
         label: fieldLabels.account,
@@ -221,7 +221,10 @@ export function BasicDetailBatchReplaceButton({
         options: categorySelectOptions,
         placeholder: t("basicDetailSelection.selectCategory"),
         allowEmpty: true,
-        smartSelectBehavior: CATEGORY_SMART_SELECT_BEHAVIOR,
+        smartSelectBehavior: {
+          ...CATEGORY_SMART_SELECT_BEHAVIOR,
+          maxDropdownWidth: 560,
+        },
       },
       institution: { value: "institution", label: fieldLabels.institution, kind: "text", placeholder: t("basicDetailSelection.institutionPlaceholder"), allowEmpty: true },
       tagId: { value: "tagId", label: fieldLabels.tagId, kind: "select", options: tagSelectOptions, allowEmpty: true },
@@ -233,7 +236,12 @@ export function BasicDetailBatchReplaceButton({
   async function applyReplace(field: BatchReplaceField, value: string) {
     const entryIds = Array.from(selectedIds);
     const result = await batchReplaceEntries({ ids: entryIds, field, value, contextAccountId, contextAccountIds });
-    if (!result.ok) throw new Error(result.error ?? t("basicDetailSelection.batchReplaceFailed"));
+    if (!result.ok) {
+      const message = result.code === "INVALID_AMOUNT"
+        ? t("basicDetailSelection.invalidAmountExpression")
+        : result.error ?? t("basicDetailSelection.batchReplaceFailed");
+      throw new Error(message);
+    }
     clear();
     dispatchFinanceDataChanged({ reason: "entry-batch-replace", entryIds });
     return t("basicDetailSelection.replacedCount", { count: result.updatedCount ?? 0 });

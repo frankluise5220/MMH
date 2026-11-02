@@ -1,10 +1,8 @@
 import { AccountKind, TransactionType } from "@prisma/client";
 
-import {
-  buildAccountDisplayOption,
+import { buildAccountDisplayOption,
   DEFAULT_CREDIT_CARD_LABEL_TEMPLATE,
-  type AccountLabelField,
-} from "@/lib/account-display";
+  type AccountLabelField, accountRenderSettings } from "@/lib/account-display";
 import { normalizeCurrency } from "@/lib/currency";
 import { toNumber, todayDateBusinessYmd } from "@/lib/date-utils";
 import { resolveHouseholdTimeZone } from "@/lib/server/business-time-zone";
@@ -408,7 +406,7 @@ export async function computeOverviewSummary(
         AccountGroup: account.AccountGroup ? { id: "", name: account.AccountGroup.name } : null,
       },
       creditCardLabelTemplate,
-      { fields: accountLabelFields, baseCurrency: fx.baseCurrency },
+      accountRenderSettings(accountLabelFields, fx.baseCurrency),
     );
 
     const accountCurrency = currencyOf(account);
@@ -502,7 +500,7 @@ export async function computeOverviewSummary(
         AccountGroup: storageAccount.AccountGroup ? { id: "", name: storageAccount.AccountGroup.name } : null,
       },
       creditCardLabelTemplate,
-      { fields: accountLabelFields, baseCurrency: fx.baseCurrency },
+      accountRenderSettings(accountLabelFields, fx.baseCurrency),
     );
     const groupCurrency = currencyOf(storageAccount);
     const groupRate = fx.rateOf(groupCurrency);
@@ -561,7 +559,7 @@ export async function computeOverviewSummary(
         AccountGroup: account.AccountGroup ? { id: "", name: account.AccountGroup.name } : null,
       },
       creditCardLabelTemplate,
-      { fields: accountLabelFields, baseCurrency: fx.baseCurrency },
+      accountRenderSettings(accountLabelFields, fx.baseCurrency),
     );
     const accountCurrency = currencyOf(account);
     const balance =
@@ -634,7 +632,7 @@ export async function computeOverviewSummary(
           AccountGroup: account.AccountGroup ? { id: "", name: account.AccountGroup.name } : null,
         },
         creditCardLabelTemplate,
-        { fields: accountLabelFields, baseCurrency: fx.baseCurrency },
+        accountRenderSettings(accountLabelFields, fx.baseCurrency),
       );
       return {
         accountId: account.id,
@@ -737,7 +735,7 @@ export async function computeOverviewSummary(
           AccountGroup: account.AccountGroup ? { id: "", name: account.AccountGroup.name } : null,
         },
         creditCardLabelTemplate,
-        { fields: accountLabelFields, baseCurrency: fx.baseCurrency },
+        accountRenderSettings(accountLabelFields, fx.baseCurrency),
       );
       return {
         accountId: account.id,

@@ -21,7 +21,7 @@ import { FundHoldingReport, type FundGroupMode } from "@/components/FundHoldingR
 import { FundGroupModeFilter } from "@/components/FundGroupModeFilter";
 import FundPortfolioTrendChart from "@/components/FundPortfolioTrendChart";
 import { loadFundPortfolioTrendData } from "@/lib/server/fund-portfolio-trend";
-import { buildAccountDisplayOption, buildGroupedAccountOptions, normalizeCreditCardLabelTemplate } from "@/lib/account-display";
+import { buildAccountDisplayOption, buildGroupedAccountOptions, normalizeCreditCardLabelTemplate, accountRenderSettings } from "@/lib/account-display";
 import { buildAccountOwnerOptions, filterAccountOwnersWithGroupIds } from "@/lib/account-owner-options";
 import { ACCOUNT_LABEL_FIELDS_COOKIE, accountLabelFieldsFromCookieValue } from "@/lib/server/account-label-fields";
 import { kindLabel } from "@/lib/account-kinds";
@@ -260,7 +260,7 @@ export default async function ReportsPage({
       Institution: account.Institution,
       AccountGroup: account.AccountGroup,
       Counterparty: account.Counterparty,
-    }, creditCardLabelTemplate, { fields: accountLabelFields, baseCurrency }),
+    }, creditCardLabelTemplate, accountRenderSettings(accountLabelFields, baseCurrency)),
   );
   const allAccountDisplayById = new Map(allAccountDisplayOptions.map((account) => [account.id, account]));
   // 持仓类报表走 unstable_cache，缓存里不能读 cookie（账户显示格式），所以那里只能按

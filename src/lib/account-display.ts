@@ -446,18 +446,16 @@ function formatAccountSelectorCoreLabel(input: {
 }
 
 /**
- * 表格渲染设置：既接受旧的「字段数组」，也接受 `{ fields, baseCurrency }`。
- * 后者是唯一正确的传参方式——只传字段数组时标签里不会渲染非本位币。
+ * 表格渲染设置。裸字段数组的旧分支已删除：只传数组时 `baseCurrency` 必然是缺的，
+ * 外币账户的币种会从标签和 hover 里消失——那正是这条规则原本要拦的写法。
+ * 现在传数组会直接编译失败，必须走 `accountRenderSettings()`。
  */
-type AccountTableRenderSettings = AccountLabelField[] | AccountRenderSettings | null | undefined;
+type AccountTableRenderSettings = AccountRenderSettings | null | undefined;
 
 function normalizeTableRenderSettings(input: AccountTableRenderSettings): {
   fields: AccountLabelField[];
   baseCurrency: string | null;
 } {
-  if (Array.isArray(input)) {
-    return { fields: normalizeAccountLabelFields(input), baseCurrency: null };
-  }
   return {
     fields: normalizeAccountLabelFields(input?.fields ?? DEFAULT_ACCOUNT_LABEL_FIELDS),
     baseCurrency: input?.baseCurrency ?? null,
@@ -584,19 +582,22 @@ export function normalizeCreditCardLabelTemplate(
 export function buildAccountDisplayOption(
   account: AccountDisplaySource,
   creditCardLabelTemplateOrMode: string | CreditCardLabelMode = DEFAULT_CREDIT_CARD_LABEL_TEMPLATE,
-  options?: {
-    suppressDuplicateCreditCardLast4?: boolean;
-    fields?: AccountLabelField[] | null;
-    /** 账簿本位币；不传时标签里不渲染币种。 */
-    baseCurrency?: string | null;
-  },
+  /**
+   * 要么完全不传设置（回退到默认格式），要么传 `accountRenderSettings()` 的产物。
+   * 中间态「手拼 fields + baseCurrency」不存在——它既可能漏 baseCurrency，也可能
+   * 与服务端读到的配置不一致。
+   */
+  options?:
+    | { suppressDuplicateCreditCardLast4?: boolean }
+    | (AccountRenderSettings & { suppressDuplicateCreditCardLast4?: boolean }),
 ): AccountDisplayOption {
   // `fields` is the global "account display format" setting. Callers that do not
   // pass it MUST still follow the rule — falling back to a hand-joined
   // `institution·name` is what produced "只显示名称/不按设置渲染" reports — so the
   // fallback is the documented default field list, never a bespoke shape.
-  const labelFields = normalizeAccountLabelFields(options?.fields ?? DEFAULT_ACCOUNT_LABEL_FIELDS);
-  const baseCurrency = options?.baseCurrency ?? account.baseCurrency ?? null;
+  const settings = options && "fields" in options ? options : undefined;
+  const labelFields = normalizeAccountLabelFields(settings?.fields ?? DEFAULT_ACCOUNT_LABEL_FIELDS);
+  const baseCurrency = settings?.baseCurrency ?? account.baseCurrency ?? null;
   const isFixedAsset = isFixedAssetAccountLike(account);
   // User-facing kind: legacy deposit (`investment` + `deposit`) and fixed assets
   // (`investment` + `property`) must render as their real type, not "investment",
@@ -739,10 +740,39 @@ export function buildAccountDisplayOption(
   };
 }
 
+declare const ACCOUNT_RENDER_SETTINGS_BRAND: unique symbol;
+
+/**
+ * 唯一合法的账户渲染设置。
+ *
+ * `fields` 决定标签显示哪些字段，`baseCurrency` 决定非本位币账户要不要带币种后缀
+ * —— 两者缺一个就会渲染出错误的标签。以前它是个普通对象字面量，任何组件都能自己
+ * 拼一份，于是「按设置渲染」只能靠 `check-account-label.cjs` 扫源码兜底。
+ *
+ * 加私有 brand 之后，手拼 `{ fields, baseCurrency }` 直接编译失败，只有
+ * `accountRenderSettings()` 能产出。守卫不再是唯一防线。
+ */
 export type AccountRenderSettings = {
-  fields?: AccountLabelField[] | null;
-  baseCurrency?: string | null;
+  fields: AccountLabelField[];
+  baseCurrency: string | null;
+  readonly [ACCOUNT_RENDER_SETTINGS_BRAND]: true;
 };
+
+/**
+ * 账户渲染设置的唯一构造入口。
+ *
+ * `fields` 收 unknown 是因为两条来源形态不同：客户端 hook 给数组，服务端从 DB/cookie
+ * 读出来的可能是字符串。归一化在这里做，调用方不必知道 `normalizeAccountLabelFields`。
+ */
+export function accountRenderSettings(
+  fields: unknown,
+  baseCurrency: string | null | undefined,
+): AccountRenderSettings {
+  return {
+    fields: normalizeAccountLabelFields(fields),
+    baseCurrency: baseCurrency ?? null,
+  } as AccountRenderSettings;
+}
 
 /**
  * 表格 / 列表单元格的唯一渲染入口。

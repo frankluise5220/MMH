@@ -68,11 +68,13 @@ import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
 import { toNumber, toStatementMonth, startOfDayUtc, formatDateUtc } from "@/lib/date-utils";
 import { logger } from "@/lib/logger";
 import { isAdvanceFundingAccount, isDepositAccount, isDepositPostingCategoryAllowed, isIncomeExpensePostingAccount, isInsuranceAccount, isLoanOrSettlementAccountKind, isPureInvestmentAccount, isSpecialCashTargetAccount } from "@/lib/account-kind-utils";
+import { inferTransferLiabilityMode, liabilitySourceForMode, ORDINARY_TRANSFER_SOURCE } from "@/lib/liability";
 import { ALL_CASH_DETAIL_SCOPE_ID, cashLedgerAccountIdsOf, isAllCashDetailScope } from "@/lib/all-cash-entries";
 import { getOrCreateInsuranceAccount } from "@/lib/insurance/autoAccount";
 import { normalizeInsuranceAction } from "@/lib/insurance/transaction";
 import { resolveOrCreateDepositAccount } from "@/lib/server/deposit-account";
 import { resolveOrCreateDepositProduct } from "@/lib/server/deposit-product";
+import { resolveOrCreateWealthProduct } from "@/lib/server/wealth-product";
 import { depositLotBelongsToAccount } from "@/lib/server/deposit-lot-options";
 import { resolveOrCreateWealthAccount } from "@/lib/server/wealth-account";
 import { createBondEntry, editBondEntry, bondEntryInputFromFormData } from "@/lib/server/bond-transactions";
@@ -149,6 +151,13 @@ class DetailValidationError extends Error {
     super(message);
     this.name = "DetailValidationError";
   }
+}
+
+type TransferEntryKind = "transfer" | "liability";
+
+function parseTransferEntryKind(value: unknown): TransferEntryKind | null {
+  const text = String(value ?? "").trim();
+  return text === "transfer" || text === "liability" ? text : null;
 }
 
 async function assertDepositRedemptionDateAllowed(params: {
@@ -472,52 +481,6 @@ function allowsZeroPostedAmountFx(body: Record<string, unknown>, type: unknown) 
   return originalAmount !== 0;
 }
 
-async function resolveWealthProductInTx(
-  tx: any,
-  params: {
-    householdId: string;
-    institutionId?: string | null;
-    currency?: string | null;
-    productId?: string | null;
-    productName?: string | null;
-    annualRate?: number | null;
-  },
-) {
-  const productId = String(params.productId ?? "").trim();
-  const productName = String(params.productName ?? "").trim();
-  const currency = normalizeCurrency(params.currency);
-  if (productId) {
-    return tx.wealthProduct.findFirst({
-      where: {
-        id: productId,
-        householdId: params.householdId,
-        institutionId: params.institutionId ?? null,
-        currency,
-        isActive: true,
-      },
-    });
-  }
-  if (!productName) return null;
-  const existing = await tx.wealthProduct.findFirst({
-    where: {
-      householdId: params.householdId,
-      institutionId: params.institutionId ?? null,
-      name: productName,
-      currency,
-      isActive: true,
-    },
-  });
-  return existing ?? tx.wealthProduct.create({
-    data: {
-      householdId: params.householdId,
-      institutionId: params.institutionId ?? null,
-      name: productName,
-      currency,
-      annualRate: params.annualRate ?? undefined,
-    },
-  });
-}
-
 function assertSameWealthCurrency(
   cashAcc: { name?: string | null; currency?: string | null },
   wealthAcc: { name?: string | null; currency?: string | null },
@@ -644,12 +607,13 @@ async function createSplitWealthTransactionFromBody(body: Record<string, unknown
         });
     if (!wealthAcc) throw new Error("请选择理财账户");
 
-    const wealthProduct = await resolveWealthProductInTx(tx, {
+    const wealthProduct = await resolveOrCreateWealthProduct(tx, {
       householdId,
       institutionId: wealthAcc.institutionId,
-      currency: wealthAcc.currency ?? cashAcc?.currency ?? "CNY",
+      currency: wealthAcc.currency,
+      fallbackCurrency: cashAcc?.currency,
       productId: wealthProductIdInput,
-      productName: productNameInput,
+      name: productNameInput,
       annualRate,
     });
     if (!wealthProduct) throw new Error("请选择或新增理财产品");
@@ -875,12 +839,13 @@ async function editSplitWealthTransactionFromBody(body: Record<string, unknown>,
         });
     if (!wealthAcc) throw new Error("请选择理财账户");
 
-    const wealthProduct = await resolveWealthProductInTx(tx, {
+    const wealthProduct = await resolveOrCreateWealthProduct(tx, {
       householdId,
       institutionId: wealthAcc.institutionId,
-      currency: wealthAcc.currency ?? cashAcc?.currency ?? "CNY",
+      currency: wealthAcc.currency,
+      fallbackCurrency: cashAcc?.currency,
       productId: wealthProductIdInput || wealthRow.wealthProductId,
-      productName: productNameInput || wealthRow.productName,
+      name: productNameInput || wealthRow.productName,
       annualRate,
     });
     if (!wealthProduct) throw new Error("请选择或新增理财产品");
@@ -2371,7 +2336,7 @@ export async function GET(req: Request) {
  *   accountId: string
  *   categoryId?: string
  *   categoryName?: string
- *   toAccountId?: string (transfer; ordinary cash/credit targets only. Fund, deposit, and liability targets must use their specialized transaction payloads.)
+ *   toAccountId?: string (transfer; fund and deposit targets must use their specialized transaction payloads)
  *   toAccountName?: string
  *   note?: string
  *   tagIds?: string[]
@@ -2390,7 +2355,8 @@ export async function GET(req: Request) {
  *   fundArrivalAmount?: number
  *   cashAccountId?: string
  *   counterpartyInstitutionId?: string (expense/income uses bank/payment institution id; advance uses Counterparty.id or legacy Institution.id)
- *   source?: string (default "manual")
+ *   entryKind?: "transfer" | "liability" (transfer request metadata; not persisted)
+ *   source?: string
  *
  * Response: { ok: true, data: { id, ... } } | { ok: false, code, error }
  */
@@ -2403,6 +2369,8 @@ export async function POST(req: Request) {
     }
 
     const type = String(body.type ?? "").trim();
+    const entryKind = parseTransferEntryKind(body.entryKind);
+    const requestedSource = String(body.source ?? "").trim() || null;
     const dateStr = String(body.date ?? "").trim();
     const amountRaw = parseMoney(body.amount);
     const amountAbs = Math.abs(amountRaw);
@@ -2415,7 +2383,9 @@ export async function POST(req: Request) {
       : [];
 
     const date = dateStr && !Number.isNaN(new Date(dateStr).getTime()) ? new Date(dateStr) : new Date();
-    const postedAt = type === "expense" || type === "income" ? (toDateOrNull(body.postedAt) ?? date) : null;
+    const postedAt = type === "expense" || type === "income" || type === "transfer"
+      ? (toDateOrNull(body.postedAt) ?? date)
+      : null;
     const { householdId } = ctx;
 
     // Accounts involved in this transaction: used to track usage frequency so
@@ -2506,23 +2476,32 @@ export async function POST(req: Request) {
           tx.account.findUnique({ where: { id: toAccountId }, include: { Institution: true } }),
         ]);
         if (!fromAcc || !toAcc) throw new Error("账户不存在");
-        // 贷款账户允许进普通转账（2026-10-13 用户口径「允许资金账户向贷款账户输出资金」）：
-        // 「资金 ↔ 贷款」落到下面的 isLiabilityTransfer 分支记为 repay_out / borrow_in 等。
-        // 「贷款↔贷款 / 贷款↔往来款 / 往来款↔往来款」互转仍由下一行拒绝。
-        const isLiabilityTransfer = isLoanOrSettlementAccountKind(fromAcc.kind) || isLoanOrSettlementAccountKind(toAcc.kind);
-        if (isLoanOrSettlementAccountKind(fromAcc.kind) && isLoanOrSettlementAccountKind(toAcc.kind)) {
+        const fromIsLiability = isLoanOrSettlementAccountKind(fromAcc.kind);
+        const toIsLiability = isLoanOrSettlementAccountKind(toAcc.kind);
+        const liabilitySideCount = Number(fromIsLiability) + Number(toIsLiability);
+        if (liabilitySideCount === 2) {
           throw new Error("往来款账户之间不能保存为普通转账");
         }
-        if (!isLiabilityTransfer && (isSpecialCashTargetAccount(fromAcc) || isSpecialCashTargetAccount(toAcc))) {
+        if (entryKind === "liability" && liabilitySideCount !== 1) {
+          throw new Error("往来款账户之间不能保存为普通转账");
+        }
+        const specialCounterparty =
+          liabilitySideCount === 1
+            ? isSpecialCashTargetAccount(fromIsLiability ? toAcc : fromAcc)
+            : isSpecialCashTargetAccount(fromAcc) || isSpecialCashTargetAccount(toAcc);
+        if (specialCounterparty) {
           throw new Error("基金、存款、贷款和往来款账户不能保存为普通转账，请使用对应的专用记账窗口");
         }
         const transferCurrency = resolveSameCurrencyTransfer(fromAcc, toAcc);
-        const liabilityMode = isLiabilityTransfer
-          ? isLoanOrSettlementAccountKind(fromAcc.kind)
-            ? fromAcc.liabilityDirection === "receivable" ? "collect_in" : "borrow_in"
-            : toAcc.liabilityDirection === "receivable" ? "lend_out" : "repay_out"
-          : null;
+        const liabilityMode = inferTransferLiabilityMode({
+          fromAccount: fromAcc,
+          toAccount: toAcc,
+          entryKind,
+          source: requestedSource,
+          note,
+        });
         const signedTransferAmount = liabilityMode === "collect_in" ? amountAbs : -amountAbs;
+        const transferSource = liabilityMode ? liabilitySourceForMode(liabilityMode) : ORDINARY_TRANSFER_SOURCE;
 
         const transferStatementMonth = statementMonthForTransfer(date, fromAcc, toAcc);
         const transferCategory = liabilityMode
@@ -2543,7 +2522,7 @@ export async function POST(req: Request) {
           amount: signedTransferAmount,
           categoryId: transferCategory?.id ?? null,
           note,
-          source: liabilityMode ? `liability_${liabilityMode}` : "manual",
+          source: transferSource,
         });
         if (duplicate) {
           createdId = duplicate.id;
@@ -2565,7 +2544,7 @@ export async function POST(req: Request) {
             toNote: (toNote || note) || null,
             currency: transferCurrency,
             statementMonth: transferStatementMonth,
-            source: liabilityMode ? `liability_${liabilityMode}` : "manual",
+            source: transferSource,
             principalAmount: liabilityMode ? amountAbs : null,
             interestAmount: liabilityMode ? 0 : null,
             feeAmount: liabilityMode ? 0 : null,
@@ -3044,20 +3023,14 @@ export async function POST(req: Request) {
         if (fundProductType === "metal" && !metalUnit) throw new Error("请选择贵金属单位");
         // 债券走自己的 BondProduct 主数据（在 createBondEntry 内处理），这里只认理财。
         const wealthProduct = fundProductType === "wealth"
-          ? (wealthProductIdInput
-              ? await tx.wealthProduct.findFirst({ where: { id: wealthProductIdInput, householdId, institutionId: investAcc.institutionId, isActive: true } })
-              : fundNameInput
-                ? (await tx.wealthProduct.findFirst({
-                    where: { householdId, institutionId: investAcc.institutionId ?? null, name: fundNameInput, isActive: true },
-                  }) ?? await tx.wealthProduct.create({
-                    data: {
-                      householdId,
-                      institutionId: investAcc.institutionId ?? null,
-                      name: fundNameInput,
-                      currency: investAcc.currency ?? "CNY",
-                    },
-                  }))
-                : null)
+          ? await resolveOrCreateWealthProduct(tx, {
+              householdId,
+              institutionId: investAcc.institutionId,
+              currency: investAcc.currency,
+              fallbackCurrency: cashAcc?.currency,
+              productId: wealthProductIdInput,
+              name: fundNameInput,
+            })
           : null;
         if (fundProductType === "wealth" && !wealthProduct) throw new Error("请选择或新增理财产品");
         if (fundProductType === "wealth" && wealthProduct) {
@@ -3643,7 +3616,7 @@ export async function POST(req: Request) {
  *   type?: "expense" | "income" | "advance" | "transfer" | "investment"
  *   accountId?: string
  *   categoryId?: string
- *   toAccountId?: string (transfer; ordinary cash/credit targets only. Fund, deposit, and liability targets must use their specialized transaction payloads.)
+ *   toAccountId?: string (transfer; fund and deposit targets must use their specialized transaction payloads)
  *   toAccountName?: string
  *   note?: string
  *   tagIds?: string[]
@@ -3675,6 +3648,7 @@ export async function PUT(req: Request) {
     }
 
     const type = String(body.type ?? "").trim();
+    const entryKind = parseTransferEntryKind(body.entryKind);
     const entryId = String(body.id ?? body.entryId ?? "").trim();
     const productType = String(body.fundProductType ?? body.productType ?? "").trim();
     const businessTransactionId = String(body.businessTransactionId ?? "").trim();
@@ -3694,7 +3668,9 @@ export async function PUT(req: Request) {
       : [];
 
     const date = dateStr && !Number.isNaN(new Date(dateStr).getTime()) ? new Date(dateStr) : new Date();
-    const postedAt = type === "expense" || type === "income" ? (toDateOrNull(body.postedAt) ?? date) : null;
+    const postedAt = type === "expense" || type === "income" || type === "transfer"
+      ? (toDateOrNull(body.postedAt) ?? date)
+      : null;
     const earlyFundSubtypeForEdit = String(body.fundSubtype ?? body.subtype ?? "").trim();
     const earlyFundUnitsForEdit = parseMoney(body.fundUnits);
     const allowsZeroAmountInvestmentEdit =
@@ -3811,26 +3787,49 @@ export async function PUT(req: Request) {
           });
           if (!linkedLot) throw new Error("DEPOSIT_LOT_NOT_FOUND");
         }
-        if (fromAcc.kind === "loan" || toAcc.kind === "loan") {
-          throw new Error("基金、存款、贷款和往来款账户不能保存为普通转账，请使用对应的专用记账窗口");
-        }
-        const isLiabilityTransfer = isLoanOrSettlementAccountKind(fromAcc.kind) || isLoanOrSettlementAccountKind(toAcc.kind);
-        if (isLoanOrSettlementAccountKind(fromAcc.kind) && isLoanOrSettlementAccountKind(toAcc.kind)) {
+        const fromIsLiability = isLoanOrSettlementAccountKind(fromAcc.kind);
+        const toIsLiability = isLoanOrSettlementAccountKind(toAcc.kind);
+        const liabilitySideCount = Number(fromIsLiability) + Number(toIsLiability);
+        if (liabilitySideCount === 2) {
           throw new Error("往来款账户之间不能保存为普通转账");
         }
-        if (!isLiabilityTransfer && (isSpecialCashTargetAccount(fromAcc) || isSpecialCashTargetAccount(toAcc)) && !transferAccountsUnchanged) {
+        if (entryKind === "liability" && liabilitySideCount !== 1) {
+          throw new Error("往来款账户之间不能保存为普通转账");
+        }
+        const liabilityMode = inferTransferLiabilityMode({
+          fromAccount: fromAcc,
+          toAccount: toAcc,
+          entryKind,
+          source: entry.source,
+          note: entry.note,
+        });
+        const canPreserveUnchangedSource =
+          transferAccountsUnchanged &&
+          !entryKind &&
+          !liabilityMode &&
+          !!entry.source &&
+          entry.source !== "manual" &&
+          !entry.source.startsWith("liability_");
+        const specialCounterparty =
+          liabilitySideCount === 1
+            ? isSpecialCashTargetAccount(fromIsLiability ? toAcc : fromAcc)
+            : isSpecialCashTargetAccount(fromAcc) || isSpecialCashTargetAccount(toAcc);
+        if (specialCounterparty && !canPreserveUnchangedSource) {
           throw new Error("基金、存款、贷款和往来款账户不能保存为普通转账，请使用对应的专用记账窗口");
         }
         const transferCurrency = resolveSameCurrencyTransfer(fromAcc, toAcc);
-        const liabilityMode = isLiabilityTransfer
-          ? isLoanOrSettlementAccountKind(fromAcc.kind)
-            ? fromAcc.liabilityDirection === "receivable" ? "collect_in" : "borrow_in"
-            : toAcc.liabilityDirection === "receivable" ? "lend_out" : "repay_out"
-          : null;
+        const entryHadLiabilitySemantics =
+          String(entry.source ?? "").startsWith("liability_") ||
+          (liabilitySideCount === 1 &&
+            (entry.principalAmount != null ||
+              Math.abs(toNumber(entry.interestAmount)) > 0.005 ||
+              Math.abs(toNumber(entry.feeAmount)) > 0.005));
         if (
           !liabilityMode &&
-          String(entry.source ?? "").startsWith("liability_") &&
-          (Math.abs(toNumber(entry.interestAmount)) > 0.005 || Math.abs(toNumber(entry.feeAmount)) > 0.005)
+          entryHadLiabilitySemantics &&
+          (Math.abs(toNumber(entry.interestAmount)) > 0.005 ||
+            Math.abs(toNumber(entry.feeAmount)) > 0.005 ||
+            Math.abs(toNumber(entry.realizedProfit)) > 0.005)
         ) {
           throw new Error("有利息或手续费的借入借出记录不能直接改为普通转账");
         }
@@ -3859,7 +3858,7 @@ export async function PUT(req: Request) {
             categoryName: transferCategory?.name ?? null,
             statementMonth: transferStatementMonth,
             date,
-            postedAt: null,
+            postedAt,
             type: TransactionType.transfer,
             counterpartyInstitutionId: null,
             counterpartyInstitutionName: null,
@@ -3867,7 +3866,11 @@ export async function PUT(req: Request) {
             note: String(body.noteScope ?? "").trim() === "toNote" ? (entry.note ?? null) : (note || null),
             toNote: String(body.noteScope ?? "").trim() === "toNote" ? (toNote || null) : ((toNote || note) || null),
             currency: transferCurrency,
-            source: liabilityMode ? `liability_${liabilityMode}` : transferAccountsUnchanged && entry.source ? entry.source : "manual",
+            source: liabilityMode
+              ? liabilitySourceForMode(liabilityMode)
+              : canPreserveUnchangedSource
+                ? entry.source
+                : ORDINARY_TRANSFER_SOURCE,
             fundCode: null,
             fundName: null,
             fundProductType: null,
@@ -4033,21 +4036,17 @@ export async function PUT(req: Request) {
     if (productType === "metal" && !metalType) throw new Error("请选择贵金属品种");
     if (productType === "metal" && !metalUnit) throw new Error("请选择贵金属单位");
     const fundNameInput = String(body.fundName ?? "").trim();
+    // The funding cash account is resolved below this point (`cashAccId`), so
+    // the product's own account currency is the only fallback available here;
+    // `assertSameWealthCurrency` rejects a mismatch right after.
     const wealthProduct = productType === "wealth"
-      ? (wealthProductIdInput
-          ? await tx.wealthProduct.findFirst({ where: { id: wealthProductIdInput, householdId, institutionId: investAcc.institutionId, isActive: true } })
-          : fundNameInput
-            ? await tx.wealthProduct.findFirst({
-                where: { householdId, institutionId: investAcc.institutionId ?? null, name: fundNameInput, isActive: true },
-              }) ?? await tx.wealthProduct.create({
-                data: {
-                  householdId,
-                  institutionId: investAcc.institutionId ?? null,
-                  name: fundNameInput,
-                  currency: investAcc.currency ?? "CNY",
-                },
-              })
-            : null)
+      ? await resolveOrCreateWealthProduct(tx, {
+          householdId,
+          institutionId: investAcc.institutionId,
+          currency: investAcc.currency,
+          productId: wealthProductIdInput,
+          name: fundNameInput,
+        })
       : null;
     if (productType === "wealth" && !wealthProduct) throw new Error("请选择或新增理财产品");
     const depositProduct = productType === "deposit"

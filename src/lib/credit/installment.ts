@@ -106,6 +106,74 @@ export function buildCreditCardInstallmentSchedule(params: {
   return rows;
 }
 
+/**
+ * 分期「年化」——把两种费率口径折算到同一把尺子上，方便和贷款/理财横向比较。
+ *
+ * - `annual_interest`（年化利率）本身就是年化，原样返回；排期也用 rate/12 做月利率，
+ *   所以 IRR 反推回来就等于它，没有再算一遍的必要。
+ * - `period_fee`（每期费率）不是年化：手续费每期按**原始本金**收，而本金逐期递减，
+ *   0.6%/期 × 12 期名义上是 7.2%，真实资金成本约 13%。这里按实际现金流
+ *   （每期还：等额本金 + 固定手续费）解月 IRR，再 ×12 得到行业披露口径的
+ *   「实际年化利率（IRR）」。不复利年化，是为了和市场/银行披露的数字可比。
+ *
+ * 只依赖 plan 上的参数（不需要日期），所以缺 billingDay / firstPaymentDate 的
+ * 历史计划同样能算。非法输入返回 null，调用方显示占位符。
+ */
+export function creditInstallmentAnnualizedRate(params: {
+  principal: number;
+  totalRuns: number;
+  rateType: CreditCardInstallmentRateType;
+  rate: number;
+}): number | null {
+  const principal = roundMoney(params.principal);
+  const totalRuns = Math.floor(params.totalRuns);
+  const rate = Number(params.rate);
+  if (!Number.isFinite(principal) || principal <= 0) return null;
+  if (!Number.isInteger(totalRuns) || totalRuns < 1) return null;
+  if (!Number.isFinite(rate) || rate < 0) return null;
+  if (params.rateType === "annual_interest") return roundRate(rate);
+  if (rate === 0) return 0;
+
+  // 与 buildCreditCardInstallmentSchedule 的 period_fee 分支同口径：
+  // 手续费每期固定 = 原始本金 × 费率，本金等额分摊、末期承接尾差。
+  const periodFee = roundMoney(principal * rate / 100);
+  const basePrincipal = roundMoney(principal / totalRuns);
+  const payments: number[] = [];
+  let allocatedPrincipal = 0;
+  for (let index = 0; index < totalRuns; index += 1) {
+    const isLast = index === totalRuns - 1;
+    const principalPart = isLast ? roundMoney(principal - allocatedPrincipal) : basePrincipal;
+    allocatedPrincipal = roundMoney(allocatedPrincipal + principalPart);
+    payments.push(roundMoney(principalPart + periodFee));
+  }
+
+  const monthlyIrr = solveMonthlyIrr(principal, payments);
+  // 返回值是**百分数**（13.03 表示 13.03%），与 plan.rate 的单位一致。
+  return roundRate(monthlyIrr * 12 * 100);
+}
+
+function roundRate(value: number) {
+  return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+/** NPV(r) = -本金 + Σ 每期还款/(1+r)^t，二分求使 NPV=0 的月利率（0 ~ 100%）。 */
+function solveMonthlyIrr(principal: number, payments: readonly number[]) {
+  const npv = (monthlyRate: number) => payments.reduce(
+    (total, payment, index) => total + payment / Math.pow(1 + monthlyRate, index + 1),
+    -principal,
+  );
+  if (npv(0) <= 0) return 0;
+  let low = 0;
+  let high = 1;
+  if (npv(high) > 0) return high;
+  for (let index = 0; index < 120; index += 1) {
+    const mid = (low + high) / 2;
+    if (npv(mid) > 0) low = mid;
+    else high = mid;
+  }
+  return (low + high) / 2;
+}
+
 export function summarizeCreditCardInstallments(rows: CreditCardInstallmentScheduleRow[]) {
   const totalPrincipal = roundMoney(rows.reduce((sum, row) => sum + row.principal, 0));
   const totalInterest = roundMoney(rows.reduce((sum, row) => sum + row.interest, 0));

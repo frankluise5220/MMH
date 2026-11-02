@@ -1,7 +1,11 @@
 import { AccountKind, LiabilityDirection, IntervalUnit, TransactionType } from "@prisma/client";
 
 import { toNumber, formatDateUtc, parseDateInputToUtc, todayDateBusinessYmd } from "@/lib/date-utils";
-import { liabilityPrincipalForAccountSide as canonicalLiabilityPrincipalForAccountSide } from "@/lib/liability";
+import {
+  inferLiabilityActivityMode,
+  liabilityPrincipalForAccountSide as canonicalLiabilityPrincipalForAccountSide,
+  type LiabilityAccountFact,
+} from "@/lib/liability";
 import { normalizeSettlementTransferCategoryName } from "@/lib/default-categories";
 import { compareDetailEntriesAsc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
 import { DEFAULT_LOAN_PREPAY_STRATEGY, parseLoanPrepayStrategy } from "@/lib/loan-prepay-strategy";
@@ -185,7 +189,13 @@ type LiabilityDetailEntry = {
   };
   liabilityEdit?: {
     editEntryId: string;
+    liabilityConversionEntryId: string;
+    entryKind: "liability";
     mode: "borrow_in" | "repay_out" | "prepay_out" | "lend_out" | "collect_in";
+    dialogType: "loan" | "settlement";
+    defaultFromAccountId: string;
+    defaultToAccountId: string;
+    defaultAmount: number;
     defaultLiabilityAccountId: string;
     defaultLiabilityAccountName?: string | null;
     defaultLoanPurposeCategoryId?: string | null;
@@ -194,8 +204,9 @@ type LiabilityDetailEntry = {
     defaultFixedAssetAccountId?: string;
     defaultFixedAssetAssetId?: string;
     defaultDate: string;
-    defaultPrincipal: number;
     defaultInterest: number;
+    defaultFee: number;
+    defaultPrincipal: number;
     defaultNote?: string | null;
     defaultPenalty?: number;
     defaultRecalculateStartDate?: string | null;
@@ -212,14 +223,21 @@ type LiabilityDetailEntry = {
     defaultAutoDebitFirstDate?: string | null;
     defaultLoanRateAdjustments?: Array<{ effectiveDate: string; annualRate: number }>;
     defaultTagIds?: string[] | null;
+    source?: string | null;
+    postedAt?: string | null;
   };
   edit?: {
     type: "expense" | "income" | "advance" | "transfer" | "investment";
     date: string;
+    postedAt?: string | null;
     amount: number;
     note: string;
+    source?: string | null;
+    entryKind?: "transfer" | "liability";
+    tagIds?: string[];
     accountId?: string;
     categoryId?: string;
+    advanceAccountId?: string;
     counterpartyInstitutionId?: string;
     fromAccountId?: string;
     toAccountId?: string;
@@ -253,6 +271,7 @@ export type LiabilityMetricEntry = {
   createdAt: Date;
   dayOrder?: number | null;
   type: TransactionType;
+  entryKind?: "transfer" | "liability" | null;
   amount: unknown;
   accountId?: string | null;
   toAccountId?: string | null;
@@ -532,6 +551,7 @@ export function buildLiabilityDetailEntriesViewData({
   accountLabelById,
   accountTitleById,
   liabilityDirectionByAccountId,
+  accountFactsById,
   displayAccountId,
   mortgagedAssetByLoanAccountId,
   collateralNameByLoanAccountId,
@@ -547,6 +567,7 @@ export function buildLiabilityDetailEntriesViewData({
   accountLabelById: Map<string, string>;
   accountTitleById?: Map<string, string>;
   liabilityDirectionByAccountId: Map<string, LiabilityDirection | string | null>;
+  accountFactsById?: ReadonlyMap<string, LiabilityAccountFact>;
   displayAccountId?: string | null;
   mortgagedAssetByLoanAccountId?: Map<string, { accountId: string; id: string }>;
   collateralNameByLoanAccountId?: Map<string, string>;
@@ -662,20 +683,10 @@ export function buildLiabilityDetailEntriesViewData({
       liabilityDirectionByAccountId.get(liabilitySideAccountId) ??
       ((selectedLiabilityRow?.net ?? 0) >= 0 ? "receivable" : "payable");
     const inferredDirection = relatedLiabilityDirection ?? ((selectedLiabilityRow?.net ?? 0) >= 0 ? "receivable" : "payable");
-    const liabilityEditMode =
-      entry.source === "liability_borrow_in" || entry.source === "liability_financed_purchase"
-        ? ("borrow_in" as const)
-        : entry.source === "liability_lend_out"
-          ? ("lend_out" as const)
-          : entry.source === "liability_collect_in"
-            ? ("collect_in" as const)
-            : entry.source === "liability_prepay_out"
-              ? ("prepay_out" as const)
-              : entry.source === "liability_repay_out" || entry.source === "scheduled_task"
-                ? ("repay_out" as const)
-                : isToLiabilityAccount
-                  ? (inferredDirection === "receivable" ? ("lend_out" as const) : ("repay_out" as const))
-                  : (inferredDirection === "receivable" ? ("collect_in" as const) : ("borrow_in" as const));
+    const liabilityEditMode = inferLiabilityActivityMode(entry, accountFactsById);
+    const displayLiabilityMode = liabilityEditMode ?? (isToLiabilityAccount
+      ? (inferredDirection === "receivable" ? ("lend_out" as const) : ("repay_out" as const))
+      : (inferredDirection === "receivable" ? ("collect_in" as const) : ("borrow_in" as const)));
     const entryDate = liabilityMetricDisplayDate(entry, displayAccountId);
     const entryDateKey = entryDate.toISOString().slice(0, 10);
     const defaultRecalculateStartDate =
@@ -713,7 +724,7 @@ export function buildLiabilityDetailEntriesViewData({
         ? (entry.categoryName || "代付")
         : entry.type === TransactionType.transfer
           ? isSelectedBankLoan
-            ? bankLiabilityTransferTypeLabel(entry.source, liabilityEditMode)
+            ? bankLiabilityTransferTypeLabel(entry.source, displayLiabilityMode)
             : normalizeSettlementTransferCategoryName(entry.categoryName)
           : (entry.categoryName || formatLiabilityEntryType(entry.type)),
       relatedAccountLabel: isBalanceReconcile ? "-" : (accountLabelById.get(cashSideAccountId) ?? "-"),
@@ -735,7 +746,7 @@ export function buildLiabilityDetailEntriesViewData({
             amount: reconcileTarget,
           }
         : undefined,
-      liabilityEdit: !isBalanceReconcile && entry.type === TransactionType.transfer && entry.source !== "advance"
+      liabilityEdit: !isBalanceReconcile && entry.type === TransactionType.transfer && liabilityEditMode
         ? (() => {
             const repaymentMemo = selectedRepaymentPlan ? decodeScheduledTaskMemo(selectedRepaymentPlan.memo) : null;
             const autoDebitMemo = selectedAutoDebitPlan ? decodeScheduledTaskMemo(selectedAutoDebitPlan.memo) : null;
@@ -751,6 +762,11 @@ export function buildLiabilityDetailEntriesViewData({
             return {
               editEntryId: entry.id,
               mode: liabilityEditMode,
+              liabilityConversionEntryId: entry.id,
+              entryKind: "liability" as const,
+              defaultFromAccountId: entry.accountId ?? "",
+              defaultToAccountId: entry.toAccountId ?? "",
+              defaultAmount: Math.abs(amount),
               dialogType: isSelectedBankLoan ? "loan" : "settlement",
               defaultLiabilityAccountId: liabilitySideAccountId,
               // Prefill the account's real stored name, not the row display
@@ -765,8 +781,9 @@ export function buildLiabilityDetailEntriesViewData({
               defaultFixedAssetAssetId: mortgagedAsset?.id,
               defaultLoanFundingMode: entry.source === "liability_financed_purchase" ? "financed_purchase" as const : "cash_disbursement" as const,
               defaultDate: entryDateKey,
-              defaultPrincipal: displayAmount,
-              defaultInterest: interestAmount,
+              defaultPrincipal: Math.abs(toNumber(entry.principalAmount ?? amount)),
+              defaultInterest: Math.abs(toNumber(entry.interestAmount)),
+              defaultFee: Math.abs(toNumber(entry.feeAmount)),
               defaultNote: entry.note ?? "",
               defaultPenalty: Math.abs(toNumber(entry.feeAmount)),
               defaultRecalculateStartDate,
@@ -798,6 +815,8 @@ export function buildLiabilityDetailEntriesViewData({
                 ? (selectedLiabilityRow?.loanRateAdjustments ?? repaymentMemo.loanRateAdjustments ?? [])
                 : [],
               defaultTagIds,
+              source: entry.source ?? null,
+              postedAt: entryDate.toISOString(),
             };
           })()
         : undefined,
@@ -818,10 +837,14 @@ export function buildLiabilityDetailEntriesViewData({
           ? {
               type: "transfer" as const,
               date: entryDateKey,
+              postedAt: entryDate.toISOString(),
               amount: Math.abs(amount),
               note: entry.note ?? "",
+              source: entry.source ?? null,
+              entryKind: entry.entryKind === "liability" ? "liability" as const : "transfer" as const,
               fromAccountId: entry.accountId ?? "",
               toAccountId: entry.toAccountId ?? "",
+              tagIds: entry.EntryTag?.map((item) => item.tagId ?? "").filter(Boolean) ?? [],
             }
           : {
               type: entry.type === TransactionType.income ? "income" as const : "expense" as const,

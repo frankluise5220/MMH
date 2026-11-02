@@ -8,6 +8,9 @@ import { AlertTriangle,  ChevronDown, Loader2, Plus, Search, Trash2, X } from "l
 import { useI18n } from "@/lib/i18n";
 import { CredentialPasswordField } from "@/components/CredentialPasswordField";
 import { useDerivedLayerZIndex } from "@/components/ModalLayer";
+import { REPO_MARKET_LABEL, REPO_PRODUCTS } from "@/lib/repo";
+import { formatMoney } from "@/lib/format";
+import { PERSONAL_INSTITUTION_TYPES } from "@/lib/institution-rules";
 
 /**
  * 产品库统一管理弹窗（存款 / 理财 / 债券 / 保险产品主数据）。
@@ -57,6 +60,19 @@ type ProductRow = {
   recordCount: number;
   /** 当前持仓笔数（已全部赎回/结清的产品为 0）。列表行末尾展示的就是这个值。 */
   holdingCount: number;
+  /**
+   * 交易所标准品种（逆回购）：只展示，不入库，也不参与增删改。
+   * 它们的代码 / 期限 / 费率由交易所规定，产品库只作为「能查到」的清单。
+   */
+  readOnly?: boolean;
+  /** 只读品种的明细（逆回购：市场 / 起投 / 费率）。 */
+  exchangeDetail?: {
+    code: string;
+    market: string;
+    minAmount: number;
+    stepAmount: number;
+    feeRatePercent: number;
+  };
 };
 
 type InstitutionOption = { id: string; name: string; shortName: string | null; type?: string };
@@ -75,6 +91,36 @@ type DeleteState = {
 
 /** 机构筛选里「未指定机构」的伪 id（真实机构 id 都是 cuid）。 */
 const NO_INSTITUTION_KEY = "__no_institution__";
+
+/** 列表里「交易所标准品种」的伪分组：逆回购不属于任何券商机构，单独成组。 */
+const EXCHANGE_GROUP_KEY = "__exchange_products__";
+
+/**
+ * 逆回购品种是交易所规则常量（`src/lib/repo.ts`），不入库、不可编辑，
+ * 但用户在「产品管理」里应该查得到它们，所以合成只读行一起展示。
+ */
+function exchangeProductRows(): ProductRow[] {
+  return REPO_PRODUCTS.map((item) => ({
+    id: `repo:${item.code}`,
+    name: item.name,
+    shortName: item.code,
+    institutionId: null,
+    currency: "CNY",
+    note: null,
+    annualRate: null,
+    termDays: item.termDays,
+    recordCount: 0,
+    holdingCount: 0,
+    readOnly: true,
+    exchangeDetail: {
+      code: item.code,
+      market: REPO_MARKET_LABEL[item.market],
+      minAmount: item.minAmount,
+      stepAmount: item.stepAmount,
+      feeRatePercent: item.feeRatePercent,
+    },
+  }));
+}
 
 const INSURANCE_PRODUCT_TYPES = [
   "savings",
@@ -172,6 +218,11 @@ type FamilyConfig = {
   allowNoInstitution: boolean;
   /** 只列出该类型的机构（保险产品必须挂在保险公司上） */
   institutionType?: string;
+  /**
+   * 从「所属机构」下拉里排除的机构类型。理财 / 债券排除往来人员 / 往来组织 / 家庭成员
+   * （不是产品发行方）；理财另排除保险公司（服务端 guard 拒绝），避免列出必然保存失败的选项。
+   */
+  excludedInstitutionTypes?: readonly string[];
 };
 
 function jsonPost(url: string, body: unknown): Promise<Response> {
@@ -229,6 +280,10 @@ const FAMILY_CONFIG: Record<ProductLibraryFamily, FamilyConfig> = {
     titleKey: "productLibrary.title.wealth",
     listUrl: "/api/v1/wealth-products",
     fields: DEPOSIT_FIELDS,
+    // 往来人员 / 往来组织 / 家庭成员不是理财产品的发行方：不进「所属机构」下拉。
+    // 保险公司同样排除——理财产品落到保险公司名下会被服务端拒绝（INSTITUTION_IS_INSURER），
+    // 列出来只会让用户选中后「保存不成功」。
+    excludedInstitutionTypes: [...PERSONAL_INSTITUTION_TYPES, "insurance"],
     createUrl: "/api/v1/wealth-products",
     createBody: (draft) => ({ ...buildPayload(DEPOSIT_FIELDS, draft), mode: "master" }),
     update: (id, draft) => jsonPut(`/api/v1/wealth-products/${id}`, buildPayload(DEPOSIT_FIELDS, draft)),
@@ -239,6 +294,8 @@ const FAMILY_CONFIG: Record<ProductLibraryFamily, FamilyConfig> = {
     titleKey: "productLibrary.title.bond",
     listUrl: "/api/v1/bond-products",
     fields: BOND_FIELDS,
+    // 同理财：往来人员 / 往来组织 / 家庭成员不是债券的发行方（服务端同样拒绝）。
+    excludedInstitutionTypes: PERSONAL_INSTITUTION_TYPES,
     createUrl: "/api/v1/bond-products",
     createBody: (draft) => ({ ...buildPayload(BOND_FIELDS, draft), mode: "master" }),
     update: (id, draft) => jsonPut(`/api/v1/bond-products/${id}`, buildPayload(BOND_FIELDS, draft)),
@@ -532,10 +589,13 @@ export function ProductLibraryModal({
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
-  const institutionOptions = useMemo(
-    () => (config.institutionType ? institutions.filter((item) => item.type === config.institutionType) : institutions),
-    [institutions, config.institutionType],
-  );
+  const institutionOptions = useMemo(() => {
+    const excluded = new Set<string>(config.excludedInstitutionTypes ?? []);
+    return institutions.filter((item) => {
+      if (config.institutionType && item.type !== config.institutionType) return false;
+      return !excluded.has(String(item.type ?? "").trim());
+    });
+  }, [institutions, config.institutionType, config.excludedInstitutionTypes]);
 
   const institutionNameById = useMemo(() => {
     const map = new Map<string, string>();
@@ -555,7 +615,9 @@ export function ProductLibraryModal({
         throw new Error(String(data?.error ?? t("productLibrary.loadFailed")));
       }
       const rawList = (family === "insurance" ? data.masters : data.products) as Record<string, unknown>[] | undefined;
-      setRows((rawList ?? []).map((item) => normalizeRow(family, item)));
+      const loaded = (rawList ?? []).map((item) => normalizeRow(family, item));
+      // 债券产品库里额外列出逆回购标准品种：它们不入库，只作为只读清单展示。
+      setRows(family === "bond" ? [...loaded, ...exchangeProductRows()] : loaded);
     } catch (error) {
       setLoadError(error instanceof Error ? error.message : t("productLibrary.loadFailed"));
       setRows([]);
@@ -589,6 +651,12 @@ export function ProductLibraryModal({
     const text = keyword.trim().toLowerCase();
     const institutionSet = new Set(institutionFilter);
     return rows.filter((row) => {
+      // 交易所标准品种不属于任何机构，按机构筛选时一并隐藏。
+      if (row.readOnly) {
+        if (institutionSet.size > 0) return false;
+        if (!text) return true;
+        return row.name.toLowerCase().includes(text) || (row.shortName ?? "").toLowerCase().includes(text);
+      }
       if (institutionSet.size > 0 && !institutionSet.has(row.institutionId ?? NO_INSTITUTION_KEY)) return false;
       if (!text) return true;
       const institution = row.institutionId ? institutionNameById.get(row.institutionId) ?? "" : "";
@@ -600,14 +668,26 @@ export function ProductLibraryModal({
     });
   }, [rows, keyword, institutionNameById, institutionFilter]);
 
+  /**
+   * 债券与理财的「不指定机构」是通用语义：留空 = 所有机构的账户都能选购。
+   * 存款产品与开户行强绑定（接口传空机构直接返回空列表），保险产品的机构必填，
+   * 这两个族保留「未指定机构」的原说法。
+   */
+  const universalScope = family === "bond" || family === "wealth";
+  const noInstitutionLabel = universalScope
+    ? t("productLibrary.universalGroup")
+    : t("productLibrary.noInstitution");
+
   /** 机构下拉的选项：按当前产品集合统计，包含「未指定机构」分组。 */
   const institutionFilterOptions = useMemo(() => {
     const map = new Map<string, { id: string; label: string; count: number }>();
     for (const row of rows) {
+      // 交易所标准品种没有机构归属，不进机构筛选。
+      if (row.readOnly) continue;
       const id = row.institutionId ?? NO_INSTITUTION_KEY;
       const label = row.institutionId
         ? institutionNameById.get(row.institutionId) ?? row.institutionName ?? t("productLibrary.unknownInstitution")
-        : t("productLibrary.noInstitution");
+        : noInstitutionLabel;
       const entry = map.get(id) ?? { id, label, count: 0 };
       entry.count += 1;
       map.set(id, entry);
@@ -617,19 +697,21 @@ export function ProductLibraryModal({
       if (b.id === NO_INSTITUTION_KEY) return -1;
       return a.label.localeCompare(b.label, "zh-Hans-CN");
     });
-  }, [rows, institutionNameById, t]);
+  }, [rows, institutionNameById, t, noInstitutionLabel]);
 
-  /** 列表按所属机构分组（未指定机构排在最后）。 */
+  /** 列表按所属机构分组（交易所标准品种单独成组，未指定机构排在最后）。 */
   const groupedRows = useMemo(() => {
     const groups: Array<{ key: string; label: string; count: number; rows: ProductRow[] }> = [];
     const indexByKey = new Map<string, number>();
     for (const row of filtered) {
-      const key = row.institutionId ?? NO_INSTITUTION_KEY;
+      const key = row.readOnly ? EXCHANGE_GROUP_KEY : row.institutionId ?? NO_INSTITUTION_KEY;
       let at = indexByKey.get(key);
       if (at == null) {
-        const label = row.institutionId
-          ? institutionNameById.get(row.institutionId) ?? row.institutionName ?? t("productLibrary.unknownInstitution")
-          : t("productLibrary.noInstitution");
+        const label = key === EXCHANGE_GROUP_KEY
+          ? t("productLibrary.exchangeGroup")
+          : row.institutionId
+            ? institutionNameById.get(row.institutionId) ?? row.institutionName ?? t("productLibrary.unknownInstitution")
+            : noInstitutionLabel;
         at = groups.length;
         indexByKey.set(key, at);
         groups.push({ key, label, count: 0, rows: [] });
@@ -638,7 +720,7 @@ export function ProductLibraryModal({
       groups[at].count += 1;
     }
     return groups;
-  }, [filtered, institutionNameById, t]);
+  }, [filtered, institutionNameById, t, noInstitutionLabel]);
 
   const selectedRow = useMemo(
     () => (isCreating ? null : rows.find((row) => row.id === selectedId) ?? null),
@@ -669,6 +751,8 @@ export function ProductLibraryModal({
   }
 
   async function handleSave() {
+    // 交易所标准品种只是清单，任何时候都不写库。
+    if (selectedRow?.readOnly) return;
     const missing = config.fields.find((field) => field.required && !String(draft[field.key] ?? "").trim());
     if (missing) {
       setFormError(t("productLibrary.requiredField", { field: t(missing.labelKey) }));
@@ -831,10 +915,16 @@ export function ProductLibraryModal({
                     <div className="sticky top-0 z-10 flex items-center justify-between gap-2 bg-white/95 px-2 py-1 backdrop-blur">
                       <span
                         className={`inline-flex min-w-0 items-center gap-1 truncate text-[11px] font-medium ${
-                          group.key === NO_INSTITUTION_KEY ? "text-amber-600" : "text-slate-500"
+                          group.key === EXCHANGE_GROUP_KEY
+                            ? "text-emerald-600"
+                            : group.key === NO_INSTITUTION_KEY
+                              ? (universalScope ? "text-sky-600" : "text-amber-600")
+                              : "text-slate-500"
                         }`}
                       >
-                        {group.key === NO_INSTITUTION_KEY ? <AlertTriangle className="h-3 w-3 shrink-0" /> : null}
+                        {group.key === NO_INSTITUTION_KEY && !universalScope
+                          ? <AlertTriangle className="h-3 w-3 shrink-0" />
+                          : null}
                         {group.label}
                       </span>
                       <span className="shrink-0 tabular-nums text-[11px] text-slate-400">{group.count}</span>
@@ -854,17 +944,31 @@ export function ProductLibraryModal({
                           {/* 单行：产品名占满剩余宽度并截断，利率/期限/持仓数靠右不换行（机构已在分组头） */}
                           <span className="min-w-0 flex-1 truncate text-sm font-medium text-slate-800">{row.name}</span>
                           <span className="flex shrink-0 items-center gap-1 whitespace-nowrap text-[11px] text-slate-500">
-                            {row.annualRate != null ? <span className="tabular-nums">{row.annualRate}%</span> : null}
-                            {row.termDays != null ? (
-                              <span className="tabular-nums">
-                                · {row.termDays}
-                                {t("productLibrary.termUnitDay")}
-                              </span>
-                            ) : null}
-                            <span className="tabular-nums text-slate-400">
-                              · {row.holdingCount}
-                              {t("productLibrary.holdingUnit")}
-                            </span>
+                            {row.readOnly ? (
+                              <>
+                                <span className="tabular-nums text-slate-400">{row.shortName}</span>
+                                {row.termDays != null ? (
+                                  <span className="tabular-nums">
+                                    · {row.termDays}
+                                    {t("productLibrary.termUnitDay")}
+                                  </span>
+                                ) : null}
+                              </>
+                            ) : (
+                              <>
+                                {row.annualRate != null ? <span className="tabular-nums">{row.annualRate}%</span> : null}
+                                {row.termDays != null ? (
+                                  <span className="tabular-nums">
+                                    · {row.termDays}
+                                    {t("productLibrary.termUnitDay")}
+                                  </span>
+                                ) : null}
+                                <span className="tabular-nums text-slate-400">
+                                  · {row.holdingCount}
+                                  {t("productLibrary.holdingUnit")}
+                                </span>
+                              </>
+                            )}
                           </span>
                         </button>
                       );
@@ -911,6 +1015,42 @@ export function ProductLibraryModal({
 
                 {deleteError ? <div className="text-xs text-rose-600">{deleteError}</div> : null}
               </div>
+            ) : selectedRow?.readOnly && selectedRow.exchangeDetail ? (
+              // 交易所标准品种：字段由交易所规定，这里只读展示，不提供编辑/删除。
+              <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
+                <div className="text-xs font-medium text-slate-500">{t("productLibrary.exchangeDetailTitle")}</div>
+                <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs leading-5 text-emerald-800">
+                  {t("productLibrary.exchangeReadOnlyHint")}
+                </div>
+                <div className="grid grid-cols-1 gap-2 md:grid-cols-2">
+                  <div className="space-y-1">
+                    <div className="form-label">{t("productLibrary.exchangeCode")}</div>
+                    <div className="form-input flex items-center tabular-nums text-slate-700">{selectedRow.exchangeDetail.code}</div>
+                  </div>
+                  <div className="space-y-1">
+                    <div className="form-label">{t("productLibrary.exchangeMarket")}</div>
+                    <div className="form-input flex items-center text-slate-700">{selectedRow.exchangeDetail.market}</div>
+                  </div>
+                  <div className="space-y-1">
+                    <div className="form-label">{t("productLibrary.termDays")}</div>
+                    <div className="form-input flex items-center tabular-nums text-slate-700">
+                      {selectedRow.termDays ?? "-"}{t("productLibrary.termUnitDay")}
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <div className="form-label">{t("productLibrary.exchangeFeeRate")}</div>
+                    <div className="form-input flex items-center tabular-nums text-slate-700">{selectedRow.exchangeDetail.feeRatePercent}%</div>
+                  </div>
+                  <div className="space-y-1">
+                    <div className="form-label">{t("productLibrary.exchangeMinAmount")}</div>
+                    <div className="form-input flex items-center tabular-nums text-slate-700">{formatMoney(selectedRow.exchangeDetail.minAmount)}</div>
+                  </div>
+                  <div className="space-y-1">
+                    <div className="form-label">{t("productLibrary.exchangeStepAmount")}</div>
+                    <div className="form-input flex items-center tabular-nums text-slate-700">{formatMoney(selectedRow.exchangeDetail.stepAmount)}</div>
+                  </div>
+                </div>
+              </div>
             ) : canSave ? (
               <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
                 <div className="text-xs font-medium text-slate-500">
@@ -947,6 +1087,23 @@ export function ProductLibraryModal({
                               {item.shortName?.trim() || item.name}
                             </option>
                           ))}
+                          {/**
+                           * 历史数据可能仍挂在被排除的机构上（往来人员 / 往来组织 /
+                           * 家庭成员）。把它显示成不可选项，而不是留空：留空会让
+                           * 用户以为已经清掉机构，但 draft 里仍是旧 id，保存后照旧。
+                           */}
+                          {(() => {
+                            const currentId = draft[field.key] ?? "";
+                            if (!currentId || institutionOptions.some((item) => item.id === currentId)) return null;
+                            const hidden = institutions.find((item) => item.id === currentId);
+                            if (!hidden) return null;
+                            return (
+                              <option value={hidden.id} disabled>
+                                {hidden.shortName?.trim() || hidden.name}
+                                {t("productLibrary.institutionNotSelectable")}
+                              </option>
+                            );
+                          })()}
                         </select>
                       ) : field.kind === "note" ? (
                         <textarea
@@ -972,7 +1129,12 @@ export function ProductLibraryModal({
                 </div>
 
                 {!config.allowNoInstitution ? null : (
-                  <div className="text-[11px] text-slate-400">{t("productLibrary.noInstitutionHint")}</div>
+                  <div className="text-[11px] text-slate-400">
+                    {/* 债券/理财：留空即「通用」，所有机构都能选购；存款/保险仍与机构强绑定。 */}
+                    {universalScope
+                      ? t("productLibrary.universalProductHint")
+                      : t("productLibrary.noInstitutionHint")}
+                  </div>
                 )}
                 {formError ? <div className="text-xs text-rose-600">{formError}</div> : null}
               </div>
@@ -988,7 +1150,7 @@ export function ProductLibraryModal({
               ) : null}
               <div className="flex items-center justify-between gap-2">
                 <div>
-                  {!isCreating && selectedRow && !deleteState ? (
+                  {!isCreating && selectedRow && !selectedRow.readOnly && !deleteState ? (
                     <button
                       type="button"
                       onClick={() => void handleDelete()}
@@ -1023,7 +1185,7 @@ export function ProductLibraryModal({
                       <button
                         type="button"
                         onClick={() => void handleSave()}
-                        disabled={saving || !canSave}
+                        disabled={saving || !canSave || !!selectedRow?.readOnly}
                         className="primary-button h-9 px-4 text-white disabled:opacity-50"
                       >
                         {saving ? t("productLibrary.saving") : t("common.save")}

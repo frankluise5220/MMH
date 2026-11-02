@@ -4,7 +4,7 @@ import { prisma } from "@/lib/db/prisma";
 import { normalizeDefaultCategoryHierarchyForHousehold } from "@/lib/default-categories";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { loadCommonData } from "@/lib/server/cached-data";
-import { buildAccountDisplayOption, type AccountLabelField } from "@/lib/account-display";
+import { buildAccountDisplayOption, type AccountLabelField, type AccountRenderSettings, accountRenderSettings } from "@/lib/account-display";
 import { getServerAccountLabelFields } from "@/lib/server/account-label-fields";
 import { getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
 import {
@@ -33,13 +33,9 @@ function withAccountDisplayFields<T extends {
   investProductType?: string | null;
   Institution?: { name: string | null; shortName?: string | null } | null;
   AccountGroup?: { id: string; name: string | null } | null;
-}>(account: T, settings?: { fields?: AccountLabelField[] | null; baseCurrency?: string | null }) {
+}>(account: T, settings?: AccountRenderSettings | null) {
   const normalized = normalizeReturnedAccountKind(account);
-  // 两个参数必须成对出现：只给 fields 时非本位币既不显示也没有 hover。
-  const display = buildAccountDisplayOption(normalized, undefined, {
-    fields: settings?.fields,
-    baseCurrency: settings?.baseCurrency,
-  });
+  const display = buildAccountDisplayOption(normalized, undefined, settings ?? undefined);
   return {
     ...normalized,
     label: display.selectorLabel || display.label,
@@ -87,7 +83,7 @@ export async function GET() {
       accounts: accounts.map((account) => {
         const counts = recordCounts.get(account.id);
         return {
-          ...withAccountDisplayFields(account, { fields: accountLabelFields, baseCurrency }),
+          ...withAccountDisplayFields(account, accountRenderSettings(accountLabelFields, baseCurrency)),
           recordCount: counts?.recordCount ?? 0,
           deletedRecordCount: counts?.deletedRecordCount ?? 0,
         };

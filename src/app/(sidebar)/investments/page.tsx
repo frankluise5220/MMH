@@ -3,7 +3,7 @@ import { ArrowLeft } from "lucide-react";
 import { cookies } from "next/headers";
 import Link from "next/link";
 
-import { buildAccountDisplayOption, normalizeCreditCardLabelTemplate } from "@/lib/account-display";
+import { buildAccountDisplayOption, normalizeCreditCardLabelTemplate, accountRenderSettings } from "@/lib/account-display";
 import { getInvestmentAccountView } from "@/lib/account-kind-utils";
 import { investProductTypeLabel } from "@/lib/account-kinds";
 import { prisma } from "@/lib/db/prisma";
@@ -101,7 +101,7 @@ export default async function InvestmentsPage({
       investProductType: account.investProductType,
       Institution: account.Institution,
       AccountGroup: account.AccountGroup,
-    }, creditCardLabelTemplate, { fields: accountLabelFields, baseCurrency });
+    }, creditCardLabelTemplate, accountRenderSettings(accountLabelFields, baseCurrency));
     const accountLabel = display.label;
     const groupName = account.AccountGroup?.name?.trim() || t("investments.noOwner");
     const institutionName = display.institutionName || t("investments.noInstitution");

@@ -1,4 +1,7 @@
 import { toStatementMonth } from "@/lib/date-utils";
+import { isLiabilityAccountKind, isLiabilityPrincipalAccount } from "@/lib/liability";
+
+export { isLiabilityAccountKind };
 export const ENTRY_ORIGIN_MANUAL = "manual" as const;
 export const ENTRY_ORIGIN_AI_IMPORT = "ai_import" as const;
 export const ENTRY_ORIGIN_EXCEL_IMPORT = "excel_import" as const;
@@ -157,11 +160,6 @@ function statementMonthForBillSide(date: Date, account: StatementAccountLike | n
  * 本金会落入"收入来源"饼图。这是统计页与 API 端点都必须调用的过滤函数，
  * 任何漏配都会让借到的钱变成"收入"被错误呈现。
  */
-/** 负债账户 kind：往来款（settlement）与贷款（loan，含银行贷与往来款贷款）。 */
-export function isLiabilityAccountKind(kind?: string | null) {
-  return kind === "settlement" || kind === "loan";
-}
-
 /**
  * 以账户现状判断这笔转账是否仍构成负债活动。
  *
@@ -178,7 +176,7 @@ function isLiabilityActivityByAccount(
   const sourceKind = entry.accountKind ?? null;
   const targetKind = entry.toAccountKind ?? null;
   if (!sourceKind && !targetKind) return null;
-  return isLiabilityAccountKind(sourceKind) || isLiabilityAccountKind(targetKind);
+  return isLiabilityPrincipalAccount({ kind: sourceKind }) || isLiabilityPrincipalAccount({ kind: targetKind });
 }
 
 const LIABILITY_PRINCIPAL_SOURCES = new Set([
@@ -200,9 +198,9 @@ export function isLiabilityPrincipalTransfer(entry: {
   accountKind?: string | null;
   toAccountKind?: string | null;
 } | null | undefined) {
-  if (!isLiabilityPrincipalSource(entry?.source)) return false;
-  // 账户两端都已不是负债账户时，历史 source 不再按负债本金处理；拿不到账户信息时保持原口径。
-  return isLiabilityActivityByAccount(entry) ?? true;
+  const byAccount = isLiabilityActivityByAccount(entry);
+  if (byAccount != null) return byAccount;
+  return isLiabilityPrincipalSource(entry?.source);
 }
 
 /**
@@ -222,8 +220,9 @@ export function isLiabilityPrincipalCashFlow(entry: {
   accountKind?: string | null;
   toAccountKind?: string | null;
 } | null | undefined) {
-  if (isLiabilityActivityByAccount(entry) === true) return true;
-  return isLiabilityPrincipalTransfer(entry);
+  const byAccount = isLiabilityActivityByAccount(entry);
+  if (byAccount != null) return byAccount;
+  return isLiabilityPrincipalSource(entry?.source);
 }
 
 export function statementMonthForTransfer(

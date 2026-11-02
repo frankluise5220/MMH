@@ -4,6 +4,8 @@ import { getHouseholdScope } from "@/lib/server/household-scope";
 import { normalizeDepositInterestPayoutInput } from "@/lib/deposit-interest-payout";
 import { ensureBondPlansForProduct } from "@/lib/server/bond-plan-tasks";
 import { deleteProductMaster } from "@/lib/server/product-master-delete";
+import { personalInstitutionError } from "@/lib/server/product-family-guard";
+import { isPersonalInstitutionType } from "@/lib/institution-rules";
 
 export const runtime = "nodejs";
 
@@ -12,10 +14,22 @@ function isoDateOnly(value: Date | null | undefined): string | null {
 }
 
 /**
+ * 条款完整性只在「把已有条款改没」时才算错。
+ *
+ * 产品库允许先建一条只有名称的债券（条款等买入时补），POST 侧本来也不校验；
+ * 所以编辑机构 / 名称 / 备注时，不该因为这条产品还没有到期日、票面利率就被
+ * 拒绝保存 —— 否则会出现「改不了机构，只能删了重建」的死角。
+ */
+function clearedExisting(next: unknown, current: unknown): boolean {
+  return next !== undefined && next === null && current !== null && current !== undefined;
+}
+
+/**
  * PUT /api/v1/bond-products/[id]
  * 编辑债券条款（票面利率 / 到期日 / 付息方式 / 计息基础 / 首次付息日）。
  * 这是"债单字段驱动"的唯一真源入口；保存后同步刷新该债单的只读计划行
- * （预期付息日 / 金额）。到期日与票面利率是债券必需项，不允许编辑成空。
+ * （预期付息日 / 金额）。到期日与票面利率不允许**清空**，但允许本来就缺
+ * —— 产品库可以先建只有名称的债券，条款在买入时补齐。
  */
 export async function PUT(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   try {
@@ -46,6 +60,10 @@ export async function PUT(req: NextRequest, ctx: { params: Promise<{ id: string 
         const institution = await prisma.institution.findFirst({ where: { id: institutionId, householdId } });
         if (!institution) {
           return NextResponse.json({ ok: false, code: "INSTITUTION_NOT_FOUND", error: "机构不存在" }, { status: 400 });
+        }
+        // 往来人员 / 往来组织 / 家庭成员不是债券的发行方（产品库下拉已排除，这里兜底）。
+        if (isPersonalInstitutionType(institution.type)) {
+          return NextResponse.json(personalInstitutionError("债券"), { status: 400 });
         }
       }
       data.institutionId = institutionId;
@@ -78,10 +96,13 @@ export async function PUT(req: NextRequest, ctx: { params: Promise<{ id: string 
       else data.firstPayoutDate = new Date(`${text}T00:00:00.000Z`);
     }
 
-    const nextMaturityDate = data.maturityDate !== undefined ? (data.maturityDate as Date | null) : product.maturityDate;
-    const nextAnnualRate = data.annualRate !== undefined ? (data.annualRate as number | null) : (product.annualRate == null ? null : Number(product.annualRate));
-    if (!nextMaturityDate) return NextResponse.json({ ok: false, code: "BOND_MATURITY_REQUIRED", error: "债券必须填写到期日" }, { status: 400 });
-    if (!nextAnnualRate) return NextResponse.json({ ok: false, code: "BOND_RATE_REQUIRED", error: "债券必须填写票面利率" }, { status: 400 });
+    // 只拦「把已有条款清空」，缺条款的产品仍然可以改机构 / 名称 / 备注。
+    if (clearedExisting(data.maturityDate, product.maturityDate)) {
+      return NextResponse.json({ ok: false, code: "BOND_MATURITY_REQUIRED", error: "债券必须填写到期日" }, { status: 400 });
+    }
+    if (clearedExisting(data.annualRate, product.annualRate)) {
+      return NextResponse.json({ ok: false, code: "BOND_RATE_REQUIRED", error: "债券必须填写票面利率" }, { status: 400 });
+    }
     if (data.payoutFrequency === null) data.payoutFrequency = "maturity";
 
     // 身份口径 = (householdId, institutionId, name)，改名 / 改机构都可能撞上已有债券。
@@ -97,7 +118,10 @@ export async function PUT(req: NextRequest, ctx: { params: Promise<{ id: string 
     }
 
     const updated = await prisma.bondProduct.update({ where: { id: product.id }, data });
-    await ensureBondPlansForProduct({ householdId, productId: updated.id }).catch(() => {});
+    // 条款不全时算不出计划行（缺到期日 / 票面利率），等条款补齐后再刷新。
+    if (updated.maturityDate && updated.annualRate != null) {
+      await ensureBondPlansForProduct({ householdId, productId: updated.id }).catch(() => {});
+    }
 
     return NextResponse.json({
       ok: true,

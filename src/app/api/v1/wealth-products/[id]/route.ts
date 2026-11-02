@@ -2,7 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { deleteProductMaster } from "@/lib/server/product-master-delete";
-import { isInsurerInstitution, insurerInstitutionError } from "@/lib/server/product-family-guard";
+import {
+  isInsurerInstitution,
+  insurerInstitutionError,
+  personalInstitutionError,
+} from "@/lib/server/product-family-guard";
+import { isPersonalInstitutionType } from "@/lib/institution-rules";
 
 export const runtime = "nodejs";
 
@@ -44,6 +49,8 @@ export async function PUT(req: NextRequest, ctx: { params: Promise<{ id: string 
         }
         // 理财家族不得挂到保险公司名下（同新建守卫），否则编辑会把产品「送回」理财库。
         if (isInsurerInstitution(institution)) return NextResponse.json(insurerInstitutionError(), { status: 400 });
+        // 往来人员 / 往来组织 / 家庭成员不是理财产品的发行方（产品库下拉已排除，这里兜底）。
+        if (isPersonalInstitutionType(institution.type)) return NextResponse.json(personalInstitutionError(), { status: 400 });
       }
       data.institutionId = institutionId;
     }

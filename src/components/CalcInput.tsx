@@ -3,6 +3,7 @@
 import { forwardRef, useEffect, useRef, useState, useCallback } from "react";
 import { Calculator } from "lucide-react";
 import { createPortal } from "react-dom";
+import { hasAmountFieldReference } from "@/lib/amount-field-expression";
 import { evaluateArithmeticExpression } from "@/lib/arithmetic-expression";
 import { useI18n } from "@/lib/i18n";
 
@@ -28,13 +29,14 @@ const HALF_WIDTH_MAP: Record<string, string> = {
   "５": "5", "６": "6", "７": "7", "８": "8", "９": "9",
   "．": ".", "。": ".",
   "＋": "+", "－": "-", "＊": "*", "／": "/",
-  "（": "(", "）": ")", "　": " ",
+  "（": "(", "）": ")", "｛": "{", "｝": "}", "　": " ",
 };
 
-function sanitizeCalcInputValue(raw: string) {
-  return raw
-    .replace(/[０-９．。＋－＊／（）　]/g, (ch) => HALF_WIDTH_MAP[ch] ?? ch)
-    .replace(/[^\d+\-*/().\s]/g, "");
+function sanitizeCalcInputValue(raw: string, allowAmountFieldReferences = false) {
+  const normalized = raw.replace(/[０-９．。＋－＊／（）｛｝　]/g, (ch) => HALF_WIDTH_MAP[ch] ?? ch);
+  return allowAmountFieldReferences
+    ? normalized.replace(/[^\d+\-*/().\s{}A-Za-z\u3400-\u9fff]/g, "")
+    : normalized.replace(/[^\d+\-*/().\s]/g, "");
 }
 
 export function evaluateCalcInputExpression(expression: string, currentValue = 0) {
@@ -81,6 +83,7 @@ type CalcInputProps = {
    * 但保留一个 20px 的小计算器按钮内嵌在右侧，避免整行被 36px 高的标准控件撑开。
    */
   compact?: boolean;
+  allowAmountFieldReferences?: boolean;
 };
 
 export const CalcInput = forwardRef<HTMLInputElement, CalcInputProps>(function CalcInput(
@@ -99,6 +102,7 @@ export const CalcInput = forwardRef<HTMLInputElement, CalcInputProps>(function C
   autoFocus = false,
   bare = false,
   compact = false,
+  allowAmountFieldReferences = false,
   },
   ref,
 ) {
@@ -113,9 +117,10 @@ export const CalcInput = forwardRef<HTMLInputElement, CalcInputProps>(function C
   const formatValue = useCallback((num: number) => num.toFixed(precision), [precision]);
 
   const doEval = useCallback((expression: string) => {
+    if (allowAmountFieldReferences && hasAmountFieldReference(expression)) return;
     const computed = evaluateCalcInputExpression(expression, numVal);
     if (computed != null) onChange(formatValue(computed));
-  }, [formatValue, numVal, onChange]);
+  }, [allowAmountFieldReferences, formatValue, numVal, onChange]);
 
   useEffect(() => {
     if (!open) return;
@@ -198,7 +203,8 @@ export const CalcInput = forwardRef<HTMLInputElement, CalcInputProps>(function C
 
   function handleInputKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key !== "Enter") return;
-    const raw = sanitizeCalcInputValue(value).trim();
+    const raw = sanitizeCalcInputValue(value, allowAmountFieldReferences).trim();
+    if (allowAmountFieldReferences && hasAmountFieldReference(raw)) return;
     // Plain signed numbers (including negatives) are values, not expressions:
     // let Enter submit the form instead of swallowing it and mutating the value.
     if (!raw || isPlainSignedNumber(raw)) return;
@@ -208,7 +214,7 @@ export const CalcInput = forwardRef<HTMLInputElement, CalcInputProps>(function C
   }
 
   function handleInputBlur() {
-    const raw = sanitizeCalcInputValue(value).trim();
+    const raw = sanitizeCalcInputValue(value, allowAmountFieldReferences).trim();
     if (isPlainSignedNumber(raw)) {
       const parsed = Number(raw);
       if (Number.isFinite(parsed)) {
@@ -235,10 +241,10 @@ export const CalcInput = forwardRef<HTMLInputElement, CalcInputProps>(function C
     <div className={`relative ${className ?? ""}`}>
       <input
         ref={ref}
-        inputMode="decimal"
+        inputMode={allowAmountFieldReferences ? "text" : "decimal"}
         value={value}
         disabled={disabled}
-        onChange={(e) => onChange(sanitizeCalcInputValue(e.target.value))}
+        onChange={(e) => onChange(sanitizeCalcInputValue(e.target.value, allowAmountFieldReferences))}
         onKeyDown={handleInputKeyDown}
         onBlur={handleInputBlur}
         placeholder={placeholder}

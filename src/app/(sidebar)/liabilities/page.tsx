@@ -4,7 +4,7 @@ import { cookies } from "next/headers";
 import Link from "next/link";
 
 import { LiabilitiesGuideClient } from "@/components/LiabilitiesGuideClient";
-import { buildAccountDisplayOption, normalizeCreditCardLabelTemplate } from "@/lib/account-display";
+import { buildAccountDisplayOption, normalizeCreditCardLabelTemplate, accountRenderSettings } from "@/lib/account-display";
 import { buildAccountOwnerOptions } from "@/lib/account-owner-options";
 import { LENDER_INSTITUTION_TYPE_VALUES, institutionTypeLabel, isInstitutionTypeOf, isSettlementCounterpartyType } from "@/lib/account-kinds";
 import { toNumber } from "@/lib/date-utils";
@@ -134,7 +134,7 @@ export default async function LiabilitiesPage({
       Institution: account.Institution,
       AccountGroup: account.AccountGroup,
       Counterparty: account.Counterparty,
-    }, creditCardLabelTemplate, { fields: accountLabelFields, baseCurrency });
+    }, creditCardLabelTemplate, accountRenderSettings(accountLabelFields, baseCurrency));
     return {
       id: account.id,
       name: account.name,
@@ -275,7 +275,7 @@ export default async function LiabilitiesPage({
         Institution: account.Institution,
         AccountGroup: account.AccountGroup,
         Counterparty: account.Counterparty,
-      }, creditCardLabelTemplate, { fields: accountLabelFields, baseCurrency });
+      }, creditCardLabelTemplate, accountRenderSettings(accountLabelFields, baseCurrency));
       return {
         id: account.id,
         label: display.label,
@@ -349,7 +349,7 @@ export default async function LiabilitiesPage({
       Institution: account.Institution,
       AccountGroup: account.AccountGroup,
       Counterparty: account.Counterparty,
-    }, creditCardLabelTemplate, { fields: accountLabelFields, baseCurrency });
+    }, creditCardLabelTemplate, accountRenderSettings(accountLabelFields, baseCurrency));
     const institutionName = display.institutionName || t("liabilities.noCounterparty");
     const liabilityPersonKey = institutionName
       ? `institution:${account.institutionId ?? institutionName}`

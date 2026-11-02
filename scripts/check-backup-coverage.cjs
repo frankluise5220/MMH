@@ -31,7 +31,6 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const root = path.resolve(__dirname, "..");
-const schema = fs.readFileSync(path.join(root, "prisma", "schema.prisma"), "utf8");
 const backup = fs.readFileSync(path.join(root, "src", "lib", "server", "backup.ts"), "utf8");
 
 /**
@@ -70,29 +69,36 @@ const INTENTIONAL_EXCLUSIONS = new Map(
 const PAYLOAD_KEY_OVERRIDES = new Map(Object.entries({ TxRecord: "transactions" }));
 
 // ---------------------------------------------------------------------------
-// 1. Parse prisma/schema.prisma into models + relation graph.
+// 1. Read models + relation graph from the generated Prisma client.
 // ---------------------------------------------------------------------------
-const models = new Map();
-for (const match of schema.matchAll(/^model\s+(\w+)\s*\{([\s\S]*?)^\}/gm)) {
-  const [, name, body] = match;
-  const fields = [];
-  for (const line of body.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("//") || trimmed.startsWith("@@")) continue;
-    const field = trimmed.match(/^(\w+)\s+([A-Za-z_]\w*)(\[\])?(\?)?/);
-    if (!field) continue;
-    fields.push({ name: field[1], type: field[2], isList: Boolean(field[3]), isOptional: Boolean(field[4]) });
-  }
-  models.set(name, { name, fields });
-}
+// This used to re-parse prisma/schema.prisma with a hand-written regex. That was
+// a second schema parser that could disagree with Prisma (multi-line attributes,
+// @@map, renamed relations) — and when it disagreed, the gate quietly audited the
+// wrong set of models. DMMF is the exact model graph the client runs on, so there
+// is nothing left to keep in sync.
+const { Prisma } = require("@prisma/client");
+const models = new Map(
+  Prisma.dmmf.datamodel.models.map((model) => [
+    model.name,
+    {
+      name: model.name,
+      fields: model.fields.map((field) => ({
+        name: field.name,
+        type: field.type,
+        isList: field.isList,
+        isOptional: !field.isRequired,
+        isRelation: field.kind === "object",
+      })),
+    },
+  ]),
+);
 if (models.size === 0) {
-  console.error("Backup coverage audit FAILED: could not parse any model from prisma/schema.prisma.");
+  console.error("Backup coverage audit FAILED: Prisma DMMF exposed no models (client not generated?).");
   process.exit(1);
 }
 
-// A field is a relation when its type is another model.
 for (const model of models.values()) {
-  model.relations = model.fields.filter((field) => models.has(field.type)).map((field) => field.type);
+  model.relations = model.fields.filter((field) => field.isRelation).map((field) => field.type);
   model.hasHouseholdId = model.fields.some((field) => field.name === "householdId");
 }
 

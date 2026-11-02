@@ -325,6 +325,12 @@ expect(/const manifestChangelog = toSingleLineText\(packageManifestNotes\);/.tes
 expect(/assertManifestChangelog\(manifestChangelog\);/.test(buildScript), "fnOS package build must fail when the App Center changelog is missing, Markdown, or too long.");
 expect(!/packageManifestNotes \|\|/.test(buildScript), "fnOS package build must not fall back to full release notes for the App Center changelog.");
 expect(/changelog=\$\{manifestChangelog\}/.test(buildScript), "fnOS manifest must include a changelog for official submission.");
+// 应用介绍与显示名同样是「封装在 fpk 里」的元数据（飞牛官方 2026-11-02 确认），
+// 商店后台改不动，只能重打包。desc 必须读全渠道共用的那份简介，不能再出现手写的一句话。
+expect(/function resolveStoreIntro\(\)/.test(buildScript), "fnOS manifest desc must be resolved from the shared store intro, not hand-written.");
+expect(/"deploy", "fnos", "repository", "fnpack\.json"/.test(buildScript), "fnOS manifest desc must read the shared intro from deploy/fnos/repository/fnpack.json.");
+expect(/desc=\$\{externalNode \?[\s\S]{0,200}storeIntro\}/.test(buildScript), "fnOS manifest desc must use the shared store intro for the official App Center listing.");
+expect(/display_name=\$\{displayName\}/.test(buildScript) && /title:\s*displayName,/.test(buildScript), "fnOS manifest display_name and the app/ui/config entry title must come from the single displayName constant.");
 expect(/mmhReleaseNotes/.test(buildScript), "fnOS package build must copy release notes into the runtime package.json.");
 expect(
   /runtimePkg\.mmhFnosManifestChangelog = manifestChangelog/.test(buildScript),

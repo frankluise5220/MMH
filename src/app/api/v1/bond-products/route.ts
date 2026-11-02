@@ -6,6 +6,8 @@ import { normalizeCurrency, normalizeOptionalCurrency } from "@/lib/currency";
 import { normalizeDepositInterestPayoutInput } from "@/lib/deposit-interest-payout";
 import { ensureBondPlansForProduct } from "@/lib/server/bond-plan-tasks";
 import { loadBondHoldingCounts } from "@/lib/server/product-holding-counts";
+import { personalInstitutionError } from "@/lib/server/product-family-guard";
+import { isPersonalInstitutionType } from "@/lib/institution-rules";
 
 export const runtime = "nodejs";
 
@@ -31,7 +33,7 @@ function isoDateOnly(value: Date | null | undefined): string | null {
  * 本接口是债券产品的唯一入口。
  *
  * Query:
- * - institutionId?: string 按机构过滤
+ * - institutionId?: string 按机构过滤；「不指定机构」的通用产品始终包含在内
  */
 export async function GET(req: NextRequest) {
   try {
@@ -41,7 +43,9 @@ export async function GET(req: NextRequest) {
       where: {
         householdId,
         isActive: true,
-        ...(institutionId ? { institutionId } : {}),
+        // 通用产品（institutionId = null）不绑定券商，任何机构的债券下拉里都应能选到；
+        // 否则「产品管理」里建了通用产品，买入时却永远看不到它。
+        ...(institutionId ? { OR: [{ institutionId }, { institutionId: null }] } : {}),
       },
       include: { Institution: { select: { id: true, name: true, shortName: true } } },
       orderBy: [{ institutionId: "asc" }, { name: "asc" }],
@@ -134,6 +138,10 @@ export async function POST(req: NextRequest) {
       if (institutionId) {
         const institution = await prisma.institution.findFirst({ where: { id: institutionId, householdId } });
         if (!institution) return NextResponse.json({ ok: false, code: "INSTITUTION_NOT_FOUND", error: "机构不存在" }, { status: 400 });
+        // 往来人员 / 往来组织 / 家庭成员不是债券的发行方（与理财产品同口径）。
+        if (isPersonalInstitutionType(institution.type)) {
+          return NextResponse.json(personalInstitutionError("债券"), { status: 400 });
+        }
       }
       const duplicate = await prisma.bondProduct.findFirst({ where: { householdId, institutionId, name } });
       if (duplicate) return NextResponse.json({ ok: false, code: "PRODUCT_EXISTS", error: "同一机构下已有同名债券" }, { status: 409 });

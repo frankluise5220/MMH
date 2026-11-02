@@ -1,4 +1,4 @@
-import { buildAccountDisplayOption } from "@/lib/account-display";
+import { accountRenderSettings, buildAccountDisplayOption } from "@/lib/account-display";
 import { prisma } from "@/lib/db/prisma";
 import { toNumber } from "@/lib/date-utils";
 import { getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
@@ -122,7 +122,7 @@ export async function loadStockHoldingReport(
         Institution: account?.Institution,
         // 这里在 unstable_cache 里跑，读不到 cookie（账户显示格式），只能按默认字段渲染；
         // 报表页会用当前请求的设置重新渲染 accountLabel/accountHoverTitle 覆盖。
-      }, undefined, { baseCurrency });
+      }, undefined, accountRenderSettings(undefined, baseCurrency));
       const quantity = roundQuantity(toNumber(item.quantity));
       const cost = roundMoney(toNumber(item.cost));
       const marketValue = roundMoney(toNumber(item.marketValue));

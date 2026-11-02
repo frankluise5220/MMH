@@ -41,7 +41,15 @@ export function TopEntryLauncher({
         { key: "stock", label: t("investment.product.stock") },
         { key: "stock-transfer", label: t("stockPanel.transfer") },
         { key: "wealth", label: t("investment.product.wealth") },
-        { key: "bond", label: t("entry.kind.bond") },
+        {
+          key: "bond",
+          label: t("entry.kind.bond"),
+          children: [
+            { key: "bond", label: t("bondForm.title.create") },
+            { key: "bond-repo-lend", label: t("entry.kind.bondRepoLend") },
+            { key: "bond-repo-redeem", label: t("entry.kind.bondRepoRedeem") },
+          ],
+        },
         { key: "deposit-buy", label: t("txForm.depositIn") },
         { key: "deposit-redeem", label: t("detailView.depositWithdraw") },
         { key: "insurance", label: t("sidebar.section.insurance") },

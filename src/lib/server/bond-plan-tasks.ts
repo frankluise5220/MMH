@@ -70,6 +70,8 @@ export async function loadBondLotPlanSource(params: {
       householdId: params.householdId,
       action: FundSubtype.buy,
       deletedAt: null,
+      // 逆回购不走债券付息计划（到期一次还本付息，由 repo 自己的到期回款处理）。
+      instrumentKind: "bond",
     },
     include: { BondProduct: true },
   });
@@ -440,6 +442,7 @@ export async function ensureBondPlansForHousehold(params: { householdId: string 
       householdId: params.householdId,
       action: FundSubtype.buy,
       deletedAt: null,
+      instrumentKind: "bond",
     },
     select: { id: true },
   });

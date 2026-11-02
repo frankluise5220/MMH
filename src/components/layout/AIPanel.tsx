@@ -489,7 +489,7 @@ export function AIPanel({
     });
     if (!res.ok) throw new Error(await readApiError(res, `HTTP ${res.status}`));
     const data = await res.json();
-    if (!data.ok) throw new Error(data.error || t("aiPanel.parseFailed"));
+    if (!data.ok) throw new Error(aiErrorMessage(data, t("aiPanel.parseFailed")));
     return data;
   }
 
@@ -507,17 +507,33 @@ export function AIPanel({
     });
     if (!res.ok) throw new Error(await readApiError(res, `HTTP ${res.status}`));
     const data = await res.json();
-    if (!data.ok) throw new Error(data.error || t("creditBill.importFailed"));
+    if (!data.ok) throw new Error(aiErrorMessage(data, t("creditBill.importFailed")));
     return data;
+  }
+
+  /**
+   * Server-owned i18n keys win over the raw message: the old shape prefixed the
+   * message with a machine code and showed provider English, which a household
+   * user cannot act on.
+   */
+  function aiErrorMessage(
+    data: { error?: string; messageKey?: string; actionKey?: string } | null | undefined,
+    fallback: string,
+  ) {
+    if (data?.messageKey) {
+      const message = t(data.messageKey);
+      const action = data.actionKey ? t(data.actionKey) : "";
+      return action ? `${message} ${action}` : message;
+    }
+    return data?.error || fallback;
   }
 
   async function readApiError(res: Response, fallback: string) {
     const text = await res.text().catch(() => "");
     try {
-      const data = JSON.parse(text) as { code?: string; error?: string } | null;
-      if (data?.error) {
-        return data.code ? `${data.code}: ${data.error}` : data.error;
-      }
+      const data = JSON.parse(text) as { code?: string; error?: string; messageKey?: string; actionKey?: string } | null;
+      const message = aiErrorMessage(data, "");
+      if (message) return message;
     } catch { /* ignore */ }
     return text.trim() || fallback;
   }

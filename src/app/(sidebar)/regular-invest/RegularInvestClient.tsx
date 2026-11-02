@@ -68,10 +68,13 @@ const STATUS_MAP: Record<string, { labelKey: string; cls: string }> = {
  * 系统计划由存单/债单/贷款模块自动生成维护（存款/债券三动作可调周期与金额，账单制贷款只读），
  * 混在用户计划里会让人分不清「这条是我建的还是系统建的」。
  */
-type PlanSourceTab = "user" | "system";
+type PlanSourceTab = "user" | "system" | "installment";
 const PLAN_SOURCE_TABS: Array<{ id: PlanSourceTab; labelKey: string }> = [
   { id: "user", labelKey: "regularInvest.client.sourceFilter.user" },
   { id: "system", labelKey: "regularInvest.client.sourceFilter.system" },
+  // 信用卡分期不是 RegularInvestPlan：它有自己的计划表（CreditCardInstallmentPlan），
+  // 期供行到期才落库。单独一页只读展示，避免伪装成计划行后点进错误的详情/操作。
+  { id: "installment", labelKey: "regularInvest.client.sourceFilter.installment" },
 ];
 const PLAN_SOURCE_TAB_ORDER = PLAN_SOURCE_TABS.map((tab) => tab.id);
 
@@ -240,6 +243,82 @@ type RegularInvestDisplayRow =
   | { kind: "group"; key: string; label: string; title: string; count: number }
   // grouped：该计划行挂在某个分组标题下面，首列要左缩进一级，跟分组行区分开层级。
   | { kind: "plan"; plan: RegularInvestPlanView; grouped?: boolean };
+
+/**
+ * 「信用卡分期」页签的一行 = 一个 active 的 CreditCardInstallmentPlan。
+ *
+ * 它与 RegularInvestPlan 是两套模型（冲抵行 + 到期才落库的期供行），所以不复用
+ * RegularInvestPlanView：硬套会让行点击落到错误的详情面板和"立即执行/暂停"动作上。
+ * 服务端已算好 paidRuns / 下一期 / 剩余应还（与 materialize 同口径），客户端只渲染。
+ */
+export type CreditInstallmentPlanView = {
+  id: string;
+  accountId: string;
+  accountLabel: string;
+  accountHoverTitle: string | null;
+  sourceType: "statement" | "transaction";
+  sourceStatementMonth: string | null;
+  sourceDate: string | null;
+  principal: number;
+  totalRuns: number;
+  /** 已落库的期供本金行数（= 已出账期次）。 */
+  paidRuns: number;
+  nextRunDate: string | null;
+  nextPayment: number | null;
+  remainingPrincipal: number;
+  remainingPayment: number;
+  rateType: "period_fee" | "annual_interest";
+  rate: number;
+  /** 年化（百分数）：period_fee 按实际现金流折算 IRR×12，annual_interest 等于 rate。 */
+  annualizedRate: number | null;
+  billingDay: number | null;
+  createdAt: string;
+  /** 期供行已全部落库（计划状态可能仍是 active，materialize 不改状态）。 */
+  completed: boolean;
+};
+
+type CreditInstallmentColumnKey =
+  | "account"
+  | "kind"
+  | "source"
+  | "principal"
+  | "progress"
+  | "nextRunDate"
+  | "nextPayment"
+  | "remainingPayment"
+  | "rate"
+  | "annualized";
+
+const INSTALLMENT_COLUMNS: ReadonlyArray<{ key: CreditInstallmentColumnKey; labelKey: string; width: number; minWidth: number; align?: "right" }> = [
+  { key: "account", labelKey: "reports.account", width: 200, minWidth: 140 },
+  { key: "kind", labelKey: "batchImport.field.type", width: 110, minWidth: 88 },
+  { key: "source", labelKey: "regularInvest.client.installment.column.source", width: 130, minWidth: 96 },
+  { key: "principal", labelKey: "regularInvest.client.installment.column.principal", width: 110, minWidth: 90, align: "right" },
+  { key: "progress", labelKey: "regularInvest.client.installment.column.progress", width: 96, minWidth: 80, align: "right" },
+  { key: "nextRunDate", labelKey: "regularInvest.client.installment.column.nextRun", width: 112, minWidth: 96 },
+  { key: "nextPayment", labelKey: "regularInvest.client.installment.column.nextPayment", width: 110, minWidth: 90, align: "right" },
+  { key: "remainingPayment", labelKey: "regularInvest.client.installment.column.remaining", width: 116, minWidth: 96, align: "right" },
+  { key: "rate", labelKey: "regularInvest.client.installment.column.rate", width: 108, minWidth: 88 },
+  { key: "annualized", labelKey: "regularInvest.client.installment.column.annualized", width: 104, minWidth: 88, align: "right" },
+];
+
+const INSTALLMENT_TABLE_MIN_WIDTH = INSTALLMENT_COLUMNS.reduce((total, column) => total + column.width, 0);
+
+/** 费率显示：18 位小数入库（Decimal(10,6)），去掉无意义的尾零。 */
+function formatInstallmentRate(
+  plan: CreditInstallmentPlanView,
+  t: (key: string, params?: Record<string, string | number>) => string,
+) {
+  const rate = Number(plan.rate.toFixed(6)).toString();
+  return plan.rateType === "annual_interest"
+    ? t("regularInvest.client.installment.rateAnnual", { rate })
+    : t("regularInvest.client.installment.ratePeriod", { rate });
+}
+
+/** 年化显示（百分数，两位小数）；服务端算不出来时给占位符，不猜。 */
+function formatInstallmentAnnualized(plan: CreditInstallmentPlanView) {
+  return plan.annualizedRate == null ? "-" : `${Number(plan.annualizedRate.toFixed(2))}%`;
+}
 
 type ExecutionProgressState = {
   title: string;
@@ -766,6 +845,7 @@ async function readJsonSafe(res: Response): Promise<any> {
 
 export function RegularInvestClient({
   initialPlans,
+  installmentPlans,
   investmentAccounts,
   cashAccounts,
   loanAccounts,
@@ -788,6 +868,8 @@ export function RegularInvestClient({
   transactionEditAction,
 }: {
   initialPlans: RegularInvestPlanView[];
+  /** 正在执行的信用卡分期（服务端已算好进度与下一期），独立页签只读展示。 */
+  installmentPlans: CreditInstallmentPlanView[];
   investmentAccounts: AccountDisplayOption[];
   cashAccounts: AccountDisplayOption[];
   loanAccounts: AccountDisplayOption[];
@@ -1765,6 +1847,103 @@ export function RegularInvestClient({
     ];
   });
 
+  /**
+   * 「信用卡分期」页签的只读表：不含任何操作列，行不可点（分期只能从账单视图或原消费撤销）。
+   * 账户标签与悬浮提示都来自服务端 buildAccountDisplayOption 的结果，不在这里拼。
+   */
+  const installmentColumns = useMemo<AdvancedDataTableColumn<CreditInstallmentPlanView>[]>(
+    () =>
+      INSTALLMENT_COLUMNS.map((column) => ({
+        key: column.key,
+        label: t(column.labelKey),
+        width: column.width,
+        minWidth: column.minWidth,
+        align: column.align,
+        hideable: column.key !== "account",
+        truncate: column.align !== "right",
+        // 分期表只有 3 行也可能有几十行，排序/筛选仍按真实值而不是渲染文本。
+        sortValue: (plan) => {
+          if (column.key === "account") return plan.accountLabel;
+          if (column.key === "kind") return plan.sourceType;
+          if (column.key === "source") return plan.sourceStatementMonth ?? plan.sourceDate ?? "";
+          if (column.key === "principal") return plan.principal;
+          if (column.key === "progress") return plan.paidRuns;
+          if (column.key === "nextRunDate") return plan.nextRunDate ? Date.parse(plan.nextRunDate) : null;
+          if (column.key === "nextPayment") return plan.nextPayment;
+          if (column.key === "remainingPayment") return plan.remainingPayment;
+          if (column.key === "annualized") return plan.annualizedRate;
+          return plan.rate;
+        },
+        filterText: column.key === "account"
+          ? (plan) => plan.accountLabel
+          : column.key === "kind"
+            ? (plan) => plan.sourceType === "statement"
+              ? t("regularInvest.client.installment.kind.statement")
+              : t("regularInvest.client.installment.kind.transaction")
+            : undefined,
+        cellTitle: (plan) => {
+          if (column.key === "account") return plan.accountHoverTitle || plan.accountLabel;
+          if (column.key === "rate") return formatInstallmentRate(plan, t);
+          if (column.key === "annualized") return t("regularInvest.client.installment.annualizedHint");
+          return "";
+        },
+        render: (plan) => {
+          if (column.key === "account") {
+            return <AccountCell label={plan.accountLabel} title={plan.accountHoverTitle} />;
+          }
+          if (column.key === "kind") {
+            return (
+              <span className="text-slate-500">
+                {plan.sourceType === "statement"
+                  ? t("regularInvest.client.installment.kind.statement")
+                  : t("regularInvest.client.installment.kind.transaction")}
+              </span>
+            );
+          }
+          if (column.key === "source") {
+            return (
+              <span className="tabular-nums text-slate-500">
+                {plan.sourceType === "statement"
+                  ? plan.sourceStatementMonth ?? "-"
+                  : formatDate(plan.sourceDate)}
+              </span>
+            );
+          }
+          if (column.key === "principal") {
+            return <span className="tabular-nums text-slate-700">{plan.principal.toFixed(2)}</span>;
+          }
+          if (column.key === "progress") {
+            return (
+              <span className="tabular-nums text-slate-600">
+                {t("regularInvest.client.installment.progressValue", { paid: plan.paidRuns, total: plan.totalRuns })}
+              </span>
+            );
+          }
+          if (column.key === "nextRunDate") {
+            return plan.completed
+              ? null
+              : <span className="tabular-nums text-slate-700">{formatDate(plan.nextRunDate)}</span>;
+          }
+          if (column.key === "nextPayment") {
+            return plan.completed || plan.nextPayment == null
+              ? <span className="text-slate-400">-</span>
+              : <span className="tabular-nums text-slate-700">{plan.nextPayment.toFixed(2)}</span>;
+          }
+          if (column.key === "remainingPayment") {
+            return <span className="tabular-nums text-slate-700">{plan.remainingPayment.toFixed(2)}</span>;
+          }
+          if (column.key === "rate") {
+            return <span className="text-slate-500">{formatInstallmentRate(plan, t)}</span>;
+          }
+          if (column.key === "annualized") {
+            return <span className="tabular-nums text-slate-700">{formatInstallmentAnnualized(plan)}</span>;
+          }
+          return null;
+        },
+      })),
+    [t],
+  );
+
   const mainTableColumns = useMemo<AdvancedDataTableColumn<RegularInvestDisplayRow>[]>(() => {
     const groupCell = (row: RegularInvestDisplayRow) =>
       row.kind === "group"
@@ -2008,7 +2187,15 @@ export function RegularInvestClient({
                   { key: "property", label: t("entry.kind.property") },
                   { key: "metal", label: t("entry.kind.metal") },
                   { key: "wealth", label: t("entry.kind.wealth") },
-                  { key: "bond", label: t("entry.kind.bond") },
+                  {
+                    key: "bond",
+                    label: t("entry.kind.bond"),
+                    children: [
+                      { key: "bond", label: t("bondForm.title.create") },
+                      { key: "bond-repo-lend", label: t("entry.kind.bondRepoLend") },
+                      { key: "bond-repo-redeem", label: t("entry.kind.bondRepoRedeem") },
+                    ],
+                  },
                   { key: "deposit", label: t("entry.kind.deposit") },
                   { key: "insurance", label: t("entry.kind.insurance") },
                   { key: "settlement", label: t("entry.kind.settlement"), disabled: cashAccounts.length === 0 },
@@ -2060,6 +2247,8 @@ export function RegularInvestClient({
                   ④）并**顶对齐 + `pt-[var(--ft-tab-rise)]`**，正好与非活动页签顶边齐平，整体落在
                   活动页签之内 —— 字号变了整排跟着收放，不再写死 28。 */}
               <div className="flex h-[var(--ft-tab-strip)] shrink-0 items-start gap-1.5 pl-2 pt-[var(--ft-tab-rise)] [&>div>button]:h-[var(--ft-tab-filter-h)]">
+                {/* 分期页签的行不是 RegularInvestPlan，类型/账户筛选对它没有意义，整组隐藏。 */}
+                {sourceTab !== "installment" && (<>
                 <MultiSelectFilterDropdown
                   options={SCHEDULED_TASK_TYPES}
                   selectedValues={selectedTypes}
@@ -2081,6 +2270,7 @@ export function RegularInvestClient({
                   emptyLabel={t("table.empty")}
                   groups={accountFilterGroups}
                 />
+                </>)}
               </div>
               {/* 计划标题、汇总、逾期、隐藏已结束、执行全部也挤在页签这一行的右侧（ml-auto），
                   不再单独占一行：整页只有页签条那一条（40px 高，由页签算出）横条承载所有
@@ -2088,24 +2278,40 @@ export function RegularInvestClient({
               <div className="ml-auto flex h-10 shrink-0 items-center gap-3 pl-3">
                 <div className="flex min-w-0 items-center gap-2.5 text-sm">
                   <span className="whitespace-nowrap font-semibold text-slate-800">{t("nav.scheduledTasks")}</span>
-                  <span className="whitespace-nowrap text-xs text-slate-500">
-                    {t("regularInvest.client.toolbarSummary", { total: filteredPlans.length, active: filteredPlans.filter((plan) => plan.status === "active").length })}
-                  </span>
-                  {overduePlans.length > 0 ? (
-                    <span className="whitespace-nowrap rounded-full bg-orange-50 px-2 py-0.5 text-xs font-medium text-orange-600">
-                      {t("regularInvest.client.overdue", { count: overduePlans.length })}
+                  {sourceTab === "installment" ? (
+                    <span className="whitespace-nowrap text-xs text-slate-500">
+                      {t("regularInvest.client.installment.summary", {
+                        count: installmentPlans.filter((plan) => !plan.completed).length,
+                        amount: installmentPlans
+                          .filter((plan) => !plan.completed)
+                          .reduce((sum, plan) => sum + plan.remainingPayment, 0)
+                          .toFixed(2),
+                      })}
                     </span>
-                  ) : null}
-                  {sourceTab === "system" ? (
-                    <span className="whitespace-nowrap rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-500">
-                      {t("regularInvest.client.sourceTab.systemHint")}
-                    </span>
-                  ) : null}
+                  ) : (
+                    <>
+                      <span className="whitespace-nowrap text-xs text-slate-500">
+                        {t("regularInvest.client.toolbarSummary", { total: filteredPlans.length, active: filteredPlans.filter((plan) => plan.status === "active").length })}
+                      </span>
+                      {overduePlans.length > 0 ? (
+                        <span className="whitespace-nowrap rounded-full bg-orange-50 px-2 py-0.5 text-xs font-medium text-orange-600">
+                          {t("regularInvest.client.overdue", { count: overduePlans.length })}
+                        </span>
+                      ) : null}
+                      {sourceTab === "system" ? (
+                        <span className="whitespace-nowrap rounded-full bg-slate-100 px-2 py-0.5 text-xs text-slate-500">
+                          {t("regularInvest.client.sourceTab.systemHint")}
+                        </span>
+                      ) : null}
+                    </>
+                  )}
                 </div>
-                <label className="flex shrink-0 cursor-pointer select-none items-center gap-1.5 whitespace-nowrap text-xs text-slate-500">
-                  <input type="checkbox" checked={!showEnded} onChange={(e) => setShowEnded(!e.target.checked)} className="h-3.5 w-3.5 accent-blue-600" />
-                  {t("regularInvest.client.hideEnded")}
-                </label>
+                {sourceTab !== "installment" && (
+                  <label className="flex shrink-0 cursor-pointer select-none items-center gap-1.5 whitespace-nowrap text-xs text-slate-500">
+                    <input type="checkbox" checked={!showEnded} onChange={(e) => setShowEnded(!e.target.checked)} className="h-3.5 w-3.5 accent-blue-600" />
+                    {t("regularInvest.client.hideEnded")}
+                  </label>
+                )}
                 {sourceTab === "user" && (
                   <button
                     onClick={handleBatchExecuteAll}
@@ -2118,39 +2324,60 @@ export function RegularInvestClient({
                 )}
               </div>
             </div>
-            {/* 内容板沿用 FT 规范：rounded-xl / border-slate-300 / #fbfaf7 / 同一套阴影，只把 p-4 改成 flex 撑满，
-                因为里面是 fillHeight 表格 + 详情面板，不是普通表单内容。
+            {/* 内容板沿用 FT 规范：外壳不再手写 rounded-xl / border-slate-300 / #fbfaf7 / 阴影，
+                直接挂 `.ft-card-surface`（+ `-fill` 撑满窗格，里面是 fillHeight 表格 + 详情面板）。
+                表格的留白与框线都由这一层给（globals.css 的 `.ft-card-surface:has(table)` 的
+                `padding: 12px 0` + `.advanced-table-header` / `.advanced-table-viewport` 的上下横线，
+                2026-10-31 用户：「卡片纸上画了个表格」→「表格外框呢」→「左右不留空，上下留」），
+                即表格左右铺满卡片宽度、上下各留 12px；这里**不要**再包 `p-*` / `border`。
                 卡片里不再有工具栏（标题/汇总/筛选全在外面），顶部第一层就是表头 —— FT 的「页签 ≡ 内容板 ≡ 表头」
                 同色因此自然成立，不会被白色工具栏隔断。 */}
-            <div className="relative z-20 flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border border-slate-300 bg-[#fbfaf7] shadow-[0_10px_24px_rgba(15,23,42,0.10)]">
+            <div className="ft-card-surface ft-card-surface-fill">
             <div className={`${selectedPlan ? "min-h-[240px] flex-1 border-b border-slate-200 bg-[#fbfaf7]" : "min-h-0 flex-1 bg-[#fbfaf7]"}`}>
-              <AdvancedDataTable
-                storageKey="regular-invest:main-table"
-                columns={mainTableColumns}
-                rows={tableRows}
-                rowKey={(row) => row.kind === "group" ? row.key : row.plan.id}
-                minTableWidth={REGULAR_INVEST_MAIN_TABLE_MIN_WIDTH}
-                fillHeight
-                showFilters
-                sortable
-                filterRows={filterRegularInvestDisplayRows}
-                sortRows={sortRegularInvestDisplayRows}
-                emptyText={t("regularInvest.client.empty")}
-                onRowClick={(row) => {
-                  if (row.kind === "plan") handleSelectPlan(row.plan);
-                }}
-                rowClassName={(row) => {
-                  if (row.kind === "group") return "bg-slate-50 hover:bg-slate-50";
-                  return `cursor-pointer hover:bg-slate-50 ${selectedPlan?.id === row.plan.id ? "bg-blue-50" : ""}`;
-                }}
-                rowActions={(row) => row.kind === "plan" ? renderPlanActions(row.plan) : null}
-                rowActionsWidth={REGULAR_INVEST_ACTION_COLUMN_WIDTH}
-                rowActionsMinWidth={REGULAR_INVEST_ACTION_COLUMN_MIN_WIDTH}
-                toolbarMode="none"
-              />
+              {sourceTab === "installment" ? (
+                // 只读：没有行点击、没有操作列 —— 分期的撤销与修改必须回到账单视图/原消费，
+                // 否则会出现"在这里删掉一期，分期计划却还活着"的两头不一致。
+                <AdvancedDataTable
+                  storageKey="regular-invest:installment-table"
+                  columns={installmentColumns}
+                  rows={installmentPlans}
+                  rowKey={(plan) => plan.id}
+                  minTableWidth={INSTALLMENT_TABLE_MIN_WIDTH}
+                  fillHeight
+                  showFilters
+                  sortable
+                  emptyText={t("regularInvest.client.installment.empty")}
+                  toolbarMode="none"
+                />
+              ) : (
+                <AdvancedDataTable
+                  storageKey="regular-invest:main-table"
+                  columns={mainTableColumns}
+                  rows={tableRows}
+                  rowKey={(row) => row.kind === "group" ? row.key : row.plan.id}
+                  minTableWidth={REGULAR_INVEST_MAIN_TABLE_MIN_WIDTH}
+                  fillHeight
+                  showFilters
+                  sortable
+                  filterRows={filterRegularInvestDisplayRows}
+                  sortRows={sortRegularInvestDisplayRows}
+                  emptyText={t("regularInvest.client.empty")}
+                  onRowClick={(row) => {
+                    if (row.kind === "plan") handleSelectPlan(row.plan);
+                  }}
+                  rowClassName={(row) => {
+                    if (row.kind === "group") return "bg-slate-50 hover:bg-slate-50";
+                    return `cursor-pointer hover:bg-slate-50 ${selectedPlan?.id === row.plan.id ? "bg-blue-50" : ""}`;
+                  }}
+                  rowActions={(row) => row.kind === "plan" ? renderPlanActions(row.plan) : null}
+                  rowActionsWidth={REGULAR_INVEST_ACTION_COLUMN_WIDTH}
+                  rowActionsMinWidth={REGULAR_INVEST_ACTION_COLUMN_MIN_WIDTH}
+                  toolbarMode="none"
+                />
+              )}
             </div>
 
-            {selectedPlan && (
+            {sourceTab !== "installment" && selectedPlan && (
               <div className="flex h-80 shrink-0 flex-col bg-slate-50">
                 <div className="flex h-10 shrink-0 items-center justify-between border-b border-slate-100 bg-white px-4">
                   <div className="flex min-w-0 items-center gap-3">

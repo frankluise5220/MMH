@@ -19,7 +19,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 
-import { creditInstallmentStatementMonthForDate } from "../src/lib/credit/installment";
+import { creditInstallmentAnnualizedRate, creditInstallmentStatementMonthForDate } from "../src/lib/credit/installment";
 import { billingDayAtDate } from "../src/lib/credit/billing";
 import { toStatementMonth } from "../src/lib/date-utils";
 
@@ -132,6 +132,35 @@ const directCalls = source.match(/(?<![\w.])toStatementMonth\(/g)?.length ?? 0;
 assert.ok(
   directCalls <= 1,
   "除回退兜底外不允许再自己调 toStatementMonth 算分期归属（会重新长出第二份口径）",
+);
+
+// 5：年化换算——period_fee 必须按现金流折算 IRR×12，不能退化成「费率 × 12」
+const annualizedOf = (rate: number, totalRuns: number) =>
+  creditInstallmentAnnualizedRate({ principal: 12000, totalRuns, rateType: "period_fee", rate });
+assert.equal(
+  creditInstallmentAnnualizedRate({ principal: 12000, totalRuns: 12, rateType: "period_fee", rate: 0 }),
+  0,
+  "零费率的分期年化必须是 0，不因浮点误差冒出正数",
+);
+assert.equal(
+  creditInstallmentAnnualizedRate({ principal: 100000, totalRuns: 120, rateType: "annual_interest", rate: 4.9 }),
+  4.9,
+  "annual_interest 本身就是年化，必须原样返回",
+);
+const twelveRuns = annualizedOf(0.6, 12);
+assert.ok(
+  twelveRuns != null && Math.abs(twelveRuns - 13.03) < 0.02,
+  `0.6%/期 × 12 期的实际年化应约 13.03%，实际 ${twelveRuns}`,
+);
+assert.ok(
+  twelveRuns != null && twelveRuns > 0.6 * 12,
+  "每期费率折算的年化必须高于「费率 × 12」的名义值，否则说明退回了简单相乘",
+);
+const sixRuns = annualizedOf(0.6, 6);
+const thirtySixRuns = annualizedOf(0.6, 36);
+assert.ok(
+  sixRuns != null && twelveRuns != null && thirtySixRuns != null && sixRuns < twelveRuns && twelveRuns < thirtySixRuns,
+  "同一费率下期数越多、本金占用越久，实际年化应更高",
 );
 
 console.log("credit installment statement month ok");

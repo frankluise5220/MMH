@@ -6,7 +6,7 @@ import { MobileTransactions, type MobileTransactionRow } from "@/components/mobi
 import { prisma } from "@/lib/db/prisma";
 import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
 import { toNumber, formatDateUtc } from "@/lib/date-utils";
-import { buildAccountDisplayOption, formatAccountTableLabel } from "@/lib/account-display";
+import { buildAccountDisplayOption, formatAccountTableLabel, accountRenderSettings } from "@/lib/account-display";
 import { getMaintainedAccountBalances } from "@/lib/server/account-balance";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { getServerAccountLabelFields } from "@/lib/server/account-label-fields";
@@ -96,9 +96,9 @@ export default async function MobileAccountDetailPage({ params }: { params: Prom
 
   const accountDisplayById = new Map(
     accounts.map((item) => {
-      const option = buildAccountDisplayOption({ ...item, kind: String(item.kind) }, undefined, { fields: accountLabelFields, baseCurrency });
+      const option = buildAccountDisplayOption({ ...item, kind: String(item.kind) }, undefined, accountRenderSettings(accountLabelFields, baseCurrency));
       return [item.id, {
-        label: formatAccountTableLabel(option, "", { fields: accountLabelFields, baseCurrency }),
+        label: formatAccountTableLabel(option, "", accountRenderSettings(accountLabelFields, baseCurrency)),
         // 行内看不到的机构/卡号/非本位币，留给 hover。
         title: option.tableHoverTitle,
       }] as const;

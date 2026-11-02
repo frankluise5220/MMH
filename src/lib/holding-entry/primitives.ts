@@ -88,9 +88,12 @@ export function isRedeemArrivalAccount(account: ArrivalAccountLike, institutionI
   return account.kind === "ewallet" && !!institutionId && account.institutionId === institutionId;
 }
 
-/** 分红入账账户：同机构（未限定机构时任意）的借记卡。 */
+const DIVIDEND_ARRIVAL_ACCOUNT_KINDS = new Set(["cash", "bank_debit", "ewallet"]);
+
+/** Dividend arrivals may use cash-family accounts at the same institution. */
 export function isDividendArrivalAccount(account: ArrivalAccountLike, institutionId?: string | null) {
-  return account.kind === "bank_debit" && (!institutionId || account.institutionId === institutionId);
+  if (!account.kind || !DIVIDEND_ARRIVAL_ACCOUNT_KINDS.has(account.kind)) return false;
+  return !institutionId || account.institutionId === institutionId;
 }
 
 /** 解析可能带千分位的带符号数字，非法值归零。 */

@@ -6,6 +6,12 @@
  *   违反 → 400 `INSTITUTION_NOT_INSURER`（见 `src/app/api/v1/insurance-products/route.ts`）。
  * - **理财家族** `WealthProduct`：**不得出现保险产品**——即不得挂在保险公司名下，
  *   违反 → 400 `INSTITUTION_IS_INSURER`，列表侧同时做排除，避免历史遗留数据回流。
+ * - **理财家族** `WealthProduct` / **债券家族** `BondProduct`：所属机构**不得是往来人员 /
+ *   往来组织 / 家庭成员**（它们不是产品发行方），违反 → 400 `INSTITUTION_IS_PERSONAL`；
+ *   产品库的「所属机构」下拉同时按 `PERSONAL_INSTITUTION_TYPES` 排除（2026-11-02 用户裁定，
+ *   先理财后债券，口径一致）。
+ * - **保险家族** 承保机构**必须**是保险公司且不得为空：`MISSING_INSTITUTION` /
+ *   `INSTITUTION_NOT_INSURER`，产品库下拉按 `institutionType: "insurance"` 白名单过滤。
  *
  * 为什么判据是「机构类型」而不是「产品名」：`WealthProduct` 上没有家族判别字段
  * （`productType` 在 `20260917_add_wealth_bond_fields` 之后已随债券拆表移除），
@@ -55,5 +61,21 @@ export function insurerInstitutionError(): ProductFamilyGuardError {
     ok: false,
     code: "INSTITUTION_IS_INSURER",
     error: "保险公司只能登记保险产品，请到保险产品的产品管理里新增",
+  };
+}
+
+/**
+ * 投资类产品挂到「往来人员 / 往来组织 / 家庭成员」名下时的统一响应体（配 400）。
+ *
+ * 前端产品库的「所属机构」下拉已经排除这三类（见 `PERSONAL_INSTITUTION_TYPES`），
+ * 这里再拦一次是为了让绕过 UI 的写入（脚本 / 旧页面 / 手工请求）也守同一条口径。
+ *
+ * `subject` 只影响文案（理财 / 债券 / …），错误码保持统一，便于前端按 code 处理。
+ */
+export function personalInstitutionError(subject = "理财产品"): ProductFamilyGuardError {
+  return {
+    ok: false,
+    code: "INSTITUTION_IS_PERSONAL",
+    error: `${subject}的所属机构不能是往来人员、往来组织或家庭成员`,
   };
 }

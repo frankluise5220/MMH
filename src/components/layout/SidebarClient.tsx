@@ -38,7 +38,7 @@ import { ClipboardBillListener } from "../ClipboardBillListener";
 import { LanguageSwitcher } from "../LanguageSwitcher";
 import { formatCurrencyMoney, isDisplayZeroMoney, roundDisplayNumber } from "@/lib/format";
 import { resolveAccountCurrencyDisplayValue } from "@/lib/account-currency-display";
-import { buildAccountDisplayOption, SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE } from "@/lib/account-display";
+import { accountRenderSettings, buildAccountDisplayOption, SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE } from "@/lib/account-display";
 import { FINANCE_DATA_CHANGED_EVENT, type FinanceDataChangedDetail } from "@/lib/client/refresh";
 import {
   fetchInternalAccountBalances,
@@ -433,7 +433,7 @@ function toSidebarAccountItem(a: any, t: (key: string, params?: Record<string, s
     Institution: a.Institution ?? null,
     AccountGroup: a.AccountGroup ?? null,
     Counterparty: a.Counterparty ?? null,
-  }, creditCardSidebarLabelTemplate, { baseCurrency: a.baseCurrency ?? null });
+  }, creditCardSidebarLabelTemplate, accountRenderSettings(undefined, a.baseCurrency ?? null));
   return {
     id: a.id,
     name: a.name,

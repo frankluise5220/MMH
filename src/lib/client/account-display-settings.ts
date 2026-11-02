@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 
-import type { AccountLabelField } from "@/lib/account-display";
+import { accountRenderSettings, type AccountRenderSettings } from "@/lib/account-display";
 import { APP_PREFS_EVENT, getAccountLabelFieldsPreference } from "@/lib/client/appPreferences";
 import { getCachedSettingsAccountData, SETTINGS_DATA_CHANGED_EVENT } from "@/lib/client/settingsCache";
 
@@ -11,18 +11,14 @@ import { getCachedSettingsAccountData, SETTINGS_DATA_CHANGED_EVENT } from "@/lib
  * 设置缓存。两个值缺一都会让渲染退化（缺 fields → 不按设置，缺 baseCurrency →
  * 非本位币既不显示也没有 hover），所以统一在这里一次读齐。
  */
-type AccountDisplaySettings = {
-  fields: AccountLabelField[];
-  baseCurrency: string | null;
-};
+export type AccountDisplaySettings = AccountRenderSettings;
 
 export function readAccountDisplaySettings(): AccountDisplaySettings {
   const cached = getCachedSettingsAccountData();
   const baseCurrency = (cached?.baseCurrency ?? "").trim();
-  return {
-    fields: getAccountLabelFieldsPreference(),
-    baseCurrency: baseCurrency || null,
-  };
+  // Always builds through the factory: the branded type is what stops other
+  // components from assembling `{ fields, baseCurrency }` by hand.
+  return accountRenderSettings(getAccountLabelFieldsPreference(), baseCurrency || null);
 }
 
 /**

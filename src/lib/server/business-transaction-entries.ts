@@ -375,15 +375,19 @@ export async function loadWealthTransactionEntryLike(params: {
 export async function loadBondTransactionEntryLike(params: {
   householdId: string;
   accountIds: string[];
+  /** 只取某些品种：债券视图传 ["bond"]，逆回购视图传 ["repo"]；不传 = 全取。 */
+  instrumentKinds?: string[];
 }) {
   const accountIds = Array.from(new Set(params.accountIds.filter(Boolean)));
   if (accountIds.length === 0) return [];
 
+  const instrumentKinds = (params.instrumentKinds ?? []).filter(Boolean);
   const rows = await prisma.bondTransaction.findMany({
     where: {
       householdId: params.householdId,
       accountId: { in: accountIds },
       deletedAt: null,
+      ...(instrumentKinds.length > 0 ? { instrumentKind: { in: instrumentKinds } } : {}),
     },
     include: {
       Account: true,

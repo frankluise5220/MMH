@@ -1532,8 +1532,8 @@ export function BasicDetailPanel({
           sortable={sortable}
           onRowsFitChange={rowsFitEnabled ? handleRowsFitChange : undefined}
           toolbarRightContent={
-            <div className="flex items-center gap-2 text-xs">
-              <span className="text-xs text-slate-600">{t("creditBillDetail.recordCount", { count: localTotalCount })}{hasDetailFilters ? t("basicDetail.filteredSuffix", { count: localOriginalCount }) : ""}{isPageLoading ? (detailAll
+            <div className="flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2 text-xs">
+              <span className="min-w-0 text-xs text-slate-600">{t("creditBillDetail.recordCount", { count: localTotalCount })}{hasDetailFilters ? t("basicDetail.filteredSuffix", { count: localOriginalCount }) : ""}{isPageLoading ? (detailAll
             ? allLoadedCount > 0
               ? t("basicDetail.loadingAllSuffix", { count: localTotalCount, loaded: allLoadedCount })
               : t("basicDetail.loadingAllPending", { count: localTotalCount })

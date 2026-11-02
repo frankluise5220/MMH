@@ -20,7 +20,22 @@ import { FOLDER_TAB_STRIP, FolderTabRuler, folderTabClass, folderTabNeighbors } 
  *      即「实体卡片」，与弹窗白底区分；卡片高度**跟着内容走**（最后一个字段下面就是卡片底边），
  *      不拉满窗口；
  *   4. 内容滚动区：字段写 `children`，超高时**在卡片内滚动**（卡片才会被压缩）；
- *   5. `footer`：保存/保存并继续等按钮，在卡片**外面**、贴窗口底边（不是卡片的一部分）。
+ *      滚动区自带 `p-4` 并挂 `ft-card-pad-body`，是**唯一**给卡片内容留白的地方；
+ *   5. **卡片里的表格：上下留 12px、左右不留空，上下各一条 1px 外框线，表头与汇总行同色**
+ *      （2026-10-31：「看起来像一张卡片纸上画了个表格」→「表格外框呢」→「试着左右不留空，上下留」
+ *      →「如果卡片里有表格，表头就应该与汇总行同色」→「汇总行下也应该有外框，与表头上方外框横线
+ *      一致」）。规则不在调用点写 `p-*` / `border` / `bg-*`，都在 globals.css 的 FT 卡片层：
+ *      留白 = `.ft-card-surface:has(table)` 的 `padding: 12px 0`（卡片里有 `<table>` 就由卡片
+ *      自己留白，页签 ≡ 卡片同色衔接不变）；外框 = 表头上沿 `.advanced-table-header`（`border-top`）
+ *      + 下沿：无汇总条时是 `.advanced-table-viewport` 的 `border-bottom`，有汇总条时改画在汇总条
+ *      下沿（同色同宽 `#cbd5e1`，表体下沿让出 1px 免得并成 2px），左右不画线、方角，因为表体已经
+ *      顶到卡片内边缘，卡片那 1px 边框就是表格的左右外框（再画一条会成 2px 双线）；
+ *      表头底色 = `--ft-table-band-bg`（= 汇总行那条浅灰，覆盖掉 `ADVANCED_TABLE_HEAD_SURFACE_CLASS`
+ *      的米色），于是「灰带 + 白表体 + 灰带」把表格夹成一条。
+ *      所以：**表格类内容不要再包一层 `p-*` / `border`**（会变成 24px 或双线），也不要给表头 /
+ *      汇总行单独刷底色（会与另一条带不同色），更不要给卡片加 `overflow-visible` / 负边距把表格
+ *      拉回去贴边；
+ *   6. `footer`：保存/保存并继续等按钮，在卡片**外面**、贴窗口底边（不是卡片的一部分）。
  *
  * 用法（弹窗里）：
  *   <form className="flex min-h-0 flex-1 flex-col" onSubmit={onSubmit}>
@@ -136,7 +151,9 @@ export function FolderTabsCard({
         ) : null}
 
         <div className={`ft-card-surface${tone === "white" ? " ft-card-surface-white" : ""}`}>
-          <div ref={bodyRef} className={`min-h-0 flex-1 space-y-3 overflow-y-auto p-4 ${bodyClassName}`.trim()}>{children}</div>
+          {/* `ft-card-pad-body`：本层自带 `p-4`，卡片**不要**再加表格留白（globals.css 里
+              `.ft-card-surface:has(table)` 会跳过挂了本标记的滚动区，避免 12 + 16 叠成一圈） */}
+          <div ref={bodyRef} className={`ft-card-pad-body min-h-0 flex-1 space-y-3 overflow-y-auto p-4 ${bodyClassName}`.trim()}>{children}</div>
         </div>
       </div>
 

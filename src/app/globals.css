@@ -218,7 +218,11 @@ html {
      与文件卡片式页签（FolderTabs 的 `bg-[#fbfaf7]`）同色；页签条 `.paper-card-header`
      也取卡片底色、只留一条细分隔线 —— 于是「卡片与页签」是一个整体，不再是「白卡片 + 灰条」。
      三段底色由 AdvancedDataTable 统一提供（调用方不再传色值）：
-     页签 / 表头 = `ADVANCED_TABLE_HEAD_SURFACE_CLASS`（#fbfaf7），表体 = `ADVANCED_TABLE_BODY_SURFACE_CLASS`（白）。 */
+     页签 / 表头 = `ADVANCED_TABLE_HEAD_SURFACE_CLASS`（#fbfaf7），表体 = `ADVANCED_TABLE_BODY_SURFACE_CLASS`（白）。
+     例外：表格长在 **FT 卡片**（`.ft-card-surface`）里时，表头改浅灰带、与底部汇总行同色
+     （2026-10-31 用户：「如果卡片里有表格，表头就应该与汇总行同色」），令牌 `--ft-table-band-bg`，
+     覆盖规则在文件末尾那组 `.ft-card-surface .advanced-table-header` 里；`.paper-card-header` 这类
+     面板标题条不受影响，仍是米色。 */
   .paper-card {
     @apply rounded-xl border shadow-soft;
     background-color: #fbfaf7;
@@ -285,6 +289,10 @@ html {
     下面不会再留一片空白。 */
   .ft-card-surface {
     --ft-card-bg: #fbfaf7;
+    /* 表格里两条「色带」的底色：表头 + 底部汇总行（= slate-100）。卡片里有表格时两者必须同色，
+       二者都由 globals.css 末尾那组 `.ft-card-surface .advanced-table-header` /
+       `[data-advanced-table-summary-footer]` 规则引用本令牌，别在调用点单独刷色。 */
+    --ft-table-band-bg: #f1f5f9;
     position: relative;
     z-index: 20;
     display: flex;
@@ -313,6 +321,20 @@ html {
      压不住这里的 `flex: 0 1 auto`，必须挂这个类（同类名在后，同特异性后者胜）。 */
   .ft-card-surface-fill {
     flex: 1 1 0%;
+  }
+
+  /* 卡片里的表格：**上下各留 12px，左右不留空**（2026-10-31 用户：「看起来像一张卡片纸上
+     画了个表格」→ 先做四边 12px → 「试着左右不留空，上下留」）。上下留白让表头顶条 / 表体
+     收尾都不贴卡片边（否则 12px 圆角会切掉表角、读起来是「整页铺了一张表」）；左右不留空，
+     表体左右直接顶到卡片内边缘，卡片那 1px 边框就是表格的左右外框（见 `advanced-table-*`
+     那组规则里刻意不画左右边框），表格因此是「铺满卡片宽度的一张表」，不是卡片上居中一块。
+     规则写在这里（FT 卡片层）而不是各调用点的 `p-*`：新增卡片、新增表格不必再各自补留白。
+       ① 卡片里没有表格（记账弹窗表单）→ 不加，表单留白仍由滚动区的 `p-4` 给；
+       ② 卡片里有表格 → 由**卡片**留白，滚动区不要再写 `p-*`，否则会叠成 28px。
+          记账弹窗的滚动区挂 `.ft-card-pad-body` 标记，本规则跳过它（弹窗里若真放了表格，
+          留白也已经在滚动区里了，不需要第二层）。 */
+  .ft-card-surface:has(table):not(:has(> .ft-card-pad-body)) {
+    padding: 12px 0;
   }
 
   /* FT 卡片页签的标签：**在页签里垂直居中**。
@@ -717,6 +739,68 @@ html {
   .ft-card-footer {
     padding-bottom: max(0.75rem, calc(0.75rem + env(safe-area-inset-bottom)));
   }
+}
+
+/* ── 卡片里的表格外框（2026-10-31 用户：「表格外框呢」→「颜色稍微深一点」→
+      「试着左右不留空，上下留」→「汇总行下也应该有外框，与表头上方外框横线一致」）──────────
+  表格要是一条能被看见的边界，不是把卡片染白一块。最终形态：**外框只有上下两条 1px 横线，
+  左右不画**（表体左右已经顶到卡片内边缘，`padding: 12px 0`，卡片那 1px 边框就是左右外框；
+  再画一条会贴成 2px 双线），所以也不再需要圆角 —— 方角顶边才和卡片边缘接得上。
+  为什么拆成三个选择器：表头容器（`advanced-table-header`，在滚动容器**外面**，纵向滚动条因此
+  不经过表头）、表体（`.advanced-table-viewport`）、底部汇总条（`data-advanced-table-summary-footer`，
+  同样在滚动容器外面）是**依次相邻的兄弟节点**，CSS 没有「上一个兄弟」选择器，没法一次框住，
+  于是「上沿画在表头、下沿画在表体或汇总条」。
+  **外框两条 + 内线两条**，这也是本组规则全部的内容：
+    · 上外框 = 表头上沿 `border-top`（slate-300）
+    · 下外框 = 表体下沿 `border-bottom`（slate-300）；有汇总条时移到汇总条**下沿**
+      （`border-bottom`，同色同宽 —— 用户要的就是「汇总行下也有外框，和表头上方那条一致」），
+      表体下沿让出 1px，否则两条线并排成 2px。
+    · 内线 = `th` 的 `border-b`（slate-200，表头带与白表体之间）、汇总条自带的 `border-t`
+      （slate-200，白表体与汇总带之间）。两条内线都比外框浅一档：外框 slate-300 > 内线 slate-200
+      > 行分隔线 slate-100，从外到内逐级变浅，汇总行不会被两条深线夹成一个「盒子」。
+  - 不给组件套包裹层来一次画完：那会改掉**所有**表格（报表 / 明细 / 设置页）的高度链
+    （`fillHeight` 的容器测量、非 fill 模式的自动高度），为一条边框不值得。
+  - 只作用于 `.ft-card-surface` 里：报表页、明细页那些满宽表格没有卡片，也就不该被框起来。
+  - 边框色 `#cbd5e1`（slate-300，2026-10-31 用户：「最外边框颜色要稍微深一点」）：初版用
+    slate-200 在米色卡片上太淡，外框几乎看不出是一条线。取 slate-300 而不是更深的 slate-400，
+    一是与卡片自身边框同色（同一套线宽/色阶，内框不会比外框更抢眼），二是与卡片内已有的线
+    拉开层次。 */
+.ft-card-surface .advanced-table-header {
+  border-top: 1px solid #cbd5e1;
+}
+
+.ft-card-surface .advanced-table-viewport {
+  border-bottom: 1px solid #cbd5e1;
+}
+
+/* 卡片底边那条汇总条自带 `border-t`：让它当下外框，否则表体下沿 + 汇总条上沿
+   会并成 2px（而且两色不一致）。 */
+.ft-card-surface .advanced-table-viewport:has(+ [data-advanced-table-summary-footer]) {
+  border-bottom: 0;
+}
+
+/* ── 卡片里：表头与底部汇总行**同色**（2026-10-31 用户：「如果卡片里有表格，表头就应该与
+      汇总行同色」）────────────────────────────────────────────────────────────────
+  表格在卡片里是「灰带 + 白表体 + 灰带」的三明治：表头一条、汇总条一条，中间才是数据。
+  表头原先取 `ADVANCED_TABLE_HEAD_SURFACE_CLASS`（#fbfaf7，与卡片/页签同色），在卡片里会
+  和卡片底、以及表格上方那 12px 留白糊成一片，读不出「这是表的一部分」；改成和汇总条一样的
+  浅灰后，上下两条带把白表体夹在中间，表格的边界一眼可见。
+  色值只认 `--ft-table-band-bg`（= slate-100 = 汇总条原来的 `bg-slate-100`），两条带都引用它，
+  避免以后只改一处、上下不一个色。
+  只框**表格**表头：`paper-card-header` 那些面板标题条不是表格头，仍是米色（它们不在
+  `.advanced-table-header` 上）。表体不在此列，白底靠 `ADVANCED_TABLE_BODY_SURFACE_CLASS`。
+  注：`thead` 自己还挂着 `bg-[#fbfaf7]` 工具类，所以两层都要覆盖（容器 + thead）。 */
+.ft-card-surface .advanced-table-header,
+.ft-card-surface .advanced-table-header thead {
+  background-color: var(--ft-table-band-bg);
+}
+
+/* 汇总条：上沿保留它自带的 `border-slate-200`（内线，与 `th` 的 `border-b` 同档），
+   下沿补一条外框，与表头上沿那条 slate-300 完全一致 —— 表格因此上下对称地闭合。
+   2026-10-31 用户：「汇总行下也应该有外框，与表头上方外框横线一致」。 */
+.ft-card-surface [data-advanced-table-summary-footer] {
+  border-bottom: 1px solid #cbd5e1;
+  background-color: var(--ft-table-band-bg);
 }
 
 .advanced-table-viewport {

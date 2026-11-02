@@ -8,7 +8,7 @@ import { getMaintainedAccountBalances } from "@/lib/server/account-balance";
 import { computeLiabilityDisplaySummary } from "@/lib/server/liability-display-summary";
 import { isDepositAccount, isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
-import { buildAccountDisplayOption, type AccountLabelField } from "@/lib/account-display";
+import { buildAccountDisplayOption, type AccountLabelField, type AccountRenderSettings, accountRenderSettings } from "@/lib/account-display";
 import { getServerAccountLabelFields } from "@/lib/server/account-label-fields";
 import { convertCurrencyAmounts, getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
 import { normalizeCurrency } from "@/lib/currency";
@@ -40,13 +40,9 @@ function withAccountDisplayFields<T extends {
   investProductType?: string | null;
   Institution?: { name: string | null; shortName?: string | null } | null;
   AccountGroup?: { id: string; name: string | null } | null;
-}>(account: T, settings?: { fields?: AccountLabelField[] | null; baseCurrency?: string | null }) {
+}>(account: T, settings?: AccountRenderSettings | null) {
   const normalized = normalizeReturnedAccountKind(account);
-  // 两个参数必须成对出现：只给 fields 时非本位币既不显示也没有 hover。
-  const display = buildAccountDisplayOption(normalized, undefined, {
-    fields: settings?.fields,
-    baseCurrency: settings?.baseCurrency,
-  });
+  const display = buildAccountDisplayOption(normalized, undefined, settings ?? undefined);
   return {
     ...normalized,
     label: display.selectorLabel || display.label,
@@ -119,7 +115,7 @@ export async function GET(request: Request) {
     };
 
     if (!includeBalances) {
-      return NextResponse.json({ ok: true, baseCurrency, accounts: accounts.map((account) => withRecordCounts(withAccountDisplayFields(account, { fields: accountLabelFields, baseCurrency }))), groups, institutions: institutionsWithCounts, counterparties: counterpartiesWithCounts, users });
+      return NextResponse.json({ ok: true, baseCurrency, accounts: accounts.map((account) => withRecordCounts(withAccountDisplayFields(account, accountRenderSettings(accountLabelFields, baseCurrency)))), groups, institutions: institutionsWithCounts, counterparties: counterpartiesWithCounts, users });
     }
 
     // For investment accounts, use market value instead of raw balance
@@ -222,7 +218,7 @@ export async function GET(request: Request) {
       totalConvertedBalance,
       missingFxCurrencies: conversion.missingCurrencies,
       rates: conversion.rates,
-      accounts: convertedAccounts.map((account) => withRecordCounts(withAccountDisplayFields(account, { fields: accountLabelFields, baseCurrency }))),
+      accounts: convertedAccounts.map((account) => withRecordCounts(withAccountDisplayFields(account, accountRenderSettings(accountLabelFields, baseCurrency)))),
       groups,
       institutions: institutionsWithCounts,
       counterparties: counterpartiesWithCounts,

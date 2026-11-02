@@ -139,7 +139,7 @@ export function DetailTablePaginationControls({
   };
 
   return (
-    <div className="flex items-center gap-1 text-xs tabular-nums">
+    <div className="flex min-w-0 max-w-full flex-wrap items-center justify-end gap-1 text-xs tabular-nums">
       <span className="text-slate-500">{t("pagination.perPage")}</span>
       <select
         value={detailAll ? "all" : autoFit ? "auto" : String(pageSize)}

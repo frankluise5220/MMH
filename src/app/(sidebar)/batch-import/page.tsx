@@ -3039,7 +3039,7 @@ export default function BatchImportPage() {
         headers: { "Content-Type": "application/json", "X-Internal-Import": "batch-import" },
         body: JSON.stringify({ items: selectedItems, traceId }),
       });
-      const data = await res.json().catch(() => null) as { error?: string; createdCount?: number; importBatchId?: string | null; trace?: string[]; failedRow?: { rowIndex?: number; error?: string } } | null;
+      const data = await res.json().catch(() => null) as { error?: string; createdCount?: number; importBatchId?: string | null; trace?: string[]; failedRow?: { rowIndex?: number; error?: string }; degraded?: { code?: string; messageKey?: string; actionKey?: string } | null } | null;
       if (!res.ok || !data || data.error) {
         postImportDebugLog(importTraceIdRef.current, "import_failed", {
           importKind: "bill",
@@ -3073,11 +3073,13 @@ export default function BatchImportPage() {
       setImportProgress((current) => current
         ? { ...current, phase: "done", done: true, ok: true, processed: selectedItems.length, created: success, error: null }
         : null);
-      setMessage(formatText("batchImport.importSuccess", {
+      const successMessage = formatText("batchImport.importSuccess", {
         count: success,
         missingCounterAccountNote: "",
         redirectNote: "",
-      }));
+      });
+      // A silent rule-parse fallback used to look identical to a successful AI parse.
+      setMessage(data.degraded ? `${successMessage} ${t("aiError.degraded")}` : successMessage);
       setImportCompletion({
         count: success,
         href: completionTarget.href,

@@ -6,6 +6,7 @@ import { prisma } from "@/lib/db/prisma";
 import { toStatementMonth } from "@/lib/date-utils";
 import { normalizeDefaultCategoryHierarchyForHousehold, type CategorySnapshot, type ResolveCategorySnapshotInput } from "@/lib/default-categories";
 import { defaultModel, localProvider } from "@/lib/ai/config";
+import { aiFailurePayload, classifyAiFailure, describeAiFailureForLog } from "@/lib/ai/errors";
 import {
   createImportAccountIdentityConflictChecker,
   normalizeImportAccountMatchKey,
@@ -698,6 +699,12 @@ export async function POST(req: Request) {
 
   let items: ParsedItem[];
   let trace: string[] = [];
+  /**
+   * Set when the model call failed and `fallbackParse` took over. The client must
+   * show this: silently importing rule-parsed rows looks like success, and the
+   * rows are exactly the ones a user would not think to double-check.
+   */
+  let degraded: ReturnType<typeof aiFailurePayload> | null = null;
 
   if (bodyItems?.success) {
     items = bodyItems.data;
@@ -719,19 +726,22 @@ export async function POST(req: Request) {
         `解析条数：${items.length}`,
         `模型：${defaultModel}`,
       ];
-    } catch {
+    } catch (error) {
       items = fallbackParse(text);
+      const failure = classifyAiFailure({ error });
+      console.warn(describeAiFailureForLog(failure, "record/ingest"));
+      degraded = aiFailurePayload(failure);
       trace = [
         `输入字符数：${text.length}`,
         `解析条数：${items.length}`,
-        "模型调用失败，已使用规则解析",
+        `模型调用失败（${failure.code}），已使用规则解析`,
       ];
     }
   }
 
   if (!shouldImport) {
     return NextResponse.json(
-      { ok: true, items, imported: false, trace },
+      { ok: true, items, imported: false, trace, ...(degraded ? { degraded } : {}) },
       { headers: corsHeaders() },
     );
   }
@@ -884,7 +894,7 @@ export async function POST(req: Request) {
         }
         finishImportProgress(traceId, { ok: true, processed: created.length, created: created.length, error: "已取消" });
         finishImportRun(ctx.householdId, traceId);
-        return NextResponse.json({ ok: true, imported: true, createdCount: created.length, cancelled: true, importBatchId, message: `已取消导入（已导入 ${created.length} 条记录）`, trace }, { headers: corsHeaders() });
+        return NextResponse.json({ ok: true, imported: true, createdCount: created.length, cancelled: true, importBatchId, message: `已取消导入（已导入 ${created.length} 条记录）`, trace, ...(degraded ? { degraded } : {}) }, { headers: corsHeaders() });
       }
       const batchEnd = Math.min(batchStart + BATCH, items.length);
       const batchData: any[] = [];
@@ -1033,6 +1043,7 @@ export async function POST(req: Request) {
           ? `已导入 ${created.length} 条记录，${recalcFailedAccountIds.length} 个账户余额稍后刷新`
           : `已导入 ${created.length} 条记录`,
         trace,
+        ...(degraded ? { degraded } : {}),
       },
       { headers: corsHeaders() },
     );

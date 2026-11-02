@@ -17,6 +17,13 @@ model AccessKey {
   /// Defaults to "write" so keys created before this column existed keep the
   /// full access they already had.
   scope     String   @default("write")
+  /// Last time this key successfully authenticated a request.
+  /// Written at most once a minute (see `access-key-auth.ts`): one MCP `tools/call`
+  /// validates the key 2-3 times (proxy + MCP route + inner handler), and turning
+  /// every read into an UPDATE is not worth it. Null means "never used since this
+  /// column shipped", which still answers the only question it exists for:
+  /// is this key still live, and if it leaks, when was it last used?
+  lastUsedAt DateTime?
   createdAt DateTime @default(now())
   updatedAt DateTime @default(now()) @updatedAt
 
@@ -721,6 +728,10 @@ model BondTransaction {
   /// 所属存单（= 该债单买入行的 id）；买入行为 null，子行必填。
   sourceBondTransactionId String?
   action                  FundSubtype         @default(buy)
+  /// 品种：bond = 债券（默认）；repo = 国债逆回购。
+  /// 逆回购复用同一套「存单」语义（借出 = buy 行、到期回款 = redeem 子行），
+  /// 但不进债券产品库、不生成付息计划，视图与明细都按这一列分流。
+  instrumentKind          String              @default("bond")
   source                  String?             @default("manual")
   entryOrigin             String?             @default("manual")
   tradeDate               DateTime

@@ -204,8 +204,10 @@ export function folderTabClass(
       // 1px，与字号无关（旧版靠 `pt-10`(40) 对 `mt-7+34=41` 凑等式，放大就露白缝；
       // 2026-10-25 用户：「如果放大，这个 40 就没效了」）。
       // 上下内边距不对称（6 / 3）是有意的：让标签跟着页签顶下移 3px，而不是随高度收缩各让 1.5px。
-      // 底色 = 内容板底色 = 表头底色：#fbfaf7，三处必须一致（表头那份由 AdvancedDataTable 的
-      // `ADVANCED_TABLE_HEAD_SURFACE_CLASS` 提供，这里不 import 它是为了不把 ADT 带进登录页的包）。
+      // 底色 = 内容板底色：#fbfaf7，两处必须一致（内容板那份由 globals.css 的 `.ft-card-surface`
+      // 给，这里不 import AdvancedDataTable 的 `ADVANCED_TABLE_HEAD_SURFACE_CLASS` 是为了不把
+      // ADT 带进登录页的包）。表头**不在**这条等色链上：卡片里有表格时表头是中性的浅灰带、
+      // 与底部汇总行同色（2026-10-31 用户，见 globals.css 的 `--ft-table-band-bg`）。
       `relative z-30 mt-[var(--ft-tab-top)] -mb-px ${width} rounded-t-[8px] border border-b-0 border-slate-300 bg-[#fbfaf7] px-4 pt-[var(--ft-tab-pad-top)] pb-[var(--ft-tab-pad-bottom)] text-[length:var(--ft-tab-font)] leading-[var(--ft-tab-leading)] font-semibold text-slate-800 shadow-[0_-2px_3px_rgba(15,23,42,0.06)]`,
       "ft-tab-fillet",
       // 排首位/末位时的缩进 = 内容板倒角半径(12px) + 页签凹角半径(6px) = 18px。

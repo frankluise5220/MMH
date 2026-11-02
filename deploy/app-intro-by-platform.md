@@ -58,6 +58,7 @@ MMH 家庭记账与全资产管理，本地优先，程序和账本数据只保�
 | 6b | 群晖套件中心「说明」（**已安装**后，用户实际看到的那一页） | `scripts/build-synology-package.cjs` · `writeInfoFile()` 的 `description="…"` | 同一份中文正典压成**单行**（INFO 是 shell 键值对，值不能跨行）。**改这一行必须重出 SPK 才生效**，服务端 `app.py` 改了也不会影响已安装套件的说明 |
 | 7 | README | `README.md` | 同一份口径的叙述 + 安装形态对照表（无独立「商店简介」章节，不必逐字复制） |
 | 8 | 软仓 VPS 线上文件 | `/opt/fn-appstores-server/data/fn-appstores.json` · `_manual.desc` | 手工同步（见下） |
+| 9 | **飞牛官方应用中心**（应用名 / 应用介绍 / 版本说明） | `scripts/build-fnos-package.cjs` 生成的 fpk `manifest`：`display_name=` · `desc=` · `changelog=` | **不手写**：`desc` 打包时读 #4 的中文正典（`resolveStoreIntro()`），`display_name` 来自 `displayName` 常量。飞牛官方 2026-11-02 确认这三项「封装在 fpk 里」，商店后台与飞书申请表**改不动**，改完必须重新打包并重新提交审核 |
 
 > Windows / Docker 没有应用商店页，用户在 **GitHub Release 页面** 与 README 上读简介：以 README 为准，Release 说明引用同一段。
 

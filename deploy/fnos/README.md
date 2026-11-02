@@ -134,6 +134,7 @@ mmh-fnos-v0.1.x-arm64.fpk
 - `uninstall_init` 只作为用户主动卸载或异常恢复时的数据兜底；正常升级验收不能依赖卸载重装。生命周期在检测到 `data/mmh.db` 时，会先把应用数据目录复制到同级的 `mmh-upgrade-backups` 目录。`uninstall_callback` 在卸载向导选择「删除用户数据」时直接清空数据目录；选择「保留」（或未经过向导的 CLI 卸载）则不动数据。用户仍应优先在 MMH 里导出 `.mmh-backup` 后再做高风险操作。
 - 生命周期脚本不能默认以 `mmh` 包用户运行。`install_init` / `upgrade_init` / `uninstall_init` 需要由应用中心/root 完成安装前权限准备和同级备份；`cmd/main start` 再把数据目录归属修正为 `mmh:mmh`，并降权到 `mmh` 用户运行 Node 服务。
 - 面向普通用户的正式升级必须走飞牛官方应用中心上架/审核后的版本发布链路。只有官方应用中心记录了同一个 `appname` 的新版本，后续用户才应在飞牛自身应用中心里看到并执行升级。
+- **官方应用中心的「应用名 / 应用介绍 / 版本说明」三项都来自包内 `manifest`**（`display_name=` / `desc=` / `changelog=`），飞牛官方 2026-11-02 明确回复「这个是封装在 fpk 的呀」：商店后台和飞书申请表都改不动它们，改完只有重新打包 + 重新提交审核才会生效。`desc` 由打包脚本从 `deploy/fnos/repository/fnpack.json` 取全渠道共用的中文简介（`resolveStoreIntro()`），不要在这个目录里另写一份；`display_name` 由 `scripts/build-fnos-package.cjs` 的 `displayName` 常量决定，改名前确认 `appname=mmh` 保持不变，否则老用户无法覆盖升级、数据目录也会换路径。
 
 ## 安全边界
 

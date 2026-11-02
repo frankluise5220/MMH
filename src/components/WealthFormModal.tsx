@@ -172,11 +172,15 @@ export function WealthFormModal({
         .map((product) => ({
           id: product.id,
           label: product.shortName?.trim() || product.name,
-          subLabel: [product.shortName?.trim() ? product.name : "", product.institutionName || ""]
+          // 不指定机构的产品是「通用」的，任何机构的理财下拉里都能选到，这里标出来。
+          subLabel: [
+            product.shortName?.trim() ? product.name : "",
+            product.institutionName || (product.institutionId ? "" : t("wealthForm.universalProduct")),
+          ]
             .filter(Boolean)
             .join(" · "),
         })),
-    [wealthProducts],
+    [wealthProducts, t],
   );
 
   const form = useHoldingEntryForm({
@@ -262,7 +266,8 @@ export function WealthFormModal({
         }
         setWealthProducts((prev) => {
           const selectedLocalProducts = prev.filter((product) =>
-            (!institutionId || product.institutionId === institutionId) && (
+            // 通用产品（无机构）在任何机构下都保留，别在机构切换的瞬间把它挤掉。
+            (!institutionId || product.institutionId === institutionId || product.institutionId == null) && (
               product.id === wealthProductId ||
               (!!fundName && (product.name === fundName || product.shortName === fundName))
             ),
@@ -656,8 +661,8 @@ export function WealthFormModal({
                         options={sortByAccountUsage(redeemCashOptions, accountUsage)}
                         placeholder={
                           redeemCashOptions.length > 0
-                            ? isRedeem ? t("wealthForm.selectArrivalBankDebitOrEwallet") : t("wealthForm.selectSameInstitutionDebit")
-                            : isRedeem ? t("wealthForm.noDebitOrEwallet") : t("wealthForm.noDebitInInstitution")
+                            ? isRedeem ? t("wealthForm.selectArrivalBankDebitOrEwallet") : t("wealthForm.selectSameInstitutionFunding")
+                            : isRedeem ? t("wealthForm.noDebitOrEwallet") : t("wealthForm.noFundingInInstitution")
                         }
                         onCreateClick={() => setNestedEntityType("cash-account")}
                         createLabel={t("settings.accounts.add")}

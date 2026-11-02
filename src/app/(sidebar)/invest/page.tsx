@@ -2,7 +2,7 @@ import { prisma } from "@/lib/db/prisma";
 import { AccountKind, TransactionType } from "@prisma/client";
 import { computeInvestBalances } from "@/lib/invest-balance";
 import { InvestHeaderSync } from "@/components/InvestHeaderSync";
-import { buildAccountDisplayOption, normalizeCreditCardLabelTemplate } from "@/lib/account-display";
+import { buildAccountDisplayOption, normalizeCreditCardLabelTemplate, accountRenderSettings } from "@/lib/account-display";
 import { toNumber } from "@/lib/date-utils";
 import { formatMoneyYuan, formatPercent } from "@/lib/format";
 import { pnlClassFromRedUp } from "@/lib/client/colors";
@@ -194,7 +194,7 @@ export default async function InvestPage({ searchParams }: { searchParams: Promi
       investProductType: a.investProductType,
       Institution: a.Institution,
       AccountGroup: a.AccountGroup,
-    }, creditCardLabelTemplate, { fields: accountLabelFields, baseCurrency });
+    }, creditCardLabelTemplate, accountRenderSettings(accountLabelFields, baseCurrency));
     const label = display.label;
     const groupName = a.AccountGroup?.name?.trim() || t("invest.noOwner");
     const productTypeLabel = investProductTypeLabel(a.investProductType, t);

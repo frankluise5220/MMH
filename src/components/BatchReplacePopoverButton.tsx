@@ -1,6 +1,6 @@
 "use client";
 
-import { Pencil } from "lucide-react";
+import { ChevronDown, Pencil } from "lucide-react";
 import { createPortal } from "react-dom";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { CalcInput } from "@/components/CalcInput";
@@ -30,6 +30,9 @@ export type BatchReplaceOption = {
 
 type BatchReplaceSmartSelectBehavior = Extract<SmartSelectProps, { mode: "single" }>["behavior"];
 
+const nativeControlClassName = "form-input appearance-none text-sm";
+const nativeControlStyle = { paddingRight: 34 };
+
 export type BatchReplaceFieldConfig<Field extends string> = {
   value: Field;
   label: string;
@@ -38,6 +41,7 @@ export type BatchReplaceFieldConfig<Field extends string> = {
   placeholder?: string;
   allowEmpty?: boolean;
   precision?: number;
+  allowAmountFieldReferences?: boolean;
   smartSelectBehavior?: BatchReplaceSmartSelectBehavior;
 };
 
@@ -213,62 +217,80 @@ export function BatchReplacePopoverButton<Field extends string>({
                 <button type="button" onClick={() => setOpen(false)} className="shrink-0 text-slate-400 hover:text-slate-600">{t("table.close")}</button>
               </div>
               {children ? <div className="mb-2 text-xs text-slate-500">{children}</div> : null}
-              <div className="grid grid-cols-[96px_minmax(0,1fr)] gap-2">
-                <select
-                  value={fieldConfig?.value ?? ""}
-                  onChange={(event) => {
-                    setField(event.target.value as Field);
-                    setValue("");
-                  }}
-                  className="h-8 rounded border border-slate-200 bg-white px-2 outline-none focus:border-blue-400"
-                >
-                  {fields.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
-                </select>
-                {fieldConfig?.kind === "select" ? (
-                  <select value={value} onChange={(event) => setValue(event.target.value)} className="h-8 rounded border border-slate-200 bg-white px-2 outline-none focus:border-blue-400">
-                    {(fieldConfig.options ?? []).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+              <div
+                className="grid items-center gap-2"
+                style={{ gridTemplateColumns: "repeat(auto-fit, minmax(128px, 1fr))" }}
+              >
+                <div className="relative min-w-0">
+                  <select
+                    value={fieldConfig?.value ?? ""}
+                    onChange={(event) => {
+                      setField(event.target.value as Field);
+                      setValue("");
+                    }}
+                    className={nativeControlClassName}
+                    style={nativeControlStyle}
+                  >
+                    {fields.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
                   </select>
+                  <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                </div>
+                {fieldConfig?.kind === "select" ? (
+                  <div className="relative min-w-0">
+                    <select value={value} onChange={(event) => setValue(event.target.value)} className={nativeControlClassName} style={nativeControlStyle}>
+                      {(fieldConfig.options ?? []).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                    </select>
+                    <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                  </div>
                 ) : fieldConfig?.kind === "smartSelect" ? (
-                  <SmartSelect
-                    mode="single"
+                  <div className="min-w-0 [&>[role=button]]:h-9 [&>[role=button]]:rounded-[8px] [&>[role=button]]:px-3 [&>[role=button]]:text-sm">
+                    <SmartSelect
+                      mode="single"
+                      value={value}
+                      onChange={setValue}
+                      options={(fieldConfig.options ?? []).map((option) => ({
+                        id: option.value,
+                        label: option.label,
+                        subLabel: option.subLabel,
+                        title: option.title,
+                        color: option.color,
+                        isHeader: option.isHeader,
+                        isGroup: option.isGroup,
+                        parentId: option.parentId,
+                        kind: option.kind,
+                        investProductType: option.investProductType,
+                        liabilityDirection: option.liabilityDirection,
+                        institutionId: option.institutionId,
+                        currency: option.currency,
+                      } satisfies SmartSelectOption))}
+                      placeholder={fieldConfig.placeholder ?? t("txForm.selectPlaceholder")}
+                      searchable
+                      behavior={fieldConfig.smartSelectBehavior ?? { search: true }}
+                    />
+                  </div>
+                ) : fieldConfig?.kind === "number" ? (
+                  <CalcInput
                     value={value}
                     onChange={setValue}
-                    options={(fieldConfig.options ?? []).map((option) => ({
-                      id: option.value,
-                      label: option.label,
-                      subLabel: option.subLabel,
-                      title: option.title,
-                      color: option.color,
-                      isHeader: option.isHeader,
-                      isGroup: option.isGroup,
-                      parentId: option.parentId,
-                      kind: option.kind,
-                      investProductType: option.investProductType,
-                      liabilityDirection: option.liabilityDirection,
-                      institutionId: option.institutionId,
-                      currency: option.currency,
-                    } satisfies SmartSelectOption))}
-                    placeholder={fieldConfig.placeholder ?? t("txForm.selectPlaceholder")}
-                    searchable
-                    behavior={fieldConfig.smartSelectBehavior ?? { search: true }}
+                    placeholder={fieldConfig?.placeholder ?? t("batchReplace.numberPlaceholder")}
+                    precision={fieldConfig?.precision ?? 2}
+                    allowAmountFieldReferences={fieldConfig?.allowAmountFieldReferences}
                   />
-                ) : fieldConfig?.kind === "number" ? (
-                  <CalcInput value={value} onChange={setValue} placeholder={fieldConfig?.placeholder ?? t("batchReplace.numberPlaceholder")} precision={fieldConfig?.precision ?? 2} />
                 ) : fieldConfig?.kind === "date" ? (
-                  <DateStepper value={value} onChange={setValue} className="h-8" />
+                  <DateStepper value={value} onChange={setValue} />
                 ) : (
                   <input
                     type="text"
                     value={value}
                     onChange={(event) => setValue(event.target.value)}
                     placeholder={fieldConfig?.placeholder ?? t("batchReplace.valuePlaceholder")}
-                    className="h-8 rounded border border-slate-200 bg-white px-2 outline-none focus:border-blue-400"
+                    className="form-input placeholder:text-slate-300"
                   />
                 )}
               </div>
               <div className="mt-3 flex justify-end gap-2">
-                <button type="button" onClick={() => { setOpen(false); setValue(""); }} className="h-8 rounded border border-slate-200 bg-white px-3 text-slate-600 hover:bg-slate-50">{t("common.cancel")}</button>
-                <button type="button" onClick={applyReplace} disabled={!canApply} className="h-8 rounded bg-blue-600 px-3 text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50">
+                <button type="button" onClick={() => { setOpen(false); setValue(""); }} className="h-9 rounded-[10px] border border-slate-300/70 bg-white px-3 text-sm text-slate-600 hover:bg-slate-50">{t("common.cancel")}</button>
+                <button type="button" onClick={applyReplace} disabled={!canApply} className="h-9 rounded-[10px] bg-blue-600 px-3 text-sm text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50">
                   {submitting ? t("batchReplace.applying") : t("batchReplace.apply")}
                 </button>
               </div>

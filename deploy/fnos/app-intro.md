@@ -17,7 +17,7 @@ MMH (MoneyMoneyHome) is a local-first home bookkeeping and full asset-management
 
 MMH（MoneyMoneyHome）は、ローカルファーストの家庭向け家計・資産管理ワークスペースです。アプリと帳簿データは自分の Feiniu NAS 上に保存され、第三者クラウドを経由しません。複数帳簿・複数メンバーに対応し、PC / モバイルブラウザ、Windows デスクトップアプリ、Android アプリ、オープン API から利用できます。支出・収入・振替、立替・借入・貸付・返済に加え、多通貨、カテゴリ、タグ、金融機関、家族メンバーを管理できます。資産と負債を一つの帳簿で管理し、クレジットカード、ローン、投資信託、株式、預金と債券の商品・債券条件、預金ロット、利息予定と収益、理財商品、貴金属、不動産、保険に対応します。統計レポート、残高照合、定期タスク、帳簿取込、AI 認識とアシスタント、添付ファイル、取り消しと復元、手動 / 自動バックアップも利用できます。精算・出張ワークフローは開発中で、一部の入力・閲覧機能を提供していますが、まだ完成していません。
 
-## 同步位置（改介绍必须 5 处全改）
+## 同步位置（改介绍必须 5 处全改；第 6 处由打包脚本派生）
 
 | 文件 | 字段 | 说明 |
 | --- | --- | --- |
@@ -26,6 +26,7 @@ MMH（MoneyMoneyHome）は、ローカルファーストの家庭向け家計・
 | `deploy/fnos/repository/apps.example.json` | `description` | 字段草案 |
 | `deploy/fnos/repository/fnpack.json` | `apps.mmh.desc` + `i18n.en-US.desc` + `i18n.ja-JP.desc` | 飞牛应用源 manifest，含三语 |
 | `deploy/fnos/selfhosted-source/data/fn-appstores.json` | `desc` | 自建 VPS 源数据（仓库内副本） |
+| `scripts/build-fnos-package.cjs`（生成 fpk `manifest`） | `desc=` | **派生，不需手工同步**：打包时读 `fnpack.json` 的中文正典（`resolveStoreIntro()`）。飞牛官方应用中心详情页读的就是这个字段 |
 
 ## 注意事项
 

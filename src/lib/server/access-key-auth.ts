@@ -78,6 +78,32 @@ async function verifyStoredAccessKey(provided: string, row: AccessKeyRow) {
   return true;
 }
 
+/**
+ * Record "this key was accepted", at most once a minute per key.
+ *
+ * A single MCP `tools/call` runs the key through verification 2-3 times (proxy, the
+ * MCP route, then the inner handler it dispatches to), so an unconditional UPDATE
+ * would turn every read request into a write. Fire-and-forget: a failed touch must
+ * never fail authentication.
+ */
+const lastUsedTouchedAt = new Map<string, number>();
+const LAST_USED_TOUCH_INTERVAL_MS = 60_000;
+
+function touchAccessKey(id: string) {
+  const now = Date.now();
+  if (now - (lastUsedTouchedAt.get(id) ?? 0) < LAST_USED_TOUCH_INTERVAL_MS) return;
+  lastUsedTouchedAt.set(id, now);
+  void prisma.accessKey
+    .update({ where: { id }, data: { lastUsedAt: new Date(now) } })
+    .catch((error) => {
+      // A failed touch must not block authentication, but it must not be silent
+      // either: a stale Prisma client (schema changed, process not restarted) or a
+      // database that has not run the migration both land here and would otherwise
+      // look like "the column just never fills in".
+      console.warn("[access-key] lastUsedAt update failed:", error instanceof Error ? error.message : error);
+    });
+}
+
 export async function verifyAccessKey(providedKey: string | null | undefined): Promise<AccessKeyAuthResult | null> {
   const key = providedKey?.trim();
   if (!key || key.length < 4) return null;
@@ -89,6 +115,7 @@ export async function verifyAccessKey(providedKey: string | null | undefined): P
 
   for (const row of rows) {
     if (await verifyStoredAccessKey(key, row)) {
+      touchAccessKey(row.id);
       // Anything other than an explicit "read" keeps full access, so keys
       // created before the column existed keep behaving as they always did.
       return { id: row.id, name: row.name, scope: row.scope === "read" ? "read" : "write" };

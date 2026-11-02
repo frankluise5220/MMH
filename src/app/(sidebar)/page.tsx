@@ -71,19 +71,18 @@ import { loadCommonData, loadSelectedAccount, loadEntriesForAccount, loadEntries
 import { locateDetailEntryPage } from "@/lib/server/detail-page-query";
 import { parseDetailDateRange } from "@/lib/server/detail-query-filters";
 import { loadBondShellData, loadBondLotOptions, bondSubtypeLabelKey } from "@/lib/server/bond-shell-data";
+import { loadRepoShellData } from "@/lib/server/repo-shell-data";
 import { computePositionDisplay } from "@/lib/invest-balance";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { compareDetailEntriesAsc, compareDetailEntriesDescBy, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
 import { rowWithLinkedInvestmentDisplayDate } from "@/lib/entry-reorder";
 import { loadEntryLinkedInvestmentDisplay } from "@/lib/server/entry-business-display";
-import {
-  SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE,
+import { SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE,
   buildAccountDisplayOption,
   buildFlatAccountOptions,
   normalizeCreditCardLabelTemplate,
   resolveAccountTableLabel,
-  stripVisibleHoverParts,
-} from "@/lib/account-display";
+  stripVisibleHoverParts, accountRenderSettings } from "@/lib/account-display";
 import { getInvestmentAccountView, isCashLedgerAccount, isDepositAccount, isIncomeExpensePostingAccount, isIncomeExpensePostingOrDepositAccount, isLoanOrSettlementAccountKind, isPureInvestmentAccount,  isTransferDropdownAccount } from "@/lib/account-kind-utils";
 import { ALL_CASH_DETAIL_SCOPE_ID, cashLedgerAccountIdsOf, cashLedgerFlowAccountId } from "@/lib/all-cash-entries";
 import { normalizeLoanType, resolveLoanTypeValue } from "@/lib/loan-type";
@@ -1168,7 +1167,7 @@ export default async function Home({
       Institution: a.Institution,
       AccountGroup: a.AccountGroup,
       Counterparty: a.Counterparty,
-    }, creditCardLabelTemplate, { fields: accountLabelFields, baseCurrency });
+    }, creditCardLabelTemplate, accountRenderSettings(accountLabelFields, baseCurrency));
     return {
       id: a.id,
       name: a.name,
@@ -1189,6 +1188,9 @@ export default async function Home({
       institutionId: a.institutionId ?? "",
       institutionType: a.Institution?.type ?? "",
       counterpartyId: a.counterpartyId ?? "",
+      // 往来款/贷款账户的对象名：记账弹窗的账户下拉要靠它把「张三·欠款」拼出来，
+      // 否则下拉里只剩账户名，「张三」搜不到（SmartSelect 只匹配 label/subLabel/title）。
+      counterpartyName: a.Counterparty?.shortName?.trim() || a.Counterparty?.name?.trim() || "",
       isSettlementAccount: a.kind === AccountKind.settlement || (a.kind === AccountKind.loan && !!a.counterpartyId),
       isConsumerLoan: a.isConsumerLoan === true,
       investProductType: a.investProductType,
@@ -1207,7 +1209,7 @@ export default async function Home({
 
   // Build hierarchical SmartSelect options: grouped by AccountGroup (isHeader),
   // ungrouped accounts shown flat with institution as subLabel
-  type SSOpt = { id: string; label: string; subLabel?: string; title?: string; isHeader?: boolean; isGroup?: boolean; parentId?: string; kind?: string | null; investProductType?: string | null; liabilityDirection?: string | null; institutionId?: string | null; institutionType?: string | null; counterpartyId?: string | null; isSettlementAccount?: boolean | null; isConsumerLoan?: boolean | null; billingDay?: number | null; currency?: string | null; isAggregate?: boolean | null };
+  type SSOpt = { id: string; label: string; subLabel?: string; title?: string; isHeader?: boolean; isGroup?: boolean; parentId?: string; kind?: string | null; investProductType?: string | null; liabilityDirection?: string | null; institutionId?: string | null; institutionType?: string | null; counterpartyId?: string | null; counterpartyName?: string | null; isSettlementAccount?: boolean | null; isConsumerLoan?: boolean | null; billingDay?: number | null; currency?: string | null; isAggregate?: boolean | null };
   const joinSSSubLabel = (parts: Array<string | null | undefined>) => {
     const result: string[] = [];
     const seen = new Set<string>();
@@ -1252,6 +1254,7 @@ export default async function Home({
         institutionId: a.institutionId || null,
         institutionType: a.institutionType || null,
         counterpartyId: a.counterpartyId || null,
+        counterpartyName: a.counterpartyName || null,
         isSettlementAccount: a.isSettlementAccount ?? null,
         isConsumerLoan: a.isConsumerLoan ?? null,
         billingDay: a.billingDay ?? null,
@@ -1273,6 +1276,7 @@ export default async function Home({
       institutionId: a.institutionId || null,
       institutionType: a.institutionType || null,
       counterpartyId: a.counterpartyId || null,
+      counterpartyName: a.counterpartyName || null,
       isSettlementAccount: a.isSettlementAccount ?? null,
       isConsumerLoan: a.isConsumerLoan ?? null,
       billingDay: a.billingDay ?? null,
@@ -1297,7 +1301,8 @@ export default async function Home({
         currency: a.currency,
         Institution: a.Institution,
         AccountGroup: a.AccountGroup,
-      }, creditCardLabelTemplate, { fields: accountLabelFields, baseCurrency });
+        Counterparty: a.Counterparty,
+      }, creditCardLabelTemplate, accountRenderSettings(accountLabelFields, baseCurrency));
       return {
         id: a.id,
         name: a.name,
@@ -1312,6 +1317,7 @@ export default async function Home({
         institutionId: a.institutionId ?? "",
         institutionType: a.Institution?.type ?? "",
         counterpartyId: a.counterpartyId ?? "",
+        counterpartyName: a.Counterparty?.shortName?.trim() || a.Counterparty?.name?.trim() || "",
         investProductType: a.investProductType,
         liabilityDirection: a.liabilityDirection ?? null,
         billingDay: a.billingDay ?? null,
@@ -1335,7 +1341,7 @@ export default async function Home({
         currency: a.currency,
         Institution: a.Institution,
         AccountGroup: a.AccountGroup,
-      }, creditCardLabelTemplate, { fields: accountLabelFields, baseCurrency });
+      }, creditCardLabelTemplate, accountRenderSettings(accountLabelFields, baseCurrency));
       return {
         id: a.id,
         name: a.name,
@@ -1456,6 +1462,7 @@ export default async function Home({
       institutionId: a.institutionId || null,
       institutionType: a.institutionType || null,
       counterpartyId: a.counterpartyId || null,
+      counterpartyName: a.counterpartyName || null,
       isSettlementAccount: a.isSettlementAccount ?? null,
       isConsumerLoan: a.isConsumerLoan ?? null,
       label: a.label,
@@ -1477,6 +1484,7 @@ export default async function Home({
       institutionId: a.institutionId || null,
       institutionType: a.institutionType || null,
       counterpartyId: a.counterpartyId || null,
+      counterpartyName: a.counterpartyName || null,
       isSettlementAccount: a.isSettlementAccount ?? null,
       isConsumerLoan: a.isConsumerLoan ?? null,
       label: a.label,
@@ -1634,7 +1642,7 @@ export default async function Home({
         Institution: selectedAccount.Institution,
         AccountGroup: selectedAccount.AccountGroup,
         Counterparty: selectedAccount.Counterparty,
-      }, selectedAccount.kind === AccountKind.bank_credit ? SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE : creditCardLabelTemplate, { fields: accountLabelFields, baseCurrency });
+      }, selectedAccount.kind === AccountKind.bank_credit ? SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE : creditCardLabelTemplate, accountRenderSettings(accountLabelFields, baseCurrency));
       const accountLabel = display.label;
       if (isPureInvestmentAccount(selectedAccount)) return accountLabel;
       if (isDepositAccount(selectedAccount)) return `${t("entry.kind.deposit")} / ${accountLabel}`;
@@ -1737,13 +1745,23 @@ export default async function Home({
             AccountGroup: account.AccountGroup ? { id: "", name: account.AccountGroup.name } : null,
           },
           undefined,
-          { fields: accountLabelFields, baseCurrency },
+          accountRenderSettings(accountLabelFields, baseCurrency),
         ).listLabel,
     ]),
   );
   const liabilityDirectionByAccountId = new Map(
     liabilityAccounts.map((account) => [account.id, account.liabilityDirection ?? null]),
   );
+  const accountFactsById = new Map(accounts.map((account) => [
+    account.id,
+    {
+      kind: account.kind,
+      liabilityDirection: account.liabilityDirection ?? null,
+      isSettlementAccount:
+        account.kind === AccountKind.settlement ||
+        (account.kind === AccountKind.loan && !!account.counterpartyId),
+    },
+  ]));
   const selectedLoanRepaymentPlanIds = new Set(
     loanRepaymentPlans
       .filter((plan) => selectedLiabilityAccountIds.has(plan.accountId))
@@ -1760,6 +1778,7 @@ export default async function Home({
     accountLabelById,
     accountTitleById,
     liabilityDirectionByAccountId,
+    accountFactsById,
     displayAccountId: accountId,
     reimbursementLinkByEntryId,
   });
@@ -1850,6 +1869,49 @@ export default async function Home({
   // 债券走自己的装载器（债单 + 票面利率 + 到期日 + 付息），不复用基金的份额/净值口径。
   const investbondData = view === "investbond" && accountId
     ? await loadBondShellData({ householdId, accountId })
+    : null;
+  // 逆回购与债券同一张存单表，按 instrumentKind 分流成「逆回购」页签的数据。
+  const repoShellData = view === "investbond" && accountId
+    ? await loadRepoShellData({ householdId, accountId })
+    : null;
+  const repoShellEntries: BondShellEntry[] = repoShellData
+    ? repoShellData.entries.map((entry) => {
+        const isCashIn = toNumber(entry.amount) >= 0;
+        const subtype = String(entry.fundSubtype ?? "");
+        const cashSideId = isCashIn ? entry.toAccountId : entry.accountId;
+        const cashSideName = isCashIn ? entry.toAccountName : entry.accountName;
+        const { label: cashAccountLabel, title: cashAccountTitle } = resolveAccountTableLabel(
+          cashSideId,
+          cashSideName,
+          accountTableLabelLookup,
+        );
+        return {
+          id: entry.id,
+          date: toYmdOrNull(entry.date) ?? "",
+          typeLabel: subtype === "buy" ? t("repoShell.typeLend") : t("repoShell.typeRedeem"),
+          bondName: entry.bondName ?? "",
+          arrivalDate: toYmdOrNull(entry.bondArrivalDate),
+          cashAccountLabel,
+          cashAccountTitle,
+          note: entry.note ?? "",
+          amount: toNumber(entry.amount),
+          businessTransactionId: entry.businessTransactionId ?? null,
+          businessLinkCount: entry.businessLinkCount ?? 0,
+          businessLinkLabels: entry.businessLinkLabels ?? [],
+          // 逆回购的编辑通过「回款」弹窗完成：债券编辑弹窗要求债券产品，逆回购没有产品。
+        } satisfies BondShellEntry;
+      })
+    : [];
+  const shellRepo = repoShellData
+    ? {
+        lots: repoShellData.lots,
+        entries: repoShellEntries,
+        totalPrincipal: repoShellData.totalPrincipal,
+        totalExpectedInterest: repoShellData.totalExpectedInterest,
+        totalRealizedProfit: repoShellData.totalRealizedProfit,
+        openCount: repoShellData.openCount,
+        defaultCashAccountId: repoShellData.defaultCashAccountId,
+      }
     : null;
   const bondShellEntries: BondShellEntry[] = investbondData
     ? investbondData.entries.map((entry) => {
@@ -3123,7 +3185,15 @@ export default async function Home({
                   { key: "property", label: t("entry.kind.property") },
                   { key: "metal", label: t("entry.kind.metal") },
                   { key: "wealth", label: t("entry.kind.wealth") },
-                  { key: "bond", label: t("entry.kind.bond") },
+                  {
+                    key: "bond",
+                    label: t("entry.kind.bond"),
+                    children: [
+                      { key: "bond", label: t("bondForm.title.create") },
+                      { key: "bond-repo-lend", label: t("entry.kind.bondRepoLend") },
+                      { key: "bond-repo-redeem", label: t("entry.kind.bondRepoRedeem") },
+                    ],
+                  },
                   { key: "deposit", label: t("entry.kind.deposit") },
                   { key: "insurance", label: t("entry.kind.insurance") },
                   { key: "settlement", label: t("entry.kind.settlement"), disabled: cashAccountList.length === 0 },
@@ -3695,6 +3765,7 @@ export default async function Home({
               totalPrincipal={investbondData.totalPrincipal}
               totalPaidInterest={investbondData.totalPaidInterest}
               totalExpectedInterest={investbondData.totalExpectedInterest}
+              repo={shellRepo}
             />
           ) : view === "investwealth" && investwealthData ? (
             <FundShell

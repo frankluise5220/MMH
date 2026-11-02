@@ -6,6 +6,7 @@ import { joinBaseUrl } from "@/lib/http";
 import { CLASSIFY_PROMPT } from "@/lib/ai/prompts";
 import { normalizeAiApiMode, type AiApiMode } from "@/lib/ai/config";
 import { buildResponsesRequestBody, extractResponsesText } from "@/lib/ai/responses";
+import { aiFetch } from "@/lib/ai/errors";
 
 // Re-exported so the /api/v1/ai/chat vision gate shares one implementation with
 // the AI settings page and /api/v1/ai/models. See model-capabilities.ts.
@@ -133,7 +134,11 @@ export async function classifyInput(
           { role: "user", content: promptContent },
         ],
       };
-      const r = await fetch(`${base}/api/chat`, { method: "POST", headers, body: JSON.stringify(body) });
+      const r = await aiFetch(
+        `${base}/api/chat`,
+        { method: "POST", headers, body: JSON.stringify(body) },
+        { timeout: "classify" },
+      );
       if (!r.ok) return null;
       const d = await r.json().catch(() => null);
       const content = (d as any)?.message?.content ?? "";
@@ -150,7 +155,11 @@ export async function classifyInput(
               { role: "user", content: promptContent },
             ],
           };
-      const r = await fetch(`${base}${apiMode === "responses" ? "/v1/responses" : "/v1/chat/completions"}`, { method: "POST", headers, body: JSON.stringify(body) });
+      const r = await aiFetch(
+        `${base}${apiMode === "responses" ? "/v1/responses" : "/v1/chat/completions"}`,
+        { method: "POST", headers, body: JSON.stringify(body) },
+        { timeout: "classify" },
+      );
       if (!r.ok) return null;
       const d = await r.json().catch(() => null);
       const content = apiMode === "responses"

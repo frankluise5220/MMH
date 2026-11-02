@@ -3,6 +3,7 @@ import { joinBaseUrl } from "@/lib/http";
 import { getRequestTimeZone } from "@/lib/server/business-time-zone";
 import type { AiApiMode } from "@/lib/ai/config";
 import { buildResponsesRequestBody, extractResponsesText } from "@/lib/ai/responses";
+import { aiFetch } from "@/lib/ai/errors";
 
 const CMD_ANALYZER_PROMPT = `你是一个专业的家庭理财记账专家。分析用户的自然语言，转化成对应的操作指令。
 
@@ -119,7 +120,11 @@ export async function callAiForCommand(opts: {
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (!isOllama && apiKey) headers.Authorization = `Bearer ${apiKey}`;
 
-    const res = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
+    const res = await aiFetch(
+      url,
+      { method: "POST", headers, body: JSON.stringify(body) },
+      { timeout: "classify" },
+    );
     if (!res.ok) return null;
     const data = (await res.json().catch(() => null)) as any;
     const raw = (

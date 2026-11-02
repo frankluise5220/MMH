@@ -5,7 +5,7 @@ import { Shield, Building2, UserRound, ArrowDownLeft, ArrowUpRight } from "lucid
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
 import { getHouseholdScope } from "@/lib/server/household-scope";
-import { buildAccountDisplayOption, normalizeCreditCardLabelTemplate } from "@/lib/account-display";
+import { buildAccountDisplayOption, normalizeCreditCardLabelTemplate, accountRenderSettings } from "@/lib/account-display";
 import { formatMoney } from "@/lib/format";
 import { toNumber } from "@/lib/date-utils";
 import { amountToneClass as amountClass } from "@/lib/client/colors";
@@ -138,7 +138,7 @@ export default async function InsurancePage() {
       investProductType: account.investProductType,
       Institution: account.Institution,
       AccountGroup: account.AccountGroup,
-    }, creditCardLabelTemplate, { fields: accountLabelFields, baseCurrency });
+    }, creditCardLabelTemplate, accountRenderSettings(accountLabelFields, baseCurrency));
 
     const relatedEntries = entries.filter((entry) => entry.insuranceProductId === product.id);
     const balance = relatedEntries.reduce((sum, entry) => sum + insuranceCashValueDelta(entry), 0);

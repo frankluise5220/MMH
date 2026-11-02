@@ -47,7 +47,6 @@ const CREDIT_BILL_BATCH_REPLACE_FIELDS: BatchReplaceField[] = [
   "type",
   "outflow",
   "inflow",
-  "amount",
   "viewAccount",
   "toAccount",
   "categoryId",

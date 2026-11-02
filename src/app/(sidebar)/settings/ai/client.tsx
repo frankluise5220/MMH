@@ -191,6 +191,8 @@ function ModelModal({
   );
   const [selectedModel, setSelectedModel] = useState(initial?.model ?? "");
   const [apiMode, setApiMode] = useState<AiApiMode>(initial?.apiMode ?? "chat");
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null);
 
   const currentBaseUrl = buildBaseUrl(urlParts);
 
@@ -205,6 +207,44 @@ function ModelModal({
     } catch (e) {
       setError(t("settings.ai.client.errFetchFailed", { message: e instanceof Error ? e.message : t("batchImport.unknownError") }));
     } finally { setFetching(false); }
+  }
+
+  /**
+   * Real end-to-end probe: the model list can succeed while the chat endpoint
+   * still fails, so this sends the same request shape the AI panel will use and
+   * reports the translated failure instead of a raw HTTP code.
+   */
+  async function handleTest() {
+    if (!selectedModel) return;
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const res = await fetch("/api/v1/ai/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          baseUrl: currentBaseUrl,
+          apiKey: apiKey.trim(),
+          model: selectedModel,
+          apiMode: channelType === "ollama" ? "chat" : apiMode,
+          channelType,
+        }),
+      });
+      const data = await res.json().catch(() => null) as
+        | { ok?: boolean; latencyMs?: number; messageKey?: string; actionKey?: string; error?: string }
+        | null;
+      if (data?.ok) {
+        setTestResult({ ok: true, text: t("settings.ai.client.testOk", { ms: String(data.latencyMs ?? 0) }) });
+      } else if (data?.messageKey) {
+        setTestResult({ ok: false, text: t(data.messageKey) });
+      } else {
+        setTestResult({ ok: false, text: data?.error ?? t("aiError.unknown") });
+      }
+    } catch {
+      setTestResult({ ok: false, text: t("aiError.unreachable") });
+    } finally {
+      setTesting(false);
+    }
   }
 
   function handleConfirm() {
@@ -302,6 +342,15 @@ function ModelModal({
                   ))}
                 </div>
               )}
+              <div className="flex items-center gap-2">
+                <button className="h-8 px-3 rounded-md border border-slate-200 bg-white text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                  onClick={handleTest} disabled={testing || !selectedModel}>
+                  {testing ? t("settings.ai.client.testing") : t("settings.ai.client.testConnection")}
+                </button>
+                {testResult && (
+                  <span className={`text-xs ${testResult.ok ? "text-emerald-700" : "text-red-600"}`}>{testResult.text}</span>
+                )}
+              </div>
               <div className="flex justify-end gap-2">
                 <button className="h-9 px-4 rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50"
                   onClick={() => { setStep("config"); }}>{t("settings.ai.client.back")}</button>

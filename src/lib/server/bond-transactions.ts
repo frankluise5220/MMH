@@ -28,12 +28,19 @@ import { resolveOrCreateWealthAccount } from "@/lib/server/wealth-account";
  *     缺省回退债单主数据 BondProduct —— 付息因此按存单各自产生；
  *   - 付息/赎回/核销用 sourceBondTransactionId 指回所属存单。
  */
-type BondEntryInput = {
+export type BondEntryInput = {
   householdId: string;
   date: Date;
   subtype: FundSubtype;
   /** 成交金额（恒为正数）。 */
   amount: number;
+  /**
+   * 品种：bond（默认）/ repo。
+   *
+   * 逆回购复用整套存单链路（买入行 = 存单、赎回行 = 到期回款），只是
+   * 不进债券产品库（productId 恒为 null，名字就是 GC001）、不生成付息计划。
+   */
+  instrumentKind?: string | null;
   /** 债券账户 id；买入时可留空，由资金来源账户推导/新建。 */
   bondAccountId: string;
   cashAccountId: string;
@@ -146,10 +153,16 @@ export function buildBondCashFlowNote(input: {
   action: FundSubtype | string | null | undefined;
   productName?: string | null;
   userNote?: string | null;
+  instrumentKind?: string | null;
 }) {
   const action = input.action;
-  const label =
-    action === FundSubtype.dividend_cash ? "债券利息到账"
+  const isRepo = input.instrumentKind === "repo";
+  const label = isRepo
+    ? action === FundSubtype.redeem || action === FundSubtype.switch_out ? "逆回购到期回款"
+      : action === FundSubtype.dividend_cash ? "逆回购利息"
+        : action === FundSubtype.write_off ? "逆回购核销"
+          : "逆回购借出"
+    : action === FundSubtype.dividend_cash ? "债券利息到账"
       : action === FundSubtype.redeem || action === FundSubtype.switch_out ? "债券赎回"
         : action === FundSubtype.write_off ? "债券核销"
           : "债券买入";
@@ -247,6 +260,7 @@ export async function createBondEntry(input: BondEntryInput): Promise<{
   if (!(input.amount > 0)) throw new Error("金额不正确");
   const isWriteOff = input.subtype === FundSubtype.write_off;
   const isCashIn = isBondCashInSubtype(input.subtype);
+  const isRepo = input.instrumentKind === "repo";
   if (!isWriteOff && !input.cashAccountId) {
     throw new Error(isCashIn ? "请选择到账账户" : "请选择资金来源账户");
   }
@@ -281,22 +295,30 @@ export async function createBondEntry(input: BondEntryInput): Promise<{
       }
     }
 
-    const bondProduct = await resolveBondProductInTx(tx, {
-      householdId: input.householdId,
-      institutionId: bondAcc.institutionId ?? null,
-      currency: bondAcc.currency ?? cashAcc?.currency ?? "CNY",
-      productId: input.productId,
-      productName: input.productName,
-      input,
-    });
-    if (!bondProduct) throw new Error("请选择或新增债券产品");
+    // 逆回购不进债券产品库：品种名（GC001）本身就是商品名，productId 恒为 null。
+    const bondProduct = isRepo
+      ? null
+      : await resolveBondProductInTx(tx, {
+          householdId: input.householdId,
+          institutionId: bondAcc.institutionId ?? null,
+          currency: bondAcc.currency ?? cashAcc?.currency ?? "CNY",
+          productId: input.productId,
+          productName: input.productName,
+          input,
+        });
+    if (!isRepo && !bondProduct) throw new Error("请选择或新增债券产品");
+    const productRef = {
+      id: bondProduct?.id ?? null,
+      name: bondProduct?.name ?? input.productName.trim(),
+    };
+    if (!productRef.name) throw new Error("请填写品种");
 
     const sourceLotId = isCashIn || isWriteOff
       ? await resolveSourceLotId({
           householdId: input.householdId,
           accountId: bondAcc.id,
-          bondProductId: bondProduct.id,
-          productName: bondProduct.name,
+          bondProductId: productRef.id,
+          productName: productRef.name,
           explicitLotId: input.sourceLotId ?? null,
         })
       : null;
@@ -315,8 +337,9 @@ export async function createBondEntry(input: BondEntryInput): Promise<{
     const signedCashAmount = isWriteOff ? -input.amount : isCashIn ? Math.abs(input.arrivalAmount ?? input.amount) : -input.amount;
     const cashNote = buildBondCashFlowNote({
       action: input.subtype,
-      productName: bondProduct.name,
+      productName: productRef.name,
       userNote: input.note,
+      instrumentKind: input.instrumentKind ?? null,
     });
     const cashEntry = await tx.txRecord.create({
       data: {
@@ -335,9 +358,9 @@ export async function createBondEntry(input: BondEntryInput): Promise<{
         note: cashNote,
         fundProductType: "bond",
         fundSubtype: input.subtype,
-        bondProductId: bondProduct.id,
+        bondProductId: productRef.id,
         bondSubtype: input.subtype,
-        bondName: bondProduct.name,
+        bondName: productRef.name,
         bondAnnualRate: input.annualRate ?? null,
         bondInterest: input.interest ?? null,
         bondArrivalDate: input.arrivalDate ?? null,
@@ -357,10 +380,11 @@ export async function createBondEntry(input: BondEntryInput): Promise<{
         accountId: bondAcc.id,
         cashAccountId: cashAcc?.id ?? null,
         cashEntryId: cashEntry.id,
-        bondProductId: bondProduct.id,
-        productName: bondProduct.name,
+        bondProductId: productRef.id,
+        productName: productRef.name,
         sourceBondTransactionId: isLot ? null : sourceLotId,
         action: input.subtype,
+        instrumentKind: isRepo ? "repo" : "bond",
         source: "manual",
         entryOrigin: "manual",
         tradeDate: input.date,
@@ -406,7 +430,7 @@ export async function createBondEntry(input: BondEntryInput): Promise<{
     return {
       cashEntryId: cashEntry.id,
       bondTransactionId: bondTransaction.id,
-      bondProductId: bondProduct.id,
+      bondProductId: productRef.id,
       isLot,
     };
   });
@@ -425,7 +449,7 @@ export async function createBondEntry(input: BondEntryInput): Promise<{
         where: { id: result.bondTransactionId },
         select: { sourceBondTransactionId: true },
       }))?.sourceBondTransactionId ?? null;
-  if (lotId) {
+  if (lotId && !isRepo) {
     await ensureBondPlansForLot({ householdId: input.householdId, lotId }).catch(() => {});
   }
   revalidateAfterFundShellChange();
@@ -451,6 +475,8 @@ export async function editBondEntry(input: BondEntryInput): Promise<{
 
   const touchedAccountIds = new Set<string>();
   let previousCashEntry: EntryBalanceChange["previous"] = null;
+  // 逆回购不生成债券付息计划：先按原行标记，事务内确认后再决定是否刷新计划行。
+  let isRepoEdit = false;
   const result = await prisma.$transaction(async (tx) => {
     const existing = businessId
       ? await tx.bondTransaction.findFirst({ where: { id: businessId, householdId: input.householdId } })
@@ -473,15 +499,24 @@ export async function editBondEntry(input: BondEntryInput): Promise<{
     });
     if (!bondAcc) throw new Error("请选择债券账户");
 
-    const bondProduct = await resolveBondProductInTx(tx, {
-      householdId: input.householdId,
-      institutionId: bondAcc.institutionId ?? null,
-      currency: bondAcc.currency ?? cashAcc?.currency ?? "CNY",
-      productId: input.productId ?? existing.bondProductId,
-      productName: input.productName,
-      input,
-    });
-    if (!bondProduct) throw new Error("请选择或新增债券产品");
+    // 逆回购行不认债券产品库（productId 恒为 null），编辑时沿用原品种名。
+    const isRepo = (existing.instrumentKind ?? "bond") === "repo";
+    isRepoEdit = isRepo;
+    const bondProduct = isRepo
+      ? null
+      : await resolveBondProductInTx(tx, {
+          householdId: input.householdId,
+          institutionId: bondAcc.institutionId ?? null,
+          currency: bondAcc.currency ?? cashAcc?.currency ?? "CNY",
+          productId: input.productId ?? existing.bondProductId,
+          productName: input.productName,
+          input,
+        });
+    if (!isRepo && !bondProduct) throw new Error("请选择或新增债券产品");
+    const productRef = {
+      id: bondProduct?.id ?? null,
+      name: bondProduct?.name ?? (input.productName.trim() || existing.productName),
+    };
 
     const isLot = existing.action === FundSubtype.buy;
     const sourceLotId = isLot ? null : existing.sourceBondTransactionId;
@@ -497,8 +532,9 @@ export async function editBondEntry(input: BondEntryInput): Promise<{
     const signedCashAmount = isWriteOff ? -input.amount : isCashIn ? Math.abs(input.arrivalAmount ?? input.amount) : -input.amount;
     const cashNote = buildBondCashFlowNote({
       action: input.subtype,
-      productName: bondProduct.name,
+      productName: productRef.name,
       userNote: input.note,
+      instrumentKind: isRepo ? "repo" : null,
     });
 
     const cashEntryId = existing.cashEntryId;
@@ -522,9 +558,9 @@ export async function editBondEntry(input: BondEntryInput): Promise<{
           note: cashNote,
           fundProductType: "bond",
           fundSubtype: input.subtype,
-          bondProductId: bondProduct.id,
+          bondProductId: productRef.id,
           bondSubtype: input.subtype,
-          bondName: bondProduct.name,
+          bondName: productRef.name,
           bondAnnualRate: input.annualRate ?? null,
           bondInterest: input.interest ?? null,
           bondArrivalDate: input.arrivalDate ?? null,
@@ -539,9 +575,10 @@ export async function editBondEntry(input: BondEntryInput): Promise<{
       data: {
         accountId: bondAcc.id,
         cashAccountId: cashAcc?.id ?? null,
-        bondProductId: bondProduct.id,
-        productName: bondProduct.name,
+        bondProductId: productRef.id,
+        productName: productRef.name,
         action: input.subtype,
+        instrumentKind: isRepo ? "repo" : "bond",
         tradeDate: input.date,
         confirmDate: isCashIn ? (input.arrivalDate ?? input.date) : input.date,
         arrivalDate: input.arrivalDate ?? null,
@@ -590,7 +627,7 @@ export async function editBondEntry(input: BondEntryInput): Promise<{
     return {
       cashEntryId: cashEntryId ?? "",
       bondTransactionId: bondTransaction.id,
-      bondProductId: bondProduct.id,
+      bondProductId: productRef.id,
       isLot,
       lotId: isLot ? bondTransaction.id : sourceLotId,
     };
@@ -603,7 +640,7 @@ export async function editBondEntry(input: BondEntryInput): Promise<{
     { entryId: result.cashEntryId, previous: previousCashEntry },
   ]).catch(() => {});
   await invalidateCreditCardCycleCacheForAccountIds(Array.from(touchedAccountIds)).catch(() => {});
-  if (result.lotId) {
+  if (result.lotId && !isRepoEdit) {
     await ensureBondPlansForLot({ householdId: input.householdId, lotId: result.lotId }).catch(() => {});
   }
   revalidateAfterFundShellChange();

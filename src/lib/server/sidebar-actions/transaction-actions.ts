@@ -28,9 +28,11 @@ import { attachEntryTags, replaceEntryTags } from "@/lib/server/entry-tags";
 import { upsertEntryBusinessCashFlowLink } from "@/lib/server/entry-business-link";
 import { revalidateAfterFundShellChange, revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { isAdvanceFundingAccount, isDepositAccount, isDepositPostingCategoryAllowed, isIncomeExpensePostingAccount,  isLoanOrSettlementAccountKind, isPureInvestmentAccount, isSpecialCashTargetAccount } from "@/lib/account-kind-utils";
+import { inferTransferLiabilityMode, liabilitySourceForMode, ORDINARY_TRANSFER_SOURCE } from "@/lib/liability";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 import { resolveOrCreateDepositAccount } from "@/lib/server/deposit-account";
 import { resolveOrCreateDepositProduct } from "@/lib/server/deposit-product";
+import { resolveOrCreateWealthProduct } from "@/lib/server/wealth-product";
 import { resolveOrCreateWealthAccount } from "@/lib/server/wealth-account";
 import { createBondEntry, editBondEntry, bondEntryInputFromFormData } from "@/lib/server/bond-transactions";
 import { resolveOrCreateAdvanceAccount } from "@/lib/server/advance-account";
@@ -71,6 +73,13 @@ import type { CreditCardInstallmentRateType } from "@/lib/credit/installment";
 function isFundShellProductType(formData: FormData) {
   const fundProductType = String(formData.get("fundProductType") ?? "").trim();
   return fundProductType === "fund" || fundProductType === "money" || fundProductType === "metal" || fundProductType === "wealth";
+}
+
+type TransferEntryKind = "transfer" | "liability";
+
+function parseTransferEntryKind(value: unknown): TransferEntryKind | null {
+  const text = String(value ?? "").trim();
+  return text === "transfer" || text === "liability" ? text : null;
 }
 
 function dateFromYmd(value: string | null | undefined): Date | null {
@@ -339,23 +348,15 @@ async function createSplitWealthTransaction(
         });
     if (!wealthAcc) throw new Error(t("sidebar.action.selectWealthAccount"));
 
-    const wealthProduct = wealthProductIdInput
-      ? await tx.wealthProduct.findFirst({
-          where: { id: wealthProductIdInput, householdId, institutionId: wealthAcc.institutionId, isActive: true },
-        })
-      : productNameInput
-        ? await tx.wealthProduct.findFirst({
-            where: { householdId, institutionId: wealthAcc.institutionId ?? null, name: productNameInput, isActive: true },
-          }) ?? await tx.wealthProduct.create({
-            data: {
-              householdId,
-              institutionId: wealthAcc.institutionId ?? null,
-              name: productNameInput,
-              currency: wealthAcc.currency ?? cashAcc.currency ?? "CNY",
-              annualRate: annualRate ?? undefined,
-            },
-          })
-        : null;
+    const wealthProduct = await resolveOrCreateWealthProduct(tx, {
+      householdId,
+      institutionId: wealthAcc.institutionId,
+      currency: wealthAcc.currency,
+      fallbackCurrency: cashAcc.currency,
+      productId: wealthProductIdInput,
+      name: productNameInput,
+      annualRate,
+    });
     if (!wealthProduct) throw new Error(t("sidebar.action.selectOrCreateWealthProduct"));
     if (!isRedeem && !isDividend) {
       await assertWealthUnitsWhenRequiredInTx(t, tx, {
@@ -453,6 +454,7 @@ export async function createTransaction(formData: FormData) {
   "use server";
   const t = await getServerT();
   const type = String(formData.get("type") ?? "").trim();
+  const entryKind = parseTransferEntryKind(formData.get("entryKind"));
   const dateStr = String(formData.get("date") ?? "").trim();
   const postedAtInput = parseOptionalDateTimeInput(formData.get("postedAt"));
   const amountRaw = parseMoneyInput(formData.get("amount") ?? null);
@@ -493,10 +495,11 @@ export async function createTransaction(formData: FormData) {
     if (type === "transfer") {
       const formFromAccountId = String(formData.get("fromAccountId") ?? "").trim();
       const formToAccountId = String(formData.get("toAccountId") ?? "").trim();
+      const requestedSource = String(formData.get("source") ?? "").trim() || null;
       if (!formFromAccountId || !formToAccountId) return { ok: false as const, error: t("sidebar.action.transferAccountsRequired") };
       if (formFromAccountId === formToAccountId) return { ok: false as const, error: t("sidebar.action.transferAccountsSame") };
-      const fromAccountId = amountRaw < 0 ? formToAccountId : formFromAccountId;
-      const toAccountId = amountRaw < 0 ? formFromAccountId : formToAccountId;
+      const fromAccountId = formFromAccountId;
+      const toAccountId = formToAccountId;
 
       await prisma.$transaction(async (tx) => {
         const [fromAcc, toAcc] = await Promise.all([
@@ -507,25 +510,34 @@ export async function createTransaction(formData: FormData) {
         const counterpartyInstitution = counterpartyInstitutionId
           ? await tx.institution.findUnique({ where: { id: counterpartyInstitutionId } })
           : null;
-        // 贷款账户允许进普通转账（2026-10-13 用户口径「允许资金账户向贷款账户输出资金」）：
-        // 「资金 ↔ 贷款」落到下面的 isLiabilityTransfer 分支，按 liabilityDirection 与现金流记为
-        // repay_out / lend_out / borrow_in / collect_in（source=liability_*）。
-        // 仍然拒绝的是「贷款↔贷款 / 贷款↔往来款 / 往来款↔往来款」互转（下一行）与
-        // 非负债配对里的基金/存款/纯投资目标。
-        const isLiabilityTransfer = isLoanOrSettlementAccountKind(fromAcc.kind) || isLoanOrSettlementAccountKind(toAcc.kind);
-        if (isLoanOrSettlementAccountKind(fromAcc.kind) && isLoanOrSettlementAccountKind(toAcc.kind)) {
+        const fromIsLiability = isLoanOrSettlementAccountKind(fromAcc.kind);
+        const toIsLiability = isLoanOrSettlementAccountKind(toAcc.kind);
+        const liabilitySideCount = Number(fromIsLiability) + Number(toIsLiability);
+        if (liabilitySideCount === 2) {
           throw new Error(t("sidebar.action.settlementTransferNotAllowed"));
         }
-        if (!isLiabilityTransfer && (isSpecialCashTargetAccount(fromAcc) || isSpecialCashTargetAccount(toAcc))) {
+        if (entryKind === "liability" && liabilitySideCount !== 1) {
+          throw new Error(t("sidebar.action.settlementTransferNotAllowed"));
+        }
+
+        const specialCounterparty =
+          liabilitySideCount === 1
+            ? isSpecialCashTargetAccount(fromIsLiability ? toAcc : fromAcc)
+            : isSpecialCashTargetAccount(fromAcc) || isSpecialCashTargetAccount(toAcc);
+        if (specialCounterparty) {
           throw new Error(t("sidebar.action.specialTargetTransferNotAllowed"));
         }
+
         const transferCurrency = resolveSameCurrencyTransfer(fromAcc, toAcc);
-        const liabilityMode = isLiabilityTransfer
-          ? isLoanOrSettlementAccountKind(fromAcc.kind)
-            ? fromAcc.liabilityDirection === "receivable" ? "collect_in" : "borrow_in"
-            : toAcc.liabilityDirection === "receivable" ? "lend_out" : "repay_out"
-          : null;
+        const liabilityMode = inferTransferLiabilityMode({
+          fromAccount: fromAcc,
+          toAccount: toAcc,
+          entryKind,
+          source: requestedSource,
+          note,
+        });
         const signedTransferAmount = liabilityMode === "collect_in" ? amountAbs : -amountAbs;
+        const transferSource = liabilityMode ? liabilitySourceForMode(liabilityMode) : ORDINARY_TRANSFER_SOURCE;
 
         const transferStatementMonth = statementMonthForTransfer(date, fromAcc, toAcc);
         const transferCategory = liabilityMode
@@ -546,7 +558,7 @@ export async function createTransaction(formData: FormData) {
           amount: signedTransferAmount,
           categoryId: transferCategory?.id ?? null,
           note,
-          source: liabilityMode ? `liability_${liabilityMode}` : "manual",
+          source: transferSource,
         });
         if (duplicate) return;
 
@@ -567,7 +579,7 @@ export async function createTransaction(formData: FormData) {
             toNote: (toNote || note) || null,
             currency: transferCurrency,
             statementMonth: transferStatementMonth,
-            source: liabilityMode ? `liability_${liabilityMode}` : "manual",
+            source: transferSource,
             principalAmount: liabilityMode ? amountAbs : null,
             interestAmount: liabilityMode ? 0 : null,
             feeAmount: liabilityMode ? 0 : null,
@@ -1061,21 +1073,15 @@ export async function createTransaction(formData: FormData) {
 
         // 债券走自己的 BondProduct 主数据（在 createBondEntry 内处理），这里只认理财。
         const wealthProduct = fundProductType === "wealth"
-          ? (wealthProductIdInput
-              ? await tx.wealthProduct.findFirst({ where: { id: wealthProductIdInput, householdId, institutionId: investAcc.institutionId, isActive: true } })
-              : fundNameInput
-                ? (await tx.wealthProduct.findFirst({
-                    where: { householdId, institutionId: investAcc.institutionId ?? null, name: fundNameInput, isActive: true },
-                  }) ?? await tx.wealthProduct.create({
-                    data: {
-                      householdId,
-                      institutionId: investAcc.institutionId ?? null,
-                      name: fundNameInput,
-                      currency: recordCurrency ?? investAcc.currency ?? "CNY",
-                      annualRate: depositAnnualRate ?? undefined,
-                    },
-                  }))
-                : null)
+          ? await resolveOrCreateWealthProduct(tx, {
+              householdId,
+              institutionId: investAcc.institutionId,
+              currency: recordCurrency,
+              fallbackCurrency: investAcc.currency,
+              productId: wealthProductIdInput,
+              name: fundNameInput,
+              annualRate: depositAnnualRate,
+            })
           : null;
         if (fundProductType === "wealth" && !wealthProduct) throw new Error(t("sidebar.action.selectOrCreateWealthProduct"));
         const depositProduct = fundProductType === "deposit"
@@ -1528,23 +1534,15 @@ async function editSplitWealthTransaction(
 
     const resolvedWealthProductId = wealthProductIdInput || wealthRow.wealthProductId || "";
     const resolvedProductNameInput = productNameInput || wealthRow.productName || "";
-    const wealthProduct = resolvedWealthProductId
-      ? await tx.wealthProduct.findFirst({
-          where: { id: resolvedWealthProductId, householdId, institutionId: wealthAcc.institutionId, isActive: true },
-        })
-      : resolvedProductNameInput
-        ? await tx.wealthProduct.findFirst({
-            where: { householdId, institutionId: wealthAcc.institutionId ?? null, name: resolvedProductNameInput, isActive: true },
-          }) ?? await tx.wealthProduct.create({
-            data: {
-              householdId,
-              institutionId: wealthAcc.institutionId ?? null,
-              name: resolvedProductNameInput,
-              currency: wealthAcc.currency ?? cashAcc.currency ?? "CNY",
-              annualRate: annualRate ?? undefined,
-            },
-          })
-        : null;
+    const wealthProduct = await resolveOrCreateWealthProduct(tx, {
+      householdId,
+      institutionId: wealthAcc.institutionId,
+      currency: wealthAcc.currency,
+      fallbackCurrency: cashAcc.currency,
+      productId: resolvedWealthProductId,
+      name: resolvedProductNameInput,
+      annualRate,
+    });
     if (!wealthProduct) throw new Error(t("sidebar.action.selectOrCreateWealthProduct"));
     if (!isRedeem && !isDividend && wealthAcc.investProductType !== "bond") {
       await assertWealthUnitsWhenRequiredInTx(t, tx, {
@@ -1997,20 +1995,13 @@ export async function editInvestment(formData: FormData) {
       if (fundProductType === "metal" && !metalUnit) throw new Error(t("sidebar.action.selectMetalUnit"));
       // 债券走自己的 BondProduct 主数据（在 editBondEntry 内处理），这里只认理财。
       const wealthProduct = fundProductType === "wealth"
-        ? (wealthProductIdInput
-            ? await tx.wealthProduct.findFirst({ where: { id: wealthProductIdInput, householdId, institutionId: finalInvestmentAccountInfo?.institutionId, isActive: true } })
-            : fundName
-              ? (await tx.wealthProduct.findFirst({
-                  where: { householdId, institutionId: finalInvestmentAccountInfo?.institutionId ?? null, name: fundName, isActive: true },
-                }) ?? await tx.wealthProduct.create({
-                  data: {
-                    householdId,
-                    institutionId: finalInvestmentAccountInfo?.institutionId ?? null,
-                    name: fundName,
-                    currency: finalInvestmentAccountInfo?.currency ?? "CNY",
-                  },
-                }))
-              : null)
+        ? await resolveOrCreateWealthProduct(tx, {
+            householdId,
+            institutionId: finalInvestmentAccountInfo?.institutionId,
+            currency: finalInvestmentAccountInfo?.currency,
+            productId: wealthProductIdInput,
+            name: fundName,
+          })
         : null;
       if (fundProductType === "wealth" && !wealthProduct) throw new Error(t("sidebar.action.selectOrCreateWealthProduct"));
       // 取回/转出的产品身份继承：先取本条记录自己的关联，下面 redeemLike 分支取到
@@ -3123,6 +3114,7 @@ export async function updateTransactionFromDialog(formData: FormData) {
   }
 
   const type = String(formData.get("type") ?? "").trim();
+  const entryKind = parseTransferEntryKind(formData.get("entryKind"));
   const dateStr = String(formData.get("date") ?? "").trim();
   const postedAtInput = parseOptionalDateTimeInput(formData.get("postedAt"));
   const amountRaw = parseMoneyInput(formData.get("amount") ?? null);
@@ -3182,8 +3174,8 @@ export async function updateTransactionFromDialog(formData: FormData) {
         const formToAccountId = String(formData.get("toAccountId") ?? "").trim();
         if (!formFromAccountId || !formToAccountId) throw new Error(t("sidebar.action.transferAccountsRequired"));
         if (formFromAccountId === formToAccountId) throw new Error(t("sidebar.action.transferAccountsSame"));
-        const fromAccountId = amountRaw < 0 ? formToAccountId : formFromAccountId;
-        const toAccountId = amountRaw < 0 ? formFromAccountId : formToAccountId;
+        const fromAccountId = formFromAccountId;
+        const toAccountId = formToAccountId;
 
         const [fromAcc, toAcc] = await Promise.all([
           tx.account.findUnique({ where: { id: fromAccountId } }),
@@ -3216,26 +3208,51 @@ export async function updateTransactionFromDialog(formData: FormData) {
           });
           if (!linkedLot) throw new Error("DEPOSIT_LOT_NOT_FOUND");
         }
-        if (fromAcc.kind === "loan" || toAcc.kind === "loan") {
-          throw new Error(t("sidebar.action.specialTargetTransferNotAllowed"));
-        }
-        const isLiabilityTransfer = isLoanOrSettlementAccountKind(fromAcc.kind) || isLoanOrSettlementAccountKind(toAcc.kind);
-        if (isLoanOrSettlementAccountKind(fromAcc.kind) && isLoanOrSettlementAccountKind(toAcc.kind)) {
+        const fromIsLiability = isLoanOrSettlementAccountKind(fromAcc.kind);
+        const toIsLiability = isLoanOrSettlementAccountKind(toAcc.kind);
+        const liabilitySideCount = Number(fromIsLiability) + Number(toIsLiability);
+        if (liabilitySideCount === 2) {
           throw new Error(t("sidebar.action.settlementTransferNotAllowed"));
         }
-        if (!isLiabilityTransfer && (isSpecialCashTargetAccount(fromAcc) || isSpecialCashTargetAccount(toAcc)) && !transferAccountsUnchanged) {
+        if (entryKind === "liability" && liabilitySideCount !== 1) {
+          throw new Error(t("sidebar.action.settlementTransferNotAllowed"));
+        }
+
+        const liabilityMode = inferTransferLiabilityMode({
+          fromAccount: fromAcc,
+          toAccount: toAcc,
+          entryKind,
+          source: entry.source,
+          note: entry.note,
+        });
+        const canPreserveUnchangedSource =
+          transferAccountsUnchanged &&
+          !entryKind &&
+          !liabilityMode &&
+          !!entry.source &&
+          entry.source !== "manual" &&
+          !entry.source.startsWith("liability_");
+        const specialCounterparty =
+          liabilitySideCount === 1
+            ? isSpecialCashTargetAccount(fromIsLiability ? toAcc : fromAcc)
+            : isSpecialCashTargetAccount(fromAcc) || isSpecialCashTargetAccount(toAcc);
+        if (specialCounterparty && !canPreserveUnchangedSource) {
           throw new Error(t("sidebar.action.specialTargetTransferNotAllowed"));
         }
+
         const transferCurrency = resolveSameCurrencyTransfer(fromAcc, toAcc);
-        const liabilityMode = isLiabilityTransfer
-          ? isLoanOrSettlementAccountKind(fromAcc.kind)
-            ? fromAcc.liabilityDirection === "receivable" ? "collect_in" : "borrow_in"
-            : toAcc.liabilityDirection === "receivable" ? "lend_out" : "repay_out"
-          : null;
+        const entryHadLiabilitySemantics =
+          String(entry.source ?? "").startsWith("liability_") ||
+          (liabilitySideCount === 1 &&
+            (entry.principalAmount != null ||
+              Math.abs(toNumber(entry.interestAmount)) > 0.005 ||
+              Math.abs(toNumber(entry.feeAmount)) > 0.005));
         if (
           !liabilityMode &&
-          String(entry.source ?? "").startsWith("liability_") &&
-          (Math.abs(toNumber(entry.interestAmount)) > 0.005 || Math.abs(toNumber(entry.feeAmount)) > 0.005)
+          entryHadLiabilitySemantics &&
+          (Math.abs(toNumber(entry.interestAmount)) > 0.005 ||
+            Math.abs(toNumber(entry.feeAmount)) > 0.005 ||
+            Math.abs(toNumber(entry.realizedProfit)) > 0.005)
         ) {
           throw new Error(t("sidebar.action.liabilityWithInterestNoTransfer"));
         }
@@ -3272,10 +3289,15 @@ export async function updateTransactionFromDialog(formData: FormData) {
             note: noteScope === "toNote" ? (entry.note ?? null) : (note || null),
             toNote: noteScope === "toNote" ? (toNote || null) : ((toNote || note) || null),
             currency: transferCurrency,
-            source: liabilityMode ? `liability_${liabilityMode}` : transferAccountsUnchanged && entry.source ? entry.source : "manual",
+            source: liabilityMode
+              ? liabilitySourceForMode(liabilityMode)
+              : canPreserveUnchangedSource
+                ? entry.source
+                : ORDINARY_TRANSFER_SOURCE,
             principalAmount: liabilityMode ? amountAbs : null,
             interestAmount: liabilityMode ? 0 : null,
             feeAmount: liabilityMode ? 0 : null,
+            realizedProfit: null,
             depositSourceEntryId: transferAccountsUnchanged
               ? (formHasDepositLot ? (formDepositLotId || null) : entry.depositSourceEntryId)
               : null,

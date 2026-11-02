@@ -7,6 +7,7 @@ import { getRequestTimeZone } from "@/lib/server/business-time-zone";
 import { loadHouseholdAvailableYears } from "@/lib/server/available-years";
 import { Suspense } from "react";
 import { ReportSelector } from "@/components/ReportSelector";
+import { getReportEntryDate } from "@/lib/report-entry-date";
 import type { ReportItem } from "@/components/ReportSelector";
 import StatisticsCharts from "@/components/StatisticsCharts";
 import { StatisticsFilterPanel } from "@/components/StatisticsFilterPanel";
@@ -165,17 +166,28 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
   const periodEnd = level === "month" ? new Date(Date.UTC(year, month, 1)) : new Date(Date.UTC(year + 1, 0, 1));
   const scopeAccountIds = scopedAccountIds ?? nonInvestAccountIds;
 
-  // Fetch transactions for the selected period (with EntryTag)
+  // Fetch transactions for the selected period (with EntryTag).
+  // 报表按生效日归期（AGENTS.md「每一处现金流入子类型白名单」+ `getReportEntryDate`）：
+  // 资金流入腿的到账日可能跨期（12-30 申请、次年 01-02 到账），所以这里必须像
+  // /api/v1/statistics 一样按 date 与 fundArrivalDate 双向放宽，再由 getReportEntryDate
+  // 精确归期；只按 `date` 取数会让跨期赎回整笔落到错误的月份/年份。
   const allEntries = await prisma.txRecord.findMany({
     where: {
       deletedAt: null,
       ...hidFilter,
-      date: { gte: periodStart, lt: periodEnd },
-      ...accountFilter,
+      OR: [
+        { date: { gte: periodStart, lt: periodEnd } },
+        { fundArrivalDate: { gte: periodStart, lt: periodEnd } },
+      ],
+      AND: [accountFilter],
     },
     select: {
       id: true,
       date: true,
+      // 生效日解析（getReportEntryDate）依赖这两列：`expense`/`income` 取 postedAt，
+      // 投资资金流入腿取到账日。缺列会让归期静默退回 `date`。
+      postedAt: true,
+      fundArrivalDate: true,
       type: true,
       amount: true,
       currency: true,
@@ -250,7 +262,9 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
   const resolveCategory = createStatisticCategoryResolver(categories);
 
   for (const e of filteredEntries) {
-    const d = e.date;
+    // 生效日（资金流入腿取到账日）落在区间外时跳过：上面的 OR 只是放宽取数边界。
+    const d = getReportEntryDate(e);
+    if (d.getTime() < periodStart.getTime() || d.getTime() >= periodEnd.getTime()) continue;
     const m = String(d.getUTCMonth() + 1).padStart(2, "0");
     if (!monthMap.has(m)) monthMap.set(m, { income: 0, expense: 0, investPnL: 0, investCost: 0 });
     const row = monthMap.get(m)!;

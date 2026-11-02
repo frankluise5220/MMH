@@ -3418,9 +3418,9 @@ export function AdvancedDataTable<T>({
         <div
           data-batch-popover-boundary
           data-advanced-table-toolbar
-          className="flex shrink-0 items-center justify-between gap-3 border-b border-slate-100 bg-white px-3 py-1.5"
+          className="flex shrink-0 flex-wrap items-center justify-between gap-x-3 gap-y-1.5 border-b border-slate-100 bg-white px-3 py-1.5"
         >
-          <div className="flex min-w-0 flex-1 items-center gap-2 text-[11px] text-slate-500">
+          <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2 text-[11px] text-slate-500">
             {toolbarMode === "custom" ? (
               <>
                 {toolbarLeftContent}
@@ -3469,7 +3469,7 @@ export function AdvancedDataTable<T>({
               </>
             )}
           </div>
-          <div data-advanced-table-toolbar-actions className="flex shrink-0 items-center gap-2">
+          <div data-advanced-table-toolbar-actions className="flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2">
             {/*
               「显示范围」常驻渲染：它的出现时机不能挂在 `effectiveDateRangeBounds` 上，
               否则时间轴还没到（表格已经画完了）这一格才补出来，工具栏整体右移一下；
@@ -3488,7 +3488,11 @@ export function AdvancedDataTable<T>({
                 onChange={applyDateRange}
               />
             ) : null}
-            {toolbarRightContent}
+            {toolbarRightContent ? (
+              <div className="min-w-0 max-w-full flex-[1_1_24rem]">
+                {toolbarRightContent}
+              </div>
+            ) : null}
             {showColumnVisibilityButton ? (
               <div ref={columnMenuRef} className="relative">
                 <button
@@ -3524,9 +3528,12 @@ export function AdvancedDataTable<T>({
       ) : null}
 
       {/* 表头：与表体共用同一份列宽，但渲染在滚动容器**外面** ——
-          纵向滚动条因此只覆盖数据区，不从表头上沿开始；横向滚动时内层用 transform 跟随。 */}
+          纵向滚动条因此只覆盖数据区，不从表头上沿开始；横向滚动时内层用 transform 跟随。
+          `advanced-table-header` 是给 FT 卡片画表格外框用的锚点（与表体 `.advanced-table-viewport`
+          是一对兄弟，边框拆成「表头上/左/右 + 表体左/右/下」，见 globals.css）。不要删这个类名，
+          否则卡片里的表格会重新贴边、并且丢掉圆角。 */}
       <div
-        className={`shrink-0 overflow-hidden ${ADVANCED_TABLE_HEAD_SURFACE_CLASS}`}
+        className={`advanced-table-header shrink-0 overflow-hidden ${ADVANCED_TABLE_HEAD_SURFACE_CLASS}`}
         style={{ paddingRight: scrollbarGutterWidth }}
       >
         <div ref={headerInnerRef} className="will-change-transform" style={{ width: tableWidthStyle }}>

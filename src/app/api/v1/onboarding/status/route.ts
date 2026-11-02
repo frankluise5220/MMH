@@ -33,7 +33,7 @@
  */
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
-import { buildAccountDisplayOption } from "@/lib/account-display";
+import { buildAccountDisplayOption, accountRenderSettings } from "@/lib/account-display";
 import { getServerAccountLabelFields } from "@/lib/server/account-label-fields";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
@@ -90,7 +90,7 @@ export async function GET() {
       return a.name.localeCompare(b.name, "zh-CN");
     })[0] ?? null;
     const defaultMoneyAccountDisplay = defaultMoneyAccount
-      ? buildAccountDisplayOption(defaultMoneyAccount, undefined, { fields: accountLabelFields, baseCurrency })
+      ? buildAccountDisplayOption(defaultMoneyAccount, undefined, accountRenderSettings(accountLabelFields, baseCurrency))
       : null;
     const investmentAccountIds = accounts
       .filter((account) => account.kind === "investment")

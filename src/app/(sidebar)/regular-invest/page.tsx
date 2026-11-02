@@ -2,7 +2,7 @@ import { prisma } from "@/lib/db/prisma";
 import { getRequestTimeZone } from "@/lib/server/business-time-zone";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
-import { buildAccountDisplayOption, buildFlatAccountOptions, buildGroupedAccountOptions } from "@/lib/account-display";
+import { buildAccountDisplayOption, buildFlatAccountOptions, buildGroupedAccountOptions, accountRenderSettings } from "@/lib/account-display";
 import { buildAccountOwnerOptions } from "@/lib/account-owner-options";
 import { buildCategorySmartSelectOptions } from "@/components/categorySmartSelect";
 import { categoryOrderBy } from "@/lib/category-order";
@@ -16,7 +16,9 @@ import { listLoanRateAdjustmentsByAccountIds } from "@/lib/server/loan-rate-adju
 import { allocateBuyFailedRefunds, getConfirmedBuyAmount } from "@/lib/fund/refund-link";
 import { getFundProfileNameMap, normalizeFundDisplayName } from "@/lib/fund/fundProfile";
 import { withFundDateRules } from "@/lib/fund/confirmDays";
-import { RegularInvestClient } from "./RegularInvestClient";
+import { RegularInvestClient, type CreditInstallmentPlanView } from "./RegularInvestClient";
+import { buildCreditCardInstallmentSchedule, creditInstallmentAnnualizedRate } from "@/lib/credit/installment";
+import { materializeDueInstallmentPayments } from "@/lib/server/credit-card-installment";
 import { MobileRegularInvest } from "@/components/mobile/MobileRegularInvest";
 import { resolveCreditCardRepaymentCategory } from "@/lib/default-categories";
 import { isCreditCardRepaymentTransfer, recordMatchesRegularInvestPlan } from "@/lib/transaction-semantics";
@@ -244,7 +246,7 @@ export default async function RegularInvestPage() {
   // 父账户（多币种聚合账户）不能记账：计划任务的资金/目标账户只到币种子账户一层。
   const accountOptions = accounts
     .filter((account) => account.isAggregate !== true)
-    .map((account) => buildAccountDisplayOption(account, undefined, { fields: accountLabelFields, baseCurrency }));
+    .map((account) => buildAccountDisplayOption(account, undefined, accountRenderSettings(accountLabelFields, baseCurrency)));
   const accountById = new Map(accountOptions.map((account) => [account.id, account]));
   // 贷款是否"仍关联着"与负债视图同口径：|余额| > ACTIVE_LIABILITY_EPSILON 才算在贷，
   // 已结清/空壳账户按"无关联贷款"处理（提示可放心删除）。
@@ -536,6 +538,122 @@ export default async function RegularInvestPage() {
     };
   });
 
+  // 信用卡分期在「计划任务」页也要看得见：正在执行的分期计划以只读行展示。
+  // 期供行是「到期才落库」的（见 credit-card-installment.ts），这里先补一次到期行，
+  // 保证「已出账 x/N」「下期应还」与账单视图、明细完全一致；失败不阻断页面。
+  if (householdId) {
+    await materializeDueInstallmentPayments(prisma, { householdId }).catch(() => {});
+  }
+  const activeInstallmentPlans = householdId
+    ? await prisma.creditCardInstallmentPlan.findMany({
+        where: { householdId, status: "active" },
+        include: {
+          Account: { select: { id: true, billingDay: true, billingDayTxPeriod: true } },
+          SourceEntry: { select: { date: true } },
+        },
+        orderBy: [{ firstStatementMonth: "asc" }, { id: "asc" }],
+      })
+    : [];
+  const activeInstallmentPlanIds = activeInstallmentPlans.map((plan) => plan.id);
+  const installmentEntries = activeInstallmentPlanIds.length > 0
+    ? await prisma.txRecord.findMany({
+        where: {
+          householdId,
+          creditCardInstallmentPlanId: { in: activeInstallmentPlanIds },
+          deletedAt: null,
+          installmentRole: { in: ["payment", "fee"] },
+        },
+        select: { creditCardInstallmentPlanId: true, installmentNo: true, installmentRole: true },
+      })
+    : [];
+  // 进度只认已落库的**本金**行：手续费行与本金行同期次成对出现，按本金行去重即可。
+  const paidInstallmentNosByPlanId = new Map<string, Set<number>>();
+  for (const entry of installmentEntries) {
+    if (entry.installmentRole !== "payment" || entry.installmentNo == null) continue;
+    const planId = entry.creditCardInstallmentPlanId;
+    if (!planId) continue;
+    const paid = paidInstallmentNosByPlanId.get(planId) ?? new Set<number>();
+    paid.add(entry.installmentNo);
+    paidInstallmentNosByPlanId.set(planId, paid);
+  }
+  const roundInstallmentMoney = (value: number) => Math.round((value + Number.EPSILON) * 100) / 100;
+  const installmentsData: CreditInstallmentPlanView[] = activeInstallmentPlans
+    .map((plan) => {
+      const account = accountById.get(plan.accountId);
+      // 与 materializeDueInstallmentPayments 的输入口径保持一致：账单日缺失退到 1 号，
+      // 首期日期缺失时用「首期账单月 + 账单日」回推（29~31 号夹到该月最后一天，不溢出）。
+      // 注意：历史计划的已落库行可能是旧口径（26/29 号）甚至被手工改过日期，这里**不回填、
+      // 不猜测**——下一期日期必须等于 materialize 将来真正会落库的那一期，否则进度对了日期却错。
+      const billingDay = plan.billingDay ?? plan.Account?.billingDay ?? 1;
+      const firstStatementMonth = plan.firstStatementMonth;
+      const firstPaymentDate = plan.firstPaymentDate ?? (() => {
+        if (!/^\d{4}-\d{2}$/.test(firstStatementMonth)) return null;
+        const year = Number(firstStatementMonth.slice(0, 4));
+        const monthIndex = Number(firstStatementMonth.slice(5, 7)) - 1;
+        const lastDay = new Date(Date.UTC(year, monthIndex + 1, 0)).getUTCDate();
+        return new Date(Date.UTC(year, monthIndex, Math.min(billingDay, lastDay)));
+      })();
+      const paidNos = paidInstallmentNosByPlanId.get(plan.id) ?? new Set<number>();
+      let nextRunDate: string | null = null;
+      let nextPayment: number | null = null;
+      let remainingPrincipal = 0;
+      let remainingPayment = 0;
+      if (firstPaymentDate) {
+        try {
+          const schedule = buildCreditCardInstallmentSchedule({
+            principal: Number(plan.installmentPrincipal),
+            totalRuns: plan.totalRuns,
+            rateType: plan.rateType,
+            rate: Number(plan.rate),
+            billingDay,
+            firstDate: firstPaymentDate,
+            billingDayTxPeriod: plan.Account?.billingDayTxPeriod ?? null,
+          });
+          const unpaid = schedule.filter((row) => !paidNos.has(row.installmentNo));
+          remainingPrincipal = roundInstallmentMoney(unpaid.reduce((sum, row) => sum + row.principal, 0));
+          remainingPayment = roundInstallmentMoney(unpaid.reduce((sum, row) => sum + row.payment, 0));
+          if (unpaid.length > 0) {
+            nextRunDate = unpaid[0].date.toISOString();
+            nextPayment = unpaid[0].payment;
+          }
+        } catch {
+          // 历史脏数据（费率/期数越界）不能把整页打挂：退化为基础信息展示。
+        }
+      }
+      return {
+        id: plan.id,
+        accountId: plan.accountId,
+        accountLabel: account?.label ?? "",
+        accountHoverTitle: account?.tableHoverTitle ?? null,
+        sourceType: plan.sourceType,
+        sourceStatementMonth: plan.sourceStatementMonth,
+        sourceDate: plan.SourceEntry?.date ? formatDateUtc(plan.SourceEntry.date) : null,
+        principal: Number(plan.installmentPrincipal),
+        totalRuns: plan.totalRuns,
+        paidRuns: paidNos.size,
+        nextRunDate,
+        nextPayment,
+        remainingPrincipal,
+        remainingPayment,
+        rateType: plan.rateType,
+        rate: Number(plan.rate),
+        // 年化：period_fee（每期费率）按实际现金流折算 IRR×12，annual_interest 原样。
+        // 只依赖 plan 参数，缺排期日期的历史计划也能算。
+        annualizedRate: creditInstallmentAnnualizedRate({
+          principal: Number(plan.installmentPrincipal),
+          totalRuns: plan.totalRuns,
+          rateType: plan.rateType,
+          rate: Number(plan.rate),
+        }),
+        billingDay,
+        createdAt: plan.createdAt.toISOString(),
+        completed: paidNos.size >= plan.totalRuns,
+      };
+    })
+    // 期供行全部落库后 plan.status 仍是 active（materialize 不回写状态），这里必须过滤，
+    // 否则「进行中」页签里会混进一堆早已还完的分期。
+    .filter((plan) => !plan.completed);
+
   const investmentAccounts = accountOptions.filter((account) => account.kind === "investment" && account.investProductType === "fund");
   const cashAccounts = accountOptions.filter((account) => ["bank_debit", "ewallet", "cash"].includes(account.kind));
   const ordinaryAccounts = accountOptions.filter((account) => ["bank_debit", "bank_credit", "ewallet", "cash"].includes(account.kind));
@@ -589,6 +707,7 @@ export default async function RegularInvestPage() {
       <div className="hidden h-full desktop:block">
         <RegularInvestClient
       initialPlans={plansData}
+      installmentPlans={installmentsData}
       investmentAccounts={investmentAccounts}
       cashAccounts={cashAccounts}
       loanAccounts={loanAccounts}

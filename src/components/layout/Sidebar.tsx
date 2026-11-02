@@ -4,7 +4,7 @@ import { cookies } from "next/headers";
 import { AccountKind } from "@prisma/client";
 
 import { SidebarClient } from "@/components/layout/SidebarClient";
-import { buildAccountDisplayOption, SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE, normalizeCreditCardLabelTemplate } from "@/lib/account-display";
+import { accountRenderSettings, buildAccountDisplayOption, SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE, normalizeCreditCardLabelTemplate } from "@/lib/account-display";
 import { prisma } from "@/lib/db/prisma";
 import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
 import { getMaintainedAccountBalances } from "@/lib/server/account-balance";
@@ -132,7 +132,7 @@ async function getSidebarData() {
       Counterparty: account.Counterparty,
       // 悬浮提示要补「非本位币」的 ISO 代码：不传 currency / baseCurrency 时
       // hoverTitle 只有所有人/类型，美元、港币账户的币种会整列消失。
-    }, creditCardSidebarLabelTemplate, { baseCurrency });
+    }, creditCardSidebarLabelTemplate, accountRenderSettings(undefined, baseCurrency));
 
     return {
       id: account.id,

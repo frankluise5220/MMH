@@ -17,6 +17,15 @@ import {
 } from "@/lib/ai/query-intent";
 import { normalizeAiApiMode } from "@/lib/ai/config";
 import { buildResponsesRequestBody, extractResponsesText, type ChatContentPart } from "@/lib/ai/responses";
+import {
+  AiTransportError,
+  aiFailurePayload,
+  aiFailureFromResponse,
+  aiFetch,
+  classifyAiFailure,
+  describeAiFailureForLog,
+  type AiFailure,
+} from "@/lib/ai/errors";
 import { isSpendableAccount } from "@/lib/account-kind-utils";
 import { BALANCE_INITIALIZATION_SOURCE, BALANCE_RECONCILE_SOURCE } from "@/lib/balance-reconcile";
 import {
@@ -43,6 +52,15 @@ export const runtime = "nodejs";
 
 export async function OPTIONS() {
   return new NextResponse(null, { status: 204, headers: corsHeaders() });
+}
+
+/**
+ * Single exit for AI failures: the browser gets stable i18n keys, the provider's
+ * raw body only reaches the server log (it can echo part of the API key).
+ */
+function respondAiFailure(failure: AiFailure, httpStatus: number) {
+  console.warn(describeAiFailureForLog(failure, "ai/chat"));
+  return NextResponse.json(aiFailurePayload(failure), { status: httpStatus, headers: corsHeaders() });
 }
 
 async function logDistill(payload: {
@@ -1610,19 +1628,13 @@ export async function POST(req: Request) {
         ],
       };
 
-      const llmRes = await fetch(joinBaseUrl(cleanUrl, "/api/chat"), {
-        method: "POST",
-        headers,
-        body: JSON.stringify(ollamaBody),
-      });
+      const llmRes = await aiFetch(
+        joinBaseUrl(cleanUrl, "/api/chat"),
+        { method: "POST", headers, body: JSON.stringify(ollamaBody) },
+        { timeout: "chat" },
+      );
 
-      if (!llmRes.ok) {
-        const errText = await llmRes.text().catch(() => "");
-        return NextResponse.json(
-          { ok: false, code: "LLM_CALL_FAILED", error: `LLM 调用失败 (${llmRes.status}): ${errText.slice(0, 300)}` },
-          { status: 502, headers: corsHeaders() },
-        );
-      }
+      if (!llmRes.ok) return respondAiFailure(await aiFailureFromResponse(llmRes), 502);
 
       const llmData = (await llmRes.json().catch(() => null)) as
         | { message?: { content?: string | null } }
@@ -1647,19 +1659,13 @@ export async function POST(req: Request) {
             temperature: 0.1,
           })
         : llmBody;
-      const llmRes = await fetch(joinBaseUrl(cleanUrl, apiMode === "responses" ? "/v1/responses" : "/v1/chat/completions"), {
-        method: "POST",
-        headers,
-        body: JSON.stringify(requestBody),
-      });
+      const llmRes = await aiFetch(
+        joinBaseUrl(cleanUrl, apiMode === "responses" ? "/v1/responses" : "/v1/chat/completions"),
+        { method: "POST", headers, body: JSON.stringify(requestBody) },
+        { timeout: "chat" },
+      );
 
-      if (!llmRes.ok) {
-        const errText = await llmRes.text().catch(() => "");
-        return NextResponse.json(
-          { ok: false, code: "LLM_CALL_FAILED", error: `LLM 调用失败 (${llmRes.status}): ${errText.slice(0, 300)}` },
-          { status: 502, headers: corsHeaders() },
-        );
-      }
+      if (!llmRes.ok) return respondAiFailure(await aiFailureFromResponse(llmRes), 502);
 
       const llmData = (await llmRes.json().catch(() => null)) as {
         choices?: Array<{ message?: { content?: string | null } }>;
@@ -1667,9 +1673,9 @@ export async function POST(req: Request) {
       } | null;
 
       if (llmData?.error) {
-        return NextResponse.json(
-          { ok: false, code: "LLM_ERROR", error: `LLM 错误: ${llmData.error.message ?? "未知错误"}` },
-          { status: 400, headers: corsHeaders() },
+        return respondAiFailure(
+          classifyAiFailure({ status: 400, body: JSON.stringify(llmData.error) }),
+          400,
         );
       }
 
@@ -1690,7 +1696,15 @@ export async function POST(req: Request) {
         success: false,
         errorMsg: "LLM 未返回内容",
       });
-      return NextResponse.json({ ok: false, code: "LLM_EMPTY_RESPONSE", error: "LLM 未返回内容，请重试或更换模型" }, { status: 422, headers: corsHeaders() });
+      return respondAiFailure(
+        {
+          code: "AI_EMPTY_RESPONSE",
+          messageKey: "aiError.empty",
+          fallbackMessage: "AI 服务器没有返回内容，请重试或换一个模型。",
+          actionKey: "aiError.action.retryLater",
+        },
+        422,
+      );
     }
 
     const now = new Date();
@@ -1791,9 +1805,9 @@ export async function POST(req: Request) {
       success: false,
       errorMsg: errMsg,
     });
-    return NextResponse.json(
-      { ok: false, code: "AI_SERVICE_UNAVAILABLE", error: errMsg },
-      { status: 500, headers: corsHeaders() },
-    );
+    if (e instanceof AiTransportError) {
+      return respondAiFailure(e.failure, 502);
+    }
+    return respondAiFailure(classifyAiFailure({ error: e }), 500);
   }
 }

@@ -3317,9 +3317,11 @@ export function FundShell(props: Props) {
         {/* 内容板（FT 卡片）：外观规则统一在 globals.css 的 `.ft-card-surface`
             （z-20 压在页签之下、圆角/边框/阴影、米色底；卡片顶边 = 流内页签条的底边，
             不靠容器 padding 定位）。
-            **卡片 / 页签 / 表头同色**：活动页签不刷白（不挂 `ft-tab-fillet-white`），保持 `#fbfaf7`；
-            表头取 `ADVANCED_TABLE_HEAD_SURFACE_CLASS`（同一个 `#fbfaf7`），与页签接缝无色差；
-            表格内部（表体）改用 `ADVANCED_TABLE_BODY_SURFACE_CLASS`（白），靠明度差区分数据区。
+            **卡片 / 页签同色**：活动页签不刷白（不挂 `ft-tab-fillet-white`），保持 `#fbfaf7`，
+            与卡片接缝无色差；表头不再跟着卡片走 —— 卡片里有表格时表头是**浅灰带**、与底部汇总行
+            同色（2026-10-31 用户：「如果卡片里有表格，表头就应该与汇总行同色」，色值由卡片上的
+            `--ft-table-band-bg` 提供，别在这里刷），于是「灰带 + 白表体 + 灰带」把表格框成一条。
+            表格内部（表体）用 `ADVANCED_TABLE_BODY_SURFACE_CLASS`（白），靠明度差区分数据区。
             汇总行不再吸在表内，而是卡片底边一条浅灰独立条（`summaryRowPlacement="footer"`）。
             挂 `ft-card-surface-fill`（flex 撑满）：本窗格高度由用户拖拽决定（固定值），卡片必须
             铺满窗格、表格在卡片内滚动；「高度跟内容走」那套（默认 `flex: 0 1 auto`）是给记账

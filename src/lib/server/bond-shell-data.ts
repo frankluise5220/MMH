@@ -297,7 +297,13 @@ export async function loadBondLotOptions(params: {
   if (accountIds.length === 0) return [];
 
   const rows = await prisma.bondTransaction.findMany({
-    where: { householdId: params.householdId, accountId: { in: accountIds }, deletedAt: null },
+    // 债券存单，不含逆回购（逆回购是同表另一品种，见 repo-shell-data）。
+    where: {
+      householdId: params.householdId,
+      accountId: { in: accountIds },
+      deletedAt: null,
+      instrumentKind: "bond",
+    },
     include: {
       BondProduct: {
         select: {
@@ -334,7 +340,8 @@ export async function loadBondShellData(params: {
 
   const [rows, entries] = await Promise.all([
     prisma.bondTransaction.findMany({
-      where: { householdId, accountId, deletedAt: null },
+      // 债券视图只认债券品种，逆回购在「逆回购」页签里单独展示。
+      where: { householdId, accountId, deletedAt: null, instrumentKind: "bond" },
       include: {
         BondProduct: {
           select: {
@@ -350,7 +357,7 @@ export async function loadBondShellData(params: {
       },
       orderBy: [{ tradeDate: "asc" }, { createdAt: "asc" }],
     }),
-    loadBondTransactionEntryLike({ householdId, accountIds: [accountId] }),
+    loadBondTransactionEntryLike({ householdId, accountIds: [accountId], instrumentKinds: ["bond"] }),
   ]);
 
   const projectedLots: BondShellLot[] = projectBondLots(rows)

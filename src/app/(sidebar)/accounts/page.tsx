@@ -4,7 +4,7 @@ import type { Prisma } from "@prisma/client";
 import { cookies } from "next/headers";
 import Link from "next/link";
 
-import { buildAccountDisplayOption, normalizeCreditCardLabelTemplate } from "@/lib/account-display";
+import { buildAccountDisplayOption, normalizeCreditCardLabelTemplate, accountRenderSettings } from "@/lib/account-display";
 import { TopEntryLauncher } from "@/components/TopEntryLauncher";
 import { DepositEntryHost } from "@/components/DepositEntryHost";
 import { BondEntryHost } from "@/components/BondEntryHost";
@@ -176,7 +176,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
         Institution: account.Institution,
         AccountGroup: account.AccountGroup,
         Counterparty: account.Counterparty,
-      }, creditCardLabelTemplate, { fields: accountLabelFields, baseCurrency });
+      }, creditCardLabelTemplate, accountRenderSettings(accountLabelFields, baseCurrency));
       return {
         id: account.id,
         name: display.label,
@@ -201,7 +201,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
         Institution: account.Institution,
         AccountGroup: account.AccountGroup,
         Counterparty: account.Counterparty,
-      }, creditCardLabelTemplate, { fields: accountLabelFields, baseCurrency });
+      }, creditCardLabelTemplate, accountRenderSettings(accountLabelFields, baseCurrency));
       const cycle = cycleByAccountId.get(account.id);
       const balance = cycle
         ? creditCardDisplayBalanceFromCurrentCycle(cycle)

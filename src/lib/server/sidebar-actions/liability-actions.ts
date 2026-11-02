@@ -38,7 +38,12 @@ import { releaseMortgagedAssetsForSettledLoanAccounts } from "@/lib/server/colla
 import { ACTIVE_LIABILITY_EPSILON } from "@/lib/server/liability-view-data";
 import { assertAccountIdentityUnique } from "@/lib/server/account-identity-unique";
 import { attachEntryTags, replaceEntryTags } from "@/lib/server/entry-tags";
-import { liabilityInterestAmountForRecord, liabilityRealizedProfitForRecord, isLoanOrSettlementAccountKind } from "@/lib/liability";
+import {
+  inferTransferLiabilityMode,
+  isLoanOrSettlementAccountKind,
+  liabilityInterestAmountForRecord,
+  liabilityRealizedProfitForRecord,
+} from "@/lib/liability";
 import { isCollateralLoanType, isHomeLoanType, isOtherLoanType, normalizeLoanType, type LoanTypeValue } from "@/lib/loan-type";
 
 const SETTLEMENT_ACCOUNT_SUFFIX = "\u7684\u5f80\u6765\u6b3e";
@@ -56,6 +61,31 @@ const BORROW_NOTE = "\u501f\u5165";
 function parseMoneyInput(value: FormDataEntryValue | null) {
   const parsed = parseFloat(String(value ?? "").replace(/,/g, ""));
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+type OriginalTransferAccountFact = {
+  id: string;
+  kind: AccountKind;
+  liabilityDirection: string | null;
+};
+
+function isExistingLiabilityTransfer(
+  original: {
+    source: string | null;
+    note: string | null;
+    accountId: string;
+    toAccountId: string | null;
+  },
+  accountById: ReadonlyMap<string, OriginalTransferAccountFact>,
+) {
+  const sourceAccount = accountById.get(original.accountId);
+  const targetAccount = original.toAccountId ? accountById.get(original.toAccountId) : null;
+  return inferTransferLiabilityMode({
+    fromAccount: sourceAccount,
+    toAccount: targetAccount,
+    source: original.source,
+    note: original.note,
+  }) != null;
 }
 
 function parseSubmittedTagIds(value: FormDataEntryValue | null) {
@@ -313,7 +343,16 @@ export async function createLiabilityTransaction(formData: FormData) {
 
   const mode = String(formData.get("mode") ?? "").trim();
   const loanFundingMode = String(formData.get("loanFundingMode") ?? "cash_disbursement").trim();
-  const editEntryId = String(formData.get("editEntryId") ?? "").trim();
+  const submittedEditEntryId = String(formData.get("editEntryId") ?? "").trim();
+  const liabilityConversionEntryId = String(formData.get("liabilityConversionEntryId") ?? "").trim();
+  const entryKind = String(formData.get("entryKind") ?? "").trim();
+  if (entryKind && entryKind !== "liability") {
+    return { ok: false as const, error: "INVALID_LIABILITY_ENTRY_KIND" };
+  }
+  if (submittedEditEntryId && liabilityConversionEntryId && submittedEditEntryId !== liabilityConversionEntryId) {
+    return { ok: false as const, error: "LIABILITY_CONVERSION_ENTRY_ID_CONFLICT" };
+  }
+  const editEntryId = liabilityConversionEntryId || submittedEditEntryId;
   const liabilityAccountId = String(formData.get("liabilityAccountId") ?? "").trim();
   const liabilityObjectId = String(formData.get("liabilityObjectId") ?? formData.get("liabilityInstitutionId") ?? "").trim();
   const cashAccountId = String(formData.get("cashAccountId") ?? "").trim();
@@ -784,7 +823,74 @@ export async function createLiabilityTransaction(formData: FormData) {
             type: TransactionType.transfer,
           },
         });
-        if (!original) throw new Error("原还款记录不存在");
+        if (!original) {
+          throw new Error(
+            liabilityConversionEntryId
+              ? "LIABILITY_CONVERSION_ENTRY_NOT_FOUND"
+              : "原还款记录不存在",
+          );
+        }
+        const originalAccountIds = [original.accountId, original.toAccountId].filter(
+          (id): id is string => Boolean(id),
+        );
+        const originalAccounts = originalAccountIds.length > 0
+          ? await tx.account.findMany({
+              where: { householdId, id: { in: originalAccountIds } },
+              select: { id: true, kind: true, liabilityDirection: true },
+            })
+          : [];
+        const originalAccountById = new Map(
+          originalAccounts.map((account) => [
+            account.id,
+            {
+              id: account.id,
+              kind: account.kind,
+              liabilityDirection: account.liabilityDirection,
+            },
+          ]),
+        );
+        const isOrdinaryTransferConversion =
+          Boolean(liabilityConversionEntryId) &&
+          !isExistingLiabilityTransfer(original, originalAccountById);
+        if (isOrdinaryTransferConversion) {
+          if (original.reconciledAt) {
+            throw new Error("LIABILITY_CONVERSION_RECONCILED");
+          }
+          if (original.regularInvestPlanId) {
+            throw new Error("LIABILITY_CONVERSION_HAS_REGULAR_INVEST_PLAN");
+          }
+          if (
+            Math.abs(toNumber(original.interestAmount)) > 0.005 ||
+            Math.abs(toNumber(original.feeAmount)) > 0.005
+          ) {
+            throw new Error("LIABILITY_CONVERSION_HAS_SPLIT_INTEREST_OR_FEE");
+          }
+          const propertyLink = await tx.propertyTransaction.findFirst({
+            where: {
+              householdId,
+              cashEntryId: original.id,
+              deletedAt: null,
+            },
+            select: { id: true },
+          });
+          if (propertyLink) {
+            throw new Error("LIABILITY_CONVERSION_HAS_PROPERTY_LINK");
+          }
+          const businessLink = await tx.entryBusinessLink.findFirst({
+            where: {
+              householdId,
+              deletedAt: null,
+              OR: [
+                { cashEntryId: original.id },
+                { businessEntryId: original.id },
+              ],
+            },
+            select: { id: true },
+          });
+          if (businessLink) {
+            throw new Error("LIABILITY_CONVERSION_HAS_BUSINESS_LINK");
+          }
+        }
         affectedAccountIds.add(original.accountId);
         if (original.toAccountId) affectedAccountIds.add(original.toAccountId);
         if (cashAccount) affectedAccountIds.add(cashAccount.id);

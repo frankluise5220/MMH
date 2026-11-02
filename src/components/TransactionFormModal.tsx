@@ -1,7 +1,7 @@
 "use client";
 
 import { ArrowLeftRight, ArrowRight, RefreshCw } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
 import { CalcInput } from "./CalcInput";
 import { ClearableNoteField } from "./ClearableNoteField";
@@ -17,7 +17,7 @@ import { useAccountSSFilter } from "./accountSSFilter";
 import { isSettlementCounterpartyType, kindLabel } from "@/lib/account-kinds";
 import { restrictAccountsByType } from "@/lib/client/account-dropdown-filter";
 import { getCashTargetOperation, isAdvanceFundingAccount, isDepositAccount, isDepositPostingCategoryAllowed,  isIncomeExpensePostingOrDepositAccount, isLoanOrSettlementAccountKind, isTransferDropdownAccount } from "@/lib/account-kind-utils";
-import { buildAccountDisplayOption, buildGroupedAccountOptions, formatAccountHoverTitle } from "@/lib/account-display";
+import { buildAccountDisplayOption, buildGroupedAccountOptions, counterpartyQualifiedAccountName, formatAccountHoverTitle } from "@/lib/account-display";
 import { recordRecentAccounts, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
 import { useResetEntryModalReconciledReadOnlyOnClose } from "@/lib/client/entryModalLock";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
@@ -73,6 +73,8 @@ type AccountOption = {
   institutionId?: string | null;
   institutionType?: string | null;
   counterpartyId?: string | null;
+  /** 往来款/贷款账户挂的往来对象显示名（page.tsx 组装时带入，下拉标签靠它补「张三·欠款」）。 */
+  counterpartyName?: string | null;
   isSettlementAccount?: boolean | null;
   isConsumerLoan?: boolean | null;
   currency?: string | null;
@@ -212,10 +214,15 @@ function inferLiabilityTransferMode(
 ): LiabilityTransferMode | null {
   const source = sourceAccount as AccountOption | undefined;
   const target = targetAccount as AccountOption | undefined;
-  if (source?.kind === "loan") {
+  const isLiabilityAccount = (account: AccountOption | undefined): account is AccountOption =>
+    account?.kind === "loan" || account?.kind === "settlement" || account?.isSettlementAccount === true;
+  const sourceIsLiability = isLiabilityAccount(source);
+  const targetIsLiability = isLiabilityAccount(target);
+  if (sourceIsLiability === targetIsLiability) return null;
+  if (sourceIsLiability) {
     return source.liabilityDirection === "receivable" ? "collect_in" : "borrow_in";
   }
-  if (target?.kind === "loan") {
+  if (targetIsLiability) {
     return target.liabilityDirection === "receivable" ? "lend_out" : "repay_out";
   }
   return null;
@@ -296,6 +303,7 @@ function settingsAccountToOption(account: SettingsAccountRecord): AccountOption 
     kind: account.kind ?? null,
     investProductType: account.investProductType ?? null,
     liabilityDirection: account.liabilityDirection ?? null,
+    isSettlementAccount: account.isSettlementAccount ?? null,
     institutionId: account.institutionId ?? null,
     institutionType: account.Institution?.type ?? null,
     currency: account.currency ?? null,
@@ -341,6 +349,7 @@ type SettingsAccountRecord = {
   numberMasked?: string | null;
   investProductType?: string | null;
   liabilityDirection?: string | null;
+  isSettlementAccount?: boolean | null;
   currency?: string | null;
   billingDay?: number | null;
   Institution?: { name: string | null; shortName?: string | null; type?: string | null } | null;
@@ -437,6 +446,9 @@ export function TransactionFormModal({
   const [accountCreateTarget, setAccountCreateTarget] = useState<"account" | "from" | "to" | "advance">("account");
   const [tagList, setTagList] = useState(allTags ?? []);
   const [accountList, setAccountList] = useState(accounts);
+  // 本次窗口内新建的往来款账户：`accounts` props 要等下一次取数才包含它，先本地兜住，
+  // 否则刚建好的往来款账户在「往来款账户」下拉里看不到，必须退出重进才能选。
+  const [localAdvanceAccounts, setLocalAdvanceAccounts] = useState<AccountOption[]>([]);
   const [transferAccountList, setTransferAccountList] = useState(transferAccounts);
   const [localAccountSSOpts, setLocalAccountSSOpts] = useState(accountSSOptions);
   const [localTransferAccountSSOpts, setLocalTransferAccountSSOpts] = useState(transferAccountSSOptions);
@@ -873,6 +885,21 @@ export function TransactionFormModal({
   } = useAccountSSFilter(localFixedAssetAccountSSOpts, ownerFilter);
 
   const accountUsage = useAccountUsage();
+  // 往来款/贷款账户在下拉里要带往来对象名（与表格 listLabel 同口径）：SmartSelect
+  // 只按 label/subLabel/title 搜索，账户名不含对象名时搜「钱手」搜不到该账户。
+  // 注意：必须在第一个用到它的 useMemo（displayTransferOptions）**之前**定义 ——
+  // 放到后面会踩 const 的 TDZ，渲染时直接 ReferenceError。
+  const qualifyCounterpartyAccountLabel = useCallback(
+    (option: AccountOption, fallbackCounterpartyName?: string): AccountOption => {
+      if (option.kind !== "settlement" && option.kind !== "loan") return option;
+      const counterpartyName = (option.counterpartyName ?? "").trim() || (fallbackCounterpartyName ?? "").trim();
+      const label = (option.label ?? "").trim();
+      if (!counterpartyName || !label) return option;
+      const qualified = counterpartyQualifiedAccountName(label, { name: counterpartyName });
+      return qualified === label ? option : { ...option, label: qualified };
+    },
+    [],
+  );
   const displayTransferOptions = useMemo(() => {
     const source = (transferFiltered?.length ? transferFiltered : localTransferAccountSSOpts) ?? [];
     const filtered = source.filter((option) => !option.isHeader);
@@ -889,8 +916,10 @@ export function TransactionFormModal({
     for (const option of selectedOptions) {
       if (!merged.some((item) => item.id === option.id)) merged.push(option);
     }
-    return sortByAccountUsage(merged, accountUsage);
-  }, [accountUsage, fromAccountId, localTransferAccountSSOpts, stockCashAccountId, stockTransferMode, toAccountId, transferAccountList, transferFiltered, transferVisibleOptionIds]);
+    // 转账下拉同样按「对象名·账户名」显示往来款账户：否则搜「钱手」搜不到它的往来款。
+    const qualified = merged.map((option) => qualifyCounterpartyAccountLabel(option as AccountOption));
+    return sortByAccountUsage(qualified, accountUsage);
+  }, [accountUsage, fromAccountId, localTransferAccountSSOpts, stockCashAccountId, stockTransferMode, toAccountId, transferAccountList, transferFiltered, transferVisibleOptionIds, qualifyCounterpartyAccountLabel]);
 
   // Stock-to-cash transfer target: securities cash account of the current stock institution + cash accounts of the same owner.
   const stockTransferToOptions = useMemo(() => {
@@ -917,31 +946,55 @@ export function TransactionFormModal({
     // 存款账户（2026-09-18 用户口径）：也放行——分类在提交时校验白名单（利息收入/
     // 利息支出、手续费）。
     const filtered = base.filter((option) => option.isHeader || option.isGroup || isIncomeExpensePostingOrDepositAccount(option));
-    return sortByAccountUsage(filtered, accountUsage);
-  }, [accountSSOptionsFiltered, accountList, accountUsage, accountVisibleOptionIds, accountId]);
+    const qualified = filtered.map((option) => qualifyCounterpartyAccountLabel(option as AccountOption));
+    return sortByAccountUsage(qualified, accountUsage);
+  }, [accountSSOptionsFiltered, accountList, accountUsage, accountVisibleOptionIds, accountId, qualifyCounterpartyAccountLabel]);
   // 代付资金侧硬排除贷款/往来款，不受「账户下拉限制类型」开关影响。
   const advanceCashAccountOptions = useMemo(
     () => displayAccountOptions.filter((option) => option.isHeader || option.isGroup || isAdvanceFundingAccount(option)),
     [displayAccountOptions],
   );
+  // 当前往来对象的显示名：往来款账户的下拉标签要能带上它，否则账户名里不含
+  // 对象名（例如账户叫「欠款」）时，在搜索框里输入对象名搜不到这个账户。
+  const advanceCounterpartyName = useMemo(() => {
+    const id = counterpartyInstitutionId?.trim();
+    if (!id) return "";
+    const items = (localNestedFieldData ?? nestedFieldData)?.counterpartyId ?? [];
+    return items.find((item) => item.id === id)?.name?.trim() ?? "";
+  }, [counterpartyInstitutionId, localNestedFieldData, nestedFieldData]);
   const advanceAccountOptions = useMemo(() => {
-    if (txType !== "advance" || !counterpartyInstitutionId) return [];
+    if (txType !== "advance") return [];
     const seen = new Set<string>();
     const options: AccountOption[] = [];
+    // 名称里没有对象名时前置「对象名·」，与表格 listLabel 同口径：
+    // SmartSelect 的搜索只匹配 label/subLabel/title，不带对象名就搜不出来。
+    const qualify = (option: AccountOption): AccountOption =>
+      qualifyCounterpartyAccountLabel(option, advanceCounterpartyName);
+    // 本次窗口内新建的往来款账户排在最前：不依赖 accounts props 刷新，也不受
+    // 「账户下拉限制类型」过滤器影响；人员未回填时先放行，回填后再按对象过滤。
+    for (const option of localAdvanceAccounts) {
+      if (option.isHeader || option.isGroup) continue;
+      const counterpartyId = (option.counterpartyId ?? "").trim();
+      if (counterpartyInstitutionId && counterpartyId !== counterpartyInstitutionId) continue;
+      if (seen.has(option.id)) continue;
+      seen.add(option.id);
+      options.push(qualify(option));
+    }
+    if (!counterpartyInstitutionId) return options;
     for (const option of [...displayAccountOptions, ...accountList]) {
       if (option.isHeader || option.isGroup) continue;
       // 口径（2026-09-13）：代付的账户侧只能是往来款账户——挂往来对象的 kind=loan
       // 账户是贷款窗口建的贷款账户，不进代付账户下拉（服务端同样只认 settlement）。
       if (option.kind !== "settlement") continue;
       // SS hierarchy options are plain SmartSelectOption rows without counterpartyId.
-      const counterpartyId = (option as Partial<AccountOption>).counterpartyId ?? "";
+      const counterpartyId = ((option as Partial<AccountOption>).counterpartyId ?? "").trim();
       if (counterpartyId !== counterpartyInstitutionId) continue;
       if (seen.has(option.id)) continue;
       seen.add(option.id);
-      options.push(option);
+      options.push(qualify(option));
     }
     return options;
-  }, [txType, counterpartyInstitutionId, displayAccountOptions, accountList]);
+  }, [txType, counterpartyInstitutionId, advanceCounterpartyName, localAdvanceAccounts, displayAccountOptions, accountList, qualifyCounterpartyAccountLabel]);
   const advanceAccountPlaceholder = useMemo(() => {
     if (!counterpartyInstitutionId || advanceAccountOptions.some((option) => option.id === advanceAccountId)) {
       return t("txForm.selectPlaceholder");
@@ -2424,7 +2477,15 @@ export function TransactionFormModal({
             },
             { key: "investment", label: t("txForm.fundMetal"), disabled: !showInvestment },
             { key: "wealth", label: t("investment.product.wealth") },
-            { key: "bond", label: t("entry.kind.bond") },
+            {
+              key: "bond",
+              label: t("entry.kind.bond"),
+              children: [
+                { key: "bond", label: t("bondForm.title.create") },
+                { key: "bond-repo-lend", label: t("entry.kind.bondRepoLend") },
+                { key: "bond-repo-redeem", label: t("entry.kind.bondRepoRedeem") },
+              ],
+            },
             { key: "deposit-buy", label: t("txForm.depositIn") },
             { key: "insurance", label: t("account.kind.insurance") },
           ]}
@@ -3359,14 +3420,45 @@ export function TransactionFormModal({
           const groupName = extra?.groupName?.trim();
           const label = institutionLabel ? `${institutionLabel}·${name}` : name;
           const subLabel = kindLabel(kind);
-          const option = { id, label, subLabel, kind, currency: extra?.currency };
+          // 往来对象要跟着新建的账户一起进本地候选：下拉标签靠它补「钱手·往来款」，
+          // 否则刚建的往来款账户既搜不到对象名，也认不出归属。
+          const createdCounterpartyId = (extra?.counterpartyId ?? "").trim();
+          const createdCounterpartyName = (extra?.counterpartyName ?? "").trim();
+          const option = {
+            id,
+            label,
+            subLabel,
+            kind,
+            currency: extra?.currency,
+            counterpartyId: createdCounterpartyId,
+            counterpartyName: createdCounterpartyName,
+          };
           setAccountList(prev => [...prev, option]);
           setTransferAccountList(prev => [...prev, option]);
           setLocalAccountSSOpts(prev => appendAccountOptionWithGroup(prev, option, groupId, groupName));
           setLocalTransferAccountSSOpts(prev => appendAccountOptionWithGroup(prev, option, groupId, groupName));
           if (accountCreateTarget === "advance") {
-            // 下拉里新建的往来款账户：选项必须带 counterpartyId 才会进「往来款账户」候选
-            setAccountList(prev => [...prev, { ...option, counterpartyId: extra?.counterpartyId ?? counterpartyInstitutionId }]);
+            // 下拉里新建的往来款账户：本次窗口内先用本地列表兜住（等 accounts 刷新
+            // 太晚，用户会以为没建成）；同时把「在账户弹窗里嵌套新建的往来对象」
+            // 回填到外层，否则 advanceAccountOptions 拿不到对象 id，直接是空列表。
+            const ownerCounterpartyId = createdCounterpartyId || (counterpartyInstitutionId || "").trim();
+            setLocalAdvanceAccounts((prev) => [
+              ...prev.filter((item) => item.id !== id),
+              { ...option, counterpartyId: ownerCounterpartyId },
+            ]);
+            if (ownerCounterpartyId && ownerCounterpartyId !== counterpartyInstitutionId) {
+              const ownerName = createdCounterpartyName;
+              if (ownerName) {
+                setLocalNestedFieldData((prev) => {
+                  if (!prev) return prev;
+                  const items = prev.counterpartyId ?? [];
+                  if (items.some((item) => item.id === ownerCounterpartyId)) return prev;
+                  return { ...prev, counterpartyId: [...items, { id: ownerCounterpartyId, name: ownerName }] };
+                });
+              }
+              setCounterpartyInstitutionId(ownerCounterpartyId);
+            }
+            advanceAccountPinnedRef.current = true;
             setAdvanceAccountId(id);
           } else if (accountCreateTarget === "from") setFromAccountId(id);
           else if (accountCreateTarget === "to") setToAccountId(id);

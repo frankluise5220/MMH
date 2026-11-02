@@ -3,7 +3,7 @@ import { getHouseholdScope } from "@/lib/server/household-scope";
 import { formatDateUtc } from "@/lib/date-utils";
 import { MobileTransactions, type MobileTransactionRow } from "@/components/mobile/MobileTransactions";
 import { MobileTransactionForm } from "@/components/mobile/MobileTransactionForm";
-import { buildAccountDisplayOption, formatAccountTableLabel } from "@/lib/account-display";
+import { buildAccountDisplayOption, formatAccountTableLabel, accountRenderSettings } from "@/lib/account-display";
 import { getServerAccountLabelFields } from "@/lib/server/account-label-fields";
 import { getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
 import { getServerT } from "@/lib/server/i18n";
@@ -60,9 +60,9 @@ export default async function TransactionsPage() {
 
   const accountDisplayById = new Map(
     accounts.map((account) => {
-      const option = buildAccountDisplayOption({ ...account, kind: String(account.kind) }, undefined, { fields: accountLabelFields, baseCurrency });
+      const option = buildAccountDisplayOption({ ...account, kind: String(account.kind) }, undefined, accountRenderSettings(accountLabelFields, baseCurrency));
       return [account.id, {
-        label: formatAccountTableLabel(option, "", { fields: accountLabelFields, baseCurrency }),
+        label: formatAccountTableLabel(option, "", accountRenderSettings(accountLabelFields, baseCurrency)),
         // 行内看不到的机构/卡号/非本位币，留给 hover。
         title: option.tableHoverTitle,
       }] as const;

@@ -3,7 +3,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { getApiHouseholdScope } from "@/lib/server/api-auth";
 import { getHouseholdTimeZone } from "@/lib/server/household-preferences";
+import { getServerT } from "@/lib/server/i18n";
 import { loadWealthStatisticSourceEntries } from "@/lib/server/investment-statistic-sources";
+import { buildStatisticsCurrencyConverter } from "@/lib/server/statistics-currency";
 import { TransactionType } from "@prisma/client";
 import { toNumber, businessTodayUtcStart } from "@/lib/date-utils";
 import { getReportEntryDate, isReportEntryDateWithin } from "@/lib/report-entry-date";
@@ -80,6 +82,12 @@ export async function GET(req: NextRequest) {
 
     await normalizeDefaultCategoryHierarchyForHousehold(prisma, householdId);
 
+    // 与统计页共用同一份「无标签」文案：这个接口经 MCP 暴露给外接 agent，
+    // 省略该参数会落到 addStatisticTagBucket 的中文默认值，英文/日文用户
+    // 拿到的标签分布里出现中文桶（同页面对同一数据给出两种语言）。
+    const t = await getServerT();
+    const untaggedLabel = t("stats.untagged");
+
     const [allAccounts, accountKindRows, categories] = await Promise.all([
       prisma.account.findMany({
         where: { ...hidFilter, isActive: true },
@@ -130,6 +138,9 @@ export async function GET(req: NextRequest) {
         date: true,
         postedAt: true,
         fundArrivalDate: true,
+        // 多币种折算的原始币种：与统计页共用 buildStatisticsCurrencyConverter，
+        // 缺这一列时 API 会把外币流水当成本位币直接相加。
+        currency: true,
         type: true,
         amount: true,
         source: true,
@@ -189,6 +200,14 @@ export async function GET(req: NextRequest) {
     const scopeAccountIds = selectedAccountIds ?? nonInvestAccountIds;
     const resolveCategory = createStatisticCategoryResolver(categories);
 
+    // 多币种统一折成本位币，与统计页同一入口。缺汇率的流水不进合计，
+    // 通过 missingFxCurrencies 告知调用方，而不是把外币金额当本位币相加。
+    const fx = await buildStatisticsCurrencyConverter(householdId, [
+      ...filteredEntries,
+      ...wealthStatisticEntries,
+      ...allAccounts.map((account) => ({ accountId: account.id })),
+    ]);
+
     for (const e of filteredEntries) {
       // 生效日（资金流入腿取到账日）落在年外时跳过：上面的 OR 只是放宽边界。
       const d = getReportEntryDate(e);
@@ -196,7 +215,8 @@ export async function GET(req: NextRequest) {
       const m = String(d.getUTCMonth() + 1).padStart(2, "0");
       if (!monthMap.has(m)) monthMap.set(m, { income: 0, expense: 0, investPnL: 0 });
       const row = monthMap.get(m)!;
-      const amount = toNumber(e.amount);
+      const amount = fx.convert(e, toNumber(e.amount));
+      if (amount == null) continue;
 
       // 账户现状 kind：历史 liability_* source 是否仍按负债口径统计，以账户为准。
       const liabilityKindEntry = {
@@ -216,13 +236,13 @@ export async function GET(req: NextRequest) {
           : resolveCategory({ type: "income", categoryId: e.categoryId, categoryName: e.categoryName });
         addStatisticCategoryBucket(incomeByCat, incomeCategory, effectiveAmount);
         dist.add("income", e, effectiveAmount);
-        addStatisticTagBucket(incomeByTag, e.EntryTag, effectiveAmount);
+        addStatisticTagBucket(incomeByTag, e.EntryTag, effectiveAmount, untaggedLabel);
       } else if (e.type === TransactionType.expense) {
         const effectiveAmount = getIncomeExpenseStatisticAmount(e.type, amount);
         row.expense += effectiveAmount;
         addStatisticCategoryBucket(expenseByCat, resolveCategory({ type: "expense", categoryId: e.categoryId, categoryName: e.categoryName }), effectiveAmount);
         dist.add("expense", e, effectiveAmount);
-        addStatisticTagBucket(expenseByTag, e.EntryTag, effectiveAmount);
+        addStatisticTagBucket(expenseByTag, e.EntryTag, effectiveAmount, untaggedLabel);
       } else if (e.type === TransactionType.transfer) {
         if (isCreditCardRepaymentTransfer({
           type: e.type,
@@ -242,14 +262,14 @@ export async function GET(req: NextRequest) {
             row.income += Math.abs(amount);
             addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", categoryId: e.categoryId, categoryName: e.categoryName }), Math.abs(amount));
             dist.add("income", e, Math.abs(amount));
-            addStatisticTagBucket(incomeByTag, e.EntryTag, Math.abs(amount));
+            addStatisticTagBucket(incomeByTag, e.EntryTag, Math.abs(amount), untaggedLabel);
           }
         } else if (isFromSelf && !isToSelf) {
           if (!isLiabilityPrincipal) {
             row.expense += Math.abs(amount);
             addStatisticCategoryBucket(expenseByCat, resolveCategory({ type: "expense", categoryId: e.categoryId, categoryName: e.categoryName }), Math.abs(amount));
             dist.add("expense", e, Math.abs(amount));
-            addStatisticTagBucket(expenseByTag, e.EntryTag, Math.abs(amount));
+            addStatisticTagBucket(expenseByTag, e.EntryTag, Math.abs(amount), untaggedLabel);
           }
         }
         for (const item of getBusinessResultStatisticItems(liabilityKindEntry)) {
@@ -257,12 +277,12 @@ export async function GET(req: NextRequest) {
             row.income += item.amount;
             addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", candidates: item.categoryCandidates, fallbackName: item.categoryName }), item.amount);
             dist.add("income", e, item.amount);
-            addStatisticTagBucket(incomeByTag, e.EntryTag, item.amount);
+            addStatisticTagBucket(incomeByTag, e.EntryTag, item.amount, untaggedLabel);
           } else {
             row.expense += item.amount;
             addStatisticCategoryBucket(expenseByCat, resolveCategory({ type: "expense", candidates: item.categoryCandidates, fallbackName: item.categoryName }), item.amount);
             dist.add("expense", e, item.amount);
-            addStatisticTagBucket(expenseByTag, e.EntryTag, item.amount);
+            addStatisticTagBucket(expenseByTag, e.EntryTag, item.amount, untaggedLabel);
           }
         }
       } else if (e.type === TransactionType.investment) {
@@ -273,16 +293,16 @@ export async function GET(req: NextRequest) {
             row.income += effectiveAmount;
             addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", fallbackName: SYSTEM_INSURANCE_RETURN_CATEGORY }), effectiveAmount);
             dist.add("income", e, effectiveAmount);
-            addStatisticTagBucket(incomeByTag, e.EntryTag, effectiveAmount);
+            addStatisticTagBucket(incomeByTag, e.EntryTag, effectiveAmount, untaggedLabel);
           } else {
             row.expense += effectiveAmount;
             addStatisticCategoryBucket(expenseByCat, resolveCategory({ type: "expense", fallbackName: SYSTEM_INSURANCE_EXPENSE_CATEGORY }), effectiveAmount);
             dist.add("expense", e, effectiveAmount);
-            addStatisticTagBucket(expenseByTag, e.EntryTag, effectiveAmount);
+            addStatisticTagBucket(expenseByTag, e.EntryTag, effectiveAmount, untaggedLabel);
           }
           continue;
         }
-        for (const item of getInvestmentStatisticItems(e)) {
+        for (const item of fx.convertItems(e, getInvestmentStatisticItems(e))) {
           const signedProfit = item.type === "income" ? item.amount : -item.amount;
           if (item.type === "income") {
             addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", candidates: item.categoryCandidates, fallbackName: item.categoryName }), item.amount);
@@ -293,7 +313,7 @@ export async function GET(req: NextRequest) {
           }
           if (item.productKind === "deposit") continue;
           row.investPnL += signedProfit;
-          const costBase = Math.abs(amount);
+          const costBase = Math.abs(amount ?? 0);
           const rate = costBase > 0 ? signedProfit / costBase : 0;
           pnlItems.push({
             id: e.id, date: d.toISOString().slice(0, 10), fundCode: e.fundCode ?? "", fundName: e.fundName ?? "",
@@ -308,9 +328,10 @@ export async function GET(req: NextRequest) {
       const m = String(d.getUTCMonth() + 1).padStart(2, "0");
       if (!monthMap.has(m)) monthMap.set(m, { income: 0, expense: 0, investPnL: 0 });
       const row = monthMap.get(m)!;
-      const amount = toNumber(e.amount);
+      // 利润率的分母必须与分子同为折算后金额，否则外币理财的收益率会按原币成本算。
+      const amount = fx.convert(e, toNumber(e.amount));
 
-      for (const item of getInvestmentStatisticItems(e)) {
+      for (const item of fx.convertItems(e, getInvestmentStatisticItems(e))) {
         const signedProfit = item.type === "income" ? item.amount : -item.amount;
         if (item.type === "income") {
           addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", candidates: item.categoryCandidates, fallbackName: item.categoryName }), item.amount);
@@ -321,7 +342,7 @@ export async function GET(req: NextRequest) {
         }
         if (item.productKind === "deposit") continue;
         row.investPnL += signedProfit;
-        const costBase = Math.abs(amount);
+        const costBase = Math.abs(amount ?? 0);
         const rate = costBase > 0 ? signedProfit / costBase : 0;
         pnlItems.push({
           id: e.id,

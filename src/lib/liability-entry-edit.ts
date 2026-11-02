@@ -1,5 +1,11 @@
 import { toNumber } from "@/lib/date-utils";
 import { DEFAULT_LOAN_PREPAY_STRATEGY, parseLoanPrepayStrategy } from "@/lib/loan-prepay-strategy";
+import {
+  inferLiabilityActivityMode,
+  isLiabilityActivityEntry as isCanonicalLiabilityActivityEntry,
+  type LiabilityAccountFact,
+  type LiabilityActivityMode,
+} from "@/lib/liability";
 
 /**
  * Shared liability activity detection and edit-event construction.
@@ -10,19 +16,17 @@ import { DEFAULT_LOAN_PREPAY_STRATEGY, parseLoanPrepayStrategy } from "@/lib/loa
  * instead of the generic expense/income form.
  */
 
-export type LiabilityMode = "borrow_in" | "repay_out" | "prepay_out" | "lend_out" | "collect_in";
+export type LiabilityMode = LiabilityActivityMode;
 
-type LiabilityActivityAccountOption = {
+type LiabilityActivityAccountOption = LiabilityAccountFact & {
   id: string;
-  kind?: string | null;
-  liabilityDirection?: string | null;
-  isSettlementAccount?: boolean | null;
 };
 
 type LiabilityActivityEntryLike = {
   id: string;
   type: string;
   source: string | null;
+  entryKind?: "transfer" | "liability" | null;
   note?: string | null;
   accountId?: string | null;
   accountKind?: string | null;
@@ -36,6 +40,7 @@ type LiabilityActivityEntryLike = {
 
 type LiabilityActivityEditFacts = {
   date: string;
+  postedAt?: string | null;
   amount: number;
   categoryId?: string | null;
   principalAmount?: number | null;
@@ -43,59 +48,24 @@ type LiabilityActivityEditFacts = {
   feeAmount?: number | null;
   realizedProfit?: number | null;
   toNote?: string | null;
+  entryTags?: Array<{
+    tagId?: string | null;
+    Tag?: { name?: string | null; color?: string | null } | null;
+  }>;
 };
-
-function liabilityModeFromSource(source: string, note?: string | null): LiabilityMode | null {
-  if (source === "liability_borrow_in") return "borrow_in";
-  if (source === "liability_financed_purchase") return "borrow_in";
-  if (source === "liability_lend_out") return "lend_out";
-  if (source === "liability_repay_out") return "repay_out";
-  if (source === "liability_prepay_out") return "prepay_out";
-  if (source === "liability_collect_in") return "collect_in";
-  if (source === "scheduled_task" && String(note ?? "").includes("还贷款")) return "repay_out";
-  return null;
-}
-
-/** 账户现状是否仍是负债账户（往来款 settlement / 贷款 loan）。 */
-function isLiabilityAccountSide(kind?: string | null, isSettlementAccount?: boolean | null) {
-  return isSettlementAccount === true || kind === "settlement" || kind === "loan";
-}
 
 export function inferLiabilityMode(
   entry: LiabilityActivityEntryLike,
   accountById?: Map<string, LiabilityActivityAccountOption>,
 ): LiabilityMode | null {
-  if (entry.type !== "transfer") return null;
-  if (entry.source === "advance") return null;
-  const sourceAccount = accountById?.get(entry.accountId ?? "");
-  const targetAccount = accountById?.get(entry.toAccountId ?? "");
-  const sourceKind = entry.accountKind ?? sourceAccount?.kind ?? null;
-  const targetKind = entry.toAccountKind ?? targetAccount?.kind ?? null;
-  const sourceMode = liabilityModeFromSource(String(entry.source ?? ""), entry.note);
-  if (sourceMode) {
-    // `source` 只记录写入时的业务语义；账户被改成普通资金账户后，历史 source 不应再让该行
-    // 按负债口径展示/编辑（分类列、类型列、编辑入口都走这里）。账户信息缺失时维持原行为。
-    const hasAccountInfo = Boolean(
-      sourceKind || targetKind || entry.accountIsSettlementAccount != null || entry.toAccountIsSettlementAccount != null,
-    );
-    if (!hasAccountInfo) return sourceMode;
-    const involvesLiabilityAccount = isLiabilityAccountSide(sourceKind, entry.accountIsSettlementAccount)
-      || isLiabilityAccountSide(targetKind, entry.toAccountIsSettlementAccount);
-    if (involvesLiabilityAccount) return sourceMode;
-  }
-  const sourceDirection = entry.accountLiabilityDirection ?? sourceAccount?.liabilityDirection ?? null;
-  const targetDirection = entry.toAccountLiabilityDirection ?? targetAccount?.liabilityDirection ?? null;
-  if (sourceKind === "loan") return sourceDirection === "receivable" ? "collect_in" : "borrow_in";
-  if (targetKind === "loan") return targetDirection === "receivable" ? "lend_out" : "repay_out";
-  return null;
+  return inferLiabilityActivityMode(entry, accountById);
 }
 
 export function isLiabilityActivityEntry(
   entry: LiabilityActivityEntryLike,
   accountById?: Map<string, LiabilityActivityAccountOption>,
 ) {
-  if (entry.type !== "transfer") return false;
-  return inferLiabilityMode(entry, accountById) != null;
+  return isCanonicalLiabilityActivityEntry(entry, accountById);
 }
 
 /**
@@ -112,11 +82,23 @@ export function buildLiabilityActivityEditEvent(
 ): { name: string; detail: Record<string, unknown> } | null {
   const mode = inferLiabilityMode(entry, accountById);
   if (!mode) return null;
-  const principalAmount = entry.principalAmount == null
-    ? Math.abs(toNumber(entry.amount))
-    : toNumber(entry.principalAmount);
-  const interestAmount = Math.abs(toNumber(entry.realizedProfit ?? entry.interestAmount ?? 0));
+  const principalAmount = Math.abs(
+    entry.principalAmount == null ? toNumber(entry.amount) : toNumber(entry.principalAmount),
+  );
+  const interestAmount = Math.abs(toNumber(entry.interestAmount ?? entry.realizedProfit ?? 0));
   const feeAmount = Math.abs(toNumber(entry.feeAmount ?? 0));
+  const tagIds = Array.from(new Set(
+    (entry.entryTags ?? [])
+      .map((item) => item.tagId ?? "")
+      .filter(Boolean),
+  ));
+  const tags = (entry.entryTags ?? [])
+    .filter((item) => item.tagId)
+    .map((item) => ({
+      id: item.tagId,
+      name: item.Tag?.name ?? "",
+      color: item.Tag?.color ?? null,
+    }));
   const isLiabilityAccountFromSide = mode === "borrow_in" || mode === "collect_in";
   const liabilityAccountId = (isLiabilityAccountFromSide ? entry.accountId : entry.toAccountId) ?? "";
   const cashAccountId = (isLiabilityAccountFromSide ? entry.toAccountId : entry.accountId) ?? "";
@@ -130,18 +112,28 @@ export function buildLiabilityActivityEditEvent(
   return {
     name: dialogType === "loan" ? "mmh:loan:create" : "mmh:settlement:create",
     detail: {
+      requestId: `edit-${entry.id}-${Date.now()}`,
       editEntryId: entry.id,
+      liabilityConversionEntryId: entry.id,
+      entryKind: "liability",
       mode,
       dialogType,
       defaultLiabilityAccountId: liabilityAccountId,
       defaultCashAccountId: cashAccountId,
+      defaultFromAccountId: entry.accountId ?? "",
+      defaultToAccountId: entry.toAccountId ?? "",
+      defaultAmount: Math.abs(toNumber(entry.amount)),
       defaultLoanFundingMode: entry.source === "liability_financed_purchase" ? "financed_purchase" : "cash_disbursement",
       defaultDate: entry.date,
+      postedAt: entry.postedAt ?? entry.date,
       defaultPrincipal: principalAmount,
       defaultInterest: interestAmount,
       defaultPenalty: feeAmount,
       defaultLoanPurposeCategoryId: mode === "borrow_in" ? (entry.categoryId ?? null) : null,
       defaultNote: entry.note ?? "",
+      source: entry.source ?? null,
+      tagIds,
+      tags,
       defaultPrepayStrategy: entry.source === "liability_prepay_out"
         ? parseLoanPrepayStrategy(entry.toNote) ?? DEFAULT_LOAN_PREPAY_STRATEGY
         : undefined,
