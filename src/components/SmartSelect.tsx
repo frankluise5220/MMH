@@ -115,6 +115,8 @@ type SmartSelectSharedBehavior = {
   /** 下拉底部的相关动作（见 SmartSelectFooterAction）。 */
   footerAction?: SmartSelectFooterAction;
   minDropdownWidth?: number;
+  /** Upper bound for content-sized dropdowns. Viewport constraints still win. */
+  maxDropdownWidth?: number;
   /** Expand the dropdown to the smallest width that fits its option labels. */
   fitContent?: boolean;
   dropdownMaxHeight?: number;
@@ -423,6 +425,7 @@ function normalizeSingleBehavior(props: SingleModeProps, options: SmartSelectOpt
     cycleAction,
     footerAction: behavior?.footerAction,
     minDropdownWidth: behavior?.minDropdownWidth,
+    maxDropdownWidth: behavior?.maxDropdownWidth,
     fitContent: behavior?.fitContent ?? false,
     dropdownMaxHeight: behavior?.dropdownMaxHeight,
     density: behavior?.density ?? "regular",
@@ -462,6 +465,7 @@ function normalizeMultiBehavior(props: MultiModeProps, options: SmartSelectOptio
     cycleAction: behavior?.cycleAction,
     footerAction: behavior?.footerAction,
     minDropdownWidth: behavior?.minDropdownWidth,
+    maxDropdownWidth: behavior?.maxDropdownWidth,
     fitContent: behavior?.fitContent ?? false,
     dropdownMaxHeight: behavior?.dropdownMaxHeight,
     density: behavior?.density ?? "regular",
@@ -516,6 +520,7 @@ export function SmartSelect(props: SmartSelectProps) {
     cycleAction,
     footerAction,
     minDropdownWidth,
+    maxDropdownWidth,
     fitContent,
     dropdownMaxHeight,
     density,
@@ -659,6 +664,7 @@ export function SmartSelect(props: SmartSelectProps) {
     const boundaryRight = (boundaryRect?.right ?? window.innerWidth) - boundaryPadding;
     const boundaryBottom = (boundaryRect?.bottom ?? window.innerHeight) - boundaryPadding;
     const minWidth = minDropdownWidth && minDropdownWidth > 0 ? minDropdownWidth : 0;
+    const maxWidth = maxDropdownWidth && maxDropdownWidth > 0 ? maxDropdownWidth : Number.POSITIVE_INFINITY;
     const availableWidth = Math.max(120, boundaryRight - boundaryLeft);
     let contentWidth = 0;
     if (fitContent) {
@@ -680,7 +686,7 @@ export function SmartSelect(props: SmartSelectProps) {
       }
     }
     const requiredWidth = Math.max(rect.width, minWidth, contentWidth);
-    const width = Math.min(requiredWidth, availableWidth);
+    const width = Math.min(requiredWidth, availableWidth, maxWidth);
     const left = Math.min(Math.max(boundaryLeft, rect.left), Math.max(boundaryLeft, boundaryRight - width));
     const estimatedHeight = (searchable ? headerHeight : 0)
       + ((isSingleCreateButton || isMultiInlineCreate) ? headerHeight : 0)
@@ -700,7 +706,7 @@ export function SmartSelect(props: SmartSelectProps) {
     const rawTop = openAbove ? rect.top - maxHeight - 4 : rect.bottom + 4;
     const top = Math.min(Math.max(boundaryTop, rawTop), Math.max(boundaryTop, boundaryBottom - maxHeight));
     setDropdownPos({ top, left, width, minWidth: width, maxHeight });
-  }, [dense, effectiveOptions, fitContent, footerActionHeight, headerHeight, isMultiInlineCreate, isSingleCreateButton, minDropdownWidth, quickPickHeight, resolvedDropdownMaxHeight, rowHeight, search, searchable, singleGridColumns, visible.length]);
+  }, [dense, effectiveOptions, fitContent, footerActionHeight, headerHeight, isMultiInlineCreate, isSingleCreateButton, maxDropdownWidth, minDropdownWidth, quickPickHeight, resolvedDropdownMaxHeight, rowHeight, search, searchable, singleGridColumns, visible.length]);
 
   const openDropdown = useCallback((preferredIndex?: "first" | "last") => {
     const nextCollapsed = initialCollapsedGroups(
@@ -1354,7 +1360,7 @@ export function SmartSelect(props: SmartSelectProps) {
             <div data-smart-select-quick-picks="true" className="space-y-1 border-b border-slate-200/70 px-2 py-1.5">
               {quickPickGroups.map((group) => (
                 <div key={group.key} data-quick-pick-group={group.key} className="flex min-w-0 items-start gap-1.5">
-                  <span className="w-[3.25rem] shrink-0 truncate pt-0.5 text-[10px] leading-4 text-slate-400" title={group.label}>
+                  <span className="min-w-[3.25rem] shrink-0 whitespace-nowrap pt-0.5 text-[10px] leading-4 text-slate-400" title={group.label}>
                     {group.label}
                   </span>
                   <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1">

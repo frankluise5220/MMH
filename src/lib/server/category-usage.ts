@@ -1,3 +1,4 @@
+import { unstable_cache } from "next/cache";
 import { prisma } from "@/lib/db/prisma";
 
 /**
@@ -24,7 +25,7 @@ type CategoryUsageRow = {
   lastUsedAt: number;
 };
 
-export async function loadCategoryUsageStats(hidFilter: { householdId: string }): Promise<CategoryUsageStats> {
+async function _loadCategoryUsageStats(hidFilter: { householdId: string }): Promise<CategoryUsageStats> {
   const rows = await prisma.txRecord.groupBy({
     by: ["categoryId"],
     where: { ...hidFilter, categoryId: { not: null }, deletedAt: null },
@@ -54,3 +55,13 @@ export async function loadCategoryUsageStats(hidFilter: { householdId: string })
 
   return { recent, frequent };
 }
+
+/** Cross-request cache; invalidated after transaction or category changes. */
+export const loadCategoryUsageStats = unstable_cache(
+  _loadCategoryUsageStats,
+  ["category-usage", "2026-11-02-v1"],
+  {
+    revalidate: false,
+    tags: ["category-usage"],
+  },
+);

@@ -12,9 +12,16 @@ export type CategoryUsageStats = {
 };
 
 const EMPTY_USAGE: CategoryUsageStats = { recent: [], frequent: [] };
+const HOUSEHOLD_COOKIE = "householdId";
 
-let cachedUsage: CategoryUsageStats | null = null;
-let inflight: Promise<CategoryUsageStats> | null = null;
+const cachedUsage = new Map<string, CategoryUsageStats>();
+const inflight = new Map<string, Promise<CategoryUsageStats>>();
+
+function readHouseholdCacheKey() {
+  if (typeof document === "undefined") return "";
+  const match = document.cookie.match(new RegExp(`(?:^|; )${HOUSEHOLD_COOKIE}=([^;]*)`));
+  return match ? decodeURIComponent(match[1]) : "";
+}
 
 function normalizeIds(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
@@ -22,46 +29,60 @@ function normalizeIds(raw: unknown): string[] {
 }
 
 /**
- * 读取分类快捷选择数据（模块级缓存 + 并发去重）。
+ * 读取分类快捷选择数据（按账簿缓存 + 并发去重）。
  * 记账成功后页面会派发 FINANCE_DATA_CHANGED_EVENT，hook 会自动强制刷新。
  */
 export function fetchCategoryUsage(force = false): Promise<CategoryUsageStats> {
-  if (!force && cachedUsage) return Promise.resolve(cachedUsage);
-  if (!force && inflight) return inflight;
+  const householdId = readHouseholdCacheKey();
+  const cached = cachedUsage.get(householdId);
+  const existing = inflight.get(householdId);
+  if (existing) return existing;
+  if (!force && cached) return Promise.resolve(cached);
   const request = (async () => {
     try {
       const response = await fetch("/api/v1/category/usage", { cache: "no-store" });
-      if (!response.ok) throw new Error(String(response.status));
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const payload = (await response.json()) as { usage?: { recent?: unknown; frequent?: unknown } };
       const next: CategoryUsageStats = {
         recent: normalizeIds(payload.usage?.recent),
         frequent: normalizeIds(payload.usage?.frequent),
       };
-      cachedUsage = next;
+      cachedUsage.set(householdId, next);
       return next;
-    } catch {
-      return cachedUsage ?? EMPTY_USAGE;
+    } catch (error) {
+      console.warn("Failed to load category usage", {
+        householdId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return cachedUsage.get(householdId) ?? EMPTY_USAGE;
     } finally {
-      inflight = null;
+      inflight.delete(householdId);
     }
   })();
-  inflight = request;
+  inflight.set(householdId, request);
   return request;
 }
 
-/** `enabled` 为 false（表单未打开）时不发请求。 */
+/**
+ * 表单组件挂载后立即预取；`enabled` 只控制后续记账变更时是否重新拉取。
+ */
 export function useCategoryUsage(enabled: boolean): CategoryUsageStats {
-  const [usage, setUsage] = useState<CategoryUsageStats>(() => cachedUsage ?? EMPTY_USAGE);
+  const [usage, setUsage] = useState<CategoryUsageStats>(() => cachedUsage.get(readHouseholdCacheKey()) ?? EMPTY_USAGE);
 
   useEffect(() => {
-    if (!enabled) return;
     let alive = true;
     const load = (force: boolean) => {
       void fetchCategoryUsage(force).then((next) => {
-        if (alive) setUsage(next);
+        if (alive && readHouseholdCacheKey() === householdId) setUsage(next);
       });
     };
+    const householdId = readHouseholdCacheKey();
     load(false);
+    if (!enabled) {
+      return () => {
+        alive = false;
+      };
+    }
     const handleChange = () => load(true);
     window.addEventListener(FINANCE_DATA_CHANGED_EVENT, handleChange);
     return () => {

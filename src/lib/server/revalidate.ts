@@ -19,6 +19,7 @@ type RevalidateOptions = {
 export function revalidateAfterTxChange(options?: RevalidateOptions) {
   revalidateTag("common-data", "max");
   revalidateTag("entries", "max");
+  revalidateTag("category-usage", "max");
   if (!options?.skipHomePath) revalidatePath("/");
   revalidatePath("/overview");
   revalidatePath("/accounts");
@@ -65,6 +66,7 @@ export function revalidateAfterFundShellChange() {
 export function revalidateAfterSettingsChange() {
   revalidateTag("common-data", "max");
   revalidateTag("invest-balances", "max");
+  revalidateTag("category-usage", "max");
   revalidatePath("/");
   revalidatePath("/accounts");
   revalidatePath("/settings/accounts");
