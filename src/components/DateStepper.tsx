@@ -21,11 +21,12 @@ function addDays(value: string, delta: number) {
   return `${nextYear}-${nextMonth}-${nextDay}`;
 }
 
-export function DateStepper({ value, onChange, onBlur, onKeyDown, min = "1900-01-01", max = "2999-12-31", className, disabled, name, autoFocus, compact = false }: {
+export function DateStepper({ value, onChange, onBlur, onKeyDown, onPickerDismiss, min = "1900-01-01", max = "2999-12-31", className, disabled, name, autoFocus, compact = false }: {
   value: string;
   onChange: (v: string) => void;
   onBlur?: () => void;
   onKeyDown?: (event: KeyboardEvent<HTMLInputElement>) => void;
+  onPickerDismiss?: (value: string) => void;
   min?: string;
   max?: string;
   className?: string;
@@ -48,6 +49,8 @@ export function DateStepper({ value, onChange, onBlur, onKeyDown, min = "1900-01
   const pickerOpenRef = useRef(false);
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+  const onPickerDismissRef = useRef(onPickerDismiss);
+  onPickerDismissRef.current = onPickerDismiss;
   const valueRef = useRef(value);
   valueRef.current = value;
   const { t } = useI18n();
@@ -69,12 +72,14 @@ export function DateStepper({ value, onChange, onBlur, onKeyDown, min = "1900-01
   };
 
   const closePickerWithoutCommit = (input: HTMLInputElement) => {
+    const wasOpen = pickerOpenRef.current;
     pickerOpenRef.current = false;
     setPickerOpen(false);
     setDraft(null);
     stopSuppressingPickerSideEffect();
     revertInputToParentValue(input);
     armIgnorePickerCommit();
+    if (wasOpen) onPickerDismissRef.current?.(valueRef.current);
   };
 
   const armIgnorePickerCommit = () => {

@@ -695,6 +695,7 @@ export function DetailViewClient({
   enableAccountNavigation = false,
   focusEntryId,
   scrollToRowKey,
+  scrollToRowRequestId,
   reorderAccountIds,
   sortable = true,
   onDisplayRowsChange,
@@ -742,6 +743,7 @@ export function DetailViewClient({
   enableAccountNavigation?: boolean;
   focusEntryId?: string;
   scrollToRowKey?: string | null;
+  scrollToRowRequestId?: number;
   reorderAccountIds?: string[];
   sortable?: boolean;
   onDisplayRowsChange?: (rows: DetailEntry[]) => void;
@@ -2036,6 +2038,7 @@ export function DetailViewClient({
       onRowsFitChange={onRowsFitChange}
       onPageStep={onPageStep}
       scrollToRowKey={scrollToRowKey}
+      scrollToRowRequestId={scrollToRowRequestId}
     />
     </div>
     <EntryAttachmentWindow

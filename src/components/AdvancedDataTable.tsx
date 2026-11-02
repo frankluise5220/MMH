@@ -770,6 +770,8 @@ type AdvancedDataTableProps<T> = {
   resetKey?: string;
   resetDisplayStateOnMount?: boolean;
   scrollToRowKey?: string | null;
+  /** Change this request id to scroll to the same row key again. */
+  scrollToRowRequestId?: number;
   /**
    * 键盘 PageUp / PageDown 的翻页入口：页码由调用方自己管（如明细页，页数据是
    * 调用方切好/取好再传进来的）时提供它。返回 true 表示这一下已翻页。
@@ -1022,6 +1024,7 @@ export function AdvancedDataTable<T>({
   resetKey,
   resetDisplayStateOnMount = false,
   scrollToRowKey,
+  scrollToRowRequestId,
   onPageStep,
   onRowsFitChange,
   showDateRangeFilter = false,
@@ -1952,17 +1955,18 @@ export function AdvancedDataTable<T>({
     ? Math.max(0, rowVirtualizer.getTotalSize() - (virtualRows[virtualRows.length - 1]?.end ?? 0))
     : 0;
 
-  const scrolledAnchorKeyRef = useRef<string | null>(null);
+  const scrollAnchorRequest = scrollToRowKey ? `${scrollToRowKey}:${scrollToRowRequestId ?? 0}` : null;
+  const scrolledAnchorRequestRef = useRef<string | null>(null);
   useLayoutEffect(() => {
     if (!scrollToRowKey) {
-      scrolledAnchorKeyRef.current = null;
+      scrolledAnchorRequestRef.current = null;
       return;
     }
-    // Scroll once per anchor key; later row-data refreshes must not yank the viewport back.
-    if (scrolledAnchorKeyRef.current === scrollToRowKey) return;
+    // Scroll once per request; later row-data refreshes must not yank the viewport back.
+    if (scrolledAnchorRequestRef.current === scrollAnchorRequest) return;
     const targetIndex = displayRowItems.findIndex((item) => item.key === scrollToRowKey);
     if (targetIndex < 0) return;
-    scrolledAnchorKeyRef.current = scrollToRowKey;
+    scrolledAnchorRequestRef.current = scrollAnchorRequest;
     const viewport = viewportRef.current;
     if (shouldVirtualizeRows) {
       rowVirtualizer.scrollToIndex(targetIndex, { align: "center" });
@@ -1975,7 +1979,7 @@ export function AdvancedDataTable<T>({
     }
     const target = viewport?.querySelector<HTMLElement>(`[data-advanced-row-key="${CSS.escape(scrollToRowKey)}"]`);
     if (viewport && target) scrollViewportToRowCenter(viewport, target);
-  }, [displayRowItems, rowVirtualizer, scrollToRowKey, shouldVirtualizeRows]);
+  }, [displayRowItems, rowVirtualizer, scrollAnchorRequest, scrollToRowKey, shouldVirtualizeRows]);
 
   /** 活动行在**当前显示行**里的下标；行被筛选/翻页挤掉时回落成 -1（没有活动行）。 */
   const activeRowIndex = useMemo(

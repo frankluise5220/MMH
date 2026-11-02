@@ -1263,7 +1263,12 @@ export function BasicDetailPanel({
   const locateDateSeqRef = useRef(0);
   const pendingCenterDateRef = useRef<string | null>(null);
   const [isLocatingDate, setIsLocatingDate] = useState(false);
-  const [locateScrollKey, setLocateScrollKey] = useState<string | null>(null);
+  const [locateScrollRequest, setLocateScrollRequest] = useState<{ key: string; id: number } | null>(null);
+  const locateScrollRequestIdRef = useRef(0);
+  const requestLocateScroll = useCallback((key: string) => {
+    locateScrollRequestIdRef.current += 1;
+    setLocateScrollRequest({ key, id: locateScrollRequestIdRef.current });
+  }, []);
 
   const readCenteredDetailDate = () => {
     const rows = displayRowsRef.current;
@@ -1300,9 +1305,8 @@ export function BasicDetailPanel({
     pendingCenterDateRef.current = null;
     const target = localEntries[index];
     if (!target) return;
-    setLocateScrollKey(null);
-    window.setTimeout(() => setLocateScrollKey(target.id), 0);
-  }, [accountId, localEntries]);
+    requestLocateScroll(target.id);
+  }, [accountId, localEntries, requestLocateScroll]);
 
   const handleDisplayRowsChange = useCallback((rows: DetailEntry[]) => {
     displayRowsRef.current = rows;
@@ -1396,10 +1400,7 @@ export function BasicDetailPanel({
       const index = findEntryIndexForDate(rows, dateYmd, accountId);
       const target = index >= 0 ? rows[index] : undefined;
       if (!target) return;
-      // Reset first so re-locating the same date scrolls again (the table
-      // centers each row key at most once).
-      setLocateScrollKey(null);
-      window.setTimeout(() => setLocateScrollKey(target.id), 0);
+      requestLocateScroll(target.id);
       return;
     }
     const seq = ++locateDateSeqRef.current;
@@ -1442,8 +1443,7 @@ export function BasicDetailPanel({
             const rows = displayRowsRef.current;
             const target = rows && inPageIndex >= 0 && inPageIndex < rows.length ? rows[inPageIndex] : null;
             if (target) {
-              setLocateScrollKey(null);
-              window.setTimeout(() => setLocateScrollKey(target.id), 0);
+              requestLocateScroll(target.id);
             }
           }
           return;
@@ -1503,7 +1503,8 @@ export function BasicDetailPanel({
           compactRows={compactRows}
           resetKey={tableResetKey}
           focusEntryId={focusEntryId}
-          scrollToRowKey={locateScrollKey}
+          scrollToRowKey={locateScrollRequest?.key ?? null}
+          scrollToRowRequestId={locateScrollRequest?.id}
           showAccountColumn={showAccountColumn}
           reorderAccountIds={scopeAccountIds}
           toolbarMode="custom"

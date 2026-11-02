@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { DateStepper } from "@/components/DateStepper";
@@ -115,6 +115,29 @@ export function DetailTablePaginationControls({
     }, 300);
   };
 
+  const commitLocateDate = (nextValue: string) => {
+    if (locateTimerRef.current != null) {
+      window.clearTimeout(locateTimerRef.current);
+      locateTimerRef.current = null;
+    }
+    if (!nextValue) return;
+    onLocateDate?.(nextValue);
+  };
+
+  const handleLocateDateKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    const nextValue = event.currentTarget.value;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(nextValue)) return;
+    setLocateDate(nextValue);
+    commitLocateDate(nextValue);
+  };
+
+  const handleLocatePickerDismiss = (nextValue: string) => {
+    setLocateDate(nextValue);
+    commitLocateDate(nextValue);
+  };
+
   return (
     <div className="flex items-center gap-1 text-xs tabular-nums">
       <span className="text-slate-500">{t("pagination.perPage")}</span>
@@ -204,6 +227,8 @@ export function DetailTablePaginationControls({
               compact
               value={locateDate}
               onChange={handleLocateDateChange}
+              onKeyDown={handleLocateDateKeyDown}
+              onPickerDismiss={handleLocatePickerDismiss}
               className={`!h-6 !min-h-0 !w-[7.5rem] !rounded !pl-1 !pr-6 !text-xs ${locateDateBusy ? "!bg-slate-50" : ""}`}
             />
           </div>
