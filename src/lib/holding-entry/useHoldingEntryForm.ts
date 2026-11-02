@@ -158,6 +158,8 @@ export function useHoldingEntryForm(options: UseHoldingEntryFormOptions) {
   const [editBusinessTransactionId, setEditBusinessTransactionId] = useState<string | null>(null);
   const unitsEditedRef = useRef(mode === "edit");
   const autoFilledUnitsForRef = useRef<string | null>(null);
+  /** 最近一次做过「账户跟随持仓」反向同步的持仓 id；用于区分「持仓变了」与「用户改了账户」。 */
+  const holdingSyncedIdRef = useRef<string | null>(null);
 
   const [cashAccountList, setCashAccountList] = useState(cashAccounts);
   const [investmentAccountList, setInvestmentAccountList] = useState(investmentAccounts);
@@ -728,8 +730,15 @@ export function useHoldingEntryForm(options: UseHoldingEntryFormOptions) {
         ? String(selectedHolding.termDays)
         : "",
     );
-    if (selectedHolding.wealthAccountId && selectedHolding.wealthAccountId !== toAccountId) {
-      setToAccountId(selectedHolding.wealthAccountId);
+    // 账户跟随持仓只应发生在「选中持仓变化」时（编辑回填、自动选中首个持仓）。
+    // 不能无条件反向同步：用户在分红/赎回页签切换理财账户时，本轮渲染里 selectedHolding
+    // 还是旧账户的持仓（过滤清空 effect 与本 effect 同一提交、读到旧值），无条件同步会把
+    // 账户弹回旧持仓所属账户，表现为「切换理财账户不生效、持仓理财不刷新」（2026-11-02）。
+    if (holdingSyncedIdRef.current !== selectedHoldingId) {
+      holdingSyncedIdRef.current = selectedHoldingId;
+      if (selectedHolding.wealthAccountId && selectedHolding.wealthAccountId !== toAccountId) {
+        setToAccountId(selectedHolding.wealthAccountId);
+      }
     }
     if (!editEntryId) {
       setInterestEdited(false);
