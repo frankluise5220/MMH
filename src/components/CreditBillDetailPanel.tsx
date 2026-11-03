@@ -52,6 +52,7 @@ const CREDIT_BILL_BATCH_REPLACE_FIELDS: BatchReplaceField[] = [
   "categoryId",
   "institution",
   "tagId",
+  "appendTagId",
   "remark",
 ];
 

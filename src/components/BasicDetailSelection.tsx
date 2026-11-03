@@ -42,6 +42,7 @@ function getFieldLabels(t: (key: string) => string): Record<BatchReplaceField, s
     categoryId: t("detail.column.category"),
     institution: t("batchImport.field.institution"),
     tagId: t("detail.column.tags"),
+    appendTagId: t("basicDetailSelection.appendTag"),
     remark: t("detail.column.remark"),
   };
 }
@@ -55,7 +56,7 @@ function getTypeOptions(t: (key: string) => string) {
     { value: "investment", label: t("transaction.type.investment") },
   ];
 }
-const defaultBatchReplaceFields: BatchReplaceField[] = ["date", "postedAt", "type", "outflow", "inflow", "amount", "viewAccount", "toAccount", "categoryId", "institution", "tagId", "remark"];
+const defaultBatchReplaceFields: BatchReplaceField[] = ["date", "postedAt", "type", "outflow", "inflow", "amount", "viewAccount", "toAccount", "categoryId", "institution", "tagId", "appendTagId", "remark"];
 
 function scopeBatchCategoryOptions(
   categoryOptions: BasicDetailBatchCategoryOption[],
@@ -228,6 +229,8 @@ export function BasicDetailBatchReplaceButton({
       },
       institution: { value: "institution", label: fieldLabels.institution, kind: "text", placeholder: t("basicDetailSelection.institutionPlaceholder"), allowEmpty: true },
       tagId: { value: "tagId", label: fieldLabels.tagId, kind: "select", options: tagSelectOptions, allowEmpty: true },
+      // 追加标签：保留记录已有标签，把所选标签并上去重；空选项只是占位（allowEmpty=false 挡住未选择就提交）。
+      appendTagId: { value: "appendTagId", label: fieldLabels.appendTagId, kind: "select", options: [{ value: "", label: t("txForm.selectPlaceholder") }, ...tagOptions] },
       remark: { value: "remark", label: fieldLabels.remark, kind: "text", placeholder: t("stockPanel.batchNotePlaceholder"), allowEmpty: true },
     };
     return fields.map((field) => configByField[field]).filter(Boolean);

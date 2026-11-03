@@ -65,6 +65,26 @@ import { useDetailPagination } from "@/lib/client/use-detail-pagination";
 import { withBasePath } from "@/lib/base-path";
  
 
+/**
+ * 理财持仓的「浮动收益率」按实际持有天数折算成年化（2026-11-03 用户口径）：
+ * 浮动盈亏 ÷ 持仓成本 ÷ 持有天数 × 365。
+ * 持有天数 = 本轮起息日(holdingDate) → 今天（本地日历），按自然日、不足 1 天按 1 天；
+ * 起息日缺失（理论上不该发生）时退回累计口径，不做年化。
+ */
+function wealthHoldingDays(holdingDate: unknown): number | null {
+  const start = typeof holdingDate === "string" ? holdingDate : "";
+  if (!start) return null;
+  const startMs = Date.parse(`${start}T00:00:00Z`);
+  if (!Number.isFinite(startMs)) return null;
+  const todayMs = Date.parse(`${todayDateLocalYmd()}T00:00:00Z`);
+  return Math.max(1, Math.floor((todayMs - startMs) / 86400000));
+}
+
+function annualizedWealthPnLRate(holdingDate: unknown, cumulativeRatePercent: number): number {
+  const days = wealthHoldingDays(holdingDate);
+  return days == null ? cumulativeRatePercent : (cumulativeRatePercent / days) * 365;
+}
+
 function fundSubtypeLabel(t: (key: string) => string, subtype: string | null | undefined, source: string | null | undefined, productType?: string | null) {
   if (source === TRANSACTION_SOURCE_FUND_UNITS_RECONCILE) return t("fundShell.subtype.unitsReconcile");
   if (subtype === "buy" && source === "regular_invest") return t("fundShell.subtype.buyRegularInvest");
@@ -1761,8 +1781,12 @@ export function FundShell(props: Props) {
     const displayMV = adj && p.units > 0 ? p.units * adj.nav : p.marketValue;
     const displayPnL = adj ? displayMV - p.cost : p.floatingPnL;
     const displayPnLRate = p.cost > 0 ? (displayPnL / p.cost) * 100 : 0;
-    return { displayNav, displayNavDate, displayMV, displayPnL, displayPnLRate };
-  }, [adjustedNavByCode]);
+    // 理财视图：浮动收益率按持有天数年化（列名同步为「年化收益率」）；基金视图保持累计口径。
+    const displayAnnualizedRate = isWealthAccount
+      ? annualizedWealthPnLRate(p.holdingDate, displayPnLRate)
+      : displayPnLRate;
+    return { displayNav, displayNavDate, displayMV, displayPnL, displayPnLRate, displayAnnualizedRate };
+  }, [adjustedNavByCode, isWealthAccount]);
 
   const renderPositionActions = useCallback((p: any) => {
     const positionKey = positionAssetKey(p);
@@ -1949,15 +1973,15 @@ export function FundShell(props: Props) {
       },
       {
         key: "floatingRate",
-        label: t("overview.floatingRate"),
+        label: isWealthAccount ? t("overview.annualizedRate") : t("overview.floatingRate"),
         width: colWidth("positions", "floatingRate", 84),
         minWidth: minFundColWidth("positions", "floatingRate"),
         align: "right",
         className: "tabular-nums",
-        sortValue: (p) => positionDisplayMetrics(p).displayPnLRate,
+        sortValue: (p) => positionDisplayMetrics(p).displayAnnualizedRate,
         render: (p) => {
-          const { displayPnLRate } = positionDisplayMetrics(p);
-          return <span className={pnl(displayPnLRate)}>{displayPnLRate.toFixed(2)}%</span>;
+          const { displayAnnualizedRate } = positionDisplayMetrics(p);
+          return <span className={pnl(displayAnnualizedRate)}>{displayAnnualizedRate.toFixed(2)}%</span>;
         },
       },
       {
@@ -2021,17 +2045,37 @@ export function FundShell(props: Props) {
   const positionSummaryRow = useMemo(() => {
     if (d.positions.length === 0) return undefined;
     const floatingProfit = d.totalMarketValue - d.totalCost;
+    // 理财视图汇总行同样年化：各持仓「年化盈亏 ÷ 成本」的成本加权平均，口径与浮动收益率列一致。
+    let wealthAnnualizedRate: number | null = null;
+    if (isWealthAccount) {
+      let annualizedPnl = 0;
+      let costSum = 0;
+      let annualizable = true;
+      for (const p of d.positions) {
+        const cost = toNumber(p.cost);
+        if (!(cost > 0)) continue;
+        const days = wealthHoldingDays(p.holdingDate);
+        if (days == null) {
+          annualizable = false;
+          break;
+        }
+        annualizedPnl += (positionDisplayMetrics(p).displayPnL / days) * 365;
+        costSum += cost;
+      }
+      if (annualizable && costSum > 0) wealthAnnualizedRate = annualizedPnl / costSum;
+    }
+    const summaryRateClassSource = wealthAnnualizedRate ?? floatingProfit;
     return {
       cells: {
         fund: t("liabilityShell.summaryRow"),
         cost: <span className="tabular-nums text-slate-800">{formatMoney(d.totalCost)}</span>,
         marketValue: <span className={`tabular-nums ${pnl(d.totalMarketValue)}`}>{formatMoney(d.totalMarketValue)}</span>,
         floatingPnL: <span className={`tabular-nums ${pnl(floatingProfit)}`}>{formatMoney(floatingProfit)}</span>,
-        floatingRate: <span className={`tabular-nums ${pnl(floatingProfit)}`}>{d.totalCost !== 0 ? formatPercent(floatingProfit / d.totalCost) : "-"}</span>,
+        floatingRate: <span className={`tabular-nums ${pnl(summaryRateClassSource)}`}>{wealthAnnualizedRate != null ? formatPercent(wealthAnnualizedRate) : d.totalCost !== 0 ? formatPercent(floatingProfit / d.totalCost) : "-"}</span>,
         historical: <span className={`tabular-nums ${pnl(d.positionHistoricalProfit)}`}>{formatMoney(d.positionHistoricalProfit)}</span>,
       },
     };
-  }, [d.positions.length, d.totalCost, d.totalMarketValue, d.positionHistoricalProfit, pnl, t]);
+  }, [d.positions, d.totalCost, d.totalMarketValue, d.positionHistoricalProfit, isWealthAccount, positionDisplayMetrics, pnl, t]);
 
   const clearedAdvancedColumns = useMemo<AdvancedDataTableColumn<any>[]>(() => [
     {
@@ -3340,10 +3384,7 @@ export function FundShell(props: Props) {
                   {sortedPositions.map((p: any) => {
                     const positionKey = positionAssetKey(p);
                     const active = positionKey === fundCode;
-                    const adj = adjustedNavByCode[p.fundCode];
-                    const displayMV = adj && p.units > 0 ? p.units * adj.nav : p.marketValue;
-                    const displayPnL = adj ? displayMV - p.cost : p.floatingPnL;
-                    const displayPnLRate = p.cost > 0 ? (displayPnL / p.cost) * 100 : 0;
+                    const { displayMV, displayPnL, displayAnnualizedRate } = positionDisplayMetrics(p);
                     return (
                       <article
                         key={positionKey || p.fundCode}
@@ -3367,7 +3408,7 @@ export function FundShell(props: Props) {
                           </div>
                           <div className="shrink-0 text-right">
                             <div className={`text-base font-semibold tabular-nums ${pnl(displayMV)}`}>{formatMoney(displayMV)}</div>
-                            <div className={`mt-0.5 text-[11px] tabular-nums ${pnl(displayPnLRate)}`}>{displayPnLRate.toFixed(2)}%</div>
+                            <div className={`mt-0.5 text-[11px] tabular-nums ${pnl(displayAnnualizedRate)}`}>{displayAnnualizedRate.toFixed(2)}%</div>
                           </div>
                         </div>
 

@@ -39,6 +39,7 @@ const REPORT_BATCH_REPLACE_FIELDS: BatchReplaceField[] = [
   "categoryId",
   "institution",
   "tagId",
+  "appendTagId",
   "remark",
 ];
 

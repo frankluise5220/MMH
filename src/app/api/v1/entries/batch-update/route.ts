@@ -17,7 +17,7 @@ import { CREDIT_CARD_REPAYMENT_CATEGORY_NAME, isCreditCardRepaymentTransfer } fr
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
 import { syncIndependentBusinessTransactionFromTxRecord } from "@/lib/server/business-transactions";
 import { upsertStatementCategoryRuleFromSavedRecord } from "@/lib/statement/category-rules";
-import { replaceEntryTags, resolveWritableTagIds } from "@/lib/server/entry-tags";
+import { attachEntryTags, replaceEntryTags, resolveWritableTagIds } from "@/lib/server/entry-tags";
 import { creditBillEffectiveDate } from "@/lib/credit/billing";
 import { addTradingDaysUtc, toStatementMonth } from "@/lib/date-utils";
 import { isDepositAccount, isDepositPostingCategoryAllowed, isIncomeExpensePostingAccount } from "@/lib/account-kind-utils";
@@ -39,7 +39,8 @@ import { isDepositAccount, isDepositPostingCategoryAllowed, isIncomeExpensePosti
  *     toAccount?: string;      // destination account Account.id
  *     categoryId?: string;     // income/expense category Category.id, pass empty string to clear
  *     institution?: string;    // counterparty institution name/short name, pass empty string to clear
- *     tagId?: string;           // readable Tag.id, pass empty string to clear all tags
+ *     tagId?: string;           // readable Tag.id, pass empty string to clear all tags (replace semantics)
+ *     appendTagId?: string;     // readable Tag.id to ADD to the entry's existing tags (existing tags are kept, deduped); empty string is ignored
  *     remark?: string;         // note, pass empty string to clear
  *     fundConfirmDate?: string;// confirm date YYYY-MM-DD or T+N offset, pass empty string to clear
  *     fundArrivalDate?: string;// arrival date YYYY-MM-DD or T+N offset, pass empty string to clear
@@ -69,6 +70,7 @@ type BatchUpdateItem = {
   categoryId?: string;
   institution?: string;
   tagId?: string;
+  appendTagId?: string;
   remark?: string;
   fundConfirmDate?: string;
   fundArrivalDate?: string;
@@ -253,7 +255,7 @@ export async function POST(req: NextRequest) {
       ? await prisma.category.findMany({ where: { id: { in: categoryIds }, ...hidFilter }, select: { id: true, name: true } })
       : [];
     const categoryById = new Map(categories.map((category) => [category.id, category]));
-    const tagIds = Array.from(new Set(updates.map((item) => String(item.tagId ?? "").trim()).filter(Boolean)));
+    const tagIds = Array.from(new Set(updates.flatMap((item) => [String(item.tagId ?? ""), String(item.appendTagId ?? "")]).map((value) => value.trim()).filter(Boolean)));
     const writableTagIds = await resolveWritableTagIds(prisma, ctx.householdId, tagIds);
     if (writableTagIds.length !== tagIds.length) {
       const invalidTagId = tagIds.find((id) => !writableTagIds.includes(id));
@@ -310,7 +312,11 @@ export async function POST(req: NextRequest) {
       if (!existing) continue;
 
       const data: Record<string, unknown> = {};
-      const tagUpdateRequested = item.tagId !== undefined;
+      // tagId = 替换语义（整体覆盖，空串=清空）；appendTagId = 追加语义（保留现有标签再并上新标签）。
+      // appendTagId 传空串视为未请求，不触发标签改动。
+      const appendTagId = item.appendTagId === undefined ? "" : String(item.appendTagId).trim();
+      const tagUpdateRequested = item.tagId !== undefined || (item.appendTagId !== undefined && appendTagId !== "");
+      let nextTagIds: string[] | null = null;
       let skipAutoRepaymentCategory = false;
       if (existing.accountId) balanceAccountIds.add(existing.accountId);
       if (existing.toAccountId) balanceAccountIds.add(existing.toAccountId);
@@ -466,17 +472,30 @@ export async function POST(req: NextRequest) {
       }
 
       if (tagUpdateRequested) {
-        const tagId = String(item.tagId ?? "").trim();
-        const tag = tagId ? tagById.get(tagId) : null;
+        const replaceTagRaw = item.tagId === undefined ? null : String(item.tagId ?? "").trim();
+        if (replaceTagRaw !== null) {
+          // 替换语义：整体覆盖，空串 = 清空全部标签。
+          nextTagIds = replaceTagRaw ? [replaceTagRaw] : [];
+        } else {
+          // 追加语义：保留现有标签，并上去重后的新标签。
+          nextTagIds = Array.from(new Set([
+            ...existing.EntryTag.map((entryTag) => entryTag.tagId),
+            appendTagId,
+          ]));
+        }
         const oldValue = existing.EntryTag
           .map((entryTag) => entryTag.Tag.name.trim())
+          .filter(Boolean)
+          .join("、");
+        const newValue = nextTagIds
+          .map((tagId) => tagById.get(tagId)?.name ?? "")
           .filter(Boolean)
           .join("、");
         changed.push({
           id,
           date: ymd(existing.date),
           oldValue,
-          newValue: tag?.name ?? "",
+          newValue,
           field: "tagId",
         });
       }
@@ -911,14 +930,24 @@ export async function POST(req: NextRequest) {
           })
         : { count: 1 };
       if (result.count > 0) {
-        if (tagUpdateRequested) {
-          const tagId = String(item.tagId ?? "").trim();
-          await replaceEntryTags({
-            tx: prisma,
-            entryId: id,
-            householdId: ctx.householdId,
-            tagIds: tagId ? [tagId] : [],
-          });
+        if (nextTagIds) {
+          if (item.tagId !== undefined) {
+            // 替换语义：整体覆盖。
+            await replaceEntryTags({
+              tx: prisma,
+              entryId: id,
+              householdId: ctx.householdId,
+              tagIds: nextTagIds,
+            });
+          } else {
+            // 追加语义：只新增，不触碰已有 EntryTag 行（attachEntryTags 自带去重）。
+            await attachEntryTags({
+              tx: prisma,
+              entryId: id,
+              householdId: ctx.householdId,
+              tagIds: [appendTagId],
+            });
+          }
         }
         updatedCount += result.count;
         touchedRecordIds.add(id);
