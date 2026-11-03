@@ -108,14 +108,26 @@ function pruneStagedApp(dir) {
     try {
       fs.rmSync(path.join(dir, name), { recursive: true, force: true });
     } catch (error) {
-      if (error && error.code === "EPERM") {
-        console.warn(`pruneStagedApp: could not remove ${name} (EPERM, likely a dev handle); skipping.`);
+      // EPERM: a live dev handle. SAFE_DELETE_BULK_CONFIRM_REQUIRED: the IDE
+      // sandbox refuses bulk deletes (`.codex-logs` alone can hold 10k files).
+      // Both mean "junk that cannot be removed here"; skipping only enlarges
+      // the package a little, never breaks the runtime, so neither may fail
+      // the build.
+      const bulkGuard = String((error && error.message) || "").includes("SAFE_DELETE_BULK_CONFIRM_REQUIRED");
+      if (error && (error.code === "EPERM" || bulkGuard)) {
+        console.warn(`pruneStagedApp: could not remove ${name} (${error.code || "bulk-delete guard"}); skipping.`);
       } else {
         throw error;
       }
     }
   }
-  fs.rmSync(path.join(dir, ".next", "cache"), { recursive: true, force: true });
+  try {
+    fs.rmSync(path.join(dir, ".next", "cache"), { recursive: true, force: true });
+  } catch (error) {
+    const bulkGuard = String((error && error.message) || "").includes("SAFE_DELETE_BULK_CONFIRM_REQUIRED");
+    if (!error || (error.code !== "EPERM" && !bulkGuard)) throw error;
+    console.warn(`pruneStagedApp: could not remove .next/cache (${error.code || "bulk-delete guard"}); skipping.`);
+  }
 }
 
 function step(message) {
