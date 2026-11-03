@@ -458,6 +458,14 @@ function applyRuntimeMigrations(db) {
   // "no such column: repaymentOffsetDays"（23 个文件在读这两列）。
   addColumnIfMissing(db, "CreditCardBillingDay", "repaymentDay", "INTEGER");
   addColumnIfMissing(db, "CreditCardBillingDay", "repaymentOffsetDays", "INTEGER");
+  // 2026-11-03 投顾组合产品分家。与 build-fnos-package.cjs 的
+  // 20261103_add_wealth_product_type 同义：老库补列 + 把已被投顾账户引用过的产品划归 advisor。
+  // 漏掉这段：升级后的桌面库打开理财/投顾下拉会报 "no such column: productType"。
+  addColumnIfMissing(db, "WealthProduct", "productType", "TEXT NOT NULL DEFAULT 'wealth'");
+  if (tableExists(db, "wealth_transactions") && columnExists(db, "WealthProduct", "productType")) {
+    // 单行 + 参数绑定：这段代码写进模板后不应再依赖任何引号转义。
+    db.prepare("UPDATE WealthProduct SET productType = ? WHERE productType = ? AND EXISTS (SELECT 1 FROM wealth_transactions wt JOIN Account a ON a.id = wt.accountId WHERE wt.wealthProductId = WealthProduct.id AND a.investProductType = ?)").run("advisor", "wealth", "advisor");
+  }
 }
 
 fs.mkdirSync(dataDir, { recursive: true });

@@ -1832,6 +1832,7 @@ export async function buildHouseholdBackupPayload(
     wealthProducts,
     depositProducts,
     bondProducts,
+    repoProductCustoms,
     accounts,
     regularInvestPlans,
     creditCardInstallmentPlans,
@@ -1900,6 +1901,7 @@ export async function buildHouseholdBackupPayload(
     prisma.wealthProduct.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.depositProduct.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.bondProduct.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
+    prisma.repoProductCustom.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.account.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.regularInvestPlan.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.creditCardInstallmentPlan.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
@@ -2158,6 +2160,7 @@ export async function buildHouseholdBackupPayload(
       wealthProducts,
       depositProducts,
       bondProducts,
+      repoProductCustoms,
       accounts,
       accountAliases,
       billOverrides,
@@ -2288,6 +2291,7 @@ async function buildHouseholdBackupWorkbook(payload: HouseholdBackupPayload) {
     ["WealthProducts", sheetRows(payload.data.wealthProducts)],
     ["DepositProducts", sheetRows(payload.data.depositProducts)],
     ["BondProducts", sheetRows(payload.data.bondProducts)],
+    ["RepoProductCustoms", sheetRows(payload.data.repoProductCustoms)],
     ["Accounts", sheetRows(payload.data.accounts)],
     ["AccountAliases", sheetRows(payload.data.accountAliases)],
     ["BillOverrides", sheetRows(payload.data.billOverrides)],
@@ -2388,6 +2392,7 @@ export async function buildHouseholdTableExportWorkbook(payload: HouseholdBackup
     ["WealthProducts", sheetRows(payload.data.wealthProducts)],
     ["DepositProducts", sheetRows(payload.data.depositProducts)],
     ["BondProducts", sheetRows(payload.data.bondProducts)],
+    ["RepoProductCustoms", sheetRows(payload.data.repoProductCustoms)],
     ["Accounts", sheetRows(payload.data.accounts)],
     ["AccountAliases", sheetRows(payload.data.accountAliases)],
     ["BillOverrides", sheetRows(payload.data.billOverrides)],
@@ -2628,6 +2633,7 @@ export function parseBackupPayload(raw: unknown) {
       wealthProducts: ensureArray(data.wealthProducts ?? [], "data.wealthProducts"),
       depositProducts: ensureArray(data.depositProducts ?? [], "data.depositProducts"),
       bondProducts: ensureArray(data.bondProducts ?? [], "data.bondProducts"),
+      repoProductCustoms: ensureArray(data.repoProductCustoms ?? [], "data.repoProductCustoms"),
       accounts: ensureLiabilityArray(data.accounts ?? [], "data.accounts"),
       accountAliases: ensureArray(data.accountAliases ?? [], "data.accountAliases"),
       billOverrides: ensureArray(data.billOverrides ?? [], "data.billOverrides"),
@@ -3034,6 +3040,7 @@ async function restoreSingleHouseholdBackup(
     await tx.wealthProduct.deleteMany({ where: { householdId } });
     await tx.depositProduct.deleteMany({ where: { householdId } });
     await tx.bondProduct.deleteMany({ where: { householdId } });
+    await tx.repoProductCustom.deleteMany({ where: { householdId } });
     await tx.importBatch.deleteMany({ where: { householdId } });
     if (isSystemRestore && !options.skipGlobalReset) {
       await tx.fundQueryApi.deleteMany({ where: { OR: [{ householdId }, { householdId: null }] } });
@@ -3446,6 +3453,13 @@ async function restoreSingleHouseholdBackup(
               ? String(item.institutionId)
               : null,
         })),
+      );
+    }
+
+    if ((data.repoProductCustoms ?? []).length > 0) {
+      await createManyRecords(
+        tx.repoProductCustom,
+        data.repoProductCustoms.map((item) => ({ ...item, householdId })),
       );
     }
 

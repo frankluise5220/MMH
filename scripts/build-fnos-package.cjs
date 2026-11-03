@@ -3192,6 +3192,38 @@ const MIGRATIONS = [
       addColumnIfMissing(db, "bond_transactions", "instrumentKind", "TEXT NOT NULL DEFAULT 'bond'");
     },
   },
+  {
+    // 投顾组合产品分家（2026-11-03）：WealthProduct.productType 区分 wealth / advisor，
+    // 两类产品的下拉、创建与名称查重互相隔离。老数据默认 'wealth' 即正确归属；
+    // 唯一需要回填的是「已被投顾账户交易引用过」的产品 —— 它们必须划归 advisor，
+    // 否则用户测试期在投顾窗口建的产品会留在理财池里、投顾下拉再也选不到。
+    // 全新安装由 native-init.sql 依据 schema 建列，这里只补存量库。
+    version: "20261103_add_wealth_product_type",
+    description: "Add WealthProduct.productType (wealth|advisor) and reclassify products already used by advisory accounts",
+    apply(db) {
+      if (!tableExists(db, "WealthProduct")) return;
+      addColumnIfMissing(db, "WealthProduct", "productType", "TEXT NOT NULL DEFAULT 'wealth'");
+      // 回填口径与 Postgres 迁移 20261103_add_wealth_product_type 完全一致。
+      if (!tableExists(db, "wealth_transactions") || !tableExists(db, "Account")) return;
+      // 标识符不带引号（SQLite 对大小写不敏感，这些名字也没有特殊字符），值走参数绑定，
+      // 这样这段 SQL 里一个引号都不需要，模板转义不会出岔子。
+      db.prepare("UPDATE WealthProduct SET productType = ? WHERE productType = ? AND EXISTS (SELECT 1 FROM wealth_transactions wt JOIN Account a ON a.id = wt.accountId WHERE wt.wealthProductId = WealthProduct.id AND a.investProductType = ?)").run("advisor", "wealth", "advisor");
+    },
+  },
+  {
+    // 逆回购自定义品种（2026-11-03）：交易所 GC/R- 清单是代码常量（src/lib/repo.ts，不入库），
+    // 清单外的品种（券商专属代码、协议回购等）由用户自建，按 household 隔离，
+    // 借出落账时与静态清单同口径解析（code → 期限/费率）。
+    // 全新安装由 native-init.sql 依据 schema 建表，这里只补存量库。
+    version: "20261103_repo_custom_products",
+    description: "Create RepoProductCustom: household-scoped custom reverse-repo instruments",
+    apply(db) {
+      // 同上：全部单行、标识符不加引号，避免模板转义问题；表结构与 native-init.sql 一致。
+      db.exec("CREATE TABLE IF NOT EXISTS RepoProductCustom (id TEXT NOT NULL, code TEXT NOT NULL, name TEXT NOT NULL, market TEXT NOT NULL, termDays INTEGER NOT NULL, feeRatePercent DECIMAL, note TEXT, householdId TEXT NOT NULL, createdAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, updatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, CONSTRAINT RepoProductCustom_pkey PRIMARY KEY (id), CONSTRAINT RepoProductCustom_householdId_fkey FOREIGN KEY (householdId) REFERENCES Household (id) ON DELETE CASCADE ON UPDATE CASCADE)");
+      db.exec("CREATE UNIQUE INDEX IF NOT EXISTS RepoProductCustom_householdId_code_key ON RepoProductCustom(householdId, code)");
+      db.exec("CREATE INDEX IF NOT EXISTS RepoProductCustom_householdId_idx ON RepoProductCustom(householdId)");
+    },
+  },
 ];
 
 // 到期日「周年 − 1 天」→ 周年；返回 null 表示不是旧口径。

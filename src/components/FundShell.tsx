@@ -3981,7 +3981,8 @@ export function FundShell(props: Props) {
       {isWealthAccount ? (
         <ProductLibraryModal
           open={productLibraryOpen}
-          family="wealth"
+          // 投顾账户打开的是投顾产品库（advisor 家族），不与理财混排；投顾产品必须归属机构。
+          family={accountProductType === "advisor" ? "advisor" : "wealth"}
           defaultInstitutionId={selectedAccount?.institutionId ?? null}
           onClose={() => setProductLibraryOpen(false)}
           onChanged={() => dispatchFinanceDataChanged({ reason: "product-library-save", accountIds: [accountId] })}

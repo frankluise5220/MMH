@@ -25,7 +25,7 @@ import { PERSONAL_INSTITUTION_TYPES } from "@/lib/institution-rules";
  *   服务端走余额安全的级联清理（见 `src/lib/server/product-master-delete.ts`）。
  */
 
-type ProductLibraryFamily = "deposit" | "wealth" | "bond" | "insurance";
+type ProductLibraryFamily = "deposit" | "wealth" | "advisor" | "bond" | "insurance";
 
 type FieldKind = "text" | "number" | "currency" | "date" | "select" | "note" | "institution";
 
@@ -147,6 +147,18 @@ const DEPOSIT_FIELDS: FieldSpec[] = [
   ...SHARED_HEAD,
   { key: "annualRate", labelKey: "productLibrary.annualRate", kind: "number" },
   { key: "termDays", labelKey: "productLibrary.termDays", kind: "number" },
+  { key: "note", labelKey: "detail.column.remark", kind: "note", span2: true },
+];
+
+/**
+ * 投顾组合产品：只有名称 / 简称 / 所属机构 / 币种 / 备注。
+ * 投顾没有票面利率与期限（按「份额 × 组合净值」估值），机构必填（2026-11-03 用户裁定）。
+ */
+const ADVISOR_FIELDS: FieldSpec[] = [
+  { key: "name", labelKey: "investForm.productNameLabel", kind: "text", required: true },
+  { key: "shortName", labelKey: "entityForm.shortNameLabel", kind: "text" },
+  { key: "institutionId", labelKey: "productLibrary.institution", kind: "institution", required: true },
+  { key: "currency", labelKey: "detail.column.currency", kind: "currency" },
   { key: "note", labelKey: "detail.column.remark", kind: "note", span2: true },
 ];
 
@@ -289,6 +301,19 @@ const FAMILY_CONFIG: Record<ProductLibraryFamily, FamilyConfig> = {
     update: (id, draft) => jsonPut(`/api/v1/wealth-products/${id}`, buildPayload(DEPOSIT_FIELDS, draft)),
     remove: (id, opts) => jsonDelete(`/api/v1/wealth-products/${id}`, opts),
     allowNoInstitution: true,
+  },
+  advisor: {
+    titleKey: "productLibrary.title.advisor",
+    listUrl: "/api/v1/wealth-products",
+    fields: ADVISOR_FIELDS,
+    // 同理财：往来主体与保险公司都不是投顾产品的发行方（服务端同样拒绝）。
+    excludedInstitutionTypes: [...PERSONAL_INSTITUTION_TYPES, "insurance"],
+    createUrl: "/api/v1/wealth-products",
+    createBody: (draft) => ({ ...buildPayload(ADVISOR_FIELDS, draft), mode: "master", productType: "advisor" }),
+    update: (id, draft) => jsonPut(`/api/v1/wealth-products/${id}`, buildPayload(ADVISOR_FIELDS, draft)),
+    remove: (id, opts) => jsonDelete(`/api/v1/wealth-products/${id}`, opts),
+    // 投顾产品必须归属机构：没有「通用（不限机构）」这一档。
+    allowNoInstitution: false,
   },
   bond: {
     titleKey: "productLibrary.title.bond",
@@ -615,10 +640,13 @@ export function ProductLibraryModal({
         throw new Error(String(data?.error ?? t("productLibrary.loadFailed")));
       }
       const rawList = (family === "insurance" ? data.masters : data.products) as Record<string, unknown>[] | undefined;
-      // 理财产品库不列投顾组合产品（advisor 家族，2026-11-03 起，两类互不混排）。
+      // 理财 / 投顾两个产品库互不混排（2026-11-03 起）：理财库不列 advisor，
+      // 投顾库只列 advisor（投顾产品必须归属机构，见 FAMILY_CONFIG.advisor）。
       const filteredList = family === "wealth"
         ? (rawList ?? []).filter((item) => item.productType !== "advisor")
-        : rawList ?? [];
+        : family === "advisor"
+          ? (rawList ?? []).filter((item) => item.productType === "advisor")
+          : rawList ?? [];
       const loaded = filteredList.map((item) => normalizeRow(family, item));
       // 债券产品库里额外列出逆回购标准品种：它们不入库，只作为只读清单展示。
       setRows(family === "bond" ? [...loaded, ...exchangeProductRows()] : loaded);
@@ -742,7 +770,8 @@ export function ProductLibraryModal({
     setIsCreating(true);
     setSelectedId(null);
     const next = draftFromRow(family, null);
-    if (config.allowNoInstitution && defaultInstitutionId) next.institutionId = defaultInstitutionId;
+    // 机构必填的产品库（投顾）也要带上当前账户的机构，省一次手选。
+    if ((config.allowNoInstitution || family === "advisor") && defaultInstitutionId) next.institutionId = defaultInstitutionId;
     setDraft(next);
     setFormError(null);
   }

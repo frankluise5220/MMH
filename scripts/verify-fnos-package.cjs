@@ -490,6 +490,19 @@ expect(/20260911_rekey_debt_agreement_to_account/.test(buildScript) && /rebuildD
       /addColumnIfMissing\(db, "bond_transactions", "instrumentKind", "TEXT NOT NULL DEFAULT 'bond'"\)/.test(buildScript),
     "fnOS SQLite migrations must add bond_transactions.instrumentKind for existing databases, otherwise upgraded devices hide every existing bond and cannot open the reverse-repo view.",
   );
+  expect(
+    /20261103_add_wealth_product_type/.test(buildScript) &&
+      /addColumnIfMissing\(db, "WealthProduct", "productType", "TEXT NOT NULL DEFAULT 'wealth'"\)/.test(buildScript) &&
+      /UPDATE WealthProduct SET productType = \? WHERE productType = \?/.test(buildScript) &&
+      /\.run\("advisor", "wealth", "advisor"\)/.test(buildScript),
+    "fnOS SQLite migrations must add WealthProduct.productType and reclassify products already used by advisory accounts, otherwise upgraded devices lose the wealth/advisory split.",
+  );
+  expect(
+    /20261103_repo_custom_products/.test(buildScript) &&
+      /CREATE TABLE IF NOT EXISTS RepoProductCustom/.test(buildScript) &&
+      /RepoProductCustom_householdId_code_key/.test(buildScript),
+    "fnOS SQLite migrations must create RepoProductCustom (with its unique household+code index) for existing databases, otherwise upgraded devices throw 'no such table' when resolving a custom reverse-repo instrument.",
+  );
 for (const tableName of [
   "transactions",
   "fund_transactions",
