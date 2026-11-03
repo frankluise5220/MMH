@@ -23,7 +23,7 @@
   "apps": {
     "mmh": {
       "display_name": "MMH 家庭财务工作台",
-      "desc": "MMH 家庭记账与全资产管理，本地优先，程序和账本数据只保存在你自己的设备或 NAS 上，不经过第三方云端。记账：支出、收入、转账、代付、借贷与还款，多账本、多币种、分类标签与成员。资产：信用卡分期、房贷重算、基金定投、股票盈亏、存款理财、房产保险。功能：报表对账、周期自动记账、导入导出、AI 识别、附件、撤销恢复与备份。多端：PC、手机浏览器、Windows、Android 与开放 API。版本：飞牛 fnOS、群晖 DSM、Windows、Docker、Android。",
+      "desc": "MMH 家庭记账与全资产管理，本地优先，程序和账本数据只保存在你自己的设备或 NAS 上，不经过第三方云端。记账：支出、收入、转账、代付、借贷与还款，多账本、多币种、分类标签与成员。资产：信用卡分期、房贷重算、基金定投、股票盈亏、存款理财、房产保险。功能：报表对账、周期自动记账、导入导出、AI 识别、附件、撤销恢复与备份。多端：PC 与手机浏览器、Windows 桌面端、Android App 与开放 API。安装形态：飞牛 fnOS、群晖 DSM、Docker。",
       "platform": [
         "x86",
         "arm"
@@ -43,15 +43,15 @@
       "i18n": {
         "zh-CN": {
           "display_name": "MMH 家庭财务工作台",
-          "desc": "MMH 家庭记账与全资产管理，本地优先，程序和账本数据只保存在你自己的设备或 NAS 上，不经过第三方云端。记账：支出、收入、转账、代付、借贷与还款，多账本、多币种、分类标签与成员。资产：信用卡分期、房贷重算、基金定投、股票盈亏、存款理财、房产保险。功能：报表对账、周期自动记账、导入导出、AI 识别、附件、撤销恢复与备份。多端：PC、手机浏览器、Windows、Android 与开放 API。版本：飞牛 fnOS、群晖 DSM、Windows、Docker、Android。"
+          "desc": "MMH 家庭记账与全资产管理，本地优先，程序和账本数据只保存在你自己的设备或 NAS 上，不经过第三方云端。记账：支出、收入、转账、代付、借贷与还款，多账本、多币种、分类标签与成员。资产：信用卡分期、房贷重算、基金定投、股票盈亏、存款理财、房产保险。功能：报表对账、周期自动记账、导入导出、AI 识别、附件、撤销恢复与备份。多端：PC 与手机浏览器、Windows 桌面端、Android App 与开放 API。安装形态：飞牛 fnOS、群晖 DSM、Docker。"
         },
         "en-US": {
           "display_name": "MMH Family Finance Workspace",
-          "desc": "MMH is a local-first home bookkeeping and full asset-management tool; the app and your ledger data stay on your own device or NAS, never through a third-party cloud. Bookkeeping: expenses, income, transfers, advances, borrowing and repayments, with multiple books, currencies, categories, tags and members. Assets: credit-card instalments, mortgage recalculation, fund regular investing, stock profit and loss, deposits, wealth products, property and insurance. Features: reports and reconciliation, scheduled entries, import and export, AI recognition, attachments, undo and backups. Clients: PC and mobile browsers, Windows, Android and an open API. Packages: Feiniu fnOS, Synology DSM, Windows, Docker and Android."
+          "desc": "MMH is a local-first home bookkeeping and full asset-management tool; the app and your ledger data stay on your own device or NAS, never through a third-party cloud. Bookkeeping: expenses, income, transfers, advances, borrowing and repayments, with multiple books, currencies, categories, tags and members. Assets: credit-card instalments, mortgage recalculation, fund regular investing, stock profit and loss, deposits, wealth products, property and insurance. Features: reports and reconciliation, scheduled entries, import and export, AI recognition, attachments, undo and backups. Clients: PC and mobile browsers, Windows desktop, Android app and an open API. Install forms: Feiniu fnOS, Synology DSM and Docker."
         },
         "ja-JP": {
           "display_name": "MMH ファミリーファイナンスワークスペース",
-          "desc": "MMH はローカルファーストの家計・資産管理ツールです。アプリと帳簿データは自分のデバイスまたは NAS にのみ保存され、第三者クラウドを経由しません。記帳：支出・収入・振替・立替・借入・貸出・返済、複数帳簿・多通貨・カテゴリ・タグ・メンバー。資産：カード分割払い、ローンの返済再計算、投資信託の積立、株式の保有損益、預金、理財商品、不動産、保険。機能：レポートと残高照合、定期自動記帳、取込と書出、AI 認識、添付、取消と復元、バックアップ。多端：PC・モバイルブラウザ、Windows、Android、オープン API。各版：飛牛 fnOS、Synology DSM、Windows、Docker、Android。"
+          "desc": "MMH はローカルファーストの家計・資産管理ツールです。アプリと帳簿データは自分のデバイスまたは NAS にのみ保存され、第三者クラウドを経由しません。記帳：支出・収入・振替・立替・借入・貸出・返済、複数帳簿・多通貨・カテゴリ・タグ・メンバー。資産：カード分割払い、ローンの返済再計算、投資信託の積立、株式の保有損益、預金、理財商品、不動産、保険。機能：レポートと残高照合、定期自動記帳、取込と書出、AI 認識、添付、取消と復元、バックアップ。多端：PC・モバイルブラウザ、Windows デスクトップ、Android アプリ、オープン API。導入形態：飛牛 fnOS、Synology DSM、Docker。"
         }
       },
       "releases": {

@@ -10,24 +10,24 @@
 ## 一份正文，全渠道共用
 
 - **不再「各平台各写各的」**：旧的三条规则（只讲本平台的安装形态 / 末尾点名其它版本 / 每平台一份）**作废**。理由：同一个软件在飞牛软仓、FnDepot、群晖套件中心、README 上出现四种措辞，维护要改五份还容易漂移；用户在不同渠道看到的介绍不一致。
-- **只有一份中性正文**：不点名安装形态（说「你自己的设备或 NAS」而不是「飞牛原生应用包」），末尾一次列全五个版本（飞牛 fnOS / 群晖 DSM / Windows / Docker / Android）。
+- **只有一份中性正文**：不点名安装形态（说「你自己的设备或 NAS」而不是「飞牛原生应用包」），末尾分两组收口：`多端` 只列访问方式（PC 与手机浏览器 / Windows 桌面端 / Android App / 开放 API），`安装形态` 只列部署方式（飞牛 fnOS / 群晖 DSM / Docker）——同一批名词不在两处重复列（2026-11-03 用户指出「多端」与「版本」语义重复后改）。
 - **各渠道只做渲染适配，不改字**：
   - 单行载体（软仓 `desc` 的简介段、FnDepot `desc` / `i18n.*.desc`、`apps.example.json` / `api/apps` 的字段）：直接用下面的正典。
   - **群晖套件中心**：直接用正典原文，**一个字都不加**。DSM 说明区是纯文本面板、换行不可用；曾经在段首插「全角空格 + `▌`」凑分段，2026-10-24 明确取消——换行既然做不到，标记就只剩副作用，还让同一段话在不同渠道不再逐字相同。
   - **README**：用同一份口径复述（长文叙述 + 安装形态对照表），不另写一份商店简介。
-- 群晖的「版本：」行会列出「群晖 DSM」自己——这是统一正文的刻意结果，**不要为它开例外**、也不要给它单独写一份。
+- 群晖的「安装形态：」会列出「群晖 DSM」自己——这是统一正文的刻意结果，**不要为它开例外**、也不要给它单独写一份。
 
 ### 中文正典（单行 · 改简介只改这一段）
 
-MMH 家庭记账与全资产管理，本地优先，程序和账本数据只保存在你自己的设备或 NAS 上，不经过第三方云端。记账：支出、收入、转账、代付、借贷与还款，多账本、多币种、分类标签与成员。资产：信用卡分期、房贷重算、基金定投、股票盈亏、存款理财、房产保险。功能：报表对账、周期自动记账、导入导出、AI 识别、附件、撤销恢复与备份。多端：PC、手机浏览器、Windows、Android 与开放 API。版本：飞牛 fnOS、群晖 DSM、Windows、Docker、Android。
+MMH 家庭记账与全资产管理，本地优先，程序和账本数据只保存在你自己的设备或 NAS 上，不经过第三方云端。记账：支出、收入、转账、代付、借贷与还款，多账本、多币种、分类标签与成员。资产：信用卡分期、房贷重算、基金定投、股票盈亏、存款理财、房产保险。功能：报表对账、周期自动记账、导入导出、AI 识别、附件、撤销恢复与备份。多端：PC 与手机浏览器、Windows 桌面端、Android App 与开放 API。安装形态：飞牛 fnOS、群晖 DSM、Docker。
 
 ### English（FnDepot `i18n.en-US.desc` / 群晖 `enu` 的正文）
 
-MMH is a local-first home bookkeeping and full asset-management tool; the app and your ledger data stay on your own device or NAS, never through a third-party cloud. Bookkeeping: expenses, income, transfers, advances, borrowing and repayments, with multiple books, currencies, categories, tags and members. Assets: credit-card instalments, mortgage recalculation, fund regular investing, stock profit and loss, deposits, wealth products, property and insurance. Features: reports and reconciliation, scheduled entries, import and export, AI recognition, attachments, undo and backups. Clients: PC and mobile browsers, Windows, Android and an open API. Packages: Feiniu fnOS, Synology DSM, Windows, Docker and Android.
+MMH is a local-first home bookkeeping and full asset-management tool; the app and your ledger data stay on your own device or NAS, never through a third-party cloud. Bookkeeping: expenses, income, transfers, advances, borrowing and repayments, with multiple books, currencies, categories, tags and members. Assets: credit-card instalments, mortgage recalculation, fund regular investing, stock profit and loss, deposits, wealth products, property and insurance. Features: reports and reconciliation, scheduled entries, import and export, AI recognition, attachments, undo and backups. Clients: PC and mobile browsers, Windows desktop, Android app and an open API. Install forms: Feiniu fnOS, Synology DSM and Docker.
 
 ### 日本語（FnDepot `i18n.ja-JP.desc`）
 
-MMH はローカルファーストの家計・資産管理ツールです。アプリと帳簿データは自分のデバイスまたは NAS にのみ保存され、第三者クラウドを経由しません。記帳：支出・収入・振替・立替・借入・貸出・返済、複数帳簿・多通貨・カテゴリ・タグ・メンバー。資産：カード分割払い、ローンの返済再計算、投資信託の積立、株式の保有損益、預金、理財商品、不動産、保険。機能：レポートと残高照合、定期自動記帳、取込と書出、AI 認識、添付、取消と復元、バックアップ。多端：PC・モバイルブラウザ、Windows、Android、オープン API。各版：飛牛 fnOS、Synology DSM、Windows、Docker、Android。
+MMH はローカルファーストの家計・資産管理ツールです。アプリと帳簿データは自分のデバイスまたは NAS にのみ保存され、第三者クラウドを経由しません。記帳：支出・収入・振替・立替・借入・貸出・返済、複数帳簿・多通貨・カテゴリ・タグ・メンバー。資産：カード分割払い、ローンの返済再計算、投資信託の積立、株式の保有損益、預金、理財商品、不動産、保険。機能：レポートと残高照合、定期自動記帳、取込と書出、AI 認識、添付、取消と復元、バックアップ。多端：PC・モバイルブラウザ、Windows デスクトップ、Android アプリ、オープン API。導入形態：飛牛 fnOS、Synology DSM、Docker。
 
 ## 群晖说明区（正典原文，无标记）
 
@@ -38,10 +38,10 @@ MMH はローカルファーストの家計・資産管理ツールです。ア�
 曾经试过在五个段首词前插「四个全角空格 + `▌`」硬凑分段，那是**为换行做的权宜之计**：换行既然本来就不可能实现，标记就只是污染正文——同一段话在不同渠道不再逐字相同，反而破坏了「一份正文」。2026-10-24 按用户要求全部移除，并加了断言（正文里出现 `▌` 或 U+3000 即失败）。
 
 ```
-MMH 家庭记账与全资产管理，本地优先，程序和账本数据只保存在你自己的设备或 NAS 上，不经过第三方云端。记账：支出、收入、转账、代付、借贷与还款，多账本、多币种、分类标签与成员。资产：信用卡分期、房贷重算、基金定投、股票盈亏、存款理财、房产保险。功能：报表对账、周期自动记账、导入导出、AI 识别、附件、撤销恢复与备份。多端：PC、手机浏览器、Windows、Android 与开放 API。版本：飞牛 fnOS、群晖 DSM、Windows、Docker、Android。
+MMH 家庭记账与全资产管理，本地优先，程序和账本数据只保存在你自己的设备或 NAS 上，不经过第三方云端。记账：支出、收入、转账、代付、借贷与还款，多账本、多币种、分类标签与成员。资产：信用卡分期、房贷重算、基金定投、股票盈亏、存款理财、房产保险。功能：报表对账、周期自动记账、导入导出、AI 识别、附件、撤销恢复与备份。多端：PC 与手机浏览器、Windows 桌面端、Android App 与开放 API。安装形态：飞牛 fnOS、群晖 DSM、Docker。
 ```
 
-代价与取舍：239 字在套件中心会渲染成一整段，读起来偏密。**要更短只能改正典本身**（所有渠道一起变），不能给群晖单独加标记或另写一份。
+代价与取舍：234 字在套件中心会渲染成一整段，读起来偏密。**要更短只能改正典本身**（所有渠道一起变），不能给群晖单独加标记或另写一份。
 
 「新增功能」（`changelog`）是**另一个渲染区，按 HTML 渲染**：`<br/>` 生效，官方套件在这里还用了 `<b>` 小标题和有序列表；SynoCommunity 的 38 个包里有 13 个正是用 `1. …<br/>2. …` 断行的（2026-10-24 抓源确认）。所以 `app.py` 的 `_synology_plain_changelog()` 会按分号拆条，把「修复…」开头的条目归到 `<b>问题修复</b>`、其余归 `<b>功能更新</b>`，两组各自编号并用 `<br/>` 连接（官方套件同样是加粗小标题 + 有序列表）。不要把「说明」区和「新增功能」区的排版手段混用：前者纯文本，后者 HTML。
 
@@ -78,5 +78,5 @@ MMH 家庭记账与全资产管理，本地优先，程序和账本数据只保�
 
 1. **简介字段只放简介**：不带版本号、不带 `v<ver> 更新：` 前缀、不写本版功能清单。版本信息只进更新说明字段（`mmhFnosManifestChangelog` / 派生 `changelog_short` / `changelog` / `releases[].changelog` / `mmhReleaseNotes`）。唯一例外是软仓 `desc`——客户端只认它，所以把更新说明也写进这一段（`【本版更新】…<br><br>【软件简介】…`，**一整行**），让它在页面上只出现一次（见 `deploy/fnos/app-intro.md`）。
 2. **功能宣称必须能在代码库验证**（`prisma/schema.prisma` 的 model 列表 + `(sidebar)` 路由 + README 功能模块表是权威来源）。**无预算、无语音记账、无日历记账**，勿仿照 88jizhang.com 文案照搬。
-3. **长度按这一份定，别再膨胀**：中文正典约 240 字（2026-10-24 由 400 字连缩两版）。软仓把「更新说明 + 简介」挤在同一个 `desc` 里（一整行），写长了「应用介绍」会变成一堵墙；要加内容先删旧内容。
+3. **长度按这一份定，别再膨胀**：中文正典约 235 字（2026-10-24 由 400 字连缩两版；2026-11-03 去重后 234 字）。软仓把「更新说明 + 简介」挤在同一个 `desc` 里（一整行），写长了「应用介绍」会变成一堵墙；要加内容先删旧内容。
 4. **三语口径一致**：英/日不是机翻，是同一份文案的对应版本；没有译文时回落中文，别放空字符串。
