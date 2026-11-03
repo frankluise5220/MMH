@@ -237,6 +237,15 @@ Var mmhTitleFont
   ; 定位现有的数据目录。**不能只信注册表**：实测 0.1.78/0.1.79 的卸载记录里
   ; InstallLocation 是空的，只看它就会跳过备份、让旧卸载器把数据删掉。
   ; 注册表拿不到时按安装器的三个默认位置兜底。
+  ;
+  ; 快照不能跨安装周期存活：data-safe 只是本次安装过程中保护数据的临时副本。
+  ; 上一次安装如果走了「$INSTDIR\data 已存在」分支就会跳过清理，把这份副本
+  ; 一直留在 TEMP 里；用户之后把 data 目录改名（表示不再使用这份数据）再重装，
+  ; customInstall 会把它原样复制回 $INSTDIR\data，看起来像「改名无效」。
+  ; 因此这里先无条件清掉历史快照与标记，只有本次 preInit 重新生成并写 stamp 的
+  ; 副本才会在 customInstall 阶段被恢复。
+  RMDir /r "$TEMP\MMH-data-safe"
+  Delete "$TEMP\MMH-data-safe.stamp"
   StrCpy $3 ""
   ReadRegStr $3 HKCU "${INSTALL_REGISTRY_KEY}" InstallLocation
   StrCmp $3 "" 0 mmhPreInitLocate
@@ -260,19 +269,34 @@ Var mmhTitleFont
   nsExec::ExecToLog 'robocopy "$3\data" "$TEMP\MMH-data-safe" /E /NFL /NDL /NJH /NJS /R:1 /W:1'
   Pop $4
   DetailPrint "MMH: 已备份现有数据 $3\data -> $TEMP\MMH-data-safe (robocopy rc=$4)"
+  ; stamp 只标记「这份快照由本次安装创建」，customInstall 据此决定要不要恢复。
+  ; 备份为空时不写 stamp，避免恢复到一个空目录。
+  IfFileExists "$TEMP\MMH-data-safe\*.*" 0 mmhPreInitNoData
+  FileOpen $9 "$TEMP\MMH-data-safe.stamp" w
+  FileWrite $9 "snapshot"
+  FileClose $9
   mmhPreInitNoData:
 !macroend
 
-; 装完把 preInit 兜住的数据放回。只在新目录还没有 data 时恢复，避免覆盖。
+; 装完把 preInit 兜住的数据放回。只有本次安装生成（带 stamp）的快照才会被恢复；
+; 无论恢复与否，结束时都清掉快照，绝不让它跨安装周期存活。
 !macro customInstall
-  IfFileExists "$TEMP\MMH-data-safe\*.*" 0 mmhInstallNoData
-  IfFileExists "$INSTDIR\data\*.*" mmhInstallNoData mmhInstallRestore
+  IfFileExists "$TEMP\MMH-data-safe.stamp" 0 mmhInstallNoData
+  IfFileExists "$TEMP\MMH-data-safe\*.*" 0 mmhInstallCleanup
+  IfFileExists "$INSTDIR\data\*.*" mmhInstallCleanup mmhInstallRestore
   mmhInstallRestore:
   nsExec::ExecToLog 'robocopy "$TEMP\MMH-data-safe" "$INSTDIR\data" /E /NFL /NDL /NJH /NJS /R:1 /W:1'
   Pop $4
-  IfFileExists "$INSTDIR\data\*.*" 0 mmhInstallNoData
-  RMDir /r "$TEMP\MMH-data-safe"
+  IfFileExists "$INSTDIR\data\*.*" 0 mmhInstallKeep
   DetailPrint "MMH: 用户数据已恢复到 $INSTDIR\data"
+  Goto mmhInstallCleanup
+  mmhInstallKeep:
+  ; 恢复失败时保留快照并留下 stamp，仅作为排障副本；下次安装会在 preInit 里清掉它。
+  DetailPrint "MMH: 数据恢复失败，快照暂留在 $TEMP\MMH-data-safe"
+  Goto mmhInstallNoData
+  mmhInstallCleanup:
+  RMDir /r "$TEMP\MMH-data-safe"
+  Delete "$TEMP\MMH-data-safe.stamp"
   mmhInstallNoData:
 !macroend
 
