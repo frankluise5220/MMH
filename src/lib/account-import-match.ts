@@ -194,7 +194,7 @@ function escapeRegExp(value: string) {
 export function normalizeImportAccountMatchKey(value?: string | null) {
   return String(value ?? "")
     .trim()
-    .replace(/[·•\-—_\s()[\]（）【】\u7684]/g, "")
+    .replace(/[·•\-—_\s()[\]（）【】.。]/g, "")
     .toLowerCase();
 }
 
@@ -259,7 +259,7 @@ function accountOwnerKeys(account: ImportAccountMatchSource) {
 }
 
 function stripLeadingImportOwner(value: string, ownerName: string) {
-  const pattern = new RegExp(`^\\s*(?:\\u6240\\u6709\\u4eba\\s*[:\\uff1a]?\\s*)?${escapeRegExp(ownerName)}(?:\\s*\\u7684|[\\s·•_\\-—/／\\\\()[\\]\\uff08\\uff09\\u3010\\u3011:\\uff1a]+)?\\s*`);
+  const pattern = new RegExp(`^\\s*(?:\\u6240\\u6709\\u4eba\\s*[:\\uff1a]?\\s*)?${escapeRegExp(ownerName)}(?:\\s*\\u7684|[\\s·•_\\-—.。/／\\\\()[\\]\\uff08\\uff09\\u3010\\u3011:\\uff1a]+)?\\s*`);
   return value.replace(pattern, "").trim();
 }
 
@@ -275,7 +275,7 @@ function stripLeadingInstitutionName(value: string, institutionNames: string[]) 
   let next = value.trim();
   for (const institutionName of institutionNames.sort((a, b) => b.length - a.length)) {
     if (!institutionName) continue;
-    next = next.replace(new RegExp(`^\\s*${escapeRegExp(institutionName)}(?:\\s*\\u7684|[\\s·•_\\-—/／\\\\()[\\]\\uff08\\uff09\\u3010\\u3011:\\uff1a]+)?\\s*`), "").trim();
+    next = next.replace(new RegExp(`^\\s*${escapeRegExp(institutionName)}(?:\\s*\\u7684|[\\s·•_\\-—.。/／\\\\()[\\]\\uff08\\uff09\\u3010\\u3011:\\uff1a]+)?\\s*`), "").trim();
   }
   return next;
 }
@@ -309,7 +309,7 @@ function inferOwnedInvestmentProductType(value: string): ImportOwnedMoneyAccount
 function bareAccountTailDigits(value: string) {
   const text = String(value ?? "")
     .trim()
-    .replace(/[\s:：·•\-—_\u2014\u2013/／()[\]（）【】]/g, "")
+    .replace(/[\s:：·•\-—.。_\u2014\u2013/／()[\]（）【】]/g, "")
     .replace(/^(?:卡尾号|尾号|卡号|账号|账户|卡)/, "");
   return /^\d{2,20}$/.test(text) ? text : "";
 }
@@ -646,7 +646,7 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(
         if (!ownerKey || rawKey === ownerKey || !rawKey.startsWith(ownerKey)) continue;
         const ownerName = accountOwnerNames(item.account).find((name) => normalizeImportAccountMatchKey(name) === ownerKey);
         if (!ownerName) continue;
-        const ownerPrefix = new RegExp(`^\\s*(?:所有人\\s*[:：]?\\s*)?${escapeRegExp(ownerName)}(?:\\s*的|[\\s·•_\\-—/／\\\\()[\\]（）【】:：]|$)`);
+        const ownerPrefix = new RegExp(`^\\s*(?:所有人\\s*[:：]?\\s*)?${escapeRegExp(ownerName)}(?:\\s*的|[\\s·•_\\-—.。/／\\\\()[\\]（）【】:：]|$)`);
         const restKey = rawKey.slice(ownerKey.length);
         const restHasAccountHint =
           inferBankNames(restKey).length > 0 ||
