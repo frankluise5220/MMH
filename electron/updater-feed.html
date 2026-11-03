@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"
+    />
+    <title>MMH 更新源</title>
+    <style>
+      /* Local static page: no remote assets, everything inlined. */
+      :root {
+        --bg: #ffffff;
+        --fg: #0f172a;
+        --muted: #64748b;
+        --line: #e2e8f0;
+        --accent: #2563eb;
+        --accent-strong: #1d4ed8;
+        --ok: #059669;
+        --err: #b91c1c;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        height: 100%;
+        margin: 0;
+      }
+      body {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        padding: 18px 22px;
+        background: var(--bg);
+        color: var(--fg);
+        font-family: "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
+        font-size: 13px;
+        -webkit-font-smoothing: antialiased;
+        overflow: hidden;
+      }
+      h1 {
+        margin: 0;
+        font-size: 16px;
+        font-weight: 600;
+      }
+      .note {
+        margin: 0;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 18px;
+      }
+      .current {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        padding: 7px 10px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: #f8fafc;
+        font-size: 12px;
+        word-break: break-all;
+      }
+      .current b {
+        font-weight: 600;
+      }
+      .tag {
+        flex: none;
+        padding: 1px 6px;
+        border-radius: 999px;
+        font-size: 11px;
+        background: #e2e8f0;
+        color: #475569;
+      }
+      .tag.override {
+        background: #fef3c7;
+        color: #92400e;
+      }
+      input {
+        width: 100%;
+        height: 32px;
+        padding: 0 10px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        font-size: 13px;
+        font-family: inherit;
+        color: var(--fg);
+        background: #fff;
+        outline: none;
+      }
+      input:focus {
+        border-color: var(--accent);
+        box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+      }
+      .row {
+        display: flex;
+        gap: 8px;
+        margin-top: auto;
+      }
+      button {
+        height: 32px;
+        padding: 0 14px;
+        border-radius: 8px;
+        border: 1px solid var(--line);
+        background: #fff;
+        color: var(--fg);
+        font-size: 13px;
+        font-family: inherit;
+        cursor: pointer;
+      }
+      button:hover {
+        background: #f8fafc;
+      }
+      button.primary {
+        border-color: var(--accent);
+        background: var(--accent);
+        color: #fff;
+      }
+      button.primary:hover {
+        background: var(--accent-strong);
+      }
+      button:disabled {
+        opacity: 0.55;
+        cursor: default;
+      }
+      .spacer {
+        flex: 1;
+      }
+      #status {
+        min-height: 16px;
+        font-size: 12px;
+        line-height: 16px;
+        color: var(--muted);
+      }
+      #status.ok {
+        color: var(--ok);
+      }
+      #status.err {
+        color: var(--err);
+      }
+      .hint {
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 15px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>更新源</h1>
+    <p class="note">
+      把本机更新源临时指向测试目录，验证安装包能装、能启动后再发到公开更新源。
+      只改这一台机器，不影响打包产物。
+    </p>
+    <div class="current">
+      <span>当前</span>
+      <b id="effective">读取中…</b>
+      <span id="tag" class="tag">默认</span>
+    </div>
+    <input id="base" type="text" spellcheck="false" placeholder="http://192.168.2.148/mmh-test/win/" />
+    <p class="hint">填目录地址（需要能取到 latest.yml 与 mmh-app-latest.json），也可以直接填清单 json 的完整地址。</p>
+    <div id="status"></div>
+    <div class="row">
+      <button id="save" class="primary">保存并生效</button>
+      <button id="reset">恢复默认</button>
+      <span class="spacer"></span>
+      <button id="close">关闭</button>
+    </div>
+    <script>
+      const api = window.mmhUpdaterFeed;
+      const $effective = document.getElementById("effective");
+      const $tag = document.getElementById("tag");
+      const $base = document.getElementById("base");
+      const $status = document.getElementById("status");
+      const $save = document.getElementById("save");
+
+      function setStatus(text, kind) {
+        $status.textContent = text || "";
+        $status.className = kind || "";
+      }
+
+      function render(state) {
+        $effective.textContent = state.base || "";
+        const isDefault = !state.base || state.base === state.defaultBase;
+        $tag.textContent = isDefault ? "默认" : "已覆盖";
+        $tag.className = "tag" + (isDefault ? "" : " override");
+        if (isDefault) $base.value = "";
+        if (state.envLocked) {
+          setStatus("环境变量 MMH_UPDATER_BASE_URL 已设置，它优先于这里的值。", "err");
+        }
+      }
+
+      async function load() {
+        try {
+          render(await api.get());
+        } catch (error) {
+          setStatus("读取失败：" + error.message, "err");
+        }
+      }
+
+      $save.addEventListener("click", async () => {
+        $save.disabled = true;
+        try {
+          const result = await api.save($base.value);
+          if (!result.ok) {
+            setStatus(result.error || "保存失败", "err");
+            return;
+          }
+          render(result);
+          setStatus("已生效，现在点「检查更新」就是从这个地址取包。", "ok");
+        } catch (error) {
+          setStatus("保存失败：" + error.message, "err");
+        } finally {
+          $save.disabled = false;
+        }
+      });
+
+      document.getElementById("reset").addEventListener("click", async () => {
+        $base.value = "";
+        try {
+          const result = await api.save("");
+          if (!result.ok) return setStatus(result.error || "恢复失败", "err");
+          render(result);
+          setStatus("已恢复公开更新源。", "ok");
+        } catch (error) {
+          setStatus("恢复失败：" + error.message, "err");
+        }
+      });
+
+      document.getElementById("close").addEventListener("click", () => api.close());
+
+      $base.addEventListener("keydown", (event) => {
+        if (event.key === "Enter") $save.click();
+      });
+
+      load();
+    </script>
+  </body>
+</html>

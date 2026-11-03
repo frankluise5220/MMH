@@ -7,6 +7,10 @@ import path from "node:path";
  * The Electron main process reads the same file at startup to decide the
  * server bind address. Changing allowLan requires an app restart to take
  * effect because the Node server is already bound.
+ *
+ * The file also carries `updaterBaseUrl` (hidden update-source override, set
+ * from the Ctrl+Shift+U dialog in the desktop app). This route must merge, not
+ * overwrite: sending `{ allowLan }` here must never drop the override.
  */
 
 function configPath(): string {
@@ -14,26 +18,29 @@ function configPath(): string {
   return path.join(dataDir, "desktop-config.json");
 }
 
-function readConfig(): { allowLan: boolean } {
+function readConfig(): Record<string, unknown> {
   try {
     const raw = fs.readFileSync(configPath(), "utf8");
     const parsed = JSON.parse(raw);
-    return { allowLan: Boolean(parsed.allowLan) };
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return { allowLan: false };
+    }
+    return parsed as Record<string, unknown>;
   } catch {
     return { allowLan: false };
   }
 }
 
 export async function GET() {
-  return NextResponse.json({ ok: true, data: readConfig() });
+  const cfg = readConfig();
+  return NextResponse.json({ ok: true, data: { ...cfg, allowLan: Boolean(cfg.allowLan) } });
 }
 
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const allowLan = Boolean(body.allowLan);
     const cfg = readConfig();
-    cfg.allowLan = allowLan;
+    cfg.allowLan = Boolean(body.allowLan);
     fs.mkdirSync(path.dirname(configPath()), { recursive: true });
     fs.writeFileSync(configPath(), JSON.stringify(cfg, null, 2), "utf8");
     return NextResponse.json({ ok: true, data: cfg, restartRequired: true });

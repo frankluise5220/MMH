@@ -28,6 +28,11 @@ files:
   # UI while the installer downloads.
   - electron/update-window.html
   - electron/update-preload.cjs
+  # Hidden update-source dialog (Ctrl+Shift+U): same rule as the download
+  # window — a static page + its own bridge, packed explicitly so a missing
+  # entry fails the build instead of showing a blank window at runtime.
+  - electron/updater-feed.html
+  - electron/updater-feed-preload.cjs
   - "!node_modules/**"
   - "!**/node_modules/**"
   # electron-updater and its runtime deps (the standalone server keeps its
