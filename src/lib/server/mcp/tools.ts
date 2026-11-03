@@ -183,7 +183,7 @@ export const MCP_TOOLS: McpTool[] = [
         },
         investProductType: {
           type: "string",
-          enum: ["fund", "money", "wealth", "bond", "deposit", "metal", "stock", "property"],
+          enum: ["fund", "money", "wealth", "advisor", "bond", "deposit", "metal", "stock", "property"],
           description: "Filter by investment product type; omit for all",
         },
       },

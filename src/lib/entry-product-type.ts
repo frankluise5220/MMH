@@ -17,6 +17,7 @@ type EntryProductType =
   | "fund"
   | "money"
   | "wealth"
+  | "advisor"
   | "bond"
   | "deposit"
   | "metal"
@@ -28,6 +29,7 @@ const ENTRY_PRODUCT_TYPES: readonly string[] = [
   "fund",
   "money",
   "wealth",
+  "advisor",
   "bond",
   "deposit",
   "metal",
@@ -60,6 +62,7 @@ function productTypeFromBusinessLabels(labels: readonly string[] | null | undefi
     const text = String(label ?? "").trim();
     if (!text) continue;
     if (text.includes("存款交易")) return "deposit";
+    if (text.includes("投顾交易")) return "advisor";
     if (text.includes("理财交易")) return "wealth";
     if (text.includes("债券交易")) return "bond";
     if (text.includes("贵金属交易")) return "metal";
@@ -90,12 +93,12 @@ export function resolveEntryProductType(entry: {
   );
 }
 
-/** `link-cash-flow` 接口接受 businessType；货币基金归基金，债券走理财链路。 */
+/** `link-cash-flow` 接口接受 businessType；货币基金归基金，债券/投顾走理财链路。 */
 export function toBusinessLinkType(
   productType: EntryProductType | null,
 ): "fund" | "wealth" | "deposit" | "metal" | "insurance" | "stock" | "property" | null {
   if (!productType) return null;
   if (productType === "money") return "fund";
-  if (productType === "bond") return "wealth";
+  if (productType === "bond" || productType === "advisor") return "wealth";
   return productType;
 }

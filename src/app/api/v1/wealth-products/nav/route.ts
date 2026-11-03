@@ -52,7 +52,7 @@ export async function PUT(req: NextRequest) {
         id: accountId,
         householdId,
         kind: AccountKind.investment,
-        investProductType: { in: ["wealth", "bond"] },
+        investProductType: { in: ["wealth", "advisor", "bond"] },
       },
       select: { id: true, institutionId: true },
     });

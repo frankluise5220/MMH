@@ -181,7 +181,7 @@ export async function loadAssetMonthEndLevels(
     (account) => isPureInvestmentAccount(account) && account.investProductType === "stock",
   );
   const wealthAccounts = accounts.filter(
-    (account) => isPureInvestmentAccount(account) && (account.investProductType === "wealth" || account.investProductType === "bond"),
+    (account) => isPureInvestmentAccount(account) && (account.investProductType === "wealth" || account.investProductType === "advisor" || account.investProductType === "bond"),
   );
   const metalAccounts = accounts.filter(
     (account) => isPureInvestmentAccount(account) && account.investProductType === "metal",

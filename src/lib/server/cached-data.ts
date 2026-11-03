@@ -390,7 +390,7 @@ async function _loadInvestAccountData(
   positionDisplay.clearedPositions = [...positionDisplay.clearedPositions].sort(clearedSortFn);
 
   const selectedFundCode =
-    account.investProductType === "wealth" || account.investProductType === "bond"
+    account.investProductType === "wealth" || account.investProductType === "advisor" || account.investProductType === "bond"
       ? (params.wealthProductIdParam || "")
       : (params.fundCodeParam || "");
 
@@ -400,7 +400,7 @@ async function _loadInvestAccountData(
           householdId: hidFilter.householdId,
           accountIds: [accountId],
         })
-      : account.investProductType === "wealth"
+      : account.investProductType === "wealth" || account.investProductType === "advisor"
         ? await loadWealthTransactionEntryLike({
             householdId: hidFilter.householdId,
             accountIds: [accountId],
@@ -443,7 +443,7 @@ async function _loadInvestAccountData(
     ? fundEntries.filter((e: any) =>
         account.investProductType === "bond"
           ? e.bondProductId === selectedFundCode
-          : account.investProductType === "wealth"
+          : account.investProductType === "wealth" || account.investProductType === "advisor"
             ? e.wealthProductId === selectedFundCode
             : account.investProductType === "metal"
               ? e.metalTypeId === selectedFundCode
@@ -466,7 +466,7 @@ async function _loadInvestAccountData(
     totalPages,
     safePage,
     selectedFundCode,
-    selectedWealthProductId: account.investProductType === "wealth" || account.investProductType === "bond" ? selectedFundCode : "",
+    selectedWealthProductId: account.investProductType === "wealth" || account.investProductType === "advisor" || account.investProductType === "bond" ? selectedFundCode : "",
     pendingByCode: Object.fromEntries(pendingByCode),
     feeRateMap: Object.fromEntries(feeRateMap),
     confirmDaysMap: Object.fromEntries(confirmDaysMap),

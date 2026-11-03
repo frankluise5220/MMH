@@ -679,7 +679,7 @@ export function InvestmentFormModal({
   );
   const investmentAccountMatchesProductType = (account: AccountOption) => {
     if (productType === "metal") return account.investProductType === "metal";
-    if (productType === "wealth") return account.investProductType === "wealth";
+    if (productType === "wealth") return account.investProductType === "wealth" || account.investProductType === "advisor";
     if (productType === "bond") return account.investProductType === "bond";
     if (productType === "deposit") return account.investProductType === "deposit" || account.kind === "deposit";
     if (productType === "fund" || productType === "money") {

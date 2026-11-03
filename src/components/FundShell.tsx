@@ -672,7 +672,8 @@ export function FundShell(props: Props) {
   const formatFundUnits = useCallback((value: number) => value.toFixed(fundUnitsDecimals), [fundUnitsDecimals]);
   const accountProductType = selectedAccount?.investProductType ?? null;
   const isMetalAccount = accountProductType === "metal";
-  const isWealthAccount = accountProductType === "wealth";
+  // 投顾组合账户与理财账户共用理财壳层（持仓列、录入与编辑链路同构）。
+  const isWealthAccount = accountProductType === "wealth" || accountProductType === "advisor";
   const positionCols = isWealthAccount ? WEALTH_POSITION_COLS : POSITION_COLS;
   const assetNameLabel = isMetalAccount ? t("fundShell.col.species") : isWealthAccount ? t("fundShell.wealthProduct") : t("txForm.fund");
   const holdingTabLabel = isMetalAccount ? t("fundShell.tab.holdings.metal") : isWealthAccount ? t("fundShell.tab.holdings.wealth") : t("fundShell.tab.holdings.fund");
@@ -2927,6 +2928,7 @@ export function FundShell(props: Props) {
           e.fundProductType === "wealth" || e.fundProductType === "bond" ? (
             <WealthFormModal
             mode="edit"
+            family={accountProductType === "advisor" ? "advisor" : "wealth"}
             accountId={selectedAccount?.id ?? ""}
             entry={{
               id: e.id,

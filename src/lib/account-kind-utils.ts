@@ -144,7 +144,8 @@ export function getInvestmentAccountView(account: Pick<AccountKindLike, "investP
   // 债券有自己的视图（BondShell）：债券是「债单 + 票面利率 + 到期日 + 付息」模型，
   // 与基金的份额/净值模型不同，不复用 investwealth。
   if (account?.investProductType === "bond") return "investbond";
-  if (account?.investProductType === "wealth") return "investwealth";
+  // 投顾组合与理财共用理财视图（交易链路同构：份额 × 手动净值）。
+  if (account?.investProductType === "wealth" || account?.investProductType === "advisor") return "investwealth";
   if (account?.investProductType === "stock") return "investstock";
   if (account?.investProductType === "property") return "investproperty";
   return "investfund";
@@ -266,8 +267,8 @@ export function getCashTargetOperation(account: AccountKindLike | null | undefin
   if (isDepositAccount(account)) return "deposit";
   if (isPureInvestmentAccount(account)) {
     // Investment accounts (including stock) do not participate in normal transfers; they only use their dedicated entry windows
-    // 债券账户与理财账户同样打开理财录入窗口（交易链路共用），表单内部再按债券模式分流。
-    if (account.investProductType === "wealth" || account.investProductType === "bond") return "wealth";
+    // 债券/投顾账户与理财账户同样打开理财录入窗口（交易链路共用），表单内部再按类型分流。
+    if (account.investProductType === "wealth" || account.investProductType === "advisor" || account.investProductType === "bond") return "wealth";
     return "investment";
   }
   if (isLoanOrSettlementAccountKind(account.kind)) return "liability";

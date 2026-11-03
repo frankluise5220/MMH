@@ -40,6 +40,8 @@ export function allowedInstitutionTypesForAccount(
   if (accountKind === "investment") {
     if (productType === "stock") return ["brokerage"];
     if (productType === "fund" || productType === "money") return ["bank", "brokerage", "fund_company", "payment"];
+    // 投顾组合挂在基金公司/代销平台（蚂蚁、天天、盈米等），机构口径与基金一致。
+    if (productType === "advisor") return ["bank", "brokerage", "fund_company", "payment"];
     if (productType === "wealth" || productType === "deposit") return ["bank"];
     if (productType === "bond") return ["bank", "brokerage", "other"];
     if (productType === "metal") return ["bank", "brokerage", "other"];

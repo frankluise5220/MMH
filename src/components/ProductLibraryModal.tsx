@@ -615,7 +615,11 @@ export function ProductLibraryModal({
         throw new Error(String(data?.error ?? t("productLibrary.loadFailed")));
       }
       const rawList = (family === "insurance" ? data.masters : data.products) as Record<string, unknown>[] | undefined;
-      const loaded = (rawList ?? []).map((item) => normalizeRow(family, item));
+      // 理财产品库不列投顾组合产品（advisor 家族，2026-11-03 起，两类互不混排）。
+      const filteredList = family === "wealth"
+        ? (rawList ?? []).filter((item) => item.productType !== "advisor")
+        : rawList ?? [];
+      const loaded = filteredList.map((item) => normalizeRow(family, item));
       // 债券产品库里额外列出逆回购标准品种：它们不入库，只作为只读清单展示。
       setRows(family === "bond" ? [...loaded, ...exchangeProductRows()] : loaded);
     } catch (error) {

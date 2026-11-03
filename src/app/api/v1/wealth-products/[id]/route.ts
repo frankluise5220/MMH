@@ -8,6 +8,7 @@ import {
   personalInstitutionError,
 } from "@/lib/server/product-family-guard";
 import { isPersonalInstitutionType } from "@/lib/institution-rules";
+import { accountInstitutionTypeIsAllowed, ACCOUNT_INSTITUTION_TYPE_ERROR } from "@/lib/account-institution-rules";
 
 export const runtime = "nodejs";
 
@@ -42,6 +43,11 @@ export async function PUT(req: NextRequest, ctx: { params: Promise<{ id: string 
     }
     if (body.institutionId !== undefined) {
       const institutionId = String(body.institutionId ?? "").trim() || null;
+      // 投顾产品必须归属机构：产品库编辑不得把它改成「通用（不限机构）」
+      //（2026-11-03 用户裁定，与新建/下单路径同一口径）。
+      if (product.productType === "advisor" && !institutionId) {
+        return NextResponse.json({ ok: false, code: "INSTITUTION_REQUIRED", error: "投顾产品必须指定所属机构" }, { status: 400 });
+      }
       if (institutionId) {
         const institution = await prisma.institution.findFirst({ where: { id: institutionId, householdId } });
         if (!institution) {
@@ -51,6 +57,9 @@ export async function PUT(req: NextRequest, ctx: { params: Promise<{ id: string 
         if (isInsurerInstitution(institution)) return NextResponse.json(insurerInstitutionError(), { status: 400 });
         // 往来人员 / 往来组织 / 家庭成员不是理财产品的发行方（产品库下拉已排除，这里兜底）。
         if (isPersonalInstitutionType(institution.type)) return NextResponse.json(personalInstitutionError(), { status: 400 });
+        if (product.productType === "advisor" && !accountInstitutionTypeIsAllowed("investment", "advisor", institution.type)) {
+          return NextResponse.json({ ok: false, code: "INSTITUTION_TYPE_INVALID", error: ACCOUNT_INSTITUTION_TYPE_ERROR }, { status: 400 });
+        }
       }
       data.institutionId = institutionId;
     }

@@ -708,6 +708,26 @@ model BondProduct {
   @@index([institutionId])
 }
 
+/// 逆回购自定义品种：交易所 GC/R- 静态清单（src/lib/repo.ts，不入库）之外的品种，
+/// 比如券商专属代码或协议回购。按 household 隔离；费率留空时按交易所期限档兜底。
+model RepoProductCustom {
+  id             String    @id @default(cuid())
+  code           String
+  name           String
+  // "sh" | "sz"，与静态清单的 RepoMarket 口径一致
+  market         String
+  termDays       Int
+  feeRatePercent Decimal?  @db.Decimal(8, 5)
+  note           String?
+  householdId    String
+  Household      Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @default(now()) @updatedAt
+
+  @@unique([householdId, code])
+  @@index([householdId])
+}
+
 /// 债券交易（买入 / 赎回 / 利息到账 / 核销）。对齐 DepositTransaction，
 /// 不含基金专属的 units / nav。
 ///
@@ -1196,6 +1216,7 @@ model Household {
   DepositTransaction        DepositTransaction[]
   DepositProduct            DepositProduct[]
   BondProduct               BondProduct[]
+  RepoProductCustom         RepoProductCustom[]
   PreciousMetalTransaction  PreciousMetalTransaction[]
   StockSecurity             StockSecurity[]
   StockTransaction          StockTransaction[]
@@ -1390,6 +1411,8 @@ model WealthProduct {
   id                String              @id @default(cuid())
   name              String
   shortName         String?
+  // 产品家族：wealth=理财（默认），advisor=投顾组合。两类互不混排（2026-11-03）。
+  productType       String              @default("wealth")
   currency          String              @default("CNY")
   annualRate        Decimal?            @db.Decimal(10, 6)
   termDays          Int?
@@ -2162,6 +2185,7 @@ enum FundProductType {
   fund
   money
   wealth
+  advisor
   bond
   deposit
   metal

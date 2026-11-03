@@ -83,7 +83,7 @@ export function HoldingHoldingFields({
           <SmartSelect
             mode="single"
             value={toAccountId}
-            onChange={(id) => { setToAccountId(id); }}
+            onChange={(id) => { console.log("[dbg] account change ->", id, "from", toAccountId); setToAccountId(id); }}
             options={sortByAccountUsage(selectOptions, accountUsage)}
             placeholder={accountPlaceholder}
             onCycleOwnerFilter={cycleOwnerFilter}
@@ -161,6 +161,10 @@ export function HoldingProductModal({
   saving,
   onClose,
   onSave,
+  institutionOptions,
+  institutionId,
+  onInstitutionChange,
+  institutionRequired,
 }: {
   title: string;
   accountLabel: string;
@@ -171,6 +175,12 @@ export function HoldingProductModal({
   saving: boolean;
   onClose: () => void;
   onSave: () => void;
+  /** 「所属机构」下拉（投顾产品用）：产品与自动建的账户都落到所选机构。 */
+  institutionOptions?: Array<{ id: string; name: string }>;
+  institutionId?: string;
+  onInstitutionChange?: (id: string) => void;
+  /** 机构必选：true 时不提供「通用（不限机构）」空选项（投顾产品必须归属机构）。 */
+  institutionRequired?: boolean;
 }) {
   const { t } = useI18n();
   return (
@@ -198,6 +208,21 @@ export function HoldingProductModal({
               autoFocus
             />
           </div>
+          {onInstitutionChange && institutionOptions ? (
+            <div className="space-y-1">
+              <div className="form-label">{t("productLibrary.institution")}</div>
+              <select
+                value={institutionId ?? ""}
+                onChange={(e) => onInstitutionChange(e.target.value)}
+                className="form-input"
+              >
+                {!institutionRequired ? <option value="">{t("wealthForm.universalProduct")}</option> : null}
+                {institutionOptions.map((item) => (
+                  <option key={item.id} value={item.id}>{item.name}</option>
+                ))}
+              </select>
+            </div>
+          ) : null}
           <div className="rounded-[10px] border border-blue-100 bg-blue-50 px-3 py-2 text-xs leading-5 text-blue-700">
             {hint}
           </div>
@@ -244,6 +269,7 @@ export function HoldingProductModal({
 /**
  * 「新增资金账户 / 新增投资账户」内层窗口。两个品种只差实体类型标识与文案：
  * - 理财：`wealth-account` + `investProductType: "wealth"`
+ * - 投顾组合：`wealth-account` + `investProductType: "advisor"`
  * - 债券：`bond-account` + `investProductType: "bond"`
  */
 export function HoldingAccountCreateModal({
@@ -256,7 +282,7 @@ export function HoldingAccountCreateModal({
   nestedFieldData,
 }: FormProps & {
   investmentEntityType: string;
-  investProductType: "wealth" | "bond";
+  investProductType: "wealth" | "advisor" | "bond";
   title: string;
   nameLabel: string;
   accountLabelText: string;

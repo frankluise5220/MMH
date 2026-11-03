@@ -3,9 +3,9 @@ import { FundSubtype } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { parseDateInputToUtc, toNumber } from "@/lib/date-utils";
 import {
-  estimateRepoFee,
   estimateRepoInterest,
   estimateRepoMaturityDateKey,
+  repoFeeRatePercent,
   repoOccupiedDays,
   repoProductByCode,
   repoProductLabel,
@@ -65,6 +65,30 @@ function repoPrincipal(value: unknown): number {
   return Number.isFinite(amount) && amount > 0 ? Number(amount.toFixed(2)) : 0;
 }
 
+/**
+ * 品种解析：先查交易所静态清单，再查本账簿的自定义品种（RepoProductCustom）。
+ * 自定义品种的费率留空时按交易所期限档兜底（repoFeeRatePercent）。
+ */
+async function resolveRepoProduct(householdId: string, code: string) {
+  const standard = repoProductByCode(code);
+  if (standard) return standard;
+  const custom = await prisma.repoProductCustom.findUnique({
+    where: { householdId_code: { householdId, code } },
+  });
+  if (!custom) return null;
+  const termDays = custom.termDays;
+  return {
+    code: custom.code,
+    name: custom.name,
+    market: custom.market === "sz" ? ("sz" as const) : ("sh" as const),
+    termDays,
+    minAmount: 1000,
+    stepAmount: 1000,
+    feeRatePercent:
+      custom.feeRatePercent == null ? repoFeeRatePercent(termDays) : Number(custom.feeRatePercent),
+  };
+}
+
 /** 借出：本金从券商资金账户出到「逆回购存单」。 */
 export async function lendRepo(input: RepoLendInput): Promise<{
   bondTransactionId: string;
@@ -78,7 +102,7 @@ export async function lendRepo(input: RepoLendInput): Promise<{
   if (!(principal > 0)) throw new Error("借出金额不正确");
   const tradeDate = parseDateInputToUtc(input.date);
   if (!tradeDate) throw new Error("成交日期不正确");
-  const product = repoProductByCode(input.code);
+  const product = await resolveRepoProduct(input.householdId, input.code);
   if (!product) throw new Error("请选择逆回购品种");
 
   const termDays = Math.round(Number(input.termDays ?? product.termDays)) || product.termDays;
@@ -91,7 +115,10 @@ export async function lendRepo(input: RepoLendInput): Promise<{
 
   const annualRate = input.annualRate != null && input.annualRate > 0 ? input.annualRate : null;
   const interest = estimateRepoInterest({ principal, annualRate, occupiedDays });
-  const fee = input.fee != null && input.fee >= 0 ? Number(input.fee.toFixed(2)) : estimateRepoFee(principal, termDays);
+  // 手续费默认用品种费率（自定义品种可以有自己的费率，不按交易所期限档）。
+  const defaultFee =
+    principal > 0 ? Math.max(0.01, Number(((principal * product.feeRatePercent) / 100).toFixed(2))) : 0;
+  const fee = input.fee != null && input.fee >= 0 ? Number(input.fee.toFixed(2)) : defaultFee;
 
   const result = await createBondEntry({
     householdId: input.householdId,

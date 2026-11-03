@@ -22,7 +22,7 @@ type ImportOwnedMoneyAccountCandidate = {
   accountName: string;
   ownerName: string;
   kind: "bank_debit" | "cash" | "ewallet" | "investment";
-  investProductType?: "fund" | "money" | "wealth" | "bond";
+  investProductType?: "fund" | "money" | "wealth" | "advisor" | "bond";
   institutionName?: string;
   institutionDisplayName?: string;
   numberMasked?: string;
@@ -294,6 +294,7 @@ function inferBankDisplayName(value: string, canonicalName?: string) {
 }
 function inferOwnedInvestmentProductType(value: string): ImportOwnedMoneyAccountCandidate["investProductType"] | null {
   if (/\u8d27\u5e01\u57fa\u91d1/.test(value)) return "money";
+  if (/\u6295\u987e/.test(value)) return "advisor";
   if (/\u7406\u8d22/.test(value)) return "wealth";
   if (/\u57ce\u6295\u503a|\u503a\u5238/.test(value)) return "bond";
   if (/\u57fa\u91d1/.test(value)) return "fund";
@@ -384,7 +385,7 @@ export function parseImportOwnedMoneyAccountCandidate(
     : kind === "ewallet"
       ? "\u7535\u5b50\u94b1\u5305"
       : kind === "investment"
-        ? investProductType === "wealth"
+        ? investProductType === "wealth" || investProductType === "advisor"
           ? "\u7406\u8d22"
           : investProductType === "bond"
             ? "\u503a\u5238"

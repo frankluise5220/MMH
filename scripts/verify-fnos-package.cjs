@@ -480,6 +480,16 @@ expect(/20260911_rekey_debt_agreement_to_account/.test(buildScript) && /rebuildD
       /SET type = 'lender' WHERE type = 'debt'/.test(buildScript),
     "fnOS SQLite migrations must rename debt* storage to liability semantics (columns, agreement table, source prefix, lender institution type) for existing databases.",
   );
+  expect(
+    /20261031_add_access_key_last_used_at/.test(buildScript) &&
+      /addColumnIfMissing\(db, "AccessKey", "lastUsedAt", "DATETIME"\)/.test(buildScript),
+    "fnOS SQLite migrations must add AccessKey.lastUsedAt for existing databases, otherwise the API-key list fails on a missing column after upgrade.",
+  );
+  expect(
+    /20261102_add_bond_instrument_kind/.test(buildScript) &&
+      /addColumnIfMissing\(db, "bond_transactions", "instrumentKind", "TEXT NOT NULL DEFAULT 'bond'"\)/.test(buildScript),
+    "fnOS SQLite migrations must add bond_transactions.instrumentKind for existing databases, otherwise upgraded devices hide every existing bond and cannot open the reverse-repo view.",
+  );
 for (const tableName of [
   "transactions",
   "fund_transactions",

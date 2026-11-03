@@ -10,6 +10,7 @@ import {
   personalInstitutionError,
 } from "@/lib/server/product-family-guard";
 import { isPersonalInstitutionType } from "@/lib/institution-rules";
+import { accountInstitutionTypeIsAllowed, ACCOUNT_INSTITUTION_TYPE_ERROR } from "@/lib/account-institution-rules";
 import { normalizeCurrency, normalizeOptionalCurrency } from "@/lib/currency";
 import { loadWealthHoldingCounts } from "@/lib/server/product-holding-counts";
 
@@ -91,6 +92,8 @@ export async function GET(req: NextRequest) {
         id: item.id,
         name: item.name,
         shortName: item.shortName,
+        // 产品家族：wealth=理财，advisor=投顾组合（录入窗口按下拉过滤互不混排）。
+        productType: item.productType,
         institutionId: item.institutionId,
         institutionName: item.Institution?.shortName?.trim() || item.Institution?.name || "",
         currency: item.currency,
@@ -129,6 +132,8 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const name = String(body.name ?? "").trim();
     const shortName = String(body.shortName ?? "").trim() || null;
+    // 产品家族：advisor=投顾组合窗口提交，缺省 wealth=理财。查重与账户解析都按家族隔离。
+    const productType = body.productType === "advisor" ? "advisor" : "wealth";
     const cashAccountId = String(body.cashAccountId ?? "").trim();
     const requestedWealthAccountId = String(body.wealthAccountId ?? "").trim() || null;
     const requestedCurrency = normalizeOptionalCurrency(body.currency);
@@ -141,14 +146,22 @@ export async function POST(req: NextRequest) {
     // 产品库（mode: "master"）：只登记产品主数据，不解析/创建理财账户，也不需要资金来源账户。
     if (String(body.mode ?? "").trim() === "master") {
       const institutionId = String(body.institutionId ?? "").trim() || null;
+      // 投顾产品没有「通用（不限机构）」：产品库登记同样必须落到一个机构
+      // （2026-11-03 用户裁定，与下单路径同一口径）。
+      if (productType === "advisor" && !institutionId) {
+        return NextResponse.json({ ok: false, code: "INSTITUTION_REQUIRED", error: "投顾产品必须指定所属机构" }, { status: 400 });
+      }
       if (institutionId) {
         const institution = await prisma.institution.findFirst({ where: { id: institutionId, householdId } });
         if (!institution) return NextResponse.json({ ok: false, code: "INSTITUTION_NOT_FOUND", error: "机构不存在" }, { status: 400 });
         if (isInsurerInstitution(institution)) return NextResponse.json(insurerInstitutionError(), { status: 400 });
         // 往来人员 / 往来组织 / 家庭成员不是理财产品的发行方。
         if (isPersonalInstitutionType(institution.type)) return NextResponse.json(personalInstitutionError(), { status: 400 });
+        if (productType === "advisor" && !accountInstitutionTypeIsAllowed("investment", "advisor", institution.type)) {
+          return NextResponse.json({ ok: false, code: "INSTITUTION_TYPE_INVALID", error: ACCOUNT_INSTITUTION_TYPE_ERROR }, { status: 400 });
+        }
       }
-      const duplicate = await prisma.wealthProduct.findFirst({ where: { householdId, institutionId, name } });
+      const duplicate = await prisma.wealthProduct.findFirst({ where: { householdId, institutionId, name, productType } });
       if (duplicate) return NextResponse.json({ ok: false, code: "PRODUCT_EXISTS", error: "同一机构下已有同名理财产品" }, { status: 409 });
       const created = await prisma.wealthProduct.create({
         data: {
@@ -156,6 +169,7 @@ export async function POST(req: NextRequest) {
           institutionId,
           name,
           shortName,
+          productType,
           currency: requestedCurrency ? normalizeCurrency(requestedCurrency) : "CNY",
           annualRate,
           termDays: termDays == null ? null : Math.round(termDays),
@@ -169,6 +183,7 @@ export async function POST(req: NextRequest) {
           id: created.id,
           name: created.name,
           shortName: created.shortName,
+          productType: created.productType,
           institutionId: created.institutionId,
           currency: created.currency,
           annualRate: created.annualRate == null ? null : Number(created.annualRate),
@@ -182,15 +197,36 @@ export async function POST(req: NextRequest) {
     // 新建产品只登记名称/类型；到期日、票面利率等条款在购买界面按次填写后回填
     // （PUT /wealth-products/[id] 是债单条款真源），不再强制创建即填齐。
 
+    // 机构归属（投顾产品用）：必填（2026-11-03 用户裁定，不提供「通用（不限机构）」），
+    // 且必须符合投资账户机构口径；产品与自动建的投顾账户都落到该机构。
+    let institutionOverride: string | null = null;
+    const requestedInstitutionId = String(body.institutionId ?? "").trim() || null;
+    if (productType === "advisor" && !requestedInstitutionId) {
+      return NextResponse.json({ ok: false, code: "INSTITUTION_REQUIRED", error: "投顾产品必须指定所属机构" }, { status: 400 });
+    }
+    if (requestedInstitutionId) {
+      const institution = await prisma.institution.findFirst({ where: { id: requestedInstitutionId, householdId } });
+      if (!institution) return NextResponse.json({ ok: false, code: "INSTITUTION_NOT_FOUND", error: "机构不存在" }, { status: 400 });
+      if (isInsurerInstitution(institution)) return NextResponse.json(insurerInstitutionError(), { status: 400 });
+      if (isPersonalInstitutionType(institution.type)) return NextResponse.json(personalInstitutionError(), { status: 400 });
+      // 金融产品不可能归属于往来主体：显式指定的机构必须符合投资账户机构口径。
+      if (productType === "advisor" && !accountInstitutionTypeIsAllowed("investment", "advisor", institution.type)) {
+        return NextResponse.json({ ok: false, code: "INSTITUTION_TYPE_INVALID", error: ACCOUNT_INSTITUTION_TYPE_ERROR }, { status: 400 });
+      }
+      institutionOverride = requestedInstitutionId;
+    }
+
     const { product, wealthAccount } = await prisma.$transaction(async (tx) => {
       const resolvedAccount = await resolveOrCreateWealthAccount(tx, {
         householdId,
         cashAccountId,
         requestedAccountId: requestedWealthAccountId,
-        accountProductType: "wealth",
+        accountProductType: productType === "advisor" ? "advisor" : "wealth",
+        institutionIdOverride: institutionOverride,
       });
+      const effectiveInstitutionId = institutionOverride ?? resolvedAccount.institutionId;
       const existing = await tx.wealthProduct.findFirst({
-        where: { householdId, institutionId: resolvedAccount.institutionId, name },
+        where: { householdId, institutionId: effectiveInstitutionId, name, productType },
         include: { Institution: { select: { id: true, name: true, shortName: true } } },
       });
       const targetCurrency = requestedCurrency ? normalizeCurrency(requestedCurrency) : normalizeCurrency(resolvedAccount.currency);
@@ -202,7 +238,8 @@ export async function POST(req: NextRequest) {
           householdId,
           name,
           shortName,
-          institutionId: resolvedAccount.institutionId,
+          productType,
+          institutionId: effectiveInstitutionId,
           currency: targetCurrency,
           annualRate,
           termDays: termDays == null ? null : Math.round(termDays),
@@ -219,6 +256,7 @@ export async function POST(req: NextRequest) {
         id: product.id,
         name: product.name,
         shortName: product.shortName,
+        productType: product.productType,
         institutionId: product.institutionId,
         institutionName: product.Institution?.shortName?.trim() || product.Institution?.name || "",
         currency: product.currency,

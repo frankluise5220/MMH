@@ -142,6 +142,8 @@ const SYSTEM_CATEGORY_LABEL_KEYS: Record<string, string> = {
   "理财收益": "systemCategory.wealthProfit",
   "理财赎回": "systemCategory.wealthRedeem",
   "理财投资": "systemCategory.wealthInvestment",
+  "投顾买入": "systemCategory.advisorBuy",
+  "投顾赎回": "systemCategory.advisorRedeem",
   "利息": "systemCategory.interest",
   "利息支出": "systemCategory.interestExpense",
   "临时支出": "systemCategory.temporaryExpenses",

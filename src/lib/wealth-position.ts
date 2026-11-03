@@ -205,7 +205,7 @@ export async function recalcWealthPositions(accountId: string) {
   });
   if (!account || account.kind !== "investment") return;
   const isBond = account.investProductType === "bond";
-  if (!isBond && account.investProductType !== "wealth") return;
+  if (!isBond && account.investProductType !== "wealth" && account.investProductType !== "advisor") return;
 
   const fundUnitsDecimals = normalizeFundUnitsDecimals(account.fundUnitsDecimals, 2);
   const commonSelect = {

@@ -53,8 +53,20 @@ type UseHoldingEntryFormOptions = {
   productKind: string;
   /** 事件命名空间：`mmh:<eventNamespace>:edit` / `mmh:<eventNamespace>:create`。 */
   eventNamespace: string;
+  /**
+   * 打开事件名覆盖：投顾组合等「独立窗口但复用同一表单」的场景用它拆开监听，
+   * 避免和理财窗口互相抢事件。缺省回退 `mmh:<eventNamespace>:create|edit`。
+   * 保存成功事件仍按 eventNamespace 派发（mmh:wealth:edit:success），刷新链路不变。
+   */
+  createEventName?: string;
+  editEventName?: string;
   /** create 事件里「默认投资账户」字段名。 */
   defaultAccountKey: string;
+  /**
+   * 赎回回款目的地放开（投顾组合用，2026-11-03）：不限定「借记卡或同机构电子钱包」，
+   * 任意资金账户都可作为回款账户（理财仍保持原口径）。
+   */
+  redeemArrivalAnyCash?: boolean;
   /** 买入已有份额型产品时是否必须有份额（默认 true；无份额品种传 false）。 */
   requiresUnitsOnBuy?: boolean;
   /** 产品 id → 名称，用于判断「买入同产品已有份额」。 */
@@ -95,8 +107,11 @@ export function useHoldingEntryForm(options: UseHoldingEntryFormOptions) {
     typedHoldingOptions,
     productKind,
     eventNamespace,
+    createEventName: createEventNameOverride,
+    editEventName: editEventNameOverride,
     defaultAccountKey,
     requiresUnitsOnBuy = true,
+    redeemArrivalAnyCash = false,
   } = options;
 
   const today = todayDateLocalYmd();
@@ -185,7 +200,19 @@ export function useHoldingEntryForm(options: UseHoldingEntryFormOptions) {
   useEffect(() => {
     if (nestedFieldData) setLocalNestedFieldData(nestedFieldData);
   }, [nestedFieldData]);
-  const { ownerFilterLabel: cfLabel, cycleOwnerFilter: cfCycle, filteredOptions: cashFiltered } = useAccountSSFilter(localCashSSOpts);
+  // 「不限账户种类」开关：打开后账户下拉解除种类/机构过滤（SS 下拉的锁形开关控制）。
+  const [unrestrictedAccounts, setUnrestrictedAccounts] = useState(false);
+
+  // 资金来源 SS：解锁时放开为「所有资金类」（借记卡/资金账户/电子钱包，跨组跨机构）。
+  // 注意设置里「按类型筛选」关闭时会把投资账户也漏进资金候选，这里始终按资金类收口。
+  const CASH_FAMILY_KINDS = new Set(["bank_debit", "cash", "ewallet"]);
+  const baseCashSSOpts = useMemo(() => {
+    if (!unrestrictedAccounts) return localCashSSOpts;
+    const items = (localCashSSOpts ?? []).filter((option) => option.isHeader || CASH_FAMILY_KINDS.has(String(option.kind ?? "")));
+    const usedParents = new Set(items.map((option) => option.parentId).filter(Boolean));
+    return items.filter((option) => !option.isHeader || usedParents.has(option.id));
+  }, [localCashSSOpts, unrestrictedAccounts]);
+  const { ownerFilterLabel: cfLabel, cycleOwnerFilter: cfCycle, filteredOptions: cashFiltered } = useAccountSSFilter(baseCashSSOpts);
   const isRedeem = subtype === "redeem";
   const isDividend = subtype === "dividend_cash";
   const isWriteOff = subtype === "write_off";
@@ -197,8 +224,13 @@ export function useHoldingEntryForm(options: UseHoldingEntryFormOptions) {
   );
 
   const accountList = useMemo(
-    () => restrictAccountsByType(investmentAccountList, (account) => account.investProductType === productKind),
-    [investmentAccountList, productKind],
+    () =>
+      // 「不限账户种类」开关（2026-11-03）：打开后账户下拉不再按账户家族过滤，
+      // 服务端规则（investProductType 匹配、机构口径）仍然兜底。
+      unrestrictedAccounts
+        ? investmentAccountList
+        : restrictAccountsByType(investmentAccountList, (account) => account.investProductType === productKind),
+    [investmentAccountList, productKind, unrestrictedAccounts],
   );
   const accountIds = useMemo(() => new Set(accountList.map((account) => account.id)), [accountList]);
   const isInvestAccountAllowed = useCallback(
@@ -214,10 +246,10 @@ export function useHoldingEntryForm(options: UseHoldingEntryFormOptions) {
   );
 
   const selectableAccountList = useMemo(() => {
-    if (isHoldingAction) return accountList;
+    if (isHoldingAction || unrestrictedAccounts) return accountList;
     if (!selectedCashAccount?.groupId) return [];
     return accountList.filter((account) => isInvestAccountAllowed(selectedCashAccount, account));
-  }, [isHoldingAction, selectedCashAccount, accountList, isInvestAccountAllowed]);
+  }, [isHoldingAction, selectedCashAccount, accountList, isInvestAccountAllowed, unrestrictedAccounts]);
   const selectableAccountIds = useMemo(
     () => new Set(selectableAccountList.map((account) => account.id)),
     [selectableAccountList],
@@ -247,22 +279,25 @@ export function useHoldingEntryForm(options: UseHoldingEntryFormOptions) {
     () =>
       cashAccountList.filter((account) =>
         isRedeem
-          ? isRedeemArrivalAccount(account, selectedInvestInstitutionId)
-          : isDividendArrivalAccount(account, selectedInvestInstitutionId),
+          ? redeemArrivalAnyCash || unrestrictedAccounts || isRedeemArrivalAccount(account, selectedInvestInstitutionId)
+          : unrestrictedAccounts || isDividendArrivalAccount(account, selectedInvestInstitutionId),
       ),
-    [cashAccountList, isRedeem, selectedInvestInstitutionId],
+    [cashAccountList, isRedeem, redeemArrivalAnyCash, selectedInvestInstitutionId, unrestrictedAccounts],
   );
 
   const resolveAccountForCashAccount = useCallback((cashId: string, explicitAccountId?: string | null) => {
     const cashAccount = cashAccountList.find((account) => account.id === cashId);
     if (!cashAccount?.groupId) return "";
-    const allowedAccounts = accountList.filter((account) => isInvestAccountAllowed(cashAccount, account));
+    // 开关打开时不再按机构匹配过滤（explicit 直通），服务端仍会校验。
+    const allowedAccounts = unrestrictedAccounts
+      ? accountList
+      : accountList.filter((account) => isInvestAccountAllowed(cashAccount, account));
     if (explicitAccountId && allowedAccounts.some((account) => account.id === explicitAccountId)) return explicitAccountId;
     const sameInstitution = allowedAccounts.find((account) => account.institutionId === cashAccount.institutionId);
     if (sameInstitution) return sameInstitution.id;
     if (allowedAccounts.some((account) => account.id === defaultAccountId)) return defaultAccountId;
     return "";
-  }, [cashAccountList, defaultAccountId, accountList, isInvestAccountAllowed]);
+  }, [cashAccountList, defaultAccountId, accountList, isInvestAccountAllowed, unrestrictedAccounts]);
 
   useEffect(() => { setCashAccountList(cashAccounts); }, [cashAccounts]);
   useEffect(() => { setInvestmentAccountList(investmentAccounts); }, [investmentAccounts]);
@@ -645,9 +680,10 @@ export function useHoldingEntryForm(options: UseHoldingEntryFormOptions) {
       );
       setOpen(true);
     }
-    window.addEventListener(`mmh:${eventNamespace}:edit`, onEdit as EventListener);
-    return () => window.removeEventListener(`mmh:${eventNamespace}:edit`, onEdit as EventListener);
-  }, [accountIds, accountList, defaultAccountId, eventNamespace, mode, shouldListenForEditEvents, today, typedHoldingOptions]);
+    const editEventName = editEventNameOverride ?? `mmh:${eventNamespace}:edit`;
+    window.addEventListener(editEventName, onEdit as EventListener);
+    return () => window.removeEventListener(editEventName, onEdit as EventListener);
+  }, [accountIds, accountList, defaultAccountId, editEventNameOverride, eventNamespace, mode, shouldListenForEditEvents, today, typedHoldingOptions]);
 
   // 新建事件：外部（账户页/移动端）请求直接打开表单。
   useEffect(() => {
@@ -678,9 +714,10 @@ export function useHoldingEntryForm(options: UseHoldingEntryFormOptions) {
       );
       setOpen(true);
     }
-    window.addEventListener(`mmh:${eventNamespace}:create`, onCreate as EventListener);
-    return () => window.removeEventListener(`mmh:${eventNamespace}:create`, onCreate as EventListener);
-  }, [defaultAccountKey, eventNamespace, mode, resolveAccountForCashAccount, today]);
+    const createEventName = createEventNameOverride ?? `mmh:${eventNamespace}:create`;
+    window.addEventListener(createEventName, onCreate as EventListener);
+    return () => window.removeEventListener(createEventName, onCreate as EventListener);
+  }, [createEventNameOverride, defaultAccountKey, eventNamespace, mode, resolveAccountForCashAccount, today]);
 
   useEffect(() => {
     setHoldingFilterDate(date);
@@ -831,6 +868,8 @@ export function useHoldingEntryForm(options: UseHoldingEntryFormOptions) {
     productInstitutionId,
     selectedInvestInstitutionId,
     redeemCashOptions,
+    unrestrictedAccounts,
+    setUnrestrictedAccounts,
     resolveAccountForCashAccount,
     accountUsage,
     cfLabel,

@@ -25,7 +25,7 @@ export async function GET(req: Request) {
         ...ctx.hidFilter,
         isPlaceholder: { not: true },
         isAggregate: { not: true },
-        investProductType: "wealth",
+        investProductType: { in: ["wealth", "advisor"] },
       },
       select: { id: true, name: true },
       orderBy: { name: "asc" },

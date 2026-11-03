@@ -79,7 +79,7 @@ export function buildWealthHoldingOptions(params: {
   }>();
 
   for (const entry of entries) {
-    if ((entry.fundProductType !== "wealth" && entry.fundProductType !== "bond") || entry.deletedAt) continue;
+    if ((entry.fundProductType !== "wealth" && entry.fundProductType !== "advisor" && entry.fundProductType !== "bond") || entry.deletedAt) continue;
     const amountValue = toNumber(entry.amount);
     const principalAmountValue = entry.wealthPrincipalAmount != null ? toNumber(entry.wealthPrincipalAmount) : amountValue;
     const isRedeemEntry =

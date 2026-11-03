@@ -636,6 +636,13 @@ function investmentCategoryLabel(
     if (subtype === "buy") return t("txForm.depositIn");
     if (subtype === "dividend_cash" || subtype === "dividend_reinvest") return t("deposit.subtype.dividend");
   }
+  if (productType === "advisor") {
+    // 投顾组合的兜底标签（新建行通常已带「投顾买入/投顾赎回」分类名，走上面 systemCategoryLabel）。
+    if (subtype === "redeem") return t("systemCategory.advisorRedeem");
+    if (isRegularInvestRefundEntry({ fundSubtype: subtype, source })) return t("detailView.buyRefund");
+    if (subtype === "buy_failed") return t("detailView.buyFailed");
+    if (subtype === "buy") return t("systemCategory.advisorBuy");
+  }
   if (productType === "wealth") {
     if (subtype === "redeem") return t("detailView.wealthRedeem");
     if (isRegularInvestRefundEntry({ fundSubtype: subtype, source })) return t("detailView.buyRefund");

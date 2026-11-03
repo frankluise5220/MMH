@@ -15,6 +15,9 @@ const SYSTEM_WEALTH_BUY_CATEGORY = "理财买入";
 const SYSTEM_WEALTH_REDEEM_CATEGORY = "理财赎回";
 const SYSTEM_WEALTH_DIVIDEND_CATEGORY = "理财分红";
 const SYSTEM_WEALTH_WRITE_OFF_CATEGORY = "理财核销";
+// 投顾组合：独立记账窗口（family=advisor），只有买入/赎回；分类仍归投资大类。
+const SYSTEM_ADVISOR_BUY_CATEGORY = "投顾买入";
+const SYSTEM_ADVISOR_REDEEM_CATEGORY = "投顾赎回";
 const SYSTEM_BOND_BUY_CATEGORY = "城投债买入";
 const SYSTEM_BOND_REDEEM_CATEGORY = "城投债赎回";
 export const SYSTEM_BOND_INTEREST_CATEGORY = "城投债利息";
@@ -56,6 +59,8 @@ export const SYSTEM_WEALTH_INVESTMENT_ACTION_CATEGORIES = [
   SYSTEM_WEALTH_REDEEM_CATEGORY,
   SYSTEM_WEALTH_DIVIDEND_CATEGORY,
   SYSTEM_WEALTH_WRITE_OFF_CATEGORY,
+  SYSTEM_ADVISOR_BUY_CATEGORY,
+  SYSTEM_ADVISOR_REDEEM_CATEGORY,
   SYSTEM_BOND_BUY_CATEGORY,
   SYSTEM_BOND_REDEEM_CATEGORY,
   SYSTEM_BOND_INTEREST_CATEGORY,
@@ -115,6 +120,12 @@ export function getInvestmentCategoryName(entry: {
 
   if (subtype === "buy_failed" && source === "regular_invest_refund") return SYSTEM_INVESTMENT_BUY_REFUND_CATEGORY;
   if (subtype === "buy_failed") return SYSTEM_INVESTMENT_BUY_FAILED_CATEGORY;
+
+  if (productType === "advisor") {
+    // 投顾组合只有买入/赎回（分红体现为组合净值变化，无核销）。
+    if (subtype === "redeem" || subtype === "switch_out") return SYSTEM_ADVISOR_REDEEM_CATEGORY;
+    return SYSTEM_ADVISOR_BUY_CATEGORY;
+  }
 
   if (productType === "wealth" || productType === "bond") {
     // 城投债 = 理财下的 bond 产品类型，分类文案独立成组（利息/核销口径对债更准确）

@@ -1393,6 +1393,8 @@ model WealthProduct {
   id                String              @id @default(cuid())
   name              String
   shortName         String?
+  // 产品家族：wealth=理财（默认），advisor=投顾组合。两类互不混排（2026-11-03）。
+  productType       String              @default("wealth")
   currency          String              @default("CNY")
   annualRate        Decimal?
   termDays          Int?
@@ -2165,6 +2167,7 @@ enum FundProductType {
   fund
   money
   wealth
+  advisor
   bond
   deposit
   metal

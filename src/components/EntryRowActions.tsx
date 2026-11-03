@@ -131,7 +131,8 @@ export function dispatchEntryEdit({
     window.dispatchEvent(new CustomEvent("mmh:insurance:edit", { detail }));
   } else if (edit.type === "investment" && pt === "bond") {
     window.dispatchEvent(new CustomEvent("mmh:bond:edit", { detail }));
-  } else if (edit.type === "investment" && pt === "wealth") {
+  } else if (edit.type === "investment" && (pt === "wealth" || pt === "advisor")) {
+    // 投顾渠道已收口（2026-11-03）：advisor 行走理财编辑窗（数据层同链路）。
     window.dispatchEvent(new CustomEvent("mmh:wealth:edit", { detail }));
   } else if (edit.type === "investment" && pt === "deposit") {
     window.dispatchEvent(new CustomEvent("mmh:deposit:edit", { detail }));

@@ -10,6 +10,7 @@ import {
   HoldingProductModal,
 } from "@/components/holding-entry/HoldingEntryFields";
 import { parseNumber } from "@/lib/investment-config";
+import { Lock, LockOpen } from "lucide-react";
 import { DateStepper } from "./DateStepper";
 import { CalcInput } from "./CalcInput";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
@@ -20,6 +21,7 @@ import { useI18n } from "@/lib/i18n";
 import { uploadEntryAttachmentFiles } from "./EntryAttachmentPanel";
 import { mergeProductOptions } from "@/lib/holding-entry/primitives";
 import { useHoldingEntryForm } from "@/lib/holding-entry/useHoldingEntryForm";
+import { isPersonalInstitutionType } from "@/lib/institution-rules";
 import type { WealthHoldingOption } from "@/lib/wealth-holdings";
 
 type Entry = {
@@ -87,6 +89,7 @@ const TERM_PRESETS = [
 
 export function WealthFormModal({
   mode = "create",
+  family = "wealth",
   accountId: defaultAccountId,
   entry,
   listenForEditEvents,
@@ -99,8 +102,15 @@ export function WealthFormModal({
   nestedFieldData,
   createAction,
   editAction,
+  createEventName,
+  editEventName,
 }: {
   mode?: "create" | "edit";
+  /**
+   * 账户家族锁定：wealth=理财窗口（默认），advisor=投顾组合窗口。两类是独立弹窗
+   * （独立实例 + 独立打开事件），不共用同一个窗口内部切换；交易链路服务端共用。
+   */
+  family?: "wealth" | "advisor";
   accountId: string;
   entry?: Entry;
   listenForEditEvents?: boolean;
@@ -116,6 +126,9 @@ export function WealthFormModal({
   nestedFieldData?: NestedFieldData;
   createAction: (formData: FormData) => Promise<{ ok: true; data?: { id?: string; cashEntryId?: string } } | { ok: false; error: string }>;
   editAction?: (formData: FormData) => Promise<{ ok: true; data?: { id?: string; cashEntryId?: string } } | { ok: false; error: string }>;
+  /** 打开事件名覆盖：advisor 实例用 mmh:advisor:create / mmh:advisor:edit，与理财窗口互不抢事件。 */
+  createEventName?: string;
+  editEventName?: string;
 }) {
   const { t } = useI18n();
 
@@ -134,6 +147,8 @@ export function WealthFormModal({
     firstPayoutDate: "",
   });
   const [productError, setProductError] = useState("");
+  // 投顾窗口「新增产品」的机构归属选择：产品与自动建的投顾账户都落到所选机构。
+  const [productInstitutionChoice, setProductInstitutionChoice] = useState("");
   const [wealthProducts, setWealthProducts] = useState<WealthProductOption[]>([]);
 
   // 可赎回持仓：初次渲染用服务端 props，保存后由 /api/v1/wealth/holdings 重取。
@@ -144,15 +159,32 @@ export function WealthFormModal({
     setHoldingOptions(wealthHoldingOptions);
   }, [wealthHoldingOptions]);
 
-  // 理财与债券是两类独立账户：理财弹窗只认理财账户上的持仓。
+  // 账户家族由 props 锁定（独立弹窗实例，不做窗口内切换）；驱动账户下拉、
+  // 可赎回持仓过滤（productKind）与提交时的 fundProductType。
+  const accountFamily = family;
+  // 提交时把账户侧类型（wealth / advisor）透传给服务端，服务端据此解析对应类型的投资账户。
+  const advisorMode = accountFamily === "advisor";
+
+  // 投顾窗口文案：复用理财文案表，整体把「理财/Wealth」替换成投顾口径，
+  // 避免为投顾再维护一份 40+ key 的平行文案表（分类名与现金流备注在服务端分家）。
+  const label = useCallback((key: string, vars?: Record<string, string | number>) => {
+    if (!advisorMode) return t(key, vars);
+    return t(key, vars)
+      .replace(/理财/g, "投顾")
+      .replace(/理財/g, "投顧")
+      .replace(/Wealth/g, "Advisory")
+      .replace(/wealth product/g, "advisory product");
+  }, [t, advisorMode]);
+
+  // 理财与债券是两类独立账户：理财弹窗只认当前家族（理财/投顾）账户上的持仓。
   const typedHoldingOptions = useMemo(
     () =>
       holdingOptions
         .filter((holding) => {
           const holdingAccount = investmentAccounts.find((account) => account.id === holding.wealthAccountId);
-          // 账户不在 props 里说明是本弹窗刚建的新理财账户（props 尚未重渲染），保留；
-          // 已知账户则只认理财：props 里同时带着债券持仓，不能混排进理财赎回。
-          return holdingAccount ? holdingAccount.investProductType === "wealth" : true;
+          // 账户不在 props 里说明是本弹窗刚建的新账户（props 尚未重渲染），保留；
+          // 已知账户则只认当前家族：props 里同时带着债券持仓，不能混排进赎回。
+          return holdingAccount ? holdingAccount.investProductType === accountFamily : true;
         })
         // 账户展示名以账户下拉为准（接口只回原始账户名）。
         .map((holding) => {
@@ -161,26 +193,32 @@ export function WealthFormModal({
             ? { ...holding, wealthAccountLabel: holdingAccount.label }
             : holding;
         }),
-    [investmentAccounts, holdingOptions],
+    [investmentAccounts, holdingOptions, accountFamily],
   );
 
   const wealthProductOptions: SmartSelectOption[] = useMemo(
     () =>
       wealthProducts
-        // 产品按模式过滤：理财模式不列债券产品（两类互不混排）。
-        .filter((product) => product.productType !== "bond")
+        // 产品按家族过滤（互不混排）：理财窗口不列债券/投顾产品；投顾窗口只列投顾产品。
+        // 投顾产品必须归属机构（2026-11-03 用户裁定）：没有机构的通用产品、以及其它机构的
+        // 投顾产品都不进投顾下拉，否则一笔投顾记录会挂到「不属于任何机构」的产品上。
+        .filter((product) => {
+          if (!advisorMode) return product.productType !== "bond" && product.productType !== "advisor";
+          if (product.productType !== "advisor" || !product.institutionId) return false;
+          return !productInstitutionChoice || product.institutionId === productInstitutionChoice;
+        })
         .map((product) => ({
           id: product.id,
           label: product.shortName?.trim() || product.name,
           // 不指定机构的产品是「通用」的，任何机构的理财下拉里都能选到，这里标出来。
           subLabel: [
             product.shortName?.trim() ? product.name : "",
-            product.institutionName || (product.institutionId ? "" : t("wealthForm.universalProduct")),
+            product.institutionName || (product.institutionId ? "" : label("wealthForm.universalProduct")),
           ]
             .filter(Boolean)
             .join(" · "),
         })),
-    [wealthProducts, t],
+    [advisorMode, wealthProducts, label, productInstitutionChoice],
   );
 
   const form = useHoldingEntryForm({
@@ -195,9 +233,13 @@ export function WealthFormModal({
     investmentAccountSSOptions,
     nestedFieldData,
     typedHoldingOptions,
-    productKind: "wealth",
+    productKind: accountFamily,
     eventNamespace: "wealth",
+    createEventName,
+    editEventName,
     defaultAccountKey: "defaultWealthAccountId",
+    // 投顾赎回回款目的地放开：任意资金账户（基金平台账户/银行卡均可），理财保持原口径。
+    redeemArrivalAnyCash: advisorMode,
     resolveProductName: (id) => wealthProducts.find((product) => product.id === id)?.name,
   });
   const {
@@ -214,6 +256,7 @@ export function WealthFormModal({
     selectedCashAccount, accountIds: wealthAccountIds,
     selectableAccountIds: selectableWealthAccountIds,
     selectOptions: wealthSelectOptions, selectedInvestAccount: selectedWealthAccount,
+    unrestrictedAccounts, setUnrestrictedAccounts,
     productInstitutionId, redeemCashOptions,
     selectedHolding, selectedHoldingId, selectedBuyProductRequiresUnits,
     interestNumber, redeemPrincipalNumber, arrivalPreview,
@@ -249,7 +292,8 @@ export function WealthFormModal({
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
-    const institutionId = productInstitutionId ?? "";
+    // 投顾窗口：机构归属选择优先（选了机构就查该机构 + 通用产品的池子）。
+    const institutionId = advisorMode ? (productInstitutionChoice || productInstitutionId || "") : (productInstitutionId ?? "");
     // 读理财产品主数据（/api/v1/wealth-products）。
     const basePath = "/api/v1/wealth-products";
     const url = institutionId
@@ -259,15 +303,26 @@ export function WealthFormModal({
       .then((res) => res.json())
       .then((data) => {
         if (cancelled || !data?.ok) return;
-        const products = (data.products ?? []) as WealthProductOption[];
-        if (wealthProductId && institutionId && !products.some((product) => product.id === wealthProductId)) {
-          setWealthProductId("");
-          setFundName("");
+        const fetched = (data.products ?? []) as WealthProductOption[];
+        // 投顾窗口的池子先剔掉「通用产品」：投顾产品必须归属机构（2026-11-03 用户裁定）。
+        const products = advisorMode
+          ? fetched.filter((product) => product.productType === "advisor" && !!product.institutionId)
+          : fetched;
+        if (wealthProductId) {
+          // 理财窗口只在明确选了机构时才清空（切换机构后原产品可能不在池子里）；
+          // 投顾窗口任何时候都不允许停在无机构/异家族的产品上。
+          const stillSelectable = advisorMode
+            ? products.some((product) => product.id === wealthProductId)
+            : !institutionId || products.some((product) => product.id === wealthProductId);
+          if (!stillSelectable) {
+            setWealthProductId("");
+            setFundName("");
+          }
         }
         setWealthProducts((prev) => {
           const selectedLocalProducts = prev.filter((product) =>
-            // 通用产品（无机构）在任何机构下都保留，别在机构切换的瞬间把它挤掉。
-            (!institutionId || product.institutionId === institutionId || product.institutionId == null) && (
+            // 通用产品（无机构）在任何机构下都保留，别在机构切换的瞬间把它挤掉；投顾窗口不保留。
+            (!advisorMode && (!institutionId || product.institutionId === institutionId || product.institutionId == null)) && (
               product.id === wealthProductId ||
               (!!fundName && (product.name === fundName || product.shortName === fundName))
             ),
@@ -281,56 +336,72 @@ export function WealthFormModal({
       })
       .catch(() => {});
     return () => { cancelled = true; };
-  }, [fundName, open, productInstitutionId, wealthProductId]);
+  }, [advisorMode, fundName, open, productInstitutionChoice, productInstitutionId, wealthProductId]);
 
   function openWealthProductModal() {
     // 产品弹窗只做新建（名称+备注）；条款（利率/到期日/付息）在购买界面按次填写。
+    // 投顾窗口默认机构跟随已选投顾账户/资金账户，可在弹窗里改选；
+    // 但金融产品不能归属往来主体/保险机构（2026-11-03 用户裁定），这类默认值直接清空。
+    let defaultInstitutionId = "";
+    if (advisorMode) {
+      const candidate = selectedWealthAccount?.institutionId ?? selectedCashAccount?.institutionId ?? "";
+      const candidateType = (nestedFieldData?.institutionId ?? []).find((item) => item.id === candidate)?.type;
+      const excluded = !candidate || isPersonalInstitutionType(candidateType) || candidateType === "insurance";
+      defaultInstitutionId = excluded ? "" : candidate;
+    }
+    setProductInstitutionChoice(defaultInstitutionId);
     setProductDraft({
       name: fundName.trim(),
       shortName: "",
       annualRate,
       termDays,
       note: "",
-      // 债券直达模式下新建产品默认城投债类型，免去再手动切换。
-      productType: "standard",
+      // 债券直达模式下新建产品默认城投债类型，免去再手动切换；
+      // 投顾窗口新建的产品直接落 advisor 家族（不进理财池）。
+      productType: advisorMode ? "advisor" : "standard",
       maturityDate: "",
       payoutFrequency: "maturity",
       firstPayoutDate: "",
     });
-    setProductError(selectedCashAccount ? "" : t("wealthForm.alert.selectSourceFirst"));
+    setProductError(selectedCashAccount ? "" : label("wealthForm.alert.selectSourceFirst"));
     setProductModalOpen(true);
   }
 
   function openWealthAccountModal() {
     if (!selectedCashAccount) {
-      window.alert(t("wealthForm.alert.selectSourceFirst"));
+      window.alert(label("wealthForm.alert.selectSourceFirst"));
       return;
     }
     if (!selectedCashAccount.groupId || !selectedCashAccount.institutionId) {
-      window.alert(t("wealthForm.alert.sourceAccountMissingOwnerOrInstitution"));
+      window.alert(label("wealthForm.alert.sourceAccountMissingOwnerOrInstitution"));
       return;
     }
     setNestedEntityType("wealth-account");
   }
 
   function productAccountHint() {
-    if (selectedWealthAccount) return t("wealthForm.productHintWillAssignTo", { account: selectedWealthAccount.label });
+    if (selectedWealthAccount) return label("wealthForm.productHintWillAssignTo", { account: selectedWealthAccount.label });
     if (selectedCashAccount) {
       // 债券/理财是两类账户：自动建账提示按当前模式显示对应账户类型。
-      return t("wealthForm.productHintAutoCreate", { account: selectedCashAccount.label });
+      return label("wealthForm.productHintAutoCreate", { account: selectedCashAccount.label });
     }
-    return t("wealthForm.productHintSelectSourceFirst");
+    return label("wealthForm.productHintSelectSourceFirst");
   }
 
   async function saveWealthProduct() {
     const name = productDraft.name.trim();
     setProductError("");
+    // 投顾产品必须归属机构（2026-11-03 用户裁定），不提供「通用（不限机构）」。
+    if (advisorMode && !productInstitutionChoice) {
+      setProductError(label("wealthForm.alert.selectInstitution"));
+      return;
+    }
     if (!selectedCashAccount) {
-      setProductError(t("wealthForm.alert.selectSourceFirst"));
+      setProductError(label("wealthForm.alert.selectSourceFirst"));
       return;
     }
     if (!name) {
-      setProductError(t("wealthForm.alert.enterProductName"));
+      setProductError(label("wealthForm.alert.enterProductName"));
       return;
     }
     setProductSaving(true);
@@ -347,13 +418,15 @@ export function WealthFormModal({
           wealthAccountId: selectedWealthAccount?.id ?? undefined,
           currency: selectedWealthAccount?.currency ?? selectedCashAccount.currency ?? "CNY",
           productType: productDraft.productType,
+          // 投顾窗口：产品与自动建的投顾账户落到所选机构（空 = 跟随资金账户机构）。
+          institutionId: advisorMode ? productInstitutionChoice : undefined,
           annualRate: parseNumber(annualRate) > 0 ? String(parseNumber(annualRate)) : undefined,
         }),
       });
       const data = await res.json().catch(() => null);
       const accountPayload = data?.wealthAccount;
       if (!data?.ok || !data.product || !accountPayload) {
-        throw new Error(data?.error ?? t("wealthForm.alert.createProductFailed"));
+        throw new Error(data?.error ?? label("wealthForm.alert.createProductFailed"));
       }
       const product = ((data.product as WealthProductOption));
       const account = accountPayload as {
@@ -408,7 +481,7 @@ export function WealthFormModal({
       if (product.termDays != null) setTermDays(String(product.termDays));
       setProductModalOpen(false);
     } catch (err) {
-      setProductError(err instanceof Error ? err.message : t("wealthForm.alert.createProductFailed"));
+      setProductError(err instanceof Error ? err.message : label("wealthForm.alert.createProductFailed"));
     } finally {
       setProductSaving(false);
     }
@@ -417,22 +490,22 @@ export function WealthFormModal({
   async function saveWealthTransaction(keepAdding: boolean) {
     if (submitting) return;
     const amt = isRedeem ? redeemPrincipalNumber : parseNumber(amount);
-    if (amt <= 0) { window.alert(t("wealthForm.alert.enterAmount")); return; }
+    if (amt <= 0) { window.alert(label("wealthForm.alert.enterAmount")); return; }
     const selectedProduct = wealthProducts.find((product) => product.id === wealthProductId);
     const resolvedFundName = selectedHolding?.fundName || selectedProduct?.name || fundName.trim();
-    if (!resolvedFundName) { window.alert(t("wealthForm.alert.selectOrCreateProductName")); return; }
-    if (!isWriteOff && !cashAccountId) { window.alert(isHoldingAction ? t("wealthForm.alert.selectArrivalAccount") : t("txForm.alert.selectCashSourceAccount")); return; }
-    if (toAccountId && !wealthAccountIds.has(toAccountId)) { window.alert(t("wealthForm.alert.selectWealthAccount")); return; }
+    if (!resolvedFundName) { window.alert(label("wealthForm.alert.selectOrCreateProductName")); return; }
+    if (!isWriteOff && !cashAccountId) { window.alert(isHoldingAction ? label("wealthForm.alert.selectArrivalAccount") : t("txForm.alert.selectCashSourceAccount")); return; }
+    if (toAccountId && !wealthAccountIds.has(toAccountId)) { window.alert(label("wealthForm.alert.selectWealthAccount")); return; }
     if (!isHoldingAction && toAccountId && !selectableWealthAccountIds.has(toAccountId)) {
-      window.alert(t("wealthForm.alert.wealthAccountScope"));
+      window.alert(label("wealthForm.alert.wealthAccountScope"));
       return;
     }
-    if (isHoldingAction && !toAccountId) { window.alert(t("wealthForm.alert.selectWealthAccount")); return; }
-    if (isHoldingAction && !selectedHoldingId) { window.alert(t("wealthForm.alert.selectHoldingProduct")); return; }
-    if (isHoldingAction && !isWriteOff && !cashAccountId) { window.alert(t("wealthForm.alert.selectArrivalAccount")); return; }
+    if (isHoldingAction && !toAccountId) { window.alert(label("wealthForm.alert.selectWealthAccount")); return; }
+    if (isHoldingAction && !selectedHoldingId) { window.alert(label("wealthForm.alert.selectHoldingProduct")); return; }
+    if (isHoldingAction && !isWriteOff && !cashAccountId) { window.alert(label("wealthForm.alert.selectArrivalAccount")); return; }
     const unitsValue = parseNumber(units);
     if (!isHoldingAction && selectedBuyProductRequiresUnits && unitsValue <= 0) {
-      window.alert(t("wealthForm.alert.unitsRequiredForExisting"));
+      window.alert(label("wealthForm.alert.unitsRequiredForExisting"));
       return;
     }
     setSubmitting(true);
@@ -440,8 +513,8 @@ export function WealthFormModal({
       const fd = new FormData();
       fd.set("type", "investment");
       fd.set("subtype", subtype);
-      // 提交 fundProductType=wealth：服务端据此解析/校验理财账户。
-      fd.set("productType", "wealth");
+      // 提交 fundProductType=wealth|advisor：服务端据此解析/校验对应类型的投资账户。
+      fd.set("productType", advisorMode ? "advisor" : "wealth");
       fd.set("date", date);
       fd.set("amount", String(amt));
       fd.set("fundName", resolvedFundName);
@@ -465,7 +538,7 @@ export function WealthFormModal({
       if (rateValue > 0 && !isWriteOff) fd.set("depositAnnualRate", String(rateValue));
       if (isRedeem) {
         const arrivalValue = arrivalEdited ? parseNumber(arrivalAmount) : arrivalPreview;
-        if (arrivalValue <= 0) throw new Error(t("wealthForm.alert.arrivalAmountInvalid"));
+        if (arrivalValue <= 0) throw new Error(label("wealthForm.alert.arrivalAmountInvalid"));
         fd.set("fundArrivalAmount", String(arrivalValue));
         if (interestAmount.trim()) fd.set("depositInterest", String(interestNumber));
       }
@@ -474,16 +547,16 @@ export function WealthFormModal({
       if (mode === "edit" && (cashEntryIdForEdit || businessTransactionIdForEdit)) {
         if (cashEntryIdForEdit) fd.set("entryId", cashEntryIdForEdit);
         if (businessTransactionIdForEdit) fd.set("businessTransactionId", businessTransactionIdForEdit);
-        fd.set("fundProductType", "wealth");
-        const res = editAction ? await editAction(fd) : { ok: false as const, error: t("wealthForm.alert.missingEditAction") };
-        if (!res.ok) throw new Error(res.error ?? t("wealthForm.alert.saveFailed"));
+        fd.set("fundProductType", advisorMode ? "advisor" : "wealth");
+        const res = editAction ? await editAction(fd) : { ok: false as const, error: label("wealthForm.alert.missingEditAction") };
+        if (!res.ok) throw new Error(res.error ?? label("wealthForm.alert.saveFailed"));
         if (cashEntryIdForEdit && pendingAttachmentFiles.length > 0) {
           await uploadEntryAttachmentFiles(cashEntryIdForEdit, pendingAttachmentFiles);
           setPendingAttachmentFiles([]);
         }
         window.dispatchEvent(new CustomEvent("mmh:wealth:edit:success", { detail: { requestId } }));
       } else {
-        fd.set("fundProductType", "wealth");
+        fd.set("fundProductType", advisorMode ? "advisor" : "wealth");
         const res = await createAction(fd);
         if (!res.ok) throw new Error(res.error ?? t("txForm.alert.saveFailed"));
         const createdEntryId = res.data?.id ?? res.data?.cashEntryId ?? null;
@@ -509,7 +582,7 @@ export function WealthFormModal({
         });
       });
     } catch (err) {
-      window.alert(err instanceof Error ? err.message : t("wealthForm.alert.saveFailed"));
+      window.alert(err instanceof Error ? err.message : label("wealthForm.alert.saveFailed"));
     } finally {
       setSubmitting(false);
     }
@@ -524,8 +597,26 @@ export function WealthFormModal({
     if (mode === "create") reset();
   });
 
-  const accountLabelText = t("wealthForm.accountLabel");
-  const accountPlaceholderText = t("wealthForm.selectWealthAccount");
+  const accountLabelText = label("wealthForm.accountLabel");
+  const accountPlaceholderText = label("wealthForm.selectWealthAccount");
+
+  // 「不限账户种类」锁形开关：挂在账户类 SS 下拉的 headerExtra 上。
+  // 锁 = 按账户种类/机构过滤（默认）；开锁 = 解除过滤（服务端规则仍兜底）。
+  const accountKindToggle = (
+    <button
+      type="button"
+      onClick={() => setUnrestrictedAccounts((prev) => !prev)}
+      title={unrestrictedAccounts ? label("wealthForm.unrestrictedOn") : label("wealthForm.unrestrictedOff")}
+      aria-label={unrestrictedAccounts ? label("wealthForm.unrestrictedOn") : label("wealthForm.unrestrictedOff")}
+      className={`inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] border transition-colors ${
+        unrestrictedAccounts
+          ? "border-amber-300 bg-amber-50 text-amber-600"
+          : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50"
+      }`}
+    >
+      {unrestrictedAccounts ? <LockOpen className="h-3 w-3" /> : <Lock className="h-3 w-3" />}
+    </button>
+  );
 
   if (!open) return null;
 
@@ -536,19 +627,27 @@ export function WealthFormModal({
         open={open}
         heightKey="wealth"
         width="lg"
-        title={mode === "edit" ? t("wealthForm.title.edit") : t("wealthForm.title.create")}
+        title={mode === "edit"
+          ? t(family === "advisor" ? "advisorForm.title.edit" : "wealthForm.title.edit")
+          : t(family === "advisor" ? "advisorForm.title.create" : "wealthForm.title.create")}
         onClose={() => {
           setOpen(false);
           if (mode === "create") reset();
         }}
         closeLabel={t("table.close")}
         onSubmit={onSubmit}
-        tabs={[
-          { id: "buy", label: t("fund.subtype.buy") },
-          { id: "redeem", label: t("fund.subtype.redeem") },
-          { id: "dividend_cash", label: t("stockPanel.action.dividend") },
-          { id: "write_off", label: t("fund.subtype.write_off") },
-        ]}
+        tabs={family === "advisor"
+          // 投顾组合只有买入/赎回：分红在投顾平台直接体现为组合净值变化，核销不适用。
+          ? [
+              { id: "buy", label: t("fund.subtype.buy") },
+              { id: "redeem", label: t("fund.subtype.redeem") },
+            ]
+          : [
+              { id: "buy", label: t("fund.subtype.buy") },
+              { id: "redeem", label: t("fund.subtype.redeem") },
+              { id: "dividend_cash", label: t("stockPanel.action.dividend") },
+              { id: "write_off", label: t("fund.subtype.write_off") },
+            ]}
         activeTabId={subtype}
         onTabChange={(id) => selectSubtypeTab(id as WealthSubtype)}
         footer={(
@@ -568,7 +667,7 @@ export function WealthFormModal({
               disabled={submitting}
               className={`h-9 rounded-[10px] px-4 text-sm text-white disabled:opacity-50 ${isRedeem ? "bg-orange-600 hover:bg-orange-700" : isDividend ? "bg-emerald-600 hover:bg-emerald-700" : isWriteOff ? "bg-slate-600 hover:bg-slate-700" : "primary-button"}`}
             >
-              {submitting ? t("txForm.saving") : mode === "edit" ? t("txForm.saveChanges") : isRedeem ? t("wealthForm.recordRedeem") : isDividend ? t("wealthForm.recordDividend") : isWriteOff ? t("wealthForm.recordWriteOff") : t("wealthForm.recordBuy")}
+              {submitting ? t("txForm.saving") : mode === "edit" ? t("txForm.saveChanges") : isRedeem ? label("wealthForm.recordRedeem") : isDividend ? label("wealthForm.recordDividend") : isWriteOff ? label("wealthForm.recordWriteOff") : label("wealthForm.recordBuy")}
             </button>
           </>
         )}
@@ -577,9 +676,9 @@ export function WealthFormModal({
             <HoldingAccountCreateModal
               form={form}
               investmentEntityType="wealth-account"
-              investProductType="wealth"
-              title={t("wealthForm.addWealthAccount")}
-              nameLabel={t("wealthForm.wealthAccountName")}
+              investProductType={advisorMode ? "advisor" : "wealth"}
+              title={label("wealthForm.addWealthAccount")}
+              nameLabel={label("wealthForm.wealthAccountName")}
               accountLabelText={accountLabelText}
               nestedFieldData={nestedFieldData}
             />
@@ -589,11 +688,20 @@ export function WealthFormModal({
                 （「新增产品」窗口藏在记账窗口后面）。 */}
             {productModalOpen ? (
               <HoldingProductModal
-                title={t("wealthForm.addProduct")}
+                title={label("wealthForm.addProduct")}
                 accountLabel={selectedWealthAccount?.label || selectedCashAccount?.label || ""}
                 draft={productDraft}
                 onDraftChange={(patch) => setProductDraft((prev) => ({ ...prev, ...patch }))}
                 hint={productAccountHint()}
+                institutionOptions={advisorMode
+                  // 金融产品的发行方不能是往来人员/往来组织/家庭成员/保险机构，下拉直接排除。
+                  ? (nestedFieldData?.institutionId ?? [])
+                      .filter((item) => !isPersonalInstitutionType(item.type) && item.type !== "insurance")
+                      .map((item) => ({ id: item.id, name: item.name }))
+                  : undefined}
+                institutionId={productInstitutionChoice}
+                onInstitutionChange={advisorMode ? setProductInstitutionChoice : undefined}
+                institutionRequired={advisorMode}
                 error={productError}
                 saving={productSaving}
                 onClose={() => setProductModalOpen(false)}
@@ -610,15 +718,15 @@ export function WealthFormModal({
                     form={form}
                     accountLabel={accountLabelText}
                     accountPlaceholder={accountPlaceholderText}
-                    holdingLabel={t("wealthForm.holdingProductLabel")}
-                    holdingPlaceholder={t("wealthForm.selectRedeemableProduct")}
-                    noHoldingPlaceholder={t("wealthForm.noAvailableHolding")}
-                    holdingHint={t("wealthForm.holdingHint")}
+                    holdingLabel={label("wealthForm.holdingProductLabel")}
+                    holdingPlaceholder={label("wealthForm.selectRedeemableProduct")}
+                    noHoldingPlaceholder={label("wealthForm.noAvailableHolding")}
+                    holdingHint={label("wealthForm.holdingHint")}
                   />
                   <div className="space-y-1">
-                    <div className="form-label">{t("wealthForm.writeOffAmount")}</div>
-                    <CalcInput value={amount} onChange={setAmount} placeholder="0.00" label={t("wealthForm.writeOffAmount")} precision={2} />
-                    <div className="text-[11px] leading-5 text-orange-600">{t("wealthForm.writeOffHint")}</div>
+                    <div className="form-label">{label("wealthForm.writeOffAmount")}</div>
+                    <CalcInput value={amount} onChange={setAmount} placeholder="0.00" label={label("wealthForm.writeOffAmount")} precision={2} />
+                    <div className="text-[11px] leading-5 text-orange-600">{label("wealthForm.writeOffHint")}</div>
                   </div>
                 </>
               ) : isHoldingAction ? (
@@ -627,10 +735,10 @@ export function WealthFormModal({
                     form={form}
                     accountLabel={accountLabelText}
                     accountPlaceholder={accountPlaceholderText}
-                    holdingLabel={isDividend ? (t("wealthForm.dividendProductLabel")) : t("wealthForm.holdingProductLabel")}
-                    holdingPlaceholder={isDividend ? t("wealthForm.selectDividendHolding") : t("wealthForm.selectRedeemableProduct")}
-                    noHoldingPlaceholder={t("wealthForm.noAvailableHolding")}
-                    holdingHint={t("wealthForm.holdingHint")}
+                    holdingLabel={isDividend ? (label("wealthForm.dividendProductLabel")) : label("wealthForm.holdingProductLabel")}
+                    holdingPlaceholder={isDividend ? label("wealthForm.selectDividendHolding") : label("wealthForm.selectRedeemableProduct")}
+                    noHoldingPlaceholder={label("wealthForm.noAvailableHolding")}
+                    holdingHint={label("wealthForm.holdingHint")}
                     showUnits
                     showAccount
                   />
@@ -642,27 +750,32 @@ export function WealthFormModal({
                   <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
                     {isRedeem ? (
                       <div className="space-y-1 sm:col-span-2">
-                        <div className="form-label">{t("wealthForm.redeemPrincipal")}</div>
+                        <div className="form-label">{label("wealthForm.redeemPrincipal")}</div>
                         <CalcInput
                           value={amount}
                           onChange={changeRedeemPrincipal}
                           placeholder="0.00"
-                          label={t("wealthForm.redeemPrincipal")}
+                          label={label("wealthForm.redeemPrincipal")}
                           precision={2}
                         />
                       </div>
                     ) : null}
                     <div className="space-y-1 sm:col-span-2">
-                      <div className="form-label">{t("wealthForm.arrivalAccount")}</div>
+                      <div className="form-label">{label("wealthForm.arrivalAccount")}</div>
                       <SmartSelect
                         mode="single"
                         value={cashAccountId}
                         onChange={(id) => { setCashAccountId(id); }}
                         options={sortByAccountUsage(redeemCashOptions, accountUsage)}
+                        headerExtra={accountKindToggle}
                         placeholder={
                           redeemCashOptions.length > 0
-                            ? isRedeem ? t("wealthForm.selectArrivalBankDebitOrEwallet") : t("wealthForm.selectSameInstitutionFunding")
-                            : isRedeem ? t("wealthForm.noDebitOrEwallet") : t("wealthForm.noFundingInInstitution")
+                            ? isRedeem
+                              ? advisorMode ? label("advisorForm.selectArrival") : label("wealthForm.selectArrivalBankDebitOrEwallet")
+                              : label("wealthForm.selectSameInstitutionFunding")
+                            : isRedeem
+                              ? advisorMode ? label("advisorForm.noArrival") : label("wealthForm.noDebitOrEwallet")
+                              : label("wealthForm.noFundingInInstitution")
                         }
                         onCreateClick={() => setNestedEntityType("cash-account")}
                         createLabel={t("settings.accounts.add")}
@@ -673,12 +786,12 @@ export function WealthFormModal({
                     {isRedeem ? (
                       <>
                         <div className="space-y-1">
-                          <div className="form-label">{t("wealthForm.redeemUnits")}</div>
+                          <div className="form-label">{label("wealthForm.redeemUnits")}</div>
                           <CalcInput
                             value={units}
                             onChange={changeRedeemUnits}
                             placeholder={t("stockFee.optional")}
-                            label={t("wealthForm.redeemUnits")}
+                            label={label("wealthForm.redeemUnits")}
                             precision={6}
                           />
                         </div>
@@ -693,12 +806,12 @@ export function WealthFormModal({
                           />
                         </div>
                         <div className="space-y-1">
-                          <div className="form-label">{t("wealthForm.annualRatePercent")}</div>
+                          <div className="form-label">{label("wealthForm.annualRatePercent")}</div>
                           <CalcInput
                             value={annualRate}
                             onChange={setAnnualRate}
-                            placeholder={t("wealthForm.rateExample")}
-                            label={t("wealthForm.annualRate")}
+                            placeholder={label("wealthForm.rateExample")}
+                            label={label("wealthForm.annualRate")}
                             precision={4}
                           />
                         </div>
@@ -715,11 +828,11 @@ export function WealthFormModal({
                       </>
                     ) : null}
                     <div className="space-y-1 sm:col-span-2">
-                      <div className="form-label">{t("wealthForm.arrivalDate")}</div>
+                      <div className="form-label">{label("wealthForm.arrivalDate")}</div>
                       <DateStepper value={arrivalDate} onChange={changeArrivalDate} />
                     </div>
                     <div className={`space-y-1 ${isRedeem ? "sm:col-span-2" : "col-span-2 sm:col-span-4"}`}>
-                      <div className="form-label">{isDividend ? (t("wealthForm.dividendAmount")) : t("wealthForm.arrivalAmount")}</div>
+                      <div className="form-label">{isDividend ? (label("wealthForm.dividendAmount")) : label("wealthForm.arrivalAmount")}</div>
                       <CalcInput
                         value={isDividend ? amount : arrivalAmount}
                         onChange={(value) => {
@@ -731,7 +844,7 @@ export function WealthFormModal({
                           }
                         }}
                         placeholder="0.00"
-                        label={isDividend ? (t("wealthForm.dividendAmount")) : t("wealthForm.arrivalAmount")}
+                        label={isDividend ? (label("wealthForm.dividendAmount")) : label("wealthForm.arrivalAmount")}
                         precision={2}
                       />
                     </div>
@@ -745,13 +858,13 @@ export function WealthFormModal({
                       <DateStepper value={date} onChange={changeTradeDate} />
                     </div>
                     <div className="space-y-1">
-                      <div className="form-label">{t("wealthForm.sourceAccount")}</div>
+                      <div className="form-label">{label("wealthForm.sourceAccount")}</div>
                       <SmartSelect
                         mode="single"
                         value={cashAccountId}
                         onChange={(id) => { setCashAccountId(id); }}
                         options={sortByAccountUsage(cashSelectOptions, accountUsage)}
-                        placeholder={t("wealthForm.selectAccount")}
+                        placeholder={label("wealthForm.selectAccount")}
                         onCreateClick={() => setNestedEntityType("cash-account")}
                         createLabel={t("settings.accounts.add")}
                         onCycleOwnerFilter={cfCycle}
@@ -767,16 +880,17 @@ export function WealthFormModal({
                         mode="single"
                         value={toAccountId}
                         onChange={(id) => { setToAccountId(id); }}
+                        headerExtra={accountKindToggle}
                         options={sortByAccountUsage(wealthSelectOptions, accountUsage)}
-                        placeholder={wealthSelectOptions.length > 0 ? t("wealthForm.selectSameInstitutionOrPayment") : t("wealthForm.autoCreateAfterAddProduct")}
+                        placeholder={wealthSelectOptions.length > 0 ? label("wealthForm.selectSameInstitutionOrPayment") : label("wealthForm.autoCreateAfterAddProduct")}
                         onCreateClick={openWealthAccountModal}
-                        createLabel={t("wealthForm.addWealthAccount")}
+                        createLabel={label("wealthForm.addWealthAccount")}
                         onCycleOwnerFilter={cycleWealthOwner}
                         ownerFilterLabel={wealthOwnerLabel}
                       />
                     </div>
                     <div className="space-y-1">
-                      <div className="form-label">{t("wealthForm.productName")}</div>
+                      <div className="form-label">{label("wealthForm.productName")}</div>
                       <SmartSelect
                         mode="single"
                         value={wealthProductId}
@@ -789,11 +903,11 @@ export function WealthFormModal({
                         }}
                         options={wealthProductOptions}
                         placeholder={wealthProductOptions.length > 0
-                          ? (t("wealthForm.selectProduct"))
-                          : (t("wealthForm.noProductClickAdd"))}
+                          ? (label("wealthForm.selectProduct"))
+                          : (label("wealthForm.noProductClickAdd"))}
                         searchable
                         onCreateClick={() => openWealthProductModal()}
-                        createLabel={t("wealthForm.addProduct")}
+                        createLabel={label("wealthForm.addProduct")}
                       />
                     </div>
                   </div>
@@ -804,41 +918,41 @@ export function WealthFormModal({
                     {(
                       <>
                         <div className="space-y-1">
-                          <div className="form-label">{t("viewImport.units")}{selectedBuyProductRequiresUnits ? t("wealthForm.unitsRequiredSuffix") : ""}</div>
+                          <div className="form-label">{t("viewImport.units")}{selectedBuyProductRequiresUnits ? label("wealthForm.unitsRequiredSuffix") : ""}</div>
                           <CalcInput value={units} onChange={(value) => { unitsEditedRef.current = true; setUnits(value); }} placeholder={selectedBuyProductRequiresUnits ? t("batchImport.required") : t("stockFee.optional")} label={t("viewImport.units")} precision={6} />
                         </div>
                         <div className="space-y-1">
-                          <div className="form-label">{t("wealthForm.avgPrice")}</div>
+                          <div className="form-label">{label("wealthForm.avgPrice")}</div>
                           <div className="form-input flex items-center justify-end text-xs tabular-nums text-slate-500">{parseNumber(units) > 0 && parseNumber(amount) > 0 ? (parseNumber(amount) / parseNumber(units)).toFixed(4) : "-"}</div>
                         </div>
                         <div className="space-y-1">
-                          <div className="form-label">{t("wealthForm.annualRatePercent")}</div>
-                          <input inputMode="decimal" value={annualRate} onChange={(e) => setAnnualRate(e.target.value)} placeholder={t("wealthForm.rateExample")} className="form-input" />
+                          <div className="form-label">{label("wealthForm.annualRatePercent")}</div>
+                          <input inputMode="decimal" value={annualRate} onChange={(e) => setAnnualRate(e.target.value)} placeholder={label("wealthForm.rateExample")} className="form-input" />
                         </div>
                       </>
                     )}
                     <div className={"sm:col-span-2"}>
-                      <div className="form-label">{t("wealthForm.buyAmount")}</div>
+                      <div className="form-label">{label("wealthForm.buyAmount")}</div>
                       <CalcInput value={amount} onChange={setAmount} placeholder="0.00" label={t("fund.subtype.buy")} precision={2} />
                     </div>
                     {/* 债券的期限由起息日与到期日决定（到期日−购买日），与到期日重复，
                         故债券模式不显示期限天数；银行理财才用「180天期」这类期限表达。 */}
                     {(
                       <div className="space-y-1">
-                        <div className="form-label">{t("wealthForm.termDays")}</div>
+                        <div className="form-label">{label("wealthForm.termDays")}</div>
                         <select
                           value={termDays}
                           onChange={(e) => setTermDays(e.target.value)}
                           className="form-input"
                         >
-                          <option value="">{t("wealthForm.termPresetPlaceholder")}</option>
+                          <option value="">{label("wealthForm.termPresetPlaceholder")}</option>
                           {TERM_PRESETS.map((preset) => (
                             <option key={preset.days} value={String(preset.days)}>
                               {t(preset.labelKey)}
                             </option>
                           ))}
                           {termDays && !TERM_PRESETS.some((preset) => String(preset.days) === termDays) ? (
-                            <option value={termDays}>{t("wealthForm.daysSuffix", { days: termDays })}</option>
+                            <option value={termDays}>{label("wealthForm.daysSuffix", { days: termDays })}</option>
                           ) : null}
                         </select>
                       </div>

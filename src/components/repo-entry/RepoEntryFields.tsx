@@ -18,11 +18,12 @@ import { formatAmountDraft, formatMoney } from "@/lib/format";
 import { todayDateLocalYmd } from "@/lib/date-utils";
 import { useI18n } from "@/lib/i18n";
 import {
-  estimateRepoFee,
   estimateRepoInterest,
   estimateRepoMaturityDateKey,
   REPO_MARKET_LABEL,
   REPO_PRODUCTS,
+  type RepoProduct,
+  repoFeeRatePercent,
   repoOccupiedDays,
   repoProductByCode,
 } from "@/lib/repo";
@@ -85,6 +86,16 @@ type Props = {
 };
 
 const LAST_DRAFT_KEY = "mmh:repo:last-draft:v1";
+
+type CustomRepoProductRow = {
+  id: string;
+  code: string;
+  name: string;
+  market: string;
+  termDays: number;
+  feeRatePercent: number | null;
+  note: string | null;
+};
 
 type LastDraft = { code: string; amount: string; annualRate: string; cashAccountId?: string };
 
@@ -152,7 +163,47 @@ export const RepoEntryFields = forwardRef<RepoEntryFieldsHandle, Props>(function
   const [arrivalAmount, setArrivalAmount] = useState("");
   const [redeemInterest, setRedeemInterest] = useState("");
 
-  const product = repoProductByCode(code);
+  // 自定义品种（交易所静态清单之外，按账簿持久化），随组件挂载加载一次。
+  const [customProducts, setCustomProducts] = useState<CustomRepoProductRow[]>([]);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [newCode, setNewCode] = useState("");
+  const [newName, setNewName] = useState("");
+  const [newMarket, setNewMarket] = useState<"sh" | "sz">("sh");
+  const [newTermDays, setNewTermDays] = useState("");
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/v1/repo/custom-products")
+      .then((res) => res.json().catch(() => null))
+      .then((data: { ok?: boolean; products?: CustomRepoProductRow[] } | null) => {
+        if (!cancelled && data?.ok) setCustomProducts(data.products ?? []);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const customAsProducts = useMemo<RepoProduct[]>(
+    () =>
+      customProducts.map((row) => ({
+        code: row.code,
+        name: row.name,
+        market: row.market === "sz" ? "sz" : "sh",
+        termDays: row.termDays,
+        minAmount: 1000,
+        stepAmount: 1000,
+        feeRatePercent: row.feeRatePercent ?? repoFeeRatePercent(row.termDays),
+      })),
+    [customProducts],
+  );
+
+  // 品种解析：先交易所清单，再自定义品种。
+  const product = useMemo(
+    () => repoProductByCode(code) ?? customAsProducts.find((item) => item.code === code) ?? null,
+    [code, customAsProducts],
+  );
   const termDays = product?.termDays ?? 1;
 
   const cashOptions = useMemo<SmartSelectOption[]>(
@@ -186,8 +237,21 @@ export const RepoEntryFields = forwardRef<RepoEntryFieldsHandle, Props>(function
         });
       }
     }
+    // 自定义品种单独成组，放在交易所清单后面。
+    if (customAsProducts.length > 0) {
+      const groupKey = "market-custom";
+      rows.push({ id: groupKey, label: t("repoForm.customGroup"), isGroup: true });
+      for (const item of customAsProducts) {
+        rows.push({
+          id: item.code,
+          label: `${item.name} · ${item.termDays}${t("repoForm.dayUnit")}`,
+          subLabel: item.code,
+          parentId: groupKey,
+        });
+      }
+    }
     return rows;
-  }, [t]);
+  }, [t, customAsProducts]);
 
   const lotOptions = useMemo<SmartSelectOption[]>(
     () =>
@@ -219,7 +283,8 @@ export const RepoEntryFields = forwardRef<RepoEntryFieldsHandle, Props>(function
     if (appliedResetKeyRef.current === resetKey) return;
     appliedResetKeyRef.current = resetKey;
     const draft = readLastDraft();
-    const nextCode = draft?.code && repoProductByCode(draft.code) ? draft.code : "204001";
+    // 上次的品种可能是自定义品种（不在交易所清单），这里不做清单校验，由提交侧兜底。
+    const nextCode = draft?.code?.trim() || "204001";
     setCode(nextCode);
     setAmount(draft?.amount ?? "");
     setAnnualRate(draft?.annualRate ?? "");
@@ -266,7 +331,9 @@ export const RepoEntryFields = forwardRef<RepoEntryFieldsHandle, Props>(function
     annualRate: num(annualRate) || null,
     occupiedDays,
   });
-  const feeEstimate = estimateRepoFee(principal, termDays);
+  // 手续费预览用品种费率（自定义品种可有自己的费率，不按交易所期限档）。
+  const feeEstimate =
+    principal > 0 ? Math.max(0.01, Number(((principal * (product?.feeRatePercent ?? 0)) / 100).toFixed(2))) : 0;
   const effectiveFee = fee === "" ? feeEstimate : num(fee);
   const arrivalPreview = Number((principal + expectedInterest - effectiveFee).toFixed(2));
 
@@ -357,29 +424,34 @@ export const RepoEntryFields = forwardRef<RepoEntryFieldsHandle, Props>(function
   // 外层窗口页脚 / 回车提交都走这个句柄。
   useImperativeHandle(ref, () => ({ submit }), [submit]);
 
+  // 债券账户字段：借出页签与「品种」并排一行，回款页签独占一行。
+  const accountField = (
+    <div className="space-y-1">
+      <div className="form-label">{t("repoForm.account")}</div>
+      {accountOptions && onAccountChange ? (
+        <SmartSelect
+          mode="single"
+          value={accountId}
+          onChange={onAccountChange}
+          options={accountOptions}
+          placeholder={t("bondForm.selectAccount")}
+          behavior={{ search: true, minDropdownWidth: 260 }}
+        />
+      ) : (
+        <div className="form-input flex items-center text-slate-600" title={accountLabel}>{accountLabel || "-"}</div>
+      )}
+    </div>
+  );
+
   return (
     <>
       <div className="text-[11px] text-slate-400">{t("repoForm.inlineHint")}</div>
 
-      <div className="space-y-1">
-        <div className="form-label">{t("repoForm.account")}</div>
-        {accountOptions && onAccountChange ? (
-          <SmartSelect
-            mode="single"
-            value={accountId}
-            onChange={onAccountChange}
-            options={accountOptions}
-            placeholder={t("bondForm.selectAccount")}
-            behavior={{ search: true, minDropdownWidth: 260 }}
-          />
-        ) : (
-          <div className="form-input flex items-center text-slate-600" title={accountLabel}>{accountLabel || "-"}</div>
-        )}
-      </div>
 
       {mode === "lend" ? (
         <>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            {accountField}
             <div className="space-y-1">
               <div className="form-label">{t("repoForm.product")}</div>
               <SmartSelect
@@ -387,13 +459,109 @@ export const RepoEntryFields = forwardRef<RepoEntryFieldsHandle, Props>(function
                 value={code}
                 onChange={(value) => {
                   setCode(value);
-                  const next = repoProductByCode(value);
+                  const next = repoProductByCode(value) ?? customAsProducts.find((item) => item.code === value) ?? null;
                   if (next) setMaturityDate(estimateRepoMaturityDateKey(tradeDate, next.termDays));
                 }}
                 options={productOptions}
                 placeholder={t("repoForm.productPlaceholder")}
+                searchable
+                onCreateClick={() => setCreateOpen(true)}
+                createLabel={t("repoForm.addProduct")}
                 behavior={{ search: true, minDropdownWidth: 260 }}
               />
+              {createOpen ? (
+                <div className="mt-2 space-y-2 rounded-lg border border-cyan-200 bg-cyan-50/60 p-3">
+                  <div className="text-xs font-medium text-slate-600">{t("repoForm.customTitle")}</div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <input
+                      value={newCode}
+                      onChange={(event) => setNewCode(event.target.value)}
+                      className="form-input"
+                      placeholder={t("repoForm.customCode")}
+                    />
+                    <input
+                      value={newName}
+                      onChange={(event) => setNewName(event.target.value)}
+                      className="form-input"
+                      placeholder={t("repoForm.customName")}
+                    />
+                    <select
+                      value={newMarket}
+                      onChange={(event) => setNewMarket(event.target.value === "sz" ? "sz" : "sh")}
+                      className="form-input"
+                    >
+                      <option value="sh">{REPO_MARKET_LABEL.sh}</option>
+                      <option value="sz">{REPO_MARKET_LABEL.sz}</option>
+                    </select>
+                    <input
+                      value={newTermDays}
+                      onChange={(event) => setNewTermDays(event.target.value)}
+                      className="form-input"
+                      inputMode="numeric"
+                      placeholder={t("repoForm.customTerm")}
+                    />
+                  </div>
+                  <div className="flex items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      className="rounded-md border border-slate-300 bg-white px-2.5 py-1 text-xs text-slate-600 hover:bg-slate-50"
+                      onClick={() => {
+                        setCreateOpen(false);
+                        setNewCode("");
+                        setNewName("");
+                        setNewTermDays("");
+                      }}
+                    >
+                      {t("common.cancel")}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={creating}
+                      className="rounded-md bg-cyan-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-cyan-700 disabled:opacity-60"
+                      onClick={async () => {
+                        if (creating) return;
+                        setCreating(true);
+                        try {
+                          const res = await fetch("/api/v1/repo/custom-products", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({
+                              code: newCode.trim(),
+                              name: newName.trim(),
+                              market: newMarket,
+                              termDays: newTermDays.trim(),
+                            }),
+                          });
+                          const data = (await res.json().catch(() => null)) as
+                            | { ok?: boolean; error?: string; product?: CustomRepoProductRow }
+                            | null;
+                          if (!res.ok || !data?.ok || !data.product) {
+                            throw new Error(data?.error ?? t("repoForm.alert.saveFailed"));
+                          }
+                          const created = data.product;
+                          setCustomProducts((prev) => [...prev, created]);
+                          setCode(created.code);
+                          setMaturityDate(estimateRepoMaturityDateKey(tradeDate, created.termDays));
+                          setCreateOpen(false);
+                          setNewCode("");
+                          setNewName("");
+                          setNewTermDays("");
+                        } catch (error) {
+                          window.alert(error instanceof Error ? error.message : t("repoForm.alert.saveFailed"));
+                        } finally {
+                          setCreating(false);
+                        }
+                      }}
+                    >
+                      {t("common.save")}
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+            <div className="space-y-1">
+              <div className="form-label">{t("repoForm.tradeDate")}</div>
+              <DateStepper value={tradeDate} onChange={setTradeDate} />
             </div>
             <div className="space-y-1">
               <div className="form-label">{t("repoForm.cashAccount")}</div>
@@ -430,24 +598,18 @@ export const RepoEntryFields = forwardRef<RepoEntryFieldsHandle, Props>(function
 
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="space-y-1">
-              <div className="form-label">{t("repoForm.tradeDate")}</div>
-              <DateStepper value={tradeDate} onChange={setTradeDate} />
-            </div>
-            <div className="space-y-1">
               <div className="form-label">{t("repoForm.maturityDate")}</div>
               <DateStepper value={maturityDate} onChange={setMaturityDate} />
             </div>
-          </div>
-
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="space-y-1">
               <div className="form-label">{t("txForm.fee")}</div>
               <CalcInput value={fee} onChange={setFee} placeholder={formatAmountDraft(feeEstimate)} label={t("txForm.fee")} precision={2} />
             </div>
-            <div className="space-y-1">
-              <div className="form-label">{t("repoForm.note")} <span className="text-slate-400">{t("stockFee.optional")}</span></div>
-              <input value={note} onChange={(event) => setNote(event.target.value)} className="form-input" placeholder={t("stockFee.optional")} />
-            </div>
+          </div>
+
+          <div className="space-y-1">
+            <div className="form-label">{t("repoForm.note")} <span className="text-slate-400">{t("stockFee.optional")}</span></div>
+            <input value={note} onChange={(event) => setNote(event.target.value)} className="form-input" placeholder={t("stockFee.optional")} />
           </div>
 
           {/* 用户只需要「品种 + 金额 + 年化」，其余按交易所口径自动算给他看。 */}
@@ -462,6 +624,7 @@ export const RepoEntryFields = forwardRef<RepoEntryFieldsHandle, Props>(function
         </>
       ) : (
         <>
+          {accountField}
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="space-y-1">
               <div className="form-label">{t("repoForm.lot")}</div>

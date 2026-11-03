@@ -181,6 +181,7 @@ export function ReportTransactionEditHost({
       />
       <WealthFormModal
         mode="edit"
+        family="wealth"
         accountId={investmentAccounts[0]?.id ?? ""}
         cashAccounts={cashAccounts}
         investmentAccounts={investmentAccounts}

@@ -82,10 +82,16 @@ export function holdingUnitsAt(holding: HoldingUnitsLike, date: string) {
   );
 }
 
-/** 赎回入账账户：任意借记卡，或同机构的电子钱包。 */
+/** 赎回入账账户：任意借记卡，或同机构的电子钱包 / 资金账户。
+ *  2026-11-03 放开：基金机构的资金账户（kind="cash"）也是合法回款地——
+ *  投顾/基金平台赎回款先回到平台资金账户，再由用户自行转出到卡。 */
 export function isRedeemArrivalAccount(account: ArrivalAccountLike, institutionId?: string | null) {
   if (account.kind === "bank_debit") return true;
-  return account.kind === "ewallet" && !!institutionId && account.institutionId === institutionId;
+  return (
+    !!institutionId &&
+    account.institutionId === institutionId &&
+    (account.kind === "ewallet" || account.kind === "cash")
+  );
 }
 
 const DIVIDEND_ARRIVAL_ACCOUNT_KINDS = new Set(["cash", "bank_debit", "ewallet"]);

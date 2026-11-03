@@ -16,6 +16,7 @@ import { getEffectiveLatestFundNavMap } from "@/lib/fund/navCache";
 import { getFundProfileNameMap, normalizeFundDisplayName } from "@/lib/fund/fundProfile";
 import { futureConfirmHoldingKey, loadFutureConfirmedBuyMap } from "@/lib/fund/future-confirm";
 import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
+import { isWealthLikeProductType } from "@/lib/investment-config";
 import { getMaintainedAccountBalances } from "@/lib/server/account-balance";
 import { resolveHouseholdTimeZone } from "@/lib/server/business-time-zone";
 import { optionalPrismaFindMany } from "@/lib/server/optional-prisma-delegate";
@@ -393,7 +394,7 @@ export const computeInvestBalances = cache(
     .filter((account) => isPureInvestmentAccount(account) && account.investProductType === "metal")
     .map((account) => account.id);
   const wealthAccountIds = accounts
-    .filter((account) => isPureInvestmentAccount(account) && account.investProductType === "wealth")
+    .filter((account) => isPureInvestmentAccount(account) && isWealthLikeProductType(account.investProductType))
     .map((account) => account.id);
   const bondAccountIds = accounts
     .filter((account) => isPureInvestmentAccount(account) && account.investProductType === "bond")
@@ -818,7 +819,7 @@ export const computePositionDisplay = cache(
     return { positions, clearedPositions: [], totalMarketValue, totalCost, positionHistoricalProfit, clearedHistoricalProfit, totalHistoricalProfit };
   }
 
-  if (account.investProductType === "wealth" || account.investProductType === "bond") {
+  if (account.investProductType === "wealth" || account.investProductType === "advisor" || account.investProductType === "bond") {
     // 债券读 bond_transactions（无份额/净值），理财读 wealth_transactions。
     const isBondAccount = account.investProductType === "bond";
     const rows = isBondAccount

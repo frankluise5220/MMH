@@ -12,7 +12,7 @@ import { verifySensitiveOperationPassword } from "@/lib/server/sensitive-operati
 import { getOrCreateDefaultAccountGroupId } from "@/lib/server/account-group-default";
 import { normalizeFundUnitsDecimals } from "@/lib/fund/unit-precision";
 import { resolveTradingCalendarForAccount } from "@/lib/fund/trading-calendar";
-import { PRODUCT_TYPES, supportsCostBasisMethod } from "@/lib/investment-config";
+import { ACCOUNT_PRODUCT_TYPES_ACCEPTED, supportsCostBasisMethod } from "@/lib/investment-config";
 import {
   getCreditCardInstitutionDefaults,
   normalizeCreditBillMode,
@@ -74,7 +74,8 @@ const costBasisMethods = ["moving_avg", "fifo", "lifo"] as const;
 
 function normalizeFundProductType(raw: unknown) {
   const value = String(raw ?? "").trim();
-  return PRODUCT_TYPES.includes(value as (typeof PRODUCT_TYPES)[number]) ? value : "fund";
+  // 用接受列表（含已收口的 advisor）：残留投顾账户编辑时不能被静默转成 fund。
+  return ACCOUNT_PRODUCT_TYPES_ACCEPTED.includes(value as (typeof ACCOUNT_PRODUCT_TYPES_ACCEPTED)[number]) ? value : "fund";
 }
 
 function normalizeCostBasisMethod(raw: unknown) {

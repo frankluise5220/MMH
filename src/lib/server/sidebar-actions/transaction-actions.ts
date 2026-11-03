@@ -34,6 +34,7 @@ import { resolveOrCreateDepositAccount } from "@/lib/server/deposit-account";
 import { resolveOrCreateDepositProduct } from "@/lib/server/deposit-product";
 import { resolveOrCreateWealthProduct } from "@/lib/server/wealth-product";
 import { resolveOrCreateWealthAccount } from "@/lib/server/wealth-account";
+import { isWealthLikeProductType } from "@/lib/investment-config";
 import { createBondEntry, editBondEntry, bondEntryInputFromFormData } from "@/lib/server/bond-transactions";
 import { resolveOrCreateAdvanceAccount } from "@/lib/server/advance-account";
 import { createCreditCardInstallmentPlan } from "@/lib/server/credit-card-installment";
@@ -72,7 +73,7 @@ import type { CreditCardInstallmentRateType } from "@/lib/credit/installment";
  */
 function isFundShellProductType(formData: FormData) {
   const fundProductType = String(formData.get("fundProductType") ?? "").trim();
-  return fundProductType === "fund" || fundProductType === "money" || fundProductType === "metal" || fundProductType === "wealth";
+  return fundProductType === "fund" || fundProductType === "money" || fundProductType === "metal" || fundProductType === "wealth" || fundProductType === "advisor";
 }
 
 type TransferEntryKind = "transfer" | "liability";
@@ -296,9 +297,11 @@ async function createSplitWealthTransaction(
   const amountAbs = Math.abs(parseMoneyInput(formData.get("amount") ?? null));
   if (!amountAbs) throw new Error(t("txForm.alert.invalidAmount"));
 
+  const entryFundProductType = String(formData.get("fundProductType") ?? "").trim();
   const requestedWealthAccountId = String(formData.get("accountId") ?? formData.get("toAccountId") ?? "").trim();
   const cashAccountId = String(formData.get("cashAccountId") ?? "").trim();
-  // 只服务理财：债券在 createTransaction 里已早退到 createBondEntry，不会走到这里。
+  // 只服务理财与投顾组合：债券在 createTransaction 里已早退到 createBondEntry，不会走到这里。
+  // fundProductType 携带账户侧类型（wealth / advisor），据此解析对应类型的投资账户。
   const productNameInput = String(formData.get("fundName") ?? "").trim();
   const wealthProductIdInput = String(formData.get("wealthProductId") ?? "").trim();
   const note = String(formData.get("note") ?? formData.get("memo") ?? "").trim();
@@ -344,13 +347,14 @@ async function createSplitWealthTransaction(
           householdId,
           cashAccountId: cashAcc.id,
           requestedAccountId: requestedWealthAccountId || null,
-          accountProductType: "wealth",
+          accountProductType: entryFundProductType === "advisor" ? "advisor" : "wealth",
         });
     if (!wealthAcc) throw new Error(t("sidebar.action.selectWealthAccount"));
 
     const wealthProduct = await resolveOrCreateWealthProduct(tx, {
       householdId,
       institutionId: wealthAcc.institutionId,
+      productType: entryFundProductType === "advisor" ? "advisor" : "wealth",
       currency: wealthAcc.currency,
       fallbackCurrency: cashAcc.currency,
       productId: wealthProductIdInput,
@@ -368,7 +372,10 @@ async function createSplitWealthTransaction(
       });
     }
 
-    const investmentCategoryName = getInvestmentCategoryName({ fundProductType: "wealth", fundSubtype: subtype });
+    const investmentCategoryName = getInvestmentCategoryName({
+      fundProductType: entryFundProductType === "advisor" ? "advisor" : "wealth",
+      fundSubtype: subtype,
+    });
     const investmentCategory = investmentCategoryName
       ? await resolveCategorySnapshot(tx, householdId, { categoryName: investmentCategoryName, type: "investment" })
       : null;
@@ -378,6 +385,7 @@ async function createSplitWealthTransaction(
       productName: wealthProduct.name,
       units,
       userNote: note,
+      productType: entryFundProductType === "advisor" ? "advisor" : "wealth",
     });
     const cashEntry = await tx.txRecord.create({
       data: {
@@ -846,7 +854,7 @@ export async function createTransaction(formData: FormData) {
         await createBondEntry(bondEntryInputFromFormData(formData, householdId));
         return { ok: true as const };
       }
-      if (entryProductType === "wealth") {
+      if (entryProductType === "wealth" || entryProductType === "advisor") {
         await createSplitWealthTransaction(t, formData, householdId);
         return { ok: true as const };
       }
@@ -910,7 +918,7 @@ export async function createTransaction(formData: FormData) {
       const depositProductIdInput = String(formData.get("depositProductId") ?? "").trim();
       const metalTypeIdInput = String(formData.get("metalTypeId") ?? "").trim();
       const metalUnitIdInput = String(formData.get("metalUnitId") ?? "").trim();
-      const effectiveAccountId = accountId || (fundProductType === "deposit" ? "__auto_deposit__" : fundProductType === "wealth" ? "__auto_wealth__" : "");
+      const effectiveAccountId = accountId || (fundProductType === "deposit" ? "__auto_deposit__" : isWealthLikeProductType(fundProductType) ? "__auto_wealth__" : "");
       if (!effectiveAccountId) return { ok: false as const, error: t("investForm.selectAccount") };
 
       const redeemLike = subtype === "redeem" || subtype === "switch_out";
@@ -952,12 +960,12 @@ export async function createTransaction(formData: FormData) {
                 fundName: fundNameInput || note || null,
                 currency: recordCurrency,
               })
-            : fundProductType === "wealth" && finalFundSubtype === FundSubtype.buy
+            : isWealthLikeProductType(fundProductType) && finalFundSubtype === FundSubtype.buy
               ? await resolveOrCreateWealthAccount(tx, {
                   householdId,
                   cashAccountId: cashAccountIdInput ?? "",
                   requestedAccountId: accountId || null,
-                  accountProductType: "wealth",
+                  accountProductType: fundProductType === "advisor" ? "advisor" : "wealth",
                 })
               : await tx.account.findUnique({ where: { id: accountId } });
         if (!investAcc) throw new Error(t("sidebar.action.accountNotFound"));
@@ -1071,11 +1079,12 @@ export async function createTransaction(formData: FormData) {
         if (fundProductType === "metal" && !metalType) throw new Error(t("sidebar.action.selectMetalType"));
         if (fundProductType === "metal" && !metalUnit) throw new Error(t("sidebar.action.selectMetalUnit"));
 
-        // 债券走自己的 BondProduct 主数据（在 createBondEntry 内处理），这里只认理财。
-        const wealthProduct = fundProductType === "wealth"
+        // 债券走自己的 BondProduct 主数据（在 createBondEntry 内处理），理财与投顾组合共用 WealthProduct。
+        const wealthProduct = isWealthLikeProductType(fundProductType)
           ? await resolveOrCreateWealthProduct(tx, {
               householdId,
               institutionId: investAcc.institutionId,
+              productType: fundProductType === "advisor" ? "advisor" : "wealth",
               currency: recordCurrency,
               fallbackCurrency: investAcc.currency,
               productId: wealthProductIdInput,
@@ -1083,7 +1092,7 @@ export async function createTransaction(formData: FormData) {
               annualRate: depositAnnualRate,
             })
           : null;
-        if (fundProductType === "wealth" && !wealthProduct) throw new Error(t("sidebar.action.selectOrCreateWealthProduct"));
+        if (isWealthLikeProductType(fundProductType) && !wealthProduct) throw new Error(t("sidebar.action.selectOrCreateWealthProduct"));
         const depositProduct = fundProductType === "deposit"
           ? await resolveOrCreateDepositProduct(tx, {
               householdId,
@@ -1106,7 +1115,7 @@ export async function createTransaction(formData: FormData) {
         if (fundProductType === "deposit" && !depositProduct && !redeemLike) throw new Error(t("sidebar.action.selectOrCreateDepositProduct"));
 
         const isMetalProduct = fundProductType === "metal";
-        const isWealthProduct = fundProductType === "wealth";
+        const isWealthProduct = isWealthLikeProductType(fundProductType);
         const entryFundCode = isMetalProduct || isWealthProduct ? null : fundCode || null;
         const profileCreateFundDisplayName = entryFundCode
           ? await resolveFundName(entryFundCode, { householdId })
@@ -1312,7 +1321,7 @@ export async function createTransaction(formData: FormData) {
               metalFee: isMetalProduct ? metalFee ?? undefined : undefined,
               insuranceAction: sourceValue === "insurance" ? (redeemLike ? "refund" : "premium") : undefined,
               insuranceProductName: sourceValue === "insurance" ? entryFundName : undefined,
-              fundProductType: sourceValue === "insurance" ? null : fundProductType as "fund" | "money" | "wealth" | "deposit" | "metal" | null | undefined,
+              fundProductType: sourceValue === "insurance" ? null : fundProductType as "fund" | "money" | "wealth" | "advisor" | "deposit" | "metal" | null | undefined,
               fundSubtype: finalFundSubtype,
               source: sourceValue,
               fundUnits: isMetalProduct ? undefined : roundedFundUnits ?? undefined,
@@ -1373,7 +1382,7 @@ export async function createTransaction(formData: FormData) {
         }
       });
       if (createdInvestmentEntryId && !createdFundTransactionId) {
-        if (fundProductType !== "wealth") {
+        if (!isWealthLikeProductType(fundProductType)) {
           await syncFundTransactionsFromTxRecords([createdInvestmentEntryId]).catch((e) => {
             console.error("createTransaction sync fund transaction:", e);
           });
@@ -1385,7 +1394,7 @@ export async function createTransaction(formData: FormData) {
 
       if (sourceValue !== "insurance" && fundProductType === "metal" && finalInvestmentAccId) {
         await recalcPreciousMetalPositions(finalInvestmentAccId).catch(() => {});
-      } else if (sourceValue !== "insurance" && fundProductType !== "deposit" && fundProductType !== "wealth" && finalInvestmentAccId) {
+      } else if (sourceValue !== "insurance" && fundProductType !== "deposit" && !isWealthLikeProductType(fundProductType) && finalInvestmentAccId) {
         await recalcFundPositions(finalInvestmentAccId, fundCode ? [fundCode] : undefined).catch(() => {});
       }
       if (createdInvestmentEntryIds.length > 0) {
@@ -1431,6 +1440,8 @@ async function editSplitWealthTransaction(
   const subtypeInput = String(formData.get("subtype") ?? "buy").trim();
   const validSubtypes = Object.values(FundSubtype);
   const subtype: FundSubtype = validSubtypes.includes(subtypeInput as FundSubtype) ? (subtypeInput as FundSubtype) : FundSubtype.buy;
+  // 编辑理财/投顾交易：账户侧类型跟随提交的 fundProductType（advisor → 投顾口径的分类与备注）。
+  const editWealthProductType = String(formData.get("fundProductType") ?? "").trim();
   const isRedeem = subtype === FundSubtype.redeem || subtype === FundSubtype.switch_out;
   const isDividend = subtype === FundSubtype.dividend_cash;
   const amountAbs = Math.abs(parseMoneyInput(formData.get("amount") ?? null));
@@ -1537,6 +1548,7 @@ async function editSplitWealthTransaction(
     const wealthProduct = await resolveOrCreateWealthProduct(tx, {
       householdId,
       institutionId: wealthAcc.institutionId,
+      productType: wealthAcc.investProductType === "advisor" ? "advisor" : "wealth",
       currency: wealthAcc.currency,
       fallbackCurrency: cashAcc.currency,
       productId: resolvedWealthProductId,
@@ -1555,7 +1567,10 @@ async function editSplitWealthTransaction(
     }
 
     const signedCashAmount = isRedeem || isDividend ? Math.abs(arrivalAmount ?? amountAbs) : -amountAbs;
-    const investmentCategoryName = getInvestmentCategoryName({ fundProductType: "wealth", fundSubtype: subtype });
+    const investmentCategoryName = getInvestmentCategoryName({
+      fundProductType: editWealthProductType === "advisor" ? "advisor" : "wealth",
+      fundSubtype: subtype,
+    });
     const investmentCategory = investmentCategoryName
       ? await resolveCategorySnapshot(tx, householdId, { categoryName: investmentCategoryName, type: "investment" })
       : null;
@@ -1564,6 +1579,7 @@ async function editSplitWealthTransaction(
       productName: wealthProduct.name,
       units,
       userNote: note,
+      productType: editWealthProductType === "advisor" ? "advisor" : "wealth",
     });
     const cashEntryData = {
       householdId,
@@ -1694,7 +1710,7 @@ export async function editInvestment(formData: FormData) {
       return { ok: false as const, error: e instanceof Error ? e.message : t("investForm.alert.saveFailed") };
     }
   }
-  if (fundProductType === "wealth") {
+  if (isWealthLikeProductType(fundProductType)) {
     try {
       await editSplitWealthTransaction(t, formData, householdId);
       return { ok: true as const };
@@ -1912,7 +1928,7 @@ export async function editInvestment(formData: FormData) {
       return { ok: true as const };
     }
 
-    const existingFundTransactionForRecalc = fundProductType !== "wealth" && fundProductType !== "metal"
+    const existingFundTransactionForRecalc = !isWealthLikeProductType(fundProductType) && fundProductType !== "metal"
       ? await findFundTransactionForEntryId(prisma, { id: entryId, householdId }).catch(() => null)
       : null;
     // Buy: cash account -> fund account; redeem / cash dividend / buy_failed refund: fund account -> cash account.
@@ -1943,12 +1959,12 @@ export async function editInvestment(formData: FormData) {
     await prisma.$transaction(async (tx) => {
       const requestedInvestmentAccountId = newToAccountId ?? oldInvestmentAccId;
       const requestedCashAccountId = isDividendReinvest ? "" : cashAccountId ?? oldCashAccId;
-      const resolvedWealthAccount = fundProductType === "wealth" && !redeemLike
+      const resolvedWealthAccount = isWealthLikeProductType(fundProductType) && !redeemLike
         ? await resolveOrCreateWealthAccount(tx, {
             householdId,
             cashAccountId: requestedCashAccountId,
             requestedAccountId: requestedInvestmentAccountId || null,
-            accountProductType: "wealth",
+            accountProductType: fundProductType === "advisor" ? "advisor" : "wealth",
           })
         : null;
       // Query the cash account info first (if needed).
@@ -1993,17 +2009,18 @@ export async function editInvestment(formData: FormData) {
         : null;
       if (fundProductType === "metal" && !metalType) throw new Error(t("sidebar.action.selectMetalType"));
       if (fundProductType === "metal" && !metalUnit) throw new Error(t("sidebar.action.selectMetalUnit"));
-      // 债券走自己的 BondProduct 主数据（在 editBondEntry 内处理），这里只认理财。
-      const wealthProduct = fundProductType === "wealth"
+      // 债券走自己的 BondProduct 主数据（在 editBondEntry 内处理），理财与投顾组合共用 WealthProduct。
+      const wealthProduct = isWealthLikeProductType(fundProductType)
         ? await resolveOrCreateWealthProduct(tx, {
             householdId,
             institutionId: finalInvestmentAccountInfo?.institutionId,
+            productType: fundProductType === "advisor" ? "advisor" : "wealth",
             currency: finalInvestmentAccountInfo?.currency,
             productId: wealthProductIdInput,
             name: fundName,
           })
         : null;
-      if (fundProductType === "wealth" && !wealthProduct) throw new Error(t("sidebar.action.selectOrCreateWealthProduct"));
+      if (isWealthLikeProductType(fundProductType) && !wealthProduct) throw new Error(t("sidebar.action.selectOrCreateWealthProduct"));
       // 取回/转出的产品身份继承：先取本条记录自己的关联，下面 redeemLike 分支取到
       // sourceLot 后可在它为空时补上存单上的关联（老记录两者都可能为空）。
       let inheritedDepositProductId: string | null = txRecord.depositProductId ?? null;
@@ -2139,7 +2156,7 @@ export async function editInvestment(formData: FormData) {
           ? (effectiveFundArrivalAmount ?? Math.max(0, amountAbs + (effectiveDepositInterest ?? 0) - (fundFee ?? 0)))
           : (isDividendCash ? amountAbs : -amountAbs);
       const isMetalProduct = fundProductType === "metal";
-      const isWealthProduct = fundProductType === "wealth";
+      const isWealthProduct = isWealthLikeProductType(fundProductType);
       // 基金手动买入的自动备注：资金侧「基金买入 代码 名称」，基金侧「资金来源 账户名」。
       // 上一条资金腿的账户名快照用来识别「资金来源 X」是不是系统当初自动写的 ——
       // 只有和它完全一致时才当作自动文案重算，用户改过的备注一律保留。
@@ -2591,7 +2608,7 @@ export async function editInvestment(formData: FormData) {
         await recalcPreciousMetalPositions(finalInvestmentAccId).catch((e) => { console.error("editInvestment recalc new metal positions:", e); });
       }
     }
-    if (!isMetalProduct && fundProductType !== "wealth") {
+    if (!isMetalProduct && !isWealthLikeProductType(fundProductType)) {
       if (oldInvestmentAccId && oldInvestmentAccId !== finalInvestmentAccId) {
         // Fund account changed: recalculate both the old and new accounts.
         await recalcFundPositions(oldInvestmentAccId, recalcCodes.length > 0 ? recalcCodes : undefined).catch((e) => { console.error("editInvestment recalc old fund positions:", e); });
@@ -2604,12 +2621,12 @@ export async function editInvestment(formData: FormData) {
 
     // Update the T+N confirm/arrival days in the unified store.
     // 设置页保存过（manualOverride）的行这里只读，不会再被交易表单覆盖。
-    if (fundProductType !== "metal" && fundProductType !== "wealth" && finalInvestmentAccId && fundCode) {
+    if (fundProductType !== "metal" && !isWealthLikeProductType(fundProductType) && finalInvestmentAccId && fundCode) {
       await setFundDateRuleAuto(finalInvestmentAccId, fundCode, { days: confirmDays, arrivalDays }).catch(() => {});
     }
 
     // Update the fee-rate rule only when the user explicitly edited the rate.
-    if (fundProductType !== "metal" && fundProductType !== "wealth" && finalInvestmentAccId && fundCode && feeRateWasEdited && feeRate !== undefined && feeRate !== null) {
+    if (fundProductType !== "metal" && !isWealthLikeProductType(fundProductType) && finalInvestmentAccId && fundCode && feeRateWasEdited && feeRate !== undefined && feeRate !== null) {
       await setFundFeeRateByDate(finalInvestmentAccId, fundCode, feeRate, fundConfirmDate ?? date, redeemLike ? "redeem" : "buy").catch(() => {});
     }
 

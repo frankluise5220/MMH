@@ -247,7 +247,7 @@ async function resolveRecordFundFeeRate(record: {
   fundConfirmDate?: Date | null;
 }) {
   const fundCode = String(record.fundCode ?? "").trim();
-  if (!fundCode || record.fundProductType === "metal" || record.fundProductType === "wealth") return null;
+  if (!fundCode || record.fundProductType === "metal" || record.fundProductType === "wealth" || record.fundProductType === "advisor") return null;
   const redeemLike = record.fundSubtype === FundSubtype.redeem || record.fundSubtype === FundSubtype.switch_out;
   const fundAccountId = redeemLike ? record.accountId : record.toAccountId;
   if (!fundAccountId) return null;
@@ -554,7 +554,8 @@ async function createSplitWealthTransactionFromBody(body: Record<string, unknown
 
   const requestedWealthAccountId = String(body.accountId ?? body.toAccountId ?? "").trim();
   const cashAccountId = String(body.cashAccountId ?? "").trim();
-  // 只服务理财：债券在 POST 分发处已早退到 createBondEntry，不会走到这里。
+  // 只服务理财与投顾组合：债券在 POST 分发处已早退到 createBondEntry，不会走到这里。
+  const entryFundProductType = String(body.fundProductType ?? body.productType ?? "").trim();
   const productNameInput = String(body.fundName ?? "").trim();
   const wealthProductIdInput = String(body.wealthProductId ?? "").trim();
   const note = String(body.note ?? body.memo ?? "").trim();
@@ -603,13 +604,14 @@ async function createSplitWealthTransactionFromBody(body: Record<string, unknown
           householdId,
           cashAccountId: cashAcc!.id,
           requestedAccountId: requestedWealthAccountId || null,
-          accountProductType: "wealth",
+          accountProductType: entryFundProductType === "advisor" ? "advisor" : "wealth",
         });
     if (!wealthAcc) throw new Error("请选择理财账户");
 
     const wealthProduct = await resolveOrCreateWealthProduct(tx, {
       householdId,
       institutionId: wealthAcc.institutionId,
+      productType: entryFundProductType === "advisor" ? "advisor" : "wealth",
       currency: wealthAcc.currency,
       fallbackCurrency: cashAcc?.currency,
       productId: wealthProductIdInput,
@@ -629,7 +631,7 @@ async function createSplitWealthTransactionFromBody(body: Record<string, unknown
     }
 
     const investmentCategoryName = getInvestmentCategoryName({
-      fundProductType: "wealth",
+      fundProductType: entryFundProductType === "advisor" ? "advisor" : "wealth",
       fundSubtype: subtype,
     });
     const investmentCategory = investmentCategoryName
@@ -642,6 +644,7 @@ async function createSplitWealthTransactionFromBody(body: Record<string, unknown
       productName: wealthProduct.name,
       units,
       userNote: note,
+      productType: entryFundProductType === "advisor" ? "advisor" : "wealth",
     });
     const cashEntry = await tx.txRecord.create({
       data: {
@@ -737,7 +740,8 @@ async function editSplitWealthTransactionFromBody(body: Record<string, unknown>,
 
   const requestedWealthAccountId = String(body.toAccountId ?? body.accountId ?? "").trim();
   const cashAccountIdInput = String(body.cashAccountId ?? "").trim();
-  // 只服务理财：债券在 PUT 分发处已早退到 editBondEntry，不会走到这里。
+  // 只服务理财与投顾组合：债券在 PUT 分发处已早退到 editBondEntry，不会走到这里。
+  const editFundProductType = String(body.fundProductType ?? body.productType ?? "").trim();
   const productNameInput = String(body.fundName ?? "").trim();
   const wealthProductIdInput = String(body.wealthProductId ?? "").trim();
   const note = String(body.note ?? body.memo ?? "").trim();
@@ -835,13 +839,14 @@ async function editSplitWealthTransactionFromBody(body: Record<string, unknown>,
           householdId,
           cashAccountId: cashAcc!.id,
           requestedAccountId: requestedWealthAccountId || wealthRow.accountId,
-          accountProductType: "wealth",
+          accountProductType: editFundProductType === "advisor" ? "advisor" : "wealth",
         });
     if (!wealthAcc) throw new Error("请选择理财账户");
 
     const wealthProduct = await resolveOrCreateWealthProduct(tx, {
       householdId,
       institutionId: wealthAcc.institutionId,
+      productType: editFundProductType === "advisor" ? "advisor" : "wealth",
       currency: wealthAcc.currency,
       fallbackCurrency: cashAcc?.currency,
       productId: wealthProductIdInput || wealthRow.wealthProductId,
@@ -862,7 +867,7 @@ async function editSplitWealthTransactionFromBody(body: Record<string, unknown>,
 
     const signedCashAmount = isWriteOff ? -amountAbs : isCashIn ? Math.abs(arrivalAmount ?? amountAbs) : -amountAbs;
     const investmentCategoryName = getInvestmentCategoryName({
-      fundProductType: "wealth",
+      fundProductType: editFundProductType === "advisor" ? "advisor" : "wealth",
       fundSubtype: subtype,
     });
     const investmentCategory = investmentCategoryName
@@ -873,6 +878,7 @@ async function editSplitWealthTransactionFromBody(body: Record<string, unknown>,
       productName: wealthProduct.name,
       units,
       userNote: note,
+      productType: editFundProductType === "advisor" ? "advisor" : "wealth",
     });
     const cashEntryData = {
       householdId,
@@ -2794,7 +2800,7 @@ export async function POST(req: Request) {
         await touchAccountUsage(usageAccountIds);
         return NextResponse.json({ ok: true, data: data ?? { id: created.cashEntryId } });
       }
-      if (fundProductType === "wealth") {
+      if (fundProductType === "wealth" || fundProductType === "advisor") {
         const created = await createSplitWealthTransactionFromBody(body, householdId, tagIds);
         const data = await loadApiDetailRecord(created.cashEntryId);
         await touchAccountUsage(usageAccountIds);
@@ -2832,7 +2838,7 @@ export async function POST(req: Request) {
       const insuranceActionForEntry = isInsurance
         ? (redeemLike ? "refund" : normalizeInsuranceAction(body.insuranceAction, "premium"))
         : null;
-      if (!accountId && fundProductType !== "deposit" && fundProductType !== "wealth" && !isInsurance) {
+      if (!accountId && fundProductType !== "deposit" && fundProductType !== "wealth" && fundProductType !== "advisor" && !isInsurance) {
         return NextResponse.json({ ok: false, code: "ACCOUNT_REQUIRED", error: "请选择账户" }, { status: 400 });
       }
       if (isInsurance && !insuranceProductId && !insuranceProductMasterId && !ownerGroupId && !String(body.policyholderPersonId ?? "").trim()) {
@@ -2860,12 +2866,12 @@ export async function POST(req: Request) {
                 cashAccountId: cashAccountIdInput,
                 fundName: fundNameInput || note || null,
               })
-            : fundProductType === "wealth" && finalFundSubtype === FundSubtype.buy
+            : (fundProductType === "wealth" || fundProductType === "advisor") && finalFundSubtype === FundSubtype.buy
               ? await resolveOrCreateWealthAccount(tx, {
                   householdId,
                   cashAccountId: cashAccountIdInput ?? "",
                   requestedAccountId: accountId || null,
-                  accountProductType: "wealth",
+                  accountProductType: fundProductType === "advisor" ? "advisor" : "wealth",
                 })
               : accountId
                 ? await tx.account.findUnique({ where: { id: accountId } })
@@ -3021,19 +3027,21 @@ export async function POST(req: Request) {
           : null;
         if (fundProductType === "metal" && !metalType) throw new Error("请选择贵金属品种");
         if (fundProductType === "metal" && !metalUnit) throw new Error("请选择贵金属单位");
-        // 债券走自己的 BondProduct 主数据（在 createBondEntry 内处理），这里只认理财。
-        const wealthProduct = fundProductType === "wealth"
+        // 债券走自己的 BondProduct 主数据（在 createBondEntry 内处理），理财与投顾组合共用 WealthProduct。
+        const isWealthLike = fundProductType === "wealth" || fundProductType === "advisor";
+        const wealthProduct = isWealthLike
           ? await resolveOrCreateWealthProduct(tx, {
               householdId,
               institutionId: investAcc.institutionId,
+              productType: fundProductType === "advisor" ? "advisor" : "wealth",
               currency: investAcc.currency,
               fallbackCurrency: cashAcc?.currency,
               productId: wealthProductIdInput,
               name: fundNameInput,
             })
           : null;
-        if (fundProductType === "wealth" && !wealthProduct) throw new Error("请选择或新增理财产品");
-        if (fundProductType === "wealth" && wealthProduct) {
+        if (isWealthLike && !wealthProduct) throw new Error("请选择或新增理财产品");
+        if (isWealthLike && wealthProduct) {
           if (!cashAcc) throw new Error("请选择理财资金账户");
           assertSameWealthCurrency(cashAcc, investAcc, wealthProduct);
         }
@@ -3209,6 +3217,7 @@ export async function POST(req: Request) {
         const shouldDeriveFundDates =
           !isMetalProduct &&
           fundProductType !== "wealth" &&
+          fundProductType !== "advisor" &&
           !!entryFundCode &&
           (finalFundSubtype === FundSubtype.buy || (redeemLike && fundProductType !== "deposit"));
         let computedConfirmDate: Date | null = fundConfirmDate;
@@ -3343,7 +3352,7 @@ export async function POST(req: Request) {
               insuranceProductId: insuranceProductId ?? undefined,
               insuranceAction: insuranceActionForEntry ?? undefined,
               insuranceProductName: isInsurance ? entryFundName : undefined,
-              fundProductType: isInsurance ? null : fundProductType as "fund" | "money" | "wealth" | "deposit" | "metal" | null | undefined,
+              fundProductType: isInsurance ? null : fundProductType as "fund" | "money" | "wealth" | "advisor" | "deposit" | "metal" | null | undefined,
               fundSubtype: finalFundSubtype,
               source: sourceValue,
               fundUnits: isMetalProduct ? undefined : roundedFundUnits ?? undefined,
@@ -3389,7 +3398,7 @@ export async function POST(req: Request) {
             createdBalanceEntryIds.push(cashEntry.id);
             const businessType: EntryBusinessType = isInsurance
               ? "insurance"
-              : fundProductType === "wealth"
+              : fundProductType === "wealth" || fundProductType === "advisor"
                 ? "wealth"
                 : fundProductType === "deposit"
                   ? "deposit"
@@ -3652,7 +3661,7 @@ export async function PUT(req: Request) {
     const entryId = String(body.id ?? body.entryId ?? "").trim();
     const productType = String(body.fundProductType ?? body.productType ?? "").trim();
     const businessTransactionId = String(body.businessTransactionId ?? "").trim();
-    if (!entryId && !(type === "investment" && (productType === "wealth" || productType === "bond") && businessTransactionId)) {
+    if (!entryId && !(type === "investment" && (productType === "wealth" || productType === "advisor" || productType === "bond") && businessTransactionId)) {
       return NextResponse.json({ ok: false, code: "MISSING_ID", error: "缺少 id" }, { status: 400 });
     }
 
@@ -3731,7 +3740,7 @@ export async function PUT(req: Request) {
       return NextResponse.json({ ok: true, data });
     }
 
-    if (type === "investment" && productType === "wealth") {
+    if (type === "investment" && (productType === "wealth" || productType === "advisor")) {
       const updated = await editSplitWealthTransactionFromBody(body, householdId, tagIds);
       await saveEntryUndo(prisma, ctx, undo, "edit", "编辑明细");
       const data = await loadApiDetailRecord(updated.cashEntryId);
@@ -3981,13 +3990,13 @@ export async function PUT(req: Request) {
       }
     }
 
-    if (productType === "wealth" && !cashReceivingLike) {
+    if ((productType === "wealth" || productType === "advisor") && !cashReceivingLike) {
       const requestedCashAccountId = cashAccountIdFormData || (entry.accountId !== investAcc?.id ? entry.accountId : "");
       investAcc = await resolveOrCreateWealthAccount(tx, {
         householdId,
         cashAccountId: requestedCashAccountId,
         requestedAccountId: investAcc?.id ?? (accountIdFormData || null),
-        accountProductType: "wealth",
+        accountProductType: productType === "advisor" ? "advisor" : "wealth",
       });
     }
 
@@ -4039,16 +4048,18 @@ export async function PUT(req: Request) {
     // The funding cash account is resolved below this point (`cashAccId`), so
     // the product's own account currency is the only fallback available here;
     // `assertSameWealthCurrency` rejects a mismatch right after.
-    const wealthProduct = productType === "wealth"
+    const isWealthLikeProduct = productType === "wealth" || productType === "advisor";
+    const wealthProduct = isWealthLikeProduct
       ? await resolveOrCreateWealthProduct(tx, {
           householdId,
           institutionId: investAcc.institutionId,
+          productType: productType === "advisor" ? "advisor" : "wealth",
           currency: investAcc.currency,
           productId: wealthProductIdInput,
           name: fundNameInput,
         })
       : null;
-    if (productType === "wealth" && !wealthProduct) throw new Error("请选择或新增理财产品");
+    if (isWealthLikeProduct && !wealthProduct) throw new Error("请选择或新增理财产品");
     const depositProduct = productType === "deposit"
       ? await resolveOrCreateDepositProduct(tx, {
           householdId,
@@ -4080,7 +4091,7 @@ export async function PUT(req: Request) {
             }
           }
         }
-        if (productType === "wealth" && wealthProduct) {
+        if (isWealthLikeProduct && wealthProduct) {
           if (!cashAccId) throw new Error("请选择理财资金账户");
           assertSameWealthCurrency({ name: cashAccName, currency: cashAccCurrency }, investAcc, wealthProduct);
         }

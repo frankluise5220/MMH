@@ -2583,9 +2583,9 @@ export default async function Home({
         })
       : [];
 
-  const allWealthAccounts = investmentAccountOptions.filter((account) => account.investProductType === "wealth" || account.investProductType === "bond");
+  const allWealthAccounts = investmentAccountOptions.filter((account) => account.investProductType === "wealth" || account.investProductType === "advisor" || account.investProductType === "bond");
   const allWealthAccountIds = allWealthAccounts.map((account) => account.id);
-  const allWealthOnlyAccountIds = allWealthAccounts.filter((account) => account.investProductType === "wealth").map((account) => account.id);
+  const allWealthOnlyAccountIds = allWealthAccounts.filter((account) => account.investProductType === "wealth" || account.investProductType === "advisor").map((account) => account.id);
   const allBondOnlyAccountIds = allWealthAccounts.filter((account) => account.investProductType === "bond").map((account) => account.id);
   // 债券与理财各有独立交易表：持仓下拉两类都带上，弹窗内部再按账户类型隔离。
   const allWealthEntries =
@@ -2986,13 +2986,13 @@ export default async function Home({
       ?? "";
   })();
   const defaultWealthAccountForSelectedInstitution =
-    selectedAccount && isPureInvestmentAccount(selectedAccount) && selectedAccount.investProductType === "wealth"
+    selectedAccount && isPureInvestmentAccount(selectedAccount) && (selectedAccount.investProductType === "wealth" || selectedAccount.investProductType === "advisor")
       ? selectedAccount.id
       : selectedAccount?.institutionId
-        ? investmentAccountOptions.find((account) => account.investProductType === "wealth" && account.institutionId === selectedAccount.institutionId)?.id
-          ?? investmentAccountOptions.find((account) => account.investProductType === "wealth")?.id
+        ? investmentAccountOptions.find((account) => (account.investProductType === "wealth" || account.investProductType === "advisor") && account.institutionId === selectedAccount.institutionId)?.id
+          ?? investmentAccountOptions.find((account) => account.investProductType === "wealth" || account.investProductType === "advisor")?.id
           ?? ""
-        : investmentAccountOptions.find((account) => account.investProductType === "wealth")?.id ?? "";
+        : investmentAccountOptions.find((account) => account.investProductType === "wealth" || account.investProductType === "advisor")?.id ?? "";
   // 债券入口的默认账户：优先当前选中账户本身（bond 类型），其次同机构的债券账户，再次任意债券账户。
   const defaultBondAccountForSelectedInstitution =
     selectedAccount && isPureInvestmentAccount(selectedAccount) && selectedAccount.investProductType === "bond"
@@ -3085,6 +3085,13 @@ export default async function Home({
               ) : null}
             </div>
             <div className={`flex shrink-0 flex-wrap items-center justify-end gap-2 ${currentInvestData ? "hidden desktop:flex" : ""}`}>
+              {/* 「胶囊菜单」（用户口径）：视图右上角的快捷记账入口，悬浮展开一级菜单、
+                  行内 ▸ 再展开二级菜单（如 债券 ▸ 债券/逆回购借出/逆回购回款、
+                  银行理财 ▸ 银行理财/投顾组合）。派发走下方 case "xxx" 的 CustomEvent
+                  （mmh:wealth:create 等），弹窗内再按 detail.accountFamily 等参数分流。
+                  注意与 `src/components/TopEntryLauncher.tsx` 区分：那是另一套壳（顶部
+                  导航用的默认入口），不是用户说的胶囊菜单；改菜单结构优先改这里的
+                  actions 数组，两处都要改时保持同构。 */}
               <UnifiedEntryLauncher
                 defaultAction={
                   isDepositView
@@ -3099,7 +3106,7 @@ export default async function Home({
                       ? (
                           selectedAccount?.investProductType === "metal"
                             ? "metal"
-                            : selectedAccount?.investProductType === "wealth"
+                            : selectedAccount?.investProductType === "wealth" || selectedAccount?.investProductType === "advisor"
                               ? "wealth"
                               : selectedAccount?.investProductType === "bond"
                                 ? "bond"
@@ -3381,6 +3388,7 @@ export default async function Home({
               />
               <WealthFormModal
                 mode="create"
+                family="wealth"
                 accountId={selectedAccount?.id ?? investmentAccountOptions[0]?.id ?? ""}
                 cashAccounts={cashAccountList}
                 investmentAccounts={investmentAccountOptions}
@@ -3393,6 +3401,7 @@ export default async function Home({
               />
               <WealthFormModal
                 mode="edit"
+                family="wealth"
                 accountId={selectedAccount?.id ?? investmentAccountOptions[0]?.id ?? ""}
                 cashAccounts={cashAccountList}
                 investmentAccounts={investmentAccountOptions}

@@ -3,6 +3,12 @@
 import { UnifiedEntryLauncher } from "@/components/UnifiedEntryLauncher";
 import { useI18n } from "@/lib/i18n";
 
+/**
+ * ⚠️ 这不是用户说的「胶囊菜单」。用户口径的「胶囊菜单」= 视图右上角的快捷记账入口，
+ * 在首页 RSC（src/app/(sidebar)/page.tsx，header 内的 UnifiedEntryLauncher，内联 actions）。
+ * 改「银行理财 ▸ 投顾组合」这类菜单结构时优先改 page.tsx 那份；本组件仅供顶部导航等
+ * 其他位置复用，两边菜单需保持同构。
+ */
 export function TopEntryLauncher({
   defaultAction = "transaction",
 }: {

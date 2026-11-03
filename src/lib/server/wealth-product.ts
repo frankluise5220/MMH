@@ -8,6 +8,8 @@ type ResolveWealthProductInput = {
   /** 产品主数据身份优先于「机构 + 名称」：命中即采用。 */
   productId?: string | null;
   name?: string | null;
+  /** 产品家族：wealth=理财（默认），advisor=投顾组合。查重与新建都按家族隔离。 */
+  productType?: string | null;
   /** 显式币种；缺省时按 `fallbackCurrency`（账户币种）落库。 */
   currency?: string | null;
   fallbackCurrency?: string | null;
@@ -55,11 +57,18 @@ export async function resolveOrCreateWealthProduct(tx: Db, input: ResolveWealthP
   const householdId = input.householdId;
   const productId = String(input.productId ?? "").trim();
   const name = String(input.name ?? "").trim();
+  const productType = input.productType === "advisor" ? "advisor" : "wealth";
   const institutionId = String(input.institutionId ?? "").trim() || null;
   const requestedCurrency = normalizeOptionalCurrency(input.currency);
   const fallbackCurrency = normalizeOptionalCurrency(input.fallbackCurrency);
   const targetCurrency = normalizeCurrency(requestedCurrency ?? fallbackCurrency ?? "CNY");
   const annualRate = parsePositiveNumber(input.annualRate);
+
+  // 投顾产品没有「通用（不限机构）」这一档（2026-11-03 用户裁定）：落账路径也必须带机构，
+  // 否则会凭空造出一个没有机构的投顾产品，产品库和投顾下拉都再也选不到它。
+  if (productType === "advisor" && !institutionId) {
+    throw new Error("投顾产品必须指定所属机构");
+  }
 
   if (productId) {
     const byId = await tx.wealthProduct.findFirst({
@@ -79,7 +88,7 @@ export async function resolveOrCreateWealthProduct(tx: Db, input: ResolveWealthP
   if (!name) return null;
 
   const existing = await tx.wealthProduct.findFirst({
-    where: { householdId, institutionId, name },
+    where: { householdId, institutionId, name, productType },
   });
   if (existing) {
     if (normalizeCurrency(existing.currency) !== targetCurrency) {
@@ -93,6 +102,7 @@ export async function resolveOrCreateWealthProduct(tx: Db, input: ResolveWealthP
       householdId,
       institutionId,
       name,
+      productType,
       currency: targetCurrency,
       annualRate,
       isActive: true,

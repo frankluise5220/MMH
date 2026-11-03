@@ -38,7 +38,7 @@ export async function GET(req: Request) {
       : await computePositionDisplay(ctx, accountId);
 
     const selectedFundCode =
-      account.investProductType === "wealth" || account.investProductType === "bond"
+      account.investProductType === "wealth" || account.investProductType === "advisor" || account.investProductType === "bond"
         ? (wealthProductIdParam || fundCodeParam || "")
         : fundCodeParam || (positionDisplay.positions.length > 0
           ? [...positionDisplay.positions].sort((a, b) => b.marketValue - a.marketValue)[0]?.fundCode
@@ -49,7 +49,7 @@ export async function GET(req: Request) {
     // Do not limit here: the client paginates details locally.
     // entryScope=account is used when the client needs a complete local cache for fast fund switching.
     const isBondLike = account.investProductType === "bond";
-    const isWealthLike = account.investProductType === "wealth" || isBondLike;
+    const isWealthLike = account.investProductType === "wealth" || account.investProductType === "advisor" || isBondLike;
     const allIndependentEntries =
       isWealthLike
         ? isBondLike

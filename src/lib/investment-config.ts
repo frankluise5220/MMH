@@ -15,12 +15,14 @@ export type ProductType =
   | "fund"
   | "money"
   | "wealth"
+  | "advisor"
   | "bond"
   | "deposit"
   | "metal"
   | "stock"
   | "property";
 
+/** 账户类型下拉（UI 列表）：投顾组合（advisor）已收口，不再提供新建入口（2026-11-03）。 */
 export const PRODUCT_TYPES: readonly ProductType[] = [
   "fund",
   "money",
@@ -32,6 +34,21 @@ export const PRODUCT_TYPES: readonly ProductType[] = [
   "property",
 ];
 
+/**
+ * 服务端接受列表：在 UI 列表基础上保留 advisor，保证残留的投顾账户在编辑时
+ * 不会被 normalize 静默转成其他类型（仅存量，不再新增）。
+ */
+export const ACCOUNT_PRODUCT_TYPES_ACCEPTED: readonly ProductType[] = [...PRODUCT_TYPES, "advisor"];
+
+/**
+ * Wealth-like product types share the wealth ledger chain
+ * (WealthTransaction / WealthProduct, manual nav valuation).
+ * 投顾组合（advisor）自上而下按「份额 × 组合净值」记账，与理财同构。
+ */
+export function isWealthLikeProductType(productType: string | null | undefined): boolean {
+  return productType === "wealth" || productType === "advisor";
+}
+
 export function supportsCostBasisMethod(productType: string | null | undefined): boolean {
   return productType === "fund" || productType === "money" || productType === "stock";
 }
@@ -41,6 +58,7 @@ export const PRODUCT_SUBTYPES: Record<ProductType, FundSubtype[][]> = {
   fund: [["buy", "redeem", "dividend_cash", "dividend_reinvest"]],
   money: [["buy", "redeem", "dividend_cash", "dividend_reinvest"]],
   wealth: [["buy", "redeem"]],
+  advisor: [["buy", "redeem"]],
   bond: [["buy", "redeem"]],
   deposit: [["buy", "redeem"]],
   metal: [["buy", "redeem"]],

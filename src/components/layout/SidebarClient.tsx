@@ -126,7 +126,7 @@ type SidebarSection = {
 function normalizeSidebarItemKind(item: Pick<AccountItem, "kind" | "investProductType">) {
   if (item.kind === "investment" && item.investProductType === "deposit") return "deposit";
   if (item.kind === "investment" && item.investProductType === "money") return "investment_money";
-  if (item.kind === "investment" && item.investProductType === "wealth") return "investment_wealth";
+  if (item.kind === "investment" && (item.investProductType === "wealth" || item.investProductType === "advisor")) return "investment_wealth";
   if (item.kind === "investment" && item.investProductType === "bond") return "investment_bond";
   if (item.kind === "investment" && item.investProductType === "stock") return "investment_stock";
   if (item.kind === "investment" && item.investProductType === "property") return "investment_property";
