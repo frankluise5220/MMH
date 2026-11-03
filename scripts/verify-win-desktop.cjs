@@ -174,6 +174,24 @@ expect(
   /electron\/update-window\.html/.test(builderYml) && /electron\/update-preload\.cjs/.test(builderYml),
   "electron-builder.yml files must include electron/update-window.html + electron/update-preload.cjs (the download window).",
 );
+
+// 2026-11-03 隐藏更新源窗口（Ctrl+Shift+U）：公开发表前先把包放到测试机能下载的
+// 目录（群晖共享），把本机更新源指过去装一遍，确认能启动再传公开更新源。页面与
+// preload 同样要显式打包，否则按快捷键只会弹一个空白窗。
+expect(
+  /electron\/updater-feed\.html/.test(builderYml) && /electron\/updater-feed-preload\.cjs/.test(builderYml),
+  "electron-builder.yml files must include electron/updater-feed.html + electron/updater-feed-preload.cjs (the hidden update-source dialog).",
+);
+expect(
+  /before-input-event/.test(electronMain) &&
+    /openUpdaterFeedWindow\(\)/.test(electronMain) &&
+    /"mmh:updater-feed-set"/.test(electronMain),
+  "Ctrl+Shift+U must open the hidden update-source dialog and save through the mmh:updater-feed-set IPC.",
+);
+expect(
+  /fetchManifest\(\{\s*url:\s*updaterManifestUrl\(\)\s*\}\)/.test(electronMain),
+  "The manifest lookup must use the hidden update source, not the hard-coded dl.floatingice.win manifest.",
+);
 expect(
   /function startInstallerDownload\(/.test(electronMain) &&
     /autoUpdater\s*\.\s*downloadUpdate\(token\)/.test(electronMain),
@@ -266,6 +284,27 @@ for (const [column, type] of [
     `Windows SQLite init must backfill HouseholdPreference.${column} for existing databases (first-screen/sidebar query reads every column).`,
   );
 }
+
+// 2026-11-02/03 桌面版 0.1.81 升级缺列事故：bond_transactions.instrumentKind 与
+// WealthProduct.productType 同批发布，补列脚本只写了后者，前者漏掉 —— 升级后的
+// 桌面库一打开债券 / 逆回购 / 定时任务就报 "no such column: instrumentKind"。
+// 新列必须同时出现在 schema.native.prisma（全新安装建列）和 applyRuntimeMigrations（补存量库）。
+for (const [table, column, type] of [
+  ["bond_transactions", "instrumentKind", "TEXT NOT NULL DEFAULT 'bond'"],
+  ["WealthProduct", "productType", "TEXT NOT NULL DEFAULT 'wealth'"],
+]) {
+  expect(
+    buildScript.includes(`addColumnIfMissing(db, "${table}", "${column}", "${type}")`),
+    `Windows SQLite init must backfill ${table}.${column} for existing databases (bond/repo/bond-task pages select it).`,
+  );
+}
+
+// 新表只靠「按 native-init.sql 建缺失表」兜底，所以它必须出现在原生 schema 里。
+const nativeSchema = fs.readFileSync(path.join(root, "prisma", "schema.native.prisma"), "utf8");
+expect(
+  /model RepoProductCustom\s*\{/.test(nativeSchema),
+  "prisma/schema.native.prisma must define RepoProductCustom so an upgraded desktop database gets the table created from native-init.sql.",
+);
 
 // cookie / localStorage / 磁盘缓存挂在 sessionData 上，不挂在 userData 上。
 // 只重定向 userData 时，用户会重新在 C:\Users\...\AppData\Roaming\MMH 里看到
@@ -365,6 +404,16 @@ for (const [table, column, type] of [
     `Windows SQLite init must backfill ${table}.${column} for existing databases (login page reads it).`,
   );
 }
+
+// 上面的白名单只能钉住「已经写下来的列」。真正拦住 0.1.81 那类事故的是打包前的升级路径
+// 门禁：它用上一个发布版本的真实结构跑一遍升级，再按当前 schema 逐表逐列断言。删掉这一步
+// 就等于回到「漏列只能等用户升级后才发现」的老路。
+expect(
+  buildScript.includes('require("./lib/win-upgrade-sim.cjs")') &&
+    buildScript.includes("verify upgrade path from previous release") &&
+    buildScript.includes("upgradeSim.simulateUpgrade({"),
+  "build-win-desktop.cjs must keep the pre-package upgrade path gate (scripts/lib/win-upgrade-sim.cjs): the whitelist above cannot catch a new column that was never registered.",
+);
 
 if (failures.length > 0) {
   console.error("Windows desktop verification failed:");

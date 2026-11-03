@@ -537,6 +537,67 @@ try {
   "utf8",
 );
 
+// ------------------------------------------------- upgrade path gate (hard)
+// 0.1.81 的事故：安装包已经上传，才发现 applyRuntimeMigrations 漏了
+// bond_transactions.instrumentKind，老用户覆盖安装后 "no such column"。
+// 静态断言只钉白名单，所以这里在打包前用「上一个发布版本的真实结构」真跑一遍升级：
+// 老库 -> stage 里的 init-sqlite.cjs -> 断言 native-init.sql 的每一张表、每一列都在。
+// 这一步不过就打不出安装包，避免再靠人记得跑校验。
+step("verify upgrade path from previous release");
+{
+  const upgradeSim = require("./lib/win-upgrade-sim.cjs");
+  const buildVersion = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")).version;
+  const upgradeBaseTag = upgradeSim.resolveBaseTag({ root, version: buildVersion });
+  if (!upgradeBaseTag) {
+    console.error(
+      "Upgrade path gate: cannot resolve a baseline tag below " +
+        buildVersion +
+        ". Fetch tags (git fetch --tags) or set MMH_UPGRADE_BASE_TAG.",
+    );
+    process.exit(1);
+  }
+  let upgradeResult;
+  try {
+    upgradeResult = upgradeSim.simulateUpgrade({
+      root,
+      baseTag: upgradeBaseTag,
+      initScriptPath: path.join(stageAppDir, "scripts", "init-sqlite.cjs"),
+      nativeInitPath: path.join(stageAppDir, "prisma", "native-init.sql"),
+      nodeModulesPath: path.join(stageAppDir, "node_modules"),
+    });
+  } catch (error) {
+    console.error("Upgrade path gate failed to run: " + (error && error.message ? error.message : error));
+    process.exit(1);
+  }
+  const missing = [...upgradeResult.missingTables, ...upgradeResult.missingColumns];
+  if (missing.length > 0) {
+    console.error(
+      "Upgrade path gate FAILED: " +
+        missing.length +
+        " object(s) missing after upgrading a " +
+        upgradeBaseTag +
+        " database:",
+    );
+    for (const item of missing) console.error("  - " + item);
+    console.error(
+      'Add addColumnIfMissing(db, "<table>", "<column>", "<definition>") to applyRuntimeMigrations in ' +
+        "this file: native-init.sql only creates missing tables, it never adds columns to existing ones.",
+    );
+    process.exit(1);
+  }
+  console.log(
+    "Upgrade path OK: " +
+      upgradeBaseTag +
+      " (" +
+      upgradeResult.baseTableCount +
+      " tables) -> " +
+      upgradeResult.expectedTableCount +
+      " tables / " +
+      upgradeResult.expectedColumnCount +
+      " columns",
+  );
+}
+
 // ------------------------------------------------- better-sqlite3 (N-API)
 // No portable Node runtime is staged any more. better-sqlite3 v13 is N-API
 // based and ships precompiled binaries per platform, so a single win32-x64.node
