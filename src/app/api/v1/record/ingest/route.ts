@@ -11,6 +11,7 @@ import {
   createImportAccountIdentityConflictChecker,
   normalizeImportAccountMatchKey,
   parseImportAccountId,
+  parseSettlementCounterpartyFromText,
   resolveImportAccountIdFromList,
   type ImportAccountIdentityConflict,
 } from "@/lib/account-import-match";
@@ -835,9 +836,9 @@ export async function POST(req: Request) {
     }
     if (unmatchedNames.size > 0) {
       // Batch-resolve liability accounts
+      // 「X的往来款/应收款/应付款」里的 X 才是往来对象（统一口径见 parseSettlementCounterpartyFromText）。
       const counterpartyNames = [...unmatchedNames].map(name => {
-        const m = name.match(/^(.+?)的往来款$/);
-        return m?.[1]?.trim() || name.trim();
+        return parseSettlementCounterpartyFromText(name) || name.trim();
       }).filter(Boolean);
       const allCps = counterpartyNames.length > 0 ? await prisma.counterparty.findMany({
         where: { householdId: ctx.householdId, OR: [{ name: { in: counterpartyNames } }, { shortName: { in: counterpartyNames } }] },
@@ -863,7 +864,7 @@ export async function POST(req: Request) {
       for (const l of existingLoans) { if (l.counterpartyId && !loanByCpId.has(l.counterpartyId)) loanByCpId.set(l.counterpartyId, l.id); }
       const defaultGroup = await ensureDefaultAccountGroupId(ctx, prisma);
       for (const name of unmatchedNames) {
-        const cn = (name.match(/^(.+?)的往来款$/) || [])[1] || name.trim();
+        const cn = parseSettlementCounterpartyFromText(name) || name.trim();
         const cpId = cpByName.get(cn);
         if (!cpId) continue;
         let loanId = loanByCpId.get(cpId);

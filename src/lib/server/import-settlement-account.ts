@@ -1,5 +1,10 @@
 import { AccountKind, type Prisma } from "@prisma/client";
-import { parseSettlementAccountName, parseImportBarePersonName, parseImportPersonAttributedCandidate } from "@/lib/account-import-match";
+import {
+  parseSettlementAccountName,
+  parseSettlementCounterpartyFromText,
+  parseImportBarePersonName,
+  parseImportPersonAttributedCandidate,
+} from "@/lib/account-import-match";
 import { assertCounterpartyDisplayNamesUnique } from "@/lib/server/counterparty-name-unique";
 import { ensureInstitutionForCounterparty } from "@/lib/server/counterparty-sync";
 
@@ -139,10 +144,12 @@ export async function resolveSettlementAccountByCounterpartyName(
     ? undefined
     : liabilityResolveCacheGet(householdId, cacheKey);
   if (cached !== undefined) return cached.accountId;
-  // Try "XX的往来款" pattern first, then fall back to the raw name.
-  const parsedCounterpartyName = parseSettlementAccountName(accountName);
+  // Try "XX的往来款/应收款/应付款" pattern first, then fall back to the raw name.
+  // 新建往来对象只认 5 字以内的对象名（自由文本口径），避免把整句备注建成对象；
+  // 复用既有对象时允许长对象名（账本里确有「旅游专用帐户的往来款」这种 6 字名字）。
+  const parsedCounterpartyName = parseSettlementCounterpartyFromText(accountName);
   if (!parsedCounterpartyName && (options.createCounterparty || options.createAccount)) return null;
-  const counterpartyName = parsedCounterpartyName ?? accountName.trim();
+  const counterpartyName = parsedCounterpartyName ?? parseSettlementAccountName(accountName) ?? accountName.trim();
   if (!counterpartyName) { liabilityResolveCacheSet(householdId, cacheKey, { accountId: null, created: false }); return null; }
 
   const resolved = await resolveOrCreateSettlementForCounterparty(tx, householdId, cacheKey, counterpartyName, accountName.trim(), options);
