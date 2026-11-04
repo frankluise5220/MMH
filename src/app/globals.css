@@ -39,6 +39,9 @@
 
      ⚠️ 全表唯一的绝对值是 **1px**：边框 / 接缝（`-mb-px`）是发丝线，不能跟着字号放大，
         否则 DPR 2 上会变粗一倍、卡片顶边出现双线。 */
+  /* FT 卡片底色：页签（活动/非活动）与内容板都引用它，保证「页签与卡片本体一致」。
+     卡片带 `.ft-card-surface` 时由该类重新声明（默认同值，白色色阶为 #fff）。 */
+  --ft-card-bg: #fbfaf7;
   --ft-tab-font: 1rem;                  /* 自由变量：活动页签字号 = 16px */
   --ft-tab-font-sm: calc(var(--ft-tab-font) * 0.75);   /* 12px  非活动页签字号 */
   --ft-tab-leading: 1.5;                /* 无单位倍率：行高 = 各自字号 × 1.5（两种页签共用一个） */
@@ -209,8 +212,15 @@ html {
     border-color: var(--line-soft);
   }
 
+  /* 标题栏内边距：**右侧比左侧少 4px**（`pl-4 pr-3 py-3`）。
+     标题栏里的操作按钮（新增 / 导出 / 导入…）要「离卡片上边 = 离卡片右边」：
+     垂直只有 `py-3` 的 12px，加上卡片自身 1px 上边框 = 13px；水平若照旧 `px-4`（16px）
+     再加 1px 右边框就是 17px，按钮看上去「右边空得多、上面贴得紧」（2026-11-04 用户：
+     「新增按钮与卡片右边上边的距离不一样」，实测右 17 / 上 13）。
+     改成 `pr-3` 后两侧都落在 13px，与 FT 卡片标题栏关闭按钮、确认底栏的 13px 口径一致；
+     左侧保持 16px，标题文字与表头单元格的左对齐不变。 */
   .panel-header {
-    @apply flex items-center justify-between border-b bg-surface-muted/90 px-4 py-3;
+    @apply flex items-center justify-between border-b bg-surface-muted/90 pl-4 pr-3 py-3;
     border-color: var(--line-soft);
   }
 
@@ -793,6 +803,39 @@ html {
 .ft-card-surface .advanced-table-header,
 .ft-card-surface .advanced-table-header thead {
   background-color: var(--ft-table-band-bg);
+}
+
+/* ── 卡片里：表头上方的工具栏跟卡片同色（2026-11-04 用户：「表格表头上方用一种颜色，
+      不要用多个背景色。也就是说FT卡片就是一种底色」）────────────────────────────
+  工具栏自带 `bg-white` 工具类，在米色卡片上是表头上方第二块底色（页签条/账单信息条/
+  工具栏/卡片留白交替两种色）。统一取 `--ft-card-bg`：表头灰带（--ft-table-band-bg）
+  以上的整段都是卡片底色，灰带仍是表格自己的上边框色带。
+  本文件手写规则排在 Tailwind utilities 之后、特异性 (0,2,0) > `bg-white` 的 (0,1,0)，可覆盖。 */
+.ft-card-surface [data-advanced-table-toolbar] {
+  background-color: var(--ft-card-bg);
+}
+
+/* ── 卡片里：带表格工具栏的卡片不吃 12px 顶留白（2026-11-04 用户：「表头上文字高度
+      低了一个倒角的半径」——卡片圆角正是 12px，`:has(table)` 的 `padding: 12px 0`
+      把工具栏文字整体压低了一个半径）。
+      工具栏直接贴页签条下方（同底色相连），表格下沿仍保留 12px（圆角不切表角）。
+      没有工具栏的卡片（表格顶到卡片顶的那种）不受影响，12px 留白照旧护住表角。 */
+.ft-card-surface:has(table):has([data-advanced-table-toolbar]) {
+  padding-top: 0;
+}
+
+/* ── 卡片里：工具栏四边等距 10px（2026-11-04 用户：先定「等距即同心、按钮不变形」，
+      后裁定 5px 太贴近边缘，扩大一倍为 10px；+1px 边框 = 按钮离卡片边 11px，
+      上/左/右等距，按钮保持原样 rounded-md 不变形。 */
+.ft-card-surface [data-advanced-table-toolbar] {
+  padding: 10px;
+}
+
+/* 表头设置按钮与批量修改按钮同高（h-8/32px，原 h-7 比铅笔按钮矮一截）；同高后
+   工具栏垂直居中，按钮上/下离卡片边缘等距（2026-11-04 用户：「用表格里按钮相同
+   大小的按钮来控制与边缘的距离上下相等」）。 */
+.ft-card-surface [data-advanced-table-column-settings] {
+  height: 2rem;
 }
 
 /* 汇总条：上沿保留它自带的 `border-slate-200`（内线，与 `th` 的 `border-b` 同档），

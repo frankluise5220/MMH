@@ -1261,7 +1261,10 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
       setBusy(true);
       setProcessingFile(true);
       setStatus(t("viewImport.importing"));
-      // 上一次导入的基金页签不能留到这一次。
+      // 上一次导入的预览（流水 / 基金）不能留到这一次：旧 previewItems 会让
+      // 「只有基金」的文件被误判成双页签，页签状态一错，两个窗口就都不显示。
+      setPreviewOpen(false);
+      setPreviewItems([]);
       setFundPreviewFile(null);
       setFundPreviewContext(null);
       setFundTradeCount(0);
@@ -1286,6 +1289,8 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
       if (detectedKind === "fund") {
         setFundPreviewContext(fundImportContextFromProps(props));
         setFundPreviewFile(file);
+        // 纯基金文件只有一个基金页：必须停在基金页签上，否则窗口被 hidden 掉。
+        setPreviewTab("fund");
         setStatus("");
         return;
       }
@@ -1314,6 +1319,9 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
             // 在基金账户页面导入时带上页面上下文：行内基金账户解析不到则落到当前基金账户
             setFundPreviewContext(fundImportContextFromProps(props));
             setFundPreviewFile(caizhiFund.file);
+            // 纯基金文件只有一个基金页：必须停在基金页签上，否则窗口被 hidden 掉
+            //（用户看到「已识别 N 条，进入导入预览」却什么也没弹出来）。
+            setPreviewTab("fund");
             setStatus(t("viewImport.recognizedCount", { count: caizhiFund.rowCount }));
             return;
           }
@@ -1545,13 +1553,23 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
   }
 
   // 一张账单拆成两个页签：资金收支（已剔除基金行）/ 基金买卖。
-  const importPreviewTabs = fundPreviewFile && previewItems.length > 0 ? (
+  // 只有两者都在时才有页签条；只有基金（基金交易表 / 财智基金明细）时基金页是唯一一页。
+  const splitPreviewTabs = Boolean(fundPreviewFile) && previewItems.length > 0;
+  // 当前实际要显示的页：**不能**直接用 previewTab —— 纯基金导入时没有页签条可切，
+  // previewTab 还停在初始值 "statement"，两个窗口就都被 hidden 掉（用户 2026-11-04：
+  // 「已识别 N 条，进入导入预览」但没有任何窗口弹出）。
+  const activePreviewTab: "statement" | "fund" = splitPreviewTabs
+    ? previewTab
+    : fundPreviewFile
+      ? "fund"
+      : "statement";
+  const importPreviewTabs = splitPreviewTabs ? (
     <ImportPreviewTabs
       tabs={[
         { key: "statement", label: t("batchImport.previewTab.cashFlow"), count: previewItems.length },
         { key: "fund", label: t("batchImport.previewTab.fundTrades"), count: fundTradeCount },
       ]}
-      active={previewTab}
+      active={activePreviewTab}
       onChange={(key) => setPreviewTab(key === "fund" ? "fund" : "statement")}
     />
   ) : null;
@@ -1679,9 +1697,10 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
       <StatementImportPreviewDialog
         open={previewOpen}
         // 切到「基金买卖」时只隐藏、不卸载：卸载会重新拉账本、重建表格，整页闪一下。
-        hidden={previewTab !== "statement"}
+        hidden={activePreviewTab !== "statement"}
         title={t("viewImport.previewTitle")}
-        description={t("viewImport.previewDescription")}
+        // 描述行取消（2026-11-04 用户）：「普通账户和信用卡账户使用同一张账单记录 Excel 表…」
+        // 与标题重复解释用法，标题栏只留标题一行。
         items={previewItems}
         balanceAdjustments={balanceAdjustments}
         defaultAccountName={statementDefaultAccountName(props)}
@@ -1696,7 +1715,7 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
       <FundImportPreviewDialog
         open={Boolean(fundPreviewFile)}
         // 与「收支明细」窗口并存：切页签只切显示，基金预览保持已解析状态（切回去不用再等）。
-        hidden={previewTab !== "fund"}
+        hidden={activePreviewTab !== "fund"}
         file={fundPreviewFile}
         context={fundPreviewContext}
         tabs={importPreviewTabs}

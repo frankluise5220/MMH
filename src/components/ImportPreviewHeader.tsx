@@ -24,19 +24,19 @@ export function ImportPreviewHeader({
   closeLabel: string;
 }) {
   return (
-    <div className="flex shrink-0 items-start justify-between gap-3 border-b border-slate-200 px-4 py-3">
+    <div className="flex shrink-0 items-start justify-between gap-3 border-b border-slate-200 pl-4 pr-3 py-3">
       <div className="min-w-0 flex-1">
         <div className="truncate text-base font-semibold leading-6 text-slate-800">{title}</div>
         {description ? <div className="mt-0.5 truncate text-xs leading-4 text-slate-500">{description}</div> : null}
       </div>
       <button
         type="button"
-        className="h-8 w-8 shrink-0 rounded-md border border-slate-300 text-slate-500 hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
+        className="h-8 shrink-0 whitespace-nowrap rounded-md border border-slate-300 px-3 text-xs text-slate-500 hover:bg-white disabled:cursor-not-allowed disabled:opacity-50"
         onClick={onClose}
         disabled={closeDisabled}
         aria-label={closeLabel}
       >
-        ×
+        {closeLabel}
       </button>
     </div>
   );

@@ -139,12 +139,19 @@ import type { ReactNode } from "react";
  *    且非活动页签会变成一枚悬在卡片上缘的圆角矩形（用户否决）。
  * 现在：页签条内容高 → 非活动页签底边恒 = 卡片上缘（被卡片 1px 上边框切断，
  * 见第 9 条），活动页签用 `-mb-px` 把接缝 −1px 变成结构保证（见 `folderTabClass`）。
+ *
+ * **页签条自带卡片底色**（`bg-[var(--ft-card-bg)]`，2026-11-04 用户：「页签颜色要延伸到卡片」）：
+ * 页签条的盒子就是「页签带」——整条横向铺满内容板宽度、纵向从条顶（活动页签上方 `--ft-tab-top`
+ * 那 7px）一直到卡片上缘，所以页签之间的 6px 缝隙、页签组右侧的空白都不再露出页面底色，
+ * 而是一整块与页签、卡片同色的带子；只有卡片里的**其他元素**（标题栏下边框、表格表头灰带）
+ * 才会把底色隔开。宽度由块级盒（或调用方那层 flex 行）给的，所以窄于卡片的手写调用点
+ * （页签组 `shrink` 的那种）要把同一个底色挂到**外层整行**上，别只挂在页签组上。
  */
-export const FOLDER_TAB_STRIP = "flex items-start gap-1.5";
+export const FOLDER_TAB_STRIP = "flex items-start gap-1.5 bg-[var(--ft-card-bg)]";
 
 /** 内容板基础类名（圆角由 folderTabPanelClass 按活动页签位置追加）。 */
 const FOLDER_TAB_PANEL =
-  "relative z-20 rounded-xl border border-slate-300 bg-[#fbfaf7] p-4 shadow-[0_10px_24px_rgba(15,23,42,0.10)]";
+  "relative z-20 rounded-xl border border-slate-300 bg-[var(--ft-card-bg)] p-4 shadow-[0_10px_24px_rgba(15,23,42,0.10)]";
 
 type TabVariant = "stretch" | "min";
 
@@ -208,7 +215,7 @@ export function folderTabClass(
       // 给，这里不 import AdvancedDataTable 的 `ADVANCED_TABLE_HEAD_SURFACE_CLASS` 是为了不把
       // ADT 带进登录页的包）。表头**不在**这条等色链上：卡片里有表格时表头是中性的浅灰带、
       // 与底部汇总行同色（2026-10-31 用户，见 globals.css 的 `--ft-table-band-bg`）。
-      `relative z-30 mt-[var(--ft-tab-top)] -mb-px ${width} rounded-t-[8px] border border-b-0 border-slate-300 bg-[#fbfaf7] px-4 pt-[var(--ft-tab-pad-top)] pb-[var(--ft-tab-pad-bottom)] text-[length:var(--ft-tab-font)] leading-[var(--ft-tab-leading)] font-semibold text-slate-800 shadow-[0_-2px_3px_rgba(15,23,42,0.06)]`,
+      `relative z-30 mt-[var(--ft-tab-top)] -mb-px ${width} rounded-t-[8px] border border-b-0 border-slate-300 bg-[var(--ft-card-bg)] px-4 pt-[var(--ft-tab-pad-top)] pb-[var(--ft-tab-pad-bottom)] text-center text-[length:var(--ft-tab-font)] leading-[var(--ft-tab-leading)] font-semibold text-slate-800 shadow-[0_-2px_3px_rgba(15,23,42,0.06)]`,
       "ft-tab-fillet",
       // 排首位/末位时的缩进 = 内容板倒角半径(12px) + 页签凹角半径(6px) = 18px。
       // 凹角外端正好落在内容板上圆角弧的起点上，两条弧相切、不会打架；
@@ -252,7 +259,7 @@ export function folderTabClass(
     // 要的是「象是藏在后面」的剪影，不是一枚圆角小签）。
     // 页签高度、下沉量、hover 抬起 / 藏进卡片的量全部是变量派生（`--ft-tab-rise` /
     // `--ft-tab-lift` / `--ft-tab-bury`），任何卡片高度、任何字号下都只藏 bury，也不会穿出卡片。
-    `relative z-10 mt-[var(--ft-tab-rise)] -mb-[var(--ft-tab-bury)] self-stretch ${width} flex items-center justify-center overflow-hidden whitespace-nowrap rounded-t-[8px] border border-b-0 border-slate-300 bg-slate-200 ${sideMargin} px-4 pb-[var(--ft-tab-bury)] text-[length:var(--ft-tab-font-sm)] leading-[var(--ft-tab-leading)] font-medium text-slate-500 shadow-[0_2px_4px_rgba(15,23,42,0.08)] hover:-translate-y-[var(--ft-tab-lift)] hover:bg-slate-100`,
+    `relative z-10 mt-[var(--ft-tab-rise)] -mb-[var(--ft-tab-bury)] self-stretch ${width} flex items-center justify-center overflow-hidden whitespace-nowrap rounded-t-[8px] border border-b-0 border-slate-300 bg-[var(--ft-card-bg)] ${sideMargin} px-4 pb-[var(--ft-tab-bury)] text-center text-[length:var(--ft-tab-font-sm)] leading-[var(--ft-tab-leading)] font-medium text-slate-500 shadow-[0_2px_4px_rgba(15,23,42,0.08)] hover:-translate-y-[var(--ft-tab-lift)] hover:bg-white`,
   ].join(" ");
 }
 

@@ -3489,7 +3489,12 @@ export function AdvancedDataTable<T>({
               />
             ) : null}
             {toolbarRightContent ? (
-              <div className="min-w-0 max-w-full flex-[1_1_24rem]">
+              /* 基宽取内容（auto）而不是固定的 24rem：固定基宽与实际内容宽不符时，
+                 （基宽+设置按钮）会被判为放不下，把设置按钮单独挤到第二行
+                 （2026-11-04 用户反馈账单导入预览里「创建往来款账户/共 N 条」一行
+                 与「表头设置」分家）。内容宽上不封顶（max-w-full），窄行时整组
+                 仍会作为整体换行，行为与原来一致。 */
+              <div className="min-w-0 max-w-full flex-[1_1_auto]">
                 {toolbarRightContent}
               </div>
             ) : null}

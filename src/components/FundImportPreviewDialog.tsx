@@ -1902,7 +1902,7 @@ export function FundImportPreviewDialog({ open, file, context, tabs = null, sour
             resetDisplayStateOnMount
           />
         </div>
-        <div className="flex items-center justify-between gap-3 border-t border-slate-200 bg-slate-50 px-4 py-3">
+        <div className="flex items-center justify-between gap-3 border-t border-slate-200 bg-slate-50 pl-4 pr-3 py-3">
           <div className="flex min-w-0 items-center gap-3 text-xs">
             <span className="shrink-0 text-slate-500">{formatText(t, "batchImport.selectedSummary", { selected: selected.size, total: previewItems.length })}</span>
             {errorIssues.length > 0 ? <span className="shrink-0 font-medium text-red-600">{formatText(t, "batchImport.errorCount", { count: errorIssues.length })}</span> : null}

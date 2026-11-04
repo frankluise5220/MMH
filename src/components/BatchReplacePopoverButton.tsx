@@ -194,6 +194,7 @@ export function BatchReplacePopoverButton<Field extends string>({
       {message ? <span className={messageClassName}>{message}</span> : null}
       <button
         type="button"
+        data-batch-replace-trigger
         onClick={() => setOpen((current) => !current)}
         disabled={disabled}
         className={buttonClassName ?? "flex h-8 w-8 items-center justify-center rounded-md border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-40"}
