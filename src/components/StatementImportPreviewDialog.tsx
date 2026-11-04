@@ -25,6 +25,7 @@ import {
   importCounterKindFromCategory,
   normalizeImportAccountMatchKey,
   parseSettlementAccountName,
+  parseSettlementCounterpartyFromText,
   parseImportAccountId,
   parseImportBarePersonName,
   parseImportOwnedMoneyAccountCandidate,
@@ -65,6 +66,8 @@ type BookAccount = {
   Institution?: { id?: string | null; name?: string | null; shortName?: string | null; type?: string | null } | null;
   AccountGroup?: { id: string; name?: string | null } | null;
   AccountAlias?: Array<{ alias: string }> | null;
+  /** 结算/贷款账户挂的往来对象：泛名「往来款」账户靠它区分「X的往来款」属于谁。 */
+  Counterparty?: { id?: string | null; name?: string | null; shortName?: string | null } | null;
 };
 
 type BookCategory = SettingsCategory;
@@ -93,6 +96,7 @@ export type StatementImportPreviewItem = {
   category?: string;
   categoryUserEdited?: boolean;
   remark?: string;
+  tags?: string;
   counterparty?: string;
   institution?: string;
   institutionUserEdited?: boolean;
@@ -127,7 +131,8 @@ type PreviewEditField =
   | "inflow"
   | "outflow"
   | "amount"
-  | "remark";
+  | "remark"
+  | "tags";
 
 type ImportPreviewRow = {
   key: string;
@@ -193,6 +198,7 @@ const IMPORT_PREVIEW_FIELD_LABEL_KEYS: Record<PreviewEditField, string> = {
   outflow: "detail.column.outflow",
   amount: "txForm.amount",
   remark: "detail.column.remark",
+  tags: "detail.column.tags",
 };
 
 const MISSING_FIELD_LABEL_KEYS: Record<string, string> = {
@@ -356,7 +362,9 @@ function counterAccountValue(item: StatementImportPreviewItem) {
 }
 
 function liabilityCounterpartyNameFromAccount(value?: string | null) {
-  return parseSettlementAccountName(cleanText(value) || "") ?? "";
+  // 口径与导入匹配器一致：往来对象名限 5 字以内；超长前缀只在能对上既有账户对象名时才用。
+  const text = cleanText(value) || "";
+  return parseSettlementCounterpartyFromText(text) ?? parseSettlementAccountName(text) ?? "";
 }
 
 function isCreatableLiabilityAccount(
@@ -565,29 +573,11 @@ function missingAccountCandidateValuesForRow(row: ImportPreviewRow, defaultAccou
   return Array.from(new Set(candidates.map(cleanText).filter(Boolean)));
 }
 
-// 预览表格高度 = 工具栏 + 表头 + 边框的固定部分，加上「最多 20 行 × 紧凑行高 30px」；
-// 高度跟着行数走，弹窗再按内容收缩，不会在表格下方留一大段空白。
-const PREVIEW_TABLE_CHROME_HEIGHT = 66;
-const PREVIEW_TABLE_ROW_HEIGHT = 30;
-const PREVIEW_TABLE_MAX_ROWS = 20;
-// 弹窗被 `max-h-[82vh]` 夹住之后，表格之外还要占掉的高度：标题栏 + 底部按钮栏 + 边框。
-// 取实测值再加一点余量（1366×768 下标题 63 + 底部 50 + 边框 2 ≈ 115）。
-const PREVIEW_DIALOG_NON_TABLE_HEIGHT = 132;
-// 分批导入进度条（含说明文字）出现时额外占掉的高度。
-const PREVIEW_IMPORT_PROGRESS_HEIGHT = 56;
-
-/** 视口高度：小屏/缩放后要让表格跟着收缩，不能只在挂载时量一次。 */
-function useViewportHeight() {
-  const [height, setHeight] = useState(0);
-  useEffect(() => {
-    const update = () => setHeight(window.innerHeight);
-    update();
-    window.addEventListener("resize", update);
-    return () => window.removeEventListener("resize", update);
-  }, []);
-  return height;
-}
-
+// 预览表格高度完全交给 flex：弹窗固定 82vh，卡片 `ft-card-surface-fill` 撑满正文，
+// 表格用 `fillHeight` 填满卡片剩余空间、内部滚动。
+// 早前按「行数 × 30 + 固定 chrome」算高度，再减去估算的弹窗外占位（132），
+// 一旦工具栏 / 表头 / 账单信息行的真实高度与常量不符，容器就会比可用空间高，
+// 底部的一行半被卡片裁掉且滚不到 —— 估算是不可靠的，布局交给 CSS。
 export function StatementImportPreviewDialog({
   open,
   title,
@@ -608,6 +598,11 @@ export function StatementImportPreviewDialog({
   const [rows, setRows] = useState<ImportPreviewRow[]>([]);
   /** 已经构建成 rows 的那份 items：同一份数据不重复构建，否则会覆盖用户的手工修改。 */
   const builtFromRef = useRef<StatementImportPreviewItem[] | null>(null);
+  /** 上次构建时用的创建选项：勾选「创建往来款账户」等开关后要重算缺失字段，但不能重建行。 */
+  const builtOptionsRef = useRef<PreviewCreationOptions | null>(null);
+  /** 最新预览行的镜像：构建 effect 里要读当前行，但不能把 `rows` 放进依赖（否则每次 setRows 都自激）。 */
+  const rowsRef = useRef<ImportPreviewRow[]>([]);
+  rowsRef.current = rows;
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
   const [editingPreviewCell, setEditingPreviewCell] = useState<{ rowKey: string; field: PreviewEditField } | null>(null);
   const [bookAccounts, setBookAccounts] = useState<BookAccount[]>([]);
@@ -752,21 +747,48 @@ export function StatementImportPreviewDialog({
     if (!open) return;
     if (!settingsBootstrapLoaded || !accountLookup) {
       builtFromRef.current = null;
-      setRows([]);
-      setSelectedKeys(new Set());
-      setEditingPreviewCell(null);
-      setCategorySyncMessage("");
+      builtOptionsRef.current = null;
+      // 幂等清空：值本来就空时必须原样返回，否则每次 setState 都产生新数组/新 Set，
+      // 触发下一轮渲染又跑回这里，形成 "Maximum update depth exceeded" 的死循环。
+      setRows((prev) => (prev.length === 0 ? prev : []));
+      setSelectedKeys((prev) => (prev.size === 0 ? prev : new Set()));
+      setEditingPreviewCell((prev) => (prev === null ? prev : null));
+      setCategorySyncMessage((prev) => (prev === "" ? prev : ""));
       return;
     }
     // 同一份导入数据只构建一次：用户在预览里改过的行存在 `rows` 里，
     // 而 `items` 还是原始数据 —— 切页签（open 变化）再重新 build 会把修改全冲掉。
-    if (builtFromRef.current === items) return;
+    const itemsChanged = builtFromRef.current !== items;
+    // 勾选/取消「创建往来款账户」「创建所有人账户」会改变「缺不缺账户」的判定，
+    // 此时 items 没变也必须重算 ready，否则勾了选项行还停在「缺对向账户」。
+    const optionsChanged = builtOptionsRef.current !== creationOptions;
+    if (!itemsChanged && !optionsChanged) return;
     builtFromRef.current = items;
-    const nextRows = buildPreviewRows(items, defaultAccountName, accountLookup, creationOptions);
-    setRows(nextRows);
-    setSelectedKeys(new Set(nextRows.filter((row) => row.ready).map((row) => row.key)));
-    setEditingPreviewCell(null);
-    setCategorySyncMessage("");
+    builtOptionsRef.current = creationOptions;
+    if (itemsChanged) {
+      const nextRows = buildPreviewRows(items, defaultAccountName, accountLookup, creationOptions);
+      setRows(nextRows);
+      setSelectedKeys(new Set(nextRows.filter((row) => row.ready).map((row) => row.key)));
+      setEditingPreviewCell(null);
+      setCategorySyncMessage("");
+      return;
+    }
+    // 仅创建选项变化：保留用户已改过的行内容，只重算缺失字段与就绪状态。
+    // 读 rowsRef 而不是依赖 rows —— rows 是这里 setState 的结果，放进依赖会自激。
+    const recomputedRows = rowsRef.current.map((row) => {
+      const missingFields = statementImportMissingFields(row.item, defaultAccountName, accountLookup, creationOptions);
+      const ready = missingFields.length === 0;
+      return { ...row, missingFields, ready };
+    });
+    setRows(recomputedRows);
+    setSelectedKeys((prevSelected) => {
+      const nextSelected = new Set(prevSelected);
+      for (const row of recomputedRows) {
+        if (row.ready) nextSelected.add(row.key);
+        else nextSelected.delete(row.key);
+      }
+      return nextSelected;
+    });
   }, [accountLookup, createLiabilityAccounts, creationOptions, defaultAccountName, items, open, settingsBootstrapLoaded]);
 
   useEffect(() => {
@@ -801,6 +823,7 @@ export function StatementImportPreviewDialog({
 
   function closeDialog() {
     builtFromRef.current = null;
+    builtOptionsRef.current = null;
     setRows([]);
     setSelectedKeys(new Set());
     setEditingPreviewCell(null);
@@ -1672,6 +1695,17 @@ export function StatementImportPreviewDialog({
       render: (row) => renderTextEditCell(row, "remark", row.item.remark || row.item.rawText || "", t("statementImportPreview.doubleClickEdit", { field: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.remark) })),
     },
     {
+      // 标签列（2026-11-04 用户）：账单 CSV 的「标签」列，双击可改，随行提交、
+      // 服务端按名找/建后挂 EntryTag。空值显示占位符，可筛选。
+      key: "tags",
+      label: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.tags),
+      width: 120,
+      minWidth: 90,
+      hideable: true,
+      filterText: (row) => cleanText(row.item.tags) || t("batchImport.emptyValue"),
+      render: (row) => renderTextEditCell(row, "tags", cleanText(row.item.tags), t("statementImportPreview.doubleClickEdit", { field: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS.tags) })),
+    },
+    {
       key: "status",
       label: t("statementImportPreview.status"),
       width: 180,
@@ -1717,21 +1751,6 @@ export function StatementImportPreviewDialog({
   const fallbackRows = rows;
   const fallbackSelectedKeys = selectedKeys;
   const previewReady = settingsBootstrapLoaded && rows.length > 0;
-  // 空结果（如筛选后无记录）时至少留 3 行高，避免空状态提示被压成一条。
-  const previewVisibleRowCount = Math.max(3, Math.min(fallbackRows.length, PREVIEW_TABLE_MAX_ROWS));
-  const previewTableHeight = previewVisibleRowCount * PREVIEW_TABLE_ROW_HEIGHT + PREVIEW_TABLE_CHROME_HEIGHT;
-  // 表格按行数算出的高度只是**上限**：弹窗被 `max-h-[82vh]` 夹住以后，若表格仍按
-  // 20 行铺满（666px），在 1366×768 / 125% 缩放下会高出弹窗一百多像素，被弹窗的
-  // overflow-hidden 直接裁掉，而且表格内部的滚动条也一起被裁 —— 用户看到的是
-  // 「弹窗显示不完整、只剩一大片灰色遮罩」。这里按视口高度给出真正的可用高度。
-  const viewportHeight = useViewportHeight();
-  const previewTableMaxHeight = Math.max(
-    120,
-    Math.round((viewportHeight || 900) * 0.82)
-      - PREVIEW_DIALOG_NON_TABLE_HEIGHT
-      - (importProgress && importProgress.total > 0 ? PREVIEW_IMPORT_PROGRESS_HEIGHT : 0),
-  );
-  const previewTableHeightValue = Math.min(previewTableHeight, previewTableMaxHeight);
   const importReadySelectedCount = useMemo(
     () => fallbackRows.reduce((count, row) => count + (fallbackSelectedKeys.has(row.key) && row.ready ? 1 : 0), 0),
     [fallbackRows, fallbackSelectedKeys],
@@ -1760,7 +1779,7 @@ export function StatementImportPreviewDialog({
         {/* FT 卡片：页签条流内撑出卡片顶边，活动页签的 -mb-px 压在卡片 1px 上边框上
             （几何同 FolderTabsCard；弹窗是固定高度，故用 ft-card-surface-fill）。 */}
         <div className="relative flex min-h-0 flex-1 flex-col p-3">
-          <div className="relative flex min-h-0 flex-col">
+          <div className="relative flex min-h-0 flex-1 flex-col">
             {tabs}
             <div className="ft-card-surface ft-card-surface-fill">
               <div className="flex min-h-0 flex-1 flex-col">
@@ -1772,7 +1791,7 @@ export function StatementImportPreviewDialog({
                   </div>
                 ) : null}
 
-        <div className="min-h-0 flex-1 overflow-hidden">
+        <div className="relative min-h-0 flex-1 overflow-hidden">
           {!settingsBootstrapLoaded ? (
             <div role="status" aria-live="polite" className="flex min-h-[320px] items-center justify-center bg-white px-4">
               <div className="flex items-start gap-3 rounded-lg border border-blue-100 bg-blue-50/60 px-4 py-3 text-sm text-slate-700">
@@ -1784,9 +1803,10 @@ export function StatementImportPreviewDialog({
               </div>
             </div>
           ) : (
-            // 表格高度按行数计算、最多 20 行（每行 30px），超出部分纵向滚动；
-            // 弹窗被 82vh 限制时取可用高度，避免行被弹窗直接裁掉。
-            <div className="min-h-0" style={{ height: previewTableHeightValue }}>
+            // 表格绝对定位铺满宿主：高度由 inset-0 直接给到（不依赖百分比能否解析），
+            // 且不参与父级高度计算，不会因为「表格变高 → 宿主变高」形成循环。
+            // fillHeight 的表格自己在表体内部滚动，行多也不会把最后一行裁掉。
+            <div className="absolute inset-0">
               <AdvancedDataTable
                 storageKey="mmh_statement_import_preview_table_v2"
                 columns={columns}
@@ -1874,10 +1894,17 @@ export function StatementImportPreviewDialog({
             </div>
           </div>
         ) : null}
-
-        <div className="flex shrink-0 items-center justify-between gap-3 border-t border-slate-200 bg-slate-50 px-4 py-3">
+              </div>
+            </div>
+          </div>
+        </div>
+        {/* 「确认导入」底栏在 FT 卡片**外面**（2026-11-04 用户裁定，与批量导入页两个
+            预览弹窗同构）：原先是卡片内 flex-col 的最后一个孩子，与表格抢同一块正文
+            高度；提到弹窗级后卡片独占正文高度，底栏贴窗口下沿、与标题栏同宽。 */}
+        {/* 确认按钮右/下等距：pr-3（12px）= py-3 底距（2026-11-04 用户：等距即同心，不变形）。 */}
+        <div className="flex shrink-0 items-center justify-between gap-3 border-t border-slate-200 bg-slate-50 pl-4 pr-3 py-3">
           <div className="flex min-w-0 items-center gap-3 text-xs">
-            <span className="shrink-0 text-slate-500">{t("statementImportPreview.willImport", { count: importReadySelectedCount })}</span>
+            {/* 「将导入 N 条」不再显示：与右侧「确认导入 N 条」按钮文字重复（2026-11-04 用户）。 */}
             {fallbackSelectedKeys.size > importReadySelectedCount ? (
               <span className="shrink-0 text-amber-700">
                 {t("statementImportPreview.selectedNotReady", { count: fallbackSelectedKeys.size - importReadySelectedCount })}
@@ -1902,10 +1929,6 @@ export function StatementImportPreviewDialog({
             >
               {busy ? t("batchImport.importing") : t("batchImport.confirmImport", { count: importReadySelectedCount })}
             </button>
-          </div>
-        </div>
-              </div>
-            </div>
           </div>
         </div>
       </div>
