@@ -172,8 +172,8 @@ type LiabilityDetailEntry = {
   relatedAccountLabel: string;
   relatedAccountTitle?: string;
   collateralLabel?: string | null;
-  /** 已被报销单关联的原始记录：往来款明细要能直接看出这笔已报销（悬停显示单据标题）。 */
-  reimbursementLink?: { id: string; title: string } | null;
+  /** 已被报销单关联的原始记录：往来款明细展示报销进度三步（已填报→已审核→已回款，悬停显示单据标题）。 */
+  reimbursementLink?: { id: string; title: string; stage: "submitted" | "approved" | "paid" } | null;
   note: string;
   amount: number;
   principal: number;
@@ -571,8 +571,8 @@ export function buildLiabilityDetailEntriesViewData({
   displayAccountId?: string | null;
   mortgagedAssetByLoanAccountId?: Map<string, { accountId: string; id: string }>;
   collateralNameByLoanAccountId?: Map<string, string>;
-  /** txRecordId → 关联的报销单（标题用于悬停提示）。 */
-  reimbursementLinkByEntryId?: Map<string, { id: string; title: string }>;
+  /** txRecordId → 关联的报销单（stage：已填报/已审核/已回款；标题用于悬停提示）。 */
+  reimbursementLinkByEntryId?: Map<string, { id: string; title: string; stage: "submitted" | "approved" | "paid" }>;
 }) {
   const automaticRepaymentPlanIds = new Set<string>();
   if (selectedAutoDebitPlan?.id) automaticRepaymentPlanIds.add(selectedAutoDebitPlan.id);

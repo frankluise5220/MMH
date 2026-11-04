@@ -1705,16 +1705,26 @@ export default async function Home({
       : [];
   // 往来款明细要标出「这笔已被报销单关联」：关联表本身很小，按账本一次取全，
   // 避免拿 5 万条流水 id 去拼 IN 查询。
-  const reimbursementLinkByEntryId = new Map<string, { id: string; title: string }>();
+  const reimbursementLinkByEntryId = new Map<string, { id: string; title: string; stage: "submitted" | "approved" | "paid" }>();
   if (liabilityEntriesRaw.length > 0) {
     const reimbursementLinks = await prisma.reimbursementTransaction.findMany({
       where: { Reimbursement: { ...hid, deletedAt: null } },
-      select: { txRecordId: true, Reimbursement: { select: { id: true, title: true } } },
+      select: {
+        txRecordId: true,
+        Reimbursement: { select: { id: true, title: true, approvedAmount: true, paymentTxRecordId: true } },
+      },
     });
     for (const link of reimbursementLinks) {
+      // 三步进度与报销单生命周期一致：建单即「已填报」，审批金额确认即「已审核」，打款流水生成即「已回款」。
+      const stage = link.Reimbursement.paymentTxRecordId
+        ? "paid"
+        : link.Reimbursement.approvedAmount != null
+        ? "approved"
+        : "submitted";
       reimbursementLinkByEntryId.set(link.txRecordId, {
         id: link.Reimbursement.id,
         title: link.Reimbursement.title,
+        stage,
       });
     }
   }

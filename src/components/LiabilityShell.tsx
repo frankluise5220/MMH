@@ -79,6 +79,15 @@ type LiabilityRow = {
   loanType?: LoanTypeValue | null;
 };
 
+/** 往来款行的报销进度三步：已填报（建单关联）→ 已审核（审批金额确认）→ 已回款（打款完成）。 */
+const REIMBURSEMENT_STAGES = ["submitted", "approved", "paid"] as const;
+type ReimbursementStage = (typeof REIMBURSEMENT_STAGES)[number];
+const REIMBURSEMENT_STAGE_INDEX: Record<ReimbursementStage, number> = {
+  submitted: 0,
+  approved: 1,
+  paid: 2,
+};
+
 type LiabilityEntry = {
   id: string;
   date: string;
@@ -86,8 +95,8 @@ type LiabilityEntry = {
   relatedAccountLabel: string;
   relatedAccountTitle?: string;
   collateralLabel?: string | null;
-  /** 已被报销单关联：明细行显示「已报销」标识，悬停看到单据标题。 */
-  reimbursementLink?: { id: string; title: string } | null;
+  /** 已被报销单关联：明细行显示报销进度三步标识，悬停看到单据标题。 */
+  reimbursementLink?: { id: string; title: string; stage: ReimbursementStage } | null;
   note: string;
   amount: number;
   principal: number;
@@ -1323,23 +1332,15 @@ export function LiabilityShell({
         label: t("liabilityShell.colType"),
         width: 110,
         minWidth: 70,
-        // 标识也参与筛选，用户能直接搜「已报销」把这些行挑出来。
-        filterText: (entry) => entry.reimbursementLink
-          ? `${entry.typeLabel} ${t("liabilityShell.reimbursementLinked")}`
-          : entry.typeLabel,
-        render: (entry) => (
-          <span className="flex items-center gap-1 text-slate-700">
-            <span className="truncate">{entry.typeLabel}</span>
-            {entry.reimbursementLink ? (
-              <span
-                className="shrink-0 rounded border border-emerald-200 bg-emerald-50 px-1 text-[10px] leading-4 text-emerald-700"
-                title={t("liabilityShell.reimbursementLinkedHint", { title: entry.reimbursementLink.title })}
-              >
-                {t("liabilityShell.reimbursementLinked")}
-              </span>
-            ) : null}
-          </span>
-        ),
+        // 报销进度也参与筛选：搜「已审核」「已回款」能把这些行（含已走到该步的行）挑出来。
+        // 进度标识本身画在操作栏（报销徽章按钮），类型列只保留类型文字。
+        filterText: (entry) => {
+          const link = entry.reimbursementLink;
+          if (!link) return entry.typeLabel;
+          const stageIndex = REIMBURSEMENT_STAGE_INDEX[link.stage];
+          return `${entry.typeLabel} ${REIMBURSEMENT_STAGES.slice(0, stageIndex + 1).map((stage) => t(`liabilityShell.reimbursementStage.${stage}`)).join(" ")}`;
+        },
+        render: (entry) => <span className="block truncate text-slate-700">{entry.typeLabel}</span>,
       },
       { key: "relatedAccount", label: t("liabilityShell.colCashAccount"), width: 160, minWidth: 100, filterText: (entry) => entry.relatedAccountLabel, render: (entry) => <span className="block truncate text-slate-600" title={entry.relatedAccountTitle || undefined}>{entry.relatedAccountLabel || "-"}</span> },
     ];
@@ -1824,6 +1825,7 @@ function LiabilityEntriesTable({
   loanType: LoanTypeValue;
   toolbarActions?: React.ReactNode;
 }) {
+  const router = useRouter();
   const { t } = useI18n();
   const { selectedIds, setSelection } = useBasicDetailSelection();
   const currentEntryIds = useMemo(() => entries.map((entry) => entry.id), [entries]);
@@ -1883,15 +1885,32 @@ function LiabilityEntriesTable({
       }}
       rowClassName={() => "hover:bg-blue-50/40"}
       rowActions={(entry) => (
-        <EntryRowActions
-          entryId={entry.id}
-          edit={entry.edit}
-          customEditEvent={getCustomEditEvent(entry)}
-          reconciled={isReconciled(entry.id)}
-        />
+        <>
+          {entry.reimbursementLink ? (
+            <button
+              type="button"
+              onClick={() => {
+                if (contextAccountId) {
+                  router.push(`/reimbursements?accountId=${encodeURIComponent(contextAccountId)}`);
+                }
+              }}
+              className="inline-flex h-6 shrink-0 items-center rounded border border-emerald-200 bg-emerald-50 px-1.5 text-[10px] font-medium leading-4 text-emerald-700 transition hover:bg-emerald-100"
+              title={`${t("liabilityShell.reimbursementLinkedHint", { title: entry.reimbursementLink.title })} · ${REIMBURSEMENT_STAGES.slice(0, REIMBURSEMENT_STAGE_INDEX[entry.reimbursementLink.stage] + 1).map((stage) => t(`liabilityShell.reimbursementStage.${stage}`)).join("›")}`}
+              aria-label={t("reimburse.entry")}
+            >
+              {t(`liabilityShell.reimbursementStage.${entry.reimbursementLink.stage}`)}
+            </button>
+          ) : null}
+          <EntryRowActions
+            entryId={entry.id}
+            edit={entry.edit}
+            customEditEvent={getCustomEditEvent(entry)}
+            reconciled={isReconciled(entry.id)}
+          />
+        </>
       )}
-      rowActionsWidth={112}
-      rowActionsMinWidth={100}
+      rowActionsWidth={148}
+      rowActionsMinWidth={124}
       batchActionSlot={(
         <>
           <BasicDetailBatchReplaceButton
