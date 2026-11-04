@@ -43,6 +43,8 @@ import { upsertStatementCategoryRuleFromTx } from "@/lib/statement/category-rule
 import { upsertStatementInstitutionRuleFromUserEdit } from "@/lib/statement/recognition-rules";
 import { ENTRY_ORIGIN_EMAIL_IMPORT, ENTRY_ORIGIN_EXCEL_IMPORT } from "@/lib/transaction-semantics";
 import { getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
+import { parseTagNamesInput } from "@/lib/server/entry-tags";
+import { readableTagWhere } from "@/lib/server/tag-scope";
 
 export const runtime = "nodejs";
 
@@ -84,6 +86,7 @@ const ParsedItemSchema = z.object({
   categoryUserEdited: z.boolean().optional(),
   institutionUserEdited: z.boolean().optional(),
   remark: z.string().optional(),
+  tags: z.string().optional(),
   counterparty: z.string().optional(),
   institution: z.string().optional(),
   postedDate: z.string().optional(),
@@ -134,6 +137,8 @@ type ImportAccountListRow = {
   numberMasked: string | null;
   Institution: { name: string; shortName: string | null } | null;
   AccountAlias: Array<{ alias: string }>;
+  /** 结算/贷款账户挂的往来对象：泛名「往来款」账户靠它区分是哪个人的。 */
+  Counterparty: { name: string; shortName: string | null } | null;
 };
 
 type StatementImportLookupCache = {
@@ -744,6 +749,7 @@ async function loadImportAccountList(tx: Db, householdId: string, cache?: Statem
           numberMasked: true,
           Institution: { select: { name: true, shortName: true } },
           AccountAlias: { select: { alias: true } },
+          Counterparty: { select: { name: true, shortName: true } },
         },
       });
     }
@@ -761,6 +767,7 @@ async function loadImportAccountList(tx: Db, householdId: string, cache?: Statem
       numberMasked: true,
       Institution: { select: { name: true, shortName: true } },
       AccountAlias: { select: { alias: true } },
+      Counterparty: { select: { name: true, shortName: true } },
     },
   });
 }
@@ -1295,6 +1302,88 @@ function buildNote(item: ParsedItem) {
   return base;
 }
 
+/**
+ * 批量快路径判定（2026-11-04 用户：「有没有新方案能提升导入速度，不用一行一行的添加」）。
+ * 只收普通「支出/收入」行：转账/投资（双分行）、分类学习行、带账单期字段的行（邮件账单）
+ * 一律走原逐行路径，保证行为等价。银行借记卡 CSV 的绝大多数行都命中快路径。
+ */
+function canFastPathItem(item: ParsedItem) {
+  if (item.type !== "expense" && item.type !== "income") return false;
+  if (item.categoryUserEdited) return false;
+  const meta = item._meta;
+  if (meta?.statementAmount != null || meta?.statementPeriodStart || meta?.statementPeriodEnd || meta?.statementDueDate) return false;
+  return true;
+}
+
+/**
+ * 快路径 data 构造 —— 与 createTransactionFromItem 的普通「支出/收入」分支 **1:1**，
+ * 两处改动必须同步（这里刻意不抽公共函数，避免把逐行分支复杂化）。
+ * 调用前先预热 lookupCache（账户/机构/分类各查一次），此后每行 0 次查询，
+ * 整批由调用方 createManyAndReturn 一次插入（返回 id，供标签整批挂载）。
+ */
+async function buildPlainExpenseIncomeData(
+  tx: Db,
+  householdId: string,
+  item: ParsedItem,
+  defaultAccountName: string | undefined,
+  options: ImportOptions,
+): Promise<Record<string, unknown>> {
+  const date = parseDate(item.date);
+  const confirmDate = postedDateForStatement(item, date);
+  const lookupCache = options.lookupCache;
+  const counterpartyInstitution = await resolveInstitution(tx, householdId, item.institution, lookupCache);
+  const accountName = pickAccountName(item.account, defaultAccountName);
+  const [accountId, category] = await Promise.all([
+    ensureAccountId(tx, householdId, accountName, item._meta, options),
+    resolveCategorySnapshotCached(tx, householdId, {
+      categoryName: item.category,
+      type: item.type === "income" ? "income" : item.type === "expense" ? "expense" : null,
+    }, lookupCache),
+  ]);
+  if (!accountId) {
+    throw new Error("Account is required and must match an existing account");
+  }
+  const statementMonth = await statementMonthForAccountId(tx, accountId, confirmDate, lookupCache);
+  const currencyMeta = await accountCurrencyMeta(tx, accountId, lookupCache);
+  const itemOriginalCurrency = normalizeCurrency(item.originalCurrency ?? "");
+  const itemOriginalAmount = Number.isFinite(item.originalAmount) && item.originalAmount ? Math.abs(item.originalAmount) : null;
+  const effectiveRecordCurrency = normalizeCurrency(currencyMeta?.currency) || "CNY";
+  const settlementCurrency = itemOriginalCurrency && itemOriginalCurrency !== effectiveRecordCurrency ? itemOriginalCurrency : null;
+  const amountAbs = Number.isFinite(item.amount) ? Math.abs(item.amount) : 0;
+  const settlementAmount = settlementCurrency && itemOriginalAmount && Math.abs(itemOriginalAmount - amountAbs) > 0.005
+    ? -itemOriginalAmount
+    : null;
+  const inflowAbs = Number.isFinite(item.inflow) ? Math.abs(item.inflow ?? 0) : 0;
+  const outflowAbs = Number.isFinite(item.outflow) ? Math.abs(item.outflow ?? 0) : 0;
+  const isExpenseRefund = item.type === "expense" && inflowAbs > 0 && outflowAbs <= 0;
+  const sign = item.type === "income" || isExpenseRefund ? 1 : -1;
+  const amount = sign * (amountAbs || inflowAbs || outflowAbs);
+  return {
+    type: item.type,
+    date,
+    postedAt: confirmDate,
+    amount,
+    accountId,
+    accountName: currencyMeta?.name || accountName || "未识别账户",
+    categoryId: category?.id ?? null,
+    categoryName: category?.name ?? null,
+    toAccountId: null,
+    toAccountName: null,
+    householdId,
+    note: buildNote(item),
+    confirmDate: item.postedDate ? confirmDate : undefined,
+    counterpartyInstitutionId: counterpartyInstitution.id,
+    counterpartyInstitutionName: counterpartyInstitution.name,
+    statementMonth,
+    importBatchId: options.importBatchId ?? undefined,
+    source: options.importBatchId ? "statement_import" : "manual",
+    entryOrigin: options.importBatchId ? ENTRY_ORIGIN_EMAIL_IMPORT : ENTRY_ORIGIN_EXCEL_IMPORT,
+    currency: normalizeCurrency(currencyMeta?.currency),
+    originalCurrency: settlementCurrency,
+    originalAmount: settlementAmount,
+  };
+}
+
 async function createTransactionFromItem(tx: Db, householdId: string, item: ParsedItem, defaultAccountName?: string, options: ImportOptions = { autoCreateAccounts: true }) {
   const date = parseDate(item.date);
   const confirmDate = postedDateForStatement(item, date);
@@ -1387,6 +1476,8 @@ async function createTransactionFromItem(tx: Db, householdId: string, item: Pars
       } as any,
     });
 
+    // 账单 CSV 的「标签」列：不再在行内逐条找/建（每行 3-5 次查询），
+    // 由 POST 主循环收集 entryId 后整批一次解析 + 一次 createMany（2026-11-04 提速）。
     return txRecord;
   }
 
@@ -1675,13 +1766,83 @@ export async function POST(req: Request) {
     options.importBatchId = importBatch.id;
   }
 
-  for (let i = 0; i < items.length; i++) {
+  // 账单「标签」列批量化：行内只收集 entryId + 名称，循环结束后整批一次找/建标签、
+  // 一次 createMany 挂 EntryTag（原先每行 3-5 次查询，400 行实测 ~29ms/行）。
+  const pendingTagLinks: Array<{ entryId: string; names: string[] }> = [];
+  const pushCreatedRecord = (item: ParsedItem, createdRecord: { id: string; accountId: string | null; toAccountId: string | null }) => {
+    created.push({ id: createdRecord.id });
+    if (item.tags && item.tags.trim()) {
+      pendingTagLinks.push({ entryId: createdRecord.id, names: parseTagNamesInput(item.tags) });
+    }
+    if (createdRecord.accountId) touchedAccountIds.add(createdRecord.accountId);
+    if (createdRecord.toAccountId) touchedAccountIds.add(createdRecord.toAccountId);
+  };
+
+  // 批量快路径（2026-11-04 用户：「不用一行一行的添加」）：普通支出/收入行预热缓存后
+  // 整批 createManyAndReturn 一次插入（返回 id，标签仍整批挂）。双分行/投资/分类学习/
+  // 带账单期字段的行、以及邮件账单导入走原逐行路径；快路径抛错时**未插入的行**整组
+  // 回退逐行（createManyAndReturn 是单条语句，失败即整块未插入，不会产生半批）。
+  const slowIdx: number[] = [];
+  if (mailSource) {
+    for (let i = 0; i < items.length; i++) slowIdx.push(i);
+  } else {
+    const fastIdx: number[] = [];
+    for (let i = 0; i < items.length; i++) (canFastPathItem(items[i]) ? fastIdx : slowIdx).push(i);
+    if (fastIdx.length > 0) {
+      let doneCount = 0;
+      try {
+        // 预热缓存：账户/机构/分类按去重键各查一次，随后每行 0 次查询。
+        for (const i of fastIdx) {
+          const item = items[i];
+          await resolveInstitution(prisma, householdId, item.institution, options.lookupCache);
+          await ensureAccountId(prisma, householdId, pickAccountName(item.account, defaultAccountName), item._meta, options);
+          await resolveCategorySnapshotCached(prisma, householdId, {
+            categoryName: item.category,
+            type: item.type === "income" ? "income" : item.type === "expense" ? "expense" : null,
+          }, options.lookupCache);
+        }
+        const FAST_CHUNK = 500;
+        for (let start = 0; start < fastIdx.length; start += FAST_CHUNK) {
+          const chunk = fastIdx.slice(start, start + FAST_CHUNK);
+          const datas: Record<string, unknown>[] = [];
+          for (const i of chunk) {
+            datas.push(await buildPlainExpenseIncomeData(prisma, householdId, items[i], defaultAccountName, options));
+          }
+          const inserted = await prisma.txRecord.createManyAndReturn({
+            data: datas as any,
+            select: { id: true },
+          });
+          inserted.forEach((row: { id: string }, k: number) => {
+            const item = items[chunk[k]];
+            pushCreatedRecord(item, { id: row.id, accountId: (datas[k].accountId as string) ?? null, toAccountId: null });
+          });
+          doneCount += chunk.length;
+        }
+      } catch {
+        // 快路径失败：未插入的行走原逐行路径（错误信息逐行回报，与旧行为一致）。
+        for (const i of fastIdx.slice(doneCount)) {
+          const item = items[i];
+          try {
+            const createdRecord = await createTransactionFromItem(prisma, householdId, item, defaultAccountName, options);
+            pushCreatedRecord(item, createdRecord);
+            const statementBillLock = await statementBillLockForImportedRecord(prisma, householdId, item, {
+              accountId: createdRecord.accountId,
+              toAccountId: createdRecord.toAccountId,
+            }, options.lookupCache);
+            if (statementBillLock) statementBillLocks.push(statementBillLock);
+          } catch (err) {
+            errors.push({ index: i, rawText: item.rawText, error: err instanceof Error ? err.message : "导入失败" });
+          }
+        }
+      }
+    }
+  }
+
+  for (const i of slowIdx) {
     const item = items[i];
     try {
       const createdRecord = await createTransactionFromItem(prisma, householdId, item, defaultAccountName, options);
-      created.push({ id: createdRecord.id });
-      if (createdRecord.accountId) touchedAccountIds.add(createdRecord.accountId);
-      if (createdRecord.toAccountId) touchedAccountIds.add(createdRecord.toAccountId);
+      pushCreatedRecord(item, createdRecord);
       const statementBillLock = await statementBillLockForImportedRecord(prisma, householdId, item, {
         accountId: createdRecord.accountId,
         toAccountId: createdRecord.toAccountId,
@@ -1690,6 +1851,33 @@ export async function POST(req: Request) {
     } catch (e) {
       const msg = e instanceof Error ? e.message : "导入失败";
       errors.push({ index: i, rawText: item.rawText, error: msg });
+    }
+  }
+
+  {
+    const allTagNames = [...new Set(pendingTagLinks.flatMap((link) => link.names))];
+    if (allTagNames.length > 0) {
+      const existingTags = await prisma.tag.findMany({
+        where: { name: { in: allTagNames }, ...readableTagWhere(householdId) },
+        select: { id: true, name: true },
+      });
+      const tagIdByName = new Map(existingTags.map((tag) => [tag.name, tag.id]));
+      for (const name of allTagNames) {
+        if (!tagIdByName.has(name)) {
+          const createdTag = await prisma.tag.create({ data: { name, householdId } });
+          tagIdByName.set(name, createdTag.id);
+        }
+      }
+      const pairs = new Map<string, { entryId: string; tagId: string }>();
+      for (const link of pendingTagLinks) {
+        for (const name of link.names) {
+          const tagId = tagIdByName.get(name);
+          if (tagId) pairs.set(`${link.entryId}:${tagId}`, { entryId: link.entryId, tagId });
+        }
+      }
+      if (pairs.size > 0) {
+        await prisma.entryTag.createMany({ data: [...pairs.values()] });
+      }
     }
   }
 
