@@ -278,6 +278,9 @@ __pycache__/
 # Windows 更新源上传脚本（发布维护者专用，含内网拓扑；package.json 的 test:win:upload 仍指向它）
 /scripts/upload-win-feed.cjs
 /scripts/upload-win-test-channel.cjs
+# 自建镜像源 / 群晖套件源运维文档（含 VPS IP、nginx 链路、宿主机路径；用户侧安装指引在 nas-install-manual.md）
+/deploy/nas/registry-vps-readme.md
+/deploy/synology/README.md
 # 维护者内部基建：内部测试/分诊工具、私有运维后台、FN 软仓运维站、Cloudflare 反馈中继
 /harness/
 /deploy/admin/
