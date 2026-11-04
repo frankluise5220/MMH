@@ -2067,25 +2067,9 @@ export function RegularInvestForm({
               <div className={isOneTimeInterval
                 ? "grid grid-cols-1 gap-3"
                 : isLoanTask
-                  // 还贷款只有「本期应还 + 开始日期」两个字段，并排一行即可。
+                  // 还贷款只有「开始日期 + 本期应还」两个字段，并排一行即可（日期固定占第一格）。
                   ? "grid grid-cols-2 gap-3"
                   : "grid grid-cols-[minmax(0,3fr)_minmax(0,3fr)_minmax(0,1fr)] gap-3"}>
-                {isLoanTask && (
-                  <div className="space-y-1">
-                    <div className="text-xs font-medium text-slate-600">{t("regularInvest.loanCurrentDue")}</div>
-                    <div className={`flex h-9 items-center rounded-md border px-3 text-sm tabular-nums ${
-                      loanDueAmount != null
-                        ? "border-slate-200 bg-slate-50 text-slate-700"
-                        : "border-amber-200 bg-amber-50 text-amber-700"
-                    }`}>
-                      {loanDueAmount != null
-                        ? loanDueAmount.toFixed(2)
-                        : loanDueLoading
-                          ? t("regularInvest.loanCurrentDueLoading")
-                          : t("regularInvest.loanCurrentDueMissing")}
-                    </div>
-                  </div>
-                )}
                 <div className="space-y-1">
                   <div className="text-xs font-medium text-slate-600">{t("stockFee.effectiveDateLabel")}</div>
                   <DateStepper
@@ -2131,6 +2115,22 @@ export function RegularInvestForm({
                     </div>
                   ) : null}
                 </div>
+                {isLoanTask && (
+                  <div className="space-y-1">
+                    <div className="text-xs font-medium text-slate-600">{t("regularInvest.loanCurrentDue")}</div>
+                    <div className={`flex h-9 items-center rounded-md border px-3 text-sm tabular-nums ${
+                      loanDueAmount != null
+                        ? "border-slate-200 bg-slate-50 text-slate-700"
+                        : "border-amber-200 bg-amber-50 text-amber-700"
+                    }`}>
+                      {loanDueAmount != null
+                        ? loanDueAmount.toFixed(2)
+                        : loanDueLoading
+                          ? t("regularInvest.loanCurrentDueLoading")
+                          : t("regularInvest.loanCurrentDueMissing")}
+                    </div>
+                  </div>
+                )}
                 {!isOneTimeInterval && !isLoanTask && (
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">{t("regularInvest.stopDateOptional")}</div>

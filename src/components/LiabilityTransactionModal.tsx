@@ -1220,7 +1220,9 @@ export function LiabilityTransactionModal({
   }
 
   function handleModeSelect(nextMode: LiabilityMode) {
-    if (editingEntryId && !canSwitchLiabilityEditMode(mode, nextMode)) return;
+    // 2026-11-04 用户口径：编辑往来款记录时「借款/还款」也要能切换（服务端
+    // editEntryId 链路本就支持五种模式互转）；贷款还款窗编辑时仍锁定页签。
+    if (editingEntryId && isLoanDialog && !canSwitchLiabilityEditMode(mode, nextMode)) return;
     setMode(nextMode);
     if (!allowsLiabilityInterest(nextMode)) setInterest("");
     if (principal.trim()) setPrincipal(formatAmountDraft(parseAbsMoneyText(principal)));
@@ -1706,23 +1708,21 @@ export function LiabilityTransactionModal({
       }));
     }
     if (isLoanDialog) return [];
-    // 与 `resolveFlowMode` 同口径（借入/借出 ↔ 还回/还出），内联写是为了让 memo 依赖只看
-    // `liabilitySideIsOut`，不必把每次渲染都重建的函数放进依赖。
-    const borrowMode: LiabilityMode = liabilitySideIsOut ? "borrow_in" : "lend_out";
-    const repayMode: LiabilityMode = liabilitySideIsOut ? "collect_in" : "repay_out";
+    // 往来款窗的「借款/还款」在编辑态不置灰：用户可以把一条还款/收款记录改回借款/借出
+    // （2026-11-04），由 handleModeSelect 与服务端 editEntryId 链路兜底。
     return [
       {
         id: "borrow",
         label: t("liabilityTx.flow.borrow"),
-        disabled: !!editingEntryId && !canSwitchLiabilityEditMode(mode, borrowMode),
+        disabled: false,
       },
       {
         id: "repay",
         label: t("liabilityTx.flow.repay"),
-        disabled: !!editingEntryId && !canSwitchLiabilityEditMode(mode, repayMode),
+        disabled: false,
       },
     ];
-  }, [isLoanRepaymentMode, isLoanDialog, editingEntryId, mode, liabilitySideIsOut, t]);
+  }, [isLoanRepaymentMode, isLoanDialog, editingEntryId, mode, t]);
   const liabilityActiveTabId = isLoanRepaymentMode ? mode : flowTab;
   function handleLiabilityTabChange(id: string) {
     if (isLoanRepaymentMode) {
@@ -2902,8 +2902,8 @@ export function LiabilityTransactionModal({
                     ) : (
                       <>
                         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                          {renderLiabilityObjectField()}
                           {renderDateField()}
+                          {renderLiabilityObjectField()}
                         </div>
                         <div className="grid grid-cols-[1fr_auto_1fr] items-end gap-3">
                           <div>

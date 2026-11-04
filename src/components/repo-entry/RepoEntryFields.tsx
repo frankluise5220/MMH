@@ -424,7 +424,7 @@ export const RepoEntryFields = forwardRef<RepoEntryFieldsHandle, Props>(function
   // 外层窗口页脚 / 回车提交都走这个句柄。
   useImperativeHandle(ref, () => ({ submit }), [submit]);
 
-  // 债券账户字段：借出页签与「品种」并排一行，回款页签独占一行。
+  // 债券账户字段：借出页签排在交易日之后（日期固定占第一格），回款页签独占一行。
   const accountField = (
     <div className="space-y-1">
       <div className="form-label">{t("repoForm.account")}</div>
@@ -451,6 +451,10 @@ export const RepoEntryFields = forwardRef<RepoEntryFieldsHandle, Props>(function
       {mode === "lend" ? (
         <>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="space-y-1">
+              <div className="form-label">{t("repoForm.tradeDate")}</div>
+              <DateStepper value={tradeDate} onChange={setTradeDate} />
+            </div>
             {accountField}
             <div className="space-y-1">
               <div className="form-label">{t("repoForm.product")}</div>
@@ -558,10 +562,6 @@ export const RepoEntryFields = forwardRef<RepoEntryFieldsHandle, Props>(function
                   </div>
                 </div>
               ) : null}
-            </div>
-            <div className="space-y-1">
-              <div className="form-label">{t("repoForm.tradeDate")}</div>
-              <DateStepper value={tradeDate} onChange={setTradeDate} />
             </div>
             <div className="space-y-1">
               <div className="form-label">{t("repoForm.cashAccount")}</div>

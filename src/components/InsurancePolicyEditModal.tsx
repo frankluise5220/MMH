@@ -80,6 +80,18 @@ export function InsurancePolicyEditModal({
 
             <div className="grid grid-cols-2 gap-3">
               <div className="space-y-1">
+                <div className="form-label">{t("insurancePolicy.effectiveDate")}</div>
+                <DateStepper
+                  value={draft.effectiveDate}
+                  onChange={(value) => {
+                    const next = { ...draft, effectiveDate: value };
+                    setDraft(next);
+                    onChange?.(next);
+                  }}
+                  className="form-input"
+                />
+              </div>
+              <div className="space-y-1">
                 <div className="form-label">{t("insuranceShell.colPolicyNo")}</div>
                 <input
                   value={draft.policyNo}
@@ -90,18 +102,6 @@ export function InsurancePolicyEditModal({
                   }}
                   className="form-input"
                   placeholder={t("insurancePolicy.optional")}
-                />
-              </div>
-              <div className="space-y-1">
-                <div className="form-label">{t("insurancePolicy.effectiveDate")}</div>
-                <DateStepper
-                  value={draft.effectiveDate}
-                  onChange={(value) => {
-                    const next = { ...draft, effectiveDate: value };
-                    setDraft(next);
-                    onChange?.(next);
-                  }}
-                  className="form-input"
                 />
               </div>
               <div className="space-y-1">
