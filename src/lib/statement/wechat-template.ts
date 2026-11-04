@@ -68,6 +68,13 @@ const WECHAT_AMOUNT_HEADERS = [
   "\u91d1\u989d\uff08\u5143\uff09",
 ];
 
+/**
+ * 新版微信导出（2026 起）把金额拆成「支出」「收入」两列，不再有「金额(元)」。
+ * 两列各存一侧的正数金额，缺列填空。
+ */
+const WECHAT_OUTFLOW_AMOUNT_HEADERS = ["\u652f\u51fa", "\u652f\u51fa\u91d1\u989d"];
+const WECHAT_INFLOW_AMOUNT_HEADERS = ["\u6536\u5165", "\u6536\u5165\u91d1\u989d"];
+
 const WECHAT_FLOW_HEADERS = [
   "\u6536/\u652f",
   "\u6536\uff0f\u652f",
@@ -189,9 +196,13 @@ function findWechatHeaderRow(rows: string[][]) {
     const timeIndex = findHeaderIndex(row, ["\u4ea4\u6613\u65f6\u95f4"]);
     const flowIndex = findHeaderIndex(row, WECHAT_FLOW_HEADERS);
     const amountIndex = findHeaderIndex(row, WECHAT_AMOUNT_HEADERS);
+    // 新版导出没有「金额(元)」，改由「支出」「收入」两列承载金额。
+    const hasSplitAmount =
+      findHeaderIndex(row, WECHAT_OUTFLOW_AMOUNT_HEADERS) >= 0 &&
+      findHeaderIndex(row, WECHAT_INFLOW_AMOUNT_HEADERS) >= 0;
     const accountIndex = findHeaderIndex(row, ["\u652f\u4ed8\u65b9\u5f0f"]);
     const statusIndex = findHeaderIndex(row, ["\u5f53\u524d\u72b6\u6001", "\u4ea4\u6613\u72b6\u6001"]);
-    if (timeIndex >= 0 && flowIndex >= 0 && amountIndex >= 0 && accountIndex >= 0 && statusIndex >= 0) {
+    if (timeIndex >= 0 && flowIndex >= 0 && (amountIndex >= 0 || hasSplitAmount) && accountIndex >= 0 && statusIndex >= 0) {
       return index;
     }
   }
@@ -211,6 +222,8 @@ function normalizeWechatSheetRows(sheet: StatementWorkbookSheetRows) {
   const productIndex = findHeaderIndex(headers, ["\u5546\u54c1", "\u5546\u54c1\u8bf4\u660e", "\u5546\u54c1\u540d\u79f0"]);
   const flowIndex = findHeaderIndex(headers, WECHAT_FLOW_HEADERS);
   const amountIndex = findHeaderIndex(headers, WECHAT_AMOUNT_HEADERS);
+  const outflowAmountIndex = amountIndex >= 0 ? -1 : findHeaderIndex(headers, WECHAT_OUTFLOW_AMOUNT_HEADERS);
+  const inflowAmountIndex = amountIndex >= 0 ? -1 : findHeaderIndex(headers, WECHAT_INFLOW_AMOUNT_HEADERS);
   const accountIndex = findHeaderIndex(headers, ["\u652f\u4ed8\u65b9\u5f0f"]);
   const statusIndex = findHeaderIndex(headers, ["\u5f53\u524d\u72b6\u6001", "\u4ea4\u6613\u72b6\u6001"]);
   const transactionTypeIndex = findHeaderIndex(headers, ["\u4ea4\u6613\u7c7b\u578b"]);
@@ -220,8 +233,11 @@ function normalizeWechatSheetRows(sheet: StatementWorkbookSheetRows) {
 
   const normalizedRows = dataRows.flatMap((row) => {
     const status = readCell(row, statusIndex);
-    const flow = readCell(row, flowIndex);
-    const amount = parseAmount(readCell(row, amountIndex));
+    const outflowAmount = outflowAmountIndex >= 0 ? parseAmount(readCell(row, outflowAmountIndex)) : "";
+    const inflowAmount = inflowAmountIndex >= 0 ? parseAmount(readCell(row, inflowAmountIndex)) : "";
+    // 单列金额（旧版）优先；新版从「支出/收入」里取有值的一侧。
+    const amount = parseAmount(readCell(row, amountIndex)) || outflowAmount || inflowAmount;
+    const flow = readCell(row, flowIndex) || (outflowAmount ? "\u652f\u51fa" : inflowAmount ? "\u6536\u5165" : "");
     const date = normalizeWechatDate(readCell(row, timeIndex));
     if (!date || !amount) return [];
 

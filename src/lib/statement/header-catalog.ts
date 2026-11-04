@@ -40,7 +40,7 @@ type StatementHeaderProfile<TField extends string> = {
 };
 
 export const STATEMENT_IMPORT_FIELD_HEADERS: Record<StatementImportField, readonly string[]> = {
-  transactionDate: ["日期", "交易日期", "记账日期", "账单日期", "date", "Date", "日付"],
+  transactionDate: ["日期", "交易日期", "交易时间", "记账日期", "账单日期", "date", "Date", "日付"],
   postedAt: ["入账日期", "到账日期", "入账时间", "到账时间", "入账日期时间", "到账日期时间", "实际入账时间", "实际到账时间", "postedAt", "postingTime", "Posting Date", "投稿日", "入帳日"],
   outflow: ["流出", "支出", "转出", "借方金额", "支出金额", "outflow", "Outflow", "出金"],
   inflow: ["流入", "收入", "转入", "贷方金额", "收入金额", "inflow", "Inflow", "入金"],
