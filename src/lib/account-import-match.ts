@@ -8,6 +8,8 @@ type ImportAccountMatchSource = {
   Institution?: { name?: string | null; shortName?: string | null } | null;
   AccountGroup?: { name?: string | null } | null;
   AccountAlias?: Array<{ alias: string }> | null;
+  /** 往来款/贷款账户挂的往来对象。调用方没查这张关系时保持 undefined（宽松口径不变）。 */
+  Counterparty?: { name?: string | null; shortName?: string | null } | null;
 };
 
 type ImportAccountMatchResult<T extends ImportAccountMatchSource> = {
@@ -49,14 +51,71 @@ export function encodeImportAccountId(accountId: string) {
 }
 
 
-// 财智导出的往来命名变体（XX的普通应付款/XX的普通应收款）与标准命名（XX的往来款）
-// 都解析出同一往来对象。账户名保留财智原名（原来是什么就是什么），往来款属性由账户类型（kind=settlement）+往来对象体现。
-const SETTLEMENT_ACCOUNT_NAME_RE = /^(.+?)的(?:往来款|普通应付款|普通应收款)$/;
+// 往来对象的统一命名口径（2026-11-04 用户裁定）：凡是「XX的<往来款|应收款|应付款>」——
+// 含财智变体「XX的普通应付款/XX的普通应收款」与旧软件写法「往来帐/往来账」——前面的
+// XX 就是往来对象。账户名保留原名（原来是什么就是什么），往来款属性由
+// kind=settlement + 往来对象体现。
+const SETTLEMENT_ACCOUNT_SUFFIX = "(?:普通)?(?:往来[款帐账]|应收[款账]|应付[款账])";
+/** 账户名/别名：前缀就是对象名，不设长度上限（账本里确有「旅游专用帐户的往来款」这类长名字）。 */
+const SETTLEMENT_ACCOUNT_NAME_RE = new RegExp(`^(.+?)的${SETTLEMENT_ACCOUNT_SUFFIX}$`);
+/** 自由文本（账单对向列、备注）：只有 5 字以内才认定为对象名，更长的多半是整句描述。 */
+const SETTLEMENT_TEXT_NAME_RE = new RegExp(`^(.{1,5}?)的${SETTLEMENT_ACCOUNT_SUFFIX}$`);
 
-/** Extract counterparty name from "XX的往来款"（含财智变体「XX的普通应付款/普通应收款」）. Returns null on no match. */
+/** 账户名 → 往来对象名：「XX的往来款/应收款/应付款」（含「普通」变体与「往来帐/往来账」）。 */
 export function parseSettlementAccountName(v: string): string | null {
-  const m = v.trim().match(SETTLEMENT_ACCOUNT_NAME_RE);
+  const m = String(v ?? "").trim().match(SETTLEMENT_ACCOUNT_NAME_RE);
   return m?.[1]?.trim() ?? null;
+}
+
+/** 自由文本 → 往来对象名：口径同账户名，但对象名限 5 字以内。 */
+export function parseSettlementCounterpartyFromText(v: string | null | undefined): string | null {
+  const m = String(v ?? "").trim().match(SETTLEMENT_TEXT_NAME_RE);
+  return m?.[1]?.trim() ?? null;
+}
+
+/**
+ * 备注里的往来款句式：「转账汇款李明月的往来款」「转出-张三的应收款」。
+ * 动作词（转账/汇款/转入/转出/借入/借出…）与分隔符只是前缀，剥掉后剩下的
+ * 「X的往来款/应收款/应付款」才是账户名。
+ */
+const SETTLEMENT_REMARK_ACTION_PREFIX_RE =
+  /^(?:(?:转账|转帐|汇款|汇入|汇出|转入|转出|借入|借出|收回|返还|还款|收款|付款|支出|收入)[\s\-—－·:：]*)+/;
+
+/** 剥掉备注开头的动作词前缀，返回可能形如「X的往来款」的剩余文本。 */
+export function stripSettlementRemarkActionPrefix(remark: string | null | undefined): string {
+  return String(remark ?? "").trim().replace(SETTLEMENT_REMARK_ACTION_PREFIX_RE, "").trim();
+}
+
+/** 备注里的往来对象名：「转账汇款李明月的往来款」→「李明月」（对象名限 5 字）。 */
+export function parseSettlementCounterpartyFromRemark(remark: string | null | undefined): string | null {
+  return parseSettlementCounterpartyFromText(stripSettlementRemarkActionPrefix(remark));
+}
+
+/**
+ * 结算/贷款账户挂的往来对象键（归一化）。`Counterparty` 未加载（undefined）时返回空数组
+ * ——调用方凭这个区分「确定没有往来对象」与「没查这张关系」，后者保持宽松匹配口径。
+ */
+function accountCounterpartyKeys(account: ImportAccountMatchSource) {
+  if (!account.Counterparty) return [];
+  return [account.Counterparty.name, account.Counterparty.shortName]
+    .map((value) => normalizeImportAccountMatchKey(value))
+    .filter(Boolean);
+}
+
+/**
+ * 「X的往来款」输入能不能落到这个结算/贷款账户上：账户名/别名写了 X、
+ * 账户名本身就是「X的往来款（或其变体）」、或账户挂的往来对象叫 X。
+ */
+function settlementAccountMatchesPerson(
+  item: { account: ImportAccountMatchSource; keys: string[] },
+  personKey: string,
+) {
+  if (!personKey) return true;
+  if (item.keys.includes(personKey)) return true;
+  const accountPerson = parseSettlementAccountName(item.account.name);
+  if (accountPerson && normalizeImportAccountMatchKey(accountPerson) === personKey) return true;
+  if (accountCounterpartyKeys(item.account).includes(personKey)) return true;
+  return false;
 }
 
 /** 判断名字是否银行/机构名（如「招商银行」「京东」）——这类前缀不能当往来对象人名。 */
@@ -174,7 +233,9 @@ const ACCOUNT_KIND_ALIASES: Array<{ kind: ImportAccountKind; aliases: string[] }
   { kind: "ewallet", aliases: ["\u7535\u5b50\u94b1\u5305", "\u94b1\u5305", "\u96f6\u94b1\u8d26\u6237", "\u4eac\u4e1c\u5c0f\u91d1\u5e93", "\u5c0f\u91d1\u5e93"] },
   { kind: "cash", aliases: ["现金", "现金账户"] },
   { kind: "investment", aliases: ["投资账户", "投资", "基金", "基金账户", "货币基金", "货币基金账户", "理财", "理财账户"] },
-  { kind: "settlement", aliases: ["往来款"] },
+  // 往来对象账户的统一识别词：往来款、应收款/应付款（含「普通应收款/普通应付款」变体）
+  // 与旧软件写法「往来帐/往来账」，见 SETTLEMENT_ACCOUNT_NAME_RE。
+  { kind: "settlement", aliases: ["往来款", "往来帐", "往来账", "应收款", "应付款"] },
 ];
 
 const ACCOUNT_KIND_SEPARATOR_WORDS = [
@@ -804,6 +865,15 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(
     const targetBankNames = inferBankNames(raw);
     const targetBankKeys = targetBankNames.map(normalizeImportAccountMatchKey);
     const targetOwnerKeys = inferTargetOwnerKeys(raw);
+    // 「X的往来款/应收款/应付款」里的 X 指定了往来对象：泛名结算账户（名字就叫「往来款」）
+    // 不许吞掉它，否则备注写「李明月的往来款」的转账会落到别人的（或任何人的）往来款账户上。
+    // 自由文本口径限 5 字；解析不出时退回完整前缀——它只用于「与既有结算账户的对象名精确等值」
+    // 的匹配与排除，绝不会拿去新建往来对象（新建走 5 字口径的 parseSettlementCounterpartyFromText）。
+    const settlementPersonKey = targetKind === "settlement"
+      ? normalizeImportAccountMatchKey(
+        parseSettlementCounterpartyFromText(raw) ?? parseSettlementAccountName(raw) ?? "",
+      )
+      : "";
 
     const directAccountId = parseImportAccountId(raw);
     if (directAccountId) {
@@ -873,18 +943,30 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(
 
     // "XX的往来款" pattern: try to match extracted counterparty name directly
     // against loan account names, bypassing kind-alias partial matching.
-    if (targetKind === "settlement") {
-      const counterpartyName = parseSettlementAccountName(raw);
-      if (counterpartyName) {
-        const cKey = normalizeImportAccountMatchKey(counterpartyName);
-        if (cKey) {
-          const loanMatches = indexed.filter(
-            (item) => (item.account.kind === "settlement" || item.account.kind === "loan") && item.keys.includes(cKey),
-          );
-          if (loanMatches.length === 1) {
-            return result(loanMatches[0].account, [], { targetKind, targetBankNames });
-          }
-        }
+    if (targetKind === "settlement" && settlementPersonKey) {
+      const isSettlementLike = (item: (typeof indexed)[number]) =>
+        item.account.kind === "settlement" || item.account.kind === "loan";
+      // 先认「名字本身写着这个对象」的账户（「X的往来款」「X的普通应付款」）：
+      // 账本里同时存在「加油卡的往来款」和挂在章啸名下的「加油卡」时，
+      // 要落到名字写明对象的那一个，而不是变成歧义。
+      const namedMatches = indexed.filter(
+        (item) => isSettlementLike(item) &&
+          normalizeImportAccountMatchKey(parseSettlementAccountName(item.account.name) ?? "") === settlementPersonKey,
+      );
+      if (namedMatches.length === 1) {
+        return result(namedMatches[0].account, [], { targetKind, targetBankNames });
+      }
+      if (namedMatches.length > 1) {
+        return result(null, namedMatches, { targetKind, targetBankNames });
+      }
+      // 再认「泛名账户 + 挂的往来对象」：账户名只叫「往来款」，靠 counterpartyId 识别。
+      const objectMatches = indexed.filter(
+        (item) => isSettlementLike(item) &&
+          (item.keys.includes(settlementPersonKey) ||
+            accountCounterpartyKeys(item.account).includes(settlementPersonKey)),
+      );
+      if (objectMatches.length === 1) {
+        return result(objectMatches[0].account, [], { targetKind, targetBankNames });
       }
     }
 
@@ -933,13 +1015,20 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(
     for (const targetKey of targetKeys) {
       // 纯所有人名两边都不参与"互相包含"匹配：它只能收窄，不能识别账户。
       if (ownerOnlyKeys.has(targetKey)) continue;
-      const partialMatches = indexed.filter((item) =>
-        item.keys.some((key) =>
+      const partialMatches = indexed.filter((item) => {
+        // 「X的往来款」不许被包含匹配吞到泛名/他人的结算账户上（账户名「往来款」
+        // 会包含在「李明月的往来款」里）。往来对象信息未加载时无从判断，保持旧口径。
+        if (settlementPersonKey && item.account.Counterparty !== undefined &&
+          (item.account.kind === "settlement" || item.account.kind === "loan") &&
+          !settlementAccountMatchesPerson(item, settlementPersonKey)) {
+          return false;
+        }
+        return item.keys.some((key) =>
           key.length >= 3 &&
           !ownerOnlyKeys.has(key) &&
           (targetKey.includes(key) || key.includes(targetKey)),
-        ),
-      );
+        );
+      });
 
       const compatiblePartialMatches = partialMatches.filter((item) => {
         if (!hasCompatibleLast4(item, last4)) return false;

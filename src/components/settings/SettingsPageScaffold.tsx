@@ -169,6 +169,7 @@ export function SettingsSection({
   actions,
   mobileActions,
   children,
+  fillHeight = false,
 }: {
   title: string;
   description?: string;
@@ -177,13 +178,35 @@ export function SettingsSection({
   /** 手机端的同组操作（筛选、新增…），整行显示；桌面隐藏，仍用 `actions`。 */
   mobileActions?: React.ReactNode;
   children: React.ReactNode;
+  /**
+   * 长表格页：卡片撑满父级剩余高度，**滚动条落在表格里**，标题栏与页签留在原处。
+   *
+   * 默认（false）卡片按内容自然长高，长表会把整页推出滚动条 —— 滚动条贴在内容区
+   * （卡片外侧），往下滚时页签和标题栏跟着一起滚走（2026-11-04 用户：
+   * 「滚动条应该在表格里而不是卡片外」）。
+   *
+   * 打开后只是配合外层 flex 链（页面根 `h-full` → 卡片 `flex-1 min-h-0`），
+   * 真正滚动的是 `SettingsTable` 的内层（`fillHeight`）。
+   *
+   * ⚠️ 一律 `desktop:` 前缀：手机上正文是卡片列表（`SettingsMobileList`），要按内容
+   * 自然流、由页面滚动；卡片带 `overflow-hidden`，若手机上也被钉成视口高，列表底部
+   * 会被直接裁掉且滚不到。
+   */
+  fillHeight?: boolean;
 }) {
   const hideDescriptions = useHideSettingDescriptions();
   const showDescription = Boolean(description) && !hideDescriptions;
+  const body = fillHeight ? <div className="flex min-h-0 flex-1 flex-col">{children}</div> : children;
 
   return (
-    <section className="panel-surface overflow-hidden">
-      <div className="panel-header gap-3">
+    <section
+      className={
+        fillHeight
+          ? "panel-surface overflow-hidden desktop:flex desktop:min-h-0 desktop:flex-1 desktop:flex-col"
+          : "panel-surface overflow-hidden"
+      }
+    >
+      <div className={`panel-header gap-3${fillHeight ? " desktop:shrink-0" : ""}`}>
         <div className="min-w-0" title={description && hideDescriptions ? description : undefined}>
           <div className="flex items-center gap-2">
             <div className="text-sm font-medium text-slate-800">{title}</div>
@@ -200,7 +223,7 @@ export function SettingsSection({
       {mobileActions ? (
         <div className="flex flex-col gap-2 border-b border-slate-100 px-3 pb-3 desktop:hidden">{mobileActions}</div>
       ) : null}
-      {children}
+      {body}
     </section>
   );
 }
@@ -266,21 +289,31 @@ export function SettingsTable({
   maxWidth = "full",
   className,
   children,
+  fillHeight = false,
 }: {
   minWidth?: number;
   maxWidth?: number | "full";
   className?: string;
   children: React.ReactNode;
+  /**
+   * 让滚动容器吃满卡片剩余高度（配 `SettingsSection` 的 `fillHeight`）：
+   * 表体自己出纵向滚动条，`thead` 的 `sticky top-0` 在滚动容器内继续生效。
+   * 同样只在 `desktop:` 生效，手机上是卡片列表、不涉及这张表。
+   */
+  fillHeight?: boolean;
 }) {
   return (
     <div
       className={[
         "w-full overflow-hidden rounded-md border border-slate-200 bg-white",
+        fillHeight ? "desktop:flex desktop:min-h-0 desktop:flex-1 desktop:flex-col" : "",
         className ?? "",
       ].join(" ")}
       style={maxWidth === "full" ? undefined : { maxWidth: `${maxWidth}px` }}
     >
-      <div className="overflow-auto">
+      {/* 滚动条槽常驻（`scrollbar-gutter: stable`），与 `AdvancedDataTable` 一致：
+          长表一直有滚动条，筛选到几行时若槽突然消失，列宽会横向跳一下。 */}
+      <div className={fillHeight ? "overflow-auto desktop:min-h-0 desktop:flex-1 desktop:[scrollbar-gutter:stable]" : "overflow-auto"}>
         <table className="w-full table-fixed border-separate border-spacing-0" style={{ minWidth: `min(100%, ${minWidth}px)` }}>
           {children}
         </table>

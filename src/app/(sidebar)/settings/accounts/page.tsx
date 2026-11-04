@@ -24,6 +24,7 @@ import {
   type StatisticsUserItem,
 } from "@/components/AccountScopeFilter";
 import { CreditCardBillingDayRulesTable } from "@/components/CreditCardBillingDayRulesTable";
+import { AccountBatchImportButton } from "@/components/settings/AccountBatchImportButton";
 import type { CreditBillingDayRuleView } from "@/lib/credit/billing-day-rules";
 import { SettingsActionButton, SettingsInfoHint, SettingsPageHeader, SettingsPrimaryAddButton, useHideSettingDescriptions } from "@/components/settings/SettingsPageScaffold";
 import { SwipeActionRow, type SwipeActionItem } from "@/components/SwipeActionRow";
@@ -1760,6 +1761,13 @@ export default function SettingsAccountsPage() {
             <span>{t("settings.accounts.hideInactiveAccounts")}</span>
           </label>
           <div className="ml-auto flex items-center gap-2">
+            <AccountBatchImportButton
+              groups={groups}
+              institutions={institutions}
+              counterparties={counterparties}
+              baseCurrency={baseCurrency}
+              onImported={() => void refreshSettingsAccounts("account:batch-import")}
+            />
             <SettingsPrimaryAddButton onClick={() => setShowCreateAccount(true)}>{t("settings.accounts.add")}</SettingsPrimaryAddButton>
           </div>
           </>

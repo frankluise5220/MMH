@@ -17,7 +17,7 @@ import {
   SettingsTh,
 } from "@/components/settings/SettingsPageScaffold";
 import { fetchSettingsTags, getCachedSettingsTags, notifySettingsDataChanged, setSettingsTags } from "@/lib/client/settingsCache";
-import { BasicDataSubmenuHeader } from "@/components/settings/BasicDataImportExport";
+import { BasicDataImportExportActions, BasicDataSubmenuHeader } from "@/components/settings/BasicDataImportExport";
 import { useI18n } from "@/lib/i18n";
 import { TAG_COLORS } from "@/lib/tag-colors";
 
@@ -97,15 +97,35 @@ export default function SettingsTagsClient({
     router.push(`/?${params.toString()}`);
   }
 
-  return (
-    <div className="space-y-4">
-      <BasicDataSubmenuHeader />
+  // 整册基础资料的模板导出/导入（2026-11-04 用户要求）：紧挨「新增」左侧，tooltip 说明作用域。
+  // 标签页标题栏没有分类筛选，两个按钮 + 新增约 300px，内容列 ≥ 352px 就能放下。
+  const importExportActions = (
+    <BasicDataImportExportActions
+      className="hidden @min-[22rem]:flex"
+      onImported={() => {
+        router.refresh();
+        void fetchTags();
+      }}
+    />
+  );
 
+  return (
+    // 桌面撑满视口剩余高度，卡片才好把「长表格」收进内滚（滚动条落在表格里而不是卡片外）；
+    // 手机不加 `h-full`，正文是卡片列表，仍按内容自然长高、由页面滚动。
+    <div className="flex min-h-0 flex-col gap-4 desktop:h-full">
+      {/* FT 页签条与卡片同一个 relative 容器、中间不留 gap（见 BasicDataSubmenuHeader 注释）。 */}
+      <div className="relative desktop:flex desktop:min-h-0 desktop:flex-1 desktop:flex-col">
+        {/* 页签条只放四个页签（不再挂工具栏），导出/导入已移到卡片标题栏「新增」左侧。 */}
+        <BasicDataSubmenuHeader />
+        {/* 卡片标题栏也取卡片底色（`.panel-header` 自带 `bg-surface-muted/90`，会在卡片顶部
+            插进一条近白横带，把「页签 → 卡片」的连续底色切断）；底色一路连续到标题栏下边框为止。 */}
+        <div className="@container relative z-20 desktop:flex desktop:min-h-0 desktop:flex-1 desktop:flex-col [&>section]:rounded-xl [&>section]:border-slate-300 [&>section]:bg-[var(--ft-card-bg)] [&>section>.panel-header]:bg-[var(--ft-card-bg)]">
       <SettingsSection
         title={t("settings.tags.listTitle")}
         count={tags.length}
-        actions={<SettingsPrimaryAddButton onClick={() => setEditing({ id: "", name: "", color: TAG_COLORS[6] })}>{t("settings.tags.add")}</SettingsPrimaryAddButton>}
+        actions={<>{importExportActions}<SettingsPrimaryAddButton onClick={() => setEditing({ id: "", name: "", color: TAG_COLORS[6] })}>{t("settings.tags.add")}</SettingsPrimaryAddButton></>}
         mobileActions={<SettingsPrimaryAddButton onClick={() => setEditing({ id: "", name: "", color: TAG_COLORS[6] })}>{t("settings.tags.add")}</SettingsPrimaryAddButton>}
+        fillHeight
       >
         <SettingsMobileList>
           {tags.length ? tags.map((tag) => (
@@ -141,8 +161,9 @@ export default function SettingsTagsClient({
           )}
         </SettingsMobileList>
 
-        <div className="hidden desktop:block">
-        <SettingsTable minWidth={640}>
+        {/* 桌面表格层：卡片里的可伸缩体，滚动交给 `SettingsTable` 的内层 */}
+        <div className="hidden desktop:flex desktop:min-h-0 desktop:flex-1 desktop:flex-col">
+        <SettingsTable minWidth={640} fillHeight>
           <thead className="sticky top-0 z-10">
             <tr>
               <SettingsTh>{t("settings.tags.tag")}</SettingsTh>
@@ -186,6 +207,8 @@ export default function SettingsTagsClient({
         </SettingsTable>
         </div>
       </SettingsSection>
+        </div>
+      </div>
 
       {editing ? (
         <TagEditModal

@@ -20,7 +20,7 @@ import { COUNTERPARTY_TYPE_VALUES, FINANCIAL_INSTITUTION_TYPE_VALUES, institutio
 import { fetchSettingsAccountData, notifySettingsDataChanged } from "@/lib/client/settingsCache";
 import { showBlockingLoading } from "@/lib/client/blocking-loading";
 import { showConfirmDialog } from "@/lib/client/confirm-dialog";
-import { BasicDataSubmenuHeader } from "@/components/settings/BasicDataImportExport";
+import { BasicDataImportExportActions, BasicDataSubmenuHeader } from "@/components/settings/BasicDataImportExport";
 import { useI18n } from "@/lib/i18n";
 
 type Institution = {
@@ -216,12 +216,25 @@ export function SettingsInstitutionsClient({
     </div>
   ) : null;
 
+  // 整册基础资料的模板导出/导入（2026-11-04 用户要求）：紧挨「新增」左侧，tooltip 说明作用域。
+  // 卡片标题栏一行放不下「标题 + 分类筛选 + 三个按钮」时（实测内容列 < 576px，如 1024px
+  // 视口 528px、平板上 338px）隐藏它们，否则标题会被挤成逐字竖排、按钮溢出卡片右边界。
+  const importExportActions = (
+    <BasicDataImportExportActions
+      className="hidden @min-[36rem]:flex"
+      onImported={() => {
+        void notifySettingsDataChanged({ scope: "accounts", reason: `${mode}:batchImport`, prefetch: true });
+        void refreshList({ force: true });
+      }}
+    />
+  );
+
   const addButton = <SettingsPrimaryAddButton onClick={() => setShowCreate(true)}>{createTitle}</SettingsPrimaryAddButton>;
 
   return (
-    <div className="space-y-4">
-      <BasicDataSubmenuHeader />
-
+    // 桌面撑满视口剩余高度，卡片才好把「长表格」收进内滚（滚动条落在表格里而不是卡片外）；
+    // 手机不加 `h-full`，正文是卡片列表，仍按内容自然长高、由页面滚动。
+    <div className="flex min-h-0 flex-col gap-4 desktop:h-full">
       <EntityCreateForm
         mode="full"
         layout="modal"
@@ -237,11 +250,22 @@ export function SettingsInstitutionsClient({
         existingNames={createExistingNames}
       />
 
+      {/* FT 页签条与卡片在同一个 relative 容器里、中间不留 gap：页签条是流内元素，
+          活动页签用 -mb-px 与卡片上沿连体，非活动页签被卡片的 z-20 盖住。
+          卡片圆角 12px / 边框 slate-300 / 米色底，与页签的凹角和底色是一套。 */}
+      <div className="relative desktop:flex desktop:min-h-0 desktop:flex-1 desktop:flex-col">
+        {/* 页签条只放四个页签（不再挂工具栏），导出/导入已移到卡片标题栏「新增」左侧；
+            手机端标题栏一行放不下两个文字按钮 + 新增，所以只在桌面标题栏出现。 */}
+        <BasicDataSubmenuHeader />
+        {/* 卡片标题栏也取卡片底色（`.panel-header` 自带 `bg-surface-muted/90`，会在卡片顶部
+            插进一条近白横带，把「页签 → 卡片」的连续底色切断）；底色一路连续到标题栏下边框为止。 */}
+        <div className="@container relative z-20 desktop:flex desktop:min-h-0 desktop:flex-1 desktop:flex-col [&>section]:rounded-xl [&>section]:border-slate-300 [&>section]:bg-[var(--ft-card-bg)] [&>section>.panel-header]:bg-[var(--ft-card-bg)]">
       <SettingsSection
         title={listTitle}
         count={visibleInstitutions.length}
-        actions={<>{filterControl}{batchControls}{addButton}</>}
+        actions={<>{filterControl}{batchControls}{importExportActions}{addButton}</>}
         mobileActions={<>{filterControl}{batchControls}{addButton}</>}
+        fillHeight
       >
         {/* 手机端：一行一张卡（表格 780px 宽在小屏上只能横向拖动，没法用） */}
         <SettingsMobileList>
@@ -277,8 +301,9 @@ export function SettingsInstitutionsClient({
           )}
         </SettingsMobileList>
 
-        <div className="hidden desktop:block">
-        <SettingsTable minWidth={mode === "counterparty" ? 900 : 780}>
+        {/* 桌面表格层：卡片里的可伸缩体，滚动交给 `SettingsTable` 的内层 */}
+        <div className="hidden desktop:flex desktop:min-h-0 desktop:flex-1 desktop:flex-col">
+        <SettingsTable minWidth={mode === "counterparty" ? 900 : 780} fillHeight>
             <thead className="sticky top-0 z-10">
               <tr>
                 <SettingsTh>
@@ -349,6 +374,8 @@ export function SettingsInstitutionsClient({
         </SettingsTable>
         </div>
       </SettingsSection>
+        </div>
+      </div>
     </div>
   );
 }
