@@ -25,7 +25,7 @@ import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { fetchSettingsAccountData, fetchSettingsBootstrap } from "@/lib/client/settingsCache";
 import { decodeTextFile } from "@/lib/text/decode-text-file";
 import { parseFlexibleDateToYmd } from "@/lib/date-utils";
-import { NAV_BACKFILL_DELAYS_MS, mergeNavBackfillRows, shouldBackfillNav } from "@/lib/fund/previewNavMerge";
+import { FundImportPreviewDialog } from "@/components/FundImportPreviewDialog";
 import { systemCategoryLabel } from "@/lib/system-category-labels";
 import { useI18n } from "@/lib/i18n";
 import {
@@ -36,13 +36,17 @@ import {
   matchStatementHeaderProfile,
   type StatementImportField,
 } from "@/lib/statement/header-catalog";
-import { normalizeAlipayWorkbookRows } from "@/lib/statement/alipay-template";
 import { routeAlipayFundBill } from "@/lib/statement/alipay-fund-bill";
 import { excludeFundTradeRows } from "@/lib/statement/fund-trade-split";
-import { guessOwnerFromFilename } from "@/lib/statement/owner-from-filename";
-import { buildJdImportTemplate, normalizeJdWorkbookRows } from "@/lib/statement/jd-template";
-import { buildWechatImportTemplate, normalizeWechatWorkbookRows } from "@/lib/statement/wechat-template";
+import { buildJdImportTemplate } from "@/lib/statement/jd-template";
+import { buildWechatImportTemplate } from "@/lib/statement/wechat-template";
 import { parseStatementCsv } from "@/lib/statement/statement-sheet-reader";
+// 识别器清单/兜底/截表头/多 sheet 合并统一在 recognizer-pipeline（勿在此手抄）。
+import {
+  looksLikeFundImportFile,
+  parseStatementSheetsStandard,
+  type StatementFieldHeaders,
+} from "@/lib/statement/recognizer-pipeline";
 import {
   inferSignedAmountInflowSign,
   isCreditCardCreditAdjustmentLikeText,
@@ -99,43 +103,6 @@ type ParsedItem = {
   importInvalidPostedAt?: string;
 };
 
-type FundImportUploadItem = {
-  rawText: string;
-  date: string;
-  fundSubtype: string;
-  cashAccount: string;
-  fundAccount: string;
-  fundCode: string;
-  amount: number;
-  units: number | null;
-  nav: number | null;
-  fee: number | null;
-  feeRateInput?: number | null;
-  confirmDate: string | null;
-  arrivalDate: string | null;
-  remark: string;
-  source?: string;
-};
-type FundImportHeaderField = Exclude<keyof FundImportUploadItem, "rawText" | "source">;
-
-type FundImportPreviewIssue = {
-  level: "error" | "warning";
-  code?: string;
-  message: string;
-};
-
-type FundImportPreviewItem = FundImportUploadItem & {
-  source: string;
-  fundName: string | null;
-  feeRate: number | null;
-  confirmDays: number | null;
-  arrivalDays: number | null;
-  cashAccountId: string | null;
-  fundAccountId: string | null;
-  fundProductType: string | null;
-  issues: FundImportPreviewIssue[];
-};
-
 type ImportTemplate = {
   key: "normal" | "credit" | "fund" | "wechat" | "jd";
   title: string;
@@ -171,6 +138,8 @@ type AccountOption = {
   Institution?: { id?: string; name: string | null; shortName?: string | null } | null;
   AccountGroup?: { id: string; name: string | null } | null;
   AccountAlias?: Array<{ alias: string }> | null;
+  /** 结算/贷款账户挂的往来对象：泛名「往来款」账户靠它区分「X的往来款」属于谁。 */
+  Counterparty?: { id?: string | null; name?: string | null; shortName?: string | null } | null;
 };
 
 type BookCategory = { id: string; name: string; type: string; parentId?: string | null; sortOrder?: number; isSystem?: boolean };
@@ -180,16 +149,8 @@ type BillImportMode = "normal" | "credit_card";
 type EditableCell = "date" | "type" | "outflow" | "inflow" | "account" | "counterAccount" | "category" | "institution" | "tags" | "remark";
 type ReplaceField = EditableCell;
 type ImportIssue = { idx: number; level: "error" | "warning"; message: string };
-type TranslateFn = (key: string, params?: Record<string, string | number>) => string;
 type NormalPreviewTableRow = { idx: number };
-type FundPreviewTableRow = FundImportPreviewItem & { idx: number };
 type FundImportKind = "normal" | "fund" | null;
-type FundImportContext = {
-  fundAccountId?: string;
-  fundAccount?: string;
-  fundCode?: string;
-  fundName?: string;
-};
 type ImportCompletionState = {
   count: number;
   href: string | null;
@@ -241,30 +202,6 @@ function postImportDebugLog(traceId: string, event: string, details: ImportDebug
   }).catch((error) => {
     console.warn("[batch-import] debug log upload failed", error);
   });
-}
-
-function normalizeFundImportContext(context?: FundImportContext | null): FundImportContext | null {
-  const fundAccountId = String(context?.fundAccountId ?? "").trim();
-  const fundAccount = String(context?.fundAccount ?? "").trim();
-  const fundCode = String(context?.fundCode ?? "").trim();
-  const fundName = String(context?.fundName ?? "").trim();
-  if (!fundAccountId && !fundAccount && !fundCode && !fundName) return null;
-  return {
-    ...(fundAccountId ? { fundAccountId } : {}),
-    ...(fundAccount ? { fundAccount } : {}),
-    ...(fundCode ? { fundCode } : {}),
-    ...(fundName ? { fundName } : {}),
-  };
-}
-
-function fundIssueMessage(issue: FundImportPreviewIssue, t: TranslateFn) {
-  if (issue.code === "MISSING_CASH_ACCOUNT" || issue.message === "MISSING_CASH_ACCOUNT") {
-    return t("batchImport.fundPreview.missingCashAccount");
-  }
-  if (issue.code === "INVALID_FUND_CODE" || issue.message === "INVALID_FUND_CODE") {
-    return t("batchImport.fundPreview.invalidFundCode");
-  }
-  return issue.message;
 }
 
 function buildCategorySmartSelectOptions(
@@ -352,36 +289,6 @@ const FUND_ACTION_HEADERS = {
   dividendCash: "batchImport.template.fund.action.dividendCash",
   dividendReinvest: "batchImport.template.fund.action.dividendReinvest",
 } as const;
-const FUND_LABEL_HEADER_SET = new Set([
-  "日期",
-  "基金动作",
-  "资金账户",
-  "基金账户",
-  "基金代码",
-  "金额",
-  "手续费率",
-  "手续费",
-  "净值",
-  "份额",
-  "净值日期",
-  "入账日期",
-  "备注",
-]);
-const FUND_FIELD_ALIASES: Record<FundImportHeaderField, string[]> = {
-  date: ["date", "日期", "交易日期", "申请日期", "Date", "日付"],
-  fundSubtype: ["fundSubtype", "分类", "业务类型", "基金动作", "基金类型", "动作", "Fund Action", "Action", "基金アクション", "ファンド操作", "cash dividend", "dividend reinvest", "現金分配", "分配金再投資"],
-  cashAccount: ["cashAccount", "资金账户", "现金账户", "付款账户", "cash account", "Cash Account", "資金口座"],
-  fundAccount: ["fundAccount", "基金账户", "投资账户", "account", "fund account", "Fund Account", "ファンド口座"],
-  fundCode: ["fundCode", "基金代码", "代码", "fund code", "Fund Code", "ファンドコード", "基金コード"],
-  amount: ["amount", "金额", "发生金额", "Amount", "金額"],
-  feeRateInput: ["feeRateInput", "feeRate", "手续费率", "费率", "Fee Rate", "Fee Rate (%)", "手数料率"],
-  fee: ["fee", "手续费", "Fee", "手数料"],
-  nav: ["nav", "净值", "成交净值", "NAV", "基準価額"],
-  units: ["units", "份额", "确认份额", "Units", "口数"],
-  confirmDate: ["confirmDate", "确认日期", "净值日期", "NAV Date", "基準価額日"],
-  arrivalDate: ["arrivalDate", "入账日期", "到账日期", "Posting Date", "入帳日"],
-  remark: ["remark", "备注", "说明", "Remark", "Note", "備考", "メモ"],
-};
 
 const replaceFieldLabelKeys: Record<ReplaceField, string> = {
   date: "batchImport.field.date",
@@ -573,33 +480,6 @@ function parseLooseNumber(value: string) {
   if (!normalized) return null;
   const amount = Number(normalized);
   return Number.isFinite(amount) ? amount : null;
-}
-
-function parseFundFeeRateInput(value: string) {
-  const raw = value.trim();
-  if (!raw) return null;
-  const rate = parseLooseNumber(raw.replace(/%/g, ""));
-  return rate == null || rate < 0 ? null : rate;
-}
-
-function parseFundFeeInput(value: string) {
-  const raw = value.trim();
-  if (!raw) return { fee: null as number | null, feeRateInput: null as number | null };
-  if (raw.includes("%")) {
-    return {
-      fee: null as number | null,
-      feeRateInput: parseFundFeeRateInput(raw),
-    };
-  }
-  const fee = parseLooseNumber(raw);
-  return {
-    fee: fee == null ? null : Math.abs(fee),
-    feeRateInput: null as number | null,
-  };
-}
-
-function normalizeFundHeaderText(value: string) {
-  return value.trim().toLowerCase().replace(/\s+/g, "");
 }
 
 function pad2(value: number) {
@@ -844,111 +724,6 @@ function worksheetRows(XLSX: typeof import("xlsx"), workbook: WorkBook, sheetNam
   }).map((row) => row.map((cell) => String(cell ?? "").trim()));
 }
 
-function importHeaderSignature(row: string[]) {
-  return row.map(normalizeImportAccountMatchKey).join("|");
-}
-
-type StatementFieldHeaders = Record<StatementImportField, readonly string[]>;
-
-function billHeaderScore(row: string[], fieldHeaders: StatementFieldHeaders = STATEMENT_IMPORT_FIELD_HEADERS) {
-  const reader = createStatementHeaderReader(row, fieldHeaders);
-  let score = 0;
-  if (reader.hasField("transactionDate")) score += 4;
-  if (reader.hasField("amount")) score += 4;
-  if (reader.hasField("sourceAccount")) score += 3;
-  if (reader.hasField("majorType")) score += 2;
-  if (reader.hasField("explicitType")) score += 2;
-  if (reader.hasField("creditAccount")) score += 2;
-  if (reader.hasField("repaymentAccount")) score += 1;
-  if (reader.hasField("transferCounterAccount")) score += 1;
-  if (reader.hasField("category")) score += 1;
-  if (reader.hasField("institution")) score += 1;
-  if (reader.hasField("remark")) score += 1;
-  return score >= 8 ? score : 0;
-}
-
-function fundHeaderScore(row: string[]) {
-  const index = buildFundHeaderIndex(row);
-  let score = 0;
-  if (index.has("date")) score += 4;
-  if (index.has("fundAccount")) score += 4;
-  if (index.has("fundCode")) score += 4;
-  if (index.has("amount")) score += 4;
-  if (index.has("fundSubtype")) score += 2;
-  if (index.has("cashAccount")) score += 1;
-  return score >= 11 ? score : 0;
-}
-
-function importHeaderScore(row: string[], fieldHeaders: StatementFieldHeaders = STATEMENT_IMPORT_FIELD_HEADERS) {
-  return Math.max(billHeaderScore(row, fieldHeaders), fundHeaderScore(row));
-}
-
-/** True when the parsed workbook rows carry fund-specific columns (fund code/account/amount). */
-function looksLikeFundImportFile(rows: string[][]) {
-  return fundHeaderScore(rows[0] ?? []) >= 11;
-}
-
-function trimWorkbookRowsToImportHeader(rows: string[][], fieldHeaders: StatementFieldHeaders = STATEMENT_IMPORT_FIELD_HEADERS) {
-  const compactRows = rows.filter((row) => row.some((cell) => cell.trim()));
-  let bestIndex = 0;
-  let bestScore = importHeaderScore(compactRows[0] ?? [], fieldHeaders);
-  compactRows.slice(0, 25).forEach((row, index) => {
-    const score = importHeaderScore(row, fieldHeaders);
-    if (score > bestScore) {
-      bestScore = score;
-      bestIndex = index;
-    }
-  });
-  return bestScore > 0 ? compactRows.slice(bestIndex) : compactRows;
-}
-
-
-
-function normalizeKnownPaymentWorkbookRows(
-  rawSheetRows: Array<{ sheetName: string; rows: string[][] }>,
-  sheetCount: number,
-  sourceFileName = "",
-): Omit<ImportFileParseResult, "sourceRows"> | null {
-  const jdRows = normalizeJdWorkbookRows(rawSheetRows);
-  if (jdRows) {
-    return {
-      rows: jdRows.rows,
-      sourceDataRowCount: jdRows.sourceDataRowCount,
-      workbook: {
-        sheetCount,
-        includedSheetCount: jdRows.includedSheetCount,
-      },
-    };
-  }
-
-  // 「张四.支付宝交易明细(...).csv」的文件名前缀是账本里的实际所有人，优先于账单内部姓名。
-  const alipayRows = normalizeAlipayWorkbookRows(rawSheetRows, guessOwnerFromFilename(sourceFileName));
-  if (alipayRows) {
-    return {
-      rows: alipayRows.rows,
-      sourceDataRowCount: alipayRows.sourceDataRowCount,
-      workbook: {
-        sheetCount,
-        includedSheetCount: alipayRows.includedSheetCount,
-      },
-    };
-  }
-
-  const wechatRows = normalizeWechatWorkbookRows(rawSheetRows);
-  if (wechatRows) {
-    return {
-      rows: wechatRows.rows,
-      sourceDataRowCount: wechatRows.sourceDataRowCount,
-      workbook: {
-        sheetCount,
-        includedSheetCount: wechatRows.includedSheetCount,
-      },
-    };
-  }
-
-  return null;
-}
-
 function mergeWorkbookRows(
   XLSX: typeof import("xlsx"),
   workbook: WorkBook,
@@ -959,48 +734,20 @@ function mergeWorkbookRows(
     .map((sheetName) => ({ sheetName, rows: worksheetRows(XLSX, workbook, sheetName) }))
     .filter((item) => item.rows.length > 0);
 
-  const knownRows = normalizeKnownPaymentWorkbookRows(rawSheetRows, workbook.SheetNames.length, sourceFileName);
-  if (knownRows) return knownRows;
-
-  const sheetRows = rawSheetRows
-    .map((item) => ({ sheetName: item.sheetName, rows: trimWorkbookRowsToImportHeader(item.rows, fieldHeaders) }))
-    .filter((item) => item.rows.length > 0);
-  if (sheetRows.length === 0) {
-    return { rows: [], sourceDataRowCount: 0, workbook: { sheetCount: workbook.SheetNames.length, includedSheetCount: 0 } };
-  }
-
-  const groups = new Map<string, typeof sheetRows>();
-  for (const item of sheetRows) {
-    const signature = importHeaderSignature(item.rows[0] ?? []);
-    groups.set(signature, [...(groups.get(signature) ?? []), item]);
-  }
-  const selectedSheets = Array.from(groups.values()).sort((a, b) => {
-    const aScore = importHeaderScore(a[0]?.rows[0] ?? [], fieldHeaders);
-    const bScore = importHeaderScore(b[0]?.rows[0] ?? [], fieldHeaders);
-    if (aScore !== bScore) return bScore - aScore;
-    const aRows = a.reduce((sum, item) => sum + Math.max(0, item.rows.length - 1), 0);
-    const bRows = b.reduce((sum, item) => sum + Math.max(0, item.rows.length - 1), 0);
-    return bRows - aRows;
-  })[0] ?? [];
-  const primaryRows = selectedSheets[0]?.rows ?? [];
-  const primarySecondSignature = importHeaderSignature(primaryRows[1] ?? []);
-  const primaryHasSecondHeader = looksLikeFundLabelRow(primaryRows[1] ?? []);
-  const mergedRows = [...primaryRows];
-
-  for (const item of selectedSheets.slice(1)) {
-    const hasSameSecondHeader = primaryHasSecondHeader && importHeaderSignature(item.rows[1] ?? []) === primarySecondSignature;
-    mergedRows.push(...item.rows.slice(hasSameSecondHeader ? 2 : 1));
-  }
-
+  // 识别器（财智8/京东/支付宝/微信，命中即短路）→ 兜底（标准模板打分截表头 + 多 sheet 合并）。
+  // fundAware: 批量导入页靠截表头顺带认出基金文件（looksLikeFundImportFile 在上游判整册基金）。
+  const result = parseStatementSheetsStandard(rawSheetRows, {
+    sheetCount: workbook.SheetNames.length,
+    sourceFileName,
+    fieldHeaders,
+    fundAware: true,
+  });
   return {
-    rows: mergedRows,
-    sourceDataRowCount: selectedSheets.reduce((sum, item) => {
-      const hasSameSecondHeader = primaryHasSecondHeader && importHeaderSignature(item.rows[1] ?? []) === primarySecondSignature;
-      return sum + Math.max(0, item.rows.length - (hasSameSecondHeader ? 2 : 1));
-    }, 0),
+    rows: result.rows,
+    sourceDataRowCount: result.sourceDataRowCount,
     workbook: {
       sheetCount: workbook.SheetNames.length,
-      includedSheetCount: selectedSheets.length,
+      includedSheetCount: result.includedSheetCount,
     },
   };
 }
@@ -1011,14 +758,16 @@ function parseImportRows(
   fileName: string,
   fieldHeaders: StatementFieldHeaders = STATEMENT_IMPORT_FIELD_HEADERS,
 ): ImportFileParseResult {
-  const rawSheetRows = [{ sheetName: fileName, rows }];
-  const knownRows = normalizeKnownPaymentWorkbookRows(rawSheetRows, 1, fileName);
-  if (knownRows) return { ...knownRows, sourceRows: rows };
-  const trimmedRows = trimWorkbookRowsToImportHeader(rows, fieldHeaders);
+  const result = parseStatementSheetsStandard([{ sheetName: fileName, rows }], {
+    sheetCount: 1,
+    sourceFileName: fileName,
+    fieldHeaders,
+    fundAware: true,
+  });
   return {
-    rows: trimmedRows,
+    rows: result.rows,
     sourceRows: rows,
-    sourceDataRowCount: Math.max(0, trimmedRows.length - 1),
+    sourceDataRowCount: result.sourceDataRowCount,
   };
 }
 
@@ -1053,123 +802,6 @@ function waitForBrowserPaint() {
   });
 }
 
-function buildFundHeaderIndex(headers: string[]) {
-  const normalizedHeaders = headers.map(normalizeFundHeaderText);
-  const map = new Map<FundImportHeaderField, number>();
-  (Object.entries(FUND_FIELD_ALIASES) as Array<[FundImportHeaderField, string[]]>).forEach(([field, aliases]) => {
-    const index = normalizedHeaders.findIndex((header) => aliases.some((alias) => normalizeFundHeaderText(alias) === header));
-    if (index >= 0) map.set(field, index);
-  });
-  return map;
-}
-
-function hasLikelyFundHeaders(map: Map<FundImportHeaderField, number>) {
-  return map.has("date") && map.has("fundAccount") && map.has("fundCode") && (map.has("amount") || map.has("units"));
-}
-
-function hasCanonicalFundHeaders(headers: string[]) {
-  return headers.some((header) => FUND_CANONICAL_HEADERS.includes(header.trim() as (typeof FUND_CANONICAL_HEADERS)[number]));
-}
-
-function looksLikeFundLabelRow(headers: string[]) {
-  return headers.some((header) => FUND_LABEL_HEADER_SET.has(header.trim()));
-}
-
-function normalizeFundActionText(value: string) {
-  return value.trim().toLowerCase().replace(/[\s_\-（）()]+/g, "");
-}
-
-function normalizeFundImportAction(rawAction: string) {
-  const action = normalizeFundActionText(rawAction);
-  // 红利再投 / 再投 must be checked before 分红 so reinvest is not misread as cash dividend.
-  if (action.includes("红利再投") || action.includes("再投") || action.includes("再投資") || action.includes("分配金再投資")) return "dividend_reinvest";
-  if (action.includes("现金分红") || action.includes("分红") || action.includes("配当") || action.includes("現金分配")) return "dividend_cash";
-  if (action.includes("定投") || action.includes("積立")) return "buy";
-  if (action.includes("申购") || action.includes("買入") || action.includes("买入") || action.includes("購入")) return "buy";
-  if (action.includes("赎回") || action.includes("贖回") || action.includes("卖出") || action.includes("解約")) return "redeem";
-  if (["buy", "purchase", "subscribe", "regularinvest", "recurringinvest", "recurringbuy"].includes(action)) return "buy";
-  if (["redeem", "redemption", "sell"].includes(action)) return "redeem";
-  if (["dividendcash", "cashdividend"].includes(action)) return "dividend_cash";
-  if (["dividendreinvest", "reinvestdividend"].includes(action)) return "dividend_reinvest";
-  return "";
-}
-
-function fundRowsToItems(rows: string[][]): FundImportUploadItem[] {
-  const firstRow = rows[0] ?? [];
-  const secondRow = rows[1] ?? [];
-  const firstHeaderIndex = buildFundHeaderIndex(firstRow);
-  const secondHeaderIndex = buildFundHeaderIndex(secondRow);
-
-  let headerIndex = firstHeaderIndex;
-  let dataRows = rows.slice(1);
-
-  if (hasCanonicalFundHeaders(firstRow)) {
-    headerIndex = firstHeaderIndex;
-    dataRows = rows.slice(looksLikeFundLabelRow(secondRow) ? 2 : 1);
-  } else if (hasLikelyFundHeaders(firstHeaderIndex)) {
-    headerIndex = firstHeaderIndex;
-    dataRows = rows.slice(1);
-  } else if (hasLikelyFundHeaders(secondHeaderIndex)) {
-    headerIndex = secondHeaderIndex;
-    dataRows = rows.slice(2);
-  }
-
-  const readField = (row: string[], field: FundImportHeaderField) => {
-    const index = headerIndex.get(field);
-    return index == null ? "" : String(row[index] ?? "").trim();
-  };
-
-  // The 业务类型 column (e.g. 定投申购 / 定投申购（智汇定投）) distinguishes
-  // recurring buys from one-time purchases. It is not a fundSubtype header, so
-  // locate it separately to derive the regular-invest source.
-  const headerRow = headerIndex === firstHeaderIndex ? firstRow : secondRow;
-  const normalizedHeaderRow = headerRow.map(normalizeFundHeaderText);
-  const businessTypeIndex = normalizedHeaderRow.findIndex((header) => header === "业务类型" || header === "businesstype" || header === "transactiontype");
-  const readBusinessType = (row: string[]) => businessTypeIndex < 0 ? "" : String(row[businessTypeIndex] ?? "").trim();
-
-  return dataRows
-    .filter((row) => row.some((cell) => String(cell ?? "").trim()))
-    .filter((row) => {
-      const bodyCells = row.map((cell) => String(cell ?? "").trim());
-      return !(
-        bodyCells.length >= 2 &&
-        bodyCells[0] &&
-        !/^\d{4}[-\/]\d{1,2}[-\/]\d{1,2}/.test(bodyCells[0]) &&
-        bodyCells.slice(1).every((cell) => !cell || /[A-Za-z\u4e00-\u9fff\u3040-\u30ff]/.test(cell)) &&
-        !bodyCells.some((cell) => /^\d+(?:\.\d+)?%?$/.test(cell) || /^(buy|redeem|dividend_cash|dividend_reinvest)$/.test(normalizeFundImportAction(cell)) || /^(buy|redeem|cashdividend|dividendreinvest)$/.test(normalizeFundActionText(cell)))
-      );
-    })
-    .map((row) => {
-      const amount = parseLooseNumber(readField(row, "amount")) ?? 0;
-      const parsedFee = parseFundFeeInput(readField(row, "fee"));
-      const parsedFeeRate = parseFundFeeRateInput(readField(row, "feeRateInput"));
-      const fundSubtype = normalizeFundImportAction(readField(row, "fundSubtype")) || readField(row, "fundSubtype");
-      const businessType = readBusinessType(row);
-      const source = businessType.includes("定投") || businessType.includes("積立") ? "regular_invest" : undefined;
-      return {
-        rawText: row.join(" "),
-        date: normalizeDateCell(readField(row, "date")),
-        fundSubtype,
-        source,
-        cashAccount: readField(row, "cashAccount"),
-        fundAccount: readField(row, "fundAccount"),
-        fundCode: readField(row, "fundCode"),
-        amount,
-        units: parseLooseNumber(readField(row, "units")),
-        nav: parseLooseNumber(readField(row, "nav")),
-        fee: parsedFee.fee,
-        feeRateInput: parsedFee.fee == null ? (parsedFeeRate ?? parsedFee.feeRateInput) : null,
-        confirmDate: normalizeDateCell(readField(row, "confirmDate")) || null,
-        arrivalDate: normalizeDateCell(readField(row, "arrivalDate")) || null,
-        remark: readField(row, "remark"),
-      };
-    });
-}
-
-function formatOptionalNumber(value: number | null | undefined, digits = 2) {
-  return typeof value === "number" && Number.isFinite(value) ? value.toFixed(digits) : "-";
-}
-
 function previewRowLabel(rowNums: number[], text: string, t: (key: string, params?: Record<string, string | number>) => string) {
   if (rowNums.length === 1) {
     return t("batchImport.previewRowLineSingle", { row: rowNums[0], text });
@@ -1177,27 +809,6 @@ function previewRowLabel(rowNums: number[], text: string, t: (key: string, param
   const rows = rowNums.slice(0, 10).join("、");
   const more = rowNums.length > 10 ? t("batchImport.previewRowLineMore", { count: rowNums.length }) : "";
   return t("batchImport.previewRowLineMany", { rows, more, text });
-}
-
-function getFundImportSubtypeLabel(subtype: string, source: string, t: (key: string) => string) {
-  if (subtype === "buy_failed" && source === "regular_invest_refund") return t("batchImport.fundSubtype.refund");
-  if (subtype === "buy_failed") return t("batchImport.fundSubtype.unfilledRefund");
-  if (subtype === "buy" && source === "regular_invest") return t("fund.subtype.regular_invest");
-  if (subtype === "buy") return t("fund.subtype.buy");
-  if (subtype === "redeem") return t("fund.subtype.redeem");
-  if (subtype === "dividend_cash") return t("fund.subtype.dividend_cash");
-  if (subtype === "dividend_reinvest") return t("fund.subtype.dividend_reinvest");
-  return subtype || "-";
-}
-
-
-function hasFundBlockingIssue(item: FundImportPreviewItem | undefined) {
-  return !!item?.issues.some((issue) => issue.level === "error");
-}
-
-function selectableFundIndexes(items: FundImportPreviewItem[]) {
-  // 未匹配/有 error 的行也允许勾选，便于批量改账户后再导入
-  return new Set(items.map((_, index) => index));
 }
 
 function normalRowsToItems(
@@ -1566,7 +1177,6 @@ function normalizeForStorage(item: ParsedItem): ParsedItem {
 export default function BatchImportPage() {
   const router = useRouter();
   const importTraceIdRef = useRef(createImportTraceId());
-  const handleFundFileRef = useRef<((file: File, context?: FundImportContext | null) => Promise<void>) | null>(null);
   const { t } = useI18n();
   const formatText = useCallback((key: Parameters<typeof t>[0], values?: Record<string, string | number>) => {
     let text = t(key) as string;
@@ -1613,11 +1223,12 @@ export default function BatchImportPage() {
     [t],
   );
   const [items, setItems] = useState<ParsedItem[]>([]);
-  const [fundUploadItems, setFundUploadItems] = useState<FundImportUploadItem[]>([]);
-  const [fundPreviewItems, setFundPreviewItems] = useState<FundImportPreviewItem[]>([]);
-  const [fundImportContext, setFundImportContext] = useState<FundImportContext | null>(null);
+  // 基金导入预览整体交给 FundImportPreviewDialog：这里只持有交给它的文件
+  // 与页签计数，解析/预览/编辑/分批提交都在弹窗内（勿在此重写基金链路）。
+  const [fundPreviewFile, setFundPreviewFile] = useState<File | null>(null);
+  const [fundTradeCount, setFundTradeCount] = useState(0);
+  const fundImportedRef = useRef(false);
   const [selected, setSelected] = useState<Set<number>>(new Set());
-  const [fundSelected, setFundSelected] = useState<Set<number>>(new Set());
   const [drafts, setDrafts] = useState<Record<number, Partial<ParsedItem>>>({});
   const [activeImportKind, setActiveImportKind] = useState<FundImportKind>(null);
   const [activeBillMode, setActiveBillMode] = useState<BillImportMode>("normal");
@@ -1991,100 +1602,9 @@ export default function BatchImportPage() {
     URL.revokeObjectURL(url);
   }, [t]);
 
-  // —— 净值异步回填（与 FundImportPreviewDialog 同一套规则）——
-  // 服务端预览最多等 1.2s 就先返回明细，没抓到的净值后台继续抓；这里隔几秒静默再问一次，
-  // 只补还没有净值的行（规则在 @/lib/fund/previewNavMerge）。
-  const fundNavBackfillTimersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
-  const fundPreviewSourceRef = useRef<{ items: FundImportUploadItem[]; context: FundImportContext | null } | null>(null);
-
-  const clearFundNavBackfill = useCallback(() => {
-    for (const timer of fundNavBackfillTimersRef.current) clearTimeout(timer);
-    fundNavBackfillTimersRef.current = [];
-  }, []);
-
-  const runFundNavBackfill = useCallback(async () => {
-    const source = fundPreviewSourceRef.current;
-    if (!source || source.items.length === 0) return;
-    try {
-      const requestContext = normalizeFundImportContext(source.context);
-      const res = await fetch("/api/v1/fund/import", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          mode: "preview",
-          items: source.items,
-          ...(requestContext ? { context: requestContext } : {}),
-        }),
-      });
-      const data = await res.json().catch(() => null) as { ok?: boolean; items?: FundImportPreviewItem[] } | null;
-      if (!res.ok || !data?.ok || !Array.isArray(data.items)) return;
-      setFundPreviewItems((prev) => mergeNavBackfillRows(prev, data.items!));
-    } catch {
-      // 静默优化：失败就保持空白，用户仍可手填
-    }
-  }, []);
-
-  const scheduleFundNavBackfill = useCallback((
-    sourceItems: FundImportUploadItem[],
-    context: FundImportContext | null,
-  ) => {
-    fundPreviewSourceRef.current = { items: sourceItems, context };
-    clearFundNavBackfill();
-    for (const delay of NAV_BACKFILL_DELAYS_MS) {
-      fundNavBackfillTimersRef.current.push(setTimeout(() => { void runFundNavBackfill(); }, delay));
-    }
-  }, [clearFundNavBackfill, runFundNavBackfill]);
-
-  useEffect(() => () => clearFundNavBackfill(), [clearFundNavBackfill]);
-
-  const requestFundPreview = useCallback(async (
-    sourceItems: FundImportUploadItem[],
-    preserveSelection: boolean,
-    fileInfo?: string,
-    context?: FundImportContext | null,
-  ) => {
-    setUploading(true);
-    await waitForBrowserPaint();
-    try {
-      const requestContext = normalizeFundImportContext(context ?? fundImportContext);
-      const res = await fetch("/api/v1/fund/import", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          mode: "preview",
-          items: sourceItems,
-          ...(requestContext ? { context: requestContext } : {}),
-        }),
-      });
-      const data = await res.json().catch(() => null) as { ok?: boolean; error?: string; items?: FundImportPreviewItem[]; navMissingCount?: number } | null;
-      if (!res.ok || !data?.ok || !Array.isArray(data.items)) {
-        throw new Error(data?.error || res.statusText || `HTTP ${res.status}`);
-      }
-      setFundPreviewItems(data.items);
-      if (preserveSelection) {
-        setFundSelected((prev) => new Set(Array.from(prev).filter((idx) => idx < data.items!.length)));
-      } else {
-        setFundSelected(selectableFundIndexes(data.items));
-      }
-      setUploadDebug(null);
-      setMessage(null);
-      // 明细已经出来了；还有净值在路上就排两次静默回填
-      clearFundNavBackfill();
-      if (shouldBackfillNav(data.navMissingCount)) {
-        scheduleFundNavBackfill(sourceItems, context ?? fundImportContext);
-      }
-      return true;
-    } catch (error) {
-      setFundPreviewItems([]);
-      setFundSelected(new Set());
-      const reason = error instanceof Error ? error.message : String(error);
-      setUploadDebug(formatText("batchImport.readFailedDebug", { reason: reason || t("batchImport.unknownError"), fileInfo: fileInfo || "" }));
-      setMessage(formatText("batchImport.readFailedMessage", { reason: reason || t("batchImport.unknownError") }));
-      return false;
-    } finally {
-      setUploading(false);
-    }
-  }, [clearFundNavBackfill, formatText, fundImportContext, scheduleFundNavBackfill, t]);
+  // —— 基金导入链路（2026-11-04 收敛）——
+  // 解析、预览、单元格编辑、净值异步回填、分批提交全部在 FundImportPreviewDialog 内；
+  // 页面只负责把文件交给弹窗（handleFundFile）并在导入完成后接管跳转弹窗（handleFundImported）。
 
   const handleNormalCsvFile = useCallback(async (file: File) => {
     const traceId = createImportTraceId();
@@ -2110,24 +1630,30 @@ export default function BatchImportPage() {
       setImportedCount(0);
       setUploading(true);
       setItems([]);
-      setFundUploadItems([]);
-      setFundPreviewItems([]);
-      setFundImportContext(null);
+      setFundPreviewFile(null);
+      setFundTradeCount(0);
       setDrafts({});
       setSelected(new Set());
-      setFundSelected(new Set());
       setShowImportIssuesOnly(false);
     });
     await waitForBrowserPaint();
-    let routedToFund = false;
     try {
       const latestCategoryRuleSamples = await refreshCategoryRuleSamples().catch(() => categoryRuleSamples);
       const parseResult = await parseImportFile(file, statementFieldHeaders);
       if (looksLikeFundImportFile(parseResult.rows)) {
         // A fund transaction workbook (fund code/account/amount columns) must go
         // through the fund recognition channel, not the bill channel.
-        routedToFund = true;
-        await handleFundFileRef.current?.(file);
+        postImportDebugLog(traceId, "parse_completed", {
+          importKind: "fund",
+          routed: "fund_channel",
+          durationMs: Math.round(performance.now() - startedAt),
+        });
+        flushSync(() => {
+          setActiveImportKind("fund");
+          setFundPreviewFile(file);
+          setFundTradeCount(0);
+          setUploading(false);
+        });
         return;
       }
       // 支付宝 / 微信账单里的基金买卖被记成「不计收支」，走流水只能落成转账，
@@ -2187,27 +1713,30 @@ export default function BatchImportPage() {
       if (parsed.length === 0) {
         if (fundRoute) {
           // 整张账单都是基金买卖：只有一个页签，直接进基金预览。
-          await handleFundFileRef.current?.(fundRoute.file);
-          setActiveImportKind("fund");
+          flushSync(() => {
+            setActiveImportKind("fund");
+            setFundPreviewFile(fundRoute.file);
+            setFundTradeCount(fundRoute.count);
+            setUploading(false);
+          });
           return;
         }
         const headers = rows[0]?.join("、") || t("batchImport.headersNotRead");
         setItems([]);
-        setFundUploadItems([]);
-        setFundPreviewItems([]);
-        setFundImportContext(null);
+        setFundPreviewFile(null);
+        setFundTradeCount(0);
         setDrafts({});
         setSelected(new Set());
-        setFundSelected(new Set());
         setShowImportIssuesOnly(false);
         setUploadDebug(`${formatText("batchImport.noRecordsRecognizedDebug", { headers, fileInfo })}\n${workbookDetail}\n${recognitionDetail}\n${traceLabel}`.trim());
         setMessage(formatText("batchImport.noRecordsRecognizedMessage", { name: file.name, headers }));
         return;
       }
       sessionStorage.setItem(BATCH_IMPORT_ITEMS_STORAGE_KEY, JSON.stringify(parsed));
-      // 基金页签要先准备（handleFundFile 会清空 items），再回填流水页签。
+      // 基金页签先备好文件（弹窗自己解析预览），再回填流水页签。
       if (fundRoute) {
-        await handleFundFileRef.current?.(fundRoute.file);
+        setFundPreviewFile(fundRoute.file);
+        setFundTradeCount(fundRoute.count);
       }
       setItems(parsed);
       setDrafts({});
@@ -2220,19 +1749,15 @@ export default function BatchImportPage() {
         // 同一张账单拆成两个页签：资金收支 / 基金买卖，默认停在资金收支。
         setActiveImportKind("normal");
       } else {
-        setFundUploadItems([]);
-        setFundPreviewItems([]);
-        setFundImportContext(null);
-        setFundSelected(new Set());
+        setFundPreviewFile(null);
+        setFundTradeCount(0);
       }
     } catch (error) {
       setItems([]);
-      setFundUploadItems([]);
-      setFundPreviewItems([]);
-      setFundImportContext(null);
+      setFundPreviewFile(null);
+      setFundTradeCount(0);
       setDrafts({});
       setSelected(new Set());
-      setFundSelected(new Set());
       const reason = error instanceof Error ? error.message : String(error);
       postImportDebugLog(traceId, "parse_failed", {
         importKind: "bill",
@@ -2242,93 +1767,35 @@ export default function BatchImportPage() {
       setUploadDebug(`${formatText("batchImport.readFailedDebug", { reason: reason || t("batchImport.unknownError"), fileInfo })}\n${traceLabel}`);
       setMessage(formatText("batchImport.readFailedMessage", { reason: reason || t("batchImport.unknownError") }));
     } finally {
-      if (!routedToFund) setUploading(false);
+      setUploading(false);
     }
   }, [bookCategories, categoryRuleSamples, formatText, isCreditAccountText, refreshCategoryRuleSamples, statementFieldHeaders, t]);
 
-  const handleFundFile = useCallback(async (file: File, context?: FundImportContext | null) => {
+  const handleFundFile = useCallback((file: File) => {
     const traceId = createImportTraceId();
     importTraceIdRef.current = traceId;
-    const startedAt = performance.now();
-    const requestContext = normalizeFundImportContext(context);
     postImportDebugLog(traceId, "file_selected", {
       importKind: "fund",
       extension: file.name.split(".").pop()?.toLowerCase() ?? "",
       sizeBytes: file.size,
-      hasFundContext: Boolean(requestContext?.fundAccountId || requestContext?.fundAccount),
     });
-    const fileInfo = formatText("batchImport.fileInfo", {
-      name: file.name,
-      type: file.type || t("batchImport.fileTypeUnknown"),
-      sizeKb: Math.round(file.size / 1024),
-    });
+    // 解析与预览在 FundImportPreviewDialog 内进行：页面只切换页签并交出文件。
     flushSync(() => {
       setActiveImportKind("fund");
-      // 与上面账单入口同理：状态只留「正在读取文件：…」一条，避免重复。
       setUploadDebug(null);
-      setMessage(formatText("batchImport.readingFileName", { name: file.name }));
-      setUploading(true);
+      setMessage(null);
+      setUploading(false);
       setImporting(false);
       setImportedCount(0);
       setItems([]);
-      setFundUploadItems([]);
-      setFundPreviewItems([]);
-      setFundImportContext(requestContext);
+      setFundPreviewFile(file);
+      setFundTradeCount(0);
       setDrafts({});
       setSelected(new Set());
-      setFundSelected(new Set());
       setEditingCell(null);
       setShowImportIssuesOnly(false);
     });
-
-    await waitForBrowserPaint();
-    let previewRequested = false;
-    try {
-      const parseResult = await parseImportFile(file);
-      const rows = parseResult.rows;
-      const parsed = fundRowsToItems(rows);
-      postImportDebugLog(traceId, "parse_completed", {
-        importKind: "fund",
-        sheetCount: parseResult.workbook?.sheetCount ?? 1,
-        includedSheetCount: parseResult.workbook?.includedSheetCount ?? 1,
-        mergedRowCount: rows.length,
-        sourceDataRowCount: parseResult.sourceDataRowCount,
-        recognizedCount: parsed.length,
-        durationMs: Math.round(performance.now() - startedAt),
-      });
-      if (parsed.length === 0) {
-        setUploadDebug(formatText("batchImport.noRecordsRecognizedDebug", {
-          headers: rows[0]?.join("、") || t("batchImport.headersNotRead"),
-          fileInfo,
-        }));
-        setMessage(formatText("batchImport.noRecordsRecognizedMessage", {
-          name: file.name,
-          headers: rows[0]?.join("、") || t("batchImport.headersNotRead"),
-        }));
-        return;
-      }
-
-      setFundUploadItems(parsed);
-      previewRequested = true;
-      await requestFundPreview(parsed, false, fileInfo, requestContext);
-    } catch (error) {
-      setFundUploadItems([]);
-      setFundPreviewItems([]);
-      setFundImportContext(requestContext);
-      setFundSelected(new Set());
-      const reason = error instanceof Error ? error.message : String(error);
-      postImportDebugLog(traceId, "parse_failed", {
-        importKind: "fund",
-        errorType: error instanceof Error ? error.name : "unknown",
-        durationMs: Math.round(performance.now() - startedAt),
-      });
-      setUploadDebug(formatText("batchImport.readFailedDebug", { reason: reason || t("batchImport.unknownError"), fileInfo }));
-      setMessage(formatText("batchImport.readFailedMessage", { reason: reason || t("batchImport.unknownError") }));
-    } finally {
-      if (!previewRequested) setUploading(false);
-    }
-  }, [formatText, requestFundPreview, t]);
-  handleFundFileRef.current = handleFundFile;
+  }, []);
 
   const openCellEdit = useCallback((idx: number, field: EditableCell) => {
     setEditingCell({ idx, field });
@@ -2683,18 +2150,6 @@ export default function BatchImportPage() {
     () => new Set(Array.from(selected).map((idx) => String(idx))),
     [selected],
   );
-  const fundPreviewRows = useMemo<FundPreviewTableRow[]>(
-    () => fundPreviewItems.map((item, idx) => ({ ...item, idx })),
-    [fundPreviewItems],
-  );
-  const selectedFundPreviewKeys = useMemo(
-    () => new Set(Array.from(fundSelected).map((idx) => String(idx))),
-    [fundSelected],
-  );
-  const fundImportReadySelectedCount = useMemo(
-    () => Array.from(fundSelected).filter((idx) => fundPreviewItems[idx] && !hasFundBlockingIssue(fundPreviewItems[idx])).length,
-    [fundPreviewItems, fundSelected],
-  );
   const previewErrorPreviewText = useMemo(() => {
     const groups: Map<string, number[]> = new Map();
     for (const row of previewErrorRows) {
@@ -2782,49 +2237,6 @@ export default function BatchImportPage() {
       percent: importProgressPercent,
     });
   }, [formatText, importProgress, importProgressPercent, importProgressPhaseLabel]);
-
-  const fundImportIssues = useMemo(() => (
-    Array.from(fundSelected)
-      .flatMap((idx) => (fundPreviewItems[idx]?.issues ?? []).map((issue) => ({
-        idx,
-        ...issue,
-        message: fundIssueMessage(issue, t),
-      })))
-  ), [fundSelected, fundPreviewItems, t]);
-  const fundImportErrorIssues = useMemo(() => fundImportIssues.filter((issue) => issue.level === "error"), [fundImportIssues]);
-  const fundImportWarningIssues = useMemo(() => fundImportIssues.filter((issue) => issue.level === "warning"), [fundImportIssues]);
-  const fundPreviewWarningGroups = useMemo(() => {
-    const grouped = new Map<string, { message: string; count: number; rows: number[] }>();
-    fundPreviewItems.forEach((item, idx) => {
-      item.issues
-        .filter((issue) => issue.level === "warning")
-        .forEach((issue) => {
-          const message = fundIssueMessage(issue, t);
-          const current = grouped.get(message);
-          if (current) {
-            current.count += 1;
-            current.rows.push(idx + 1);
-          } else {
-            grouped.set(message, { message, count: 1, rows: [idx + 1] });
-          }
-        });
-    });
-    return Array.from(grouped.values()).sort((a, b) => b.count - a.count || a.rows[0] - b.rows[0]);
-  }, [fundPreviewItems, t]);
-  const fundPreviewWarningSummary = useMemo(() => {
-    if (fundPreviewWarningGroups.length === 0) return "";
-    const main = fundPreviewWarningGroups
-      .slice(0, 2)
-      .map((group) => formatText("batchImport.fundPreview.warningCompactItem", {
-        message: group.message,
-        count: group.count,
-      }))
-      .join("；");
-    const moreCount = fundPreviewWarningGroups.length - 2;
-    return moreCount > 0
-      ? `${main}；${formatText("batchImport.fundPreview.warningCompactMore", { count: moreCount })}`
-      : main;
-  }, [fundPreviewWarningGroups, formatText]);
 
   const applyReplaceToTargets = useCallback((replaceField: ReplaceField, replaceValue: string) => {
     const targetIndexes = [...batchTargetIndexes];
@@ -3108,63 +2520,6 @@ export default function BatchImportPage() {
     }
   }, [activeBillMode, formatText, getItem, importCompletionTargetForRows, importErrorIssues, importErrorRows, importIssues, importTargetIndexes, importing, items.length, normalizeAccountFieldsForImport, previewValidationProgress, previewValidationRunning, t]);
 
-  const handleFundImport = useCallback(async () => {
-    if (importing) return;
-    const selectedIndexes = Array.from(fundSelected).sort((a, b) => a - b);
-    // 允许勾选未匹配行做批量修改；确认导入时只提交无 error 的勾选行
-    const selectedItems = selectedIndexes
-      .map((idx) => fundPreviewItems[idx])
-      .filter((item): item is FundImportPreviewItem => Boolean(item) && !hasFundBlockingIssue(item));
-    if (selectedItems.length === 0) {
-      const selectedBlocking = selectedIndexes
-        .map((idx) => fundPreviewItems[idx])
-        .filter((item): item is FundImportPreviewItem => Boolean(item) && hasFundBlockingIssue(item));
-      if (selectedBlocking.length > 0) {
-        setMessage(formatText("batchImport.importReadyEmpty", { count: selectedBlocking.length }));
-      }
-      return;
-    }
-
-    setImporting(true);
-    setImportedCount(0);
-    setImportCompletion(null);
-    setMessage(formatText("batchImport.fundImportingSelected", { count: selectedItems.length }));
-    setUploadDebug(null);
-
-    try {
-      const requestContext = normalizeFundImportContext(fundImportContext);
-      const res = await fetch("/api/v1/fund/import", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          mode: "import",
-          items: selectedItems,
-          ...(requestContext ? { context: requestContext } : {}),
-        }),
-      });
-      const data = await res.json().catch(() => null) as { ok?: boolean; error?: string; createdCount?: number } | null;
-      if (!res.ok || !data?.ok) {
-        throw new Error(data?.error || res.statusText || `HTTP ${res.status}`);
-      }
-      const success = data.createdCount ?? selectedItems.length;
-      setImportedCount(success);
-      setMessage(formatText("batchImport.fundImportSuccess", {
-        count: success,
-        redirectNote: "",
-      }));
-      setImportCompletion({
-        count: success,
-        href: "/investments",
-        accountIds: selectedItems.map((item) => item.fundAccountId).filter((id): id is string => Boolean(id)),
-        kind: "fund",
-      });
-    } catch (error) {
-      setMessage(formatText("batchImport.importFailedRollback", { reason: error instanceof Error ? error.message : String(error) }));
-    } finally {
-      setImporting(false);
-    }
-  }, [importing, fundSelected, fundPreviewItems, fundImportErrorIssues, fundImportIssues, fundImportContext, formatText, t]);
-
   const handleCancel = useCallback(() => {
     sessionStorage.removeItem(BATCH_IMPORT_ITEMS_STORAGE_KEY);
     setActiveImportKind(null);
@@ -3172,11 +2527,9 @@ export default function BatchImportPage() {
     setUploading(false);
     setImportedCount(0);
     setItems([]);
-    setFundUploadItems([]);
-    setFundPreviewItems([]);
-    setFundImportContext(null);
+    setFundPreviewFile(null);
+    setFundTradeCount(0);
     setSelected(new Set());
-    setFundSelected(new Set());
     setDrafts({});
     setEditingCell(null);
     setShowImportIssuesOnly(false);
@@ -3185,6 +2538,32 @@ export default function BatchImportPage() {
     setImportProgress(null);
     setImportCompletion(null);
   }, []);
+
+  // 基金导入成功：弹窗先回调 onImported 再 onClose，这里只挂完成弹窗；
+  // 收尾（清状态 + 跳转 /investments）在 handleImportCompletionConfirm 里做。
+  const handleFundImported = useCallback(({ count, accountIds }: { count: number; accountIds: string[] }) => {
+    fundImportedRef.current = true;
+    setImportCompletion({
+      count,
+      href: "/investments",
+      accountIds,
+      kind: "fund",
+    });
+  }, []);
+
+  // 弹窗关闭（用户点 × 或导入成功后的自动 onClose）。导入成功时保留完成弹窗，
+  // 其余情况与旧基金预览窗的 × 一致：整页取消。
+  const handleFundDialogClose = useCallback(() => {
+    const imported = fundImportedRef.current;
+    fundImportedRef.current = false;
+    setFundPreviewFile(null);
+    setFundTradeCount(0);
+    if (imported) {
+      setActiveImportKind((prev) => (prev === "fund" ? null : prev));
+    } else {
+      handleCancel();
+    }
+  }, [handleCancel]);
 
   const handleImportCompletionConfirm = useCallback(() => {
     const completion = importCompletion;
@@ -3827,66 +3206,26 @@ export default function BatchImportPage() {
     updateDraft,
   ]);
 
-  const fundPreviewColumns = useMemo<AdvancedDataTableColumn<FundPreviewTableRow>[]>(() => [
-    {
-      key: "status",
-      label: "",
-      width: 42,
-      minWidth: 36,
-      align: "center",
-      filterText: (row) => row.issues.some((issue) => issue.level === "error") ? t("batchImport.levelError") : row.issues.some((issue) => issue.level === "warning") ? t("batchImport.levelWarning") : t("batchImport.levelNormal"),
-      render: (row) => {
-        const rowHasError = row.issues.some((issue) => issue.level === "error");
-        const rowHasWarning = row.issues.some((issue) => issue.level === "warning");
-        if (row.issues.length === 0) return <span className="text-[11px] text-slate-400">{row.idx + 1}</span>;
-        return (
-          <span
-            className={`inline-flex h-4 w-4 items-center justify-center rounded-full text-[10px] font-bold leading-none text-white ${rowHasError ? "bg-red-500" : rowHasWarning ? "bg-amber-500" : "bg-slate-300"}`}
-            title={row.issues.map((issue) => fundIssueMessage(issue, t)).join("；")}
-          >
-            !
-          </span>
-        );
-      },
-    },
-    { key: "date", label: t("batchImport.template.fund.label.date"), width: 112, minWidth: 92, filterKind: "dateRange", filterText: (row) => row.date || "-", sortValue: (row) => row.date || "", render: (row) => <span className="whitespace-nowrap tabular-nums text-slate-700">{row.date || "-"}</span> },
-    { key: "fundSubtype", label: t("batchImport.template.fund.label.fundSubtype"), width: 116, minWidth: 92, filterText: (row) => getFundImportSubtypeLabel(row.fundSubtype, row.source, t), render: (row) => <span className="whitespace-nowrap text-slate-700">{getFundImportSubtypeLabel(row.fundSubtype, row.source, t)}</span> },
-    { key: "cashAccount", label: t("batchImport.template.fund.label.cashAccount"), width: 180, minWidth: 130, filterText: (row) => row.cashAccount || "-", render: (row) => <span className="truncate text-slate-700" title={row.cashAccount || ""}>{row.cashAccount || "-"}</span> },
-    { key: "fundAccount", label: t("batchImport.template.fund.label.fundAccount"), width: 180, minWidth: 130, filterText: (row) => row.fundAccount || "-", render: (row) => <span className="truncate text-slate-700" title={row.fundAccount || ""}>{row.fundAccount || "-"}</span> },
-    { key: "fundCode", label: t("batchImport.template.fund.label.fundCode"), width: 96, minWidth: 76, filterText: (row) => row.fundCode || "-", render: (row) => <span className="whitespace-nowrap tabular-nums text-slate-700">{row.fundCode || "-"}</span> },
-    { key: "fundName", label: t("batchImport.template.fund.label.fundName"), width: 220, minWidth: 150, filterText: (row) => row.fundName || "-", render: (row) => <span className="truncate text-slate-700" title={row.fundName || ""}>{row.fundName || "-"}</span> },
-    { key: "amount", label: t("batchImport.template.fund.label.amount"), width: 116, minWidth: 90, align: "right", sortValue: (row) => row.amount, render: (row) => <span className="whitespace-nowrap tabular-nums text-slate-700">{formatOptionalNumber(row.amount, 2)}</span> },
-    { key: "feeRate", label: t("batchImport.template.fund.label.feeRate"), width: 96, minWidth: 78, align: "right", sortValue: (row) => row.feeRate ?? 0, render: (row) => <span className="whitespace-nowrap tabular-nums text-slate-700">{row.feeRate != null ? `${row.feeRate.toFixed(4)}%` : "-"}</span> },
-    { key: "fee", label: t("batchImport.template.fund.label.fee"), width: 96, minWidth: 76, align: "right", sortValue: (row) => row.fee ?? 0, render: (row) => <span className="whitespace-nowrap tabular-nums text-slate-700">{formatOptionalNumber(row.fee, 2)}</span> },
-    { key: "nav", label: t("batchImport.template.fund.label.nav"), width: 96, minWidth: 78, align: "right", sortValue: (row) => row.nav ?? 0, render: (row) => <span className="whitespace-nowrap tabular-nums text-slate-700">{formatOptionalNumber(row.nav, 4)}</span> },
-    { key: "units", label: t("batchImport.template.fund.label.units"), width: 116, minWidth: 90, align: "right", sortValue: (row) => row.units ?? 0, render: (row) => <span className="whitespace-nowrap tabular-nums text-slate-700">{formatOptionalNumber(row.units, 2)}</span> },
-    { key: "confirmDate", label: t("batchImport.template.fund.label.confirmDate"), width: 112, minWidth: 92, filterKind: "dateRange", filterText: (row) => row.confirmDate || "-", sortValue: (row) => row.confirmDate || "", render: (row) => <span className="whitespace-nowrap tabular-nums text-slate-700">{row.confirmDate || "-"}</span> },
-    { key: "arrivalDate", label: t("batchImport.template.fund.label.arrivalDate"), width: 112, minWidth: 92, filterKind: "dateRange", filterText: (row) => row.arrivalDate || "-", sortValue: (row) => row.arrivalDate || "", render: (row) => <span className="whitespace-nowrap tabular-nums text-slate-700">{row.arrivalDate || "-"}</span> },
-    { key: "remark", label: t("batchImport.template.fund.label.remark"), width: 220, minWidth: 150, filterText: (row) => row.remark || "-", render: (row) => <span className="truncate text-slate-700" title={row.remark || ""}>{row.remark || "-"}</span> },
-  ], [t]);
-
   const hasVisibleImportWork = activeImportKind !== null ||
     items.length > 0 ||
-    fundPreviewItems.length > 0 ||
+    Boolean(fundPreviewFile) ||
     uploading ||
     Boolean(message) ||
     Boolean(uploadDebug) ||
     Boolean(importCompletion);
-  const showUploadProcessingOverlay = uploading && (
-    (activeImportKind === "normal" && items.length === 0) ||
-    (activeImportKind === "fund" && fundPreviewItems.length === 0)
-  );
+  const showUploadProcessingOverlay = uploading && activeImportKind === "normal" && items.length === 0;
   // 一张账单拆成两个页签：资金收支（已剔除基金行）/ 基金买卖。
-  const previewTabs = (
+  // 只有真的路由出了基金文件才显示页签条；纯流水/纯基金各自只有一个视图。
+  const previewTabs = fundPreviewFile ? (
     <ImportPreviewTabs
       tabs={[
         { key: "normal", label: t("batchImport.previewTab.cashFlow"), count: items.length },
-        { key: "fund", label: t("batchImport.previewTab.fundTrades"), count: fundPreviewItems.length },
+        { key: "fund", label: t("batchImport.previewTab.fundTrades"), count: fundTradeCount },
       ]}
       active={activeImportKind}
       onChange={(key) => setActiveImportKind(key === "fund" ? "fund" : "normal")}
     />
-  );
+  ) : null;
 
   useEffect(() => {
     if (!pendingFileChecked || hasVisibleImportWork) return;
@@ -4091,7 +3430,8 @@ export default function BatchImportPage() {
                       </div>
                     )}
                     {importProgress && (
-                      <div className="shrink-0 border-b border-blue-100 bg-white px-4 py-2 text-xs text-slate-600">
+                      // 不带底色：FT 卡片内表头上方统一卡片底色（2026-11-04 用户裁定）。
+                      <div className="shrink-0 border-b border-blue-100 px-4 py-2 text-xs text-slate-600">
                         <div className="mb-1 flex items-center justify-between gap-3">
                           <span>{importProgressText}</span>
                           <span className="font-medium text-slate-700">{importProgressPercent}%</span>
@@ -4238,144 +3578,44 @@ export default function BatchImportPage() {
                         resetDisplayStateOnMount
                       />
                     </div>
-                    <div className="flex items-center justify-between gap-3 border-t border-slate-200 bg-slate-50 px-4 py-3">
-                      <div className="flex min-w-0 items-center gap-3 text-xs">
-                        <span className="shrink-0 text-slate-500">{formatText("batchImport.selectedSummary", { selected: importTargetCount, total: items.length })}</span>
-                        {previewErrorRows.length > 0 ? <span className="shrink-0 font-medium text-red-600">{formatText("batchImport.errorCount", { count: previewErrorRows.length })}</span> : null}
-                        {previewWarningRowCount > 0 ? <span className="shrink-0 font-medium text-amber-600">{formatText("batchImport.warningCount", { count: previewWarningRowCount })}</span> : null}
-                      </div>
-                      <div className="flex items-center justify-end">
-                        <button
-                          type="button"
-                          onClick={handleImport}
-                          disabled={Boolean(importCompletion) || uploading || importing || previewValidationRunning || importTargetCount === 0 || importErrorIssues.length > 0}
-                          className="h-9 rounded-md bg-blue-600 px-4 text-sm text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          {importing ? t("batchImport.importing") : t("batchImport.confirmSelectedImport")}
-                        </button>
-                      </div>
-                    </div>
                   </div>
                 </div>
+              </div>
+            </div>
+            {/* 「确认导入」底栏在 FT 卡片**外面**（2026-11-04 用户裁定）：原先是卡片内
+                flex-col 的最后一个孩子，与表格抢同一块正文高度（用户观感是底栏挡表格）。
+                提到弹窗级后卡片独占正文高度，底栏贴窗口下沿，与标题栏同宽。 */}
+            <div className="flex shrink-0 items-center justify-between gap-3 border-t border-slate-200 bg-slate-50 pl-4 pr-3 py-3">
+              <div className="flex min-w-0 items-center gap-3 text-xs">
+                <span className="shrink-0 text-slate-500">{formatText("batchImport.selectedSummary", { selected: importTargetCount, total: items.length })}</span>
+                {previewErrorRows.length > 0 ? <span className="shrink-0 font-medium text-red-600">{formatText("batchImport.errorCount", { count: previewErrorRows.length })}</span> : null}
+                {previewWarningRowCount > 0 ? <span className="shrink-0 font-medium text-amber-600">{formatText("batchImport.warningCount", { count: previewWarningRowCount })}</span> : null}
+              </div>
+              <div className="flex items-center justify-end">
+                <button
+                  type="button"
+                  onClick={handleImport}
+                  disabled={Boolean(importCompletion) || uploading || importing || previewValidationRunning || importTargetCount === 0 || importErrorIssues.length > 0}
+                  className="h-9 rounded-md bg-blue-600 px-4 text-sm text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {importing ? t("batchImport.importing") : t("batchImport.confirmSelectedImport")}
+                </button>
               </div>
             </div>
           </div>
         </ModalLayer>
       )}
 
-      {(fundPreviewItems.length > 0 || (uploading && !showUploadProcessingOverlay)) && (
-        <ModalLayer
-          className="fixed inset-0 bg-slate-900/40 p-4 flex items-center justify-center"
-          style={activeImportKind === "fund" ? undefined : { display: "none" }}
-        >
-          <div data-smart-select-boundary className="h-[82vh] min-h-[420px] w-[80rem] min-w-[720px] max-w-[calc(100vw-2rem)] resize overflow-hidden rounded-xl border border-slate-200 bg-white shadow-2xl flex flex-col">
-            <div className="shrink-0 px-4 py-3 border-b border-slate-200 flex items-center justify-between gap-3">
-              <div>
-                <div className="text-base font-semibold text-slate-800">{t("batchImport.previewFundTitle")}</div>
-                <div className="text-xs text-slate-500 mt-1">
-                  {uploading ? t("batchImport.previewParsing") : formatText("batchImport.previewFundHint", { count: fundPreviewItems.length })}
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={importCompletion ? handleImportCompletionConfirm : handleCancel}
-                className="h-8 w-8 rounded-md border border-slate-300 text-slate-500 hover:bg-slate-50"
-                aria-label={t("table.close")}
-              >
-                ×
-              </button>
-            </div>
-            <div className="relative flex min-h-0 flex-1 flex-col p-3">
-              <div className="relative flex min-h-0 flex-col">
-                {previewTabs}
-                <div className="ft-card-surface ft-card-surface-fill">
-                  <div className="flex min-h-0 flex-1 flex-col">
-                    {message && (
-                      <div className="shrink-0 border-b border-blue-100 bg-blue-50 px-4 py-2 text-sm text-blue-700">
-                        {message}
-                      </div>
-                    )}
-                    {uploadDebug && (
-                      <div className="shrink-0 max-h-24 overflow-auto border-b border-amber-100 bg-amber-50 px-4 py-2 text-xs text-amber-800 whitespace-pre-wrap">
-                        {uploadDebug}
-                      </div>
-                    )}
-                    <div className="shrink-0 border-b border-slate-200 px-4 py-3">
-                      <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600">
-                        <span className="font-medium text-slate-700">{formatText("batchImport.selectedSummary", { selected: fundSelected.size, total: fundPreviewItems.length })}</span>
-                        {fundImportErrorIssues.length > 0 && (
-                          <span className="font-medium text-red-600">{formatText("batchImport.errorCount", { count: fundImportErrorIssues.length })}</span>
-                        )}
-                        {fundImportWarningIssues.length > 0 && (
-                          <span className="font-medium text-amber-600">{formatText("batchImport.warningCount", { count: fundImportWarningIssues.length })}</span>
-                        )}
-                      </div>
-                      {fundPreviewWarningSummary && (
-                        <div className="mt-2 text-xs text-amber-700">
-                          <span className="font-medium text-amber-800">{t("batchImport.fundPreview.warningSummaryTitle")}</span>
-                          <span className="ml-1">{fundPreviewWarningSummary}</span>
-                        </div>
-                      )}
-                    </div>
-                    <div className="flex-1 min-h-0">
-                      <AdvancedDataTable
-                        storageKey="mmh_batch_import_fund_preview_table_v1"
-                        columns={fundPreviewColumns}
-                        rows={uploading ? [] : fundPreviewRows}
-                        rowKey={(row) => String(row.idx)}
-                        emptyText={uploading ? t("batchImport.previewParsing") : t("batchImport.noRecordsForFilter")}
-                        minTableWidth={1760}
-                        selectable
-                        selectAllScope="renderedRows"
-                        selectedKeys={selectedFundPreviewKeys}
-                        onSelectionChange={(keys) => {
-                          setFundSelected(new Set(Array.from(keys).map((key) => Number(key)).filter((idx) => Number.isInteger(idx))));
-                        }}
-                        toolbarTitle={t("batchImport.previewFundTitle")}
-                        toolbarRightContent={(
-                          <div className="flex items-center gap-3 text-xs text-slate-500">
-                            <span>{formatText("batchImport.selectedSummary", { selected: fundSelected.size, total: fundPreviewItems.length })}</span>
-                            {fundImportErrorIssues.length > 0 ? <span className="font-medium text-red-600">{formatText("batchImport.errorCount", { count: fundImportErrorIssues.length })}</span> : null}
-                            {fundImportWarningIssues.length > 0 ? <span className="font-medium text-amber-600">{formatText("batchImport.warningCount", { count: fundImportWarningIssues.length })}</span> : null}
-                          </div>
-                        )}
-                        rowClassName={(row) => {
-                          const rowHasError = row.issues.some((issue) => issue.level === "error");
-                          const rowHasWarning = row.issues.some((issue) => issue.level === "warning");
-                          return rowHasError ? "bg-red-50 hover:bg-red-100/80" : rowHasWarning ? "bg-amber-50 hover:bg-amber-100/80" : "hover:bg-slate-50";
-                        }}
-                        fillHeight
-                        compactRows
-                        showFilters={false}
-                        sortable={false}
-                        showColumnVisibilityButton={false}
-                        resetDisplayStateOnMount
-                      />
-                    </div>
-                    <div className="flex items-center justify-between gap-3 border-t border-slate-200 bg-slate-50 px-4 py-3">
-                      <div className="flex min-w-0 items-center gap-3 text-xs">
-                        <span className="shrink-0 text-slate-500">{formatText("batchImport.selectedSummary", { selected: fundSelected.size, total: fundPreviewItems.length })}</span>
-                        {fundImportErrorIssues.length > 0 ? <span className="shrink-0 font-medium text-red-600">{formatText("batchImport.errorCount", { count: fundImportErrorIssues.length })}</span> : null}
-                        {fundImportWarningIssues.length > 0 ? <span className="shrink-0 font-medium text-amber-600">{formatText("batchImport.warningCount", { count: fundImportWarningIssues.length })}</span> : null}
-                      </div>
-                      <div className="flex items-center justify-end">
-                        <button
-                          type="button"
-                          onClick={handleFundImport}
-                          disabled={Boolean(importCompletion) || uploading || importing || fundImportReadySelectedCount === 0}
-                          className="h-9 rounded-md bg-blue-600 px-4 text-sm text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          {importing ? t("batchImport.importing") : formatText("batchImport.confirmImport", { count: fundImportReadySelectedCount })}
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </ModalLayer>
-      )}
+      {/* 基金导入预览：与明细页入口共用 FundImportPreviewDialog（解析/编辑/分批提交都在弹窗内）。 */}
+      <FundImportPreviewDialog
+        open={Boolean(fundPreviewFile)}
+        // 与「资金收支」窗口并存：切页签只切显示，基金预览保持已解析状态。
+        hidden={activeImportKind !== "fund"}
+        file={fundPreviewFile}
+        tabs={previewTabs}
+        onClose={handleFundDialogClose}
+        onImported={handleFundImported}
+      />
     </div>
   );
 }

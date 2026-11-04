@@ -19,25 +19,28 @@ import {
   matchStatementHeaderProfile,
   normalizeSpdbCurrencyCode,
   parseSpdbOriginalAmount,
-  type StatementImportField,
 } from "@/lib/statement/header-catalog";
-import { normalizeAlipayWorkbookRows } from "@/lib/statement/alipay-template";
 import {
   guessCaizhiAccountNameFromFilename,
-  normalizeCaizhiWorkbookRows,
-  detectCaizhiHeaders,
   type CaizhiBalanceAdjustRow,
-  type CaizhiWorkbookSheetRows,
 } from "@/lib/statement/caizhi-template";
-import { normalizeJdWorkbookRows } from "@/lib/statement/jd-template";
-import { normalizeWechatWorkbookRows } from "@/lib/statement/wechat-template";
 import { readStatementSheetRows } from "@/lib/statement/statement-sheet-reader";
-import { guessOwnerFromFilename } from "@/lib/statement/owner-from-filename";
 import { normalizeStatementHeader as normalizeHeader } from "@/lib/statement/header-utils";
+// 识别器清单/兜底/截表头/多 sheet 合并统一在 recognizer-pipeline（勿在此手抄）。
+import {
+  parseStatementSheetsStandard,
+  type StatementFieldHeaders,
+} from "@/lib/statement/recognizer-pipeline";
 import {
   alignStatementIncomeRefunds,
   enrichKnownStatementMerchantForImport,
 } from "@/lib/statement/import-normalization";
+import {
+  normalizeImportAccountMatchKey,
+  parseSettlementAccountName,
+  parseSettlementCounterpartyFromText,
+  stripSettlementRemarkActionPrefix,
+} from "@/lib/account-import-match";
 
 type StatementExcelPreviewItem = {
   rawText: string;
@@ -53,6 +56,7 @@ type StatementExcelPreviewItem = {
   category?: string;
   categoryUserEdited?: boolean;
   remark?: string;
+  tags?: string;
   counterparty?: string;
   institution?: string;
   institutionUserEdited?: boolean;
@@ -75,8 +79,6 @@ type StatementExcelPreviewItem = {
     statementDueDate?: string;
   };
 };
-
-type StatementFieldHeaders = Record<StatementImportField, readonly string[]>;
 
 /**
  * 「余额」列别名，只用于按余额差额反推收支方向（招行流水：「联机余额」）。
@@ -117,6 +119,13 @@ const BANK_INVESTMENT_RE = /申购|赎回|认购|定投/;
  */
 const WHOLE_ROW_TRANSFER_RE = /^(?:转账|转帐)/;
 const BANK_FEE_REMARK_RE = /手续费|服务费|工本费|年费|短信费|账户管理费|挂失费/;
+/**
+ * 「收支大类/类型」列明确写出资金性质的写法。这类显式分类是最高优先级语义：
+ * 类型写明「支出/收入」的行，不能因为备注里的支付渠道描述（招行把渠道挂在
+ * 备注尾部，如「银联无卡自助消费银联转账（云闪付）」）命中信用卡还款关键词
+ * 就被翻转成转账。typeText 在使用点已 toLowerCase，英文大小写不敏感。
+ */
+const EXPLICIT_DIRECTION_TYPE_RE = /^(支出|支出金额|expense|outflow|installment|收入|收入金额|income|inflow|refund|credit|収入|給与|投资|investment|投資)/;
 
 /**
  * 「X转入 / X转出」是各家银行对本行内部划转最通用的写法（朝朝宝、朝朝盈、理财、通知存款、
@@ -258,71 +267,6 @@ export function normalizeStatementExcelParsedItems(items: StatementExcelPreviewI
   return alignStatementIncomeRefunds(items.map(enrichKnownStatementMerchantForImport));
 }
 
-function statementHeaderScore(row: string[], fieldHeaders: StatementFieldHeaders) {
-  const reader = createStatementHeaderReader(row, fieldHeaders);
-  let score = 0;
-  if (reader.hasField("transactionDate")) score += 4;
-  if (reader.hasField("amount")) score += 4;
-  if (reader.hasField("sourceAccount")) score += 3;
-  if (reader.hasField("majorType")) score += 2;
-  if (reader.hasField("explicitType")) score += 2;
-  if (reader.hasField("creditAccount")) score += 2;
-  if (reader.hasField("repaymentAccount")) score += 1;
-  if (reader.hasField("transferCounterAccount")) score += 1;
-  if (reader.hasField("category")) score += 1;
-  if (reader.hasField("institution")) score += 1;
-  if (reader.hasField("remark")) score += 1;
-  return score >= 8 ? score : 0;
-}
-
-function trimRowsToStatementHeader(rows: string[][], fieldHeaders: StatementFieldHeaders) {
-  const compactRows = rows.filter((row) => row.some((cell) => cell.trim()));
-  let bestIndex = 0;
-  let bestScore = statementHeaderScore(compactRows[0] ?? [], fieldHeaders);
-  compactRows.slice(0, 25).forEach((row, index) => {
-    const score = statementHeaderScore(row, fieldHeaders);
-    if (score > bestScore) {
-      bestScore = score;
-      bestIndex = index;
-    }
-  });
-  return bestScore > 0 ? compactRows.slice(bestIndex) : compactRows;
-}
-
-function headerSignature(row: string[]) {
-  return row.map(normalizeHeader).join("|");
-}
-
-function mergeStatementWorkbookRows(
-  sheetRows: Array<{ sheetName: string; rows: string[][] }>,
-  fieldHeaders: StatementFieldHeaders,
-) {
-  const trimmedSheets = sheetRows
-    .map((sheet) => ({ ...sheet, rows: trimRowsToStatementHeader(sheet.rows, fieldHeaders) }))
-    .filter((sheet) => sheet.rows.length > 0);
-  if (trimmedSheets.length === 0) return [] as string[][];
-
-  const groups = new Map<string, typeof trimmedSheets>();
-  for (const sheet of trimmedSheets) {
-    const signature = headerSignature(sheet.rows[0] ?? []);
-    groups.set(signature, [...(groups.get(signature) ?? []), sheet]);
-  }
-
-  const selectedSheets = Array.from(groups.values()).sort((a, b) => {
-    const aScore = statementHeaderScore(a[0]?.rows[0] ?? [], fieldHeaders);
-    const bScore = statementHeaderScore(b[0]?.rows[0] ?? [], fieldHeaders);
-    if (aScore !== bScore) return bScore - aScore;
-    const aRows = a.reduce((sum, sheet) => sum + Math.max(0, sheet.rows.length - 1), 0);
-    const bRows = b.reduce((sum, sheet) => sum + Math.max(0, sheet.rows.length - 1), 0);
-    return bRows - aRows;
-  })[0] ?? [];
-
-  const [firstSheet, ...restSheets] = selectedSheets;
-  const mergedRows = [...(firstSheet?.rows ?? [])];
-  for (const sheet of restSheets) mergedRows.push(...sheet.rows.slice(1));
-  return mergedRows;
-}
-
 export function parseStatementTemplateRows(
   rows: string[][],
   defaultAccountName: string,
@@ -426,8 +370,8 @@ export function parseStatementTemplateRows(
       : null;
     const postedDate = postedIndex >= 0 ? normalizeDate(row[postedIndex] ?? "") : undefined;
     const sourceText = `${typeText} ${category} ${institution} ${remark} ${rowText(row)}`;
-    const isRepayment = /转账|transfer|振替/.test(typeText)
-      || isCreditCardRepaymentLikeText(sourceText)
+    const isRepayment = /转账|转帐|transfer|振替/.test(typeText)
+      || (!EXPLICIT_DIRECTION_TYPE_RE.test(typeText) && isCreditCardRepaymentLikeText(sourceText))
       || remarkFlowType === "transfer";
     const isRefund = isExpenseRefundLikeText(sourceText);
     const isSignedInflow = signedDirection === "in";
@@ -437,12 +381,29 @@ export function parseStatementTemplateRows(
       : "";
     // 对向账户兜底：本行划转取摘要里的产品名（朝朝宝），对外转账取「对手信息」列的名称。
     // 只给转账行兜底，普通收支不受影响；匹配不到时由用户在预览里批量补齐。
-    const counterAccount = rawCounterAccount
+    let counterAccount = rawCounterAccount
       || (isRepayment
         ? inferSelfTransferCounterAccount(remark)
           || inferTransferCounterpartyFromRemark(remark)
           || institution
         : "");
+    // 借入/借出往来转账：备注里「（转账|汇款）X的往来款/应收款/应付款」的 X 才是真实往来对象
+    // （2026-11-04 用户：备注「转账汇款李明月的往来款」被识别成往来对象「钱手」）。
+    // 旧软件导出的对向账户列常是泛称「往来款」或沿用旧对象（「钱手的往来款」），
+    // 命中的又是泛名账户；备注里的对象与列里解析出的对象不一致（或列是泛称）时以备注为准，
+    // 账户名沿用备注原文（「X的应收款」就记「X的应收款」，不改写成「X的往来款」）。
+    if (isRepayment) {
+      const remarkSettlementName = stripSettlementRemarkActionPrefix(remark);
+      const remarkPerson = parseSettlementCounterpartyFromText(remarkSettlementName) ?? "";
+      if (remarkPerson) {
+        const counterPerson = parseSettlementAccountName(counterAccount.trim());
+        const sameObject = counterPerson &&
+          normalizeImportAccountMatchKey(counterPerson) === normalizeImportAccountMatchKey(remarkPerson);
+        if (!sameObject) {
+          counterAccount = remarkSettlementName;
+        }
+      }
+    }
 
     if (isRepayment) {
       const accountIsCurrent = normalizeHeader(accountValue) === normalizeHeader(defaultAccountName);
@@ -476,6 +437,7 @@ export function parseStatementTemplateRows(
         institution,
         counterparty: institution || undefined,
         remark,
+        tags: tags || undefined,
         postedDate,
         _meta: cardLast4 || knownInstitutionName ? {
           institutionName: knownInstitutionName,
@@ -511,6 +473,7 @@ export function parseStatementTemplateRows(
       institution,
       counterparty: institution || undefined,
       remark,
+      tags: tags || undefined,
       postedDate,
       originalCurrency: settlementDiffers ? settlementCurrency : undefined,
       originalAmount: settlementDiffers ? settlementAmount ?? undefined : undefined,
@@ -543,21 +506,8 @@ export function normalizeStatementSheetsRows(
   fieldHeaders: StatementFieldHeaders = STATEMENT_IMPORT_FIELD_HEADERS,
 ): ReadStatementWorkbookResult {
   const sheetRows = readonlySheetRows.map((sheet) => ({ sheetName: sheet.sheetName, rows: sheet.rows }));
-  const jdRows = normalizeJdWorkbookRows(sheetRows);
-  // 「张四.支付宝交易明细(...).csv」这类文件名前缀代表账本里的实际所有人，
-  // 优先于账单内部写的导出者姓名。
-  const alipayRows = normalizeAlipayWorkbookRows(sheetRows, guessOwnerFromFilename(sourceFileName));
-  const wechatRows = normalizeWechatWorkbookRows(sheetRows);
-
-  // 优先检测财智8格式（需要从文件名猜账户名）
-  const accountNameFromFile = guessCaizhiAccountNameFromFilename(sourceFileName);
-  const caizhiRows = normalizeCaizhiWorkbookRows(sheetRows as CaizhiWorkbookSheetRows[], accountNameFromFile);
-
-  const rows = caizhiRows?.rows
-    ?? jdRows?.rows
-    ?? alipayRows?.rows
-    ?? wechatRows?.rows
-    ?? mergeStatementWorkbookRows(sheetRows, fieldHeaders);
+  // 识别器清单（财智8→京东→支付宝→微信，短路）与兜底统一在 recognizer-pipeline。
+  const result = parseStatementSheetsStandard(sheetRows, { sourceFileName, fieldHeaders });
 
   const text = sheetRows
     .flatMap((sheet) => sheet.rows.filter((row) => row.some(Boolean)))
@@ -565,10 +515,10 @@ export function normalizeStatementSheetsRows(
     .join("\n");
 
   return {
-    rows,
+    rows: result.rows,
     text,
-    caizhiRows: caizhiRows?.rows,
-    caizhiBalanceAdjustRows: caizhiRows?.balanceAdjustRows?.filter((row) => row.targetBalance != null),
+    caizhiRows: result.caizhiRows,
+    caizhiBalanceAdjustRows: result.caizhiBalanceAdjustRows,
   };
 }
 
