@@ -275,6 +275,9 @@ __pycache__/
 /scripts/diag-cf-email-routing.cjs
 /scripts/diag-imap-inbox.cjs
 /scripts/diag-smtp-send.cjs
+# Windows 更新源上传脚本（发布维护者专用，含内网拓扑；package.json 的 test:win:upload 仍指向它）
+/scripts/upload-win-feed.cjs
+/scripts/upload-win-test-channel.cjs
 # 维护者内部基建：内部测试/分诊工具、私有运维后台、FN 软仓运维站、Cloudflare 反馈中继
 /harness/
 /deploy/admin/
