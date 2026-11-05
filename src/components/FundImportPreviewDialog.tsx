@@ -1719,6 +1719,10 @@ export function FundImportPreviewDialog({ open, file, context, tabs = null, sour
     }
   }, [autoCreateInstitutionAccounts, errorIssues, importIssues, importing, onClose, onImported, previewItems, requestContext, setImportProgress, selected, t]);
 
+  // 这里刻意不把各 render* 函数放进依赖数组（它们每次渲染都重建，放进去等于取消 memo）。
+  // 代价是列定义会捕获某一帧的闭包：凡是「处理完就该立刻恢复」的闸门状态
+  //（例如局部行重算中的 rowPatchingDepthRef），必须用 ref 读实时值，
+  // 不能直接读 state，否则闭包永远停在「进行中」那一帧，表格双击就再也进不去编辑态。
   const columns = useMemo<AdvancedDataTableColumn<FundPreviewTableRow>[]>(() => [
     {
       // 序号 / 问题标记列：与账单预览的「#」列同款，不进「表头设置」的可隐藏列表
