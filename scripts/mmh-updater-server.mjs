@@ -249,19 +249,52 @@ function run(command, step, options = {}) {
     task.currentStep = options.phase || step;
     pushLog(`$ ${command}`);
     pushLog(`开始：${step}`);
-    const child = spawn("sh", ["-lc", `git config --global --add safe.directory ${quotedWorkdir} >/dev/null 2>&1 || true; ${command}`], { cwd: workdir });
+    // detached puts the command in its own process group so the timeout below
+    // can kill docker together with the shell that launched it.
+    const child = spawn("sh", ["-lc", `git config --global --add safe.directory ${quotedWorkdir} >/dev/null 2>&1 || true; ${command}`], {
+      cwd: workdir,
+      detached: Boolean(options.timeoutMs),
+    });
     // Stream through the terminal line buffer so progress output (docker pull)
     // repaints one line instead of appending a row per frame.
     child.stdout.on("data", (chunk) => writeConsoleChunk(chunk));
     child.stderr.on("data", (chunk) => writeConsoleChunk(chunk));
+    // A throttled mirror can sit on a single layer for tens of minutes without
+    // ever reporting failure. Without a deadline the fallback below could never
+    // run, so callers that want to fail over pass a budget.
+    let timer = null;
+    let timedOut = false;
+    const clearTimer = () => {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    };
+    if (options.timeoutMs > 0) {
+      timer = setTimeout(() => {
+        timedOut = true;
+        // `sh -lc` is the direct child; docker lives in its process group, and
+        // killing only the shell would leave the pull running orphaned.
+        try {
+          process.kill(-child.pid, "SIGKILL");
+        } catch {
+          try {
+            child.kill("SIGKILL");
+          } catch {}
+        }
+      }, options.timeoutMs);
+    }
     child.on("close", (code) => {
+      clearTimer();
       // The command is gone: commit whatever it left on the current line.
       flushConsoleLine();
-      if (code === 0) {
+      if (!timedOut && code === 0) {
         pushLog(`完成：${step}`);
         resolve();
       } else {
-        const message = `${step}失败，退出码 ${code}`;
+        const message = timedOut
+          ? `${step}超时（超过 ${Math.round(options.timeoutMs / 60000)} 分钟）`
+          : `${step}失败，退出码 ${code}`;
         if (options.allowFailure) {
           pushLog(`${message}，继续执行`);
           resolve();
@@ -270,7 +303,10 @@ function run(command, step, options = {}) {
         reject(new Error(message));
       }
     });
-    child.on("error", reject);
+    child.on("error", (error) => {
+      clearTimer();
+      reject(error);
+    });
   });
 }
 
@@ -541,7 +577,19 @@ function imageIdsToRemove(history, keepIds) {
 function removeRecordedImagesCommand(imageIds) {
   const ids = (imageIds || []).filter((id) => isSafeImageId(id));
   if (!ids.length) return "";
-  return ids.map((id) => `docker rmi ${JSON.stringify(id)} >/dev/null 2>&1 || true`).join("; ");
+  // Switching mirrors can leave one image behind more than one tag, and
+  // `docker rmi <id>` refuses to delete an image that is referenced from
+  // several repositories. Leaving that leftover in place is the correct
+  // trade-off: a forced delete also removes images that a stopped-but-
+  // restarting container still points at, and the only cost of keeping one is
+  // disk space on the NAS. The guard in verify-docker-entrypoint.cjs forbids a
+  // forced delete for exactly this reason.
+  return ids
+    .map((id) => {
+      const ref = JSON.stringify(id);
+      return `docker rmi ${ref} >/dev/null 2>&1 || true`;
+    })
+    .join("; ");
 }
 
 function captureDocker(args, timeoutMs = 5000) {
@@ -723,7 +771,8 @@ async function chooseImageSource() {
     const updaterImage = config.customUpdaterImage || deriveUpdaterImage(config.customAppImage);
     pushLog("使用自定义镜像源");
     await updateEnvImageSource(config.customAppImage, updaterImage);
-    return { appImage: config.customAppImage, updaterImage };
+    // A hand-written registry has no siblings to fall back to.
+    return { appImage: config.customAppImage, updaterImage, candidates: [] };
   }
 
   const selected = config.source !== "auto" ? imageSources[config.source] : null;
@@ -741,19 +790,45 @@ async function chooseImageSource() {
 
   task.currentStep = "检测镜像源";
   pushLog("检测镜像源");
+  // A source picked on the settings page outranks the probe. The 8s manifest
+  // check only answers "does this registry reply quickly right now"; a mirror
+  // that replies slowly but pulls fine would otherwise be skipped with a single
+  // log line and the next one in auto order (NJU) takes over -- which is how a
+  // manual choice used to get silently ignored and end up on the slow mirror.
+  const pinned = config.source !== "auto" ? candidates[0] : null;
   for (const source of candidates) {
     pushLog(`检测 ${source.name} 镜像源`);
     const ok = await inspectImageSource(source);
     if (ok) {
       pushLog(`使用 ${source.name} 镜像源`);
       await updateEnvImageSource(source.app, source.updater);
-      return { appImage: source.app, updaterImage: source.updater };
+      // Being able to read the manifest is not the same as being able to
+      // download every blob behind it, so the untried sources are handed to the
+      // pull step as fallbacks rather than discarded here.
+      return {
+        appImage: source.app,
+        updaterImage: source.updater,
+        candidates: [source, ...candidates.filter((item) => item !== source)],
+      };
+    }
+    if (source === pinned) {
+      pushLog(`${source.name} 镜像源清单探测未通过，仍按所选镜像源尝试拉取`);
+      await updateEnvImageSource(source.app, source.updater);
+      return {
+        appImage: source.app,
+        updaterImage: source.updater,
+        candidates: [source, ...candidates.filter((item) => item !== source)],
+      };
     }
     pushLog(`${source.name} 镜像源不可用，尝试下一个`);
   }
 
   pushLog("镜像源检测失败，保留当前 .env 配置");
-  return { appImage: config.appImage, updaterImage: config.updaterImage };
+  return {
+    appImage: config.appImage,
+    updaterImage: config.updaterImage,
+    candidates: candidates.filter((source) => source.app !== config.appImage),
+  };
 }
 
 function inspectImageSource(source, timeoutMs = 8000) {
@@ -776,6 +851,62 @@ function inspectImageSource(source, timeoutMs = 8000) {
     child.on("close", (code) => finish(code === 0));
     child.on("error", () => finish(false));
   });
+}
+
+// Pulling is where a reachable-but-degraded mirror actually fails: the manifest
+// probe passes, then a 40 MB blob dies at 100% and docker retries the same layer
+// forever. Fail over to the remaining candidates instead of aborting the whole
+// update on the first one.
+const pullAttemptTimeoutMs = 10 * 60 * 1000;
+// Three sources cover every mirror we publish to; trying more only multiplies
+// the wait for a user who is already stuck.
+const pullSourceBudget = 3;
+
+async function pullImagesWithFallback(selectedImages) {
+  try {
+    await run(composeCommand("pull updater app"), "拉取应用镜像", { timeoutMs: pullAttemptTimeoutMs });
+    return selectedImages;
+  } catch (error) {
+    pushLog(error instanceof Error ? error.message : String(error));
+  }
+
+  const tried = new Set([selectedImages.appImage]);
+  const fallbacks = [];
+  for (const source of selectedImages.candidates || []) {
+    if (!source?.app || tried.has(source.app)) continue;
+    tried.add(source.app);
+    fallbacks.push(source);
+    if (fallbacks.length >= pullSourceBudget - 1) break;
+  }
+
+  if (!fallbacks.length) {
+    throw new Error("当前镜像源拉取失败，且没有可切换的备用镜像源；请更换镜像源或改用离线镜像包导入");
+  }
+
+  for (const source of fallbacks) {
+    pushLog(`改用 ${source.name} 镜像源重试`);
+    try {
+      await run(`docker pull ${JSON.stringify(source.app)}`, `从 ${source.name} 拉取应用镜像`, {
+        phase: "拉取应用镜像",
+        timeoutMs: pullAttemptTimeoutMs,
+      });
+    } catch (error) {
+      pushLog(error instanceof Error ? error.message : String(error));
+      continue;
+    }
+    // Compose reads the image name from .env, so the switch has to be written
+    // back before the containers get recreated below.
+    await updateEnvImageSource(source.app, source.updater);
+    await run(`docker pull ${JSON.stringify(source.updater)}`, `从 ${source.name} 拉取执行器镜像`, {
+      phase: "拉取应用镜像",
+      allowFailure: true,
+      timeoutMs: pullAttemptTimeoutMs,
+    });
+    pushLog(`已切换到 ${source.name} 镜像源`);
+    return { appImage: source.app, updaterImage: source.updater, candidates: fallbacks };
+  }
+
+  throw new Error("所有可用镜像源均拉取失败；请更换镜像源或改用离线镜像包导入");
 }
 
 async function scheduleUpdaterRecreate(updaterImage, staleImageIds = []) {
@@ -1234,8 +1365,7 @@ async function runUpdatePipeline() {
     // the one that is currently running.
     snapshot = await takePreUpdateSnapshot();
     await run(syncDeployFilesCommand(), "同步部署文件", { allowFailure: true });
-    const selectedImages = await chooseImageSource();
-    await run(composeCommand("pull updater app"), "拉取应用镜像");
+    const selectedImages = await pullImagesWithFallback(await chooseImageSource());
     const pulledImages = await recordPulledImages(selectedImages).catch(() => []);
 
     task.status = "restarting";

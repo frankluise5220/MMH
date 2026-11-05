@@ -351,12 +351,18 @@ expect(
 const pipeline = updaterServer.slice(updaterServer.indexOf("async function runUpdatePipeline()"));
 const snapshotCallIndex = pipeline.indexOf("await takePreUpdateSnapshot()");
 const syncDeployCallIndex = pipeline.indexOf("syncDeployFilesCommand()");
-const pullCallIndex = pipeline.indexOf('composeCommand("pull updater app")');
+// The pull step moved into pullImagesWithFallback (multi-mirror retry), so the
+// pipeline body no longer holds the literal compose call. Anchor on the helper
+// invocation instead, and keep asserting that the helper itself really pulls,
+// and that the snapshot still runs before both the deploy files and the pull.
+const pullCallIndex = pipeline.indexOf("pullImagesWithFallback(");
 expect(
   /async function takePreUpdateSnapshot/.test(updaterServer) &&
     /pg_dump -Fc/.test(updaterServer) &&
     /pg_restore/.test(updaterServer) &&
     /rollbackImageTag/.test(updaterServer) &&
+    /async function pullImagesWithFallback/.test(updaterServer) &&
+    /composeCommand\("pull updater app"\)/.test(updaterServer) &&
     snapshotCallIndex >= 0 &&
     syncDeployCallIndex >= 0 &&
     pullCallIndex >= 0 &&

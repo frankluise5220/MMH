@@ -134,6 +134,23 @@ jobs:
             type=raw,value=main,enable=${{ github.event_name == 'push' && endsWith(github.ref, '/heads/main') }}
             type=sha,prefix=sha-,format=short
 
+      # The prisma runtime layer is 190 MB uncompressed (50.65 MB compressed).
+      # An empty PRISMA_CLI_VERSION makes `prisma@` resolve to `latest`, which
+      # changed the layer on every build: users re-downloaded 50.65 MB on every
+      # upgrade and blew the mirror's per-layer timeout (2026-11-06). Pin the
+      # exact versions from the lockfile; fall back to node_modules for the
+      # republish path where the dependency tree may not be installed yet.
+      - name: Resolve Prisma runtime versions
+        id: prisma-runtime
+        run: |
+          cli="$(node -e "console.log(require('./package-lock.json').packages['node_modules/prisma'].version)" 2>/dev/null || true)"
+          dotenv="$(node -e "console.log(require('./package-lock.json').packages['node_modules/dotenv'].version)" 2>/dev/null || true)"
+          [ -n "$cli" ] || cli="$(node -e "console.log(require('./node_modules/prisma/package.json').version)")"
+          [ -n "$dotenv" ] || dotenv="$(node -e "console.log(require('./node_modules/dotenv/package.json').version)")"
+          echo "cli=$cli" >> "$GITHUB_OUTPUT"
+          echo "dotenv=$dotenv" >> "$GITHUB_OUTPUT"
+          echo "prisma runtime: prisma=$cli dotenv=$dotenv"
+
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
@@ -141,6 +158,8 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           build-args: |
+            PRISMA_CLI_VERSION=${{ steps.prisma-runtime.outputs.cli }}
+            DOTENV_VERSION=${{ steps.prisma-runtime.outputs.dotenv }}
             APP_COMMIT=${{ github.sha }}
             APP_COMMIT_MESSAGE=${{ github.event.head_commit.message }}
             APP_COMMIT_DATE=${{ github.event.head_commit.timestamp }}

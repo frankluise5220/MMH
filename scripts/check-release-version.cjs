@@ -256,7 +256,11 @@ expect(/npm run check:docker/.test(dockerWorkflow), "Docker workflow must run ch
 // before publication, and a Docker user upgraded to a commit whose schema had
 // no HouseholdPreference.detailWindowYears (P2022 ColumnNotFound afterwards).
 expect(/release:\s*\n\s*types:\s*\[published\]/.test(dockerWorkflow), "Docker workflow must also run on `release: published`, which is the only event allowed to write the public image tags.");
-expect(/type=raw,value=latest,enable=\$\{\{\s*github\.event_name == 'release'\s*\}\}/.test(dockerWorkflow), "Docker workflow must publish latest only from the `release: published` build, never from a tag push (a draft may be tagged for days before the user confirms it).");
+// 重发（workflow_dispatch + publish_tag）是 2026-11-05 起唯一能把 latest 从坏镜像
+// 拉回健康版本的路径，它同样由人工显式触发，和 tag push 不是一回事。正则因此接受
+// 「release published」或「显式重发当前版本号」两种来源，但仍然拒绝任何 tag push
+// 形式（第 262 行的断言继续兜住 startsWith(github.ref, 'refs/tags/v')）。
+expect(/type=raw,value=latest,enable=\$\{\{\s*github\.event_name == 'release'(?:\s*\|\|\s*steps\.republish\.outputs\.enabled == 'true')?\s*\}\}/.test(dockerWorkflow), "Docker workflow must publish latest only from the `release: published` build or an explicit republish of the current version, never from a tag push (a draft may be tagged for days before the user confirms it).");
 expect(/type=semver,pattern=\{\{version\}\},enable=\$\{\{\s*github\.event_name == 'release'\s*\}\}/.test(dockerWorkflow), "Docker workflow must publish the package version tag only from the `release: published` build.");
 expect(/type=raw,value=main,enable=\$\{\{\s*github\.event_name == 'push' &&\s*endsWith\(github\.ref,\s*'\/heads\/main'\)\s*\}\}/.test(dockerWorkflow), "Docker workflow must publish main snapshots without moving latest.");
 expect(!/type=raw,value=latest,enable=\$\{\{\s*startsWith\(github\.ref, 'refs\/tags\/v'\)/.test(dockerWorkflow), "Docker workflow must not go back to publishing latest on tag pushes.");
