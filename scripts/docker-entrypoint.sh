@@ -920,6 +920,29 @@ ensure_account_parent_unique() {
   return 1
 }
 
+ensure_category_type_name_unique() {
+  # 0.1.82 把 Category 的唯一性从 (householdId,name) 放宽到
+  # (householdId,type,name)：收入与支出是两棵独立的分类树。
+  # SQLite 通道（fnOS / 群晖 / 桌面）由迁移 20261105_category_name_per_type 处理，
+  # Docker 通道走 prisma db push，必须在这里预先改索引。
+  # 不预处理时，升级库上的 push 只打印一条 bullet
+  #   "A unique constraint covering the columns [householdId,type,name] on the
+  #    table Category will be added"
+  # 然后以 "Use the --accept-data-loss flag" 退出 1，重试 4 次后 exit 78。
+  # 2026-11-05 v0.1.82 的 Docker 升级模拟就是这么红的（fresh-install 反而 PASS，
+  # 因为空库没有旧索引要替换）。
+  # 新索引比旧索引宽松，旧约束已保证 (householdId,name) 唯一，故不可能冲突；
+  # 旧索引必须同时删掉，否则同一约束留两套索引，push 仍会规划删除。
+  if ensure_unique_index "Category" \
+    '' \
+    'DROP INDEX IF EXISTS "Category_householdId_name_key"; CREATE UNIQUE INDEX IF NOT EXISTS "Category_householdId_type_name_key" ON "Category"("householdId","type","name");'; then
+    mmh_log "ensured Category unique index is (householdId,type,name)"
+    return 0
+  fi
+  mmh_log "WARNING: could not ensure Category.householdId/type/name unique index; schema sync may refuse to start on an upgraded database."
+  return 1
+}
+
 list_prisma_copy_tables() {
   psql_mmh -tAc "SELECT quote_ident(n.nspname) || '.' || quote_ident(c.relname) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE n.nspname = 'public' AND c.relkind = 'r' AND c.relname ~* '_copy';"
 }
@@ -1067,6 +1090,9 @@ ensure_account_balance_recomputed_at_column || true
 ensure_reimbursement_payment_tx_unique || true
 ensure_user_household_fn_uid_unique || true
 ensure_account_parent_unique || true
+# 0.1.82 放宽了 Category 的唯一约束（新增 type 列），必须先替换索引，
+# 否则 db push 会要求 --accept-data-loss，升级库上直接拒绝启动。
+ensure_category_type_name_unique || true
 
 PUSH_OUTPUT="$(mktemp)"
 PUSH_OK=0

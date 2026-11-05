@@ -19,6 +19,9 @@ on:
         description: "Space-separated base image tags, e.g. '0.1.62 0.1.52'"
         required: false
         default: "0.1.52"
+      target_image:
+        description: "Optional full image ref (e.g. ghcr.io/owner/mmh:sha-abc1234). Lets a main-push snapshot be simulated before it is tagged."
+        required: false
   workflow_run:
     workflows: ["Build and Push Docker Image"]
     types: [completed]
@@ -49,6 +52,9 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "target_tag=${{ github.event.inputs.target_tag }}" >> "$GITHUB_OUTPUT"
             echo "base_tags=${{ github.event.inputs.base_tags }}" >> "$GITHUB_OUTPUT"
+            # 手动触发时可指向任意镜像（如 main push 产出的 sha-<commit> 快照），
+            # 用于在打 tag 之前先验证 entrypoint 修复。
+            echo "target_image=${{ github.event.inputs.target_image }}" >> "$GITHUB_OUTPUT"
           else
             head_sha="${{ github.event.workflow_run.head_sha }}"
             line="$(git ls-remote --tags origin | grep -F "${head_sha}" | head -n1 || true)"
