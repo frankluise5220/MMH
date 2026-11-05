@@ -744,6 +744,16 @@ export function FundImportPreviewDialog({ open, file, context, tabs = null, sour
   const [draftValue, setDraftValue] = useState("");
   const [draftOriginalValue, setDraftOriginalValue] = useState("");
   const skipNextEditCommitRef = useRef(false);
+  /**
+   * 局部行重算的并发计数（同步值）。
+   *
+   * 编辑闸门必须读 ref 而不是 `rowPatching` state：`columns` 是 useMemo，
+   * 它的依赖里没有 `rowPatching`，所以 `rowPatching` 由 true 翻回 false 时
+   * 表格不会重建，各 `render` 闭包里拿的还是「rowPatching === true」那一版
+   * `beginCellEdit`，双击就永远进不了编辑态（改过一次账户后整表锁死）。
+   * 用 ref 让每次调用都读当下的真实值，且用计数避免并发的两次预览请求互相提前解锁。
+   */
+  const rowPatchingDepthRef = useRef(0);
   /** 已经解析过的文件：切页签回来不重跑（重跑要再等一次服务端识别）。 */
   const loadedFileRef = useRef<File | null>(null);
 
@@ -1039,6 +1049,7 @@ export function FundImportPreviewDialog({ open, file, context, tabs = null, sour
   const requestPreviewForRows = useCallback(async (patches: Array<{ index: number; item: FundImportUploadItem }>) => {
     const usable = patches.filter((entry) => entry.item);
     if (usable.length === 0) return false;
+    rowPatchingDepthRef.current += 1;
     setRowPatching(true);
     try {
       const res = await fetch("/api/v1/fund/import", {
@@ -1071,7 +1082,8 @@ export function FundImportPreviewDialog({ open, file, context, tabs = null, sour
       setMessage(formatText(t, "batchImport.readFailedMessage", { reason: reason || t("batchImport.unknownError") }));
       return false;
     } finally {
-      setRowPatching(false);
+      rowPatchingDepthRef.current = Math.max(0, rowPatchingDepthRef.current - 1);
+      if (rowPatchingDepthRef.current === 0) setRowPatching(false);
     }
   }, [autoCreateInstitutionAccounts, requestContext, t]);
 
@@ -1358,13 +1370,13 @@ export function FundImportPreviewDialog({ open, file, context, tabs = null, sour
   }
 
   const beginCellEdit = useCallback((row: FundPreviewTableRow, field: FundPreviewEditField) => {
-    if (uploading || importing || rowPatching) return;
+    if (uploading || importing || rowPatchingDepthRef.current > 0) return;
     skipNextEditCommitRef.current = false;
     const nextDraftValue = draftValueFromRow(row, field);
     setEditingCell({ idx: row.idx, field });
     setDraftValue(nextDraftValue);
     setDraftOriginalValue(nextDraftValue);
-  }, [importing, rowPatching, uploading]);
+  }, [importing, uploading]);
 
   const commitDraftEdit = useCallback(async () => {
     if (skipNextEditCommitRef.current) {
@@ -1784,7 +1796,8 @@ export function FundImportPreviewDialog({ open, file, context, tabs = null, sour
             正好压在卡片 1px 上边框上（几何同 FolderTabsCard，容器是固定高度所以用
             ft-card-surface-fill）。 */}
         <div className="relative flex min-h-0 flex-1 flex-col p-3">
-          <div className="relative flex min-h-0 flex-col">
+          {/* 卡片容器必须 flex-1：底栏提到卡片外后，正文高度由它独占（同账单预览）。 */}
+          <div className="relative flex min-h-0 flex-1 flex-col">
             {tabs}
             <div className="ft-card-surface ft-card-surface-fill">
               <div className="flex min-h-0 flex-1 flex-col">
@@ -1907,7 +1920,16 @@ export function FundImportPreviewDialog({ open, file, context, tabs = null, sour
             resetDisplayStateOnMount
           />
         </div>
-        <div className="flex items-center justify-between gap-3 border-t border-slate-200 bg-slate-50 pl-4 pr-3 py-3">
+              </div>
+            </div>
+          </div>
+        </div>
+        {/* 「确认导入」底栏在 FT 卡片**外面**（2026-11-05 用户裁定，与账单预览、
+            批量导入页两个预览同构）：原先是卡片内 flex-col 的最后一个孩子，与表格抢
+            同一块正文高度；提到弹窗级后卡片独占正文高度、表格可见行变多，底栏贴窗口
+            下沿并与标题栏同宽。 */}
+        {/* 确认按钮右/下等距：pr-3（12px）= py-3 底距。 */}
+        <div className="flex shrink-0 items-center justify-between gap-3 border-t border-slate-200 bg-slate-50 pl-4 pr-3 py-3">
           <div className="flex min-w-0 items-center gap-3 text-xs">
             <span className="shrink-0 text-slate-500">{formatText(t, "batchImport.selectedSummary", { selected: selected.size, total: previewItems.length })}</span>
             {errorIssues.length > 0 ? <span className="shrink-0 font-medium text-red-600">{formatText(t, "batchImport.errorCount", { count: errorIssues.length })}</span> : null}
@@ -1922,10 +1944,6 @@ export function FundImportPreviewDialog({ open, file, context, tabs = null, sour
             >
               {importing ? t("batchImport.importing") : formatText(t, "batchImport.confirmImport", { count: importReadySelectedCount })}
             </button>
-          </div>
-        </div>
-              </div>
-            </div>
           </div>
         </div>
       </div>
