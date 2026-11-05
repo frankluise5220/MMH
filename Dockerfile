@@ -58,6 +58,16 @@ RUN npm run build
 # 用 RUN rm 删除是无效的——那只会新增一个「删除层」，镜像反而更大。
 RUN find .next/standalone -type f \( -name '*.d.ts' -o -name '*.map' -o -name '*.md' \) -delete 2>/dev/null || true
 
+# 2026-11-06 实测：0.1.82 重发后 standalone 的 node_modules 压缩后仍有 30.71 MB，
+# 是整条升级链上唯一超过镜像站单层约 27 MB 断开线的层。它内部是两群互不相干的包
+# —— Next 运行时核心（next / @next）与 Next 挑出来的少量生产依赖。把核心先移到
+# 兄弟目录，runtime 阶段分两次 COPY 落回同一个 node_modules，目录结构不变。
+RUN mkdir -p .next/standalone-next \
+  && mv .next/standalone/node_modules/next .next/standalone-next/next \
+  && if [ -d .next/standalone/node_modules/@next ]; then \
+       mv .next/standalone/node_modules/@next .next/standalone-next/@next; \
+     fi
+
 FROM ${NODE_RUNTIME_IMAGE} AS prisma-deps
 
 ARG PRISMA_CLI_VERSION
@@ -133,12 +143,15 @@ RUN apt-get update \
      done \
   && test -x /usr/lib/postgresql/*/bin/psql
 
-# 拆成四条 COPY：node_modules 在两次发版之间是稳定的（next/react/prisma/sharp 的版本
-# 不变就不变），业务代码每次都变。合成一条时两者被绑进同一个层，代码改一行就整层重建，
-# 用户每次升级都被迫重下约 39 MB；拆开后增量只剩 .next 那一层（约 12 MB），
-# 90 KB/s 的镜像源也能压在约 5 分钟的断开线内。
+# standalone 拆成五条 COPY：node_modules 在两次发版之间是稳定的（next/react/prisma/sharp
+# 的版本不变就不变），业务代码每次都变。合成一条时两者被绑进同一个层，代码改一行就
+# 整层重建，用户每次升级都被迫重下约 39 MB；拆开后增量只剩 .next 那一层（约 7 MB），
+# 90 KB/s 的镜像源也能压在断开线内。
 # 注意：standalone 顶层必须只有这四项（Next 15 的输出形态）。新增顶层文件时要同步加 COPY，
 # 否则运行时才报 module not found —— 下面的 RUN 会先把它拦在构建期。
+# Next 运行时核心与其余生产依赖分两次落回 node_modules：合成一条时这一层压缩后
+# 30.71 MB，超过镜像站单层断开线；拆开后分别是约 8 MB 与约 22 MB，都在线内。
+COPY --chown=node:node --from=build /app/.next/standalone-next ./node_modules
 COPY --chown=node:node --from=build /app/.next/standalone/node_modules ./node_modules
 COPY --chown=node:node --from=build /app/.next/standalone/.next ./.next
 COPY --chown=node:node --from=build /app/.next/standalone/package.json ./package.json
