@@ -91,6 +91,12 @@ jobs:
             echo "::error::publish_tag=$TAG 与 package.json version=$VERSION 不一致；重发只允许当前版本号"
             exit 1
           fi
+          # 只允许 main：workflow_dispatch 的 --ref 可以是任意分支，
+          # 从中间分支构建并挂上已发布版本号正是 v0.1.78 事故的形态。
+          if [ "${GITHUB_REF}" != "refs/heads/main" ]; then
+            echo "::error::重发只能从 main 构建（当前 $GITHUB_REF）"
+            exit 1
+          fi
           echo "enabled=true" >> "$GITHUB_OUTPUT"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "republishing $TAG from $(git rev-parse --short HEAD)"

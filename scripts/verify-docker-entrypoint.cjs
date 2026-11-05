@@ -405,13 +405,25 @@ expect(
 // every Docker user who pulled then recorded schema_version=0.1.78 against a
 // table missing the column, and the real 0.1.78 image then skipped
 // `prisma db push` (same version string) and served P2022 ColumnNotFound.
+//
+// 2026-11-05 v0.1.82 例外：那个 release 的 git tag 指向 b15e8f68，entrypoint 缺
+// ensure_category_type_name_unique，升级库上 db push 要求 --accept-data-loss 后
+// exit 78。重新 publish 那个 release 只会重建坏镜像（checkout 的仍是旧 tag），
+// 所以允许 dispatch + publish_tag 从 main 重发同名版本。首次发布仍然只有
+// release: published 能写 latest / 版本标签，重发入口自带两条硬约束：
+// publish_tag 必须等于 package.json 的 version、GITHUB_REF 必须是 refs/heads/main。
+const republishLatest =
+  "type=raw,value=latest,enable=${{ github.event_name == 'release' || steps.republish.outputs.enabled == 'true' }}";
 expect(
   /release:\s*\n\s*types:\s*\[published\]/.test(workflow) &&
     !/type=raw,value=latest,enable=\$\{\{ startsWith\(github\.ref, 'refs\/tags\/v'\) \}\}/.test(workflow) &&
-    /type=raw,value=latest,enable=\$\{\{ github\.event_name == 'release' \}\}/.test(workflow) &&
+    (workflow.split(republishLatest).length - 1) === 2 &&
+    /type=raw,value=\$\{\{ steps\.republish\.outputs\.tag \}\},enable=\$\{\{ steps\.republish\.outputs\.enabled == 'true' \}\}/.test(workflow) &&
     /type=semver,pattern=\{\{version\}\},enable=\$\{\{ github\.event_name == 'release' \}\}/.test(workflow) &&
-    (workflow.match(/type=raw,value=latest,enable=\$\{\{ github\.event_name == 'release' \}\}/g) || []).length === 2,
-  "docker-build.yml must only write `latest` / the version tag on `release: published`; a v* tag push may build sha-<commit> snapshots only. Otherwise a draft-stage image becomes pullable by name and users upgrade to an intermediate commit whose schema is not the shipped one (v0.1.78, 2026-10-27).",
+    /workflow_dispatch:\s*\n\s*inputs:\s*\n\s*publish_tag:/.test(workflow) &&
+    /if \[ "\$TAG" != "\$VERSION" \]/.test(workflow) &&
+    /if \[ "\$\{GITHUB_REF\}" != "refs\/heads\/main" \]/.test(workflow),
+  "docker-build.yml must only write `latest` / the version tag on `release: published`, or through the constrained `publish_tag` republish input (it must equal package.json version and build from main); a v* tag push may build sha-<commit> snapshots only. Otherwise a draft-stage image becomes pullable by name and users upgrade to an intermediate commit whose schema is not the shipped one (v0.1.78, 2026-10-27).",
 );
 expect(
   /target_image=ghcr\.io\/\$\{\{ github\.repository_owner \}\}\/mmh:sha-\$\{head_sha:0:7\}/.test(upgradeSim) &&
