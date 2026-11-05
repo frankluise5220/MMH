@@ -63,14 +63,22 @@ export async function GET(req: Request) {
 const CATEGORY_TYPES = ["expense", "income", "advance", "transfer", "investment"] as const;
 const RESERVED_CATEGORY_NAMES = new Set(["支出", "收入", "代付", "转账", "投资"]);
 
+/**
+ * Category names are unique per household **and per type**: income and expense
+ * each have their own namespace, so an expense "棋牌" no longer blocks an
+ * income "棋牌". Keep this scoped by `type` — a name-only lookup would reject a
+ * legal create (schema: @@unique([householdId, type, name])).
+ */
 async function findDuplicateCategoryName(
   householdId: string,
+  type: string,
   name: string,
   exceptId?: string,
 ) {
   return prisma.category.findFirst({
     where: {
       householdId,
+      type,
       name,
       ...(exceptId ? { NOT: { id: exceptId } } : {}),
     },
@@ -88,7 +96,7 @@ function isDuplicateCategoryNameError(error: unknown) {
  *
  * Body: { name: string, type?: "expense" | "income" | "advance" | "transfer" | "investment", parentId?: string }
  * - When parentId is present, the category type is inherited from the parent category.
- * - Category name must be globally unique within the same household, regardless of income/expense type or parent.
+ * - Category name must be unique within the same household **and the same type**; income and expense are separate namespaces, and the parent does not matter.
  * - "expense", "income", "advance", "transfer", "investment" are category type roots and cannot be written as regular category names.
  * - Built-in business categories (investment profit, investment loss, repayment, loan, etc.) are shown in the same category tree for statistics linkage; they cannot be renamed, moved, or deleted.
  *
@@ -124,7 +132,7 @@ export async function POST(req: NextRequest) {
       type = parent.type;
     }
 
-    const duplicate = await findDuplicateCategoryName(householdId, name);
+    const duplicate = await findDuplicateCategoryName(householdId, type, name);
     if (duplicate) {
       return NextResponse.json({ ok: false, code: "CATEGORY_NAME_EXISTS", error: "分类名称已存在" }, { status: 409 });
     }
@@ -159,7 +167,7 @@ export async function POST(req: NextRequest) {
  * - When parentId is present, the whole category node moves; child categories move with it.
  * - parentId empty/null means moving to the root of the current type.
  * - Moving across income/expense types is not allowed; moving under itself or its own descendants is not allowed.
- * - Category name must be globally unique within the same household, regardless of income/expense type or parent.
+ * - Category name must be unique within the same household **and the updated category's own type**; income and expense are separate namespaces, and the parent does not matter.
  * - System built-in categories cannot be renamed or moved, but user subcategories may be created under them.
  * - Renaming also updates categoryName on existing entries so old records stop showing the old name.
  * - orderedIds reorders user sibling categories. System categories do not participate in the order and remain after user categories.
@@ -236,7 +244,7 @@ export async function PUT(req: NextRequest) {
       }
     }
 
-    const duplicate = await findDuplicateCategoryName(householdId, name, id);
+    const duplicate = await findDuplicateCategoryName(householdId, current.type, name, id);
     if (duplicate) {
       return NextResponse.json({ ok: false, code: "CATEGORY_NAME_EXISTS", error: "分类名称已存在" }, { status: 409 });
     }

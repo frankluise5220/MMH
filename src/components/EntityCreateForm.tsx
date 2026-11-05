@@ -133,7 +133,9 @@ type CompactModeProps = {
   hiddenFields?: string[];
   /** Extra fields that should remain visible for confirmation but not editable. */
   readOnlyFields?: string[];
-  /** Existing entity names for client-side duplicate check */
+  /** Existing entity names for client-side duplicate check.
+   *  For categories, pass only the names of the **same type** (income/expense each
+   *  have their own namespace — see @@unique([householdId, type, name])). */
   existingNames?: string[];
   /** For category type: available parent categories to create subcategories under */
   parentCategories?: Array<{ id: string; name: string; label: string; type: string; depth?: number; parentId?: string; isGroup?: boolean }>;
@@ -162,7 +164,9 @@ type FullModeProps = {
   onNestedCreated?: (id: string, name: string, extra?: { kind?: string; type?: string }) => void;
   /** Dynamic data for select fields that need runtime-populated options */
   fieldData?: Record<string, Array<{ id: string; name: string; type?: string }>>;
-  /** Existing entity names for client-side duplicate check */
+  /** Existing entity names for client-side duplicate check.
+   *  For categories, pass only the names of the **same type** (income/expense each
+   *  have their own namespace — see @@unique([householdId, type, name])). */
   existingNames?: string[];
   /** For category: available parent categories */
   parentCategories?: Array<{ id: string; name: string; label: string; type: string; depth?: number; parentId?: string; isGroup?: boolean }>;

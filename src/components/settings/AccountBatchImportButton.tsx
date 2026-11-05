@@ -2904,7 +2904,13 @@ export function AccountBatchImportButton({
     const institutionIds = mapByName(institutions);
     const counterpartyIds = mapByName(counterparties);
     const ownerIds = mapByName(groups);
-    const categoryIds = mapByName(await fetchCategories());
+    // 分类名称只在同一收支类型内唯一（收入/支出各可有一个「棋牌」），
+    // 所以命中索引必须带 type，否则会把收入分类当成支出分类跳过或错挂父级。
+    const categoryList = await fetchCategories();
+    const categoryIdsByTypeName = new Map<string, string>();
+    for (const category of categoryList) {
+      categoryIdsByTypeName.set(`${category.type}:${normalizeImportHeader(category.name)}`, category.id);
+    }
     const tagIds = mapByName(await fetchExistingTags());
     // 贷款类别：内置类别的显示名走 i18n，所以同时按「存储名」和「本地化名」建索引。
     const loanCategoryIds = new Map<string, string>();
@@ -2944,7 +2950,8 @@ export function AccountBatchImportButton({
             path = "/api/v1/tags";
             body = { name: row.name, color: row.color || undefined };
           } else if (row.target === "category") {
-            const existingCategoryId = categoryIds.get(normalizeImportHeader(row.name));
+            const categoryKey = (name: string) => `${row.categoryType}:${normalizeImportHeader(name)}`;
+            const existingCategoryId = categoryIdsByTypeName.get(categoryKey(row.name));
             if (existingCategoryId) {
               continue;
             }
@@ -2952,7 +2959,7 @@ export function AccountBatchImportButton({
             body = {
               name: row.name,
               type: row.categoryType,
-              parentId: row.parentCategoryId || categoryIds.get(normalizeImportHeader(row.parentCategoryName)) || "",
+              parentId: row.parentCategoryId || categoryIdsByTypeName.get(categoryKey(row.parentCategoryName)) || "",
             };
           } else {
             const institutionId = row.institutionId || institutionIds.get(normalizeImportHeader(row.institutionName)) || "";
@@ -3058,7 +3065,7 @@ export function AccountBatchImportButton({
             }
             if (row.target === "category") {
               const id = createdEntityId(data, "category");
-              if (id) categoryIds.set(normalizeImportHeader(row.name), id);
+              if (id) categoryIdsByTypeName.set(`${row.categoryType}:${normalizeImportHeader(row.name)}`, id);
             }
             if (row.target === "tag") {
               const id = createdEntityId(data, "tag");

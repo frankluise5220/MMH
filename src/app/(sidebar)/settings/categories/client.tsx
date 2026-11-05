@@ -136,16 +136,18 @@ export default function SettingsCategoriesClient({
     return path;
   }
 
-  function allCategoryNamesExcept(id?: string) {
+  // 名称唯一性只在同一个收支类型内成立（服务端 @@unique([householdId, type, name])），
+  // 所以查重必须带上 type：收入的「棋牌」和支出的「棋牌」是两个分类。
+  function allCategoryNamesExcept(type: string, id?: string) {
     return categories
-      .filter(c => c.id !== id)
+      .filter(c => c.type === type && c.id !== id)
       .map(c => c.name);
   }
 
-  function hasDuplicateCategoryName(name: string, exceptId?: string) {
+  function hasDuplicateCategoryName(name: string, type: string, exceptId?: string) {
     const trimmed = name.trim();
     if (!trimmed) return false;
-    return allCategoryNamesExcept(exceptId).some(existing => existing.trim() === trimmed);
+    return allCategoryNamesExcept(type, exceptId).some(existing => existing.trim() === trimmed);
   }
 
   function toggleExpand(id: string) {
@@ -245,7 +247,7 @@ export default function SettingsCategoriesClient({
       return false;
     }
     if (nextName === target.name) return true;
-    if (hasDuplicateCategoryName(nextName, id)) {
+    if (hasDuplicateCategoryName(nextName, target.type, id)) {
       setEditError(t("settings.categories.client.nameExists"));
       return false;
     }
@@ -578,7 +580,7 @@ export default function SettingsCategoriesClient({
               defaultType={cat.type}
               parentCategories={parentCategoryOptions}
               onCreated={handleCategoryCreated}
-              existingNames={allCategoryNamesExcept()}
+              existingNames={allCategoryNamesExcept(cat.type)}
               hiddenFields={["parentId"]}
             />
           </div>
@@ -707,7 +709,7 @@ export default function SettingsCategoriesClient({
                       extraFields={{ type }}
                       hiddenFields={["type", "parentId"]}
                       onCreated={handleCategoryCreated}
-                      existingNames={allCategoryNamesExcept()}
+                      existingNames={allCategoryNamesExcept(type)}
                     />
                   </div>
                 )}
@@ -851,7 +853,7 @@ export default function SettingsCategoriesClient({
                     void notifySettingsDataChanged({ scope: "categories", reason: "category:create-child", prefetch: true });
                     setExpanded(prev => new Set([...prev, selectedId!]));
                   }}
-                  existingNames={allCategoryNamesExcept()}
+                  existingNames={allCategoryNamesExcept(selectedCategory.type)}
                 />
               </div>
             </div>

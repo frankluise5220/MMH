@@ -3224,6 +3224,19 @@ const MIGRATIONS = [
       db.exec("CREATE INDEX IF NOT EXISTS RepoProductCustom_householdId_idx ON RepoProductCustom(householdId)");
     },
   },
+  {
+    // 分类名称唯一性放宽（2026-11-05）：从「整本账唯一」改为「账本 + 收支类型内唯一」，
+    // 与 Postgres 迁移 20261105_category_name_per_type 及 build-win-desktop.cjs 的
+    // applyRuntimeMigrations 同义。旧索引是 Prisma 为 @@unique([householdId, name])
+    // 生成的，留着会让「收入 棋牌 / 支出 棋牌」在写库时被唯一约束拒绝。
+    version: "20261105_category_name_per_type",
+    description: "Relax Category name uniqueness to (householdId, type, name)",
+    apply(db) {
+      if (!tableExists(db, "Category")) return;
+      db.exec("DROP INDEX IF EXISTS Category_householdId_name_key");
+      db.exec("CREATE UNIQUE INDEX IF NOT EXISTS Category_householdId_type_name_key ON Category(householdId, type, name)");
+    },
+  },
 ];
 
 // 到期日「周年 − 1 天」→ 周年；返回 null 表示不是旧口径。

@@ -493,6 +493,14 @@ function applyRuntimeMigrations(db) {
     // 单行 + 参数绑定：这段代码写进模板后不应再依赖任何引号转义。
     db.prepare("UPDATE WealthProduct SET productType = ? WHERE productType = ? AND EXISTS (SELECT 1 FROM wealth_transactions wt JOIN Account a ON a.id = wt.accountId WHERE wt.wealthProductId = WealthProduct.id AND a.investProductType = ?)").run("advisor", "wealth", "advisor");
   }
+  // 2026-11-05 分类名称唯一性放宽为「账本 + 收支类型」。
+  // 与 build-fnos-package.cjs 的 20261105_category_name_per_type 同义：卡片库里的旧索引
+  // Category_householdId_name_key 必须删掉，否则服务端查重已放行（收入/支出各一个「棋牌」），
+  // 写库时仍会被旧索引拒绝。两处 IF EXISTS 保证重复执行无副作用。
+  if (tableExists(db, "Category")) {
+    db.exec('DROP INDEX IF EXISTS "Category_householdId_name_key"');
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS "Category_householdId_type_name_key" ON "Category"("householdId", "type", "name")');
+  }
 }
 
 fs.mkdirSync(dataDir, { recursive: true });

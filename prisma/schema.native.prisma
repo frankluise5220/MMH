@@ -260,7 +260,9 @@ model Category {
   transactions             TxRecord[]
   StatementRecognitionRule StatementRecognitionRule[]
 
-  @@unique([householdId, name])
+  // 分类名称只在「账本 + 收支类型」内唯一：收入与支出是两个命名空间，
+  // 支出的「棋牌」不应挡住收入建同名分类（迁移 20261105_category_name_per_type）。
+  @@unique([householdId, type, name])
   @@index([householdId, type, parentId, sortOrder])
 }
 

@@ -136,6 +136,14 @@ function isUniqueConstraintError(error: unknown) {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002";
 }
 
+/**
+ * Resolves a category by id, or by name when the caller only has the display
+ * name (statement rows, mail parsing, …).
+ *
+ * Always pass `type` when you know it: category names are unique per
+ * (household, type), so "棋牌" can exist as both an expense and an income
+ * category. A name-only call may pick the wrong side of that pair.
+ */
 export async function resolveCategorySnapshot(
   writer: CategoryWriter,
   householdId: string,
@@ -782,30 +790,17 @@ async function ensureFallbackCategory(
     select: { id: true },
   });
 
-  // The unique index on Category is (householdId, name), so a restored or
-  // imported row can already carry this fallback name under a different
-  // parent or type. Reuse it (and converge its type) instead of failing the
-  // create with a unique-constraint error.
+  // A restored or imported row can already carry this fallback name under a
+  // different parent of the **same** type; reuse it instead of failing the
+  // create with a unique-constraint error. Names are unique per
+  // (household, type), so a same-named row under another type is a distinct
+  // category and must not be adopted or have its type converged.
   if (!fallback) {
     fallback = await writer.category.findFirst({
       where: { householdId, type, name: fallbackName },
       orderBy: { id: "asc" },
       select: { id: true },
     });
-  }
-
-  if (!fallback) {
-    const anyType = await writer.category.findFirst({
-      where: { householdId, name: fallbackName },
-      orderBy: { id: "asc" },
-      select: { id: true, type: true },
-    });
-    if (anyType) {
-      if (anyType.type !== type) {
-        await writer.category.update({ where: { id: anyType.id }, data: { type } });
-      }
-      fallback = { id: anyType.id };
-    }
   }
 
   if (!fallback) {
@@ -817,7 +812,7 @@ async function ensureFallbackCategory(
     } catch (error) {
       if (!isUniqueConstraintError(error)) throw error;
       fallback = await writer.category.findFirst({
-        where: { householdId, name: fallbackName },
+        where: { householdId, type, name: fallbackName },
         orderBy: { id: "asc" },
         select: { id: true },
       });
@@ -992,37 +987,9 @@ async function ensureDefaultCategory(
     });
   }
 
-  if (!category && isSystem) {
-    category = await writer.category.findFirst({
-      where: { householdId, type, name },
-      select: { id: true, parentId: true, isSystem: true, type: true },
-    });
-  }
-
-  if (!category) {
-    // The unique index on Category is (householdId, name), so restored or
-    // imported data can already contain this name under a different type.
-    // Adopt that row and converge its type/parent/system flags instead of
-    // attempting a create that would fail with a unique-constraint error and
-    // abort category normalization for the whole household (which made the
-    // web bootstrap endpoint fail permanently).
-    category = await writer.category.findFirst({
-      where: { householdId, name },
-      orderBy: { id: "asc" },
-      select: { id: true, parentId: true, isSystem: true, type: true },
-    });
-    if (category) {
-      const changes: { type?: string; parentId?: string | null; isSystem?: boolean } = {};
-      if (category.type !== type) changes.type = type;
-      if (category.parentId !== parentId) changes.parentId = parentId;
-      if (isSystem && !category.isSystem) changes.isSystem = true;
-      if (Object.keys(changes).length > 0) {
-        await writer.category.update({ where: { id: category.id }, data: changes });
-      }
-      await mergeSameTypeCategoryNameDuplicates(writer, householdId, type, name, category.id);
-      return { id: category.id };
-    }
-  }
+  // Names are unique per (household, type) — same-name rows under another type
+  // are legitimately different categories now, so there is nothing to adopt
+  // across types; only a same-type row under another parent is reused below.
 
   if (!category) {
     try {
@@ -1047,10 +1014,11 @@ async function ensureDefaultCategory(
     } catch (error) {
       if (!isUniqueConstraintError(error)) throw error;
       // A concurrent request may have created the row between our lookups and
-      // the create. Re-fetch by name only: the colliding row can have any
-      // type (the unique index is (householdId, name)).
+      // the create. Re-fetch within the same type — the unique index is
+      // (householdId, type, name), so a same-name row of another type did not
+      // cause this collision.
       category = await writer.category.findFirst({
-        where: { householdId, name },
+        where: { householdId, type, name },
         orderBy: { id: "asc" },
         select: { id: true, parentId: true, isSystem: true, type: true },
       });
