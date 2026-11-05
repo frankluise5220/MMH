@@ -62,10 +62,13 @@ RUN find .next/standalone -type f \( -name '*.d.ts' -o -name '*.map' -o -name '*
 # 是整条升级链上唯一超过镜像站单层约 27 MB 断开线的层。它内部是两群互不相干的包
 # —— Next 运行时核心（next / @next）与 Next 挑出来的少量生产依赖。把核心先移到
 # 兄弟目录，runtime 阶段分两次 COPY 落回同一个 node_modules，目录结构不变。
-RUN mkdir -p .next/standalone-next \
+RUN mkdir -p .next/standalone-next .next/standalone-native \
   && mv .next/standalone/node_modules/next .next/standalone-next/next \
   && if [ -d .next/standalone/node_modules/@next ]; then \
        mv .next/standalone/node_modules/@next .next/standalone-next/@next; \
+     fi \
+  && if [ -d .next/standalone/node_modules/@img ]; then \
+       mv .next/standalone/node_modules/@img .next/standalone-native/@img; \
      fi
 
 FROM ${NODE_RUNTIME_IMAGE} AS prisma-deps
@@ -149,9 +152,11 @@ RUN apt-get update \
 # 90 KB/s 的镜像源也能压在断开线内。
 # 注意：standalone 顶层必须只有这四项（Next 15 的输出形态）。新增顶层文件时要同步加 COPY，
 # 否则运行时才报 module not found —— 下面的 RUN 会先把它拦在构建期。
-# Next 运行时核心与其余生产依赖分两次落回 node_modules：合成一条时这一层压缩后
-# 30.71 MB，超过镜像站单层断开线；拆开后分别是约 8 MB 与约 22 MB，都在线内。
+# standalone 依赖分三次落回 node_modules：合成一条时该层压缩后 30.71 MB，超过镜像站
+# 单层断开线。实测拆开后是 next 约 4.8 MB、sharp 的 libvips 原生产物约 9 MB（.so
+# 几乎不可压缩）、其余约 17 MB，都在线内。只是移动位置，文件一个不少。
 COPY --chown=node:node --from=build /app/.next/standalone-next ./node_modules
+COPY --chown=node:node --from=build /app/.next/standalone-native ./node_modules
 COPY --chown=node:node --from=build /app/.next/standalone/node_modules ./node_modules
 COPY --chown=node:node --from=build /app/.next/standalone/.next ./.next
 COPY --chown=node:node --from=build /app/.next/standalone/package.json ./package.json
