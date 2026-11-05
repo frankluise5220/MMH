@@ -6,7 +6,14 @@ type ImportAccountMatchSource = {
   kind?: ImportAccountKind | null;
   numberMasked?: string | null;
   Institution?: { name?: string | null; shortName?: string | null } | null;
-  AccountGroup?: { name?: string | null } | null;
+  /**
+   * 账户所有人（分组）。2026-11-05：`Institution` 是配对到的家庭成员，
+   * 它的姓名与**简称**和分组名一样，都是「所有人」的合法写法。
+   */
+  AccountGroup?: {
+    name?: string | null;
+    Institution?: { name?: string | null; shortName?: string | null } | null;
+  } | null;
   AccountAlias?: Array<{ alias: string }> | null;
   /** 往来款/贷款账户挂的往来对象。调用方没查这张关系时保持 undefined（宽松口径不变）。 */
   Counterparty?: { name?: string | null; shortName?: string | null } | null;
@@ -308,11 +315,31 @@ function accountBankKeys(account: ImportAccountMatchSource) {
   ].map(normalizeImportAccountMatchKey).filter(Boolean);
 }
 
+/**
+ * 一个「所有人」的全部写法：分组名 + 配对家庭成员的姓名 + 简称。
+ *
+ * 2026-11-05 用户口径：家庭成员表里填的简称也是所有人，「墨」与「墨斗鱼」等价。
+ * 简称在导入里承担两个作用——收窄候选（`墨·招商银行储蓄卡(9447)`）与
+ * 冒号前的所有人前缀（`墨的零钱`），所以账户侧与文本侧必须用同一套写法。
+ */
+export function ownerNamesFromAccountGroup(
+  group:
+    | {
+        name?: string | null;
+        Institution?: { name?: string | null; shortName?: string | null } | null;
+      }
+    | null
+    | undefined,
+): string[] {
+  const names = [group?.name, group?.Institution?.name, group?.Institution?.shortName]
+    .map((name) => String(name ?? "").trim())
+    .filter(Boolean);
+  return Array.from(new Set(names));
+}
+
 function accountOwnerNames(account: ImportAccountMatchSource) {
   if (account.kind === "loan" || account.kind === "settlement") return [];
-  return [account.AccountGroup?.name ?? ""]
-    .map((name) => name.trim())
-    .filter(Boolean);
+  return ownerNamesFromAccountGroup(account.AccountGroup);
 }
 
 function accountOwnerKeys(account: ImportAccountMatchSource) {

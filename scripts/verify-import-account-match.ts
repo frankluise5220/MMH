@@ -11,6 +11,7 @@
  */
 import {
   createImportAccountMatcher,
+  parseImportOwnedMoneyAccountCandidate,
   parseImportPaymentCardAccount,
   parseSettlementAccountName,
   parseSettlementCounterpartyFromRemark,
@@ -24,7 +25,10 @@ type Source = {
   kind?: ImportAccountKind | null;
   numberMasked?: string | null;
   Institution?: { name?: string | null; shortName?: string | null } | null;
-  AccountGroup?: { name?: string | null } | null;
+  AccountGroup?: {
+    name?: string | null;
+    Institution?: { name?: string | null; shortName?: string | null } | null;
+  } | null;
   AccountAlias?: Array<{ alias: string }> | null;
   Counterparty?: { name?: string | null; shortName?: string | null } | null;
 };
@@ -230,6 +234,59 @@ expectCard("亲属卡(浮冰)", "墨斗鱼", "(未解析)", null, "亲属卡不�
   } else {
     failed += 1;
     console.error(`FAIL  只写机构 + 尾号 -> ${actualId ?? "未匹配"}，期望 cmb-9447`);
+  }
+}
+
+// 2026-11-05 用户口径：家庭成员（Institution.type=family_member）里填的「简称」
+// 也是所有人，「姜慧」与「墨斗鱼」必须等价——既能在文本前缀里被认出来，
+// 也能收窄到该所有人名下的账户（同名账户靠它区分，不能串到别人名下）。
+{
+  const ownerGroup = (name: string, shortName: string) => ({ name, Institution: { name, shortName } });
+  const ownedAccounts: Source[] = [
+    {
+      id: "cmb-9447",
+      name: "9447",
+      kind: "bank_debit",
+      Institution: { name: "招商银行" },
+      AccountGroup: ownerGroup("墨斗鱼", "姜慧"),
+    },
+    {
+      id: "cmb-7457",
+      name: "7457",
+      kind: "bank_debit",
+      Institution: { name: "招商银行" },
+      AccountGroup: ownerGroup("付斌", "浮冰"),
+    },
+    { id: "coin-a", name: "零钱", kind: "ewallet", AccountGroup: ownerGroup("墨斗鱼", "姜慧") },
+    { id: "coin-b", name: "零钱", kind: "ewallet", AccountGroup: ownerGroup("付斌", "浮冰") },
+  ];
+  const ownedMatch = createImportAccountMatcher(ownedAccounts, { ownerName: null });
+  const ownerCases: Array<[string, string, string]> = [
+    ["墨斗鱼·招商银行储蓄卡(9447)", "cmb-9447", "正名收窄"],
+    ["姜慧·招商银行储蓄卡(9447)", "cmb-9447", "简称与正名等价"],
+    ["姜慧·零钱", "coin-a", "简称收窄到同名的零钱账户"],
+    ["浮冰·零钱", "coin-b", "另一个简称不串到别人名下"],
+  ];
+  for (const [query, expectedId, note] of ownerCases) {
+    const actualId = ownedMatch(query).account?.id ?? null;
+    if (actualId === expectedId) {
+      console.log(`PASS  ${note}：${query} -> ${actualId}`);
+    } else {
+      failed += 1;
+      console.error(`FAIL  ${note}：${query} -> ${actualId ?? "未匹配"}，期望 ${expectedId}`);
+    }
+  }
+
+  // 简称要能被「所有人 + 账户」解析器认出来（新建账户走这条路）。
+  const parsedByShort = parseImportOwnedMoneyAccountCandidate("姜慧的招商银行储蓄卡(9447)", [
+    "墨斗鱼",
+    "姜慧",
+  ]);
+  if (parsedByShort?.ownerName === "姜慧") {
+    console.log(`PASS  简称作为所有人前缀被解析：owner=${parsedByShort.ownerName}`);
+  } else {
+    failed += 1;
+    console.error(`FAIL  简称作为所有人前缀被解析：${parsedByShort?.ownerName ?? "未解析"}`);
   }
 }
 

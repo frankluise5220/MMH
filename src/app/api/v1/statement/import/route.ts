@@ -15,6 +15,7 @@ import {
   normalizeImportAccountMatchKey,
   parseImportAccountId,
   parseImportOwnedMoneyAccountCandidate,
+  ownerNamesFromAccountGroup,
   resolveImportAccountFromList,
 } from "@/lib/account-import-match";
 import { INCOME_EXPENSE_INSTITUTION_TYPES } from "@/lib/institution-rules";
@@ -118,7 +119,11 @@ type ImportOptions = {
   forceCreateOwnedMoneyAccounts?: boolean;
   importBatchId?: string | null;
   createdAccounts?: Array<{ id: string; name: string; kind: string; institutionName?: string | null }>;
-  accountGroups?: Array<{ id: string; name: string }>;
+  accountGroups?: Array<{
+    id: string;
+    name: string;
+    Institution?: { name: string | null; shortName: string | null } | null;
+  }>;
   /**
    * Per-request lookup cache for bulk imports. The per-item loop repeats the
    * same account/category/institution lookups thousands of times; without the
@@ -137,6 +142,11 @@ type ImportAccountListRow = {
   numberMasked: string | null;
   Institution: { name: string; shortName: string | null } | null;
   AccountAlias: Array<{ alias: string }>;
+  /** 所有人（分组 + 配对家庭成员）：简称与正名一样参与匹配。 */
+  AccountGroup?: {
+    name: string | null;
+    Institution?: { name: string | null; shortName: string | null } | null;
+  } | null;
   /** 结算/贷款账户挂的往来对象：泛名「往来款」账户靠它区分是哪个人的。 */
   Counterparty: { name: string; shortName: string | null } | null;
 };
@@ -748,6 +758,12 @@ async function loadImportAccountList(tx: Db, householdId: string, cache?: Statem
           kind: true,
           numberMasked: true,
           Institution: { select: { name: true, shortName: true } },
+          AccountGroup: {
+            select: {
+              name: true,
+              Institution: { select: { name: true, shortName: true } },
+            },
+          },
           AccountAlias: { select: { alias: true } },
           Counterparty: { select: { name: true, shortName: true } },
         },
@@ -766,6 +782,12 @@ async function loadImportAccountList(tx: Db, householdId: string, cache?: Statem
       kind: true,
       numberMasked: true,
       Institution: { select: { name: true, shortName: true } },
+      AccountGroup: {
+        select: {
+          name: true,
+          Institution: { select: { name: true, shortName: true } },
+        },
+      },
       AccountAlias: { select: { alias: true } },
       Counterparty: { select: { name: true, shortName: true } },
     },
@@ -834,7 +856,9 @@ async function loadImportAccountGroups(tx: Db, householdId: string, options: Imp
   if (options.accountGroups) return options.accountGroups;
   options.accountGroups = await tx.accountGroup.findMany({
     where: { householdId },
-    select: { id: true, name: true },
+    // 家庭成员简称与分组名一样是「所有人」的写法（2026-11-05）：
+    // 「墨的零钱」要和「墨斗鱼的零钱」解析出同一个所有人。
+    select: { id: true, name: true, Institution: { select: { name: true, shortName: true } } },
     orderBy: [{ sortOrder: "asc" }, { name: "asc" }],
   });
   return options.accountGroups;
@@ -848,9 +872,16 @@ async function createOwnedMoneyAccountFromImportName(
 ) {
   if (!options.forceCreateOwnedMoneyAccounts) return null;
   const groups = await loadImportAccountGroups(tx, householdId, options);
-  const candidate = parseImportOwnedMoneyAccountCandidate(accountName, groups.map((group) => group.name));
+  const candidate = parseImportOwnedMoneyAccountCandidate(
+    accountName,
+    groups.flatMap((group) => ownerNamesFromAccountGroup(group)),
+  );
   if (!candidate) return null;
-  const group = groups.find((item) => normalizeImportAccountMatchKey(item.name) === normalizeImportAccountMatchKey(candidate.ownerName));
+  const group = groups.find((item) =>
+    ownerNamesFromAccountGroup(item).some(
+      (name) => normalizeImportAccountMatchKey(name) === normalizeImportAccountMatchKey(candidate.ownerName),
+    ),
+  );
   if (!group?.id) return null;
   const institutionId = await ensureOwnedMoneyInstitutionId(tx, householdId, candidate.institutionName, candidate.kind, options.lookupCache);
   await assertAccountIdentityUnique(tx, {

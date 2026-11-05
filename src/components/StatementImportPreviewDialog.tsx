@@ -24,6 +24,7 @@ import {
   encodeImportAccountId,
   importCounterKindFromCategory,
   normalizeImportAccountMatchKey,
+  ownerNamesFromAccountGroup,
   parseSettlementAccountName,
   parseSettlementCounterpartyFromText,
   parseImportAccountId,
@@ -64,7 +65,12 @@ type BookAccount = {
   hoverTitle?: string | null;
   displaySubLabel?: string | null;
   Institution?: { id?: string | null; name?: string | null; shortName?: string | null; type?: string | null } | null;
-  AccountGroup?: { id: string; name?: string | null } | null;
+  AccountGroup?: {
+    id: string;
+    name?: string | null;
+    /** 配对到的家庭成员：姓名与简称都算「所有人」的写法。 */
+    Institution?: { name?: string | null; shortName?: string | null } | null;
+  } | null;
   AccountAlias?: Array<{ alias: string }> | null;
   /** 结算/贷款账户挂的往来对象：泛名「往来款」账户靠它区分「X的往来款」属于谁。 */
   Counterparty?: { id?: string | null; name?: string | null; shortName?: string | null } | null;
@@ -647,10 +653,15 @@ export function StatementImportPreviewDialog({
     if (accountOwner) return accountOwner;
     const fileName = sourceFileName?.trim() ?? "";
     if (!fileName) return "";
-    // 所有人 = 家庭成员 = 账户分组（AccountGroup）。「未指定」这类占位分组不是人，
-    // 参与文件名匹配只会误命中。
-    const owners = bookAccountGroups
-      .map((group) => group.name?.trim() ?? "")
+    // 所有人 = 家庭成员 = 账户分组（AccountGroup），家庭成员的简称同样算数
+    // （「墨的交易流水」与「墨斗鱼的交易流水」都指向同一个所有人）。
+    // 「未指定」这类占位分组不是人，参与文件名匹配只会误命中。
+    const owners = Array.from(
+      new Set([
+        ...bookAccountGroups.map((group) => group.name?.trim() ?? ""),
+        ...activeBookAccounts.flatMap((account) => ownerNamesFromAccountGroup(account.AccountGroup)),
+      ]),
+    )
       .filter((name) => Boolean(name) && !PLACEHOLDER_OWNER_NAMES.has(name))
       .sort((a, b) => b.length - a.length);
     const ownerInFileName = owners.find((owner) => fileName.includes(owner));
@@ -675,11 +686,19 @@ export function StatementImportPreviewDialog({
     () => {
       if (!settingsBootstrapLoaded) return null;
       const matchAccount = createImportAccountMatcher(activeBookAccounts, { ownerName: contextOwnerName });
+      // 「所有人」的写法 = 分组名 + 配对家庭成员的姓名与简称（2026-11-05 用户口径）。
+      // 「墨的零钱」要和「墨斗鱼的零钱」解析出同一个所有人，否则会被当成新账户。
+      const ownerNames = Array.from(
+        new Set([
+          ...bookAccountGroups.map((group) => group.name).filter(Boolean),
+          ...activeBookAccounts.flatMap((account) => ownerNamesFromAccountGroup(account.AccountGroup)),
+        ]),
+      );
       return {
         accountById: new Map(activeBookAccounts.map((account) => [account.id, account])),
         resolveAccount: (accountName) => matchAccount(accountName).account,
         matchAccount,
-        ownerNames: bookAccountGroups.map((group) => group.name).filter(Boolean),
+        ownerNames,
         hasCounterparty: (name) => {
           const key = normalizeImportAccountMatchKey(name);
           if (!key) return false;

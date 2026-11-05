@@ -51,7 +51,16 @@ async function _loadCommonData(hidFilter: { householdId: string }) {
     }),
     prisma.account.findMany({
       where: { isPlaceholder: { not: true }, ...hidFilter },
-      include: { Institution: true, Counterparty: true, AccountGroup: true, AccountAlias: true },
+      include: {
+        Institution: true,
+        Counterparty: true,
+        // 所有人 = 分组 + 配对家庭成员；简称也要跟着账户走，
+        // 导入预览按「墨·招商银行储蓄卡(9447)」匹配时才认得出「墨」是谁。
+        AccountGroup: {
+          include: { Institution: { select: { name: true, shortName: true } } },
+        },
+        AccountAlias: true,
+      },
       orderBy: [{ isActive: "desc" }, { name: "asc" }],
     }),
     loadReadableTagsByRecentUse(hidFilter.householdId),
@@ -76,7 +85,7 @@ async function _loadCommonData(hidFilter: { householdId: string }) {
 // Bump the cache key whenever serialized object fields are added or removed;
 // otherwise old objects may lack a field and make `field === true` always false
 // (observed with isReimbursable on 2026-09-21).
-const COMMON_DATA_CACHE_VERSION = "2026-09-21-counterparty-is-reimbursable-v1";
+const COMMON_DATA_CACHE_VERSION = "2026-11-05-owner-group-family-member-short-name-v1";
 export const loadCommonData = unstable_cache(
   _loadCommonData,
   ["common-data", CATEGORY_HIERARCHY_NORMALIZATION_VERSION, COMMON_DATA_CACHE_VERSION],
