@@ -16,6 +16,11 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      publish_tag:
+        description: "重发已发布版本（必须等于 package.json 的 version，例如 0.1.82），会同时推 latest 与该版本标签。留空则只产出 sha-<commit> 快照。"
+        required: false
+        default: ""
 
 permissions:
   contents: read
@@ -65,6 +70,31 @@ jobs:
           VERSION="$(node -p "require('./package.json').version")"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
 
+      # 重发入口（2026-11-05 v0.1.82 事件）：release v0.1.82 的 git tag 指向
+      # b15e8f68，那个 commit 的 docker-entrypoint.sh 缺 ensure_category_type_name_unique，
+      # 升级库上 db push 会要求 --accept-data-loss 然后 exit 78。修复合在 main 之后
+      # 重新 publish 那个 release 只会重新构建出坏镜像，所以用 dispatch + 版本号重发：
+      # 从当前 ref 构建，标签仍然是那个已发布的版本号，latest 随之回到健康版本。
+      # 约束：只允许重发 package.json 当前的版本号，避免把 0.1.83 的代码挂成 0.1.82。
+      - name: Resolve republish tag
+        id: republish
+        shell: bash
+        run: |
+          TAG="${{ inputs.publish_tag }}"
+          VERSION="${{ steps.package.outputs.version }}"
+          if [ -z "$TAG" ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "tag=${VERSION}" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [ "$TAG" != "$VERSION" ]; then
+            echo "::error::publish_tag=$TAG 与 package.json version=$VERSION 不一致；重发只允许当前版本号"
+            exit 1
+          fi
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "republishing $TAG from $(git rev-parse --short HEAD)"
+
       - name: Verify Docker entrypoint
         run: npm run check:docker
 
@@ -92,7 +122,8 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository_owner }}/mmh
           tags: |
-            type=raw,value=latest,enable=${{ github.event_name == 'release' }}
+            type=raw,value=latest,enable=${{ github.event_name == 'release' || steps.republish.outputs.enabled == 'true' }}
+            type=raw,value=${{ steps.republish.outputs.tag }},enable=${{ steps.republish.outputs.enabled == 'true' }}
             type=semver,pattern={{version}},enable=${{ github.event_name == 'release' }}
             type=raw,value=main,enable=${{ github.event_name == 'push' && endsWith(github.ref, '/heads/main') }}
             type=sha,prefix=sha-,format=short
@@ -117,7 +148,8 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository_owner }}/mmh-updater
           tags: |
-            type=raw,value=latest,enable=${{ github.event_name == 'release' }}
+            type=raw,value=latest,enable=${{ github.event_name == 'release' || steps.republish.outputs.enabled == 'true' }}
+            type=raw,value=${{ steps.republish.outputs.tag }},enable=${{ steps.republish.outputs.enabled == 'true' }}
             type=semver,pattern={{version}},enable=${{ github.event_name == 'release' }}
             type=raw,value=main,enable=${{ github.event_name == 'push' && endsWith(github.ref, '/heads/main') }}
             type=sha,prefix=sha-,format=short
