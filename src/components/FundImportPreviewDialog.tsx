@@ -1709,8 +1709,10 @@ export function FundImportPreviewDialog({ open, file, context, tabs = null, sour
 
   const columns = useMemo<AdvancedDataTableColumn<FundPreviewTableRow>[]>(() => [
     {
+      // 序号 / 问题标记列：与账单预览的「#」列同款，不进「表头设置」的可隐藏列表
+      //（隐藏它等于把行号与错误红点一起藏掉）。
       key: "status",
-      label: "",
+      label: "#",
       width: 42,
       minWidth: 36,
       align: "center",
@@ -1748,16 +1750,16 @@ export function FundImportPreviewDialog({ open, file, context, tabs = null, sour
       render: (row) => renderAccountEditCell(row, "fundAccount"),
     },
     { key: "fundCode", label: t("batchImport.template.fund.label.fundCode"), width: 96, minWidth: 76, filterText: (row) => row.fundCode || "-", render: (row) => renderTextEditCell(row, "fundCode", row.fundCode, "tabular-nums text-slate-700") },
-    { key: "fundName", label: t("batchImport.template.fund.label.fundName"), width: 220, minWidth: 150, filterText: (row) => row.fundName || "-", render: (row) => <span className="truncate text-slate-700" title={row.fundName || ""}>{row.fundName || "-"}</span> },
+    { key: "fundName", label: t("batchImport.template.fund.label.fundName"), width: 220, minWidth: 150, hideable: true, filterText: (row) => row.fundName || "-", render: (row) => <span className="truncate text-slate-700" title={row.fundName || ""}>{row.fundName || "-"}</span> },
     { key: "amount", label: t("batchImport.template.fund.label.amount"), width: 116, minWidth: 90, align: "right", filterKind: "numberRange", filterText: (row) => formatOptionalNumber(row.amount, 2), filterNumber: (row) => row.amount, sortValue: (row) => row.amount, render: (row) => renderNumberEditCell(row, "amount", row.amount, 2) },
-    { key: "feeRate", label: t("batchImport.template.fund.label.feeRate"), width: 96, minWidth: 78, align: "right", filterKind: "numberRange", filterText: (row) => row.feeRate != null ? row.feeRate.toFixed(4) : "-", filterNumber: (row) => row.feeRate, sortValue: (row) => row.feeRate ?? 0, render: (row) => renderNumberEditCell(row, "feeRate", row.feeRate, 4, "feeRate", "%") },
-    { key: "fee", label: t("batchImport.template.fund.label.fee"), width: 96, minWidth: 76, align: "right", filterKind: "numberRange", filterText: (row) => formatOptionalNumber(row.fee, 2), filterNumber: (row) => row.fee, sortValue: (row) => row.fee ?? 0, render: (row) => renderNumberEditCell(row, "fee", row.fee, 2, "fee") },
-    { key: "nav", label: t("batchImport.template.fund.label.nav"), width: 96, minWidth: 78, align: "right", filterKind: "numberRange", filterText: (row) => formatOptionalNumber(row.nav, 4), filterNumber: (row) => row.nav, sortValue: (row) => row.nav ?? 0, render: (row) => renderNumberEditCell(row, "nav", row.nav, 4, "nav") },
-    { key: "units", label: t("batchImport.template.fund.label.units"), width: 116, minWidth: 90, align: "right", filterKind: "numberRange", filterText: (row) => formatOptionalNumber(row.units, 2), filterNumber: (row) => row.units, sortValue: (row) => row.units ?? 0, render: (row) => renderNumberEditCell(row, "units", row.units, 2, "units") },
-    { key: "confirmDate", label: t("batchImport.template.fund.label.confirmDate"), width: 112, minWidth: 92, filterKind: "dateRange", filterText: (row) => row.confirmDate || "-", sortValue: (row) => row.confirmDate || "", render: (row) => renderTextEditCell(row, "confirmDate", row.confirmDate, "tabular-nums text-slate-700") },
-    { key: "arrivalDate", label: t("batchImport.template.fund.label.arrivalDate"), width: 112, minWidth: 92, filterKind: "dateRange", filterText: (row) => row.arrivalDate || "-", sortValue: (row) => row.arrivalDate || "", render: (row) => renderTextEditCell(row, "arrivalDate", row.arrivalDate, "tabular-nums text-slate-700") },
-    { key: "remark", label: t("batchImport.template.fund.label.remark"), width: 220, minWidth: 150, filterText: (row) => row.remark || "-", render: (row) => renderTextEditCell(row, "remark", row.remark) },
-    { key: "tags", label: t("detail.column.tags"), width: 150, minWidth: 110, filterText: (row) => row.tags || "-", render: (row) => renderTextEditCell(row, "tags", row.tags) },
+    { key: "feeRate", label: t("batchImport.template.fund.label.feeRate"), width: 96, minWidth: 78, hideable: true, align: "right", filterKind: "numberRange", filterText: (row) => row.feeRate != null ? row.feeRate.toFixed(4) : "-", filterNumber: (row) => row.feeRate, sortValue: (row) => row.feeRate ?? 0, render: (row) => renderNumberEditCell(row, "feeRate", row.feeRate, 4, "feeRate", "%") },
+    { key: "fee", label: t("batchImport.template.fund.label.fee"), width: 96, minWidth: 76, hideable: true, align: "right", filterKind: "numberRange", filterText: (row) => formatOptionalNumber(row.fee, 2), filterNumber: (row) => row.fee, sortValue: (row) => row.fee ?? 0, render: (row) => renderNumberEditCell(row, "fee", row.fee, 2, "fee") },
+    { key: "nav", label: t("batchImport.template.fund.label.nav"), width: 96, minWidth: 78, hideable: true, align: "right", filterKind: "numberRange", filterText: (row) => formatOptionalNumber(row.nav, 4), filterNumber: (row) => row.nav, sortValue: (row) => row.nav ?? 0, render: (row) => renderNumberEditCell(row, "nav", row.nav, 4, "nav") },
+    { key: "units", label: t("batchImport.template.fund.label.units"), width: 116, minWidth: 90, hideable: true, align: "right", filterKind: "numberRange", filterText: (row) => formatOptionalNumber(row.units, 2), filterNumber: (row) => row.units, sortValue: (row) => row.units ?? 0, render: (row) => renderNumberEditCell(row, "units", row.units, 2, "units") },
+    { key: "confirmDate", label: t("batchImport.template.fund.label.confirmDate"), width: 112, minWidth: 92, hideable: true, filterKind: "dateRange", filterText: (row) => row.confirmDate || "-", sortValue: (row) => row.confirmDate || "", render: (row) => renderTextEditCell(row, "confirmDate", row.confirmDate, "tabular-nums text-slate-700") },
+    { key: "arrivalDate", label: t("batchImport.template.fund.label.arrivalDate"), width: 112, minWidth: 92, hideable: true, filterKind: "dateRange", filterText: (row) => row.arrivalDate || "-", sortValue: (row) => row.arrivalDate || "", render: (row) => renderTextEditCell(row, "arrivalDate", row.arrivalDate, "tabular-nums text-slate-700") },
+    { key: "remark", label: t("batchImport.template.fund.label.remark"), width: 220, minWidth: 150, hideable: true, filterText: (row) => row.remark || "-", render: (row) => renderTextEditCell(row, "remark", row.remark) },
+    { key: "tags", label: t("detail.column.tags"), width: 150, minWidth: 110, hideable: true, filterText: (row) => row.tags || "-", render: (row) => renderTextEditCell(row, "tags", row.tags) },
   ], [cashAccountDisplayById, cashAccountOptions, draftValue, editingCell, fundAccountDisplayById, fundAccountOptions, importing, patchUploadItem, previewAccountLabel, previewAccountTitle, t, uploading]);
 
   if (!open || !file) return null;
@@ -1836,6 +1838,10 @@ export function FundImportPreviewDialog({ open, file, context, tabs = null, sour
           ) : null}
         </div>
         <div className="min-h-0 flex-1">
+          {/* 表头设置（2026-11-04 用户）：基金预览有 16 列，此前 showColumnVisibilityButton={false}
+              关掉了「显示列」菜单，列一多只能靠拖列宽，而拖拽下限又是全局 52px，一拖整表就挤塌。
+              现在与账单预览一致：次要列 hideable，列宽/显隐按 storageKey 落盘
+              （resetDisplayStateOnMount 只重置筛选与排序，不会清掉用户选好的列）。 */}
           <AdvancedDataTable
             storageKey="mmh_fund_import_preview_dialog_table_v1"
             columns={columns}
@@ -1898,7 +1904,6 @@ export function FundImportPreviewDialog({ open, file, context, tabs = null, sour
             showFilters
             sortable
             selectAllPreferred={(row) => !hasBlockingIssue(row)}
-            showColumnVisibilityButton={false}
             resetDisplayStateOnMount
           />
         </div>

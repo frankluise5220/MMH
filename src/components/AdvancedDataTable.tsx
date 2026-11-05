@@ -605,6 +605,18 @@ function plainTextOf(node: ReactNode): string {
 
 type ResizeFrameColumn = { key: string; resizeMinWidth: number };
 
+/**
+ * 「用户能把这一列拖到多窄」的下限：显式 `resizeMinWidth` 优先，否则用列自己声明的
+ * `minWidth`，都没有才退回 52px。
+ *
+ * 不能直接退回 52px（2026-11-04 用户：基金导入预览「拖一列，其余全挤成一条」）：
+ * 列多的表一拖宽，右侧所有列都被压到 52px 并落盘，表格看起来就塌了。`minWidth`
+ * 本来就是这一列的最小可读宽度，拖拽没有理由越过它 —— 放不下就让表格横向滚动。
+ */
+function resolveResizeMinWidth(column: { resizeMinWidth?: number; minWidth?: number }) {
+  return column.resizeMinWidth ?? column.minWidth ?? 52;
+}
+
 /** 按权重把 target 分给若干列，任何列都不低于 min；分不下时这些列取 min（总量会超出 target）。 */
 function distributeByWeight(
   columns: { key: string; weight: number; min: number }[],
@@ -632,7 +644,8 @@ function distributeByWeight(
 }
 
 /**
- * 列宽拖拽过程中的整表列宽：始终在容器可用宽度内调整，尽量不产生横向滚动条。
+ * 列宽拖拽过程中的整表列宽：默认在容器可用宽度内调整，尽量不产生横向滚动条；
+ * `growTable` 模式下反过来——只加宽被拖那一列，总宽度不设上限（导入预览用）。
  * - 被拖列左侧的列一律冻结：它们一变宽/变窄，被拖列的左边界就跟着挪，手柄与鼠标脱节。
  * - 空间由右侧的列按原比例吸收/让出，且各自不低于最小列宽；右侧全压到最小仍不够时，
  *   才允许整表超出容器（此时才出现横向滚动条）。
@@ -646,6 +659,7 @@ function computeResizeFrame(
   draggedKey: string,
   draggedWidth: number,
   availableColumnWidth: number,
+  options?: { growTable?: boolean },
 ): { colWidths: Record<string, number>; columnsTotal: number } {
   const index = columns.findIndex((column) => column.key === draggedKey);
   const widthOf = (column: ResizeFrameColumn) =>
@@ -657,6 +671,15 @@ function computeResizeFrame(
   }
 
   const dragged = columns[index];
+  if (options?.growTable) {
+    // 「不限制总宽度」模式：只改被拖那一列，其它列一律保持拖拽开始时的宽度
+    // （不再从右侧列刮空间），整表跟着变宽，超出容器就横向滚动。
+    const colWidths = Object.fromEntries(columns.map((column) => [column.key, widthOf(column)]));
+    colWidths[dragged.key] = Math.max(dragged.resizeMinWidth, draggedWidth);
+    const columnsTotal = Object.values(colWidths).reduce((sum, width) => sum + width, 0);
+    return { colWidths, columnsTotal };
+  }
+
   const leftColumns = columns.slice(0, index);
   const rightColumns = columns.slice(index + 1);
   const colWidths: Record<string, number> = {};
@@ -698,6 +721,14 @@ type AdvancedDataTableProps<T> = {
   rowKey: (row: T, index: number) => string;
   emptyText?: ReactNode;
   minTableWidth?: number;
+  /**
+   * 拖拽列宽时允许整表变宽（默认 false：始终在容器宽度内调整，右侧列按比例让出空间）。
+   *
+   * 导入预览这类「列多、每列内容长短差很大」的表开启：用户手动拖宽一列，就是想把这
+   * 一列放大看清楚，不该为了不出现横向滚动条去压缩其它列（2026-11-05 用户：
+   * 「账单导入的表格，用户手动调节表头放大时，应该不限制总宽度」）。
+   */
+  resizeGrowsTable?: boolean;
   rowClassName?: (row: T, index: number) => string;
   rowBackgroundGroupKey?: (row: T, index: number) => string | null | undefined;
   rowBackgroundEnabled?: boolean;
@@ -980,6 +1011,7 @@ export function AdvancedDataTable<T>({
   rowKey,
   emptyText,
   minTableWidth,
+  resizeGrowsTable = false,
   rowClassName,
   rowBackgroundGroupKey,
   rowBackgroundEnabled = false,
@@ -2070,14 +2102,14 @@ export function AdvancedDataTable<T>({
     const baseWidths = visibleColumns.map((column) => {
       const saved = columnWidths[column.key];
       const defaultMinWidth = column.minWidth ?? 52;
-      const resizeMinWidth = column.resizeMinWidth ?? 52;
+      const resizeMinWidth = resolveResizeMinWidth(column);
       const hasSavedWidth = Number.isFinite(saved);
       const preferredWidth = hasSavedWidth
         ? Math.max(resizeMinWidth, saved)
         : Math.max(defaultMinWidth, column.width);
-      const minWidth = hasSavedWidth && saved < defaultMinWidth
-        ? Math.max(resizeMinWidth, saved)
-        : defaultMinWidth;
+      // 历史落盘的过窄宽度（旧拖拽下限 52px 留下的值）一律被 preferredWidth 抬回
+      // 最小列宽；这里不再为「用户拖得比 minWidth 还窄」保留第二套下限。
+      const minWidth = defaultMinWidth;
       return { key: column.key, minWidth, resizeMinWidth, preferredWidth } as const;
     });
     const minColumnsTotal = baseWidths.reduce((sum, column) => sum + column.minWidth, 0);
@@ -2104,6 +2136,7 @@ export function AdvancedDataTable<T>({
         resizeSession.key,
         resizeSession.width,
         Math.max(0, availableWidth - controlWidth),
+        { growTable: resizeGrowsTable },
       );
       return { tableWidth: controlWidth + frame.columnsTotal, controlWidth, colWidths: frame.colWidths };
     }
@@ -2132,6 +2165,17 @@ export function AdvancedDataTable<T>({
           controlWidth,
           colWidths: Object.fromEntries(
             baseWidths.map((column) => [column.key, column.preferredWidth * growScale]),
+          ),
+        };
+      }
+      if (resizeGrowsTable) {
+        // 「不限制总宽度」：落盘的列宽原样渲染，整表比容器宽就横向滚动。
+        // 不压缩回来，否则用户刚拖宽的列下一帧又被挤回原样。
+        return {
+          tableWidth: controlWidth + basePreferredColumnsTotal,
+          controlWidth,
+          colWidths: Object.fromEntries(
+            baseWidths.map((column) => [column.key, column.preferredWidth]),
           ),
         };
       }
@@ -2170,7 +2214,16 @@ export function AdvancedDataTable<T>({
       controlWidth,
       colWidths: Object.fromEntries(baseWidths.map((column) => [column.key, column.preferredWidth])),
     };
-  }, [columnWidths, draggableRows, minTableWidth, resizeSession, selectable, viewportWidth, visibleColumns]);
+  }, [
+    columnWidths,
+    draggableRows,
+    minTableWidth,
+    resizeGrowsTable,
+    resizeSession,
+    selectable,
+    viewportWidth,
+    visibleColumns,
+  ]);
 
   const setSelection = useCallback((next: Set<string>) => {
     if (onSelectionChange) onSelectionChange(next);
@@ -2198,13 +2251,13 @@ export function AdvancedDataTable<T>({
     event.preventDefault();
     event.stopPropagation();
     resizeCleanupRef.current?.();
-    const minWidth = column.resizeMinWidth ?? 52;
+    const minWidth = resolveResizeMinWidth(column);
     const startX = event.clientX;
     const startWidth = layout.colWidths[column.key] ?? columnWidths[column.key] ?? column.width;
     // 整表列宽的落盘依据：可见列顺序 + 拖拽开始时的实际宽度（与 layout 预览用的是同一份快照）。
     const frameColumns: ResizeFrameColumn[] = visibleColumns.map((item) => ({
       key: item.key,
-      resizeMinWidth: item.resizeMinWidth ?? 52,
+      resizeMinWidth: resolveResizeMinWidth(item),
     }));
     const availableColumnWidth = Math.max(0, (viewportWidth || layout.tableWidth) - layout.controlWidth);
     setResizeSession({ key: column.key, width: startWidth, baseWidths: layout.colWidths });
@@ -2236,21 +2289,31 @@ export function AdvancedDataTable<T>({
       if (Math.round(latestWidth) === Math.round(startWidth)) return;
       // 松手时把整表列宽一起冻结成「最后看到的宽度」：layout 之后按手动宽度直接渲染，
       // 与被拖动的最后一帧完全一致，因此松手不回弹。
-      const frame = computeResizeFrame(frameColumns, layout.colWidths, column.key, latestWidth, availableColumnWidth);
+      const frame = computeResizeFrame(
+        frameColumns,
+        layout.colWidths,
+        column.key,
+        latestWidth,
+        availableColumnWidth,
+        { growTable: resizeGrowsTable },
+      );
       const minWidthByKey = new Map(frameColumns.map((item) => [item.key, item.resizeMinWidth]));
       const frozen = Object.entries(frame.colWidths).map(([key, width]) => ({
         key,
         width: Math.max(minWidthByKey.get(key) ?? 52, Math.round(width)),
       }));
       // 取整后可能比容器多出几像素；从最宽的列里扣掉，免得刚松手就冒出一条横向滚动条。
-      let roundedTotal = frozen.reduce((sum, item) => sum + item.width, 0);
-      const limit = Math.round(availableColumnWidth);
-      while (roundedTotal > limit) {
-        const widest = frozen.reduce((a, b) => (b.width > a.width ? b : a));
-        const take = Math.min(roundedTotal - limit, widest.width - (minWidthByKey.get(widest.key) ?? 52));
-        if (take <= 0) break;
-        widest.width -= take;
-        roundedTotal -= take;
+      // 「不限制总宽度」模式下不做这件事——用户要的就是整表变宽后滚动。
+      if (!resizeGrowsTable) {
+        let roundedTotal = frozen.reduce((sum, item) => sum + item.width, 0);
+        const limit = Math.round(availableColumnWidth);
+        while (roundedTotal > limit) {
+          const widest = frozen.reduce((a, b) => (b.width > a.width ? b : a));
+          const take = Math.min(roundedTotal - limit, widest.width - (minWidthByKey.get(widest.key) ?? 52));
+          if (take <= 0) break;
+          widest.width -= take;
+          roundedTotal -= take;
+        }
       }
       setColumnWidths((prev) => {
         const next = { ...prev };
@@ -2266,7 +2329,16 @@ export function AdvancedDataTable<T>({
     window.addEventListener("mouseup", onUp);
     window.addEventListener("blur", onUp);
     resizeCleanupRef.current = onUp;
-  }, [columnWidths, layout.colWidths, layout.controlWidth, layout.tableWidth, storageKey, viewportWidth, visibleColumns]);
+  }, [
+    columnWidths,
+    layout.colWidths,
+    layout.controlWidth,
+    layout.tableWidth,
+    resizeGrowsTable,
+    storageKey,
+    viewportWidth,
+    visibleColumns,
+  ]);
 
   const resetColumnWidths = useCallback(() => {
     // 清空即可：没有手动列宽时 layout 会回到「按列定义的默认宽度铺满/压缩」的那套算法。

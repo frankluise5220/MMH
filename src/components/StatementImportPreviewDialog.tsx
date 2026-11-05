@@ -1833,6 +1833,9 @@ export function StatementImportPreviewDialog({
                 rowKey={(row) => row.key}
                 emptyText={t("batchImport.noRecordsForFilter")}
                 minTableWidth={1180}
+                // 用户手动拖宽某一列时只把整表变宽（超出就横向滚动），
+                // 不去压缩其它列——预览里每列内容长短差别大，被挤窄就看不见了。
+                resizeGrowsTable
                 selectable
                 selectAllScope="renderedRows"
                 selectAllPreferred={(row) => row.ready}
