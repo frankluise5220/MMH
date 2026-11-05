@@ -28,9 +28,13 @@ export async function routeAlipayFundBill(
   sourceFileName: string,
   ownerHint = "",
 ): Promise<AlipayFundBillRoute | null> {
+  // 所有人优先级交给 extractAlipayFundTrades：显式入参 > 账单表头「姓名：」> 文件名。
+  // 文件名「支付宝交易明细(20260728-20261028).csv」里没有人名，之前直接用它兜底就等于
+  // 没有所有人，资金账户名退化成裸「余额宝」。
   const trades = extractAlipayFundTrades(
     sheets,
-    ownerHint || guessOwnerFromFilename(sourceFileName),
+    ownerHint,
+    guessOwnerFromFilename(sourceFileName),
   );
   if (trades.length === 0) return null;
   return { file: await buildFundImportFile(trades, sourceFileName), count: trades.length, trades };

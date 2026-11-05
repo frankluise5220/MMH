@@ -9,6 +9,7 @@
 // （见 /api/v1/fund/resolve-by-names），查不到的在预览里由用户补一次，
 // 导入成功后本地就有该基金资料，下次自动匹配。
 
+import { findAlipayOwnerHint } from "@/lib/statement/alipay-template";
 import {
   cleanStatementText as cleanText,
   findStatementHeaderIndex as findHeaderIndex,
@@ -110,6 +111,7 @@ function isFundDistributor(value: string) {
 export function extractAlipayFundTrades(
   sheets: readonly AlipayFundTradeSheet[],
   ownerHint = "",
+  fallbackOwnerHint = "",
 ): AlipayFundTrade[] {
   const trades: AlipayFundTrade[] = [];
 
@@ -129,6 +131,15 @@ export function extractAlipayFundTrades(
       }
     }
     if (headerIndex < 0) continue;
+
+    // 所有人：显式入参 > 账单表头的「姓名：」> 文件名兜底。
+    // 必须和资金收支页签同源（normalizeAlipayWorkbookRows 也走 findAlipayOwnerHint）：
+    // 「余额宝」在两位成员各有一个的账本里是两条同名账户，丢了所有人前缀就退化成裸
+    // 「余额宝」，匹配器只能判歧义 —— 资金账户空着，后面的「同机构基金账户」也无从推断。
+    const sheetOwner =
+      cleanText(ownerHint)
+      || findAlipayOwnerHint(rows, headerIndex)
+      || cleanText(fallbackOwnerHint);
 
     const timeIndex = findHeaderIndex(headers, ["\u4ea4\u6613\u65f6\u95f4", "\u4ea4\u6613\u521b\u5efa\u65f6\u95f4"]);
     const categoryIndex = findHeaderIndex(headers, ["\u4ea4\u6613\u5206\u7c7b"]);
@@ -162,8 +173,8 @@ export function extractAlipayFundTrades(
         amount,
         subtype,
         fundName,
-        cashAccount: buildCashAccount(readCell(row, paymentIndex), ownerHint),
-        fundAccount: buildFundAccount(counterparty, ownerHint),
+        cashAccount: buildCashAccount(readCell(row, paymentIndex), sheetOwner),
+        fundAccount: buildFundAccount(counterparty, sheetOwner),
         rawText: row.join(","),
       });
     }
