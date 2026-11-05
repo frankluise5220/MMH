@@ -96,9 +96,15 @@ jobs:
             # 其余情况留给人判断，避免顺手删掉别的发布通道。
             rest="$(echo "$body" | jq -r --arg id "$id" --arg t "$DELETE_TAG" \
               '.[] | select((.id|tostring) == $id) | (.metadata.container.tags // []) | map(select(. != $t)) | join(",")')"
-            if [ -n "$rest" ]; then
+            # 只独占才算安全，但 main push 产生的 sha-<commit> 快照不算发布通道：
+            # v0.1.82 那个 version 就是同时挂着 0.1.82 与 sha-b15e8f6，一并删掉即可。
+            other="$(printf '%s' "$rest" | tr ',' '\n' | grep -Ev '^sha-[0-9a-f]{7,40}$' | tr '\n' ' ' || true)"
+            if [ -n "$other" ]; then
               echo "::warning::version $id also carries [$rest]; skipping so those tags survive"
               continue
+            fi
+            if [ -n "$rest" ]; then
+              echo "note: version $id also drops sha snapshot tag(s) [$rest]"
             fi
             echo "deleting package version $id (tag $DELETE_TAG)"
             code="$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
