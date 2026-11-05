@@ -1,0 +1,120 @@
+name: GHCR Cleanup
+
+# 运维用途：删除一个已经发布的镜像标签（连同它独占的 package version），
+# 并可选地把 :latest 重新指向一个仍然健康的版本。
+# 起因：2026-11-05 v0.1.82 的 Docker 镜像在既有库上 prisma db push 会以
+# --accept-data-loss 为由失败、entrypoint 拒绝启动（exit 78），需要先把
+# :0.1.82 / :latest 下架，避免用户拉到坏版本。
+#
+# 为什么放在 Actions 里：删除 package version 需要 delete:packages 权限，
+# 本地 gh 登录态（gho_，仅 repo/workflow/gist）连版本列表都读不到（403），
+# 而 GITHUB_TOKEN 配合 packages: write 可以管理本仓库关联的包。
+on:
+  workflow_dispatch:
+    inputs:
+      image:
+        description: "镜像名（小写，不含 owner），例如 mmh"
+        required: true
+        default: "mmh"
+      delete_tag:
+        description: "要删除的标签，例如 0.1.82"
+        required: true
+      retag_latest_to:
+        description: "把 :latest 指回哪个仍健康的标签（留空则不动 latest）"
+        required: false
+        default: "0.1.81"
+      confirm:
+        description: "输入 DELETE 以确认执行"
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    env:
+      OWNER: ${{ github.repository_owner }}
+      IMAGE: ${{ inputs.image }}
+      DELETE_TAG: ${{ inputs.delete_tag }}
+      RETAG_TO: ${{ inputs.retag_latest_to }}
+    steps:
+      - name: Guard
+        run: |
+          if [ "${{ inputs.confirm }}" != "DELETE" ]; then
+            echo "::error::confirm 必须输入 DELETE"
+            exit 1
+          fi
+          echo "owner=$OWNER image=$IMAGE delete_tag=$DELETE_TAG retag_latest_to=$RETAG_TO"
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Show current digests
+        run: |
+          set +e
+          for tag in "$DELETE_TAG" latest; do
+            echo "--- $tag"
+            docker buildx imagetools inspect "ghcr.io/$OWNER/$IMAGE:$tag" 2>&1 | head -n 6
+          done
+
+      - name: Point latest at the previous release
+        if: inputs.retag_latest_to != ''
+        run: |
+          set -euo pipefail
+          echo "retagging :latest -> :$RETAG_TO"
+          docker buildx imagetools create \
+            --tag "ghcr.io/$OWNER/$IMAGE:latest" \
+            "ghcr.io/$OWNER/$IMAGE:$RETAG_TO"
+          echo "--- latest now:"
+          docker buildx imagetools inspect "ghcr.io/$OWNER/$IMAGE:latest" | head -n 6
+
+      - name: Delete the package version that owns the tag
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/users/$OWNER/packages/container/$IMAGE/versions?per_page=100"
+          body="$(curl -sS -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" "$api")"
+          if echo "$body" | jq -e '.message' >/dev/null 2>&1; then
+            echo "::error::listing versions failed: $(echo "$body" | jq -r '.message')"
+            exit 1
+          fi
+          echo "$body" | jq -r '.[] | "\(.id)\t\(.metadata.container.tags | join(","))"'
+          ids="$(echo "$body" | jq -r --arg t "$DELETE_TAG" '.[] | select((.metadata.container.tags // []) | index($t)) | .id')"
+          if [ -z "$ids" ]; then
+            echo "no package version carries tag $DELETE_TAG (already gone?)"
+            exit 0
+          fi
+          for id in $ids; do
+            # 同一个 version 可能还挂着别的标签（sha-xxx / main）。只删本版本独占的，
+            # 其余情况留给人判断，避免顺手删掉别的发布通道。
+            rest="$(echo "$body" | jq -r --arg id "$id" --arg t "$DELETE_TAG" \
+              '.[] | select((.id|tostring) == $id) | (.metadata.container.tags // []) | map(select(. != $t)) | join(",")')"
+            if [ -n "$rest" ]; then
+              echo "::warning::version $id also carries [$rest]; skipping so those tags survive"
+              continue
+            fi
+            echo "deleting package version $id (tag $DELETE_TAG)"
+            code="$(curl -sS -o /dev/null -w '%{http_code}' -X DELETE \
+              -H "Authorization: Bearer $TOKEN" -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/users/$OWNER/packages/container/$IMAGE/versions/$id")"
+            echo "  -> HTTP $code"
+            if [ "$code" != "204" ]; then
+              echo "::error::delete failed for version $id (HTTP $code)"
+              exit 1
+            fi
+          done
+
+      - name: Verify
+        run: |
+          set +e
+          echo "--- $DELETE_TAG (expect failure / 404)"
+          docker buildx imagetools inspect "ghcr.io/$OWNER/$IMAGE:$DELETE_TAG" 2>&1 | head -n 3
+          echo "--- latest (expect $RETAG_TO digest)"
+          docker buildx imagetools inspect "ghcr.io/$OWNER/$IMAGE:latest" 2>&1 | head -n 6
