@@ -703,6 +703,19 @@ function accountDailyNavDeltaProfit(params: {
     // 10-15 → 10-16 的 -400.24，10-20 的当日收益因此少了 400.24。只记缺失、不计利润，
     // 等新行落地再算，才能保证「每个净值行只被消费一次」。
     if (!hasExactNav && hasLaterNav) continue;
+    // 尾部回退（dateKey 之后已经没有净值行了）会把「最新一行 − 前一行」再计提一次：
+    // 11-05 还没有净值时，5 号报表日的 dateKey 回退到 11-04，用的正是 4 号报表日
+    // 已经用过的同一对净值行，于是两天显示同一笔基金收益。判据统一成「每个净值行
+    // 只被消费一次」—— 前一报表日的目标净值日已经覆盖到 currentRow 时，这段涨跌
+    // 早就记过了，这里只保留上面的缺失提示，不再计提。
+    const previousReportDate = new Date(params.date);
+    previousReportDate.setUTCDate(previousReportDate.getUTCDate() - 1);
+    const previousTargetKey = fundNavTargetDateForOffset({
+      referenceDate: previousReportDate,
+      navDateOffset: params.navDateOffsetByCode?.get(fundCode) ?? 0,
+      tradingCalendar: "cn_fund",
+    });
+    if (previousTargetKey >= currentRow.date) continue;
     // 份额按「这一天真正用到的净值行日期」比较，而不是报表日期：份额起算日是
     // 确认日后的下一个交易日，那天若该基金没有净值（QDII 缺数据、标的市场休市），
     // 本行就不会把它算进来，等它出现下一条净值行时才统计 —— 有净值能算出份额，
