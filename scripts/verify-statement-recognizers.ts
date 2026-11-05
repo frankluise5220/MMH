@@ -111,15 +111,24 @@ check("昵称清洗：🙈🙉🙊 与装饰符不拼进账户名", () => {
   assert.equal(out.rows[1][COL.account], "墨斗鱼微信零钱");
 });
 
-check("退款行（已全额退款）不清空账户，仍保留付款方式", () => {
-  // 用户报的 2019-11-19 那笔：转账 ¥2,000 状态「已全额退款」，
-  // 付款方式写着「零钱」，却因为标成待确认把账户清空，
-  // 预览随即回退到发起导入的账户，记成了银行储蓄卡。
+check("退款行（已全额退款）翻成收入，账户仍保留付款方式", () => {
+  // 用户报的 2019-11-19 那笔：转账 ¥2,000 状态「已全额退款」。
+  // 微信旧版不会另起一条收入，只把原支出行的状态改成「已全额退款」，
+  // 钱当天已退回零钱，所以这一笔必须记成收入（金额仍是正数）。
+  // 同一笔重转的 2019-11-20 那行状态是「对方已收钱」，仍是支出。
   const refund = WECHAT_2019.map((row, index) => (index === 4 ? [...row.slice(0, 7), "已全额退款", ...row.slice(8)] : row));
   const out = parse("wechat-refund", refund);
   assert.equal(out.template, "wechat");
+  assert.equal(out.rows[1][COL.majorType], "收入");
+  assert.equal(out.rows[1][COL.outflow], "");
+  assert.equal(out.rows[1][COL.inflow], "30");
   assert.equal(out.rows[1][COL.account], "墨斗鱼微信零钱");
-  assert.match(String(out.rows[1][10] ?? ""), /已全额退款/);
+  const remark = String(out.rows[1][10] ?? "");
+  assert.match(remark, /状态:已全额退款/);
+  assert.match(remark, /原收支:支出/);
+  // 非退款行不被翻转：样本第二条（微信红包 收入 ¥50）保持收入且不带「原收支」。
+  assert.equal(out.rows[2][COL.majorType], "收入");
+  assert.doesNotMatch(String(out.rows[2][10] ?? ""), /原收支/);
 });
 
 check("银行卡付款方式解析成 机构+卡类型+尾号", () => {

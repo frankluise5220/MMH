@@ -218,10 +218,11 @@ function normalizeWechatPaymentAccount(value: string, ownerHint: string) {
 }
 
 /**
- * Returns true for rows that should be skipped because the transaction
- * was fully refunded or returned by the counterparty.
+ * 微信旧版账单里「已全额退款 / 已退还」的交易不会另起一条收入行，
+ * 而是把原来那条支出行的「当前状态」改成这个值（金额仍是正数）。
+ * 所以它不是「忽略」信号，而是「方向翻转成收入」的信号，见下方 classifiedFlow。
  */
-function isIgnoredWechatStatus(value: string) {
+function isWechatRefundStatus(value: string) {
   return /\u5df2\u5168\u989d\u9000\u6b3e|\u5df2\u9000\u8fd8/.test(value);
 }
 
@@ -341,8 +342,19 @@ function normalizeWechatSheetRows(sheet: StatementWorkbookSheetRows) {
       || (outflowAmount ? "\u652f\u51fa" : inflowAmount ? "\u6536\u5165" : "")
       || inferWechatFlowFromText(transactionType, product, counterparty, rawRemark);
 
-    const classifiedFlow = classifyWechatFlow(flow) ?? fallbackWechatFlow();
-    const requiresReview = classifiedFlow.requiresReview || isIgnoredWechatStatus(status);
+    // 微信旧版账单专用口径（2026-11-05 用户裁定）：「收/支」列写着「支出」、
+    // 当前状态是「已全额退款 / 已退还」时，钱当天已经退回付款账户，
+    // 必须记成收入（金额仍是正数），不能再当支出扣一次余额。
+    // 例：2019-11-19 转账给 TK-史美玲 ¥2,000 状态「已全额退款」→ 收入 ¥2,000，
+    // 与 2019-11-20 那笔「对方已收钱」的支出 ¥2,000 正好一进一出。
+    const declaredFlow = classifyWechatFlow(flow);
+    const refunded = isWechatRefundStatus(status);
+    const classifiedFlow =
+      refunded && declaredFlow?.outflow
+        ? { majorType: "\u6536\u5165", outflow: false, inflow: true, requiresReview: false }
+        : declaredFlow ?? fallbackWechatFlow();
+    // 方向由「已全额退款」定死的行不需要人工确认；只有方向本身判不出来时才留待确认。
+    const requiresReview = classifiedFlow.requiresReview || (refunded && !declaredFlow);
 
     const account = normalizeWechatPaymentAccount(readCell(row, accountIndex), ownerHint);
     const orderNo = readCell(row, orderIndex);
@@ -355,11 +367,12 @@ function normalizeWechatSheetRows(sheet: StatementWorkbookSheetRows) {
           ? `\u5bfc\u5165\u515c\u5e95:\u8bf7\u786e\u8ba4\u7c7b\u578b`
           : `\u5bfc\u5165\u515c\u5e95:\u8bf7\u786e\u8ba4\u7c7b\u578b\u548c\u8d26\u6237`
         : "",
-      flow && requiresReview ? `\u539f\u6536\u652f:${flow}` : "",
+      // 退款行也写「原收支」，让用户看到微信原文写的是「支出」、是我们按退款口径翻成收入。
+      flow && (requiresReview || refunded) ? `\u539f\u6536\u652f:${flow}` : "",
       rawRemark && !visibleRemark.includes(rawRemark) ? `\u539f\u59cb\u5907\u6ce8:${rawRemark}` : "",
       orderNo ? `\u5fae\u4fe1\u5355\u53f7:${orderNo}` : "",
       merchantOrderNo ? `\u5546\u6237\u5355\u53f7:${merchantOrderNo}` : "",
-      status && (requiresReview || !/\u5df2\u5168\u989d\u9000\u6b3e|\u5df2\u9000\u8fd8/.test(status)) ? `\u72b6\u6001:${status}` : "",
+      status && (requiresReview || refunded) ? `\u72b6\u6001:${status}` : "",
     ]);
 
     return [[
