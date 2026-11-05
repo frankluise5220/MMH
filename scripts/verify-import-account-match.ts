@@ -11,6 +11,7 @@
  */
 import {
   createImportAccountMatcher,
+  parseImportPaymentCardAccount,
   parseSettlementAccountName,
   parseSettlementCounterpartyFromRemark,
   parseSettlementCounterpartyFromText,
@@ -183,6 +184,53 @@ if (legacyResult === "legacy-payable") {
 } else {
   failed += 1;
   console.error(`FAIL  "赵六的往来款"（未加载往来对象） -> ${legacyResult ?? "未匹配"}，期望 legacy-payable`);
+}
+
+// 2026-11-05 用户报告：微信「支付方式」写「招商银行储蓄卡(9447)」时，
+// 不能落到同一银行下另一张借记卡（账本里那张叫「一卡通」）。
+// 「一卡通」是借记卡的同义展开，候选键里也有「招商银行储蓄卡」，
+// 会抢走「招商银行储蓄卡(9447)」的精确匹配。
+const cardAccounts: Source[] = [
+  { id: "cmb-9447", name: "9447", kind: "bank_debit", Institution: { name: "招商银行", shortName: "招行" }, AccountGroup: { name: "墨斗鱼" } },
+  { id: "cmb-7457", name: "7457", kind: "bank_debit", Institution: { name: "招商银行", shortName: "招行" }, AccountGroup: { name: "墨斗鱼" } },
+  { id: "cmb-yikatong", name: "一卡通", kind: "bank_debit", Institution: { name: "招商银行", shortName: "招行" }, AccountGroup: { name: "墨斗鱼" } },
+  { id: "jsrcb-5516", name: "5516", kind: "bank_debit", Institution: { name: "江苏农商联合银行" }, AccountGroup: { name: "墨斗鱼" } },
+];
+const cardMatch = createImportAccountMatcher(cardAccounts, { ownerName: "墨斗鱼" });
+
+function expectCard(
+  query: string,
+  owner: string,
+  expectedName: string,
+  expectedId: string | null,
+  note: string,
+) {
+  const parsed = parseImportPaymentCardAccount(query, owner);
+  const actualName = parsed?.accountName ?? "(未解析)";
+  const actualId = parsed ? cardMatch(parsed.accountName).account?.id ?? null : null;
+  if (actualName === expectedName && actualId === expectedId) {
+    console.log(`PASS  ${note}：${query} -> ${actualName} -> ${actualId ?? "未匹配"}`);
+  } else {
+    failed += 1;
+    console.error(
+      `FAIL  ${note}：${query} -> ${actualName} -> ${actualId ?? "未匹配"}，期望 ${expectedName} -> ${expectedId ?? "未匹配"}`,
+    );
+  }
+}
+
+expectCard("招商银行储蓄卡(9447)", "墨斗鱼", "墨斗鱼招商银行储蓄卡(9447)", "cmb-9447", "招行储蓄卡带尾号不落到一卡通");
+expectCard("江苏农商联合银行储蓄卡(5516)", "墨斗鱼", "墨斗鱼江苏农商联合银行储蓄卡(5516)", "jsrcb-5516", "机构名保留原文全称");
+expectCard("亲属卡(浮冰)", "墨斗鱼", "(未解析)", null, "亲属卡不是银行卡");
+
+// 只给机构 + 尾号（没有卡类型词）也要能落到那张卡。
+{
+  const actualId = cardMatch("墨斗鱼招商银行9447").account?.id ?? null;
+  if (actualId === "cmb-9447") {
+    console.log("PASS  只写机构 + 尾号 -> cmb-9447");
+  } else {
+    failed += 1;
+    console.error(`FAIL  只写机构 + 尾号 -> ${actualId ?? "未匹配"}，期望 cmb-9447`);
+  }
 }
 
 if (failed > 0) {

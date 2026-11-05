@@ -644,6 +644,71 @@ export function buildImportAccountCandidates(account: ImportAccountMatchSource) 
   return Array.from(candidates).filter(Boolean);
 }
 
+export type ImportPaymentCardAccount = {
+  /** 原始文本（账单「支付方式 / 付款方式」列的原文）。 */
+  raw: string;
+  /** 账本机构口径的银行名（BANK_ALIASES 的 canonical，如「招商银行」）。 */
+  institutionName: string;
+  kind: "bank_debit" | "bank_credit";
+  /** 中文卡类型（储蓄卡 / 信用卡）。 */
+  kindLabel: string;
+  /** 卡号尾号（4 位）；文本里没有尾号时为空串。 */
+  last4: string;
+  /** 拼好的账户名：`墨斗鱼招商银行储蓄卡(9447)`。 */
+  accountName: string;
+};
+
+/**
+ * 把账单「支付方式 / 付款方式」里的银行卡文本解析成结构化账户。
+ *
+ * 微信 2019 版这列写的是「招商银行储蓄卡(9447)」：机构 + 卡类型 + 尾号三段。
+ * 原样丢给匹配器只能靠宽松包含猜（实测会落到同一家银行下另一张名字叫
+ * 「一卡通」的卡上，因为「一卡通」是借记卡的同义展开，键里也有「招商银行储蓄卡」）。
+ * 这里先把三段语义定死，账户名拼成 `墨斗鱼招商银行储蓄卡(9447)`，
+ * 匹配器再用 机构 + 借记卡 + 尾号9447 精确落到那一个账户。
+ *
+ * 解析不出机构名（「亲属卡」「零钱」「余额」这类不是银行卡的文本）时返回 null，
+ * 交给调用方的其他口径处理。
+ */
+export function parseImportPaymentCardAccount(
+  value: string | null | undefined,
+  ownerName?: string | null,
+): ImportPaymentCardAccount | null {
+  const raw = String(value ?? "").trim();
+  if (!raw) return null;
+
+  const key = normalizeImportAccountMatchKey(raw);
+  const kind: ImportPaymentCardAccount["kind"] | null = /信用卡|贷记卡/.test(key)
+    ? "bank_credit"
+    : /储蓄卡|借记卡|一卡通|银行卡/.test(key)
+      ? "bank_debit"
+      : null;
+  if (!kind) return null;
+
+  const bank = BANK_ALIASES.find((item) =>
+    [item.canonical, ...item.aliases].some((variant) => key.includes(normalizeImportAccountMatchKey(variant))),
+  );
+  if (!bank) return null;
+
+  // 机构名优先用原文里写全的那个：「江苏农商联合银行储蓄卡(5516)」的 canonical
+  // 只有「农商银行」，直接用会把账户名写成「农商银行储蓄卡(5516)」，
+  // 与账本机构名「江苏农商联合银行」不一致。原文出现的最长机构名更准。
+  const spellOut = raw.match(/[\u4e00-\u9fa5]{2,12}?(?:银行|信用社)/)?.[0] ?? "";
+  const institutionName = spellOut && expandImportBankName(spellOut).length > 0 ? spellOut : bank.canonical;
+
+  const last4 = extractImportAccountLast4(raw);
+  const kindLabel = raw.match(/储蓄卡|借记卡|一卡通|银行卡|信用卡|贷记卡/)?.[0] ?? (kind === "bank_credit" ? "信用卡" : "储蓄卡");
+  const owner = String(ownerName ?? "").trim();
+  return {
+    raw,
+    institutionName,
+    kind,
+    kindLabel,
+    last4,
+    accountName: `${owner}${institutionName}${kindLabel}${last4 ? `(${last4})` : ""}`,
+  };
+}
+
 export function resolveImportAccountIdFromList(
   accountName: string | undefined,
   accounts: ImportAccountMatchSource[],
@@ -923,7 +988,12 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(
           // "张四的招商银行信用卡" expands to a bare "招商银行信用卡" key which can
           // exact-match a differently-owned "信用卡" account; that hit must fall
           // through to owner-aware stages instead of returning here.
-          ownerKeyMatches(compatibleExactMatches[0], targetOwnerKeys)
+          ownerKeyMatches(compatibleExactMatches[0], targetOwnerKeys) &&
+          // 输入带尾号、命中的账户却没有尾号时不在此定案：
+          // 「招商银行储蓄卡(9447)」会精确命中「招商银行一卡通」账户的
+          // 「招商银行储蓄卡」键（一卡通是借记卡的同义展开），但账本里真正
+          // 带 9447 的是另一张卡。交给后面的 byLast4 阶段按尾号收口。
+          !(last4 && !compatibleExactMatches[0].last4)
         ) {
           return result(compatibleExactMatches[0].account, [], { targetKind, targetBankNames });
         }

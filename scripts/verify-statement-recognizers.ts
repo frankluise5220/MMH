@@ -122,6 +122,15 @@ check("退款行（已全额退款）不清空账户，仍保留付款方式", (
   assert.match(String(out.rows[1][10] ?? ""), /已全额退款/);
 });
 
+check("银行卡付款方式解析成 机构+卡类型+尾号", () => {
+  // 微信 2019 版「支付方式」写「招商银行储蓄卡(9447)」：
+  // 账户名必须补全成 所有人+机构+卡类型+尾号，交给匹配器按尾号精确落账。
+  const rows = WECHAT_2019.map((row, index) => (index === 4 ? [...row.slice(0, 6), "招商银行储蓄卡(9447)", ...row.slice(7)] : row));
+  const out = parse("wechat-card", rows);
+  assert.equal(out.template, "wechat");
+  assert.equal(out.rows[1][COL.account], "墨斗鱼招商银行储蓄卡(9447)");
+});
+
 console.log("[2] 微信 2026 新版（支出/收入双列）");
 check("命中 wechat，双列金额各取一侧", () => {
   const out = parse("wechat-2026", WECHAT_2026, "微信支付账单流水文件(20260101-20261104).xlsx");

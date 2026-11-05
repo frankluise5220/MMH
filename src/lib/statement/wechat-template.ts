@@ -1,4 +1,5 @@
 import type { StatementWorkbookSheetRows } from "@/lib/statement/alipay-template";
+import { parseImportPaymentCardAccount } from "@/lib/account-import-match";
 import {
   cleanStatementText as cleanText,
   findStatementHeaderIndex as findHeaderIndex,
@@ -200,10 +201,18 @@ function extractOwnerNameFromNickname(nickname: string) {
  *
  * 所有人前缀只在昵称能抽出干净人名时才加；否则只写「微信零钱」，
  * 由导入预览的账户匹配去账本里按「包含」关系落到「X的微信零钱 / 微信零钱」。
+ *
+ * 银行卡（2026-11-05 用户要求）：微信 2019 版这列写「招商银行储蓄卡(9447)」，
+ * 交给 `parseImportPaymentCardAccount` 拆成 机构 + 卡类型 + 尾号 再拼成
+ * `墨斗鱼招商银行储蓄卡(9447)`，让匹配器按「招商银行 + 借记卡 + 9447」精确落账，
+ * 而不是靠宽松包含落到同银行另一张也在做借记卡的卡上。
  */
 function normalizeWechatPaymentAccount(value: string, ownerHint: string) {
   const raw = cleanText(value);
-  if (!isWechatBalanceAccountText(raw)) return raw;
+  if (!isWechatBalanceAccountText(raw)) {
+    const ownerName = extractOwnerNameFromNickname(ownerHint);
+    return parseImportPaymentCardAccount(raw, ownerName)?.accountName ?? raw;
+  }
   const ownerName = extractOwnerNameFromNickname(ownerHint);
   return ownerName ? `${ownerName}${WECHAT_DEFAULT_ACCOUNT}` : WECHAT_DEFAULT_ACCOUNT;
 }
