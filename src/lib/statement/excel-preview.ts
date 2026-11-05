@@ -26,6 +26,7 @@ import {
 } from "@/lib/statement/caizhi-template";
 import { readStatementSheetRows } from "@/lib/statement/statement-sheet-reader";
 import { normalizeStatementHeader as normalizeHeader } from "@/lib/statement/header-utils";
+import { wechatMetaFromRow, wechatMetaHeaderIndexes } from "@/lib/statement/wechat-transfer-guard";
 // 识别器清单/兜底/截表头/多 sheet 合并统一在 recognizer-pipeline（勿在此手抄）。
 import {
   parseStatementSheetsStandard,
@@ -58,6 +59,18 @@ type StatementExcelPreviewItem = {
   remark?: string;
   tags?: string;
   counterparty?: string;
+  /** 该行来自微信账单（归一化行带「原交易类型」列）。 */
+  wechatStatement?: boolean;
+  /** 微信账单原文「交易类型」（转账 / 商户消费 / 红包…）：只在把「收支大类」改成转账时判定。 */
+  statementTransactionType?: string;
+  /** 微信账单原文「交易对方」：改成转账时按「<交易对方>的往来款」填对向账户。 */
+  statementCounterparty?: string;
+  /**
+   * 原文「对向账户 / 对方账户」列的原始值。
+   * 非转账行不参与导入（否则会被当成商户或账户），但用户把「收支大类」改成转账时
+   * 要能据此回填对向账户，否则状态只会显示「缺对向账户」。
+   */
+  rawCounterAccount?: string;
   institution?: string;
   institutionUserEdited?: boolean;
   postedDate?: string;
@@ -300,6 +313,8 @@ export function parseStatementTemplateRows(
   const currencyIndex = spdbIndexes?.currency ?? -1;
   const originalAmountIndex = spdbIndexes?.originalAmount ?? -1;
   const balanceIndex = reader.findIndex(STATEMENT_BALANCE_HEADER_ALIASES);
+  // 微信模板在归一化行末尾追加了原文「交易类型」「交易对方」，其它账单没有这两列（返回 null）。
+  const wechatMetaIndexes = wechatMetaHeaderIndexes(headers);
 
   if (dateIndex < 0 || (amountIndex < 0 && inflowIndex < 0 && outflowIndex < 0)) return [];
 
@@ -436,6 +451,8 @@ export function parseStatementTemplateRows(
         category,
         institution,
         counterparty: institution || undefined,
+        ...wechatMetaFromRow(row, wechatMetaIndexes),
+        rawCounterAccount: rawCounterAccount || undefined,
         remark,
         tags: tags || undefined,
         postedDate,
@@ -472,6 +489,8 @@ export function parseStatementTemplateRows(
       category,
       institution,
       counterparty: institution || undefined,
+      ...wechatMetaFromRow(row, wechatMetaIndexes),
+      rawCounterAccount: rawCounterAccount || undefined,
       remark,
       tags: tags || undefined,
       postedDate,

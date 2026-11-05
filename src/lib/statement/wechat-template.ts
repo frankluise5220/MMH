@@ -8,6 +8,10 @@ import {
   parseStatementAmount as parseAmount,
   readStatementCell as readCell,
 } from "@/lib/statement/header-utils";
+import {
+  WECHAT_RAW_COUNTERPARTY_HEADER,
+  WECHAT_RAW_TRANSACTION_TYPE_HEADER,
+} from "@/lib/statement/wechat-transfer-guard";
 
 /**
  * Normalized row layout produced by the WeChat bill template.
@@ -24,6 +28,11 @@ import {
  * [8]  \u6536\u652f\u673a\u6784 (institution)
  * [9]  \u5907\u6ce8 (visible remark)
  * [10] \u7b2c\u4e8c\u5907\u6ce8 (match remark)
+ *
+ * 微信额外追加两列（标准 11 列不动，避免影响其它模板的读取口径）：
+ * [11] \u539f\u4ea4\u6613\u7c7b\u578b (raw \u4ea4\u6613\u7c7b\u578b)
+ * [12] \u539f\u4ea4\u6613\u5bf9\u65b9 (raw \u4ea4\u6613\u5bf9\u65b9)
+ * 预览里用户把「收支大类」改成转账时靠这两列判断（见 wechat-transfer-guard.ts）。
  */
 type NormalizedWechatWorkbookRows = {
   rows: string[][];
@@ -58,6 +67,8 @@ const NORMALIZED_HEADERS = [
   "\u6536\u652f\u673a\u6784",
   "\u5907\u6ce8",
   "\u7b2c\u4e8c\u5907\u6ce8",
+  WECHAT_RAW_TRANSACTION_TYPE_HEADER,
+  WECHAT_RAW_COUNTERPARTY_HEADER,
 ];
 
 const WECHAT_INSTITUTION = "\u5fae\u4fe1";
@@ -391,6 +402,9 @@ function normalizeWechatSheetRows(sheet: StatementWorkbookSheetRows) {
       WECHAT_INSTITUTION,
       visibleRemark,
       matchRemark,
+      // 微信原文的「交易类型」「交易对方」：只给预览的「收支大类→转账」守卫用。
+      transactionType,
+      counterparty,
     ]];
   });
 

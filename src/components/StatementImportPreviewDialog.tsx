@@ -45,6 +45,8 @@ import {
   type SettingsCounterparty,
 } from "@/lib/client/settingsCache";
 import { statementPreviewCategorySyncKey } from "@/lib/statement/preview-category-sync";
+import { resolveWechatTransferGuard, wechatTransferBlockMessage } from "@/lib/statement/wechat-transfer-guard";
+import { suggestTransferCounterAccountName } from "@/lib/statement/transfer-counter-account";
 import { uniqueStatementInfoTexts } from "@/lib/statement/preview-meta";
 import { systemCategoryLabel } from "@/lib/system-category-labels";
 import { useI18n } from "@/lib/i18n";
@@ -104,6 +106,17 @@ export type StatementImportPreviewItem = {
   remark?: string;
   tags?: string;
   counterparty?: string;
+  /**
+   * 微信账单原文「交易类型」（转账 / 商户消费 / 红包…）。只有微信账单有值：
+   * 用户把「收支大类」改成转账时靠它判断是「真转账」还是商户消费（见 wechat-transfer-guard）。
+   */
+  statementTransactionType?: string;
+  /** 微信账单原文「交易对方」：改成转账时按「<交易对方>的往来款」填对向账户。 */
+  statementCounterparty?: string;
+  /** 该行来自微信账单（归一化行带「原交易类型」列）。 */
+  wechatStatement?: boolean;
+  /** 原文「对向账户 / 对方账户」列的原始值：非转账行不参与导入，改成转账时用它回填对向账户。 */
+  rawCounterAccount?: string;
   institution?: string;
   institutionUserEdited?: boolean;
   postedDate?: string;
@@ -619,6 +632,8 @@ export function StatementImportPreviewDialog({
   const [createLiabilityAccounts, setCreateLiabilityAccounts] = useState(false);
   const [forceCreateOwnedMoneyAccounts, setForceCreateOwnedMoneyAccounts] = useState(false);
   const [categorySyncMessage, setCategorySyncMessage] = useState("");
+  /** 「收支大类 → 转账」守卫的即时提示（微信账单：能否改转账、将新建哪个往来款账户）。 */
+  const [typeGuardNotice, setTypeGuardNotice] = useState<{ text: string; tone: "info" | "warn" } | null>(null);
   const { t, language } = useI18n();
   const accountDisplaySettings = useAccountDisplaySettings();
   const colorScheme = useMemo(
@@ -773,6 +788,7 @@ export function StatementImportPreviewDialog({
       setSelectedKeys((prev) => (prev.size === 0 ? prev : new Set()));
       setEditingPreviewCell((prev) => (prev === null ? prev : null));
       setCategorySyncMessage((prev) => (prev === "" ? prev : ""));
+      setTypeGuardNotice((prev) => (prev === null ? prev : null));
       return;
     }
     // 同一份导入数据只构建一次：用户在预览里改过的行存在 `rows` 里，
@@ -790,6 +806,7 @@ export function StatementImportPreviewDialog({
       setSelectedKeys(new Set(nextRows.filter((row) => row.ready).map((row) => row.key)));
       setEditingPreviewCell(null);
       setCategorySyncMessage("");
+      setTypeGuardNotice(null);
       return;
     }
     // 仅创建选项变化：保留用户已改过的行内容，只重算缺失字段与就绪状态。
@@ -850,6 +867,7 @@ export function StatementImportPreviewDialog({
     setCreateLiabilityAccounts(false);
     setForceCreateOwnedMoneyAccounts(false);
     setCategorySyncMessage("");
+    setTypeGuardNotice(null);
     onClose();
   }
 
@@ -1180,6 +1198,83 @@ export function StatementImportPreviewDialog({
     };
   }
 
+  /**
+   * 「收支大类 → 转账」守卫（微信账单专用，其它账单原样放行）：
+   * - 微信原文「交易类型」不含转账（商户消费 / 红包 / 二维码收款 / 空值）→ 不准改成转账；
+   * - 微信原文是转账但没有「交易对象」→ 也不准改成转账（没有对向账户）；
+   * - 原文是转账且有交易对象 → 按「<交易对象>的往来款」填对向账户，并提示将新建该往来款账户。
+   */
+  function typeChangeForItem(
+    item: StatementImportPreviewItem,
+    type: StatementImportPreviewItem["type"],
+  ):
+    | { blocked: { text: string; tone: "warn" } }
+    | { patch: Partial<StatementImportPreviewItem>; notice: { text: string; tone: "info" | "warn" } | null } {
+    const patch = typePatchForItem(item, type);
+    if (type !== "transfer") return { patch, notice: null };
+    const guard = resolveWechatTransferGuard(item);
+    const blockedMessage = wechatTransferBlockMessage(guard);
+    if (blockedMessage) {
+      return { blocked: { text: t(blockedMessage.key, blockedMessage.params), tone: "warn" } };
+    }
+    if (guard.kind === "transfer") {
+      return {
+        patch: {
+          ...patch,
+          ...(patch.transferDirection === "out"
+            ? { toAccount: guard.counterAccountName }
+            : { fromAccount: guard.counterAccountName }),
+        },
+        notice: {
+          text: t(
+            createLiabilityAccounts
+              ? "statementImportPreview.wechatTransferFilledCounterAccount"
+              : "statementImportPreview.wechatTransferFilledCounterAccountNeedsOption",
+            { name: guard.counterparty, account: guard.counterAccountName },
+          ),
+          tone: "info",
+        },
+      };
+    }
+    // 非微信账单（MMH 标准模板 / 银行流水 / 财智等）没有「原交易类型」列，走不了上面的守卫，
+    // 但原文「对向账户 / 对方账户」列往往写着交易对象——只是非转账行不参与导入被丢掉了。
+    // 改成转账时按往来款口径回填，否则状态只会停在「缺对向账户」。
+    const rawCounterAccount = cleanText(item.rawCounterAccount);
+    const suggestedCounterAccount = suggestTransferCounterAccountName(rawCounterAccount);
+    if (suggestedCounterAccount) {
+      if (patch.transferDirection === "out") {
+        if (!cleanText(patch.toAccount)) {
+          return {
+            patch: { ...patch, toAccount: suggestedCounterAccount },
+            notice: {
+              text: t(
+                createLiabilityAccounts
+                  ? "statementImportPreview.transferFilledCounterAccount"
+                  : "statementImportPreview.transferFilledCounterAccountNeedsOption",
+                { name: rawCounterAccount, account: suggestedCounterAccount },
+              ),
+              tone: "info",
+            },
+          };
+        }
+      } else if (!cleanText(patch.fromAccount)) {
+        return {
+          patch: { ...patch, fromAccount: suggestedCounterAccount },
+          notice: {
+            text: t(
+              createLiabilityAccounts
+                ? "statementImportPreview.transferFilledCounterAccount"
+                : "statementImportPreview.transferFilledCounterAccountNeedsOption",
+              { name: rawCounterAccount, account: suggestedCounterAccount },
+            ),
+            tone: "info",
+          },
+        };
+      }
+    }
+    return { patch, notice: null };
+  }
+
   function recomputeRow(row: ImportPreviewRow, patch: Partial<StatementImportPreviewItem>): ImportPreviewRow {
     let item: StatementImportPreviewItem = { ...row.item, ...patch };
     if ("date" in patch) {
@@ -1262,8 +1357,17 @@ export function StatementImportPreviewDialog({
           ? recomputeRow(row, amountPatchForItem(row.item, computed))
           : recomputeRow(row, flowAmountPatchForItem(row.item, field, computed));
       }
+      if (field === "type") {
+        // 微信账单里「没有交易对象」的行不能批量改成转账（同单行编辑口径），直接计入跳过。
+        const next = typeChangeForItem(row.item, value as StatementImportPreviewItem["type"]);
+        if ("blocked" in next) {
+          invalid++;
+          return row;
+        }
+        changed++;
+        return recomputeRow(row, next.patch);
+      }
       changed++;
-      if (field === "type") return recomputeRow(row, typePatchForItem(row.item, value as StatementImportPreviewItem["type"]));
       if (field === "account") return recomputeRow(row, primaryAccountPatch(row.item, value ? encodeImportAccountId(value) : ""));
       if (field === "counterAccount") return recomputeRow(row, counterAccountPatch(row.item, value ? encodeImportAccountId(value) : ""));
       if (field === "category") return recomputeRow(row, { category: previewCategoryNameById(value) || undefined, categoryUserEdited: true });
@@ -1271,7 +1375,9 @@ export function StatementImportPreviewDialog({
       return recomputeRow(row, { [field]: value || undefined } as Partial<StatementImportPreviewItem>);
     });
     recomputeState(nextRows);
-    const invalidSuffix = invalid > 0 ? t("statementImportPreview.invalidAmountSkipped", { count: invalid }) : "";
+    const invalidSuffix = invalid > 0
+      ? t(field === "type" ? "statementImportPreview.invalidTypeSkipped" : "statementImportPreview.invalidAmountSkipped", { count: invalid })
+      : "";
     return t("statementImportPreview.batchReplaceResult", { count: changed, field: t(IMPORT_PREVIEW_FIELD_LABEL_KEYS[field]), invalidSuffix });
   }
 
@@ -1539,7 +1645,14 @@ export function StatementImportPreviewDialog({
               onDoubleClick={stopPreviewCellEvent}
               onBlur={() => setEditingPreviewCell(null)}
               onChange={(event) => {
-                updatePreviewRow(row.key, typePatchForItem(row.item, event.target.value as StatementImportPreviewItem["type"]));
+                const next = typeChangeForItem(row.item, event.target.value as StatementImportPreviewItem["type"]);
+                if ("blocked" in next) {
+                  setTypeGuardNotice(next.blocked);
+                  setEditingPreviewCell(null);
+                  return;
+                }
+                updatePreviewRow(row.key, next.patch);
+                setTypeGuardNotice(next.notice);
                 setEditingPreviewCell(null);
               }}
             >
@@ -1941,6 +2054,14 @@ export function StatementImportPreviewDialog({
               </span>
             ) : null}
             {categorySyncMessage ? <span className="truncate text-blue-600" title={categorySyncMessage}>{categorySyncMessage}</span> : null}
+            {typeGuardNotice ? (
+              <span
+                className={`truncate ${typeGuardNotice.tone === "warn" ? "text-amber-700" : "text-blue-600"}`}
+                title={typeGuardNotice.text}
+              >
+                {typeGuardNotice.text}
+              </span>
+            ) : null}
           </div>
           <div className="flex items-center justify-end">
             <button

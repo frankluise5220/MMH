@@ -63,6 +63,13 @@ import {
 import { inferKnownStatementMerchant } from "@/lib/statement/merchant-inference";
 import { statementPreviewCategorySyncKey } from "@/lib/statement/preview-category-sync";
 import {
+  resolveWechatTransferGuard,
+  wechatMetaFromRow,
+  wechatMetaHeaderIndexes,
+  wechatTransferBlockMessage,
+} from "@/lib/statement/wechat-transfer-guard";
+import { suggestTransferCounterAccountName } from "@/lib/statement/transfer-counter-account";
+import {
   CREDIT_CARD_REPAYMENT_BUSINESS_TYPE,
   CREDIT_CARD_REPAYMENT_CATEGORY_NAME,
   isCreditCardRepaymentBusinessType,
@@ -98,6 +105,12 @@ type ParsedItem = {
   remark?: string;
   secondRemark?: string;
   counterparty?: string;
+  /** 该行来自微信账单（归一化行带「原交易类型」列）。 */
+  wechatStatement?: boolean;
+  /** 微信账单原文「交易类型」：把「收支大类」改成转账时判定是真转账还是商户消费。 */
+  statementTransactionType?: string;
+  /** 微信账单原文「交易对方」：改成转账时按「<交易对方>的往来款」填对向账户。 */
+  statementCounterparty?: string;
   transferDirection?: "in" | "out";
   importIgnoredCounterAccount?: string;
   importInvalidPostedAt?: string;
@@ -819,6 +832,8 @@ function normalRowsToItems(
   const [headers = [], ...dataRows] = rows;
   const headerReader = createStatementHeaderReader(headers, fieldHeaders);
   const readAny = (row: string[], keys: readonly string[]) => headerReader.readAliases(row, keys);
+  // 微信模板在归一化行末尾追加了原文「交易类型」「交易对方」（其它账单没有这两列）。
+  const wechatMetaIndexes = wechatMetaHeaderIndexes(headers);
   const normalizeCreditAccountValue = (value: string) => {
     const trimmed = value.trim();
     return /^\d{4}$/.test(trimmed) ? `信用卡${trimmed}` : trimmed;
@@ -1037,6 +1052,7 @@ function normalRowsToItems(
         : type === "transfer" ? category : resolvedCategory,
       institution: type === "transfer" ? institution : resolvedInstitution,
       counterparty: merchant.counterparty || "",
+      ...wechatMetaFromRow(row, wechatMetaIndexes),
       tags,
       remark,
       secondRemark: type === "transfer" ? (secondRemark || remark) : "",
@@ -1972,7 +1988,8 @@ export default function BatchImportPage() {
         message: formatText("batchImport.issue.postedAtInvalid", { value: item.importInvalidPostedAt }),
       });
     }
-    if (item.importIgnoredCounterAccount) {
+    // 改成转账后这一列已经被回填成对向账户，不能再提示「非转账记录填写了对向账户」。
+    if (item.importIgnoredCounterAccount && item.type !== "transfer") {
       issues.push({
         idx,
         level: "warning",
@@ -2262,18 +2279,29 @@ export default function BatchImportPage() {
         const nextType = nextPreviewType === CREDIT_CARD_REPAYMENT_BUSINESS_TYPE
           ? "transfer"
           : nextPreviewType;
+        const nextBusinessType = nextPreviewType === CREDIT_CARD_REPAYMENT_BUSINESS_TYPE ? CREDIT_CARD_REPAYMENT_BUSINESS_TYPE : null;
+        // 微信账单里原文交易类型不是转账、或没有「交易对象」的行不能批量改成转账，计入跳过。
+        const wechatGuard = nextBusinessType ? null : resolveWechatTransferGuard(item);
+        if (wechatGuard && wechatTransferBlockMessage(wechatGuard)) {
+          invalid++;
+          continue;
+        }
         patch.type = nextType;
-        patch.businessType = nextPreviewType === CREDIT_CARD_REPAYMENT_BUSINESS_TYPE
-          ? CREDIT_CARD_REPAYMENT_BUSINESS_TYPE
-          : null;
-        Object.assign(
-          patch,
-          accountPatchForPreviewTypeChange(
-            item,
-            nextType,
-            nextPreviewType === CREDIT_CARD_REPAYMENT_BUSINESS_TYPE ? CREDIT_CARD_REPAYMENT_BUSINESS_TYPE : null,
-          ),
-        );
+        patch.businessType = nextBusinessType;
+        const accountPatch: Partial<ParsedItem> = accountPatchForPreviewTypeChange(item, nextType, nextBusinessType);
+        if (wechatGuard?.kind === "transfer") {
+          if (accountPatch.transferDirection === "in") accountPatch.fromAccount = wechatGuard.counterAccountName;
+          else accountPatch.toAccount = wechatGuard.counterAccountName;
+        } else if (!nextBusinessType) {
+          // 其它账单（MMH 标准模板 / 银行流水 / 财智）没有原文「交易类型」列，
+          // 用原文「对向账户 / 对方账户」列按往来款口径回填，否则改完仍是「缺对向账户」。
+          const suggested = suggestTransferCounterAccountName(item.importIgnoredCounterAccount);
+          if (suggested) {
+            if (accountPatch.transferDirection === "in") accountPatch.fromAccount = suggested;
+            else accountPatch.toAccount = suggested;
+          }
+        }
+        Object.assign(patch, accountPatch);
         const flow = normalizeFlowFields(nextType, item.amount ?? 0, item.inflow ?? 0, item.outflow ?? 0, patch.transferDirection ?? direction);
         patch.amount = flow.amount;
         patch.inflow = flow.inflow;
@@ -2737,7 +2765,35 @@ export default function BatchImportPage() {
                   const nextPreviewType = event.target.value as PreviewType;
                   const nextType = nextPreviewType === CREDIT_CARD_REPAYMENT_BUSINESS_TYPE ? "transfer" : nextPreviewType;
                   const nextBusinessType = nextPreviewType === CREDIT_CARD_REPAYMENT_BUSINESS_TYPE ? CREDIT_CARD_REPAYMENT_BUSINESS_TYPE : null;
-                  const accountPatch = accountPatchForPreviewTypeChange(currentRowItem, nextType, nextBusinessType);
+                  // 微信账单：原文交易类型不是转账、或没有「交易对象」，都不许改成转账；
+                  // 原文是转账时按「<交易对象>的往来款」填对向账户（导入时新建这个往来款账户）。
+                  const wechatGuard = nextBusinessType ? null : resolveWechatTransferGuard(currentRowItem);
+                  const wechatBlocked = wechatGuard ? wechatTransferBlockMessage(wechatGuard) : null;
+                  if (wechatGuard && wechatBlocked) {
+                    setMessage(formatText(wechatBlocked.key, wechatBlocked.params ?? {}));
+                    closeCellEdit();
+                    return;
+                  }
+                  const accountPatch: Partial<ParsedItem> = accountPatchForPreviewTypeChange(currentRowItem, nextType, nextBusinessType);
+                  if (wechatGuard?.kind === "transfer") {
+                    if (accountPatch.transferDirection === "in") accountPatch.fromAccount = wechatGuard.counterAccountName;
+                    else accountPatch.toAccount = wechatGuard.counterAccountName;
+                    setMessage(formatText("statementImportPreview.wechatTransferFilledCounterAccount", {
+                      name: wechatGuard.counterparty,
+                      account: wechatGuard.counterAccountName,
+                    }));
+                  } else if (!nextBusinessType) {
+                    // 其它账单没有原文「交易类型」列：用原文「对向账户 / 对方账户」列按往来款口径回填。
+                    const suggested = suggestTransferCounterAccountName(currentRowItem.importIgnoredCounterAccount);
+                    if (suggested) {
+                      if (accountPatch.transferDirection === "in") accountPatch.fromAccount = suggested;
+                      else accountPatch.toAccount = suggested;
+                      setMessage(formatText("statementImportPreview.transferFilledCounterAccount", {
+                        name: currentRowItem.importIgnoredCounterAccount ?? "",
+                        account: suggested,
+                      }));
+                    }
+                  }
                   updateDraft(idx, "type", nextType);
                   updateDraft(idx, "businessType", nextBusinessType);
                   for (const [field, value] of Object.entries(accountPatch)) updateDraft(idx, field, value);
@@ -3182,7 +3238,6 @@ export default function BatchImportPage() {
     accountCellTitle,
     accountDisplayText,
     accountPickerRoleForCell,
-    accountPatchForPreviewTypeChange,
     accountSelectTextById,
     accountSelectValue,
     accountSmartSelectOptionsFor,
@@ -3192,8 +3247,8 @@ export default function BatchImportPage() {
     closeCellEdit,
     drafts,
     editingCell,
+    formatText,
     getItem,
-    getPreviewType,
     getTypeLabel,
     isCreditCardRepaymentItem,
     items,
