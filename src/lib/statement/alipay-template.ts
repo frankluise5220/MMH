@@ -376,7 +376,9 @@ function normalizeAlipaySheetRows(sheet: StatementWorkbookSheetRows, ownerOverri
     const matchRemark = compactJoin([
       requiresReview
         ? classifiedFlow.requiresReview
-          ? `\u5bfc\u5165\u515c\u5e95:\u8bf7\u786e\u8ba4\u7c7b\u578b\u548c\u8d26\u6237`
+          ? account
+            ? `\u5bfc\u5165\u515c\u5e95:\u8bf7\u786e\u8ba4\u7c7b\u578b`
+            : `\u5bfc\u5165\u515c\u5e95:\u8bf7\u786e\u8ba4\u7c7b\u578b\u548c\u8d26\u6237`
           : `\u5bfc\u5165\u515c\u5e95:\u8bf7\u786e\u8ba4\u8d26\u6237`
         : "",
       flow && requiresReview ? `\u539f\u6536\u652f:${flow}` : "",
@@ -395,8 +397,10 @@ function normalizeAlipaySheetRows(sheet: StatementWorkbookSheetRows, ownerOverri
       classifiedFlow.outflow ? amount : "",
       classifiedFlow.inflow ? amount : "",
       amount,
-      requiresReview ? "" : account,
-      requiresReview ? "" : transferCounterAccount,
+      // 同微信：付款方式已经解析出来的账户不再因「待确认」清空。
+      // 清空后预览会回退到发起导入的那个账户，一笔零钱支出会被记到银行储蓄卡上。
+      account,
+      transferCounterAccount,
       "",
       ALIPAY_INSTITUTION,
       visibleRemark,

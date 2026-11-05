@@ -111,6 +111,17 @@ check("昵称清洗：🙈🙉🙊 与装饰符不拼进账户名", () => {
   assert.equal(out.rows[1][COL.account], "墨斗鱼微信零钱");
 });
 
+check("退款行（已全额退款）不清空账户，仍保留付款方式", () => {
+  // 用户报的 2019-11-19 那笔：转账 ¥2,000 状态「已全额退款」，
+  // 付款方式写着「零钱」，却因为标成待确认把账户清空，
+  // 预览随即回退到发起导入的账户，记成了银行储蓄卡。
+  const refund = WECHAT_2019.map((row, index) => (index === 4 ? [...row.slice(0, 7), "已全额退款", ...row.slice(8)] : row));
+  const out = parse("wechat-refund", refund);
+  assert.equal(out.template, "wechat");
+  assert.equal(out.rows[1][COL.account], "墨斗鱼微信零钱");
+  assert.match(String(out.rows[1][10] ?? ""), /已全额退款/);
+});
+
 console.log("[2] 微信 2026 新版（支出/收入双列）");
 check("命中 wechat，双列金额各取一侧", () => {
   const out = parse("wechat-2026", WECHAT_2026, "微信支付账单流水文件(20260101-20261104).xlsx");

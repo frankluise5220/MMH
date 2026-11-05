@@ -341,7 +341,11 @@ function normalizeWechatSheetRows(sheet: StatementWorkbookSheetRows) {
 
     const visibleRemark = buildWechatVisibleRemark(transactionType, counterparty, product, rawRemark);
     const matchRemark = compactJoin([
-      requiresReview ? `\u5bfc\u5165\u515c\u5e95:\u8bf7\u786e\u8ba4\u7c7b\u578b\u548c\u8d26\u6237` : "",
+      requiresReview
+        ? account
+          ? `\u5bfc\u5165\u515c\u5e95:\u8bf7\u786e\u8ba4\u7c7b\u578b`
+          : `\u5bfc\u5165\u515c\u5e95:\u8bf7\u786e\u8ba4\u7c7b\u578b\u548c\u8d26\u6237`
+        : "",
       flow && requiresReview ? `\u539f\u6536\u652f:${flow}` : "",
       rawRemark && !visibleRemark.includes(rawRemark) ? `\u539f\u59cb\u5907\u6ce8:${rawRemark}` : "",
       orderNo ? `\u5fae\u4fe1\u5355\u53f7:${orderNo}` : "",
@@ -355,7 +359,11 @@ function normalizeWechatSheetRows(sheet: StatementWorkbookSheetRows) {
       classifiedFlow.outflow ? amount : "",
       classifiedFlow.inflow ? amount : "",
       amount,
-      requiresReview ? "" : account,
+      // 账户列不因「待确认」清空（2026-11-05 用户：2019-11-19 那笔「已全额退款」的转账
+      // 付款方式写着「零钱」，却因为状态被标待确认而把账户清空，预览随即回退到
+      // 发起导入的那个账户——一笔零钱转账被记成了「宁波(0214)」银行储蓄卡）。
+      // 付款方式能解析出来就是可用信息，待确认只影响「类型」，不影响「账户」。
+      account,
       "",
       "",
       WECHAT_INSTITUTION,
