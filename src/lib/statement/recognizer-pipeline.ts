@@ -49,6 +49,8 @@ export type RecognizedStatementSheets = {
   rows: string[][];
   sourceDataRowCount: number;
   includedSheetCount: number;
+  /** 从文件名猜到的模板（先验，不是判据）：与 template 不一致时可用于提示表头被改过。 */
+  filenameHint?: StatementTemplateHint;
   /** 仅 caizhi：财智8 归一化出的全部标准行（= rows）。 */
   caizhiRows?: string[][];
   /** 仅 caizhi：余额校准行（余额调整/初始化等，不作为流水导入）。 */
@@ -242,59 +244,101 @@ export function mergeStandardWorkbookRows(
   };
 }
 
+// —— 第 0 步：文件名先验（只排探测顺序，不代替表头判定）——
+
+export type StatementTemplateHint = Exclude<StatementFileTemplate, "standard">;
+
+const TEMPLATE_HINT_PATTERNS: ReadonlyArray<{ template: StatementTemplateHint; pattern: RegExp }> = [
+  { template: "caizhi", pattern: /\u8d22\u667a|caizhi|czb?8/i },
+  { template: "jd", pattern: /\u4eac\u4e1c|jingdong|\bjd\b/i },
+  { template: "alipay", pattern: /\u652f\u4ed8\u5b9d|alipay/i },
+  { template: "wechat", pattern: /\u5fae\u4fe1|weixin|wechat/i },
+];
+
+/**
+ * 文件名先验：只用来决定「先试哪个识别器」和失败时的提示语。
+ *
+ * 不能拿它当判据——`墨斗鱼.微信转账(20240101-20261103).xlsx` 名字带「微信」，
+ * 内容却是 MMH 标准模板；反过来用户可以随便改文件名。真正的判定仍然逐层看表头。
+ */
+export function guessStatementTemplateHint(sourceFileName = ""): StatementTemplateHint | null {
+  const name = String(sourceFileName ?? "");
+  if (!name) return null;
+  for (const item of TEMPLATE_HINT_PATTERNS) {
+    if (item.pattern.test(name)) return item.template;
+  }
+  return null;
+}
+
 // —— 第 1 步：专用识别器清单（命中即短路）——
+
+const STATEMENT_RECOGNIZER_ORDER: readonly StatementTemplateHint[] = ["caizhi", "jd", "alipay", "wechat"];
 
 export function recognizeStatementSheets(
   rawSheetRows: Array<{ sheetName: string; rows: string[][] }>,
   sourceFileName = "",
 ): RecognizedStatementSheets | null {
-  // 优先检测财智8格式（表头特征最特异；需要从文件名猜账户名）。
-  const caizhiRows = normalizeCaizhiWorkbookRows(
-    rawSheetRows as CaizhiWorkbookSheetRows[],
-    guessCaizhiAccountNameFromFilename(sourceFileName),
-  );
-  if (caizhiRows) {
-    return {
-      template: "caizhi",
-      rows: caizhiRows.rows,
-      sourceDataRowCount: caizhiRows.sourceDataRowCount,
-      includedSheetCount: caizhiRows.includedSheetCount,
-      caizhiRows: caizhiRows.rows,
-      caizhiBalanceAdjustRows: caizhiRows.balanceAdjustRows?.filter((row) => row.targetBalance != null),
-    };
-  }
+  const filenameHint = guessStatementTemplateHint(sourceFileName);
 
-  const jdRows = normalizeJdWorkbookRows(rawSheetRows);
-  if (jdRows) {
-    return {
-      template: "jd",
-      rows: jdRows.rows,
-      sourceDataRowCount: jdRows.sourceDataRowCount,
-      includedSheetCount: jdRows.includedSheetCount,
-    };
-  }
+  // 每个识别器只管「自己的表头特征能不能认出来」，顺序由文件名先验调整。
+  const runners: Record<StatementTemplateHint, () => RecognizedStatementSheets | null> = {
+    // 财智8 需要从文件名猜账户名。
+    caizhi: () => {
+      const caizhiRows = normalizeCaizhiWorkbookRows(
+        rawSheetRows as CaizhiWorkbookSheetRows[],
+        guessCaizhiAccountNameFromFilename(sourceFileName),
+      );
+      if (!caizhiRows) return null;
+      return {
+        template: "caizhi",
+        rows: caizhiRows.rows,
+        sourceDataRowCount: caizhiRows.sourceDataRowCount,
+        includedSheetCount: caizhiRows.includedSheetCount,
+        caizhiRows: caizhiRows.rows,
+        caizhiBalanceAdjustRows: caizhiRows.balanceAdjustRows?.filter((row) => row.targetBalance != null),
+      };
+    },
+    jd: () => {
+      const jdRows = normalizeJdWorkbookRows(rawSheetRows);
+      if (!jdRows) return null;
+      return {
+        template: "jd",
+        rows: jdRows.rows,
+        sourceDataRowCount: jdRows.sourceDataRowCount,
+        includedSheetCount: jdRows.includedSheetCount,
+      };
+    },
+    // 「张四.支付宝交易明细(...).csv」的文件名前缀是账本里的实际所有人，优先于账单内部姓名。
+    alipay: () => {
+      const alipayRows = normalizeAlipayWorkbookRows(rawSheetRows, guessOwnerFromFilename(sourceFileName));
+      if (!alipayRows) return null;
+      return {
+        template: "alipay",
+        rows: alipayRows.rows,
+        sourceDataRowCount: alipayRows.sourceDataRowCount,
+        includedSheetCount: alipayRows.includedSheetCount,
+      };
+    },
+    wechat: () => {
+      const wechatRows = normalizeWechatWorkbookRows(rawSheetRows);
+      if (!wechatRows) return null;
+      return {
+        template: "wechat",
+        rows: wechatRows.rows,
+        sourceDataRowCount: wechatRows.sourceDataRowCount,
+        includedSheetCount: wechatRows.includedSheetCount,
+      };
+    },
+  };
 
-  // 「张四.支付宝交易明细(...).csv」的文件名前缀是账本里的实际所有人，优先于账单内部姓名。
-  const alipayRows = normalizeAlipayWorkbookRows(rawSheetRows, guessOwnerFromFilename(sourceFileName));
-  if (alipayRows) {
-    return {
-      template: "alipay",
-      rows: alipayRows.rows,
-      sourceDataRowCount: alipayRows.sourceDataRowCount,
-      includedSheetCount: alipayRows.includedSheetCount,
-    };
-  }
+  const order = filenameHint
+    ? [filenameHint, ...STATEMENT_RECOGNIZER_ORDER.filter((template) => template !== filenameHint)]
+    : STATEMENT_RECOGNIZER_ORDER;
 
-  const wechatRows = normalizeWechatWorkbookRows(rawSheetRows);
-  if (wechatRows) {
-    return {
-      template: "wechat",
-      rows: wechatRows.rows,
-      sourceDataRowCount: wechatRows.sourceDataRowCount,
-      includedSheetCount: wechatRows.includedSheetCount,
-    };
+  for (const template of order) {
+    const recognized = runners[template]();
+    if (recognized) return { ...recognized, filenameHint: filenameHint ?? undefined };
   }
-
   return null;
 }
 
@@ -314,5 +358,6 @@ export function parseStatementSheetsStandard(
   const recognized = recognizeStatementSheets(rawSheetRows, sourceFileName);
   if (recognized) return recognized;
   const merged = mergeStandardWorkbookRows(rawSheetRows, fieldHeaders, { fundAware });
-  return { template: "standard", ...merged };
+  // 落到标准模板但文件名像是某家账单时，filenameHint 让预览能提示「表头可能被改过」。
+  return { template: "standard", ...merged, filenameHint: guessStatementTemplateHint(sourceFileName) ?? undefined };
 }

@@ -228,19 +228,38 @@ function fallbackJdFlow() {
   return { majorType: "\u652f\u51fa", outflow: true, inflow: false, negativeAmount: false, transfer: false, requiresReview: true };
 }
 
+/**
+ * 京东表头打分（2026-11-05）：硬门槛是京东专属三件套（交易时间 + 商户名称 + 交易说明）
+ * 加金额列；「收/支」「付款方式」「交易状态」「交易分类」缺一列只减分。
+ * 用户改表头（删列/改名）时不再整份降级到标准模板——降级后「付款方式」「收/支」
+ * 都对不上标准别名，账户和方向会静默丢失。
+ */
+function jdHeaderScore(row: string[]) {
+  if (findHeaderIndex(row, ["\u4ea4\u6613\u65f6\u95f4"]) < 0) return 0;
+  if (findHeaderIndex(row, ["\u5546\u6237\u540d\u79f0"]) < 0) return 0;
+  if (findHeaderIndex(row, ["\u4ea4\u6613\u8bf4\u660e"]) < 0) return 0;
+  if (findHeaderIndex(row, JD_AMOUNT_HEADERS) < 0) return 0;
+
+  let score = 8;
+  if (findHeaderIndex(row, JD_FLOW_HEADERS) >= 0) score += 2;
+  if (findHeaderIndex(row, JD_PAYMENT_ACCOUNT_HEADERS) >= 0) score += 2;
+  if (findHeaderIndex(row, ["\u4ea4\u6613\u72b6\u6001"]) >= 0) score += 1;
+  if (findHeaderIndex(row, ["\u4ea4\u6613\u5206\u7c7b"]) >= 0) score += 1;
+  if (findHeaderIndex(row, ["\u5907\u6ce8"]) >= 0) score += 1;
+  return score >= 10 ? score : 0;
+}
+
 function findJdHeaderRow(rows: string[][]) {
-  for (const [index, row] of rows.slice(0, 60).entries()) {
-    const timeIndex = findHeaderIndex(row, ["\u4ea4\u6613\u65f6\u95f4"]);
-    const merchantIndex = findHeaderIndex(row, ["\u5546\u6237\u540d\u79f0"]);
-    const descriptionIndex = findHeaderIndex(row, ["\u4ea4\u6613\u8bf4\u660e"]);
-    const amountIndex = findHeaderIndex(row, JD_AMOUNT_HEADERS);
-    const accountIndex = findHeaderIndex(row, JD_PAYMENT_ACCOUNT_HEADERS);
-    const flowIndex = findHeaderIndex(row, JD_FLOW_HEADERS);
-    if (timeIndex >= 0 && merchantIndex >= 0 && descriptionIndex >= 0 && amountIndex >= 0 && accountIndex >= 0 && flowIndex >= 0) {
-      return index;
+  let bestIndex = -1;
+  let bestScore = 0;
+  rows.slice(0, 60).forEach((row, index) => {
+    const score = jdHeaderScore(row);
+    if (score > bestScore) {
+      bestScore = score;
+      bestIndex = index;
     }
-  }
-  return -1;
+  });
+  return bestIndex;
 }
 
 function buildExpenseCategoryByRemark(dataRows: string[][], indexes: {

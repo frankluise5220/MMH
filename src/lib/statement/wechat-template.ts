@@ -62,24 +62,32 @@ const NORMALIZED_HEADERS = [
 const WECHAT_INSTITUTION = "\u5fae\u4fe1";
 const WECHAT_DEFAULT_ACCOUNT = "\u5fae\u4fe1\u96f6\u94b1";
 
+const WECHAT_TIME_HEADERS = ["\u4ea4\u6613\u65f6\u95f4", "\u4ea4\u6613\u65e5\u671f", "\u652f\u4ed8\u65f6\u95f4", "\u65f6\u95f4"];
+
 const WECHAT_AMOUNT_HEADERS = [
   "\u91d1\u989d",
   "\u91d1\u989d(\u5143)",
   "\u91d1\u989d\uff08\u5143\uff09",
+  "\u4ea4\u6613\u91d1\u989d",
 ];
 
 /**
  * 新版微信导出（2026 起）把金额拆成「支出」「收入」两列，不再有「金额(元)」。
  * 两列各存一侧的正数金额，缺列填空。
  */
-const WECHAT_OUTFLOW_AMOUNT_HEADERS = ["\u652f\u51fa", "\u652f\u51fa\u91d1\u989d"];
-const WECHAT_INFLOW_AMOUNT_HEADERS = ["\u6536\u5165", "\u6536\u5165\u91d1\u989d"];
+const WECHAT_OUTFLOW_AMOUNT_HEADERS = ["\u652f\u51fa", "\u652f\u51fa\u91d1\u989d", "\u4ed8\u6b3e\u91d1\u989d"];
+const WECHAT_INFLOW_AMOUNT_HEADERS = ["\u6536\u5165", "\u6536\u5165\u91d1\u989d", "\u6536\u6b3e\u91d1\u989d"];
 
 const WECHAT_FLOW_HEADERS = [
   "\u6536/\u652f",
   "\u6536\uff0f\u652f",
   "\u6536\u652f",
+  "\u6536\u652f\u7c7b\u578b",
+  "\u6536\u652f\u65b9\u5411",
 ];
+
+/** 京东（商户名称/交易说明）、支付宝（商品说明）的专属列：微信表头里不会同时出现。 */
+const WECHAT_FOREIGN_HEADERS = ["\u5546\u6237\u540d\u79f0", "\u4ea4\u6613\u8bf4\u660e", "\u5546\u54c1\u8bf4\u660e"];
 
 const WECHAT_OWNER_HEADERS = [
   "\u5fae\u4fe1\u6635\u79f0",
@@ -161,16 +169,43 @@ function isWechatBalanceAccountText(value: string) {
   return !key || key === "/" || key === "\u96f6\u94b1" || key === "\u5fae\u4fe1\u96f6\u94b1";
 }
 
+/** 昵称里的装饰符（emoji、波浪线、括号、标点）：微信昵称常带这些，不能进账户名。 */
+const WECHAT_NICKNAME_NOISE_RE =
+  /[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}\u{2B00}-\u{2BFF}\u{FE0F}\u{200D}~～`^'"*#@!！？?。.,，、:：;；=+|\\/><\-—–_()[\]（）【】]/gu;
+
+/** 昵称由这些通用词组成时不是人名（「微信用户」「微信支付」）。 */
+const WECHAT_GENERIC_NICKNAME_RE = /^(?:微信|昵称|用户|支付|账单|转账|零钱|wechat|weixin|user)+$/i;
+
+/**
+ * 从微信昵称里抽「像人名」的部分：「ヅ~~墨斗鱼🙈🙉🙊」→「墨斗鱼」。
+ *
+ * 这是账户名的第一层判断：昵称干净、2-8 字、不是「微信用户」这类通用词，才当成
+ * 所有人前缀；否则宁可丢掉昵称——账本里的账户叫「微信零钱」时，拼上脏昵称反而
+ * 匹配不上（2019 旧账单实测账户变成「ヅ~~墨斗鱼🙈🙉🙊微信零钱」）。
+ */
+function extractOwnerNameFromNickname(nickname: string) {
+  const base = unwrapHeaderValue(nickname);
+  if (!base) return "";
+  const cleaned = base.replace(WECHAT_NICKNAME_NOISE_RE, " ");
+  const candidates = cleaned.match(/[\u4e00-\u9fa5A-Za-z]+/g) ?? [];
+  const best = candidates
+    .filter((part) => !WECHAT_GENERIC_NICKNAME_RE.test(part))
+    .sort((a, b) => b.length - a.length)[0] ?? "";
+  return best.length >= 2 && best.length <= 8 ? best : "";
+}
+
 /**
  * Normalize the payment method column into an account name. When the value
  * is "/" (unspecified), default to the WeChat balance account.
+ *
+ * 所有人前缀只在昵称能抽出干净人名时才加；否则只写「微信零钱」，
+ * 由导入预览的账户匹配去账本里按「包含」关系落到「X的微信零钱 / 微信零钱」。
  */
 function normalizeWechatPaymentAccount(value: string, ownerHint: string) {
   const raw = cleanText(value);
-  if (isWechatBalanceAccountText(raw)) {
-    return ownerHint ? `${ownerHint}${WECHAT_DEFAULT_ACCOUNT}` : WECHAT_DEFAULT_ACCOUNT;
-  }
-  return raw;
+  if (!isWechatBalanceAccountText(raw)) return raw;
+  const ownerName = extractOwnerNameFromNickname(ownerHint);
+  return ownerName ? `${ownerName}${WECHAT_DEFAULT_ACCOUNT}` : WECHAT_DEFAULT_ACCOUNT;
 }
 
 /**
@@ -191,22 +226,69 @@ function fallbackWechatFlow() {
   return { majorType: "\u652f\u51fa", outflow: true, inflow: false, requiresReview: true };
 }
 
+const WECHAT_INFLOW_TEXT_RE =
+  /(?:\u6536\u5230|\u6536\u6b3e|\u6536\u94b1|\u5165\u8d26|\u5230\u8d26|\u9000\u6b3e|\u8fd4\u73b0|\u5956\u52b1|\u5229\u606f|\u5206\u7ea2|\u8f6c\u5165)/;
+const WECHAT_OUTFLOW_TEXT_RE =
+  /(?:\u53d1\u51fa|\u6d88\u8d39|\u652f\u4ed8|\u4ed8\u6b3e|\u8f6c\u51fa|\u63d0\u73b0|\u5145\u503c|\u6263\u8d39|\u7f34\u8d39|\u8fd8\u6b3e|\u8f6c\u8d26\u7ed9)/;
+
+/**
+ * 方向列的第四层兜底：没有「收/支」列、也没有「支出/收入」双列时，从文字线索判方向。
+ * 「转账」本身不收不支，必须靠「转账给 / 收到」这类词区分，所以这里只认成对词。
+ */
+function inferWechatFlowFromText(...parts: string[]) {
+  const text = parts.filter(Boolean).join(" ");
+  if (!text) return "";
+  if (WECHAT_INFLOW_TEXT_RE.test(text)) return "\u6536\u5165";
+  if (WECHAT_OUTFLOW_TEXT_RE.test(text)) return "\u652f\u51fa";
+  return "";
+}
+
+/**
+ * 微信表头打分（2026-11-05）：不再「每一列都必须有」——用户改过表头（删列、改列名、
+ * 金额拆两列）就整份降级到标准模板，方向和账户列会静默丢失。改为层层判定：
+ *   硬门槛：交易时间 + （金额 或 支出+收入 双列）——没有这两样就不是流水表；
+ *   加分项：收/支 + 支付方式 + 当前状态 + 交易对方 + 备注，缺一列只少几分。
+ * 命中下限 10 分：删掉任意一列仍能认出是微信账单。
+ */
+function wechatHeaderScore(row: string[]) {
+  if (findHeaderIndex(row, WECHAT_FOREIGN_HEADERS) >= 0) return 0;
+  if (findHeaderIndex(row, WECHAT_TIME_HEADERS) < 0) return 0;
+  const hasSingleAmount = findHeaderIndex(row, WECHAT_AMOUNT_HEADERS) >= 0;
+  // 新版导出没有「金额(元)」，改由「支出」「收入」两列承载金额。
+  const hasSplitAmount =
+    findHeaderIndex(row, WECHAT_OUTFLOW_AMOUNT_HEADERS) >= 0 &&
+    findHeaderIndex(row, WECHAT_INFLOW_AMOUNT_HEADERS) >= 0;
+  if (!hasSingleAmount && !hasSplitAmount) return 0;
+
+  // 微信专属列：「收/支」「支付方式」「当前状态」在标准模板（含「支出/收入」双列）里不会有。
+  // 缺了这一层，MMH 标准模板导出（交易时间/对方账户/收支大类/商品/支出/收入/账户）
+  // 会被微信模板按「时间 + 双列金额 + 商品 + 备注」抢走。
+  const hasFlow = findHeaderIndex(row, WECHAT_FLOW_HEADERS) >= 0;
+  const hasPaymentAccount = findHeaderIndex(row, ["\u652f\u4ed8\u65b9\u5f0f"]) >= 0;
+  const hasStatus = findHeaderIndex(row, ["\u5f53\u524d\u72b6\u6001", "\u4ea4\u6613\u72b6\u6001"]) >= 0;
+  if (!hasFlow && !hasPaymentAccount && !hasStatus) return 0;
+
+  let score = 8;
+  if (hasFlow) score += 2;
+  if (hasPaymentAccount) score += 2;
+  if (hasStatus) score += 2;
+  if (findHeaderIndex(row, ["\u4ea4\u6613\u5bf9\u65b9"]) >= 0) score += 1;
+  if (findHeaderIndex(row, ["\u5907\u6ce8"]) >= 0) score += 1;
+  if (findHeaderIndex(row, ["\u5546\u54c1"]) >= 0) score += 1;
+  return score >= 10 ? score : 0;
+}
+
 function findWechatHeaderRow(rows: string[][]) {
-  for (const [index, row] of rows.slice(0, 25).entries()) {
-    const timeIndex = findHeaderIndex(row, ["\u4ea4\u6613\u65f6\u95f4"]);
-    const flowIndex = findHeaderIndex(row, WECHAT_FLOW_HEADERS);
-    const amountIndex = findHeaderIndex(row, WECHAT_AMOUNT_HEADERS);
-    // 新版导出没有「金额(元)」，改由「支出」「收入」两列承载金额。
-    const hasSplitAmount =
-      findHeaderIndex(row, WECHAT_OUTFLOW_AMOUNT_HEADERS) >= 0 &&
-      findHeaderIndex(row, WECHAT_INFLOW_AMOUNT_HEADERS) >= 0;
-    const accountIndex = findHeaderIndex(row, ["\u652f\u4ed8\u65b9\u5f0f"]);
-    const statusIndex = findHeaderIndex(row, ["\u5f53\u524d\u72b6\u6001", "\u4ea4\u6613\u72b6\u6001"]);
-    if (timeIndex >= 0 && flowIndex >= 0 && (amountIndex >= 0 || hasSplitAmount) && accountIndex >= 0 && statusIndex >= 0) {
-      return index;
+  let bestIndex = -1;
+  let bestScore = 0;
+  rows.slice(0, 60).forEach((row, index) => {
+    const score = wechatHeaderScore(row);
+    if (score > bestScore) {
+      bestScore = score;
+      bestIndex = index;
     }
-  }
-  return -1;
+  });
+  return bestIndex;
 }
 
 function normalizeWechatSheetRows(sheet: StatementWorkbookSheetRows) {
@@ -217,17 +299,17 @@ function normalizeWechatSheetRows(sheet: StatementWorkbookSheetRows) {
   const headers = compactRows[headerRowIndex] ?? [];
   const dataRows = compactRows.slice(headerRowIndex + 1);
   const ownerHint = findWechatOwnerHint(compactRows, headerRowIndex);
-  const timeIndex = findHeaderIndex(headers, ["\u4ea4\u6613\u65f6\u95f4"]);
+  const timeIndex = findHeaderIndex(headers, WECHAT_TIME_HEADERS);
   const counterpartyIndex = findHeaderIndex(headers, ["\u4ea4\u6613\u5bf9\u65b9"]);
   const productIndex = findHeaderIndex(headers, ["\u5546\u54c1", "\u5546\u54c1\u8bf4\u660e", "\u5546\u54c1\u540d\u79f0"]);
   const flowIndex = findHeaderIndex(headers, WECHAT_FLOW_HEADERS);
   const amountIndex = findHeaderIndex(headers, WECHAT_AMOUNT_HEADERS);
   const outflowAmountIndex = amountIndex >= 0 ? -1 : findHeaderIndex(headers, WECHAT_OUTFLOW_AMOUNT_HEADERS);
   const inflowAmountIndex = amountIndex >= 0 ? -1 : findHeaderIndex(headers, WECHAT_INFLOW_AMOUNT_HEADERS);
-  const accountIndex = findHeaderIndex(headers, ["\u652f\u4ed8\u65b9\u5f0f"]);
+  const accountIndex = findHeaderIndex(headers, ["\u652f\u4ed8\u65b9\u5f0f", "\u4ed8\u6b3e\u65b9\u5f0f", "\u8d44\u91d1\u6e20\u9053"]);
   const statusIndex = findHeaderIndex(headers, ["\u5f53\u524d\u72b6\u6001", "\u4ea4\u6613\u72b6\u6001"]);
-  const transactionTypeIndex = findHeaderIndex(headers, ["\u4ea4\u6613\u7c7b\u578b"]);
-  const orderIndex = findHeaderIndex(headers, ["\u4ea4\u6613\u5355\u53f7"]);
+  const transactionTypeIndex = findHeaderIndex(headers, ["\u4ea4\u6613\u7c7b\u578b", "\u7c7b\u578b"]);
+  const orderIndex = findHeaderIndex(headers, ["\u4ea4\u6613\u5355\u53f7", "\u4ea4\u6613\u53f7"]);
   const merchantOrderIndex = findHeaderIndex(headers, ["\u5546\u6237\u5355\u53f7"]);
   const remarkIndex = findHeaderIndex(headers, ["\u5907\u6ce8"]);
 
@@ -235,19 +317,24 @@ function normalizeWechatSheetRows(sheet: StatementWorkbookSheetRows) {
     const status = readCell(row, statusIndex);
     const outflowAmount = outflowAmountIndex >= 0 ? parseAmount(readCell(row, outflowAmountIndex)) : "";
     const inflowAmount = inflowAmountIndex >= 0 ? parseAmount(readCell(row, inflowAmountIndex)) : "";
-    // 单列金额（旧版）优先；新版从「支出/收入」里取有值的一侧。
+    // 金额三层：单列「金额」→「支出/收入」双列 → 都没有就丢行。
     const amount = parseAmount(readCell(row, amountIndex)) || outflowAmount || inflowAmount;
-    const flow = readCell(row, flowIndex) || (outflowAmount ? "\u652f\u51fa" : inflowAmount ? "\u6536\u5165" : "");
     const date = normalizeWechatDate(readCell(row, timeIndex));
     if (!date || !amount) return [];
-
-    const classifiedFlow = classifyWechatFlow(flow) ?? fallbackWechatFlow();
-    const requiresReview = classifiedFlow.requiresReview || isIgnoredWechatStatus(status);
 
     const counterparty = normalizeWechatText(readCell(row, counterpartyIndex));
     const product = normalizeWechatText(readCell(row, productIndex));
     const transactionType = normalizeWechatText(readCell(row, transactionTypeIndex));
     const rawRemark = normalizeWechatText(readCell(row, remarkIndex));
+    // 收支方向三层：收/支列 → 支出/收入哪列有值 → 交易类型/商品/对方的文字线索；
+    // 三层都判不出来才落「待确认」，不再默认当支出。
+    const flow = readCell(row, flowIndex)
+      || (outflowAmount ? "\u652f\u51fa" : inflowAmount ? "\u6536\u5165" : "")
+      || inferWechatFlowFromText(transactionType, product, counterparty, rawRemark);
+
+    const classifiedFlow = classifyWechatFlow(flow) ?? fallbackWechatFlow();
+    const requiresReview = classifiedFlow.requiresReview || isIgnoredWechatStatus(status);
+
     const account = normalizeWechatPaymentAccount(readCell(row, accountIndex), ownerHint);
     const orderNo = readCell(row, orderIndex);
     const merchantOrderNo = readCell(row, merchantOrderIndex);

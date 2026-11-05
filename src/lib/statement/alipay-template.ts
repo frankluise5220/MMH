@@ -61,33 +61,52 @@ const ALIPAY_OWNER_HEADERS = [
   "\u8d26\u6237\u540d",
 ];
 
+/**
+ * 支付宝表头打分（2026-11-05）：与微信同口径，不再要求每一列都在。
+ * 硬门槛是支付宝的专属特征——交易时间 + 金额 +（交易对方 或 商品说明）；
+ * 「收/支」「交易状态」「交易分类」「备注」缺一列只减分，不会整份降级到标准模板
+ * （降级后「收/支」和「付款方式」都对不上标准别名，方向与账户会静默丢失）。
+ */
+function alipayHeaderScore(row: string[]) {
+  // 京东用「商户名称 + 交易说明」，微信用「支付方式 + 当前状态」，都不属于支付宝表头：
+  // 出现这些列就排除，避免京东 / 微信账单被支付宝模板抢走。
+  // 「当前状态」必须一起排：微信用户删掉「支付方式」列后，只剩它与「交易状态」可区分。
+  if (
+    findHeaderIndex(row, ["\u5546\u6237\u540d\u79f0", "\u4ea4\u6613\u8bf4\u660e", "\u652f\u4ed8\u65b9\u5f0f", "\u5f53\u524d\u72b6\u6001"]) >= 0
+  ) {
+    return 0;
+  }
+  if (findHeaderIndex(row, ALIPAY_TIME_HEADERS) < 0) return 0;
+  if (findHeaderIndex(row, ALIPAY_AMOUNT_HEADERS) < 0) return 0;
+  if (
+    findHeaderIndex(row, ["\u4ea4\u6613\u5bf9\u65b9"]) < 0 &&
+    findHeaderIndex(row, ALIPAY_DESCRIPTION_HEADERS) < 0
+  ) {
+    return 0;
+  }
+
+  let score = 8;
+  if (findHeaderIndex(row, ["\u6536/\u652f", "\u6536\uff0f\u652f", "\u6536\u652f"]) >= 0) score += 2;
+  if (findHeaderIndex(row, ["\u4ea4\u6613\u72b6\u6001"]) >= 0) score += 2;
+  if (findHeaderIndex(row, ["\u4ea4\u6613\u5bf9\u65b9"]) >= 0) score += 1;
+  if (findHeaderIndex(row, ALIPAY_DESCRIPTION_HEADERS) >= 0) score += 1;
+  if (findHeaderIndex(row, ["\u5907\u6ce8"]) >= 0) score += 1;
+  return score >= 10 ? score : 0;
+}
+
 function findAlipayHeaderRow(rows: string[][]) {
   // 支付宝导出的回单头部有「导出信息 / 特别提示 / 电子客户回单」等说明行，
   // 表头通常落在第 20 行以后，扫描窗口必须比 25 行更宽。
-  for (const [index, row] of rows.slice(0, 60).entries()) {
-    const timeIndex = findHeaderIndex(row, ALIPAY_TIME_HEADERS);
-    const flowIndex = findHeaderIndex(row, ["\u6536/\u652f", "\u6536\u652f"]);
-    const amountIndex = findHeaderIndex(row, ALIPAY_AMOUNT_HEADERS);
-    const statusIndex = findHeaderIndex(row, ["\u4ea4\u6613\u72b6\u6001"]);
-    const counterpartyIndex = findHeaderIndex(row, ["\u4ea4\u6613\u5bf9\u65b9"]);
-    const descriptionIndex = findHeaderIndex(row, ALIPAY_DESCRIPTION_HEADERS);
-    // 京东用「商户名称 + 交易说明」，微信用「支付方式」，都不属于支付宝表头：
-    // 出现这两列就跳过，避免京东 / 微信账单被支付宝模板抢走（两者都有「交易状态」「交易分类」）。
-    if (findHeaderIndex(row, ["\u5546\u6237\u540d\u79f0"]) >= 0) continue;
-    if (findHeaderIndex(row, ["\u652f\u4ed8\u65b9\u5f0f"]) >= 0) continue;
-    // 「收/付款方式」只出现在资金明细导出里，交易明细导出没有这一列，
-    // 因此账户列不是命中条件；「交易对方 / 商品说明」才是支付宝的专属特征。
-    if (
-      timeIndex >= 0 &&
-      flowIndex >= 0 &&
-      amountIndex >= 0 &&
-      statusIndex >= 0 &&
-      (counterpartyIndex >= 0 || descriptionIndex >= 0)
-    ) {
-      return index;
+  let bestIndex = -1;
+  let bestScore = 0;
+  rows.slice(0, 60).forEach((row, index) => {
+    const score = alipayHeaderScore(row);
+    if (score > bestScore) {
+      bestScore = score;
+      bestIndex = index;
     }
-  }
-  return -1;
+  });
+  return bestIndex;
 }
 
 /** 支付宝交易明细只按日入账，时间部分丢掉；新旧两种日期写法由共性解析器兼容。 */
