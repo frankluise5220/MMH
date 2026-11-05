@@ -831,11 +831,30 @@ html {
   padding: 10px;
 }
 
-/* 表头设置按钮与批量修改按钮同高（h-8/32px，原 h-7 比铅笔按钮矮一截）；同高后
-   工具栏垂直居中，按钮上/下离卡片边缘等距（2026-11-04 用户：「用表格里按钮相同
-   大小的按钮来控制与边缘的距离上下相等」）。 */
-.ft-card-surface [data-advanced-table-column-settings] {
-  height: 2rem;
+/* ── 卡片里：工具栏图标按钮缩到与表格行内图标同尺寸（2026-11-05 用户：「缩小全选编辑
+      按钮和表头设置按钮的大小，目前是与表格内图标（编辑、删除）的大小保持一致。
+      但是保持与边缘的距离一致」）────────────────────────────────────────────────
+  两个按钮分别是：
+  - `data-batch-replace-trigger`：批量编辑（勾选行后才出现的铅笔，BatchReplacePopoverButton
+    的默认样 h-8 w-8）
+  - `data-advanced-table-column-settings`：表头设置（secondary-button h-7 px-2）
+  此前为了「上/下等距」，把它们撑到 32px（h-8 同高），比表体里的编辑/删除图标大了一圈
+  （行内图标外盒 20px、图标 14px = h-3.5，见 ROW_ACTION_BUTTON_BOX_CLASS）。现在两者都收
+  到行内图标尺寸：外盒 20px、图标 14px、圆角 6px（行内是 rounded 4px，这里取 rounded-md
+  与铅笔按钮原本的圆角一致，避免 20px 盒子上出现 10px 药丸圆角）。
+  尺寸变小**不动内边距**：工具栏仍是 `padding: 10px`（见上一条规则）+1px 卡片边框，
+  按钮离卡片上/左/右边缘仍是 11px，四边等距不变。 */
+.ft-card-surface [data-advanced-table-toolbar] :is([data-batch-replace-trigger], [data-advanced-table-column-settings]) {
+  width: 20px;
+  min-width: 20px;
+  height: 20px;
+  padding: 0;
+  border-radius: 6px;
+}
+
+.ft-card-surface [data-advanced-table-toolbar] :is([data-batch-replace-trigger], [data-advanced-table-column-settings]) > svg {
+  width: 14px;
+  height: 14px;
 }
 
 /* 汇总条：上沿保留它自带的 `border-slate-200`（内线，与 `th` 的 `border-b` 同档），

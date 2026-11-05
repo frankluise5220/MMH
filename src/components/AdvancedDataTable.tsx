@@ -3571,7 +3571,10 @@ export function AdvancedDataTable<T>({
               </div>
             ) : null}
             {showColumnVisibilityButton ? (
-              <div ref={columnMenuRef} className="relative">
+              /* `flex` 不是摆设：只有 `relative` 时这里会走行内格式化，外层 strut 的
+                 line-height（24px）会把容器撑到 24px，比里面的按钮高 4px，按钮在工具栏
+                 里垂直居中后就离卡片上边缘比左右多 2px。flex 让容器高度只跟按钮走。 */
+              <div ref={columnMenuRef} className="relative flex">
                 <button
                   type="button"
                   data-advanced-table-column-settings
