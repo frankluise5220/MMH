@@ -323,6 +323,11 @@ LEGACY_SQL
     done
     docker logs "$app" > "$WORK/$label.boot.log" 2>&1 || true
     if [ "$state" != "booted" ]; then
+      # reason 只留 6 行 [mmh]；prisma 自己的 stderr 没有该前缀，会被整段过滤掉，
+      # 于是 2026-11-05 v0.1.82 只看到 "db push attempt N failed" 查不出原因。
+      # 失败时把完整 entrypoint 日志尾部打到 job 日志（artifact 也会带上）。
+      log "case $label: entrypoint log tail (last 80 lines):"
+      tail -n 80 "$WORK/$label.boot.log" 2>/dev/null | sed 's/^/    /' || true
       reason="entrypoint terminal state '$state' (not 'booted'); [mmh] tail: $(grep -a '\[mmh\]' "$WORK/$label.boot.log" | tail -n 6 | tr '\n' '|')"
       rc=1
     fi
