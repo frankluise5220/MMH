@@ -95,6 +95,18 @@ jobs:
             echo "Build ref ${tag} -> target ${image_tag}, bases: ${bases}"
           fi
 
+      # workflow_run 路径把目标镜像写成 ghcr.io/...:sha-<commit>，而
+      # docker-upgrade-sim.sh 在 MMH_TARGET_IMAGE 非空时走「使用本地镜像」分支，
+      # preflight 的 docker image inspect 会直接失败（2026-11-05 v0.1.82 就是这么红的：
+      # main push 的 commit 与 v0.1.82 tag 相同，workflow_run 不再 skip）。
+      # 所以先显式拉取；workflow_dispatch 不传 target_image，由脚本自己 pull。
+      - name: Pull target image
+        if: steps.resolve.outputs.skip != 'true' && steps.resolve.outputs.target_image != ''
+        shell: bash
+        env:
+          MMH_TARGET_IMAGE: ${{ steps.resolve.outputs.target_image }}
+        run: docker pull "$MMH_TARGET_IMAGE"
+
       - name: Run docker upgrade simulation
         if: steps.resolve.outputs.skip != 'true'
         shell: bash
