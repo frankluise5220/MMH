@@ -1,0 +1,41 @@
+name: retag
+
+# 运维应急：把一个已存在的多架构 index 重新指向若干 tag，不重新构建、不重传层。
+# 用途：某次发布的镜像有缺陷时，先把 0.1.82/latest 指回上一个可用版本，
+# 避免更新器和任何人拉到坏镜像；修好后由正常发布流水线覆盖回来。
+on:
+  workflow_dispatch:
+    inputs:
+      tags:
+        description: "目标 tag，逗号分隔"
+        required: true
+        default: "0.1.82,latest"
+      source:
+        description: "源 digest（多架构 index，sha256:...）"
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  retag:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 登录 GHCR
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
+      - name: 重新指向 tag
+        run: |
+          set -eu
+          src="ghcr.io/frankluise5220/mmh@${{ inputs.source }}"
+          args=""
+          IFS=',' read -ra list <<< "${{ inputs.tags }}"
+          for tag in "${list[@]}"; do
+            tag="$(printf '%s' "$tag" | tr -d '[:space:]')"
+            [ -n "$tag" ] || continue
+            args="$args -t ghcr.io/frankluise5220/mmh:$tag"
+          done
+          echo "retag $src ->$args"
+          docker buildx imagetools create $args "$src"
+          docker buildx imagetools inspect ghcr.io/frankluise5220/mmh:${{ inputs.tags }}
