@@ -83,7 +83,8 @@ RUN set -eu; \
       mkdir -p .next/standalone-img/sharp .next/standalone-img/vips-lib; \
       for p in .next/standalone/node_modules/@img/*; do \
         case "$(basename "$p")" in \
-          *libvips*) mv "$p" .next/standalone-img/vips-pkg; \
+          *musl*) rm -rf "$p" ;; \
+          sharp-libvips-linux-x64) mv "$p" .next/standalone-img/vips-pkg; \
                      big=$( (du -k .next/standalone-img/vips-pkg/lib/* 2>/dev/null || true) \
                              | sort -rn | awk 'NR==1{print $2}' ); \
                      if [ -n "$big" ]; then mv "$big" .next/standalone-img/vips-lib/; fi ;; \
@@ -192,7 +193,9 @@ COPY --chown=node:node --from=build /app/.next/standalone-next ./node_modules
 # sharp 的 libvips 是整条链上最难压的一层：.so 本身几乎不可压缩，单包就顶到镜像站
 # 的断开线上。所以 libvips 包拆成三份落下：包骨架 + 其余 .so（vips-pkg）、最大的那个
 # .so（vips-lib）、sharp 的 .node 插件（sharp/）。
-COPY --chown=node:node --from=build /app/.next/standalone-img/sharp/* ./node_modules/@img/
+# 目标必须是「单源目录」：COPY 多源（含 *.cjs 通配符）时 Docker 会把每个目录的内容
+# 摊平到目标目录，@img/sharp-linux-x64 这一层包名会消失，sharp 运行期找不到 .node。
+COPY --chown=node:node --from=build /app/.next/standalone-img/sharp ./node_modules/@img
 COPY --chown=node:node --from=build /app/.next/standalone-img/vips-pkg ./node_modules/@img/sharp-libvips-linux-x64
 COPY --chown=node:node --from=build /app/.next/standalone-img/vips-lib ./node_modules/@img/sharp-libvips-linux-x64/lib
 COPY --chown=node:node --from=build /app/.next/standalone-split/g0 ./node_modules
@@ -201,15 +204,16 @@ COPY --chown=node:node --from=build /app/.next/standalone-split/g2 ./node_module
 COPY --chown=node:node --from=build /app/.next/standalone/.next ./.next
 COPY --chown=node:node --from=build /app/.next/standalone/package.json ./package.json
 COPY --chown=node:node --from=build /app/.next/standalone/server.js ./server.js
-RUN set -eu; \
-    echo "=== @img ==="; ls -la ./node_modules/@img || true; \
-    for d in ./node_modules/@img/*/; do \
-      echo "== pkg $d"; ls -A "$d" || true; \
-      echo "-- lib"; ls -A "${d}lib" 2>/dev/null || true; \
-    done; \
-    test -f ./server.js && test -f ./package.json && test -d ./.next/server \
+# @img 下必须是「包目录」而不是摊平的内容：生产镜像实测形态是 colour/ +
+# sharp-linux-x64/ + sharp-libvips-linux-x64/（musl 两份在 bookworm 上纯属死重量，
+# 已在 build 阶段删掉）。sharp 按包名 require .node，包名层一丢就是运行时
+# MODULE_NOT_FOUND，所以在构建期拦死。
+RUN test -f ./server.js && test -f ./package.json && test -d ./.next/server \
  && test -d ./node_modules/next \
- && test -n "$(ls -A ./node_modules/@img)"
+ && test -d ./node_modules/@img/colour \
+ && test -d ./node_modules/@img/sharp-linux-x64 \
+ && test -n "$(ls -A ./node_modules/@img/sharp-linux-x64/lib)" \
+ && test -n "$(ls -A ./node_modules/@img/sharp-libvips-linux-x64/lib)"
 COPY --chown=node:node --from=build /app/.next/static ./.next/static
 COPY --chown=node:node --from=build /app/public ./public
 COPY --chown=node:node --from=build /app/prisma ./prisma
