@@ -164,23 +164,28 @@ ENV HOSTNAME=0.0.0.0
 # 代码侧已用显式业务时区（date-utils.todayDateBusinessYmd），这里统一进程时区做双保险。
 ENV TZ=Asia/Shanghai
 
-# psql 是启动必需：docker-entrypoint.sh 用它跑兼容迁移，不能像其它工具那样删掉。
-# 但整包 postgresql-client 会在 /usr/lib/postgresql/*/bin 下装 25 个二进制
-# （initdb/pg_ctl/pgbench/vacuumdb/basebackup…），容器里一个都用不到，
-# /usr/share/postgresql/* 下的 extension/tsearch_data 也只有 CREATE EXTENSION
-# 时才读 —— 那是 postgres 容器的事，不是本镜像。全部清掉后这一层从 50.65 MB
-# 降到 25 MB 上下，才可能压在镜像站单层约 5 分钟、约 27 MB 的断开线以内。
+# psql 和 pg_isready 是启动必需，不能像其它工具那样删掉：
+#   - psql：docker-entrypoint.sh 用它跑兼容迁移
+#   - pg_isready：entrypoint 的 "until pg_isready ..." 等待数据库就绪
+# /usr/bin 下的同名命令是 postgresql-common 的 pg_wrapper 符号链接，它会去找
+# /usr/lib/postgresql/<ver>/bin/<name>。底层二进制一删，wrapper 就报
+# "You must install at least one postgresql-client-<version> package"，
+# 容器会卡在重启循环里（2026-11-06 就踩过这个坑）。
+# 其余 23 个二进制容器里一个都用不到，/usr/share/postgresql/* 下的
+# extension/tsearch_data 也只有 CREATE EXTENSION 时才读 —— 那是 postgres
+# 容器的事，不是本镜像。清掉后这一层从 50.65 MB 降到 25 MB 上下，才可能
+# 压在镜像站单层约 5 分钟、约 27 MB 的断开线以内。
 RUN apt-get update \
   && apt-get install -y --no-install-recommends postgresql-client openssl ca-certificates gosu \
   && rm -rf /var/lib/apt/lists/* /usr/share/doc /usr/share/man /usr/share/postgresql/*/man \
        /usr/share/postgresql/*/extension /usr/share/postgresql/*/tsearch_data \
-  && for b in initdb pg_amcheck pg_basebackup pg_ctl pg_isready pg_receivewal \
+  && for b in initdb pg_amcheck pg_basebackup pg_ctl pg_receivewal \
        pg_recvlogical pg_resetwal pg_rewrite pg_test_fsync pg_test_timing \
        pg_upgrade pg_waldump pg_walsummary clusterdb createdb createuser \
        dropdb dropuser oid2name pgbench reindexdb vacuumdb; do \
        rm -f /usr/lib/postgresql/*/bin/$b; \
      done \
-  && test -x /usr/lib/postgresql/*/bin/psql
+  && psql --version && pg_isready --version && pg_dump --version >/dev/null
 
 # standalone 拆成多条 COPY：node_modules 在两次发版之间是稳定的（next/react/prisma/sharp
 # 的版本不变就不变），业务代码每次都变。合成一条时两者被绑进同一个层，代码改一行就
