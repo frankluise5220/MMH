@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 // 发布前的镜像层体积门禁。
 //
-// 国内镜像站（ghcr.dockerproxy.net / ghcr.m.daocloud.io）按**单个 blob** 断线：
-// 层下到 100% 后校验失败，然后无限重试同一层。实测 11.48 MB 能过，14.25 / 15.64 /
-// 16.21 / 18.76 / 20.18 / 20.74 / 21.13 / 24.31 MB 每次都卡在 Retrying。这不是总大小
-// 限制——30 个小层能拉完，一个 20 MB 的层永远拉不完。
+// 国内镜像站按**单个 blob** 断线：层下到 100% 后校验失败，或干脆不落盘。
+// 2026-11-06 复测（148 与 5.149 两台独立网络的机器，NJU 与 GHCR 直连）：
+// 8.75 MB 的层同样停在 "Download complete" 之后，900 秒也不推进 —— 早先
+// 「≤11.48 MB 能过、10 MB 阈值安全」的结论不成立。阈值收紧到 4.5 MB。
 //
 // 因此「镜像发布成功」不等于「用户能升级」：0.1.81 的执行器是耦合拉取
 // （compose pull updater app），任何一个超线层都会让整次升级卡死。
@@ -18,14 +18,18 @@
 //   node scripts/check-image-layer-sizes.mjs --tag 0.1.82 --since 0.1.81   # 发布门禁
 //   node scripts/check-image-layer-sizes.mjs --tag 0.1.82                  # 无基线：只报告
 //   node scripts/check-image-layer-sizes.mjs --repo mmh-updater --tag latest
-//   node scripts/check-image-layer-sizes.mjs --tag 0.1.82 --max-mb 12      # 临时放宽
+//   node scripts/check-image-layer-sizes.mjs --tag 0.1.83 --max-mb 4.5     # 显式阈值
 //
 // 退出码 1 表示存在超线的**新增**层，不要发布（或不要把 latest 指向它）。
 
 const OWNER = process.env.MMH_IMAGE_OWNER || "frankluise5220";
 const DEFAULT_REPOS = ["mmh", "mmh-updater"];
-// 设计目标 ≤ 8 MB；实测断开线在 12.89（过）与 14.25（卡死）之间，取 10 MB 留余量。
-const HARD_LIMIT_MB = 10;
+// 8.75 MB 实测会卡，取 4.5 MB 留余量。
+const HARD_LIMIT_MB = 4.5;
+// 只缩小单层还不够：0.1.82 第一版把 19 层放大到 38 层，30 个新层 76 MB 全部要重下。
+// 层复用被破坏同样判红。
+const MAX_FRESH_LAYERS = 16;
+const MAX_FRESH_TOTAL_MB = 32;
 
 function parseArgs(argv) {
   const args = { only: null, tag: "latest", since: null, maxMb: HARD_LIMIT_MB, reportOnly: false };
@@ -196,12 +200,23 @@ async function main() {
       );
     }
 
-    if (oversized.length > 0) {
+    // updater 用 12 个 2.44 MB 分块取代一个大 node 运行时层，新增层数天然更多。
+    const maxFreshLayers = name === "mmh" ? MAX_FRESH_LAYERS : 24;
+    const tooManyFresh =
+      fresh.length > maxFreshLayers || freshSummary.total > MAX_FRESH_TOTAL_MB * 1024 * 1024;
+    if (oversized.length > 0 || tooManyFresh) {
       failed = true;
-      console.error(
-        `  ✗ 本次新增/变更层里有 ${oversized.length} 层超过 ${args.maxMb} MB：国内镜像站会下到 100% 后无限重试，存量用户会卡在"拉取镜像"。`,
-      );
-      console.error("    修法见 Dockerfile / Dockerfile.updater 顶部的层切分说明（单层不许超过 10 MB）。");
+      if (oversized.length > 0) {
+        console.error(
+          `  ✗ 本次新增/变更层里有 ${oversized.length} 层超过 ${args.maxMb} MB：镜像站会在下到 100% 后卡住，存量用户会卡在"拉取镜像"。`,
+        );
+      }
+      if (tooManyFresh) {
+        console.error(
+          `  ✗ 相对 ${args.since} 新增 ${fresh.length} 层 / ${formatMb(freshSummary.total)} MB，超过 ${maxFreshLayers} 层 / ${MAX_FRESH_TOTAL_MB} MB：层复用被破坏，存量用户要重下整份应用镜像。`,
+        );
+      }
+      console.error("    修法：以用户正在跑的版本为 FROM 基线，只叠加少量 < 4.5 MB 的差异层，不要改早期层。");
     } else if (args.reportOnly) {
       console.log(`  · 报告模式：新增层最大 ${formatMb(freshSummary.max)} MB，不做判定`);
     } else {
