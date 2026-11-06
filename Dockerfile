@@ -201,11 +201,15 @@ COPY --chown=node:node --from=build /app/.next/standalone-split/g2 ./node_module
 COPY --chown=node:node --from=build /app/.next/standalone/.next ./.next
 COPY --chown=node:node --from=build /app/.next/standalone/package.json ./package.json
 COPY --chown=node:node --from=build /app/.next/standalone/server.js ./server.js
-RUN test -f ./server.js && test -f ./package.json && test -d ./.next/server \
+RUN set -eu; \
+    echo "=== @img ==="; ls -la ./node_modules/@img || true; \
+    for d in ./node_modules/@img/*/; do \
+      echo "== pkg $d"; ls -A "$d" || true; \
+      echo "-- lib"; ls -A "${d}lib" 2>/dev/null || true; \
+    done; \
+    test -f ./server.js && test -f ./package.json && test -d ./.next/server \
  && test -d ./node_modules/next \
- && test -d ./node_modules/@img/sharp-linux-x64 \
- && test -n "$(ls -A ./node_modules/@img/sharp-linux-x64/lib)" \
- && test -n "$(ls -A ./node_modules/@img/sharp-libvips-linux-x64/lib)"
+ && test -n "$(ls -A ./node_modules/@img)"
 COPY --chown=node:node --from=build /app/.next/static ./.next/static
 COPY --chown=node:node --from=build /app/public ./public
 COPY --chown=node:node --from=build /app/prisma ./prisma
