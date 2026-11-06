@@ -158,7 +158,7 @@ RUN set -eu; \
     mv node_modules/prisma /opt/prisma-split/cli; \
     mv node_modules/@prisma /opt/prisma-split/scope; \
     split_into /opt/prisma-split/cli/build 2 /opt/prisma-split/cli-build; \
-    split_into /opt/prisma-split/scope 2 /opt/prisma-split/scope-split; \
+    split_into /opt/prisma-split/scope 3 /opt/prisma-split/scope-split; \
     split_into node_modules 3 /opt/prisma-split/rest
 
 FROM ${NODE_RUNTIME_IMAGE} AS runtime
@@ -259,12 +259,15 @@ COPY --chown=node:node --from=build /app/public ./public
 COPY --chown=node:node --from=build /app/prisma ./prisma
 COPY --chown=node:node --from=build /app/prisma.config.ts ./prisma.config.ts
 # prisma 运行时（未压缩 190 MB）同样按体积分组：CLI 的 build 目录 2 组、@prisma 作用域
-# 2 组、其余依赖 3 组，每组压缩后 5-8 MB。文件仍然落在原来的路径上，require 不受影响。
+# 3 组、其余依赖 3 组，每组压缩后 5-8 MB。文件仍然落在原来的路径上，require 不受影响。
+# @prisma 用 3 组而不是 2 组：2026-11-06 保留 studio-core（只裁 dist/ui）以后，2 组时
+# 装着 studio-core 的那组压到 11.19 MB，正好越过镜像站 10 MB 的断线线（#30 层）。
 COPY --chown=node:node --from=prisma-deps /opt/prisma-split/cli ./node_modules/prisma
 COPY --chown=node:node --from=prisma-deps /opt/prisma-split/cli-build/g0 ./node_modules/prisma/build
 COPY --chown=node:node --from=prisma-deps /opt/prisma-split/cli-build/g1 ./node_modules/prisma/build
 COPY --chown=node:node --from=prisma-deps /opt/prisma-split/scope-split/g0 ./node_modules/@prisma
 COPY --chown=node:node --from=prisma-deps /opt/prisma-split/scope-split/g1 ./node_modules/@prisma
+COPY --chown=node:node --from=prisma-deps /opt/prisma-split/scope-split/g2 ./node_modules/@prisma
 COPY --chown=node:node --from=prisma-deps /opt/prisma-split/rest/g0 ./node_modules
 COPY --chown=node:node --from=prisma-deps /opt/prisma-split/rest/g1 ./node_modules
 COPY --chown=node:node --from=prisma-deps /opt/prisma-split/rest/g2 ./node_modules
