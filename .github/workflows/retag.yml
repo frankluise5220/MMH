@@ -38,4 +38,3 @@ jobs:
           done
           echo "retag $src ->$args"
           docker buildx imagetools create $args "$src"
-          docker buildx imagetools inspect ghcr.io/frankluise5220/mmh:${{ inputs.tags }}
