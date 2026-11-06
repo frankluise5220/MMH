@@ -6,6 +6,8 @@ const path = require("node:path");
 const root = path.resolve(__dirname, "..");
 const entrypoint = fs.readFileSync(path.join(root, "scripts", "docker-entrypoint.sh"), "utf8");
 const dockerfile = fs.readFileSync(path.join(root, "Dockerfile"), "utf8");
+const updaterDockerfile = fs.readFileSync(path.join(root, "Dockerfile.updater"), "utf8");
+const updaterBootstrap = fs.readFileSync(path.join(root, "scripts", "updater-bootstrap.sh"), "utf8");
 const rootCompose = fs.readFileSync(path.join(root, "docker-compose.yml"), "utf8");
 const nasCompose = fs.readFileSync(path.join(root, "deploy", "nas", "docker-compose.yml"), "utf8");
 const nasEnvExample = fs.readFileSync(path.join(root, "deploy", "nas", "env.example"), "utf8");
@@ -362,13 +364,82 @@ expect(
     /pg_restore/.test(updaterServer) &&
     /rollbackImageTag/.test(updaterServer) &&
     /async function pullImagesWithFallback/.test(updaterServer) &&
-    /composeCommand\("pull updater app"\)/.test(updaterServer) &&
+    /async function pullAppImage/.test(updaterServer) &&
     snapshotCallIndex >= 0 &&
     syncDeployCallIndex >= 0 &&
     pullCallIndex >= 0 &&
     snapshotCallIndex < syncDeployCallIndex &&
     snapshotCallIndex < pullCallIndex,
   "Docker updater must snapshot the running image, the deploy files and a pg_dump before the deploy files are overwritten or any image is pulled.",
+);
+// `compose pull updater app` made the executor image (18-24 MB base layers on a
+// throttled mirror) a prerequisite for the app upgrade, which is how a single
+// stuck blob turned into "升级卡住". The app image is now the only blocking
+// pull, and the executor pull may fail without failing the task.
+expect(
+  /async function pullUpdaterImage/.test(updaterServer) &&
+    /updaterReady/.test(updaterServer) &&
+    !/composeCommand\("pull/.test(updaterServer) &&
+    !/pull updater app/.test(updaterServer),
+  "Docker updater must pull the app image on its own and keep the executor image pull non-blocking.",
+);
+
+// 解耦只能救「新执行器已经在跑」的用户；存量 0.1.81 用户跑的是旧二进制，第一步仍然是
+// 耦合的 `compose pull updater app`，所以执行器镜像本身必须每一层都能被国内镜像站拉下来。
+// 镜像站按单个 blob 断线（约 10–12 MB 以上必然重试到失败），实测 0.1.82 的
+// `apk add git nodejs` 就是一层 24.31 MB，且每次重建都换 digest —— 老用户必须重下，必卡。
+// 现在的形态：node 运行时 tar.gz 后 split 成固定块数（当前 12 块，每块 2.44 MB），
+// 各占一层，由 ENTRYPOINT 在启动时合并。任何把块合并回一条 COPY、或把 node 装回
+// RUN apk add 的改动都会让这个类别的故障复发。
+const updaterPartCopies = (
+  updaterDockerfile.match(/^COPY --from=nodebundle \/node-parts\/part\.\d\d /gm) || []
+).length;
+const declaredPartCount = Number(
+  (updaterDockerfile.match(/split -n (\d+) -d -a 2 \/node-runtime\.tgz/) || [])[1] || 0,
+);
+const updaterRuntimeStage = updaterDockerfile
+  .slice(updaterDockerfile.lastIndexOf("\nFROM ") + 1)
+  .split(/\r?\n/)
+  .filter((line) => !line.trimStart().startsWith("#"))
+  .join("\n");
+expect(
+  declaredPartCount >= 8 && updaterPartCopies === declaredPartCount,
+  `Dockerfile.updater must COPY the split node runtime as ${declaredPartCount || "N"} separate layers (one COPY per split chunk); a single directory COPY collapses them back into one oversized layer.`,
+);
+expect(
+  !/^COPY --from=nodebundle \/node-parts\/? /m.test(updaterDockerfile) &&
+    !/^COPY --from=nodebundle \/node-parts\/\* /m.test(updaterDockerfile),
+  "Dockerfile.updater must not copy /node-parts as one source: that produces a single ~25 MB layer, which is exactly the blob the mirror drops.",
+);
+expect(
+  /^FROM docker:28\.5\.2-cli\s*$/m.test(updaterDockerfile) && !/^FROM docker:28-cli\s*$/m.test(updaterDockerfile),
+  "Dockerfile.updater must pin the executor base to docker:28.5.2-cli (same amd64 digest as the docker:28-cli every 0.1.81 host already has, so its 18-21 MB layers are skipped); a rolling docker:28-cli tag re-downloads them on every release.",
+);
+expect(
+  typeof updaterRuntimeStage === "string" ? !/apk add/.test(updaterRuntimeStage) : true,
+  "Dockerfile.updater runtime stage must not install nodejs with apk: that emits a fresh ~24 MB layer on every rebuild.",
+);
+expect(
+  /^ENTRYPOINT \["\/opt\/mmh\/bootstrap\.sh"\]$/m.test(updaterDockerfile) &&
+    /exec "\$@"/.test(updaterBootstrap) &&
+    /tar -xzf "\$tmp_tgz" -C \//.test(updaterBootstrap) &&
+    /ls \$parts_glob/.test(updaterBootstrap),
+  "Dockerfile.updater must merge the split node runtime from its ENTRYPOINT (compose `command:` only overrides CMD, so an entrypoint is the only place that runs for existing users' compose files), and updater-bootstrap.sh must reassemble the parts before exec-ing the command.",
+);
+// 同一类故障在 app 镜像上的两个诱因（2026-11-06 实测，把已发布层解开统计）：
+// (1) postgresql-client 那一层不裁剪时压缩后 10.16 MB：31 MB 原始内容里 10.2 MB 是
+//     libcrypto.a/libssl.a/libpq.a 静态库、1.7 MB 是 openssl 头文件、4 MB 是 psql
+//     翻译、1.7 MB 是 debconf 缓存 —— 运行时一个都用不到。裁掉后实测 5.53 MB。
+// (2) prisma 运行时一半体积是 studio-core（37.4 MB）与 @electric-sql/PGlite
+//     （24.1 MB）：只有 `prisma studio` / `prisma dev` 用，容器只跑 `prisma db push`。
+//     它们各自单独吃掉一层（9.90 / 9.96 MB），删掉后这块最大层降到 7.3 MB 以内。
+expect(
+  /libcrypto\.a/.test(dockerfile) && /libssl\.a/.test(dockerfile) && /libpq\.a/.test(dockerfile),
+  "Dockerfile must strip the static libs (libcrypto.a/libssl.a/libpq.a) inside the postgresql-client layer: leaving them pushes that layer to 10.16 MB, right at the mirror's per-blob disconnect line.",
+);
+expect(
+  /rm -rf node_modules\/@prisma\/studio-core node_modules\/@electric-sql/.test(dockerfile),
+  "The prisma runtime stage must drop @prisma/studio-core (37 MB) and @electric-sql/PGlite (24 MB): they are only used by `prisma studio` / `prisma dev`, and each one alone made a ~10 MB layer. Verified safe by running `prisma validate` + `prisma db push` against a real postgres without them.",
 );
 expect(
   /dropdb --force -U/.test(updaterServer) &&

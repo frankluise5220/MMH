@@ -1,6 +1,6 @@
 import http from "node:http";
 import { spawn } from "node:child_process";
-import { access, readFile, writeFile } from "node:fs/promises";
+import { access, readFile, rename, writeFile } from "node:fs/promises";
 
 const port = Number(process.env.MMH_UPDATER_PORT || 7788);
 const token = String(process.env.MMH_UPDATE_TOKEN || "").trim();
@@ -86,7 +86,26 @@ async function resolveHostWorkdir() {
 }
 
 async function persistTask() {
-  await writeFile(taskStateFile, JSON.stringify(task), "utf8");
+  // Temp file + rename: the page and the crash-recovery path both read this
+  // JSON, and a half-written file would look like "no task at all".
+  const tempFile = `${taskStateFile}.tmp`;
+  await writeFile(tempFile, JSON.stringify(task), "utf8");
+  await rename(tempFile, taskStateFile);
+}
+
+// Step boundaries are too coarse to survive a crash: the executor runs inside
+// the container it is about to recreate, and a killed process used to leave the
+// previous run's JSON on disk, so the page showed "已回滚" for an upgrade that
+// was actually in progress. Every console line now schedules a write, coalesced
+// to one per 1.5s (the page polls at that rate anyway).
+const persistDebounceMs = 1500;
+let persistTimer = null;
+function schedulePersist() {
+  if (persistTimer) return;
+  persistTimer = setTimeout(() => {
+    persistTimer = null;
+    persistTask().catch(() => {});
+  }, persistDebounceMs);
 }
 
 async function readRecentPersistedTask() {
@@ -125,6 +144,7 @@ function pushLog(line) {
   task.logs.push(`[${now()}] ${text}`);
   if (task.logs.length > 600) task.logs = task.logs.slice(-600);
   task.updatedAt = now();
+  schedulePersist();
 }
 
 // ---------------------------------------------------------------------------
@@ -854,17 +874,66 @@ function inspectImageSource(source, timeoutMs = 8000) {
 }
 
 // Pulling is where a reachable-but-degraded mirror actually fails: the manifest
-// probe passes, then a 40 MB blob dies at 100% and docker retries the same layer
+// probe passes, then a 20 MB blob dies at 100% and docker retries the same layer
 // forever. Fail over to the remaining candidates instead of aborting the whole
 // update on the first one.
 const pullAttemptTimeoutMs = 10 * 60 * 1000;
 // Three sources cover every mirror we publish to; trying more only multiplies
 // the wait for a user who is already stuck.
 const pullSourceBudget = 3;
+// The executor image is only needed by the *next* update -- the container
+// running this pipeline is the current one. Its base layers are 18-24 MB each,
+// exactly the blobs a throttled domestic mirror keeps dropping, so it gets a
+// small budget and is allowed to fail: "app upgraded, executor still old" is a
+// working household, "升级卡在 24 MB 那层" is not.
+const updaterPullTimeoutMs = 3 * 60 * 1000;
 
-async function pullImagesWithFallback(selectedImages) {
+function updaterFallbackSources(selectedImages, limit = 2) {
+  const tried = new Set([selectedImages.updaterImage]);
+  const out = [];
+  for (const source of selectedImages.candidates || []) {
+    if (!source?.updater || tried.has(source.updater)) continue;
+    tried.add(source.updater);
+    out.push(source);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
+async function pullUpdaterImage(selectedImages) {
+  const sources = [selectedImages, ...updaterFallbackSources(selectedImages)];
+  for (const source of sources) {
+    const image = source.updaterImage || deriveUpdaterImage(source.appImage);
+    if (!image) continue;
+    pushLog("拉取执行器镜像（不影响本次升级）");
+    try {
+      await run(`docker pull ${JSON.stringify(image)}`, "拉取执行器镜像", {
+        phase: "拉取执行器镜像",
+        timeoutMs: updaterPullTimeoutMs,
+      });
+    } catch (error) {
+      pushLog(error instanceof Error ? error.message : String(error));
+      continue;
+    }
+    if (image !== selectedImages.updaterImage) {
+      // The executor tag that actually landed on the host is the one compose
+      // must recreate from, not the one the app image switch picked.
+      await updateEnvImageSource(selectedImages.appImage, image);
+    }
+    return { updaterImage: image, updaterReady: true };
+  }
+  pushLog("执行器镜像未拉取成功，本次跳过执行器重建：应用升级不受影响，下次更新前会再试");
+  return { updaterImage: selectedImages.updaterImage || "", updaterReady: false };
+}
+
+async function pullAppImage(selectedImages) {
   try {
-    await run(composeCommand("pull updater app"), "拉取应用镜像", { timeoutMs: pullAttemptTimeoutMs });
+    // The app image is pulled on its own: the combined compose pull used to
+    // treat the executor's 24 MB layer as a prerequisite for the app upgrade, so
+    // one throttled blob held the whole upgrade hostage.
+    await run(`docker pull ${JSON.stringify(selectedImages.appImage)}`, "拉取应用镜像", {
+      timeoutMs: pullAttemptTimeoutMs,
+    });
     return selectedImages;
   } catch (error) {
     pushLog(error instanceof Error ? error.message : String(error));
@@ -897,16 +966,17 @@ async function pullImagesWithFallback(selectedImages) {
     // Compose reads the image name from .env, so the switch has to be written
     // back before the containers get recreated below.
     await updateEnvImageSource(source.app, source.updater);
-    await run(`docker pull ${JSON.stringify(source.updater)}`, `从 ${source.name} 拉取执行器镜像`, {
-      phase: "拉取应用镜像",
-      allowFailure: true,
-      timeoutMs: pullAttemptTimeoutMs,
-    });
     pushLog(`已切换到 ${source.name} 镜像源`);
     return { appImage: source.app, updaterImage: source.updater, candidates: fallbacks };
   }
 
   throw new Error("所有可用镜像源均拉取失败；请更换镜像源或改用离线镜像包导入");
+}
+
+async function pullImagesWithFallback(selectedImages) {
+  const pulled = await pullAppImage(selectedImages);
+  const updater = await pullUpdaterImage(pulled);
+  return { ...pulled, ...updater };
 }
 
 async function scheduleUpdaterRecreate(updaterImage, staleImageIds = []) {
@@ -1401,8 +1471,19 @@ async function runUpdatePipeline() {
       pushLog(`上一版本镜像保留为 ${rollbackImageTag}，需要时可回滚`);
     }
     await persistTask();
-    await scheduleUpdaterRecreate(selectedImages.updaterImage, staleImageIds);
-    pushLog("更新执行器将切换到所选镜像源");
+    if (selectedImages.updaterReady) {
+      await scheduleUpdaterRecreate(selectedImages.updaterImage, staleImageIds);
+      pushLog("更新执行器将切换到所选镜像源");
+    } else {
+      // scheduleUpdaterRecreate always carried the stale-image cleanup; without
+      // it a host that can never pull the executor image would accumulate one
+      // unused app image per release.
+      const cleanupCommand = removeRecordedImagesCommand(staleImageIds);
+      if (cleanupCommand) {
+        await run(cleanupCommand, "清理历史镜像", { allowFailure: true });
+      }
+      pushLog("本次未切换执行器镜像：当前执行器可以继续完成下次更新");
+    }
   } catch (error) {
     await failUpdate(error instanceof Error ? error.message : String(error), snapshot, appRecreateStarted).catch(
       async (failError) => {

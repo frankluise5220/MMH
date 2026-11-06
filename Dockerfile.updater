@@ -1,21 +1,99 @@
-FROM docker:28-cli
+# 执行器镜像的层体积是「一键更新」能否成功的前提，不是审美问题。
+#
+# 国内镜像站（ghcr.dockerproxy.net / ghcr.m.daocloud.io）按**单个 blob**断线：
+# 约 10–12 MB 以上的层会下到 100% 后校验失败并无限重试同一层。2026-11-06 生产实测
+# （NAS 2.148）：11.48 MB 一次过，14.25 / 15.64 / 16.21 / 18.76 / 20.18 / 20.74 /
+# 21.13 / 24.31 MB 每次都「下到 100% 后 Retrying」。
+#
+# 又因为 0.1.81 的执行器是耦合拉取（`compose pull updater app`，旧代码改不了），
+# 存量用户升级时执行器镜像里**任何一个超线层**都会让整次升级失败。所以这里的目标
+# 不是「镜像变小」，而是「没有任何一层超过 8 MB」：
+#
+#   docker:28.5.2-cli       18.76 / 21.13 / 20.74 MB 三层 —— 存量 0.1.81 用户本地
+#                           已经存在（`28-cli` 与 `28.5.2-cli` 当前指向同一个 amd64
+#                           digest sha256:cd58b396…），按 blob digest 直接跳过，
+#                           所以保留这个 base，不要动、也不要换 tag。
+#   apk add git nodejs      0.1.82 实测这是一层 24.31 MB，而且每次重建都会换 digest
+#                           （apk 包版本漂移）——老用户必须重下，必卡。
+#                           改法：装完打成 tar.gz 再 split 成固定 12 块，每块单独
+#                           COPY 成一层（实测每层 2.44 MB），容器启动时合并回文件系统。
+#                           注意 `COPY /parts/*` 会把 12 块合成一层，等于没拆。
+#
+# 不要把它「优化」回 `RUN apk add --no-cache git nodejs`：那一层的 digest 每次都变，
+# 而老用户为它卡住的代价是整个更新按钮失效。校验见
+# `npm run check:docker`（scripts/verify-docker-entrypoint.cjs）。
+
+# ---------- 阶段 1：把 node 运行时装成一个可分块的 tar.gz ----------
+FROM docker:28.5.2-cli AS nodebundle
+
+# 装到一个独立的 root 里再整体打包，而不是靠 `apk info -L nodejs` 挑文件：
+# nodejs 的依赖（libstdc++、libicu*、libsqlite3、libsimdjson…）是独立的 apk 包，
+# 只按 ldd 的 symlink 名挑会漏掉 symlink 指向的实体文件，node 起来时报
+# "Error relocating /usr/bin/node: ... symbol not found"（2026-11-06 实测）。
+# 用 `--root` 让 apk 把整棵依赖树装进 /node-root，再整体 tar。
+# coreutils 提供 GNU split（busybox 的 split 没有 -n）。只存在于本阶段，不进最终镜像。
+RUN apk add --no-cache coreutils \
+ && mkdir -p /node-root/etc/apk \
+ && cp -a /etc/apk/. /node-root/etc/apk/ \
+ && apk add --no-cache --root /node-root --initdb --no-scripts nodejs \
+ && tar -czf /node-runtime.tgz -C /node-root \
+      --exclude=./etc \
+      --exclude=./lib/apk \
+      --exclude=./var \
+      --exclude=./sbin \
+      --exclude=./usr/sbin \
+      --exclude=./usr/lib/node_modules/npm \
+      --exclude=./usr/bin/npm \
+      --exclude=./usr/bin/npx \
+      . \
+ && mkdir -p /node-parts \
+ && split -n 12 -d -a 2 /node-runtime.tgz /node-parts/part. \
+ && ls -l /node-parts \
+ && test "$(ls /node-parts | wc -l | tr -d ' ')" -eq 12
+
+# ---------- 阶段 2：运行时 ----------
+FROM docker:28.5.2-cli
 
 ARG APP_COMMIT=unknown
 ARG APP_COMMIT_MESSAGE=""
 ARG APP_COMMIT_DATE=""
 ARG APP_VERSION=0.1.0
 
-RUN apk add --no-cache git nodejs
+# 每块必须各自一条 COPY：一条 COPY 整个目录只会生成一个合并后的大层。
+COPY --from=nodebundle /node-parts/part.00 /opt/mmh/node-runtime/part.00
+COPY --from=nodebundle /node-parts/part.01 /opt/mmh/node-runtime/part.01
+COPY --from=nodebundle /node-parts/part.02 /opt/mmh/node-runtime/part.02
+COPY --from=nodebundle /node-parts/part.03 /opt/mmh/node-runtime/part.03
+COPY --from=nodebundle /node-parts/part.04 /opt/mmh/node-runtime/part.04
+COPY --from=nodebundle /node-parts/part.05 /opt/mmh/node-runtime/part.05
+COPY --from=nodebundle /node-parts/part.06 /opt/mmh/node-runtime/part.06
+COPY --from=nodebundle /node-parts/part.07 /opt/mmh/node-runtime/part.07
+COPY --from=nodebundle /node-parts/part.08 /opt/mmh/node-runtime/part.08
+COPY --from=nodebundle /node-parts/part.09 /opt/mmh/node-runtime/part.09
+COPY --from=nodebundle /node-parts/part.10 /opt/mmh/node-runtime/part.10
+COPY --from=nodebundle /node-parts/part.11 /opt/mmh/node-runtime/part.11
 
 WORKDIR /updater
 COPY scripts/mmh-updater-server.mjs /updater/mmh-updater-server.mjs
 COPY deploy/nas/docker-compose.yml /updater/deploy/docker-compose.yml
 COPY deploy/nas/postgres-entrypoint.sh /updater/deploy/postgres-entrypoint.sh
 
+# 合并逻辑必须挂在 ENTRYPOINT 上，不能挂在 CMD 上：
+# 存量用户的 docker-compose.yml 里写着
+#   command: sh -lc "... exec node /updater/mmh-updater-server.mjs"
+# compose 的 command 只覆盖 CMD，ENTRYPOINT 会保留。挂在 CMD 上（或写在
+# `RUN apk add` 之后靠 `node` 直接可用）在新容器里就会因为 node 还没合并而 ENOENT。
+#
+# `docker run --entrypoint sh <image>`（composeCommand 的 helper 容器、
+# scheduleUpdaterRecreate 的重建任务）会绕过 ENTRYPOINT —— 那些路径只跑
+# `docker compose`，不需要 node，所以是安全的。
+COPY scripts/updater-bootstrap.sh /opt/mmh/bootstrap.sh
+RUN chmod +x /opt/mmh/bootstrap.sh
+
 EXPOSE 7788
 
-ENTRYPOINT []
-CMD ["sh", "-lc", "git config --global --add safe.directory /workspace >/dev/null 2>&1 || true; if [ -f /updater/mmh-updater-server.mjs ]; then exec node /updater/mmh-updater-server.mjs; fi; exec node /workspace/scripts/mmh-updater-server.mjs"]
+ENTRYPOINT ["/opt/mmh/bootstrap.sh"]
+CMD ["sh", "-lc", "exec node /updater/mmh-updater-server.mjs"]
 
 LABEL org.opencontainers.image.title="MMH Updater"
 LABEL org.opencontainers.image.source="https://github.com/frankluise5220/MMH"

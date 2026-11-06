@@ -42,6 +42,7 @@
     "check:credit-cycle": "tsx scripts/verify-credit-cycle-boundaries.ts",
     "check:credit-installment": "tsx scripts/verify-credit-installment-statement-month.ts",
     "check:docker": "node scripts/verify-docker-entrypoint.cjs",
+    "check:image-layers": "node scripts/check-image-layer-sizes.mjs",
     "check:fnos-gateway": "node scripts/check-fnos-gateway-guards.cjs",
     "check:fnos": "node scripts/verify-fnos-package.cjs",
     "build:win:desktop": "node scripts/build-win-desktop.cjs",

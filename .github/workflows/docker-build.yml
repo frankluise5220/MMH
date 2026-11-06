@@ -193,3 +193,43 @@ jobs:
             APP_VERSION=${{ steps.package.outputs.version }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # 层体积门禁（2026-11-06，0.1.82 升级卡死事故）。
+      # 国内镜像站按**单个 blob** 断线：约 10–12 MB 以上的层会下到 100% 后校验失败，
+      # 然后无限重试同一层。所以「镜像构建成功」不等于「用户能升级」：0.1.82 的
+      # mmh-updater 里有一层 24.31 MB（apk add git nodejs），导致所有存量 0.1.81 用户
+      # 的「一键更新」永久卡在「拉取镜像」。
+      # 判定口径是**差集**而不是绝对值：基础镜像层（node:20-bookworm 的 201.75 MB、
+      # docker:28-cli 的 20.74 MB …）在存量用户本地已经存在，按 blob digest 直接跳过，
+      # 用绝对值判会把 app 镜像永久判红。所以拿「用户正在跑的版本」当基线，
+      # 只要求本次新增/变更的每一层 ≤ 10 MB（实测 12.89 MB 能过、14.25 MB 必卡）。
+      # 红的时候 latest 已经指向坏镜像，必须立刻用 .github/workflows/retag.yml 把
+      # latest 指回上一个健康的 digest，再修 Dockerfile。
+      - name: Verify image layer sizes
+        shell: bash
+        env:
+          MMH_IMAGE_OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          app_tag="$(printf '%s\n' "${{ steps.meta.outputs.tags }}" | sed -n '1p' | sed 's|.*:||')"
+          updater_tag="$(printf '%s\n' "${{ steps.meta-updater.outputs.tags }}" | sed -n '1p' | sed 's|.*:||')"
+          # 基线 = 现存的最新发布 tag（排除正在构建的这一版）。checkout 是浅克隆，
+          # 本地没有 tag，用 ls-remote 从远端拿。
+          baseline="$(git ls-remote --tags --refs origin 'v*' 2>/dev/null \
+            | sed 's|.*refs/tags/v||' | grep -vx "$app_tag" | sort -V | tail -1 || true)"
+          echo "审计 mmh:${app_tag} 与 mmh-updater:${updater_tag}；基线=${baseline:-无}"
+          since_args=()
+          if [ -n "$baseline" ]; then
+            since_args=(--since "$baseline")
+          else
+            echo "没有可对比的发布 tag：只输出全量报告，不判定（首次发版）"
+          fi
+          node scripts/check-image-layer-sizes.mjs --repo mmh --tag "$app_tag" "${since_args[@]}"
+          node scripts/check-image-layer-sizes.mjs --repo mmh-updater --tag "$updater_tag" "${since_args[@]}"
+          if [ -z "$baseline" ]; then
+            exit 0
+          fi
+          if [ "${{ steps.republish.outputs.enabled }}" = "true" ] || [ "${{ github.event_name }}" = "release" ]; then
+            node scripts/check-image-layer-sizes.mjs --repo mmh --tag latest "${since_args[@]}"
+            node scripts/check-image-layer-sizes.mjs --repo mmh-updater --tag latest "${since_args[@]}"
+          fi
