@@ -213,11 +213,23 @@ jobs:
           set -euo pipefail
           app_tag="$(printf '%s\n' "${{ steps.meta.outputs.tags }}" | sed -n '1p' | sed 's|.*:||')"
           updater_tag="$(printf '%s\n' "${{ steps.meta-updater.outputs.tags }}" | sed -n '1p' | sed 's|.*:||')"
-          # 基线 = 现存的最新发布 tag（排除正在构建的这一版）。checkout 是浅克隆，
+          # 基线 = 最新一个纯版本号 tag（排除正在构建的这一版）。checkout 是浅克隆，
           # 本地没有 tag，用 ls-remote 从远端拿。
+          # 2026-11-06：此前没有过滤，v2026.08.07.3-fnos 这类 fnOS 打包 tag 在 sort -V
+          # 里比 0.1.82 更大，被选成基线后 registry 查不到（MANIFEST_UNKNOWN），门禁就
+          # 退化成“只报告不判定”，24.31MB 的执行器大层因此一路“通过”。基线必须是 X.Y.Z。
           baseline="$(git ls-remote --tags --refs origin 'v*' 2>/dev/null \
-            | sed 's|.*refs/tags/v||' | grep -vx "$app_tag" | sort -V | tail -1 || true)"
+            | sed 's|.*refs/tags/v||' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+            | grep -vx "$app_tag" | sort -V | tail -1 || true)"
           echo "审计 mmh:${app_tag} 与 mmh-updater:${updater_tag}；基线=${baseline:-无}"
+          # 基线镜像必须真的在 registry 里，否则 --since 会退化成“只报告不判定”，
+          # 大层就会一路绿灯（2026-11-06 事故）。这里把它变成硬失败。
+          if [ -n "${baseline:-}" ]; then
+            if ! docker buildx imagetools inspect "ghcr.io/${MMH_IMAGE_OWNER}/mmh:${baseline}" >/dev/null 2>&1; then
+              echo "基线镜像 ghcr.io/${MMH_IMAGE_OWNER}/mmh:${baseline} 不存在，无法做增量判定" >&2
+              exit 1
+            fi
+          fi
           since_args=()
           if [ -n "$baseline" ]; then
             since_args=(--since "$baseline")
