@@ -91,6 +91,12 @@ expect(
   /node node_modules\/prisma\/build\/index\.js -v/.test(dockerfile),
   "Dockerfile must run the prisma CLI (`node node_modules/prisma/build/index.js -v`) after pruning the prisma runtime, so an over-aggressive prune fails the build instead of the user's upgrade.",
 );
+expect(
+  /rm -f \/opt\/prisma-split\/scope\/engines\/schema-engine-/.test(dockerfile) &&
+    /COPY[^\n]*--from=build \/app\/node_modules\/@prisma\/engines\/schema-engine-[\w.-]+ \.\/node_modules\/@prisma\/engines\//.test(dockerfile) &&
+    /ls -A \.\/node_modules\/@prisma\/engines\/schema-engine-/.test(dockerfile),
+  "The 21.26 MB schema engine must exist exactly once: prisma-deps copy is deleted (it shares a layer with query-plan-executor and pushed that layer to 10.04 MB), the build-stage copy supplies it, and a build-time `ls` guard proves the binary is still there.",
+);
 for (const [name, compose] of [
   ["repo docker-compose.yml", rootCompose],
   ["NAS docker-compose.yml", nasCompose],

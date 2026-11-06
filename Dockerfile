@@ -128,6 +128,8 @@ RUN [ -n "${PRISMA_CLI_VERSION}" ] || { \
 # 只能删 dist/ui 与 metafile，dist/data 和 chunks 必须留着：包体 38.3 MB → 8.1 MB。
 # 裁剪后已用真实 postgres 跑通 `prisma validate` + `prisma db push`，下面还有一条
 # `prisma -v` 兜底断言，裁剪过头会让构建失败，而不是等用户升级时才炸。
+# 另外 @prisma/engines/schema-engine-* 在这里删掉：运行时那份由 build 阶段的 COPY 提供，
+# 两处都留等于同一个 21.26 MB 二进制写进镜像两遍（见运行时阶段 COPY 处的说明）。
 # 注释必须写在 RUN 之外 —— 反斜杠续行的 RUN 里出现 #，会把后面的命令整段
 # 注释掉（老坑）。
 RUN set -eu; \
@@ -157,6 +159,7 @@ RUN set -eu; \
     mkdir -p /opt/prisma-split; \
     mv node_modules/prisma /opt/prisma-split/cli; \
     mv node_modules/@prisma /opt/prisma-split/scope; \
+    rm -f /opt/prisma-split/scope/engines/schema-engine-*; \
     split_into /opt/prisma-split/cli/build 2 /opt/prisma-split/cli-build; \
     split_into /opt/prisma-split/scope 3 /opt/prisma-split/scope-split; \
     split_into node_modules 3 /opt/prisma-split/rest
@@ -260,8 +263,10 @@ COPY --chown=node:node --from=build /app/prisma ./prisma
 COPY --chown=node:node --from=build /app/prisma.config.ts ./prisma.config.ts
 # prisma 运行时（未压缩 190 MB）同样按体积分组：CLI 的 build 目录 2 组、@prisma 作用域
 # 3 组、其余依赖 3 组，每组压缩后 5-8 MB。文件仍然落在原来的路径上，require 不受影响。
-# @prisma 用 3 组而不是 2 组：2026-11-06 保留 studio-core（只裁 dist/ui）以后，2 组时
-# 装着 studio-core 的那组压到 11.19 MB，正好越过镜像站 10 MB 的断线线（#30 层）。
+# 分组只能按「包」切，切不开包内文件，所以单包超过 10 MB 时必须先瘦包：
+#   @prisma/studio-core  保留包体（顶层 require），只裁 dist/ui + metafile，38.3 → 8.1 MB
+#   @prisma/engines      包内 21.26 MB 的 schema-engine 二进制由下面 build 阶段那条 COPY 提供，
+#                        prisma-deps 里的同一份直接删掉（同一路径写两遍 = 白占一个 8.75 MB 层）
 COPY --chown=node:node --from=prisma-deps /opt/prisma-split/cli ./node_modules/prisma
 COPY --chown=node:node --from=prisma-deps /opt/prisma-split/cli-build/g0 ./node_modules/prisma/build
 COPY --chown=node:node --from=prisma-deps /opt/prisma-split/cli-build/g1 ./node_modules/prisma/build
@@ -280,9 +285,12 @@ RUN test -x ./node_modules/.bin/prisma \
  && test -d ./node_modules/@prisma/engines
 # The runtime runs `prisma db push` during startup. Keep the schema engine in
 # the image so offline/restricted NAS hosts do not need binaries.prisma.sh.
+# This is the ONLY copy: prisma-deps 里那份同路径的 21.26 MB 二进制已在裁剪阶段删掉，
+# 否则它会连带 query-plan-executor 一起挤成 10.04 MB 的单层（#30，越过镜像站断线线）。
 COPY --chown=node:node --from=build /app/node_modules/@prisma/engines/schema-engine-debian-openssl-3.0.x ./node_modules/@prisma/engines/schema-engine-debian-openssl-3.0.x
 COPY scripts/docker-entrypoint.sh ./docker-entrypoint.sh
 RUN chmod +x ./docker-entrypoint.sh \
+  && test -n "$(ls -A ./node_modules/@prisma/engines/schema-engine-* 2>/dev/null)" \
   && mkdir -p /app/data \
   && chown -R node:node /app/data
 
