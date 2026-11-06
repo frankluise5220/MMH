@@ -48,7 +48,11 @@ expect(
   "Compose files must not set MMH_BASE_PATH at runtime; the Docker build already bakes empty and Next cannot change it afterwards.",
 );
 
-expect(/gosu/.test(dockerfile), "Dockerfile must install gosu so the runtime can drop root privileges.");
+expect(
+  /^ARG BASE_IMAGE=ghcr\.io\/[\w-]+\/mmh:\d+\.\d+\.\d+\s*$/m.test(dockerfile) &&
+    (dockerfile.match(/^FROM \$\{BASE_IMAGE\}/gm) || []).length === 2,
+  "Dockerfile must build FROM the published baseline image: it already supplies gosu, the prisma CLI, node_modules and the runtime ENV, and its layers are reused by digest on every installed host. Rebuilding those layers forces a full re-download.",
+);
 expect(/COPY --chown=node:node --from=build/.test(dockerfile), "Dockerfile must copy app files as node-owned files.");
 expect(/ensure_session_secret/.test(entrypoint), "Docker entrypoint must generate and persist MMH_SESSION_SECRET when it is not configured.");
 
@@ -69,8 +73,11 @@ expect(schemaGuardIndex >= 0 && dbPushIndex >= 0 && schemaGuardIndex < dbPushInd
 
 const nodeLimitCallIndex = entrypoint.indexOf("\napply_node_memory_limit\n");
 const prismaPushIndex = entrypoint.indexOf("prisma db push");
-expect(/ENV MMH_NODE_MAX_OLD_SPACE_MB=auto/.test(dockerfile), "Dockerfile must default the Node old-space limit to auto.");
-expect(/ENV PG_POOL_MAX=4/.test(dockerfile), "Dockerfile must default the app database pool to a NAS-friendly size.");
+const appFinalStage = dockerfile.slice(dockerfile.lastIndexOf("\nFROM ") + 1);
+expect(
+  !/^RUN apt-get/m.test(appFinalStage) && !/^RUN npm install/m.test(appFinalStage),
+  "The final stage must inherit baseline runtime settings (MMH_NODE_MAX_OLD_SPACE_MB / PG_POOL_MAX / TZ) instead of re-running apt-get or npm install: any new base layer changes the digest and breaks layer reuse for installed users.",
+);
 expect(
   /apply_node_memory_limit/.test(entrypoint) &&
     /MMH_NODE_MAX_OLD_SPACE_MB="\$\{MMH_NODE_MAX_OLD_SPACE_MB:-auto\}"/.test(entrypoint) &&
@@ -82,20 +89,26 @@ expect(
     nodeLimitCallIndex < prismaPushIndex,
   "Docker entrypoint must apply the Node old-space guardrail before Prisma schema sync and app start.",
 );
-const studioCorePrunes = dockerfile.match(/node_modules\/@prisma\/studio-core[^\s;\\]*/g) || [];
+// 0.1.82 第一版为了把镜像做小，改了 apt / prisma-deps / standalone 这些早期层，
+// 38 层里只有 8 层（全是基础镜像层）能被 0.1.81 用户复用，其余 30 层 76 MB 全部
+// 要重下；其中 8.75 MB 的 blob 在两台独立网络的机器上都卡在 "Download complete"
+// 之后不落盘，900 秒也不推进。现在只以原版镜像为底座叠加差异层。
 expect(
-  studioCorePrunes.length > 0 && studioCorePrunes.every((entry) => entry.startsWith("node_modules/@prisma/studio-core/dist/")),
-  "Dockerfile may only prune @prisma/studio-core/dist/** (ui + metafiles), never the package root: prisma's build/index.js requires @prisma/studio-core/data/* at module scope, so deleting the package makes `prisma db push` die with MODULE_NOT_FOUND and the container crash-loops after an upgrade (0.1.82 shipped this way on 2026-11-06).",
+  /COPY --from=previous \/app \/app\/prev/.test(dockerfile) &&
+    /cmp -s/.test(dockerfile) &&
+    /\/app\/delta/.test(dockerfile),
+  "Dockerfile must diff the freshly built standalone against the published baseline /app and ship only the changed files.",
+);
+const appPartCopies = (
+  dockerfile.match(/^COPY --chown=node:node --from=build \/app\/parts\/p\d+\/ \/app\//gm) || []
+).length;
+expect(
+  appPartCopies === 12 && /-size \+3500k/.test(dockerfile) && /"\$sz" -gt 4096/.test(dockerfile),
+  "Dockerfile must split the changed files into 12 separate COPY layers and fail the build when a single file exceeds 3.5 MB or a part exceeds 4 MB: domestic mirrors drop 8.75 MB blobs.",
 );
 expect(
-  /node node_modules\/prisma\/build\/index\.js -v/.test(dockerfile),
-  "Dockerfile must run the prisma CLI (`node node_modules/prisma/build/index.js -v`) after pruning the prisma runtime, so an over-aggressive prune fails the build instead of the user's upgrade.",
-);
-expect(
-  /rm -f \/opt\/prisma-split\/scope\/engines\/schema-engine-/.test(dockerfile) &&
-    /COPY[^\n]*--from=build \/app\/node_modules\/@prisma\/engines\/schema-engine-[\w.-]+ \.\/node_modules\/@prisma\/engines\//.test(dockerfile) &&
-    /ls -A \.\/node_modules\/@prisma\/engines\/schema-engine-/.test(dockerfile),
-  "The 21.26 MB schema engine must exist exactly once: prisma-deps copy is deleted (it shares a layer with query-plan-executor and pushed that layer to 10.04 MB), the build-stage copy supplies it, and a build-time `ls` guard proves the binary is still there.",
+  !/prisma-split/.test(dockerfile) && !/standalone-split/.test(dockerfile) && !/studio-core\/dist\/ui/.test(dockerfile),
+  "Dockerfile must not reintroduce the 0.1.82 pruning/splitting stages: they changed every baseline layer digest and made installed users re-download the whole image.",
 );
 for (const [name, compose] of [
   ["repo docker-compose.yml", rootCompose],
@@ -441,22 +454,21 @@ expect(
     /ls \$parts_glob/.test(updaterBootstrap),
   "Dockerfile.updater must merge the split node runtime from its ENTRYPOINT (compose `command:` only overrides CMD, so an entrypoint is the only place that runs for existing users' compose files), and updater-bootstrap.sh must reassemble the parts before exec-ing the command.",
 );
-// 同一类故障在 app 镜像上的两个诱因（2026-11-06 实测，把已发布层解开统计）：
-// (1) postgresql-client 那一层不裁剪时压缩后 10.16 MB：31 MB 原始内容里 10.2 MB 是
-//     libcrypto.a/libssl.a/libpq.a 静态库、1.7 MB 是 openssl 头文件、4 MB 是 psql
-//     翻译、1.7 MB 是 debconf 缓存 —— 运行时一个都用不到。裁掉后实测 5.53 MB。
-// (2) prisma 运行时一半体积是 studio-core（37.4 MB）与 @electric-sql/PGlite
-//     （24.1 MB）：只有 `prisma studio` / `prisma dev` 用，容器只跑 `prisma db push`。
-//     它们各自单独吃掉一层（9.90 / 9.96 MB），删掉后这块最大层降到 7.3 MB 以内。
+// 裁掉 apt 静态库、studio-core/dist/ui 等确实是「把镜像做小」，但它同时改掉了
+// 0.1.81 的早期层 digest —— 存量用户不再复用那些层，反而要重下 30 层 76 MB。
+// 现在这些层原样继承，唯一要钉死的是「门禁必须按用户基线判定，且阈值足够小」：
+// 8.75 MB 的 blob 在 148 和 5.149 两台独立网络的机器上都会在
+// "Download complete" 之后停住，900 秒也不落盘。
+const layerGate = fs.readFileSync(path.join(root, "scripts", "check-image-layer-sizes.mjs"), "utf8");
 expect(
-  /libcrypto\.a/.test(dockerfile) && /libssl\.a/.test(dockerfile) && /libpq\.a/.test(dockerfile),
-  "Dockerfile must strip the static libs (libcrypto.a/libssl.a/libpq.a) inside the postgresql-client layer: leaving them pushes that layer to 10.16 MB, right at the mirror's per-blob disconnect line.",
+  /^const HARD_LIMIT_MB = 4\.5;/m.test(layerGate) &&
+    /MAX_FRESH_LAYERS/.test(layerGate) &&
+    /MAX_FRESH_TOTAL_MB/.test(layerGate),
+  "The layer-size gate must use a 4.5 MB per-layer limit and also cap the number/total size of fresh layers, so breaking layer reuse fails the build instead of only shrinking individual layers.",
 );
 expect(
-  /rm -rf node_modules\/@electric-sql/.test(dockerfile) &&
-    /node_modules\/@prisma\/studio-core\/dist\/ui/.test(dockerfile) &&
-    /node_modules\/@prisma\/studio-core\/dist\/metafile-esm\.json/.test(dockerfile),
-  "The prisma runtime stage must drop @electric-sql/PGlite (24 MB, only `prisma dev` / studio) and prune @prisma/studio-core/dist/ui + metafiles (~30 MB of browser-UI bundle and build metadata): each one alone made a ~10 MB layer. The studio-core package root itself must stay — see the MODULE_NOT_FOUND assertion above; 0.1.82 first shipped without it and every upgrade crash-looped.",
+  /^ARG BASE_IMAGE=ghcr\.io\/frankluise5220\/mmh:0\.1\.81\s*$/m.test(dockerfile),
+  "BASE_IMAGE must stay pinned to the version installed users are running (0.1.81): their old updater has no timeout and cannot recover from a stalled pull.",
 );
 expect(
   /dropdb --force -U/.test(updaterServer) &&
