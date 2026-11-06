@@ -117,13 +117,17 @@ RUN [ -n "${PRISMA_CLI_VERSION}" ] || { \
     }
 
 # 2026-11-06 实测（把已发布的 prisma 相关层解开统计）：运行时有一半体积是
-# 容器里永远执行不到的代码，删掉后这一块从压缩约 48 MB 降到约 30 MB，
-# 单层最大值也从 9.9 MB 降到 7.3 MB 以内：
-#   @prisma/studio-core  37.4 MB —— 只有 `prisma studio` 用
-#   @electric-sql/*      24.1 MB —— PGlite（WASM 版 postgres），只有 `prisma dev` / studio 用
-#   *.map / *.d.ts / *.md        源码映射与类型声明，运行期纯死重量
-# 安全性已实测：删掉后用真实 postgres 跑 `prisma validate` 与 `prisma db push`
-# （容器启动时唯一的 prisma 调用）全流程通过，CLI 对这些包的 require 是惰性的。
+# 容器里永远执行不到的代码：
+#   @prisma/studio-core/dist/ui                 25.0 MB —— `prisma studio` 的浏览器端 UI
+#   @prisma/studio-core/dist/metafile-*.json     5.2 MB —— 打包元数据
+#   @electric-sql/*                             24.1 MB —— PGlite（WASM 版 postgres），只有 `prisma dev` / studio 用
+#   *.map / *.d.ts / *.md                               源码映射与类型声明，运行期纯死重量
+# 但 @prisma/studio-core 包本身不能删：prisma CLI 的 build/index.js 在模块顶层就
+# require 它（data/bff、data/mysql、data/postgresjs、data/node-sqlite），删整个包会让
+# `prisma db push` 直接 MODULE_NOT_FOUND、容器启动即崩（0.1.82 第一版就是这么炸的）。
+# 只能删 dist/ui 与 metafile，dist/data 和 chunks 必须留着：包体 38.3 MB → 8.1 MB。
+# 裁剪后已用真实 postgres 跑通 `prisma validate` + `prisma db push`，下面还有一条
+# `prisma -v` 兜底断言，裁剪过头会让构建失败，而不是等用户升级时才炸。
 # 注释必须写在 RUN 之外 —— 反斜杠续行的 RUN 里出现 #，会把后面的命令整段
 # 注释掉（老坑）。
 RUN set -eu; \
@@ -144,8 +148,12 @@ RUN set -eu; \
     npm config set audit false; \
     npm config set fund false; \
     npm install --omit=dev --ignore-scripts --no-package-lock "prisma@${PRISMA_CLI_VERSION}" "dotenv@${DOTENV_VERSION}"; \
-    rm -rf node_modules/@prisma/studio-core node_modules/@electric-sql; \
+    rm -rf node_modules/@electric-sql \
+      node_modules/@prisma/studio-core/dist/ui \
+      node_modules/@prisma/studio-core/dist/metafile-cjs.json \
+      node_modules/@prisma/studio-core/dist/metafile-esm.json; \
     find node_modules -type f \( -name '*.map' -o -name '*.d.ts' -o -name '*.d.cts' -o -name '*.md' \) -delete; \
+    node node_modules/prisma/build/index.js -v > /dev/null; \
     mkdir -p /opt/prisma-split; \
     mv node_modules/prisma /opt/prisma-split/cli; \
     mv node_modules/@prisma /opt/prisma-split/scope; \

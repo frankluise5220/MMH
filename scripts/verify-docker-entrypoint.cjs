@@ -82,6 +82,15 @@ expect(
     nodeLimitCallIndex < prismaPushIndex,
   "Docker entrypoint must apply the Node old-space guardrail before Prisma schema sync and app start.",
 );
+const studioCorePrunes = dockerfile.match(/node_modules\/@prisma\/studio-core[^\s;\\]*/g) || [];
+expect(
+  studioCorePrunes.length > 0 && studioCorePrunes.every((entry) => entry.startsWith("node_modules/@prisma/studio-core/dist/")),
+  "Dockerfile may only prune @prisma/studio-core/dist/** (ui + metafiles), never the package root: prisma's build/index.js requires @prisma/studio-core/data/* at module scope, so deleting the package makes `prisma db push` die with MODULE_NOT_FOUND and the container crash-loops after an upgrade (0.1.82 shipped this way on 2026-11-06).",
+);
+expect(
+  /node node_modules\/prisma\/build\/index\.js -v/.test(dockerfile),
+  "Dockerfile must run the prisma CLI (`node node_modules/prisma/build/index.js -v`) after pruning the prisma runtime, so an over-aggressive prune fails the build instead of the user's upgrade.",
+);
 for (const [name, compose] of [
   ["repo docker-compose.yml", rootCompose],
   ["NAS docker-compose.yml", nasCompose],
@@ -438,8 +447,10 @@ expect(
   "Dockerfile must strip the static libs (libcrypto.a/libssl.a/libpq.a) inside the postgresql-client layer: leaving them pushes that layer to 10.16 MB, right at the mirror's per-blob disconnect line.",
 );
 expect(
-  /rm -rf node_modules\/@prisma\/studio-core node_modules\/@electric-sql/.test(dockerfile),
-  "The prisma runtime stage must drop @prisma/studio-core (37 MB) and @electric-sql/PGlite (24 MB): they are only used by `prisma studio` / `prisma dev`, and each one alone made a ~10 MB layer. Verified safe by running `prisma validate` + `prisma db push` against a real postgres without them.",
+  /rm -rf node_modules\/@electric-sql/.test(dockerfile) &&
+    /node_modules\/@prisma\/studio-core\/dist\/ui/.test(dockerfile) &&
+    /node_modules\/@prisma\/studio-core\/dist\/metafile-esm\.json/.test(dockerfile),
+  "The prisma runtime stage must drop @electric-sql/PGlite (24 MB, only `prisma dev` / studio) and prune @prisma/studio-core/dist/ui + metafiles (~30 MB of browser-UI bundle and build metadata): each one alone made a ~10 MB layer. The studio-core package root itself must stay — see the MODULE_NOT_FOUND assertion above; 0.1.82 first shipped without it and every upgrade crash-looped.",
 );
 expect(
   /dropdb --force -U/.test(updaterServer) &&
