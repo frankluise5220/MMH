@@ -1,8 +1,27 @@
+# 存量 Docker 用户跑的是原版 0.1.81（含它自己的旧 updater）。这一版能否升级，
+# 只取决于旧执行器 `compose pull` 能不能把新镜像的层从镜像站拉全：新写进
+# 0.1.82/0.1.83 的 updater 代码要升级成功后才生效，对这次升级毫无帮助。
+#
+# 所以这里直接以已发布的 0.1.81 镜像为底座。它的 19 个层按 blob digest 原样
+# 保留，用户本地全部跳过后只需下载下面几条差异层。**任何对 apt / npm ci /
+# prisma 运行时 / standalone 结构早期层的改写都会让 digest 变化**，把用户拖回
+# 「重下几十个层」的坑；0.1.82 第一版就是这样把 19 层变成 38 层的。
+#
+# 0.1.81 → 本版之间 package.json 的依赖没有变化（只有 version 与业务代码），
+# 因此 node_modules、prisma CLI、schema-engine、基础镜像都可以整层复用。
+# 构建时先按原版 Dockerfile 的完全相同命令编译出 standalone，再与 0.1.81 的
+# /app 逐文件比对，只把变化的文件按体积轮转分到 12 个目录；最终镜像每条 COPY
+# 是一层，单层 < 4 MB。国内镜像站对 8.75 MB 的 blob 也会「下到 100% 后不落盘」，
+# 所以单文件阈值取 3.5 MB，而不是之前拍的 10 MB。
+ARG BASE_IMAGE=ghcr.io/frankluise5220/mmh:0.1.81
 ARG NODE_BUILD_IMAGE=node:20-bookworm
-ARG NODE_RUNTIME_IMAGE=node:20-bookworm
+# 兼容 CI 现有的 build-args；prisma 运行时现在整层复用 BASE_IMAGE，不再单独安装。
 ARG PRISMA_CLI_VERSION=7.8.0
 ARG DOTENV_VERSION=17.4.2
 ARG APP_VERSION=0.1.0
+
+FROM ${BASE_IMAGE} AS previous
+
 FROM ${NODE_BUILD_IMAGE} AS build
 
 ARG APP_COMMIT=unknown
@@ -15,12 +34,6 @@ ENV DATABASE_URL=postgresql://build:build@127.0.0.1:5432/build?schema=public
 ENV NEXT_TELEMETRY_DISABLED=1
 # Base-path contract: this image serves MMH from the ORIGIN ROOT. Only the fnOS
 # gateway package carries a prefix (/app/mmh, see scripts/build-fnos-app.cjs).
-# Declaring the empty value here (instead of relying on the default) stops a
-# leftover MMH_BASE_PATH in the build host / CI environment from baking a
-# prefix into this image -- that would break every route when the container is
-# published as http://host:<port>/. Mounting MMH on a reverse-proxy sub-path
-# needs a rebuild with this value changed; it can never differ at runtime,
-# because Next inlines basePath into the build output.
 ENV MMH_BASE_PATH=""
 ENV APP_COMMIT=${APP_COMMIT}
 ENV APP_COMMIT_MESSAGE=${APP_COMMIT_MESSAGE}
@@ -41,258 +54,100 @@ RUN npm config set fetch-retries 5 \
   && npm config set fund false \
   && npm ci --ignore-scripts
 
-# 先 copy prisma schema 和 config，让 generate 层能被缓存
 COPY prisma ./prisma/
 COPY next.config.ts tsconfig.json ./
 RUN npx prisma generate \
   && npx prisma db push --help >/dev/null \
   && test -x node_modules/@prisma/engines/schema-engine-debian-openssl-3.0.x
 
-# 源码最后 copy（变更最频繁）
 COPY . .
 RUN npm run build
 
-# standalone 里被打进来的类型声明、markdown 和 source map 在运行时不参与任何
-# 代码路径（Next 只 require .js/.json/.node），却能占到未压缩体积的一成以上。
-# 在 build 阶段删掉再 COPY，最终镜像里根本不会出现这些文件；放在 runtime 阶段
-# 用 RUN rm 删除是无效的——那只会新增一个「删除层」，镜像反而更大。
-RUN find .next/standalone -type f \( -name '*.d.ts' -o -name '*.map' -o -name '*.md' \) -delete 2>/dev/null || true
-
-# 2026-11-06 生产实测（NAS 2.148 拉 0.1.82）：镜像站的断开线不是 27 MB，而是约
-# 12 MB —— ≤11.48 MB 的层一次成功，14.25 / 15.64 / 16.21 / 20.18 MB 四层每次都
-# 「下到 100% 后 Retrying」（blob 不完整，没有 Verifying Checksum），25 次重试后
-# 整次升级卡死。按 27 MB 估出来的「19 MB 已经安全」是错的。
-# 所以这里不再手写固定的两组（next / @img），而是把 standalone 的 node_modules
-# 顶层条目按体积降序 round-robin 分到若干组，每组压缩后约 5 MB。
-# 只是移动位置，runtime 阶段原样 COPY 回同一个 node_modules，路径结构不变。
+# 与 0.1.81 的 /app 逐文件比较，只保留真正变化的文件。
+# .next/standalone 在 0.1.81 里是被 COPY 到 /app 根目录的，所以它的相对路径
+# 与 prev 的 /app 一一对应；其余资源按各自的目标目录对应。
+COPY --from=previous /app /app/prev
 RUN set -eu; \
-    split_into() { \
-      src="$1"; groups="$2"; out="$3"; i=0; j=0; \
-      mkdir -p "$out"; \
-      while [ "$j" -lt "$groups" ]; do mkdir -p "$out/g$j"; j=$((j+1)); done; \
-      for d in $( (du -sk "$src"/* "$src"/.[!.]* 2>/dev/null || true) | sort -rn | awk '{print $2}' ); do \
-        i=$((i+1)); g=$((i % groups)); mkdir -p "$out/g$g"; mv "$d" "$out/g$g/"; \
-      done; \
+    mkdir -p /app/delta; \
+    copy_changed() { \
+      src="$1"; dst="$2"; \
+      [ -e "/app/$src" ] || return 0; \
+      if [ -d "/app/$src" ]; then \
+        (cd "/app/$src" && find . -type f) | while read -r f; do \
+          if [ ! -f "/app/prev/$dst/$f" ] || ! cmp -s "/app/$src/$f" "/app/prev/$dst/$f"; then \
+            mkdir -p "/app/delta/$dst/$(dirname "$f")"; \
+            cp "/app/$src/$f" "/app/delta/$dst/$f"; \
+          fi; \
+        done; \
+      elif [ ! -f "/app/prev/$dst" ] || ! cmp -s "/app/$src" "/app/prev/$dst"; then \
+        mkdir -p "/app/delta/$(dirname "$dst")"; \
+        cp "/app/$src" "/app/delta/$dst"; \
+      fi; \
     }; \
-    mkdir -p .next/standalone-next; \
-    mv .next/standalone/node_modules/next .next/standalone-next/next; \
-    if [ -d .next/standalone/node_modules/@next ]; then \
-      mv .next/standalone/node_modules/@next .next/standalone-next/@next; \
-    fi; \
-    if [ -d .next/standalone/node_modules/@img ]; then \
-      mkdir -p .next/standalone-img/sharp .next/standalone-img/vips-lib; \
-      for p in .next/standalone/node_modules/@img/*; do \
-        case "$(basename "$p")" in \
-          *musl*) rm -rf "$p" ;; \
-          sharp-libvips-linux-x64) mv "$p" .next/standalone-img/vips-pkg; \
-                     big=$( (du -k .next/standalone-img/vips-pkg/lib/* 2>/dev/null || true) \
-                             | sort -rn | awk 'NR==1{print $2}' ); \
-                     if [ -n "$big" ]; then mv "$big" .next/standalone-img/vips-lib/; fi ;; \
-          *)         mv "$p" .next/standalone-img/sharp/ ;; \
-        esac; \
-      done; \
-      rmdir .next/standalone/node_modules/@img 2>/dev/null || true; \
-    fi; \
-    split_into .next/standalone/node_modules 3 .next/standalone-split
-
-FROM ${NODE_RUNTIME_IMAGE} AS prisma-deps
-
-ARG PRISMA_CLI_VERSION
-ARG DOTENV_VERSION
-
-WORKDIR /opt/prisma-runtime
-ENV NEXT_TELEMETRY_DISABLED=1
-
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends openssl ca-certificates \
-  && rm -rf /var/lib/apt/lists/*
-
-# CI 的 build-args 曾经没传 PRISMA_CLI_VERSION，`prisma@` 于是退化成
-# `prisma@latest`：每次构建装的是当天最新版，这一层（未压缩 190 MB、压缩后
-# 50.65 MB）每次发版都换 digest，用户每次升级都必须重下 —— 90 KB/s 下必然
-# 越过镜像站单层 5 分钟的断开线。空值直接让构建失败，避免再次悄悄退化。
-RUN [ -n "${PRISMA_CLI_VERSION}" ] || { \
-      echo "PRISMA_CLI_VERSION 为空：prisma@ 会被解析成 latest，导致该层每次发版都变。" >&2; \
-      exit 1; \
-    }
-
-# 2026-11-06 实测（把已发布的 prisma 相关层解开统计）：运行时有一半体积是
-# 容器里永远执行不到的代码：
-#   @prisma/studio-core/dist/ui                 25.0 MB —— `prisma studio` 的浏览器端 UI
-#   @prisma/studio-core/dist/metafile-*.json     5.2 MB —— 打包元数据
-#   @electric-sql/*                             24.1 MB —— PGlite（WASM 版 postgres），只有 `prisma dev` / studio 用
-#   *.map / *.d.ts / *.md                               源码映射与类型声明，运行期纯死重量
-# 但 @prisma/studio-core 包本身不能删：prisma CLI 的 build/index.js 在模块顶层就
-# require 它（data/bff、data/mysql、data/postgresjs、data/node-sqlite），删整个包会让
-# `prisma db push` 直接 MODULE_NOT_FOUND、容器启动即崩（0.1.82 第一版就是这么炸的）。
-# 只能删 dist/ui 与 metafile，dist/data 和 chunks 必须留着：包体 38.3 MB → 8.1 MB。
-# 裁剪后已用真实 postgres 跑通 `prisma validate` + `prisma db push`，下面还有一条
-# `prisma -v` 兜底断言，裁剪过头会让构建失败，而不是等用户升级时才炸。
-# 另外 @prisma/engines/schema-engine-* 在这里删掉：运行时那份由 build 阶段的 COPY 提供，
-# 两处都留等于同一个 21.26 MB 二进制写进镜像两遍（见运行时阶段 COPY 处的说明）。
-# 注释必须写在 RUN 之外 —— 反斜杠续行的 RUN 里出现 #，会把后面的命令整段
-# 注释掉（老坑）。
-RUN set -eu; \
-    split_into() { \
-      src="$1"; groups="$2"; out="$3"; i=0; j=0; \
-      mkdir -p "$out"; \
-      while [ "$j" -lt "$groups" ]; do mkdir -p "$out/g$j"; j=$((j+1)); done; \
-      for d in $( (du -sk "$src"/* "$src"/.[!.]* 2>/dev/null || true) | sort -rn | awk '{print $2}' ); do \
-        i=$((i+1)); g=$((i % groups)); mkdir -p "$out/g$g"; mv "$d" "$out/g$g/"; \
-      done; \
+    copy_changed .next/standalone .; \
+    copy_changed .next/static .next/static; \
+    copy_changed public public; \
+    copy_changed prisma prisma; \
+    copy_changed prisma.config.ts prisma.config.ts; \
+    copy_changed scripts/docker-entrypoint.sh docker-entrypoint.sh; \
+    test -n "$(find /app/delta -type f -print -quit)" || { \
+      echo "与 ${BASE_IMAGE} 没有任何文件差异，拒绝发布空更新" >&2; exit 1; \
     }; \
-    printf "{\n  \"name\": \"prisma-runtime\",\n  \"private\": true\n}\n" > package.json; \
-    npm config set fetch-retries 5; \
-    npm config set fetch-retry-factor 2; \
-    npm config set fetch-retry-mintimeout 20000; \
-    npm config set fetch-retry-maxtimeout 120000; \
-    npm config set fetch-timeout 1200000; \
-    npm config set audit false; \
-    npm config set fund false; \
-    npm install --omit=dev --ignore-scripts --no-package-lock "prisma@${PRISMA_CLI_VERSION}" "dotenv@${DOTENV_VERSION}"; \
-    rm -rf node_modules/@electric-sql \
-      node_modules/@prisma/studio-core/dist/ui \
-      node_modules/@prisma/studio-core/dist/metafile-cjs.json \
-      node_modules/@prisma/studio-core/dist/metafile-esm.json; \
-    find node_modules -type f \( -name '*.map' -o -name '*.d.ts' -o -name '*.d.cts' -o -name '*.md' \) -delete; \
-    node node_modules/prisma/build/index.js -v > /dev/null; \
-    mkdir -p /opt/prisma-split; \
-    mv node_modules/prisma /opt/prisma-split/cli; \
-    mv node_modules/@prisma /opt/prisma-split/scope; \
-    rm -f /opt/prisma-split/scope/engines/schema-engine-*; \
-    split_into /opt/prisma-split/cli/build 2 /opt/prisma-split/cli-build; \
-    split_into /opt/prisma-split/scope 3 /opt/prisma-split/scope-split; \
-    split_into node_modules 3 /opt/prisma-split/rest
+    chmod +x /app/delta/docker-entrypoint.sh 2>/dev/null || true; \
+    echo "changed files: $(find /app/delta -type f | wc -l)"; \
+    oversize=$(find /app/delta -type f -size +3500k -print -quit); \
+    if [ -n "$oversize" ]; then \
+      echo "单个变化文件超过 3.5 MB，无法切成安全层：$oversize" >&2; exit 1; \
+    fi; \
+    for i in 0 1 2 3 4 5 6 7 8 9 10 11; do mkdir -p "/app/parts/p$i"; done; \
+    n=0; \
+    find /app/delta -type f -printf '%s %p\n' | sort -rn | while read -r size f; do \
+      rel="${f#/app/delta/}"; \
+      g=$((n % 12)); n=$((n + 1)); \
+      mkdir -p "/app/parts/p$g/$(dirname "$rel")"; \
+      cp "$f" "/app/parts/p$g/$rel"; \
+    done; \
+    for i in 0 1 2 3 4 5 6 7 8 9 10 11; do \
+      sz=$(du -sk "/app/parts/p$i" | cut -f1); \
+      echo "part p$i: ${sz} KB (uncompressed)"; \
+      if [ "$sz" -gt 4096 ]; then echo "part p$i exceeds 4 MB" >&2; exit 1; fi; \
+    done
 
-FROM ${NODE_RUNTIME_IMAGE} AS runtime
+FROM ${BASE_IMAGE}
 
 ARG APP_COMMIT=unknown
 ARG APP_COMMIT_MESSAGE=""
 ARG APP_COMMIT_DATE=""
 ARG APP_VERSION=0.1.0
 
-WORKDIR /app
-ENV NEXT_TELEMETRY_DISABLED=1
 ENV APP_COMMIT=${APP_COMMIT}
 ENV APP_COMMIT_MESSAGE=${APP_COMMIT_MESSAGE}
 ENV APP_COMMIT_DATE=${APP_COMMIT_DATE}
 ENV APP_VERSION=${APP_VERSION}
 ENV NODE_ENV=production
-ENV MMH_NODE_MAX_OLD_SPACE_MB=auto
-ENV PG_POOL_MAX=4
-ENV PORT=7777
-ENV HOSTNAME=0.0.0.0
-# 容器默认时区是 UTC：北京时间 00:00–08:00 期间「今天」会比本地日期晚一天，
-# 导致当天刚记的流水被明细页当成未来行隐藏、表单默认日期变成昨天。
-# 代码侧已用显式业务时区（date-utils.todayDateBusinessYmd），这里统一进程时区做双保险。
 ENV TZ=Asia/Shanghai
 
-# psql 和 pg_isready 是启动必需，不能像其它工具那样删掉：
-#   - psql：docker-entrypoint.sh 用它跑兼容迁移
-#   - pg_isready：entrypoint 的 "until pg_isready ..." 等待数据库就绪
-# /usr/bin 下的同名命令是 postgresql-common 的 pg_wrapper 符号链接，它会去找
-# /usr/lib/postgresql/<ver>/bin/<name>。底层二进制一删，wrapper 就报
-# "You must install at least one postgresql-client-<version> package"，
-# 容器会卡在重启循环里（2026-11-06 就踩过这个坑）。
-# 其余 23 个二进制容器里一个都用不到，/usr/share/postgresql/* 下的
-# extension/tsearch_data 也只有 CREATE EXTENSION 时才读 —— 那是 postgres
-# 容器的事，不是本镜像。
-#
-# 2026-11-06 二次裁剪（把这一层压进单 blob 安全区）。直接把注册表里已发布的
-# 这一层 blob 解开统计：31 MB 原始内容里运行时真正需要的只有 psql/pg_dump/
-# pg_isready（2.2 MB）、libpq.so、libssl/libcrypto.so、gosu 和 ca 证书。
-# 剩下的死重量：
-#   libcrypto.a 8.72 MB + libssl.a 1.18 MB + libpq.a 0.33 MB  静态库（10.2 MB）
-#   /usr/include/{openssl,postgresql}                          头文件（1.7 MB）
-#   /usr/share/locale/*/LC_MESSAGES/{psql,pg_*}*.mo            翻译（4 MB，C locale 不用）
-#   /var/cache/debconf/templates.dat(-old)                     debconf 缓存（1.7 MB）
-# 删掉这些后这一层从压缩后 10.16 MB 降到约 5 MB。不能拆成两条 RUN「先装后删」：
-# 那样被删的文件仍然留在前一层里，镜像只会更大。
-RUN apt-get update \
-  && apt-get install -y --no-install-recommends postgresql-client openssl ca-certificates gosu \
-  && rm -rf /var/lib/apt/lists/* /usr/share/doc /usr/share/man /usr/share/postgresql/*/man \
-       /usr/share/postgresql/*/extension /usr/share/postgresql/*/tsearch_data \
-       /var/cache/debconf /usr/include/openssl /usr/include/postgresql \
-       /usr/share/locale/*/LC_MESSAGES/psql*.mo /usr/share/locale/*/LC_MESSAGES/pg_*.mo \
-  && rm -f /usr/lib/x86_64-linux-gnu/libcrypto.a /usr/lib/x86_64-linux-gnu/libssl.a \
-       /usr/lib/x86_64-linux-gnu/libpq.a \
-  && for b in initdb pg_amcheck pg_basebackup pg_ctl pg_receivewal \
-       pg_recvlogical pg_resetwal pg_rewrite pg_test_fsync pg_test_timing \
-       pg_upgrade pg_waldump pg_walsummary clusterdb createdb createuser \
-       dropdb dropuser oid2name pgbench reindexdb vacuumdb; do \
-       rm -f /usr/lib/postgresql/*/bin/$b; \
-     done \
-  && psql --version && pg_isready --version && pg_dump --version >/dev/null \
-  && openssl version >/dev/null && command -v gosu >/dev/null
+# 每一条 COPY 都是一层 < 4 MB；0.1.81 的 19 层在用户本地全部 Already exists。
+COPY --chown=node:node --from=build /app/parts/p0/ /app/
+COPY --chown=node:node --from=build /app/parts/p1/ /app/
+COPY --chown=node:node --from=build /app/parts/p2/ /app/
+COPY --chown=node:node --from=build /app/parts/p3/ /app/
+COPY --chown=node:node --from=build /app/parts/p4/ /app/
+COPY --chown=node:node --from=build /app/parts/p5/ /app/
+COPY --chown=node:node --from=build /app/parts/p6/ /app/
+COPY --chown=node:node --from=build /app/parts/p7/ /app/
+COPY --chown=node:node --from=build /app/parts/p8/ /app/
+COPY --chown=node:node --from=build /app/parts/p9/ /app/
+COPY --chown=node:node --from=build /app/parts/p10/ /app/
+COPY --chown=node:node --from=build /app/parts/p11/ /app/
 
-# standalone 拆成多条 COPY：node_modules 在两次发版之间是稳定的（next/react/prisma/sharp
-# 的版本不变就不变），业务代码每次都变。合成一条时两者被绑进同一个层，代码改一行就
-# 整层重建，用户每次升级都被迫重下约 39 MB；拆开后增量只剩 .next 那一层（约 7 MB）。
-# 注意：standalone 顶层必须只有这四项（Next 15 的输出形态）。新增顶层文件时要同步加 COPY，
-# 否则运行时才报 module not found —— 下面的 RUN 会先把它拦在构建期。
-# 分组由 build 阶段按体积 round-robin 算出来，每层压缩后约 5 MB；镜像站实测约 12 MB
-# 的 blob 断开线就是这么绕开的。只是移动位置，文件一个不少。
-COPY --chown=node:node --from=build /app/.next/standalone-next ./node_modules
-# sharp 的 libvips 是整条链上最难压的一层：.so 本身几乎不可压缩，单包就顶到镜像站
-# 的断开线上。所以 libvips 包拆成三份落下：包骨架 + 其余 .so（vips-pkg）、最大的那个
-# .so（vips-lib）、sharp 的 .node 插件（sharp/）。
-# 目标必须是「单源目录」：COPY 多源（含 *.cjs 通配符）时 Docker 会把每个目录的内容
-# 摊平到目标目录，@img/sharp-linux-x64 这一层包名会消失，sharp 运行期找不到 .node。
-COPY --chown=node:node --from=build /app/.next/standalone-img/sharp ./node_modules/@img
-COPY --chown=node:node --from=build /app/.next/standalone-img/vips-pkg ./node_modules/@img/sharp-libvips-linux-x64
-COPY --chown=node:node --from=build /app/.next/standalone-img/vips-lib ./node_modules/@img/sharp-libvips-linux-x64/lib
-COPY --chown=node:node --from=build /app/.next/standalone-split/g0 ./node_modules
-COPY --chown=node:node --from=build /app/.next/standalone-split/g1 ./node_modules
-COPY --chown=node:node --from=build /app/.next/standalone-split/g2 ./node_modules
-COPY --chown=node:node --from=build /app/.next/standalone/.next ./.next
-COPY --chown=node:node --from=build /app/.next/standalone/package.json ./package.json
-COPY --chown=node:node --from=build /app/.next/standalone/server.js ./server.js
-# @img 下必须是「包目录」而不是摊平的内容：生产镜像实测形态是 colour/ +
-# sharp-linux-x64/ + sharp-libvips-linux-x64/（musl 两份在 bookworm 上纯属死重量，
-# 已在 build 阶段删掉）。sharp 按包名 require .node，包名层一丢就是运行时
-# MODULE_NOT_FOUND，所以在构建期拦死。
-RUN test -f ./server.js && test -f ./package.json && test -d ./.next/server \
- && test -d ./node_modules/next \
- && test -d ./node_modules/@img/colour \
- && test -d ./node_modules/@img/sharp-linux-x64 \
- && test -n "$(ls -A ./node_modules/@img/sharp-linux-x64/lib)" \
- && test -n "$(ls -A ./node_modules/@img/sharp-libvips-linux-x64/lib)"
-COPY --chown=node:node --from=build /app/.next/static ./.next/static
-COPY --chown=node:node --from=build /app/public ./public
-COPY --chown=node:node --from=build /app/prisma ./prisma
-COPY --chown=node:node --from=build /app/prisma.config.ts ./prisma.config.ts
-# prisma 运行时（未压缩 190 MB）同样按体积分组：CLI 的 build 目录 2 组、@prisma 作用域
-# 3 组、其余依赖 3 组，每组压缩后 5-8 MB。文件仍然落在原来的路径上，require 不受影响。
-# 分组只能按「包」切，切不开包内文件，所以单包超过 10 MB 时必须先瘦包：
-#   @prisma/studio-core  保留包体（顶层 require），只裁 dist/ui + metafile，38.3 → 8.1 MB
-#   @prisma/engines      包内 21.26 MB 的 schema-engine 二进制由下面 build 阶段那条 COPY 提供，
-#                        prisma-deps 里的同一份直接删掉（同一路径写两遍 = 白占一个 8.75 MB 层）
-COPY --chown=node:node --from=prisma-deps /opt/prisma-split/cli ./node_modules/prisma
-COPY --chown=node:node --from=prisma-deps /opt/prisma-split/cli-build/g0 ./node_modules/prisma/build
-COPY --chown=node:node --from=prisma-deps /opt/prisma-split/cli-build/g1 ./node_modules/prisma/build
-COPY --chown=node:node --from=prisma-deps /opt/prisma-split/scope-split/g0 ./node_modules/@prisma
-COPY --chown=node:node --from=prisma-deps /opt/prisma-split/scope-split/g1 ./node_modules/@prisma
-COPY --chown=node:node --from=prisma-deps /opt/prisma-split/scope-split/g2 ./node_modules/@prisma
-COPY --chown=node:node --from=prisma-deps /opt/prisma-split/rest/g0 ./node_modules
-COPY --chown=node:node --from=prisma-deps /opt/prisma-split/rest/g1 ./node_modules
-COPY --chown=node:node --from=prisma-deps /opt/prisma-split/rest/g2 ./node_modules
-# 这些组是从同一个 node_modules 移出去、再分批 COPY 回来的，路径必须严丝合缝。
-# 少一个 @prisma/dev，`prisma db push` 会在容器启动时直接抛 MODULE_NOT_FOUND，
-# 而那时已经没法回退到构建日志了 —— 所以在构建期就拦住。
-RUN test -x ./node_modules/.bin/prisma \
- && test -f ./node_modules/prisma/build/index.js \
- && test -f ./node_modules/@prisma/dev/package.json \
- && test -d ./node_modules/@prisma/engines
-# The runtime runs `prisma db push` during startup. Keep the schema engine in
-# the image so offline/restricted NAS hosts do not need binaries.prisma.sh.
-# This is the ONLY copy: prisma-deps 里那份同路径的 21.26 MB 二进制已在裁剪阶段删掉，
-# 否则它会连带 query-plan-executor 一起挤成 10.04 MB 的单层（#30，越过镜像站断线线）。
-COPY --chown=node:node --from=build /app/node_modules/@prisma/engines/schema-engine-debian-openssl-3.0.x ./node_modules/@prisma/engines/schema-engine-debian-openssl-3.0.x
-COPY scripts/docker-entrypoint.sh ./docker-entrypoint.sh
-RUN chmod +x ./docker-entrypoint.sh \
-  && test -n "$(ls -A ./node_modules/@prisma/engines/schema-engine-* 2>/dev/null)" \
-  && mkdir -p /app/data \
-  && chown -R node:node /app/data
+RUN test -x ./docker-entrypoint.sh \
+  && test -f ./server.js \
+  && test -f ./package.json \
+  && test -d ./.next/server \
+  && test -d ./node_modules/next \
+  && test -x ./node_modules/.bin/prisma \
+  && test -n "$(ls -A ./node_modules/@prisma/engines/schema-engine-* 2>/dev/null)"
 
 EXPOSE 7777
 
