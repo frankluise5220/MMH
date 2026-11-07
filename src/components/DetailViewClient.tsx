@@ -27,7 +27,7 @@ import { normalizeSameDayOrders, rebaseRunningBalancesAfterSameDayReorder, start
 import { buildLiabilityActivityEditEvent, inferLiabilityMode, isLiabilityActivityEntry, type LiabilityMode } from "@/lib/liability-entry-edit";
 import { resolveAccountProductType, resolveEntryProductType, toBusinessLinkType } from "@/lib/entry-product-type";
 import { parseLoanPrepayStrategy } from "@/lib/loan-prepay-strategy";
-import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
+import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT, type FinanceDataChangedDetail } from "@/lib/client/refresh";
 import { withBasePath } from "@/lib/base-path";
 import {
   ENTRY_ORIGIN_AI_IMPORT,
@@ -1437,7 +1437,10 @@ export function DetailViewClient({
   useEffect(() => {
     if (!refreshOnGlobalEvent) return;
     const handler = (event: Event) => {
-      const detail = (event as CustomEvent<{ accountIds?: string[]; deletedEntryIds?: string[] }>).detail ?? {};
+      const detail = (event as CustomEvent<FinanceDataChangedDetail>).detail ?? {};
+      // 新增一笔由父层 BasicDetailPanel 统一按当前页重取，并同步「共 N 条」计数；
+      // 这里再发一次 no-store 的当前页请求只会把同一页重复取两遍。
+      if (detail.reason === "transaction-save" && (detail.entryIds?.length ?? 0) === 0) return;
       const eventAccountIds = detail.accountIds ?? [];
       if (
         eventAccountIds.length > 0

@@ -6,7 +6,7 @@ type RevalidateOptions = {
    *
    * purge 当前所在路由会让 server action 的响应带上当前页面的新 RSC payload，
    * Next 会整棵重渲染首页（用户看到的就是「保存后全页面刷新」：卡 1~2 秒、
-   * 滚动位置和表格状态一起丢）。编辑类保存传 true：首页自己会补上 UI ——
+   * 滚动位置和表格状态一起丢）。编辑 / 普通收支新增保存传 true：首页自己会补上 UI ——
    * DetailViewClient 按当前页重取明细、LiveAccountBalance / SidebarClient
    * 打补丁刷新余额。
    *

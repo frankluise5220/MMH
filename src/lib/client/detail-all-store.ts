@@ -54,6 +54,58 @@ const jobs = new Map<string, Job<unknown>>();
 const listeners = new Map<string, Set<Listener<unknown>>>();
 
 /**
+ * 「缓存是否可用」的变更通知。
+ *
+ * `subscribeDetailAll` 只派发某个 key 的加载进度，看不到「整份到齐 / 被作废 /
+ * 过期」这些状态变化 —— 而单账户视图正是靠它决定复用「全部收支」共享缓存还是
+ * 按自己的 accountId 取数。漏一次就会在共享缓存作废后继续挂着 `__all_cash__`，
+ * 为只有几千行的账户把全账簿几万行重拉一遍。
+ */
+const cacheAvailabilityListeners = new Set<() => void>();
+
+function notifyCacheAvailabilityChanged() {
+  [...cacheAvailabilityListeners].forEach((listener) => listener());
+}
+
+/** 配合 `useSyncExternalStore`：缓存可用性一变就重算数据口径。 */
+export function subscribeDetailAllCacheAvailability(listener: () => void) {
+  cacheAvailabilityListeners.add(listener);
+  return () => {
+    cacheAvailabilityListeners.delete(listener);
+  };
+}
+
+/**
+ * 作废缓存时留下的「上一份完整结果」，只用于**展示兜底**，不参与数据正确性判断。
+ *
+ * 保存一笔账之后整份重拉，第一块只有 500 行：`entries` 从两万行骤降到 500 行，
+ * 浏览器把 `scrollTop` 夹到新内容的底部，用户看到的就是「保存后一下跳到最底下」。
+ * 所以在重拉期间继续把旧行发给界面，等新数据铺满（或拉完）再整体替换。
+ */
+type StaleSnapshot = { entries: unknown[]; totalCount: number; range?: string };
+const staleSnapshots = new Map<string, StaleSnapshot>();
+
+function rememberStale<T>(job: Job<T>) {
+  if (job.entries.length === 0) return;
+  if (!staleSnapshots.has(job.key) && staleSnapshots.size >= MAX_CACHED_JOBS) {
+    const oldest = staleSnapshots.keys().next();
+    if (!oldest.done) staleSnapshots.delete(oldest.value);
+  }
+  staleSnapshots.set(job.key, { entries: job.entries, totalCount: job.totalCount, range: job.range });
+}
+
+/** 新数据还没铺满旧行数时用旧行展示：行数不缩水，滚动位置就不会被浏览器夹到底部。 */
+function visibleRows<T>(job: Job<T>): { entries: T[]; totalCount: number } {
+  const stale = staleSnapshots.get(job.key);
+  if (!stale) return { entries: job.entries, totalCount: job.totalCount };
+  if (job.done || job.entries.length >= stale.entries.length) {
+    staleSnapshots.delete(job.key);
+    return { entries: job.entries, totalCount: job.totalCount };
+  }
+  return { entries: stale.entries as T[], totalCount: stale.totalCount };
+}
+
+/**
  * 缓存按**账户**而不是「账户 + 范围」。
  *
  * 观测窗口从「最近 5 年」改成「最近 3 年」时，3 年的行是 5 年的子集：已经拉到
@@ -96,6 +148,19 @@ export function detailRangeCovers(loaded: string | undefined, wanted: string | u
 }
 
 /**
+ * 某个 key 的整份明细是不是已经到齐、且覆盖当前窗口（渲染期只读）。
+ *
+ * 与 `ensureDetailAll` 的复用判断同一口径：没完成、已过期、窗口比缓存更宽都不算
+ * 可用。组件靠它在渲染期决定数据口径，所以这里**不能**顺手删缓存或发请求 ——
+ * 那会在 render 里改外部 store，触发重复渲染。
+ */
+export function isDetailAllReady(key: string, range?: string): boolean {
+  const job = jobs.get(key);
+  if (!job || !job.done || Date.now() - job.finishedAt > TTL_MS) return false;
+  return detailRangeCovers(job.range, range);
+}
+
+/**
  * 按数据范围裁掉已加载的行（本地过滤，不发请求）。
  *
  * 截止为空 = **到今天为止**，不是「到数据末端」：缓存里可能带着未来那几行（用户
@@ -117,9 +182,10 @@ export function filterEntriesByRange<T extends { date?: string | null }>(entries
 function emit<T>(key: string, job: Job<T>) {
   const set = listeners.get(key);
   if (!set || set.size === 0) return;
+  const visible = visibleRows(job);
   const snapshot: DetailAllSnapshot<T> = {
-    entries: job.entries,
-    totalCount: job.totalCount,
+    entries: visible.entries,
+    totalCount: visible.totalCount,
     loadedCount: Math.max(job.loadedCount, job.entries.length),
     done: job.done,
     range: job.range,
@@ -134,11 +200,14 @@ export function peekDetailAll<T>(key: string): DetailAllSnapshot<T> | null {
   if (!job) return null;
   if (job.done && Date.now() - job.finishedAt > TTL_MS) {
     jobs.delete(key);
+    staleSnapshots.delete(key);
+    notifyCacheAvailabilityChanged();
     return null;
   }
+  const visible = visibleRows(job);
   return {
-    entries: job.entries,
-    totalCount: job.totalCount,
+    entries: visible.entries,
+    totalCount: visible.totalCount,
     loadedCount: Math.max(job.loadedCount, job.entries.length),
     done: job.done,
     range: job.range,
@@ -166,6 +235,7 @@ function pruneCache() {
   if (settled.length <= MAX_CACHED_JOBS) return;
   settled.sort((a, b) => a[1].finishedAt - b[1].finishedAt);
   settled.slice(0, settled.length - MAX_CACHED_JOBS).forEach(([key]) => jobs.delete(key));
+  notifyCacheAvailabilityChanged();
 }
 
 /**
@@ -185,9 +255,10 @@ export function ensureDetailAll<T>(options: {
     && (!existing.done || Date.now() - existing.finishedAt < TTL_MS)
     && detailRangeCovers(existing.range, options.range)
   ) {
+    const visible = visibleRows(existing);
     return {
-      entries: existing.entries,
-      totalCount: existing.totalCount,
+      entries: visible.entries,
+      totalCount: visible.totalCount,
       loadedCount: Math.max(existing.loadedCount, existing.entries.length),
       done: existing.done,
       range: existing.range,
@@ -195,9 +266,14 @@ export function ensureDetailAll<T>(options: {
   }
   if (existing) {
     // 范围变大 / 过期：这份数据不再够用，先停掉在途任务再重来。
+    rememberStale(existing);
     existing.controller.abort();
     jobs.delete(options.key);
+    notifyCacheAvailabilityChanged();
   }
+  // 兜底行只在覆盖新窗口时可用；范围变大时旧行不够，还留着会让计数对不上。
+  const stale = staleSnapshots.get(options.key);
+  if (stale && !detailRangeCovers(stale.range, options.range)) staleSnapshots.delete(options.key);
 
   const job: Job<T> = {
     key: options.key,
@@ -235,6 +311,7 @@ export function ensureDetailAll<T>(options: {
       // 被 invalidate 中止的半截结果不落地，下次仍然从头取（总比显示半份强）。
       if (result.stopped) {
         jobs.delete(options.key);
+        notifyCacheAvailabilityChanged();
         return;
       }
       job.entries = result.entries;
@@ -243,15 +320,20 @@ export function ensureDetailAll<T>(options: {
       job.done = true;
       job.finishedAt = Date.now();
       emit(options.key, job);
+      notifyCacheAvailabilityChanged();
       pruneCache();
     })
     .catch((error) => {
-      if (isCurrent()) jobs.delete(options.key);
+      if (isCurrent()) {
+        jobs.delete(options.key);
+        notifyCacheAvailabilityChanged();
+      }
       if (isAbortError(error)) return;
       console.error("Load all transaction detail entries failed:", error);
     });
 
-  return { entries: job.entries, totalCount: job.totalCount, loadedCount: 0, done: false, range: job.range };
+  const visible = visibleRows(job);
+  return { entries: visible.entries, totalCount: visible.totalCount, loadedCount: 0, done: false, range: job.range };
 }
 
 /**
@@ -261,13 +343,23 @@ export function ensureDetailAll<T>(options: {
  * 而已经落地的整份结果会带着被删的行，必须作废，否则下次切「全部」又显示出来。
  */
 export function dropDetailAllCache() {
+  let changed = false;
   [...jobs.entries()].forEach(([key, job]) => {
-    if (job.done) jobs.delete(key);
+    if (!job.done) return;
+    rememberStale(job);
+    jobs.delete(key);
+    changed = true;
   });
+  if (changed) notifyCacheAvailabilityChanged();
 }
 
 /** 数据确实变了、马上要重拉：中止在途任务并丢掉所有缓存。 */
 export function invalidateDetailAll() {
-  jobs.forEach((job) => job.controller.abort());
+  const hadJobs = jobs.size > 0;
+  jobs.forEach((job) => {
+    rememberStale(job);
+    job.controller.abort();
+  });
   jobs.clear();
+  if (hadJobs) notifyCacheAvailabilityChanged();
 }

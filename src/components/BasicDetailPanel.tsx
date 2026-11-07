@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { X } from "lucide-react";
@@ -32,8 +32,10 @@ import {
   ensureDetailAll,
   filterEntriesByRange,
   invalidateDetailAll,
+  isDetailAllReady,
   peekDetailAll,
   subscribeDetailAll,
+  subscribeDetailAllCacheAvailability,
   type DetailAllSnapshot,
 } from "@/lib/client/detail-all-store";
 import { useI18n } from "@/lib/i18n";
@@ -605,16 +607,23 @@ export function BasicDetailPanel({
    * 里本来就意味着「本账户的全部」，不需要全账簿。
    *
    * 走到复用分支时才需要本地筛 + 折余额（余额不在共享缓存里），见 `scopeEntriesOf`。
+   *
+   * 「已经整份到齐」必须**实时**判断：缓存是模块级 Map，`dropDetailAllCache` /
+   * `invalidateDetailAll` / TTL 都会把它删掉，却不会给「订阅进度」的组件发快照。
+   * 以前只在挂载时用 `useMemo` 看一次，缓存作废后单账户仍把 `detailCacheScopeId`
+   * 钉在 `__all_cash__` 上 —— 一个只有三千行的账户会跟着重拉全账簿四万多行，
+   * 表头还把「共 N 条」报成全账簿的总数。现在订阅缓存可用性，一失效就回落到
+   * 本账户自己的 `accountId`；范围比缓存更宽（例如「全部时间」）同样不复用。
    */
-  const reuseSharedAllCash = useMemo(() => {
-    if (!deriveFromAllCashCache) return false;
-    const shared = peekDetailAll<DetailEntry>(ALL_CASH_DETAIL_SCOPE_ID);
-    return !!shared?.done;
-    // accountId 参与依赖：切换账户时要重新判断一次（同一实例会被复用）。
-  }, [accountId, deriveFromAllCashCache]);
+  const detailAllRangeKey = hasDetailDateRange ? serverDateRangeKey : undefined;
+  const sharedAllCashReady = useSyncExternalStore(
+    subscribeDetailAllCacheAvailability,
+    () => deriveFromAllCashCache && isDetailAllReady(ALL_CASH_DETAIL_SCOPE_ID, detailAllRangeKey),
+    () => false,
+  );
+  const reuseSharedAllCash = deriveFromAllCashCache && sharedAllCashReady;
   const detailCacheScopeId = reuseSharedAllCash ? ALL_CASH_DETAIL_SCOPE_ID : accountId;
   const detailAllKey = detailAllCacheKey(detailCacheScopeId);
-  const detailAllRangeKey = hasDetailDateRange ? serverDateRangeKey : undefined;
   const businessTodayKey = todayDateBusinessYmd(getTimeZonePreference());
 
   /**
@@ -727,14 +736,18 @@ export function BasicDetailPanel({
       locatingDateRef.current = false;
       setIsPageLoading(false);
     } else {
-      setAllLoadedCount(snapshot.loadedCount);
-      if (Number.isFinite(snapshot.totalCount)) {
+      // 共享缓存里的 totalCount / loadedCount 是「全部收支」的全局口径，绝不能写进
+      // 单账户表头：本账户只有三千多行，界面却会显示「共 43629 条 · 已加载 15500 条」。
+      // 复用期间按本账户已到行数报进度、总数沿用服务端的账户口径；按自己 accountId
+      // 加载时仓库里的数本来就是本账户口径，照常用。
+      setAllLoadedCount(reuseSharedAllCash ? rows.length : snapshot.loadedCount);
+      if (!reuseSharedAllCash && Number.isFinite(snapshot.totalCount)) {
         setLocalTotalCount(snapshot.totalCount);
         setLocalOriginalCount(snapshot.totalCount);
       }
       setIsPageLoading(true);
     }
-  }, [accountId, detailAllKey, detailAllRangeKey, openingBalance, openingBalancePending, scopeEntriesOf]);
+  }, [accountId, detailAllKey, detailAllRangeKey, openingBalance, openingBalancePending, reuseSharedAllCash, scopeEntriesOf]);
 
   /**
    * 整份明细缓存（`detail-all-store`，按账户）是**唯一数据源**。
@@ -758,14 +771,33 @@ export function BasicDetailPanel({
     return { entries: windowed.slice(start, start + size), totalCount: windowed.length };
   }, [detailAllKey, detailAllRangeKey, openingBalancePending, scopeEntriesOf]);
 
+  /**
+   * 取数前按仓库的**当前**状态重新解析一次数据口径。
+   *
+   * `finance:changed` 这类事件回调里的闭包可能还是「共享缓存可用」那一帧，而同一个
+   * handler 刚刚 `dropDetailAllCache()` / `invalidateDetailAll()` 把它作废了。照抄
+   * 渲染时的 `detailCacheScopeId` 会用旧 key 把 `__all_cash__` 重新拉一遍（几万行），
+   * 所以这里重新看一眼缓存，失效就回落到本账户自己的 accountId。
+   */
+  const resolveDetailCacheScope = useCallback(() => {
+    const sharedReady = deriveFromAllCashCache
+      && isDetailAllReady(ALL_CASH_DETAIL_SCOPE_ID, detailAllRangeKey);
+    const scopeId = sharedReady ? ALL_CASH_DETAIL_SCOPE_ID : accountId;
+    return { key: detailAllCacheKey(scopeId), accountId: scopeId };
+  }, [accountId, deriveFromAllCashCache, detailAllRangeKey]);
+
   const reloadDetailPage = useCallback((signal?: AbortSignal) => {
     if (!clientPaginationEnabled) return;
     const requestKey = `${accountId}|${detailAll ? "all" : String(safePage)}|${pageSize}|${serverDateRangeKey}`;
     if (detailAll) {
+      const scope = resolveDetailCacheScope();
+      // 共享缓存刚作废：渲染用的 key 下一帧就会切到本账户，由那个 effect 启动加载；
+      // 这里按旧 key 发起的 `ensureDetailAll` 会变成一次全账簿重拉，必须跳过。
+      if (scope.key !== detailAllKey) return;
       // 「全部」= 窗口内整份：缓存里已经有了，只取快照，不发请求。
       const snapshot = ensureDetailAll<DetailEntry>({
         key: detailAllKey,
-        accountId: detailCacheScopeId,
+        accountId: scope.accountId,
         range: detailAllRangeKey,
         errorMessage: t("basicDetail.loadFailed"),
       });
@@ -824,7 +856,7 @@ export function BasicDetailPanel({
       locatingDateRef.current = false;
       setIsPageLoading(false);
     })();
-  }, [accountId, applyDetailAllSnapshot, clientPaginationEnabled, detailAll, detailAllKey, detailAllRangeKey, detailCacheScopeId, hasDetailDateRange, pageSize, readCachedDetailPage, safePage, serverDateRangeKey, t]);
+  }, [accountId, applyDetailAllSnapshot, clientPaginationEnabled, detailAll, detailAllKey, detailAllRangeKey, hasDetailDateRange, pageSize, readCachedDetailPage, resolveDetailCacheScope, safePage, serverDateRangeKey, t]);
 
   // 后台按「当前窗口」（默认就是设置里的观测年数）把整份明细读进缓存，与页码无关：
   // 之后翻到哪一页、把窗口缩小都只在本地切，不再产生请求。窗口放大到超出已拉范围时
@@ -839,9 +871,12 @@ export function BasicDetailPanel({
   useEffect(() => {
     if (!clientPaginationEnabled) return;
     const start = () => {
+      const scope = resolveDetailCacheScope();
+      // 缓存状态在定时器等待期间变了：等 key 切换后本 effect 重跑，别按旧口径备料。
+      if (scope.key !== detailAllKey) return;
       ensureDetailAll<DetailEntry>({
         key: detailAllKey,
-        accountId: detailCacheScopeId,
+        accountId: scope.accountId,
         range: detailAllRangeKey,
         errorMessage: t("basicDetail.loadFailed"),
       });
@@ -853,7 +888,7 @@ export function BasicDetailPanel({
     const timer = window.setTimeout(start, DETAIL_PRELOAD_IDLE_DELAY_MS);
     // 期间又切了账户：这一份备料已经没人要了，别再压到服务端上。
     return () => window.clearTimeout(timer);
-  }, [clientPaginationEnabled, detailAll, detailAllKey, detailAllRangeKey, detailCacheScopeId, t]);
+  }, [clientPaginationEnabled, detailAll, detailAllKey, detailAllRangeKey, resolveDetailCacheScope, t]);
 
   // 「全部」的加载由仓库推进，这里只订阅：整份到齐才重建表格（并发分块阶段
   // 只滚进度数字，不为每一块重建两万行），完成时收掉加载态。
@@ -1047,7 +1082,9 @@ export function BasicDetailPanel({
         // 用户以为「记一笔失败」。
         const isCreateEvent = detail.reason === "transaction-save" && (detail.entryIds?.length ?? 0) === 0;
         if (isCurrentAccountEvent && clientPaginationEnabled && refreshOnGlobalEvent && isCreateEvent) {
-          if (detailAll) invalidateDetailAll();
+          // 上面的 dropDetailAllCache() 已经作废了已落地的整份快照（保留兜底行、
+          // 不碰在途任务），这里只按当前页重取一次。不要再 invalidateDetailAll()：
+          // 它会 abort 所有在途任务、清空全部缓存，正是「记一笔 = 几万条从头加载」。
           invalidateDetailOpeningBalance();
           reloadDetailPage();
           return;

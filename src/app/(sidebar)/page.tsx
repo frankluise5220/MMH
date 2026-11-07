@@ -3936,8 +3936,10 @@ export default async function Home({
                   showPagination={!tagIdParam}
                   showImportExport={!tagIdParam && !isAllCashView}
                   scopeAccountIds={cashLedgerAccountIds}
-                  // 现金类账户的明细不再单独拉一份：复用「全部收支」那份缓存，
-                  // 本地筛出本账户的行并补算余额（一行数据只存一份）。
+                  // 现金类账户在「全部收支」缓存已整份到齐、且覆盖当前窗口时复用它，
+                  // 本地筛出本账户的行并补算余额（一行数据只存一份）；缓存未就绪 /
+                  // 已作废 / 窗口更宽时按本账户自己的 accountId 取数，别为几千行的
+                  // 账户去拉全账簿几万行。
                   // 贷款 / 往来款 / 存款 / 保险 / 基金理财不在那份集合里，仍各存一份。
                   deriveFromAllCashCache={
                     !tagIdParam &&

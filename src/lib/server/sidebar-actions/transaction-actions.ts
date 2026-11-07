@@ -1417,9 +1417,14 @@ export async function createTransaction(formData: FormData) {
           : [String(formData.get("accountId") ?? "").trim(), ...fixedAssetAccountIdsToRefresh];
     await invalidateCreditCardCycleCacheForAccountIds(touchedAccountIds).catch(() => {});
     await touchAccountUsage(touchedAccountIds);
+    // 普通收支 / 转账 / 垫付的新增保存与编辑保存同口径：不 purge 当前所在的 "/"，
+    // 否则 action 响应会带回整棵首页 RSC payload，用户看到的就是「记一笔 =
+    // 全页面刷新」。明细由 BasicDetailPanel 按当前页重取，余额由 LiveAccountBalance /
+    // SidebarClient 打补丁刷新；tag 失效保证下次导航仍最新。
+    // 投资 / 固定资产分支的数据由各 Shell 自己重取，保持原有 path purge 不变。
     if (type === "investment" && isFundShellProductType(formData)) revalidateAfterFundShellChange();
     else if (type === "investment" || touchedFixedAsset) revalidateAfterInvestChange();
-    else revalidateAfterTxChange();
+    else revalidateAfterTxChange({ skipHomePath: true });
     return { ok: true as const, data: createdEntryId ? { id: createdEntryId } : undefined };
   } catch (e) {
     const msg = e instanceof Error ? e.message : t("txForm.alert.saveFailed");
