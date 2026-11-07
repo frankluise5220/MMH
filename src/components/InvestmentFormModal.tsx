@@ -11,8 +11,9 @@ import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
 /** 整窗外壳（遮罩 / 标题栏 / 宽度档位 / 表单 / FT 页签与卡片 / 窗口底按钮行）：规则集中在它。 */
 import { EntryModalShell } from "@/components/EntryModalShell";
-import { useI18n } from "@/lib/i18n";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { ModalLayer } from "@/components/ModalLayer";
+import { translate, useI18n } from "@/lib/i18n";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { recordRecentAccounts, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
@@ -41,6 +42,19 @@ import {
 } from "@/lib/investment-config";
 
 const KNOWN_SUBTYPES = new Set<FundSubtype>(["buy", "redeem", "dividend_cash", "dividend_reinvest", "buy_failed"]);
+
+/** 同一页面可能挂载多个贵金属表单实例（首页 + FundShell），新建字典后互相补齐下拉。 */
+const METAL_DICTIONARY_CREATED_EVENT = "mmh:precious-metal-dictionary:created";
+
+type MetalDictionaryItem = {
+  id: string;
+  code: string;
+  name: string;
+  shortName?: string | null;
+  symbol?: string | null;
+  decimals?: number | null;
+};
+type MetalDictionaryCreatedDetail = { kind: "type" | "unit"; item: MetalDictionaryItem };
 
 function pnlCls(n: number | null | undefined): string {
   if (n == null) return "text-slate-600";
@@ -448,6 +462,10 @@ export function InvestmentFormModal({
   const [fundName, setFundName] = useState(initFundName);
   const [metalTypeId, setMetalTypeId] = useState(initMetalTypeId);
   const [metalUnitId, setMetalUnitId] = useState(initMetalUnitId);
+  // 字典由服务端 props 下发；新建成功后本地立即补齐，不让下拉等 router.refresh()。
+  const [localMetalTypes, setLocalMetalTypes] = useState<PreciousMetalTypeOption[]>(metalTypes ?? []);
+  const [localMetalUnits, setLocalMetalUnits] = useState<PreciousMetalUnitOption[]>(metalUnits ?? []);
+  const [metalCreateKind, setMetalCreateKind] = useState<"type" | "unit" | null>(null);
   const [nameLoading, setNameLoading] = useState(false);
   const [nav, setNav] = useState(initNav);
   const [navLoading, setNavLoading] = useState(false);
@@ -712,20 +730,30 @@ export function InvestmentFormModal({
     [productInvestmentAccountList],
   );
   const metalTypeOptions = useMemo<SmartSelectOption[]>(
-    () => (metalTypes ?? []).map((item) => ({
-      id: item.id,
-      label: item.name,
-      subLabel: [item.shortName?.trim(), item.code].filter(Boolean).join(" · "),
-    })),
-    [metalTypes],
+    () => localMetalTypes.map((item) => {
+      // 系统内置行跟外汇内置币种一样走 i18n 名称，自建行显示用户填的名称。
+      const key = `investForm.metal.systemType.${item.code.toLowerCase()}`;
+      const label = translate(language, key);
+      return {
+        id: item.id,
+        label: label === key ? item.name : label,
+        subLabel: [item.shortName?.trim(), item.code].filter(Boolean).join(" · "),
+      };
+    }),
+    [localMetalTypes, language],
   );
   const metalUnitOptions = useMemo<SmartSelectOption[]>(
-    () => (metalUnits ?? []).map((item) => ({
-      id: item.id,
-      label: item.symbol ? `${item.name} (${item.symbol})` : item.name,
-      subLabel: item.code,
-    })),
-    [metalUnits],
+    () => localMetalUnits.map((item) => {
+      const key = `investForm.metal.systemUnit.${item.code.toLowerCase()}`;
+      const label = translate(language, key);
+      const name = label === key ? item.name : label;
+      return {
+        id: item.id,
+        label: item.symbol ? `${name} (${item.symbol})` : name,
+        subLabel: item.code,
+      };
+    }),
+    [localMetalUnits, language],
   );
   const {
     ownerFilterLabel: cashOwnerFilterLabel,
@@ -774,6 +802,31 @@ export function InvestmentFormModal({
   }, [investmentAccountSSOptions]);
 
   useEffect(() => {
+    setLocalMetalTypes(metalTypes ?? []);
+  }, [metalTypes]);
+
+  useEffect(() => {
+    setLocalMetalUnits(metalUnits ?? []);
+  }, [metalUnits]);
+
+  // 其它弹窗实例（首页 / FundShell）新建字典时同步补齐本实例的下拉。
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<MetalDictionaryCreatedDetail>).detail;
+      if (!detail?.item?.id) return;
+      if (detail.kind === "type") {
+        const item = detail.item;
+        setLocalMetalTypes((prev) => (prev.some((row) => row.id === item.id) ? prev : [...prev, item]));
+      } else {
+        const item = detail.item;
+        setLocalMetalUnits((prev) => (prev.some((row) => row.id === item.id) ? prev : [...prev, item]));
+      }
+    };
+    window.addEventListener(METAL_DICTIONARY_CREATED_EVENT, handler);
+    return () => window.removeEventListener(METAL_DICTIONARY_CREATED_EVENT, handler);
+  }, []);
+
+  useEffect(() => {
     if (!open) return;
     if (toAccountId && productInvestmentAccountIds.has(toAccountId)) return;
     if (mode === "edit" && toAccountId) return;
@@ -804,10 +857,10 @@ export function InvestmentFormModal({
 
   useEffect(() => {
     if (productType !== "metal") return;
-    if (!metalTypeId && metalTypes?.[0]) applyMetalType(metalTypes[0].id);
-    if (!metalUnitId && metalUnits?.[0]) setMetalUnitId(metalUnits[0].id);
+    if (!metalTypeId && localMetalTypes[0]) applyMetalType(localMetalTypes[0].id);
+    if (!metalUnitId && localMetalUnits[0]) setMetalUnitId(localMetalUnits[0].id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [productType, metalTypes, metalUnits]);
+  }, [productType, localMetalTypes, localMetalUnits]);
 
   function selectCashAccount(id: string) {
     cashAccountTouchedRef.current = true;
@@ -858,32 +911,54 @@ export function InvestmentFormModal({
     );
   }
 
+  function handleMetalDictionaryCreated(kind: "type" | "unit", item: MetalDictionaryItem) {
+    setMetalCreateKind(null);
+    window.dispatchEvent(
+      new CustomEvent<MetalDictionaryCreatedDetail>(METAL_DICTIONARY_CREATED_EVENT, { detail: { kind, item } }),
+    );
+    if (kind === "type") applyMetalType(item.id, item);
+    else setMetalUnitId(item.id);
+  }
+
   function renderMetalFields() {
     return (
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <div className="space-y-1">
-          <div className="text-xs font-medium text-slate-600">{t("investForm.metalType")}</div>
-          <SmartSelect
-            mode="single"
-            value={metalTypeId}
-            onChange={applyMetalType}
-            options={metalTypeOptions}
-            placeholder={t("investForm.selectMetalType")}
-            searchable
-          />
+      <>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div className="space-y-1">
+            <div className="text-xs font-medium text-slate-600">{t("investForm.metalType")}</div>
+            <SmartSelect
+              mode="single"
+              value={metalTypeId}
+              onChange={applyMetalType}
+              options={metalTypeOptions}
+              placeholder={t("investForm.selectMetalType")}
+              onCreateClick={() => setMetalCreateKind("type")}
+              createLabel={t("investForm.metal.addType")}
+              searchable
+            />
+          </div>
+          <div className="space-y-1">
+            <div className="text-xs font-medium text-slate-600">{t("investForm.unit")}</div>
+            <SmartSelect
+              mode="single"
+              value={metalUnitId}
+              onChange={setMetalUnitId}
+              options={metalUnitOptions}
+              placeholder={t("investForm.selectUnit")}
+              onCreateClick={() => setMetalCreateKind("unit")}
+              createLabel={t("investForm.metal.addUnit")}
+              searchable
+            />
+          </div>
         </div>
-        <div className="space-y-1">
-          <div className="text-xs font-medium text-slate-600">{t("investForm.unit")}</div>
-          <SmartSelect
-            mode="single"
-            value={metalUnitId}
-            onChange={setMetalUnitId}
-            options={metalUnitOptions}
-            placeholder={t("investForm.selectUnit")}
-            searchable
+        {metalCreateKind ? (
+          <MetalDictionaryCreateModal
+            kind={metalCreateKind}
+            onClose={() => setMetalCreateKind(null)}
+            onCreated={(item) => handleMetalDictionaryCreated(metalCreateKind, item)}
           />
-        </div>
-      </div>
+        ) : null}
+      </>
     );
   }
 
@@ -923,20 +998,20 @@ export function InvestmentFormModal({
     });
   }
 
-  function applyMetalType(nextId: string) {
+  function applyMetalType(nextId: string, fallback?: MetalDictionaryItem) {
     setMetalTypeId(nextId);
-    const selected = metalTypes?.find((item) => item.id === nextId);
+    const selected = fallback ?? localMetalTypes.find((item) => item.id === nextId);
     setFundCode(selected?.id ?? "");
     setFundName(selected?.name ?? "");
     setHoldingSearch(selected ? `${selected.name} ${selected.code}` : "");
   }
 
   function selectedMetalType() {
-    return metalTypes?.find((item) => item.id === metalTypeId) ?? null;
+    return localMetalTypes.find((item) => item.id === metalTypeId) ?? null;
   }
 
   function selectedMetalUnit() {
-    return metalUnits?.find((item) => item.id === metalUnitId) ?? null;
+    return localMetalUnits.find((item) => item.id === metalUnitId) ?? null;
   }
 
   function enableEditAutoNav() {
@@ -1293,8 +1368,8 @@ export function InvestmentFormModal({
         : fixedProductType;
       setProductType(requestedProductType);
       if (requestedProductType === "metal") {
-        const nextType = metalTypes?.[0] ?? null;
-        const nextUnit = metalUnits?.[0] ?? null;
+        const nextType = localMetalTypes[0] ?? null;
+        const nextUnit = localMetalUnits[0] ?? null;
         if (nextType) {
           setMetalTypeId(nextType.id);
           setFundCode(nextType.id);
@@ -1323,7 +1398,7 @@ export function InvestmentFormModal({
 
     window.addEventListener("mmh:investment:create", onOpenFromCreate as EventListener);
     return () => window.removeEventListener("mmh:investment:create", onOpenFromCreate as EventListener);
-  }, [mode, today, defaults, listenCreateEvents, fixedProductType, metalTypes, metalUnits]);
+  }, [mode, today, defaults, listenCreateEvents, fixedProductType, localMetalTypes, localMetalUnits]);
 
   // Listen for edit events (dispatched by EntryRowActions for fund/money investment records).
   useEffect(() => {
@@ -3628,5 +3703,170 @@ export function InvestmentFormModal({
         document.body,
       ) : null}
     </>
+  );
+}
+
+/* ---------- 内联新增贵金属品种 / 单位（与「新增货币」同一交互） ---------- */
+
+type MetalDictionaryCreateResponse = {
+  ok: boolean;
+  item?: MetalDictionaryItem;
+  error?: string;
+};
+
+const METAL_DICTIONARY_INPUT_CLASS =
+  "h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-sm outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-100";
+
+function MetalDictionaryCreateModal({
+  kind,
+  onClose,
+  onCreated,
+}: {
+  kind: "type" | "unit";
+  onClose: () => void;
+  onCreated: (item: MetalDictionaryItem) => void;
+}) {
+  const { t } = useI18n();
+  const [name, setName] = useState("");
+  const [code, setCode] = useState("");
+  const [shortName, setShortName] = useState("");
+  const [symbol, setSymbol] = useState("");
+  const [decimals, setDecimals] = useState("3");
+  const [error, setError] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  async function submit() {
+    if (submitting) return;
+    if (!name.trim()) {
+      setError(t("investForm.metal.nameRequired"));
+      return;
+    }
+    setError(null);
+    setSubmitting(true);
+    try {
+      const payload = kind === "type"
+        ? { kind, name: name.trim(), code: code.trim(), shortName: shortName.trim() }
+        : { kind, name: name.trim(), symbol: symbol.trim(), decimals: Number(decimals) };
+      const res = await fetch("/api/v1/precious-metals/dictionaries", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      const data: MetalDictionaryCreateResponse = await res.json();
+      if (!data.ok || !data.item) {
+        setError(data.error || t("investForm.metal.createFailed"));
+        return;
+      }
+      onCreated(data.item);
+    } catch {
+      setError(t("investForm.metal.createFailed"));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  return (
+    <ModalLayer className="fixed inset-0 flex items-center justify-center bg-black/30 p-4" onClick={(e) => {
+      if (e.target === e.currentTarget) onClose();
+    }}>
+      <div className="w-full max-w-md rounded-lg border border-slate-200 bg-white p-4 shadow-xl">
+        <div className="mb-3 flex items-start justify-between">
+          <div className="text-sm font-medium text-slate-800">
+            {t(kind === "type" ? "investForm.metal.createTypeTitle" : "investForm.metal.createUnitTitle")}
+          </div>
+          <button
+            type="button"
+            className="text-slate-400 hover:text-slate-600"
+            onClick={onClose}
+            aria-label={t("common.cancel")}
+          >
+            ×
+          </button>
+        </div>
+
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <MetalDictionaryField label={t("investForm.metal.name")}>
+            <input
+              autoFocus
+              className={METAL_DICTIONARY_INPUT_CLASS}
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+            />
+          </MetalDictionaryField>
+          {kind === "type" ? (
+            <>
+              <MetalDictionaryField label={t("investForm.metal.code")} hint={t("investForm.metal.codeHint")}>
+                <input
+                  className={METAL_DICTIONARY_INPUT_CLASS}
+                  value={code}
+                  onChange={(e) => setCode(e.target.value)}
+                  maxLength={24}
+                />
+              </MetalDictionaryField>
+              <MetalDictionaryField label={t("investForm.metal.shortName")}>
+                <input
+                  className={METAL_DICTIONARY_INPUT_CLASS}
+                  value={shortName}
+                  onChange={(e) => setShortName(e.target.value)}
+                  maxLength={16}
+                />
+              </MetalDictionaryField>
+            </>
+          ) : (
+            <>
+              <MetalDictionaryField label={t("investForm.metal.symbol")}>
+                <input
+                  className={METAL_DICTIONARY_INPUT_CLASS}
+                  value={symbol}
+                  onChange={(e) => setSymbol(e.target.value)}
+                  maxLength={8}
+                />
+              </MetalDictionaryField>
+              <MetalDictionaryField label={t("investForm.metal.decimals")}>
+                <input
+                  type="number"
+                  min={0}
+                  max={6}
+                  step={1}
+                  className={METAL_DICTIONARY_INPUT_CLASS}
+                  value={decimals}
+                  onChange={(e) => setDecimals(e.target.value)}
+                />
+              </MetalDictionaryField>
+            </>
+          )}
+        </div>
+
+        {error ? <p className="mt-2 text-xs text-rose-600">{error}</p> : null}
+
+        <div className="mt-3 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="h-8 rounded-md border border-slate-200 px-3 text-xs text-slate-600"
+          >
+            {t("common.cancel")}
+          </button>
+          <button
+            type="button"
+            onClick={submit}
+            disabled={submitting}
+            className="h-8 rounded-md bg-blue-600 px-3 text-xs text-white disabled:opacity-50"
+          >
+            {submitting ? t("common.loading") : t("common.save")}
+          </button>
+        </div>
+      </div>
+    </ModalLayer>
+  );
+}
+
+function MetalDictionaryField({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
+  return (
+    <label className="block">
+      <span className="text-xs text-slate-600">{label}</span>
+      {hint ? <span className="ml-1 text-[11px] text-slate-400">({hint})</span> : null}
+      <span className="mt-1 block">{children}</span>
+    </label>
   );
 }
