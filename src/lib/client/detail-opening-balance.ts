@@ -55,7 +55,17 @@ export function loadDetailOpeningBalance(
   return request;
 }
 
-/** 流水 / 余额变了：期初余额会变，缓存必须失效（在途请求不受影响）。 */
-export function invalidateDetailOpeningBalance() {
-  cache.clear();
+/**
+ * 流水 / 余额变了：期初余额会变，缓存必须失效（在途请求不受影响）。
+ * 传 accountIds 时只清这些账户；影响域未知（不传）才整张表清空。
+ */
+export function invalidateDetailOpeningBalance(accountIds?: readonly string[]) {
+  if (!accountIds?.length) {
+    cache.clear();
+    return;
+  }
+  const prefixes = accountIds.map((id) => `${id}|`);
+  [...cache.keys()].forEach((key) => {
+    if (prefixes.some((prefix) => key.startsWith(prefix))) cache.delete(key);
+  });
 }

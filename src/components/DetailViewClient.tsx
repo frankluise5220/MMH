@@ -27,7 +27,7 @@ import { normalizeSameDayOrders, rebaseRunningBalancesAfterSameDayReorder, start
 import { buildLiabilityActivityEditEvent, inferLiabilityMode, isLiabilityActivityEntry, type LiabilityMode } from "@/lib/liability-entry-edit";
 import { resolveAccountProductType, resolveEntryProductType, toBusinessLinkType } from "@/lib/entry-product-type";
 import { parseLoanPrepayStrategy } from "@/lib/loan-prepay-strategy";
-import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT, type FinanceDataChangedDetail } from "@/lib/client/refresh";
+import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT, financeChangeTouchesEntries, type FinanceDataChangedDetail } from "@/lib/client/refresh";
 import { withBasePath } from "@/lib/base-path";
 import {
   ENTRY_ORIGIN_AI_IMPORT,
@@ -684,6 +684,7 @@ export function DetailViewClient({
   compactRows = false,
   storageKey: storageKeyProp,
   refreshOnGlobalEvent = true,
+  parentOwnsRefresh = false,
   toolbarMode = "default",
   toolbarTitle,
   toolbarRightContent,
@@ -732,6 +733,8 @@ export function DetailViewClient({
   compactRows?: boolean;
   storageKey?: string;
   refreshOnGlobalEvent?: boolean;
+  /** 父层（BasicDetailPanel）已统一接管明细刷新：本组件不再按页重取，避免同页请求两遍。 */
+  parentOwnsRefresh?: boolean;
   toolbarMode?: "default" | "custom" | "none";
   toolbarTitle?: ReactNode;
   toolbarRightContent?: ReactNode;
@@ -1438,9 +1441,15 @@ export function DetailViewClient({
     if (!refreshOnGlobalEvent) return;
     const handler = (event: Event) => {
       const detail = (event as CustomEvent<FinanceDataChangedDetail>).detail ?? {};
-      // 新增一笔由父层 BasicDetailPanel 统一按当前页重取，并同步「共 N 条」计数；
-      // 这里再发一次 no-store 的当前页请求只会把同一页重复取两遍。
-      if (detail.reason === "transaction-save" && (detail.entryIds?.length ?? 0) === 0) return;
+      // 父层已接管：明细刷新统一由 BasicDetailPanel 做（按影响域作废缓存 +
+      // 按当前页 / 整份重取一次），这里再发一次 no-store 请求只会取两遍同一页。
+      // 唯一要自己补的是选中态：被删的行得从勾选集合里清掉。
+      if (parentOwnsRefresh) {
+        if ((detail.deletedEntryIds?.length ?? 0) > 0) setSelection(new Set());
+        return;
+      }
+      // 独立使用时才自己兜底：行情 / 净值 / 开机巡检不改明细行，不必重取。
+      if (!financeChangeTouchesEntries(detail)) return;
       const eventAccountIds = detail.accountIds ?? [];
       if (
         eventAccountIds.length > 0
@@ -1496,7 +1505,7 @@ export function DetailViewClient({
     };
     window.addEventListener(FINANCE_DATA_CHANGED_EVENT, handler);
     return () => window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, handler);
-  }, [accountColumnScopeIds, accountId, detailQueryRange, entries, refreshOnGlobalEvent, selectedAccountKind, setSelection, t]);
+  }, [accountColumnScopeIds, accountId, detailQueryRange, entries, parentOwnsRefresh, refreshOnGlobalEvent, selectedAccountKind, setSelection, t]);
 
   const columns = useMemo<AdvancedDataTableColumn<DetailEntry>[]>(() => [
     {

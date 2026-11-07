@@ -342,9 +342,32 @@ export function ensureDetailAll<T>(options: {
  * 删行时用它：在途任务拉的是服务端最新数据（已删的行不会回来），让它跑完即可；
  * 而已经落地的整份结果会带着被删的行，必须作废，否则下次切「全部」又显示出来。
  */
-export function dropDetailAllCache() {
+/**
+ * 只改行文本后，把当前页返回的行按 id 覆盖缓存中的对应行。
+ *
+ * 只换同 id 的行：不增删、不重排、不改 totalCount / done，也不通知订阅者 ——
+ * 调用方（父层）已经用同一批行更新了表格，再 emit 只会多一次整表重建。
+ * 行必须来自明细**列表**接口，与缓存里的行同构（含 runningBalance /
+ * reconciledAt / reconciledBalance），整行替换才安全；不要用 `?id=` 的编辑
+ * 回填结果调它（那条分支缺余额字段，还会覆盖基金关联行的金额与账户）。
+ */
+export function patchDetailAllRows<T extends { id: string }>(key: string, rows: T[]) {
+  if (rows.length === 0) return;
+  const byId = new Map(rows.map((row) => [row.id, row]));
+  const apply = (entries: T[]) => entries.map((entry) => byId.get(entry.id) ?? entry);
+  const job = jobs.get(key) as Job<T> | undefined;
+  if (job?.entries.length) job.entries = apply(job.entries);
+  const stale = staleSnapshots.get(key);
+  if (stale) stale.entries = apply(stale.entries as T[]);
+}
+
+export function dropDetailAllCache(keys?: readonly string[]) {
+  // 不传 keys = 影响域未知的全局事件，按全部作废；传了就只动这些账户视图，
+  // 别因为 A 账户记了一笔就把 B 账户几万行的整份缓存也丢掉。
+  const affected = keys?.length ? new Set(keys) : null;
   let changed = false;
   [...jobs.entries()].forEach(([key, job]) => {
+    if (affected && !affected.has(key)) return;
     if (!job.done) return;
     rememberStale(job);
     jobs.delete(key);
@@ -353,13 +376,15 @@ export function dropDetailAllCache() {
   if (changed) notifyCacheAvailabilityChanged();
 }
 
-/** 数据确实变了、马上要重拉：中止在途任务并丢掉所有缓存。 */
-export function invalidateDetailAll() {
-  const hadJobs = jobs.size > 0;
-  jobs.forEach((job) => {
+/** 大范围改写：中止受影响视图的在途任务并丢掉它们的缓存，其它视图照旧。 */
+export function invalidateDetailAll(keys?: readonly string[]) {
+  const affected = keys?.length ? new Set(keys) : null;
+  const selected = [...jobs.entries()].filter(([key]) => !affected || affected.has(key));
+  if (selected.length === 0) return;
+  selected.forEach(([key, job]) => {
     rememberStale(job);
     job.controller.abort();
+    jobs.delete(key);
   });
-  jobs.clear();
-  if (hadJobs) notifyCacheAvailabilityChanged();
+  notifyCacheAvailabilityChanged();
 }

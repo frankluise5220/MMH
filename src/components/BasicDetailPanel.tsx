@@ -11,7 +11,13 @@ import { DetailTablePaginationControls } from "@/components/DetailTablePaginatio
 import { DetailViewClient, type DetailEntry } from "@/components/DetailViewClient";
 import { foldRunningBalancesInDescOrder, removeEntriesAndUpdateRunningBalances } from "@/lib/detail-running-balance";
 import { HANDSET_HIDDEN_CLASS, ViewExcelImportMenuButton } from "@/components/ViewExcelImportMenuButton";
-import { FINANCE_DATA_CHANGED_EVENT, type FinanceDataChangedDetail } from "@/lib/client/refresh";
+import {
+  FINANCE_DATA_CHANGED_EVENT,
+  classifyFinanceEntryChange,
+  financeChangeAffectsAccount,
+  isBulkFinanceEntryChange,
+  type FinanceDataChangedDetail,
+} from "@/lib/client/refresh";
 import { formatDateUtc, todayDateBusinessYmd } from "@/lib/date-utils";
 import { getTimeZonePreference } from "@/lib/client/appPreferences";
 import { getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
@@ -33,6 +39,7 @@ import {
   filterEntriesByRange,
   invalidateDetailAll,
   isDetailAllReady,
+  patchDetailAllRows,
   peekDetailAll,
   subscribeDetailAll,
   subscribeDetailAllCacheAvailability,
@@ -858,6 +865,45 @@ export function BasicDetailPanel({
     })();
   }, [accountId, applyDetailAllSnapshot, clientPaginationEnabled, detailAll, detailAllKey, detailAllRangeKey, hasDetailDateRange, pageSize, readCachedDetailPage, resolveDetailCacheScope, safePage, serverDateRangeKey, t]);
 
+  /**
+   * 只改行文本（备注 / 分类 / 标签…）时的最低限度刷新，只在索引分页视图使用：
+   * 按当前页取一次**服务端列表口径的完整行**，按 id 覆盖表格与缓存里的那几行。
+   * 行数 / 排序 / 逐笔余额 / 总条数都不变，所以不作废整份缓存、不重算期初余额、
+   * 不动页码，也不惊动其它账户。取完整行而不是猜字段白名单，是为了连入账日、
+   * 币种这类「不影响余额但会显示在明细里」的字段一起更新，不漏刷。
+   *
+   * 「全部」视图和筛选 / 标签视图不走这里：前者编辑的行可能不在当前页，后者改了
+   * 筛选列值会让该行进出结果集，两者都必须重算整个结果集。
+   */
+  const refreshTextOnlyPage = useCallback(async (signal?: AbortSignal) => {
+    const params = new URLSearchParams({
+      accountId,
+      page: String(safePage),
+      pageSize: String(pageSize),
+    });
+    if (hasDetailDateRange) params.set("range", serverDateRangeKey);
+    const requestKey = detailPageKeyRef.current;
+    try {
+      const payload = await loadDetailPagePayload(
+        `/api/v1/transactions/detail?${params.toString()}`,
+        signal,
+        t("basicDetail.loadFailed"),
+      );
+      if (requestKey !== detailPageKeyRef.current) return;
+      const byId = new Map(payload.entries.map((entry) => [entry.id, entry]));
+      // 只替换同 id 的行：不增删、不重排，其余行保持同一引用。
+      setLocalEntries((prev) => prev.map((entry) => byId.get(entry.id) ?? entry));
+      patchDetailAllRows(detailAllKey, payload.entries);
+      setIsPageLoading(false);
+    } catch (error) {
+      if (isAbortError(error)) return;
+      console.error("Refresh detail row text failed:", error);
+      // 兜底：作废当前视图缓存再按结构变化完整重取，绝不把旧文本留在界面上。
+      dropDetailAllCache([detailAllKey]);
+      reloadDetailPage();
+    }
+  }, [accountId, detailAllKey, hasDetailDateRange, pageSize, reloadDetailPage, safePage, serverDateRangeKey, t]);
+
   // 后台按「当前窗口」（默认就是设置里的观测年数）把整份明细读进缓存，与页码无关：
   // 之后翻到哪一页、把窗口缩小都只在本地切，不再产生请求。窗口放大到超出已拉范围时
   // 才重新拉一份更宽的 —— 缩窗永远不丢缓存。任务归 detail-all-store 所有，
@@ -1037,80 +1083,64 @@ export function BasicDetailPanel({
   useEffect(() => {
     const handleFinanceChange = (event: Event) => {
       const detail = (event as CustomEvent<FinanceDataChangedDetail>).detail ?? {};
+      // ① 行情 / 净值 / 开机巡检：明细行一行都没变，不刷界面也不作废缓存。
+      //    其余事件（含不带 entryIds 的导入、定投执行、撤销、通知落账）按结构变化
+      //    处理 —— 触发宁可偏敏感，不能让刚记的一笔不出现。
+      const impact = classifyFinanceEntryChange(detail);
+      if (impact === "none") return;
+
       const eventAccountIds = detail.accountIds ?? [];
-      // 已落地的「全部」结果可能已经过期：只作废缓存，不碰在途任务 —— 在途那
-      // 份拉的是服务端最新数据，中途打断它才是真正的「又从头加载几万条」。
-      // startup-check 只是每日任务的例行提示，数据没变，连缓存都不用丢。
-      if (detail.reason !== "startup-check") dropDetailAllCache();
-      const isCurrentAccountEvent = eventAccountIds.length === 0
-        || eventAccountIds.includes(accountId)
-        || (isAllCashDetailScope(accountId) && (scopeAccountIds?.some((id) => eventAccountIds.includes(id)) ?? true));
-      if (
-        event.type === FINANCE_DATA_CHANGED_EVENT &&
-        detail.reason === "view-normal-excel-import" &&
-        isCurrentAccountEvent
-      ) {
-        invalidateDetailAll();
-        invalidateDetailOpeningBalance();
-        reloadDetailPage();
-        return;
+      const isCurrentAccountEvent = financeChangeAffectsAccount(
+        detail,
+        accountId,
+        isAllCashDetailScope(accountId) ? scopeAccountIds : undefined,
+      );
+      // ② 按影响域算出要作废的缓存 key：受影响账户 + 被它们影响的「全部收支」共享缓存。
+      const affectsCashScope = eventAccountIds.some((id) => scopeAccountIds?.includes(id) ?? true);
+      const affectedKeys = eventAccountIds.length === 0
+        ? undefined
+        : Array.from(new Set([
+          ...eventAccountIds.map(detailAllCacheKey),
+          ...(affectsCashScope ? [detailAllCacheKey(ALL_CASH_DETAIL_SCOPE_ID)] : []),
+        ]));
+
+      // ③ 只改行文本：行数 / 排序 / 逐笔余额 / 总条数都不变。
+      //    索引分页视图 → 取回当前页完整行、按 id 覆盖，零整份重拉、零期初余额重算；
+      //    不命中当前视图 → 只让受影响账户的缓存失效，界面一行不动；
+      //    「全部」/ 筛选 / 标签视图 → 行可能不在当前页或会进出筛选结果集，落到 ④ 重算。
+      if (impact === "text") {
+        if (isCurrentAccountEvent && clientPaginationEnabled && refreshOnGlobalEvent && !detailAll) {
+          void refreshTextOnlyPage();
+          return;
+        }
+        if (!isCurrentAccountEvent) {
+          dropDetailAllCache(affectedKeys);
+          return;
+        }
       }
 
-      // 对账 / 解锁只改写明细行的 reconciledAt / reconciledBalance（锁标记 + 余额锚点），
-      // 本地快照推不出这两个字段的差异（删行重算那套逻辑用不上）→ 必须重取。
-      // 没有这个分支，锁定/解锁后列表不刷新，行上的锁图标永远不出现，也就无从解锁。
-      if (
-        event.type === FINANCE_DATA_CHANGED_EVENT &&
-        detail.reason === "entry-reconcile" &&
-        isCurrentAccountEvent
-      ) {
-        // 有明细筛选时 localEntries 由 RSC 的 entries prop 持有，客户端分页
-        // 取数路径是禁用的，只能整棵刷新。
-        invalidateDetailAll();
-        invalidateDetailOpeningBalance();
-        if (clientPaginationEnabled) reloadDetailPage();
-        else router.refresh();
-        return;
+      // ④ 结构变化（或必须重算结果集）：按域作废缓存，必要时连在途分块一起停掉。
+      dropDetailAllCache(affectedKeys);
+      if (isBulkFinanceEntryChange(detail)) invalidateDetailAll(affectedKeys);
+      // 备注-only 编辑不改余额，期初余额不用重算；影响域未知时清空整张缓存。
+      if (detail.balanceChanged !== false) {
+        invalidateDetailOpeningBalance(eventAccountIds.length > 0 ? eventAccountIds : undefined);
       }
+      // 没命中当前账户视图：缓存口径已按域更新，界面一行都不用动。
+      if (!isCurrentAccountEvent) return;
 
       const deletedEntryIds = detail.deletedEntryIds ?? [];
       if (deletedEntryIds.length === 0) {
-        // 新增（「记一笔」）：客户端分页打开时这里刻意不接收 RSC 传来的新
-        // entries（否则翻页会被冲回第 1 页），而「共 N 条」计数同样来自本地
-        // 快照 —— 只有按当前页重取一次，新行和计数才会一起出现。
-        // 没有这个分支时的表现：保存成功，但表格里看不到新行、计数不动，
-        // 用户以为「记一笔失败」。
-        const isCreateEvent = detail.reason === "transaction-save" && (detail.entryIds?.length ?? 0) === 0;
-        if (isCurrentAccountEvent && clientPaginationEnabled && refreshOnGlobalEvent && isCreateEvent) {
-          // 上面的 dropDetailAllCache() 已经作废了已落地的整份快照（保留兜底行、
-          // 不碰在途任务），这里只按当前页重取一次。不要再 invalidateDetailAll()：
-          // 它会 abort 所有在途任务、清空全部缓存，正是「记一笔 = 几万条从头加载」。
-          invalidateDetailOpeningBalance();
-          reloadDetailPage();
+        // ⑤ 明细刷新的唯一入口（子层通过 parentOwnsRefresh 让出，避免同页取两遍）：
+        //    有筛选 / 标签视图 → 筛选结果集在 RSC 内存里算，按页 API 的口径不一致，
+        //    重取会冲掉筛选条件；只能整棵重算一次（且只在命中当前账户时触发）；
+        //    普通分页 → 按当前页重取一次，新行与「共 N 条」一起出现；
+        //    「全部」→ 缓存已按域作废，ensureDetailAll 按当前账户口径重取整份。
+        if (!clientPaginationEnabled || !refreshOnGlobalEvent) {
+          router.refresh();
           return;
         }
-        // 编辑类改动：常规视图交给 DetailViewClient 按当前页重取（不再整页刷新，
-        // 服务端编辑保存也不再 purge 当前路由）。下面两种情形它补不了，只能
-        // 整棵刷新：① 有明细筛选——数据由 RSC 的 entries prop 持有，客户端
-        // 分页取数被禁用，且重取不带筛选条件会把筛选结果冲掉；
-        // ② refreshOnGlobalEvent 关闭（标签视图）——子组件根本不监听。
-        // ③「全部」视图——子组件的全量重取已交给父层分块（见 refreshOnGlobalEvent
-        //   的传参），编辑后必须由这里重取，否则改完一行列表不动。
-        if (isCurrentAccountEvent) {
-          // 「全部」整份重拉要十几秒，只有**确实改到具体条目**的事件才值得。
-          // 后台例行刷新（行情、净值、定投自动执行、startup-check、通知触发…）
-          // 不带 entryIds，以前一律 invalidate + 重拉，用户看到的就是「明明没动，
-          // 几万条又在转圈」。这些事件前面已经 dropDetailAllCache()，下次进入会重取。
-          const touchesEntries =
-            (detail.entryIds?.length ?? 0) > 0 || (detail.deletedEntryIds?.length ?? 0) > 0;
-          if (detailAll && clientPaginationEnabled && touchesEntries) {
-            invalidateDetailAll();
-            invalidateDetailOpeningBalance();
-            reloadDetailPage();
-            return;
-          }
-          if (!clientPaginationEnabled || !refreshOnGlobalEvent) router.refresh();
-        }
+        reloadDetailPage();
         return;
       }
       const deletedSet = new Set(deletedEntryIds);
@@ -1140,7 +1170,7 @@ export function BasicDetailPanel({
     return () => {
       window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, handleFinanceChange);
     };
-  }, [accountId, accountKind, clientPaginationEnabled, detailAll, localEntries, openingBalance, refreshOnGlobalEvent, reloadDetailPage, router, scopeAccountIds]);
+  }, [accountId, accountKind, clientPaginationEnabled, detailAll, localEntries, openingBalance, refreshOnGlobalEvent, refreshTextOnlyPage, reloadDetailPage, router, scopeAccountIds]);
 
   // 取数实现放进 ref：下面这个 effect 只在「页码 / 页大小 / 时间范围」变的那一刻重取。
   // 不能把 reloadDetailPage 当依赖 —— 它随 openingBalancePending、缓存快照、期初余额换
@@ -1565,6 +1595,7 @@ export function BasicDetailPanel({
           // 40 行，子层又塞回整份五万行，下一次父层刷新再摆回 40 行，表格看起来
           // 一直在闪，工具栏还长时间停在「已加载 500 条」。
           refreshOnGlobalEvent={refreshOnGlobalEvent && clientPaginationEnabled && !detailAll}
+          parentOwnsRefresh
           draggableRows={draggableRows}
           sortable={sortable}
           onRowsFitChange={rowsFitEnabled ? handleRowsFitChange : undefined}

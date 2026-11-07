@@ -1421,9 +1421,10 @@ export async function createTransaction(formData: FormData) {
     // 否则 action 响应会带回整棵首页 RSC payload，用户看到的就是「记一笔 =
     // 全页面刷新」。明细由 BasicDetailPanel 按当前页重取，余额由 LiveAccountBalance /
     // SidebarClient 打补丁刷新；tag 失效保证下次导航仍最新。
-    // 投资 / 固定资产分支的数据由各 Shell 自己重取，保持原有 path purge 不变。
+    // 投资 / 固定资产分支只跳过当前 "/" 的 purge：/invest 等路由照旧失效，
+    // 首页明细与余额由 finance:changed 的局部刷新链路补齐。
     if (type === "investment" && isFundShellProductType(formData)) revalidateAfterFundShellChange();
-    else if (type === "investment" || touchedFixedAsset) revalidateAfterInvestChange();
+    else if (type === "investment" || touchedFixedAsset) revalidateAfterInvestChange({ skipHomePath: true });
     else revalidateAfterTxChange({ skipHomePath: true });
     return { ok: true as const, data: createdEntryId ? { id: createdEntryId } : undefined };
   } catch (e) {
@@ -3747,9 +3748,10 @@ export async function updateTransactionFromDialog(formData: FormData) {
     // 会让 action 响应带回整棵首页的 RSC payload，用户看到的就是「改一条记录 =
     // 全页面刷新」）。明细行由 DetailViewClient 按当前页重取，余额由
     // LiveAccountBalance / SidebarClient 打补丁刷新；tag 失效保证下次导航仍最新。
-    // 投资 / 固定资产分支的数据由各 Shell 自己重取，保持原有 path purge 不变。
+    // 投资 / 固定资产分支只跳过当前 "/" 的 purge：/invest 等路由照旧失效，
+    // 首页明细与余额由 finance:changed 的局部刷新链路补齐。
     if (type === "investment" && isFundShellProductType(formData)) revalidateAfterFundShellChange();
-    else if (type === "investment" || touchedFixedAsset) revalidateAfterInvestChange();
+    else if (type === "investment" || touchedFixedAsset) revalidateAfterInvestChange({ skipHomePath: true });
     else revalidateAfterTxChange({ skipHomePath: true });
     await saveEntryUndo(prisma, ctx, undo, "edit", t("sidebar.undo.editEntry"));
     return { ok: true as const };
