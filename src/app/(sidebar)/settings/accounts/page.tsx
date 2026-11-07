@@ -646,7 +646,7 @@ export default function SettingsAccountsPage() {
   async function changeEditInstitution(institutionId: string) {
     setEditForm((current) => ({ ...current, institutionId }));
     if (editForm.kind !== "bank_credit" || !institutionId) return;
-    const result = await fetch(`/api/v1/accounts/credit-card-defaults?institutionId=${encodeURIComponent(institutionId)}`, { cache: "no-store" })
+    const result = await fetch(`/api/v1/accounts/credit-card-defaults?institutionId=${encodeURIComponent(institutionId)}&groupId=${encodeURIComponent(editForm.groupId || "")}`, { cache: "no-store" })
       .then((response) => response.json())
       .catch((error) => {
         console.warn("[accounts] failed to load credit-card institution defaults", error);
@@ -687,7 +687,7 @@ export default function SettingsAccountsPage() {
     // Converting into a credit card while keeping the institution: prefill the
     // institution's billing defaults for still-empty day fields (mirrors changeEditInstitution).
     if (nextKind !== "bank_credit" || !nextInstitutionId) return;
-    const result = await fetch(`/api/v1/accounts/credit-card-defaults?institutionId=${encodeURIComponent(nextInstitutionId)}`, { cache: "no-store" })
+    const result = await fetch(`/api/v1/accounts/credit-card-defaults?institutionId=${encodeURIComponent(nextInstitutionId)}&groupId=${encodeURIComponent(editForm.groupId || "")}`, { cache: "no-store" })
       .then((response) => response.json())
       .catch((error) => {
         console.warn("[accounts] failed to load credit-card institution defaults", error);

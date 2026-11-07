@@ -133,6 +133,7 @@ export async function PATCH(req: Request) {
         id: true,
         householdId: true,
         institutionId: true,
+        groupId: true,
         kind: true,
         creditBillMode: true,
         billingDay: true,
@@ -147,7 +148,7 @@ export async function PATCH(req: Request) {
     const storageAccountId = billAccountIds[0] ?? account.id;
     const settingsAccountIds = account.institutionId
       ? (await prisma.account.findMany({
-          where: { householdId, institutionId: account.institutionId, kind: AccountKind.bank_credit },
+          where: { householdId, institutionId: account.institutionId, groupId: account.groupId, kind: AccountKind.bank_credit },
           select: { id: true },
           orderBy: { id: "asc" },
         })).map((row) => row.id)
@@ -277,6 +278,7 @@ export async function PATCH(req: Request) {
       await syncCreditCardInstitutionSettings(tx, {
         householdId,
         institutionId: account.institutionId,
+        groupId: account.groupId,
         repaymentDay,
         repaymentOffsetDays,
         creditBillMode: account.creditBillMode,

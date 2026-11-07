@@ -124,6 +124,7 @@ async function resolveBillGroup(householdId: string, accountId: string) {
       id: true,
       householdId: true,
       institutionId: true,
+      groupId: true,
       kind: true,
       creditBillMode: true,
       billingDay: true,
@@ -388,6 +389,7 @@ export async function PATCH(req: Request) {
         id: true,
         householdId: true,
         institutionId: true,
+        groupId: true,
         billingDayTxPeriod: true,
         repaymentDay: true,
         repaymentOffsetDays: true,
@@ -440,11 +442,10 @@ export async function PATCH(req: Request) {
       return NextResponse.json({ ok: false, code: "NOTHING_TO_UPDATE", error: "没有需要保存的修改" }, { status: 400 });
     }
 
-    // billingDayTxPeriod / repaymentDay are institution-synced settings: apply
-    // to every credit-card account of the same institution (or just this card
-    // when the account has no institution).
+    // billingDayTxPeriod / repaymentDay are synced across the bill group:
+    // same institution + same owner (or just this card without an institution).
     const targetWhere = account.institutionId
-      ? { householdId: account.householdId, institutionId: account.institutionId, kind: AccountKind.bank_credit }
+      ? { householdId: account.householdId, institutionId: account.institutionId, groupId: account.groupId, kind: AccountKind.bank_credit }
       : { id: account.id };
     await prisma.account.updateMany({ where: targetWhere, data });
     const affected = await prisma.account.findMany({ where: targetWhere, select: { id: true } });

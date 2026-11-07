@@ -30,7 +30,7 @@ export async function getCreditCardInstitutionDefaults(
   writer: AccountWriter,
   householdId: string,
   institutionId: string | null | undefined,
-  excludeAccountId?: string,
+  options?: { excludeAccountId?: string; groupId?: string | null },
 ): Promise<CreditCardInstitutionDefaults | null> {
   if (!institutionId) return null;
   const accounts = await writer.account.findMany({
@@ -39,7 +39,9 @@ export async function getCreditCardInstitutionDefaults(
       institutionId,
       kind: AccountKind.bank_credit,
       isActive: true,
-      ...(excludeAccountId ? { NOT: { id: excludeAccountId } } : {}),
+      // 新建信用卡的默认值只在「同机构 + 同所有人」内继承。
+      ...(options?.groupId ? { groupId: options.groupId } : {}),
+      ...(options?.excludeAccountId ? { NOT: { id: options.excludeAccountId } } : {}),
     },
     select: {
       billingDay: true,
@@ -80,6 +82,7 @@ export async function syncCreditCardInstitutionSettings(
     repaymentOffsetDays?: number | null;
     creditBillMode: CreditBillMode;
     billingDayTxPeriod?: CreditBillingDayTxPeriod;
+    groupId?: string | null;
   },
 ) {
   if (!input.institutionId) return;
@@ -94,11 +97,14 @@ export async function syncCreditCardInstitutionSettings(
       : {}),
     ...(input.billingDayTxPeriod ? { billingDayTxPeriod: input.billingDayTxPeriod } : {}),
   };
+  // 同步范围与账单分组一致：同机构 + 同所有人。改 A 的账单模式不能把 B 的卡
+  // 一起改成合并账单。
   await writer.account.updateMany({
     where: {
       householdId: input.householdId,
       institutionId: input.institutionId,
       kind: AccountKind.bank_credit,
+      ...(input.groupId ? { groupId: input.groupId } : {}),
     },
     data,
   });
@@ -112,6 +118,7 @@ export async function getCreditBillAccountIds(
     institutionId: string | null;
     kind: AccountKind;
     creditBillMode: CreditBillMode;
+    groupId?: string | null;
   },
 ) {
   if (
@@ -121,10 +128,19 @@ export async function getCreditBillAccountIds(
   ) {
     return [account.id];
   }
+  // 合并账单 = 同机构 + 同所有人（AccountGroup）。不同家庭成员在同一家银行的
+  // 信用卡各出各的账单；groupId 缺失时按账户 id 回查一次，查不到就退回单卡，
+  // 绝不退化成「同机构全量合并」。
+  const groupId = account.groupId ?? (await writer.account.findFirst({
+    where: { id: account.id, householdId: account.householdId },
+    select: { groupId: true },
+  }))?.groupId ?? null;
+  if (!groupId) return [account.id];
   const rows = await writer.account.findMany({
     where: {
       householdId: account.householdId,
       institutionId: account.institutionId,
+      groupId,
       kind: AccountKind.bank_credit,
       creditBillMode: CREDIT_BILL_MODE_CONSOLIDATED,
     },

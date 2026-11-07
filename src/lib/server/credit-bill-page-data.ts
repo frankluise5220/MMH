@@ -244,9 +244,10 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
   // Bump this timestamp whenever the credit-bill flow calculation logic
   // changes (e.g. classifyCreditBillFlowSide). It forces persisted cycle
   // summaries to be recomputed with the new logic instead of reusing stale
-  // cached values. Last bumped: 2026-08-29 15:55 (transfer rows now follow
-  // the signed credit-card-side amount instead of always counting as inflow).
-  const creditBillSummaryLogicUpdatedAt = new Date(Date.UTC(2026, 7, 29, 7, 55, 0));
+  // cached values. Last bumped: 2026-11-07 (consolidated bills are scoped to
+  // institution + owner now, so persisted cycles from the old cross-owner
+  // group must be recomputed under the new bill storage account).
+  const creditBillSummaryLogicUpdatedAt = new Date(Date.UTC(2026, 10, 7, 0, 0, 0));
   const latestBillingDayRuleUpdatedAt = billingDayRules.reduce<Date | null>(
     (latest, rule) => (!latest || rule.updatedAt > latest ? rule.updatedAt : latest),
     null,
@@ -1182,6 +1183,7 @@ export async function refreshCreditCardCycleCachesForAccountIds(params: {
       id: true,
       householdId: true,
       institutionId: true,
+      groupId: true,
       kind: true,
       billingDay: true,
       repaymentDay: true,

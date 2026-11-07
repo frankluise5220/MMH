@@ -435,6 +435,10 @@ export async function computeOverviewSummary(
     };
   });
 
+  // 合并账单的分组键是「机构 + 所有人」。同一家银行里不同家庭成员的信用卡
+  // 各出一份账单，不能因为机构相同就合并（账单周期、额度、当期应还都会串人）。
+  // 这里仍走数据库查询并 orderBy id，是为了和 getCreditBillAccountIds 选出
+  // 同一个 billStorageAccountId（含已停用卡），否则概览读不到账单周期。
   const consolidatedInstitutionIds = Array.from(new Set(
     creditAccounts
       .filter((account) => account.creditBillMode === "consolidated" && !!account.institutionId)
@@ -448,14 +452,17 @@ export async function computeOverviewSummary(
           creditBillMode: "consolidated",
           institutionId: { in: consolidatedInstitutionIds },
         },
-        select: { id: true, institutionId: true },
+        select: { id: true, institutionId: true, groupId: true },
         orderBy: { id: "asc" },
       })
     : [];
-  const consolidatedStorageIdByInstitutionId = new Map<string, string>();
+  const billGroupKey = (account: { institutionId: string | null; groupId: string | null }) =>
+    `${account.institutionId ?? ""}:${account.groupId ?? ""}`;
+  const consolidatedStorageIdByOwnerInstitution = new Map<string, string>();
   for (const account of consolidatedGroupAccounts) {
-    if (account.institutionId && !consolidatedStorageIdByInstitutionId.has(account.institutionId)) {
-      consolidatedStorageIdByInstitutionId.set(account.institutionId, account.id);
+    const key = billGroupKey(account);
+    if (!consolidatedStorageIdByOwnerInstitution.has(key)) {
+      consolidatedStorageIdByOwnerInstitution.set(key, account.id);
     }
   }
   const creditStorageIdByAccountId = new Map(
@@ -463,7 +470,7 @@ export async function computeOverviewSummary(
       if (account.creditBillMode !== "consolidated" || !account.institutionId) {
         return [account.id, account.id] as const;
       }
-      const storageId = consolidatedStorageIdByInstitutionId.get(account.institutionId) ?? account.id;
+      const storageId = consolidatedStorageIdByOwnerInstitution.get(billGroupKey(account)) ?? account.id;
       return [account.id, storageId] as const;
     }),
   );
@@ -486,9 +493,8 @@ export async function computeOverviewSummary(
   }
   const creditAccountList: CreditAccountRow[] = Array.from(creditAccountsByStorageId.entries()).map(([storageId, groupAccounts]) => {
     const storageAccount = groupAccounts.find((account) => account.id === storageId) ?? groupAccounts[0];
-    const isConsolidatedGroup =
-      groupAccounts.length > 1 ||
-      (storageAccount.creditBillMode === "consolidated" && !!storageAccount.institutionId);
+    // 单卡组即使挂在合并模式下也不该显示成机构名，否则同一机构会出现两行同名账单。
+    const isConsolidatedGroup = groupAccounts.length > 1;
     const display = buildAccountDisplayOption(
       {
         id: storageAccount.id,

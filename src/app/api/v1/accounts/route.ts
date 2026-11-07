@@ -336,7 +336,7 @@ export async function POST(req: NextRequest) {
     if (requestedUserId && !owner) return NextResponse.json({ ok: false, code: "OWNER_NOT_FOUND", error: "Owner not found in this household" }, { status: 400 });
 
     const creditDefaults = isCreditLike
-      ? await getCreditCardInstitutionDefaults(prisma, householdId, institution?.id)
+      ? await getCreditCardInstitutionDefaults(prisma, householdId, institution?.id, { groupId: ensuredGroup.id })
       : null;
     const requestedBillingDay = parseBillingDay(body.billingDay);
     const requestedRepaymentDay = parseDay(body.repaymentDay);
@@ -514,6 +514,7 @@ export async function POST(req: NextRequest) {
       await syncCreditCardInstitutionSettings(prisma, {
         householdId,
         institutionId: account.institutionId,
+        groupId: account.groupId,
         repaymentDay: account.repaymentDay,
         repaymentOffsetDays: account.repaymentOffsetDays,
         creditBillMode: account.creditBillMode,
@@ -521,7 +522,7 @@ export async function POST(req: NextRequest) {
       });
       const institutionCards = account.institutionId
         ? await prisma.account.findMany({
-            where: { householdId, institutionId: account.institutionId, kind: "bank_credit" },
+            where: { householdId, institutionId: account.institutionId, groupId: account.groupId, kind: "bank_credit" },
             select: { id: true },
           })
         : [{ id: account.id }];
@@ -970,7 +971,7 @@ export async function PUT(req: NextRequest) {
     if (updated.kind === "bank_credit") {
       const institutionCardsBeforeSync = updated.institutionId
         ? await prisma.account.findMany({
-            where: { householdId: updated.householdId, institutionId: updated.institutionId, kind: "bank_credit" },
+            where: { householdId: updated.householdId, institutionId: updated.institutionId, groupId: updated.groupId, kind: "bank_credit" },
             select: { id: true, billingDay: true },
           })
         : [{ id: updated.id, billingDay: updated.billingDay }];
@@ -983,6 +984,7 @@ export async function PUT(req: NextRequest) {
       await syncCreditCardInstitutionSettings(prisma, {
         householdId: updated.householdId,
         institutionId: updated.institutionId,
+        groupId: updated.groupId,
         repaymentDay: updated.repaymentDay,
         repaymentOffsetDays: updated.repaymentOffsetDays,
         creditBillMode: updated.creditBillMode,
@@ -990,7 +992,7 @@ export async function PUT(req: NextRequest) {
       });
       const institutionCards = updated.institutionId
         ? await prisma.account.findMany({
-            where: { householdId: updated.householdId, institutionId: updated.institutionId, kind: "bank_credit" },
+            where: { householdId: updated.householdId, institutionId: updated.institutionId, groupId: updated.groupId, kind: "bank_credit" },
             select: { id: true },
           })
         : [{ id: updated.id }];

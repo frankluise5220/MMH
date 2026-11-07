@@ -562,7 +562,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
   useEffect(() => {
     if (entityType !== "account" || form.kind !== "bank_credit" || !form.institutionId) return;
     let cancelled = false;
-    fetch(`/api/v1/accounts/credit-card-defaults?institutionId=${encodeURIComponent(form.institutionId)}`, { cache: "no-store" })
+    fetch(`/api/v1/accounts/credit-card-defaults?institutionId=${encodeURIComponent(form.institutionId)}&groupId=${encodeURIComponent(form.groupId || "")}`, { cache: "no-store" })
       .then((response) => response.json())
       .then((result) => {
         if (cancelled || !result?.ok || !result.data) return;
@@ -587,7 +587,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     return () => {
       cancelled = true;
     };
-  }, [entityType, form.institutionId, form.kind]);
+  }, [entityType, form.institutionId, form.groupId, form.kind]);
 
   /** Get default type for compact mode */
   const getDefaultTypeCompact = useCallback((): string => {

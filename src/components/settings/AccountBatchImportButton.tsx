@@ -165,7 +165,7 @@ type AccountBatchImportButtonProps = {
 };
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;
-type AccountImportOption = { value: string; labelKey: string };
+type AccountImportOption = { value: string; labelKey: string; legacyLabels?: string[] };
 
 type ImportSheetDefinition = {
   type: ImportSheetType;
@@ -460,7 +460,19 @@ const TRADING_CALENDAR_OPTIONS: AccountImportOption[] = TRADING_CALENDARS.map((v
 const TAG_COLOR_OPTIONS: AccountImportOption[] = TAG_COLORS.map((value) => ({ value, labelKey: TAG_COLOR_NAME_KEYS[value] }));
 const CREDIT_BILL_MODE_OPTIONS: AccountImportOption[] = [
   { value: "separate", labelKey: "entityForm.creditBillMode.separate" },
-  { value: "consolidated", labelKey: "entityForm.creditBillMode.consolidated" },
+  {
+    value: "consolidated",
+    labelKey: "entityForm.creditBillMode.consolidated",
+    // 2026-11-07 之前的模板写的是「同机构合并账单」；文案改成带所有人后
+    // 必须继续识别旧 xlsx，否则历史导入文件会被判成非法枚举。
+    legacyLabels: [
+      "同机构合并账单",
+      "Consolidated Bills (same institution)",
+      "Consolidated Bill (same institution)",
+      "同一機関で合算請求",
+      "同一機関で統合請求",
+    ],
+  },
 ];
 const OBJECT_TYPE_OPTIONS: AccountImportOption[] = institutionTypeOptions(["family_member", "person", "organization"]);
 const CATEGORY_TYPE_OPTIONS: AccountImportOption[] = [
@@ -525,7 +537,8 @@ function parseImportEnum(value: string, options: AccountImportOption[], t: (key:
   const byLabel = options.find((option) =>
     normalizeImportHeader(t(option.labelKey)) === raw ||
     normalizeImportHeader(`${t(option.labelKey)}(${option.value})`) === raw ||
-    normalizeImportHeader(`${t(option.labelKey)}（${option.value}）`) === raw
+    normalizeImportHeader(`${t(option.labelKey)}（${option.value}）`) === raw ||
+    (option.legacyLabels ?? []).some((label) => normalizeImportHeader(label) === raw)
   );
   return byLabel?.value ?? "";
 }
