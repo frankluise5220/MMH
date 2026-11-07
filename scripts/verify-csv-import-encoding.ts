@@ -183,8 +183,6 @@ assert.equal(repayment.rows[1][6], "测试用户支付宝花呗", "repayment tar
 assert.equal(repayment.rows[1][9], "花呗自动还款-2026年10月账单", "product text must stay in the remark");
 
 // 8. 文件名前缀是账本里的实际所有人，优先于账单内部写的导出者姓名。
-//    场景：同一份账单（内部「姓名：付斌」）被命名为「张四.支付宝交易明细(...).csv」，
-//    表示这本账要记在张四名下，账户就得是「张四支付宝xxx」而不是「付斌支付宝xxx」。
 assert.equal(
   guessOwnerFromFilename("\u5f20\u56db.\u652f\u4ed8\u5b9d\u4ea4\u6613\u660e\u7ec6(20260728-20261028) .csv"),
   "\u5f20\u56db",

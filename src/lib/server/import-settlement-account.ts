@@ -26,7 +26,7 @@ type LiabilityResolveOptions = {
   createCounterparty?: boolean;
   createAccount?: boolean;
   createdAccounts?: CreatedImportAccount[];
-  /** 允许把「张珺」这类纯人名对向账户建成往来款账户（转账两侧才开启）。 */
+  /** 允许把纯人名对向账户建成往来款账户（转账两侧才开启）。 */
   allowBarePersonName?: boolean;
 };
 
@@ -157,9 +157,9 @@ export async function resolveSettlementAccountByCounterpartyName(
 }
 
 /**
- * Loose fallback for non-owner person-prefixed names like「付斌的招行3833」:
- * 付斌 is not a ledger owner (not in AccountGroup names), so the name can only
- * be attributed to a settlement account under counterparty 付斌 (原名保留).
+ * Loose fallback for non-owner person-prefixed names (「XX的YYY」):
+ * the prefix is not a ledger owner (not in AccountGroup names), so the name
+ * can only be attributed to a settlement account under that counterparty (原名保留).
  *
  * Called LATE in the account-resolution chain (after every existing-account
  * match has failed) and only when the "创建往来款账户" option is enabled —
@@ -172,7 +172,7 @@ export async function resolveSettlementAccountByLoosePersonName(
   accountName: string,
   options: LiabilityResolveOptions = {},
 ): Promise<string | null> {
-  // 缓存键要区分是否允许纯人名：同一个「付斌」在未勾选时算出 null，
+  // 缓存键要区分是否允许纯人名：同一个原文在未勾选时算出 null，
   // 若共用键会把 null 结果留给后续勾选了「创建往来款账户」的导入（模块级缓存跨请求存活）。
   const cacheKey = options.allowBarePersonName ? `${accountName}\u001fperson` : accountName;
   const cached = liabilityResolveCacheGet(householdId, cacheKey);

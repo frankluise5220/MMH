@@ -74,7 +74,10 @@ type AccountLookupRow = {
   currency: string | null;
   numberMasked: string | null;
   Institution: { name: string | null; shortName?: string | null } | null;
-  AccountGroup?: { name: string | null } | null;
+  AccountGroup?: {
+    name: string | null;
+    Institution?: { name: string | null; shortName?: string | null } | null;
+  } | null;
   AccountAlias?: Array<{ alias: string }> | null;
 };
 type ImportContext = {
@@ -490,6 +493,8 @@ function assertImportAccountIdentity(
   accountId: string | null,
   originalText: string | undefined,
   fieldLabel: string,
+  rowIndex?: number,
+  item?: ParsedItem,
 ) {
   const original = String(originalText ?? "").trim();
   if (!original || !accountId) return;
@@ -497,7 +502,11 @@ function assertImportAccountIdentity(
   const conflict = ctx.accountIdentityConflictFor(selected, original);
   if (!conflict) return;
   const selectedName = selected?.name ?? accountId;
-  throw new Error(`${fieldLabel}“${selectedName}”与导入原始账户“${conflict.originalText}”不一致，请重新选择匹配账户`);
+  const message = `${fieldLabel}“${selectedName}”与导入原始账户“${conflict.originalText}”不一致，请重新选择匹配账户`;
+  if (rowIndex != null && item) {
+    throw new ImportItemError(buildImportFailureDetail(rowIndex, item, new Error(message)));
+  }
+  throw new Error(message);
 }
 
 async function buildImportContext(): Promise<ImportContext> {
@@ -520,7 +529,12 @@ async function buildImportContext(): Promise<ImportContext> {
             shortName: true,
           },
         },
-        AccountGroup: { select: { name: true } },
+        AccountGroup: {
+          select: {
+            name: true,
+            Institution: { select: { name: true, shortName: true } },
+          },
+        },
         AccountAlias: { select: { alias: true } },
       },
     }),
@@ -917,6 +931,10 @@ export async function POST(req: Request) {
           if (item.type === "transfer" && (!fromId || !toId)) {
             throw new ImportItemError(buildImportFailureDetail(i, item, new Error("转账账户未匹配，不能导入")));
           }
+          // 预览提交的 account-id: 值不能被无条件信任：原始账户文本写了归属时，
+          // 服务端再核一次，避免整批流水静默落到别人的同名账户上。
+          assertImportAccountIdentity(ctx, fromId, item.importSourceFromAccount, "转出账户", i, item);
+          assertImportAccountIdentity(ctx, toId, item.importSourceToAccount, "转入账户", i, item);
           const sourceId = fromId || (item.type === "investment" && toId ? getOrCreateDefaultAccount(ctx, defaultAccountName) : "");
           const fromMeta = ctx.accountMetaById.get(sourceId ?? "") ?? null;
           const toMeta = ctx.accountMetaById.get(toId ?? "") ?? null;
@@ -939,6 +957,7 @@ export async function POST(req: Request) {
           if (!accountId) {
             throw new ImportItemError(buildImportFailureDetail(i, item, new Error("Account is required and must match an existing account")));
           }
+          assertImportAccountIdentity(ctx, accountId, item.importSourceAccount || item.importSourceStatementAccount, "账户", i, item);
           const meta = ctx.accountMetaById.get(accountId ?? "") ?? null;
           const storedName = accountId && meta ? meta.name : accountName;
           const postedAt = item.type === "expense" || item.type === "income" ? (parseOptionalDateTime(item.postedAt) ?? date) : null;

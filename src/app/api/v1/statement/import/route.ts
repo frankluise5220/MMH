@@ -11,6 +11,7 @@ import { normalizeDefaultCategoryHierarchyForHousehold, resolveCategorySnapshot,
 import { normalizeCurrency, resolveSameCurrencyTransfer } from "@/lib/currency";
 import {
   expandImportBankName,
+  inferImportOwnerKeysFromText,
   isImportPaymentTailSourceHint,
   normalizeImportAccountMatchKey,
   parseImportAccountId,
@@ -95,6 +96,11 @@ const ParsedItemSchema = z.object({
   originalCurrency: z.string().optional(),
   originalAmount: z.number().finite().optional(),
   transferDirection: z.enum(["in", "out"]).optional(),
+  // 原始账户文本：account-id: 是预览里选中的账户 id，服务端要用原文复核归属。
+  importSourceAccount: z.string().optional(),
+  importSourceFromAccount: z.string().optional(),
+  importSourceToAccount: z.string().optional(),
+  importSourceStatementAccount: z.string().optional(),
   _meta: z.object({
     institutionName: z.string().optional(),
     ownerName: z.string().optional(),
@@ -1216,15 +1222,12 @@ async function ensureAccountIdUncached(
   const forcedOwnedMoneyAccountId = await createOwnedMoneyAccountFromImportName(tx, householdId, name, options);
   if (forcedOwnedMoneyAccountId) return forcedOwnedMoneyAccountId;
 
-  // 非所有人「XX的YYY」（如财智导出的「付斌的招行3833」）：勾选"创建往来款账户"时，
-  // 在既有账户匹配全部失败后归属为往来对象 XX 的往来款账户（原名保留）。
   // 活动类型提示（信用卡还款/网贷收回）优先——对向侧按提示建信用卡/贷款账户，不走人名归属。
   if (options.createLiabilityAccounts === true && !counterKindHint) {
     const loosePersonAccountId = await resolveSettlementAccountByLoosePersonName(tx, householdId, name, {
       createCounterparty: true,
       createAccount: true,
       createdAccounts: options.createdAccounts,
-      // 转账两侧的对向账户常直接写人名（「张珺」「付斌」），勾选后建往来款账户。
       allowBarePersonName: allowBarePersonSettlement === true,
     });
     if (loosePersonAccountId) return loosePersonAccountId;
@@ -1662,6 +1665,52 @@ function parseBalanceReconcileDate(value: string | undefined, timeZone: string):
  * Returns: { ok: true, createdCount, skippedCount, ids, importBatchId?, lockedStatementBills?, createdAccounts?, errors }
  * - lockedStatementBills items may include amount, periodStart, periodEnd, and dueDate.
  */
+/**
+ * account-id: 是预览里选中的账户 id，服务端不能无条件信任它：
+ * 原始账户文本写明所有人时，必须与选中账户的归属一致，否则
+ * 带所有人前缀的「XX·支付宝·余额宝」会整批落到另一个人名下的余额宝。
+ */
+async function findImportAccountIdentityConflict(items: ParsedItem[], householdId: string): Promise<string | null> {
+  const refs = items.flatMap((item) => [
+    { value: item.account, original: item.importSourceAccount || item.importSourceStatementAccount, label: "账户" },
+    { value: item.fromAccount, original: item.importSourceFromAccount, label: "转出账户" },
+    { value: item.toAccount, original: item.importSourceToAccount, label: "转入账户" },
+  ]).flatMap(({ value, original, label }) => {
+    const id = value ? parseImportAccountId(String(value).trim()) : null;
+    if (!id || !original) return [];
+    return [{ id, original: String(original).trim(), label }];
+  });
+  if (refs.length === 0) return null;
+  const [accounts, groups] = await Promise.all([
+    prisma.account.findMany({
+      where: { householdId, id: { in: Array.from(new Set(refs.map((ref) => ref.id))) } },
+      select: {
+        id: true,
+        name: true,
+        AccountGroup: {
+          select: { name: true, Institution: { select: { name: true, shortName: true } } },
+        },
+      },
+    }),
+    prisma.accountGroup.findMany({
+      where: { householdId },
+      select: { name: true, Institution: { select: { name: true, shortName: true } } },
+    }),
+  ]);
+  const ownerNames = Array.from(new Set(groups.flatMap((group) => ownerNamesFromAccountGroup(group))));
+  const byId = new Map(accounts.map((account) => [account.id, account]));
+  for (const ref of refs) {
+    const selected = byId.get(ref.id);
+    if (!selected) continue;
+    const inferred = inferImportOwnerKeysFromText(ref.original, ownerNames);
+    const selectedOwnerKeys = ownerNamesFromAccountGroup(selected.AccountGroup).map(normalizeImportAccountMatchKey);
+    if (inferred.length > 0 && selectedOwnerKeys.length > 0 && !inferred.some((key) => selectedOwnerKeys.includes(key))) {
+      return `${ref.label}「${selected.name}」的归属与导入原始账户「${ref.original}」不一致，请重新选择匹配账户`;
+    }
+  }
+  return null;
+}
+
 export async function POST(req: Request) {
   const currentUser = await getCurrentUser();
   if (!currentUser && !requireApiKey(req).ok) {
@@ -1724,6 +1773,13 @@ export async function POST(req: Request) {
   };
   const { householdId } = await getHouseholdScope();
   await normalizeDefaultCategoryHierarchyForHousehold(prisma, householdId);
+  const identityConflict = await findImportAccountIdentityConflict(items, householdId);
+  if (identityConflict) {
+    return NextResponse.json(
+      { ok: false, code: "ACCOUNT_IDENTITY_CONFLICT", error: identityConflict },
+      { status: 400, headers: corsHeaders() },
+    );
+  }
 
   const created: { id: string }[] = [];
   const touchedAccountIds = new Set<string>();

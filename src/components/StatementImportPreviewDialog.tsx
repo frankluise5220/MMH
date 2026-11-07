@@ -174,7 +174,7 @@ type StatementImportPreviewDialogProps = {
   sourceAccountId?: string | null;
   /** 导入来源直接指定的所有人（优先于账户与文件名推断）。 */
   sourceOwnerName?: string | null;
-  /** 被解析的流水文件名：导出文件名常带「姜慧招商银行交易流水…」，可据此推断所有人。 */
+  /** 被解析的流水文件名：可据此推断所有人。 */
   sourceFileName?: string | null;
   busy?: boolean;
   /** 分批导入进度：宿主分批提交时传入，弹窗底部显示进度条 */
@@ -395,9 +395,9 @@ function isCreatableLiabilityAccount(
   if (!options.createLiabilityAccounts || !lookup) return false;
   const counterpartyName = liabilityCounterpartyNameFromAccount(value);
   if (counterpartyName) return true;
-  // 非所有人「XX的YYY」（如财智的「付斌的招行3833」）→ 归属为往来对象 XX 的往来款账户
+  // 非所有人「XX的YYY」→ 归属为往来对象 XX 的往来款账户
   if (parseImportPersonAttributedCandidate(value, lookup.ownerNames)) return true;
-  // 银行流水里**转账对向**常直接写人名（「张珺」），勾选后同样按往来对象建账户。
+  // 银行流水里**转账对向**常直接写人名，勾选后同样按往来对象建账户。
   // 主账户不适用：服务端只在转账两侧开启这条路径。
   return allowBarePersonName && Boolean(parseImportBarePersonName(value, lookup.ownerNames));
 }
@@ -658,7 +658,7 @@ export function StatementImportPreviewDialog({
     [accountDisplayOptions],
   );
   // 「同名不同所有人」的账户（如两个「朝朝宝」）不应该让用户逐行去选：导入来源本身
-  // 往往已经说明了所有人——发起导入的账户视图，或流水文件名（「姜慧招商银行交易流水…」）。
+  // 往往已经说明了所有人——发起导入的账户视图，或流水文件名。
   const contextOwnerName = useMemo(() => {
     const explicit = sourceOwnerName?.trim() ?? "";
     if (explicit) return explicit;
@@ -990,10 +990,11 @@ export function StatementImportPreviewDialog({
   function ownedAccountDisplayName(value: string) {
     const candidate = parseImportOwnedMoneyAccountCandidate(value, accountLookup?.ownerNames ?? []);
     if (!candidate) return "";
-    return [candidate.ownerName, candidate.institutionDisplayName ?? candidate.institutionName, candidate.accountName]
+    const parts = [candidate.ownerName, candidate.institutionDisplayName ?? candidate.institutionName, candidate.accountName]
       .map(cleanText)
-      .filter(Boolean)
-      .join("·");
+      .filter(Boolean);
+    // 渠道账户（云闪付/微信/支付宝）的机构名与账户名相同，别显示成「墨斗鱼·云闪付·云闪付」
+    return parts.filter((part, index) => index === 0 || part !== parts[index - 1]).join("·");
   }
 
   function forcedOwnedAccountCreationLabels(row: ImportPreviewRow) {
@@ -1071,7 +1072,7 @@ export function StatementImportPreviewDialog({
       .map((value) => {
         const match = accountLookup.matchAccount(value);
         if (match.account || match.ambiguousAccounts.length < 2) return "";
-        // 文本带"所有人·机构·类型"语义（如"付斌的招行基金"）时，给出维度化的说明
+        // 文本带"所有人·机构·类型"语义时，给出维度化的说明
         // 和"勾选创建所有人账户"的出路；纯类型词（如"信用卡"）解析不出所有人，保持原文案。
         const ownedCandidate = parseImportOwnedMoneyAccountCandidate(value, accountLookup.ownerNames);
         if (ownedCandidate) {

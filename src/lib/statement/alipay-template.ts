@@ -133,11 +133,11 @@ function normalizeAlipayOwnerHint(value: string) {
 }
 
 /**
- * 账单表头里的所有人（「姓名：付斌」）。
+ * 账单表头里的所有人。
  *
- * 资金收支页签和基金买卖页签都必须用它，两个页签的「资金账户」才会是同一个名字
- * （「付斌支付宝余额宝」）。只剩裸「余额宝」时，两位家庭成员各有一个余额宝的账本
- * 里就是两条同名账户，匹配器只能判歧义，资金账户直接空着。
+ * 资金收支页签和基金买卖页签都必须用它，两个页签的「资金账户」才会是同一个名字。
+ * 只剩裸「余额宝」时，两位家庭成员各有一个余额宝的账本里就是两条同名账户，
+ * 匹配器只能判歧义，资金账户直接空着。
  */
 export function findAlipayOwnerHint(rows: string[][], headerRowIndex: number) {
   for (const row of rows.slice(0, headerRowIndex)) {
