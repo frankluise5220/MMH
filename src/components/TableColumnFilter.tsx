@@ -6,6 +6,9 @@ import { useI18n } from "@/lib/i18n";
 import { useOutsideClose } from "@/lib/client/useOutsideClose";
 import { DateStepper } from "@/components/DateStepper";
 
+/** 「一个都不选」在筛选值里要占一个哨兵位；空数组的含义是「清除筛选＝全选」。 */
+const NO_MATCH_VALUE = "__NO_MATCH__";
+
 type TableColumnFilterProps = {
   label: string;
   options: string[];
@@ -132,10 +135,20 @@ export function TableColumnFilter({
   const rootRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const [keyword, setKeyword] = useState("");
+  /** 弹窗内的勾选草稿：null 表示还没动过，沿用已应用的筛选值。 */
+  const [draftValues, setDraftValues] = useState<string[] | null>(null);
+  const draftRef = useRef<string[] | null>(null);
+
+  const updateDraft = useCallback((next: string[] | null) => {
+    draftRef.current = next;
+    setDraftValues(next);
+  }, []);
 
   useEffect(() => {
-    if (open) setKeyword("");
-  }, [open]);
+    if (!open) return;
+    setKeyword("");
+    updateDraft(null);
+  }, [open, updateDraft]);
 
   useEffect(() => {
     if (!open) return;
@@ -145,8 +158,6 @@ export function TableColumnFilter({
     });
     return () => window.cancelAnimationFrame(frame);
   }, [open]);
-
-  useOutsideClose(rootRef, open, onClose);
 
   const filterOptionsByKeyword = useCallback((rawKeyword: string) => {
     const query = rawKeyword.trim().toLowerCase();
@@ -165,20 +176,51 @@ export function TableColumnFilter({
     return filterOptionsByKeyword(keyword);
   }, [filterOptionsByKeyword, keyword]);
 
-  function applyKeywordFilter() {
-    const query = (inputRef.current?.value ?? keyword).trim();
-    if (!query) {
+  /** 空数组＝全选、__NO_MATCH__＝全不选，勾选状态永远按集合实际内容显示。 */
+  const baseSelectedValues = useMemo(() => (
+    selectedValues.length > 0
+      ? selectedValues.filter((value) => value !== NO_MATCH_VALUE)
+      : options
+  ), [options, selectedValues]);
+  const effectiveSelectedValues = draftValues ?? baseSelectedValues;
+
+  const commitDraft = useCallback(() => {
+    const draft = draftRef.current;
+    if (draft == null) return false;
+    updateDraft(null);
+    if (draft.length === 0) {
+      onChange([NO_MATCH_VALUE]);
+    } else if (draft.length === options.length && draft.every((value) => options.includes(value))) {
       onChange([]);
-      onClose();
-      return;
+    } else {
+      onChange(draft);
     }
-    const matchedOptions = filterOptionsByKeyword(query);
-    onChange(matchedOptions.length > 0 ? matchedOptions : ["__NO_MATCH__"]);
+    return true;
+  }, [onChange, options, updateDraft]);
+
+  /** 关闭也提交勾选，保持旧版「勾一下就生效」的手感；确认则只是显式提交并收起弹窗。 */
+  const handleClose = useCallback(() => {
+    commitDraft();
+    onClose();
+  }, [commitDraft, onClose]);
+
+  useOutsideClose(rootRef, open, handleClose);
+
+  function applyConfirm() {
+    if (!commitDraft()) {
+      // 没有手动改过勾选时，关键字仍按原语义批量应用；空关键字则保留现有筛选，不再清空。
+      const query = (inputRef.current?.value ?? keyword).trim();
+      if (query) {
+        const matchedOptions = filterOptionsByKeyword(query);
+        onChange(matchedOptions.length > 0 ? matchedOptions : [NO_MATCH_VALUE]);
+      }
+    }
     onClose();
   }
 
   const keywordActive = keyword.trim().length > 0;
   const keywordMatchedCount = visibleOptions.length;
+  const hasDraft = draftValues !== null;
 
   return (
     <div ref={rootRef} className="relative inline-flex items-center gap-1">
@@ -199,18 +241,21 @@ export function TableColumnFilter({
       <FilterPopover open={open} anchorRef={rootRef} className="h-96 min-h-52 min-w-56 max-w-[min(640px,90vw)] resize overflow-auto rounded-lg border border-slate-200 bg-white p-2 shadow-xl" height={384}>
           <div className="mb-2 flex items-center justify-between gap-2 border-b border-slate-100 pb-2">
             <span className="text-xs font-medium text-slate-700">{filterTitle}</span>
-            <button type="button" onClick={onClose} className="text-xs text-slate-400 hover:text-slate-700">
+            <button type="button" onClick={handleClose} className="text-xs text-slate-400 hover:text-slate-700">
               {t("table.close")}
             </button>
           </div>
           <div className="mb-2 flex items-center gap-2">
-            <button type="button" onClick={() => onChange([])} className="rounded border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50">
+            <button type="button" onClick={() => updateDraft(options)} className="rounded border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50">
               {t("table.selectAllValues")}
             </button>
-            <button type="button" onClick={() => onChange(["__NO_MATCH__"])} className="rounded border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50">
+            <button type="button" onClick={() => updateDraft([])} className="rounded border border-slate-200 px-2 py-1 text-xs text-slate-600 hover:bg-slate-50">
               {t("table.selectNoValues")}
             </button>
-            <button type="button" onClick={() => onChange(undefined)} className="ml-auto text-xs text-blue-600 hover:text-blue-700">
+            <button type="button" onClick={() => {
+              updateDraft(options);
+              onChange(undefined);
+            }} className="ml-auto text-xs text-blue-600 hover:text-blue-700">
               {t("table.clear")}
             </button>
           </div>
@@ -223,27 +268,27 @@ export function TableColumnFilter({
                 event.stopPropagation();
                 if (event.key !== "Enter") return;
                 event.preventDefault();
-                applyKeywordFilter();
+                applyConfirm();
               }}
               placeholder={t("table.filterSearchPlaceholder")}
               className="h-8 min-w-0 flex-1 rounded border border-slate-200 bg-white px-2 text-xs outline-none focus:border-blue-400"
             />
             <button
               type="button"
-              onClick={applyKeywordFilter}
+              onClick={applyConfirm}
               className="h-8 shrink-0 rounded border border-blue-200 bg-blue-50 px-3 text-xs text-blue-700 hover:bg-blue-100"
             >
-              {keywordActive ? `${t("table.confirm")} (${keywordMatchedCount})` : t("table.confirm")}
+              {keywordActive && !hasDraft ? `${t("table.confirm")} (${keywordMatchedCount})` : t("table.confirm")}
             </button>
           </div>
-          {keywordActive ? (
+          {keywordActive && !hasDraft ? (
             <div className="mb-2 rounded-md bg-blue-50 px-2 py-1 text-[11px] text-blue-700">
               {t("tableFilter.applyHint", { count: keywordMatchedCount })}
             </div>
           ) : null}
           <div className="max-h-[calc(100%-116px)] space-y-1 overflow-auto pr-1">
             {visibleOptions.map((value) => {
-              const checked = keywordActive ? true : selectedValues.length > 0 ? selectedValues.includes(value) : true;
+              const checked = effectiveSelectedValues.includes(value);
               const title = optionTitles[value] || value;
               const count = optionCounts[value];
               return (
@@ -257,11 +302,10 @@ export function TableColumnFilter({
                   <button
                     type="button"
                     onClick={() => {
-                      const nextValues = selectedValues.length > 0 ? selectedValues : options;
-                      const next = nextValues.includes(value)
-                        ? nextValues.filter((item) => item !== value)
-                        : Array.from(new Set([...nextValues, value]));
-                      onChange(next.length === options.length ? [] : next);
+                      const next = effectiveSelectedValues.includes(value)
+                        ? effectiveSelectedValues.filter((item) => item !== value)
+                        : Array.from(new Set([...effectiveSelectedValues, value]));
+                      updateDraft(next);
                     }}
                     className={`flex h-3.5 w-3.5 items-center justify-center rounded border text-[10px] ${
                       checked ? "border-blue-600 bg-blue-600 text-white" : "border-slate-300 bg-white text-transparent"
@@ -273,6 +317,7 @@ export function TableColumnFilter({
                   <button
                     type="button"
                     onClick={() => {
+                      updateDraft(null);
                       onChange([value]);
                       onClose();
                     }}

@@ -98,6 +98,39 @@ export function accountFilterGroupLabel(type: string, t?: I18nT): string {
   return kindLabel(type, t);
 }
 
+export type AccountTypeSearchSource = {
+  kind?: string | null;
+  investProductType?: string | null;
+};
+
+/**
+ * 账户筛选输入器用的「类型词」（表格表头筛选、账户搜索等）。
+ *
+ * 词只按该账户自己的类型精确生成，不把整份词表拼给每个账户：输入「信用卡」
+ * 命中所有 bank_credit 账户，不会让名字里恰好写着信用卡的借记卡账户多出命中。
+ * 中文兜底与当前界面语言一起给出，切换语言后两种写法都能搜到。
+ */
+export function accountTypeSearchText(source: AccountTypeSearchSource, t?: I18nT): string {
+  const rawKind = source.kind?.trim() ?? "";
+  // 侧边栏等视图会把 investment 细化成 investment_stock，还原大类后才能同时
+  // 命中「投资」和产品类别「股票」；只有产品类型没有 kind 时也按投资账户处理。
+  const baseKind = rawKind
+    ? (rawKind === "investment" || rawKind.startsWith("investment_") ? "investment" : rawKind)
+    : (source.investProductType ? "investment" : "");
+  const groupKey = accountFilterGroupKey({
+    kind: baseKind,
+    investProductType: source.investProductType ?? null,
+  });
+  const terms = new Set<string>();
+  if (baseKind) {
+    terms.add(kindLabel(baseKind));
+    if (t) terms.add(kindLabel(baseKind, t));
+  }
+  terms.add(accountFilterGroupLabel(groupKey));
+  if (t) terms.add(accountFilterGroupLabel(groupKey, t));
+  return Array.from(terms).filter(Boolean).join(" ");
+}
+
 export function kindColor(k: string): string {
   if (k === "bank_credit") return "bg-amber-50 text-amber-700 border-amber-200";
   if (k === "bank_debit") return "bg-slate-50 text-slate-700 border-slate-200";

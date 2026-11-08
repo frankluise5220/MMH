@@ -29,6 +29,7 @@ import { normalizeSameDayOrders, rebaseRunningBalancesAfterSameDayReorder, start
 import { buildLiabilityActivityEditEvent, inferLiabilityMode, isLiabilityActivityEntry, type LiabilityMode } from "@/lib/liability-entry-edit";
 import { resolveAccountProductType, resolveEntryProductType, toBusinessLinkType } from "@/lib/entry-product-type";
 import { parseLoanPrepayStrategy } from "@/lib/loan-prepay-strategy";
+import { accountTypeSearchText } from "@/lib/account-kinds";
 import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT, financeChangeTouchesEntries, type FinanceDataChangedDetail } from "@/lib/client/refresh";
 import { withBasePath } from "@/lib/base-path";
 import {
@@ -840,6 +841,31 @@ export function DetailViewClient({
     return map;
   }, [accountOptions, investmentProductTypeByAccountId]);
   /**
+   * 「账户 / 关联账户」列表头筛选的类型词，按账户 id 预先算好。
+   * hover 标题会按账户显示格式去重，不能保证带类型，所以筛选词里显式补上
+   * kind 与投资产品类别：输入「信用卡 / 贷款 / 股票」命中的是该类型的账户。
+   */
+  const accountTypeFilterTextById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const option of accountOptions) {
+      const text = accountTypeSearchText({
+        kind: option.kind,
+        investProductType: investmentProductTypeByAccountId[option.id] ?? null,
+      }, t);
+      if (text) map.set(option.id, text);
+    }
+    for (const [id, investProductType] of Object.entries(investmentProductTypeByAccountId)) {
+      if (map.has(id) || !investProductType) continue;
+      const text = accountTypeSearchText({ kind: null, investProductType }, t);
+      if (text) map.set(id, text);
+    }
+    return map;
+  }, [accountOptions, investmentProductTypeByAccountId, t]);
+  const accountTypeFilterTextOf = useCallback(
+    (accountId?: string | null) => accountId ? accountTypeFilterTextById.get(accountId) ?? "" : "",
+    [accountTypeFilterTextById],
+  );
+  /**
    * 明细行的业务产品类型（唯一推导入口）。
    * 分类列、类型列、编辑窗分流、关联业务按钮都必须走这里，否则同一行会
    * 「显示成存款取出、双击却打开基金窗」——即用户看到的两种窗口。
@@ -1539,7 +1565,13 @@ export function DetailViewClient({
       filterTitle: (e: DetailEntry) => accountColumnDisplayFallback(e).title,
       filterSearchText: (e: DetailEntry) => {
         const option = accountColumnDisplayFallback(e);
-        return [option.label, option.title, e.accountName, e.toAccountName].filter(Boolean).join(" ");
+        return [
+          option.label,
+          option.title,
+          e.accountName,
+          e.toAccountName,
+          accountTypeFilterTextOf(option.id),
+        ].filter(Boolean).join(" ");
       },
       render: (e: DetailEntry) => {
         const option = accountColumnDisplayFallback(e);
@@ -1734,6 +1766,7 @@ export function DetailViewClient({
           selected.label,
           selected.title,
           related.name,
+          accountTypeFilterTextOf(related.id),
         ].filter(Boolean).join(" ");
       },
       render: (e) => {
@@ -1858,7 +1891,7 @@ export function DetailViewClient({
         </span>
       ),
     },
-  ], [accountColumnDefaultHidden, accountColumnDisplayFallback, resolvedAccountColumnLabel, accountColumnMode, accountDisplayFallback, accountId, accountOptionById, dateDisplayFormat, detailCategoryLabel, detailFlowAmountOf, entryProductTypeOf, flowAccountIdOf, inflowCls, outflowCls, relatedAccountDefaultHidden, relatedAccountTarget, renderNavigableAccountLabel, runningBalanceDefaultHidden, showAccountColumn, showRunningBalance, t]);
+  ], [accountColumnDefaultHidden, accountColumnDisplayFallback, resolvedAccountColumnLabel, accountColumnMode, accountDisplayFallback, accountId, accountOptionById, accountTypeFilterTextOf, dateDisplayFormat, detailCategoryLabel, detailFlowAmountOf, entryProductTypeOf, flowAccountIdOf, inflowCls, outflowCls, relatedAccountDefaultHidden, relatedAccountTarget, renderNavigableAccountLabel, runningBalanceDefaultHidden, showAccountColumn, showRunningBalance, t]);
 
   const customToolbarLeft = toolbarMode === "custom" ? (
     <div className="flex min-w-0 items-center gap-2">
