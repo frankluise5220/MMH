@@ -16,6 +16,7 @@ import {
 import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
 import { useEntryReconcileState } from "@/lib/client/use-entry-reconcile-state";
 import { fetchSettingsAccountData } from "@/lib/client/settingsCache";
+import { useSettingsDataVersion } from "@/lib/client/use-settings-data-version";
 import { amountToneClass as amountClass } from "@/lib/client/colors";
 import {
   AdvancedDataTable,
@@ -709,6 +710,9 @@ export function InsuranceShell({
     void refreshInsuranceData();
   }, [refreshInsuranceData]);
 
+  // Keeping the shell mounted must not freeze the family-member options.
+  const settingsVersion = useSettingsDataVersion("accounts");
+
   useEffect(() => {
     let cancelled = false;
     fetchSettingsAccountData()
@@ -734,7 +738,7 @@ export function InsuranceShell({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [settingsVersion]);
 
   const visibleHoldings = useMemo(
     () =>
