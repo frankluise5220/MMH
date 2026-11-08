@@ -33,6 +33,13 @@ const basePath = (process.env.MMH_BASE_PATH || "").trim().replace(/\/+$/, "");
 
 const nextConfig: NextConfig = {
   output: "standalone",
+  // smb3-client is ESM-only and loaded through a native dynamic import in
+  // src/lib/server/backup-target.ts (a plain import() is rewritten to require()
+  // in CommonJS server chunks). Webpack cannot trace it, so copy the package
+  // into the standalone output explicitly.
+  outputFileTracingIncludes: {
+    "/api/v1/settings/backup/auto": ["./node_modules/smb3-client/**/*"],
+  },
   // 左下角的 dev 浮标（圆形 N）会压在移动端弹窗底部按钮上，实测遮住「保存」文字。
   // 它只在 dev 出现，生产构建不受影响。
   devIndicators: false,

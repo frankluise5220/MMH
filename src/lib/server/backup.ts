@@ -41,6 +41,9 @@ import type { CurrentUser } from "@/lib/server/auth";
 import { logger } from "@/lib/logger";
 import { preferenceRowData } from "@/lib/server/household-preferences";
 import { preferencesFromRow, type PreferenceRow } from "@/lib/preferences";
+import { BACKUP_FORMAT_VERSION } from "@/lib/backup-format";
+
+export { BACKUP_FORMAT_VERSION };
 
 /**
  * 5：备份文件一律 gzip（见 src/lib/server/backup-package.ts）。包内结构未变，
@@ -48,7 +51,6 @@ import { preferencesFromRow, type PreferenceRow } from "@/lib/preferences";
  * 6：系统备份可携带 `households[]`（多账簿）。单账簿包的 `data` 结构一字未改，
  * 因此 5 及更早的包照旧能读，只是没有 `households` 那一段。
  */
-export const BACKUP_FORMAT_VERSION = 6;
 /** 4：密文内容是 gzip 载荷（compress-then-encrypt）；3 及更早是明文 JSON 密文。 */
 const ENCRYPTED_BACKUP_PACKAGE_VERSION = 4;
 const ENCRYPTED_BACKUP_ALGORITHM = "aes-256-gcm";

@@ -8,7 +8,7 @@ import {
   getPathDiskInfo,
   loadAutoBackupConfig,
   loadAutoBackupStatus,
-  probeBackupPath,
+  probeBackupConfig,
   runAutoBackupNow,
   saveAutoBackupConfig,
   saveAutoBackupStatus,
@@ -81,14 +81,10 @@ export async function POST(req: NextRequest) {
   }
 
   const rawConfig = body?.config;
-  const probeTarget =
-    rawConfig && typeof rawConfig === "object" && typeof (rawConfig as Record<string, unknown>).path === "string"
-      ? String((rawConfig as Record<string, unknown>).path)
-      : "";
-  const probe = await probeBackupPath(probeTarget);
+  const probe = await probeBackupConfig(rawConfig);
   if (!probe.ok) {
     return NextResponse.json(
-      { ok: false, code: "BACKUP_PATH_NOT_WRITABLE", error: probe.error },
+      { ok: false, code: probe.code, error: probe.error, data: { dir: probe.dir } },
       { status: 400 },
     );
   }
@@ -128,6 +124,8 @@ async function handleRunNow() {
     return NextResponse.json({ ok: true, data: { result, status } });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    const pathFailure = error as { code?: string; dir?: string } | null;
+    const code = pathFailure?.code === "BACKUP_PATH_NOT_WRITABLE" ? "BACKUP_PATH_NOT_WRITABLE" : "AUTO_BACKUP_FAILED";
     const now = new Date();
     const config = await loadAutoBackupConfig();
     await saveAutoBackupStatus({
@@ -137,8 +135,13 @@ async function handleRunNow() {
       nextRunAt: config.enabled ? computeNextRunAt(config, now, now).toISOString() : null,
     });
     return NextResponse.json(
-      { ok: false, code: "AUTO_BACKUP_FAILED", error: message, data: { status: await loadAutoBackupStatus() } },
-      { status: 500 },
+      {
+        ok: false,
+        code,
+        error: message,
+        data: { dir: pathFailure?.dir, status: await loadAutoBackupStatus() },
+      },
+      { status: code === "BACKUP_PATH_NOT_WRITABLE" ? 400 : 500 },
     );
   }
 }

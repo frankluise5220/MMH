@@ -2,11 +2,12 @@
 import { ModalLayer } from "@/components/ModalLayer";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Download, RotateCcw, Shield, Upload, RefreshCw } from "lucide-react";
+import { ChevronDown, Download, Shield, Upload, RefreshCw } from "lucide-react";
 import { withBasePath } from "@/lib/base-path";
 import {
   SettingsActionButton,
   SettingsEmptyRow,
+  SettingsInfoHint,
   SettingsRowActions,
   SettingsTable,
   SettingsTd,
@@ -32,11 +33,24 @@ import { useI18n } from "@/lib/i18n";
 import SettingsSwitch from "@/components/settings/SettingsSwitch";
 import { CredentialPasswordField } from "@/components/CredentialPasswordField";
 import { RESTORE_UPLOAD_LIMIT_BYTES, RESTORE_UPLOAD_LIMIT_LABEL } from "@/lib/backup-upload-limit";
+import { BACKUP_FORMAT_VERSION, KNOWN_BACKUP_DATA_TABLES } from "@/lib/backup-format";
 import { copyToClipboard } from "@/lib/client/clipboard";
 
 type I18nT = (key: string, params?: Record<string, string | number>) => string;
 
+/** Label with an on-demand explanation: keeps the form compact without losing detail. */
+function AutoBackupFieldLabel({ text, hint }: { text: string; hint?: string }) {
+  return (
+    <div className="flex items-center gap-1 text-xs font-medium text-slate-600">
+      <span>{text}</span>
+      {hint ? <SettingsInfoHint text={hint} /> : null}
+    </div>
+  );
+}
+
 const LEDGER_INVITE_CODE_KEY = "ledger_creation_invite_code";
+
+const KNOWN_BACKUP_TABLE_SET = new Set<string>(KNOWN_BACKUP_DATA_TABLES);
 
 /**
  * Invite-code row plus the redemption verdict computed by the server.
@@ -137,6 +151,27 @@ type RestoreProgressState = {
 };
 
 type AutoBackupFrequencyType = "daily" | "weekly" | "interval";
+type AutoBackupDestination = "local" | "webdav" | "ftp" | "smb";
+
+type AutoBackupRemote = {
+  url: string;
+  port: number;
+  username: string;
+  password: string;
+  directory: string;
+  secure: boolean;
+  domain: string;
+};
+
+const DEFAULT_AUTO_BACKUP_REMOTE: AutoBackupRemote = {
+  url: "",
+  port: 21,
+  username: "",
+  password: "",
+  directory: "",
+  secure: true,
+  domain: "",
+};
 
 type AutoBackupConfig = {
   enabled: boolean;
@@ -146,6 +181,8 @@ type AutoBackupConfig = {
   everyHours: number;
   scope: "system" | "household";
   path: string;
+  destination: AutoBackupDestination;
+  remote: AutoBackupRemote;
   passphrase: string;
   keepCount: number;
 };
@@ -165,8 +202,10 @@ type AutoBackupDiskInfo = {
 
 type AutoBackupResponse = {
   ok?: boolean;
+  code?: string;
   error?: string;
   data?: {
+    dir?: string;
     config?: AutoBackupConfig;
     status?: AutoBackupStatus;
     capabilities?: {
@@ -690,6 +729,8 @@ export default function DatabaseSettingsPage() {
   const [backupOptionsDialogOpen, setBackupOptionsDialogOpen] = useState(false);
 
   const [restoreFile, setRestoreFile] = useState<File | null>(null);
+  const [restoreFormatVersion, setRestoreFormatVersion] = useState(0);
+  const [restoreUnknownTables, setRestoreUnknownTables] = useState<string[]>([]);
   const [restoreUserPassword, setRestoreUserPassword] = useState("");
   const [restorePassphrase, setRestorePassphrase] = useState("");
   const [restoreBackupScope, setRestoreBackupScope] = useState<"system" | "household" | null>(null);
@@ -731,10 +772,6 @@ export default function DatabaseSettingsPage() {
 
   const canBackup = !backuping && !tableExporting && !restoring;
   const canTableExport = !backuping && !tableExporting && !restoring;
-  const canRestore = useMemo(
-    () => Boolean(restoreFile) && !restoring,
-    [restoreFile, restoring],
-  );
   const sortedLedgerInviteRecords = useMemo(
     () => [...ledgerInviteRecords].sort((a, b) => {
       if (Boolean(a.usedAt) !== Boolean(b.usedAt)) return a.usedAt ? 1 : -1;
@@ -804,6 +841,27 @@ export default function DatabaseSettingsPage() {
     };
   }, []);
 
+  function updateAutoBackupRemote(patch: Partial<AutoBackupRemote>) {
+    setAutoBackup((prev) => (prev ? { ...prev, remote: { ...prev.remote, ...patch } } : prev));
+    setAutoBackupDisk(null);
+  }
+
+  function autoBackupApiError(
+    data: AutoBackupResponse | null,
+    status: number,
+    fallbackKey: string,
+    pathFallback: string,
+  ): string {
+    if (data?.code === "BACKUP_PATH_NOT_WRITABLE") {
+      const remote = autoBackup?.destination && autoBackup.destination !== "local";
+      return t(remote ? "settings.autoBackup.remoteNotWritable" : "settings.autoBackup.pathNotWritable", {
+        path: data.data?.dir || pathFallback || "…",
+        error: data.error ?? "",
+      });
+    }
+    return data?.error ?? t(fallbackKey, { error: String(status) });
+  }
+
   async function loadAutoBackupSettings() {
     setAutoBackupLoading(true);
     setAutoBackupError("");
@@ -828,7 +886,9 @@ export default function DatabaseSettingsPage() {
           weekday: config.weekday,
           everyHours: config.everyHours,
           scope: systemSupported ? config.scope : "household",
-          path: config.path,
+          path: config.path ?? "",
+          destination: config.destination ?? "local",
+          remote: { ...DEFAULT_AUTO_BACKUP_REMOTE, ...(config.remote ?? {}) },
           passphrase: config.passphrase ?? "",
           keepCount: config.keepCount,
         });
@@ -841,6 +901,8 @@ export default function DatabaseSettingsPage() {
           everyHours: 24,
           scope: systemSupported ? "system" : "household",
           path: "",
+          destination: "local",
+          remote: { ...DEFAULT_AUTO_BACKUP_REMOTE },
           passphrase: "",
           keepCount: 7,
         });
@@ -866,7 +928,7 @@ export default function DatabaseSettingsPage() {
       });
       const data = await res.json().catch(() => null) as AutoBackupResponse | null;
       if (!res.ok || !data?.ok || !data.data) {
-        throw new Error(data?.error ?? t("settings.autoBackup.saveFailed", { error: String(res.status) }));
+        throw new Error(autoBackupApiError(data, res.status, "settings.autoBackup.saveFailed", autoBackup.path || autoBackupDefaultDir));
       }
       const saved = data.data.config;
       if (saved) {
@@ -890,7 +952,7 @@ export default function DatabaseSettingsPage() {
       const res = await fetch("/api/v1/settings/backup/auto?action=run-now", { method: "POST" });
       const data = await res.json().catch(() => null) as AutoBackupResponse | null;
       if (!res.ok || !data?.ok) {
-        throw new Error(data?.error ?? t("settings.autoBackup.runNowFailed", { error: String(res.status) }));
+        throw new Error(autoBackupApiError(data, res.status, "settings.autoBackup.runNowFailed", autoBackup?.path || autoBackupDefaultDir));
       }
       setAutoBackupStatus(data.data?.status ?? null);
       const files = data.data?.result?.files;
@@ -1306,27 +1368,51 @@ export default function DatabaseSettingsPage() {
     }
   }
 
+  /**
+   * 包文件从格式 5 起一律 gzip（明文 JSON 只有 formatVersion ≤ 4 的老包）。
+   * 客户端没有 node:zlib，用浏览器 DecompressionStream 解压后才能读 payload；
+   * 环境不支持或包损坏时返回 null，调用方按「读不到」处理，不误报。
+   */
+  type BackupPackagePreview = {
+    scope?: { backupScope?: unknown; container?: unknown };
+    encrypted?: unknown;
+    encryption?: { keySource?: unknown };
+    formatVersion?: unknown;
+    data?: { [key: string]: unknown };
+  };
+
+  async function readBackupPackagePayload(file: File): Promise<BackupPackagePreview | null> {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    const isGzip = bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b;
+    if (!isGzip) return JSON.parse(new TextDecoder().decode(bytes)) as BackupPackagePreview;
+    if (typeof DecompressionStream === "undefined") return null;
+    const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
+    return JSON.parse(await new Response(stream).text()) as BackupPackagePreview;
+  }
+
   async function inspectBackupFile(file: File): Promise<{
     scope: "system" | "household";
     container: "sqlite-snapshot" | null;
     encryption: "passphrase" | "system" | "plain" | null;
+    formatVersion: number;
+    unknownTables: string[];
   }> {
+    const fallback = { scope: "system" as const, container: null, encryption: null, formatVersion: 0, unknownTables: [] };
     try {
-      const text = await file.text();
-      const parsed = JSON.parse(text) as {
-        scope?: { backupScope?: unknown; container?: unknown };
-        encrypted?: unknown;
-        encryption?: { keySource?: unknown };
-      };
+      const parsed = await readBackupPackagePayload(file);
+      if (!parsed) return fallback;
       const encrypted = parsed?.encrypted === true;
       const keySource = typeof parsed?.encryption?.keySource === "string" ? parsed.encryption.keySource : "";
+      const dataKeys = parsed?.data ? Object.keys(parsed.data) : [];
       return {
         scope: parsed?.scope?.backupScope === "household" ? "household" : "system",
         container: parsed?.scope?.container === "sqlite-snapshot" ? "sqlite-snapshot" : null,
         encryption: !encrypted ? "plain" : keySource === "passphrase" ? "passphrase" : "system",
+        formatVersion: Number(parsed?.formatVersion ?? 0),
+        unknownTables: dataKeys.filter((key) => !KNOWN_BACKUP_TABLE_SET.has(key)),
       };
     } catch {
-      return { scope: "system", container: null, encryption: null };
+      return fallback;
     }
   }
 
@@ -1338,11 +1424,14 @@ export default function DatabaseSettingsPage() {
     setRestoreBackupScope(inspection?.scope ?? null);
     setRestoreBackupContainer(inspection?.container ?? null);
     setRestoreBackupEncryption(inspection?.encryption ?? null);
+    setRestoreFormatVersion(inspection?.formatVersion ?? 0);
+    setRestoreUnknownTables(inspection?.unknownTables ?? []);
     setRestoreConfirmSystemOverwrite(false);
     setRestoreOptionsDialogOpen(false);
     setRestoreError("");
     setRestoreMessage("");
     setRestoreProgress(RESTORE_PROGRESS_IDLE);
+    if (nextFile) openRestoreOptionsDialog(nextFile);
   }
 
   async function pickRestoreFile() {
@@ -1365,8 +1454,8 @@ export default function DatabaseSettingsPage() {
     }
   }
 
-  function openRestoreOptionsDialog() {
-    if (!restoreFile) {
+  function openRestoreOptionsDialog(file?: File | null) {
+    if (!file && !restoreFile) {
       setRestoreError(t("settings.database.selectBackupFile"));
       return;
     }
@@ -1422,7 +1511,11 @@ export default function DatabaseSettingsPage() {
       const summaryText = counts
         ? t("settings.database.restoreSummary", { accounts: counts.accounts ?? 0, transactions: counts.transactions ?? 0, categories: counts.categories ?? 0, institutions: counts.institutions ?? 0 })
         : t("settings.database.restoreDone");
-      setRestoreMessage(`${summaryText} ${t("settings.database.pageWillRefresh")}`);
+      const skippedTables =
+        restoreUnknownTables.length > 0
+          ? ` ${t("settings.database.restoreSkippedTables", { tables: restoreUnknownTables.join(", ") })}`
+          : "";
+      setRestoreMessage(`${summaryText} ${t("settings.database.pageWillRefresh")}${skippedTables}`);
       setRestoreOptionsDialogOpen(false);
       setRestoreUserPassword("");
       setRestorePassphrase("");
@@ -1560,7 +1653,7 @@ export default function DatabaseSettingsPage() {
               className="inline-flex h-9 w-32 items-center justify-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-50"
             >
               <Upload className="h-4 w-4 shrink-0" />
-              {t("settings.database.selectBackup")}
+              {restoring ? t("settings.database.restoring") : t("settings.database.restoreBackup")}
             </button>
             <input
               ref={restoreFileInputRef}
@@ -1571,15 +1664,6 @@ export default function DatabaseSettingsPage() {
                 void applyRestoreFile(event.target.files?.[0] ?? null);
               }}
             />
-            <button
-              type="button"
-              onClick={openRestoreOptionsDialog}
-              disabled={!canRestore}
-              className="inline-flex h-9 w-32 items-center justify-center gap-2 rounded-md bg-red-600 px-3 text-sm text-white hover:bg-red-700 disabled:opacity-50"
-            >
-              <RotateCcw className="h-4 w-4" />
-              {restoring ? t("settings.database.restoring") : t("settings.database.startRestore")}
-            </button>
           </div>
         </div>
       </section>
@@ -1715,7 +1799,10 @@ export default function DatabaseSettingsPage() {
             </div>
 
             <div className="sm:col-span-2">
-              <div className="text-xs font-medium text-slate-600">{t("settings.autoBackup.passphrase")}</div>
+              <AutoBackupFieldLabel
+                text={t("settings.autoBackup.passphrase")}
+                hint={t("settings.autoBackup.passphraseHint")}
+              />
               <input
                 type="password"
                 value={autoBackup.passphrase}
@@ -1727,39 +1814,209 @@ export default function DatabaseSettingsPage() {
                 autoComplete="off"
                 className="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700"
               />
-              <div className="mt-1 text-[11px] text-slate-400">{t("settings.autoBackup.passphraseHint")}</div>
             </div>
 
-            <div>
-              <div className="text-xs font-medium text-slate-600">{t("settings.autoBackup.path")}</div>
-              <input
-                type="text"
-                value={autoBackup.path}
-                placeholder={t("settings.autoBackup.pathPlaceholder")}
+            <div className="sm:col-span-2">
+              <AutoBackupFieldLabel
+                text={t("settings.autoBackup.destination")}
+                hint={t("settings.autoBackup.destinationHint")}
+              />
+              <select
+                value={autoBackup.destination}
                 onChange={(event) => {
-                  setAutoBackup((prev) => (prev ? { ...prev, path: event.target.value } : prev));
+                  const destination = event.target.value as AutoBackupDestination;
+                  setAutoBackup((prev) => {
+                    if (!prev) return prev;
+                    const port = destination === "smb" ? 445 : destination === "ftp" ? 21 : prev.remote.port;
+                    return { ...prev, destination, remote: { ...prev.remote, port } };
+                  });
                   setAutoBackupDisk(null);
                 }}
                 className="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700"
-              />
-              <div className="mt-1 truncate text-[11px] text-slate-400" title={autoBackupDefaultDir}>
-                {t("settings.autoBackup.defaultDir", { path: autoBackupDefaultDir || "…" })}
-              </div>
-              <div className="mt-1 text-[11px] text-amber-700">{t("settings.autoBackup.pathHint")}</div>
-              {autoBackupDisk?.free ? (
-                <div className="mt-1 text-[11px] text-slate-500">
-                  {t("settings.autoBackup.diskSpace", { free: autoBackupDisk.free })}
-                </div>
-              ) : null}
-              {autoBackupDisk?.freeBytes !== undefined && autoBackupDisk.freeBytes < 2 * 1024 * 1024 * 1024 ? (
-                <div className="mt-1 rounded-md bg-amber-50 px-2 py-1 text-[11px] text-amber-800">
-                  {t("settings.autoBackup.diskSpaceLow", { free: autoBackupDisk.free ?? "" })}
-                </div>
-              ) : null}
+              >
+                <option value="local">{t("settings.autoBackup.destination.local")}</option>
+                <option value="webdav">{t("settings.autoBackup.destination.webdav")}</option>
+                <option value="ftp">{t("settings.autoBackup.destination.ftp")}</option>
+                <option value="smb">{t("settings.autoBackup.destination.smb")}</option>
+              </select>
             </div>
 
+            {autoBackup.destination === "local" ? (
+              <div className="sm:col-span-2">
+                <AutoBackupFieldLabel text={t("settings.autoBackup.path")} hint={t("settings.autoBackup.tip.path")} />
+                <input
+                  type="text"
+                  value={autoBackup.path}
+                  placeholder={t("settings.autoBackup.pathPlaceholder")}
+                  onChange={(event) => {
+                    setAutoBackup((prev) => (prev ? { ...prev, path: event.target.value } : prev));
+                    setAutoBackupDisk(null);
+                  }}
+                  className="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700"
+                />
+                <div className="mt-1 truncate text-[11px] text-slate-400" title={autoBackupDefaultDir}>
+                  {t("settings.autoBackup.defaultDir", { path: autoBackupDefaultDir || "…" })}
+                </div>
+                {autoBackupDisk?.free ? (
+                  <div className="mt-1 text-[11px] text-slate-500">
+                    {t("settings.autoBackup.diskSpace", { free: autoBackupDisk.free })}
+                  </div>
+                ) : null}
+                {autoBackupDisk?.freeBytes !== undefined && autoBackupDisk.freeBytes < 2 * 1024 * 1024 * 1024 ? (
+                  <div className="mt-1 rounded-md bg-amber-50 px-2 py-1 text-[11px] text-amber-800">
+                    {t("settings.autoBackup.diskSpaceLow", { free: autoBackupDisk.free ?? "" })}
+                  </div>
+                ) : null}
+              </div>
+            ) : (
+              <>
+                <div>
+                  <AutoBackupFieldLabel
+                    text={t("settings.autoBackup.remote.url")}
+                    hint={t(`settings.autoBackup.tip.url.${autoBackup.destination}`)}
+                  />
+                  <input
+                    type="text"
+                    value={autoBackup.remote.url}
+                    placeholder={
+                      autoBackup.destination === "webdav"
+                        ? t("settings.autoBackup.remote.urlPlaceholder.webdav")
+                        : autoBackup.destination === "smb"
+                          ? t("settings.autoBackup.remote.urlPlaceholder.smb")
+                          : t("settings.autoBackup.remote.urlPlaceholder.ftp")
+                    }
+                    onChange={(event) => updateAutoBackupRemote({ url: event.target.value })}
+                    autoComplete="off"
+                    className="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700"
+                  />
+                </div>
+                <div>
+                  <AutoBackupFieldLabel
+                    text={t("settings.autoBackup.remote.directory")}
+                    hint={t(`settings.autoBackup.tip.directory.${autoBackup.destination}`)}
+                  />
+                  <input
+                    type="text"
+                    value={autoBackup.remote.directory}
+                    placeholder={
+                      autoBackup.destination === "smb"
+                        ? t("settings.autoBackup.remote.directoryPlaceholder.smb")
+                        : t("settings.autoBackup.remote.directoryPlaceholder")
+                    }
+                    onChange={(event) => updateAutoBackupRemote({ directory: event.target.value })}
+                    className="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700"
+                  />
+                </div>
+                <div>
+                  <AutoBackupFieldLabel
+                    text={t("settings.autoBackup.remote.username")}
+                    hint={t("settings.autoBackup.tip.username")}
+                  />
+                  <input
+                    type="text"
+                    value={autoBackup.remote.username}
+                    onChange={(event) => updateAutoBackupRemote({ username: event.target.value })}
+                    autoComplete="off"
+                    className="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700"
+                  />
+                </div>
+                <div>
+                  <AutoBackupFieldLabel
+                    text={t("settings.autoBackup.remote.password")}
+                    hint={t("settings.autoBackup.tip.password")}
+                  />
+                  <input
+                    type="password"
+                    value={autoBackup.remote.password}
+                    onChange={(event) => updateAutoBackupRemote({ password: event.target.value })}
+                    autoComplete="off"
+                    className="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700"
+                  />
+                </div>
+              </>
+            )}
+
+            <details className="group rounded-md border border-slate-200 bg-slate-50/60 px-3 py-2 sm:col-span-2">
+              <summary className="flex cursor-pointer list-none items-center justify-between text-xs font-medium text-slate-600">
+                <span>{t("settings.autoBackup.advanced")}</span>
+                <ChevronDown className="h-3.5 w-3.5 text-slate-400 transition-transform group-open:rotate-180" />
+              </summary>
+              <div className="mt-3 space-y-3 border-t border-slate-200 pt-3">
+                {autoBackup.destination !== "local" ? (
+                  <div>
+                    <div className="text-[11px] font-medium text-slate-600">{t("settings.autoBackup.advancedFields")}</div>
+                    <div className="mt-2 grid gap-3 sm:grid-cols-2">
+                      {autoBackup.destination === "ftp" || autoBackup.destination === "smb" ? (
+                        <div>
+                          <AutoBackupFieldLabel
+                            text={t("settings.autoBackup.remote.port")}
+                            hint={t("settings.autoBackup.tip.port")}
+                          />
+                          <input
+                            type="number"
+                            min={1}
+                            max={65535}
+                            value={autoBackup.remote.port}
+                            onChange={(event) => updateAutoBackupRemote({ port: Number(event.target.value) })}
+                            className="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700"
+                          />
+                        </div>
+                      ) : null}
+                      {autoBackup.destination === "smb" ? (
+                        <div>
+                          <AutoBackupFieldLabel
+                            text={t("settings.autoBackup.remote.domain")}
+                            hint={t("settings.autoBackup.tip.domain")}
+                          />
+                          <input
+                            type="text"
+                            value={autoBackup.remote.domain}
+                            placeholder={t("settings.autoBackup.remote.domainPlaceholder")}
+                            onChange={(event) => updateAutoBackupRemote({ domain: event.target.value })}
+                            autoComplete="off"
+                            className="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700"
+                          />
+                        </div>
+                      ) : null}
+                      {autoBackup.destination !== "smb" ? (
+                        <div className="flex items-center gap-2 sm:col-span-2">
+                          <input
+                            id="auto-backup-secure"
+                            type="checkbox"
+                            checked={autoBackup.remote.secure}
+                            onChange={(event) => updateAutoBackupRemote({ secure: event.target.checked })}
+                            className="h-4 w-4 rounded border-slate-300"
+                          />
+                          <label htmlFor="auto-backup-secure" className="text-xs text-slate-600">
+                            {t("settings.autoBackup.remote.secure")}
+                          </label>
+                          <SettingsInfoHint text={t("settings.autoBackup.tip.secure")} />
+                        </div>
+                      ) : null}
+                    </div>
+                  </div>
+                ) : null}
+                <div>
+                  <div className="text-[11px] font-medium text-slate-600">{t("settings.autoBackup.guideTitle")}</div>
+                  <p className="mt-1 whitespace-pre-line text-[11px] leading-relaxed text-slate-500">
+                    {autoBackup.destination === "local"
+                      ? t("settings.autoBackup.pathHint")
+                      : t(`settings.autoBackup.guide.${autoBackup.destination}`)}
+                  </p>
+                  {autoBackup.destination !== "local" ? (
+                    <p className="mt-2 whitespace-pre-line text-[11px] leading-relaxed text-slate-500">
+                      {t("settings.autoBackup.remote.hint")}
+                    </p>
+                  ) : null}
+                </div>
+              </div>
+            </details>
+
             <div>
-              <div className="text-xs font-medium text-slate-600">{t("settings.autoBackup.keepCount")}</div>
+              <AutoBackupFieldLabel
+                text={t("settings.autoBackup.keepCount")}
+                hint={t("settings.autoBackup.keepCountHint")}
+              />
               <input
                 type="number"
                 min={1}
@@ -1771,7 +2028,6 @@ export default function DatabaseSettingsPage() {
                 }}
                 className="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700"
               />
-              <div className="mt-1 text-[11px] text-slate-400">{t("settings.autoBackup.keepCountHint")}</div>
             </div>
           </div>
         ) : null}
@@ -1961,6 +2217,20 @@ export default function DatabaseSettingsPage() {
                   ? t("settings.database.householdSnapshotDetected")
                   : t("settings.database.householdBackupDetected")}
             </div>
+            {restoreFormatVersion > BACKUP_FORMAT_VERSION ? (
+              <div className="mt-2 rounded-md bg-amber-50 px-2 py-1 text-[11px] text-amber-800">
+                {t("settings.database.restoreNewerFormatWarning", {
+                  format: restoreFormatVersion,
+                  current: BACKUP_FORMAT_VERSION,
+                })}
+              </div>
+            ) : null}
+            {restoreUnknownTables.length > 0 ? (
+              <div className="mt-2 rounded-md bg-amber-50 px-2 py-1 text-[11px] text-amber-800">
+                <div>{t("settings.database.restoreUnknownTablesWarning", { tables: restoreUnknownTables.join(", ") })}</div>
+                <div className="mt-1">{t("settings.database.restoreUnknownTablesHint")}</div>
+              </div>
+            ) : null}
             {restoreBackupEncryption === "passphrase" ? (
               <div className="mt-2 rounded-md bg-amber-50 px-2 py-1 text-[11px] text-amber-800">
                 {t("settings.database.backupEncryptedDetected")}

@@ -25,6 +25,7 @@ const read = (file) => fs.readFileSync(path.join(root, file), "utf8");
 
 const packageSource = read("src/lib/server/backup-package.ts");
 const backupSource = read("src/lib/server/backup.ts");
+const backupFormatSource = read("src/lib/backup-format.ts");
 const routeSource = read("src/app/api/v1/settings/backup/route.ts");
 const autoBackupSource = read("src/lib/server/auto-backup.ts");
 const caizhiSource = read("src/lib/importers/caizhi/export.ts");
@@ -54,9 +55,42 @@ expect(
 );
 
 // 2. 格式版本
-const versionMatch = /export const BACKUP_FORMAT_VERSION = (\d+)/.exec(backupSource);
+const versionMatch =
+  /export const BACKUP_FORMAT_VERSION = (\d+)/.exec(backupFormatSource) ??
+  /export const BACKUP_FORMAT_VERSION = (\d+)/.exec(backupSource);
 const version = versionMatch ? Number(versionMatch[1]) : 0;
 expect(version >= 6, `BACKUP_FORMAT_VERSION 必须 ≥ 6（当前 ${version}）：5 起包文件一律 gzip，6 起系统备份可携带 households[]，改格式必须抬版本号。`);
+
+// 2d. 恢复确认弹窗要向用户点名「包里有、当前版本不认识」的表，因此客户端的
+// KNOWN_BACKUP_DATA_TABLES 必须与服务端 parseBackupPayload 显式解析的键完全一致。
+const parserStart = backupSource.indexOf("export function parseBackupPayload");
+const parserEnd = backupSource.indexOf("async function restoreSingleHouseholdBackup", parserStart);
+expect(
+  parserStart >= 0 && parserEnd > parserStart,
+  "backup.ts 必须导出 parseBackupPayload，且其后紧跟 restoreSingleHouseholdBackup（清单断言依赖这个顺序）。",
+);
+const knownTablesStart = backupFormatSource.indexOf("KNOWN_BACKUP_DATA_TABLES = [");
+const knownTablesEnd = backupFormatSource.indexOf("] as const", knownTablesStart);
+expect(
+  knownTablesStart >= 0 && knownTablesEnd > knownTablesStart,
+  "backup-format.ts 必须导出 KNOWN_BACKUP_DATA_TABLES 数组。",
+);
+const parserKeys = new Set(
+  [...backupSource.slice(parserStart, parserEnd).matchAll(/\bdata\.([A-Za-z]+)/g)].map((match) => match[1]),
+);
+const knownTables = new Set(
+  [...backupFormatSource.slice(knownTablesStart, knownTablesEnd).matchAll(/"([A-Za-z]+)"/g)].map((match) => match[1]),
+);
+const missingFromClient = [...parserKeys].filter((key) => !knownTables.has(key));
+const unknownToServer = [...knownTables].filter((key) => !parserKeys.has(key));
+expect(
+  missingFromClient.length === 0,
+  `KNOWN_BACKUP_DATA_TABLES 缺少 parseBackupPayload 认识的键：${missingFromClient.join(", ")}。`,
+);
+expect(
+  unknownToServer.length === 0,
+  `KNOWN_BACKUP_DATA_TABLES 含有 parseBackupPayload 不解析的键（客户端会误报未识别数据）：${unknownToServer.join(", ")}。`,
+);
 
 // 2b. 系统备份必须带上全部账簿：只带当前账簿等于「换机时其余账簿没备份」。
 expect(

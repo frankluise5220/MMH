@@ -1,6 +1,3 @@
-import crypto from "node:crypto";
-import fs from "node:fs";
-import path from "node:path";
 import { prisma } from "@/lib/db/prisma";
 import { logger } from "@/lib/logger";
 import {
@@ -10,8 +7,24 @@ import {
   encryptBackupPayload,
 } from "@/lib/server/backup";
 import { encodeBackupPackage } from "@/lib/server/backup-package";
+import {
+  DEFAULT_REMOTE_BACKUP_SETTINGS,
+  asBackupPathFailure,
+  createBackupTarget,
+  describeBackupTarget,
+  normalizeRemoteBackupSettings,
+  type BackupDestination,
+  type BackupFileInfo,
+  type BackupPathFailure,
+  type BackupTarget,
+  type DiskInfo,
+  type RemoteBackupSettings,
+} from "@/lib/server/backup-target";
 import { createSqliteSnapshotBuffer, isSqliteFileDatabase } from "@/lib/server/sqlite-snapshot";
 import { readJsonSystemSetting, writeJsonSystemSetting } from "@/lib/server/system-setting";
+
+export { defaultAutoBackupDir, formatDiskBytes, getPathDiskInfo } from "@/lib/server/backup-target";
+export type { BackupDestination, RemoteBackupSettings } from "@/lib/server/backup-target";
 
 /**
  * Server-side automatic backup (NAS / Docker / desktop).
@@ -43,8 +56,12 @@ export type AutoBackupConfig = {
   everyHours: number;
   /** "system" = whole-database snapshot (SQLite only); "household" = one encrypted package per household */
   scope: "system" | "household";
-  /** target directory on the server; empty string resolves to defaultAutoBackupDir() */
+  /** local directory on the server; empty string resolves to defaultAutoBackupDir() */
   path: string;
+  /** where packages are written: a local directory, WebDAV or FTP */
+  destination: BackupDestination;
+  /** network target settings; ignored when destination = "local" */
+  remote: RemoteBackupSettings;
   /** optional passphrase for portable encrypted backups; empty uses the system key */
   passphrase: string;
   /** how many most recent backup files to keep (1..100) */
@@ -71,6 +88,8 @@ const DEFAULT_CONFIG: AutoBackupConfig = {
   everyHours: 24,
   scope: "system",
   path: "",
+  destination: "local",
+  remote: DEFAULT_REMOTE_BACKUP_SETTINGS,
   passphrase: "",
   keepCount: 7,
 };
@@ -90,6 +109,8 @@ function normalizeAutoBackupConfig(raw: unknown): AutoBackupConfig {
   if (!Number.isInteger(everyHours) || everyHours < 1 || everyHours > 720) everyHours = DEFAULT_CONFIG.everyHours;
   let keepCount = Number(obj.keepCount ?? DEFAULT_CONFIG.keepCount);
   if (!Number.isInteger(keepCount) || keepCount < 1 || keepCount > 100) keepCount = DEFAULT_CONFIG.keepCount;
+  const destination: BackupDestination =
+    obj.destination === "webdav" || obj.destination === "ftp" || obj.destination === "smb" ? obj.destination : "local";
   return {
     enabled: obj.enabled === true,
     frequencyType,
@@ -98,81 +119,44 @@ function normalizeAutoBackupConfig(raw: unknown): AutoBackupConfig {
     everyHours,
     scope: obj.scope === "system" ? "system" : "household",
     path: String(obj.path ?? "").trim(),
+    destination,
+    remote: normalizeRemoteBackupSettings(obj.remote),
     passphrase: String(obj.passphrase ?? "").trim(),
     keepCount,
   };
 }
 
-export function defaultAutoBackupDir(): string {
-  const dataDir = process.env.MMH_DATA_DIR || path.join(process.cwd(), "data");
-  return path.join(dataDir, "backups");
-}
-
-type DiskInfo = {
-  freeBytes: number;
-  totalBytes: number;
-};
-
-function nearestExistingDir(target: string): string {
-  let current = path.resolve(target);
-  for (let i = 0; i < 64; i++) {
-    try {
-      if (fs.statSync(current).isDirectory()) return current;
-    } catch {
-      // keep walking up
-    }
-    const parent = path.dirname(current);
-    if (parent === current) return current;
-    current = parent;
-  }
-  return current;
-}
-
-export async function getPathDiskInfo(target: string): Promise<DiskInfo | null> {
-  try {
-    const stats = await fs.promises.statfs(nearestExistingDir(target));
-    return {
-      freeBytes: Number(stats.bavail ?? stats.bfree) * Number(stats.bsize),
-      totalBytes: Number(stats.blocks) * Number(stats.bsize),
-    };
-  } catch {
-    return null;
-  }
-}
-
-export function formatDiskBytes(bytes: number): string {
-  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB", "TB"];
-  let value = bytes;
-  let unit = 0;
-  while (value >= 1024 && unit < units.length - 1) {
-    value /= 1024;
-    unit += 1;
-  }
-  return `${value >= 100 ? Math.round(value) : value.toFixed(1)} ${units[unit]}`;
-}
+export type BackupPathProbeResult =
+  | { ok: true; dir: string; disk: DiskInfo | null }
+  | { ok: false; dir: string; error: string; code: string };
 
 /**
- * Verifies that a backup directory can be created and written to, and returns
- * the free space of the disk it lives on. Used before saving the config so a
- * bad path (unwritable, no such mount) is rejected at save time instead of at
- * 3am during a scheduled run.
+ * Verifies that the configured destination can be reached and written to, and
+ * returns the free space of a local disk when available. Used before saving the
+ * config so a bad path / bad credentials are rejected at save time instead of
+ * at 3am during a scheduled run.
  */
-export async function probeBackupPath(
-  target: string,
-): Promise<{ ok: true; dir: string; disk: DiskInfo | null } | { ok: false; error: string }> {
-  const dir = target || defaultAutoBackupDir();
-  const probeFile = path.join(dir, `.mmh-probe-${crypto.randomUUID()}.tmp`);
+export async function probeBackupConfig(raw: unknown): Promise<BackupPathProbeResult> {
+  const config = normalizeAutoBackupConfig(raw);
+  const dir = describeBackupTarget(config);
   try {
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(probeFile, "", { mode: 0o600 });
-    fs.rmSync(probeFile, { force: true });
-    const disk = await getPathDiskInfo(dir);
-    return { ok: true, dir, disk };
+    const target = createBackupTarget(config);
+    await target.probe();
+    return { ok: true, dir: target.location, disk: await target.disk() };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    return { ok: false, error: message };
+    const failure = asBackupPathFailure(dir, error);
+    return {
+      ok: false,
+      dir,
+      error: failure.message,
+      code: (failure as BackupPathFailure).code ?? "BACKUP_PATH_NOT_WRITABLE",
+    };
   }
+}
+
+/** Backwards-compatible probe for a plain local directory. */
+export async function probeBackupPath(target: string): Promise<BackupPathProbeResult> {
+  return probeBackupConfig({ path: target });
 }
 
 export async function loadAutoBackupConfig(): Promise<AutoBackupConfig> {
@@ -247,29 +231,24 @@ function backupFileName(name: string, exportedAt: Date): string {
   return buildBackupFileName(name, exportedAt, "mmh-backup");
 }
 
-function cleanupOldBackups(targetDir: string, keepCount: number): void {
-  let entries: fs.Dirent[] = [];
-  try {
-    entries = fs.readdirSync(targetDir, { withFileTypes: true });
-  } catch {
-    return;
-  }
-  const backups = entries
-    .filter((entry) => entry.isFile() && /\.(?:mmh-backup|mmhbackup)$/i.test(entry.name))
-    .map((entry) => {
-      let mtime = 0;
-      try {
-        mtime = fs.statSync(path.join(targetDir, entry.name)).mtimeMs;
-      } catch {
-        mtime = 0;
-      }
-      return { name: entry.name, mtime };
-    })
-    .sort((a, b) => b.mtime - a.mtime);
+const BACKUP_FILE_RE = /\.(?:mmh-backup|mmhbackup)$/i;
 
+async function listBackupFiles(target: BackupTarget): Promise<BackupFileInfo[]> {
+  try {
+    const files = await target.list();
+    return files
+      .filter((file) => BACKUP_FILE_RE.test(file.name))
+      .sort((a, b) => b.mtimeMs - a.mtimeMs || b.name.localeCompare(a.name));
+  } catch {
+    return [];
+  }
+}
+
+async function cleanupOldBackups(target: BackupTarget, keepCount: number): Promise<void> {
+  const backups = await listBackupFiles(target);
   for (const stale of backups.slice(keepCount)) {
     try {
-      fs.rmSync(path.join(targetDir, stale.name));
+      await target.remove(stale.name);
       logger.info(`auto backup pruned stale file: ${stale.name}`, "auto-backup");
     } catch {
       // Best-effort cleanup; a locked file must not break the backup run.
@@ -277,29 +256,18 @@ function cleanupOldBackups(targetDir: string, keepCount: number): void {
   }
 }
 
-function getLatestAutoBackupFileMtime(targetDir: string): Date | null {
-  let entries: fs.Dirent[] = [];
-  try {
-    entries = fs.readdirSync(targetDir, { withFileTypes: true });
-  } catch {
-    return null;
-  }
-
-  let latest = 0;
-  for (const entry of entries) {
-    if (!entry.isFile() || !/\.(?:mmh-backup|mmhbackup)$/i.test(entry.name)) continue;
-    try {
-      const mtime = fs.statSync(path.join(targetDir, entry.name)).mtimeMs;
-      if (Number.isFinite(mtime) && mtime > latest) latest = mtime;
-    } catch {
-      // Ignore files that disappear while scanning the backup directory.
-    }
-  }
+async function getLatestAutoBackupFileMtime(target: BackupTarget): Promise<Date | null> {
+  const backups = await listBackupFiles(target);
+  const latest = backups.reduce((max, file) => (Number.isFinite(file.mtimeMs) ? Math.max(max, file.mtimeMs) : max), 0);
   return latest > 0 ? new Date(latest) : null;
 }
 
-function isAutoBackupFileStale(targetDir: string, now: Date, staleMs = WINDOWS_STARTUP_BACKUP_STALE_MS): boolean {
-  const latest = getLatestAutoBackupFileMtime(targetDir);
+async function isAutoBackupFileStale(
+  target: BackupTarget,
+  now: Date,
+  staleMs = WINDOWS_STARTUP_BACKUP_STALE_MS,
+): Promise<boolean> {
+  const latest = await getLatestAutoBackupFileMtime(target);
   if (!latest) return true;
   return now.getTime() - latest.getTime() >= staleMs;
 }
@@ -321,8 +289,7 @@ export async function runAutoBackupNow(
     return { scope: resolved.scope, files: [] };
   }
 
-  const targetDir = resolved.path || defaultAutoBackupDir();
-  fs.mkdirSync(targetDir, { recursive: true });
+  const target = createBackupTarget(resolved);
   const exportedAt = new Date();
   const files: string[] = [];
 
@@ -343,7 +310,7 @@ export async function runAutoBackupNow(
       { passphrase: resolved.passphrase, useSystemKeyWhenNoPassphrase: true },
     );
     const fileName = backupFileName("system", exportedAt);
-    fs.writeFileSync(path.join(targetDir, fileName), encodeBackupPackage(packageObject), { mode: 0o600 });
+    await target.write(fileName, encodeBackupPackage(packageObject));
     files.push(fileName);
   } else {
     const households = await prisma.household.findMany({ orderBy: { createdAt: "asc" } });
@@ -357,12 +324,12 @@ export async function runAutoBackupNow(
         useSystemKeyWhenNoPassphrase: true,
       });
       const fileName = backupFileName(household.name, exportedAt);
-      fs.writeFileSync(path.join(targetDir, fileName), encodeBackupPackage(packageObject), { mode: 0o600 });
+      await target.write(fileName, encodeBackupPackage(packageObject));
       files.push(fileName);
     }
   }
 
-  cleanupOldBackups(targetDir, resolved.keepCount);
+  await cleanupOldBackups(target, resolved.keepCount);
   return { scope: resolved.scope, files };
 }
 
@@ -421,8 +388,8 @@ export async function runWindowsStartupAutoBackupIfStale(): Promise<AutoBackupRu
     config = await loadAutoBackupConfig();
     if (!config.enabled) return null;
 
-    const targetDir = config.path || defaultAutoBackupDir();
-    if (!isAutoBackupFileStale(targetDir, now)) return null;
+    const target = createBackupTarget(config);
+    if (!(await isAutoBackupFileStale(target, now))) return null;
 
     const result = await runAutoBackupNow(config, { force: true });
     await saveAutoBackupStatus({
