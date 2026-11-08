@@ -1,5 +1,7 @@
 "use client";
 
+import { canRefreshCurrentRoute, replaceCurrentRouteUrl } from "@/lib/client/route-url-sync";
+
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
 
@@ -126,7 +128,7 @@ export function CreditBillDetailPanel({
       writeStoredDetailPreference(accountId, state.rows, state.mode === "all", safePage, state.mode === "fit");
       const nextHref = `${url.pathname}${url.search}${url.hash}`;
       const currentHref = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-      if (nextHref !== currentHref) window.history.replaceState(window.history.state, "", nextHref);
+      if (nextHref !== currentHref) replaceCurrentRouteUrl(nextHref);
     },
   });
   const { replace: replaceBillPagination } = billPager;
@@ -193,7 +195,7 @@ export function CreditBillDetailPanel({
         })
         .catch((error) => {
           console.error("Load credit bill details failed:", error);
-          router.replace(detail.href, { scroll: false });
+          if (canRefreshCurrentRoute()) router.replace(detail.href, { scroll: false });
         })
         .finally(() => {
           if (seq === selectionFetchSeqRef.current) setIsSwitchLoading(false);
@@ -220,7 +222,9 @@ export function CreditBillDetailPanel({
       const currentHref = withoutBasePath(
         `${window.location.pathname}${window.location.search}${window.location.hash}`,
       );
-      router.replace(currentHref, { scroll: false });
+      // A background refresh while /settings is still compiling would submit
+      // the OLD dashboard URL through the router and cancel that navigation.
+      if (canRefreshCurrentRoute()) router.replace(currentHref, { scroll: false });
     };
     window.addEventListener(FINANCE_DATA_CHANGED_EVENT, handleFinanceChange);
     return () => window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, handleFinanceChange);

@@ -1,5 +1,7 @@
 "use client";
 
+import { replaceCurrentRouteUrl } from "@/lib/client/route-url-sync";
+
 import { ArrowLeftRight, ArrowRight, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { createPortal } from "react-dom";
@@ -1782,7 +1784,7 @@ export function TransactionFormModal({
       }),
     );
     url.searchParams.delete("quickEntry");
-    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+    replaceCurrentRouteUrl(`${url.pathname}${url.search}${url.hash}`);
   }, [defaultAccountId]);
 
   useEffect(() => {

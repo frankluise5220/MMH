@@ -20,6 +20,7 @@ import {
 } from "lucide-react";
 import { InitModal } from "@/components/InitModal";
 import { FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
+import { clearRouteNavigation, markLeavingNavigationFromLink } from "@/lib/client/route-url-sync";
 import { FIRST_USE_GUIDE_OPEN_EVENT } from "@/lib/client/onboardingGuide";
 import { APP_PREFS_EVENT, getSidebarHideInitialDataPreference } from "@/lib/client/appPreferences";
 import { useI18n } from "@/lib/i18n";
@@ -231,6 +232,34 @@ export function FirstUseGuide({ children }: { children: ReactNode }) {
     setMounted(true);
     void loadStatus();
   }, [loadStatus]);
+
+  // The shell stays mounted across client-side route changes, so it is the right
+  // place to record "we are leaving this pathname" before Next starts the
+  // navigation. The old page (dashboard detail / fund / bill views) keeps
+  // mirroring its view state into the address bar while /settings is compiling
+  // in dev; one such history.replaceState cancels the navigation and bounces
+  // the user back to the account view. See src/lib/client/route-url-sync.ts.
+  useEffect(() => {
+    const onCapture = (event: MouseEvent) => {
+      if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+      if (!(event.target instanceof Element)) return;
+      const anchor = event.target.closest("a[href]");
+      if (!anchor) return;
+      const href = anchor.getAttribute("href");
+      if (!href || !href.startsWith("/") || href.startsWith("//")) return;
+      // Downloads / API links do not navigate the app router.
+      if (href.startsWith("/api/") || anchor.hasAttribute("download")) return;
+      const target = anchor.getAttribute("target");
+      if (target && target !== "_self") return;
+      markLeavingNavigationFromLink(href);
+    };
+    document.addEventListener("click", onCapture, true);
+    return () => document.removeEventListener("click", onCapture, true);
+  }, []);
+
+  useEffect(() => {
+    clearRouteNavigation();
+  }, [pathname]);
 
   useEffect(() => {
     const refresh = () => { void loadStatus(); };

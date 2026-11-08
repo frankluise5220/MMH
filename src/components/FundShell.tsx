@@ -62,7 +62,7 @@ import { isFundLikeInvestmentAccount } from "@/lib/account-kind-utils";
 import { TRANSACTION_SOURCE_FUND_UNITS_RECONCILE, isFundUnitsReconcileEntry } from "@/lib/transaction-semantics";
 import { useI18n } from "@/lib/i18n";
 import { useDetailPagination } from "@/lib/client/use-detail-pagination";
-import { withBasePath } from "@/lib/base-path";
+import { replaceCurrentRouteUrl } from "@/lib/client/route-url-sync";
  
 
 /**
@@ -1308,7 +1308,7 @@ export function FundShell(props: Props) {
 
     if (showCleared) q.set("showCleared", "1");
 
-    window.history.replaceState(null, "", withBasePath(`/?${q.toString()}`));
+    replaceCurrentRouteUrl(`/?${q.toString()}`);
 
   }, [baseQuery, isWealthAccount, showCleared, view]);
 
@@ -1326,7 +1326,7 @@ export function FundShell(props: Props) {
     else q.delete("showCleared");
     q.delete("fundCode");
     q.delete("wealthProductId");
-    window.history.replaceState(null, "", withBasePath(`/?${q.toString()}`));
+    replaceCurrentRouteUrl(`/?${q.toString()}`);
   }, [baseQuery, showCleared, view]);
 
   function toggleCleared(on: boolean) {
@@ -1342,7 +1342,7 @@ export function FundShell(props: Props) {
 
     else { q.delete("showCleared"); q.delete("fundCode"); q.delete("wealthProductId"); }
 
-    window.history.replaceState(null, "", withBasePath(`/?${q.toString()}`));
+    replaceCurrentRouteUrl(`/?${q.toString()}`);
 
     setFundCode("");
 
@@ -1720,7 +1720,7 @@ export function FundShell(props: Props) {
       q.delete("fundCode");
       q.delete("wealthProductId");
 
-      window.history.replaceState(null, "", withBasePath(`/?${q.toString()}`));
+      replaceCurrentRouteUrl(`/?${q.toString()}`);
 
       return;
 
@@ -1737,7 +1737,7 @@ export function FundShell(props: Props) {
         q.set("wealthProductId", fundCode);
       }
       q.delete("fundCode");
-      window.history.replaceState(null, "", withBasePath(`/?${q.toString()}`));
+      replaceCurrentRouteUrl(`/?${q.toString()}`);
       return;
     }
 
@@ -1745,7 +1745,7 @@ export function FundShell(props: Props) {
       if (fundChartOpen) setFundChartOpen(false);
       q.delete("fundCode");
       q.delete("wealthProductId");
-      window.history.replaceState(null, "", withBasePath(`/?${q.toString()}`));
+      replaceCurrentRouteUrl(`/?${q.toString()}`);
       return;
     }
 
@@ -1759,7 +1759,7 @@ export function FundShell(props: Props) {
       q.delete("fundCode");
       q.delete("wealthProductId");
 
-      window.history.replaceState(null, "", withBasePath(`/?${q.toString()}`));
+      replaceCurrentRouteUrl(`/?${q.toString()}`);
 
       return;
 
@@ -1767,7 +1767,7 @@ export function FundShell(props: Props) {
 
     q.set("fundCode", fundCode);
     q.delete("wealthProductId");
-    window.history.replaceState(null, "", withBasePath(`/?${q.toString()}`));
+    replaceCurrentRouteUrl(`/?${q.toString()}`);
 
   }, [baseQuery, view, showCleared, fundCode, fundChartOpen, sortedPositions, sortedClearedPositions, isWealthAccount, positionAssetKey]);
 

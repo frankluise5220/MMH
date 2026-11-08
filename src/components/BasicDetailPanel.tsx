@@ -1,5 +1,7 @@
 "use client";
 
+import { canRefreshCurrentRoute, replaceCurrentRouteUrl } from "@/lib/client/route-url-sync";
+
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
@@ -551,13 +553,16 @@ export function BasicDetailPanel({
       writeStoredDetailPreference(accountId, state.rows, state.mode === "all", nextSafePage, state.mode === "fit");
       const nextHref = `${url.pathname}${url.search}${url.hash}`;
       const currentHref = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-      if (nextHref !== currentHref) {
+      if (nextHref !== currentHref && canRefreshCurrentRoute()) {
         if (clientPaginationEnabled) {
           // Next 16: must pass null, not window.history.state — reusing the
           // router's internal state object breaks canonicalUrl sync, so later
           // router.refresh() calls re-render from the OLD URL (dropping
           // detailAll=1) and overwrite the client-fetched full list.
-          window.history.replaceState(null, "", nextHref);
+          // replaceCurrentRouteUrl also refuses to write while another route
+          // is being navigated to: even a no-op replaceState dispatches
+          // ACTION_RESTORE and cancels that navigation.
+          replaceCurrentRouteUrl(nextHref);
         } else {
           router.replace(nextHref, { scroll: false });
         }
@@ -1137,7 +1142,7 @@ export function BasicDetailPanel({
         //    普通分页 → 按当前页重取一次，新行与「共 N 条」一起出现；
         //    「全部」→ 缓存已按域作废，ensureDetailAll 按当前账户口径重取整份。
         if (!clientPaginationEnabled || !refreshOnGlobalEvent) {
-          router.refresh();
+          if (canRefreshCurrentRoute()) router.refresh();
           return;
         }
         reloadDetailPage();
@@ -1536,7 +1541,7 @@ export function BasicDetailPanel({
     if (typeof window === "undefined") return;
     const url = new URL(window.location.href);
     url.searchParams.delete("guide");
-    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+    replaceCurrentRouteUrl(`${url.pathname}${url.search}${url.hash}`);
   };
   const guideWidth = guideMetrics?.width ?? 1024;
   const guideHeight = guideMetrics?.height ?? 560;

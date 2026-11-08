@@ -1,5 +1,7 @@
 "use client";
 
+import { replaceCurrentRouteUrl } from "@/lib/client/route-url-sync";
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown } from "lucide-react";
 
@@ -260,7 +262,7 @@ export function IncomeExpenseReportClient({
       clientDetailKeyRef.current = activeDetailKey(data.data.details);
       setActiveDetails(data.data.details);
       setDetailEntries(data.data.entries ?? []);
-      window.history.replaceState(window.history.state, "", withBasePath(`/reports?${params.toString()}`));
+      replaceCurrentRouteUrl(`/reports?${params.toString()}`);
       window.requestAnimationFrame(() => {
         document.getElementById("report-details")?.scrollIntoView({ block: "nearest" });
       });
@@ -292,7 +294,7 @@ export function IncomeExpenseReportClient({
         clientDetailKeyRef.current = null;
         setActiveDetails(null);
         setDetailEntries([]);
-        window.history.replaceState(window.history.state, "", buildClearUrl(currentReportQuery));
+        replaceCurrentRouteUrl(buildClearUrl(currentReportQuery));
         return [];
       }
       hasClientDetailSelectionRef.current = true;

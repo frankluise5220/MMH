@@ -1,4 +1,6 @@
 "use client";
+
+import { canRefreshCurrentRoute, replaceCurrentRouteUrl } from "@/lib/client/route-url-sync";
 import { ModalLayer } from "@/components/ModalLayer";
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -201,7 +203,7 @@ export function CreditBillSummaryTable({
       const detail = (event as CustomEvent<{ reason?: string; accountIds?: string[] }>).detail;
       if (detail?.reason !== "account-credit-cycle-settings") return;
       if (detail.accountIds?.length && !detail.accountIds.includes(accountId)) return;
-      router.refresh();
+      if (canRefreshCurrentRoute()) router.refresh();
     };
     window.addEventListener(FINANCE_DATA_CHANGED_EVENT, handleFinanceChange);
     return () => window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, handleFinanceChange);
@@ -264,7 +266,7 @@ export function CreditBillSummaryTable({
     const url = new URL(window.location.href);
     url.searchParams.set("view", "bill");
     url.searchParams.set("billPage", String(safePage));
-    window.history.replaceState(window.history.state, "", url);
+    replaceCurrentRouteUrl(`${url.pathname}${url.search}${url.hash}`);
   }, [safePage]);
 
   const pagedRows = useMemo(

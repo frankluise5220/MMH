@@ -1,4 +1,6 @@
 "use client";
+
+import { replaceCurrentRouteUrl } from "@/lib/client/route-url-sync";
 import { ModalLayer } from "@/components/ModalLayer";
 import { FOLDER_TAB_STRIP, FolderTabRuler, folderTabClass, folderTabNeighbors } from "@/app/login/FolderTabs";
 
@@ -944,7 +946,7 @@ export function RegularInvestClient({
     setShowCreateForm(true);
     params.delete("create");
     const query = params.toString();
-    window.history.replaceState(null, "", `${window.location.pathname}${query ? `?${query}` : ""}`);
+    replaceCurrentRouteUrl(`${window.location.pathname}${query ? `?${query}` : ""}`);
   }, []);
 
   useEffect(() => {

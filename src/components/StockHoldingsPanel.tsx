@@ -1,5 +1,7 @@
 "use client";
 
+import { replaceCurrentRouteUrl } from "@/lib/client/route-url-sync";
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pencil, RefreshCcw, SlidersHorizontal, Trash2 } from "lucide-react";
 
@@ -590,7 +592,7 @@ export function StockHoldingsPanel({
     const url = new URL(window.location.href);
     if (nextShowCleared) url.searchParams.set("showCleared", "1");
     else url.searchParams.delete("showCleared");
-    window.history.replaceState(null, "", url.toString());
+    replaceCurrentRouteUrl(`${url.pathname}${url.search}${url.hash}`);
   }
 
   const handleHoldingRowUpdated = useCallback(() => {

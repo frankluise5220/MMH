@@ -1,4 +1,6 @@
 "use client";
+
+import { replaceCurrentRouteUrl } from "@/lib/client/route-url-sync";
 import { ModalLayer } from "@/components/ModalLayer";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -150,7 +152,7 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
     if (url.searchParams.get("quickEntry") !== "1") return;
     openCreate();
     url.searchParams.delete("quickEntry");
-    window.history.replaceState(null, "", `${url.pathname}${url.search}${url.hash}`);
+    replaceCurrentRouteUrl(`${url.pathname}${url.search}${url.hash}`);
   }, [openCreate]);
 
   useEffect(() => {

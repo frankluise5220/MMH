@@ -1,5 +1,7 @@
 "use client";
 
+import { replaceCurrentRouteUrl } from "@/lib/client/route-url-sync";
+
 import { useCallback, useState, useEffect, useLayoutEffect, useMemo, useRef, type ReactNode, type MouseEvent } from "react";
 import { Paperclip } from "lucide-react";
 import { formatDateDisplay, formatDateUtc as localDateKey, toNumber, todayDateBusinessYmd } from "@/lib/date-utils";
@@ -1093,7 +1095,7 @@ export function DetailViewClient({
       const url = new URL(window.location.href);
       if (url.searchParams.get("focusEntryId") === target) {
         url.searchParams.delete("focusEntryId");
-        window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+        replaceCurrentRouteUrl(`${url.pathname}${url.search}${url.hash}`);
       }
     });
     return () => window.cancelAnimationFrame(frame);
