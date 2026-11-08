@@ -40,6 +40,8 @@ export function dispatchFinanceDataChanged(detail: FinanceDataChangedDetail = {}
  * 金额、文本、余额都不变。清单必须保守 —— 导入、定投执行、撤销、通知强制落账
  * 这类会真实写流水但可能不带 entryIds 的 reason 一律不能放进来；未知 reason
  * 也按「会改明细」处理。宁可多刷一次当前页，也不能让刚记的一笔不出现。
+ * `startup-check` 只允许用于「只有净值 / 行情变化」的开机巡检；auto-execute 真的
+ * 执行了定投并写流水时必须改派 `startup-auto-execute`（结构事件），不能用它掩盖。
  */
 const ENTRY_NEUTRAL_REASONS = new Set([
   "startup-check",
@@ -54,6 +56,20 @@ const ENTRY_NEUTRAL_REASONS = new Set([
 /** 这次事件会不会动到流水明细行（决定要不要刷明细、要不要作废整份缓存）。 */
 export function financeChangeTouchesEntries(detail: FinanceDataChangedDetail): boolean {
   return !detail.reason || !ENTRY_NEUTRAL_REASONS.has(detail.reason);
+}
+
+/**
+ * 明细 / Shell 视图的行文本是否需要重新取。
+ *
+ * `balanceChanged === false` 只说明余额相关字段（类型 / 金额 / 日期 / 账户）没变，
+ * 备注、分类、标签、附件仍可能已经改了。余额组件可以据此跳过，但会渲染行文本的
+ * 视图不能整表跳过，否则改完备注界面还是旧值。这里只排除明确不动明细行的中性
+ * 事件与对账锁（锁标记由 `useEntryReconcileState` 就地更新）。
+ */
+export function financeChangeNeedsRowRefresh(detail: FinanceDataChangedDetail): boolean {
+  if (!financeChangeTouchesEntries(detail)) return false;
+  if (detail.reason === "entry-reconcile") return false;
+  return true;
 }
 
 /**

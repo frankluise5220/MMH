@@ -6,6 +6,7 @@ import { Banknote, Check, Link2, Pencil, Plus, Printer, ReceiptText, Trash2 } fr
 import { useI18n } from "@/lib/i18n";
 import { formatAmountDraft, formatMoney, formatMoneyYuan } from "@/lib/format";
 import { todayDateLocalYmd } from "@/lib/date-utils";
+import { compactFinanceAccountIds, dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { DateStepper } from "./DateStepper";
 import { AdvancedDataTable, ROW_ACTION_BUTTON_BOX_CLASS, type AdvancedDataTableColumn } from "@/components/AdvancedDataTable";
 import { reimbursementErrorMessage } from "@/lib/reimbursement-error";
@@ -147,6 +148,22 @@ export function ReimbursementWorkspace({
     } finally {
       setLoading(false);
     }
+  };
+
+  /**
+   * 结算 / 删除单据会真实写 txRecord（结算生成付款流水，删除软删关联流水）。
+   * server action 只 revalidatePath，客户端分页的明细与余额缓存不会自己更新，
+   * 必须补一次事件；结算按点名账户收窄，删除影响域未知则保守按全局处理。
+   */
+  const notifyReimbursementLedgerChanged = (extraAccountIds?: string[]) => {
+    dispatchFinanceDataChanged({
+      reason: "reimbursement-ledger",
+      // 结算能点名账户就按域刷新；删除可能软删挂在任意账户的关联流水，影响域未知，
+      // 不传 accountIds 让下游按全局保守处理（见 financeChangeAffectsAccount）。
+      accountIds: extraAccountIds
+        ? compactFinanceAccountIds([advanceAccountId, ...extraAccountIds])
+        : undefined,
+    });
   };
 
   useEffect(() => {
@@ -627,6 +644,7 @@ export function ReimbursementWorkspace({
       }
       setPaymentBatch(null);
       await load();
+      notifyReimbursementLedgerChanged([reimburseCashAccountId]);
     } finally {
       setBusy(false);
     }
@@ -644,6 +662,8 @@ export function ReimbursementWorkspace({
         return;
       }
       await load();
+      // 删除单据会软删它关联的流水，明细与余额必须跟着刷新。
+      notifyReimbursementLedgerChanged();
     } finally {
       setBusy(false);
     }
@@ -664,6 +684,7 @@ export function ReimbursementWorkspace({
       if (failed > 0) window.alert(t("reimburse.document.batchDeleteFailed", { count: String(failed) }));
       setSelectedDocumentIds(new Set());
       await load();
+      notifyReimbursementLedgerChanged();
     } finally {
       setBusy(false);
     }
