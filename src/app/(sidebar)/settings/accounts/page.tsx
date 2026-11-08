@@ -33,7 +33,13 @@ import { buildAccountDisplayOption } from "@/lib/account-display";
 import { accountOwnerNameById, buildAccountOwnerOptions } from "@/lib/account-owner-options";
 import { getCreditCardLabelTemplatePreference } from "@/lib/client/appPreferences";
 import { readAccountDisplaySettings } from "@/lib/client/account-display-settings";
-import { fetchSettingsAccountData, getCachedSettingsAccountData, notifySettingsDataChanged } from "@/lib/client/settingsCache";
+import {
+  fetchSettingsAccountData,
+  getCachedSettingsAccountData,
+  notifySettingsDataChanged,
+  SETTINGS_DATA_CHANGED_EVENT,
+  type SettingsDataChangedDetail,
+} from "@/lib/client/settingsCache";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import {
   accountKindOptionsForEdit,
@@ -351,10 +357,35 @@ export default function SettingsAccountsPage() {
     }
   }, []);
 
+  // Set right before this page publishes its own change event: the listener
+  // below skips that single event because the page already awaits loadAll.
+  const selfRefreshRef = useRef(false);
+
   const refreshSettingsAccounts = useCallback(async (reason: string) => {
+    selfRefreshRef.current = true;
     void notifySettingsDataChanged({ scope: "accounts", reason, prefetch: true });
     await loadAll({ force: true });
     dispatchFinanceDataChanged({ reason: "settings-accounts-change" });
+  }, [loadAll]);
+
+  // Basic data changed from another dialog in this window (nested institution /
+  // counterparty / group, account type quick edit, ...) must refresh the option
+  // lists here, otherwise a mounted page keeps its stale snapshot.
+  useEffect(() => {
+    const onSettingsChanged = (event: Event) => {
+      const detail = (event as CustomEvent<SettingsDataChangedDetail>).detail;
+      const scope = detail?.scope ?? "all";
+      if (scope !== "accounts" && scope !== "all") return;
+      if (selfRefreshRef.current) {
+        selfRefreshRef.current = false;
+        return;
+      }
+      void loadAll({ force: true });
+    };
+    window.addEventListener(SETTINGS_DATA_CHANGED_EVENT, onSettingsChanged as EventListener);
+    return () => {
+      window.removeEventListener(SETTINGS_DATA_CHANGED_EVENT, onSettingsChanged as EventListener);
+    };
   }, [loadAll]);
 
   // 正在编辑的信用卡账户：账单日设置走「账单日设置」弹窗（按生效日期的规则表），

@@ -12,6 +12,7 @@ import { isSettlementCounterpartyType, kindLabel } from "@/lib/account-kinds";
 import { buildAccountDisplayOption } from "@/lib/account-display";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { fetchSettingsAccountData } from "@/lib/client/settingsCache";
+import { useSettingsDataVersion } from "@/lib/client/use-settings-data-version";
 import { useI18n } from "@/lib/i18n";
 import { readAccountDisplaySettings } from "@/lib/client/account-display-settings";
 import { isDepositAccount } from "@/lib/account-kind-utils";
@@ -136,15 +137,21 @@ export function InitModal({
     }
   }
 
+  // New or renamed accounts / institutions / counterparties must reach an
+  // already loaded dialog without closing and reopening it.
+  const settingsVersion = useSettingsDataVersion("accounts");
+  const loadedSettingsVersionRef = useRef(-1);
+
   useEffect(() => {
     if (!open) return;
     setMessage(null);
     setBusy(false);
     setTab(initialTab);
-    if (!accountsLoaded) {
-      fetchAccounts();
+    if (!accountsLoaded || loadedSettingsVersionRef.current !== settingsVersion) {
+      loadedSettingsVersionRef.current = settingsVersion;
+      void fetchAccounts();
     }
-  }, [open, accountsLoaded, initialTab]);
+  }, [open, accountsLoaded, initialTab, settingsVersion]);
 
   function createEmptyFundRow(defaultAcc?: AccountOption): FundHoldingRow {
     tempIdCounter.current += 1;

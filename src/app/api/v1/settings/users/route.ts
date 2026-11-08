@@ -7,6 +7,7 @@ import { verifySensitiveOperationPassword } from "@/lib/server/sensitive-operati
 import { getCurrentUser, isAdmin } from "@/lib/server/auth";
 import { readGatewayFnosIdentity } from "@/lib/server/gateway-identity";
 import { queueLedgerInventoryReport } from "@/lib/server/ledger-inventory";
+import { revalidateAfterSettingsChange } from "@/lib/server/revalidate";
 import { DEFAULT_SESSION_DAYS, normalizeSessionDays } from "@/lib/session-days";
 import { isRegistrationConfigured } from "@/lib/server/registration-client";
 
@@ -196,6 +197,8 @@ export async function POST(req: NextRequest) {
 
   // The ledger gained a member; refresh the installation inventory.
   queueLedgerInventoryReport("member-changed");
+  // Users are part of the settings snapshot (account owner options).
+  revalidateAfterSettingsChange();
 
   return NextResponse.json({
     ok: true,
@@ -315,6 +318,9 @@ export async function PUT(req: NextRequest) {
     });
   }
 
+  // Renames and role changes are visible in account owner options.
+  revalidateAfterSettingsChange();
+
   return NextResponse.json({
     ok: true,
     user: { ...user, sessionDays: hasSessionDays ? normalizedSessionDays : DEFAULT_SESSION_DAYS },
@@ -374,6 +380,7 @@ export async function DELETE(req: NextRequest) {
 
   // The ledger lost a member; refresh the installation inventory.
   queueLedgerInventoryReport("member-changed");
+  revalidateAfterSettingsChange();
 
   return NextResponse.json({ ok: true }, { headers: cors() });
 }

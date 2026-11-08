@@ -17,6 +17,7 @@ import { buildAccountDisplayOption } from "@/lib/account-display";
 import { formatAmountDraft, formatMoneyLoose as formatMoney } from "@/lib/format";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { fetchSettingsAccountData } from "@/lib/client/settingsCache";
+import { useSettingsDataVersion } from "@/lib/client/use-settings-data-version";
 import { useI18n } from "@/lib/i18n";
 import { readAccountDisplaySettings } from "@/lib/client/account-display-settings";
 import { todayDateLocalYmd } from "@/lib/date-utils";
@@ -645,6 +646,10 @@ export function InsuranceFormModal({
     arrivalDateTouchedRef.current = true;
     setArrivalDate(nextDate);
   }
+  // The modal is mounted for the whole session, so option lists must refetch
+  // whenever accounts / institutions / counterparties change.
+  const settingsVersion = useSettingsDataVersion("accounts");
+
   useEffect(() => {
     let cancelled = false;
 
@@ -717,7 +722,7 @@ export function InsuranceFormModal({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [settingsVersion]);
 
   useEffect(() => {
     let cancelled = false;

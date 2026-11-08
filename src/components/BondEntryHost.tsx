@@ -7,6 +7,7 @@ import type { SmartSelectOption } from "@/components/SmartSelect";
 import { buildAccountDisplayOption } from "@/lib/account-display";
 import { readAccountDisplaySettings } from "@/lib/client/account-display-settings";
 import { fetchSettingsAccountData } from "@/lib/client/settingsCache";
+import { useSettingsDataVersion } from "@/lib/client/use-settings-data-version";
 
 /**
  * 顶部「胶囊记账入口」的债券落地宿主。
@@ -148,6 +149,10 @@ export function BondEntryHost({
     };
   }, [mounted, openSignal]);
 
+  // The host stays mounted after the first open, so new or renamed basic data
+  // must retrigger the options fetch below.
+  const settingsVersion = useSettingsDataVersion("accounts");
+
   useEffect(() => {
     if (!mounted) return;
     let cancelled = false;
@@ -176,7 +181,7 @@ export function BondEntryHost({
     return () => {
       cancelled = true;
     };
-  }, [mounted]);
+  }, [mounted, settingsVersion]);
 
   const accountOptions = useMemo(() => accounts.map(toOption), [accounts]);
   const cashAccountOptions = useMemo(

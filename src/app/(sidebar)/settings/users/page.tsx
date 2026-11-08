@@ -17,6 +17,7 @@ import {
 import { SESSION_DAY_OPTIONS } from "@/lib/session-days";
 import { useI18n } from "@/lib/i18n";
 import { CredentialPasswordField, resetCredentialKindCache } from "@/components/CredentialPasswordField";
+import { notifySettingsDataChanged } from "@/lib/client/settingsCache";
 import { FolderTabs } from "@/app/login/FolderTabs";
 
 type ManagedUser = {
@@ -1271,6 +1272,7 @@ export default function UsersPage() {
         // local password" notice in every sensitive-operation dialog until reload.
         if (data.password) resetCredentialKindCache();
         await fetchUsers();
+        void notifySettingsDataChanged({ scope: "accounts", reason: "settings-users:save", prefetch: true });
         setShowModal(false);
         setEditingUser(null);
       } else {
@@ -1298,6 +1300,7 @@ export default function UsersPage() {
         setDeleteTarget(null);
         setDeletePassword("");
         await fetchUsers();
+        void notifySettingsDataChanged({ scope: "accounts", reason: "settings-users:delete", prefetch: true });
       } else {
         setDeleteError(result?.error || t("settings.users.deleteFailed"));
       }

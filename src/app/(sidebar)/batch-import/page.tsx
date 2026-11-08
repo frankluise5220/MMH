@@ -23,6 +23,7 @@ import {
 } from "@/lib/account-import-match";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { fetchSettingsAccountData, fetchSettingsBootstrap } from "@/lib/client/settingsCache";
+import { useSettingsDataVersion } from "@/lib/client/use-settings-data-version";
 import { decodeTextFile } from "@/lib/text/decode-text-file";
 import { parseFlexibleDateToYmd } from "@/lib/date-utils";
 import { FundImportPreviewDialog } from "@/components/FundImportPreviewDialog";
@@ -1194,6 +1195,9 @@ export default function BatchImportPage() {
   const router = useRouter();
   const importTraceIdRef = useRef(createImportTraceId());
   const { t } = useI18n();
+  // The importer keeps its account matcher for the whole session; a new or
+  // renamed account must rebuild it without a page reload.
+  const settingsVersion = useSettingsDataVersion("accounts");
   const formatText = useCallback((key: Parameters<typeof t>[0], values?: Record<string, string | number>) => {
     let text = t(key) as string;
     if (!values) return text;
@@ -1325,7 +1329,7 @@ export default function BatchImportPage() {
         }
       });
     return () => { cancelled = true; };
-  }, [formatText]);
+  }, [formatText, settingsVersion]);
 
   useEffect(() => {
     let cancelled = false;

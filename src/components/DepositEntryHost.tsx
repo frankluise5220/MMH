@@ -7,6 +7,7 @@ import type { SmartSelectOption } from "@/components/SmartSelect";
 import { buildAccountDisplayOption } from "@/lib/account-display";
 import { readAccountDisplaySettings } from "@/lib/client/account-display-settings";
 import { fetchSettingsAccountData } from "@/lib/client/settingsCache";
+import { useSettingsDataVersion } from "@/lib/client/use-settings-data-version";
 
 /**
  * 顶部「胶囊记账入口」的存款落地宿主。
@@ -83,6 +84,9 @@ export function DepositEntryHost({
   const [nestedFieldData, setNestedFieldData] = useState<
     Record<string, Array<{ id: string; name: string; type?: string }>> | undefined
   >(undefined);
+  // The host stays mounted after the first open, so new or renamed basic data
+  // must retrigger the options fetch below.
+  const settingsVersion = useSettingsDataVersion("accounts");
 
   // 只有用户真的点了存款入口才挂载，页面首屏不为这些账户数据买单。
   // 弹窗内部的 onCreate 监听是在挂载后才注册的，而事件此刻已经派发过了 ——
@@ -146,7 +150,7 @@ export function DepositEntryHost({
     return () => {
       cancelled = true;
     };
-  }, [mounted]);
+  }, [mounted, settingsVersion]);
 
   const accountOptions = useMemo(() => accounts.map(toOption), [accounts]);
   const cashAccountOptions = useMemo(
