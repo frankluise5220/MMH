@@ -7,7 +7,7 @@ MMH 内置 MCP（Model Context Protocol）服务端。AI 助手（Claude Desktop
 ## 前置条件
 
 - MMH 0.1.71 或更高版本，更早版本没有 MCP 端点。
-- 一把 Access Key，在「设置 → 外接 API Key」创建。
+- 一把 Access Key，在「设置 → MCP 接入说明」页顶部的 Access Key 列表创建。
   - 「只读（仅查询）」：只能查询，建议作为默认选择。
   - 「读写（查询 + 记账）」：额外允许记账和删账。
   - 完整 Key 只在创建弹窗里显示一次，关闭后无法再查看，请当场复制保存。

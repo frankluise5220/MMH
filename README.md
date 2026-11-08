@@ -87,7 +87,7 @@ MMH 内置 MCP（Model Context Protocol）服务端（0.1.71 起）。Claude Des
 | `mmh_create_transaction` | 记一笔支出 / 收入 / 转账 |
 | `mmh_delete_transaction` | 删除一笔流水 |
 
-接入只需两步：在「设置 → 外接 API Key」创建一把 Key（默认选只读，需要助手记账时选读写，完整 Key 只显示一次），再把客户端指向 `<MMH 地址>/api/v1/mcp`；只支持本机子进程的客户端用仓库自带的 `scripts/mmh-mcp-stdio.cjs` 桥接。参数、口径和一份可直接交给助手的提示词见 [MCP 接入指南](MCP.md)。
+接入只需两步：在「设置 → MCP 接入说明」页顶部的 Access Key 列表创建一把 Key（默认选只读，需要助手记账时选读写，完整 Key 只显示一次），再把客户端指向 `<MMH 地址>/api/v1/mcp`；只支持本机子进程的客户端用仓库自带的 `scripts/mmh-mcp-stdio.cjs` 桥接。该页可直接复制接入配置、查看工具清单与提示词，参数、口径详见 [MCP 接入指南](MCP.md)。
 
 ### 部署与更新
 

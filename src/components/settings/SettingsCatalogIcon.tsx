@@ -1,5 +1,6 @@
 import {
   BookOpen,
+  Bot,
   Building2,
   CalendarClock,
   Cpu,
@@ -24,6 +25,7 @@ import {
 
 const ICONS = {
   "book-open": BookOpen,
+  bot: Bot,
   "building-2": Building2,
   "calendar-clock": CalendarClock,
   cpu: Cpu,
