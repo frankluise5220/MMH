@@ -361,7 +361,51 @@ export function patchDetailAllRows<T extends { id: string }>(key: string, rows: 
   if (stale) stale.entries = apply(stale.entries as T[]);
 }
 
-export function dropDetailAllCache(keys?: readonly string[]) {
+/** 结构变化事件带来的行标识：用来修正兜底数据，避免删掉的行复活、新增的行被遮住。 */
+export type CacheChangeOptions = {
+  /** 本次事件涉及的行（新增 / 修改 / 删除都在内）。 */
+  entryIds?: readonly string[];
+  /** 本次事件删掉的行。 */
+  deletedEntryIds?: readonly string[];
+};
+
+type EntryIdLike = { id?: unknown };
+
+/**
+ * 行集合变了之后修正「展示兜底」。
+ *
+ * 兜底行只适合「同一批行重拉一遍」（改金额 / 日期 / 账户，行数不变）：那时保留旧行
+ * 能钉住滚动位置。但删除会让被删的行重新出现在表里，新增会让新行一直藏到整份拉完，
+ * 所以这两类事件必须先把兜底数据改对：
+ * - 删掉的行直接从兜底里剔除（行数仍然不变，滚动位置照样钉得住）；
+ * - 事件里的 id 在兜底里根本不存在 = 新增行，整份兜底作废（宁可短暂缩水，也不能
+ *   让刚记的一笔不出现）。
+ *
+ * 只做这两件事，不做重排：排序由表格自己做，兜底只要保证「行集合」大致正确。
+ */
+function reconcileStale(key: string, options?: CacheChangeOptions) {
+  const stale = staleSnapshots.get(key);
+  if (!stale) return;
+  const deleted = new Set(options?.deletedEntryIds ?? []);
+  if (deleted.size > 0) {
+    const before = stale.entries.length;
+    const kept = (stale.entries as EntryIdLike[]).filter((entry) => !deleted.has(String(entry?.id ?? "")));
+    if (kept.length < before) {
+      stale.entries = kept;
+      stale.totalCount = Math.max(0, stale.totalCount - (before - kept.length));
+    }
+    if (kept.length === 0) {
+      staleSnapshots.delete(key);
+      return;
+    }
+  }
+  const touched = options?.entryIds ?? [];
+  if (touched.length === 0) return;
+  const known = new Set((stale.entries as EntryIdLike[]).map((entry) => String(entry?.id ?? "")));
+  if (touched.some((id) => !known.has(id))) staleSnapshots.delete(key);
+}
+
+export function dropDetailAllCache(keys?: readonly string[], options?: CacheChangeOptions) {
   // 不传 keys = 影响域未知的全局事件，按全部作废；传了就只动这些账户视图，
   // 别因为 A 账户记了一笔就把 B 账户几万行的整份缓存也丢掉。
   const affected = keys?.length ? new Set(keys) : null;
@@ -373,18 +417,21 @@ export function dropDetailAllCache(keys?: readonly string[]) {
     jobs.delete(key);
     changed = true;
   });
+  // 任务可能上一轮就被删掉了，只剩兜底数据；这类残留同样要跟着行集变化修正。
+  (affected ? [...affected] : [...staleSnapshots.keys()]).forEach((key) => reconcileStale(key, options));
   if (changed) notifyCacheAvailabilityChanged();
 }
 
 /** 大范围改写：中止受影响视图的在途任务并丢掉它们的缓存，其它视图照旧。 */
-export function invalidateDetailAll(keys?: readonly string[]) {
+export function invalidateDetailAll(keys?: readonly string[], options?: CacheChangeOptions) {
   const affected = keys?.length ? new Set(keys) : null;
   const selected = [...jobs.entries()].filter(([key]) => !affected || affected.has(key));
-  if (selected.length === 0) return;
   selected.forEach(([key, job]) => {
     rememberStale(job);
     job.controller.abort();
     jobs.delete(key);
   });
+  (affected ? [...affected] : [...staleSnapshots.keys()]).forEach((key) => reconcileStale(key, options));
+  if (selected.length === 0) return;
   notifyCacheAvailabilityChanged();
 }

@@ -1125,8 +1125,15 @@ export function BasicDetailPanel({
       }
 
       // ④ 结构变化（或必须重算结果集）：按域作废缓存，必要时连在途分块一起停掉。
-      dropDetailAllCache(affectedKeys);
-      if (isBulkFinanceEntryChange(detail)) invalidateDetailAll(affectedKeys);
+      // 一并带上本次事件的行标识：作废时留作展示兜底的旧行要据此剔除已删行、给新增行
+      // 让位 —— 否则删除后兜底行会把删掉的那条又渲染回来，新增的行则一直藏到整份拉完。
+      const deletedEntryIds = detail.deletedEntryIds ?? [];
+      const cacheChangeOptions = {
+        entryIds: detail.entryIds,
+        deletedEntryIds,
+      };
+      dropDetailAllCache(affectedKeys, cacheChangeOptions);
+      if (isBulkFinanceEntryChange(detail)) invalidateDetailAll(affectedKeys, cacheChangeOptions);
       // 备注-only 编辑不改余额，期初余额不用重算；影响域未知时清空整张缓存。
       if (detail.balanceChanged !== false) {
         invalidateDetailOpeningBalance(eventAccountIds.length > 0 ? eventAccountIds : undefined);
@@ -1134,7 +1141,6 @@ export function BasicDetailPanel({
       // 没命中当前账户视图：缓存口径已按域更新，界面一行都不用动。
       if (!isCurrentAccountEvent) return;
 
-      const deletedEntryIds = detail.deletedEntryIds ?? [];
       if (deletedEntryIds.length === 0) {
         // ⑤ 明细刷新的唯一入口（子层通过 parentOwnsRefresh 让出，避免同页取两遍）：
         //    有筛选 / 标签视图 → 筛选结果集在 RSC 内存里算，按页 API 的口径不一致，
