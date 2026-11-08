@@ -54,6 +54,11 @@ export type PositionDisplayRow = {
   marketValue: number;
   floatingPnL: number;
   floatingPnLRate: number;
+  /**
+   * 约定的年化收益率（百分数）。优先取买入交易行上用户填写的年化，
+   * 缺省回退产品主数据；两者都没有时为 null。
+   */
+  annualRate?: number | null;
   pendingCost: number;
   historicalProfit: number;
 };
@@ -82,6 +87,8 @@ type ClearedPositionRow = {
   clearedDate: string;
   totalBuyAmount: number;
   totalRedeemAmount: number;
+  /** 赎回时用户填写的年化收益率（百分数）；只有走计算兜底时为空。 */
+  annualRate?: number | null;
 };
 
 type PositionDisplayResult = {
@@ -860,6 +867,10 @@ export const computePositionDisplay = cache(
       remainingUnits: number;
       cycleHasUnits: boolean;
       historicalProfit: number;
+      /** 买入时约定的年化收益率（百分数）。 */
+      annualRate: number | null;
+      /** 赎回时填写的年化收益率（百分数），用于清仓后的「实际年化」。 */
+      redeemAnnualRate: number | null;
       totalBuyAmount: number;
       totalRedeemAmount: number;
       firstBuyDate: string;
@@ -878,6 +889,7 @@ export const computePositionDisplay = cache(
       units: number | null;
       arrival: number;
       profit: number;
+      annualRate: number | null;
     }> = [];
 
     for (const row of rows) {
@@ -893,6 +905,15 @@ export const computePositionDisplay = cache(
         interest: row.interest,
         fee: row.fee,
       });
+      // 「我们填的年利率」落在交易行上（买入=约定年化，赎回=实际年化），产品主数据只是回退。
+      const productAnnualRate =
+        row.annualRate != null
+          ? toNumber(row.annualRate)
+          : row.WealthProduct?.annualRate != null
+            ? toNumber(row.WealthProduct.annualRate)
+            : (row as { BondProduct?: { annualRate?: unknown } | null }).BondProduct?.annualRate != null
+              ? toNumber((row as { BondProduct?: { annualRate?: unknown } | null }).BondProduct?.annualRate)
+              : null;
       wealthEvents.push({
         key,
         wealthProductId: row.wealthProductId ?? null,
@@ -905,6 +926,7 @@ export const computePositionDisplay = cache(
         units,
         arrival,
         profit,
+        annualRate: productAnnualRate != null && Number.isFinite(productAnnualRate) ? productAnnualRate : null,
       });
     }
 
@@ -924,11 +946,21 @@ export const computePositionDisplay = cache(
         remainingUnits: 0,
         cycleHasUnits: false,
         historicalProfit: 0,
+        annualRate: null,
+        redeemAnnualRate: null,
         totalBuyAmount: 0,
         totalRedeemAmount: 0,
         firstBuyDate: "",
         clearedDate: "",
       };
+
+      // 买入行的年化是「约定年化」；赎回行的年化是用户结算时填的「实际年化」，分开保存。
+      if (event.action === "buy" && bucket.annualRate == null && event.annualRate != null) {
+        bucket.annualRate = event.annualRate;
+      }
+      if (event.action === "cash_in" && event.annualRate != null) {
+        bucket.redeemAnnualRate = event.annualRate;
+      }
 
       if (event.action === "dividend") {
         bucket.historicalProfit += event.arrival;
@@ -949,7 +981,11 @@ export const computePositionDisplay = cache(
         bucket.clearedDate = event.tradeDate;
       } else {
         const wasCleared = isWealthHoldingCleared(bucket.cycleHasUnits, bucket.remaining, bucket.remainingUnits);
-        if (wasCleared) bucket.holdingDate = event.tradeDate;
+        if (wasCleared) {
+          bucket.holdingDate = event.tradeDate;
+          // 新一轮持仓开始，上一轮赎回时填的实际年化不再适用于下一轮清仓。
+          bucket.redeemAnnualRate = null;
+        }
         if (event.units != null) {
           bucket.cycleHasUnits = true;
           bucket.remainingUnits += event.units;
@@ -989,6 +1025,7 @@ export const computePositionDisplay = cache(
           marketValue,
           floatingPnL,
           floatingPnLRate: remaining > 0 ? floatingPnL / remaining : 0,
+          annualRate: bucket.annualRate,
           pendingCost: 0,
           historicalProfit: Number(bucket.historicalProfit.toFixed(2)),
         });
@@ -1004,6 +1041,7 @@ export const computePositionDisplay = cache(
           clearedDate: bucket.clearedDate || bucket.firstBuyDate,
           totalBuyAmount: Number(bucket.totalBuyAmount.toFixed(2)),
           totalRedeemAmount: Number(bucket.totalRedeemAmount.toFixed(2)),
+          annualRate: bucket.redeemAnnualRate,
         });
       }
     }

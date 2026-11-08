@@ -72,23 +72,50 @@ import { replaceCurrentRouteUrl } from "@/lib/client/route-url-sync";
  
 
 /**
- * 理财持仓的「浮动收益率」按实际持有天数折算成年化（2026-11-03 用户口径）：
- * 浮动盈亏 ÷ 持仓成本 ÷ 持有天数 × 365。
- * 持有天数 = 本轮起息日(holdingDate) → 今天（本地日历），按自然日、不足 1 天按 1 天；
- * 起息日缺失（理论上不该发生）时退回累计口径，不做年化。
+ * 理财持仓的「约定年化」口径（2026-11-08 用户最终裁定）：
+ * 持仓期不再做任何年化折算——浮盈÷持有天数×365 在未维护净值时恒为 0.00%（纯噪声），
+ * 而理财产品购买时填的年化本身就是年化，重复外推只会放大短期波动。
+ * 所以这一列只回显「购买时填写的年化」（invest-balance 已按
+ * 买入交易的 annualRate → 产品主数据 annualRate 取值），没填就显示「-」。
+ * 已清仓/已赎回的行另算「实际年化」（起止日期明确、收益已实现）。
+ * 基金视图这一列仍是累计浮盈率，不受影响。
  */
-function wealthHoldingDays(holdingDate: unknown): number | null {
-  const start = typeof holdingDate === "string" ? holdingDate : "";
-  if (!start) return null;
+
+/**
+ * 已清仓理财的实际年化：累计收益率（清仓收益 ÷ 累计买入）× 365 ÷ 持有天数。
+ * 持有天数 = 首笔买入日 → 清仓日，不足 1 天按 1 天；日期不全时不显示。
+ */
+function wealthClearedAnnualizedRate(firstBuyDate: unknown, clearedDate: unknown, returnRate: number): number | null {
+  const start = typeof firstBuyDate === "string" ? firstBuyDate : "";
+  const end = typeof clearedDate === "string" ? clearedDate : "";
+  if (!start || !end) return null;
   const startMs = Date.parse(`${start}T00:00:00Z`);
-  if (!Number.isFinite(startMs)) return null;
-  const todayMs = Date.parse(`${todayDateLocalYmd()}T00:00:00Z`);
-  return Math.max(1, Math.floor((todayMs - startMs) / 86400000));
+  const endMs = Date.parse(`${end}T00:00:00Z`);
+  if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs < startMs) return null;
+  const days = Math.max(1, Math.floor((endMs - startMs) / 86400000));
+  return (returnRate * 100 * 365) / days;
 }
 
-function annualizedWealthPnLRate(holdingDate: unknown, cumulativeRatePercent: number): number {
-  const days = wealthHoldingDays(holdingDate);
-  return days == null ? cumulativeRatePercent : (cumulativeRatePercent / days) * 365;
+/**
+ * 清仓行的实际年化（2026-11-09 用户裁定）：**折算优先**。
+ * 「实际年化」的定义就是实际发生的收益除以实际占用资金的天数，
+ * 所以只要首笔买入日/清仓日/收益齐全，一律按 收益 ÷ 累计买入 × 365 ÷ 持有天数 计算；
+ * 赎回时手填的年化只作兜底（日期缺失、折算不出来才用），不再覆盖实际结果——
+ * 手填值可能有误，拿它盖掉实算值会让这一列失去可比性。
+ */
+function clearedDisplayAnnualizedRate(row: {
+  annualRate?: unknown;
+  firstBuyDate?: unknown;
+  clearedDate?: unknown;
+  returnRate?: unknown;
+}): number | null {
+  const computed = wealthClearedAnnualizedRate(row.firstBuyDate, row.clearedDate, toNumber(row.returnRate));
+  if (computed != null) return computed;
+  if (row.annualRate != null) {
+    const filled = Number(row.annualRate);
+    if (Number.isFinite(filled)) return filled;
+  }
+  return null;
 }
 
 function fundSubtypeLabel(t: (key: string) => string, subtype: string | null | undefined, source: string | null | undefined, productType?: string | null) {
@@ -228,6 +255,7 @@ const CLEARED_COLS = [
   ["redeemAmount", 112],
   ["historical", 112],
   ["returnRate", 80],
+  ["annualized", 84],
 ] as const;
 
 const DETAIL_COLS = [
@@ -296,6 +324,7 @@ const FUND_COL_MIN_WIDTHS: Record<FundTableKey, Record<string, number>> = {
     redeemAmount: 82,
     historical: 82,
     returnRate: 62,
+    annualized: 68,
   },
   details: {
     nav: 76,
@@ -1783,11 +1812,21 @@ export function FundShell(props: Props) {
     const displayMV = adj && p.units > 0 ? p.units * adj.nav : p.marketValue;
     const displayPnL = adj ? displayMV - p.cost : p.floatingPnL;
     const displayPnLRate = p.cost > 0 ? (displayPnL / p.cost) * 100 : 0;
-    // 理财视图：浮动收益率按持有天数年化（列名同步为「年化收益率」）；基金视图保持累计口径。
-    const displayAnnualizedRate = isWealthAccount
-      ? annualizedWealthPnLRate(p.holdingDate, displayPnLRate)
-      : displayPnLRate;
-    return { displayNav, displayNavDate, displayMV, displayPnL, displayPnLRate, displayAnnualizedRate };
+    // 理财视图：只回显购买时填写的年化，不做浮盈外推；基金视图这一列仍是累计浮盈率。
+    const agreedAnnualRate =
+      isWealthAccount && p.annualRate != null && Number.isFinite(Number(p.annualRate))
+        ? Number(p.annualRate)
+        : null;
+    const displayAnnualizedRate = isWealthAccount ? agreedAnnualRate : displayPnLRate;
+    return {
+      displayNav,
+      displayNavDate,
+      displayMV,
+      displayPnL,
+      displayPnLRate,
+      agreedAnnualRate,
+      displayAnnualizedRate,
+    };
   }, [adjustedNavByCode, isWealthAccount]);
 
   const renderPositionActions = useCallback((p: any) => {
@@ -1975,15 +2014,24 @@ export function FundShell(props: Props) {
       },
       {
         key: "floatingRate",
-        label: isWealthAccount ? t("overview.annualizedRate") : t("overview.floatingRate"),
+        label: isWealthAccount ? t("fundShell.col.agreedAnnualRate") : t("overview.floatingRate"),
         width: colWidth("positions", "floatingRate", 84),
         minWidth: minFundColWidth("positions", "floatingRate"),
         align: "right",
         className: "tabular-nums",
-        sortValue: (p) => positionDisplayMetrics(p).displayAnnualizedRate,
+        sortValue: (p) => positionDisplayMetrics(p).displayAnnualizedRate ?? -Infinity,
         render: (p) => {
           const { displayAnnualizedRate } = positionDisplayMetrics(p);
-          return <span className={pnl(displayAnnualizedRate)}>{displayAnnualizedRate.toFixed(2)}%</span>;
+          if (displayAnnualizedRate == null) return <span className="text-slate-300">-</span>;
+          if (!isWealthAccount) {
+            return <span className={pnl(displayAnnualizedRate)}>{displayAnnualizedRate.toFixed(2)}%</span>;
+          }
+          // 约定年化不是盈亏，保持中性色，只回显购买时填的值。
+          return (
+            <span className="text-slate-700" title={t("fundShell.annualRate.agreedHint")}>
+              {displayAnnualizedRate.toFixed(2)}%
+            </span>
+          );
         },
       },
       {
@@ -2047,33 +2095,36 @@ export function FundShell(props: Props) {
   const positionSummaryRow = useMemo(() => {
     if (d.positions.length === 0) return undefined;
     const floatingProfit = d.totalMarketValue - d.totalCost;
-    // 理财视图汇总行同样年化：各持仓「年化盈亏 ÷ 成本」的成本加权平均，口径与浮动收益率列一致。
+    // 理财视图汇总行：只对填了约定年化的持仓按成本加权，没填就显示「-」，不折算、不染色。
     let wealthAnnualizedRate: number | null = null;
     if (isWealthAccount) {
-      let annualizedPnl = 0;
+      let weighted = 0;
       let costSum = 0;
-      let annualizable = true;
       for (const p of d.positions) {
         const cost = toNumber(p.cost);
-        if (!(cost > 0)) continue;
-        const days = wealthHoldingDays(p.holdingDate);
-        if (days == null) {
-          annualizable = false;
-          break;
-        }
-        annualizedPnl += (positionDisplayMetrics(p).displayPnL / days) * 365;
+        const rate = positionDisplayMetrics(p).displayAnnualizedRate;
+        if (!(cost > 0) || rate == null) continue;
+        weighted += rate * cost;
         costSum += cost;
       }
-      if (annualizable && costSum > 0) wealthAnnualizedRate = annualizedPnl / costSum;
+      if (costSum > 0) wealthAnnualizedRate = weighted / costSum;
     }
-    const summaryRateClassSource = wealthAnnualizedRate ?? floatingProfit;
     return {
       cells: {
         fund: t("liabilityShell.summaryRow"),
         cost: <span className="tabular-nums text-slate-800">{formatMoney(d.totalCost)}</span>,
         marketValue: <span className={`tabular-nums ${pnl(d.totalMarketValue)}`}>{formatMoney(d.totalMarketValue)}</span>,
         floatingPnL: <span className={`tabular-nums ${pnl(floatingProfit)}`}>{formatMoney(floatingProfit)}</span>,
-        floatingRate: <span className={`tabular-nums ${pnl(summaryRateClassSource)}`}>{wealthAnnualizedRate != null ? formatPercent(wealthAnnualizedRate) : d.totalCost !== 0 ? formatPercent(floatingProfit / d.totalCost) : "-"}</span>,
+        // 理财这一列是「约定年化」，没填就是「-」，绝不拿浮盈率冒充；基金列本来就是浮盈率。
+        floatingRate: isWealthAccount ? (
+          <span className="tabular-nums text-slate-700">
+            {wealthAnnualizedRate != null ? formatPercent(wealthAnnualizedRate / 100) : "-"}
+          </span>
+        ) : (
+          <span className={`tabular-nums ${pnl(floatingProfit)}`}>
+            {d.totalCost !== 0 ? formatPercent(floatingProfit / d.totalCost) : "-"}
+          </span>
+        ),
         historical: <span className={`tabular-nums ${pnl(d.positionHistoricalProfit)}`}>{formatMoney(d.positionHistoricalProfit)}</span>,
       },
     };
@@ -2172,6 +2223,35 @@ export function FundShell(props: Props) {
         return <span className={pnl(value)}>{Number.isFinite(value) ? `${(value * 100).toFixed(2)}%` : "-"}</span>;
       },
     },
+    // 已清仓/已赎回才用实际收益折算年化：起止日期明确、收益已实现，这段「实际年化」才有比较意义。
+    ...(isWealthAccount
+      ? [{
+          key: "annualized",
+          label: t("fundShell.col.actualAnnualized"),
+          width: colWidth("cleared", "annualized", 84),
+          minWidth: minFundColWidth("cleared", "annualized"),
+          align: "right" as const,
+          className: "tabular-nums",
+          filterText: (c: any) => {
+            const rate = clearedDisplayAnnualizedRate(c);
+            return rate == null ? "" : rate.toFixed(2);
+          },
+          sortValue: (c: any) => clearedDisplayAnnualizedRate(c) ?? -Infinity,
+          render: (c: any) => {
+            const rate = clearedDisplayAnnualizedRate(c);
+            if (rate == null) return <span className="text-slate-300">-</span>;
+            const computed = wealthClearedAnnualizedRate(c.firstBuyDate, c.clearedDate, toNumber(c.returnRate));
+            const filled = c.annualRate != null && Number.isFinite(Number(c.annualRate)) ? Number(c.annualRate) : null;
+            // 悬停给出口径；手填值与实算不一致时把两个数都摆出来，避免"填过就当准"的误解。
+            const title = computed == null
+              ? t("fundShell.actualAnnualized.filledFallback", { rate: (filled ?? rate).toFixed(2) })
+              : filled != null && Math.abs(filled - computed) >= 0.005
+                ? `${t("fundShell.actualAnnualized.hint")} · ${t("fundShell.actualAnnualized.filledDiff", { filled: filled.toFixed(2), actual: computed.toFixed(2) })}`
+                : t("fundShell.actualAnnualized.hint");
+            return <span className={pnl(rate)} title={title}>{rate.toFixed(2)}%</span>;
+          },
+        } satisfies AdvancedDataTableColumn<any>]
+      : []),
   ], [assetNameLabel, colWidth, fundCode, isWealthAccount, pnl, positionAssetKey, t]);
 
   const clearedSummaryRow = useMemo<AdvancedDataTableSummaryRow | undefined>(() => {
@@ -2179,6 +2259,19 @@ export function FundShell(props: Props) {
     const totalBuyAmt = d.clearedPositions.reduce((sum: number, c: any) => sum + toNumber(c.totalBuyAmount), 0);
     const totalRedeemAmt = d.clearedPositions.reduce((sum: number, c: any) => sum + toNumber(c.totalRedeemAmount), 0);
     const totalReturnRate = totalBuyAmt > 0 ? d.clearedHistoricalProfit / totalBuyAmt : 0;
+    let weightedAnnualized: number | null = null;
+    if (isWealthAccount) {
+      let weighted = 0;
+      let buySum = 0;
+      for (const c of d.clearedPositions) {
+        const buy = toNumber(c.totalBuyAmount);
+        const rate = clearedDisplayAnnualizedRate(c);
+        if (!(buy > 0) || rate == null) continue;
+        weighted += rate * buy;
+        buySum += buy;
+      }
+      if (buySum > 0) weightedAnnualized = weighted / buySum;
+    }
     return {
       cells: {
         fund: <span className="text-xs font-semibold text-slate-700">{t("liabilityShell.summaryRow")}</span>,
@@ -2186,11 +2279,18 @@ export function FundShell(props: Props) {
         redeemAmount: <span className="tabular-nums text-xs text-slate-800">{formatMoney(totalRedeemAmt)}</span>,
         historical: <span className={`tabular-nums text-xs ${pnl(d.clearedHistoricalProfit)}`}>{formatMoney(d.clearedHistoricalProfit)}</span>,
         returnRate: <span className={`tabular-nums text-xs ${pnl(totalReturnRate)}`}>{totalBuyAmt > 0 ? formatPercent(totalReturnRate) : "-"}</span>,
+        ...(isWealthAccount
+          ? {
+              annualized: weightedAnnualized != null
+                ? <span className={`tabular-nums text-xs ${pnl(weightedAnnualized)}`}>{weightedAnnualized.toFixed(2)}%</span>
+                : <span className="text-xs text-slate-300">-</span>,
+            }
+          : {}),
       },
       rowClassName: "bg-slate-50/95",
       cellClassName: "text-xs",
     };
-  }, [d.clearedHistoricalProfit, d.clearedPositions, pnl, t]);
+  }, [d.clearedHistoricalProfit, d.clearedPositions, isWealthAccount, pnl, t]);
 
 
   const cashAccountInfoOf = useCallback((e: any) => {
@@ -3410,7 +3510,13 @@ export function FundShell(props: Props) {
                           </div>
                           <div className="shrink-0 text-right">
                             <div className={`text-base font-semibold tabular-nums ${pnl(displayMV)}`}>{formatMoney(displayMV)}</div>
-                            <div className={`mt-0.5 text-[11px] tabular-nums ${pnl(displayAnnualizedRate)}`}>{displayAnnualizedRate.toFixed(2)}%</div>
+                            <div className={`mt-0.5 text-[11px] tabular-nums ${isWealthAccount ? (displayAnnualizedRate != null ? "text-slate-500" : "text-slate-300") : displayAnnualizedRate != null ? pnl(displayAnnualizedRate) : "text-slate-300"}`}>
+                              {displayAnnualizedRate == null
+                                ? "-"
+                                : isWealthAccount
+                                  ? `${t("fundShell.col.agreedAnnualRate")} ${displayAnnualizedRate.toFixed(2)}%`
+                                  : `${displayAnnualizedRate.toFixed(2)}%`}
+                            </div>
                           </div>
                         </div>
 
