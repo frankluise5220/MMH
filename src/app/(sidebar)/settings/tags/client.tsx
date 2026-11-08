@@ -103,6 +103,11 @@ export default function SettingsTagsClient({
     <BasicDataImportExportActions
       className="hidden @min-[22rem]:flex"
       onImported={() => {
+        // A full basic-data import can create accounts, institutions,
+        // counterparties, categories and tags, so refreshing only this page's
+        // tags is not enough: the settingsCache account snapshot (localStorage
+        // included) must expire and refetch as well.
+        void notifySettingsDataChanged({ scope: "all", reason: "basic-data:import", prefetch: true }).catch(() => null);
         router.refresh();
         void fetchTags();
       }}

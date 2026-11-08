@@ -63,10 +63,24 @@ export function revalidateAfterFundShellChange() {
   revalidateTag("fund-holding", "max");
 }
 
+/**
+ * Settings writes (account create/update/delete, institutions, categories, ...)
+ * are read-your-own-writes: `revalidateTag(tag, "max")` is
+ * stale-while-revalidate, so the next request still gets the pre-write
+ * `common-data` snapshot (which holds the account list) and only the request
+ * after that sees the new value — users perceive it as "I edited the account
+ * but the cache still shows the old data". `updateTag` only works inside Server
+ * Actions; Route Handlers must use `revalidateTag(tag, { expire: 0 })` to expire
+ * the tag immediately (see node_modules/next/dist/docs/.../revalidateTag.md).
+ */
+function expireTagNow(tag: string) {
+  revalidateTag(tag, { expire: 0 });
+}
+
 export function revalidateAfterSettingsChange() {
-  revalidateTag("common-data", "max");
-  revalidateTag("invest-balances", "max");
-  revalidateTag("category-usage", "max");
+  expireTagNow("common-data");
+  expireTagNow("invest-balances");
+  expireTagNow("category-usage");
   revalidatePath("/");
   revalidatePath("/accounts");
   revalidatePath("/settings/accounts");

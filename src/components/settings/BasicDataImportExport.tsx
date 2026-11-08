@@ -6,7 +6,11 @@ import { usePathname } from "next/navigation";
 
 import { FOLDER_TAB_STRIP, FolderTabRuler, folderTabClass } from "@/app/login/FolderTabs";
 import { AccountBatchImportButton } from "@/components/settings/AccountBatchImportButton";
-import { fetchSettingsAccountData } from "@/lib/client/settingsCache";
+import {
+  fetchSettingsAccountData,
+  SETTINGS_DATA_CHANGED_EVENT,
+  type SettingsDataChangedDetail,
+} from "@/lib/client/settingsCache";
 import { useI18n } from "@/lib/i18n";
 
 type BasicDataImportOptions = Awaited<ReturnType<typeof fetchSettingsAccountData>>;
@@ -147,13 +151,24 @@ export function BasicDataImportExportActions({ onImported, className }: { onImpo
 
   useEffect(() => {
     let alive = true;
-    void fetchSettingsAccountData()
-      .then((value) => {
-        if (alive) setOptions(value);
-      })
-      .catch(() => null);
+    const load = (force = false) => {
+      void fetchSettingsAccountData(force ? { force: true } : undefined)
+        .then((value) => {
+          if (alive) setOptions(value);
+        })
+        .catch(() => null);
+    };
+    // Import can create institutions/counterparties, so the options snapshot
+    // frozen at mount time must refetch when the settings data changes.
+    const onSettingsChanged = (event: Event) => {
+      const scope = (event as CustomEvent<SettingsDataChangedDetail>).detail?.scope ?? "all";
+      if (scope === "accounts" || scope === "all") load(true);
+    };
+    load();
+    window.addEventListener(SETTINGS_DATA_CHANGED_EVENT, onSettingsChanged as EventListener);
     return () => {
       alive = false;
+      window.removeEventListener(SETTINGS_DATA_CHANGED_EVENT, onSettingsChanged as EventListener);
     };
   }, []);
 

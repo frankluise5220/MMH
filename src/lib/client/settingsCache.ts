@@ -62,6 +62,10 @@ type PersistedAccountEnvelope = {
 
 const cache = new Map<string, CacheEntry<unknown>>();
 let hydratedHouseholdId: string | null = null;
+// Invalidation epoch: a request started before an invalidation must never write
+// its pre-write snapshot back into memory/localStorage once it resolves,
+// otherwise a just-edited account gets resurrected by a background fetch.
+let cacheEpoch = 0;
 
 function isFresh(entry: CacheEntry<unknown> | undefined) {
   return Boolean(entry?.value) && Date.now() - entry!.updatedAt < TTL_MS;
@@ -120,6 +124,7 @@ function hydrateAccountCacheFromPersist() {
   const householdId = readHouseholdId();
   if (hydratedHouseholdId === householdId) return;
   if (hydratedHouseholdId && hydratedHouseholdId !== householdId) {
+    cacheEpoch += 1;
     cache.delete(ACCOUNT_DATA_KEY);
     cache.delete(BOOTSTRAP_KEY);
     cache.delete(CATEGORIES_KEY);
@@ -176,6 +181,7 @@ export async function fetchSettingsBootstrap(options?: { force?: boolean }) {
   const entry = cache.get(BOOTSTRAP_KEY) as CacheEntry<SettingsBootstrapData> | undefined;
   if (!options?.force && isFresh(entry) && entry?.value) return entry.value;
   if (!options?.force && entry?.promise) return entry.promise;
+  const epoch = cacheEpoch;
 
   const promise = fetch("/api/v1/settings/bootstrap", { cache: "no-store" })
     .then((res) => res.json())
@@ -191,13 +197,16 @@ export async function fetchSettingsBootstrap(options?: { force?: boolean }) {
         categories: data.categories || [],
         tags: data.tags || [],
       };
-      seedBootstrapCaches(value);
+      // Invalidation happened while this request was in flight: the response is
+      // a pre-write snapshot, so it must not be seeded back into the cache.
+      if (epoch === cacheEpoch) seedBootstrapCaches(value);
       // Mailboxes and the mail import keyword are system settings too: warm them
       // alongside the bootstrap so the mail import dialog opens from cache.
       warmEmailSettings();
       return value;
     })
     .catch((error) => {
+      if (epoch !== cacheEpoch) throw error;
       const prev = cache.get(BOOTSTRAP_KEY) as CacheEntry<SettingsBootstrapData> | undefined;
       if (prev?.value) seedBootstrapCaches(prev.value);
       else cache.delete(BOOTSTRAP_KEY);
@@ -222,6 +231,7 @@ function scopeTouchesTags(scope: SettingsDataScope) {
 }
 
 function invalidateSettingsData(scope: SettingsDataScope = "all") {
+  cacheEpoch += 1;
   if (scopeTouchesAccounts(scope)) {
     cache.delete(ACCOUNT_DATA_KEY);
     clearPersistedAccountData();
@@ -252,6 +262,7 @@ export async function notifySettingsDataChanged(options?: SettingsDataChangeOpti
 }
 
 function startAccountDataFetch(entry?: CacheEntry<SettingsAccountData>) {
+  const epoch = cacheEpoch;
   const promise = fetch("/api/v1/accounts/internal?balances=false", { cache: "no-store" })
     .then((res) => res.json())
     .then((data) => {
@@ -264,10 +275,11 @@ function startAccountDataFetch(entry?: CacheEntry<SettingsAccountData>) {
         counterparties: data.counterparties || [],
         users: data.users || [],
       };
-      setAccountDataCache(value);
+      if (epoch === cacheEpoch) setAccountDataCache(value);
       return value;
     })
     .catch((error) => {
+      if (epoch !== cacheEpoch) throw error;
       const prev = cache.get(ACCOUNT_DATA_KEY) as CacheEntry<SettingsAccountData> | undefined;
       if (prev?.value) cache.set(ACCOUNT_DATA_KEY, { value: prev.value, updatedAt: prev.updatedAt, promise: undefined });
       else cache.delete(ACCOUNT_DATA_KEY);
@@ -310,6 +322,7 @@ export function getCachedSettingsCategories() {
 }
 
 export async function fetchSettingsCategories(options?: { force?: boolean }) {
+  const epoch = cacheEpoch;
   const bootstrap = await getSharedSettingsBootstrap(options);
   if (bootstrap) return bootstrap.categories;
   const entry = cache.get(CATEGORIES_KEY) as CacheEntry<SettingsCategory[]> | undefined;
@@ -319,10 +332,11 @@ export async function fetchSettingsCategories(options?: { force?: boolean }) {
   const promise = fetchSettingsBootstrap(options)
     .then((data) => {
       const value = data.categories || [];
-      setCacheValue(CATEGORIES_KEY, value);
+      if (epoch === cacheEpoch) setCacheValue(CATEGORIES_KEY, value);
       return value as SettingsCategory[];
     })
     .catch((error) => {
+      if (epoch !== cacheEpoch) throw error;
       const prev = cache.get(CATEGORIES_KEY) as CacheEntry<SettingsCategory[]> | undefined;
       if (prev?.value) setCacheValue(CATEGORIES_KEY, prev.value);
       else cache.delete(CATEGORIES_KEY);
@@ -344,6 +358,7 @@ export function getCachedSettingsTags() {
 }
 
 export async function fetchSettingsTags(options?: { force?: boolean }) {
+  const epoch = cacheEpoch;
   const bootstrap = await getSharedSettingsBootstrap(options);
   if (bootstrap) return bootstrap.tags;
   const entry = cache.get(TAGS_KEY) as CacheEntry<SettingsTag[]> | undefined;
@@ -353,10 +368,11 @@ export async function fetchSettingsTags(options?: { force?: boolean }) {
   const promise = fetchSettingsBootstrap(options)
     .then((data) => {
       const value = data.tags || [];
-      cache.set(TAGS_KEY, { value, updatedAt: Date.now() });
+      if (epoch === cacheEpoch) cache.set(TAGS_KEY, { value, updatedAt: Date.now() });
       return value as SettingsTag[];
     })
     .catch((error) => {
+      if (epoch !== cacheEpoch) throw error;
       const prev = cache.get(TAGS_KEY) as CacheEntry<SettingsTag[]> | undefined;
       if (prev?.value) cache.set(TAGS_KEY, { value: prev.value, updatedAt: prev.updatedAt });
       else cache.delete(TAGS_KEY);

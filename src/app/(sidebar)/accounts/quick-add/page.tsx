@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { CheckCircle2, Loader2 } from "lucide-react";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
-import { fetchSettingsAccountData } from "@/lib/client/settingsCache";
+import { fetchSettingsAccountData, notifySettingsDataChanged } from "@/lib/client/settingsCache";
 import { useI18n } from "@/lib/i18n";
 
 type T = (key: string, params?: Record<string, string | number>) => string;
@@ -206,6 +206,10 @@ export default function QuickAddAccountsPage() {
         }
       }
 
+      // The server already revalidated, but the client settingsCache (including
+      // the localStorage snapshot) only reacts to SETTINGS_DATA_CHANGED_EVENT:
+      // without this notification other pages keep the stale account options.
+      await notifySettingsDataChanged({ scope: "accounts", reason: "quick-add-accounts", prefetch: true }).catch(() => null);
       setAccounts((prev) => [...prev, ...createdAccounts]);
       setMessage(
         skippedCount > 0
