@@ -246,6 +246,12 @@ export default function DisplaySettingsPage() {
   // 明细默认观测窗口（年）。0 = 不限；只作用于服务端首次取数，不进 cookie 镜像。
   const [detailWindowYears, setDetailWindowYears] = useState<number>(DEFAULT_DETAIL_WINDOW_YEARS);
   const [savingDetailWindowYears, setSavingDetailWindowYears] = useState(false);
+  // 计划任务执行行为（原 /settings/scheduled-tasks 独立页，2026-11-08 并入个性化设置）。
+  const [balanceGuard, setBalanceGuard] = useState(false);
+  const [balanceGuardLoaded, setBalanceGuardLoaded] = useState(false);
+  const [savingBalanceGuard, setSavingBalanceGuard] = useState(false);
+  const [balanceGuardSaved, setBalanceGuardSaved] = useState(false);
+  const [balanceGuardError, setBalanceGuardError] = useState<string | null>(null);
   const [savingScheme, setSavingScheme] = useState(false);
   const [savingBaseCurrency, setSavingBaseCurrency] = useState(false);
   const [savingTimeZone, setSavingTimeZone] = useState(false);
@@ -293,6 +299,19 @@ export default function DisplaySettingsPage() {
 
   useEffect(() => {
     void loadBaseCurrency();
+  }, []);
+
+  // 余额校验开关走独立 API（HouseholdPreference.balanceGuard），不在 app-preferences 镜像里。
+  useEffect(() => {
+    fetch("/api/v1/settings/scheduled-tasks", { cache: "no-store" })
+      .then((res) => res.json())
+      .then((body) => {
+        if (body?.ok) setBalanceGuard(Boolean(body.data?.balanceGuard));
+      })
+      .catch(() => {
+        // 读不到就先按关闭显示；用户仍可切换保存。
+      })
+      .finally(() => setBalanceGuardLoaded(true));
   }, []);
 
   // 观测窗口只有服务端取数用，没进 cookie 镜像，所以这里读一次真值。
@@ -756,6 +775,31 @@ export default function DisplaySettingsPage() {
     }
   }
 
+  async function toggleBalanceGuard(next: boolean) {
+    if (savingBalanceGuard) return;
+    setSavingBalanceGuard(true);
+    setBalanceGuardSaved(false);
+    setBalanceGuardError(null);
+    try {
+      const res = await fetch("/api/v1/settings/scheduled-tasks", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ balanceGuard: next }),
+      });
+      const body = await res.json().catch(() => null);
+      if (!res.ok || !body?.ok) {
+        setBalanceGuardError(body?.error || t("settings.scheduledTasks.saveFailed"));
+        return;
+      }
+      setBalanceGuard(Boolean(body.data?.balanceGuard));
+      setBalanceGuardSaved(true);
+    } catch {
+      setBalanceGuardError(t("settings.scheduledTasks.saveFailed"));
+    } finally {
+      setSavingBalanceGuard(false);
+    }
+  }
+
   const accountFormatPreviews = useMemo(
     () =>
       ACCOUNT_FORMAT_PREVIEW_SAMPLES.map((sample) => ({
@@ -1018,6 +1062,25 @@ export default function DisplaySettingsPage() {
               label={t("settings.display.accountUsageSort")}
             />
           </MobileSettingRow>
+        </MobileSettingGroup>
+
+        <MobileSettingGroup title={t("settings.scheduledTasks.title")}>
+          <MobileSettingRow
+            title={t("settings.scheduledTasks.balanceGuard")}
+            desc={t("settings.scheduledTasks.balanceGuardDesc")}
+            hideDesc={hideSettingDescriptions}
+            inline
+          >
+            <SettingsSwitch
+              checked={balanceGuard}
+              disabled={savingBalanceGuard || !balanceGuardLoaded}
+              onCheckedChange={(next) => void toggleBalanceGuard(next)}
+              label={t("settings.scheduledTasks.balanceGuard")}
+            />
+          </MobileSettingRow>
+          {balanceGuardError ? (
+            <div className="px-4 pb-3 text-xs text-red-600">{balanceGuardError}</div>
+          ) : null}
         </MobileSettingGroup>
       </div>
       ) : (
@@ -1348,6 +1411,35 @@ export default function DisplaySettingsPage() {
               </div>
             </div>
           </SettingRow>
+        </div>
+      </section>
+
+      <section className="panel-surface overflow-hidden">
+        <div>
+          <SettingRow title={t("settings.scheduledTasks.balanceGuard")} desc={t("settings.scheduledTasks.balanceGuardDesc")} hideDesc={hideSettingDescriptions}>
+            <div className="space-y-2">
+              <SettingsSwitch
+                checked={balanceGuard}
+                disabled={savingBalanceGuard || !balanceGuardLoaded}
+                onCheckedChange={(next) => void toggleBalanceGuard(next)}
+                label={t("settings.scheduledTasks.balanceGuard")}
+              />
+              {balanceGuardSaved ? (
+                <p className="text-xs text-emerald-700">{t("settings.scheduledTasks.saved")}</p>
+              ) : null}
+              {balanceGuardError ? (
+                <p className="text-xs text-red-600">{balanceGuardError}</p>
+              ) : null}
+            </div>
+          </SettingRow>
+        </div>
+        <div className="border-t border-slate-100 px-4 py-3">
+          <div className="text-xs font-medium text-slate-700">{t("settings.scheduledTasks.behaviourTitle")}</div>
+          <ul className="mt-2 space-y-1.5 text-xs leading-5 text-slate-500">
+            <li>· {t("settings.scheduledTasks.behaviour.guard")}</li>
+            <li>· {t("settings.scheduledTasks.behaviour.force")}</li>
+            <li>· {t("settings.scheduledTasks.behaviour.off")}</li>
+          </ul>
         </div>
       </section>
       </div>

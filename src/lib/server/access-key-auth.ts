@@ -1,6 +1,17 @@
 import { prisma } from "@/lib/db/prisma";
-import { hashPassword, verifyPassword } from "@/lib/auth/password";
+import { verifyPassword } from "@/lib/auth/password";
+import { decrypt, encrypt, getOrCreateMasterKey } from "@/lib/auth/encrypt";
 
+/**
+ * Storage formats for AccessKey.key, oldest first:
+ * 1. Plain text (legacy, migrated away on first successful verification).
+ * 2. "bcrypt-sha256-v1:<preview>:<hash>" (legacy hash, still verified but cannot
+ *    be revealed, so those keys show no copy button).
+ * 3. "enc-aes-gcm-v1:<iv>.<ciphertext>.<tag>" (reversible AES-256-GCM; chosen over
+ *    hashing because users must be able to copy an existing key again on the MCP
+ *    settings page. The master key lives in SystemSetting, see encrypt.ts).
+ */
+const ACCESS_KEY_ENC_PREFIX = "enc-aes-gcm-v1:";
 const ACCESS_KEY_HASH_PREFIX = "bcrypt-sha256-v1:";
 
 type AccessKeyRow = {
@@ -33,47 +44,85 @@ function accessKeyPreview(plain: string) {
   return `${"*".repeat(Math.max(8, Math.min(normalized.length, 12)))}${suffix}`;
 }
 
-function parseStoredAccessKey(stored: string): { hashed: true; preview: string; hash: string } | { hashed: false; plain: string } {
-  if (!stored.startsWith(ACCESS_KEY_HASH_PREFIX)) {
-    return { hashed: false, plain: stored };
+type ParsedStoredAccessKey =
+  | { kind: "encrypted"; cipher: string }
+  | { kind: "hashed"; preview: string; hash: string }
+  | { kind: "plain"; plain: string };
+
+function parseStoredAccessKey(stored: string): ParsedStoredAccessKey {
+  if (stored.startsWith(ACCESS_KEY_ENC_PREFIX)) {
+    return { kind: "encrypted", cipher: stored.slice(ACCESS_KEY_ENC_PREFIX.length) };
   }
-  const rest = stored.slice(ACCESS_KEY_HASH_PREFIX.length);
-  const separator = rest.indexOf(":");
-  if (separator <= 0) {
-    return { hashed: true, preview: "****", hash: rest };
+  if (stored.startsWith(ACCESS_KEY_HASH_PREFIX)) {
+    const rest = stored.slice(ACCESS_KEY_HASH_PREFIX.length);
+    const separator = rest.indexOf(":");
+    if (separator <= 0) {
+      return { kind: "hashed", preview: "****", hash: rest };
+    }
+    return {
+      kind: "hashed",
+      preview: rest.slice(0, separator),
+      hash: rest.slice(separator + 1),
+    };
   }
-  return {
-    hashed: true,
-    preview: rest.slice(0, separator),
-    hash: rest.slice(separator + 1),
-  };
+  return { kind: "plain", plain: stored };
 }
 
-export function storedAccessKeyPreview(stored: string) {
-  const parsed = parseStoredAccessKey(stored);
-  return parsed.hashed ? parsed.preview : accessKeyPreview(parsed.plain);
-}
-
-export async function hashAccessKey(plain: string) {
+/** New keys are stored reversibly so the settings page can copy them again later. */
+export async function storeAccessKey(plain: string) {
   const normalized = plain.trim();
   if (!normalized) {
     throw new Error("Access key is required.");
   }
-  const hash = await hashPassword(normalized);
-  return `${ACCESS_KEY_HASH_PREFIX}${accessKeyPreview(normalized)}:${hash}`;
+  const masterKey = await getOrCreateMasterKey();
+  return `${ACCESS_KEY_ENC_PREFIX}${encrypt(normalized, masterKey)}`;
+}
+
+export async function storedAccessKeyPreview(stored: string) {
+  const parsed = parseStoredAccessKey(stored);
+  try {
+    if (parsed.kind === "encrypted") {
+      return accessKeyPreview(await decrypt(parsed.cipher, await getOrCreateMasterKey()));
+    }
+  } catch {
+    return "****";
+  }
+  if (parsed.kind === "hashed") return parsed.preview;
+  return accessKeyPreview(parsed.plain);
+}
+
+/** Full plain key when the storage format allows it, null for legacy hashed keys. */
+export async function revealStoredAccessKey(stored: string): Promise<string | null> {
+  const parsed = parseStoredAccessKey(stored);
+  if (parsed.kind !== "encrypted") return null;
+  try {
+    return await decrypt(parsed.cipher, await getOrCreateMasterKey());
+  } catch {
+    return null;
+  }
 }
 
 async function verifyStoredAccessKey(provided: string, row: AccessKeyRow) {
   const stored = parseStoredAccessKey(row.key);
-  if (stored.hashed) {
+  if (stored.kind === "encrypted") {
+    let plain: string | null = null;
+    try {
+      plain = await decrypt(stored.cipher, await getOrCreateMasterKey());
+    } catch {
+      return false;
+    }
+    return plainTextEquals(provided, plain);
+  }
+  if (stored.kind === "hashed") {
     if (!stored.hash) return false;
     return verifyPassword(provided, stored.hash).catch(() => false);
   }
   if (!plainTextEquals(provided, stored.plain)) return false;
-  const nextHash = await hashAccessKey(provided);
+  // Legacy plain-text keys migrate to the reversible-encrypted format.
+  const nextStored = await storeAccessKey(provided);
   await prisma.accessKey.update({
     where: { id: row.id },
-    data: { key: nextHash },
+    data: { key: nextStored },
   }).catch(() => null);
   return true;
 }

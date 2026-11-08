@@ -2,15 +2,19 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
 import { getCurrentUser, isAdmin } from "@/lib/server/auth";
-import { hashAccessKey, storedAccessKeyPreview } from "@/lib/server/access-key-auth";
+import { revealStoredAccessKey, storeAccessKey, storedAccessKeyPreview } from "@/lib/server/access-key-auth";
 
 export const runtime = "nodejs";
 
 /**
  * API Key management endpoint (admin only).
  *
- * GET   /api/v1/settings/access-keys        → Lists API keys with masked previews only
- * POST  /api/v1/settings/access-keys        → Creates { name, key }; stores only a hash
+ * GET   /api/v1/settings/access-keys        → Lists API keys; full value included
+ *                                              when the storage format is reversible
+ *                                              (legacy hashed keys only preview)
+ * POST  /api/v1/settings/access-keys        → Creates { name, key }; stores reversibly
+ *                                              encrypted (AES-256-GCM) so it can be
+ *                                              copied again later
  * DELETE /api/v1/settings/access-keys?id=…  → Deletes the specified key
  */
 async function requireAdmin(): Promise<{ ok: true } | { ok: false; response: NextResponse }> {
@@ -35,13 +39,14 @@ export async function GET() {
 
   return NextResponse.json({
     ok: true,
-    keys: keys.map((key) => ({
+    keys: await Promise.all(keys.map(async (key) => ({
       id: key.id,
       name: key.name,
-      keyPreview: storedAccessKeyPreview(key.key),
+      keyPreview: await storedAccessKeyPreview(key.key),
+      key: await revealStoredAccessKey(key.key),
       scope: normalizeScope(key.scope),
       createdAt: key.createdAt,
-    })),
+    }))),
   });
 }
 
@@ -70,10 +75,10 @@ export async function POST(req: Request) {
   }
 
   const { name, key, scope } = parse.data;
-  const hashedKey = await hashAccessKey(key);
+  const storedKey = await storeAccessKey(key);
 
   const created = await prisma.accessKey.create({
-    data: { name, key: hashedKey, scope },
+    data: { name, key: storedKey, scope },
     select: { id: true, name: true, key: true, scope: true, createdAt: true },
   });
 
@@ -82,7 +87,8 @@ export async function POST(req: Request) {
     key: {
       id: created.id,
       name: created.name,
-      keyPreview: storedAccessKeyPreview(created.key),
+      keyPreview: await storedAccessKeyPreview(created.key),
+      key: key.trim(),
       scope: normalizeScope(created.scope),
       createdAt: created.createdAt,
     },

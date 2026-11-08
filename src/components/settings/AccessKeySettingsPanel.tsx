@@ -1,0 +1,231 @@
+"use client";
+import Link from "next/link";
+import { ModalLayer } from "@/components/ModalLayer";
+
+import { useState, useEffect } from "react";
+import { Check, X } from "lucide-react";
+import {
+  SettingsActionButton,
+  SettingsEmptyRow,
+  SettingsPageHeader,
+  SettingsPrimaryAddButton,
+  SettingsRowActions,
+  SettingsSection,
+  SettingsTable,
+  SettingsTd,
+  SettingsTh,
+} from "@/components/settings/SettingsPageScaffold";
+import { copyToClipboard } from "@/lib/client/clipboard";
+import { generateRandomKey } from "@/lib/client/randomKey";
+import { withBasePath } from "@/lib/base-path";
+import { useI18n } from "@/lib/i18n";
+
+type AccessKey = {
+  id: string;
+  name: string;
+  keyPreview: string;
+  /** Full key value; null for legacy hashed keys that cannot be revealed. */
+  key?: string | null;
+  /** Absent for keys created before the column existed; those are full-access. */
+  scope?: "read" | "write";
+  createdAt?: string;
+};
+
+function isReadScope(key: AccessKey) {
+  return key.scope === "read";
+}
+
+/**
+ * Shared by the legacy /settings/api page and the MCP setup page. The embedded
+ * form drops its own page header so the MCP page keeps a single title.
+ */
+export function AccessKeySettingsPanel({ showHeader = true }: { showHeader?: boolean }) {
+  const { t } = useI18n();
+  const [keys, setKeys] = useState<AccessKey[]>([]);
+  const [showModal, setShowModal] = useState(false);
+  const [name, setName] = useState("");
+  const [newKey, setNewKey] = useState("");
+  const [newScope, setNewScope] = useState<"read" | "write">("read");
+  const [copiedKeyId, setCopiedKeyId] = useState<string | null>(null);
+  const [copiedNewKey, setCopiedNewKey] = useState(false);
+
+  useEffect(() => {
+    if (!copiedKeyId && !copiedNewKey) return;
+    const timer = window.setTimeout(() => {
+      setCopiedKeyId(null);
+      setCopiedNewKey(false);
+    }, 1800);
+    return () => window.clearTimeout(timer);
+  }, [copiedKeyId, copiedNewKey]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetchKeys(controller.signal);
+    return () => controller.abort();
+  }, []);
+
+  async function fetchKeys(signal?: AbortSignal) {
+    try {
+      const res = await fetch(withBasePath("/api/v1/settings/access-keys"), { signal });
+      const data = await res.json();
+      if (data.ok && Array.isArray(data.keys)) setKeys(data.keys);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+    }
+  }
+
+  async function handleCreate() {
+    if (!name.trim() || !newKey.trim()) return;
+    try {
+      const res = await fetch(withBasePath("/api/v1/settings/access-keys"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: name.trim(), key: newKey, scope: newScope }),
+      });
+      const data = await res.json();
+      if (data.ok && data.key) {
+        setKeys(prev => [data.key, ...prev]);
+        setShowModal(false);
+        setName("");
+        setNewKey("");
+        setNewScope("read");
+      }
+    } catch { /* ignore */ }
+  }
+
+  async function handleDelete(id: string) {
+    try {
+      const res = await fetch(withBasePath(`/api/v1/settings/access-keys?id=${encodeURIComponent(id)}`), { method: "DELETE" });
+      const data = await res.json();
+      if (data.ok) setKeys(prev => prev.filter(k => k.id !== id));
+    } catch { /* ignore */ }
+  }
+
+  return (
+    <div className="space-y-4">
+      {showHeader ? (
+        <SettingsPageHeader
+          title={t("settings.externalApiKeys.title")}
+          description={t("settings.externalApiKeys.description")}
+          count={keys.length}
+          actions={
+            <Link href="/settings/mcp" className="secondary-button h-8 px-2.5 text-xs">
+              {t("settings.mcp")}
+            </Link>
+          }
+        />
+      ) : null}
+
+      <SettingsSection
+        title={t("settings.externalApiKeys.listTitle")}
+        count={keys.length}
+        actions={
+          <SettingsPrimaryAddButton onClick={() => { setNewKey(generateRandomKey()); setName(""); setShowModal(true); }}>
+            {t("settings.externalApiKeys.add")}
+          </SettingsPrimaryAddButton>
+        }
+      >
+      <SettingsTable minWidth={760} maxWidth="full">
+        <thead className="sticky top-0 z-10">
+          <tr>
+            <SettingsTh>{t("settings.externalApiKeys.name")}</SettingsTh>
+            <SettingsTh>{t("settings.externalApiKeys.scope")}</SettingsTh>
+            <SettingsTh>{t("settings.externalApiKeys.key")}</SettingsTh>
+            <SettingsTh>{t("settings.externalApiKeys.createdAt")}</SettingsTh>
+            <SettingsTh align="right">{t("settings.externalApiKeys.actions")}</SettingsTh>
+          </tr>
+        </thead>
+        <tbody>
+          {keys.length > 0 ? keys.map((k) => (
+              <tr key={k.id} className="hover:bg-slate-50">
+                <SettingsTd className="text-sm font-medium text-slate-800">{k.name}</SettingsTd>
+                <SettingsTd>
+                  <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium ${isReadScope(k) ? "bg-slate-100 text-slate-600" : "bg-amber-50 text-amber-700"}`}>
+                    {isReadScope(k)
+                      ? t("settings.externalApiKeys.scopeRead")
+                      : t("settings.externalApiKeys.scopeWrite")}
+                  </span>
+                </SettingsTd>
+                <SettingsTd className="max-w-[24rem] truncate font-mono text-[11px] text-slate-500" title={k.key ? k.key : t("settings.externalApiKeys.legacyKeyHint")}>
+                  {k.keyPreview}
+                </SettingsTd>
+                <SettingsTd>{k.createdAt ? new Date(k.createdAt).toLocaleString() : "-"}</SettingsTd>
+                <SettingsTd align="right">
+                  <SettingsRowActions>
+                    <SettingsActionButton
+                      label={copiedKeyId === k.id ? t("settings.externalApiKeys.copied") : t("settings.externalApiKeys.copyKey")}
+                      variant="copy"
+                      disabled={!k.key}
+                      icon={copiedKeyId === k.id ? <Check className="h-3.5 w-3.5 text-emerald-600" /> : undefined}
+                      title={copiedKeyId === k.id ? t("settings.externalApiKeys.copied") : (k.key ? undefined : t("settings.externalApiKeys.legacyKeyHint"))}
+                      onClick={async () => {
+                        if (!k.key) return;
+                        if (await copyToClipboard(k.key)) setCopiedKeyId(k.id);
+                      }}
+                    />
+                    <SettingsActionButton
+                      label={t("settings.externalApiKeys.deleteKey")}
+                      variant="delete"
+                      onClick={() => handleDelete(k.id)}
+                    />
+                  </SettingsRowActions>
+                </SettingsTd>
+              </tr>
+          )) : (
+            <SettingsEmptyRow colSpan={5}>{t("settings.externalApiKeys.empty")}</SettingsEmptyRow>
+          )}
+        </tbody>
+      </SettingsTable>
+      </SettingsSection>
+
+      {showModal && (
+        <ModalLayer className="app-modal-backdrop">
+          <div className="app-modal-panel max-w-md">
+            <div className="modal-header shrink-0">
+              <div className="text-sm font-semibold text-slate-800">{t("settings.externalApiKeys.addTitle")}</div>
+              <button type="button" onClick={() => setShowModal(false)} className="secondary-button h-8 px-2">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+            <div className="p-5 space-y-4">
+              <div>
+                <label className="form-label mb-1.5 block">{t("settings.externalApiKeys.name")}</label>
+                <input className="form-input"
+                  value={name} onChange={(e) => setName(e.target.value)} placeholder={t("settings.externalApiKeys.namePlaceholder")} autoFocus />
+              </div>
+              <div>
+                <label className="form-label mb-1.5 block">{t("settings.externalApiKeys.scope")}</label>
+                <select className="form-input h-9"
+                  value={newScope} onChange={(e) => setNewScope(e.target.value === "write" ? "write" : "read")}>
+                  <option value="read">{t("settings.externalApiKeys.scopeRead")}</option>
+                  <option value="write">{t("settings.externalApiKeys.scopeWrite")}</option>
+                </select>
+                <p className="mt-1.5 text-[11px] leading-4 text-slate-500">
+                  {t("settings.externalApiKeys.scopeHint")}
+                </p>
+              </div>
+              <div>
+                <label className="form-label mb-1.5 block">{t("settings.externalApiKeys.key")}</label>
+                <div className="flex items-center gap-2">
+                  <div className="h-9 flex-1 rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700 overflow-hidden font-mono">{newKey}</div>
+                  <button type="button" className="secondary-button inline-flex h-9 items-center gap-1.5 px-3"
+                    onClick={async () => {
+                      if (await copyToClipboard(newKey)) setCopiedNewKey(true);
+                    }}>
+                    {copiedNewKey ? <Check className="h-4 w-4 text-emerald-600" /> : null}
+                    {copiedNewKey ? t("settings.externalApiKeys.copied") : t("settings.externalApiKeys.copy")}
+                  </button>
+                </div>
+              </div>
+              <div className="flex justify-end gap-2 border-t border-slate-100 pt-3">
+                <button className="secondary-button h-9 px-4" onClick={() => setShowModal(false)}>{t("common.cancel")}</button>
+                <button className="primary-button h-9 px-4 disabled:opacity-50"
+                  onClick={handleCreate} disabled={!name.trim()}>{t("common.save")}</button>
+              </div>
+            </div>
+          </div>
+        </ModalLayer>
+      )}
+    </div>
+  );
+}

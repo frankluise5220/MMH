@@ -125,13 +125,13 @@
           "apiRefs": ["/api/v1/settings/ai-config"]
         },
         {
-          "id": "api",
-          "label": "外接 API",
-          "description": "外部 Agent 和自动化访问密钥",
-          "icon": "key",
+          "id": "mcp",
+          "label": "MCP 接入说明",
+          "description": "Access Key 管理、接入配置、工具清单和提示词",
+          "icon": "bot",
           "surfaces": ["web"],
-          "webHref": "/settings/api",
-          "apiRefs": ["/api/v1/settings/access-keys"]
+          "webHref": "/settings/mcp",
+          "apiRefs": ["/api/v1/mcp", "/api/v1/settings/access-keys"]
         },
         {
           "id": "fund-api",
@@ -141,31 +141,23 @@
           "surfaces": ["web"],
           "webHref": "/settings/fund-api",
           "apiRefs": ["/api/v1/settings/fund-query-api"]
-        },
-        {
-          "id": "scheduled-tasks",
-          "label": "计划任务",
-          "description": "计划任务执行时的余额校验与忽略余额强行生成",
-          "icon": "calendar-clock",
-          "surfaces": ["web"],
-          "webHref": "/settings/scheduled-tasks",
-          "apiRefs": ["/api/v1/settings/scheduled-tasks"]
         }
       ]
     },
     {
       "id": "display",
       "label": "显示偏好",
-      "description": "颜色、时间和界面偏好",
+      "description": "个性化设置：颜色、时间和界面偏好",
       "items": [
         {
           "id": "display",
-          "label": "显示",
-          "description": "颜色、时间和界面偏好",
+          "label": "个性化设置",
+          "description": "界面、侧边栏、明细表格偏好与计划任务执行行为",
           "icon": "palette",
           "surfaces": ["web", "android"],
           "webHref": "/settings/display",
-          "preferenceKeys": ["colorScheme", "language", "sidebar"]
+          "preferenceKeys": ["colorScheme", "language", "sidebar"],
+          "apiRefs": ["/api/v1/settings/app-preferences", "/api/v1/settings/color-scheme", "/api/v1/settings/scheduled-tasks"]
         },
         {
           "id": "color-scheme",
