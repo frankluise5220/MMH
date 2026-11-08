@@ -200,9 +200,10 @@ jobs:
       # mmh-updater 里有一层 24.31 MB（apk add git nodejs），导致所有存量 0.1.81 用户
       # 的「一键更新」永久卡在「拉取镜像」。
       # 判定口径是**差集**而不是绝对值：基础镜像层（node:20-bookworm 的 201.75 MB、
-      # docker:28-cli 的 20.74 MB …）在存量用户本地已经存在，按 blob digest 直接跳过，
-      # 用绝对值判会把 app 镜像永久判红。所以拿「用户正在跑的版本」当基线，
-      # 只要求本次新增/变更的每一层 ≤ 10 MB（实测 12.89 MB 能过、14.25 MB 必卡）。
+      # docker:28-cli 的 20.74 MB …）在存量用户本地已经存在，按 blob digest 直接跳过。
+      # 基线固定为 Dockerfile 的 BASE_IMAGE（用户正在跑的原版 0.1.81）。
+      # 新增层每层 ≤ 4.5 MB（8.75 MB 实测会卡），且新增层数/总增量也受限，
+      # 防止为了缩单层而把 19 层放大成 38 层、破坏层复用。
       # 红的时候 latest 已经指向坏镜像，必须立刻用 .github/workflows/retag.yml 把
       # latest 指回上一个健康的 digest，再修 Dockerfile。
       - name: Verify image layer sizes
@@ -213,19 +214,12 @@ jobs:
           set -euo pipefail
           app_tag="$(printf '%s\n' "${{ steps.meta.outputs.tags }}" | sed -n '1p' | sed 's|.*:||')"
           updater_tag="$(printf '%s\n' "${{ steps.meta-updater.outputs.tags }}" | sed -n '1p' | sed 's|.*:||')"
-          # 基线 = 最新一个同主版本的纯版本号 tag（排除正在构建的这一版）。
-          # checkout 是浅克隆，本地没有 tag，用 ls-remote 从远端拿。
-          # 2026-11-06：此前没有任何过滤，v2026.08.07.3-fnos / v2026.08.05 这类 fnOS
-          # 打包 tag 在 sort -V 里比 0.1.82 更大，被选成基线后 registry 查不到
-          # （MANIFEST_UNKNOWN），门禁就退化成“只报告不判定”，24.31MB 的执行器大层
-          # 因此一路“通过”。现在要求：X.Y.Z 形式 + 与 package.json 同主版本，
-          # 且排除本次要产出的版本号（重发时 app_tag 是 latest，必须单独排除）。
-          pkg_version="$(node -p "require('./package.json').version")"
-          pkg_major="${pkg_version%%.*}"
-          baseline="$(git ls-remote --tags --refs origin 'v*' 2>/dev/null \
-            | sed 's|.*refs/tags/v||' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
-            | awk -F. -v m="$pkg_major" '$1 == m' \
-            | grep -vx "$app_tag" | grep -vx "$pkg_version" | sort -V | tail -1 || true)"
+          # 门禁基线必须等于 Dockerfile 的 BASE_IMAGE：存量用户跑的是原版 0.1.81
+          # （含旧 updater），新镜像就是 FROM 它构建的。自动取「上一个发布 tag」
+          # 会在下一版选中坏掉的 0.1.82，差集里混进 0.1.81 的大层而误判。
+          # 从 Dockerfile 直接解析，保证两者永远一致。
+          baseline="$(sed -n 's|^ARG BASE_IMAGE=ghcr\.io/.*/mmh:\([0-9][0-9.]*\)$|\1|p' Dockerfile | tail -1)"
+          test -n "$baseline" || { echo "Dockerfile 里找不到固定的 BASE_IMAGE tag" >&2; exit 1; }
           echo "审计 mmh:${app_tag} 与 mmh-updater:${updater_tag}；基线=${baseline:-无}"
           # 基线镜像必须真的在 registry 里，否则 --since 会退化成“只报告不判定”，
           # 大层就会一路绿灯（2026-11-06 事故）。这里把它变成硬失败。
