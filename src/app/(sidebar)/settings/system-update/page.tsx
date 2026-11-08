@@ -154,6 +154,48 @@ function formatVersionLine(
   return [head, formatVersionDate(date, timeZone)].filter(Boolean).join(" · ");
 }
 
+/**
+ * 写剪贴板。`navigator.clipboard` 只在安全上下文（https / localhost）里存在，
+ * 而 NAS 用户大多用 http://192.168.x.x:port 打开，那里它是 undefined，
+ * 直接调用只会抛错并被 catch 吞掉——「复制日志」按钮于是毫无反应。
+ * 所以这里退回到 execCommand，非安全上下文里它仍然有效。
+ */
+async function writeClipboard(text: string) {
+  if (typeof navigator !== "undefined" && window.isSecureContext && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // 权限被拒或用户手势已失效，继续走兜底。
+    }
+  }
+  if (typeof document === "undefined") return false;
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.setAttribute("readonly", "");
+  area.style.position = "fixed";
+  area.style.top = "-1000px";
+  area.style.opacity = "0";
+  document.body.appendChild(area);
+  const selection = document.getSelection();
+  const previousRange = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+  let ok = false;
+  try {
+    area.select();
+    area.setSelectionRange(0, text.length);
+    ok = document.execCommand("copy");
+  } catch {
+    ok = false;
+  } finally {
+    document.body.removeChild(area);
+    if (selection && previousRange) {
+      selection.removeAllRanges();
+      selection.addRange(previousRange);
+    }
+  }
+  return ok;
+}
+
 function formatImageVersion(result: ImageSpeedResult | undefined, timeZone: string, t: (key: string) => string) {
   if (!result) return "";
   if (!result.ok) return result.error || t("settings.systemUpdate.failed");
@@ -1287,13 +1329,10 @@ function UpdateConsole({
 
   async function copyLog() {
     if (!lines.length) return;
-    try {
-      await navigator.clipboard.writeText(lines.join("\n"));
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      // Clipboard access can be denied (insecure context); the log stays visible.
-    }
+    const ok = await writeClipboard(lines.join("\n"));
+    if (!ok) return;
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   }
 
   const header = (

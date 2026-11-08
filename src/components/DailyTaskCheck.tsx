@@ -138,7 +138,18 @@ export function DailyTaskCheck() {
         // 统一执行），这里不再单独扫一遍存款，避免出现第二条生成路径。
 
         if (hasUsefulChange(planData) || hasUsefulChange(pendingData) || hasUsefulChange(stockData)) {
-          dispatchFinanceDataChanged({ reason: "startup-check", entryIds: getEntryIds(pendingData) });
+          // auto-execute 会批量写 txRecord（定投 / 存款到期 / 取息）。有真实落账时不能
+          // 再用中性的 startup-check 掩盖，否则新记的流水不会出现在明细里；只有净值
+          // 回填 / 行情刷新才保持中性，避免开机无谓重取整页。
+          const executedCount = Number(isObject(planData) ? planData.executedCount ?? 0 : 0);
+          if (executedCount > 0) {
+            dispatchFinanceDataChanged({
+              reason: "startup-auto-execute",
+              entryIds: getEntryIds(pendingData),
+            });
+          } else {
+            dispatchFinanceDataChanged({ reason: "startup-check", entryIds: getEntryIds(pendingData) });
+          }
         }
         startupCheckCompleted = true;
       } catch (error) {

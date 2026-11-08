@@ -15,7 +15,13 @@ import { pnlClassFromRedUp } from "@/lib/client/colors";
 import { useOutsideClose } from "@/lib/client/useOutsideClose";
 import { toNumber } from "@/lib/date-utils";
 import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
-import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
+import {
+  dispatchFinanceDataChanged,
+  financeChangeAffectsAccount,
+  financeChangeNeedsRowRefresh,
+  FINANCE_DATA_CHANGED_EVENT,
+  type FinanceDataChangedDetail,
+} from "@/lib/client/refresh";
 import { recordRecentAccounts } from "@/lib/client/recentAccounts";
 import { useEntryReconcileState } from "@/lib/client/use-entry-reconcile-state";
 import { setEntryModalReconciledReadOnly } from "@/lib/client/entryModalLock";
@@ -1516,18 +1522,14 @@ export function FundShell(props: Props) {
 
   useEffect(() => {
     const onFundChanged = (event: Event) => {
-      const detail = (event as CustomEvent<{ balanceChanged?: boolean; accountIds?: string[]; reason?: string }>).detail;
-      // 对账锁定/解锁只改 reconciledAt / reconciledBalance：业务明细、持仓、备注都不会变，
-      // 行内锁标记由 `useEntryReconcileState` 就地更新。这里若重取整份 shell-data，
-      // 会把 allEntries 整体替换成接口版本（备注等文字闪烁/跳变），没有收益。
-      if (detail?.reason === "entry-reconcile") return;
-      // Remark-only edits do not change holdings: skip the shell refresh.
-      if (detail?.balanceChanged === false) return;
-      // Scoped saves refresh only the affected accounts. When the event names
-      // its accounts and this fund account is not one of them, the 1.7MB
-      // shell-data refetch cannot change anything here — skip it.
-      const scopedIds = Array.from(new Set((detail?.accountIds ?? []).map((id) => String(id ?? "").trim()).filter(Boolean)));
-      if (scopedIds.length > 0 && accountIdRef.current && !scopedIds.includes(accountIdRef.current)) return;
+      const detail = (event as CustomEvent<FinanceDataChangedDetail>).detail ?? {};
+      // 对账锁只改 reconciledAt / reconciledBalance，行内锁标记由
+      // `useEntryReconcileState` 就地更新；行情 / 净值由 FundShell 自己重取。
+      // balanceChanged === false 只说明余额字段没变，备注 / 分类仍可能改了，不能整表跳过。
+      if (!financeChangeNeedsRowRefresh(detail)) return;
+      // 事件点名了账户而本基金账户不在其中时，1.7MB 的 shell-data 重取不会带来变化。
+      const currentAccountId = accountIdRef.current;
+      if (currentAccountId && !financeChangeAffectsAccount(detail, currentAccountId)) return;
       shellRefreshHandler();
     };
     window.addEventListener(FINANCE_DATA_CHANGED_EVENT, onFundChanged);

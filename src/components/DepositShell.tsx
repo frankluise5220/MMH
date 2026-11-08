@@ -19,7 +19,13 @@ import { EntryRowActions } from "./EntryRowActions";
 import { ProductLibraryModal } from "./ProductLibraryModal";
 import { ResizableVerticalSplit } from "./ResizableVerticalSplit";
 import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
-import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
+import {
+  dispatchFinanceDataChanged,
+  financeChangeAffectsAccount,
+  financeChangeNeedsRowRefresh,
+  FINANCE_DATA_CHANGED_EVENT,
+  type FinanceDataChangedDetail,
+} from "@/lib/client/refresh";
 import { useEntryReconcileState } from "@/lib/client/use-entry-reconcile-state";
 import { amountToneClass as amountClass } from "@/lib/client/colors";
 import {
@@ -101,6 +107,7 @@ type LotTab = "held" | "expired";
 const DEPOSIT_ENTRY_COLUMN_SETTINGS_EVENT = "mmh:deposit-entries:column-settings";
 
 export function DepositShell({
+  accountId,
   accountLabel,
   institutionName,
   institutionId,
@@ -110,6 +117,7 @@ export function DepositShell({
   renewAction,
   payInterestAction,
 }: {
+  accountId: string;
   accountLabel: string;
   institutionName?: string;
   /** 当前存款账户所属机构，用作产品库新建产品时的默认机构 */
@@ -287,16 +295,16 @@ export function DepositShell({
   // (edits via EntryRowActions, batch operations, deposits created elsewhere).
   useEffect(() => {
     const handler = (event: Event) => {
-      const detail = (event as CustomEvent<{ balanceChanged?: boolean; reason?: string }>).detail;
-      // 对账锁定/解锁只改 reconciledAt / reconciledBalance：业务明细不变，行内锁标记由
-      // `useEntryReconcileState` 就地更新；不重取服务端数据，避免整表替换。
-      if (detail?.reason === "entry-reconcile") return;
-      if (detail?.balanceChanged === false) return;
+      const detail = (event as CustomEvent<FinanceDataChangedDetail>).detail ?? {};
+      // 只排除明确不动行文本的事件（行情 / 净值、对账锁）。balanceChanged === false
+      // 只说明余额字段没变，备注 / 分类 / 标签仍可能改了，不能整表跳过。
+      if (!financeChangeNeedsRowRefresh(detail)) return;
+      if (!financeChangeAffectsAccount(detail, accountId)) return;
       router.refresh();
     };
     window.addEventListener(FINANCE_DATA_CHANGED_EVENT, handler);
     return () => window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, handler);
-  }, [router]);
+  }, [accountId, router]);
 
   // Pagination state is owned here for the header controls; the actual slicing
   // happens INSIDE AdvancedDataTable (rows must be the FULL set, exactly like

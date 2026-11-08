@@ -1135,7 +1135,10 @@ export function BasicDetailPanel({
       dropDetailAllCache(affectedKeys, cacheChangeOptions);
       if (isBulkFinanceEntryChange(detail)) invalidateDetailAll(affectedKeys, cacheChangeOptions);
       // 备注-only 编辑不改余额，期初余额不用重算；影响域未知时清空整张缓存。
-      if (detail.balanceChanged !== false) {
+      // 本视图不显示逐笔余额列（全部收支 / 标签筛选 / 投资账户）时，这个缓存根本
+      // 不会被读取，也不用清 —— header / 侧栏余额由 LiveAccountBalance、
+      // SidebarClient 各自按 balanceChanged 刷新，与这里无关。
+      if ((showRunningBalance ?? !isInvestAccount) && detail.balanceChanged !== false) {
         invalidateDetailOpeningBalance(eventAccountIds.length > 0 ? eventAccountIds : undefined);
       }
       // 没命中当前账户视图：缓存口径已按域更新，界面一行都不用动。
@@ -1181,7 +1184,7 @@ export function BasicDetailPanel({
     return () => {
       window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, handleFinanceChange);
     };
-  }, [accountId, accountKind, clientPaginationEnabled, detailAll, localEntries, openingBalance, refreshOnGlobalEvent, refreshTextOnlyPage, reloadDetailPage, router, scopeAccountIds]);
+  }, [accountId, accountKind, clientPaginationEnabled, detailAll, isInvestAccount, localEntries, openingBalance, refreshOnGlobalEvent, refreshTextOnlyPage, reloadDetailPage, router, scopeAccountIds, showRunningBalance]);
 
   // 取数实现放进 ref：下面这个 effect 只在「页码 / 页大小 / 时间范围」变的那一刻重取。
   // 不能把 reloadDetailPage 当依赖 —— 它随 openingBalancePending、缓存快照、期初余额换

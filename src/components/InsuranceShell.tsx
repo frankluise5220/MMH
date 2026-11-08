@@ -13,7 +13,13 @@ import {
   insuranceCashValueDelta,
   type InsuranceAction,
 } from "@/lib/insurance/transaction";
-import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
+import {
+  dispatchFinanceDataChanged,
+  financeChangeAffectsAccount,
+  financeChangeNeedsRowRefresh,
+  FINANCE_DATA_CHANGED_EVENT,
+  type FinanceDataChangedDetail,
+} from "@/lib/client/refresh";
 import { useEntryReconcileState } from "@/lib/client/use-entry-reconcile-state";
 import { fetchSettingsAccountData } from "@/lib/client/settingsCache";
 import { useSettingsDataVersion } from "@/lib/client/use-settings-data-version";
@@ -657,17 +663,16 @@ export function InsuranceShell({
 
   useEffect(() => {
     const handler = (event: Event) => {
-      const detail = (event as CustomEvent<{ balanceChanged?: boolean; reason?: string }>).detail;
-      // 对账锁定/解锁只改 reconciledAt / reconciledBalance：业务明细不变，行内锁标记由
-      // `useEntryReconcileState` 就地更新；不重取服务端数据，避免整表替换。
-      if (detail?.reason === "entry-reconcile") return;
-      // Remark-only edits do not change holdings: skip the shell refresh.
-      if (detail?.balanceChanged === false) return;
+      const detail = (event as CustomEvent<FinanceDataChangedDetail>).detail ?? {};
+      // balanceChanged === false 只说明余额字段没变，备注 / 分类 / 标签仍可能改了；
+      // 行内含 note 列，不能整表跳过。只排除行情 / 净值与对账锁。
+      if (!financeChangeNeedsRowRefresh(detail)) return;
+      if (!financeChangeAffectsAccount(detail, accountId)) return;
       void refreshInsuranceData();
     };
     window.addEventListener(FINANCE_DATA_CHANGED_EVENT, handler);
     return () => window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, handler);
-  }, [refreshInsuranceData]);
+  }, [accountId, refreshInsuranceData]);
 
   useEffect(() => {
     function onInsuranceEdit(event: Event) {

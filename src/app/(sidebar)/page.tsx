@@ -3708,6 +3708,7 @@ export default async function Home({
             />
           ) : view === "deposit" && selectedAccount ? (
             <DepositShell
+              accountId={selectedAccount.id}
               accountLabel={selectedAccountLabel}
               institutionName={selectedAccount.Institution?.name ?? ""}
               institutionId={selectedAccount.institutionId ?? null}

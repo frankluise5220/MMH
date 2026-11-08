@@ -16,7 +16,13 @@ import { ProductLibraryModal } from "./ProductLibraryModal";
 import { ResizableVerticalSplit } from "./ResizableVerticalSplit";
 import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { amountToneClass as amountClass } from "@/lib/client/colors";
-import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
+import {
+  dispatchFinanceDataChanged,
+  financeChangeAffectsAccount,
+  financeChangeNeedsRowRefresh,
+  FINANCE_DATA_CHANGED_EVENT,
+  type FinanceDataChangedDetail,
+} from "@/lib/client/refresh";
 import { recordRecentAccounts } from "@/lib/client/recentAccounts";
 import { useEntryReconcileState } from "@/lib/client/use-entry-reconcile-state";
 import { parseDepositInterestPayout } from "@/lib/deposit-interest-payout";
@@ -232,16 +238,16 @@ export function BondShell({
   // 债券视图走服务端渲染 + router.refresh()，与存款视图同一刷新契约。
   useEffect(() => {
     const handler = (event: Event) => {
-      const detail = (event as CustomEvent<{ balanceChanged?: boolean; reason?: string }>).detail;
-      // 对账锁定/解锁只改 reconciledAt / reconciledBalance：业务明细不变，行内锁标记由
-      // `useEntryReconcileState` 就地更新；不重取服务端数据，避免整表替换。
-      if (detail?.reason === "entry-reconcile") return;
-      if (detail?.balanceChanged === false) return;
+      const detail = (event as CustomEvent<FinanceDataChangedDetail>).detail ?? {};
+      // 只排除明确不动行文本的事件（行情 / 净值、对账锁）。balanceChanged === false
+      // 只说明余额字段没变，备注 / 分类 / 标签仍可能改了，不能整表跳过。
+      if (!financeChangeNeedsRowRefresh(detail)) return;
+      if (!financeChangeAffectsAccount(detail, accountId)) return;
       router.refresh();
     };
     window.addEventListener(FINANCE_DATA_CHANGED_EVENT, handler);
     return () => window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, handler);
-  }, [router]);
+  }, [accountId, router]);
 
   // 页码 / 每页行数 / 全部只有这一个状态点（与存款视图同一实现）。
   // 「自适应」是页大小的来源，不是独立开关，所以手选固定行数后表格再回报容量
