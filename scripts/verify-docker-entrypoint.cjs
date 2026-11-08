@@ -466,9 +466,19 @@ expect(
     /MAX_FRESH_TOTAL_MB/.test(layerGate),
   "The layer-size gate must use a 4.5 MB per-layer limit and also cap the number/total size of fresh layers, so breaking layer reuse fails the build instead of only shrinking individual layers.",
 );
+// 基线必须等于「存量用户正在跑的上一个补丁版」，随 package.json 版本滚动：
+// 钉死成某个具体版本会在下一版立刻过期，而留空/浮动 tag 会让门禁失去比较基准。
+const releaseVersion = String(
+  JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")).version || "",
+).trim();
+const previousPatch = releaseVersion.replace(/\.(\d+)$/, (_, patch) => `.${Number(patch) - 1}`);
 expect(
-  /^ARG BASE_IMAGE=ghcr\.io\/frankluise5220\/mmh:0\.1\.81\s*$/m.test(dockerfile),
-  "BASE_IMAGE must stay pinned to the version installed users are running (0.1.81): their old updater has no timeout and cannot recover from a stalled pull.",
+  /^0\.1\.\d+$/.test(releaseVersion) &&
+    new RegExp(
+      `^ARG BASE_IMAGE=ghcr\\.io\\/frankluise5220\\/mmh:${previousPatch.replace(/\./g, "\\.")}\\s*$`,
+      "m",
+    ).test(dockerfile),
+  `BASE_IMAGE must stay pinned to the version installed users are running (${previousPatch}): their old updater has no timeout and cannot recover from a stalled pull.`,
 );
 expect(
   /dropdb --force -U/.test(updaterServer) &&
