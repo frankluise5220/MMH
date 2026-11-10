@@ -62,6 +62,7 @@ import {
   recalcAndSaveAccountBalance,
   type EntryBalanceChange,
 } from "@/lib/server/account-balance";
+import { createPlainLedgerEntry } from "@/lib/server/ledger-entry-create";
 import { creditBillEffectiveDate, creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
 import { fundArrivalDate as computeFundArrivalDate, resolveFundDates } from "@/lib/fund/confirmDays";
 import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
@@ -81,7 +82,7 @@ import { createBondEntry, editBondEntry, bondEntryInputFromFormData } from "@/li
 import { resolveOrCreateAdvanceAccount } from "@/lib/server/advance-account";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
 import { materializeDueInstallmentPayments } from "@/lib/server/credit-card-installment";
-import { prepareEntryUndo, saveEntryUndo } from "@/lib/server/entry-undo";
+import { prepareEntryUndo, saveCreatedEntryUndo, saveEntryUndo } from "@/lib/server/entry-undo";
 import { buildDetailExportRowsForScope } from "@/lib/server/detail-export-rows";
 import { getServerT } from "@/lib/server/i18n";
 import { encodeScheduledTaskMemo } from "@/lib/scheduled-task";
@@ -2535,26 +2536,23 @@ export async function POST(req: Request) {
           return;
         }
 
-        const created = await tx.txRecord.create({
-          data: {
-            accountId: fromAcc.id,
-            accountName: fromAcc.name,
-            toAccountId: toAcc.id,
-            toAccountName: toAcc.name,
-            amount: signedTransferAmount,
-            type: TransactionType.transfer,
-            date,
-            categoryId: transferCategory?.id ?? null,
-            categoryName: transferCategory?.name ?? null,
-            note: note || null,
+        const created = await createPlainLedgerEntry(tx, {
+          householdId,
+          type: TransactionType.transfer,
+          date,
+          amount: signedTransferAmount,
+          account: fromAcc,
+          toAccount: toAcc,
+          category: transferCategory,
+          note: note || null,
+          currency: transferCurrency,
+          source: transferSource,
+          statementMonth: transferStatementMonth,
+          extra: {
             toNote: (toNote || note) || null,
-            currency: transferCurrency,
-            statementMonth: transferStatementMonth,
-            source: transferSource,
             principalAmount: liabilityMode ? amountAbs : null,
             interestAmount: liabilityMode ? 0 : null,
             feeAmount: liabilityMode ? 0 : null,
-            householdId,
           },
         });
         createdId = created.id;
@@ -2606,22 +2604,17 @@ export async function POST(req: Request) {
           return;
         }
 
-        const created = await tx.txRecord.create({
-          data: {
-            accountId: acc.id,
-            accountName: acc.name,
-            categoryId: cat?.id ?? null,
-            categoryName: cat?.name ?? null,
-            counterpartyInstitutionId: counterpartyInstitution?.id ?? null,
-            counterpartyInstitutionName: counterpartyInstitution?.name ?? null,
-            amount: amountRaw,
-            type: TransactionType.expense,
-            date,
-            postedAt,
-            note: note || null,
-            statementMonth,
-            householdId,
-          },
+        const created = await createPlainLedgerEntry(tx, {
+          householdId,
+          type: TransactionType.expense,
+          date,
+          postedAt,
+          amount: amountRaw,
+          account: acc,
+          category: cat,
+          counterpartyInstitution,
+          note: note || null,
+          statementMonth,
         });
         createdId = created.id;
         createdBalanceEntryIds.push(created.id);
@@ -2709,23 +2702,18 @@ export async function POST(req: Request) {
           }
         }
 
-        const created = await tx.txRecord.create({
-          data: {
-            accountId: acc?.id ?? undefined,
-            accountName: acc?.name ?? "未知账户",
-            categoryId: cat?.id ?? undefined,
-            categoryName: cat?.name ?? undefined,
-            counterpartyInstitutionId: counterpartyInstitution?.id ?? null,
-            counterpartyInstitutionName: counterpartyInstitution?.name ?? null,
-            amount: amountRaw,
-            type: TransactionType.income,
-            date,
-            currency: incomeCurrency,
-            note: note || undefined,
-            statementMonth: statementMonth ?? undefined,
-            depositSourceEntryId: depositLotId || undefined,
-            householdId,
-          } as any,
+        const created = await createPlainLedgerEntry(tx, {
+          householdId,
+          type: TransactionType.income,
+          date,
+          amount: amountRaw,
+          account: acc,
+          category: cat,
+          counterpartyInstitution,
+          note: note || undefined,
+          currency: incomeCurrency,
+          statementMonth,
+          extra: { depositSourceEntryId: depositLotId || undefined },
         });
         createdId = created.id;
         createdBalanceEntryIds.push(created.id);
@@ -2798,12 +2786,14 @@ export async function POST(req: Request) {
         const created = await createBondEntry(bondEntryInputFromFormData(formDataFromJsonBody(body), householdId));
         const data = await loadApiDetailRecord(created.cashEntryId);
         await touchAccountUsage(usageAccountIds);
+        await saveCreatedEntryUndo(prisma, ctx, [created.cashEntryId], "create", "新增明细");
         return NextResponse.json({ ok: true, data: data ?? { id: created.cashEntryId } });
       }
       if (fundProductType === "wealth" || fundProductType === "advisor") {
         const created = await createSplitWealthTransactionFromBody(body, householdId, tagIds);
         const data = await loadApiDetailRecord(created.cashEntryId);
         await touchAccountUsage(usageAccountIds);
+        await saveCreatedEntryUndo(prisma, ctx, [created.cashEntryId], "create", "新增明细");
         return NextResponse.json({ ok: true, data: data ?? { id: created.cashEntryId } });
       }
       let insuranceProductId = String(body.insuranceProductId ?? "").trim() || null;
@@ -3527,6 +3517,8 @@ export async function POST(req: Request) {
     if (changedInvestment) revalidateAfterInvestChange();
     else revalidateAfterTxChange();
     await touchAccountUsage(usageAccountIds);
+    // 一次「确认新增」= 一条撤销记录；createdBalanceEntryIds 含本次全部新建明细行。
+    await saveCreatedEntryUndo(prisma, ctx, createdBalanceEntryIds, "create", "新增明细");
 
     // Return the record just created
     if (createdId) {

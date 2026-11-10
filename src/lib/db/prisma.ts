@@ -1,4 +1,4 @@
-import { PrismaClient } from "@prisma/client";
+import { Prisma, PrismaClient } from "@prisma/client";
 import { PrismaBetterSqlite3WithSafeRollback } from "./sqlite-adapter";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Pool } from "pg";
@@ -41,6 +41,18 @@ export function getConfiguredTransactionOptions() {
   };
 }
 
+/**
+ * 查询事件开关（只给 scripts/bench-reports.ts 这类性能排查用）：打开后每个 SQL 都
+ * 发一个 `query` 事件，脚本可以拿到「一条请求发了几条 SQL、SQL 总共花了多久」，
+ * 用来区分「数据库慢」和「JS 汇总慢」。用 emit:'event' 而不是 'query'，避免把每条
+ * SQL 都打到 stdout。生产环境不要开。
+ */
+const queryLogEnabled = process.env.MMH_PRISMA_QUERY_LOG === "1";
+
+function logConfig(): Array<Prisma.LogLevel | Prisma.LogDefinition> {
+  return queryLogEnabled ? [{ emit: "event", level: "query" }, { emit: "stdout", level: "error" }] : ["error"];
+}
+
 function createClient(): PrismaClient {
   const connectionString = process.env.DATABASE_URL;
   if (!connectionString) {
@@ -52,7 +64,7 @@ function createClient(): PrismaClient {
       url: connectionString,
     });
     return new PrismaClient({
-      log: ["error"],
+      log: logConfig(),
       adapter,
       transactionOptions: getConfiguredTransactionOptions(),
     });
@@ -70,7 +82,7 @@ function createClient(): PrismaClient {
 
   const adapter = new PrismaPg(pool);
   return new PrismaClient({
-    log: ["error"],
+    log: logConfig(),
     adapter,
     transactionOptions: getConfiguredTransactionOptions(),
   });

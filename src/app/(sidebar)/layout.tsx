@@ -2,6 +2,7 @@ import { Sidebar } from "@/components/layout/Sidebar";
 import { AIPanel } from "@/components/layout/AIPanel";
 import { BackgroundTaskStatusBar } from "@/components/BackgroundTaskStatusBar";
 import { FirstUseGuide } from "@/components/FirstUseGuide";
+import { StatementMailAutoImportHost } from "@/components/StatementMailAutoImportHost";
 import { MobileNavigation } from "@/components/layout/MobileNavigation";
 import { MobilePullToRefresh } from "@/components/layout/MobilePullToRefresh";
 import { getCurrentUser } from "@/lib/server/auth";
@@ -33,6 +34,8 @@ export default async function SidebarLayout({
   return (
     <div className="flex h-dvh overflow-x-hidden overflow-y-hidden" data-device={deviceKind}>
       <BackgroundTaskStatusBar />
+      {/* 邮箱账单「下期自动导入」：通知栏点「打开导入」后在这里弹导入预览。 */}
+      <StatementMailAutoImportHost />
       {/* 两层判断各管一件事：`isMobileDevice` 决定「有没有侧边栏这种形态」，
           `md:block` 只决定「这么窄的窗口还塞不塞得下 288px 侧边栏」。
           桌面浏览器把窗口拉到 390px 时侧边栏让位，但内容仍是桌面 panel/表格，

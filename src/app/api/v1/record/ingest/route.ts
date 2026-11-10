@@ -42,7 +42,7 @@ import {
 import { INCOME_EXPENSE_INSTITUTION_TYPES } from "@/lib/institution-rules";
 import { upsertStatementCategoryRuleFromTx } from "@/lib/statement/category-rules";
 import { upsertStatementInstitutionRuleFromUserEdit } from "@/lib/statement/recognition-rules";
-import { prepareEntryUndo, saveEntryUndo } from "@/lib/server/entry-undo";
+import { prepareCreatedEntryUndo, saveEntryUndo } from "@/lib/server/entry-undo";
 import { creditBillEffectiveDate } from "@/lib/credit/billing";
 
 /**
@@ -904,7 +904,7 @@ export async function POST(req: Request) {
       if (isImportCancelled(traceId)) {
         if (importBatchId && created.length > 0) {
           const importedRecords = await prisma.txRecord.findMany({ where: { importBatchId, householdId: ctx.householdId, deletedAt: null } });
-          const undo = await prepareEntryUndo(prisma, ctx.householdId, importedRecords.map((record) => record.id));
+          const undo = await prepareCreatedEntryUndo(prisma, ctx.householdId, importedRecords.map((record) => record.id));
           await saveEntryUndo(prisma, await getHouseholdScope(), undo, "batch_create", "Batch import");
         }
         finishImportProgress(traceId, { ok: true, processed: created.length, created: created.length, error: "已取消" });
@@ -1021,7 +1021,7 @@ export async function POST(req: Request) {
       const importedRecords = await prisma.txRecord.findMany({
         where: { importBatchId, householdId: ctx.householdId, deletedAt: null },
       });
-      const undo = await prepareEntryUndo(prisma, ctx.householdId, importedRecords.map((record) => record.id));
+      const undo = await prepareCreatedEntryUndo(prisma, ctx.householdId, importedRecords.map((record) => record.id));
       const undoContext = await getHouseholdScope();
       await saveEntryUndo(prisma, undoContext, undo, "batch_create", "Batch import");
     }

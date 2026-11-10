@@ -1,5 +1,7 @@
 "use client";
 import { ModalLayer } from "@/components/ModalLayer";
+import dynamic from "next/dynamic";
+import type { StatementImportPreviewItem } from "@/components/StatementImportPreviewDialog";
 
 import { useEffect, useRef, useState, type ClipboardEvent } from "react";
 import { createPortal } from "react-dom";
@@ -54,7 +56,7 @@ type ParsedItem = {
 
 type Message =
   | { role: "user"; text: string }
-  | { role: "assistant"; text: string; trace?: string[]; error?: string };
+  | { role: "assistant"; text: string; trace?: string[]; error?: string; undoOperationId?: string };
 
 type ImportConfirmItem = {
   key: string;
@@ -259,6 +261,60 @@ function formatRecognitionPreviewText(items: ParsedItem[], t: (key: string, para
   return `${t("aiPanel.preview.title", { count: items.length })}\n${lines.join("\n\n")}${rest}`;
 }
 
+const StatementImportPreviewDialog = dynamic(
+  () => import("@/components/StatementImportPreviewDialog").then((mod) => ({ default: mod.StatementImportPreviewDialog })),
+  { ssr: false },
+);
+
+/** 超过这个条数改用完整导入预览弹窗（可逐格修改），少量记录仍用对话内卡片。 */
+const AI_BULK_PREVIEW_THRESHOLD = 5;
+
+function toStatementPreviewItem(item: ParsedItem): StatementImportPreviewItem {
+  return {
+    rawText: item.rawText ?? "",
+    type: item.type,
+    date: item.date,
+    amount: Math.abs(item.amount ?? 0),
+    account: item.account || item._meta?.accountDisplayName,
+    fromAccount: item.fromAccount,
+    toAccount: item.toAccount,
+    category: item.category,
+    remark: item.remark,
+    counterparty: item.counterparty,
+    institution: item.institution || item._meta?.institutionName,
+    postedDate: item.postedAt,
+  };
+}
+
+function fromStatementPreviewItem(item: StatementImportPreviewItem): ParsedItem {
+  // 不沿用服务端上一轮对齐出来的 id：用户在预览里改过账户/分类后，让
+  // /api/v1/ai/import 再做一遍识别重新对齐，避免旧 id 把记录落到别的账户上。
+  return normalizeItemForImport({
+    rawText: item.rawText,
+    type: item.type,
+    date: item.date,
+    postedAt: item.postedDate,
+    amount: item.amount,
+    account: item.account,
+    fromAccount: item.fromAccount,
+    toAccount: item.toAccount,
+    category: item.category,
+    institution: item.institution,
+    remark: item.remark,
+    counterparty: item.counterparty,
+  });
+}
+
+/** 程序二次识别后的「最终操作」回显：只陈述将写入什么，不让模型决定口径。 */
+function buildFinalActionText(items: ParsedItem[], t: (key: string, params?: Record<string, string | number>) => string) {
+  const counts = new Map<ParsedItem["type"], number>();
+  for (const item of items) counts.set(item.type, (counts.get(item.type) ?? 0) + 1);
+  const detail = Array.from(counts.entries())
+    .map(([type, count]) => `${itemTypeLabel(type, t)} ${count}`)
+    .join(" / ");
+  return t("aiPanel.finalAction", { count: items.length, detail });
+}
+
 /* ---- Component ---- */
 
 export function AIPanel({
@@ -286,6 +342,11 @@ export function AIPanel({
   const [collapsed, setCollapsedState] = useState(() => initialCollapsed || getAiPanelCollapsedPreference());
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialog | null>(null);
   const [importConfirmDialog, setImportConfirmDialog] = useState<ImportConfirmDialog | null>(null);
+  /** >5 条时打开完整导入预览弹窗，items 是弹窗可编辑的候选行。 */
+  const [bulkPreview, setBulkPreview] = useState<StatementImportPreviewItem[] | null>(null);
+  /** 最近一次成功导入：用于精确撤销并把候选行放回可修改状态。 */
+  const [lastImport, setLastImport] = useState<{ items: ParsedItem[]; undoOperationId: string | null } | null>(null);
+  const [undoBusy, setUndoBusy] = useState(false);
   const [deletePreviewFilters, setDeletePreviewFilters] = useState<DeletePreviewFilters>({ text: "", accountName: "", type: "all", selection: "all" });
   const [deletePreviewColumnFilters, setDeletePreviewColumnFilters] = useState<Partial<Record<DeletePreviewColumn, string[]>>>({});
   const [activeDeletePreviewFilterColumn, setActiveDeletePreviewFilterColumn] = useState<DeletePreviewColumn | null>(null);
@@ -540,6 +601,90 @@ export function AIPanel({
 
   /* ---- Handlers ---- */
 
+  /** 模型填表 → 程序二次识别后给出最终操作；条数多则改用可编辑的导入预览弹窗。 */
+  function presentImportItems(allItems: ParsedItem[], trace?: string[], keyPrefix = "ai") {
+    const finalAction = buildFinalActionText(allItems, t);
+    if (allItems.length > AI_BULK_PREVIEW_THRESHOLD) {
+      setImportConfirmDialog(null);
+      setBulkPreview(allItems.map(toStatementPreviewItem));
+      setMessages((m) => [...m, { role: "assistant", text: `${finalAction}\n${t("aiPanel.bulkPreviewOpened")}`, trace }]);
+      return;
+    }
+    const importData = allItems.map((item, i) => ({
+      key: `${keyPrefix}-${i}-${Date.now()}`,
+      item,
+      ready: isRowReadyForImport(item),
+      missingFields: getMissingFields(item, t),
+    }));
+    setImportConfirmDialog({
+      items: importData,
+      selectedKeys: new Set(importData.filter((it) => it.ready).map((it) => it.key)),
+      selectAll: importData.every((it) => it.ready),
+    });
+    setMessages((m) => [...m, { role: "assistant", text: `${finalAction}\n\n${formatRecognitionPreviewText(allItems, t)}`, trace }]);
+  }
+
+  async function runImport(selected: ParsedItem[]) {
+    if (!selected.length || loading) return;
+    setLoading(true);
+    try {
+      const result = await importItems(selected);
+      const createdAccounts = Array.isArray(result.createdAccounts) ? result.createdAccounts : [];
+      const accountText = createdAccounts.length
+        ? t("aiPanel.autoCreatedAccounts", { names: createdAccounts.map((account: any) => `${account.institutionName ? `${account.institutionName}·` : ""}${account.name}`).join("、") })
+        : "";
+      const undoOperationId = typeof result.undoOperationId === "string" ? result.undoOperationId : null;
+      setMessages((m) => [...m, {
+        role: "assistant",
+        text: t("aiPanel.importedCount", { count: result.createdCount, extra: accountText }),
+        ...(undoOperationId ? { undoOperationId } : {}),
+      }]);
+      setLastImport({ items: selected, undoOperationId });
+      setImportConfirmDialog(null);
+      setBulkPreview(null);
+      // 服务端已在导入结束时重算这些账户的 Account.balance；带上 id 让顶栏/侧边栏
+      // 走 scoped 刷新（种子不完整时会自动回落到全量重算）。
+      const importedAccountIds = Array.isArray(result.accountIds)
+        ? result.accountIds.filter((id: unknown): id is string => typeof id === "string" && id.length > 0)
+        : [];
+      dispatchFinanceDataChanged({
+        reason: "ai-entry-import",
+        accountIds: importedAccountIds.length > 0 ? importedAccountIds : undefined,
+      });
+    } catch (e: any) {
+      setMessages((m) => [...m, { role: "assistant", text: t("aiPanel.importFailed", { message: e.message }) }]);
+    } finally { setLoading(false); }
+  }
+
+  /** 只撤销「本次 AI 导入」的快照，再把候选行放回可修改状态。 */
+  async function handleUndoAndEdit() {
+    if (!lastImport || undoBusy) return;
+    setUndoBusy(true);
+    try {
+      const latestRes = await fetch("/api/v1/undo", { cache: "no-store" });
+      const latest = await latestRes.json();
+      const latestId = typeof latest?.data?.id === "string" ? latest.data.id : null;
+      const matches = lastImport.undoOperationId
+        ? latestId === lastImport.undoOperationId
+        : latest?.data?.action === "batch_create";
+      if (!matches) {
+        setMessages((m) => [...m, { role: "assistant", text: t("aiPanel.undoUnavailable") }]);
+        setLastImport(null);
+        return;
+      }
+      const res = await fetch("/api/v1/undo", { method: "POST" });
+      const result = await res.json();
+      if (!res.ok || !result.ok) throw new Error(result?.error ?? `HTTP ${res.status}`);
+      const items = lastImport.items;
+      setLastImport(null);
+      dispatchFinanceDataChanged({ reason: "ai-entry-undo" });
+      setMessages((m) => [...m, { role: "assistant", text: t("aiPanel.undoneAndEditable") }]);
+      presentImportItems(items, undefined, "undo");
+    } catch (e: any) {
+      setMessages((m) => [...m, { role: "assistant", text: t("aiPanel.undoFailed", { message: e.message }) }]);
+    } finally { setUndoBusy(false); }
+  }
+
   async function onSend() {
     const text = input.trim();
     if (!text || loading) return;
@@ -613,19 +758,7 @@ export function AIPanel({
 
       if (parsed.items) {
         const withSkills = applySkills(parsed.items, text);
-        const allItems = withSkills.map(normalizeItemForImport);
-        const importData = allItems.map((item, i) => ({
-          key: `ai-${i}-${Date.now()}`,
-          item,
-          ready: isRowReadyForImport(item),
-          missingFields: getMissingFields(item, t),
-        }));
-        setImportConfirmDialog({
-          items: importData,
-          selectedKeys: new Set(importData.filter(it => it.ready).map(it => it.key)),
-          selectAll: importData.every(it => it.ready),
-        });
-        setMessages((m) => [...m, { role: "assistant", text: formatRecognitionPreviewText(allItems, t), trace: parsed.trace }]);
+        presentImportItems(withSkills.map(normalizeItemForImport), parsed.trace, "ai");
       } else if (parsed.operation) {
         setMessages((m) => [...m, { role: "assistant", text: t("aiPanel.executedOp", { operation: parsed.operation }), trace: parsed.trace }]);
         dispatchFinanceDataChanged({ reason: "ai-operation" });
@@ -647,19 +780,7 @@ export function AIPanel({
       });
       const parsed = await parseStatement({ imageDataUrl });
       if (parsed.items) {
-        const allItems = parsed.items.map(normalizeItemForImport);
-        const importData = allItems.map((item, i) => ({
-          key: `img-${i}-${Date.now()}`,
-          item,
-          ready: isRowReadyForImport(item),
-          missingFields: getMissingFields(item, t),
-        }));
-        setImportConfirmDialog({
-          items: importData,
-          selectedKeys: new Set(importData.filter(it => it.ready).map(it => it.key)),
-          selectAll: importData.every(it => it.ready),
-        });
-        setMessages((m) => [...m, { role: "assistant", text: formatRecognitionPreviewText(allItems, t), trace: parsed.trace }]);
+        presentImportItems(parsed.items.map(normalizeItemForImport), parsed.trace, "img");
       }
     } catch (e: any) {
       setMessages((m) => [...m, { role: "assistant", text: t("aiPanel.recognizeFailed", { message: e.message }) }]);
@@ -732,28 +853,7 @@ export function AIPanel({
     const selected = importConfirmDialog.items
       .filter(it => importConfirmDialog.selectedKeys.has(it.key))
       .map(it => it.item);
-    if (!selected.length) return;
-    setLoading(true);
-    try {
-      const result = await importItems(selected);
-      const createdAccounts = Array.isArray(result.createdAccounts) ? result.createdAccounts : [];
-      const accountText = createdAccounts.length
-        ? t("aiPanel.autoCreatedAccounts", { names: createdAccounts.map((account: any) => `${account.institutionName ? `${account.institutionName}·` : ""}${account.name}`).join("、") })
-        : "";
-      setMessages((m) => [...m, { role: "assistant", text: t("aiPanel.importedCount", { count: result.createdCount, extra: accountText }) }]);
-      setImportConfirmDialog(null);
-      // 服务端已在导入结束时重算这些账户的 Account.balance；带上 id 让顶栏/侧边栏
-      // 走 scoped 刷新（种子不完整时会自动回落到全量重算）。
-      const importedAccountIds = Array.isArray(result.accountIds)
-        ? result.accountIds.filter((id: unknown): id is string => typeof id === "string" && id.length > 0)
-        : [];
-      dispatchFinanceDataChanged({
-        reason: "ai-entry-import",
-        accountIds: importedAccountIds.length > 0 ? importedAccountIds : undefined,
-      });
-    } catch (e: any) {
-      setMessages((m) => [...m, { role: "assistant", text: t("aiPanel.importFailed", { message: e.message }) }]);
-    } finally { setLoading(false); }
+    await runImport(selected);
   }
 
   function toggleImportItem(key: string) {
@@ -1726,6 +1826,16 @@ export function AIPanel({
             }`}>
               {m.text}
             </div>
+            {m.role === "assistant" && m.undoOperationId && lastImport?.undoOperationId === m.undoOperationId && (
+              <button
+                type="button"
+                onClick={handleUndoAndEdit}
+                disabled={undoBusy}
+                className="mt-0.5 rounded-lg border border-foreground/10 bg-surface-white px-2.5 py-1 text-[10px] font-bold text-foreground/60 hover:text-foreground hover:bg-foreground/5 disabled:opacity-40"
+              >
+                {undoBusy ? t("aiPanel.undoing") : t("aiPanel.undoAndEdit")}
+              </button>
+            )}
           </div>
         ))}
         {loading && (
@@ -2074,6 +2184,18 @@ export function AIPanel({
       </>
       )}
     </aside>
+      {bulkPreview && (
+        <StatementImportPreviewDialog
+          open
+          title={t("aiPanel.bulkPreviewTitle")}
+          description={t("aiPanel.bulkPreviewDescription")}
+          items={bulkPreview}
+          defaultAccountName={defaultAccountName ?? ""}
+          busy={loading}
+          onClose={() => setBulkPreview(null)}
+          onConfirm={(items) => { void runImport(items.map(fromStatementPreviewItem)); }}
+        />
+      )}
     </>
   );
 }

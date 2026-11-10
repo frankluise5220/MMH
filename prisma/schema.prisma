@@ -1249,6 +1249,8 @@ model Household {
   User                      User[]
   WealthProduct             WealthProduct[]
   Preference                HouseholdPreference?
+  StatementMailAutoImport   StatementMailAutoImport[]
+  StatementMailAutoImportJob StatementMailAutoImportJob[]
   transactions              TxRecord[]
 }
 
@@ -1625,8 +1627,70 @@ model EmailAccount {
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @default(now()) @updatedAt
   household    Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  StatementMailAutoImport StatementMailAutoImport[]
 
   @@index([householdId])
+}
+
+/// 邮箱账单「下期自动导入」计划：用户在导入账单时勾选后创建。服务端的
+/// system-task 按 nextRunAt 定时从同一个邮箱检索下一期同银行的账单邮件，
+/// 抓取正文/附件原文落成 StatementMailAutoImportJob（待导入任务），
+/// **不自动落账** —— 用户在通知里打开导入预览确认后才写流水。
+model StatementMailAutoImport {
+  id              String    @id @default(cuid())
+  householdId     String
+  emailAccountId  String
+  /// 目标账户：账单导入默认落到哪个账户。账户删除后置空，用户在预览里重选。
+  accountId       String?
+  /// 目标账户名快照：账户已删时给预览兜底，也用于通知文案。
+  accountName     String?
+  /// 邮件筛选：发件人包含该字符串（空 = 不限）。
+  fromIncludes    String?
+  /// 邮件筛选：主题包含该字符串（空 = 不限，缺省「账单」）。
+  subjectIncludes String?
+  /// 每月执行日（1-28，避免 29-31 在某些月份不存在）。
+  dayOfMonth      Int       @default(1)
+  /// 执行时刻（0-23，账簿业务时区）。
+  hourOfDay       Int       @default(9)
+  enabled         Boolean   @default(true)
+  lastRunAt       DateTime?
+  lastError       String?
+  nextRunAt       DateTime
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @default(now()) @updatedAt
+  Household       Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  EmailAccount    EmailAccount @relation(fields: [emailAccountId], references: [id], onDelete: Cascade)
+  Jobs            StatementMailAutoImportJob[]
+
+  @@index([householdId, enabled])
+  @@index([enabled, nextRunAt])
+}
+
+/// 自动导入计划抓到的账单（正文 + 附件原文），等待用户确认导入。
+model StatementMailAutoImportJob {
+  id              String    @id @default(cuid())
+  householdId     String
+  scheduleId      String?
+  emailAccountId  String
+  /// 邮件 UID：同一封邮件只抓一次。
+  uid             Int
+  hash            String?
+  subject         String?
+  fromAddress     String?
+  mailDate        DateTime?
+  /// 邮件正文 + 附件文字的原文；用户打开通知时才解析成导入预览。
+  content         String
+  accountId       String?
+  accountName     String?
+  /// pending | imported | dismissed
+  status          String    @default("pending")
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @default(now()) @updatedAt
+  Household       Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  Schedule        StatementMailAutoImport? @relation(fields: [scheduleId], references: [id], onDelete: SetNull)
+
+  @@unique([householdId, emailAccountId, uid])
+  @@index([householdId, status, createdAt])
 }
 
 model Tag {

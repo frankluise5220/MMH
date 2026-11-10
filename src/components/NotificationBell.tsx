@@ -12,6 +12,7 @@ import {
   ChevronRight,
   Info,
   Loader2,
+  MailOpen,
   RefreshCw,
   Trash2,
 } from "lucide-react";
@@ -101,7 +102,20 @@ type Feed = {
   reminders: ReminderItem[];
   receipt: ExecutionReceipt | null;
   overdueAutoCount: number;
+  /** 邮箱账单「下期自动导入」抓回来的待确认账单。 */
+  pendingBillImports: PendingBillImport[];
 };
+
+type PendingBillImport = {
+  id: string;
+  title: string;
+  accountName: string | null;
+  fromAddress: string | null;
+  createdAt: string;
+};
+
+/** 打开待导入账单的全局事件：由 StatementMailAutoImportHost 接住并弹导入预览。 */
+const MAIL_AUTO_IMPORT_OPEN_EVENT = "mmh:statement:mail-auto-import";
 
 type PanelTab = "unread" | "read";
 
@@ -184,7 +198,12 @@ export function NotificationBell({ collapsed }: { collapsed: boolean }) {
   const lastLoadedAtRef = useRef(0);
   const [open, setOpen] = useState(false);
   const [position, setPosition] = useState<{ top: number; left: number } | null>(null);
-  const [feed, setFeed] = useState<Feed>({ reminders: [], receipt: null, overdueAutoCount: 0 });
+  const [feed, setFeed] = useState<Feed>({
+    reminders: [],
+    receipt: null,
+    overdueAutoCount: 0,
+    pendingBillImports: [],
+  });
   const [loading, setLoading] = useState(false);
   const [failed, setFailed] = useState(false);
   const [tab, setTab] = useState<PanelTab>("unread");
@@ -201,6 +220,9 @@ export function NotificationBell({ collapsed }: { collapsed: boolean }) {
           reminders: Array.isArray(data.reminders) ? (data.reminders as ReminderItem[]) : [],
           receipt: (data.receipt ?? null) as ExecutionReceipt | null,
           overdueAutoCount: Number(data.overdueAutoCount ?? 0) || 0,
+          pendingBillImports: Array.isArray(data.pendingBillImports)
+            ? (data.pendingBillImports as PendingBillImport[])
+            : [],
         });
         setFailed(false);
         lastLoadedAtRef.current = Date.now();
@@ -343,8 +365,29 @@ export function NotificationBell({ collapsed }: { collapsed: boolean }) {
     [localNote, serverNote, readIds],
   );
 
+  const pendingBillImports = feed.pendingBillImports;
+  /**
+   * 待导入账单**不走已读机制**：它不是"看过就算了"的消息，而是一件待办 ——
+   * 只有导入完成（或用户忽略）才从列表里消失。所以它单独计数、单独渲染。
+   */
+  const openBillImport = useCallback((jobId: string) => {
+    setOpen(false);
+    window.dispatchEvent(new CustomEvent(MAIL_AUTO_IMPORT_OPEN_EVENT, { detail: { jobId } }));
+  }, []);
+  const dismissBillImport = useCallback(async (jobId: string) => {
+    setFeed((prev) => ({
+      ...prev,
+      pendingBillImports: prev.pendingBillImports.filter((item) => item.id !== jobId),
+    }));
+    await fetch(`/api/v1/statement/mail-auto-import/jobs/${jobId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status: "dismissed" }),
+    }).catch(() => undefined);
+  }, []);
+
   const unreadTotal = unreadReminders.length + unreadExecutions.length;
-  const badgeCount = unreadTotal;
+  const badgeCount = unreadTotal + pendingBillImports.length;
 
   const markAllRead = useCallback(() => {
     markManyRead([...unreadReminders.map(({ note }) => note), ...unreadExecutions]);
@@ -446,9 +489,47 @@ export function NotificationBell({ collapsed }: { collapsed: boolean }) {
               />
             ) : null}
 
-            {serverNote ? (
+            {serverNote && !readIds.has(serverNote.id) ? (
               <Section title={t("notification.receipt.section")}>
                 <ServerReceipt receipt={feed.receipt} failed={failed} onMarkRead={() => markRead(serverNote)} />
+              </Section>
+            ) : null}
+
+            {pendingBillImports.length > 0 ? (
+              <Section title={t("notification.mailAutoImport.section")}>
+                <ul className="divide-y divide-slate-50">
+                  {pendingBillImports.map((item) => (
+                    <li key={item.id} className="px-3 py-2">
+                      <div className="flex items-start gap-2">
+                        <MailOpen size={13} className="mt-0.5 shrink-0 text-emerald-600" />
+                        <div className="min-w-0 flex-1">
+                          <p className="truncate text-[11.5px] font-medium text-slate-700" title={item.title}>
+                            {item.title}
+                          </p>
+                          <p className="mt-0.5 truncate text-[10.5px] text-slate-400">
+                            {[item.accountName, formatRunTime(item.createdAt)].filter(Boolean).join(" · ")}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="mt-1.5 flex items-center gap-1.5 pl-5">
+                        <button
+                          type="button"
+                          onClick={() => openBillImport(item.id)}
+                          className="rounded bg-emerald-600 px-2 py-0.5 text-[10.5px] font-medium text-white transition-colors hover:bg-emerald-700"
+                        >
+                          {t("notification.mailAutoImport.open")}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void dismissBillImport(item.id)}
+                          className="rounded px-2 py-0.5 text-[10.5px] font-medium text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700"
+                        >
+                          {t("notification.mailAutoImport.dismiss")}
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
               </Section>
             ) : null}
 
@@ -482,7 +563,7 @@ export function NotificationBell({ collapsed }: { collapsed: boolean }) {
               </Section>
             ) : null}
 
-            {unreadTotal === 0 && !loading ? (
+            {unreadTotal === 0 && pendingBillImports.length === 0 && !loading ? (
               <p className="px-3 py-6 text-center text-xs text-slate-400">{t("notification.unread.empty")}</p>
             ) : null}
           </>

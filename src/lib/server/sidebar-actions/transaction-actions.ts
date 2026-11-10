@@ -15,7 +15,7 @@ import {
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
 import { depositLotBelongsToAccount } from "@/lib/server/deposit-lot-options";
 import { isDepositRedemptionDateAllowed, loadDepositLotBalance, loadLatestDepositInterestDate } from "@/lib/server/deposit-lot-balance";
-import { prepareEntryUndo, saveEntryUndo } from "@/lib/server/entry-undo";
+import { prepareEntryUndo, saveCreatedEntryUndo, saveEntryUndo } from "@/lib/server/entry-undo";
 import { isEntryReconciled } from "@/lib/server/entry-reconcile";
 import { fundArrivalDate as computeFundArrivalDate, resolveFundDates, setFundDateRuleAuto } from "@/lib/fund/confirmDays";
 import { setFundFeeRateByDate } from "@/lib/fund/feeRate";
@@ -286,7 +286,7 @@ async function createSplitWealthTransaction(
   t: (key: string, params?: Record<string, string | number>) => string,
   formData: FormData,
   householdId: string,
-) {
+): Promise<string | null> {
   const dateStr = String(formData.get("date") ?? "").trim();
   const date = dateStr && !Number.isNaN(new Date(dateStr).getTime()) ? new Date(dateStr) : new Date();
   const subtypeInput = String(formData.get("subtype") ?? "buy").trim();
@@ -457,6 +457,7 @@ async function createSplitWealthTransaction(
   }
   await invalidateCreditCardCycleCacheForAccountIds(touchedAccountIds).catch(() => {});
   revalidateAfterFundShellChange();
+  return createdCashEntryId;
 }
 export async function createTransaction(formData: FormData) {
   "use server";
@@ -480,8 +481,12 @@ export async function createTransaction(formData: FormData) {
 
   const date = dateStr && !Number.isNaN(new Date(dateStr).getTime()) ? new Date(dateStr) : new Date();
   const postedAt = type === "expense" || type === "income" || type === "transfer" ? (postedAtInput ?? date) : null;
-  const { householdId } = await getHouseholdScope();
+  const ctx = await getHouseholdScope();
+  const { householdId } = ctx;
   let createdEntryId: string | null = null;
+  // 本次确认新建的全部 TxRecord id：投资分支逐腿收集，普通分支在公共成功尾补入。
+  // 一次确认只写一条撤销记录，绝不按腿循环调用 saveEntryUndo。
+  const createdInvestmentEntryIds: string[] = [];
   let touchedFixedAsset = false;
   const fixedAssetAccountIdsToRefresh = new Set<string>();
 
@@ -851,16 +856,20 @@ export async function createTransaction(formData: FormData) {
       // 债券走债券专用落库路径（BondProduct + bond_transactions，买入行即存单），
       // 不再借道理财拆账；理财保持原路径。
       if (entryProductType === "bond") {
-        await createBondEntry(bondEntryInputFromFormData(formData, householdId));
+        const created = await createBondEntry(bondEntryInputFromFormData(formData, householdId));
+        createdInvestmentEntryIds.push(created.cashEntryId);
+        await saveCreatedEntryUndo(prisma, ctx, createdInvestmentEntryIds, "create", "新增明细");
         return { ok: true as const };
       }
       if (entryProductType === "wealth" || entryProductType === "advisor") {
-        await createSplitWealthTransaction(t, formData, householdId);
+        const cashEntryId = await createSplitWealthTransaction(t, formData, householdId);
+        if (cashEntryId) createdInvestmentEntryIds.push(cashEntryId);
+        await saveCreatedEntryUndo(prisma, ctx, createdInvestmentEntryIds, "create", "新增明细");
         return { ok: true as const };
       }
       let createdInvestmentEntryId: string | null = null;
       let createdFundTransactionId: string | null = null;
-      const createdInvestmentEntryIds: string[] = [];
+      // createdInvestmentEntryIds 上提到函数作用域：公共成功尾要用它写唯一一条撤销记录。
       const accountId = String(formData.get("accountId") ?? "").trim();
       const subtype =
         String(formData.get("fundSubtype") ?? formData.get("subtype") ?? "").trim() ||
@@ -1426,6 +1435,9 @@ export async function createTransaction(formData: FormData) {
     if (type === "investment" && isFundShellProductType(formData)) revalidateAfterFundShellChange();
     else if (type === "investment" || touchedFixedAsset) revalidateAfterInvestChange({ skipHomePath: true });
     else revalidateAfterTxChange({ skipHomePath: true });
+    // 一次「确认新增」= 一条撤销记录。投资分支的 id 可能是业务单 id，不能混进来。
+    if (type !== "investment" && createdEntryId) createdInvestmentEntryIds.push(createdEntryId);
+    await saveCreatedEntryUndo(prisma, ctx, createdInvestmentEntryIds, "create", "新增明细");
     return { ok: true as const, data: createdEntryId ? { id: createdEntryId } : undefined };
   } catch (e) {
     const msg = e instanceof Error ? e.message : t("txForm.alert.saveFailed");

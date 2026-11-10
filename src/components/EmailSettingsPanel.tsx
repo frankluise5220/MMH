@@ -23,6 +23,7 @@ import {
 import { createImportTraceId, postImportDebugLog } from "@/lib/client/importDebugLog";
 import { showChoiceDialog } from "@/lib/client/confirm-dialog";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { guardStatementDuplicateImport } from "@/lib/client/statement-import-duplicates";
 import {
   fetchEmailAccounts,
   fetchEmailImportKeyword,
@@ -131,6 +132,28 @@ type BookLookups = {
   users: BookUser[];
   categories: BookCategory[];
 };
+/** 邮箱账单「下期自动导入」计划（服务端 StatementMailAutoImport）。 */
+type AutoImportSchedule = {
+  id: string;
+  emailAccountId: string;
+  accountId: string | null;
+  accountName: string | null;
+  fromIncludes: string | null;
+  subjectIncludes: string | null;
+  enabled: boolean;
+  lastError: string | null;
+  nextRunAt: string;
+};
+
+/** 从 "银行账单 <bill@bank.com>" 里取纯邮箱地址，用作下期自动导入的发件人筛选。 */
+function mailSenderAddress(raw?: string | null): string | null {
+  const text = String(raw ?? "").trim();
+  if (!text) return null;
+  const bracketed = text.match(/<([^>]+)>/);
+  const value = (bracketed ? bracketed[1] : text).trim().toLowerCase();
+  return value.includes("@") ? value : null;
+}
+
 type MailItem = { uid: number; subject: string; from: string; date: string; hash?: string };
 type MailAttachment = { id: string; filename: string; contentType: string; size: number; text?: string; parseError?: string };
 type MailDetail = { uid: number; subject: string; from: string; date: string; text: string; html: string; attachments?: MailAttachment[]; hash?: string };
@@ -364,6 +387,10 @@ export function EmailSettingsPanel({
   const [accountDraft, setAccountDraft] = useState<AccountCreateDraft | null>(null);
   const [savingAccountDraft, setSavingAccountDraft] = useState(false);
   const [importing, setImporting] = useState(false);
+  /** 「下期自动导入」计划：当前账簿下所有邮箱的自动抓取计划。 */
+  const [autoImportSchedules, setAutoImportSchedules] = useState<AutoImportSchedule[]>([]);
+  const [autoImportSaving, setAutoImportSaving] = useState(false);
+  const [autoImportError, setAutoImportError] = useState("");
   const [importComplete, setImportComplete] = useState<ImportCompleteState | null>(null);
   const [mailStartDate, setMailStartDate] = useState(() => monthAgoDateString());
   const [mailEndDate, setMailEndDate] = useState(() => todayDateString());
@@ -374,6 +401,22 @@ export function EmailSettingsPanel({
   const [accountTested, setAccountTested] = useState(false);
   const [editingPreviewCell, setEditingPreviewCell] = useState<{ rowKey: string; field: ImportPreviewEditableCell } | null>(null);
   const mailImportTraceIdRef = useRef(createImportTraceId("settings-email-mail"));
+
+  const loadAutoImportSchedules = useCallback(async () => {
+    try {
+      const res = await fetch("/api/v1/statement/mail-auto-import/schedules", { cache: "no-store" });
+      const data = await res.json().catch(() => null);
+      if (data?.ok && Array.isArray(data.data)) {
+        setAutoImportSchedules(data.data as AutoImportSchedule[]);
+      }
+    } catch {
+      // 计划读不到不影响手动导入。
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadAutoImportSchedules();
+  }, [loadAutoImportSchedules]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -869,6 +912,12 @@ export function EmailSettingsPanel({
           })
       : parsedItems;
     if (!sourceItems.length) return;
+    // 同一份账单重复导入（同日期、同笔数、同金额）先问是否覆盖，再走落账。
+    const duplicateChoice = await guardStatementDuplicateImport(
+      sourceItems as unknown as Array<Record<string, unknown>>,
+      t,
+    );
+    if (duplicateChoice === "cancel") return;
     const selectedAccountIds = confirmedItems?.length
       ? Array.from(new Set(confirmedItems.flatMap((item) => [
           parseImportAccountId(item.account),
@@ -2170,6 +2219,63 @@ export function EmailSettingsPanel({
     return `${(size / 1024 / 1024).toFixed(1)} MB`;
   }
 
+  // 「下期自动导入」：按「当前邮箱 + 目标账户」定位一条计划，勾选即建、取消即删。
+  // 目标账户取当前预览解析出的账户；还没预览过就先记 null，自动抓取回来的账单
+  // 会以"未指定账户"进入预览，由用户在预览里选（与手动导入的兜底一致）。
+  const autoImportAccountId = importPreview?.statementAccountId ?? null;
+  const currentAutoImportSchedule =
+    autoImportSchedules.find(
+      (schedule) =>
+        schedule.emailAccountId === selectedId &&
+        (schedule.accountId ?? null) === (autoImportAccountId ?? null) &&
+        schedule.enabled,
+    ) ?? null;
+
+  async function toggleNextPeriodAutoImport(enabled: boolean) {
+    if (!selectedId || autoImportSaving) return;
+    setAutoImportSaving(true);
+    setAutoImportError("");
+    try {
+      if (!enabled) {
+        const target = currentAutoImportSchedule;
+        if (target) {
+          const res = await fetch(
+            `/api/v1/statement/mail-auto-import/schedules?id=${encodeURIComponent(target.id)}`,
+            { method: "DELETE" },
+          );
+          const data = await res.json().catch(() => null);
+          if (!data?.ok) throw new Error(data?.error || t("settings.email.autoImportSaveFailed"));
+        }
+      } else {
+        // 下月同期：沿用这封账单的日期（1-28 由服务端收敛），时间取上午 9 点。
+        const mailDate = selectedMail?.date ? new Date(`${selectedMail.date}T00:00:00Z`) : null;
+        const dayOfMonth = mailDate && !Number.isNaN(mailDate.getTime()) ? mailDate.getUTCDate() : 1;
+        const res = await fetch("/api/v1/statement/mail-auto-import/schedules", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            emailAccountId: selectedId,
+            accountId: autoImportAccountId,
+            accountName: autoImportAccountId
+              ? previewAccountDisplayLabelById(autoImportAccountId)
+              : null,
+            fromIncludes: mailSenderAddress(selectedMail?.from),
+            dayOfMonth,
+            hourOfDay: 9,
+            enabled: true,
+          }),
+        });
+        const data = await res.json().catch(() => null);
+        if (!data?.ok) throw new Error(data?.error || t("settings.email.autoImportSaveFailed"));
+      }
+      await loadAutoImportSchedules();
+    } catch (error) {
+      setAutoImportError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setAutoImportSaving(false);
+    }
+  }
+
   return (
     <div className="space-y-4">
       {!embedded && <h2 className="text-sm font-semibold text-slate-800">{t("settings.email.title")}</h2>}
@@ -2309,11 +2415,36 @@ export function EmailSettingsPanel({
                       </div>
                     </div>
                   )}
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <label
+                      className="flex items-center gap-2 text-xs text-slate-600"
+                      title={t("settings.email.autoImportHint")}
+                    >
+                      <input
+                        type="checkbox"
+                        className="h-3.5 w-3.5 cursor-pointer rounded border-slate-300 accent-blue-600"
+                        checked={Boolean(currentAutoImportSchedule)}
+                        disabled={autoImportSaving || !selectedId}
+                        onChange={(event) => void toggleNextPeriodAutoImport(event.target.checked)}
+                      />
+                      <span>{t("settings.email.autoImportToggle")}</span>
+                    </label>
+                    <span className="text-[11px] text-slate-400">
+                      {currentAutoImportSchedule
+                        ? t("settings.email.autoImportOn", {
+                            date: currentAutoImportSchedule.nextRunAt
+                              ? new Date(currentAutoImportSchedule.nextRunAt).toLocaleDateString()
+                              : "",
+                          })
+                        : t("settings.email.autoImportHint")}
+                    </span>
                     <button className="h-8 px-3 rounded-md bg-blue-600 text-white text-xs hover:bg-blue-700 disabled:opacity-50" onClick={() => parseMail(selectedMail, true)} disabled={parsing}>
                       {parsing ? t("settings.email.recognizing") : t("settings.email.importBill")}
                     </button>
                   </div>
+                  {autoImportError ? (
+                    <div className="text-[11px] text-rose-600">{autoImportError}</div>
+                  ) : null}
                 </>
               ) : (
                 <div className="rounded-md border border-dashed border-slate-200 px-3 py-10 text-center text-sm text-slate-400">{t("settings.email.selectMailHint")}</div>

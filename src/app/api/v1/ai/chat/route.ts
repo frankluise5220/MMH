@@ -46,6 +46,11 @@ import { businessTodayUtcStart, todayDateBusinessYmd } from "@/lib/date-utils";
 import { enrichAiParsedItems } from "@/lib/statement/ai-import-enrichment";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { softDeleteEntriesByIds } from "@/lib/server/entry-delete";
+import { restoreDeletedEntries } from "@/lib/server/entry-restore";
+import { prepareEntryUndo, saveEntryUndo } from "@/lib/server/entry-undo";
+import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
+import { revalidateAfterTxChange } from "@/lib/server/revalidate";
+import { syncFundTransactionsFromTxRecords } from "@/lib/fund/transactions";
 
 export const runtime = "nodejs";
 
@@ -468,7 +473,7 @@ function buildUpdatePreview(plan: ParsedUpdateCommand, count: number, accountNam
   };
 }
 
-async function executeUpdatePlan(plan: ParsedUpdateCommand, apply: boolean, accountName?: string, hidFilter: Record<string, string> = {}, householdId: string | null = null) {
+async function executeUpdatePlan(plan: ParsedUpdateCommand, apply: boolean, ctx: HouseholdContext, accountName?: string, hidFilter: Record<string, string> = {}, householdId: string | null = null) {
   const accounts = await prisma.account.findMany({
     where: { isActive: true, ...hidFilter },
     include: { Institution: true },
@@ -528,6 +533,7 @@ async function executeUpdatePlan(plan: ParsedUpdateCommand, apply: boolean, acco
 
     const sourceIds = entries.filter((e) => e.accountId === oldAccount.id).map((e) => e.id);
     const targetIds = entries.filter((e) => e.toAccountId === oldAccount.id).map((e) => e.id);
+    const undo = await prepareEntryUndo(prisma, ctx.householdId, entries.map((e) => e.id));
     const [sourceResult, targetResult] = await prisma.$transaction([
       prisma.txRecord.updateMany({
         where: { id: { in: sourceIds }, deletedAt: null, ...hidFilter },
@@ -538,7 +544,12 @@ async function executeUpdatePlan(plan: ParsedUpdateCommand, apply: boolean, acco
         data: { toAccountId: newAccount.id, toAccountName: newAccount.name },
       }),
     ]);
+    await saveEntryUndo(prisma, ctx, undo, "batch_edit", `AI 批量换账户 ${entries.length} 条`);
     await Promise.all([oldAccount.id, newAccount.id].map((id) => recalcAndSaveAccountBalance(id)));
+    await invalidateCreditCardCycleCacheForAccountIds([oldAccount.id, newAccount.id]).catch((error) =>
+      console.warn("[ai/chat] 信用卡账单缓存失效失败", error),
+    );
+    revalidateAfterTxChange();
     // Client-side handles page refresh
     return {
       ok: true,
@@ -618,11 +629,23 @@ async function executeUpdatePlan(plan: ParsedUpdateCommand, apply: boolean, acco
     if (entry.toAccountId) affectedAccountIds.add(entry.toAccountId);
   });
   if (accountId) affectedAccountIds.add(accountId);
+  const undo = await prepareEntryUndo(prisma, ctx.householdId, entries.map((e) => e.id));
   const result = await prisma.txRecord.updateMany({
     where: { id: { in: entries.map(e => e.id) }, deletedAt: null, ...hidFilter },
     data,
   });
+  await saveEntryUndo(prisma, ctx, undo, "batch_edit", `AI 批量修改 ${result.count} 条`);
+  const investmentIds = entries.filter((e) => e.type === "investment").map((e) => e.id);
+  if (investmentIds.length > 0) {
+    await syncFundTransactionsFromTxRecords(investmentIds).catch((error) =>
+      console.warn("[ai/chat] 同步基金业务单失败", error),
+    );
+  }
   await Promise.all([...affectedAccountIds].map((id) => recalcAndSaveAccountBalance(id)));
+  await invalidateCreditCardCycleCacheForAccountIds(affectedAccountIds).catch((error) =>
+    console.warn("[ai/chat] 信用卡账单缓存失效失败", error),
+  );
+  revalidateAfterTxChange();
   // Client-side handles page refresh
 
   return {
@@ -956,7 +979,7 @@ function parseRestoreCommand(text: string) {
   return { take };
 }
 
-async function executeRestorePlan(plan: { take: number }, apply: boolean, hidFilter: Record<string, string> = {}, householdId: string | null = null) {
+async function executeRestorePlan(plan: { take: number }, apply: boolean, ctx: HouseholdContext, hidFilter: Record<string, string> = {}, householdId: string | null = null) {
   const rows = await prisma.txRecord.findMany({
     where: { deletedAt: { not: null }, ...hidFilter },
     include: { account: { select: { name: true } } },
@@ -979,10 +1002,8 @@ async function executeRestorePlan(plan: { take: number }, apply: boolean, hidFil
   }
 
   const ids = rows.map((r) => r.id);
-  const res = await prisma.txRecord.updateMany({
-    where: { id: { in: ids } },
-    data: { deletedAt: null },
-  });
+  // 与 Web UI 的恢复入口共用一条路径：分期计划、业务单、持仓、余额、账单缓存都在这里补齐。
+  const res = await restoreDeletedEntries(ctx, ids);
   return { ok: true as const, restoredCount: res.count, requiresConfirm: false as const, targets };
 }
 
@@ -1166,7 +1187,7 @@ export async function POST(req: Request) {
     if (restorePlan) {
       try {
         const applyNow = /确认|继续|执行|立即/.test(text);
-        const r = await executeRestorePlan(restorePlan, applyNow, hidFilter, householdId);
+        const r = await executeRestorePlan(restorePlan, applyNow, ctx, hidFilter, householdId);
         if (applyNow) {
           return NextResponse.json({
             ok: true,
@@ -1191,7 +1212,7 @@ export async function POST(req: Request) {
     if (updatePlan) {
       try {
         const applyNow = /确认|继续|执行|立即/.test(text);
-        const result = await executeUpdatePlan(updatePlan, applyNow, accountName, hidFilter, householdId);
+        const result = await executeUpdatePlan(updatePlan, applyNow, ctx, accountName, hidFilter, householdId);
         if (!result.ok) return NextResponse.json({ ok: false, code: "UPDATE_PLAN_FAILED", error: (result as { error: string }).error }, { status: 422, headers: corsHeaders() });
         if (applyNow) {
           return NextResponse.json({

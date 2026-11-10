@@ -134,10 +134,13 @@ function isDockerEnvironment(): boolean {
 }
 
 function getDeploymentTarget(): "docker" | "fnos" | "synology" | "windows" | "standalone" {
-  if (isDockerEnvironment()) return "docker";
   const target = String(process.env.MMH_DEPLOY_TARGET ?? "").trim().toLowerCase();
+  // 飞牛 / 群晖的启动脚本会显式导出 MMH_DEPLOY_TARGET，而这种安装包也可能被
+  // 装进容器化环境（此时 /.dockerenv 同样存在）。显式声明优先，否则包版会被
+  // 误判成 Docker 镜像部署，既拿不到应用中心的管理文案，也用错了版本检查分支。
   if (target === "fnos") return "fnos";
   if (target === "synology") return "synology";
+  if (isDockerEnvironment()) return "docker";
   // Windows desktop (Electron shell sets MMH_DEPLOY_TARGET=windows). It has no
   // git checkout and must never fall into the git/Docker update paths: its
   // updates come from electron-updater, driven by the settings page through the
@@ -523,6 +526,60 @@ async function getGitHubVersionInfo(projectRoot: string): Promise<GitHubVersionI
   }
 }
 
+/**
+ * 包管理形态（飞牛 FPK / 群晖 SPK）的远端版本检查。
+ *
+ * 这两种安装包没有 git 检出、也没有宿主机 updater：既不能比对 commit，也不能
+ * 在应用内拉镜像，唯一可用的远端信源是 GitHub Release 的 tag 版本号。所以这里
+ * 只做版本号比较，`needsUpdate` 只用于在设置页提示「有新版本，请到应用中心
+ * 升级」；真正的更新动作仍由 POST 里的 409 拒绝，不会绕过包管理器。
+ *
+ * 只请求一次 `/releases/latest`（不查 commit、不跑 git ls-remote）：包里没有
+ * .git，NAS 上的 Git 二进制也不一定存在，多出来的请求只会拖长设置页等待时间。
+ */
+async function getPackageVersionInfo(projectRoot: string, localVersion: string): Promise<VersionInfo> {
+  const local = getLocalGitInfo(projectRoot);
+  let remoteVersion = "";
+  let fetchError: string | undefined;
+  try {
+    const release = await fetchGitHubJson<{ tag_name?: string }>("/releases/latest");
+    remoteVersion = versionFromReleaseTag(String(release.tag_name ?? ""));
+    if (!remoteVersion) throw new Error("GitHub 最新发布没有版本号");
+  } catch (error) {
+    fetchError = `无法获取 GitHub 最新版本：${commandErrorMessage(error)}`;
+  }
+  const remoteParsed = parseReleaseVersion(remoteVersion);
+  const localParsed = parseReleaseVersion(localVersion);
+  const canCheck = Boolean(remoteParsed && localParsed);
+  const needsUpdate = Boolean(
+    canCheck && localParsed && remoteParsed && compareReleaseVersions(remoteParsed, localParsed) > 0,
+  );
+  if (!fetchError && !canCheck && remoteVersion) {
+    fetchError = `无法比较版本号（当前版本：${localVersion || "unknown"}）`;
+  }
+
+  return {
+    ...local,
+    remoteName: "github",
+    remoteBranch: "latest",
+    remoteUrl: DEFAULT_GITHUB_REPO_URL,
+    remoteVersion,
+    remoteCommit: "unknown",
+    remoteCommitMsg: "",
+    remoteCommitDate: "",
+    needsUpdate,
+    canCheckUpdate: canCheck,
+    githubUrl: DEFAULT_GITHUB_REPO_URL,
+    githubVersion: remoteVersion,
+    githubCommit: "unknown",
+    githubCommitMsg: "",
+    githubCommitDate: "",
+    githubCanCheck: canCheck,
+    githubFetchError: fetchError,
+    fetchError,
+  };
+}
+
 function getPackageVersionAtRef(projectRoot: string, ref: string) {
   try {
     const pkg = JSON.parse(readCommand(projectRoot, `git show ${ref}:package.json`)) as { version?: string };
@@ -812,7 +869,10 @@ export async function GET(req: NextRequest) {
       // a git ls-remote / GitHub commit comparison here would only produce a
       // permanent "无法确认远端版本" on a machine that updates fine.
       versionInfo = { ...localOnlyVersionInfo, fetchError: undefined };
-    } else if (checkRemote && !managedPackageEnvironment) {
+    } else if (checkRemote && managedPackageEnvironment) {
+      // 飞牛 / 群晖也能提示新版本：按 GitHub Release 版本号比较，只提示不执行更新。
+      versionInfo = await getPackageVersionInfo(projectRoot, localVersion);
+    } else if (checkRemote) {
       versionInfo = await getGitVersionInfo(projectRoot);
     }
 

@@ -20,6 +20,10 @@ import {
 import { scheduledTaskFundingAccountId } from "@/lib/scheduled-task-balance";
 import { resolveScheduledTaskBalanceBlocks } from "@/lib/server/scheduled-task-balance-guard";
 import {
+  loadPendingMailAutoImportNotices,
+  type PendingMailAutoImportNotice,
+} from "@/lib/server/statement-mail-auto-import";
+import {
   isManualConfirmReminderKind,
   isOutflowReminderKind,
   isUpcomingReminderKind,
@@ -65,6 +69,11 @@ type NotificationFeed = {
   receipt: ExecutionReceipt;
   /** 逾期未落账的**自动**计划数（手工确认类不计入）。 */
   overdueAutoCount: number;
+  /**
+   * 邮箱账单「下期自动导入」抓回来的账单：只提示，不落账。
+   * 用户点开后走导入预览，确认后才写流水。
+   */
+  pendingBillImports: PendingMailAutoImportNotice[];
 };
 
 /**
@@ -329,6 +338,7 @@ export async function loadNotificationFeed(params: {
     return {
       reminders: [],
       overdueAutoCount: 0,
+      pendingBillImports: await loadPendingMailAutoImportNotices(params.householdId),
       receipt: {
         lastRunAt: null,
         lastRunCount: 0,
@@ -558,5 +568,10 @@ export async function loadNotificationFeed(params: {
       .sort((a, b) => b.count - a.count);
   }
 
-  return { reminders, receipt, overdueAutoCount };
+  return {
+    reminders,
+    receipt,
+    overdueAutoCount,
+    pendingBillImports: await loadPendingMailAutoImportNotices(params.householdId),
+  };
 }

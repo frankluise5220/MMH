@@ -28,6 +28,7 @@ import { BALANCE_RECONCILE_SOURCE, encodeBalanceReconcileTarget } from "@/lib/ba
 import { markAccountBalancesDirty, recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { getCreditBillAccountIds } from "@/lib/server/credit-card-institution-settings";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
+import { prepareCreatedEntryUndo, saveEntryUndo } from "@/lib/server/entry-undo";
 import { refreshCreditCardCycleCachesForAccountIds } from "@/lib/server/credit-bill-page-data";
 import { revalidateAfterTxChange } from "@/lib/server/revalidate";
 import {
@@ -1729,6 +1730,7 @@ export async function POST(req: Request) {
     mailSource?: unknown;
     balanceAdjustments?: unknown;
     isLastBatch?: unknown;
+    skipUndoRegistration?: unknown;
   };
 
   const parse = z
@@ -1744,6 +1746,9 @@ export async function POST(req: Request) {
       // 末批做一次 —— 每批都算会把同一批账户的流水重复扫 10 遍。缺省为 true：单次
       // 调用方（邮件导入、脚本）不传这个字段，也必须重算。
       isLastBatch: z.boolean().optional().default(true),
+      // Excel 分批导入由前端在 10 批结束后汇总登记唯一一条撤销记录；单请求调用方
+      // （邮件导入、脚本）不传这个字段，由服务端登记，同样一次确认一条。
+      skipUndoRegistration: z.boolean().optional().default(false),
       balanceAdjustments: z
         .array(
           z.object({
@@ -1771,7 +1776,8 @@ export async function POST(req: Request) {
     createdAccounts: [],
     lookupCache: createStatementImportLookupCache(),
   };
-  const { householdId } = await getHouseholdScope();
+  const undoScope = await getHouseholdScope();
+  const { householdId } = undoScope;
   await normalizeDefaultCategoryHierarchyForHousehold(prisma, householdId);
   const identityConflict = await findImportAccountIdentityConflict(items, householdId);
   if (identityConflict) {
@@ -1971,6 +1977,9 @@ export async function POST(req: Request) {
   // 财智「余额调整」→ 余额校准：把指定日期的账户余额校正为目标值。
   // 只对可校准账户（现金/借记卡/电子零钱/往来款/贷款）生效；同账户同日期已存在校准锚点时跳过（幂等）。
   const appliedBalanceAdjustments: Array<{ accountId: string; date: string; balance: number; entryId: string }> = [];
+  // 只有「本次新建」的余额校准锚点才属于可撤销的新增行；复用已有锚点不能进撤销快照，
+  // 否则撤销导入会把导入前就存在的行删掉。
+  const createdAnchorIds: string[] = [];
   if (parse.data.balanceAdjustments.length > 0) {
     const targetAccountName = defaultAccountName ?? "";
     const targetAccountId = targetAccountName
@@ -2022,6 +2031,7 @@ export async function POST(req: Request) {
           select: { id: true },
         });
         appliedBalanceAdjustments.push({ accountId: targetAccount.id, date: adjustDate.toISOString().slice(0, 10), balance, entryId: anchor.id });
+        createdAnchorIds.push(anchor.id);
         touchedAccountIds.add(targetAccount.id);
       }
       // 校准账户已并入 touchedAccountIds，由下方「末批统一重算」兜底，这里不再单独算
@@ -2073,11 +2083,29 @@ export async function POST(req: Request) {
 
   // Client-side handles page refresh
   revalidateAfterTxChange();
+
+  // 一次「确认导入」= 一条撤销记录。Excel 的 10 个分批请求由前端汇总后统一登记，
+  // 这里跳过；单请求导入（邮件 / 脚本）直接登记，仍只写一条。登记失败不影响已落账结果。
+  if (!parse.data.skipUndoRegistration) {
+    try {
+      const undo = await prepareCreatedEntryUndo(prisma, householdId, [
+        ...created.map((row) => row.id),
+        ...createdAnchorIds,
+      ]);
+      if (undo) {
+        await saveEntryUndo(prisma, undoScope, undo, "batch_create", `导入 ${undo.entryIds.length} 条明细`);
+      }
+    } catch (error) {
+      console.error("[statement-import] failed to register undo", error);
+    }
+  }
+
   return NextResponse.json({
     ok: true,
     createdCount: created.length,
     skippedCount: errors.length,
     ids: created.map((t) => t.id),
+    createdAnchorIds,
     importBatchId,
     deletedManualRecordCount,
     // 本次导入真正碰过的账户（含转账对手账户、余额校准账户）。客户端必须拿它去

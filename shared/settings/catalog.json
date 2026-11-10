@@ -187,7 +187,7 @@
         {
           "id": "system-update",
           "label": "系统更新",
-          "description": "NAS Docker 更新和版本检查",
+          "description": "Docker、飞牛、群晖等部署形态的版本检查与更新",
           "icon": "refresh-cw",
           "surfaces": ["web"],
           "webHref": "/settings/system-update",

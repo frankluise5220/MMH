@@ -187,6 +187,64 @@ export async function saveEntryUndo(
   return created;
 }
 
+/**
+ * 「确认新增」专用快照：只装这次真正新建的行。
+ *
+ * prepareEntryUndo 会把 fundSourceEntryId / depositSourceEntryId / 分期计划指向的旧行
+ * 一起展开进快照，撤销 edit / delete 时这是必须的（关联行也要一起恢复）；但撤销
+ * create 是把快照里的每一行软删，展开旧行会把历史存单、买入行一起删掉。
+ * 所以新增走这里：不展开 related，一次确认的所有新 id 一次传入。
+ */
+export async function prepareCreatedEntryUndo(
+  db: DbWriter,
+  householdId: string,
+  createdEntryIds: Iterable<string>,
+): Promise<PreparedEntryUndo> {
+  const ids = Array.from(new Set(Array.from(createdEntryIds).filter(Boolean)));
+  if (ids.length === 0) return null;
+  const records = await db.txRecord.findMany({
+    where: { id: { in: ids }, OR: [{ householdId }, { householdId: null }], deletedAt: null },
+  });
+  if (records.length === 0) return null;
+  const entryTags = await db.entryTag.findMany({
+    where: { entryId: { in: records.map((record) => record.id) } },
+    select: { entryId: true, tagId: true },
+  });
+  const tagIdsByEntryId = new Map<string, string[]>();
+  for (const entryTag of entryTags) {
+    const tagIds = tagIdsByEntryId.get(entryTag.entryId) ?? [];
+    tagIds.push(entryTag.tagId);
+    tagIdsByEntryId.set(entryTag.entryId, tagIds);
+  }
+  const snapshots = serializeRecords(records, tagIdsByEntryId);
+  // 撤销时只按这组 id 清理关联：历史存单 / 买入行不在里面，绝不会被连带删掉。
+  if (snapshots[0]) snapshots[0]._createdEntryIds = records.map((record) => record.id);
+  return {
+    snapshots,
+    entryIds: records.map((record) => record.id),
+  };
+}
+
+/** 一次确认新增 = 一条撤销记录；没新建行（例如重复单）时不写记录。 */
+export async function saveCreatedEntryUndo(
+  db: DbWriter,
+  ctx: HouseholdContext,
+  createdEntryIds: Iterable<string>,
+  action: "create" | "batch_create",
+  label: string,
+) {
+  try {
+    const undo = await prepareCreatedEntryUndo(db, ctx.householdId, createdEntryIds);
+    if (!undo) return null;
+    return await saveEntryUndo(db, ctx, undo, action, label);
+  } catch (error) {
+    // 撤销登记是附加能力：主写操作已经落库，不能因为它失败就把「确认新增」判成失败
+    // （否则用户会再点一次确认，制造重复记录）。
+    console.error("[entry-undo] failed to register created entry undo", error);
+    return null;
+  }
+}
+
 export async function getLatestEntryUndo(ctx: HouseholdContext) {
   return prisma.undoOperation.findFirst({
     where: { ...undoScope(ctx), undoneAt: null },
@@ -276,7 +334,7 @@ function snapshotToUpdateData(snapshot: UndoSnapshot) {
   return data;
 }
 
-async function recalculateRestoredEntries(records: TxRecord[], options?: { forceInvestRevalidate?: boolean }) {
+async function recalculateRestoredEntries(records: TxRecord[], options?: { forceInvestRevalidate?: boolean; skipBusinessSync?: boolean }) {
   const accountIds = new Set<string>();
   const fundAccounts = new Map<string, Set<string>>();
   const metalAccounts = new Set<string>();
@@ -299,13 +357,17 @@ async function recalculateRestoredEntries(records: TxRecord[], options?: { force
     }
   }
 
-  await syncFundTransactionsFromTxRecords(records.map((record) => record.id)).catch((error) => {
-    console.error("[entry-undo] failed to sync fund transactions", error);
-  });
-  for (const record of records) {
-    await syncIndependentBusinessTransactionFromTxRecord(prisma, { businessEntryId: record.id }).catch((error) => {
-      console.error("[entry-undo] failed to sync independent business transaction", { entryId: record.id, error });
+  // 撤销「新增」时业务单 / link 已按白名单软删，这两个 sync 会按 upsert 把它们复活；
+  // 那种场景只保留余额、持仓、缓存重算。
+  if (!options?.skipBusinessSync) {
+    await syncFundTransactionsFromTxRecords(records.map((record) => record.id)).catch((error) => {
+      console.error("[entry-undo] failed to sync fund transactions", error);
     });
+    for (const record of records) {
+      await syncIndependentBusinessTransactionFromTxRecord(prisma, { businessEntryId: record.id }).catch((error) => {
+        console.error("[entry-undo] failed to sync independent business transaction", { entryId: record.id, error });
+      });
+    }
   }
   for (const [accountId, codes] of fundAccounts) {
     await recalcFundPositions(accountId, Array.from(codes)).catch((error) => {
@@ -332,6 +394,88 @@ async function recalculateRestoredEntries(records: TxRecord[], options?: { force
   else revalidateAfterTxChange();
 }
 
+/**
+ * 撤销「确认新增」时把这次操作产生的关联一并撤销。
+ *
+ * ownedIds 是本次真正新建的 TxRecord id（不展开历史引用）。业务单按「自己就是本次
+ * 新建的行」或「现金腿是本次新建的行」定位，link / 标签 / 附件 / 分期子行按 ownedIds
+ * 定位，因此 depositSourceEntryId / fundSourceEntryId 指向的历史存单、买入行不会被删。
+ */
+async function revertCreatedEntryRelations(
+  tx: Prisma.TransactionClient,
+  ctx: HouseholdContext,
+  ownedIds: string[],
+  deletedAt: Date,
+) {
+  if (ownedIds.length === 0) return;
+  const householdId = ctx.householdId;
+  const businessWhere = {
+    householdId,
+    deletedAt: null,
+    OR: [{ id: { in: ownedIds } }, { cashEntryId: { in: ownedIds } }],
+  };
+
+  // 8 类独立业务单：基金 / 保险 / 理财 / 债券 / 存款 / 贵金属 / 股票 / 房产
+  await tx.fundTransaction.updateMany({ where: businessWhere, data: { deletedAt } });
+  await tx.insuranceTransaction.updateMany({ where: businessWhere, data: { deletedAt } });
+  await tx.wealthTransaction.updateMany({ where: businessWhere, data: { deletedAt } });
+  await tx.bondTransaction.updateMany({ where: businessWhere, data: { deletedAt } });
+  await tx.depositTransaction.updateMany({ where: businessWhere, data: { deletedAt } });
+  await tx.preciousMetalTransaction.updateMany({ where: businessWhere, data: { deletedAt } });
+  await tx.stockTransaction.updateMany({ where: businessWhere, data: { deletedAt } });
+  await tx.propertyTransaction.updateMany({ where: businessWhere, data: { deletedAt } });
+
+  // 基金现金流明细没有 deletedAt，只能物理删；业务-现金腿 link 软删。
+  const fundRows = await tx.fundTransaction.findMany({
+    where: { householdId, OR: [{ id: { in: ownedIds } }, { cashEntryId: { in: ownedIds } }] },
+    select: { id: true },
+  });
+  if (fundRows.length > 0) {
+    await tx.fundTransactionCashFlow.deleteMany({
+      where: { fundTransactionId: { in: fundRows.map((row) => row.id) } },
+    });
+  }
+  await tx.entryBusinessLink.updateMany({
+    where: {
+      householdId,
+      deletedAt: null,
+      OR: [
+        { cashEntryId: { in: ownedIds } },
+        { businessEntryId: { in: ownedIds } },
+        { fundTransactionId: { in: fundRows.map((row) => row.id) } },
+      ],
+    },
+    data: { deletedAt },
+  });
+  await tx.entryTag.deleteMany({ where: { entryId: { in: ownedIds } } });
+  await tx.attachment.deleteMany({ where: { entryId: { in: ownedIds } } });
+
+  // 信用卡分期：计划置 cancelled，冲抵行与已落地的 payment / fee 子行一起软删。
+  const installmentPlans = await tx.creditCardInstallmentPlan.findMany({
+    where: { householdId, sourceEntryId: { in: ownedIds } },
+    select: { id: true },
+  });
+  for (const plan of installmentPlans) {
+    await tx.txRecord.updateMany({
+      where: { householdId, creditCardInstallmentPlanId: plan.id, deletedAt: null },
+      data: { deletedAt },
+    });
+    await tx.creditCardInstallmentPlan.updateMany({
+      where: { id: plan.id, householdId },
+      data: { status: "cancelled" },
+    });
+  }
+
+  // 存单系统计划行按 lotId 拼 id，只处理本次新建的存单，不动历史存单的计划。
+  const lotPlanIds = ownedIds.flatMap((id) =>
+    ["depm_", "depa_", "depi_", "bondm_", "bonda_", "bondi_"].map((prefix) => `${prefix}${id}`),
+  );
+  await tx.regularInvestPlan.updateMany({
+    where: { householdId, id: { in: lotPlanIds } },
+    data: { status: "completed" },
+  });
+}
+
 export async function undoLatestEntryOperation(ctx: HouseholdContext) {
   const operation = await getLatestEntryUndo(ctx);
   if (!operation || operation.undoneAt) return null;
@@ -344,11 +488,19 @@ export async function undoLatestEntryOperation(ctx: HouseholdContext) {
     : [];
   if (snapshots.length === 0) return null;
 
+  const isCreate = operation.action === "create" || operation.action === "batch_create";
+  // 新增类记录带「本次新建行」白名单；旧的 batch_create 记录没有，回退到快照 id（保持原行为）。
+  const declaredOwned = snapshots[0]?._createdEntryIds;
+  const ownedIds = (
+    Array.isArray(declaredOwned)
+      ? declaredOwned.filter((id): id is string => typeof id === "string" && id.length > 0)
+      : snapshots.map((snapshot) => String(snapshot.id ?? "")).filter(Boolean)
+  );
+  const deletedAt = new Date();
+
   await prisma.$transaction(async (tx) => {
-    if (operation.action === "create" || operation.action === "batch_create") {
-      for (const snapshot of snapshots) {
-        const id = String(snapshot.id ?? "");
-        if (!id) continue;
+    if (isCreate) {
+      for (const id of ownedIds) {
         // 「对账」锁定的记录不可删除：撤销「新建」等价于删除，必须先解除对账。
         const locked = await tx.txRecord.findFirst({
           where: { id, OR: [{ householdId: ctx.householdId }, { householdId: null }], reconciledAt: { not: null } },
@@ -357,10 +509,15 @@ export async function undoLatestEntryOperation(ctx: HouseholdContext) {
         if (locked) throw new Error("该记录已对账锁定，需先解除对账才能撤销");
         await tx.txRecord.updateMany({
           where: { id, OR: [{ householdId: ctx.householdId }, { householdId: null }], deletedAt: null },
-          data: { deletedAt: new Date() },
+          data: { deletedAt },
         });
       }
-      await tx.undoOperation.update({ where: { id: operation.id }, data: { undoneAt: new Date() } });
+      // 改动前留下的 batch_create 记录没有白名单，其快照可能含历史引用：只软删明细，
+      // 不做关联清理，避免拿旧记录去删用户已有的业务单。
+      if (Array.isArray(declaredOwned)) {
+        await revertCreatedEntryRelations(tx, ctx, ownedIds, deletedAt);
+      }
+      await tx.undoOperation.update({ where: { id: operation.id }, data: { undoneAt: deletedAt } });
       return;
     }
     for (const snapshot of snapshots) {
@@ -402,13 +559,16 @@ export async function undoLatestEntryOperation(ctx: HouseholdContext) {
   // 整笔业务单也要一起恢复：业务单被整笔删除时，仅恢复 TxRecord 不够——资金腿不携带
   // fundCode，syncFundTransactionsFromTxRecords 认不出来，投资侧派生行会永远回不来。
   // 业务单删除必然连带删除它的资金腿，腿在快照里恢复，业务单就按 link 反查一起恢复。
-  const restoredBusiness = await restoreBusinessRecordsForCashEntryIds(
-    ctx,
-    snapshots.map((snapshot) => String(snapshot.id ?? "")).filter(Boolean),
-  ).catch((error) => {
-    console.error("[entry-undo] failed to restore business records", error);
-    return { restoredCount: 0, fundTargets: [] as RestoredBusinessFundTarget[] };
-  });
+  // 撤销「新增」正好相反：关联刚被软删，这里绝不能把它们复活。
+  const restoredBusiness = isCreate
+    ? { restoredCount: 0, fundTargets: [] as RestoredBusinessFundTarget[] }
+    : await restoreBusinessRecordsForCashEntryIds(
+      ctx,
+      snapshots.map((snapshot) => String(snapshot.id ?? "")).filter(Boolean),
+    ).catch((error) => {
+      console.error("[entry-undo] failed to restore business records", error);
+      return { restoredCount: 0, fundTargets: [] as RestoredBusinessFundTarget[] };
+    });
 
   const restored = await prisma.txRecord.findMany({
     where: {
@@ -418,6 +578,7 @@ export async function undoLatestEntryOperation(ctx: HouseholdContext) {
   });
   await recalculateRestoredEntries(restored, {
     forceInvestRevalidate: restoredBusiness.restoredCount > 0 || restoredBusiness.fundTargets.length > 0,
+    skipBusinessSync: isCreate,
   });
   for (const target of restoredBusiness.fundTargets) {
     await recalcFundPositions(target.fundAccountId, [target.fundCode]).catch((error) => {

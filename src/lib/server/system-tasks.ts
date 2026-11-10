@@ -2,20 +2,23 @@ import { prisma } from "@/lib/db/prisma";
 import { materializeDueInstallmentPayments } from "@/lib/server/credit-card-installment";
 import { ensureAccountGroupMemberPairing } from "@/lib/server/account-group-member-pairing";
 import { bootstrapPendingAccountBalances } from "@/lib/server/account-balance";
+import { runStatementMailAutoImportTick } from "@/lib/server/statement-mail-auto-import";
 import { logger } from "@/lib/logger";
 
 /**
  * System-level scheduled tasks (no user session required).
  *
  * Currently: materialize due credit-card installment payment rows for ALL
- * households, and self-heal the owner group <-> family member pairing (every
- * person owner becomes a real family member and vice versa). Runs
- * periodically from `src/instrumentation-node.ts` so both stay correct
- * independent of any login.
+ * households, self-heal the owner group <-> family member pairing (every
+ * person owner becomes a real family member and vice versa), and pull the
+ * next period's bill for households that enabled "next period auto import"
+ * on an emailed statement. Runs periodically from `src/instrumentation-node.ts`
+ * so all of them stay correct independent of any login.
  */
 export async function runDueSystemTasks(): Promise<{
   materializedInstallments: number;
   bootstrappedAccountBalances: number;
+  statementMailAutoImports: number;
 }> {
   const households = await prisma.household.findMany({ select: { id: true } });
   let materializedInstallments = 0;
@@ -45,5 +48,15 @@ export async function runDueSystemTasks(): Promise<{
   if (bootstrappedAccountBalances > 0) {
     logger.info(`system task bootstrapped ${bootstrappedAccountBalances} account balances`, "system-task");
   }
-  return { materializedInstallments, bootstrappedAccountBalances };
+  // 邮箱账单「下期自动导入」：到期的计划去 IMAP 把下一期账单取回来，落成待确认任务。
+  // 这里只抓取不落账，失败重试由计划自己记录，不影响其它账簿。
+  const mailAutoImports = await runStatementMailAutoImportTick().catch((error) => {
+    logger.error("statement mail auto import tick failed", "system-task", { error });
+    return { ran: 0, created: 0, failed: 0 };
+  });
+  return {
+    materializedInstallments,
+    bootstrappedAccountBalances,
+    statementMailAutoImports: mailAutoImports.created,
+  };
 }

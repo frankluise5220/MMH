@@ -28,6 +28,7 @@
     "check:encoding": "node scripts/check-encoding.cjs",
     "check:ai": "tsx scripts/verify-ai-failure-classification.ts",
     "check:csv-import": "tsx scripts/verify-csv-import-encoding.ts",
+    "check:ai-write": "node scripts/check-ai-write-parity.cjs",
     "check:recognizer": "tsx scripts/verify-statement-recognizers.ts",
     "check:wechat-transfer-guard": "tsx scripts/verify-wechat-transfer-guard.ts",
     "check:backup": "node scripts/verify-backup-completeness.cjs && node scripts/check-backup-coverage.cjs && node scripts/check-restore-field-coverage.cjs && node scripts/check-backup-package.cjs && tsx scripts/verify-backup-package.ts",
@@ -60,7 +61,8 @@
     "codex:rg": "node scripts/codex-rg.cjs",
     "codex:prisma": "node scripts/codex-prisma-run.cjs",
     "caizhi:convert": "tsx scripts/caizhi/convert-caizhi-backup.ts",
-    "check:restore-compat": "tsx scripts/verify-restore-compat.ts"
+    "check:restore-compat": "tsx scripts/verify-restore-compat.ts",
+    "bench:reports": "tsx scripts/bench-reports.ts"
   },
   "dependencies": {
     "@ai-sdk/openai": "^3.0.64",

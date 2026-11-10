@@ -37,6 +37,13 @@ export async function GET(req: NextRequest) {
       "load notification feed failed: " + (error instanceof Error ? error.message : String(error)),
       "notifications",
     );
-    return NextResponse.json({ ok: false, error: "load-failed", reminders: [], receipt: null, overdueAutoCount: 0 });
+    return NextResponse.json({
+      ok: false,
+      error: "load-failed",
+      reminders: [],
+      receipt: null,
+      overdueAutoCount: 0,
+      pendingBillImports: [],
+    });
   }
 }

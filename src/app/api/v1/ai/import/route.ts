@@ -3,11 +3,15 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { z } from "zod";
 import { FundCashFlowKind, FundSubtype } from "@prisma/client";
-import { toNumber, toStatementMonth } from "@/lib/date-utils";
+import { toNumber } from "@/lib/date-utils";
+import { createPlainLedgerEntry, resolvePlainStatementMonth } from "@/lib/server/ledger-entry-create";
 import { getLatestFundNav } from "@/lib/fund/navCache";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { createFundTransactionWithCashFlows } from "@/lib/fund/transactions";
+import { prepareCreatedEntryUndo, saveEntryUndo } from "@/lib/server/entry-undo";
+import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
+import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { normalizeCurrency, resolveSameCurrencyTransfer } from "@/lib/currency";
@@ -18,7 +22,6 @@ import { enrichAiParsedItems } from "@/lib/statement/ai-import-enrichment";
 import type { ParsedItem } from "@/lib/ai/parser";
 import { isSpendableAccount } from "@/lib/account-kind-utils";
 import { ENTRY_ORIGIN_AI_IMPORT } from "@/lib/transaction-semantics";
-import { creditBillEffectiveDate } from "@/lib/credit/billing";
 
 export const runtime = "nodejs";
 
@@ -511,6 +514,9 @@ export async function POST(req: NextRequest) {
   // Account.balance 存储列，所以结束时必须对它们做一次重算，否则余额要等
   // system-task 的后台全量重算轮到它才慢慢追上。
   const touchedAccountIds = new Set<string>();
+  // 本次写入的明细 id：与 Web UI / MCP 一样，批量创建后要留一份可撤销快照。
+  const createdEntryIds: string[] = [];
+  let touchedInvestment = false;
   const defaultAcc = (defaultAccountName ?? "").trim();
   const defaultContextAccount = (() => {
     const account = findAccount(defaultAcc);
@@ -571,7 +577,7 @@ export async function POST(req: NextRequest) {
         const productType = fundContext.fundProductType ?? (fundContext.fundCode?.startsWith("5") ? "money_fund" : "fund");
 
 
-        await createFundTransactionWithCashFlows(prisma, {
+        const fundResult = await createFundTransactionWithCashFlows(prisma, {
           householdId,
           fundAccountId: fundAcc.id,
           cashAccountId: cashAcc?.id ?? null,
@@ -595,6 +601,10 @@ export async function POST(req: NextRequest) {
           }] : [],
           note: normalizedRemark,
         });
+        for (const entry of fundResult.cashEntries) createdEntryIds.push(entry.id);
+        touchedAccountIds.add(fundAcc.id);
+        if (cashAcc) touchedAccountIds.add(cashAcc.id);
+        touchedInvestment = true;
         createdCount++;
         continue;
       }
@@ -614,27 +624,23 @@ export async function POST(req: NextRequest) {
           errors.push({ index: i, rawText: item.rawText.slice(0, 60), error: "转账缺少账户，至少需要两个账户" });
           continue;
         }
-        const fromStatementMonth =
-          (from.kind === "bank_credit" || from.kind === "loan") && from.billingDay ? toStatementMonth(date, from.billingDay, from.billingDayTxPeriod) : null;
         const transferCurrency = resolveSameCurrencyTransfer(from, to);
-        await prisma.txRecord.create({
-          data: {
-            type: item.type as any,
-            status: "posted",
-            date,
-            amount: -entryAmount,
-            accountId: from.id,
-            accountName: from.name,
-            toAccountId: to.id,
-            toAccountName: to.name,
-            note: normalizedRemark,
-            statementMonth: fromStatementMonth,
-            householdId,
-            currency: transferCurrency,
-            source: "ai_recognition",
-            entryOrigin: ENTRY_ORIGIN_AI_IMPORT,
-          },
+        const created = await createPlainLedgerEntry(prisma, {
+          householdId,
+          type: "transfer",
+          date,
+          amount: -entryAmount,
+          account: from,
+          toAccount: to,
+          note: normalizedRemark,
+          currency: transferCurrency,
+          source: "ai_recognition",
+          entryOrigin: ENTRY_ORIGIN_AI_IMPORT,
+          status: "posted",
         });
+        createdEntryIds.push(created.id);
+        touchedAccountIds.add(from.id);
+        touchedAccountIds.add(to.id);
         didCreate = true;
       } else if (item.type === "investment") {
         const from =
@@ -661,10 +667,9 @@ export async function POST(req: NextRequest) {
             errors.push({ index: i, rawText: item.rawText.slice(0, 60), error: "缺少账户，请先添加账户" });
             continue;
           }
-          const statementMonth =
-            (single.kind === "bank_credit" || single.kind === "loan") && single.billingDay ? toStatementMonth(date, single.billingDay, single.billingDayTxPeriod) : null;
+          const statementMonth = resolvePlainStatementMonth(single, "investment", date, postedAt);
 
-          await prisma.txRecord.create({
+          const created = await prisma.txRecord.create({
             data: {
               type: "investment" as any,
               status: "posted",
@@ -683,12 +688,14 @@ export async function POST(req: NextRequest) {
 
             },
           });
+          createdEntryIds.push(created.id);
+          touchedAccountIds.add(single.id);
+          touchedInvestment = true;
           didCreate = true;
         } else {
-          const fromStatementMonth =
-            (from.kind === "bank_credit" || from.kind === "loan") && from.billingDay ? toStatementMonth(date, from.billingDay, from.billingDayTxPeriod) : null;
+          const fromStatementMonth = resolvePlainStatementMonth(from, "investment", date, postedAt);
 
-          await prisma.txRecord.create({
+          const created = await prisma.txRecord.create({
             data: {
               type: "investment" as any,
               status: "posted",
@@ -707,6 +714,10 @@ export async function POST(req: NextRequest) {
 
             },
           });
+          createdEntryIds.push(created.id);
+          touchedAccountIds.add(from.id);
+          touchedAccountIds.add(to.id);
+          touchedInvestment = true;
           didCreate = true;
         }
       } else {
@@ -755,44 +766,40 @@ export async function POST(req: NextRequest) {
         const counterpartyInstitution = item.institutionId
           ? institutions.find((institution) => institution.id === item.institutionId) ?? null
           : findCounterpartyInstitution(normalizedInstitution);
-        const statementMonth =
-          (account.kind === "bank_credit" || account.kind === "loan") && account.billingDay
-            ? toStatementMonth(creditBillEffectiveDate({ type: item.type, date, postedAt }) ?? date, account.billingDay, account.billingDayTxPeriod)
-            : null;
-        const entryData: Record<string, unknown> = {
-          type: item.type as any,
-          status: "posted",
-          date,
-          postedAt,
-          amount: item.type === "expense" ? (isExpenseRefund ? entryAmount : -entryAmount) : entryAmount,
-          accountId: account.id,
-          accountName: account.name,
-          note: normalizedRemark,
-          statementMonth,
-          householdId,
-          currency: normalizeCurrency(account.currency),
-          source: "ai_recognition",
-          entryOrigin: ENTRY_ORIGIN_AI_IMPORT,
-          counterpartyInstitutionId: counterpartyInstitution?.id ?? null,
-          counterpartyInstitutionName: counterpartyInstitution?.name ?? normalizedInstitution ?? null,
-        };
-        if (category) {
-          entryData.categoryId = category.id;
-          entryData.categoryName = category.name;
-        }
+        const signedAmount = item.type === "expense" ? (isExpenseRefund ? entryAmount : -entryAmount) : entryAmount;
         await prisma.$transaction(async (tx) => {
           const duplicate = await findRecentTransactionDuplicate(tx, {
             householdId,
             type: item.type as any,
             date,
             accountId: account.id,
-            amount: entryData.amount as number,
+            amount: signedAmount,
             categoryId: category?.id ?? null,
             note: normalizedRemark ?? null,
             source: "ai_recognition",
           });
           if (duplicate) return;
-          await tx.txRecord.create({ data: entryData as any });
+          const created = await createPlainLedgerEntry(tx, {
+            householdId,
+            type: item.type as "expense" | "income",
+            date,
+            postedAt,
+            amount: signedAmount,
+            account,
+            category,
+            counterpartyInstitution: counterpartyInstitution
+              ? { id: counterpartyInstitution.id, name: counterpartyInstitution.name }
+              : null,
+            note: normalizedRemark,
+            currency: normalizeCurrency(account.currency),
+            source: "ai_recognition",
+            entryOrigin: ENTRY_ORIGIN_AI_IMPORT,
+            status: "posted",
+            extra: {
+              counterpartyInstitutionName: counterpartyInstitution?.name ?? normalizedInstitution ?? null,
+            },
+          });
+          createdEntryIds.push(created.id);
           didCreate = true;
           touchedAccountIds.add(account.id);
         });
@@ -803,6 +810,7 @@ export async function POST(req: NextRequest) {
     }
   }
 
+  let undoOperationId: string | null = null;
   if (createdCount > 0) {
     // Recalculate positions so the fundHolding table updates immediately
     if (fundContext?.accountId) {
@@ -811,6 +819,21 @@ export async function POST(req: NextRequest) {
     // 余额重算：与账单/基金导入保持同一口径，导入结束即刷新 Account.balance
     for (const accountId of touchedAccountIds) {
       await recalcAndSaveAccountBalance(accountId).catch(logger.catchLog("余额重算失败", "ai/import"));
+    }
+    await invalidateCreditCardCycleCacheForAccountIds(touchedAccountIds).catch(
+      logger.catchLog("信用卡账单缓存失效失败", "ai/import"),
+    );
+    // 明细/投资缓存按 Web UI 的同一套失效规则刷新，否则页面仍读旧缓存。
+    if (touchedInvestment) revalidateAfterInvestChange();
+    else revalidateAfterTxChange();
+    // 批量创建同样要留一份可撤销快照：与 MCP / Web UI 的批量导入对齐，
+    // 让通用「撤销」入口能撤回这次 AI 导入，而不是只能逐条删。
+    try {
+      const undo = await prepareCreatedEntryUndo(prisma, householdId, createdEntryIds);
+      const savedUndo = await saveEntryUndo(prisma, scope, undo, "batch_create", `AI 导入 ${createdEntryIds.length} 条`);
+      undoOperationId = savedUndo?.id ?? null;
+    } catch (error) {
+      console.warn("[ai/import] 写入撤销快照失败", error);
     }
     // Client-side handles page refresh
   }
@@ -821,6 +844,7 @@ export async function POST(req: NextRequest) {
     skippedCount: errors.length,
     createdAccounts,
     accountIds: Array.from(touchedAccountIds),
+    undoOperationId,
     errors: errors.length > 0 ? errors : undefined,
   });
 }

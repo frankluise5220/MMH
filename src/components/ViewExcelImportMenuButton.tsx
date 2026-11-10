@@ -39,6 +39,7 @@ import { convertCaizhiFundImportFile } from "@/lib/statement/caizhi-template";
 import { readStatementSheetRows } from "@/lib/statement/statement-sheet-reader";
 import { routeAlipayFundBill } from "@/lib/statement/alipay-fund-bill";
 import { excludeFundTradeRows } from "@/lib/statement/fund-trade-split";
+import { guardStatementDuplicateImport } from "@/lib/client/statement-import-duplicates";
 
 /**
  * 手持设备上隐藏导入导出入口的类名（唯一写入点，四处入口共用）。
@@ -1421,17 +1422,43 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
     return Array.isArray(data.items) ? data.items : [];
   }
 
+  /**
+   * 一次「确认导入」只登记一条撤销记录。10 个分批请求各自返回的新建明细 id 在这里
+   * 汇总后一次提交，不能每批各登记一次（那会变成 10 条，而通用撤销只撤最新一条）。
+   * 登记失败不影响已经落账的导入结果。
+   */
+  async function registerImportUndo(entryIds: string[]) {
+    if (entryIds.length === 0) return;
+    try {
+      await fetch("/api/v1/undo/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ entryIds }),
+      });
+    } catch {
+      // 撤销登记是附加能力，失败时保留原导入结果
+    }
+  }
+
   async function confirmImport(
     items: StatementImportPreviewItem[],
     options?: { createLiabilityAccounts?: boolean; forceCreateOwnedMoneyAccounts?: boolean },
   ) {
     if (items.length === 0) return;
+    // 同一份账单重复导入：同一天已有记录的笔数与金额完全一致时先问用户是否覆盖。
+    // 必须在这里（分批之前）问：每批只有 1/10 的行，逐批判断会漏掉别的批次里的重复。
+    const duplicateChoice = await guardStatementDuplicateImport(
+      items as unknown as Array<Record<string, unknown>>,
+      t,
+    );
+    if (duplicateChoice === "cancel") return;
     setBusy(true);
     setStatus(t("viewImport.importingBills"));
     setImportProgress({ imported: 0, total: items.length });
     let createdCount = 0;
     let skippedCount = 0;
     let importedRows = 0;
+    const createdEntryIds: string[] = [];
     try {
       const requestBody = (batchItems: StatementImportPreviewItem[], isLastBatch: boolean) => JSON.stringify({
         items: batchItems,
@@ -1441,6 +1468,8 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
         forceCreateOwnedMoneyAccounts: options?.forceCreateOwnedMoneyAccounts === true,
         // 末批标记：服务端只在末批对全部受影响账户做一次余额重算
         isLastBatch,
+        // 10 批同属一次确认：撤销记录在循环结束后由前端统一登记一条
+        skipUndoRegistration: true,
         // 余额校准行放最后一批：所有交易记录落库后再校准余额
         ...(isLastBatch && balanceAdjustments.length > 0 ? { balanceAdjustments } : {}),
       });
@@ -1459,18 +1488,21 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
           headers: { "Content-Type": "application/json" },
           body: requestBody(batchItems, isLastBatch),
         });
-        const data = await res.json().catch(() => null) as { ok?: boolean; error?: string; createdCount?: number; skippedCount?: number; accountIds?: string[]; errors?: Array<{ error?: string }> } | null;
+        const data = await res.json().catch(() => null) as { ok?: boolean; error?: string; createdCount?: number; skippedCount?: number; accountIds?: string[]; ids?: string[]; createdAnchorIds?: string[]; errors?: Array<{ error?: string }> } | null;
         if (!res.ok || !data?.ok) {
           throw new Error(data?.error || data?.errors?.[0]?.error || t("creditBill.importFailed"));
         }
         createdCount += data.createdCount ?? 0;
         skippedCount += data.skippedCount ?? 0;
+        for (const id of data.ids ?? []) if (typeof id === "string" && id) createdEntryIds.push(id);
+        for (const id of data.createdAnchorIds ?? []) if (typeof id === "string" && id) createdEntryIds.push(id);
         for (const accountId of data.accountIds ?? []) {
           if (typeof accountId === "string" && accountId) refreshedAccountIds.add(accountId);
         }
         importedRows += batchItems.length;
         setImportProgress({ imported: importedRows, total: items.length });
       }
+      await registerImportUndo(createdEntryIds);
       setStatus(t("creditBill.importExcelSuccess", { created: createdCount, skipped: skippedCount }));
       setBalanceAdjustments([]);
       setPreviewOpen(false);
@@ -1482,6 +1514,8 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
         accountIds: refreshedAccountIds.size > 0 ? Array.from(refreshedAccountIds) : [props.accountId],
       });
     } catch (error) {
+      // 部分批次已落账但没有回滚：仍要能用一次撤销把它们整体撤掉。
+      await registerImportUndo(createdEntryIds);
       const reason = error instanceof Error ? error.message : String(error);
       if (importedRows > 0 && items.length > importedRows) {
         setStatus(t("viewImport.statementImportPartialFailed", {

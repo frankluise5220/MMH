@@ -321,7 +321,7 @@ export default function SystemUpdatePage() {
     try {
       const query = options?.checkRemote ? "?check=1" : "";
       const res = await fetch(`/api/v1/settings/system-update${query}`, { cache: "no-store" });
-      const data = await res.json();
+      const data = await res.json() as VersionInfo;
       setVersionInfo(data);
       if (data?.imageSourceConfig) {
         setImageSourceDraft({
@@ -330,15 +330,29 @@ export default function SystemUpdatePage() {
           customUpdaterImage: deriveUpdaterImage(data.imageSourceConfig.customAppImage || ""),
         });
       }
+      return data;
     } catch {
       setVersionInfo(null);
+      return null;
     } finally {
       setLoadingVersion(false);
     }
   }, []);
 
+  // 首屏就带 `?check=1`：Docker / 飞牛 / 群晖没有别的更新提示通道（没有桌面端的
+  // 启动自检），只查本地版本的话首屏永远停在「未获取」，用户根本看不到有更新。
+  // 先读一次本地信息确认部署形态，只有 Docker / 包版才自动发起远端检查，避免
+  // 源码部署在进页面时白白跑一次 git fetch。
+  const autoRemoteCheckRef = useRef(false);
   useEffect(() => {
-    loadVersionInfo();
+    if (autoRemoteCheckRef.current) return;
+    autoRemoteCheckRef.current = true;
+    void (async () => {
+      const local = await loadVersionInfo();
+      if (local?.ok && (local.isDocker || local.isFnos || local.isSynology)) {
+        await loadVersionInfo({ checkRemote: true });
+      }
+    })();
   }, [loadVersionInfo]);
 
   useEffect(() => {
@@ -733,8 +747,13 @@ export default function SystemUpdatePage() {
   const hasResolvedRemoteCommit = Boolean(
     versionInfo?.remoteCommit && versionInfo.remoteCommit !== "unknown",
   );
+  // 飞牛 / 群晖安装包里没有 git 检出，远端只能拿到 Release 版本号，commit 可能是
+  // unknown；此时按版本号（remoteVersion）也算已确认远端版本。
+  const hasResolvedRemoteVersion = Boolean(cleanVersionPart(versionInfo?.remoteVersion));
   const canCheckUpdate =
-    versionInfo?.ok && versionInfo.canCheckUpdate !== false && hasResolvedRemoteCommit;
+    versionInfo?.ok
+    && versionInfo.canCheckUpdate !== false
+    && (hasResolvedRemoteCommit || hasResolvedRemoteVersion);
   const isLatest = versionInfo?.ok && canCheckUpdate && !versionInfo.needsUpdate;
   const needsUpdate = versionInfo?.ok && canCheckUpdate && versionInfo.needsUpdate;
   const dockerManaged = Boolean(versionInfo?.isDocker);
@@ -973,7 +992,14 @@ sudo docker compose -p mmh up -d app updater`}</pre>
               <div className="text-slate-500">{packageManaged || windowsManaged ? t("settings.systemUpdate.updateMethod") : needsUpdate ? t("settings.systemUpdate.availableVersion") : t("settings.systemUpdate.remoteVersion")}</div>
               <div className="min-w-0">
                 {packageManaged ? (
-                  <span className="text-slate-600">{synologyManaged ? t("settings.systemUpdate.managedBySynology") : t("settings.systemUpdate.managedByFnos")}</span>
+                  <>
+                    <span className="text-slate-600">{synologyManaged ? t("settings.systemUpdate.managedBySynology") : t("settings.systemUpdate.managedByFnos")}</span>
+                    {canCheckUpdate && versionInfo.remoteVersion ? (
+                      <span className="ml-2 text-xs text-slate-500">
+                        {t("settings.systemUpdate.latestVersion", { version: versionInfo.remoteVersion })}
+                      </span>
+                    ) : null}
+                  </>
                 ) : windowsManaged ? (
                   <span className="text-slate-600">{t("settings.systemUpdate.managedByDesktop")}</span>
                 ) : canCheckUpdate ? (
@@ -999,9 +1025,30 @@ sudo docker compose -p mmh up -d app updater`}</pre>
             </div>
 
             {packageManaged ? (
-              <div className="rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
-                {synologyManaged ? t("settings.systemUpdate.synologyManagedInfo") : t("settings.systemUpdate.fnosManagedInfo")}
-              </div>
+              <>
+                {needsUpdate ? (
+                  <div className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                    <div className="font-medium">
+                      {t("settings.systemUpdate.packageUpdateAvailable", {
+                        version: versionInfo.remoteVersion || versionInfo.remoteCommit,
+                      })}
+                    </div>
+                    <div className="mt-1 text-xs leading-5 text-amber-700">
+                      {synologyManaged
+                        ? t("settings.systemUpdate.synologyPackageUpdateHint")
+                        : t("settings.systemUpdate.fnosPackageUpdateHint")}
+                    </div>
+                  </div>
+                ) : isLatest ? (
+                  <div className="flex items-center gap-2 rounded-md border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm font-medium text-emerald-700">
+                    <CheckCircle2 className="h-4 w-4 shrink-0" />
+                    {t("settings.systemUpdate.currentIsLatest")}
+                  </div>
+                ) : null}
+                <div className="rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+                  {synologyManaged ? t("settings.systemUpdate.synologyManagedInfo") : t("settings.systemUpdate.fnosManagedInfo")}
+                </div>
+              </>
             ) : null}
 
             {windowsUpdatePanel}
@@ -1036,7 +1083,7 @@ sudo docker compose -p mmh up -d app updater`}</pre>
               </div>
             ) : null}
 
-            {!packageManaged && !windowsManaged && !canCheckUpdate && (versionInfo.fetchError || versionInfo.githubFetchError) ? (
+            {!windowsManaged && !canCheckUpdate && (versionInfo.fetchError || versionInfo.githubFetchError) ? (
               <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
                 {t("settings.systemUpdate.fetchRemoteFailed", { error: versionInfo.fetchError || versionInfo.githubFetchError || "" })}
               </div>
