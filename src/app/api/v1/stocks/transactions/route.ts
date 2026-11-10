@@ -9,7 +9,7 @@ import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { getApiHouseholdScope } from "@/lib/server/api-auth";
 import { ensureBrokerageCashAccountForStockAccount } from "@/lib/server/brokerage-cash-account";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
-import { revalidateAfterInvestChange } from "@/lib/server/revalidate";
+import { revalidateAfterStockTransactionChange } from "@/lib/server/revalidate";
 import { loadCachedStockTransactions, serializeStockTransaction } from "@/lib/server/stock-transactions";
 import { ensureStockTransactionCashFlow } from "@/lib/stock/cashFlow";
 import { buildInvestmentSourceNote, isAutoInvestmentSourceNote } from "@/lib/investment-cash-note";
@@ -122,7 +122,7 @@ async function deleteStockTransactionRows(householdId: string, rows: StockTransa
   await invalidateCreditCardCycleCacheForAccountIds(balanceAccountIds).catch(
     logger.catchLog("credit-card-cycle-cache-invalidation-failed", "route.ts"),
   );
-  revalidateAfterInvestChange();
+  revalidateAfterStockTransactionChange();
 
   return {
     deletedIds,
@@ -405,7 +405,7 @@ export async function POST(req: NextRequest) {
     await recalcAndSaveAccountBalance(stockAccountId).catch(() => undefined);
     if (cashAccountId) await recalcAndSaveAccountBalance(cashAccountId).catch(() => undefined);
     await invalidateCreditCardCycleCacheForAccountIds(new Set([stockAccountId, cashAccountId].filter((id): id is string => Boolean(id)))).catch(() => undefined);
-    revalidateAfterInvestChange();
+    revalidateAfterStockTransactionChange();
 
     const row = await prisma.stockTransaction.findUnique({
       where: { id: created.id },
@@ -616,7 +616,7 @@ export async function PATCH(req: NextRequest) {
       if (accountId) await recalcAndSaveAccountBalance(accountId).catch(() => undefined);
     }
     await invalidateCreditCardCycleCacheForAccountIds(recalcIds).catch(() => undefined);
-    revalidateAfterInvestChange();
+    revalidateAfterStockTransactionChange();
 
     const row = await prisma.stockTransaction.findUnique({
       where: { id: updated.id },

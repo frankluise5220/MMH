@@ -18,7 +18,7 @@ import {
 } from "@/lib/server/brokerage-cash-account";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
 import { attachEntryTagsByNames, parseTagNamesInput } from "@/lib/server/entry-tags";
-import { revalidateAfterInvestChange } from "@/lib/server/revalidate";
+import { revalidateAfterStockTransactionChange } from "@/lib/server/revalidate";
 import { findRecentManualTransactionDuplicate } from "@/lib/server/transaction-dedupe";
 import { ensureStockTransactionCashFlow, stockCashAmount } from "@/lib/stock/cashFlow";
 import { calculateStockTransactionFeesByDate } from "@/lib/stock/feeRule";
@@ -1348,7 +1348,7 @@ export async function POST(req: NextRequest) {
       await recalcAndSaveAccountBalance(accountId).catch(() => undefined);
     }
     await invalidateCreditCardCycleCacheForAccountIds(accountIds).catch(() => undefined);
-    revalidateAfterInvestChange();
+    revalidateAfterStockTransactionChange();
 
     return NextResponse.json({
       ok: true,

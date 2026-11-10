@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { prisma } from "@/lib/db/prisma";
 import { getApiHouseholdScope } from "@/lib/server/api-auth";
-import { revalidateAfterInvestChange } from "@/lib/server/revalidate";
+import { revalidateAfterStockTransactionChange } from "@/lib/server/revalidate";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { recalcStockPositions } from "@/lib/stock/recalcPosition";
@@ -104,7 +104,7 @@ export async function POST(req: NextRequest) {
       await recalcAndSaveAccountBalance(accountId).catch(() => undefined);
     }
     await invalidateCreditCardCycleCacheForAccountIds(accountIds).catch(() => undefined);
-    revalidateAfterInvestChange();
+    revalidateAfterStockTransactionChange();
 
     return NextResponse.json({
       ok: true,

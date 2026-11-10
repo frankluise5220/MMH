@@ -9,7 +9,13 @@ import { formatCurrencyMoney, formatMoney, formatPercent } from "@/lib/format";
 import { pnlClassFromRedUp } from "@/lib/client/colors";
 import { showBlockingLoading } from "@/lib/client/blocking-loading";
 import { showConfirmDialog } from "@/lib/client/confirm-dialog";
-import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import {
+  dispatchFinanceDataChanged,
+  FINANCE_DATA_CHANGED_EVENT,
+  financeChangeAffectsAccount,
+  financeChangeTouchesEntries,
+  type FinanceDataChangedDetail,
+} from "@/lib/client/refresh";
 import { recordRecentAccounts } from "@/lib/client/recentAccounts";
 import { useI18n } from "@/lib/i18n";
 import { useDetailPagination } from "@/lib/client/use-detail-pagination";
@@ -48,6 +54,18 @@ type StockPosition = {
 
 const STOCK_DETAIL_COLUMN_SETTINGS_EVENT = "mmh:stock-detail:column-settings";
 const STOCK_POSITION_EPSILON = 0.000001;
+
+/**
+ * 本面板自己派发、并且已经就地刷过列表的 stock reason。
+ * 其余 `stock-*` 事件（手工记账 stock-transaction-save、编辑 stock-transaction-update、
+ * Excel 导入 stock-excel-import）必须在这里重取一次，否则刚记的交易不会出现在
+ * 持仓与交易明细里。
+ */
+const SELF_STOCK_REFRESH_REASONS = new Set([
+  "stock-transaction-delete",
+  "stock-transaction-batch-delete",
+  "stock-transaction-batch-update",
+]);
 
 type StockTransaction = {
   id: string;
@@ -365,14 +383,44 @@ export function StockHoldingsPanel({
     }
   }, [accountId, showCleared, t]);
 
+  /**
+   * 手工记账 / Excel 导入 / 明细页编辑保存都会派发 FINANCE_DATA_CHANGED_EVENT，
+   * 本面板必须自己刷一次持仓与交易明细：此前只监听 `mmh:stock:edit:success`，
+   * 手工新增（reason = stock-transaction-save）没有任何监听者，页面上的持仓和
+   * 明细就停在保存前的快照 —— 用户看到的正是「刚输的两条页面上不显示，数据表里有」。
+   * 列表客户端还有一层 per-position 缓存（transactionCacheRef），必须一起清掉，
+   * 否则强制刷新之外的路径仍会读到旧列表。
+   */
   useEffect(() => {
-    function onEditSaved() {
-      void reloadHoldings().catch(() => undefined);
-      if (selectedPosition) void loadTransactions(selectedPosition, true);
-    }
-    window.addEventListener("mmh:stock:edit:success", onEditSaved);
-    return () => window.removeEventListener("mmh:stock:edit:success", onEditSaved);
-  }, [loadTransactions, reloadHoldings, selectedPosition]);
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const refreshList = () => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = null;
+        transactionCacheRef.current.clear();
+        void reloadHoldings().catch(() => undefined);
+        if (selectedPosition) void loadTransactions(selectedPosition, true);
+      }, 120);
+    };
+    const onFinanceChanged = (event: Event) => {
+      const detail = (event as CustomEvent<FinanceDataChangedDetail>).detail;
+      if (!detail) return;
+      const reason = String(detail.reason ?? "");
+      if (!reason.startsWith("stock")) return;
+      if (SELF_STOCK_REFRESH_REASONS.has(reason)) return;
+      // 行情 / 净值类事件不动交易行集合（持仓市值由本面板自己的刷新就地更新）。
+      if (!financeChangeTouchesEntries(detail)) return;
+      if (!financeChangeAffectsAccount(detail, accountId)) return;
+      refreshList();
+    };
+    window.addEventListener("mmh:stock:edit:success", refreshList);
+    window.addEventListener(FINANCE_DATA_CHANGED_EVENT, onFinanceChanged);
+    return () => {
+      if (timer) clearTimeout(timer);
+      window.removeEventListener("mmh:stock:edit:success", refreshList);
+      window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, onFinanceChanged);
+    };
+  }, [accountId, loadTransactions, reloadHoldings, selectedPosition]);
 
   // Default to the largest holding, matching the list's market-value order.
   const initialStockSelectionRef = useRef(false);

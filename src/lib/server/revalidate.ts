@@ -46,6 +46,22 @@ export function revalidateAfterInvestChange(options?: RevalidateOptions) {
 }
 
 /**
+ * Stock transaction writes (`/api/v1/stocks/transactions*`, `/api/v1/stocks/import`)
+ * must be read-your-own-writes: the stock view refetches its transaction list and
+ * holdings right after the save, and that refetch is the only thing that puts the
+ * new row on screen. `revalidateTag(tag, "max")` in `revalidateAfterInvestChange`
+ * is stale-while-revalidate, so a plain `revalidateAfterInvestChange()` from a
+ * Route Handler hands the pre-write snapshot back to that refetch and the row the
+ * user just saved never renders ("刚记的两笔在页面上不显示，数据表里有").
+ * Expire the two stock list caches immediately instead.
+ */
+export function revalidateAfterStockTransactionChange(options?: RevalidateOptions) {
+  revalidateAfterInvestChange(options);
+  expireTagNow("stock-transactions");
+  expireTagNow("stock-holding-report");
+}
+
+/**
  * Fund-shell saves (fund / money / metal / wealth) refresh ONLY via tags —
  * no revalidatePath, so the server action response does not carry a fresh RSC
  * payload for the current page (the 1-2.5s full re-render per save).
