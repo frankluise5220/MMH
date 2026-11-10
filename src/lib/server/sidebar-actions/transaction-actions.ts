@@ -282,6 +282,26 @@ function allowsZeroPostedAmountFx(formData: FormData, type: string) {
   return Number.isFinite(originalAmount) && originalAmount !== 0;
 }
 
+/**
+ * 投资记账弹窗（基金 / 货币基金 / 贵金属）允许「只记份额（克数）、金额为 0」：
+ * 赠送、实物交接、或导入后现金金额未知时，数量是唯一已知的事实。
+ * 买入与赎回都适用（赎回时净值未知也按 0 记），前端会先弹一次确认；
+ * 理财 / 投顾 / 债券 / 存单走各自的弹窗与写入链路，不在此列。
+ */
+const ZERO_AMOUNT_INVEST_PRODUCT_TYPES = new Set(["fund", "money", "metal"]);
+
+function allowsZeroAmountInvestEntry(formData: FormData, type: string, subtype: string) {
+  if (type !== "investment") return false;
+  if (subtype !== FundSubtype.buy && subtype !== FundSubtype.redeem) return false;
+  const productType = String(formData.get("fundProductType") ?? "").trim();
+  if (!ZERO_AMOUNT_INVEST_PRODUCT_TYPES.has(productType)) return false;
+  const quantityRaw = productType === "metal"
+    ? String(formData.get("metalQuantity") ?? formData.get("fundUnits") ?? "")
+    : String(formData.get("fundUnits") ?? "");
+  const quantity = Number.parseFloat(quantityRaw);
+  return Number.isFinite(quantity) && quantity > 0;
+}
+
 async function createSplitWealthTransaction(
   t: (key: string, params?: Record<string, string | number>) => string,
   formData: FormData,
@@ -500,7 +520,12 @@ export async function createTransaction(formData: FormData) {
     Number.isFinite(earlyFundUnitsRaw) &&
     earlyFundUnitsRaw > 0;
 
-  if (!amountAbs && !allowsZeroAmountInvestment && !allowsZeroPostedAmountFx(formData, type)) {
+  if (
+    !amountAbs &&
+    !allowsZeroAmountInvestment &&
+    !allowsZeroAmountInvestEntry(formData, type, earlyFundSubtype) &&
+    !allowsZeroPostedAmountFx(formData, type)
+  ) {
     return { ok: false as const, error: t("txForm.alert.invalidAmount") };
   }
 
@@ -1861,7 +1886,11 @@ export async function editInvestment(formData: FormData) {
   const fundSubtypeValue: FundSubtype = validSubtypes.includes(subtype as FundSubtype) ? (subtype as FundSubtype) : FundSubtype.buy;
   const isDividendReinvest = fundSubtypeValue === FundSubtype.dividend_reinvest;
   const isDividendCash = fundSubtypeValue === FundSubtype.dividend_cash;
-  if (!amountAbs && !(isDividendReinvest && fundUnits != null && fundUnits > 0)) {
+  if (
+    !amountAbs &&
+    !(isDividendReinvest && fundUnits != null && fundUnits > 0) &&
+    !allowsZeroAmountInvestEntry(formData, "investment", subtype)
+  ) {
     return { ok: false as const, error: t("txForm.alert.invalidAmount") };
   }
 
@@ -3173,7 +3202,12 @@ export async function updateTransactionFromDialog(formData: FormData) {
     earlyEditFundSubtype === FundSubtype.dividend_reinvest &&
     Number.isFinite(earlyEditFundUnitsRaw) &&
     earlyEditFundUnitsRaw > 0;
-  if (!amountAbs && !allowsZeroAmountInvestmentEdit && !allowsZeroPostedAmountFx(formData, type)) {
+  if (
+    !amountAbs &&
+    !allowsZeroAmountInvestmentEdit &&
+    !allowsZeroAmountInvestEntry(formData, type, earlyEditFundSubtype) &&
+    !allowsZeroPostedAmountFx(formData, type)
+  ) {
     return { ok: false as const, error: t("txForm.alert.invalidAmount") };
   }
 

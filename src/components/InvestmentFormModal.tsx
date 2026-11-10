@@ -20,6 +20,7 @@ import { recordRecentAccounts, sortByAccountUsage, useAccountUsage } from "@/lib
 /** 必填字段红框（统一实现：申请日期 / 基金代码 / 买入金额 / 份额）。 */
 import { REQUIRED_FIELD_CLASS } from "@/lib/client/required-field";
 import { getColorSchemeFromCookie, pnlClassFromRedUp } from "@/lib/client/colors";
+import { showConfirmDialog } from "@/lib/client/confirm-dialog";
 import { compactFinanceAccountIds, dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useResetEntryModalReconciledReadOnlyOnClose } from "@/lib/client/entryModalLock";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
@@ -2194,6 +2195,11 @@ export function InvestmentFormModal({
       setFeeEdited(false);
     }
 
+    // 买入允许「只填份额/克数、金额为 0」（贵金属一直如此，基金/货币现在同样放开）：
+    // 金额为 0 时反推不出数量（会得到空串），此时必须保留用户手填的数量，
+    // 否则清空金额就把数量一起抹掉了。
+    const keepsTypedQuantity =
+      unitsEditedRef.current && (productType === "metal" || p(nextAmountRaw) <= 0);
     unitsEditedRef.current = false;
     // 份额必须用「已经定下来的手续费」来算。以前这里把 feeRate 也塞进计算参数，
     // 于是 buildInvestmentCalculation 又按费率派生了一次手续费：份额按费率算、
@@ -2205,6 +2211,7 @@ export function InvestmentFormModal({
       navRaw: nextNavRaw,
       refundEnabled: buyResultStatus === "refund",
     });
+    if (keepsTypedQuantity && !nextCalc.computedUnits) return true;
     setUnits(nextCalc.computedUnits);
     return true;
   }
@@ -2622,9 +2629,18 @@ export function InvestmentFormModal({
     e.preventDefault();
     if (submitting) return;
     const finalAmount = p(amount);
+    // 基金 / 货币基金 / 贵金属只记份额（克数）也可以：赠送、实物交接、或导入后现金金额未知时，
+    // 数量是唯一已知的事实，金额允许为 0（买入、赎回都适用）。提交前会再弹一次确认。
+    const allowsZeroAmountEntry =
+      (productType === "fund" || productType === "money" || productType === "metal") &&
+      (subtype === "buy" || subtype === "redeem") &&
+      p(units) > 0 &&
+      finalAmount === 0;
     // Dividend reinvest changes fund-side units only; it does not create a cash amount.
     if (isDividend(subtype) && subtype !== "dividend_cash") {
       // Only validate units; do not block an empty amount.
+    } else if (allowsZeroAmountEntry) {
+      // 有了份额/克数就不校验金额（0 / 留空都按 0 处理）。
     } else if (!amount.trim() || finalAmount < 0) {
       window.alert(t("investForm.alert.invalidAmount"));
       return;
@@ -2693,6 +2709,18 @@ export function InvestmentFormModal({
         window.alert(t("investForm.alert.redeemUnitsExceed", { units: formatUnits(redeemLimitUnits) }));
         return;
       }
+    }
+
+    if (allowsZeroAmountEntry) {
+      // 金额 0 是「有数量、没金额」的记账（赠送/实物/导入未补现金），交给用户确认：
+      // 回车或点「确认」即保存，取消（Esc / 点遮罩 / 取消按钮）返回窗口继续改金额。
+      const confirmedZeroAmount = await showConfirmDialog({
+        title: t("investForm.zeroAmountConfirm.title"),
+        message: t("investForm.zeroAmountConfirm.message", { units: formatUnits(finalUnits) }),
+        confirmLabel: t("investForm.zeroAmountConfirm.confirm"),
+        cancelLabel: t("common.cancel"),
+      });
+      if (!confirmedZeroAmount) return;
     }
 
     const effectiveAmount = subtype === "dividend_reinvest" ? 0 : finalAmount;
