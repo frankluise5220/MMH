@@ -2189,15 +2189,8 @@ export function RegularInvestClient({
                   { key: "property", label: t("entry.kind.property") },
                   { key: "metal", label: t("entry.kind.metal") },
                   { key: "wealth", label: t("entry.kind.wealth") },
-                  {
-                    key: "bond",
-                    label: t("entry.kind.bond"),
-                    children: [
-                      { key: "bond", label: t("bondForm.title.create") },
-                      { key: "bond-repo-lend", label: t("entry.kind.bondRepoLend") },
-                      { key: "bond-repo-redeem", label: t("entry.kind.bondRepoRedeem") },
-                    ],
-                  },
+                  // 逆回购只在股票视图录入（本页没有逆回购窗口，避免出现点不动的菜单项）。
+                  { key: "bond", label: t("bondForm.title.create") },
                   { key: "deposit", label: t("entry.kind.deposit") },
                   { key: "insurance", label: t("entry.kind.insurance") },
                   { key: "settlement", label: t("entry.kind.settlement"), disabled: cashAccounts.length === 0 },

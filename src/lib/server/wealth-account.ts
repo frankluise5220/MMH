@@ -9,8 +9,8 @@ type ResolveWealthAccountInput = {
   householdId: string;
   cashAccountId: string;
   requestedAccountId?: string | null;
-  /** 目标账户类型：wealth=理财账户（默认），bond=债券账户，advisor=投顾组合账户。互不混用。 */
-  accountProductType?: "wealth" | "bond" | "advisor";
+  /** 目标账户类型：wealth=理财账户（默认），bond=债券账户，advisor=投顾组合账户，stock=股票账户（逆回购）。互不混用。 */
+  accountProductType?: "wealth" | "bond" | "advisor" | "stock";
   /**
    * 自动建账时的机构覆盖：投顾产品指定「所属机构」时，复用/新建的投顾账户
    * 落到该机构而不是资金账户机构（资金账户只提供币种与所有人）。
@@ -30,8 +30,21 @@ const wealthAccountInclude = {
  */
 export async function resolveOrCreateWealthAccount(tx: Db, input: ResolveWealthAccountInput) {
   const accountProductType =
-    input.accountProductType === "bond" ? "bond" : input.accountProductType === "advisor" ? "advisor" : "wealth";
-  const accountTypeLabel = accountProductType === "bond" ? "债券账户" : accountProductType === "advisor" ? "投顾组合账户" : "理财账户";
+    input.accountProductType === "bond"
+      ? "bond"
+      : input.accountProductType === "advisor"
+        ? "advisor"
+        : input.accountProductType === "stock"
+          ? "stock"
+          : "wealth";
+  const accountTypeLabel =
+    accountProductType === "bond"
+      ? "债券账户"
+      : accountProductType === "advisor"
+        ? "投顾组合账户"
+        : accountProductType === "stock"
+          ? "股票账户"
+          : "理财账户";
   const cashAccount = await tx.account.findFirst({
     where: { id: input.cashAccountId, householdId: input.householdId, isActive: true },
     include: wealthAccountInclude,
@@ -92,7 +105,14 @@ export async function resolveOrCreateWealthAccount(tx: Db, input: ResolveWealthA
 
   return tx.account.create({
     data: {
-      name: accountProductType === "bond" ? "债券" : accountProductType === "advisor" ? "投顾组合" : "理财",
+      name:
+        accountProductType === "bond"
+          ? "债券"
+          : accountProductType === "advisor"
+            ? "投顾组合"
+            : accountProductType === "stock"
+              ? "股票"
+              : "理财",
       kind: "investment",
       investProductType: accountProductType,
       currency: cashCurrency,

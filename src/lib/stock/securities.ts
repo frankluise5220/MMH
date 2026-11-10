@@ -37,6 +37,25 @@ export function normalizeUsableStockName(value: unknown, stockCode: string) {
   return hasUsableStockName(name, stockCode) ? name : null;
 }
 
+/**
+ * 显示名的唯一来源是 `StockSecurity`。`StockHolding.stockName` /
+ * `StockTransaction.stockName` 只是历史快照，改名后不会同步，读路径不得优先使用。
+ */
+export async function getStockSecurityNameMap(securityIds: Array<string | null | undefined>) {
+  const ids = Array.from(new Set(securityIds.filter((id): id is string => Boolean(id))));
+  const result = new Map<string, string>();
+  if (ids.length === 0) return result;
+  const rows = await prisma.stockSecurity.findMany({
+    where: { id: { in: ids } },
+    select: { id: true, stockName: true },
+  });
+  for (const row of rows) {
+    const name = row.stockName?.trim();
+    if (name) result.set(row.id, name);
+  }
+  return result;
+}
+
 async function findLocalStockName(client: TxClient, householdId: string, market: string, stockCode: string) {
   const holding = await client.stockHolding.findFirst({
     where: { householdId, market, stockCode, stockName: { not: null } },

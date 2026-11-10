@@ -2479,15 +2479,7 @@ export function TransactionFormModal({
             },
             { key: "investment", label: t("txForm.fundMetal"), disabled: !showInvestment },
             { key: "wealth", label: t("investment.product.wealth") },
-            {
-              key: "bond",
-              label: t("entry.kind.bond"),
-              children: [
-                { key: "bond", label: t("bondForm.title.create") },
-                { key: "bond-repo-lend", label: t("entry.kind.bondRepoLend") },
-                { key: "bond-repo-redeem", label: t("entry.kind.bondRepoRedeem") },
-              ],
-            },
+            { key: "bond", label: t("bondForm.title.create") },
             { key: "deposit-buy", label: t("txForm.depositIn") },
             { key: "insurance", label: t("account.kind.insurance") },
           ]}

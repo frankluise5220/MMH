@@ -54,7 +54,6 @@ type SyncFundNavRow = {
   navDate: Date;
   nav: unknown;
   cumNav: unknown | null;
-  name: string | null;
   updatedAt: Date;
 };
 
@@ -69,7 +68,6 @@ function mergeLatestFundNav(rows: SyncFundNavRow[], latestByCode: Map<string, La
         navDate: latest.navDate,
         nav: latest.nav,
         cumNav: latest.cumNav,
-        name: latest.name,
         updatedAt: latest.navDate,
       });
     }
@@ -509,7 +507,6 @@ export async function GET(req: Request) {
             navDate: true,
             nav: true,
             cumNav: true,
-            name: true,
             updatedAt: true,
           },
           orderBy: [{ updatedAt: "asc" }, { id: "asc" }],
@@ -650,7 +647,7 @@ export async function GET(req: Request) {
             id: item.id,
             accountId: item.accountId,
             fundCode: item.fundCode,
-            fundName: item.fundName ?? latestNav?.name ?? null,
+            fundName: item.fundName ?? fundProfileNameByCode.get(item.fundCode) ?? null,
             units: toNumber(item.units),
             avgCost: toNumber(item.avgCost),
             cost: toNumber(item.cost),
@@ -760,7 +757,6 @@ export async function GET(req: Request) {
             ? fundProfileNameByCode.get(itemFundCode)
               ?? normalizeFundDisplayName(itemFundCode, item.fundName)
               ?? normalizeFundDisplayName(itemFundCode, item.targetName)
-              ?? normalizeFundDisplayName(itemFundCode, latestNavByCode.get(itemFundCode)?.name)
               ?? itemFundCode
             : item.fundName ?? "";
           const displayTargetName = isFundRegularInvest ? displayFundName : item.targetName;
@@ -832,7 +828,7 @@ export async function GET(req: Request) {
           navDate: formatDateUtc(item.navDate),
           nav: toNumber(item.nav),
           cumNav: item.cumNav == null ? null : toNumber(item.cumNav),
-          name: item.name,
+          name: fundProfileNameByCode.get(item.fundCode) ?? null,
           updatedAt: item.updatedAt.toISOString(),
         })),
       },

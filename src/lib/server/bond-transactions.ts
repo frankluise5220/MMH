@@ -284,14 +284,19 @@ export async function createBondEntry(input: BondEntryInput): Promise<{
           householdId: input.householdId,
           cashAccountId: cashAcc!.id,
           requestedAccountId: input.bondAccountId || null,
-          accountProductType: "bond",
+          // 逆回购已并入股票视图，落在股票（证券）账户上；债券买卖仍落债券账户。
+          accountProductType: isRepo ? "stock" : "bond",
         });
-    if (!bondAcc) throw new Error("请选择债券账户");
+    if (!bondAcc) throw new Error(isRepo ? "请选择股票账户" : "请选择债券账户");
     if (!isCashIn && !isWriteOff) {
       const cashCurrency = normalizeCurrency(cashAcc!.currency);
       const bondCurrency = normalizeCurrency(bondAcc.currency);
       if (cashCurrency !== bondCurrency) {
-        throw new Error(`债券资金账户与债券账户币种不一致。资金账户是 ${cashCurrency}，债券账户是 ${bondCurrency}；请先换汇或选择同币种账户。`);
+        throw new Error(
+          isRepo
+            ? `逆回购资金账户与股票账户币种不一致。资金账户是 ${cashCurrency}，股票账户是 ${bondCurrency}；请先换汇或选择同币种账户。`
+            : `债券资金账户与债券账户币种不一致。资金账户是 ${cashCurrency}，债券账户是 ${bondCurrency}；请先换汇或选择同币种账户。`,
+        );
       }
     }
 

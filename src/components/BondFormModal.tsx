@@ -27,13 +27,6 @@ import {
   parseDepositInterestPayout,
 } from "@/lib/deposit-interest-payout";
 import { uploadEntryAttachmentFiles } from "./EntryAttachmentPanel";
-import {
-  RepoEntryFields,
-  type RepoCashAccountOption,
-  type RepoEntryFieldsHandle,
-  type RepoEntryMode,
-  type RepoOpenLotOption,
-} from "./repo-entry/RepoEntryFields";
 import { mergeProductOptions } from "@/lib/holding-entry/primitives";
 import { useHoldingEntryForm } from "@/lib/holding-entry/useHoldingEntryForm";
 import type { HoldingEntryEditDetail } from "@/lib/holding-entry/types";
@@ -189,19 +182,7 @@ export function BondFormModal({
   });
   const [productError, setProductError] = useState("");
 
-  // 逆回购：与买入/赎回/收息/核销同属债券账户的动作，共用这一个窗口（页签），
-  // 但落账走独立的 /api/v1/repo/*（bond_transactions.instrumentKind = "repo"）。
-  // 只在新增模式出现；编辑已有逆回购仍通过「回款」动作完成。
-  const repoAvailable = mode === "create";
-  // 逆回购的「借出 / 到期回款」各占一个 FT 页签：值是当前页签对应的动作，null = 不在逆回购页签。
-  const [repoMode, setRepoMode] = useState<RepoEntryMode | null>(null);
-  const [repoLots, setRepoLots] = useState<RepoOpenLotOption[]>([]);
-  const [repoLotsLoading, setRepoLotsLoading] = useState(false);
-  const [repoDefaultCashAccountId, setRepoDefaultCashAccountId] = useState<string | null>(null);
-  const [repoInitialLotId, setRepoInitialLotId] = useState<string | null>(null);
-  const [repoResetKey, setRepoResetKey] = useState(0);
-  const [repoSubmitting, setRepoSubmitting] = useState(false);
-  const repoFieldsRef = useRef<RepoEntryFieldsHandle>(null);
+  // 逆回购已并入股票交易窗口（买入/卖出/分红/股本变动 + 逆回购页签），债券窗口不再承载。
 
   // 债券持仓 = 存单。同一债单多张存单用「名称 #序号」区分；无份额/净值概念。
   const typedHoldingOptions = useMemo<BondHoldingOption[]>(() => {
@@ -797,81 +778,16 @@ export function BondFormModal({
 
   function closeBondModal() {
     setOpen(false);
-    setRepoMode(null);
-    setRepoInitialLotId(null);
     if (mode === "create") reset();
   }
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
-    // 逆回购页签有自己的提交（走 /api/v1/repo/*），不经过持仓型记账的表单数据。
-    if (repoMode) {
-      await repoFieldsRef.current?.submit();
-      return;
-    }
     await saveBondTransaction(false);
   }
   useCloseOnNavigation(open, closeBondModal);
   const accountLabelText = t("bondForm.accountLabel");
   const accountPlaceholderText = t("bondForm.selectAccount");
-
-  const repoCashAccountOptions = useMemo<RepoCashAccountOption[]>(
-    () =>
-      cashAccounts.map((item) => ({
-        id: item.id,
-        label: item.label,
-        title: item.subLabel ?? null,
-        kind: item.kind ?? null,
-        institutionId: item.institutionId ?? null,
-      })),
-    [cashAccounts],
-  );
-
-  // 回款页签的存单下拉按需取（窗口也可能从没有页面数据的全局记账入口打开）。
-  useEffect(() => {
-    if (!open || !repoAvailable || repoMode == null) return;
-    const targetAccountId = toAccountId || defaultAccountId;
-    let cancelled = false;
-    setRepoLotsLoading(true);
-    fetch(`/api/v1/repo/lots${targetAccountId ? `?accountId=${encodeURIComponent(targetAccountId)}` : ""}`)
-      .then((res) => res.json())
-      .then((data: { ok?: boolean; lots?: RepoOpenLotOption[]; defaultCashAccountId?: string | null } | null) => {
-        if (cancelled) return;
-        if (!data?.ok) {
-          setRepoLots([]);
-          return;
-        }
-        setRepoLots(data.lots ?? []);
-        setRepoDefaultCashAccountId(data.defaultCashAccountId ?? null);
-      })
-      .catch(() => {
-        if (!cancelled) setRepoLots([]);
-      })
-      .finally(() => {
-        if (!cancelled) setRepoLotsLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [open, repoAvailable, repoMode, toAccountId, defaultAccountId]);
-
-  // 胶囊菜单的「逆回购借出 / 逆回购回款」通过 create 事件直接落到对应页签（同一个窗口）。
-  useEffect(() => {
-    if (!repoAvailable) return;
-    function onCreate(ev: Event) {
-      const detail = (ev as CustomEvent<{
-        defaultSubtype?: string;
-        defaultRepoMode?: RepoEntryMode;
-        defaultLotId?: string | null;
-      }>).detail;
-      if (detail?.defaultSubtype !== "repo") return;
-      setRepoMode(detail.defaultRepoMode === "redeem" ? "redeem" : "lend");
-      setRepoInitialLotId(detail.defaultLotId ?? null);
-      setRepoResetKey((key) => key + 1);
-    }
-    window.addEventListener("mmh:bond:create", onCreate);
-    return () => window.removeEventListener("mmh:bond:create", onCreate);
-  }, [repoAvailable]);
 
   if (!open) return null;
 
@@ -891,30 +807,15 @@ export function BondFormModal({
           { id: "redeem", label: t("bondForm.redeem") },
           { id: "dividend_cash", label: t("bondForm.interestReceipt") },
           { id: "write_off", label: t("fund.subtype.write_off") },
-          ...(repoAvailable
-            ? [
-                { id: "repo-lend", label: t("bondForm.repoLendTab") },
-                { id: "repo-redeem", label: t("bondForm.repoRedeemTab") },
-              ]
-            : []),
         ]}
-        activeTabId={repoMode ? (repoMode === "redeem" ? "repo-redeem" : "repo-lend") : subtype}
-        onTabChange={(id) => {
-          if (id === "repo-lend" || id === "repo-redeem") {
-            setRepoMode(id === "repo-redeem" ? "redeem" : "lend");
-            setRepoInitialLotId(null);
-            setRepoResetKey((key) => key + 1);
-            return;
-          }
-          setRepoMode(null);
-          selectSubtypeTab(id as BondSubtype);
-        }}
+        activeTabId={subtype}
+        onTabChange={(id) => selectSubtypeTab(id as BondSubtype)}
         footer={(
           <>
-            {mode === "create" && !repoMode ? (
+            {mode === "create" ? (
               <button
                 type="button"
-                disabled={submitting || repoSubmitting}
+                disabled={submitting}
                 onClick={() => { void saveBondTransaction(true); }}
                 className="secondary-button h-9 px-4 text-sm disabled:opacity-50"
               >
@@ -923,14 +824,12 @@ export function BondFormModal({
             ) : null}
             <button
               type="submit"
-              disabled={submitting || repoSubmitting}
-              className={`h-9 rounded-[10px] px-4 text-sm text-white disabled:opacity-50 ${repoMode ? (repoMode === "redeem" ? "bg-orange-600 hover:bg-orange-700" : "primary-button") : isRedeem ? "bg-orange-600 hover:bg-orange-700" : isDividend ? "bg-emerald-600 hover:bg-emerald-700" : isWriteOff ? "bg-slate-600 hover:bg-slate-700" : "primary-button"}`}
+              disabled={submitting}
+              className={`h-9 rounded-[10px] px-4 text-sm text-white disabled:opacity-50 ${isRedeem ? "bg-orange-600 hover:bg-orange-700" : isDividend ? "bg-emerald-600 hover:bg-emerald-700" : isWriteOff ? "bg-slate-600 hover:bg-slate-700" : "primary-button"}`}
             >
-              {submitting || repoSubmitting
+              {submitting
                 ? t("txForm.saving")
-                : repoMode
-                  ? t("common.save")
-                  : mode === "edit" ? t("txForm.saveChanges") : isRedeem ? t("wealthForm.recordRedeem") : isDividend ? t("wealthForm.recordDividend") : isWriteOff ? t("wealthForm.recordWriteOff") : t("wealthForm.recordBuy")}
+                : mode === "edit" ? t("txForm.saveChanges") : isRedeem ? t("wealthForm.recordRedeem") : isDividend ? t("wealthForm.recordDividend") : isWriteOff ? t("wealthForm.recordWriteOff") : t("wealthForm.recordBuy")}
             </button>
           </>
         )}
@@ -966,29 +865,7 @@ export function BondFormModal({
         }
       >
 
-        {repoMode ? (
-          <RepoEntryFields
-            ref={repoFieldsRef}
-            accountId={toAccountId}
-            accountLabel={selectedBondAccount?.label ?? ""}
-            accountOptions={bondSelectOptions}
-            onAccountChange={setToAccountId}
-            institutionId={selectedBondAccount?.institutionId ?? null}
-            cashAccounts={repoCashAccountOptions}
-            defaultCashAccountId={repoDefaultCashAccountId}
-            lots={repoLots}
-            lotsLoading={repoLotsLoading}
-            mode={repoMode}
-            initialLotId={repoInitialLotId}
-            resetKey={repoResetKey}
-            onSubmittingChange={setRepoSubmitting}
-            onSaved={() => {
-              // 与「保存」同口径：关窗、回到债券页签，数据刷新由字段组件自己发。
-              closeBondModal();
-            }}
-          />
-        ) : (
-          <>
+        <>
               {isWriteOff ? (
                 <>
                   <HoldingHoldingFields
@@ -1290,7 +1167,6 @@ export function BondFormModal({
                 onPendingFilesChange={setPendingAttachmentFiles}
               />
           </>
-        )}
 
       </EntryModalShell>
 

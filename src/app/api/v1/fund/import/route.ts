@@ -11,7 +11,7 @@ import {
 } from "@/lib/account-import-match";
 import { getFundConfirmRule } from "@/lib/fund/confirmDays";
 import { getFundFeeRate, getFundFeeRateByDate } from "@/lib/fund/feeRate";
-import { getFundNav, getLatestFundNav, refreshFundNavCacheRanges } from "@/lib/fund/navCache";
+import { getFundNav, refreshFundNavCacheRanges } from "@/lib/fund/navCache";
 import { resolveFundName } from "@/lib/fund/fundProfile";
 import { calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
 import { createFundTransactionWithCashFlows, type FundCashFlowInput } from "@/lib/fund/transactions";
@@ -523,11 +523,7 @@ async function resolveFundNameByCode(ctx: ImportContext, fundCode: string) {
 
   const lookup = (async () => {
     const resolved = await resolveFundName(code, { householdId: ctx.householdId }).catch(() => null);
-    const resolvedName = normalizeUsableFundName(resolved, code);
-    if (resolvedName) return resolvedName;
-
-    const latestNav = await getLatestFundNav(code).catch(() => null);
-    return normalizeUsableFundName(latestNav?.name, code);
+    return normalizeUsableFundName(resolved, code);
   })();
   ctx.fundNameLookupCache.set(code, lookup);
   return lookup;
@@ -1036,7 +1032,6 @@ async function enrichImportItem(
       if (navData?.dateMatch && navData.nav > 0) {
         nav = navData.nav;
         calculatedFields.add("nav");
-        fundName = fundName ?? normalizeUsableFundName(navData.name, fundCode);
       }
     }
 

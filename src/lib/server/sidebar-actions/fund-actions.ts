@@ -86,9 +86,6 @@ export async function fillFundNavFromCache(formData: FormData) {
     if (units != null) {
       updateData.units = units;
     }
-    if (navData.name) {
-      updateData.fundName = navData.name;
-    }
 
     await prisma.$transaction(async (tx) => {
       await tx.fundTransaction.update({

@@ -54,12 +54,15 @@ export async function POST(req: NextRequest) {
   try {
     const { householdId } = await getHouseholdScope();
     const body = await req.json().catch(() => ({}));
-    const code = text(body.code).toUpperCase();
+    const code = text(body.code);
     const name = text(body.name);
     const market = text(body.market).toLowerCase();
     const termDays = positiveInt(body.termDays);
     if (!code) return NextResponse.json({ ok: false, error: "请填写品种代码" }, { status: 400 });
-    if (code.length > 16) return NextResponse.json({ ok: false, error: "品种代码过长" }, { status: 400 });
+    // 逆回购品种与股票一致：6 位数字代码（交易所标准品种就是 204001 / 131810 这种）。
+    if (!/^\d{6}$/.test(code)) {
+      return NextResponse.json({ ok: false, error: "品种代码必须是 6 位数字" }, { status: 400 });
+    }
     if (!name) return NextResponse.json({ ok: false, error: "请填写品种简称" }, { status: 400 });
     if (name.length > 32) return NextResponse.json({ ok: false, error: "品种简称过长" }, { status: 400 });
     if (market !== "sh" && market !== "sz") {

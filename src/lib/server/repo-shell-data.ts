@@ -11,7 +11,7 @@ import {
 import { loadBondTransactionEntryLike } from "@/lib/server/business-transaction-entries";
 
 /**
- * 逆回购视图（债券页 › 逆回购页签）的数据口径。
+ * 逆回购视图（股票页 › 逆回购页签）的数据口径。
  *
  * 逆回购存单就是 bond_transactions 里 instrumentKind = "repo" 的 buy 行：
  *   - 本金固定、年化固定、到期一次还本付息，没有付息计划；

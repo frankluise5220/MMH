@@ -296,6 +296,7 @@ export async function POST(req: NextRequest) {
         include: {
           StockAccount: { select: { name: true, currency: true } },
           CashAccount: { select: { name: true, currency: true } },
+          StockSecurity: { select: { stockName: true } },
           EntryBusinessLink: { where: { deletedAt: null }, select: { id: true, cashEntryId: true } },
         },
       });
@@ -412,6 +413,7 @@ export async function POST(req: NextRequest) {
       include: {
         StockAccount: { select: { name: true, currency: true } },
         CashAccount: { select: { name: true, currency: true } },
+        StockSecurity: { select: { stockName: true } },
         EntryBusinessLink: { where: { deletedAt: null }, select: { id: true, cashEntryId: true } },
       },
     });
@@ -623,6 +625,7 @@ export async function PATCH(req: NextRequest) {
       include: {
         StockAccount: { select: { name: true, currency: true } },
         CashAccount: { select: { name: true, currency: true } },
+        StockSecurity: { select: { stockName: true } },
         EntryBusinessLink: { where: { deletedAt: null }, select: { id: true, cashEntryId: true } },
       },
     });

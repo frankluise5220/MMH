@@ -101,7 +101,7 @@ export async function POST(req: NextRequest) {
         // Existing exact cache data is valid regardless of age. Only query the
         // external API for recent confirmation dates; older misses are manual.
         const cachedNav = await getFundNavFromCacheOnly(entry.fundCode, utcDate(confirmDate));
-        let navData: { nav: number; cumNav: number | null; name: string | null; dateMatch: boolean; actualDate?: string } | null = cachedNav
+        let navData: { nav: number; cumNav: number | null; dateMatch: boolean; actualDate?: string } | null = cachedNav
           ? { ...cachedNav, dateMatch: true, actualDate: confirmDate }
           : null;
         const isRecentConfirmation = isWithinRecentTradingDaysUtc(
@@ -163,9 +163,6 @@ export async function POST(req: NextRequest) {
         };
         if (hasExactNav && navData) {
           updateData.nav = navData.nav;
-          if (navData.name) {
-            updateData.fundName = navData.name;
-          }
         }
         if (units != null && Number.isFinite(units) && units > 0) {
           updateData.units = units;
@@ -201,8 +198,7 @@ export async function POST(req: NextRequest) {
       holdingNavChecked: heldNavResult.checked,
       holdingNavRefreshed: heldNavResult.latestNavAvailable,
       holdingNavFailed: heldNavResult.failed,
-      nameFixed: heldNavResult.nameFixed,
-      message: `补填确认净值 ${entryFilled} 笔${entryFailed > 0 ? `，${entryFailed} 笔失败` : ""}${heldNavResult.nameFixed > 0 ? `，修正名称 ${heldNavResult.nameFixed} 个` : ""}`,
+      message: `补填确认净值 ${entryFilled} 笔${entryFailed > 0 ? `，${entryFailed} 笔失败` : ""}`,
     });
   } catch (e) {
     return NextResponse.json(

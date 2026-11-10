@@ -19,10 +19,10 @@ import {
 import { recordRecentAccounts } from "@/lib/client/recentAccounts";
 import { useI18n } from "@/lib/i18n";
 import { useDetailPagination } from "@/lib/client/use-detail-pagination";
+import { FOLDER_TAB_STRIP, FolderTabRuler, folderTabClass, folderTabNeighbors } from "@/app/login/FolderTabs";
 import { ResizableVerticalSplit } from "@/components/ResizableVerticalSplit";
 import { StockFeeRuleSettingsButton } from "@/components/StockFeeRuleSettingsButton";
 import {
-  ADVANCED_TABLE_HEAD_SURFACE_CLASS,
   AdvancedDataTable,
   ROW_ACTION_BUTTON_BOX_CLASS,
   type AdvancedDataTableColumn,
@@ -31,6 +31,7 @@ import { BatchReplacePopoverButton, type BatchReplaceFieldConfig } from "@/compo
 import { BusinessLinkActionButton } from "@/components/BusinessLinkActionButton";
 import { DetailTablePaginationControls } from "@/components/DetailTablePaginationControls";
 import { StockHoldingRowActions } from "@/components/StockHoldingRowActions";
+import { RepoLotsTable, type StockRepoPanelData } from "@/components/repo-entry/RepoLotsTable";
 import { HANDSET_HIDDEN_CLASS, ViewExcelImportMenuButton, exportRowsToXlsx } from "@/components/ViewExcelImportMenuButton";
 import { todayDateLocalYmd } from "@/lib/date-utils";
 
@@ -244,6 +245,7 @@ export function StockHoldingsPanel({
   stockCashAccountId,
   stockCashAccountName,
   accountOptions = [],
+  repo = null,
 }: {
   accountId: string;
   accountLabel: string;
@@ -257,6 +259,8 @@ export function StockHoldingsPanel({
   isRedUp: boolean;
   stockCashAccountId?: string;
   stockCashAccountName?: string | null;
+  /** 逆回购存单（首屏由服务端 `loadRepoShellData` 给出，之后按需自取）。 */
+  repo?: StockRepoPanelData | null;
   /** 账户下拉/明细列统一走「账户显示格式」：这里只用来把交易行的账户 id 翻成标签。 */
   accountOptions?: Array<{
     id: string;
@@ -284,6 +288,11 @@ export function StockHoldingsPanel({
   const [positions, setPositions] = useState<StockPosition[]>(initialPositions);
   const [clearedPositions, setClearedPositions] = useState<StockPosition[]>(initialClearedPositions);
   const [showCleared, setShowCleared] = useState(initialShowCleared);
+  // 逆回购页签：与「持仓/已清仓」并列的第三种视图。逆回购只有一个动作（借出），
+  // 到期自动回款，所以这里只展示存单，不提供任何「回款」操作。
+  const [repoOpen, setRepoOpen] = useState(false);
+  const [repoData, setRepoData] = useState<StockRepoPanelData | null>(repo ?? null);
+  const [repoLoading, setRepoLoading] = useState(false);
   const [marketValue, setMarketValue] = useState(totalMarketValue);
   const [cost, setCost] = useState(totalCost);
   const [selectedKey, setSelectedKey] = useState("");
@@ -642,6 +651,92 @@ export function StockHoldingsPanel({
     else url.searchParams.delete("showCleared");
     replaceCurrentRouteUrl(`${url.pathname}${url.search}${url.hash}`);
   }
+
+  const loadRepoOverview = useCallback(async () => {
+    if (!accountId) return;
+    setRepoLoading(true);
+    try {
+      const res = await fetch(`/api/v1/repo/overview?accountId=${encodeURIComponent(accountId)}`, { cache: "no-store" });
+      const data = (await res.json().catch(() => null)) as
+        | { ok?: boolean; data?: StockRepoPanelData }
+        | null;
+      if (data?.ok && data.data) setRepoData(data.data);
+    } catch {
+      /* 网络失败就保留上一次的数据，不把表清空 */
+    } finally {
+      setRepoLoading(false);
+    }
+  }, [accountId]);
+
+  /**
+   * 进页签先补一次到期回款：「第二天自动回购」不能依赖用户手动点。
+   * 回款是幂等的，多刷几次不会重复入账。
+   */
+  const settleDueRepos = useCallback(async () => {
+    try {
+      await fetch("/api/v1/repo/auto-redeem", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accountId }),
+      });
+    } catch {
+      /* 忽略：下一轮打开还会再试 */
+    }
+  }, [accountId]);
+
+  function switchToRepo() {
+    setRepoOpen(true);
+    setShowCleared(false);
+    setSelectedKey("");
+    setTransactions([]);
+    setTransactionsError("");
+    setSelectedIds(new Set());
+    detailPager.goPage(1);
+    if (showCleared) {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("showCleared");
+      replaceCurrentRouteUrl(`${url.pathname}${url.search}${url.hash}`);
+    }
+    void (async () => {
+      await settleDueRepos();
+      await loadRepoOverview();
+    })();
+  }
+
+  /**
+   * 三个 FT 页签的唯一入口（持仓 / 清仓 / 逆回购）。
+   * 逆回购是独立数据源（`bondTransaction` 的 repo 行），切出时只需收起；
+   * 持仓↔清仓仍走 `switchPositionTab`，由它负责清空选中、翻页与 URL 同步。
+   */
+  function selectPositionTab(id: string) {
+    if (id === "repo") {
+      if (!repoOpen) switchToRepo();
+      return;
+    }
+    if (repoOpen) setRepoOpen(false);
+    if (id === "cleared") {
+      if (!showCleared) switchPositionTab(true);
+      return;
+    }
+    if (showCleared) switchPositionTab(false);
+  }
+
+  // 服务端首屏数据变化（换账户 / 重新渲染）时同步过来。
+  useEffect(() => {
+    setRepoData(repo ?? null);
+  }, [repo]);
+
+  // 记完一笔逆回购、或从别处删掉存单：页签在显示时才需要立刻重取。
+  useEffect(() => {
+    if (!repoOpen) return;
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<FinanceDataChangedDetail>).detail ?? {};
+      if (!financeChangeAffectsAccount(detail, accountId)) return;
+      void loadRepoOverview();
+    };
+    window.addEventListener(FINANCE_DATA_CHANGED_EVENT, handler as EventListener);
+    return () => window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, handler as EventListener);
+  }, [accountId, loadRepoOverview, repoOpen]);
 
   const handleHoldingRowUpdated = useCallback(() => {
     dispatchFinanceDataChanged({ reason: "stock-holding-row-update", accountIds: [accountId] });
@@ -1126,113 +1221,188 @@ export function StockHoldingsPanel({
     );
   }, [deleteTransaction, deletingIds, openEditTransaction, t]);
 
+  // 三个 FT 页签（「股票持仓、清仓、逆回购用三个 FT 页签」）：逆回购与持仓/清仓同属
+  // 「这个股票账户里的东西」，因此共用一条页签条 + 一张卡片，切换只换卡片里的表格。
+  const positionTabItems = [
+    { id: "holding", label: t("invest.filterHolding") },
+    { id: "cleared", label: t("invest.filterCleared") },
+    { id: "repo", label: t("repoForm.title") },
+  ];
+  const activePositionTab = repoOpen ? "repo" : showCleared ? "cleared" : "holding";
+
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-transparent p-4 md:p-5">
       <ResizableVerticalSplit
         storageKey={`mmh:stock-shell:${accountId}:split-height`}
-        hasLowerPane={Boolean(selectedPosition)}
+        hasLowerPane={!repoOpen && Boolean(selectedPosition)}
         defaultUpperHeight={360}
         separatorLabel={t("stockPanel.resizeLabel")}
         separatorTitle={t("stockPanel.resizeTitle")}
         stackOnMobile
       >
-      <div className="paper-card flex h-full min-h-0 flex-col overflow-hidden">
-        <div className={`paper-card-header shrink-0 gap-2 ${ADVANCED_TABLE_HEAD_SURFACE_CLASS}`}>
-          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 text-left">
-            <div className="flex min-w-0 items-center gap-1 text-sm font-semibold text-slate-800">
-              <span className="flex h-6 min-w-0 shrink items-center truncate">{t("stockTx.holdingStock")}</span>
-              <div className="ml-2 flex items-center gap-0.5 rounded bg-slate-100 p-0.5 text-xs">
+      {/* FT 卡片：页签条是**流内**元素（高 = 页签内容，底边 = 卡片上缘、不随窗格伸缩），
+          页签组靠左、等宽（隐形量尺按最长标签定宽），几何见 `@/app/login/FolderTabs` 文件头。 */}
+      <div className="relative flex h-full min-h-0 flex-col">
+        <div className={FOLDER_TAB_STRIP}>
+          <div className="flex h-full max-w-[calc(100%-9rem)] items-start gap-1.5">
+            {positionTabItems.map((tab, index) => {
+              const active = tab.id === activePositionTab;
+              return (
                 <button
+                  key={tab.id}
                   type="button"
-                  onClick={() => switchPositionTab(false)}
-                  className={`h-6 rounded px-2 ${!showCleared ? "bg-white font-medium text-blue-700 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}
+                  onClick={() => selectPositionTab(tab.id)}
+                  className={folderTabClass(
+                    active,
+                    index === positionTabItems.length - 1,
+                    "stretch",
+                    index === 0,
+                    folderTabNeighbors(positionTabItems.map((item) => item.id), tab.id, activePositionTab),
+                  )}
                 >
-                  {t("invest.filterHolding")}
+                  {/* 活动页签不能 overflow-hidden（下缘凹角画在按钮盒外），裁切交给内层 span。 */}
+                  <span className="relative block overflow-hidden whitespace-nowrap">
+                    <FolderTabRuler labels={positionTabItems.map((item) => item.label)} />
+                    {tab.label}
+                  </span>
                 </button>
-                <button
-                  type="button"
-                  onClick={() => switchPositionTab(true)}
-                  className={`h-6 rounded px-2 ${showCleared ? "bg-white font-medium text-blue-700 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}
-                >
-                  {t("invest.filterCleared")}
-                </button>
-              </div>
-              <span className="flex h-6 shrink-0 items-center text-xs text-slate-500">
-                <span className="ml-2">{t("stockPanel.cashBalanceLabel")}</span>
-                <span className="ml-2 font-semibold tabular-nums text-slate-800">{formatCurrencyMoney(cashBalance, currency)}</span>
-              </span>
-            </div>
-          </div>
-          <div className="flex min-w-0 max-w-[66vw] items-center gap-1 overflow-x-auto whitespace-nowrap pb-0.5 text-xs md:max-w-none md:overflow-visible [&>*]:shrink-0">
-            <ViewExcelImportMenuButton
-              className={HANDSET_HIDDEN_CLASS}
-              kind="stock"
-              accountId={accountId}
-              stockAccountName={accountLabel}
-              exportItems={[{
-                label: t("viewImport.exportExcel"),
-                onClick: () => void exportStockTransactions(),
-              }]}
-            />
-            <StockFeeRuleSettingsButton accountId={accountId} accountLabel={accountLabel} currency={currency} />
-            <button
-              type="button"
-              onClick={() => void refreshClosingPrices()}
-              disabled={refreshingPrice || positions.length === 0}
-              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-500 transition-colors hover:bg-blue-50 hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
-              title={t("stockPanel.refreshPriceTitle")}
-              aria-label={t("stockPanel.refreshPriceTitle")}
-            >
-              <RefreshCcw className={`h-3.5 w-3.5 ${refreshingPrice ? "animate-spin" : ""}`} />
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                window.dispatchEvent(new CustomEvent("mmh:create-transaction:open", {
-                  detail: {
-                    requestId: `stock-transfer-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-                    source: "launcher",
-                    item: { type: "transfer", remark: t("stockPanel.transfer") },
-                    lockedType: "transfer",
-                    stockTransferMode: true,
-                    stockCashAccountId: stockCashAccountId ?? "",
-                    stockCashAccountName: stockCashAccountName || "",
-                    defaultFromAccountId: "",
-                    defaultToAccountId: stockCashAccountId ?? "",
-                  },
-                }));
-              }}
-              className="h-7 rounded border border-slate-200 bg-white px-2.5 text-xs text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-              title={t("stockPanel.transferTitle")}
-            >
-              {t("stockPanel.transfer")}
-            </button>
-            {refreshMessage ? <span className="px-1 text-[10px] text-slate-500">{refreshMessage}</span> : null}
+              );
+            })}
           </div>
         </div>
 
-        <div className="min-h-0 flex-1">
-          <AdvancedDataTable
-            storageKey="mmh_stock_shell_positions_advanced_v1"
-            columns={positionColumns}
-            resetKey={showCleared ? "cleared" : "holding"}
-            rows={displayPositions}
-            rowKey={(p) => positionKey(p)}
-            emptyText={showCleared ? t("stockPanel.noCleared") : t("stockHoldingReport.empty")}
-            minTableWidth={976}
-            rowClassName={(p) => {
-              const active = positionKey(p) === selectedKey;
-              return `cursor-pointer ${active ? "bg-blue-50 hover:bg-blue-50" : "hover:bg-blue-50/40"}`;
-            }}
-            onRowClick={(p) => void loadTransactions(p)}
-            showFilters={false}
-            fillHeight
-            toolbarMode="none"
-            draggableRows={false}
-            defaultSort={showCleared ? { key: "historical", direction: "desc" } : { key: "marketValue", direction: "desc" }}
-            summaryRow={positionSummaryRow}
-            summaryRowPlacement="footer"
-          />
+        {/* 内容板：`ft-card-surface-fill` 撑满窗格（窗格高度由拖拽决定）。
+            卡片里只有表格，上下 12px / 左右贴边由 `.ft-card-surface:has(table)` 接管；
+            信息条与按钮挂 `data-advanced-table-toolbar`：顶部 12px 留白归零、底色取卡片色，
+            于是「页签条 → 信息条 → 表头灰带」是同一块底色，不出现第二块背景。 */}
+        <div className="ft-card-surface ft-card-surface-fill">
+          <div data-advanced-table-toolbar className="flex shrink-0 flex-wrap items-center justify-between gap-2">
+            <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-left text-xs text-slate-500">
+              <span className="flex h-6 shrink-0 items-center">
+                <span>{t("stockPanel.cashBalanceLabel")}</span>
+                <span className="ml-2 font-semibold tabular-nums text-slate-800">{formatCurrencyMoney(cashBalance, currency)}</span>
+              </span>
+              {repoOpen ? (
+                <span className="flex h-6 shrink-0 items-center gap-3">
+                  <span>
+                    {t("stockPanel.repoOpenPrincipal")}
+                    <span className="ml-1.5 font-semibold tabular-nums text-slate-800">
+                      {formatCurrencyMoney(repoData?.totalPrincipal ?? 0, currency)}
+                    </span>
+                  </span>
+                  <span>
+                    {t("stockPanel.repoExpectedInterest")}
+                    <span className="ml-1.5 font-semibold tabular-nums text-slate-800">
+                      {formatCurrencyMoney(repoData?.totalExpectedInterest ?? 0, currency)}
+                    </span>
+                  </span>
+                  <span>
+                    {t("stockPanel.repoRealized")}
+                    <span className="ml-1.5 font-semibold tabular-nums text-slate-800">
+                      {formatCurrencyMoney(repoData?.totalRealizedProfit ?? 0, currency)}
+                    </span>
+                  </span>
+                  {repoLoading ? <span className="text-[10px] text-slate-400">…</span> : null}
+                </span>
+              ) : null}
+            </div>
+            <div className="flex min-w-0 max-w-full items-center gap-1 overflow-x-auto whitespace-nowrap pb-0.5 text-xs [&>*]:shrink-0">
+              {repoOpen ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    window.dispatchEvent(new CustomEvent("mmh:stock:create", {
+                      detail: {
+                        requestId: `repo-lend-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+                        defaultAction: "repo",
+                        defaultStockAccountId: accountId,
+                        defaultCashAccountId: stockCashAccountId ?? "",
+                      },
+                    }));
+                  }}
+                  className="h-7 rounded border border-slate-200 bg-white px-2.5 text-xs text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                  title={t("txForm.addEntry")}
+                >
+                  {t("txForm.addEntry")}
+                </button>
+              ) : (
+                <>
+                  <ViewExcelImportMenuButton
+                    className={HANDSET_HIDDEN_CLASS}
+                    kind="stock"
+                    accountId={accountId}
+                    stockAccountName={accountLabel}
+                    exportItems={[{
+                      label: t("viewImport.exportExcel"),
+                      onClick: () => void exportStockTransactions(),
+                    }]}
+                  />
+                  <StockFeeRuleSettingsButton accountId={accountId} accountLabel={accountLabel} currency={currency} />
+                  <button
+                    type="button"
+                    onClick={() => void refreshClosingPrices()}
+                    disabled={refreshingPrice || positions.length === 0}
+                    className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-500 transition-colors hover:bg-blue-50 hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-50"
+                    title={t("stockPanel.refreshPriceTitle")}
+                    aria-label={t("stockPanel.refreshPriceTitle")}
+                  >
+                    <RefreshCcw className={`h-3.5 w-3.5 ${refreshingPrice ? "animate-spin" : ""}`} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      window.dispatchEvent(new CustomEvent("mmh:create-transaction:open", {
+                        detail: {
+                          requestId: `stock-transfer-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+                          source: "launcher",
+                          item: { type: "transfer", remark: t("stockPanel.transfer") },
+                          lockedType: "transfer",
+                          stockTransferMode: true,
+                          stockCashAccountId: stockCashAccountId ?? "",
+                          stockCashAccountName: stockCashAccountName || "",
+                          defaultFromAccountId: "",
+                          defaultToAccountId: stockCashAccountId ?? "",
+                        },
+                      }));
+                    }}
+                    className="h-7 rounded border border-slate-200 bg-white px-2.5 text-xs text-slate-500 hover:bg-blue-50 hover:text-blue-600"
+                    title={t("stockPanel.transferTitle")}
+                  >
+                    {t("stockPanel.transfer")}
+                  </button>
+                  {refreshMessage ? <span className="px-1 text-[10px] text-slate-500">{refreshMessage}</span> : null}
+                </>
+              )}
+            </div>
+          </div>
+
+          <div className="min-h-0 flex-1">
+            {repoOpen ? (
+              <RepoLotsTable rows={repoData?.lots ?? []} currency={currency} />
+            ) : (
+              <AdvancedDataTable
+                storageKey="mmh_stock_shell_positions_advanced_v1"
+                columns={positionColumns}
+                resetKey={showCleared ? "cleared" : "holding"}
+                rows={displayPositions}
+                rowKey={(p) => positionKey(p)}
+                emptyText={showCleared ? t("stockPanel.noCleared") : t("stockHoldingReport.empty")}
+                minTableWidth={976}
+                rowClassName={(p) => {
+                  const active = positionKey(p) === selectedKey;
+                  return `cursor-pointer ${active ? "bg-blue-50 hover:bg-blue-50" : "hover:bg-blue-50/40"}`;
+                }}
+                onRowClick={(p) => void loadTransactions(p)}
+                showFilters={false}
+                fillHeight
+                toolbarMode="none"
+                draggableRows={false}
+                defaultSort={showCleared ? { key: "historical", direction: "desc" } : { key: "marketValue", direction: "desc" }}
+                summaryRow={positionSummaryRow}
+                summaryRowPlacement="footer"
+              />
+            )}
+            </div>
         </div>
       </div>
 

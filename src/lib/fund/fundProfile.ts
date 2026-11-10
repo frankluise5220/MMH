@@ -129,16 +129,6 @@ export function latestFundNavTargetDateForOffset(params: {
 }
 
 
-function hasFetchedFundProfileData(profile: FundProfileRecord | null) {
-  const displayName = profile ? normalizeFundDisplayName(profile.fundCode, profile.fundName) : null;
-  return Boolean(
-    displayName ||
-    profile?.fundCompany?.trim() ||
-    profile?.custodian?.trim() ||
-    profile?.manager?.trim(),
-  );
-}
-
 function toFundProfileRecord(row: FundProfileSqlRow): FundProfileRecord {
   return {
     fundCode: row.fundCode,
@@ -510,50 +500,6 @@ export async function getFundProfileNameMap(fundCodes: Iterable<string>): Promis
   return map;
 }
 
-/** Ensure that a valid fund code has a FundProfile row before external lookup. */
-async function ensureFundProfileRecord(fundCode: string): Promise<FundProfileRecord | null> {
-  const code = fundCode.trim();
-  if (!/^\d{6}$/.test(code)) return null;
-  const existing = await getFundProfile(code);
-  if (existing) return existing;
-
-  const prisma = await getPrismaClient();
-  if (!(await hasFundProfileTradingCalendarColumn())) {
-    await prisma.$executeRaw(Prisma.sql`
-      INSERT INTO "FundProfile" (
-        "fundCode",
-        "fundName",
-        "fundCompany",
-        "custodian",
-        "manager",
-        "navDateOffset",
-        "createdAt",
-        "updatedAt"
-      )
-      VALUES (${code}, NULL, NULL, NULL, NULL, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-      ON CONFLICT ("fundCode") DO NOTHING
-    `);
-    return getFundProfile(code);
-  }
-
-  await prisma.$executeRaw(Prisma.sql`
-    INSERT INTO "FundProfile" (
-      "fundCode",
-      "fundName",
-      "fundCompany",
-      "custodian",
-      "manager",
-      "navDateOffset",
-      "tradingCalendar",
-      "createdAt",
-      "updatedAt"
-    )
-    VALUES (${code}, NULL, NULL, NULL, NULL, 0, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-    ON CONFLICT ("fundCode") DO NOTHING
-  `);
-  return getFundProfile(code);
-}
-
 /**
  * Read the configured NAV date offsets for multiple fund codes in one query.
  */
@@ -576,32 +522,26 @@ export async function getFundNavDateOffsets(fundCodes: Iterable<string>) {
 /**
  * Resolve a fund's display name by fund code.
  *
- * This is the single entry point for "fund code → fund name" lookups across
- * the app. Resolution order:
- *   1. FundProfile table (fund-level cache, includes fund company).
- *   2. Fund company / fund detail API (queryFundProfile), which also writes
- *      the profile back to FundProfile so later lookups hit the cache.
- *   3. Fall back to the lightweight identity API (queryFundIdentity) when the
- *      profile page yields no name.
+ * **只读。** FundProfile 的写入只发生在基金资料页（`/api/v1/fund/profile`），
+ * 交易、导入、反查等读路径不允许顺手 upsert —— 否则一份过时或猜错的名字会被
+ * 悄悄写进跨账本共享的资料库，而用户以为那只基金仍是旧名。
  *
- * Returns the resolved name, or null when the code is invalid or unresolvable.
+ * 解析顺序：
+ *   1. FundProfile（资料页维护的权威名）。
+ *   2. 轻量身份接口（queryFundIdentity，纯查询、不落库）。
+ *
+ * 都拿不到就返回 null，由调用方显示 fundCode。
  */
 export async function resolveFundName(
   fundCode: string,
-  context?: FundProfileContext,
+  _context?: FundProfileContext,
 ): Promise<string | null> {
   const code = fundCode.trim();
   if (!/^\d{6}$/.test(code)) return null;
 
-  const cached = await ensureFundProfileRecord(code);
-  if (cached) {
-    await syncFundCompanyInstitution(cached, context);
-    const cachedName = normalizeFundDisplayName(code, cached.fundName);
-    if (cachedName) return cachedName;
-  }
-
-  const profile = await ensureFundProfile(code, context);
-  if (profile?.fundName) return profile.fundName;
+  const profile = await getFundProfile(code);
+  const cachedName = profile ? normalizeFundDisplayName(code, profile.fundName) : null;
+  if (cachedName) return cachedName;
 
   const identity = await queryFundIdentity(code);
   if (identity?.name) return identity.name;
@@ -610,43 +550,10 @@ export async function resolveFundName(
 }
 
 /**
- * Ensure a fund's profile exists in the FundProfile table.
- *
- * - If the profile is already cached, return it without any network call.
- * - Otherwise fetch it from the fund overview page and upsert it.
- * - If the fetch fails, return null (callers should not treat this as fatal).
- */
-export async function ensureFundProfile(
-  fundCode: string,
-  context?: FundProfileContext,
-): Promise<FundProfileRecord | null> {
-  const code = fundCode.trim();
-  if (!/^\d{6}$/.test(code)) return null;
-
-  const cached = await getFundProfile(code);
-  if (hasFetchedFundProfileData(cached)) {
-    await syncFundCompanyInstitution(cached!, context);
-    return cached;
-  }
-
-  await ensureFundProfileRecord(code);
-  const fetched = await queryFundProfile(code);
-  if (!fetched) return null;
-
-  const profile = await upsertFetchedFundProfile({
-    fundCode: code,
-    fundName: fetched.name ?? null,
-    fundCompany: fetched.fundCompany ?? null,
-    custodian: fetched.custodian ?? null,
-    manager: fetched.manager ?? null,
-  });
-  await syncFundCompanyInstitution(profile, context);
-  return profile;
-}
-
-/**
  * Fetch a fund profile from the external source and merge the returned fields
  * into the fund-level profile cache without changing the configured NAV offset.
+ *
+ * **只有基金资料页的「刷新资料」按钮会调到这里。** 读路径不允许写 FundProfile。
  */
 export async function refreshFundProfile(
   fundCode: string,

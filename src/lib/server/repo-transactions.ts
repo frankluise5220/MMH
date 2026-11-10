@@ -1,7 +1,7 @@
 import { FundSubtype } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
-import { parseDateInputToUtc, toNumber } from "@/lib/date-utils";
+import { formatDateUtc, parseDateInputToUtc, toNumber } from "@/lib/date-utils";
 import {
   estimateRepoInterest,
   estimateRepoMaturityDateKey,
@@ -13,7 +13,7 @@ import {
 import { createBondEntry } from "@/lib/server/bond-transactions";
 
 /**
- * 国债逆回购的落账入口。
+ * 逆回购的落账入口。
  *
  * 逆回购在账务上就是一张「到期一次还本付息的存单」，因此整条链路复用债券：
  *   - 借出（lendRepo）= bond_transactions 的 buy 行（本金出账到券商账户）；
@@ -23,7 +23,7 @@ import { createBondEntry } from "@/lib/server/bond-transactions";
 
 export type RepoLendInput = {
   householdId: string;
-  /** 债券账户（券商账户）。 */
+  /** 股票（证券）账户。 */
   accountId: string;
   /** 资金腿：券商资金账户。 */
   cashAccountId: string;
@@ -240,4 +240,88 @@ export async function redeemRepo(input: RepoRedeemInput): Promise<{
     interest,
     arrivalAmount,
   };
+}
+
+export type RepoAutoRedeemResult = {
+  /** 本次真正落账的存单数。 */
+  redeemed: number;
+  /** 到期但没能自动回款（缺资金账户 / 落账失败）的存单数。 */
+  failed: number;
+  redeemedLotIds: string[];
+};
+
+/**
+ * 到期自动回款（逆回购的唯一「到期动作」）。
+ *
+ * 借出时已经在成交价里定了回购利率与到期日，到期不需要用户再点一次「回款」：
+ * 业务日推进到到期日之后，本息自动回到借出时的券商资金账户。
+ *
+ * - 账务日期用**存单到期日**而不是「今天」：用户隔几天才打开页面，利息与流水日期
+ *   仍然落在到期日，不会把一周前该回的钱记到今天。
+ * - 幂等：已有 redeem 子行的存单跳过；重复调用不会重复入账。
+ * - 单张失败不阻塞其它存单。
+ */
+export async function autoRedeemDueRepos(params: {
+  householdId: string;
+  /** 业务日 ymd（家庭时区）。到期日 <= asOf 的存单视为到期。 */
+  asOf: string;
+  /** 只处理某个证券账户（股票视图按账户刷新时传）。 */
+  accountId?: string | null;
+}): Promise<RepoAutoRedeemResult> {
+  const asOf = parseDateInputToUtc(params.asOf);
+  if (!asOf) return { redeemed: 0, failed: 0, redeemedLotIds: [] };
+
+  const lots = await prisma.bondTransaction.findMany({
+    where: {
+      householdId: params.householdId,
+      instrumentKind: "repo",
+      action: FundSubtype.buy,
+      deletedAt: null,
+      maturityDate: { not: null, lte: asOf },
+      ...(params.accountId ? { accountId: params.accountId } : {}),
+    },
+    select: { id: true, maturityDate: true, cashAccountId: true },
+    orderBy: [{ maturityDate: "asc" }, { createdAt: "asc" }],
+  });
+  if (lots.length === 0) return { redeemed: 0, failed: 0, redeemedLotIds: [] };
+
+  const redeemedRows = await prisma.bondTransaction.findMany({
+    where: {
+      householdId: params.householdId,
+      sourceBondTransactionId: { in: lots.map((lot) => lot.id) },
+      action: FundSubtype.redeem,
+      deletedAt: null,
+    },
+    select: { sourceBondTransactionId: true },
+  });
+  const redeemedIds = new Set(
+    redeemedRows
+      .map((row) => row.sourceBondTransactionId)
+      .filter((id): id is string => Boolean(id)),
+  );
+
+  const redeemedLotIds: string[] = [];
+  let failed = 0;
+  for (const lot of lots) {
+    if (redeemedIds.has(lot.id)) continue;
+    // 没有资金账户的存单无法回款，留给用户手动处理（在列表里会显示为「逾期」）。
+    if (!String(lot.cashAccountId ?? "").trim()) {
+      failed += 1;
+      continue;
+    }
+    const arrivalKey = formatDateUtc(lot.maturityDate ?? asOf);
+    try {
+      await redeemRepo({
+        householdId: params.householdId,
+        lotId: lot.id,
+        arrivalDate: arrivalKey,
+        note: "到期自动回款",
+      });
+      redeemedLotIds.push(lot.id);
+    } catch {
+      failed += 1;
+    }
+  }
+
+  return { redeemed: redeemedLotIds.length, failed, redeemedLotIds };
 }

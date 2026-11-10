@@ -11,7 +11,7 @@ import {
 import { fundUnitsProfitStartDate } from "@/lib/fund/confirmDays";
 import { allocateBuyFailedRefunds } from "@/lib/fund/refund-link";
 import { normalizeFundUnitsDecimals } from "@/lib/fund/unit-precision";
-import { fundNavTargetDateForOffset, fundTradingCalendarForName, getFundNavDateOffsets, getFundProfiles } from "@/lib/fund/fundProfile";
+import { fundNavTargetDateForOffset, fundTradingCalendarForName, getFundNavDateOffsets, getFundProfileNameMap, getFundProfiles } from "@/lib/fund/fundProfile";
 import { translate } from "@/lib/i18n-core";
 import type { DisplayLanguage } from "@/lib/client/appPreferences";
 import { loadFundStatisticSourceEntries, loadWealthStatisticSourceEntries } from "@/lib/server/investment-statistic-sources";
@@ -1339,7 +1339,7 @@ async function applyFundValuationProfit(params: {
       fundCode: { in: Array.from(fundCodes) },
       navDate: { lte: maxBoundary },
     },
-    select: { fundCode: true, navDate: true, nav: true, name: true },
+    select: { fundCode: true, navDate: true, nav: true },
     orderBy: [{ fundCode: "asc" }, { navDate: "asc" }],
   });
   const navByCode = new Map<string, Array<{ date: string; nav: number }>>();
@@ -1347,8 +1347,11 @@ async function applyFundValuationProfit(params: {
     const list = navByCode.get(navRow.fundCode) ?? [];
     list.push({ date: ymd(navRow.navDate), nav: toNumber(navRow.nav) });
     navByCode.set(navRow.fundCode, list);
-    if (navRow.name) mergeFundNavMeta(fundMetaByCode, navRow.fundCode, navRow.name);
   }
+  // 基金元信息（QDII / 货币 / 交易日历）只从 FundProfile 的名字推断，
+  // 净值缓存不再持有基金名。
+  const profileNames = await getFundProfileNameMap(Array.from(fundCodes));
+  for (const [code, name] of profileNames) mergeFundNavMeta(fundMetaByCode, code, name);
 
   let previousSnapshot = 0;
   for (const [index, bucket] of params.buckets.entries()) {

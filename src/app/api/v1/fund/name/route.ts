@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
-import { toNumber } from "@/lib/date-utils";
-import { getLatestFundNav, refreshLatestFundNav, setFundNav } from "@/lib/fund/navCache";
+
+import { setFundNav } from "@/lib/fund/navCache";
 import { resolveFundName } from "@/lib/fund/fundProfile";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 
@@ -37,7 +37,7 @@ async function fetchFromEastmoney(fundCode: string, headers: Record<string, stri
           const nav = parseFloat(data.dwjz);
           const cumNav = data?.ljjz ? parseFloat(data.ljjz) : nav;
           if (Number.isFinite(nav) && nav > 0) {
-            await setFundNav(fundCode, utcDate(data.jzrq), nav, Number.isFinite(cumNav) ? cumNav : nav, data?.name ?? null).catch((error) => {
+            await setFundNav(fundCode, utcDate(data.jzrq), nav, Number.isFinite(cumNav) ? cumNav : nav).catch((error) => {
               console.warn("Failed to cache fund NAV from name fallback", { fundCode, error });
             });
           }
@@ -145,8 +145,8 @@ export async function GET(req: NextRequest) {
 
   try {
     const { householdId } = await getHouseholdScope();
-    // 1. Resolve the fund name through the unified fund-profile lookup (FundProfile
-    //    cache first, then the fund company / detail API, which also writes back).
+    // 1. Resolve the fund name through the unified fund-profile lookup（只读：
+    //    FundProfile 优先，其次轻量身份接口；不写库）。
     const resolvedName = await resolveFundName(fundCode, { householdId });
     if (resolvedName) {
       return NextResponse.json({
@@ -156,30 +156,7 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    // 2. Then query the NAV cache.
-    const latestNav = await getLatestFundNav(fundCode);
-    if (latestNav?.name) {
-      return NextResponse.json({
-        ok: true,
-        name: latestNav.name,
-        nav: toNumber(latestNav.nav),
-        navDate: latestNav.navDate?.toISOString?.()?.slice(0, 10) ?? null,
-        source: "navcache",
-      });
-    }
-
-    const refreshedNav = await refreshLatestFundNav(fundCode);
-    if (refreshedNav?.name || refreshedNav?.nav) {
-      return NextResponse.json({
-        ok: true,
-        name: refreshedNav.name ?? fundCode,
-        nav: toNumber(refreshedNav.nav),
-        navDate: refreshedNav.navDate?.toISOString?.()?.slice(0, 10) ?? null,
-        source: "navapi",
-      });
-    }
-
-    // 2. Local cache missed; try multiple external APIs
+    // 2. 净值缓存不再持有基金名（只回答净值），直接问外部名称接口。
     const headers = {
       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
     };

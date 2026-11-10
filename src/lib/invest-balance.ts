@@ -632,6 +632,7 @@ export const computePositionDisplay = cache(
     const stockHoldings = await prisma.stockHolding.findMany({
       where: { accountId, householdId: ctx.householdId },
       orderBy: [{ market: "asc" }, { stockCode: "asc" }],
+      include: { StockSecurity: { select: { stockName: true } } },
     });
     const mapStockHolding = (holding: (typeof stockHoldings)[number]): PositionDisplayRow => {
       const quantity = toNumber(holding.quantity);
@@ -645,7 +646,8 @@ export const computePositionDisplay = cache(
         stockCode: holding.stockCode,
         market: holding.market,
         securityId: holding.securityId,
-        name: holding.stockName || holding.stockCode,
+        // 名字只认 StockSecurity；持仓行的 stockName 是历史快照。
+        name: holding.StockSecurity?.stockName?.trim() || holding.stockCode,
         holdingDate: "",
         units: quantity,
         avgCost: toNumber(holding.avgCost),
@@ -792,7 +794,11 @@ export const computePositionDisplay = cache(
   if (account.investProductType === "metal") {
     const metalHoldings = await prisma.preciousMetalHolding.findMany({
       where: { accountId },
-      orderBy: [{ metalTypeName: "asc" }, { metalUnitName: "asc" }],
+      orderBy: [{ PreciousMetalType: { name: "asc" } }, { PreciousMetalUnit: { name: "asc" } }],
+      include: {
+        PreciousMetalType: { select: { name: true } },
+        PreciousMetalUnit: { select: { name: true } },
+      },
     });
     const positions: PositionDisplayRow[] = metalHoldings
       .filter((holding) => toNumber(holding.quantity) > 0.000001)
@@ -804,7 +810,8 @@ export const computePositionDisplay = cache(
         const floatingPnL = marketValue - cost;
         return {
           fundCode: holding.metalTypeId,
-          name: `${holding.metalTypeName} · ${holding.metalUnitName}`,
+          // 名字只认 PreciousMetalType / PreciousMetalUnit；持仓行同名是历史快照。
+          name: `${holding.PreciousMetalType?.name ?? holding.metalTypeName} · ${holding.PreciousMetalUnit?.name ?? holding.metalUnitName}`,
           holdingDate: "",
           units: quantity,
           avgCost: toNumber(holding.avgCost),
@@ -836,7 +843,15 @@ export const computePositionDisplay = cache(
             include: { BondProduct: true },
             orderBy: [{ tradeDate: "asc" }, { createdAt: "asc" }],
           })
-        ).map((row) => ({ ...row, wealthProductId: row.bondProductId, units: null, nav: null, WealthProduct: null }))
+        ).map((row) => ({
+          ...row,
+          // 债券名只认 BondProduct；交易行的 productName 是历史快照。
+          productName: row.BondProduct?.name ?? row.productName,
+          wealthProductId: row.bondProductId,
+          units: null,
+          nav: null,
+          WealthProduct: null,
+        }))
       : await prisma.wealthTransaction.findMany({
           where: { accountId, deletedAt: null },
           include: { WealthProduct: true },
@@ -850,7 +865,7 @@ export const computePositionDisplay = cache(
       if (!wp || wp.manualNav == null) continue;
       const nav = toNumber(wp.manualNav);
       if (!Number.isFinite(nav) || nav <= 0) continue;
-      const key = row.wealthProductId ?? row.productName ?? wp.name ?? "";
+      const key = row.wealthProductId ?? wp.id;
       if (key && !manualNavByKey.has(key)) {
         manualNavByKey.set(key, {
           nav,
@@ -1092,13 +1107,13 @@ export const computePositionDisplay = cache(
   // Load the latest cached NAV for every held fund, money funds included, so the
   // position row can always pair the displayed NAV with its date. Money funds
   // keep NAV = 1 (their cached value is the per-10k yield, not the unit NAV).
-  const latestNavByCode = new Map<string, { nav: number; date: string; name: string | null }>();
+  const latestNavByCode = new Map<string, { nav: number; date: string }>();
   const profileNameByCode = await getFundProfileNameMap(fundCodes);
   if (fundCodes.length > 0) {
     const caches = await getEffectiveLatestFundNavMap(fundCodes);
     for (const [fundCode, c] of caches) {
       // Keep the full YYYY-MM-DD date in the payload; clients format for display.
-      latestNavByCode.set(fundCode, { nav: c.nav, date: c.navDate.toISOString().slice(0, 10), name: c.name });
+      latestNavByCode.set(fundCode, { nav: c.nav, date: c.navDate.toISOString().slice(0, 10) });
     }
   }
 
@@ -1121,9 +1136,8 @@ export const computePositionDisplay = cache(
     const latestNav = isMoneyFund ? 1 : (navInfo?.nav ?? (h.nav != null ? toNumber(h.nav) : 0));
     const navDateStr = navInfo?.date ?? "";
     const profileName = profileNameByCode.get(h.fundCode);
-    const cachedNavName = normalizeFundDisplayName(h.fundCode, navInfo?.name);
     const storedName = normalizeFundDisplayName(h.fundCode, h.fundName);
-    const displayName = profileName || cachedNavName || storedName || h.fundCode;
+    const displayName = profileName || storedName || h.fundCode;
     const historicalProfit = toNumber(h.historicalProfit);
 
     const confirmedMV = latestNav > 0 && units > 0 ? units * latestNav : confirmedCost;

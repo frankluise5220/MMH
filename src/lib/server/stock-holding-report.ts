@@ -107,6 +107,7 @@ export async function loadStockHoldingReport(
       quantity: { gt: 0 },
     },
     orderBy: [{ market: "asc" }, { stockCode: "asc" }],
+    include: { StockSecurity: { select: { stockName: true } } },
   });
 
   const rows = holdings
@@ -136,7 +137,8 @@ export async function loadStockHoldingReport(
         securityId: item.securityId,
         market: item.market,
         stockCode: item.stockCode,
-        stockName: item.stockName?.trim() || item.stockCode,
+        // 名字只认 StockSecurity；持仓行的 stockName 是历史快照。
+        stockName: item.StockSecurity?.stockName?.trim() || item.stockCode,
         quantity,
         avgCost: toNumber(item.avgCost),
         cost,

@@ -23,7 +23,7 @@ import { logger } from "@/lib/logger";
  * rule: units use gross buy amount - linked refund amount - buy fee.
  * Response shape: { ok: true, checked, filled, navFilled, skippedFuture,
  * skippedNoNav, failed, holdingNavChecked, holdingNavRefreshed,
- * holdingNavFailed, nameFixed, entryIds }.
+ * holdingNavFailed, entryIds }.
  */
 function utcDate(dateStr: string) {
   const [y, m, d] = dateStr.split("-").map(Number);
@@ -76,7 +76,7 @@ export async function POST() {
     const heldNavResult = await refreshHeldFundLatestNavs({ householdId });
 
     if (candidateRows.length === 0) {
-      if (heldNavResult.latestNavAvailable > 0 || heldNavResult.nameFixed > 0) {
+      if (heldNavResult.latestNavAvailable > 0) {
         revalidateAfterInvestChange();
       }
       return NextResponse.json({
@@ -89,7 +89,6 @@ export async function POST() {
         failed: 0,
         holdingNavChecked: heldNavResult.checked,
         holdingNavRefreshed: heldNavResult.latestNavAvailable,
-        nameFixed: heldNavResult.nameFixed,
         holdingNavFailed: heldNavResult.failed,
       });
     }
@@ -159,7 +158,6 @@ export async function POST() {
             nav: navData.nav,
             units,
             fee,
-            ...(navData.name ? { fundName: navData.name } : {}),
           },
         });
         changedEntryIds.push(row.id);
@@ -180,7 +178,7 @@ export async function POST() {
         await recalcAndSaveAccountBalance(accountId).catch(logger.catchLog("balance", "fund/refresh-pending"));
       }
     }
-    if (changedEntryIds.length > 0 || heldNavResult.latestNavAvailable > 0 || heldNavResult.nameFixed > 0) {
+    if (changedEntryIds.length > 0 || heldNavResult.latestNavAvailable > 0) {
       revalidateAfterInvestChange();
     }
 
@@ -194,7 +192,6 @@ export async function POST() {
       failed,
       holdingNavChecked: heldNavResult.checked,
       holdingNavRefreshed: heldNavResult.latestNavAvailable,
-      nameFixed: heldNavResult.nameFixed,
       holdingNavFailed: heldNavResult.failed,
       entryIds: changedEntryIds,
     });

@@ -62,9 +62,17 @@ function hasUsefulChange(result: unknown) {
   const navFilled = Number(data.navFilled ?? data.entryNavFilled ?? 0);
   const holdingNavRefreshed = Number(data.holdingNavRefreshed ?? 0);
   const stockRefreshed = Number(data.refreshed ?? 0);
-  const nameFixed = Number(data.nameFixed ?? 0);
   const depositMatured = Number(data.processed ?? 0);
-  return executedCount > 0 || filled > 0 || navFilled > 0 || holdingNavRefreshed > 0 || nameFixed > 0 || stockRefreshed > 0 || depositMatured > 0;
+  const repoRedeemed = Number(data.redeemed ?? 0);
+  return (
+    executedCount > 0 ||
+    filled > 0 ||
+    navFilled > 0 ||
+    holdingNavRefreshed > 0 ||
+    stockRefreshed > 0 ||
+    depositMatured > 0 ||
+    repoRedeemed > 0
+  );
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -137,7 +145,26 @@ export function DailyTaskCheck() {
         // 存款到期 / 取息已改为系统计划任务（由上面的 /regular-invest/auto-execute
         // 统一执行），这里不再单独扫一遍存款，避免出现第二条生成路径。
 
-        if (hasUsefulChange(planData) || hasUsefulChange(pendingData) || hasUsefulChange(stockData)) {
+        // 逆回购到期自动回款：借出时已经定死回购利率与到期日，到期不需要用户再操作。
+        // 巡检失败不打断整条链路（下一轮打开股票视图还会补一次），因此这里单独兜住异常。
+        let repoData: unknown = null;
+        try {
+          const repoRes = await fetch("/api/v1/repo/auto-redeem", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+          });
+          repoData = await repoRes.json().catch(() => null);
+          assertOkResponse(repoRes, repoData, "repo auto redeem");
+        } catch (error) {
+          console.warn("[DailyTaskCheck] repo auto redeem failed", error);
+        }
+
+        if (
+          hasUsefulChange(planData) ||
+          hasUsefulChange(pendingData) ||
+          hasUsefulChange(stockData) ||
+          hasUsefulChange(repoData)
+        ) {
           // auto-execute 会批量写 txRecord（定投 / 存款到期 / 取息）。有真实落账时不能
           // 再用中性的 startup-check 掩盖，否则新记的流水不会出现在明细里；只有净值
           // 回填 / 行情刷新才保持中性，避免开机无谓重取整页。

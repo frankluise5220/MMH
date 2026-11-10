@@ -118,14 +118,15 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: false, code: "RECORD_NOT_FOUND", error: "没有匹配的记录" }, { status: 404 });
     }
 
-    const name = await prisma.fundNavCache.findFirst({
+    // 名字只从 FundProfile 读（唯一持有基金名的地方）；资料库没有就落代码，
+    // 不再从净值缓存借名字，也不在这里补写资料库。
+    const profile = await prisma.fundProfile.findUnique({
       where: { fundCode: newFundCode },
-      orderBy: { navDate: "desc" },
-      select: { name: true },
+      select: { fundName: true },
     });
     await prisma.fundTransaction.updateMany({
       where: { id: { in: records.map(e => e.id) } },
-      data: { fundCode: newFundCode, fundName: name?.name ?? newFundCode },
+      data: { fundCode: newFundCode, fundName: profile?.fundName ?? newFundCode },
     });
 
     const recalcMap = new Map<string, Set<string>>();

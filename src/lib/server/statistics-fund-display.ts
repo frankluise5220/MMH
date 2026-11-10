@@ -1,5 +1,4 @@
 import { getFundProfileNameMap, normalizeFundDisplayName } from "@/lib/fund/fundProfile";
-import { getLatestFundNavMap } from "@/lib/fund/navCache";
 import { prisma } from "@/lib/db/prisma";
 import { chunk, IN_CHUNK_SIZE } from "@/lib/server/prisma-in-chunks";
 
@@ -96,10 +95,8 @@ export async function buildStatisticsFundDisplayResolver(
     ...rows.map((row) => normalizeStatisticFundCode(row.fundCode)),
     ...Array.from(linkedFundByEntryId.values()).map((row) => normalizeStatisticFundCode(row.fundCode)),
   ].filter(Boolean)));
-  const [profileNameByCode, latestNavByCode] = await Promise.all([
-    getFundProfileNameMap(fundCodes),
-    getLatestFundNavMap(fundCodes),
-  ]);
+  // 名字只从 FundProfile 读；净值缓存不再持有基金名。
+  const profileNameByCode = await getFundProfileNameMap(fundCodes);
 
   return function resolveStatisticsFundDisplay(entry: StatisticsFundNameSource) {
     const rawFundCode = String(entry.fundCode ?? "").trim();
@@ -114,7 +111,6 @@ export async function buildStatisticsFundDisplayResolver(
 
     const fundName = (
       profileNameByCode.get(normalizedCode) ??
-      normalizeFundDisplayName(normalizedCode, latestNavByCode.get(normalizedCode)?.name) ??
       normalizeFundDisplayName(normalizedCode, storedName) ??
       normalizeFundDisplayName(normalizedCode, linkedFund?.fundName) ??
       normalizedCode

@@ -494,6 +494,16 @@ function normalizeRecordDates(record: Record<string, unknown>, nullDateKeys = ne
   return normalized;
 }
 
+/**
+ * 兼容旧备份包：`FundNavCache.name` 已从模型删除，但 0.1.83 之前导出的包
+ * 里每行都带这个字段。恢复时直接喂给 createMany 会报 `Unknown argument name`。
+ */
+function stripRetiredFundNavCacheFields(record: Record<string, unknown>) {
+  if (!("name" in record)) return record;
+  const { name: _retired, ...rest } = record;
+  return rest;
+}
+
 async function createManyRecords(
   delegate: unknown,
   records: Record<string, unknown>[],
@@ -3215,7 +3225,7 @@ async function restoreSingleHouseholdBackup(
     }
 
     if (isSystemRestore && data.fundNavCaches.length > 0) {
-      await createManyRecords(tx.fundNavCache, data.fundNavCaches);
+      await createManyRecords(tx.fundNavCache, data.fundNavCaches.map(stripRetiredFundNavCacheFields));
     }
 
     if (isSystemRestore && data.stockBrokerageCatalogs.length > 0) {

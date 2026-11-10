@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import { ArrowDownLeft, ArrowUpRight, Coins, Landmark, Library, SlidersHorizontal, Trash2 } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, Landmark, Library, SlidersHorizontal, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 
 import {
@@ -74,49 +74,9 @@ export type BondShellEntry = {
   edit?: Omit<EditPayload, "entryId">;
 };
 
-/**
- * 逆回购存单：与债券存单同构（本金 + 年化 + 到期日），但口径不同——
- * 到期一次还本付息、按**实际占款天数**计息、没有付息计划。
- */
-export type BondShellRepoLot = {
-  id: string;
-  /** 品种名，如 `GC001 · 1天`。 */
-  name: string;
-  /** 交易代码 204001。 */
-  code: string | null;
-  termDays: number | null;
-  annualRate: number | null;
-  principal: number;
-  startDate: string | null;
-  maturityDate: string | null;
-  clearedDate: string | null;
-  occupiedDays: number | null;
-  remainingDays: number | null;
-  fee: number | null;
-  expectedInterest: number | null;
-  actualInterest: number | null;
-  realizedProfit: number;
-  status: "open" | "closed";
-  relatedEntryIds: string[];
-};
-
-export type BondShellRepo = {
-  lots: BondShellRepoLot[];
-  entries: BondShellEntry[];
-  totalPrincipal: number;
-  totalExpectedInterest: number;
-  totalRealizedProfit: number;
-  openCount: number;
-  defaultCashAccountId: string | null;
-};
-
-type LotTab = "held" | "cleared" | "repo-open" | "repo-closed";
+type LotTab = "held" | "cleared";
 
 const BOND_ENTRY_COLUMN_SETTINGS_EVENT = "mmh:bond-entries:column-settings";
-
-function repoTotalPrincipalOf(lots: BondShellRepoLot[]): number {
-  return Number(lots.reduce((sum, lot) => sum + lot.principal, 0).toFixed(2));
-}
 
 export function BondShell({
   accountId,
@@ -128,7 +88,6 @@ export function BondShell({
   totalPrincipal,
   totalPaidInterest,
   totalExpectedInterest,
-  repo,
 }: {
   accountId: string;
   accountLabel: string;
@@ -140,11 +99,8 @@ export function BondShell({
   totalPrincipal: number;
   totalPaidInterest: number;
   totalExpectedInterest: number;
-  /** 逆回购（同一张 bond_transactions 表里 instrumentKind = "repo" 的存单）。 */
-  repo?: BondShellRepo | null;
 }) {
   const [selectedLotId, setSelectedLotId] = useState<string | null>(null);
-  const [selectedRepoLotId, setSelectedRepoLotId] = useState<string | null>(null);
   const [productLibraryOpen, setProductLibraryOpen] = useState(false);
   const [lotTab, setLotTab] = useState<LotTab>("held");
   const [entryRowCount, setEntryRowCount] = useState(0);
@@ -177,41 +133,26 @@ export function BondShell({
     });
   }, [formatText, t]);
 
-  const isRepoView = lotTab === "repo-open" || lotTab === "repo-closed";
   const heldLots = useMemo(() => lots.filter((lot) => lot.status === "open"), [lots]);
   const clearedLots = useMemo(() => lots.filter((lot) => lot.status === "closed"), [lots]);
   const visibleLots = lotTab === "held" ? heldLots : clearedLots;
-
-  const repoLots = useMemo(() => repo?.lots ?? [], [repo]);
-  const repoOpenLots = useMemo(() => repoLots.filter((lot) => lot.status === "open"), [repoLots]);
-  const repoClosedLots = useMemo(() => repoLots.filter((lot) => lot.status === "closed"), [repoLots]);
-  const repoVisibleLots = lotTab === "repo-open" ? repoOpenLots : repoClosedLots;
 
   const selectedLot = useMemo(
     () => lots.find((lot) => lot.id === selectedLotId) ?? null,
     [lots, selectedLotId],
   );
-  const selectedRepoLot = useMemo(
-    () => repoLots.find((lot) => lot.id === selectedRepoLotId) ?? null,
-    [repoLots, selectedRepoLotId],
-  );
 
   function switchLotTab(tab: LotTab) {
     setLotTab(tab);
     setSelectedLotId(null);
-    setSelectedRepoLotId(null);
   }
 
-  const activeEntries = useMemo(
-    () => (isRepoView ? (repo?.entries ?? []) : entries),
-    [entries, isRepoView, repo],
-  );
+  const activeEntries = entries;
   const visibleEntries = useMemo(() => {
-    const related = isRepoView ? selectedRepoLot : selectedLot;
-    if (!related) return activeEntries;
-    const relatedIds = new Set(related.relatedEntryIds);
+    if (!selectedLot) return activeEntries;
+    const relatedIds = new Set(selectedLot.relatedEntryIds);
     return activeEntries.filter((entry) => relatedIds.has(entry.id));
-  }, [activeEntries, selectedLot, selectedRepoLot, isRepoView]);
+  }, [activeEntries, selectedLot]);
   const visibleEntryIds = useMemo(() => visibleEntries.map((entry) => entry.id), [visibleEntries]);
   // 债券明细行就是背后的现金流水：现金明细页锁定的记录，这里同样要显示锁并能就地解锁。
   const { isReconciled } = useEntryReconcileState(visibleEntryIds);
@@ -220,7 +161,6 @@ export function BondShell({
 
   useEffect(() => {
     setSelectedEntryIds(new Set());
-    setSelectedRepoLotId(null);
   }, [accountId]);
 
   useEffect(() => {
@@ -261,7 +201,7 @@ export function BondShell({
   const goEntryPage = entryPager.goPage;
   useEffect(() => {
     goEntryPage(1);
-  }, [selectedLotId, selectedRepoLotId, goEntryPage]);
+  }, [selectedLotId, goEntryPage]);
 
   async function batchDeleteEntries() {
     if (selectedEntryIds.size === 0) return;
@@ -351,90 +291,6 @@ export function BondShell({
 
   const lotColumns = lotTab === "held" ? heldColumns : clearedColumns;
 
-  const repoNameColumn = useMemo<AdvancedDataTableColumn<BondShellRepoLot>>(() => ({
-    key: "name",
-    label: t("repoShell.colProduct"),
-    width: 200,
-    minWidth: 140,
-    filterText: (lot) => `${lot.name} ${lot.code ?? ""}`,
-    filterSearchText: (lot) => `${lot.name} ${lot.code ?? ""}`,
-    sortValue: (lot) => lot.name,
-    render: (lot) => (
-      <div className="flex min-w-0 items-center gap-2">
-        <span className="truncate font-medium text-slate-700" title={`${lot.name}${lot.code ? ` ${lot.code}` : ""}`}>{lot.name || "-"}</span>
-        {lot.termDays ? (
-          <span className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-500">
-            {lot.termDays}{t("repoShell.dayUnit")}
-          </span>
-        ) : null}
-      </div>
-    ),
-  }), [t]);
-
-  const repoOpenColumns = useMemo<AdvancedDataTableColumn<BondShellRepoLot>[]>(() => [
-    repoNameColumn,
-    { key: "startDate", label: t("repoShell.colLendDate"), width: 108, minWidth: 84, hideable: true, filterKind: "dateRange", filterText: (lot) => lot.startDate ?? "", sortValue: (lot) => lot.startDate ?? "", render: (lot) => <span className="tabular-nums text-slate-600">{lot.startDate || "-"}</span> },
-    { key: "maturityDate", label: t("repoShell.colMaturityDate"), width: 108, minWidth: 84, hideable: true, filterKind: "dateRange", filterText: (lot) => lot.maturityDate ?? "", sortValue: (lot) => lot.maturityDate ?? "", render: (lot) => <span className="tabular-nums text-slate-600">{lot.maturityDate || "-"}</span> },
-    {
-      key: "remainingDays",
-      label: t("repoShell.colRemainingDays"),
-      width: 96,
-      minWidth: 76,
-      align: "right",
-      hideable: true,
-      filterKind: "numberRange",
-      filterText: (lot) => (lot.remainingDays != null ? String(lot.remainingDays) : null),
-      filterNumber: (lot) => lot.remainingDays ?? null,
-      sortValue: (lot) => lot.remainingDays ?? 0,
-      render: (lot) => {
-        if (lot.remainingDays == null) return <span className="text-slate-400">-</span>;
-        const overdue = lot.remainingDays < 0;
-        return (
-          <span className={`tabular-nums ${overdue ? "font-semibold text-rose-600" : "text-slate-600"}`}>
-            {overdue ? t("repoShell.overdue") : lot.remainingDays}
-          </span>
-        );
-      },
-    },
-    { key: "annualRate", label: t("repoShell.colAnnualRate"), width: 100, minWidth: 72, align: "right", hideable: true, filterKind: "numberRange", filterText: (lot) => (lot.annualRate != null ? String(lot.annualRate) : null), filterNumber: (lot) => lot.annualRate ?? null, sortValue: (lot) => lot.annualRate ?? 0, render: (lot) => <span className="tabular-nums text-slate-600">{lot.annualRate != null ? `${lot.annualRate}%` : "-"}</span> },
-    { key: "principal", label: t("repoShell.colPrincipal"), width: 124, minWidth: 90, align: "right", hideable: true, filterKind: "numberRange", filterText: (lot) => String(lot.principal), filterNumber: (lot) => lot.principal, sortValue: (lot) => lot.principal, render: (lot) => moneyCell(lot.principal) },
-    { key: "expectedInterest", label: t("repoShell.colExpectedInterest"), width: 120, minWidth: 88, align: "right", hideable: true, filterKind: "numberRange", filterText: (lot) => (lot.expectedInterest != null ? String(lot.expectedInterest) : null), filterNumber: (lot) => lot.expectedInterest ?? null, sortValue: (lot) => lot.expectedInterest ?? 0, render: (lot) => moneyCell(lot.expectedInterest, "text-emerald-700") },
-    { key: "fee", label: t("repoShell.colFee"), width: 96, minWidth: 72, align: "right", hideable: true, filterKind: "numberRange", filterText: (lot) => (lot.fee != null ? String(lot.fee) : null), filterNumber: (lot) => lot.fee ?? null, sortValue: (lot) => lot.fee ?? 0, render: (lot) => moneyCell(lot.fee) },
-    { key: "realizedProfit", label: t("repoShell.colRealizedProfit"), width: 120, minWidth: 88, align: "right", hideable: true, filterKind: "numberRange", filterText: (lot) => String(lot.realizedProfit), filterNumber: (lot) => Math.abs(lot.realizedProfit), sortValue: (lot) => lot.realizedProfit, render: (lot) => (lot.realizedProfit !== 0 ? moneyCell(lot.realizedProfit, amountClass(lot.realizedProfit)) : moneyCell(null)) },
-  ], [moneyCell, repoNameColumn, t]);
-
-  const repoClosedColumns = useMemo<AdvancedDataTableColumn<BondShellRepoLot>[]>(() => [
-    repoNameColumn,
-    { key: "startDate", label: t("repoShell.colLendDate"), width: 108, minWidth: 84, hideable: true, filterKind: "dateRange", filterText: (lot) => lot.startDate ?? "", sortValue: (lot) => lot.startDate ?? "", render: (lot) => <span className="tabular-nums text-slate-600">{lot.startDate || "-"}</span> },
-    { key: "clearedDate", label: t("repoShell.colClearedDate"), width: 108, minWidth: 84, hideable: true, filterKind: "dateRange", filterText: (lot) => lot.clearedDate ?? "", sortValue: (lot) => lot.clearedDate ?? "", render: (lot) => <span className="tabular-nums text-slate-600">{lot.clearedDate || "-"}</span> },
-    { key: "occupiedDays", label: t("repoShell.colOccupiedDays"), width: 100, minWidth: 78, align: "right", hideable: true, filterKind: "numberRange", filterText: (lot) => (lot.occupiedDays != null ? String(lot.occupiedDays) : null), filterNumber: (lot) => lot.occupiedDays ?? null, sortValue: (lot) => lot.occupiedDays ?? 0, render: (lot) => <span className="tabular-nums text-slate-600">{lot.occupiedDays ?? "-"}</span> },
-    { key: "annualRate", label: t("repoShell.colAnnualRate"), width: 100, minWidth: 72, align: "right", hideable: true, filterKind: "numberRange", filterText: (lot) => (lot.annualRate != null ? String(lot.annualRate) : null), filterNumber: (lot) => lot.annualRate ?? null, sortValue: (lot) => lot.annualRate ?? 0, render: (lot) => <span className="tabular-nums text-slate-600">{lot.annualRate != null ? `${lot.annualRate}%` : "-"}</span> },
-    { key: "principal", label: t("repoShell.colPrincipal"), width: 124, minWidth: 90, align: "right", hideable: true, filterKind: "numberRange", filterText: (lot) => String(lot.principal), filterNumber: (lot) => lot.principal, sortValue: (lot) => lot.principal, render: (lot) => moneyCell(lot.principal) },
-    { key: "actualInterest", label: t("repoShell.colActualInterest"), width: 120, minWidth: 88, align: "right", hideable: true, filterKind: "numberRange", filterText: (lot) => (lot.actualInterest != null ? String(lot.actualInterest) : null), filterNumber: (lot) => lot.actualInterest ?? null, sortValue: (lot) => lot.actualInterest ?? 0, render: (lot) => moneyCell(lot.actualInterest, "text-emerald-600") },
-    { key: "fee", label: t("repoShell.colFee"), width: 96, minWidth: 72, align: "right", hideable: true, filterKind: "numberRange", filterText: (lot) => (lot.fee != null ? String(lot.fee) : null), filterNumber: (lot) => lot.fee ?? null, sortValue: (lot) => lot.fee ?? 0, render: (lot) => moneyCell(lot.fee) },
-    { key: "realizedProfit", label: t("repoShell.colRealizedProfit"), width: 120, minWidth: 88, align: "right", hideable: true, filterKind: "numberRange", filterText: (lot) => String(lot.realizedProfit), filterNumber: (lot) => Math.abs(lot.realizedProfit), sortValue: (lot) => lot.realizedProfit, render: (lot) => (lot.realizedProfit !== 0 ? moneyCell(lot.realizedProfit, amountClass(lot.realizedProfit)) : moneyCell(null)) },
-  ], [moneyCell, repoNameColumn, t]);
-
-  const repoColumns = lotTab === "repo-open" ? repoOpenColumns : repoClosedColumns;
-
-  const repoSummaryRow = useMemo<AdvancedDataTableSummaryRow | undefined>(() => {
-    if (repoVisibleLots.length === 0) return undefined;
-    const cells: Record<string, ReactNode> = {
-      name: <span className="font-semibold text-slate-800">{t("liabilityShell.summaryRow")}</span>,
-      principal: <span className="font-semibold tabular-nums text-slate-800">{formatMoney(repoTotalPrincipalOf(repoVisibleLots))}</span>,
-    };
-    if (lotTab === "repo-open") {
-      const expected = repoVisibleLots.reduce((sum, lot) => sum + (lot.expectedInterest ?? 0), 0);
-      if (expected > 0) cells.expectedInterest = <span className="font-semibold tabular-nums text-emerald-700">{formatMoney(expected)}</span>;
-    } else {
-      const interest = repoVisibleLots.reduce((sum, lot) => sum + (lot.actualInterest ?? 0), 0);
-      if (interest > 0) cells.actualInterest = <span className="font-semibold tabular-nums text-emerald-600">{formatMoney(interest)}</span>;
-    }
-    const realized = repoVisibleLots.reduce((sum, lot) => sum + lot.realizedProfit, 0);
-    if (realized !== 0) cells.realizedProfit = <span className={`font-semibold tabular-nums ${amountClass(realized)}`}>{formatMoney(realized)}</span>;
-    return { cells, rowClassName: "bg-slate-50/80" };
-  }, [lotTab, repoVisibleLots, t]);
-
   const lotsSummaryRow = useMemo<AdvancedDataTableSummaryRow | undefined>(() => {
     if (visibleLots.length === 0) return undefined;
     const cells: Record<string, ReactNode> = {
@@ -490,7 +346,7 @@ export function BondShell({
         <section className="paper-card flex h-full min-h-0 flex-col overflow-hidden">
           <div className={`paper-card-header ${ADVANCED_TABLE_HEAD_SURFACE_CLASS}`}>
             <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
-              {isRepoView ? <Coins className="h-4 w-4 text-emerald-600" /> : <Landmark className="h-4 w-4 text-amber-600" />}
+              <Landmark className="h-4 w-4 text-amber-600" />
               <div className="flex items-center gap-0.5">
                 <button
                   type="button"
@@ -506,96 +362,50 @@ export function BondShell({
                 >
                   {t("bondShell.clearedTitle")}
                 </button>
-                <span className="mx-1 h-4 w-px bg-slate-200" aria-hidden="true" />
-                <button
-                  type="button"
-                  onClick={() => switchLotTab("repo-open")}
-                  className={`h-6 rounded px-2 text-xs font-medium ${lotTab === "repo-open" ? "bg-emerald-50 text-emerald-700" : "text-slate-500 hover:text-slate-700"}`}
-                >
-                  {t("repoShell.holdingsTitle")}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => switchLotTab("repo-closed")}
-                  className={`h-6 rounded px-2 text-xs font-medium ${lotTab === "repo-closed" ? "bg-emerald-50 text-emerald-700" : "text-slate-500 hover:text-slate-700"}`}
-                >
-                  {t("repoShell.clearedTitle")}
-                </button>
+                {/* 逆回购已移到股票视图（股票页签下的「逆回购」）。 */}
               </div>
             </div>
             <div className="flex items-center gap-2">
               <span className="text-xs text-slate-400">
-                {isRepoView
-                  ? selectedRepoLot
-                    ? formatText("repoShell.lotSelectedHint", { name: selectedRepoLot.name })
-                    : lotTab === "repo-open"
-                      ? formatText("repoShell.holdingsHint", {
-                          count: repoOpenLots.length,
-                          amount: formatMoney(repo?.totalPrincipal ?? 0),
-                          scope: institutionName || accountLabel,
-                        })
-                      : formatText("repoShell.clearedHint", { count: repoClosedLots.length })
-                  : selectedLot
-                    ? formatText("bondShell.lotSelectedHint", { name: selectedLot.name })
-                    : lotTab === "held"
-                      ? formatText("bondShell.holdingsHint", {
-                          count: heldLots.length,
-                          amount: formatMoney(totalPrincipal),
-                          scope: institutionName || accountLabel,
-                        })
-                      : formatText("bondShell.clearedHint", { count: clearedLots.length })}
+                {selectedLot
+                  ? formatText("bondShell.lotSelectedHint", { name: selectedLot.name })
+                  : lotTab === "held"
+                    ? formatText("bondShell.holdingsHint", {
+                        count: heldLots.length,
+                        amount: formatMoney(totalPrincipal),
+                        scope: institutionName || accountLabel,
+                      })
+                    : formatText("bondShell.clearedHint", { count: clearedLots.length })}
               </span>
-              {isRepoView ? null : (
-                <button
-                  type="button"
-                  onClick={() => setProductLibraryOpen(true)}
-                  className="secondary-button h-7 gap-1 px-2 text-xs"
-                  title={t("productLibrary.title.bond")}
-                >
-                  <Library className="h-3.5 w-3.5" />
-                  {t("productLibrary.entryButton")}
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={() => setProductLibraryOpen(true)}
+                className="secondary-button h-7 gap-1 px-2 text-xs"
+                title={t("productLibrary.title.bond")}
+              >
+                <Library className="h-3.5 w-3.5" />
+                {t("productLibrary.entryButton")}
+              </button>
             </div>
           </div>
           <div className="min-h-0 flex-1">
-            {isRepoView ? (
-              <AdvancedDataTable
-                key={`repo-${lotTab}`}
-                storageKey="mmh_repo_lots_table_v1"
-                columns={repoColumns}
-                rows={repoVisibleLots}
-                rowKey={(lot) => lot.id}
-                minTableWidth={1080}
-                emptyText={lotTab === "repo-open" ? t("repoShell.emptyHoldings") : t("repoShell.emptyCleared")}
-                showFilters
-                fillHeight
-                toolbarMode="none"
-                defaultSort={{ key: "principal", direction: "desc" }}
-                summaryRow={repoSummaryRow}
-                summaryRowPlacement="footer"
-                onRowClick={(lot) => setSelectedRepoLotId((current) => current === lot.id ? null : lot.id)}
-                rowClassName={(lot) => `cursor-pointer ${selectedRepoLotId === lot.id ? "bg-emerald-50 hover:bg-emerald-50" : "hover:bg-slate-50"}`}
-              />
-            ) : (
-              <AdvancedDataTable
-                key={lotTab}
-                storageKey="mmh_bond_lots_table_v1"
-                columns={lotColumns}
-                rows={visibleLots}
-                rowKey={(lot) => lot.id}
-                minTableWidth={1120}
-                emptyText={lotTab === "held" ? t("bondShell.emptyHoldings") : t("bondShell.emptyCleared")}
-                showFilters
-                fillHeight
-                toolbarMode="none"
-                defaultSort={{ key: "principal", direction: "desc" }}
-                summaryRow={lotsSummaryRow}
-                summaryRowPlacement="footer"
-                onRowClick={(lot) => setSelectedLotId((current) => current === lot.id ? null : lot.id)}
-                rowClassName={(lot) => `cursor-pointer ${selectedLotId === lot.id ? "bg-blue-50 hover:bg-blue-50" : "hover:bg-slate-50"}`}
-              />
-            )}
+            <AdvancedDataTable
+              key={lotTab}
+              storageKey="mmh_bond_lots_table_v1"
+              columns={lotColumns}
+              rows={visibleLots}
+              rowKey={(lot) => lot.id}
+              minTableWidth={1120}
+              emptyText={lotTab === "held" ? t("bondShell.emptyHoldings") : t("bondShell.emptyCleared")}
+              showFilters
+              fillHeight
+              toolbarMode="none"
+              defaultSort={{ key: "principal", direction: "desc" }}
+              summaryRow={lotsSummaryRow}
+              summaryRowPlacement="footer"
+              onRowClick={(lot) => setSelectedLotId((current) => current === lot.id ? null : lot.id)}
+              rowClassName={(lot) => `cursor-pointer ${selectedLotId === lot.id ? "bg-blue-50 hover:bg-blue-50" : "hover:bg-slate-50"}`}
+            />
           </div>
         </section>
 

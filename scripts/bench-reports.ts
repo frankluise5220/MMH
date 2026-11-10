@@ -419,7 +419,103 @@ async function main() {
   );
   results.push(
     await runCase(
-      "基金统计源 · 窄字段对照（下界）",
+      "基金统计源 · 主查询（去掉三条关系）",
+      () =>
+        prisma.fundTransaction.findMany({
+          where: { householdId, deletedAt: null, applyDate: { lt: endExclusive } },
+          select: {
+            id: true,
+            applyDate: true,
+            arrivalDate: true,
+            cashEntryId: true,
+            cashAccountId: true,
+            fundAccountId: true,
+            fundSubtype: true,
+            fundProductType: true,
+            fundCode: true,
+            fundName: true,
+            realizedProfit: true,
+            units: true,
+            nav: true,
+            fee: true,
+            note: true,
+            createdAt: true,
+          },
+          orderBy: [{ applyDate: "asc" }, { createdAt: "asc" }, { id: "asc" }],
+          take: 50000,
+        }),
+      runs,
+      "拆分关系成本用",
+    ),
+  );
+  results.push(
+    await runCase(
+      "基金统计源 · 主查询去 fundName",
+      () =>
+        prisma.fundTransaction.findMany({
+          where: { householdId, deletedAt: null, applyDate: { lt: endExclusive } },
+          select: {
+            id: true,
+            applyDate: true,
+            arrivalDate: true,
+            cashEntryId: true,
+            cashAccountId: true,
+            fundAccountId: true,
+            fundSubtype: true,
+            fundProductType: true,
+            fundCode: true,
+            realizedProfit: true,
+            units: true,
+            nav: true,
+            fee: true,
+            note: true,
+            createdAt: true,
+          },
+          orderBy: [{ applyDate: "asc" }, { createdAt: "asc" }, { id: "asc" }],
+          take: 50000,
+        }),
+      runs,
+      "对照：少一列字符串",
+    ),
+  );
+  results.push(
+    await runCase(
+      "基金统计源 · 主查询+下界(30天)",
+      () =>
+        prisma.fundTransaction.findMany({
+          where: {
+            householdId,
+            deletedAt: null,
+            applyDate: { gte: new Date(from.getTime() - 30 * 86_400_000), lt: endExclusive },
+          },
+          select: {
+            id: true,
+            applyDate: true,
+            arrivalDate: true,
+            cashEntryId: true,
+            cashAccountId: true,
+            fundAccountId: true,
+            fundSubtype: true,
+            fundProductType: true,
+            fundCode: true,
+            fundName: true,
+            realizedProfit: true,
+            units: true,
+            nav: true,
+            fee: true,
+            note: true,
+            createdAt: true,
+          },
+          orderBy: [{ applyDate: "asc" }, { createdAt: "asc" }, { id: "asc" }],
+          take: 50000,
+        }),
+      runs,
+      "只按申请日预筛，不动归期口径",
+    ),
+  );
+  results.push(
+    await runCase(
+      "基金统计源 · 最小列对照（含关系）",
       () =>
         prisma.fundTransaction.findMany({
           where: { householdId, deletedAt: null, applyDate: { lt: endExclusive } },
@@ -437,7 +533,7 @@ async function main() {
           take: 50000,
         }),
       runs,
-      "只换 select 不换逻辑",
+      "最小列参照，估算字段成本",
     ),
   );
   results.push(

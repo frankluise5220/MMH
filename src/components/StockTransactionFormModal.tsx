@@ -9,6 +9,7 @@ import { CalcInput } from "./CalcInput";
 import { ClearableNoteField } from "./ClearableNoteField";
 import { DateStepper } from "./DateStepper";
 import { EntityCreateForm } from "./EntityCreateForm";
+import { RepoEntryFields, type RepoCashAccountOption, type RepoEntryFieldsHandle } from "./repo-entry/RepoEntryFields";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
@@ -28,7 +29,7 @@ type StockTransactionAction =
   | "split_share"
   | "merge_share";
 
-type StockModalAction = "buy" | "sell" | "dividend" | "share_change";
+type StockModalAction = "buy" | "sell" | "dividend" | "share_change" | "repo";
 type StockDividendMode = "cash" | "shares" | "cash_shares";
 type SubmitMode = "close" | "repeat";
 
@@ -193,6 +194,8 @@ const STOCK_ACTIONS: Array<{ key: StockModalAction; labelKey: string; tone: stri
   { key: "sell", labelKey: "stockPanel.action.sell", tone: "bg-orange-600 text-white border-orange-600" },
   { key: "dividend", labelKey: "stockPanel.action.dividend", tone: "bg-emerald-600 text-white border-emerald-600" },
   { key: "share_change", labelKey: "stockTx.action.shareChange", tone: "bg-violet-600 text-white border-violet-600" },
+  // 逆回购并入这个窗口：只有一个「借出」动作，到期自动回款，所以没有回款页签。
+  { key: "repo", labelKey: "repoForm.tabTitle", tone: "bg-teal-600 text-white border-teal-600" },
 ];
 
 const SHARE_CHANGE_ACTIONS = [
@@ -507,6 +510,10 @@ export function StockTransactionFormModal({
   const [attachmentEntryId, setAttachmentEntryId] = useState<string | null>(null);
   const [note, setNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  // 「逆回购」页签由 RepoEntryFields 自己发请求，这里只借用状态位锁页脚按钮。
+  const [repoSubmitting, setRepoSubmitting] = useState(false);
+  const [repoResetKey, setRepoResetKey] = useState(0);
+  const repoFieldsRef = useRef<RepoEntryFieldsHandle>(null);
   const formRef = useRef<HTMLFormElement>(null);
   const submitModeRef = useRef<SubmitMode>("close");
 
@@ -565,6 +572,17 @@ export function StockTransactionFormModal({
   }, [eligibleCashAccounts, localCashSSOptions]);
   const selectedCashAccount = eligibleCashAccounts.find((account) => account.id === cashAccountId)
     ?? null;
+  // 逆回购页签复用同一批资金账户（现金 / 借记卡 / 电子钱包）。
+  const repoCashAccounts = useMemo<RepoCashAccountOption[]>(
+    () => eligibleCashAccounts.map((account) => ({
+      id: account.id,
+      label: account.label,
+      title: account.hoverTitle ?? account.title ?? null,
+      kind: account.kind ?? null,
+      institutionId: account.institutionId ?? null,
+    })),
+    [eligibleCashAccounts],
+  );
   const sellHoldingOptions = useMemo<SmartSelectOption[]>(
     () => sellHoldings.map((holding) => ({
       id: holding.securityId,
@@ -610,11 +628,14 @@ export function StockTransactionFormModal({
   const isDividendShares = action === "dividend" && dividendMode === "shares";
   const isDividendCashShares = action === "dividend" && dividendMode === "cash_shares";
   const isHoldingSelectionAction = action === "sell" || action === "dividend" || action === "share_change";
-  const transactionAction: StockTransactionAction = action === "share_change"
-    ? shareChangeAction
-    : isDividendShares
-      ? "bonus_share"
-      : action;
+  // 逆回购不写 stock_transactions（走 /api/v1/repo/lend），这里只是为了类型收敛。
+  const transactionAction: StockTransactionAction = action === "repo"
+    ? "buy"
+    : action === "share_change"
+      ? shareChangeAction
+      : isDividendShares
+        ? "bonus_share"
+        : action;
   const isBuySell = action === "buy" || action === "sell";
   const isDividendAction = action === "dividend";
   const isShareAction = action === "share_change";
@@ -1265,7 +1286,12 @@ export function StockTransactionFormModal({
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (submitting) return;
+    if (submitting || repoSubmitting) return;
+    if (action === "repo") {
+      // 逆回购页签自己发请求（借出即锁定利率与到期日，到期自动回款），页脚按钮只做转发。
+      await repoFieldsRef.current?.submit();
+      return;
+    }
     if (!stockAccountId) {
       window.alert(t("stockTx.alert.selectStockAccount"));
       return;
@@ -1416,6 +1442,19 @@ export function StockTransactionFormModal({
     }
   }
 
+  /**
+   * 逆回购保存成功：保存并继续 → 留在页签换一张草稿；否则关窗。
+   * 账务刷新已经由 RepoEntryFields 自己派发，这里只负责窗口生命周期。
+   */
+  const handleRepoSaved = useCallback(() => {
+    if (submitModeRef.current === "repeat" && !editingId) {
+      submitModeRef.current = "close";
+      setRepoResetKey((prev) => prev + 1);
+      return;
+    }
+    setOpen(false);
+  }, [editingId]);
+
   if (!open || typeof document === "undefined") return null;
 
   return (
@@ -1429,7 +1468,10 @@ export function StockTransactionFormModal({
         closeTitle={t("stockTx.close")}
         onSubmit={submit}
         formRef={formRef}
-        tabs={STOCK_ACTIONS.map((item) => ({ id: item.key, label: t(item.labelKey) }))}
+        tabs={STOCK_ACTIONS
+          // 逆回购是「新借一笔」，编辑已有股票交易时不出这个页签。
+          .filter((item) => !(editingId && item.key === "repo"))
+          .map((item) => ({ id: item.key, label: t(item.labelKey) }))}
         activeTabId={action}
         onTabChange={(id) => changeModalAction(id as StockModalAction)}
         footer={(
@@ -1437,22 +1479,22 @@ export function StockTransactionFormModal({
             {!editingId ? (
               <button
                 type="button"
-                disabled={submitting || autoCreatingAccount}
+                disabled={submitting || repoSubmitting || autoCreatingAccount}
                 className="secondary-button h-9 px-4 text-sm disabled:opacity-50"
                 onClick={() => {
                   submitModeRef.current = "repeat";
                   formRef.current?.requestSubmit();
                 }}
               >
-                {submitting ? t("txForm.saving") : t("txForm.saveAndRepeat")}
+                {submitting || repoSubmitting ? t("txForm.saving") : t("txForm.saveAndRepeat")}
               </button>
             ) : null}
             <button
               type="submit"
-              disabled={submitting || autoCreatingAccount}
+              disabled={submitting || repoSubmitting || autoCreatingAccount}
               className="primary-button h-9 px-4 text-sm disabled:opacity-50"
             >
-              {submitting ? t("stockTx.saving") : t("common.save")}
+              {submitting || repoSubmitting ? t("stockTx.saving") : t("common.save")}
             </button>
           </>
         )}
@@ -1494,6 +1536,31 @@ export function StockTransactionFormModal({
         }
       >
 
+        {action === "repo" ? (
+          <>
+            <RepoEntryFields
+              ref={repoFieldsRef}
+              accountId={stockAccountId}
+              accountLabel={selectedAccount?.label ?? ""}
+              accountOptions={sortByAccountUsage(filteredOptions ?? stockAccountOptions, accountUsage)}
+              onAccountChange={(id) => {
+                cashAccountTouchedRef.current = false;
+                setStockAccountId(id);
+              }}
+              institutionId={selectedAccount?.institutionId ?? null}
+              cashAccounts={repoCashAccounts}
+              defaultCashAccountId={cashAccountId || defaultCashAccountId || null}
+              resetKey={repoResetKey}
+              onCreateAccount={() => setNestedAccountOpen(true)}
+              createAccountLabel={t("stockTx.addStockAccount")}
+              onCreateCashAccount={openNestedCashAccountCreate}
+              createCashAccountLabel={t("stockTx.addCashAccount")}
+              onSubmittingChange={setRepoSubmitting}
+              onSaved={handleRepoSaved}
+            />
+          </>
+        ) : (
+          <>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div className="space-y-1">
                   <div className="form-label">{t("stockPanel.stockAccountTitle")}</div>
@@ -1759,6 +1826,8 @@ export function StockTransactionFormModal({
                   </div>
                 </div>
               </div>
+          </>
+        )}
       </EntryModalShell>
   );
 }

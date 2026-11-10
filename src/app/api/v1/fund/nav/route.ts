@@ -11,6 +11,7 @@ import { calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
 import { ensureFundTransactionCashFlowLinks, findFundTransactionForEntryId } from "@/lib/fund/transactions";
 import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
+import { getFundProfile } from "@/lib/fund/fundProfile";
 
 /**
  * GET /api/v1/fund/nav?code=&date=&accountId=&purpose=&applyDate=
@@ -36,7 +37,6 @@ async function getNav(fundCode: string, dateStr: string, accountId?: string) {
       date: cached.actualDate ?? dateStr,
       nav: cached.nav,
       cumNav: cached.cumNav ?? undefined,
-      name: cached.name ?? undefined,
     };
   }
   // If the requested date is in the future or not a trading day, the historical NAV may be missing.
@@ -48,7 +48,6 @@ async function getNav(fundCode: string, dateStr: string, accountId?: string) {
       date: latest.navDate.toISOString().slice(0, 10),
       nav: latest.nav,
       cumNav: latest.cumNav ?? undefined,
-      name: latest.name ?? undefined,
     };
   }
   return null;
@@ -132,6 +131,8 @@ export async function GET(req: NextRequest) {
   }
 
   try {
+    // 名字只从 FundProfile 读（净值缓存不再持有基金名）。
+    const profileName = (await getFundProfile(fundCode).catch(() => null))?.fundName ?? undefined;
     if (date) {
       const account = accountId
         ? await prisma.account.findUnique({ where: { id: accountId }, select: { tradingCalendar: true } })
@@ -154,7 +155,7 @@ export async function GET(req: NextRequest) {
           { status: 404 },
         );
       }
-      return NextResponse.json({ ok: true, ...data });
+      return NextResponse.json({ ok: true, ...data, name: profileName });
     }
 
     // Without a date: query the real-time estimate
@@ -168,7 +169,7 @@ export async function GET(req: NextRequest) {
       date: navDateStr,
       nav: latest.nav,
       cumNav: latest.cumNav ?? undefined,
-      name: latest.name ?? undefined,
+      name: profileName,
     });
   } catch (e) {
     return NextResponse.json(
@@ -274,9 +275,6 @@ export async function POST(req: NextRequest) {
     if (units != null) {
       updateData.units = units;
     }
-    if (navData.name) {
-      updateData.fundName = navData.name;
-    }
 
     await prisma.$transaction(async (tx) => {
       await tx.fundTransaction.update({
@@ -296,7 +294,7 @@ export async function POST(req: NextRequest) {
       units,
       fee,
       confirmDate,
-      name: navData.name,
+      name: fundTransaction.fundName ?? null,
     });
   } catch (e) {
     return NextResponse.json(

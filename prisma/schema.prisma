@@ -470,7 +470,8 @@ model FundNavCache {
   navDate       DateTime
   nav           Decimal  @db.Decimal(20, 6)
   cumNav        Decimal? @db.Decimal(20, 6)
-  name          String?
+  // 不存基金名：名字是基金维度的主数据，只有 FundProfile 持有，且只由基金资料页写入。
+  // 这张表按 (fundCode, navDate) 只回答「那天净值多少」。
   sgzt          String? // 申购状态（开放申购、暂停申购、限制大额申购等）
   purchaseLimit Int? // 申购日上限金额（元），从天天基金详情页解析
   createdAt     DateTime @default(now())

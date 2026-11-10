@@ -687,7 +687,7 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
       const cacheQueries = generatedRecords.map(r =>
         prisma.fundNavCache.findUnique({
           where: { fundCode_navDate: { fundCode: r.fundCode, navDate: new Date(r.confirmDate + "T00:00:00Z") } },
-          select: { nav: true, name: true },
+          select: { nav: true },
         })
       );
       const cacheResults = await Promise.all(cacheQueries);
@@ -704,9 +704,8 @@ async function executeAutoExecuteRound(householdId: string, now: Date): Promise<
             nav,
             roundUnits: (value) => roundFundUnits(value, r.fundUnitsDecimals),
           });
-          const profileName = fundNameByCode.get(r.fundCode);
-          const navName = normalizeFundDisplayName(r.fundCode, n.name);
-          const displayName = profileName ?? navName;
+          // 名字只从 FundProfile 读（净值缓存不再持有基金名）。
+          const displayName = fundNameByCode.get(r.fundCode) ?? r.fundCode;
           await prisma.fundTransaction.update({
             where: { id: r.id },
             data: {

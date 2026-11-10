@@ -1,7 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
-import { refreshFundProfile } from "@/lib/fund/fundProfile";
 import {
   matchFundNamesToCodes,
   type FundNameLibraryEntry,
@@ -28,13 +27,13 @@ async function searchWithTimeout(name: string, timeoutMs: number) {
  * 返回 { items: [{ name, fundCode | null, matchedName, exact }] }
  *
  * 账单（支付宝 / 微信）只有基金名、没有代码，而基金导入要求 /^\d{6}$/ 的代码。
- * 这里用本地已有的 FundProfile / FundNavCache 当名称词典反查；查不到的返回
- * null，由前端留空让用户在预览里补一次 —— 导入成功后本地就有该基金资料，
- * 之后同样的账单能自动匹配。
+ * 这里用 FundProfile（唯一持有基金名的表）当名称词典反查；查不到的返回
+ * null，由前端留空让用户在预览里补一次。资料库只读，反查不写 FundProfile ——
+ * 想让下次账单自动匹配，得用户到基金资料页把这批基金补进去。
  */
 export async function POST(req: NextRequest) {
   try {
-    const ctx = await getHouseholdScope();
+    await getHouseholdScope();
     const body = await req.json() as { names?: unknown };
     const names = Array.isArray(body?.names)
       ? Array.from(new Set(body.names.map((name) => String(name ?? "").trim()).filter(Boolean))).slice(0, 200)
@@ -43,32 +42,22 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true, items: [] });
     }
 
-    const [profiles, navNames] = await Promise.all([
-      prisma.fundProfile.findMany({
-        where: { fundName: { not: null } },
-        select: { fundCode: true, fundName: true },
-      }),
-      prisma.fundNavCache.findMany({
-        where: { name: { not: null } },
-        distinct: ["fundCode"],
-        select: { fundCode: true, name: true },
-      }),
-    ]);
+    // 名称词典只来自 FundProfile —— 唯一持有基金名的地方。
+    const profiles = await prisma.fundProfile.findMany({
+      where: { fundName: { not: null } },
+      select: { fundCode: true, fundName: true },
+    });
 
     const libraryMap = new Map<string, FundNameLibraryEntry>();
     for (const row of profiles) {
       if (row.fundName) libraryMap.set(row.fundCode, { fundCode: row.fundCode, name: row.fundName });
     }
-    for (const row of navNames) {
-      if (libraryMap.has(row.fundCode) || !row.name) continue;
-      libraryMap.set(row.fundCode, { fundCode: row.fundCode, name: row.name });
-    }
 
     const { resolved, unresolved } = matchFundNamesToCodes(names, Array.from(libraryMap.values()));
     const resolvedByName = new Map(resolved.map((item) => [item.name, item]));
 
-    // 本地库里没有的基金，联网用名称反查 —— 查到就把基金资料拉回来写进本地库，
-    // 下次同样的账单直接走本地匹配，不用再联网，也不需要用户手填。
+    // 本地库里没有的基金，联网用名称反查 —— 只把结果带回本次预览，不写 FundProfile。
+    // 资料库的写入只允许发生在基金资料页。
     //
     // 必须并发 + 逐个限时：账单里通常有近十只本地没有的基金，串行 await 会把
     // 「读取文件」阶段拖成几十秒（用户报告的导入很慢），一次卡住的请求还会拖死全部。
@@ -81,7 +70,6 @@ export async function POST(req: NextRequest) {
     const ONLINE_LOOKUP_TIMEOUT_MS = 8_000;
     const ONLINE_LOOKUP_BUDGET_MS = 6_000;
     const queue = unresolved.slice(0, MAX_ONLINE_LOOKUPS);
-    const onlineHits: Array<{ name: string; fundCode: string }> = [];
     let cursor = 0;
     let budgetExceeded = false;
     const lookupWorker = async () => {
@@ -97,7 +85,6 @@ export async function POST(req: NextRequest) {
           matchedName: hit.name,
           exact: false,
         });
-        onlineHits.push({ name: unresolvedName, fundCode: hit.fundCode });
       }
     };
     let budgetTimer: ReturnType<typeof setTimeout> | null = null;
@@ -118,16 +105,8 @@ export async function POST(req: NextRequest) {
       if (budgetTimer) clearTimeout(budgetTimer);
     }
 
-    // 刷新资料（含基金公司 / 托管人）写入 FundProfile；失败不影响本次解析结果。
-    // **故意不 await**：这份资料只有「下一次导入能否走本地匹配」会用到，本次预览一个字
-    // 都不显示。冷启动时 15 只基金要各走一次 TLS 握手，实测把响应又拖后 3~4s；这里发起
-    // 后立即返回，写库在后台跑完（本应用是长驻 Node 进程，不存在 Serverless 冻结问题）。
-    void Promise.all(
-      onlineHits.map((hit) =>
-        refreshFundProfile(hit.fundCode, { householdId: ctx.householdId }).catch(() => null),
-      ),
-    );
-
+    // 不再顺手刷新 FundProfile：资料库的写入只允许发生在基金资料页。
+    // 按名字反查是纯读操作，命中结果只用于本次导入预览。
     const stillUnresolved = names.filter((name) => !resolvedByName.has(name));
 
     return NextResponse.json({

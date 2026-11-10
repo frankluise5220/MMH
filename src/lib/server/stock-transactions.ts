@@ -8,6 +8,8 @@ import { normalizeStockCode, normalizeStockMarket } from "@/lib/stock/market";
 const STOCK_TRANSACTION_LIST_INCLUDE = {
   StockAccount: { select: { name: true, currency: true } },
   CashAccount: { select: { name: true, currency: true } },
+  // 名字只认 StockSecurity；交易行的 stockName 是历史快照。
+  StockSecurity: { select: { stockName: true } },
   EntryBusinessLink: {
     where: { deletedAt: null },
     select: { id: true, cashEntryId: true },
@@ -68,7 +70,7 @@ export function serializeStockTransaction(row: StockTransactionListRow): StockTr
     securityId: row.securityId ?? null,
     market: row.market,
     stockCode: row.stockCode,
-    stockName: row.stockName ?? null,
+    stockName: row.StockSecurity?.stockName?.trim() || row.stockName || null,
     action: row.action,
     source: row.source ?? "manual",
     tradeDate: formatDateUtc(row.tradeDate),

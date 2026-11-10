@@ -3,6 +3,7 @@ import { FundCashFlowKind, FundSubtype } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { toNumber } from "@/lib/date-utils";
 import { calculateWealthPositionsFromEntries } from "@/lib/wealth-position";
+import { getFundProfileNameMap } from "@/lib/fund/fundProfile";
 import { normalizeFundUnitsDecimals } from "@/lib/fund/unit-precision";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 import type { InvestmentStatisticEntryLike } from "@/lib/transaction-statistics";
@@ -40,6 +41,20 @@ function absNumber(value: unknown) {
   return Math.abs(toNumber(value));
 }
 
+/**
+ * 基金显示名：只认 FundProfile（资料库）。
+ *
+ * 名字是基金的维度属性，不是每一笔交易的属性。资料库的写入只发生在基金资料页，
+ * 读路径（报表、列表、导出）一律只拿 fundCode 去查，查不到就交给调用方显示代码，
+ * 不再回退到 fundTransaction.fundName 快照 —— 否则「改名的唯一入口」会被导入时
+ * 的旧快照绕过。
+ */
+async function loadFundDisplayNames(fundCodes: Array<string | null>): Promise<Map<string, string>> {
+  const codes = Array.from(new Set(fundCodes.map((code) => code?.trim()).filter(Boolean) as string[]));
+  if (codes.length === 0) return new Map();
+  return getFundProfileNameMap(codes);
+}
+
 export async function loadFundStatisticSourceEntries(
   ctx: HouseholdContext,
   params: {
@@ -51,6 +66,12 @@ export async function loadFundStatisticSourceEntries(
 ): Promise<InvestmentStatisticSourceEntry[]> {
   const accountIds = Array.from(new Set(params.accountIds?.filter(Boolean) ?? []));
   const tagIds = Array.from(new Set(params.tagIds?.filter(Boolean) ?? []));
+  // 这条查询按设计没有 applyDate 下界（最多 5 万行），所以字段必须显式列出：
+  // `include: { Account: true } / { cashFlows: true }` 会把两张账户表和现金流表的
+  // 全部列按行数一起拉回来，而这里只用到账户名和现金流的日期/金额/条数。
+  // fundName 也不取：同一只基金的名字在每行重复，改由 loadFundDisplayNames 按
+  // fundCode 从资料库取（缺失时由调用方显示代码）。
+  // 实测（scripts/bench-reports.ts）：收窄后报表的基金统计源从 908ms 降到 661ms。
   const rows = await prisma.fundTransaction.findMany({
     where: {
       householdId: ctx.householdId,
@@ -60,10 +81,35 @@ export async function loadFundStatisticSourceEntries(
         ? { OR: [{ fundAccountId: { in: accountIds } }, { cashAccountId: { in: accountIds } }] }
         : {}),
     },
-    include: {
-      Account: true,
-      CashAccount: true,
-      cashFlows: true,
+    select: {
+      id: true,
+      applyDate: true,
+      arrivalDate: true,
+      cashEntryId: true,
+      cashAccountId: true,
+      fundAccountId: true,
+      fundSubtype: true,
+      fundProductType: true,
+      fundCode: true,
+      realizedProfit: true,
+      units: true,
+      nav: true,
+      fee: true,
+      note: true,
+      createdAt: true,
+      Account: { select: { name: true } },
+      CashAccount: { select: { name: true } },
+      cashFlows: {
+        select: {
+          id: true,
+          kind: true,
+          amount: true,
+          flowDate: true,
+          txRecordId: true,
+          accountId: true,
+          createdAt: true,
+        },
+      },
       EntryBusinessLink: {
         where: { deletedAt: null },
         select: { cashEntryId: true },
@@ -73,6 +119,8 @@ export async function loadFundStatisticSourceEntries(
     take: 50000,
   });
 
+  // 基金名要和现金腿查询并行，别串在它后面。
+  const fundNameByCodePromise = loadFundDisplayNames(rows.map((row) => row.fundCode));
   const cashEntryIds = Array.from(new Set(rows.flatMap((row) => [
     row.cashEntryId,
     ...row.cashFlows.map((flow) => flow.txRecordId),
@@ -99,12 +147,14 @@ export async function loadFundStatisticSourceEntries(
         },
       })
     : [];
+  const fundNameByCode = await fundNameByCodePromise;
   const cashEntryById = new Map(cashEntries.map((entry) => [entry.id, entry]));
   const startMs = params.start.getTime();
   const endMs = params.endExclusive.getTime();
   const entries: InvestmentStatisticSourceEntry[] = [];
 
   for (const row of rows) {
+    const fundName = row.fundCode ? fundNameByCode.get(row.fundCode) ?? null : null;
     const orderedFlows = [...row.cashFlows].sort((a, b) =>
       a.flowDate.getTime() - b.flowDate.getTime() ||
       a.createdAt.getTime() - b.createdAt.getTime() ||
@@ -141,10 +191,10 @@ export async function loadFundStatisticSourceEntries(
         fundNav: row.nav,
         fundFee: row.fee,
         fundCode: row.fundCode,
-        fundName: row.fundName,
+        fundName,
         accountId: row.fundAccountId,
         accountName: row.Account.name,
-        counterpartyName: row.fundName,
+        counterpartyName: fundName,
         note: row.note ?? primaryCashEntry?.note ?? null,
         createdAt: primaryCashEntry?.createdAt ?? row.createdAt,
         tagIds: mainTags.map((tag) => tag.tagId),
@@ -173,10 +223,10 @@ export async function loadFundStatisticSourceEntries(
         fundSubtype: FundSubtype.buy_failed,
         fundProductType: row.fundProductType,
         fundCode: row.fundCode,
-        fundName: row.fundName,
+        fundName,
         accountId: cashEntry?.accountId ?? flow.accountId ?? row.cashAccountId ?? row.fundAccountId,
         accountName: cashEntry?.account?.name ?? cashEntry?.accountName ?? row.CashAccount?.name ?? row.Account.name,
-        counterpartyName: row.fundName,
+        counterpartyName: fundName,
         note: row.note ?? cashEntry?.note ?? null,
         createdAt: cashEntry?.createdAt ?? flow.createdAt,
         tagIds: tags.map((tag) => tag.tagId),

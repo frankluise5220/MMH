@@ -18,7 +18,7 @@ export async function GET(req: Request) {
     const accountIds = requestedAccountId
       ? [requestedAccountId]
       : (await prisma.account.findMany({
-          where: { ...ctx.hidFilter, isPlaceholder: { not: true }, investProductType: "bond" },
+          where: { ...ctx.hidFilter, isPlaceholder: { not: true }, investProductType: { in: ["stock", "bond"] } },
           select: { id: true },
         })).map((account) => account.id);
 

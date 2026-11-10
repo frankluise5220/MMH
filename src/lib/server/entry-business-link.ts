@@ -92,6 +92,8 @@ type EntryBusinessLinkSummaryRow = {
     price?: unknown;
     brokerTradeId?: string | null;
     note?: string | null;
+    /** 名字唯一来源；`stockName` 只是交易行快照。 */
+    StockSecurity?: { stockName: string | null } | null;
   } | null;
   PropertyTransaction?: { id: string; deletedAt?: Date | null } | null;
 };
@@ -115,6 +117,7 @@ const STOCK_TRANSACTION_SUMMARY_SELECT = {
   price: true,
   brokerTradeId: true,
   note: true,
+  StockSecurity: { select: { stockName: true } },
 } as const;
 
 export const entryBusinessLinkSummaryInclude = {

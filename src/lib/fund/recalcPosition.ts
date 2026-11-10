@@ -1,5 +1,6 @@
 import { prisma } from "@/lib/db/prisma";
 import { getLatestFundNavMap } from "@/lib/fund/navCache";
+import { getFundProfileNameMap } from "@/lib/fund/fundProfile";
 import { FundCashFlowKind, FundSubtype, type Prisma } from "@prisma/client";
 import { toNumber } from "@/lib/date-utils";
 import { allocateBuyFailedRefunds, getEffectiveBuyUnits } from "@/lib/fund/refund-link";
@@ -407,12 +408,9 @@ export async function recalcFundPositions(
   // 最新净值只经 navCache 的共享入口取（每基金一条），不再整表拉下来自己挑。
   const latestNavByCode = await getLatestFundNavMap(codesToCalc);
   const navCacheMap = new Map<string, number>();
-  const navNameMap = new Map<string, string>();
-  for (const [code, row] of latestNavByCode) {
-    navCacheMap.set(code, toNum(row.nav));
-    const name = (row.name ?? "").trim();
-    if (name && name !== code) navNameMap.set(code, name);
-  }
+  for (const [code, row] of latestNavByCode) navCacheMap.set(code, toNum(row.nav));
+  // 名字只从 FundProfile 读（净值缓存只回答净值）。
+  const profileNameMap = await getFundProfileNameMap(codesToCalc);
 
   const entryNameMap = new Map<string, string>();
   // Fund names are display-only; fundCode is the calculation key.
@@ -441,7 +439,7 @@ export async function recalcFundPositions(
       where: { accountId_fundCode: { accountId, fundCode: code } },
     });
     const existingName = (existing?.fundName ?? "").trim();
-    const fundName = navNameMap.get(code) ?? (existingName && existingName !== code ? existingName : undefined) ?? entryNameMap.get(code) ?? null;
+    const fundName = profileNameMap.get(code) ?? (existingName && existingName !== code ? existingName : undefined) ?? entryNameMap.get(code) ?? null;
 
     const holdingData = {
       fundName,

@@ -18,7 +18,7 @@ function positiveNumber(raw: unknown): number | null {
  * POST /api/v1/repo/lend —— 逆回购借出（一笔 = 一张存单）。
  *
  * Body:
- * - accountId: 债券账户（券商账户）
+ * - accountId: 股票（证券）账户
  * - cashAccountId: 券商资金账户
  * - date: 成交日 yyyy-MM-dd
  * - code: 品种代码，如 204001
@@ -35,7 +35,7 @@ export async function POST(req: NextRequest) {
     const date = text(body.date);
     const code = text(body.code);
     const amount = positiveNumber(body.amount);
-    if (!accountId) return NextResponse.json({ error: "请选择债券账户" }, { status: 400 });
+    if (!accountId) return NextResponse.json({ error: "请选择股票账户" }, { status: 400 });
     if (!cashAccountId) return NextResponse.json({ error: "请选择资金账户" }, { status: 400 });
     if (!date) return NextResponse.json({ error: "请选择成交日期" }, { status: 400 });
     if (!code) return NextResponse.json({ error: "请选择逆回购品种" }, { status: 400 });

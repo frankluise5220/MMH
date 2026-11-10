@@ -1204,7 +1204,8 @@ function linkedStockDetailFields(stockRow: any) {
       securityId: stockRow.securityId ?? null,
       market: stockRow.market ?? "",
       stockCode: stockRow.stockCode ?? "",
-      stockName: stockRow.stockName ?? null,
+      // 名字只认 StockSecurity；交易行的 stockName 是历史快照。
+      stockName: stockRow.StockSecurity?.stockName ?? stockRow.stockName ?? null,
       action: stockRow.action,
       tradeDate: stockRow.tradeDate ? formatDateUtc(stockRow.tradeDate) : "",
       settleDate: stockRow.settleDate ? formatDateUtc(stockRow.settleDate) : null,

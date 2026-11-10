@@ -129,12 +129,9 @@ export async function POST(req: NextRequest) {
         };
       }
 
-      const latestNameRows = await Promise.all([
-        tx.fundNavCache.findFirst({
-          where: { fundCode },
-          orderBy: { navDate: "desc" },
-          select: { name: true },
-        }),
+      // 名字只从 FundProfile 读；净值缓存不再持有基金名。
+      const [profile, latestEntry] = await Promise.all([
+        tx.fundProfile.findUnique({ where: { fundCode }, select: { fundName: true } }),
         tx.fundTransaction.findFirst({
           where: { fundAccountId: accountId, fundCode, deletedAt: null },
           orderBy: [{ applyDate: "desc" }, { createdAt: "desc" }],
@@ -144,8 +141,8 @@ export async function POST(req: NextRequest) {
       const fundName =
         usefulFundName(body.fundName, fundCode) ??
         usefulFundName(holding?.fundName, fundCode) ??
-        usefulFundName(latestNameRows[0]?.name, fundCode) ??
-        usefulFundName(latestNameRows[1]?.fundName, fundCode);
+        usefulFundName(profile?.fundName, fundCode) ??
+        usefulFundName(latestEntry?.fundName, fundCode);
       const isIncrease = deltaUnits > 0;
       const absoluteDelta = Math.abs(deltaUnits);
 

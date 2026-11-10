@@ -2,7 +2,7 @@ import { estimateBondInterestForDays } from "@/lib/bond";
 import { addDaysUtc, parseDateInputToUtc } from "@/lib/date-utils";
 
 /**
- * 国债逆回购（GC / R-）—— 券商账户里的「借出资金、到期还本付息」。
+ * 逆回购（GC / R-）—— 券商账户里的「借出资金、到期还本付息」。
  *
  * 为什么放在债券下面：逆回购在账务上就是**一张到期一次还本付息的存单**
  * （本金固定、年化固定、有到期日），与债券的存单模型完全同构，因此复用

@@ -2,7 +2,6 @@ import { prisma } from "@/lib/db/prisma";
 import { todayDateBusinessYmd } from "@/lib/date-utils";
 import { queryFundNav } from "@/lib/fund/queryApi";
 import {
-  ensureFundProfile,
   fundTradingCalendarForProfile,
   getFundProfile,
   getFundProfiles,
@@ -95,7 +94,7 @@ export async function preloadNavListToCache(
   for (const navItem of navList) {
     try {
       const limit = (navItem.sgzt?.includes("\u9650\u5236")) ? purchaseLimit : undefined;
-      await setFundNav(fundCode, utcDate(navItem.date), navItem.nav, navItem.cumNav, undefined, navItem.sgzt, limit ?? undefined);
+      await setFundNav(fundCode, utcDate(navItem.date), navItem.nav, navItem.cumNav, navItem.sgzt, limit ?? undefined);
       written++;
     } catch {
       // A single failed write must not abort the whole batch
@@ -220,16 +219,6 @@ function utcDate(dateStr: string): Date {
   return new Date(Date.UTC(y, m - 1, d));
 }
 
-async function ensureFundProfileForAccount(fundCode: string, accountId?: string) {
-  const householdId = accountId
-    ? (await prisma.account.findUnique({
-        where: { id: accountId },
-        select: { householdId: true },
-      }))?.householdId
-    : null;
-  await ensureFundProfile(fundCode, { householdId });
-}
-
 async function getFundAccountNavContext(accountId?: string) {
   if (!accountId) return null;
   return prisma.account.findUnique({
@@ -257,7 +246,7 @@ async function getFundAccountNavContext(accountId?: string) {
  * @param fundCode Fund code
  * @param navDate NAV date (must be a Date built with utcDate, ensuring T00:00:00Z)
  * @param accountId Fund account ID (optional; used to prefer the account default API and institution scenarios)
- * @returns NAV info (nav, cumNav, name, dateMatch, actualDate) or null
+ * @returns NAV info (nav, cumNav, dateMatch, actualDate) or null
  */
 export async function getFundNav(
   fundCode: string,
@@ -265,16 +254,12 @@ export async function getFundNav(
   accountId?: string,
   /** `network: false` → 只读缓存，未命中直接返回 null（导入预览要秒出明细时用）。 */
   options?: { network?: boolean },
-): Promise<{ nav: number; cumNav: number | null; name: string | null; dateMatch: boolean; actualDate?: string } | null> {
+): Promise<{ nav: number; cumNav: number | null; dateMatch: boolean; actualDate?: string } | null> {
   // 1. Query the cache table first
   const cached = await getFundNavFromCacheOnly(fundCode, navDate);
 
-  if (cached) {
-    // Best-effort: ensure the fund's static profile (fund company etc.) is
-    // cached too. Fire-and-forget so a profile fetch never blocks NAV reads.
-    void ensureFundProfileForAccount(fundCode, accountId).catch(() => {});
-    return { ...cached, dateMatch: true }; // Cache dates always match
-  }
+  // 读净值不写 FundProfile：资料库的写入只发生在基金资料页。
+  if (cached) return { ...cached, dateMatch: true }; // Cache dates always match
 
   if (options?.network === false) return null;
 
@@ -297,20 +282,15 @@ export async function getFundNav(
       actualNavDate,
       apiData.nav,
       apiData.cumNav ?? undefined,
-      apiData.name ?? undefined,
     );
   } catch (error) {
     console.warn("Failed to cache fund NAV", { fundCode, navDate: actualDateStr, error });
   }
 
-  // Best-effort: also cache the fund's static profile (fund company etc.).
-  void ensureFundProfileForAccount(fundCode, accountId).catch(() => {});
-
   // 5. Return the result (including date-match info and the actual NAV date)
   return {
     nav: apiData.nav,
     cumNav: apiData.cumNav ?? null,
-    name: apiData.name ?? null,
     dateMatch,
     actualDate: actualDateStr,
   };
@@ -321,12 +301,11 @@ export async function getFundNav(
  *
  * @param fundCode Fund code
  * @param navDate NAV date (must be built with utcDate, ensuring T00:00:00Z)
- * @returns NAV info (nav, cumNav, name, sgzt) or null when not cached
+ * @returns NAV info (nav, cumNav, sgzt) or null when not cached
  */
 interface NavCacheEntry {
   nav: number;
   cumNav: number | null;
-  name: string | null;
   sgzt: string | null;
   purchaseLimit: number | null;
 }
@@ -342,7 +321,6 @@ export async function getFundNavFromCacheOnly(
   return {
     nav: Number(record.nav),
     cumNav: record.cumNav ? Number(record.cumNav) : null,
-    name: record.name,
     sgzt: record.sgzt ?? null,
     purchaseLimit: record.purchaseLimit ?? null,
   };
@@ -380,7 +358,6 @@ async function fetchPurchaseLimit(fundCode: string): Promise<number | null> {
  * @param navDate NAV date (must be built with utcDate, ensuring T00:00:00Z)
  * @param nav Unit NAV
  * @param cumNav Cumulative NAV (optional)
- * @param name Fund name (optional)
  * @param sgzt Purchase status from the external provider.
  */
 export async function setFundNav(
@@ -388,14 +365,13 @@ export async function setFundNav(
   navDate: Date,
   nav: number,
   cumNav?: number | null,
-  name?: string | null,
   sgzt?: string | null,
   purchaseLimit?: number | null
 ): Promise<void> {
   await prisma.fundNavCache.upsert({
     where: { fundCode_navDate: { fundCode, navDate } },
-    create: { fundCode, navDate, nav, cumNav, name, sgzt, purchaseLimit },
-    update: { nav, cumNav, name, sgzt, purchaseLimit },
+    create: { fundCode, navDate, nav, cumNav, sgzt, purchaseLimit },
+    update: { nav, cumNav, sgzt, purchaseLimit },
   });
 }
 
@@ -420,7 +396,7 @@ export async function setFundNav(
  */
 export async function getLatestFundNav(
   fundCode: string
-): Promise<{ id: string; nav: number; cumNav: number | null; navDate: Date; name: string | null } | null> {
+): Promise<{ id: string; nav: number; cumNav: number | null; navDate: Date } | null> {
   const record = await prisma.fundNavCache.findFirst({
     where: { fundCode },
     orderBy: { navDate: "desc" },
@@ -433,7 +409,6 @@ export async function getLatestFundNav(
     nav: Number(record.nav),
     cumNav: record.cumNav ? Number(record.cumNav) : null,
     navDate: record.navDate,
-    name: record.name,
   };
 }
 
@@ -445,7 +420,7 @@ export async function getLatestFundNav(
 export async function getLatestFundNavOnOrBefore(
   fundCode: string,
   navDate: Date,
-): Promise<{ id: string; nav: number; cumNav: number | null; navDate: Date; name: string | null } | null> {
+): Promise<{ id: string; nav: number; cumNav: number | null; navDate: Date } | null> {
   const record = await prisma.fundNavCache.findFirst({
     where: { fundCode, navDate: { lte: navDate } },
     orderBy: { navDate: "desc" },
@@ -458,7 +433,6 @@ export async function getLatestFundNavOnOrBefore(
     nav: Number(record.nav),
     cumNav: record.cumNav ? Number(record.cumNav) : null,
     navDate: record.navDate,
-    name: record.name,
   };
 }
 
@@ -469,9 +443,9 @@ export async function getLatestFundNavOnOrBefore(
  */
 export async function getLatestFundNavMap(
   fundCodes: string[],
-): Promise<Map<string, { id: string; nav: number; cumNav: number | null; navDate: Date; name: string | null }>> {
+): Promise<Map<string, { id: string; nav: number; cumNav: number | null; navDate: Date }>> {
   const codes = [...new Set(fundCodes.map((code) => code.trim()).filter(Boolean))];
-  const result = new Map<string, { id: string; nav: number; cumNav: number | null; navDate: Date; name: string | null }>();
+  const result = new Map<string, { id: string; nav: number; cumNav: number | null; navDate: Date }>();
   if (codes.length === 0) return result;
 
   const latestDates = await prisma.fundNavCache.groupBy({
@@ -499,7 +473,6 @@ export async function getLatestFundNavMap(
       nav: true,
       cumNav: true,
       navDate: true,
-      name: true,
     },
   });
 
@@ -509,7 +482,6 @@ export async function getLatestFundNavMap(
       nav: Number(row.nav),
       cumNav: row.cumNav ? Number(row.cumNav) : null,
       navDate: row.navDate,
-      name: row.name,
     });
   }
 
@@ -523,15 +495,15 @@ export async function getLatestFundNavMap(
 export async function getFundNavMapOnOrBefore(
   fundCodes: readonly string[],
   navDate: Date,
-): Promise<Map<string, { nav: number; cumNav: number | null; navDate: Date; name: string | null }>> {
+): Promise<Map<string, { nav: number; cumNav: number | null; navDate: Date }>> {
   const codes = [...new Set(fundCodes.map((code) => code.trim()).filter(Boolean))];
-  const result = new Map<string, { nav: number; cumNav: number | null; navDate: Date; name: string | null }>();
+  const result = new Map<string, { nav: number; cumNav: number | null; navDate: Date }>();
   if (codes.length === 0) return result;
 
   const rows = await prisma.fundNavCache.findMany({
     where: { fundCode: { in: codes }, navDate: { lte: navDate } },
     orderBy: [{ fundCode: "asc" }, { navDate: "desc" }],
-    select: { fundCode: true, navDate: true, nav: true, cumNav: true, name: true },
+    select: { fundCode: true, navDate: true, nav: true, cumNav: true },
   });
   for (const row of rows) {
     if (result.has(row.fundCode)) continue;
@@ -539,7 +511,6 @@ export async function getFundNavMapOnOrBefore(
       nav: Number(row.nav),
       cumNav: row.cumNav == null ? null : Number(row.cumNav),
       navDate: row.navDate,
-      name: row.name ?? null,
     });
   }
   return result;
@@ -548,14 +519,14 @@ export async function getFundNavMapOnOrBefore(
 export async function getEffectiveLatestFundNavMap(
   fundCodes: string[],
   now: Date = new Date(),
-): Promise<Map<string, { id: string; nav: number; cumNav: number | null; navDate: Date; name: string | null }>> {
+): Promise<Map<string, { id: string; nav: number; cumNav: number | null; navDate: Date }>> {
   const codes = [...new Set(fundCodes.map((code) => code.trim()).filter(Boolean))];
   const rawLatest = await getLatestFundNavMap(codes);
   if (codes.length === 0) return rawLatest;
 
   const profiles = await getFundProfiles(codes);
   const profileByCode = new Map(profiles.map((profile) => [profile.fundCode, profile]));
-  const result = new Map<string, { id: string; nav: number; cumNav: number | null; navDate: Date; name: string | null }>();
+  const result = new Map<string, { id: string; nav: number; cumNav: number | null; navDate: Date }>();
 
   await Promise.all(codes.map(async (fundCode) => {
     const profile = profileByCode.get(fundCode);
@@ -601,7 +572,7 @@ async function resolveEffectiveLatestNavTarget(fundCode: string, accountId?: str
 export async function refreshLatestFundNav(
   fundCode: string,
   accountId?: string,
-): Promise<{ id: string; nav: number; cumNav: number | null; navDate: Date; name: string | null } | null> {
+): Promise<{ id: string; nav: number; cumNav: number | null; navDate: Date } | null> {
   const targetDate = await resolveEffectiveLatestNavTarget(fundCode, accountId);
   const targetNavDate = utcDate(targetDate);
   const cached = await getFundNavFromCacheOnly(fundCode, targetNavDate);
@@ -618,7 +589,6 @@ export async function refreshLatestFundNav(
     navDate,
     apiData.nav,
     apiData.cumNav ?? null,
-    apiData.name ?? null,
   );
 
   return getLatestFundNavOnOrBefore(fundCode, targetNavDate);
@@ -627,7 +597,6 @@ export async function refreshLatestFundNav(
 type RefreshHeldFundLatestNavsResult = {
   checked: number;
   latestNavAvailable: number;
-  nameFixed: number;
   failed: number;
   fundCodes: string[];
 };
@@ -671,7 +640,6 @@ export async function refreshHeldFundLatestNavs(options: {
     select: {
       accountId: true,
       fundCode: true,
-      fundName: true,
     },
     orderBy: [
       { accountId: "asc" },
@@ -680,7 +648,6 @@ export async function refreshHeldFundLatestNavs(options: {
   });
 
   let latestNavAvailable = 0;
-  let nameFixed = 0;
   let failed = 0;
   const fundCodes = new Set<string>();
 
@@ -691,18 +658,11 @@ export async function refreshHeldFundLatestNavs(options: {
       if (!fundCode) return;
       fundCodes.add(fundCode);
       try {
+        // 只刷净值。基金名不在这里维护：名字只由 FundProfile 持有，
+        // 且只允许在基金资料页写入。
         const latestNav = await refreshLatestFundNav(fundCode, holding.accountId);
         if (!latestNav) return;
         latestNavAvailable++;
-
-        const name = (latestNav.name ?? "").trim();
-        if (name && name !== fundCode && name !== (holding.fundName ?? "").trim()) {
-          await prisma.fundHolding.update({
-            where: { accountId_fundCode: { accountId: holding.accountId, fundCode } },
-            data: { fundName: name },
-          });
-          nameFixed++;
-        }
       } catch {
         failed++;
       }
@@ -712,7 +672,6 @@ export async function refreshHeldFundLatestNavs(options: {
   return {
     checked: holdings.length,
     latestNavAvailable,
-    nameFixed,
     failed,
     fundCodes: [...fundCodes],
   };

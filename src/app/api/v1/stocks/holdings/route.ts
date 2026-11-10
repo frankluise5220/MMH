@@ -4,6 +4,7 @@ import { prisma } from "@/lib/db/prisma";
 import { toNumber } from "@/lib/date-utils";
 import { getApiHouseholdScope } from "@/lib/server/api-auth";
 import { computeStockHoldingsAsOfDate, recalcStockPositions } from "@/lib/stock/recalcPosition";
+import { getStockSecurityNameMap } from "@/lib/stock/securities";
 
 export const runtime = "nodejs";
 
@@ -57,13 +58,14 @@ export async function GET(req: NextRequest) {
 
     if (asOfDate) {
       const rows = await computeStockHoldingsAsOfDate(accountId, asOfDate);
+      const securityNames = await getStockSecurityNameMap(rows.map((item) => item.securityId));
       const holdings = rows.map((item) => ({
         id: item.securityId,
         accountId,
         securityId: item.securityId,
         market: item.market,
         stockCode: item.stockCode,
-        stockName: item.stockName,
+        stockName: securityNames.get(item.securityId) ?? item.stockCode,
         quantity: item.quantity,
         avgCost: 0,
         cost: 0,
@@ -93,6 +95,7 @@ export async function GET(req: NextRequest) {
         ...(includeZero ? {} : { quantity: { gt: 0 } }),
       },
       orderBy: [{ market: "asc" }, { stockCode: "asc" }],
+      include: { StockSecurity: { select: { stockName: true } } },
     });
     const holdings = rows.map((item) => {
       const cost = toNumber(item.cost);
@@ -104,7 +107,8 @@ export async function GET(req: NextRequest) {
         securityId: item.securityId,
         market: item.market,
         stockCode: item.stockCode,
-        stockName: item.stockName,
+        // 名字只认 StockSecurity；持仓行的 stockName 是历史快照。
+        stockName: item.StockSecurity?.stockName?.trim() || item.stockCode,
         quantity: toNumber(item.quantity),
         avgCost: toNumber(item.avgCost),
         cost,

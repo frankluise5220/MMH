@@ -5,7 +5,7 @@ import { z } from "zod";
 import { FundCashFlowKind, FundSubtype } from "@prisma/client";
 import { toNumber } from "@/lib/date-utils";
 import { createPlainLedgerEntry, resolvePlainStatementMonth } from "@/lib/server/ledger-entry-create";
-import { getLatestFundNav } from "@/lib/fund/navCache";
+import { getFundProfile } from "@/lib/fund/fundProfile";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { createFundTransactionWithCashFlows } from "@/lib/fund/transactions";
@@ -523,15 +523,13 @@ export async function POST(req: NextRequest) {
     return canUseAsDefaultSpendableAccount(account) ? account : null;
   })();
 
-  // Resolve fund name from nav cache for batch fund operations
+  // 基金名只从 FundProfile 读（唯一持有基金名的表）；资料库没有就落代码。
   let resolvedFundName: string | null = null;
   if (fundContext?.fundCode) {
-    try {
-      const latestNav = await getLatestFundNav(fundContext.fundCode);
-      if (latestNav?.name && latestNav.name !== fundContext.fundCode) {
-        resolvedFundName = latestNav.name;
-      }
-    } catch { /* best effort */ }
+    const profile = await getFundProfile(fundContext.fundCode).catch(() => null);
+    if (profile?.fundName && profile.fundName !== fundContext.fundCode) {
+      resolvedFundName = profile.fundName;
+    }
   }
 
   for (let i = 0; i < normalizedItems.length; i++) {

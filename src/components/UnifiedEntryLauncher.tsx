@@ -20,12 +20,11 @@ type EntryKind =
   | "stock-sell"
   | "stock-transfer"
   | "stock-dividend"
+  | "stock-repo"
   | "property"
   | "metal"
   | "wealth"
   | "bond"
-  | "bond-repo-lend"
-  | "bond-repo-redeem"
   | "deposit"
   | "deposit-buy"
   | "deposit-redeem"
@@ -311,18 +310,16 @@ function dispatchEntryAction(kind: EntryKind, context?: Props["context"], loanTy
         }),
       );
       return;
-    // 逆回购是债券账户上的动作，入口只在胶囊里：同开 BondFormModal，直接落到「逆回购」页签。
-    case "bond-repo-lend":
-    case "bond-repo-redeem":
+    // 逆回购只有一个动作（借出），落在股票（证券）账户上；到期自动回款，不再有「回款」入口。
+    // 它跟买入/卖出/分红/股本变动同一个窗口，只是多一个「逆回购」页签。
+    case "stock-repo":
       window.dispatchEvent(
-        new CustomEvent("mmh:bond:create", {
+        new CustomEvent("mmh:stock:create", {
           detail: {
             requestId,
-            defaultSubtype: "repo",
-            defaultRepoMode: kind === "bond-repo-redeem" ? "redeem" : "lend",
-            defaultCashAccountId: context?.defaultCashAccountId ?? context?.defaultAccountId ?? "",
-            defaultBondAccountId: context?.defaultBondAccountId ?? "",
-            defaultWealthAccountId: context?.defaultBondAccountId ?? "",
+            defaultAction: "repo",
+            defaultStockAccountId: context?.defaultStockAccountId ?? context?.defaultInvestmentAccountId ?? "",
+            defaultCashAccountId: context?.defaultStockCashAccountId ?? context?.defaultCashAccountId ?? "",
           },
         }),
       );

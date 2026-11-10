@@ -1880,47 +1880,18 @@ export default async function Home({
   const investbondData = view === "investbond" && accountId
     ? await loadBondShellData({ householdId, accountId })
     : null;
-  // 逆回购与债券同一张存单表，按 instrumentKind 分流成「逆回购」页签的数据。
-  const repoShellData = view === "investbond" && accountId
+  // 逆回购已并入股票视图：存单（bond_transactions.instrumentKind = "repo"）挂在股票（证券）账户上，
+  // 只喂给股票卡片的「逆回购」页签；债券卡片不再展示逆回购。
+  const repoShellData = view === "investstock" && accountId
     ? await loadRepoShellData({ householdId, accountId })
     : null;
-  const repoShellEntries: BondShellEntry[] = repoShellData
-    ? repoShellData.entries.map((entry) => {
-        const isCashIn = toNumber(entry.amount) >= 0;
-        const subtype = String(entry.fundSubtype ?? "");
-        const cashSideId = isCashIn ? entry.toAccountId : entry.accountId;
-        const cashSideName = isCashIn ? entry.toAccountName : entry.accountName;
-        const { label: cashAccountLabel, title: cashAccountTitle } = resolveAccountTableLabel(
-          cashSideId,
-          cashSideName,
-          accountTableLabelLookup,
-        );
-        return {
-          id: entry.id,
-          date: toYmdOrNull(entry.date) ?? "",
-          typeLabel: subtype === "buy" ? t("repoShell.typeLend") : t("repoShell.typeRedeem"),
-          bondName: entry.bondName ?? "",
-          arrivalDate: toYmdOrNull(entry.bondArrivalDate),
-          cashAccountLabel,
-          cashAccountTitle,
-          note: entry.note ?? "",
-          amount: toNumber(entry.amount),
-          businessTransactionId: entry.businessTransactionId ?? null,
-          businessLinkCount: entry.businessLinkCount ?? 0,
-          businessLinkLabels: entry.businessLinkLabels ?? [],
-          // 逆回购的编辑通过「回款」弹窗完成：债券编辑弹窗要求债券产品，逆回购没有产品。
-        } satisfies BondShellEntry;
-      })
-    : [];
-  const shellRepo = repoShellData
+  const stockRepo = repoShellData
     ? {
         lots: repoShellData.lots,
-        entries: repoShellEntries,
         totalPrincipal: repoShellData.totalPrincipal,
         totalExpectedInterest: repoShellData.totalExpectedInterest,
         totalRealizedProfit: repoShellData.totalRealizedProfit,
         openCount: repoShellData.openCount,
-        defaultCashAccountId: repoShellData.defaultCashAccountId,
       }
     : null;
   const bondShellEntries: BondShellEntry[] = investbondData
@@ -3197,6 +3168,8 @@ export default async function Home({
                       { key: "stock-sell", label: t("stockPanel.action.sell") },
                       { key: "stock-transfer", label: t("entry.kind.stockTransfer") },
                       { key: "stock-dividend", label: t("stockPanel.action.dividend") },
+                      // 逆回购并入股票：只有一个「逆回购」动作（到期自动回款）。
+                      { key: "stock-repo", label: t("repoForm.title") },
                     ],
                   },
                   { key: "property", label: t("entry.kind.property") },
@@ -3207,8 +3180,6 @@ export default async function Home({
                     label: t("entry.kind.bond"),
                     children: [
                       { key: "bond", label: t("bondForm.title.create") },
-                      { key: "bond-repo-lend", label: t("entry.kind.bondRepoLend") },
-                      { key: "bond-repo-redeem", label: t("entry.kind.bondRepoRedeem") },
                     ],
                   },
                   { key: "deposit", label: t("entry.kind.deposit") },
@@ -3785,7 +3756,6 @@ export default async function Home({
               totalPrincipal={investbondData.totalPrincipal}
               totalPaidInterest={investbondData.totalPaidInterest}
               totalExpectedInterest={investbondData.totalExpectedInterest}
-              repo={shellRepo}
             />
           ) : view === "investwealth" && investwealthData ? (
             <FundShell
@@ -3854,6 +3824,7 @@ export default async function Home({
               stockCashAccountId={defaultStockCashAccountId}
               stockCashAccountName={defaultStockCashAccountName}
               accountOptions={accountOptions}
+              repo={stockRepo}
             />
           ) : view === "investfund" && investfundData ? (
             <FundShell
