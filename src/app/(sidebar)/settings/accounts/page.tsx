@@ -208,9 +208,6 @@ function allowedInstitutionTypesForEdit(kind: string | null | undefined, investP
 
 const SETTINGS_ACCOUNT_KIND_OPTIONS = kindOrder.filter((kind) => kind !== "loan" && kind !== "settlement");
 
-// 模块级常量：内联对象每次渲染都是新引用，会让 ADT 的显示状态 hydrate effect 每渲染重跑并 setState 新对象 → 无限循环。
-const ACCOUNT_TABLE_DEFAULT_SORT = { key: "name", direction: "asc" } as const;
-
 function getAccountDetailHref(account: Account) {
   const query = new URLSearchParams();
   if (account.kind === "loan" || account.kind === "settlement") {
@@ -1817,7 +1814,6 @@ export default function SettingsAccountsPage() {
           fillHeight
           showFilters={false}
           sortable
-          defaultSort={ACCOUNT_TABLE_DEFAULT_SORT}
           emptyText={loadingAccounts ? t("common.loading") : t("settings.accounts.empty")}
           rowClassName={(a) => (a.isPlaceholder ? "opacity-40 bg-slate-50" : !a.isActive ? "opacity-60" : "")}
           onRowDoubleClick={(a) => { if (!a.isPlaceholder) openEdit(a); }}

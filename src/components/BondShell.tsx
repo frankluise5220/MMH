@@ -400,7 +400,6 @@ export function BondShell({
               showFilters
               fillHeight
               toolbarMode="none"
-              defaultSort={{ key: "principal", direction: "desc" }}
               summaryRow={lotsSummaryRow}
               summaryRowPlacement="footer"
               onRowClick={(lot) => setSelectedLotId((current) => current === lot.id ? null : lot.id)}

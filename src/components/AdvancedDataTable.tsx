@@ -771,8 +771,9 @@ type AdvancedDataTableProps<T> = {
   toolbarRightContent?: ReactNode;
   showTableStateInCustomToolbar?: boolean;
   showColumnVisibilityButton?: boolean;
+  // 表格默认永远是「无排序」状态：表头不着色、不翻转，行序就是调用方传入的顺序。
+  // 排序只能由用户点表头产生（并落盘记住），不要再提供「初始排序 / 默认排序」之类的入口。
   sortable?: boolean;
-  defaultSort?: AdvancedDataTableSortState | null;
   filterRows?: (
     rows: T[],
     filters: Partial<Record<string, string[]>>,
@@ -1045,7 +1046,6 @@ export function AdvancedDataTable<T>({
   showTableStateInCustomToolbar = false,
   showColumnVisibilityButton = true,
   sortable = true,
-  defaultSort = null,
   filterRows,
   sortRows,
   pagination,
@@ -1275,7 +1275,9 @@ export function AdvancedDataTable<T>({
     [dateRangeColumnKey, filterableColumnKeys, showDateRangeFilter, transientColumnKeys],
   );
   const filtersStorageKey = `${storageKey}:filters:v2`;
-  const sortStorageKey = sortStorageKeyProp ?? `${storageKey}:sort:v1`;
+  // v2：旧版本的 `:sort:v1` 会把「默认排序」写进浏览器（首屏带排序态），
+  // 升版一次性作废这些伪用户选择，让每张表首次打开都回到无排序的默认态。
+  const sortStorageKey = sortStorageKeyProp ?? `${storageKey}:sort:v2`;
   const columnOrderStorageKey = `${storageKey}:order:v1`;
 
   useEffect(() => {
@@ -1320,7 +1322,7 @@ export function AdvancedDataTable<T>({
 
   useEffect(() => {
     // 只在首次挂载或 storage key 变化（换账户 / 数据集）时回填一次。调用方的
-    // defaultSort、columns 传内联对象时本 effect 会每渲染重跑，没有这道门的话
+    // columns / filters 传内联对象时本 effect 会每渲染重跑，没有这道门的话
     // 每次渲染都拿初值覆盖 filters：刚点的「全部时间」被瞬间写回，再配上新对象
     // 触发渲染，就是「Maximum update depth exceeded」+ 页面一直闪。
     const hydrationKey = `${filtersStorageKey}|${sortStorageKey}|${resetDisplayStateOnMount ? "1" : "0"}`;
@@ -1356,13 +1358,13 @@ export function AdvancedDataTable<T>({
         setSortState(null);
         writeJson(sortStorageKey, null);
       } else {
+        // 默认态永远是无排序：只有用户点过表头（落盘记录）才回填排序。
         const storedSort = readJson<AdvancedDataTableSortState | null | undefined>(sortStorageKey, undefined);
         const nextSort = normalizeStoredSortState(
-          storedSort === undefined ? defaultSort : storedSort,
+          storedSort === undefined ? null : storedSort,
           sortableColumnKeys,
         );
-        // 同值短路：调用方 defaultSort 传内联对象时，本 effect 每渲染重跑；
-        // setState 新对象会造成"新引用 → 重渲染 → effect 再跑"的无限循环（Maximum update depth）。
+        // 同值短路：setState 新对象会造成"新引用 → 重渲染 → effect 再跑"的无限循环（Maximum update depth）。
         setSortState((prev) => (
           prev?.key === nextSort?.key && prev?.direction === nextSort?.direction ? prev : nextSort
         ));
@@ -1370,7 +1372,7 @@ export function AdvancedDataTable<T>({
     }
     setActiveFilterColumn(null);
     tableDisplayStateHydratedRef.current = true;
-  }, [defaultSort, filtersStorageKey, persistedFilterKeys, resetDisplayStateOnMount, sortable, sortStorageKey, sortableColumnKeys]);
+  }, [filtersStorageKey, persistedFilterKeys, resetDisplayStateOnMount, sortable, sortStorageKey, sortableColumnKeys]);
 
   useEffect(() => {
     if (!tableDisplayStateHydratedRef.current) return;

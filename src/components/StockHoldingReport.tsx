@@ -64,7 +64,6 @@ export function StockHoldingReport({ rows, totals, isRedUp }: Props) {
   const best = [...rows].sort((a, b) => b.totalProfit - a.totalProfit)[0] ?? null;
   const worst = [...rows].sort((a, b) => a.totalProfit - b.totalProfit)[0] ?? null;
   const { t } = useI18n();
-  const stockReportDefaultSort = useMemo(() => ({ key: "marketValue", direction: "desc" as const }), []);
   const columns = useMemo<AdvancedDataTableColumn<StockHoldingReportRow>[]>(() => [
     {
       key: "stock",
@@ -310,7 +309,6 @@ export function StockHoldingReport({ rows, totals, isRedUp }: Props) {
             fillHeight
             toolbarMode="none"
             draggableRows={false}
-            defaultSort={stockReportDefaultSort}
             summaryRow={summaryRow}
           />
         </div>

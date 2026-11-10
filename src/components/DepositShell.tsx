@@ -582,7 +582,6 @@ export function DepositShell({
               showFilters
               fillHeight
               toolbarMode="none"
-              defaultSort={null}
               summaryRow={lotsSummaryRow}
               summaryRowPlacement="footer"
               onRowClick={(lot) => setSelectedLotId((current) => current === lot.id ? null : lot.id)}

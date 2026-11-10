@@ -777,7 +777,6 @@ export function FundHoldingReport({ rows, clearedRows, totals, isRedUp, groupMod
             fillHeight
             toolbarMode="none"
             draggableRows={false}
-            defaultSort={{ key: "marketValue", direction: "desc" }}
             sortRows={sortHoldings}
             summaryRow={holdingSummaryRow}
             resetKey={groupMode}

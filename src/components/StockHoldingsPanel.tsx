@@ -1397,7 +1397,6 @@ export function StockHoldingsPanel({
                 fillHeight
                 toolbarMode="none"
                 draggableRows={false}
-                defaultSort={showCleared ? { key: "historical", direction: "desc" } : { key: "marketValue", direction: "desc" }}
                 summaryRow={positionSummaryRow}
                 summaryRowPlacement="footer"
               />

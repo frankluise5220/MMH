@@ -288,7 +288,6 @@ export function RepoLotsTable({ rows, currency, minTableWidth = 1080 }: Props) {
       fillHeight
       toolbarMode="none"
       draggableRows={false}
-      defaultSort={{ key: "startDate", direction: "desc" }}
       summaryRow={summaryRow}
       summaryRowPlacement="footer"
     />

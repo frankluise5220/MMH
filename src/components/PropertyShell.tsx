@@ -931,7 +931,6 @@ export function PropertyShell({
               toolbarMode="none"
               draggableRows={false}
               sortable
-              defaultSort={{ key: "marketValue", direction: "desc" }}
               summaryRow={positionSummaryRow}
             />
           </div>
