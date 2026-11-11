@@ -6,7 +6,7 @@ import type { StatementImportPreviewItem } from "@/components/StatementImportPre
 import { useEffect, useRef, useState, type ClipboardEvent } from "react";
 import { createPortal } from "react-dom";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { PanelRightClose, PanelRightOpen, Send, X, Wand2, ImagePlus, Plus, Settings, ChevronDown, Sparkles, Trash2, Eye, Pencil, Mail } from "lucide-react";
+import { PanelRightClose, PanelRightOpen, Send, X, Wand2, ImagePlus, Plus, Settings, ChevronDown, ChevronRight, Sparkles, Trash2, Eye, Pencil, Mail } from "lucide-react";
 import { formatMoney } from "@/lib/format";
 import { AI_API_MODES, CHANNEL_TYPES, getModelsUrl, normalizeAiApiMode, type AiApiMode } from "@/lib/ai/config";
 import { callDeleteEntries, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
@@ -132,11 +132,22 @@ type AiModelConfig = {
   apiMode: AiApiMode;
 };
 
+type AiModelGroup = {
+  /** 供应商（渠道）id */
+  channelId: string;
+  /** 供应商名称，作为下拉里的分组标题 */
+  channelName: string;
+  /** 该供应商下的模型显示名（与 names 里的条目一一对应） */
+  models: string[];
+};
+
 type AiModelLoadResult = {
   names: string[];
   configs: Record<string, AiModelConfig>;
   idsByName: Record<string, string>;
   active: string;
+  /** 按供应商分组的模型，供模型下拉分组展示 */
+  groups: AiModelGroup[];
 };
 
 let aiModelCache: { loadedAt: number; result: AiModelLoadResult } | null = null;
@@ -353,6 +364,8 @@ export function AIPanel({
 
   const [activeModel, setActiveModel] = useState(() => loadActiveModel());
   const [modelNames, setModelNames] = useState<string[]>([]);
+  /** 与 modelNames 同源，按供应商分组，模型下拉用分组标题 + 缩进条目展示 */
+  const [modelGroups, setModelGroups] = useState<AiModelGroup[]>([]);
   const [modelConfigs, setModelConfigs] = useState<Record<string, { baseUrl: string; apiKey: string; model: string; apiMode: AiApiMode }>>({});
   const [modelIdsByName, setModelIdsByName] = useState<Record<string, string>>({});
   const [modelsLoading, setModelsLoading] = useState(true);
@@ -430,6 +443,16 @@ export function AIPanel({
     return () => window.removeEventListener("focus", onFocus);
   }, [mounted, pathname, collapsed]);
 
+  /**
+   * 已经有模型名却没有分组信息时强制刷新一次。
+   * 典型场景：热更新后组件 state 被保留，modelNames 还是旧数据，而按供应商分组
+   * 是新加的字段，导致下拉只显示模型、没有供应商标题。
+   */
+  useEffect(() => {
+    if (!mounted) return;
+    if (modelNames.length > 0 && modelGroups.length === 0) reloadModels(true);
+  }, [mounted, modelNames.length, modelGroups.length]);
+
   function setCollapsedPersist(next: boolean) {
     setCollapsedState(next);
     setAiPanelCollapsedPreference(next);
@@ -449,11 +472,16 @@ export function AIPanel({
 
     aiModelRequest = (async () => {
     try {
-      const res = await fetch("/api/v1/settings/ai-config");
+      // 加超时：请求被 HMR/网络挂住时不能让“加载中”永久停留
+      const res = await fetch("/api/v1/settings/ai-config", { cache: "no-store", signal: AbortSignal.timeout(8_000) });
       const data = await res.json();
       if (!data.ok || !data.channels) return null;
       const models: Array<{ id: string; name: string; baseUrl: string; apiKey: string; model: string; apiMode: string | null | undefined }> = [];
+      // 同时按供应商收集，供模型下拉分组展示（同一个模型名只出现在第一组，避免重复条目）
+      const groups: AiModelGroup[] = [];
+      const groupedNames = new Set<string>();
       for (const ch of data.channels) {
+        const groupModels: string[] = [];
         for (const m of ch.AiModel) {
           models.push({
             id: m.id,
@@ -463,6 +491,14 @@ export function AIPanel({
             model: m.model,
             apiMode: m.apiMode,
           });
+          const displayName = m.name || m.model;
+          if (displayName && !groupedNames.has(displayName)) {
+            groupedNames.add(displayName);
+            groupModels.push(displayName);
+          }
+        }
+        if (groupModels.length > 0) {
+          groups.push({ channelId: ch.id, channelName: ch.name || t("aiPanel.unnamedChannel"), models: groupModels });
         }
       }
       if (models.length === 0) return null;
@@ -481,34 +517,43 @@ export function AIPanel({
       }
       const activeModelFromDB = models.find((m) => m.id === data.activeModelId);
       const active = activeModelFromDB?.name ?? names[0] ?? "";
-      return { names, configs, idsByName, active };
+      return { names, configs, idsByName, active, groups };
     } catch {
       return null;
     }
     })();
 
-    const result = await aiModelRequest;
-    aiModelRequest = null;
+    let result: AiModelLoadResult | null = null;
+    try {
+      result = await aiModelRequest;
+    } finally {
+      // 无论成功、失败还是被 abort，都要释放共享请求，否则后续调用会永远等这个 promise
+      aiModelRequest = null;
+    }
     if (result) aiModelCache = { loadedAt: Date.now(), result };
     return result;
   }
 
   function reloadModels(force = false) {
     if (force) aiModelCache = null;
-    loadModelsFromDB().then((dbResult) => {
-      setModelsLoading(false);
-      if (dbResult && dbResult.names.length > 0) {
-        setModelNames(dbResult.names);
-        setModelConfigs(dbResult.configs);
-        setModelIdsByName(dbResult.idsByName);
-        setActiveModel((current) => {
-          const saved = current || loadActiveModel();
-          const next = saved && dbResult.configs[saved] ? saved : dbResult.active;
-          saveActiveModel(next);
-          return next;
-        });
-      }
-    });
+    loadModelsFromDB()
+      .then((dbResult) => {
+        if (dbResult && dbResult.names.length > 0) {
+          setModelNames(dbResult.names);
+          setModelGroups(dbResult.groups);
+          setModelConfigs(dbResult.configs);
+          setModelIdsByName(dbResult.idsByName);
+          setActiveModel((current) => {
+            const saved = current || loadActiveModel();
+            const next = saved && dbResult.configs[saved] ? saved : dbResult.active;
+            saveActiveModel(next);
+            return next;
+          });
+        }
+      })
+      .catch(() => {})
+      // 一定结束“加载中”，避免异常路径把面板卡在加载态
+      .finally(() => setModelsLoading(false));
   }
 
   /* ---- API Calls ---- */
@@ -976,6 +1021,8 @@ export function AIPanel({
   }
 
   const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
+  /** 模型下拉里被折叠的供应商分组（默认全部展开，点标题收起） */
+  const [collapsedModelGroups, setCollapsedModelGroups] = useState<Record<string, boolean>>({});
   const [settingsView, setSettingsView] = useState(false);
 
   /* ---- Settings state ---- */
@@ -990,10 +1037,29 @@ export function AIPanel({
   const [fetchingModels, setFetchingModels] = useState(false);
   const [settingsLoading, setSettingsLoading] = useState(false);
   const [settingsError, setSettingsError] = useState("");
+  /** 管理模型视图：已有渠道/模型列表的加载与失败态，避免“只显示添加表单” */
+  const [channelsLoading, setChannelsLoading] = useState(false);
+  const [channelsError, setChannelsError] = useState("");
+  /** 管理模型视图：添加表单默认收起，列表优先 */
+  const [showAddForm, setShowAddForm] = useState(false);
+  /**
+   * 管理模型视图：默认只列供应商，点开某个供应商才展开它的模型。
+   * 之前每个供应商的模型全部平铺，供应商一多就要滚很久才能找到目标供应商。
+   */
+  const [expandedChannelId, setExpandedChannelId] = useState<string | null>(null);
+  /**
+   * 添加表单的目标供应商："" 表示新建供应商，否则给既有供应商追加模型。
+   * 服务端 GET 会返回解密后的 apiKey，所以追加模型时可直接复用该供应商的
+   * baseUrl / apiKey 拉取远程模型列表，只走 PUT { model, channelId } 建模型。
+   */
+  const [addToChannelId, setAddToChannelId] = useState("");
 
   /* ---- Edit model overlay ---- */
   const [editModelOverlay, setEditModelOverlay] = useState<null | {
+    /** 当前编辑中的模型 ID（可修改，保存时写回 AiModel.model） */
     modelId: string;
+    /** 打开面板时的原始模型 ID，用于判断显示名称是否仍是默认值 */
+    originalModelId: string;
     modelDbId: string;
     channelId: string;
     channelName: string;
@@ -1005,17 +1071,18 @@ export function AIPanel({
     apiMode: AiApiMode;
   }>(null);
 
-  async function openEditModelOverlay(modelName: string) {
-    const modelDbId = modelIdsByName[modelName];
+  async function openEditModelOverlayById(modelDbId: string) {
     if (!modelDbId) return;
     setModelDropdownOpen(false);
     const freshChannels = await loadChannelsFromDB();
     const sourceChannels = freshChannels ?? channels;
     for (const ch of sourceChannels) {
-      const m = ch.AiModel.find((m) => m.id === modelDbId);
+      const m = ch.AiModel.find((item) => item.id === modelDbId);
       if (m) {
+        setSettingsError("");
         setEditModelOverlay({
           modelId: m.model,
+          originalModelId: m.model,
           modelDbId: m.id,
           channelId: ch.id,
           channelName: ch.name,
@@ -1031,8 +1098,20 @@ export function AIPanel({
     }
   }
 
+  async function openEditModelOverlay(modelName: string) {
+    const modelDbId = modelIdsByName[modelName];
+    if (!modelDbId) return;
+    await openEditModelOverlayById(modelDbId);
+  }
+
   async function saveEditModelOverlay() {
     if (!editModelOverlay) return;
+    const nextModelId = editModelOverlay.modelId.trim();
+    if (!nextModelId) return;
+    // 显示名称仍等于原模型 ID（即用户没自定义过名称）时，跟随模型 ID 一起改，避免留下旧 ID 当名字。
+    const nextModelName = editModelOverlay.modelName.trim() === editModelOverlay.originalModelId || !editModelOverlay.modelName.trim()
+      ? nextModelId
+      : editModelOverlay.modelName.trim();
     setSettingsLoading(true);
     setSettingsError("");
     try {
@@ -1055,7 +1134,8 @@ export function AIPanel({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           updateModelId: editModelOverlay.modelDbId,
-          name: editModelOverlay.modelName,
+          model: nextModelId,
+          name: nextModelName,
           vision: editModelOverlay.vision,
           apiMode: editModelOverlay.channelType === "ollama" ? "chat" : editModelOverlay.apiMode,
         }),
@@ -1073,53 +1153,83 @@ export function AIPanel({
   }
 
   async function loadChannelsFromDB(): Promise<ChannelData[] | null> {
+    setChannelsLoading(true);
+    setChannelsError("");
     try {
-      const res = await fetch("/api/v1/settings/ai-config");
-      const data = await res.json() as { ok?: boolean; channels?: ChannelData[]; activeModelId?: string | null };
-      if (!data.ok) return null;
+      const res = await fetch("/api/v1/settings/ai-config", { cache: "no-store", signal: AbortSignal.timeout(8_000) });
+      const data = await res.json() as { ok?: boolean; channels?: ChannelData[]; activeModelId?: string | null; error?: string };
+      if (!data.ok) {
+        setChannelsError(data.error || t("aiPanel.loadChannelsFailed"));
+        return null;
+      }
       const nextChannels = data.channels ?? [];
       setChannels(nextChannels);
       setActiveModelId(data.activeModelId ?? null);
       return nextChannels;
-    } catch { /* ignore */ }
+    } catch (e) {
+      setChannelsError(e instanceof Error ? e.message : t("aiPanel.loadChannelsFailed"));
+    } finally {
+      setChannelsLoading(false);
+    }
     return null;
   }
 
 
-  async function fetchModelsForAdd() {
-    if (!addChannelForm.baseUrl.trim()) return;
-    if (addChannelForm.channelType !== "ollama" && !addChannelForm.apiKey.trim()) return;
+  /**
+   * 拉取远程模型列表。
+   * `target` 用于「切换到某个既有供应商」时立即按该供应商的地址/Key 拉取，
+   * 否则回落到表单当前值；目标是既有供应商时剔除它已经添加过的模型。
+   */
+  async function fetchModelsForAdd(target?: { baseUrl: string; apiKey: string; channelType: string; channelId: string }) {
+    const baseUrl = (target?.baseUrl ?? addChannelForm.baseUrl).trim();
+    const apiKey = (target?.apiKey ?? addChannelForm.apiKey).trim();
+    const channelType = target?.channelType ?? addChannelForm.channelType;
+    const channelId = target?.channelId ?? addToChannelId;
+    if (!baseUrl) return;
+    if (channelType !== "ollama" && !apiKey) return;
     setFetchingModels(true);
     setSettingsError("");
     setRemoteModels([]); // Clear the old list to show the loading state.
     try {
-      const modelsUrl = getModelsUrl(addChannelForm.channelType);
+      const modelsUrl = getModelsUrl(channelType);
       const res = await fetch("/api/v1/ai/models", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ baseUrl: addChannelForm.baseUrl.trim(), apiKey: addChannelForm.apiKey.trim(), modelsUrl }),
+        body: JSON.stringify({ baseUrl, apiKey, modelsUrl }),
+        // 远程供应商可能很久不响应，超时后走失败态，避免表单一直显示“获取中”
+        signal: AbortSignal.timeout(20_000),
       });
       const data = await res.json();
       if (!data.ok) throw new Error(data.error ?? t("settings.ai.client.fetchModelsFailed"));
-      const list: typeof remoteModels = data.modelInfos ?? data.models ?? [];
+      const all: typeof remoteModels = data.modelInfos ?? data.models ?? [];
+      // 追加到既有供应商时，把该供应商下已有的模型剔除，避免重复添加同一个模型
+      const existing = channelId
+        ? new Set((channels.find(c => c.id === channelId)?.AiModel ?? []).map(m => m.model))
+        : null;
+      const list = existing ? all.filter(m => !existing.has(m.id)) : all;
       setRemoteModels(list);
       setModelFetched(true);
-      if (list.length > 0) setSelectedRemoteModel(list[0].id);
-      else { setSelectedRemoteModel(""); }
+      setSelectedRemoteModel(list.length > 0 ? list[0].id : "");
     } catch (e: any) {
       setSettingsError(e.message);
       setModelFetched(true);
     } finally { setFetchingModels(false); }
   }
 
-  /* ---- Auto-fetch models when URL/Key changes ---- */
+  /* ---- Auto-fetch models when URL/Key/target channel changes ---- */
   const prevFormRef = useRef(addChannelForm);
+  /** 切换目标供应商时已经手动拉过一次，跳过紧随其后的自动拉取，避免重复请求 */
+  const skipAutoFetchRef = useRef(false);
   useEffect(() => {
     const prev = prevFormRef.current;
     prevFormRef.current = addChannelForm;
+    if (skipAutoFetchRef.current) {
+      skipAutoFetchRef.current = false;
+      return;
+    }
     if (addChannelForm.baseUrl.trim() &&
         (addChannelForm.channelType === "ollama" || addChannelForm.apiKey.trim()) &&
-        (prev.baseUrl !== addChannelForm.baseUrl || prev.apiKey !== addChannelForm.apiKey)) {
+        (prev.baseUrl !== addChannelForm.baseUrl || prev.apiKey !== addChannelForm.apiKey || prev.channelType !== addChannelForm.channelType)) {
       fetchModelsForAdd();
     }
   }, [addChannelForm.baseUrl, addChannelForm.apiKey, addChannelForm.channelType]);
@@ -1129,14 +1239,18 @@ export function AIPanel({
     setSettingsLoading(true);
     setSettingsError("");
     try {
-      const res = await fetch("/api/v1/settings/ai-config", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: addChannelForm.name, channelType: addChannelForm.channelType, baseUrl: addChannelForm.baseUrl, apiKey: addChannelForm.apiKey }),
-      });
-      const data = await res.json();
-      if (!data.ok) throw new Error(data.error ?? t("aiPanel.addFailed"));
-      const chId = data.channel.id;
+      // 目标供应商已选定：只在该供应商下追加一个模型，不新建渠道
+      let chId = addToChannelId;
+      if (!chId) {
+        const res = await fetch("/api/v1/settings/ai-config", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: addChannelForm.name, channelType: addChannelForm.channelType, baseUrl: addChannelForm.baseUrl, apiKey: addChannelForm.apiKey }),
+        });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.error ?? t("aiPanel.addFailed"));
+        chId = data.channel.id as string;
+      }
       const info = remoteModels.find(m => m.id === selectedRemoteModel);
       const mRes = await fetch("/api/v1/settings/ai-config", {
         method: "PUT",
@@ -1155,11 +1269,37 @@ export function AIPanel({
       setRemoteModels([]);
       setSelectedRemoteModel("");
       setModelFetched(false);
+      setShowAddForm(false);
+      setAddToChannelId("");
+      // 目标供应商展开，方便确认刚添加的模型
+      setExpandedChannelId(chId);
       await loadChannelsFromDB();
       reloadModels(true);
     } catch (e: any) {
       setSettingsError(e.message);
     } finally { setSettingsLoading(false); }
+  }
+
+  /** 展开某供应商后点「添加模型」：预填该供应商的地址/Key，直接拉取未添加过的模型 */
+  function openAddModelFormForChannel(ch: ChannelData) {
+    const channelType = ch.channelType ?? "custom";
+    setAddToChannelId(ch.id);
+    setAddChannelForm({ name: "", channelType, baseUrl: ch.baseUrl, apiKey: ch.apiKey ?? "", apiMode: "chat" });
+    setRemoteModels([]);
+    setSelectedRemoteModel("");
+    setModelFetched(false);
+    setSettingsError("");
+    setShowAddForm(true);
+    setExpandedChannelId(ch.id);
+    // 表单字段可能与切换前相同（同一地址/Key），这里直接拉一次，不依赖 effect 的变化判断；
+    // 只有表单真的会变化（effect 会触发）时才需要抑制紧接着的自动拉取
+    if (ch.baseUrl.trim() && (channelType === "ollama" || (ch.apiKey ?? "").trim())) {
+      skipAutoFetchRef.current =
+        addChannelForm.baseUrl !== ch.baseUrl ||
+        addChannelForm.apiKey !== (ch.apiKey ?? "") ||
+        addChannelForm.channelType !== channelType;
+      void fetchModelsForAdd({ baseUrl: ch.baseUrl, apiKey: ch.apiKey ?? "", channelType, channelId: ch.id });
+    }
   }
 
   async function handleDeleteModel(modelId: string) {
@@ -1180,6 +1320,7 @@ export function AIPanel({
     setSettingsLoading(true);
     try {
       await fetch(`/api/v1/settings/ai-config?id=${channelId}`, { method: "DELETE" });
+      setExpandedChannelId(prev => (prev === channelId ? null : prev));
       await loadChannelsFromDB();
       reloadModels(true);
     } catch { /* ignore */ }
@@ -1380,9 +1521,9 @@ export function AIPanel({
               <Plus size={16} />
             </button>
             <button
-              onClick={() => { setSettingsView(true); loadChannelsFromDB(); }}
+              onClick={() => { setSettingsView(true); setShowAddForm(false); setExpandedChannelId(null); loadChannelsFromDB(); }}
               className="flex h-8 w-8 items-center justify-center rounded-md text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-900"
-              title={t("aiPanel.apiConfig")}
+              title={t("aiPanel.manageModels")}
             >
               <Settings size={16} />
             </button>
@@ -1400,7 +1541,13 @@ export function AIPanel({
         <div className="relative">
           {modelNames.length > 0 ? (
             <button
-              onClick={() => setModelDropdownOpen(!modelDropdownOpen)}
+              onClick={() => {
+                const next = !modelDropdownOpen;
+                setModelDropdownOpen(next);
+                // 每次打开都强制刷新一次：分组信息（供应商名）与设置页的增删保持一致，
+                // 也避免热更新后组件 state 里还留着没有分组信息的旧数据
+                if (next) reloadModels(true);
+              }}
               className="flex w-full items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-[11px] text-slate-600 shadow-sm transition-colors hover:bg-slate-50"
             >
               <span className="font-bold truncate">{activeModelDisplay}</span>
@@ -1408,7 +1555,7 @@ export function AIPanel({
             </button>
           ) : (
             <button
-              onClick={() => { setSettingsView(true); loadChannelsFromDB(); }}
+              onClick={() => { setSettingsView(true); setShowAddForm(true); loadChannelsFromDB(); }}
               className="flex w-full items-center justify-between gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-[11px] text-slate-500 shadow-sm transition-colors hover:bg-slate-50"
             >
               <span>{modelsLoading ? t("aiPanel.loadingModels") : t("aiPanel.noModelConfigured")}</span>
@@ -1419,58 +1566,81 @@ export function AIPanel({
           {/* Model dropdown popup */}
           {modelDropdownOpen && modelNames.length > 0 && (
             <div className="absolute top-full left-0 right-0 mt-1 z-50 bg-surface-white border border-foreground/10 rounded-xl shadow-lg overflow-hidden">
-              <div className="max-h-[220px] overflow-y-auto py-1">
-                {modelNames.map((name) => {
-                  const isActive = name === activeModel;
+              <div className="max-h-[260px] overflow-y-auto py-1">
+                {(modelGroups.length > 0 ? modelGroups : [{ channelId: "__all", channelName: t("aiPanel.allModels"), models: modelNames }]).map((group) => {
+                  const groupCollapsed = !!collapsedModelGroups[group.channelId];
                   return (
-                    <div key={name} className={`flex items-center justify-between gap-2 px-3 py-2 transition-all hover:bg-accent-green/10 ${
-                      isActive ? "bg-accent-green/5" : ""
-                    }`}>
+                  <div key={group.channelId}>
+                    {group.channelName && (
                       <button
-                        onClick={() => {
-                          setActiveModel(name);
-                          saveActiveModel(name);
-                          const modelId = modelIdsByName[name];
-                          if (modelId) {
-                            void fetch("/api/v1/settings/ai-config", {
-                              method: "PUT",
-                              headers: { "Content-Type": "application/json" },
-                              body: JSON.stringify({ activeModelId: modelId }),
-                            })
-                              .then((res) => {
-                                if (res.ok) dispatchAiConfigChanged();
-                              })
-                              .catch(() => {});
-                          }
-                          setModelDropdownOpen(false);
-                        }}
-                        className={`text-[11px] truncate min-w-0 flex-1 text-left ${isActive ? "font-bold text-accent-green" : "text-foreground/70"}`}
+                        type="button"
+                        onClick={() => setCollapsedModelGroups((prev) => ({ ...prev, [group.channelId]: !prev[group.channelId] }))}
+                        className="flex w-full items-center gap-1 px-3 pb-1 pt-2 text-left transition-colors hover:text-foreground/60"
+                        aria-expanded={!groupCollapsed}
+                        title={groupCollapsed ? t("aiPanel.expandChannel") : t("aiPanel.collapseChannel")}
                       >
-                        {isActive ? name + " ✓" : name}
+                        <ChevronRight
+                          size={10}
+                          className={`shrink-0 text-foreground/30 transition-transform ${groupCollapsed ? "" : "rotate-90"}`}
+                        />
+                        <span className="truncate text-[10px] font-bold tracking-wide text-foreground/30">{group.channelName}</span>
+                        <span className="ml-auto shrink-0 text-[10px] font-medium text-foreground/25">{group.models.length}</span>
                       </button>
-                      <div className="flex items-center gap-1 shrink-0">
-                        <button
-                          onClick={() => { void openEditModelOverlay(name); }}
-                          className="w-5 h-5 rounded flex items-center justify-center text-foreground/20 hover:text-foreground/50 hover:bg-foreground/10 transition-all"
-                          title={t("settings.ai.client.action.edit")}
-                        >
-                          <Pencil size={10} />
-                        </button>
-                        <button
-                          onClick={() => { const id = modelIdsByName[name]; if (id) { handleDeleteModel(id); setModelDropdownOpen(false); } }}
-                          className="w-5 h-5 rounded flex items-center justify-center text-foreground/20 hover:text-red-500 hover:bg-red-50 transition-all"
-                          title={t("settings.ai.client.action.delete")}
-                        >
-                          <X size={10} />
-                        </button>
-                      </div>
-                    </div>
+                    )}
+                    {!groupCollapsed && group.models.map((name) => {
+                      const isActive = name === activeModel;
+                      return (
+                        <div key={name} className={`flex items-center justify-between gap-2 pl-6 pr-3 py-2 transition-all hover:bg-accent-green/10 ${
+                          isActive ? "bg-accent-green/5" : ""
+                        }`}>
+                          <button
+                            onClick={() => {
+                              setActiveModel(name);
+                              saveActiveModel(name);
+                              const modelId = modelIdsByName[name];
+                              if (modelId) {
+                                void fetch("/api/v1/settings/ai-config", {
+                                  method: "PUT",
+                                  headers: { "Content-Type": "application/json" },
+                                  body: JSON.stringify({ activeModelId: modelId }),
+                                })
+                                  .then((res) => {
+                                    if (res.ok) dispatchAiConfigChanged();
+                                  })
+                                  .catch(() => {});
+                              }
+                              setModelDropdownOpen(false);
+                            }}
+                            className={`text-[11px] truncate min-w-0 flex-1 text-left ${isActive ? "font-bold text-accent-green" : "text-foreground/70"}`}
+                          >
+                            {isActive ? name + " ✓" : name}
+                          </button>
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button
+                              onClick={() => { void openEditModelOverlay(name); }}
+                              className="w-5 h-5 rounded flex items-center justify-center text-foreground/20 hover:text-foreground/50 hover:bg-foreground/10 transition-all"
+                              title={t("settings.ai.client.action.edit")}
+                            >
+                              <Pencil size={10} />
+                            </button>
+                            <button
+                              onClick={() => { const id = modelIdsByName[name]; if (id) { handleDeleteModel(id); setModelDropdownOpen(false); } }}
+                              className="w-5 h-5 rounded flex items-center justify-center text-foreground/20 hover:text-red-500 hover:bg-red-50 transition-all"
+                              title={t("settings.ai.client.action.delete")}
+                            >
+                              <X size={10} />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
                   );
                 })}
               </div>
               <div className="border-t border-foreground/5">
                 <button
-                  onClick={() => { setModelDropdownOpen(false); setSettingsView(true); loadChannelsFromDB(); }}
+                  onClick={() => { setModelDropdownOpen(false); setSettingsView(true); setShowAddForm(false); setExpandedChannelId(null); loadChannelsFromDB(); }}
                   className="w-full px-3 py-2.5 text-[11px] text-left text-foreground/40 hover:bg-foreground/5 transition-all flex items-center gap-1.5"
                 >
                   <Settings size={10} /> {t("aiPanel.manageModels")}
@@ -1481,9 +1651,9 @@ export function AIPanel({
         </div>
       </div>
 
-      {/* Edit model overlay */}
+      {/* Edit model overlay（z-index 高于 API 配置层，从配置弹窗里也能直接打开编辑） */}
       {editModelOverlay && (
-        <div className="absolute inset-0 z-50 bg-background/95 backdrop-blur-md flex flex-col animate-in fade-in duration-300">
+        <div className="absolute inset-0 z-[60] bg-background/95 backdrop-blur-md flex flex-col animate-in fade-in duration-300">
           <div className="flex items-center justify-between px-5 py-4 border-b border-foreground/5 shrink-0">
             <h6 className="font-heading text-base text-foreground">{t("settings.ai.client.action.edit")}</h6>
             <button onClick={() => { setEditModelOverlay(null); setSettingsError(""); }} className="text-foreground/20 hover:text-foreground transition-colors">
@@ -1551,9 +1721,13 @@ export function AIPanel({
                   </div>
                   <div>
                     <label className="block text-[10px] font-bold text-foreground/30 mb-1">{t("aiPanel.modelId")}</label>
-                    <div className="h-10 rounded-xl bg-foreground/5 border border-foreground/5 px-4 text-sm text-foreground/50 flex items-center">
-                      {editModelOverlay.modelId}
-                    </div>
+                    <input
+                      className="w-full h-10 rounded-xl bg-background/50 border border-foreground/10 px-4 text-sm outline-none focus:border-accent-green/30 text-foreground font-mono"
+                      name="mmh-ai-model-id" autoComplete="off" spellCheck={false}
+                      placeholder="deepseek-chat"
+                      value={editModelOverlay.modelId}
+                      onChange={(e) => setEditModelOverlay(o => o ? { ...o, modelId: e.target.value } : null)}
+                    />
                   </div>
                   {editModelOverlay.channelType !== "ollama" && (
                     <div>
@@ -1588,7 +1762,7 @@ export function AIPanel({
             <button onClick={() => { setEditModelOverlay(null); setSettingsError(""); }} className="flex-1 py-3 bg-background border border-foreground/10 text-foreground rounded-xl font-bold text-sm hover:bg-foreground/5 transition-colors">
               {t("table.close")}
             </button>
-            <button onClick={saveEditModelOverlay} disabled={settingsLoading} className="flex-[2] py-3 bg-foreground text-background rounded-xl font-bold text-sm shadow-lg disabled:opacity-30 active:scale-95 transition-transform">
+            <button onClick={saveEditModelOverlay} disabled={settingsLoading || !editModelOverlay.modelId.trim()} className="flex-[2] py-3 bg-foreground text-background rounded-xl font-bold text-sm shadow-lg disabled:opacity-30 active:scale-95 transition-transform">
               {settingsLoading ? t("aiPanel.saving") : t("common.save")}
             </button>
           </div>
@@ -1599,68 +1773,226 @@ export function AIPanel({
       {settingsView && (
         <div className="absolute inset-0 z-50 bg-background/95 backdrop-blur-md flex flex-col animate-in fade-in duration-300">
           {/* Dialog header */}
-          <div className="flex items-center justify-between px-5 py-4 border-b border-foreground/5 shrink-0">
-            <h6 className="font-heading text-base text-foreground">{t("aiPanel.apiConfig")}</h6>
-            <button onClick={() => { setSettingsView(false); }} className="text-foreground/20 hover:text-foreground transition-colors">
-              <X size={18} />
-            </button>
+          <div className="flex items-center justify-between gap-2 px-5 py-4 border-b border-foreground/5 shrink-0">
+            <h6 className="font-heading text-base text-foreground truncate">{t("aiPanel.manageModels")}</h6>
+            <div className="flex items-center gap-1 shrink-0">
+              <button
+                onClick={() => {
+                  // 从头部「新增」进入时回到「新建供应商」口径，避免沿用上次选中的供应商
+                  if (!showAddForm) { setAddToChannelId(""); setAddChannelForm({ name: "", channelType: "deepseek", baseUrl: "", apiKey: "", apiMode: "chat" }); }
+                  setShowAddForm(v => !v);
+                  setSettingsError("");
+                }}
+                className={`h-7 px-2 rounded-lg flex items-center gap-1 text-[11px] font-bold transition-colors ${showAddForm ? "bg-foreground text-background" : "text-foreground/50 hover:text-foreground hover:bg-foreground/5"}`}
+                title={t("aiPanel.newChannelModel")}
+              >
+                <Plus size={12} /> {t("aiPanel.newChannelModel")}
+              </button>
+              <button onClick={() => { setSettingsView(false); setShowAddForm(false); }} className="w-7 h-7 rounded-lg flex items-center justify-center text-foreground/20 hover:text-foreground hover:bg-foreground/5 transition-colors" title={t("common.close")}>
+                <X size={18} />
+              </button>
+            </div>
           </div>
 
           {/* Dialog content */}
           <div className="flex-1 overflow-y-auto px-5 py-4 custom-scrollbar">
 
-            {/* Channel & model list */}
-            {channels.length > 0 && (
-              <div className="space-y-4 mb-4">
-                {channels.map((ch) => (
-                  <div key={ch.id} className="rounded-xl border border-foreground/5 bg-surface-white p-4 shadow-sm">
-                    {/* Channel header */}
-                    <div className="flex items-center justify-between gap-3 mb-3">
-                      <div className="min-w-0">
-                        <div className="text-sm font-bold text-foreground">{ch.name}</div>
-                        <div className="mt-0.5 text-[10px] text-foreground/30 truncate">{ch.baseUrl}</div>
-                      </div>
-                      <button onClick={() => handleDeleteChannel(ch.id)} className="w-7 h-7 rounded-lg flex items-center justify-center text-foreground/20 hover:text-red-500 hover:bg-red-50 transition-all" title={t("aiPanel.deleteChannel")}>
-                        <Trash2 size={14} />
-                      </button>
-                    </div>
-
-                    {/* Model list */}
-                    {ch.AiModel.length > 0 ? (
-                      <div className="space-y-2">
-                        {ch.AiModel.map((m) => (
-                          <div key={m.id} className="flex items-center justify-between gap-3 py-2 px-3 rounded-lg border border-foreground/5 bg-background/30 hover:bg-foreground/5 transition-all">
-                            <div className="flex items-center gap-2 min-w-0">
-                              <span className="text-sm font-medium text-foreground truncate">{m.name || m.model}</span>
-                              {m.vision && <Eye size={12} className="text-accent-green shrink-0" />}
-                              {m.active && <span className="text-[10px] bg-accent-green/10 text-accent-green px-2 py-0.5 rounded-full shrink-0 font-bold">{t("aiPanel.active")}</span>}
-                            </div>
-                            <div className="flex items-center gap-2 shrink-0">
-                              {!m.active && (
-                                <button onClick={() => handleSetActiveModel(m.id)} className="text-[10px] text-foreground/30 hover:text-accent-green font-bold transition-colors px-2 py-1 rounded-lg hover:bg-accent-green/10">
-                                  {t("aiPanel.setActive")}
-                                </button>
-                              )}
-                              <button onClick={() => handleDeleteModel(m.id)} className="w-6 h-6 rounded-lg flex items-center justify-center text-foreground/20 hover:text-red-500 hover:bg-red-50 transition-all">
-                                <X size={12} />
-                              </button>
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="text-[11px] text-foreground/30 py-3 text-center">{t("aiPanel.noModels")}</div>
-                    )}
-                  </div>
-                ))}
+            {/* 已有渠道/模型：加载中 / 失败 / 空 / 列表 */}
+            {channelsLoading && channels.length === 0 && (
+              <div className="flex items-center justify-center gap-2 py-6 text-[11px] text-foreground/30">
+                <Wand2 size={12} className="animate-spin text-accent-green" /> {t("common.loading")}
+              </div>
+            )}
+            {!channelsLoading && channelsError && (
+              <div className="mb-4 rounded-xl border border-red-100 bg-red-50 px-3 py-2">
+                <div className="text-[11px] text-red-500">{channelsError}</div>
+                <button onClick={() => { void loadChannelsFromDB(); }} className="mt-1 text-[11px] font-bold text-red-500 underline">
+                  {t("aiPanel.retry")}
+                </button>
+              </div>
+            )}
+            {!channelsLoading && !channelsError && channels.length === 0 && (
+              <div className="mb-4 rounded-xl border border-dashed border-foreground/10 px-3 py-6 text-center text-[11px] leading-relaxed text-foreground/30">
+                {t("aiPanel.noChannels")}
               </div>
             )}
 
+            {/* Channel & model list */}
+            {channels.length > 0 && (
+              <div className="space-y-4 mb-4">
+                {channels.map((ch) => {
+                  const isExpanded = expandedChannelId === ch.id;
+                  return (
+                    <div key={ch.id} className="rounded-xl border border-foreground/5 bg-surface-white shadow-sm">
+                      {/* Channel header：整行可点，只展开当前供应商的模型 */}
+                      <div className="flex items-center justify-between gap-3 p-4">
+                        <button
+                          type="button"
+                          onClick={() => setExpandedChannelId(prev => (prev === ch.id ? null : ch.id))}
+                          className="flex flex-1 items-center gap-2 min-w-0 text-left rounded-lg"
+                          aria-expanded={isExpanded}
+                          title={isExpanded ? t("aiPanel.collapseChannel") : t("aiPanel.expandChannel")}
+                        >
+                          <ChevronRight
+                            size={14}
+                            className={`shrink-0 text-foreground/30 transition-transform ${isExpanded ? "rotate-90" : ""}`}
+                          />
+                          <div className="min-w-0">
+                            <div className="text-sm font-bold text-foreground truncate">{ch.name}</div>
+                            <div className="mt-0.5 text-[10px] text-foreground/30 truncate">{ch.baseUrl}</div>
+                          </div>
+                          <span className="ml-auto shrink-0 rounded-full bg-foreground/5 px-2 py-0.5 text-[10px] font-bold text-foreground/40">
+                            {ch.AiModel.length}
+                          </span>
+                        </button>
+                        <button onClick={() => handleDeleteChannel(ch.id)} className="w-7 h-7 rounded-lg flex items-center justify-center text-foreground/20 hover:text-red-500 hover:bg-red-50 transition-all shrink-0" title={t("aiPanel.deleteChannel")}>
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+
+                      {/* Model list：仅展开的供应商显示 */}
+                      {isExpanded && (
+                        <div className="px-4 pb-4">
+                          {ch.AiModel.length > 0 ? (
+                            <div className="space-y-2">
+                              {ch.AiModel.map((m) => (
+                                <div
+                                  key={m.id}
+                                  onClick={() => { void openEditModelOverlayById(m.id); }}
+                                  className="group flex items-center justify-between gap-2 py-2 px-3 rounded-lg border border-foreground/5 bg-background/30 hover:bg-foreground/5 hover:border-foreground/10 transition-all"
+                                >
+                                  <button
+                                    type="button"
+                                    onClick={() => { void openEditModelOverlayById(m.id); }}
+                                    className="flex-1 min-w-0 text-left rounded-md"
+                                    title={t("settings.ai.client.action.edit")}
+                                  >
+                                    <div className="flex items-center gap-2 min-w-0">
+                                      <span className="text-sm font-medium text-foreground truncate">{m.name || m.model}</span>
+                                      {m.vision && <Eye size={12} className="text-accent-green shrink-0" />}
+                                      {m.active && <span className="text-[10px] bg-accent-green/10 text-accent-green px-2 py-0.5 rounded-full shrink-0 font-bold">{t("aiPanel.active")}</span>}
+                                    </div>
+                                    {m.name && m.name !== m.model ? (
+                                      <div className="mt-0.5 text-[10px] font-mono text-foreground/30 truncate">{m.model}</div>
+                                    ) : null}
+                                  </button>
+                                  <div className="flex items-center gap-1 shrink-0">
+                                    {!m.active && (
+                                      <button
+                                        onClick={() => void handleSetActiveModel(m.id)}
+                                        className="text-[10px] text-foreground/30 hover:text-accent-green font-bold transition-colors px-2 py-1 rounded-lg hover:bg-accent-green/10"
+                                      >
+                                        {t("aiPanel.setActive")}
+                                      </button>
+                                    )}
+                                    <button
+                                      onClick={() => { void openEditModelOverlayById(m.id); }}
+                                      className="w-6 h-6 rounded-lg flex items-center justify-center text-foreground/20 hover:text-foreground/60 hover:bg-foreground/10 transition-all"
+                                      title={t("settings.ai.client.action.edit")}
+                                    >
+                                      <Pencil size={12} />
+                                    </button>
+                                    <button
+                                      onClick={() => void handleDeleteModel(m.id)}
+                                      className="w-6 h-6 rounded-lg flex items-center justify-center text-foreground/20 hover:text-red-500 hover:bg-red-50 transition-all"
+                                      title={t("settings.ai.client.action.delete")}
+                                    >
+                                      <X size={12} />
+                                    </button>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="text-[11px] text-foreground/30 py-3 text-center">{t("aiPanel.noModels")}</div>
+                          )}
+                          {/* 在同一供应商下继续添加模型 */}
+                          <button
+                            type="button"
+                            onClick={() => openAddModelFormForChannel(ch)}
+                            className="mt-2 w-full py-2 rounded-lg border border-dashed border-foreground/10 text-[11px] font-bold text-foreground/40 hover:text-foreground hover:border-foreground/20 transition-all flex items-center justify-center gap-1"
+                          >
+                            <Plus size={11} /> {t("aiPanel.addModelToChannel")}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* 新增入口：添加表单默认收起，点开后再展开 */}
+            {!showAddForm && (
+              <button
+                onClick={() => { setShowAddForm(true); setAddToChannelId(""); setSettingsError(""); }}
+                className="w-full py-2.5 rounded-xl border border-dashed border-foreground/10 text-[11px] font-bold text-foreground/40 hover:text-foreground hover:border-foreground/20 transition-all flex items-center justify-center gap-1.5"
+              >
+                <Plus size={12} /> {t("aiPanel.newChannelModel")}
+              </button>
+            )}
+
             {/* Add channel - single-step form */}
+            {showAddForm && (
             <div className="rounded-xl border border-foreground/10 bg-surface-white p-4 shadow-sm space-y-3">
-              <div className="text-sm font-bold text-foreground">{t("aiPanel.addChannel")}</div>
+              <div className="flex items-center justify-between">
+                <div className="text-sm font-bold text-foreground">
+                  {addToChannelId
+                    ? t("aiPanel.addModelTitle", { name: channels.find(c => c.id === addToChannelId)?.name ?? "" })
+                    : t("aiPanel.addChannel")}
+                </div>
+                <button onClick={() => { setShowAddForm(false); setAddToChannelId(""); setSettingsError(""); }} className="w-6 h-6 rounded-lg flex items-center justify-center text-foreground/20 hover:text-foreground hover:bg-foreground/5 transition-colors" title={t("common.cancel")}>
+                  <X size={14} />
+                </button>
+              </div>
+
+              {/* 目标供应商：新建供应商，或在既有供应商下追加模型 */}
+              <div>
+                <label className="block text-[10px] font-bold text-foreground/30 mb-1">{t("aiPanel.targetChannel")}</label>
+                <select
+                  className="w-full h-9 rounded-xl bg-background/50 border border-foreground/10 px-3 text-sm outline-none focus:border-accent-green/30 text-foreground"
+                  value={addToChannelId}
+                  onChange={(e) => {
+                    const id = e.target.value;
+                    const ch = channels.find(c => c.id === id);
+                    setAddToChannelId(id);
+                    setSettingsError("");
+                    setRemoteModels([]);
+                    setSelectedRemoteModel("");
+                    setModelFetched(false);
+                    if (ch) {
+                      // 复用该供应商的地址/Key，直接拉取它还没添加过的模型
+                      const channelType = ch.channelType ?? "custom";
+                      setAddChannelForm({ name: "", channelType, baseUrl: ch.baseUrl, apiKey: ch.apiKey ?? "", apiMode: "chat" });
+                      skipAutoFetchRef.current =
+                        addChannelForm.baseUrl !== ch.baseUrl ||
+                        addChannelForm.apiKey !== (ch.apiKey ?? "") ||
+                        addChannelForm.channelType !== channelType;
+                      void fetchModelsForAdd({ baseUrl: ch.baseUrl, apiKey: ch.apiKey ?? "", channelType, channelId: ch.id });
+                    } else {
+                      setAddChannelForm({ name: "", channelType: "deepseek", baseUrl: "", apiKey: "", apiMode: "chat" });
+                    }
+                  }}
+                >
+                  <option value="">{t("aiPanel.newProviderOption")}</option>
+                  {channels.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              </div>
 
               {/* Basic configuration */}
+              {addToChannelId ? (
+                <div>
+                  <label className="block text-[10px] font-bold text-foreground/30 mb-1">{t("aiPanel.displayName")}{t("aiPanel.optionalSuffix")}</label>
+                  <input
+                    className="w-full h-9 rounded-xl bg-background/50 border border-foreground/10 px-3 text-sm outline-none focus:border-accent-green/30 text-foreground"
+                    placeholder={t("aiPanel.channelNamePlaceholder")}
+                    name="mmh-ai-model-name" autoComplete="off"
+                    value={addChannelForm.name}
+                    onChange={(e) => setAddChannelForm(f => ({ ...f, name: e.target.value }))}
+                  />
+                  <div className="mt-1 text-[10px] text-foreground/30">{t("aiPanel.reuseChannelEndpoint")}</div>
+                </div>
+              ) : (
               <div className="grid grid-cols-2 gap-2">
                 <div className="col-span-2">
                   <label className="block text-[10px] font-bold text-foreground/30 mb-1">{t("aiPanel.channelNameOptional")}</label>
@@ -1710,6 +2042,7 @@ export function AIPanel({
                   />
                 </div>
               </div>
+              )}
 
               {/* Error hint */}
               {/* Model selection area - always visible once the Key is filled */}
@@ -1763,11 +2096,14 @@ export function AIPanel({
                         <div className="text-[11px] text-red-500 bg-red-50 border border-red-100 rounded-lg px-3 py-2">{settingsError}</div>
                       )}
                       <button
-                        onClick={fetchModelsForAdd}
+                        onClick={() => void fetchModelsForAdd()}
                         className="w-full py-2 rounded-xl border border-dashed border-foreground/10 text-[11px] font-bold text-foreground/40 hover:text-foreground hover:border-foreground/20 transition-all"
                       >
                         {settingsError ? t("aiPanel.retryFetch") : t("aiPanel.clickFetch")}
                       </button>
+                      {addToChannelId && modelFetched && !settingsError && (
+                        <div className="text-[10px] text-foreground/30 text-center">{t("aiPanel.allRemoteModelsAdded")}</div>
+                      )}
                       <div>
                         <label className="block text-[10px] font-bold text-foreground/30 mb-1">{t("aiPanel.manualModelId")}</label>
                         <input
@@ -1790,11 +2126,11 @@ export function AIPanel({
 
               {/* Bottom buttons */}
               <div className="flex gap-2 pt-1">
-                <button onClick={() => { setSettingsView(false); setAddChannelForm({ name: "", channelType: "deepseek", baseUrl: "", apiKey: "", apiMode: "chat" }); setRemoteModels([]); setSelectedRemoteModel(""); setModelFetched(false); setSettingsError(""); }} className="flex-1 py-2.5 bg-background border border-foreground/10 text-foreground/60 rounded-xl font-bold text-xs hover:bg-foreground/5 transition-colors">
+                <button onClick={() => { setShowAddForm(false); setAddToChannelId(""); setAddChannelForm({ name: "", channelType: "deepseek", baseUrl: "", apiKey: "", apiMode: "chat" }); setRemoteModels([]); setSelectedRemoteModel(""); setModelFetched(false); setSettingsError(""); }} className="flex-1 py-2.5 bg-background border border-foreground/10 text-foreground/60 rounded-xl font-bold text-xs hover:bg-foreground/5 transition-colors">
                   {t("common.cancel")}
                 </button>
                 <button
-                  onClick={remoteModels.length > 0 ? handleAddChannelAndModel : fetchModelsForAdd}
+                  onClick={() => { if (remoteModels.length > 0) void handleAddChannelAndModel(); else void fetchModelsForAdd(); }}
                   disabled={settingsLoading || fetchingModels || !addChannelForm.baseUrl.trim() || (addChannelForm.channelType !== "ollama" && !addChannelForm.apiKey.trim()) || (remoteModels.length > 0 && !selectedRemoteModel)}
                   className="flex-[2] py-2.5 bg-foreground text-background rounded-xl font-bold text-xs shadow-lg disabled:opacity-30 active:scale-95 transition-transform"
                 >
@@ -1802,9 +2138,8 @@ export function AIPanel({
                 </button>
               </div>
             </div>
+            )}
           </div>
-
-          {/* The bottom add button is merged into the form above; no separate button here */}
         </div>
       )}
 
