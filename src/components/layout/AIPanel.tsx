@@ -674,10 +674,21 @@ export function AIPanel({
    * 模型填表 → 程序二次识别后给出最终操作。
    * 单笔（≤{@link AI_AUTO_IMPORT_MAX_COUNT} 条）且识别完整时直接入库，不再让用户点确认；
    * 2 笔起或任一笔记缺必填项才升级为确认卡片 / 导入预览弹窗。
+   *
+   * `directImport` 是服务端对「这份结果能不能不问人直接落账」的判断：
+   * 逐行切分的多行文本、账单类文本都会给 false。以前这个字段没人读，
+   * 导致后端想拦也拦不住，单笔兜底结果照样被静默入库。
    */
-  function presentImportItems(allItems: ParsedItem[], trace?: string[], keyPrefix = "ai", allowAutoImport = true) {
+  function presentImportItems(
+    allItems: ParsedItem[],
+    trace?: string[],
+    keyPrefix = "ai",
+    allowAutoImport = true,
+    directImport = true,
+  ) {
     const finalAction = buildFinalActionText(allItems, t);
     const autoImport = allowAutoImport
+      && directImport
       && allItems.length > 0
       && allItems.length <= AI_AUTO_IMPORT_MAX_COUNT
       && allItems.every(isConfidentForAutoImport);
@@ -852,7 +863,7 @@ export function AIPanel({
 
       if (parsed.items) {
         const withSkills = applySkills(parsed.items, text);
-        presentImportItems(withSkills.map(normalizeItemForImport), parsed.trace, "ai");
+        presentImportItems(withSkills.map(normalizeItemForImport), parsed.trace, "ai", true, parsed.directImport !== false);
       } else if (parsed.operation) {
         setMessages((m) => [...m, { role: "assistant", text: t("aiPanel.executedOp", { operation: parsed.operation }), trace: parsed.trace }]);
         dispatchFinanceDataChanged({ reason: "ai-operation" });
@@ -874,7 +885,7 @@ export function AIPanel({
       });
       const parsed = await parseStatement({ imageDataUrl });
       if (parsed.items) {
-        presentImportItems(parsed.items.map(normalizeItemForImport), parsed.trace, "img");
+        presentImportItems(parsed.items.map(normalizeItemForImport), parsed.trace, "img", true, parsed.directImport !== false);
       }
     } catch (e: any) {
       setMessages((m) => [...m, { role: "assistant", text: t("aiPanel.recognizeFailed", { message: e.message }) }]);

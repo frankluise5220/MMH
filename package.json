@@ -27,6 +27,7 @@
     "stage:synology": "node scripts/build-synology-package.cjs --stage-only",
     "check:encoding": "node scripts/check-encoding.cjs",
     "check:ai": "tsx scripts/verify-ai-failure-classification.ts",
+    "check:ai-ledger-parse": "tsx scripts/verify-ai-ledger-parse.ts",
     "check:csv-import": "tsx scripts/verify-csv-import-encoding.ts",
     "check:ai-write": "node scripts/check-ai-write-parity.cjs",
     "check:recognizer": "tsx scripts/verify-statement-recognizers.ts",

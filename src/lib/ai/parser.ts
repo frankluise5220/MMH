@@ -296,9 +296,187 @@ export function parseCMBFundRecord(text: string, now: Date): { items: ParsedItem
   return { items: rows, directImport: rows.length > 0 };
 }
 
+/** 完整日期：2026-11-01 / 2026/11/1 / 2026.11.1 / 2026年11月1日。 */
+const LEDGER_LINE_DATE_FULL = /(\d{4})[-/.年](\d{1,2})[-/.月](\d{1,2})日?/;
+/** 无年份的中文日期：11月01日。银行流水里很常见，缺年份时按业务年补。 */
+const LEDGER_LINE_DATE_MD = /(\d{1,2})月(\d{1,2})日/;
+/** 行首无年份的 11-01 / 11/01，必须锚在开头，否则会误吃金额。 */
+const LEDGER_LINE_DATE_HEAD = /^\s*(\d{1,2})[-/](\d{1,2})(?=\s|\||$)/;
+
+/** 汇总行不是流水，切进来就会多记一笔。 */
+const LEDGER_LINE_SUMMARY = /^(合计|小计|总计|共计|总金额|total|subtotal|sum)(?![a-z])\s*[:：]?/i;
+
+/**
+ * 行内金额候选。前置捕获 `(^|[^\d.,])` 用来保留分隔字符（replace 时要还回去），
+ * 后置 `(?![\d])` 防止把 "1500" 的前半截当成 15。不用后行断言是为了兼容性。
+ */
+const LEDGER_LINE_AMOUNT = /(^|[^\d.,])([+-]?\d{1,3}(?:,\d{3})+(?:\.\d{1,2})?|[+-]?\d+(?:\.\d{1,2})?)(?![\d])/g;
+
+/**
+ * 切分锚点：必须带 4 位年，或者是「11月01日」这种中文日期。
+ *
+ * 绝不能用裸 `\d{1,2}[-/.月]\d{1,2}`——它会把金额 `45.50` 读成「45 月 50 日」，
+ * 三笔流水被切成六段，日期全靠 normalizeDate 回退成「今天」；原文若是别的日子就记错。
+ * 月份 / 日都限定在合法范围内，`45.50`、`37.10` 这类小数自然落选。
+ */
+const LEDGER_SPLIT_DATE =
+  /(?:\d{4}[-/.年](?:1[0-2]|0?[1-9])[-/.月](?:3[01]|[12]\d|0?[1-9])日?)|(?:(?:1[0-2]|0?[1-9])月(?:3[01]|[12]\d|0?[1-9])日)/g;
+
+/** 一段流水的形态，用来反向校验「切出来的这几段是不是同一格式的记录」。 */
+type LedgerSegmentShape = {
+  startsWithDate: boolean;
+  amountCount: number;
+  hasDescription: boolean;
+};
+
+function ledgerSegmentShape(segment: string): LedgerSegmentShape {
+  const startsWithDate = /^\s*(?:\d{4}[-/.年]|(?:0?[1-9]|1[0-2])月|\d{1,2}[-/])/.test(segment);
+  const withoutDate = segment.replace(LEDGER_SPLIT_DATE, " ");
+  return {
+    startsWithDate,
+    amountCount: [...withoutDate.matchAll(LEDGER_LINE_AMOUNT)].length,
+    hasDescription:
+      withoutDate
+        .replace(LEDGER_LINE_AMOUNT, " ")
+        .replace(/[|,，;；：:/\\_\-—]+/g, " ")
+        .replace(/\s+/g, "").length >= 1,
+  };
+}
+
+/**
+ * 反向校验：按日期切出来的段必须彼此同格式，才认可是「一批流水记录」。
+ *
+ * 否则一句话会被拆坏——区间描述 `2026-11-01 到 2026-11-30 共消费 1000 元`
+ * 会被切成 `2026-11-01 到`（没有金额）和 `2026-11-30 共消费 1000 元`。
+ *
+ * 判据分两层：
+ * - 硬：每段以日期起头、**恰好一个金额**。区间描述与纯日期在这里落选。
+ * - 软：描述形态要齐（要么每段都有描述，要么都没有）。
+ *
+ * 「带不带账户词」刻意不参与判定：流水里省略卡名太常见（`2026-11-01 早餐 15 浦发信用卡`
+ * 紧接 `2026-11-02 打车 32`），拿它当门槛会把正常两笔判成不同格式而不切。
+ * 同理「日期 + 金额」两列粘贴没有描述，只要是齐齐地没有，仍算同格式。
+ */
+function looksLikeHomogeneousLedger(segments: string[]): boolean {
+  if (segments.length < 2) return false;
+  const shapes = segments.map(ledgerSegmentShape);
+  if (!shapes.every((shape) => shape.startsWithDate && shape.amountCount === 1)) {
+    return false;
+  }
+  return new Set(shapes.map((shape) => shape.hasDescription)).size === 1;
+}
+
+/**
+ * 把整段文本切成「一笔一段」。
+ *
+ * 只按换行切是不够的：从聊天记录、短信里复制出来时经常是三笔挤成一行
+ * （`2026-11-11 45.50 生活费 浦发信用卡 2026-11-11 37.10 邮储信用卡 …`），
+ * 一行只剩一笔可切。日期是流水里最可靠的记录边界，按它再切一次。
+ * 首个日期之前的内容直接丢弃——那里通常是「共 3 笔」这类表头，当成一笔会多记。
+ * 切完还要过 {@link looksLikeHomogeneousLedger} 反验，不同构就退回整行不切。
+ */
+function splitLedgerSegments(text: string): string[] {
+  const segments: string[] = [];
+  for (const rawLine of String(text ?? "").split("\n")) {
+    const line = rawLine.trim();
+    if (!line) continue;
+
+    const hits = [...line.matchAll(LEDGER_SPLIT_DATE)];
+    if (hits.length < 2) {
+      segments.push(line);
+      continue;
+    }
+    const parts: string[] = [];
+    hits.forEach((hit, index) => {
+      const start = hit.index ?? 0;
+      const end = index + 1 < hits.length ? (hits[index + 1].index ?? line.length) : line.length;
+      const segment = line.slice(start, end).trim();
+      if (segment) parts.push(segment);
+    });
+    // 反验不过：整行原样留着，交给后续单笔/多行逻辑，不做牺牲性切分。
+    if (!looksLikeHomogeneousLedger(parts)) {
+      segments.push(line);
+      continue;
+    }
+    segments.push(...parts);
+  }
+  return segments;
+}
+
+/**
+ * 多行流水文本 → 逐行条目（不依赖模型）。
+ *
+ * 之所以需要它：`batch_table` 规则分支和长文本批量分支会把**用户原文**直接喂给
+ * {@link parseItems}，而那段文本不是 JSON，`extractItemsFromText` 必然返回 null，
+ * 兜底逻辑于是把「三行三笔」压成「一笔、金额取最后一个数字」。这里按行切分补上这条路径。
+ *
+ * 金额取该行最后一个数字：流水普遍把金额放在行尾。卡号/尾号先剔除，
+ * 避免把「尾号3833」的 3833 认成金额。
+ * 少于 2 行能切出条目时返回 null，交给调用方的单笔兜底，避免误伤自然语句。
+ */
+export function parseLedgerLines(text: string, now: Date): ParsedItem[] | null {
+  const lines = splitLedgerSegments(text);
+  if (lines.length < 2) return null;
+
+  const items: ParsedItem[] = [];
+  for (const line of lines) {
+    if (LEDGER_LINE_SUMMARY.test(line)) continue;
+
+    // 依次尝试：完整日期 → 11月01日 → 行首 11-01。第一个命中的就从行里摘掉，
+    // 避免日期里的数字被当成金额。
+    let dateToken: string | undefined;
+    let withoutDate = line;
+    const full = line.match(LEDGER_LINE_DATE_FULL);
+    const md = full ? null : line.match(LEDGER_LINE_DATE_MD);
+    const head = full || md ? null : line.match(LEDGER_LINE_DATE_HEAD);
+    if (full) {
+      dateToken = `${full[1]}-${full[2].padStart(2, "0")}-${full[3].padStart(2, "0")}`;
+      withoutDate = line.replace(full[0], " ");
+    } else if (md) {
+      dateToken = normalizeMonthDayDate(Number(md[1]), Number(md[2]), now) ?? undefined;
+      withoutDate = line.replace(md[0], " ");
+    } else if (head) {
+      dateToken = normalizeMonthDayDate(Number(head[1]), Number(head[2]), now) ?? undefined;
+      withoutDate = line.replace(head[0], " ");
+    }
+
+    const amountSource = withoutDate.replace(/(尾号|卡号|账号|\*{2,})\s*\d+/g, " ");
+    const candidates = [...amountSource.matchAll(LEDGER_LINE_AMOUNT)]
+      .map((m) => Math.abs(Number(m[2].replace(/,/g, ""))))
+      .filter((value) => Number.isFinite(value) && value > 0 && value < 1_000_000_000);
+    if (!candidates.length) continue;
+
+    const amount = candidates[candidates.length - 1];
+    const remark = amountSource
+      .replace(LEDGER_LINE_AMOUNT, "$1 ")
+      .replace(/[|,，;；:：/]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 60);
+    // 既没日期也没描述的行，大概率是页眉页脚或分隔线，不当成流水。
+    if (!remark && !dateToken) continue;
+
+    // 「入账」不算收入信号：「消费入账」也是入账，误判会把支出记成收入。
+    const isIncome = /(工资|收入|收款|报销|利息|红包)/.test(line);
+    items.push({
+      rawText: line.slice(0, 200),
+      type: isIncome ? "income" : "expense",
+      date: normalizeDate(dateToken, line, now),
+      amount,
+      remark: remark.replace(/(元|块钱|块|RMB)$/i, "").trim() || undefined,
+    });
+  }
+
+  if (items.length < 2) return null;
+  // 多行文本一律要人工过一眼：行内切分是启发式的，不能静默落账。
+  return items;
+}
+
 export function parseItems(raw: string, now: Date, userTextForContext: string): { items: ParsedItem[]; directImport: boolean } {
   const items = extractItemsFromText(raw);
   if (!items || items.length === 0) {
+    const ledgerItems = parseLedgerLines(userTextForContext || raw, now);
+    if (ledgerItems) return { items: ledgerItems, directImport: false };
     const ctx = (userTextForContext || raw).trim();
     const fallback: ParsedItem = {
       rawText: ctx.slice(0, 200),

@@ -205,6 +205,15 @@ function preprocessBillText(raw: string, currentYear: number = Number(todayDateB
   return { cleaned, header, txLines };
 }
 
+/**
+ * 规则只切出一笔、原文却有多行：说明这份文本没被规则吃透（多行被压成了一笔）。
+ * 此时不能把结果返回给前端——单笔 + 字段齐全会被自动入库，等于静默丢账。
+ */
+function ruleParseCollapsed(text: string, itemCount: number) {
+  if (itemCount !== 1) return false;
+  return text.split("\n").map((line) => line.trim()).filter(Boolean).length > 1;
+}
+
 function parseBillTxLines(txLines: string[], header: BillHeader, issuerKeyword: string): ParsedItem[] {
   const items: ParsedItem[] = [];
   for (const line of txLines) {
@@ -1489,6 +1498,10 @@ export async function POST(req: Request) {
         ? parseCMBFundRecord(text, now)
         : parseItems(text, now, text);
       const items = await enrichItems(parsedOut.items);
+      if (ruleParseCollapsed(text, items.length)) {
+        // 不返回：继续走下面的模型解析，让模型重新切分多行记录。
+        return null;
+      }
       if (items.length) {
         return {
           ok: true,
@@ -1563,9 +1576,11 @@ export async function POST(req: Request) {
       const now = new Date();
       const parsedOut = parseItems(text, now, text);
       const items = await enrichItems(parsedOut.items);
-      if (items.length) {
+      if (items.length && !ruleParseCollapsed(text, items.length)) {
         const isBill = isBillStatement(text);
-        const directImport = !isBill && items.every(isReadyForImport);
+        // parsedOut.directImport 已对「逐行切分」的结果置 false，这里必须一起参与，
+        // 否则重算成 true 又把多行文本放进了自动入库。
+        const directImport = !isBill && parsedOut.directImport && items.every(isReadyForImport);
         return NextResponse.json(
           {
             ok: true,
@@ -1769,7 +1784,9 @@ export async function POST(req: Request) {
     const parsedOut = parseItems(rawContent, now, text ?? "");
     const items = await enrichPreviewAccountNames(await enrichItems(parsedOut.items), hidFilter, accountId);
     const isBill = isBillStatement(text ?? "");
-    const directImport = items.every(isReadyForImport);
+    // 与上面两处规则分支同一口径：解析层判定「需要人工确认」时必须一起参与，
+    // 否则这里重算成 true 会把逐行切分/账单类结果重新放回自动入库。
+    const directImport = parsedOut.directImport && items.every(isReadyForImport);
     const finalDirectImport = !isBill && directImport;
 
     const duplicates: Array<{ existingEntryId: string; existingTransactionId: string; overlapStart: Date; overlapEnd: Date }> = [];
