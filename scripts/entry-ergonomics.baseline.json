@@ -1,0 +1,58 @@
+{
+  "src/components/TransactionFormModal.tsx": {
+    "name": "支出/收入/转账",
+    "controls": 11,
+    "smartSelect": 21,
+    "required": 10,
+    "effects": 22,
+    "lines": 3587
+  },
+  "src/components/InvestmentFormModal.tsx": {
+    "name": "投资买入卖出",
+    "controls": 29,
+    "smartSelect": 6,
+    "required": 8,
+    "effects": 36,
+    "lines": 3901
+  },
+  "src/components/WealthFormModal.tsx": {
+    "name": "银行理财",
+    "controls": 11,
+    "smartSelect": 4,
+    "required": 0,
+    "effects": 3,
+    "lines": 976
+  },
+  "src/components/BondFormModal.tsx": {
+    "name": "债券/逆回购",
+    "controls": 14,
+    "smartSelect": 4,
+    "required": 0,
+    "effects": 4,
+    "lines": 1175
+  },
+  "src/components/DepositFormModal.tsx": {
+    "name": "存款",
+    "controls": 17,
+    "smartSelect": 6,
+    "required": 0,
+    "effects": 25,
+    "lines": 2417
+  },
+  "src/components/StockTransactionFormModal.tsx": {
+    "name": "股票交易",
+    "controls": 16,
+    "smartSelect": 3,
+    "required": 0,
+    "effects": 14,
+    "lines": 1834
+  },
+  "src/components/LiabilityTransactionModal.tsx": {
+    "name": "往来款",
+    "controls": 22,
+    "smartSelect": 10,
+    "required": 0,
+    "effects": 26,
+    "lines": 3742
+  }
+}
