@@ -281,6 +281,25 @@ const StatementImportPreviewDialog = dynamic(
 /** 超过这个条数改用完整导入预览弹窗（可逐格修改），少量记录仍用对话内卡片。 */
 const AI_BULK_PREVIEW_THRESHOLD = 5;
 
+/**
+ * 自动入库的条数上限：只有**单笔**记账在识别完整时直接入库，不再弹确认。
+ * 2 笔起一律走确认（≤5 用对话内勾选卡片，>5 用完整导入预览）。
+ * 注意不要写成「条数 < 1」，那样永远不成立。
+ */
+const AI_AUTO_IMPORT_MAX_COUNT = 1;
+
+/**
+ * 「得分够」= 这笔记录可以原样落账，不需要用户补任何必填项。
+ * 比 `isRowReadyForImport` 更严：日期必须明确，且必须有真实账户名
+ * （不靠 `_meta.institutionName` 兜底），避免自动入库时凭空新建账户。
+ */
+function isConfidentForAutoImport(item: ParsedItem) {
+  if (!isRowReadyForImport(item)) return false;
+  if (!item.date?.trim()) return false;
+  if (item.type === "transfer") return true;
+  return Boolean(item.accountId?.trim() || item.account?.trim());
+}
+
 function toStatementPreviewItem(item: ParsedItem): StatementImportPreviewItem {
   return {
     rawText: item.rawText ?? "",
@@ -341,6 +360,11 @@ export function AIPanel({
   const { t } = useI18n();
   const chatEndRef = useRef<HTMLDivElement>(null);
   const modelsLoadedRef = useRef(false);
+  /**
+   * 导入去重用 ref 而不是 `loading`：自动入库发生在解析刚落账的那一轮渲染里，
+   * 闭包里的 `loading` 还是 true，用 state 判断会把自动入库直接吞掉。
+   */
+  const importingRef = useRef(false);
 
   /* State */
   const [mounted, setMounted] = useState(false);
@@ -646,9 +670,29 @@ export function AIPanel({
 
   /* ---- Handlers ---- */
 
-  /** 模型填表 → 程序二次识别后给出最终操作；条数多则改用可编辑的导入预览弹窗。 */
-  function presentImportItems(allItems: ParsedItem[], trace?: string[], keyPrefix = "ai") {
+  /**
+   * 模型填表 → 程序二次识别后给出最终操作。
+   * 单笔（≤{@link AI_AUTO_IMPORT_MAX_COUNT} 条）且识别完整时直接入库，不再让用户点确认；
+   * 2 笔起或任一笔记缺必填项才升级为确认卡片 / 导入预览弹窗。
+   */
+  function presentImportItems(allItems: ParsedItem[], trace?: string[], keyPrefix = "ai", allowAutoImport = true) {
     const finalAction = buildFinalActionText(allItems, t);
+    const autoImport = allowAutoImport
+      && allItems.length > 0
+      && allItems.length <= AI_AUTO_IMPORT_MAX_COUNT
+      && allItems.every(isConfidentForAutoImport);
+    if (autoImport) {
+      setImportConfirmDialog(null);
+      setBulkPreview(null);
+      setMessages((m) => [...m, {
+        role: "assistant",
+        text: `${t("aiPanel.autoImportNoConfirm")}\n\n${formatRecognitionPreviewText(allItems, t)}`,
+        trace,
+      }]);
+      // 等本轮 handleSend 的 finally 把 loading 复位后再跑，避免与解析态互相覆盖。
+      setTimeout(() => { void runImport(allItems); }, 0);
+      return;
+    }
     if (allItems.length > AI_BULK_PREVIEW_THRESHOLD) {
       setImportConfirmDialog(null);
       setBulkPreview(allItems.map(toStatementPreviewItem));
@@ -670,7 +714,8 @@ export function AIPanel({
   }
 
   async function runImport(selected: ParsedItem[]) {
-    if (!selected.length || loading) return;
+    if (!selected.length || importingRef.current) return;
+    importingRef.current = true;
     setLoading(true);
     try {
       const result = await importItems(selected);
@@ -698,7 +743,10 @@ export function AIPanel({
       });
     } catch (e: any) {
       setMessages((m) => [...m, { role: "assistant", text: t("aiPanel.importFailed", { message: e.message }) }]);
-    } finally { setLoading(false); }
+    } finally {
+      importingRef.current = false;
+      setLoading(false);
+    }
   }
 
   /** 只撤销「本次 AI 导入」的快照，再把候选行放回可修改状态。 */
@@ -724,7 +772,8 @@ export function AIPanel({
       setLastImport(null);
       dispatchFinanceDataChanged({ reason: "ai-entry-undo" });
       setMessages((m) => [...m, { role: "assistant", text: t("aiPanel.undoneAndEditable") }]);
-      presentImportItems(items, undefined, "undo");
+      // 「撤销并修改」必须给用户一个可改的确认卡片：这里禁止自动入库，否则单笔会被原样再写一遍。
+      presentImportItems(items, undefined, "undo", false);
     } catch (e: any) {
       setMessages((m) => [...m, { role: "assistant", text: t("aiPanel.undoFailed", { message: e.message }) }]);
     } finally { setUndoBusy(false); }

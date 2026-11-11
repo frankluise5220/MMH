@@ -33,7 +33,8 @@ for (const [key, rel] of Object.entries(FILES)) {
 }
 
 const required = [
-  ["AI 导入写批量撤销快照", "aiImport", "prepareEntryUndo("],
+  // 导入改成批量建行后用 prepareCreatedEntryUndo 按新建 id 生成快照（取代逐条 prepareEntryUndo）
+  ["AI 导入写批量撤销快照", "aiImport", "prepareCreatedEntryUndo("],
   ["AI 导入保存 batch_create 快照", "aiImport", "saveEntryUndo("],
   ["AI 导入快照动作为 batch_create", "aiImport", '"batch_create"'],
   ["AI 导入失效信用卡账单缓存", "aiImport", "invalidateCreditCardCycleCacheForAccountIds("],
