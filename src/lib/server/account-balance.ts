@@ -252,6 +252,8 @@ export async function computeAccountDisplayBalances(
         fundName: true,
         fundCode: true,
         fundArrivalDate: true,
+        // 存单分桶用产品 id 做稳定身份（见 depositLotProductKey），名称/代码可能为空。
+        depositProductId: true,
         depositSourceEntryId: true,
       },
       orderBy: [{ date: "asc" }, { createdAt: "asc" }, { id: "asc" }],

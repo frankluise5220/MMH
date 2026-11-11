@@ -111,19 +111,35 @@ export function depositRedemptionPrincipal(entry: DepositAmountRow): number {
 const DEPOSIT_LOT_DIVIDEND_SUBTYPES = new Set(["dividend_cash", "dividend_reinvest"]);
 const DEPOSIT_LOT_REDEMPTION_SUBTYPES = new Set(["redeem", "switch_out"]);
 
-function depositLotName(entry: { fundName?: string | null; fundCode?: string | null }) {
-  // 兜底名必须与「取回行」用同一份原始字符串：两边都为空时 key 相同，不能带任何
-  // 本地化占位文案，否则同一张存单的存入行和取回行会算出两个不同的 key。
-  return (entry.fundName ?? entry.fundCode ?? "").trim();
-}
-
-function depositLotBucketKey(
+/**
+ * 一张存单的分桶键候选，**按身份精度从高到低**：
+ *   产品 id → 产品代码 → 产品名 → 空串
+ *
+ * 为什么不是单键：
+ * - 身份精度：实测开发库 50 行存款的 `fundName`、`fundCode` 全是 null，键里的名称段
+ *   一直是空串，同一存款账户 + 同一到期日的两张不同产品存单会落进同一个 bucket，
+ *   取回时被扣到错误的存单上。`depositProductId`（多数行有值）才能真正区分它们。
+ * - 兼容：存入行和取回行的字段并不总是齐平（一侧有 id、另一侧只有名字），单键会让
+ *   同一张存单的两侧算出不同 key，剩余本金扣不掉、余额虚高。所以注册时把每个候选
+ *   都挂一份，查找时按精度逐个试，先命中先用。
+ *
+ * 名称只作为最后的兜底，永远排在 id 和代码之后 —— 名称会随改名变化，id 和代码不会。
+ */
+function depositLotBucketKeys(
   depositAccountId: string,
-  entry: { fundName?: string | null; fundCode?: string | null; fundArrivalDate?: Date | null },
+  entry: {
+    depositProductId?: string | null;
+    fundName?: string | null;
+    fundCode?: string | null;
+    fundArrivalDate?: Date | null;
+  },
   dateKey: (value: Date) => string | null,
-) {
+): string[] {
   const maturityKey = entry.fundArrivalDate ? dateKey(entry.fundArrivalDate) ?? "" : "";
-  return `${depositAccountId}\u001f${depositLotName(entry)}\u001f${maturityKey}`;
+  const identities = [entry.depositProductId, entry.fundCode, entry.fundName, ""]
+    .map((value) => (value ?? "").trim())
+    .filter((value, index, all) => all.indexOf(value) === index);
+  return identities.map((identity) => `${depositAccountId}\u001f${identity}\u001f${maturityKey}`);
 }
 
 export type DepositCashValueEntry = {
@@ -133,6 +149,8 @@ export type DepositCashValueEntry = {
   fundSubtype?: string | null;
   fundName?: string | null;
   fundCode?: string | null;
+  /** 存单所属存款产品 id：分桶的首选身份。名称和代码在实测数据里都是 null，只有它能稳定区分同账户同到期日的不同产品存单。 */
+  depositProductId?: string | null;
   accountId?: string | null;
   toAccountId?: string | null;
   amount?: unknown;
@@ -159,7 +177,7 @@ export type DepositCashValueLot = {
  * - 日期边界一致：只统计生效日（存入日）≤ asOfKey 的行，未来的取回不会提前把
  *   今天的本金扣掉；
  * - 取回匹配一致：优先按 `depositSourceEntryId` 关联到存单，缺失关联的旧数据按
- *   「存款账户 + 产品名 + 到期日」兜底扣减；
+ *   「存款账户 + 产品 id / 代码（名称仅作最后兜底）+ 到期日」分桶扣减；
  * - 利息/取息行既不开存单也不关存单，只作为现金流存在。
  *
  * 存款账户上的普通收支（转账、利息收入等）**不参与**这里的余额 —— 那些钱没有
@@ -205,10 +223,12 @@ export function computeDepositCashValueByAccount(params: {
       redemptionEntryIds: [],
     };
     lots.push(lot);
-    const key = depositLotBucketKey(lot.depositAccountId, entry, dateKey);
-    const bucket = lotBuckets.get(key);
-    if (bucket) bucket.push(lot);
-    else lotBuckets.set(key, [lot]);
+    // 每个身份的键都挂一份，让对侧行无论缺 id、缺代码还是缺名字都能命中同一张存单。
+    for (const key of depositLotBucketKeys(lot.depositAccountId, entry, dateKey)) {
+      const bucket = lotBuckets.get(key);
+      if (bucket) bucket.push(lot);
+      else lotBuckets.set(key, [lot]);
+    }
   }
 
   // 第二遍扣减：取回可能早于存入行的展示排序（提前取回时按到期日排序会把存入行
@@ -221,9 +241,17 @@ export function computeDepositCashValueByAccount(params: {
     const linked = entry.depositSourceEntryId
       ? lots.find((lot) => lot.lotId === entry.depositSourceEntryId)
       : undefined;
-    const bucket = linked
-      ? [linked]
-      : lotBuckets.get(depositLotBucketKey(entry.accountId, entry, dateKey)) ?? [];
+    // 没有显式关联的老数据：按身份精度从高到低找第一个非空桶，命中即用。
+    let bucket: DepositCashValueLot[] = linked ? [linked] : [];
+    if (!linked) {
+      for (const key of depositLotBucketKeys(entry.accountId, entry, dateKey)) {
+        const found = lotBuckets.get(key);
+        if (found && found.length > 0) {
+          bucket = found;
+          break;
+        }
+      }
+    }
     for (const lot of bucket) {
       if (lot.remainingPrincipal <= 0) continue;
       lot.remainingPrincipal = Math.max(
