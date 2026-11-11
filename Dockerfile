@@ -10,9 +10,11 @@
 # 0.1.81 → 本版之间 package.json 的依赖没有变化（只有 version 与业务代码），
 # 因此 node_modules、prisma CLI、schema-engine、基础镜像都可以整层复用。
 # 构建时先按原版 Dockerfile 的完全相同命令编译出 standalone，再与 0.1.81 的
-# /app 逐文件比对，只把变化的文件按体积轮转分到 12 个目录；最终镜像每条 COPY
-# 是一层，单层 < 4 MB。国内镜像站对 8.75 MB 的 blob 也会「下到 100% 后不落盘」，
-# 所以单文件阈值取 3.5 MB，而不是之前拍的 10 MB。
+# /app 逐文件比对，只把变化的文件按体积从大到小装进当前最轻的桶（贪心均衡）；
+# 最终镜像每条 COPY 是一层，单层 < 4 MB。国内镜像站对 8.75 MB 的 blob 也会
+# 「下到 100% 后不落盘」，所以单文件阈值取 3.5 MB，而不是之前拍的 10 MB。
+# 0.1.84 教训：原来是 `n % 12` 轮转，最大的 1/13/25… 个文件全部落进 p0，
+# 752 个变化文件时 p0 达 4168 KB 越限、App 镜像直接构建失败（GHCR 无 0.1.84）。
 ARG BASE_IMAGE=ghcr.io/frankluise5220/mmh:0.1.83
 ARG NODE_BUILD_IMAGE=node:20-bookworm
 # 兼容 CI 现有的 build-args；prisma 运行时现在整层复用 BASE_IMAGE，不再单独安装。
@@ -99,13 +101,17 @@ RUN set -eu; \
     if [ -n "$oversize" ]; then \
       echo "单个变化文件超过 3.5 MB，无法切成安全层：$oversize" >&2; exit 1; \
     fi; \
-    for i in 0 1 2 3 4 5 6 7 8 9 10 11; do mkdir -p "/app/parts/p$i"; done; \
-    n=0; \
+    for i in 0 1 2 3 4 5 6 7 8 9 10 11; do mkdir -p "/app/parts/p$i"; echo 0 > "/tmp/load$i"; done; \
     find /app/delta -type f -printf '%s %p\n' | sort -rn | while read -r size f; do \
       rel="${f#/app/delta/}"; \
-      g=$((n % 12)); n=$((n + 1)); \
+      g=0; smallest=$(cat /tmp/load0); \
+      for i in 1 2 3 4 5 6 7 8 9 10 11; do \
+        v=$(cat "/tmp/load$i"); \
+        if [ "$v" -lt "$smallest" ]; then g=$i; smallest=$v; fi; \
+      done; \
       mkdir -p "/app/parts/p$g/$(dirname "$rel")"; \
       cp "$f" "/app/parts/p$g/$rel"; \
+      echo $((smallest + (size + 1023) / 1024)) > "/tmp/load$g"; \
     done; \
     for i in 0 1 2 3 4 5 6 7 8 9 10 11; do \
       sz=$(du -sk "/app/parts/p$i" | cut -f1); \
