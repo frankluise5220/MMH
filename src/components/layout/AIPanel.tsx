@@ -5,7 +5,7 @@ import type { StatementImportPreviewItem } from "@/components/StatementImportPre
 
 import { useEffect, useRef, useState, type ClipboardEvent } from "react";
 import { createPortal } from "react-dom";
-import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { usePathname, useSearchParams } from "next/navigation";
 import { PanelRightClose, PanelRightOpen, Send, X, Wand2, ImagePlus, Plus, Settings, ChevronDown, ChevronRight, Sparkles, Trash2, Eye, Pencil, Mail } from "lucide-react";
 import { formatMoney } from "@/lib/format";
 import { AI_API_MODES, CHANNEL_TYPES, getModelsUrl, normalizeAiApiMode, type AiApiMode } from "@/lib/ai/config";
@@ -16,6 +16,7 @@ import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { recordRecentAccounts } from "@/lib/client/recentAccounts";
 import { showConfirmDialog } from "@/lib/client/confirm-dialog";
 import { TableColumnFilter } from "@/components/TableColumnFilter";
+import { CreditBillMailImportDialog, prefetchMailImportPanel } from "@/components/CreditBillMailImportButton";
 import {
   APP_PREFS_EVENT,
   getAiPanelCollapsedPreference,
@@ -335,7 +336,6 @@ export function AIPanel({
   defaultAccountName?: string;
   initialCollapsed?: boolean;
 }) {
-  const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const { t } = useI18n();
@@ -1023,6 +1023,8 @@ export function AIPanel({
   const [modelDropdownOpen, setModelDropdownOpen] = useState(false);
   /** 模型下拉里被折叠的供应商分组（默认全部展开，点标题收起） */
   const [collapsedModelGroups, setCollapsedModelGroups] = useState<Record<string, boolean>>({});
+  /** 邮箱导入独立窗口（复用信用卡账单那套弹窗，不必再跳系统设置） */
+  const [mailImportOpen, setMailImportOpen] = useState(false);
   const [settingsView, setSettingsView] = useState(false);
 
   /* ---- Settings state ---- */
@@ -2508,7 +2510,9 @@ export function AIPanel({
           </label>
           <button
             type="button"
-            onClick={() => router.push("/settings/email")}
+            onMouseEnter={() => prefetchMailImportPanel()}
+            onFocus={() => prefetchMailImportPanel()}
+            onClick={() => { prefetchMailImportPanel(); setMailImportOpen(true); }}
             className="flex items-center gap-1.5 px-2 py-1.5 rounded-lg text-[10px] font-bold text-foreground/30 hover:text-foreground/60 hover:bg-foreground/5 transition-all"
             title={t("aiPanel.emailImportTitle")}
           >
@@ -2531,6 +2535,8 @@ export function AIPanel({
           onConfirm={(items) => { void runImport(items.map(fromStatementPreviewItem)); }}
         />
       )}
+      {/* 邮箱导入独立窗口：选账号 → 获取邮件 → 选中账单 → 预览确认导入 */}
+      <CreditBillMailImportDialog open={mailImportOpen} onClose={() => setMailImportOpen(false)} />
     </>
   );
 }
