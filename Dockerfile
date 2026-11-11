@@ -13,7 +13,7 @@
 # /app 逐文件比对，只把变化的文件按体积轮转分到 12 个目录；最终镜像每条 COPY
 # 是一层，单层 < 4 MB。国内镜像站对 8.75 MB 的 blob 也会「下到 100% 后不落盘」，
 # 所以单文件阈值取 3.5 MB，而不是之前拍的 10 MB。
-ARG BASE_IMAGE=ghcr.io/frankluise5220/mmh:0.1.82
+ARG BASE_IMAGE=ghcr.io/frankluise5220/mmh:0.1.83
 ARG NODE_BUILD_IMAGE=node:20-bookworm
 # 兼容 CI 现有的 build-args；prisma 运行时现在整层复用 BASE_IMAGE，不再单独安装。
 ARG PRISMA_CLI_VERSION=7.8.0
