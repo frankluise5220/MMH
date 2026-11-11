@@ -137,8 +137,8 @@ export async function loadStockHoldingReport(
         securityId: item.securityId,
         market: item.market,
         stockCode: item.stockCode,
-        // 名字只认 StockSecurity；持仓行的 stockName 是历史快照。
-        stockName: item.StockSecurity?.stockName?.trim() || item.stockCode,
+        // 名字优先认 StockSecurity；持仓行的 stockName 是历史快照，仅资料库缺行时兜底。
+        stockName: item.StockSecurity?.stockName?.trim() || item.stockName?.trim() || item.stockCode,
         quantity,
         avgCost: toNumber(item.avgCost),
         cost,

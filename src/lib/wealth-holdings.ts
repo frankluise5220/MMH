@@ -92,9 +92,13 @@ export function buildWealthHoldingOptions(params: {
 
     // 产品条款：理财读 WealthProduct，债券读自己的 BondProduct（两类独立主数据）。
     const productInfo = entry.WealthProduct ?? entry.BondProduct ?? null;
-    const productName = productInfo?.name ?? entry.fundName ?? unnamedFallback;
+    // 名称只在展示层用：资料库优先，缺行时退回本行快照（历史兼容），最后才是兜底文案。
+    // 原先读的 entry.fundName 在 wealthTransaction 上并不存在，等于丢掉了 productName 快照。
+    const productName = productInfo?.name?.trim() || entry.productName?.trim() || unnamedFallback;
     const productLabel = productInfo?.shortName?.trim() || productName;
-    const productKey = entry.wealthProductId ? `product:${entry.wealthProductId}` : `name:${productName}`;
+    // 分组键只用 id，名称不参与：实测 171 行理财记录全部有 wealthProductId，名称分支是
+    // 死代码；万一将来出现无 id 的行，用行 id 单独成桶 —— 按名字合并会让同名不同产品串数据。
+    const productKey = entry.wealthProductId ? `product:${entry.wealthProductId}` : `entry:${entry.id}`;
     const key = `${wealthAccountId}\u001f${productKey}`;
     const existing = buckets.get(key);
     const annualRate =

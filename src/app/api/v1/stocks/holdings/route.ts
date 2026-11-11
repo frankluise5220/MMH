@@ -65,7 +65,7 @@ export async function GET(req: NextRequest) {
         securityId: item.securityId,
         market: item.market,
         stockCode: item.stockCode,
-        stockName: securityNames.get(item.securityId) ?? item.stockCode,
+        stockName: securityNames.get(item.securityId) ?? item.stockName ?? item.stockCode,
         quantity: item.quantity,
         avgCost: 0,
         cost: 0,
@@ -107,8 +107,8 @@ export async function GET(req: NextRequest) {
         securityId: item.securityId,
         market: item.market,
         stockCode: item.stockCode,
-        // 名字只认 StockSecurity；持仓行的 stockName 是历史快照。
-        stockName: item.StockSecurity?.stockName?.trim() || item.stockCode,
+        // 名字优先认 StockSecurity；持仓行的 stockName 是历史快照，仅资料库缺行时兜底。
+        stockName: item.StockSecurity?.stockName?.trim() || item.stockName?.trim() || item.stockCode,
         quantity: toNumber(item.quantity),
         avgCost: toNumber(item.avgCost),
         cost,

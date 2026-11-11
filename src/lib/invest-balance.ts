@@ -646,8 +646,8 @@ export const computePositionDisplay = cache(
         stockCode: holding.stockCode,
         market: holding.market,
         securityId: holding.securityId,
-        // 名字只认 StockSecurity；持仓行的 stockName 是历史快照。
-        name: holding.StockSecurity?.stockName?.trim() || holding.stockCode,
+        // 名字优先认 StockSecurity；持仓行的 stockName 是历史快照，仅资料库缺行时兜底。
+        name: holding.StockSecurity?.stockName?.trim() || holding.stockName?.trim() || holding.stockCode,
         holdingDate: "",
         units: quantity,
         avgCost: toNumber(holding.avgCost),
