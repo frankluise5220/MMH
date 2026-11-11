@@ -95,4 +95,5 @@ export const KNOWN_BACKUP_DATA_TABLES = [
   "attachments",
   "entryTags",
   "emailAccounts",
+  "statementMailAutoImports",
 ] as const;

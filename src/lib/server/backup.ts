@@ -1863,6 +1863,7 @@ export async function buildHouseholdBackupPayload(
     importBatches,
     transactions,
     emailAccounts,
+    statementMailAutoImports,
     preciousMetalTypes,
     preciousMetalUnits,
     fxRates,
@@ -1952,6 +1953,7 @@ export async function buildHouseholdBackupPayload(
     prisma.importBatch.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.txRecord.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.emailAccount.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
+    prisma.statementMailAutoImport.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.preciousMetalType.findMany({ where: { householdId }, orderBy: [{ sortOrder: "asc" }, { name: "asc" }] }),
     prisma.preciousMetalUnit.findMany({ where: { householdId }, orderBy: [{ sortOrder: "asc" }, { name: "asc" }] }),
     prisma.fxRate.findMany({ where: { householdId }, orderBy: [{ rateDate: "asc" }] }),
@@ -2129,6 +2131,7 @@ export async function buildHouseholdBackupPayload(
       institutions: institutions.length,
       counterparties: counterparties.length,
       emailAccounts: emailAccounts.length,
+      statementMailAutoImports: statementMailAutoImports.length,
       fundQueryApis: fundQueryApis.length,
       regularInvestPlans: regularInvestPlans.length,
       businessTransactions:
@@ -2232,6 +2235,7 @@ export async function buildHouseholdBackupPayload(
       attachments,
       entryTags,
       emailAccounts,
+      statementMailAutoImports,
     },
   };
 }
@@ -2711,6 +2715,7 @@ export function parseBackupPayload(raw: unknown) {
       attachments: ensureArray(data.attachments ?? [], "data.attachments"),
       entryTags: ensureArray(data.entryTags ?? [], "data.entryTags"),
       emailAccounts: ensureArray(data.emailAccounts ?? [], "data.emailAccounts"),
+      statementMailAutoImports: ensureArray(data.statementMailAutoImports ?? [], "data.statementMailAutoImports"),
     }),
   };
 }
@@ -3062,6 +3067,8 @@ async function restoreSingleHouseholdBackup(
     await tx.preciousMetalType.deleteMany({ where: { householdId } });
     await tx.preciousMetalUnit.deleteMany({ where: { householdId } });
     await tx.fxRate.deleteMany({ where: { householdId } });
+    await tx.statementMailAutoImportJob.deleteMany({ where: { householdId } });
+    await tx.statementMailAutoImport.deleteMany({ where: { householdId } });
     await tx.emailAccount.deleteMany({ where: { householdId } });
     await tx.tag.deleteMany({ where: { householdId } });
     await tx.statementRecognitionRule.deleteMany({ where: { householdId } });
@@ -4869,6 +4876,32 @@ async function restoreSingleHouseholdBackup(
           createdAt: item.createdAt ? new Date(String(item.createdAt)) : new Date(),
           updatedAt: item.updatedAt ? new Date(String(item.updatedAt)) : new Date(),
         })),
+      });
+    }
+
+    const importedEmailAccounts = new Set(data.emailAccounts.map((item) => String(item.id)));
+    if (data.statementMailAutoImports.length > 0) {
+      await tx.statementMailAutoImport.createMany({
+        data: data.statementMailAutoImports
+          // 邮箱账户按原 id 重建；引用不到的直接丢弃，避免外键失败。
+          .filter((item) => importedEmailAccounts.has(String(item.emailAccountId)))
+          .map((item) => ({
+            id: String(item.id),
+            householdId,
+            emailAccountId: String(item.emailAccountId),
+            accountId: item.accountId && importedAccounts.has(String(item.accountId)) ? String(item.accountId) : null,
+            accountName: item.accountName == null ? null : String(item.accountName),
+            fromIncludes: item.fromIncludes == null ? null : String(item.fromIncludes),
+            subjectIncludes: item.subjectIncludes == null ? null : String(item.subjectIncludes),
+            dayOfMonth: Number(item.dayOfMonth ?? 1),
+            hourOfDay: Number(item.hourOfDay ?? 9),
+            enabled: item.enabled == null ? true : Boolean(item.enabled),
+            lastRunAt: item.lastRunAt ? new Date(String(item.lastRunAt)) : null,
+            lastError: item.lastError == null ? null : String(item.lastError),
+            nextRunAt: item.nextRunAt ? new Date(String(item.nextRunAt)) : new Date(),
+            createdAt: item.createdAt ? new Date(String(item.createdAt)) : new Date(),
+            updatedAt: item.updatedAt ? new Date(String(item.updatedAt)) : new Date(),
+          })),
       });
     }
 

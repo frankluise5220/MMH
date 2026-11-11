@@ -47,6 +47,8 @@ const INTENTIONAL_EXCLUSIONS = new Map(
     RegistrationCode: "Invite/registration codes are instance-scoped, never part of a household snapshot.",
     SponsorTipIntent: "Instance-scoped sponsor state, not household data.",
     UndoOperation: "Undo history is session-local; restore explicitly clears it.",
+    StatementMailAutoImportJob:
+      "Runtime mailbox fetch queue holding raw email bodies; restore clears it and StatementMailAutoImport re-fetches from the mailbox, so raw message bodies and stale pending items never travel inside a backup package.",
     MmhSchemaMeta: "Schema bookkeeping owned by the migration runner.",
     BenchmarkCache: "Derived cache, rebuilt on demand.",
     FundNavCache: "Derived cache, rebuilt on demand.",
