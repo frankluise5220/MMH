@@ -17,8 +17,11 @@ import {
 } from "@/lib/date-utils";
 import {
   DEFAULT_ACCOUNT_USAGE_SORT_ENABLED,
+  DEFAULT_REPO_OCCUPIED_DAYS_MODE,
   PREFERENCE_COOKIE_MIRROR,
+  normalizeRepoOccupiedDaysMode,
   type AppPreferences,
+  type RepoOccupiedDaysMode,
 } from "@/lib/preferences";
 import {
   normalizeRowHeightMode,
@@ -57,6 +60,7 @@ const ROW_HEIGHT_MODE_KEY = "advanced_data_table_row_height_mode";
 export const ACCOUNT_LABEL_FIELDS_COOKIE = "mmh_account_label_fields";
 export const ACCOUNT_DROPDOWN_RESTRICT_TYPE_COOKIE = "mmh_account_dropdown_restrict_type";
 export const ACCOUNT_USAGE_SORT_KEY = "mmh_account_usage_sort";
+export const REPO_OCCUPIED_DAYS_MODE_KEY = "mmh_repo_occupied_days_mode";
 const SIDEBAR_COLLAPSED_KEY = "sidebar_collapsed";
 const SIDEBAR_OWNER_FILTER_KEY = "sidebar_owner_filter";
 const AI_PANEL_COLLAPSED_KEY = "mmh_ai_panel_collapsed";
@@ -98,6 +102,7 @@ type AppPreferencesSnapshot = {
   accountLabelFields: AccountLabelField[];
   accountDropdownRestrictType: boolean;
   accountUsageSortEnabled: boolean;
+  repoOccupiedDaysMode: RepoOccupiedDaysMode;
 };
 
 const DEFAULT_SESSION_DAYS = 30;
@@ -518,6 +523,7 @@ export function getAppPreferences(): AppPreferencesSnapshot {
     accountLabelFields: getAccountLabelFieldsPreference(),
     accountDropdownRestrictType: getAccountDropdownRestrictTypePreference(),
     accountUsageSortEnabled: getAccountUsageSortEnabledPreference(),
+    repoOccupiedDaysMode: getRepoOccupiedDaysModePreference(),
   };
 }
 
@@ -581,3 +587,18 @@ export function setAccountUsageSortEnabledPreference(value: boolean) {
   setCookieValue(ACCOUNT_USAGE_SORT_KEY, value ? "1" : "0");
   emitPreferencesChanged();
 }
+
+/**
+ * 逆回购占款天数口径。表单预览与提交都要用它，否则屏幕上算的利息和落账的利息
+ * 会是两套数（服务端按 DB 里的值，客户端按 cookie 镜像，两边由同一个 PUT 同步）。
+ */
+export function getRepoOccupiedDaysModePreference(): RepoOccupiedDaysMode {
+  return normalizeRepoOccupiedDaysMode(parseCookieValue(REPO_OCCUPIED_DAYS_MODE_KEY));
+}
+
+export function setRepoOccupiedDaysModePreference(value: RepoOccupiedDaysMode) {
+  setCookieValue(REPO_OCCUPIED_DAYS_MODE_KEY, normalizeRepoOccupiedDaysMode(value));
+  emitPreferencesChanged();
+}
+
+export type { RepoOccupiedDaysMode } from "@/lib/preferences";

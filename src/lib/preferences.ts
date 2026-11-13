@@ -27,12 +27,25 @@ export type ColorScheme = "red_up_green_down" | "green_up_red_down";
 export type CreditCardLabelMode = "short_last4" | "full_name";
 export type SidebarGroupMode = "kind" | "institution";
 
+/**
+ * 逆回购占款天数的三种算法。占款天数直接决定预计利息，而「占款」在不同人心里
+ * 指的不是同一件事，所以交给账簿自己选：
+ *   actual      — 成交日 → 回款日的自然日。券商按自然日计息，周五做 1 天期顺延到
+ *                 周一回款，实付 3 天息，这里也是 3 天；
+ *   term        — 只按品种期限，顺延回款不加天。1 天期永远是 1 天；
+ *   arrival_gap — 期限 + 回款日之后到下个交易日的休市天数。回款日落在周五就 +2，
+ *                 用来表达「钱周五回来了但周末动不了」。
+ */
+export type RepoOccupiedDaysMode = "actual" | "term" | "arrival_gap";
+
 export const DEFAULT_TIME_ZONE = "Asia/Shanghai";
 export const DEFAULT_SESSION_DAYS = 30;
 export const DEFAULT_FUND_UNITS_DECIMALS = 2;
 export const DEFAULT_DISPLAY_LANGUAGE: DisplayLanguage = "zh-CN";
 const DEFAULT_COLOR_SCHEME: ColorScheme = "red_up_green_down";
 export const DEFAULT_CREDIT_CARD_LABEL_MODE: CreditCardLabelMode = "short_last4";
+/** 默认与券商实付一致（自然日），用户可在逆回购页签里换成另外两种口径。 */
+export const DEFAULT_REPO_OCCUPIED_DAYS_MODE: RepoOccupiedDaysMode = "actual";
 /** 明细默认观测窗口（年）；0 = 不限，「全部」就真的是全部时间。 */
 export const DEFAULT_DETAIL_WINDOW_YEARS = 5;
 export const DETAIL_WINDOW_YEAR_OPTIONS = [1, 2, 3, 5, 10, 0] as const;
@@ -64,6 +77,7 @@ export type PreferenceRow = {
   accountLabelFields?: string | null;
   accountDropdownRestrictType?: boolean | null;
   accountUsageSortEnabled?: boolean | null;
+  repoOccupiedDaysMode?: string | null;
 };
 
 /** 默认按使用频率排序，与引入开关之前的行为一致。 */
@@ -96,6 +110,8 @@ export type AppPreferences = {
   accountDropdownRestrictType: boolean;
   /** 是否按最近一个月的记账频率给侧边栏和账户下拉排序。 */
   accountUsageSortEnabled: boolean;
+  /** 逆回购占款天数口径（决定预计利息）。 */
+  repoOccupiedDaysMode: RepoOccupiedDaysMode;
 };
 
 export function normalizeSessionDays(input: unknown): number {
@@ -160,6 +176,11 @@ export function normalizeSidebarGroupMode(input: unknown): SidebarGroupMode {
   return input === "institution" ? "institution" : "kind";
 }
 
+/** 非法值一律退回 `actual`，避免存进去的字符串让占款天数算成 0。 */
+export function normalizeRepoOccupiedDaysMode(input: unknown): RepoOccupiedDaysMode {
+  return input === "term" || input === "arrival_gap" ? input : DEFAULT_REPO_OCCUPIED_DAYS_MODE;
+}
+
 export function normalizeAccountLabelFieldsSetting(input: unknown): AccountLabelField[] {
   if (Array.isArray(input)) {
     const fields = parseAccountLabelFields(serializeAccountLabelFields(input as AccountLabelField[]));
@@ -210,6 +231,7 @@ export function preferencesFromRow(row: PreferenceRow | null | undefined): AppPr
       : [...DEFAULT_ACCOUNT_LABEL_FIELDS],
     accountDropdownRestrictType: normalizeBoolean(row?.accountDropdownRestrictType, true),
     accountUsageSortEnabled: normalizeBoolean(row?.accountUsageSortEnabled, DEFAULT_ACCOUNT_USAGE_SORT_ENABLED),
+    repoOccupiedDaysMode: normalizeRepoOccupiedDaysMode(row?.repoOccupiedDaysMode),
   };
 }
 
@@ -245,4 +267,5 @@ export const PREFERENCE_COOKIE_MIRROR = [
   { key: "mmh_account_label_fields", pick: (p: AppPreferences) => serializeAccountLabelFields(p.accountLabelFields) },
   { key: "mmh_account_dropdown_restrict_type", pick: (p: AppPreferences) => (p.accountDropdownRestrictType ? "1" : "0") },
   { key: "mmh_account_usage_sort", pick: (p: AppPreferences) => (p.accountUsageSortEnabled ? "1" : "0") },
+  { key: "mmh_repo_occupied_days_mode", pick: (p: AppPreferences) => p.repoOccupiedDaysMode },
 ] as const;

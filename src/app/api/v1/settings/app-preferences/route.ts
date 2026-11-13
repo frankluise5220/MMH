@@ -11,6 +11,7 @@ import {
   normalizeDetailWindowYears,
   normalizeDisplayLanguage,
   normalizeFundUnitsDecimals,
+  normalizeRepoOccupiedDaysMode,
   normalizeSessionDays,
   normalizeSidebarGroupMode,
   normalizeTimeZone,
@@ -127,6 +128,9 @@ export async function PUT(req: NextRequest) {
     }
     if (has("accountUsageSortEnabled")) {
       patch.accountUsageSortEnabled = normalizeBoolean(body.accountUsageSortEnabled, true);
+    }
+    if (has("repoOccupiedDaysMode")) {
+      patch.repoOccupiedDaysMode = normalizeRepoOccupiedDaysMode(body.repoOccupiedDaysMode);
     }
 
     const preferences = await updateHouseholdPreferences(householdId, patch);

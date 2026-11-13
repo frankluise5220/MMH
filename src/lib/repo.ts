@@ -1,5 +1,6 @@
 import { estimateBondInterestForDays } from "@/lib/bond";
-import { addDaysUtc, parseDateInputToUtc } from "@/lib/date-utils";
+import { addDaysUtc, formatDateUtc, isTradingClosedDate, parseDateInputToUtc } from "@/lib/date-utils";
+import type { RepoOccupiedDaysMode } from "@/lib/preferences";
 
 /**
  * 逆回购（GC / R-）—— 券商账户里的「借出资金、到期还本付息」。
@@ -103,9 +104,49 @@ export function repoProductByName(name: string | null | undefined): RepoProduct 
   return REPO_PRODUCTS.find((item) => item.name.toUpperCase() === normalized) ?? null;
 }
 
-/** 存单/明细上显示的名字：`GC001 · 1天`。 */
-export function repoProductLabel(item: RepoProduct): string {
-  return `${item.name} · ${item.termDays}天`;
+/**
+ * 存单/明细上显示的名字：`GC001 · 1天期`，占款天数与期限不同时补成
+ * `GC001 · 1天期（占款3天）`。
+ *
+ * 期限是品种属性（GC001 = 1 天期），占款是钱实际被占用/计息的自然日数：周五做
+ * 1 天期，到期日顺延到下周一，占款是 3 天。只写「1天」会被读成「这笔钱只占 1 天」，
+ * 所以两者不一致时把占款一并写出来。
+ */
+export function repoProductLabel(item: RepoProduct, occupiedDays?: number | null): string {
+  return repoLabelFor(item.name, item.termDays, occupiedDays);
+}
+
+/** 只有名字与期限时的同一份规则（编辑自定义品种、品种清单还没加载完时用）。 */
+export function repoLabelFor(name: string, termDays: number, occupiedDays?: number | null): string {
+  const safeTerm = Number.isFinite(termDays) && termDays > 0 ? Math.round(termDays) : 1;
+  const term = `${safeTerm}天期`;
+  const occupied = Number(occupiedDays ?? 0);
+  if (!Number.isFinite(occupied) || occupied <= 0 || Math.round(occupied) === safeTerm) {
+    return `${name} · ${term}`;
+  }
+  return `${name} · ${term}（占款${Math.round(occupied)}天）`;
+}
+
+/**
+ * 明细备注里剥掉系统拼的前缀，只留用户自己写的部分。
+ *
+ * `buildBondCashFlowNote` 会把「逆回购借出 <品种名>」拼在用户备注前面；编辑时把
+ * 一整串回填进备注框再保存，就会滚成「逆回购借出 X；逆回购借出 X；…」。
+ */
+export function stripRepoNotePrefix(
+  note: string | null | undefined,
+  productName: string | null | undefined,
+): string {
+  const text = String(note ?? "").trim();
+  const name = String(productName ?? "").trim();
+  if (!text || !name) return text;
+  for (const action of ["逆回购借出", "逆回购到期回款", "逆回购利息", "逆回购核销"]) {
+    const prefix = `${action} ${name}`;
+    if (!text.startsWith(prefix)) continue;
+    const rest = text.slice(prefix.length).trim();
+    return rest.startsWith("；") ? rest.slice(1).trim() : rest;
+  }
+  return text;
 }
 
 /** 从历史名字里回推品种（明细只见名字，没有代码列）。 */
@@ -138,8 +179,8 @@ export function estimateRepoFee(principal: number, termDays: number | null | und
 /**
  * 利息 = 本金 × 年化 × 实际占款天数 ÷ 365。
  *
- * 与债券存单共用同一个公式（@/lib/bond 的 estimateBondInterestForDays），
- * 逆回购的交易所计息口径正好也是 365 天的自然日计息。
+ * 与债券存单共用同一个公式（@/lib/bond 的 estimateBondInterestForDays），年化按 365 天折算；
+ * 天数取 `repoOccupiedDays`（自然日口径：周五 1 天期顺延到周一算 3 天，与券商实付一致）。
  */
 export function estimateRepoInterest(params: {
   principal: number;
@@ -153,24 +194,68 @@ export function estimateRepoInterest(params: {
   });
 }
 
-/** 占款天数 = 到期日 − 成交日（自然日）。周五做 1 天期因此是 3 天。 */
-export function repoOccupiedDays(tradeDateKey: string | null, maturityKey: string | null): number {
+/**
+ * 占款天数。同一天同一张存单，三种口径能算出三个数，所以由账簿设置决定
+ * （`HouseholdPreference.repoOccupiedDaysMode`，详见 `RepoOccupiedDaysMode`）：
+ *
+ * - `actual`（默认，与券商实付一致）：成交日 → 到期日（回款日）的自然日差。周五做
+ *   1 天期，T+1 落在周六，实际到账顺延到下周一，占款 3 天（周末照付利息）；跨长假同理。
+ * - `term`：只按品种期限，顺延回款不加天（周五的 1 天期就是 1 天）。
+ * - `arrival_gap`：期限 + 回款日之后到下个交易日的休市天数。回款日落在周五就 +2，
+ *   表达「钱周五回来、周末动不了」；周四买 1 天期 = 3 天，周五买 1 天期 = 1 天，
+ *   周二买 3 天期 = 5 天。
+ *
+ * 三种口径都必须保留：账本里「预计利息」要对得上对账单（actual），也有人只想看
+ * 合约期限（term），还有按资金实际不可用天数做资金规划的（arrival_gap）。
+ */
+export function repoOccupiedDays(
+  tradeDateKey: string | null,
+  maturityKey: string | null,
+  termDays?: number | null,
+  mode: RepoOccupiedDaysMode = "actual",
+): number {
   const from = parseDateInputToUtc(tradeDateKey ?? "");
   const to = parseDateInputToUtc(maturityKey ?? "");
   if (!from || !to) return 0;
-  return Math.max(0, Math.round((to.getTime() - from.getTime()) / 86400000));
-}
+  const calendarDays = Math.max(0, Math.round((to.getTime() - from.getTime()) / 86400000));
+  if (calendarDays <= 0) return 0;
+  if (mode === "actual") return calendarDays;
 
-function isWeekendUtc(date: Date): boolean {
-  const day = date.getUTCDay();
-  return day === 0 || day === 6;
+  // 期限是另外两种口径的基数；拿不到期限（旧数据、清单外品种）只能退回自然日。
+  const term = Math.round(Number(termDays ?? 0));
+  if (!(term > 0)) return calendarDays;
+  if (mode === "term") return term;
+  // 延期回款（回款日被拖到推算到期日之后）照样把多出来的自然日补上，
+  // 否则「拖到下周才回款」反而显示得比按时回款还短。
+  const scheduled = parseDateInputToUtc(estimateRepoMaturityDateKey(tradeDateKey ?? "", term));
+  const delay = scheduled ? Math.max(0, Math.round((to.getTime() - scheduled.getTime()) / 86400000)) : 0;
+  return term + repoClosedDaysAfter(maturityKey ?? "") + delay;
 }
 
 /**
- * 到期日 = 成交日 + 期限（自然日），落在周末则顺延到下一个工作日。
+ * 回款日之后紧跟着的休市天数（周六、周日、A 股法定节假日都算）。
+ * 只看回款日之后：钱在回款日当天已经可用，被算作占款的是它之后动不了的那几天。
+ */
+function repoClosedDaysAfter(arrivalKey: string): number {
+  let cursor = parseDateInputToUtc(arrivalKey);
+  if (!cursor) return 0;
+  let closed = 0;
+  // 最多数 10 天，防止脏数据把长假循环拉长。
+  for (let step = 0; step < 10; step += 1) {
+    cursor = addDaysUtc(cursor, 1);
+    if (!isTradingClosedDate(formatDateUtc(cursor), "cn_fund")) break;
+    closed += 1;
+  }
+  return closed;
+}
+
+/**
+ * 到期日 = 成交日 + 期限（自然日），落在非交易日则顺延到下一个交易日。
  *
- * 交易所的准确规则还要避开法定节假日；项目里没有可用的交易日历表，
- * 所以这里只处理周末，节假日由用户在到期日字段上手动改一天（表单里可编辑）。
+ * 到期日必须是交易日：周五做 1 天期，T+1 落在周六，实际到账是下周一；占款几天由
+ * 账簿的 `RepoOccupiedDaysMode` 决定（见 `repoOccupiedDays`）。非交易日取「周末 + A 股
+ * 法定节假日」（`isTradingClosedDate(..., "cn_fund")`）；节假日表覆盖 2024 年起，
+ * 更早的日期退化成只跳周末，用户可在到期日字段上手动改。
  */
 export function estimateRepoMaturityDateKey(tradeDateKey: string, termDays: number): string {
   const trade = parseDateInputToUtc(tradeDateKey);
@@ -178,10 +263,10 @@ export function estimateRepoMaturityDateKey(tradeDateKey: string, termDays: numb
   const days = Number.isFinite(termDays) && termDays > 0 ? Math.round(termDays) : 1;
   let cursor = addDaysUtc(trade, days);
   // 最多顺延 10 天，防止脏数据死循环。
-  for (let step = 0; step < 10 && isWeekendUtc(cursor); step += 1) {
+  for (let step = 0; step < 10 && isTradingClosedDate(formatDateUtc(cursor), "cn_fund"); step += 1) {
     cursor = addDaysUtc(cursor, 1);
   }
-  return cursor.toISOString().slice(0, 10);
+  return formatDateUtc(cursor);
 }
 
 export function estimateRepoMaturityDate(tradeDateKey: string, termDays: number): Date | null {

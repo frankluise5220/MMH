@@ -1292,6 +1292,11 @@ model HouseholdPreference {
   accountDropdownRestrictType       Boolean         @default(true)
   /// 侧边栏 / 账户下拉是否按最近一个月的记账频率排序；关闭后保持账户原始顺序。
   accountUsageSortEnabled           Boolean         @default(true)
+  /// 逆回购占款天数口径（决定预计利息怎么算）：
+  /// actual      = 成交日 → 回款日的自然日差，与券商实付一致（周五做 1 天期 = 3 天）；
+  /// term        = 只按品种期限，顺延回款不加天（1 天期永远 1 天）；
+  /// arrival_gap = 品种期限 + 回款日之后到下个交易日的休市天数（回款日落在周五则 +2）。
+  repoOccupiedDaysMode              String          @default("actual")
   createdAt                         DateTime        @default(now())
   updatedAt                         DateTime        @default(now()) @updatedAt
 

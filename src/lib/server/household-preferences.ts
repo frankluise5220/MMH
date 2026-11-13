@@ -62,6 +62,7 @@ export function preferenceRowData(prefs: AppPreferences) {
     accountLabelFields: serializeAccountLabelFields(prefs.accountLabelFields),
     accountDropdownRestrictType: prefs.accountDropdownRestrictType,
     accountUsageSortEnabled: prefs.accountUsageSortEnabled,
+    repoOccupiedDaysMode: prefs.repoOccupiedDaysMode,
   };
 }
 

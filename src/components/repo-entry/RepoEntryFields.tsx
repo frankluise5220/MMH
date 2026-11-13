@@ -13,6 +13,7 @@ import {
 import { CalcInput } from "@/components/CalcInput";
 import { DateStepper } from "@/components/DateStepper";
 import { SmartSelect, type SmartSelectOption } from "@/components/SmartSelect";
+import { getRepoOccupiedDaysModePreference } from "@/lib/client/appPreferences";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { formatAmountDraft, formatMoney } from "@/lib/format";
 import { todayDateLocalYmd } from "@/lib/date-utils";
@@ -273,7 +274,9 @@ export const RepoEntryFields = forwardRef<RepoEntryFieldsHandle, Props>(function
     if (next && next !== cashAccountId) setCashAccountId(next);
   }, [cashAccountId, cashAccounts, pickDefaultCashAccount]);
 
-  const occupiedDays = repoOccupiedDays(tradeDate, maturityDate);
+  // 占款口径跟着账簿设置走（cookie 镜像），与落账用同一份值。
+  const occupiedDaysMode = getRepoOccupiedDaysModePreference();
+  const occupiedDays = repoOccupiedDays(tradeDate, maturityDate, termDays, occupiedDaysMode);
   const principal = num(amount);
   const expectedInterest = estimateRepoInterest({
     principal,
@@ -293,7 +296,8 @@ export const RepoEntryFields = forwardRef<RepoEntryFieldsHandle, Props>(function
     if (!REPO_CODE_RE.test(code.trim())) return window.alert(t("repoForm.alert.codeRequired"));
     if (!product) return window.alert(t("repoForm.alert.productRequired"));
     if (!(principal > 0)) return window.alert(t("repoForm.alert.amountRequired"));
-    if (!maturityDate || repoOccupiedDays(tradeDate, maturityDate) <= 0) {
+    const occupiedMode = getRepoOccupiedDaysModePreference();
+    if (!maturityDate || repoOccupiedDays(tradeDate, maturityDate, termDays, occupiedMode) <= 0) {
       return window.alert(t("repoForm.alert.maturityInvalid"));
     }
 

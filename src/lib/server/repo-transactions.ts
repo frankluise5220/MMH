@@ -11,6 +11,7 @@ import {
   repoProductLabel,
 } from "@/lib/repo";
 import { createBondEntry } from "@/lib/server/bond-transactions";
+import { getHouseholdPreferences } from "@/lib/server/household-preferences";
 
 /**
  * 逆回购的落账入口。
@@ -110,7 +111,9 @@ export async function lendRepo(input: RepoLendInput): Promise<{
     String(input.maturityDate ?? "").trim() || estimateRepoMaturityDateKey(input.date, termDays);
   const maturityDate = parseDateInputToUtc(maturityKey);
   if (!maturityDate) throw new Error("到期日不正确");
-  const occupiedDays = repoOccupiedDays(input.date, maturityKey);
+  // 占款口径由账簿设置决定（默认 actual = 自然日，与券商实付一致）。
+  const occupiedDaysMode = (await getHouseholdPreferences(input.householdId)).repoOccupiedDaysMode;
+  const occupiedDays = repoOccupiedDays(input.date, maturityKey, termDays, occupiedDaysMode);
   if (!(occupiedDays > 0)) throw new Error("到期日必须晚于成交日");
 
   const annualRate = input.annualRate != null && input.annualRate > 0 ? input.annualRate : null;
@@ -128,8 +131,9 @@ export async function lendRepo(input: RepoLendInput): Promise<{
     bondAccountId: input.accountId,
     cashAccountId: input.cashAccountId,
     productId: null,
-    // 品种名即商品名：`GC001 · 1天`（同品种多笔存单靠到期日区分）。
-    productName: repoProductLabel(product),
+    // 品种名即商品名：`GC001 · 1天期（占款3天）`（周五做、周一到账）；
+    // 占款天数写进名字，明细描述才不会被读成「这笔钱只占 1 天」。
+    productName: repoProductLabel(product, occupiedDays),
     annualRate,
     termDays,
     maturityDate,
@@ -197,8 +201,10 @@ export async function redeemRepo(input: RepoRedeemInput): Promise<{
   if (!(principal > 0)) throw new Error("存单本金不正确");
 
   const tradeKey = lot.tradeDate.toISOString().slice(0, 10);
-  // 利息按**实际占款天数**（成交日 → 回款日）重算：周五做 1 天期实际占 3 天。
-  const occupiedDays = repoOccupiedDays(tradeKey, arrivalKey) || (lot.termDays ?? 1);
+  // 利息按占款天数重算，口径与借出时同一份设置（改设置不会追溯已入账的存单）。
+  const occupiedDaysMode = (await getHouseholdPreferences(input.householdId)).repoOccupiedDaysMode;
+  const occupiedDays =
+    repoOccupiedDays(tradeKey, arrivalKey, lot.termDays, occupiedDaysMode) || (lot.termDays ?? 1);
   const interest =
     input.interest != null && Number.isFinite(input.interest)
       ? Number(Number(input.interest).toFixed(2))

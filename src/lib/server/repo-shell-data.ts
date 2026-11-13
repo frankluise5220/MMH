@@ -2,10 +2,12 @@ import { FundSubtype } from "@prisma/client";
 
 import { toNumber, todayDateBusinessYmd } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
-import { getHouseholdTimeZone } from "@/lib/server/household-preferences";
+import { getHouseholdPreferences } from "@/lib/server/household-preferences";
+import type { RepoOccupiedDaysMode } from "@/lib/preferences";
 import {
   estimateRepoFee,
   estimateRepoInterest,
+  repoOccupiedDays,
   repoProductFromLabel,
 } from "@/lib/repo";
 import { loadBondTransactionEntryLike } from "@/lib/server/business-transaction-entries";
@@ -105,8 +107,28 @@ function daysBetween(fromKey: string | null, toKey: string | null): number | nul
   return Math.round((to - from) / 86400000);
 }
 
+/**
+ * 占款天数，口径由账簿设置决定（`RepoOccupiedDaysMode`，见 `repoOccupiedDays`）。
+ * 未回款时才用品种期限兜底。
+ * 与落账（repo-transactions）和录入预览（RepoEntryFields）共用 `repoOccupiedDays`，
+ * 三处口径必须一致，否则列表写的利息和落库的利息会对不上。
+ */
+function occupiedDaysOf(
+  startKey: string,
+  endKey: string | null,
+  termDays: number | null | undefined,
+  mode: RepoOccupiedDaysMode,
+): number | null {
+  if (!endKey) return termDays ?? null;
+  return repoOccupiedDays(startKey, endKey, termDays, mode) || termDays || null;
+}
+
 /** 逆回购存单投影（视图与回款弹窗共用同一份口径）。 */
-export function projectRepoLots(rows: RepoRow[], todayKey: string): RepoShellLot[] {
+export function projectRepoLots(
+  rows: RepoRow[],
+  todayKey: string,
+  occupiedDaysMode: RepoOccupiedDaysMode = "actual",
+): RepoShellLot[] {
   type LotAcc = {
     id: string;
     name: string;
@@ -134,7 +156,7 @@ export function projectRepoLots(rows: RepoRow[], todayKey: string): RepoShellLot
     const startKey = ymd(row.tradeDate) ?? todayKey;
     const maturityKey = ymd(row.maturityDate);
     const principal = Math.abs(toNumber(row.grossAmount));
-    const occupiedDays = daysBetween(startKey, maturityKey) ?? row.termDays ?? null;
+    const occupiedDays = occupiedDaysOf(startKey, maturityKey, row.termDays, occupiedDaysMode);
     const lot: LotAcc = {
       id: row.id,
       name,
@@ -190,7 +212,12 @@ export function projectRepoLots(rows: RepoRow[], todayKey: string): RepoShellLot
       const principal = Math.max(0, Number(lot.principal.toFixed(2)));
       const status: RepoShellLot["status"] = principal > PRINCIPAL_EPSILON ? "open" : "closed";
       const product = repoProductFromLabel(lot.name);
-      const occupiedDays = daysBetween(lot.startKey, lot.clearedDate ?? lot.maturityKey);
+      const occupiedDays = occupiedDaysOf(
+        lot.startKey,
+        lot.clearedDate ?? lot.maturityKey,
+        lot.termDays,
+        occupiedDaysMode,
+      );
       return {
         id: lot.id,
         name: lot.name,
@@ -231,7 +258,8 @@ export async function loadRepoShellData(params: {
     include: { Institution: true },
   });
   if (!account) return null;
-  const todayKey = params.todayKey ?? todayDateBusinessYmd(await getHouseholdTimeZone(householdId));
+  const preferences = await getHouseholdPreferences(householdId);
+  const todayKey = params.todayKey ?? todayDateBusinessYmd(preferences.timeZone);
 
   const [rows, entries] = await Promise.all([
     prisma.bondTransaction.findMany({
@@ -264,7 +292,7 @@ export async function loadRepoShellData(params: {
     }),
   ]);
 
-  const lots = projectRepoLots(rows, todayKey);
+  const lots = projectRepoLots(rows, todayKey, preferences.repoOccupiedDaysMode);
   const openLots = lots.filter((lot) => lot.status === "open");
   const latestBuy = [...rows].reverse().find((row) => row.action === FundSubtype.buy);
 
