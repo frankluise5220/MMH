@@ -11,6 +11,8 @@ import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
 /** 整窗外壳（遮罩 / 标题栏 / 宽度档位 / 表单 / FT 页签与卡片 / 窗口底按钮行）：规则集中在它。 */
 import { EntryModalShell } from "@/components/EntryModalShell";
+/** 贵金属「提取实物」页签：同一个投资记账窗里完成提取实物，不再另开弹窗。 */
+import { MetalExtractFields, type MetalExtractSubmitRef } from "./MetalExtractFields";
 import { ModalLayer } from "@/components/ModalLayer";
 import { translate, useI18n } from "@/lib/i18n";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
@@ -26,7 +28,7 @@ import { useResetEntryModalReconciledReadOnlyOnClose } from "@/lib/client/entryM
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
 import { addTradingDaysUtc, countTradingDaysUtc, todayDateLocalYmd } from "@/lib/date-utils";
 import { findLinkedEntries, type RefundLinkableEntry } from "@/lib/fund/refund-link";
-import { formatFundUnitsValue, normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision-core";
+import { formatFundUnitsValue, resolveQuantityDecimals, roundFundUnits } from "@/lib/fund/unit-precision-core";
 import { formatAmountDraft } from "@/lib/format";
 import {
   type FundSubtype,
@@ -43,6 +45,9 @@ import {
 } from "@/lib/investment-config";
 
 const KNOWN_SUBTYPES = new Set<FundSubtype>(["buy", "redeem", "dividend_cash", "dividend_reinvest", "buy_failed"]);
+
+/** 贵金属窗口的第三个 FT 页签：不是 FundSubtype，不参与普通投资记录的提交。 */
+const METAL_EXTRACT_TAB_ID = "metal_extract";
 
 /** 同一页面可能挂载多个贵金属表单实例（首页 + FundShell），新建字典后互相补齐下拉。 */
 const METAL_DICTIONARY_CREATED_EVENT = "mmh:precious-metal-dictionary:created";
@@ -236,6 +241,10 @@ type OpenInvestmentCreateDetail = {
   defaultProductType?: ProductType;
   defaultFundCode?: string;
   defaultFundName?: string;
+  /** 胶囊菜单 / 持仓行「提取实物」入口：直接把贵金属窗口落在提取实物页签上。 */
+  defaultSubtype?: "metal_extract";
+  defaultMetalTypeId?: string | null;
+  defaultMetalUnitId?: string | null;
 };
 
 type NestedFieldData = Record<string, Array<{ id: string; name: string; type?: string }>>;
@@ -254,6 +263,15 @@ type LoadedFundAccountData = {
 };
 type PreciousMetalTypeOption = { id: string; code: string; name: string; shortName?: string | null };
 type PreciousMetalUnitOption = { id: string; code: string; name: string; symbol?: string | null; decimals?: number | null };
+/** 赎回页签的可用持仓：按（账户, 品种, 单位）唯一，数量即账面可卖克数。 */
+type MetalHoldingOption = {
+  accountId: string;
+  metalTypeId: string;
+  metalTypeName: string;
+  metalUnitId: string;
+  metalUnitName: string;
+  quantity: number;
+};
 type BuyResultStatus = "normal" | "refund";
 type LinkedCandidateEntry = {
   id: string;
@@ -338,6 +356,8 @@ export function InvestmentFormModal({
   allEntries,
   createAction,
   editAction,
+  propertyAccounts,
+  extractAction,
   openSignal,
   hideTrigger,
   listenCreateEvents = true,
@@ -359,6 +379,9 @@ export function InvestmentFormModal({
   allEntries?: LinkedCandidateEntry[];
   createAction: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
   editAction?: (formData: FormData) => Promise<{ ok: true } | { ok: false; error: string }>;
+  /** 提取实物页签专用：固定资产账户下拉 + 服务端提取实物动作；不给就不显示该页签。 */
+  propertyAccounts?: SmartSelectOption[];
+  extractAction?: (formData: FormData) => Promise<{ ok: boolean; message?: string; assetName?: string }>;
   openSignal?: number;
   hideTrigger?: boolean;
   listenCreateEvents?: boolean;
@@ -367,8 +390,6 @@ export function InvestmentFormModal({
   const { t, language } = useI18n();
   const editInstanceKeyRef = useRef<object>({});
   const today = todayDateLocalYmd();
-  const fundUnitsDecimals = normalizeFundUnitsDecimals(fundUnitsDecimalsProp, 2);
-  const formatUnits = (value: number) => formatFundUnitsValue(value, fundUnitsDecimals);
 
   const fixedProductType: ProductType =
     (["fund", "money", "wealth", "deposit", "metal"].includes(accountProductType ?? "")
@@ -376,6 +397,10 @@ export function InvestmentFormModal({
       : (mode === "edit" && entry?.fundProductType && ["fund", "money", "wealth", "deposit", "metal"].includes(entry.fundProductType)
         ? entry.fundProductType as ProductType
         : "fund"));
+  // 初始化回填发生在 productType state 建立之前，先用锁定类型定精度；
+  // 录入 / 提交用的精度在 state 之后按弹窗当前产品类型动态解析（胶囊菜单可指定 metal）。
+  const initialUnitsDecimals = resolveQuantityDecimals(fixedProductType, fundUnitsDecimalsProp);
+  const formatInitialUnits = (value: number) => formatFundUnitsValue(value, initialUnitsDecimals);
 
   // When editing legacy records, map the stored form to the current display subtype.
   const initDisplaySubtype: FundSubtype = mode === "edit" && entry?.fundSubtype === "buy_failed" && entry?.source === "regular_invest_refund"
@@ -395,9 +420,9 @@ export function InvestmentFormModal({
     isRedeemLike(initSubtype) &&
     (fixedProductType === "fund" || fixedProductType === "money");
   const initUnits = mode === "edit" && fixedProductType === "metal" && entry?.metalQuantity != null
-    ? formatUnits(Number(entry.metalQuantity))
-    : mode === "edit" && (entry?.displayFundUnits ?? entry?.fundUnits) != null ? formatUnits(Number(entry?.displayFundUnits ?? entry?.fundUnits))
-    : !initUsesRedeemAsOfUnits && defaults?.fundUnits && defaults.fundUnits > 0 ? formatUnits(Number(defaults.fundUnits)) : "";
+    ? formatInitialUnits(Number(entry.metalQuantity))
+    : mode === "edit" && (entry?.displayFundUnits ?? entry?.fundUnits) != null ? formatInitialUnits(Number(entry?.displayFundUnits ?? entry?.fundUnits))
+    : !initUsesRedeemAsOfUnits && defaults?.fundUnits && defaults.fundUnits > 0 ? formatInitialUnits(Number(defaults.fundUnits)) : "";
   const initFee = mode === "edit" && fixedProductType === "metal" && entry?.metalFee != null
     ? String(entry.metalFee)
     : mode === "edit" && entry?.fundFee != null ? String(entry.fundFee) : "";
@@ -450,7 +475,17 @@ export function InvestmentFormModal({
   // 已「对账」的记录：编辑窗照常打开，但整张表单禁用（可查看、不可改）——由 `EntryModalShell` 统一处理。
   useResetEntryModalReconciledReadOnlyOnClose(open);
   const [productType, setProductType] = useState<ProductType>(fixedProductType);
+  // 贵金属数量（克 / 盎司）不沿用基金份额的 2 位，否则编辑回填与提交都会丢精度。
+  const fundUnitsDecimals = resolveQuantityDecimals(productType, fundUnitsDecimalsProp);
+  const formatUnits = (value: number) => formatFundUnitsValue(value, fundUnitsDecimals);
   const [subtype, setSubtype] = useState<FundSubtype>(initSubtype);
+  // 贵金属窗口的「提取实物」页签（第三个 FT 页签，独立于 FundSubtype）。
+  const [metalExtractTab, setMetalExtractTab] = useState(false);
+  const [metalExtractPreference, setMetalExtractPreference] = useState<{ metalTypeId?: string; metalUnitId?: string }>({});
+  const metalExtractSubmitRef = useRef<MetalExtractSubmitRef["current"]>(null);
+  // 只有新建的贵金属窗口、且调用方给了提取实物动作时才有第三个页签；编辑态沿用「只改克数」的单一页签。
+  const showMetalExtractTab = mode === "create" && productType === "metal" && Boolean(extractAction);
+  const isMetalExtractTab = showMetalExtractTab && metalExtractTab;
   const [applyDate, setApplyDate] = useState(initDate);
   const [confirmDate, setConfirmDate] = useState(initConfirmDate);
   const [cashAccountId, setCashAccountId] = useState(initCashAccountId);
@@ -467,6 +502,10 @@ export function InvestmentFormModal({
   const [localMetalTypes, setLocalMetalTypes] = useState<PreciousMetalTypeOption[]>(metalTypes ?? []);
   const [localMetalUnits, setLocalMetalUnits] = useState<PreciousMetalUnitOption[]>(metalUnits ?? []);
   const [metalCreateKind, setMetalCreateKind] = useState<"type" | "unit" | null>(null);
+  // 赎回页签的可卖克数：口径是 recalc 写入的 PreciousMetalHolding，不和页面另外算一套。
+  const [metalHoldings, setMetalHoldings] = useState<MetalHoldingOption[]>([]);
+  const [metalHoldingsLoading, setMetalHoldingsLoading] = useState(false);
+  const metalAutoFillKeyRef = useRef("");
   const [nameLoading, setNameLoading] = useState(false);
   const [nav, setNav] = useState(initNav);
   const [navLoading, setNavLoading] = useState(false);
@@ -863,6 +902,45 @@ export function InvestmentFormModal({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [productType, localMetalTypes, localMetalUnits]);
 
+  // 赎回页签要显示「可用 X 克」并挡住超卖，所以按当前贵金属账户取一次账面持仓。
+  // 贵金属保存不重渲染当前路由，弹窗自己取，别指望页面 props 会刷新。
+  useEffect(() => {
+    if (productType !== "metal" || mode === "edit" || !open || !isRedeemLike(subtype) || !toAccountId) {
+      setMetalHoldings([]);
+      return;
+    }
+    let cancelled = false;
+    setMetalHoldingsLoading(true);
+    fetch(`/api/v1/precious-metals/holdings?accountId=${encodeURIComponent(toAccountId)}`)
+      .then((res) => res.json())
+      .then((data) => {
+        if (cancelled) return;
+        setMetalHoldings(data?.ok && Array.isArray(data.holdings) ? (data.holdings as MetalHoldingOption[]) : []);
+      })
+      .catch(() => {
+        if (!cancelled) setMetalHoldings([]);
+      })
+      .finally(() => {
+        if (!cancelled) setMetalHoldingsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [productType, mode, open, subtype, toAccountId]);
+
+  const metalAvailable = productType === "metal" && isRedeemLike(subtype) && metalTypeId && metalUnitId
+    ? metalHoldings.find((row) => row.accountId === toAccountId && row.metalTypeId === metalTypeId && row.metalUnitId === metalUnitId) ?? null
+    : null;
+
+  // 选中品种/单位后带出全部可卖克数；用户改过克数就保留，与基金赎回同一套规则。
+  useEffect(() => {
+    if (!metalAvailable || mode === "edit" || unitsEditedRef.current) return;
+    const key = `${metalAvailable.accountId}:${metalAvailable.metalTypeId}:${metalAvailable.metalUnitId}`;
+    if (metalAutoFillKeyRef.current === key) return;
+    metalAutoFillKeyRef.current = key;
+    setUnits(formatUnits(metalAvailable.quantity));
+  }, [metalAvailable?.accountId, metalAvailable?.metalTypeId, metalAvailable?.metalUnitId, metalAvailable?.quantity, mode]);
+
   function selectCashAccount(id: string) {
     cashAccountTouchedRef.current = true;
     cashAccountAutoRef.current = false;
@@ -922,6 +1000,25 @@ export function InvestmentFormModal({
   }
 
   function renderMetalFields() {
+    if (isMetalExtractEdit) {
+      const typeLabel =
+        entry?.metalTypeName || metalTypeOptions.find((option) => option.id === metalTypeId)?.label || "";
+      const unitLabel =
+        entry?.metalUnitName || metalUnitOptions.find((option) => option.id === metalUnitId)?.label || "";
+      return (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div className="space-y-1">
+            <div className="text-xs font-medium text-slate-600">{t("investForm.metalType")}</div>
+            <input value={typeLabel} readOnly className="form-input bg-slate-50 text-slate-700" />
+          </div>
+          <div className="space-y-1">
+            <div className="text-xs font-medium text-slate-600">{t("investForm.unit")}</div>
+            <input value={unitLabel} readOnly className="form-input bg-slate-50 text-slate-700" />
+          </div>
+          <div className="text-xs text-slate-500 sm:col-span-2">{t("metalExtract.editQuantityOnlyHint")}</div>
+        </div>
+      );
+    }
     return (
       <>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -1188,7 +1285,14 @@ export function InvestmentFormModal({
     setFundName(editEntry.fundName ?? editEntry.fundCode ?? "");
     setMetalTypeId(editEntry.metalTypeId ?? (editEntry.fundProductType === "metal" ? editEntry.fundCode ?? "" : ""));
     setMetalUnitId(editEntry.metalUnitId ?? "");
-    setNav(editEntry.fundNav != null ? String(editEntry.fundNav) : "");
+    // 提取实物明细没有净值字段，单价显示当天结转的平均单位成本（金额 = 克数 × 该单价）。
+    setNav(
+      editEntry.fundNav != null
+        ? String(editEntry.fundNav)
+        : editEntry.source === "metal_extract" && editEntry.metalUnitPrice != null
+          ? String(editEntry.metalUnitPrice)
+          : "",
+    );
     setUnits(nextDisplayUnits != null ? formatFundUnitsValue(Number(nextDisplayUnits), fundUnitsDecimals) : "");
     setAmount(formatAmountDraft(Math.abs(Number(editEntry.amount) || 0)));
     setFeeRate(String(editEntry.feeRate ?? defaults?.feeRate ?? "0"));
@@ -1368,6 +1472,13 @@ export function InvestmentFormModal({
         ? detail.defaultProductType as ProductType
         : fixedProductType;
       setProductType(requestedProductType);
+      // 「提取实物」入口直接打开同一个贵金属窗口的提取实物页签，而不是另弹一个窗。
+      const wantsMetalExtract = requestedProductType === "metal" && detail.defaultSubtype === "metal_extract";
+      setMetalExtractTab(wantsMetalExtract);
+      setMetalExtractPreference({
+        metalTypeId: detail.defaultMetalTypeId ?? undefined,
+        metalUnitId: detail.defaultMetalUnitId ?? undefined,
+      });
       if (requestedProductType === "metal") {
         const nextType = localMetalTypes[0] ?? null;
         const nextUnit = localMetalUnits[0] ?? null;
@@ -2373,6 +2484,12 @@ export function InvestmentFormModal({
   // The arrival date is a terminal field; it only back-fills arrivalDays and must not drive confirmDate.
   useEffect(() => {
     if (mode === "edit" && !editAutoNavEnabledRef.current) return;
+    // 贵金属是实时成交：没有 T+N 确认环节，资金当天划转，到账日就跟成交日一致，
+    // 不再按「确认日 + 到账天数」推到未来（用户手改过到账日则保留）。
+    if (productType === "metal") {
+      if (applyDate && !arrivalDateEditedRef.current) setArrivalDate(applyDate);
+      return;
+    }
     if (isDividend(subtype) && applyDate && !arrivalDateEditedRef.current) {
       setArrivalDate(applyDate);
       return;
@@ -2385,7 +2502,7 @@ export function InvestmentFormModal({
         setArrivalDate(arrivalDays > 0 ? addFundTradingDays(nextConfirmDate, arrivalDays) : nextConfirmDate);
       }
     }
-  }, [applyDate, confirmDays, subtype, open, mode]);
+  }, [applyDate, confirmDays, subtype, open, mode, productType]);
 
   // When the user edits the arrival date, back-calculate arrivalDays.
   const arrivalDateEditedRef = useRef(false);
@@ -2520,6 +2637,9 @@ export function InvestmentFormModal({
       clearConfirmDaysEdited();
     }
     // Reset date, amount, units, NAV, fee, and memo.
+    setMetalExtractTab(false);
+    setMetalExtractPreference({});
+    metalExtractSubmitRef.current = null;
     setApplyDate(today);
     cashAccountTouchedRef.current = false;
     cashAccountAutoRef.current = false;
@@ -2591,9 +2711,55 @@ export function InvestmentFormModal({
     }
   }
 
+  /**
+   * 贵金属取价：按「品种 + 计量单位」查行情（不依赖账户已有持仓）。
+   * 与基金净值的差别是只有一个当日价，没有按日期回放的历史序列，所以不看交易日期。
+   */
+  async function fetchMetalPrice() {
+    const metalType = selectedMetalType();
+    const metalUnit = selectedMetalUnit();
+    if (!metalType || !metalUnit) {
+      window.alert(t("investForm.alert.selectMetalTypeOrUnit"));
+      return;
+    }
+    setNavLoading(true);
+    try {
+      const params = new URLSearchParams({ metalTypeId: metalType.id, metalUnitId: metalUnit.id });
+      const res = await fetch(`/api/v1/precious-metals/prices/quote?${params.toString()}`);
+      const data = await res.json().catch(() => null);
+      if (!data?.ok || !(Number(data.data?.price) > 0)) {
+        window.alert(data?.error ?? t("investForm.alert.metalPriceFetchFailed"));
+        return;
+      }
+      const nextNav = String(data.data.price);
+      setNavFromApi(nextNav);
+      // 贵金属实时成交、没有确认日，比较基准就是成交日（申请日）。
+      // 行情日期与之不同则标出来（周末/节假日取到的是最近一个交易日的收盘价）。
+      const tradeDate = applyDate;
+      const quoteDate = String(data.data.priceDate ?? "");
+      setNavActualDate(quoteDate && quoteDate !== tradeDate ? quoteDate : null);
+      const recalculated = subtype === "buy"
+        ? recalculateBuyUnitsFromInputs({
+            navRaw: nextNav,
+            recalculateFeeFromRate: shouldRecalculateFeeFromRateForCurrentInputs(),
+          })
+        : recalculateRedeemAmountsFromNav(nextNav);
+      if (!recalculated && isBuyLike(subtype)) {
+        calculateBuyUnits(amount, fee, arrivalAmount, nextNav, buyResultStatus === "refund", true);
+      }
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : t("investForm.alert.navFetchError"));
+    } finally {
+      setNavLoading(false);
+    }
+  }
+
   async function fetchNav() {
+    if (productType === "metal") {
+      await fetchMetalPrice();
+      return;
+    }
     if (!fundCode) return;
-    if (productType === "metal") return;
     const fetchDate = confirmDate || applyDate;
     setNavLoading(true);
     try {
@@ -2628,6 +2794,31 @@ export function InvestmentFormModal({
   async function onSubmit(e: FormEvent<HTMLFormElement>, keepOpen = false) {
     e.preventDefault();
     if (submitting) return;
+    // 「提取实物」页签走独立的提取实物动作：金额/成本由服务端按平均成本结转，
+    // 不套用普通投资表单的金额、份额、净值校验与 FormData。
+    if (isMetalExtractTab) {
+      if (!extractAction) return;
+      const built = metalExtractSubmitRef.current?.();
+      if (!built) return;
+      if (!built.ok) { window.alert(built.error); return; }
+      setSubmitting(true);
+      try {
+        const res = await extractAction(built.formData);
+        if (!res.ok) { window.alert(res.message || t("txForm.alert.saveFailed")); return; }
+        setOpen(false);
+        if (mode === "create") resetForCreate();
+        requestAnimationFrame(() => {
+          const accountIds = compactFinanceAccountIds([toAccountId]);
+          recordRecentAccounts(accountIds);
+          dispatchFinanceDataChanged({ reason: "metal-extract", accountIds });
+        });
+      } catch (err) {
+        window.alert(err instanceof Error ? err.message : t("txForm.alert.saveFailed"));
+      } finally {
+        setSubmitting(false);
+      }
+      return;
+    }
     const finalAmount = p(amount);
     // 基金 / 货币基金 / 贵金属只记份额（克数）也可以：赠送、实物交接、或导入后现金金额未知时，
     // 数量是唯一已知的事实，金额允许为 0（买入、赎回都适用）。提交前会再弹一次确认。
@@ -2709,6 +2900,16 @@ export function InvestmentFormModal({
         window.alert(t("investForm.alert.redeemUnitsExceed", { units: formatUnits(redeemLimitUnits) }));
         return;
       }
+    }
+
+    // 贵金属赎回：账户里该品种/单位的账面克数就是上限。查不到持仓（如导入的历史记录、
+    // 账户刚改过）时不拦，否则用户没法补记已经在账外的旧交易。
+    if (productType === "metal" && isRedeemLike(subtype) && metalAvailable && finalUnits > metalAvailable.quantity + 0.0001) {
+      window.alert(t("investForm.alert.metalRedeemUnitsExceed", {
+        quantity: formatUnits(metalAvailable.quantity),
+        unit: metalAvailable.metalUnitName,
+      }));
+      return;
     }
 
     if (allowsZeroAmountEntry) {
@@ -2989,7 +3190,10 @@ export function InvestmentFormModal({
   }
 
   const showCode = productType === "fund" || productType === "money" || productType === "metal";
-  const showFee = showFeeFor(subtype, productType);
+  // 提取实物（贵金属 → 固定资产）只认「提取数量」（2026-11-13 用户裁定）：
+  // 品种/单位/单价/手续费全部锁死，金额由服务端按平均成本重算并同步固定资产。
+  const isMetalExtractEdit = mode === "edit" && entry?.source === "metal_extract";
+  const showFee = showFeeFor(subtype, productType) && !isMetalExtractEdit;
   const productShortLabel = productType === "metal" ? t("investment.product.metal") : t("txForm.fund");
   const productAccountLabel = t("investForm.productAccount", { product: productShortLabel });
   const productCodeLabel = t("investForm.productCode", { product: productShortLabel });
@@ -3000,6 +3204,26 @@ export function InvestmentFormModal({
   const title = mode === "edit"
     ? t("investForm.editTitle", { product: productShortLabel })
     : t("investForm.createTitle");
+  // 页签口径：
+  // - 编辑提取实物明细：锁成单项「提取实物」（只改克数，服务端不认 subtype）；
+  // - 新建贵金属窗口：买入 / 赎回 / 提取实物（第三个页签就在本窗口里）；
+  // - 其余产品：PRODUCT_SUBTYPES 原样。
+  const visibleTabIds: string[] = isMetalExtractEdit
+    ? ["redeem"]
+    : [...allSubtypes, ...(showMetalExtractTab ? [METAL_EXTRACT_TAB_ID] : [])];
+  const tabLabel = (id: string) =>
+    id === METAL_EXTRACT_TAB_ID || isMetalExtractEdit
+      ? t("metalExtract.entryButton")
+      : subtypeLabel(id as FundSubtype);
+  function changeTab(id: string) {
+    if (id === METAL_EXTRACT_TAB_ID) {
+      setMetalExtractTab(true);
+      setMetalExtractPreference({ metalTypeId: metalTypeId || undefined, metalUnitId: metalUnitId || undefined });
+      return;
+    }
+    setMetalExtractTab(false);
+    selectSubtypeOption(id as FundSubtype);
+  }
   useCloseOnNavigation(open, () => {
     setOpen(false);
     if (mode === "create") resetForCreate();
@@ -3035,7 +3259,7 @@ export function InvestmentFormModal({
            对账只读、FT 页签与卡片、窗口底按钮行全部由它统一（规则见 FolderTabsCard 头注释）。
            `heightMode="natural"`：窗口底边跟着卡片高度走（切页签只伸缩下沿，上沿由 EMS 锚定
            不动）——投资窗字段数随子类型差异大，锁高会在短页签下把按钮推离卡片。页签可见项由
-           `PRODUCT_SUBTYPES[productType]` 决定（存款/贵金属等只有买入赎回）。 */
+           `PRODUCT_SUBTYPES[productType]` 决定（存款/贵金属等只有买入赎回，贵金属另加「提取实物」）。 */
         <EntryModalShell
           open={open}
           heightKey="investment-form"
@@ -3046,14 +3270,14 @@ export function InvestmentFormModal({
           onClose={() => { setOpen(false); if (mode === "create") resetForCreate(); }}
           closeLabel={t("investForm.close")}
           onSubmit={(event) => { void onSubmit(event); }}
-          tabs={allSubtypes.map((item) => ({ id: item, label: subtypeLabel(item) }))}
-          activeTabId={subtype}
-          onTabChange={(id) => selectSubtypeOption(id as FundSubtype)}
-          rulerLabels={allSubtypes.map((item) => subtypeLabel(item))}
+          tabs={visibleTabIds.map((id) => ({ id, label: tabLabel(id) }))}
+          activeTabId={isMetalExtractTab ? METAL_EXTRACT_TAB_ID : subtype}
+          onTabChange={changeTab}
+          rulerLabels={visibleTabIds.map(tabLabel)}
           panelRef={panelRef}
           footer={(
             <>
-              {mode === "create" && (
+              {mode === "create" && !isMetalExtractTab && (
                 <button
                   type="button"
                   disabled={submitting}
@@ -3071,11 +3295,22 @@ export function InvestmentFormModal({
                 disabled={submitting}
                 className="primary-button h-9 disabled:opacity-50"
               >
-                {submitting ? t("txForm.saving") : t("common.save")}
+                {submitting ? t("txForm.saving") : isMetalExtractTab ? t("metalExtract.submit") : t("common.save")}
               </button>
             </>
           )}
         >
+              {isMetalExtractTab ? (
+                <MetalExtractFields
+                  accountId={toAccountId}
+                  metalTypeId={metalExtractPreference.metalTypeId}
+                  metalUnitId={metalExtractPreference.metalUnitId}
+                  propertyAccounts={propertyAccounts ?? []}
+                  nestedFieldData={nestedFieldData}
+                  submitRef={metalExtractSubmitRef}
+                />
+              ) : (
+              <>
               {isDividend(subtype) ? (
                 <>
                   <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -3215,20 +3450,21 @@ export function InvestmentFormModal({
                 </>
               ) : (
               <>
-              <div className="grid grid-cols-[1fr_auto_1fr] gap-2 items-end">
+              <div className={`grid items-end gap-2 ${showConfirmFor(subtype, productType) ? "grid-cols-[1fr_auto_1fr]" : "grid-cols-2"}`}>
                 <div className="space-y-1">
                   <div className="text-xs font-medium text-slate-600">{t("investForm.applyDate")}</div>
                   {/* 申请日期为必填（红框）：仅买入窗口标记，赎回窗口用同一行但不加框 */}
                   <DateStepper value={applyDate} onChange={changeApplyDate}
                     className={redeemPanelMode ? undefined : REQUIRED_FIELD_CLASS}
                     onBlur={() => {
+                      if (productType === "metal") return;
                       if (confirmDays >= 0 && applyDate) {
                         enableEditAutoNav();
                         setConfirmDate(addFundTradingDays(applyDate, confirmDays));
                       }
                     }} />
                 </div>
-                {showConfirmFor(subtype) && (
+                {showConfirmFor(subtype, productType) && (
                   <div className="flex items-center gap-1 text-xs text-slate-600 shrink-0 pb-1">
                     <span>T+</span>
                     <input inputMode="numeric" value={confirmDays}
@@ -3245,7 +3481,7 @@ export function InvestmentFormModal({
                       className="h-7 w-8 rounded-[8px] border border-slate-300/70 bg-white text-center text-xs outline-none transition-colors focus:border-blue-400 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-100 disabled:text-slate-500" />
                   </div>
                 )}
-                {showConfirmFor(subtype) && (
+                {showConfirmFor(subtype, productType) && (
                   <div className="relative space-y-1">
                     <div className="text-xs font-medium text-slate-600">{t("investForm.confirmDate")}</div>
                     <DateStepper value={confirmDate} onChange={changeConfirmDate} min={applyDate} />
@@ -3253,22 +3489,25 @@ export function InvestmentFormModal({
                 )}
               </div>
               {/* 提示是 portal + fixed 浮层，浮在窗口外上方，不占这一行的高度、不撑大窗口。 */}
-              {showConfirmFor(subtype) && (
+              {showConfirmFor(subtype, productType) && (
                 <ConfirmRuleLockNotice anchorRef={panelRef} visible={confirmRuleHint === "confirm"} text={t("fundConfirmDays.localEditHint")} onClose={() => setConfirmRuleHint(null)} />
               )}
 
               {redeemPanelMode ? (
                 <>
                   {investmentAccounts && investmentAccounts.length > 0 && (
-                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                    <div className={`grid grid-cols-1 gap-3 ${isMetalExtractEdit ? "" : "sm:grid-cols-2"}`}>
                       <div className="space-y-1">
                           <div className="text-xs font-medium text-slate-600">{productAccountLabel}</div>
                           {renderInvestmentAccountSelect(t("investForm.selectProductAccount", { account: productAccountLabel }))}
                       </div>
-                      <div className="space-y-1">
-                        <div className="text-xs font-medium text-slate-600">{t("investForm.redeemArrivalAccount")}</div>
-                        {renderCashAccountSelect(t("investForm.selectCashAccount"))}
-                      </div>
+                      {/* 提取实物没有回款环节：赎回到账账户/到账日期/到账金额都不该出现在提取实物明细里。 */}
+                      {isMetalExtractEdit ? null : (
+                        <div className="space-y-1">
+                          <div className="text-xs font-medium text-slate-600">{t("investForm.redeemArrivalAccount")}</div>
+                          {renderCashAccountSelect(t("investForm.selectCashAccount"))}
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -3336,7 +3575,17 @@ export function InvestmentFormModal({
 
                   <div className="grid grid-cols-[1fr_auto_1fr] items-end gap-2">
                       <div className="space-y-1">
-                        <div className="text-xs font-medium text-slate-600">{t("investForm.units")}</div>
+                        <div className="text-xs font-medium text-slate-600">
+                          {productType === "metal" ? t("investForm.metalQuantity") : t("investForm.units")}
+                          {metalAvailable ? (
+                            <span className="ml-1 font-normal text-slate-400">
+                              {t("investForm.metalAvailableUnits", {
+                                quantity: formatUnits(metalAvailable.quantity),
+                                unit: metalAvailable.metalUnitName,
+                              })}
+                            </span>
+                          ) : null}
+                        </div>
                         <CalcInput
                           value={units}
                           onChange={(v) => {
@@ -3348,17 +3597,17 @@ export function InvestmentFormModal({
                             setUnits(v);
                             recalculateRedeemAmountsFromTerms({ unitsRaw: v });
                           }}
-                          placeholder="0.00"
-                          label={t("investForm.units")}
+                          placeholder={formatUnits(0)}
+                          label={productType === "metal" ? t("investForm.metalQuantity") : t("investForm.units")}
                           precision={fundUnitsDecimals}
                         />
                       </div>
                       <button
                         type="button"
                         onClick={fetchNav}
-                        disabled={navLoading || !fundCode || productType === "metal"}
+                        disabled={isMetalExtractEdit || navLoading || (productType === "metal" ? !metalTypeId || !metalUnitId : !fundCode)}
                         className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] border border-amber-200 bg-amber-50 text-amber-700 transition-colors hover:border-amber-300 hover:bg-amber-100 disabled:opacity-50"
-                        title={productType === "metal" ? t("investForm.metalPriceManualTitle") : t("investForm.fetchNav")}
+                        title={productType === "metal" ? t("investForm.fetchMetalPrice") : t("investForm.fetchNav")}
                       >
                         <DatabaseZap className={`h-4 w-4 ${navLoading ? "animate-pulse" : ""}`} />
                       </button>
@@ -3375,6 +3624,7 @@ export function InvestmentFormModal({
                         <input
                           inputMode="decimal"
                           value={nav}
+                          readOnly={isMetalExtractEdit}
                           onChange={(e) => {
                             const nextNav = e.target.value;
                             setNav(nextNav);
@@ -3389,7 +3639,7 @@ export function InvestmentFormModal({
                               ? t("investForm.navUnavailable")
                               : "1.2345"}
                           style={{ caretColor: "var(--foreground)" }}
-                          className="form-input caret-slate-800"
+                          className={`form-input caret-slate-800 ${isMetalExtractEdit ? "bg-slate-50 text-slate-700" : ""}`}
                         />
                       </div>
                     </div>
@@ -3448,19 +3698,21 @@ export function InvestmentFormModal({
                     )}
                   </div>
 
-                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                    <div className="relative space-y-1">
-                      <div className="text-xs font-medium text-slate-600">{t("investForm.arrivalDate")}</div>
-                      <DateStepper value={arrivalDate} onChange={onArrivalDateChange} min={applyDate} />
-                      <ConfirmRuleLockNotice anchorRef={panelRef} visible={confirmRuleHint === "arrival"} text={t("fundConfirmDays.localEditHint")} onClose={() => setConfirmRuleHint(null)} />
+                  {isMetalExtractEdit ? null : (
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                      <div className="relative space-y-1">
+                        <div className="text-xs font-medium text-slate-600">{t("investForm.arrivalDate")}</div>
+                        <DateStepper value={arrivalDate} onChange={onArrivalDateChange} min={applyDate} />
+                        <ConfirmRuleLockNotice anchorRef={panelRef} visible={confirmRuleHint === "arrival"} text={t("fundConfirmDays.localEditHint")} onClose={() => setConfirmRuleHint(null)} />
+                      </div>
+                      <div className="space-y-1">
+                        <div className="text-xs font-medium text-slate-600">{t("investForm.arrivalAmount")}</div>
+                        <CalcInput value={arrivalAmount} onChange={setArrivalAmount} placeholder={t("investForm.arrivalAmountPlaceholder")} label={t("investForm.arrivalAmount")} precision={2} />
+                      </div>
                     </div>
-                    <div className="space-y-1">
-                      <div className="text-xs font-medium text-slate-600">{t("investForm.arrivalAmount")}</div>
-                      <CalcInput value={arrivalAmount} onChange={setArrivalAmount} placeholder={t("investForm.arrivalAmountPlaceholder")} label={t("investForm.arrivalAmount")} precision={2} />
-                    </div>
-                  </div>
+                  )}
 
-                  {mode === "edit" && entry && (
+                  {mode === "edit" && entry && !isMetalExtractEdit && (
                     <div className="space-y-1 rounded-md border border-emerald-100 bg-emerald-50/40 p-3">
                       <div className="flex items-center justify-between text-xs">
                         <span className="font-medium text-slate-600">{t("investForm.redeemProfit")}</span>
@@ -3468,7 +3720,7 @@ export function InvestmentFormModal({
                           {entry.realizedProfit != null ? entry.realizedProfit.toFixed(2) : t("investForm.profitAfterSave")}
                         </span>
                       </div>
-                      <div className="text-[10px] text-slate-400">{t("investForm.redeemProfitHint")}</div>
+                      <div className="text-[10px] text-slate-400">{t(productType === "metal" ? "investForm.redeemProfitHint.metal" : "investForm.redeemProfitHint")}</div>
                     </div>
                   )}
                 </>
@@ -3589,9 +3841,9 @@ export function InvestmentFormModal({
                 <button
                   type="button"
                   onClick={fetchNav}
-                  disabled={navLoading || !fundCode || productType === "metal"}
+                  disabled={navLoading || (productType === "metal" ? !metalTypeId || !metalUnitId : !fundCode)}
                   className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] border border-amber-200 bg-amber-50 text-amber-700 transition-colors hover:border-amber-300 hover:bg-amber-100 disabled:opacity-50"
-                  title={productType === "metal" ? t("investForm.metalPriceManualTitle") : t("investForm.fetchNav")}
+                  title={productType === "metal" ? t("investForm.fetchMetalPrice") : t("investForm.fetchNav")}
                 >
                   <DatabaseZap className={`h-4 w-4 ${navLoading ? "animate-pulse" : ""}`} />
                 </button>
@@ -3694,11 +3946,11 @@ export function InvestmentFormModal({
                   <ConfirmRuleLockNotice anchorRef={panelRef} visible={confirmRuleHint === "arrival"} text={t("fundConfirmDays.localEditHint")} onClose={() => setConfirmRuleHint(null)} />
                 </div>
                 <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">{t("investForm.units")}</div>
+                  <div className="text-xs font-medium text-slate-600">{productType === "metal" ? t("investForm.metalQuantity") : t("investForm.units")}</div>
                   <CalcInput value={units}
                     onChange={(v) => { unitsEditedRef.current = true; setUnits(v); }}
-                    placeholder={computedUnits || "0.00"}
-                    label={t("investForm.units")} precision={fundUnitsDecimals}
+                    placeholder={computedUnits || formatUnits(0)}
+                    label={productType === "metal" ? t("investForm.metalQuantity") : t("investForm.units")} precision={fundUnitsDecimals}
                     className={REQUIRED_FIELD_CLASS} />
                 </div>
               </div>
@@ -3709,6 +3961,8 @@ export function InvestmentFormModal({
                 <div className="text-xs font-medium text-slate-600">{t("detail.column.remark")}</div>
                 <ClearableNoteField value={memo} onValueChange={setMemo} placeholder={t("stockFee.optional")} className="form-input" />
               </div>
+              </>
+              )}
               </>
               )}
         </EntryModalShell>

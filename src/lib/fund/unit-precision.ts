@@ -4,9 +4,11 @@ import { normalizeFundUnitsDecimals } from "@/lib/fund/unit-precision-core";
 export {
   DEFAULT_FUND_UNITS_DECIMALS,
   MAX_FUND_UNITS_DECIMALS,
+  METAL_QUANTITY_DECIMALS,
   MIN_FUND_UNITS_DECIMALS,
   formatFundUnitsValue,
   normalizeFundUnitsDecimals,
+  resolveQuantityDecimals,
   roundFundUnits,
   roundNullableFundUnits,
 } from "@/lib/fund/unit-precision-core";

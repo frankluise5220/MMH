@@ -18,7 +18,8 @@ import { loadBondTransactionEntryLike } from "@/lib/server/business-transaction-
  * 逆回购存单就是 bond_transactions 里 instrumentKind = "repo" 的 buy 行：
  *   - 本金固定、年化固定、到期一次还本付息，没有付息计划；
  *   - 回款 = 同一存单的 redeem 子行（sourceBondTransactionId 指回 buy 行）；
- *   - 利息按**实际占款天数**（成交日 → 回款日）计，不按名义期限。
+ *   - 利息按**占款天数**（自然日）计：周五 1 天期顺延到周一到账算 3 天，周末照付利息，
+ *     与券商实付一致。
  * 这里只做投影，不写库；落账见 repo-transactions.ts。
  */
 
@@ -35,7 +36,7 @@ export type RepoShellLot = {
   startDate: string | null;
   maturityDate: string | null;
   clearedDate: string | null;
-  /** 占款天数（成交日 → 回款日 / 到期日）。 */
+  /** 占款天数：成交日 → 到期日（回款日）的自然日差，周五 1 天期顺延到周一是 3 天。 */
   occupiedDays: number | null;
   /** 距到期还剩几天（已回款为 null，过期未回款为负数）。 */
   remainingDays: number | null;
@@ -50,6 +51,8 @@ export type RepoShellLot = {
   status: "open" | "closed";
   /** 该存单在明细表里的分录 id，用于点中收窄明细。 */
   relatedEntryIds: string[];
+  /** 借出时的资金账户：行内编辑要按它回填逆回购窗口的「现金账户」。 */
+  cashAccountId: string | null;
 };
 
 export type RepoShellData = {
@@ -143,6 +146,7 @@ export function projectRepoLots(
     realizedProfit: number;
     clearedDate: string | null;
     relatedEntryIds: string[];
+    cashAccountId: string | null;
   };
 
   const lots: LotAcc[] = [];
@@ -171,6 +175,7 @@ export function projectRepoLots(
       realizedProfit: 0,
       clearedDate: null,
       relatedEntryIds: [entryIdOf(row)],
+      cashAccountId: row.cashAccountId ?? null,
     };
     // 借出行没有落利息时，用同一公式补一个预计值（占款天数口径）。
     if (lot.expectedInterest == null && occupiedDays) {
@@ -238,6 +243,7 @@ export function projectRepoLots(
         realizedProfit: Number(lot.realizedProfit.toFixed(2)),
         status,
         relatedEntryIds: lot.relatedEntryIds,
+        cashAccountId: lot.cashAccountId,
       } satisfies RepoShellLot;
     })
     .sort((a, b) => {

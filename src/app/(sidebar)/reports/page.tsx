@@ -24,6 +24,7 @@ import { loadFundPortfolioTrendData } from "@/lib/server/fund-portfolio-trend";
 import { buildAccountDisplayOption, buildGroupedAccountOptions, normalizeCreditCardLabelTemplate, accountRenderSettings } from "@/lib/account-display";
 import { buildAccountOwnerOptions, filterAccountOwnersWithGroupIds } from "@/lib/account-owner-options";
 import { ACCOUNT_LABEL_FIELDS_COOKIE, accountLabelFieldsFromCookieValue } from "@/lib/server/account-label-fields";
+import { ACCOUNT_DROPDOWN_GROUP_BY_COOKIE, accountDropdownGroupByFromCookieValue } from "@/lib/server/account-dropdown-group-by";
 import { kindLabel } from "@/lib/account-kinds";
 import { isDepositAccount, isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import { prisma } from "@/lib/db/prisma";
@@ -212,6 +213,8 @@ export default async function ReportsPage({
     typeof params.detailColumnKey === "string" ? params.detailColumnKey.trim() : "";
   const cookieStore = await cookies();
   const accountLabelFields = accountLabelFieldsFromCookieValue(cookieStore.get(ACCOUNT_LABEL_FIELDS_COOKIE)?.value);
+  // 账户下拉的分组维度（所有人 / 分组标签 / 机构），报表页的账户筛选下拉跟着走。
+  const accountDropdownGroupBy = accountDropdownGroupByFromCookieValue(cookieStore.get(ACCOUNT_DROPDOWN_GROUP_BY_COOKIE)?.value);
   const colorScheme = (cookieStore.get("colorScheme")?.value === "green_up_red_down"
     ? "green_up_red_down"
     : "red_up_green_down") satisfies ColorScheme;
@@ -307,7 +310,7 @@ export default async function ReportsPage({
     institutionId: account.institutionId,
     currency: account.currency,
   }));
-  const accountSSOptions = buildGroupedAccountOptions(accountDisplayOptions);
+  const accountSSOptions = buildGroupedAccountOptions(accountDisplayOptions, accountDropdownGroupBy);
   const incomeFilterAccounts = accountRecords.map((account) => ({
     id: account.id,
     name: account.name,
@@ -368,9 +371,11 @@ export default async function ReportsPage({
   const investmentAccountIds = new Set(investmentAccounts.map((account) => account.id));
   const cashAccountSSOptions = buildGroupedAccountOptions(
     allAccountDisplayOptions.filter((account) => cashAccountIds.has(account.id)),
+    accountDropdownGroupBy,
   );
   const investmentAccountSSOptions = buildGroupedAccountOptions(
     allAccountDisplayOptions.filter((account) => investmentAccountIds.has(account.id)),
+    accountDropdownGroupBy,
   );
   // 存款账户（kind = "deposit"，含 legacy investment + deposit）不算「纯投资账户」，
   // 不会出现在上面的 investmentAccounts 里。存款编辑窗必须单独拿到它们，否则

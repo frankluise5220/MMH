@@ -2,6 +2,7 @@
 import { ModalLayer } from "@/components/ModalLayer";
 
 import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
 import { Banknote, Check, Link2, Pencil, Plus, Printer, ReceiptText, Trash2 } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { formatAmountDraft, formatMoney, formatMoneyYuan } from "@/lib/format";
@@ -89,6 +90,7 @@ export function ReimbursementWorkspace({
 }) {
   const globalMode = !objectId;
   const { t } = useI18n();
+  const router = useRouter();
   const [data, setData] = useState<ReimbursementOverviewData | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -129,6 +131,22 @@ export function ReimbursementWorkspace({
   const [batchApproveDate, setBatchApproveDate] = useState(todayDateLocalYmd());
   const [batchApproveNote, setBatchApproveNote] = useState("");
   const [batchApproveAmounts, setBatchApproveAmounts] = useState<Record<string, string>>({});
+
+  /**
+   * 关闭 = 回到报销入口所在视图，而不是浏览器后退。
+   * history.back() 依赖历史栈：新标签页/直接输入地址进入时会把用户退出应用，
+   * 页内换过对象时也只是退回上一个报销 URL，表现成「往后退一页」而不是关闭。
+   */
+  const closeWorkspace = () => {
+    if (busy) return;
+    if (advanceAccountId) {
+      // 从往来款/贷款行的「报销」进入：回到该对象的往来款视图。
+      router.replace(`/?view=liability&liabilityPerson=${encodeURIComponent(`account:${advanceAccountId}`)}`);
+      return;
+    }
+    // 侧边栏「费用报销」全局视图：回首页账户视图。
+    router.replace("/");
+  };
 
   const load = async () => {
     setLoading(true);
@@ -819,7 +837,7 @@ export function ReimbursementWorkspace({
               </div>
             ) : null}
           </div>
-          <button type="button" onClick={() => window.history.back()} className="secondary-button h-8 px-2" disabled={busy}>
+          <button type="button" onClick={closeWorkspace} className="secondary-button h-8 px-2" disabled={busy}>
             {t("table.close")}
           </button>
         </div>

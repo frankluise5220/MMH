@@ -6,6 +6,7 @@ import { InvestmentFormModal } from "@/components/InvestmentFormModal";
 import { TransactionFormModal } from "@/components/TransactionFormModal";
 import { WealthFormModal } from "@/components/WealthFormModal";
 import { BondFormModal } from "@/components/BondFormModal";
+import { InsuranceEntryEditBridge } from "@/components/InsuranceEntryEditBridge";
 import { useI18n } from "@/lib/i18n";
 
 type AccountOption = {
@@ -212,6 +213,13 @@ export function ReportTransactionEditHost({
         nestedFieldData={nestedFieldData}
         createAction={updateInvestment}
         editAction={updateInvestment}
+      />
+      {/* 报表下钻明细里保险缴费/理赔行（type=investment、source=insurance）派发的是
+          `mmh:insurance:edit`，此前这个页面没人接，行内「编辑」是死按钮。 */}
+      <InsuranceEntryEditBridge
+        cashAccounts={cashAccounts}
+        cashAccountSSOptions={cashAccountSSOptions}
+        nestedFieldData={nestedFieldData}
       />
     </>
   );

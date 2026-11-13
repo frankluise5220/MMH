@@ -63,6 +63,10 @@ model Account {
   numberMasked                                               String?
   routeKey                                                   String?                     @unique
   note                                                       String?
+  // 自定义分组标签（2026-11-13 用户裁定）：用户自己起的分类名（如「日常现金」「孩子教育」），
+  // 侧边栏与账户下拉可以按它分组。与 `groupId` → `AccountGroup`（所有人/归属人分组）
+  // 是两个完全不同的概念，不要混用。自由文本、可空；空 = 「未分组」。
+  accountGroup                                               String?
   usageCount                                                 Int                         @default(0)
   lastUsedAt                                                 DateTime?
   householdId                                                String
@@ -1278,6 +1282,10 @@ model HouseholdPreference {
   displayLanguage                   String          @default("zh-CN")
   dateDisplayFormat                 String          @default("yyyy-mm-dd")
   sidebarGroupBy                    String          @default("kind")
+  // 账户下拉的分组维度（2026-11-13）：owner（按所有人，默认 / 历史行为）|
+  // accountGroup（按账户自定义分组标签）| institution（按机构）。
+  // 与 sidebarGroupBy 是两套独立设置：下拉表头原本固定按所有人，侧边栏则是 类型/机构。
+  accountDropdownGroupBy            String          @default("owner")
   sidebarHideZero                   Boolean         @default(false)
   sidebarHideInitialData            Boolean         @default(false)
   sidebarShowFixedAssets            Boolean         @default(true)
@@ -1497,7 +1505,12 @@ model PreciousMetalHolding {
   quantity          Decimal           @default(0) @db.Decimal(20, 6)
   avgCost           Decimal           @default(0) @db.Decimal(20, 6)
   cost              Decimal           @default(0) @db.Decimal(18, 2)
+  /// 最后一笔成交单价（recalc 时按交易回放写入，不是行情）。
   unitPrice         Decimal?          @db.Decimal(20, 6)
+  /// 行情最新单价（按 metalUnitId 计价）+ 行情日期 + 数据源，手动/自动刷新写入。
+  latestPrice       Decimal?          @db.Decimal(20, 6)
+  latestPriceDate   DateTime?
+  priceSource       String?
   marketValue       Decimal           @default(0) @db.Decimal(18, 2)
   historicalProfit  Decimal           @default(0) @db.Decimal(18, 2)
   householdId       String
@@ -2360,6 +2373,7 @@ enum StockTransactionAction {
   merge_share
   fee_adjustment
   tax_adjustment
+  tax_refund
 }
 
 enum StockFeeType {

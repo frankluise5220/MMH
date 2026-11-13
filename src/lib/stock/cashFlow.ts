@@ -57,6 +57,7 @@ export function stockActionLabel(action: StockTransactionAction | string) {
   if (action === StockTransactionAction.merge_share) return "并股";
   if (action === StockTransactionAction.fee_adjustment) return "股票费用调整";
   if (action === StockTransactionAction.tax_adjustment) return "股票税费调整";
+  if (action === StockTransactionAction.tax_refund) return "股票退税";
   return "股票交易";
 }
 
@@ -73,7 +74,12 @@ export function totalStockFee(row: Partial<StockCashFlowRow>) {
 }
 
 export function isStockCashInAction(action: StockTransactionAction | string) {
-  return action === StockTransactionAction.sell || action === StockTransactionAction.dividend;
+  return (
+    action === StockTransactionAction.sell ||
+    action === StockTransactionAction.dividend ||
+    // 退税：券商把多扣的红利税退回证券资金账户，方向和卖出/分红一样是资金流入。
+    action === StockTransactionAction.tax_refund
+  );
 }
 
 export function isStockCashOutAction(action: StockTransactionAction | string) {

@@ -2199,6 +2199,37 @@ const Database = require("better-sqlite3");
 
 const MIGRATIONS = [
   {
+    // 贵金属行情（2026-11-13）：持仓新增 latestPrice / latestPriceDate / priceSource。
+    // 三列可空，存量持仓没有行情时读取侧回退 unitPrice（最后一笔成交价）。
+    // 漏掉这段：升级后的库读贵金属持仓会报 "no such column: latestPrice"。
+    version: "20261113_add_metal_latest_price",
+    description: "Add latestPrice / latestPriceDate / priceSource to PreciousMetalHolding",
+    apply(db) {
+      if (tableExists(db, "PreciousMetalHolding")) {
+        addColumnIfMissing(db, "PreciousMetalHolding", "latestPrice", "DECIMAL(20,6)");
+        addColumnIfMissing(db, "PreciousMetalHolding", "latestPriceDate", "DATETIME");
+        addColumnIfMissing(db, "PreciousMetalHolding", "priceSource", "TEXT");
+      }
+    },
+  },
+  {
+    // 账户自定义分组标签（2026-11-13 用户裁定）：用户自己起的分类名，
+    // 侧边栏 / 账户下拉可以按它分组；与 groupId → AccountGroup（所有人分组）无关。
+    // 可空自由文本，存量账户一律走「未分组」，不需要回填。
+    version: "20261113_add_account_group_label",
+    description: "Add Account.accountGroup + HouseholdPreference.accountDropdownGroupBy for account grouping",
+    apply(db) {
+      if (tableExists(db, "Account")) {
+        addColumnIfMissing(db, "Account", "accountGroup", "TEXT");
+      }
+      // 账户下拉分组维度（owner / accountGroup / institution）。household-preferences
+      // 是全列 findUnique，缺这一列会让首屏与侧边栏抛 "no such column"。
+      if (tableExists(db, "HouseholdPreference")) {
+        addColumnIfMissing(db, "HouseholdPreference", "accountDropdownGroupBy", "TEXT NOT NULL DEFAULT 'owner'");
+      }
+    },
+  },
+  {
     // 基金资金腿「出处 + 去处」统一（2026-10-17 用户裁定）：买入记 现金账户 → 基金账户，
     // 退款记 基金账户 → 现金账户，两侧账户都落库；历史单腿数据在此补齐。
     // 幂等：补齐后 toAccountId 非空，条件不再命中。

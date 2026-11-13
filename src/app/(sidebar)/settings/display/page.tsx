@@ -16,6 +16,7 @@ import {
 import {
   APP_PREFS_EVENT,
   getAccountLabelFieldsPreference,
+  getAccountDropdownGroupByPreference,
   getAccountDropdownRestrictTypePreference,
   getAccountUsageSortEnabledPreference,
   getDetailDateBackgroundPreference,
@@ -33,6 +34,7 @@ import {
   getRowHeightModePreference,
   normalizeRowHeightMode,
   setAccountLabelFieldsPreference,
+  setAccountDropdownGroupByPreference,
   setAccountDropdownRestrictTypePreference,
   setAccountUsageSortEnabledPreference,
   setRowHeightModePreference,
@@ -46,6 +48,7 @@ import {
   setSidebarShowAllCashEntriesPreference,
   setSidebarShowReimbursementsPreference,
   setTimeZonePreference,
+  type AccountDropdownGroupBy,
   type DisplayLanguage,
   type DateDisplayFormat,
   type RowHeightMode,
@@ -241,6 +244,8 @@ export default function DisplaySettingsPage() {
   const [sidebarShowReimbursements, setSidebarShowReimbursements] = useState(true);
   const [detailDateBackground, setDetailDateBackground] = useState(false);
   const [accountDropdownRestrictType, setAccountDropdownRestrictType] = useState(true);
+  // 账户下拉分组维度（2026-11-13）：owner 是历史行为，默认值必须与库里的 default 一致。
+  const [accountDropdownGroupBy, setAccountDropdownGroupBy] = useState<AccountDropdownGroupBy>("owner");
   const [accountUsageSortEnabled, setAccountUsageSortEnabled] = useState(true);
   const [rowHeightMode, setRowHeightMode] = useState<RowHeightMode>(DEFAULT_ROW_HEIGHT_MODE);
   // 明细默认观测窗口（年）。0 = 不限；只作用于服务端首次取数，不进 cookie 镜像。
@@ -273,6 +278,7 @@ export default function DisplaySettingsPage() {
     setSidebarShowReimbursements(getSidebarShowReimbursementsPreference());
     setDetailDateBackground(getDetailDateBackgroundPreference());
     setAccountDropdownRestrictType(getAccountDropdownRestrictTypePreference());
+    setAccountDropdownGroupBy(getAccountDropdownGroupByPreference());
     setAccountUsageSortEnabled(getAccountUsageSortEnabledPreference());
     setRowHeightMode(getRowHeightModePreference());
     setDisplayLanguage(getDisplayLanguagePreference());
@@ -547,6 +553,30 @@ export default function DisplaySettingsPage() {
     } catch {
       setSidebarGroupBy(prev);
       setSidebarGroupPreference(prev);
+    }
+  }
+
+  async function updateAccountDropdownGroupBy(next: AccountDropdownGroupBy) {
+    const prev = accountDropdownGroupBy;
+    setAccountDropdownGroupBy(next);
+    setAccountDropdownGroupByPreference(next);
+    try {
+      const res = await fetch("/api/v1/settings/app-preferences", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accountDropdownGroupBy: next }),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        setAccountDropdownGroupBy(prev);
+        setAccountDropdownGroupByPreference(prev);
+      } else {
+        // 侧边栏 / 表单里的下拉都是挂载时读 cookie 镜像，广播一次让当前页立刻跟上。
+        window.dispatchEvent(new Event(APP_PREFS_EVENT));
+      }
+    } catch {
+      setAccountDropdownGroupBy(prev);
+      setAccountDropdownGroupByPreference(prev);
     }
   }
 
@@ -1055,6 +1085,22 @@ export default function DisplaySettingsPage() {
               label={t("settings.display.accountDropdownRestrictType")}
             />
           </MobileSettingRow>
+          <MobileSettingRow
+            title={t("settings.display.accountDropdownGroupBy")}
+            desc={t("settings.display.accountDropdownGroupByDesc")}
+            hideDesc={hideSettingDescriptions}
+          >
+            <select
+              value={accountDropdownGroupBy}
+              onChange={(e) => void updateAccountDropdownGroupBy(e.target.value as AccountDropdownGroupBy)}
+              className={mobileSelectClass}
+              aria-label={t("settings.display.accountDropdownGroupBy")}
+            >
+              <option value="owner">{t("settings.display.groupByOwner")}</option>
+              <option value="accountGroup">{t("settings.display.groupByAccountGroup")}</option>
+              <option value="institution">{t("settings.display.groupByInstitution")}</option>
+            </select>
+          </MobileSettingRow>
           <MobileSettingRow title={t("settings.display.accountUsageSort")} desc={t("settings.display.accountUsageSortDesc")} hideDesc={hideSettingDescriptions} inline>
             <SettingsSwitch
               checked={accountUsageSortEnabled}
@@ -1108,6 +1154,35 @@ export default function DisplaySettingsPage() {
               >
                 {t("settings.display.groupByInstitution")}
               </button>
+              <button
+                type="button"
+                onClick={() => void updateSidebarGroup("accountGroup")}
+                className={`segment-button h-9 px-4 ${sidebarGroupBy === "accountGroup" ? "segment-button-active font-medium" : ""}`}
+              >
+                {t("settings.display.groupByAccountGroup")}
+              </button>
+            </div>
+          </SettingRow>
+          <SettingRow
+            title={t("settings.display.accountDropdownGroupBy")}
+            desc={t("settings.display.accountDropdownGroupByDesc")}
+            hideDesc={hideSettingDescriptions}
+          >
+            <div className="flex flex-wrap gap-2">
+              {([
+                ["owner", t("settings.display.groupByOwner")],
+                ["accountGroup", t("settings.display.groupByAccountGroup")],
+                ["institution", t("settings.display.groupByInstitution")],
+              ] as const).map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => void updateAccountDropdownGroupBy(value)}
+                  className={`segment-button h-9 px-4 ${accountDropdownGroupBy === value ? "segment-button-active font-medium" : ""}`}
+                >
+                  {label}
+                </button>
+              ))}
             </div>
           </SettingRow>
           <SettingRow title={t("settings.display.hideZero")} desc={t("settings.display.hideZeroDesc")} hideDesc={hideSettingDescriptions}>

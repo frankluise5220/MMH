@@ -101,6 +101,10 @@ export async function GET(req: NextRequest) {
       const cost = toNumber(item.cost);
       const marketValue = toNumber(item.marketValue);
       const floatingPnL = marketValue - cost;
+      const historicalProfit = toNumber(item.historicalProfit);
+      const totalProfit = floatingPnL + historicalProfit;
+      // 摊薄成本 = 成本 − 已实现盈亏；券商的「浮动盈亏」用的就是这个口径。
+      const dilutedCost = cost - historicalProfit;
       return {
         id: item.id,
         accountId: item.accountId,
@@ -117,7 +121,10 @@ export async function GET(req: NextRequest) {
         marketValue,
         floatingPnL,
         floatingPnLRate: cost > 0 ? floatingPnL / cost : 0,
-        historicalProfit: toNumber(item.historicalProfit),
+        historicalProfit,
+        totalProfit,
+        dilutedCost,
+        totalPnLRate: dilutedCost > 0 ? totalProfit / dilutedCost : 0,
       };
     });
     const totalMarketValue = holdings.reduce((sum, item) => sum + item.marketValue, 0);

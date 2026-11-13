@@ -2,6 +2,7 @@ import { normalizeLoanRepaymentMethod } from "@/lib/loan-repayment";
 
 export type ScheduledTaskType =
   | "fund_regular_invest"
+  | "metal_regular_invest"
   | "loan_repayment"
   | "transfer"
   | "insurance_premium"
@@ -61,12 +62,21 @@ export type ScheduledTaskPayload = {
     effectiveDate: string;
     annualRate: number;
   }>;
+  /**
+   * 贵金属积存计划（metal_regular_invest）：品种与计量单位。
+   * 计划只存金额，执行时按执行日最新报价折算克数入仓。
+   */
+  metalTypeId?: string | null;
+  metalTypeName?: string | null;
+  metalUnitId?: string | null;
+  metalUnitName?: string | null;
 };
 
 const SCHEDULED_TASK_MEMO_PREFIX = "MMH_SCHEDULED_TASK:";
 
 const SCHEDULED_TASK_TYPE_LABEL: Record<ScheduledTaskType, string> = {
   fund_regular_invest: "基金定投",
+  metal_regular_invest: "贵金属积存",
   loan_repayment: "还贷款",
   transfer: "转账",
   insurance_premium: "保费缴费",
@@ -83,6 +93,7 @@ const SCHEDULED_TASK_TYPE_LABEL: Record<ScheduledTaskType, string> = {
 export function normalizeScheduledTaskType(value: unknown): ScheduledTaskType {
   if (
     value === "fund_regular_invest" ||
+    value === "metal_regular_invest" ||
     value === "loan_repayment" ||
     value === "transfer" ||
     value === "insurance_premium" ||
@@ -223,6 +234,10 @@ export function decodeScheduledTaskMemo(memo?: string | null): ScheduledTaskPayl
               .filter((item) => /^\d{4}-\d{2}-\d{2}$/.test(item.effectiveDate) && Number.isFinite(item.annualRate) && item.annualRate >= 0)
               .sort((a, b) => a.effectiveDate.localeCompare(b.effectiveDate))
           : [],
+        metalTypeId: typeof parsed.metalTypeId === "string" && parsed.metalTypeId.trim() ? parsed.metalTypeId.trim() : null,
+        metalTypeName: typeof parsed.metalTypeName === "string" && parsed.metalTypeName.trim() ? parsed.metalTypeName.trim() : null,
+        metalUnitId: typeof parsed.metalUnitId === "string" && parsed.metalUnitId.trim() ? parsed.metalUnitId.trim() : null,
+        metalUnitName: typeof parsed.metalUnitName === "string" && parsed.metalUnitName.trim() ? parsed.metalUnitName.trim() : null,
       };
     }
   } catch {

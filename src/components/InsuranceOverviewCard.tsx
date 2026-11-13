@@ -68,7 +68,7 @@ export function InsuranceOverviewCard({
               <div key={person.insuredPersonKey} className="py-3">
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0 truncate text-sm font-semibold text-slate-800">{person.insuredPersonName}</div>
-                  <div className="shrink-0 text-sm font-semibold tabular-nums text-slate-900">{formatCompactMoney(person.coverage, t)}</div>
+                  <div title={formatCompactMoney(person.coverage, t)} className="max-w-[55%] shrink-0 truncate text-sm font-semibold tabular-nums text-slate-900">{formatCompactMoney(person.coverage, t)}</div>
                 </div>
                 <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-slate-500">
                   {coverageColumns.map((column) => {
@@ -106,10 +106,10 @@ export function InsuranceOverviewCard({
                       const item = person.categories.find((category) => category.key === column.key);
                       const coverage = item?.coverage ?? 0;
                       return (
-                        <td key={column.key} className="border-t border-slate-100 px-2 py-2 text-right align-middle tabular-nums group-hover:bg-slate-50">
+                        <td key={column.key} className="max-w-0 border-t border-slate-100 px-2 py-2 text-right align-middle tabular-nums group-hover:bg-slate-50">
                           {coverage > 0 ? (
-                            <div>
-                              <div className="font-semibold text-slate-800">{formatCompactMoney(coverage, t)}</div>
+                            <div className="truncate font-semibold text-slate-800" title={formatCompactMoney(coverage, t)}>
+                              {formatCompactMoney(coverage, t)}
                             </div>
                           ) : (
                             <span className="text-slate-300">-</span>
@@ -117,8 +117,8 @@ export function InsuranceOverviewCard({
                         </td>
                       );
                     })}
-                    <td className="border-t border-slate-100 px-2 py-2 text-right align-middle font-semibold tabular-nums text-slate-900 group-hover:bg-slate-50">
-                      {formatCompactMoney(person.coverage, t)}
+                    <td className="max-w-0 border-t border-slate-100 px-2 py-2 text-right align-middle font-semibold tabular-nums text-slate-900 group-hover:bg-slate-50">
+                      <div className="truncate" title={formatCompactMoney(person.coverage, t)}>{formatCompactMoney(person.coverage, t)}</div>
                     </td>
                   </tr>
                 ))}
@@ -138,9 +138,11 @@ export function InsuranceOverviewCard({
 
 function MetricCard({ label, value, valueClass = "text-slate-900" }: { label: string; value: string; valueClass?: string }) {
   return (
-    <div className="rounded-lg border border-slate-100 bg-slate-50/80 px-4 py-3">
-      <div className="text-xs text-slate-500">{label}</div>
-      <div className={`mt-1 text-sm font-semibold tabular-nums ${valueClass}`}>{value}</div>
+    // 与 OverviewDashboard 的 MetricCard 同口径：单行截断 + `title` 悬停看全。此前这里既没有
+    // `min-w-0` 也没有 `truncate`，长金额会直接顶出卡片边界（2026-11-12 用户反馈）。
+    <div className="min-w-0 rounded-lg border border-slate-100 bg-slate-50/80 px-4 py-3">
+      <div className="truncate text-xs text-slate-500" title={label}>{label}</div>
+      <div className={`mt-1 truncate text-sm font-semibold tabular-nums ${valueClass}`} title={value}>{value}</div>
     </div>
   );
 }

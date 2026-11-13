@@ -440,6 +440,7 @@ async function softDeleteIndependentBusinessRecordsByIds(
       accountId: true,
       cashAccountId: true,
       action: true,
+      instrumentKind: true,
       sourceBondTransactionId: true,
     },
   });
@@ -447,6 +448,9 @@ async function softDeleteIndependentBusinessRecordsByIds(
   // 计划行（bondm_/bondi_<存单id>）以存单为真源，删除后必须重算，否则
   // 撤销赎回时计划行金额不会回补、删存单时计划行会空挂。
   const affectedBondLotIds = new Set<string>();
+  // 逆回购：借出行就是存单，回款是它的 redeem 子行。删存单必须连子行一起删，
+  // 否则回款行会残留成「指向已删存单」的孤儿（明细里还看得见一笔回款）。
+  const repoSoldLotIds: string[] = [];
   for (const row of bondRows) {
     const updated = await prisma.bondTransaction.updateMany({
       where: { id: row.id, householdId: ctx.householdId, deletedAt: null },
@@ -459,8 +463,37 @@ async function softDeleteIndependentBusinessRecordsByIds(
     addOptionalAccountId(targets, row.accountId);
     addOptionalAccountId(targets, row.cashAccountId);
     targets.wealthAccountsToRecalc.add(row.accountId);
-    if (row.action === "buy") affectedBondLotIds.add(row.id);
-    else if (row.sourceBondTransactionId) affectedBondLotIds.add(row.sourceBondTransactionId);
+    if (row.action === "buy") {
+      affectedBondLotIds.add(row.id);
+      if (row.instrumentKind === "repo") repoSoldLotIds.push(row.id);
+    } else if (row.sourceBondTransactionId) {
+      affectedBondLotIds.add(row.sourceBondTransactionId);
+    }
+  }
+  // 逆回购存单被删：它的回款/利息/核销子行一并软删，避免留下孤儿行。
+  // 子行自己的现金分录通过 removedEntryIds 在下面统一软删。
+  if (repoSoldLotIds.length > 0) {
+    const childRows = await prisma.bondTransaction.findMany({
+      where: {
+        householdId: ctx.householdId,
+        deletedAt: null,
+        sourceBondTransactionId: { in: repoSoldLotIds },
+      },
+      select: { id: true, cashEntryId: true, accountId: true, cashAccountId: true },
+    });
+    for (const child of childRows) {
+      const updated = await prisma.bondTransaction.updateMany({
+        where: { id: child.id, householdId: ctx.householdId, deletedAt: null },
+        data: { deletedAt },
+      });
+      if (updated.count === 0) continue;
+      result.deletedCount += updated.count;
+      result.touchedInvestment = true;
+      pushRemovedIds(child.id, child.cashEntryId);
+      addOptionalAccountId(targets, child.accountId);
+      addOptionalAccountId(targets, child.cashAccountId);
+      targets.wealthAccountsToRecalc.add(child.accountId);
+    }
   }
   if (affectedBondLotIds.size > 0) {
     // ensureBondPlansForLot 自己判：存单还在→按剩余本金刷新；存单已删/已了结→标完成。

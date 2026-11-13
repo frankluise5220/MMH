@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useI18n } from "@/lib/i18n";
 import { MMH_BASE_PATH, withBasePath } from "@/lib/base-path";
+import { openMetalExtract } from "@/lib/client/metal-extract-event";
 import { selectedStockForAccount } from "@/lib/client/stock-selection";
 import type { LoanTypeValue } from "@/lib/loan-type";
 
@@ -27,6 +28,7 @@ type EntryKind =
   | "property-sell"
   | "property-expense"
   | "metal"
+  | "metal-extract"
   | "wealth"
   | "bond"
   | "deposit"
@@ -343,6 +345,13 @@ function dispatchEntryAction(kind: EntryKind, context?: Props["context"], loanTy
         }),
       );
       return;
+    case "metal-extract": {
+      // 提取实物（贵金属 → 固定资产）：打开贵金属投资记账窗的「提取实物」页签。
+      const metalAccountId = context?.defaultMetalAccountId ?? "";
+      if (!metalAccountId) return;
+      openMetalExtract({ requestId, accountId: metalAccountId });
+      return;
+    }
     case "wealth":
       window.dispatchEvent(
         new CustomEvent("mmh:wealth:create", {

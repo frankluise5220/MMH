@@ -343,7 +343,8 @@ function isCashStockAction(action: string) {
     action === StockTransactionAction.sell ||
     action === StockTransactionAction.dividend ||
     action === StockTransactionAction.fee_adjustment ||
-    action === StockTransactionAction.tax_adjustment
+    action === StockTransactionAction.tax_adjustment ||
+    action === StockTransactionAction.tax_refund
   );
 }
 
@@ -553,7 +554,7 @@ function enrichImportItemWithoutStockAccount(
     if (buySellAction && (!quantity || !price || !grossAmount || grossAmount <= 0)) {
       issues.push(issue("error", "QUANTITY_AND_PRICE_REQUIRED"));
     }
-    if ((action === StockTransactionAction.dividend || action === StockTransactionAction.fee_adjustment || action === StockTransactionAction.tax_adjustment) && (!grossAmount || grossAmount <= 0)) {
+    if ((action === StockTransactionAction.dividend || action === StockTransactionAction.fee_adjustment || action === StockTransactionAction.tax_adjustment || action === StockTransactionAction.tax_refund) && (!grossAmount || grossAmount <= 0)) {
       issues.push(issue("error", "AMOUNT_REQUIRED"));
     }
     if (isShareOnlyAction(action) && !quantity) issues.push(issue("error", "QUANTITY_REQUIRED"));
@@ -834,7 +835,7 @@ async function enrichImportItem(ctx: ImportContext, input: StockImportInput): Pr
   if (buySellAction && (!quantity || !price || !grossAmount || grossAmount <= 0)) {
     issues.push(issue("error", "QUANTITY_AND_PRICE_REQUIRED"));
   }
-  if ((action === StockTransactionAction.dividend || action === StockTransactionAction.fee_adjustment || action === StockTransactionAction.tax_adjustment) && (!grossAmount || grossAmount <= 0)) {
+  if ((action === StockTransactionAction.dividend || action === StockTransactionAction.fee_adjustment || action === StockTransactionAction.tax_adjustment || action === StockTransactionAction.tax_refund) && (!grossAmount || grossAmount <= 0)) {
     issues.push(issue("error", "AMOUNT_REQUIRED"));
   }
   if (isShareOnlyAction(action) && !quantity) {

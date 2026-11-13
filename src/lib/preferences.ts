@@ -13,6 +13,7 @@ import {
   normalizeCreditCardLabelTemplate,
   parseAccountLabelFields,
   serializeAccountLabelFields,
+  type AccountGroupByMode,
   type AccountLabelField,
 } from "@/lib/account-display";
 import {
@@ -25,7 +26,14 @@ import { DEFAULT_ROW_HEIGHT_MODE, normalizeRowHeightMode, type RowHeightMode } f
 export type DisplayLanguage = "zh-CN" | "en-US" | "ja-JP";
 export type ColorScheme = "red_up_green_down" | "green_up_red_down";
 export type CreditCardLabelMode = "short_last4" | "full_name";
-export type SidebarGroupMode = "kind" | "institution";
+export type SidebarGroupMode = "kind" | "institution" | "accountGroup";
+/**
+ * 账户下拉的分组维度：
+ *   owner        — 按所有人（AccountGroup），历史行为，也是默认值；
+ *   accountGroup — 按账户自定义分组标签（Account.accountGroup，空 = 未分组）；
+ *   institution  — 按机构。
+ */
+export type AccountDropdownGroupBy = AccountGroupByMode;
 
 /**
  * 逆回购占款天数的三种算法。占款天数直接决定预计利息，而「占款」在不同人心里
@@ -66,6 +74,7 @@ export type PreferenceRow = {
   displayLanguage?: string | null;
   dateDisplayFormat?: string | null;
   sidebarGroupBy?: string | null;
+  accountDropdownGroupBy?: string | null;
   sidebarHideZero?: boolean | null;
   sidebarHideInitialData?: boolean | null;
   sidebarShowFixedAssets?: boolean | null;
@@ -98,6 +107,8 @@ export type AppPreferences = {
   displayLanguage: DisplayLanguage;
   dateDisplayFormat: DateDisplayFormat;
   sidebarGroupBy: SidebarGroupMode;
+  /** 账户下拉的分组维度（owner / accountGroup / institution）。 */
+  accountDropdownGroupBy: AccountDropdownGroupBy;
   sidebarHideZero: boolean;
   sidebarHideInitialData: boolean;
   sidebarShowFixedAssets: boolean;
@@ -173,7 +184,14 @@ export function normalizeDisplayLanguage(input: unknown): DisplayLanguage {
 }
 
 export function normalizeSidebarGroupMode(input: unknown): SidebarGroupMode {
-  return input === "institution" ? "institution" : "kind";
+  if (input === "institution" || input === "accountGroup") return input;
+  return "kind";
+}
+
+/** 非法值一律退回 `owner`，保证下拉分组行为不会因脏数据消失。 */
+export function normalizeAccountDropdownGroupBy(input: unknown): AccountDropdownGroupBy {
+  if (input === "accountGroup" || input === "institution") return input;
+  return "owner";
 }
 
 /** 非法值一律退回 `actual`，避免存进去的字符串让占款天数算成 0。 */
@@ -218,6 +236,7 @@ export function preferencesFromRow(row: PreferenceRow | null | undefined): AppPr
     displayLanguage: normalizeDisplayLanguage(row?.displayLanguage),
     dateDisplayFormat: normalizeDateDisplayFormat(row?.dateDisplayFormat ?? DEFAULT_DATE_DISPLAY_FORMAT),
     sidebarGroupBy: normalizeSidebarGroupMode(row?.sidebarGroupBy),
+    accountDropdownGroupBy: normalizeAccountDropdownGroupBy(row?.accountDropdownGroupBy),
     sidebarHideZero: normalizeBoolean(row?.sidebarHideZero, false),
     sidebarHideInitialData: normalizeBoolean(row?.sidebarHideInitialData, false),
     sidebarShowFixedAssets: normalizeBoolean(row?.sidebarShowFixedAssets, true),
@@ -257,6 +276,7 @@ export const PREFERENCE_COOKIE_MIRROR = [
   { key: "mmh_display_language", pick: (p: AppPreferences) => p.displayLanguage },
   { key: "mmh_date_display_format", pick: (p: AppPreferences) => p.dateDisplayFormat },
   { key: "sidebar_group_by", pick: (p: AppPreferences) => p.sidebarGroupBy },
+  { key: "account_dropdown_group_by", pick: (p: AppPreferences) => p.accountDropdownGroupBy },
   { key: "sidebar_hide_zero", pick: (p: AppPreferences) => String(p.sidebarHideZero) },
   { key: "sidebar_hide_initial_data", pick: (p: AppPreferences) => String(p.sidebarHideInitialData) },
   { key: "sidebar_show_fixed_assets", pick: (p: AppPreferences) => String(p.sidebarShowFixedAssets) },

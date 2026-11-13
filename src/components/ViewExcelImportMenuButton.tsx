@@ -253,6 +253,7 @@ function templateFor(props: ViewExcelImportMenuButtonProps, t: TranslateFn): Tem
             { value: t("stockPanel.action.merge_share") },
             { value: t("stockPanel.action.fee_adjustment") },
             { value: t("stockPanel.action.tax_adjustment") },
+            { value: t("stockPanel.action.tax_refund") },
             { value: t("viewImport.stockActionBankTransfer") },
           ],
         },
@@ -1039,6 +1040,7 @@ function normalizeStockImportAction(raw: string, t: TranslateFn) {
     ["merge_share", ["merge_share", "merge", t("stockPanel.action.merge_share"), ...splitImportAliases(t("viewImport.stockActionAlias.merge_share"))]],
     ["fee_adjustment", ["fee_adjustment", "fee adjustment", t("stockPanel.action.fee_adjustment"), ...splitImportAliases(t("viewImport.stockActionAlias.fee_adjustment"))]],
     ["tax_adjustment", ["tax_adjustment", "tax adjustment", t("stockPanel.action.tax_adjustment"), ...splitImportAliases(t("viewImport.stockActionAlias.tax_adjustment"))]],
+    ["tax_refund", ["tax_refund", "tax refund", t("stockPanel.action.tax_refund"), ...splitImportAliases(t("viewImport.stockActionAlias.tax_refund"))]],
     ["bank_transfer", ["bank_transfer", t("viewImport.stockActionBankTransfer"), ...splitImportAliases(t("viewImport.stockActionAlias.bank_transfer"))]],
   ];
   for (const [action, labels] of candidates) {

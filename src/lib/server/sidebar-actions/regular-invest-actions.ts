@@ -89,9 +89,15 @@ async function createRegularInvest(formData: FormData) {
 
   const taskType = normalizeScheduledTaskType(formData.get("taskType"));
   const isFundTask = taskType === "fund_regular_invest";
+  const isMetalTask = taskType === "metal_regular_invest";
   const isOrdinaryTask = taskType === "income" || taskType === "expense";
-  const requiresCashAccount = taskType === "transfer" || taskType === "loan_repayment" || taskType === "insurance_premium";
+  const requiresCashAccount =
+    taskType === "transfer" || taskType === "loan_repayment" || taskType === "insurance_premium" || isMetalTask;
   const accountId = String(formData.get("accountId") ?? "").trim();
+  const metalTypeIdRaw = String(formData.get("metalTypeId") ?? "").trim();
+  const metalUnitIdRaw = String(formData.get("metalUnitId") ?? "").trim();
+  const metalTypeNameRaw = String(formData.get("metalTypeName") ?? "").trim();
+  const metalUnitNameRaw = String(formData.get("metalUnitName") ?? "").trim();
   const fundCodeRaw = String(formData.get("fundCode") ?? "").trim();
   const fundCode = isFundTask ? fundCodeRaw : taskType;
   const categoryId = String(formData.get("categoryId") ?? "").trim() || null;
@@ -130,10 +136,35 @@ async function createRegularInvest(formData: FormData) {
   if (taskType === "insurance_premium" && !insuranceProductId) {
     return { ok: false as const, error: "缴费计划缺少保险产品" };
   }
+  if (isMetalTask && (!metalTypeIdRaw || !metalUnitIdRaw)) {
+    return { ok: false as const, error: "积存计划缺少贵金属品种或计量单位" };
+  }
 
   const targetAcc = await prisma.account.findUnique({ where: { id: accountId } });
   if (!targetAcc) return { ok: false as const, error: isFundTask ? "基金账户不存在" : "目标账户不存在" };
   if (householdId && targetAcc.householdId !== householdId) return { ok: false as const, error: "目标账户不属于当前账簿" };
+
+  // 贵金属积存：目标账户必须是贵金属投资账户，品种/单位取自系统或本账簿字典。
+  let resolvedMetalTypeName: string | null = metalTypeNameRaw || null;
+  let resolvedMetalUnitName: string | null = metalUnitNameRaw || null;
+  if (isMetalTask) {
+    if (targetAcc.investProductType !== "metal") return { ok: false as const, error: "请选择贵金属投资账户" };
+    const [metalType, metalUnit] = await Promise.all([
+      prisma.preciousMetalType.findFirst({
+        where: { id: metalTypeIdRaw, OR: [{ householdId: null }, { householdId }] },
+        select: { name: true },
+      }),
+      prisma.preciousMetalUnit.findFirst({
+        where: { id: metalUnitIdRaw, OR: [{ householdId: null }, { householdId }] },
+        select: { name: true, symbol: true },
+      }),
+    ]);
+    if (!metalType) return { ok: false as const, error: "贵金属品种不存在" };
+    if (!metalUnit) return { ok: false as const, error: "贵金属计量单位不存在" };
+    resolvedMetalTypeName = resolvedMetalTypeName || metalType.name;
+    resolvedMetalUnitName =
+      resolvedMetalUnitName || (metalUnit.symbol ? `${metalUnit.name}(${metalUnit.symbol})` : metalUnit.name);
+  }
 
   const cashAcc = cashAccountId
     ? await prisma.account.findUnique({ where: { id: cashAccountId }, select: { id: true, name: true, householdId: true } })
@@ -173,7 +204,9 @@ async function createRegularInvest(formData: FormData) {
   const profileFundName = isFundTask ? await resolveFundName(fundCode, { householdId }) : null;
   const fundName = isFundTask
     ? profileFundName ?? normalizeFundDisplayName(fundCode, suppliedFundName) ?? fundCode
-    : suppliedFundName ?? (isOrdinaryTask ? categoryName ?? scheduledTaskTypeLabel(taskType) : scheduledTaskTypeLabel(taskType));
+    : isMetalTask
+      ? suppliedFundName ?? resolvedMetalTypeName ?? scheduledTaskTypeLabel(taskType)
+      : suppliedFundName ?? (isOrdinaryTask ? categoryName ?? scheduledTaskTypeLabel(taskType) : scheduledTaskTypeLabel(taskType));
 
   try {
     await prisma.$transaction(async (tx) => {
@@ -189,7 +222,7 @@ async function createRegularInvest(formData: FormData) {
           taskType,
           targetName: fundName,
           insuranceProductName: taskType === "insurance_premium" ? fundName : null,
-          fundProductType: isFundTask ? (targetAcc.investProductType || null) : null,
+          fundProductType: isFundTask ? (targetAcc.investProductType || null) : isMetalTask ? "metal" : null,
           amount: amountRaw,
           intervalUnit: intervalUnitValue,
           intervalValue,
@@ -214,6 +247,10 @@ async function createRegularInvest(formData: FormData) {
             repaymentMethod: taskType === "loan_repayment" ? repaymentMethod : null,
             repaymentIntervalMonths: taskType === "loan_repayment" ? repaymentIntervalMonths : null,
             loanPlanRole: taskType === "loan_repayment" ? "auto_debit" : null,
+            metalTypeId: isMetalTask ? metalTypeIdRaw : null,
+            metalTypeName: isMetalTask ? resolvedMetalTypeName : null,
+            metalUnitId: isMetalTask ? metalUnitIdRaw : null,
+            metalUnitName: isMetalTask ? resolvedMetalUnitName : null,
           }),
           skipPendingPreceding: isFundTask ? skipPendingPreceding : false,
           ...{ householdId },
@@ -343,8 +380,22 @@ async function updateRegularInvest(formData: FormData) {
     }
   }
   const isFundTask = taskType === "fund_regular_invest";
+  const isMetalTask = taskType === "metal_regular_invest";
   const isOrdinaryTask = taskType === "income" || taskType === "expense";
-  const requiresCashAccount = taskType === "transfer" || taskType === "loan_repayment" || taskType === "insurance_premium";
+  const requiresCashAccount =
+    taskType === "transfer" || taskType === "loan_repayment" || taskType === "insurance_premium" || isMetalTask;
+  const nextMetalTypeId = formData.has("metalTypeId")
+    ? String(formData.get("metalTypeId") ?? "").trim() || null
+    : existingTask.metalTypeId ?? null;
+  const nextMetalUnitId = formData.has("metalUnitId")
+    ? String(formData.get("metalUnitId") ?? "").trim() || null
+    : existingTask.metalUnitId ?? null;
+  const nextMetalTypeName = formData.has("metalTypeName")
+    ? String(formData.get("metalTypeName") ?? "").trim() || null
+    : existingTask.metalTypeName ?? null;
+  const nextMetalUnitName = formData.has("metalUnitName")
+    ? String(formData.get("metalUnitName") ?? "").trim() || null
+    : existingTask.metalUnitName ?? null;
   const accountId = String(formData.get("accountId") ?? plan.accountId).trim();
   const fundCodeRaw = String(formData.get("fundCode") ?? plan.fundCode).trim();
   const fundCode = isFundTask ? fundCodeRaw : taskType;
@@ -389,6 +440,7 @@ async function updateRegularInvest(formData: FormData) {
   if (!accountId || (isFundTask && !fundCode)) return { ok: false as const, error: "缺少必填字段" };
   if (requiresCashAccount && !cashAccountId) return { ok: false as const, error: "计划任务缺少资金账户" };
   if (taskType === "insurance_premium" && !insuranceProductId) return { ok: false as const, error: "缴费计划缺少保险产品" };
+  if (isMetalTask && (!nextMetalTypeId || !nextMetalUnitId)) return { ok: false as const, error: "积存计划缺少贵金属品种或计量单位" };
 
   const updateData: any = {};
   const profileFundName = isFundTask ? await resolveFundName(fundCode, { householdId }) : null;
@@ -406,7 +458,9 @@ async function updateRegularInvest(formData: FormData) {
     // 存款系统计划编辑时保留存单名，不回退成「存款取息/存款到期」的通用标签。
     ? (suppliedFundName || plan.fundName || scheduledTaskTypeLabel(taskType))
     : isFundTask
-      ? profileFundName ?? normalizeFundDisplayName(fundCode, suppliedFundName) ?? normalizeFundDisplayName(fundCode, plan.fundName) ?? fundCode
+    ? profileFundName ?? normalizeFundDisplayName(fundCode, suppliedFundName) ?? normalizeFundDisplayName(fundCode, plan.fundName) ?? fundCode
+    : isMetalTask
+      ? suppliedFundName || nextMetalTypeName || plan.fundName || scheduledTaskTypeLabel(taskType)
       : suppliedFundName || (isOrdinaryTask ? nextCategoryName ?? plan.targetName ?? plan.fundName ?? scheduledTaskTypeLabel(taskType) : scheduledTaskTypeLabel(taskType));
   updateData.accountId = accountId;
   updateData.fundCode = fundCode;
@@ -431,6 +485,10 @@ async function updateRegularInvest(formData: FormData) {
       repaymentMethod: taskType === "loan_repayment" ? nextRepaymentMethod : null,
       repaymentIntervalMonths: taskType === "loan_repayment" ? nextRepaymentIntervalMonths : null,
       loanPlanRole: taskType === "loan_repayment" ? getLoanScheduledPlanRole(existingTask) ?? "auto_debit" : null,
+      metalTypeId: isMetalTask ? nextMetalTypeId : null,
+      metalTypeName: isMetalTask ? nextMetalTypeName : null,
+      metalUnitId: isMetalTask ? nextMetalUnitId : null,
+      metalUnitName: isMetalTask ? nextMetalUnitName : null,
     });
   }
   if (accountId !== plan.accountId || formData.has("accountId")) {
@@ -441,9 +499,11 @@ async function updateRegularInvest(formData: FormData) {
     // 存款/债券系统计划的 fundProductType（deposit / bond）由自愈写入，换账户时保留。
     updateData.fundProductType = isFundTask
       ? (targetAcc.investProductType || plan.fundProductType || null)
-      : isLotSystemPlanEdit ? plan.fundProductType ?? null : null;
+      : isMetalTask
+        ? "metal"
+        : isLotSystemPlanEdit ? plan.fundProductType ?? null : null;
   } else if (!isFundTask && !isLotSystemPlanEdit) {
-    updateData.fundProductType = null;
+    updateData.fundProductType = isMetalTask ? "metal" : null;
   }
   if (Number.isFinite(amountRaw) && amountRaw > 0) updateData.amount = amountRaw;
   const normalizedEffectiveInterval = normalizeIntervalScheduleValue(

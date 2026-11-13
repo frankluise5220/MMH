@@ -195,6 +195,30 @@ export function StockHoldingReport({ rows, totals, isRedUp }: Props) {
       sortValue: (row) => row.totalProfit,
       render: (row) => <span className={valueClass(row.totalProfit, isRedUp)}>{signedMoney(row.totalProfit, row.currency)}</span>,
     },
+    {
+      // 券商/同花顺默认按「摊薄成本」显示浮动盈亏：已实现盈亏摊回剩余股数，成本因此更高（亏损时）。
+      // 本表把两者拆开列，再补一列摊薄成本和综合盈亏率，方便逐项核对。
+      key: "dilutedCost",
+      label: t("stockHoldingReport.colDilutedCost"),
+      width: 112,
+      minWidth: 88,
+      align: "right",
+      className: "tabular-nums",
+      filterText: (row) => String(row.dilutedCost),
+      sortValue: (row) => row.dilutedCost,
+      render: (row) => formatCurrencyMoney(row.dilutedCost, row.currency),
+    },
+    {
+      key: "totalPnLRate",
+      label: t("stockHoldingReport.colTotalPnLRate"),
+      width: 104,
+      minWidth: 82,
+      align: "right",
+      className: "tabular-nums",
+      filterText: (row) => String(row.totalPnLRate),
+      sortValue: (row) => row.totalPnLRate,
+      render: (row) => <span className={valueClass(row.totalPnLRate, isRedUp)}>{formatRate(row.totalPnLRate)}</span>,
+    },
   ], [isRedUp, t]);
   const summaryRow = useMemo<AdvancedDataTableSummaryRow | undefined>(() => {
     if (rows.length === 0) return undefined;
@@ -208,6 +232,8 @@ export function StockHoldingReport({ rows, totals, isRedUp }: Props) {
         floatingPnLRate: <span className={`tabular-nums text-xs ${valueClass(totals.floatingPnLRate, isRedUp)}`}>{formatRate(totals.floatingPnLRate)}</span>,
         historicalProfit: <span className={`tabular-nums text-xs ${valueClass(totals.historicalProfit, isRedUp)}`}>{signedMoney(totals.historicalProfit, currency)}</span>,
         totalProfit: <span className={`tabular-nums text-xs ${valueClass(totals.totalProfit, isRedUp)}`}>{signedMoney(totals.totalProfit, currency)}</span>,
+        dilutedCost: <span className="tabular-nums text-xs text-slate-700">{formatCurrencyMoney(totals.dilutedCost, currency)}</span>,
+        totalPnLRate: <span className={`tabular-nums text-xs ${valueClass(totals.totalPnLRate, isRedUp)}`}>{formatRate(totals.totalPnLRate)}</span>,
       },
       rowClassName: "bg-slate-50",
       cellClassName: "text-xs",
@@ -286,7 +312,8 @@ export function StockHoldingReport({ rows, totals, isRedUp }: Props) {
                     className={valueClass(row.floatingPnL, isRedUp)}
                   />
                   <MobileMetric label={t("stockHoldingReport.colRealized")} value={signedMoney(row.historicalProfit, row.currency)} className={valueClass(row.historicalProfit, isRedUp)} />
-                  <MobileMetric label={t("stockHoldingReport.colTotalPnL")} value={signedMoney(row.totalProfit, row.currency)} className={valueClass(row.totalProfit, isRedUp)} />
+                  <MobileMetric label={t("stockHoldingReport.colTotalPnL")} value={`${signedMoney(row.totalProfit, row.currency)} (${formatRate(row.totalPnLRate)})`} className={valueClass(row.totalProfit, isRedUp)} />
+                  <MobileMetric label={t("stockHoldingReport.colDilutedCost")} value={formatCurrencyMoney(row.dilutedCost, row.currency)} className="text-slate-700" />
                 </div>
               </div>
             ))}
@@ -303,7 +330,7 @@ export function StockHoldingReport({ rows, totals, isRedUp }: Props) {
             rows={rows}
             rowKey={(row) => row.id}
             emptyText={emptyText}
-            minTableWidth={1280}
+            minTableWidth={1460}
             rowClassName={() => "hover:bg-slate-50"}
             showFilters={false}
             fillHeight

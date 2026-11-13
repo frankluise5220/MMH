@@ -191,14 +191,20 @@ export async function POST(req: NextRequest) {
       categoryName,
       note,
       skipPendingPreceding,
+      metalTypeId,
+      metalTypeName,
+      metalUnitId,
+      metalUnitName,
     } = body;
 
     const scheduledTaskType = normalizeScheduledTaskType(taskType);
     const isFundTask = scheduledTaskType === "fund_regular_invest";
+    const isMetalTask = scheduledTaskType === "metal_regular_invest";
     const isInsuranceTask = scheduledTaskType === "insurance_premium";
     const isLoanTask = scheduledTaskType === "loan_repayment";
     const isOrdinaryTask = scheduledTaskType === "income" || scheduledTaskType === "expense";
-    const requiresCashAccount = scheduledTaskType === "transfer" || scheduledTaskType === "loan_repayment" || isInsuranceTask;
+    const requiresCashAccount =
+      scheduledTaskType === "transfer" || scheduledTaskType === "loan_repayment" || isInsuranceTask || isMetalTask;
     const loanRepaymentMethod = normalizeLoanRepaymentMethod(typeof repaymentMethod === "string" ? repaymentMethod : null);
     const parsedLoanAnnualRate = parseOptionalNonNegativeNumber(annualRate);
     const loanAnnualRate = parsedLoanAnnualRate ?? (isLoanTask && allowsZeroAnnualRateRepaymentMethod(loanRepaymentMethod) ? 0 : null);
@@ -219,6 +225,9 @@ export async function POST(req: NextRequest) {
     }
     if (requiresCashAccount && !cashAccountId) {
       return NextResponse.json({ ok: false, code: "CASH_ACCOUNT_REQUIRED", error: "请选择资金账户" }, { status: 400 });
+    }
+    if (isMetalTask && (!metalTypeId || !metalUnitId)) {
+      return NextResponse.json({ ok: false, code: "MISSING_METAL_FIELDS", error: "请选择贵金属品种与计量单位" }, { status: 400 });
     }
 
     // Resolve the target account for insurance_premium
@@ -258,6 +267,29 @@ export async function POST(req: NextRequest) {
     if (requiresCashAccount && !cashAcc) return NextResponse.json({ ok: false, code: "CASH_ACCOUNT_NOT_FOUND", error: "资金账户不存在" }, { status: 400 });
     if (scheduledTaskType === "transfer" && cashAccountId === effectiveAccountId) {
       return NextResponse.json({ ok: false, code: "SAME_TRANSFER_ACCOUNTS", error: "转出/转入账户不能相同" }, { status: 400 });
+    }
+
+    // 贵金属积存：目标账户必须是贵金属投资账户，品种/单位需存在（系统字典或本账簿自建）。
+    let resolvedMetalTypeName: string | null = null;
+    let resolvedMetalUnitName: string | null = null;
+    if (isMetalTask) {
+      if (targetAcc.investProductType !== "metal") {
+        return NextResponse.json({ ok: false, code: "METAL_ACCOUNT_REQUIRED", error: "请选择贵金属投资账户" }, { status: 400 });
+      }
+      const [metalType, metalUnit] = await Promise.all([
+        prisma.preciousMetalType.findFirst({
+          where: { id: String(metalTypeId), OR: [{ householdId: null }, { householdId }] },
+          select: { id: true, name: true },
+        }),
+        prisma.preciousMetalUnit.findFirst({
+          where: { id: String(metalUnitId), OR: [{ householdId: null }, { householdId }] },
+          select: { id: true, name: true, symbol: true },
+        }),
+      ]);
+      if (!metalType) return NextResponse.json({ ok: false, code: "METAL_TYPE_NOT_FOUND", error: "贵金属品种不存在" }, { status: 400 });
+      if (!metalUnit) return NextResponse.json({ ok: false, code: "METAL_UNIT_NOT_FOUND", error: "贵金属计量单位不存在" }, { status: 400 });
+      resolvedMetalTypeName = cleanOptionalString(metalTypeName) ?? metalType.name;
+      resolvedMetalUnitName = cleanOptionalString(metalUnitName) ?? (metalUnit.symbol ? `${metalUnit.name}(${metalUnit.symbol})` : metalUnit.name);
     }
 
     const suppliedTaskName = cleanOptionalString(fundName);
@@ -315,7 +347,7 @@ export async function POST(req: NextRequest) {
           taskType: scheduledTaskType,
           targetName: taskTitle,
           insuranceProductName: isInsuranceTask ? insuranceProductName ?? taskTitle : null,
-          fundProductType: isFundTask ? (fundProductType || targetAcc.investProductType || null) : null,
+          fundProductType: isFundTask ? (fundProductType || targetAcc.investProductType || null) : isMetalTask ? "metal" : null,
           amount: amountNum,
           intervalUnit: intervalUnitValue,
           intervalValue: unitVal,
@@ -341,6 +373,10 @@ export async function POST(req: NextRequest) {
             repaymentMethod: isLoanTask ? loanRepaymentMethod : null,
             repaymentIntervalMonths: isLoanTask ? loanRepaymentIntervalMonths : null,
             loanPlanRole: isLoanTask ? "auto_debit" : null,
+            metalTypeId: isMetalTask ? String(metalTypeId) : null,
+            metalTypeName: isMetalTask ? resolvedMetalTypeName : null,
+            metalUnitId: isMetalTask ? String(metalUnitId) : null,
+            metalUnitName: isMetalTask ? resolvedMetalUnitName : null,
           }),
           skipPendingPreceding: isFundTask ? skipPendingPreceding !== false : false,
         },
@@ -382,6 +418,10 @@ export async function POST(req: NextRequest) {
         taskCategoryId: isOrdinaryTask ? taskCategoryId : null,
         taskCategoryName: isOrdinaryTask ? taskCategoryName : null,
         taskInsuranceProductId: insuranceProductId || null,
+        taskMetalTypeId: isMetalTask ? String(metalTypeId) : null,
+        taskMetalTypeName: isMetalTask ? resolvedMetalTypeName : null,
+        taskMetalUnitId: isMetalTask ? String(metalUnitId) : null,
+        taskMetalUnitName: isMetalTask ? resolvedMetalUnitName : null,
         taskNote: isOrdinaryTask ? taskNote : null,
         taskAnnualRate: isLoanTask ? loanAnnualRate : null,
         taskRepaymentMethod: isLoanTask ? loanRepaymentMethod : null,
@@ -442,6 +482,10 @@ export async function PUT(req: NextRequest) {
       categoryName,
       note,
       skipPendingPreceding,
+      metalTypeId,
+      metalTypeName,
+      metalUnitId,
+      metalUnitName,
     } = body;
 
     if (!id) return NextResponse.json({ ok: false, code: "MISSING_PLAN_ID", error: "缺少 id" }, { status: 400 });
@@ -551,6 +595,7 @@ export async function PUT(req: NextRequest) {
       }
     }
     const isFundTask = nextTaskType === "fund_regular_invest";
+    const isMetalTask = nextTaskType === "metal_regular_invest";
     const isInsuranceTask = nextTaskType === "insurance_premium";
     const isLoanTask = nextTaskType === "loan_repayment";
     const isOrdinaryTask = nextTaskType === "income" || nextTaskType === "expense";
@@ -566,7 +611,33 @@ export async function PUT(req: NextRequest) {
     const nextCategoryId = categoryId !== undefined ? cleanOptionalString(categoryId) : existingTask.categoryId ?? null;
     const nextCategoryName = categoryName !== undefined ? cleanOptionalString(categoryName) : existingTask.categoryName ?? null;
     const nextNote = note !== undefined ? cleanOptionalString(note) : existingTask.note ?? null;
-    const requiresCashAccount = nextTaskType === "transfer" || nextTaskType === "loan_repayment" || nextTaskType === "insurance_premium";
+    const requiresCashAccount =
+      nextTaskType === "transfer" || nextTaskType === "loan_repayment" || nextTaskType === "insurance_premium" || isMetalTask;
+    const existingTaskMetalTypeId = existingTask.metalTypeId ?? null;
+    const existingTaskMetalUnitId = existingTask.metalUnitId ?? null;
+    const effectiveMetalTypeId = cleanOptionalString(metalTypeId) ?? existingTaskMetalTypeId;
+    const effectiveMetalUnitId = cleanOptionalString(metalUnitId) ?? existingTaskMetalUnitId;
+    if (isMetalTask && (!effectiveMetalTypeId || !effectiveMetalUnitId)) {
+      return NextResponse.json({ ok: false, code: "MISSING_METAL_FIELDS", error: "请选择贵金属品种与计量单位" }, { status: 400 });
+    }
+    let nextMetalTypeName: string | null = existingTask.metalTypeName ?? null;
+    let nextMetalUnitName: string | null = existingTask.metalUnitName ?? null;
+    if (isMetalTask) {
+      const [metalType, metalUnit] = await Promise.all([
+        prisma.preciousMetalType.findFirst({
+          where: { id: effectiveMetalTypeId!, OR: [{ householdId: null }, { householdId }] },
+          select: { name: true },
+        }),
+        prisma.preciousMetalUnit.findFirst({
+          where: { id: effectiveMetalUnitId!, OR: [{ householdId: null }, { householdId }] },
+          select: { name: true, symbol: true },
+        }),
+      ]);
+      if (!metalType) return NextResponse.json({ ok: false, code: "METAL_TYPE_NOT_FOUND", error: "贵金属品种不存在" }, { status: 400 });
+      if (!metalUnit) return NextResponse.json({ ok: false, code: "METAL_UNIT_NOT_FOUND", error: "贵金属计量单位不存在" }, { status: 400 });
+      nextMetalTypeName = cleanOptionalString(metalTypeName) ?? metalType.name;
+      nextMetalUnitName = cleanOptionalString(metalUnitName) ?? (metalUnit.symbol ? `${metalUnit.name}(${metalUnit.symbol})` : metalUnit.name);
+    }
     const effectiveAccountIdForValidation = accountId || existing.accountId;
     const effectiveCashAccountIdForValidation =
       cashAccountId != null ? cashAccountId || null : existing.cashAccountId;
@@ -575,6 +646,18 @@ export async function PUT(req: NextRequest) {
     }
     if (nextTaskType === "transfer" && effectiveCashAccountIdForValidation === effectiveAccountIdForValidation) {
       return NextResponse.json({ ok: false, code: "SAME_TRANSFER_ACCOUNTS", error: "转出/转入账户不能相同" }, { status: 400 });
+    }
+    if (isMetalTask) {
+      const targetMetalAccount = await prisma.account.findFirst({
+        where: { id: effectiveAccountIdForValidation, householdId },
+        select: { investProductType: true },
+      });
+      if (!targetMetalAccount) {
+        return NextResponse.json({ ok: false, code: "ACCOUNT_NOT_FOUND", error: "目标账户不存在" }, { status: 400 });
+      }
+      if (targetMetalAccount.investProductType !== "metal") {
+        return NextResponse.json({ ok: false, code: "METAL_ACCOUNT_REQUIRED", error: "请选择贵金属投资账户" }, { status: 400 });
+      }
     }
 
     if (accountId != null) {
@@ -683,7 +766,9 @@ export async function PUT(req: NextRequest) {
     else if (fundName != null && suppliedFundName) updateData.fundName = suppliedFundName;
     updateData.taskType = nextTaskType;
     updateData.targetName =
-      isInsuranceTask
+      isMetalTask
+        ? suppliedFundName ?? nextMetalTypeName ?? existing.targetName ?? scheduledTaskTypeLabel(nextTaskType)
+        : isInsuranceTask
         ? nextInsuranceProductName ?? suppliedFundName ?? existing.targetName ?? existing.fundName ?? scheduledTaskTypeLabel(nextTaskType)
         : isOrdinaryTask
           ? suppliedFundName ?? nextCategoryName ?? existing.targetName ?? existing.fundName ?? scheduledTaskTypeLabel(nextTaskType)
@@ -754,13 +839,18 @@ export async function PUT(req: NextRequest) {
         repaymentMethod: isLoanTask ? nextRepaymentMethod : null,
         repaymentIntervalMonths: isLoanTask ? nextRepaymentIntervalMonths : null,
         loanPlanRole: isLoanTask ? getLoanScheduledPlanRole(existingTask) ?? "auto_debit" : null,
+        metalTypeId: isMetalTask ? effectiveMetalTypeId : null,
+        metalTypeName: isMetalTask ? nextMetalTypeName : null,
+        metalUnitId: isMetalTask ? effectiveMetalUnitId : null,
+        metalUnitName: isMetalTask ? nextMetalUnitName : null,
       });
     }
     if (!isFundTask) {
       updateData.fundCode = nextTaskType;
-      updateData.fundName = updateData.targetName;
+      // 贵金属积存的名称展示品种（黄金 / 白银），其它非基金任务用任务标题。
+      updateData.fundName = isMetalTask ? nextMetalTypeName ?? updateData.targetName : updateData.targetName;
       // 存款/债券系统计划的 fundProductType（deposit / bond）由自愈写入，别清空。
-      if (!isLotSystemPlan) updateData.fundProductType = null;
+      if (!isLotSystemPlan) updateData.fundProductType = isMetalTask ? "metal" : null;
       updateData.feeRate = 0;
       updateData.skipPendingPreceding = false;
     }

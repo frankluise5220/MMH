@@ -89,14 +89,10 @@ export function BasicDataSubmenuHeader({ children }: { children?: ReactNode }) {
   const tabLabels = BASIC_DATA_TABS.map((item) => t(item.labelKey));
 
   return (
-    // 「页签带」= 卡片底色（2026-11-04 用户：「页签颜色要延伸到卡片」）：横向铺满内容板宽度
-    // （页签组是 `shrink`，所以底色必须挂在这层整行上），纵向从条顶一路压到卡片上缘**再往下 12px**
-    // ——`pb-3` 让盒子多长 12px、`-mb-3` 把外边距还回去，排版位置一像素不动。多出的 12px 被卡片
-    // （z-20，实体米色）整块盖住，只会从卡片两个上圆角外侧的「死角」露出来；不补的话那里是页面
-    // 灰底，米色带子与米色卡片之间会插进两块灰色小三角。
-    // ⚠️ padding 必须挂在这层块级容器上，不能挂在下面那行 `items-end` 的 flex 上：flex 的
-    // padding-bottom 会把页签整体上顶 12px，页签与卡片的 −1px 接缝当场断开。
-    <div className="@container shrink-0 bg-[var(--ft-card-bg)] pb-3 -mb-3">
+    // 页签条**不刷底色**（2026-11-12 用户：「页签背景有一个与卡片同宽的长条形底色，去掉」）：
+    // 2026-11-04 曾在这层整行刷卡片底色，并用 `pb-3 -mb-3` 多长 12px 去填卡片上圆角外侧的死角；
+    // 底色撤销后那 12px 没有意义，一并去掉（两者相互抵消，排版位置不变）。
+    <div className="@container shrink-0">
       <div className="relative flex items-end gap-2 @max-[26rem]:[--ft-tab-font:0.8125rem] @max-[19rem]:[--ft-tab-font:0.75rem]">
         {/* 页签组靠左、**不铺满整行**：`shrink`（basis auto）让它按内容宽排布，等宽由每个页签里的
             `FolderTabRuler` 提供（各页签 max-content 都等于最长标签宽 → 组宽 = N × 最长标签宽）。 */}

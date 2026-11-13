@@ -9,15 +9,24 @@ import { CalcInput } from "./CalcInput";
 import { ClearableNoteField } from "./ClearableNoteField";
 import { DateStepper } from "./DateStepper";
 import { EntityCreateForm } from "./EntityCreateForm";
-import { RepoEntryFields, type RepoCashAccountOption, type RepoEntryFieldsHandle } from "./repo-entry/RepoEntryFields";
+import { RepoEntryFields, type RepoCashAccountOption, type RepoEntryEditing, type RepoEntryFieldsHandle } from "./repo-entry/RepoEntryFields";
 import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
+import { STOCK_HOLDING_COLLAPSED_GROUPS, buildStockHoldingSelectOptions } from "./stockHoldingSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
 /** 记账弹窗整窗外壳：宽度/标题栏/表单/FT 页签卡片/固定页脚/高度锁定统一由它负责。 */
 import { EntryModalShell } from "@/components/EntryModalShell";
 import { recordRecentAccounts, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
+import {
+  invalidateStockHoldingsCache,
+  readStockHoldingsCache,
+  stockHoldingsCacheKey,
+  writeStockHoldingsCache,
+  type StockHoldingRow,
+} from "@/lib/client/stock-holdings-cache";
 import { formatAmountDraft, formatMoneyWithCurrencyCode as formatMoney } from "@/lib/format";
+import { stripRepoNotePrefix } from "@/lib/repo";
 import { todayDateLocalYmd as todayDateInputValue } from "@/lib/date-utils";
 import { useI18n } from "@/lib/i18n";
 
@@ -27,9 +36,35 @@ type StockTransactionAction =
   | "dividend"
   | "bonus_share"
   | "split_share"
-  | "merge_share";
+  | "merge_share"
+  | "fee_adjustment"
+  | "tax_adjustment"
+  | "tax_refund";
 
-type StockModalAction = "buy" | "sell" | "dividend" | "share_change" | "repo";
+type StockModalAction = "buy" | "sell" | "dividend" | "share_change" | "tax" | "repo";
+
+/**
+ * 「股息税」页签下的三个底层动作：
+ * - tax_adjustment：券商补扣红利税（资金流出、冲减历史收益）
+ * - tax_refund：券商退还多扣的红利税（资金流入、回补历史收益）
+ * - fee_adjustment：纯费用调整（资金流出）
+ */
+type StockAdjustAction = Extract<StockTransactionAction, "tax_adjustment" | "tax_refund" | "fee_adjustment">;
+
+/** 明细页「编辑」逆回购借出行时携带的最小信息，条款再由 /api/v1/repo/overview 补齐。 */
+type RepoEditEventDetail = {
+  entryId: string;
+  lotId?: string | null;
+  stockAccountId?: string | null;
+  cashAccountId?: string | null;
+  code?: string | null;
+  principal?: number | null;
+  tradeDate?: string | null;
+  termDays?: number | null;
+  maturityDate?: string | null;
+  settled?: boolean;
+  note?: string | null;
+};
 type StockDividendMode = "cash" | "shares" | "cash_shares";
 type SubmitMode = "close" | "repeat";
 
@@ -109,15 +144,7 @@ type StockSecurityLookupResponse = {
   };
 };
 
-type SellStockHolding = {
-  id: string;
-  accountId: string;
-  securityId: string;
-  market: string;
-  stockCode: string;
-  stockName?: string | null;
-  quantity: number;
-};
+type SellStockHolding = StockHoldingRow;
 
 type StockHoldingsResponse = {
   ok?: boolean;
@@ -165,6 +192,11 @@ type StockCreateEventDetail = {
   defaultDate?: string;
   defaultAmount?: number;
   defaultAction?: StockModalAction;
+  /** 持仓页当前选中的股票：任何页签打开窗口都先落到这只，不用再点下拉。 */
+  defaultSecurityId?: string;
+  defaultStockCode?: string;
+  defaultStockName?: string;
+  defaultMarket?: string;
 };
 
 type StockEditEventDetail = {
@@ -194,6 +226,8 @@ const STOCK_ACTIONS: Array<{ key: StockModalAction; labelKey: string; tone: stri
   { key: "sell", labelKey: "stockPanel.action.sell", tone: "bg-orange-600 text-white border-orange-600" },
   { key: "dividend", labelKey: "stockPanel.action.dividend", tone: "bg-emerald-600 text-white border-emerald-600" },
   { key: "share_change", labelKey: "stockTx.action.shareChange", tone: "bg-violet-600 text-white border-violet-600" },
+  // 股息红利税被券商补扣、或纯费用调整：只有一笔扣款，不碰持股数量与成本。
+  { key: "tax", labelKey: "stockTx.action.taxTab", tone: "bg-rose-600 text-white border-rose-600" },
   // 逆回购并入这个窗口：只有一个「借出」动作，到期自动回款，所以没有回款页签。
   { key: "repo", labelKey: "repoForm.tabTitle", tone: "bg-teal-600 text-white border-teal-600" },
 ];
@@ -202,6 +236,12 @@ const SHARE_CHANGE_ACTIONS = [
   { key: "bonus_share", labelKey: "stockTx.shareChange.bonusShare" },
   { key: "split_share", labelKey: "stockTx.shareChange.splitShare" },
   { key: "merge_share", labelKey: "stockTx.shareChange.mergeShare" },
+];
+
+const ADJUST_ACTIONS: Array<{ key: StockAdjustAction; labelKey: string }> = [
+  { key: "tax_adjustment", labelKey: "stockTx.adjustType.tax" },
+  { key: "tax_refund", labelKey: "stockTx.adjustType.taxRefund" },
+  { key: "fee_adjustment", labelKey: "stockTx.adjustType.fee" },
 ];
 function parseNumber(value: string) {
   const num = Number(String(value).replace(/,/g, "").trim());
@@ -219,6 +259,35 @@ function sumFeeValues(values: Array<number | null | undefined>) {
 
 function feeDraftValue(value: number | null | undefined) {
   return value == null || !Number.isFinite(Number(value)) ? "" : String(Number(value));
+}
+
+/** 汇总框（费用小计 / 金额合计）显示的值：纯数字两位小数，不带币种后缀。 */
+function formatStockAmountValue(value: number) {
+  return Number.isFinite(value) ? value.toFixed(2) : "";
+}
+
+/**
+ * 手改「费用小计」后，把总额按原比例摊回四个明细框（残差分给「附加费」）。
+ * 必须摊回去：明细才是提交给后端的费用字段，只改汇总框不摊明细，后端仍按旧费用记账，
+ * 现金和持仓成本就跟用户看到的对不上了。正负调整都能表达（每项都非负）。
+ */
+function distributeFeeDraftTotal(total: number, draft: FeeDraftState): FeeDraftState {
+  if (!(total > 0)) return { ...EMPTY_FEE_DRAFT };
+  const current = FEE_DRAFT_KEYS.map((key) => Math.max(0, parseFeeDraftValue(draft[key]) ?? 0));
+  const sum = current.reduce((acc, value) => acc + value, 0);
+  if (sum <= 0) {
+    // 还没有任何明细（估算没回来或都被清空）：整体记到附加费，它本来就是「其他费用」的兜底项。
+    return { ...EMPTY_FEE_DRAFT, surcharge: formatStockAmountValue(total) };
+  }
+  const parts = current.map((value) => Math.round((total * value / sum) * 100) / 100);
+  const surchargeIndex = FEE_DRAFT_KEYS.indexOf("surcharge");
+  const partsSum = parts.reduce((acc, value) => acc + value, 0);
+  parts[surchargeIndex] = Math.max(0, Math.round((parts[surchargeIndex] + (total - partsSum)) * 100) / 100);
+  const next = { ...EMPTY_FEE_DRAFT };
+  FEE_DRAFT_KEYS.forEach((key, index) => {
+    next[key] = formatStockAmountValue(parts[index]);
+  });
+  return next;
 }
 
 function parseFeeDraftValue(value: string) {
@@ -438,6 +507,7 @@ function quantityLabelForAction(t: (key: string) => string, action: StockTransac
 
 function amountLabelForAction(t: (key: string) => string, action: StockModalAction) {
   if (action === "dividend") return t("stockTx.dividendAmount");
+  if (action === "tax") return t("stockTx.adjustAmount");
   return t("stockPanel.colGrossAmount");
 }
 
@@ -448,6 +518,7 @@ export function StockTransactionFormModal({
   stockAccountSSOptions,
   cashAccounts = [],
   cashAccountSSOptions,
+  editInvestmentAction,
 }: {
   defaultStockAccountId?: string;
   defaultCashAccountId?: string;
@@ -455,6 +526,8 @@ export function StockTransactionFormModal({
   stockAccountSSOptions?: SmartSelectOption[];
   cashAccounts?: AccountOption[];
   cashAccountSSOptions?: SmartSelectOption[];
+  /** 明细页的编辑动作：逆回购行编辑保存时复用，服务端按原行仍按逆回购落账。 */
+  editInvestmentAction?: (formData: FormData) => Promise<{ ok: boolean; error?: string }>;
 }) {
   const today = useMemo(() => todayDateInputValue(), []);
   const accountUsage = useAccountUsage();
@@ -485,13 +558,22 @@ export function StockTransactionFormModal({
   const [action, setAction] = useState<StockModalAction>("buy");
   const [dividendMode, setDividendMode] = useState<StockDividendMode>("cash");
   const [shareChangeAction, setShareChangeAction] = useState<Extract<StockTransactionAction, "bonus_share" | "split_share" | "merge_share">>("bonus_share");
+  // 税费调整页签：默认「股息/红利税」，编辑历史 fee_adjustment 行时保持原类型。
+  const [adjustAction, setAdjustAction] = useState<StockAdjustAction>("tax_adjustment");
   const [market, setMarket] = useState("CN");
   const [stockCode, setStockCode] = useState("");
   const [stockName, setStockName] = useState("");
   const [selectedSecurityId, setSelectedSecurityId] = useState("");
+  /**
+   * 打开弹窗时要默认选中的股票（来自持仓页当前选中行）。持仓列表是异步拉的，
+   * 先把它存下来，等列表回来后匹配上再选中，用掉一次即清空。
+   */
+  const [prefillStock, setPrefillStock] = useState<{ securityId: string; stockCode: string } | null>(null);
   const [sellHoldings, setSellHoldings] = useState<SellStockHolding[]>([]);
   const [sellHoldingsLoading, setSellHoldingsLoading] = useState(false);
   const [sellHoldingsError, setSellHoldingsError] = useState("");
+  /** 记账成功后自增：让持仓下拉重拉一次（缓存已作废），「保存并再记一笔」不会拿着旧数量。 */
+  const [holdingsRefreshTick, setHoldingsRefreshTick] = useState(0);
   const [tradeDate, setTradeDate] = useState(today);
   // 到账日 / 交割日：留空表示与交易日期相同。资金账户侧明细把它当「生效日」
   // （排序、日期列、余额），投资账户侧仍显示交易日期（2026-10-17）。
@@ -506,6 +588,12 @@ export function StockTransactionFormModal({
   const [feeEstimateError, setFeeEstimateError] = useState("");
   const [feeEstimateStatus, setFeeEstimateStatus] = useState("");
   const [feeDraft, setFeeDraft] = useState<FeeDraftState>(EMPTY_FEE_DRAFT);
+  /**
+   * 「费用小计 / 金额合计」自动算，但允许手改：值非 null 表示用户改过，以用户的值为准，
+   * 清空输入即回到自动。改小计会把总额摊回四个明细框，改合计则作为实际收付金额提交。
+   */
+  const [feeTotalOverride, setFeeTotalOverride] = useState<string | null>(null);
+  const [amountTotalOverride, setAmountTotalOverride] = useState<string | null>(null);
   const [pendingAttachmentFiles, setPendingAttachmentFiles] = useState<File[]>([]);
   const [attachmentEntryId, setAttachmentEntryId] = useState<string | null>(null);
   const [note, setNote] = useState("");
@@ -513,6 +601,8 @@ export function StockTransactionFormModal({
   // 「逆回购」页签由 RepoEntryFields 自己发请求，这里只借用状态位锁页脚按钮。
   const [repoSubmitting, setRepoSubmitting] = useState(false);
   const [repoResetKey, setRepoResetKey] = useState(0);
+  // 逆回购编辑：从明细页「编辑」进来时回填存单条款，保存走 editInvestmentAction。
+  const [repoEditing, setRepoEditing] = useState<RepoEntryEditing | null>(null);
   const repoFieldsRef = useRef<RepoEntryFieldsHandle>(null);
   const formRef = useRef<HTMLFormElement>(null);
   const submitModeRef = useRef<SubmitMode>("close");
@@ -525,6 +615,8 @@ export function StockTransactionFormModal({
       transferFee: false,
     };
     setFeeDraft({ ...EMPTY_FEE_DRAFT });
+    setFeeTotalOverride(null);
+    setAmountTotalOverride(null);
     setPendingAttachmentFiles([]);
     setAttachmentEntryId(null);
   }, []);
@@ -532,6 +624,9 @@ export function StockTransactionFormModal({
   const updateFeeDraft = useCallback((key: FeeDraftKey, value: string) => {
     feeManualOverrideRef.current[key] = value.trim().length > 0;
     setFeeDraft((prev) => ({ ...prev, [key]: value }));
+    // 改了某个明细，小计与合计要重新按明细自动算，否则会跟手改值打架。
+    setFeeTotalOverride(null);
+    setAmountTotalOverride(null);
   }, []);
 
   useEffect(() => {
@@ -583,29 +678,69 @@ export function StockTransactionFormModal({
     })),
     [eligibleCashAccounts],
   );
-  const sellHoldingOptions = useMemo<SmartSelectOption[]>(
-    () => sellHoldings.map((holding) => ({
-      id: holding.securityId,
-      label: holding.stockName?.trim() || holding.stockCode,
-      subLabel: `${holding.stockCode} · ${t("stockTx.holdingQuantitySubLabel", { quantity: formatStockQuantity(holding.quantity, language) })}`,
-    })),
-    [sellHoldings, t, language],
-  );
+  /**
+   * 持仓下拉（卖出 / 分红 / 股本变动 / 股息税共用）：当前持仓一组、已清仓一组。
+   * 分组、parentId、默认收起都在 buildStockHoldingSelectOptions 里统一处理，
+   * 各页签只是数据源不同（股息税按 includeZero=1 拉全量，其余按交易日回放）。
+   */
+  const holdingSelectOptions = useMemo<SmartSelectOption[]>(() => {
+    // 编辑历史行时那只股票可能已经不在持仓表里（换过账户、或资料被清理），补进列表避免下拉显示空白。
+    const extras: SmartSelectOption[] = selectedSecurityId
+      ? [{
+          id: selectedSecurityId,
+          label: stockName?.trim() || stockCode || t("stockTx.taxHoldingStock"),
+          subLabel: stockCode,
+        }]
+      : [];
+    return buildStockHoldingSelectOptions(
+      sellHoldings,
+      { active: t("stockTx.holdingGroupActive"), closed: t("stockTx.holdingGroupClosed") },
+      (holding, closed) => (closed
+        ? `${holding.stockCode} · ${t("stockTx.holdingGroupClosed")}`
+        : `${holding.stockCode} · ${t("stockTx.holdingCurrentQuantitySubLabel", { quantity: formatStockQuantity(holding.quantity, language) })}`),
+      extras,
+    );
+  }, [language, selectedSecurityId, sellHoldings, stockCode, stockName, t]);
   const selectedSellHolding = sellHoldings.find((holding) => holding.securityId === selectedSecurityId) ?? null;
 
+  /**
+   * 切页签后要按新页签的口径重新对齐「当前这只股票」：持仓列表可能换了一份
+   * （股息税 includeZero=1，卖出/分红按交易日回放），数量也要跟着重算。
+   */
+  const pendingHoldingResyncRef = useRef(false);
+
   function changeModalAction(nextAction: StockModalAction) {
+    // 离开逆回购页签就退出编辑态，否则标题与「保存并继续」的显示会错位。
+    if (nextAction !== "repo") setRepoEditing(null);
+    // 页签换了口径（费用规则/成交额算法都不同），手改过的汇总值不再适用。
+    setFeeTotalOverride(null);
+    setAmountTotalOverride(null);
     setAction(nextAction);
     if (nextAction !== "dividend") setDividendMode("cash");
-    setSelectedSecurityId("");
-    if (nextAction === "sell" || nextAction === "dividend" || nextAction === "share_change") {
+    if (nextAction === "tax") setAdjustAction("tax_adjustment");
+    // 逆回购跟股票无关，切过去要清干净；其余页签保留当前这只股票，
+    // 用户不用为了换个动作再点一次下拉。
+    if (nextAction === "repo") {
+      setSelectedSecurityId("");
       setStockCode("");
       setStockName("");
       setQuantity("");
+      return;
     }
+    if (nextAction !== "sell") setQuantity("");
+    if (nextAction === "buy") {
+      // 买入靠代码输入框识别证券，留着 securityId 会让代码和证券对不上（用户接着改代码时尤其危险）。
+      setSelectedSecurityId("");
+      return;
+    }
+    pendingHoldingResyncRef.current = true;
   }
 
   function handleTradeDateChange(value: string) {
     setTradeDate(value);
+    // 费率按交易日取规则，手改过的费用与合计一并回到自动。
+    setFeeTotalOverride(null);
+    setAmountTotalOverride(null);
     if (action === "sell" || action === "dividend" || action === "share_change") {
       setSelectedSecurityId("");
       setStockCode("");
@@ -622,6 +757,8 @@ export function StockTransactionFormModal({
     setStockCode(holding.stockCode);
     setStockName(holding.stockName?.trim() || holding.stockCode);
     setQuantity(action === "sell" ? formatStockQuantity(holding.quantity, language) : "");
+    // 换了一只股票，之前手填的合计不再对应这笔成交。
+    setAmountTotalOverride(null);
   }
 
   const isDividendCash = action === "dividend" && dividendMode === "cash";
@@ -635,11 +772,21 @@ export function StockTransactionFormModal({
       ? shareChangeAction
       : isDividendShares
         ? "bonus_share"
-        : action;
+        : action === "tax"
+          ? adjustAction
+          : action;
   const isBuySell = action === "buy" || action === "sell";
   const isDividendAction = action === "dividend";
   const isShareAction = action === "share_change";
-  const isCashAmountAction = action === "buy" || action === "sell" || isDividendCash || isDividendCashShares;
+  const isAdjustAction = action === "tax";
+  // 股息税必须挂在一只有持仓的股票上（清仓后的补扣挂已清仓的那只），所以它和卖出/分红/股本变动
+  // 一样走「持仓下拉」，而不是手输代码。
+  const needsHoldingPicker = isHoldingSelectionAction || isAdjustAction;
+  const isTaxRefundAction = adjustAction === "tax_refund";
+  // 退税是资金回流，字段名要说「退还金额」，不能让用户以为又要扣一笔。
+  const adjustAmountLabel = t(isTaxRefundAction ? "stockTx.refundAmount" : "stockTx.adjustAmount");
+  const adjustAmountPlaceholder = t(isTaxRefundAction ? "stockTx.refundAmountPlaceholder" : "stockTx.adjustAmountPlaceholder");
+  const isCashAmountAction = action === "buy" || action === "sell" || isDividendCash || isDividendCashShares || isAdjustAction;
   const showQuantityField = isBuySell || isShareAction || isDividendShares || isDividendCashShares;
   const showPriceField = isBuySell;
   const showAmountField = isCashAmountAction;
@@ -700,6 +847,13 @@ export function StockTransactionFormModal({
   const feeDraftTotal = sumFeeValues([feeResolvedStampTax, feeResolvedCommission, feeResolvedSurcharge, feeResolvedTransferFee]);
   const hasFeeDraftValue = FEE_DRAFT_KEYS.some((key) => feeDraft[key].trim().length > 0);
   const feeCardVisible = Boolean(feeEstimate || hasFeeDraftValue);
+  /** 费用小计的实际取值：手改优先；金额合计与提交的净额都跟着它走。 */
+  const feeTotalValue = feeTotalOverride != null ? Math.max(0, parseNumber(feeTotalOverride)) : feeDraftTotal;
+  const autoAmountTotal = action === "buy"
+    ? effectiveGrossAmount + feeTotalValue
+    : Math.max(0, effectiveGrossAmount - feeTotalValue);
+  /** 金额合计的实际取值：用户手改过就用他的数（提交时作为实际收付金额）。 */
+  const amountTotalValue = amountTotalOverride != null ? Math.max(0, parseNumber(amountTotalOverride)) : autoAmountTotal;
   const finalCashAmountLabel = action === "buy" ? t("stockTx.expectedPayable") : t("stockTx.expectedArrival");
   const feeBreakdownTitle = feeCardVisible
     ? [
@@ -707,35 +861,90 @@ export function StockTransactionFormModal({
         t("stockTx.feeBreakdownLine", { label: t("stockFee.feeType.commission"), value: formatMoney(feeResolvedCommission ?? 0, displayCurrency) }),
         t("stockTx.feeBreakdownLine", { label: t("stockTx.feeType.surcharge"), value: formatMoney(feeResolvedSurcharge ?? 0, displayCurrency) }),
         t("stockTx.feeBreakdownLine", { label: t("stockFee.feeType.transfer_fee"), value: formatMoney(feeResolvedTransferFee ?? 0, displayCurrency) }),
-        t("stockTx.feeBreakdownTotal", { amount: formatMoney(feeDraftTotal, displayCurrency) }),
+        t("stockTx.feeBreakdownTotal", { amount: formatMoney(feeTotalValue, displayCurrency) }),
         t("stockTx.feeBreakdownFinal", {
           label: finalCashAmountLabel,
-          amount: formatMoney(
-            action === "buy"
-              ? effectiveGrossAmount + feeDraftTotal
-              : Math.max(0, effectiveGrossAmount - feeDraftTotal),
-            displayCurrency,
-          ),
+          amount: formatMoney(amountTotalValue, displayCurrency),
         }),
       ].join("\n")
     : feeEstimateLoading
       ? t("stockTx.calculatingFees")
       : feeEstimateError || t("stockTx.feeAutoHint");
-  const feeTotalDisplay = feeEstimateLoading
-    ? t("stockTx.calculating")
-    : feeCardVisible
-      ? formatMoney(feeDraftTotal, displayCurrency)
-      : "-";
-  const finalCashAmountDisplay = feeEstimateLoading
-    ? t("stockTx.calculating")
-    : feeCardVisible
-      ? formatMoney(
-          action === "buy"
-            ? effectiveGrossAmount + feeDraftTotal
-            : Math.max(0, effectiveGrossAmount - feeDraftTotal),
-          displayCurrency,
-        )
-      : "-";
+  // 这两个汇总框的值只是金额数字（不带币种）：币种由「资金账户」和上方费用框的
+  // placeholder 体现，写成 `0.00 CNY` 既挤占宽度，也让计算框里出现的不是数字。
+  // 手改过就显示用户输入（保留未格式化的原文，免得打字被打断），否则显示自动算的值。
+  // 费用卡已经有数就继续显示它：改数量/单价时估算会重跑，不能每敲一下就把汇总变成「计算中」。
+  const feeTotalDisplay = feeTotalOverride
+    ?? (feeCardVisible
+      ? formatStockAmountValue(feeDraftTotal)
+      : feeEstimateLoading
+        ? t("stockTx.calculating")
+        : "-");
+  const finalCashAmountDisplay = amountTotalOverride
+    ?? (feeCardVisible
+      ? formatStockAmountValue(autoAmountTotal)
+      : feeEstimateLoading
+        ? t("stockTx.calculating")
+        : "-");
+
+  /** 改数量/单价：手填的那笔「金额合计」就不再对应这次成交，回到自动。 */
+  function handleQuantityInput(value: string) {
+    setQuantity(value);
+    setAmountTotalOverride(null);
+  }
+
+  function handlePriceInput(value: string) {
+    setPrice(value);
+    setAmountTotalOverride(null);
+  }
+
+  /** 清空汇总框 = 回到「完全自动」：连手工覆盖过的费用明细一起还给费用规则。 */
+  function clearManualFeeTotals() {
+    feeManualOverrideRef.current = {
+      stampTax: false,
+      commission: false,
+      surcharge: false,
+      transferFee: false,
+    };
+    setFeeDraft({ ...EMPTY_FEE_DRAFT });
+    setFeeTotalOverride(null);
+    setAmountTotalOverride(null);
+  }
+
+  /** 手改「费用小计」：值即实际总费用，同时摊回四个明细框，保证明细与提交值一致。 */
+  function applyFeeTotalInput(value: string) {
+    if (value.trim().length === 0) {
+      clearManualFeeTotals();
+      return;
+    }
+    setFeeTotalOverride(value);
+    // 合计要跟着新费用重算，手改过的那份就不作数了。
+    setAmountTotalOverride(null);
+    FEE_DRAFT_KEYS.forEach((key) => {
+      feeManualOverrideRef.current[key] = true;
+    });
+    setFeeDraft(distributeFeeDraftTotal(Math.max(0, parseNumber(value)), feeDraft));
+  }
+
+  /**
+   * 手改「金额合计」：这就是这笔实际要付/要收的钱数，反算成单价 ——
+   * 买入 付出 = 成交额 + 费用，卖出 到账 = 成交额 − 费用，解出成交额再除以股数。
+   * 费用明细保持不动（用户只是告诉了总钱数）。
+   */
+  function applyAmountTotalInput(value: string) {
+    if (value.trim().length === 0) {
+      clearManualFeeTotals();
+      return;
+    }
+    setAmountTotalOverride(value);
+    if (!isBuySell) return;
+    const quantityValue = parseNumber(quantity);
+    if (!(quantityValue > 0)) return;
+    const target = parseNumber(value);
+    const gross = action === "buy" ? target - feeTotalValue : target + feeTotalValue;
+    const nextPrice = Math.max(0, gross) / quantityValue;
+    setPrice(nextPrice > 0 ? String(Number(nextPrice.toFixed(4))) : "");
+  }
   const accountCreateFieldData = useMemo(() => {
     const accounts = mergeAccounts(localStockAccounts, localCashAccounts);
     const groups = new Map<string, { id: string; name: string }>();
@@ -790,12 +999,22 @@ export function StockTransactionFormModal({
     });
     setRequestId(detail?.requestId ?? null);
     setEditingId(null);
+    setRepoEditing(null);
     setAction(STOCK_ACTIONS.find((item) => item.key === detail?.defaultAction)?.key ?? "buy");
     setDividendMode("cash");
-    setMarket("CN");
-    setStockCode("");
-    setStockName("");
+    setAdjustAction("tax_adjustment");
+    // 持仓页选了某只股票：任何页签（含默认落在的「买入」）打开窗口都先把它填进去，
+    // 之后切到卖出，下拉里已经是这只，不用再点一次。
+    const prefillCode = normalizeStockCode(detail?.defaultStockCode ?? "");
+    setMarket(detail?.defaultMarket || (prefillCode ? inferStockMarketFromCode(prefillCode) : "CN"));
+    setStockCode(prefillCode);
+    setStockName(detail?.defaultStockName?.trim() || "");
     setSelectedSecurityId("");
+    setPrefillStock(
+      detail?.defaultSecurityId || prefillCode
+        ? { securityId: detail?.defaultSecurityId ?? "", stockCode: prefillCode }
+        : null,
+    );
     setSellHoldings([]);
     setSellHoldingsLoading(false);
     setSellHoldingsError("");
@@ -834,6 +1053,11 @@ export function StockTransactionFormModal({
     } else if (tx.action === "split_share" || tx.action === "merge_share") {
       setAction("share_change");
       setShareChangeAction(tx.action as Extract<StockTransactionAction, "bonus_share" | "split_share" | "merge_share">);
+    } else if (tx.action === "tax_adjustment" || tx.action === "tax_refund" || tx.action === "fee_adjustment") {
+      // 税费调整行（股息红利税补扣/退还、费用调整）回到「股息税」页签，别再落到买入里改错动作。
+      setAction("tax");
+      setAdjustAction(tx.action);
+      setDividendMode("cash");
     } else {
       setAction("buy");
       setDividendMode("cash");
@@ -842,6 +1066,7 @@ export function StockTransactionFormModal({
     setStockCode(normalizeStockCode(tx.stockCode));
     setStockName(tx.stockName?.trim() || tx.stockCode);
     setSelectedSecurityId(tx.securityId ?? "");
+    setPrefillStock(null);
     setSellHoldings([]);
     setSellHoldingsLoading(false);
     setSellHoldingsError("");
@@ -916,6 +1141,80 @@ export function StockTransactionFormModal({
     window.addEventListener("mmh:stock:edit", onEditOpen);
     return () => window.removeEventListener("mmh:stock:edit", onEditOpen);
   }, [resetDraftForEdit]);
+
+  // 明细页「编辑」逆回购借出行：切到逆回购页签并回填存单条款。
+  // 明细行只有现金侧字段（金额/日期/备注），年化、期限、到期日、是否已回款要回存单侧取。
+  useEffect(() => {
+    async function onRepoEdit(event: Event) {
+      const detail = (event as CustomEvent<RepoEditEventDetail>).detail;
+      if (!detail?.entryId) return;
+      resetDraft({
+        defaultAction: "repo",
+        defaultStockAccountId: detail.stockAccountId ?? undefined,
+        defaultCashAccountId: detail.cashAccountId ?? undefined,
+      });
+      setRepoEditing({
+        entryId: detail.entryId,
+        lotId: detail.lotId ?? "",
+        // 明细详情已判断过是否回款；overview 拿不到时也不能放开金额/日期。
+        settled: Boolean(detail.settled),
+        code: detail.code ?? "",
+        termDays: detail.termDays ?? 1,
+        principal: Math.abs(Number(detail.principal ?? 0)),
+        annualRate: null,
+        tradeDate: detail.tradeDate ?? today,
+        maturityDate: detail.maturityDate ?? "",
+        fee: null,
+        cashAccountId: detail.cashAccountId ?? "",
+        note: detail.note ?? "",
+      });
+      setOpen(true);
+      const accountId = detail.stockAccountId?.trim();
+      if (!accountId) return;
+      try {
+        const res = await fetch(`/api/v1/repo/overview?accountId=${encodeURIComponent(accountId)}`);
+        const data = (await res.json().catch(() => null)) as
+          | {
+              ok?: boolean;
+              data?: {
+                lots?: Array<{
+                  id: string;
+                  name: string;
+                  code: string | null;
+                  termDays: number | null;
+                  annualRate: number | null;
+                  startDate: string | null;
+                  maturityDate: string | null;
+                  clearedDate: string | null;
+                  fee: number | null;
+                }>;
+              };
+            }
+          | null;
+        const lot = (data?.data?.lots ?? []).find((item) => item.id === detail.lotId);
+        if (!lot) return;
+        setRepoEditing((prev) =>
+          prev && prev.entryId === detail.entryId
+            ? {
+                ...prev,
+                code: lot.code ?? prev.code,
+                termDays: lot.termDays ?? prev.termDays,
+                annualRate: lot.annualRate,
+                tradeDate: lot.startDate ?? prev.tradeDate,
+                maturityDate: lot.maturityDate ?? prev.maturityDate,
+                fee: lot.fee,
+                settled: Boolean(lot.clearedDate) || prev.settled,
+                note: stripRepoNotePrefix(detail.note ?? "", lot.name),
+              }
+            : prev,
+        );
+      } catch {
+        /* 取不到存单就按明细行给的字段编辑，金额与日期仍然可改 */
+      }
+    }
+    window.addEventListener("mmh:repo:edit", onRepoEdit);
+    return () => window.removeEventListener("mmh:repo:edit", onRepoEdit);
+  }, [resetDraft, today]);
 
   const ensureDefaultStockAccount = useCallback(async () => {
     if (autoCreatingAccount || autoCreateAttemptedRef.current || localStockAccounts.length > 0) return;
@@ -1151,19 +1450,55 @@ export function StockTransactionFormModal({
     };
   }, [open, stockCode, stockName, t]);
 
+  /**
+   * 买入页签不显示持仓下拉，但用户经常就地切到卖出/分红。
+   * 先在后台把这一天的卖出口径静默取好写进缓存：切过去时下拉立刻有值，不用再干等。
+   * 缓存已有同一份就跳过，不重复请求。
+   */
   useEffect(() => {
-    if (!open || !isHoldingSelectionAction || !stockAccountId || !tradeDate) {
+    if (!open || needsHoldingPicker || editingId || !stockAccountId || !tradeDate || action === "repo") return;
+    const preloadKey = stockHoldingsCacheKey(stockAccountId, { tradeDate });
+    if (readStockHoldingsCache(preloadKey)) return;
+    const controller = new AbortController();
+    const timer = window.setTimeout(() => {
+      fetch(`/api/v1/stocks/holdings?${new URLSearchParams({ accountId: stockAccountId, tradeDate }).toString()}`, {
+        signal: controller.signal,
+        cache: "no-store",
+      })
+        .then((res) => res.json().catch(() => null))
+        .then((data: StockHoldingsResponse | null) => {
+          if (!data?.ok) return;
+          writeStockHoldingsCache(preloadKey, Array.isArray(data.data?.holdings) ? data.data.holdings : []);
+        })
+        .catch(() => undefined);
+    }, 400);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [action, editingId, needsHoldingPicker, open, stockAccountId, tradeDate]);
+
+  useEffect(() => {
+    // 股息税不看交易日：清仓后的补扣必须能选到那只已清仓的股票，所以取全量持仓（includeZero=1）；
+    // 卖出/分红/股本变动仍按交易日回放，只认当日还在手上的持仓。
+    if (!open || !needsHoldingPicker || !stockAccountId || (!isAdjustAction && !tradeDate)) {
       setSellHoldingsLoading(false);
       return;
     }
     const controller = new AbortController();
-    setSellHoldingsLoading(true);
-    setSellHoldingsError("");
-    setSellHoldings([]);
-    const params = new URLSearchParams({
-      accountId: stockAccountId,
-      tradeDate,
+    const params = isAdjustAction
+      ? new URLSearchParams({ accountId: stockAccountId, includeZero: "1" })
+      : new URLSearchParams({ accountId: stockAccountId, tradeDate });
+    const cacheKey = stockHoldingsCacheKey(stockAccountId, {
+      includeZero: isAdjustAction,
+      tradeDate: isAdjustAction ? undefined : tradeDate,
     });
+    // 上次同样的账户/口径/交易日拉过就先用它把下拉填上：不转圈、立刻能选。
+    // 请求照样发，回来再覆盖成最新结果（刚记过账时也靠这一下校准）。
+    const cachedRows = readStockHoldingsCache(cacheKey);
+    setSellHoldingsError("");
+    setSellHoldings(cachedRows ?? []);
+    setSellHoldingsLoading(!cachedRows);
     fetch(`/api/v1/stocks/holdings?${params.toString()}`, {
       signal: controller.signal,
       cache: "no-store",
@@ -1171,18 +1506,99 @@ export function StockTransactionFormModal({
       .then((res) => res.json().catch(() => null))
       .then((data: StockHoldingsResponse | null) => {
         if (!data?.ok) throw new Error(data?.error ?? t("stockTx.error.holdingsLoadFailed"));
-        setSellHoldings(Array.isArray(data.data?.holdings) ? data.data.holdings : []);
+        const rows = Array.isArray(data.data?.holdings) ? data.data.holdings : [];
+        writeStockHoldingsCache(cacheKey, rows);
+        setSellHoldings(rows);
       })
       .catch((error) => {
         if ((error as Error)?.name === "AbortError") return;
-        setSellHoldings([]);
+        // 有缓存就继续用缓存，别把已经能选的下拉清空。
+        if (!cachedRows) setSellHoldings([]);
         setSellHoldingsError(error instanceof Error ? error.message : t("stockTx.error.holdingsLoadFailed"));
       })
       .finally(() => {
         if (!controller.signal.aborted) setSellHoldingsLoading(false);
       });
     return () => controller.abort();
-  }, [isHoldingSelectionAction, open, stockAccountId, tradeDate, t]);
+  }, [holdingsRefreshTick, isAdjustAction, needsHoldingPicker, open, stockAccountId, tradeDate, t]);
+
+  /**
+   * 打开时的默认持仓：
+   * 1. 持仓页已经选中某只股票 → 直接落到它（卖出/分红不必再点一次下拉）；
+   * 2. 否则股息税仍回落到当前持仓第一只（与持仓卡片排序一致）。
+   * 持仓列表是异步拉的，这里等它回来再判定；prefill 只消费一次，
+   * 之后切换页签由 changeModalAction + pendingHoldingResync 保持这只股票。
+   */
+  useEffect(() => {
+    if (!open || editingId || selectedSecurityId) return;
+    if (prefillStock) {
+      if (sellHoldingsLoading || sellHoldings.length === 0) return;
+      const code = normalizeStockCode(prefillStock.stockCode);
+      const picked = (prefillStock.securityId
+        ? sellHoldings.find((holding) => holding.securityId === prefillStock.securityId)
+        : undefined)
+        ?? (code
+          ? sellHoldings.find((holding) => normalizeStockCode(holding.stockCode) === code)
+          : undefined)
+        ?? null;
+      setPrefillStock(null);
+      if (picked) {
+        setSelectedSecurityId(picked.securityId);
+        setMarket(picked.market);
+        setStockCode(picked.stockCode);
+        setStockName(picked.stockName?.trim() || picked.stockCode);
+        if (action === "sell") setQuantity(formatStockQuantity(picked.quantity, language));
+        return;
+      }
+    }
+    if (!isAdjustAction) return;
+    const first = sellHoldings.find((holding) => Number(holding.quantity) > 0) ?? sellHoldings[0] ?? null;
+    if (!first) return;
+    setSelectedSecurityId(first.securityId);
+    setMarket(first.market);
+    setStockCode(first.stockCode);
+    setStockName(first.stockName?.trim() || first.stockCode);
+  }, [action, editingId, isAdjustAction, language, open, prefillStock, selectedSecurityId, sellHoldings, sellHoldingsLoading]);
+
+  /**
+   * 切页签（买入/卖出/分红/股本变动/股息税）时保留当前这只股票：
+   * 等新页签的持仓列表回来后按 securityId（回退代码）重新对齐，
+   * 卖出还要把数量换成当日可卖数量——换了口径后的持仓可能和上一页签不一样。
+   */
+  useEffect(() => {
+    if (!open || !pendingHoldingResyncRef.current) return;
+    if (!needsHoldingPicker) {
+      pendingHoldingResyncRef.current = false;
+      return;
+    }
+    if (editingId) {
+      // 编辑历史行时数量是用户填的，别拿持仓量覆盖。
+      pendingHoldingResyncRef.current = false;
+      return;
+    }
+    // 新页签的持仓列表还没落地（正在拉 / 还没开始拉）就再等一次：
+    // 切页签那一帧 sellHoldings 仍是旧值或空数组，这里提前收工会把选中值丢掉。
+    if (sellHoldingsLoading || sellHoldings.length === 0) return;
+    pendingHoldingResyncRef.current = false;
+    // 打开时带进来的那只股票到这里就交出去了，别留着让「改交易日清空重选」又被它选回来。
+    setPrefillStock(null);
+    const code = normalizeStockCode(stockCode);
+    const holding = (selectedSecurityId
+      ? sellHoldings.find((item) => item.securityId === selectedSecurityId)
+      : undefined)
+      ?? (code
+        ? sellHoldings.find((item) => normalizeStockCode(item.stockCode) === code)
+        : undefined)
+      ?? null;
+    if (holding) {
+      setSelectedSecurityId(holding.securityId);
+      setMarket(holding.market);
+      setStockCode(holding.stockCode);
+      setStockName(holding.stockName?.trim() || holding.stockCode);
+    }
+    setQuantity(action === "sell" && holding ? formatStockQuantity(holding.quantity, language) : "");
+    setAmountTotalOverride(null);
+  }, [action, editingId, language, needsHoldingPicker, open, selectedSecurityId, sellHoldings, sellHoldingsLoading, stockCode]);
 
   const loadFeeEstimate = useCallback(async (refresh = false) => {
     const normalizedCode = normalizeStockCode(stockCode);
@@ -1297,11 +1713,15 @@ export function StockTransactionFormModal({
       return;
     }
     const normalizedCode = normalizeStockCode(stockCode);
-    if (isHoldingSelectionAction && !selectedSecurityId) {
-      window.alert(action === "sell" || action === "share_change" ? t("stockTx.alert.selectHoldingStock") : t("stockTx.alert.selectDividendStock"));
+    if (needsHoldingPicker && !selectedSecurityId) {
+      window.alert(isAdjustAction
+        ? t("stockTx.alert.selectTaxHoldingStock")
+        : action === "sell" || action === "share_change"
+          ? t("stockTx.alert.selectHoldingStock")
+          : t("stockTx.alert.selectDividendStock"));
       return;
     }
-    if (!isHoldingSelectionAction && !normalizedCode) {
+    if (!needsHoldingPicker && !normalizedCode) {
       window.alert(t("stockTx.alert.enterStockCode"));
       return;
     }
@@ -1397,12 +1817,16 @@ export function StockTransactionFormModal({
           quantity: showQuantityField ? quantity || undefined : undefined,
           price: showPriceField ? price || undefined : undefined,
           grossAmount: showAmountField ? effectiveGrossAmount || undefined : undefined,
-          netAmount: showNetAmount ? netAmount || undefined : undefined,
+          // 「金额合计」手改过就是这笔的实际收付金额（后端 netAmount 优先于 成交额±费用）。
+          netAmount: showNetAmount ? netAmount || undefined : amountTotalOverride != null ? amountTotalValue : undefined,
         });
       }
       if (requestId) {
         window.dispatchEvent(new CustomEvent(editingId ? "mmh:stock:edit:success" : "mmh:stock:create:success", { detail: { requestId } }));
       }
+      // 持仓已经变了：缓存作废并让持仓下拉重拉，「保存并再记一笔」时数量才是新的。
+      invalidateStockHoldingsCache(stockAccountId);
+      setHoldingsRefreshTick((prev) => prev + 1);
       requestAnimationFrame(() => {
         const accountIds = Array.from(new Set([stockAccountId, selectedCashAccount?.id].filter((id): id is string => Boolean(id))));
         recordRecentAccounts(accountIds);
@@ -1447,13 +1871,14 @@ export function StockTransactionFormModal({
    * 账务刷新已经由 RepoEntryFields 自己派发，这里只负责窗口生命周期。
    */
   const handleRepoSaved = useCallback(() => {
-    if (submitModeRef.current === "repeat" && !editingId) {
+    if (submitModeRef.current === "repeat" && !editingId && !repoEditing) {
       submitModeRef.current = "close";
       setRepoResetKey((prev) => prev + 1);
       return;
     }
     setOpen(false);
-  }, [editingId]);
+    setRepoEditing(null);
+  }, [editingId, repoEditing]);
 
   if (!open || typeof document === "undefined") return null;
 
@@ -1462,7 +1887,7 @@ export function StockTransactionFormModal({
         open={open}
         heightKey="stock-tx"
         width="md"
-        title={editingId ? t("stockTx.editTitle") : t("stockTx.title")}
+        title={repoEditing ? t("repoForm.editTitle") : editingId ? t("stockTx.editTitle") : t("stockTx.title")}
         onClose={close}
         closeLabel={<X className="h-4 w-4" />}
         closeTitle={t("stockTx.close")}
@@ -1476,7 +1901,7 @@ export function StockTransactionFormModal({
         onTabChange={(id) => changeModalAction(id as StockModalAction)}
         footer={(
           <>
-            {!editingId ? (
+            {!editingId && !repoEditing ? (
               <button
                 type="button"
                 disabled={submitting || repoSubmitting || autoCreatingAccount}
@@ -1557,6 +1982,8 @@ export function StockTransactionFormModal({
               createCashAccountLabel={t("stockTx.addCashAccount")}
               onSubmittingChange={setRepoSubmitting}
               onSaved={handleRepoSaved}
+              editing={repoEditing}
+              editAction={editInvestmentAction}
             />
           </>
         ) : (
@@ -1606,16 +2033,30 @@ export function StockTransactionFormModal({
               </div>
 
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                {isHoldingSelectionAction ? (
+                {needsHoldingPicker ? (
                   <div className="space-y-1 sm:col-span-3">
-                    <div className="form-label">{action === "sell" || action === "share_change" ? t("stockTx.holdingStock") : t("stockTx.dividendStock")}</div>
+                    <div className="form-label">{isAdjustAction ? t("stockTx.taxHoldingStock") : action === "sell" || action === "share_change" ? t("stockTx.holdingStock") : t("stockTx.dividendStock")}</div>
                     <SmartSelect
                       mode="single"
                       value={selectedSecurityId}
                       onChange={selectHolding}
-                      options={sellHoldingOptions}
-                      placeholder={sellHoldingsLoading ? t("stockTx.loadingHoldings") : action === "sell" ? t("stockTx.selectSellableStock") : action === "share_change" ? t("stockTx.selectHoldingStock") : t("stockTx.selectDividendHoldingStock")}
-                      behavior={{ search: true, density: "compact", minDropdownWidth: 300 }}
+                      options={holdingSelectOptions}
+                      placeholder={sellHoldingsLoading
+                        ? t("stockTx.loadingHoldings")
+                        : isAdjustAction
+                          ? t("stockTx.selectTaxHoldingStock")
+                          : action === "sell"
+                            ? t("stockTx.selectSellableStock")
+                            : action === "share_change"
+                              ? t("stockTx.selectHoldingStock")
+                              : t("stockTx.selectDividendHoldingStock")}
+                      behavior={{
+                        search: true,
+                        density: "compact",
+                        minDropdownWidth: 300,
+                        // 「已清仓」是查历史用的分组，默认收起；选中里面的股票时会自动展开。
+                        defaultCollapsedGroupIds: STOCK_HOLDING_COLLAPSED_GROUPS,
+                      }}
                     />
                     {sellHoldingsError ? <div className="text-[11px] text-rose-600">{sellHoldingsError}</div> : null}
                   </div>
@@ -1629,6 +2070,10 @@ export function StockTransactionFormModal({
                           const nextCode = event.target.value.toUpperCase();
                           setStockCode(nextCode);
                           setStockName("");
+                          // 代码被改写后旧的证券绑定就失效了，否则会拿 A 的 securityId 去记 B 的买入。
+                          setSelectedSecurityId("");
+                          // 打开时带进来的那只也不作数了，否则切到卖出会被它按旧代码拉回去。
+                          setPrefillStock(null);
                           setMarket(inferStockMarketFromCode(nextCode));
                         }}
                         className="form-input"
@@ -1653,13 +2098,13 @@ export function StockTransactionFormModal({
                 {isBuySell ? (
                   <div className="space-y-1">
                     <div className="form-label">{quantityFieldLabel}</div>
-                    <CalcInput value={quantity} onChange={setQuantity} placeholder={t("stockTx.quantityPlaceholder")} label={quantityFieldLabel} precision={4} />
+                    <CalcInput value={quantity} onChange={handleQuantityInput} placeholder={t("stockTx.quantityPlaceholder")} label={quantityFieldLabel} precision={4} />
                   </div>
                 ) : null}
                 {isBuySell ? (
                   <div className="space-y-1">
                     <div className="form-label">{t("stockTx.priceLabel")}</div>
-                    <CalcInput value={price} onChange={setPrice} placeholder={t("stockTx.pricePlaceholder")} label={t("stockTx.priceLabel")} precision={4} />
+                    <CalcInput value={price} onChange={handlePriceInput} placeholder={t("stockTx.pricePlaceholder")} label={t("stockTx.priceLabel")} precision={4} />
                   </div>
                 ) : null}
               </div>
@@ -1722,6 +2167,36 @@ export function StockTransactionFormModal({
                 </div>
               ) : null}
 
+              {isAdjustAction ? (
+                <div className="space-y-2">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-start">
+                    <div className="space-y-1 sm:w-52 sm:shrink-0">
+                      <div className="form-label">{t("stockTx.adjustTypeLabel")}</div>
+                      <select
+                        value={adjustAction}
+                        onChange={(event) => setAdjustAction(event.target.value as StockAdjustAction)}
+                        className="form-input"
+                      >
+                        {ADJUST_ACTIONS.map((item) => <option key={item.key} value={item.key}>{t(item.labelKey)}</option>)}
+                      </select>
+                    </div>
+                    <div className="flex-1 space-y-1">
+                      <div className="form-label">{adjustAmountLabel}</div>
+                      <CalcInput
+                        value={grossAmount}
+                        onChange={setGrossAmount}
+                        placeholder={adjustAmountPlaceholder}
+                        label={adjustAmountLabel}
+                        precision={2}
+                      />
+                    </div>
+                  </div>
+                  <div className="text-[11px] leading-relaxed text-slate-500">
+                    {t(isTaxRefundAction ? "stockTx.adjustRenderHint" : "stockTx.adjustHint")}
+                  </div>
+                </div>
+              ) : null}
+
               <div className={`grid grid-cols-1 gap-3 ${isBuySell ? "sm:grid-cols-1" : "sm:grid-cols-3"}`}>
                 {isShareAction ? (
                   <div className="space-y-2 sm:col-span-3">
@@ -1738,7 +2213,7 @@ export function StockTransactionFormModal({
                       </div>
                       <div className="flex-1 space-y-1">
                         <div className="form-label">{quantityFieldLabel}</div>
-                        <CalcInput value={quantity} onChange={setQuantity} placeholder={t("stockTx.shareChangeQuantity")} label={quantityFieldLabel} precision={4} />
+                        <CalcInput value={quantity} onChange={handleQuantityInput} placeholder={t("stockTx.shareChangeQuantity")} label={quantityFieldLabel} precision={4} />
                       </div>
                     </div>
                     <div className="text-[11px] leading-relaxed text-slate-500">
@@ -1749,10 +2224,10 @@ export function StockTransactionFormModal({
                 {showQuantityField && !isBuySell && !isDividendAction && !isShareAction ? (
                   <div className="space-y-1">
                     <div className="form-label">{quantityFieldLabel}</div>
-                    <CalcInput value={quantity} onChange={setQuantity} placeholder={t("stockTx.quantityPlaceholder")} label={quantityFieldLabel} precision={4} />
+                    <CalcInput value={quantity} onChange={handleQuantityInput} placeholder={t("stockTx.quantityPlaceholder")} label={quantityFieldLabel} precision={4} />
                   </div>
                 ) : null}
-                {showAmountField && !isBuySell && !isDividendAction ? (
+                {showAmountField && !isBuySell && !isDividendAction && !isAdjustAction ? (
                   <div className="space-y-1">
                     <div className="form-label">{amountLabelForAction(t, action)}</div>
                     <CalcInput
@@ -1783,6 +2258,7 @@ export function StockTransactionFormModal({
                           onChange={(value) => updateFeeDraft(item.key, value)}
                           placeholder={item.estimateValue == null ? t("stockFee.optional") : formatMoney(item.estimateValue, displayCurrency)}
                           label={t(item.labelKey)}
+                          ariaLabel={t(item.labelKey)}
                           precision={2}
                         />
                       </div>
@@ -1790,22 +2266,30 @@ export function StockTransactionFormModal({
                   </div>
                   <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
                     <div className="space-y-1">
-                      <div className="form-label">{t("stockTx.feeSubtotalWithCurrency", { currency: displayCurrency })}</div>
-                      <input
-                        value={feeTotalDisplay}
-                        readOnly
-                        title={feeBreakdownTitle}
-                        className="form-input bg-slate-50 text-right font-semibold tabular-nums text-slate-900"
-                      />
+                      <div className="form-label">{t("stockTx.feeSubtotal")}</div>
+                      <div title={feeBreakdownTitle}>
+                        <CalcInput
+                          value={feeTotalDisplay}
+                          onChange={applyFeeTotalInput}
+                          label={t("stockTx.feeSubtotal")}
+                          ariaLabel={t("stockTx.feeSubtotal")}
+                          precision={2}
+                          inputClassName="text-right font-semibold"
+                        />
+                      </div>
                     </div>
                     <div className="space-y-1">
-                      <div className="form-label">{t("stockTx.amountTotalWithCurrency", { currency: displayCurrency })}</div>
-                      <input
-                        value={finalCashAmountDisplay}
-                        readOnly
-                        title={action === "buy" ? t("stockTx.finalCashDebitTitle") : t("stockTx.finalCashCreditTitle")}
-                        className="form-input bg-slate-50 text-right font-semibold tabular-nums text-slate-900"
-                      />
+                      <div className="form-label">{t("stockTx.amountTotal")}</div>
+                      <div title={action === "buy" ? t("stockTx.finalCashDebitTitle") : t("stockTx.finalCashCreditTitle")}>
+                        <CalcInput
+                          value={finalCashAmountDisplay}
+                          onChange={applyAmountTotalInput}
+                          label={t("stockTx.amountTotal")}
+                          ariaLabel={t("stockTx.amountTotal")}
+                          precision={2}
+                          inputClassName="text-right font-semibold"
+                        />
+                      </div>
                     </div>
                   </div>
                   {feeEstimateError ? <div className="text-xs text-rose-600">{feeEstimateError}</div> : null}

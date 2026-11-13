@@ -23,6 +23,7 @@ import { MobileRegularInvest } from "@/components/mobile/MobileRegularInvest";
 import { resolveCreditCardRepaymentCategory } from "@/lib/default-categories";
 import { isCreditCardRepaymentTransfer, recordMatchesRegularInvestPlan } from "@/lib/transaction-semantics";
 import { getServerAccountLabelFields } from "@/lib/server/account-label-fields";
+import { getServerAccountDropdownGroupBy } from "@/lib/server/account-dropdown-group-by";
 import { resolveScheduledTaskBalanceBlocks } from "@/lib/server/scheduled-task-balance-guard";
 import { getServerT } from "@/lib/server/i18n";
 import { createTransaction } from "@/lib/server/sidebar-actions/transaction-actions";
@@ -120,6 +121,8 @@ export default async function RegularInvestPage() {
   const { hidFilter, householdId } = await getHouseholdScope();
   const t = await getServerT();
   const accountLabelFields = await getServerAccountLabelFields();
+  // 账户下拉的分组维度（所有人 / 分组标签 / 机构），与「设置 → 显示」里的一致。
+  const accountDropdownGroupBy = await getServerAccountDropdownGroupBy();
   const baseCurrency = await getHouseholdBaseCurrency(householdId);
 
   const [plans, accounts, groups, institutions, insuranceProducts, categories] = await Promise.all([
@@ -504,6 +507,10 @@ export default async function RegularInvestPage() {
       taskCategoryId: scheduledTask.categoryId ?? null,
       taskCategoryName: scheduledTask.categoryName ?? null,
       taskInsuranceProductId: scheduledTask.insuranceProductId ?? null,
+      taskMetalTypeId: scheduledTask.metalTypeId ?? null,
+      taskMetalTypeName: scheduledTask.metalTypeName ?? null,
+      taskMetalUnitId: scheduledTask.metalUnitId ?? null,
+      taskMetalUnitName: scheduledTask.metalUnitName ?? null,
       taskNote: scheduledTask.note ?? null,
       taskAnnualRate: scheduledTask.annualRate ?? null,
       taskRepaymentMethod: scheduledTask.repaymentMethod ? normalizeLoanRepaymentMethod(scheduledTask.repaymentMethod) : null,
@@ -655,6 +662,8 @@ export default async function RegularInvestPage() {
     .filter((plan) => !plan.completed);
 
   const investmentAccounts = accountOptions.filter((account) => account.kind === "investment" && account.investProductType === "fund");
+  // 贵金属积存计划只认贵金属投资账户，单独一路，避免基金账户混进下拉
+  const metalAccounts = accountOptions.filter((account) => account.kind === "investment" && account.investProductType === "metal");
   const cashAccounts = accountOptions.filter((account) => ["bank_debit", "ewallet", "cash"].includes(account.kind));
   const ordinaryAccounts = accountOptions.filter((account) => ["bank_debit", "bank_credit", "ewallet", "cash"].includes(account.kind));
   const loanAccounts = accountOptions.filter((account) => account.kind === "loan");
@@ -709,21 +718,22 @@ export default async function RegularInvestPage() {
       initialPlans={plansData}
       installmentPlans={installmentsData}
       investmentAccounts={investmentAccounts}
+      metalAccounts={metalAccounts}
       cashAccounts={cashAccounts}
       loanAccounts={loanAccounts}
       transferTargetAccounts={transferTargetAccounts}
       ordinaryAccounts={ordinaryAccounts}
       insuranceProductOptions={insuranceProductOptions}
       investmentAccountSSOptions={buildFlatAccountOptions(investmentAccounts)}
-      cashAccountSSOptions={buildGroupedAccountOptions(cashAccounts)}
-      transferTargetAccountSSOptions={buildGroupedAccountOptions(transferTargetAccounts)}
-      ordinaryAccountSSOptions={buildGroupedAccountOptions(ordinaryAccounts)}
+      cashAccountSSOptions={buildGroupedAccountOptions(cashAccounts, accountDropdownGroupBy)}
+      transferTargetAccountSSOptions={buildGroupedAccountOptions(transferTargetAccounts, accountDropdownGroupBy)}
+      ordinaryAccountSSOptions={buildGroupedAccountOptions(ordinaryAccounts, accountDropdownGroupBy)}
       incomeCategoryOptions={incomeCategoryOptions}
       expenseCategoryOptions={expenseCategoryOptions}
       expenseCategories={expenseCategories}
       incomeCategories={incomeCategories}
       advanceCategories={advanceCategories}
-      allAccountSSOptions={buildGroupedAccountOptions(accountOptions)}
+      allAccountSSOptions={buildGroupedAccountOptions(accountOptions, accountDropdownGroupBy)}
       filterAccounts={accountOptions.map((account) => ({
         id: account.id,
         label: account.label,

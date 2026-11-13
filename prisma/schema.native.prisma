@@ -66,6 +66,10 @@ model Account {
   numberMasked                                               String?
   routeKey                                                   String?                     @unique
   note                                                       String?
+  // 自定义分组标签（2026-11-13 用户裁定）：用户自己起的分类名（如「日常现金」「孩子教育」），
+  // 侧边栏与账户下拉可以按它分组。与 `groupId` → `AccountGroup`（所有人/归属人分组）
+  // 是两个完全不同的概念，不要混用。自由文本、可空；空 = 「未分组」。
+  accountGroup                                               String?
   usageCount                                                 Int                         @default(0)
   lastUsedAt                                                 DateTime?
   householdId                                                String
@@ -473,7 +477,8 @@ model FundNavCache {
   navDate       DateTime
   nav           Decimal
   cumNav        Decimal?
-  name          String?
+  // 不存基金名：名字是基金维度的主数据，只有 FundProfile 持有，且只由基金资料页写入。
+  // 这张表按 (fundCode, navDate) 只回答「那天净值多少」。
   sgzt          String? // 申购状态（开放申购、暂停申购、限制大额申购等）
   purchaseLimit Int? // 申购日上限金额（元），从天天基金详情页解析
   createdAt     DateTime @default(now())
@@ -1252,6 +1257,8 @@ model Household {
   User                      User[]
   WealthProduct             WealthProduct[]
   Preference                HouseholdPreference?
+  StatementMailAutoImport   StatementMailAutoImport[]
+  StatementMailAutoImportJob StatementMailAutoImportJob[]
   transactions              TxRecord[]
 }
 
@@ -1278,6 +1285,10 @@ model HouseholdPreference {
   displayLanguage                   String          @default("zh-CN")
   dateDisplayFormat                 String          @default("yyyy-mm-dd")
   sidebarGroupBy                    String          @default("kind")
+  // 账户下拉的分组维度（2026-11-13）：owner（按所有人，默认 / 历史行为）|
+  // accountGroup（按账户自定义分组标签）| institution（按机构）。
+  // 与 sidebarGroupBy 是两套独立设置：下拉表头原本固定按所有人，侧边栏则是 类型/机构。
+  accountDropdownGroupBy            String          @default("owner")
   sidebarHideZero                   Boolean         @default(false)
   sidebarHideInitialData            Boolean         @default(false)
   sidebarShowFixedAssets            Boolean         @default(true)
@@ -1497,7 +1508,12 @@ model PreciousMetalHolding {
   quantity          Decimal           @default(0)
   avgCost           Decimal           @default(0)
   cost              Decimal           @default(0)
+  /// 最后一笔成交单价（recalc 时按交易回放写入，不是行情）。
   unitPrice         Decimal?
+  /// 行情最新单价（按 metalUnitId 计价）+ 行情日期 + 数据源，手动/自动刷新写入。
+  latestPrice       Decimal?
+  latestPriceDate   DateTime?
+  priceSource       String?
   marketValue       Decimal           @default(0)
   historicalProfit  Decimal           @default(0)
   householdId       String
@@ -1633,8 +1649,70 @@ model EmailAccount {
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @default(now()) @updatedAt
   household    Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  StatementMailAutoImport StatementMailAutoImport[]
 
   @@index([householdId])
+}
+
+/// 邮箱账单「下期自动导入」计划：用户在导入账单时勾选后创建。服务端的
+/// system-task 按 nextRunAt 定时从同一个邮箱检索下一期同银行的账单邮件，
+/// 抓取正文/附件原文落成 StatementMailAutoImportJob（待导入任务），
+/// **不自动落账** —— 用户在通知里打开导入预览确认后才写流水。
+model StatementMailAutoImport {
+  id              String    @id @default(cuid())
+  householdId     String
+  emailAccountId  String
+  /// 目标账户：账单导入默认落到哪个账户。账户删除后置空，用户在预览里重选。
+  accountId       String?
+  /// 目标账户名快照：账户已删时给预览兜底，也用于通知文案。
+  accountName     String?
+  /// 邮件筛选：发件人包含该字符串（空 = 不限）。
+  fromIncludes    String?
+  /// 邮件筛选：主题包含该字符串（空 = 不限，缺省「账单」）。
+  subjectIncludes String?
+  /// 每月执行日（1-28，避免 29-31 在某些月份不存在）。
+  dayOfMonth      Int       @default(1)
+  /// 执行时刻（0-23，账簿业务时区）。
+  hourOfDay       Int       @default(9)
+  enabled         Boolean   @default(true)
+  lastRunAt       DateTime?
+  lastError       String?
+  nextRunAt       DateTime
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @default(now()) @updatedAt
+  Household       Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  EmailAccount    EmailAccount @relation(fields: [emailAccountId], references: [id], onDelete: Cascade)
+  Jobs            StatementMailAutoImportJob[]
+
+  @@index([householdId, enabled])
+  @@index([enabled, nextRunAt])
+}
+
+/// 自动导入计划抓到的账单（正文 + 附件原文），等待用户确认导入。
+model StatementMailAutoImportJob {
+  id              String    @id @default(cuid())
+  householdId     String
+  scheduleId      String?
+  emailAccountId  String
+  /// 邮件 UID：同一封邮件只抓一次。
+  uid             Int
+  hash            String?
+  subject         String?
+  fromAddress     String?
+  mailDate        DateTime?
+  /// 邮件正文 + 附件文字的原文；用户打开通知时才解析成导入预览。
+  content         String
+  accountId       String?
+  accountName     String?
+  /// pending | imported | dismissed
+  status          String    @default("pending")
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @default(now()) @updatedAt
+  Household       Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  Schedule        StatementMailAutoImport? @relation(fields: [scheduleId], references: [id], onDelete: SetNull)
+
+  @@unique([householdId, emailAccountId, uid])
+  @@index([householdId, status, createdAt])
 }
 
 model Tag {
@@ -2298,6 +2376,7 @@ enum StockTransactionAction {
   merge_share
   fee_adjustment
   tax_adjustment
+  tax_refund
 }
 
 enum StockFeeType {

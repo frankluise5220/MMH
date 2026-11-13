@@ -27,6 +27,7 @@ import { addTradingDaysUtc } from "@/lib/date-utils";
 import { formatAmountDraft } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
 import { readAccountDisplaySettings } from "@/lib/client/account-display-settings";
+import { getAccountDropdownGroupByPreference } from "@/lib/client/appPreferences";
 import { restrictAccountsByType } from "@/lib/client/account-dropdown-filter";
 
 export type StockImportUploadItem = {
@@ -244,6 +245,7 @@ const STOCK_PREVIEW_ACTIONS = [
   "merge_share",
   "fee_adjustment",
   "tax_adjustment",
+  "tax_refund",
   "bank_transfer",
 ] as const;
 
@@ -380,7 +382,7 @@ export function StockImportPreviewDialog({ open, items, context, onClose, onImpo
     () => new Map(stockAccountDisplayOptions.map((account) => [account.id, account])),
     [stockAccountDisplayOptions],
   );
-  const stockAccountOptions = useMemo(() => buildGroupedAccountOptions(stockAccountDisplayOptions), [stockAccountDisplayOptions]);
+  const stockAccountOptions = useMemo(() => buildGroupedAccountOptions(stockAccountDisplayOptions, getAccountDropdownGroupByPreference()), [stockAccountDisplayOptions]);
   const stockAccountBatchOptions = useMemo(
     () => stockAccountOptions.map((option) => ({
       value: option.id,
@@ -422,7 +424,7 @@ export function StockImportPreviewDialog({ open, items, context, onClose, onImpo
     () => new Map(bankAccountDisplayOptions.map((account) => [account.id, account])),
     [bankAccountDisplayOptions],
   );
-  const bankAccountOptions = useMemo(() => buildGroupedAccountOptions(bankAccountDisplayOptions), [bankAccountDisplayOptions]);
+  const bankAccountOptions = useMemo(() => buildGroupedAccountOptions(bankAccountDisplayOptions, getAccountDropdownGroupByPreference()), [bankAccountDisplayOptions]);
   const bankAccountBatchOptions = useMemo(
     () => bankAccountOptions.map((option) => ({
       value: option.id,

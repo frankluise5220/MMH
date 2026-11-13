@@ -457,6 +457,17 @@ function applyRuntimeMigrations(db) {
   // 20261017_add_metal_arrival_date 同义（可空，读取侧回退到 date）。
   // 0.1.74 漏了这段，升级后的桌面库查贵金属会报 "no such column: arrivalDate"。
   addColumnIfMissing(db, "precious_metal_transactions", "arrivalDate", "DATETIME");
+  // 2026-11-13 贵金属行情：latestPrice / latestPriceDate / priceSource。
+  // 与 prisma/migrations/20261113_add_metal_latest_price 同义（三列可空，无行情时
+  // 读取侧回退 unitPrice）。漏掉这段：升级后的桌面库刷新价格会成功，但重新打开
+  // 贵金属账户读持仓报 "no such column: latestPrice"（Prisma 是整行查询）。
+  // 表名两种写法都试：原生 schema 未给 PreciousMetalHolding 加 @@map，
+  // 但同族的 precious_metal_transactions 是蛇形，存量库两种都可能存在。
+  for (const metalHoldingTable of ["PreciousMetalHolding", "precious_metal_holdings"]) {
+    addColumnIfMissing(db, metalHoldingTable, "latestPrice", "DECIMAL(20,6)");
+    addColumnIfMissing(db, metalHoldingTable, "latestPriceDate", "DATETIME");
+    addColumnIfMissing(db, metalHoldingTable, "priceSource", "TEXT");
+  }
   // 2026-10-18 多币种父账户：parentId / isAggregate 以及 (parentId, currency) 唯一索引。
   // 与 build-fnos-package.cjs 的 20261018_add_account_parent 同义。
   addColumnIfMissing(db, "Account", "parentId", "TEXT");
@@ -504,6 +515,13 @@ function applyRuntimeMigrations(db) {
     db.exec('DROP INDEX IF EXISTS "Category_householdId_name_key"');
     db.exec('CREATE UNIQUE INDEX IF NOT EXISTS "Category_householdId_type_name_key" ON "Category"("householdId", "type", "name")');
   }
+  // 2026-11-13 账户自定义分组标签。与 build-fnos-package.cjs 的
+  // 20261113_add_account_group_label 同义（可空自由文本，存量账户 = 未分组）。
+  // 漏掉这段：升级后的桌面库打开账户页 / 侧边栏会报 "no such column: accountGroup"
+  // （账户查询是全列 findMany，不是 select 白名单）。
+  addColumnIfMissing(db, "Account", "accountGroup", "TEXT");
+  // 账户下拉分组维度。household-preferences 走全列 findUnique，缺列即首屏报错。
+  addColumnIfMissing(db, "HouseholdPreference", "accountDropdownGroupBy", "TEXT NOT NULL DEFAULT 'owner'");
 }
 
 fs.mkdirSync(dataDir, { recursive: true });

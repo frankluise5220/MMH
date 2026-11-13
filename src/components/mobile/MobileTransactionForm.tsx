@@ -19,6 +19,7 @@ import { recordRecentAccounts } from "@/lib/client/recentAccounts";
 import { REQUIRED_FIELD_CLASS } from "@/lib/client/required-field";
 import { useI18n } from "@/lib/i18n";
 import { readAccountDisplaySettings } from "@/lib/client/account-display-settings";
+import { getAccountDropdownGroupByPreference } from "@/lib/client/appPreferences";
 import { todayDateLocalYmd } from "@/lib/date-utils";
 import { formatAmountDraft } from "@/lib/format";
 
@@ -73,6 +74,8 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
       accounts
         .filter((account) => isIncomeExpensePostingOrDepositAccount(account))
         .map((account) => buildAccountDisplayOption(account, undefined, readAccountDisplaySettings())),
+      // 分组维度跟随「设置 → 显示 → 账户下拉分组」，默认按所有人。
+      getAccountDropdownGroupByPreference(),
     ),
     [accounts],
   );
@@ -82,6 +85,7 @@ export function MobileTransactionForm({ accounts, categories, defaultAccountId =
           accounts
             .filter((account) => isTransferDropdownAccount(account))
             .map((account) => buildAccountDisplayOption(account, undefined, readAccountDisplaySettings())),
+          getAccountDropdownGroupByPreference(),
         )
       : postingAccountOptions),
     [accounts, draft.type, postingAccountOptions],

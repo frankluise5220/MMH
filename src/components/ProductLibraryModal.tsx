@@ -614,6 +614,21 @@ export function ProductLibraryModal({
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
+  /**
+   * 保险产品库的「先查询、再修改」（issue #25 第 3 点）。
+   *
+   * 产品库其余家族（存款 / 理财 / 债券）的产品主数据没有公开来源，只能手填；
+   * 保险产品能在中国保险行业协会产品库里查到官方全名与销售状态，所以这里给
+   * 产品名称加一个「查询」按钮，把候选结果只当作**填表参考**：选中后把官方
+   * 全名写进「简称」、类型写进「产品类型」，其余字段仍可手工改。
+   */
+  const [lookupLoading, setLookupLoading] = useState(false);
+  const [lookupError, setLookupError] = useState<string | null>(null);
+  const [lookupCandidates, setLookupCandidates] = useState<
+    Array<{ name: string; institutionName: string | null; productType: string | null; status: string | null }>
+  >([]);
+  const [lookupSelected, setLookupSelected] = useState(-1);
+
   const institutionOptions = useMemo(() => {
     const excluded = new Set<string>(config.excludedInstitutionTypes ?? []);
     return institutions.filter((item) => {
@@ -667,6 +682,9 @@ export function ProductLibraryModal({
     setDeleteState(null);
     setFormError(null);
     setDraft(draftFromRow(family, null));
+    setLookupCandidates([]);
+    setLookupSelected(-1);
+    setLookupError(null);
     void loadRows();
     void (async () => {
       try {
@@ -764,6 +782,9 @@ export function ProductLibraryModal({
     setSelectedId(row.id);
     setDraft(draftFromRow(family, row));
     setFormError(null);
+    setLookupCandidates([]);
+    setLookupSelected(-1);
+    setLookupError(null);
   }
 
   function startCreate() {
@@ -774,6 +795,87 @@ export function ProductLibraryModal({
     if ((config.allowNoInstitution || family === "advisor") && defaultInstitutionId) next.institutionId = defaultInstitutionId;
     setDraft(next);
     setFormError(null);
+    setLookupCandidates([]);
+    setLookupSelected(-1);
+    setLookupError(null);
+  }
+
+  /** 保险产品名称查询：行业协会产品库 + 公开页面，结果只作填表参考。 */
+  async function handleLookupInsuranceProduct() {
+    const name = String(draft.name ?? "").trim();
+    if (!name || lookupLoading) return;
+    const institutionId = String(draft.institutionId ?? "");
+    const institutionName = institutionId
+      ? institutionOptions.find((item) => item.id === institutionId)?.name ?? ""
+      : "";
+    setLookupLoading(true);
+    setLookupError(null);
+    try {
+      const params = new URLSearchParams({ name });
+      if (institutionName) params.set("institutionName", institutionName);
+      const response = await fetch(`/api/v1/insurance-products/lookup?${params.toString()}`, { cache: "no-store" });
+      const data = await response.json().catch(() => null) as {
+        ok?: boolean;
+        error?: string;
+        data?: {
+          candidates?: Array<{
+            name?: string;
+            institutionName?: string | null;
+            productType?: string | null;
+            status?: string | null;
+          }>;
+        };
+      } | null;
+      if (!response.ok || !data?.ok) {
+        throw new Error(data?.error || t("insuranceFormModal.alert.lookupFailed"));
+      }
+      const candidates = (data.data?.candidates ?? [])
+        .map((candidate) => ({
+          name: String(candidate.name ?? ""),
+          institutionName: candidate.institutionName ?? null,
+          productType: candidate.productType ?? null,
+          status: candidate.status ?? null,
+        }))
+        .filter((candidate) => candidate.name);
+      setLookupCandidates(candidates);
+      setLookupSelected(candidates.length > 0 ? 0 : -1);
+      if (candidates.length === 0) setLookupError(t("productLibrary.lookupEmpty"));
+    } catch (error) {
+      setLookupCandidates([]);
+      setLookupSelected(-1);
+      setLookupError(error instanceof Error ? error.message : t("insuranceFormModal.alert.lookupFailed"));
+    } finally {
+      setLookupLoading(false);
+    }
+  }
+
+  /**
+   * 选中候选：产品名称保留用户输入的短名，官方全名进「简称」（与保单弹窗一致），
+   * 类型 / 销售状态来自候选，其余字段不动。机构留空时按候选公司名补一次。
+   */
+  function applyLookupCandidate(index: number) {
+    const candidate = lookupCandidates[index];
+    if (!candidate) return;
+    setLookupSelected(index);
+    setDraft((prev) => {
+      const next: Record<string, string> = { ...prev, shortName: candidate.name };
+      if (candidate.productType) next.productType = candidate.productType;
+      const officialInstitution = candidate.institutionName;
+      if (!String(next.institutionId ?? "").trim() && officialInstitution) {
+        const matched = institutionOptions.find(
+          (item) => item.name.includes(officialInstitution) || officialInstitution.includes(item.name),
+        );
+        if (matched) next.institutionId = matched.id;
+      }
+      if (!String(next.note ?? "").trim() && candidate.status) next.note = candidate.status;
+      return next;
+    });
+  }
+
+  /** 类型值 → 文案；未知值原样显示，避免 t() 回落到 key。 */
+  function insuranceTypeText(value: string | null) {
+    if (!value) return "";
+    return INSURANCE_PRODUCT_TYPES.includes(value) ? t(`insuranceProduct.type.${value}`) : value;
   }
 
   function closeDeleteConfirm() {
@@ -833,9 +935,18 @@ export function ProductLibraryModal({
         onChanged();
         return;
       }
-      if (response.status === 409 && data?.refs) {
-        setDeleteState({ row: selectedRow, refs: data.refs });
-        setCascade(false);
+      if (
+        response.status === 409 &&
+        (data?.refs || data?.code === "PRODUCT_HAS_LINKED_DATA" || data?.code === "DELETE_PASSWORD_REQUIRED")
+      ) {
+        // 服务端确认「被引用」时进入确认面板：勾选级联 + 输入密码。
+        // 缺少 refs 也照样进入面板——否则密码永远没有输入框可用（issue #25）。
+        setDeleteState({
+          row: selectedRow,
+          refs: data?.refs ?? { entryCount: 0, businessCount: 0, lotCount: 0, planCount: 0 },
+        });
+        // needPassword 说明调用方已经带了 cascade，勾选状态保持一致。
+        setCascade(data?.code === "DELETE_PASSWORD_REQUIRED");
         setPassword("");
         return;
       }
@@ -1092,9 +1203,21 @@ export function ProductLibraryModal({
                 <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                   {config.fields.map((field) => (
                     <div key={field.key} className={`space-y-1 ${field.span2 ? "md:col-span-2" : ""}`}>
-                      <div className="form-label">
-                        {t(field.labelKey)}
-                        {field.required ? <span className="text-rose-500"> *</span> : null}
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="form-label">
+                          {t(field.labelKey)}
+                          {field.required ? <span className="text-rose-500"> *</span> : null}
+                        </div>
+                        {family === "insurance" && field.key === "name" ? (
+                          <button
+                            type="button"
+                            onClick={() => void handleLookupInsuranceProduct()}
+                            disabled={lookupLoading || !String(draft.name ?? "").trim()}
+                            className="text-[11px] text-blue-600 hover:text-blue-700 disabled:text-slate-300"
+                          >
+                            {lookupLoading ? t("insuranceFormModal.lookupLoading") : t("insuranceFormModal.lookup")}
+                          </button>
+                        ) : null}
                       </div>
                       {field.kind === "select" ? (
                         <select
@@ -1160,6 +1283,54 @@ export function ProductLibraryModal({
                     </div>
                   ))}
                 </div>
+
+                {family === "insurance" && (lookupCandidates.length > 0 || lookupError) ? (
+                  <div className="space-y-1">
+                    {lookupError ? <div className="text-[11px] text-rose-600">{lookupError}</div> : null}
+                    {lookupCandidates.length > 0 ? (
+                      <>
+                        <div className="flex items-center justify-between gap-2 text-xs font-medium text-slate-500">
+                          <span>{t("insuranceFormModal.lookupResultCount", { count: lookupCandidates.length })}</span>
+                          <span className="text-[11px] font-normal text-slate-400">
+                            {t("productLibrary.lookupHint")}
+                          </span>
+                        </div>
+                        <div className="max-h-40 overflow-auto rounded-md border border-slate-200">
+                          {lookupCandidates.map((candidate, index) => (
+                            <label
+                              key={`${candidate.name}-${candidate.institutionName ?? ""}-${index}`}
+                              className={`flex cursor-pointer items-start gap-2 border-b border-slate-100 px-3 py-2 text-xs last:border-b-0 hover:bg-slate-50 ${
+                                lookupSelected === index ? "bg-blue-50/70" : ""
+                              }`}
+                            >
+                              <input
+                                type="radio"
+                                name="insuranceProductLookupCandidate"
+                                checked={lookupSelected === index}
+                                onChange={() => applyLookupCandidate(index)}
+                                className="mt-0.5 accent-blue-600"
+                              />
+                              <div className="min-w-0">
+                                <div className="truncate text-slate-800" title={candidate.name}>
+                                  {candidate.name}
+                                </div>
+                                <div className="text-[11px] text-slate-500">
+                                  {[
+                                    candidate.institutionName,
+                                    insuranceTypeText(candidate.productType),
+                                    candidate.status,
+                                  ]
+                                    .filter(Boolean)
+                                    .join(" · ")}
+                                </div>
+                              </div>
+                            </label>
+                          ))}
+                        </div>
+                      </>
+                    ) : null}
+                  </div>
+                ) : null}
 
                 {!config.allowNoInstitution ? null : (
                   <div className="text-[11px] text-slate-400">

@@ -679,6 +679,11 @@ export async function loadAssetMonthEndLevels(
             bucket.cost = Math.max(0, bucket.cost + gross);
             break;
           }
+          case StockTransactionAction.tax_refund: {
+            // 退回来的红利税冲抵之前记进去的税费成本，成本曲线跟着回退。
+            bucket.cost = Math.max(0, bucket.cost - gross);
+            break;
+          }
           default:
             // dividend rows settle as cash via TxRecords; skip here
             break;

@@ -51,6 +51,7 @@ export function preferenceRowData(prefs: AppPreferences) {
     displayLanguage: prefs.displayLanguage,
     dateDisplayFormat: prefs.dateDisplayFormat,
     sidebarGroupBy: prefs.sidebarGroupBy,
+    accountDropdownGroupBy: prefs.accountDropdownGroupBy,
     sidebarHideZero: prefs.sidebarHideZero,
     sidebarHideInitialData: prefs.sidebarHideInitialData,
     sidebarShowFixedAssets: prefs.sidebarShowFixedAssets,

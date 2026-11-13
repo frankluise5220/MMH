@@ -228,7 +228,7 @@ export async function GET(req: NextRequest) {
  * - market?: stock market; omitted values are inferred from stockCode where possible
  * - stockCode: stock code when securityId is not supplied
  * - stockName?: display name
- * - action: buy | sell | dividend | bonus_share | split_share | merge_share | fee_adjustment | tax_adjustment
+ * - action: buy | sell | dividend | bonus_share | split_share | merge_share | fee_adjustment | tax_adjustment | tax_refund
  *   dividend uses grossAmount and optional netAmount for cash dividends; bonus_share is the no-cash stock dividend/transfer action
  * - tradeDate: YYYY-MM-DD
  * - settleDate?: YYYY-MM-DD
@@ -280,13 +280,13 @@ export async function POST(req: NextRequest) {
     if (buySellAction && (!quantity || !price || grossAmount <= 0)) {
       return NextResponse.json({ ok: false, code: "QUANTITY_AND_PRICE_REQUIRED", error: "Buy/sell stock transactions require quantity and price" }, { status: 400, headers: corsHeaders() });
     }
-    if ((action === StockTransactionAction.dividend || action === StockTransactionAction.fee_adjustment || action === StockTransactionAction.tax_adjustment) && grossAmount <= 0) {
+    if ((action === StockTransactionAction.dividend || action === StockTransactionAction.fee_adjustment || action === StockTransactionAction.tax_adjustment || action === StockTransactionAction.tax_refund) && grossAmount <= 0) {
       return NextResponse.json({ ok: false, code: "AMOUNT_REQUIRED", error: "Amount is required for this stock transaction" }, { status: 400, headers: corsHeaders() });
     }
     if ((action === StockTransactionAction.bonus_share || action === StockTransactionAction.split_share || action === StockTransactionAction.merge_share) && !quantity) {
       return NextResponse.json({ ok: false, code: "QUANTITY_REQUIRED", error: "Quantity is required for this stock transaction" }, { status: 400, headers: corsHeaders() });
     }
-    if ((action === StockTransactionAction.buy || action === StockTransactionAction.sell || action === StockTransactionAction.dividend || action === StockTransactionAction.fee_adjustment || action === StockTransactionAction.tax_adjustment) && !cashAccount) {
+    if ((action === StockTransactionAction.buy || action === StockTransactionAction.sell || action === StockTransactionAction.dividend || action === StockTransactionAction.fee_adjustment || action === StockTransactionAction.tax_adjustment || action === StockTransactionAction.tax_refund) && !cashAccount) {
       return NextResponse.json({ ok: false, code: "CASH_ACCOUNT_UNDETERMINED", error: "Funding account could not be resolved" }, { status: 400, headers: corsHeaders() });
     }
 
@@ -403,9 +403,11 @@ export async function POST(req: NextRequest) {
     });
 
     await recalcStockPositions(stockAccountId, [security.id]);
-    await recalcAndSaveAccountBalance(stockAccountId).catch(() => undefined);
-    if (cashAccountId) await recalcAndSaveAccountBalance(cashAccountId).catch(() => undefined);
-    await invalidateCreditCardCycleCacheForAccountIds(new Set([stockAccountId, cashAccountId].filter((id): id is string => Boolean(id)))).catch(() => undefined);
+    // 这里绝不能静默吞错：余额重算失败时用户看到的就是「记账后资金余额不动」，
+    // 至少要在服务端留下一条可追的日志。
+    await recalcAndSaveAccountBalance(stockAccountId).catch(logger.catchLog("stock-balance-recalc-failed", "stocks/transactions#POST"));
+    if (cashAccountId) await recalcAndSaveAccountBalance(cashAccountId).catch(logger.catchLog("stock-cash-balance-recalc-failed", "stocks/transactions#POST"));
+    await invalidateCreditCardCycleCacheForAccountIds(new Set([stockAccountId, cashAccountId].filter((id): id is string => Boolean(id)))).catch(logger.catchLog("stock-credit-cycle-cache-failed", "stocks/transactions#POST"));
     revalidateAfterStockTransactionChange();
 
     const row = await prisma.stockTransaction.findUnique({
@@ -505,13 +507,13 @@ export async function PATCH(req: NextRequest) {
     if (buySellAction && (!quantity || !price || grossAmount <= 0)) {
       return NextResponse.json({ ok: false, code: "QUANTITY_AND_PRICE_REQUIRED", error: "Buy/sell stock transactions require quantity and price" }, { status: 400, headers: corsHeaders() });
     }
-    if ((action === StockTransactionAction.dividend || action === StockTransactionAction.fee_adjustment || action === StockTransactionAction.tax_adjustment) && grossAmount <= 0) {
+    if ((action === StockTransactionAction.dividend || action === StockTransactionAction.fee_adjustment || action === StockTransactionAction.tax_adjustment || action === StockTransactionAction.tax_refund) && grossAmount <= 0) {
       return NextResponse.json({ ok: false, code: "AMOUNT_REQUIRED", error: "Amount is required for this stock transaction" }, { status: 400, headers: corsHeaders() });
     }
     if ((action === StockTransactionAction.bonus_share || action === StockTransactionAction.split_share || action === StockTransactionAction.merge_share) && !quantity) {
       return NextResponse.json({ ok: false, code: "QUANTITY_REQUIRED", error: "Quantity is required for this stock transaction" }, { status: 400, headers: corsHeaders() });
     }
-    if ((action === StockTransactionAction.buy || action === StockTransactionAction.sell || action === StockTransactionAction.dividend || action === StockTransactionAction.fee_adjustment || action === StockTransactionAction.tax_adjustment) && !cashAccount) {
+    if ((action === StockTransactionAction.buy || action === StockTransactionAction.sell || action === StockTransactionAction.dividend || action === StockTransactionAction.fee_adjustment || action === StockTransactionAction.tax_adjustment || action === StockTransactionAction.tax_refund) && !cashAccount) {
       return NextResponse.json({ ok: false, code: "CASH_ACCOUNT_UNDETERMINED", error: "Funding account could not be resolved" }, { status: 400, headers: corsHeaders() });
     }
 
@@ -615,9 +617,9 @@ export async function PATCH(req: NextRequest) {
     const recalcIds = new Set<string>([stockAccountId, existing.stockAccountId, cashAccount?.id ?? "", existing.cashAccountId ?? ""]);
     await recalcStockPositions(stockAccountId, security.id ? [security.id] : undefined);
     for (const accountId of recalcIds) {
-      if (accountId) await recalcAndSaveAccountBalance(accountId).catch(() => undefined);
+      if (accountId) await recalcAndSaveAccountBalance(accountId).catch(logger.catchLog("stock-balance-recalc-failed", "stocks/transactions#PATCH"));
     }
-    await invalidateCreditCardCycleCacheForAccountIds(recalcIds).catch(() => undefined);
+    await invalidateCreditCardCycleCacheForAccountIds(recalcIds).catch(logger.catchLog("stock-credit-cycle-cache-failed", "stocks/transactions#PATCH"));
     revalidateAfterStockTransactionChange();
 
     const row = await prisma.stockTransaction.findUnique({

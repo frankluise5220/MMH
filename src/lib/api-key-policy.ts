@@ -49,6 +49,7 @@ const ALLOWED_PATH_METHODS: Record<string, readonly HttpMethod[]> = {
   "/api/v1/deposit/lots": ["GET"],
   "/api/v1/bond/lots": ["GET"],
   "/api/v1/precious-metals/dictionaries": ["GET"],
+  "/api/v1/precious-metals/holdings": ["GET"],
   "/api/v1/reports/stock-holdings": ["GET"],
 
   // Properties

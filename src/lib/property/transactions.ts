@@ -6,6 +6,7 @@ import { prisma } from "@/lib/db/prisma";
 import { computeLoanPrincipalBalancesAsOf } from "@/lib/server/account-balance";
 import { ACTIVE_LIABILITY_EPSILON } from "@/lib/server/liability-view-data";
 import { upsertEntryBusinessCashFlowLink } from "@/lib/server/entry-business-link";
+import { TRANSACTION_SOURCE_METAL_EXTRACT } from "@/lib/transaction-semantics";
 
 type TxClient = Prisma.TransactionClient | typeof prisma;
 
@@ -312,9 +313,13 @@ export async function syncLinkedFixedAssetTransactionFromCashEntry(
 ): Promise<FixedAssetSyncResult> {
   const row = await client.propertyTransaction.findFirst({
     where: { householdId: params.householdId, cashEntryId: params.cashEntry.id, deletedAt: null },
-    select: { id: true, propertyAssetId: true, accountId: true, cashAccountId: true, action: true, fee: true, tax: true },
+    select: { id: true, propertyAssetId: true, accountId: true, cashAccountId: true, action: true, fee: true, tax: true, source: true },
   });
   if (!row) return emptySyncResult();
+  // 贵金属提取实物：这条固定资产交易的成本由贵金属持仓结转而来，与现金收支无关。
+  // 编辑提取实物明细（仍是 investment 行）时按现金流口径会把这条交易软删、把收藏品资产清零，
+  // 所以这里直接跳过同步，保持两边各管各的。
+  if (row.source === TRANSACTION_SOURCE_METAL_EXTRACT) return emptySyncResult();
 
   const propertyAssetIds = [row.propertyAssetId];
   const accountIds = compactStrings([row.accountId, row.cashAccountId, params.cashEntry.accountId]);
@@ -366,6 +371,37 @@ export async function syncLinkedFixedAssetTransactionFromCashEntry(
   });
   await recalcPropertyAssetsFromTransactions(client, { householdId: params.householdId, propertyAssetIds });
   return { touched: true, propertyAssetIds, accountIds };
+}
+
+/**
+ * 提取实物（metal_extract）的固定资产交易只靠 `cashEntryId` 挂在明细上，没有 EntryBusinessLink。
+ * 删除明细时它被连带软删、资产也被重算成「已删除」；恢复明细必须把这条交易一起复活，
+ * 否则用户撤销删除后收藏品资产永远回不来（贵金属持仓与固定资产两头都对不上）。
+ * 只处理 source=metal_extract 的行：手工固定资产交易的恢复仍走业务单 link 那条路径。
+ */
+export async function restoreMetalExtractPropertyTransactions(
+  client: TxClient,
+  params: { householdId: string; cashEntryIds: string[] },
+) {
+  const cashEntryIds = compactStrings(params.cashEntryIds);
+  if (cashEntryIds.length === 0) return { restoredCount: 0, propertyAssetIds: [] as string[] };
+  const rows = await client.propertyTransaction.findMany({
+    where: {
+      householdId: params.householdId,
+      cashEntryId: { in: cashEntryIds },
+      source: TRANSACTION_SOURCE_METAL_EXTRACT,
+      deletedAt: { not: null },
+    },
+    select: { id: true, propertyAssetId: true },
+  });
+  if (rows.length === 0) return { restoredCount: 0, propertyAssetIds: [] as string[] };
+  await client.propertyTransaction.updateMany({
+    where: { id: { in: rows.map((row) => row.id) } },
+    data: { deletedAt: null },
+  });
+  const propertyAssetIds = compactStrings(rows.map((row) => row.propertyAssetId));
+  await recalcPropertyAssetsFromTransactions(client, { householdId: params.householdId, propertyAssetIds });
+  return { restoredCount: rows.length, propertyAssetIds };
 }
 
 export async function recalcPropertyAssetsFromTransactions(

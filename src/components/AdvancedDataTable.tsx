@@ -172,6 +172,12 @@ export type AdvancedDataTableColumn<T> = {
   filterNumber?: (row: T) => number | null | undefined;
   filterTitle?: (row: T) => string;
   filterSearchText?: (row: T) => string;
+  /**
+   * 钉在水平滚动容器的一侧：横向滚动时该列保持可见。
+   * 列宽仍计入表格总宽，滚动范围与滚动条不受影响；表头因为渲染在滚动容器外、
+   * 靠 transform 跟随，需要 `syncHeaderToScrollLeft` 反向补偿（见 `data-advanced-table-sticky-header`）。
+   */
+  sticky?: "right";
   /** Render simple cell content as a single truncated line. */
   truncate?: boolean;
   /** Full text shown when the pointer rests over a clipped cell. */
@@ -730,6 +736,13 @@ type AdvancedDataTableProps<T> = {
    */
   resizeGrowsTable?: boolean;
   rowClassName?: (row: T, index: number) => string;
+  /**
+   * 列之间的竖线（表头 + 表体的 `border-right`）。默认 true。
+   *
+   * 分组列表这类靠「组头横线 + 底色」分层的表格可以关掉：竖线会和分组横线打架，
+   * 一整片网格线反而看不出组边界（2026-11-13 设置 → 账户列表）。
+   */
+  columnDividers?: boolean;
   rowBackgroundGroupKey?: (row: T, index: number) => string | null | undefined;
   rowBackgroundEnabled?: boolean;
   onRowClick?: (row: T, index: number) => void;
@@ -762,6 +775,8 @@ type AdvancedDataTableProps<T> = {
   rowActions?: (row: T, index: number) => ReactNode;
   rowActionsWidth?: number;
   rowActionsMinWidth?: number;
+  /** 行操作列钉在右侧，横向滚动时保持可见（默认不钉，跟随滚动）。 */
+  stickyRowActions?: boolean;
   showFilters?: boolean;
   fillHeight?: boolean;
   compactRows?: boolean;
@@ -1014,6 +1029,7 @@ export function AdvancedDataTable<T>({
   minTableWidth,
   resizeGrowsTable = false,
   rowClassName,
+  columnDividers = true,
   rowBackgroundGroupKey,
   rowBackgroundEnabled = false,
   onRowClick,
@@ -1036,6 +1052,7 @@ export function AdvancedDataTable<T>({
   rowActions,
   rowActionsWidth = 96,
   rowActionsMinWidth = 76,
+  stickyRowActions = false,
   showFilters = true,
   fillHeight = false,
   compactRows = false,
@@ -1079,12 +1096,52 @@ export function AdvancedDataTable<T>({
   const viewportRef = useRef<HTMLDivElement>(null);
   // 表头渲染在表体滚动容器**之外**，横向滚动时用 transform 平移跟随（直接改 DOM，不触发 React 重渲染）。
   const headerInnerRef = useRef<HTMLDivElement>(null);
+  // 钉住的表头列（只支持最右一列）：DOM 引用、当前位移、以及它右边缘相对表格右边缘的偏移。
+  const stickyHeaderCellRef = useRef<HTMLElement | null>(null);
+  const stickyHeaderShiftRef = useRef(0);
+  const stickyHeaderOffsetRef = useRef<number | null>(null);
+  // 表体里对应的那一格：表头固定列的定位基准（它的右边缘就是「应该对齐的那根线」）。
+  const stickyBodyCellRef = useRef<HTMLElement | null>(null);
   // 汇总条固定在卡片底边（`summaryRowPlacement="footer"`）：同样脱离表格，单独渲染一张同列宽的窄表。
   const summaryFooterRef = useRef<HTMLDivElement>(null);
   const syncHeaderToScrollLeft = useCallback((scrollLeft: number) => {
     const translate = `translateX(${-scrollLeft}px)`;
     if (headerInnerRef.current) headerInnerRef.current.style.transform = translate;
     if (summaryFooterRef.current) summaryFooterRef.current.style.transform = translate;
+    // 钉住的表头列：表体那一格靠原生 sticky 定在滚动容器的**内容区**右边缘，表头不在滚动容器里、
+    // 只靠父级平移跟随，所以要给它反向补偿，让它贴住同一根线；滚到最右时补偿量归零，两边重合。
+    // 基准必须量表体那一格，不能量 viewport 的 rect：经典滚动条占 16px，viewport 的右边界包含它，
+    // 表头这一格就会比表体偏右 16px，两条竖线错开（overlay 滚动条的环境里反而是对的，所以别图省事）。
+    const inner = headerInnerRef.current;
+    const viewport = viewportRef.current;
+    if (!inner || !viewport) return;
+    let cell = stickyHeaderCellRef.current;
+    if (!cell || !cell.isConnected) {
+      cell = inner.querySelector<HTMLElement>("[data-advanced-table-sticky-header]");
+      stickyHeaderCellRef.current = cell;
+      stickyHeaderOffsetRef.current = null;
+      stickyHeaderShiftRef.current = 0;
+    }
+    if (!cell) return;
+    const innerRect = inner.getBoundingClientRect();
+    if (stickyHeaderOffsetRef.current == null) {
+      // 该格右边缘相对表格右边缘的位置（行操作列是最后一列，恒为 0），只在表格布局变化时重算。
+      stickyHeaderOffsetRef.current = cell.getBoundingClientRect().right
+        - stickyHeaderShiftRef.current
+        - innerRect.right;
+    }
+    let bodyCell = stickyBodyCellRef.current;
+    if (!bodyCell || !bodyCell.isConnected) {
+      bodyCell = viewport.querySelector<HTMLElement>("[data-advanced-table-sticky-body]");
+      stickyBodyCellRef.current = bodyCell;
+    }
+    const targetRight = bodyCell
+      ? bodyCell.getBoundingClientRect().right
+      // 没有数据行（空表）时没有表体可参照：用内容区右边缘，同样排除竖直滚动条。
+      : viewport.getBoundingClientRect().left + viewport.clientLeft + viewport.clientWidth;
+    const shift = targetRight - innerRect.right - stickyHeaderOffsetRef.current;
+    stickyHeaderShiftRef.current = shift;
+    cell.style.transform = `translateX(${shift}px)`;
   }, []);
   const columnMenuRef = useRef<HTMLDivElement>(null);
   const [viewportWidth, setViewportWidth] = useState(0);
@@ -1211,6 +1268,7 @@ export function AdvancedDataTable<T>({
         width: rowActionsWidth,
         minWidth: rowActionsMinWidth,
         align: "right",
+        ...(stickyRowActions ? { sticky: "right" as const } : null),
         render: (row, index) => (
           <div
             data-row-double-click-ignore
@@ -1223,7 +1281,7 @@ export function AdvancedDataTable<T>({
         ),
       },
     ];
-  }, [columns, compactRows, rowActions, rowActionsMaxHeightClass, rowActionsMinWidth, rowActionsWidth]);
+  }, [columns, compactRows, rowActions, rowActionsMaxHeightClass, rowActionsMinWidth, rowActionsWidth, stickyRowActions]);
   const hiddenStorageKey = `${storageKey}:hidden:v2`;
   const hideableColumnKeys = useMemo(
     () => new Set(tableColumns.filter((column) => column.hideable).map((column) => column.key)),
@@ -2099,6 +2157,28 @@ export function AdvancedDataTable<T>({
     };
   }, []);
 
+  /**
+   * 拖列宽时要不要允许整表变宽（横向滚动条留着）。
+   *
+   * 默认（`resizeGrowsTable=false`）的语义是「表格永远铺满卡片、不产生滚动条」：拖宽一列
+   * 从右侧列借宽度，松手再把总和截回可用宽度。这对本来就装得下的小表是对的，但对列多的表
+   * （报表下钻 12 列 ≈1780px、卡片才 935px）是灾难——它本来就必须横向滚动，一旦落盘过列宽，
+   * layout 会把整表压缩回 935px，用户看到的就是「怎么拉都拉不大，松手缩回没有滚动条的宽度」。
+   *
+   * 判据用「列定义声明宽度之和 / minTableWidth」这类与 `columnWidths` 无关的量，
+   * 落盘前后稳定，不会被拖拽自己改掉。
+   */
+  const resizeGrowsTableEffective = useMemo(() => {
+    if (resizeGrowsTable) return true;
+    if (viewportWidth <= 0) return false;
+    const controlWidth = selectable ? (draggableRows ? 58 : 38) : (draggableRows ? 30 : 0);
+    const declaredColumnsTotal = visibleColumns.reduce(
+      (sum, column) => sum + Math.max(column.minWidth ?? 52, column.width),
+      0,
+    );
+    return Math.max(minTableWidth ?? 0, controlWidth + declaredColumnsTotal) > viewportWidth;
+  }, [draggableRows, minTableWidth, resizeGrowsTable, selectable, viewportWidth, visibleColumns]);
+
   const layout = useMemo(() => {
     const controlWidth = selectable ? (draggableRows ? 58 : 38) : (draggableRows ? 30 : 0);
     const baseWidths = visibleColumns.map((column) => {
@@ -2138,7 +2218,7 @@ export function AdvancedDataTable<T>({
         resizeSession.key,
         resizeSession.width,
         Math.max(0, availableWidth - controlWidth),
-        { growTable: resizeGrowsTable },
+        { growTable: resizeGrowsTableEffective },
       );
       return { tableWidth: controlWidth + frame.columnsTotal, controlWidth, colWidths: frame.colWidths };
     }
@@ -2170,7 +2250,7 @@ export function AdvancedDataTable<T>({
           ),
         };
       }
-      if (resizeGrowsTable) {
+      if (resizeGrowsTableEffective) {
         // 「不限制总宽度」：落盘的列宽原样渲染，整表比容器宽就横向滚动。
         // 不压缩回来，否则用户刚拖宽的列下一帧又被挤回原样。
         return {
@@ -2183,6 +2263,8 @@ export function AdvancedDataTable<T>({
       }
       // 装不下（窗口变窄或手动调宽）就等比压缩到容器内，且不低于最小列宽；
       // 只有全压到最小列宽仍放不下时才出现横向滚动条。
+      // 注意：能走到这里说明这张表没有「天生超宽」（否则上面 growTable 分支已接管），
+      // 压缩回容器宽是这类小表的既有约定，不要删。
       const colWidths = distributeByWeight(
         baseWidths.map((column) => ({ key: column.key, weight: column.preferredWidth, min: column.minWidth })),
         availableColumnWidth,
@@ -2220,7 +2302,7 @@ export function AdvancedDataTable<T>({
     columnWidths,
     draggableRows,
     minTableWidth,
-    resizeGrowsTable,
+    resizeGrowsTableEffective,
     resizeSession,
     selectable,
     viewportWidth,
@@ -2271,6 +2353,18 @@ export function AdvancedDataTable<T>({
       const top = headerRect ? Math.min(headerRect.top, viewportRect.top) : viewportRect.top;
       setResizeGuide({ x: clientX, top, height: viewportRect.bottom - top });
     };
+    // 被拖的那一格：拉宽时如果它的右边缘越过了可视区，要让滚动跟上（见 onMove）。
+    const resizeCell = (event.currentTarget as HTMLElement | null)?.closest("th") ?? null;
+    /** 被拖列右边缘超出「真正看得见」的右边界多少（>0 表示有看不见的新增宽度）。 */
+    const rightOverflow = () => {
+      const viewport = viewportRef.current;
+      if (!viewport || !resizeCell) return 0;
+      let visibleRight = viewport.getBoundingClientRect().left + viewport.clientLeft + viewport.clientWidth;
+      // 钉住的列压在最右边，它盖住的那 128px 其实看不见；否则最后一列永远「没超过边界」，不会跟随。
+      const stickyCell = headerInnerRef.current?.querySelector<HTMLElement>("[data-advanced-table-sticky-header]");
+      if (stickyCell) visibleRight = Math.min(visibleRight, stickyCell.getBoundingClientRect().left);
+      return resizeCell.getBoundingClientRect().right - visibleRight;
+    };
     let latestWidth = startWidth;
     const onMove = (moveEvent: MouseEvent) => {
       updateResizeGuide(moveEvent.clientX);
@@ -2278,6 +2372,11 @@ export function AdvancedDataTable<T>({
       // 每个 mousemove 都同步写一次 localStorage 会卡顿，手柄就跟不上鼠标了。
       latestWidth = Math.max(minWidth, startWidth + moveEvent.clientX - startX);
       setResizeSession((current) => current ? { ...current, width: latestWidth } : current);
+      // 拉宽紧贴固定列的最后一列（备注）时，新增的宽度全落在可视区右侧外面：不跟着滚的话
+      // 松手看到的还是原来那么宽，像是「根本拉不宽」。把手柄始终留在可视区里，列向左长出来。
+      const overflow = rightOverflow();
+      const viewport = viewportRef.current;
+      if (viewport && overflow > 0.5) viewport.scrollLeft += overflow;
     };
     const onUp = () => {
       window.removeEventListener("mousemove", onMove);
@@ -2297,7 +2396,7 @@ export function AdvancedDataTable<T>({
         column.key,
         latestWidth,
         availableColumnWidth,
-        { growTable: resizeGrowsTable },
+        { growTable: resizeGrowsTableEffective },
       );
       const minWidthByKey = new Map(frameColumns.map((item) => [item.key, item.resizeMinWidth]));
       const frozen = Object.entries(frame.colWidths).map(([key, width]) => ({
@@ -2306,7 +2405,7 @@ export function AdvancedDataTable<T>({
       }));
       // 取整后可能比容器多出几像素；从最宽的列里扣掉，免得刚松手就冒出一条横向滚动条。
       // 「不限制总宽度」模式下不做这件事——用户要的就是整表变宽后滚动。
-      if (!resizeGrowsTable) {
+      if (!resizeGrowsTableEffective) {
         let roundedTotal = frozen.reduce((sum, item) => sum + item.width, 0);
         const limit = Math.round(availableColumnWidth);
         while (roundedTotal > limit) {
@@ -2323,6 +2422,12 @@ export function AdvancedDataTable<T>({
         writeJson(`${storageKey}:widths`, next);
         return next;
       });
+      // 松手时再补一次：最后一次 mousemove 之后布局还会再宽一帧，别把那一截留在屏幕外。
+      requestAnimationFrame(() => {
+        const overflow = rightOverflow();
+        const viewport = viewportRef.current;
+        if (viewport && overflow > 0.5) viewport.scrollLeft += overflow;
+      });
     };
     updateResizeGuide(startX);
     document.body.style.cursor = "col-resize";
@@ -2336,7 +2441,7 @@ export function AdvancedDataTable<T>({
     layout.colWidths,
     layout.controlWidth,
     layout.tableWidth,
-    resizeGrowsTable,
+    resizeGrowsTableEffective,
     storageKey,
     viewportWidth,
     visibleColumns,
@@ -3312,6 +3417,14 @@ export function AdvancedDataTable<T>({
     needsHorizontalScroll ||
     (viewportWidth > 0 && layout.tableWidth > viewportWidth + HORIZONTAL_SCROLL_TOLERANCE_PX);
 
+  // 表格总宽变化（拖列宽、显隐列）或滚动容器变宽（窗口 resize，滚动条可能随之出现/消失）后，
+  // 钉住的表头列要重新定位：缓存的行内偏移失效，重算后再贴一次右边缘，否则会和表体那一列错开。
+  // viewportWidth 必须进依赖：只改容器宽度时不会触发 scroll 事件，表头会停在旧位置。
+  useLayoutEffect(() => {
+    stickyHeaderOffsetRef.current = null;
+    syncHeaderToScrollLeft(viewportRef.current?.scrollLeft ?? 0);
+  }, [syncHeaderToScrollLeft, tableWidthStyle, viewportWidth]);
+
   const handleViewportScroll = useCallback((event: ReactUIEvent<HTMLDivElement>) => {
     syncHeaderToScrollLeft(event.currentTarget.scrollLeft);
     // 表格一滚动，锚定在表头上的提示就不再对准，收掉。
@@ -3619,7 +3732,7 @@ export function AdvancedDataTable<T>({
         style={{ paddingRight: scrollbarGutterWidth }}
       >
         <div ref={headerInnerRef} className="will-change-transform" style={{ width: tableWidthStyle }}>
-          <table className="table-fixed border-separate border-spacing-0 [&_th]:border-r [&_th]:border-slate-200" style={{ width: tableWidthStyle }}>
+          <table className={`table-fixed border-separate border-spacing-0${columnDividers ? " [&_th]:border-r [&_th]:border-slate-200" : ""}`} style={{ width: tableWidthStyle }}>
             <colgroup>
               {(selectable || draggableRows) ? <col style={{ width: layout.controlWidth }} /> : null}
               {visibleColumns.map((column) => <col key={column.key} style={{ width: layout.colWidths[column.key] ?? column.width }} />)}
@@ -3650,13 +3763,15 @@ export function AdvancedDataTable<T>({
                   <th
                     key={column.key}
                     data-advanced-table-header-cell={column.key}
+                    // 钉住的列：transform 由 syncHeaderToScrollLeft 反向补偿（表头在滚动容器外）。
+                    data-advanced-table-sticky-header={column.sticky === "right" ? "" : undefined}
                     // 按住表头 0.6s 拾起该列，左右拖动调整位置（「行操作」列钉在最右，不参与）。
                     onPointerDown={(event) => handleColumnPointerDown(event, column.key)}
                     onMouseEnter={(event) => {
                       if (column.key !== "__row_actions") scheduleHeaderDragHint(event.currentTarget);
                     }}
                     onMouseLeave={clearHeaderDragHint}
-                    className={["relative select-none border-b border-slate-200 text-center text-xs font-semibold text-slate-600", headerPaddingClass, column.headerClassName ?? "", isDraggedColumn ? "opacity-40" : "", isLongPressPending ? "bg-blue-50/70" : ""].join(" ")}
+                    className={["relative select-none border-b border-slate-200 text-center text-xs font-semibold text-slate-600", headerPaddingClass, column.headerClassName ?? "", isDraggedColumn ? "opacity-40" : "", isLongPressPending ? "bg-blue-50/70" : "", column.sticky === "right" ? "z-[3] bg-[#fbfaf7] shadow-[-6px_0_6px_-6px_rgba(15,23,42,0.14)]" : ""].join(" ")}
                     style={columnDrop
                       ? { boxShadow: columnDrop.position === "before" ? "inset 2px 0 0 #3b82f6" : "inset -2px 0 0 #3b82f6" }
                       : undefined}
@@ -3799,7 +3914,7 @@ export function AdvancedDataTable<T>({
             : `advanced-table-viewport outline-none ${ADVANCED_TABLE_BODY_SURFACE_CLASS} ${hasHorizontalScroll ? "overflow-x-auto" : "overflow-x-hidden"} overflow-y-scroll [scrollbar-gutter:stable]`
         }
       >
-        <table className="table-fixed border-separate border-spacing-0 [&_td]:border-r [&_td]:border-slate-100" style={{ width: tableWidthStyle }}>
+        <table className={`table-fixed border-separate border-spacing-0${columnDividers ? " [&_td]:border-r [&_td]:border-slate-100" : ""}`} style={{ width: tableWidthStyle }}>
           <colgroup>
             {(selectable || draggableRows) ? <col style={{ width: layout.controlWidth }} /> : null}
             {visibleColumns.map((column) => <col key={column.key} style={{ width: layout.colWidths[column.key] ?? column.width }} />)}
@@ -3951,7 +4066,11 @@ export function AdvancedDataTable<T>({
                     return (
                       <td
                         key={column.key}
-                        className={["select-text border-b border-slate-100", bodyTextClass, cellPaddingClass, alignClass(column.align), column.className ?? ""].join(" ")}
+                        // 钉住的表头列以这一格的右边缘为定位基准（见 syncHeaderToScrollLeft）。
+                        data-advanced-table-sticky-body={column.sticky === "right" ? "" : undefined}
+                        // 钉住的列必须自带不透明底色，否则横向滚动时被压在下层的内容会透上来；
+                        // 代价是这一格不跟随行 hover / 斑马纹变色（看起来像独立的浮条）。
+                        className={["select-text border-b border-slate-100", bodyTextClass, cellPaddingClass, alignClass(column.align), column.className ?? "", column.sticky === "right" ? "sticky right-0 z-[2] bg-white shadow-[-6px_0_6px_-6px_rgba(15,23,42,0.14)]" : ""].join(" ")}
                         style={{ ...rowCellPaddingStyle, ...selectionEndCellStyle }}
                       >
                         {wrappedContent}
@@ -4013,7 +4132,7 @@ export function AdvancedDataTable<T>({
         >
           <div ref={summaryFooterRef} className="will-change-transform" style={{ width: tableWidthStyle }}>
             <table
-              className="table-fixed border-separate border-spacing-0 [&_td]:border-r [&_td]:border-slate-200/70"
+              className={`table-fixed border-separate border-spacing-0${columnDividers ? " [&_td]:border-r [&_td]:border-slate-200/70" : ""}`}
               style={{ width: tableWidthStyle }}
             >
               <colgroup>

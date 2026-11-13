@@ -175,6 +175,14 @@ export type DetailEntry = {
   id: string;
   cashEntryId?: string | null;
   businessTransactionId?: string | null;
+  /** 债券侧存单 id（单条详情才返回；逆回购编辑据此找存单）。 */
+  bondTransactionId?: string | null;
+  /** 债券侧品种：`repo` 表示逆回购借出行。 */
+  bondInstrumentKind?: string | null;
+  /** 逆回购存单已回款（编辑时锁金额与日期）。 */
+  bondRedeemed?: boolean;
+  bondTermDays?: number | null;
+  bondMaturityDate?: string | null;
   stockTransactionId?: string | null;
   stockTransaction?: {
     id: string;
@@ -704,6 +712,7 @@ export function DetailViewClient({
   showRunningBalance = true,
   runningBalanceDefaultHidden = false,
   enableAccountNavigation = false,
+  stickyRowActions = false,
   focusEntryId,
   scrollToRowKey,
   scrollToRowRequestId,
@@ -754,6 +763,8 @@ export function DetailViewClient({
   showRunningBalance?: boolean;
   runningBalanceDefaultHidden?: boolean;
   enableAccountNavigation?: boolean;
+  /** 行操作列钉在右侧，横向滚动时保持可见（报表下钻等列较宽的表格用）。 */
+  stickyRowActions?: boolean;
   focusEntryId?: string;
   scrollToRowKey?: string | null;
   scrollToRowRequestId?: number;
@@ -1228,6 +1239,11 @@ export function DetailViewClient({
             depositSourceEntryId: e.depositSourceEntryId ?? null,
             fundFee: e.fundFee != null ? toNumber(e.fundFee) : undefined,
             fundProductType: entryFundProductType ?? undefined,
+            // 逆回购借出行的存单标识：编辑时分流到逆回购窗口并回填条款。
+            bondInstrumentKind: e.bondInstrumentKind ?? null,
+            bondRedeemed: Boolean(e.bondRedeemed),
+            bondTermDays: e.bondTermDays != null ? toNumber(e.bondTermDays) : null,
+            bondMaturityDate: e.bondMaturityDate ?? null,
             metalTypeId: e.metalTypeId ?? null,
             metalTypeName: e.metalTypeName ?? null,
             metalUnitId: e.metalUnitId ?? null,
@@ -2055,6 +2071,7 @@ export function DetailViewClient({
       }}
       rowActionsWidth={128}
       rowActionsMinWidth={104}
+      stickyRowActions={stickyRowActions}
       batchActionSlot={toolbarMode === "default" ? (
         <>
           <BasicDetailBatchReplaceButton fields={batchReplaceFields} accountOptions={resolvedBatchReplaceAccountOptions} categoryOptions={categoryOptions} tagOptions={tagOptions} categoryTypes={selectedCategoryTypes} contextAccountId={accountId} contextAccountIds={accountColumnScopeIdList} />

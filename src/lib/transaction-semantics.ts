@@ -47,6 +47,13 @@ const TRANSACTION_SOURCE_SCHEDULED_TASK = "scheduled_task" as const;
  * 因此「计划任务」页统计「已执行次数」时必须按 source 单独匹配。
  */
 export const TRANSACTION_SOURCE_BOND = "bond" as const;
+/**
+ * 贵金属提取实物（转固定资产/收藏品）写入的流水 source。
+ *
+ * 复用「赎回」子类型来减少克数与成本，但金额恰等于移出成本，已实现盈亏恒为 0；
+ * 明细层据此把这一行显示成「提取实物」而不是「卖出」，固定资产侧也用它标记来源。
+ */
+export const TRANSACTION_SOURCE_METAL_EXTRACT = "metal_extract" as const;
 
 export function isLicensedInsuranceEntry(entry: { source?: string | null; insuranceProductId?: string | null }) {
   return entry.source === TRANSACTION_SOURCE_INSURANCE || Boolean(entry.insuranceProductId);

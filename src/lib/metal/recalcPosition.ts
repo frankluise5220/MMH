@@ -109,8 +109,24 @@ export async function recalcPreciousMetalPositions(accountId: string) {
   const activeKeys = new Set(positions.keys());
   const existingHoldings = await prisma.preciousMetalHolding.findMany({
     where: { accountId },
-    select: { metalTypeId: true, metalUnitId: true },
+    select: {
+      metalTypeId: true,
+      metalUnitId: true,
+      latestPrice: true,
+      latestPriceDate: true,
+      priceSource: true,
+    },
   });
+  // 行情不是交易回放的产物：重算持仓时必须原样带过来，否则每次记账都把刷新出来的价格抹掉。
+  const latestQuoteByKey = new Map<string, { latestPrice: number | null; latestPriceDate: Date | null; priceSource: string | null }>();
+  for (const holding of existingHoldings) {
+    const latestPrice = holding.latestPrice != null ? toNum(holding.latestPrice) : null;
+    latestQuoteByKey.set(`${holding.metalTypeId}::${holding.metalUnitId}`, {
+      latestPrice: latestPrice != null && latestPrice > 0 ? latestPrice : null,
+      latestPriceDate: holding.latestPriceDate ?? null,
+      priceSource: holding.priceSource ?? null,
+    });
+  }
   for (const holding of existingHoldings) {
     const key = `${holding.metalTypeId}::${holding.metalUnitId}`;
     if (!activeKeys.has(key)) {
@@ -132,7 +148,13 @@ export async function recalcPreciousMetalPositions(accountId: string) {
     const quantity = roundQuantity(position.quantity);
     const avgCost = quantity > 0 ? position.cost / quantity : 0;
     const unitPrice = position.unitPrice ?? (quantity > 0 ? avgCost : null);
-    const marketValue = quantity > 0 && unitPrice != null ? quantity * unitPrice : 0;
+    const latestQuote = latestQuoteByKey.get(key);
+    const latestPrice = latestQuote?.latestPrice ?? null;
+    // 有行情用行情，没有行情才退回最后一笔成交价（存量持仓的行为不变）。
+    const valuationPrice = latestPrice ?? unitPrice;
+    const marketValue = quantity > 0 && valuationPrice != null
+      ? Math.round(quantity * valuationPrice * 100) / 100
+      : 0;
 
     await prisma.preciousMetalHolding.upsert({
       where: {
@@ -153,6 +175,9 @@ export async function recalcPreciousMetalPositions(accountId: string) {
         avgCost,
         cost: position.cost,
         unitPrice,
+        latestPrice,
+        latestPriceDate: latestQuote?.latestPriceDate ?? null,
+        priceSource: latestQuote?.priceSource ?? null,
         marketValue,
         historicalProfit: position.historicalProfit,
       },
@@ -163,6 +188,9 @@ export async function recalcPreciousMetalPositions(accountId: string) {
         avgCost,
         cost: position.cost,
         unitPrice,
+        latestPrice,
+        latestPriceDate: latestQuote?.latestPriceDate ?? null,
+        priceSource: latestQuote?.priceSource ?? null,
         marketValue,
         historicalProfit: position.historicalProfit,
       },

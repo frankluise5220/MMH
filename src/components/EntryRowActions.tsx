@@ -72,6 +72,12 @@ export type EditPayload = {
   fundProductType?: string;
   /** 债券存单归属：子行（付息/赎回/核销）指回所属存单，编辑时据此预选存单。 */
   sourceBondTransactionId?: string | null;
+  /** 债券侧品种：`repo` = 逆回购借出行，编辑走逆回购窗口而不是债券窗。 */
+  bondTransactionId?: string | null;
+  bondRedeemed?: boolean;
+  bondInstrumentKind?: string | null;
+  bondTermDays?: number | null;
+  bondMaturityDate?: string | null;
   source?: string | null;
   linkedCandidateEntries?: Array<{
     id?: string;
@@ -129,6 +135,26 @@ export function dispatchEntryEdit({
   const pt = edit.fundProductType;
   if (edit.type === "investment" && (edit.source === "insurance" || edit.insuranceProductId)) {
     window.dispatchEvent(new CustomEvent("mmh:insurance:edit", { detail }));
+  } else if (edit.type === "investment" && pt === "bond" && edit.bondInstrumentKind === "repo") {
+    // 逆回购借出行：没有债券产品，走债券编辑窗会卡在「年化/到期日必填」上，
+    // 直接交给逆回购窗口回填存单条款。回款行仍走债券窗（它不改条款）。
+    const codeMatch = String(edit.fundName ?? edit.note ?? "").match(/(\d{6}|[A-Z]{2}\d{3})/);
+    window.dispatchEvent(new CustomEvent("mmh:repo:edit", {
+      detail: {
+        entryId: editEntryId,
+        lotId: edit.bondTransactionId ?? edit.businessTransactionId ?? null,
+        stockAccountId: edit.toAccountId ?? edit.accountId ?? null,
+        cashAccountId: edit.cashAccountId ?? edit.accountId ?? null,
+        code: codeMatch?.[1] ?? null,
+        principal: Math.abs(Number(edit.amount) || 0),
+        tradeDate: edit.date,
+        termDays: edit.bondTermDays ?? null,
+        maturityDate: edit.bondMaturityDate ?? null,
+        settled: Boolean(edit.bondRedeemed),
+        note: edit.note ?? "",
+        reconciledReadOnly: edit.reconciledReadOnly,
+      },
+    }));
   } else if (edit.type === "investment" && pt === "bond") {
     window.dispatchEvent(new CustomEvent("mmh:bond:edit", { detail }));
   } else if (edit.type === "investment" && (pt === "wealth" || pt === "advisor")) {

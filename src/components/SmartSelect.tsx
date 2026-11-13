@@ -104,6 +104,12 @@ type SmartSelectSharedBehavior = {
   hierarchy?: HierarchyBehavior;
   collapsibleGroups?: boolean;
   initialCollapsedAll?: boolean;
+  /**
+   * 默认收起的分组 id（组头 id）。`initialCollapsedAll` 是「所有组都收起」的粗暴版，
+   * 这里只收起指定组——「当前持仓展开、已清仓收起」这类历史组用它，不必让整份列表都折起来。
+   * 选中的选项所在分组会自动展开，所以收起的组不会藏住当前值。
+   */
+  defaultCollapsedGroupIds?: string[];
   accordionGroups?: boolean;
   groupSelectOnDoubleClick?: boolean;
   expandOnGroupSelect?: boolean;
@@ -290,12 +296,14 @@ function initialCollapsedGroups(
   selectedValue: string,
   enabled: boolean,
   collapseAll = false,
+  defaultCollapsedIds?: Set<string>,
 ) {
   const collapsed = new Set<string>();
   if (!enabled) return collapsed;
 
   for (const option of options) {
     if (option.isGroup || (collapseAll && option.isHeader)) collapsed.add(option.id);
+    else if (option.isHeader && defaultCollapsedIds?.has(option.id)) collapsed.add(option.id);
   }
 
   if (!selectedValue) return collapsed;
@@ -417,6 +425,7 @@ function normalizeSingleBehavior(props: SingleModeProps, options: SmartSelectOpt
     clearable: behavior?.clearable ?? true,
     cycleSelectionWithArrowKeys: behavior?.cycleSelectionWithArrowKeys ?? true,
     initialCollapsedAll: behavior?.initialCollapsedAll ?? false,
+    defaultCollapsedGroupIds: behavior?.defaultCollapsedGroupIds,
     accordionGroups: behavior?.accordionGroups ?? false,
     groupSelectOnDoubleClick: behavior?.groupSelectOnDoubleClick ?? false,
     expandOnGroupSelect: behavior?.expandOnGroupSelect ?? false,
@@ -457,6 +466,7 @@ function normalizeMultiBehavior(props: MultiModeProps, options: SmartSelectOptio
     clearable: false,
     cycleSelectionWithArrowKeys: false,
     initialCollapsedAll: behavior?.initialCollapsedAll ?? false,
+    defaultCollapsedGroupIds: behavior?.defaultCollapsedGroupIds,
     accordionGroups: behavior?.accordionGroups ?? false,
     groupSelectOnDoubleClick: behavior?.groupSelectOnDoubleClick ?? false,
     expandOnGroupSelect: behavior?.expandOnGroupSelect ?? false,
@@ -512,6 +522,7 @@ export function SmartSelect(props: SmartSelectProps) {
     clearable,
     cycleSelectionWithArrowKeys,
     initialCollapsedAll,
+    defaultCollapsedGroupIds,
     accordionGroups,
     groupSelectOnDoubleClick,
     expandOnGroupSelect,
@@ -723,12 +734,17 @@ export function SmartSelect(props: SmartSelectProps) {
     setDropdownPos({ top, bottom, left, width, minWidth: width, maxHeight });
   }, [dense, effectiveOptions, fitContent, footerActionHeight, headerHeight, isMultiInlineCreate, isSingleCreateButton, maxDropdownWidth, minDropdownWidth, quickPickHeight, resizableDropdown, resolvedDropdownMaxHeight, rowHeight, search, searchable, singleGridColumns, visible.length]);
 
+  // 调用点常把 behavior 写成内联字面量，数组每次渲染都是新引用；用字符串键做依赖，
+  // 免得 openDropdown 每帧重建、把 autoOpen 的 effect 拖成反复执行。
+  const defaultCollapsedGroupKey = (defaultCollapsedGroupIds ?? []).join("\u0001");
+
   const openDropdown = useCallback((preferredIndex?: "first" | "last") => {
     const nextCollapsed = initialCollapsedGroups(
       effectiveOptions,
       mode === "single" ? value : "",
       hierarchy && collapsibleGroups,
       initialCollapsedAll,
+      defaultCollapsedGroupKey ? new Set(defaultCollapsedGroupKey.split("\u0001")) : undefined,
     );
     const nextFiltered = searchable
       ? (hierarchy ? filterWithGroups(effectiveOptions, "") : filterFlatOptions(effectiveOptions, ""))
@@ -741,7 +757,7 @@ export function SmartSelect(props: SmartSelectProps) {
     setOpen(true);
     setFocusedIndex(findInitialFocusedIndex(nextVisible, mode, value, preferredIndex));
     window.requestAnimationFrame(() => calcPosition());
-  }, [calcPosition, collapsibleGroups, effectiveOptions, hierarchy, initialCollapsedAll, mode, searchable, value]);
+  }, [calcPosition, collapsibleGroups, defaultCollapsedGroupKey, effectiveOptions, hierarchy, initialCollapsedAll, mode, searchable, value]);
 
   useEffect(() => {
     if (!autoOpen) {

@@ -19,7 +19,9 @@ import {
   DEFAULT_ACCOUNT_USAGE_SORT_ENABLED,
   DEFAULT_REPO_OCCUPIED_DAYS_MODE,
   PREFERENCE_COOKIE_MIRROR,
+  normalizeAccountDropdownGroupBy,
   normalizeRepoOccupiedDaysMode,
+  type AccountDropdownGroupBy,
   type AppPreferences,
   type RepoOccupiedDaysMode,
 } from "@/lib/preferences";
@@ -50,6 +52,7 @@ const CREDIT_BILL_RECENT_CYCLES_COOKIE = "mmh_credit_recent_cycles";
 export const DISPLAY_LANGUAGE_COOKIE = "mmh_display_language";
 const DATE_DISPLAY_FORMAT_COOKIE = "mmh_date_display_format";
 const SIDEBAR_GROUP_BY_KEY = "sidebar_group_by";
+const ACCOUNT_DROPDOWN_GROUP_BY_KEY = "account_dropdown_group_by";
 const SIDEBAR_HIDE_ZERO_KEY = "sidebar_hide_zero";
 const SIDEBAR_HIDE_INITIAL_DATA_KEY = "sidebar_hide_initial_data";
 const SIDEBAR_SHOW_FIXED_ASSETS_KEY = "sidebar_show_fixed_assets";
@@ -72,7 +75,9 @@ const DEFAULT_SIDE_NAV_TOP_OFFSET_PX = 160;
 const MIN_SIDE_NAV_TOP_OFFSET_PX = 72;
 const MAX_SIDE_NAV_TOP_OFFSET_PX = 520;
 
-export type SidebarGroupMode = "kind" | "institution";
+export type SidebarGroupMode = "kind" | "institution" | "accountGroup";
+/** 账户下拉分组维度（单一事实来源在 `src/lib/preferences.ts`）。 */
+export type { AccountDropdownGroupBy } from "@/lib/preferences";
 export type CreditCardLabelMode = "short_last4" | "full_name";
 export type DisplayLanguage = "zh-CN" | "en-US" | "ja-JP";
 
@@ -90,6 +95,7 @@ type AppPreferencesSnapshot = {
   displayLanguage: DisplayLanguage;
   dateDisplayFormat: DateDisplayFormat;
   sidebarGroupBy: SidebarGroupMode;
+  accountDropdownGroupBy: AccountDropdownGroupBy;
   sidebarOwnerFilter: string;
   sidebarHideZero: boolean;
   sidebarHideInitialData: boolean;
@@ -238,13 +244,27 @@ export function setDisplayLanguagePreference(value: DisplayLanguage) {
 }
 
 export function getSidebarGroupPreference(): SidebarGroupMode {
+  const normalize = (value: string | null): SidebarGroupMode =>
+    value === "institution" || value === "accountGroup" ? value : "kind";
   try {
-    const value = localStorage.getItem(SIDEBAR_GROUP_BY_KEY) ?? parseCookieValue(SIDEBAR_GROUP_BY_KEY);
-    if (value === "institution") return "institution";
-    return "kind";
+    return normalize(localStorage.getItem(SIDEBAR_GROUP_BY_KEY) ?? parseCookieValue(SIDEBAR_GROUP_BY_KEY));
   } catch {
-    return parseCookieValue(SIDEBAR_GROUP_BY_KEY) === "institution" ? "institution" : "kind";
+    return normalize(parseCookieValue(SIDEBAR_GROUP_BY_KEY));
   }
+}
+
+/**
+ * 账户下拉的分组维度。默认 `owner`（按所有人），与历史行为一致；
+ * 用户在「设置 → 显示」里可以换成按账户分组标签或按机构。
+ */
+export function getAccountDropdownGroupByPreference(): AccountDropdownGroupBy {
+  return normalizeAccountDropdownGroupBy(parseCookieValue(ACCOUNT_DROPDOWN_GROUP_BY_KEY));
+}
+
+export function setAccountDropdownGroupByPreference(mode: AccountDropdownGroupBy) {
+  if (typeof document === "undefined") return;
+  setCookieValue(ACCOUNT_DROPDOWN_GROUP_BY_KEY, mode);
+  emitPreferencesChanged();
 }
 
 export function setSidebarGroupPreference(mode: SidebarGroupMode) {
@@ -511,6 +531,7 @@ export function getAppPreferences(): AppPreferencesSnapshot {
     displayLanguage: getDisplayLanguagePreference(),
     dateDisplayFormat: getDateDisplayFormatPreference(),
     sidebarGroupBy: getSidebarGroupPreference(),
+    accountDropdownGroupBy: getAccountDropdownGroupByPreference(),
     sidebarOwnerFilter: getSidebarOwnerFilterPreference(),
     sidebarHideZero: getSidebarHideZeroPreference(),
     sidebarHideInitialData: getSidebarHideInitialDataPreference(),

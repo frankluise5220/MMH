@@ -20,6 +20,7 @@ import {
   type RestoredBusinessFundTarget,
 } from "@/lib/server/entry-business-link";
 import { syncIndependentBusinessTransactionFromTxRecord } from "@/lib/server/business-transactions";
+import { restoreMetalExtractPropertyTransactions } from "@/lib/property/transactions";
 
 export async function restoreDeletedEntries(ctx: HouseholdContext, transactionIds: string[]) {
   const { householdId } = ctx;
@@ -71,6 +72,15 @@ export async function restoreDeletedEntries(ctx: HouseholdContext, transactionId
     logger.catchLog("恢复整笔业务明细失败", "entry-restore.ts")(error);
     return { restoredCount: 0, fundTargets: [] as RestoredBusinessFundTarget[] };
   });
+  // 提取实物的固定资产交易只靠 cashEntryId 挂在明细上（没有 EntryBusinessLink），删除时被连带软删、
+  // 资产被重算成已删除；这里要把它一起复活，否则撤销删除后收藏品资产永远回不来。
+  const restoredMetalAssets = await restoreMetalExtractPropertyTransactions(prisma, {
+    householdId,
+    cashEntryIds: transactionIds,
+  }).catch((error) => {
+    logger.catchLog("恢复提取实物固定资产交易失败", "entry-restore.ts")(error);
+    return { restoredCount: 0, propertyAssetIds: [] as string[] };
+  });
   await syncFundTransactionsFromTxRecords(transactionIds).catch(logger.catchLog("同步基金业务单失败", "entry-restore.ts"));
   for (const id of transactionIds) {
     await syncIndependentBusinessTransactionFromTxRecord(prisma, { businessEntryId: id }).catch(
@@ -114,7 +124,12 @@ export async function restoreDeletedEntries(ctx: HouseholdContext, transactionId
   );
   // 资金腿本身没有 fundCode / fundProductType，只看腿判断不出投资侧是否变化；
   // 整笔恢复带回业务单时也要失效投资侧缓存，否则页面仍读旧缓存。
-  if (touchedInvestment || restoredBusiness.restoredCount > 0 || restoredBusiness.fundTargets.length > 0) {
+  if (
+    touchedInvestment
+    || restoredBusiness.restoredCount > 0
+    || restoredBusiness.fundTargets.length > 0
+    || restoredMetalAssets.restoredCount > 0
+  ) {
     revalidateAfterInvestChange();
   } else {
     revalidateAfterTxChange();

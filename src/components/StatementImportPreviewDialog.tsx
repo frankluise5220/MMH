@@ -51,6 +51,7 @@ import { uniqueStatementInfoTexts } from "@/lib/statement/preview-meta";
 import { systemCategoryLabel } from "@/lib/system-category-labels";
 import { useI18n } from "@/lib/i18n";
 import { readAccountDisplaySettings, useAccountDisplaySettings } from "@/lib/client/account-display-settings";
+import { getAccountDropdownGroupByPreference } from "@/lib/client/appPreferences";
 
 type BookAccount = {
   id: string;
@@ -735,7 +736,7 @@ export function StatementImportPreviewDialog({
     [createLiabilityAccounts, forceCreateOwnedMoneyAccounts],
   );
   const accountSmartSelectOptions = useMemo(
-    () => buildGroupedAccountOptions(accountDisplayOptions),
+    () => buildGroupedAccountOptions(accountDisplayOptions, getAccountDropdownGroupByPreference()),
     [accountDisplayOptions],
   );
   const {

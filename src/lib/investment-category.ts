@@ -97,7 +97,7 @@ export const SYSTEM_INVESTMENT_ACTION_CATEGORIES = [
 export function getStockInvestmentCategoryName(action?: string | null) {
   if (action === "sell") return SYSTEM_STOCK_SELL_CATEGORY;
   if (action === "dividend" || action === "bonus_share") return SYSTEM_STOCK_DIVIDEND_CATEGORY;
-  if (action === "fee_adjustment" || action === "tax_adjustment") return SYSTEM_STOCK_FEE_CATEGORY;
+  if (action === "fee_adjustment" || action === "tax_adjustment" || action === "tax_refund") return SYSTEM_STOCK_FEE_CATEGORY;
   return SYSTEM_STOCK_BUY_CATEGORY;
 }
 

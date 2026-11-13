@@ -7,6 +7,10 @@ import { verifySensitiveOperationPassword } from "@/lib/server/sensitive-operati
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { assertInstitutionDisplayNamesUnique } from "@/lib/server/institution-name-unique";
+import {
+  cascadeDeleteInsurancePolicyEntries,
+  countReconciledInsurancePolicyEntries,
+} from "@/lib/server/insurance-policy-cascade";
 
 const PRODUCT_TYPES = new Set<InsuranceProductType>([
   "savings",
@@ -1130,8 +1134,8 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ ok: false, code: "MISSING_PRODUCT_ID", error: "缺少保险产品ID" }, { status: 400 });
     }
 
-    const { hidFilter, user } = await getHouseholdScope();
-    const householdId = hidFilter.householdId;
+    const scope = await getHouseholdScope();
+    const { hidFilter, user, householdId } = scope;
 
     if (mode === "master") {
       const existingMaster = await prisma.insuranceProductMaster.findFirst({
@@ -1148,19 +1152,7 @@ export async function DELETE(req: NextRequest) {
       } catch {
         body = null;
       }
-      const password = String(body?.password ?? "").trim();
       const cascade = body?.cascade === true;
-
-      if (!password) {
-        return NextResponse.json({ ok: false, code: "MISSING_PASSWORD", error: "请输入密码确认删除" }, { status: 400 });
-      }
-      if (!user) {
-        return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "未登录" }, { status: 401 });
-      }
-      const verification = await verifySensitiveOperationPassword(password);
-      if (!verification.ok) {
-        return NextResponse.json({ ok: false, code: verification.code ?? "AUTH_VERIFICATION_FAILED", error: verification.error }, { status: verification.status });
-      }
 
       const linkedPolicies = await prisma.insuranceProduct.findMany({
         where: { householdId, productMasterId: id },
@@ -1192,13 +1184,66 @@ export async function DELETE(req: NextRequest) {
           ])
         : [0, 0, 0];
       const linkedTxCount = Math.max(txCount, businessTxCount);
+      const refs = {
+        entryCount: linkedTxCount,
+        businessCount: businessTxCount,
+        lotCount: linkedPolicyIds.length,
+        planCount,
+        referenced: linkedPolicyIds.length > 0 || linkedTxCount > 0 || planCount > 0,
+      };
 
-      if ((linkedPolicyIds.length > 0 || linkedTxCount > 0 || planCount > 0) && !cascade) {
+      /**
+       * 引用保护顺序必须与存款 / 理财 / 债券产品库一致（`deleteProductMaster`）：
+       * 1. 未被引用 → 直接删除，不问密码；
+       * 2. 被引用且未勾选级联 → 409 + refs，客户端据此渲染「同时删除关联数据」确认面板；
+       * 3. 被引用且已勾选 → 校验当前用户密码后级联清理。
+       *
+       * 旧实现把「请输入密码」放在统计引用之前，于是 0 持仓的产品点删除只得到
+       * 400「请输入密码确认删除」，而产品库的密码输入框只在进入确认面板后才渲染，
+       * 界面上根本没有可输入的框（issue #25 第 2 点）。
+       */
+      if (refs.referenced && !cascade) {
         return NextResponse.json({
           ok: false,
           code: "PRODUCT_HAS_LINKED_DATA",
+          needCascade: true,
+          refs,
           error: `该保险产品已关联${linkedPolicyIds.length}个保单、${linkedTxCount}条记录、${planCount}个计划任务，请勾选“同时删除关联数据”后再确认`,
         }, { status: 409 });
+      }
+
+      if (refs.referenced) {
+        const password = String(body?.password ?? "").trim();
+        if (!password) {
+          return NextResponse.json({
+            ok: false,
+            code: "DELETE_PASSWORD_REQUIRED",
+            needPassword: true,
+            refs,
+            error: "请输入当前用户密码确认删除",
+          }, { status: 409 });
+        }
+        if (!user) {
+          return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "未登录" }, { status: 401 });
+        }
+        const verification = await verifySensitiveOperationPassword(password);
+        if (!verification.ok) {
+          return NextResponse.json({ ok: false, code: verification.code ?? "AUTH_VERIFICATION_FAILED", error: verification.error }, { status: verification.status });
+        }
+      }
+
+      if (linkedPolicyIds.length > 0) {
+        // 对账锁定的记录 softDelete 会跳过，先拦下，别删完保单留下指向空产品的流水。
+        const reconciledCount = await countReconciledInsurancePolicyEntries(householdId, linkedPolicyIds);
+        if (reconciledCount > 0) {
+          return NextResponse.json({
+            ok: false,
+            code: "INSURANCE_ENTRIES_RECONCILED",
+            error: `该保险产品下有 ${reconciledCount} 条记录已对账锁定，请先取消对账后再删除`,
+          }, { status: 409 });
+        }
+        // 走软删 + 余额重算（内部用全局 prisma，必须在事务外执行）
+        await cascadeDeleteInsurancePolicyEntries(scope, linkedPolicyIds, "删除保险产品库");
       }
 
       await prisma.$transaction(async (tx) => {
@@ -1209,18 +1254,8 @@ export async function DELETE(req: NextRequest) {
               ...insurancePremiumPlanProductFilter(linkedPolicyIds),
             },
           });
-          await tx.txRecord.deleteMany({
-            where: {
-              householdId,
-              insuranceProductId: { in: linkedPolicyIds },
-            },
-          });
-          await tx.insuranceTransaction.deleteMany({
-            where: {
-              householdId,
-              insuranceProductId: { in: linkedPolicyIds },
-            },
-          });
+          // 记录上一步已软删；保单的 onDelete: Cascade 只把这些已软删的业务行物理清掉，
+          // 不会再有「账上有流水、余额没回补」的情况。
           await tx.insuranceProduct.deleteMany({
             where: {
               householdId,
@@ -1315,27 +1350,27 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ ok: false, code: verification.code ?? "AUTH_VERIFICATION_FAILED", error: verification.error }, { status: verification.status });
     }
 
+    const reconciledCount = await countReconciledInsurancePolicyEntries(householdId, [id]);
+    if (reconciledCount > 0) {
+      return NextResponse.json({
+        ok: false,
+        code: "INSURANCE_ENTRIES_RECONCILED",
+        error: `该保单下有 ${reconciledCount} 条记录已对账锁定，请先取消对账后再删除`,
+      }, { status: 409 });
+    }
+
+    // 走软删 + 余额重算（内部用全局 prisma，必须在事务外执行）
+    await cascadeDeleteInsurancePolicyEntries(scope, [id], "删除保险保单");
+
     await prisma.$transaction(async (tx) => {
       if (planCount > 0) {
         await tx.regularInvestPlan.deleteMany({
           where: {
-            householdId: hidFilter.householdId ?? undefined,
+            householdId,
             ...insurancePremiumPlanProductFilter([id]),
           },
         });
       }
-      await tx.txRecord.deleteMany({
-        where: {
-          householdId: hidFilter.householdId ?? undefined,
-          insuranceProductId: id,
-        },
-      });
-      await tx.insuranceTransaction.deleteMany({
-        where: {
-          householdId: hidFilter.householdId ?? undefined,
-          insuranceProductId: id,
-        },
-      });
       await tx.insuranceProduct.delete({ where: { id } });
     });
     return NextResponse.json({ ok: true, data: { id } });

@@ -3591,6 +3591,9 @@ async function restoreSingleHouseholdBackup(
           numberMasked: item.numberMasked == null ? null : String(item.numberMasked),
           routeKey: item.routeKey == null ? null : String(item.routeKey),
           note: item.note == null ? null : String(item.note),
+          // 账户自定义分组标签（2026-11-13）：不显式恢复会静默落回 null，
+          // 恢复后侧边栏/下拉的分组全变「未分组」。
+          accountGroup: item.accountGroup == null ? null : String(item.accountGroup),
           usageCount: Number(item.usageCount ?? 0),
           lastUsedAt: item.lastUsedAt == null ? null : new Date(String(item.lastUsedAt)),
           householdId,

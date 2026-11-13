@@ -29,7 +29,7 @@ import { upsertEntryBusinessCashFlowLink } from "@/lib/server/entry-business-lin
 import { revalidateAfterFundShellChange, revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
 import { isAdvanceFundingAccount, isDepositAccount, isDepositPostingCategoryAllowed, isIncomeExpensePostingAccount,  isLoanOrSettlementAccountKind, isPureInvestmentAccount, isSpecialCashTargetAccount } from "@/lib/account-kind-utils";
 import { inferTransferLiabilityMode, liabilitySourceForMode, ORDINARY_TRANSFER_SOURCE } from "@/lib/liability";
-import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
+import { normalizeFundUnitsDecimals, resolveQuantityDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 import { resolveOrCreateDepositAccount } from "@/lib/server/deposit-account";
 import { resolveOrCreateDepositProduct } from "@/lib/server/deposit-product";
 import { resolveOrCreateWealthProduct } from "@/lib/server/wealth-product";
@@ -38,7 +38,8 @@ import { isWealthLikeProductType } from "@/lib/investment-config";
 import { createBondEntry, editBondEntry, bondEntryInputFromFormData } from "@/lib/server/bond-transactions";
 import { resolveOrCreateAdvanceAccount } from "@/lib/server/advance-account";
 import { createCreditCardInstallmentPlan } from "@/lib/server/credit-card-installment";
-import { ENTRY_ORIGIN_MANUAL, ENTRY_ORIGIN_SCHEDULED_TASK, isCreditCardRepaymentTransfer, statementMonthForTransfer } from "@/lib/transaction-semantics";
+import { ENTRY_ORIGIN_MANUAL, ENTRY_ORIGIN_SCHEDULED_TASK, isCreditCardRepaymentTransfer, statementMonthForTransfer, TRANSACTION_SOURCE_METAL_EXTRACT } from "@/lib/transaction-semantics";
+import { updateMetalExtractEntry } from "@/lib/server/sidebar-actions/metal-actions";
 import { ensureSettlementTransferCategory, resolveCategorySnapshot, resolveCreditCardRepaymentCategory, SYSTEM_DEPOSIT_INTEREST_CATEGORY } from "@/lib/default-categories";
 import { getInvestmentCategoryName } from "@/lib/investment-category";
 import { calculateDepositAccruedInterest, depositSegmentInterest, round2 } from "@/lib/deposit-maturity";
@@ -1350,7 +1351,7 @@ export async function createTransaction(formData: FormData) {
               metalTypeName: metalType?.name ?? undefined,
               metalUnitId: metalUnit?.id ?? undefined,
               metalUnitName: metalUnit ? (metalUnit.symbol ? `${metalUnit.name}(${metalUnit.symbol})` : metalUnit.name) : undefined,
-              metalQuantity: isMetalProduct ? (metalQuantity != null ? roundFundUnits(metalQuantity, fundUnitsDecimals) : undefined) : undefined,
+              metalQuantity: isMetalProduct ? (metalQuantity != null ? roundFundUnits(metalQuantity, resolveQuantityDecimals("metal", fundUnitsDecimals)) : undefined) : undefined,
               metalUnitPrice: isMetalProduct ? metalUnitPrice ?? undefined : undefined,
               metalFee: isMetalProduct ? metalFee ?? undefined : undefined,
               insuranceAction: sourceValue === "insurance" ? (redeemLike ? "refund" : "premium") : undefined,
@@ -1729,6 +1730,20 @@ export async function editInvestment(formData: FormData) {
   // 放在最前面：债券 / 理财 / 基金等分支各自走不同的编辑实现，统一在这里拦。
   if (entryId && (await isEntryReconciled(entryId))) {
     return { ok: false as const, error: t("reconcile.lockedError") };
+  }
+  // 提取实物明细（贵金属 → 固定资产）只认「提取数量」：金额由平均成本重算并同步固定资产，
+  // 品种/单位/账户沿用原明细，避免被通用投资编辑改成普通买卖。
+  if (entryId) {
+    const metalExtractEntry = await prisma.txRecord.findFirst({
+      where: { id: entryId, householdId, source: TRANSACTION_SOURCE_METAL_EXTRACT },
+      select: { id: true },
+    });
+    if (metalExtractEntry) {
+      const result = await updateMetalExtractEntry(formData);
+      return result.ok
+        ? { ok: true as const }
+        : { ok: false as const, error: result.message || "保存提取实物明细失败" };
+    }
   }
   const subtype =
     String(formData.get("fundSubtype") ?? formData.get("subtype") ?? "").trim() ||
@@ -2237,7 +2252,7 @@ export async function editInvestment(formData: FormData) {
         metalTypeName: metalType?.name ?? null,
         metalUnitId: metalUnit?.id ?? null,
         metalUnitName: metalUnit ? (metalUnit.symbol ? `${metalUnit.name}(${metalUnit.symbol})` : metalUnit.name) : null,
-        metalQuantity: isMetalProduct ? (metalQuantity != null ? roundFundUnits(metalQuantity, fundUnitsDecimals) : null) : null,
+        metalQuantity: isMetalProduct ? (metalQuantity != null ? roundFundUnits(metalQuantity, resolveQuantityDecimals("metal", fundUnitsDecimals)) : null) : null,
         metalUnitPrice: isMetalProduct ? metalUnitPrice : null,
         metalFee: isMetalProduct ? metalFee : null,
         fundSubtype: finalFundSubtype,

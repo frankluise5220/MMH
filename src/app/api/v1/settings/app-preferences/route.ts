@@ -4,6 +4,7 @@ import { normalizeDateDisplayFormat } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
 import {
   PREFERENCE_COOKIE_MIRROR,
+  normalizeAccountDropdownGroupBy,
   normalizeAccountLabelFieldsSetting,
   normalizeBoolean,
   normalizeColorScheme,
@@ -104,6 +105,9 @@ export async function PUT(req: NextRequest) {
     if (has("displayLanguage")) patch.displayLanguage = normalizeDisplayLanguage(body.displayLanguage);
     if (has("dateDisplayFormat")) patch.dateDisplayFormat = normalizeDateDisplayFormat(body.dateDisplayFormat);
     if (has("sidebarGroupBy")) patch.sidebarGroupBy = normalizeSidebarGroupMode(body.sidebarGroupBy);
+    if (has("accountDropdownGroupBy")) {
+      patch.accountDropdownGroupBy = normalizeAccountDropdownGroupBy(body.accountDropdownGroupBy);
+    }
     if (has("sidebarHideZero")) patch.sidebarHideZero = normalizeBoolean(body.sidebarHideZero, false);
     if (has("sidebarHideInitialData")) {
       patch.sidebarHideInitialData = normalizeBoolean(body.sidebarHideInitialData, false);

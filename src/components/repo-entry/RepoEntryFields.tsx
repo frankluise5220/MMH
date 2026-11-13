@@ -25,8 +25,10 @@ import {
   REPO_PRODUCTS,
   type RepoProduct,
   repoFeeRatePercent,
+  repoLabelFor,
   repoOccupiedDays,
   repoProductByCode,
+  repoProductLabel,
 } from "@/lib/repo";
 
 /**
@@ -51,6 +53,29 @@ export type RepoEntryFieldsHandle = {
   submit: () => Promise<void>;
 };
 
+/**
+ * 编辑一笔已入账的逆回购：回填存单条款，保存走明细页的编辑动作。
+ *
+ * `settled` 为真表示这张存单已经回款，此时金额与日期改动不会重算已入账的回款，
+ * 所以这些字段只读，避免账面与回款记录对不上。
+ */
+export type RepoEntryEditing = {
+  /** 明细（现金分录）id，编辑动作按它反查业务行。 */
+  entryId: string;
+  /** 存单（bond_transactions）id。 */
+  lotId: string;
+  settled: boolean;
+  code: string;
+  termDays: number;
+  principal: number;
+  annualRate: number | null;
+  tradeDate: string;
+  maturityDate: string;
+  fee: number | null;
+  cashAccountId: string;
+  note: string;
+};
+
 type Props = {
   /** 逆回购归属的股票（证券）账户。 */
   accountId: string;
@@ -72,6 +97,10 @@ type Props = {
   createCashAccountLabel?: string;
   onSubmittingChange?: (submitting: boolean) => void;
   onSaved?: () => void;
+  /** 编辑已有存单（来自明细页「编辑」）：回填条款并改走 editAction 保存。 */
+  editing?: RepoEntryEditing | null;
+  /** 明细页的编辑动作（server action），只在编辑态使用。 */
+  editAction?: (formData: FormData) => Promise<{ ok: boolean; error?: string }>;
 };
 
 const LAST_DRAFT_KEY = "mmh:repo:last-draft:v2";
@@ -131,6 +160,8 @@ export const RepoEntryFields = forwardRef<RepoEntryFieldsHandle, Props>(function
     createCashAccountLabel,
     onSubmittingChange,
     onSaved,
+    editing = null,
+    editAction,
   },
   ref,
 ) {
@@ -193,7 +224,8 @@ export const RepoEntryFields = forwardRef<RepoEntryFieldsHandle, Props>(function
     () => repoProductByCode(code) ?? customAsProducts.find((item) => item.code === code) ?? null,
     [code, customAsProducts],
   );
-  const termDays = product?.termDays ?? 1;
+  // 编辑态下自定义品种名单可能还没取回来，用存单上的期限兜底。
+  const termDays = product?.termDays ?? editing?.termDays ?? 1;
 
   const cashOptions = useMemo<SmartSelectOption[]>(
     () => cashAccounts.map((item) => ({
@@ -237,9 +269,13 @@ export const RepoEntryFields = forwardRef<RepoEntryFieldsHandle, Props>(function
 
   // 只在「窗口刚打开」时恢复默认值：路由刷新带来的新数组不能把用户正在填的内容冲掉。
   const appliedResetKeyRef = useRef<number | null>(null);
+  // 「到期日已按哪组（成交日|品种）推算过」：编辑回填与手改到期日都靠它区分，
+  // 避免 T+期限 的自动推算把存单上真实的到期日冲掉。
+  const autoMaturityKeyRef = useRef<string>("");
   useEffect(() => {
     if (appliedResetKeyRef.current === resetKey) return;
     appliedResetKeyRef.current = resetKey;
+    autoMaturityKeyRef.current = "";
     const draft = readLastDraft();
     // 上次的品种可能是自定义品种（不在交易所清单），这里不做清单校验，由提交侧兜底。
     const nextCode = draft?.code?.trim() || "204001";
@@ -261,8 +297,41 @@ export const RepoEntryFields = forwardRef<RepoEntryFieldsHandle, Props>(function
     );
   }, [resetKey, cashAccounts, pickDefaultCashAccount]);
 
+  // 编辑态：把存单条款回填进来。只认一次 entryId，避免父组件重渲染把用户改动冲掉。
+  const appliedEditingRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!editing) return;
+    // 外层先给明细侧字段、随后用存单接口补齐条款，两次 entryId 相同但内容不同，
+    // 所以按内容签名去重（而不是只认 entryId），否则补全的那次会被跳过。
+    const signature = [
+      editing.entryId,
+      editing.tradeDate,
+      editing.maturityDate,
+      editing.annualRate ?? "",
+      editing.fee ?? "",
+      editing.settled ? "1" : "0",
+    ].join("|");
+    if (appliedEditingRef.current === signature) return;
+    appliedEditingRef.current = signature;
+    // 把「已按这组成交日/品种推算过」的标记对齐到回填值：存单上的到期日可能被
+    // 手动改过（跨节假日），不能被 T+期限 的推算冲掉。
+    autoMaturityKeyRef.current = `${editing.tradeDate}|${editing.code}`;
+    setCode(editing.code);
+    setTradeDate(editing.tradeDate);
+    setMaturityDate(editing.maturityDate);
+    setAmount(formatAmountDraft(editing.principal));
+    setAnnualRate(editing.annualRate == null ? "" : String(editing.annualRate));
+    setFee(editing.fee == null ? "" : String(editing.fee));
+    setNote(editing.note);
+    setPickerOpen(false);
+    if (editing.cashAccountId) setCashAccountId(editing.cashAccountId);
+  }, [editing]);
+
   // 成交日或品种变化 → 到期日跟着重算（此后用户仍可手动改，改动日期不会再被覆盖）。
   useEffect(() => {
+    const key = `${tradeDate}|${code}`;
+    if (autoMaturityKeyRef.current === key) return;
+    autoMaturityKeyRef.current = key;
     setMaturityDate(estimateRepoMaturityDateKey(tradeDate, termDays));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tradeDate, code]);
@@ -294,7 +363,8 @@ export const RepoEntryFields = forwardRef<RepoEntryFieldsHandle, Props>(function
     if (!accountId) return window.alert(t("repoForm.alert.accountRequired"));
     if (!cashAccountId) return window.alert(t("repoForm.alert.cashRequired"));
     if (!REPO_CODE_RE.test(code.trim())) return window.alert(t("repoForm.alert.codeRequired"));
-    if (!product) return window.alert(t("repoForm.alert.productRequired"));
+    // 编辑自定义品种时清单可能还没取回，此时靠存单上的期限走，不再要求命中品种。
+    if (!product && !editing) return window.alert(t("repoForm.alert.productRequired"));
     if (!(principal > 0)) return window.alert(t("repoForm.alert.amountRequired"));
     const occupiedMode = getRepoOccupiedDaysModePreference();
     if (!maturityDate || repoOccupiedDays(tradeDate, maturityDate, termDays, occupiedMode) <= 0) {
@@ -304,6 +374,41 @@ export const RepoEntryFields = forwardRef<RepoEntryFieldsHandle, Props>(function
     setSubmitting(true);
     onSubmittingChange?.(true);
     try {
+      if (editing) {
+        // 走明细页的编辑动作：服务端按原行的 instrumentKind 仍按逆回购落账，
+        // 名称按新的成交/到期日重算占款，避免改完日期名字还写着旧的占款天数。
+        if (!editAction) throw new Error(t("repoForm.alert.saveFailed"));
+        const nextOccupiedDays = repoOccupiedDays(tradeDate, maturityDate, termDays, occupiedMode);
+        const label = product
+          ? repoProductLabel(product, nextOccupiedDays)
+          : repoLabelFor(code.trim(), termDays, nextOccupiedDays);
+        const fd = new FormData();
+        fd.set("type", "investment");
+        fd.set("fundProductType", "bond");
+        fd.set("fundSubtype", "buy");
+        fd.set("date", tradeDate);
+        fd.set("amount", String(principal));
+        fd.set("fundName", label);
+        fd.set("accountId", accountId);
+        fd.set("cashAccountId", cashAccountId);
+        if (num(annualRate) > 0) fd.set("depositAnnualRate", String(num(annualRate)));
+        fd.set("bondTermDays", String(termDays));
+        fd.set("bondMaturityDate", maturityDate);
+        if (fee !== "") fd.set("fundFee", String(num(fee)));
+        fd.set("note", note.trim());
+        fd.set("entryId", editing.entryId);
+        fd.set("businessTransactionId", editing.lotId);
+        const result = await editAction(fd);
+        if (!result?.ok) throw new Error(result?.error ?? t("repoForm.alert.saveFailed"));
+        dispatchFinanceDataChanged({
+          reason: "repo-edit",
+          accountIds: [accountId, cashAccountId].filter(Boolean),
+          entryIds: [editing.entryId],
+        });
+        onSaved?.();
+        return;
+      }
+
       const res = await fetch("/api/v1/repo/lend", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -339,7 +444,7 @@ export const RepoEntryFields = forwardRef<RepoEntryFieldsHandle, Props>(function
       onSubmittingChange?.(false);
     }
   }, [
-    accountId, amount, annualRate, cashAccountId, code, fee, maturityDate, note,
+    accountId, amount, annualRate, cashAccountId, code, editAction, editing, fee, maturityDate, note,
     onSaved, onSubmittingChange, principal, product, submitting, t, termDays, tradeDate,
   ]);
 
@@ -373,21 +478,27 @@ export const RepoEntryFields = forwardRef<RepoEntryFieldsHandle, Props>(function
       <div className="relative">
         <input
           value={code}
+          readOnly={Boolean(editing)}
           onChange={(event) => {
+            if (editing) return;
             const next = event.target.value.replace(/\s/g, "").slice(0, 6);
             setCode(next);
             setPickerOpen(true);
           }}
-          onFocus={() => setPickerOpen(true)}
+          onFocus={() => {
+            if (!editing) setPickerOpen(true);
+          }}
           onBlur={() => window.setTimeout(() => setPickerOpen(false), 120)}
-          className="form-input font-mono tabular-nums tracking-[0.08em]"
+          className={`form-input font-mono tabular-nums tracking-[0.08em] ${
+            editing ? "cursor-not-allowed bg-slate-50 text-slate-500" : ""
+          }`}
           placeholder={t("repoForm.codePlaceholder")}
           inputMode="numeric"
           maxLength={6}
           autoComplete="off"
           aria-label={t("repoForm.code")}
         />
-        {pickerOpen && codeMatches.length > 0 ? (
+        {!editing && pickerOpen && codeMatches.length > 0 ? (
           <div className="absolute left-0 right-0 top-full z-30 mt-1 max-h-64 overflow-auto rounded-md border border-slate-200 bg-white py-1 shadow-lg">
             {codeMatches.map((item) => (
               <button
@@ -537,11 +648,16 @@ export const RepoEntryFields = forwardRef<RepoEntryFieldsHandle, Props>(function
   return (
     <>
       <div className="text-[11px] text-slate-400">{t("repoForm.inlineHint")}</div>
+      {editing?.settled ? (
+        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-700">
+          {t("repoForm.editSettledHint")}
+        </div>
+      ) : null}
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <div className="space-y-1">
           <div className="form-label">{t("repoForm.tradeDate")}</div>
-          <DateStepper value={tradeDate} onChange={setTradeDate} />
+          <DateStepper value={tradeDate} onChange={setTradeDate} disabled={Boolean(editing?.settled)} />
         </div>
         {accountField}
         {codeField}
@@ -560,7 +676,7 @@ export const RepoEntryFields = forwardRef<RepoEntryFieldsHandle, Props>(function
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+      <div className={`grid grid-cols-1 gap-3 sm:grid-cols-2 ${editing?.settled ? "pointer-events-none opacity-60" : ""}`}>
         <div className="space-y-1">
           <div className="form-label">{t("repoForm.amount")}</div>
           <CalcInput value={amount} onChange={setAmount} placeholder={t("txForm.amount")} label={t("repoForm.amount")} precision={2} />
@@ -580,10 +696,10 @@ export const RepoEntryFields = forwardRef<RepoEntryFieldsHandle, Props>(function
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+      <div className={`grid grid-cols-1 gap-3 sm:grid-cols-2 ${editing?.settled ? "pointer-events-none opacity-60" : ""}`}>
         <div className="space-y-1">
           <div className="form-label">{t("repoForm.maturityDate")}</div>
-          <DateStepper value={maturityDate} onChange={setMaturityDate} />
+          <DateStepper value={maturityDate} onChange={setMaturityDate} disabled={Boolean(editing?.settled)} />
           <div className="text-[11px] text-slate-400">{t("repoForm.autoRedeemHint")}</div>
         </div>
         <div className="space-y-1">

@@ -54,6 +54,7 @@ import { filterIncomeExpenseInstitutions } from "@/lib/institution-rules";
 import { buildCategoryParentOptions, buildCategoryTreeOptions } from "@/components/categorySmartSelect";
 import { buildCategoryQuickPickGroups, useCategoryUsage } from "@/lib/client/category-usage";
 import { readAccountDisplaySettings } from "@/lib/client/account-display-settings";
+import { getAccountDropdownGroupByPreference } from "@/lib/client/appPreferences";
 import { normalizeOptionalCurrency } from "@/lib/currency";
 
 type TxType = "expense" | "income" | "advance" | "transfer" | "fx" | "investment";
@@ -316,7 +317,8 @@ function settingsAccountToOption(account: SettingsAccountRecord): AccountOption 
 function buildGroupedOptionsFromSettingsAccounts(accounts: SettingsAccountRecord[]): SmartSelectOption[] {
   const displayOptions = accounts.map((account) => buildAccountDisplayOption(account as Parameters<typeof buildAccountDisplayOption>[0], undefined, readAccountDisplaySettings()));
   const metaById = new Map(accounts.map((account) => [account.id, settingsAccountToOption(account)]));
-  return buildGroupedAccountOptions(displayOptions).map((option) => (
+  // 分组维度跟随「设置 → 显示 → 账户下拉分组」（owner / 分组标签 / 机构），默认按所有人。
+  return buildGroupedAccountOptions(displayOptions, getAccountDropdownGroupByPreference()).map((option) => (
     option.isHeader || option.isGroup ? option : { ...option, ...metaById.get(option.id) }
   ));
 }
@@ -509,7 +511,10 @@ export function TransactionFormModal({
     groupName?: string,
   ) {
     const next = [...(base ?? [])];
-    const headerId = groupId ? `group:${groupId}` : "";
+    // 只有「按所有人」分组时，新建账户才有确定的表头。按分组标签 / 按机构时
+    // 新账户还没有这个维度（分组标签是用户之后填的），直接排到列表尾部，
+    // 否则会挂到一个列表里不存在的 parentId 上。
+    const headerId = getAccountDropdownGroupByPreference() === "owner" && groupId ? `group:${groupId}` : "";
     if (headerId && groupName?.trim() && !next.some((item) => item.id === headerId)) {
       next.push({ id: headerId, label: groupName.trim(), isHeader: true });
     }

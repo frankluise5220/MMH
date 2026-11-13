@@ -8,6 +8,7 @@ import { recalcPreciousMetalPositions } from "@/lib/metal/recalcPosition";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
 import { syncIndependentBusinessTransactionFromTxRecord } from "@/lib/server/business-transactions";
+import { restoreMetalExtractPropertyTransactions } from "@/lib/property/transactions";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 import { createManySkipDuplicatesCompat } from "@/lib/server/prisma-create-many";
 import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/server/revalidate";
@@ -569,6 +570,17 @@ export async function undoLatestEntryOperation(ctx: HouseholdContext) {
       console.error("[entry-undo] failed to restore business records", error);
       return { restoredCount: 0, fundTargets: [] as RestoredBusinessFundTarget[] };
     });
+  // 提取实物明细的固定资产交易没有 EntryBusinessLink，只能按 cashEntryId 反查恢复；
+  // 撤销「新增」时关联刚被软删，绝不能复活。
+  const restoredMetalAssets = isCreate
+    ? { restoredCount: 0 }
+    : await restoreMetalExtractPropertyTransactions(prisma, {
+      householdId: ctx.householdId,
+      cashEntryIds: snapshots.map((snapshot) => String(snapshot.id ?? "")).filter(Boolean),
+    }).catch((error) => {
+      console.error("[entry-undo] failed to restore metal extract fixed asset", error);
+      return { restoredCount: 0 };
+    });
 
   const restored = await prisma.txRecord.findMany({
     where: {
@@ -577,7 +589,10 @@ export async function undoLatestEntryOperation(ctx: HouseholdContext) {
     },
   });
   await recalculateRestoredEntries(restored, {
-    forceInvestRevalidate: restoredBusiness.restoredCount > 0 || restoredBusiness.fundTargets.length > 0,
+    forceInvestRevalidate:
+      restoredBusiness.restoredCount > 0
+      || restoredBusiness.fundTargets.length > 0
+      || restoredMetalAssets.restoredCount > 0,
     skipBusinessSync: isCreate,
   });
   for (const target of restoredBusiness.fundTargets) {

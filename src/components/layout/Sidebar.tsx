@@ -144,6 +144,8 @@ async function getSidebarData() {
       currency: normalizeCurrency(account.currency),
       kind: account.kind as string,
       groupName: display.groupName || (isLoanOrSettlementAccountKind(account.kind) ? "" : "未设置所有人"),
+      // 自定义分组标签（2026-11-13）：侧边栏「按分组」视图用它切节。
+      accountGroup: display.accountGroupName,
       institution: display.institutionName || undefined,
       institutionId: account.institutionId ?? null,
       institutionType: account.Institution?.type ?? null,
@@ -198,7 +200,10 @@ export async function Sidebar() {
     sidebarShowAllCashEntries: cookieStore.get("sidebar_show_all_cash_entries")?.value !== "false",
     sidebarShowReimbursements: cookieStore.get("sidebar_show_reimbursements")?.value !== "false",
     sidebarCollapsed: cookieStore.get("sidebar_collapsed")?.value === "true",
-    sidebarGroupBy: (cookieStore.get("sidebar_group_by")?.value === "institution" ? "institution" : "kind") as SidebarGroupMode,
+    sidebarGroupBy: ((): SidebarGroupMode => {
+      const value = cookieStore.get("sidebar_group_by")?.value;
+      return value === "institution" || value === "accountGroup" ? value : "kind";
+    })(),
   };
 
   return (

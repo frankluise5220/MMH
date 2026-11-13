@@ -40,6 +40,7 @@ const INTERVAL_LABELS: Record<string, string> = {
 // （点在「系统计划任务」里编辑还贷款，却看不到自己属于哪一类）。所以单列一项。
 const TASK_TYPE_OPTIONS: Array<{ value: ScheduledTaskType; labelKey: string }> = [
   { value: "fund_regular_invest", labelKey: "detailView.fundRegularInvest" },
+  { value: "metal_regular_invest", labelKey: "regularInvest.taskType.metalRegularInvest" },
   { value: "transfer", labelKey: "transaction.type.transfer" },
   { value: "loan_repayment", labelKey: "regularInvest.taskType.loanRepayment" },
   { value: "insurance_premium", labelKey: "regularInvest.taskType.insurancePremium" },
@@ -346,6 +347,11 @@ interface RegularInvestFormData {
   categoryName: string;
   insuranceProductId: string;
   policyholderGroupId: string;
+  /** 贵金属积存：品种与计量单位（metal_regular_invest 专用） */
+  metalTypeId: string;
+  metalTypeName: string;
+  metalUnitId: string;
+  metalUnitName: string;
   note: string;
   amount: string;
   intervalUnit: string;
@@ -398,6 +404,11 @@ interface EditData {
   id: string;
   taskType?: ScheduledTaskType;
   taskInsuranceProductId?: string | null;
+  /** 贵金属积存计划的品种与计量单位（memo 解出后由调用方下发） */
+  taskMetalTypeId?: string | null;
+  taskMetalTypeName?: string | null;
+  taskMetalUnitId?: string | null;
+  taskMetalUnitName?: string | null;
   taskCategoryId?: string | null;
   taskCategoryName?: string | null;
   taskNote?: string | null;
@@ -444,6 +455,7 @@ export function RegularInvestForm({
   accountId,
   accountLabel,
   investmentAccounts,
+  metalAccounts,
   cashAccounts,
   loanAccounts,
   transferTargetAccounts,
@@ -478,6 +490,8 @@ export function RegularInvestForm({
   accountId: string;
   accountLabel?: string;
   investmentAccounts?: { id: string; name: string; label: string }[];
+  /** 贵金属投资账户（investProductType === "metal"），供贵金属积存页签使用 */
+  metalAccounts?: { id: string; name: string; label: string }[];
   cashAccounts?: { id: string; label: string; icon?: string; subLabel?: string }[];
   loanAccounts?: { id: string; label: string; icon?: string; subLabel?: string }[];
   transferTargetAccounts?: { id: string; label: string; icon?: string; subLabel?: string }[];
@@ -530,12 +544,18 @@ export function RegularInvestForm({
   const [nameLoading, setNameLoading] = useState(false);
   const [cashAccountList, setCashAccountList] = useState(cashAccounts ?? []);
   const [investmentAccountList, setInvestmentAccountList] = useState(investmentAccounts ?? []);
+  const [metalAccountList, setMetalAccountList] = useState(metalAccounts ?? []);
   const [loanAccountList, setLoanAccountList] = useState(loanAccounts ?? []);
   const [transferTargetAccountList, setTransferTargetAccountList] = useState(transferTargetAccounts ?? []);
   const [ordinaryAccountList, setOrdinaryAccountList] = useState(ordinaryAccounts ?? []);
   const [localCashSSOptions, setLocalCashSSOptions] = useState(cashAccountSSOptions);
   const [localInvestmentSSOptions, setLocalInvestmentSSOptions] = useState(investmentAccountSSOptions);
   const [localTransferTargetSSOptions, setLocalTransferTargetSSOptions] = useState(transferTargetAccountSSOptions);
+  // 贵金属积存：品种 / 计量单位字典（首次切到该页签时按需拉取）
+  const [metalCatalog, setMetalCatalog] = useState<{
+    types: Array<{ id: string; name: string; code: string }>;
+    units: Array<{ id: string; name: string; code: string; symbol: string | null }>;
+  }>({ types: [], units: [] });
   const [localOrdinarySSOptions, setLocalOrdinarySSOptions] = useState(ordinaryAccountSSOptions);
   const confirmDaysTouchedRef = useRef(false);
   const arrivalDaysTouchedRef = useRef(false);
@@ -631,6 +651,10 @@ export function RegularInvestForm({
         categoryName: editData.taskCategoryName || "",
         insuranceProductId: editData.taskInsuranceProductId || "",
         policyholderGroupId: insuranceProduct?.ownerGroupId || "",
+        metalTypeId: editData.taskMetalTypeId || "",
+        metalTypeName: editData.taskMetalTypeName || "",
+        metalUnitId: editData.taskMetalUnitId || "",
+        metalUnitName: editData.taskMetalUnitName || "",
         note: editData.taskNote || "",
         amount: editData.amount ? formatAmountDraft(editData.amount) : "",
         // 「一次性」只是**总期数**口径（totalRuns === 1），不代表存储周期本身是 once：
@@ -682,6 +706,10 @@ export function RegularInvestForm({
       categoryName: "",
       insuranceProductId: "",
       policyholderGroupId: "",
+      metalTypeId: "",
+      metalTypeName: "",
+      metalUnitId: "",
+      metalUnitName: "",
       note: "",
       amount: "",
       intervalUnit: "day",
@@ -730,12 +758,48 @@ export function RegularInvestForm({
 
   useEffect(() => { setCashAccountList(cashAccounts ?? []); }, [cashAccounts]);
   useEffect(() => { setInvestmentAccountList(investmentAccounts ?? []); }, [investmentAccounts]);
+  useEffect(() => { setMetalAccountList(metalAccounts ?? []); }, [metalAccounts]);
   useEffect(() => { setLoanAccountList(loanAccounts ?? []); }, [loanAccounts]);
   useEffect(() => { setTransferTargetAccountList(transferTargetAccounts ?? []); }, [transferTargetAccounts]);
   useEffect(() => { setOrdinaryAccountList(ordinaryAccounts ?? []); }, [ordinaryAccounts]);
   useEffect(() => { setLocalCashSSOptions(cashAccountSSOptions); }, [cashAccountSSOptions]);
   useEffect(() => { setLocalInvestmentSSOptions(investmentAccountSSOptions); }, [investmentAccountSSOptions]);
   useEffect(() => { setLocalTransferTargetSSOptions(transferTargetAccountSSOptions); }, [transferTargetAccountSSOptions]);
+  // 贵金属积存字典：进入该页签时才拉取，避免打扰其它任务类型。
+  useEffect(() => {
+    if (formData.taskType !== "metal_regular_invest") return;
+    if (metalCatalog.types.length > 0 && metalCatalog.units.length > 0) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch("/api/v1/precious-metals/dictionaries");
+        const payload = await res.json();
+        if (cancelled || !payload?.ok) return;
+        const nextTypes: Array<{ id: string; name: string; code: string }> = payload.data?.types ?? [];
+        const nextUnits: Array<{ id: string; name: string; code: string; symbol: string | null }> = payload.data?.units ?? [];
+        setMetalCatalog({ types: nextTypes, units: nextUnits });
+        // 默认落到第一个品种 / 单位：银行积存绝大多数就是黄金·克，省一次下拉。
+        setFormData((d) => {
+          if (d.taskType !== "metal_regular_invest") return d;
+          const typeId = d.metalTypeId || nextTypes[0]?.id || "";
+          const unitId = d.metalUnitId || nextUnits[0]?.id || "";
+          const type = nextTypes.find((item) => item.id === typeId);
+          const unit = nextUnits.find((item) => item.id === unitId);
+          return {
+            ...d,
+            metalTypeId: typeId,
+            metalTypeName: d.metalTypeName || type?.name || "",
+            metalUnitId: unitId,
+            metalUnitName:
+              d.metalUnitName || (unit ? (unit.symbol ? `${unit.name}(${unit.symbol})` : unit.name) : ""),
+          };
+        });
+      } catch {
+        // 字典拉取失败时保持空列表，重开弹窗再试
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [formData.taskType, metalCatalog.types.length, metalCatalog.units.length]);
   useEffect(() => { setLocalOrdinarySSOptions(ordinaryAccountSSOptions); }, [ordinaryAccountSSOptions]);
 
   useEffect(() => {
@@ -924,7 +988,9 @@ export function RegularInvestForm({
       const accountLabel =
         formData.taskType === "fund_regular_invest"
           ? t("viewImport.fundAccount")
-          : formData.taskType === "loan_repayment"
+          : formData.taskType === "metal_regular_invest"
+            ? t("regularInvest.metal.account")
+            : formData.taskType === "loan_repayment"
             ? t("regularInvest.account.loanAccount")
             : formData.taskType === "insurance_premium"
               ? t("settings.insuranceProducts")
@@ -942,7 +1008,17 @@ export function RegularInvestForm({
       window.alert(t("regularInvest.alert.selectInsuranceProduct"));
       return;
     }
-    if ((formData.taskType === "transfer" || formData.taskType === "loan_repayment" || formData.taskType === "insurance_premium") && !formData.cashAccountId) {
+    if (formData.taskType === "metal_regular_invest" && (!formData.metalTypeId || !formData.metalUnitId)) {
+      window.alert(t("regularInvest.alert.selectMetalProduct"));
+      return;
+    }
+    if (
+      (formData.taskType === "transfer" ||
+        formData.taskType === "loan_repayment" ||
+        formData.taskType === "insurance_premium" ||
+        formData.taskType === "metal_regular_invest") &&
+      !formData.cashAccountId
+    ) {
       window.alert(t("regularInvest.alert.selectCashAccount"));
       return;
     }
@@ -1046,9 +1122,11 @@ export function RegularInvestForm({
       const isOrdinaryTask = isOrdinaryTaskType(planFormDisplayTaskType(formData.taskType));
       const taskTypeTitle = formData.taskType === "income" ? t("transaction.type.income") : formData.taskType === "expense" ? t("transaction.type.expense") : scheduledTaskTypeLabel(formData.taskType);
       const submitFundCode = formData.taskType === "fund_regular_invest" ? formData.fundCode.trim() : formData.taskType;
-      const submitFundName = isOrdinaryTask
-        ? (formData.categoryName.trim() || formData.fundName.trim() || taskTypeTitle)
-        : (formData.fundName.trim() || formData.fundCode.trim() || scheduledTaskTypeLabel(formData.taskType));
+      const submitFundName = isMetalTask
+        ? (formData.fundName.trim() || formData.metalTypeName || scheduledTaskTypeLabel(formData.taskType))
+        : isOrdinaryTask
+          ? (formData.categoryName.trim() || formData.fundName.trim() || taskTypeTitle)
+          : (formData.fundName.trim() || formData.fundCode.trim() || scheduledTaskTypeLabel(formData.taskType));
       const submitPlanName = formData.planName.trim() || (mode === "create" ? submitFundName : "");
       const submitCashAccountId = isOrdinaryTask ? "" : formData.cashAccountId || "";
 
@@ -1061,6 +1139,10 @@ export function RegularInvestForm({
           fd.set("planId", editData.id);
           fd.set("taskType", formData.taskType);
           fd.set("insuranceProductId", formData.insuranceProductId || "");
+          fd.set("metalTypeId", isMetalTask ? formData.metalTypeId : "");
+          fd.set("metalTypeName", isMetalTask ? formData.metalTypeName : "");
+          fd.set("metalUnitId", isMetalTask ? formData.metalUnitId : "");
+          fd.set("metalUnitName", isMetalTask ? formData.metalUnitName : "");
           fd.set("accountId", formData.accountId);
           fd.set("fundCode", submitFundCode);
           fd.set("fundName", submitFundName);
@@ -1095,6 +1177,10 @@ export function RegularInvestForm({
             id: editData.id,
             taskType: formData.taskType,
             insuranceProductId: formData.insuranceProductId || null,
+            metalTypeId: isMetalTask ? formData.metalTypeId || null : null,
+            metalTypeName: isMetalTask ? formData.metalTypeName || null : null,
+            metalUnitId: isMetalTask ? formData.metalUnitId || null : null,
+            metalUnitName: isMetalTask ? formData.metalUnitName || null : null,
             accountId: formData.accountId,
             fundCode: submitFundCode,
             fundName: submitFundName,
@@ -1143,6 +1229,10 @@ export function RegularInvestForm({
           fd.set("intent", "createRegularInvest");
           fd.set("taskType", formData.taskType);
           fd.set("insuranceProductId", formData.insuranceProductId || "");
+          fd.set("metalTypeId", isMetalTask ? formData.metalTypeId : "");
+          fd.set("metalTypeName", isMetalTask ? formData.metalTypeName : "");
+          fd.set("metalUnitId", isMetalTask ? formData.metalUnitId : "");
+          fd.set("metalUnitName", isMetalTask ? formData.metalUnitName : "");
           fd.set("accountId", formData.accountId);
           fd.set("fundCode", submitFundCode);
           fd.set("fundName", submitFundName);
@@ -1185,6 +1275,10 @@ export function RegularInvestForm({
             accountId: formData.accountId,
             taskType: formData.taskType,
             insuranceProductId: formData.insuranceProductId || null,
+            metalTypeId: isMetalTask ? formData.metalTypeId || null : null,
+            metalTypeName: isMetalTask ? formData.metalTypeName || null : null,
+            metalUnitId: isMetalTask ? formData.metalUnitId || null : null,
+            metalUnitName: isMetalTask ? formData.metalUnitName || null : null,
             fundCode: submitFundCode,
             fundName: submitFundName,
             planName: submitPlanName || submitFundName,
@@ -1241,6 +1335,11 @@ export function RegularInvestForm({
   const investmentOptions = investFiltered
     ? sortByAccountUsage(stripDefaultGroupOptions(investFiltered), accountUsage)
     : sortByAccountUsage(investmentAccountList.map(a => ({ id: a.id, label: stripDefaultGroupLabel(a.label), subLabel: (a as { subLabel?: string }).subLabel })), accountUsage);
+  // 贵金属积存只列贵金属投资账户（由页面按 investProductType 过滤后传入）
+  const metalAccountOptions = sortByAccountUsage(
+    metalAccountList.map((a) => ({ id: a.id, label: stripDefaultGroupLabel(a.label), subLabel: (a as { subLabel?: string }).subLabel })),
+    accountUsage,
+  );
   const cashOptions = sortByAccountUsage(cashFiltered ?? cashAccountList.map(a => ({ id: a.id, label: a.label, subLabel: a.subLabel })), accountUsage);
   const loanOptions = loanAccountList.map(a => ({ id: a.id, label: a.label, subLabel: a.subLabel }));
   const transferTargetOptions = sortByAccountUsage(transferTargetFiltered ?? transferTargetAccountList.map(a => ({ id: a.id, label: a.label, subLabel: a.subLabel })), accountUsage);
@@ -1252,6 +1351,7 @@ export function RegularInvestForm({
     .filter((item) => item.name && item.name !== "未指定")
     .map((item) => ({ id: item.id, label: item.name }));
   const isFundTask = formData.taskType === "fund_regular_invest";
+  const isMetalTask = formData.taskType === "metal_regular_invest";
   const isLoanTask = formData.taskType === "loan_repayment";
   const isInsuranceTask = formData.taskType === "insurance_premium";
   // 展示类型：存款/债券三动作计划映射为普通 income/transfer 模板渲染，
@@ -1460,6 +1560,10 @@ export function RegularInvestForm({
         categoryName: nextIsOrdinaryTask && isOrdinaryTaskType(prev.taskType) && prev.taskType === taskType ? prev.categoryName : "",
         insuranceProductId: taskType === "insurance_premium" ? prev.insuranceProductId : "",
         policyholderGroupId: taskType === "insurance_premium" ? prev.policyholderGroupId : "",
+        metalTypeId: taskType === "metal_regular_invest" ? prev.metalTypeId : "",
+        metalTypeName: taskType === "metal_regular_invest" ? prev.metalTypeName : "",
+        metalUnitId: taskType === "metal_regular_invest" ? prev.metalUnitId : "",
+        metalUnitName: taskType === "metal_regular_invest" ? prev.metalUnitName : "",
         intervalUnit: taskType === "insurance_premium" ? "month" : prev.intervalUnit,
         intervalValue: taskType === "insurance_premium" ? "1" : prev.intervalValue,
         executionDay: taskType === "insurance_premium" ? "" : prev.executionDay,
@@ -1924,9 +2028,28 @@ export function RegularInvestForm({
                 <div className="grid grid-cols-2 gap-3">
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">
-                      {isFundTask ? t("viewImport.fundAccount") : isInsuranceTask ? t("settings.insuranceProducts") : t("regularInvest.account.targetAccount")}
+                      {isFundTask
+                        ? t("viewImport.fundAccount")
+                        : isMetalTask
+                          ? t("regularInvest.metal.account")
+                          : isInsuranceTask
+                            ? t("settings.insuranceProducts")
+                            : t("regularInvest.account.targetAccount")}
                     </div>
-                    {isFundTask ? (
+                    {isMetalTask ? (
+                      metalAccountOptions.length > 0 ? (
+                        <div className={REQUIRED_FIELD_CLASS}>
+                          <SmartSelect mode="single" value={formData.accountId}
+                            onChange={(id) => { setFormData(d => ({ ...d, accountId: id })); }}
+                            options={metalAccountOptions}
+                            placeholder={t("regularInvest.metal.accountPlaceholder")} />
+                        </div>
+                      ) : (
+                        <div className="h-9 w-full rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700 flex items-center">
+                          {t("regularInvest.metal.accountEmpty")}
+                        </div>
+                      )
+                    ) : isFundTask ? (
                       investmentAccountList.length > 0 ? (
                         <div className={REQUIRED_FIELD_CLASS}>
                           <SmartSelect mode="single" value={formData.accountId}
@@ -1977,6 +2100,48 @@ export function RegularInvestForm({
                       </div>
                     </div>
                   )}
+                </div>
+              )}
+
+              {isMetalTask && (
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1">
+                    <div className="text-xs font-medium text-slate-600">{t("regularInvest.metal.type")}</div>
+                    <div className={REQUIRED_FIELD_CLASS}>
+                      <SmartSelect
+                        mode="single"
+                        value={formData.metalTypeId}
+                        onChange={(id) => {
+                          const type = metalCatalog.types.find((item) => item.id === id);
+                          setFormData((d) => ({ ...d, metalTypeId: id, metalTypeName: type?.name ?? "" }));
+                        }}
+                        options={metalCatalog.types.map((item) => ({ id: item.id, label: `${item.name}·${item.code}` }))}
+                        placeholder={t("regularInvest.metal.typePlaceholder")}
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <div className="text-xs font-medium text-slate-600">{t("regularInvest.metal.unit")}</div>
+                    <div className={REQUIRED_FIELD_CLASS}>
+                      <SmartSelect
+                        mode="single"
+                        value={formData.metalUnitId}
+                        onChange={(id) => {
+                          const unit = metalCatalog.units.find((item) => item.id === id);
+                          setFormData((d) => ({
+                            ...d,
+                            metalUnitId: id,
+                            metalUnitName: unit ? (unit.symbol ? `${unit.name}(${unit.symbol})` : unit.name) : "",
+                          }));
+                        }}
+                        options={metalCatalog.units.map((item) => ({
+                          id: item.id,
+                          label: item.symbol ? `${item.name} (${item.symbol})` : item.name,
+                        }))}
+                        placeholder={t("regularInvest.metal.unitPlaceholder")}
+                      />
+                    </div>
+                  </div>
                 </div>
               )}
 

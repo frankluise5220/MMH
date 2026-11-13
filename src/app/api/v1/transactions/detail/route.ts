@@ -55,7 +55,7 @@ import { recalcPreciousMetalPositions } from "@/lib/metal/recalcPosition";
 import { calculateWealthCashDividendProfit, recalcWealthPositions } from "@/lib/wealth-position";
 import { computeInvestBalances } from "@/lib/invest-balance";
 import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
-import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
+import { normalizeFundUnitsDecimals, resolveQuantityDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 import {
   applyEntryChangesToAccountBalances,
   BALANCE_ENTRY_SELECT,
@@ -1000,6 +1000,26 @@ async function loadApiDetailRecord(entryId: string) {
     },
   });
   if (!entry) return null;
+  // 逆回购借出行在债券侧还有一条存单：编辑时要靠存单上的 instrumentKind 判断
+  // 走逆回购窗口（而不是债券窗），并回填期限/到期日。
+  const bondRow = entry.fundProductType === "bond" && entry.householdId
+    ? await prisma.bondTransaction.findFirst({
+        where: { householdId: entry.householdId, cashEntryId: entry.id, deletedAt: null },
+        select: { id: true, instrumentKind: true, action: true, termDays: true, maturityDate: true },
+      })
+    : null;
+  // 逆回购存单是否已回款：已回款时编辑窗要锁住金额/日期，否则会和入账的回款对不上。
+  const bondRedeemed = bondRow && bondRow.action === "buy"
+    ? Boolean(await prisma.bondTransaction.findFirst({
+        where: {
+          householdId: entry.householdId ?? undefined,
+          sourceBondTransactionId: bondRow.id,
+          action: "redeem",
+          deletedAt: null,
+        },
+        select: { id: true },
+      }))
+    : false;
   const linkedWealthTransactionId = linkedWealthTransactionIdOf(entry);
   const linkedWealthTransaction = linkedWealthTransactionId && entry.householdId
     ? await prisma.wealthTransaction.findFirst({
@@ -1069,6 +1089,11 @@ async function loadApiDetailRecord(entryId: string) {
     fundArrivalDate: entry.fundArrivalDate ? formatDateUtc(entry.fundArrivalDate) : null,
     fundArrivalAmount: entry.fundArrivalAmount ? toNumber(entry.fundArrivalAmount) : null,
     source: entry.source,
+    bondInstrumentKind: bondRow?.instrumentKind ?? null,
+    bondTransactionId: bondRow?.id ?? null,
+    bondRedeemed,
+    bondTermDays: bondRow?.termDays ?? null,
+    bondMaturityDate: bondRow?.maturityDate ? formatDateUtc(bondRow.maturityDate) : null,
     ...buildEntryBusinessLinkSummary(entry),
     ...(linkedWealthTransaction ? linkedWealthDetailFields(entry, linkedWealthTransaction) : {}),
     ...(linkedStockTransaction ? linkedStockDetailFields(linkedStockTransaction) : {}),
@@ -3337,7 +3362,7 @@ export async function POST(req: Request) {
               metalTypeName: metalType?.name ?? undefined,
               metalUnitId: metalUnit?.id ?? undefined,
               metalUnitName: metalUnit ? (metalUnit.symbol ? `${metalUnit.name}(${metalUnit.symbol})` : metalUnit.name) : undefined,
-              metalQuantity: isMetalProduct ? (metalQuantity != null ? roundFundUnits(metalQuantity, fundUnitsDecimals) : undefined) : undefined,
+              metalQuantity: isMetalProduct ? (metalQuantity != null ? roundFundUnits(metalQuantity, resolveQuantityDecimals("metal", fundUnitsDecimals)) : undefined) : undefined,
               metalUnitPrice: isMetalProduct ? metalUnitPrice ?? undefined : undefined,
               metalFee: isMetalProduct ? metalFee ?? undefined : undefined,
               insuranceProductId: insuranceProductId ?? undefined,
@@ -4015,7 +4040,7 @@ export async function PUT(req: Request) {
     const metalFeeInput = positiveNumber(body.metalFee ?? body.fundFee);
     const fundUnitsDecimals = normalizeFundUnitsDecimals(investAcc.fundUnitsDecimals);
     const roundedFundUnits = fundUnitsInput != null ? roundFundUnits(fundUnitsInput, fundUnitsDecimals) : null;
-    const roundedMetalQuantity = metalQuantityInput != null ? roundFundUnits(metalQuantityInput, fundUnitsDecimals) : roundedFundUnits;
+    const roundedMetalQuantity = metalQuantityInput != null ? roundFundUnits(metalQuantityInput, resolveQuantityDecimals("metal", fundUnitsDecimals)) : roundedFundUnits;
     const isMetalProduct = productType === "metal";
     const metalType = productType === "metal" && metalTypeIdInput
       ? await tx.preciousMetalType.findFirst({

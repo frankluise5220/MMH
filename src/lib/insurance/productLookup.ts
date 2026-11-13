@@ -61,6 +61,19 @@ const IA_CHINA_CONSUMER_ENTRY =
 const IA_CHINA_AES_KEY = "0d36c68466e06b99";
 const IA_CHINA_AES_IV = "0840e274812143f5";
 
+/**
+ * 产品设计类型（投连 / 万能）必须先于给付形态（年金 / 两全 / 养老）判定。
+ *
+ * 例：「弘康共赢团体养老年金保险（投资连结型）」里的「年金」只是给付形态，
+ * 「投资连结型」才是产品设计类型；行业协会产品库只回传名称、公司、条款号，
+ * 不提供类型字段，所以类型只能从名称推断，顺序错了就会把投连产品判成年金型
+ * （issue #25）。万能型同理——「XX年金保险（万能型）」也应按万能型记账。
+ */
+const DESIGN_TYPE_RULES: Array<{ productType: string; keywords: string[] }> = [
+  { productType: "investment_linked", keywords: ["投连", "投资连结", "投资连接"] },
+  { productType: "universal", keywords: ["万能"] },
+];
+
 const PRODUCT_TYPE_RULES: Array<{ productType: string; keywords: string[] }> = [
   { productType: "critical_illness", keywords: ["重疾", "重大疾病"] },
   { productType: "medical", keywords: ["医疗", "住院", "百万医疗"] },
@@ -68,11 +81,11 @@ const PRODUCT_TYPE_RULES: Array<{ productType: string; keywords: string[] }> = [
   { productType: "annuity", keywords: ["年金", "养老"] },
   { productType: "term_life", keywords: ["定期寿", "定寿"] },
   { productType: "whole_life", keywords: ["终身寿", "增额终身寿"] },
-  { productType: "universal", keywords: ["万能"] },
-  { productType: "investment_linked", keywords: ["投连", "投资连结"] },
   { productType: "dividend", keywords: ["分红"] },
   { productType: "savings", keywords: ["两全", "储蓄", "教育金"] },
 ];
+
+const ALL_PRODUCT_TYPE_RULES = [...DESIGN_TYPE_RULES, ...PRODUCT_TYPE_RULES];
 
 const INSTITUTION_HINTS = [
   "中国平安",
@@ -206,9 +219,10 @@ function parseBingRss(xml: string): InsuranceLookupResult[] {
     .slice(0, 8);
 }
 
-function inferProductType(text: string) {
+/** 从产品名称 / 公开页面标题推断产品类型；导出供回归脚本断言顺序。 */
+export function inferProductType(text: string) {
   const normalized = text.toLowerCase();
-  return PRODUCT_TYPE_RULES.find((rule) =>
+  return ALL_PRODUCT_TYPE_RULES.find((rule) =>
     rule.keywords.some((keyword) => normalized.includes(keyword.toLowerCase())),
   )?.productType ?? null;
 }

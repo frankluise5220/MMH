@@ -27,9 +27,10 @@ import { useEntryReconcileState } from "@/lib/client/use-entry-reconcile-state";
 import { setEntryModalReconciledReadOnly } from "@/lib/client/entryModalLock";
 import { BasicDetailReconcileLockButton } from "@/components/BasicDetailSelection";
 
-import { ChartLine, Download, Library, List, Pencil, Settings2, SlidersHorizontal, Trash2, X } from "lucide-react";
+import { ChartLine, Download, Library, List, Package, Pencil, Settings2, SlidersHorizontal, Trash2, X } from "lucide-react";
 
 import { FundProfileSettingsModal } from "@/components/FundProfileSettingsModal";
+import { openMetalExtract } from "@/lib/client/metal-extract-event";
 import type { FundProfileNavigationItem } from "@/components/FundProfileSettingsClient";
 import { InvestmentFormModal } from "@/components/InvestmentFormModal";
 import { allocateBuyFailedRefunds, findLinkedEntries, getConfirmedBuyAmount, getEffectiveBuyUnitsByRefunds, type RefundLinkableEntry } from "@/lib/fund/refund-link";
@@ -54,6 +55,7 @@ import { ResizableVerticalSplit } from "@/components/ResizableVerticalSplit";
 import { FOLDER_TAB_STRIP, FolderTabRuler, folderTabClass, folderTabNeighbors } from "@/app/login/FolderTabs";
 
 import { RefreshNavButton } from "@/components/RefreshNavButton";
+import { RefreshMetalPriceButton } from "@/components/RefreshMetalPriceButton";
 
 import { AddNavButton } from "@/components/AddNavButton";
 
@@ -65,7 +67,8 @@ import { DetailTablePaginationControls } from "@/components/DetailTablePaginatio
 
 import { subtypeDisplay } from "@/lib/investment-config";
 import { isFundLikeInvestmentAccount } from "@/lib/account-kind-utils";
-import { TRANSACTION_SOURCE_FUND_UNITS_RECONCILE, isFundUnitsReconcileEntry } from "@/lib/transaction-semantics";
+import { resolveQuantityDecimals } from "@/lib/fund/unit-precision-core";
+import { TRANSACTION_SOURCE_FUND_UNITS_RECONCILE, TRANSACTION_SOURCE_METAL_EXTRACT, isFundUnitsReconcileEntry } from "@/lib/transaction-semantics";
 import { useI18n } from "@/lib/i18n";
 import { useDetailPagination } from "@/lib/client/use-detail-pagination";
 import { replaceCurrentRouteUrl } from "@/lib/client/route-url-sync";
@@ -120,6 +123,8 @@ function clearedDisplayAnnualizedRate(row: {
 
 function fundSubtypeLabel(t: (key: string) => string, subtype: string | null | undefined, source: string | null | undefined, productType?: string | null) {
   if (source === TRANSACTION_SOURCE_FUND_UNITS_RECONCILE) return t("fundShell.subtype.unitsReconcile");
+  // 提取实物：底层仍是「赎回」子类型（只减克数与成本，已实现盈亏为 0），但语义是转实物收藏品。
+  if (source === TRANSACTION_SOURCE_METAL_EXTRACT) return t("fundShell.subtype.metalExtract");
   if (subtype === "buy" && source === "regular_invest") return t("fundShell.subtype.buyRegularInvest");
   if (subtype === "buy" && source === "dividend") return t("fund.subtype.dividend");
   if (subtype === "buy_failed" && source === "regular_invest_refund") return t("fundShell.subtype.buyRefund");
@@ -156,6 +161,8 @@ const NAV_ONLY_REASONS = new Set([
   "nav-add",
   "wealth-nav-add",
   "nav-refresh",
+  // 贵金属行情刷新只改持仓的 latestPrice / marketValue，不改任何明细行。
+  "metal-price-refresh",
 ]);
 
 function isGenericFundName(name: string, code: string) {
@@ -727,13 +734,18 @@ export function FundShell(props: Props) {
     accountId, selectedAccount, accountOptions,
 
     cashAccounts, investmentAccounts, cashAccountSSOptions, investmentAccountSSOptions, metalTypes, metalUnits, nestedFieldData, createAction, editAction,
+    propertyAccounts, extractAction,
 
     fillNavAction, isRedUp,
     fundUnitsDecimals: fundUnitsDecimalsProp,
 
   } = props;
 
-  const fundUnitsDecimals = Number.isFinite(Number(fundUnitsDecimalsProp)) ? Math.min(Math.max(Math.round(Number(fundUnitsDecimalsProp)), 0), 6) : 2;
+  // 贵金属数量不能跟着基金份额的 2 位走：录入、明细、持仓、导出共用这份精度。
+  const fundUnitsDecimals = resolveQuantityDecimals(
+    selectedAccount?.investProductType,
+    fundUnitsDecimalsProp,
+  );
 
   const { t } = useI18n();
 
@@ -745,18 +757,42 @@ export function FundShell(props: Props) {
   const positionCols = isWealthAccount ? WEALTH_POSITION_COLS : POSITION_COLS;
   const assetNameLabel = isMetalAccount ? t("fundShell.col.species") : isWealthAccount ? t("fundShell.wealthProduct") : t("txForm.fund");
   const holdingTabLabel = isMetalAccount ? t("fundShell.tab.holdings.metal") : isWealthAccount ? t("fundShell.tab.holdings.wealth") : t("fundShell.tab.holdings.fund");
-  const clearedTabLabel = isWealthAccount ? t("fundShell.tab.cleared.wealth") : t("fundShell.tab.cleared.fund");
-  const noClearedText = isWealthAccount ? t("fundShell.empty.cleared.wealth") : t("fundShell.empty.cleared.fund");
-  /** 上窗格 FT 卡片页签：贵金属账户没有「清仓」概念，只有持仓一页。 */
+  const clearedTabLabel = isMetalAccount
+    ? t("fundShell.tab.cleared.metal")
+    : isWealthAccount ? t("fundShell.tab.cleared.wealth") : t("fundShell.tab.cleared.fund");
+  const noClearedText = isMetalAccount
+    ? t("fundShell.empty.cleared.metal")
+    : isWealthAccount ? t("fundShell.empty.cleared.wealth") : t("fundShell.empty.cleared.fund");
+  /** 上窗格 FT 卡片页签：持仓 / 已清仓，贵金属与基金、理财同构。 */
   const positionTabItems = useMemo(() => {
     const items: { id: string; label: string }[] = [{ id: "held", label: holdingTabLabel }];
-    if (!isMetalAccount) items.push({ id: "cleared", label: clearedTabLabel });
+    items.push({ id: "cleared", label: clearedTabLabel });
     return items;
-  }, [clearedTabLabel, holdingTabLabel, isMetalAccount]);
-  const chooseHoldingText = isWealthAccount ? t("fundShell.selectHoldingFirst.wealth") : t("fundShell.selectHoldingFirst.fund");
-  const investmentAccountLabel = isWealthAccount ? t("fundShell.account.wealth") : t("viewImport.fundAccount");
+  }, [clearedTabLabel, holdingTabLabel]);
+  // 贵金属不是基金：账户名、品种列、空态提示都不能再借用基金的说法。
+  const chooseHoldingText = isMetalAccount
+    ? t("fundShell.selectHoldingFirst.metal")
+    : isWealthAccount
+      ? t("fundShell.selectHoldingFirst.wealth")
+      : t("fundShell.selectHoldingFirst.fund");
+  const investmentAccountLabel = isMetalAccount
+    ? t("fundShell.account.metal")
+    : isWealthAccount
+      ? t("fundShell.account.wealth")
+      : t("viewImport.fundAccount");
   const fundAccountOptions = useMemo(() => investmentAccounts.filter((account: any) => isFundLikeInvestmentAccount(account)), [investmentAccounts]);
-  const detailNameLabel = isWealthAccount ? t("fundShell.wealthProduct") : t("txForm.fund");
+  const detailNameLabel = isMetalAccount
+    ? t("fundShell.col.species")
+    : isWealthAccount
+      ? t("fundShell.wealthProduct")
+      : t("txForm.fund");
+  /** 贵金属明细的数量叫「数量」而不是基金「份额」；列头与列设置菜单共用同一份映射。 */
+  const detailColumnLabelKeys = useMemo<Record<DetailColumnKey, string>>(
+    () => isMetalAccount
+      ? { ...DETAIL_COLUMN_LABEL_KEYS, units: "fundShell.col.quantity" }
+      : DETAIL_COLUMN_LABEL_KEYS,
+    [isMetalAccount],
+  );
   const navColumnLabel = isMetalAccount ? t("fundShell.nav.unitPrice") : isWealthAccount ? t("fundShell.nav.wealth") : t("viewImport.nav");
   const detailAmountColumnLabel = isWealthAccount ? t("fundShell.amount.wealth") : t("txForm.amount");
   const allRecordsLabel = isWealthAccount ? t("fundShell.allRecords.wealth") : t("fundShell.allRecords.fund");
@@ -772,6 +808,12 @@ export function FundShell(props: Props) {
       ? position?.wealthProductId ?? ""
       : position?.fundCode ?? "",
   ).trim(), [isWealthAccount]);
+  /** 贵金属按「品种 + 单位」清仓：同品种不同单位不能让表格与卡片复用同一个 key。 */
+  const clearedRowKey = useCallback((position: any) => {
+    const key = positionAssetKey(position);
+    const withUnit = position?.metalUnitId ? `${key}::${position.metalUnitId}` : key;
+    return withUnit || String(position?.fundCode ?? "");
+  }, [positionAssetKey]);
 
 
 
@@ -798,8 +840,8 @@ export function FundShell(props: Props) {
 
   const [showCleared, setShowCleared] = useState(initialShowCleared);
 
-  /** FT 卡片当前页签 id（贵金属账户只有持仓）。 */
-  const activePositionTabId = showCleared && !isMetalAccount ? "cleared" : "held";
+  /** FT 卡片当前页签 id：持仓 / 已清仓，所有投资产品同构。 */
+  const activePositionTabId = showCleared ? "cleared" : "held";
 
   const [detailTableRowCount, setDetailTableRowCount] = useState(0);
   /**
@@ -1893,7 +1935,21 @@ export function FundShell(props: Props) {
               </button>
             ) : null}
           </>
-        ) : null}
+        ) : (
+          <button
+            type="button"
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              openMetalExtract({ accountId, metalTypeId: p.fundCode ?? null, metalUnitId: null });
+            }}
+            className={`${ROW_ACTION_BUTTON_BOX_CLASS} border-slate-200 bg-white text-slate-500 hover:border-amber-200 hover:bg-amber-50 hover:text-amber-700`}
+            title={t("metalExtract.title")}
+            aria-label={t("metalExtract.title")}
+          >
+            <Package className="h-3 w-3" />
+          </button>
+        )}
       </div>
     );
   }, [
@@ -2006,16 +2062,17 @@ export function FundShell(props: Props) {
           return <span className={pnl(displayMV)}>{formatMoney(displayMV)}</span>;
         },
       },
-      {
+      // 「未确认金额」是基金申购在途的概念；贵金属没有确认流程，这一列永远是空杠。
+      ...(isMetalAccount ? [] : [{
         key: "pending",
         label: t("fundShell.col.pending"),
         width: colWidth("positions", "pending", 78),
         minWidth: minFundColWidth("positions", "pending"),
         align: "right",
         className: "text-[11px] tabular-nums",
-        sortValue: (p) => toNumber(p.pendingCost),
-        render: (p) => toNumber(p.pendingCost) > 0 ? <span className="font-medium text-amber-600">{formatMoney(p.pendingCost)}</span> : <span className="text-slate-300">-</span>,
-      },
+        sortValue: (p: any) => toNumber(p.pendingCost),
+        render: (p: any) => toNumber(p.pendingCost) > 0 ? <span className="font-medium text-amber-600">{formatMoney(p.pendingCost)}</span> : <span className="text-slate-300">-</span>,
+      } satisfies AdvancedDataTableColumn<any>]),
       {
         key: "floatingPnL",
         label: t("fundShell.col.floatingPnL"),
@@ -2147,6 +2204,8 @@ export function FundShell(props: Props) {
     };
   }, [d.positions, d.totalCost, d.totalMarketValue, d.positionHistoricalProfit, isWealthAccount, positionDisplayMetrics, pnl, t]);
 
+  // 理财 / 贵金属的 fundCode 是内部产品 / 品种 id，不是给用户看的基金代码，清仓列只显示名称。
+  const hideClearedAssetCode = isWealthAccount || isMetalAccount;
   const clearedAdvancedColumns = useMemo<AdvancedDataTableColumn<any>[]>(() => [
     {
       key: "fund",
@@ -2156,17 +2215,17 @@ export function FundShell(props: Props) {
       headerClassName: "text-left",
       className: "px-4",
       filterText: (c) => [c.name, c.fundCode].filter(Boolean).join(" "),
-      sortValue: (c) => String(isWealthAccount ? c.name ?? "" : c.fundCode ?? c.name ?? ""),
+      sortValue: (c) => String(hideClearedAssetCode ? c.name ?? "" : c.fundCode ?? c.name ?? ""),
       render: (c) => {
         const clearedKey = positionAssetKey(c);
         const active = clearedKey === fundCode;
         return (
           <span
             className={`block truncate font-medium ${active ? "text-blue-700" : "text-slate-700"}`}
-            title={isWealthAccount ? c.name : `${c.name} ${c.fundCode}`}
+            title={hideClearedAssetCode ? c.name : `${c.name} ${c.fundCode}`}
           >
             {c.name}
-            {!isWealthAccount && c.fundCode ? <span className="ml-1 text-slate-400">{c.fundCode}</span> : null}
+            {!hideClearedAssetCode && c.fundCode ? <span className="ml-1 text-slate-400">{c.fundCode}</span> : null}
           </span>
         );
       },
@@ -2269,7 +2328,7 @@ export function FundShell(props: Props) {
           },
         } satisfies AdvancedDataTableColumn<any>]
       : []),
-  ], [assetNameLabel, colWidth, fundCode, isWealthAccount, pnl, positionAssetKey, t]);
+  ], [assetNameLabel, colWidth, fundCode, hideClearedAssetCode, isWealthAccount, pnl, positionAssetKey, t]);
 
   const clearedSummaryRow = useMemo<AdvancedDataTableSummaryRow | undefined>(() => {
     if (d.clearedPositions.length === 0) return undefined;
@@ -2738,7 +2797,7 @@ export function FundShell(props: Props) {
       if (key === "date") {
         return {
           key,
-          label: t(DETAIL_COLUMN_LABEL_KEYS[key]),
+          label: t(detailColumnLabelKeys[key]),
           ...common,
           filterKind: "dateRange",
           filterText: (e: any) => fundApplyDateOf(e) || "",
@@ -2750,7 +2809,7 @@ export function FundShell(props: Props) {
       if (key === "confirmDate") {
         return {
           key,
-          label: t(DETAIL_COLUMN_LABEL_KEYS[key]),
+          label: t(detailColumnLabelKeys[key]),
           ...common,
           filterKind: "dateRange",
           filterText: (e: any) => fmtDate(e.fundConfirmDate) || "",
@@ -2766,7 +2825,7 @@ export function FundShell(props: Props) {
       if (key === "arrivalDate") {
         return {
           key,
-          label: t(DETAIL_COLUMN_LABEL_KEYS[key]),
+          label: t(detailColumnLabelKeys[key]),
           ...common,
           filterKind: "dateRange",
           filterText: (e: any) => fmtDate(e.fundArrivalDate) || "",
@@ -2782,7 +2841,7 @@ export function FundShell(props: Props) {
       if (key === "cashAccount") {
         return {
           key,
-          label: t(DETAIL_COLUMN_LABEL_KEYS[key]),
+          label: t(detailColumnLabelKeys[key]),
           ...common,
           filterText: (e: any) => cashAccountInfoOf(e)?.label ?? "",
           filterSearchText: (e: any) => {
@@ -2840,7 +2899,7 @@ export function FundShell(props: Props) {
       if (key === "units") {
         return {
           key,
-          label: t(DETAIL_COLUMN_LABEL_KEYS[key]),
+          label: t(detailColumnLabelKeys[key]),
           ...common,
           align: "right",
           filterKind: "numberRange",
@@ -2857,7 +2916,7 @@ export function FundShell(props: Props) {
       if (key === "remainingUnits") {
         return {
           key,
-          label: t(DETAIL_COLUMN_LABEL_KEYS[key]),
+          label: t(detailColumnLabelKeys[key]),
           ...common,
           align: "right",
           filterKind: "numberRange",
@@ -2875,7 +2934,7 @@ export function FundShell(props: Props) {
       if (key === "subtype") {
         return {
           key,
-          label: t(DETAIL_COLUMN_LABEL_KEYS[key]),
+          label: t(detailColumnLabelKeys[key]),
           ...common,
           filterText: detailSubtypeLabelOf,
           sortValue: detailSubtypeLabelOf,
@@ -2925,7 +2984,7 @@ export function FundShell(props: Props) {
       if (key === "profit") {
         return {
           key,
-          label: t(DETAIL_COLUMN_LABEL_KEYS[key]),
+          label: t(detailColumnLabelKeys[key]),
           ...common,
           align: "right",
           filterKind: "numberRange",
@@ -2955,7 +3014,7 @@ export function FundShell(props: Props) {
       if (key === "status") {
         return {
           key,
-          label: t(DETAIL_COLUMN_LABEL_KEYS[key]),
+          label: t(detailColumnLabelKeys[key]),
           ...common,
           filterText: statusOf,
           sortValue: statusOf,
@@ -2973,7 +3032,7 @@ export function FundShell(props: Props) {
       if (key === "tags") {
         return {
           key,
-          label: t(DETAIL_COLUMN_LABEL_KEYS[key]),
+          label: t(detailColumnLabelKeys[key]),
           ...common,
           filterText: (e: any) => entryTagsOf(e).map((et: any) => et.Tag?.name ?? et.name ?? "").join(" "),
           render: (e: any) => {
@@ -3003,7 +3062,7 @@ export function FundShell(props: Props) {
       if (key === "note") {
         return {
           key,
-          label: t(DETAIL_COLUMN_LABEL_KEYS[key]),
+          label: t(detailColumnLabelKeys[key]),
           ...common,
           filterText: (e: any) => String(e.note ?? "").trim(),
           sortValue: (e: any) => String(e.note ?? "").trim() || null,
@@ -3018,7 +3077,7 @@ export function FundShell(props: Props) {
 
       return {
         key,
-        label: DETAIL_COLUMN_LABEL_KEYS[key] ? t(DETAIL_COLUMN_LABEL_KEYS[key]) : key,
+        label: detailColumnLabelKeys[key] ? t(detailColumnLabelKeys[key]) : key,
         ...common,
         render: () => null,
       } satisfies AdvancedDataTableColumn<any>;
@@ -3027,6 +3086,7 @@ export function FundShell(props: Props) {
     colWidth,
     cashAccountInfoOf,
     detailAmountColumnLabel,
+    detailColumnLabelKeys,
     detailAmountOf,
     detailNameLabel,
     displayFundName,
@@ -3086,7 +3146,7 @@ export function FundShell(props: Props) {
     return (
       <div className="flex shrink-0 items-center justify-end gap-1">
         <BasicDetailReconcileLockButton entryId={String(e.id ?? "")} reconciled={locked} />
-        {!isUnitsReconcile && !isWealthAccount && e.fundCode && e.fundSubtype === "buy" && statusOf(e) !== "buy_failed" && (e.fundUnits == null || Number(e.fundUnits) === 0) ? <FillNavButton entryId={e.id} fundCode={e.fundCode} action={fillNavAction} onFilled={(data) => handleEntryNavFilled(e, data)} /> : null}
+        {!isUnitsReconcile && !isWealthAccount && !isMetalAccount && e.fundCode && e.fundSubtype === "buy" && statusOf(e) !== "buy_failed" && (e.fundUnits == null || Number(e.fundUnits) === 0) ? <FillNavButton entryId={e.id} fundCode={e.fundCode} action={fillNavAction} onFilled={(data) => handleEntryNavFilled(e, data)} /> : null}
         {!isUnitsReconcile ? (
           e.fundProductType === "wealth" || e.fundProductType === "bond" ? (
             <WealthFormModal
@@ -3371,6 +3431,8 @@ export function FundShell(props: Props) {
               holdings={d.positions.map((p: any) => ({ fundCode: p.fundCode, name: p.name, units: p.units }))}
               allEntries={d.allEntries.map((e: any) => ({ id: e.id, date: fmtDate(e.date), createdAt: e.createdAt, fundConfirmDate: fmtDate(e.fundConfirmDate), fundArrivalDate: fmtDate(e.fundArrivalDate), fundSourceEntryId: e.fundSourceEntryId ?? null, fundCode: entryAssetKey(e), fundName: e.fundName ?? e.productName ?? null, fundSubtype: e.fundSubtype, fundUnits: displayUnitsOf(e), source: e.source ?? null, accountId: e.accountId ?? null, toAccountId: e.toAccountId ?? null, amount: toNumber(e.amount) }))}
               createAction={createAction}
+              propertyAccounts={propertyAccounts}
+              extractAction={extractAction}
               openSignal={positionEntryOpenSignal}
               hideTrigger
               listenCreateEvents={false}
@@ -3381,8 +3443,22 @@ export function FundShell(props: Props) {
 
           <div className="flex items-center gap-2 text-xs text-slate-500 min-h-[24px]">
 
-            {!showCleared && !isMetalAccount && !isWealthAccount && d.positions.length > 0 ? (
-              <RefreshNavButton accountId={accountId} symbols={d.positions.map((p: any) => p.fundCode).filter(Boolean)} />
+            {!showCleared && !isWealthAccount && d.positions.length > 0 ? (
+              isMetalAccount
+                ? <RefreshMetalPriceButton accountId={accountId} />
+                : <RefreshNavButton accountId={accountId} symbols={d.positions.map((p: any) => p.fundCode).filter(Boolean)} />
+            ) : null}
+
+            {!showCleared && isMetalAccount && d.positions.length > 0 ? (
+              <button
+                type="button"
+                onClick={() => openMetalExtract({ accountId })}
+                className="inline-flex h-6 items-center gap-1 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 hover:bg-slate-50"
+                title={t("metalExtract.title")}
+              >
+                <Package className="h-3.5 w-3.5" />
+                {t("metalExtract.entryButton")}
+              </button>
             ) : null}
 
             {!isMetalAccount && !isWealthAccount ? (
@@ -3559,7 +3635,7 @@ export function FundShell(props: Props) {
                     const active = clearedKey === fundCode;
                     return (
                       <article
-                        key={clearedKey || c.fundCode}
+                        key={clearedRowKey(c)}
                         className={`rounded-lg border bg-white px-3 py-3 shadow-sm ${
                           active ? "border-blue-200 bg-blue-50/70" : "border-slate-200"
                         }`}
@@ -3567,10 +3643,10 @@ export function FundShell(props: Props) {
                       >
                         <div className="flex items-start justify-between gap-3">
                           <div className="min-w-0 flex-1">
-                            <div className={`truncate text-sm font-semibold ${active ? "text-blue-700" : "text-slate-900"}`} title={isWealthAccount ? c.name : `${c.name} ${c.fundCode}`}>
+                            <div className={`truncate text-sm font-semibold ${active ? "text-blue-700" : "text-slate-900"}`} title={hideClearedAssetCode ? c.name : `${c.name} ${c.fundCode}`}>
                               {c.name}
                             </div>
-                            {!isWealthAccount && c.fundCode ? <div className="mt-1 text-[11px] tabular-nums text-slate-400">{c.fundCode}</div> : null}
+                            {!hideClearedAssetCode && c.fundCode ? <div className="mt-1 text-[11px] tabular-nums text-slate-400">{c.fundCode}</div> : null}
                           </div>
                           <div className="shrink-0 text-right">
                             <div className={`text-base font-semibold tabular-nums ${pnl(c.historicalProfit)}`}>{formatMoney(c.historicalProfit)}</div>
@@ -3628,7 +3704,7 @@ export function FundShell(props: Props) {
               storageKey={`mmh_fund_shell_cleared_advanced_v1:${isWealthAccount ? "wealth" : isMetalAccount ? "metal" : "fund"}`}
               columns={clearedAdvancedColumns}
               rows={d.clearedPositions}
-              rowKey={(c, index) => positionAssetKey(c) || c.fundCode || String(index)}
+              rowKey={(c, index) => clearedRowKey(c) || String(index)}
               emptyText={noClearedText}
               minTableWidth={Math.max(820, minFundTableWidth("cleared", CLEARED_COLS))}
               rowClassName={(c) => {
@@ -3863,7 +3939,7 @@ export function FundShell(props: Props) {
                                 ? navColumnLabel
                                 : key === "amount"
                                   ? detailAmountColumnLabel
-                                  : t(DETAIL_COLUMN_LABEL_KEYS[key])}
+                                  : t(detailColumnLabelKeys[key])}
                           </span>
                         </label>
                       );
@@ -4041,7 +4117,7 @@ export function FundShell(props: Props) {
                       {/* 手机卡片的操作栏整体放大到 32px：只重写同一组比例变量，按钮本身不写尺寸。 */}
                       <div className="flex items-center gap-1.5 [--mmh-row-action-btn:32px] [--mmh-row-action-icon:19px]">
                         <BasicDetailReconcileLockButton entryId={String(e.id ?? "")} reconciled={locked} asButton={false} />
-                        {!isUnitsReconcile && !isWealthAccount && e.fundCode && e.fundSubtype === "buy" && (e.fundUnits == null || Number(e.fundUnits) === 0) ? (
+                        {!isUnitsReconcile && !isWealthAccount && !isMetalAccount && e.fundCode && e.fundSubtype === "buy" && (e.fundUnits == null || Number(e.fundUnits) === 0) ? (
                           <FillNavButton entryId={e.id} fundCode={e.fundCode} action={fillNavAction} onFilled={(data) => handleEntryNavFilled(e, data)} />
                         ) : null}
                         {!isUnitsReconcile ? (

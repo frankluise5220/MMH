@@ -110,8 +110,11 @@ export const showFeeFor = (s: FundSubtype, pt: ProductType): boolean =>
 /**
  * Whether the T+N confirmation days and confirmation date are shown.
  * Cash dividends only have an arrival date; there is no application confirmation concept.
+ * Precious metals (gold/silver/… accumulation) trade in real time: the trade price and the
+ * quantity are fixed at the moment of purchase, so there is no T+N confirmation step to show.
  */
-export const showConfirmFor = (s: FundSubtype): boolean => (isBuyLike(s) || isRedeemLike(s)) && !isDividend(s);
+export const showConfirmFor = (s: FundSubtype, pt?: ProductType): boolean =>
+  pt === "metal" ? false : (isBuyLike(s) || isRedeemLike(s)) && !isDividend(s);
 
 /**
  * Whether the arrival date is shown (confirmation date + arrivalDays).

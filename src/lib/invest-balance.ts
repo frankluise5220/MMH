@@ -66,6 +66,8 @@ export type PositionDisplayRow = {
 
 type ClearedPositionRow = {
   fundCode: string;
+  /** 贵金属按「品种 + 单位」清仓，同品种不同单位要能区分成两行。 */
+  metalUnitId?: string | null;
   accountId?: string | null;
   stockCode?: string | null;
   market?: string | null;
@@ -830,9 +832,83 @@ export const computePositionDisplay = cache(
     const totalMarketValue = positions.reduce((sum, row) => sum + row.marketValue, 0);
     const totalCost = positions.reduce((sum, row) => sum + row.cost, 0);
     const positionHistoricalProfit = positions.reduce((sum, row) => sum + row.historicalProfit, 0);
-    const clearedHistoricalProfit = 0;
+    // 归零的持仓行不会消失：recalcPreciousMetalPositions 对「交易回放中出现过的品种+单位」
+    // 一律 upsert（quantity 可为 0、cost 归零、historicalProfit 保留累计已实现收益），
+    // 所以「已清仓」不需要新表或新字段，删行只发生在回放中彻底不再出现的 key。
+    const clearedHoldings = metalHoldings.filter((holding) => toNumber(holding.quantity) <= 0.000001);
+    const clearedKeys = new Set(clearedHoldings.map((holding) => `${holding.metalTypeId}::${holding.metalUnitId}`));
+    const clearedStats = new Map<string, { firstBuyDate: string; clearedDate: string; totalBuyAmount: number; totalRedeemAmount: number }>();
+    if (clearedHoldings.length > 0) {
+      // 与 recalcPreciousMetalPositions 同一口径回放交易：买入累计 |amount|，
+      // 卖出 / 提取实物 / 转出累计 max(0, amount - fee)，最后一笔卖出日即清仓日。
+      const clearedTransactions = await prisma.preciousMetalTransaction.findMany({
+        where: {
+          householdId: ctx.householdId,
+          accountId,
+          deletedAt: null,
+          metalTypeId: { in: Array.from(new Set(clearedHoldings.map((holding) => holding.metalTypeId))) },
+        },
+        select: {
+          metalTypeId: true,
+          metalUnitId: true,
+          action: true,
+          tradeDate: true,
+          createdAt: true,
+          amount: true,
+          fee: true,
+          quantity: true,
+        },
+        orderBy: [{ tradeDate: "asc" }, { createdAt: "asc" }, { id: "asc" }],
+      });
+      for (const row of clearedTransactions) {
+        const key = `${row.metalTypeId}::${row.metalUnitId}`;
+        if (!clearedKeys.has(key)) continue;
+        if (row.quantity == null || toNumber(row.quantity) <= 0) continue;
+        const stats = clearedStats.get(key) ?? {
+          firstBuyDate: "",
+          clearedDate: "",
+          totalBuyAmount: 0,
+          totalRedeemAmount: 0,
+        };
+        const tradeDate = dateOnlyString(row.tradeDate);
+        if (row.action === FundSubtype.redeem || row.action === FundSubtype.switch_out) {
+          stats.clearedDate = tradeDate || stats.clearedDate;
+          stats.totalRedeemAmount += Math.max(0, toNumber(row.amount) - (row.fee != null ? toNumber(row.fee) : 0));
+        } else {
+          if (!stats.firstBuyDate || tradeDate < stats.firstBuyDate) stats.firstBuyDate = tradeDate;
+          stats.totalBuyAmount += Math.abs(toNumber(row.amount));
+        }
+        clearedStats.set(key, stats);
+      }
+    }
+    const clearedPositions: ClearedPositionRow[] = clearedHoldings
+      .map((holding) => {
+        const stats = clearedStats.get(`${holding.metalTypeId}::${holding.metalUnitId}`);
+        const totalBuyAmount = roundMoney(stats?.totalBuyAmount ?? 0);
+        const historicalProfit = roundMoney(toNumber(holding.historicalProfit));
+        return {
+          fundCode: holding.metalTypeId,
+          metalUnitId: holding.metalUnitId,
+          accountId,
+          name: `${holding.PreciousMetalType?.name ?? holding.metalTypeName} · ${holding.PreciousMetalUnit?.name ?? holding.metalUnitName}`,
+          units: 0,
+          historicalProfit,
+          totalInvested: totalBuyAmount,
+          returnRate: totalBuyAmount > 0 ? historicalProfit / totalBuyAmount : 0,
+          firstBuyDate: stats?.firstBuyDate ?? "",
+          clearedDate: stats?.clearedDate ?? "",
+          totalBuyAmount,
+          totalRedeemAmount: roundMoney(stats?.totalRedeemAmount ?? 0),
+        };
+      })
+      .sort((left, right) => {
+        const dateCompare = (right.clearedDate || "").localeCompare(left.clearedDate || "");
+        if (dateCompare !== 0) return dateCompare;
+        return left.name.localeCompare(right.name);
+      });
+    const clearedHistoricalProfit = clearedPositions.reduce((sum, row) => sum + row.historicalProfit, 0);
     const totalHistoricalProfit = positionHistoricalProfit + clearedHistoricalProfit;
-    return { positions, clearedPositions: [], totalMarketValue, totalCost, positionHistoricalProfit, clearedHistoricalProfit, totalHistoricalProfit };
+    return { positions, clearedPositions, totalMarketValue, totalCost, positionHistoricalProfit, clearedHistoricalProfit, totalHistoricalProfit };
   }
 
   if (account.investProductType === "wealth" || account.investProductType === "advisor" || account.investProductType === "bond") {

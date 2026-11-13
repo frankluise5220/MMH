@@ -389,6 +389,8 @@ export async function POST(req: NextRequest) {
       ? String(body.numberMasked ?? "").trim() || null
       : null;
     const note = String(body.note ?? "").trim() || null;
+    // 自定义分组标签（2026-11-13）：用户自己起的分类名，可空。
+    const accountGroup = String(body.accountGroup ?? "").trim() || null;
 
     await assertAccountIdentityUnique(prisma, {
       householdId,
@@ -445,6 +447,7 @@ export async function POST(req: NextRequest) {
           billingDayTxPeriod,
           numberMasked,
           note,
+          accountGroup,
           investProductType: investProductType as any,
           fixedAssetType: fixedAssetType as any,
           costBasisMethod: isInvestment && supportsCostBasisMethod(investProductType) ? normalizeCostBasisMethod(body.costBasisMethod) as any : null,
@@ -636,6 +639,8 @@ export async function PUT(req: NextRequest) {
       data.isConsumerLoan = body.isConsumerLoan === true || String(body.isConsumerLoan ?? "").trim().toLowerCase() === "true";
     }
     if (body.note !== undefined) data.note = String(body.note ?? "").trim() || null;
+    // 自定义分组标签（2026-11-13）：自由文本，清空即回到「未分组」。
+    if (body.accountGroup !== undefined) data.accountGroup = String(body.accountGroup ?? "").trim() || null;
 
     if (body.fundUnitsDecimals !== undefined) {
       data.fundUnitsDecimals = normalizeFundUnitsDecimals(body.fundUnitsDecimals ?? existing.fundUnitsDecimals);
@@ -1283,6 +1288,7 @@ export async function GET(req: Request) {
       fixedAssetType: account.fixedAssetType,
       liabilityDirection: account.liabilityDirection,
       note: account.note,
+      accountGroup: account.accountGroup,
       currency: account.currency,
       groupName: account.kind === AccountKind.loan || account.kind === AccountKind.settlement ? "" : account.AccountGroup?.name ?? "",
       institutionName: account.Institution?.name ?? "",

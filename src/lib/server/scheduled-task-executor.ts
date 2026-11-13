@@ -22,6 +22,7 @@ import { revalidateAfterInvestChange, revalidateAfterTxChange } from "@/lib/serv
 import { resolveCategorySnapshot, resolveCreditCardRepaymentCategory } from "@/lib/default-categories";
 import { ENTRY_ORIGIN_SCHEDULED_TASK, isCreditCardRepaymentTransfer } from "@/lib/transaction-semantics";
 import { syncIndependentBusinessTransactionFromTxRecord } from "@/lib/server/business-transactions";
+import { executeMetalScheduledTaskPlan, isMetalPlanTask } from "@/lib/server/metal-plan-tasks";
 
 export type NonFundTaskType = Exclude<ScheduledTaskType, "fund_regular_invest">;
 
@@ -121,6 +122,18 @@ export async function executeNonFundScheduledTaskPlan(params: {
   const task = params.task ?? decodeScheduledTaskMemo(plan.memo);
   if (!isNonFundScheduledTask(task.type)) {
     throw new Error("该执行器仅支持非基金类计划任务");
+  }
+  // 贵金属积存：按金额买入并用当日报价折算克数，与转账/收支的记录结构完全不同，
+  // 所以在进入通用分支前先分流。
+  if (isMetalPlanTask(task.type)) {
+    return executeMetalScheduledTaskPlan({
+      householdId,
+      plan,
+      task,
+      overrideDate: params.overrideDate ?? null,
+      overrideAmount: params.overrideAmount ?? null,
+      now: params.now,
+    });
   }
   const loanRateAdjustments = task.type === "loan_repayment"
     ? resolveLoanRateAdjustments({

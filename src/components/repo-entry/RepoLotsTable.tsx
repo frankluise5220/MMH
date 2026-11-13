@@ -1,8 +1,9 @@
 "use client";
 
 import { useMemo } from "react";
+import { Pencil, Trash2 } from "lucide-react";
 
-import { AdvancedDataTable, type AdvancedDataTableColumn } from "@/components/AdvancedDataTable";
+import { AdvancedDataTable, ROW_ACTION_BUTTON_BOX_CLASS, type AdvancedDataTableColumn } from "@/components/AdvancedDataTable";
 import { formatCurrencyMoney, formatMoney } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
 
@@ -30,6 +31,10 @@ export type RepoLotRow = {
   actualInterest: number | null;
   realizedProfit: number;
   status: "open" | "closed";
+  /** 资金腿分录 id（借出行在前）。删除时取第一条交给 `/api/v1/entries/delete`。 */
+  relatedEntryIds?: string[];
+  /** 借出的资金账户：行内编辑回填逆回购窗口的「现金账户」。 */
+  cashAccountId?: string | null;
 };
 
 /** 股票视图「逆回购」页签的数据包（`loadRepoShellData` 去掉明细行后的部分）。 */
@@ -45,13 +50,29 @@ type Props = {
   rows: RepoLotRow[];
   currency: string;
   minTableWidth?: number;
+  /** 编辑一笔逆回购（打开逆回购窗口回填条款）。不传则不显示编辑按钮。 */
+  onEdit?: (row: RepoLotRow) => void;
+  /** 删除一笔逆回购（连带存单与回款流水）。不传则不显示删除按钮。 */
+  onDelete?: (row: RepoLotRow) => void;
+  /** 正在删除的存单 id（按钮置灰）。 */
+  deletingIds?: ReadonlySet<string>;
+  /** 该存单的现金流水已「对账」锁定：编辑只读、删除置灰。 */
+  lockedIds?: ReadonlySet<string>;
 };
 
 function dash(value: string | null | undefined) {
   return value ? <span className="text-slate-700">{value}</span> : <span className="text-slate-300">-</span>;
 }
 
-export function RepoLotsTable({ rows, currency, minTableWidth = 1080 }: Props) {
+export function RepoLotsTable({
+  rows,
+  currency,
+  minTableWidth = 1140,
+  onEdit,
+  onDelete,
+  deletingIds,
+  lockedIds,
+}: Props) {
   const { t } = useI18n();
 
   const columns = useMemo<AdvancedDataTableColumn<RepoLotRow>[]>(() => [
@@ -66,10 +87,16 @@ export function RepoLotsTable({ rows, currency, minTableWidth = 1080 }: Props) {
       filterText: (row) => `${row.code ?? ""} ${row.name}`,
       render: (row) => (
         <div className="flex min-w-0 flex-col">
-          <span className="truncate text-slate-800">{row.name || "-"}</span>
+          {/* 主行只留品种简称（存单名形如 `GC001 · 1天期（占款3天）`，期限/占款放副行，
+              避免同一格里把「1天」既当品种期限又当占款读）。 */}
+          <span className="truncate text-slate-800">{row.name.split(" · ")[0] || "-"}</span>
           <span className="truncate font-mono text-[11px] tabular-nums text-slate-400">
             {row.code ?? "-"}
-            {row.termDays ? ` · ${row.termDays}${t("repoShell.dayUnit")}` : ""}
+            {/* 期限是品种属性，占款是自然日计息天数；跨周末/假期时占款大于期限，两者都列出。 */}
+            {row.termDays ? ` · ${t("repoShell.termDays", { days: row.termDays })}` : ""}
+            {row.occupiedDays && row.termDays && row.occupiedDays !== row.termDays
+              ? ` · ${t("repoShell.occupiedDaysShort", { days: row.occupiedDays })}`
+              : ""}
           </span>
         </div>
       ),
@@ -288,6 +315,47 @@ export function RepoLotsTable({ rows, currency, minTableWidth = 1080 }: Props) {
       fillHeight
       toolbarMode="none"
       draggableRows={false}
+      rowActions={onEdit || onDelete ? (row) => {
+        const entryId = row.relatedEntryIds?.[0] ?? "";
+        const busy = deletingIds?.has(row.id) ?? false;
+        const locked = lockedIds?.has(row.id) ?? false;
+        return (
+          <>
+            {onEdit ? (
+              <button
+                type="button"
+                disabled={!entryId}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onEdit(row);
+                }}
+                className={`${ROW_ACTION_BUTTON_BOX_CLASS} border-slate-200 bg-white text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40`}
+                title={locked ? t("reconcile.readOnlyNotice") : t("repoShell.editLotTitle")}
+                aria-label={locked ? t("reconcile.readOnlyNotice") : t("repoShell.editLotTitle")}
+              >
+                <Pencil />
+              </button>
+            ) : null}
+            {onDelete ? (
+              <button
+                type="button"
+                disabled={!entryId || busy || locked}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onDelete(row);
+                }}
+                className={`${ROW_ACTION_BUTTON_BOX_CLASS} border-rose-200 bg-rose-50 text-rose-600 hover:border-rose-300 hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-40`}
+                title={locked ? t("reconcile.lockedError") : t("repoShell.deleteLotTitle")}
+                aria-label={locked ? t("reconcile.lockedError") : t("repoShell.deleteLotTitle")}
+              >
+                <Trash2 />
+              </button>
+            ) : null}
+          </>
+        );
+      } : undefined}
+      rowActionsWidth={onEdit && onDelete ? 96 : 64}
+      rowActionsMinWidth={onEdit && onDelete ? 88 : 56}
       summaryRow={summaryRow}
       summaryRowPlacement="footer"
     />

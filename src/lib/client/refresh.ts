@@ -50,6 +50,8 @@ const ENTRY_NEUTRAL_REASONS = new Set([
   "nav-refresh",
   "fund-nav-refilled",
   "stock-price-refresh",
+  // 贵金属行情刷新：只写持仓的 latestPrice / marketValue，明细行一行不动。
+  "metal-price-refresh",
   "invest-header-sync",
 ]);
 

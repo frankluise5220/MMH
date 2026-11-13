@@ -88,9 +88,10 @@ import { SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE,
 import { getInvestmentAccountView, isCashLedgerAccount, isDepositAccount, isIncomeExpensePostingAccount, isIncomeExpensePostingOrDepositAccount, isLoanOrSettlementAccountKind, isPureInvestmentAccount,  isTransferDropdownAccount } from "@/lib/account-kind-utils";
 import { ALL_CASH_DETAIL_SCOPE_ID, cashLedgerAccountIdsOf, cashLedgerFlowAccountId } from "@/lib/all-cash-entries";
 import { normalizeLoanType, resolveLoanTypeValue } from "@/lib/loan-type";
-import { normalizeFundUnitsDecimals } from "@/lib/fund/unit-precision";
+import { resolveQuantityDecimals } from "@/lib/fund/unit-precision";
 import { regularInvestFormAction } from "@/lib/server/sidebar-actions/regular-invest-actions";
 import { fillFundNavFromCache } from "@/lib/server/sidebar-actions/fund-actions";
+import { extractMetalToFixedAsset } from "@/lib/server/sidebar-actions/metal-actions";
 import { createLiabilityTransaction } from "@/lib/server/sidebar-actions/liability-actions";
 import {
   createReimbursement,
@@ -580,7 +581,10 @@ export default async function Home({
   });
   // selectedAccount: per-account, deduplicated at request level.
   const selectedAccount = await loadSelectedAccount(accountId || undefined, hidFilter);
-  const fundUnitsDecimals = normalizeFundUnitsDecimals(selectedAccount?.fundUnitsDecimals, 2);
+  const fundUnitsDecimals = resolveQuantityDecimals(
+    selectedAccount?.investProductType,
+    selectedAccount?.fundUnitsDecimals,
+  );
   const isBillAccount =
     (selectedAccount?.kind === AccountKind.bank_credit || selectedAccount?.kind === AccountKind.loan) ||
     !!selectedAccount?.billingDay;
@@ -1207,6 +1211,7 @@ export default async function Home({
       isSettlementAccount: a.kind === AccountKind.settlement || (a.kind === AccountKind.loan && !!a.counterpartyId),
       isConsumerLoan: a.isConsumerLoan === true,
       investProductType: a.investProductType,
+      fixedAssetType: a.fixedAssetType ?? null,
       liabilityDirection: a.liabilityDirection ?? null,
       billingDay: a.billingDay ?? null,
       subLabel: display.subLabel,
@@ -1467,6 +1472,16 @@ export default async function Home({
     : accountOptions.filter((a) => isTransferDropdownAccount(a));
   const stockAccountSSOptions = buildAccountSSOptions(a => a.kind === "investment" && a.investProductType === "stock");
   const propertyAccountSSOptions = buildAccountSSOptions(a => a.kind === "investment" && a.investProductType === "property");
+  // 提取实物的目标账户只能是「贵金属实物」固定资产账户（fixedAssetType=collectible，
+  // 与 extractMetalToFixedAsset 落库口径一致），房产 / 汽车 / 设备等账户不能接收实物。
+  // 「限制账户类型」设置关掉时 buildAccountSSOptions 会忽略 filter，所以再按 id 兜底过滤一次。
+  const metalPropertyAccountIds = new Set(
+    accountOptions
+      .filter(a => a.kind === "investment" && a.investProductType === "property" && a.fixedAssetType === "collectible")
+      .map(a => a.id),
+  );
+  const metalPropertyAccountSSOptions = buildAccountSSOptions(a => metalPropertyAccountIds.has(a.id))
+    .filter(option => !option.isHeader && metalPropertyAccountIds.has(option.id));
   const liabilityTransferAccountSSOptions = buildAccountSSOptions(a => a.isAggregate !== true && (a.kind === "bank_debit" || a.kind === "cash" || a.kind === "ewallet" || a.kind === "bank_credit"));
   // 不是所有往来对象都能当「往来款对象」—— 常用商户（merchant）排除
   const liabilityCounterpartyOptions = counterparties.filter((counterparty) => isSettlementCounterpartyType(counterparty.type));
@@ -3234,7 +3249,19 @@ export default async function Home({
                       { key: "property-expense", label: t("propertyForm.action.expense") },
                     ],
                   },
-                  { key: "metal", label: t("entry.kind.metal") },
+                  {
+                    key: "metal",
+                    label: t("entry.kind.metal"),
+                    children: [
+                      { key: "metal", label: t("stockPanel.action.buy") },
+                      // 提取实物（贵金属 → 固定资产）是独立动作，入口就在这里（2026-11-13 用户裁定）。
+                      {
+                        key: "metal-extract",
+                        label: t("metalExtract.entryButton"),
+                        disabled: !defaultMetalInvestmentAccountId,
+                      },
+                    ],
+                  },
                   { key: "wealth", label: t("entry.kind.wealth") },
                   {
                     key: "bond",
@@ -3397,6 +3424,8 @@ export default async function Home({
                   amount: e.amount != null ? Number(e.amount) : 0,
                 })) ?? undefined}
                 createAction={createTransaction}
+                propertyAccounts={metalPropertyAccountSSOptions}
+                extractAction={extractMetalToFixedAsset}
                 fundUnitsDecimals={fundUnitsDecimals}
               />
               <InvestmentFormModal
@@ -3802,6 +3831,8 @@ export default async function Home({
               nestedFieldData={nestedFieldData}
               createAction={createTransaction}
               editAction={editInvestment}
+              propertyAccounts={metalPropertyAccountSSOptions}
+              extractAction={extractMetalToFixedAsset}
               fillNavAction={fillFundNavFromCache}
               regularInvestFormAction={regularInvestFormAction}
               lastUsedCashAccount={lastUsedCashAccount}
@@ -3850,6 +3881,8 @@ export default async function Home({
               nestedFieldData={nestedFieldData}
               createAction={createTransaction}
               editAction={editInvestment}
+              propertyAccounts={metalPropertyAccountSSOptions}
+              extractAction={extractMetalToFixedAsset}
               fillNavAction={fillFundNavFromCache}
               regularInvestFormAction={regularInvestFormAction}
               lastUsedCashAccount={lastUsedCashAccount}
@@ -3920,6 +3953,8 @@ export default async function Home({
               nestedFieldData={nestedFieldData}
               createAction={createTransaction}
               editAction={editInvestment}
+              propertyAccounts={metalPropertyAccountSSOptions}
+              extractAction={extractMetalToFixedAsset}
               fillNavAction={fillFundNavFromCache}
               regularInvestFormAction={regularInvestFormAction}
               lastUsedCashAccount={lastUsedCashAccount}

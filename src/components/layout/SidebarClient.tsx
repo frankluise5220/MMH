@@ -85,6 +85,8 @@ type AccountItem = {
   fxRateMissing?: boolean;
   kind: string;
   groupName?: string;
+  /** 账户自定义分组标签（2026-11-13），空 = 未分组。 */
+  accountGroup?: string;
   institution?: string;
   institutionId?: string | null;
   institutionType?: string | null;
@@ -500,7 +502,7 @@ export function SidebarClient({
     sidebarShowAllCashEntries: boolean;
     sidebarShowReimbursements: boolean;
     sidebarCollapsed: boolean;
-    sidebarGroupBy: "kind" | "institution";
+    sidebarGroupBy: "kind" | "institution" | "accountGroup";
   };
 }) {
   const router = useRouter();
@@ -538,7 +540,7 @@ export function SidebarClient({
   const [showAllCashEntries, setShowAllCashEntries] = useState(() => initialPreferences?.sidebarShowAllCashEntries ?? getSidebarShowAllCashEntriesPreference());
   const [showReimbursements, setShowReimbursements] = useState(() => initialPreferences?.sidebarShowReimbursements ?? getSidebarShowReimbursementsPreference());
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => initialPreferences?.sidebarCollapsed ?? getSidebarCollapsedPreference());
-  const [sidebarGroupBy, setSidebarGroupBy] = useState<"kind" | "institution">(() => initialPreferences?.sidebarGroupBy ?? getSidebarGroupPreference());
+  const [sidebarGroupBy, setSidebarGroupBy] = useState<"kind" | "institution" | "accountGroup">(() => initialPreferences?.sidebarGroupBy ?? getSidebarGroupPreference());
   const accountsScrollRef = useRef<HTMLDivElement | null>(null);
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set());
   const [collapsedAssetSubgroupKeys, setCollapsedAssetSubgroupKeys] = useState<Set<string>>(new Set());
@@ -867,7 +869,12 @@ export function SidebarClient({
   }
 
   function cycleSidebarGroupBy() {
-    const next = sidebarGroupBy === "kind" ? "institution" : "kind";
+    // 三档循环：类型 → 机构 → 分组标签 → 类型。
+    const next = sidebarGroupBy === "kind"
+      ? "institution"
+      : sidebarGroupBy === "institution"
+        ? "accountGroup"
+        : "kind";
     setSidebarGroupBy(next);
     setSidebarGroupPreference(next);
   }
@@ -1119,15 +1126,21 @@ export function SidebarClient({
       }
       return liabilitySections;
     };
-    if (sidebarGroupBy === "institution") {
+    // 机构 / 自定义分组标签两档：都是「按一个字符串字段切节」，只是取值来源不同。
+    // 分组标签是用户自己起的名字（2026-11-13），空值归到「未分组」并排在最后。
+    if (sidebarGroupBy === "institution" || sidebarGroupBy === "accountGroup") {
+      const groupByLabel = sidebarGroupBy === "accountGroup";
+      const ungroupedLabel = groupByLabel ? t("sidebar.ungroupedAccounts") : t("insurance.noInstitution");
       const liabilityKinds = new Set(["loan", "loan_summary", REIMBURSEMENT_SUMMARY_KIND]);
       const map = new Map<string, SidebarSection>();
       for (const item of visibleItems) {
         if (liabilityKinds.has(item.kind)) continue;
         const label = item.kind === FIXED_ASSET_SUMMARY_KIND
           ? FIXED_ASSET_SECTION
-          : item.institution?.trim() || t("insurance.noInstitution");
-        const key = `institution:${label}`;
+          : groupByLabel
+            ? item.accountGroup?.trim() || ungroupedLabel
+            : item.institution?.trim() || ungroupedLabel;
+        const key = `${sidebarGroupBy}:${label}`;
         const existing = map.get(key);
         if (existing) {
           existing.accounts.push(item);
@@ -1142,7 +1155,7 @@ export function SidebarClient({
           });
         }
       }
-      const institutionSections = Array.from(map.values())
+      const fieldSections = Array.from(map.values())
         .map((section) => ({
           ...section,
           accounts: section.accounts.length >= SIDEBAR_USAGE_SORT_MIN_GROUP_SIZE
@@ -1153,8 +1166,14 @@ export function SidebarClient({
               })
             : section.accounts,
         }))
-        .sort((a, b) => a.label.localeCompare(b.label, "zh-Hans-CN"));
-      return [...institutionSections, ...buildLiabilitySections()];
+        .sort((a, b) => {
+          // 未分组的账户永远垫底，避免混在一堆用户自定义名字中间找。
+          const aUngrouped = a.label === ungroupedLabel;
+          const bUngrouped = b.label === ungroupedLabel;
+          if (aUngrouped !== bUngrouped) return aUngrouped ? 1 : -1;
+          return a.label.localeCompare(b.label, "zh-Hans-CN");
+        });
+      return [...fieldSections, ...buildLiabilitySections()];
     }
 
     const groups = [
@@ -1279,7 +1298,7 @@ export function SidebarClient({
   }
 
   function sidebarItemRowLabel(it: AccountItem) {
-    return sidebarGroupBy === "institution" && it.kind !== "loan_summary" && it.kind !== REIMBURSEMENT_SUMMARY_KIND
+    return sidebarGroupBy !== "kind" && it.kind !== "loan_summary" && it.kind !== REIMBURSEMENT_SUMMARY_KIND
       ? it.kind === FIXED_ASSET_SUMMARY_KIND
         ? it.label
         : it.kind === "insurance"
@@ -1698,8 +1717,8 @@ export function SidebarClient({
           <div className="flex items-center gap-1">
             <button type="button"
               onClick={cycleSidebarGroupBy}
-              className={`rounded-md p-1 transition-colors ${sidebarGroupBy === "institution" ? "bg-slate-100 text-slate-600" : "text-slate-300 hover:bg-slate-50 hover:text-slate-500"}`}
-              title={`${t("sidebar.ownerFilterTitle")}：${sidebarGroupBy === "kind" ? t("sidebar.groupByKind") : t("sidebar.groupByInstitution")}`}
+              className={`rounded-md p-1 transition-colors ${sidebarGroupBy !== "kind" ? "bg-slate-100 text-slate-600" : "text-slate-300 hover:bg-slate-50 hover:text-slate-500"}`}
+              title={`${t("sidebar.ownerFilterTitle")}：${sidebarGroupBy === "kind" ? t("sidebar.groupByKind") : sidebarGroupBy === "institution" ? t("sidebar.groupByInstitution") : t("sidebar.groupByAccountGroup")}`}
             >
               <Repeat size={14} />
             </button>

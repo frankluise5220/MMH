@@ -42,6 +42,7 @@ import {
 import { useI18n } from "@/lib/i18n";
 import { formatAmountDraft } from "@/lib/format";
 import { readAccountDisplaySettings } from "@/lib/client/account-display-settings";
+import { getAccountDropdownGroupByPreference } from "@/lib/client/appPreferences";
 
 type I18nT = (key: string, params?: Record<string, string | number>) => string;
 
@@ -1510,7 +1511,7 @@ export function EmailSettingsPanel({
     () => {
       if (!hasImportPreview) return [];
       const displayById = new Map(previewDebitAccountDisplayOptions.map((account) => [account.id, account]));
-      return buildGroupedAccountOptions(previewDebitAccountDisplayOptions).map((option) => {
+      return buildGroupedAccountOptions(previewDebitAccountDisplayOptions, getAccountDropdownGroupByPreference()).map((option) => {
         if (option.isHeader) return option;
         const account = displayById.get(option.id);
         return {

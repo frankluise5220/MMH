@@ -176,6 +176,10 @@ type RegularInvestPlanView = {
   taskCategoryId?: string | null;
   taskCategoryName?: string | null;
   taskInsuranceProductId?: string | null;
+  taskMetalTypeId?: string | null;
+  taskMetalTypeName?: string | null;
+  taskMetalUnitId?: string | null;
+  taskMetalUnitName?: string | null;
   taskNote?: string | null;
   taskAnnualRate?: number | null;
   taskRepaymentMethod?: string | null;
@@ -849,6 +853,7 @@ export function RegularInvestClient({
   initialPlans,
   installmentPlans,
   investmentAccounts,
+  metalAccounts,
   cashAccounts,
   loanAccounts,
   transferTargetAccounts,
@@ -873,6 +878,8 @@ export function RegularInvestClient({
   /** 正在执行的信用卡分期（服务端已算好进度与下一期），独立页签只读展示。 */
   installmentPlans: CreditInstallmentPlanView[];
   investmentAccounts: AccountDisplayOption[];
+  /** 贵金属投资账户，供「贵金属积存」页签使用 */
+  metalAccounts: AccountDisplayOption[];
   cashAccounts: AccountDisplayOption[];
   loanAccounts: AccountDisplayOption[];
   transferTargetAccounts: AccountDisplayOption[];
@@ -962,11 +969,13 @@ export function RegularInvestClient({
     const accountCandidates =
       taskType === "fund_regular_invest"
         ? investmentAccounts
-        : taskType === "loan_repayment"
-          ? loanAccounts
-          : taskType === "income" || taskType === "expense"
-            ? ordinaryAccounts
-            : transferTargetAccounts;
+        : taskType === "metal_regular_invest"
+          ? metalAccounts
+          : taskType === "loan_repayment"
+            ? loanAccounts
+            : taskType === "income" || taskType === "expense"
+              ? ordinaryAccounts
+              : transferTargetAccounts;
     const fundAccount = accountCandidates.find((account) => account.id === plan.accountId);
     const cashAccount = cashAccounts.find((account) => account.id === plan.cashAccountId);
     return {
@@ -2137,6 +2146,7 @@ export function RegularInvestClient({
               <RegularInvestForm
                 accountId={investmentAccounts[0]?.id ?? ""}
                 investmentAccounts={investmentAccounts}
+                metalAccounts={metalAccounts}
                 cashAccounts={cashAccounts}
                 loanAccounts={loanAccounts}
                 transferTargetAccounts={transferTargetAccounts}
@@ -2497,6 +2507,10 @@ export function RegularInvestClient({
           id: editPlan.id,
           taskType: getPlanTaskType(editPlan),
           taskInsuranceProductId: editPlan.taskInsuranceProductId ?? null,
+          taskMetalTypeId: editPlan.taskMetalTypeId ?? null,
+          taskMetalTypeName: editPlan.taskMetalTypeName ?? null,
+          taskMetalUnitId: editPlan.taskMetalUnitId ?? null,
+          taskMetalUnitName: editPlan.taskMetalUnitName ?? null,
           taskCategoryId: editPlan.taskCategoryId ?? null,
           taskCategoryName: editPlan.taskCategoryName ?? null,
           taskNote: editPlan.taskNote ?? null,
@@ -2531,6 +2545,7 @@ export function RegularInvestClient({
         editAccountLabel={editPlan ? (editPlan.accountLabel || editPlan.accountName || undefined) : undefined}
         repaymentSchedule={editPlan?.repaymentSchedule ?? null}
         investmentAccounts={investmentAccounts}
+        metalAccounts={metalAccounts}
         cashAccounts={cashAccounts}
         loanAccounts={loanAccounts}
         transferTargetAccounts={transferTargetAccounts}

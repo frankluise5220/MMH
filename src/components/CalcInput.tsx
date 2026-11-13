@@ -69,6 +69,12 @@ type CalcInputProps = {
   label?: string;
   precision?: number;
   disabled?: boolean;
+  /**
+   * 只读汇总框：值由别的字段算出来，用户不能改，但仍要长得像计算框
+   * （同一套 form-input 边框 / 等宽数字），所以不走 `disabled`——禁用态无法选中复制数值。
+   * 只读时自动隐藏计算器按钮：算出来的结果写不回去，弹出来只会误导。
+   */
+  readOnly?: boolean;
   hideCalculator?: boolean;
   inputClassName?: string;
   ariaLabel?: string;
@@ -96,6 +102,7 @@ export const CalcInput = forwardRef<HTMLInputElement, CalcInputProps>(function C
   label,
   precision = 2,
   disabled = false,
+  readOnly = false,
   hideCalculator = false,
   inputClassName,
   ariaLabel,
@@ -253,16 +260,17 @@ export const CalcInput = forwardRef<HTMLInputElement, CalcInputProps>(function C
         inputMode={allowAmountFieldReferences ? "text" : "decimal"}
         value={visibleValue}
         disabled={disabled}
+        readOnly={readOnly}
         onChange={(e) => onChange(sanitizeCalcInputValue(e.target.value, allowAmountFieldReferences))}
         onFocus={() => setDashPlaceholderCleared(true)}
-        onKeyDown={handleInputKeyDown}
-        onBlur={handleInputBlur}
+        onKeyDown={readOnly ? undefined : handleInputKeyDown}
+        onBlur={readOnly ? () => setDashPlaceholderCleared(false) : handleInputBlur}
         placeholder={placeholder}
         autoFocus={autoFocus}
         aria-label={ariaLabel}
         style={{
           caretColor: "var(--foreground)",
-          ...(bare || hideCalculator
+          ...(bare || hideCalculator || readOnly
             ? {}
             : { paddingRight: compact ? TRIGGER_RESERVED_COMPACT_PX : TRIGGER_RESERVED_PX }),
         }}
@@ -273,7 +281,7 @@ export const CalcInput = forwardRef<HTMLInputElement, CalcInputProps>(function C
               // 紧凑模式：视觉完全由调用方（表格单元格样式）决定，这里只留
               // 计算器按钮的右侧留白（`style.paddingRight`）与禁用态。
               ? `placeholder:text-slate-300 caret-slate-800 disabled:cursor-not-allowed disabled:text-slate-400 ${inputClassName ?? ""}`
-              : `form-input font-mono placeholder:text-slate-300 caret-slate-800 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500 ${inputClassName ?? ""}`
+              : `form-input font-mono placeholder:text-slate-300 caret-slate-800 disabled:cursor-not-allowed disabled:bg-slate-50 disabled:text-slate-500 ${readOnly ? "bg-slate-50 text-slate-900" : ""} ${inputClassName ?? ""}`
         }
       />
 
@@ -283,7 +291,7 @@ export const CalcInput = forwardRef<HTMLInputElement, CalcInputProps>(function C
           按钮**不带任何边框**（包括左侧分隔线）：内缩后这些边框会与输入框自身的边框平行贴在一起
           （右侧能看到两层描边 + 抗锯齿造成的“模糊重影”），而左侧一条竖线与整体外框不搭。
           外框（描边 + 红/蓝环）统一由输入框负责，图标本身就够区分按钮。 */}
-      {compact && !hideCalculator && (
+      {compact && !hideCalculator && !readOnly && (
         <div className="absolute right-0 top-1/2 -translate-y-1/2">
           <button
             ref={triggerRef}
@@ -298,7 +306,7 @@ export const CalcInput = forwardRef<HTMLInputElement, CalcInputProps>(function C
         </div>
       )}
 
-      {!bare && !compact && !hideCalculator && <div className="absolute right-px top-px">
+      {!bare && !compact && !hideCalculator && !readOnly && <div className="absolute right-px top-px">
         <button
           ref={triggerRef}
           type="button"

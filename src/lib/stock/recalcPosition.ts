@@ -87,6 +87,9 @@ export async function computeStockHoldingsAsOfDate(accountId: string, asOfDate: 
       tradeDate: { lte: asOfDate },
       ...securityFilter,
     },
+    // 只要回放数量用的这几列：整行取会把金额、费率、备注、审计列全搬一遍，
+    // 而卖出/分红页签每次打开都要走这一支，历史交易一多就明显拖慢下拉。
+    select: { securityId: true, market: true, stockCode: true, stockName: true, action: true, quantity: true },
     orderBy: [{ tradeDate: "asc" }, { createdAt: "asc" }, { id: "asc" }],
   });
   return summarizeStockPositionQuantity(rows);
@@ -193,6 +196,11 @@ export async function recalcStockPositions(accountId: string, securityIds?: stri
         current.cost = roundMoney(current.cost - mergeCost);
       }
       realizedProfitById.set(row.id, null);
+    } else if (row.action === StockTransactionAction.tax_refund) {
+      // 券商退还多扣的红利税：钱回到证券资金账户，历史收益按退税金额回补。
+      const refund = netAmount ?? grossAmount;
+      current.historicalProfit += refund;
+      realizedProfitById.set(row.id, refund);
     } else {
       const adjustment = netAmount ?? grossAmount;
       current.historicalProfit -= adjustment;
