@@ -115,7 +115,12 @@ export function AddNavButton({
         setOpen(false);
         setFundCode("");
         setNav("");
-        dispatchFinanceDataChanged({ reason: wealthMode ? "wealth-nav-add" : "nav-add" });
+        // 带上账户，让同账本里别的账户视图不必跟着重取；本账户的持仓表
+        // 会因 NAV_ONLY_REASONS 重新拉一次 shell-data 以显示新净值/市值。
+        dispatchFinanceDataChanged({
+          reason: wealthMode ? "wealth-nav-add" : "nav-add",
+          accountIds: wealthMode ? [accountId] : undefined,
+        });
       } else {
         window.alert(data.error ?? t("addNav.addFailed"));
       }

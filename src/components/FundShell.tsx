@@ -145,6 +145,19 @@ function compactNavDate(value: string | null | undefined) {
   return /^\d{4}-\d{2}-\d{2}$/.test(date) ? `${date.slice(5, 7)}.${date.slice(8, 10)}` : String(value ?? "");
 }
 
+/**
+ * 只改行情 / 净值、不动任何明细行的事件。
+ *
+ * 它们被 `ENTRY_NEUTRAL_REASONS` 判为「不用刷明细」，但持仓表显示的净值、
+ * 市值、浮盈全部由这些值算出来：手动录入净值后若跟着明细行一起跳过重取，
+ * 用户保存成功却看到表格毫无变化。所以本表对这几个 reason 仍要重取。
+ */
+const NAV_ONLY_REASONS = new Set([
+  "nav-add",
+  "wealth-nav-add",
+  "nav-refresh",
+]);
+
 function isGenericFundName(name: string, code: string) {
   const value = name.trim();
   if (!value || value === code) return true;
@@ -1551,10 +1564,15 @@ export function FundShell(props: Props) {
   useEffect(() => {
     const onFundChanged = (event: Event) => {
       const detail = (event as CustomEvent<FinanceDataChangedDetail>).detail ?? {};
+      // 行情 / 净值类事件不改明细行，`financeChangeNeedsRowRefresh` 会判 false；
+      // 但它们改的是持仓的净值、市值、浮盈 —— 这些正是本表要显示的列。
+      // 手动录入净值后如果跟着明细行一起跳过重取，表格里就还是旧净值，
+      // 用户看到的是「保存成功但界面毫无变化」。所以这类事件必须重取。
+      const positionValueOnly = NAV_ONLY_REASONS.has(String(detail.reason ?? ""));
       // 对账锁只改 reconciledAt / reconciledBalance，行内锁标记由
-      // `useEntryReconcileState` 就地更新；行情 / 净值由 FundShell 自己重取。
+      // `useEntryReconcileState` 就地更新。
       // balanceChanged === false 只说明余额字段没变，备注 / 分类仍可能改了，不能整表跳过。
-      if (!financeChangeNeedsRowRefresh(detail)) return;
+      if (!positionValueOnly && !financeChangeNeedsRowRefresh(detail)) return;
       // 事件点名了账户而本基金账户不在其中时，1.7MB 的 shell-data 重取不会带来变化。
       const currentAccountId = accountIdRef.current;
       if (currentAccountId && !financeChangeAffectsAccount(detail, currentAccountId)) return;
