@@ -9,6 +9,7 @@ import { formatCurrencyMoney, formatMoney, formatPercent } from "@/lib/format";
 import { pnlClassFromRedUp } from "@/lib/client/colors";
 import { showBlockingLoading } from "@/lib/client/blocking-loading";
 import { showConfirmDialog } from "@/lib/client/confirm-dialog";
+import { setSelectedStock } from "@/lib/client/stock-selection";
 import {
   dispatchFinanceDataChanged,
   FINANCE_DATA_CHANGED_EVENT,
@@ -16,9 +17,16 @@ import {
   financeChangeTouchesEntries,
   type FinanceDataChangedDetail,
 } from "@/lib/client/refresh";
+import {
+  getRepoOccupiedDaysModePreference,
+  setRepoOccupiedDaysModePreference,
+  type RepoOccupiedDaysMode,
+} from "@/lib/client/appPreferences";
 import { recordRecentAccounts } from "@/lib/client/recentAccounts";
+import { callDeleteEntries, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { useI18n } from "@/lib/i18n";
 import { useDetailPagination } from "@/lib/client/use-detail-pagination";
+import { useEntryReconcileState } from "@/lib/client/use-entry-reconcile-state";
 import { FOLDER_TAB_STRIP, FolderTabRuler, folderTabClass, folderTabNeighbors } from "@/app/login/FolderTabs";
 import { ResizableVerticalSplit } from "@/components/ResizableVerticalSplit";
 import { StockFeeRuleSettingsButton } from "@/components/StockFeeRuleSettingsButton";
@@ -31,7 +39,7 @@ import { BatchReplacePopoverButton, type BatchReplaceFieldConfig } from "@/compo
 import { BusinessLinkActionButton } from "@/components/BusinessLinkActionButton";
 import { DetailTablePaginationControls } from "@/components/DetailTablePaginationControls";
 import { StockHoldingRowActions } from "@/components/StockHoldingRowActions";
-import { RepoLotsTable, type StockRepoPanelData } from "@/components/repo-entry/RepoLotsTable";
+import { RepoLotsTable, type RepoLotRow, type StockRepoPanelData } from "@/components/repo-entry/RepoLotsTable";
 import { HANDSET_HIDDEN_CLASS, ViewExcelImportMenuButton, exportRowsToXlsx } from "@/components/ViewExcelImportMenuButton";
 import { todayDateLocalYmd } from "@/lib/date-utils";
 
@@ -166,6 +174,7 @@ const ACTION_LABEL_KEYS: Record<string, string> = {
   merge_share: "stockPanel.action.merge_share",
   fee_adjustment: "stockPanel.action.fee_adjustment",
   tax_adjustment: "stockPanel.action.tax_adjustment",
+  tax_refund: "stockPanel.action.tax_refund",
 };
 
 function actionLabel(t: (key: string) => string, action: string) {
@@ -209,6 +218,7 @@ function cashAmount(tx: StockTransaction) {
   if (tx.action === "buy") return -(gross + fees);
   if (tx.action === "sell" || tx.action === "dividend") return net ?? Math.max(0, gross - fees);
   if (tx.action === "fee_adjustment" || tx.action === "tax_adjustment") return -(net ?? gross);
+  if (tx.action === "tax_refund") return net ?? gross;
   return 0;
 }
 
@@ -238,12 +248,15 @@ export function StockHoldingsPanel({
   positions: initialPositions,
   clearedPositions: initialClearedPositions = [],
   initialShowCleared = false,
+  /** 首屏直接落在「逆回购」页签：胶囊菜单的「股票」是进逆回购界面的入口，URL 用 `stockTab=repo` 表达。 */
+  initialRepoOpen = false,
   cashBalance,
   totalMarketValue,
   totalCost,
   isRedUp,
   stockCashAccountId,
   stockCashAccountName,
+  stockCashAccountHoverTitle,
   accountOptions = [],
   repo = null,
 }: {
@@ -253,12 +266,15 @@ export function StockHoldingsPanel({
   positions: StockPosition[];
   clearedPositions?: StockPosition[];
   initialShowCleared?: boolean;
+  initialRepoOpen?: boolean;
   cashBalance: number;
   totalMarketValue: number;
   totalCost: number;
   isRedUp: boolean;
   stockCashAccountId?: string;
   stockCashAccountName?: string | null;
+  /** 账户显示格式省略的字段（所有人/种类/币种）靠悬浮补全。 */
+  stockCashAccountHoverTitle?: string | null;
   /** 逆回购存单（首屏由服务端 `loadRepoShellData` 给出，之后按需自取）。 */
   repo?: StockRepoPanelData | null;
   /** 账户下拉/明细列统一走「账户显示格式」：这里只用来把交易行的账户 id 翻成标签。 */
@@ -290,9 +306,28 @@ export function StockHoldingsPanel({
   const [showCleared, setShowCleared] = useState(initialShowCleared);
   // 逆回购页签：与「持仓/已清仓」并列的第三种视图。逆回购只有一个动作（借出），
   // 到期自动回款，所以这里只展示存单，不提供任何「回款」操作。
-  const [repoOpen, setRepoOpen] = useState(false);
+  // 首屏是否直接落在逆回购由 URL `stockTab=repo` 决定（胶囊菜单的「股票」带这个参数进来）。
+  const [repoOpen, setRepoOpen] = useState(initialRepoOpen);
   const [repoData, setRepoData] = useState<StockRepoPanelData | null>(repo ?? null);
   const [repoLoading, setRepoLoading] = useState(false);
+  /** 正在删除的逆回购存单 id（行内删除按钮置灰）。 */
+  const [repoDeletingIds, setRepoDeletingIds] = useState<Set<string>>(new Set());
+  // 逆回购存单背后的现金流水若已「对账」锁定，行内编辑只读、删除置灰 —— 与其它资产视图同口径。
+  const repoEntryIds = useMemo(
+    () => (repoData?.lots ?? []).map((lot) => lot.relatedEntryIds?.[0]),
+    [repoData],
+  );
+  const { isReconciled: isRepoEntryReconciled } = useEntryReconcileState(repoEntryIds);
+  const repoLockedIds = useMemo(() => {
+    const locked = new Set<string>();
+    for (const lot of repoData?.lots ?? []) {
+      if (isRepoEntryReconciled(lot.relatedEntryIds?.[0])) locked.add(lot.id);
+    }
+    return locked;
+  }, [isRepoEntryReconciled, repoData]);
+  // 占款口径：账本里「预计利息」要对得上对账单还是只看合约期限，由用户自己选
+  // （三种算法的差别见 RepoOccupiedDaysMode）。cookie 是 DB 的镜像，服务端落账读 DB。
+  const [repoOccupiedMode, setRepoOccupiedMode] = useState<RepoOccupiedDaysMode>("actual");
   const [marketValue, setMarketValue] = useState(totalMarketValue);
   const [cost, setCost] = useState(totalCost);
   const [selectedKey, setSelectedKey] = useState("");
@@ -333,6 +368,27 @@ export function StockHoldingsPanel({
       setSelectedIds(new Set());
     }
   }, [selectedKey, selectedPosition]);
+
+  /**
+   * 把「这里选中的那只股票」交给记账入口（胶囊菜单的卖出/分红）。
+   * 选中状态是本组件的 state，出不了组件树；页面是 RSC，没有 props 通路能把
+   * 它送到 UnifiedEntryLauncher，所以用一个模块级快照中转，弹窗打开时默认选中它。
+   */
+  useEffect(() => {
+    setSelectedStock(selectedPosition
+      ? {
+          accountId,
+          securityId: selectedPosition.securityId ?? "",
+          market: selectedPosition.market ?? "CN",
+          stockCode: selectedPosition.stockCode,
+          stockName: selectedPosition.name?.trim() || selectedPosition.stockCode,
+          quantity: selectedPosition.units,
+        }
+      : null);
+  }, [accountId, selectedPosition]);
+
+  // 离开持仓页（切换账户/视图）就别再带着上一页的选择。
+  useEffect(() => () => setSelectedStock(null), []);
 
   const loadTransactions = useCallback(async (position: StockPosition, force = false) => {
     const market = position.market ?? "";
@@ -669,6 +725,113 @@ export function StockHoldingsPanel({
   }, [accountId]);
 
   /**
+   * 编辑一笔逆回购：与明细页那行「编辑」派发同一个事件（`mmh:repo:edit`），由逆回购窗口按条款回填。
+   * 逆回购的条款（品种/本金/成交日/期限/到期日）只存在存单上，这里直接带上，窗口再按 lotId 校准一次。
+   */
+  const editRepoLot = useCallback((lot: RepoLotRow) => {
+    const entryId = lot.relatedEntryIds?.[0];
+    if (!entryId) return;
+    window.dispatchEvent(
+      new CustomEvent("mmh:repo:edit", {
+        detail: {
+          entryId,
+          lotId: lot.id,
+          stockAccountId: accountId || null,
+          cashAccountId: lot.cashAccountId ?? null,
+          code: lot.code,
+          principal: lot.principal,
+          tradeDate: lot.startDate,
+          termDays: lot.termDays,
+          maturityDate: lot.maturityDate,
+          settled: lot.status === "closed",
+          reconciledReadOnly: repoLockedIds.has(lot.id),
+        },
+      }),
+    );
+  }, [accountId, repoLockedIds]);
+
+  /**
+   * 删除一笔逆回购。删的是「借出」那条资金流水，服务端会连带软删存单和已回款子行，
+   * 并把本金/利息回补到资金账户 —— 与明细页删除走同一条链路（`entries/delete`）。
+   *
+   * 这里固定传 `linkedAction: "deleteBusiness"`：逆回购的资金腿和存单是一体的，
+   * 只删资金流水会留下「账上钱回来了、存单还挂在在借」的幽灵记录，所以不给这个选项，
+   * 而是在确认框里写清「存单和回款一起删、余额回补」。
+   */
+  const deleteRepoLot = useCallback(async (lot: RepoLotRow) => {
+    const entryId = lot.relatedEntryIds?.[0];
+    if (!entryId || repoDeletingIds.has(lot.id)) return;
+    if (repoLockedIds.has(lot.id)) {
+      window.alert(t("reconcile.lockedError"));
+      return;
+    }
+    const confirmed = await showConfirmDialog({
+      title: t("repoShell.deleteConfirmTitle"),
+      message: t("repoShell.deleteConfirm", {
+        name: lot.name,
+        principal: formatCurrencyMoney(lot.principal, currency),
+        startDate: lot.startDate ?? "-",
+      }),
+      confirmLabel: t("common.delete"),
+      cancelLabel: t("common.cancel"),
+      tone: "danger",
+    });
+    if (!confirmed) return;
+    setRepoDeletingIds((prev) => new Set(prev).add(lot.id));
+    const closeBlocking = showBlockingLoading(t("common.batchDeleting"));
+    try {
+      const result = await callDeleteEntries({ entryIds: [entryId], linkedAction: "deleteBusiness" });
+      if (!result.ok) {
+        window.alert(result.error);
+        return;
+      }
+      dispatchFinanceDataChanged({
+        reason: "repo-lot-delete",
+        accountIds: getDeleteRefreshAccountIds(result),
+        entryIds: getDeleteRefreshEntryIds(result, [entryId]),
+      });
+      await loadRepoOverview();
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : String(error));
+    } finally {
+      closeBlocking();
+      setRepoDeletingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(lot.id);
+        return next;
+      });
+    }
+  }, [currency, loadRepoOverview, repoDeletingIds, repoLockedIds, t]);
+
+  // cookie 在服务端渲染时读不到，挂载后再校准一次，避免选择框停在默认值。
+  useEffect(() => {
+    setRepoOccupiedMode(getRepoOccupiedDaysModePreference());
+  }, []);
+
+  // 切换占款口径：先更新本机镜像（录入预览立即跟上），再落库并刷新列表里的利息。
+  const changeRepoOccupiedMode = useCallback(
+    async (next: RepoOccupiedDaysMode) => {
+      const prev = repoOccupiedMode;
+      setRepoOccupiedMode(next);
+      setRepoOccupiedDaysModePreference(next);
+      try {
+        const res = await fetch("/api/v1/settings/app-preferences", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ repoOccupiedDaysMode: next }),
+        });
+        const data = (await res.json().catch(() => null)) as { ok?: boolean } | null;
+        if (!data?.ok) throw new Error("save failed");
+        await loadRepoOverview();
+      } catch {
+        setRepoOccupiedMode(prev);
+        setRepoOccupiedDaysModePreference(prev);
+      }
+    },
+    [loadRepoOverview, repoOccupiedMode],
+  );
+
+  /**
    * 进页签先补一次到期回款：「第二天自动回购」不能依赖用户手动点。
    * 回款是幂等的，多刷几次不会重复入账。
    */
@@ -684,6 +847,16 @@ export function StockHoldingsPanel({
     }
   }, [accountId]);
 
+  // 首屏直接落在逆回购（URL `stockTab=repo`）时也要跑一次「到期自动回款 + 重取存单」，
+  // 与点页签进入走同一条路径；否则刷新后表里还是服务端快照，已到期的存单仍显示未回款。
+  useEffect(() => {
+    if (!initialRepoOpen) return;
+    void (async () => {
+      await settleDueRepos();
+      await loadRepoOverview();
+    })();
+  }, [initialRepoOpen, loadRepoOverview, settleDueRepos]);
+
   function switchToRepo() {
     setRepoOpen(true);
     setShowCleared(false);
@@ -692,11 +865,18 @@ export function StockHoldingsPanel({
     setTransactionsError("");
     setSelectedIds(new Set());
     detailPager.goPage(1);
-    if (showCleared) {
-      const url = new URL(window.location.href);
+    // URL 同步：`stockTab=repo` 让刷新、以及从胶囊菜单「股票」进来时都直接落在逆回购页签。
+    const url = new URL(window.location.href);
+    let urlChanged = false;
+    if (url.searchParams.get("showCleared") === "1") {
       url.searchParams.delete("showCleared");
-      replaceCurrentRouteUrl(`${url.pathname}${url.search}${url.hash}`);
+      urlChanged = true;
     }
+    if (url.searchParams.get("stockTab") !== "repo") {
+      url.searchParams.set("stockTab", "repo");
+      urlChanged = true;
+    }
+    if (urlChanged) replaceCurrentRouteUrl(`${url.pathname}${url.search}${url.hash}`);
     void (async () => {
       await settleDueRepos();
       await loadRepoOverview();
@@ -713,7 +893,15 @@ export function StockHoldingsPanel({
       if (!repoOpen) switchToRepo();
       return;
     }
-    if (repoOpen) setRepoOpen(false);
+    if (repoOpen) {
+      setRepoOpen(false);
+      // 切出逆回购时把 URL 标记一起清掉，否则刷新会又弹回逆回购页签。
+      const url = new URL(window.location.href);
+      if (url.searchParams.get("stockTab") === "repo") {
+        url.searchParams.delete("stockTab");
+        replaceCurrentRouteUrl(`${url.pathname}${url.search}${url.hash}`);
+      }
+    }
     if (id === "cleared") {
       if (!showCleared) switchPositionTab(true);
       return;
@@ -795,7 +983,7 @@ export function StockHoldingsPanel({
       filterText: (p) => String(p.cost),
       filterNumber: (p) => p.cost,
       sortValue: (p) => p.cost,
-      render: (p) => <span className="text-slate-700">{formatCurrencyMoney(p.cost, currency)}</span>,
+      render: (p) => <span className={pnlClass(p.cost, isRedUp)}>{formatCurrencyMoney(p.cost, currency)}</span>,
     },
     {
       key: "nav",
@@ -904,7 +1092,7 @@ export function StockHoldingsPanel({
       cells: {
         stock: t("liabilityShell.summaryRow"),
         units: <span className="tabular-nums text-slate-800">{t(showCleared ? "stockPanel.clearedCount" : "stockPanel.holdingCount", { count: displayPositions.length })}</span>,
-        cost: <span className="tabular-nums text-slate-800">{formatCurrencyMoney(displayCost, currency)}</span>,
+        cost: <span className={`tabular-nums ${pnlClass(displayCost, isRedUp)}`}>{formatCurrencyMoney(displayCost, currency)}</span>,
         marketValue: <span className={`tabular-nums ${pnlClass(displayMarketValue, isRedUp)}`}>{formatCurrencyMoney(displayMarketValue, currency)}</span>,
         floatingPnL: <span className={`tabular-nums ${pnlClass(totalFloating, isRedUp)}`}>{formatCurrencyMoney(totalFloating, currency)}</span>,
         floatingRate: <span className={`tabular-nums ${pnlClass(displayCost !== 0 ? totalFloating / displayCost : 0, isRedUp)}`}>{displayCost !== 0 ? formatPercent(totalFloating / displayCost) : "-"}</span>,
@@ -1278,27 +1466,31 @@ export function StockHoldingsPanel({
         <div className="ft-card-surface ft-card-surface-fill">
           <div data-advanced-table-toolbar className="flex shrink-0 flex-wrap items-center justify-between gap-2">
             <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-left text-xs text-slate-500">
-              <span className="flex h-6 shrink-0 items-center">
-                <span>{t("stockPanel.cashBalanceLabel")}</span>
-                <span className="ml-2 font-semibold tabular-nums text-slate-800">{formatCurrencyMoney(cashBalance, currency)}</span>
+              {/* 余额后面带上实际资金账户名：多只资金账户并存时，用户才知道这个数字是谁的。 */}
+              <span className="flex h-6 min-w-0 shrink items-center" title={stockCashAccountHoverTitle ?? stockCashAccountName ?? undefined}>
+                <span className="shrink-0">{t("stockPanel.cashBalanceLabel")}</span>
+                {stockCashAccountName ? (
+                  <span className="ml-1 max-w-[12rem] truncate text-slate-400">{stockCashAccountName}</span>
+                ) : null}
+                <span className={`ml-2 shrink-0 font-semibold tabular-nums ${pnlClass(cashBalance, isRedUp)}`}>{formatCurrencyMoney(cashBalance, currency)}</span>
               </span>
               {repoOpen ? (
                 <span className="flex h-6 shrink-0 items-center gap-3">
                   <span>
                     {t("stockPanel.repoOpenPrincipal")}
-                    <span className="ml-1.5 font-semibold tabular-nums text-slate-800">
+                    <span className={`ml-1.5 font-semibold tabular-nums ${pnlClass(repoData?.totalPrincipal ?? 0, isRedUp)}`}>
                       {formatCurrencyMoney(repoData?.totalPrincipal ?? 0, currency)}
                     </span>
                   </span>
                   <span>
                     {t("stockPanel.repoExpectedInterest")}
-                    <span className="ml-1.5 font-semibold tabular-nums text-slate-800">
+                    <span className={`ml-1.5 font-semibold tabular-nums ${pnlClass(repoData?.totalExpectedInterest ?? 0, isRedUp)}`}>
                       {formatCurrencyMoney(repoData?.totalExpectedInterest ?? 0, currency)}
                     </span>
                   </span>
                   <span>
                     {t("stockPanel.repoRealized")}
-                    <span className="ml-1.5 font-semibold tabular-nums text-slate-800">
+                    <span className={`ml-1.5 font-semibold tabular-nums ${pnlClass(repoData?.totalRealizedProfit ?? 0, isRedUp)}`}>
                       {formatCurrencyMoney(repoData?.totalRealizedProfit ?? 0, currency)}
                     </span>
                   </span>
@@ -1307,24 +1499,26 @@ export function StockHoldingsPanel({
               ) : null}
             </div>
             <div className="flex min-w-0 max-w-full items-center gap-1 overflow-x-auto whitespace-nowrap pb-0.5 text-xs [&>*]:shrink-0">
+              {/* 逆回购页签**不放**卡片内记账按钮（2026-11-12 用户：「逆回购卡片不要显示『记一笔』」）：
+                  记账入口统一收敛到右上角胶囊菜单「股票 › 逆回购」，卡片只负责展示存单，
+                  同一动作不再有两个入口。 */}
               {repoOpen ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    window.dispatchEvent(new CustomEvent("mmh:stock:create", {
-                      detail: {
-                        requestId: `repo-lend-${Date.now()}-${Math.random().toString(16).slice(2)}`,
-                        defaultAction: "repo",
-                        defaultStockAccountId: accountId,
-                        defaultCashAccountId: stockCashAccountId ?? "",
-                      },
-                    }));
-                  }}
-                  className="h-7 rounded border border-slate-200 bg-white px-2.5 text-xs text-slate-500 hover:bg-blue-50 hover:text-blue-600"
-                  title={t("txForm.addEntry")}
+                // 占款口径就地切换：改完列表的「占款/预计利息」立刻按新口径重算。
+                <label
+                  className="flex h-7 items-center gap-1.5 rounded border border-slate-200 bg-white px-2 text-xs text-slate-500"
+                  title={t("repoForm.occupiedMode.hint")}
                 >
-                  {t("txForm.addEntry")}
-                </button>
+                  <span className="whitespace-nowrap">{t("repoForm.occupiedMode.label")}</span>
+                  <select
+                    value={repoOccupiedMode}
+                    onChange={(event) => void changeRepoOccupiedMode(event.target.value as RepoOccupiedDaysMode)}
+                    className="h-5 cursor-pointer rounded border-0 bg-transparent pr-1 text-xs text-slate-700 outline-none"
+                  >
+                    <option value="actual">{t("repoForm.occupiedMode.actual")}</option>
+                    <option value="term">{t("repoForm.occupiedMode.term")}</option>
+                    <option value="arrival_gap">{t("repoForm.occupiedMode.arrival_gap")}</option>
+                  </select>
+                </label>
               ) : (
                 <>
                   <ViewExcelImportMenuButton
@@ -1378,7 +1572,14 @@ export function StockHoldingsPanel({
 
           <div className="min-h-0 flex-1">
             {repoOpen ? (
-              <RepoLotsTable rows={repoData?.lots ?? []} currency={currency} />
+              <RepoLotsTable
+                rows={repoData?.lots ?? []}
+                currency={currency}
+                onEdit={editRepoLot}
+                onDelete={(lot) => void deleteRepoLot(lot)}
+                deletingIds={repoDeletingIds}
+                lockedIds={repoLockedIds}
+              />
             ) : (
               <AdvancedDataTable
                 storageKey="mmh_stock_shell_positions_advanced_v1"

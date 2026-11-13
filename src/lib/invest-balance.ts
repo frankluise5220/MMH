@@ -9,7 +9,7 @@
 
 import { prisma } from "@/lib/db/prisma";
 import { cache } from "react";
-import { toNumber, todayDateBusinessYmd } from "@/lib/date-utils";
+import { formatDateUtc, toNumber, todayDateBusinessYmd } from "@/lib/date-utils";
 import { AccountKind, FundCashFlowKind, FundSubtype, StockTransactionAction } from "@prisma/client";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 import { getEffectiveLatestFundNavMap } from "@/lib/fund/navCache";
@@ -18,6 +18,7 @@ import { futureConfirmHoldingKey, loadFutureConfirmedBuyMap } from "@/lib/fund/f
 import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import { isWealthLikeProductType } from "@/lib/investment-config";
 import { getMaintainedAccountBalances } from "@/lib/server/account-balance";
+import { resolveStockFundingAccount } from "@/lib/server/brokerage-cash-account";
 import { resolveHouseholdTimeZone } from "@/lib/server/business-time-zone";
 import { optionalPrismaFindMany } from "@/lib/server/optional-prisma-delegate";
 
@@ -617,7 +618,7 @@ export const computePositionDisplay = cache(
   ): Promise<PositionDisplayResult> => {
   const account = await prisma.account.findFirst({
     where: { id: accountId, ...ctx.hidFilter },
-    select: { investProductType: true, institutionId: true },
+    select: { investProductType: true, institutionId: true, groupId: true, currency: true },
   });
   if (!account) {
     return { positions: [], clearedPositions: [], totalMarketValue: 0, totalCost: 0, positionHistoricalProfit: 0, clearedHistoricalProfit: 0, totalHistoricalProfit: 0 };
@@ -754,18 +755,15 @@ export const computePositionDisplay = cache(
     const positionHistoricalProfit = positions.reduce((sum, row) => sum + row.historicalProfit, 0);
     const clearedHistoricalProfit = clearedPositions.reduce((sum, row) => sum + row.historicalProfit, 0);
     const totalHistoricalProfit = positionHistoricalProfit + clearedHistoricalProfit;
-    const brokerageCashAccount = account.institutionId
-      ? await prisma.account.findFirst({
-          where: {
-            ...(ctx.hidFilter ?? {}),
-            institutionId: account.institutionId,
-            kind: { in: [AccountKind.bank_debit, AccountKind.cash, AccountKind.ewallet] },
-            isPlaceholder: { not: true },
-          },
-          select: { id: true, name: true, kind: true, investProductType: true },
-          orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-        })
-      : null;
+    // 资金余额跟着这只股票账户实际记账用的资金账户走，不能按机构猜第一个：
+    // 用户换过资金账户后，猜出来的账户余额是静止的，看起来就像记账没生效。
+    const brokerageCashAccount = await resolveStockFundingAccount(prisma, {
+      id: accountId,
+      householdId: ctx.householdId,
+      groupId: account.groupId,
+      institutionId: account.institutionId,
+      currency: account.currency,
+    });
     const cashAccountId = brokerageCashAccount?.id ?? accountId;
     const stockCashBalanceMap = await getMaintainedAccountBalances(
       [{
@@ -806,6 +804,10 @@ export const computePositionDisplay = cache(
         const quantity = toNumber(holding.quantity);
         const cost = toNumber(holding.cost);
         const unitPrice = holding.unitPrice != null ? toNumber(holding.unitPrice) : null;
+        // 单价优先显示行情价（刷新得到），没有行情再退回最后一笔成交价。
+        const latestPrice = holding.latestPrice != null && toNumber(holding.latestPrice) > 0
+          ? toNumber(holding.latestPrice)
+          : null;
         const marketValue = toNumber(holding.marketValue);
         const floatingPnL = marketValue - cost;
         return {
@@ -816,8 +818,8 @@ export const computePositionDisplay = cache(
           units: quantity,
           avgCost: toNumber(holding.avgCost),
           cost,
-          nav: unitPrice,
-          navDate: "",
+          nav: latestPrice ?? unitPrice,
+          navDate: holding.latestPriceDate ? formatDateUtc(holding.latestPriceDate) : "",
           marketValue,
           floatingPnL,
           floatingPnLRate: cost > 0 ? floatingPnL / cost : 0,

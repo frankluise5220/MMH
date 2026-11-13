@@ -37,6 +37,7 @@ import { ResizableVerticalSplit } from "@/components/ResizableVerticalSplit";
 import { calculateWealthCashDividendProfit, recalcWealthPositions } from "@/lib/wealth-position";
 import { computeDepositCashValueByAccount } from "@/lib/server/deposit-lot-balance";
 import { computeDepositNonCertificateBalances, getMaintainedAccountBalances } from "@/lib/server/account-balance";
+import { resolveStockFundingAccount } from "@/lib/server/brokerage-cash-account";
 import { computeLiabilityDisplaySummary } from "@/lib/server/liability-display-summary";
 import {
   applyLiabilityRowEntryMetrics,
@@ -49,6 +50,7 @@ import { prepareEntryUndo, saveEntryUndo } from "@/lib/server/entry-undo";
 import { getCreditBillAccountIds } from "@/lib/server/credit-card-institution-settings";
 import { formatCurrencyMoney, formatMoney } from "@/lib/format";
 import { pnlClassFromRedUp } from "@/lib/client/colors";
+import { getServerAccountDropdownGroupBy } from "@/lib/server/account-dropdown-group-by";
 import { LiveAccountBalance } from "@/components/LiveAccountBalance";
 import { AccountFxRateInline } from "@/components/AccountFxRateInline";
 import { createFundTransactionWithCashFlows, detachFundTransactionCashFlow, findFundTransactionForEntryId, syncFundTransactionsFromTxRecords, upsertFundTransactionRefundCashFlow, type FundCashFlowInput } from "@/lib/fund/transactions";
@@ -360,6 +362,8 @@ export default async function Home({
     accountId?: string;
     tagId?: string;
     view?: string;
+    /** 股票视图页签：`repo` = 直接落在逆回购页签（胶囊菜单入口用）。 */
+    stockTab?: string;
     billMonth?: string;
     hideZeroBills?: string;
     hideSettledBills?: string;
@@ -520,6 +524,9 @@ export default async function Home({
   const fundPageParam = typeof params?.fundPage === "string" ? parseInt(params.fundPage, 10) : 1;
   const fundPage = Number.isFinite(fundPageParam) && fundPageParam >= 1 ? fundPageParam : 1;
   const showCleared = params?.showCleared === "1";
+  // 胶囊菜单「股票」直接落在逆回购界面：URL 用 `stockTab=repo` 表达这个页签状态，
+  // 由 `StockHoldingsPanel` 在首屏读它（并在切页签时同步回 URL，见该组件 switchToRepo）。
+  const stockTabRepo = params?.stockTab === "repo";
 
   // Read the up/down color scheme.
   const colorScheme = (cookieStore.get("colorScheme")?.value ?? "red_up_green_down") as "red_up_green_down" | "green_up_red_down";
@@ -1153,6 +1160,10 @@ export default async function Home({
     }
   }
 
+  // 账户下拉的分组维度（2026-11-13，owner / accountGroup / institution）。
+  // 本页是服务端组件，只能从 cookie 镜像里读，不能在渲染中碰客户端偏好模块。
+  const accountDropdownGroupBy = await getServerAccountDropdownGroupBy();
+
   const accountOptions = accounts
     .filter(a => a.name !== "未指定账户")
     .map((a) => {
@@ -1184,6 +1195,8 @@ export default async function Home({
       tableHoverTitle: display.tableHoverTitle,
       groupId: display.groupId,
       groupName: display.groupName,
+      // 自定义分组标签（2026-11-13）：首页账户下拉「按分组标签」维度靠它切节。
+      accountGroupName: display.accountGroupName,
       institutionName: display.institutionName,
       institutionId: a.institutionId ?? "",
       institutionType: a.Institution?.type ?? "",
@@ -1223,6 +1236,45 @@ export default async function Home({
   };
   function buildAccountSSOptions(filter?: (a: typeof accountOptions[number]) => boolean): SSOpt[] {
     const filtered = filter && restrictAccountTypes ? accountOptions.filter(filter) : accountOptions;
+
+    // 2026-11-13：分组维度可切换（设置 → 显示 → 账户下拉分组）。owner 保持历史行为，
+    // 另外两档按自定义分组标签 / 机构切节，未设置该维度的账户排到列表尾部（无表头）。
+    const dropdownGroupBy = accountDropdownGroupBy;
+    if (dropdownGroupBy !== "owner") {
+      const headerPrefix = dropdownGroupBy === "accountGroup" ? "group:ag:" : "group:in:";
+      const headerOf = (a: typeof accountOptions[number]) =>
+        (dropdownGroupBy === "accountGroup" ? a.accountGroupName : a.institutionName).trim();
+      const headerLabels = Array.from(new Set(filtered.map(headerOf).filter(Boolean)))
+        .sort((x, y) => x.localeCompare(y, "zh-Hans-CN"));
+      const items: SSOpt[] = [...filtered]
+        .sort((x, y) => (headerOf(x) + x.label).localeCompare(headerOf(y) + y.label, "zh-Hans-CN"))
+        .map(a => ({
+          id: a.id,
+          label: a.label,
+          subLabel: joinSSSubLabel(
+            [a.groupName, a.subLabel].filter(part => !!part && !a.label.includes(part)),
+          ),
+          title: stripVisibleHoverParts(a.hoverTitle, [a.groupName]),
+          parentId: headerOf(a) ? `${headerPrefix}${headerOf(a)}` : undefined,
+          kind: a.kind,
+          investProductType: a.investProductType ?? null,
+          liabilityDirection: a.liabilityDirection ?? null,
+          institutionId: a.institutionId || null,
+          institutionType: a.institutionType || null,
+          counterpartyId: a.counterpartyId || null,
+          counterpartyName: a.counterpartyName || null,
+          isSettlementAccount: a.isSettlementAccount ?? null,
+          isConsumerLoan: a.isConsumerLoan ?? null,
+          billingDay: a.billingDay ?? null,
+          currency: a.currency ?? null,
+          isAggregate: a.isAggregate === true,
+        }));
+      return [
+        ...headerLabels.map(label => ({ id: `${headerPrefix}${label}`, label, isHeader: true })),
+        ...items,
+      ];
+    }
+
     const grouped = filtered.filter(a => a.groupId);
     const ungrouped = filtered.filter(a => !a.groupId);
 
@@ -2939,22 +2991,21 @@ export default async function Home({
     return latestBuy?.accountId ?? "";
   })();
   const defaultInvestCashAccountId = lastInvestBuyCashAccountId || defaultCashAccountForSelectedInstitution;
-  const defaultStockCashAccountId = (() => {
-    const stockAccount = stockAccountOptions.find((account) => account.id === defaultStockInvestmentAccountId) ?? null;
-    const stockOwnerGroupId = (stockAccount?.groupId ?? "").trim();
-    if (stockAccount?.institutionId) {
-      const sameOwnerCash = (account: typeof cashAccountList[number]) =>
-        (!stockOwnerGroupId || (account.groupId ?? "") === stockOwnerGroupId);
-      const cashAccount = cashAccountList.find((account) =>
-        account.institutionId === stockAccount.institutionId && account.institutionType === "brokerage" && sameOwnerCash(account))
-        ?? cashAccountList.find((account) =>
-          account.institutionId === stockAccount.institutionId && sameOwnerCash(account))
-        ?? null;
-      return cashAccount?.id ?? defaultCashAccountForSelectedInstitution;
-    }
-    return defaultCashAccountForSelectedInstitution;
-  })();
-  const defaultStockCashAccountName = cashAccountList.find((account) => account.id === defaultStockCashAccountId)?.label ?? null;
+  // 记账默认资金账户 = 表头显示的那只：股票视图直接用服务端算好的，其余情况问同一个解析函数。
+  const defaultStockAccountOption = stockAccountOptions.find((account) => account.id === defaultStockInvestmentAccountId) ?? null;
+  const defaultStockCashAccountId = investstockData?.cashAccountId
+    ?? (defaultStockAccountOption
+      ? (await resolveStockFundingAccount(prisma, {
+        id: defaultStockAccountOption.id,
+        householdId,
+        groupId: defaultStockAccountOption.groupId ?? "",
+        institutionId: defaultStockAccountOption.institutionId ?? null,
+        currency: defaultStockAccountOption.currency ?? "CNY",
+      }))?.id
+      : null)
+    ?? defaultCashAccountForSelectedInstitution;
+  // 记账弹窗的默认资金账户和表头「资金余额」读同一只账户，不再各猜一次。
+  const stockCashFundingAccount = cashAccountList.find((account) => account.id === defaultStockCashAccountId) ?? null;
   const defaultStockTransferFromAccountId = (() => {
     const stockAccount = stockAccountOptions.find((account) => account.id === defaultStockInvestmentAccountId) ?? null;
     const stockOwnerGroupId = (stockAccount?.groupId ?? "").trim();
@@ -3172,7 +3223,16 @@ export default async function Home({
                       { key: "stock-repo", label: t("repoForm.title") },
                     ],
                   },
-                  { key: "property", label: t("entry.kind.property") },
+                  {
+                    key: "property",
+                    label: t("entry.kind.property"),
+                    children: [
+                      { key: "property", label: t("propertyForm.action.purchase") },
+                      // 固定资产也能卖：走 PropertyFormModal 的出售态，回款进资金账户、
+                      // 资产状态置 sold（2026-11-13 用户：「在固定资产记一笔里增加售出」）。
+                      { key: "property-sell", label: t("propertyForm.action.sale") },
+                    ],
+                  },
                   { key: "metal", label: t("entry.kind.metal") },
                   { key: "wealth", label: t("entry.kind.wealth") },
                   {
@@ -3283,6 +3343,7 @@ export default async function Home({
                 stockAccountSSOptions={stockAccountSSOptions}
                 cashAccounts={cashAccountList}
                 cashAccountSSOptions={cashAccountSSOptions}
+                editInvestmentAction={editInvestment}
               />
               <PropertyFormModal
                 defaultPropertyAccountId={defaultPropertyInvestmentAccountId}
@@ -3810,19 +3871,21 @@ export default async function Home({
             />
           ) : view === "investstock" && investstockData ? (
             <StockHoldingsPanel
-              key={`investstock-${accountId}`}
+              key={`investstock-${accountId}-${stockTabRepo ? "repo" : "pos"}`}
               accountId={accountId}
               accountLabel={selectedAccountLabel}
               currency={selectedAccount?.currency ?? baseCurrency}
               positions={JSON.parse(JSON.stringify(investstockData.positions))}
               clearedPositions={JSON.parse(JSON.stringify(investstockData.clearedPositions))}
               initialShowCleared={showCleared}
+              initialRepoOpen={stockTabRepo}
               cashBalance={investstockData.cashBalance ?? 0}
               totalMarketValue={investstockData.totalMarketValue}
               totalCost={investstockData.totalCost}
               isRedUp={isRedUp}
               stockCashAccountId={defaultStockCashAccountId}
-              stockCashAccountName={defaultStockCashAccountName}
+              stockCashAccountName={stockCashFundingAccount?.label ?? null}
+              stockCashAccountHoverTitle={stockCashFundingAccount?.hoverTitle ?? null}
               accountOptions={accountOptions}
               repo={stockRepo}
             />
