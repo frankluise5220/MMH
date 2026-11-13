@@ -101,9 +101,10 @@ const LOGIN_INPUT_CLASS =
   "h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100";
 
 // 文件卡片式页签：抽成独立组件（src/app/login/FolderTabs.tsx）。
-// 本文件用其导出的纯函数（folderTabClass / folderTabPanelClass / FOLDER_TAB_STRIP），
+// 本文件用其导出的纯函数（folderTabClass / folderTabPanelClass / FOLDER_TAB_STRIP_PLAIN），
 // 登录方式页签与建账方式页签共用；<FolderTabs> 组件本身供外部页面直接复用。
-import { folderTabClass, folderTabNeighbors, folderTabPanelClass, FOLDER_TAB_STRIP, FolderTabs } from "./FolderTabs";
+// 页签条**不带底色**：登录页签直接坐在对话框白底上（`PLAIN` 与 `FOLDER_TAB_STRIP` 现已同义）。
+import { folderTabClass, folderTabNeighbors, folderTabPanelClass, FOLDER_TAB_STRIP_PLAIN, FolderTabs } from "./FolderTabs";
 
 function getLoginUserScopeId(user: LoginUserChoice) {
   return user.householdId ?? SYSTEM_LOGIN_SCOPE_ID;
@@ -279,8 +280,10 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
     : mmhUserChoices;
   // 「死账」判定与 local 页签对称：只看选中账簿有没有绑 MMH 用户，不看
   // 全局是否存在 MMH 用户。飞牛免密建账后整个系统可能一个 MMH 用户都没有，
-  // 但 MMH 页签仍应变黄警示（否则会让人以为能直接邮箱+密码登录，而登录
-  // 只能得到 MMH_USER_NOT_BOUND）。
+  // 这里仍要给卡片内的黄色提示（否则会让人以为能直接邮箱+密码登录，而登录
+  // 只能得到 MMH_USER_NOT_BOUND）——但**页签本身不染色**：提示归提示，
+  // 页签保持 FT 的常规米白 / 灰蓝（2026-11-12 用户：「会显示黄色提示，
+  // 但是页签不用变黄」）。
   const mmhTabUnavailable =
     loginMode === "mmh" &&
     !!selectedHouseholdId &&
@@ -1560,7 +1563,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
             {/* 重置密码不再是「另一张卡片」：它就在本卡片里、在「进入」下方就地展开，
                 页签条与登录表单都保持可见，用户随时能收起或换页签。 */}
             <div className="relative">
-              <div className={FOLDER_TAB_STRIP}>
+              <div className={FOLDER_TAB_STRIP_PLAIN}>
                 <button
                   type="button"
                   onClick={() => switchLoginMode("local")}
@@ -1570,7 +1573,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                     "stretch",
                     loginTabOrder.indexOf("local") === 0,
                     folderTabNeighbors(loginTabOrder, "local", loginMode),
-                  )}${localTabUnavailable ? " ft-tab-fillet-amber" : ""}`}
+                  )}`}
                 >
                   <span className="relative block overflow-hidden whitespace-nowrap">{t("login.mode.local")}</span>
                 </button>
@@ -1584,7 +1587,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                       "stretch",
                       loginTabOrder.indexOf("mmh") === 0,
                       folderTabNeighbors(loginTabOrder, "mmh", loginMode),
-                    )}${mmhTabUnavailable ? " ft-tab-fillet-amber" : ""}`}
+                    )}`}
                   >
                     <span className="relative block overflow-hidden whitespace-nowrap">{t("login.mode.mmh")}</span>
                   </button>
@@ -1599,7 +1602,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
                       "stretch",
                       loginTabOrder.indexOf("fnos") === 0,
                       folderTabNeighbors(loginTabOrder, "fnos", loginMode),
-                    )}${fnosTabUnavailable ? " ft-tab-fillet-amber" : ""}`}
+                    )}`}
                   >
                     <span className="relative block overflow-hidden whitespace-nowrap">{t("login.fnosLogin")}</span>
                   </button>
@@ -2012,7 +2015,7 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
           <div className="space-y-4 p-6">
             {!initialLedgerSetup && (
               <div className="relative">
-                <div className={FOLDER_TAB_STRIP}>
+                <div className={FOLDER_TAB_STRIP_PLAIN}>
                   <button
                     type="button"
                     onClick={() => setCreateMethod("invite")}

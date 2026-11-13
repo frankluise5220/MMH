@@ -39,9 +39,20 @@
 
      ⚠️ 全表唯一的绝对值是 **1px**：边框 / 接缝（`-mb-px`）是发丝线，不能跟着字号放大，
         否则 DPR 2 上会变粗一倍、卡片顶边出现双线。 */
-  /* FT 卡片底色：页签（活动/非活动）与内容板都引用它，保证「页签与卡片本体一致」。
-     卡片带 `.ft-card-surface` 时由该类重新声明（默认同值，白色色阶为 #fff）。 */
+  /* FT 卡片底色：**活动页签**与内容板都引用它，保证「活动页签与卡片本体一致」。
+     卡片带 `.ft-card-surface` 时由该类重新声明（默认同值，白色色阶为 #fff）。
+     非活动页签**不**引用它（见下面的 `--ft-tab-inactive-bg`）。 */
   --ft-card-bg: #fbfaf7;
+  /* 非活动页签底色：**必须比活动页签（= 卡片底色）明显深一档**。
+     两者同色是旧版的做法，靠字号 16/12 + 字重 + 文字灰度区分；在页签条与卡片同色的大面积
+     场景（股票 / 基金页）里整块糊成一片，用户 2026-11-12 反馈「激活页签和未激活页签的颜色
+     差不多」。这里让非活动页签整体压暗，读作「叠在当前卡片后面的另一张更暗的卡纸」——
+     与 `FolderTabs.tsx` 文件头的视觉语义一致，不再依赖文字粗细去区分。
+     深浅关系是硬约束：`inactive < active`，hover 态 `inactive-hover` 也要**仍深于**活动页签，
+     否则鼠标一移上来非活动页签反而比活动页签亮，层次就反了（与 `--ft-tab-lift < --ft-tab-step`
+     同一条思路）。 */
+  --ft-tab-inactive-bg: #e3e8f0;
+  --ft-tab-inactive-bg-hover: #eef2f7;
   --ft-tab-font: 1rem;                  /* 自由变量：活动页签字号 = 16px */
   --ft-tab-font-sm: calc(var(--ft-tab-font) * 0.75);   /* 12px  非活动页签字号 */
   --ft-tab-leading: 1.5;                /* 无单位倍率：行高 = 各自字号 × 1.5（两种页签共用一个） */
@@ -645,32 +656,10 @@ html {
       linear-gradient(var(--ft-tab-seam-fill), var(--ft-tab-seam-fill));
   }
 
-  /* 「未绑定」警示色阶：活动页签 + 凹角整体刷成浅黄（amber），与内容板里的 amber notice
-     提示框呼应——选中账簿缺失该类型用户时，页签 tab 本身也变黄，而不只是内容区给提示。
-     覆盖点比 `.ft-tab-fillet-white` 多两处：除 `background-color`（页签底）与 `::before`
-     （凹角填充，色 = 页签底 amber-50 #fffbeb）外，还要把 `border-color`（页签 1px 边框）
-     与 `::after`（凹角描边）换成 amber-200 #fde68a，否则接缝处「页签黄底 + 灰描边」打架。
-     同样挂在**活动页签**上、与 `.ft-tab-fillet` 同元素；本文件手写规则排在 Tailwind utilities
-     之后，故能覆盖 `bg-[#fbfaf7]` / `border-slate-300`（无需 !important）。 */
-  .ft-tab-fillet-amber {
-    background-color: #fffbeb;
-    border-color: #fde68a;
-  }
-
-  /* ⚠️ 第三层是接缝补带（见 `.ft-tab-fillet::before` 注释），覆盖 `background-image` 时别丢。 */
-  .ft-tab-fillet-amber::before {
-    --ft-tab-seam-fill: #fffbeb;
-    background-image:
-      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='7' height='7' viewBox='0 0 7 7'%3E%3Cpath d='M6.5 0A6.5 6.5 0 0 1 0 6.5L0 7L7 7L7 0Z' fill='%23fffbeb'/%3E%3C/svg%3E"),
-      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='7' height='7' viewBox='0 0 7 7'%3E%3Cpath d='M0.5 0A6.5 6.5 0 0 0 7 6.5L7 7L0 7L0 0Z' fill='%23fffbeb'/%3E%3C/svg%3E"),
-      linear-gradient(var(--ft-tab-seam-fill), var(--ft-tab-seam-fill));
-  }
-
-  .ft-tab-fillet-amber::after {
-    background-image:
-      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='7' height='7' viewBox='0 0 7 7'%3E%3Cpath d='M6.5 0A6.5 6.5 0 0 1 0 6.5' fill='none' stroke='%23fde68a' stroke-width='1'/%3E%3C/svg%3E"),
-      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='7' height='7' viewBox='0 0 7 7'%3E%3Cpath d='M0.5 0A6.5 6.5 0 0 0 7 6.5' fill='none' stroke='%23fde68a' stroke-width='1'/%3E%3C/svg%3E");
-  }
+  /* 历史：`.ft-tab-fillet-amber`（把活动页签 + 凹角整体刷成 amber）已于 2026-11-12 撤销。
+     选中账簿缺失该类型用户时，只在内容板里给黄色 notice，**页签本身不再变黄**
+     （用户：「会显示黄色提示，但是页签不用变黄」）。警示不要做在页签上：页签是
+     导航控件，染色后整个页签条都跟着变调，提示本来就该由卡片内的 notice 承担。 */
 
   thead th,
   thead th.text-left,

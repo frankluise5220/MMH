@@ -140,14 +140,16 @@ import type { ReactNode } from "react";
  * 现在：页签条内容高 → 非活动页签底边恒 = 卡片上缘（被卡片 1px 上边框切断，
  * 见第 9 条），活动页签用 `-mb-px` 把接缝 −1px 变成结构保证（见 `folderTabClass`）。
  *
- * **页签条自带卡片底色**（`bg-[var(--ft-card-bg)]`，2026-11-04 用户：「页签颜色要延伸到卡片」）：
- * 页签条的盒子就是「页签带」——整条横向铺满内容板宽度、纵向从条顶（活动页签上方 `--ft-tab-top`
- * 那 7px）一直到卡片上缘，所以页签之间的 6px 缝隙、页签组右侧的空白都不再露出页面底色，
- * 而是一整块与页签、卡片同色的带子；只有卡片里的**其他元素**（标题栏下边框、表格表头灰带）
- * 才会把底色隔开。宽度由块级盒（或调用方那层 flex 行）给的，所以窄于卡片的手写调用点
- * （页签组 `shrink` 的那种）要把同一个底色挂到**外层整行**上，别只挂在页签组上。
+ * **页签条不带底色**（2026-11-12 用户：「页签背景有一个与卡片同宽的长条形底色，去掉」）：
+ * 页签之间的 6px 缝隙、页签组右侧的空白都直接露出页面 / 弹窗底色，只留页签本身。
+ *
+ * 历史（别改回去）：2026-11-04 曾让整条铺满卡片底色（「页签颜色要延伸到卡片」），在股票 /
+ * 基金页上就是一条与卡片同宽的米色长条，右侧空白一大片，与非活动页签的深色对照很突兀；
+ * 2026-11-12 早些时候还因为这条带子落在登录弹窗白底上而拆出 `PLAIN` 版本。现在整条底色撤销，
+ * 两个常量**同义**，保留两个名字只为不改动各处调用点。
  */
-export const FOLDER_TAB_STRIP = "flex items-start gap-1.5 bg-[var(--ft-card-bg)]";
+export const FOLDER_TAB_STRIP_PLAIN = "flex items-start gap-1.5";
+export const FOLDER_TAB_STRIP = FOLDER_TAB_STRIP_PLAIN;
 
 /** 内容板基础类名（圆角由 folderTabPanelClass 按活动页签位置追加）。 */
 const FOLDER_TAB_PANEL =
@@ -259,7 +261,12 @@ export function folderTabClass(
     // 要的是「象是藏在后面」的剪影，不是一枚圆角小签）。
     // 页签高度、下沉量、hover 抬起 / 藏进卡片的量全部是变量派生（`--ft-tab-rise` /
     // `--ft-tab-lift` / `--ft-tab-bury`），任何卡片高度、任何字号下都只藏 bury，也不会穿出卡片。
-    `relative z-10 mt-[var(--ft-tab-rise)] -mb-[var(--ft-tab-bury)] self-stretch ${width} flex items-center justify-center overflow-hidden whitespace-nowrap rounded-t-[8px] border border-b-0 border-slate-300 bg-[var(--ft-card-bg)] ${sideMargin} px-4 pb-[var(--ft-tab-bury)] text-center text-[length:var(--ft-tab-font-sm)] leading-[var(--ft-tab-leading)] font-medium text-slate-500 shadow-[0_2px_4px_rgba(15,23,42,0.08)] hover:-translate-y-[var(--ft-tab-lift)] hover:bg-white`,
+    // **底色比活动页签深一档**（`--ft-tab-inactive-bg`，令牌与深浅约束见 globals.css）：
+    // 活动页签 = 卡片底色，非活动 = 更暗的卡纸 —— 「叠在当前卡片后面」靠明度读出来，
+    // 不再只靠 16/12 字号 + 文字灰度，页签条与卡片同色的大面积场景（股票 / 基金页）也不会糊成一片。
+    // hover 只微亮到 `--ft-tab-inactive-bg-hover`，**仍深于活动页签**：原来写 `hover:bg-white`，
+    // 鼠标一移上来非活动页签会比活动页签还亮，层次反转（与 lift < step 同一条约束）。
+    `relative z-10 mt-[var(--ft-tab-rise)] -mb-[var(--ft-tab-bury)] self-stretch ${width} flex items-center justify-center overflow-hidden whitespace-nowrap rounded-t-[8px] border border-b-0 border-slate-300 bg-[var(--ft-tab-inactive-bg)] ${sideMargin} px-4 pb-[var(--ft-tab-bury)] text-center text-[length:var(--ft-tab-font-sm)] leading-[var(--ft-tab-leading)] font-medium text-slate-500 shadow-[0_2px_4px_rgba(15,23,42,0.08)] hover:-translate-y-[var(--ft-tab-lift)] hover:bg-[var(--ft-tab-inactive-bg-hover)]`,
   ].join(" ");
 }
 
