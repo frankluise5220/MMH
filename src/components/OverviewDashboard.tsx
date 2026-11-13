@@ -1,10 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import type { ElementType } from "react";
 import {
-  ArrowDownRight,
-  ArrowUpRight,
+  BarChart3,
   Building2,
   CreditCard,
   HandCoins,
@@ -12,6 +10,8 @@ import {
   Wallet,
 } from "lucide-react";
 
+import { MonthlyCashFlowChart } from "@/components/MonthlyCashFlowChart";
+import type { MonthlyCashFlowItem } from "@/components/MonthlyCashFlowChart";
 import { formatCurrencyMoney, formatMoney, formatMoneyYuan, formatPercent } from "@/lib/format";
 import { pnlClassFromRedUp } from "@/lib/client/colors";
 import { InsuranceOverviewCard, type InsuranceOverview } from "@/components/InsuranceOverviewCard";
@@ -119,6 +119,8 @@ export type OverviewDashboardProps = {
   assetDistribution: AssetDistItem[];
   monthIncome: number;
   monthExpense: number;
+  /** 近 12 个月（含本月）收支，服务端按业务日截止统计；缺失时不渲染柱形图。 */
+  monthlyCashFlow?: MonthlyCashFlowItem[];
   accountList: AccountItem[];
   creditAccountList: CreditAccountItem[];
   liabilityAccountList?: AccountItem[];
@@ -173,6 +175,34 @@ function isForeign(item: { currency?: string; fxMissing?: boolean }, baseCurrenc
   return currency !== baseCurrency;
 }
 
+/**
+ * 概览里所有行内金额的唯一格式化入口：**一律系统默认货币（账簿本位币）口径**。
+ *
+ * 外币账户的余额/市值必须先折算，`converted*` 为 null 意味着汇率缺失——这时显示 "-"，
+ * 绝不退回原币数字：`$10,000` 直接印成 `10,000.00` 会被当成 ¥10,000（JPY 还和 CNY 共用 ¥ 符号，
+ * 更容易看错）。2026-11-12 用户：「外币这块应该显示系统默认货币金额」。
+ */
+function baseMoneyText(
+  raw: number,
+  converted: number | null | undefined,
+  item: { currency?: string; fxRateMissing?: boolean },
+  baseCurrency: string,
+) {
+  const foreign = isForeign(item, baseCurrency);
+  if (foreign && (converted == null || item.fxRateMissing === true)) return "-";
+  return formatMoney(converted ?? raw);
+}
+
+/**
+ * 悬停提示里的原币金额：必须带 ISO 代码。JPY 和 CNY 共用 `¥`、USD 用 `$`，
+ * 只写符号会和行内的默认货币金额混看（2026-11-12 用户反馈外币显示问题）。
+ */
+function originalMoneyText(raw: number, currency: string | undefined) {
+  const code = String(currency ?? "").trim().toUpperCase();
+  const text = formatCurrencyMoney(raw, currency);
+  return code ? `${text} ${code}` : text;
+}
+
 function directionalClass(value: number, isRedUp: boolean) {
   return pnlClassFromRedUp(value, isRedUp, "softMuted");
 }
@@ -190,12 +220,15 @@ function formatRate(value: number) {
   return formatPercent(value);
 }
 
+
+
 export function OverviewDashboard({
   netWorth,
   accountTypeTotals,
   assetDistribution,
   monthIncome,
   monthExpense,
+  monthlyCashFlow = [],
   accountList,
   creditAccountList,
   liabilityAccountList = [],
@@ -229,7 +262,6 @@ export function OverviewDashboard({
   const fixedCostValue = fixedAssetCost ?? totals.fixedAssetCost;
   const fixedPnL = fixedAssetFloatingPnL ?? fixedValue - fixedCostValue;
   const fixedRate = fixedAssetFloatingPnLRate ?? (fixedCostValue > 0 ? fixedPnL / fixedCostValue : 0);
-  const monthNet = monthIncome - monthExpense;
   const netLiabilities = totals.liabilities - totals.loanReceivable;
   const netLiabilityLabel = netLiabilities >= 0 ? t("overview.netLiability") : t("overview.netCredit");
   const netLiabilityAmount = Math.abs(netLiabilities);
@@ -240,10 +272,12 @@ export function OverviewDashboard({
     accountList.some((account) => isForeign(account, baseCurrency)) ||
     liabilityAccountList.some((account) => isForeign(account, baseCurrency)) ||
     fixedAssetAccountList.some((item) => isForeign(item, baseCurrency));
+  // 资金账户卡最多列 8 个：去掉行内种类副标题后每行更矮，一屏能多放几个账户
+  // （2026-11-13 用户：「显示的账户再多一点，不要显示下面的账户类型」）。
   const topAccounts = accountList
     .slice()
     .sort((a, b) => Math.abs(baseAmount(b)) - Math.abs(baseAmount(a)))
-    .slice(0, 5);
+    .slice(0, 8);
   const creditBillOf = (account: CreditAccountItem) => account.convertedCurrentBill ?? account.currentBill;
   const paidOf = (account: CreditAccountItem) => account.convertedPaid ?? account.paid;
   const creditCards = creditAccountList
@@ -256,6 +290,12 @@ export function OverviewDashboard({
     0,
   );
   const liabilityAccounts = liabilityAccountList.filter((account) => account.balance !== 0);
+  // 残值（资产现值）为 0 的固定资产不再占一行：这类空壳账户挂上去只会显示
+  // 「0.00 / 0.00 / +0.00%」。上方的现值/成本/增值仍按全部账户统计，
+  // 这里只影响明细列表（2026-11-13 用户：「固定资产里残值为 0 的不用显示」）。
+  const fixedAssets = fixedAssetAccountList.filter(
+    (item) => Math.abs(item.convertedMarketValue ?? item.marketValue) > 0,
+  );
   const showInvestmentOverview = investmentAccountCount == null
     ? topPositions.length > 0 || investMarketValue !== 0 || investCost !== 0
     : investmentAccountCount > 0;
@@ -290,6 +330,7 @@ export function OverviewDashboard({
         assetDistribution={assetDistribution}
         monthIncome={monthIncome}
         monthExpense={monthExpense}
+        monthlyCashFlow={monthlyCashFlow}
         accountList={accountList}
         creditAccountList={creditAccountList}
         liabilityAccountList={liabilityAccountList}
@@ -316,15 +357,27 @@ export function OverviewDashboard({
     <div className="page-body bg-transparent">
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-4 px-4 py-4 md:px-5 md:py-5">
         <section className="panel-surface overflow-hidden">
-          <div className="grid gap-4 px-5 py-4 md:grid-cols-[minmax(220px,1fr)_2.2fr] md:items-center md:px-6">
-            <div>
-              <div className="text-xs font-medium tracking-[0.18em] text-slate-400 uppercase">Overview</div>
-              <div className="mt-1 text-sm text-slate-500">{t("overview.netWorth")}</div>
-              <div className={`mt-1 break-all text-3xl font-semibold md:text-4xl ${directionalClass(netWorth, isRedUp)}`}>
-                {formatMoneyYuan(netWorth)}
+          <div className="px-5 py-4 md:px-6">
+            <div className="flex flex-wrap items-end justify-between gap-x-4 gap-y-2">
+              <div>
+                <div className="text-xs font-medium tracking-[0.18em] text-slate-400 uppercase">Overview</div>
+                <div className="mt-1 text-sm text-slate-500">{t("overview.netWorth")}</div>
+                <div className={`mt-1 break-all text-3xl font-semibold md:text-4xl ${directionalClass(netWorth, isRedUp)}`}>
+                  {formatMoneyYuan(netWorth)}
+                </div>
               </div>
+              {missingFxCurrencies.length > 0 ? (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-700">
+                  {t("overview.missingFxRateDetail", { currencies: missingFxCurrencies.join("、") })}
+                </div>
+              ) : hasForeignCurrency ? (
+                <div className="text-[11px] text-slate-400">
+                  {t("overview.convertedToBase", { currency: baseCurrency })}
+                </div>
+              ) : null}
             </div>
-            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+            {/* 五个指标卡独占整宽一行：挤在净值右侧时每张只有 ~110px，金额一律省略号。 */}
+            <div className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-5">
               <MetricCard label={t("overview.liquidAssets")} value={formatMoneyYuan(totals.liquidAssets)} valueClass={directionalClass(totals.liquidAssets, isRedUp)} />
               <MetricCard label={netLiabilityLabel} value={formatMoneyYuan(netLiabilityAmount)} valueClass={netLiabilityClass} />
               {showInvestmentOverview ? (
@@ -337,17 +390,23 @@ export function OverviewDashboard({
                 <MetricCard label={t("overview.insuranceCashValue")} value={formatMoneyYuan(totals.insuranceAsset)} valueClass={directionalClass(totals.insuranceAsset, isRedUp)} />
               ) : null}
             </div>
-            {missingFxCurrencies.length > 0 ? (
-              <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] text-amber-700">
-                {t("overview.missingFxRateDetail", { currencies: missingFxCurrencies.join("、") })}
-              </div>
-            ) : hasForeignCurrency ? (
-              <div className="mt-3 text-[11px] text-slate-400">
-                {t("overview.convertedToBase", { currency: baseCurrency })}
-              </div>
-            ) : null}
           </div>
         </section>
+
+        {/* 近 12 个月收支：放在页头「Overview」概览卡下方、各资产卡片上方。 */}
+        {monthlyCashFlow.length > 0 ? (
+          <section className="panel-surface overflow-hidden">
+            <div className="panel-header">
+              <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
+                <BarChart3 className="h-4 w-4 text-sky-500" />
+                {t("overview.last12MonthsCashFlow")}
+              </div>
+            </div>
+            <div className="px-2 py-3 md:px-3">
+              <MonthlyCashFlowChart rows={monthlyCashFlow} isRedUp={isRedUp} />
+            </div>
+          </section>
+        ) : null}
 
         <section className="grid grid-cols-1 gap-4 xl:grid-cols-2">
           {showInvestmentOverview ? (
@@ -382,8 +441,8 @@ export function OverviewDashboard({
                       className="grid grid-cols-[minmax(0,1fr)_96px] items-center gap-3 px-4 py-3 hover:bg-slate-50 sm:grid-cols-[minmax(0,1fr)_96px_96px_72px]"
                     >
                       <div title={item.hoverTitle || undefined} className="truncate text-sm font-semibold text-slate-800">{item.name}</div>
-                      <div className={`text-right text-xs font-semibold tabular-nums ${directionalClass(item.convertedMarketValue ?? item.marketValue, isRedUp)}`}>{formatMoney(item.convertedMarketValue ?? item.marketValue)}</div>
-                      <div className={`hidden text-right text-xs font-semibold tabular-nums sm:block ${directionalClass(item.convertedFloatingPnL ?? item.floatingPnL, isRedUp)}`}>{formatMoney(item.convertedFloatingPnL ?? item.floatingPnL)}</div>
+                      <div title={baseMoneyText(item.marketValue, item.convertedMarketValue, item, baseCurrency)} className={`truncate text-right text-xs font-semibold tabular-nums ${directionalClass(item.convertedMarketValue ?? item.marketValue, isRedUp)}`}>{baseMoneyText(item.marketValue, item.convertedMarketValue, item, baseCurrency)}</div>
+                      <div title={baseMoneyText(item.floatingPnL, item.convertedFloatingPnL, item, baseCurrency)} className={`hidden truncate text-right text-xs font-semibold tabular-nums sm:block ${directionalClass(item.convertedFloatingPnL ?? item.floatingPnL, isRedUp)}`}>{baseMoneyText(item.floatingPnL, item.convertedFloatingPnL, item, baseCurrency)}</div>
                       <div className={`hidden text-right text-xs font-semibold tabular-nums sm:block ${directionalClass(item.floatingPnLRate, isRedUp)}`}>{formatRate(item.floatingPnLRate)}</div>
                     </Link>
                   ))
@@ -412,16 +471,24 @@ export function OverviewDashboard({
             </div>
             <div className="divide-y divide-slate-100 border-t border-slate-100">
               {topAccounts.length > 0 ? (
-                topAccounts.slice(0, 4).map((account) => (
+                topAccounts.map((account) => (
                   <Link key={account.id} href={`/?accountId=${account.id}&view=detail`} scroll={false} className="flex items-center justify-between gap-3 px-4 py-3 hover:bg-slate-50">
                     <div className="min-w-0">
-                      <div title={account.hoverTitle || undefined} className="truncate text-sm font-semibold text-slate-800">{account.name}</div>
-                      <div className="mt-1 truncate text-[11px] text-slate-400">
-                        {account.kind}
-                        {isForeign(account, baseCurrency) ? ` · ${t("overview.originalAmount", { amount: formatCurrencyMoney(account.balance, account.currency) })}` : ""}
+                      <div
+                        title={[
+                          account.hoverTitle,
+                          isForeign(account, baseCurrency)
+                            ? t("overview.originalAmount", { amount: originalMoneyText(account.balance, account.currency) })
+                            : null,
+                        ].filter(Boolean).join(" · ") || undefined}
+                        className="truncate text-sm font-semibold text-slate-800"
+                      >
+                        {account.name}
                       </div>
+                      {/* 行内不再印「现金 / 借记卡 / 钱包 / 存款」这行种类副标题：种类、卡号、
+                          币种都还在上面的 title（hoverTitle）里，行压缩后能多列几个账户。 */}
                     </div>
-                    <div className={`shrink-0 text-sm font-semibold tabular-nums ${directionalClass(baseAmount(account), isRedUp)}`}>{formatMoney(baseAmount(account))}</div>
+                    <div title={baseMoneyText(account.balance, account.convertedBalance, account, baseCurrency)} className={`max-w-[55%] shrink-0 truncate text-sm font-semibold tabular-nums ${directionalClass(baseAmount(account), isRedUp)}`}>{baseMoneyText(account.balance, account.convertedBalance, account, baseCurrency)}</div>
                   </Link>
                 ))
               ) : (
@@ -445,8 +512,8 @@ export function OverviewDashboard({
                 <MetricCard label={t("overview.fixedAssetRate")} value={formatRate(fixedRate)} valueClass={directionalClass(fixedRate, isRedUp)} />
               </div>
               <div className="divide-y divide-slate-100 border-t border-slate-100">
-                {fixedAssetAccountList.length > 0 ? (
-                  fixedAssetAccountList.slice(0, 5).map((item) => (
+                {fixedAssets.length > 0 ? (
+                  fixedAssets.slice(0, 5).map((item) => (
                     <Link
                       key={item.accountId}
                       href={`/?accountId=${item.accountId}&view=investproperty`}
@@ -454,14 +521,23 @@ export function OverviewDashboard({
                       className="grid grid-cols-[minmax(0,1fr)_96px] items-center gap-3 px-4 py-3 hover:bg-slate-50 sm:grid-cols-[minmax(0,1fr)_96px_96px_72px]"
                     >
                       <div className="min-w-0">
-                        <div title={item.hoverTitle || undefined} className="truncate text-sm font-semibold text-slate-800">{item.name}</div>
+                        <div
+                          title={[
+                            item.hoverTitle,
+                            isForeign(item, baseCurrency)
+                              ? t("overview.originalAmount", { amount: originalMoneyText(item.marketValue, item.currency) })
+                              : null,
+                          ].filter(Boolean).join(" · ") || undefined}
+                          className="truncate text-sm font-semibold text-slate-800"
+                        >
+                          {item.name}
+                        </div>
                         <div className="mt-1 truncate text-[11px] text-slate-400">
                           {item.assetType ? t(`fixedAsset.type.${item.assetType}`) : t("account.kind.fixed_asset")}
-                          {isForeign(item, baseCurrency) ? ` · ${t("overview.originalAmount", { amount: formatCurrencyMoney(item.marketValue, item.currency) })}` : ""}
                         </div>
                       </div>
-                      <div className={`text-right text-xs font-semibold tabular-nums ${directionalClass(item.convertedMarketValue ?? item.marketValue, isRedUp)}`}>{formatMoney(item.convertedMarketValue ?? item.marketValue)}</div>
-                      <div className={`hidden text-right text-xs font-semibold tabular-nums sm:block ${directionalClass(item.floatingPnL, isRedUp)}`}>{formatMoney(item.floatingPnL)}</div>
+                      <div title={baseMoneyText(item.marketValue, item.convertedMarketValue, item, baseCurrency)} className={`truncate text-right text-xs font-semibold tabular-nums ${directionalClass(item.convertedMarketValue ?? item.marketValue, isRedUp)}`}>{baseMoneyText(item.marketValue, item.convertedMarketValue, item, baseCurrency)}</div>
+                      <div title={formatMoney(item.floatingPnL)} className={`hidden truncate text-right text-xs font-semibold tabular-nums sm:block ${directionalClass(item.floatingPnL, isRedUp)}`}>{formatMoney(item.floatingPnL)}</div>
                       <div className={`hidden text-right text-xs font-semibold tabular-nums sm:block ${directionalClass(item.floatingPnLRate, isRedUp)}`}>{formatRate(item.floatingPnLRate)}</div>
                     </Link>
                   ))
@@ -498,7 +574,7 @@ export function OverviewDashboard({
                     <div className="min-w-0">
                       <div title={account.hoverTitle || undefined} className="truncate text-sm font-semibold text-slate-800">{account.name}</div>
                     </div>
-                    <div className={`shrink-0 text-sm font-semibold tabular-nums ${liabilityClass(creditBillOf(account), isRedUp)}`}>{formatMoney(creditBillOf(account))}</div>
+                    <div title={formatMoney(creditBillOf(account))} className={`max-w-[55%] shrink-0 truncate text-sm font-semibold tabular-nums ${liabilityClass(creditBillOf(account), isRedUp)}`}>{formatMoney(creditBillOf(account))}</div>
                   </Link>
                 ))}
                 {creditCards.length === 0 && (
@@ -529,12 +605,20 @@ export function OverviewDashboard({
                     scroll={false}
                     className="rounded-lg border border-slate-100 bg-slate-50/80 px-3 py-3 transition-colors hover:border-rose-200 hover:bg-rose-50/30"
                   >
-                    <div title={account.hoverTitle || undefined} className="line-clamp-2 min-h-[40px] text-sm font-semibold leading-5 text-slate-800">{account.name}</div>
-                    <div className="mt-3 truncate text-[11px] text-slate-400">
-                      {baseAmount(account) >= 0 ? t("overview.owedToMe") : t("overview.iOwe")}
-                      {isForeign(account, baseCurrency) ? ` · ${t("overview.originalAmount", { amount: formatCurrencyMoney(account.balance, account.currency) })}` : ""}
+                    <div
+                      title={[
+                        account.hoverTitle,
+                        isForeign(account, baseCurrency)
+                          ? t("overview.originalAmount", { amount: originalMoneyText(account.balance, account.currency) })
+                          : null,
+                      ].filter(Boolean).join(" · ") || undefined}
+                      className="line-clamp-2 min-h-[40px] text-sm font-semibold leading-5 text-slate-800"
+                    >
+                      {account.name}
                     </div>
-                    <div className={`mt-0.5 text-base font-semibold tabular-nums ${directionalClass(baseAmount(account), isRedUp)}`}>{formatMoney(baseAmount(account))}</div>
+                    {/* 往来款行只显示金额：负数=我欠别人，正数=别人欠我（2026-11-12 用户：
+                        不要显示「我欠别人 / 别人欠我」这种文字，方向看金额正负号就够）。 */}
+                    <div title={baseMoneyText(account.balance, account.convertedBalance, account, baseCurrency)} className={`mt-3 truncate text-base font-semibold tabular-nums ${directionalClass(baseAmount(account), isRedUp)}`}>{baseMoneyText(account.balance, account.convertedBalance, account, baseCurrency)}</div>
                   </Link>
                 ))}
               </div>
@@ -542,26 +626,6 @@ export function OverviewDashboard({
           )}
         </section>
 
-        <section className="grid grid-cols-1 gap-3 md:grid-cols-3">
-          <CashFlowCard
-            label={t("overview.thisMonthIncome")}
-            value={formatMoneyYuan(monthIncome)}
-            icon={ArrowUpRight}
-            className={isRedUp ? "text-red-600" : "text-emerald-600"}
-          />
-          <CashFlowCard
-            label={t("overview.thisMonthExpense")}
-            value={formatMoneyYuan(-monthExpense)}
-            icon={ArrowDownRight}
-            className={isRedUp ? "text-emerald-600" : "text-red-600"}
-          />
-          <CashFlowCard
-            label={t("overview.thisMonthNet")}
-            value={formatMoneyYuan(monthNet)}
-            icon={Wallet}
-            className={directionalClass(monthNet, isRedUp)}
-          />
-        </section>
       </div>
     </div>
     </div>
@@ -571,9 +635,12 @@ export function OverviewDashboard({
 
 function MetricCard({ label, value, valueClass = "text-slate-900" }: { label: string; value: string; valueClass?: string }) {
   return (
+    // 指标卡在 `grid-cols-2 / md:grid-cols-4` 里最窄只有 ~90px，七位数的金额（`¥1,234,567.89`）
+    // 放不下一行——一律单行截断成 `¥1,234…`，`title` 带完整金额，悬停即可看全
+    // （2026-11-12 用户：「概览窗口里的数字经常超出卡片看不到」）。
     <div className="min-w-0 rounded-lg border border-slate-100 bg-slate-50/80 px-4 py-3">
-      <div className="text-xs text-slate-500">{label}</div>
-      <div className={`mt-1 truncate text-sm font-semibold tabular-nums ${valueClass}`}>{value}</div>
+      <div className="truncate text-xs text-slate-500" title={label}>{label}</div>
+      <div className={`mt-1 truncate text-sm font-semibold tabular-nums ${valueClass}`} title={value}>{value}</div>
     </div>
   );
 }
@@ -715,28 +782,6 @@ function CreditBillProgressBar({
           </span>
         </div>
       )}
-    </div>
-  );
-}
-
-function CashFlowCard({
-  label,
-  value,
-  icon: Icon,
-  className,
-}: {
-  label: string;
-  value: string;
-  icon: ElementType;
-  className: string;
-}) {
-  return (
-    <div className="panel-surface px-4 py-3">
-      <div className="flex items-center justify-between text-xs text-slate-500">
-        <span>{label}</span>
-        <Icon className={`h-4 w-4 ${className}`} />
-      </div>
-      <div className={`mt-2 text-lg font-semibold tabular-nums ${className}`}>{value}</div>
     </div>
   );
 }

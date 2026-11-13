@@ -35,6 +35,13 @@ type AssetDistributionItem = {
   pct: number;
 };
 
+/** 一根月份柱：`month` 为 `YYYY-MM`，金额已折算到本位币。 */
+type MonthlyCashFlowRow = {
+  month: string;
+  income: number;
+  expense: number;
+};
+
 type AccountListRow = {
   /** 行内看不到的信息（所有人/类型/非本位币），仅在非空时用于 title。 */
   hoverTitle?: string;
@@ -162,6 +169,12 @@ type OverviewSummary = {
   dailyAccountList: AccountListRow[];
   creditAccountList: CreditAccountRow[];
   liabilityAccountList: AccountListRow[];
+  /**
+   * 近 12 个月（含本月，按业务日截止）收支柱形图的数据。
+   * 口径与 `monthIncome` / `monthExpense` 完全一致 —— 同一遍分桶得出，
+   * 最后一个桶就是本月，别再另写一套统计（否则柱形图和「本月收入」卡片会对不上）。
+   */
+  monthlyCashFlow: MonthlyCashFlowRow[];
   accountTypeTotals: AccountTypeTotals;
   creditUsedTotal: number;
   creditLimitTotal: number;
@@ -283,7 +296,6 @@ export async function computeOverviewSummary(
   const businessToday = todayDateBusinessYmd(await resolveHouseholdTimeZone(ctx.hidFilter.householdId));
   const todayYear = Number(businessToday.slice(0, 4));
   const todayMonth = Number(businessToday.slice(5, 7));
-  const monthStart = new Date(Date.UTC(todayYear, todayMonth - 1, 1));
   const monthEnd = new Date(Date.UTC(todayYear, todayMonth, 1));
   // 本月收支只能算到今天：未来记账（预约的转账 / 还没到发生的收支）不是已实现的
   // 统计，提前计入会让「本月收入/支出」比余额先动 —— 同一笔钱在余额里不存在、
@@ -332,15 +344,26 @@ export async function computeOverviewSummary(
   const fixedAssetAccounts = pureInvestmentAccounts.filter(isFixedAssetAccountLike);
   const investmentOnlyAccounts = pureInvestmentAccounts.filter((account) => !isFixedAssetAccountLike(account));
   const creditAccounts = accounts.filter((account) => account.kind === AccountKind.bank_credit);
-  const liabilityAccounts = accounts.filter((account) => account.kind === AccountKind.loan);
+  // 「往来款净额」卡的明细：往来款（settlement）与贷款（loan）同为负债类，一起列进这张卡
+  // （2026-11-12 用户：「往来款应该显示在往来款净额这个卡片里」，此前只有 loan 进列表，
+  // 往来款账户反倒被塞进了资金账户卡）。卡片上的应收/应付数字本来就来自
+  // `computeLiabilityDisplaySummary`，那个查询一直是 settlement + loan，改这里只是把明细对齐。
+  const liabilityAccounts = accounts.filter(
+    (account) => account.kind === AccountKind.loan || account.kind === AccountKind.settlement,
+  );
   const insuranceAccounts = accounts.filter((account) => account.kind === AccountKind.insurance);
 
+  // 资金账户：现金 / 借记卡 / 钱包 / 存款这类「日常收支能用它结账」的账户。
+  // **往来款（kind=settlement）不算资金账户**——它有自己的「往来款净额」卡
+  // （2026-11-12 用户：「日常账户改成资金账户，只显示资金账户，不显示往来款」）。
+  // 以前 settlement 混在这里，卡片副标题还会把 kind 原值 `settlement` 直接印在界面上。
   const dailyBaseAccounts = accounts.filter(
     (account) =>
       !isPureInvestmentAccount(account) &&
       !isLegacyDepositAccount(account) &&
       account.kind !== AccountKind.bank_credit &&
       account.kind !== AccountKind.loan &&
+      account.kind !== AccountKind.settlement &&
       account.kind !== AccountKind.insurance,
   );
 
@@ -348,8 +371,27 @@ export async function computeOverviewSummary(
     ...dailyBaseAccounts.map((account) => ({ ...account, summaryKind: account.kind as string })),
     ...legacyDepositAccounts.map((account) => ({ ...account, summaryKind: "deposit" })),
   ];
-  const dailyAccountIds = dailyAccounts.map((account) => account.id);
-  const dailyCurrencyByAccountId = new Map(dailyAccounts.map((account) => [account.id, currencyOf(account)]));
+
+  // 「本月收入 / 支出 / 结余」的统计口径**保持原样**（含往来款账户的进出）：用户只要求
+  // 资金账户卡不再列往来款，没要求改月度收支。所以这里另留一份含 settlement 的集合，
+  // 只给下面那段月度流水统计用，别再复用到展示列表上。
+  const monthlyStatAccounts = [
+    ...accounts
+      .filter(
+        (account) =>
+          !isPureInvestmentAccount(account) &&
+          !isLegacyDepositAccount(account) &&
+          account.kind !== AccountKind.bank_credit &&
+          account.kind !== AccountKind.loan &&
+          account.kind !== AccountKind.insurance,
+      )
+      .map((account) => ({ ...account, summaryKind: account.kind as string })),
+    ...legacyDepositAccounts.map((account) => ({ ...account, summaryKind: "deposit" })),
+  ];
+  const monthlyStatAccountIds = monthlyStatAccounts.map((account) => account.id);
+  const monthlyStatCurrencyByAccountId = new Map(
+    monthlyStatAccounts.map((account) => [account.id, currencyOf(account)]),
+  );
   const dailyAndLiabilityDisplayBalanceByAccountId = await getMaintainedAccountBalances(
     [...dailyAccounts, ...liabilityAccounts].map((account) => ({
       id: account.id,
@@ -361,36 +403,74 @@ export async function computeOverviewSummary(
   );
   const liabilityDisplaySummary = await computeLiabilityDisplaySummary(ctx, fx);
 
+  // 近 12 个月收支：与「本月收入/支出」同一遍统计（分桶后本月桶就是原来的两个数字），
+  // 所以窗口从当月扩到滚动 12 个月，而不是另写一套口径 —— 否则柱形图和卡片会对不上。
+  const cashFlowMonths: string[] = [];
+  const cashFlowMonthIndexByKey = new Map<string, number>();
+  for (let offset = 11; offset >= 0; offset -= 1) {
+    const cursor = new Date(Date.UTC(todayYear, todayMonth - 1 - offset, 1));
+    const key = `${cursor.getUTCFullYear()}-${String(cursor.getUTCMonth() + 1).padStart(2, "0")}`;
+    cashFlowMonthIndexByKey.set(key, cashFlowMonths.length);
+    cashFlowMonths.push(key);
+  }
+  const monthlyCashFlow: MonthlyCashFlowRow[] = cashFlowMonths.map((month) => ({ month, income: 0, expense: 0 }));
+  const cashFlowStart = new Date(Date.UTC(todayYear, todayMonth - 12, 1));
+
   let monthIncome = 0;
   let monthExpense = 0;
 
-  if (dailyAccountIds.length > 0) {
+  if (monthlyStatAccountIds.length > 0) {
+    const statAccountIdSet = new Set(monthlyStatAccountIds);
     const monthEntries = await prisma.txRecord.findMany({
       where: {
         deletedAt: null,
         ...hidFilter,
-        date: { gte: monthStart, lt: monthQueryEnd },
-        OR: [{ accountId: { in: dailyAccountIds } }, { toAccountId: { in: dailyAccountIds } }],
+        date: { gte: cashFlowStart, lt: monthQueryEnd },
+        OR: [
+          { accountId: { in: monthlyStatAccountIds } },
+          { toAccountId: { in: monthlyStatAccountIds } },
+        ],
       },
-      select: { type: true, amount: true, accountId: true, toAccountId: true },
+      select: { type: true, amount: true, accountId: true, toAccountId: true, date: true },
     });
 
     for (const entry of monthEntries) {
       const amount = toNumber(entry.amount);
-      const isToDaily = dailyAccountIds.includes(entry.toAccountId ?? "");
-      const isFromDaily = dailyAccountIds.includes(entry.accountId);
+      const isToStat = statAccountIdSet.has(entry.toAccountId ?? "");
+      const isFromStat = statAccountIdSet.has(entry.accountId);
       const convertFor = (value: number, accountId: string | null | undefined) =>
-        fx.convertForTotal(value, dailyCurrencyByAccountId.get(accountId ?? ""));
+        fx.convertForTotal(value, monthlyStatCurrencyByAccountId.get(accountId ?? ""));
 
-      if (entry.type === TransactionType.income && isToDaily) {
-        monthIncome += convertFor(getIncomeExpenseStatisticAmount(entry.type, amount), entry.toAccountId);
-      } else if (entry.type === TransactionType.expense && isFromDaily) {
-        monthExpense += convertFor(getIncomeExpenseStatisticAmount(entry.type, amount), entry.accountId);
+      let income = 0;
+      let expense = 0;
+      if (entry.type === TransactionType.income) {
+        // 收入记录的「收款账户」写在 accountId（amount 正数=流入该账户），toAccountId 只有
+        // 转账 / 投资才有值 —— 库里 5000+ 条 income 的 toAccountId 全是 null。曾经这里按
+        // isToStat + toAccountId 判断，等于把收入一律丢掉：柱形图收入柱恒为 0、「本月收入」
+        // 恒为 0.00。报表页同样按 `toAccountId ?? accountId` 兜底，两边口径要对齐。
+        const statAccountId = isFromStat ? entry.accountId : isToStat ? entry.toAccountId : null;
+        if (statAccountId) {
+          income = convertFor(getIncomeExpenseStatisticAmount(entry.type, amount), statAccountId);
+        }
+      } else if (entry.type === TransactionType.expense && isFromStat) {
+        expense = convertFor(getIncomeExpenseStatisticAmount(entry.type, amount), entry.accountId);
       } else if (entry.type === TransactionType.transfer) {
-        if (isToDaily && !isFromDaily) monthIncome += Math.abs(convertFor(amount, entry.toAccountId));
-        if (isFromDaily && !isToDaily) monthExpense += Math.abs(convertFor(amount, entry.accountId));
+        if (isToStat && !isFromStat) income = Math.abs(convertFor(amount, entry.toAccountId));
+        if (isFromStat && !isToStat) expense = Math.abs(convertFor(amount, entry.accountId));
       }
+      if (income === 0 && expense === 0) continue;
+
+      const date = entry.date;
+      const key = `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
+      const index = cashFlowMonthIndexByKey.get(key);
+      if (index === undefined) continue;
+      monthlyCashFlow[index].income += income;
+      monthlyCashFlow[index].expense += expense;
     }
+
+    const currentMonth = monthlyCashFlow[monthlyCashFlow.length - 1];
+    monthIncome = currentMonth?.income ?? 0;
+    monthExpense = currentMonth?.expense ?? 0;
   }
 
   const dailyAccountList: AccountListRow[] = dailyAccounts.map((account) => {
@@ -822,6 +902,7 @@ export async function computeOverviewSummary(
     dailyAccountList,
     creditAccountList,
     liabilityAccountList,
+    monthlyCashFlow,
     accountTypeTotals,
     creditUsedTotal,
     creditLimitTotal,

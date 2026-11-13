@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import {
+  BarChart3,
   ChevronRight,
   CreditCard,
   Eye,
@@ -10,6 +11,7 @@ import {
   Wallet,
 } from "lucide-react";
 
+import { MonthlyCashFlowChart } from "@/components/MonthlyCashFlowChart";
 import type { OverviewDashboardProps } from "@/components/OverviewDashboard";
 import { formatMoneyYuan, formatPercent } from "@/lib/format";
 import { pnlClassFromRedUp } from "@/lib/client/colors";
@@ -54,6 +56,7 @@ export function MobileOverviewDashboard({
   accountTypeTotals,
   monthIncome,
   monthExpense,
+  monthlyCashFlow = [],
   creditAccountList,
   topPositions = [],
   investmentAccountCount,
@@ -150,6 +153,19 @@ export function MobileOverviewDashboard({
           </div>
         ) : null}
 
+        {/* 近 12 个月收支：与桌面同位（Hero 卡下方、卡片上方），隐藏金额时整块不画柱。 */}
+        {monthlyCashFlow.length > 0 ? (
+          <section className="rounded-2xl bg-white shadow-sm ring-1 ring-slate-200">
+            <div className="flex items-center gap-2 px-3 pb-1 pt-3 text-sm font-semibold text-slate-950">
+              <BarChart3 className="h-4 w-4 text-sky-500" />
+              {t("overview.last12MonthsCashFlow")}
+            </div>
+            <div className="px-2 pb-2">
+              <MonthlyCashFlowChart rows={monthlyCashFlow} isRedUp={isRedUp} compact masked={!showAmounts} />
+            </div>
+          </section>
+        ) : null}
+
         <section className="grid grid-cols-2 gap-2">
           <Link href="/accounts" className="rounded-2xl bg-white p-3 shadow-sm ring-1 ring-slate-200 active:bg-slate-50">
             <MiniTile icon={Wallet} label={t("overview.dailyAccounts")} value={amount(totals.dailyNetWorth)} tone="blue" valueClass={valueClass(totals.dailyNetWorth)} />
@@ -203,7 +219,7 @@ export function MobileOverviewDashboard({
                       className="flex items-center justify-between gap-2 rounded-xl bg-slate-50 px-2.5 py-2"
                     >
                       <span title={item.hoverTitle || undefined} className="min-w-0 flex-1 truncate text-xs font-medium text-slate-900">{item.name}</span>
-                      <span className={`shrink-0 text-xs font-semibold tabular-nums ${valueClass(item.convertedMarketValue ?? item.marketValue)}`}>{amount(item.convertedMarketValue ?? item.marketValue)}</span>
+                      <span title={amount(item.convertedMarketValue ?? item.marketValue)} className={`shrink-0 text-xs font-semibold tabular-nums ${valueClass(item.convertedMarketValue ?? item.marketValue)}`}>{amount(item.convertedMarketValue ?? item.marketValue)}</span>
                     </Link>
                   ))}
                 </div>
@@ -222,7 +238,7 @@ export function MobileOverviewDashboard({
               {creditCardsWithBills.map((account) => (
                 <Link key={account.id} href={`/accounts/${encodeURIComponent(account.id)}`} className="flex min-h-9 items-center gap-2 rounded-xl bg-rose-50/55 px-2.5 py-1.5 active:bg-rose-50">
                   <span title={account.hoverTitle || undefined} className="min-w-0 flex-1 truncate text-xs font-medium text-slate-900">{account.name}</span>
-                  <span className={`shrink-0 text-xs font-semibold tabular-nums ${liabilityValueClass(account.currentBill)}`}>{amount(account.currentBill)}</span>
+                  <span title={amount(account.currentBill)} className={`shrink-0 text-xs font-semibold tabular-nums ${liabilityValueClass(account.currentBill)}`}>{amount(account.currentBill)}</span>
                   <span className="shrink-0 text-xs font-medium text-rose-600">{account.dueDate}</span>
                 </Link>
               ))}
@@ -238,7 +254,7 @@ function HeroMetric({ label, value, className = "text-white" }: { label: string;
   return (
     <div className="min-w-0 rounded-2xl bg-white/[0.08] px-3 py-2 ring-1 ring-white/10">
       <div className="text-[11px] text-indigo-200">{label}</div>
-      <div className={`mt-1 truncate text-sm font-semibold tabular-nums ${className}`}>{value}</div>
+      <div title={value} className={`mt-1 truncate text-sm font-semibold tabular-nums ${className}`}>{value}</div>
     </div>
   );
 }
@@ -247,7 +263,7 @@ function HeroFlowMetric({ label, value, className }: { label: string; value: str
   return (
     <div className="min-w-0 px-2 py-1.5 text-center">
       <div className="truncate text-[10px] text-indigo-200">{label}</div>
-      <div className={`mt-1 truncate text-xs font-semibold tabular-nums ${className ?? "text-white"}`}>{value}</div>
+      <div title={value} className={`mt-1 truncate text-xs font-semibold tabular-nums ${className ?? "text-white"}`}>{value}</div>
     </div>
   );
 }
@@ -262,7 +278,7 @@ function MiniTile({ icon: Icon, label, value, tone, valueClass = "text-slate-950
       </span>
       <span className="min-w-0 flex-1">
         <span className="block text-xs text-slate-500">{label}</span>
-        <span className={`mt-1 block truncate text-sm font-semibold tabular-nums ${valueClass}`}>{value}</span>
+        <span title={value} className={`mt-1 block truncate text-sm font-semibold tabular-nums ${valueClass}`}>{value}</span>
       </span>
     </div>
   );
@@ -272,7 +288,7 @@ function TinyMetric({ label, value, valueClass = "text-slate-700", align = "left
   return (
     <div className={`min-w-0 ${align === "right" ? "text-right" : "text-left"}`}>
       <div className="truncate text-[10px] text-slate-400">{label}</div>
-      <div className={`mt-0.5 truncate text-[11px] font-semibold tabular-nums ${valueClass}`}>{value}</div>
+      <div title={value} className={`mt-0.5 truncate text-[11px] font-semibold tabular-nums ${valueClass}`}>{value}</div>
     </div>
   );
 }
@@ -281,7 +297,7 @@ function TinyPanel({ label, value, valueClass = "text-slate-950", align = "left"
   return (
     <div className={`min-w-0 rounded-xl bg-slate-50 px-3 py-2 ${align === "right" ? "text-right" : "text-left"}`}>
       <div className="truncate text-[11px] text-slate-500">{label}</div>
-      <div className={`mt-1 truncate text-sm font-semibold tabular-nums ${valueClass}`}>{value}</div>
+      <div title={value} className={`mt-1 truncate text-sm font-semibold tabular-nums ${valueClass}`}>{value}</div>
     </div>
   );
 }
