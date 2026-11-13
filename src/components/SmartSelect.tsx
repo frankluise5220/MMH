@@ -540,6 +540,9 @@ export function SmartSelect(props: SmartSelectProps) {
     ? Math.max(2, Math.min(6, Math.floor(expandedGroupColumns)))
     : undefined;
   const fullGridRowStyle = singleGridColumns ? { gridColumn: "1 / -1" } : undefined;
+  // 栅格（按 expandedGroupColumns 横排）里的格子跟着 density 收高度，横向间距保持 p-1/gap-x-1，
+  // 纵向行距更紧一点，否则 12 个月排三列时整块太松散。
+  const gridCellClass = micro ? "h-5 text-[11px]" : dense ? "h-6 text-xs" : compact ? "h-7 text-xs" : "h-8 text-sm";
   const resolvedDropdownMaxHeight = dropdownMaxHeight ?? (compact ? 320 : 360);
 
   const isSingleCreateButton = mode === "single" && create?.type === "button" ? create : undefined;
@@ -1152,7 +1155,7 @@ export function SmartSelect(props: SmartSelectProps) {
                 index === focusedIndex ? "border-blue-200 bg-blue-50" : "border-slate-200/70 bg-slate-50 hover:border-slate-300 hover:bg-slate-100"
               } ${selected ? "border-blue-200 bg-blue-50 font-medium text-blue-700" : "text-slate-700"}`
             : singleGridColumns
-              ? `flex h-8 min-w-0 items-center justify-center rounded-md px-2 text-center text-xs transition-colors ${
+              ? `flex ${gridCellClass} min-w-0 items-center justify-center rounded-md px-2 text-center transition-colors ${
                   index === focusedIndex ? "bg-blue-50" : "hover:bg-slate-50"
                 } ${selected ? "bg-blue-50 font-medium text-blue-700" : "text-slate-700"}`
               : `flex ${micro ? "h-5 px-1.5 text-[11px]" : dense ? "h-7 px-2 text-xs" : compact ? "h-8 px-2 text-xs" : "h-9 px-3 text-sm"} w-full items-center gap-1.5 text-left transition-colors ${
@@ -1407,7 +1410,7 @@ export function SmartSelect(props: SmartSelectProps) {
             ref={listRef}
             id={listId}
             role="listbox"
-            className={`min-h-0 flex-1 overflow-y-auto ${singleGridColumns ? "grid content-start gap-1 p-1" : ""}`}
+            className={`min-h-0 flex-1 overflow-y-auto ${singleGridColumns ? "grid content-start gap-x-1 gap-y-0.5 p-1" : ""}`}
             style={{
               maxHeight: resizableDropdown ? undefined : resolvedDropdownMaxHeight,
               ...(singleGridColumns ? { gridTemplateColumns: `repeat(${singleGridColumns}, minmax(0, 1fr))` } : {}),
@@ -1464,7 +1467,7 @@ export function SmartSelect(props: SmartSelectProps) {
                   onClick={() => selectSingle(option.id)}
                   onMouseEnter={() => setFocusedIndex(index)}
                   className={singleGridColumns
-                    ? `flex h-8 min-w-0 items-center justify-center rounded-md px-2 text-center text-xs transition-colors ${
+                    ? `flex ${gridCellClass} min-w-0 items-center justify-center rounded-md px-2 text-center transition-colors ${
                         index === focusedIndex ? "bg-blue-50" : "hover:bg-slate-50"
                       } ${selected ? "bg-blue-50 font-medium text-blue-700" : "text-slate-700"}`
                     : `flex ${micro ? "h-5 px-1.5 text-[11px]" : dense ? "h-7 px-2 text-xs" : compact ? "h-8 px-2 text-xs" : "h-9 px-3 text-sm"} w-full items-center gap-1.5 text-left transition-colors ${

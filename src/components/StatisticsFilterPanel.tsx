@@ -10,6 +10,7 @@ import {
   type StatisticsInstitutionItem,
   type StatisticsUserItem,
 } from "@/components/AccountScopeFilter";
+import { SmartSelect, type SmartSelectOption } from "@/components/SmartSelect";
 
 export type {
   StatisticsAccountItem,
@@ -40,9 +41,12 @@ export function StatisticsFilterPanel({ allAccounts, allInstitutions = [], allUs
   const searchParams = useSearchParams();
   const { t } = useI18n();
   const isReports = reportPath === "/reports";
+  // 报表页服务端默认粒度是「月」（/reports 未带 groupBy 时按 month 渲染列头），
+  // 所以这里必须以「只有显式 groupBy=year 才是年」为准，否则首屏会出现
+  // 「统计范围=年、表格列头却是月份」的错位。
   const [level, setLevel] = useState<"year" | "month">(
     isReports
-      ? searchParams.get(periodParam ?? "groupBy") === "month" ? "month" : "year"
+      ? searchParams.get(periodParam ?? "groupBy") === "year" ? "year" : "month"
       : searchParams.get("level") === "month" ? "month" : "year",
   );
   const [accountId, setAccountId] = useState(searchParams.get(accountParam ?? "accounts") ?? "");
@@ -61,6 +65,57 @@ export function StatisticsFilterPanel({ allAccounts, allInstitutions = [], allUs
     institutionIds: institutionId.split(",").filter(Boolean),
     accountIds: accountId.split(",").filter(Boolean),
   };
+
+  // 月粒度的起止月：按年分组的可折叠下拉（组头=年份，展开后选月份），
+  // 列表里月份只写 01～12，闭合的触发器写紧凑的 YYYYMM（202401）。
+  // 可选范围 = 账簿可选年份，当前值若在范围外单独补一个年份组，
+  // 避免受控值在列表里找不到而回退。
+  const monthSelectOptions = (() => {
+    const years = [...(availableYears.length > 0 ? availableYears : [year])];
+    for (const current of [startMonth, endMonth]) {
+      if (!/^\d{4}-\d{2}$/.test(current)) continue;
+      const candidate = Number(current.slice(0, 4));
+      if (!years.includes(candidate)) years.push(candidate);
+    }
+    years.sort((left, right) => left - right);
+    const options: SmartSelectOption[] = [];
+    for (const candidate of years) {
+      const groupId = `month-group-${candidate}`;
+      options.push({ id: groupId, label: String(candidate), isHeader: true });
+      for (let index = 1; index <= 12; index += 1) {
+        const month = String(index).padStart(2, "0");
+        options.push({
+          id: `${candidate}-${month}`,
+          label: month,
+          triggerLabel: `${candidate}${month}`,
+          // 搜索按 label/subLabel/title 匹配：列表里只写 01～12，
+          // 靠 title 让「2024」「202401」都能搜到。
+          title: `${candidate}${month}`,
+          parentId: groupId,
+        });
+      }
+    }
+    return options;
+  })();
+  const monthPickerBehavior = {
+    density: "compact" as const,
+    // 年份组默认全部收起，点开年份再选月份；选中值所在的组会自动展开。
+    initialCollapsedAll: true,
+    // 手风琴：同时只展开一个年份，打开 2024 会自动收起 2023。
+    // 与分类选择（categorySmartSelect）等既有层级下拉同一套行为，别另写一套。
+    accordionGroups: true,
+    selectableGroups: true,
+    groupSelectOnDoubleClick: false,
+    clearable: false,
+    // 组头只写年份（默认会跟一个「12」的组内计数，容易被当成月份）。
+    showGroupCounts: false,
+    // 触发器只有 96px，弹层必须更宽，否则组头/月份都被截断。
+    minDropdownWidth: 168,
+    // 展开的年份组里月份按 4 列排（01 02 03 04 / … ），12 个月正好 3 行，
+    // 配合 SmartSelect 收紧后的行距，整块看起来像小日历。
+    expandedGroupColumns: 4,
+  };
+
 
   function handleLevelChange(nextLevel: "year" | "month") {
     if (nextLevel === level) return;
@@ -126,7 +181,7 @@ export function StatisticsFilterPanel({ allAccounts, allInstitutions = [], allUs
         <option value="year">{t("reports.year")}</option>
         <option value="month">{t("reports.month")}</option>
       </select>}
-      {!hideRange && isReports && level === "month" ? <><input type="month" value={startMonth} onChange={(event) => setStartMonth(event.target.value)} className="h-9 w-[132px] rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 md:h-8" /><input type="month" value={endMonth} onChange={(event) => setEndMonth(event.target.value)} className="h-9 w-[132px] rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 md:h-8" /></> : null}
+      {!hideRange && isReports && level === "month" ? <><div className="w-24 shrink-0"><SmartSelect mode="single" value={startMonth} onChange={setStartMonth} options={monthSelectOptions} behavior={monthPickerBehavior} /></div><div className="w-24 shrink-0"><SmartSelect mode="single" value={endMonth} onChange={setEndMonth} options={monthSelectOptions} behavior={monthPickerBehavior} /></div></> : null}
       {!hideRange && isReports && level === "year" ? <><select value={startYear} onChange={(event) => setStartYear(event.target.value)} className="h-9 w-24 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 md:h-8">{(availableYears.length > 0 ? availableYears : [year]).map((value) => <option key={`start-${value}`}>{value}</option>)}</select><select value={endYear} onChange={(event) => setEndYear(event.target.value)} className="h-9 w-24 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 md:h-8">{(availableYears.length > 0 ? availableYears : [year]).map((value) => <option key={`end-${value}`}>{value}</option>)}</select></> : null}
       {/* 统计图表页：单年（年视图）或 年+月（月视图），提交到 year/month 参数 */}
       {!hideRange && !isReports ? <>
