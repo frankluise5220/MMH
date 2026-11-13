@@ -105,6 +105,14 @@ export function PropertyFormModal({
   const [marketValue, setMarketValue] = useState("");
   const [note, setNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  /**
+   * 按需拉取的资产列表。
+   *
+   * 只有固定资产视图（`view=investproperty`）会把 `propertyAssets` 传下来；从概览或
+   * 账户页的「记一笔 → 固定资产 → 出售」打开时它是空的，资产下拉会一个选项都没有，
+   * 等于卖不了。`null` = 还没拉过，空数组也是一次有效结果（新账簿没资产）。
+   */
+  const [extraAssets, setExtraAssets] = useState<PropertyAssetOption[] | null>(null);
 
   const propertyOptions = useMemo(
     () => propertyAccountSSOptions?.length ? propertyAccountSSOptions : propertyAccounts.map(accountToOption),
@@ -114,10 +122,33 @@ export function PropertyFormModal({
     () => cashAccountSSOptions?.length ? cashAccountSSOptions : cashAccounts.map(accountToOption),
     [cashAccountSSOptions, cashAccounts],
   );
+  // 资产数据源：页面上带了就用页面那份（固定资产视图），否则用按需补拉的。
+  const assetSource = extraAssets && extraAssets.length > 0 ? extraAssets : propertyAssets;
   const assetOptions = useMemo(
-    () => propertyAssets.map((asset) => ({ id: asset.id, label: asset.name, title: asset.name })),
-    [propertyAssets],
+    () => assetSource.map((asset) => ({ id: asset.id, label: asset.name, title: asset.name })),
+    [assetSource],
   );
+
+  // 出售 / 装修得先选具体资产，而这两个动作的入口未必在固定资产视图里，
+  // 缺列表就补拉一次（`transactions=0` 只要资产，不拖明细）。
+  useEffect(() => {
+    if (!open || mode !== "transaction" || action === "purchase") return;
+    if (propertyAssets.length > 0 || extraAssets !== null) return;
+    let cancelled = false;
+    fetch("/api/v1/properties?transactions=0", { cache: "no-store" })
+      .then((res) => res.json())
+      .then((body: { ok?: boolean; data?: { assets?: Array<{ id: string; name: string; marketValue?: number | null }> } } | null) => {
+        if (cancelled) return;
+        setExtraAssets((body?.data?.assets ?? []).map((asset) => ({
+          id: asset.id,
+          name: asset.name,
+          marketValue: asset.marketValue ?? null,
+        })));
+      })
+      // 拉不到就让下拉空着（保存时后端还会校验资产），别把弹窗卡死。
+      .catch(() => { if (!cancelled) setExtraAssets([]); });
+    return () => { cancelled = true; };
+  }, [open, mode, action, propertyAssets.length, extraAssets]);
 
   const resetTransactionDraft = useCallback((detail?: PropertyCreateEventDetail) => {
     setMode("transaction");
@@ -126,6 +157,8 @@ export function PropertyFormModal({
     setPropertyAccountId(detail?.defaultPropertyAccountId || defaultPropertyAccountId || propertyAccounts[0]?.id || "");
     setCashAccountId(detail?.defaultCashAccountId || defaultCashAccountId || cashAccounts[0]?.id || "");
     setPropertyAssetId("");
+    // 每次打开都重拉资产：刚在别处新增的车/房，不该因为上一次的缓存而选不到。
+    setExtraAssets(null);
     setName("");
     setPropertyType("");
     setAddress("");
@@ -334,7 +367,11 @@ export function PropertyFormModal({
                 <SmartSelect
                   mode="single"
                   value={propertyAccountId}
-                  onChange={setPropertyAccountId}
+                  onChange={(value) => {
+                    setPropertyAccountId(value);
+                    // 换账户后原来选中的资产不属于新账户了，清掉重新选。
+                    setPropertyAssetId("");
+                  }}
                   options={propertyOptions}
                   placeholder={t("propertyForm.propertyAccountPlaceholder")}
                   behavior={{ search: true, density: "compact", minDropdownWidth: 260 }}

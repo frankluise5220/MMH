@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useI18n } from "@/lib/i18n";
 import { MMH_BASE_PATH, withBasePath } from "@/lib/base-path";
+import { selectedStockForAccount } from "@/lib/client/stock-selection";
 import type { LoanTypeValue } from "@/lib/loan-type";
 
 type EntryKind =
@@ -22,6 +23,7 @@ type EntryKind =
   | "stock-dividend"
   | "stock-repo"
   | "property"
+  | "property-sell"
   | "metal"
   | "wealth"
   | "bond"
@@ -230,20 +232,53 @@ function dispatchEntryAction(kind: EntryKind, context?: Props["context"], loanTy
         }),
       );
       return;
-    case "stock":
-    case "stock-sell":
-    case "stock-dividend":
+    // 「股票」按**当前页签**决定默认动作：已经停在逆回购页签（URL `stockTab=repo`，由
+    // StockHoldingsPanel 维持）时，点它直接弹出**逆回购记账窗**，而不是买入
+    // （2026-11-12 用户：「如果在股票逆回购，点击胶囊按钮，就出现逆回购记一笔的界面」）。
+    // 其他情况仍是原来的买入。
+    case "stock": {
+      const onRepoLots = new URLSearchParams(window.location.search).get("stockTab") === "repo";
+      const stockAccountId = context?.defaultStockAccountId ?? context?.defaultInvestmentAccountId ?? "";
+      // 持仓页已经选中某只股票时直接带上它。买入页签（stock 入口默认落这里）先显示这只，
+      // 用户切到卖出/分红时下拉里也已经是它，不必再点一次。逆回购与股票无关，不带。
+      const pickedStock = onRepoLots ? null : selectedStockForAccount(stockAccountId);
       window.dispatchEvent(
         new CustomEvent("mmh:stock:create", {
           detail: {
             requestId,
-            defaultAction: kind === "stock-sell" ? "sell" : kind === "stock-dividend" ? "dividend" : "buy",
-            defaultStockAccountId: context?.defaultStockAccountId ?? context?.defaultInvestmentAccountId ?? "",
+            defaultAction: onRepoLots ? "repo" : "buy",
+            defaultStockAccountId: stockAccountId,
             defaultCashAccountId: context?.defaultStockCashAccountId ?? context?.defaultCashAccountId ?? "",
+            defaultSecurityId: pickedStock?.securityId || undefined,
+            defaultStockCode: pickedStock?.stockCode || undefined,
+            defaultStockName: pickedStock?.stockName || undefined,
+            defaultMarket: pickedStock?.market || undefined,
           },
         }),
       );
       return;
+    }
+    case "stock-sell":
+    case "stock-dividend": {
+      const stockAccountId = context?.defaultStockAccountId ?? context?.defaultInvestmentAccountId ?? "";
+      // 账号对不上（不在股票视图 / 已离开持仓页）时拿不到，退回让用户在弹窗里选。
+      const pickedStock = selectedStockForAccount(stockAccountId);
+      window.dispatchEvent(
+        new CustomEvent("mmh:stock:create", {
+          detail: {
+            requestId,
+            defaultAction: kind === "stock-sell" ? "sell" : "dividend",
+            defaultStockAccountId: stockAccountId,
+            defaultCashAccountId: context?.defaultStockCashAccountId ?? context?.defaultCashAccountId ?? "",
+            defaultSecurityId: pickedStock?.securityId || undefined,
+            defaultStockCode: pickedStock?.stockCode || undefined,
+            defaultStockName: pickedStock?.stockName || undefined,
+            defaultMarket: pickedStock?.market || undefined,
+          },
+        }),
+      );
+      return;
+    }
     case "stock-transfer":
       window.dispatchEvent(
         new CustomEvent("mmh:create-transaction:open", {
@@ -271,6 +306,21 @@ function dispatchEntryAction(kind: EntryKind, context?: Props["context"], loanTy
             fixedAssetAccountId,
             fixedAssetRequired: true,
             lockFixedAsset: Boolean(fixedAssetAccountId),
+          },
+        }),
+      );
+      return;
+    case "property-sell":
+      // 出售走固定资产专用表单 PropertyFormModal（买入/装修/出售三态它都有），
+      // 这里只打开并预置 sale：选资产、填成交价/税费/收款账户即可。后端
+      // POST /api/v1/properties 会把资产状态置 sold、按净回款更新市值，并生成回款流水。
+      window.dispatchEvent(
+        new CustomEvent("mmh:property:create", {
+          detail: {
+            requestId,
+            defaultAction: "sale",
+            defaultPropertyAccountId: context?.defaultPropertyAccountId ?? context?.defaultInvestmentAccountId ?? "",
+            defaultCashAccountId: context?.defaultCashAccountId ?? context?.defaultAccountId ?? "",
           },
         }),
       );
