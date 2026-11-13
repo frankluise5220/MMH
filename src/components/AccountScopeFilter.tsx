@@ -1,7 +1,7 @@
 "use client";
 
 import { ChevronDown } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { useI18n } from "@/lib/i18n";
 import { accountTableCell } from "@/lib/account-display";
@@ -55,6 +55,11 @@ type Props = {
   clearedOnlyFundCompanies?: string[];
   value: AccountScopeValue;
   onChange: (next: AccountScopeValue) => void;
+  /**
+   * 紧凑模式：触发器窄一档（7.5rem 而不是 10rem）。
+   * 给「一行要塞很多筛选控件」的工具栏用（设置 → 账户列表），默认关闭以免影响报表/统计页。
+   */
+  compact?: boolean;
 };
 
 export function AccountScopeFilter({
@@ -66,6 +71,7 @@ export function AccountScopeFilter({
   clearedOnlyFundCompanies = [],
   value,
   onChange,
+  compact = false,
 }: Props) {
   const { t } = useI18n();
   const displaySettings = useAccountDisplaySettings();
@@ -147,6 +153,28 @@ export function AccountScopeFilter({
     return (left.label ?? left.name).localeCompare(right.label ?? right.name, "zh-CN");
   }), [userFilteredAccounts, realInstitutionIds]);
   const userOptions = allUsers;
+
+  // 机构触发器宽度 = 最长机构名（含「全部机构」占位）的文本宽度 + 图标/内边距。
+  // 用 canvas 量一次（字号跟随 text-xs 的 12px），量不出来就退回 CSS 的内容宽度，
+  // 上限 208px（`max-w-52`），超长机构名仍走省略号。
+  const institutionLabels = useMemo(
+    () => [
+      t("statistics.allInstitutions"),
+      ...institutionOptions.map((institution) => institution.name),
+      ...fundCompanyOptions.map((item) => item.name),
+    ],
+    [t, institutionOptions, fundCompanyOptions],
+  );
+  const [institutionTriggerWidth, setInstitutionTriggerWidth] = useState<number | null>(null);
+  useEffect(() => {
+    const context = document.createElement("canvas").getContext("2d");
+    if (!context) return;
+    const fontFamily = getComputedStyle(document.body).fontFamily || "sans-serif";
+    context.font = `12px ${fontFamily}`;
+    const widest = institutionLabels.reduce((max, label) => Math.max(max, context.measureText(label).width), 0);
+    // px-2.5(20) + gap(8) + chevron(14) + border(2)
+    setInstitutionTriggerWidth(Math.min(Math.ceil(widest) + 44, 208));
+  }, [institutionLabels]);
 
   useEffect(() => {
     if (!openMenu) return;
@@ -375,6 +403,17 @@ export function AccountScopeFilter({
     ? (["users", "institutions", "accounts"] as const)
     : (["users", "institutions"] as const);
 
+  /**
+   * 触发器宽度策略：
+   * - 机构：按「最长机构名」定宽（`--mmh-inst-trigger-w`），上限 13rem —— 「全部机构」只有 4 个字，
+   *   固定 7.5rem 会撑出一大片留白；而宽度恒定取最长名，切换选项时按钮不会左跳右跳。
+   * - 人员 / 账户：保持原来的固定档位。
+   */
+  const triggerWidthClass = (isInstitutions: boolean) => {
+    if (isInstitutions) return "md:min-w-[var(--mmh-inst-trigger-w,0px)] md:max-w-52";
+    return compact ? "md:min-w-[7.5rem] md:max-w-44" : "md:min-w-40 md:max-w-56";
+  };
+
   const fundCompanyGroupBlock = fundCompanyOptions.length === 0 ? null : (
     <div className="grid grid-cols-[96px_1fr] items-start gap-2 border-b border-slate-200 py-2 last:border-b-0">
       <label className="flex min-h-7 items-center gap-1.5 px-2 text-xs font-medium text-slate-600">
@@ -425,7 +464,7 @@ export function AccountScopeFilter({
         const draft = isUsers ? draftUserIds : isInstitutions ? draftInstitutionIds : draftAccountIds;
         const items = isUsers ? userOptions : isInstitutions ? institutionOptions : accountOptions;
         return <div key={kind} className="relative shrink-0">
-          <button type="button" title={selectionLabel(kind, selected)} aria-haspopup="listbox" aria-expanded={openMenu === kind} className="inline-flex h-9 min-w-0 flex-1 items-center justify-between gap-2 rounded-md border border-slate-300 bg-white px-2.5 text-left text-xs text-slate-700 shadow-sm hover:border-slate-400 md:h-8 md:min-w-40 md:max-w-56 md:flex-none" onClick={(event) => toggleMenu(kind, event.currentTarget)}>
+          <button type="button" title={selectionLabel(kind, selected)} aria-haspopup="listbox" aria-expanded={openMenu === kind} style={isInstitutions && institutionTriggerWidth ? ({ "--mmh-inst-trigger-w": `${institutionTriggerWidth}px` } as CSSProperties) : undefined} className={`inline-flex h-9 min-w-0 flex-1 items-center justify-between gap-2 rounded-md border border-slate-300 bg-white px-2.5 text-left text-xs text-slate-700 shadow-sm hover:border-slate-400 md:h-8 md:flex-none ${triggerWidthClass(isInstitutions)}`} onClick={(event) => toggleMenu(kind, event.currentTarget)}>
             <span className="truncate">{selectionLabel(kind, selected)}</span>
             <ChevronDown className={`h-3.5 w-3.5 shrink-0 text-slate-400 transition-transform ${openMenu === kind ? "rotate-180" : ""}`} />
           </button>

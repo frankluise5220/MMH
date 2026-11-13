@@ -3,12 +3,12 @@ import { ModalLayer } from "@/components/ModalLayer";
 
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { Power, PowerOff, CreditCard, Wallet, Building2, Landmark, PiggyBank, Banknote, Layers, Trash2, X, CornerDownRight, Plus, Pencil, SlidersHorizontal, Check } from "lucide-react";
+import { Power, PowerOff, CreditCard, Wallet, Building2, Landmark, PiggyBank, Banknote, Layers, Trash2, X, CornerDownRight, Plus, Pencil, SlidersHorizontal, Check, ChevronDown, ChevronRight, ChevronsUpDown, ChevronsDownUp } from "lucide-react";
 import { TransparentSideNavButtons } from "@/components/TransparentSideNavButtons";
 import type { AccountKind } from "@prisma/client";
 import { PRODUCT_TYPES, supportsCostBasisMethod } from "@/lib/investment-config";
 import { institutionTypeLabel, isSettlementCounterpartyType, kindIconName, kindColor, kindOrder } from "@/lib/account-kinds";
-import { AdvancedDataTable, type AdvancedDataTableColumn } from "@/components/AdvancedDataTable";
+import { AdvancedDataTable, type AdvancedDataTableColumn, type AdvancedDataTableSortState } from "@/components/AdvancedDataTable";
 import { EntityCreateForm } from "@/components/EntityCreateForm";
 import { CalcInput } from "@/components/CalcInput";
 import { ClearableNoteField } from "@/components/ClearableNoteField";
@@ -26,12 +26,13 @@ import {
 import { CreditCardBillingDayRulesTable } from "@/components/CreditCardBillingDayRulesTable";
 import { AccountBatchImportButton } from "@/components/settings/AccountBatchImportButton";
 import type { CreditBillingDayRuleView } from "@/lib/credit/billing-day-rules";
-import { SettingsActionButton, SettingsInfoHint, SettingsPageHeader, SettingsPrimaryAddButton, useHideSettingDescriptions } from "@/components/settings/SettingsPageScaffold";
+import { SettingsActionButton, SettingsInfoHint, SettingsPageHeader, useHideSettingDescriptions } from "@/components/settings/SettingsPageScaffold";
 import { SwipeActionRow, type SwipeActionItem } from "@/components/SwipeActionRow";
 import SettingsSwitch from "@/components/settings/SettingsSwitch";
 import { buildAccountDisplayOption } from "@/lib/account-display";
 import { accountOwnerNameById, buildAccountOwnerOptions } from "@/lib/account-owner-options";
 import { getCreditCardLabelTemplatePreference } from "@/lib/client/appPreferences";
+import { fetchInternalAccountBalances } from "@/lib/client/account-balances-fetch";
 import { readAccountDisplaySettings } from "@/lib/client/account-display-settings";
 import {
   fetchSettingsAccountData,
@@ -55,6 +56,7 @@ import { CredentialPasswordField } from "@/components/CredentialPasswordField";
 import { showConfirmDialog } from "@/lib/client/confirm-dialog";
 import { CURRENCY_OPTIONS, normalizeCurrency } from "@/lib/currency";
 import { formatCurrencyMoney } from "@/lib/format";
+import { getColorSchemeFromCookie, pnlColor, type ColorScheme } from "@/lib/client/colors";
 import { formatDateDisplay } from "@/lib/date-utils";
 import {
   accountInstitutionTypeIsAllowed,
@@ -126,6 +128,8 @@ type Counterparty = { id: string; name: string; shortName?: string | null; type?
 type Account = {
   id: string; name: string; kind: AccountKind; currency: string; isActive: boolean;
   note: string | null;
+  /** 账户自定义分组标签（2026-11-13），与 groupId 的「所有人分组」无关。 */
+  accountGroup?: string | null;
   isPlaceholder?: boolean;
   institutionId: string | null; groupId: string | null;
   Institution: { id: string; name: string; shortName?: string | null } | null;
@@ -150,6 +154,59 @@ type Account = {
   /** 多币种父账户（聚合账户）：只参与统计，本身没有明细。 */
   isAggregate?: boolean | null;
 };
+
+/**
+ * 账户列表分组维度（表头下拉）。`none` = 现有平铺状态。
+ * 与「设置 → 显示 → 账户下拉分组」无关：那是记账下拉的口径，这里是账户列表的视图。
+ */
+const ACCOUNT_GROUP_BY_VALUES = ["none", "owner", "institution", "kind", "groupLabel"] as const;
+type AccountGroupBy = (typeof ACCOUNT_GROUP_BY_VALUES)[number];
+const ACCOUNT_GROUP_BY_STORAGE_KEY = "mmh_settings_accounts_group_by_v1";
+const ACCOUNT_GROUP_BY_LABEL_KEYS: Record<AccountGroupBy, string> = {
+  none: "settings.accounts.groupByNone",
+  owner: "settings.accounts.groupByOwner",
+  institution: "settings.accounts.groupByInstitution",
+  kind: "settings.accounts.groupByKind",
+  groupLabel: "settings.accounts.groupByGroupLabel",
+};
+
+/** 余额列用到的账户余额快照（GET /api/v1/accounts/internal 的子集）。 */
+type AccountBalanceSnapshot = {
+  balance: number;
+  convertedBalance: number | null;
+  currency: string;
+  baseCurrency: string;
+  fxRateMissing: boolean;
+  /** 多币种子账户：余额是原币，父账户余额已是子户折本位币之和，统计只能算根账户。 */
+  parentId: string | null;
+};
+
+/** 分组表头行携带的统计结果。 */
+type AccountGroupSummary = {
+  key: string;
+  label: string;
+  count: number;
+  /** 本位币折算合计（跨币种组也能相加）。 */
+  convertedTotal: number;
+  /** 组内只有一种币种时的原币合计，便于用户直接对上账户金额。 */
+  singleCurrency: { currency: string; amount: number } | null;
+  byCurrency: Array<{ currency: string; amount: number }>;
+  missingFx: boolean;
+  /** 组是否收起。默认收起：组头保留账户数与合计，点组头展开。 */
+  collapsed: boolean;
+  /** 「分不出组」的组（无所有人 / 无机构 / 无分组标签），排序固定沉底。 */
+  unclassified: boolean;
+};
+
+/**
+ * 分组表头在 ADT 里以「伪账户行」呈现（ADT 没有行分组能力，组头必须占一行）。
+ * 任何拿 Account 做事的回调都必须先过 `isGroupSummaryRow` 守卫。
+ */
+type AccountTableRow = Account & { groupSummary?: AccountGroupSummary };
+
+function isGroupSummaryRow(row: Account): row is AccountTableRow & { groupSummary: AccountGroupSummary } {
+  return Boolean((row as AccountTableRow).groupSummary);
+}
 
 /** 软删除记录预览行（GET /api/v1/entries/deleted 的 data.records 元素）。 */
 type DeletedRecord = {
@@ -248,6 +305,13 @@ export default function SettingsAccountsPage() {
   const fixedAssetTypeLabel = useCallback((value: string | null | undefined) => t(`fixedAsset.type.${value || "property"}`), [t]);
   // 说明类文案跟随首次使用向导开关：只在「新手期」显示，关掉向导后不再啰嗦。
   const hideSettingDescriptions = useHideSettingDescriptions();
+  // 余额配色跟随「系统设置 → 涨跌颜色」：红涨绿跌（默认）时正数红、负数绿，绿涨红跌时相反。
+  // 首帧先按默认值渲染，挂载后再读 cookie，避免服务端与客户端 className 不一致。
+  const [colorScheme, setColorScheme] = useState<ColorScheme>("red_up_green_down");
+  useEffect(() => {
+    setColorScheme(getColorSchemeFromCookie(document.cookie ?? null));
+  }, []);
+  const amountClass = useCallback((value: number) => pnlColor(value, colorScheme, "muted"), [colorScheme]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [loanCategories, setLoanCategories] = useState<LoanCategoryView[]>([]);
@@ -278,6 +342,14 @@ export default function SettingsAccountsPage() {
   const [upgradingMultiCurrency, setUpgradingMultiCurrency] = useState(false);
   // ADT 表格当前视图（筛选+列排序后的全量行）：编辑弹窗的上一/下一导航沿此顺序。
   const [displayRows, setDisplayRows] = useState<Account[]>([]);
+  // 账户列表分组维度（表头下拉）。none = 现有平铺状态。
+  const [accountGroupBy, setAccountGroupByState] = useState<AccountGroupBy>("none");
+  // 分组默认全部收起。这里只记「用户手动展开过的组」，所以新出现/切换维度后天然是收起态。
+  const [expandedGroupKeys, setExpandedGroupKeys] = useState<Set<string>>(() => new Set());
+  // 余额快照：服务端 /internal 已按各账户口径算好（投资市值、存单、信用卡当期、负债），
+  // 前端只做展示，绝不重算，否则与侧边栏/首页对不上。
+  const [balanceById, setBalanceById] = useState<Map<string, AccountBalanceSnapshot>>(new Map());
+  const [balanceBaseCurrency, setBalanceBaseCurrency] = useState("CNY");
   const guideAccountSetup = searchParams.get("guide") === "accounts";
 
   // 可选的上级账户 = 家庭里的多币种父账户（聚合账户）。父账户自己不能再挂上级，
@@ -322,6 +394,61 @@ export default function SettingsAccountsPage() {
   const [trashSelectedIds, setTrashSelectedIds] = useState<string[]>([]);
   const [trashBusy, setTrashBusy] = useState(false);
 
+  const loadAccountBalances = useCallback(async () => {
+    const payload = await fetchInternalAccountBalances();
+    const rows = payload?.accounts;
+    if (!Array.isArray(rows)) return;
+    const next = new Map<string, AccountBalanceSnapshot>();
+    for (const raw of rows as Array<Record<string, unknown>>) {
+      const id = String(raw.id ?? "").trim();
+      if (!id) continue;
+      const balance = Number(raw.balance ?? 0);
+      const converted = raw.convertedBalance == null ? null : Number(raw.convertedBalance);
+      next.set(id, {
+        balance: Number.isFinite(balance) ? balance : 0,
+        convertedBalance: converted != null && Number.isFinite(converted) ? converted : null,
+        currency: normalizeCurrency(String(raw.currency ?? payload?.baseCurrency ?? "CNY")),
+        baseCurrency: normalizeCurrency(String(raw.baseCurrency ?? payload?.baseCurrency ?? "CNY")),
+        fxRateMissing: raw.fxRateMissing === true,
+        parentId: raw.parentId ? String(raw.parentId) : null,
+      });
+    }
+    setBalanceById(next);
+    if (payload?.baseCurrency) setBalanceBaseCurrency(normalizeCurrency(payload.baseCurrency));
+  }, []);
+
+  // 分组维度是纯设备视图状态（与账簿数据无关），落 localStorage 即可。
+  useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem(ACCOUNT_GROUP_BY_STORAGE_KEY);
+      if (saved && (ACCOUNT_GROUP_BY_VALUES as readonly string[]).includes(saved)) {
+        setAccountGroupByState(saved as AccountGroupBy);
+      }
+    } catch {
+      // 隐私模式读不到 localStorage 就用默认值，不打断页面。
+    }
+  }, []);
+
+  const setAccountGroupBy = useCallback((next: AccountGroupBy) => {
+    setAccountGroupByState(next);
+    // 换分组维度后组 key 全变了，旧的展开记录没有意义，直接回到「全部收起」。
+    setExpandedGroupKeys(new Set());
+    try {
+      window.localStorage.setItem(ACCOUNT_GROUP_BY_STORAGE_KEY, next);
+    } catch {
+      // 写不进去只影响下次打开时的记忆，不影响本次视图。
+    }
+  }, []);
+
+  const toggleAccountGroup = useCallback((key: string) => {
+    setExpandedGroupKeys((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
   useEffect(() => {
     const cached = getCachedSettingsAccountData();
     if (cached) {
@@ -341,6 +468,8 @@ export default function SettingsAccountsPage() {
 
   const loadAll = useCallback(async (options?: { force?: boolean }) => {
     if (!options?.force) setLoadingAccounts(true);
+    // 余额与账户清单并行拉：两个接口各自 coalesce，不阻塞列表首屏。
+    void loadAccountBalances();
     try {
       const data = await fetchSettingsAccountData(options).catch(() => null);
       if (!data) return;
@@ -352,7 +481,7 @@ export default function SettingsAccountsPage() {
     } finally {
       setLoadingAccounts(false);
     }
-  }, []);
+  }, [loadAccountBalances]);
 
   // Set right before this page publishes its own change event: the listener
   // below skips that single event because the page already awaits loadAll.
@@ -441,6 +570,8 @@ export default function SettingsAccountsPage() {
     return {
       name: a.name,
       note: a.note || "",
+      // 自定义分组标签（2026-11-13）：空串 = 未分组。
+      accountGroup: a.accountGroup || "",
       kind: editKind,
       currency: normalizeCurrency(a.currency || baseCurrency),
       groupId: a.groupId || "",
@@ -895,6 +1026,16 @@ export default function SettingsAccountsPage() {
     }
   }
 
+  // 已有分组标签：编辑弹窗用 datalist 提供候选，避免用户把「日常」「日常开销」写成两套。
+  const accountGroupLabelOptions = useMemo(() => {
+    const seen = new Set<string>();
+    for (const account of accounts) {
+      const label = (account.accountGroup ?? "").trim();
+      if (label) seen.add(label);
+    }
+    return Array.from(seen).sort((a, b) => a.localeCompare(b, "zh-Hans-CN"));
+  }, [accounts]);
+
   // useMemo：rows 引用不稳定会让 ADT 的 onDisplayRowsChange effect 每渲染回写 setDisplayRows(新数组) → 无限循环。
   const filteredAccounts = useMemo(() => accounts.filter(a => {
     if (scope.userIds.length > 0 && !scope.userIds.includes(a.groupId ?? "")) return false;
@@ -911,6 +1052,198 @@ export default function SettingsAccountsPage() {
     // accountNameQuery 已在 deps 中；刻意不列入依赖以保持 rows 引用稳定（ADT 回写循环防护）。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }), [accounts, scope, selectedAccountKinds, hideInactiveAccounts, accountNameQuery]);
+
+  /**
+   * 账户列表分组渲染（2026-11-13）：ADT 没有行分组能力，组头以「伪账户行」插在每组前面
+   * （id 前缀 `__group__:`，靠 groupSummary 识别），账户行原样跟在组头后面，名称列缩进。
+   * 组统计只加根账户（多币种子账户的余额是原币，父账户余额已是子户折本位币之和）。
+   */
+  const accountTableRows = useMemo<AccountTableRow[]>(() => {
+    if (accountGroupBy === "none") return filteredAccounts;
+
+    // unclassified：该维度下「分不出组」的账户（没有归属人 / 没有机构 / 没有分组标签），
+    // 排序时统一沉到最后，不参与组序号与名称排序。
+    const buckets = new Map<string, { label: string; order: number; unclassified: boolean; rows: Account[] }>();
+    const push = (key: string, label: string, order: number, account: Account, unclassified = false) => {
+      const bucket = buckets.get(key);
+      if (bucket) bucket.rows.push(account);
+      else buckets.set(key, { label, order, unclassified, rows: [account] });
+    };
+
+    for (const account of filteredAccounts) {
+      switch (accountGroupBy) {
+        case "owner": {
+          const groupId = (account.groupId ?? "").trim();
+          const ownerName = groupId
+            ? ownerNameByGroupId.get(groupId) ?? account.AccountGroup?.name ?? ""
+            : "";
+          const order = groupId ? groups.findIndex((group) => group.id === groupId) : -1;
+          push(
+            groupId ? `owner:${groupId}` : "owner:none",
+            ownerName || t("settings.accounts.groupOwnerNone"),
+            order < 0 ? 9999 : order,
+            account,
+            !groupId,
+          );
+          break;
+        }
+        case "institution": {
+          const institutionId = account.Institution?.id ?? account.institutionId ?? CASH_INSTITUTION_ID;
+          const isSettlement = normalizedAccountKind(account) === "settlement";
+          const label = isSettlement
+            ? account.Counterparty?.shortName?.trim() || account.Counterparty?.name || ""
+            : account.Institution?.shortName?.trim() || account.Institution?.name || "";
+          push(
+            `institution:${institutionId}`,
+            label || t("settings.accounts.groupInstitutionNone"),
+            0,
+            account,
+            !label,
+          );
+          break;
+        }
+        case "kind": {
+          const kind = normalizedAccountKind(account);
+          const order = kindOrder.indexOf(kind);
+          push(`kind:${kind}`, accountKindLabel(kind), order < 0 ? 9999 : order, account);
+          break;
+        }
+        case "groupLabel": {
+          const label = (account.accountGroup ?? "").trim();
+          push(
+            label ? `label:${label}` : "label:none",
+            label || t("settings.accounts.groupLabelNone"),
+            0,
+            account,
+            !label,
+          );
+          break;
+        }
+        default:
+          break;
+      }
+    }
+
+    const ordered = Array.from(buckets.entries()).sort((a, b) => {
+      // 「无法分组」组永远排在最下面，其余按组序号 + 名称排。
+      if (a[1].unclassified !== b[1].unclassified) return a[1].unclassified ? 1 : -1;
+      return a[1].order - b[1].order || a[1].label.localeCompare(b[1].label, "zh-Hans-CN");
+    });
+
+    const rows: AccountTableRow[] = [];
+    for (const [key, bucket] of ordered) {
+      const byCurrency = new Map<string, number>();
+      let convertedTotal = 0;
+      let missingFx = false;
+      for (const account of bucket.rows) {
+        const snapshot = balanceById.get(account.id);
+        if (!snapshot) continue;
+        if (snapshot.parentId) continue;
+        byCurrency.set(snapshot.currency, (byCurrency.get(snapshot.currency) ?? 0) + snapshot.balance);
+        if (snapshot.convertedBalance == null) missingFx = true;
+        else convertedTotal += snapshot.convertedBalance;
+      }
+      const currencies = Array.from(byCurrency.entries())
+        .map(([currency, amount]) => ({ currency, amount }))
+        .sort((x, y) => Math.abs(y.amount) - Math.abs(x.amount));
+      const collapsed = !expandedGroupKeys.has(key);
+      const summary: AccountGroupSummary = {
+        key,
+        label: bucket.label,
+        count: bucket.rows.length,
+        convertedTotal,
+        singleCurrency: currencies.length === 1 ? currencies[0] : null,
+        byCurrency: currencies,
+        missingFx,
+        collapsed,
+        unclassified: bucket.unclassified,
+      };
+      rows.push({
+        id: `__group__:${key}`,
+        name: bucket.label,
+        kind: "cash",
+        currency: balanceBaseCurrency,
+        isActive: true,
+        groupSummary: summary,
+      } as unknown as AccountTableRow);
+      // 收起的组只留组头——账户数与该组合计已经写在组头上了。
+      if (collapsed) continue;
+      rows.push(...[...bucket.rows].sort((a, b) => a.name.localeCompare(b.name, "zh-Hans-CN")));
+    }
+    return rows;
+  }, [
+    accountGroupBy,
+    expandedGroupKeys,
+    filteredAccounts,
+    balanceById,
+    balanceBaseCurrency,
+    groups,
+    ownerNameByGroupId,
+    t,
+    accountKindLabel,
+  ]);
+
+  /**
+   * 分组视图下的列头排序 = 排「组」：
+   * 以「组头 + 组内账户」为块，按组头在该列上的值给块排序，块内账户顺序不动。
+   * 组头值由各列 sortValue 决定（名称 → 组名，余额 → 组合计，其它列基本同值 → 保持分组维度顺序）。
+   * （交给 ADT 默认排序会把组头伪行当普通行跟账户一起比，组头被打散到别的组中间。）
+   * 平铺模式返回 null，交回 ADT 默认的整表排序。
+   */
+  const sortAccountRowGroups = useCallback(
+    (rows: Account[], sortState: AdvancedDataTableSortState | null, columns: AdvancedDataTableColumn<Account>[]) => {
+      if (accountGroupBy === "none" || !sortState) return null;
+      const column = columns.find((item) => item.key === sortState.key);
+      const readValue = column?.sortValue ?? column?.filterText;
+      if (!readValue) return null;
+
+      // 切成「组头 + 组内账户」的连续块；首行不是组头说明行结构不是分组视图，交回默认排序。
+      const blocks: { head: Account; members: Account[] }[] = [];
+      for (const row of rows) {
+        if (isGroupSummaryRow(row)) blocks.push({ head: row, members: [] });
+        else if (blocks.length === 0) return null;
+        else blocks[blocks.length - 1].members.push(row);
+      }
+
+      // 与 ADT 默认排序保持同一口径：空值沉底、数字按大小、其它按本地化字符串、同值保持原序。
+      const compare = (a: { value: unknown; index: number }, b: { value: unknown; index: number }) => {
+        const aEmpty = a.value == null || a.value === "";
+        const bEmpty = b.value == null || b.value === "";
+        if (aEmpty || bEmpty) {
+          if (aEmpty && bEmpty) return a.index - b.index;
+          return aEmpty ? 1 : -1;
+        }
+        const compared = typeof a.value === "number" && typeof b.value === "number"
+          ? a.value - b.value
+          : String(a.value).localeCompare(String(b.value), "zh-CN", { numeric: true });
+        if (compared === 0) return a.index - b.index;
+        return sortState.direction === "asc" ? compared : -compared;
+      };
+
+      return blocks
+        .map((block, index) => ({ block, index, value: readValue(block.head) }))
+        .sort(compare)
+        .flatMap((item) => [item.block.head, ...item.block.members]);
+    },
+    [accountGroupBy],
+  );
+
+  /**
+   * 分组视图下的全部组 key（组头按维度全量输出，收起的组也有组头），给「全部展开」用。
+   * 平铺模式下为空，两个全展开/全收起按钮随之隐藏。
+   */
+  const accountGroupRowKeys = useMemo(
+    () => accountTableRows.filter(isGroupSummaryRow).map((row) => row.groupSummary.key),
+    [accountTableRows],
+  );
+  const expandAllAccountGroups = useCallback(() => {
+    setExpandedGroupKeys(new Set(accountGroupRowKeys));
+  }, [accountGroupRowKeys]);
+  const collapseAllAccountGroups = useCallback(() => {
+    setExpandedGroupKeys(new Set());
+  }, []);
+  const allAccountGroupsExpanded =
+    accountGroupRowKeys.length > 0 && accountGroupRowKeys.every((key) => expandedGroupKeys.has(key));
 
   // ---- 移动端：类型页签（单选） + 按类型分组 ----
   // 页签与桌面端的 selectedAccountKinds（多选下拉）互不影响：移动端是「浏览分组」，
@@ -991,7 +1324,9 @@ export default function SettingsAccountsPage() {
   };
 
   // ---- ADT 表格 ----
-  const navigationAccountsState = displayRows.length > 0 ? displayRows : filteredAccounts;
+  // 键盘上下导航只能停在真账户上，分组表头（伪行）要滤掉。
+  const navigationAccountsState = (displayRows.length > 0 ? displayRows : filteredAccounts)
+    .filter((row) => !isGroupSummaryRow(row));
 
   // event 可为 null：移动端卡片列表的删除按钮不走「行点击冒泡」这一层，无需 stopPropagation。
   const handleDeleteClick = useCallback(async (event: React.MouseEvent | null, a: Account) => {
@@ -1174,9 +1509,34 @@ export default function SettingsAccountsPage() {
         a.note ? `${a.name} · ${t("settings.accounts.notePrefix")}${a.note}` : a.name,
       ].filter(Boolean).join(" · "),
       render: (a) => {
+        if (isGroupSummaryRow(a)) {
+          const summary = a.groupSummary;
+          const toggleHint = summary.collapsed
+            ? t("settings.accounts.groupExpand")
+            : t("settings.accounts.groupCollapse");
+          // 「无法分组」的组固定沉底，title 里说明原因，免得用户以为排序坏了。
+          const rowTitle = summary.unclassified
+            ? `${toggleHint} · ${t("settings.accounts.groupUnclassifiedHint")}`
+            : toggleHint;
+          return (
+            <div className="flex min-w-0 items-center gap-1.5" title={rowTitle}>
+              {summary.collapsed
+                ? <ChevronRight className="h-3.5 w-3.5 shrink-0 text-slate-400" aria-hidden="true" />
+                : <ChevronDown className="h-3.5 w-3.5 shrink-0 text-slate-400" aria-hidden="true" />}
+              <span className="truncate text-xs font-semibold text-slate-700">{summary.label}</span>
+              <span className="shrink-0 rounded-full border border-slate-200 bg-white px-1.5 py-0.5 text-[10px] font-normal tabular-nums text-slate-500">
+                {tf("settings.accounts.groupAccountCount", { count: summary.count })}
+              </span>
+            </div>
+          );
+        }
         const parentName = a.parentId ? accountNameById.get(a.parentId) ?? "" : "";
+        // 分组视图下账户相对组头缩进一格；多币种子账户在缩进基础上再退一级。
+        const indentClass = accountGroupBy !== "none"
+          ? (parentName ? "pl-8" : "pl-5")
+          : (parentName ? "pl-3" : "");
         return (
-          <div className={`flex min-w-0 items-center gap-1.5 ${parentName ? "pl-3" : ""}`}>
+          <div className={`flex min-w-0 items-center gap-1.5 ${indentClass}`}>
             {parentName ? <CornerDownRight className="h-3 w-3 shrink-0 text-slate-300" aria-hidden="true" /> : null}
             {a.isPlaceholder || a.isAggregate ? (
               // 聚合父账户没有明细，点进去只会是空列表（与侧边栏同一口径：只做折叠）。
@@ -1358,6 +1718,87 @@ export default function SettingsAccountsPage() {
       render: (a) => <span className="tabular-nums text-slate-600">{a.currency}</span>,
     },
     {
+      // 余额列（2026-11-13）：口径全部由服务端 /api/v1/accounts/internal 算好
+      // （投资按市值、存单按现金价值、信用卡按当期账单、负债带方向、多币种折算），
+      // 这里只展示，绝不重算——重算就会和侧边栏/首页对不上。
+      key: "balance",
+      label: t("settings.accounts.colBalance"),
+      width: 150,
+      minWidth: 112,
+      align: "right",
+      hideable: true,
+      sortValue: (a) => {
+        // 分组视图按这一列排序时，比较的是「组的合计」而不是组内某个账户：
+        // 单币种组给原币合计，跨币种组给本位币折算合计，与组头显示的 primary 数字同一口径。
+        if (isGroupSummaryRow(a)) {
+          const summary = a.groupSummary;
+          return summary.singleCurrency ? summary.singleCurrency.amount : summary.convertedTotal;
+        }
+        const snapshot = balanceById.get(a.id);
+        if (!snapshot) return Number.NEGATIVE_INFINITY;
+        return snapshot.currency === snapshot.baseCurrency
+          ? snapshot.balance
+          : snapshot.convertedBalance ?? Number.NEGATIVE_INFINITY;
+      },
+      cellTitle: (a) => {
+        if (isGroupSummaryRow(a)) {
+          return a.groupSummary.byCurrency
+            .map((item) => formatCurrencyMoney(item.amount, item.currency))
+            .join(" · ");
+        }
+        const snapshot = balanceById.get(a.id);
+        if (!snapshot) return "";
+        if (snapshot.fxRateMissing) {
+          return tf("settings.accounts.balanceFxMissing", { currency: snapshot.currency });
+        }
+        if (snapshot.currency === snapshot.baseCurrency) {
+          return formatCurrencyMoney(snapshot.balance, snapshot.currency);
+        }
+        return `${formatCurrencyMoney(snapshot.balance, snapshot.currency)} ≈ ${formatCurrencyMoney(snapshot.convertedBalance ?? 0, snapshot.baseCurrency)}`;
+      },
+      filterText: () => null,
+      render: (a) => {
+        if (isGroupSummaryRow(a)) {
+          const summary = a.groupSummary;
+          const single = summary.singleCurrency;
+          // 单币种组直接给原币合计（能和账户对得上）；跨币种组只有折算合计有意义。
+          const total = single ? single.amount : summary.convertedTotal;
+          const primary = single
+            ? formatCurrencyMoney(single.amount, single.currency)
+            : formatCurrencyMoney(summary.convertedTotal, balanceBaseCurrency);
+          // 跨币种组的 primary 已经是本位币折算值，不能再重复一次；只有单币种外币组才补折算行。
+          const hint = summary.missingFx
+            ? t("settings.accounts.balanceFxMissingShort")
+            : single && single.currency !== balanceBaseCurrency
+              ? `≈ ${formatCurrencyMoney(summary.convertedTotal, balanceBaseCurrency)}`
+              : "";
+          return (
+            <div className="flex min-w-0 flex-col items-end leading-tight">
+              {/* 合计走统一的金额着色规则（正绿 / 负红 / 零灰），与组内账户行余额同一套颜色。 */}
+              <span className={`tabular-nums text-xs font-semibold ${amountClass(total)}`}>{primary}</span>
+              {hint ? <span className="text-[10px] font-normal text-slate-400">{hint}</span> : null}
+            </div>
+          );
+        }
+        const snapshot = balanceById.get(a.id);
+        if (!snapshot) return <span className="text-slate-300">-</span>;
+        const converted = snapshot.convertedBalance;
+        const isForeign = snapshot.currency !== snapshot.baseCurrency && converted != null;
+        return (
+          <div className="flex min-w-0 flex-col items-end leading-tight">
+            <span className={`tabular-nums ${amountClass(snapshot.balance)}`}>
+              {formatCurrencyMoney(snapshot.balance, snapshot.currency)}
+            </span>
+            {isForeign ? (
+              <span className="text-[10px] text-slate-400">
+                ≈ {formatCurrencyMoney(converted ?? 0, snapshot.baseCurrency)}
+              </span>
+            ) : null}
+          </div>
+        );
+      },
+    },
+    {
       key: "records",
       label: t("settings.accounts.colRecords"),
       width: 96,
@@ -1408,6 +1849,22 @@ export default function SettingsAccountsPage() {
       ),
     },
     {
+      // 自定义分组标签（2026-11-13）：侧边栏「按分组」与账户下拉分组都读它。
+      key: "accountGroup",
+      label: t("settings.accounts.accountGroup"),
+      width: 120,
+      minWidth: 88,
+      hideable: true,
+      sortValue: (a) => (a.accountGroup ?? "").trim(),
+      filterText: (a) => (a.accountGroup ?? "").trim() || null,
+      render: (a) => {
+        const label = (a.accountGroup ?? "").trim();
+        return label
+          ? <span className="whitespace-nowrap rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-600">{label}</span>
+          : <span className="text-slate-300">-</span>;
+      },
+    },
+    {
       key: "note",
       label: t("settings.accounts.note"),
       width: 220,
@@ -1420,9 +1877,25 @@ export default function SettingsAccountsPage() {
         ? <span className="text-slate-500">{a.note}</span>
         : <span className="text-slate-300">-</span>),
     },
-  ], [t, tf, router, accountKindLabel, investmentLabel, fixedAssetTypeLabel, mergeSelectedIds, toggleMergeSelected, openTrash, ownerNameByGroupId, accountNameById, subAccountCountByParentId]);
+  ], [t, tf, router, accountKindLabel, investmentLabel, fixedAssetTypeLabel, mergeSelectedIds, toggleMergeSelected, openTrash, ownerNameByGroupId, accountNameById, subAccountCountByParentId, accountGroupBy, balanceById, balanceBaseCurrency, amountClass]);
 
-  const renderRowActions = useCallback((a: Account) => (
+  // 分组表头行只占「名称 + 余额」两格；其余列一律返回 null，
+  // 否则伪行会被渲染成「启用」徽章、删除按钮这类真账户才有的内容。
+  const accountTableColumnsWithGroupRows = useMemo<AdvancedDataTableColumn<Account>[]>(
+    () => accountTableColumns.map((column) => ({
+      ...column,
+      render: (account: Account, index: number) => {
+        if (isGroupSummaryRow(account) && column.key !== "name" && column.key !== "balance") return null;
+        return column.render ? column.render(account, index) : null;
+      },
+    })),
+    [accountTableColumns],
+  );
+
+  const renderRowActions = useCallback((a: Account) => {
+    // 分组表头是伪行，不能有「停用/编辑/删除」这类真账户动作。
+    if (isGroupSummaryRow(a)) return null;
+    return (
     <>
       {!a.isPlaceholder && (
         <SettingsActionButton
@@ -1444,7 +1917,8 @@ export default function SettingsAccountsPage() {
         onClick={(event) => void handleDeleteClick(event, a)}
       />
     </>
-  ), [t, toggleActive, openEdit, handleDeleteClick]);
+    );
+  }, [t, toggleActive, openEdit, handleDeleteClick]);
 
   return (
     <div className="flex h-full w-full min-w-0 flex-col overflow-hidden">
@@ -1622,6 +2096,25 @@ export default function SettingsAccountsPage() {
                         ) : null}
                         {a.note ? <div className="mt-1 truncate text-xs leading-4 text-slate-400">{a.note}</div> : null}
                       </div>
+                      {(() => {
+                        // 移动端同样给余额：口径与桌面列一致，都来自 /internal 快照。
+                        const snapshot = balanceById.get(a.id);
+                        if (!snapshot) return null;
+                        const converted = snapshot.convertedBalance;
+                        const isForeign = snapshot.currency !== snapshot.baseCurrency && converted != null;
+                        return (
+                          <div className="shrink-0 text-right">
+                            <div className={`tabular-nums text-sm font-semibold ${amountClass(snapshot.balance)}`}>
+                              {formatCurrencyMoney(snapshot.balance, snapshot.currency)}
+                            </div>
+                            {isForeign ? (
+                              <div className="mt-0.5 text-[10px] tabular-nums text-slate-400">
+                                ≈ {formatCurrencyMoney(converted ?? 0, snapshot.baseCurrency)}
+                              </div>
+                            ) : null}
+                          </div>
+                        );
+                      })()}
                     </div>
                   </SwipeActionRow>
                 );
@@ -1746,59 +2239,17 @@ export default function SettingsAccountsPage() {
         title={t("settings.accounts.title")}
         description={guideAccountSetup ? t("settings.accounts.guideDescription") : t("settings.accounts.description")}
         count={filteredAccounts.length}
-        toolbar={
-          <>
-          <div className="w-64 max-w-full">
-            <input
-              value={accountNameQuery}
-              onChange={(event) => setAccountNameQuery(event.target.value)}
-              placeholder={t("settings.accounts.searchPlaceholder")}
-              className="h-8 w-full rounded-md border border-slate-300 bg-white px-2.5 text-xs text-slate-700 outline-none transition-colors placeholder:text-slate-400 hover:border-slate-400 focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
-            />
-          </div>
-          <AccountScopeFilter
-            allAccounts={statisticsAccounts}
-            allInstitutions={statisticsInstitutions}
-            allUsers={statisticsUsers}
-            value={scope}
-            onChange={setScope}
-            showAccountFilter={false}
-          />
-          <MultiSelectFilterDropdown
-            options={accountKindFilterOptions}
-            selectedValues={selectedAccountKinds}
-            onChange={setSelectedAccountKinds}
-            labelFor={accountKindLabel}
-            allLabel={t("settings.accounts.type")}
-            selectedSummaryLabel={(first, count) => t("settings.accounts.selectedTypesSummary", { first, count })}
-            clearLabel={t("statistics.clearSelection")}
-            emptyLabel={t("table.empty")}
-            renderOptionLeading={(kind) => (
-              <span className={`inline-flex shrink-0 items-center gap-1.5 rounded border px-1.5 py-0.5 font-semibold ${kindColor(kind)}`}>
-                {kindIcon(kind)}
-              </span>
-            )}
-          />
-          <label className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-600 shadow-sm">
-            <input
-              type="checkbox"
-              checked={hideInactiveAccounts}
-              onChange={(event) => setHideInactiveAccounts(event.target.checked)}
-              className="h-3.5 w-3.5 accent-blue-600"
-            />
-            <span>{t("settings.accounts.hideInactiveAccounts")}</span>
-          </label>
-          <div className="ml-auto flex items-center gap-2">
-            <AccountBatchImportButton
-              groups={groups}
-              institutions={institutions}
-              counterparties={counterparties}
-              baseCurrency={baseCurrency}
-              onImported={() => void refreshSettingsAccounts("account:batch-import")}
-            />
-            <SettingsPrimaryAddButton onClick={() => setShowCreateAccount(true)}>{t("settings.accounts.add")}</SettingsPrimaryAddButton>
-          </div>
-          </>
+        // 右上角永远只放「胶囊菜单」位：最右端固定是胶囊形态的主入口「+ 新增账户」。
+        // 页面级动作（导出模板 / 导入 EXCEL）下移到表格工具栏，与「表头设置」按钮同一行。
+        actions={
+          <button
+            type="button"
+            onClick={() => setShowCreateAccount(true)}
+            className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-full bg-blue-600 px-3.5 text-[13px] font-medium text-white shadow-sm ring-1 ring-blue-600/90 transition-colors hover:bg-blue-700"
+          >
+            <Plus className="h-4 w-4" />
+            {t("settings.accounts.add")}
+          </button>
         }
       />
       </div>
@@ -1807,21 +2258,156 @@ export default function SettingsAccountsPage() {
       <div className="mt-3 min-h-0 flex-1">
         <AdvancedDataTable
           storageKey="mmh_settings_accounts_table_v1"
-          columns={accountTableColumns}
-          rows={filteredAccounts}
+          columns={accountTableColumnsWithGroupRows}
+          rows={accountTableRows}
           rowKey={(a) => a.id}
-          minTableWidth={1430}
+          minTableWidth={1590}
+          // 分组视图靠「组头底色 + 组间横线」分层，列竖线会和它打架，这里关掉。
+          columnDividers={false}
           fillHeight
           showFilters={false}
+          // 分组时点表头排序的是「组本身」（组头按该列的值重排），块内账户顺序不动，见 sortRows。
           sortable
+          sortRows={sortAccountRowGroups}
           emptyText={loadingAccounts ? t("common.loading") : t("settings.accounts.empty")}
-          rowClassName={(a) => (a.isPlaceholder ? "opacity-40 bg-slate-50" : !a.isActive ? "opacity-60" : "")}
-          onRowDoubleClick={(a) => { if (!a.isPlaceholder) openEdit(a); }}
+          rowClassName={(a, index) => {
+            if (isGroupSummaryRow(a)) {
+              // 组头上边加一条发丝横线，把相邻两组分开；第一组紧接表头，不重复画线。
+              // 表体是 border-separate（tr 边框不生效），线要落在每个 td 上。
+              const divider = index > 0 ? " [&>td]:border-t-[0.5px] [&>td]:border-slate-200" : "";
+              return `bg-slate-100/80 cursor-pointer select-none${divider}`;
+            }
+            return a.isPlaceholder ? "opacity-40 bg-slate-50" : !a.isActive ? "opacity-60" : "";
+          }}
+          // 组头行整行点击即展开/收起；双击组头不触发编辑。
+          onRowClick={(a) => {
+            if (isGroupSummaryRow(a)) toggleAccountGroup(a.groupSummary.key);
+          }}
+          onRowDoubleClick={(a) => { if (isGroupSummaryRow(a)) return; if (!a.isPlaceholder) openEdit(a); }}
           onDisplayRowsChange={setDisplayRows}
           rowActions={renderRowActions}
           rowActionsWidth={116}
           rowActionsMinWidth={104}
+          // 筛选控件放 ADT 工具栏左侧：与右侧「表头设置」按钮同一行；右上角只留动作按钮。
           toolbarMode="default"
+          // 「表头设置」不能走 ADT 内置的右组：`toolbarRightContent` 是个 flex-1 的独立 item，
+          // 本页筛选一多它就被挤到单独一行、还夹在中间。改成自绘按钮（`ml-auto` 推到行尾）
+          // + `columnVisibilityTriggerId` 唤起 ADT 原生列菜单，视觉上永远贴最右边缘。
+          showColumnVisibilityButton={false}
+          columnVisibilityTriggerId="mmh:accounts:column-menu"
+          toolbarLeftContent={
+            <>
+              <div className="w-48 max-w-full">
+                <input
+                  value={accountNameQuery}
+                  onChange={(event) => setAccountNameQuery(event.target.value)}
+                  placeholder={t("settings.accounts.searchPlaceholder")}
+                  className="h-8 w-full rounded-md border border-slate-300 bg-white px-2.5 text-xs text-slate-700 outline-none transition-colors placeholder:text-slate-400 hover:border-slate-400 focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
+                />
+              </div>
+              <AccountScopeFilter
+                allAccounts={statisticsAccounts}
+                allInstitutions={statisticsInstitutions}
+                allUsers={statisticsUsers}
+                value={scope}
+                onChange={setScope}
+                showAccountFilter={false}
+                // 这一行还要放分组、隐藏停用与全展开/全收起，人员/机构触发器窄一档。
+                compact
+              />
+              <MultiSelectFilterDropdown
+                options={accountKindFilterOptions}
+                selectedValues={selectedAccountKinds}
+                onChange={setSelectedAccountKinds}
+                labelFor={accountKindLabel}
+                allLabel={t("settings.accounts.type")}
+                selectedSummaryLabel={(first, count) => t("settings.accounts.selectedTypesSummary", { first, count })}
+                clearLabel={t("statistics.clearSelection")}
+                emptyLabel={t("table.empty")}
+                renderOptionLeading={(kind) => (
+                  <span className={`inline-flex shrink-0 items-center gap-1.5 rounded border px-1.5 py-0.5 font-semibold ${kindColor(kind)}`}>
+                    {kindIcon(kind)}
+                  </span>
+                )}
+              />
+              <label className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-600 shadow-sm">
+                <Layers className="h-3.5 w-3.5 shrink-0 text-slate-400" aria-hidden="true" />
+                <select
+                  value={accountGroupBy}
+                  onChange={(event) => setAccountGroupBy(event.target.value as AccountGroupBy)}
+                  className="h-full max-w-[8.5rem] bg-transparent text-xs text-slate-600 outline-none"
+                  aria-label={t("settings.accounts.groupByLabel")}
+                  title={t("settings.accounts.groupByLabel")}
+                >
+                  {ACCOUNT_GROUP_BY_VALUES.map((value) => (
+                    <option key={value} value={value}>{t(ACCOUNT_GROUP_BY_LABEL_KEYS[value])}</option>
+                  ))}
+                </select>
+              </label>
+              {/* 全部展开 / 全部收起：只在分组视图有组时出现，图标按钮避免挤占这一行的宽度。 */}
+              {accountGroupRowKeys.length > 0 ? (
+                <div className="inline-flex h-8 shrink-0 items-center overflow-hidden rounded-md border border-slate-200 bg-white shadow-sm">
+                  <button
+                    type="button"
+                    onClick={expandAllAccountGroups}
+                    disabled={allAccountGroupsExpanded}
+                    title={t("settings.accounts.expandAllGroups")}
+                    aria-label={t("settings.accounts.expandAllGroups")}
+                    className="flex h-full w-7 items-center justify-center text-slate-500 transition-colors hover:bg-slate-50 hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+                  >
+                    <ChevronsUpDown className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                  </button>
+                  <span className="h-4 w-px shrink-0 bg-slate-200" aria-hidden="true" />
+                  <button
+                    type="button"
+                    onClick={collapseAllAccountGroups}
+                    disabled={expandedGroupKeys.size === 0}
+                    title={t("settings.accounts.collapseAllGroups")}
+                    aria-label={t("settings.accounts.collapseAllGroups")}
+                    className="flex h-full w-7 items-center justify-center text-slate-500 transition-colors hover:bg-slate-50 hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent"
+                  >
+                    <ChevronsDownUp className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                  </button>
+                </div>
+              ) : null}
+              <label className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-600 shadow-sm">
+                <input
+                  type="checkbox"
+                  checked={hideInactiveAccounts}
+                  onChange={(event) => setHideInactiveAccounts(event.target.checked)}
+                  className="h-3.5 w-3.5 accent-blue-600"
+                />
+                <span>{t("settings.accounts.hideInactiveAccounts")}</span>
+              </label>
+              {/* 「导出模板 / 导入 EXCEL」与「表头设置」跟在筛选胶囊后面；`ml-auto` 把这组
+                  推到所在行的最右端 —— 表头设置永远贴右边缘（与右上角胶囊同一条竖线），
+                  和其他表格一致；宽度不够时整组换到下一行，仍贴右。 */}
+              <div className="ml-auto flex shrink-0 items-center gap-2">
+                <AccountBatchImportButton
+                  variant="menu"
+                  groups={groups}
+                  institutions={institutions}
+                  counterparties={counterparties}
+                  baseCurrency={baseCurrency}
+                  onImported={() => void refreshSettingsAccounts("account:batch-import")}
+                />
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    const rect = event.currentTarget.getBoundingClientRect();
+                    window.dispatchEvent(new CustomEvent("mmh:accounts:column-menu", {
+                      detail: { anchorRect: { top: rect.top, bottom: rect.bottom, right: rect.right, left: rect.left } },
+                    }));
+                  }}
+                  title={t("table.columnSettings")}
+                  aria-label={t("table.columnSettings")}
+                  className="inline-flex h-8 shrink-0 items-center rounded-md border border-slate-200 bg-white px-2 text-slate-500 shadow-sm transition-colors hover:bg-slate-50"
+                >
+                  <SlidersHorizontal className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </>
+          }
         />
       </div>
       </div>
@@ -2106,6 +2692,26 @@ export default function SettingsAccountsPage() {
                       behavior={{ density: "compact" }}
                       onCreateClick={() => setNestedEntityType("group")} createLabel={t("settings.accounts.addOwner")} />
                   </div>
+                </div>
+                {/* 自定义分组标签（2026-11-13）：用户自己起的分类名，只影响侧边栏 / 账户下拉的分组显示，
+                    与上面的「所有人」无关。用 datalist 复用已有标签，既省输入又避免同义重名。 */}
+                <div>
+                  <label className="mb-1 flex items-center gap-1 text-xs text-slate-500">
+                    <span>{t("settings.accounts.accountGroup")}</span>
+                    <SettingsInfoHint text={t("settings.accounts.accountGroupHint")} />
+                  </label>
+                  <input
+                    value={editForm.accountGroup || ""}
+                    onChange={e => setEditForm(f => ({ ...f, accountGroup: e.target.value }))}
+                    list="account-group-label-options"
+                    placeholder={t("settings.accounts.accountGroupPlaceholder")}
+                    className={FIELD_INPUT_CLS}
+                  />
+                  <datalist id="account-group-label-options">
+                    {accountGroupLabelOptions.map((label) => (
+                      <option key={label} value={label} />
+                    ))}
+                  </datalist>
                 </div>
                 {/* 多币种归属：只有资金账户（含信用卡）才有上级账户；父账户自己不能有上级。
                     历史数据已有归属时仍显示，方便解除。 */}
