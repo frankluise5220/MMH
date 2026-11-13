@@ -109,6 +109,14 @@ export const CalcInput = forwardRef<HTMLInputElement, CalcInputProps>(function C
   const [open, setOpen] = useState(false);
   const [dialogPos, setDialogPos] = useState<{ top: number; left: number } | null>(null);
   const [expr, setExpr] = useState("");
+  /**
+   * 汇总框还没算出数值时，调用方会把「-」当值传进来占位。用户点进来是要填数，
+   * 这个「-」不能变成值得删半天的字符（跟着输入还会变成「-5」这种负数）。
+   * 聚焦时让位成空串，失焦且仍为空就恢复显示那个占位。
+   */
+  const [dashPlaceholderCleared, setDashPlaceholderCleared] = useState(false);
+  const isDashOnly = value.trim() === "-";
+  const visibleValue = isDashOnly && dashPlaceholderCleared ? "" : value;
   const triggerRef = useRef<HTMLButtonElement>(null);
   const dialogRef = useRef<HTMLDivElement>(null);
   const numVal = parseFloat(value) || 0;
@@ -203,7 +211,7 @@ export const CalcInput = forwardRef<HTMLInputElement, CalcInputProps>(function C
 
   function handleInputKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
     if (e.key !== "Enter") return;
-    const raw = sanitizeCalcInputValue(value, allowAmountFieldReferences).trim();
+    const raw = sanitizeCalcInputValue(visibleValue, allowAmountFieldReferences).trim();
     if (allowAmountFieldReferences && hasAmountFieldReference(raw)) return;
     // Plain signed numbers (including negatives) are values, not expressions:
     // let Enter submit the form instead of swallowing it and mutating the value.
@@ -214,7 +222,8 @@ export const CalcInput = forwardRef<HTMLInputElement, CalcInputProps>(function C
   }
 
   function handleInputBlur() {
-    const raw = sanitizeCalcInputValue(value, allowAmountFieldReferences).trim();
+    setDashPlaceholderCleared(false);
+    const raw = sanitizeCalcInputValue(visibleValue, allowAmountFieldReferences).trim();
     if (isPlainSignedNumber(raw)) {
       const parsed = Number(raw);
       if (Number.isFinite(parsed)) {
@@ -242,9 +251,10 @@ export const CalcInput = forwardRef<HTMLInputElement, CalcInputProps>(function C
       <input
         ref={ref}
         inputMode={allowAmountFieldReferences ? "text" : "decimal"}
-        value={value}
+        value={visibleValue}
         disabled={disabled}
         onChange={(e) => onChange(sanitizeCalcInputValue(e.target.value, allowAmountFieldReferences))}
+        onFocus={() => setDashPlaceholderCleared(true)}
         onKeyDown={handleInputKeyDown}
         onBlur={handleInputBlur}
         placeholder={placeholder}
