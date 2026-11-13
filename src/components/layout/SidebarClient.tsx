@@ -1,6 +1,6 @@
 "use client";
 
-import Link from "next/link";
+import Link, { useLinkStatus } from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { useState, useEffect, useMemo, useRef, useCallback, startTransition } from "react";
 import {
@@ -462,6 +462,25 @@ function toSidebarAccountItem(a: any, t: (key: string, params?: Record<string, s
   };
 }
 
+/**
+ * 账户行的导航等待指示。
+ * 视图切换（尤其从报销/报表等全屏工作区点回账户视图）时，目标路由是动态渲染，
+ * 导航完成前地址栏和主体内容都不会变化，用户会误以为「点了没反应」并连续点击。
+ * 这里用 Link 的 pending 状态给出行内反馈；非 pending 时保留同样尺寸的占位，避免行内跳动。
+ */
+function SidebarLinkPending() {
+  const { pending } = useLinkStatus();
+  return (
+    <span
+      aria-hidden
+      data-sidebar-link-pending={pending ? "true" : "false"}
+      className={`ml-1 inline-flex h-3 w-3 shrink-0 items-center justify-center transition-opacity duration-150 ${pending ? "opacity-100" : "opacity-0"}`}
+    >
+      <span className="h-3 w-3 animate-spin rounded-full border-[1.5px] border-slate-200 border-t-slate-500" />
+    </span>
+  );
+}
+
 export function SidebarClient({
   items: initialItems,
   household,
@@ -520,6 +539,7 @@ export function SidebarClient({
   const [showReimbursements, setShowReimbursements] = useState(() => initialPreferences?.sidebarShowReimbursements ?? getSidebarShowReimbursementsPreference());
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => initialPreferences?.sidebarCollapsed ?? getSidebarCollapsedPreference());
   const [sidebarGroupBy, setSidebarGroupBy] = useState<"kind" | "institution">(() => initialPreferences?.sidebarGroupBy ?? getSidebarGroupPreference());
+  const accountsScrollRef = useRef<HTMLDivElement | null>(null);
   const [collapsedSections, setCollapsedSections] = useState<Set<string>>(new Set());
   const [collapsedAssetSubgroupKeys, setCollapsedAssetSubgroupKeys] = useState<Set<string>>(new Set());
   // 多币种子账户默认展开；收起状态按父账户 id 记忆（本会话内）。
@@ -852,15 +872,30 @@ export function SidebarClient({
     setSidebarGroupPreference(next);
   }
 
+  /**
+   * 展开分区后把该分区的标题滚到账户区顶部。
+   * 否则分区标题停在账户区底部，展开后只有第一行账户冒出来（其余在可视区外），
+   * 用户点到的其实是滚动区外的行/背景，表现成「点账户没反应」。
+   */
+  function scrollSectionToTop(key: string) {
+    requestAnimationFrame(() => {
+      const node = accountsScrollRef.current?.querySelector<HTMLElement>(`[data-sidebar-section="${key}"]`);
+      node?.scrollIntoView({ block: "start" });
+    });
+  }
+
   function toggleSection(key: string) {
+    const willExpand = collapsedSections.has(key);
     setCollapsedSections(prev => {
       const next = new Set(prev);
       if (next.has(key)) next.delete(key); else next.add(key);
       return next;
     });
+    if (willExpand) scrollSectionToTop(key);
   }
 
   function openOnlySection(key: string) {
+    const willExpand = collapsedSections.has(key);
     setCollapsedSections(prev => {
       if (!prev.has(key)) {
         const next = new Set(prev);
@@ -869,6 +904,7 @@ export function SidebarClient({
       }
       return new Set(sections.map((section) => section.kind).filter((sectionKey) => sectionKey !== key));
     });
+    if (willExpand) scrollSectionToTop(key);
   }
 
   const navItemCls = (href: string, forceActive = false) =>
@@ -1673,7 +1709,7 @@ export function SidebarClient({
           </div>
         </div>
 
-        <div className="flex-1 min-h-0 overflow-x-hidden overflow-y-scroll custom-scrollbar [scrollbar-gutter:stable]">
+        <div ref={accountsScrollRef} className="flex-1 min-h-0 overflow-x-hidden overflow-y-scroll custom-scrollbar [scrollbar-gutter:stable]">
           <nav className="space-y-1">
             <div className="space-y-2">
               {sections.map((sec) => {
@@ -1683,9 +1719,11 @@ export function SidebarClient({
                   ? sec.subgroups
                   : [{ key: `${sec.kind}_default`, label: "", accounts: sec.accounts, total: sec.total }];
                 return (
-                  <div key={sec.kind}>
+                  <div key={sec.kind} data-sidebar-section={sec.kind}>
+                    {/* 不用 sticky：吸顶的分区标题会盖住滚动到它下方的账户行，
+                        点击这些行会落到标题上（表现为「点账户没反应」或分区被收起）。 */}
                     <div
-                      className="sticky top-0 z-10 flex w-full items-center rounded-lg bg-white/92 px-3 py-2 backdrop-blur transition-all duration-200 hover:bg-white group"
+                      className="flex w-full items-center rounded-lg bg-white px-3 py-2 transition-all duration-200 group"
                     >
                       <button
                         type="button"
@@ -1807,6 +1845,7 @@ export function SidebarClient({
                                           <span className="text-fade-right block min-w-0" title={soloTitle}>{soloLabel}</span>
                                         </span>
                                         <span className={`shrink-0 pl-2 text-[11px] font-medium tabular-nums ${itemBalanceCls(soloChild)}`}>{formatSidebarBalance(soloChild)}</span>
+                                        <SidebarLinkPending />
                                       </Link>
                                     ) : subAccounts.length > 0 ? (
                                       <button
@@ -1838,6 +1877,7 @@ export function SidebarClient({
                                           <span className="text-fade-right block min-w-0" title={itemTitle}>{sidebarItemRowLabel(it)}</span>
                                         </span>
                                         <span className={`shrink-0 pl-2 text-[11px] font-medium tabular-nums ${itemBalanceCls(it)}`}>{formatSidebarBalance(it)}</span>
+                                        <SidebarLinkPending />
                                       </Link>
                                     )}
                                     {!soloChild && subAccounts.length > 0 && !subAccountsCollapsed
