@@ -320,13 +320,13 @@ function FixedAssetTransactionTable({
               <Paperclip />
             </button>
           ) : null}
-          {entry.cashEntryId ? (
-            <EntryRowActions
-              entryId={entry.id}
-              customEditEvent={buildPropertyEditEvent(entry)}
-              reconciled={isReconciled(entry.id)}
-            />
-          ) : null}
+          {/* 房产行的 id 就是它背后的 TxRecord（编辑/删除都按它走），所以 cashEntryId
+              缺失时也要给操作入口 —— 旧数据没写这个标记，之前整行操作被藏掉了。 */}
+          <EntryRowActions
+            entryId={entry.id}
+            customEditEvent={buildPropertyEditEvent(entry)}
+            reconciled={isReconciled(entry.id)}
+          />
         </>
       )}
       rowActionsWidth={140}

@@ -39,7 +39,7 @@ type AccountSnapshot = {
 
 function propertyActionLabel(action: PropertyTransactionAction | string) {
   if (action === PropertyTransactionAction.sale || action === "sale") return "房产出售";
-  if (action === PropertyTransactionAction.improvement || action === "improvement") return "装修投入";
+  if (action === PropertyTransactionAction.improvement || action === "improvement") return "资产投入";
   return "房产购入";
 }
 

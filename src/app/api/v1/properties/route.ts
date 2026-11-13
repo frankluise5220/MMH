@@ -281,8 +281,11 @@ export async function POST(req: NextRequest) {
     const marketValueInput = parseOptionalNonNegativeNumber(body.marketValue);
     const isDisposal = action === PropertyTransactionAction.disposal;
     const isPurchase = action === PropertyTransactionAction.purchase;
-    // 购入允许金额为 0（仅登记资产、不生成现金流）；装修投入 / 出售仍要求金额 > 0。
-    if (amount <= 0 && !isDisposal && !isPurchase) {
+    const isImprovement = action === PropertyTransactionAction.improvement;
+    // 购入 / 产值调整（improvement）允许金额为 0：只登记资产、或只改产值，
+    // 不生成现金流（`ensurePropertyTransactionCashFlow` 在金额为 0 时本就不建流水）。
+    // 出售仍要求金额 > 0，纯粹没回款的报废走 disposal。
+    if (amount <= 0 && !isDisposal && !isPurchase && !isImprovement) {
       return NextResponse.json({ ok: false, code: "INVALID_AMOUNT", error: "交易金额必须大于 0" }, { status: 400, headers: corsHeaders() });
     }
 

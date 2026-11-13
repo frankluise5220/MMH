@@ -23,7 +23,9 @@ type EntryKind =
   | "stock-dividend"
   | "stock-repo"
   | "property"
+  | "property-improvement"
   | "property-sell"
+  | "property-expense"
   | "metal"
   | "wealth"
   | "bond"
@@ -294,6 +296,24 @@ function dispatchEntryAction(kind: EntryKind, context?: Props["context"], loanTy
       );
       return;
     case "property":
+    case "property-improvement":
+    case "property-sell": {
+      // 固定资产记账一张弹窗、两个页签：资产变动（含新购入）/ 资产售出。
+      // 「出售」入口直接落到售出页签；原来这里派发的是通用支出表单，卖不了资产。
+      window.dispatchEvent(
+        new CustomEvent("mmh:property:create", {
+          detail: {
+            requestId,
+            defaultAction: kind === "property-sell" ? "sale" : undefined,
+            defaultPropertyAccountId: context?.defaultPropertyAccountId ?? context?.defaultInvestmentAccountId ?? "",
+            defaultCashAccountId: context?.defaultCashAccountId ?? context?.defaultAccountId ?? "",
+          },
+        }),
+      );
+      return;
+    }
+    case "property-expense": {
+      // 挂在固定资产上的费用化支出（物业费、税费…）仍走通用支出表单。
       const fixedAssetAccountId = context?.defaultPropertyAccountId ?? context?.defaultInvestmentAccountId ?? "";
       window.dispatchEvent(
         new CustomEvent("mmh:create-transaction:open", {
@@ -310,21 +330,7 @@ function dispatchEntryAction(kind: EntryKind, context?: Props["context"], loanTy
         }),
       );
       return;
-    case "property-sell":
-      // 出售走固定资产专用表单 PropertyFormModal（买入/装修/出售三态它都有），
-      // 这里只打开并预置 sale：选资产、填成交价/税费/收款账户即可。后端
-      // POST /api/v1/properties 会把资产状态置 sold、按净回款更新市值，并生成回款流水。
-      window.dispatchEvent(
-        new CustomEvent("mmh:property:create", {
-          detail: {
-            requestId,
-            defaultAction: "sale",
-            defaultPropertyAccountId: context?.defaultPropertyAccountId ?? context?.defaultInvestmentAccountId ?? "",
-            defaultCashAccountId: context?.defaultCashAccountId ?? context?.defaultAccountId ?? "",
-          },
-        }),
-      );
-      return;
+    }
     case "metal":
       window.dispatchEvent(
         new CustomEvent("mmh:investment:create", {

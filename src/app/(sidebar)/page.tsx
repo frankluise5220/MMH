@@ -3227,10 +3227,11 @@ export default async function Home({
                     key: "property",
                     label: t("entry.kind.property"),
                     children: [
-                      { key: "property", label: t("propertyForm.action.purchase") },
-                      // 固定资产也能卖：走 PropertyFormModal 的出售态，回款进资金账户、
-                      // 资产状态置 sold（2026-11-13 用户：「在固定资产记一笔里增加售出」）。
-                      { key: "property-sell", label: t("propertyForm.action.sale") },
+                      // 固定资产只有一个动作：资产变动。购入 / 产值变动 / 出售都在同一个页面里，
+                      // 由「选了哪项资产」和「变动后产值」推断，不再分页签或子项。
+                      { key: "property", label: t("propertyForm.title.assetChange") },
+                      // 物业费/税费这类挂在固定资产上的费用化支出仍走通用支出表单。
+                      { key: "property-expense", label: t("propertyForm.action.expense") },
                     ],
                   },
                   { key: "metal", label: t("entry.kind.metal") },
@@ -3348,6 +3349,7 @@ export default async function Home({
               <PropertyFormModal
                 defaultPropertyAccountId={defaultPropertyInvestmentAccountId}
                 defaultCashAccountId={defaultCashAccountForSelectedInstitution}
+                defaultAssetType={fixedAssetTypeParam || selectedAccount?.fixedAssetType || null}
                 propertyAccounts={propertyAccountOptions}
                 propertyAccountSSOptions={propertyAccountSSOptions}
                 cashAccounts={cashAccountList}
@@ -3356,6 +3358,7 @@ export default async function Home({
                   id: position.propertyAssetId ?? position.fundCode,
                   name: position.name,
                   marketValue: position.marketValue,
+                  accountId: position.accountId ?? null,
                 })) ?? []}
               />
               <InvestmentFormModal
