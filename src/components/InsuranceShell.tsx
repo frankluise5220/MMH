@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import Link from "next/link";
 import { ArrowDownLeft, ArrowUpRight, Library, Pencil, Plus, Shield, Trash2 } from "lucide-react";
 
+import { FOLDER_TAB_STRIP, FolderTabRuler, folderTabClass, folderTabNeighbors } from "@/app/login/FolderTabs";
 import { formatAmountDraft, formatMoney } from "@/lib/format";
 import { resolveAccountTableLabel, type AccountTableLabelLookup } from "@/lib/account-display";
 import { useI18n } from "@/lib/i18n";
@@ -20,6 +21,7 @@ import {
   FINANCE_DATA_CHANGED_EVENT,
   type FinanceDataChangedDetail,
 } from "@/lib/client/refresh";
+import { replaceCurrentRouteUrl } from "@/lib/client/route-url-sync";
 import { useEntryReconcileState } from "@/lib/client/use-entry-reconcile-state";
 import { fetchSettingsAccountData } from "@/lib/client/settingsCache";
 import { useSettingsDataVersion } from "@/lib/client/use-settings-data-version";
@@ -195,6 +197,13 @@ function frequencyLabel(t: (key: string) => string, months?: number | null) {
   if (months === 12) return t("insuranceShell.frequency.annual");
   if (months === 999999) return t("insuranceShell.frequency.single");
   return "-";
+}
+
+/** 失效保单：已满期、已退保、已失效。其他状态（含空）都算保障中。 */
+const INACTIVE_POLICY_STATUSES = new Set(["matured", "surrendered", "lapsed"]);
+
+function isInactivePolicy(status?: string | null) {
+  return Boolean(status && INACTIVE_POLICY_STATUSES.has(status));
 }
 
 function statusLabel(t: (key: string) => string, status?: string | null) {
@@ -473,6 +482,7 @@ export function InsuranceShell({
   cashAccountSSOptions = [],
   accountLabelById,
   accountTitleById,
+  initialShowCleared = false,
 }: {
   accountId: string;
   accountLabel: string;
@@ -487,11 +497,13 @@ export function InsuranceShell({
   /** 按「账户显示格式」预渲染的现金账户标签 / hover（服务端下发，客户端刷新明细时复用）。 */
   accountLabelById?: Record<string, string>;
   accountTitleById?: Record<string, string>;
+  /** 首屏落在「失效保单」页签（URL 的 showCleared=1，与其他资产视图一致）。 */
+  initialShowCleared?: boolean;
 }) {
   const [refreshedEntries, setRefreshedEntries] = useState<InsuranceEntry[] | null>(null);
   const [refreshedHoldings, setRefreshedHoldings] = useState<InsuranceHolding[] | null>(null);
   const [selectedHoldingId, setSelectedHoldingId] = useState<string | null>(null);
-  const [showActiveOnly, setShowActiveOnly] = useState(false);
+  const [showCleared, setShowCleared] = useState(initialShowCleared);
   /** 保险产品库入口（产品主数据独立管理，不再只能双击保单行进入） */
   const [productLibraryOpen, setProductLibraryOpen] = useState(false);
   const [familyMemberOptionsState, setFamilyMemberOptionsState] =
@@ -538,6 +550,15 @@ export function InsuranceShell({
   useEffect(() => {
     familyMemberOptionsStateRef.current = familyMemberOptionsState;
   }, [familyMemberOptionsState]);
+
+  // 服务端整页刷新换了页签（例如从别的页面带 showCleared 回到保险）时同步过来。
+  const initialTabRef = useRef(initialShowCleared);
+  useEffect(() => {
+    if (initialTabRef.current === initialShowCleared) return;
+    initialTabRef.current = initialShowCleared;
+    setShowCleared(initialShowCleared);
+    setSelectedHoldingId(null);
+  }, [initialShowCleared]);
 
   const refreshInsuranceData = useCallback(async () => {
     const seq = ++refreshSeq.current;
@@ -747,11 +768,29 @@ export function InsuranceShell({
 
   const visibleHoldings = useMemo(
     () =>
-      currentHoldings
-        .filter((holding) => holding.relatedEntryIds.length > 0 || holding.status !== "lapsed")
-        .filter((holding) => !showActiveOnly || holding.status === "active"),
-    [currentHoldings, showActiveOnly],
+      currentHoldings.filter((holding) =>
+        showCleared ? isInactivePolicy(holding.status) : !isInactivePolicy(holding.status),
+      ),
+    [currentHoldings, showCleared],
   );
+
+  // FT 卡片两个页签：保障中 / 失效保单。
+  const policyTabItems = [
+    { id: "inforce", label: t("insuranceShell.tab.inforce") },
+    { id: "inactive", label: t("insuranceShell.tab.inactive") },
+  ];
+  const activePolicyTabId = showCleared ? "inactive" : "inforce";
+
+  /** 与基金/股票/固定资产一致：页签同步回 URL，刷新后仍落在同一页签。 */
+  function switchPolicyTab(tabId: string) {
+    const nextShowCleared = tabId === "inactive";
+    setShowCleared(nextShowCleared);
+    setSelectedHoldingId(null);
+    const url = new URL(window.location.href);
+    if (nextShowCleared) url.searchParams.set("showCleared", "1");
+    else url.searchParams.delete("showCleared");
+    replaceCurrentRouteUrl(`${url.pathname}${url.search}${url.hash}`);
+  }
 
   const selectedHolding = useMemo(
     () => visibleHoldings.find((holding) => holding.id === selectedHoldingId) ?? null,
@@ -899,6 +938,7 @@ export function InsuranceShell({
             : undefined,
           paymentTermYears,
           coverageAmount,
+          status: next.status,
         }),
       });
       const data = (await response.json().catch(() => null)) as
@@ -997,6 +1037,25 @@ export function InsuranceShell({
           </span>
         ),
       },
+      // 「失效保单」页签里要能分辨已满期 / 已退保 / 已失效，保障中页签不重复这一列。
+      ...(showCleared
+        ? ([
+            {
+              key: "status",
+              label: t("insuranceShell.colStatus"),
+              width: 96,
+              minWidth: 74,
+              hideable: true,
+              filterText: (holding: InsuranceHolding) => statusLabel(t, holding.status),
+              sortValue: (holding: InsuranceHolding) => statusLabel(t, holding.status),
+              render: (holding: InsuranceHolding) => (
+                <span className="inline-flex items-center rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">
+                  {statusLabel(t, holding.status)}
+                </span>
+              ),
+            },
+          ] as AdvancedDataTableColumn<InsuranceHolding>[])
+        : []),
       {
         key: "policyNo",
         label: t("insuranceShell.colPolicyNo"),
@@ -1128,6 +1187,7 @@ export function InsuranceShell({
               onClick={() => {
                 setPolicyEditValue({
                   id: holding.id,
+                  status: holding.status ?? "active",
                   policyNo: holding.policyNo ?? "",
                   effectiveDate: holding.effectiveDate ?? holding.startDate ?? "",
                   policyholderPersonId:
@@ -1174,7 +1234,7 @@ export function InsuranceShell({
         ),
       },
     ],
-    [t],
+    [showCleared, t],
   );
 
   const entryColumns = useMemo<AdvancedDataTableColumn<InsuranceEntry>[]>(
@@ -1267,71 +1327,89 @@ export function InsuranceShell({
         separatorLabel={t("insuranceShell.resizeLabel")}
         separatorTitle={t("insuranceShell.resizeTitle")}
       >
-        <section className="panel-surface flex h-full min-h-0 flex-col overflow-hidden">
-          <div className="min-h-0 flex-1">
-            <AdvancedDataTable
-              storageKey="mmh_insurance_holdings_table_v2"
-              columns={holdingColumns}
-              rows={visibleHoldings}
-              rowKey={(holding) => holding.id}
-              minTableWidth={1120}
-              emptyText={t("insuranceShell.emptyHoldings")}
-              showFilters={false}
-              showColumnVisibilityButton
-              fillHeight
-              toolbarTitle={
-                <span className="inline-flex items-center gap-2">
-                  <Shield className="h-4 w-4 text-cyan-600" />
-                  {t("insuranceShell.holdingsTitle")}
-                </span>
-              }
-              toolbarRightContent={
-                <div className="flex items-center gap-2">
-                  <label className="inline-flex cursor-pointer items-center gap-1.5 text-xs text-slate-500">
-                    <input
-                      type="checkbox"
-                      checked={showActiveOnly}
-                      onChange={(event) => {
-                        setShowActiveOnly(event.target.checked);
-                        setSelectedHoldingId(null);
-                      }}
-                      className="h-3.5 w-3.5 rounded border-slate-300"
-                    />
-                    {t("insuranceShell.activeOnly")}
-                  </label>
+        {/* FT 卡片：保障中 / 失效保单共用一张表，切页签只换数据源。 */}
+        <div className="relative flex h-full min-h-0 flex-col">
+          <div className={FOLDER_TAB_STRIP}>
+            <div className="flex h-full max-w-[calc(100%-9rem)] items-start gap-1.5">
+              {policyTabItems.map((tab, index) => {
+                const active = tab.id === activePolicyTabId;
+                return (
                   <button
+                    key={tab.id}
                     type="button"
-                    onClick={() => setProductLibraryOpen(true)}
-                    className="secondary-button h-7 gap-1 px-2 text-xs"
-                    title={t("productLibrary.title.insurance")}
+                    onClick={() => switchPolicyTab(tab.id)}
+                    className={folderTabClass(
+                      active,
+                      index === policyTabItems.length - 1,
+                      "stretch",
+                      index === 0,
+                      folderTabNeighbors(policyTabItems.map((item) => item.id), tab.id, activePolicyTabId),
+                    )}
                   >
-                    <Library className="h-3.5 w-3.5" />
-                    {t("productLibrary.entryButton")}
+                    <span className="relative block overflow-hidden whitespace-nowrap">
+                      <FolderTabRuler labels={policyTabItems.map((item) => item.label)} />
+                      {tab.label}
+                    </span>
                   </button>
-                </div>
-              }
-              summaryRow={holdingSummaryRow}
-              onRowClick={(holding) =>
-                setSelectedHoldingId((current) => (current === holding.id ? null : holding.id))
-              }
-              onRowDoubleClick={(holding) => {
-                setProductEditValue({
-                  id: holding.id,
-                  name: holding.label,
-                  shortName: "",
-                  productType: holding.productType ?? "other",
-                  accountingType: holding.accountingType ?? "asset",
-                  currency: holding.currency ?? "CNY",
-                  institutionId: holding.institutionId ?? "",
-                  note: holding.note ?? "",
-                });
-              }}
-              rowClassName={(holding) =>
-                `cursor-pointer ${selectedHoldingId === holding.id ? "bg-blue-50 hover:bg-blue-50" : "hover:bg-slate-50"}`
-              }
-            />
+                );
+              })}
+            </div>
           </div>
-        </section>
+
+          <div className="ft-card-surface ft-card-surface-fill">
+            <div className="min-h-0 flex-1">
+              <AdvancedDataTable
+                storageKey="mmh_insurance_holdings_table_v2"
+                columns={holdingColumns}
+                rows={visibleHoldings}
+                rowKey={(holding) => holding.id}
+                minTableWidth={showCleared ? 1216 : 1120}
+                emptyText={showCleared ? t("insuranceShell.emptyInactive") : t("insuranceShell.emptyHoldings")}
+                showFilters={false}
+                showColumnVisibilityButton
+                fillHeight
+                toolbarTitle={
+                  <span className="inline-flex items-center gap-2">
+                    <Shield className="h-4 w-4 text-cyan-600" />
+                    {t("insuranceShell.holdingsTitle")}
+                  </span>
+                }
+                toolbarRightContent={
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setProductLibraryOpen(true)}
+                      className="secondary-button h-7 gap-1 px-2 text-xs"
+                      title={t("productLibrary.title.insurance")}
+                    >
+                      <Library className="h-3.5 w-3.5" />
+                      {t("productLibrary.entryButton")}
+                    </button>
+                  </div>
+                }
+                summaryRow={holdingSummaryRow}
+                onRowClick={(holding) =>
+                  setSelectedHoldingId((current) => (current === holding.id ? null : holding.id))
+                }
+                onRowDoubleClick={(holding) => {
+                  setProductEditValue({
+                    id: holding.id,
+                    name: holding.label,
+                    shortName: "",
+                    productType: holding.productType ?? "other",
+                    accountingType: holding.accountingType ?? "asset",
+                    currency: holding.currency ?? "CNY",
+                    institutionId: holding.institutionId ?? "",
+                    note: holding.note ?? "",
+                  });
+                }}
+                rowClassName={(holding) =>
+                  `cursor-pointer ${selectedHoldingId === holding.id ? "bg-blue-50 hover:bg-blue-50" : "hover:bg-slate-50"}`
+                }
+              />
+            </div>
+          </div>
+        </div>
 
         <section className="panel-surface flex h-full min-h-0 flex-col overflow-hidden">
           <BasicDetailSelectionProvider

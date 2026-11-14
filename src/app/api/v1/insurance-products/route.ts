@@ -758,6 +758,12 @@ export async function PUT(req: NextRequest) {
     const householdId = hidFilter.householdId;
 
     if (mode === "policy") {
+      // 只有显式传了合法状态才改状态，避免旧前端不传时把保单重置成 active。
+      const policyStatusInput = typeof body.status === "string" ? body.status.trim() : "";
+      const policyStatus =
+        policyStatusInput && STATUSES.has(policyStatusInput as InsuranceStatus)
+          ? (policyStatusInput as InsuranceStatus)
+          : null;
       const existingPolicy = await prisma.insuranceProduct.findFirst({
         where: { id, ...hidFilter },
       });
@@ -816,6 +822,7 @@ export async function PUT(req: NextRequest) {
           effectiveDate,
           paymentTermYears,
           coverageAmount,
+          ...(policyStatus ? { status: policyStatus } : {}),
         },
       });
 

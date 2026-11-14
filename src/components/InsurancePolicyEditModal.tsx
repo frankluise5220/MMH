@@ -8,6 +8,8 @@ import { useI18n } from "@/lib/i18n";
 
 type InsurancePolicyEditValue = {
   id: string;
+  /** active / matured / surrendered / lapsed；失效保单在「失效保单」页签里查看。 */
+  status: string;
   policyNo: string;
   effectiveDate: string;
   policyholderPersonId: string;
@@ -168,6 +170,23 @@ export function InsurancePolicyEditModal({
                   placeholder={t("insurancePolicy.coveragePlaceholder")}
                   precision={2}
                 />
+              </div>
+              <div className="space-y-1">
+                <div className="form-label">{t("insuranceShell.colStatus")}</div>
+                <select
+                  value={draft.status}
+                  onChange={(event) => {
+                    const next = { ...draft, status: event.target.value };
+                    setDraft(next);
+                    onChange?.(next);
+                  }}
+                  className="form-input"
+                >
+                  <option value="active">{t("insuranceShell.status.active")}</option>
+                  <option value="matured">{t("insuranceShell.status.matured")}</option>
+                  <option value="surrendered">{t("insuranceShell.status.surrendered")}</option>
+                  <option value="lapsed">{t("insuranceShell.status.lapsed")}</option>
+                </select>
               </div>
             </div>
           </div>

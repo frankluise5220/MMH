@@ -3792,6 +3792,7 @@ export default async function Home({
               accountLabel={selectedAccountLabel}
               institutionName={selectedAccount.Institution?.name ?? ""}
               institutionId={selectedAccount.institutionId ?? null}
+              initialShowCleared={showCleared}
               holdings={insuranceHoldings}
               entries={insuranceEntries}
               cashAccounts={cashAccountList}
