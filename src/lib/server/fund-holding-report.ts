@@ -199,7 +199,8 @@ export async function loadFundHoldingReport(
 
     for (const cleared of display.clearedPositions) {
       clearedRows.push({
-        id: `${accountId}::${cleared.fundCode}`,
+        // 同一只基金可能清仓过多次（一次清仓一条记录），id 必须带上周期才唯一。
+        id: `${accountId}::${cleared.fundCode}::${cleared.firstBuyDate}~${cleared.clearedDate}`,
         accountId,
         accountName: account?.name ?? accountId,
         institutionName,

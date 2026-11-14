@@ -69,7 +69,7 @@ import { subtypeDisplay } from "@/lib/investment-config";
 import { isFundLikeInvestmentAccount } from "@/lib/account-kind-utils";
 import { institutionFullName } from "@/lib/institution-display";
 import { resolveQuantityDecimals } from "@/lib/fund/unit-precision-core";
-import { TRANSACTION_SOURCE_FUND_UNITS_RECONCILE, TRANSACTION_SOURCE_METAL_EXTRACT, isFundUnitsReconcileEntry } from "@/lib/transaction-semantics";
+import { TRANSACTION_SOURCE_FUND_UNITS_RECONCILE, TRANSACTION_SOURCE_METAL_EXTRACT, TRANSACTION_SOURCE_MONEY_INCOME, isFundUnitsReconcileEntry } from "@/lib/transaction-semantics";
 import { useI18n } from "@/lib/i18n";
 import { useDetailPagination } from "@/lib/client/use-detail-pagination";
 import { replaceCurrentRouteUrl } from "@/lib/client/route-url-sync";
@@ -124,6 +124,8 @@ function clearedDisplayAnnualizedRate(row: {
 
 function fundSubtypeLabel(t: (key: string) => string, subtype: string | null | undefined, source: string | null | undefined, productType?: string | null) {
   if (source === TRANSACTION_SOURCE_FUND_UNITS_RECONCILE) return t("fundShell.subtype.unitsReconcile");
+  // 货基收益结转：底层是 buy（只增份额），但它是收益分配，不是用户申购。
+  if (source === TRANSACTION_SOURCE_MONEY_INCOME) return t("fund.subtype.moneyIncome");
   // 提取实物：底层仍是「赎回」子类型（只减克数与成本，已实现盈亏为 0），但语义是转实物收藏品。
   if (source === TRANSACTION_SOURCE_METAL_EXTRACT) return t("fundShell.subtype.metalExtract");
   if (subtype === "buy" && source === "regular_invest") return t("fundShell.subtype.buyRegularInvest");
@@ -531,6 +533,7 @@ function compactFundSubtypeLabel(t: (key: string) => string, entry: any, fallbac
     ? String(entry?.fundProductType ?? "") === "bond"
     : false;
   if (source === TRANSACTION_SOURCE_FUND_UNITS_RECONCILE) return t("fundShell.subtypeCompact.unitsReconcile");
+  if (source === TRANSACTION_SOURCE_MONEY_INCOME) return t("fund.subtype.moneyIncome");
   if (subtype === "buy_failed" && source === "regular_invest_refund") return t("fundShell.subtypeCompact.refund");
   if (subtype === "buy_failed") return t("fundShell.subtypeCompact.failed");
   if (subtype === "buy" && source === "regular_invest") return t("fund.subtype.regular_invest");
@@ -809,11 +812,16 @@ export function FundShell(props: Props) {
       ? position?.wealthProductId ?? ""
       : position?.fundCode ?? "",
   ).trim(), [isWealthAccount]);
-  /** 贵金属按「品种 + 单位」清仓：同品种不同单位不能让表格与卡片复用同一个 key。 */
+  /**
+   * 贵金属按「品种 + 单位」清仓：同品种不同单位不能让表格与卡片复用同一个 key。
+   * 同一只基金也可能清仓过多次（一次清仓一条记录），所以行 key 还要带上周期。
+   */
   const clearedRowKey = useCallback((position: any) => {
     const key = positionAssetKey(position);
     const withUnit = position?.metalUnitId ? `${key}::${position.metalUnitId}` : key;
-    return withUnit || String(position?.fundCode ?? "");
+    const base = withUnit || String(position?.fundCode ?? "");
+    const cycle = [position?.firstBuyDate, position?.clearedDate].filter(Boolean).join("~");
+    return cycle ? `${base}#${cycle}` : base;
   }, [positionAssetKey]);
 
 
@@ -955,6 +963,11 @@ export function FundShell(props: Props) {
   }, [isMetalAccount, refundAmountByBuyId]);
   const displayUnitsOf = displayUnitsOfPlain;
   const detailAmountOf = useCallback((entry: any) => {
+    // 收益结转没有现金流，amount 必须记 0（记成收益额会被算进持仓成本）；
+    // 金额列改用份额——货基净值恒 1，份额数值就是当天结转的收益。
+    if (entry?.source === TRANSACTION_SOURCE_MONEY_INCOME) {
+      return Math.abs(toNumber(entry?.fundUnits ?? 0));
+    }
     const rawAmount = toNumber(entry?.amount);
     if (!isWealthAccount) {
       if (entry?.fundSubtype === "buy_failed") {

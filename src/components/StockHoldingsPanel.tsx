@@ -932,7 +932,8 @@ export function StockHoldingsPanel({
     if (selectedPosition) void loadTransactions(selectedPosition, true);
   }, [accountId, loadTransactions, reloadHoldings, selectedPosition]);
 
-  const positionColumns = useMemo<AdvancedDataTableColumn<StockPosition>[]>(() => [
+  const positionColumns = useMemo<AdvancedDataTableColumn<StockPosition>[]>(() => {
+    const all: AdvancedDataTableColumn<StockPosition>[] = [
     {
       key: "stock",
       label: t("stockHoldingReport.colStock"),
@@ -1080,7 +1081,80 @@ export function StockHoldingsPanel({
         />
       ),
     },
-  ], [accountId, currency, handleHoldingRowUpdated, isRedUp, selectedKey, t]);
+    ];
+
+    /**
+     * 清仓行没有持仓数量/成本/市值，展示的是「这一轮投了多少、收回多少、赚了多少」。
+     * 同一只股票可以清仓多次，首买日与清仓日就是用来区分这几条记录的。
+     */
+    if (!showCleared) return all;
+    const clearedOnly: AdvancedDataTableColumn<StockPosition>[] = [
+      {
+        key: "firstBuy",
+        label: t("stockPanel.colFirstBuy"),
+        width: 108,
+        minWidth: 84,
+        headerClassName: "text-left",
+        className: "tabular-nums text-slate-600",
+        filterText: (p: any) => String(p.firstBuyDate ?? ""),
+        sortValue: (p: any) => String(p.firstBuyDate ?? ""),
+        render: (p: any) => p.firstBuyDate || "-",
+      },
+      {
+        key: "clearedDate",
+        label: t("stockPanel.colClearedDate"),
+        width: 108,
+        minWidth: 84,
+        headerClassName: "text-left",
+        className: "tabular-nums text-slate-600",
+        filterText: (p: any) => String(p.clearedDate ?? ""),
+        sortValue: (p: any) => String(p.clearedDate ?? ""),
+        render: (p: any) => p.clearedDate || "-",
+      },
+      {
+        key: "buyAmount",
+        label: t("stockPanel.colBuyAmount"),
+        width: 120,
+        minWidth: 88,
+        align: "right",
+        className: "tabular-nums",
+        filterKind: "numberRange",
+        filterText: (p: any) => String(p.totalBuyAmount ?? 0),
+        filterNumber: (p: any) => p.totalBuyAmount ?? 0,
+        sortValue: (p: any) => p.totalBuyAmount ?? 0,
+        render: (p: any) => <span className="text-slate-700">{formatCurrencyMoney(p.totalBuyAmount ?? 0, currency)}</span>,
+      },
+      {
+        key: "redeemAmount",
+        label: t("stockPanel.colRedeemAmount"),
+        width: 120,
+        minWidth: 88,
+        align: "right",
+        className: "tabular-nums",
+        filterKind: "numberRange",
+        filterText: (p: any) => String(p.totalRedeemAmount ?? 0),
+        filterNumber: (p: any) => p.totalRedeemAmount ?? 0,
+        sortValue: (p: any) => p.totalRedeemAmount ?? 0,
+        render: (p: any) => <span className="text-slate-700">{formatCurrencyMoney(p.totalRedeemAmount ?? 0, currency)}</span>,
+      },
+      {
+        key: "returnRate",
+        label: t("stockPanel.colReturnRate"),
+        width: 88,
+        minWidth: 64,
+        align: "right",
+        className: "tabular-nums",
+        filterKind: "numberRange",
+        filterText: (p: any) => String(p.returnRate ?? 0),
+        filterNumber: (p: any) => p.returnRate ?? 0,
+        sortValue: (p: any) => p.returnRate ?? 0,
+        render: (p: any) => <span className={pnlClass(p.returnRate ?? 0, isRedUp)}>{((p.returnRate ?? 0) * 100).toFixed(2)}%</span>,
+      },
+    ];
+    const stockColumn = all.find((column) => column.key === "stock");
+    const historicalColumn = all.find((column) => column.key === "historical");
+    return [stockColumn!, ...clearedOnly, historicalColumn!];
+  }, [accountId, currency, handleHoldingRowUpdated, isRedUp, selectedKey, showCleared, t]);
 
   const positionSummaryRow = useMemo(() => {
     if (displayPositions.length === 0) return undefined;
@@ -1586,7 +1660,8 @@ export function StockHoldingsPanel({
                 columns={positionColumns}
                 resetKey={showCleared ? "cleared" : "holding"}
                 rows={displayPositions}
-                rowKey={(p) => positionKey(p)}
+                // 同一只股票可能清仓过多次（一次清仓一条记录），行 key 要带上周期才唯一。
+                rowKey={(p) => `${positionKey(p)}#${p.clearedDate ?? ""}`}
                 emptyText={showCleared ? t("stockPanel.noCleared") : t("stockHoldingReport.empty")}
                 minTableWidth={976}
                 rowClassName={(p) => {

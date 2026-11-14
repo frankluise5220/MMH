@@ -15,6 +15,8 @@ import type { HouseholdContext } from "@/lib/server/household-scope";
 import { getEffectiveLatestFundNavMap } from "@/lib/fund/navCache";
 import { getFundProfileNameMap, normalizeFundDisplayName } from "@/lib/fund/fundProfile";
 import { futureConfirmHoldingKey, loadFutureConfirmedBuyMap } from "@/lib/fund/future-confirm";
+import { deriveClosedCycles } from "@/lib/fund/closed-cycles";
+import { derivePositionCycles } from "@/lib/invest/position-cycles";
 import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import { isWealthLikeProductType } from "@/lib/investment-config";
 import { getMaintainedAccountBalances } from "@/lib/server/account-balance";
@@ -677,8 +679,9 @@ export const computePositionDisplay = cache(
       new Set(clearedHoldings.map((holding) => holding.securityId).filter((securityId): securityId is string => Boolean(securityId))),
     );
     const clearedStats = new Map<string, { firstBuyDate: string; clearedDate: string; totalBuyAmount: number; totalRedeemAmount: number }>();
-    if (clearedSecurityIds.length > 0) {
-      const clearedTransactions = await prisma.stockTransaction.findMany({
+    // 只在有已清仓标的时读流水，同时供「按轮重放」与「缺数量时的按产品聚合兜底」使用。
+    const clearedTransactions = clearedSecurityIds.length > 0
+      ? await prisma.stockTransaction.findMany({
         where: {
           householdId: ctx.householdId,
           stockAccountId: accountId,
@@ -689,6 +692,8 @@ export const computePositionDisplay = cache(
           securityId: true,
           action: true,
           tradeDate: true,
+          createdAt: true,
+          quantity: true,
           grossAmount: true,
           netAmount: true,
           fee: true,
@@ -700,63 +705,140 @@ export const computePositionDisplay = cache(
           otherFee: true,
         },
         orderBy: [{ tradeDate: "asc" }, { createdAt: "asc" }, { id: "asc" }],
-      });
-      for (const row of clearedTransactions) {
-        if (!row.securityId) continue;
-        const stats = clearedStats.get(row.securityId) ?? {
-          firstBuyDate: "",
-          clearedDate: "",
-          totalBuyAmount: 0,
-          totalRedeemAmount: 0,
-        };
-        const tradeDate = dateOnlyString(row.tradeDate);
-        if (row.action === StockTransactionAction.buy) {
-          if (!stats.firstBuyDate || tradeDate < stats.firstBuyDate) stats.firstBuyDate = tradeDate;
-          stats.totalBuyAmount += Math.abs(toNumber(row.grossAmount)) + stockFeeTotal(row);
-        } else if (row.action === StockTransactionAction.sell) {
-          stats.clearedDate = tradeDate || stats.clearedDate;
-          stats.totalRedeemAmount += stockSellProceeds(row);
-        } else if (row.action === StockTransactionAction.merge_share) {
-          stats.clearedDate = tradeDate || stats.clearedDate;
-        }
-        clearedStats.set(row.securityId, stats);
-      }
-    }
-    const clearedPositions: ClearedPositionRow[] = clearedHoldings
-      .map((holding) => {
-        const row = mapStockHolding(holding);
-        const stats = clearedStats.get(holding.securityId);
-        const totalInvested = roundMoney(stats?.totalBuyAmount ?? 0);
-        const historicalProfit = roundMoney(row.historicalProfit);
-        return {
-          fundCode: row.fundCode,
-          accountId: row.accountId,
-          stockCode: row.stockCode,
-          market: row.market,
-          securityId: row.securityId,
-          name: row.name,
-          units: row.units,
-          avgCost: row.avgCost,
-          cost: row.cost,
-          nav: row.nav,
-          navDate: row.navDate,
-          marketValue: row.marketValue,
-          floatingPnL: row.floatingPnL,
-          floatingPnLRate: row.floatingPnLRate,
-          historicalProfit,
-          totalInvested,
-          returnRate: totalInvested > 0 ? historicalProfit / totalInvested : 0,
-          firstBuyDate: stats?.firstBuyDate ?? "",
-          clearedDate: stats?.clearedDate ?? "",
-          totalBuyAmount: totalInvested,
-          totalRedeemAmount: roundMoney(stats?.totalRedeemAmount ?? 0),
-        };
       })
-      .sort((left, right) => {
-        const dateCompare = (right.clearedDate || "").localeCompare(left.clearedDate || "");
-        if (dateCompare !== 0) return dateCompare;
-        return left.fundCode.localeCompare(right.fundCode);
+      : [];
+    for (const row of clearedTransactions) {
+      if (!row.securityId) continue;
+      const stats = clearedStats.get(row.securityId) ?? {
+        firstBuyDate: "",
+        clearedDate: "",
+        totalBuyAmount: 0,
+        totalRedeemAmount: 0,
+      };
+      const tradeDate = dateOnlyString(row.tradeDate);
+      if (row.action === StockTransactionAction.buy) {
+        if (!stats.firstBuyDate || tradeDate < stats.firstBuyDate) stats.firstBuyDate = tradeDate;
+        stats.totalBuyAmount += Math.abs(toNumber(row.grossAmount)) + stockFeeTotal(row);
+      } else if (row.action === StockTransactionAction.sell) {
+        stats.clearedDate = tradeDate || stats.clearedDate;
+        stats.totalRedeemAmount += stockSellProceeds(row);
+      } else if (row.action === StockTransactionAction.merge_share) {
+        stats.clearedDate = tradeDate || stats.clearedDate;
+      }
+      clearedStats.set(row.securityId, stats);
+    }
+
+    /**
+     * 清仓记录按「轮」产出：同一只股票清仓后又买、再清仓，就是两条记录。
+     * 用数量重放（与 recalcStockPositions 同一套加减规则：买入/送股/拆股为加，
+     * 卖出/并股为减），数量归零那一笔的交易日即清仓日。
+     */
+    const stockCycles = derivePositionCycles(
+      clearedTransactions
+        .filter((row) => row.securityId)
+        .map((row) => {
+          const quantity = row.quantity != null ? Math.abs(toNumber(row.quantity)) : null;
+          const tradeDate = dateOnlyString(row.tradeDate);
+          const base = {
+            key: String(row.securityId),
+            date: tradeDate,
+            order: row.createdAt.getTime(),
+          };
+          if (row.action === StockTransactionAction.buy) {
+            return { ...base, delta: quantity, invest: Math.abs(toNumber(row.grossAmount)) + stockFeeTotal(row) };
+          }
+          if (row.action === StockTransactionAction.sell) {
+            return { ...base, delta: quantity == null ? null : -quantity, redeem: stockSellProceeds(row) };
+          }
+          // 送股 / 拆股只增数量、不带成本，也不产生现金流。
+          if (row.action === StockTransactionAction.bonus_share || row.action === StockTransactionAction.split_share) {
+            return { ...base, delta: quantity, invest: 0 };
+          }
+          if (row.action === StockTransactionAction.merge_share) {
+            return { ...base, delta: quantity == null ? null : -quantity };
+          }
+          // 分红与退税是纯现金回收；费用调整属于成本增项。
+          if (row.action === StockTransactionAction.dividend || row.action === StockTransactionAction.tax_refund) {
+            return { ...base, delta: null, redeem: row.netAmount != null ? toNumber(row.netAmount) : Math.max(0, toNumber(row.grossAmount) - stockFeeTotal(row)) };
+          }
+          if (row.action === StockTransactionAction.fee_adjustment || row.action === StockTransactionAction.tax_adjustment) {
+            return { ...base, delta: null, invest: Math.abs(row.netAmount != null ? toNumber(row.netAmount) : toNumber(row.grossAmount)) };
+          }
+          return { ...base, delta: null };
+        }),
+    );
+    const stockCyclesBySecurityId = new Map<string, typeof stockCycles>();
+    for (const cycle of stockCycles) {
+      const list = stockCyclesBySecurityId.get(cycle.key);
+      if (list) list.push(cycle);
+      else stockCyclesBySecurityId.set(cycle.key, [cycle]);
+    }
+
+    const clearedPositions: ClearedPositionRow[] = [];
+    for (const holding of clearedHoldings) {
+      const row = mapStockHolding(holding);
+      const cycles = holding.securityId ? stockCyclesBySecurityId.get(holding.securityId) ?? [] : [];
+      if (cycles.length > 0) {
+        for (const cycle of cycles) {
+          clearedPositions.push({
+            fundCode: row.fundCode,
+            accountId: row.accountId,
+            stockCode: row.stockCode,
+            market: row.market,
+            securityId: row.securityId,
+            name: row.name,
+            units: row.units,
+            avgCost: row.avgCost,
+            cost: row.cost,
+            nav: row.nav,
+            navDate: row.navDate,
+            marketValue: row.marketValue,
+            floatingPnL: row.floatingPnL,
+            floatingPnLRate: row.floatingPnLRate,
+            historicalProfit: cycle.realizedProfit,
+            totalInvested: cycle.totalInvestAmount,
+            returnRate: cycle.returnRate,
+            firstBuyDate: cycle.firstBuyDate,
+            clearedDate: cycle.clearedDate,
+            totalBuyAmount: cycle.totalInvestAmount,
+            totalRedeemAmount: cycle.totalRedeemAmount,
+          });
+        }
+        continue;
+      }
+      // 兜底：历史流水缺数量时无法重放，退回按产品聚合的一行，避免清仓记录凭空消失。
+      const stats = clearedStats.get(holding.securityId);
+      const totalInvested = roundMoney(stats?.totalBuyAmount ?? 0);
+      const historicalProfit = roundMoney(row.historicalProfit);
+      clearedPositions.push({
+        fundCode: row.fundCode,
+        accountId: row.accountId,
+        stockCode: row.stockCode,
+        market: row.market,
+        securityId: row.securityId,
+        name: row.name,
+        units: row.units,
+        avgCost: row.avgCost,
+        cost: row.cost,
+        nav: row.nav,
+        navDate: row.navDate,
+        marketValue: row.marketValue,
+        floatingPnL: row.floatingPnL,
+        floatingPnLRate: row.floatingPnLRate,
+        historicalProfit,
+        totalInvested,
+        returnRate: totalInvested > 0 ? historicalProfit / totalInvested : 0,
+        firstBuyDate: stats?.firstBuyDate ?? "",
+        clearedDate: stats?.clearedDate ?? "",
+        totalBuyAmount: totalInvested,
+        totalRedeemAmount: roundMoney(stats?.totalRedeemAmount ?? 0),
       });
+    }
+    clearedPositions.sort((left, right) => {
+      const dateCompare = (right.clearedDate || "").localeCompare(left.clearedDate || "");
+      if (dateCompare !== 0) return dateCompare;
+      return left.fundCode.localeCompare(right.fundCode);
+    });
     const totalMarketValue = positions.reduce((sum, row) => sum + row.marketValue, 0);
     const totalCost = positions.reduce((sum, row) => sum + row.cost, 0);
     const positionHistoricalProfit = positions.reduce((sum, row) => sum + row.historicalProfit, 0);
@@ -843,10 +925,10 @@ export const computePositionDisplay = cache(
     const clearedHoldings = metalHoldings.filter((holding) => toNumber(holding.quantity) <= 0.000001);
     const clearedKeys = new Set(clearedHoldings.map((holding) => `${holding.metalTypeId}::${holding.metalUnitId}`));
     const clearedStats = new Map<string, { firstBuyDate: string; clearedDate: string; totalBuyAmount: number; totalRedeemAmount: number }>();
-    if (clearedHoldings.length > 0) {
-      // 与 recalcPreciousMetalPositions 同一口径回放交易：买入累计 |amount|，
-      // 卖出 / 提取实物 / 转出累计 max(0, amount - fee)，最后一笔卖出日即清仓日。
-      const clearedTransactions = await prisma.preciousMetalTransaction.findMany({
+    // 与 recalcPreciousMetalPositions 同一口径回放交易：买入累计 |amount|，
+    // 卖出 / 提取实物 / 转出累计 max(0, amount - fee)，最后一笔卖出日即清仓日。
+    const clearedTransactions = clearedHoldings.length > 0
+      ? await prisma.preciousMetalTransaction.findMany({
         where: {
           householdId: ctx.householdId,
           accountId,
@@ -864,53 +946,99 @@ export const computePositionDisplay = cache(
           quantity: true,
         },
         orderBy: [{ tradeDate: "asc" }, { createdAt: "asc" }, { id: "asc" }],
-      });
-      for (const row of clearedTransactions) {
-        const key = `${row.metalTypeId}::${row.metalUnitId}`;
-        if (!clearedKeys.has(key)) continue;
-        if (row.quantity == null || toNumber(row.quantity) <= 0) continue;
-        const stats = clearedStats.get(key) ?? {
-          firstBuyDate: "",
-          clearedDate: "",
-          totalBuyAmount: 0,
-          totalRedeemAmount: 0,
-        };
-        const tradeDate = dateOnlyString(row.tradeDate);
-        if (row.action === FundSubtype.redeem || row.action === FundSubtype.switch_out) {
-          stats.clearedDate = tradeDate || stats.clearedDate;
-          stats.totalRedeemAmount += Math.max(0, toNumber(row.amount) - (row.fee != null ? toNumber(row.fee) : 0));
-        } else {
-          if (!stats.firstBuyDate || tradeDate < stats.firstBuyDate) stats.firstBuyDate = tradeDate;
-          stats.totalBuyAmount += Math.abs(toNumber(row.amount));
-        }
-        clearedStats.set(key, stats);
-      }
-    }
-    const clearedPositions: ClearedPositionRow[] = clearedHoldings
-      .map((holding) => {
-        const stats = clearedStats.get(`${holding.metalTypeId}::${holding.metalUnitId}`);
-        const totalBuyAmount = roundMoney(stats?.totalBuyAmount ?? 0);
-        const historicalProfit = roundMoney(toNumber(holding.historicalProfit));
-        return {
-          fundCode: holding.metalTypeId,
-          metalUnitId: holding.metalUnitId,
-          accountId,
-          name: `${holding.PreciousMetalType?.name ?? holding.metalTypeName} · ${holding.PreciousMetalUnit?.name ?? holding.metalUnitName}`,
-          units: 0,
-          historicalProfit,
-          totalInvested: totalBuyAmount,
-          returnRate: totalBuyAmount > 0 ? historicalProfit / totalBuyAmount : 0,
-          firstBuyDate: stats?.firstBuyDate ?? "",
-          clearedDate: stats?.clearedDate ?? "",
-          totalBuyAmount,
-          totalRedeemAmount: roundMoney(stats?.totalRedeemAmount ?? 0),
-        };
       })
-      .sort((left, right) => {
-        const dateCompare = (right.clearedDate || "").localeCompare(left.clearedDate || "");
-        if (dateCompare !== 0) return dateCompare;
-        return left.name.localeCompare(right.name);
+      : [];
+    for (const row of clearedTransactions) {
+      const key = `${row.metalTypeId}::${row.metalUnitId}`;
+      if (!clearedKeys.has(key)) continue;
+      if (row.quantity == null || toNumber(row.quantity) <= 0) continue;
+      const stats = clearedStats.get(key) ?? {
+        firstBuyDate: "",
+        clearedDate: "",
+        totalBuyAmount: 0,
+        totalRedeemAmount: 0,
+      };
+      const tradeDate = dateOnlyString(row.tradeDate);
+      if (row.action === FundSubtype.redeem || row.action === FundSubtype.switch_out) {
+        stats.clearedDate = tradeDate || stats.clearedDate;
+        stats.totalRedeemAmount += Math.max(0, toNumber(row.amount) - (row.fee != null ? toNumber(row.fee) : 0));
+      } else {
+        if (!stats.firstBuyDate || tradeDate < stats.firstBuyDate) stats.firstBuyDate = tradeDate;
+        stats.totalBuyAmount += Math.abs(toNumber(row.amount));
+      }
+      clearedStats.set(key, stats);
+    }
+
+    // 按「轮」重放：数量归零即一次清仓，同一品种+单位可以对清多次。
+    const metalCycles = derivePositionCycles(
+      clearedTransactions
+        .filter((row) => row.quantity != null && toNumber(row.quantity) > 0)
+        .map((row) => {
+          const key = `${row.metalTypeId}::${row.metalUnitId}`;
+          const quantity = toNumber(row.quantity);
+          const base = { key, date: dateOnlyString(row.tradeDate), order: row.createdAt.getTime() };
+          const fee = row.fee != null ? toNumber(row.fee) : 0;
+          if (row.action === FundSubtype.redeem || row.action === FundSubtype.switch_out) {
+            return { ...base, delta: -quantity, redeem: Math.max(0, toNumber(row.amount) - fee) };
+          }
+          return { ...base, delta: quantity, invest: Math.abs(toNumber(row.amount)) };
+        }),
+    );
+    const metalCyclesByKey = new Map<string, typeof metalCycles>();
+    for (const cycle of metalCycles) {
+      const list = metalCyclesByKey.get(cycle.key);
+      if (list) list.push(cycle);
+      else metalCyclesByKey.set(cycle.key, [cycle]);
+    }
+
+    const clearedPositions: ClearedPositionRow[] = [];
+    for (const holding of clearedHoldings) {
+      const key = `${holding.metalTypeId}::${holding.metalUnitId}`;
+      const name = `${holding.PreciousMetalType?.name ?? holding.metalTypeName} · ${holding.PreciousMetalUnit?.name ?? holding.metalUnitName}`;
+      const cycles = metalCyclesByKey.get(key) ?? [];
+      if (cycles.length > 0) {
+        for (const cycle of cycles) {
+          clearedPositions.push({
+            fundCode: holding.metalTypeId,
+            metalUnitId: holding.metalUnitId,
+            accountId,
+            name,
+            units: 0,
+            historicalProfit: cycle.realizedProfit,
+            totalInvested: cycle.totalInvestAmount,
+            returnRate: cycle.returnRate,
+            firstBuyDate: cycle.firstBuyDate,
+            clearedDate: cycle.clearedDate,
+            totalBuyAmount: cycle.totalInvestAmount,
+            totalRedeemAmount: cycle.totalRedeemAmount,
+          });
+        }
+        continue;
+      }
+      // 兜底：流水缺数量时退回按产品聚合的一行，保证既有清仓记录不丢。
+      const stats = clearedStats.get(key);
+      const totalBuyAmount = roundMoney(stats?.totalBuyAmount ?? 0);
+      const historicalProfit = roundMoney(toNumber(holding.historicalProfit));
+      clearedPositions.push({
+        fundCode: holding.metalTypeId,
+        metalUnitId: holding.metalUnitId,
+        accountId,
+        name,
+        units: 0,
+        historicalProfit,
+        totalInvested: totalBuyAmount,
+        returnRate: totalBuyAmount > 0 ? historicalProfit / totalBuyAmount : 0,
+        firstBuyDate: stats?.firstBuyDate ?? "",
+        clearedDate: stats?.clearedDate ?? "",
+        totalBuyAmount,
+        totalRedeemAmount: roundMoney(stats?.totalRedeemAmount ?? 0),
       });
+    }
+    clearedPositions.sort((left, right) => {
+      const dateCompare = (right.clearedDate || "").localeCompare(left.clearedDate || "");
+      if (dateCompare !== 0) return dateCompare;
+      return left.name.localeCompare(right.name);
+    });
     const clearedHistoricalProfit = clearedPositions.reduce((sum, row) => sum + row.historicalProfit, 0);
     const totalHistoricalProfit = positionHistoricalProfit + clearedHistoricalProfit;
     return { positions, clearedPositions, totalMarketValue, totalCost, positionHistoricalProfit, clearedHistoricalProfit, totalHistoricalProfit };
@@ -1034,6 +1162,14 @@ export const computePositionDisplay = cache(
       a.key.localeCompare(b.key)
     );
 
+    /**
+     * 每清仓一次封存一条记录，再把累计字段清零重新起算。
+     * 原先清仓只重置余额（remaining/units），totalBuyAmount、firstBuyDate、
+     * historicalProfit 一直累加，同一产品第二次清仓时第一轮的数字会被并进第二轮，
+     * 「清仓几次」和「每轮赚多少」都看不出来。
+     */
+    const closedCycles: ClearedPositionRow[] = [];
+
     for (const event of wealthEvents) {
       const bucket = buckets.get(event.key) ?? {
         fundCode: event.key,
@@ -1061,22 +1197,48 @@ export const computePositionDisplay = cache(
       }
 
       if (event.action === "dividend") {
-        bucket.historicalProfit += event.arrival;
-        bucket.clearedDate = event.tradeDate;
+        // 清仓后补齐的分红不再属于任何一轮持仓，不能凭空造出一条空周期。
+        if (bucket.totalBuyAmount > 0) {
+          bucket.historicalProfit += event.arrival;
+          bucket.clearedDate = event.tradeDate;
+        }
       } else if (event.action === "cash_in") {
         if (event.units != null) {
           bucket.cycleHasUnits = true;
           bucket.remainingUnits -= event.units;
         }
         bucket.remaining -= event.principalOut;
-        const cleared = isWealthHoldingCleared(bucket.cycleHasUnits, bucket.remaining, bucket.remainingUnits);
-        if (cleared) {
-          resetWealthHoldingBucket(bucket);
-          bucket.holdingDate = "";
-        }
         bucket.totalRedeemAmount += event.arrival;
         bucket.historicalProfit += event.profit;
         bucket.clearedDate = event.tradeDate;
+        const cleared = isWealthHoldingCleared(bucket.cycleHasUnits, bucket.remaining, bucket.remainingUnits);
+        if (cleared) {
+          if (bucket.totalBuyAmount > 0) {
+            closedCycles.push({
+              fundCode: bucket.fundCode,
+              wealthProductId: bucket.wealthProductId,
+              name: bucket.name,
+              historicalProfit: Number(bucket.historicalProfit.toFixed(2)),
+              totalInvested: Number(bucket.totalBuyAmount.toFixed(2)),
+              returnRate: bucket.totalBuyAmount > 0 ? bucket.historicalProfit / bucket.totalBuyAmount : 0,
+              firstBuyDate: bucket.firstBuyDate,
+              clearedDate: bucket.clearedDate || bucket.firstBuyDate,
+              totalBuyAmount: Number(bucket.totalBuyAmount.toFixed(2)),
+              totalRedeemAmount: Number(bucket.totalRedeemAmount.toFixed(2)),
+              annualRate: bucket.redeemAnnualRate ?? bucket.annualRate,
+            });
+          }
+          // 封存后整轮清零：下一笔买入就是新一轮的起点。
+          resetWealthHoldingBucket(bucket);
+          bucket.holdingDate = "";
+          bucket.historicalProfit = 0;
+          bucket.totalBuyAmount = 0;
+          bucket.totalRedeemAmount = 0;
+          bucket.firstBuyDate = "";
+          bucket.clearedDate = "";
+          bucket.annualRate = null;
+          bucket.redeemAnnualRate = null;
+        }
       } else {
         const wasCleared = isWealthHoldingCleared(bucket.cycleHasUnits, bucket.remaining, bucket.remainingUnits);
         if (wasCleared) {
@@ -1097,7 +1259,8 @@ export const computePositionDisplay = cache(
     }
 
     const positions: PositionDisplayRow[] = [];
-    const clearedPositions: ClearedPositionRow[] = [];
+    // 已封存的周期先入列；尚未清仓的桶既可能是持仓，也可能是「流水到此为止已归零」的最后一轮。
+    const clearedPositions: ClearedPositionRow[] = closedCycles.slice();
     for (const bucket of buckets.values()) {
       const remaining = Number(bucket.remaining.toFixed(2));
       const remainingUnits = Number(bucket.remainingUnits.toFixed(6));
@@ -1172,19 +1335,31 @@ export const computePositionDisplay = cache(
   // a fund transaction carries the more precise product type. This prevents a
   // misclassified money account from forcing an ordinary fund's NAV to 1.
   const fundProductTypeByCode = new Map<string, string>();
-  if (fundCodes.length > 0) {
-    const fundTransactions = await prisma.fundTransaction.findMany({
+  // 流水在下面既用于判定货基，也用于重放清仓周期，因此放在两项 if 之外。
+  const fundTransactions = fundCodes.length > 0
+    ? await prisma.fundTransaction.findMany({
       where: {
         fundAccountId: accountId,
         fundCode: { in: fundCodes },
         deletedAt: null,
       },
-      select: { fundCode: true, fundProductType: true },
-    });
-    for (const transaction of fundTransactions) {
-      if (transaction.fundCode && transaction.fundProductType) {
-        fundProductTypeByCode.set(transaction.fundCode, transaction.fundProductType);
-      }
+      // 同一份流水既回答「这只基金算不算货基」，也拿来重放清仓周期，避免查两遍。
+      select: {
+        fundCode: true,
+        fundProductType: true,
+        fundSubtype: true,
+        source: true,
+        units: true,
+        grossAmount: true,
+        arrivalAmount: true,
+        applyDate: true,
+        createdAt: true,
+      },
+    })
+    : [];
+  for (const transaction of fundTransactions) {
+    if (transaction.fundCode && transaction.fundProductType) {
+      fundProductTypeByCode.set(transaction.fundCode, transaction.fundProductType);
     }
   }
   // Load the latest cached NAV for every held fund, money funds included, so the
@@ -1201,7 +1376,9 @@ export const computePositionDisplay = cache(
   }
 
   const positions: PositionDisplayRow[] = [];
-  const clearedPositions: ClearedPositionRow[] = [];
+  /** 清仓行改由流水重放生成（一次清仓一条），这里只记下持仓表判定已清零的代码。 */
+  const clearedHoldingCodes = new Set<string>();
+  const displayNameByCode = new Map<string, string>();
 
   for (const h of holdings) {
     const futureConfirmed = futureConfirmedByHoldingKey.get(holdingKey(h.accountId, h.fundCode));
@@ -1222,6 +1399,7 @@ export const computePositionDisplay = cache(
     const storedName = normalizeFundDisplayName(h.fundCode, h.fundName);
     const displayName = profileName || storedName || h.fundCode;
     const historicalProfit = toNumber(h.historicalProfit);
+    displayNameByCode.set(h.fundCode, displayName);
 
     const confirmedMV = latestNav > 0 && units > 0 ? units * latestNav : confirmedCost;
     const marketValue = confirmedMV + pending;
@@ -1245,117 +1423,39 @@ export const computePositionDisplay = cache(
         historicalProfit,
       });
     } else {
-      clearedPositions.push({
-        fundCode: h.fundCode,
-        name: displayName,
-        historicalProfit,
-        totalInvested: 0,
-        returnRate: 0,
-        firstBuyDate: "",
-        clearedDate: "",
-        totalBuyAmount: 0,
-        totalRedeemAmount: 0,
-      });
+      clearedHoldingCodes.add(h.fundCode);
     }
   }
 
   positions.sort((a, b) => b.marketValue - a.marketValue);
-  clearedPositions.sort((a, b) => b.clearedDate.localeCompare(a.clearedDate) || b.historicalProfit - a.historicalProfit);
 
-  // Batch-query cleared funds: total invested amount + first purchase time + cleared time + buy/redeem amounts
-  if (clearedPositions.length > 0) {
-    const clearedCodes = clearedPositions.map(c => c.fundCode);
-    // Total invested amount (sum of ABS(amount) over all buy transactions)
-    const investedRows = await prisma.fundTransaction.groupBy({
-      by: ["fundCode"],
-      where: {
-        ...ctx.hidFilter,
-        fundCode: { in: clearedCodes },
-        fundSubtype: "buy",
-        fundAccountId: accountId,
-        deletedAt: null,
-      },
-      _sum: { grossAmount: true },
-    });
-    const investedMap = new Map<string, number>();
-    for (const row of investedRows) {
-      if (row.fundCode) {
-        investedMap.set(row.fundCode, Math.abs(toNumber(row._sum.grossAmount ?? 0)));
-      }
-    }
-    // First purchase time (date of the earliest buy transaction)
-    const firstBuyRows = await prisma.fundTransaction.groupBy({
-      by: ["fundCode"],
-      where: {
-        ...ctx.hidFilter,
-        fundCode: { in: clearedCodes },
-        fundSubtype: "buy",
-        fundAccountId: accountId,
-        deletedAt: null,
-      },
-      _min: { applyDate: true },
-    });
-    const firstBuyMap = new Map<string, string>();
-    for (const row of firstBuyRows) {
-      if (row.fundCode && row._min.applyDate) {
-        firstBuyMap.set(row.fundCode, row._min.applyDate.toISOString().slice(0, 10));
-      }
-    }
-    // Cleared time (date of the last redemption)
-    const clearedDateRows = await prisma.fundTransaction.groupBy({
-      by: ["fundCode"],
-      where: {
-        ...ctx.hidFilter,
-        fundCode: { in: clearedCodes },
-        fundSubtype: { in: ["redeem"] },
-        fundAccountId: accountId,
-        deletedAt: null,
-      },
-      _max: { applyDate: true },
-    });
-    const clearedDateMap = new Map<string, string>();
-    for (const row of clearedDateRows) {
-      if (row.fundCode && row._max.applyDate) {
-        clearedDateMap.set(row.fundCode, row._max.applyDate.toISOString().slice(0, 10));
-      }
-    }
-    // Buy amount and recovered amount: only transactions before the cleared date are counted
-    // Recovered amount = redemption arrival + cash dividend arrival, keeping the same cash-flow basis as cleared profit
-    const clearedTxRows = await prisma.fundTransaction.findMany({
-      where: {
-        ...ctx.hidFilter,
-        fundCode: { in: clearedCodes },
-        fundAccountId: accountId,
-        fundSubtype: { in: ["buy", "redeem", "dividend_cash"] },
-        deletedAt: null,
-      },
-      select: { fundCode: true, fundSubtype: true, grossAmount: true, arrivalAmount: true, applyDate: true },
-    });
-    const buyAmountMap = new Map<string, number>();
-    const redeemAmountMap = new Map<string, number>();
-    for (const row of clearedTxRows) {
-      if (!row.fundCode) continue;
-      const clearedDate = clearedDateMap.get(row.fundCode);
-      const txDate = row.applyDate.toISOString().slice(0, 10);
-      if (clearedDate && txDate > clearedDate) continue;
-      if (row.fundSubtype === "buy") {
-        buyAmountMap.set(row.fundCode, (buyAmountMap.get(row.fundCode) ?? 0) + Math.abs(toNumber(row.grossAmount)));
-      } else {
-        const arrival = toNumber(row.arrivalAmount ?? 0);
-        const amt = Math.abs(toNumber(row.grossAmount));
-        redeemAmountMap.set(row.fundCode, (redeemAmountMap.get(row.fundCode) ?? 0) + (arrival > 0 ? arrival : amt));
-      }
-    }
-    for (const c of clearedPositions) {
-      c.totalInvested = investedMap.get(c.fundCode) ?? 0;
-      c.firstBuyDate = firstBuyMap.get(c.fundCode) ?? "";
-      c.clearedDate = clearedDateMap.get(c.fundCode) ?? "";
-      c.totalBuyAmount = buyAmountMap.get(c.fundCode) ?? 0;
-      c.totalRedeemAmount = redeemAmountMap.get(c.fundCode) ?? 0;
-      c.historicalProfit = c.totalRedeemAmount - c.totalBuyAmount;
-      c.returnRate = c.totalInvested > 0 ? c.historicalProfit / c.totalInvested : 0;
-    }
-  }
+  /**
+   * 清仓记录按「周期」产出，不按产品：同一只基金多次清仓就是多条记录。
+   * 周期从流水重放（份额 0 → 0），所以第一次清仓的数字不会再被第二次建仓覆盖。
+   */
+  const clearedPositions: ClearedPositionRow[] = deriveClosedCycles(
+    fundTransactions.map((row) => ({
+      fundCode: row.fundCode,
+      fundSubtype: row.fundSubtype,
+      source: row.source,
+      units: row.units == null ? null : toNumber(row.units),
+      grossAmount: row.grossAmount == null ? null : toNumber(row.grossAmount),
+      arrivalAmount: row.arrivalAmount == null ? null : toNumber(row.arrivalAmount),
+      date: row.applyDate.toISOString().slice(0, 10),
+      order: row.createdAt.getTime(),
+    })),
+    clearedHoldingCodes,
+  ).map((cycle) => ({
+    fundCode: cycle.fundCode,
+    name: displayNameByCode.get(cycle.fundCode) ?? profileNameByCode.get(cycle.fundCode) ?? cycle.fundCode,
+    historicalProfit: cycle.realizedProfit,
+    totalInvested: cycle.totalBuyAmount,
+    returnRate: cycle.returnRate,
+    firstBuyDate: cycle.firstBuyDate,
+    clearedDate: cycle.clearedDate,
+    totalBuyAmount: cycle.totalBuyAmount,
+    totalRedeemAmount: cycle.totalRedeemAmount,
+  }));
 
   const totalMarketValue = positions.reduce((s, p) => s + p.marketValue, 0);
   const totalCost = positions.reduce((s, p) => s + p.cost, 0);
