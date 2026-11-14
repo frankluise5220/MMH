@@ -21,6 +21,13 @@ import {
 } from "@/lib/deposit-maturity";
 import { getServerT } from "@/lib/server/i18n";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
+import {
+  createInterestTransfers,
+  runExclusive,
+  runSingleFlight,
+  utcDayKey,
+  type InterestAccrualResult,
+} from "@/lib/server/interest-accrual";
 import { syncIndependentBusinessTransactionFromTxRecord } from "@/lib/server/business-transactions";
 import { revalidateAfterInvestChange } from "@/lib/server/revalidate";
 import { renewDeposit } from "@/lib/server/sidebar-actions/transaction-actions";
@@ -102,8 +109,6 @@ type DepositAutoMaturityResult = {
   details: DepositAutoMaturityDetail[];
 };
 
-let inFlight: Promise<DepositAutoMaturityResult> | null = null;
-
 /**
  * Process every held deposit lot whose maturity date has arrived, following
  * the lot's stored maturity action. Idempotent per lot:
@@ -116,11 +121,8 @@ export async function autoProcessMaturedDeposits(
   householdId: string,
   now: Date = new Date(),
 ): Promise<DepositAutoMaturityResult> {
-  if (inFlight) return inFlight;
-  inFlight = runAutoProcessMaturedDeposits(householdId, now).finally(() => {
-    inFlight = null;
-  });
-  return inFlight;
+  // 按账簿单飞：页面刷新与开机自检同时触发时复用同一轮，不重复扫描。
+  return runSingleFlight(`deposit-maturity:${householdId}`, () => runAutoProcessMaturedDeposits(householdId, now));
 }
 
 async function runAutoProcessMaturedDeposits(
@@ -288,28 +290,12 @@ async function lotAlreadyRedeemed(buyId: string, householdId: string): Promise<b
   return !balance || balance.settled;
 }
 
-/** Day key in UTC (the app stores calendar days as UTC midnight). Timezone-agnostic
- *  comparison for payout scheduling — avoids UTC/local off-by-one days. */
-function localDayKey(date: Date): string {
-  const y = date.getUTCFullYear();
-  const m = String(date.getUTCMonth() + 1).padStart(2, "0");
-  const d = String(date.getUTCDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
-}
-
-type PayoutOutcome = {
-  status: "accrued" | "skipped";
-  pairs?: number;
-  totalInterest?: number;
-  entryIds?: string[];
-  reason?: string;
-};
+/** 日键与生息结果形状来自公共层（`@/lib/server/interest-accrual`）。 */
+type PayoutOutcome = InterestAccrualResult;
 
 /** Public single-lot entry for the deposit plan executor (system plan path). */
-/** 同存单互斥：页面刷新与计划执行可能同时触发，避免重复生成。 */
-const accrualInFlight = new Set<string>();
-
-export async function autoAccruePeriodicInterestForLot(params: {
+/** 同存单互斥由公共层 `runExclusive` 保证（页面刷新与计划执行可能同时触发）。 */
+type DepositAccrualParams = {
   householdId: string;
   lotId: string;
   now: Date;
@@ -317,23 +303,21 @@ export async function autoAccruePeriodicInterestForLot(params: {
   createTransfer?: boolean;
   /** 系统计划任务 id：生成的利息记录会写入 regularInvestPlanId 作为关联。 */
   planId?: string | null;
-}): Promise<{ status: "accrued" | "skipped"; pairs?: number; totalInterest?: number; reason?: string }> {
-  const key = `${params.householdId}:${params.lotId}`;
-  if (accrualInFlight.has(key)) {
-    return { status: "skipped", reason: "正在生成中" };
-  }
-  accrualInFlight.add(key);
-  try {
-    return await autoAccruePeriodicInterest(
-      params.lotId,
-      params.householdId,
-      utcDayStart(params.now),
-      params.createTransfer !== false,
-      params.planId ?? null,
-    );
-  } finally {
-    accrualInFlight.delete(key);
-  }
+};
+
+export async function autoAccruePeriodicInterestForLot(params: DepositAccrualParams): Promise<PayoutOutcome> {
+  return runExclusive(
+    `deposit-interest-accrual:${params.householdId}:${params.lotId}`,
+    () =>
+      autoAccruePeriodicInterest(
+        params.lotId,
+        params.householdId,
+        utcDayStart(params.now),
+        params.createTransfer !== false,
+        params.planId ?? null,
+      ),
+    () => ({ status: "skipped", reason: "正在生成中" }),
+  );
 }
 
 /** Public single-lot maturity runner for the deposit plan executor. */
@@ -454,16 +438,16 @@ async function autoAccruePeriodicInterest(
   // ── Scheduled payout dates: anchor stepping from the start date, capped at
   // the earlier of the lot's maturity and today (maturity-day stub handled by
   // including the maturity date itself when it lands after the last anchor).
-  const todayKey = localDayKey(today);
+  const todayKey = utcDayKey(today);
   // 排程直接保存「锚点时刻」本身，并用本地日做去重键。写入记录时用同一个时刻，
   // 这样下一轮覆盖判定（按本地日）必然命中 —— 之前键按 UTC 日、写入按本地零点，
   // 差一天导致每轮都判定「未生成」→ 反复补生成（2026-09 一个月三笔的事故）。
-  const maturityKeyCap = buy.fundArrivalDate ? localDayKey(buy.fundArrivalDate) : null;
+  const maturityKeyCap = buy.fundArrivalDate ? utcDayKey(buy.fundArrivalDate) : null;
   const upperKey = maturityKeyCap && maturityKeyCap <= todayKey ? maturityKeyCap : todayKey;
   const payoutByKey = new Map<string, Date>();
   const addPayout = (date: Date) => {
-    const key = localDayKey(date);
-    if (key > localDayKey(startDate) && key <= upperKey) payoutByKey.set(key, date);
+    const key = utcDayKey(date);
+    if (key > utcDayKey(startDate) && key <= upperKey) payoutByKey.set(key, date);
   };
   // 付息锚点 = 起存日 + N 周期（对应日）：1-01 起存 7 天取息 → 1-08、1-15……；
   // 18 号存按月 → 次月 18 号。与计划排程共用 depositPayoutAnchorUtc，两处永远一致。
@@ -476,7 +460,7 @@ async function autoAccruePeriodicInterest(
   const maxPeriods = depositPayoutMaxPeriods(frequency);
   for (let periods = 0; periods <= maxPeriods; periods++) {
     const date = depositPayoutAnchorUtc(phaseBase, frequency, periods);
-    if (localDayKey(date) > upperKey) break;
+    if (utcDayKey(date) > upperKey) break;
     addPayout(date);
   }
   // 到期日尾差：最后一个付息日之后、到期日之前的那几天，银行在到期日一次结清。
@@ -502,7 +486,7 @@ async function autoAccruePeriodicInterest(
   });
   const rowsByDay = new Map<string, typeof liveRows>();
   for (const row of liveRows) {
-    const key = localDayKey(new Date(row.date));
+    const key = utcDayKey(new Date(row.date));
     const bucket = rowsByDay.get(key);
     if (bucket) bucket.push(row);
     else rowsByDay.set(key, [row]);
@@ -568,7 +552,7 @@ async function autoAccruePeriodicInterest(
     const skipLegacyPrevDayCompat =
       manualPhaseDate != null || (frequency.unit === "day" && frequency.interval <= 1);
     const prevDay = new Date(payoutDate.getTime() - 86400000);
-    if (!skipLegacyPrevDayCompat && coveredDays.has(localDayKey(prevDay))) {
+    if (!skipLegacyPrevDayCompat && coveredDays.has(utcDayKey(prevDay))) {
       segmentStart = prevDay;
       continue;
     }
@@ -709,38 +693,34 @@ export async function autoWithdrawAccruedInterestForLot(params: {
     },
     select: { date: true, amount: true },
   });
-  const transferKeys = new Set(transfers.map((row) => `${localDayKey(new Date(row.date))}|${Number(row.amount)}`));
-  const pending = incomes.filter((row) => !transferKeys.has(`${localDayKey(new Date(row.date))}|${-Number(row.amount)}`));
-  if (pending.length === 0) return { status: "skipped", reason: "no accrued interest to withdraw" };
-
   const t = await getServerT();
-  let totalInterest = 0;
-  for (const income of pending) {
-    const amount = round2(Number(income.amount));
-    if (!(amount > 0)) continue;
-    await prisma.txRecord.create({
-      data: {
-        date: income.date,
-        type: TransactionType.transfer,
-        accountId: depositAccount.id,
-        accountName: depositAccount.name,
-        toAccountId: payoutCashAccount.id,
-        toAccountName: payoutCashAccount.name,
-        amount: -amount,
-        currency: recordCurrency,
-        source: "deposit",
-        entryOrigin: ENTRY_ORIGIN_SCHEDULED_TASK,
-        depositSourceEntryId: buy.id,
-        regularInvestPlanId: params.planId ?? null,
-        note: `${t("deposit.renew.payoutTransferNote", { name: buy.fundName ?? "" })}`,
-        householdId: buy.householdId,
-      },
-    });
-    totalInterest += amount;
-  }
-  await recalcAndSaveAccountBalance(depositAccount.id).catch(() => {});
-  await recalcAndSaveAccountBalance(payoutCashAccount.id).catch(() => {});
-  return { status: "accrued", pairs: pending.length, totalInterest: round2(totalInterest) };
+  // 「这笔利息已经转出过」按「日 + 带符号金额」判定：转账金额本身就是负数，
+  // 用它和收入的负数对齐。这个口径属于存款，判定留在本文件。
+  const covered = new Set(transfers.map((row) => `${utcDayKey(row.date)}|${Number(row.amount)}`));
+  const pending = incomes
+    .map((row) => ({ id: row.id, date: row.date, amount: Number(row.amount) }))
+    .filter((row) => row.amount > 0 && !covered.has(`${utcDayKey(row.date)}|${-row.amount}`));
+
+  return createInterestTransfers({
+    pending,
+    buildTransfer: (income, amount) => ({
+      date: income.date,
+      type: TransactionType.transfer,
+      accountId: depositAccount.id,
+      accountName: depositAccount.name,
+      toAccountId: payoutCashAccount.id,
+      toAccountName: payoutCashAccount.name,
+      amount: -amount,
+      currency: recordCurrency,
+      source: "deposit",
+      entryOrigin: ENTRY_ORIGIN_SCHEDULED_TASK,
+      depositSourceEntryId: buy.id,
+      regularInvestPlanId: params.planId ?? null,
+      note: `${t("deposit.renew.payoutTransferNote", { name: buy.fundName ?? "" })}`,
+      householdId: buy.householdId,
+    }),
+    recalcAccountIds: [depositAccount.id, payoutCashAccount.id],
+  });
 }
 
 async function autoRedeemDeposit(buyId: string, householdId: string): Promise<LotOutcome> {

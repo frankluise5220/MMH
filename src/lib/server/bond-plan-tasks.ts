@@ -5,6 +5,7 @@ import { bondDateKey, bondPlanInterval, bondPayoutExpectation, clampBondFirstPay
 import { toNumber } from "@/lib/date-utils";
 import { parseDepositInterestPayout } from "@/lib/deposit-interest-payout";
 import { encodeScheduledTaskMemo } from "@/lib/scheduled-task";
+import { completeSystemPlansForLot, upsertSystemPlan } from "@/lib/server/interest-accrual";
 
 export const BOND_MATURITY_PLAN_FUND_CODE = "bond_maturity";
 export const BOND_ACCRUAL_PLAN_FUND_CODE = "bond_interest_accrual";
@@ -223,8 +224,9 @@ export async function ensureBondPlansForLot(params: {
       type: "bond_maturity",
       title: `债券到期：${source.name}`,
     });
-    await prisma.regularInvestPlan.upsert({
-      where: { id: `bondm_${source.lotId}` },
+    await upsertSystemPlan({
+      id: `bondm_${source.lotId}`,
+      manualOverride,
       create: {
         id: `bondm_${source.lotId}`,
         planGroupId: `${BOND_PLAN_GROUP_PREFIX}${source.lotId}`,
@@ -252,18 +254,17 @@ export async function ensureBondPlansForLot(params: {
         skipPendingPreceding: false,
         householdId: source.householdId,
       },
-      update: manualOverride.has(`bondm_${source.lotId}`)
-        ? { accountId: source.accountId, accountName: source.name, planAction: BOND_ACTION_PRINCIPAL, status: RegularInvestStatus.active, memo: maturityMemo }
-        : {
-            accountId: source.accountId,
-            accountName: source.name,
-            startDate: maturity,
-            nextRunDate: maturity,
-            planAction: BOND_ACTION_PRINCIPAL,
-            amount: source.principal,
-            status: RegularInvestStatus.active,
-            memo: maturityMemo,
-          },
+      manualUpdate: { accountId: source.accountId, accountName: source.name, planAction: BOND_ACTION_PRINCIPAL, status: RegularInvestStatus.active, memo: maturityMemo },
+      autoUpdate: {
+        accountId: source.accountId,
+        accountName: source.name,
+        startDate: maturity,
+        nextRunDate: maturity,
+        planAction: BOND_ACTION_PRINCIPAL,
+        amount: source.principal,
+        status: RegularInvestStatus.active,
+        memo: maturityMemo,
+      },
     }).catch(() => {});
     maturityPlanId = `bondm_${source.lotId}`;
   } else {
@@ -305,8 +306,9 @@ export async function ensureBondPlansForLot(params: {
       type: "bond_interest_accrual",
       title: `债券利息生成：${source.name}`,
     });
-    await prisma.regularInvestPlan.upsert({
-      where: { id: `bonda_${source.lotId}` },
+    await upsertSystemPlan({
+      id: `bonda_${source.lotId}`,
+      manualOverride,
       create: {
         ...common,
         id: `bonda_${source.lotId}`,
@@ -314,26 +316,27 @@ export async function ensureBondPlansForLot(params: {
         fundCode: BOND_ACCRUAL_PLAN_FUND_CODE,
         memo: accrualMemo,
       },
-      update: manualOverride.has(`bonda_${source.lotId}`)
-        ? {
-            planAction: BOND_ACTION_ACCRUAL,
-            fundCode: BOND_ACCRUAL_PLAN_FUND_CODE,
-            memo: accrualMemo,
-            status: RegularInvestStatus.active,
-            // 手动覆盖只固定金额/周期，不冻结排期：执行后必须推进下次执行日，
-            // 否则用户改过的日期执行完会永远停在过去，计划一直显示逾期。
-            ...(params.advanceManualNextRunDate ? { nextRunDate: nextRun } : {}),
-          }
-        : {
-            ...common,
-            planAction: BOND_ACTION_ACCRUAL,
-            fundCode: BOND_ACCRUAL_PLAN_FUND_CODE,
-            memo: accrualMemo,
-          },
+      manualUpdate: {
+        planAction: BOND_ACTION_ACCRUAL,
+        fundCode: BOND_ACCRUAL_PLAN_FUND_CODE,
+        memo: accrualMemo,
+        status: RegularInvestStatus.active,
+      },
+      autoUpdate: {
+        ...common,
+        planAction: BOND_ACTION_ACCRUAL,
+        fundCode: BOND_ACCRUAL_PLAN_FUND_CODE,
+        memo: accrualMemo,
+      },
+      // 手动覆盖只固定金额/周期，不冻结排期：执行后必须推进下次执行日，
+      // 否则用户改过的日期执行完会永远停在过去，计划一直显示逾期。
+      advanceManualNextRunDate: params.advanceManualNextRunDate,
+      manualNextRunDate: nextRun,
     }).catch(() => {});
     const payoutMemo = payoutMemoText(source.name);
-    await prisma.regularInvestPlan.upsert({
-      where: { id: `bondi_${source.lotId}` },
+    await upsertSystemPlan({
+      id: `bondi_${source.lotId}`,
+      manualOverride,
       create: {
         ...common,
         id: `bondi_${source.lotId}`,
@@ -341,20 +344,20 @@ export async function ensureBondPlansForLot(params: {
         fundCode: BOND_PAYOUT_PLAN_FUND_CODE,
         memo: payoutMemo,
       },
-      update: manualOverride.has(`bondi_${source.lotId}`)
-        ? {
-            planAction: BOND_ACTION_PAYOUT,
-            fundCode: BOND_PAYOUT_PLAN_FUND_CODE,
-            memo: payoutMemo,
-            status: RegularInvestStatus.active,
-            ...(params.advanceManualNextRunDate ? { nextRunDate: nextRun } : {}),
-          }
-        : {
-            ...common,
-            planAction: BOND_ACTION_PAYOUT,
-            fundCode: BOND_PAYOUT_PLAN_FUND_CODE,
-            memo: payoutMemo,
-          },
+      manualUpdate: {
+        planAction: BOND_ACTION_PAYOUT,
+        fundCode: BOND_PAYOUT_PLAN_FUND_CODE,
+        memo: payoutMemo,
+        status: RegularInvestStatus.active,
+      },
+      autoUpdate: {
+        ...common,
+        planAction: BOND_ACTION_PAYOUT,
+        fundCode: BOND_PAYOUT_PLAN_FUND_CODE,
+        memo: payoutMemo,
+      },
+      advanceManualNextRunDate: params.advanceManualNextRunDate,
+      manualNextRunDate: nextRun,
     }).catch(() => {});
     payoutPlanId = `bondi_${source.lotId}`;
   } else {
@@ -373,14 +376,11 @@ export async function completeBondPlansForLot(params: {
   householdId: string;
   lotId: string;
 }): Promise<void> {
-  await prisma.regularInvestPlan.updateMany({
-    where: {
-      householdId: params.householdId,
-      id: { in: [`bondm_${params.lotId}`, `bonda_${params.lotId}`, `bondi_${params.lotId}`] },
-      status: { not: RegularInvestStatus.completed },
-    },
-    data: { status: RegularInvestStatus.completed },
-  }).catch(() => {});
+  await completeSystemPlansForLot({
+    householdId: params.householdId,
+    lotId: params.lotId,
+    idPrefixes: ["bondm_", "bonda_", "bondi_"],
+  });
 }
 
 /** 刷新某债单下全部存单的计划行（债单条款卡编辑后调用）。 */

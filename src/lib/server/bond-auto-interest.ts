@@ -7,6 +7,12 @@ import { resolveCategorySnapshot } from "@/lib/default-categories";
 import { SYSTEM_BOND_INTEREST_CATEGORY } from "@/lib/investment-category";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { ensureBondPlansForLot, loadBondLotPlanSource } from "@/lib/server/bond-plan-tasks";
+import {
+  createInterestTransfers,
+  runExclusive,
+  utcDayKey,
+  type InterestAccrualResult,
+} from "@/lib/server/interest-accrual";
 import { getServerT } from "@/lib/server/i18n";
 import { ENTRY_ORIGIN_SCHEDULED_TASK, TRANSACTION_SOURCE_BOND } from "@/lib/transaction-semantics";
 
@@ -25,26 +31,36 @@ import { ENTRY_ORIGIN_SCHEDULED_TASK, TRANSACTION_SOURCE_BOND } from "@/lib/tran
  * （本金到账时间/金额不确定，且有核销），本模块只管付息。
  */
 
-type BondInterestAccrualResult = {
-  status: "accrued" | "skipped";
-  pairs?: number;
-  totalInterest?: number;
-  entryIds?: string[];
-  reason?: string;
-};
+type BondInterestAccrualResult = InterestAccrualResult;
 
 const INTEREST_SOURCE = TRANSACTION_SOURCE_BOND;
 /** 一次最多补多少期，防脏数据把整个历史刷爆。 */
 const MAX_PAYOUTS_PER_RUN = 120;
 
-export async function autoAccrueBondPeriodicInterestForLot(params: {
+type BondAccrualParams = {
   householdId: string;
   lotId: string;
   today: Date;
   planId?: string | null;
   /** 新三动作组中，利息生成动作只创建收入，不创建转账。 */
   createTransfer?: boolean;
-}): Promise<BondInterestAccrualResult> {
+};
+
+/**
+ * 同存单互斥：页面刷新与计划执行可能同时触发，重复生成会直接多算利息。
+ * 与存款 autoAccruePeriodicInterestForLot 同一把锁的实现（runExclusive）。
+ */
+export async function autoAccrueBondPeriodicInterestForLot(
+  params: BondAccrualParams,
+): Promise<BondInterestAccrualResult> {
+  return runExclusive(
+    `bond-interest-accrual:${params.householdId}:${params.lotId}`,
+    () => accrueBondPeriodicInterest(params),
+    () => ({ status: "skipped", reason: "正在生成中" }),
+  );
+}
+
+async function accrueBondPeriodicInterest(params: BondAccrualParams): Promise<BondInterestAccrualResult> {
   const source = await loadBondLotPlanSource({ householdId: params.householdId, lotId: params.lotId });
   if (!source) return { status: "skipped", reason: "存单不存在" };
 
@@ -91,7 +107,7 @@ export async function autoAccrueBondPeriodicInterestForLot(params: {
   if (amountOverride == null && !(annualRate > 0)) return { status: "skipped", reason: "缺票面利率" };
 
   // 应付息日：从首次付息日按周期步进，只取不晚于「今天」的期次（到期日尾差一并纳入）。
-  const todayKey = localDayKey(params.today);
+  const todayKey = utcDayKey(params.today);
   const startKey = bondDateKey(source.startDate);
   const slots = bondPayoutDatesUpTo({
     term: {
@@ -270,12 +286,24 @@ export async function autoAccrueBondPeriodicInterestForLot(params: {
  * 三动作组的债券取息动作：只把已生成但尚未转出的利息转入资金账户。
  * 旧 bondi_ 没有 planAction 时仍由上面的兼容执行器一次完成生息+取息。
  */
-export async function autoWithdrawAccruedBondInterestForLot(params: {
+type BondWithdrawParams = {
   householdId: string;
   lotId: string;
   today: Date;
   planId?: string | null;
-}): Promise<BondInterestAccrualResult> {
+};
+
+export async function autoWithdrawAccruedBondInterestForLot(
+  params: BondWithdrawParams,
+): Promise<BondInterestAccrualResult> {
+  return runExclusive(
+    `bond-interest-payout:${params.householdId}:${params.lotId}`,
+    () => withdrawAccruedBondInterest(params),
+    () => ({ status: "skipped", reason: "正在生成中" }),
+  );
+}
+
+async function withdrawAccruedBondInterest(params: BondWithdrawParams): Promise<BondInterestAccrualResult> {
   const source = await loadBondLotPlanSource({ householdId: params.householdId, lotId: params.lotId });
   if (!source) return { status: "skipped", reason: "存单不存在" };
   if (!(source.principal > 0)) return { status: "skipped", reason: "存单本金为 0" };
@@ -323,54 +351,44 @@ export async function autoWithdrawAccruedBondInterestForLot(params: {
     },
     select: { date: true, amount: true },
   });
-  const transferKeys = new Set(existingTransfers.map((row) => `${localDayKey(row.date)}|${Math.abs(Number(row.amount))}`));
-  const pending = incomes.filter((row) => {
-    const key = `${localDayKey(row.date)}|${Math.abs(Number(row.amount))}`;
-    return !transferKeys.has(key) && row.date <= params.today;
-  });
-  if (pending.length === 0) return { status: "skipped", reason: "没有待取出的利息" };
 
-  const entryIds: string[] = [];
-  let totalInterest = 0;
-  for (const income of pending) {
-    const amount = Math.abs(Number(income.amount));
-    if (!(amount > 0)) continue;
-    const transfer = await prisma.txRecord.create({
-      data: {
-        householdId: params.householdId,
-        date: income.date,
-        type: TransactionType.transfer,
-        accountId: bondAccount.id,
-        accountName: bondAccount.name,
-        toAccountId: cashAccount.id,
-        toAccountName: cashAccount.name,
-        amount: -amount,
-        currency: income.currency ?? currency,
-        source: INTEREST_SOURCE,
-        entryOrigin: ENTRY_ORIGIN_SCHEDULED_TASK,
-        note: transferNote,
-        regularInvestPlanId: params.planId ?? null,
-      },
-    });
-    entryIds.push(transfer.id);
-    transferKeys.add(`${localDayKey(income.date)}|${amount}`);
-    totalInterest = Number((totalInterest + amount).toFixed(2));
-  }
-  if (entryIds.length === 0) return { status: "skipped", reason: "没有有效利息" };
-  await recalcAndSaveAccountBalance(bondAccount.id).catch(() => {});
-  await recalcAndSaveAccountBalance(cashAccount.id).catch(() => {});
+  // 「这笔利息已经转出过」按「日 + 绝对值」判定：转入转出金额一正一负，
+  // 债券这边历来按绝对值配对。这个口径属于债券，判定留在本文件。
+  const covered = new Set(
+    existingTransfers.map((row) => `${utcDayKey(row.date)}|${Math.abs(Number(row.amount))}`),
+  );
+  const pending = incomes
+    .map((row) => ({ id: row.id, date: row.date, amount: Number(row.amount), currency: row.currency }))
+    .filter(
+      (row) =>
+        row.date <= params.today && !covered.has(`${utcDayKey(row.date)}|${Math.abs(Number(row.amount))}`),
+    );
+
+  const result = await createInterestTransfers({
+    pending,
+    buildTransfer: (income, amount) => ({
+      householdId: params.householdId,
+      date: income.date,
+      type: TransactionType.transfer,
+      accountId: bondAccount.id,
+      accountName: bondAccount.name,
+      toAccountId: cashAccount.id,
+      toAccountName: cashAccount.name,
+      amount: -amount,
+      currency: income.currency ?? currency,
+      source: INTEREST_SOURCE,
+      entryOrigin: ENTRY_ORIGIN_SCHEDULED_TASK,
+      note: transferNote,
+      regularInvestPlanId: params.planId ?? null,
+    }),
+    recalcAccountIds: [bondAccount.id, cashAccount.id],
+  });
+  if (result.status !== "accrued") return { status: "skipped", reason: "没有待取出的利息" };
+
   await ensureBondPlansForLot({
     householdId: params.householdId,
     lotId: source.lotId,
     advanceManualNextRunDate: true,
   }).catch(() => {});
-  return { status: "accrued", pairs: entryIds.length, totalInterest, entryIds };
-}
-
-/** 日键（YYYY-MM-DD），口径是 UTC：DB 日历日字段存 UTC 零点。 */
-function localDayKey(date: Date): string {
-  const y = date.getUTCFullYear();
-  const m = String(date.getUTCMonth() + 1).padStart(2, "0");
-  const d = String(date.getUTCDate()).padStart(2, "0");
-  return `${y}-${m}-${d}`;
+  return result;
 }
