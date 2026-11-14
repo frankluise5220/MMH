@@ -102,35 +102,38 @@ const externalNodeStartup = externalNode ? [
 // 0.1.85 的 x86_64-external-node.fpk 真机安装正是死在这里：tar 解包明明成功，
 // app_payload_is_ready 却一直返回 1，最后报 "did not produce a runnable app"。
 // 所以 external-node 只认 server.js，运行时交给 select_node_bin 去发现。
+// 判定顺序：先认标准的 \$dest/app 布局，再认历史遗留的「载荷铺在应用根」布局。
+// 反过来写会让根下残留的 server/ 永远短路掉 app/ 的解包，导致新包装完仍是
+// 老结构（5.149 的残局就是这么来的）。
 const payloadReadyFn = externalNode
   ? `app_payload_is_ready() {
     local dest="$1"
-    if [ -f "\${dest}/server/server.js" ]; then
-        APP_ROOT="\${dest}"
-        APP_BIN=""
-        APP_SERVER="\${dest}/server/server.js"
-        return 0
-    fi
     if [ -f "\${dest}/app/server/server.js" ]; then
         APP_ROOT="\${dest}/app"
         APP_BIN=""
         APP_SERVER="\${dest}/app/server/server.js"
         return 0
     fi
+    if [ -f "\${dest}/server/server.js" ]; then
+        APP_ROOT="\${dest}"
+        APP_BIN=""
+        APP_SERVER="\${dest}/server/server.js"
+        return 0
+    fi
     return 1
 }`
   : `app_payload_is_ready() {
     local dest="$1"
-    if [ -x "\${dest}/bin/node" ] && [ -f "\${dest}/server/server.js" ]; then
-        APP_ROOT="\${dest}"
-        APP_BIN="\${dest}/bin/node"
-        APP_SERVER="\${dest}/server/server.js"
-        return 0
-    fi
     if [ -x "\${dest}/app/bin/node" ] && [ -f "\${dest}/app/server/server.js" ]; then
         APP_ROOT="\${dest}/app"
         APP_BIN="\${dest}/app/bin/node"
         APP_SERVER="\${dest}/app/server/server.js"
+        return 0
+    fi
+    if [ -x "\${dest}/bin/node" ] && [ -f "\${dest}/server/server.js" ]; then
+        APP_ROOT="\${dest}"
+        APP_BIN="\${dest}/bin/node"
+        APP_SERVER="\${dest}/server/server.js"
         return 0
     fi
     return 1
@@ -1073,16 +1076,11 @@ ensure_app_ready() {
         return 0
     fi
 
-    if ! tar -xzf "$tgz" -C "$dest"; then
-        echo "MMH payload extract failed: $tgz -> $dest" >&2
-        return 1
-    fi
-    if app_payload_is_ready "$dest"; then
-        ensure_cmd_scripts
-        return 0
-    fi
-
-    echo "MMH payload extract did not produce a runnable app in $dest" >&2
+    # 不再回退成「把 app.tgz 铺到 $dest 根」：那条路径会把 server/、.next/ 直接
+    # 摊在应用目录里，与 fpk 自带的 cmd/、manifest、ui/ 混在一起，之后
+    # app_payload_is_ready 又会因为根下存在 server/server.js 而直接短路，
+    # 再也不解 app/ —— 5.149 就是这样装成「根目录 + 没有 cmd」的残局。
+    echo "MMH payload extract failed: $tgz did not produce $dest/app/server/server.js" >&2
     return 1
 }
 
@@ -1270,6 +1268,62 @@ resolve_port() {
     probe_free_port "$start_port"
 }
 
+# 谁在监听这个端口 —— 写进安装日志，用户能看懂到底撞了哪个程序
+port_owner_desc() {
+    local p="$1" line pid cmd
+    if command -v ss >/dev/null 2>&1; then
+        line="$(ss -ltnp 2>/dev/null | grep -F ":$p " | head -1 || true)"
+        pid="$(printf '%s' "$line" | sed -n 's/.*pid=\\([0-9][0-9]*\\).*/\\1/p' | head -1)"
+        if [ -n "$pid" ]; then
+            cmd="$(tr '\\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+            printf 'pid=%s %s' "$pid" "$cmd"
+            return 0
+        fi
+    fi
+    printf 'unknown process'
+}
+
+# 本应用自己的残留实例（PID 文件丢失后变孤儿）会被应用中心的端口检查拦住，
+# 所以安装/升级阶段先按 cmdline 把它们清掉，而不是让启动直接失败。
+stop_own_payload_processes() {
+    local dest entry pid cmd
+    dest="$(resolve_app_dest)"
+    for entry in /proc/[0-9]*; do
+        pid="\${entry#/proc/}"
+        cmd="$(tr '\\0' ' ' < "$entry/cmdline" 2>/dev/null || true)"
+        [ -n "$cmd" ] || continue
+        case "$cmd" in
+            *"$dest/app/server/mmh-unix-server.cjs"*|*"$dest/app/server/server.js"*|*"$dest/server/mmh-unix-server.cjs"*|*"$dest/server/server.js"*)
+                kill -9 "$pid" 2>/dev/null || true
+                ;;
+        esac
+    done
+}
+
+# 安装/升级时确定端口：先让本应用残留实例让位；仍是别人的程序占着，
+# 就顺延到下一个空闲端口并落盘（write_env_file 会同步 ui/config 与 manifest），
+# 同时把「谁占着、改用了哪个」打到安装日志里。
+prepare_install_port() {
+    local pkgvar port_file port probe
+    pkgvar="$(resolve_pkgvar)"
+    port_file="$pkgvar/.port"
+    port="$(resolve_port)"
+    if port_in_use "$port"; then
+        stop_own_payload_processes
+        sleep 1
+    fi
+    if port_in_use "$port"; then
+        probe="$(probe_free_port "$((port + 1))")"
+        echo "MMH: port $port is already used by $(port_owner_desc "$port")" >&2
+        if [ -n "$probe" ] && [ "$probe" != "$port" ]; then
+            port="$probe"
+            printf '%s\\n' "$port" > "$port_file"
+            echo "MMH: this install will use port $port instead (change it in App Center > MMH 记账 > Settings)" >&2
+        fi
+    fi
+    printf '%s\\n' "$port"
+}
+
 write_env_file() {
     local requested_port="$1"
     local requested_node_bin="\${2:-}"
@@ -1317,13 +1371,22 @@ EOF
     printf '%s\\n' "$session_secret" > "$session_secret_file"
     chmod 600 "$session_secret_file" 2>/dev/null || true
 
-    if [ -n "\${APP_ROOT:-}" ] && [ -f "\${APP_ROOT}/ui/config" ]; then
-        sed -i 's/"port": "[0-9]*"/"port": "'"\${port}"'"/' "\${APP_ROOT}/ui/config"
+    # 端口落在三个地方：${pkgvar}/.port、ui/config（应用中心入口）、manifest
+    # 的 service_port。后两者不一定在 $APP_ROOT 下（manifest 在应用根，
+    # 载荷在 app/），所以两条路径都要试，否则改了 .port 但应用中心仍按旧端口
+    # 做启动前检查，用户看到的就是「端口被占用」而实际服务已经换了端口。
+    local ui_cfg manifest_file app_dest_root
+    ui_cfg="$(app_ui_config 2>/dev/null || true)"
+    if [ -n "$ui_cfg" ] && [ -f "$ui_cfg" ]; then
+        sed -i 's/"port": "[0-9]*"/"port": "'"\${port}"'"/' "$ui_cfg"
     fi
-
-    if [ -n "\${APP_ROOT:-}" ] && [ -f "\${APP_ROOT}/manifest" ]; then
-        sed -i "s/^service_port[[:space:]]*=.*/service_port          = \${port}/" "\${APP_ROOT}/manifest"
-    fi
+    app_dest_root="$(resolve_app_dest 2>/dev/null || true)"
+    for manifest_file in "\${app_dest_root}/manifest" "\${APP_ROOT:-}/manifest"; do
+        [ -n "$manifest_file" ] || continue
+        if [ -f "$manifest_file" ]; then
+            sed -i "s/^service_port[[:space:]]*=.*/service_port          = \${port}/" "$manifest_file"
+        fi
+    done
 
     if id mmh >/dev/null 2>&1; then
         chown -R mmh:mmh "$pkgvar" 2>/dev/null || true
@@ -1984,7 +2047,7 @@ if [ -f "$SCRIPT_DIR/app-layout" ]; then
 fi
 if [ -f "$SCRIPT_DIR/apply-settings" ]; then
     . "$SCRIPT_DIR/apply-settings"
-    write_env_file "" "\${wizard_node_bin:-}" >/dev/null
+    write_env_file "$(prepare_install_port)" "\${wizard_node_bin:-}" >/dev/null
 fi
 
 exit 0

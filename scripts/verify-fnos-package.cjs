@@ -295,6 +295,18 @@ expect(
   buildScript.includes('start_port="\\${TRIM_SERVICE_PORT:-${fnosDefaultPort}}"'),
   "fnOS fresh-install probe must start at fnosDefaultPort (or TRIM_SERVICE_PORT when the App Center passes one).",
 );
+expect(
+  buildScript.includes('write_env_file "$(prepare_install_port)"'),
+  "fnOS install/upgrade must resolve a usable port before writing settings: App Center checks the port before it ever runs cmd/main, so a leftover instance holding it (or another app on it) turns into START_FAILED_PORT_USAGE with no chance for the package to clean up.",
+);
+expect(
+  buildScript.includes("stop_own_payload_processes") && buildScript.includes("port_owner_desc"),
+  "fnOS install must clean its own orphaned server processes and log who holds the port if it is a foreign process.",
+);
+expect(
+  !buildScript.includes('tar -xzf "$tgz" -C "$dest"'),
+  "ensure_app_ready must not fall back to extracting the payload into the app root: it mixes server/ with cmd/ and manifest, and the root layout then short-circuits later extracts.",
+);
 const appBuildScript = read(path.join(root, "scripts", "build-fnos-app.cjs"));
 const schemaScript = read(path.join(root, "scripts", "generate-native-sqlite-schema.cjs"));
 const fnosReleaseWorkflow = read(path.join(root, ".github", "workflows", "fnos-release.yml"));
