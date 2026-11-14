@@ -2033,9 +2033,13 @@ export default async function Home({
         const positions = investpropertyData.positions.filter(
           (position) => (position.assetType ?? "property") === fixedAssetTypeParam,
         );
+        // 历史持有页签也要按子类型过滤，否则在「车辆」下会看到已出售的房产。
+        const clearedPositions = investpropertyData.clearedPositions.filter(
+          (position) => (position.assetType ?? "property") === fixedAssetTypeParam,
+        );
         const totalMarketValue = positions.reduce((sum, row) => sum + row.marketValue, 0);
         const totalCost = positions.reduce((sum, row) => sum + row.cost, 0);
-        return { ...investpropertyData, positions, totalMarketValue, totalCost };
+        return { ...investpropertyData, positions, clearedPositions, totalMarketValue, totalCost };
       })()
     : investpropertyData;
   const investfundData = view === "investfund" && accountId
@@ -3896,6 +3900,8 @@ export default async function Home({
               currency={selectedAccount?.currency ?? baseCurrency}
               baseCurrency={baseCurrency}
               positions={JSON.parse(JSON.stringify(investpropertyFilteredData.positions))}
+              clearedPositions={JSON.parse(JSON.stringify(investpropertyFilteredData.clearedPositions))}
+              initialShowCleared={showCleared}
               entries={JSON.parse(JSON.stringify(investpropertyEntries))}
               totalMarketValue={investpropertyFilteredData.totalMarketValue}
               totalCost={investpropertyFilteredData.totalCost}

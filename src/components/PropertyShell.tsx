@@ -1,8 +1,9 @@
 "use client";
 
 import { Boxes, Paperclip, Pencil, RefreshCcw } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
+import { FOLDER_TAB_STRIP, FolderTabRuler, folderTabClass, folderTabNeighbors } from "@/app/login/FolderTabs";
 import { AdvancedDataTable, ROW_ACTION_BUTTON_BOX_CLASS, type AdvancedDataTableColumn } from "@/components/AdvancedDataTable";
 import { FixedAssetEditModal, type FixedAssetEditMeta, type FixedAssetEditValue } from "@/components/FixedAssetEditModal";
 import { ResizableVerticalSplit } from "@/components/ResizableVerticalSplit";
@@ -19,6 +20,7 @@ import {
   usePruneBasicDetailSelection,
 } from "@/components/BasicDetailSelection";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { replaceCurrentRouteUrl } from "@/lib/client/route-url-sync";
 import { useEntryReconcileState } from "@/lib/client/use-entry-reconcile-state";
 import { useDetailPagination, type DetailPagination } from "@/lib/client/use-detail-pagination";
 import { formatDateDisplay } from "@/lib/date-utils";
@@ -50,6 +52,22 @@ type PropertyPosition = {
   navDate: string;
   floatingPnL: number;
   floatingPnLRate: number;
+};
+
+/** 已出售 / 已处置资产：由 `buildPropertyPositionDisplay` 的 clearedPositions 生成。 */
+type PropertyClearedPosition = {
+  fundCode: string;
+  propertyAssetId?: string | null;
+  name: string;
+  assetType?: string | null;
+  status?: string | null;
+  historicalProfit: number;
+  totalInvested: number;
+  returnRate: number;
+  firstBuyDate: string;
+  clearedDate: string;
+  totalBuyAmount: number;
+  totalRedeemAmount: number;
 };
 
 type FixedAssetTransaction = {
@@ -98,6 +116,8 @@ type Props = {
   currency: string;
   baseCurrency: string;
   positions: PropertyPosition[];
+  clearedPositions?: PropertyClearedPosition[];
+  initialShowCleared?: boolean;
   entries: FixedAssetTransaction[];
   totalMarketValue: number;
   totalCost: number;
@@ -124,6 +144,11 @@ function transactionCategoryLabel(t: (key: string) => string, categoryName: stri
 function assetTypeLabel(t: (key: string) => string, assetType: string | null | undefined) {
   const type = assetType || "property";
   return t(`fixedAsset.type.${type}`);
+}
+
+/** 持仓行与历史持有行都用资产 id 作为选中键（历史行的 fundCode 就是资产 id）。 */
+function propertyAssetKey(row: { propertyAssetId?: string | null; fundCode: string }) {
+  return row.propertyAssetId ?? row.fundCode;
 }
 
 function propertyStatusText(t: (key: string) => string, status: string | null | undefined) {
@@ -349,6 +374,8 @@ export function PropertyShell({
   currency,
   baseCurrency,
   positions,
+  clearedPositions = [],
+  initialShowCleared = false,
   entries,
   totalMarketValue,
   totalCost,
@@ -363,11 +390,22 @@ export function PropertyShell({
   const floatingPnL = totalMarketValue - totalCost;
   const floatingRate = totalCost > 0 ? floatingPnL / totalCost : 0;
   const pnlCls = useCallback((value: number) => pnlClassFromRedUp(value, isRedUp), [isRedUp]);
+  // 两个页签共用下半窗格的交易明细；初始页签来自 URL 的 showCleared。
+  const [showCleared, setShowCleared] = useState(initialShowCleared);
   // Default to the first asset (server-sorted by market value) so details show on open.
   const [selectedAssetId, setSelectedAssetId] = useState(() => {
-    const first = positions[0];
-    return first ? (first.propertyAssetId ?? first.fundCode) : "";
+    const first = (initialShowCleared ? clearedPositions : positions)[0];
+    return first ? propertyAssetKey(first) : "";
   });
+  // 服务端刷新换回另一个页签时，选中项也要跟着换，否则下窗格会指向另一个页签的资产。
+  const initialTabRef = useRef(initialShowCleared);
+  useEffect(() => {
+    if (initialTabRef.current === initialShowCleared) return;
+    initialTabRef.current = initialShowCleared;
+    setShowCleared(initialShowCleared);
+    const first = (initialShowCleared ? clearedPositions : positions)[0];
+    setSelectedAssetId(first ? propertyAssetKey(first) : "");
+  }, [clearedPositions, initialShowCleared, positions]);
   const [editValue, setEditValue] = useState<FixedAssetEditValue | null>(null);
   const [editMeta, setEditMeta] = useState<FixedAssetEditMeta | null>(null);
   const [savingEdit, setSavingEdit] = useState(false);
@@ -383,10 +421,28 @@ export function PropertyShell({
     [assetType],
   );
 
-  const selectedPosition = useMemo(
-    () => positions.find((position) => (position.propertyAssetId ?? position.fundCode) === selectedAssetId) ?? null,
-    [positions, selectedAssetId],
-  );
+  const selectedPosition = useMemo<PropertyPosition | null>(() => {
+    if (!selectedAssetId) return null;
+    if (showCleared) {
+      // 历史持有行转成持仓形状，下窗格只用它做标题/明细，仍可查看出售、处置交易。
+      const row = clearedPositions.find((item) => propertyAssetKey(item) === selectedAssetId);
+      if (!row) return null;
+      return {
+        fundCode: row.fundCode,
+        propertyAssetId: row.propertyAssetId ?? row.fundCode,
+        assetType: row.assetType ?? null,
+        status: row.status ?? null,
+        name: row.name,
+        holdingDate: row.firstBuyDate,
+        cost: row.totalBuyAmount,
+        marketValue: row.totalRedeemAmount,
+        navDate: row.clearedDate,
+        floatingPnL: row.historicalProfit,
+        floatingPnLRate: row.returnRate,
+      };
+    }
+    return positions.find((position) => propertyAssetKey(position) === selectedAssetId) ?? null;
+  }, [clearedPositions, positions, selectedAssetId, showCleared]);
   const selectedEntries = useMemo(
     () => selectedAssetId
       ? entries.filter((entry) => (entry.propertyAssetId ?? "") === selectedAssetId)
@@ -408,9 +464,31 @@ export function PropertyShell({
     setTransactionRowCount(selectedEntries.length);
   }, [selectedAssetId, selectedEntries.length, goTransactionPage]);
 
-  function selectPosition(position: PropertyPosition) {
-    const assetId = position.propertyAssetId ?? position.fundCode;
+  function toggleAssetSelection(assetId: string) {
     setSelectedAssetId((current) => (current === assetId ? "" : assetId));
+  }
+
+  function selectPosition(position: PropertyPosition) {
+    toggleAssetSelection(propertyAssetKey(position));
+  }
+
+  // FT 卡片两个页签：持有中 / 历史持有（已出售、已处置）。
+  const positionTabItems = [
+    { id: "held", label: t("propertyShell.tab.held") },
+    { id: "history", label: t("propertyShell.tab.history") },
+  ];
+  const activePositionTabId = showCleared ? "history" : "held";
+
+  /** 与基金/股票视图一致：页签同步回 URL，刷新后仍落在同一页签。 */
+  function switchPositionTab(tabId: string) {
+    const nextShowCleared = tabId === "history";
+    setShowCleared(nextShowCleared);
+    const first = (nextShowCleared ? clearedPositions : positions)[0];
+    setSelectedAssetId(first ? propertyAssetKey(first) : "");
+    const url = new URL(window.location.href);
+    if (nextShowCleared) url.searchParams.set("showCleared", "1");
+    else url.searchParams.delete("showCleared");
+    replaceCurrentRouteUrl(`${url.pathname}${url.search}${url.hash}`);
   }
 
   function buildPropertyEditEvent(entry: FixedAssetTransaction) {
@@ -723,6 +801,150 @@ export function PropertyShell({
     };
   }, [displayCurrency, floatingPnL, floatingRate, pnlCls, positions.length, t, totalCost, totalMarketValue]);
 
+  const historyTotals = useMemo(() => {
+    const cost = clearedPositions.reduce((sum, row) => sum + Number(row.totalBuyAmount ?? 0), 0);
+    const proceeds = clearedPositions.reduce((sum, row) => sum + Number(row.totalRedeemAmount ?? 0), 0);
+    const profit = clearedPositions.reduce((sum, row) => sum + Number(row.historicalProfit ?? 0), 0);
+    return { cost, proceeds, profit, returnRate: cost > 0 ? profit / cost : 0 };
+  }, [clearedPositions]);
+
+  const historyColumns = useMemo<AdvancedDataTableColumn<PropertyClearedPosition>[]>(() => [
+    {
+      key: "asset",
+      label: t("settings.accounts.name"),
+      width: 240,
+      minWidth: 160,
+      headerClassName: "text-left",
+      className: "px-4",
+      sortValue: (row) => row.name,
+      filterText: (row) => row.name,
+      render: (row) => {
+        const selected = propertyAssetKey(row) === selectedAssetId;
+        return (
+          <div className="flex min-w-0 items-center gap-2">
+            <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-slate-100 text-slate-500">
+              <Boxes className="h-3.5 w-3.5" />
+            </span>
+            <div className="min-w-0">
+              <div className={`truncate font-medium ${selected ? "text-blue-700" : "text-slate-700"}`} title={row.name}>{row.name}</div>
+            </div>
+          </div>
+        );
+      },
+    },
+    {
+      key: "status",
+      label: t("propertyShell.column.status"),
+      width: 92,
+      minWidth: 72,
+      sortValue: (row) => propertyStatusText(t, row.status),
+      filterText: (row) => propertyStatusText(t, row.status),
+      render: (row) => (
+        <span className="inline-flex items-center rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">
+          {propertyStatusText(t, row.status)}
+        </span>
+      ),
+    },
+    ...(assetType
+      ? []
+      : [{
+          key: "assetType",
+          label: t("fixedAssetEdit.assetType"),
+          width: 96,
+          minWidth: 80,
+          sortValue: (row) => assetTypeLabel(t, row.assetType),
+          filterText: (row) => assetTypeLabel(t, row.assetType),
+          render: (row) => <span className="text-slate-600">{assetTypeLabel(t, row.assetType)}</span>,
+        }]),
+    {
+      key: "firstBuyDate",
+      label: t("propertyShell.column.purchaseDate"),
+      width: 112,
+      minWidth: 88,
+      className: "tabular-nums text-slate-600",
+      sortValue: (row) => row.firstBuyDate,
+      filterKind: "dateRange",
+      filterText: (row) => row.firstBuyDate,
+      render: (row) => row.firstBuyDate || "-",
+    },
+    {
+      key: "clearedDate",
+      label: t("propertyShell.column.clearedDate"),
+      width: 112,
+      minWidth: 88,
+      className: "tabular-nums text-slate-600",
+      sortValue: (row) => row.clearedDate,
+      filterKind: "dateRange",
+      filterText: (row) => row.clearedDate,
+      render: (row) => row.clearedDate || "-",
+    },
+    {
+      key: "cost",
+      label: t("propertyShell.column.cost"),
+      width: 124,
+      minWidth: 92,
+      align: "right",
+      className: "tabular-nums",
+      filterKind: "numberRange",
+      filterText: (row) => String(row.totalBuyAmount),
+      filterNumber: (row) => row.totalBuyAmount,
+      sortValue: (row) => row.totalBuyAmount,
+      render: (row) => formatCurrencyMoney(row.totalBuyAmount, displayCurrency),
+    },
+    {
+      key: "proceeds",
+      label: t("propertyShell.column.proceeds"),
+      width: 124,
+      minWidth: 92,
+      align: "right",
+      className: "tabular-nums",
+      filterKind: "numberRange",
+      filterText: (row) => String(row.totalRedeemAmount),
+      filterNumber: (row) => row.totalRedeemAmount,
+      sortValue: (row) => row.totalRedeemAmount,
+      render: (row) => formatCurrencyMoney(row.totalRedeemAmount, displayCurrency),
+    },
+    {
+      key: "realizedPnL",
+      label: t("propertyShell.column.realizedPnL"),
+      width: 124,
+      minWidth: 92,
+      align: "right",
+      className: "tabular-nums",
+      filterKind: "numberRange",
+      filterText: (row) => String(row.historicalProfit),
+      filterNumber: (row) => row.historicalProfit,
+      sortValue: (row) => row.historicalProfit,
+      render: (row) => <span className={pnlCls(row.historicalProfit)}>{formatCurrencyMoney(row.historicalProfit, displayCurrency)}</span>,
+    },
+    {
+      key: "returnRate",
+      label: t("propertyShell.column.returnRate"),
+      width: 96,
+      minWidth: 76,
+      align: "right",
+      className: "tabular-nums",
+      filterKind: "numberRange",
+      filterText: (row) => String(row.returnRate),
+      filterNumber: (row) => row.returnRate,
+      sortValue: (row) => row.returnRate,
+      render: (row) => <span className={pnlCls(row.returnRate)}>{rate(row.returnRate)}</span>,
+    },
+  ], [assetType, displayCurrency, pnlCls, selectedAssetId, t]);
+
+  const historySummaryRow = useMemo(() => {
+    if (clearedPositions.length === 0) return undefined;
+    return {
+      cells: {
+        asset: t("liabilityShell.summaryRow"),
+        cost: <span className="tabular-nums text-slate-800">{formatCurrencyMoney(historyTotals.cost, displayCurrency)}</span>,
+        proceeds: <span className="tabular-nums text-slate-800">{formatCurrencyMoney(historyTotals.proceeds, displayCurrency)}</span>,
+        realizedPnL: <span className={`tabular-nums ${pnlCls(historyTotals.profit)}`}>{formatCurrencyMoney(historyTotals.profit, displayCurrency)}</span>,
+        returnRate: <span className={`tabular-nums ${pnlCls(historyTotals.returnRate)}`}>{rate(historyTotals.returnRate)}</span>,
+      },
+    };
+  }, [clearedPositions.length, displayCurrency, historyTotals, pnlCls, t]);
+
   const transactionColumns = useMemo<AdvancedDataTableColumn<FixedAssetTransaction>[]>(() => {
     const accountDisplay = (id: string | null | undefined, fallback: string | null | undefined) => {
       const source = id ? accountOptionById.get(id) : undefined;
@@ -888,51 +1110,82 @@ export function PropertyShell({
         separatorTitle={t("propertyShell.resizeTitle")}
         stackOnMobile
       >
-        <div className="panel-surface flex h-full min-h-0 flex-col overflow-hidden">
-          <div className="flex shrink-0 justify-end border-b border-slate-200 px-4 py-3">
-            <div className="grid grid-cols-3 gap-6 text-right text-xs">
-              <div>
-                <div className="text-slate-500">{t("propertyShell.marketValue")}</div>
-                <div className="mt-1 text-sm font-semibold tabular-nums text-slate-900">
-                  {formatCurrencyMoney(totalMarketValue, displayCurrency)}
-                </div>
-              </div>
-              <div>
-                <div className="text-slate-500">{t("propertyShell.totalCost")}</div>
-                <div className="mt-1 text-sm font-semibold tabular-nums text-slate-900">
-                  {formatCurrencyMoney(totalCost, displayCurrency)}
-                </div>
-              </div>
-              <div>
-                <div className="text-slate-500">{t("propertyShell.floatingPnL")}</div>
-                <div className={`mt-1 text-sm font-semibold tabular-nums ${pnlCls(floatingPnL)}`}>
-                  {formatCurrencyMoney(floatingPnL, displayCurrency)} · {rate(floatingRate)}
-                </div>
-              </div>
+        {/* FT 卡片：持有中 / 历史持有共用一张卡片，切换只换上窗格的表格。
+            页签条是流内元素，垂直几何全部由 `--ft-tab-*` 令牌推导，不要写死高度。 */}
+        <div className="relative flex h-full min-h-0 flex-col">
+          <div className={FOLDER_TAB_STRIP}>
+            <div className="flex h-full max-w-[calc(100%-9rem)] items-start gap-1.5">
+              {positionTabItems.map((tab, index) => {
+                const active = tab.id === activePositionTabId;
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => switchPositionTab(tab.id)}
+                    className={folderTabClass(
+                      active,
+                      index === positionTabItems.length - 1,
+                      "stretch",
+                      index === 0,
+                      folderTabNeighbors(positionTabItems.map((item) => item.id), tab.id, activePositionTabId),
+                    )}
+                  >
+                    <span className="relative block overflow-hidden whitespace-nowrap">
+                      <FolderTabRuler labels={positionTabItems.map((item) => item.label)} />
+                      {tab.label}
+                    </span>
+                  </button>
+                );
+              })}
             </div>
           </div>
-          <div className="min-h-0 flex-1 overflow-auto">
-            <AdvancedDataTable
-              storageKey="mmh_fixed_asset_positions_advanced_v1"
-              columns={positionColumns}
-              rows={positions}
-              rowKey={(position, index) => position.propertyAssetId ?? position.fundCode ?? String(index)}
-              emptyText={t("propertyShell.emptyTitle")}
-              minTableWidth={1332}
-              rowClassName={(position) => {
-                const assetId = position.propertyAssetId ?? position.fundCode;
-                const selected = assetId === selectedAssetId;
-                return `cursor-pointer ${selected ? "bg-blue-50 hover:bg-blue-50" : "hover:bg-blue-50/40"}`;
-              }}
-              onRowClick={selectPosition}
-              onRowDoubleClick={openFixedAssetEdit}
-              showFilters={false}
-              fillHeight
-              toolbarMode="none"
-              draggableRows={false}
-              sortable
-              summaryRow={positionSummaryRow}
-            />
+
+          <div className="ft-card-surface ft-card-surface-fill">
+            {/* 汇总只在表格最下面那条 summaryRow 里出现，卡片顶部不再重复一遍。 */}
+            <div className="min-h-0 flex-1 overflow-auto">
+              {showCleared ? (
+                <AdvancedDataTable
+                  storageKey="mmh_fixed_asset_history_advanced_v1"
+                  columns={historyColumns}
+                  rows={clearedPositions}
+                  rowKey={(row, index) => propertyAssetKey(row) || String(index)}
+                  emptyText={t("propertyShell.emptyHistory")}
+                  minTableWidth={1120}
+                  rowClassName={(row) => {
+                    const selected = propertyAssetKey(row) === selectedAssetId;
+                    return `cursor-pointer ${selected ? "bg-blue-50 hover:bg-blue-50" : "hover:bg-blue-50/40"}`;
+                  }}
+                  onRowClick={(row) => toggleAssetSelection(propertyAssetKey(row))}
+                  showFilters={false}
+                  fillHeight
+                  toolbarMode="none"
+                  draggableRows={false}
+                  sortable
+                  summaryRow={historySummaryRow}
+                />
+              ) : (
+                <AdvancedDataTable
+                  storageKey="mmh_fixed_asset_positions_advanced_v1"
+                  columns={positionColumns}
+                  rows={positions}
+                  rowKey={(position, index) => propertyAssetKey(position) || String(index)}
+                  emptyText={t("propertyShell.emptyTitle")}
+                  minTableWidth={1332}
+                  rowClassName={(position) => {
+                    const selected = propertyAssetKey(position) === selectedAssetId;
+                    return `cursor-pointer ${selected ? "bg-blue-50 hover:bg-blue-50" : "hover:bg-blue-50/40"}`;
+                  }}
+                  onRowClick={selectPosition}
+                  onRowDoubleClick={openFixedAssetEdit}
+                  showFilters={false}
+                  fillHeight
+                  toolbarMode="none"
+                  draggableRows={false}
+                  sortable
+                  summaryRow={positionSummaryRow}
+                />
+              )}
+            </div>
           </div>
         </div>
 

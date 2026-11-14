@@ -92,6 +92,9 @@ type ClearedPositionRow = {
   totalRedeemAmount: number;
   /** 赎回时用户填写的年化收益率（百分数）；只有走计算兜底时为空。 */
   annualRate?: number | null;
+  /** 固定资产「历史持有」：子类型筛选与状态展示需要，其他产品不写这两个字段。 */
+  assetType?: string | null;
+  status?: string | null;
 };
 
 type PositionDisplayResult = {
@@ -311,6 +314,8 @@ function buildPropertyPositionDisplay(propertyAssets: PropertyAssetDisplayRow[])
       fundCode: asset.id,
       propertyAssetId: asset.id,
       name: asset.name,
+      assetType: asset.assetType ?? null,
+      status: asset.status ?? null,
       historicalProfit: toNumber(asset.marketValue) - toNumber(asset.cost),
       totalInvested: toNumber(asset.cost),
       returnRate: toNumber(asset.cost) > 0 ? (toNumber(asset.marketValue) - toNumber(asset.cost)) / toNumber(asset.cost) : 0,

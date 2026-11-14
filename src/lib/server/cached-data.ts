@@ -271,7 +271,8 @@ async function _loadFixedAssetPositionDisplay(hidFilterStr: string, accountId: s
 /** Cross-request cache for fixed-asset positions. */
 export const loadFixedAssetPositionDisplay = unstable_cache(
   _loadFixedAssetPositionDisplay,
-  ["fixed-asset-display"],
+  // v2：历史持有行新增 assetType / status，换 key 让旧缓存（缺这两个字段）自然失效。
+  ["fixed-asset-display-v2"],
   { revalidate: false, tags: ["fixed-asset-display", "invest-balances"] },
 );
 
