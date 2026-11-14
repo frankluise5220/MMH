@@ -5,7 +5,6 @@ import { ArrowDownLeft, ArrowUpRight, Landmark, Library, SlidersHorizontal, Tras
 import { useRouter } from "next/navigation";
 
 import {
-  ADVANCED_TABLE_HEAD_SURFACE_CLASS,
   AdvancedDataTable,
   type AdvancedDataTableColumn,
   type AdvancedDataTableSummaryRow,
@@ -14,6 +13,7 @@ import { DetailTablePaginationControls } from "./DetailTablePaginationControls";
 import { EntryRowActions, type EditPayload } from "./EntryRowActions";
 import { ProductLibraryModal } from "./ProductLibraryModal";
 import { ResizableVerticalSplit } from "./ResizableVerticalSplit";
+import { FOLDER_TAB_STRIP, FolderTabRuler, folderTabClass, folderTabNeighbors } from "@/app/login/FolderTabs";
 import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
 import { amountToneClass as amountClass } from "@/lib/client/colors";
 import {
@@ -334,6 +334,15 @@ export function BondShell({
     },
   ], [t]);
 
+  // 两个 FT 页签（「持有债券 / 已了结」，与股票视图的「持仓 / 清仓」同构）：
+  // 持有与了结同属「这个债券账户里的东西」，共用一条页签条 + 一张 FT 卡片，
+  // 切换只换卡片里的表格（列、空态、汇总行都跟着 lotTab 走）。
+  // 逆回购已移到股票视图（股票页签下的「逆回购」）。
+  const lotTabItems = [
+    { id: "held" as const, label: t("bondShell.holdingsTitle") },
+    { id: "cleared" as const, label: t("bondShell.clearedTitle") },
+  ];
+
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-transparent p-4 md:p-5">
       <ResizableVerticalSplit
@@ -343,70 +352,87 @@ export function BondShell({
         separatorLabel={t("bondShell.resizeLabel")}
         separatorTitle={t("bondShell.resizeTitle")}
       >
-        <section className="paper-card flex h-full min-h-0 flex-col overflow-hidden">
-          <div className={`paper-card-header ${ADVANCED_TABLE_HEAD_SURFACE_CLASS}`}>
-            <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
-              <Landmark className="h-4 w-4 text-amber-600" />
-              <div className="flex items-center gap-0.5">
+        {/* FT 卡片：页签条是**流内**元素（高 = 页签内容，底边 = 卡片上缘、不随窗格伸缩），
+            页签组靠左、等宽（隐形量尺按最长标签定宽），几何见 `@/app/login/FolderTabs` 文件头。 */}
+        <div className="relative flex h-full min-h-0 flex-col">
+          <div className={FOLDER_TAB_STRIP}>
+            <div className="flex h-full max-w-[calc(100%-9rem)] items-start gap-1.5">
+              {lotTabItems.map((tab, index) => {
+                const active = tab.id === lotTab;
+                return (
+                  <button
+                    key={tab.id}
+                    type="button"
+                    onClick={() => switchLotTab(tab.id)}
+                    className={folderTabClass(
+                      active,
+                      index === lotTabItems.length - 1,
+                      "stretch",
+                      index === 0,
+                      folderTabNeighbors(lotTabItems.map((item) => item.id), tab.id, lotTab),
+                    )}
+                  >
+                    {/* 活动页签不能 overflow-hidden（下缘凹角画在按钮盒外），裁切交给内层 span。 */}
+                    <span className="relative block overflow-hidden whitespace-nowrap">
+                      <FolderTabRuler labels={lotTabItems.map((item) => item.label)} />
+                      {tab.label}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* 内容板：`ft-card-surface-fill` 撑满窗格。信息条挂 `data-advanced-table-toolbar`：
+              顶部 12px 留白归零、底色取卡片色，于是「页签条 → 信息条 → 表头灰带」同一块底色。 */}
+          <div className="ft-card-surface ft-card-surface-fill">
+            <div data-advanced-table-toolbar className="flex shrink-0 flex-wrap items-center justify-between gap-2">
+              {/* 不再显示「机构 共 N 只持有中债券，持仓本金 X」这类汇总句：页签已经写明
+                  「持有债券 / 已了结」，只数与本金由表格表头汇总、底部合计行给出，
+                  空账户时这句话只剩 0 和 0.00。保留「已选中」提示（与下方明细收窄联动）。 */}
+              {selectedLot ? (
+                <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-left text-xs text-slate-500">
+                  <span className="flex h-6 min-w-0 items-center gap-1.5">
+                    <Landmark className="h-3.5 w-3.5 shrink-0 text-amber-600" />
+                    <span className="min-w-0 truncate">
+                      {formatText("bondShell.lotSelectedHint", { name: selectedLot.name })}
+                    </span>
+                  </span>
+                </div>
+              ) : null}
+              {/* `ml-auto`：左侧提示不渲染时按钮仍贴右，不跟着 justify-between 滑到左边。 */}
+              <div className="ml-auto flex shrink-0 items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => switchLotTab("held")}
-                  className={`h-6 rounded px-2 text-xs font-medium ${lotTab === "held" ? "bg-blue-50 text-blue-700" : "text-slate-500 hover:text-slate-700"}`}
+                  onClick={() => setProductLibraryOpen(true)}
+                  className="secondary-button h-7 gap-1 px-2 text-xs"
+                  title={t("productLibrary.title.bond")}
                 >
-                  {t("bondShell.holdingsTitle")}
+                  <Library className="h-3.5 w-3.5" />
+                  {t("productLibrary.entryButton")}
                 </button>
-                <button
-                  type="button"
-                  onClick={() => switchLotTab("cleared")}
-                  className={`h-6 rounded px-2 text-xs font-medium ${lotTab === "cleared" ? "bg-blue-50 text-blue-700" : "text-slate-500 hover:text-slate-700"}`}
-                >
-                  {t("bondShell.clearedTitle")}
-                </button>
-                {/* 逆回购已移到股票视图（股票页签下的「逆回购」）。 */}
               </div>
             </div>
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-slate-400">
-                {selectedLot
-                  ? formatText("bondShell.lotSelectedHint", { name: selectedLot.name })
-                  : lotTab === "held"
-                    ? formatText("bondShell.holdingsHint", {
-                        count: heldLots.length,
-                        amount: formatMoney(totalPrincipal),
-                        scope: institutionName || accountLabel,
-                      })
-                    : formatText("bondShell.clearedHint", { count: clearedLots.length })}
-              </span>
-              <button
-                type="button"
-                onClick={() => setProductLibraryOpen(true)}
-                className="secondary-button h-7 gap-1 px-2 text-xs"
-                title={t("productLibrary.title.bond")}
-              >
-                <Library className="h-3.5 w-3.5" />
-                {t("productLibrary.entryButton")}
-              </button>
+            <div className="min-h-0 flex-1">
+              <AdvancedDataTable
+                key={lotTab}
+                storageKey="mmh_bond_lots_table_v1"
+                columns={lotColumns}
+                rows={visibleLots}
+                rowKey={(lot) => lot.id}
+                minTableWidth={1120}
+                emptyText={lotTab === "held" ? t("bondShell.emptyHoldings") : t("bondShell.emptyCleared")}
+                showFilters
+                fillHeight
+                toolbarMode="none"
+                summaryRow={lotsSummaryRow}
+                summaryRowPlacement="footer"
+                onRowClick={(lot) => setSelectedLotId((current) => current === lot.id ? null : lot.id)}
+                rowClassName={(lot) => `cursor-pointer ${selectedLotId === lot.id ? "bg-blue-50 hover:bg-blue-50" : "hover:bg-slate-50"}`}
+              />
             </div>
           </div>
-          <div className="min-h-0 flex-1">
-            <AdvancedDataTable
-              key={lotTab}
-              storageKey="mmh_bond_lots_table_v1"
-              columns={lotColumns}
-              rows={visibleLots}
-              rowKey={(lot) => lot.id}
-              minTableWidth={1120}
-              emptyText={lotTab === "held" ? t("bondShell.emptyHoldings") : t("bondShell.emptyCleared")}
-              showFilters
-              fillHeight
-              toolbarMode="none"
-              summaryRow={lotsSummaryRow}
-              summaryRowPlacement="footer"
-              onRowClick={(lot) => setSelectedLotId((current) => current === lot.id ? null : lot.id)}
-              rowClassName={(lot) => `cursor-pointer ${selectedLotId === lot.id ? "bg-blue-50 hover:bg-blue-50" : "hover:bg-slate-50"}`}
-            />
-          </div>
-        </section>
+        </div>
 
         <section className="panel-surface flex h-full min-h-0 flex-col overflow-hidden">
           <div className="panel-header">
