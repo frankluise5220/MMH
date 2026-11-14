@@ -1275,7 +1275,7 @@ port_owner_desc() {
         line="$(ss -ltnp 2>/dev/null | grep -F ":$p " | head -1 || true)"
         pid="$(printf '%s' "$line" | sed -n 's/.*pid=\\([0-9][0-9]*\\).*/\\1/p' | head -1)"
         if [ -n "$pid" ]; then
-            cmd="$(tr '\\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+            cmd="$(cat "/proc/$pid/cmdline" 2>/dev/null | tr '\\0' ' ' || true)"
             printf 'pid=%s %s' "$pid" "$cmd"
             return 0
         fi
@@ -1290,7 +1290,7 @@ stop_own_payload_processes() {
     dest="$(resolve_app_dest)"
     for entry in /proc/[0-9]*; do
         pid="\${entry#/proc/}"
-        cmd="$(tr '\\0' ' ' < "$entry/cmdline" 2>/dev/null || true)"
+        cmd="$(cat "$entry/cmdline" 2>/dev/null | tr '\\0' ' ' || true)"
         [ -n "$cmd" ] || continue
         case "$cmd" in
             *"$dest/app/server/mmh-unix-server.cjs"*|*"$dest/app/server/server.js"*|*"$dest/server/mmh-unix-server.cjs"*|*"$dest/server/server.js"*)
@@ -1371,7 +1371,7 @@ EOF
     printf '%s\\n' "$session_secret" > "$session_secret_file"
     chmod 600 "$session_secret_file" 2>/dev/null || true
 
-    # 端口落在三个地方：${pkgvar}/.port、ui/config（应用中心入口）、manifest
+    # 端口落在三个地方：mmh.env 同目录下的 .port、ui/config（应用中心入口）、manifest
     # 的 service_port。后两者不一定在 $APP_ROOT 下（manifest 在应用根，
     # 载荷在 app/），所以两条路径都要试，否则改了 .port 但应用中心仍按旧端口
     # 做启动前检查，用户看到的就是「端口被占用」而实际服务已经换了端口。
@@ -1927,7 +1927,7 @@ stop_leftover_mmh_server () {
   for pid in /proc/[0-9]*; do
     [ -d "$pid" ] || continue
     pid="\${pid#/proc/}"
-    cmd="$(tr '\\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null || true)"
+    cmd="$(cat "/proc/$pid/cmdline" 2>/dev/null | tr '\\0' ' ' || true)"
     [ -n "$cmd" ] || continue
     case "$cmd" in
       *next-server*|*server/server.js*|*mmh-unix-server.cjs*)
