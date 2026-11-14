@@ -1110,12 +1110,17 @@ async function createFundTransaction(tx: Prisma.TransactionClient, householdId: 
   );
   const recordDate = toUtcDate(item.date);
   const importFundUnitsDecimals = normalizeFundUnitsDecimals(fundAccount.fundUnitsDecimals);
-  const normalizedUnits = (subtype === "buy" || isDividendReinvest) && item.units == null && item.nav != null
+  // 货基一元一份：账单里那列「净值」其实是每万份收益（0.2~0.7），拿它除金额会把份额
+  // 放大几千倍。账户是货币基金时一律按净值 1 折算、落库也写 1，与手工记账窗口同口径。
+  const moneyFund = fundAccount.investProductType === FundProductType.money
+    || item.fundProductType === FundProductType.money;
+  const effectiveNav = moneyFund ? 1 : item.nav ?? null;
+  const normalizedUnits = (subtype === "buy" || isDividendReinvest) && item.units == null && effectiveNav != null
     ? calculateConfirmedBuyUnits({
       grossAmount: amountAbs,
       refundAmount: 0,
       fee: subtype === "buy" ? item.fee : 0,
-      nav: item.nav,
+      nav: effectiveNav,
       roundUnits: (value) => roundFundUnits(value, importFundUnitsDecimals),
     })
     : item.units;
@@ -1148,7 +1153,7 @@ async function createFundTransaction(tx: Prisma.TransactionClient, householdId: 
     cashAccountId: isDividendReinvest ? null : cashAccount?.id ?? null,
     fundCode: item.fundCode,
     fundName: storedFundName,
-    fundProductType: item.fundProductType ?? "fund",
+    fundProductType: moneyFund ? FundProductType.money : item.fundProductType ?? "fund",
     fundSubtype: finalFundSubtype,
     source,
     applyDate: recordDate,
@@ -1158,7 +1163,7 @@ async function createFundTransaction(tx: Prisma.TransactionClient, householdId: 
     refundAmount: isBuyFailedRefund ? amountAbs : 0,
     arrivalAmount: isDividendReinvest ? null : redeemLike || isDividendCash || isBuyFailedRefund ? amountAbs : null,
     fee: isDividendReinvest ? null : item.fee ?? null,
-    nav: item.nav ?? null,
+    nav: effectiveNav,
     units: normalizedUnits ?? null,
     note: item.remark || null,
     cashFlows,

@@ -123,7 +123,9 @@ function calcByMovingAvg(entries: FundPositionEntryLike[], fundUnitsDecimals: nu
     if (subtype === "buy") {
       const costBasis = buyEntryCostBasis(e, amount);
       const u = e.units ?? 0;
-      if (u === 0) rec.pendingCost += pendingBuyAmount(e, amount);
+      // 负收益结转（货基某日万份收益为负）：只减份额、不动成本，不能当买入去加成本。
+      if (u < 0) rec.units = roundFundUnits(rec.units + u, fundUnitsDecimals);
+      else if (u === 0) rec.pendingCost += pendingBuyAmount(e, amount);
       else { rec.cost += costBasis; rec.units = roundFundUnits(rec.units + u, fundUnitsDecimals); }
     } else if (subtype === "dividend_cash") {
       rec.historicalProfit += e.realizedProfit != null ? toNum(e.realizedProfit) : Math.abs(amount);
@@ -203,7 +205,18 @@ function calcByFifo(entries: FundPositionEntryLike[], fundUnitsDecimals: number,
     if (subtype === "buy") {
       const costBasis = buyEntryCostBasis(e, amount);
       const u = e.units ?? 0;
-      if (u === 0) { rec.pendingCost += pendingBuyAmount(e, amount); }
+      if (u < 0) {
+        // 负收益结转：按先进先出扣减批次数量，成本不动（否则会出现成本单价为负的批次）。
+        let remaining = -u;
+        for (const lot of codeLots) {
+          if (remaining <= 0) break;
+          const take = Math.min(lot.units, remaining);
+          lot.units = Math.max(0, roundFundUnits(lot.units - take, fundUnitsDecimals));
+          remaining -= take;
+        }
+        lots.set(code, codeLots.filter((lot) => lot.units > 0));
+        rec.units = roundFundUnits(rec.units + u, fundUnitsDecimals);
+      } else if (u === 0) { rec.pendingCost += pendingBuyAmount(e, amount); }
       else { codeLots.push({ units: u, costPerUnit: costBasis / u }); rec.units = roundFundUnits(rec.units + u, fundUnitsDecimals); rec.cost += costBasis; }
     } else if (subtype === "dividend_cash") {
       rec.historicalProfit += e.realizedProfit != null ? toNum(e.realizedProfit) : Math.abs(amount);
