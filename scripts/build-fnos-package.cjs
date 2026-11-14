@@ -791,7 +791,7 @@ if (generatedSchema.status !== 0) process.exit(generatedSchema.status || 1);
 write(path.join(stageDir, "manifest"), `
 appname=${appName}
 version=${version}
-desc=${externalNode ? "一套本地部署、自动安装 Node.js 22 运行时的家庭账务管理系统。" : storeIntro}
+desc=${externalNode ? storeIntro + "（本安装包不内置运行时，安装时自动安装应用中心的「Node.js 22」依赖。）" : storeIntro}
 display_name=${displayName}
 arch=${target.manifestArch}
 platform=${target.manifestPlatform}
