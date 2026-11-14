@@ -78,9 +78,9 @@ function resolveStoreIntro() {
 
 const storeIntro = resolveStoreIntro();
 const externalNodeStartup = externalNode ? [
-  "  NODE_MAJOR=\"$($NODE_BIN -p 'process.versions.node.split(\\\".\\\")[0]' 2>/dev/null || true)\"",
-  "  if [ \"$NODE_MAJOR\" != \"22\" ]; then",
-  "    echo \"MMH requires Node.js 22.x for the external-node package; detected ${NODE_MAJOR:-unknown}.\" >&2",
+  "  NODE_MAJOR=\"$($NODE_BIN -p 'process.versions.node.split(\".\")[0]' 2>/dev/null || true)\"",
+  "  if [ -z \"$NODE_MAJOR\" ] || ! [ \"$NODE_MAJOR\" -ge 22 ] 2>/dev/null; then",
+  "    echo \"MMH needs Node.js 22 or newer for the external-node package; detected ${NODE_MAJOR:-unknown} (selected ${NODE_BIN}).\" >&2",
   "    exit 1",
   "  fi",
   "  if ! (cd \"$SERVER_DIR\" && \"$NODE_BIN\" -e 'const Database=require(\"better-sqlite3\"); const db=new Database(\":memory:\"); if (db.prepare(\"select 1 as ok\").get().ok !== 1) process.exit(1); db.close();') >/dev/null 2>&1; then",
@@ -1448,15 +1448,18 @@ resolve_node_bin () {
         ;;
     esac
   fi
+  # 应用中心「Node.js 22」依赖优先于 /usr/local/bin/node：后者是用户自己装的
+  # Node（可能就是 24），把它排在前面会让 external-node 变体挑到一个非 22 的
+  # 运行时；依赖装上了就先用依赖，用户想覆盖就显式写 MMH_NODE_BIN。
   for candidate in \
     /var/apps/nodejs_v22/bin/node \
     /var/apps/nodejs_v22/app/bin/node \
-    /usr/local/bin/node \
     /vol*/@appcenter/nodejs_v22/bin/node \
     /vol*/@appcenter/nodejs_v22/app/bin/node \
     /vol*/@appcenter/nodejs_v22/*/bin/node \
     /vol*/@appcenter/nodejs_v22/*/app/bin/node \
-    /vol*/@appcenter/nodejs_v22/*/node; do
+    /vol*/@appcenter/nodejs_v22/*/node \
+    /usr/local/bin/node; do
     [ -x "$candidate" ] && { printf '%s' "$candidate"; return 0; }
   done
   candidate="$(command -v node 2>/dev/null || true)"

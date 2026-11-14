@@ -342,6 +342,23 @@ expect(
   /const payloadReadyFn = externalNode/.test(buildScript),
   "fnOS app_payload_is_ready must be variant-aware: external-node payloads carry no bin/node, so the bundled check (bin/node + server.js) can never succeed for them.",
 );
+// external-node 启动前先探测 node 大版本。0.1.85 那版把这行写成了
+// `split(\".\")`（生成到脚本里就是一个反斜杠加引号），node 直接 SyntaxError，
+// NODE_MAJOR 恒为空，真机上每次启动都报 "detected unknown" 而拒绝启动。
+// 同时版本门槛必须与 select_node_bin 的 minimum 一致（>=22），不能钉死等号 22，
+// 否则用户自己装 Node 24 覆盖 MMH_NODE_BIN 时又会被这条检查挡回去。
+expect(
+  buildScript.includes('split(\\".\\")'),
+  'fnOS external-node node-major probe must emit split(".") verbatim (write split(\\".\\") in the JS source); a stray backslash makes it a JS SyntaxError and every start fails with "detected unknown".',
+);
+expect(
+  /-z \\"\$NODE_MAJOR\\" \] \|\| ! \[ \\"\$NODE_MAJOR\\" -ge 22 \]/.test(buildScript),
+  "fnOS external-node must accept Node.js >= 22 (matching select_node_bin's minimum), not just exactly 22, or MMH_NODE_BIN pointing at Node 24 breaks startup.",
+);
+expect(
+  /\/usr\/local\/bin\/node;\s*do/.test(buildScript),
+  "fnOS resolve_node_bin must try the App Center nodejs_v22 dependency before /usr/local/bin/node, otherwise external-node picks a user-installed Node that may not match the bundled better-sqlite3.",
+);
 expect(/mmhReleaseNotes/.test(buildScript), "fnOS package build must copy release notes into the runtime package.json.");
 expect(
   /runtimePkg\.mmhFnosManifestChangelog = manifestChangelog/.test(buildScript),
