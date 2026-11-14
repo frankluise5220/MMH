@@ -5,6 +5,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { DepositFormModal } from "@/components/DepositFormModal";
 import type { SmartSelectOption } from "@/components/SmartSelect";
 import { buildAccountDisplayOption } from "@/lib/account-display";
+import { institutionFullName } from "@/lib/institution-display";
 import { readAccountDisplaySettings } from "@/lib/client/account-display-settings";
 import { fetchSettingsAccountData } from "@/lib/client/settingsCache";
 import { useSettingsDataVersion } from "@/lib/client/use-settings-data-version";
@@ -137,7 +138,7 @@ export function DepositEntryHost({
         groupId: (data.groups ?? []).map((group) => ({ id: group.id, name: group.name })),
         institutionId: (data.institutions ?? []).map((institution) => ({
           id: institution.id,
-          name: institution.shortName?.trim() || institution.name,
+          name: institutionFullName(institution),
           type: institution.type ?? "",
         })),
         counterpartyId: (data.counterparties ?? []).map((counterparty) => ({

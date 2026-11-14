@@ -77,7 +77,8 @@ export async function GET(req: NextRequest) {
         name: item.name,
         shortName: item.shortName,
         institutionId: item.institutionId,
-        institutionName: item.Institution?.shortName?.trim() || item.Institution?.name || "",
+        // 债单的机构信息是独立主体 → 全称（账户标签里才用简称）。
+        institutionName: item.Institution?.name?.trim() || item.Institution?.shortName || "",
         currency: item.currency,
         annualRate: item.annualRate == null ? null : Number(item.annualRate),
         termDays: item.termDays,
@@ -229,7 +230,7 @@ export async function POST(req: NextRequest) {
         name: product.name,
         shortName: product.shortName,
         institutionId: product.institutionId,
-        institutionName: product.Institution?.shortName?.trim() || product.Institution?.name || "",
+        institutionName: product.Institution?.name?.trim() || product.Institution?.shortName || "",
         currency: product.currency,
         annualRate: product.annualRate == null ? null : Number(product.annualRate),
         termDays: product.termDays,

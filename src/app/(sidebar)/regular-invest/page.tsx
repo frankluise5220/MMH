@@ -702,8 +702,9 @@ export default async function RegularInvestPage() {
     ownerGroupName: product.OwnerGroup?.name ?? null,
     premiumAmount: product.premiumAmount == null ? null : Number(product.premiumAmount),
     premiumFrequencyMonths: product.premiumFrequencyMonths == null ? null : Number(product.premiumFrequencyMonths),
+    // 产品选项里的机构是独立主体 → 全称（账户标签里才用简称）。
     subLabel: [
-      product.Institution?.shortName || product.Institution?.name,
+      product.Institution?.name || product.Institution?.shortName,
       product.OwnerGroup?.name,
     ].filter(Boolean).join(" · "),
   }));

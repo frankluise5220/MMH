@@ -104,7 +104,8 @@ export default async function InvestmentsPage({
     }, creditCardLabelTemplate, accountRenderSettings(accountLabelFields, baseCurrency));
     const accountLabel = display.label;
     const groupName = account.AccountGroup?.name?.trim() || t("investments.noOwner");
-    const institutionName = display.institutionName || t("investments.noInstitution");
+    // 机构是独立主体 → 全称；账户标签里的机构名（display.institutionName）才是简称。
+    const institutionName = display.institutionFullName || t("investments.noInstitution");
     const ownerName = account.User?.name?.trim() || t("investments.unspecified");
     const productType = investProductTypeLabel(account.investProductType, t);
 

@@ -22,6 +22,7 @@ import { calcInitialScheduledRunDate, calcNextScheduledRunDate } from "@/lib/sch
 import { resolveLoanRateAdjustments } from "@/lib/server/loan-rate-adjustments";
 import { resolveLoanType } from "@/lib/account-kind-utils";
 import { normalizeLoanType, type LoanTypeValue } from "@/lib/loan-type";
+import { institutionFullName } from "@/lib/institution-display";
 import {
   BALANCE_INITIALIZATION_SOURCE,
   BALANCE_RECONCILE_SOURCE,
@@ -1059,7 +1060,8 @@ export function buildLiabilityRowsViewData({
   const ordinaryAccountIdsByGroupKey = new Map<string, string[]>();
 
   for (const account of liabilityAccounts) {
-    const institutionName = (account.Institution?.shortName?.trim() || account.Institution?.name || "").trim();
+    // 放款机构是独立主体 → 全称（账户标签里才用简称）。
+    const institutionName = institutionFullName(account.Institution);
     const counterpartyName = (account.Counterparty?.shortName?.trim() || account.Counterparty?.name || "").trim();
     const objectName = counterpartyName || institutionName || account.name;
     const balance = cashDisplayBalanceByAccountId.get(account.id) ?? toNumber(account.balance);

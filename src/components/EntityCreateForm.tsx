@@ -15,6 +15,7 @@ import { CurrencySmartSelect } from "@/components/CurrencySmartSelect";
 import { notifySettingsDataChanged, type SettingsDataScope } from "@/lib/client/settingsCache";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { CURRENCY_OPTIONS, normalizeCurrency } from "@/lib/currency";
+import { institutionFullName } from "@/lib/institution-display";
 import {
   accountInstitutionTypeIsAllowed,
   accountRequiresInstitution,
@@ -1087,7 +1088,10 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
         const selectedTypeValue = typeKey ? (form[typeKey] || created[typeKey] || "") : "";
         notifySmartSelectOptionCreated({
           id: created.id,
-          label: created.shortName?.trim?.() || created.name,
+          // 新建机构后广播给机构下拉：机构是独立主体 → 全称；其余实体（账户等）沿用简称优先。
+          label: entityType === "institution"
+            ? institutionFullName(created)
+            : created.shortName?.trim?.() || created.name,
           subLabel: entityType === "account"
             ? (created.AccountGroup?.name || (created.kind ? t(`account.kind.${created.kind}`) : undefined))
             : entityType === "institution" || entityType === "counterparty"

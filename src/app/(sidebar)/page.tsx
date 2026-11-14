@@ -5,6 +5,7 @@ import { connection } from "next/server";
 import { cookies } from "next/headers";
 import { AccountKind,   TransactionType, FundSubtype, RegularInvestStatus } from "@prisma/client";
 import { institutionTypeLabel, isSettlementCounterpartyType, isInstitutionTypeOf, LOAN_DIALOG_INSTITUTION_TYPE_VALUES } from "@/lib/account-kinds";
+import { institutionFullName } from "@/lib/institution-display";
 import { getServerAccountDropdownRestrictType } from "@/lib/server/account-dropdown-restrict";
 import { TransactionFormModal } from "@/components/TransactionFormModal";
 import { MobileTransactionForm } from "@/components/mobile/MobileTransactionForm";
@@ -1501,7 +1502,7 @@ export default async function Home({
         { id: "loan-institution-source-header", label: t("liabilityTx.loanInstitutionHeader"), isHeader: true },
         ...loanSourceInstitutions.map((institution) => ({
           id: `institution:${institution.id}`,
-          label: institution.shortName?.trim() || institution.name,
+          label: institutionFullName(institution),
           subLabel: institutionTypeLabel(institution.type ?? null, t),
         })),
       ]

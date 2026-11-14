@@ -4,6 +4,7 @@ import { toNumber, todayDateBusinessYmd } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdPreferences } from "@/lib/server/household-preferences";
 import type { RepoOccupiedDaysMode } from "@/lib/preferences";
+import { institutionFullName } from "@/lib/institution-display";
 import {
   estimateRepoFee,
   estimateRepoInterest,
@@ -306,7 +307,8 @@ export async function loadRepoShellData(params: {
     account: {
       id: account.id,
       name: account.name,
-      institutionName: account.Institution?.shortName || account.Institution?.name || "",
+      // 账户所属机构作为范围说明展示时用全称（账户标签里才用简称）。
+      institutionName: institutionFullName(account.Institution),
       currency: account.currency,
     },
     lots,

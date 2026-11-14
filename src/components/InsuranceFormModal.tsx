@@ -226,7 +226,8 @@ function mapInsuranceProduct(item: Record<string, unknown>, t: (key: string) => 
   return {
     id: valueFromRecord(item, "id"),
     label: valueFromRecord(item, "name"),
-    subLabel: [valueFromRecord(item, "institutionShortName") || valueFromRecord(item, "institutionName"), productTypeLabel(t, nullableStringFromRecord(item, "productType"))].filter(Boolean).join(" · "),
+    // 产品的机构信息是独立主体 → 全称（账户标签里才用简称）。
+    subLabel: [valueFromRecord(item, "institutionName") || valueFromRecord(item, "institutionShortName"), productTypeLabel(t, nullableStringFromRecord(item, "productType"))].filter(Boolean).join(" · "),
     productMasterId: nullableStringFromRecord(item, "productMasterId"),
     accountId: valueFromRecord(item, "accountId"),
     accountLabel: valueFromRecord(item, "accountName"),
@@ -267,7 +268,8 @@ function mapInsuranceProductMaster(item: Record<string, unknown>, t: (key: strin
     isMaster: true,
     productMasterId: id,
     label: valueFromRecord(item, "name"),
-    subLabel: [valueFromRecord(item, "institutionShortName") || valueFromRecord(item, "institutionName"), productTypeLabel(t, nullableStringFromRecord(item, "productType"))].filter(Boolean).join(" · "),
+    // 产品的机构信息是独立主体 → 全称（账户标签里才用简称）。
+    subLabel: [valueFromRecord(item, "institutionName") || valueFromRecord(item, "institutionShortName"), productTypeLabel(t, nullableStringFromRecord(item, "productType"))].filter(Boolean).join(" · "),
     accountId: "",
     institutionId: nullableStringFromRecord(item, "institutionId"),
     institutionName: nullableStringFromRecord(item, "institutionName"),
@@ -669,10 +671,11 @@ export function InsuranceFormModal({
           }));
         const nextInstitutions = institutions
           .filter((item) => item.type === "insurance")
+          // 机构下拉展示全称；简称只用于账户标签，不再作为副标签重复。
           .map((item) => ({
             id: item.id,
             label: item.name,
-            subLabel: item.shortName && item.shortName !== item.name ? item.shortName : t("institution.type.insurance"),
+            subLabel: t("institution.type.insurance"),
           }));
         setFamilyMemberOptions(nextFamilyMembers);
         setInstitutionOptions(nextInstitutions);

@@ -4,6 +4,7 @@ import { bondPayoutExpectation, clampBondFirstPayoutToStart, estimateBondInteres
 import { toNumber } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
 import { loadBondTransactionEntryLike } from "@/lib/server/business-transaction-entries";
+import { institutionFullName } from "@/lib/institution-display";
 
 /**
  * 债券视图（BondShell）的数据口径。
@@ -374,7 +375,8 @@ export async function loadBondShellData(params: {
     account: {
       id: account.id,
       name: account.name,
-      institutionName: account.Institution?.shortName || account.Institution?.name || "",
+      // 账户所属机构作为范围说明展示时用全称（账户标签里才用简称）。
+      institutionName: institutionFullName(account.Institution),
       currency: account.currency,
     },
     lots: projectedLots,

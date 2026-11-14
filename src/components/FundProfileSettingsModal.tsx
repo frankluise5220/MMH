@@ -78,10 +78,10 @@ function fallbackProfile(fundCode: string, fundName: string | null | undefined):
 }
 
 function institutionOptions(rows: InstitutionResponse["institutions"] = []): SmartSelectOption[] {
+  // 机构下拉展示全称；简称只用于账户标签，不再作为副标签重复。
   return rows.map((row) => ({
     id: row.id,
-    label: row.name,
-    subLabel: row.shortName?.trim() || undefined,
+    label: row.name?.trim() || row.shortName?.trim() || "",
     kind: row.type,
   }));
 }

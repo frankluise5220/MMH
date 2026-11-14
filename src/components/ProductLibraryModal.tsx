@@ -11,6 +11,7 @@ import { useDerivedLayerZIndex } from "@/components/ModalLayer";
 import { REPO_MARKET_LABEL, REPO_PRODUCTS } from "@/lib/repo";
 import { formatMoney } from "@/lib/format";
 import { PERSONAL_INSTITUTION_TYPES } from "@/lib/institution-rules";
+import { institutionFullName } from "@/lib/institution-display";
 
 /**
  * 产品库统一管理弹窗（存款 / 理财 / 债券 / 保险产品主数据）。
@@ -351,7 +352,8 @@ function normalizeRow(family: ProductLibraryFamily, raw: Record<string, unknown>
       name: String(raw.name ?? ""),
       shortName: str(raw.shortName),
       institutionId: str(raw.institutionId),
-      institutionName: String(raw.institutionShortName ?? raw.institutionName ?? ""),
+      // 产品库的机构是独立主体 → 全称优先。
+      institutionName: String(raw.institutionName ?? raw.institutionShortName ?? ""),
       currency: String(raw.currency ?? "CNY"),
       note: str(raw.note),
       productType: str(raw.productType),
@@ -640,7 +642,7 @@ export function ProductLibraryModal({
   const institutionNameById = useMemo(() => {
     const map = new Map<string, string>();
     for (const item of institutions) {
-      map.set(item.id, item.shortName?.trim() || item.name);
+      map.set(item.id, institutionFullName(item));
     }
     return map;
   }, [institutions]);
@@ -1240,7 +1242,7 @@ export function ProductLibraryModal({
                           <option value="">{config.allowNoInstitution ? t("productLibrary.institutionNone") : t("productLibrary.selectInstitution")}</option>
                           {institutionOptions.map((item) => (
                             <option key={item.id} value={item.id}>
-                              {item.shortName?.trim() || item.name}
+                              {institutionFullName(item)}
                             </option>
                           ))}
                           {/**

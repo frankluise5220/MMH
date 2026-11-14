@@ -7,6 +7,7 @@ import { LiabilitiesGuideClient } from "@/components/LiabilitiesGuideClient";
 import { buildAccountDisplayOption, normalizeCreditCardLabelTemplate, accountRenderSettings } from "@/lib/account-display";
 import { buildAccountOwnerOptions } from "@/lib/account-owner-options";
 import { LENDER_INSTITUTION_TYPE_VALUES, institutionTypeLabel, isInstitutionTypeOf, isSettlementCounterpartyType } from "@/lib/account-kinds";
+import { institutionFullName } from "@/lib/institution-display";
 import { toNumber } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
 import { formatMoney } from "@/lib/format";
@@ -235,7 +236,7 @@ export default async function LiabilitiesPage({
           { id: "institution-source-header", label: t("liabilities.fromInstitution"), isHeader: true },
           ...institutions.filter((institution) => isInstitutionTypeOf(institution.type, LENDER_INSTITUTION_TYPE_VALUES)).map((institution) => ({
             id: `institution:${institution.id}`,
-            label: institution.shortName?.trim() || institution.name,
+            label: institutionFullName(institution),
             subLabel: institutionTypeLabel(institution.type, t),
           })),
         ]

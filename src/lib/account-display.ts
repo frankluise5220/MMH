@@ -3,6 +3,7 @@ import { kindLabel } from "@/lib/account-kinds";
 import { normalizeUserFacingAccountKind } from "@/lib/account-kind-utils";
 import { accountCurrencyLabelText, accountNameMentionsCurrency } from "@/lib/currency";
 import { FIXED_ASSET_EXPENSE_CATEGORY_NAME, isFixedAssetAccountLike } from "@/lib/fixed-asset";
+import { institutionFullName, institutionShortName } from "@/lib/institution-display";
 
 export type AccountDisplaySource = {
   id: string;
@@ -250,7 +251,13 @@ export type AccountDisplayOption = {
   groupName: string;
   /** 账户自定义分组标签（`Account.accountGroup`），空串 = 未分组。 */
   accountGroupName: string;
+  /** 账户标签里用的机构名（简称优先）——账户语境。 */
   institutionName: string;
+  /**
+   * 机构全称（全称优先），只用于机构作为独立主体展示的位置，
+   * 例如「按机构分组」的表头。账户标签仍然用 `institutionName`。
+   */
+  institutionFullName: string;
   investProductType: string | null;
   subLabel: string;
   fullLabel: string;
@@ -407,14 +414,15 @@ export function counterpartyQualifiedAccountName(
   return `${counterpartyName}${ACCOUNT_LABEL_SEPARATOR}${name}`;
 }
 
+/**
+ * 账户标签里的机构名：**简称优先**（2026-11-14 用户裁定，只有账户语境用简称）。
+ * 机构作为独立主体展示时走 `institutionFullName`（src/lib/institution-display.ts）。
+ */
 function formatDisplayInstitutionName(
   institution?: { name: string | null; shortName?: string | null } | null,
   preferShort = true,
 ) {
-  const shortName = institution?.shortName?.trim() ?? "";
-  const fullName = institution?.name?.trim() ?? "";
-  if (preferShort && shortName) return shortName;
-  return fullName || shortName;
+  return preferShort ? institutionShortName(institution) : institutionFullName(institution);
 }
 
 export function formatAccountSelectorLabel(input: {
@@ -612,6 +620,7 @@ export function buildAccountDisplayOption(
   // so the dropdown/table sub-label matches what the account actually is.
   const displayKind = normalizeUserFacingAccountKind(account);
   const institutionName = isFixedAsset ? "" : formatDisplayInstitutionName(account.Institution, true);
+  const institutionFull = isFixedAsset ? "" : institutionFullName(account.Institution);
   const showOwner = accountUsesOwnerInDisplay(account);
   const groupId = showOwner ? account.groupId ?? account.AccountGroup?.id ?? "" : "";
   const groupName = showOwner ? account.AccountGroup?.name?.trim() ?? "" : "";
@@ -741,6 +750,7 @@ export function buildAccountDisplayOption(
     groupName,
     accountGroupName: (account.accountGroup ?? "").trim(),
     institutionName,
+    institutionFullName: institutionFull,
     investProductType: account.investProductType ?? null,
     subLabel,
     fullLabel: ownerQualifiedLabel,
@@ -892,7 +902,8 @@ function resolveAccountGroupBucket(
     return name ? { id: `group:ag:${name}`, name } : null;
   }
   if (groupBy === "institution") {
-    const name = account.institutionName.trim();
+    // 分组表头是机构作为独立主体出现，用全称（账户标签里才用简称）。
+    const name = account.institutionFullName.trim();
     return name ? { id: `group:in:${name}`, name } : null;
   }
   if (account.groupId && accountUsesOwnerInDisplay(account)) {

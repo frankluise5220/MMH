@@ -14,6 +14,7 @@ import { useAccountSSFilter } from "./accountSSFilter";
 import { buildCategoryTreeOptions, type CategorySource } from "./categorySmartSelect";
 import { institutionTypeLabel, isSettlementCounterpartyType, isInstitutionTypeOf, LOAN_DIALOG_INSTITUTION_TYPE_VALUES } from "@/lib/account-kinds";
 import { buildAccountDisplayOption, formatAccountHoverTitle } from "@/lib/account-display";
+import { institutionFullName } from "@/lib/institution-display";
 import { recordRecentAccounts, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
 /** 整窗外壳（遮罩 / 标题栏 / 宽度档位 / 表单 / FT 页签与卡片 / 窗口底按钮行）：规则集中在它。 */
@@ -667,7 +668,7 @@ export function LiabilityTransactionModal({
         .map((group: { id: string; name: string }) => ({ id: group.id, name: group.name })),
       institutionId: (data.institutions ?? []).map((institution: { id: string; name: string; shortName?: string | null; type?: string | null }) => ({
         id: institution.id,
-        name: institution.shortName?.trim() || institution.name,
+        name: institutionFullName(institution),
         type: institution.type ?? "",
       })),
       counterpartyId: (data.counterparties ?? []).map((counterparty: { id: string; name: string; shortName?: string | null; type?: string | null }) => ({
@@ -846,7 +847,7 @@ export function LiabilityTransactionModal({
         groupId: (data.groups ?? []).map((group) => ({ id: group.id, name: group.name })),
         institutionId: (data.institutions ?? []).map((institution) => ({
           id: institution.id,
-          name: institution.shortName?.trim() || institution.name,
+          name: institutionFullName(institution),
           type: institution.type ?? "",
         })),
         counterpartyId: (data.counterparties ?? []).map((counterparty) => ({

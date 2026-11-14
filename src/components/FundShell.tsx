@@ -67,6 +67,7 @@ import { DetailTablePaginationControls } from "@/components/DetailTablePaginatio
 
 import { subtypeDisplay } from "@/lib/investment-config";
 import { isFundLikeInvestmentAccount } from "@/lib/account-kind-utils";
+import { institutionFullName } from "@/lib/institution-display";
 import { resolveQuantityDecimals } from "@/lib/fund/unit-precision-core";
 import { TRANSACTION_SOURCE_FUND_UNITS_RECONCILE, TRANSACTION_SOURCE_METAL_EXTRACT, isFundUnitsReconcileEntry } from "@/lib/transaction-semantics";
 import { useI18n } from "@/lib/i18n";
@@ -3777,7 +3778,7 @@ export function FundShell(props: Props) {
         account={{
           id: accountId,
           name: selectedAccount?.name ?? t("viewImport.fundAccount"),
-          institutionName: selectedAccount?.Institution?.shortName?.trim() || selectedAccount?.Institution?.name?.trim() || null,
+          institutionName: institutionFullName(selectedAccount?.Institution) || null,
         }}
         fundCode={fundSettingsCode ?? ""}
         fallbackFundName={fundSettingsName}

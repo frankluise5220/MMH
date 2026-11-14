@@ -4,6 +4,7 @@ import { notFound } from "next/navigation";
 import { FundProfileSettingsClient, type FundProfileSettingsData } from "@/components/FundProfileSettingsClient";
 import type { SmartSelectOption } from "@/components/SmartSelect";
 import { getInvestmentAccountView } from "@/lib/account-kind-utils";
+import { institutionFullName } from "@/lib/institution-display";
 import { prisma } from "@/lib/db/prisma";
 import { fundTradingCalendarForProfile, getFundProfile } from "@/lib/fund/fundProfile";
 import { getHouseholdScope } from "@/lib/server/household-scope";
@@ -70,17 +71,17 @@ export default async function FundProfileSettingsPage({
     navDateOffset: profile?.navDateOffset ?? 0,
     tradingCalendar: profile ? fundTradingCalendarForProfile(profile) : "cn_fund",
   };
-  const institutionName = account.Institution?.shortName?.trim() || account.Institution?.name?.trim() || null;
+  const institutionName = institutionFullName(account.Institution) || null;
   const backQuery = new URLSearchParams({ accountId: account.id, view: getInvestmentAccountView(account), fundCode });
 
   return (
     <FundProfileSettingsClient
       account={{ id: account.id, name: account.name, institutionName }}
       profile={profileData}
+      // 基金公司是机构主体 → 只显示全称，简称仅用于账户标签，不再作为副标签重复出现。
       fundCompanyOptions={fundCompanyInstitutions.map((institution): SmartSelectOption => ({
         id: institution.id,
-        label: institution.name,
-        subLabel: institution.shortName?.trim() || undefined,
+        label: institutionFullName(institution),
         kind: institution.type,
       }))}
       backHref={`/?${backQuery.toString()}`}

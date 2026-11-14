@@ -30,6 +30,7 @@ import { SettingsActionButton, SettingsInfoHint, SettingsPageHeader, useHideSett
 import { SwipeActionRow, type SwipeActionItem } from "@/components/SwipeActionRow";
 import SettingsSwitch from "@/components/settings/SettingsSwitch";
 import { buildAccountDisplayOption } from "@/lib/account-display";
+import { institutionFullName } from "@/lib/institution-display";
 import { accountOwnerNameById, buildAccountOwnerOptions } from "@/lib/account-owner-options";
 import { getCreditCardLabelTemplatePreference } from "@/lib/client/appPreferences";
 import { fetchInternalAccountBalances } from "@/lib/client/account-balances-fetch";
@@ -944,7 +945,7 @@ export default function SettingsAccountsPage() {
   }));
   const statisticsInstitutions: StatisticsInstitutionItem[] = institutions.map((institution) => ({
     id: institution.id,
-    name: institution.shortName?.trim() || institution.name,
+    name: institutionFullName(institution),
     type: institution.type,
   }));
   // 「账户所有人」一律按配对家庭成员的姓名展示（见 src/lib/account-owner-options.ts）：
@@ -1092,7 +1093,7 @@ export default function SettingsAccountsPage() {
           const isSettlement = normalizedAccountKind(account) === "settlement";
           const label = isSettlement
             ? account.Counterparty?.shortName?.trim() || account.Counterparty?.name || ""
-            : account.Institution?.shortName?.trim() || account.Institution?.name || "";
+            : institutionFullName(account.Institution);
           push(
             `institution:${institutionId}`,
             label || t("settings.accounts.groupInstitutionNone"),
@@ -1292,7 +1293,7 @@ export default function SettingsAccountsPage() {
 
   // 筛选抽屉的机构选项：口径与 filteredAccounts 一致（真实机构 id，无机构归「现金」）。
   const mobileScopeInstitutionOptions = useMemo(() => {
-    const nameById = new Map(institutions.map((item) => [item.id, item.shortName?.trim() || item.name]));
+    const nameById = new Map(institutions.map((item) => [item.id, institutionFullName(item)]));
     const names = new Map<string, string>();
     for (const account of accounts) {
       const id = account.Institution?.id ?? account.institutionId ?? CASH_INSTITUTION_ID;
@@ -1674,16 +1675,16 @@ export default function SettingsAccountsPage() {
       width: 170,
       minWidth: 120,
       truncate: true,
-      sortValue: (a) => a.Institution?.shortName?.trim() || a.Institution?.name || a.Counterparty?.shortName?.trim() || a.Counterparty?.name || "",
+      sortValue: (a) => institutionFullName(a.Institution) || a.Counterparty?.shortName?.trim() || a.Counterparty?.name || "",
       filterText: (a) => (normalizedAccountKind(a) === "settlement"
         ? a.Counterparty?.shortName?.trim() || a.Counterparty?.name || null
-        : a.Institution?.shortName?.trim() || a.Institution?.name || null),
+        : institutionFullName(a.Institution) || null),
       render: (a) => {
         if (normalizedAccountKind(a) === "settlement") {
           const label = a.Counterparty?.shortName?.trim() || a.Counterparty?.name || "";
           return label ? <span className="text-slate-700">{label}</span> : <span className="text-slate-300">-</span>;
         }
-        const label = a.Institution?.shortName?.trim() || a.Institution?.name || "";
+        const label = institutionFullName(a.Institution);
         return label ? <span className="text-slate-700">{label}</span> : <span className="text-slate-300">-</span>;
       },
     },
@@ -2765,8 +2766,8 @@ export default function SettingsAccountsPage() {
                         onChange={changeEditInstitution}
                         options={filteredInstitutions.map(i => ({
                           id: i.id,
-                          label: i.shortName?.trim() || i.name,
-                          subLabel: [i.shortName?.trim() ? i.name : "", institutionKindLabel(i.type)].filter(Boolean).join(" · "),
+                          label: institutionFullName(i),
+                          subLabel: institutionKindLabel(i.type),
                         }))}
                         placeholder={t("settings.accounts.selectInstitution")}
                         behavior={{ density: "compact" }}

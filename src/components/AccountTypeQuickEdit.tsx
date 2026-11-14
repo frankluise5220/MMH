@@ -14,6 +14,7 @@ import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { normalizeCurrency } from "@/lib/currency";
 import { supportsTradingCalendarForAccount, TRADING_CALENDARS } from "@/lib/fund/trading-calendar";
 import { isSettlementCounterpartyType } from "@/lib/account-kinds";
+import { institutionFullName } from "@/lib/institution-display";
 import {
   accountKindOptionsForEdit,
   accountRecordLockErrorKey,
@@ -399,7 +400,7 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
               {kind === "loan" ? <Field label={t("settings.accounts.loanCategory")}><select value={form.loanCategoryId || loanCategories[0]?.id || ""} onChange={(event) => setField("loanCategoryId", event.target.value)} className={inputClass}>{loanCategories.map((category) => <option key={category.id} value={category.id}>{category.isSystem ? t(`loan.type.${category.baseType}`) : category.name}</option>)}</select></Field> : null}
               {isFixedAssetAccount && <Field label={t("fixedAssetEdit.assetType")}><select value={form.fixedAssetType || "property"} disabled={loanAccountEditLocked} onChange={(event) => setField("fixedAssetType", event.target.value)} className={inputClass}>{FIXED_ASSET_TYPES.map((value) => <option key={value} value={value}>{t(`fixedAsset.type.${value}`)}</option>)}</select></Field>}
               <Field label={t("settings.accounts.owner")}><select value={form.groupId ?? ""} disabled={loanAccountEditLocked} onChange={(event) => setField("groupId", event.target.value)} className={inputClass}><option value="">{t("settings.accounts.selectOwner")}</option>{groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select></Field>
-              {supportsInstitution && !isFixedAssetAccount && <Field label={t("settings.accounts.institution")}><select value={form.institutionId ?? ""} disabled={loanAccountEditLocked} onChange={(event) => setField("institutionId", event.target.value)} className={inputClass}><option value="">{t("settings.accounts.selectInstitution")}</option>{filteredInstitutions.map((institution) => <option key={institution.id} value={institution.id}>{institution.shortName?.trim() || institution.name}</option>)}</select></Field>}
+              {supportsInstitution && !isFixedAssetAccount && <Field label={t("settings.accounts.institution")}><select value={form.institutionId ?? ""} disabled={loanAccountEditLocked} onChange={(event) => setField("institutionId", event.target.value)} className={inputClass}><option value="">{t("settings.accounts.selectInstitution")}</option>{filteredInstitutions.map((institution) => <option key={institution.id} value={institution.id}>{institutionFullName(institution)}</option>)}</select></Field>}
               {kind === "settlement" && account.agreementAnnualRate !== undefined && (
                 <>
                   <Field label={t("liabilityTx.agreementAnnualRate")}><input value={form.agreementAnnualRate ?? ""} onChange={(event) => setField("agreementAnnualRate", event.target.value)} inputMode="decimal" className={inputClass} /></Field>

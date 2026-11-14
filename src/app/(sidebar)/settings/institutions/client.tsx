@@ -280,7 +280,8 @@ export function SettingsInstitutionsClient({
                 <>
                   {/* 家庭页里每一行都是「家庭成员」，类型不必再说一遍 */}
                   {mode !== "family" ? (<><span>{typeLabel(item.type)}</span><span className="text-slate-300">·</span></>) : null}
-                  {item.shortName?.trim() ? (<><span className="truncate">{item.shortName.trim()}</span><span className="text-slate-300">·</span></>) : null}
+                  {/* 机构简称只用于账户标签；这里的标题已经是全称，机构模式不再重复简称 */}
+                  {mode === "counterparty" && item.shortName?.trim() ? (<><span className="truncate">{item.shortName.trim()}</span><span className="text-slate-300">·</span></>) : null}
                   <span className={(item.accountCount ?? 0) > 0 ? "tabular-nums text-slate-600" : "tabular-nums text-slate-400"}>
                     {t("settings.institutions.accountCount", { count: item.accountCount ?? 0 })}
                   </span>

@@ -95,7 +95,8 @@ export async function GET(req: NextRequest) {
         // 产品家族：wealth=理财，advisor=投顾组合（录入窗口按下拉过滤互不混排）。
         productType: item.productType,
         institutionId: item.institutionId,
-        institutionName: item.Institution?.shortName?.trim() || item.Institution?.name || "",
+        // 产品的机构信息是独立主体 → 全称（账户标签里才用简称）。
+        institutionName: item.Institution?.name?.trim() || item.Institution?.shortName || "",
         currency: item.currency,
         annualRate: item.annualRate == null ? null : Number(item.annualRate),
         termDays: item.termDays,
@@ -258,7 +259,7 @@ export async function POST(req: NextRequest) {
         shortName: product.shortName,
         productType: product.productType,
         institutionId: product.institutionId,
-        institutionName: product.Institution?.shortName?.trim() || product.Institution?.name || "",
+        institutionName: product.Institution?.name?.trim() || product.Institution?.shortName || "",
         currency: product.currency,
         annualRate: product.annualRate == null ? null : Number(product.annualRate),
         termDays: product.termDays,

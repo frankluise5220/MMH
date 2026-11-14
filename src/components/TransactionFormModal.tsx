@@ -20,6 +20,7 @@ import { isSettlementCounterpartyType, kindLabel } from "@/lib/account-kinds";
 import { restrictAccountsByType } from "@/lib/client/account-dropdown-filter";
 import { getCashTargetOperation, isAdvanceFundingAccount, isDepositAccount, isDepositPostingCategoryAllowed,  isIncomeExpensePostingOrDepositAccount, isLoanOrSettlementAccountKind, isTransferDropdownAccount } from "@/lib/account-kind-utils";
 import { buildAccountDisplayOption, buildGroupedAccountOptions, counterpartyQualifiedAccountName, formatAccountHoverTitle } from "@/lib/account-display";
+import { institutionFullName } from "@/lib/institution-display";
 import { recordRecentAccounts, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
 import { useResetEntryModalReconciledReadOnlyOnClose } from "@/lib/client/entryModalLock";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
@@ -537,7 +538,7 @@ export function TransactionFormModal({
             groupId: (data.groups ?? []).filter((group: { name: string }) => group.name !== "未指定").map((group: { id: string; name: string }) => ({ id: group.id, name: group.name })),
             institutionId: (data.institutions ?? []).map((institution: { id: string; name: string; shortName?: string | null; type?: string | null }) => ({
               id: institution.id,
-              name: institution.shortName?.trim() || institution.name,
+              name: institutionFullName(institution),
               type: institution.type ?? "",
             })),
             counterpartyId: (data.counterparties ?? [])
@@ -829,7 +830,7 @@ export function TransactionFormModal({
         groupId: (data.groups ?? []).map((group) => ({ id: group.id, name: group.name })),
         institutionId: (data.institutions ?? []).map((institution) => ({
           id: institution.id,
-          name: institution.shortName?.trim() || institution.name,
+          name: institutionFullName(institution),
           type: institution.type ?? "",
         })),
         counterpartyId: (data.counterparties ?? []).map((counterparty) => ({
