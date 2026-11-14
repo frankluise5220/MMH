@@ -46,7 +46,10 @@ const externalNode = process.env.FNOS_EXTERNAL_NODE === "1";
 // 覆盖升级链路和 @appcenter/mmh 数据目录都会断。
 // 2026-11-02 用户定名：显示名从「MMH」改为「MMH 记账」（MMH 与「记账」之间留一个空格），
 // 飞牛的包标记（appname=mmh）保持不变。
-const displayName = externalNode ? "MMH 记账（外部 Node.js）" : "MMH 记账";
+// 2026-11-14 用户明确：显示名不得按变体加后缀（「（外部 Node.js）」这类）——bundled
+// 与 external-node 是同一个应用的两个包，不是两个软件，装哪个都应该只显示「MMH 记账」。
+// 变体信息只出现在 fpk 文件名与 desc 里。
+const displayName = "MMH 记账";
 // 应用介绍：全渠道同一份通用简介（群晖套件中心、软仓、FnDepot 用的都是它）。
 // 飞牛官方 2026-11-02 确认：应用商店详情页的简介就封装在 fpk 的 manifest（desc=）
 // 里，商店后台与飞书申请表都改不动它——只有重新打包、重新提交才会变。此前这里是
