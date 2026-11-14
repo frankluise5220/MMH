@@ -282,13 +282,19 @@ function expectPngSize(file, size) {
 }
 
 const buildScript = read(path.join(root, "scripts", "build-fnos-package.cjs"));
-// Single source of truth for the package's default service port. 7777 collides
-// with existing services on real fnOS hosts, so the package must not default to
-// it; every manifest/wizard/script fallback must agree with this constant.
+// Single source of truth for the package's default service port: the historical
+// 7777, shared with Docker / SPK / desktop. A host that already runs something on
+// 7777 must be handled by probing forward on fresh install, not by moving the
+// default for everyone; existing installs keep the port stored in .port.
 const fnosDefaultPortMatch = buildScript.match(/const fnosDefaultPort = (\d+);/);
 const fnosDefaultPort = fnosDefaultPortMatch ? fnosDefaultPortMatch[1] : "";
 expect(Boolean(fnosDefaultPort), "fnOS build script must declare a numeric fnosDefaultPort constant.");
-expect(fnosDefaultPort !== "7777", "fnOS default service port must not be 7777: it collides with services already running on real hosts (wizard default, manifest service_port and script fallbacks must all move together).");
+expect(fnosDefaultPort === "7777", "fnOS default service port must stay 7777 like every other channel; a single host's port collision is resolved by probing, not by changing the default.");
+expect(buildScript.includes('probe_free_port "$start_port"'), "fnOS fresh installs must probe for a free port instead of binding a taken default.");
+expect(
+  buildScript.includes('start_port="\\${TRIM_SERVICE_PORT:-${fnosDefaultPort}}"'),
+  "fnOS fresh-install probe must start at fnosDefaultPort (or TRIM_SERVICE_PORT when the App Center passes one).",
+);
 const appBuildScript = read(path.join(root, "scripts", "build-fnos-app.cjs"));
 const schemaScript = read(path.join(root, "scripts", "generate-native-sqlite-schema.cjs"));
 const fnosReleaseWorkflow = read(path.join(root, ".github", "workflows", "fnos-release.yml"));
@@ -580,10 +586,10 @@ expect(/MMH_SYSTEM_PASSWORD/.test(buildScript), "fnOS start script must export M
 expect(/mmh-system-password\.txt/.test(buildScript), "fnOS start script must persist generated system passwords in app data.");
 expect(/install_callback/.test(buildScript) && /write_env_file/.test(buildScript), "fnOS lifecycle callbacks must persist package runtime settings.");
 expect(/"run-as": "package"/.test(buildScript), "fnOS lifecycle scripts must run as the mmh package user.");
-expect(buildScript.includes(`service_port=\${fnosDefaultPort}`) && !/service_port=7777/.test(buildScript), "fnOS manifest must take service_port from fnosDefaultPort (a hardcoded 7777 collides with services already running on real hosts).");
+expect(buildScript.includes(`service_port=\${fnosDefaultPort}`) && !/service_port=7777/.test(buildScript), "fnOS manifest must take service_port from fnosDefaultPort instead of hardcoding a number, so the wizard, manifest and script fallbacks can never drift apart.");
 expect(
   buildScript.includes('MMH_LOCAL_TCP_PORT="\\${MMH_LOCAL_TCP_PORT:-\\${PORT:-') && !/MMH_LOCAL_TCP_PORT:-7777/.test(buildScript),
-  "fnOS cmd/main must default MMH_LOCAL_TCP_PORT to PORT: a hardcoded 7777 keeps the gateway listening on 7777 no matter which service port the user picks, so changing the port never resolves the conflict.",
+  "fnOS cmd/main must default MMH_LOCAL_TCP_PORT to PORT: a hardcoded port keeps the gateway listening on it no matter which service port the user picks, so moving the port would never actually free the old one.",
 );
 expect(/checkport=true/.test(buildScript), "fnOS manifest must enable service-port checking.");
 expect(/gatewayPrefix:\s*"\/app\/mmh"/.test(buildScript) && /gatewaySocket:\s*"app\.sock"/.test(buildScript) && /type:\s*"url"/.test(buildScript), "fnOS entry must register the unified-gateway URL /app/mmh on the app.sock socket.");

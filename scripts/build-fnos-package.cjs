@@ -50,10 +50,11 @@ const externalNode = process.env.FNOS_EXTERNAL_NODE === "1";
 // 与 external-node 是同一个应用的两个包，不是两个软件，装哪个都应该只显示「MMH 记账」。
 // 变体信息只出现在 fpk 文件名与 desc 里。
 const displayName = "MMH 记账";
-// fnOS 包的默认服务端口。2026-11-14 用户裁定：7777 在真机上已被既有服务占用，
-// fnOS 包必须避开它。其他渠道（Docker / 群晖 SPK / 桌面）仍固定 7777，不动。
-// 安装时从这个值开始探测第一个空闲端口，向导里也随时可以改。
-const fnosDefaultPort = 7788;
+// fnOS 包的默认服务端口。2026-11-14 用户裁定：默认沿用历史值 7777，与本产品其它
+// 渠道（Docker / 群晖 SPK / 桌面）一致，不为了某台机器上的一次端口占用就整体改默认值。
+// 冲突靠探测解决：全新安装从这个值开始找第一个空闲端口（被占则 +1，最多 20 次），
+// 升级/重装沿用已保存的 .port，向导里也随时可以改。
+const fnosDefaultPort = 7777;
 // 应用介绍：全渠道同一份通用简介（群晖套件中心、软仓、FnDepot 用的都是它）。
 // 飞牛官方 2026-11-02 确认：应用商店详情页的简介就封装在 fpk 的 manifest（desc=）
 // 里，商店后台与飞书申请表都改不动它——只有重新打包、重新提交才会变。此前这里是
@@ -1261,9 +1262,10 @@ resolve_port() {
         return 0
     fi
     # No install wizard ships with this package: fresh installs never ask for a
-    # port, so probe for a free one instead of deadlocking on a taken default
-    # port (7777 collides with existing services on real hosts, hence 7788).
-    # Reinstalls and updates reuse .port above and never reach this probe.
+    # port, so start from the historical default and probe forward instead of
+    # deadlocking on a host that already uses it. Reinstalls and updates reuse
+    # .port above and never reach this probe, so an existing install keeps
+    # whatever port it was given.
     start_port="\${TRIM_SERVICE_PORT:-${fnosDefaultPort}}"
     probe_free_port "$start_port"
 }
