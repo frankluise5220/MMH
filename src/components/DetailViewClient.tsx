@@ -43,6 +43,7 @@ import {
   isLicensedInsuranceEntry,
   isRegularInvestRefundEntry,
   TRANSACTION_SOURCE_INSURANCE,
+  TRANSACTION_SOURCE_MONEY_INCOME,
 } from "@/lib/transaction-semantics";
 import { normalizeSettlementTransferCategoryName } from "@/lib/settlement-category-name";
 import { advanceDialogAmount } from "@/lib/advance-transfer";
@@ -670,6 +671,7 @@ function investmentCategoryLabel(
     if (subtype === "buy") return t("detailView.metalBuy");
   }
   if (productType === "fund" || productType === "money" || !productType) {
+    if (source === TRANSACTION_SOURCE_MONEY_INCOME) return t("fund.subtype.moneyIncome");
     if (subtype === "buy" && source === "regular_invest") return t("detailView.fundRegularInvest");
     if (subtype === "buy" && source === "dividend") return t("detailView.dividendInvest");
     if (subtype === "redeem") return t("detailView.fundRedeem");

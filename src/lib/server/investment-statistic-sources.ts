@@ -2,6 +2,7 @@ import { FundCashFlowKind, FundSubtype } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
 import { toNumber } from "@/lib/date-utils";
+import { TRANSACTION_SOURCE_MONEY_INCOME } from "@/lib/transaction-semantics";
 import { calculateWealthPositionsFromEntries } from "@/lib/wealth-position";
 import { getFundProfileNameMap } from "@/lib/fund/fundProfile";
 import { normalizeFundUnitsDecimals } from "@/lib/fund/unit-precision";
@@ -91,6 +92,7 @@ export async function loadFundStatisticSourceEntries(
       fundSubtype: true,
       fundProductType: true,
       fundCode: true,
+      source: true,
       realizedProfit: true,
       units: true,
       nav: true,
@@ -154,6 +156,9 @@ export async function loadFundStatisticSourceEntries(
   const entries: InvestmentStatisticSourceEntry[] = [];
 
   for (const row of rows) {
+    // 货基收益结转只增份额、没有现金流，若放进来就会变成一条「买入 0 元」的流水，
+    // 把笔数算多却算不出金额；它的收益已经体现在持仓市值和浮盈里。
+    if (row.source === TRANSACTION_SOURCE_MONEY_INCOME) continue;
     const fundName = row.fundCode ? fundNameByCode.get(row.fundCode) ?? null : null;
     const orderedFlows = [...row.cashFlows].sort((a, b) =>
       a.flowDate.getTime() - b.flowDate.getTime() ||

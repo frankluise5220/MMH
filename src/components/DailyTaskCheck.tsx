@@ -159,17 +159,35 @@ export function DailyTaskCheck() {
           console.warn("[DailyTaskCheck] repo auto redeem failed", error);
         }
 
+        // 货基收益结转：按每万份收益把收益转成份额。和逆回购一样单独兜住异常——
+        // 取数失败不该挡住后面的行情刷新；漏掉的日子下一轮会按游标补上。
+        let moneyIncomeData: unknown = null;
+        try {
+          const moneyIncomeRes = await fetch("/api/v1/fund/money-income/accrue", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+          });
+          moneyIncomeData = await moneyIncomeRes.json().catch(() => null);
+          assertOkResponse(moneyIncomeRes, moneyIncomeData, "money fund income accrual");
+        } catch (error) {
+          console.warn("[DailyTaskCheck] money fund income accrual failed", error);
+        }
+
         if (
           hasUsefulChange(planData) ||
           hasUsefulChange(pendingData) ||
           hasUsefulChange(stockData) ||
-          hasUsefulChange(repoData)
+          hasUsefulChange(repoData) ||
+          hasUsefulChange(moneyIncomeData)
         ) {
           // auto-execute 会批量写 txRecord（定投 / 存款到期 / 取息）。有真实落账时不能
           // 再用中性的 startup-check 掩盖，否则新记的流水不会出现在明细里；只有净值
           // 回填 / 行情刷新才保持中性，避免开机无谓重取整页。
           const executedCount = Number(isObject(planData) ? planData.executedCount ?? 0 : 0);
-          if (executedCount > 0) {
+          // 收益结转虽然只动份额（没有现金流水），但它确实改变了持仓与明细，必须重取。
+          const moneyAccrued =
+            isObject(moneyIncomeData) && isObject(moneyIncomeData.data) && moneyIncomeData.data.status === "accrued";
+          if (executedCount > 0 || moneyAccrued) {
             dispatchFinanceDataChanged({
               reason: "startup-auto-execute",
               entryIds: getEntryIds(pendingData),

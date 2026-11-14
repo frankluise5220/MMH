@@ -603,14 +603,12 @@ function accountMarketValueAt(params: {
     const calendar = fundValuationCalendar(params.account, meta);
 
     if (meta.isMoney) {
-      // Money funds keep a constant unit NAV of 1. The cached nav is the
-      // per-10k daily yield when below 1, so market value is always
-      // units x 1 and the yield is counted as same-day income.
+      // Money funds keep a constant unit NAV of 1: market value is units x 1.
+      // The daily per-10k yield is **already** converted into units by the
+      // income-accrual job (source = money_fund_income), so it is baked into
+      // `units` here. Counting it again as same-day income would double book
+      // the same yield.
       marketValue += units * 1 + pending;
-      const exactNav = exactNavOnDate(params.navByCode, fundCode, dateKey);
-      if (exactNav != null && exactNav < 1 && units > 0) {
-        moneyIncome += (exactNav * units) / 10000;
-      }
       continue;
     }
 

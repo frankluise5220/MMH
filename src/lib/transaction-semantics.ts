@@ -40,6 +40,13 @@ export const TRANSACTION_SOURCE_INSURANCE = "insurance" as const;
 const TRANSACTION_SOURCE_REGULAR_INVEST = "regular_invest" as const;
 export const TRANSACTION_SOURCE_REGULAR_INVEST_REFUND = "regular_invest_refund" as const;
 export const TRANSACTION_SOURCE_FUND_UNITS_RECONCILE = "fund_units_reconcile" as const;
+/**
+ * 货币基金每日收益结转（红利再投）写入的流水 source。
+ *
+ * 货基净值恒为 1，收益按监管口径只能红利再投：只增份额、没有现金流动，
+ * 因此明细要显示成「收益结转」而不是「买入」，统计也不能算成新增投入。
+ */
+export const TRANSACTION_SOURCE_MONEY_INCOME = "money_fund_income" as const;
 const TRANSACTION_SOURCE_SCHEDULED_TASK = "scheduled_task" as const;
 /**
  * 债券执行器（买入/付息/赎回）写入的流水 source。
