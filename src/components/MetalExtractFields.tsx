@@ -277,6 +277,7 @@ export function MetalExtractFields({
           title={t("metalExtract.createPropertyAccount")}
           defaultType="investment"
           defaultName={t("metalExtract.newAccountDefaultName")}
+          notice={t("metalExtract.createPropertyAccountNotice")}
           nestedFieldData={nestedFieldData}
           hiddenFields={[
             "kind",

@@ -147,6 +147,8 @@ type CompactModeProps = {
   includeInitialBalanceFields?: boolean;
   /** For account creation: initial currency selected from the current ledger setting. */
   defaultCurrency?: string;
+  /** 只读提示条（表单顶部）：说明这套字段被锁定的默认口径，例如提取实物新建账户默认是收藏品。 */
+  notice?: string;
 };
 
 /* ---- Full mode props (new, for settings pages) ---- */
@@ -478,6 +480,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
   const displayNameLabel = props.nameLabel ?? t(config.nameLabelKey);
   const displayNamePlaceholder = props.namePlaceholder ?? t(config.namePlaceholderKey);
   const defaultName = props.defaultName ?? "";
+  const notice = mode === "compact" ? props.notice ?? "" : "";
   const includeInitialBalanceFields = entityType === "account" && Boolean(props.includeInitialBalanceFields);
 
   // Unpack mode-specific props
@@ -1182,6 +1185,11 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
               </button>
             </div>
             <form className="p-4 space-y-3" onSubmit={onSubmit}>
+              {notice ? (
+                <div className="rounded-lg border border-sky-100 bg-sky-50 px-3 py-2 text-xs leading-5 text-sky-800">
+                  {notice}
+                </div>
+              ) : null}
               <div className="space-y-1">
                 <div className="form-label">{displayNameLabel}</div>
                 <input
