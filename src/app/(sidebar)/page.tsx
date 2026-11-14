@@ -3185,6 +3185,10 @@ export default async function Home({
                       : (selectedAccount?.id ?? accountId ?? ""),
                   defaultTransferToAccountId: isBillAccount ? (selectedAccount?.id ?? accountId ?? "") : "",
                   defaultInvestmentAccountId: currentFundInvestmentAccountId,
+                  // 货基账户里点「记一笔」要打开货基记账窗，不能一律按开放式基金。
+                  defaultInvestmentProductType: isFundLikeInvestView
+                    ? (selectedAccount?.investProductType ?? "")
+                    : "",
                   defaultStockAccountId: defaultStockInvestmentAccountId,
                   defaultStockCashAccountId,
                   defaultStockTransferFromAccountId,

@@ -412,9 +412,12 @@ export function InvestmentFormModal({
     : (mode === "edit" && entry && entry.amount < 0 ? "buy" : "redeem");
   const initSubtype: FundSubtype = initDisplaySubtype;
   const initAmount = mode === "edit" && entry ? Math.abs(entry.amount) : "";
+  // 货基净值恒为 1：历史上存成万份收益的旧记录（例如 0.2168）也不能回填成净值，
+  // 否则一打开编辑窗份额就被放大几千倍。
   const initNav = mode === "edit" && fixedProductType === "metal" && entry?.metalUnitPrice != null
     ? String(entry.metalUnitPrice)
-    : mode === "edit" && entry?.fundNav != null ? String(entry.fundNav) : "";
+    : mode === "edit" && fixedProductType === "money" ? "1"
+      : mode === "edit" && entry?.fundNav != null ? String(entry.fundNav) : "";
   const initUsesRedeemAsOfUnits =
     mode === "create" &&
     isRedeemLike(initSubtype) &&
@@ -475,6 +478,16 @@ export function InvestmentFormModal({
   // 已「对账」的记录：编辑窗照常打开，但整张表单禁用（可查看、不可改）——由 `EntryModalShell` 统一处理。
   useResetEntryModalReconciledReadOnlyOnClose(open);
   const [productType, setProductType] = useState<ProductType>(fixedProductType);
+  // 账户本身已经定死了产品类型（货基账户、贵金属账户…）时，界面必须从头到尾就是这个类型。
+  // 以前类型会被「胶囊菜单的默认值」「输入基金代码后查到的类型」「编辑记录的 fundProductType」
+  // 中途改掉，于是货基账户里能出现开放式基金的净值框。锁定的唯一依据是账户，不是代码。
+  const lockedProductType: ProductType | null =
+    accountProductType && ["fund", "money", "wealth", "deposit", "metal"].includes(accountProductType)
+      ? (accountProductType as ProductType)
+      : null;
+  function applyProductType(next: ProductType) {
+    setProductType(lockedProductType ?? next);
+  }
   // 贵金属数量（克 / 盎司）不沿用基金份额的 2 位，否则编辑回填与提交都会丢精度。
   const fundUnitsDecimals = resolveQuantityDecimals(productType, fundUnitsDecimalsProp);
   const formatUnits = (value: number) => formatFundUnitsValue(value, fundUnitsDecimals);
@@ -1471,7 +1484,7 @@ export function InvestmentFormModal({
       const requestedProductType: ProductType = detail.defaultProductType && ["fund", "money", "wealth", "deposit", "metal"].includes(detail.defaultProductType)
         ? detail.defaultProductType as ProductType
         : fixedProductType;
-      setProductType(requestedProductType);
+      applyProductType(requestedProductType);
       // 「提取实物」入口直接打开同一个贵金属窗口的提取实物页签，而不是另弹一个窗。
       const wantsMetalExtract = requestedProductType === "metal" && detail.defaultSubtype === "metal_extract";
       setMetalExtractTab(wantsMetalExtract);
@@ -1592,7 +1605,7 @@ export function InvestmentFormModal({
       }
       setLinkedRefundEntryId(linkedRefund?.id ?? null);
       if (detail.fundProductType && ["fund", "money", "wealth", "deposit", "metal"].includes(detail.fundProductType)) {
-        setProductType(detail.fundProductType as ProductType);
+        applyProductType(detail.fundProductType as ProductType);
       }
 
       editAutoNavEnabledRef.current = false;
@@ -2059,7 +2072,11 @@ export function InvestmentFormModal({
     selectSubtype(nextSubtype);
   }
 
+  // 页签收窄后（例如货基去掉了分红），编辑一条历史分红记录不能被强行拽回第一个页签，
+  // 否则一打开编辑窗 subtype 就变成「买入」，保存时把历史记录改名了。
+  const subtypeOwnedByEntry = mode === "edit" && !!entry?.fundSubtype && entry.fundSubtype === subtype;
   useEffect(() => {
+    if (subtypeOwnedByEntry) return;
     if (!allSubtypes.includes(subtype)) {
       setSubtype(allSubtypes[0]);
     }
@@ -2212,7 +2229,9 @@ export function InvestmentFormModal({
     const hasFeeRawOption = Object.prototype.hasOwnProperty.call(options ?? {}, "feeRaw");
     const hasFeeRateRawOption = Object.prototype.hasOwnProperty.call(options ?? {}, "feeRateRaw");
     const amountN = Math.max(0, p(options?.amountRaw ?? amount));
-    const navN = p(options?.navRaw ?? nav);
+    // 货基一元一份：净值恒为 1。行情接口给的 0.2168 是「每万份收益」，不是净值，
+    // 拿它去除金额会把份额放大几千倍，所以这里直接短路，不看 nav 输入框的值。
+    const navN = p(productType === "money" ? "1" : (options?.navRaw ?? nav));
     const feeInputN = Math.max(0, p(options?.feeRaw ?? fee));
     const feeRateN = Math.max(0, p(options?.feeRateRaw ?? feeRate));
     const refundEnabled = options?.refundEnabled ?? (subtype === "buy" && buyResultStatus === "refund");
@@ -2564,6 +2583,8 @@ export function InvestmentFormModal({
     const code = fundCode.trim();
     if (!confirmDate || !code || !showUnitsFor(subtype, productType)) return;
     if (productType === "metal") return;
+    // 货基不取净值：接口返回的是每万份收益，填进净值框就会把份额算错。
+    if (productType === "money") return;
     if (mode === "edit" && !editAutoNavEnabledRef.current) {
       // 编辑模式默认尊重记录里已保存的净值（只有改动日期/代码时才重取）。
       // 例外：记录本身没有净值的普通买入（例如尚未回填净值的定投买入）——不补取
@@ -2616,7 +2637,7 @@ export function InvestmentFormModal({
     }
 
     if (!keepSubtype) {
-      setProductType(fixedProductType);
+      applyProductType(fixedProductType);
       setSubtype("buy");
       setCashAccountId("");
       investmentAccountTouchedRef.current = false;
@@ -2759,6 +2780,8 @@ export function InvestmentFormModal({
       await fetchMetalPrice();
       return;
     }
+    // 货基净值恒为 1，没有可取的净值；万份收益属于收益数据，不进这张表单。
+    if (productType === "money") return;
     if (!fundCode) return;
     const fetchDate = confirmDate || applyDate;
     setNavLoading(true);
@@ -2993,7 +3016,8 @@ export function InvestmentFormModal({
         formData.set("fundUnits", finalUnits > 0 ? String(finalUnits) : "");
       }
       if (shouldSubmitFundNavFields) {
-        formData.set("fundNav", nav.trim() ? String(p(nav)) : "");
+        // 货基落库净值恒为 1（万份收益不进这张表）。
+        formData.set("fundNav", productType === "money" ? "1" : (nav.trim() ? String(p(nav)) : ""));
         if (!isDividend(subtype)) formData.set("fundFee", finalFee > 0 ? String(finalFee) : "");
         formData.set("fundConfirmDate", confirmDate || "");
       }
@@ -3051,7 +3075,8 @@ export function InvestmentFormModal({
         if (finalUnits > 0) formData.set("fundUnits", String(finalUnits));
       }
       if (shouldSubmitFundNavFields) {
-        if (p(nav) > 0) formData.set("fundNav", String(p(nav)));
+        if (productType === "money") formData.set("fundNav", "1");
+        else if (p(nav) > 0) formData.set("fundNav", String(p(nav)));
         if (!isDividend(subtype)) formData.set("fundFee", finalFee > 0 ? String(finalFee) : "");
         if (confirmDate) formData.set("fundConfirmDate", confirmDate);
       }
@@ -3210,7 +3235,12 @@ export function InvestmentFormModal({
   // - 其余产品：PRODUCT_SUBTYPES 原样。
   const visibleTabIds: string[] = isMetalExtractEdit
     ? ["redeem"]
-    : [...allSubtypes, ...(showMetalExtractTab ? [METAL_EXTRACT_TAB_ID] : [])];
+    : [
+        ...allSubtypes,
+        // 历史记录兜底：产品页签收窄后（货基不再有分红），旧记录仍要有一个自己的页签可停靠。
+        ...(allSubtypes.includes(subtype) ? [] : [subtype]),
+        ...(showMetalExtractTab ? [METAL_EXTRACT_TAB_ID] : []),
+      ];
   const tabLabel = (id: string) =>
     id === METAL_EXTRACT_TAB_ID || isMetalExtractEdit
       ? t("metalExtract.entryButton")
@@ -3803,21 +3833,24 @@ export function InvestmentFormModal({
                   「净值 (10-07净值)」实测 93.4px，再窄（如严格一半 5.5rem = 88px）标签必然换行，
                   100px 是「单行不换行」的下限，其余宽度全给右侧「买入金额 / 退回金额 / 确认金额」
                   三格，三格再均分（内层 `1fr 1fr 1fr`）。 */}
-              <div className="grid grid-cols-1 items-end gap-2 sm:grid-cols-[6.25rem_auto_1fr]">
+              <div className={`grid grid-cols-1 items-end gap-2 ${productType === "money" ? "sm:grid-cols-[6.25rem_1fr]" : "sm:grid-cols-[6.25rem_auto_1fr]"}`}>
                 <div className="space-y-1">
                   <div className="text-xs font-medium text-slate-600">
                     {productType === "metal" ? t("investForm.metalPrice") : t("investForm.nav")}
-                    {navLoading ? (
+                    {navLoading && productType !== "money" ? (
                       <span className="ml-1 font-normal text-slate-400">{t("investForm.fetching")}</span>
                     ) : null}
-                    {navActualDate && !navLoading ? (
+                    {navActualDate && !navLoading && productType !== "money" ? (
                       <span className="ml-1 whitespace-nowrap font-normal text-amber-600">{t("investForm.navActualDate", { date: formatNavHintDate(navActualDate), label: productType === "metal" ? t("investForm.metalPrice") : t("investForm.nav") })}</span>
                     ) : null}
                   </div>
                   <input
                     inputMode="decimal"
-                    value={nav}
+                    value={productType === "money" ? "1.0000" : nav}
+                    readOnly={productType === "money"}
                     onChange={(e) => {
+                      // 货基净值是常量，输入框只显示不接收输入。
+                      if (productType === "money") return;
                       const nextNav = e.target.value;
                       setNav(nextNav);
                       navEditedRef.current = true;
@@ -3838,15 +3871,18 @@ export function InvestmentFormModal({
                     className="form-input"
                   />
                 </div>
-                <button
-                  type="button"
-                  onClick={fetchNav}
-                  disabled={navLoading || (productType === "metal" ? !metalTypeId || !metalUnitId : !fundCode)}
-                  className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] border border-amber-200 bg-amber-50 text-amber-700 transition-colors hover:border-amber-300 hover:bg-amber-100 disabled:opacity-50"
-                  title={productType === "metal" ? t("investForm.fetchMetalPrice") : t("investForm.fetchNav")}
-                >
-                  <DatabaseZap className={`h-4 w-4 ${navLoading ? "animate-pulse" : ""}`} />
-                </button>
+                {/* 货基没有可取的净值，去掉取数按钮：它拉回来的 0.2168 是万份收益。 */}
+                {productType === "money" ? null : (
+                  <button
+                    type="button"
+                    onClick={fetchNav}
+                    disabled={navLoading || (productType === "metal" ? !metalTypeId || !metalUnitId : !fundCode)}
+                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] border border-amber-200 bg-amber-50 text-amber-700 transition-colors hover:border-amber-300 hover:bg-amber-100 disabled:opacity-50"
+                    title={productType === "metal" ? t("investForm.fetchMetalPrice") : t("investForm.fetchNav")}
+                  >
+                    <DatabaseZap className={`h-4 w-4 ${navLoading ? "animate-pulse" : ""}`} />
+                  </button>
+                )}
                 <div className={`grid grid-cols-1 gap-2 ${isBuyLike(subtype) && subtype === "buy" && !isDividend(subtype) && productType !== "metal" ? "sm:grid-cols-[1fr_1fr_1fr]" : ""}`}>
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">

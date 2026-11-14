@@ -56,7 +56,9 @@ export function supportsCostBasisMethod(productType: string | null | undefined):
 // Transaction types supported by each product type (layout grouping)
 export const PRODUCT_SUBTYPES: Record<ProductType, FundSubtype[][]> = {
   fund: [["buy", "redeem", "dividend_cash", "dividend_reinvest"]],
-  money: [["buy", "redeem", "dividend_cash", "dividend_reinvest"]],
+  // 货币基金净值恒为 1，收益按监管口径只能红利再投（每日结转份额），不存在现金分红；
+  // 收益结转是后台按日自动增份额，不是用户手记的一笔交易，所以两个分红页签都不给货基。
+  money: [["buy", "redeem"]],
   wealth: [["buy", "redeem"]],
   advisor: [["buy", "redeem"]],
   bond: [["buy", "redeem"]],

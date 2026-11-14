@@ -62,6 +62,8 @@ type Props = {
     defaultTransferFromAccountId?: string;
     defaultTransferToAccountId?: string;
     defaultInvestmentAccountId?: string;
+    /** 当前投资账户的产品类型（fund / money）。货基账户点「记一笔」必须带着 money 打开。 */
+    defaultInvestmentProductType?: string;
     defaultStockAccountId?: string;
     defaultStockCashAccountId?: string;
     defaultStockTransferFromAccountId?: string;
@@ -221,21 +223,30 @@ function dispatchEntryAction(kind: EntryKind, context?: Props["context"], loanTy
         }),
       );
       return;
-    case "investment":
+    case "investment": {
       const currentFund = getCurrentFundContext(context);
+      // 产品类型不能写死成开放式基金：货基账户点「记一笔」会带着 fund 打开，
+      // 副标题显示「开放式基金」，后续净值与份额也按基金口径算。
+      // 账户类型优先；拿不到时按当前视图兜底（investmoney 是货基专属视图）。
+      const accountProductType = context?.defaultInvestmentProductType ?? "";
+      const onMoneyView =
+        typeof window !== "undefined" &&
+        new URLSearchParams(window.location.search).get("view") === "investmoney";
+      const productType = accountProductType === "money" || onMoneyView ? "money" : "fund";
       window.dispatchEvent(
         new CustomEvent("mmh:investment:create", {
           detail: {
             requestId,
             defaultAccountId: context?.defaultInvestmentAccountId ?? "",
             defaultCashAccountId: context?.defaultCashAccountId ?? context?.defaultAccountId ?? "",
-            defaultProductType: "fund",
+            defaultProductType: productType,
             defaultFundCode: currentFund.fundCode,
             defaultFundName: currentFund.fundName,
           },
         }),
       );
       return;
+    }
     // 「股票」按**当前页签**决定默认动作：已经停在逆回购页签（URL `stockTab=repo`，由
     // StockHoldingsPanel 维持）时，点它直接弹出**逆回购记账窗**，而不是买入
     // （2026-11-12 用户：「如果在股票逆回购，点击胶囊按钮，就出现逆回购记一笔的界面」）。
