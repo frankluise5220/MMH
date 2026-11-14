@@ -84,10 +84,49 @@ const externalNodeStartup = externalNode ? [
   "    exit 1",
   "  fi",
   "  if ! (cd \"$SERVER_DIR\" && \"$NODE_BIN\" -e 'const Database=require(\"better-sqlite3\"); const db=new Database(\":memory:\"); if (db.prepare(\"select 1 as ok\").get().ok !== 1) process.exit(1); db.close();') >/dev/null 2>&1; then",
-  "    echo \"MMH external Node.js cannot load better-sqlite3. Install the matching Node.js v22 runtime.\" >&2",
+  "    echo \"MMH cannot load better-sqlite3 with the detected Node.js. Reinstall the App Center 'Node.js 22' dependency from MMH's install_dep_apps, or point MMH_NODE_BIN at a Node.js 22 binary.\" >&2",
   "    exit 1",
   "  fi",
 ].join("\n") : "";
+// 载荷就绪判定。bundled 变体要求「内置 node + server.js」两项都在，因为它自己
+// 带运行时；external-node 变体打包时把 app/bin 整个删掉了（见文件末尾的
+// `hasNode && externalNode` 分支），继续用同一条判定就永远不可能就绪 ——
+// 0.1.85 的 x86_64-external-node.fpk 真机安装正是死在这里：tar 解包明明成功，
+// app_payload_is_ready 却一直返回 1，最后报 "did not produce a runnable app"。
+// 所以 external-node 只认 server.js，运行时交给 select_node_bin 去发现。
+const payloadReadyFn = externalNode
+  ? `app_payload_is_ready() {
+    local dest="$1"
+    if [ -f "\${dest}/server/server.js" ]; then
+        APP_ROOT="\${dest}"
+        APP_BIN=""
+        APP_SERVER="\${dest}/server/server.js"
+        return 0
+    fi
+    if [ -f "\${dest}/app/server/server.js" ]; then
+        APP_ROOT="\${dest}/app"
+        APP_BIN=""
+        APP_SERVER="\${dest}/app/server/server.js"
+        return 0
+    fi
+    return 1
+}`
+  : `app_payload_is_ready() {
+    local dest="$1"
+    if [ -x "\${dest}/bin/node" ] && [ -f "\${dest}/server/server.js" ]; then
+        APP_ROOT="\${dest}"
+        APP_BIN="\${dest}/bin/node"
+        APP_SERVER="\${dest}/server/server.js"
+        return 0
+    fi
+    if [ -x "\${dest}/app/bin/node" ] && [ -f "\${dest}/app/server/server.js" ]; then
+        APP_ROOT="\${dest}/app"
+        APP_BIN="\${dest}/app/bin/node"
+        APP_SERVER="\${dest}/app/server/server.js"
+        return 0
+    fi
+    return 1
+}`;
 const stageDir = path.join(outDir, `${target.stageDirName}${externalNode ? "-external-node" : ""}`);
 const nodeTarball = process.env.FNOS_NODE_TARBALL || "";
 const isLinux = process.platform === "linux";
@@ -745,7 +784,7 @@ if (generatedSchema.status !== 0) process.exit(generatedSchema.status || 1);
 write(path.join(stageDir, "manifest"), `
 appname=${appName}
 version=${version}
-desc=${externalNode ? "一套本地部署、依赖外部 Node.js 运行时的家庭账务管理系统。" : storeIntro}
+desc=${externalNode ? "一套本地部署、自动安装 Node.js 22 运行时的家庭账务管理系统。" : storeIntro}
 display_name=${displayName}
 arch=${target.manifestArch}
 platform=${target.manifestPlatform}
@@ -758,7 +797,7 @@ distributor_url=https://github.com/frankluise5220/MMH
 helpurl=https://github.com/frankluise5220/MMH
 desktop_uidir=ui
 desktop_applaunchname=mmh.Application
-service_port=7777
+${externalNode ? "install_dep_apps=nodejs_v22\n" : ""}service_port=7777
 checkport=true
 changelog=${manifestChangelog}
 `);
@@ -815,8 +854,8 @@ write(path.join(stageDir, "wizard", "config"), JSON.stringify([
         type: "text",
         field: "wizard_node_bin",
         label: "Node.js 可执行文件",
-        initValue: "node",
-        helpText: "需要 Node.js 22.x。可填写 node、绝对路径，或 FN Depot Node.js v22 的实际路径。保存后会重启 MMH 服务。",
+        initValue: "",
+        helpText: "留空即可：安装时会自动拉取应用中心的「Node.js 22」依赖（install_dep_apps=nodejs_v22），启动时自动使用它。只有想改用别的 Node.js 22 时才需要填（node、绝对路径或 FN Depot 里的路径）。保存后会重启 MMH 服务。",
       }] : []),
     ],
   },
@@ -945,22 +984,7 @@ EOF
     echo "/var/apps/$TRIM_APPNAME"
 }
 
-app_payload_is_ready() {
-    local dest="$1"
-    if [ -x "\${dest}/bin/node" ] && [ -f "\${dest}/server/server.js" ]; then
-        APP_ROOT="\${dest}"
-        APP_BIN="\${dest}/bin/node"
-        APP_SERVER="\${dest}/server/server.js"
-        return 0
-    fi
-    if [ -x "\${dest}/app/bin/node" ] && [ -f "\${dest}/app/server/server.js" ]; then
-        APP_ROOT="\${dest}/app"
-        APP_BIN="\${dest}/app/bin/node"
-        APP_SERVER="\${dest}/app/server/server.js"
-        return 0
-    fi
-    return 1
-}
+${payloadReadyFn}
 
 find_download_app_tgz() {
     local candidate newest="" newest_mtime=0 mtime
@@ -1001,23 +1025,35 @@ ensure_cmd_scripts() {
 }
 
 ensure_app_ready() {
-    local dest tgz
+    local dest tgz attempt=0
     dest="$(resolve_app_dest)"
     tgz="\${dest}/app.tgz"
 
     mkdir -p "$dest" 2>/dev/null || true
-    if app_payload_is_ready "$dest"; then
-        ensure_cmd_scripts
-        return 0
-    fi
-
-    if [ ! -f "$tgz" ]; then
-        tgz="$(find_download_app_tgz 2>/dev/null || true)"
-    fi
-    if [ ! -f "$tgz" ]; then
-        echo "MMH payload is missing: no extracted app and no app.tgz under $dest or appcenter-downloads" >&2
-        return 1
-    fi
+    # fnOS 把 .fpk 解到 appcenter-downloads 与调用 install_callback / start 之间存在
+    # 竞态：app.tgz 有二十多 MB，脚本先跑起来时它可能还没落盘，旧实现当场报
+    # "MMH payload is missing" 让安装直接失败（0.1.85 external-node 真机就是这样
+    # 挂掉的：用户日志里卸载备份刚写完，紧接着就是 payload is missing）。
+    # 这里最多等 20 秒，拿到 app.tgz 再走解包。
+    while :; do
+        if app_payload_is_ready "$dest"; then
+            ensure_cmd_scripts
+            return 0
+        fi
+        tgz="\${dest}/app.tgz"
+        if [ ! -f "$tgz" ]; then
+            tgz="$(find_download_app_tgz 2>/dev/null || true)"
+        fi
+        if [ -f "$tgz" ]; then
+            break
+        fi
+        if [ "$attempt" -ge 20 ]; then
+            echo "MMH payload is missing: no extracted app and no app.tgz under $dest or appcenter-downloads" >&2
+            return 1
+        fi
+        attempt=$((attempt + 1))
+        sleep 1
+    done
 
     mkdir -p "\${dest}/app"
     if ! tar -xzf "$tgz" -C "\${dest}/app"; then
@@ -1744,7 +1780,7 @@ start_app () {
     if [ -n "\${BUNDLED_NODE_BIN:-}" ]; then
       echo "MMH bundled Node runtime is missing: $BUNDLED_NODE_BIN" >&2
     else
-      echo "MMH requires external Node.js 22. Install Node.js v22, then set MMH_NODE_BIN in the MMH application settings." >&2
+      echo "MMH needs Node.js 22: install/repair the App Center 'Node.js 22' dependency (the package declares install_dep_apps=nodejs_v22), or set MMH_NODE_BIN in the MMH application settings." >&2
     fi
     exit 1
   fi

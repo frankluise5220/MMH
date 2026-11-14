@@ -8,7 +8,7 @@ mmh
 
 现有 MMH 普通 NAS 安装与更新主线仍然是 Docker，继续参考 `deploy/nas-install-manual.md` 和 `deploy/nas/`。飞牛版只是额外的 `.fpk` 分发形式，不把普通 NAS 安装改成 SQLite。
 
-飞牛专用 `.fpk` 使用 SQLite 原生运行方式：包内包含 Next standalone、Linux Node runtime、Prisma runtime、SQLite 初始化脚本和应用入口，不依赖 Docker/PostgreSQL。它不是源码包，也不是调试归档。由于包含原生二进制，正式 Release 资产只按架构发布两个文件：`mmh-fnos-v0.1.x-x86_64.fpk` 和 `mmh-fnos-v0.1.x-arm64.fpk`，但应用 ID 仍然是同一个 `mmh`。
+飞牛专用 `.fpk` 使用 SQLite 原生运行方式：包内包含 Next standalone、Prisma runtime、SQLite 初始化脚本和应用入口，不依赖 Docker/PostgreSQL。它不是源码包，也不是调试归档。由于包含原生二进制，正式 Release 资产按架构发布四个文件：`mmh-fnos-v0.1.x-x86_64.fpk` / `mmh-fnos-v0.1.x-arm64.fpk`（bundled，内置 Node.js 22），以及 `mmh-fnos-v0.1.x-x86_64-external-node.fpk` / `mmh-fnos-v0.1.x-arm64-external-node.fpk`（轻量变体，约 20MB，不含 Node 运行时，manifest 声明 `install_dep_apps=nodejs_v22`，安装时由应用中心自动装上「Node.js 22」依赖，运行时优先使用 `/vol*/@appcenter/nodejs_v22/bin/node`）。应用 ID 仍然是同一个 `mmh`。
 
 ## 用户安装
 

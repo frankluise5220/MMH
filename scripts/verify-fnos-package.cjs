@@ -331,6 +331,17 @@ expect(/function resolveStoreIntro\(\)/.test(buildScript), "fnOS manifest desc m
 expect(/"deploy", "fnos", "repository", "fnpack\.json"/.test(buildScript), "fnOS manifest desc must read the shared intro from deploy/fnos/repository/fnpack.json.");
 expect(/desc=\$\{externalNode \?[\s\S]{0,200}storeIntro\}/.test(buildScript), "fnOS manifest desc must use the shared store intro for the official App Center listing.");
 expect(/display_name=\$\{displayName\}/.test(buildScript) && /title:\s*displayName,/.test(buildScript), "fnOS manifest display_name and the app/ui/config entry title must come from the single displayName constant.");
+// external-node 不内置运行时，必须靠 fnOS 的 install_dep_apps 把「Node.js 22」依赖装上
+// （司农记账就是这么做的），否则用户得自己去应用中心找 Node.js，装漏了就是启动失败。
+// bundled 自带 bin/node，不能声明依赖。
+expect(
+  /externalNode \? "install_dep_apps=nodejs_v22/.test(buildScript),
+  "fnOS external-node manifest must declare install_dep_apps=nodejs_v22 so the App Center installs the Node.js 22 dependency automatically; bundled packages already ship bin/node and must not.",
+);
+expect(
+  /const payloadReadyFn = externalNode/.test(buildScript),
+  "fnOS app_payload_is_ready must be variant-aware: external-node payloads carry no bin/node, so the bundled check (bin/node + server.js) can never succeed for them.",
+);
 expect(/mmhReleaseNotes/.test(buildScript), "fnOS package build must copy release notes into the runtime package.json.");
 expect(
   /runtimePkg\.mmhFnosManifestChangelog = manifestChangelog/.test(buildScript),
