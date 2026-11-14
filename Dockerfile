@@ -15,7 +15,7 @@
 # 「下到 100% 后不落盘」，所以单文件阈值取 3.5 MB，而不是之前拍的 10 MB。
 # 0.1.84 教训：原来是 `n % 12` 轮转，最大的 1/13/25… 个文件全部落进 p0，
 # 752 个变化文件时 p0 达 4168 KB 越限、App 镜像直接构建失败（GHCR 无 0.1.84）。
-ARG BASE_IMAGE=ghcr.io/frankluise5220/mmh:0.1.83
+ARG BASE_IMAGE=ghcr.io/frankluise5220/mmh:0.1.84
 ARG NODE_BUILD_IMAGE=node:20-bookworm
 # 兼容 CI 现有的 build-args；prisma 运行时现在整层复用 BASE_IMAGE，不再单独安装。
 ARG PRISMA_CLI_VERSION=7.8.0
