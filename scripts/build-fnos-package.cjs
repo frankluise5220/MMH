@@ -50,6 +50,10 @@ const externalNode = process.env.FNOS_EXTERNAL_NODE === "1";
 // 与 external-node 是同一个应用的两个包，不是两个软件，装哪个都应该只显示「MMH 记账」。
 // 变体信息只出现在 fpk 文件名与 desc 里。
 const displayName = "MMH 记账";
+// fnOS 包的默认服务端口。2026-11-14 用户裁定：7777 在真机上已被既有服务占用，
+// fnOS 包必须避开它。其他渠道（Docker / 群晖 SPK / 桌面）仍固定 7777，不动。
+// 安装时从这个值开始探测第一个空闲端口，向导里也随时可以改。
+const fnosDefaultPort = 7788;
 // 应用介绍：全渠道同一份通用简介（群晖套件中心、软仓、FnDepot 用的都是它）。
 // 飞牛官方 2026-11-02 确认：应用商店详情页的简介就封装在 fpk 的 manifest（desc=）
 // 里，商店后台与飞书申请表都改不动它——只有重新打包、重新提交才会变。此前这里是
@@ -800,7 +804,7 @@ distributor_url=https://github.com/frankluise5220/MMH
 helpurl=https://github.com/frankluise5220/MMH
 desktop_uidir=ui
 desktop_applaunchname=mmh.Application
-${externalNode ? "install_dep_apps=nodejs_v22\n" : ""}service_port=7777
+${externalNode ? "install_dep_apps=nodejs_v22\n" : ""}service_port=${fnosDefaultPort}
 checkport=true
 changelog=${manifestChangelog}
 `);
@@ -843,7 +847,7 @@ write(path.join(stageDir, "wizard", "config"), JSON.stringify([
         type: "text",
         field: "wizard_port",
         label: "服务端口",
-        initValue: "7777",
+        initValue: String(fnosDefaultPort),
         rules: [
           { required: true, message: "请输入服务端口" },
           {
@@ -851,7 +855,7 @@ write(path.join(stageDir, "wizard", "config"), JSON.stringify([
             message: "请输入 1000-65535 之间的端口",
           },
         ],
-        helpText: "保存后会重启 MMH 服务。端口会写入应用数据目录，后续更新会继续沿用，不会被包内默认值覆盖。默认值固定为 7777，不一定是当前在用的端口。",
+        helpText: "保存后会重启 MMH 服务。端口会写入应用数据目录，后续更新会继续沿用，不会被包内默认值覆盖。默认值是 7788（不用 7777：该端口常与已有服务冲突），也不一定是当前在用的端口。",
       },
       ...(externalNode ? [{
         type: "text",
@@ -1227,7 +1231,7 @@ probe_free_port() {
     local start="$1"
     local p i
     case "$start" in
-        ''|*[!0-9]*) start=7777 ;;
+        ''|*[!0-9]*) start=${fnosDefaultPort} ;;
     esac
     p="$start"
     i=0
@@ -1257,9 +1261,10 @@ resolve_port() {
         return 0
     fi
     # No install wizard ships with this package: fresh installs never ask for a
-    # port, so probe for a free one instead of deadlocking on a taken 7777.
+    # port, so probe for a free one instead of deadlocking on a taken default
+    # port (7777 collides with existing services on real hosts, hence 7788).
     # Reinstalls and updates reuse .port above and never reach this probe.
-    start_port="\${TRIM_SERVICE_PORT:-7777}"
+    start_port="\${TRIM_SERVICE_PORT:-${fnosDefaultPort}}"
     probe_free_port "$start_port"
 }
 
@@ -1537,7 +1542,7 @@ ensure_runtime_settings () {
   mkdir -p "$DATA_DEST" "$DATA_ROOT"
 
   env_port="$(read_env_value PORT 2>/dev/null || true)"
-  export PORT="\${PORT:-\${env_port:-7777}}"
+  export PORT="\${PORT:-\${env_port:-${fnosDefaultPort}}}"
 
   env_password="$(read_env_value MMH_SYSTEM_PASSWORD 2>/dev/null || true)"
   system_password="\${MMH_SYSTEM_PASSWORD:-$env_password}"
@@ -1830,7 +1835,10 @@ ${externalNodeStartup}
   local mmh_gateway_entry="$SERVER_DIR/mmh-unix-server.cjs"
   if [ -f "$mmh_gateway_entry" ] && { [ -n "\${MMH_GATEWAY_SOCKET_PATH:-}" ] || [ -n "\${TRIM_APPDEST:-}" ]; }; then
     export MMH_GATEWAY_SOCKET_PATH="\${MMH_GATEWAY_SOCKET_PATH:-$TRIM_APPDEST/app.sock}"
-    export MMH_LOCAL_TCP_PORT="\${MMH_LOCAL_TCP_PORT:-7777}"
+    # Must follow PORT. Keeping a hardcoded 7777 here means changing the service
+    # port never frees 7777: the gateway would still listen on it and collide
+    # with whatever the host already runs there.
+    export MMH_LOCAL_TCP_PORT="\${MMH_LOCAL_TCP_PORT:-\${PORT:-${fnosDefaultPort}}}"
     export MMH_LOCAL_TCP_HOST="\${MMH_LOCAL_TCP_HOST:-0.0.0.0}"
     # The fnOS build bakes Next's basePath to /app/mmh; the launcher reads this
     # to inject the prefix on the local TCP compatibility port (LAN/Android
@@ -1878,7 +1886,7 @@ wait_listen_port_free () {
   if [ -z "$port" ]; then
     port="$(read_env_value PORT 2>/dev/null || true)"
   fi
-  port="\${port:-7777}"
+  port="\${port:-${fnosDefaultPort}}"
   i=0
   while [ "$i" -lt 20 ]; do
     if command -v ss >/dev/null 2>&1 && ss -ltn 2>/dev/null | grep -E ":\${port}([[:space:]]|$)" >/dev/null; then

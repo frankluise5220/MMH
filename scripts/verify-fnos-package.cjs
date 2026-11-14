@@ -282,6 +282,13 @@ function expectPngSize(file, size) {
 }
 
 const buildScript = read(path.join(root, "scripts", "build-fnos-package.cjs"));
+// Single source of truth for the package's default service port. 7777 collides
+// with existing services on real fnOS hosts, so the package must not default to
+// it; every manifest/wizard/script fallback must agree with this constant.
+const fnosDefaultPortMatch = buildScript.match(/const fnosDefaultPort = (\d+);/);
+const fnosDefaultPort = fnosDefaultPortMatch ? fnosDefaultPortMatch[1] : "";
+expect(Boolean(fnosDefaultPort), "fnOS build script must declare a numeric fnosDefaultPort constant.");
+expect(fnosDefaultPort !== "7777", "fnOS default service port must not be 7777: it collides with services already running on real hosts (wizard default, manifest service_port and script fallbacks must all move together).");
 const appBuildScript = read(path.join(root, "scripts", "build-fnos-app.cjs"));
 const schemaScript = read(path.join(root, "scripts", "generate-native-sqlite-schema.cjs"));
 const fnosReleaseWorkflow = read(path.join(root, ".github", "workflows", "fnos-release.yml"));
@@ -573,7 +580,11 @@ expect(/MMH_SYSTEM_PASSWORD/.test(buildScript), "fnOS start script must export M
 expect(/mmh-system-password\.txt/.test(buildScript), "fnOS start script must persist generated system passwords in app data.");
 expect(/install_callback/.test(buildScript) && /write_env_file/.test(buildScript), "fnOS lifecycle callbacks must persist package runtime settings.");
 expect(/"run-as": "package"/.test(buildScript), "fnOS lifecycle scripts must run as the mmh package user.");
-expect(/service_port=7777/.test(buildScript), "fnOS manifest must expose the legacy HTTP service port.");
+expect(buildScript.includes(`service_port=\${fnosDefaultPort}`) && !/service_port=7777/.test(buildScript), "fnOS manifest must take service_port from fnosDefaultPort (a hardcoded 7777 collides with services already running on real hosts).");
+expect(
+  buildScript.includes('MMH_LOCAL_TCP_PORT="\\${MMH_LOCAL_TCP_PORT:-\\${PORT:-') && !/MMH_LOCAL_TCP_PORT:-7777/.test(buildScript),
+  "fnOS cmd/main must default MMH_LOCAL_TCP_PORT to PORT: a hardcoded 7777 keeps the gateway listening on 7777 no matter which service port the user picks, so changing the port never resolves the conflict.",
+);
 expect(/checkport=true/.test(buildScript), "fnOS manifest must enable service-port checking.");
 expect(/gatewayPrefix:\s*"\/app\/mmh"/.test(buildScript) && /gatewaySocket:\s*"app\.sock"/.test(buildScript) && /type:\s*"url"/.test(buildScript), "fnOS entry must register the unified-gateway URL /app/mmh on the app.sock socket.");
 expect(/url:\s*"\/app\/mmh"/.test(buildScript), "fnOS entry must open the unified-gateway root path /app/mmh.");
@@ -686,7 +697,7 @@ if (fs.existsSync(stageDir)) {
   const stageApplySettingsScript = read(path.join(stageDir, "cmd", "apply-settings"));
   expect(new RegExp(`arch\\s*=\\s*${verifyTarget.manifestArch}`).test(stageManifest), `fnOS ${verifyTarget.id} stage manifest must declare arch=${verifyTarget.manifestArch}.`);
   expect(new RegExp(`platform\\s*=\\s*${verifyTarget.manifestPlatform}`).test(stageManifest), `fnOS ${verifyTarget.id} stage manifest must declare platform=${verifyTarget.manifestPlatform}.`);
-  expect(/^service_port=7777$/m.test(stageManifest), `fnOS ${verifyTarget.id} stage manifest must declare service_port=7777.`);
+  expect(new RegExp(`^service_port=${fnosDefaultPort}$`, "m").test(stageManifest), `fnOS ${verifyTarget.id} stage manifest must declare service_port=${fnosDefaultPort}.`);
   expect(/^checkport=true$/m.test(stageManifest), `fnOS ${verifyTarget.id} stage manifest must enable service-port checking.`);
   expect(/^os_min_version=0\.9\.0$/m.test(stageManifest), `fnOS ${verifyTarget.id} stage manifest must require fnOS 0.9.0 or newer.`);
   assertManifestChangelogReadable(stageManifest, `fnOS ${verifyTarget.id} stage`);
@@ -821,7 +832,7 @@ if (process.env.FNOS_VERIFY_BUILT_FPK === "1") {
   expect(/version\s*=/.test(manifest), "Built fnOS .fpk manifest must include a version.");
   expect(new RegExp(`platform\\s*=\\s*${verifyTarget.manifestPlatform}`).test(manifest), `Built fnOS .fpk manifest must declare platform=${verifyTarget.manifestPlatform}.`);
   expect(new RegExp(`^arch\\s*=\\s*${verifyTarget.manifestArch}$`, "m").test(manifest), `Built fnOS .fpk manifest must declare arch=${verifyTarget.manifestArch}.`);
-  expect(/^service_port\s*=\s*7777$/m.test(manifest), "Built fnOS .fpk manifest must declare service_port=7777.");
+  expect(new RegExp(`^service_port\\s*=\\s*${fnosDefaultPort}$`, "m").test(manifest), `Built fnOS .fpk manifest must declare service_port=${fnosDefaultPort}.`);
   expect(/^checkport\s*=\s*true$/m.test(manifest), "Built fnOS .fpk manifest must enable service-port checking.");
   expect(/^os_min_version\s*=\s*0\.9\.0$/m.test(manifest), "Built fnOS .fpk manifest must require fnOS 0.9.0 or newer.");
   assertManifestChangelogReadable(manifest, "Built fnOS .fpk");
