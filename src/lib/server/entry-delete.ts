@@ -876,8 +876,16 @@ export async function softDeleteEntriesByIds(
       select: { id: true, accountId: true },
     });
 
+    // 期供行（payment / fee）允许「只删这一期」：账单视图里一期就是一个金额，
+    // 删掉它不该把同一条计划的历史各期一起抹掉。只有删到计划来源（原消费记录、
+    // 账单分期调整行）时才连坐整条计划 —— 来源没了，计划本身就不成立。
+    const isSingleInstallmentRow =
+      Boolean(installmentPlan) &&
+      txRecord.creditCardInstallmentPlanId === installmentPlan?.id &&
+      (txRecord.installmentRole === "payment" || txRecord.installmentRole === "fee");
+
     let deletedWithInstallmentPlan = false;
-    if (installmentPlan && !processedInstallmentPlanIds.has(installmentPlan.id)) {
+    if (installmentPlan && !isSingleInstallmentRow && !processedInstallmentPlanIds.has(installmentPlan.id)) {
       processedInstallmentPlanIds.add(installmentPlan.id);
       const deletedAt = new Date();
       const relatedRecords = await prisma.txRecord.findMany({

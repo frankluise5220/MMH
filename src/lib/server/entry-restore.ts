@@ -32,7 +32,7 @@ export async function restoreDeletedEntries(ctx: HouseholdContext, transactionId
     where: { id: { in: transactionIds } },
     data: { deletedAt: null },
   });
-  const restoredInstallmentPlans = await prisma.creditCardInstallmentPlan.findMany({
+  const affectedInstallmentPlans = await prisma.creditCardInstallmentPlan.findMany({
     where: {
       householdId,
       OR: [
@@ -46,17 +46,28 @@ export async function restoreDeletedEntries(ctx: HouseholdContext, transactionId
         },
       ],
     },
-    select: { id: true },
+    select: { id: true, status: true, sourceEntryId: true },
   });
-  if (restoredInstallmentPlans.length > 0) {
-    const planIds = restoredInstallmentPlans.map((plan) => plan.id);
+  // 期供行是「单期可删」的，恢复时也必须只恢复被选中的那几行。
+  // 只有两种情况才整条计划连坐恢复：
+  //   1. 计划已被取消（删除的是原消费/账单调节行，整条计划一起删的）；
+  //   2. 本次恢复的就是计划来源行。
+  // 否则「删掉第 2 期和第 4 期，再恢复第 2 期」会把第 4 期一起偷偷带回来。
+  const planIdsToRevive = affectedInstallmentPlans
+    .filter(
+      (plan) =>
+        plan.status === "cancelled" ||
+        (plan.sourceEntryId ? transactionIds.includes(plan.sourceEntryId) : false),
+    )
+    .map((plan) => plan.id);
+  if (planIdsToRevive.length > 0) {
     await prisma.$transaction([
       prisma.creditCardInstallmentPlan.updateMany({
-        where: { id: { in: planIds }, householdId },
+        where: { id: { in: planIdsToRevive }, householdId },
         data: { status: "active" },
       }),
       prisma.txRecord.updateMany({
-        where: { creditCardInstallmentPlanId: { in: planIds }, householdId },
+        where: { creditCardInstallmentPlanId: { in: planIdsToRevive }, householdId },
         data: { deletedAt: null },
       }),
     ]);

@@ -372,10 +372,11 @@ export async function materializeDueInstallmentPayments(
       }));
     if (dueRows.length === 0) continue;
 
+    // 这里故意**不滤 deletedAt**：期供行允许用户单期删除，只有把已软删的行也算作
+    // 「生成过」，下一次 materialize 才不会把它当成缺失又补一条回来（删了又出现）。
     const existing = await db.txRecord.findMany({
       where: {
         creditCardInstallmentPlanId: plan.id,
-        deletedAt: null,
         installmentRole: { in: ["payment", "fee"] },
       },
       select: { installmentNo: true, installmentRole: true },
@@ -383,10 +384,17 @@ export async function materializeDueInstallmentPayments(
     const existingPaymentNos = new Set(
       existing.filter((entry) => entry.installmentRole === "payment").map((entry) => entry.installmentNo),
     );
+    const existingFeeNos = new Set(
+      existing.filter((entry) => entry.installmentRole === "fee").map((entry) => entry.installmentNo),
+    );
 
     const tagIds = parsePlanTagIds(plan.tagIds);
     for (const row of dueRows) {
-      if (existingPaymentNos.has(row.installmentNo)) continue;
+      // 本金行与手续费行各自判重：用户可能只删掉其中一条（明细里两行分开显示），
+      // 被删掉的那条不再补，另一条照旧，不会整期一起复活。
+      const needPrincipal = !existingPaymentNos.has(row.installmentNo);
+      const needFee = row.interest > 0 && !existingFeeNos.has(row.installmentNo);
+      if (!needPrincipal && !needFee) continue;
       const label = plan.sourceType === CreditCardInstallmentSourceType.statement
         ? `${plan.firstStatementMonth} 账单`
         : "消费分期";
@@ -394,34 +402,37 @@ export async function materializeDueInstallmentPayments(
       const installmentDateLabel = formatDateUtc(row.date);
       const installmentAmountLabel = Number(plan.installmentPrincipal).toFixed(2);
 
-      const principalEntry = await db.txRecord.create({
-        data: {
-          householdId: input.householdId,
-          accountId: plan.accountId,
-          accountName: plan.Account?.name ?? "",
-          categoryId: plan.categoryId ?? null,
-          categoryName: plan.categoryName ?? null,
-          amount: -row.principal,
-          type: TransactionType.expense,
-          date: row.date,
-          postedAt: row.date,
-          statementMonth: row.statementMonth,
-          source: "credit_card_installment",
-          creditCardInstallmentPlanId: plan.id,
-          installmentNo: row.installmentNo,
-          installmentTotal: plan.totalRuns,
-          installmentPrincipal: row.principal,
-          installmentInterest: 0,
-          installmentRole: "payment",
-          note: `${label}（${installmentKindLabel}分期本金 ${row.installmentNo}/${plan.totalRuns}，分期金额 ${installmentAmountLabel}，分期日期 ${installmentDateLabel}）`,
-        },
-      });
-      if (tagIds.length) {
-        await attachEntryTags({ tx: db, entryId: principalEntry.id, householdId: input.householdId, tagIds });
+      if (needPrincipal) {
+        const principalEntry = await db.txRecord.create({
+          data: {
+            householdId: input.householdId,
+            accountId: plan.accountId,
+            accountName: plan.Account?.name ?? "",
+            categoryId: plan.categoryId ?? null,
+            categoryName: plan.categoryName ?? null,
+            amount: -row.principal,
+            type: TransactionType.expense,
+            date: row.date,
+            postedAt: row.date,
+            statementMonth: row.statementMonth,
+            source: "credit_card_installment",
+            creditCardInstallmentPlanId: plan.id,
+            installmentNo: row.installmentNo,
+            installmentTotal: plan.totalRuns,
+            installmentPrincipal: row.principal,
+            installmentInterest: 0,
+            installmentRole: "payment",
+            note: `${label}（${installmentKindLabel}分期本金 ${row.installmentNo}/${plan.totalRuns}，分期金额 ${installmentAmountLabel}，分期日期 ${installmentDateLabel}）`,
+          },
+        });
+        if (tagIds.length) {
+          await attachEntryTags({ tx: db, entryId: principalEntry.id, householdId: input.householdId, tagIds });
+        }
+        materialized += 1;
+        existingPaymentNos.add(row.installmentNo);
       }
-      materialized += 1;
 
-      if (row.interest > 0) {
+      if (needFee) {
         const feeEntry = await db.txRecord.create({
           data: {
             householdId: input.householdId,
@@ -448,8 +459,8 @@ export async function materializeDueInstallmentPayments(
           await attachEntryTags({ tx: db, entryId: feeEntry.id, householdId: input.householdId, tagIds });
         }
         materialized += 1;
+        existingFeeNos.add(row.installmentNo);
       }
-      existingPaymentNos.add(row.installmentNo);
     }
   }
 
