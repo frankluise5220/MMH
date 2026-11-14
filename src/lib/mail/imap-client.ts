@@ -49,10 +49,33 @@ type SearchObject = {
   since?: Date | string;
   before?: Date | string;
   or?: SearchObject[];
+  all?: boolean;
 };
 
 const IMAP_OPERATION_TIMEOUT_MS = 15000;
 const IMAP_CLIENT_NAME = "MMH";
+/** 一轮 FETCH 取多少封 envelope。200 封/轮在常见邮箱上 100~300ms。 */
+const MAIL_FETCH_CHUNK_SIZE = 200;
+/**
+ * 一次「取邮件列表」最多翻多少封 envelope。
+ *
+ * 导入关键词默认是中文（「账单」），不能可靠地下推给 IMAP SEARCH（非 ASCII 需要 CHARSET UTF-8，
+ * 不少服务端直接回 BAD），所以实际做法是「服务端按日期筛 → 本地按关键词筛」，
+ * 本地能筛多少就取决于这个预算。旧实现固定只翻最近 50 封，于是日期范围设到 8 月
+ * 也只能在最近 50 封里找，永远翻不到一个月以前的账单邮件。
+ */
+const MAIL_SCAN_ENVELOPE_BUDGET = 3000;
+/** 列表动作的整体时间预算：客户端 20s 就会 abort，这里留足余量。 */
+const MAIL_LIST_TIME_BUDGET_MS = 12000;
+
+type MailListFilters = {
+  limit: number;
+  keywords: string[];
+  subjectKeyword?: string;
+  fromKeyword?: string;
+  sinceValid?: Date | null;
+  beforeValid?: Date | null;
+};
 
 function buildClient(config: ImapConfig) {
   return new ImapFlow({
@@ -113,18 +136,6 @@ function formatAddress(address?: { name?: string; address?: string }[]) {
   return (first?.address || first?.name || "").trim();
 }
 
-function buildRecentSequenceRange(total: number, limit: number, hasKeyword: boolean, scanLimit?: number) {
-  const requestedScanLimit = scanLimit && Number.isFinite(scanLimit) ? Math.max(1, Math.floor(scanLimit)) : 0;
-  const effectiveScanLimit = requestedScanLimit > 0
-    ? Math.max(limit, requestedScanLimit)
-    : hasKeyword
-      ? Math.max(limit * 100, 500)
-      : limit;
-  const scanLimitClamped = Math.min(total, effectiveScanLimit);
-  const start = Math.max(1, total - scanLimitClamped + 1);
-  return `${start}:${total}`;
-}
-
 type MailEnvelopeMessage = {
   uid: number;
   envelope?: {
@@ -181,11 +192,8 @@ function orSearchQueries(queries: SearchObject[]) {
   return { or: queries } satisfies SearchObject;
 }
 
-function hasNonAsciiSearchText(value: string | undefined) {
-  return Boolean(value && /[^\x00-\x7F]/.test(value));
-}
-
 function buildMailSearchQuery(input: {
+  includeText: boolean;
   keywords: string[];
   subjectKeyword?: string;
   fromKeyword?: string;
@@ -196,70 +204,145 @@ function buildMailSearchQuery(input: {
   if (input.sinceValid) query.since = input.sinceValid;
   if (input.beforeValid) query.before = input.beforeValid;
 
-  if (input.keywords.length > 0) {
-    const keywordQuery = orSearchQueries(input.keywords.flatMap((keyword) => [
-      { subject: keyword } satisfies SearchObject,
-      { from: keyword } satisfies SearchObject,
-    ]));
-    if (keywordQuery?.or) query.or = keywordQuery.or;
-    else if (keywordQuery) Object.assign(query, keywordQuery);
+  if (input.includeText) {
+    if (input.keywords.length > 0) {
+      const keywordQuery = orSearchQueries(input.keywords.flatMap((keyword) => [
+        { subject: keyword } satisfies SearchObject,
+        { from: keyword } satisfies SearchObject,
+      ]));
+      if (keywordQuery?.or) query.or = keywordQuery.or;
+      else if (keywordQuery) Object.assign(query, keywordQuery);
+    }
+    if (input.subjectKeyword) query.subject = input.subjectKeyword;
+    if (input.fromKeyword) query.from = input.fromKeyword;
   }
-  if (input.subjectKeyword) query.subject = input.subjectKeyword;
-  if (input.fromKeyword) query.from = input.fromKeyword;
 
-  return Object.keys(query).length > 0 ? query : null;
+  // 只有中文关键词、又没设日期时没有任何可下推的条件：退化成 ALL，
+  // 让服务端把 uid 全给回来、在本地筛，总比只翻最近 50 封强。
+  if (Object.keys(query).length === 0) query.all = true;
+  return query;
+}
+
+/** 按 uid 降序分批取 envelope：命中的收进 rows，够 limit、到预算或超时就停。 */
+async function fetchMatchingEnvelopesByUid(
+  client: MailClient["client"],
+  uids: number[],
+  filters: MailListFilters,
+  deadline: number,
+  trace: string[],
+) {
+  const rows: MailListItem[] = [];
+  let scanned = 0;
+  for (let offset = 0; offset < uids.length; offset += MAIL_FETCH_CHUNK_SIZE) {
+    if (rows.length >= filters.limit) break;
+    if (scanned >= MAIL_SCAN_ENVELOPE_BUDGET) {
+      trace.push(`uid fetch budget hit ${scanned}`);
+      break;
+    }
+    if (Date.now() >= deadline) {
+      trace.push(`uid fetch deadline hit ${scanned}`);
+      break;
+    }
+    const chunk = uids.slice(offset, offset + MAIL_FETCH_CHUNK_SIZE);
+    for await (const message of client.fetch(chunk, { envelope: true, uid: true }, { uid: true })) {
+      scanned += 1;
+      const item = buildMailListItem(message);
+      if (mailListItemMatchesFilters(item, filters)) rows.push(item);
+    }
+  }
+  return { rows, scanned };
 }
 
 async function trySearchMailListRows(
   client: MailClient["client"],
-  filters: {
-    limit: number;
-    keywords: string[];
-    subjectKeyword?: string;
-    fromKeyword?: string;
-    sinceValid?: Date | null;
-    beforeValid?: Date | null;
-  },
+  filters: MailListFilters,
+  deadline: number,
   trace: string[],
 ) {
-  const textTerms = [...filters.keywords, filters.subjectKeyword, filters.fromKeyword];
-  if (textTerms.some(hasNonAsciiSearchText)) {
-    trace.push("search skipped unicode text");
-    return null;
+  // 中文关键词（默认就是「账单」）优先下推给 IMAP SEARCH：imapflow 会自动附加
+  // CHARSET UTF-8，能直接把几万封收窄到几十封 —— 只有「不带日期」时必须这么做，
+  // 否则退化成 ALL，本地翻页会在 12s 预算内被截断（实测 2969 封只翻到 200 封）。
+  //
+  // 注意 QQ 邮箱有个组合缺陷：`SINCE/BEFORE + SUBJECT 中文` 恒返回空集
+  // （实测 8 月窗口内 subject「账单」「兴业」均为 0，而同期只有日期条件时是 49 封）。
+  // 所以这里下推返回空集一律再跑一次「只按日期筛」，不把 0 当真结果。
+  // 带日期时服务端已把范围收窄，那次本地筛的翻页量很小；不带日期时下推一次就能命中。
+  const textTerms = [...filters.keywords, filters.subjectKeyword, filters.fromKeyword].filter(Boolean);
+  const plans: Array<{ pushed: boolean; query: SearchObject }> = [];
+  if (textTerms.length > 0) {
+    plans.push({ pushed: true, query: buildMailSearchQuery({ ...filters, includeText: true }) });
   }
+  plans.push({ pushed: false, query: buildMailSearchQuery({ ...filters, includeText: false }) });
+  if (!plans[0].pushed) trace.push("search text local only");
 
-  const query = buildMailSearchQuery(filters);
-  if (!query) return null;
+  for (let index = 0; index < plans.length; index += 1) {
+    const plan = plans[index];
+    const isLastPlan = index === plans.length - 1;
+    try {
+      trace.push(plan.pushed ? "search start (text pushed down)" : "search start");
+      const searched = await withTimeout(client.search(plan.query, { uid: true }), "IMAP mail list search timed out");
+      if (searched === false) {
+        trace.push("search unavailable");
+        return null;
+      }
+      const uids = Array.isArray(searched)
+        ? Array.from(new Set(searched.filter((uid) => Number.isFinite(uid)))).sort((a, b) => b - a)
+        : [];
+      trace.push(`search ok ${uids.length}`);
+      // 下推返回空集：可能是服务端不认非 ASCII 匹配，再用不带文本的条件确认一遍。
+      if (uids.length === 0) {
+        if (!isLastPlan) continue;
+        return { items: [] as MailListItem[], matched: 0, scanned: 0, searched: true };
+      }
 
-  try {
-    trace.push("search start");
-    const searched = await withTimeout(client.search(query, { uid: true }), "IMAP mail list search timed out");
-    if (searched === false) {
-      trace.push("search unavailable");
-      return null;
+      const { rows, scanned } = await fetchMatchingEnvelopesByUid(client, uids, filters, deadline, trace);
+      return {
+        items: rows.sort((a, b) => b.uid - a.uid).slice(0, filters.limit),
+        matched: rows.length,
+        scanned,
+        searched: true,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      trace.push(`search fallback: ${message}`);
+      if (isLastPlan) return null;
     }
-    const uids = Array.isArray(searched)
-      ? Array.from(new Set(searched.filter((uid) => Number.isFinite(uid)))).sort((a, b) => b - a)
-      : [];
-    trace.push(`search ok ${uids.length}`);
-    if (uids.length === 0) return { items: [] as MailListItem[], matched: 0, searched: true };
+  }
+  return null;
+}
 
-    const fetchUids = uids.slice(0, Math.max(filters.limit, 20));
-    const rows: MailListItem[] = [];
-    for await (const message of client.fetch(fetchUids, { envelope: true, uid: true }, { uid: true })) {
+/**
+ * 服务端不支持 DATE 检索时的兜底：从最新往里一块一块翻，凑够 limit 就收工。
+ * 整块的邮件都比 since 还旧时立刻停 —— 邮箱按到达顺序排列，再往回翻只会更旧。
+ */
+async function scanRecentMailRows(
+  client: MailClient["client"],
+  total: number,
+  filters: MailListFilters,
+  deadline: number,
+  trace: string[],
+) {
+  const rows: MailListItem[] = [];
+  let scanned = 0;
+  let seqEnd = total;
+  while (seqEnd >= 1 && rows.length < filters.limit && scanned < MAIL_SCAN_ENVELOPE_BUDGET && Date.now() < deadline) {
+    const chunkSize = Math.min(MAIL_FETCH_CHUNK_SIZE, seqEnd, MAIL_SCAN_ENVELOPE_BUDGET - scanned);
+    const seqStart = seqEnd - chunkSize + 1;
+    const range = `${seqStart}:${seqEnd}`;
+    trace.push(`fetch seq ${range}`);
+    let oldestInChunk: Date | null = null;
+    for await (const message of client.fetch(range, { envelope: true, uid: true })) {
+      scanned += 1;
       const item = buildMailListItem(message);
+      const date = item.date ? new Date(item.date) : null;
+      if (date && !Number.isNaN(date.getTime()) && (!oldestInChunk || date < oldestInChunk)) oldestInChunk = date;
       if (mailListItemMatchesFilters(item, filters)) rows.push(item);
     }
-    return {
-      items: rows.sort((a, b) => b.uid - a.uid).slice(0, filters.limit),
-      matched: uids.length,
-      searched: true,
-    };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    trace.push(`search fallback: ${message}`);
-    return null;
+    if (filters.sinceValid && oldestInChunk && oldestInChunk < filters.sinceValid) break;
+    seqEnd = seqStart - 1;
   }
+  if (scanned >= MAIL_SCAN_ENVELOPE_BUDGET) trace.push(`scan budget hit ${scanned}`);
+  return { rows, scanned };
 }
 
 export async function connectAndOpenBox(config: ImapConfig, trace: string[] = []) {
@@ -319,24 +402,27 @@ export async function listMails(
   const beforeValid = before && !Number.isNaN(before.getTime())
     ? new Date(before.getTime() + 24 * 60 * 60 * 1000)
     : null;
-  const searchedRows = await trySearchMailListRows(client, {
+  const filters: MailListFilters = {
     limit: options.limit,
     keywords,
     subjectKeyword,
     fromKeyword,
     sinceValid,
     beforeValid,
-  }, trace);
+  };
+  const deadline = Date.now() + MAIL_LIST_TIME_BUDGET_MS;
+
+  const searchedRows = await trySearchMailListRows(client, filters, deadline, trace);
   if (searchedRows) {
     return {
       items: searchedRows.items,
       meta: {
         total,
-        scanned: searchedRows.matched,
+        scanned: searchedRows.scanned,
         matched: searchedRows.matched,
         limited: options.limit,
         hasKeyword,
-        scanLimit: searchedRows.matched,
+        scanLimit: searchedRows.scanned,
         sinceDate: options.sinceDate ?? "",
         endDate: options.endDate ?? "",
         searchMode: "imap",
@@ -344,32 +430,20 @@ export async function listMails(
     };
   }
 
-  const range = buildRecentSequenceRange(total, options.limit, hasKeyword || Boolean(sinceValid) || Boolean(beforeValid), options.scanLimit);
-  let scanned = 0;
-  trace.push(`fetch seq ${range}`);
-
-  const rows: MailListItem[] = [];
-  const task = (async () => {
-    for await (const message of client.fetch(range, { envelope: true, uid: true })) {
-      const item = buildMailListItem(message);
-      scanned += 1;
-      if (!mailListItemMatchesFilters(item, { keywords, subjectKeyword, fromKeyword, sinceValid, beforeValid })) continue;
-      rows.push(item);
-      trace.push(`row ok uid=${message.uid} "${item.subject}"`);
-    }
-  })();
-
-  await withTimeout(task, "IMAP mail list read timed out");
-  const items = rows.sort((a, b) => b.uid - a.uid).slice(0, options.limit);
+  const scannedRows = await withTimeout(
+    scanRecentMailRows(client, total, filters, deadline, trace),
+    "IMAP mail list read timed out",
+  );
+  const items = scannedRows.rows.sort((a, b) => b.uid - a.uid).slice(0, options.limit);
   return {
     items,
     meta: {
       total,
-      scanned,
-      matched: rows.length,
+      scanned: scannedRows.scanned,
+      matched: scannedRows.rows.length,
       limited: options.limit,
       hasKeyword,
-      scanLimit: options.scanLimit ?? scanned,
+      scanLimit: scannedRows.scanned,
       sinceDate: options.sinceDate ?? "",
       endDate: options.endDate ?? "",
       searchMode: "scan",

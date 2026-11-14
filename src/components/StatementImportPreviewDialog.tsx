@@ -1299,8 +1299,19 @@ export function StatementImportPreviewDialog({
 
   function recomputeState(nextRows: ImportPreviewRow[]) {
     const rowKeys = new Set(nextRows.map((row) => row.key));
+    // 用户改动资料（补账户 / 分类 / 改金额类型等）让某行从「不可导入」变成「可导入」时，
+    // 自动勾上这一行：用户已经把缺的东西补齐了，还要再手动点一次勾选没有道理。
+    // 只增不减：本来就缺资料的行、被用户手动取消勾选的好行都不在这里动。
+    const readyBefore = new Set(rowsRef.current.filter((row) => row.ready).map((row) => row.key));
+    const newlyReadyKeys = nextRows
+      .filter((row) => row.ready && !readyBefore.has(row.key))
+      .map((row) => row.key);
     setRows(nextRows);
-    setSelectedKeys((current) => new Set(Array.from(current).filter((key) => rowKeys.has(key))));
+    setSelectedKeys((current) => {
+      const next = new Set(Array.from(current).filter((key) => rowKeys.has(key)));
+      for (const key of newlyReadyKeys) next.add(key);
+      return next;
+    });
   }
 
   function updatePreviewRow(rowKey: string, patch: Partial<StatementImportPreviewItem>) {

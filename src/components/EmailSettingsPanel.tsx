@@ -1056,6 +1056,13 @@ export function EmailSettingsPanel({
     setParsedItems([]);
     setImportPreview(null);
     setImportComplete(null);
+    // 导入已经落库、成功提示也要收起，整个「预览 + 导入」会话到此结束。
+    // 必须在这里通知外层（CreditBillMailImportDialog）：它靠 previewOpen 把窗口渲染成
+    // `opacity-0 + pointer-events-none` 的隐形遮罩（为了让预览窗口压在它上面）。
+    // 导入成功时 importItems 是直接 setImportPreview(null) 收掉预览的，走不到预览窗
+    // 自己的 onClose，于是外层永远停在隐形状态 —— 用户看到的现象就是：导入成功一单后，
+    // 再点「邮箱导入」什么窗口都不弹（其实窗口一直在，只是透明且点不到）。
+    onStatementPreviewClosed?.();
     dispatchFinanceDataChanged({ reason: "email-bill-import", accountIds: targetAccountId ? [targetAccountId] : undefined });
     if (targetAccountId) {
       const account = bookAccounts.find((item) => item.id === targetAccountId);
