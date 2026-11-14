@@ -156,16 +156,19 @@ jobs:
           if-no-files-found: error
 
       - name: Upload fnOS FPK to GitHub Release
-        # The documented release asset set is the two bundled FPKs. Without the
-        # variant gate every matrix leg ran this step -- and two of the four legs
-        # build the undocumented external-node variant -- so a published release
-        # would carry four fnOS assets instead of two.
-        # (`release: published` is the only event that reaches this step, which is
-        # why the never-published v0.1.67 draft still shows just two.)
-        if: github.event_name == 'release' && matrix.package_variant == 'bundled'
+        # Release asset set = x86/arm64 x bundled/external-node = 4 FPKs (2026-11-14).
+        # bundled ships Node.js 22 inside; external-node is ~20MB and requires the
+        # target machine to provide Node.js 22.x (database is still SQLite via
+        # better-sqlite3). Until 2026-11-14 only bundled was uploaded because the
+        # external-node variant was undocumented; that gate was widened on purpose,
+        # so 4 FPKs is now the expected result, not a regression.
+        # (`release: published` is the only event that reaches this step; a
+        # workflow_dispatch only produces Actions artifacts.)
+        if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
           # Pin the filename instead of globbing `*.fpk`, so a stray build left
-          # in the workspace can never leak onto the release.
-          files: release-artifacts/fnos/mmh-fnos-v*-${{ matrix.target_arch == 'x86' && 'x86_64' || 'arm64' }}.fpk
+          # in the workspace can never leak onto the release. The suffix keeps the
+          # two variants from clobbering each other.
+          files: release-artifacts/fnos/mmh-fnos-v*-${{ matrix.target_arch == 'x86' && 'x86_64' || 'arm64' }}${{ matrix.package_variant == 'external-node' && '-external-node' || '' }}.fpk
           overwrite_files: true
