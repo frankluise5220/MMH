@@ -48,6 +48,8 @@ type EntryAction = {
   disabled?: boolean;
   loanType?: LoanType;
   mode?: LoanMode;
+  /** 基金二级菜单（开放式基金 / 货币基金）用它锁定弹窗的产品类型。 */
+  productType?: "fund" | "money";
   children?: EntryAction[];
 };
 
@@ -128,7 +130,13 @@ function getCurrentFundContext(context?: Props["context"]) {
   }
 }
 
-function dispatchEntryAction(kind: EntryKind, context?: Props["context"], loanType?: LoanType, loanMode?: LoanMode) {
+function dispatchEntryAction(
+  kind: EntryKind,
+  context?: Props["context"],
+  loanType?: LoanType,
+  loanMode?: LoanMode,
+  productTypeOverride?: "fund" | "money",
+) {
   if (typeof window === "undefined") return;
   const requestId = makeRequestId(kind);
   switch (kind) {
@@ -228,11 +236,13 @@ function dispatchEntryAction(kind: EntryKind, context?: Props["context"], loanTy
       // 产品类型不能写死成开放式基金：货基账户点「记一笔」会带着 fund 打开，
       // 副标题显示「开放式基金」，后续净值与份额也按基金口径算。
       // 账户类型优先；拿不到时按当前视图兜底（investmoney 是货基专属视图）。
+      // 「基金 ▸ 开放式基金 / 货币基金」二级菜单显式点选时以菜单为准。
       const accountProductType = context?.defaultInvestmentProductType ?? "";
       const onMoneyView =
         typeof window !== "undefined" &&
         new URLSearchParams(window.location.search).get("view") === "investmoney";
-      const productType = accountProductType === "money" || onMoneyView ? "money" : "fund";
+      const productType =
+        productTypeOverride ?? (accountProductType === "money" || onMoneyView ? "money" : "fund");
       window.dispatchEvent(
         new CustomEvent("mmh:investment:create", {
           detail: {
@@ -635,7 +645,15 @@ export function UnifiedEntryLauncher({ defaultAction, actions, className, hideDe
           data-entry-launcher-primary-action={defaultItem?.key ?? ""}
           onClick={() => {
             setMenuOpen(false);
-            if (defaultItem) dispatchEntryAction(defaultItem.key, context, defaultItem.loanType, defaultItem.mode);
+            if (defaultItem) {
+              dispatchEntryAction(
+                defaultItem.key,
+                context,
+                defaultItem.loanType,
+                defaultItem.mode,
+                defaultItem.productType,
+              );
+            }
           }}
           disabled={!defaultItem}
           className="inline-flex items-center gap-1.5 bg-transparent px-3 text-sm font-medium hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
@@ -686,7 +704,15 @@ export function UnifiedEntryLauncher({ defaultAction, actions, className, hideDe
                           disabled={item.disabled}
                           onClick={() => {
                             setMenuOpen(false);
-                            if (!item.disabled) dispatchEntryAction(item.key, context, item.loanType, item.mode);
+                            if (!item.disabled) {
+                              dispatchEntryAction(
+                                item.key,
+                                context,
+                                item.loanType,
+                                item.mode,
+                                item.productType,
+                              );
+                            }
                           }}
                           className="flex-1 px-3 py-2 text-left text-sm font-medium text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300 disabled:hover:bg-white"
                         >
@@ -722,7 +748,9 @@ export function UnifiedEntryLauncher({ defaultAction, actions, className, hideDe
                     }}
                     onClick={() => {
                       setMenuOpen(false);
-                      if (!item.disabled) dispatchEntryAction(item.key, context, item.loanType, item.mode);
+                      if (!item.disabled) {
+                        dispatchEntryAction(item.key, context, item.loanType, item.mode, item.productType);
+                      }
                     }}
                     className="flex w-full items-center px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300 disabled:hover:bg-white"
                   >
@@ -746,12 +774,20 @@ export function UnifiedEntryLauncher({ defaultAction, actions, className, hideDe
             >
               {openSubmenuAction.children?.map((child) => (
                 <button
-                  key={`${openSubmenuAction.key}:${child.key}:${child.loanType ?? child.mode ?? "default"}`}
+                  key={`${openSubmenuAction.key}:${child.key}:${child.loanType ?? child.mode ?? child.productType ?? "default"}`}
                   type="button"
                   disabled={child.disabled}
                   onClick={() => {
                     setMenuOpen(false);
-                    if (!child.disabled) dispatchEntryAction(child.key, context, child.loanType, child.mode);
+                    if (!child.disabled) {
+                      dispatchEntryAction(
+                        child.key,
+                        context,
+                        child.loanType,
+                        child.mode,
+                        child.productType,
+                      );
+                    }
                   }}
                   className="flex w-full items-center whitespace-nowrap px-3 py-2 text-left text-sm text-slate-700 hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-300 disabled:hover:bg-white"
                 >

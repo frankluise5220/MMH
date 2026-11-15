@@ -3234,7 +3234,16 @@ export default async function Home({
                       { key: "fx-sell", label: t("entry.kind.fxSell") },
                     ],
                   },
-                  { key: "investment", label: t("entry.kind.investment") },
+                  {
+                    key: "investment",
+                    label: t("entry.kind.investment"),
+                    // 基金分两类产品：开放式基金按净值/份额，货币基金净值恒为 1、收益红利再投。
+                    // 子项用 productType 锁定弹窗的产品类型，不受当前账户/视图影响。
+                    children: [
+                      { key: "investment", label: t("investment.product.fund"), productType: "fund" },
+                      { key: "investment", label: t("investment.product.money"), productType: "money" },
+                    ],
+                  },
                   {
                     key: "stock",
                     label: t("entry.kind.stock"),

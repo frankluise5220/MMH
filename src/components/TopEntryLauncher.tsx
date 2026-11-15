@@ -43,7 +43,14 @@ export function TopEntryLauncher({
             { key: "fx-sell", label: t("entry.kind.fxSell") },
           ],
         },
-        { key: "investment", label: t("txForm.fund") },
+        {
+          key: "investment",
+          label: t("txForm.fund"),
+          children: [
+            { key: "investment", label: t("investment.product.fund"), productType: "fund" },
+            { key: "investment", label: t("investment.product.money"), productType: "money" },
+          ],
+        },
         { key: "stock", label: t("investment.product.stock") },
         { key: "stock-repo", label: t("repoForm.title") },
         { key: "stock-transfer", label: t("stockPanel.transfer") },

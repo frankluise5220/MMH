@@ -480,11 +480,17 @@ export function InvestmentFormModal({
   const [productType, setProductType] = useState<ProductType>(fixedProductType);
   // 账户本身已经定死了产品类型（货基账户、贵金属账户…）时，界面必须从头到尾就是这个类型。
   // 以前类型会被「胶囊菜单的默认值」「输入基金代码后查到的类型」「编辑记录的 fundProductType」
-  // 中途改掉，于是货基账户里能出现开放式基金的净值框。锁定的唯一依据是账户，不是代码。
-  const lockedProductType: ProductType | null =
+  // 中途改掉，于是货基账户里能出现开放式基金的净值框。锁定的依据是账户，不是代码。
+  // 但账户锁不是常量：胶囊菜单「基金 ▸ 开放式基金 / 货币基金」是用户显式点选的产品类型，
+  // 与页面选中账户类别冲突时以菜单为准，解除锁定并清空账户（见 onOpenFromCreate）。
+  const accountLockedProductType: ProductType | null =
     accountProductType && ["fund", "money", "wealth", "deposit", "metal"].includes(accountProductType)
       ? (accountProductType as ProductType)
       : null;
+  const [lockedProductType, setLockedProductType] = useState<ProductType | null>(accountLockedProductType);
+  useEffect(() => {
+    setLockedProductType(accountLockedProductType);
+  }, [accountLockedProductType]);
   function applyProductType(next: ProductType) {
     setProductType(lockedProductType ?? next);
   }
@@ -894,8 +900,15 @@ export function InvestmentFormModal({
     if (!selectedCashInstitutionId) return;
     if (investmentAccountTouchedRef.current) return;
     if (currentInvestmentAccountOption?.institutionId === selectedCashInstitutionId) return;
+    // 同机构账户只是便利默认值，不能把开放式基金账户塞进货币基金窗口（反之亦然）：
+    // 基金/货基必须再核对 investProductType，别的一律保持原样。
     const sameInstitutionAccount = productInvestmentAccountList.find(
-      (account) => account.institutionId && account.institutionId === selectedCashInstitutionId,
+      (account) =>
+        account.institutionId &&
+        account.institutionId === selectedCashInstitutionId &&
+        (productType === "fund" || productType === "money"
+          ? account.investProductType === productType
+          : true),
     );
     if (!sameInstitutionAccount) return;
     setToAccountId(sameInstitutionAccount.id);
@@ -904,6 +917,7 @@ export function InvestmentFormModal({
     mode,
     open,
     productInvestmentAccountList,
+    productType,
     selectedCashInstitutionId,
     subtype,
   ]);
@@ -1481,10 +1495,18 @@ export function InvestmentFormModal({
 
       requestIdRef.current = detail.requestId;
       resetForCreate(false, { preferDefaults: true });
-      const requestedProductType: ProductType = detail.defaultProductType && ["fund", "money", "wealth", "deposit", "metal"].includes(detail.defaultProductType)
-        ? detail.defaultProductType as ProductType
-        : fixedProductType;
-      applyProductType(requestedProductType);
+      const explicitProductType: ProductType | null =
+        detail.defaultProductType && ["fund", "money", "wealth", "deposit", "metal"].includes(detail.defaultProductType)
+          ? (detail.defaultProductType as ProductType)
+          : null;
+      const requestedProductType: ProductType = explicitProductType ?? fixedProductType;
+      // 菜单显式点选的产品类型与页面选中账户的锁定类型冲突时，以菜单为准：
+      // 解除锁定、清空账户，让下面按新类型的账户列表重选，不把开放式基金记进货基窗口。
+      const typeConflict = Boolean(
+        explicitProductType && accountLockedProductType && explicitProductType !== accountLockedProductType,
+      );
+      setLockedProductType(typeConflict ? null : accountLockedProductType);
+      setProductType(typeConflict ? (explicitProductType as ProductType) : (accountLockedProductType ?? requestedProductType));
       // 「提取实物」入口直接打开同一个贵金属窗口的提取实物页签，而不是另弹一个窗。
       const wantsMetalExtract = requestedProductType === "metal" && detail.defaultSubtype === "metal_extract";
       setMetalExtractTab(wantsMetalExtract);
@@ -1507,7 +1529,28 @@ export function InvestmentFormModal({
       if (typeof detail.defaultAmount === "number" && detail.defaultAmount > 0) {
         setAmount(formatAmountDraft(detail.defaultAmount));
       }
-      if ("defaultAccountId" in detail) setToAccountId(detail.defaultAccountId ?? "");
+      // 菜单显式点选了产品类型时，带过来的账户必须同类（开放式基金账户不能接进货币基金窗口）：
+      // 换成本类型账户，一个都没有才清空，交给下面的自动选中兜底。
+      const sameTypeAccount = explicitProductType
+        ? localInvestmentAccountList.find((item) => item.investProductType === explicitProductType)
+        : undefined;
+      const defaultAccountId = "defaultAccountId" in detail ? detail.defaultAccountId ?? "" : null;
+      const defaultAccountType = defaultAccountId
+        ? localInvestmentAccountList.find((item) => item.id === defaultAccountId)?.investProductType ?? ""
+        : "";
+      const defaultAccountMismatch = Boolean(
+        explicitProductType &&
+          defaultAccountType &&
+          defaultAccountType !== explicitProductType &&
+          (defaultAccountType === "fund" || defaultAccountType === "money"),
+      );
+      if (defaultAccountId && !defaultAccountMismatch) {
+        setToAccountId(defaultAccountId);
+      } else if (explicitProductType === "fund" || explicitProductType === "money") {
+        setToAccountId(sameTypeAccount?.id ?? "");
+      } else if (defaultAccountId !== null) {
+        setToAccountId(defaultAccountId);
+      }
       if ("defaultCashAccountId" in detail) setCashAccountId(detail.defaultCashAccountId ?? "");
       const nextFundCode = String(detail.defaultFundCode ?? "").trim();
       if (nextFundCode && requestedProductType !== "metal") {
@@ -1523,7 +1566,7 @@ export function InvestmentFormModal({
 
     window.addEventListener("mmh:investment:create", onOpenFromCreate as EventListener);
     return () => window.removeEventListener("mmh:investment:create", onOpenFromCreate as EventListener);
-  }, [mode, today, defaults, listenCreateEvents, fixedProductType, localMetalTypes, localMetalUnits]);
+  }, [mode, today, defaults, listenCreateEvents, fixedProductType, accountLockedProductType, localInvestmentAccountList, localMetalTypes, localMetalUnits]);
 
   // Listen for edit events (dispatched by EntryRowActions for fund/money investment records).
   useEffect(() => {
