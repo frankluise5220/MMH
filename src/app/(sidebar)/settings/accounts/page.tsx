@@ -2313,6 +2313,8 @@ export default function SettingsAccountsPage() {
                 value={scope}
                 onChange={setScope}
                 showAccountFilter={false}
+                // 账户列表只按人员/机构过滤，不消费分组维度，别给出假筛选入口。
+                showGroupFilter={false}
                 // 这一行还要放分组、隐藏停用与全展开/全收起，人员/机构触发器窄一档。
                 compact
               />

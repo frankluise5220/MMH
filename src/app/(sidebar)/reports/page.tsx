@@ -14,6 +14,7 @@ import { ReportTransactionEditHost } from "@/components/ReportTransactionEditHos
 import { ReportSelector } from "@/components/ReportSelector";
 import { StatisticsFilterPanel } from "@/components/StatisticsFilterPanel";
 import { CASH_INSTITUTION_ID } from "@/components/AccountScopeFilter";
+import { accountCustomGroupKey } from "@/lib/account-kinds";
 import { splitInstitutionSelection } from "@/lib/fund-company-filter";
 import type { ReportItem } from "@/components/ReportSelector";
 import { StockHoldingReport } from "@/components/StockHoldingReport";
@@ -317,6 +318,7 @@ export default async function ReportsPage({
     kind: account.kind,
     label: allAccountDisplayById.get(account.id)?.fullLabel ?? allAccountDisplayById.get(account.id)?.label ?? account.name,
     groupId: account.groupId,
+    accountGroup: account.accountGroup,
     Institution: account.Institution ? { id: account.Institution.id, name: account.Institution.name } : null,
   }));
   const incomeFilterInstitutions = commonData.institutions
@@ -332,9 +334,17 @@ export default async function ReportsPage({
   const selectedIncomeAccountIds = typeof params.accountId === "string"
     ? params.accountId.split(",").map((id) => id.trim()).filter(Boolean)
     : [];
+  const selectedIncomeGroupKeys = typeof params.groups === "string"
+    ? params.groups.split(",").map((key) => key.trim()).filter(Boolean)
+    : [];
   const scopedIncomeAccountIds = (() => {
     const scopes: Array<string[]> = [];
     if (selectedIncomeAccountIds.length) scopes.push(selectedIncomeAccountIds);
+    if (selectedIncomeGroupKeys.length) {
+      scopes.push(accountRecords
+        .filter((account) => selectedIncomeGroupKeys.includes(accountCustomGroupKey(account)))
+        .map((account) => account.id));
+    }
     if (selectedIncomeInstitutionIds.length) {
       scopes.push(accountRecords
         .filter((account) => account.institutionId && selectedIncomeInstitutionIds.includes(account.institutionId))
@@ -418,6 +428,10 @@ export default async function ReportsPage({
   const selectedInvestmentAccountIds = typeof params.investmentAccounts === "string"
     ? params.investmentAccounts.split(",").map((id) => id.trim()).filter(Boolean)
     : [];
+  // 自定义分组（`Account.accountGroup` 标签），投资收益/持仓/基金三张报表共用。
+  const selectedGroupKeys = typeof params.groups === "string"
+    ? params.groups.split(",").map((key) => key.trim()).filter(Boolean)
+    : [];
   // Fund companies ride inside `institutionIds` under the `__fundcompany__:` prefix
   // (they are FundProfile names, not Institution rows). Split them out so the
   // account scoping below only sees real institutions.
@@ -427,6 +441,11 @@ export default async function ReportsPage({
   const scopedInvestmentAccountIds = (() => {
     const scopes: Array<string[]> = [];
     if (selectedInvestmentAccountIds.length) scopes.push(selectedInvestmentAccountIds);
+    if (selectedGroupKeys.length) {
+      scopes.push(investmentAccountRecords
+        .filter((account) => selectedGroupKeys.includes(accountCustomGroupKey(account)))
+        .map((account) => account.id));
+    }
     if (selectedInstitutionIds.length) {
       scopes.push(investmentAccountRecords
         .filter((account) => selectedInstitutionIds.includes(account.institutionId ?? CASH_INSTITUTION_ID))
@@ -458,6 +477,7 @@ export default async function ReportsPage({
     kind: account.kind,
     label: allAccountDisplayById.get(account.id)?.fullLabel ?? allAccountDisplayById.get(account.id)?.label ?? account.name,
     groupId: account.groupId,
+    accountGroup: account.accountGroup,
     Institution: account.Institution ? { id: account.Institution.id, name: account.Institution.name } : null,
   }));
   if (reportType === "investment-profit") {
@@ -596,6 +616,7 @@ export default async function ReportsPage({
               </div>
               <InvestmentProfitFilterSelect
                 selectedUserIds={selectedUserIds}
+                selectedGroupKeys={selectedGroupKeys}
                 selectedInstitutionIds={selectedInstitutionIds}
                 selectedAccountIds={selectedInvestmentAccountIds}
                 allUsers={investmentFilterUsers}
@@ -626,6 +647,11 @@ export default async function ReportsPage({
     const stockScopedAccountIds = (() => {
       const scopes: Array<string[]> = [];
       if (selectedInvestmentAccountIds.length) scopes.push(selectedInvestmentAccountIds);
+      if (selectedGroupKeys.length) {
+        scopes.push(stockAccountRecords
+          .filter((account) => selectedGroupKeys.includes(accountCustomGroupKey(account)))
+          .map((account) => account.id));
+      }
       if (selectedInstitutionIds.length) {
         scopes.push(stockAccountRecords
           .filter((account) => selectedInstitutionIds.includes(account.institutionId ?? CASH_INSTITUTION_ID))
@@ -657,6 +683,7 @@ export default async function ReportsPage({
       kind: account.kind,
       label: allAccountDisplayById.get(account.id)?.fullLabel ?? allAccountDisplayById.get(account.id)?.label ?? account.name,
       groupId: account.groupId,
+      accountGroup: account.accountGroup,
       Institution: account.Institution ? { id: account.Institution.id, name: account.Institution.name } : null,
     }));
     const stockExportHref = buildCsvDataUri([
@@ -726,6 +753,7 @@ export default async function ReportsPage({
             <div className="flex min-h-10 shrink-0 flex-wrap items-center gap-3 border-b border-slate-200 bg-white px-1 pb-2">
               <InvestmentProfitFilterSelect
                 selectedUserIds={selectedUserIds}
+                selectedGroupKeys={selectedGroupKeys}
                 selectedInstitutionIds={selectedInstitutionIds}
                 selectedAccountIds={selectedInvestmentAccountIds}
                 allUsers={stockFilterUsers}
@@ -761,6 +789,11 @@ export default async function ReportsPage({
     const fundScopedAccountIds = (() => {
       const scopes: Array<string[]> = [];
       if (selectedInvestmentAccountIds.length) scopes.push(selectedInvestmentAccountIds);
+      if (selectedGroupKeys.length) {
+        scopes.push(fundAccountRecords
+          .filter((account) => selectedGroupKeys.includes(accountCustomGroupKey(account)))
+          .map((account) => account.id));
+      }
       // Fund-company selections filter report rows, not accounts; they are applied
       // by loadFundHoldingReport via `fundCompanies`.
       if (selectedRealInstitutionIds.length) {
@@ -796,12 +829,13 @@ export default async function ReportsPage({
       kind: account.kind,
       label: allAccountDisplayById.get(account.id)?.fullLabel ?? allAccountDisplayById.get(account.id)?.label ?? account.name,
       groupId: account.groupId,
+      accountGroup: account.accountGroup,
       Institution: account.Institution ? { id: account.Institution.id, name: account.Institution.name } : null,
     }));
     // Shared across the fund-holdings filter controls so switching one filter
     // does not silently drop the others.
     const fundBaseParams: Record<string, string> = { report: "fund-holdings", fundGroup: fundGroupMode };
-    for (const key of ["userIds", "institutionIds", "investmentAccounts"] as const) {
+    for (const key of ["userIds", "groups", "institutionIds", "investmentAccounts"] as const) {
       const value = params[key];
       if (typeof value === "string" && value.trim()) fundBaseParams[key] = value.trim();
     }
@@ -901,6 +935,7 @@ export default async function ReportsPage({
               />
               <InvestmentProfitFilterSelect
                 selectedUserIds={selectedUserIds}
+                selectedGroupKeys={selectedGroupKeys}
                 selectedInstitutionIds={selectedInstitutionIds}
                 selectedAccountIds={selectedInvestmentAccountIds}
                 allUsers={fundFilterUsers}

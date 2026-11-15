@@ -264,6 +264,22 @@ export function institutionTypeLabel(type: string | null | undefined, t: I18nT):
 }
 
 
+/** 「未打标签」账户在选择器里的哨兵值（真实标签是自由文本，不会等于它）。 */
+export const UNGROUPED_GROUP_KEY = "__ungrouped__";
+
+/**
+ * 账户「自定义分组」键：`Account.accountGroup` 自由文本标签（如「日常现金」
+ * 「孩子教育」），空 = 未分组。与 `accountFilterGroupKey`（按账户类型）以及
+ * `AccountGroup`（归属人分组）是三个不同概念，别混用。
+ *
+ * 放这里（而不是 `AccountScopeFilter`）是因为那个文件带 `"use client"`，
+ * 从它导出函数会让服务端组件拿到 client reference，调用时直接报错。
+ */
+export function accountCustomGroupKey(account: { accountGroup?: string | null }): string {
+  const name = account.accountGroup?.trim() ?? "";
+  return name || UNGROUPED_GROUP_KEY;
+}
+
 export const kindOrder: string[] = [
   "cash",
   "bank_debit",

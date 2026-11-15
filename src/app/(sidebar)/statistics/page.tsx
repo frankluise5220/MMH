@@ -17,6 +17,7 @@ import { loadWealthStatisticSourceEntries } from "@/lib/server/investment-statis
 import { buildStatisticsCurrencyConverter } from "@/lib/server/statistics-currency";
 import { buildStatisticsFundDisplayResolver } from "@/lib/server/statistics-fund-display";
 import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
+import { accountCustomGroupKey } from "@/lib/account-kinds";
 import { buildAccountOwnerOptions } from "@/lib/account-owner-options";
 import {
   normalizeDefaultCategoryHierarchyForHousehold,
@@ -106,6 +107,11 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
     ? params.userIds.split(",").map((id) => id.trim()).filter(Boolean)
     : typeof params?.userId === "string" && params.userId.trim() ? [params.userId] : null;
 
+  // 自定义分组（`Account.accountGroup` 标签，未分组用 `__ungrouped__`）。
+  const selectedGroupKeys = typeof params?.groups === "string" && params.groups.trim()
+    ? params.groups.split(",").map((key) => key.trim()).filter(Boolean)
+    : null;
+
   const selectedTagIds = typeof params?.tags === "string" && params.tags.trim()
     ? params.tags.split(",").map(s => s.trim()).filter(Boolean)
     : null;
@@ -115,7 +121,7 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
   const [allAccounts, accountKindRows, categories, allInstitutions, ownerGroups, ownerMembers, availableYears] = await Promise.all([
     prisma.account.findMany({
       where: { ...hidFilter, isActive: true, counterpartyId: null, kind: { not: "insurance" } },
-      select: { id: true, name: true, kind: true, userId: true, groupId: true, counterpartyId: true, numberMasked: true, Institution: { select: { id: true, name: true, type: true } } },
+      select: { id: true, name: true, kind: true, userId: true, groupId: true, accountGroup: true, counterpartyId: true, numberMasked: true, Institution: { select: { id: true, name: true, type: true } } },
       orderBy: { name: "asc" },
     }),
     // 负债本金判定必须覆盖挂往来对象/已停用账户。筛选下拉那份 allAccounts
@@ -154,7 +160,11 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
   const userAccountIds = selectedUserIds
     ? allAccounts.filter((account) => account.groupId && selectedUserIds.includes(account.groupId)).map((account) => account.id)
     : null;
-  const accountScopes = [selectedAccountIds, institutionAccountIds, userAccountIds].filter((ids): ids is string[] => Boolean(ids));
+  // 分组维度：分组标签 → 该组名下账户，与其他维度取交集（和筛选器里的级联口径一致）。
+  const groupAccountIds = selectedGroupKeys
+    ? allAccounts.filter((account) => selectedGroupKeys.includes(accountCustomGroupKey(account))).map((account) => account.id)
+    : null;
+  const accountScopes = [selectedAccountIds, institutionAccountIds, userAccountIds, groupAccountIds].filter((ids): ids is string[] => Boolean(ids));
   const scopedAccountIds = accountScopes.length > 0
     ? allAccounts.map((account) => account.id).filter((id) => accountScopes.every((ids) => ids.includes(id)))
     : null;

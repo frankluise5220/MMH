@@ -15,6 +15,7 @@ import {
 
 export function InvestmentProfitFilterSelect({
   selectedUserIds,
+  selectedGroupKeys = [],
   selectedInstitutionIds,
   selectedAccountIds,
   allUsers,
@@ -25,6 +26,8 @@ export function InvestmentProfitFilterSelect({
   baseParams,
 }: {
   selectedUserIds: string[];
+  /** 自定义分组（`Account.accountGroup` 标签）当前选择，URL 参数 `groups`。 */
+  selectedGroupKeys?: string[];
   selectedInstitutionIds: string[];
   selectedAccountIds: string[];
   allUsers: StatisticsUserItem[];
@@ -40,6 +43,7 @@ export function InvestmentProfitFilterSelect({
   const [isPending, startTransition] = useTransition();
   const [scope, setScope] = useState<AccountScopeValue>({
     userIds: selectedUserIds,
+    groupKeys: selectedGroupKeys,
     institutionIds: selectedInstitutionIds,
     accountIds: selectedAccountIds,
   });
@@ -49,15 +53,17 @@ export function InvestmentProfitFilterSelect({
   useEffect(() => {
     setScope({
       userIds: selectedUserIds,
+      groupKeys: selectedGroupKeys,
       institutionIds: selectedInstitutionIds,
       accountIds: selectedAccountIds,
     });
-  }, [selectedUserIds, selectedInstitutionIds, selectedAccountIds]);
+  }, [selectedUserIds, selectedGroupKeys, selectedInstitutionIds, selectedAccountIds]);
 
   function buildHref(next: AccountScopeValue) {
     const query = new URLSearchParams();
     Object.entries(baseParams).forEach(([key, value]) => query.set(key, value));
     if (next.userIds.length) query.set("userIds", next.userIds.join(","));
+    if ((next.groupKeys ?? []).length) query.set("groups", (next.groupKeys ?? []).join(","));
     if (next.institutionIds.length) query.set("institutionIds", next.institutionIds.join(","));
     if (next.accountIds.length) query.set("investmentAccounts", next.accountIds.join(","));
     return `/reports${query.toString() ? `?${query.toString()}` : ""}`;

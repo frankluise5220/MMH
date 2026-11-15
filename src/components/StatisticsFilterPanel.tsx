@@ -52,6 +52,8 @@ export function StatisticsFilterPanel({ allAccounts, allInstitutions = [], allUs
   const [accountId, setAccountId] = useState(searchParams.get(accountParam ?? "accounts") ?? "");
   const [institutionId, setInstitutionId] = useState(searchParams.get("institutionIds") ?? searchParams.get("institutionId") ?? "");
   const [userIds, setUserIds] = useState<string[]>(searchParams.get("userIds")?.split(",").filter(Boolean) ?? (searchParams.get("userId") ? [searchParams.get("userId")!] : []));
+  // 自定义分组维度（`Account.accountGroup` 标签，逗号分隔；未分组用 `__ungrouped__`）。
+  const [groupKeys, setGroupKeys] = useState<string[]>(searchParams.get("groups")?.split(",").filter(Boolean) ?? []);
   const [startMonth, setStartMonth] = useState(searchParams.get("startMonth") ?? start?.slice(0, 7) ?? `${year}-01`);
   const [endMonth, setEndMonth] = useState(searchParams.get("endMonth") ?? end?.slice(0, 7) ?? `${year}-12`);
   const [startYear, setStartYear] = useState(searchParams.get("startYear") ?? start?.slice(0, 4) ?? String(year));
@@ -62,6 +64,7 @@ export function StatisticsFilterPanel({ allAccounts, allInstitutions = [], allUs
 
   const scopeValue: AccountScopeValue = {
     userIds,
+    groupKeys,
     institutionIds: institutionId.split(",").filter(Boolean),
     accountIds: accountId.split(",").filter(Boolean),
   };
@@ -131,8 +134,9 @@ export function StatisticsFilterPanel({ allAccounts, allInstitutions = [], allUs
     setLevel(nextLevel);
   }
 
-  function generate(overrides: { nextUserIds?: string[]; nextInstitutionId?: string; nextAccountId?: string } = {}) {
+  function generate(overrides: { nextUserIds?: string[]; nextGroupKeys?: string[]; nextInstitutionId?: string; nextAccountId?: string } = {}) {
     const nextUserIds = overrides.nextUserIds ?? userIds;
+    const nextGroupKeys = overrides.nextGroupKeys ?? groupKeys;
     const nextInstitutionId = overrides.nextInstitutionId ?? institutionId;
     const nextAccountId = overrides.nextAccountId ?? accountId;
     const params = new URLSearchParams();
@@ -155,6 +159,7 @@ export function StatisticsFilterPanel({ allAccounts, allInstitutions = [], allUs
       params.set("institutionIds", nextInstitutionId);
     }
     if (nextUserIds.length > 0) params.set("userIds", nextUserIds.join(","));
+    if (nextGroupKeys.length > 0) params.set("groups", nextGroupKeys.join(","));
     router.push(`${reportPath}?${params.toString()}`, { scroll: false });
   }
 
@@ -163,12 +168,14 @@ export function StatisticsFilterPanel({ allAccounts, allInstitutions = [], allUs
     // AccountScopeFilter follow these values; the report itself recomputes
     // only when the user clicks the refresh button (generate()).
     setUserIds(next.userIds);
+    setGroupKeys(next.groupKeys ?? []);
     setInstitutionId(next.institutionIds.join(","));
     setAccountId(next.accountIds.join(","));
   }
 
   function clearFilters() {
     setUserIds([]);
+    setGroupKeys([]);
     setInstitutionId("");
     setAccountId("");
   }
