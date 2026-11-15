@@ -279,7 +279,11 @@ function parsePlanTagIds(raw: string | null): string[] {
  *
  * Payment rows are created lazily: for each active plan, rebuild the schedule
  * from the stored billing day / first payment date and create the principal
- * (and fee) rows whose date is on or before `asOfDate` and do not exist yet.
+ * (and fee) rows whose date is on or before `asOfDate` and whose installment
+ * number is past the plan's watermark (`materializedThroughNo`). The watermark
+ * — not the presence of the row — is what decides whether a period still needs
+ * materializing, so a period the user deleted (soft or permanently removed
+ * from the recycle bin) is never recreated.
  * Legacy plans without stored billingDay/firstPaymentDate fall back to the
  * account billing day and the first statement month + billing day.
  *
@@ -328,6 +332,7 @@ export async function materializeDueInstallmentPayments(
       billingDay: true,
       firstPaymentDate: true,
       firstStatementMonth: true,
+      materializedThroughNo: true,
       tagIds: true,
       categoryId: true,
       categoryName: true,
@@ -344,6 +349,10 @@ export async function materializeDueInstallmentPayments(
 
   let materialized = 0;
   for (const plan of plans) {
+    // 水位：这条计划已经落库到第几期。期供行允许用户单期删除，甚至从回收站彻底删除，
+    // 一旦判重依赖「那一行还在不在」，被硬删的期就会被当成缺失重新补出来（删了又出现）。
+    // 所以落库范围由计划自己推进：只落 installmentNo > 水位的期。
+    const watermark = plan.materializedThroughNo ?? 0;
     const billingDay = plan.billingDay ?? plan.Account?.billingDay ?? 1;
     const firstDate =
       plan.firstPaymentDate ??
@@ -357,7 +366,7 @@ export async function materializeDueInstallmentPayments(
       firstDate,
     });
     const dueRows: InstallmentPaymentRow[] = schedule
-      .filter((row) => row.date.getTime() <= asOf.getTime())
+      .filter((row) => row.installmentNo > watermark && row.date.getTime() <= asOf.getTime())
       .map((row) => ({
         installmentNo: row.installmentNo,
         date: row.date,
@@ -372,8 +381,8 @@ export async function materializeDueInstallmentPayments(
       }));
     if (dueRows.length === 0) continue;
 
-    // 这里故意**不滤 deletedAt**：期供行允许用户单期删除，只有把已软删的行也算作
-    // 「生成过」，下一次 materialize 才不会把它当成缺失又补一条回来（删了又出现）。
+    // 兜底判重（水位是主闸门）：升级前落库的行、执行中途失败后重跑时的重复检查。
+    // 这里故意**不滤 deletedAt**：期供行允许用户单期删除，已软删的行也算「生成过」。
     const existing = await db.txRecord.findMany({
       where: {
         creditCardInstallmentPlanId: plan.id,
@@ -389,7 +398,11 @@ export async function materializeDueInstallmentPayments(
     );
 
     const tagIds = parsePlanTagIds(plan.tagIds);
+    let nextWatermark = watermark;
     for (const row of dueRows) {
+      // 水位先推进：即便这一期两行都已存在（升级前落库 / 上一轮建完后中断），
+      // 也算「这一期执行过了」，下次不再纳入范围。
+      nextWatermark = Math.max(nextWatermark, row.installmentNo);
       // 本金行与手续费行各自判重：用户可能只删掉其中一条（明细里两行分开显示），
       // 被删掉的那条不再补，另一条照旧，不会整期一起复活。
       const needPrincipal = !existingPaymentNos.has(row.installmentNo);
@@ -461,6 +474,14 @@ export async function materializeDueInstallmentPayments(
         materialized += 1;
         existingFeeNos.add(row.installmentNo);
       }
+    }
+
+    if (nextWatermark > watermark) {
+      // 水位只前进不后退（lt 条件兜住并发/重入），写到最大已执行期号。
+      await db.creditCardInstallmentPlan.updateMany({
+        where: { id: plan.id, householdId: input.householdId, materializedThroughNo: { lt: nextWatermark } },
+        data: { materializedThroughNo: nextWatermark },
+      });
     }
   }
 

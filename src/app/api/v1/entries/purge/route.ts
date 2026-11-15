@@ -35,8 +35,10 @@ type PurgeCoreResult = {
  *   自身也已软删时才一并硬删——「移除资金流水但保留业务明细」场景下的在用业务行
  *   必须保留（其 cashEntryId 悬空为普通文本列，无外键约束，无碍）；
  * - EntryTag / Attachment 为硬外键级联，显式删除只为统计准确；
- * - EntryBusinessLink（SetNull）、FxConversion（Cascade）、分期计划源记录（Cascade）
- *   由数据库级联处理；在用的关联行 cashEntryId 会被 FK 自动置空。
+ * - EntryBusinessLink（SetNull）、FxConversion（Cascade）由数据库级联处理；
+ *   在用的关联行 cashEntryId 会被 FK 自动置空；
+ * - 分期计划的 sourceEntryId 在删除前显式置空：表结构虽是 SetNull，但存量 SQLite
+ *   桌面库的外键仍是旧 CASCADE，置空才能保证「清回收站不会连带删掉整条分期计划」。
  */
 async function purgeSoftDeletedTxRecords(
   householdId: string,
@@ -104,6 +106,15 @@ async function purgeSoftDeletedTxRecords(
 
     await tx.entryTag.deleteMany({ where: { entryId: { in: purgedIds } } });
     await tx.attachment.deleteMany({ where: { entryId: { in: purgedIds } } });
+
+    // 分期计划的来源记录（原消费）被彻底删除：先断链，再删记录。
+    // 表结构上已是 ON DELETE SET NULL，但存量 SQLite 桌面库的外键仍是旧的 CASCADE，
+    // 而 SQLite 改不了约束——只有先置空 sourceEntryId，才能保证两边行为一致：
+    // 计划与它已经落地/待落地的各期不会被「清空回收站」一起物理删除。
+    await tx.creditCardInstallmentPlan.updateMany({
+      where: { householdId, sourceEntryId: { in: purgedIds } },
+      data: { sourceEntryId: null },
+    });
 
     const deleted = await tx.txRecord.deleteMany({
       where: { id: { in: purgedIds }, deletedAt: { not: null } },

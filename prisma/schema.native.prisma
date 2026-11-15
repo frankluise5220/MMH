@@ -367,6 +367,10 @@ model CreditCardInstallmentPlan {
   // fall back to the account billing day / firstStatementMonth.
   billingDay           Int?
   firstPaymentDate     DateTime?
+  // 期供行落库水位：已经落地到第几期。期供行是「到期才落库」的，判重不能只看
+  // 期供行是否还存在（用户能把某一期彻底删除，行没了就会被当成缺失又补一条），
+  // 所以由计划自己记住推进到第几期：materialize 只落 installmentNo > 水位的期。
+  materializedThroughNo Int                            @default(0)
   tagIds               String?
   categoryId           String?
   categoryName         String?
@@ -375,7 +379,9 @@ model CreditCardInstallmentPlan {
   updatedAt            DateTime                        @default(now()) @updatedAt
   Account              Account                         @relation(fields: [accountId], references: [id], onDelete: Cascade)
   Household            Household                       @relation(fields: [householdId], references: [id], onDelete: Cascade)
-  SourceEntry          TxRecord?                       @relation("CreditCardInstallmentSource", fields: [sourceEntryId], references: [id], onDelete: Cascade)
+  // 来源记录被「彻底删除」时只断链，不连坐删计划：期供行是真实已发生的支出，
+  // 不能因为清空回收站里的一条原消费记录就整条计划连同历史各期一起物理消失。
+  SourceEntry          TxRecord?                       @relation("CreditCardInstallmentSource", fields: [sourceEntryId], references: [id], onDelete: SetNull)
   Entries              TxRecord[]                      @relation("CreditCardInstallmentEntries")
 
   @@index([householdId, accountId, status])
