@@ -464,7 +464,7 @@ export const RepoEntryFields = forwardRef<RepoEntryFieldsHandle, Props>(function
           placeholder={t("repoForm.stockAccountPlaceholder")}
           onCreateClick={onCreateAccount}
           createLabel={createAccountLabel}
-          behavior={{ search: true, density: "compact", minDropdownWidth: 260 }}
+          behavior={{ search: true, minDropdownWidth: 260 }}
         />
       ) : (
         <div className="form-input flex items-center text-slate-600" title={accountLabel}>{accountLabel || "-"}</div>
@@ -671,7 +671,7 @@ export const RepoEntryFields = forwardRef<RepoEntryFieldsHandle, Props>(function
             placeholder={t("repoForm.cashAccountPlaceholder")}
             onCreateClick={onCreateCashAccount}
             createLabel={createCashAccountLabel}
-            behavior={{ search: true, density: "compact", minDropdownWidth: 260 }}
+            behavior={{ search: true, minDropdownWidth: 260 }}
           />
         </div>
       </div>

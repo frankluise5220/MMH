@@ -2010,7 +2010,7 @@ export function StockTransactionFormModal({
                     createLabel={t("stockTx.addStockAccount")}
                     onCycleOwnerFilter={cycleOwnerFilter}
                     ownerFilterLabel={ownerFilterLabel}
-                    behavior={{ search: true, density: "compact", minDropdownWidth: 280 }}
+                    behavior={{ search: true, minDropdownWidth: 280 }}
                   />
                   {autoCreateError ? <div className="text-[11px] text-rose-600">{autoCreateError}</div> : null}
                 </div>
@@ -2027,7 +2027,7 @@ export function StockTransactionFormModal({
                     placeholder={eligibleCashAccountOptions.length > 0 ? t("stockTx.selectCashAccount") : t("stockTx.addCashAccount")}
                     onCreateClick={openNestedCashAccountCreate}
                     createLabel={t("stockTx.addCashAccount")}
-                    behavior={{ search: true, density: "compact", minDropdownWidth: 260 }}
+                    behavior={{ search: true, minDropdownWidth: 260 }}
                   />
                 </div>
               </div>
@@ -2052,7 +2052,6 @@ export function StockTransactionFormModal({
                               : t("stockTx.selectDividendHoldingStock")}
                       behavior={{
                         search: true,
-                        density: "compact",
                         minDropdownWidth: 300,
                         // 「已清仓」是查历史用的分组，默认收起；选中里面的股票时会自动展开。
                         defaultCollapsedGroupIds: STOCK_HOLDING_COLLAPSED_GROUPS,

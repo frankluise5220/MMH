@@ -79,6 +79,36 @@
   /* ④ 挂在页签条右侧的筛选按钮：高 = 活动页签高 − 层次 = 露出区 + 1px = 28px，
         与 `pt-[var(--ft-tab-rise)]` 顶对齐后正好落在非活动页签的竖向范围内 */
   --ft-tab-filter-h: calc(var(--ft-tab-height) - var(--ft-tab-step)); /* 28px */
+
+  /* ── 表单控件垂直几何：一套只依赖字号的公式（配套 `.form-input` / SmartSelect）──
+     **唯一自由变量 = 字号 `--field-font`**，其余全部是「字号 × 系数」，系数按 14px
+     标定（系数 × 14 = 注释里的 px）。
+     此前这里是三套互相不知道对方存在的魔法数：`.form-input` 写死 `h-9`、下拉触发器写死
+     `h-9/h-8/h-7/h-6`、下拉行高又另算 36/30/26/16——字号一动，同一行里的输入框和下拉框
+     就错开（用户 2026-11-15：「这个数字应该是可以跟随全局而变化的吧」→「应该跟文字字体走吧」）。
+     现在控件高度从字号推导，与 FT 页签同一条思路（见上面的 `--ft-tab-*`）：
+
+         高度 = 行高(字号 × 1.5) + 上下内边距(字号 × 0.4643 × 2) + 2 × 1px 边框
+              = 字号 × 18/7        （14px → 36px，与旧的 `h-9` 逐像素一致）
+
+     相邻档位差恰好 4px（= 字号 × 2/7），旧阶梯 36/32/28/24/20/16 因此能逐个原样命中：
+         --field-h          36px 默认控件（记账弹窗的输入框、日期框、下拉触发器）
+         --field-h-compact  32px 表格工具栏 / `density="compact"` 下拉
+         --field-h-dense    28px 行内编辑 / `density="dense"`
+         --field-h-micro    24px 最紧 / `density="micro"`
+         --field-h-tight    20px 下拉里的密集行
+         --field-h-mini     16px 下拉里的组头
+
+     公式用 `calc(font × k)` 而**不是 `em`**：这些变量会被别的元素引用（明细行内编辑器、
+     工具栏按钮），`em` 会在引用者自己的字号上解析出另一个值，同一条公式算出两个高度。 */
+  --field-font: 0.875rem;                                            /* 14px = text-sm */
+  --field-h-step: calc(var(--field-font) * 2 / 7);                   /*  4px 相邻档位差 */
+  --field-h: calc(var(--field-font) * 18 / 7);                       /* 36px 默认控件高 */
+  --field-h-compact: calc(var(--field-h) - var(--field-h-step));     /* 32px */
+  --field-h-dense: calc(var(--field-h) - var(--field-h-step) * 2);   /* 28px */
+  --field-h-micro: calc(var(--field-h) - var(--field-h-step) * 3);   /* 24px */
+  --field-h-tight: calc(var(--field-h) - var(--field-h-step) * 4);   /* 20px */
+  --field-h-mini: calc(var(--field-h) - var(--field-h-step) * 5);    /* 16px */
 }
 
 html {
@@ -434,7 +464,10 @@ html {
   }
 
   .form-input {
-    @apply h-9 w-full rounded-[10px] border bg-white px-3 text-sm text-slate-800 outline-none transition-colors;
+    @apply w-full rounded-[10px] border bg-white px-3 text-sm text-slate-800 outline-none transition-colors;
+    /* 高度不写死：跟字号走（--field-h = 字号 × 18/7，14px 字号下就是原来的 36px）。
+       `@apply` 放在前面，调用点显式传的 `h-8 / h-10` 仍由工具类层覆盖。 */
+    height: var(--field-h);
     border-color: rgba(148, 163, 184, 0.28);
   }
 
@@ -710,7 +743,7 @@ html {
   }
 
   /* 移动端弹窗内所有表单控件统一 44px 高（触摸热区）。⚠️ SmartSelect 的触发框**不是**
-     `.form-input`（它是 `role="button"` 的 div，自带宽高 `h-9`），漏在这条规则之外时，
+     `.form-input`（它是 `role="button"` 的 div，高度来自 `--field-h`），漏在这条规则之外时，
      同一个弹窗里「下拉框 36px + 输入框 44px」并存，同一行的两个字段高矮不一。
      故给默认尺寸的触发框挂上 `.smart-select-trigger`（见 SmartSelect.tsx，micro/dense/compact
      等紧凑尺寸不加，避免影响表格工具栏里的紧凑下拉）。 */

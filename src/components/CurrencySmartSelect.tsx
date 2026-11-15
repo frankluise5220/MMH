@@ -142,7 +142,12 @@ type Props = {
   showRequestButton?: boolean;
   /** Currency codes that should not be selectable in this field. */
   excludeCodes?: string[];
-  /** SmartSelect density */
+  /**
+   * SmartSelect density. Defaults to `regular` so the trigger is `h-9` and lines
+   * up with the `form-input` / `<select>` fields it sits next to（compact 只有
+   * `h-8`，在记账弹窗里会比相邻输入框矮 4px）。只有相邻控件本身更矮的场合
+   * （如 `AccountTypeQuickEdit` 的 h-8 输入框）才显式传 `compact`。
+   */
   density?: "regular" | "compact" | "dense" | "micro";
   /**
    * "name" (default) renders the localized currency name with the ISO code as
@@ -163,7 +168,7 @@ export function CurrencySmartSelect({
   placeholder,
   showRequestButton = true,
   excludeCodes = [],
-  density = "compact",
+  density = "regular",
   labelMode = "name",
   minDropdownWidth,
 }: Props) {
