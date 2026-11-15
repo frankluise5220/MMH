@@ -11,6 +11,39 @@ type CollateralClient = Prisma.TransactionClient | typeof prisma;
 const NON_TERMINAL_ASSET_STATUS = { notIn: ["sold", "disposed", "deleted"] };
 
 /**
+ * 处置兜底（2026-11-16 用户裁定「方案 A」）：售出 / 处置前从贷款侧反查抵押关系。
+ *
+ * 资产端的抵押标记（status=mortgaged / mortgageLoanAccountId）只有在借入时走过
+ * syncCollateralAssetLink 才有值；房贷（loanType=home）借入时固定资产是可选关联，
+ * 老的抵押贷记录也可能从未建立关联。所以「资产上看不出抵押」不等于真的没抵押，
+ * 还要查贷款侧 collateralAssetId 指向本资产、且本金余额未结清的贷款账户。
+ */
+export async function findUnsettledCollateralLoanAccounts(
+  client: CollateralClient,
+  params: { householdId: string; propertyAssetId: string; asOfDate?: Date },
+): Promise<Array<{ id: string; name: string }>> {
+  const loanAccounts = await client.account.findMany({
+    where: {
+      householdId: params.householdId,
+      collateralAssetId: params.propertyAssetId,
+      kind: AccountKind.loan,
+    },
+    select: { id: true, kind: true, name: true },
+  });
+  if (loanAccounts.length === 0) return [];
+
+  const balances = await computeLoanPrincipalBalancesAsOf(
+    loanAccounts,
+    { householdId: params.householdId },
+    params.asOfDate ?? new Date(),
+    { client },
+  );
+  return loanAccounts
+    .filter((account) => (balances.get(account.id) ?? 0) < -ACTIVE_LIABILITY_EPSILON)
+    .map((account) => ({ id: account.id, name: account.name }));
+}
+
+/**
  * 贷款结清后自动解除关联固定资产的抵押状态。
  *
  * 结清口径与负债视图一致：贷款本金余额（截至今天，未来日期的流水不计入）

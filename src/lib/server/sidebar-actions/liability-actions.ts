@@ -631,8 +631,15 @@ export async function createLiabilityTransaction(formData: FormData) {
         return cashAccount;
       };
       const syncCollateralAssetLink = async () => {
-        if (mode !== "borrow_in" || !isCollateralLoanTypeValue) return;
-        if (!fixedAssetAccountId || !fixedAssetAssetId) throw new Error("COLLATERAL_ASSET_REQUIRED");
+        if (mode !== "borrow_in") return;
+        // 抵押贷的固定资产必填（上面已校验）；房贷是可选关联，选了才建立抵押关系。
+        // 房贷同样要写贷款侧 collateralAssetId（2026-11-16）：售出 / 处置前的反查只看这个
+        // 字段，房贷链路不写就等于「房贷中的房子可以随便卖」。
+        if (!isCollateralLoanTypeValue && !isHomeLoanTypeValue) return;
+        if (!fixedAssetAccountId || !fixedAssetAssetId) {
+          if (isCollateralLoanTypeValue) throw new Error("COLLATERAL_ASSET_REQUIRED");
+          return;
+        }
         const collateralAsset = await tx.propertyAsset.findFirst({
           where: {
             id: fixedAssetAssetId,
@@ -940,7 +947,13 @@ export async function createLiabilityTransaction(formData: FormData) {
         if (tagIdsWereSubmitted) {
           await replaceEntryTags({ tx, entryId: original.id, householdId, tagIds });
         }
-        if (mode === "borrow_in" && isCollateralLoanTypeValue) {
+        // 房贷编辑补选 / 换选购入房产时同样要变成抵押（2026-11-16）：只走
+        // linkExpenseToFixedAsset 的话，资产端不会标「抵押中」、贷款侧也不写
+        // collateralAssetId，售出 / 处置前的反查就查不到。
+        const shouldSyncCollateralOnEdit =
+          mode === "borrow_in" &&
+          (isCollateralLoanTypeValue || (isHomeLoanTypeValue && Boolean(fixedAssetAccountId && fixedAssetAssetId)));
+        if (shouldSyncCollateralOnEdit) {
           await syncCollateralAssetLink();
         } else if (mode === "borrow_in" && fixedAssetToggleSubmitted === "false") {
           // 编辑借入记录时把固定资产开关关掉 → 删除借入记录与固定资产的关联
@@ -969,10 +982,9 @@ export async function createLiabilityTransaction(formData: FormData) {
             if (existingLink.accountId) affectedAccountIds.add(existingLink.accountId);
           }
         } else if (mode === "borrow_in" && fixedAssetAccountId) {
-          // 直购型贷款（消费贷/房贷/其他）编辑借入记录时同步固定资产关联：
-          // 关联 = 给固定资产增加成本（PropertyTransaction）；抵押状态展示只
-          // 属于抵押贷（syncCollateralAssetLink）。与创建链路同口径，否则
-          // 编辑时提交的 fixedAssetAccountId 会被静默丢弃。
+          // 直购型贷款（消费贷 / 其他）编辑借入记录时同步固定资产关联：
+          // 关联 = 给固定资产增加成本（PropertyTransaction）。抵押贷与选了房产的
+          // 房贷在上面走 syncCollateralAssetLink，不会到这一支。
           const fixedAssetFundingAccount = isFinancedPurchaseForRecord ? liabilityAccount : cashAccount ?? liabilityAccount;
           await linkExpenseToFixedAsset(tx, {
             householdId,
@@ -1264,9 +1276,12 @@ export async function createLiabilityTransaction(formData: FormData) {
         await attachEntryTags({ tx, entryId: createdBorrow.id, householdId, tagIds });
       }
 
-      if (mode === "borrow_in" && isCollateralLoanTypeValue) {
+      // 抵押贷 / 房贷：建借入记录时把固定资产写成抵押物（房贷没选资产时内部直接返回）。
+      if (mode === "borrow_in" && (isCollateralLoanTypeValue || isHomeLoanTypeValue)) {
         await syncCollateralAssetLink();
-      } else if (mode === "borrow_in" && fixedAssetAccountId) {
+      }
+      // 直购 / 房贷的固定资产成本关联（抵押贷不走这里，它的关联由上面负责）。
+      if (mode === "borrow_in" && !isCollateralLoanTypeValue && fixedAssetAccountId) {
         // Link direct-purchase loan principal to a fixed asset when selected.
         // Financed purchases are paid by the lender, so the loan account is the
         // funding side even when a later auto-debit cash account is selected.
