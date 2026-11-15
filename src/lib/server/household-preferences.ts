@@ -47,7 +47,6 @@ export function preferenceRowData(prefs: AppPreferences) {
     creditCardSidebarLabelTemplate: prefs.creditCardSidebarLabelTemplate,
     creditBillHideZero: prefs.creditBillHideZero,
     creditBillHideSettled: prefs.creditBillHideSettled,
-    creditBillShowRecentCycles: prefs.creditBillShowRecentCycles,
     displayLanguage: prefs.displayLanguage,
     dateDisplayFormat: prefs.dateDisplayFormat,
     sidebarGroupBy: prefs.sidebarGroupBy,

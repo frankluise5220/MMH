@@ -369,7 +369,6 @@ export default async function Home({
     billMonth?: string;
     hideZeroBills?: string;
     hideSettledBills?: string;
-    billMonthsLimit?: string;
     billPage?: string;
     pageSize?: string;
     detailPage?: string;
@@ -539,7 +538,6 @@ export default async function Home({
   );
   const creditBillHideZeroPref = cookieStore.get("mmh_credit_hide_zero_bills")?.value;
   const creditBillHideSettledPref = cookieStore.get("mmh_credit_hide_settled_bills")?.value;
-  const creditBillRecentCyclesPref = cookieStore.get("mmh_credit_recent_cycles")?.value;
   const hideZeroBills =
     typeof params?.hideZeroBills === "string"
       ? params.hideZeroBills === "1"
@@ -548,13 +546,6 @@ export default async function Home({
     typeof params?.hideSettledBills === "string"
       ? params.hideSettledBills === "1"
       : creditBillHideSettledPref === "1" || creditBillHideSettledPref === "true";
-  const showRecentBillCycles =
-    typeof params?.billMonthsLimit === "string"
-      ? params.billMonthsLimit !== "all"
-      : creditBillRecentCyclesPref == null
-        ? true
-        : creditBillRecentCyclesPref === "1" || creditBillRecentCyclesPref === "true";
-  const billMonthsLimit = showRecentBillCycles ? 10 : 9999;
   const isRedUp = colorScheme === "red_up_green_down";
   const ctx = await getCachedHouseholdScope();
   const { hidFilter, householdId } = ctx;
@@ -1901,10 +1892,8 @@ export default async function Home({
     billStorageAccountId,
     billMonthParam,
     billPage,
-    billMonthsLimit,
     hideZeroBills,
     hideSettledBills,
-    showRecentBillCycles,
     view,
     t,
     categoryLabels,
@@ -3704,7 +3693,6 @@ export default async function Home({
                       settledBillMonth={settledBillMonth}
                       hideZeroBills={hideZeroBills}
                       hideSettledBills={hideSettledBills}
-                      showRecentBillCycles={showRecentBillCycles}
                       fillHeight
                     />
                   ) : (

@@ -93,10 +93,8 @@ type LoadCreditBillPageDataParams = {
   billStorageAccountId: string;
   billMonthParam: string;
   billPage: number;
-  billMonthsLimit: number;
   hideZeroBills: boolean;
   hideSettledBills: boolean;
-  showRecentBillCycles: boolean;
   view: string;
   t: (key: string) => string;
   forceCycleRefresh?: boolean;
@@ -153,10 +151,8 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
     billStorageAccountId,
     billMonthParam,
     billPage,
-    billMonthsLimit,
     hideZeroBills,
     hideSettledBills,
-    showRecentBillCycles,
     view,
     t,
     forceCycleRefresh = false,
@@ -600,12 +596,7 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
       }
     }
 
-    const sortedMonths = Array.from(months).sort((a, b) => b.localeCompare(a));
-    const limitedMonths = sortedMonths.slice(0, billMonthsLimit);
-    if (showRecentBillCycles && selectedBillMonth && !limitedMonths.includes(selectedBillMonth)) {
-      limitedMonths.push(selectedBillMonth);
-    }
-    return limitedMonths;
+    return Array.from(months).sort((a, b) => b.localeCompare(a));
   })();
 
   const billMonthsForCumulative = (() => {
@@ -969,7 +960,7 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
     .filter((s) => hideZeroBills ? !(s.expenseAbs === 0 && s.income === 0 && s.bill === 0 && s.paid === 0 && !s.isCurrentCycle) : true)
     .filter((s) => hideSettledBills ? !isCreditBillSettled(s) : true);
 
-  const billListPageSize = 12;
+  const billListPageSize = 10;
   const totalPages = Math.ceil(displayBillRows.length / billListPageSize);
   const currentPage = Math.min(billPage, totalPages || 1);
   const creditBillSummaryRows: CreditBillSummaryRow[] = displayBillRows.map((s) => ({
@@ -1222,10 +1213,8 @@ export async function refreshCreditCardCycleCachesForAccountIds(params: {
       billStorageAccountId: group.billStorageAccountId,
       billMonthParam: "",
       billPage: 1,
-      billMonthsLimit: 120,
       hideZeroBills: false,
       hideSettledBills: false,
-      showRecentBillCycles: false,
       view: "refresh",
       t: (key) => key,
       forceCycleRefresh: true,

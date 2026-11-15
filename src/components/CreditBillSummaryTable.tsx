@@ -23,7 +23,6 @@ import { creditBillUnpaidAmount, isCreditBillSettled, type BillingDayTxPeriod } 
 import {
   setCreditBillHideSettledPreference,
   setCreditBillHideZeroPreference,
-  setCreditBillShowRecentCyclesPreference,
 } from "@/lib/client/appPreferences";
 import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
@@ -62,7 +61,6 @@ type CreditBillSummaryTableProps = {
   settledBillMonth: string;
   hideZeroBills: boolean;
   hideSettledBills: boolean;
-  showRecentBillCycles: boolean;
   className?: string;
   fillHeight?: boolean;
 };
@@ -119,7 +117,6 @@ export function CreditBillSummaryTable({
   settledBillMonth,
   hideZeroBills,
   hideSettledBills,
-  showRecentBillCycles,
   className,
   fillHeight = false,
 }: CreditBillSummaryTableProps) {
@@ -222,7 +219,6 @@ export function CreditBillSummaryTable({
         billMonth: url.searchParams.get("billMonth") || "all",
         hideZeroBills: hideZeroBills ? "1" : "0",
         hideSettledBills: hideSettledBills ? "1" : "0",
-        billMonthsLimit: showRecentBillCycles ? "10" : "all",
       });
       const seq = ++summaryRefreshSeqRef.current;
       fetch(`/api/v1/bill/summary?${params.toString()}`, { cache: "no-store" })
@@ -255,7 +251,7 @@ export function CreditBillSummaryTable({
     };
     window.addEventListener(FINANCE_DATA_CHANGED_EVENT, handleBillOverrideChange as EventListener);
     return () => window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, handleBillOverrideChange as EventListener);
-  }, [accountId, hideSettledBills, hideZeroBills, showRecentBillCycles, t]);
+  }, [accountId, hideSettledBills, hideZeroBills, t]);
 
   useEffect(() => {
     if (page === safePage) return;
@@ -379,7 +375,6 @@ export function CreditBillSummaryTable({
     q.set("billPage", String(safePage));
     if (hideZeroBills) q.set("hideZeroBills", "1");
     if (hideSettledBills) q.set("hideSettledBills", "1");
-    if (!showRecentBillCycles) q.set("billMonthsLimit", "all");
     mutate?.(q);
     return `/?${q.toString()}`;
   };
@@ -670,25 +665,6 @@ export function CreditBillSummaryTable({
                   onClick: openExportDialog,
                 }]}
               />
-              <button
-                type="button"
-                onClick={() => {
-                  const next = !showRecentBillCycles;
-                  setCreditBillShowRecentCyclesPreference(next);
-                  navigateWithQuery((q) => {
-                    if (next) q.delete("billMonthsLimit");
-                    else q.set("billMonthsLimit", "all");
-                  });
-                }}
-                className={`flex h-7 items-center rounded-md border px-2 text-xs ${
-                  showRecentBillCycles
-                    ? "border-blue-300 bg-blue-50 text-blue-700"
-                    : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50"
-                }`}
-                title={showRecentBillCycles ? t("creditBill.recentTitle") : t("creditBill.allBillsTitle")}
-              >
-                {showRecentBillCycles ? t("creditBill.recent10") : t("creditBill.allBills")}
-              </button>
               <button
                 type="button"
                 onClick={() => {

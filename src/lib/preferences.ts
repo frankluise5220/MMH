@@ -70,7 +70,6 @@ export type PreferenceRow = {
   creditCardSidebarLabelTemplate?: string | null;
   creditBillHideZero?: boolean | null;
   creditBillHideSettled?: boolean | null;
-  creditBillShowRecentCycles?: boolean | null;
   displayLanguage?: string | null;
   dateDisplayFormat?: string | null;
   sidebarGroupBy?: string | null;
@@ -103,7 +102,6 @@ export type AppPreferences = {
   creditCardSidebarLabelTemplate: string;
   creditBillHideZero: boolean;
   creditBillHideSettled: boolean;
-  creditBillShowRecentCycles: boolean;
   displayLanguage: DisplayLanguage;
   dateDisplayFormat: DateDisplayFormat;
   sidebarGroupBy: SidebarGroupMode;
@@ -232,7 +230,6 @@ export function preferencesFromRow(row: PreferenceRow | null | undefined): AppPr
     ),
     creditBillHideZero: normalizeBoolean(row?.creditBillHideZero, false),
     creditBillHideSettled: normalizeBoolean(row?.creditBillHideSettled, false),
-    creditBillShowRecentCycles: normalizeBoolean(row?.creditBillShowRecentCycles, true),
     displayLanguage: normalizeDisplayLanguage(row?.displayLanguage),
     dateDisplayFormat: normalizeDateDisplayFormat(row?.dateDisplayFormat ?? DEFAULT_DATE_DISPLAY_FORMAT),
     sidebarGroupBy: normalizeSidebarGroupMode(row?.sidebarGroupBy),
@@ -272,7 +269,6 @@ export const PREFERENCE_COOKIE_MIRROR = [
   { key: "mmh_credit_card_sidebar_label_template", pick: (p: AppPreferences) => p.creditCardSidebarLabelTemplate },
   { key: "mmh_credit_hide_zero_bills", pick: (p: AppPreferences) => (p.creditBillHideZero ? "1" : "0") },
   { key: "mmh_credit_hide_settled_bills", pick: (p: AppPreferences) => (p.creditBillHideSettled ? "1" : "0") },
-  { key: "mmh_credit_recent_cycles", pick: (p: AppPreferences) => (p.creditBillShowRecentCycles ? "1" : "0") },
   { key: "mmh_display_language", pick: (p: AppPreferences) => p.displayLanguage },
   { key: "mmh_date_display_format", pick: (p: AppPreferences) => p.dateDisplayFormat },
   { key: "sidebar_group_by", pick: (p: AppPreferences) => p.sidebarGroupBy },

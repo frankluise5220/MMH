@@ -99,9 +99,6 @@ export async function PUT(req: NextRequest) {
     }
     if (has("creditBillHideZero")) patch.creditBillHideZero = normalizeBoolean(body.creditBillHideZero, false);
     if (has("creditBillHideSettled")) patch.creditBillHideSettled = normalizeBoolean(body.creditBillHideSettled, false);
-    if (has("creditBillShowRecentCycles")) {
-      patch.creditBillShowRecentCycles = normalizeBoolean(body.creditBillShowRecentCycles, true);
-    }
     if (has("displayLanguage")) patch.displayLanguage = normalizeDisplayLanguage(body.displayLanguage);
     if (has("dateDisplayFormat")) patch.dateDisplayFormat = normalizeDateDisplayFormat(body.dateDisplayFormat);
     if (has("sidebarGroupBy")) patch.sidebarGroupBy = normalizeSidebarGroupMode(body.sidebarGroupBy);

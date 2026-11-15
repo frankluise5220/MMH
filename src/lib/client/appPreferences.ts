@@ -48,7 +48,6 @@ const CREDIT_CARD_LABEL_TEMPLATE_COOKIE = "mmh_credit_card_label_template";
 const CREDIT_CARD_SIDEBAR_LABEL_TEMPLATE_COOKIE = "mmh_credit_card_sidebar_label_template";
 const CREDIT_BILL_HIDE_ZERO_COOKIE = "mmh_credit_hide_zero_bills";
 const CREDIT_BILL_HIDE_SETTLED_COOKIE = "mmh_credit_hide_settled_bills";
-const CREDIT_BILL_RECENT_CYCLES_COOKIE = "mmh_credit_recent_cycles";
 export const DISPLAY_LANGUAGE_COOKIE = "mmh_display_language";
 const DATE_DISPLAY_FORMAT_COOKIE = "mmh_date_display_format";
 const SIDEBAR_GROUP_BY_KEY = "sidebar_group_by";
@@ -91,7 +90,6 @@ type AppPreferencesSnapshot = {
   creditCardSidebarLabelTemplate: string;
   creditBillHideZero: boolean;
   creditBillHideSettled: boolean;
-  creditBillShowRecentCycles: boolean;
   displayLanguage: DisplayLanguage;
   dateDisplayFormat: DateDisplayFormat;
   sidebarGroupBy: SidebarGroupMode;
@@ -203,18 +201,6 @@ function getCreditBillHideSettledPreference(): boolean {
 export function setCreditBillHideSettledPreference(value: boolean) {
   if (typeof document === "undefined") return;
   setCookieValue(CREDIT_BILL_HIDE_SETTLED_COOKIE, value ? "1" : "0");
-  emitPreferencesChanged();
-}
-
-function getCreditBillShowRecentCyclesPreference(): boolean {
-  const raw = parseCookieValue(CREDIT_BILL_RECENT_CYCLES_COOKIE);
-  if (raw == null) return true;
-  return raw === "1" || raw === "true";
-}
-
-export function setCreditBillShowRecentCyclesPreference(value: boolean) {
-  if (typeof document === "undefined") return;
-  setCookieValue(CREDIT_BILL_RECENT_CYCLES_COOKIE, value ? "1" : "0");
   emitPreferencesChanged();
 }
 
@@ -527,7 +513,6 @@ export function getAppPreferences(): AppPreferencesSnapshot {
     creditCardSidebarLabelTemplate: getCreditCardSidebarLabelTemplatePreference(),
     creditBillHideZero: getCreditBillHideZeroPreference(),
     creditBillHideSettled: getCreditBillHideSettledPreference(),
-    creditBillShowRecentCycles: getCreditBillShowRecentCyclesPreference(),
     displayLanguage: getDisplayLanguagePreference(),
     dateDisplayFormat: getDateDisplayFormatPreference(),
     sidebarGroupBy: getSidebarGroupPreference(),

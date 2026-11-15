@@ -6,7 +6,6 @@
  *   billMonth?: YYYY-MM|all, used to preserve the selected bill scope
  *   hideZeroBills?: 1|0
  *   hideSettledBills?: 1|0
- *   billMonthsLimit?: all|positive integer
  *
  * Returns the recalculated credit-card bill summary rows without re-rendering
  * the detail panel or the surrounding page.
@@ -20,12 +19,6 @@ import { loadCreditBillPageData } from "@/lib/server/credit-bill-page-data";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 
 export const runtime = "nodejs";
-
-function parseBillMonthsLimit(value: string | null) {
-  if (value === "all") return 9999;
-  const parsed = Number(value);
-  return Number.isInteger(parsed) && parsed > 0 ? Math.min(parsed, 9999) : 10;
-}
 
 export async function GET(request: Request) {
   try {
@@ -63,10 +56,8 @@ export async function GET(request: Request) {
       billStorageAccountId: billAccountIds[0] ?? account.id,
       billMonthParam: searchParams.get("billMonth")?.trim() || "",
       billPage: 1,
-      billMonthsLimit: parseBillMonthsLimit(searchParams.get("billMonthsLimit")),
       hideZeroBills: searchParams.get("hideZeroBills") === "1",
       hideSettledBills: searchParams.get("hideSettledBills") === "1",
-      showRecentBillCycles: searchParams.get("billMonthsLimit") !== "all",
       view: "refresh",
       t: () => "",
       categoryLabels: new Map(),
