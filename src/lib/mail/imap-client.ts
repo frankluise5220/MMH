@@ -1,6 +1,8 @@
 import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
 import { createHash } from "node:crypto";
+import { connect as netConnect, type Socket as NetSocket } from "node:net";
+import { connect as tlsConnect, type TLSSocket } from "node:tls";
 import type { Readable } from "stream";
 import { extractPdfText } from "@/lib/mail/pdf";
 import { extractSpreadsheetText } from "@/lib/mail/spreadsheet";
@@ -345,20 +347,265 @@ async function scanRecentMailRows(
   return { rows, scanned };
 }
 
+/**
+ * 连接前的端点体检：一次连接里打通 TCP →（按需）TLS → 读第一块欢迎语。
+ *
+ * 只靠 imapflow 的报错分不清「网络不通」「端口不是 IMAP 服务」「密码错了」：它对
+ * 前两者都只等到 greetingTimeout 才失败，报出来是一句笼统的 timeout。IMAP 协议规定
+ * 服务器连上后立刻发 `* OK`，所以在预检里读几个字节就能判定这个端口到底是不是 IMAP
+ * —— 端口填成 443（HTTPS 等客户端先说话）这类错误会当场暴露，不用等 15 秒。
+ */
+const PROBE_TCP_TIMEOUT_MS = 5000;
+const PROBE_TLS_TIMEOUT_MS = 5000;
+const PROBE_GREETING_TIMEOUT_MS = 5000;
+const PROBE_GREETING_MAX_BYTES = 80;
+
+type EndpointProbe = {
+  /** 失败发生在哪一步；ok=true 时是 "ok"。 */
+  stage: "tcp" | "tls" | "greeting" | "ok";
+  ok: boolean;
+  code?: string;
+  tcpMs: number;
+  tlsMs?: number;
+  greetingMs?: number;
+  certName?: string;
+  /** 服务器返回的头几个字节，用来识别「这个端口不是 IMAP」。 */
+  greeting?: string;
+};
+
+function errorCodeOf(error: unknown) {
+  return (error as NodeJS.ErrnoException | null)?.code ?? "EUNKNOWN";
+}
+
+function timeoutError(message: string) {
+  return Object.assign(new Error(message), { code: "ETIMEDOUT" });
+}
+
+function connectTcp(host: string, port: number, timeoutMs: number) {
+  return new Promise<{ socket: NetSocket; ms: number }>((resolve, reject) => {
+    const startedAt = Date.now();
+    const socket = netConnect({ host, port });
+    const fail = (error: unknown) => {
+      socket.destroy();
+      reject(error);
+    };
+    socket.setTimeout(timeoutMs, () => fail(timeoutError("tcp connect timeout")));
+    socket.once("error", fail);
+    socket.once("connect", () => {
+      socket.setTimeout(0);
+      socket.off("error", fail);
+      socket.on("error", () => {});
+      resolve({ socket, ms: Date.now() - startedAt });
+    });
+  });
+}
+
+function upgradeToTls(socket: NetSocket, host: string, timeoutMs: number) {
+  return new Promise<{ socket: TLSSocket; ms: number; certName?: string }>((resolve, reject) => {
+    const startedAt = Date.now();
+    const secured = tlsConnect({ socket, servername: host, minVersion: "TLSv1.2" });
+    const fail = (error: unknown) => {
+      secured.destroy();
+      socket.destroy();
+      reject(error);
+    };
+    secured.setTimeout(timeoutMs, () => fail(timeoutError("tls handshake timeout")));
+    secured.once("error", fail);
+    secured.once("secureConnect", () => {
+      secured.setTimeout(0);
+      secured.off("error", fail);
+      secured.on("error", () => {});
+      const cert = secured.getPeerCertificate?.();
+      resolve({ socket: secured, ms: Date.now() - startedAt, certName: cert?.subject?.CN || undefined });
+    });
+  });
+}
+
+function readGreeting(socket: NetSocket | TLSSocket, timeoutMs: number) {
+  return new Promise<{ text: string; ms: number; timedOut: boolean; closed: boolean }>((resolve) => {
+    const startedAt = Date.now();
+    let buffer = Buffer.alloc(0);
+    const finish = (timedOut: boolean, closed = false) => {
+      clearTimeout(timer);
+      socket.off("data", onData);
+      socket.off("close", onClose);
+      resolve({ text: buffer.toString("latin1").slice(0, PROBE_GREETING_MAX_BYTES), ms: Date.now() - startedAt, timedOut, closed });
+    };
+    const onData = (chunk: Buffer) => {
+      buffer = Buffer.concat([buffer, chunk]);
+      if (buffer.length > 0) finish(false);
+    };
+    const onClose = () => finish(false, true);
+    const timer = setTimeout(() => finish(true), timeoutMs);
+    socket.on("data", onData);
+    socket.once("close", onClose);
+  });
+}
+
+async function probeEndpoint(host: string, port: number, secure: boolean): Promise<EndpointProbe> {
+  const startedAt = Date.now();
+
+  let tcp: { socket: NetSocket; ms: number };
+  try {
+    tcp = await connectTcp(host, port, PROBE_TCP_TIMEOUT_MS);
+  } catch (error) {
+    return { stage: "tcp", ok: false, code: errorCodeOf(error), tcpMs: Date.now() - startedAt };
+  }
+
+  let current: NetSocket | TLSSocket = tcp.socket;
+  let tlsMs: number | undefined;
+  let certName: string | undefined;
+
+  if (secure) {
+    try {
+      const secured = await upgradeToTls(tcp.socket, host, PROBE_TLS_TIMEOUT_MS);
+      current = secured.socket;
+      tlsMs = secured.ms;
+      certName = secured.certName;
+    } catch (error) {
+      tcp.socket.destroy();
+      return { stage: "tls", ok: false, code: errorCodeOf(error), tcpMs: tcp.ms, tlsMs: Date.now() - startedAt - tcp.ms };
+    }
+  }
+
+  try {
+    const greeting = await readGreeting(current, PROBE_GREETING_TIMEOUT_MS);
+    const text = greeting.text.trim();
+    const imapGreeting = /^\*\s+(OK|PREAUTH|BYE)\b/i.test(text);
+    const ok = !greeting.timedOut && imapGreeting;
+    return {
+      stage: ok ? "ok" : "greeting",
+      ok,
+      // 区分「静默不语」与「立刻断开」：后者才是服务端主动拒绝（限流/封禁）。
+      code: ok ? undefined : greeting.timedOut ? "ETIMEDOUT" : greeting.closed && !text ? "ECONNRESET" : undefined,
+      tcpMs: tcp.ms,
+      tlsMs,
+      certName,
+      greetingMs: greeting.ms,
+      greeting: text,
+    };
+  } finally {
+    current.destroy();
+  }
+}
+
+function describeProbeFailure(config: ImapConfig, probe: EndpointProbe) {
+  const endpoint = `${config.host}:${config.port}`;
+  if (probe.stage === "tcp") {
+    switch (probe.code) {
+      case "ENOTFOUND":
+      case "EAI_AGAIN":
+        return `无法解析邮件服务器地址 ${config.host}，请检查 IMAP 服务器填写是否正确`;
+      case "ECONNREFUSED":
+        return `${endpoint} 拒绝连接：该端口没有服务，请确认端口（SSL 通常 993，明文通常 143）`;
+      case "ETIMEDOUT":
+        return `连接 ${endpoint} 超时（${probe.tcpMs}ms 内未能建立 TCP 连接）：网络不通、端口被防火墙拦截，或该服务器只允许特定网络访问`;
+      default:
+        return `连接 ${endpoint} 失败（${probe.code ?? "未知错误"}）`;
+    }
+  }
+  if (probe.stage === "tls") {
+    if (/CERT|UNABLE_TO_VERIFY|SELF_SIGNED|ALTNAME/i.test(probe.code ?? "")) {
+      return `已连上 ${endpoint}，但服务器证书与 ${config.host} 不匹配（${probe.code}）：这个端口上跑的不是该域名的邮件服务，请核对 IMAP 服务器与端口`;
+    }
+    if (config.port === 143 || config.port === 25 || config.port === 110) {
+      return `已连上 ${endpoint}，但 TLS 握手失败（${probe.code ?? "未知错误"}）：${config.port} 端口是明文协议，请取消勾选 TLS，或改用 993 端口并勾选 TLS`;
+    }
+    return `已连上 ${endpoint}，但 TLS 握手失败（${probe.code ?? "未知错误"}）：该端口不是 TLS 端口，请确认端口与 TLS 开关的搭配（993 需勾选，143 不勾选）`;
+  }
+  const received = probe.greeting?.trim();
+  if (received) {
+    return `已连上 ${endpoint}，但对方回的不是 IMAP 欢迎语（收到「${received.slice(0, 40)}」）：这个端口不是 IMAP 服务，请核对服务器与端口`;
+  }
+  if (probe.code === "ECONNRESET") {
+    return `已连上 ${endpoint}，但服务器立刻断开了连接（没有发 IMAP 欢迎语）：可能这个端口不是 IMAP，也可能服务器临时拒绝了本机 IP，请核对端口后稍后重试`;
+  }
+  return config.secure
+    ? `已连上 ${endpoint} 并完成 TLS 握手${probe.certName ? `（证书 ${probe.certName}）` : ""}，但没收到 IMAP 欢迎语：该端口不是 IMAP 服务，请核对 IMAP 端口（搜狐为 993）`
+    : `已连上 ${endpoint}，但没收到 IMAP 欢迎语：993 端口需要勾选 TLS`;
+}
+
+type ImapFailure = {
+  code?: string;
+  message?: string;
+  responseText?: string;
+  responseStatus?: string;
+  authenticationFailed?: boolean;
+};
+
+/**
+ * 把 imapflow 的失败翻译成用户能据此行动的一句话。
+ *
+ * 关键点是 imapflow 对登录失败只抛 `Command failed`，真正的理由在 responseText 里
+ * （例如搜狐回 `NO Invalid login user or password`）—— 不还原这句，用户只会以为
+ * 是网络问题然后反复重试。
+ */
+function describeProbeTrace(probe: EndpointProbe) {
+  const parts = [
+    `probe ${probe.ok ? "ok" : `failed@${probe.stage}(${probe.code ?? "-"})`}`,
+    `tcp=${probe.tcpMs}ms`,
+  ];
+  if (probe.tlsMs != null) parts.push(`tls=${probe.tlsMs}ms`);
+  if (probe.certName) parts.push(`cert=${probe.certName}`);
+  if (probe.greetingMs != null) parts.push(`greeting=${probe.greetingMs}ms`);
+  if (probe.greeting) parts.push(`greeting="${probe.greeting.slice(0, 40)}"`);
+  return parts.join(" ");
+}
+
+function describeConnectFailure(config: ImapConfig, error: unknown, probe: EndpointProbe) {
+  const failure = (error ?? {}) as ImapFailure;
+  const endpoint = `${config.host}:${config.port}`;
+  const rawMessage = failure.message ?? "";
+  const serverText = (failure.responseText ?? "").trim();
+
+  if (failure.authenticationFailed || /invalid login|authentication failed|login fail/i.test(serverText)) {
+    return `登录被服务器拒绝（${serverText || "用户名或密码/授权码不正确"}）：${endpoint} 可以连通，请确认账号、密码或客户端授权码`;
+  }
+  if (serverText) {
+    return `邮件服务器拒绝了登录请求（${serverText}）：${endpoint}`;
+  }
+
+  // 明文端口上勾了 TLS：OpenSSL 只会吐出 packet length too long 这类术语，
+  // 用户看不出是自己把 TLS 开关勾错了。
+  if (/ssl routines|eproto|wrong version number|packet length too long|wrong ssl version/i.test(`${failure.code ?? ""} ${rawMessage}`)) {
+    return `已连上 ${endpoint}，但 TLS 握手失败：服务器返回的数据不是 TLS，通常是端口与 TLS 开关不匹配，明文 IMAP 一般用 143 端口并取消勾选 TLS（当前 ${config.port} 端口勾了 TLS）`;
+  }
+
+  const timedOut = failure.code === "CONNECT_TIMEOUT"
+    || failure.code === "ETIMEOUT"
+    || /timeout|timed out/i.test(rawMessage);
+  if (!timedOut) return `${rawMessage || "连接邮件服务器失败"}（${endpoint}）`;
+
+  if (!probe.ok) return describeProbeFailure(config, probe);
+  // 预检刚刚还收到过 IMAP 欢迎语，imapflow 却连接超时：不是端口/协议问题，
+  // 而是服务端对这条连接的处置（并发或频率限制最常见）。
+  return `预检能收到欢迎语（${probe.greeting?.slice(0, 20) ?? "* OK"}），但正式连接在 15 秒内没有完成：服务器可能对该 IP 做了连接数或频率限制，请稍后重试`;
+}
+
 export async function connectAndOpenBox(config: ImapConfig, trace: string[] = []) {
   const mailbox = (config.mailbox ?? "INBOX").trim() || "INBOX";
   const client = buildClient(config);
+  const endpoint = `${config.host}:${config.port} secure=${config.secure ? "1" : "0"}`;
 
-  trace.push(`connect ${config.host}:${config.port} secure=${config.secure ? "1" : "0"}`);
+  trace.push(`connect ${endpoint}`);
+  const probe = await probeEndpoint(config.host, config.port, config.secure);
+  trace.push(describeProbeTrace(probe));
+  if (!probe.ok) {
+    client.close();
+    throw new Error(describeProbeFailure(config, probe));
+  }
+
   try {
-    await withTimeout(client.connect(), "IMAP connection timed out");
+    await withTimeout(client.connect(), `IMAP connection timed out (${endpoint})`);
     trace.push("connect ok");
     await withTimeout(client.mailboxOpen(mailbox, { readOnly: true }), "Mailbox folder open timed out");
     trace.push(`mailbox open ok: ${mailbox}`);
     return { client, mailbox };
   } catch (error) {
     client.close();
-    throw error;
+    const described = describeConnectFailure(config, error, probe);
+    trace.push(`error: ${described}`);
+    throw new Error(described);
   }
 }
 

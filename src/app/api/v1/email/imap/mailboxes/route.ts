@@ -1,16 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { ImapFlow } from "imapflow";
-import { getCurrentUser, isAdmin } from "@/lib/server/auth";
+import { prisma } from "@/lib/db/prisma";
+import { getHouseholdScope } from "@/lib/server/household-scope";
+import { isAdmin } from "@/lib/server/auth";
 
 export const runtime = "nodejs";
 
 const BodySchema = z.object({
-  host: z.string().min(1),
-  port: z.number().int().min(1).max(65535).default(993),
-  secure: z.boolean().default(true),
-  user: z.string().min(1),
-  password: z.string().min(1),
+  /** 已保存账户：编辑时密码框是空的，用库里的授权码连一次以列出文件夹。 */
+  accountId: z.string().min(1).optional(),
+  host: z.string().optional(),
+  port: z.number().int().min(1).max(65535).optional(),
+  secure: z.boolean().optional(),
+  user: z.string().optional(),
+  password: z.string().optional(),
 });
 
 /**
@@ -22,7 +26,7 @@ const BodySchema = z.object({
  * intranet-scan/credential-testing proxy, so admin authentication is required.
  */
 export async function POST(req: NextRequest) {
-  const currentUser = await getCurrentUser();
+  const { householdId, user: currentUser } = await getHouseholdScope();
   if (!currentUser) {
     return NextResponse.json({ ok: false, code: "UNAUTHORIZED", error: "请先登录" }, { status: 401 });
   }
@@ -36,7 +40,25 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: false, code: "INVALID_REQUEST", error: "参数格式不正确" }, { status: 400 });
   }
 
-  const { host, port, secure, user, password } = parsed.data;
+  const input = parsed.data;
+  const saved = input.accountId
+    ? await prisma.emailAccount.findFirst({
+      where: { id: input.accountId, householdId },
+      select: { imapHost: true, imapPort: true, imapSecure: true, username: true, password: true },
+    })
+    : null;
+
+  const host = (input.host ?? saved?.imapHost ?? "").trim();
+  const port = input.port ?? saved?.imapPort ?? 993;
+  const secure = input.secure ?? saved?.imapSecure ?? true;
+  const user = (input.user ?? saved?.username ?? "").trim();
+  // 编辑已保存账户时表单里的密码是空的，回落用库里的授权码，否则只能让用户重填一次。
+  const password = (input.password ?? "").trim() || saved?.password || "";
+
+  if (!host || !user || !password) {
+    return NextResponse.json({ ok: false, code: "INCOMPLETE_CONFIG", error: "请先填写 IMAP 主机、邮箱账号与授权码，再读取文件夹列表" }, { status: 400 });
+  }
+
   const trace: string[] = [];
 
   const client = new ImapFlow({
@@ -98,16 +120,22 @@ export async function POST(req: NextRequest) {
     trace.push(`mailbox list ok: ${unique.length}`);
     return NextResponse.json({ ok: true, trace, mailboxes: unique.slice(0, 200) });
   } catch (e) {
-    const rawMsg = e instanceof Error ? e.message : "邮箱连接失败";
-    const lower = rawMsg.toLowerCase();
-    const msg = lower.includes("auth") || lower.includes("login")
-      ? "认证失败：请确认邮箱账号与授权码是否正确。"
-      : lower.includes("timed out") || lower.includes("timeout")
-        ? "连接超时：请检查网络、端口与TLS设置。"
-        : lower.includes("enotfound")
-          ? "域名解析失败：请检查IMAP主机地址是否正确。"
-          : rawMsg;
-    return NextResponse.json({ ok: false, code: "IMAP_CONNECT_FAILED", error: msg, trace: [...trace, `error: ${rawMsg}`] }, { status: 500 });
+    // imapflow 对登录失败只抛 `Command failed`，真正的原因（NO Invalid login…）
+    // 在 responseText 里；不还原这句，用户只会以为是网络问题。
+    const failure = (e ?? {}) as { message?: string; code?: string; responseText?: string; authenticationFailed?: boolean };
+    const serverText = (failure.responseText ?? "").trim();
+    const rawMsg = failure.message ?? "邮箱连接失败";
+    const lower = `${failure.code ?? ""} ${rawMsg} ${serverText}`.toLowerCase();
+    const msg = failure.authenticationFailed || serverText
+      ? `认证失败：${serverText || "请确认邮箱账号与授权码是否正确"}。IMAP 通常要用邮箱设置里单独生成的授权码/独立密码，不是网页登录密码。`
+      : lower.includes("auth") || lower.includes("login")
+        ? "认证失败：请确认邮箱账号与授权码是否正确。IMAP 通常要用邮箱设置里单独生成的授权码/独立密码。"
+        : lower.includes("timed out") || lower.includes("timeout")
+          ? "连接超时：请检查网络、端口与TLS设置。"
+          : lower.includes("enotfound")
+            ? "域名解析失败：请检查IMAP主机地址是否正确。"
+            : rawMsg;
+    return NextResponse.json({ ok: false, code: "IMAP_CONNECT_FAILED", error: msg, trace: [...trace, `error: ${rawMsg}${serverText ? ` :: ${serverText}` : ""}`] }, { status: 500 });
   } finally {
     try {
       await client.logout();

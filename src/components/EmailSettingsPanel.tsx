@@ -361,6 +361,11 @@ export function EmailSettingsPanel({
   const [imapSecure, setImapSecure] = useState(true);
   const [password, setPassword] = useState("");
   const [mailbox, setMailbox] = useState("INBOX");
+  // 邮箱里到底有哪些文件夹，只有连上去才知道：把列表拉下来让用户点选，避免裸填文件夹名。
+  const [mailboxOptions, setMailboxOptions] = useState<string[]>([]);
+  const [loadingMailboxOptions, setLoadingMailboxOptions] = useState(false);
+  const [mailboxPickerOpen, setMailboxPickerOpen] = useState(false);
+  const [mailboxPickerNote, setMailboxPickerNote] = useState("");
   const [smtpHost, setSmtpHost] = useState("");
   const [smtpPort, setSmtpPort] = useState("465");
   const [smtpSecure, setSmtpSecure] = useState(true);
@@ -490,6 +495,7 @@ export function EmailSettingsPanel({
   function resetForm() {
     setEditingId(null); setProviderKey(""); setLabel(""); setUsername(""); setImapHost(""); setImapPort("993");
     setImapSecure(true); setPassword(""); setMailbox("INBOX");
+    setMailboxOptions([]); setMailboxPickerOpen(false); setMailboxPickerNote("");
     setSmtpHost(""); setSmtpPort("465"); setSmtpSecure(true); setSmtpFrom("");
     setTestResult("");
     setAccountTested(false);
@@ -532,6 +538,9 @@ export function EmailSettingsPanel({
     setImapSecure(account.imapSecure);
     setPassword("");
     setMailbox(account.mailbox || "INBOX");
+    setMailboxOptions([]);
+    setMailboxPickerOpen(false);
+    setMailboxPickerNote("");
     setSmtpHost(account.smtpHost ?? "");
     setSmtpPort(String(account.smtpPort ?? 465));
     setSmtpSecure(account.smtpPort == null ? true : account.smtpPort === 465);
@@ -619,6 +628,52 @@ export function EmailSettingsPanel({
       setAccountTested(true);
     } catch (e) { setError(e instanceof Error ? e.message : t("settings.passwordRecovery.networkError")); }
     finally { setTesting(false); }
+  }
+
+  /**
+   * 列出邮箱里真实存在的文件夹。
+   *
+   * 这个输入框以前只能靠用户自己记住 IMAP 文件夹名（INBOX / 收件箱 / 账单 …），
+   * 填错只会得到「文件夹打开失败」。这里直接把服务器的文件夹列表拉下来点选。
+   */
+  async function toggleMailboxPicker() {
+    if (mailboxPickerOpen) {
+      setMailboxPickerOpen(false);
+      return;
+    }
+    setMailboxPickerOpen(true);
+    setMailboxPickerNote("");
+    if (!imapHost.trim() || !username.trim()) {
+      setMailboxOptions([]);
+      setMailboxPickerNote(t("settings.email.mailboxNeedConfig"));
+      return;
+    }
+    setLoadingMailboxOptions(true);
+    try {
+      const res = await fetch("/api/v1/email/imap/mailboxes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          accountId: editingId ?? undefined,
+          host: imapHost.trim(),
+          port: Number(imapPort) || 993,
+          secure: imapSecure,
+          user: username.trim(),
+          password: password.trim(),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) throw new Error(data.error ?? t("settings.email.mailboxEmpty"));
+      const raw = Array.isArray(data.mailboxes) ? (data.mailboxes as unknown[]) : [];
+      const list = Array.from(new Set(raw.filter((item): item is string => typeof item === "string" && item.trim().length > 0)));
+      setMailboxOptions(list);
+      if (!list.length) setMailboxPickerNote(t("settings.email.mailboxEmpty"));
+    } catch (e) {
+      setMailboxOptions([]);
+      setMailboxPickerNote(e instanceof Error ? e.message : t("settings.email.mailboxEmpty"));
+    } finally {
+      setLoadingMailboxOptions(false);
+    }
   }
 
   async function saveMailKeyword() {
@@ -2732,8 +2787,32 @@ export function EmailSettingsPanel({
                 </label>
               </div>
               <input className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" value={password} onChange={(e) => setPassword(e.target.value)} placeholder={editingId ? t("settings.email.passwordPlaceholderEdit") : t("settings.email.passwordPlaceholder")} type="password" autoComplete="new-password" />
-              <input className="h-9 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" value={mailbox} onChange={(e) => setMailbox(e.target.value)} placeholder={t("settings.email.mailboxPlaceholder")} />
+              <div className="relative">
+                <div className="flex gap-2">
+                  <input className="h-9 min-w-0 flex-1 rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" value={mailbox} onChange={(e) => setMailbox(e.target.value)} placeholder={t("settings.email.mailboxPlaceholder")} />
+                  <button type="button" className="h-9 shrink-0 rounded-md border border-slate-300 px-3 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50" onClick={toggleMailboxPicker} disabled={loadingMailboxOptions}>
+                    {loadingMailboxOptions ? t("settings.email.mailboxLoading") : t("settings.email.mailboxPick")}
+                  </button>
+                </div>
+                {mailboxPickerOpen && (
+                  <div className="absolute left-0 top-full z-30 mt-1 max-h-56 w-full overflow-auto rounded-md border border-slate-200 bg-white p-1 shadow-lg">
+                    {mailboxPickerNote && <div className="px-2 py-1 text-xs leading-5 text-amber-600">{mailboxPickerNote}</div>}
+                    {["INBOX", ...mailboxOptions.filter((box) => box.toUpperCase() !== "INBOX")].map((box) => (
+                      <button
+                        key={box}
+                        type="button"
+                        title={box}
+                        className={`block w-full truncate rounded px-2 py-1 text-left text-sm ${box === mailbox ? "bg-blue-50 text-blue-700" : "text-slate-700 hover:bg-slate-100"}`}
+                        onClick={() => { setMailbox(box); setMailboxPickerOpen(false); }}
+                      >
+                        {box}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
+            <div className="mt-2 text-xs leading-5 text-slate-500">{t("settings.email.mailboxHint")}</div>
 
             <div className="mt-3 pt-3 border-t border-slate-100">
               <div className="text-xs font-medium text-slate-500 mb-2">{t("settings.email.smtpSection")}</div>
