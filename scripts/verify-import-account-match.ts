@@ -238,6 +238,40 @@ expectCard("亲属卡(老四)", "墨斗鱼", "(未解析)", null, "亲属卡不�
   }
 }
 
+// 2026-11-15 用户报告：预览提示「“招商银行储蓄卡(9447)”匹配到3个账户，请手动选择」。
+// 复现条件：导入上下文的所有人判成了「付斌」（在该所有人的账户视图/文件名下导入），
+// 而 9447 这张卡属于墨斗鱼。旧逻辑在 byLast4 阶段按所有人硬过滤，把唯一正确的卡滤掉，
+// 退化到「同机构同类型且尾号为空」的 3 张借记卡，3 个候选全都不是这张卡。
+// 口径：尾号是卡的身份，所有人只是提示——尾号唯一命中就该定案。
+{
+  const crossOwnerAccounts: Source[] = [
+    { id: "cmb-9447", name: "9447", kind: "bank_debit", Institution: { name: "招商银行", shortName: "招行" }, AccountGroup: { name: "墨斗鱼" } },
+    { id: "cmb-usd", name: "美元账户", kind: "bank_debit", Institution: { name: "招商银行", shortName: "招行" }, AccountGroup: { name: "付斌" } },
+    { id: "cmb-jpy", name: "日元账户", kind: "bank_debit", Institution: { name: "招商银行", shortName: "招行" }, AccountGroup: { name: "付斌" } },
+    { id: "cmb-zzy", name: "朝朝盈", kind: "bank_debit", Institution: { name: "招商银行", shortName: "招行" }, AccountGroup: { name: "付斌" } },
+  ];
+  const crossOwnerMatch = createImportAccountMatcher(crossOwnerAccounts, { ownerName: "付斌" });
+  const byTail = crossOwnerMatch("招商银行储蓄卡(9447)");
+  if (byTail.account?.id === "cmb-9447" && byTail.ambiguousAccounts.length === 0) {
+    console.log("PASS  上下文所有人判错时，尾号唯一仍定案：招商银行储蓄卡(9447) -> cmb-9447");
+  } else {
+    failed += 1;
+    console.error(
+      `FAIL  上下文所有人判错时，尾号唯一仍定案：-> ${byTail.account?.id ?? `歧义${byTail.ambiguousAccounts.length}个`}，期望 cmb-9447`,
+    );
+  }
+  // 没有尾号的同机构同类型文本仍按所有人收窄，不能因为上面的放宽变成静默串人。
+  const withoutTail = crossOwnerMatch("招商银行储蓄卡");
+  if (!withoutTail.account && withoutTail.ambiguousAccounts.length === 3) {
+    console.log("PASS  不带尾号仍按所有人收窄：招商银行储蓄卡 -> 保留 3 个同所有人候选");
+  } else {
+    failed += 1;
+    console.error(
+      `FAIL  不带尾号仍按所有人收窄：-> ${withoutTail.account?.id ?? `${withoutTail.ambiguousAccounts.length} 个歧义`}，期望 3 个歧义候选`,
+    );
+  }
+}
+
 {
   const ownerGroup = (name: string, shortName: string) => ({ name, Institution: { name, shortName } });
   const ownedAccounts: Source[] = [

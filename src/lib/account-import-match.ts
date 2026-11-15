@@ -1148,12 +1148,19 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(
     }
 
     if (last4) {
-      const byLast4 = indexed.filter((item) => {
+      // 尾号是卡自己的身份，所有人只是提示：文本写了尾号时，账本里尾号唯一的账户
+      // 就是它本身。导入入口 / 文件名判错所有人时（在「付斌」的账户视图里导入
+      // 墨斗鱼的 9447 流水），按所有人硬过滤会把这唯一正确的卡滤掉，退化到
+      // 「同一家银行下尾号为空的 3 张借记卡」，预览就变成「匹配到 3 个账户」，
+      // 而列出来的 3 个候选全都不是这张卡。所以先用「尾号 + 类型 + 机构」取候选，
+      // 再按所有人收窄；收窄后为空（上下文所有人不可信）才回到尾号候选。
+      const byLast4IgnoringOwner = indexed.filter((item) => {
         if (item.last4 !== last4) return false;
         if (targetKind && item.account.kind && targetKind !== item.account.kind) return false;
-        if (!ownerKeyMatches(item, effectiveOwnerKeys)) return false;
         return bankKeyMatches(item, targetBankKeys);
       });
+      const byLast4Owned = byLast4IgnoringOwner.filter((item) => ownerKeyMatches(item, effectiveOwnerKeys));
+      const byLast4 = byLast4Owned.length > 0 ? byLast4Owned : byLast4IgnoringOwner;
       if (byLast4.length === 1) return result(byLast4[0].account, [], { targetKind, targetBankNames });
       if (byLast4.length > 1 && isImportUnionPayDebitTailSourceHint(raw)) {
         const paymentSource = pickUnionPayDebitSource(byLast4);
