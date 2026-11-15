@@ -562,6 +562,8 @@ export function LiabilityTransactionModal({
   const [open, setOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [editingEntryId, setEditingEntryId] = useState("");
+  // 「转换交易」的会话标识：新建成功后随 `<ns>:create:success` 回传（见 lib/client/entry-conversion.ts）。
+  const [requestId, setRequestId] = useState<string | null>(null);
   // True when the open/edit event already carried repayment-plan defaults
   // (liability-side edit); the plan fetch prefill then stays off.
   const planDefaultsFromEventRef = useRef(false);
@@ -932,6 +934,7 @@ export function LiabilityTransactionModal({
       const editEventLoanType = editEventLiabilityAccount ? accountOptionLoanType(editEventLiabilityAccount) : null;
       const effectiveLoanType = detailLoanType ?? editEventLoanType;
       resetDraft();
+      setRequestId(detail?.requestId ?? null);
       fixedAssetLinkPrefilledRef.current = false;
       planDefaultsFromEventRef.current = !!(
         detail?.defaultRepaymentMethod ||
@@ -1640,6 +1643,11 @@ export function LiabilityTransactionModal({
       }
       recordRecentAccounts([cashAccountId, fixedAssetAccountId]);
       dispatchFinanceDataChanged({ reason: "liability-save" });
+      // 「转换交易」靠 requestId 把这次新建和原记录串起来（见 lib/client/entry-conversion.ts）。
+      if (!editingEntryId && requestId) {
+        window.dispatchEvent(new CustomEvent("mmh:settlement:create:success", { detail: { requestId } }));
+        setRequestId(null);
+      }
       if (keepAdding) {
         // 保存并再记一笔：账户、利率、还款方式、日期保留，只清本笔金额类字段
         setPrincipal("");
@@ -3093,7 +3101,6 @@ export function LiabilityTransactionModal({
                                       groupSelectOnDoubleClick: false,
                                       minDropdownWidth: 560,
                                       dropdownMaxHeight: 420,
-                                      density: "compact",
                                       expandedGroupColumns: 4,
                                     }}
                                   />

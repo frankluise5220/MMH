@@ -241,6 +241,8 @@ type OpenInvestmentCreateDetail = {
   defaultProductType?: ProductType;
   defaultFundCode?: string;
   defaultFundName?: string;
+  /** 「转换交易」带入的原记录备注。 */
+  defaultMemo?: string;
   /** 胶囊菜单 / 持仓行「提取实物」入口：直接把贵金属窗口落在提取实物页签上。 */
   defaultSubtype?: "metal_extract";
   defaultMetalTypeId?: string | null;
@@ -1528,6 +1530,9 @@ export function InvestmentFormModal({
       if (detail.defaultDate) setApplyDate(detail.defaultDate);
       if (typeof detail.defaultAmount === "number" && detail.defaultAmount > 0) {
         setAmount(formatAmountDraft(detail.defaultAmount));
+      }
+      if (typeof detail.defaultMemo === "string" && detail.defaultMemo.trim()) {
+        setMemo(detail.defaultMemo.trim());
       }
       // 菜单显式点选了产品类型时，带过来的账户必须同类（开放式基金账户不能接进货币基金窗口）：
       // 换成本类型账户，一个都没有才清空，交给下面的自动选中兜底。

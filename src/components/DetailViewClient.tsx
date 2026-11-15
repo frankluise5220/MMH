@@ -15,6 +15,8 @@ import { EntryAttachmentWindow } from "./EntryAttachmentWindow";
 import { BasicDetailBatchDeleteButton,
   BasicDetailBatchReconcileButton,
   BasicDetailBatchReplaceButton,
+  BasicDetailConvertButton,
+  BasicDetailConvertWatcher,
   BasicDetailReconcileLockButton,
   type BasicDetailBatchCategoryOption,
   useBasicDetailSelection,
@@ -1329,6 +1331,12 @@ export function DetailViewClient({
   const selectedCount = selectedIds.size;
   // 「对账」锁定余额时用的明细视图账户：单账户明细视图就是 accountId。
   const reconcileAccountId = reconcileContextAccountId ?? accountId;
+  // 「转换」只在选中恰好一条记录时出现，并带入该行的资金账户 / 日期 / 金额。
+  const convertSourceEntry = useMemo(() => {
+    if (selectedIds.size !== 1) return null;
+    const [onlyId] = Array.from(selectedIds);
+    return entries.find((entry) => entry.id === onlyId) ?? null;
+  }, [entries, selectedIds]);
   const currentEntryIds = useMemo(() => entries.map((entry) => entry.id), [entries]);
   const selectedFlowSummary = useMemo(() => {
     const inflowByCurrency = new Map<string, number>();
@@ -1913,6 +1921,7 @@ export function DetailViewClient({
 
   const customToolbarLeft = toolbarMode === "custom" ? (
     <div className="flex min-w-0 items-center gap-2">
+      {convertSourceEntry ? <BasicDetailConvertButton entry={convertSourceEntry} cashAccountId={flowAccountIdOf(convertSourceEntry)} /> : null}
       {selectedCount > 0 ? <BasicDetailBatchReplaceButton fields={batchReplaceFields} accountOptions={resolvedBatchReplaceAccountOptions} categoryOptions={categoryOptions} tagOptions={tagOptions} categoryTypes={selectedCategoryTypes} contextAccountId={accountId} contextAccountIds={accountColumnScopeIdList} /> : null}
       {selectedCount > 0 ? <BasicDetailBatchDeleteButton /> : null}
       {selectedCount > 0 && reconcileEnabled ? <BasicDetailBatchReconcileButton contextAccountId={reconcileAccountId} /> : null}
@@ -2076,6 +2085,7 @@ export function DetailViewClient({
       stickyRowActions={stickyRowActions}
       batchActionSlot={toolbarMode === "default" ? (
         <>
+          {convertSourceEntry ? <BasicDetailConvertButton entry={convertSourceEntry} cashAccountId={flowAccountIdOf(convertSourceEntry)} /> : null}
           <BasicDetailBatchReplaceButton fields={batchReplaceFields} accountOptions={resolvedBatchReplaceAccountOptions} categoryOptions={categoryOptions} tagOptions={tagOptions} categoryTypes={selectedCategoryTypes} contextAccountId={accountId} contextAccountIds={accountColumnScopeIdList} />
           <BasicDetailBatchDeleteButton />
           {reconcileEnabled ? <BasicDetailBatchReconcileButton contextAccountId={reconcileAccountId} /> : null}
@@ -2119,6 +2129,7 @@ export function DetailViewClient({
       entryId={attachmentViewEntryId}
       onClose={() => setAttachmentViewEntryId(null)}
     />
+    <BasicDetailConvertWatcher />
     </>
   );
 }

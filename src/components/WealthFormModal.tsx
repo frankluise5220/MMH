@@ -564,6 +564,8 @@ export function WealthFormModal({
           await uploadEntryAttachmentFiles(createdEntryId, pendingAttachmentFiles);
           setPendingAttachmentFiles([]);
         }
+        // 「转换交易」靠 requestId 把这次新建和原记录串起来（见 lib/client/entry-conversion.ts）。
+        if (requestId) window.dispatchEvent(new CustomEvent("mmh:wealth:create:success", { detail: { requestId } }));
       }
       if (keepAdding && mode === "create") {
         resetAfterKeepAdding();

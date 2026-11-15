@@ -1,14 +1,34 @@
 "use client";
 
-import { Lock, ReceiptText, ShieldCheck, Trash2 } from "lucide-react";
+import { ArrowLeftRight, ChevronDown, Lock, ReceiptText, ShieldCheck, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
+import { createPortal } from "react-dom";
 import { ROW_ACTION_BUTTON_BOX_CLASS } from "@/components/AdvancedDataTable";
 import { BatchReplacePopoverButton, type BatchReplaceFieldConfig, type BatchReplaceOption } from "@/components/BatchReplacePopoverButton";
 import { CATEGORY_SMART_SELECT_BEHAVIOR } from "@/components/categorySmartSelect";
+import { useDerivedLayerZIndex } from "@/components/ModalLayer";
 import type { ReimbursementFormEntry } from "@/components/ReimbursementFormModal";
 import { callReconcileEntries } from "@/lib/api/entry-reconcile";
-import { deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
+import { callDeleteEntries, deleteEntriesWithLinkedPrompt, getDeleteRefreshAccountIds, getDeleteRefreshEntryIds } from "@/lib/api/entries-delete";
+import {
+  beginEntryConversion,
+  createEntryConversionRequestId,
+  ENTRY_CONVERSION_SUCCESS_EVENTS,
+  takeEntryConversion,
+  type EntryConversionTargetKey,
+} from "@/lib/client/entry-conversion";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { recordRecentAccounts } from "@/lib/client/recentAccounts";
 import { showConfirmDialog } from "@/lib/client/confirm-dialog";
@@ -488,4 +508,411 @@ function showSelectionBlocked(
   selectedAdvanceAccountIds: Set<string>,
 ) {
   return blockedSelection || (selectedCount > 0 && (selectedEntries.length !== selectedCount || selectedAdvanceAccountIds.size !== 1));
+}
+
+/* ------------------------------------------------------------------ *
+ * 「转换交易」
+ *
+ * 选中一条记录 → 转换 → 选目标交易类型 → 打开该类型的新建窗（带入资金账户 /
+ * 日期 / 金额 / 备注）→ 保存成功后删除原记录（真·转换）。
+ * 会话登记与「保存成功」事件的约定见 `@/lib/client/entry-conversion`。
+ * ------------------------------------------------------------------ */
+
+/** 转换时用得上的明细行字段（明细行是瘦身行，这里只声明实际读取的部分）。 */
+export type ConvertSourceEntry = {
+  id: string;
+  type?: string | null;
+  date?: string | null;
+  amount?: number | null;
+  bookAmount?: number | null;
+  note?: string | null;
+  businessNote?: string | null;
+  accountId?: string | null;
+  accountKind?: string | null;
+  accountIsSettlementAccount?: boolean | null;
+  toAccountId?: string | null;
+  toAccountKind?: string | null;
+  cashAccountId?: string | null;
+  reconciledAt?: string | null;
+  fundCode?: string | null;
+  fundName?: string | null;
+  stockTransaction?: {
+    stockAccountId?: string | null;
+    cashAccountId?: string | null;
+    securityId?: string | null;
+    market?: string | null;
+    stockCode?: string | null;
+    stockName?: string | null;
+  } | null;
+};
+
+type ConvertTargetGroup = {
+  key: string;
+  labelKey: string;
+  targets: Array<{ key: EntryConversionTargetKey; labelKey: string }>;
+};
+
+const CONVERT_TARGET_GROUPS: ConvertTargetGroup[] = [
+  {
+    key: "cash",
+    labelKey: "detail.convert.group.cash",
+    targets: [
+      { key: "expense", labelKey: "detail.convert.target.expense" },
+      { key: "income", labelKey: "detail.convert.target.income" },
+      { key: "advance", labelKey: "detail.convert.target.advance" },
+      { key: "transfer", labelKey: "detail.convert.target.transfer" },
+      { key: "credit_repay", labelKey: "detail.convert.target.creditRepay" },
+    ],
+  },
+  {
+    key: "investment",
+    labelKey: "detail.convert.group.investment",
+    targets: [
+      { key: "fund", labelKey: "detail.convert.target.fund" },
+      { key: "metal", labelKey: "detail.convert.target.metal" },
+      { key: "wealth", labelKey: "detail.convert.target.wealth" },
+      { key: "bond", labelKey: "detail.convert.target.bond" },
+      { key: "deposit", labelKey: "detail.convert.target.deposit" },
+      { key: "insurance", labelKey: "detail.convert.target.insurance" },
+      { key: "stock", labelKey: "detail.convert.target.stock" },
+    ],
+  },
+  {
+    key: "liability",
+    labelKey: "detail.convert.group.liability",
+    targets: [
+      { key: "liability_borrow_in", labelKey: "detail.convert.target.borrowIn" },
+      { key: "liability_lend_out", labelKey: "detail.convert.target.lendOut" },
+      { key: "liability_repay_out", labelKey: "detail.convert.target.repayOut" },
+      { key: "liability_collect_in", labelKey: "detail.convert.target.collectIn" },
+    ],
+  },
+];
+
+const CONVERT_LIABILITY_MODES: Partial<Record<EntryConversionTargetKey, "borrow_in" | "lend_out" | "repay_out" | "collect_in">> = {
+  liability_borrow_in: "borrow_in",
+  liability_lend_out: "lend_out",
+  liability_repay_out: "repay_out",
+  liability_collect_in: "collect_in",
+};
+
+/**
+ * 选中单条记录时出现在明细工具栏的「转换」按钮。
+ *
+ * 菜单按「记账 / 投资 / 往来」分组；点某一项只负责按目标类型派发新建事件，
+ * 真正的替换（删除原记录）由 `<BasicDetailConvertWatcher />` 在目标窗保存成功后完成。
+ */
+export function BasicDetailConvertButton({
+  entry,
+  cashAccountId,
+}: {
+  entry: ConvertSourceEntry;
+  /** 该行的资金账户（全部收支视图下与 accountId 可能不同）。 */
+  cashAccountId?: string | null;
+}) {
+  const { t } = useI18n();
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const panelRef = useRef<HTMLDivElement | null>(null);
+  const [open, setOpen] = useState(false);
+  const [panelStyle, setPanelStyle] = useState<CSSProperties | null>(null);
+  const zIndex = useDerivedLayerZIndex();
+  const reconciled = Boolean(entry.reconciledAt);
+
+  // 菜单用 portal 定位：明细表格容器带 overflow 与固定高度，absolute 面板会被裁掉。
+  useLayoutEffect(() => {
+    if (!open) return;
+    const place = () => {
+      const trigger = triggerRef.current;
+      const panel = panelRef.current;
+      if (!trigger || !panel) return;
+      const rect = trigger.getBoundingClientRect();
+      const width = panel.offsetWidth || 184;
+      const height = panel.offsetHeight || 320;
+      const left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
+      const below = rect.bottom + 6;
+      const top = below + height > window.innerHeight - 8 ? Math.max(8, rect.top - height - 6) : below;
+      setPanelStyle({ left, top, width });
+    };
+    place();
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: MouseEvent) => {
+      const target = event.target as Node | null;
+      if (triggerRef.current?.contains(target) || panelRef.current?.contains(target)) return;
+      setOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    window.addEventListener("mousedown", onPointerDown);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("mousedown", onPointerDown);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  const dispatchConversion = useCallback((targetKey: EntryConversionTargetKey, label: string) => {
+    const requestId = createEntryConversionRequestId();
+    beginEntryConversion(requestId, { sourceEntryId: entry.id, targetKey, targetLabel: label });
+
+    const amount = Math.abs(Number(entry.bookAmount ?? entry.amount ?? 0)) || 0;
+    const date = String(entry.date ?? "").slice(0, 10);
+    const note = String(entry.businessNote ?? entry.note ?? "").trim();
+    const moneyAccountId = String(cashAccountId || entry.cashAccountId || entry.accountId || "").trim();
+    const stock = entry.stockTransaction ?? null;
+    // 原记录本身就是往来款/贷款时，目标窗可以直接落在同一个往来对象上。
+    const liabilityAccountId = entry.accountKind === "loan" || entry.accountIsSettlementAccount
+      ? String(entry.accountId ?? "")
+      : "";
+
+    const openTransaction = (type: string, override?: { from?: string; to?: string }) => {
+      window.dispatchEvent(new CustomEvent("mmh:create-transaction:open", {
+        detail: {
+          requestId,
+          source: "detail-convert",
+          defaultAccountId: moneyAccountId,
+          defaultFromAccountId: override?.from ?? moneyAccountId,
+          defaultToAccountId: override?.to ?? "",
+          item: { type, date, amount, remark: note },
+        },
+      }));
+    };
+
+    switch (targetKey) {
+      case "expense":
+      case "income":
+      case "advance":
+        openTransaction(targetKey);
+        break;
+      case "transfer":
+        openTransaction("transfer");
+        break;
+      case "credit_repay": {
+        const creditSide = entry.accountKind === "bank_credit"
+          ? String(entry.accountId ?? "")
+          : entry.toAccountKind === "bank_credit"
+            ? String(entry.toAccountId ?? "")
+            : "";
+        openTransaction("transfer", creditSide ? { to: creditSide } : undefined);
+        break;
+      }
+      case "fund":
+      case "metal":
+        window.dispatchEvent(new CustomEvent("mmh:investment:create", {
+          detail: {
+            requestId,
+            defaultProductType: targetKey,
+            defaultCashAccountId: moneyAccountId,
+            defaultDate: date,
+            defaultAmount: amount || undefined,
+            defaultMemo: note || undefined,
+            ...(targetKey === "fund" && entry.fundCode
+              ? { defaultFundCode: entry.fundCode, defaultFundName: entry.fundName ?? "" }
+              : {}),
+          },
+        }));
+        break;
+      case "wealth":
+      case "bond":
+        window.dispatchEvent(new CustomEvent(`mmh:${targetKey}:create`, {
+          detail: {
+            requestId,
+            defaultCashAccountId: moneyAccountId,
+            defaultDate: date,
+            defaultAmount: amount || undefined,
+          },
+        }));
+        break;
+      case "deposit":
+        window.dispatchEvent(new CustomEvent("mmh:deposit:create", {
+          detail: {
+            requestId,
+            defaultSubtype: "buy",
+            defaultCashAccountId: moneyAccountId,
+            defaultDate: date,
+            defaultAmount: amount || undefined,
+          },
+        }));
+        break;
+      case "insurance":
+        window.dispatchEvent(new CustomEvent("mmh:insurance:create", {
+          detail: {
+            requestId,
+            defaultCashAccountId: moneyAccountId,
+            defaultDate: date,
+            defaultAmount: amount || undefined,
+          },
+        }));
+        break;
+      case "stock":
+        window.dispatchEvent(new CustomEvent("mmh:stock:create", {
+          detail: {
+            requestId,
+            defaultAction: "buy",
+            defaultStockAccountId: stock?.stockAccountId ?? "",
+            defaultCashAccountId: stock?.cashAccountId || moneyAccountId,
+            defaultDate: date,
+            defaultAmount: amount || undefined,
+            defaultSecurityId: stock?.securityId ?? undefined,
+            defaultStockCode: stock?.stockCode ?? undefined,
+            defaultStockName: stock?.stockName ?? undefined,
+            defaultMarket: stock?.market ?? undefined,
+          },
+        }));
+        break;
+      default: {
+        const liabilityMode = CONVERT_LIABILITY_MODES[targetKey];
+        if (!liabilityMode) return;
+        const isLoanTarget = Boolean(liabilityAccountId) && entry.accountKind === "loan"
+          && (liabilityMode === "borrow_in" || liabilityMode === "repay_out");
+        window.dispatchEvent(new CustomEvent(isLoanTarget ? "mmh:loan:create" : "mmh:settlement:create", {
+          detail: {
+            requestId,
+            mode: liabilityMode,
+            entryKind: "liability",
+            defaultLiabilityAccountId: liabilityAccountId,
+            defaultCashAccountId: moneyAccountId,
+            defaultDate: date,
+            defaultPrincipal: amount || undefined,
+            defaultNote: note || undefined,
+          },
+        }));
+      }
+    }
+  }, [cashAccountId, entry]);
+
+  const disabled = reconciled;
+
+  return (
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        onClick={() => setOpen((value) => !value)}
+        disabled={disabled}
+        className="flex h-6 items-center gap-1 rounded border border-indigo-200 bg-indigo-50 px-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-100 disabled:cursor-not-allowed disabled:opacity-40"
+        title={disabled ? t("detail.convert.reconciledDisabled") : t("detail.convert.buttonTitle")}
+        aria-label={t("detail.convert.button")}
+        aria-haspopup="menu"
+        aria-expanded={open}
+      >
+        <ArrowLeftRight className="h-3.5 w-3.5" />
+        <span>{t("detail.convert.button")}</span>
+        <ChevronDown className="h-3 w-3 opacity-60" />
+      </button>
+      {open && typeof document !== "undefined" ? createPortal(
+        <div
+          ref={panelRef}
+          role="menu"
+          aria-label={t("detail.convert.buttonTitle")}
+          style={{ ...panelStyle, zIndex, visibility: panelStyle ? "visible" : "hidden" }}
+          className="fixed max-h-[70vh] overflow-y-auto rounded-lg border border-slate-200 bg-white py-1 shadow-xl"
+        >
+          {CONVERT_TARGET_GROUPS.map((group) => (
+            <div key={group.key} className="py-0.5">
+              <div className="px-2.5 py-1 text-[11px] font-semibold text-slate-400">{t(group.labelKey)}</div>
+              {group.targets.map((target) => (
+                <button
+                  key={target.key}
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    setOpen(false);
+                    dispatchConversion(target.key, t(target.labelKey));
+                  }}
+                  className="block w-full px-2.5 py-1.5 text-left text-xs text-slate-700 hover:bg-indigo-50 hover:text-indigo-700"
+                >
+                  {t(target.labelKey)}
+                </button>
+              ))}
+            </div>
+          ))}
+        </div>,
+        document.body,
+      ) : null}
+    </>
+  );
+}
+
+/**
+ * 「转换」收尾：目标交易保存成功后删除原记录。
+ *
+ * 必须在选中区之外常驻挂载——转换按钮在保存前就随选择变化/列表刷新卸载了。
+ */
+export function BasicDetailConvertWatcher() {
+  const { t } = useI18n();
+  const { setDeleteMessage } = useBasicDetailSelection();
+
+  const removeSource = useCallback(async (session: ReturnType<typeof takeEntryConversion>) => {
+    if (!session) return;
+    const entryIds = [session.sourceEntryId];
+    try {
+      const precheck = await callDeleteEntries({ entryIds, checkOnly: true });
+      if (!precheck.ok && !precheck.needConfirm) {
+        setDeleteMessage(t("detail.convert.removeFailed", {
+          target: session.targetLabel,
+          reason: precheck.error || t("detail.convert.removeUnknownReason"),
+        }));
+        return;
+      }
+      const hasLinkedBusiness = (precheck.impacts?.length ?? 0) > 0 || Boolean(precheck.needConfirm);
+      const data = await callDeleteEntries({
+        entryIds,
+        linkedAction: hasLinkedBusiness ? "deleteBusiness" : undefined,
+      });
+      if (!data.ok) {
+        setDeleteMessage(t("detail.convert.removeFailed", {
+          target: session.targetLabel,
+          reason: data.error || t("detail.convert.removeUnknownReason"),
+        }));
+        return;
+      }
+      const refreshEntryIds = getDeleteRefreshEntryIds(data, entryIds);
+      const accountIds = getDeleteRefreshAccountIds(data);
+      recordRecentAccounts(accountIds);
+      dispatchFinanceDataChanged({
+        reason: "entry-convert",
+        accountIds,
+        deletedEntryIds: refreshEntryIds,
+        entryIds: refreshEntryIds,
+      });
+      const depositWarning = (data.depositGeneratedRecordCount ?? 0) > 0
+        ? ` ${t("entriesDelete.depositGeneratedWarning", { count: data.depositGeneratedRecordCount ?? 0 })}`
+        : "";
+      setDeleteMessage(`${t("detail.convert.removed", { target: session.targetLabel })}${depositWarning}`);
+    } catch (error) {
+      setDeleteMessage(t("detail.convert.removeFailed", {
+        target: session.targetLabel,
+        reason: error instanceof Error ? error.message : t("detail.convert.removeUnknownReason"),
+      }));
+    }
+  }, [setDeleteMessage, t]);
+
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const requestId = (event as CustomEvent<{ requestId?: string }>).detail?.requestId;
+      const session = takeEntryConversion(requestId);
+      if (!session) return;
+      void removeSource(session);
+    };
+    for (const eventName of ENTRY_CONVERSION_SUCCESS_EVENTS) {
+      window.addEventListener(eventName, handler);
+    }
+    return () => {
+      for (const eventName of ENTRY_CONVERSION_SUCCESS_EVENTS) {
+        window.removeEventListener(eventName, handler);
+      }
+    };
+  }, [removeSource]);
+
+  return null;
 }

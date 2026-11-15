@@ -595,12 +595,19 @@ export function InsuranceFormModal({
       }));
   }, [insuranceProductOptions, selectedOwnerGroupId, subtype]);
 
-  function resetForm(defaults?: { requestId?: string | null; defaultCashAccountId?: string; defaultInsuranceAccountId?: string }) {
+  function resetForm(defaults?: {
+    requestId?: string | null;
+    defaultCashAccountId?: string;
+    defaultInsuranceAccountId?: string;
+    defaultDate?: string;
+    defaultAmount?: string;
+  }) {
+    const presetDate = defaults?.defaultDate && /^\d{4}-\d{2}-\d{2}$/.test(defaults.defaultDate) ? defaults.defaultDate : today;
     setSubtype("buy");
-    setDate(today);
-    setArrivalDate(today);
+    setDate(presetDate);
+    setArrivalDate(presetDate);
     arrivalDateTouchedRef.current = false;
-    setAmount("");
+    setAmount(defaults?.defaultAmount ?? "");
     setCashAccountId(defaults?.defaultCashAccountId ?? "");
     setMemo("");
     setRequestId(defaults?.requestId ?? null);
@@ -759,11 +766,21 @@ export function InsuranceFormModal({
 
   useEffect(() => {
     function onCreate(ev: Event) {
-      const detail = (ev as CustomEvent<{ requestId: string; defaultCashAccountId?: string; defaultInsuranceAccountId?: string }>).detail;
+      const detail = (ev as CustomEvent<{
+        requestId: string;
+        defaultCashAccountId?: string;
+        defaultInsuranceAccountId?: string;
+        defaultDate?: string;
+        defaultAmount?: number | string;
+      }>).detail;
       resetForm({
         requestId: detail?.requestId ?? null,
         defaultCashAccountId: detail?.defaultCashAccountId,
         defaultInsuranceAccountId: detail?.defaultInsuranceAccountId ?? defaultAccountId,
+        defaultDate: detail?.defaultDate,
+        defaultAmount: detail?.defaultAmount != null && Number(detail.defaultAmount) > 0
+          ? formatAmountDraft(Number(detail.defaultAmount))
+          : undefined,
       });
       setOpen(true);
     }
@@ -849,6 +866,9 @@ export function InsuranceFormModal({
 
       if (isEdit) {
         window.dispatchEvent(new CustomEvent("mmh:insurance:edit:success", { detail: { requestId } }));
+      } else if (requestId) {
+        // 「转换交易」靠 requestId 把这次新建和原记录串起来（见 lib/client/entry-conversion.ts）。
+        window.dispatchEvent(new CustomEvent("mmh:insurance:create:success", { detail: { requestId } }));
       }
       if (keepAdding && !isEdit) {
         resetAfterKeepAdding();

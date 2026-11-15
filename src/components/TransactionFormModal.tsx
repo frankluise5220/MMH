@@ -103,7 +103,8 @@ type CategoryOption = {
 
 type AiPrefillItem = {
   rawText?: string;
-  type?: "expense" | "income" | "transfer" | "fx" | "investment";
+  /** `advance`（代付）来自明细页「转换交易」；文本解析不会产出它。 */
+  type?: "expense" | "income" | "advance" | "transfer" | "fx" | "investment";
   date?: string;
   amount?: number;
   account?: string;
@@ -1667,13 +1668,15 @@ export function TransactionFormModal({
       const mappedType: TxType =
         item.type === "income"
           ? "income"
-          : item.type === "transfer"
-            ? "transfer"
-            : item.type === "fx"
-              ? "fx"
-            : item.type === "investment"
-              ? "investment"
-              : "expense";
+          : item.type === "advance"
+            ? "advance"
+            : item.type === "transfer"
+              ? "transfer"
+              : item.type === "fx"
+                ? "fx"
+              : item.type === "investment"
+                ? "investment"
+                : "expense";
       const effectiveType = detail.lockedType ?? mappedType;
       const effectiveFxDirection: FxDirection = detail.fxDirection === "sell" ? "sell" : "buy";
 
@@ -1752,7 +1755,7 @@ export function TransactionFormModal({
         setCategoryId("");
         setAccountId("");
       } else {
-        setAccountId(findAccountIdByLabel(item.account, accounts) || (defaultAccountId ?? ""));
+        setAccountId(findAccountIdByLabel(item.account, accounts) || detail.defaultAccountId || (defaultAccountId ?? ""));
 
         const rawCat = (item.category ?? "").trim();
         const withTypePrefix = rawCat ? `支出.${rawCat}` : "";
@@ -1764,7 +1767,7 @@ export function TransactionFormModal({
             || findCategoryIdByLabel(rawCat, expenseCategories);
         setCategoryId(nextCatId);
 
-        setFromAccountId(defaultAccountId ?? "");
+        setFromAccountId(detail.defaultAccountId || (defaultAccountId ?? ""));
         setToAccountId("");
       }
     }

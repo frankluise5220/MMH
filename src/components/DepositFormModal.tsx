@@ -1616,6 +1616,8 @@ export function DepositFormModal({
       } else {
         const res = await createAction(fd);
         if (!res.ok) throw new Error(res.error ?? t("txForm.alert.saveFailed"));
+        // 「转换交易」靠 requestId 把这次新建和原记录串起来（见 lib/client/entry-conversion.ts）。
+        if (requestId) window.dispatchEvent(new CustomEvent("mmh:deposit:create:success", { detail: { requestId } }));
       }
 
       if (keepAdding && mode === "create") {
