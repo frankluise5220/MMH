@@ -130,6 +130,7 @@ function normalizeSidebarItemKind(item: Pick<AccountItem, "kind" | "investProduc
   if (item.kind === "investment" && item.investProductType === "money") return "investment_money";
   if (item.kind === "investment" && (item.investProductType === "wealth" || item.investProductType === "advisor")) return "investment_wealth";
   if (item.kind === "investment" && item.investProductType === "bond") return "investment_bond";
+  if (item.kind === "investment" && item.investProductType === "metal") return "investment_metal";
   if (item.kind === "investment" && item.investProductType === "stock") return "investment_stock";
   if (item.kind === "investment" && item.investProductType === "property") return "investment_property";
   if (item.kind === "investment" && item.investProductType === "fund") return "investment_fund";
@@ -145,7 +146,7 @@ function normalizeSidebarAccountItem(item: AccountItem): AccountItem {
 
 const ASSET_KINDS = ["cash", "bank_debit", "ewallet", "deposit"];
 const CREDIT_KINDS = ["bank_credit"];
-const INVEST_KINDS = ["investment", "investment_fund", "investment_money", "investment_wealth", "investment_bond", "investment_stock"];
+const INVEST_KINDS = ["investment", "investment_fund", "investment_money", "investment_wealth", "investment_bond", "investment_stock", "investment_metal"];
 const FIXED_ASSET_SUMMARY_KIND = "fixed_asset_summary";
 const FIXED_ASSET_SUMMARY_ID = "__fixed_assets__";
 const FIXED_ASSET_SECTION = "fixed_assets";
@@ -183,6 +184,7 @@ const KIND_SORT_ORDER = new Map<string, number>([
   ["investment_bond", 531],
   ["investment_stock", 54],
   ["investment_property", 55],
+  ["investment_metal", 545],
   [FIXED_ASSET_SUMMARY_KIND, 56],
   ["insurance", 55],
   ["bank_credit", 60],
@@ -982,6 +984,7 @@ export function SidebarClient({
     if (kind === "investment_wealth") return t("sidebar.kind.wealth");
     if (kind === "investment_bond") return t("entry.kind.bond");
     if (kind === "investment_stock") return t("investment.product.stock");
+    if (kind === "investment_metal") return t("investment.product.metal");
     if (kind === "investment_property") return t("investment.product.property");
     if (kind === FIXED_ASSET_SUMMARY_KIND) return t("sidebar.section.fixedAssets");
     if (kind === "insurance") return t("sidebar.kind.insurance");
