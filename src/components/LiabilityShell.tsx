@@ -496,6 +496,10 @@ export function LiabilityShell({
   const [accountEditOpenSignal, setAccountEditOpenSignal] = useState(0);
   const [pendingLoanEditAccountId, setPendingLoanEditAccountId] = useState<string | null>(null);
   const rowClickTimerRef = useRef<number | null>(null);
+  /** 最近一次在表格里自己点选的行；它不该触发「滚到选中行」。 */
+  const selfSelectedRowKeyRef = useRef<string | null>(null);
+  /** 需要把某一行滚进视口的一次性请求（键 + 递增 id，同一行也能再次请求）。 */
+  const [rowScrollRequest, setRowScrollRequest] = useState<{ key: string; id: number } | null>(null);
   const baseRows = useMemo(
     () => showSettledRows ? rows : rows.filter((row) => !isSettledLiabilityRow(row)),
     [rows, showSettledRows],
@@ -630,6 +634,20 @@ export function LiabilityShell({
     });
   }, [rows, selectedKey]);
 
+  /**
+   * 从别处带着 liabilityPerson 进来（费用报销的「返回至往来款」、侧边栏、账户设置页）时，
+   * 把选中的那一行滚进视口并居中 —— 否则用户回到本页只看到表头和第一行，得自己去找。
+   * 表内自己点出来的选中不滚（点的那行本来就在眼前，滚一下反而跳）。
+   */
+  useEffect(() => {
+    if (!selectedKey) return;
+    if (selfSelectedRowKeyRef.current === selectedKey) {
+      selfSelectedRowKeyRef.current = null;
+      return;
+    }
+    setRowScrollRequest((current) => ({ key: selectedKey, id: (current?.id ?? 0) + 1 }));
+  }, [selectedKey]);
+
   useEffect(() => {
     if (!isSelectedBankLoan && detailTab === "schedule") {
       setDetailTab("entries");
@@ -670,6 +688,7 @@ export function LiabilityShell({
     if (rowClickTimerRef.current) {
       window.clearTimeout(rowClickTimerRef.current);
     }
+    selfSelectedRowKeyRef.current = row.key;
     rowClickTimerRef.current = window.setTimeout(() => {
       const params = new URLSearchParams(window.location.search);
       params.set("view", "liability");
@@ -1471,6 +1490,8 @@ export function LiabilityShell({
             minTableWidth={1040}
             emptyText={t("liabilityShell.emptyRows")}
             fillHeight
+            scrollToRowKey={rowScrollRequest?.key ?? null}
+            scrollToRowRequestId={rowScrollRequest?.id}
             filterRows={filterLiabilityRows}
             sortRows={sortLiabilityRows}
             toolbarTitle={(

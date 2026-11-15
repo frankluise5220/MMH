@@ -2117,6 +2117,7 @@ const I18N_MESSAGES = {
     "reimburse.entryMultipleAccounts": "一次只能选择同一个往来款账户的明细",
     "reimburse.modalTitle": "报销单",
     "reimburse.workspaceTitle": "费用报销",
+    "reimburse.backToLiability": "返回至往来款",
     "reimburse.loadFailed": "报销数据加载失败",
     "reimburse.retryLoad": "重试",
     "reimburse.table.batch": "报销批次",

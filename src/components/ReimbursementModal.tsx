@@ -3,7 +3,7 @@ import { ModalLayer } from "@/components/ModalLayer";
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Banknote, Check, Link2, Pencil, Plus, Printer, ReceiptText, Trash2 } from "lucide-react";
+import { ArrowLeft, Banknote, Check, Link2, Pencil, Plus, Printer, ReceiptText, Trash2 } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { formatAmountDraft, formatMoney, formatMoneyYuan } from "@/lib/format";
 import { todayDateLocalYmd } from "@/lib/date-utils";
@@ -133,19 +133,18 @@ export function ReimbursementWorkspace({
   const [batchApproveAmounts, setBatchApproveAmounts] = useState<Record<string, string>>({});
 
   /**
-   * 关闭 = 回到报销入口所在视图，而不是浏览器后退。
+   * 返回 = 回到这笔报销所属的往来款视图，而不是浏览器后退、也不是关掉工作区。
    * history.back() 依赖历史栈：新标签页/直接输入地址进入时会把用户退出应用，
-   * 页内换过对象时也只是退回上一个报销 URL，表现成「往后退一页」而不是关闭。
+   * 页内换过对象时也只是退回上一个报销 URL。
    */
-  const closeWorkspace = () => {
+  const backToSettlements = () => {
     if (busy) return;
-    if (advanceAccountId) {
-      // 从往来款/贷款行的「报销」进入：回到该对象的往来款视图。
-      router.replace(`/?view=liability&liabilityPerson=${encodeURIComponent(`account:${advanceAccountId}`)}`);
-      return;
-    }
-    // 侧边栏「费用报销」全局视图：回首页账户视图。
-    router.replace("/");
+    // 从往来款行的「报销」进入：带 accountId，回到这只往来款账户的页面。
+    const target = advanceAccountId
+      ? `/?view=liability&liabilityPerson=${encodeURIComponent(`account:${advanceAccountId}`)}`
+      : // 侧边栏「费用报销」汇总视角：没有单一关联账户，回到往来款总览。
+        "/?view=liability";
+    router.replace(target);
   };
 
   const load = async () => {
@@ -825,23 +824,34 @@ export function ReimbursementWorkspace({
   };
 
   return (
-    <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background p-4 md:p-5">
-      <div className="panel-surface flex h-full min-h-0 flex-col overflow-hidden">
-        <div className="flex shrink-0 items-center justify-between border-b border-slate-200 px-4 py-3">
-          <div>
-            <div className="text-sm font-semibold text-slate-800">{t("reimburse.workspaceTitle")}</div>
+    <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-transparent">
+      {/* 与其它视图同一套页面表头（page-header）：标题在左，右上角是「返回至往来款」，
+          不再用工作区自带的标题栏 + 关闭按钮 —— 其它视图都没有「关闭」这种说法。 */}
+      <header className="page-header">
+        <div className="flex min-h-14 flex-wrap items-center justify-between gap-2 px-4 py-2 md:px-5">
+          <div className="flex min-w-0 flex-wrap items-center gap-3 text-sm">
+            <span className="page-title">{t("reimburse.workspaceTitle")}</span>
             {accountName ? (
-              <div className="mt-0.5 flex items-center gap-1 text-xs text-slate-500">
-                <ReceiptText className="h-3.5 w-3.5" />
-                {accountName}
-              </div>
+              <span className="inline-flex min-w-0 items-center gap-1 text-xs text-slate-500">
+                <ReceiptText className="h-3.5 w-3.5 shrink-0" />
+                <span className="truncate" title={accountName}>{accountName}</span>
+              </span>
             ) : null}
           </div>
-          <button type="button" onClick={closeWorkspace} className="secondary-button h-8 px-2" disabled={busy}>
-            {t("table.close")}
+          <button
+            type="button"
+            onClick={backToSettlements}
+            className="secondary-button flex h-8 shrink-0 items-center gap-1.5 px-3 text-xs"
+            disabled={busy}
+            title={t("reimburse.backToLiability")}
+          >
+            <ArrowLeft className="h-3.5 w-3.5" />
+            {t("reimburse.backToLiability")}
           </button>
         </div>
+      </header>
 
+      <div className="panel-surface m-4 flex min-h-0 flex-1 flex-col overflow-hidden md:m-5">
         <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden p-4">
           {loadError ? (
             <div className="flex shrink-0 items-center justify-between gap-3 rounded border border-rose-200 bg-rose-50 px-3 py-1.5 text-xs text-rose-700">
