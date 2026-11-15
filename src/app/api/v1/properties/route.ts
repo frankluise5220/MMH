@@ -8,26 +8,38 @@
  * POST
  *   Body: {
  *     accountId, cashAccountId?, propertyAssetId?,
- *     action: "purchase" | "improvement" | "sale",
+ *     action: "purchase" | "improvement" | "sale" | "disposal",
  *     name?, assetType?, propertyType?, address?, attributes?, tradeDate, settlementDate?,
- *     amount, fee?, tax?, marketValue?, note?
+ *     productionDate?, weight?, weightUnit?,
+ *     amount, fee?, tax?, marketValue?, depreciation?, note?
  *   }
  *   Creates/updates the property asset, writes a PropertyTransaction, and
  *   creates the linked cash-side TxRecord when cashAccountId is supplied.
  *
  * PUT
  *   Body: { propertyAssetId, name?, assetType?, propertyType?, address?, attributes?, purchaseDate?,
- *          purchasePrice?, note? }
- *   Updates the fixed asset info fields on the PropertyAsset record.
+ *          productionDate?, weight?, weightUnit?, purchasePrice?, note?, depreciationMethod?,
+ *          usefulLifeMonths?, salvageValue?, accumulatedDepreciation? }
+ *   Updates the fixed asset info fields on the PropertyAsset record. 折旧相关字段只有传了
+ *   才会写（未传 = 保持原值），避免老的局部提交把折旧清空。
+ *
+ * 折旧口径：见 src/lib/fixed-asset-depreciation.ts。出售 / 处置的 realizedProfit 按
+ * 账面净值（cost − 累计折旧）计算，处置时可以再传 depreciation（本次折损/折旧）。
  */
 import { NextRequest, NextResponse } from "next/server";
 import { AccountKind, Prisma, PropertyTransactionAction } from "@prisma/client";
 
 import { normalizeCurrency } from "@/lib/currency";
 import { normalizeFixedAssetType } from "@/lib/fixed-asset";
+import {
+  normalizeDepreciationMethod,
+  normalizeWeightUnit,
+  resolveAssetDepreciation,
+} from "@/lib/fixed-asset-depreciation";
 import { formatDateUtc, toNumber } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
 import { ensurePropertyTransactionCashFlow } from "@/lib/property/cashFlow";
+import { findUnsettledCollateralLoanAccounts } from "@/lib/server/collateral-mortgage";
 import { getApiHouseholdScope } from "@/lib/server/api-auth";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
@@ -36,6 +48,33 @@ import { revalidateAfterInvestChange } from "@/lib/server/revalidate";
 export const runtime = "nodejs";
 
 const PROPERTY_ACTIONS = new Set(Object.values(PropertyTransactionAction));
+
+/**
+ * 抵押中的固定资产不能售出 / 处置（2026-11-15 用户裁定）。
+ * 资产端 status=mortgaged 或 mortgageLoanAccountId 非空即视为抵押中；
+ * 解除方式只有两条：结清贷款（自动解除）或在资产编辑里取消「抵押中」。
+ */
+const MORTGAGED_ASSET_LOCKED_MESSAGE = "该固定资产仍处于抵押中，请先结清对应贷款（结清后自动解除抵押）或在资产编辑里取消「抵押中」，再售出 / 处置";
+
+/** 事务里抛出、catch 里转成 409 的哨兵错误（普通 Error 会被当成 500 处理）。 */
+class MortgagedAssetLockedError extends Error {
+  constructor(message: string = MORTGAGED_ASSET_LOCKED_MESSAGE) {
+    super(message);
+    this.name = "MortgagedAssetLockedError";
+  }
+}
+
+/** 贷款侧反查到未结清抵押时的提示：把贷款账户名带上，用户知道该还哪笔。 */
+function unsettledCollateralMessage(loanNames: string[]) {
+  return `该固定资产仍抵押在未结清的贷款${loanNames.map((name) => `「${name}」`).join("、")}上，请先结清该贷款（结清后自动解除抵押）再售出 / 处置`;
+}
+
+function mortgagedAssetLockedResponse(message: string = MORTGAGED_ASSET_LOCKED_MESSAGE) {
+  return NextResponse.json(
+    { ok: false, code: "MORTGAGED_ASSET_CANNOT_TERMINATE", error: message },
+    { status: 409, headers: corsHeaders() },
+  );
+}
 
 function corsHeaders() {
   return {
@@ -125,9 +164,16 @@ function serializeAsset(row: {
   attributes?: unknown | null;
   currency?: string | null;
   purchaseDate?: Date | null;
+  productionDate?: Date | null;
+  weight?: unknown | null;
+  weightUnit?: string | null;
   purchasePrice?: unknown | null;
   cost: unknown;
   marketValue: unknown;
+  depreciationMethod?: string | null;
+  usefulLifeMonths?: number | null;
+  salvageValue?: unknown | null;
+  accumulatedDepreciation?: unknown | null;
   latestValuationDate?: Date | null;
   status: string;
   note?: string | null;
@@ -143,9 +189,16 @@ function serializeAsset(row: {
     attributes: row.attributes ?? null,
     currency: normalizeCurrency(row.currency),
     purchaseDate: row.purchaseDate ? formatDateUtc(row.purchaseDate) : null,
+    productionDate: row.productionDate ? formatDateUtc(row.productionDate) : null,
+    weight: row.weight == null ? null : toNumber(row.weight),
+    weightUnit: normalizeWeightUnit(row.weightUnit),
     purchasePrice: row.purchasePrice == null ? null : toNumber(row.purchasePrice),
     cost: toNumber(row.cost),
     marketValue: toNumber(row.marketValue),
+    depreciationMethod: normalizeDepreciationMethod(row.depreciationMethod),
+    usefulLifeMonths: row.usefulLifeMonths ?? null,
+    salvageValue: row.salvageValue == null ? 0 : toNumber(row.salvageValue),
+    accumulatedDepreciation: row.accumulatedDepreciation == null ? 0 : toNumber(row.accumulatedDepreciation),
     latestValuationDate: row.latestValuationDate ? formatDateUtc(row.latestValuationDate) : null,
     status: row.status,
     note: row.note ?? null,
@@ -205,10 +258,18 @@ export async function GET(req: NextRequest) {
     // edit prefill).
     const includeTransactions = req.nextUrl.searchParams.get("transactions") !== "0";
     const linkedCashEntryId = req.nextUrl.searchParams.get("linkedCashEntryId")?.trim() || "";
+    // 单资产详情：固定资产编辑弹窗要读整行（生产日期 / 重量 / 折旧等新列），
+    // 而持仓列表走的是白名单 select，拿不到这些字段。
+    const assetId = req.nextUrl.searchParams.get("assetId")?.trim() || "";
 
     const [assets, transactions, linkedTransaction] = await Promise.all([
       prisma.propertyAsset.findMany({
-        where: { householdId, deletedAt: null, ...(accountId ? { accountId } : {}) },
+        where: {
+          householdId,
+          deletedAt: null,
+          ...(accountId ? { accountId } : {}),
+          ...(assetId ? { id: assetId } : {}),
+        },
         orderBy: [{ status: "asc" }, { latestValuationDate: "desc" }, { createdAt: "asc" }],
       }),
       includeTransactions
@@ -280,6 +341,16 @@ export async function POST(req: NextRequest) {
     const tax = parseOptionalNonNegativeNumber(body.tax);
     const marketValueInput = parseOptionalNonNegativeNumber(body.marketValue);
     const isDisposal = action === PropertyTransactionAction.disposal;
+    /**
+     * 处置方式（报废 / 赠送 / 遗弃 / 损耗 / 其他）+ 折损率（只有「损耗」带）。
+     * 报废、赠送、遗弃是「完全没有了」：没有回款、没有残值，折损率一律不填；
+     * 损耗是「还剩下一部分」：0<r<1 时把剩余部分按 1−r 重新入库。
+     */
+    const disposalReason = String(body.disposalReason ?? "").trim();
+    const lossRatioInput = parseOptionalNonNegativeNumber(body.lossRatio);
+    const partialLossRatio = isDisposal && disposalReason === "loss" && lossRatioInput != null && lossRatioInput > 0 && lossRatioInput < 1
+      ? lossRatioInput
+      : null;
     const isPurchase = action === PropertyTransactionAction.purchase;
     const isImprovement = action === PropertyTransactionAction.improvement;
     // 购入 / 产值调整（improvement）允许金额为 0：只登记资产、或只改产值，
@@ -298,6 +369,19 @@ export async function POST(req: NextRequest) {
       let existingAsset = propertyAssetId
         ? await tx.propertyAsset.findFirst({ where: { id: propertyAssetId, householdId, accountId, deletedAt: null } })
         : null;
+      // 出售 / 处置时结算出来的累计折旧（含本次折损），用于算账面净值与处置损益。
+      let settledAccumulated: number | null = null;
+      /**
+       * 损耗处置的结算结果（只在 0<折损率<1 时有值）：原资产按折损部分记损失，
+       * 剩余部分按净值 × (1 − 折损率) 在同一账户下重新入库，继续持有。
+       */
+      let lossSettlement: {
+        ratio: number;
+        lossAmount: number;
+        reentryCost: number;
+        reentryMarketValue: number;
+        reentryWeight: number | null;
+      } | null = null;
       const nextAssetType = normalizeFixedAssetType(
         action === PropertyTransactionAction.purchase
           ? body.assetType ?? propertyAccount.fixedAssetType
@@ -321,6 +405,9 @@ export async function POST(req: NextRequest) {
             attributes: parseAttributes(body.attributes),
             currency: propertyAccount.currency ?? cashAccount?.currency ?? "CNY",
             purchaseDate: tradeDate,
+            productionDate: parseDateOnly(body.productionDate),
+            weight: decimalString(parseOptionalNonNegativeNumber(body.weight)),
+            weightUnit: body.weightUnit == null ? null : normalizeWeightUnit(body.weightUnit),
             purchasePrice: decimalString(amount),
             cost: String(totalCostDelta),
             marketValue: String(initialMarketValue),
@@ -349,6 +436,46 @@ export async function POST(req: NextRequest) {
         const nextMarketValue = isTerminal
           ? recovery
           : marketValueInput ?? toNumber(existingAsset.marketValue);
+        if (isTerminal) {
+          // 抵押中的资产不能售出 / 处置：房子、车还压在那笔贷款上，卖掉贷款就悬空了，
+          // 而且处置后 mortgageLoanAccountId 会留在资产上，贷款侧 collateralAssetId 仍指着它。
+          // 正当路径只有结清贷款（releaseMortgagedAssetsForSettledLoanAccounts 自动解除）。
+          if (existingAsset.status === "mortgaged" || existingAsset.mortgageLoanAccountId) {
+            throw new MortgagedAssetLockedError();
+          }
+          // 资产端没有抵押标记也要反查一次贷款侧（2026-11-16 方案 A）：房贷借入时固定资产
+          // 是可选关联、老数据可能从未建立关联，只看资产字段会让「贷款没还清就把房 / 车处置掉」
+          // 从这道校验里漏过去。
+          const unsettledCollaterals = await findUnsettledCollateralLoanAccounts(tx, {
+            householdId,
+            propertyAssetId: existingAsset.id,
+          });
+          if (unsettledCollaterals.length > 0) {
+            throw new MortgagedAssetLockedError(
+              unsettledCollateralMessage(unsettledCollaterals.map((account) => account.name)),
+            );
+          }
+          // 终止时把累计折旧结算下来落到资产上：直线法按日期推算的部分 + 本次填写的
+          // 折损/折旧（body.depreciation），上限是成本（不能折成负数净值）。
+          const depreciationAtTrade = resolveAssetDepreciation(existingAsset, formatDateUtc(tradeDate));
+          const impairment = parseOptionalNonNegativeNumber(body.depreciation) ?? 0;
+          settledAccumulated = Math.min(nextCost, depreciationAtTrade.accumulated + impairment);
+          if (partialLossRatio != null) {
+            // 损耗：折损掉的那部分价值进本期损失，剩下 1−折损率 的净值原样重新入库。
+            const netBookValueBeforeLoss = Math.max(0, nextCost - settledAccumulated);
+            const roundMoney = (value: number) => Math.round(value * 100) / 100;
+            const lossAmount = roundMoney(netBookValueBeforeLoss * partialLossRatio);
+            lossSettlement = {
+              ratio: partialLossRatio,
+              lossAmount,
+              reentryCost: roundMoney(netBookValueBeforeLoss - lossAmount),
+              reentryMarketValue: roundMoney(Math.max(0, toNumber(existingAsset.marketValue) * (1 - partialLossRatio))),
+              reentryWeight: existingAsset.weight != null
+                ? Math.round(toNumber(existingAsset.weight) * (1 - partialLossRatio) * 1000) / 1000
+                : null,
+            };
+          }
+        }
         await tx.propertyAsset.update({
           where: { id: existingAsset.id },
           data: {
@@ -357,6 +484,7 @@ export async function POST(req: NextRequest) {
             marketValue: String(nextMarketValue),
             latestValuationDate: marketValueInput != null || isTerminal ? (settlementDate ?? tradeDate) : existingAsset.latestValuationDate,
             status: action === PropertyTransactionAction.sale ? "sold" : isDisposal ? "disposed" : existingAsset.status,
+            ...(settledAccumulated != null ? { accumulatedDepreciation: String(settledAccumulated) } : {}),
           },
         });
         if (marketValueInput != null || isTerminal) {
@@ -367,7 +495,7 @@ export async function POST(req: NextRequest) {
               valuationDate: settlementDate ?? tradeDate,
               marketValue: String(nextMarketValue),
               source: action === PropertyTransactionAction.sale ? "sale" : isDisposal ? "disposal" : "manual",
-              note: action === PropertyTransactionAction.sale ? "出售回收金额" : isDisposal ? "废弃回收金额" : "交易后手动估值",
+              note: action === PropertyTransactionAction.sale ? "出售回收金额" : isDisposal ? "处置回收金额" : "交易后手动估值",
             },
           });
         }
@@ -379,8 +507,14 @@ export async function POST(req: NextRequest) {
       });
 
       const isTerminalAction = action === PropertyTransactionAction.sale || action === PropertyTransactionAction.disposal;
+      // 处置 / 出售损益按「回收净额 − 账面净值」算，净值 = 成本 − 累计折旧。
+      // 折旧没登记时 settledAccumulated 为 0，与旧口径（回收 − 成本）完全一致。
+      const netBookValueAtTerminal = Math.max(0, toNumber(existingAsset?.cost ?? 0) - (settledAccumulated ?? 0));
+      // 损耗只损失折损掉的那部分（剩余部分重新入库，不能把整条净值都记成损失）。
       const realizedProfit = isTerminalAction && existingAsset
-        ? Math.max(0, amount - (fee ?? 0) - (tax ?? 0)) - toNumber(existingAsset.cost)
+        ? lossSettlement
+          ? -lossSettlement.lossAmount
+          : Math.max(0, amount - (fee ?? 0) - (tax ?? 0)) - netBookValueAtTerminal
         : null;
       const row = await tx.propertyTransaction.create({
         data: {
@@ -407,7 +541,70 @@ export async function POST(req: NextRequest) {
         cashAccount: row.CashAccount,
         metadata: { createdBy: "properties-api" },
       });
-      return { id: row.id, link };
+      /**
+       * 损耗后剩余部分重新入库（原资产已在上面按 disposal 终结）：
+       * 新资产按「净值 × (1−折损率)」入账，净值连续；重量、产值、残值同比缩减。
+       * 同时补一条金额 = 剩余净值的 purchase 交易（不挂资金账户 → 不生成现金流，
+       * 成本是从原资产结转过来的），这样 recalcPropertyAssetsFromTransactions
+       * 以后重算这条资产时能把成本还原回来（没有交易记录会被当成空资产软删）。
+       */
+      let reentryAssetId: string | null = null;
+      if (lossSettlement && existingAsset) {
+        const source = existingAsset;
+        const tradeDay = settlementDate ?? tradeDate;
+        const reentry = await tx.propertyAsset.create({
+          data: {
+            householdId,
+            accountId,
+            name: source.name,
+            assetType: nextAssetType,
+            propertyType: source.propertyType,
+            address: source.address,
+            ...(source.attributes == null ? {} : { attributes: source.attributes as Prisma.InputJsonValue }),
+            currency: source.currency,
+            purchaseDate: tradeDay,
+            productionDate: source.productionDate,
+            weight: decimalString(lossSettlement.reentryWeight),
+            weightUnit: source.weightUnit,
+            purchasePrice: decimalString(lossSettlement.reentryCost),
+            cost: String(lossSettlement.reentryCost),
+            marketValue: String(lossSettlement.reentryMarketValue),
+            latestValuationDate: tradeDay,
+            depreciationMethod: source.depreciationMethod,
+            usefulLifeMonths: source.usefulLifeMonths,
+            salvageValue: String(Math.round(toNumber(source.salvageValue) * (1 - lossSettlement.ratio) * 100) / 100),
+            accumulatedDepreciation: "0",
+            status: "active",
+            note: `「${source.name}」损耗 ${Math.round(lossSettlement.ratio * 10000) / 100}% 后剩余部分重新入库（原资产 ${source.id}）`,
+          },
+        });
+        reentryAssetId = reentry.id;
+        await tx.propertyValuation.create({
+          data: {
+            householdId,
+            propertyAssetId: reentry.id,
+            valuationDate: tradeDay,
+            marketValue: String(lossSettlement.reentryMarketValue),
+            source: "manual",
+            note: "损耗后剩余部分重新入库估值",
+          },
+        });
+        await tx.propertyTransaction.create({
+          data: {
+            householdId,
+            accountId,
+            cashAccountId: null,
+            propertyAssetId: reentry.id,
+            action: PropertyTransactionAction.purchase,
+            source: "disposal-loss-reentry",
+            tradeDate,
+            settlementDate,
+            amount: String(lossSettlement.reentryCost),
+            note: `损耗后剩余部分重新入库（承接「${source.name}」）`,
+          },
+        });
+      }
+      return { id: row.id, link, reentryAssetId };
     });
 
     for (const id of touchedAccountIds) {
@@ -432,9 +629,12 @@ export async function POST(req: NextRequest) {
         transaction: row ? serializeTransaction(row) : null,
         linkId: created.link.linkId,
         cashEntryId: created.link.cashEntryId,
+        /** 损耗处置时新入库的剩余资产 id（报废 / 赠送 / 遗弃为 null）。 */
+        reentryAssetId: created.reentryAssetId,
       },
     }, { headers: corsHeaders() });
   } catch (error) {
+    if (error instanceof MortgagedAssetLockedError) return mortgagedAssetLockedResponse(error.message);
     return NextResponse.json(
       { ok: false, code: "CREATE_FAILED", error: error instanceof Error ? error.message : "创建失败" },
       { status: 500, headers: corsHeaders() },
@@ -464,10 +664,57 @@ export async function PUT(req: NextRequest) {
     const purchaseDate = parseDateOnly(body?.purchaseDate);
     const purchasePrice = parseOptionalNonNegativeNumber(body?.purchasePrice);
     const nextStatus = String(body?.status ?? "").trim() || "active";
+    // 抵押中的资产不允许被编辑成终态（否则 `status=sold` 就绕过了
+    // 售出 / 处置接口的抵押校验，资产凭空消失而贷款还挂着它）。
+    const isTerminalAssetStatus = ["sold", "disposed", "deleted"].includes(nextStatus);
+    const assetMortgaged = asset.status === "mortgaged" || Boolean(asset.mortgageLoanAccountId);
+    if (assetMortgaged && isTerminalAssetStatus) {
+      return mortgagedAssetLockedResponse();
+    }
+    // 与 POST 同口径的反查（2026-11-16 方案 A）：资产端没标记，也可能抵押在未结清的贷款上，
+    // 这里同样不允许直接把状态改成售出 / 处置 / 删除。
+    if (isTerminalAssetStatus) {
+      const unsettledCollaterals = await findUnsettledCollateralLoanAccounts(prisma, { householdId, propertyAssetId });
+      if (unsettledCollaterals.length > 0) {
+        return mortgagedAssetLockedResponse(
+          unsettledCollateralMessage(unsettledCollaterals.map((account) => account.name)),
+        );
+      }
+    }
+    // 手动解除抵押（编辑弹窗取消「抵押中」勾选）：状态回到 active 时把关联一起清掉，
+    // 否则 releaseMortgagedAssetsForSettledLoanAccounts 只看 mortgageLoanAccountId，
+    // 会让「已经取消勾选」的资产仍被当成抵押中。
+    const releaseMortgageLink = assetMortgaged && nextStatus === "active" && Boolean(asset.mortgageLoanAccountId);
     const updated = await prisma.$transaction(async (tx) => {
       // 缺省时沿用资产现有类型：`normalizeFixedAssetType(undefined)` 会得到 "property"，
       // 任何只改名称/状态的局部提交都会把车辆、设备静默改回房产。
       const nextAssetType = normalizeFixedAssetType(body?.assetType ?? asset.assetType);
+      // 折旧与扩展属性只在请求里出现过才写：老的局部提交（只改名称/地址）不该把
+      // 生产日期、重量、折旧口径清空。
+      const extended: Prisma.PropertyAssetUpdateInput = {};
+      if (body && "productionDate" in body) extended.productionDate = parseDateOnly(body.productionDate);
+      if (body && "weight" in body) {
+        const weight = parseOptionalNonNegativeNumber(body.weight);
+        extended.weight = weight == null ? null : String(weight);
+      }
+      if (body && "weightUnit" in body) {
+        extended.weightUnit = body.weightUnit == null || String(body.weightUnit).trim() === ""
+          ? null
+          : normalizeWeightUnit(body.weightUnit);
+      }
+      if (body && "depreciationMethod" in body) {
+        extended.depreciationMethod = normalizeDepreciationMethod(body.depreciationMethod);
+      }
+      if (body && "usefulLifeMonths" in body) {
+        const months = parseOptionalNonNegativeNumber(body.usefulLifeMonths);
+        extended.usefulLifeMonths = months == null ? null : Math.round(months);
+      }
+      if (body && "salvageValue" in body) {
+        extended.salvageValue = String(parseNonNegativeNumber(body.salvageValue));
+      }
+      if (body && "accumulatedDepreciation" in body) {
+        extended.accumulatedDepreciation = String(parseNonNegativeNumber(body.accumulatedDepreciation));
+      }
       const updatedAsset = await tx.propertyAsset.update({
         where: { id: propertyAssetId },
         data: {
@@ -480,6 +727,8 @@ export async function PUT(req: NextRequest) {
           purchasePrice: purchasePrice == null ? null : String(purchasePrice),
           note: String(body?.note ?? "").trim() || null,
           status: nextStatus,
+          ...(releaseMortgageLink ? { MortgageLoanAccount: { disconnect: true } } : {}),
+          ...extended,
         },
       });
       await tx.account.updateMany({

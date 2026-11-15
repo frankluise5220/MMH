@@ -28,10 +28,35 @@ import { formatCurrencyMoney, formatPercent } from "@/lib/format";
 import { pnlClassFromRedUp } from "@/lib/client/colors";
 import { useI18n } from "@/lib/i18n";
 import { normalizeFixedAssetType } from "@/lib/fixed-asset";
+import { normalizeDepreciationMethod, normalizeWeightUnit } from "@/lib/fixed-asset-depreciation";
 import { buildLiabilityActivityEditEvent } from "@/lib/liability-entry-edit";
 import { formatAccountTableLabel, formatAccountTableTitle, type AccountTableDisplaySource } from "@/lib/account-display";
 import { systemCategoryLabel } from "@/lib/system-category-labels";
 import { readAccountDisplaySettings } from "@/lib/client/account-display-settings";
+
+/**
+ * `/api/v1/properties?assetId=...` 返回的整行资产（编辑窗用）。
+ * 持仓列表走白名单 select，拿不到生产日期 / 重量 / 折旧这些列，所以编辑前要单独拉整行。
+ */
+type FixedAssetDetail = {
+  id: string;
+  name: string;
+  assetType?: string | null;
+  propertyType?: string | null;
+  address?: string | null;
+  attributes?: unknown;
+  purchaseDate?: string | null;
+  productionDate?: string | null;
+  weight?: number | null;
+  weightUnit?: string | null;
+  purchasePrice?: number | null;
+  depreciationMethod?: string | null;
+  usefulLifeMonths?: number | null;
+  salvageValue?: number | null;
+  accumulatedDepreciation?: number | null;
+  note?: string | null;
+  status?: string | null;
+};
 
 type PropertyPosition = {
   fundCode: string;
@@ -137,8 +162,17 @@ function rate(value: number) {
   return formatPercent(value);
 }
 
-function transactionCategoryLabel(t: (key: string) => string, categoryName: string | null | undefined) {
-  return systemCategoryLabel(categoryName, t) || t("txForm.uncategorized");
+function transactionCategoryLabel(
+  t: (key: string) => string,
+  categoryName: string | null | undefined,
+  propertyAction?: string | null,
+) {
+  const fromCashEntry = systemCategoryLabel(categoryName, t);
+  if (fromCashEntry) return fromCashEntry;
+  // 无回款的处置（遗弃 / 赠送 / 报废）不产生现金流，明细行没有资金流水的分类，
+  // 用动作兜底成「资产处置」，否则会显示成「未分类」。
+  if (propertyAction === "disposal") return t("propertyForm.action.disposal");
+  return t("txForm.uncategorized");
 }
 
 function assetTypeLabel(t: (key: string) => string, assetType: string | null | undefined) {
@@ -546,19 +580,45 @@ export function PropertyShell({
     };
   }
 
-  function openFixedAssetEdit(position: PropertyPosition) {
+  /**
+   * 打开资产编辑窗。持仓列表走的是白名单 select（生产日期 / 重量 / 折旧这些新列不在里面），
+   * 所以这里必须按 id 再拉一次整行，否则保存时没带上的字段会被写空。
+   * 拉不到就不开窗（宁可提示一次，也不要用半份数据覆盖资产）。
+   */
+  async function openFixedAssetEdit(position: PropertyPosition) {
     const assetId = position.propertyAssetId ?? position.fundCode;
+    let detail: FixedAssetDetail | null = null;
+    try {
+      const response = await fetch(`/api/v1/properties?transactions=0&assetId=${encodeURIComponent(assetId)}`, { cache: "no-store" });
+      const body = (await response.json().catch(() => null)) as { ok?: boolean; data?: { assets?: FixedAssetDetail[] } } | null;
+      detail = body?.data?.assets?.[0] ?? null;
+    } catch {
+      detail = null;
+    }
+    if (!detail) {
+      window.alert(t("fixedAssetEdit.loadFailed"));
+      return;
+    }
+    const months = detail.usefulLifeMonths ?? 0;
+    const years = months > 0 ? Math.round((months / 12) * 10) / 10 : 0;
     setEditValue({
-      id: assetId,
-      name: position.name,
-      assetType: normalizeFixedAssetType(position.assetType),
-      propertyType: position.propertyType ?? "",
-      address: position.address ?? "",
-      attributes: (position.attributes ?? {}) as Record<string, unknown>,
-      purchaseDate: position.holdingDate || "",
-      purchasePrice: position.purchasePrice != null ? String(position.purchasePrice) : "",
-      note: position.note ?? "",
-      status: position.status ?? "active",
+      id: detail.id,
+      name: detail.name,
+      assetType: normalizeFixedAssetType(detail.assetType),
+      propertyType: detail.propertyType ?? "",
+      address: detail.address ?? "",
+      attributes: (detail.attributes ?? {}) as Record<string, unknown>,
+      purchaseDate: detail.purchaseDate ?? "",
+      productionDate: detail.productionDate ?? "",
+      weight: detail.weight != null ? String(detail.weight) : "",
+      weightUnit: normalizeWeightUnit(detail.weightUnit),
+      purchasePrice: detail.purchasePrice != null ? String(detail.purchasePrice) : "",
+      depreciationMethod: normalizeDepreciationMethod(detail.depreciationMethod),
+      usefulLifeYears: years > 0 ? String(years) : "",
+      salvageValue: detail.salvageValue != null ? String(detail.salvageValue) : "",
+      accumulatedDepreciation: detail.accumulatedDepreciation != null ? String(detail.accumulatedDepreciation) : "",
+      note: detail.note ?? "",
+      status: detail.status ?? "active",
     });
     setEditMeta({
       accountName: position.name,
@@ -580,8 +640,19 @@ export function PropertyShell({
           propertyType: next.propertyType.trim() || undefined,
           address: next.address.trim() || undefined,
           attributes: next.attributes ?? undefined,
-          purchaseDate: next.purchaseDate.trim() || undefined,
-          purchasePrice: next.purchasePrice.trim() || undefined,
+          purchaseDate: next.purchaseDate.trim() || null,
+          productionDate: next.productionDate.trim() || null,
+          // 重量留空就清掉（连带单位），别留一个没有数字的单位。
+          weight: next.weight.trim() || null,
+          weightUnit: next.weight.trim() ? next.weightUnit : null,
+          purchasePrice: next.purchasePrice.trim() || null,
+          depreciationMethod: next.depreciationMethod,
+          usefulLifeMonths: (() => {
+            const years = Number(next.usefulLifeYears);
+            return Number.isFinite(years) && years > 0 ? Math.round(years * 12) : null;
+          })(),
+          salvageValue: next.salvageValue.trim() || "0",
+          accumulatedDepreciation: next.accumulatedDepreciation.trim() || "0",
           note: next.note.trim() || undefined,
           status: next.status || "active",
         }),
@@ -1037,11 +1108,11 @@ export function PropertyShell({
         label: t("detail.column.category"),
         width: 160,
         minWidth: 100,
-        filterText: (entry) => transactionCategoryLabel(t, entry.categoryName),
-        sortValue: (entry) => transactionCategoryLabel(t, entry.categoryName),
+        filterText: (entry) => transactionCategoryLabel(t, entry.categoryName, entry.propertyAction),
+        sortValue: (entry) => transactionCategoryLabel(t, entry.categoryName, entry.propertyAction),
         truncate: true,
-        cellTitle: (entry) => transactionCategoryLabel(t, entry.categoryName),
-        render: (entry) => <span className="block truncate text-slate-600" title={transactionCategoryLabel(t, entry.categoryName)}>{transactionCategoryLabel(t, entry.categoryName)}</span>,
+        cellTitle: (entry) => transactionCategoryLabel(t, entry.categoryName, entry.propertyAction),
+        render: (entry) => <span className="block truncate text-slate-600" title={transactionCategoryLabel(t, entry.categoryName, entry.propertyAction)}>{transactionCategoryLabel(t, entry.categoryName, entry.propertyAction)}</span>,
       },
       {
         key: "counterpartyInstitution",

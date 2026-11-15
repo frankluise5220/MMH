@@ -127,6 +127,9 @@ type PropertyAssetDisplayRow = {
   purchasePrice?: unknown | null;
   cost: unknown;
   marketValue: unknown;
+  // 已售/已处置资产的累计折旧（终止时结算落库）。历史持有的已实现盈亏 = 回收 − 账面净值，
+  // 少了这一列就会把折损过的资产按全额成本算亏损。
+  accumulatedDepreciation?: unknown | null;
   latestValuationDate?: Date | null;
   note?: string | null;
   createdAt?: Date;
@@ -251,6 +254,10 @@ async function loadPropertyAssetsForPositionDisplay(accountIds: string[], househ
       // The fixed-asset table does not need every PropertyAsset column. Keep
       // this query narrow so a newly added optional column cannot hide all
       // positions while an older local database is catching up.
+      // accumulatedDepreciation 是唯一例外的「新列」：已售/已处置资产的已实现盈亏
+      // 必须按账面净值算（2026-11-15 折旧口径），缺了这列只能按全额成本算亏损。
+      // 它随 20261115_add_fixed_asset_depreciation 一起下发（PG 迁移 / fnOS 与桌面
+      // 的 addColumnIfMissing 三处齐备），不要在这里再加别的可选列。
       select: {
         id: true,
         accountId: true,
@@ -264,6 +271,7 @@ async function loadPropertyAssetsForPositionDisplay(accountIds: string[], househ
         purchasePrice: true,
         cost: true,
         marketValue: true,
+        accumulatedDepreciation: true,
         latestValuationDate: true,
         note: true,
         createdAt: true,
@@ -312,20 +320,29 @@ function buildPropertyPositionDisplay(propertyAssets: PropertyAssetDisplayRow[])
     .sort((a, b) => b.marketValue - a.marketValue || a.name.localeCompare(b.name));
   const clearedPositions: ClearedPositionRow[] = propertyAssets
     .filter((asset) => asset.status === "sold" || asset.status === "disposed")
-    .map((asset) => ({
-      fundCode: asset.id,
-      propertyAssetId: asset.id,
-      name: asset.name,
-      assetType: asset.assetType ?? null,
-      status: asset.status ?? null,
-      historicalProfit: toNumber(asset.marketValue) - toNumber(asset.cost),
-      totalInvested: toNumber(asset.cost),
-      returnRate: toNumber(asset.cost) > 0 ? (toNumber(asset.marketValue) - toNumber(asset.cost)) / toNumber(asset.cost) : 0,
-      firstBuyDate: asset.purchaseDate ? asset.purchaseDate.toISOString().slice(0, 10) : "",
-      clearedDate: asset.latestValuationDate ? asset.latestValuationDate.toISOString().slice(0, 10) : "",
-      totalBuyAmount: toNumber(asset.cost),
-      totalRedeemAmount: toNumber(asset.marketValue),
-    }));
+    .map((asset) => {
+      // 已售/已处置：回收金额 − 账面净值（成本 − 累计折旧）。没有折旧登记时
+      // 累计折旧为 0，与旧口径完全一致。
+      const cost = toNumber(asset.cost);
+      const accumulated = Math.min(cost, Math.max(0, toNumber(asset.accumulatedDepreciation)));
+      const netBookValue = Math.max(0, cost - accumulated);
+      const marketValue = toNumber(asset.marketValue);
+      const profit = marketValue - netBookValue;
+      return {
+        fundCode: asset.id,
+        propertyAssetId: asset.id,
+        name: asset.name,
+        assetType: asset.assetType ?? null,
+        status: asset.status ?? null,
+        historicalProfit: profit,
+        totalInvested: netBookValue,
+        returnRate: netBookValue > 0 ? profit / netBookValue : 0,
+        firstBuyDate: asset.purchaseDate ? asset.purchaseDate.toISOString().slice(0, 10) : "",
+        clearedDate: asset.latestValuationDate ? asset.latestValuationDate.toISOString().slice(0, 10) : "",
+        totalBuyAmount: netBookValue,
+        totalRedeemAmount: marketValue,
+      };
+    });
   const totalMarketValue = positions.reduce((sum, row) => sum + row.marketValue, 0);
   const totalCost = positions.reduce((sum, row) => sum + row.cost, 0);
   const positionHistoricalProfit = positions.reduce((sum, row) => sum + row.historicalProfit, 0);

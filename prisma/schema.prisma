@@ -1085,9 +1085,19 @@ model PropertyAsset {
   attributes            Json?
   currency              String                @default("CNY")
   purchaseDate          DateTime?
+  productionDate        DateTime?
+  weight                Decimal?              @db.Decimal(18, 3)
+  weightUnit            String?
   purchasePrice         Decimal?              @db.Decimal(18, 2)
   cost                  Decimal               @default(0) @db.Decimal(18, 2)
   marketValue           Decimal               @default(0) @db.Decimal(18, 2)
+  // 折旧（2026-11-15）：none = 累计折旧/折损由用户手填；straight_line = 按 purchaseDate
+  // 到当前日期的整月数直线推算，accumulatedDepreciation 这时只表示「额外折损/减值」。
+  // 口径实现在 src/lib/fixed-asset-depreciation.ts，别在别处另算。
+  depreciationMethod    String                @default("none")
+  usefulLifeMonths      Int?
+  salvageValue          Decimal               @default(0) @db.Decimal(18, 2)
+  accumulatedDepreciation Decimal             @default(0) @db.Decimal(18, 2)
   latestValuationDate   DateTime?
   status                String                @default("active")
   note                  String?

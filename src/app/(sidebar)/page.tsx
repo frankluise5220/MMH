@@ -3392,6 +3392,8 @@ export default async function Home({
                   id: position.propertyAssetId ?? position.fundCode,
                   name: position.name,
                   marketValue: position.marketValue,
+                  // 处置页签要拿账面成本算「处置损失」。
+                  cost: position.cost ?? null,
                   accountId: position.accountId ?? null,
                 })) ?? []}
               />

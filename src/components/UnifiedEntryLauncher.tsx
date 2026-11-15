@@ -321,7 +321,7 @@ function dispatchEntryAction(
     case "property":
     case "property-improvement":
     case "property-sell": {
-      // 固定资产记账一张弹窗、两个页签：资产变动（含新购入）/ 资产售出。
+      // 固定资产记账一张弹窗、三个页签：资产变动（含新购入）/ 资产售出 / 资产处置（遗弃、赠送等无回款）。
       // 「出售」入口直接落到售出页签；原来这里派发的是通用支出表单，卖不了资产。
       window.dispatchEvent(
         new CustomEvent("mmh:property:create", {
