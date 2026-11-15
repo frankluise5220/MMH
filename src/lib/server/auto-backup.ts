@@ -23,7 +23,14 @@ import {
 import { createSqliteSnapshotBuffer, isSqliteFileDatabase } from "@/lib/server/sqlite-snapshot";
 import { readJsonSystemSetting, writeJsonSystemSetting } from "@/lib/server/system-setting";
 
-export { defaultAutoBackupDir, formatDiskBytes, getPathDiskInfo } from "@/lib/server/backup-target";
+export {
+  defaultAutoBackupDir,
+  formatDiskBytes,
+  getPathDiskInfo,
+  isPersistentLocalPath,
+  isRunningInContainer,
+  persistentDataRoot,
+} from "@/lib/server/backup-target";
 export type { BackupDestination, RemoteBackupSettings } from "@/lib/server/backup-target";
 
 /**
@@ -78,6 +85,12 @@ export type AutoBackupStatus = {
 type AutoBackupRunResult = {
   scope: AutoBackupConfig["scope"];
   files: string[];
+  /**
+   * Where the packages were written (local directory or protocol URL). The
+   * settings page shows it after a manual run: "backup finished" without the
+   * destination is what made users hunt for the files in the wrong folder.
+   */
+  location: string;
 };
 
 const DEFAULT_CONFIG: AutoBackupConfig = {
@@ -286,7 +299,7 @@ export async function runAutoBackupNow(
 ): Promise<AutoBackupRunResult> {
   const resolved = config ?? (await loadAutoBackupConfig());
   if (!resolved.enabled && !options.force) {
-    return { scope: resolved.scope, files: [] };
+    return { scope: resolved.scope, files: [], location: describeBackupTarget(resolved) };
   }
 
   const target = createBackupTarget(resolved);
@@ -330,7 +343,7 @@ export async function runAutoBackupNow(
   }
 
   await cleanupOldBackups(target, resolved.keepCount);
-  return { scope: resolved.scope, files };
+  return { scope: resolved.scope, files, location: target.location };
 }
 
 /**

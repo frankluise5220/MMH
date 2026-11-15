@@ -212,9 +212,12 @@ type AutoBackupResponse = {
       systemBackup?: boolean;
       defaultDir?: string;
       defaultDisk?: AutoBackupDiskInfo | null;
+      /** Docker / Podman: only mounted volumes survive a container recreate */
+      containerized?: boolean;
+      persistentRoot?: string;
     };
     disk?: AutoBackupDiskInfo | null;
-    result?: { files?: string[] };
+    result?: { files?: string[]; location?: string };
   };
 };
 
@@ -763,6 +766,8 @@ export default function DatabaseSettingsPage() {
   const [autoBackupStatus, setAutoBackupStatus] = useState<AutoBackupStatus | null>(null);
   const [autoBackupSystemSupported, setAutoBackupSystemSupported] = useState(true);
   const [autoBackupDefaultDir, setAutoBackupDefaultDir] = useState("");
+  const [autoBackupContainerized, setAutoBackupContainerized] = useState(false);
+  const [autoBackupPersistentRoot, setAutoBackupPersistentRoot] = useState("");
   const [autoBackupDisk, setAutoBackupDisk] = useState<AutoBackupDiskInfo | null>(null);
   const [autoBackupLoading, setAutoBackupLoading] = useState(true);
   const [autoBackupSaving, setAutoBackupSaving] = useState(false);
@@ -852,6 +857,13 @@ export default function DatabaseSettingsPage() {
     fallbackKey: string,
     pathFallback: string,
   ): string {
+    if (data?.code === "BACKUP_PATH_NOT_PERSISTENT") {
+      return t("settings.autoBackup.pathNotPersistent", {
+        path: data.data?.dir || pathFallback || "…",
+        dir: autoBackupDefaultDir || "…",
+        error: data.error ?? "",
+      });
+    }
     if (data?.code === "BACKUP_PATH_NOT_WRITABLE") {
       const remote = autoBackup?.destination && autoBackup.destination !== "local";
       return t(remote ? "settings.autoBackup.remoteNotWritable" : "settings.autoBackup.pathNotWritable", {
@@ -876,6 +888,8 @@ export default function DatabaseSettingsPage() {
       const systemSupported = capabilities?.systemBackup !== false;
       setAutoBackupSystemSupported(systemSupported);
       setAutoBackupDefaultDir(capabilities?.defaultDir ?? "");
+      setAutoBackupContainerized(capabilities?.containerized === true);
+      setAutoBackupPersistentRoot(capabilities?.persistentRoot ?? "");
       setAutoBackupDisk(capabilities?.defaultDisk ?? null);
       const config = data.data.config;
       if (config) {
@@ -956,11 +970,13 @@ export default function DatabaseSettingsPage() {
       }
       setAutoBackupStatus(data.data?.status ?? null);
       const files = data.data?.result?.files;
-      if (files && files.length > 0) {
-        setAutoBackupMessage(t("settings.autoBackup.runNowResult", { files: files.join(", ") }));
-      } else {
-        setAutoBackupMessage(t("settings.autoBackup.runNowResult", { files: t("settings.autoBackup.lastRunNone") }));
-      }
+      const location = data.data?.result?.location || autoBackupDefaultDir;
+      setAutoBackupMessage(
+        t("settings.autoBackup.runNowResult", {
+          files: files && files.length > 0 ? files.join(", ") : t("settings.autoBackup.lastRunNone"),
+          location: location || "…",
+        }),
+      );
     } catch (error) {
       setAutoBackupError(error instanceof Error ? error.message : t("settings.autoBackup.runNowFailed", { error: "" }));
     } finally {
@@ -1857,6 +1873,13 @@ export default function DatabaseSettingsPage() {
                 <div className="mt-1 truncate text-[11px] text-slate-400" title={autoBackupDefaultDir}>
                   {t("settings.autoBackup.defaultDir", { path: autoBackupDefaultDir || "…" })}
                 </div>
+                {autoBackupContainerized ? (
+                  <div className="mt-1 rounded-md border border-sky-100 bg-sky-50 px-2 py-1 text-[11px] leading-relaxed text-sky-900">
+                    {t("settings.autoBackup.containerHint", {
+                      root: autoBackupPersistentRoot || autoBackupDefaultDir || "…",
+                    })}
+                  </div>
+                ) : null}
                 {autoBackupDisk?.free ? (
                   <div className="mt-1 text-[11px] text-slate-500">
                     {t("settings.autoBackup.diskSpace", { free: autoBackupDisk.free })}

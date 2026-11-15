@@ -91,7 +91,17 @@ export type BackupTargetConfig = {
   remote: RemoteBackupSettings;
 };
 
-export type BackupPathFailure = Error & { code: "BACKUP_PATH_NOT_WRITABLE"; dir: string };
+export type BackupPathFailureCode = "BACKUP_PATH_NOT_WRITABLE" | "BACKUP_PATH_NOT_PERSISTENT";
+
+export type BackupPathFailure = Error & { code: BackupPathFailureCode; dir: string };
+
+function backupPathFailureCode(error: unknown): BackupPathFailureCode {
+  // `code` is also where Node puts errno strings ("EACCES", "ENOENT"), so only
+  // the explicit non-persistent marker passes through.
+  return (error as { code?: unknown } | null)?.code === "BACKUP_PATH_NOT_PERSISTENT"
+    ? "BACKUP_PATH_NOT_PERSISTENT"
+    : "BACKUP_PATH_NOT_WRITABLE";
+}
 
 /**
  * Filesystem / protocol errors carry the failing target only in their message.
@@ -100,7 +110,7 @@ export type BackupPathFailure = Error & { code: "BACKUP_PATH_NOT_WRITABLE"; dir:
  */
 export function asBackupPathFailure(dir: string, error: unknown): BackupPathFailure {
   const message = error instanceof Error ? error.message : String(error);
-  return Object.assign(new Error(message), { code: "BACKUP_PATH_NOT_WRITABLE" as const, dir });
+  return Object.assign(new Error(message), { code: backupPathFailureCode(error), dir });
 }
 
 async function guarded<T>(location: string, fn: () => Promise<T>): Promise<T> {
@@ -114,6 +124,127 @@ async function guarded<T>(location: string, fn: () => Promise<T>): Promise<T> {
 export function defaultAutoBackupDir(): string {
   const dataDir = process.env.MMH_DATA_DIR || path.join(process.cwd(), "data");
   return path.join(dataDir, "backups");
+}
+
+/** Data volume root that survives a container being recreated (`MMH_DATA_DIR`). */
+export function persistentDataRoot(): string {
+  const dataDir = process.env.MMH_DATA_DIR || path.join(process.cwd(), "data");
+  return path.resolve(dataDir);
+}
+
+/**
+ * True inside Docker / Podman. The container's own writable layer is thrown
+ * away by every image update, so a local backup path that no mount backs is
+ * silent data loss, not a permission problem — the user sees "saved" and
+ * "backup finished" while the files are one `docker compose up` away from
+ * disappearing.
+ */
+export function isRunningInContainer(): boolean {
+  if (process.env.MMH_CONTAINER === "1") return true;
+  try {
+    return fs.existsSync("/.dockerenv") || fs.existsSync("/run/.containerenv");
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Filesystems inside a container that never persist: the writable overlay and
+ * the kernel's synthetic filesystems. `tmpfs` also covers `/dev/shm`, so a
+ * backup written there is equally lost on restart.
+ */
+const NON_PERSISTENT_FS = new Set([
+  "overlay",
+  "proc",
+  "sysfs",
+  "devpts",
+  "devtmpfs",
+  "tmpfs",
+  "shm",
+  "mqueue",
+  "cgroup",
+  "cgroup2",
+  "securityfs",
+  "debugfs",
+  "tracefs",
+  "pstore",
+  "bpf",
+  "nsfs",
+  "configfs",
+  "ramfs",
+  "autofs",
+  "fusectl",
+  "fuse.lxcfs",
+]);
+
+/** `/proc/mounts` escapes space and friends as octal (`\040`). */
+function decodeMountPath(raw: string): string {
+  return raw.replace(/\\([0-7]{3})/g, (_, octal: string) => String.fromCharCode(parseInt(octal, 8)));
+}
+
+/** Directory mount points that survive a container recreation. */
+function containerMountRoots(): string[] {
+  let raw: string;
+  try {
+    raw = fs.readFileSync("/proc/mounts", "utf8");
+  } catch {
+    return [];
+  }
+  const roots: string[] = [];
+  for (const line of raw.split("\n")) {
+    const parts = line.trim().split(/\s+/);
+    if (parts.length < 3) continue;
+    const mountPoint = decodeMountPath(parts[1] ?? "");
+    const fsType = parts[2] ?? "";
+    // "/" itself cannot count: in a container it *is* the writable layer.
+    if (!mountPoint || mountPoint === "/") continue;
+    if (NON_PERSISTENT_FS.has(fsType)) continue;
+    if (/^\/(proc|sys|dev)(\/|$)/.test(mountPoint)) continue;
+    try {
+      if (!fs.statSync(mountPoint).isDirectory()) continue;
+    } catch {
+      continue;
+    }
+    roots.push(mountPoint);
+  }
+  return roots;
+}
+
+/** Directories whose contents outlive the container. */
+export function persistentLocalRoots(): string[] {
+  const roots = new Set<string>([persistentDataRoot()]);
+  if (isRunningInContainer()) {
+    for (const mountPoint of containerMountRoots()) roots.add(mountPoint);
+  }
+  return [...roots];
+}
+
+/**
+ * Is `dir` safe to write backups into?
+ *
+ * Outside a container every disk on the machine persists, so the check is a
+ * no-op there (desktop app, fnOS / SPK packages). Inside a container only the
+ * data volume and explicit mounts qualify.
+ */
+export function isPersistentLocalPath(dir: string): boolean {
+  if (!isRunningInContainer()) return true;
+  const resolved = path.resolve(dir);
+  return persistentLocalRoots().some((root) => {
+    const prefix = root.endsWith(path.sep) ? root : `${root}${path.sep}`;
+    return resolved === root || resolved.startsWith(prefix);
+  });
+}
+
+function nonPersistentPathError(dir: string): BackupPathFailure {
+  const suggested = defaultAutoBackupDir();
+  return Object.assign(
+    new Error(
+      `Backup directory is not inside a persistent volume: ${dir}. ` +
+        `The container's writable layer is discarded when the container is recreated, so these files would be lost. ` +
+        `Use the default directory (${suggested}) or switch the destination to SMB / FTP / WebDAV.`,
+    ),
+    { code: "BACKUP_PATH_NOT_PERSISTENT" as const, dir },
+  );
 }
 
 /** Reject `..` and NUL in user-entered remote directories; keep leading `/`. */
@@ -218,10 +349,14 @@ export function describeBackupTarget(config: BackupTargetConfig): string {
 
 function localTarget(dir: string): BackupTarget {
   const location = dir || defaultAutoBackupDir();
+  const assertPersistent = () => {
+    if (!isPersistentLocalPath(location)) throw nonPersistentPathError(location);
+  };
   return {
     location,
     probe: () =>
       guarded(location, async () => {
+        assertPersistent();
         await fs.promises.mkdir(location, { recursive: true });
         const probeName = `.mmh-probe-${crypto.randomUUID()}.tmp`;
         await fs.promises.writeFile(path.join(location, probeName), Buffer.alloc(0), { mode: 0o600 });
@@ -229,6 +364,7 @@ function localTarget(dir: string): BackupTarget {
       }),
     write: (fileName, bytes) =>
       guarded(location, async () => {
+        assertPersistent();
         await fs.promises.mkdir(location, { recursive: true });
         await fs.promises.writeFile(path.join(location, safeRemoteFileName(fileName)), bytes, { mode: 0o600 });
       }),

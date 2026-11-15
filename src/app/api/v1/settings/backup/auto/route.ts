@@ -6,8 +6,10 @@ import {
   defaultAutoBackupDir,
   formatDiskBytes,
   getPathDiskInfo,
+  isRunningInContainer,
   loadAutoBackupConfig,
   loadAutoBackupStatus,
+  persistentDataRoot,
   probeBackupConfig,
   runAutoBackupNow,
   saveAutoBackupConfig,
@@ -54,6 +56,12 @@ export async function GET() {
         systemBackup: isSqliteFileDatabase(),
         defaultDir,
         defaultDisk: defaultDisk ? { ...defaultDisk, free: formatDiskBytes(defaultDisk.freeBytes) } : null,
+        // The settings page needs to know the deployment shape: inside a
+        // container only mounted volumes survive a recreate, so a local path
+        // outside the data volume must be presented as data loss, not as an
+        // arbitrary "choose any folder" field.
+        containerized: isRunningInContainer(),
+        persistentRoot: persistentDataRoot(),
       },
     },
   });
@@ -125,7 +133,10 @@ async function handleRunNow() {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const pathFailure = error as { code?: string; dir?: string } | null;
-    const code = pathFailure?.code === "BACKUP_PATH_NOT_WRITABLE" ? "BACKUP_PATH_NOT_WRITABLE" : "AUTO_BACKUP_FAILED";
+    const code =
+      pathFailure?.code === "BACKUP_PATH_NOT_WRITABLE" || pathFailure?.code === "BACKUP_PATH_NOT_PERSISTENT"
+        ? pathFailure.code
+        : "AUTO_BACKUP_FAILED";
     const now = new Date();
     const config = await loadAutoBackupConfig();
     await saveAutoBackupStatus({
@@ -141,7 +152,7 @@ async function handleRunNow() {
         error: message,
         data: { dir: pathFailure?.dir, status: await loadAutoBackupStatus() },
       },
-      { status: code === "BACKUP_PATH_NOT_WRITABLE" ? 400 : 500 },
+      { status: code === "BACKUP_PATH_NOT_WRITABLE" || code === "BACKUP_PATH_NOT_PERSISTENT" ? 400 : 500 },
     );
   }
 }
