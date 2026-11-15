@@ -416,7 +416,8 @@ function upgradeToTls(socket: NetSocket, host: string, timeoutMs: number) {
       secured.off("error", fail);
       secured.on("error", () => {});
       const cert = secured.getPeerCertificate?.();
-      resolve({ socket: secured, ms: Date.now() - startedAt, certName: cert?.subject?.CN || undefined });
+      const cn = cert?.subject?.CN;
+      resolve({ socket: secured, ms: Date.now() - startedAt, certName: Array.isArray(cn) ? cn[0] : cn });
     });
   });
 }
