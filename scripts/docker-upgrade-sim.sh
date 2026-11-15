@@ -144,6 +144,33 @@ transactions:debtInterestAmount=transactions:interestAmount
 transactions:debtFeeAmount=transactions:feeAmount
 DebtAgreement:*=SettlementAgreement:*'
 
+# 2026-11-16 口径：有些列是**有意退役**的（迁移里 DROP COLUMN，数据不再需要），
+# 例如 FundNavCache.name —— 基金名只由 FundProfile 持有，净值缓存不再存名字。
+# 它们和「已知重命名」一样不是数据丢失，区别是升级后不要求存在同名/新名对象。
+# 格式：table:column。新增条目必须能在 prisma/migrations 里找到那次 DROP COLUMN
+# （retired_object_has_migration 校验；没有仓库源码的环境只跳过校验），
+# 否则这个白名单就成了万能逃生口。
+RETIRED_OBJECTS='FundNavCache:name'
+
+# 仓库根目录（脚本在 scripts/ 下）。非仓库环境返回空，调用方据此跳过校验。
+repo_root() {
+  local dir
+  dir="$(cd "$(dirname "$0")" 2>/dev/null && pwd)" || return 0
+  printf '%s' "$(dirname "$dir")"
+}
+
+# $1 = table:column。返回 0 = 退役有迁移证据（或无法校验）。
+retired_object_has_migration() {
+  local obj="$1" col migrations
+  col="${obj#*:}"
+  migrations="$(repo_root)/prisma/migrations"
+  [ -n "$migrations" ] || return 0
+  [ -d "$migrations" ] || return 0
+  grep -rqs -- "DROP COLUMN IF EXISTS \"$col\"" "$migrations" && return 0
+  grep -rqs -- "DROP COLUMN \"$col\"" "$migrations" && return 0
+  return 1
+}
+
 # 过滤掉「合法重命名」导致的 dropped，返回非空则仍有真实数据丢失。
 # $1 = dropped 对象列表（多行，来自 comm -23），$2 = 升级后对象文件路径。
 filter_known_renames() {
@@ -152,6 +179,13 @@ filter_known_renames() {
   printf '%s\n' "$dropped_list" | while IFS= read -r line; do
     [ -z "$line" ] && continue
     matched=""
+    # 有意退役的列（见 RETIRED_OBJECTS）：迁移里已 DROP COLUMN，不算数据丢失。
+    if printf '%s\n' "$RETIRED_OBJECTS" | grep -qx "$line"; then
+      if retired_object_has_migration "$line"; then
+        matched=1
+        continue
+      fi
+    fi
     while IFS= read -r mapping; do
       [ -z "$mapping" ] && continue
       old_obj="$(printf '%s' "$mapping" | cut -d= -f1)"

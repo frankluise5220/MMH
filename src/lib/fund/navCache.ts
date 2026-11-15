@@ -359,6 +359,7 @@ async function fetchPurchaseLimit(fundCode: string): Promise<number | null> {
  * @param nav Unit NAV
  * @param cumNav Cumulative NAV (optional)
  * @param sgzt Purchase status from the external provider.
+ * @param purchaseLimit Daily purchase cap in yuan (optional; parsed from the provider page).
  */
 export async function setFundNav(
   fundCode: string,
@@ -374,18 +375,6 @@ export async function setFundNav(
     update: { nav, cumNav, sgzt, purchaseLimit },
   });
 }
-
-/**
- * Update a fund NAV inside a transaction.
- *
- * @param tx Prisma transaction client
- * @param fundCode Fund code
- * @param navDate NAV date (must be built with utcDate, ensuring T00:00:00Z)
- * @param nav Unit NAV
- * @param cumNav Cumulative NAV (optional)
- * @param name Fund name (optional)
- * @param sgzt Purchase status (optional)
- */
 
 /**
  * Query a fund's latest NAV.
