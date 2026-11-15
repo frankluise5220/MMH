@@ -27,7 +27,7 @@ import { useEntryReconcileState } from "@/lib/client/use-entry-reconcile-state";
 import { setEntryModalReconciledReadOnly } from "@/lib/client/entryModalLock";
 import { BasicDetailReconcileLockButton } from "@/components/BasicDetailSelection";
 
-import { ChartLine, Download, Library, List, Package, Pencil, Settings2, SlidersHorizontal, Trash2, X } from "lucide-react";
+import { ChartLine, Library, List, Package, Pencil, Settings2, SlidersHorizontal, Trash2, X } from "lucide-react";
 
 import { FundProfileSettingsModal } from "@/components/FundProfileSettingsModal";
 import { openMetalExtract } from "@/lib/client/metal-extract-event";
@@ -758,6 +758,13 @@ export function FundShell(props: Props) {
   const isMetalAccount = accountProductType === "metal";
   // 投顾组合账户与理财账户共用理财壳层（持仓列、录入与编辑链路同构）。
   const isWealthAccount = accountProductType === "wealth" || accountProductType === "advisor";
+  /**
+   * 名称后面那串「代码」只对公募基金有意义（6 位基金代码）。
+   * 贵金属的 fundCode 是内部品种 id（pmt-system-xau），理财是内部产品 id：
+   * 「黄金 · 克」品种名 + 单位已经说明清楚，再挂一串 id 只是噪声。
+   * 持仓 / 清仓 / 明细表 / 移动端卡片共用这一个开关。
+   */
+  const hideAssetCode = isWealthAccount || isMetalAccount;
   const positionCols = isWealthAccount ? WEALTH_POSITION_COLS : POSITION_COLS;
   const assetNameLabel = isMetalAccount ? t("fundShell.col.species") : isWealthAccount ? t("fundShell.wealthProduct") : t("txForm.fund");
   const holdingTabLabel = isMetalAccount ? t("fundShell.tab.holdings.metal") : isWealthAccount ? t("fundShell.tab.holdings.wealth") : t("fundShell.tab.holdings.fund");
@@ -862,9 +869,6 @@ export function FundShell(props: Props) {
    */
   const goFundPageRef = useRef<(page: number) => void>(() => {});
 
-  const [showExportMenu, setShowExportMenu] = useState(false);
-  const exportRef = useRef<HTMLDivElement>(null);
-
   const [adjustedNavByCode, setAdjustedNavByCode] = useState<Record<string, { nav: number; date: string }>>({});
 
   const [localData, setLocalData] = useState({
@@ -901,10 +905,8 @@ export function FundShell(props: Props) {
   const [fundChartRange, setFundChartRange] = useState<FundChartRange>("month");
   const closePositionColumnMenu = useCallback(() => setPositionColumnMenuOpen(false), []);
   const closeDetailColumnMenu = useCallback(() => setDetailColumnMenuOpen(false), []);
-  const closeExportMenu = useCallback(() => setShowExportMenu(false), []);
   useOutsideClose(positionColumnMenuRef, positionColumnMenuOpen, closePositionColumnMenu);
   useOutsideClose(detailColumnMenuRef, detailColumnMenuOpen, closeDetailColumnMenu);
-  useOutsideClose(exportRef, showExportMenu, closeExportMenu);
   const [fundNavHistoryState, setFundNavHistoryState] = useState<{
     code: string;
     loading: boolean;
@@ -1987,7 +1989,7 @@ export function FundShell(props: Props) {
         minWidth: minFundColWidth("positions", "fund"),
         headerClassName: "text-left",
         className: "px-4",
-        sortValue: (p) => String(isWealthAccount ? p.name ?? "" : p.fundCode ?? p.name ?? ""),
+        sortValue: (p) => String(hideAssetCode ? p.name ?? "" : p.fundCode ?? p.name ?? ""),
         render: (p) => {
           const positionKey = positionAssetKey(p);
           const active = positionKey === fundCode;
@@ -1995,10 +1997,10 @@ export function FundShell(props: Props) {
           return (
             <span
               className={`block truncate font-medium ${active ? "text-blue-700" : "text-slate-700"}`}
-              title={isWealthAccount ? p.name : `${p.name} ${p.fundCode}`}
+              title={hideAssetCode ? p.name : `${p.name} ${p.fundCode}`}
             >
               {p.name}
-              {!isWealthAccount && p.fundCode !== p.name ? <span className={`ml-1 ${pnl(displayPnL)}`}>{p.fundCode}</span> : null}
+              {!hideAssetCode && p.fundCode !== p.name ? <span className={`ml-1 ${pnl(displayPnL)}`}>{p.fundCode}</span> : null}
             </span>
           );
         },
@@ -2147,6 +2149,7 @@ export function FundShell(props: Props) {
     colWidth,
     formatFundUnits,
     fundCode,
+    hideAssetCode,
     isMetalAccount,
     isWealthAccount,
     navColumnLabel,
@@ -2218,8 +2221,6 @@ export function FundShell(props: Props) {
     };
   }, [d.positions, d.totalCost, d.totalMarketValue, d.positionHistoricalProfit, isWealthAccount, positionDisplayMetrics, pnl, t]);
 
-  // 理财 / 贵金属的 fundCode 是内部产品 / 品种 id，不是给用户看的基金代码，清仓列只显示名称。
-  const hideClearedAssetCode = isWealthAccount || isMetalAccount;
   const clearedAdvancedColumns = useMemo<AdvancedDataTableColumn<any>[]>(() => [
     {
       key: "fund",
@@ -2229,17 +2230,17 @@ export function FundShell(props: Props) {
       headerClassName: "text-left",
       className: "px-4",
       filterText: (c) => [c.name, c.fundCode].filter(Boolean).join(" "),
-      sortValue: (c) => String(hideClearedAssetCode ? c.name ?? "" : c.fundCode ?? c.name ?? ""),
+      sortValue: (c) => String(hideAssetCode ? c.name ?? "" : c.fundCode ?? c.name ?? ""),
       render: (c) => {
         const clearedKey = positionAssetKey(c);
         const active = clearedKey === fundCode;
         return (
           <span
             className={`block truncate font-medium ${active ? "text-blue-700" : "text-slate-700"}`}
-            title={hideClearedAssetCode ? c.name : `${c.name} ${c.fundCode}`}
+            title={hideAssetCode ? c.name : `${c.name} ${c.fundCode}`}
           >
             {c.name}
-            {!hideClearedAssetCode && c.fundCode ? <span className="ml-1 text-slate-400">{c.fundCode}</span> : null}
+            {!hideAssetCode && c.fundCode ? <span className="ml-1 text-slate-400">{c.fundCode}</span> : null}
           </span>
         );
       },
@@ -2342,7 +2343,7 @@ export function FundShell(props: Props) {
           },
         } satisfies AdvancedDataTableColumn<any>]
       : []),
-  ], [assetNameLabel, colWidth, fundCode, hideClearedAssetCode, isWealthAccount, pnl, positionAssetKey, t]);
+  ], [assetNameLabel, colWidth, fundCode, hideAssetCode, isWealthAccount, pnl, positionAssetKey, t]);
 
   const clearedSummaryRow = useMemo<AdvancedDataTableSummaryRow | undefined>(() => {
     if (d.clearedPositions.length === 0) return undefined;
@@ -2885,9 +2886,9 @@ export function FundShell(props: Props) {
           filterTitle: fundSearchTextOf,
           sortValue: fundLabelOf,
           render: (e: any) => (
-            <div className="truncate text-slate-700" title={isWealthAccount ? displayFundName(e) : `${displayFundName(e)} ${e.fundCode || ""}`}>
+            <div className="truncate text-slate-700" title={hideAssetCode ? displayFundName(e) : `${displayFundName(e)} ${e.fundCode || ""}`}>
               {displayFundName(e)}
-              {!isWealthAccount && e.fundCode && displayFundName(e) !== e.fundCode && <span className="ml-1 text-slate-400">{e.fundCode}</span>}
+              {!hideAssetCode && e.fundCode && displayFundName(e) !== e.fundCode && <span className="ml-1 text-slate-400">{e.fundCode}</span>}
             </div>
           ),
         } satisfies AdvancedDataTableColumn<any>;
@@ -3108,6 +3109,7 @@ export function FundShell(props: Props) {
     entryTagsOf,
     formatFundUnits,
     fundApplyDateOf,
+    hideAssetCode,
     isSingleNormalFundScope,
     isWealthAccount,
     navColumnLabel,
@@ -3657,10 +3659,10 @@ export function FundShell(props: Props) {
                       >
                         <div className="flex items-start justify-between gap-3">
                           <div className="min-w-0 flex-1">
-                            <div className={`truncate text-sm font-semibold ${active ? "text-blue-700" : "text-slate-900"}`} title={hideClearedAssetCode ? c.name : `${c.name} ${c.fundCode}`}>
+                            <div className={`truncate text-sm font-semibold ${active ? "text-blue-700" : "text-slate-900"}`} title={hideAssetCode ? c.name : `${c.name} ${c.fundCode}`}>
                               {c.name}
                             </div>
-                            {!hideClearedAssetCode && c.fundCode ? <div className="mt-1 text-[11px] tabular-nums text-slate-400">{c.fundCode}</div> : null}
+                            {!hideAssetCode && c.fundCode ? <div className="mt-1 text-[11px] tabular-nums text-slate-400">{c.fundCode}</div> : null}
                           </div>
                           <div className="shrink-0 text-right">
                             <div className={`text-base font-semibold tabular-nums ${pnl(c.historicalProfit)}`}>{formatMoney(c.historicalProfit)}</div>
@@ -3838,17 +3840,6 @@ export function FundShell(props: Props) {
                   <Trash2 className="h-3.5 w-3.5" />
                 </button>
 
-                <button
-                  type="button"
-                  onClick={() => void exportXlsx("selectedFunds")}
-                  disabled={selectedFundCodes.size === 0}
-                  className={`flex h-6 w-6 items-center justify-center rounded border border-slate-200 bg-white text-slate-600 hover:bg-blue-50 hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-40 ${HANDSET_HIDDEN_CLASS}`}
-                  title={t("fundShell.export.selectedDetail", { kind: isWealthAccount ? t("fundShell.kind.wealth") : t("txForm.fund"), count: selectedFundCodes.size })}
-                  aria-label={t("fundShell.export.selectedDetail", { kind: isWealthAccount ? t("fundShell.kind.wealth") : t("txForm.fund"), count: selectedFundCodes.size })}
-                >
-                  <Download className="h-3.5 w-3.5" />
-                </button>
-
                 <span
                   className="h-6 rounded border border-blue-200 bg-blue-50 px-2 text-xs font-medium leading-6 tabular-nums text-blue-700"
                   title={t("fundShell.selectedTitle", { count: batchTargetIds.length })}
@@ -3978,56 +3969,6 @@ export function FundShell(props: Props) {
 
             </div>
 
-            {isMetalAccount || isWealthAccount ? (
-            <div className={`relative ${HANDSET_HIDDEN_CLASS}`} ref={exportRef}>
-
-              <button onClick={() => setShowExportMenu(!showExportMenu)} className="h-6 px-2 rounded border border-slate-200 bg-white text-slate-500 hover:bg-blue-50 hover:text-blue-600 flex items-center gap-1" title={t("viewImport.exportExcel")}>
-
-                <Download className="w-3 h-3" />{t("viewImport.export")}
-
-              </button>
-
-              {showExportMenu && (
-
-                <div className="absolute right-0 top-7 z-50 min-w-[170px] w-max max-w-[80vw] rounded-lg border border-slate-200 bg-white py-1 shadow-soft">
-
-                  <button onClick={() => { if (!fundCode) return; setShowExportMenu(false); void exportXlsx("current"); }}
-
-                    disabled={!fundCode}
-
-                    className="w-full whitespace-nowrap px-3 py-1.5 text-left text-xs text-slate-700 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent">
-
-                    {t("fundShell.export.currentDetail", { kind: isWealthAccount ? t("fundShell.kind.wealth") : t("txForm.fund") })}
-
-                  </button>
-
-                  <button onClick={() => { if (selectedFundCodes.size === 0) return; setShowExportMenu(false); void exportXlsx("selectedFunds"); }}
-
-                    disabled={selectedFundCodes.size === 0}
-
-                    className="w-full whitespace-nowrap px-3 py-1.5 text-left text-xs text-slate-700 hover:bg-blue-50 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent">
-
-                    {selectedFundCodes.size > 0
-                      ? t("fundShell.export.selectedDetail", { kind: isWealthAccount ? t("fundShell.kind.wealth") : t("txForm.fund"), count: selectedFundCodes.size })
-                      : t("fundShell.export.selected", { kind: isWealthAccount ? t("fundShell.kind.wealth") : t("txForm.fund") })}
-
-                  </button>
-
-                  <button onClick={() => { setShowExportMenu(false); void exportXlsx("all"); }}
-
-                    className="w-full whitespace-nowrap px-3 py-1.5 text-left text-xs text-slate-700 hover:bg-blue-50">
-
-                    {t("fundShell.export.allDetail", { kind: isWealthAccount ? t("fundShell.kind.wealth") : t("txForm.fund") })}
-
-                  </button>
-
-                </div>
-
-              )}
-
-            </div>
-            ) : null}
-
             <div className="flex items-center gap-1">
 
               <span className="text-slate-300">|</span>
@@ -4084,7 +4025,7 @@ export function FundShell(props: Props) {
                             {displayFundName(e)}
                           </span>
                         </div>
-                        {!isWealthAccount && e.fundCode && !isSingleNormalFundScope ? (
+                        {!hideAssetCode && e.fundCode && !isSingleNormalFundScope ? (
                           <div className="mt-1 truncate text-[11px] tabular-nums text-slate-400">{e.fundCode}</div>
                         ) : null}
                       </div>
