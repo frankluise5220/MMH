@@ -12,6 +12,8 @@ import { DateStepper } from "./DateStepper";
 import { AdvancedDataTable, ROW_ACTION_BUTTON_BOX_CLASS, type AdvancedDataTableColumn } from "@/components/AdvancedDataTable";
 import { reimbursementErrorMessage } from "@/lib/reimbursement-error";
 import { filterReimbursementCandidates } from "@/lib/reimbursement-candidates";
+import { buildAccountDisplayOption } from "@/lib/account-display";
+import { useAccountDisplaySettings } from "@/lib/client/account-display-settings";
 import { ReimbursementDocumentModal } from "@/components/ReimbursementDocumentModal";
 import type { ReimbursementFormEntry, ReimbursementObjectOption } from "@/components/ReimbursementFormModal";
 import { ReimbursementPreview, ReimbursementBatchPrintPortal } from "@/components/ReimbursementPreview";
@@ -823,6 +825,25 @@ export function ReimbursementWorkspace({
     }
   };
 
+  const accountDisplaySettings = useAccountDisplaySettings();
+  const advanceAccountOption = cashAccountOptions.find((option) => option.id === advanceAccountId);
+  const accountHoverTitle = advanceAccountOption
+    ? buildAccountDisplayOption(
+        {
+          id: advanceAccountOption.id,
+          name: accountName,
+          kind: advanceAccountOption.kind ?? "cash",
+          currency: advanceAccountOption.currency ?? null,
+          numberMasked: advanceAccountOption.numberMasked ?? null,
+          Institution: advanceAccountOption.institutionName
+            ? { name: advanceAccountOption.institutionName }
+            : null,
+        },
+        undefined,
+        accountDisplaySettings,
+      ).tableHoverTitle
+    : accountName;
+
   return (
     <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-transparent">
       {/* 与其它视图同一套页面表头（page-header）：标题在左，右上角是「返回至往来款」，
@@ -834,7 +855,7 @@ export function ReimbursementWorkspace({
             {accountName ? (
               <span className="inline-flex min-w-0 items-center gap-1 text-xs text-slate-500">
                 <ReceiptText className="h-3.5 w-3.5 shrink-0" />
-                <span className="truncate" title={accountName}>{accountName}</span>
+                <span className="truncate" title={accountHoverTitle}>{accountName}</span>
               </span>
             ) : null}
           </div>
