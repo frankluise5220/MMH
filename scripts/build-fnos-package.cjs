@@ -2314,6 +2314,41 @@ const Database = require("better-sqlite3");
 
 const MIGRATIONS = [
   {
+    // 固定资产扩展属性与折旧（2026-11-15 用户裁定）：生产日期 / 重量（含单位）、
+    // 折旧方式 / 折旧年限（月）/ 残值 / 累计折旧（折损）。口径实现在
+    // src/lib/fixed-asset-depreciation.ts（none = 手填，straight_line = 按年限直线推算）。
+    // 漏掉这段：升级后的库打开固定资产编辑/处置会报 "no such column: accumulatedDepreciation"。
+    // 新增列都有默认值，存量资产不回填。
+    version: "20261115_add_fixed_asset_depreciation",
+    description: "Add productionDate / weight / depreciation columns to PropertyAsset",
+    apply(db) {
+      for (const table of ["PropertyAsset", "property_assets"]) {
+        if (!tableExists(db, table)) continue;
+        addColumnIfMissing(db, table, "productionDate", "DATETIME");
+        addColumnIfMissing(db, table, "weight", "DECIMAL(18,3)");
+        addColumnIfMissing(db, table, "weightUnit", "TEXT");
+        addColumnIfMissing(db, table, "depreciationMethod", "TEXT NOT NULL DEFAULT 'none'");
+        addColumnIfMissing(db, table, "usefulLifeMonths", "INTEGER");
+        addColumnIfMissing(db, table, "salvageValue", "DECIMAL(18,2) NOT NULL DEFAULT 0");
+        addColumnIfMissing(db, table, "accumulatedDepreciation", "DECIMAL(18,2) NOT NULL DEFAULT 0");
+      }
+    },
+  },
+  {
+    // 信用卡分期「期供行落库水位」（2026-11-15）：计划记住已经落地到第几期，
+    // materialize 只落 installmentNo > 水位的期，用户删掉的期（软删 / 回收站彻底删除）
+    // 都不会被补回来。存量不回填：水位 0 时历史期仍会被逐期判重跳过，第一次运行
+    // 就把水位推到最大到期期号（自愈），与 PG 迁移 20261115 同义。
+    // 漏掉这段：升级后的库跑分期落地会报 "no such column: materializedThroughNo"
+    // （materialize 查计划整行，缺列直接抛错）。
+    version: "20261115_add_installment_materialized_watermark",
+    description: "Add CreditCardInstallmentPlan.materializedThroughNo",
+    apply(db) {
+      if (!tableExists(db, "CreditCardInstallmentPlan")) return;
+      addColumnIfMissing(db, "CreditCardInstallmentPlan", "materializedThroughNo", "INTEGER NOT NULL DEFAULT 0");
+    },
+  },
+  {
     // 贵金属行情（2026-11-13）：持仓新增 latestPrice / latestPriceDate / priceSource。
     // 三列可空，存量持仓没有行情时读取侧回退 unitPrice（最后一笔成交价）。
     // 漏掉这段：升级后的库读贵金属持仓会报 "no such column: latestPrice"。

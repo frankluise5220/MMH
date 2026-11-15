@@ -493,6 +493,13 @@ function applyRuntimeMigrations(db) {
   // "no such column: repaymentOffsetDays"（23 个文件在读这两列）。
   addColumnIfMissing(db, "CreditCardBillingDay", "repaymentDay", "INTEGER");
   addColumnIfMissing(db, "CreditCardBillingDay", "repaymentOffsetDays", "INTEGER");
+  // 2026-11-15 信用卡分期「期供行落库水位」。计划记住已落地到第几期，materialize 只落
+  // installmentNo > 水位的期，用户删掉的期（含回收站「彻底删除」）不会再被补回来。
+  // 与 prisma/migrations/20261115_add_installment_materialized_watermark 同义。
+  // 漏掉这段：升级后的桌面库跑分期落地会报 "no such column: materializedThroughNo"
+  // （materialize 是查计划整行，缺列直接抛错，账单页/计划任务页的分期也跟着空）。
+  // 存量库该列取默认 0 即可：历史期由「这一期是否已有行」兜底判重，不会重发。
+  addColumnIfMissing(db, "CreditCardInstallmentPlan", "materializedThroughNo", "INTEGER NOT NULL DEFAULT 0");
   // 2026-11-02 国债逆回购：顺手补上 0.1.81 漏掉的那一列。
   // 与 build-fnos-package.cjs 的 20261102_add_bond_instrument_kind 同义（老数据全是债券）。
   // 漏掉这段：升级后的桌面库缺 bond_transactions.instrumentKind，债券 / 逆回购 /
@@ -522,6 +529,22 @@ function applyRuntimeMigrations(db) {
   addColumnIfMissing(db, "Account", "accountGroup", "TEXT");
   // 账户下拉分组维度。household-preferences 走全列 findUnique，缺列即首屏报错。
   addColumnIfMissing(db, "HouseholdPreference", "accountDropdownGroupBy", "TEXT NOT NULL DEFAULT 'owner'");
+  // 2026-11-15 固定资产扩展属性（生产日期 / 重量）+ 折旧（方式 / 年限 / 残值 / 累计折旧）。
+  // 与 prisma/migrations/20261115_add_fixed_asset_depreciation 同义；
+  // 折旧口径在 src/lib/fixed-asset-depreciation.ts。
+  // 漏掉这段：升级后的桌面库打开固定资产页 / 编辑资产会报 "no such column:
+  // accumulatedDepreciation"（固定资产持仓虽走 select 白名单，但资产编辑与
+  // 资产处置都查整行）。新增列都有默认值，存量资产不需要回填。
+  // 表名两种写法都试（原生 schema 未给 PropertyAsset 加 @@map，Postgres 侧是蛇形）。
+  for (const propertyAssetTable of ["PropertyAsset", "property_assets"]) {
+    addColumnIfMissing(db, propertyAssetTable, "productionDate", "DATETIME");
+    addColumnIfMissing(db, propertyAssetTable, "weight", "DECIMAL(18,3)");
+    addColumnIfMissing(db, propertyAssetTable, "weightUnit", "TEXT");
+    addColumnIfMissing(db, propertyAssetTable, "depreciationMethod", "TEXT NOT NULL DEFAULT 'none'");
+    addColumnIfMissing(db, propertyAssetTable, "usefulLifeMonths", "INTEGER");
+    addColumnIfMissing(db, propertyAssetTable, "salvageValue", "DECIMAL(18,2) NOT NULL DEFAULT 0");
+    addColumnIfMissing(db, propertyAssetTable, "accumulatedDepreciation", "DECIMAL(18,2) NOT NULL DEFAULT 0");
+  }
 }
 
 fs.mkdirSync(dataDir, { recursive: true });
