@@ -2462,6 +2462,8 @@ export default function SettingsAccountsPage() {
             nestedEntityType !== "institution" ? undefined
               : isStockInvestmentAccount(editForm.kind, editForm.investProductType || "fund") ? "brokerage"
               : editForm.kind === "investment" && (["fund", "money"].includes(editForm.investProductType || "fund")) ? "fund_company"
+              // 电子钱包的机构已放开（银行/基金公司/证券等），新增机构仍默认第三方支付。
+              : editForm.kind === "ewallet" ? "payment"
               : allowedInstitutionTypesForEdit(editForm.kind, editForm.investProductType || "fund").length === 1 ? allowedInstitutionTypesForEdit(editForm.kind, editForm.investProductType || "fund")[0]
               : undefined
           }

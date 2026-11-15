@@ -235,6 +235,21 @@ export const LOAN_DIALOG_INSTITUTION_TYPE_VALUES = ["bank", "provident_fund", "l
 /** 贷款账户（kind=loan）允许挂的机构类型（账户层规则，比贷款弹窗多 payment/other）。 */
 export const LOAN_ACCOUNT_INSTITUTION_TYPE_VALUES = ["bank", "provident_fund", "payment", "other"] as const;
 
+/**
+ * 电子钱包账户（kind=ewallet）允许挂的机构类型。
+ * 2026-11-15 用户裁定放开：电子钱包不一定开在第三方支付，银行钱包、基金公司现金宝、
+ * 券商余额理财都能记成钱包，因此不再只认 payment。顺序保持 payment 在首位（最常见的钱包形态，
+ * 新增机构的默认类型也取它）。不含家庭/往来对象类与公积金中心/放款机构。
+ */
+export const EWALLET_INSTITUTION_TYPE_VALUES = [
+  "payment",
+  "bank",
+  "fund_company",
+  "brokerage",
+  "insurance",
+  "other",
+] as const;
+
 /** 负债页「来自机构」来源子集：贷款机构 + 可挂往来款的组织类。 */
 export const LENDER_INSTITUTION_TYPE_VALUES = ["bank", "provident_fund", "lender", "organization", "other"] as const;
 

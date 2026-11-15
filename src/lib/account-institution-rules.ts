@@ -1,4 +1,9 @@
-import { isInstitutionTypeOf, LOAN_ACCOUNT_INSTITUTION_TYPE_VALUES, LOAN_DIALOG_INSTITUTION_TYPE_VALUES } from "@/lib/account-kinds";
+import {
+  EWALLET_INSTITUTION_TYPE_VALUES,
+  isInstitutionTypeOf,
+  LOAN_ACCOUNT_INSTITUTION_TYPE_VALUES,
+  LOAN_DIALOG_INSTITUTION_TYPE_VALUES,
+} from "@/lib/account-kinds";
 
 export const STOCK_ACCOUNT_INSTITUTION_ERROR = "Stock accounts must use a brokerage institution";
 export const ACCOUNT_INSTITUTION_REQUIRED_ERROR = "This account type requires an institution";
@@ -28,7 +33,8 @@ export function allowedInstitutionTypesForAccount(
   if (accountKind === "fixed_asset" || productType === "property") return [];
   if (accountKind === "bank_credit") return ["bank", "payment"];
   if (accountKind === "bank_debit" || accountKind === "deposit") return ["bank"];
-  if (accountKind === "ewallet") return ["payment"];
+  // 电子钱包 2026-11-15 起放开机构类型（银行/基金公司/证券/保险等），见 EWALLET_INSTITUTION_TYPE_VALUES。
+  if (accountKind === "ewallet") return [...EWALLET_INSTITUTION_TYPE_VALUES];
   if (accountKind === "insurance") return ["insurance"];
   if (accountKind === "loan") {
     const base = LOAN_ACCOUNT_INSTITUTION_TYPE_VALUES;

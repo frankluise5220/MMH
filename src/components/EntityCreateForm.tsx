@@ -766,6 +766,26 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     return dataList.filter((item) => accountInstitutionTypeIsAllowed(accountKind, investProductType, item.type));
   }
 
+  /**
+   * 切换账户类型时机构要不要跟着清空：只看「新类型是否仍允许这个机构」。
+   * 用户裁定（2026-11-15）：银行同时允许借记卡与电子钱包，借记卡 → 电子钱包 这类迁移必须保留
+   * 用户已填好的机构，切换类型不该抹掉其它字段。机构清单里查不到（还没加载到）时也保留原值，
+   * 宁可保存时明确报「机构类型不符」，也不静默清空。
+   * 返回 null 表示保持不动。
+   */
+  function nextInstitutionIdOnKindChange(nextKind: string, current: Record<string, string>): string | null {
+    const institutionId = (current.institutionId ?? "").trim();
+    if (!institutionId) return null;
+    if (nextKind === "settlement") return "";
+    const nextProductType = nextKind === "investment"
+      ? (current.investProductType || "fund")
+      : nextKind === "fixed_asset" ? "property" : "";
+    if (allowedInstitutionTypesForAccount(nextKind, nextProductType).length === 0) return "";
+    const institution = (nestedFieldData.institutionId ?? []).find((item) => item.id === institutionId);
+    if (institution && !accountInstitutionTypeIsAllowed(nextKind, nextProductType, institution.type)) return "";
+    return null;
+  }
+
   function institutionTypeMatchesCurrentAccount(type?: string) {
     if (entityType !== "account") return true;
     const accountKind = form.kind || form.type || extraFields?.kind || defaultType;
@@ -787,6 +807,8 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     if (isStockInvestmentAccount(accountKind, investProductType)) return "brokerage";
     if (accountKind === "investment" && (investProductType === "fund" || investProductType === "money")) return "fund_company";
     if (accountKind === "loan") return "bank";
+    // 电子钱包的机构已放开（银行/基金公司/证券等），但新增时仍默认第三方支付——最常见的钱包形态。
+    if (accountKind === "ewallet") return "payment";
     if (allowedTypes.length === 1) return allowedTypes[0];
     return undefined;
   }
@@ -964,7 +986,8 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
   function selectFieldPatch(field: FieldDef, value: string, current: Record<string, string>) {
     const patch: Record<string, string> = { [field.key]: value };
     if (field.key === "kind") {
-      patch.institutionId = "";
+      const keepInstitutionId = nextInstitutionIdOnKindChange(value, current);
+      if (keepInstitutionId !== null) patch.institutionId = keepInstitutionId;
       patch.counterpartyId = "";
       patch.loanType = value === "loan" ? (current.loanType || "home") : "";
       patch.isConsumerLoan = value === "loan" && current.loanType === "consumer" ? "true" : "false";
@@ -1211,7 +1234,20 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                   <div className="form-label">{t(config.typeLabelKey)}</div>
                   <select
                     value={(typeKey ? form[typeKey] : "") ?? ""}
-                    onChange={(e) => setForm(prev => ({ ...prev, ...(typeKey ? { [typeKey]: e.target.value } : {}), institutionId: "" }))}
+                    onChange={(e) => {
+                      const nextType = e.target.value;
+                      setForm((prev) => {
+                        const next: Record<string, string> = { ...prev, ...(typeKey ? { [typeKey]: nextType } : {}) };
+                        if (typeKey === "kind") {
+                          // 与全量模式同口径：新类型仍允许该机构就保留，不再一律清空。
+                          const keepInstitutionId = nextInstitutionIdOnKindChange(nextType, prev);
+                          if (keepInstitutionId !== null) next.institutionId = keepInstitutionId;
+                        } else {
+                          next.institutionId = "";
+                        }
+                        return next;
+                      });
+                    }}
                     className="form-input"
                   >
                     {typeSelectOptions.map((typeOption) => (
