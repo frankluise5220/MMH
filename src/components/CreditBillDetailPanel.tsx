@@ -25,6 +25,8 @@ import {
 type CreditBillDetailPanelProps = {
   accountId: string;
   reorderAccountIds?: string[];
+  /** 账单账户组（合并账单时是多张卡）；流入 / 流出按它判定，与「账单统计」同口径。 */
+  billAccountIds?: string[];
   showCardColumn?: boolean;
   entries: DetailEntry[];
   initialPage: number;
@@ -77,6 +79,7 @@ type CreditBillDetailPayload = {
 export function CreditBillDetailPanel({
   accountId,
   reorderAccountIds,
+  billAccountIds,
   showCardColumn = false,
   entries,
   initialPage,
@@ -263,6 +266,7 @@ export function CreditBillDetailPanel({
           relatedAccountDefaultHidden
           showRunningBalance={false}
           reorderAccountIds={reorderAccountIds}
+          billFlowAccountIds={billAccountIds}
           storageKey="mmh_credit_bill_detail_table_v1"
           resetKey={tableResetKey}
           refreshOnGlobalEvent={false}

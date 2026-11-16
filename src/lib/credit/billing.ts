@@ -41,15 +41,19 @@ type CreditBillCumulative = {
   cumulativeOverpaid: number;
 };
 
-type CreditBillFlowEntry = {
+/** 计算账单带符号流水所需的最小字段（客户端明细行也能直接传）。 */
+export type CreditBillFlowRow = {
   accountId?: string | null;
   toAccountId?: string | null;
   amount?: unknown;
-  type?: string | null;
-  categoryName?: string | null;
-  date?: Date | null;
-  postedAt?: Date | null;
 };
+
+/**
+ * 带符号口径只认「哪一侧是卡 + 金额」，不读日期/类型，
+ * 因此不要再给这里加 `date: Date` 之类的字段：明细行的日期是 `string`，
+ * 加了会让 `DetailEntry` 失去可赋值性（TS2345）。
+ */
+type CreditBillFlowEntry = CreditBillFlowRow;
 
 type CreditCardCyclePersistRow = {
   statementMonth: string;
@@ -189,7 +193,14 @@ export function signedCreditBillAmountFromCardSide(
   if (fromBillAccount && toBillAccount) return 0;
   const amount = toNumber(entry.amount);
   if (fromBillAccount) return amount;
-  if (toBillAccount) return -amount;
+  /**
+   * 卡是收款方（还款、亲属卡退款、消费退款）时，钱一定是流进这张卡的**流入**，
+   * 不能按 `-amount` 反推：还款行的 `amount` 是负数（钱从付款账户出去），
+   * 退款行（`source=liability_collect_in` 等）却是正数，`-amount` 会把退款算成流出，
+   * 于是「账单统计・流出」比明细的流出列多出一笔（2026-11-16 报障：差 19.01）。
+   * 明细行金额本身就是按侧别取绝对值的，两边口径必须一致。
+   */
+  if (toBillAccount) return Math.abs(amount);
   return null;
 }
 

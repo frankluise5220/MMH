@@ -3706,6 +3706,7 @@ export default async function Home({
                   <CreditBillDetailPanel
                     accountId={selectedAccount?.id ?? ""}
                     reorderAccountIds={billAccountIds}
+                    billAccountIds={billAccountIds}
                     showCardColumn
                     entries={creditBillDetailEntries}
                     initialPage={detailPage}

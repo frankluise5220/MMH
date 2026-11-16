@@ -60,6 +60,7 @@ import { systemCategoryLabel } from "@/lib/system-category-labels";
 import { APP_PREFS_EVENT, getDateDisplayFormatPreference, getDetailDateBackgroundPreference, getTimeZonePreference, type DateDisplayFormat } from "@/lib/client/appPreferences";
 import { readAccountDisplaySettings } from "@/lib/client/account-display-settings";
 import { cashLedgerFlowAccountId, isAllCashDetailScope } from "@/lib/all-cash-entries";
+import { signedCreditBillAmountFromCardSide } from "@/lib/credit/billing";
 
 const LEGACY_BASIC_DETAIL_STORAGE_KEY = "mmh_basic_detail_table_v1";
 
@@ -721,6 +722,7 @@ export function DetailViewClient({
   scrollToRowKey,
   scrollToRowRequestId,
   reorderAccountIds,
+  billFlowAccountIds,
   sortable = true,
   onDisplayRowsChange,
   onRowsFitChange,
@@ -773,6 +775,12 @@ export function DetailViewClient({
   scrollToRowKey?: string | null;
   scrollToRowRequestId?: number;
   reorderAccountIds?: string[];
+  /**
+   * 信用卡账单明细的卡片范围（账单账户组）。传了它，流入 / 流出就改走
+   * `signedCreditBillAmountFromCardSide`——与「账单统计」完全同一个函数，
+   * 保证统计的流出 / 流入恒等于明细各行合计（2026-11-16 报障：差 19.01）。
+   */
+  billFlowAccountIds?: string[];
   sortable?: boolean;
   onDisplayRowsChange?: (rows: DetailEntry[]) => void;
   onRowsFitChange?: (rows: number) => void;
@@ -915,6 +923,11 @@ export function DetailViewClient({
     () => new Set((reorderAccountIds?.length ? reorderAccountIds : (isAllCashDetailScope(accountId) ? [] : [accountId])).filter(Boolean)),
     [accountId, reorderAccountIds],
   );
+  /** 信用卡账单视图的卡片集合；只在账单明细传，其它视图为 null 走原账户口径。 */
+  const billFlowAccountIdSet = useMemo(
+    () => (billFlowAccountIds && billFlowAccountIds.length > 0 ? new Set(billFlowAccountIds.filter(Boolean)) : null),
+    [billFlowAccountIds],
+  );
   // 当前明细账户的类别：贷款 / 往来款要走本金口径（与服务端 SQL 一致）。
   const selectedAccountKind = useMemo(() => accountOptionById.get(accountId)?.kind ?? null, [accountOptionById, accountId]);
   const flowAccountIdOf = useCallback((entry: { accountId?: string | null; toAccountId?: string | null }) => {
@@ -957,11 +970,20 @@ export function DetailViewClient({
    * 其它视图沿用账户视角金额（不变）。
    */
   const detailFlowAmountOf = useCallback((entry: DetailEntry) => {
+    /**
+     * 信用卡账单明细：与「账单统计」共用 `signedCreditBillAmountFromCardSide`。
+     * 这里若另走 `effectiveAmountForAccount`，退款（卡是收款方、amount 为正）
+     * 会在统计里进流出、在明细里进流入，两处合计差一笔（2026-11-16 报障：差 19.01）。
+     */
+    if (billFlowAccountIdSet) {
+      const signed = signedCreditBillAmountFromCardSide(entry, billFlowAccountIdSet);
+      if (signed != null) return signed;
+    }
     if (isAllCashDetailScope(accountId)) {
       return effectiveAmountForAccount(entry, primaryAccountTarget(entry).id);
     }
     return effectiveAmountForAccount(entry, flowAccountIdOf(entry));
-  }, [accountId, flowAccountIdOf, primaryAccountTarget]);
+  }, [accountId, billFlowAccountIdSet, flowAccountIdOf, primaryAccountTarget]);
   /**
    * 明细「账户」列属于哪一侧。
    * - 全部交易记录：资金账户那一侧（见 `primaryAccountTarget`）。
