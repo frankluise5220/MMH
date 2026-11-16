@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import Link from "next/link";
 import {
   AlertTriangle,
+  ArrowUpCircle,
   Bell,
   CalendarClock,
   Check,
@@ -21,6 +22,7 @@ import { useI18n } from "@/lib/i18n";
 import { formatCurrencyMoney } from "@/lib/format";
 import { FINANCE_DATA_CHANGED_EVENT, dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { APP_PREFS_EVENT, getAccountLabelFieldsPreference } from "@/lib/client/appPreferences";
+import { useUpdateNotice } from "@/lib/client/update-notice";
 import {
   useNotificationReceipts,
   type StoredReceipt,
@@ -209,6 +211,7 @@ export function NotificationBell({ collapsed }: { collapsed: boolean }) {
   const [tab, setTab] = useState<PanelTab>("unread");
   const receipts = useNotificationReceipts();
   const { entries: readEntries, readIds, markRead, markManyRead, clearRead } = useNotificationReads();
+  const updateNotice = useUpdateNotice();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -387,7 +390,9 @@ export function NotificationBell({ collapsed }: { collapsed: boolean }) {
   }, []);
 
   const unreadTotal = unreadReminders.length + unreadExecutions.length;
-  const badgeCount = unreadTotal + pendingBillImports.length;
+  // 系统更新提示不计进「未读」页签的计数：它和待导入账单一样是待办，不是一条
+  // 需要标记已读的消息，只有升级（远端版本变了）或「稍后」才会让它消失。
+  const badgeCount = unreadTotal + pendingBillImports.length + (updateNotice.pending ? 1 : 0);
 
   const markAllRead = useCallback(() => {
     markManyRead([...unreadReminders.map(({ note }) => note), ...unreadExecutions]);
@@ -480,6 +485,44 @@ export function NotificationBell({ collapsed }: { collapsed: boolean }) {
       <div className="min-h-0 flex-1 overflow-y-auto">
         {tab === "unread" ? (
           <>
+            {updateNotice.pending && updateNotice.notice ? (
+              <Section title={t("notification.update.section")}>
+                <div className="px-3 py-2">
+                  <div className="flex items-start gap-2">
+                    <ArrowUpCircle size={13} className="mt-0.5 shrink-0 text-blue-600" />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-[11.5px] font-medium text-slate-700">
+                        {t("notification.update.available", {
+                          version: updateNotice.notice.remoteVersion || updateNotice.notice.remoteCommit,
+                        })}
+                      </p>
+                      {updateNotice.notice.localVersion ? (
+                        <p className="mt-0.5 truncate text-[10.5px] text-slate-400">
+                          {t("notification.update.current", { version: updateNotice.notice.localVersion })}
+                        </p>
+                      ) : null}
+                    </div>
+                  </div>
+                  <div className="mt-1.5 flex items-center gap-1.5 pl-5">
+                    <Link
+                      href="/settings/system-update"
+                      onClick={() => setOpen(false)}
+                      className="rounded bg-blue-600 px-2 py-0.5 text-[10.5px] font-medium text-white transition-colors hover:bg-blue-700"
+                    >
+                      {t("notification.update.action")}
+                    </Link>
+                    <button
+                      type="button"
+                      onClick={updateNotice.dismiss}
+                      className="rounded px-2 py-0.5 text-[10.5px] font-medium text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-700"
+                    >
+                      {t("notification.update.dismiss")}
+                    </button>
+                  </div>
+                </div>
+              </Section>
+            ) : null}
+
             {localNote && latestReceipt && !readIds.has(localNote.id) ? (
               <ThisRunBlock
                 receipt={latestReceipt}
@@ -563,7 +606,7 @@ export function NotificationBell({ collapsed }: { collapsed: boolean }) {
               </Section>
             ) : null}
 
-            {unreadTotal === 0 && pendingBillImports.length === 0 && !loading ? (
+            {unreadTotal === 0 && pendingBillImports.length === 0 && !updateNotice.pending && !loading ? (
               <p className="px-3 py-6 text-center text-xs text-slate-400">{t("notification.unread.empty")}</p>
             ) : null}
           </>

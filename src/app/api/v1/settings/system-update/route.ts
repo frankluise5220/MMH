@@ -12,9 +12,23 @@
  */
 import { NextRequest, NextResponse } from "next/server";
 import { exec, execSync } from "child_process";
-import { existsSync, readFileSync } from "fs";
-import { dirname, join } from "path";
+import { existsSync } from "fs";
+import { join } from "path";
 import { getCurrentUser, isAdmin } from "@/lib/server/auth";
+import {
+  IMAGE_VERSION_CHECK_TIMEOUT_MS,
+  STANDARD_IMAGE_SOURCE_ORDER,
+  VERSION_CHECK_TIMEOUT_MS,
+  callUpdater,
+  compareReleaseVersions,
+  getDeploymentTarget,
+  getUpdaterConfig,
+  isDockerEnvironment,
+  parseReleaseVersion,
+  readLocalPackageJson,
+  versionFromReleaseTag,
+  type ImageSourceConfig,
+} from "@/lib/server/system-update/service";
 
 export const runtime = "nodejs";
 
@@ -60,140 +74,9 @@ type GitHubVersionInfo = Pick<
   "githubUrl" | "githubVersion" | "githubCommit" | "githubCommitMsg" | "githubCommitDate" | "githubCanCheck" | "githubFetchError"
 >;
 
-type ImageSourceConfig = {
-  source: string;
-  appImage: string;
-  updaterImage: string;
-  customAppImage: string;
-  customUpdaterImage: string;
-  options: Array<{ value: string; label: string; appImage?: string; updaterImage?: string }>;
-};
-
 let updateRunning = false;
 const DEFAULT_GITHUB_REPO_URL = "https://github.com/frankluise5220/MMH.git";
 const GITHUB_REPO_API_URL = "https://api.github.com/repos/frankluise5220/MMH";
-const IMAGE_FALLBACK_ORDER = ["fnvps", "dockerproxy", "nju", "ghcr", "daocloud", "custom"];
-const STANDARD_IMAGE_SOURCE_ORDER = IMAGE_FALLBACK_ORDER.filter((source) => source !== "custom");
-const UPDATER_DEFAULT_TIMEOUT_MS = 5_000;
-const VERSION_CHECK_TIMEOUT_MS = 5_000;
-const IMAGE_VERSION_CHECK_TIMEOUT_MS = 6_000;
-
-function getUpdaterConfig() {
-  const url = String(process.env.MMH_UPDATER_URL ?? "").trim();
-  const token = String(process.env.MMH_UPDATE_TOKEN ?? "").trim();
-  return { url, token, enabled: Boolean(url && token) };
-}
-
-/** Actionable guidance shown when the host updater cannot be reached due to missing configuration. */
-function getUpdaterSetupHint() {
-  return "未配置宿主机更新执行器：请在 docker-compose.yml 同目录的 .env 中设置 MMH_UPDATE_TOKEN（任意长随机字符串，app 与 updater 两个容器取值需一致），然后执行 docker compose up -d app updater 使配置生效，再回到本页重试。";
-}
-
-async function callUpdater(path: string, init?: RequestInit, timeoutMs = UPDATER_DEFAULT_TIMEOUT_MS) {
-  const { url, token } = getUpdaterConfig();
-  if (!url || !token) {
-    throw new Error(getUpdaterSetupHint());
-  }
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await fetch(`${url.replace(/\/$/, "")}${path}`, {
-      ...init,
-      headers: {
-        ...(init?.headers ?? {}),
-        Authorization: `Bearer ${token}`,
-      },
-      cache: "no-store",
-      signal: controller.signal,
-    });
-    const data = await res.json().catch(() => null) as any;
-    if (!res.ok) {
-      const detail = String(data?.error ?? `更新执行器请求失败：${res.status}`);
-      throw new Error(res.status === 401 ? `${detail}（鉴权失败：请检查 .env 中 MMH_UPDATE_TOKEN 是否与 updater 容器所用 token 一致，改后需 docker compose up -d app updater）` : detail);
-    }
-    return data;
-  } catch (error) {
-    if ((error as { name?: string })?.name === "AbortError") {
-      throw new Error("更新执行器响应超时");
-    }
-    throw error;
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-function isDockerEnvironment(): boolean {
-  if (existsSync("/.dockerenv")) return true;
-  try {
-    const cgroup = readFileSync("/proc/1/cgroup", "utf-8");
-    if (cgroup.includes("docker") || cgroup.includes("kubepods")) return true;
-  } catch {
-    // /proc is unavailable on non-Linux hosts.
-  }
-  return process.env.DOCKER_CONTAINER === "true";
-}
-
-function getDeploymentTarget(): "docker" | "fnos" | "synology" | "windows" | "standalone" {
-  const target = String(process.env.MMH_DEPLOY_TARGET ?? "").trim().toLowerCase();
-  // 飞牛 / 群晖的启动脚本会显式导出 MMH_DEPLOY_TARGET，而这种安装包也可能被
-  // 装进容器化环境（此时 /.dockerenv 同样存在）。显式声明优先，否则包版会被
-  // 误判成 Docker 镜像部署，既拿不到应用中心的管理文案，也用错了版本检查分支。
-  if (target === "fnos") return "fnos";
-  if (target === "synology") return "synology";
-  if (isDockerEnvironment()) return "docker";
-  // Windows desktop (Electron shell sets MMH_DEPLOY_TARGET=windows). It has no
-  // git checkout and must never fall into the git/Docker update paths: its
-  // updates come from electron-updater, driven by the settings page through the
-  // preload bridge (下载 → 更新窗口 → 重启).
-  if (target === "windows") return "windows";
-  return "standalone";
-}
-
-type LocalPackageJson = {
-  version?: unknown;
-  /**
-   * The shared update note: the fnOS App Center 「版本说明」, the soft-store
-   * `changelog`, the FnDepot entry and the Synology「新增功能」panel all render
-   * this same single-line string. The in-app「本版说明」panel shows it too, so a
-   * version's in-app note and its store note can never drift apart.
-   */
-  mmhFnosManifestChangelog?: unknown;
-  /**
-   * The long Markdown release body (three blocks, including the install /
-   * upgrade instructions). It belongs to the GitHub Release 正文 only — the
-   * in-app panel deliberately does not use it.
-   */
-  mmhReleaseNotes?: unknown;
-  releaseNotes?: unknown;
-  mmhReleaseNotesI18n?: unknown;
-};
-
-/**
- * Read the runtime `package.json` (version + release notes) from the app root.
- *
- * `process.cwd()` is correct for dev, Docker and the standalone/Windows layouts,
- * but the package-managed layouts start the bundled `server.js` from a parent
- * directory: the Synology start-stop script launches
- * `node <target>/app/server/server.js` without changing directory, and the fnOS
- * start script itself accepts both `<app>` and `<app>/server` as the process cwd
- * when it looks for a surviving server (`build-fnos-package.cjs`). A cwd-only
- * read therefore misses the file and blanks out both the local version and 本版说明
- * on those deployments, so fall back to the directory of the running entry script.
- */
-function readLocalPackageJson(projectRoot: string): LocalPackageJson {
-  const candidates = [join(projectRoot, "package.json")];
-  const entryScript = String(process.argv[1] ?? "").trim();
-  if (entryScript) candidates.push(join(dirname(entryScript), "package.json"));
-  for (const candidate of candidates) {
-    try {
-      if (!existsSync(candidate)) continue;
-      return JSON.parse(readFileSync(candidate, "utf-8")) as LocalPackageJson;
-    } catch {
-      // Try the next candidate instead of failing the whole update check.
-    }
-  }
-  return {};
-}
 
 /**
  * The in-app「本版说明」text (设置 → 系统更新).
@@ -398,33 +281,6 @@ async function fetchGitHubJson<T>(path: string) {
   } finally {
     clearTimeout(timer);
   }
-}
-
-function versionFromReleaseTag(tagName: string) {
-  return tagName.trim().replace(/^v/i, "");
-}
-
-function parseReleaseVersion(value: string) {
-  const version = versionFromReleaseTag(value);
-  const match = version.match(/^(\d+)\.(\d+)\.(\d+)$/);
-  if (!match) return null;
-  const parts = match.slice(1).map((part) => Number(part));
-  if (parts.some((part) => !Number.isSafeInteger(part))) return null;
-  // Ignore old calendar/test tags such as v2026.08.05 when the GitHub API is
-  // unreachable and we have to fall back to raw tag listing.
-  if (parts[0]! > 99) return null;
-  return { version, parts };
-}
-
-function compareReleaseVersions(
-  a: { parts: number[] },
-  b: { parts: number[] },
-) {
-  for (let index = 0; index < 3; index += 1) {
-    const diff = (a.parts[index] ?? 0) - (b.parts[index] ?? 0);
-    if (diff !== 0) return diff;
-  }
-  return 0;
 }
 
 function latestReleaseTagFromLsRemote(output: string) {
