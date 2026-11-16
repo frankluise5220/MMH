@@ -24,6 +24,7 @@ import { REQUIRED_FIELD_CLASS } from "@/lib/client/required-field";
 import { getColorSchemeFromCookie, pnlClassFromRedUp } from "@/lib/client/colors";
 import { showConfirmDialog } from "@/lib/client/confirm-dialog";
 import { compactFinanceAccountIds, dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { isEntryConversionRequest } from "@/lib/client/entry-conversion";
 import { useResetEntryModalReconciledReadOnlyOnClose } from "@/lib/client/entryModalLock";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
 import { addTradingDaysUtc, countTradingDaysUtc, todayDateLocalYmd } from "@/lib/date-utils";
@@ -477,6 +478,8 @@ export function InvestmentFormModal({
   const initConfirmDaysValue = typeof initConfirmDays === "number" ? initConfirmDays : Number(initConfirmDays) || 0;
 
   const [open, setOpen] = useState(false);
+  /** 本次新建来自「转换交易」：保存后要删原记录，因此不提供「保存并再记一笔」。 */
+  const [conversionEntry, setConversionEntry] = useState(false);
   // 已「对账」的记录：编辑窗照常打开，但整张表单禁用（可查看、不可改）——由 `EntryModalShell` 统一处理。
   useResetEntryModalReconciledReadOnlyOnClose(open);
   const [productType, setProductType] = useState<ProductType>(fixedProductType);
@@ -1497,6 +1500,7 @@ export function InvestmentFormModal({
 
       requestIdRef.current = detail.requestId;
       resetForCreate(false, { preferDefaults: true });
+      setConversionEntry(isEntryConversionRequest(detail.requestId));
       const explicitProductType: ProductType | null =
         detail.defaultProductType && ["fund", "money", "wealth", "deposit", "metal"].includes(detail.defaultProductType)
           ? (detail.defaultProductType as ProductType)
@@ -2674,6 +2678,7 @@ export function InvestmentFormModal({
   }, [amount, applyDate, arrivalAmount, buyResultStatus, confirmDate, fee, feeEdited, feeRate, feeRateEdited, fundCode, mode, productType, subtype, toAccountId]);
 
   function resetForCreate(keepSubtype = false, options?: { preferDefaults?: boolean }) {
+    setConversionEntry(false);
     // Read current fund from URL at click time (defaults prop may be stale from SSR)
     let urlFundCode = "";
     if (!options?.preferDefaults) {
@@ -3355,7 +3360,7 @@ export function InvestmentFormModal({
           panelRef={panelRef}
           footer={(
             <>
-              {mode === "create" && !isMetalExtractTab && (
+              {mode === "create" && !isMetalExtractTab && !conversionEntry && (
                 <button
                   type="button"
                   disabled={submitting}

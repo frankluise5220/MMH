@@ -24,6 +24,7 @@ import { institutionFullName } from "@/lib/institution-display";
 import { recordRecentAccounts, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
 import { useResetEntryModalReconciledReadOnlyOnClose } from "@/lib/client/entryModalLock";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { isEntryConversionRequest } from "@/lib/client/entry-conversion";
 /** 必填字段红框（统一实现，见该模块注释）。 */
 import { REQUIRED_FIELD_CLASS } from "@/lib/client/required-field";
 import type { DepositLotOption } from "@/lib/server/deposit-lot-options";
@@ -419,6 +420,8 @@ export function TransactionFormModal({
   const [stockCashAccountId, setStockCashAccountId] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [requestId, setRequestId] = useState<string | null>(null);
+  /** 本次新建来自「转换交易」：保存后要删原记录，因此不提供「保存并再记一笔」。 */
+  const [conversionEntry, setConversionEntry] = useState(false);
   const [editEntryId, setEditEntryId] = useState<string | null>(null);
   const [editEntryOriginalType, setEditEntryOriginalType] = useState<TxType | null>(null);
   const [editEntryHasFundDetail, setEditEntryHasFundDetail] = useState(false);
@@ -1221,7 +1224,7 @@ export function TransactionFormModal({
   // 窗口底按钮行：在 FT 卡片**外面**（卡片按内容高度收在备注下面），由 `FolderTabsCard` 贴窗口底边。
   const entryFooter = (
     <>
-      {!editEntryId ? (
+      {!editEntryId && !conversionEntry ? (
         <button
           type="button"
           className="secondary-button h-9 px-3 border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100"
@@ -1553,6 +1556,7 @@ export function TransactionFormModal({
     setSelectedTagIds([]);
     setPendingAttachmentFiles([]);
     setRequestId(null);
+    setConversionEntry(false);
     setEditEntryId(null);
     setEditEntryOriginalType(null);
     setEditEntryHasFundDetail(false);
@@ -1580,6 +1584,7 @@ export function TransactionFormModal({
     setInstallmentAmountEdited(false);
     setPendingAttachmentFiles([]);
     setRequestId(null);
+    setConversionEntry(false);
     setEditEntryId(null);
     setEditEntryOriginalType(null);
     setEditEntryHasFundDetail(false);
@@ -1681,6 +1686,7 @@ export function TransactionFormModal({
       const effectiveFxDirection: FxDirection = detail.fxDirection === "sell" ? "sell" : "buy";
 
       setRequestId(detail.requestId);
+      setConversionEntry(isEntryConversionRequest(detail.requestId));
       setOpen(true);
       setLockedType(detail.lockedType ?? null);
       setStockTransferMode(detail.stockTransferMode === true);

@@ -14,6 +14,7 @@ import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { STOCK_HOLDING_COLLAPSED_GROUPS, buildStockHoldingSelectOptions } from "./stockHoldingSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { isEntryConversionRequest } from "@/lib/client/entry-conversion";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
 /** 记账弹窗整窗外壳：宽度/标题栏/表单/FT 页签卡片/固定页脚/高度锁定统一由它负责。 */
 import { EntryModalShell } from "@/components/EntryModalShell";
@@ -535,6 +536,8 @@ export function StockTransactionFormModal({
 
   const [open, setOpen] = useState(false);
   const [requestId, setRequestId] = useState<string | null>(null);
+  /** 本次新建来自「转换交易」：保存后要删原记录，因此不提供「保存并再记一笔」。 */
+  const [conversionEntry, setConversionEntry] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [stockAccountId, setStockAccountId] = useState(defaultStockAccountId ?? "");
   const [cashAccountId, setCashAccountId] = useState(defaultCashAccountId ?? "");
@@ -998,6 +1001,7 @@ export function StockTransactionFormModal({
       fallbackCashAccountId: defaultCashAccountId,
     });
     setRequestId(detail?.requestId ?? null);
+    setConversionEntry(isEntryConversionRequest(detail?.requestId));
     setEditingId(null);
     setRepoEditing(null);
     setAction(STOCK_ACTIONS.find((item) => item.key === detail?.defaultAction)?.key ?? "buy");
@@ -1042,6 +1046,7 @@ export function StockTransactionFormModal({
     const tx = detail.transaction;
     const nextStockAccountId = tx.stockAccountId || defaultStockAccountId || localStockAccounts[0]?.id || "";
     setRequestId(detail.requestId ?? null);
+    setConversionEntry(false);
     setEditingId(tx.id);
     // Backfill the action: within dividend, distinguish cash vs bonus shares; share_change maps to capital changes.
     if (tx.action === "buy" || tx.action === "sell") {
@@ -1111,6 +1116,7 @@ export function StockTransactionFormModal({
     resetFeeDraft();
     setNote("");
     setRequestId(null);
+    setConversionEntry(false);
     setEditingId(null);
     setPendingAttachmentFiles([]);
     setAttachmentEntryId(null);
@@ -1901,7 +1907,7 @@ export function StockTransactionFormModal({
         onTabChange={(id) => changeModalAction(id as StockModalAction)}
         footer={(
           <>
-            {!editingId && !repoEditing ? (
+            {!editingId && !repoEditing && !conversionEntry ? (
               <button
                 type="button"
                 disabled={submitting || repoSubmitting || autoCreatingAccount}

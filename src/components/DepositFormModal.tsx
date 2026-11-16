@@ -16,6 +16,7 @@ import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
 /** 记账弹窗整窗外壳：宽度/标题栏/表单/FT 页签卡片/固定页脚/高度锁定统一由它负责。 */
 import { EntryModalShell } from "@/components/EntryModalShell";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { isEntryConversionRequest } from "@/lib/client/entry-conversion";
 import { useI18n } from "@/lib/i18n";
 import { APP_PREFS_EVENT, getSidebarHideInitialDataPreference } from "@/lib/client/appPreferences";
 import { Repeat } from "lucide-react";
@@ -292,6 +293,8 @@ export function DepositFormModal({
   const [memo, setMemo] = useState(initMemo);
   const [submitting, setSubmitting] = useState(false);
   const [requestId, setRequestId] = useState<string | null>(null);
+  /** 本次新建来自「转换交易」：保存后要删原记录，因此不提供「保存并再记一笔」。 */
+  const [conversionEntry, setConversionEntry] = useState(false);
   const [editEntryId, setEditEntryId] = useState<string | null>(null);
   const [editingRedeemSource, setEditingRedeemSource] = useState<EditingRedeemSource | null>(null);
   // 续存来源存单：非空时本弹窗处于「续存建新存单」模式，提交走 renewAction。
@@ -1066,6 +1069,7 @@ export function DepositFormModal({
     setSelectedRedeemLotId("");
     setMemo("");
     setRequestId(null);
+    setConversionEntry(false);
     setEditEntryId(null);
     setEditingRedeemSource(null);
     setLockedSubtype(null);
@@ -1319,6 +1323,7 @@ export function DepositFormModal({
       const nextSubtype = isRenew ? "buy" : detail?.defaultSubtype === "redeem" ? "redeem" : "buy";
       setRequestId(detail?.requestId ?? null);
       reset();
+      setConversionEntry(isEntryConversionRequest(detail?.requestId));
       setSubtype(nextSubtype);
       setCashAccountId(detail?.defaultCashAccountId ?? "");
       setDate(detail?.defaultDate || today);
@@ -1743,7 +1748,7 @@ export function DepositFormModal({
         }}
         footer={(
           <>
-            {mode === "create" && !isRenew ? (
+            {mode === "create" && !isRenew && !conversionEntry ? (
               <button
                 type="button"
                 disabled={submitting}

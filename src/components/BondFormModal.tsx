@@ -285,7 +285,7 @@ export function BondFormModal({
     interestAmount, arrivalAmount, setArrivalAmount, arrivalEdited, setArrivalEdited,
     cashAccountId, setCashAccountId, toAccountId, setToAccountId,
     memo, setMemo, pendingAttachmentFiles, setPendingAttachmentFiles, submitting, setSubmitting,
-    requestId, editEntryId, editBusinessTransactionId,
+    requestId, editEntryId, editBusinessTransactionId, conversionEntry,
     setInvestmentAccountList, setLocalInvestSSOpts, setNestedEntityType,
     isRedeem, isDividend, isWriteOff, isHoldingAction,
     selectedCashAccount, accountIds: bondAccountIds,
@@ -814,7 +814,7 @@ export function BondFormModal({
         onTabChange={(id) => selectSubtypeTab(id as BondSubtype)}
         footer={(
           <>
-            {mode === "create" ? (
+            {mode === "create" && !conversionEntry ? (
               <button
                 type="button"
                 disabled={submitting}

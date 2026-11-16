@@ -21,6 +21,7 @@ import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
 import { EntryModalShell } from "@/components/EntryModalShell";
 import type { FolderTabsCardItem } from "@/components/FolderTabsCard";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { isEntryConversionRequest } from "@/lib/client/entry-conversion";
 import { showConfirmDialog } from "@/lib/client/confirm-dialog";
 import { formatDateUtc as formatDateInput, parseDateInputToUtc as dateInputToUtcDate } from "@/lib/date-utils";
 import { formatAmountDraft } from "@/lib/format";
@@ -564,6 +565,8 @@ export function LiabilityTransactionModal({
   const [editingEntryId, setEditingEntryId] = useState("");
   // 「转换交易」的会话标识：新建成功后随 `<ns>:create:success` 回传（见 lib/client/entry-conversion.ts）。
   const [requestId, setRequestId] = useState<string | null>(null);
+  /** 本次新建来自「转换交易」：保存后要删原记录，因此不提供「保存并再记一笔」。 */
+  const [conversionEntry, setConversionEntry] = useState(false);
   // True when the open/edit event already carried repayment-plan defaults
   // (liability-side edit); the plan fetch prefill then stays off.
   const planDefaultsFromEventRef = useRef(false);
@@ -935,6 +938,7 @@ export function LiabilityTransactionModal({
       const effectiveLoanType = detailLoanType ?? editEventLoanType;
       resetDraft();
       setRequestId(detail?.requestId ?? null);
+      setConversionEntry(isEntryConversionRequest(detail?.requestId));
       fixedAssetLinkPrefilledRef.current = false;
       planDefaultsFromEventRef.current = !!(
         detail?.defaultRepaymentMethod ||
@@ -1647,6 +1651,7 @@ export function LiabilityTransactionModal({
       if (!editingEntryId && requestId) {
         window.dispatchEvent(new CustomEvent("mmh:settlement:create:success", { detail: { requestId } }));
         setRequestId(null);
+        setConversionEntry(false);
       }
       if (keepAdding) {
         // 保存并再记一笔：账户、利率、还款方式、日期保留，只清本笔金额类字段
@@ -2836,9 +2841,11 @@ export function LiabilityTransactionModal({
           rulerLabels={liabilityTabs.map((tab) => tab.label)}
           footer={(
             <>
-              <button type="button" className="secondary-button h-9 px-3" disabled={submitting} onClick={() => saveLiabilityTransaction(true)}>
-                {submitting ? t("txForm.saving") : t("txForm.saveAndRepeat")}
-              </button>
+              {!conversionEntry ? (
+                <button type="button" className="secondary-button h-9 px-3" disabled={submitting} onClick={() => saveLiabilityTransaction(true)}>
+                  {submitting ? t("txForm.saving") : t("txForm.saveAndRepeat")}
+                </button>
+              ) : null}
               <button type="submit" className="primary-button h-9 px-3" disabled={submitting}>
                 {submitting ? t("txForm.saving") : t("common.save")}
               </button>

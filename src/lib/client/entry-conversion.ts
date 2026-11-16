@@ -74,6 +74,18 @@ export function cancelEntryConversion(requestId: string) {
   sessions.delete(requestId);
 }
 
+/**
+ * 该 requestId 是不是「转换交易」发起的新建。
+ *
+ * 转换窗保存后要删掉原记录，因此没有「保存并再记一笔」这种留在原地继续记的语义，
+ * 各录入窗据此把该按钮藏掉。只在窗口打开时判断一次（`takeEntryConversion`
+ * 会在保存成功后把会话删掉，渲染期反复查询会得到 false）。
+ */
+export function isEntryConversionRequest(requestId: string | null | undefined) {
+  const key = String(requestId ?? "").trim();
+  return key.length > 0 && sessions.has(key);
+}
+
 /** 取出并移除会话（每个 requestId 只结算一次，避免「保存并再记一笔」重复删除）。 */
 export function takeEntryConversion(requestId: string | null | undefined): EntryConversionSession | null {
   const key = String(requestId ?? "").trim();

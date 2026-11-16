@@ -250,7 +250,7 @@ export function WealthFormModal({
     arrivalAmount, setArrivalAmount, arrivalEdited, setArrivalEdited,
     cashAccountId, setCashAccountId, toAccountId, setToAccountId,
     memo, setMemo, pendingAttachmentFiles, setPendingAttachmentFiles, submitting, setSubmitting,
-    requestId, editEntryId, editBusinessTransactionId,
+    requestId, editEntryId, editBusinessTransactionId, conversionEntry,
     setInvestmentAccountList, setLocalInvestSSOpts, setNestedEntityType,
     isRedeem, isDividend, isWriteOff, isHoldingAction,
     selectedCashAccount, accountIds: wealthAccountIds,
@@ -654,7 +654,7 @@ export function WealthFormModal({
         onTabChange={(id) => selectSubtypeTab(id as WealthSubtype)}
         footer={(
           <>
-            {mode === "create" ? (
+            {mode === "create" && !conversionEntry ? (
               <button
                 type="button"
                 disabled={submitting}

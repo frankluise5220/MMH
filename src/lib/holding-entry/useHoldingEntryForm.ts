@@ -13,6 +13,7 @@ import type { SmartSelectOption } from "@/components/SmartSelect";
 import { useAccountSSFilter } from "@/components/accountSSFilter";
 import { restrictAccountsByType } from "@/lib/client/account-dropdown-filter";
 import { useAccountUsage } from "@/lib/client/recentAccounts";
+import { isEntryConversionRequest } from "@/lib/client/entry-conversion";
 import { useI18n } from "@/lib/i18n";
 import { formatAmountDraft } from "@/lib/format";
 import { parseNumber } from "@/lib/investment-config";
@@ -169,6 +170,8 @@ export function useHoldingEntryForm(options: UseHoldingEntryFormOptions) {
   const [pendingAttachmentFiles, setPendingAttachmentFiles] = useState<File[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [requestId, setRequestId] = useState<string | null>(null);
+  /** 本次新建来自「转换交易」：保存后要删原记录，因此不提供「保存并再记一笔」。 */
+  const [conversionEntry, setConversionEntry] = useState(false);
   const [editEntryId, setEditEntryId] = useState<string | null>(null);
   const [editBusinessTransactionId, setEditBusinessTransactionId] = useState<string | null>(null);
   const unitsEditedRef = useRef(mode === "edit");
@@ -464,6 +467,7 @@ export function useHoldingEntryForm(options: UseHoldingEntryFormOptions) {
     setMemo("");
     setPendingAttachmentFiles([]);
     setRequestId(null);
+    setConversionEntry(false);
     setEditEntryId(null);
     setEditBusinessTransactionId(null);
     domainResetRef.current?.();
@@ -487,6 +491,7 @@ export function useHoldingEntryForm(options: UseHoldingEntryFormOptions) {
     setMemo("");
     setPendingAttachmentFiles([]);
     setRequestId(null);
+    setConversionEntry(false);
     setEditEntryId(null);
     setEditBusinessTransactionId(null);
   }
@@ -549,6 +554,7 @@ export function useHoldingEntryForm(options: UseHoldingEntryFormOptions) {
     opts: { nextSubtype: HoldingEntrySubtype; eventPath: boolean; requestId?: string | null; keepZeroAmount: boolean },
   ) {
     const baseDate = source.date?.slice(0, 10) || today;
+    setConversionEntry(false);
     if (opts.eventPath) {
       setRequestId(opts.requestId ?? null);
       setEditEntryId(
@@ -699,6 +705,7 @@ export function useHoldingEntryForm(options: UseHoldingEntryFormOptions) {
       const nextCashAccountId = detail?.defaultCashAccountId ?? "";
       reset();
       setRequestId(detail?.requestId ?? null);
+      setConversionEntry(isEntryConversionRequest(detail?.requestId));
       setCashAccountId(nextCashAccountId);
       setDate(nextDate);
       setHoldingFilterDate(nextDate);
@@ -841,6 +848,7 @@ export function useHoldingEntryForm(options: UseHoldingEntryFormOptions) {
     pendingAttachmentFiles, setPendingAttachmentFiles,
     submitting, setSubmitting,
     requestId, setRequestId,
+    conversionEntry,
     editEntryId, setEditEntryId,
     editBusinessTransactionId, setEditBusinessTransactionId,
     editingRedeemSource, setEditingRedeemSource,

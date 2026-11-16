@@ -16,6 +16,7 @@ import { kindLabel } from "@/lib/account-kinds";
 import { buildAccountDisplayOption } from "@/lib/account-display";
 import { formatAmountDraft, formatMoneyLoose as formatMoney } from "@/lib/format";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import { isEntryConversionRequest } from "@/lib/client/entry-conversion";
 import { fetchSettingsAccountData } from "@/lib/client/settingsCache";
 import { useSettingsDataVersion } from "@/lib/client/use-settings-data-version";
 import { useI18n } from "@/lib/i18n";
@@ -318,6 +319,8 @@ export function InsuranceFormModal({
   const [cashAccountId, setCashAccountId] = useState(initCashAccountId);
   const [memo, setMemo] = useState(initMemo);
   const [requestId, setRequestId] = useState<string | null>(null);
+  /** 本次新建来自「转换交易」：保存后要删原记录，因此不提供「保存并再记一笔」。 */
+  const [conversionEntry, setConversionEntry] = useState(false);
   const [editEntryId, setEditEntryId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
@@ -611,6 +614,7 @@ export function InsuranceFormModal({
     setCashAccountId(defaults?.defaultCashAccountId ?? "");
     setMemo("");
     setRequestId(defaults?.requestId ?? null);
+    setConversionEntry(isEntryConversionRequest(defaults?.requestId));
     setEditEntryId(null);
     setInsuranceProductId("");
     setProductType("savings");
@@ -639,6 +643,7 @@ export function InsuranceFormModal({
     setPolicyNo("");
     setMemo("");
     setRequestId(null);
+    setConversionEntry(false);
   }
 
   useEffect(() => setCashAccountList(cashAccounts), [cashAccounts]);
@@ -952,7 +957,7 @@ export function InsuranceFormModal({
         }}
         footer={(
           <>
-            {!isEditingRecord ? (
+            {!isEditingRecord && !conversionEntry ? (
               <button
                 type="button"
                 onClick={() => { void submitInsurance({ createPremiumPlan: false, backfillPastRecords: false }, true); }}
