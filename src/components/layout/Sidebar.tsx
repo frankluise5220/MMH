@@ -14,16 +14,9 @@ import { getCachedHouseholdScope } from "@/lib/server/household-scope";
 import { isDepositAccount, isLoanOrSettlementAccountKind, isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import { dominantFixedAssetType } from "@/lib/fixed-asset";
 import type { SidebarGroupMode } from "@/lib/client/appPreferences";
-import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
+import { loadCreditCardBillGroupBalances } from "@/lib/server/credit-card-display-balance";
 import { convertCurrencyAmounts } from "@/lib/server/fx-rates";
 import { normalizeCurrency } from "@/lib/currency";
-
-type CurrentCreditCycle = {
-  accountId: string;
-  effectiveBill: unknown;
-  cumulativeRemain: unknown;
-  cumulativeOverpaid: unknown;
-};
 
 async function getSidebarData() {
   await connection();
@@ -81,26 +74,17 @@ async function getSidebarData() {
     .filter((account) => account.kind === AccountKind.insurance)
     .map((account) => account.id);
   const cashDisplayBalancePromise = getMaintainedAccountBalances(cashBalanceAccounts, hidFilter);
-  const currentCreditCyclesPromise: Promise<CurrentCreditCycle[]> = creditIds.length > 0
-    ? prisma.creditCardCycle.findMany({
-        where: { accountId: { in: creditIds }, isCurrentCycle: true },
-        select: { accountId: true, effectiveBill: true, cumulativeRemain: true, cumulativeOverpaid: true },
-      })
-    : Promise.resolve([]);
+  const creditBillGroupPromise = loadCreditCardBillGroupBalances(creditIds);
   const insuranceDisplayBalancePromise = computeInsuranceAccountDisplayBalances(insuranceAccountIds, hidFilter);
   const liabilityDisplaySummaryPromise = computeLiabilityDisplaySummary(ctx);
-  const [cashDisplayBalanceByAccountId, currentCreditCycles, insuranceDisplayBalanceByAccountId, liabilityDisplaySummary] = await Promise.all([
+  const [cashDisplayBalanceByAccountId, creditBillGroup, insuranceDisplayBalanceByAccountId, liabilityDisplaySummary] = await Promise.all([
     cashDisplayBalancePromise,
-    currentCreditCyclesPromise,
+    creditBillGroupPromise,
     insuranceDisplayBalancePromise,
     liabilityDisplaySummaryPromise,
   ]);
-  const currentCreditBalanceByAccountId = new Map<string, number>(
-    currentCreditCycles.map((cycle) => [
-      cycle.accountId,
-      creditCardDisplayBalanceFromCurrentCycle(cycle),
-    ]),
-  );
+  const currentCreditBalanceByAccountId = creditBillGroup.balanceByAccountId;
+  const creditBillStorageIdByAccountId = creditBillGroup.billStorageIdByAccountId;
   const baseCurrency = normalizeCurrency(household?.baseCurrency);
   const rawItems = accounts.map((account) => {
     const isInvest = isPureInvestmentAccount(account);
@@ -167,6 +151,10 @@ async function getSidebarData() {
       // 否则客户端只能看到一排平铺账户（父账户与子账户还会被重复统计）。
       parentId: account.parentId ?? null,
       isAggregate: account.isAggregate === true,
+      // 合并账单组内每张卡显示同一份账单余额，客户端节合计按这个键去重。
+      creditBillStorageId: account.kind === AccountKind.bank_credit
+        ? (creditBillStorageIdByAccountId.get(account.id) ?? account.id)
+        : null,
     };
   });
   const conversion = await convertCurrencyAmounts({

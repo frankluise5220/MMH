@@ -4,7 +4,7 @@ import { AccountKind } from "@prisma/client";
 import { MobileTransactionForm } from "@/components/mobile/MobileTransactionForm";
 import { MobileTransactions, type MobileTransactionRow } from "@/components/mobile/MobileTransactions";
 import { prisma } from "@/lib/db/prisma";
-import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
+import { loadCreditCardBillGroupBalances } from "@/lib/server/credit-card-display-balance";
 import { toNumber, formatDateUtc } from "@/lib/date-utils";
 import { buildAccountDisplayOption, formatAccountTableLabel, accountRenderSettings } from "@/lib/account-display";
 import { getMaintainedAccountBalances } from "@/lib/server/account-balance";
@@ -63,7 +63,7 @@ export default async function MobileAccountDetailPage({ params }: { params: Prom
   ]);
   if (!account) notFound();
 
-  const [entries, balances, currentCreditCycle] = await Promise.all([
+  const [entries, balances, creditBillGroup] = await Promise.all([
     prisma.txRecord.findMany({
       where: {
         deletedAt: null,
@@ -87,11 +87,8 @@ export default async function MobileAccountDetailPage({ params }: { params: Prom
     }),
     getMaintainedAccountBalances([account], hidFilter),
     account.kind === AccountKind.bank_credit
-      ? prisma.creditCardCycle.findFirst({
-          where: { accountId: account.id, isCurrentCycle: true },
-          select: { effectiveBill: true, cumulativeRemain: true, cumulativeOverpaid: true },
-        })
-      : Promise.resolve(null),
+      ? loadCreditCardBillGroupBalances([account.id])
+      : Promise.resolve({ balanceByAccountId: new Map<string, number>(), billStorageIdByAccountId: new Map<string, string>() }),
   ]);
 
   const accountDisplayById = new Map(
@@ -123,7 +120,7 @@ export default async function MobileAccountDetailPage({ params }: { params: Prom
     };
   });
   const balance = account.kind === AccountKind.bank_credit
-    ? -creditCardDisplayBalanceFromCurrentCycle(currentCreditCycle, toNumber(account.balance))
+    ? -(creditBillGroup.balanceByAccountId.get(account.id) ?? toNumber(account.balance))
     : balances.get(account.id) ?? toNumber(account.balance);
   const kind = String(account.kind);
 

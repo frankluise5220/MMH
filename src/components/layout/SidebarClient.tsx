@@ -102,6 +102,11 @@ type AccountItem = {
   /** 聚合账户（父账户）：只参与统计，本身没有明细。 */
   isAggregate?: boolean | null;
   /**
+   * 合并账单组（同机构 + 同所有人）的存储账户 id。
+   * 组内每张卡显示同一份账单余额，汇总时必须按它去重，否则负债会算成 N 倍。
+   */
+  creditBillStorageId?: string | null;
+  /**
    * 多币种子账户。独立于 `children`：`children` 已被固定资产小类、
    * 往来款汇总行等「分组节点」占用，混用会把那些节点也当账户行渲染出来。
    */
@@ -419,6 +424,7 @@ function getSidebarItemSignature(item: AccountItem): string {
     item.fixedAssetType ?? "",
     item.parentId ?? "",
     item.isAggregate ? "1" : "0",
+    item.creditBillStorageId ?? "",
     childSignature,
     subAccountSignature,
   ].join("\u0001");
@@ -463,6 +469,7 @@ function toSidebarAccountItem(a: any, t: (key: string, params?: Record<string, s
     fixedAssetType: a.fixedAssetType ?? null,
     parentId: a.parentId ?? null,
     isAggregate: a.isAggregate === true,
+    creditBillStorageId: a.creditBillStorageId ?? null,
   };
 }
 
@@ -794,6 +801,49 @@ export function SidebarClient({
     };
   }, [householdId, t]);
 
+  // 客户端导航不会重新渲染 layout：侧边栏余额会一直停在首次 SSR 的数值上。
+  // 账期切换 / 账单 cycle 缓存刚重建时，账单页已经是新数字，左侧还是旧值（典型：0）。
+  // 每次导航后按「信用卡集合」做一次轻量校验，拿到新值走和记账后相同的 patch 路径。
+  const creditSidebarIdsKey = useMemo(() => {
+    const ids: string[] = [];
+    const walk = (list: readonly AccountItem[]) => {
+      for (const item of list) {
+        if (item.id && item.kind === "bank_credit") ids.push(String(item.id));
+        if (item.children?.length) walk(item.children);
+        if (item.subAccounts?.length) walk(item.subAccounts);
+      }
+    };
+    walk(items);
+    return Array.from(new Set(ids)).sort().join(",");
+  }, [items]);
+  const creditBalanceCheckRef = useRef(0);
+
+  useEffect(() => {
+    if (!creditSidebarIdsKey) return;
+    const now = Date.now();
+    if (now - creditBalanceCheckRef.current < 15_000) return;
+    creditBalanceCheckRef.current = now;
+    const ids = creditSidebarIdsKey.split(",");
+    let cancelled = false;
+    void fetchScopedAccountBalances(ids)
+      .then((scoped) => {
+        if (cancelled || !scoped?.ok) return;
+        startTransition(() => {
+          setItems((prev) => {
+            const patched = patchSidebarAccountBalances(prev, scoped.data);
+            if (!patched.changed) return prev;
+            const next = normalizeSidebarItems(patched.next, t);
+            seedConvertedBalances(next);
+            return next;
+          });
+        });
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [pathname, creditSidebarIdsKey, t]);
+
   useEffect(() => {
     const applyPrefs = () => {
       const prefs = getAppPreferences();
@@ -946,6 +996,19 @@ export function SidebarClient({
   }, [baseCurrency]);
   const displayBalanceValue = useCallback((item: AccountItem) => resolveSidebarBalance(item).value, [resolveSidebarBalance]);
   const displayBalance = useCallback((item: AccountItem) => displayBalanceValue(item) ?? 0, [displayBalanceValue]);
+  // 合并账单组内每张卡都显示同一份账单余额，节合计必须按账单组去重，
+  // 否则同一份欠款会被算成「卡张数 × 账单金额」。
+  const sumSectionBalance = useCallback((list: AccountItem[]) => {
+    const seen = new Set<string>();
+    let total = 0;
+    for (const item of list) {
+      const key = item.creditBillStorageId || item.id || `${item.kind}\u0000${item.label}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      total += displayBalance(item);
+    }
+    return total;
+  }, [displayBalance]);
   const formatSidebarBalance = useCallback((item: AccountItem) => {
     const resolved = resolveSidebarBalance(item);
     return resolved.value == null ? t("sidebar.balance.missingFxRate") : formatCurrencyMoney(resolved.value, resolved.currency);
@@ -1100,7 +1163,7 @@ export function SidebarClient({
           key: loanSubgroupKey(loanType),
           label: t(`loan.type.${loanType}`),
           accounts,
-          total: accounts.reduce((sum, account) => sum + displayBalance(account), 0),
+          total: sumSectionBalance(accounts),
           href: `/?view=liability&loanType=${loanType}`,
         };
       }).filter((subgroup) => subgroup.accounts.length > 0);
@@ -1114,7 +1177,7 @@ export function SidebarClient({
           kind: LIABILITY_SECTION,
           label: LIABILITY_SECTION,
           accounts: sortAccountsByUsage(liabilityItems),
-          total: liabilityItems.reduce((sum, account) => sum + displayBalance(account), 0),
+          total: sumSectionBalance(liabilityItems),
           subgroups: [],
         });
       }
@@ -1123,7 +1186,7 @@ export function SidebarClient({
           kind: LOAN_SECTION,
           label: LOAN_SECTION,
           accounts: sortAccountsByUsage(loanItems),
-          total: loanItems.reduce((sum, account) => sum + displayBalance(account), 0),
+          total: sumSectionBalance(loanItems),
           subgroups: buildLoanSubgroups(loanItems),
         });
       }
@@ -1147,17 +1210,19 @@ export function SidebarClient({
         const existing = map.get(key);
         if (existing) {
           existing.accounts.push(item);
-          existing.total += displayBalance(item);
         } else {
           map.set(key, {
             kind: key,
             label,
             accounts: [item],
-            total: displayBalance(item),
+            total: 0,
             subgroups: [],
           });
         }
       }
+      // 合计在收集完成后统一算：合并账单组内每张卡都显示同一份账单余额，
+      // 边遍历边累加会把同一份欠款按卡张数重复计入。
+      for (const section of map.values()) section.total = sumSectionBalance(section.accounts);
       const fieldSections = Array.from(map.values())
         .map((section) => ({
           ...section,
@@ -1199,7 +1264,7 @@ export function SidebarClient({
                   key: subgroup.key,
                   label: subgroup.label,
                   accounts,
-                  total: accounts.reduce((sum, account) => sum + displayBalance(account), 0),
+                  total: sumSectionBalance(accounts),
                 };
               }).filter((subgroup) => subgroup.accounts.length > 0);
               const coveredKinds = new Set(ASSET_SUBGROUPS.flatMap((subgroup) => subgroup.kinds));
@@ -1209,7 +1274,7 @@ export function SidebarClient({
                   key: "other_asset",
                   label: "其他资产",
                   accounts: fallbackAccounts,
-                  total: fallbackAccounts.reduce((sum, account) => sum + displayBalance(account), 0),
+                  total: sumSectionBalance(fallbackAccounts),
                 });
               }
               return subgroupItems;
@@ -1219,11 +1284,11 @@ export function SidebarClient({
           : [];
       return {
         kind: g.label, label: g.label, accounts: sortAccountsByUsage(filtered),
-        total: filtered.reduce((s, a) => s + displayBalance(a), 0),
+        total: sumSectionBalance(filtered),
         subgroups,
       };
     }).filter(s => s.accounts.length > 0);
-  }, [visibleItems, sidebarGroupBy, accountUsage, displayBalance, t]);
+  }, [visibleItems, sidebarGroupBy, accountUsage, displayBalance, sumSectionBalance, t]);
 
   const selectedLiabilityPerson = (searchParams.get("liabilityPerson") ?? "").trim();
   const liabilityPersonKeyFor = (item: AccountItem) => item.id ? `account:${item.id}` : "";

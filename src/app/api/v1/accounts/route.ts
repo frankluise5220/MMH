@@ -34,8 +34,8 @@ import { getMaintainedAccountBalances, recalcAndSaveAccountBalance } from "@/lib
 import {
   CREDIT_CARD_MAX_REPAYMENT_OFFSET_DAYS,
   CREDIT_CARD_MONTH_END_BILLING_DAY,
-  creditCardDisplayBalanceFromCurrentCycle,
 } from "@/lib/credit/billing";
+import { loadCreditCardBillGroupBalances } from "@/lib/server/credit-card-display-balance";
 import {
   accountSupportsNumberMasked,
   assertAccountIdentityUnique,
@@ -1237,7 +1237,7 @@ export async function GET(req: Request) {
     },
     orderBy: [{ kind: "asc" }, { name: "asc" }],
   });
-  const [investBalByAccountId, displayBalanceByAccountId, currentCreditCycles, insuranceDisplayBalanceByAccountId] = await Promise.all([
+  const [investBalByAccountId, displayBalanceByAccountId, creditBillGroup, insuranceDisplayBalanceByAccountId] = await Promise.all([
     computeInvestBalances(scope),
     getMaintainedAccountBalances(
       rows
@@ -1250,24 +1250,16 @@ export async function GET(req: Request) {
         })),
       scope.hidFilter,
     ),
-    prisma.creditCardCycle.findMany({
-      where: {
-        accountId: { in: rows.filter((account) => account.kind === AccountKind.bank_credit).map((account) => account.id) },
-        isCurrentCycle: true,
-      },
-      select: { accountId: true, effectiveBill: true, cumulativeRemain: true, cumulativeOverpaid: true },
-    }),
+    loadCreditCardBillGroupBalances(
+      rows.filter((account) => account.kind === AccountKind.bank_credit).map((account) => account.id),
+    ),
     computeInsuranceAccountDisplayBalances(
       rows.filter((account) => account.kind === AccountKind.insurance).map((account) => account.id),
       scope.hidFilter,
     ),
   ]);
-  const currentCreditBalanceByAccountId = new Map(
-    currentCreditCycles.map((cycle) => [
-      cycle.accountId,
-      creditCardDisplayBalanceFromCurrentCycle(cycle),
-    ]),
-  );
+  const currentCreditBalanceByAccountId = creditBillGroup.balanceByAccountId;
+  const creditBillStorageIdByAccountId = creditBillGroup.billStorageIdByAccountId;
 
   const accounts = rows
     .map((account) => ({
@@ -1294,6 +1286,10 @@ export async function GET(req: Request) {
       institutionName: account.Institution?.name ?? "",
       usageCount: account.usageCount,
       lastUsedAt: account.lastUsedAt ? account.lastUsedAt.toISOString() : null,
+      // 合并账单组的去重键：组内每张卡余额相同，客户端求和同键只应计一次。
+      creditBillStorageId: account.kind === AccountKind.bank_credit
+        ? creditBillStorageIdByAccountId.get(account.id) ?? account.id
+        : null,
     }))
     // Most frequently used accounts first, then alphabetical, so entry forms
     // (Web and Android) surface the accounts the user actually uses.

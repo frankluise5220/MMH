@@ -280,7 +280,7 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
         )
       : { updatedEntries: 0, updatedPlans: 0 };
   if (normalizedCreditInstallments.updatedEntries > 0 || normalizedCreditInstallments.updatedPlans > 0) {
-    await invalidateCreditCardCycleCacheForAccountIds(billAccountIds);
+    await invalidateCreditCardCycleCacheForAccountIds(billAccountIds, { rebuild: false });
   }
 
   const isDisplayableBillMonth = (month: string) => !currentStatementMonth || month <= currentStatementMonth;
@@ -1204,7 +1204,7 @@ export async function refreshCreditCardCycleCachesForAccountIds(params: {
   }
 
   for (const group of refreshGroups.values()) {
-    await invalidateCreditCardCycleCacheForAccountIds(group.billAccountIds);
+    await invalidateCreditCardCycleCacheForAccountIds(group.billAccountIds, { rebuild: false });
     await loadCreditBillPageData({
       householdId: params.householdId,
       selectedAccount: group.selectedAccount,

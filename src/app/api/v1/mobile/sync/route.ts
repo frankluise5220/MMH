@@ -9,7 +9,7 @@ import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import { computeInvestBalances } from "@/lib/invest-balance";
 import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
 import { getMaintainedAccountBalances } from "@/lib/server/account-balance";
-import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
+import { loadCreditCardBillGroupBalances } from "@/lib/server/credit-card-display-balance";
 import { optionalPrismaFindMany } from "@/lib/server/optional-prisma-delegate";
 import { categoryOrderBy } from "@/lib/category-order";
 import { decodeScheduledTaskMemo, isSystemManagedScheduledTask, normalizeScheduledTaskType, scheduledTaskTypeLabel } from "@/lib/scheduled-task";
@@ -526,7 +526,7 @@ export async function GET(req: Request) {
       fundFeeRates.length > limit ||
       regularInvestPlans.length > limit ||
       fundNav.length > limit;
-    const [investBalByAccountId, displayBalanceByAccountId, currentCreditCycles, insuranceDisplayBalanceByAccountId] = await Promise.all([
+    const [investBalByAccountId, displayBalanceByAccountId, creditBillGroup, insuranceDisplayBalanceByAccountId] = await Promise.all([
       computeInvestBalances(scope),
       getMaintainedAccountBalances(
         accountBatch
@@ -539,24 +539,16 @@ export async function GET(req: Request) {
           })),
         scope.hidFilter,
       ),
-      prisma.creditCardCycle.findMany({
-        where: {
-          accountId: { in: accountBatch.filter((account) => account.kind === AccountKind.bank_credit).map((account) => account.id) },
-          isCurrentCycle: true,
-        },
-        select: { accountId: true, effectiveBill: true, cumulativeRemain: true, cumulativeOverpaid: true },
-      }),
+      loadCreditCardBillGroupBalances(
+        accountBatch.filter((account) => account.kind === AccountKind.bank_credit).map((account) => account.id),
+      ),
       computeInsuranceAccountDisplayBalances(
         accountBatch.filter((account) => account.kind === AccountKind.insurance).map((account) => account.id),
         scope.hidFilter,
       ),
     ]);
-    const currentCreditBalanceByAccountId = new Map(
-      currentCreditCycles.map((cycle) => [
-        cycle.accountId,
-        creditCardDisplayBalanceFromCurrentCycle(cycle),
-      ]),
-    );
+    const currentCreditBalanceByAccountId = creditBillGroup.balanceByAccountId;
+    const creditBillStorageIdByAccountId = creditBillGroup.billStorageIdByAccountId;
 
     return NextResponse.json(
       {
@@ -585,6 +577,10 @@ export async function GET(req: Request) {
           investProductType: account.investProductType,
           tradingCalendar: account.tradingCalendar,
           creditLimit: account.creditLimit == null ? null : toNumber(account.creditLimit),
+          // 合并账单组的去重键：组内每张卡余额相同，求和同键只应计一次。
+          creditBillStorageId: account.kind === AccountKind.bank_credit
+            ? creditBillStorageIdByAccountId.get(account.id) ?? account.id
+            : null,
           billingDay: account.billingDay,
           billingDayTxPeriod: account.billingDayTxPeriod,
           repaymentDay: account.repaymentDay,

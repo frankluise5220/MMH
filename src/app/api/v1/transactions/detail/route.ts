@@ -63,7 +63,8 @@ import {
   type EntryBalanceChange,
 } from "@/lib/server/account-balance";
 import { createPlainLedgerEntry } from "@/lib/server/ledger-entry-create";
-import { creditBillEffectiveDate, creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
+import { creditBillEffectiveDate } from "@/lib/credit/billing";
+import { loadCreditCardBillGroupBalances } from "@/lib/server/credit-card-display-balance";
 import { fundArrivalDate as computeFundArrivalDate, resolveFundDates } from "@/lib/fund/confirmDays";
 import { getFundFeeRateByDate } from "@/lib/fund/feeRate";
 import { toNumber, toStatementMonth, startOfDayUtc, formatDateUtc } from "@/lib/date-utils";
@@ -289,13 +290,9 @@ async function resolveAccountDisplayBalance(
   }
 
   if (account.kind === AccountKind.bank_credit) {
-    const cycle = await prisma.creditCardCycle.findFirst({
-      where: { accountId: account.id, isCurrentCycle: true },
-      select: { effectiveBill: true, cumulativeRemain: true, cumulativeOverpaid: true },
-    });
-    return cycle
-      ? creditCardDisplayBalanceFromCurrentCycle(cycle)
-      : toNumber(account.balance);
+    // 合并账单组内每张卡都要显示同一份账单余额（不只是主卡）。
+    const balances = await loadCreditCardBillGroupBalances([account.id]);
+    return balances.balanceByAccountId.get(account.id) ?? toNumber(account.balance);
   }
 
   return toNumber(account.balance);

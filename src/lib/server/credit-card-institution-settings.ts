@@ -110,6 +110,27 @@ export async function syncCreditCardInstitutionSettings(
   });
 }
 
+/**
+ * 合并账单的分组键：同 household + 同机构 + **同所有人**。
+ *
+ * 「所有人」就是 `Account.groupId`（`AccountGroup`，比如「付斌」「墨斗鱼」「amanda」）。
+ * 不同家庭成员在同一家银行各出各的账单，所以组键必须带 groupId —— 只按
+ * household + 机构分组会把两个人的卡并成一份账单（2026-11-16 用户再次强调）。
+ * 这里不引入 `userId`：本账簿里所有人一律由 groupId 表达，两套口径并存只会
+ * 在 groupId 相同、userId 不同时又分叉。
+ *
+ * `institutionId` / `groupId` 任一缺失时返回 null，调用方必须退化成「单卡」，
+ * 绝不允许退化成「同机构全量合并」。
+ */
+export function creditBillGroupKey(account: {
+  householdId: string;
+  institutionId?: string | null;
+  groupId?: string | null;
+}): string | null {
+  if (!account.institutionId || !account.groupId) return null;
+  return `${account.householdId}|${account.institutionId}|${account.groupId}`;
+}
+
 export async function getCreditBillAccountIds(
   writer: AccountWriter,
   account: {

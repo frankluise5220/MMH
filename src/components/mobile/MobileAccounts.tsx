@@ -35,6 +35,8 @@ type CreditRow = AccountRow & {
   creditLimit: number;
   availableLimit: number;
   currentBill: number;
+  /** 合并账单组的去重键：组内每张卡余额相同，合计同键只应计一次。 */
+  creditBillStorageId?: string | null;
 };
 
 type AccountGroup = {
@@ -85,7 +87,18 @@ export function MobileAccounts({
   }, [activeTab, creditAccounts, groups, hideZero, t]);
 
   const accountCount = visibleGroups.reduce((sum, group) => sum + group.accounts.length, 0);
-  const creditTotal = creditAccounts.reduce((sum, account) => sum + Math.max(0, account.balance), 0);
+  // 合并账单组内每张卡显示同一份账单余额，合计按账单组去重。
+  const creditTotal = (() => {
+    const seen = new Set<string>();
+    let total = 0;
+    for (const account of creditAccounts) {
+      const key = account.creditBillStorageId || account.id;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      total += Math.max(0, account.balance);
+    }
+    return total;
+  })();
 
   function toggleGroup(kind: string) {
     setCollapsed((current) => {

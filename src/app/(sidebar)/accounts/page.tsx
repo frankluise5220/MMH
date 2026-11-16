@@ -14,6 +14,7 @@ import { prisma } from "@/lib/db/prisma";
 import { formatMoney, formatMoneyYuan } from "@/lib/format";
 import { pnlClassFromRedUp } from "@/lib/client/colors";
 import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
+import { loadCreditCardBillGroupBalances } from "@/lib/server/credit-card-display-balance";
 import { isCreditCardMonthEndBillingDay } from "@/lib/credit/rules";
 import { getMaintainedAccountBalances } from "@/lib/server/account-balance";
 import { getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
@@ -146,7 +147,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
           },
         })
       : Promise.resolve([]);
-  const [displayBalanceByAccountId, currentCycles] = await Promise.all([
+  const [displayBalanceByAccountId, currentCycles, creditBillGroup] = await Promise.all([
     getMaintainedAccountBalances(
       accounts
         .filter((account) => account.kind !== AccountKind.bank_credit)
@@ -159,7 +160,10 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
       hidFilter,
     ),
     currentCyclesPromise,
+    loadCreditCardBillGroupBalances(creditIds),
   ]);
+  const currentCreditBalanceByAccountId = creditBillGroup.balanceByAccountId;
+  const creditBillStorageIdByAccountId = creditBillGroup.billStorageIdByAccountId;
   const cycleByAccountId = new Map<string, CurrentCreditCycle>(currentCycles.map((cycle) => [cycle.accountId, cycle]));
 
   const moneyAccounts = accounts
@@ -202,10 +206,11 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
         AccountGroup: account.AccountGroup,
         Counterparty: account.Counterparty,
       }, creditCardLabelTemplate, accountRenderSettings(accountLabelFields, baseCurrency));
-      const cycle = cycleByAccountId.get(account.id);
-      const balance = cycle
-        ? creditCardDisplayBalanceFromCurrentCycle(cycle)
-        : toNumber(account.balance);
+      // 合并账单组只有主卡有 cycle 行：非主卡也取主卡那一份，组内账单数字才能一致。
+      const creditBillStorageId = creditBillStorageIdByAccountId.get(account.id) ?? account.id;
+      const cycle = cycleByAccountId.get(creditBillStorageId) ?? cycleByAccountId.get(account.id);
+      const balance = currentCreditBalanceByAccountId.get(account.id)
+        ?? (cycle ? creditCardDisplayBalanceFromCurrentCycle(cycle) : toNumber(account.balance));
       const creditLimit = toNumber(account.creditLimit);
       const currentAmount = toNumber(cycle?.expenseAbs) - toNumber(cycle?.income);
       return {
@@ -213,6 +218,7 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
         name: display.label,
         hoverTitle: display.hoverTitle,
         kind: account.kind,
+        creditBillStorageId,
         groupName: account.AccountGroup?.name?.trim() || t("batchImport.ownerUnset"),
         balance,
         creditLimit,
@@ -234,11 +240,20 @@ export default async function AccountsPage({ searchParams }: { searchParams: Sea
   const loanTotal = moneyAccounts
     .filter((account) => account.kind === AccountKind.loan || account.kind === AccountKind.settlement)
     .reduce((sum, account) => sum + Math.abs(Math.min(0, account.balance)), 0);
-  const creditUsedTotal = creditAccounts.reduce((sum, account) => sum + Math.max(0, account.balance), 0);
+  // 合并账单组内每张卡显示同一份账单余额，合计按账单组去重（组额度仍是每张卡各算）。
+  const creditBillGroupLeaders = (() => {
+    const seen = new Set<string>();
+    return creditAccounts.filter((account) => {
+      if (seen.has(account.creditBillStorageId)) return false;
+      seen.add(account.creditBillStorageId);
+      return true;
+    });
+  })();
+  const creditUsedTotal = creditBillGroupLeaders.reduce((sum, account) => sum + Math.max(0, account.balance), 0);
   const creditLimitTotal = creditAccounts.reduce((sum, account) => sum + account.creditLimit, 0);
   const creditAvailableTotal = Math.max(0, creditLimitTotal - creditUsedTotal);
-  const creditCurrentAmountTotal = creditAccounts.reduce((sum, account) => sum + account.currentAmount, 0);
-  const creditBillTotal = creditAccounts.reduce((sum, account) => sum + account.currentBill, 0);
+  const creditCurrentAmountTotal = creditBillGroupLeaders.reduce((sum, account) => sum + account.currentAmount, 0);
+  const creditBillTotal = creditBillGroupLeaders.reduce((sum, account) => sum + account.currentBill, 0);
 
   const groupedMoneyAccounts = MONEY_KINDS.map((kind) => ({
     kind,

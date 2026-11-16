@@ -11,7 +11,7 @@ import { institutionFullName } from "@/lib/institution-display";
 import { toNumber } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
 import { formatMoney } from "@/lib/format";
-import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
+import { loadCreditCardBillGroupBalances } from "@/lib/server/credit-card-display-balance";
 import { isCreditCardMonthEndBillingDay } from "@/lib/credit/rules";
 import { getMaintainedAccountBalances } from "@/lib/server/account-balance";
 import { createLiabilityTransaction } from "@/lib/server/sidebar-actions/liability-actions";
@@ -207,18 +207,9 @@ export default async function LiabilitiesPage({
     hidFilter,
   );
   const creditIds = accounts.filter((account) => account.kind === AccountKind.bank_credit).map((account) => account.id);
-  const currentCreditCycles = creditIds.length > 0
-    ? await prisma.creditCardCycle.findMany({
-        where: { accountId: { in: creditIds }, isCurrentCycle: true },
-        select: { accountId: true, effectiveBill: true, cumulativeRemain: true, cumulativeOverpaid: true },
-      })
-    : [];
-  const currentCreditBalanceByAccountId = new Map(
-    currentCreditCycles.map((cycle) => [
-      cycle.accountId,
-      creditCardDisplayBalanceFromCurrentCycle(cycle),
-    ]),
-  );
+  const creditBillGroup = await loadCreditCardBillGroupBalances(creditIds);
+  const currentCreditBalanceByAccountId = creditBillGroup.balanceByAccountId;
+  const creditBillStorageIdByAccountId = creditBillGroup.billStorageIdByAccountId;
   const accountLinkedCounterparties = counterparties.filter((counterparty) => isSettlementCounterpartyType(counterparty.type));
   const liabilityObjectOptions: SmartSelectOptionLike[] = [
     ...(accountLinkedCounterparties.length > 0
@@ -372,16 +363,33 @@ export default async function LiabilitiesPage({
       creditLimit: account.creditLimit == null ? 0 : toNumber(account.creditLimit),
       numberMasked: account.numberMasked,
       liabilityPersonKey,
+      // 合并账单组内每张卡显示同一份账单余额，合计按它去重。
+      creditBillStorageId: account.kind === AccountKind.bank_credit
+        ? creditBillStorageIdByAccountId.get(account.id) ?? account.id
+        : null,
     };
   });
 
-  const payableTotal = rows.filter((row) => row.direction === "payable").reduce((sum, row) => sum + row.amount, 0);
-  const receivableTotal = rows.filter((row) => row.direction === "receivable").reduce((sum, row) => sum + row.amount, 0);
-  const creditTotal = rows.filter((row) => row.kind === AccountKind.bank_credit).reduce((sum, row) => sum + row.amount, 0);
-  const loanTotal = rows.filter((row) => row.kind === AccountKind.loan && row.direction === "payable").reduce((sum, row) => sum + row.amount, 0);
+  // 合并账单组只计一次（组内每张卡都挂着同一份欠款）。
+  const billGroupDedupedRows = (() => {
+    const seen = new Set<string>();
+    return rows.filter((row) => {
+      if (row.kind !== AccountKind.bank_credit || !row.creditBillStorageId) return true;
+      if (seen.has(row.creditBillStorageId)) return false;
+      seen.add(row.creditBillStorageId);
+      return true;
+    });
+  })();
 
-  const institutionRows = Array.from(
-    rows.reduce((map, row) => {
+  const payableTotal = billGroupDedupedRows.filter((row) => row.direction === "payable").reduce((sum, row) => sum + row.amount, 0);
+  const receivableTotal = billGroupDedupedRows.filter((row) => row.direction === "receivable").reduce((sum, row) => sum + row.amount, 0);
+  const creditTotal = billGroupDedupedRows.filter((row) => row.kind === AccountKind.bank_credit).reduce((sum, row) => sum + row.amount, 0);
+  const loanTotal = billGroupDedupedRows.filter((row) => row.kind === AccountKind.loan && row.direction === "payable").reduce((sum, row) => sum + row.amount, 0);
+
+  const institutionRows = (() => {
+    const map = new Map<string, { key: string; name: string; payable: number; receivable: number; count: number }>();
+    // 卡数按全部账户算，金额按账单组去重后算。
+    for (const row of rows) {
       const current = map.get(row.institutionName) ?? {
         key: row.liabilityPersonKey,
         name: row.institutionName,
@@ -390,12 +398,16 @@ export default async function LiabilitiesPage({
         count: 0,
       };
       current.count += 1;
+      map.set(row.institutionName, current);
+    }
+    for (const row of billGroupDedupedRows) {
+      const current = map.get(row.institutionName);
+      if (!current) continue;
       if (row.direction === "receivable") current.receivable += row.amount;
       else current.payable += row.amount;
-      map.set(row.institutionName, current);
-      return map;
-    }, new Map<string, { key: string; name: string; payable: number; receivable: number; count: number }>()),
-  ).map(([, value]) => value).sort((a, b) => (b.payable + b.receivable) - (a.payable + a.receivable));
+    }
+    return Array.from(map.values()).sort((a, b) => (b.payable + b.receivable) - (a.payable + a.receivable));
+  })();
 
   return (
     <div className="flex-1 min-h-0 overflow-auto bg-slate-50">

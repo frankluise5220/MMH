@@ -18,7 +18,7 @@ import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance"
 import { getMaintainedAccountBalances } from "@/lib/server/account-balance";
 import { computeLiabilityDisplaySummary } from "@/lib/server/liability-display-summary";
 import { isDepositAccount, isPureInvestmentAccount } from "@/lib/account-kind-utils";
-import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
+import { loadCreditCardBillGroupBalances } from "@/lib/server/credit-card-display-balance";
 import { convertCurrencyAmounts, getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
 import { normalizeCurrency } from "@/lib/currency";
 
@@ -80,39 +80,21 @@ export async function GET(req: Request) {
         billingDay: account.billingDay,
       }));
 
-    const [investBalByAccountId, displayBalanceByAccountId, currentCreditCycles, insuranceDisplayBalanceByAccountId, liabilityDisplaySummary] = await Promise.all([
+    const [investBalByAccountId, displayBalanceByAccountId, creditBillGroup, insuranceDisplayBalanceByAccountId, liabilityDisplaySummary] = await Promise.all([
       investAccounts.length > 0
         ? computeInvestBalances(ctx, investAccounts.map((account) => account.id))
         : Promise.resolve(new Map<string, { marketValue: number }>()),
       cashLikeAccounts.length > 0
         ? getMaintainedAccountBalances(cashLikeAccounts, hidFilter)
         : Promise.resolve(new Map<string, number>()),
-      creditIds.length > 0
-        ? prisma.creditCardCycle.findMany({
-            where: {
-              accountId: { in: creditIds },
-              isCurrentCycle: true,
-            },
-            select: { accountId: true, effectiveBill: true, cumulativeRemain: true, cumulativeOverpaid: true },
-          })
-        : Promise.resolve([] as Array<{
-            accountId: string;
-            effectiveBill: unknown;
-            cumulativeRemain: unknown;
-            cumulativeOverpaid: unknown;
-          }>),
+      loadCreditCardBillGroupBalances(creditIds),
       insuranceIds.length > 0
         ? computeInsuranceAccountDisplayBalances(insuranceIds, hidFilter)
         : Promise.resolve(new Map<string, number>()),
       hasLiabilityAccounts ? computeLiabilityDisplaySummary(ctx) : Promise.resolve({ balanceByAccountId: new Map<string, number>() }),
     ]);
-    const currentCreditBalanceByAccountId = new Map(
-      currentCreditCycles.map((cycle) => [
-        cycle.accountId,
-        creditCardDisplayBalanceFromCurrentCycle(cycle),
-      ]),
-    );
-
+    const currentCreditBalanceByAccountId = creditBillGroup.balanceByAccountId;
+    const creditBillStorageIdByAccountId = creditBillGroup.billStorageIdByAccountId;
     const enriched = accounts.map((a) => {
       if (a.isAggregate) return { ...a, balance: toNumber(a.balance) };
       const balance = isPureInvestmentAccount(a)
@@ -154,6 +136,10 @@ export async function GET(req: Request) {
         fxRate: rate?.rate ?? null,
         fxRateDate: rate?.rateDate ?? null,
         fxRateMissing: rate?.missing ?? false,
+        // 合并账单组的去重键：组内每张卡余额相同，求和时同键只应计一次。
+        creditBillStorageId: a.kind === AccountKind.bank_credit
+          ? creditBillStorageIdByAccountId.get(a.id) ?? a.id
+          : null,
       };
     });
 
