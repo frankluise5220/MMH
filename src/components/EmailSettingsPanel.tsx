@@ -21,9 +21,7 @@ import {
   importPreviewFlowAmountTextFor,
 } from "@/lib/client/colors";
 import { createImportTraceId, postImportDebugLog } from "@/lib/client/importDebugLog";
-import { showChoiceDialog } from "@/lib/client/confirm-dialog";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
-import { guardStatementDuplicateImport } from "@/lib/client/statement-import-duplicates";
 import {
   fetchEmailAccounts,
   fetchEmailImportKeyword,
@@ -965,12 +963,7 @@ export function EmailSettingsPanel({
           })
       : parsedItems;
     if (!sourceItems.length) return;
-    // 同一份账单重复导入（同日期、同笔数、同金额）先问是否覆盖，再走落账。
-    const duplicateChoice = await guardStatementDuplicateImport(
-      sourceItems as unknown as Array<Record<string, unknown>>,
-      t,
-    );
-    if (duplicateChoice === "cancel") return;
+    // 重复交易检测统一在预览弹窗确认时做（StatementImportPreviewDialog.confirmSelected）。
     const selectedAccountIds = confirmedItems?.length
       ? Array.from(new Set(confirmedItems.flatMap((item) => [
           parseImportAccountId(item.account),
@@ -1003,43 +996,11 @@ export function EmailSettingsPanel({
       selectedCount: sourceItems.length,
     });
     try {
-      let conflictPolicy: "overwrite" | "keep" | undefined;
-      let res: Response | null = null;
-      let data: any = null;
-      // The import API pre-checks manual records in the same statement period.
-      // On MANUAL_RECORD_CONFLICT, ask the user to overwrite or keep; cancel aborts.
-      for (;;) {
-        res = await fetch("/api/v1/statement/import", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ items: sourceItems, autoCreateAccounts: false, mailSource, manualRecordConflictPolicy: conflictPolicy }),
-        });
-        data = await res.json();
-        if (data.ok || data.code !== "MANUAL_RECORD_CONFLICT") break;
-        postImportDebugLog(traceId, "email_import_manual_conflict", {
-          ...mailDebugDetails(selectedMail, selectedId),
-          conflictCount: Number(data.conflict?.total ?? 0),
-        });
-        const conflictCount = Number(data.conflict?.total ?? 0);
-        setImporting(false);
-        const choice = await showChoiceDialog<"overwrite" | "keep">({
-          title: t("settings.email.manualConflictTitle"),
-          message: t("settings.email.manualConflictMessage", { count: conflictCount }),
-          choices: [
-            { value: "keep", label: t("settings.email.manualConflictKeep") },
-            { value: "overwrite", label: t("settings.email.manualConflictOverwrite"), tone: "danger" },
-          ],
-          cancelLabel: t("common.cancel"),
-        });
-        if (!choice) {
-          postImportDebugLog(traceId, "email_import_cancelled", {
-            ...mailDebugDetails(selectedMail, selectedId),
-            reason: "manual_record_conflict_cancelled",
-          });
-          return;
-        }
-        conflictPolicy = choice;
-        setImporting(true);
-      }
+      const res = await fetch("/api/v1/statement/import", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ items: sourceItems, autoCreateAccounts: false, mailSource }),
+      });
+      const data: any = await res.json();
       if (data.ok) {
         const lockedAccountIds = Array.isArray(data.lockedStatementBills)
           ? data.lockedStatementBills.flatMap((item: any) => Array.isArray(item.billAccountIds) ? item.billAccountIds : [item.accountId]).filter(Boolean)
@@ -1047,19 +1008,15 @@ export function EmailSettingsPanel({
         const refreshAccountIds = Array.from(new Set([...(targetAccountId ? [targetAccountId] : []), ...lockedAccountIds]));
         const createdCount = data.createdCount ?? 0;
         const skippedCount = data.skippedCount ?? 0;
-        const deletedManualCount = Number(data.deletedManualRecordCount ?? 0);
         postImportDebugLog(traceId, "email_import_succeeded", {
           ...mailDebugDetails(selectedMail, selectedId),
           selectedCount: sourceItems.length,
           createdCount,
           skippedCount,
-          deletedManualRecordCount: deletedManualCount,
           importBatchId: data.importBatchId ?? null,
           durationMs: Math.round(performance.now() - startedAt),
         });
-        setInfo(deletedManualCount > 0
-          ? t("settings.email.importCompleteWithOverwrite", { created: createdCount, skipped: skippedCount, deleted: deletedManualCount })
-          : t("settings.email.importCompleteInfo", { created: createdCount, skipped: skippedCount }));
+        setInfo(t("settings.email.importCompleteInfo", { created: createdCount, skipped: skippedCount }));
         if ((data.skippedCount ?? 0) > 0) {
           const firstError = Array.isArray(data.errors) ? data.errors[0]?.error : "";
           setError(firstError ? t("settings.email.skippedWithError", { count: data.skippedCount, error: firstError }) : t("settings.email.skippedCheck", { count: data.skippedCount }));

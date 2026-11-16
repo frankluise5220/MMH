@@ -39,7 +39,6 @@ import { convertCaizhiFundImportFile } from "@/lib/statement/caizhi-template";
 import { readStatementSheetRows } from "@/lib/statement/statement-sheet-reader";
 import { routeAlipayFundBill } from "@/lib/statement/alipay-fund-bill";
 import { excludeFundTradeRows } from "@/lib/statement/fund-trade-split";
-import { guardStatementDuplicateImport } from "@/lib/client/statement-import-duplicates";
 
 /**
  * 手持设备上隐藏导入导出入口的类名（唯一写入点，四处入口共用）。
@@ -1486,13 +1485,8 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
     options?: { createLiabilityAccounts?: boolean; forceCreateOwnedMoneyAccounts?: boolean },
   ) {
     if (items.length === 0) return;
-    // 同一份账单重复导入：同一天已有记录的笔数与金额完全一致时先问用户是否覆盖。
-    // 必须在这里（分批之前）问：每批只有 1/10 的行，逐批判断会漏掉别的批次里的重复。
-    const duplicateChoice = await guardStatementDuplicateImport(
-      items as unknown as Array<Record<string, unknown>>,
-      t,
-    );
-    if (duplicateChoice === "cancel") return;
+    // 重复检测统一在预览弹窗确认时做（StatementImportPreviewDialog.confirmSelected），
+    // 那里拿到的是全量勾选行，不会被下面的 10 批拆分切碎。
     setBusy(true);
     setStatus(t("viewImport.importingBills"));
     setImportProgress({ imported: 0, total: items.length });

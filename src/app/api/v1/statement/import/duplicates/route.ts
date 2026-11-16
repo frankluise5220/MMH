@@ -11,8 +11,9 @@ export const runtime = "nodejs";
 /**
  * POST /api/v1/statement/import/duplicates
  *
- * 账单导入前的「重复账单」检查：
- *   - action=check（默认）：返回同一天内笔数与金额都跟本次导入一致的已有记录；
+ * 账单导入前的「重复交易」检查（全项目唯一的判重出口）：
+ *   - action=check（默认）：按「日期 + 交易身份」分组，组内笔数一致、再比金额一致才算重复。
+ *     转账的身份是 A→B（转出账户 → 转入账户，方向敏感），支出/收入/投资的身份是账户 + 类型；
  *   - action=delete        ：用户选了「覆盖」，软删除这些记录（只认上面检测出来的 id）。
  *
  * Body: { items, action?: "check" | "delete", recordIds?: string[] }

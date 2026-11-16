@@ -6,7 +6,6 @@ import {
   StatementImportPreviewDialog,
   type StatementImportPreviewItem,
 } from "@/components/StatementImportPreviewDialog";
-import { showChoiceDialog } from "@/lib/client/confirm-dialog";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
 
@@ -106,46 +105,25 @@ export function StatementMailAutoImportHost() {
         date: job.mailDate ? String(job.mailDate).slice(0, 10) : "",
       };
       try {
-        let policy: "overwrite" | "keep" | undefined;
-        for (;;) {
-          const res = await fetch("/api/v1/statement/import", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              items: confirmed,
-              autoCreateAccounts: false,
-              mailSource,
-              manualRecordConflictPolicy: policy,
-            }),
-          });
-          const data = await res.json().catch(() => null);
-          if (data?.ok) {
-            await markJob(job.id, "imported");
-            dispatchFinanceDataChanged();
-            setOpen(false);
-            setJob(null);
-            setItems([]);
-            return;
-          }
-          if (data?.code !== "MANUAL_RECORD_CONFLICT") {
-            setError(data?.error || t("statement.mailAutoImport.importFailed"));
-            return;
-          }
-          setBusy(false);
-          const conflictCount = Number(data.conflict?.total ?? 0);
-          const choice = await showChoiceDialog<"overwrite" | "keep">({
-            title: t("settings.email.manualConflictTitle"),
-            message: t("settings.email.manualConflictMessage", { count: conflictCount }),
-            choices: [
-              { value: "keep", label: t("settings.email.manualConflictKeep") },
-              { value: "overwrite", label: t("settings.email.manualConflictOverwrite"), tone: "danger" },
-            ],
-            cancelLabel: t("common.cancel"),
-          });
-          if (!choice) return;
-          policy = choice;
-          setBusy(true);
+        const res = await fetch("/api/v1/statement/import", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            items: confirmed,
+            autoCreateAccounts: false,
+            mailSource,
+          }),
+        });
+        const data = await res.json().catch(() => null);
+        if (data?.ok) {
+          await markJob(job.id, "imported");
+          dispatchFinanceDataChanged();
+          setOpen(false);
+          setJob(null);
+          setItems([]);
+          return;
         }
+        setError(data?.error || t("statement.mailAutoImport.importFailed"));
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       } finally {

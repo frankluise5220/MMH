@@ -52,6 +52,7 @@ import { compareCreditCardProfile, type CreditCardProfileMismatch } from "@/lib/
 import { systemCategoryLabel } from "@/lib/system-category-labels";
 import { useI18n } from "@/lib/i18n";
 import { readAccountDisplaySettings, useAccountDisplaySettings } from "@/lib/client/account-display-settings";
+import { guardStatementDuplicateImport } from "@/lib/client/statement-import-duplicates";
 import { getAccountDropdownGroupByPreference } from "@/lib/client/appPreferences";
 
 type BookAccount = {
@@ -1461,6 +1462,14 @@ export function StatementImportPreviewDialog({
     if (selectedRows.length === 0) return;
     const selectedItems = selectedRows.map((row) => previewItemForImport(row.item));
     if (selectedItems.length === 0) return;
+    // 唯一判重出口：所有入口（明细页 Excel、设置页邮件、邮件自动导入、AI 助手、批量导入页）
+    // 都在这里，按「日期 + 交易身份」整组比对笔数与金额；必须在宿主分批提交**之前**问，
+    // 否则每批只有一部分行，笔数永远对不上。
+    const duplicateChoice = await guardStatementDuplicateImport(
+      selectedItems as unknown as Array<Record<string, unknown>>,
+      t,
+    );
+    if (duplicateChoice === "cancel") return;
     await onConfirm(selectedItems, {
       createLiabilityAccounts,
       forceCreateOwnedMoneyAccounts,

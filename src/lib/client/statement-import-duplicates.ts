@@ -1,12 +1,14 @@
 import { showChoiceDialog } from "@/lib/client/confirm-dialog";
 
 /**
- * 账单导入前的重复检查（客户端侧）。
+ * 账单导入前的重复检查（客户端侧，唯一入口）。
  *
- * 服务端按「账户 + 日期」分组比较金额多重集合：同一天已有记录的笔数与金额
- * 跟这次要导入的完全一致 → 视为同一份账单重复导入，询问用户是否覆盖。
+ * 服务端口径（见 lib/server/statement-import-duplicates.ts）：按「日期 + 交易身份」分组，
+ * 转账的身份是 A→B（转出账户 → 转入账户，方向敏感），支出/收入/投资的身份是账户 + 类型；
+ * 组内笔数一致、再比金额一致，才判定为重复。
  *
- * 返回 "proceed" 表示可以继续导入（覆盖的话旧记录已经被软删），"cancel" 表示用户取消。
+ * 由 StatementImportPreviewDialog 在确认时统一调用（所有导入入口共用），命中即询问用户
+ * 是否覆盖。返回 "proceed" 表示可以继续导入（覆盖的话旧记录已经被软删），"cancel" 表示取消。
  */
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;
