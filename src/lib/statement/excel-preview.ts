@@ -8,10 +8,16 @@ import {
 import {
   inferBalanceBasedInflowSign,
   inferSignedAmountInflowSign,
+  isCreditCardRepaymentKeywordText,
   isCreditCardRepaymentLikeText,
+  isCreditCardVoucherLikeText,
   isExpenseRefundLikeText,
   signedAmountDirection,
 } from "@/lib/statement/amount-direction";
+import {
+  creditCardSummaryMeta,
+  extractCreditCardStatementSummary,
+} from "@/lib/statement/credit-card-summary";
 import {
   STATEMENT_IMPORT_FIELD_HEADERS,
   SPDB_CREDIT_CARD_TRANSACTION_REPORT_PROFILE,
@@ -294,6 +300,12 @@ export function parseStatementTemplateRows(
   const dataRows = dropTemplateSampleRows(rowsBeforeTemplateGuide(rawDataRows, guideTitleRowIndex), sampleColumnIndex);
   const spdbIndexes = matchStatementHeaderProfile(headers, SPDB_CREDIT_CARD_TRANSACTION_REPORT_PROFILE);
   const knownInstitutionName = spdbIndexes ? SPDB_CREDIT_CARD_TRANSACTION_REPORT_PROFILE.institutionName : undefined;
+  // 账单摘要与 PDF/文本通道共用同一份词表（credit-card-summary.ts）：信用卡账单里若带
+  // 「本期应还金额」，每一行都挂上，导入时就能走共用的 BillOverride 把该账期账单金额锁住。
+  const statementSummaryMeta = creditCardSummaryMeta(
+    extractCreditCardStatementSummary(rows.map((row) => row.join(" ")).join("\n")),
+  );
+  const hasStatementSummary = Object.keys(statementSummaryMeta).length > 0;
   const reader = createStatementHeaderReader(headers, fieldHeaders);
   const dateIndex = spdbIndexes?.transactionDate ?? reader.findFieldIndex("transactionDate");
   const typeIndex = reader.findIndex([...fieldHeaders.explicitType, ...fieldHeaders.majorType]);
@@ -385,12 +397,20 @@ export function parseStatementTemplateRows(
       : null;
     const postedDate = postedIndex >= 0 ? normalizeDate(row[postedIndex] ?? "") : undefined;
     const sourceText = `${typeText} ${category} ${institution} ${remark} ${rowText(row)}`;
-    const isRepayment = /转账|转帐|transfer|振替/.test(typeText)
-      || (!EXPLICIT_DIRECTION_TYPE_RE.test(typeText) && isCreditCardRepaymentLikeText(sourceText))
-      || remarkFlowType === "transfer";
+    const isRepayment = !isCreditCardVoucherLikeText(sourceText) && (
+      /转账|转帐|transfer|振替/.test(typeText)
+      || (!EXPLICIT_DIRECTION_TYPE_RE.test(typeText) && (
+        isCreditCardRepaymentLikeText(sourceText)
+        // 备注列写「口袋银行一键还款」「银联在线还款」时严格词表不命中；整行兜底时不放宽。
+        || (remarkFromColumn && isCreditCardRepaymentKeywordText(remark))
+      ))
+      || remarkFlowType === "transfer"
+    );
     const isRefund = isExpenseRefundLikeText(sourceText);
     const isSignedInflow = signedDirection === "in";
-    const isIncome = !isRefund && (/income|收入|収入/.test(typeText) || isSignedInflow);
+    // 还款券/立减券是银行补贴：无符号列的普通流水表也要落收入，不能落到支出。
+    const isIncome = isCreditCardVoucherLikeText(sourceText)
+      || (!isRefund && (/income|收入|収入/.test(typeText) || isSignedInflow));
     const rawCounterAccount = counterIndex >= 0
       ? cleanStatementCounterparty(String(row[counterIndex] ?? "").trim())
       : "";
@@ -456,9 +476,10 @@ export function parseStatementTemplateRows(
         remark,
         tags: tags || undefined,
         postedDate,
-        _meta: cardLast4 || knownInstitutionName ? {
+        _meta: cardLast4 || knownInstitutionName || hasStatementSummary ? {
           institutionName: knownInstitutionName,
           cardNumberMasked: cardLast4 || undefined,
+          ...statementSummaryMeta,
         } : undefined,
       }];
     }
@@ -496,9 +517,10 @@ export function parseStatementTemplateRows(
       postedDate,
       originalCurrency: settlementDiffers ? settlementCurrency : undefined,
       originalAmount: settlementDiffers ? settlementAmount ?? undefined : undefined,
-      _meta: cardLast4 || knownInstitutionName ? {
+      _meta: cardLast4 || knownInstitutionName || hasStatementSummary ? {
         institutionName: knownInstitutionName,
         cardNumberMasked: cardLast4 || undefined,
+        ...statementSummaryMeta,
       } : undefined,
     }];
   });

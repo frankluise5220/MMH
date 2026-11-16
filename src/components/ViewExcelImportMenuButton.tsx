@@ -1141,6 +1141,11 @@ function waitForBrowserPaint() {
   });
 }
 
+/** 上传的文件是不是 PDF 账单：扩展名优先（部分系统给不出 MIME）。 */
+function isPdfStatementFile(file: File) {
+  return file.type === "application/pdf" || /\.pdf$/i.test(file.name);
+}
+
 function statementDefaultAccountName(props: ViewExcelImportMenuButtonProps) {
   return props.kind === "normal" ? props.accountName : "";
 }
@@ -1276,6 +1281,25 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
     await waitForBrowserPaint();
     try {
       setPreviewSourceFileName(file.name);
+      // PDF 账单（信用卡电子账单等）：服务端抽文字 → 与 Excel 完全相同的识别/预览链路。
+      // 邮件附件通道与本通道共用 extractPdfContent，只是文字来源不同。
+      if (isPdfStatementFile(file)) {
+        const text = await extractPdfTextOnServer(file);
+        const latestRecognitionSamples = await refreshRecognitionSamples().catch(() => recognitionSamples);
+        const categories = await loadImportCategories();
+        const serverItems = await parseByServer(text);
+        const items = alignStatementRecognitionToLedger(
+          serverItems,
+          categories,
+          latestRecognitionSamples,
+        ).filter((item) => item.date && Number(item.amount) > 0);
+        if (items.length === 0) throw new Error(t("viewImport.noRows"));
+        setPreviewItems(items);
+        setPreviewOpen(true);
+        setPreviewTab("statement");
+        setStatus(t("viewImport.recognizedCount", { count: items.length }));
+        return;
+      }
       const billSheets = await readStatementSheetRows(file);
       const detectedKind = await detectImportFileKind(billSheets, t);
 
@@ -1411,6 +1435,21 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
       setProcessingFile(false);
       if (inputRef.current) inputRef.current.value = "";
     }
+  }
+
+  /**
+   * PDF 账单的文字抽取必须放服务端：pdf-parse 会连带 pdfjs 与原生 canvas，
+   * 一旦进了 client bundle，页面直接编译失败。抽完的文字再走同一条识别链路。
+   */
+  async function extractPdfTextOnServer(file: File) {
+    const form = new FormData();
+    form.append("file", file);
+    const res = await fetch("/api/v1/statement/parse-pdf", { method: "POST", body: form });
+    const data = await res.json().catch(() => null) as { ok?: boolean; error?: string; text?: string } | null;
+    if (!res.ok || !data?.ok || !data.text) {
+      throw new Error(data?.error || t("viewImport.recognitionFailed"));
+    }
+    return data.text;
   }
 
   async function parseByServer(text: string) {
@@ -1715,7 +1754,12 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
       <input
         ref={inputRef}
         type="file"
-        accept=".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+        accept={
+          // PDF 只能进流水通道（基金/股票页签的文件仍然是 Excel 模板）。
+          props.kind === "normal"
+            ? ".pdf,application/pdf,.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+            : ".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+        }
         className="hidden"
         onChange={(event) => {
           const file = event.target.files?.[0];

@@ -33,12 +33,25 @@ const basePath = (process.env.MMH_BASE_PATH || "").trim().replace(/\/+$/, "");
 
 const nextConfig: NextConfig = {
   output: "standalone",
+  // pdf-parse 是 ESM + CJS 双发布，内部还 require @napi-rs/canvas 的原生二进制。
+  // 一旦被 webpack 打进 server chunk，加载时就会抛
+  // "Object.defineProperty called on non-object"（2026-11-16 dev 实测），
+  // 表现为邮件里的 PDF 附件一条文字都抽不出来。交给 Node 运行时 require。
+  serverExternalPackages: ["pdf-parse"],
   // smb3-client is ESM-only and loaded through a native dynamic import in
   // src/lib/server/backup-target.ts (a plain import() is rewritten to require()
   // in CommonJS server chunks). Webpack cannot trace it, so copy the package
   // into the standalone output explicitly.
   outputFileTracingIncludes: {
     "/api/v1/settings/backup/auto": ["./node_modules/smb3-client/**/*"],
+    // pdf-parse 被 serverExternalPackages 排除出打包后，只能靠 nft 把它和
+    // 原生 canvas 复制进 standalone；否则打包产物里 require("pdf-parse") 直接
+    // 失败，PDF 附件又会变成「抽不出文字」。
+    "/api/v1/email/imap/fetch": [
+      "./node_modules/pdf-parse/**/*",
+      "./node_modules/pdfjs-dist/**/*",
+      "./node_modules/@napi-rs/canvas/**/*",
+    ],
   },
   // 左下角的 dev 浮标（圆形 N）会压在移动端弹窗底部按钮上，实测遮住「保存」文字。
   // 它只在 dev 出现，生产构建不受影响。

@@ -10,11 +10,41 @@ const STANDALONE_PAYMENT_RE = /^\s*payment\s*$/i;
 const EXPLICIT_REPAYMENT_RE =
   /\u94f6\u8054\u5165\u8d26|\u94f6\u8054\u8f6c\u8d26|\u4ed8\u6b3e\u5c3e\u53f7|\u6263\u6b3e\u5c3e\u53f7|\u8fd8\u6b3e\u5c3e\u53f7|\u81ea\u52a8\u8fd8\u6b3e|\u81ea\u52a8\u6263\u6b3e|\u4fe1\u7528\u5361\u8fd8\u6b3e|\u8fd8\u6b3e\u5165\u8d26|\u8fd8\u6b3e\u6210\u529f|\u6210\u529f\u8fd8\u6b3e|\u5df2\u8fd8\u6b3e|repayment|autopay|auto\s*pay|automatic\s+payment|payment\s+(?:received|posted|made|credited)|payment\s*[-\u2013\u2014]\s*thank\s+you|thank\s+you(?:\s+for)?(?:\s+your)?\s+payment/i;
 
+/**
+ * 银行补贴类（还款券 / 立减券 / 红包券 / 优惠券）：钱确实是银行给的，属于收入。
+ *
+ * 「还款券」描述里带「还款」二字，早先把整行当还款转移（transfer），入账金额又挂到
+ * 信用卡还款上，账面上就多出一笔假还款（2026-11-16 平安账单实测：只有「口袋银行一键还款」
+ * 与「银联在线还款」两笔是真还款，「还款券 ￥-2.58」是补贴）。所以含「券」一律先判为
+ * 补贴，不再参与还款/退款/转账判定。
+ */
+export function isCreditCardVoucherLikeText(text: string) {
+  return /\u5238/.test(String(text ?? ""));
+}
+
 export function isCreditCardRepaymentLikeText(text: string) {
   const normalized = String(text ?? "");
+  if (isCreditCardVoucherLikeText(normalized)) return false;
   return EXPLICIT_REPAYMENT_RE.test(normalized) ||
     STANDALONE_REPAYMENT_RE.test(normalized) ||
     STANDALONE_PAYMENT_RE.test(normalized);
+}
+
+const REPAYMENT_KEYWORD_RE = /\u8fd8\u6b3e|\u8fd4\u6e08|repayment|autopay|auto\s*pay/i;
+
+/**
+ * 宽口径「还款字样」：`isCreditCardRepaymentLikeText` 只认固定词组（信用卡还款/自动还款/已还款…），
+ * 账单里更常见的写法是「口袋银行一键还款」「银联在线还款」，严格词表一个都不命中，
+ * 于是同一份平安账单走 Excel 通道时这两笔真还款反而变成了收入。
+ *
+ * 只放宽「还款」这个词，不碰「转账」——备注列可能是整行兜底，裸认「转账」会把
+ * 「微信转账」这类商户名当成转账动作。含「券」的补贴照旧不算还款。
+ */
+export function isCreditCardRepaymentKeywordText(text: string) {
+  const normalized = String(text ?? "");
+  if (!normalized.trim()) return false;
+  if (isCreditCardVoucherLikeText(normalized)) return false;
+  return REPAYMENT_KEYWORD_RE.test(normalized);
 }
 
 export function isExpenseRefundLikeText(text: string) {

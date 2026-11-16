@@ -2,6 +2,7 @@ import { prisma } from "@/lib/db/prisma";
 import { addDaysUtc, formatDateInTimeZone } from "@/lib/date-utils";
 import { getHouseholdTimeZone } from "@/lib/server/household-preferences";
 import { closeImap, connectAndOpenBox, fetchMailDetail, listMails, type MailDetail } from "@/lib/mail/imap-client";
+import { buildStatementMailContent } from "@/lib/mail/statement-content";
 import { logger } from "@/lib/logger";
 
 /**
@@ -110,13 +111,8 @@ export function computeNextMonthlyRunAt(params: {
 }
 
 function buildMailContent(mail: MailDetail): string {
-  const attachmentText = (mail.attachments ?? [])
-    .filter((attachment) => attachment.text?.trim())
-    .map((attachment) => `【附件：${attachment.filename || "未命名 PDF"}】\n${attachment.text!.trim()}`)
-    .join("\n\n");
-  return [mail.html?.trim() || mail.text?.trim() || "", attachmentText]
-    .filter((part) => part && part.trim())
-    .join("\n\n");
+  // 与手动导入共用同一份整理逻辑：附件文字独占，不混入邮件 HTML。
+  return buildStatementMailContent(mail);
 }
 
 function mailImportedNote(emailAccountId: string, uid: number) {

@@ -48,6 +48,7 @@ import { statementPreviewCategorySyncKey } from "@/lib/statement/preview-categor
 import { resolveWechatTransferGuard, wechatTransferBlockMessage } from "@/lib/statement/wechat-transfer-guard";
 import { suggestTransferCounterAccountName } from "@/lib/statement/transfer-counter-account";
 import { uniqueStatementInfoTexts } from "@/lib/statement/preview-meta";
+import { compareCreditCardProfile, type CreditCardProfileMismatch } from "@/lib/statement/credit-card-summary";
 import { systemCategoryLabel } from "@/lib/system-category-labels";
 import { useI18n } from "@/lib/i18n";
 import { readAccountDisplaySettings, useAccountDisplaySettings } from "@/lib/client/account-display-settings";
@@ -77,6 +78,10 @@ type BookAccount = {
   AccountAlias?: Array<{ alias: string }> | null;
   /** 结算/贷款账户挂的往来对象：泛名「往来款」账户靠它区分「X的往来款」属于谁。 */
   Counterparty?: { id?: string | null; name?: string | null; shortName?: string | null } | null;
+  /** 信用卡档案：账单里识别出的账单日/还款日/额度与它不一致时给用户提示。 */
+  billingDay?: number | null;
+  repaymentDay?: number | null;
+  creditLimit?: number | null;
 };
 
 type BookCategory = SettingsCategory;
@@ -457,6 +462,11 @@ function findPreviewAccount(
   return null;
 }
 
+/** 账单日/还款日按「日」显示，额度按金额显示，避免同一句里出现 76000 这种裸数字。 */
+function creditProfileValueText(field: CreditCardProfileMismatch["field"], value: number) {
+  return field === "creditLimit" ? value.toFixed(2) : String(Math.round(value));
+}
+
 function canonicalizePreviewAccountValue(
   value: string | undefined | null,
   lookup: PreviewAccountLookup | null,
@@ -777,6 +787,33 @@ export function StatementImportPreviewDialog({
       : ""),
     [statementInfoTexts, t],
   );
+  // 账单里的账单日/还款日/额度与账本账户档案不一致时提醒（账本没配的字段不算误差：
+  // 导入时会按账单补上；真正对不上说明要么账户挑错了，要么账户档案过时了）。
+  const statementProfileNotice = useMemo(() => {
+    if (!accountLookup) return "";
+    const meta = rows.find(({ item }) => {
+      const value = item._meta;
+      return Boolean(
+        value
+        && (value.billingDay !== undefined || value.repaymentDay !== undefined || value.creditLimit !== undefined),
+      );
+    })?.item._meta;
+    if (!meta) return "";
+    const accounts = rows
+      .flatMap(({ item }) => [item.account, item.fromAccount, item.toAccount])
+      .map((value) => findPreviewAccount(value, accountLookup, meta))
+      .filter((account): account is BookAccount => Boolean(account));
+    const account = accounts.find((entry) => entry.kind === "bank_credit") ?? accounts[0];
+    const mismatches = compareCreditCardProfile(meta, account);
+    if (mismatches.length === 0) return "";
+    const details = mismatches
+      .map((mismatch) => t(`statementImportPreview.profileMismatch.${mismatch.field}`, {
+        statement: creditProfileValueText(mismatch.field, mismatch.statementValue),
+        account: creditProfileValueText(mismatch.field, mismatch.accountValue),
+      }))
+      .join(" / ");
+    return t("statementImportPreview.profileMismatch", { details });
+  }, [accountLookup, rows, t]);
 
   useEffect(() => {
     if (!open) return;
@@ -1933,6 +1970,17 @@ export function StatementImportPreviewDialog({
                 {statementInfoText ? (
                   <div className="shrink-0 truncate border-b border-slate-100 px-4 py-2 text-xs leading-4 text-slate-500" title={statementInfoText}>
                     {statementInfoText}
+                  </div>
+                ) : null}
+                {/* 账单与账户档案不一致（账单日/还款日/额度）：单独一行提醒，不挡住上面的账单信息。 */}
+                {statementProfileNotice ? (
+                  <div
+                    className="shrink-0 truncate border-b border-amber-100 bg-amber-50 px-4 py-2 text-xs leading-4 text-amber-700"
+                    title={statementProfileNotice}
+                    role="status"
+                    aria-live="polite"
+                  >
+                    {statementProfileNotice}
                   </div>
                 ) : null}
 

@@ -33,6 +33,7 @@ import {
   setEmailImportKeyword,
 } from "@/lib/client/settingsCache";
 import { DEFAULT_EMAIL_IMPORT_KEYWORD, normalizeEmailImportKeyword } from "@/lib/mail/email-import-settings";
+import { buildStatementMailContent } from "@/lib/mail/statement-content";
 import { inferKnownStatementMerchant } from "@/lib/statement/merchant-inference";
 import {
   formatStatementMoneyAmount as formatMoneyAmount,
@@ -816,13 +817,9 @@ export function EmailSettingsPanel({
   }
 
   function buildStatementParseContent(mail: MailDetail | null, fallbackContent = "") {
-    const attachmentText = mail?.attachments
-      ?.filter((attachment) => attachment.text?.trim())
-      .map((attachment) => `\u3010\u9644\u4ef6\uff1a${attachment.filename || "\u672a\u547d\u540d PDF"}\u3011\n${attachment.text!.trim()}`)
-      .join("\n\n");
-    return [mail?.html?.trim() || fallbackContent.trim(), attachmentText]
-      .filter((part) => part && part.trim())
-      .join("\n\n");
+    // 附件文字优先且独占：把邮件 HTML 一起塞进去会让识别器改走 HTML 分支，
+    // 认不出表头就整段放弃，最后只剩一条 amount=0 的兜底记录。
+    return buildStatementMailContent(mail) || fallbackContent.trim();
   }
 
   async function fetchMail(uid: number, autoParse = false) {

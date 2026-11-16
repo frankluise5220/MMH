@@ -18,7 +18,9 @@ import {
 import {
   inferSignedAmountInflowSign,
   isCreditCardCreditAdjustmentLikeText,
+  isCreditCardRepaymentKeywordText,
   isCreditCardRepaymentLikeText,
+  isCreditCardVoucherLikeText,
   isExpenseRefundLikeText,
   signedAmountDirection,
   type SignedAmountInflowSign,
@@ -29,6 +31,14 @@ import {
   enrichKnownStatementMerchantForImport,
 } from "@/lib/statement/import-normalization";
 import { loadStatementRecognitionRuleSamples } from "@/lib/statement/recognition-rules";
+import {
+  CREDIT_CARD_BILLING_DATE_LABELS,
+  CREDIT_CARD_CREDIT_LIMIT_LABELS,
+  CREDIT_CARD_DUE_DATE_LABELS,
+  CREDIT_CARD_MINIMUM_PAYMENT_LABELS,
+  CREDIT_CARD_STATEMENT_AMOUNT_LABELS,
+  CREDIT_CARD_STATEMENT_AMOUNT_TEMPLATE_LABELS,
+} from "@/lib/statement/credit-card-summary";
 import { SYSTEM_BANK_INSTALLMENT_EXPENSE_CATEGORY } from "@/lib/default-categories";
 import { creditCardBillingDayFromCycleEndDate } from "@/lib/credit/billing";
 
@@ -248,6 +258,16 @@ function extractAmount(text: string): number {
   return best;
 }
 
+/**
+ * 金额前是否带负号（如 `￥-874.00`、`-874.00`）。
+ *
+ * 日期里的 `2022-02-02` 也含 `-`，所以只认「货币符号 + 负号」或「空格 + 负号 + 小数」，
+ * 避免把日期当成负数金额。
+ */
+function hasNegativeMoneySign(line: string) {
+  return /[￥¥]\s*[-−]\s*\d/.test(line) || /(?<![\d:])\s[-−]\s*\d[\d,]*\.\d{2}\b/.test(line);
+}
+
 function extractDate(line: string): string | undefined {
   const m = line.match(/\b(\d{4})[-\/.年](\d{1,2})[-\/.月](\d{1,2})\b/);
   if (m) return `${m[1]}-${m[2].padStart(2,"0")}-${m[3].padStart(2,"0")}`;
@@ -268,7 +288,10 @@ function normalizeDateTimeCell(value?: string): string | undefined {
 }
 
 function isLikelyTransfer(text: string): boolean {
-  return /转账|还款|转入|转出|汇款|充值|提现|银联入账|付款尾号|扣款尾号|还款尾号|自动扣款/i.test(text);
+  // 「还款券」里带「还款」，但那是银行补贴（收入），不是还款转移。
+  if (isCreditCardVoucherLikeText(text)) return false;
+  return isCreditCardRepaymentKeywordText(text)
+    || /转账|转入|转出|汇款|充值|提现|银联入账|付款尾号|扣款尾号|还款尾号|自动扣款/i.test(text);
 }
 
 function extractPaymentTail(text: string) {
@@ -428,28 +451,16 @@ function extractDateAfterLabels(text: string, labels: string[]) {
 }
 
 function extractStatementAmount(text: string) {
-  return extractMoneyAfterLabels(text, [
-    "本期应还款金额",
-    "本期应还款总额",
-    "本期应还款",
-    "本期应缴余额",
-    "本期应还",
-    "本期余额",
-    "本期账单金额",
-    "New Balance",
-    "Total Due",
-  ], { rejectContext: isStatementAmountNoiseContext });
+  // 词表在 credit-card-summary.ts 里统一维护：各银行模板的写法都汇总到那里，
+  // 这里和 Excel/批量导入通道吃的是同一份，新增银行只补词表。
+  return extractMoneyAfterLabels(text, [...CREDIT_CARD_STATEMENT_AMOUNT_LABELS], {
+    rejectContext: isStatementAmountNoiseContext,
+  });
 }
 
 function extractCreditLimit(text: string) {
   const normalized = stripHtml(text);
-  const labels = [
-    "总授信额度",
-    "总信用额度",
-    "信用额度",
-    "固定额度",
-    "Credit Limit",
-  ];
+  const labels = CREDIT_CARD_CREDIT_LIMIT_LABELS;
 
   for (const label of labels) {
     const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -603,18 +614,30 @@ function detectBankName(text: string) {
   const normalized = text.replace(/\s+/g, "");
   const found = BANK_NAMES.find((name) => normalized.includes(name));
   if (found === "中国邮政储蓄银行") return "邮储银行";
-  return found ?? "";
+  if (found) return found;
+  // 有些账单只写「平安信用卡」「中信信用卡」，通篇没有「银行」二字；把
+  // 「信用卡/贷记卡」当「银行」再比一次，否则整张账单的机构名都是空的。
+  const aliasText = normalized.replace(/(?:银行)?信用卡|贷记卡/g, "银行");
+  const aliasFound = BANK_NAMES.find((name) => aliasText.includes(name));
+  if (aliasFound === "中国邮政储蓄银行") return "邮储银行";
+  return aliasFound ?? "";
 }
 
 function extractStatementAccountHeader(rowText: string, fallbackInstitutionName?: string) {
   const normalized = rowText.replace(/\s+/g, " ").trim();
   if (!/(?:主卡|副卡|Main Card|Supplementary Card|合计)/i.test(normalized)) return null;
 
-  const match = normalized.match(/([\u4e00-\u9fa5A-Za-z0-9·\s]{2,48}?卡)\s*[（(](\d{4})[）)]/);
+  // 「平安车主卡万事达金卡********9198」这类星号卡号也要认；此前只认「金卡（9198）」。
+  const match = normalized.match(
+    /([\u4e00-\u9fa5A-Za-z0-9·\s]{2,48}?卡)\s*(?:[（(](\d{4})[）)]|(?:\*{2,}|x{2,}|X{2,})\s*(\d{4}))/,
+  );
   if (!match) return null;
 
-  const cardTitle = match[1].replace(/\s+/g, "").trim();
-  const cardNumberMasked = match[2];
+  const cardTitle = match[1]
+    .replace(/^(?:主卡|副卡|Main\s*Card|Supplementary\s*Card)\s*/i, "")
+    .replace(/\s+/g, "")
+    .trim();
+  const cardNumberMasked = match[2] ?? match[3];
   const institutionName = detectBankName(cardTitle) || String(fallbackInstitutionName ?? "").trim();
   return {
     accountName: `${cardTitle}（${cardNumberMasked}）`,
@@ -658,15 +681,18 @@ function extractCreditCardLast4(text: string, fallbackInstitutionName?: string) 
 function extractCreditCardMeta(text: string): ParsedItemMeta & { accountName?: string } {
   const plain = stripHtml(text);
   const institutionName = detectBankName(plain);
-  const ownerName = plain.match(/尊敬的\s*([\u4e00-\u9fa5·]{2,8})\s*(?:先生|女士|小姐)?\s*您好/)?.[1]?.trim();
+  // 「尊敬的付斌先生您好」和另起一行的「付斌 先生」都是持卡人写法（平安账单是后者）。
+  // 后者只在信件头部找，避免正文里出现的「张三 先生」被当成持卡人。
+  const ownerName = plain.match(/尊敬的\s*([\u4e00-\u9fa5·]{2,8})\s*(?:先生|女士|小姐)?\s*您好/)?.[1]?.trim()
+    ?? plain.slice(0, 240).match(/(?:^|\s)([\u4e00-\u9fa5·]{2,6})\s*(?:先生|女士|小姐)(?:\s|$)/)?.[1]?.trim();
   const cardNumberMasked = extractCreditCardLast4(text, institutionName);
   const creditLimit = extractCreditLimit(plain);
   const periodMatch = plain.match(/(\d{4}[年\/\-.]\d{1,2}[月\/\-.]\d{1,2})日?\s*[-~至—]\s*(\d{4}[年\/\-.]\d{1,2}[月\/\-.]\d{1,2})日?/);
   const periodStart = parseDateParts(periodMatch?.[1] ?? "");
   const periodEnd = parseDateParts(periodMatch?.[2] ?? "");
-  const directBillingDate = extractImmediateDateAfterLabels(plain, ["本期账单日", "账单日"]);
+  const directBillingDate = extractImmediateDateAfterLabels(plain, [...CREDIT_CARD_BILLING_DATE_LABELS]);
   const directBillingDay = directBillingDate ? undefined : parseLooseNumber(plain.match(/账单日\s*[:：]?\s*(\d{1,2})\s*日?/)?.[1]);
-  const dueDate = extractDateAfterLabels(plain, ["到期还款日", "最后还款日", "还款日", "Payment Due Date", "Due Date"]);
+  const dueDate = extractDateAfterLabels(plain, [...CREDIT_CARD_DUE_DATE_LABELS]);
   const billingDay = normalizeParsedCreditCardBillingDay({
     explicitDay: directBillingDay,
     explicitDate: directBillingDate,
@@ -686,7 +712,9 @@ function extractCreditCardMeta(text: string): ParsedItemMeta & { accountName?: s
     repaymentDay,
     statementAmount,
     statementPeriodStart: periodStart?.ymd,
-    statementPeriodEnd: periodEnd?.ymd,
+    // 没有「账单周期 a—b」区间时，本期账单日就是账期结束日：账单金额要锁到这个账期，
+    // 少了它就只能按交易日期猜账期。
+    statementPeriodEnd: (periodEnd ?? directBillingDate)?.ymd,
     statementDueDate: dueDate?.ymd,
     accountName,
   };
@@ -1101,19 +1129,22 @@ function classifyCreditCardSignedAmount({
   amount: number;
   signedAmountInflowSign: SignedAmountInflowSign | null;
 }) {
+  const isVoucher = isCreditCardVoucherLikeText(transferText);
   const isRepaymentTransfer = isCreditCardRepaymentLike(transferText);
   const isExpenseRefund = isExpenseRefundLike(transferText);
   const signedDirection = signedAmountDirection(amount, signedAmountInflowSign);
   const isSignedInflow = signedDirection === "in";
   const isCreditIn = isCreditCardCreditInLike(transferText);
   const type: ParsedItem["type"] =
-    isRepaymentTransfer || isLikelyTransfer(description)
-      ? "transfer"
-      : isExpenseRefund
-        ? "expense"
-        : isCreditIn || isSignedInflow
-          ? "income"
-          : "expense";
+    isVoucher
+      ? "income"
+      : isRepaymentTransfer || isLikelyTransfer(description)
+        ? "transfer"
+        : isExpenseRefund
+          ? "expense"
+          : isCreditIn || isSignedInflow
+            ? "income"
+            : "expense";
 
   return {
     type,
@@ -1378,7 +1409,7 @@ function extractIcbcCreditCardMeta(text: string): ParsedItemMeta & { accountName
   const period = extractStatementPeriod(plain);
   const paymentSummary = extractIcbcPaymentSummary(text);
   const cardNumberMasked = paymentSummary.cardNumberMasked || extractCreditCardLast4(text, "工商银行");
-  const directDueDate = extractDateAfterLabels(plain, ["到期还款日", "最后还款日", "还款日", "Payment Due Date", "Due Date"]);
+  const directDueDate = extractDateAfterLabels(plain, [...CREDIT_CARD_DUE_DATE_LABELS]);
   const derivedDueDate = directDueDate?.ymd ?? addDaysToYmd(period?.end.ymd, 25);
   const dueParts = parseDateParts(derivedDueDate);
   const accountName = cardNumberMasked ? `工商银行信用卡(${cardNumberMasked})` : "工商银行信用卡";
@@ -1682,13 +1713,8 @@ function normalizeCmbDate(value: string | undefined, period: ReturnType<typeof e
 function extractCmbCreditCardMeta(text: string): ParsedItemMeta & { accountName?: string } {
   const plain = stripHtml(text);
   const period = extractCmbStatementPeriod(text);
-  const statementAmount = extractCmbLabeledMoney(text, [
-    "本期应还金额",
-    "本期应还总额",
-    "本期应还",
-    "应还金额",
-  ]);
-  const minimumPayment = extractCmbLabeledMoney(text, ["最低还款额"]);
+  const statementAmount = extractCmbLabeledMoney(text, [...CREDIT_CARD_STATEMENT_AMOUNT_TEMPLATE_LABELS]);
+  const minimumPayment = extractCmbLabeledMoney(text, [...CREDIT_CARD_MINIMUM_PAYMENT_LABELS]);
   const creditLimit = extractCreditLimit(plain);
   // CMB summary carries no masked card number; the card last-4 only appears in
   // the transaction rows (multi-card statements). Do not use the generic
@@ -2001,15 +2027,10 @@ function extractMinshengLabeledMoney(text: string, labels: string[]) {
 function extractMinshengCreditCardMeta(text: string): ParsedItemMeta & { accountName?: string } {
   const plain = stripHtml(text);
   const period = extractStatementPeriod(text);
-  const billingDay = extractDateAfterLabels(plain, ["本期账单日"]);
-  const dueDate = extractDateAfterLabels(plain, ["本期最后还款日", "最后还款日"]);
-  const statementAmount = extractMinshengLabeledMoney(plain, [
-    "本期应还金额",
-    "本期应还款金额",
-    "本期应还款总额",
-    "应还金额",
-  ]);
-  const minimumPayment = extractMinshengLabeledMoney(plain, ["最低还款额"]);
+  const billingDay = extractDateAfterLabels(plain, [...CREDIT_CARD_BILLING_DATE_LABELS]);
+  const dueDate = extractDateAfterLabels(plain, [...CREDIT_CARD_DUE_DATE_LABELS]);
+  const statementAmount = extractMinshengLabeledMoney(plain, [...CREDIT_CARD_STATEMENT_AMOUNT_TEMPLATE_LABELS]);
+  const minimumPayment = extractMinshengLabeledMoney(plain, [...CREDIT_CARD_MINIMUM_PAYMENT_LABELS]);
   const creditLimit = extractCreditLimit(plain);
   const cardNumberMasked = extractCreditCardLast4(plain, "民生银行");
   const ownerName = plain.match(/尊敬的\s*([\u4e00-\u9fa5·]{2,8})\s*(?:先生|女士|小姐)?/)?.[1]?.trim();
@@ -2718,6 +2739,26 @@ function parseStructuredStatement(text: string): ParsedItem[] {
   const sourceText = /<[^>]+>/.test(text) ? htmlToLooseText(text) : text;
   const lines = sourceText.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
   const items: ParsedItem[] = [];
+  // 信用卡账单里带负号的金额是退款/还款（减少本期应还），不是消费；储蓄卡流水
+  // 恰好相反（负号=支出），所以只在信用卡语境下反转方向。
+  const isCreditCardContext = /信用卡|本期应还|最低应还|信用额度|credit\s*card/i.test(sourceText);
+  // 没有专用模板的信用卡账单（平安/兴业等纯文本 PDF）也要带出账单摘要：
+  // 本期应还金额用于导入时锁定该账期的账单金额，账单日/还款日/额度用于补账户档案。
+  const creditCardMeta = isCreditCardContext ? extractCreditCardMeta(text) : null;
+  const creditCardItemMeta: ParsedItemMeta | undefined = creditCardMeta
+    ? {
+        institutionName: creditCardMeta.institutionName,
+        ownerName: creditCardMeta.ownerName,
+        cardNumberMasked: creditCardMeta.cardNumberMasked,
+        creditLimit: creditCardMeta.creditLimit,
+        billingDay: creditCardMeta.billingDay,
+        repaymentDay: creditCardMeta.repaymentDay,
+        statementAmount: creditCardMeta.statementAmount,
+        statementPeriodStart: creditCardMeta.statementPeriodStart,
+        statementPeriodEnd: creditCardMeta.statementPeriodEnd,
+        statementDueDate: creditCardMeta.statementDueDate,
+      }
+    : undefined;
 
   for (const line of lines) {
     if (isNoiseLine(line)) continue;
@@ -2728,14 +2769,16 @@ function parseStructuredStatement(text: string): ParsedItem[] {
     if (amount === 0) continue;
 
     const { counterparty, category, institution } = aliasMatch(line);
+    // 还款券/立减券这类银行补贴直接记收入：既不是还款（transfer），也不是退款。
+    const isVoucher = isCreditCardVoucherLikeText(line);
     const isRepaymentTransfer = isCreditCardRepaymentLike(line);
-    const isExpenseRefund = isExpenseRefundLike(line);
-    const isIncome = !isExpenseRefund && /收入|工资|报销|退款|返现|返利|到账|奖金|红包/i.test(line);
-    const isTransfer = isRepaymentTransfer || isLikelyTransfer(line);
+    const isExpenseRefund = !isVoucher && (isExpenseRefundLike(line) || (isCreditCardContext && hasNegativeMoneySign(line)));
+    const isIncome = !isVoucher && !isExpenseRefund && /收入|工资|报销|退款|返现|返利|到账|奖金|红包/i.test(line);
+    const isTransfer = !isVoucher && (isRepaymentTransfer || isLikelyTransfer(line));
     const paymentFromAccount = isTransfer ? paymentTailAccountName(line) : "";
     const transferAccounts = isTransfer ? extractDelimitedTransferAccounts(line) : null;
 
-    const type = isTransfer ? "transfer" : isIncome ? "income" : "expense";
+    const type = isVoucher ? "income" : isTransfer ? "transfer" : isIncome ? "income" : "expense";
     const transferDirection = transferAccounts?.transferDirection;
 
     items.push({
@@ -2753,6 +2796,7 @@ function parseStructuredStatement(text: string): ParsedItem[] {
       toAccount: transferAccounts?.toAccount || undefined,
       transferDirection,
       remark: line,
+      _meta: creditCardItemMeta,
     });
   }
 
@@ -2794,6 +2838,11 @@ function normalizeExplicitStatementFlowDirections(items: ParsedItem[]) {
 
     const hasExplicitOutflow = /[（(]\s*(?:支出|转出)\s*[）)]/.test(source) || /(?:^|\s)(?:消费|取现)(?:\s|$)/.test(source);
     const hasExplicitInflow = /[（(]\s*(?:存入|收入|转入)\s*[）)]/.test(source);
+    // 还款券/立减券是银行补贴，落到收入；无论前面哪条分支把它当成了还款或退款。
+    if (isCreditCardVoucherLikeText(source)) {
+      return { ...item, type: "income" as const, amount, inflow: amount, outflow: undefined, transferDirection: undefined };
+    }
+
     const isRepaymentTransfer = isCreditCardRepaymentLike(source);
     const isRefund = isExpenseRefundLike(source) || /(?:^|\s)(?:退款|退货|撤销|冲正)(?:\s|$)/.test(source);
 

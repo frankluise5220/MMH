@@ -51,7 +51,9 @@ import {
 import {
   inferSignedAmountInflowSign,
   isCreditCardCreditAdjustmentLikeText,
+  isCreditCardRepaymentKeywordText,
   isCreditCardRepaymentLikeText,
+  isCreditCardVoucherLikeText,
   isExpenseRefundLikeText,
   signedAmountDirection,
 } from "@/lib/statement/amount-direction";
@@ -586,6 +588,8 @@ function isExpenseRefundImportText(source: string) {
 }
 
 function inferBillType(source: string, inflow: number, outflow: number, counterAccount: string): ParsedItem["type"] {
+  // 先认补贴券：下面的 /还款/ 兜底正则会把「还款券」误判成转账。
+  if (isCreditCardVoucherLikeText(source)) return "income";
   if (isExpenseRefundImportText(source)) return "expense";
   if (/结息|利息|派息|收入|収入|工资|給与|报销|返现|返利|credit/i.test(source)) return "income";
   if (/转入|转进|他行转入|账户转入|转出|转账|转给|转到|汇款|跨行转账|取现|还款|振替|返済|repayment|payment/i.test(source)) return "transfer";
@@ -925,7 +929,9 @@ function normalRowsToItems(
     const secondRemark = readAny(row, fieldHeaders.secondRemark);
     const rowText = row.join(" ");
     let source = `${majorTypeText} ${majorType ?? ""} ${explicitType} ${category} ${institution} ${remark} ${secondRemark} ${counterAccount} ${account} ${rowText}`;
-    const creditCardRepaymentLike = isCreditCardRepaymentLikeText(source) || /自动还款|自动扣款|银联转账|银联入账|云闪付|autopay/i.test(source);
+    const creditCardRepaymentLike = isCreditCardRepaymentLikeText(source)
+      || isCreditCardRepaymentKeywordText(source)
+      || /自动扣款|银联转账|银联入账|云闪付/i.test(source);
     if (importMode === "credit_card" && !counterAccount.trim() && creditCardRepaymentLike) {
       counterAccount = importCreditCardPaymentSourceHint(source);
       source = `${majorTypeText} ${majorType ?? ""} ${explicitType} ${category} ${institution} ${remark} ${secondRemark} ${counterAccount} ${account} ${rowText}`;

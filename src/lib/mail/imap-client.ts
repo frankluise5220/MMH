@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { connect as netConnect, type Socket as NetSocket } from "node:net";
 import { connect as tlsConnect, type TLSSocket } from "node:tls";
 import type { Readable } from "stream";
-import { extractPdfText } from "@/lib/mail/pdf";
+import { extractPdfContent } from "@/lib/mail/pdf";
 import { extractSpreadsheetText } from "@/lib/mail/spreadsheet";
 
 type ImapConfig = {
@@ -734,22 +734,43 @@ export async function fetchMailDetail(target: MailClient["client"] | MailClient,
     }
 
     try {
-      const text = isPdf ? await extractPdfText(content) : await extractSpreadsheetText(content);
+      if (isPdf) {
+        const pdf = await extractPdfContent(content);
+        const text = pdf.text;
+        return {
+          id: String(index),
+          filename,
+          contentType,
+          size: attachment.size ?? content.length,
+          text: text || undefined,
+          parseError: text
+            ? undefined
+            : pdf.error
+            ? /password|encrypt/i.test(pdf.error)
+              ? "PDF is password-protected. Remove the password and import again."
+              : `PDF text extraction failed: ${pdf.error}`
+            : "No text layer found: this PDF is likely a scanned image.",
+        };
+      }
+      const text = await extractSpreadsheetText(content);
       return {
         id: String(index),
         filename,
         contentType,
         size: attachment.size ?? content.length,
         text: text || undefined,
-        parseError: text ? undefined : isPdf ? "No text was extracted from the PDF." : "No table text was extracted from the spreadsheet.",
+        parseError: text ? undefined : "No table text was extracted from the spreadsheet.",
       };
-    } catch {
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error ?? "");
       return {
         id: String(index),
         filename,
         contentType,
         size: attachment.size ?? content.length,
-        parseError: isPdf ? "PDF text extraction failed. The file may be scanned or encrypted." : "Spreadsheet reading failed. The file may be encrypted or malformed.",
+        parseError: isPdf
+          ? `PDF text extraction failed: ${message || "unknown error"}`
+          : "Spreadsheet reading failed. The file may be encrypted or malformed.",
       };
     }
   }));
