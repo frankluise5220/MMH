@@ -157,17 +157,16 @@ type AccountBatchImportButtonProps = {
   counterparties: Array<{ id: string; name: string; shortName?: string | null; type?: string | null }>;
   baseCurrency: string;
   onImported: () => void;
-  /** 紧凑模式：按钮高 28px（`--ft-tab-filter-h`），用于挂在 FT 页签条右端。 */
-  compact?: boolean;
-  /** 按钮 tooltip。基本资料页用来说明「这是整套基础资料模板的导出/导入」，不传则不加 title。 */
+  /**
+   * 按钮 tooltip。基本资料页用来说明「这是整套基础资料模板的导出/导入」，不传则不加 title。
+   *
+   * 形态**只有一种**：一枚「导入 / 导出」下拉按钮，菜单里是「导出模板」「导入 Excel」两项。
+   * 账户页筛选工具栏与基本资料四页（家庭成员 / 往来对象 / 机构 / 标签）共用这一形态
+   * （2026-11-16 用户：「有的合在一个组件里，有的是分开，都统一成一个组件」）；不要再加
+   * `variant` 之类的第二形态，两处再各写一遍就会重新长歪。
+   */
   exportTemplateTitle?: string;
   importExcelTitle?: string;
-  /**
-   * 渲染形态：
-   * - `inline`（默认）：导出模板 / 导入 Excel 两个并排按钮；
-   * - `menu`：合并成一枚下拉按钮，两项收进菜单里（工具栏空间紧张时用）。
-   */
-  variant?: "inline" | "menu";
 };
 
 type Translate = (key: string, params?: Record<string, string | number>) => string;
@@ -2483,14 +2482,12 @@ export function AccountBatchImportButton({
   counterparties,
   baseCurrency,
   onImported,
-  compact = false,
   exportTemplateTitle,
   importExcelTitle,
-  variant = "inline",
 }: AccountBatchImportButtonProps) {
   const { t } = useI18n();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  // `variant="menu"`: 导出/导入收进一枚下拉按钮，展开状态自管。
+  // 导出/导入收进一枚下拉按钮，展开状态自管。
   const [menuOpen, setMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const [open, setOpen] = useState(false);
@@ -3276,75 +3273,53 @@ export function AccountBatchImportButton({
           event.target.value = "";
         }}
       />
-      {variant === "menu" ? (
-        <div ref={menuRef} className="relative shrink-0">
-          <button
-            type="button"
-            onClick={() => setMenuOpen((value) => !value)}
-            aria-haspopup="menu"
-            aria-expanded={menuOpen}
-            className={`inline-flex ${compact ? "h-7" : "h-8"} shrink-0 items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-600 shadow-sm transition-colors hover:bg-slate-50`}
+      {/* 唯一形态：一枚「导入 / 导出」下拉按钮（账户页工具栏与基本资料四页共用）。 */}
+      <div ref={menuRef} className="relative shrink-0">
+        <button
+          type="button"
+          onClick={() => setMenuOpen((value) => !value)}
+          aria-haspopup="menu"
+          aria-expanded={menuOpen}
+          className="inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-600 shadow-sm transition-colors hover:bg-slate-50"
+        >
+          <Download className="h-3.5 w-3.5 text-slate-400" aria-hidden="true" />
+          {t("settings.accounts.importExport")}
+          <ChevronDown className={`h-3 w-3 shrink-0 text-slate-400 transition-transform ${menuOpen ? "rotate-180" : ""}`} aria-hidden="true" />
+        </button>
+        {menuOpen ? (
+          <div
+            role="menu"
+            className="absolute right-0 top-full z-50 mt-1 w-36 rounded-lg border border-slate-200 bg-white p-1 shadow-soft"
           >
-            <Download className="h-3.5 w-3.5 text-slate-400" aria-hidden="true" />
-            {t("settings.accounts.importExport")}
-            <ChevronDown className={`h-3 w-3 shrink-0 text-slate-400 transition-transform ${menuOpen ? "rotate-180" : ""}`} aria-hidden="true" />
-          </button>
-          {menuOpen ? (
-            <div
-              role="menu"
-              className="absolute right-0 top-full z-50 mt-1 w-36 rounded-lg border border-slate-200 bg-white p-1 shadow-soft"
+            <button
+              type="button"
+              role="menuitem"
+              title={exportTemplateTitle}
+              onClick={() => {
+                setMenuOpen(false);
+                void downloadTemplate();
+              }}
+              className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-slate-600 transition-colors hover:bg-slate-50"
             >
-              <button
-                type="button"
-                role="menuitem"
-                title={exportTemplateTitle}
-                onClick={() => {
-                  setMenuOpen(false);
-                  void downloadTemplate();
-                }}
-                className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-slate-600 transition-colors hover:bg-slate-50"
-              >
-                <Download className="h-3.5 w-3.5 shrink-0 text-slate-400" aria-hidden="true" />
-                {t("settings.accounts.exportTemplate")}
-              </button>
-              <button
-                type="button"
-                role="menuitem"
-                title={importExcelTitle}
-                onClick={() => {
-                  setMenuOpen(false);
-                  fileInputRef.current?.click();
-                }}
-                className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-slate-600 transition-colors hover:bg-blue-50"
-              >
-                <FileUp className="h-3.5 w-3.5 shrink-0 text-slate-400" aria-hidden="true" />
-                {t("settings.accounts.importExcel")}
-              </button>
-            </div>
-          ) : null}
-        </div>
-      ) : (
-        <>
-          <button
-            type="button"
-            title={exportTemplateTitle}
-            onClick={() => void downloadTemplate()}
-            className={`inline-flex ${compact ? "h-7" : "h-8"} shrink-0 items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-600 shadow-sm transition-colors hover:bg-slate-50`}
-          >
-            <Download className="h-3.5 w-3.5" />
-            {t("settings.accounts.exportTemplate")}
-          </button>
-          <button
-            type="button"
-            title={importExcelTitle}
-            onClick={() => fileInputRef.current?.click()}
-            className={`inline-flex ${compact ? "h-7" : "h-8"} shrink-0 items-center gap-1.5 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-600 shadow-sm transition-colors hover:bg-blue-50`}
-          >
-            <FileUp className="h-3.5 w-3.5" />
-            {t("settings.accounts.importExcel")}
-          </button>
-        </>
-      )}
+              <Download className="h-3.5 w-3.5 shrink-0 text-slate-400" aria-hidden="true" />
+              {t("settings.accounts.exportTemplate")}
+            </button>
+            <button
+              type="button"
+              role="menuitem"
+              title={importExcelTitle}
+              onClick={() => {
+                setMenuOpen(false);
+                fileInputRef.current?.click();
+              }}
+              className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-xs text-slate-600 transition-colors hover:bg-blue-50"
+            >
+              <FileUp className="h-3.5 w-3.5 shrink-0 text-slate-400" aria-hidden="true" />
+              {t("settings.accounts.importExcel")}
+            </button>
+          </div>
+        ) : null}
+      </div>
       {dialog}
     </>
   );

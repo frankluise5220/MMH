@@ -2382,12 +2382,11 @@ export default function SettingsAccountsPage() {
                 />
                 <span>{t("settings.accounts.hideInactiveAccounts")}</span>
               </label>
-              {/* 「导出模板 / 导入 EXCEL」与「表头设置」跟在筛选胶囊后面；`ml-auto` 把这组
+              {/* 「导入 / 导出」与「表头设置」跟在筛选胶囊后面；`ml-auto` 把这组
                   推到所在行的最右端 —— 表头设置永远贴右边缘（与右上角胶囊同一条竖线），
                   和其他表格一致；宽度不够时整组换到下一行，仍贴右。 */}
               <div className="ml-auto flex shrink-0 items-center gap-2">
                 <AccountBatchImportButton
-                  variant="menu"
                   groups={groups}
                   institutions={institutions}
                   counterparties={counterparties}

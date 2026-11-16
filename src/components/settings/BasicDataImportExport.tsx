@@ -132,7 +132,7 @@ export function BasicDataSubmenuHeader({ children }: { children?: ReactNode }) {
 }
 
 /**
- * 基本资料页的「导出模板 / 导入 EXCEL」入口。
+ * 基本资料页的「导入 / 导出」入口。
  *
  * 复用账户页那套批量导入组件，只是基础资料（机构 / 往来对象 / 家庭成员 / 基准币种）由这里
  * 自己按需取（`fetchSettingsAccountData` 带缓存，四个子页共用一份请求）。
@@ -140,6 +140,10 @@ export function BasicDataSubmenuHeader({ children }: { children?: ReactNode }) {
  * 2026-11-04 用户：「把导出与导入放到新增左边，鼠标放上去的时候提示这是整个基础资料的
  * 模板导出和导入」——所以不再挂 FT 页签条右端（`BasicDataSubmenuHeader` 的 children），
  * 而是由各页放进 `SettingsSection.actions` 的 `addButton` 之前，并带 tooltip 说明作用域。
+ *
+ * 形态与账户页完全一致：一枚「导入 / 导出」下拉按钮，`exportTemplateTitle` /
+ * `importExcelTitle` 的 tooltip 挂在菜单两项上（2026-11-16 用户要求两处统一，不要在这里
+ * 另挂一排「导出模板 + 导入 EXCEL」的并排按钮）。
  */
 export function BasicDataImportExportActions({ onImported, className }: { onImported?: () => void; className?: string }) {
   const { t } = useI18n();
@@ -172,7 +176,7 @@ export function BasicDataImportExportActions({ onImported, className }: { onImpo
 
   return (
     <div className={className ? `${className} items-center gap-2` : "flex items-center gap-2"}>
-      {/* 放进卡片标题栏后与「新增」等按钮同高（不再用 compact 的 28px 页签条高度）。 */}
+      {/* 与「新增」等按钮同高；形态由 AccountBatchImportButton 自己决定（单枚下拉）。 */}
       <AccountBatchImportButton
         exportTemplateTitle={t("settings.basicData.templateTip")}
         importExcelTitle={t("settings.basicData.importTip")}
