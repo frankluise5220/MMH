@@ -16,7 +16,7 @@ import {
   type ReactNode,
   type UIEvent as ReactUIEvent,
 } from "react";
-import { GripVertical, SlidersHorizontal, Trash2 } from "lucide-react";
+import { ArrowRightLeft, GripVertical, SlidersHorizontal, Trash2 } from "lucide-react";
 import { DateRangeColumnFilter, NumberRangeColumnFilter, TableColumnFilter, TextColumnFilter } from "./TableColumnFilter";
 import { DateRangeSliderFilter } from "./DateRangeSliderFilter";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -78,6 +78,15 @@ export const ADVANCED_TABLE_HEAD_SURFACE_CLASS = "bg-[#fbfaf7]";
  */
 export const ADVANCED_TABLE_BODY_SURFACE_CLASS = "bg-white";
 const ROW_ACTIONS_COMPACT_CLASS = " [&_button]:min-h-0 [&_button]:max-h-5";
+/**
+ * 控制列（勾选框 + 反选按钮）的固定宽度。
+ * 表头：勾选框 14 + 间距 4 + 反选按钮 20 = 38，加 `px-1`（8）刚好 46 ≤ 48；
+ * 表体：勾选框 14 + `px-2`（16）= 30，多出来的余量给行内其它微元素。
+ * 有行拖拽手柄时再加一个手柄位（手柄 16 + 间距 4）。
+ */
+const SELECT_CONTROL_WIDTH = 48;
+const SELECT_CONTROL_WIDTH_WITH_DRAG = 56;
+const ROW_DRAG_CONTROL_WIDTH = 30;
 /**
  * 兜底上限：只约束**没走比例等式**的按钮（如设置页的 SettingsActionButton 自带
  * 移动端 40px 触达尺寸），别让它们撑破行高。按比例算出来的按钮永远小于这些上限。
@@ -2171,7 +2180,9 @@ export function AdvancedDataTable<T>({
   const resizeGrowsTableEffective = useMemo(() => {
     if (resizeGrowsTable) return true;
     if (viewportWidth <= 0) return false;
-    const controlWidth = selectable ? (draggableRows ? 58 : 38) : (draggableRows ? 30 : 0);
+    const controlWidth = selectable
+      ? (draggableRows ? SELECT_CONTROL_WIDTH_WITH_DRAG : SELECT_CONTROL_WIDTH)
+      : (draggableRows ? ROW_DRAG_CONTROL_WIDTH : 0);
     const declaredColumnsTotal = visibleColumns.reduce(
       (sum, column) => sum + Math.max(column.minWidth ?? 52, column.width),
       0,
@@ -2180,7 +2191,9 @@ export function AdvancedDataTable<T>({
   }, [draggableRows, minTableWidth, resizeGrowsTable, selectable, viewportWidth, visibleColumns]);
 
   const layout = useMemo(() => {
-    const controlWidth = selectable ? (draggableRows ? 58 : 38) : (draggableRows ? 30 : 0);
+    const controlWidth = selectable
+      ? (draggableRows ? SELECT_CONTROL_WIDTH_WITH_DRAG : SELECT_CONTROL_WIDTH)
+      : (draggableRows ? ROW_DRAG_CONTROL_WIDTH : 0);
     const baseWidths = visibleColumns.map((column) => {
       const saved = columnWidths[column.key];
       const defaultMinWidth = column.minWidth ?? 52;
@@ -2761,6 +2774,21 @@ export function AdvancedDataTable<T>({
     const next = new Set(selectedSelectableKeys);
     if (checked) next.add(key);
     else next.delete(key);
+    setSelection(next);
+  }
+
+  /**
+   * 反选**当前可见行**：只翻转这一屏（当前页 + 当前筛选/排序结果）里可勾选的行，
+   * 不跨页扩散 —— 用户看到哪些行就反哪些行，翻到别页已勾选的记录保持原样。
+   * （与「全选」不同，这里不走 selectAllPreferred：反选就是逐行取反，所见即所得。）
+   */
+  function invertVisibleSelection() {
+    const next = new Set(effectiveSelectedKeys);
+    for (const { row, index, key } of displayRowItems) {
+      if (!(rowSelectable?.(row, index) ?? true)) continue;
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+    }
     setSelection(next);
   }
 
@@ -3739,19 +3767,35 @@ export function AdvancedDataTable<T>({
             </colgroup>
             <thead className={ADVANCED_TABLE_HEAD_SURFACE_CLASS}>
               <tr data-advanced-table-header-row style={{ height: rowHeight }}>
+                {/* 勾选列的表头多一个「反选」按钮，所以内边距比表体紧一档（px-1），
+                    否则勾选框 + 反选按钮放不进控制列。 */}
                 {(selectable || draggableRows) ? (
-                  <th className={`border-b border-slate-200 text-center ${selectPaddingClass}`}>
+                  <th className={`border-b border-slate-200 text-center ${selectable ? "px-1" : selectPaddingClass}`}>
                     {selectable ? (
-                      <input
-                        type="checkbox"
-                        checked={allSelected}
-                        ref={(input) => {
-                          if (input) input.indeterminate = partiallySelected;
-                        }}
-                        onChange={(event) => toggleAllRows(event.target.checked)}
-                        className="h-3.5 w-3.5 rounded border-slate-300"
-                        aria-label={t("table.selectAll")}
-                      />
+                      <div className="flex items-center justify-center gap-1">
+                        <input
+                          type="checkbox"
+                          checked={allSelected}
+                          ref={(input) => {
+                            if (input) input.indeterminate = partiallySelected;
+                          }}
+                          onChange={(event) => toggleAllRows(event.target.checked)}
+                          className="h-3.5 w-3.5 shrink-0 rounded border-slate-300"
+                          aria-label={t("table.selectAll")}
+                        />
+                        {/* 反选只作用于当前可见行（当前页），不跨页 —— 见 invertVisibleSelection。 */}
+                        <button
+                          type="button"
+                          onClick={invertVisibleSelection}
+                          disabled={displayRowItems.length === 0}
+                          title={t("table.invertSelectionHint")}
+                          aria-label={t("table.invertSelection")}
+                          data-advanced-table-invert-selection
+                          className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-slate-500 transition-colors hover:bg-slate-200/70 hover:text-blue-600 disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          <ArrowRightLeft className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
                     ) : null}
                   </th>
                 ) : null}
