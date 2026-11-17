@@ -15,16 +15,24 @@ import {
   BasicDetailBatchDeleteButton,
   BasicDetailBatchDeleteMessage,
   BasicDetailBatchReplaceButton,
+  BasicDetailConvertButton,
+  BasicDetailConvertWatcher,
   BasicDetailSelectionProvider,
   useBasicDetailSelection,
   usePruneBasicDetailSelection,
   type BasicDetailBatchCategoryOption,
+  type ConvertSourceEntry,
 } from "./BasicDetailSelection";
 import { formatMoney } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
 import { pnlClassFromRedUp } from "@/lib/client/colors";
 import { showConfirmDialog } from "@/lib/client/confirm-dialog";
-import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
+import {
+  dispatchFinanceDataChanged,
+  financeChangeTouchesEntries,
+  FINANCE_DATA_CHANGED_EVENT,
+  type FinanceDataChangedDetail,
+} from "@/lib/client/refresh";
 import { useEntryReconcileState } from "@/lib/client/use-entry-reconcile-state";
 import {
   buildMortgageLprRateAdjustments,
@@ -92,9 +100,12 @@ type LiabilityEntry = {
   id: string;
   date: string;
   typeLabel: string;
-  relatedAccountLabel: string;
-  relatedAccountTitle?: string;
   collateralLabel?: string | null;
+  /** 两端账户：流出侧恒在前、流入侧在后（空串＝这类行没有两端账户，如余额校准）。 */
+  fromAccountLabel: string;
+  fromAccountTitle?: string;
+  toAccountLabel: string;
+  toAccountTitle?: string;
   /** 已被报销单关联：明细行显示报销进度三步标识，悬停看到单据标题。 */
   reimbursementLink?: { id: string; title: string; stage: ReimbursementStage } | null;
   note: string;
@@ -153,6 +164,46 @@ type LiabilityEntry = {
     toAccountId?: string;
   };
 };
+
+/**
+ * 往来款 / 借款明细行 → 「转换交易」的输入行。
+ *
+ * 这些行本身是「资金账户 ↔ 往来款（借款）账户」的转账，行上没有账户种类字段，
+ * 可用的信息在 `liabilityEdit`（双击编辑时派发的往来款事件负载）里：债务侧账户、
+ * 资金侧账户、日期、金额。余额校准行没有可转换的业务语义，返回 null。
+ */
+function liabilityConvertSourceEntry(entry: LiabilityEntry, reconciled: boolean): ConvertSourceEntry | null {
+  const liabilityEdit = entry.liabilityEdit;
+  if (liabilityEdit) {
+    return {
+      id: entry.id,
+      type: "transfer",
+      date: liabilityEdit.defaultDate,
+      amount: Math.abs(liabilityEdit.defaultPrincipal || entry.amount),
+      note: liabilityEdit.defaultNote ?? entry.note,
+      // 债务侧账户：转换到别的往来款类型时直接落在同一对象上。
+      accountId: liabilityEdit.defaultLiabilityAccountId,
+      accountKind: liabilityEdit.dialogType === "loan" ? "loan" : "settlement",
+      accountIsSettlementAccount: liabilityEdit.dialogType !== "loan",
+      cashAccountId: liabilityEdit.defaultCashAccountId,
+      reconciledAt: reconciled ? entry.date : null,
+    };
+  }
+  if (entry.edit) {
+    return {
+      id: entry.id,
+      type: entry.edit.type,
+      date: entry.edit.date,
+      amount: Math.abs(entry.edit.amount ?? entry.amount),
+      note: entry.edit.note ?? entry.note,
+      accountId: entry.edit.accountId,
+      cashAccountId: entry.edit.type === "transfer" ? entry.edit.fromAccountId : entry.edit.accountId,
+      toAccountId: entry.edit.toAccountId,
+      reconciledAt: reconciled ? entry.date : null,
+    };
+  }
+  return null;
+}
 
 type RepaymentScheduleRow = {
   rowType: "payment" | "rate_adjustment";
@@ -232,6 +283,8 @@ function formatDiscountValue(discount: number) {
 }
 
 const SETTLED_LIABILITY_EPSILON = 0.005;
+/** 「显示已还完」勾选状态的本地记忆键（纯设备视图状态，不进 HouseholdPreference）。 */
+const SHOW_SETTLED_ROWS_STORAGE_KEY = "mmh:liability:showSettledRows";
 
 function isSettledLiabilityRow(row: LiabilityRow) {
   return Math.abs(row.net) < SETTLED_LIABILITY_EPSILON && row.payable + row.receivable < SETTLED_LIABILITY_EPSILON;
@@ -486,10 +539,17 @@ export function LiabilityShell({
   const [rebuildDialog, setRebuildDialog] = useState<{ effectiveDate: string; preview: LoanRebuildPreview } | null>(null);
   const [rebuildRemainingRuns, setRebuildRemainingRuns] = useState("");
   const [rebuildBusy, setRebuildBusy] = useState(false);
-  const [showSettledRows, setShowSettledRows] = useState(() => {
-    const selected = rows.find((row) => row.key === selectedKey);
-    return selected ? isSettledLiabilityRow(selected) : false;
-  });
+  // 「显示已还完」是用户自己的视图开关，不该由选中行决定：以前只要选中的是已结清对象
+  // 就会自动勾上，刷新后永远勾着（2026-11-17 用户报的）。默认收起，用户勾选后记在本机。
+  const [showSettledRows, setShowSettledRows] = useState(false);
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem(SHOW_SETTLED_ROWS_STORAGE_KEY);
+      if (stored != null) setShowSettledRows(stored === "1");
+    } catch {
+      // 隐私模式下 localStorage 可能抛错，保持默认收起即可。
+    }
+  }, []);
   const [expandedLiabilityRowKeys, setExpandedLiabilityRowKeys] = useState<Set<string>>(() => new Set());
   const [editingLiabilityAccount, setEditingLiabilityAccount] = useState<AccountQuickEditValue | null>(null);
   const [editingLoanDetails, setEditingLoanDetails] = useState<LoanQuickEditValue | null>(null);
@@ -500,8 +560,10 @@ export function LiabilityShell({
   const selfSelectedRowKeyRef = useRef<string | null>(null);
   /** 需要把某一行滚进视口的一次性请求（键 + 递增 id，同一行也能再次请求）。 */
   const [rowScrollRequest, setRowScrollRequest] = useState<{ key: string; id: number } | null>(null);
+  // 收起「显示已还完」时直接过滤掉已结清行；是否展开只由用户勾选决定，
+  // 不再由选中的行反向改写这个开关（见上面的 showSettledRows 说明）。
   const baseRows = useMemo(
-    () => showSettledRows ? rows : rows.filter((row) => !isSettledLiabilityRow(row)),
+    () => (showSettledRows ? rows : rows.filter((row) => !isSettledLiabilityRow(row))),
     [rows, showSettledRows],
   );
   const childrenByParentKey = useMemo(() => collectLiabilityChildrenByParentKey(baseRows), [baseRows]);
@@ -618,13 +680,6 @@ export function LiabilityShell({
 
   useEffect(() => {
     const selected = rows.find((row) => row.key === selectedKey);
-    if (selected && isSettledLiabilityRow(selected)) {
-      setShowSettledRows(true);
-    }
-  }, [rows, selectedKey]);
-
-  useEffect(() => {
-    const selected = rows.find((row) => row.key === selectedKey);
     if (!selected?.parentKey) return;
     setExpandedLiabilityRowKeys((current) => {
       if (current.has(selected.parentKey ?? "")) return current;
@@ -653,6 +708,38 @@ export function LiabilityShell({
       setDetailTab("entries");
     }
   }, [detailTab, isSelectedBankLoan]);
+
+  /**
+   * 往来款视图的行、余额和明细全部由 RSC（page.tsx）算好传进来，本组件没有自己的取数
+   * 通道：记账 / 编辑 / 删除 / 转换之后只能让服务端重算一遍。少了这一步，转成支出后
+   * 提示「原记录已删除」、明细表里那条还在、往来对象和顶部汇总也停在旧余额
+   * （2026-11-17 用户报的就是这个）。
+   */
+  useEffect(() => {
+    let timer: number | null = null;
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<FinanceDataChangedDetail>).detail ?? {};
+      // 行情 / 净值 / 开机巡检不改明细行，不用重算整页。
+      if (!financeChangeTouchesEntries(detail)) return;
+      const eventAccountIds = detail.accountIds ?? [];
+      if (eventAccountIds.length > 0) {
+        // 带了影响域就只认本页这些往来款 / 贷款账户，别因为别处记一笔就整页重取。
+        const scope = new Set(rows.map((row) => row.accountId).filter(Boolean));
+        if (!eventAccountIds.some((id) => scope.has(id))) return;
+      }
+      // 一次转换会连发两次事件（目标交易保存 + 删除原记录），合并成一次刷新。
+      if (timer != null) window.clearTimeout(timer);
+      timer = window.setTimeout(() => {
+        timer = null;
+        router.refresh();
+      }, 80);
+    };
+    window.addEventListener(FINANCE_DATA_CHANGED_EVENT, handler);
+    return () => {
+      window.removeEventListener(FINANCE_DATA_CHANGED_EVENT, handler);
+      if (timer != null) window.clearTimeout(timer);
+    };
+  }, [router, rows]);
 
   const loanSetupEditForAccount = useCallback((accountId: string): LoanQuickEditValue | null => {
     const entry = entries
@@ -1361,7 +1448,29 @@ export function LiabilityShell({
         },
         render: (entry) => <span className="block truncate text-slate-700">{entry.typeLabel}</span>,
       },
-      { key: "relatedAccount", label: t("liabilityShell.colCashAccount"), width: 160, minWidth: 100, filterText: (entry) => entry.relatedAccountLabel, render: (entry) => <span className="block truncate text-slate-600" title={entry.relatedAccountTitle || undefined}>{entry.relatedAccountLabel || "-"}</span> },
+      {
+        key: "fromAccount",
+        // 原来的「资金账户」+「资金流向」两列收成一对方位账户（2026-11-17 用户要求）：
+        // 两端本来就在 entry.accountId / entry.toAccountId 上，流向定序后
+        // 流出账户恒排在左、流入账户恒排在右，一行只填其中一侧。
+        label: t("liabilityShell.colFromAccount"),
+        width: 150,
+        minWidth: 96,
+        filterText: (entry) => `${entry.fromAccountLabel} ${entry.toAccountLabel}`,
+        render: (entry) => (
+          <span className="block truncate text-slate-600" title={entry.fromAccountTitle || undefined}>{entry.fromAccountLabel || "-"}</span>
+        ),
+      },
+      {
+        key: "toAccount",
+        label: t("liabilityShell.colToAccount"),
+        width: 150,
+        minWidth: 96,
+        filterText: (entry) => `${entry.fromAccountLabel} ${entry.toAccountLabel}`,
+        render: (entry) => (
+          <span className="block truncate text-slate-600" title={entry.toAccountTitle || undefined}>{entry.toAccountLabel || "-"}</span>
+        ),
+      },
     ];
     // 抵押物是抵押贷款专属字段：往来款/房贷/消费贷明细不展示该列。
     if (isSelectedCollateralLoan) {
@@ -1377,28 +1486,27 @@ export function LiabilityShell({
     }
     columns.push(
       {
-        key: "outflow",
-        label: t("detail.column.outflow"),
-        width: 110,
-        minWidth: 86,
+        key: "amount",
+        // 原来「流出」「流入」两列各有一半是空的：合成一列金额，方向交给左侧两个账户列。
+        // 有两端账户的行不写正负号（账户列已经排好谁先谁后，颜色区分进出）；
+        // 没有两端账户的行（余额校准等）保留正负号，否则看不出方向。
+        // 颜色跟「往来余额方向」的符号走（2026-11-17 用户裁定）：负数＝钱流向往来款账户（借出/应收增加）→ 绿色，
+        // 正数＝从往来款流回资金账户 → 红色。这里的符号就是本页规则里的负数，不要按现金账户视角反过来着色。
+        label: t("liabilityShell.colAmount"),
+        width: 130,
+        minWidth: 96,
         align: "right",
-        render: (entry) => (
-          <span className="font-semibold tabular-nums text-rose-700">
-            {entry.principal < 0 ? formatMoney(Math.abs(entry.principal)) : "-"}
-          </span>
-        ),
-      },
-      {
-        key: "inflow",
-        label: t("detail.column.inflow"),
-        width: 110,
-        minWidth: 86,
-        align: "right",
-        render: (entry) => (
-          <span className="font-semibold tabular-nums text-emerald-700">
-            {entry.principal > 0 ? formatMoney(entry.principal) : "-"}
-          </span>
-        ),
+        filterText: (entry) => entry.principal.toFixed(2),
+        render: (entry) => {
+          if (entry.principal === 0) return <span className="text-slate-400">-</span>;
+          const hasFlow = Boolean(entry.fromAccountLabel && entry.toAccountLabel);
+          const magnitude = formatMoney(Math.abs(entry.principal));
+          return (
+            <span className={`font-semibold tabular-nums ${entry.principal < 0 ? "text-emerald-700" : "text-rose-700"}`}>
+              {hasFlow ? magnitude : `${entry.principal > 0 ? "+" : "-"}${magnitude}`}
+            </span>
+          );
+        },
       },
       {
         key: "interest",
@@ -1501,18 +1609,23 @@ export function LiabilityShell({
               </span>
             )}
             toolbarRightContent={(
-              <div className="flex items-center gap-3">
-                <label className="flex cursor-pointer items-center gap-1.5 text-xs text-slate-500">
-                  <input
-                    type="checkbox"
-                    checked={showSettledRows}
-                    onChange={(event) => setShowSettledRows(event.target.checked)}
-                    className="h-3.5 w-3.5 accent-blue-600"
-                  />
-                  {t("liabilityShell.showSettledRows")}{settledCount > 0 ? `(${settledCount})` : ""}
-                </label>
-                <div className="text-xs text-slate-400">{t("liabilityShell.inflowOutflowHint")}</div>
-              </div>
+              <label className="flex cursor-pointer items-center gap-1.5 text-xs text-slate-500">
+                <input
+                  type="checkbox"
+                  checked={showSettledRows}
+                  onChange={(event) => {
+                    const next = event.target.checked;
+                    setShowSettledRows(next);
+                    try {
+                      window.localStorage.setItem(SHOW_SETTLED_ROWS_STORAGE_KEY, next ? "1" : "0");
+                    } catch {
+                      // 隐私模式下写不进去，本次会话内仍然生效。
+                    }
+                  }}
+                  className="h-3.5 w-3.5 accent-blue-600"
+                />
+                {t("liabilityShell.showSettledRows")}{settledCount > 0 ? `(${settledCount})` : ""}
+              </label>
             )}
             onRowClick={(row) => openLiabilityRow(row)}
             onRowDoubleClick={(row) => openLiabilityAccountProperties(row)}
@@ -1581,6 +1694,8 @@ export function LiabilityShell({
           ) : detailTab === "entries" || !isSelectedBankLoan ? (
             <BasicDetailSelectionProvider resetKey={`liability-entries:${selectedRow.key}`}>
               <BasicDetailBatchDeleteMessage />
+              {/* 转换成功后删除原记录：Watcher 必须在选中区之内常驻，不能跟着按钮卸载。 */}
+              <BasicDetailConvertWatcher />
               <LiabilityEntriesTable
                 accountOptions={accountOptions}
                 categoryOptions={categoryOptions}
@@ -1853,6 +1968,14 @@ function LiabilityEntriesTable({
   usePruneBasicDetailSelection(currentEntryIds);
   // 负债明细行就是背后的现金流水：现金明细页锁定的记录，这里同样要显示锁并能就地解锁。
   const { isReconciled } = useEntryReconcileState(currentEntryIds);
+  // 「转换」只在恰好选中一条记录时出现（与现金明细页一致）。
+  const convertSourceEntry = useMemo(() => {
+    if (selectedIds.size !== 1) return null;
+    const [onlyId] = Array.from(selectedIds);
+    const entry = entries.find((item) => item.id === onlyId);
+    if (!entry) return null;
+    return liabilityConvertSourceEntry(entry, isReconciled(entry.id));
+  }, [entries, isReconciled, selectedIds]);
   const normalizedAccountOptions = useMemo(
     () => accountOptions.map((account) => ({
       id: account.id,
@@ -1934,6 +2057,7 @@ function LiabilityEntriesTable({
       rowActionsMinWidth={124}
       batchActionSlot={(
         <>
+          {convertSourceEntry ? <BasicDetailConvertButton entry={convertSourceEntry} /> : null}
           <BasicDetailBatchReplaceButton
             accountOptions={normalizedAccountOptions}
             categoryOptions={categoryOptions}

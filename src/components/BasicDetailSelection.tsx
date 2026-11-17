@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowLeftRight, ChevronDown, Lock, ReceiptText, ShieldCheck, Trash2 } from "lucide-react";
+import { ChevronDown, Lock, ReceiptText, ShieldCheck, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import {
   createContext,
@@ -805,7 +805,7 @@ export function BasicDetailConvertButton({
         aria-haspopup="menu"
         aria-expanded={open}
       >
-        <ArrowLeftRight className="h-3.5 w-3.5" />
+        {/* 不加箭头图标：表头「反选」用的就是 ArrowRightLeft，两个图标容易混淆。 */}
         <span>{t("detail.convert.button")}</span>
         <ChevronDown className="h-3 w-3 opacity-60" />
       </button>

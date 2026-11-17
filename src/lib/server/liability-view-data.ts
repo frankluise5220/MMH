@@ -7,7 +7,7 @@ import {
   type LiabilityAccountFact,
 } from "@/lib/liability";
 import { normalizeSettlementTransferCategoryName } from "@/lib/default-categories";
-import { compareDetailEntriesAsc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
+import { compareDetailEntriesAsc, compareDetailEntriesDesc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
 import { DEFAULT_LOAN_PREPAY_STRATEGY, parseLoanPrepayStrategy } from "@/lib/loan-prepay-strategy";
 import {
   calcLoanRunPartsWithRateAdjustments,
@@ -170,9 +170,17 @@ type LiabilityDetailEntry = {
   id: string;
   date: string;
   typeLabel: string;
-  relatedAccountLabel: string;
-  relatedAccountTitle?: string;
   collateralLabel?: string | null;
+  /**
+   * 明细两端账户（2026-11-17 用户要求：把「资金账户」拆成「流出账户 / 流入账户」，
+   * 不再显示「资金流向」那一列）。两端本来就存在 `entry.accountId` / `entry.toAccountId` 上，
+   * 谁流出由现金侧方向决定（`cashFlowAmount < 0` ＝钱从资金账户出去），
+   * 所以流出侧永远排在前、流入侧排在后，一行只填其中一侧。
+   */
+  fromAccountLabel: string;
+  fromAccountTitle?: string;
+  toAccountLabel: string;
+  toAccountTitle?: string;
   /** 已被报销单关联的原始记录：往来款明细展示报销进度三步（已填报→已审核→已回款，悬停显示单据标题）。 */
   reimbursementLink?: { id: string; title: string; stage: "submitted" | "approved" | "paid" } | null;
   note: string;
@@ -661,7 +669,14 @@ export function buildLiabilityDetailEntriesViewData({
     return Math.abs(balanceBeforeDate ?? selectedLiabilityRow?.net ?? 0);
   };
 
-  const liabilityDetailEntries: LiabilityDetailEntry[] = filteredLiabilityPrincipalEntries.map((entry) => {
+  // 余额是按 `compareDetailEntriesAsc` 折叠出来的（见上面的 runningLiabilityBalance 循环），
+  // 所以明细行必须按同一个比较器的**反向**（降序）输出，否则两条流水落在同一天、且
+  // postedAt/dayOrder/createdAt 完全相同时，DB 的 `order by date desc, createdAt desc`
+  // 对它们的先后没有定义——显示顺序和折叠顺序各走各的，余额列就会错位
+  // （2026-11-16 报障：2018-05-29 的 300,000 显示余额 580,000，其下 280,000 反而是 280,000）。
+  const orderedLiabilityPrincipalEntriesDesc = [...filteredLiabilityPrincipalEntries]
+    .sort((a, b) => compareDetailEntriesDesc(a, b, displayAccountId));
+  const liabilityDetailEntries: LiabilityDetailEntry[] = orderedLiabilityPrincipalEntriesDesc.map((entry) => {
     const amount = toNumber(entry.amount);
     const reconcileTarget = getLiabilityBalanceReconcileTarget(entry);
     const isBalanceReconcile = reconcileTarget != null;
@@ -680,6 +695,23 @@ export function buildLiabilityDetailEntriesViewData({
         : null;
     const liabilitySideAccountId = isToLiabilityAccount ? (entry.toAccountId ?? "") : (entry.accountId ?? "");
     const cashSideAccountId = isToLiabilityAccount ? (entry.accountId ?? "") : (entry.toAccountId ?? "");
+    // 流出/流入账户：两端就在 entry.accountId / entry.toAccountId 上，按钱的走向排序，
+    // 流出侧恒排在前（cashFlowAmount<0 ＝资金账户出钱，>0 ＝资金账户进钱）。
+    // 余额校准这类没有两端账户的行留空，金额列继续带正负号。
+    const fromAccountId = isBalanceReconcile
+      ? ""
+      : cashFlowAmount < 0
+        ? cashSideAccountId
+        : cashFlowAmount > 0
+          ? liabilitySideAccountId
+          : (entry.accountId ?? "");
+    const toAccountId = isBalanceReconcile
+      ? ""
+      : cashFlowAmount < 0
+        ? liabilitySideAccountId
+        : cashFlowAmount > 0
+          ? cashSideAccountId
+          : (entry.toAccountId ?? "");
     const relatedLiabilityDirection =
       liabilityDirectionByAccountId.get(liabilitySideAccountId) ??
       ((selectedLiabilityRow?.net ?? 0) >= 0 ? "receivable" : "payable");
@@ -728,8 +760,12 @@ export function buildLiabilityDetailEntriesViewData({
             ? bankLiabilityTransferTypeLabel(entry.source, displayLiabilityMode)
             : normalizeSettlementTransferCategoryName(entry.categoryName)
           : (entry.categoryName || formatLiabilityEntryType(entry.type)),
-      relatedAccountLabel: isBalanceReconcile ? "-" : (accountLabelById.get(cashSideAccountId) ?? "-"),
-      relatedAccountTitle: isBalanceReconcile ? "" : (accountTitleById?.get(cashSideAccountId) ?? ""),
+      // 空串＝这一侧没有账户（余额校准行两端都没有），由表格渲染成「-」；
+      // 金额列也靠这两个空串判断「有没有方向可看」，避免无账户的行丢掉正负号。
+      fromAccountLabel: fromAccountId ? (accountLabelById.get(fromAccountId) ?? "") : "",
+      fromAccountTitle: fromAccountId ? (accountTitleById?.get(fromAccountId) ?? "") : "",
+      toAccountLabel: toAccountId ? (accountLabelById.get(toAccountId) ?? "") : "",
+      toAccountTitle: toAccountId ? (accountTitleById?.get(toAccountId) ?? "") : "",
       collateralLabel: collateralNameByLoanAccountId?.get(liabilitySideAccountId) ?? null,
       reimbursementLink: reimbursementLinkByEntryId?.get(entry.id) ?? null,
       note: entry.note ?? "",

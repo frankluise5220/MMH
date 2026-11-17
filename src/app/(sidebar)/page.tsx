@@ -1756,7 +1756,11 @@ export default async function Home({
             fundArrivalDate: true,
             EntryTag: { select: { tagId: true } },
           },
-          orderBy: [{ date: "desc" }, { createdAt: "desc" }],
+          // 末位补 id：同一天、且 createdAt 相同的流水（批量导入/批量建账常见）
+          // 若不给出稳定的 tie-break，Postgres 的返回顺序会随执行计划变化，明细行序
+          // 就会和余额折叠顺序（compareDetailEntriesAsc）打架。口径与
+          // detail-entry-order 的降序比较器一致。
+          orderBy: [{ date: "desc" }, { createdAt: "desc" }, { id: "desc" }],
           // 负债流水随自动扣款/账单逐月增长（默认账本已 4500+ 条），上限过低会按日期截断最老历史，
           // 导致还款计划表早期期次「消失」（2026-09-14 实证：3000 条只覆盖到 2018-12，期次 1-19 不显示）。
           take: 50000,
