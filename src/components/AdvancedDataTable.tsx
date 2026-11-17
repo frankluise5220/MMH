@@ -2087,6 +2087,17 @@ export function AdvancedDataTable<T>({
     () => (activeRowKey ? displayRowItems.findIndex((item) => item.key === activeRowKey) : -1),
     [activeRowKey, displayRowItems],
   );
+  /**
+   * 指针刚按下的行键。
+   *
+   * 行内没有可聚焦元素，鼠标按在行上时浏览器会把焦点给到表体容器自己，
+   * `focusin` 若在这里默认落「第一行」，`useLayoutEffect` 就会把视口滚回顶部
+   * （虚拟列表 `scrollToIndex(0)`）—— 抬手时指针下面已经不是原来那一行，
+   * 浏览器补发的 click 落到 TBODY 空白上，行点击彻底丢失。
+   * 用户看到的就是「点某个账户行，光标跳到第一行且没选中」（2026-11-17 报的
+   * 往来款「点毕蕾跳到姜爷爷」）。按刚按下的那一行落高亮即可。
+   */
+  const pointerDownRowKeyRef = useRef<string | null>(null);
   /** 键盘走到哪一行就把它拉进视口；同一个活动行只滚一次，数据刷新不会把视口拽回去。 */
   const scrolledActiveRowKeyRef = useRef<string | null>(null);
   useLayoutEffect(() => {
@@ -2143,9 +2154,19 @@ export function AdvancedDataTable<T>({
       setTableViewportFocused(true);
       // 焦点落在行内的按钮 / 输入框上时只标记「表内有焦点」，不动活动行。
       if (target !== viewport) return;
+      // 鼠标按在行上时，浏览器把焦点交给表体容器自己：活动行必须按刚按下的那一行落，
+      // 不能默认第一行，否则视口被滚回顶部、这次 click 也会丢失（见 pointerDownRowKeyRef）。
+      const pressedRowKey = pointerDownRowKeyRef.current;
+      // 只服务这一次点击，别让它影响之后用 Tab 回到表体时的高亮起点。
+      pointerDownRowKeyRef.current = null;
       // 用 Tab 进来时先给一行落高亮，用户立刻知道方向键会从这里开始走。
       const firstRowKey = viewport.querySelector<HTMLElement>("[data-advanced-row-key]")?.dataset.advancedRowKey ?? null;
-      setActiveRowKey((current) => current ?? firstRowKey);
+      setActiveRowKey((current) => current ?? pressedRowKey ?? firstRowKey);
+    };
+    /** 捕获阶段记下按在哪一行：`focusin` 由这次 mousedown 的默认动作触发，冒泡阶段的 React 处理器来不及。 */
+    const handlePointerDown = (event: MouseEvent) => {
+      const rowElement = event.target instanceof Element ? event.target.closest<HTMLElement>("[data-advanced-row-key]") : null;
+      pointerDownRowKeyRef.current = rowElement?.dataset.advancedRowKey ?? null;
     };
     const handleFocusIn = (event: FocusEvent) => markFocused(event.target);
     const handleFocusOut = (event: FocusEvent) => {
@@ -2157,12 +2178,14 @@ export function AdvancedDataTable<T>({
     };
     viewport.addEventListener("focusin", handleFocusIn);
     viewport.addEventListener("focusout", handleFocusOut);
+    viewport.addEventListener("mousedown", handlePointerDown, true);
     // 挂载时焦点已经在表里（页面刷新后浏览器恢复焦点、或水合晚于用户 Tab）：
     // focusin 那次已经错过了，这里按当前 activeElement 补一次初始化。
     if (viewport.contains(document.activeElement)) markFocused(document.activeElement);
     return () => {
       viewport.removeEventListener("focusin", handleFocusIn);
       viewport.removeEventListener("focusout", handleFocusOut);
+      viewport.removeEventListener("mousedown", handlePointerDown, true);
     };
   }, []);
 
