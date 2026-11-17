@@ -39,10 +39,47 @@ function sanitizeCalcInputValue(raw: string, allowAmountFieldReferences = false)
     : normalized.replace(/[^\d+\-*/().\s]/g, "");
 }
 
+/** `text` 是否整段被一对括号包住（允许内部再嵌套括号）。 */
+function isSingleParenthesizedGroup(text: string) {
+  if (!text.startsWith("(") || !text.endsWith(")")) return false;
+  let depth = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    const ch = text[i];
+    if (ch === "(") depth += 1;
+    else if (ch === ")") {
+      depth -= 1;
+      if (depth < 0) return false;
+      if (depth === 0 && i !== text.length - 1) return false;
+    }
+  }
+  return depth === 0;
+}
+
+/**
+ * 首字符是运算符的「相对简写」——在当前值上做一次运算，例如 `*2`、`/4`、
+ * `-20`、`+.01`、`-(30+5)`。
+ *
+ * **不能只看首字符**：用户把整笔算式写全时（原值 -3800.00，光标在末尾再敲
+ * `-20`，得到 `-3800.00-20`），首字符只是这个数字自己的负号。无脑拼当前值
+ * 会把原值算两遍（-3800 - 3800 - 20 = -7620），正是「计算框算出看不懂的数」。
+ */
+function isOperatorLedShorthand(raw: string) {
+  const lead = raw[0];
+  if (!/[+\-*/]/.test(lead)) return false;
+  // 完整表达式不可能以乘除开头，一定是简写。
+  if (lead === "*" || lead === "/") return true;
+  const rest = raw.slice(1);
+  if (!rest) return true;
+  // `-20` / `+.01`：运算符后面只有一个操作数。
+  if (/^(?:\d+(?:\.\d*)?|\.\d+)$/.test(rest)) return true;
+  // `-(30+5)`：括号组整体作为一个操作数。
+  return isSingleParenthesizedGroup(rest) && /^[\d+\-*/().\s]+$/.test(rest);
+}
+
 export function evaluateCalcInputExpression(expression: string, currentValue = 0) {
   let full = sanitizeCalcInputValue(expression).trim();
   if (!full) return null;
-  if (/^[+\-*/]/.test(full)) full = `${Number(currentValue) || 0}${full}`;
+  if (isOperatorLedShorthand(full)) full = `${Number(currentValue) || 0}${full}`;
   if (!/^[\d+\-*/().\s]+$/.test(full)) return null;
   const computed = evaluateArithmeticExpression(full);
   return typeof computed === "number" && Number.isFinite(computed) ? computed : null;
