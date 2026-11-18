@@ -18,6 +18,11 @@ import { COUNTERPARTY_TYPE_OPTIONS, institutionTypeLabel, institutionTypeOptions
 import { useI18n } from "@/lib/i18n";
 import { TAG_COLORS, TAG_COLOR_NAME_KEYS } from "@/lib/tag-colors";
 import { isCreditCardMonthEndBillingDay } from "@/lib/credit/rules";
+import {
+  findTemplateGuideTitleRowIndex,
+  findTemplateSampleColumnIndex,
+  isTemplateSampleRowValue,
+} from "@/lib/import-template-sample";
 
 /**
  * 基本资料批量导入的字段全集。
@@ -512,9 +517,10 @@ function normalizeImportHeader(value: unknown) {
 }
 
 // The exported guide title cell holds the title plus an explanatory note in one
-// wrapped cell, so match on the leading title text instead of the full cell.
-function isGuideTitleCell(value: unknown, guideTitle: string) {
-  return normalizeImportHeader(value).startsWith(guideTitle);
+// wrapped cell, so the shared helper matches on the leading title text instead of
+// the full cell (see import-template-sample.ts).
+function findGuideRowOffset(rows: ReadonlyArray<readonly unknown[]>, guideTitle: string) {
+  return findTemplateGuideTitleRowIndex(rows, guideTitle);
 }
 
 function normalizeImportCell(value: unknown) {
@@ -575,13 +581,9 @@ function isRequiredField(sheetType: ImportSheetType, field: AccountBatchImportFi
   return REQUIRED_FIELDS_BY_SHEET[sheetType].includes(field);
 }
 
-function isTemplateSampleRow(value: string, t: (key: string) => string) {
-  const normalized = normalizeImportHeader(value);
-  if (!normalized) return false;
-  return normalized === normalizeImportHeader(t("settings.accounts.import.sampleRowYes")) ||
-    normalized === "yes" ||
-    normalized === "true" ||
-    normalized === "sample";
+// 样板行判定统一走共享实现（yes/true/1/是/はい/样板…），各导入通道口径一致。
+function isTemplateSampleRow(value: string) {
+  return isTemplateSampleRowValue(value);
 }
 
 function requiredFieldError(
@@ -710,8 +712,7 @@ function parseSheetRows(
   if (!fieldIndex.has("name")) return [];
 
   const bodyRows = rows.slice(headerIndex + 1);
-  const guideTitle = normalizeImportHeader(t("settings.accounts.import.sheetGuideTitle"));
-  const guideOffset = bodyRows.findIndex((row) => row.some((cell) => isGuideTitleCell(cell, guideTitle)));
+  const guideOffset = findGuideRowOffset(bodyRows, t("settings.accounts.import.sheetGuideTitle"));
   const importRows = guideOffset >= 0 ? bodyRows.slice(0, guideOffset) : bodyRows;
 
   return importRows.flatMap((source, offset): ImportAccountRow[] => {
@@ -722,7 +723,7 @@ function parseSheetRows(
     };
     const errors: string[] = [];
     const rawName = valueAt("name");
-    if (isTemplateSampleRow(valueAt("sample"), t)) return [];
+    if (isTemplateSampleRow(valueAt("sample"))) return [];
     const rowHasData = definition.fields.some((field) => field !== "sample" && valueAt(field));
     if (!rowHasData) return [];
     if (!rawName) errors.push(requiredFieldError("name", t));
@@ -950,6 +951,9 @@ function categoryTreeHeaders(t: (key: string) => string, thirdLevelCount = 4) {
     t("settings.accounts.import.categoryRootColumn"),
     t("settings.accounts.import.categorySecondLevelColumn"),
     ...Array.from({ length: Math.max(1, thirdLevelCount) }, (_, index) => `${thirdLevel}${index + 1}`),
+    // 分类树是「一级 / 二级 / 三级…」的横向层级，样板行标记只能放最后一列，
+    // 解析时按表头定位该列，第三级及以下用 slice 到该列之前，避免「是」被当成分类名。
+    t("settings.accounts.import.sampleRow"),
   ];
 }
 
@@ -1041,16 +1045,21 @@ function parseCategoryTreeRows(
 ) {
   const headerIndex = findCategoryTreeHeaderIndex(rows, t);
   if (headerIndex < 0) return [];
+  // 分类树的样板行标记在末列（表头可能是各语言的「样板行」）；老模板没有该列时按无标记处理。
+  const sampleColumnIndex = findTemplateSampleColumnIndex(rows[headerIndex] ?? []);
   const bodyRows = rows.slice(headerIndex + 1);
-  const guideTitle = normalizeImportHeader(t("settings.accounts.import.sheetGuideTitle"));
-  const guideOffset = bodyRows.findIndex((row) => row.some((cell) => isGuideTitleCell(cell, guideTitle)));
+  const guideOffset = findGuideRowOffset(bodyRows, t("settings.accounts.import.sheetGuideTitle"));
   const importRows = guideOffset >= 0 ? bodyRows.slice(0, guideOffset) : bodyRows;
 
   return importRows.flatMap((source, offset): ImportAccountRow[] => {
     const sourceRow = headerIndex + offset + 2;
+    if (sampleColumnIndex >= 0 && isTemplateSampleRow(normalizeImportCell(source[sampleColumnIndex]))) return [];
     const rawType = normalizeImportCell(source[0]);
     const secondLevelName = normalizeImportCell(source[1]);
-    const thirdLevelNames = source.slice(2).map(normalizeImportCell).filter(Boolean);
+    const thirdLevelNames = source
+      .slice(2, sampleColumnIndex > 1 ? sampleColumnIndex : source.length)
+      .map(normalizeImportCell)
+      .filter(Boolean);
     if (!rawType && !secondLevelName && thirdLevelNames.length === 0) return [];
 
     const parsedType = parseImportEnum(rawType, CATEGORY_TYPE_OPTIONS, t);
@@ -2265,36 +2274,57 @@ function appendStyledSheet(
   XLSX.utils.book_append_sheet(workbook, sheet, sheetName);
 }
 
-function fallbackCategoryTemplateRows(t: (key: string) => string) {
+/**
+ * 分类树 sheet：三级列数取各行最大值（至少 4），末列统一是「样板行」标记。
+ * 数据行必须补空到标记列之前，否则标记列会错位、样板行识别不到。
+ */
+function buildCategoryTreeSheet(t: (key: string) => string, rows: string[][], sampleCell: string) {
+  const thirdLevelCount = Math.max(4, ...rows.map((row) => Math.max(0, row.length - 2)));
+  const headers = categoryTreeHeaders(t, thirdLevelCount);
+  const markerIndex = headers.length - 1;
   return [
-    categoryTreeHeaders(t),
-    [
-      categoryTypeLabel("expense", t),
-      t("settings.accounts.importSampleCategoryDining"),
-      t("settings.accounts.importSampleCategoryBreakfast"),
-      t("settings.accounts.importSampleCategoryLunch"),
-      t("settings.accounts.importSampleCategoryDinner"),
-    ],
-    [
-      categoryTypeLabel("expense", t),
-      t("settings.accounts.importSampleCategoryTransport"),
-      t("settings.accounts.importSampleCategoryTaxi"),
-      t("settings.accounts.importSampleCategoryBus"),
-      t("settings.accounts.importSampleCategorySubway"),
-    ],
-    [
-      categoryTypeLabel("income", t),
-      t("settings.accounts.importSampleCategorySalary"),
-      t("settings.accounts.importSampleCategoryBaseSalary"),
-      t("settings.accounts.importSampleCategoryBonus"),
-    ],
-    [
-      categoryTypeLabel("income", t),
-      t("settings.accounts.importSampleCategoryInvestmentIncome"),
-      t("settings.accounts.importSampleCategoryInterest"),
-      t("settings.accounts.importSampleCategoryDividend"),
-    ],
+    headers,
+    ...rows.map((row) => {
+      const cells = row.slice(0, markerIndex);
+      while (cells.length < markerIndex) cells.push("");
+      return [...cells, sampleCell];
+    }),
   ];
+}
+
+function fallbackCategoryTemplateRows(t: (key: string) => string) {
+  return buildCategoryTreeSheet(
+    t,
+    [
+      [
+        categoryTypeLabel("expense", t),
+        t("settings.accounts.importSampleCategoryDining"),
+        t("settings.accounts.importSampleCategoryBreakfast"),
+        t("settings.accounts.importSampleCategoryLunch"),
+        t("settings.accounts.importSampleCategoryDinner"),
+      ],
+      [
+        categoryTypeLabel("expense", t),
+        t("settings.accounts.importSampleCategoryTransport"),
+        t("settings.accounts.importSampleCategoryTaxi"),
+        t("settings.accounts.importSampleCategoryBus"),
+        t("settings.accounts.importSampleCategorySubway"),
+      ],
+      [
+        categoryTypeLabel("income", t),
+        t("settings.accounts.importSampleCategorySalary"),
+        t("settings.accounts.importSampleCategoryBaseSalary"),
+        t("settings.accounts.importSampleCategoryBonus"),
+      ],
+      [
+        categoryTypeLabel("income", t),
+        t("settings.accounts.importSampleCategoryInvestmentIncome"),
+        t("settings.accounts.importSampleCategoryInterest"),
+        t("settings.accounts.importSampleCategoryDividend"),
+      ],
+    ],
+    t("settings.accounts.import.sampleRowYes"),
+  );
 }
 
 function buildCategoryTemplateRows(
@@ -2334,8 +2364,8 @@ function buildCategoryTemplateRows(
   }
 
   if (categoryRows.length === 0) return fallbackCategoryTemplateRows(t);
-  const thirdLevelCount = Math.max(4, ...categoryRows.map((row) => Math.max(0, row.length - 2)));
-  return [categoryTreeHeaders(t, thirdLevelCount), ...categoryRows];
+  // 从既有分类导出的都是真实数据，标记列留空。
+  return buildCategoryTreeSheet(t, categoryRows, "");
 }
 
 function appendCategoryStyledSheet(
@@ -2362,6 +2392,12 @@ function appendCategoryStyledSheet(
       t("settings.accounts.import.categoryThirdLevelColumn"),
       t("settings.accounts.import.guideOptionalValue"),
       t("settings.accounts.import.guideCategoryThirdLevel"),
+      false,
+    ],
+    [
+      t("settings.accounts.import.sampleRow"),
+      t("settings.accounts.import.sampleRowYes"),
+      t("settings.accounts.import.guideSampleRow"),
       false,
     ],
   ];

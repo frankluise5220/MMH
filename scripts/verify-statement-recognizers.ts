@@ -32,6 +32,12 @@ import {
   guessStatementTemplateHint,
   parseStatementSheetsStandard,
 } from "../src/lib/statement/recognizer-pipeline";
+import {
+  findTemplateSampleColumnIndex,
+  isTemplateSampleRowValue,
+  stripTemplateRows,
+  TEMPLATE_GUIDE_TITLE_HINTS,
+} from "../src/lib/import-template-sample";
 
 type Sheet = { sheetName: string; rows: string[][] };
 
@@ -284,6 +290,27 @@ check("整张 sheet 都是样板行时该 sheet 一条不取", () => {
   assert.equal(out.template, "caizhi");
   assert.equal(out.rows.length - 1, 2);
   assert.equal(out.rows[1][CAIZHI_COL.account], "计划帐户(姜)");
+});
+
+check("stripTemplateRows 同时剔除样板行与底部字段说明区", () => {
+  const headers = ["日期", "收支", "金额", "样板行"];
+  const dataRows = [
+    ["2026-06-08", "支出", "32.50", "是"],
+    ["2026-06-09", "收入", "1.28", ""],
+    ["2026-06-10", "支出", "9.90", "yes"],
+    ["本页字段说明（示例文案）", "", "", ""],
+    ["日期", "必填", "YYYY-MM-DD", ""],
+  ];
+  const kept = stripTemplateRows(dataRows, headers, TEMPLATE_GUIDE_TITLE_HINTS);
+  assert.equal(kept.length, 1);
+  assert.equal(kept[0][0], "2026-06-09");
+});
+
+check("marker column is localized (Sample Row / サンプル行)", () => {
+  assert.equal(findTemplateSampleColumnIndex(["Date", "Sample Row"]), 1);
+  assert.equal(findTemplateSampleColumnIndex(["日付", "サンプル行"]), 1);
+  assert.equal(isTemplateSampleRowValue("はい"), true);
+  assert.equal(isTemplateSampleRowValue("否"), false);
 });
 
 console.log(`\ncheck:recognizer ok（${assertionCount} 条断言）`);

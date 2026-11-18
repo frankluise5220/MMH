@@ -1,9 +1,8 @@
 import { parseFlexibleDateToYmd } from "@/lib/date-utils";
 import {
-  dropTemplateSampleRows,
-  findTemplateGuideTitleRowIndex,
-  findTemplateSampleColumnIndex,
-  rowsBeforeTemplateGuide,
+  stripTemplateRows,
+  TEMPLATE_GUIDE_TITLE_HINTS,
+  type TemplateGuideTitle,
 } from "@/lib/import-template-sample";
 import {
   inferBalanceBasedInflowSign,
@@ -26,10 +25,7 @@ import {
   normalizeSpdbCurrencyCode,
   parseSpdbOriginalAmount,
 } from "@/lib/statement/header-catalog";
-import {
-  guessCaizhiAccountNameFromFilename,
-  type CaizhiBalanceAdjustRow,
-} from "@/lib/statement/caizhi-template";
+import type { CaizhiBalanceAdjustRow } from "@/lib/statement/caizhi-template";
 import { readStatementSheetRows } from "@/lib/statement/statement-sheet-reader";
 import { normalizeStatementHeader as normalizeHeader } from "@/lib/statement/header-utils";
 import { wechatMetaFromRow, wechatMetaHeaderIndexes } from "@/lib/statement/wechat-transfer-guard";
@@ -290,14 +286,12 @@ export function parseStatementTemplateRows(
   rows: string[][],
   defaultAccountName: string,
   fieldHeaders: StatementFieldHeaders = STATEMENT_IMPORT_FIELD_HEADERS,
-  /** 模板说明区标题行文案；传入后会截断标题行以下的所有说明行 */
-  guideTitle = "",
+  /** 模板说明区标题行文案（可传多语言候选）；默认已含三种语言的标题前缀 */
+  guideTitle: TemplateGuideTitle = TEMPLATE_GUIDE_TITLE_HINTS,
 ): StatementExcelPreviewItem[] {
   const [headers = [], ...rawDataRows] = rows;
   // 模板自带的样板行和底部字段说明区都不是真实账单数据。
-  const guideTitleRowIndex = findTemplateGuideTitleRowIndex(rawDataRows, guideTitle);
-  const sampleColumnIndex = findTemplateSampleColumnIndex(headers);
-  const dataRows = dropTemplateSampleRows(rowsBeforeTemplateGuide(rawDataRows, guideTitleRowIndex), sampleColumnIndex);
+  const dataRows = stripTemplateRows(rawDataRows, headers, guideTitle);
   const spdbIndexes = matchStatementHeaderProfile(headers, SPDB_CREDIT_CARD_TRANSACTION_REPORT_PROFILE);
   const knownInstitutionName = spdbIndexes ? SPDB_CREDIT_CARD_TRANSACTION_REPORT_PROFILE.institutionName : undefined;
   // 账单摘要与 PDF/文本通道共用同一份词表（credit-card-summary.ts）：信用卡账单里若带
@@ -574,7 +568,7 @@ export async function parseStatementExcelFile(
   file: File,
   defaultAccountName: string,
   fieldHeaders: StatementFieldHeaders = STATEMENT_IMPORT_FIELD_HEADERS,
-  guideTitle = "",
+  guideTitle: TemplateGuideTitle = TEMPLATE_GUIDE_TITLE_HINTS,
   /** 已经读过（可能还剔过基金买卖行）的工作表行；不传则自己读文件。 */
   sheetRows?: readonly { sheetName: string; rows: string[][] }[],
 ) {

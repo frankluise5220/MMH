@@ -10,11 +10,13 @@ import {
   findFirstStatementHeaderIndex,
   normalizeSpdbCurrencyCode,
   parseSpdbOriginalAmount,
+  STATEMENT_IMPORT_FIELD_HEADERS,
 } from "@/lib/statement/header-catalog";
 import {
   hasImportableStatementRows,
   parseStatementTemplateRows,
 } from "@/lib/statement/excel-preview";
+import { TEMPLATE_GUIDE_TITLE_HINTS } from "@/lib/import-template-sample";
 import {
   inferSignedAmountInflowSign,
   isCreditCardCreditAdjustmentLikeText,
@@ -953,7 +955,8 @@ function parsePlainStatementImportTable(text: string): ParsedItem[] {
     .filter((cells) => !isMarkdownSeparatorRow(cells));
 
   for (let index = 0; index < Math.min(rows.length, 25); index += 1) {
-    const items = parseStatementTemplateRows(rows.slice(index), "");
+    // 服务端拿不到界面语言，用内置的多语言标题前缀截断模板底部的字段说明区。
+    const items = parseStatementTemplateRows(rows.slice(index), "", STATEMENT_IMPORT_FIELD_HEADERS, TEMPLATE_GUIDE_TITLE_HINTS);
     if (hasImportableStatementRows(items)) return items;
   }
 
