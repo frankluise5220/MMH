@@ -11,12 +11,18 @@
  * 不做任何 fetch / 状态订阅。
  */
 
+/**
+ * 目标类型只允许是**录入窗里真实存在的页签 / 入口**（2026-11-17 用户裁定）：
+ * - 记账窗的 FT 页签是 支出 / 收入 / 代付 / 转账 四个；信用卡还款不是独立类型，
+ *   它就是一笔「转账」（资金账户 → 信用卡账户），所以这里没有 credit_repay。
+ * - 往来款窗只有「借款 / 还款」两个页签：借入 ↔ 借出、还款 ↔ 收款是同一个页签的
+ *   两种流向（由往来款账户落在流出侧还是流入侧决定），所以往来目标是 2 个而不是 4 个。
+ */
 export type EntryConversionTargetKey =
   | "expense"
   | "income"
   | "advance"
   | "transfer"
-  | "credit_repay"
   | "fund"
   | "metal"
   | "wealth"
@@ -24,10 +30,8 @@ export type EntryConversionTargetKey =
   | "deposit"
   | "insurance"
   | "stock"
-  | "liability_borrow_in"
-  | "liability_lend_out"
-  | "liability_repay_out"
-  | "liability_collect_in";
+  | "liability_borrow"
+  | "liability_repay";
 
 export type EntryConversionSession = {
   /** 被转换的原记录（保存成功后删除）。 */

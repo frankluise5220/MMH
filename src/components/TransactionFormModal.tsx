@@ -11,6 +11,7 @@ import { CurrencySmartSelect } from "./CurrencySmartSelect";
 import { DateStepper } from "./DateStepper";
 import { EntityCreateForm, NestedAddModal } from "./EntityCreateForm";
 import { EntryAttachmentButton, uploadEntryAttachmentFiles } from "./EntryAttachmentPanel";
+import { EntryConvertMenu, type ConvertSourceEntry } from "./BasicDetailSelection";
 import { EntryModalShell } from "./EntryModalShell";
 import type { FolderTabsCardItem } from "./FolderTabsCard";
 import { SmartSelect, SmartSelectOption } from "./SmartSelect";
@@ -1575,6 +1576,29 @@ export function TransactionFormModal({
   });
 
   /**
+   * 编辑窗标题栏的「转换」：与明细表头那颗按钮同一个组件（`EntryConvertMenu`）。
+   * 源记录用**原类型** + 表单当前值（含尚未保存的日期/金额/备注），
+   * 转换结果与从表头转换完全一致：目标窗保存成功后由明细页的 Watcher 删掉原记录。
+   */
+  const convertSourceEntry = useMemo<ConvertSourceEntry | null>(() => {
+    if (!open || !editEntryId) return null;
+    const originalType = editEntryOriginalType ?? txType;
+    const isTransferLike = originalType === "transfer";
+    const signedAmount = Number(amount) || 0;
+    return {
+      id: editEntryId,
+      type: originalType,
+      date,
+      amount: signedAmount,
+      bookAmount: signedAmount,
+      note,
+      accountId: isTransferLike ? fromAccountId : accountId,
+      toAccountId: isTransferLike ? toAccountId : "",
+      cashAccountId: isTransferLike ? fromAccountId : accountId,
+    };
+  }, [open, editEntryId, editEntryOriginalType, txType, amount, date, note, accountId, fromAccountId, toAccountId]);
+
+  /**
    * 保存并再记一笔：记账类型、账户、分类、日期、备注、标签保留（同一天连记多笔是常态，日期不动）；
    * 金额以及由金额派生出的分期/汇率/本币金额清空 —— 表单必须看得出已经换了一笔。
    * 同时清掉本笔的会话态（requestId、编辑标识、已上传附件）。
@@ -1853,6 +1877,12 @@ export function TransactionFormModal({
         originalAmount?: number | null;
       }>).detail;
       if (!detail?.requestId || !detail.entryId) return;
+      // 编辑既有记录永远不是「从某账户锁定类型」的入口：上一次新建留下的 lockedType /
+      // 股票转出模式必须清掉，否则编辑窗顶部会只剩一个灰页签，收支代转就没法切了
+      // （而切页签正是这四类之间唯一的转换方式，2026-11-17）。
+      setLockedType(null);
+      setStockTransferMode(false);
+      setStockCashAccountId("");
       setRequestId(detail.requestId);
       setEditEntryId(detail.entryId);
       setEditEntryOriginalType(detail.type);
@@ -2526,6 +2556,18 @@ export function TransactionFormModal({
           title={txType === "fx"
             ? (fxDirection === "sell" ? t("txForm.fxSellTitle") : t("txForm.fxBuyTitle"))
             : editEntryId ? t("txForm.editEntry") : t("txForm.addEntry")}
+          headerExtra={convertSourceEntry ? (
+            <EntryConvertMenu
+              entry={convertSourceEntry}
+              cashAccountId={convertSourceEntry.cashAccountId}
+              onBeforeConvert={() => {
+                // 转换要先让出窗口：目标窗与编辑窗共用同一份表单状态，
+                // 与「切换到投资/理财等录入窗」的既有做法一致（先关窗清草稿，再派发）。
+                setOpen(false);
+                resetDraft();
+              }}
+            />
+          ) : undefined}
           onClose={() => {
             setOpen(false);
             resetDraft();

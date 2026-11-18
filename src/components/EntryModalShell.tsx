@@ -74,6 +74,8 @@ export function EntryModalShell({
   panelRef,
   title,
   subtitle,
+  /** 标题栏右侧、关闭按钮左边的附加操作（如编辑窗里的「转换」下拉）。 */
+  headerExtra,
   onClose,
   closeLabel,
   closeTitle,
@@ -113,6 +115,8 @@ export function EntryModalShell({
   title: ReactNode;
   /** 标题右侧的次要说明（如产品类型） */
   subtitle?: ReactNode;
+  /** 标题栏右侧的附加操作，渲染在关闭按钮左侧（层级、宽度都由标题栏统一管）。 */
+  headerExtra?: ReactNode;
   onClose: () => void;
   closeLabel?: ReactNode;
   /** 关闭按钮的 title（关闭按钮只有图标时给无障碍名称） */
@@ -183,9 +187,12 @@ export function EntryModalShell({
               {title}
               {subtitle ? <span className="ml-2 text-xs font-normal text-slate-500">{subtitle}</span> : null}
             </div>
-            <button type="button" onClick={onClose} title={closeTitle} className="secondary-button h-8 px-2">
-              {closeLabel ?? t("table.close")}
-            </button>
+            <div className="flex min-w-0 items-center gap-2">
+              {headerExtra}
+              <button type="button" onClick={onClose} title={closeTitle} className="secondary-button h-8 px-2">
+                {closeLabel ?? t("table.close")}
+              </button>
+            </div>
           </div>
 
           <form ref={formRef} className="flex min-h-0 flex-1 flex-col" onSubmit={onSubmit}>

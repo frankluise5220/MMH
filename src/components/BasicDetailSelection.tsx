@@ -552,6 +552,20 @@ type ConvertTargetGroup = {
   targets: Array<{ key: EntryConversionTargetKey; labelKey: string }>;
 };
 
+/**
+ * 转换目标的唯一口径：**录入窗里真实存在的页签 / 入口**。
+ *
+ * - 记账窗的 FT 页签只有 支出 / 收入 / 代付 / 转账 四个，所以现金组就是这四个；
+ *   以前那条「信用卡还款」是凭空多出来的类型 —— 信用卡还款本身就是一笔转账
+ *   （资金账户 → 信用卡账户），要还卡就选「转账」并选信用卡作为流入账户
+ *   （2026-11-17 用户裁定，目标清单里不要出现不存在的类型）。
+ * - 投资组对应胶囊菜单里真实存在的录入窗（基金/贵金属/理财/债券/存单/保险/股票）。
+ * - 往来组只在**源记录不是往来款/贷款**时出现：一条往来款记录转成往来款没有意义，
+ *   想改方向/模式直接在往来款编辑窗切「借款 / 还款」页签即可。
+ * - 现金组只在**源记录不是记账窗那四类**时出现：支收代转这四类在编辑窗顶部就是页签，
+ *   切页签保存即等于原地转换（提交带 type），菜单里再列一遍就是同一件事做两次
+ *   （2026-11-17 用户裁定：「大窗口里本就有收入/代付/转账的页签，不需要显示这三个选项」）。
+ */
 const CONVERT_TARGET_GROUPS: ConvertTargetGroup[] = [
   {
     key: "cash",
@@ -561,7 +575,6 @@ const CONVERT_TARGET_GROUPS: ConvertTargetGroup[] = [
       { key: "income", labelKey: "detail.convert.target.income" },
       { key: "advance", labelKey: "detail.convert.target.advance" },
       { key: "transfer", labelKey: "detail.convert.target.transfer" },
-      { key: "credit_repay", labelKey: "detail.convert.target.creditRepay" },
     ],
   },
   {
@@ -580,35 +593,56 @@ const CONVERT_TARGET_GROUPS: ConvertTargetGroup[] = [
   {
     key: "liability",
     labelKey: "detail.convert.group.liability",
+    // 往来款窗只有「借款 / 还款」两个页签（借入借出、还款收款是同一页签的两种流向，
+    // 由往来款账户落在流出侧还是流入侧决定），所以目标也只列这两项，文案直接复用页签 key。
     targets: [
-      { key: "liability_borrow_in", labelKey: "detail.convert.target.borrowIn" },
-      { key: "liability_lend_out", labelKey: "detail.convert.target.lendOut" },
-      { key: "liability_repay_out", labelKey: "detail.convert.target.repayOut" },
-      { key: "liability_collect_in", labelKey: "detail.convert.target.collectIn" },
+      { key: "liability_borrow", labelKey: "liabilityTx.flow.borrow" },
+      { key: "liability_repay", labelKey: "liabilityTx.flow.repay" },
     ],
   },
 ];
 
-const CONVERT_LIABILITY_MODES: Partial<Record<EntryConversionTargetKey, "borrow_in" | "lend_out" | "repay_out" | "collect_in">> = {
-  liability_borrow_in: "borrow_in",
-  liability_lend_out: "lend_out",
-  liability_repay_out: "repay_out",
-  liability_collect_in: "collect_in",
-};
+/**
+ * 往来目标只有「借款 / 还款」两个页签，页签内部的流向沿用原记录的现金方向：
+ * 原来钱是出去的 → 借出 / 还款，原来钱是进来的 → 借入 / 收款。
+ * 进窗后把往来款账户挪到另一侧即可换成反方向，所以这只是默认值。
+ */
+function convertLiabilityMode(
+  targetKey: EntryConversionTargetKey,
+  entry: ConvertSourceEntry,
+): "borrow_in" | "lend_out" | "repay_out" | "collect_in" | null {
+  const inflow = String(entry.type ?? "").trim() === "income";
+  if (targetKey === "liability_borrow") return inflow ? "borrow_in" : "lend_out";
+  if (targetKey === "liability_repay") return inflow ? "collect_in" : "repay_out";
+  return null;
+}
+
+/** 记账窗（支 / 收 / 代 / 转）那一族类型：它们的编辑窗顶部自带四个 FT 页签。 */
+const CONVERT_CASH_FAMILY_KEYS = new Set<string>(["expense", "income", "advance", "transfer"]);
 
 /**
- * 选中单条记录时出现在明细工具栏的「转换」按钮。
+ * 「转换交易」下拉：只挂在**编辑窗标题栏**里（`EntryConvertHeaderAction`）。
+ * 明细表头那颗按钮已移除（2026-11-17 用户裁定：转换属于「改这条记录」，放进编辑窗）。
  *
  * 菜单按「记账 / 投资 / 往来」分组；点某一项只负责按目标类型派发新建事件，
  * 真正的替换（删除原记录）由 `<BasicDetailConvertWatcher />` 在目标窗保存成功后完成。
  */
-export function BasicDetailConvertButton({
+export function EntryConvertMenu({
   entry,
   cashAccountId,
+  disabled: disabledProp = false,
+  onBeforeConvert,
 }: {
   entry: ConvertSourceEntry;
   /** 该行的资金账户（全部收支视图下与 accountId 可能不同）。 */
   cashAccountId?: string | null;
+  /** 额外禁用（编辑窗里「已对账」只读时用）。 */
+  disabled?: boolean;
+  /**
+   * 派发目标新建事件之前的回调：编辑窗必须先关掉自己并清空草稿，
+   * 否则两个录入窗会抢同一份表单状态。
+   */
+  onBeforeConvert?: () => void;
 }) {
   const { t } = useI18n();
   const triggerRef = useRef<HTMLButtonElement | null>(null);
@@ -617,6 +651,27 @@ export function BasicDetailConvertButton({
   const [panelStyle, setPanelStyle] = useState<CSSProperties | null>(null);
   const zIndex = useDerivedLayerZIndex();
   const reconciled = Boolean(entry.reconciledAt);
+  // 源记录本身是往来款/贷款：往来组整组不出现（想改方向就在编辑窗切「借款 / 还款」页签）。
+  const sourceIsLiability = entry.accountKind === "loan"
+    || entry.accountKind === "settlement"
+    || Boolean(entry.accountIsSettlementAccount);
+  // 源记录的类型与某个目标同名时同样不出现（支出不必「转换成支出」）。
+  const sourceType = String(entry.type ?? "").trim();
+  // 源记录本身就出自记账窗：支出 / 收入 / 代付 / 转账 在编辑窗里就是页签，切页签即转换。
+  // 往来款/贷款的现金流行也存成 transfer，但它们的编辑窗是往来款窗（没有这四个页签），
+  // 所以这类来源仍要保留现金组，别跟着一起吞掉。
+  const sourceIsCashFamily = CONVERT_CASH_FAMILY_KEYS.has(sourceType) && !sourceIsLiability;
+  const visibleGroups = useMemo(
+    () => CONVERT_TARGET_GROUPS
+      .filter((group) => !(group.key === "liability" && sourceIsLiability))
+      .filter((group) => !(group.key === "cash" && sourceIsCashFamily))
+      .map((group) => ({
+        ...group,
+        targets: group.targets.filter((target) => target.key !== sourceType),
+      }))
+      .filter((group) => group.targets.length > 0),
+    [sourceIsLiability, sourceIsCashFamily, sourceType],
+  );
 
   // 菜单用 portal 定位：明细表格容器带 overflow 与固定高度，absolute 面板会被裁掉。
   useLayoutEffect(() => {
@@ -693,10 +748,9 @@ export function BasicDetailConvertButton({
       case "advance":
         openTransaction(targetKey);
         break;
-      case "transfer":
-        openTransaction("transfer");
-        break;
-      case "credit_repay": {
+      case "transfer": {
+        // 信用卡还款没有独立类型（它就是转账），但把信用卡预填到流入侧：
+        // 原来那条「信用卡还款」的实用价值只剩这个预填。方向仍是「资金账户 → 信用卡」。
         const creditSide = entry.accountKind === "bank_credit"
           ? String(entry.accountId ?? "")
           : entry.toAccountKind === "bank_credit"
@@ -770,7 +824,7 @@ export function BasicDetailConvertButton({
         }));
         break;
       default: {
-        const liabilityMode = CONVERT_LIABILITY_MODES[targetKey];
+        const liabilityMode = convertLiabilityMode(targetKey, entry);
         if (!liabilityMode) return;
         const isLoanTarget = Boolean(liabilityAccountId) && entry.accountKind === "loan"
           && (liabilityMode === "borrow_in" || liabilityMode === "repay_out");
@@ -790,7 +844,7 @@ export function BasicDetailConvertButton({
     }
   }, [cashAccountId, entry]);
 
-  const disabled = reconciled;
+  const disabled = disabledProp || reconciled;
 
   return (
     <>
@@ -799,7 +853,7 @@ export function BasicDetailConvertButton({
         type="button"
         onClick={() => setOpen((value) => !value)}
         disabled={disabled}
-        className="flex h-6 items-center gap-1 rounded border border-indigo-200 bg-indigo-50 px-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-100 disabled:cursor-not-allowed disabled:opacity-40"
+        className="secondary-button h-8 px-2 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-40"
         title={disabled ? t("detail.convert.reconciledDisabled") : t("detail.convert.buttonTitle")}
         aria-label={t("detail.convert.button")}
         aria-haspopup="menu"
@@ -817,7 +871,7 @@ export function BasicDetailConvertButton({
           style={{ ...panelStyle, zIndex, visibility: panelStyle ? "visible" : "hidden" }}
           className="fixed max-h-[70vh] overflow-y-auto rounded-lg border border-slate-200 bg-white py-1 shadow-xl"
         >
-          {CONVERT_TARGET_GROUPS.map((group) => (
+          {visibleGroups.map((group) => (
             <div key={group.key} className="py-0.5">
               <div className="px-2.5 py-1 text-[11px] font-semibold text-slate-400">{t(group.labelKey)}</div>
               {group.targets.map((target) => (
@@ -827,6 +881,7 @@ export function BasicDetailConvertButton({
                   role="menuitem"
                   onClick={() => {
                     setOpen(false);
+                    onBeforeConvert?.();
                     dispatchConversion(target.key, t(target.labelKey));
                   }}
                   className="block w-full px-2.5 py-1.5 text-left text-xs text-slate-700 hover:bg-indigo-50 hover:text-indigo-700"
@@ -847,6 +902,8 @@ export function BasicDetailConvertButton({
  * 「转换」收尾：目标交易保存成功后删除原记录。
  *
  * 必须在选中区之外常驻挂载——转换按钮在保存前就随选择变化/列表刷新卸载了。
+ *
+ * 没有明细 Provider 的页面（报表、计划投资等）由 `EntryConversionFallbackWatcher` 兜底。
  */
 export function BasicDetailConvertWatcher() {
   const { t } = useI18n();
