@@ -944,23 +944,37 @@ function detectMissingStockPrices(params: {
   if (snapshotDateKey > params.todayKey) return;
   const expectedDate = lastStockTradingDateOnOrBefore(snapshotDateKey);
   if (!expectedDate || expectedDate >= params.todayKey) return;
+  // 港股/美股休市日与 A 股不同，没有第二套交易日历可用，改用宽松窗口：
+  // 最近 7 个自然日内只要有一条收盘价就不算缺价，避免节假日误报。
+  const overseasWindowStart = isoDateShift(snapshotDateKey, -6);
+
   for (const position of params.heldPositions) {
-    if (position.market !== "CN") continue;
-    if (params.priceByKey.get(position.key)?.some((row) => row.date === expectedDate)) continue;
+    const rows = params.priceByKey.get(position.key) ?? [];
+    const hasPrice = position.market === "CN"
+      ? rows.some((row) => row.date === expectedDate)
+      : rows.some((row) => row.date >= overseasWindowStart && row.date <= snapshotDateKey);
+    if (hasPrice) continue;
     const account = params.accountByKey.get(position.key);
     if (!account) continue;
-    const key = `${position.key}|${expectedDate}`;
+    const missingDate = position.market === "CN" ? expectedDate : snapshotDateKey;
+    const key = `${position.key}|${missingDate}`;
     if (!params.missingByKey.has(key)) {
       params.missingByKey.set(key, {
         market: position.market,
         stockCode: position.stockCode,
         stockName: params.stockNameByKey.get(position.key) ?? null,
-        date: expectedDate,
+        date: missingDate,
         accountId: account.id,
         accountName: account.name,
       });
     }
   }
+}
+
+function isoDateShift(ymdKey: string, days: number): string {
+  const date = new Date(`${ymdKey}T00:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
 }
 
 function stockCashFlows(params: {

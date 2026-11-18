@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { todayDateBusinessYmd } from "@/lib/date-utils";
-import { inferStockExchangeFromCode, normalizeStockCode } from "@/lib/stock/market";
+import { inferStockExchangeFromCode, normalizeStockCode, normalizeStockMarket } from "@/lib/stock/market";
 import {
   STOCK_JSON_PARSER,
   isKnownStockQuoteParser,
@@ -73,11 +73,11 @@ export async function POST(req: NextRequest) {
     }
   }
 
-  const market = (data.market || "CN").trim().toUpperCase();
-  if (market !== "CN") {
-    // 表结构已经留了 market，但港股 / 美股的 parser 还没写，先明确拒绝而不是静默失败。
+  // 测试必须指定具体市场：同一段地址在港股/美股下会展开成不同的 secid / 代码后缀。
+  const market = normalizeStockMarket(data.market || "CN");
+  if (!["CN", "HK", "US"].includes(market)) {
     return NextResponse.json(
-      { ok: false, outcome: "unsupported_market", message: "目前只支持 A 股（CN）" },
+      { ok: false, outcome: "unsupported_market", message: "测试时请选择具体市场（CN / HK / US）" },
       { status: 400 },
     );
   }
@@ -108,6 +108,7 @@ export async function POST(req: NextRequest) {
 
   const result = await fetchQuoteRows(api, {
     stockCode,
+    market,
     exchange: inferStockExchangeFromCode(market, stockCode),
     dateStart: shiftYmd(targetDate, -LOOKBACK_DAYS),
     date: targetDate,

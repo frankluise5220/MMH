@@ -4,7 +4,7 @@ import {
   EASTMONEY_KLINE_PARSER,
   STOCK_JSON_PARSER,
   TENCENT_KLINE_PARSER,
-  buildQuoteRequestUrl,
+  buildQuoteRequestUrls,
   isKnownStockQuoteParser,
   normalizeStockQuoteJsonConfig,
   parseQuoteRows,
@@ -25,7 +25,9 @@ export const DEFAULT_STOCK_QUOTE_APIS = [
   {
     code: EASTMONEY_KLINE_PARSER,
     name: "东方财富 · K线",
-    market: "CN",
+    // 东财 K 线三个市场同一套报文（secid 前缀不同，由 {secid} 占位符承载），
+    // 所以内置源不限制市场，A 股 / 港股 / 美股共用。
+    market: "*",
     parser: EASTMONEY_KLINE_PARSER,
     // 不带 beg 时服务端返回 end 之前最近的 N 条；带 beg 才有区间。
     // 单日查询由调用方把 dateStart 往前推若干天，所以这里可以安全地同时给 beg/end。
@@ -40,7 +42,7 @@ export const DEFAULT_STOCK_QUOTE_APIS = [
   {
     code: TENCENT_KLINE_PARSER,
     name: "腾讯行情 · 前复权日线",
-    market: "CN",
+    market: "*",
     parser: TENCENT_KLINE_PARSER,
     baseUrl:
       "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get" +
@@ -60,7 +62,10 @@ export async function ensureDefaultStockQuoteApis(): Promise<void> {
       prisma.stockQuoteApi.upsert({
         where: { code: api.code },
         create: { ...api },
-        update: {},
+        // 老库里的内置源是 market="CN"（当时只支持 A 股），升级后必须放开到 "*"，
+        // 否则港股 / 美股取价会因为市场过滤一条源都匹配不到。其余字段仍然是 update: {}
+        // 的语义（用户改过的地址、优先级、启停都不动）。
+        update: { market: api.market },
       }),
     ),
   );
@@ -184,50 +189,63 @@ export async function fetchQuoteRows(
     return { ok: false, outcome: "parse_error", message: "解析配置不是合法的 JSON 对象" };
   }
 
-  const url = buildQuoteRequestUrl(api, target);
+  const urls = buildQuoteRequestUrls(api, target);
   const headers: Record<string, string> = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
   };
   if (parser === EASTMONEY_KLINE_PARSER) headers.Referer = "https://quote.eastmoney.com/";
-  const request = applyAuth(jsonConfig, await resolveApiKey(api.apiKey), url, headers);
+  const apiKey = await resolveApiKey(api.apiKey);
 
-  try {
-    const response = await fetch(request.url, {
-      headers: request.headers,
-      cache: "no-store",
-      signal: AbortSignal.timeout(STOCK_QUOTE_FETCH_TIMEOUT_MS),
-    });
-    if (!response.ok) {
-      return { ok: false, outcome: "http_error", status: response.status };
-    }
-    const text = await response.text();
-    // 只给测试连接回显用；解析始终基于完整报文，避免长报文被截断后 JSON.parse 失败。
-    const raw = text.slice(0, QUOTE_RAW_PREVIEW_LIMIT);
-
-    let data: unknown;
+  // 美股代码里没有交易所信息，同一模板会展开成多个候选地址（东财 105/106/107，
+  // 腾讯 .OQ/.N/.A），按顺序试，第一个取到收盘价的胜出。
+  let lastFailure: QuoteFetchResult = { ok: false, outcome: "empty" };
+  for (const url of urls) {
+    const request = applyAuth(jsonConfig, apiKey, url, headers);
     try {
-      data = JSON.parse(text);
-    } catch {
-      // 部分接口把 JSON 包在 JS 片段里（jsonp / var x = {...}）。
-      const match = text.match(/\{[\s\S]+\}/);
-      if (!match) {
-        return { ok: false, outcome: "parse_error", message: "返回内容不是 JSON", raw };
+      const response = await fetch(request.url, {
+        headers: request.headers,
+        cache: "no-store",
+        signal: AbortSignal.timeout(STOCK_QUOTE_FETCH_TIMEOUT_MS),
+      });
+      if (!response.ok) {
+        lastFailure = { ok: false, outcome: "http_error", status: response.status };
+        continue;
       }
-      try {
-        data = JSON.parse(match[0]);
-      } catch {
-        return { ok: false, outcome: "parse_error", message: "返回内容不是合法 JSON", raw };
-      }
-    }
+      const text = await response.text();
+      // 只给测试连接回显用；解析始终基于完整报文，避免长报文被截断后 JSON.parse 失败。
+      const raw = text.slice(0, QUOTE_RAW_PREVIEW_LIMIT);
 
-    const rows = parseQuoteRows(data, parser, target, jsonConfig);
-    if (!rows) return { ok: false, outcome: "empty", raw };
-    return { ok: true, rows, raw };
-  } catch (error) {
-    return {
-      ok: false,
-      outcome: "network_error",
-      message: error instanceof Error ? error.message : String(error),
-    };
+      let data: unknown;
+      try {
+        data = JSON.parse(text);
+      } catch {
+        // 部分接口把 JSON 包在 JS 片段里（jsonp / var x = {...}）。
+        const match = text.match(/\{[\s\S]+\}/);
+        if (!match) {
+          lastFailure = { ok: false, outcome: "parse_error", message: "返回内容不是 JSON", raw };
+          continue;
+        }
+        try {
+          data = JSON.parse(match[0]);
+        } catch {
+          lastFailure = { ok: false, outcome: "parse_error", message: "返回内容不是合法 JSON", raw };
+          continue;
+        }
+      }
+
+      const rows = parseQuoteRows(data, parser, target, jsonConfig);
+      if (!rows) {
+        lastFailure = { ok: false, outcome: "empty", raw };
+        continue;
+      }
+      return { ok: true, rows, raw };
+    } catch (error) {
+      lastFailure = {
+        ok: false,
+        outcome: "network_error",
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
   }
+  return lastFailure;
 }

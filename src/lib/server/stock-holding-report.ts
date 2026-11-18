@@ -2,6 +2,7 @@ import { accountRenderSettings, buildAccountDisplayOption } from "@/lib/account-
 import { prisma } from "@/lib/db/prisma";
 import { toNumber } from "@/lib/date-utils";
 import { getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
+import { defaultStockCurrencyForMarket } from "@/lib/stock/market";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 
 export type StockHoldingReportRow = {
@@ -167,7 +168,9 @@ export async function loadStockHoldingReport(
         dilutedCost,
         // 摊薄成本 ≤ 0 时（已回本）比例没有意义，保持 0 而不是 Infinity。
         totalPnLRate: dilutedCost > 0 ? totalProfit / dilutedCost : 0,
-        currency: account?.currency || "CNY",
+        // 市值 = 数量 × 该市场收盘价，币种必须跟着市场走。账户币种只是历史遗留的兜底：
+        // 老数据里有「CNY 账户记港股」，按账户打标签会把港币市值算成人民币资产。
+        currency: defaultStockCurrencyForMarket(item.market),
       };
     })
     .sort((left, right) => {

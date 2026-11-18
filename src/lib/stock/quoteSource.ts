@@ -1,5 +1,9 @@
 import { parseNavDate, parseNavNumber, readJsonPath } from "@/lib/fund/json-parser";
-import { inferStockExchangeFromCode } from "@/lib/stock/market";
+import {
+  inferStockExchangeFromCode,
+  inferStockMarketFromCode,
+  normalizeStockMarket,
+} from "@/lib/stock/market";
 
 /**
  * 股票收盘价的可配置数据源：请求地址模板 + 报文解析。
@@ -133,7 +137,9 @@ export function isKnownStockQuoteParser(parser: string): boolean {
 
 export type QuoteTarget = {
   stockCode: string;
-  /** SH / SZ / BJ；为空时按代码推断。 */
+  /** CN / HK / US；为空时按代码推断。 */
+  market?: string | null;
+  /** SH / SZ / BJ；为空时按代码推断。港股/美股没有交易所前缀。 */
   exchange: string | null;
   /** 区间起始日（单日查询时由调用方往前推若干天，覆盖节假日）。 */
   dateStart: string;
@@ -153,30 +159,115 @@ export type QuoteFetchResult =
       raw?: string;
     };
 
+export function resolveQuoteMarket(target: QuoteTarget): string {
+  return normalizeStockMarket(target.market ?? inferStockMarketFromCode(target.stockCode));
+}
+
+function cnExchangeOf(target: QuoteTarget): string {
+  return (
+    target.exchange ?? inferStockExchangeFromCode("CN", target.stockCode) ?? ""
+  ).toUpperCase();
+}
+
+/**
+ * 东财 secid 候选：A 股按交易所前缀（1. 沪 / 0. 深京），港股固定 116，
+ * 美股按交易所分 105(NASDAQ) / 106(NYSE) / 107(AMEX)，代码里没有交易所信息，只能试探。
+ */
+function secidCandidates(target: QuoteTarget): string[] {
+  const market = resolveQuoteMarket(target);
+  const code = target.stockCode;
+  if (market === "HK") return [`116.${code}`];
+  if (market === "US") return ["105", "106", "107"].map((prefix) => `${prefix}.${code}`);
+  const exchange = cnExchangeOf(target);
+  if (exchange === "SH") return [`1.${code}`];
+  if (exchange === "SZ" || exchange === "BJ") return [`0.${code}`];
+  return [`1.${code}`, `0.${code}`];
+}
+
+/** 腾讯行情的美股交易所后缀：.OQ 纳斯达克 / .N 纽交所 / .A 美交所。 */
+const US_TENCENT_SUFFIXES = [".OQ", ".N", ".A"] as const;
+
+/** 腾讯系行情符号：sh600519 / sz000001 / hk00700 / usAAPL.OQ。 */
+export function tencentSymbols(target: QuoteTarget): string[] {
+  const market = resolveQuoteMarket(target);
+  const code = target.stockCode;
+  if (market === "HK") return [`hk${code}`];
+  if (market === "US") {
+    // BRK.B 这类代码自带交易所点号，不再追加后缀。
+    return code.includes(".") ? [`us${code}`] : US_TENCENT_SUFFIXES.map((suffix) => `us${code}${suffix}`);
+  }
+  const exchange = cnExchangeOf(target);
+  if (exchange === "SH") return [`sh${code}`];
+  if (exchange === "SZ") return [`sz${code}`];
+  if (exchange === "BJ") return [`bj${code}`];
+  if (/^[69]/.test(code)) return [`sh${code}`];
+  if (/^[023]/.test(code)) return [`sz${code}`];
+  if (/^(4|8|92)/.test(code)) return [`bj${code}`];
+  return [`sz${code}`];
+}
+
+/** `{code}` 候选：美股同样要试交易所后缀，其余市场只有代码本身。 */
+function codeCandidates(target: QuoteTarget, codeSuffix: string): string[] {
+  const market = resolveQuoteMarket(target);
+  const code = target.stockCode;
+  if (market === "US") {
+    if (code.includes(".")) return [`${code}${codeSuffix}`];
+    return US_TENCENT_SUFFIXES.map((suffix) => `${code}${suffix}${codeSuffix}`);
+  }
+  return [`${code}${codeSuffix}`];
+}
+
+/** `{exchangeLower}` 候选：A 股 sh/sz/bj，港股 hk，美股 us。 */
+function exchangeLowerCandidates(target: QuoteTarget): string[] {
+  const market = resolveQuoteMarket(target);
+  if (market === "HK") return ["hk"];
+  if (market === "US") return ["us"];
+  const exchange = cnExchangeOf(target);
+  if (exchange) return [exchange.toLowerCase()];
+  return [tencentSymbols(target)[0]!.replace(target.stockCode, "") || "sz"];
+}
+
 /**
  * 占位符替换。比基金侧多三个：股票接口普遍要求带市场信息，且格式各不相同。
  *
  * - `{code}` 600519 / `{exchange}` SH / `{exchangeLower}` sh / `{secid}` 1.600519
  * - `{date}` 2026-11-18 / `{dateCompact}` 20261118
  * - `{dateStart}` / `{dateStartCompact}` 区间起始日
+ *
+ * 返回候选地址列表：美股没有交易所信息，同一个模板要按 secid/代码后缀逐个试，
+ * 由调用方按顺序请求，第一个成功的胜出。
  */
-export function buildQuoteRequestUrl(api: StockQuoteApiConfig, target: QuoteTarget): string {
+export function buildQuoteRequestUrls(api: StockQuoteApiConfig, target: QuoteTarget): string[] {
   const config = stockQuoteJsonConfigOf(api);
-  const stockCode = `${target.stockCode}${config?.codeSuffix ?? ""}`;
-  const exchange = (
-    target.exchange ?? inferStockExchangeFromCode("CN", target.stockCode) ?? ""
-  ).toUpperCase();
-  const secid = exchange === "SH" ? `1.${target.stockCode}` : `0.${target.stockCode}`;
+  const codes = codeCandidates(target, config?.codeSuffix ?? "");
+  const exchangeLowers = exchangeLowerCandidates(target);
+  const secids = secidCandidates(target);
+  const urls: string[] = [];
 
-  return api.baseUrl
-    .replaceAll("{code}", stockCode)
-    .replaceAll("{exchangeLower}", exchange.toLowerCase())
-    .replaceAll("{exchange}", exchange)
-    .replaceAll("{secid}", secid)
-    .replaceAll("{dateStartCompact}", target.dateStart.replaceAll("-", ""))
-    .replaceAll("{dateStart}", target.dateStart)
-    .replaceAll("{dateCompact}", target.date.replaceAll("-", ""))
-    .replaceAll("{date}", target.date);
+  for (const secid of secids) {
+    const exchange = secid.startsWith("116.") ? "" : secid.startsWith("1.") ? "SH" : secid.startsWith("0.") ? "SZ" : "";
+    for (const code of codes) {
+      for (const exchangeLower of exchangeLowers) {
+        urls.push(
+          api.baseUrl
+            .replaceAll("{code}", code)
+            .replaceAll("{exchangeLower}", exchangeLower)
+            .replaceAll("{exchange}", exchange || exchangeLower.toUpperCase())
+            .replaceAll("{secid}", secid)
+            .replaceAll("{dateStartCompact}", target.dateStart.replaceAll("-", ""))
+            .replaceAll("{dateStart}", target.dateStart)
+            .replaceAll("{dateCompact}", target.date.replaceAll("-", ""))
+            .replaceAll("{date}", target.date),
+        );
+      }
+    }
+  }
+
+  return Array.from(new Set(urls));
+}
+
+export function buildQuoteRequestUrl(api: StockQuoteApiConfig, target: QuoteTarget): string {
+  return buildQuoteRequestUrls(api, target)[0]!;
 }
 
 function parseDelimitedRow(row: unknown): QuoteRow | null {
@@ -203,16 +294,7 @@ function collect(
 }
 
 export function tencentSymbol(target: QuoteTarget): string {
-  const exchange = (
-    target.exchange ?? inferStockExchangeFromCode("CN", target.stockCode) ?? ""
-  ).toUpperCase();
-  if (exchange === "SH") return `sh${target.stockCode}`;
-  if (exchange === "SZ") return `sz${target.stockCode}`;
-  if (exchange === "BJ") return `bj${target.stockCode}`;
-  if (/^[69]/.test(target.stockCode)) return `sh${target.stockCode}`;
-  if (/^[023]/.test(target.stockCode)) return `sz${target.stockCode}`;
-  if (/^(4|8|92)/.test(target.stockCode)) return `bj${target.stockCode}`;
-  return `sz${target.stockCode}`;
+  return tencentSymbols(target)[0]!;
 }
 
 export function parseQuoteRows(
@@ -227,11 +309,18 @@ export function parseQuoteRows(
   }
 
   if (parser === TENCENT_KLINE_PARSER) {
-    const node = (data as { data?: Record<string, unknown> } | null)?.data?.[tencentSymbol(target)];
-    if (!node || typeof node !== "object") return null;
-    const record = node as Record<string, unknown>;
-    // fqkline 复权日线在 `qfqday`，部分日期区间 / 不复权查询返回 `day`。
-    return collect(record.qfqday, parseArrayRow) ?? collect(record.day, parseArrayRow);
+    const payload = (data as { data?: Record<string, unknown> } | null)?.data;
+    if (!payload || typeof payload !== "object") return null;
+    // 美股的符号带交易所后缀，报文里只有命中的那一个 key，逐个试。
+    for (const symbol of tencentSymbols(target)) {
+      const node = payload[symbol];
+      if (!node || typeof node !== "object") continue;
+      const record = node as Record<string, unknown>;
+      // fqkline 复权日线在 `qfqday`，部分日期区间 / 不复权查询返回 `day`。
+      const rows = collect(record.qfqday, parseArrayRow) ?? collect(record.day, parseArrayRow);
+      if (rows) return rows;
+    }
+    return null;
   }
 
   if (parser === STOCK_JSON_PARSER && jsonConfig) {

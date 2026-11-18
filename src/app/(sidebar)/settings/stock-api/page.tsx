@@ -35,6 +35,14 @@ type StockQuoteApiRecord = {
 
 const PARSER_CODES = ["eastmoney_kline", "tencent_kline", "json"] as const;
 
+/** 测试连接用的示例代码，选市场时顺手带出来。 */
+const MARKET_TEST_CODES: Record<string, string> = {
+  CN: "600519",
+  HK: "00700",
+  US: "AAPL",
+  "*": "600519",
+};
+
 type ParserCode = (typeof PARSER_CODES)[number];
 
 type FormState = {
@@ -316,7 +324,17 @@ export default function StockApiSettingsPage() {
                       ) : null}
                     </div>
                   </SettingsTd>
-                  <SettingsTd>{api.market === "CN" ? t("settings.stockApi.marketCn") : api.market}</SettingsTd>
+                  <SettingsTd>
+                    {api.market === "CN"
+                      ? t("settings.stockApi.marketCn")
+                      : api.market === "HK"
+                        ? t("settings.stockApi.marketHk")
+                        : api.market === "US"
+                          ? t("settings.stockApi.marketUs")
+                          : api.market === "*"
+                            ? t("settings.stockApi.marketAll")
+                            : api.market}
+                  </SettingsTd>
                   <SettingsTd>{parserLabel(api)}</SettingsTd>
                   <SettingsTd className="max-w-[320px] truncate" title={api.baseUrl}>
                     {api.baseUrl}
@@ -361,8 +379,24 @@ export default function StockApiSettingsPage() {
                   <input className={inputClass} value={form.name} onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))} />
                 </Field>
                 <Field label={t("settings.stockApi.market")}>
-                  <select className={inputClass} value={form.market} onChange={(e) => setForm((f) => ({ ...f, market: e.target.value }))}>
+                  <select
+                    className={inputClass}
+                    value={form.market}
+                    onChange={(e) => {
+                      const nextMarket = e.target.value;
+                      setForm((f) => ({ ...f, market: nextMarket }));
+                      // 测试代码跟着市场换示例，用户自己填过的代码不动。
+                      setTestCode((prev) =>
+                        !prev.trim() || Object.values(MARKET_TEST_CODES).includes(prev.trim())
+                          ? MARKET_TEST_CODES[nextMarket] ?? prev
+                          : prev,
+                      );
+                    }}
+                  >
                     <option value="CN">{t("settings.stockApi.marketCn")}</option>
+                    <option value="HK">{t("settings.stockApi.marketHk")}</option>
+                    <option value="US">{t("settings.stockApi.marketUs")}</option>
+                    <option value="*">{t("settings.stockApi.marketAll")}</option>
                   </select>
                 </Field>
               </div>

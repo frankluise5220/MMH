@@ -16,6 +16,8 @@ import { buildInvestmentSourceNote, isAutoInvestmentSourceNote } from "@/lib/inv
 import { calculateStockTransactionFeesByDate } from "@/lib/stock/feeRule";
 import { recalcStockPositions } from "@/lib/stock/recalcPosition";
 import { inferStockMarketFromCode, normalizeStockCode, normalizeStockMarket, normalizeUsableStockName, resolveOrCreateStockSecurity } from "@/lib/stock/securities";
+import { defaultStockCurrencyForMarket } from "@/lib/stock/market";
+import { stockCurrencyMismatchMessage, stockMarketCurrencyMismatch } from "@/lib/stock/currencyGuard";
 
 export const runtime = "nodejs";
 
@@ -313,19 +315,41 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    const requestedMarket = body.market
+      ? normalizeStockMarket(body.market)
+      : inferStockMarketFromCode(body.stockCode);
     const security = body.securityId
       ? await prisma.stockSecurity.findFirst({
           where: { id: String(body.securityId).trim(), householdId, isActive: true },
         })
       : await resolveOrCreateStockSecurity(prisma, {
           householdId,
-          market: body.market ? normalizeStockMarket(body.market) : inferStockMarketFromCode(body.stockCode),
+          market: requestedMarket,
           stockCode: normalizeStockCode(body.stockCode),
           stockName: normalizeUsableStockName(body.stockName, normalizeStockCode(body.stockCode)) ?? undefined,
-          currency: normalizeCurrency(body.currency ?? stockAccount.currency),
+          // 证券币种由市场决定，不能跟着账户走（否则用 CNY 账户录腾讯会把证券标成 CNY）。
+          currency: normalizeCurrency(body.currency ?? defaultStockCurrencyForMarket(requestedMarket)),
           exchange: String(body.exchange ?? "").trim() || null,
         });
     if (!security) return NextResponse.json({ ok: false, code: "SECURITY_NOT_FOUND", error: "Stock security was not found" }, { status: 400, headers: corsHeaders() });
+
+    // 港币/美股必须用同币种账户：金额不换算，币种对不上就是静默错账。
+    const currencyMismatch = stockMarketCurrencyMismatch({
+      market: security.market,
+      stockAccountCurrency: stockAccount.currency,
+      cashAccountCurrency: cashAccount?.currency ?? null,
+    });
+    if (currencyMismatch) {
+      return NextResponse.json(
+        {
+          ok: false,
+          code: currencyMismatch.code,
+          error: stockCurrencyMismatchMessage(currencyMismatch),
+          currency: currencyMismatch,
+        },
+        { status: 400, headers: corsHeaders() },
+      );
+    }
 
     const fees = buySellAction
       ? await (async () => {
@@ -519,19 +543,52 @@ export async function PATCH(req: NextRequest) {
 
     const rawCode = normalizeStockCode(String(body.stockCode ?? existing.stockCode).trim());
     if (!rawCode) return NextResponse.json({ ok: false, code: "STOCK_CODE_REQUIRED", error: "Stock code is required" }, { status: 400, headers: corsHeaders() });
+    const requestedMarket = body.market
+      ? normalizeStockMarket(body.market)
+      : inferStockMarketFromCode(rawCode);
     const security = body.securityId || rawCode !== existing.stockCode
       ? await resolveOrCreateStockSecurity(prisma, {
           householdId,
-          market: body.market ? normalizeStockMarket(body.market) : inferStockMarketFromCode(rawCode),
+          market: requestedMarket,
           stockCode: rawCode,
           stockName: normalizeUsableStockName(body.stockName, rawCode) ?? undefined,
-          currency: normalizeCurrency(body.currency ?? stockAccount.currency),
+          // 证券币种由市场决定，不能跟着账户走。
+          currency: normalizeCurrency(body.currency ?? defaultStockCurrencyForMarket(requestedMarket)),
           exchange: String(body.exchange ?? "").trim() || null,
         })
       : existing.securityId
         ? await prisma.stockSecurity.findFirst({ where: { id: existing.securityId, householdId, isActive: true } })
         : null;
     if (!security) return NextResponse.json({ ok: false, code: "SECURITY_NOT_FOUND", error: "Stock security was not found" }, { status: 400, headers: corsHeaders() });
+
+    // 只有「市场 / 证券 / 账户 / 动作」被改动时才校验币种。
+    // 历史遗留的「CNY 账户记港股」记录仍然可以改备注、改数量，不至于整行锁死。
+    const patchTouchesCurrencyScope =
+      body.market !== undefined
+      || body.stockCode !== undefined
+      || body.securityId !== undefined
+      || body.stockAccountId !== undefined
+      || body.accountId !== undefined
+      || body.cashAccountId !== undefined
+      || body.action !== undefined;
+    if (patchTouchesCurrencyScope) {
+      const currencyMismatch = stockMarketCurrencyMismatch({
+        market: security.market,
+        stockAccountCurrency: stockAccount.currency,
+        cashAccountCurrency: cashAccount?.currency ?? null,
+      });
+      if (currencyMismatch) {
+        return NextResponse.json(
+          {
+            ok: false,
+            code: currencyMismatch.code,
+            error: stockCurrencyMismatchMessage(currencyMismatch),
+            currency: currencyMismatch,
+          },
+          { status: 400, headers: corsHeaders() },
+        );
+      }
+    }
 
     const fees = buySellAction
       ? await (async () => {

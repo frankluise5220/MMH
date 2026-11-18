@@ -68,8 +68,8 @@ export async function GET() {
 const CreateSchema = z.object({
   name: z.string().min(1).max(80),
   code: z.string().min(1).max(40).optional(),
-  /** 当前只有 A 股实现；"*" 表示不限制市场。 */
-  market: z.enum(["CN", "*"]).default("CN"),
+  /** CN / HK / US；"*" 表示同一套地址服务所有市场（内置源就是这样）。 */
+  market: z.enum(["CN", "HK", "US", "*"]).default("CN"),
   parser: z.string().min(1).max(40).optional(),
   parserConfig: z.unknown().optional(),
   baseUrl: z.string().min(1),
@@ -159,8 +159,8 @@ export async function PUT(req: NextRequest) {
   if (priority !== undefined) data.priority = priority;
   if (isActive !== undefined) data.isActive = isActive;
   if (market !== undefined) {
-    if (market !== "CN" && market !== "*") {
-      return NextResponse.json({ ok: false, code: "INVALID_MARKET", error: "暂只支持 CN" }, { status: 400 });
+    if (!["CN", "HK", "US", "*"].includes(String(market))) {
+      return NextResponse.json({ ok: false, code: "INVALID_MARKET", error: "市场只能是 CN / HK / US / *" }, { status: 400 });
     }
     data.market = market;
   }

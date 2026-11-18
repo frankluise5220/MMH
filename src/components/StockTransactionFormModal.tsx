@@ -808,6 +808,15 @@ export function StockTransactionFormModal({
       ? effectiveGrossAmount
       : 0;
   const displayCurrency = currencyForStockMarket(market, selectedCashAccount?.currency || selectedAccount?.currency);
+  // 港币/美股必须用同币种账户：记账层不换算金额、报表直接取账户币种，
+  // 币种对不上就是静默错账（服务端 stockMarketCurrencyMismatch 同规则硬拦截）。
+  const marketNeedsCurrencyMatch = market === "HK" || market === "US";
+  const stockAccountCurrencyMismatch = marketNeedsCurrencyMatch && selectedAccount?.currency
+    ? selectedAccount.currency.toUpperCase() !== displayCurrency
+    : false;
+  const cashAccountCurrencyMismatch = marketNeedsCurrencyMatch && selectedCashAccount?.currency
+    ? selectedCashAccount.currency.toUpperCase() !== displayCurrency
+    : false;
   const feeInputConfigs = [
     {
       key: "stampTax" as const,
@@ -2047,6 +2056,15 @@ export function StockTransactionFormModal({
                     behavior={{ search: true, minDropdownWidth: 280 }}
                   />
                   {autoCreateError ? <div className="text-[11px] text-rose-600">{autoCreateError}</div> : null}
+                  {stockAccountCurrencyMismatch ? (
+                    <div className="text-[11px] text-rose-600">
+                      {t("stockTx.marketCurrencyStockMismatch", {
+                        market,
+                        currency: displayCurrency,
+                        actual: selectedAccount?.currency ?? "",
+                      })}
+                    </div>
+                  ) : null}
                 </div>
                 <div className="space-y-1">
                   <div className="form-label">{t("txForm.cashAccount")}</div>
@@ -2063,6 +2081,15 @@ export function StockTransactionFormModal({
                     createLabel={t("stockTx.addCashAccount")}
                     behavior={{ search: true, minDropdownWidth: 260 }}
                   />
+                  {cashAccountCurrencyMismatch ? (
+                    <div className="text-[11px] text-rose-600">
+                      {t("stockTx.marketCurrencyCashMismatch", {
+                        market,
+                        currency: displayCurrency,
+                        actual: selectedCashAccount?.currency ?? "",
+                      })}
+                    </div>
+                  ) : null}
                 </div>
               </div>
 
