@@ -559,6 +559,45 @@ function trimForeignPrebuilds(serverDir, nodeArch) {
   }
 }
 
+// Next's standalone tracing keeps the packages whole, so `pdf-parse` and
+// `pdfjs-dist` arrive with their own source maps: pdf.worker.mjs.map alone is
+// 5 MB and the two packages together ship ~19 MB of them. Nothing at runtime
+// reads a .map (it only decorates stack traces), and the Docker image already
+// strips them from .next, so drop every one under the staged server before
+// app.tgz is built. The fnOS package was ~14 MB larger than 0.1.86 purely
+// because of this dependency, and these maps were a third of that growth.
+function pruneSourceMaps(serverDir) {
+  if (!fs.existsSync(serverDir)) return 0;
+  let count = 0;
+  let bytes = 0;
+  const stack = [serverDir];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    let entries = [];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const item = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(item);
+        continue;
+      }
+      if (!entry.name.endsWith(".map")) continue;
+      const size = fs.statSync(item).size;
+      fs.rmSync(item, { force: true });
+      count += 1;
+      bytes += size;
+    }
+  }
+  if (count > 0) {
+    console.log(`Pruned ${count} source maps (${(bytes / (1024 * 1024)).toFixed(1)} MB) from the fnOS payload.`);
+  }
+  return count;
+}
+
 // better-sqlite3 declares an engines range; a bundled runtime below it compiles
 // but fails at load time with no useful output. Check the range up front so a
 // Node major mismatch names itself instead of showing up as a bare exit code.
@@ -4321,6 +4360,7 @@ if (verifyNative.status !== 0) {
 // for the four database dialects this package never uses.
 pruneRuntimeToStandalone(path.join(stageDir, "app", "server"));
 trimForeignPrebuilds(path.join(stageDir, "app", "server"), target.nodeArch);
+pruneSourceMaps(path.join(stageDir, "app", "server"));
 
 // The native smoke test above runs before the prune, so prove the pruned tree
 // still loads the SQLite binding. Cheap (in-memory) and catches a future

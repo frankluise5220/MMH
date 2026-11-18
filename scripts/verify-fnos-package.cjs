@@ -307,6 +307,10 @@ expect(
   !buildScript.includes('tar -xzf "$tgz" -C "$dest"'),
   "ensure_app_ready must not fall back to extracting the payload into the app root: it mixes server/ with cmd/ and manifest, and the root layout then short-circuits later extracts.",
 );
+expect(
+  buildScript.includes("function pruneSourceMaps(") && buildScript.includes('pruneSourceMaps(path.join(stageDir, "app", "server"))'),
+  "fnOS build must strip *.map from the staged server: pdfjs-dist / pdf-parse ship ~19 MB of source maps that nothing reads at runtime.",
+);
 const appBuildScript = read(path.join(root, "scripts", "build-fnos-app.cjs"));
 const schemaScript = read(path.join(root, "scripts", "generate-native-sqlite-schema.cjs"));
 const fnosReleaseWorkflow = read(path.join(root, ".github", "workflows", "fnos-release.yml"));
@@ -951,6 +955,11 @@ if (process.env.FNOS_VERIFY_BUILT_FPK === "1") {
   expect(
     appEntries.includes("server/node_modules/next/dist/compiled/webpack/webpack-lib.js"),
     "Built fnOS .fpk must include Next.js compiled webpack runtime modules required by its production server.",
+  );
+  const shippedSourceMaps = appEntries.filter((entry) => entry.endsWith(".map"));
+  expect(
+    shippedSourceMaps.length === 0,
+    `Built fnOS .fpk must not ship source maps (${shippedSourceMaps.length} found, e.g. ${shippedSourceMaps.slice(0, 3).join(", ")}); pdfjs-dist alone adds ~19 MB of dead weight.`,
   );
   const publicFiles = appEntries
     .filter((entry) => entry.startsWith("server/public/") && !entry.endsWith("/"))
