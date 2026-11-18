@@ -624,14 +624,8 @@ type ConvertTarget = {
   key: EntryConversionTargetKey;
   labelKey: string;
   /**
-   * 源记录的钱是**流进来**的（收入）时用的文案：同一类操作此时是「赎回 / 卖出」而不是「买入」，
-   * 派发时也直接落在对应页签上（2026-11-18 用户裁定：流入交易不能显示成「理财买入」，
-   * 应显示「理财赎回」并默认进赎回页签）。
-   */
-  inflowLabelKey?: string;
-  /**
-   * 这个目标本身的现金方向：钱进（收入 / 赎回 / 卖出 / 取出 / 收款）= "in"，
-   * 钱出（支出 / 代付 / 买入 / 申购 / 缴费）= "out"，转账、投资、往来这类两边都能走的 = "both"。
+   * 这个目标本身的现金方向：钱进（收入 / 取出 / 收款）= "in"，
+   * 钱出（支出 / 代付 / 缴费）= "out"，转账、投资、往来这类两边都能走的 = "both"。
    *
    * 菜单只列与源记录**同向**的目标（2026-11-18 用户裁定：流入的金额转换时「只列资金流入的操作」，
    * 买入 / 申购 / 缴费类完全不出现），钱流出的记录则反过来 —— 支出 / 代付这类不出现。
@@ -673,16 +667,20 @@ const CONVERT_TARGET_GROUPS: ConvertTargetGroup[] = [
   {
     key: "investment",
     labelKey: "detail.convert.group.investment",
-    // 投资类入口本身两个方向都能走（买入 / 赎回），所以 flow=both；钱进来时文案换成赎回/卖出，
-    // 打开窗也落在那个页签上。保险窗同样有「买入（缴费）/ 赎回（退保）」两个页签。
+    // 投资类入口本身两个方向都能走（买入 / 赎回），所以 flow=both。
+    // 菜单只写资产名（开放式基金 / 货币基金 / 贵金属…），不写申购赎回这类动作词
+    // （2026-11-18 用户裁定：不要「基金申购」这种带动作的文案，方向由打开窗后的页签体现）。
     targets: [
-      { key: "fund", labelKey: "detail.convert.target.fund", inflowLabelKey: "detail.convert.target.fundRedeem", flow: "both" },
-      { key: "metal", labelKey: "detail.convert.target.metal", inflowLabelKey: "detail.convert.target.metalRedeem", flow: "both" },
-      { key: "wealth", labelKey: "detail.convert.target.wealth", inflowLabelKey: "detail.convert.target.wealthRedeem", flow: "both" },
-      { key: "bond", labelKey: "detail.convert.target.bond", inflowLabelKey: "detail.convert.target.bondRedeem", flow: "both" },
-      { key: "deposit", labelKey: "detail.convert.target.deposit", inflowLabelKey: "detail.convert.target.depositRedeem", flow: "both" },
-      { key: "insurance", labelKey: "detail.convert.target.insurance", inflowLabelKey: "detail.convert.target.insuranceRedeem", flow: "both" },
-      { key: "stock", labelKey: "detail.convert.target.stock", inflowLabelKey: "detail.convert.target.stockSell", flow: "both" },
+      { key: "fund", labelKey: "detail.convert.target.fund", flow: "both" },
+      // 货币基金与开放式基金共用一个录入窗，产品类型不同（fund / money）：
+      // 少了这一项，货基账户只能从胶囊菜单记，转换菜单里没有货基入口。
+      { key: "money", labelKey: "detail.convert.target.money", flow: "both" },
+      { key: "metal", labelKey: "detail.convert.target.metal", flow: "both" },
+      { key: "wealth", labelKey: "detail.convert.target.wealth", flow: "both" },
+      { key: "bond", labelKey: "detail.convert.target.bond", flow: "both" },
+      { key: "deposit", labelKey: "detail.convert.target.deposit", flow: "both" },
+      { key: "insurance", labelKey: "detail.convert.target.insurance", flow: "both" },
+      { key: "stock", labelKey: "detail.convert.target.stock", flow: "both" },
     ],
   },
   {
@@ -768,10 +766,6 @@ export function EntryConvertMenu({
     && Boolean(entry.rowAccountId)
     && String(entry.rowAccountId) === String(entry.toAccountId);
   const inflow = entry.inflow ?? (sourceType === "income" || transferInflow);
-  const resolveTargetLabelKey = useCallback(
-    (target: ConvertTarget) => (inflow && target.inflowLabelKey ? target.inflowLabelKey : target.labelKey),
-    [inflow],
-  );
   const visibleGroups = useMemo(
     () => CONVERT_TARGET_GROUPS
       .filter((group) => !(group.key === "liability" && sourceIsLiability))
@@ -875,6 +869,7 @@ export function EntryConvertMenu({
         break;
       }
       case "fund":
+      case "money":
       case "metal":
         window.dispatchEvent(new CustomEvent("mmh:investment:create", {
           detail: {
@@ -886,7 +881,8 @@ export function EntryConvertMenu({
             defaultDate: date,
             defaultAmount: amount || undefined,
             defaultMemo: note || undefined,
-            ...(targetKey === "fund" && entry.fundCode
+            // 基金 / 货基都按代码预填（同一只基金在两条链路上代码一致）；贵金属没有代码。
+            ...(targetKey !== "metal" && entry.fundCode
               ? { defaultFundCode: entry.fundCode, defaultFundName: entry.fundName ?? "" }
               : {}),
           },
@@ -1002,11 +998,11 @@ export function EntryConvertMenu({
                   onClick={() => {
                     setOpen(false);
                     onBeforeConvert?.();
-                    dispatchConversion(target.key, t(resolveTargetLabelKey(target)));
+                    dispatchConversion(target.key, t(target.labelKey));
                   }}
                   className="block w-full px-2.5 py-1.5 text-left text-xs text-slate-700 hover:bg-indigo-50 hover:text-indigo-700"
                 >
-                  {t(resolveTargetLabelKey(target))}
+                  {t(target.labelKey)}
                 </button>
               ))}
             </div>

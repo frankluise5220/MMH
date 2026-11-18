@@ -24,6 +24,8 @@ export type EntryConversionTargetKey =
   | "advance"
   | "transfer"
   | "fund"
+  /** 货币基金：与开放式基金同一个录入窗，只是产品类型不同（默认落在货基页签）。 */
+  | "money"
   | "metal"
   | "wealth"
   | "bond"
