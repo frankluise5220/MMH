@@ -52,7 +52,7 @@ import {
 } from "@/lib/loan-repayment";
 import { formatLoanRecalculateSuccessMessage } from "@/lib/loan-repayment-recalculate-result";
 import { DEFAULT_LOAN_PREPAY_STRATEGY, type LoanPrepayStrategy } from "@/lib/loan-prepay-strategy";
-import { isHomeLoanType,  resolveLoanTypeValue, type LoanTypeValue } from "@/lib/loan-type";
+import { LOAN_TYPES, isHomeLoanType, normalizeLoanType, resolveLoanTypeValue, type LoanTypeValue } from "@/lib/loan-type";
 import { allowsLiabilityInterest, swapLiabilityFlowDirection } from "@/lib/liability";
 import {
   decodeScheduledTaskMemo,
@@ -1708,20 +1708,50 @@ export function LiabilityTransactionModal({
   }
   const flowTab = mode === "repay_out" || mode === "collect_in" ? "repay" : "borrow";
   /**
-   * 窗口页签 = 原来摆在表单中段的两组 `segment-button`，改由 FT 页签在卡片顶部显示：
-   *  - 贷款还款窗：正常还款 / 提前还款；
-   *  - 往来款窗：借入借出 / 还款收款（id 与 `flowTab` 同口径）；
-   *  - 贷款借入窗：只有一种流向，不给页签（卡片顶边直接贴窗口顶部）。
+   * 贷款类别页签项：优先用接口返回的类别（含用户自建类别），接口没回来（或失败）时
+   * 用内置四类兜底，页签照常可切 —— 不再用「只有一个『请选择』」的下拉。
    */
-  const liabilityTabs = useMemo<FolderTabsCardItem[]>(() => {
-    if (isLoanRepaymentMode) {
-      return (["repay_out", "prepay_out"] as const).map((item) => ({
-        id: item,
-        label: t(MODE_LABELS[item]),
-        disabled: !!editingEntryId && !canSwitchLiabilityEditMode(mode, item),
+  const loanCategoryTabItems = useMemo(() => {
+    if (loanCategoryOptions.length > 0) {
+      return loanCategoryOptions.map((category) => ({
+        id: category.id,
+        baseType: category.baseType,
+        label: category.isSystem ? t(`loan.type.${category.baseType}`) : category.name,
       }));
     }
-    if (isLoanDialog) return [];
+    return LOAN_TYPES.map((baseType) => ({
+      id: baseType as string,
+      baseType: baseType as LoanTypeValue,
+      label: t(`loan.type.${baseType}`),
+    }));
+  }, [loanCategoryOptions, t]);
+  // 当前页签：类别列表到位前用口径（activeLoanTab）兜底，避免首帧没有选中项。
+  const loanCategoryTabId = loanCategoryOptions.length > 0
+    ? loanCategoryId || loanCategoryOptions.find((item) => item.baseType === activeLoanTab)?.id || ""
+    : activeLoanTab;
+  /**
+   * 窗口页签 = 原来摆在表单中段的两组 `segment-button`，改由 FT 页签在卡片顶部显示：
+   *  - 贷款窗：贷款类别（房贷/消费/抵押/其他，含自建类别）+ 正常还款 / 提前还款；
+   *  - 往来款窗：借入借出 / 还款收款（id 与 `flowTab` 同口径）。
+   */
+  const liabilityTabs = useMemo<FolderTabsCardItem[]>(() => {
+    if (isLoanDialog) {
+      const locked = !!editingEntryId;
+      const categoryTabs: FolderTabsCardItem[] = loanCategoryTabItems.map((item) => ({
+        id: item.id,
+        label: item.label,
+        // 编辑既有贷款记录时不允许换类别：换类别会重置整张表单，也会影响已生成的还款计划。
+        disabled: locked,
+      }));
+      const repaymentTabs: FolderTabsCardItem[] = (["repay_out", "prepay_out"] as const).map((item) => ({
+        id: item,
+        label: t(MODE_LABELS[item]),
+        // 编辑还款记录时保留原来的「正常还款 / 提前还款」可互切；编辑贷款借入记录时把还款页签一并锁住
+        // （把一条借入记录切成还款会脱离它生成的还款计划）。
+        disabled: locked && !(isLoanRepaymentMode && canSwitchLiabilityEditMode(mode, item)),
+      }));
+      return [...categoryTabs, ...repaymentTabs];
+    }
     // 往来款窗的「借款/还款」在编辑态不置灰：用户可以把一条还款/收款记录改回借款/借出
     // （2026-11-04），由 handleModeSelect 与服务端 editEntryId 链路兜底。
     return [
@@ -1736,11 +1766,28 @@ export function LiabilityTransactionModal({
         disabled: false,
       },
     ];
-  }, [isLoanRepaymentMode, isLoanDialog, editingEntryId, mode, t]);
-  const liabilityActiveTabId = isLoanRepaymentMode ? mode : flowTab;
+  }, [isLoanDialog, isLoanRepaymentMode, loanCategoryTabItems, editingEntryId, mode, t]);
+  const liabilityActiveTabId = isLoanDialog
+    ? (isLoanRepaymentMode ? mode : loanCategoryTabId)
+    : flowTab;
+
   function handleLiabilityTabChange(id: string) {
-    if (isLoanRepaymentMode) {
-      handleModeSelect(id as LiabilityMode);
+    if (isLoanDialog) {
+      if (id === "repay_out" || id === "prepay_out") {
+        handleModeSelect(id);
+        return;
+      }
+      const category = loanCategoryOptions.find((item) => item.id === id);
+      if (category) {
+        setLoanCategoryId(category.id);
+        handleLoanTabSelect(category.baseType);
+        return;
+      }
+      // 兜底页签的 id 就是口径本身（home / consumer / mortgage / other）。
+      const fallbackTab = normalizeLoanType(id);
+      if (!fallbackTab) return;
+      setLoanCategoryId("");
+      handleLoanTabSelect(fallbackTab);
       return;
     }
     handleModeSelect(resolveFlowMode(id === "repay"));
@@ -2825,7 +2872,8 @@ export function LiabilityTransactionModal({
           open={open}
           heightKey="liability-tx"
           heightMode="natural"
-          width="md"
+          /* 贷款窗顶部有 6 个页签（4 个贷款类别 + 正常还款/提前还款），md 档会把「消费贷款」压成省略号。 */
+          width={isLoanDialog ? "xl" : "md"}
           title={editingEntryId
             ? (isLoanDialog ? t("liabilityTx.editLoan") : t("liabilityTx.editRepayment"))
             : isLoanDialog ? t("liabilityTx.loanTitle") : t("liabilityTx.title")}
@@ -2852,33 +2900,6 @@ export function LiabilityTransactionModal({
             </>
           )}
         >
-                    {isLoanDialog ? (
-                      activeLoanTab === "repay_out" ? (
-                        <div className="text-sm font-semibold text-slate-700">{t("liabilityTx.loanMode.repayment")}</div>
-                      ) : (
-                        <label className="block space-y-1">
-                          <div className="form-label">{t("settings.accounts.loanCategory")}</div>
-                          <select
-                            value={loanCategoryId}
-                            disabled={isLoanBorrowEditLocked}
-                            onChange={(event) => {
-                              const nextId = event.target.value;
-                              const option = loanCategoryOptions.find((item) => item.id === nextId);
-                              setLoanCategoryId(nextId);
-                              if (option) handleLoanTabSelect(option.baseType);
-                            }}
-                            className="form-input"
-                          >
-                            <option value="">{t("txForm.selectPlaceholder")}</option>
-                            {loanCategoryOptions.map((option) => (
-                              <option key={option.id} value={option.id}>
-                                {option.isSystem ? t(`loan.type.${option.baseType}`) : option.name}
-                              </option>
-                            ))}
-                          </select>
-                        </label>
-                      )
-                    ) : null}
 
                     {isLoanBorrow ? (
                       <>
