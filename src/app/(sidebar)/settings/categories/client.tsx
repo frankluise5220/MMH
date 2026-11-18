@@ -540,7 +540,7 @@ export default function SettingsCategoriesClient({
               </button>
               <button onClick={(e) => { e.stopPropagation(); setInlineEditingId(null); setInlineEditingName(""); }}
                 className="h-5 w-5 flex items-center justify-center rounded hover:bg-slate-100 text-slate-400 hover:text-slate-600 shrink-0" title={t("common.cancel")}>
-                <X className="w-3 h-3" />
+                <X className="h-3.5 w-3.5" />
               </button>
             </>
           ) : !cat.isSystem ? (
@@ -920,7 +920,7 @@ export default function SettingsCategoriesClient({
                               <button onClick={(e) => { e.stopPropagation(); setInlineEditingId(null); setInlineEditingName(""); }}
                                 className="h-6 w-6 flex items-center justify-center rounded hover:bg-slate-100 text-slate-400 hover:text-slate-600"
                                 title={t("common.cancel")}>
-                                <X className="w-3 h-3" />
+                                <X className="h-3.5 w-3.5" />
                               </button>
                             </>
                           ) : !child.isSystem ? (

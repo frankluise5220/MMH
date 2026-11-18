@@ -3,7 +3,7 @@ import { ModalLayer } from "@/components/ModalLayer";
 
 import { useState } from "react";
 import { createPortal } from "react-dom";
-import { Database, Settings2 } from "lucide-react";
+import { Database, Settings2, X } from "lucide-react";
 
 import { ROW_ACTION_BUTTON_BOX_CLASS } from "@/components/AdvancedDataTable";
 import { ManualGrabMark } from "@/components/AddNavButton";
@@ -221,9 +221,11 @@ export function StockHoldingRowActions({
               <button
                 type="button"
                 onClick={() => setPriceOpen(false)}
-                className="h-8 px-2 rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50"
+                className="secondary-button inline-flex h-8 w-8 shrink-0 items-center justify-center px-0"
+                title={t("table.close")}
+                aria-label={t("table.close")}
               >
-                {t("table.close")}
+                <X className="h-4 w-4" />
               </button>
             </div>
             <div className="p-4 space-y-3">
@@ -273,9 +275,11 @@ export function StockHoldingRowActions({
               <button
                 type="button"
                 onClick={() => setSettingsOpen(false)}
-                className="h-8 px-2 rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50"
+                className="secondary-button inline-flex h-8 w-8 shrink-0 items-center justify-center px-0"
+                title={t("table.close")}
+                aria-label={t("table.close")}
               >
-                {t("table.close")}
+                <X className="h-4 w-4" />
               </button>
             </div>
             <div className="p-4 space-y-3">

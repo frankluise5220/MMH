@@ -160,7 +160,7 @@ function ConfirmRuleLockNotice({
         title={t("investForm.close")}
         className="-mr-0.5 shrink-0 rounded p-0.5 text-amber-600 transition-colors hover:bg-amber-100 hover:text-amber-800"
       >
-        <X className="h-3.5 w-3.5" />
+        <X className="h-4 w-4" />
       </button>
     </div>,
     document.body,
@@ -3372,7 +3372,6 @@ export function InvestmentFormModal({
               }}
             />
           )}
-          closeLabel={t("investForm.close")}
           onSubmit={(event) => { void onSubmit(event); }}
           tabs={visibleTabIds.map((id) => ({ id, label: tabLabel(id) }))}
           activeTabId={isMetalExtractTab ? METAL_EXTRACT_TAB_ID : subtype}
@@ -4235,13 +4234,6 @@ function MetalDictionaryCreateModal({
         {error ? <p className="mt-2 text-xs text-rose-600">{error}</p> : null}
 
         <div className="mt-3 flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={onClose}
-            className="h-8 rounded-md border border-slate-200 px-3 text-xs text-slate-600"
-          >
-            {t("common.cancel")}
-          </button>
           <button
             type="button"
             onClick={submit}

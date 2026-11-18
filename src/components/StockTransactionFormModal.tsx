@@ -2,7 +2,6 @@
 
 import { accountOptionFromParts } from "@/lib/account-display";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { X } from "lucide-react";
 
 import { EntryAttachmentButton, uploadEntryAttachmentFiles } from "./EntryAttachmentPanel";
 import { CalcInput } from "./CalcInput";
@@ -1925,7 +1924,6 @@ export function StockTransactionFormModal({
             onBeforeConvert={close}
           />
         )}
-        closeLabel={<X className="h-4 w-4" />}
         closeTitle={t("stockTx.close")}
         onSubmit={submit}
         formRef={formRef}

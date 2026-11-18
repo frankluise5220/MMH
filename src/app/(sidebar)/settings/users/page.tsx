@@ -497,7 +497,6 @@ function UserModal({
         />
       </div>
       <div className="flex justify-end gap-2">
-        <button className="secondary-button h-9 px-4" onClick={onCancel}>{t("common.cancel")}</button>
         <button className="primary-button h-9 px-4 disabled:opacity-50"
           onClick={handleSubmit} disabled={!name.trim()}>
           {isEditing ? t("common.save") : t("settings.users.add")}
@@ -610,7 +609,7 @@ function FnosBindModal({
       <div className="app-modal-panel max-w-md">
         <div className="modal-header shrink-0">
           <div className="text-sm font-semibold text-slate-800">{t("settings.users.register.bindFnid")}</div>
-          <button type="button" onClick={onClose} className="secondary-button h-8 px-2"><X className="h-4 w-4" /></button>
+          <button type="button" onClick={onClose} className="secondary-button inline-flex h-8 w-8 shrink-0 items-center justify-center px-0" title={t("table.close")} aria-label={t("table.close")}><X className="h-4 w-4" /></button>
         </div>
         <div className="space-y-4 p-5">
           {error && <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">{error}</div>}
@@ -641,7 +640,6 @@ function FnosBindModal({
           )}
           <div className="text-xs text-slate-500">{t("settings.users.register.fnidBound")}: {target.fnosUid || t("settings.users.status.local")}</div>
           <div className="flex justify-end gap-2">
-            <button type="button" className="secondary-button h-9 px-4" onClick={onClose}>{t("common.cancel")}</button>
             {target.fnosUid && <button type="button" className="secondary-button h-9 px-4" onClick={() => void submit(null)} disabled={submitting}>{t("common.delete")}</button>}
             <button type="button" className="primary-button h-9 px-4 disabled:opacity-50" onClick={() => void submit(fnosUid.trim())} disabled={submitting || !fnosUid.trim()}>
               {submitting ? t("settings.users.register.submitting") : t("common.save")}
@@ -725,7 +723,7 @@ function PasswordSetModal({
       <div className="app-modal-panel max-w-md">
         <div className="modal-header shrink-0">
           <div className="text-sm font-semibold text-slate-800">{t("settings.users.bindLocal")}</div>
-          <button type="button" onClick={onClose} className="secondary-button h-8 px-2"><X className="h-4 w-4" /></button>
+          <button type="button" onClick={onClose} className="secondary-button inline-flex h-8 w-8 shrink-0 items-center justify-center px-0" title={t("table.close")} aria-label={t("table.close")}><X className="h-4 w-4" /></button>
         </div>
         <div className="p-5">
           <FolderTabs
@@ -769,7 +767,6 @@ function PasswordSetModal({
               />
             </div>
             <div className="flex justify-end gap-2">
-              <button type="button" className="secondary-button h-9 px-4" onClick={onClose}>{t("common.cancel")}</button>
               <button type="button" className="primary-button h-9 px-4 disabled:opacity-50"
                 onClick={submit} disabled={submitting || !localName.trim() || password.length < 6}>
                 {submitting ? t("settings.users.register.submitting") : t("common.save")}
@@ -1084,7 +1081,6 @@ function RegisterModal({
                         <>
                           {codeAndPasswordFields}
                           <div className="flex justify-end gap-2">
-                            <button type="button" className="secondary-button h-9 px-4" onClick={onClose}>{t("common.cancel")}</button>
                             <button type="button" className="primary-button h-9 px-4 disabled:opacity-50"
                               onClick={resetAndBind} disabled={submitting || code.trim().length < 6 || password.trim().length < 8 || confirmPassword.trim().length < 8}>
                               {submitting ? t("settings.users.register.submitting") : t("settings.users.register.confirmResetBind")}
@@ -1114,7 +1110,6 @@ function RegisterModal({
                           />
                         </div>
                         <div className="flex justify-end gap-2">
-                          <button type="button" className="secondary-button h-9 px-4" onClick={onClose}>{t("common.cancel")}</button>
                           <button type="button" className="primary-button h-9 px-4 disabled:opacity-50"
                             onClick={bindExistingMmhUser} disabled={submitting || !email.trim() || !password.trim()}>
                             {submitting ? t("settings.users.register.submitting") : t("settings.users.register.bindMmh")}
@@ -1137,7 +1132,6 @@ function RegisterModal({
                       <>
                         {codeAndPasswordFields}
                         <div className="flex justify-end gap-2">
-                          <button type="button" className="secondary-button h-9 px-4" onClick={onClose}>{t("common.cancel")}</button>
                           <button type="button" className="primary-button h-9 px-4 disabled:opacity-50"
                             onClick={registerAndBind} disabled={submitting || code.trim().length < 6 || password.trim().length < 8 || confirmPassword.trim().length < 8}>
                             {submitting ? t("settings.users.register.submitting") : t("settings.users.register.confirmRegisterBind")}
@@ -1146,7 +1140,6 @@ function RegisterModal({
                       </>
                     ) : (
                       <div className="flex justify-end gap-2">
-                        <button type="button" className="secondary-button h-9 px-4" onClick={onClose}>{t("common.cancel")}</button>
                         <button type="button" className="primary-button h-9 px-4 disabled:opacity-50"
                           onClick={sendRegisterCode} disabled={sending || !email.trim()}>
                           {sending ? t("settings.users.register.submitting") : t("settings.users.register.sendCode")}
@@ -1770,18 +1763,6 @@ export default function UsersPage() {
               <div className="flex justify-end gap-2">
                 <button
                   type="button"
-                  className="secondary-button h-9 px-4"
-                  onClick={() => {
-                    setDeleteTarget(null);
-                    setDeletePassword("");
-                    setDeleteError("");
-                  }}
-                  disabled={deleting}
-                >
-                  {t("common.cancel")}
-                </button>
-                <button
-                  type="button"
                   className="h-9 rounded-md bg-red-600 px-4 text-sm text-white hover:bg-red-700 disabled:opacity-50"
                   onClick={handleDelete}
                   disabled={deleting || !deletePassword.trim()}
@@ -1828,18 +1809,6 @@ export default function UsersPage() {
                 <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600">{unbindError}</div>
               )}
               <div className="flex justify-end gap-2">
-                <button
-                  type="button"
-                  className="secondary-button h-9 px-4"
-                  onClick={() => {
-                    setUnbindTarget(null);
-                    setUnbindPassword("");
-                    setUnbindError("");
-                  }}
-                  disabled={unbinding}
-                >
-                  {t("common.cancel")}
-                </button>
                 <button
                   type="button"
                   className="h-9 rounded-md bg-red-600 px-4 text-sm text-white hover:bg-red-700 disabled:opacity-50"

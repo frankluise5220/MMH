@@ -20,7 +20,7 @@ import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { isEntryConversionRequest } from "@/lib/client/entry-conversion";
 import { useI18n } from "@/lib/i18n";
 import { APP_PREFS_EVENT, getSidebarHideInitialDataPreference } from "@/lib/client/appPreferences";
-import { Repeat } from "lucide-react";
+import { Repeat, X } from "lucide-react";
 import { depositTermMaturityUtc } from "@/lib/deposit-term";
 import { calculateDepositAccruedInterest, depositRenewalStartUtc } from "@/lib/deposit-maturity";
 import {
@@ -1755,7 +1755,6 @@ export function DepositFormModal({
             }}
           />
         )}
-        closeLabel={t("investForm.close")}
         onSubmit={onSubmit}
         tabs={[
           { id: "buy", label: t("deposit.subtype.buy"), disabled: !!lockedSubtype },
@@ -1854,12 +1853,12 @@ export function DepositFormModal({
                     <div>
                       <div className="text-sm font-semibold text-slate-800">{t("depositForm.addProduct")}</div>
                     </div>
-                    <button
+                    <button title={t("table.close")} aria-label={t("table.close")}
                       type="button"
                       onClick={() => setProductModalOpen(false)}
-                      className="secondary-button h-8 px-2"
+                      className="secondary-button inline-flex h-8 w-8 shrink-0 items-center justify-center px-0"
                     >
-                      {t("table.close")}
+                      <X className="h-4 w-4" />
                     </button>
                   </div>
                   <div className="space-y-3 p-3 sm:p-4">
@@ -1919,14 +1918,6 @@ export function DepositFormModal({
                       />
                     </div>
                     <div className="flex justify-end gap-2 pt-1">
-                      <button
-                        type="button"
-                        onClick={() => setProductModalOpen(false)}
-                        className="secondary-button h-9 px-4 text-sm"
-                        disabled={productSaving}
-                      >
-                        {t("common.cancel")}
-                      </button>
                       <button
                         type="button"
                         onClick={() => { void saveDepositProduct(); }}

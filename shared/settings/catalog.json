@@ -141,6 +141,15 @@
           "surfaces": ["web"],
           "webHref": "/settings/fund-api",
           "apiRefs": ["/api/v1/settings/fund-query-api"]
+        },
+        {
+          "id": "stock-api",
+          "label": "股票行情 API",
+          "description": "股票收盘价的查询来源和优先级，东财失效时可切到自定义源",
+          "icon": "globe",
+          "surfaces": ["web"],
+          "webHref": "/settings/stock-api",
+          "apiRefs": ["/api/v1/settings/stock-quote-api"]
         }
       ]
     },

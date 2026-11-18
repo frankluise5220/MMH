@@ -1406,9 +1406,6 @@ export function ProductLibraryModal({
                     </>
                   ) : (
                     <>
-                      <button type="button" onClick={onClose} className="secondary-button h-9 px-4">
-                        {t("common.close")}
-                      </button>
                       <button
                         type="button"
                         onClick={() => void handleSave()}

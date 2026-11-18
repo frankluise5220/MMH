@@ -429,9 +429,21 @@ export function LedgerSwitcher({
           return (
             <ModalLayer className="fixed inset-0 flex items-center justify-center bg-black/50 backdrop-blur-sm">
               <div className="w-full max-w-sm bg-white rounded-xl border border-slate-200 shadow-xl overflow-hidden">
-                <div className="px-6 py-5 border-b border-slate-200 bg-slate-50">
-                  <div className="text-base font-semibold text-slate-800">{t("ledgerSwitch.switchToTitle", { name: displayName })}</div>
-                  <div className="mt-1 text-xs text-slate-500">{t("ledgerSwitch.switchToDesc")}</div>
+                <div className="flex items-start justify-between gap-2 px-6 py-5 border-b border-slate-200 bg-slate-50">
+                  <div className="min-w-0">
+                    <div className="text-base font-semibold text-slate-800">{t("ledgerSwitch.switchToTitle", { name: displayName })}</div>
+                    <div className="mt-1 text-xs text-slate-500">{t("ledgerSwitch.switchToDesc")}</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => { setSwitchTargetId(null); setSwitchUsername(""); setSwitchPassword(""); setSwitchError(""); }}
+                    disabled={switching}
+                    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-slate-400 hover:bg-white hover:text-slate-600 disabled:opacity-40"
+                    title={t("table.close")}
+                    aria-label={t("table.close")}
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
                 </div>
 
                 <div className="p-6 space-y-4">
@@ -489,17 +501,9 @@ export function LedgerSwitcher({
                   <div className="flex gap-3">
                     <button
                       type="button"
-                      onClick={() => { setSwitchTargetId(null); setSwitchUsername(""); setSwitchPassword(""); setSwitchError(""); }}
-                      disabled={switching}
-                      className="flex-1 h-10 rounded-md border border-slate-200 bg-white text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-50"
-                    >
-                      {t("ledgerSwitch.cancel")}
-                    </button>
-                    <button
-                      type="button"
                       onClick={handleSwitchVerify}
                       disabled={switching || (!isAdminUser && (!switchUsername.trim() || !switchPassword.trim()))}
-                      className="flex-1 h-10 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50"
+                      className="w-full h-10 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50"
                     >
                       {switching ? t("ledgerSwitch.verifying") : t("ledgerSwitch.confirmSwitch")}
                     </button>
@@ -514,9 +518,21 @@ export function LedgerSwitcher({
         {showCreateDialog && (
           <ModalLayer className="fixed inset-0 flex items-center justify-center bg-black/50 backdrop-blur-sm">
             <div ref={dialogRef} className="w-full max-w-sm bg-white rounded-xl border border-slate-200 shadow-xl overflow-hidden">
-              <div className="px-6 py-5 border-b border-slate-200 bg-slate-50">
-                <div className="text-base font-semibold text-slate-800">{t("ledgerSwitch.newLedger")}</div>
-                <div className="mt-1 text-xs text-slate-500">{t("ledgerSwitch.newLedgerDesc")}</div>
+              <div className="flex items-start justify-between gap-2 px-6 py-5 border-b border-slate-200 bg-slate-50">
+                <div className="min-w-0">
+                  <div className="text-base font-semibold text-slate-800">{t("ledgerSwitch.newLedger")}</div>
+                  <div className="mt-1 text-xs text-slate-500">{t("ledgerSwitch.newLedgerDesc")}</div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => { setShowCreateDialog(false); setCreateAdminName(""); setCreateAdminPassword(""); setCreateAdminPasswordConfirm(""); setCreateAdminEmail(""); }}
+                  disabled={adding}
+                  className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-slate-400 hover:bg-white hover:text-slate-600 disabled:opacity-40"
+                  title={t("table.close")}
+                  aria-label={t("table.close")}
+                >
+                  <X className="h-4 w-4" />
+                </button>
               </div>
 
               <div className="p-6 space-y-4">
@@ -577,14 +593,6 @@ export function LedgerSwitcher({
                 <div className="flex gap-3">
                   <button
                     type="button"
-                    onClick={() => { setShowCreateDialog(false); setCreateAdminName(""); setCreateAdminPassword(""); setCreateAdminPasswordConfirm(""); setCreateAdminEmail(""); }}
-                    disabled={adding}
-                    className="flex-1 h-10 rounded-md border border-slate-200 bg-white text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-50"
-                  >
-                    {t("ledgerSwitch.cancel")}
-                  </button>
-                  <button
-                    type="button"
                     onClick={handleCreateWithAdmin}
                     disabled={adding || !createAdminName.trim() || !createAdminPassword.trim() || !createAdminPasswordConfirm.trim() || !createAdminEmail.trim()}
                     className="flex-1 h-10 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50"
@@ -605,9 +613,21 @@ export function LedgerSwitcher({
           return (
             <ModalLayer className="fixed inset-0 flex items-center justify-center bg-black/50 backdrop-blur-sm">
               <div className="w-full max-w-sm bg-white rounded-xl border border-slate-200 shadow-xl overflow-hidden">
-                <div className="px-6 py-5 border-b border-red-100 bg-red-50">
-                  <div className="text-base font-semibold text-red-800">{t("ledgerSwitch.deleteLedger")}</div>
-                  <div className="mt-1 text-xs text-red-600">{t("ledgerSwitch.deleteLedgerDesc")}</div>
+                <div className="flex items-start justify-between gap-2 px-6 py-5 border-b border-red-100 bg-red-50">
+                  <div className="min-w-0">
+                    <div className="text-base font-semibold text-red-800">{t("ledgerSwitch.deleteLedger")}</div>
+                    <div className="mt-1 text-xs text-red-600">{t("ledgerSwitch.deleteLedgerDesc")}</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => { setDeletingId(null); setDeleteConfirmName(""); setDeleteDbPassword(""); setDeleteError(""); }}
+                    disabled={deleting}
+                    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-red-400 hover:bg-white hover:text-red-600 disabled:opacity-40"
+                    title={t("table.close")}
+                    aria-label={t("table.close")}
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
                 </div>
 
                 <div className="p-6 space-y-4">
@@ -647,14 +667,6 @@ export function LedgerSwitcher({
                   </div>
 
                   <div className="flex gap-3">
-                    <button
-                      type="button"
-                      onClick={() => { setDeletingId(null); setDeleteConfirmName(""); setDeleteDbPassword(""); setDeleteError(""); }}
-                      disabled={deleting}
-                      className="flex-1 h-10 rounded-md border border-slate-200 bg-white text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-50"
-                    >
-                      {t("ledgerSwitch.cancel")}
-                    </button>
                     <button
                       type="button"
                       onClick={handleDelete}

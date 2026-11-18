@@ -1,5 +1,6 @@
 "use client";
 
+import { X } from "lucide-react";
 import { accountOptionFromParts } from "@/lib/account-display";
 import { DateStepper } from "@/components/DateStepper";
 import { ClearableNoteField } from "@/components/ClearableNoteField";
@@ -195,8 +196,8 @@ export function HoldingProductModal({
               {accountLabel || t("txForm.alert.selectCashSourceAccount")}
             </div>
           </div>
-          <button type="button" onClick={onClose} className="secondary-button h-8 px-2">
-            {t("table.close")}
+          <button title={t("table.close")} aria-label={t("table.close")} type="button" onClick={onClose} className="secondary-button inline-flex h-8 w-8 shrink-0 items-center justify-center px-0">
+            <X className="h-4 w-4" />
           </button>
         </div>
         <div className="space-y-3 p-3 sm:p-4">
@@ -245,14 +246,6 @@ export function HoldingProductModal({
             />
           </div>
           <div className="flex justify-end gap-2 pt-1">
-            <button
-              type="button"
-              onClick={onClose}
-              className="secondary-button h-9 px-4 text-sm"
-              disabled={saving}
-            >
-              {t("common.cancel")}
-            </button>
             <button
               type="button"
               onClick={onSave}

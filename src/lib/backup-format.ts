@@ -59,6 +59,7 @@ export const KNOWN_BACKUP_DATA_TABLES = [
   "reimbursementSettlements",
   "reimbursementSettlementTransactions",
   "fundQueryApis",
+  "stockQuoteApis",
   "statementRecognitionRules",
   "statementCategoryRules",
   "regularInvestPlans",

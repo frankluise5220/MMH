@@ -1450,10 +1450,11 @@ export function AIPanel({
             </div>
             <button
               onClick={() => setConfirmDialog(null)}
-              className="flex h-8 w-8 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:bg-slate-100 hover:text-slate-900"
+              className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:bg-slate-100 hover:text-slate-900"
               title={t("table.close")}
+              aria-label={t("table.close")}
             >
-              <X size={18} />
+              <X className="h-4 w-4" />
             </button>
           </div>
 
@@ -1687,10 +1688,10 @@ export function AIPanel({
                             </button>
                             <button
                               onClick={() => { const id = modelIdsByName[name]; if (id) { handleDeleteModel(id); setModelDropdownOpen(false); } }}
-                              className="w-5 h-5 rounded flex items-center justify-center text-foreground/20 hover:text-red-500 hover:bg-red-50 transition-all"
+                              className="w-5 h-5 rounded flex items-center justify-center text-foreground/40 hover:text-red-500 hover:bg-red-50 transition-all"
                               title={t("settings.ai.client.action.delete")}
                             >
-                              <X size={10} />
+                              <X className="h-3.5 w-3.5" />
                             </button>
                           </div>
                         </div>
@@ -1718,8 +1719,8 @@ export function AIPanel({
         <div className="absolute inset-0 z-[60] bg-background/95 backdrop-blur-md flex flex-col animate-in fade-in duration-300">
           <div className="flex items-center justify-between px-5 py-4 border-b border-foreground/5 shrink-0">
             <h6 className="font-heading text-base text-foreground">{t("settings.ai.client.action.edit")}</h6>
-            <button onClick={() => { setEditModelOverlay(null); setSettingsError(""); }} className="text-foreground/20 hover:text-foreground transition-colors">
-              <X size={18} />
+            <button onClick={() => { setEditModelOverlay(null); setSettingsError(""); }} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-foreground/40 transition-colors hover:bg-foreground/5 hover:text-foreground" title={t("table.close")} aria-label={t("table.close")}>
+              <X className="h-4 w-4" />
             </button>
           </div>
           <div className="flex-1 overflow-y-auto px-5 py-4 custom-scrollbar">
@@ -1821,9 +1822,6 @@ export function AIPanel({
             </div>
           </div>
           <div className="px-5 py-4 border-t border-foreground/5 shrink-0 flex gap-3">
-            <button onClick={() => { setEditModelOverlay(null); setSettingsError(""); }} className="flex-1 py-3 bg-background border border-foreground/10 text-foreground rounded-xl font-bold text-sm hover:bg-foreground/5 transition-colors">
-              {t("table.close")}
-            </button>
             <button onClick={saveEditModelOverlay} disabled={settingsLoading || !editModelOverlay.modelId.trim()} className="flex-[2] py-3 bg-foreground text-background rounded-xl font-bold text-sm shadow-lg disabled:opacity-30 active:scale-95 transition-transform">
               {settingsLoading ? t("aiPanel.saving") : t("common.save")}
             </button>
@@ -1850,8 +1848,8 @@ export function AIPanel({
               >
                 <Plus size={12} /> {t("aiPanel.newChannelModel")}
               </button>
-              <button onClick={() => { setSettingsView(false); setShowAddForm(false); }} className="w-7 h-7 rounded-lg flex items-center justify-center text-foreground/20 hover:text-foreground hover:bg-foreground/5 transition-colors" title={t("common.close")}>
-                <X size={18} />
+              <button onClick={() => { setSettingsView(false); setShowAddForm(false); }} className="w-7 h-7 rounded-lg flex items-center justify-center text-foreground/40 hover:text-foreground hover:bg-foreground/5 transition-colors" title={t("common.close")} aria-label={t("common.close")}>
+                <X className="h-4 w-4" />
               </button>
             </div>
           </div>
@@ -1956,10 +1954,10 @@ export function AIPanel({
                                     </button>
                                     <button
                                       onClick={() => void handleDeleteModel(m.id)}
-                                      className="w-6 h-6 rounded-lg flex items-center justify-center text-foreground/20 hover:text-red-500 hover:bg-red-50 transition-all"
+                                      className="w-6 h-6 rounded-lg flex items-center justify-center text-foreground/40 hover:text-red-500 hover:bg-red-50 transition-all"
                                       title={t("settings.ai.client.action.delete")}
                                     >
-                                      <X size={12} />
+                                      <X className="h-3.5 w-3.5" />
                                     </button>
                                   </div>
                                 </div>
@@ -2003,8 +2001,8 @@ export function AIPanel({
                     ? t("aiPanel.addModelTitle", { name: channels.find(c => c.id === addToChannelId)?.name ?? "" })
                     : t("aiPanel.addChannel")}
                 </div>
-                <button onClick={() => { setShowAddForm(false); setAddToChannelId(""); setSettingsError(""); }} className="w-6 h-6 rounded-lg flex items-center justify-center text-foreground/20 hover:text-foreground hover:bg-foreground/5 transition-colors" title={t("common.cancel")}>
-                  <X size={14} />
+                <button onClick={() => { setShowAddForm(false); setAddToChannelId(""); setSettingsError(""); }} className="w-6 h-6 shrink-0 rounded-lg flex items-center justify-center text-foreground/40 hover:text-foreground hover:bg-foreground/5 transition-colors" title={t("common.cancel")} aria-label={t("common.cancel")}>
+                  <X className="h-4 w-4" />
                 </button>
               </div>
 
@@ -2299,8 +2297,8 @@ export function AIPanel({
         <div className="absolute inset-0 z-40 bg-background/95 backdrop-blur-md p-6 flex flex-col animate-in fade-in duration-300">
           <div className="flex justify-between items-center mb-6">
             <h6 className="font-heading text-lg text-foreground">{confirmDialog?.label ?? t("batchImport.confirmSelectedImport")}</h6>
-            <button onClick={() => { setConfirmDialog(null); setImportConfirmDialog(null); }} className="text-foreground/20 hover:text-foreground transition-colors">
-              <X size={20} />
+            <button onClick={() => { setConfirmDialog(null); setImportConfirmDialog(null); }} className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-foreground/40 transition-colors hover:bg-foreground/5 hover:text-foreground" title={t("table.close")} aria-label={t("table.close")}>
+              <X className="h-4 w-4" />
             </button>
           </div>
 

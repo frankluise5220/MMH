@@ -142,7 +142,7 @@ export function BackgroundTaskStatusBar() {
               className="shrink-0 rounded-md p-1 text-slate-400 transition-colors hover:bg-white/70 hover:text-slate-700"
               title={t("table.close")}
             >
-              <X className="h-3.5 w-3.5" />
+              <X className="h-4 w-4" />
             </button>
           ) : null}
         </div>

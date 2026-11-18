@@ -218,7 +218,6 @@ export function AccessKeySettingsPanel({ showHeader = true }: { showHeader?: boo
                 </div>
               </div>
               <div className="flex justify-end gap-2 border-t border-slate-100 pt-3">
-                <button className="secondary-button h-9 px-4" onClick={() => setShowModal(false)}>{t("common.cancel")}</button>
                 <button className="primary-button h-9 px-4 disabled:opacity-50"
                   onClick={handleCreate} disabled={!name.trim()}>{t("common.save")}</button>
               </div>

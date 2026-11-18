@@ -1967,7 +1967,6 @@ export function StatementImportPreviewDialog({
           description={description}
           onClose={closeDialog}
           closeDisabled={busy}
-          closeLabel={t("table.close")}
         />
         {/* FT 卡片：页签条流内撑出卡片顶边，活动页签的 -mb-px 压在卡片 1px 上边框上
             （几何同 FolderTabsCard；弹窗是固定高度，故用 ft-card-surface-fill）。 */}

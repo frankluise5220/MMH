@@ -3,7 +3,7 @@ import { ModalLayer } from "@/components/ModalLayer";
 
 import { createPortal } from "react-dom";
 import { useEffect, useMemo, useRef, useState, useCallback, type FormEvent, type ReactNode } from "react";
-import { Plus } from "lucide-react";
+import { Plus, X } from "lucide-react";
 import { COUNTERPARTY_TYPE_OPTIONS, FINANCIAL_INSTITUTION_TYPE_VALUES, institutionTypeLabel, institutionTypeOptions, kindOrder } from "@/lib/account-kinds";
 import { PRODUCT_TYPES, supportsCostBasisMethod } from "@/lib/investment-config";
 import { supportsTradingCalendarForAccount, TRADING_CALENDARS } from "@/lib/fund/trading-calendar";
@@ -1267,9 +1267,9 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
           <div className="app-modal-panel max-w-sm">
             <div className="modal-header">
               <div className="text-sm font-semibold text-slate-800">{displayTitle}</div>
-              <button type="button" onClick={onClose}
-                className="secondary-button h-8 px-2">
-                {t("entityForm.close")}
+              <button title={t("entityForm.close")} aria-label={t("entityForm.close")} type="button" onClick={onClose}
+                className="secondary-button inline-flex h-8 w-8 shrink-0 items-center justify-center px-0">
+                <X className="h-4 w-4" />
               </button>
             </div>
             <form className="p-4 space-y-3" onSubmit={onSubmit}>
@@ -1459,10 +1459,6 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
               ))}
               {error && <div className="text-xs text-red-500">{error}</div>}
               <div className="flex justify-end gap-2">
-                <button type="button" onClick={onClose}
-                  className="secondary-button h-9 px-3">
-                  {t("common.cancel")}
-                </button>
                 <button type="submit" disabled={saving || !(form.name?.trim())}
                   className="primary-button h-9 disabled:opacity-50">
                   {saving ? t("entityForm.saving") : t("common.save")}
@@ -1601,12 +1597,12 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
           <div className="app-modal-panel max-w-3xl">
             <div className="modal-header shrink-0">
               <div className="text-sm font-semibold text-slate-800">{displayTitle}</div>
-              <button
+              <button title={t("entityForm.close")} aria-label={t("entityForm.close")}
                 type="button"
                 onClick={() => { props.onClose?.(); setError(""); initForm(); }}
-                className="secondary-button h-8 px-2"
+                className="secondary-button inline-flex h-8 w-8 shrink-0 items-center justify-center px-0"
               >
-                {t("entityForm.close")}
+                <X className="h-4 w-4" />
               </button>
             </div>
             <form className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4" onSubmit={onSubmit}>
@@ -1782,13 +1778,6 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
               </div>
 
               <div className="flex justify-end gap-2 border-t border-slate-100 pt-3">
-                <button
-                  type="button"
-                  onClick={() => { props.onClose?.(); setError(""); initForm(); }}
-                  className="secondary-button h-9 px-4"
-                >
-                  {t("common.cancel")}
-                </button>
                 <button
                   type="submit"
                   disabled={saving || !(form.name?.trim())}

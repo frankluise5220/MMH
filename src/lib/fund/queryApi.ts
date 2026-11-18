@@ -12,7 +12,11 @@
  * @returns NAV info or null
  */
 import { prisma } from "@/lib/db/prisma";
-import { ensureDefaultFundQueryApisThrottled } from "@/lib/fund/queryApiDefaults";
+import { todayDateBusinessYmd } from "@/lib/date-utils";
+import {
+  ensureDefaultFundQueryApisThrottled,
+  repairDefaultFundQueryApisOnce,
+} from "@/lib/fund/queryApiDefaults";
 import { getOrCreateMasterKey, decrypt, isEncrypted } from "@/lib/auth/encrypt";
 import {
   normalizeFundJsonParserConfig,
@@ -96,6 +100,24 @@ const headers = {
 };
 
 const MAX_FUND_QUERY_API_ATTEMPTS = 3;
+
+/**
+ * 不带日期取「最新净值」时，`{date}` 型源从业务今天起往前回退几天。
+ *
+ * 2026-11 天天基金的实时估值接口随估值频道一起下线后，`{date}` 型源成了取最新
+ * 净值的唯一路径；但「今天」在 15:00 前、周末和节假日都还没有净值，把业务今天
+ * 直接填进去会稳定拿到空列表（以前的实现干脆不替换占位符，URL 里留着 `{date}`
+ * 字面量，必然失败）。6 天足够覆盖一个周末加一两天短假。
+ */
+const LATEST_NAV_LOOKBACK_DAYS = 6;
+
+/**
+ * 回退阶段的总请求预算。
+ *
+ * 每个日期一次 HTTP，最长 8s 超时：6 天 × N 个源全超时能把批量导入拖到几分钟。
+ * 命中通常发生在第 1~3 天，所以给一个硬上限，用完就认定这些源都拿不到最新净值。
+ */
+const LATEST_NAV_MAX_DATED_REQUESTS = 8;
 
 /**
  * 单次净值请求的超时。
@@ -652,6 +674,10 @@ export async function queryFundNav(
     });
   }
 
+  // 老库里已经下线的默认源（天天基金实时估值）在进程首次查询时就地停用：
+  // 留着它只会一直显示「已启用」，无日期取数时白跑一次必然失败的请求并占掉一个候选名额。
+  await repairDefaultFundQueryApisOnce();
+
   // Get the list of active APIs
   let activeApis = await getActiveApis(account?.householdId);
   if (activeApis.length === 0) {
@@ -693,24 +719,77 @@ export async function queryFundNav(
     if (candidateApis.length === 0) diagnostics.reason = "NO_MATCHING_API";
   }
 
-  for (const { api, parser } of candidates) {
-    const url = buildRequestUrl(api, fundCode, dateStr);
+  // 分两类：只能取最新净值的源（实时估值，地址里没有 `{date}`），和能按日期取数的源。
+  const latestOnly = candidates.filter((item) => !apiSupportsDate(item.api));
+  const datedOnly = candidates.filter((item) => apiSupportsDate(item.api));
 
-    const { result } = await fetchUrl(api, url, parser, { targetDate: dateStr }, (outcome) => {
-      attempts.push({ code: api.code, host: urlHost(url), ...outcome });
+  const requestCandidate = async (
+    item: (typeof candidates)[number],
+    requestDate?: string,
+  ): Promise<{ result: NavResult; outcome: FundNavQueryAttempt["outcome"] }> => {
+    const url = buildRequestUrl(item.api, fundCode, requestDate);
+    let outcome: FundNavQueryAttempt["outcome"] = "empty";
+    const { result } = await fetchUrl(item.api, url, item.parser, { targetDate: requestDate }, (info) => {
+      outcome = info.outcome;
+      attempts.push({ code: item.api.code, host: urlHost(url), ...info });
     });
+    return { result, outcome };
+  };
+
+  // 实时估值这类「只能取最新净值」的源按地址原样试一次。
+  for (const item of latestOnly) {
+    const { result } = await requestCandidate(item);
     if (result) {
       if (diagnostics) diagnostics.reason = undefined;
       return result;
     }
   }
 
-  // Exact-date query failed; use the wider-range fallback only if it fits the same request budget.
-  if (dateStr && candidateApis.length < MAX_FUND_QUERY_API_ATTEMPTS) {
+  if (dateStr) {
+    for (const item of datedOnly) {
+      const { result } = await requestCandidate(item, dateStr);
+      if (result) {
+        if (diagnostics) diagnostics.reason = undefined;
+        return result;
+      }
+    }
+  } else if (datedOnly.length > 0) {
+    // 取「最新净值」= 业务今天起往前第一个有净值的交易日。
+    // 以前这里把日期留空，`{date}` 不被替换，URL 里带着字面量发出去，这类源必然失败；
+    // 实时估值接口下线后，它成了唯一可能命中的路径，必须真的按日期去查。
+    const anchor = todayDateBusinessYmd();
+    let budget = LATEST_NAV_MAX_DATED_REQUESTS;
+    let anyRequest = false;
+    for (const item of datedOnly) {
+      for (let offset = 0; offset <= LATEST_NAV_LOOKBACK_DAYS && budget > 0; offset += 1) {
+        budget -= 1;
+        anyRequest = true;
+        const { result, outcome } = await requestCandidate(item, shiftYmd(anchor, -offset));
+        if (result) {
+          if (diagnostics) {
+            diagnostics.reason = undefined;
+            diagnostics.fallback = "ok";
+          }
+          return result;
+        }
+        // 域名不通：同一条源换个日期也修不好网络，别让剩下的每一天都白等一次超时。
+        if (outcome === "network_error") break;
+      }
+      if (budget <= 0) break;
+    }
+    if (diagnostics && anyRequest) diagnostics.fallback = "empty";
+  }
+
+  // 精准日查不到就一定要走区间兜底。
+  //
+  // 以前这里是 `candidateApis.length < MAX_FUND_QUERY_API_ATTEMPTS`（候选源不足 3 条才兜底），
+  // 逻辑正好反了：用户把源配满 3 条，反而失去兜底 —— 而节假日、19:00 前这些
+  // 「当天还没净值」的日期，区间兜底是唯一能拿到最近一个交易日净值的路径。
+  if (dateStr) {
     const historicalResult = await queryHistoricalNav(fundCode, dateStr);
     if (diagnostics) diagnostics.fallback = historicalResult ? "ok" : "empty";
     if (historicalResult) return historicalResult;
-  } else if (diagnostics) {
+  } else if (diagnostics && diagnostics.fallback === undefined) {
     diagnostics.fallback = "skipped";
   }
 

@@ -1008,6 +1008,34 @@ model StockPriceCache {
   @@map("stock_price_cache")
 }
 
+/// 股票收盘价查询源。与 FundQueryApi 同构，但独立成表：基金源被 Account 外键引用，
+/// 混用会让「这条源是给基金还是股票」变成隐含语义，且两边的 parser 完全不同。
+/// 内置的东财 / 腾讯两条以 builtin=true 落库，可调优先级、可停用，不可删除。
+model StockQuoteApi {
+  id           String   @id @default(cuid())
+  name         String
+  code         String   @unique
+  /// 适用市场。当前只有 CN 的实现，其余值留给港股 / 美股接入。
+  market       String   @default("CN")
+  /// 请求地址模板，支持 {code} {exchange} {exchangeLower} {secid} {date} {dateCompact}
+  baseUrl      String
+  apiKey       String?
+  /// 解析器标识（eastmoney_kline / tencent_kline / json）。为空时沿用 code。
+  parser       String?
+  /// 自定义 JSON 源（parser = "json"）的取值配置：字段路径 + 鉴权方式。
+  parserConfig Json?
+  priority     Int      @default(0)
+  isActive     Boolean  @default(true)
+  /// 代码内置的默认源：可停用、可调序，不可删除；整表为空时由查询侧自愈补齐。
+  builtin      Boolean  @default(false)
+  householdId  String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @default(now()) @updatedAt
+
+  @@index([market, isActive, priority])
+  @@map("stock_quote_apis")
+}
+
 model StockFeeRule {
   id            String              @id @default(cuid())
   accountId     String

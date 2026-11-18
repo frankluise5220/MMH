@@ -1,4 +1,5 @@
 "use client";
+import { X } from "lucide-react";
 import { ModalLayer } from "@/components/ModalLayer";
 
 import { useEffect, useState } from "react";
@@ -144,12 +145,12 @@ export function CreditCardBillingDaySettingsDialog({
                 <div className="text-sm font-semibold text-slate-800">{t("creditBill.billingDaySettingsTitle")}</div>
                 <div className="mt-0.5 text-xs text-slate-500">{t("creditBill.billingDaySettingsDesc", { day: effectiveBillingDayDisplay })}</div>
               </div>
-              <button
+              <button title={t("table.close")} aria-label={t("table.close")}
                 type="button"
                 onClick={onClose}
-                className="secondary-button h-8 min-w-14 shrink-0 whitespace-nowrap px-3"
+                className="secondary-button inline-flex h-8 w-8 shrink-0 items-center justify-center px-0"
               >
-                {t("table.close")}
+                <X className="h-4 w-4" />
               </button>
             </div>
 

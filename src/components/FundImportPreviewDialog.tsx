@@ -1795,7 +1795,6 @@ export function FundImportPreviewDialog({ open, file, context, tabs = null, sour
           description={uploading ? t("batchImport.previewParsing") : formatText(t, "batchImport.previewFundHint", { count: previewItems.length })}
           onClose={onClose}
           closeDisabled={importing}
-          closeLabel={t("table.close")}
         />
         {/* FT 卡片：页签条是流内元素，卡片顶边由它撑出来，活动页签的 -mb-px
             正好压在卡片 1px 上边框上（几何同 FolderTabsCard，容器是固定高度所以用

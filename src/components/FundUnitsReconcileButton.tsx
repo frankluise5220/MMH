@@ -1,8 +1,8 @@
 "use client";
-import { ModalLayer } from "@/components/ModalLayer";
 
 import { useMemo, useState } from "react";
 import { Scale } from "lucide-react";
+import { SimpleModal } from "./SimpleModal";
 import { DateStepper } from "./DateStepper";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { formatFundUnitsValue, normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision-core";
@@ -117,14 +117,24 @@ export function FundUnitsReconcileButton({
       </button>
 
       {open ? (
-        <ModalLayer className="fixed inset-0 flex items-center justify-center bg-slate-900/25 px-4 py-4">
-          <div className="w-full max-w-md rounded-2xl border border-slate-200 bg-white shadow-2xl">
-            <div className="border-b border-slate-100 px-4 py-3">
-              <div className="text-sm font-semibold text-slate-800">{t("fundUnitsReconcile.title")}</div>
-              <div className="mt-1 text-xs text-slate-500">{t("fundUnitsReconcile.desc")}</div>
-            </div>
-
-            <div className="space-y-3 px-4 py-4 text-sm">
+        <SimpleModal
+          open={open}
+          onClose={() => setOpen(false)}
+          closeDisabled={submitting}
+          title={t("fundUnitsReconcile.title")}
+          description={t("fundUnitsReconcile.desc")}
+          footer={
+            <button
+              type="button"
+              onClick={submit}
+              className="primary-button h-8 px-3 text-xs disabled:opacity-50"
+              disabled={submitting || parsedActualUnits == null}
+            >
+              {submitting ? t("fundUnitsReconcile.saving") : t("fundUnitsReconcile.confirm")}
+            </button>
+          }
+        >
+            <div className="space-y-3 text-sm">
               <div className="rounded-lg border border-sky-100 bg-sky-50 px-3 py-2 text-xs text-sky-800">
                 {t("fundUnitsReconcile.hint")}
               </div>
@@ -180,27 +190,7 @@ export function FundUnitsReconcileButton({
               {error ? <div className="text-xs text-red-600">{error}</div> : null}
               {info ? <div className="text-xs text-slate-500">{info}</div> : null}
             </div>
-
-            <div className="flex items-center justify-end gap-2 border-t border-slate-100 px-4 py-3">
-              <button
-                type="button"
-                onClick={() => setOpen(false)}
-                className="secondary-button h-8 px-3 text-xs"
-                disabled={submitting}
-              >
-                {t("common.cancel")}
-              </button>
-              <button
-                type="button"
-                onClick={submit}
-                className="primary-button h-8 px-3 text-xs disabled:opacity-50"
-                disabled={submitting || parsedActualUnits == null}
-              >
-                {submitting ? t("fundUnitsReconcile.saving") : t("fundUnitsReconcile.confirm")}
-              </button>
-            </div>
-          </div>
-        </ModalLayer>
+        </SimpleModal>
       ) : null}
     </>
   );

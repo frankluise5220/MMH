@@ -14,6 +14,7 @@ import {
   verifyVerifiedSessionValue,
 } from "@/lib/server/session-cookies";
 import { verifySensitiveOperationPassword } from "@/lib/server/sensitive-operation-auth";
+import { resetDefaultFundQueryApiRepair } from "@/lib/fund/queryApiDefaults";
 import {
   buildBackupFileName,
   buildHouseholdBackupPayload,
@@ -250,6 +251,9 @@ async function runRestoreTask(
       },
     });
     payload = null;
+    // 备份是按行原样导出的（含 isActive），从升级前的备份恢复会把已下线的净值源写回
+    // active；重置一次，下一次取净值时重新做默认源修复。
+    resetDefaultFundQueryApiRepair();
 
     updateRestoreTask(task, {
       status: "success",

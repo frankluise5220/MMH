@@ -1672,7 +1672,6 @@ export function RegularInvestForm({
         width="md"
         title={title}
         onClose={() => setActualOpen(false)}
-        closeLabel={t("table.close")}
         onSubmit={onSubmit}
         tabs={TASK_TYPE_OPTIONS.map((item) => ({
           id: item.value,

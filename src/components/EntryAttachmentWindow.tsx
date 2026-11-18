@@ -145,8 +145,8 @@ export function EntryAttachmentWindow({
             <Paperclip className="h-4 w-4" />
             {t("attachments.title")}
           </div>
-          <button type="button" className="secondary-button h-8 px-2" onClick={onClose}>
-            {t("table.close")}
+          <button title={t("table.close")} aria-label={t("table.close")} type="button" className="secondary-button inline-flex h-8 w-8 shrink-0 items-center justify-center px-0" onClick={onClose}>
+            <X className="h-4 w-4" />
           </button>
         </div>
         <div className="max-h-80 min-h-24 space-y-2 overflow-y-auto p-4">
@@ -196,7 +196,7 @@ export function EntryAttachmentWindow({
           ) : null}
           {error ? <div className="text-sm text-red-600">{error}</div> : null}
         </div>
-        <div className="flex items-center justify-end gap-2 border-t border-slate-200 p-3">
+        <div className="flex items-center gap-2 border-t border-slate-200 p-3">
           {!entryId && !onPendingFilesChange ? (
             <button type="button" className="secondary-button h-8 px-3" disabled>
               <Plus className="mr-1 inline h-3.5 w-3.5" />
@@ -221,9 +221,6 @@ export function EntryAttachmentWindow({
               />
             </label>
           )}
-          <button type="button" className="secondary-button h-8 px-3" onClick={onClose}>
-            {t("table.close")}
-          </button>
         </div>
       </div>
     </ModalLayer>,

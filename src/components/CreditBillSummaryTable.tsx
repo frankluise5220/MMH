@@ -10,6 +10,7 @@ import { AdvancedDataTable, type AdvancedDataTableColumn } from "@/components/Ad
 import { CalcInput } from "@/components/CalcInput";
 import { DateStepper } from "@/components/DateStepper";
 import { CreditCardBillingDaySettingsDialog } from "@/components/CreditCardBillingDaySettingsDialog";
+import { SimpleModal } from "@/components/SimpleModal";
 import { currentBillingDayFromRules, type CreditBillingDayRuleView } from "@/lib/credit/billing-day-rules";
 import EditBillAmount from "@/components/EditBillAmount";
 import { HANDSET_HIDDEN_CLASS, ViewExcelImportMenuButton, exportRowsToXlsx } from "@/components/ViewExcelImportMenuButton";
@@ -723,55 +724,50 @@ export function CreditBillSummaryTable({
         onRulesChanged={setBillingDayRulesLocal}
       />
       {exportOpen ? (
-        <ModalLayer className="fixed inset-0 flex items-center justify-center bg-slate-900/25 px-4">
-          <div className="w-full max-w-md overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
-            <div className="border-b border-slate-100 px-4 py-3">
-              <div className="text-sm font-semibold text-slate-800">{t("creditBillSummary.exportTitle")}</div>
-              <div className="mt-1 text-xs text-slate-500">
-                {t("creditBillSummary.exportDesc")}
-              </div>
-            </div>
-            <div className="space-y-3 px-4 py-4">
-              <label className="block">
-                <span className="mb-1 block text-xs font-medium text-slate-600">{t("creditBillSummary.exportStartLabel")}</span>
-                <select
-                  value={exportStartMonth}
-                  onChange={(event) => setExportStartMonth(event.target.value)}
-                  className="form-input"
-                >
-                  {exportBillOptions.map((row) => (
-                    <option key={row.month} value={row.month}>
-                      {t("creditBillSummary.exportOption", { month: row.month, start: row.periodStart, end: row.periodEnd })}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="block">
-                <span className="mb-1 block text-xs font-medium text-slate-600">{t("creditBillSummary.exportEndLabel")}</span>
-                <select
-                  value={exportEndMonth}
-                  onChange={(event) => setExportEndMonth(event.target.value)}
-                  className="form-input"
-                >
-                  {exportBillOptions.map((row) => (
-                    <option key={row.month} value={row.month}>
-                      {t("creditBillSummary.exportOption", { month: row.month, start: row.periodStart, end: row.periodEnd })}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              {exportError ? <div className="rounded bg-red-50 px-3 py-2 text-xs text-red-700">{exportError}</div> : null}
-            </div>
-            <div className="flex justify-end gap-2 border-t border-slate-100 px-4 py-3">
-              <button type="button" onClick={() => setExportOpen(false)} className="secondary-button h-8 px-3 text-xs" disabled={exportBusy}>
-                {t("common.cancel")}
-              </button>
-              <button type="button" onClick={() => void exportBillExcel()} className="primary-button h-8 px-3 text-xs" disabled={exportBusy || exportBillOptions.length === 0}>
-                {exportBusy ? t("creditBillSummary.exporting") : t("creditBillSummary.export")}
-              </button>
-            </div>
+        <SimpleModal
+          open={exportOpen}
+          onClose={() => setExportOpen(false)}
+          closeDisabled={exportBusy}
+          title={t("creditBillSummary.exportTitle")}
+          description={t("creditBillSummary.exportDesc")}
+          footer={
+            <button type="button" onClick={() => void exportBillExcel()} className="primary-button h-8 px-3 text-xs" disabled={exportBusy || exportBillOptions.length === 0}>
+              {exportBusy ? t("creditBillSummary.exporting") : t("creditBillSummary.export")}
+            </button>
+          }
+        >
+          <div className="space-y-3">
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-slate-600">{t("creditBillSummary.exportStartLabel")}</span>
+              <select
+                value={exportStartMonth}
+                onChange={(event) => setExportStartMonth(event.target.value)}
+                className="form-input"
+              >
+                {exportBillOptions.map((row) => (
+                  <option key={row.month} value={row.month}>
+                    {t("creditBillSummary.exportOption", { month: row.month, start: row.periodStart, end: row.periodEnd })}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-slate-600">{t("creditBillSummary.exportEndLabel")}</span>
+              <select
+                value={exportEndMonth}
+                onChange={(event) => setExportEndMonth(event.target.value)}
+                className="form-input"
+              >
+                {exportBillOptions.map((row) => (
+                  <option key={row.month} value={row.month}>
+                    {t("creditBillSummary.exportOption", { month: row.month, start: row.periodStart, end: row.periodEnd })}
+                  </option>
+                ))}
+              </select>
+            </label>
+            {exportError ? <div className="rounded bg-red-50 px-3 py-2 text-xs text-red-700">{exportError}</div> : null}
           </div>
-        </ModalLayer>
+        </SimpleModal>
       ) : null}
       {installmentOpen ? (
         <ModalLayer className="fixed inset-0 flex items-center justify-center bg-slate-900/25 px-4">
@@ -933,9 +929,6 @@ export function CreditBillSummaryTable({
               {installmentError ? <div className="rounded bg-red-50 px-3 py-2 text-xs text-red-700">{installmentError}</div> : null}
             </div>
             <div className="flex justify-end gap-2 border-t border-slate-100 px-4 py-3">
-              <button type="button" onClick={() => setInstallmentOpen(false)} className="secondary-button h-8 px-3 text-xs" disabled={installmentSaving}>
-                {t("common.cancel")}
-              </button>
               <button
                 type="button"
                 onClick={saveStatementInstallment}

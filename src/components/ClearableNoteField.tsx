@@ -91,7 +91,7 @@ export function ClearableNoteField({
           }}
           className={clearButtonClassName}
         >
-          <X className="h-3 w-3" />
+          <X className="h-3.5 w-3.5" />
         </button>
       ) : null}
     </div>

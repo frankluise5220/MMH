@@ -1,5 +1,6 @@
 "use client";
 
+import { X } from "lucide-react";
 import { createPortal } from "react-dom";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode, type RefObject } from "react";
 import { useI18n } from "@/lib/i18n";
@@ -241,8 +242,8 @@ export function TableColumnFilter({
       <FilterPopover open={open} anchorRef={rootRef} className="h-96 min-h-52 min-w-56 max-w-[min(640px,90vw)] resize overflow-auto rounded-lg border border-slate-200 bg-white p-2 shadow-xl" height={384}>
           <div className="mb-2 flex items-center justify-between gap-2 border-b border-slate-100 pb-2">
             <span className="text-xs font-medium text-slate-700">{filterTitle}</span>
-            <button type="button" onClick={handleClose} className="text-xs text-slate-400 hover:text-slate-700">
-              {t("table.close")}
+            <button title={t("table.close")} aria-label={t("table.close")} type="button" onClick={handleClose} className="secondary-button inline-flex h-7 w-7 shrink-0 items-center justify-center px-0">
+              <X className="h-4 w-4" />
             </button>
           </div>
           <div className="mb-2 flex items-center gap-2">
@@ -388,8 +389,8 @@ export function DateRangeColumnFilter({
       <FilterPopover open={open} anchorRef={rootRef} className="rounded-lg border border-slate-200 bg-white p-2 shadow-xl">
           <div className="mb-2 flex items-center justify-between gap-2 border-b border-slate-100 pb-2">
             <span className="text-xs font-medium text-slate-700">{filterTitle}</span>
-            <button type="button" onClick={onClose} className="text-xs text-slate-400 hover:text-slate-700">
-              {t("table.close")}
+            <button title={t("table.close")} aria-label={t("table.close")} type="button" onClick={onClose} className="secondary-button inline-flex h-7 w-7 shrink-0 items-center justify-center px-0">
+              <X className="h-4 w-4" />
             </button>
           </div>
           <div className="space-y-2">
@@ -484,8 +485,8 @@ export function NumberRangeColumnFilter({
       <FilterPopover open={open} anchorRef={rootRef} className="rounded-lg border border-slate-200 bg-white p-2 shadow-xl">
           <div className="mb-2 flex items-center justify-between gap-2 border-b border-slate-100 pb-2">
             <span className="text-xs font-medium text-slate-700">{filterTitle}</span>
-            <button type="button" onClick={onClose} className="text-xs text-slate-400 hover:text-slate-700">
-              {t("table.close")}
+            <button title={t("table.close")} aria-label={t("table.close")} type="button" onClick={onClose} className="secondary-button inline-flex h-7 w-7 shrink-0 items-center justify-center px-0">
+              <X className="h-4 w-4" />
             </button>
           </div>
           <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
@@ -598,8 +599,8 @@ export function TextColumnFilter({
       <FilterPopover open={open} anchorRef={rootRef} className="rounded-lg border border-slate-200 bg-white p-2 shadow-xl">
           <div className="mb-2 flex items-center justify-between gap-2 border-b border-slate-100 pb-2">
             <span className="text-xs font-medium text-slate-700">{filterTitle}</span>
-            <button type="button" onClick={onClose} className="text-xs text-slate-400 hover:text-slate-700">
-              {t("table.close")}
+            <button title={t("table.close")} aria-label={t("table.close")} type="button" onClick={onClose} className="secondary-button inline-flex h-7 w-7 shrink-0 items-center justify-center px-0">
+              <X className="h-4 w-4" />
             </button>
           </div>
           <div className="flex items-center gap-2">

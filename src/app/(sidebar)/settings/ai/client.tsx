@@ -2,7 +2,7 @@
 import { ModalLayer } from "@/components/ModalLayer";
 
 import { useEffect, useState } from "react";
-import { ArrowLeftRight } from "lucide-react";
+import { ArrowLeftRight, X } from "lucide-react";
 import {
   SettingsActionButton,
   SettingsEmptyRow,
@@ -267,10 +267,15 @@ function ModelModal({
   return (
     <ModalLayer className="fixed inset-0 flex items-center justify-center bg-black/40 p-4">
       <div className="w-full max-w-lg bg-white rounded-xl shadow-xl overflow-hidden">
-        <div className="px-5 py-4 border-b border-slate-200 bg-slate-50">
-          <div className="text-sm font-semibold text-slate-800">
+        <div className="flex items-start justify-between gap-2 px-5 py-4 border-b border-slate-200 bg-slate-50">
+          <div className="min-w-0 text-sm font-semibold text-slate-800">
             {modalTitle}
           </div>
+          <button type="button" onClick={onCancel}
+            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-slate-400 hover:bg-white hover:text-slate-600"
+            title={t("table.close")} aria-label={t("table.close")}>
+            <X className="h-4 w-4" />
+          </button>
         </div>
         <div className="p-5 space-y-4">
           {step === "config" ? (
@@ -303,8 +308,6 @@ function ModelModal({
               </div>
               {error && <div className="text-xs text-red-600">{error}</div>}
               <div className="flex justify-end gap-2">
-                <button className="h-9 px-4 rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50"
-                  onClick={onCancel}>{t("common.cancel")}</button>
                 <button className="h-9 px-4 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50"
                   onClick={handleFetch} disabled={fetching}>
                   {fetching ? t("settings.ai.client.fetching") : t("settings.ai.client.fetchModels")}
@@ -694,8 +697,13 @@ export default function AISettingsClient({
       {quickAdd && (
         <ModalLayer className="fixed inset-0 flex items-center justify-center bg-black/40 p-4">
           <div className="w-full max-w-md bg-white rounded-xl shadow-xl overflow-hidden">
-            <div className="px-5 py-4 border-b border-slate-200 bg-slate-50">
-              <div className="text-sm font-semibold text-slate-800">{t("settings.ai.client.switchTitle", { name: quickAdd.channelName || quickAdd.channelId })}</div>
+            <div className="flex items-start justify-between gap-2 px-5 py-4 border-b border-slate-200 bg-slate-50">
+              <div className="min-w-0 text-sm font-semibold text-slate-800">{t("settings.ai.client.switchTitle", { name: quickAdd.channelName || quickAdd.channelId })}</div>
+              <button type="button" onClick={() => setQuickAdd(null)}
+                className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-slate-400 hover:bg-white hover:text-slate-600"
+                title={t("table.close")} aria-label={t("table.close")}>
+                <X className="h-4 w-4" />
+              </button>
             </div>
             <div className="p-5 space-y-3">
               {quickFetching ? (
@@ -735,7 +743,6 @@ export default function AISettingsClient({
                 <div className="text-sm text-red-600 text-center py-4">{t("settings.ai.client.errQuickNoModels")}</div>
               )}
               <div className="flex justify-end gap-2">
-                <button className="h-9 px-4 rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50" onClick={() => setQuickAdd(null)}>{t("common.cancel")}</button>
                 <button className="h-9 px-4 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50" onClick={confirmQuickAdd} disabled={!quickSelected}>{t("ledgerSwitch.confirmSwitch")}</button>
               </div>
             </div>

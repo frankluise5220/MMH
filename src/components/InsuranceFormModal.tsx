@@ -6,7 +6,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { EntryModalShell } from "@/components/EntryModalShell";
 import { EntryConvertHeaderAction } from "@/components/EntryConvertHeaderAction";
 
-import { Repeat } from "lucide-react";
+import { Repeat, X } from "lucide-react";
 import { DateStepper } from "./DateStepper";
 import { CalcInput } from "./CalcInput";
 import { ClearableNoteField } from "./ClearableNoteField";
@@ -1052,7 +1052,7 @@ export function InsuranceFormModal({
                 <div className="w-full max-w-sm overflow-hidden rounded-xl border border-slate-200 bg-white shadow-lg">
                   <div className="flex items-center justify-between border-b border-slate-200 bg-slate-50 px-4 py-3">
                     <div className="text-sm font-semibold text-slate-800">{t("insuranceFormModal.newProductTitle")}</div>
-                    <button
+                    <button title={t("table.close")} aria-label={t("table.close")}
                       type="button"
                       onClick={() => {
                         setShowNewProductModal(false);
@@ -1062,9 +1062,9 @@ export function InsuranceFormModal({
                         setNewProductSelectedCandidate(-1);
                         setNewProductLookupError("");
                       }}
-                      className="h-8 rounded-md border border-slate-200 bg-white px-2 text-sm text-slate-700 hover:bg-slate-50"
+                      className="secondary-button inline-flex h-8 w-8 shrink-0 items-center justify-center px-0"
                     >
-                      {t("table.close")}
+                      <X className="h-4 w-4" />
                     </button>
                   </div>
                   <div className="space-y-3 p-4">
@@ -1148,20 +1148,6 @@ export function InsuranceFormModal({
                     )}
 
                     <div className="flex justify-end gap-2 pt-1">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setShowNewProductModal(false);
-                          setNewProductInstitutionId("");
-                          setNewProductName("");
-                          setNewProductLookupCandidates([]);
-                          setNewProductSelectedCandidate(-1);
-                          setNewProductLookupError("");
-                        }}
-                        className="h-9 rounded-md border border-slate-200 bg-white px-4 text-sm text-slate-700 hover:bg-slate-50"
-                      >
-                        {t("common.cancel")}
-                      </button>
                       <button
                         type="button"
                         onClick={handleCreateProductMaster}

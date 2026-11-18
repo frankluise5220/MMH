@@ -1439,7 +1439,7 @@ export default function DisplaySettingsPage() {
                             aria-label={t("settings.display.accountFormatRemove")}
                             className="ml-0.5 flex h-4 w-4 shrink-0 items-center justify-center rounded text-blue-400 hover:bg-blue-100 hover:text-blue-700"
                           >
-                            <X className="h-3 w-3" />
+                            <X className="h-3.5 w-3.5" />
                           </button>
                         </div>
                       );

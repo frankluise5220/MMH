@@ -153,6 +153,7 @@ function summaryRows(payload: HouseholdBackupPayload) {
     { field: "counterparties", value: payload.counts.counterparties },
     { field: "emailAccounts", value: payload.counts.emailAccounts },
     { field: "fundQueryApis", value: payload.counts.fundQueryApis },
+    { field: "stockQuoteApis", value: payload.counts.stockQuoteApis },
     { field: "regularInvestPlans", value: payload.counts.regularInvestPlans },
     { field: "businessTransactions", value: payload.counts.businessTransactions },
     { field: "systemSettings", value: payload.counts.systemSettings },
@@ -1876,6 +1877,7 @@ export async function buildHouseholdBackupPayload(
     reimbursementSettlements,
     reimbursementSettlementTransactions,
     fundQueryApis,
+    stockQuoteApis,
     statementRecognitionRules,
     importBatches,
     transactions,
@@ -1966,6 +1968,12 @@ export async function buildHouseholdBackupPayload(
         ? { OR: [{ householdId }, { householdId: null }] }
         : { householdId },
       orderBy: [{ createdAt: "asc" }],
+    }),
+    // 内置的东财 / 腾讯两行 householdId 为 null，由查询侧 ensureDefaultStockQuoteApis 自愈补齐，
+    // 不随快照走：code 唯一，写回时会与目标实例的 seed 行撞键。用户自建的源完整往返。
+    prisma.stockQuoteApi.findMany({
+      where: { householdId },
+      orderBy: [{ priority: "asc" }, { createdAt: "asc" }],
     }),
     prisma.statementRecognitionRule.findMany({ where: { householdId }, orderBy: [{ priority: "desc" }, { hitCount: "desc" }, { updatedAt: "desc" }] }),
     prisma.importBatch.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
@@ -2157,6 +2165,7 @@ export async function buildHouseholdBackupPayload(
       emailAccounts: emailAccounts.length,
       statementMailAutoImports: statementMailAutoImports.length,
       fundQueryApis: fundQueryApis.length,
+      stockQuoteApis: stockQuoteApis.length,
       regularInvestPlans: regularInvestPlans.length,
       businessTransactions:
         fundTransactions.length +
@@ -2222,6 +2231,7 @@ export async function buildHouseholdBackupPayload(
       reimbursementSettlements,
       reimbursementSettlementTransactions,
       fundQueryApis,
+      stockQuoteApis,
       statementRecognitionRules,
       regularInvestPlans,
       importBatches: options.omitImportBatchRawText === false ? importBatches : importBatchesForBackup(importBatches),
@@ -2354,6 +2364,7 @@ async function buildHouseholdBackupWorkbook(payload: HouseholdBackupPayload) {
     ["ReimbursementSettlements", sheetRows(payload.data.reimbursementSettlements)],
     ["ReimbursementSettlementTransactions", sheetRows(payload.data.reimbursementSettlementTransactions)],
     ["FundQueryApis", sheetRows(payload.data.fundQueryApis)],
+    ["StockQuoteApis", sheetRows(payload.data.stockQuoteApis)],
     ["StatementRecognitionRules", sheetRows(payload.data.statementRecognitionRules)],
     ["RegularInvestPlans", sheetRows(payload.data.regularInvestPlans)],
     ["ImportBatches", sheetRows(payload.data.importBatches)],
@@ -2456,6 +2467,7 @@ export async function buildHouseholdTableExportWorkbook(payload: HouseholdBackup
     ["ReimbursementSettlements", sheetRows(payload.data.reimbursementSettlements)],
     ["ReimbursementSettlementTransactions", sheetRows(payload.data.reimbursementSettlementTransactions)],
     ["FundQueryApis", sheetRows(payload.data.fundQueryApis)],
+    ["StockQuoteApis", sheetRows(payload.data.stockQuoteApis)],
     ["StatementRecognitionRules", sheetRows(payload.data.statementRecognitionRules)],
     ["RegularInvestPlans", sheetRows(tableRegularInvestPlans)],
     ["ImportBatches", sheetRows(payload.data.importBatches)],
@@ -2706,6 +2718,7 @@ export function parseBackupPayload(raw: unknown) {
         "data.reimbursementSettlementTransactions",
       ),
       fundQueryApis: ensureArray(data.fundQueryApis ?? [], "data.fundQueryApis"),
+      stockQuoteApis: ensureArray(data.stockQuoteApis ?? [], "data.stockQuoteApis"),
       statementRecognitionRules: ensureArray(data.statementRecognitionRules ?? [], "data.statementRecognitionRules"),
       statementCategoryRules: ensureArray(data.statementCategoryRules ?? [], "data.statementCategoryRules"),
       regularInvestPlans: ensureArray(data.regularInvestPlans ?? [], "data.regularInvestPlans"),
@@ -3103,6 +3116,8 @@ async function restoreSingleHouseholdBackup(
     } else {
       await tx.fundQueryApi.deleteMany({ where: { householdId } });
     }
+    // 只清 household 自建的行情源；内置两行（householdId=null）留给 ensureDefaultStockQuoteApis 自愈。
+    await tx.stockQuoteApi.deleteMany({ where: { householdId } });
     await tx.preciousMetalType.deleteMany({ where: { householdId } });
     await tx.preciousMetalUnit.deleteMany({ where: { householdId } });
     await tx.fxRate.deleteMany({ where: { householdId } });
@@ -3532,6 +3547,27 @@ async function restoreSingleHouseholdBackup(
           priority: Number(item.priority ?? 0),
           isActive: item.isActive == null ? true : Boolean(item.isActive),
           householdId: isSystemRestore && item.householdId == null ? null : householdId,
+          createdAt: item.createdAt ? new Date(String(item.createdAt)) : new Date(),
+          updatedAt: item.updatedAt ? new Date(String(item.updatedAt)) : new Date(),
+        })),
+      });
+    }
+
+    if (data.stockQuoteApis.length > 0) {
+      await tx.stockQuoteApi.createMany({
+        data: data.stockQuoteApis.map((item) => ({
+          id: String(item.id),
+          name: String(item.name ?? ""),
+          code: String(item.code ?? ""),
+          market: String(item.market ?? "CN"),
+          baseUrl: String(item.baseUrl ?? ""),
+          apiKey: item.apiKey == null ? null : String(item.apiKey),
+          parser: item.parser == null ? null : String(item.parser),
+          parserConfig: item.parserConfig ?? undefined,
+          priority: Number(item.priority ?? 0),
+          isActive: item.isActive == null ? true : Boolean(item.isActive),
+          builtin: Boolean(item.builtin),
+          householdId,
           createdAt: item.createdAt ? new Date(String(item.createdAt)) : new Date(),
           updatedAt: item.updatedAt ? new Date(String(item.updatedAt)) : new Date(),
         })),

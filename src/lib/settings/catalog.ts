@@ -176,6 +176,7 @@ const SETTINGS_ITEM_LABEL_KEYS: Record<string, string> = {
   api: "settings.externalApi",
   mcp: "settings.mcp",
   "fund-api": "settings.fundApi",
+  "stock-api": "settings.stockApi",
   "scheduled-tasks": "settings.scheduledTasks",
   display: "settings.display",
   database: "settings.database",

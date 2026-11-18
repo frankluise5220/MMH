@@ -2705,7 +2705,6 @@ export function EmailSettingsPanel({
             </div>
 
             <div className="mt-4 flex items-center justify-end gap-2">
-              <button className="h-9 px-4 rounded-md border border-slate-300 text-sm hover:bg-slate-50" onClick={() => setAccountDraft(null)}>{t("common.cancel")}</button>
               <button className="h-9 px-4 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50" onClick={createAccountFromDraft} disabled={savingAccountDraft || !accountDraft.name.trim()}>
                 {savingAccountDraft ? t("settings.email.creating") : t("settings.email.createAndUse")}
               </button>
@@ -2781,7 +2780,6 @@ export function EmailSettingsPanel({
             </div>
 
             <div className="mt-4 flex items-center justify-end gap-2">
-              <button className="h-9 px-4 rounded-md border border-slate-300 text-sm hover:bg-slate-50" onClick={closeAccountModal}>{t("common.cancel")}</button>
               <button className="h-9 px-4 rounded-md border border-slate-300 text-sm hover:bg-slate-50 disabled:opacity-50" onClick={testConnection} disabled={testing}>{testing ? t("settings.email.testing") : t("settings.email.testConnection")}</button>
               <button className="h-9 px-4 rounded-md bg-blue-600 text-white text-sm hover:bg-blue-700 disabled:opacity-50" onClick={saveAccount} disabled={saving}>{saving ? t("settings.email.saving") : editingId ? t("settings.email.saveChanges") : t("common.save")}</button>
             </div>

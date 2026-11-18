@@ -641,8 +641,8 @@ export function ReimbursementEditor({
           <div className="app-modal-panel max-w-xl">
             <div className="modal-header shrink-0">
               <div className="text-sm font-semibold text-slate-800">{t("reimburse.source.add")}</div>
-              <button type="button" onClick={() => setShowLinkDialog(false)} className="secondary-button h-8 px-2" disabled={linkingTransaction}>
-                {t("table.close")}
+              <button title={t("table.close")} aria-label={t("table.close")} type="button" onClick={() => setShowLinkDialog(false)} className="secondary-button inline-flex h-8 w-8 shrink-0 items-center justify-center px-0" disabled={linkingTransaction}>
+                <X className="h-4 w-4" />
               </button>
             </div>
             <div className="space-y-3 p-4">

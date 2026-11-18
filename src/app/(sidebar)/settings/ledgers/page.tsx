@@ -623,9 +623,6 @@ export default function LedgerSettingsPage() {
               </label>
             </div>
             <div className="flex justify-end gap-2">
-              <button type="button" onClick={() => setShowCreate(false)} disabled={busy === "create"} className="h-9 rounded-md border border-slate-200 bg-white px-4 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50">
-                {t("common.cancel")}
-              </button>
               <button type="button" onClick={createLedger} disabled={busy === "create"} className="h-9 rounded-md bg-blue-600 px-4 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50">
                 {busy === "create" ? t("settings.ledgers.creating") : t("settings.ledgers.add")}
               </button>
@@ -662,9 +659,6 @@ export default function LedgerSettingsPage() {
               />
             </label>
             <div className="flex justify-end gap-2">
-              <button type="button" onClick={() => setSwitchForm(null)} disabled={busy?.startsWith("switch:")} className="h-9 rounded-md border border-slate-200 bg-white px-4 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50">
-                {t("common.cancel")}
-              </button>
               <button type="button" onClick={() => switchTo(switchForm.householdId, switchForm.username, switchForm.password)} disabled={busy?.startsWith("switch:")} className="h-9 rounded-md bg-blue-600 px-4 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50">
                 {t("settings.ledgers.confirmSwitch")}
               </button>
@@ -695,9 +689,6 @@ export default function LedgerSettingsPage() {
               labelIcon={<Shield className="h-3.5 w-3.5 text-amber-500" />}
             />
             <div className="flex justify-end gap-2">
-              <button type="button" onClick={() => setDeleteForm(null)} disabled={busy?.startsWith("delete:")} className="h-9 rounded-md border border-slate-200 bg-white px-4 text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-50">
-                {t("common.cancel")}
-              </button>
               <button type="button" onClick={deleteLedger} disabled={busy?.startsWith("delete:")} className="h-9 rounded-md bg-red-600 px-4 text-sm font-medium text-white hover:bg-red-700 disabled:opacity-50">
                 {t("settings.ledgers.confirmDelete")}
               </button>

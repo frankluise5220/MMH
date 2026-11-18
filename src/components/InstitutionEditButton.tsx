@@ -1,6 +1,7 @@
 "use client";
 import { ModalLayer } from "@/components/ModalLayer";
 
+import { X } from "lucide-react";
 import { useState, type FormEvent } from "react";
 import { SettingsActionButton } from "@/components/settings/SettingsPageScaffold";
 import { notifySettingsDataChanged } from "@/lib/client/settingsCache";
@@ -88,7 +89,11 @@ export function InstitutionEditButton({
             <div className="px-4 py-3 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
               <div className="text-sm font-semibold text-slate-800">{title ?? t("settings.counterparties.editTitle")}</div>
               <button type="button" onClick={() => setOpen(false)}
-                className="h-8 px-2 rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50">{t("table.close")}</button>
+                className="secondary-button inline-flex h-8 w-8 shrink-0 items-center justify-center px-0"
+                title={t("table.close")}
+                aria-label={t("table.close")}>
+                <X className="h-4 w-4" />
+              </button>
             </div>
             <form className="p-4 space-y-3" onSubmit={onSubmit}>
               <div className="space-y-1">

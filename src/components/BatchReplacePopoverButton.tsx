@@ -1,6 +1,6 @@
 "use client";
 
-import { ChevronDown, Pencil } from "lucide-react";
+import { ChevronDown, Pencil, X } from "lucide-react";
 import { createPortal } from "react-dom";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { CalcInput } from "@/components/CalcInput";
@@ -221,7 +221,15 @@ export function BatchReplacePopoverButton<Field extends string>({
             >
               <div className="mb-2 flex items-center justify-between gap-3">
                 <span className="font-medium text-slate-700">{t("batchReplace.panelTitle", { label: effectiveTargetLabel, count: targetCount })}</span>
-                <button type="button" onClick={() => setOpen(false)} className="shrink-0 text-slate-400 hover:text-slate-600">{t("table.close")}</button>
+                <button
+                  type="button"
+                  onClick={() => setOpen(false)}
+                  className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                  title={t("table.close")}
+                  aria-label={t("table.close")}
+                >
+                  <X className="h-4 w-4" />
+                </button>
               </div>
               {children ? <div className="mb-2 text-xs text-slate-500">{children}</div> : null}
               <div

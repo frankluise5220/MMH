@@ -12,7 +12,7 @@ import {
   type CSSProperties,
   type PointerEvent as ReactPointerEvent,
 } from "react";
-import { CalendarRange, ChevronDown } from "lucide-react";
+import { CalendarRange, ChevronDown, X } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { useOutsideClose } from "@/lib/client/useOutsideClose";
 import { DateStepper } from "./DateStepper";
@@ -568,8 +568,8 @@ export function DateRangeSliderFilter({
             <span className="text-xs font-medium text-slate-700">{t("advancedTable.dateRangeFilter")}</span>
             <div className="flex items-center gap-2">
               {hasTrack ? <span className="text-xs tabular-nums text-slate-500">{t("advancedTable.dateRangeDays", { count: dayCount })}</span> : null}
-              <button type="button" onClick={() => setOpen(false)} className="text-xs text-slate-400 hover:text-slate-700">
-                {t("table.close")}
+              <button title={t("table.close")} aria-label={t("table.close")} type="button" onClick={() => setOpen(false)} className="secondary-button inline-flex h-7 w-7 shrink-0 items-center justify-center px-0">
+                <X className="h-4 w-4" />
               </button>
             </div>
           </div>

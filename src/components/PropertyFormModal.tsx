@@ -1,7 +1,6 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
-import { X } from "lucide-react";
 /** 记账弹窗整窗外壳：宽度/标题栏/表单/FT 页签卡片/固定页脚/高度锁定统一由它负责。 */
 import { EntryModalShell } from "@/components/EntryModalShell";
 
@@ -733,7 +732,6 @@ export function PropertyFormModal({
       }}
       rulerLabels={[t("propertyForm.tab.change"), t("propertyForm.tab.sale"), t("propertyForm.tab.disposal")]}
       onClose={close}
-      closeLabel={<X className="h-4 w-4" />}
       closeTitle={t("table.close")}
       onSubmit={submit}
       footer={(

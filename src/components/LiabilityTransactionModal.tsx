@@ -396,7 +396,6 @@ function FixedAssetCreateDialog({
         width="sm"
         title={t("txForm.createFixedAsset")}
         onClose={onClose}
-        closeLabel={t("table.close")}
         onSubmit={(event) => {
           event.preventDefault();
           onSubmit();
@@ -2927,7 +2926,6 @@ export function LiabilityTransactionModal({
               }}
             />
           )}
-          closeLabel={t("table.close")}
           onSubmit={onSubmit}
           tabs={liabilityTabs}
           activeTabId={liabilityActiveTabId}
@@ -3465,7 +3463,6 @@ export function LiabilityTransactionModal({
         width="sm"
         title={t("liabilityTx.historyConfirmTitle")}
         onClose={() => setHistoryConfirmOpen(false)}
-        closeLabel={t("liabilityTx.back")}
         onSubmit={(event) => {
           event.preventDefault();
           void confirmHistoricalPrompt();
@@ -3577,7 +3574,6 @@ export function LiabilityTransactionModal({
         width="md"
         title={t("liabilityShell.rateAdjustment")}
         onClose={() => setHistoricalRatesOpen(false)}
-        closeLabel={t("table.close")}
         onSubmit={(event) => {
           event.preventDefault();
           if (historicalRateRows.length === 0) {

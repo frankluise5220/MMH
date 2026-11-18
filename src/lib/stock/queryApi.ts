@@ -1,9 +1,18 @@
+import { todayDateBusinessYmd } from "@/lib/date-utils";
 import {
   defaultStockCurrencyForMarket,
   inferStockExchangeFromCode,
   normalizeStockCode,
   normalizeStockMarket,
 } from "@/lib/stock/market";
+import {
+  parserCodeOf,
+  pickCloseOnOrBefore,
+  pickCloseRange,
+  shiftYmd,
+  toYmd,
+} from "@/lib/stock/quoteSource";
+import { fetchQuoteRows, getActiveStockQuoteApis } from "@/lib/stock/quoteSourceRepo";
 
 type StockIdentityResult = {
   market: string;
@@ -373,6 +382,66 @@ export async function queryStockIdentity(marketRaw: unknown, stockCodeRaw: unkno
   };
 }
 
+/** 单日查询往前看的窗口：覆盖周末 + 长假，保证非交易日也能取到最近一个收盘价。 */
+const QUOTE_SINGLE_DAY_LOOKBACK_DAYS = 10;
+
+/** 按 priority 依次尝试用户配置的源，第一个给出有效收盘价的胜出。 */
+async function queryConfiguredClosePrice(
+  stockCode: string,
+  exchange: string | null,
+  targetDate: string,
+): Promise<StockClosePriceResult> {
+  const apis = await getActiveStockQuoteApis("CN");
+  const dateStart = shiftYmd(targetDate, -QUOTE_SINGLE_DAY_LOOKBACK_DAYS);
+
+  for (const api of apis) {
+    const result = await fetchQuoteRows(api, { stockCode, exchange, dateStart, date: targetDate });
+    if (!result.ok) continue;
+    const picked = pickCloseOnOrBefore(result.rows, targetDate);
+    if (!picked) continue;
+    return {
+      market: "CN",
+      stockCode,
+      closePrice: picked.closePrice,
+      priceDate: picked.priceDate,
+      currency: "CNY",
+      exchange,
+      source: parserCodeOf(api),
+    };
+  }
+  return null;
+}
+
+async function queryConfiguredCloseRange(
+  stockCode: string,
+  exchange: string | null,
+  startDate: string,
+  endDate: string,
+): Promise<StockClosePriceListResult> {
+  const apis = await getActiveStockQuoteApis("CN");
+
+  for (const api of apis) {
+    const result = await fetchQuoteRows(api, {
+      stockCode,
+      exchange,
+      dateStart: startDate,
+      date: endDate,
+    });
+    if (!result.ok) continue;
+    const items = pickCloseRange(result.rows, startDate, endDate);
+    if (items.length === 0) continue;
+    return {
+      market: "CN",
+      stockCode,
+      currency: "CNY",
+      exchange,
+      source: parserCodeOf(api),
+      items,
+    };
+  }
+  return null;
+}
+
 export async function queryStockLatestClosePrice(marketRaw: unknown, stockCodeRaw: unknown, exchangeRaw?: unknown): Promise<StockClosePriceResult> {
   const market = normalizeStockMarket(marketRaw);
   const stockCode = normalizeStockCode(stockCodeRaw);
@@ -380,7 +449,10 @@ export async function queryStockLatestClosePrice(marketRaw: unknown, stockCodeRa
   if (!stockCode) return null;
 
   if (market === "CN") {
-    return queryEastmoneyCnLatestClose(stockCode, exchange);
+    // 配置源优先；全部失败再退回内置链路，保证升级后行为不倒退。
+    const today = todayDateBusinessYmd();
+    return (await queryConfiguredClosePrice(stockCode, exchange, today))
+      ?? queryEastmoneyCnLatestClose(stockCode, exchange);
   }
 
   return null;
@@ -393,6 +465,11 @@ export async function queryStockClosePriceByDate(marketRaw: unknown, stockCodeRa
   if (!stockCode) return null;
 
   if (market === "CN") {
+    const targetDate = toYmd(dateRaw);
+    if (targetDate) {
+      const configured = await queryConfiguredClosePrice(stockCode, exchange, targetDate);
+      if (configured) return configured;
+    }
     return queryEastmoneyCnCloseByDate(stockCode, dateRaw, exchange);
   }
 
@@ -462,6 +539,12 @@ export async function queryStockClosePriceList(
   if (!stockCode) return null;
 
   if (market === "CN") {
+    const startYmd = toYmd(startDateRaw);
+    const endYmd = toYmd(endDateRaw);
+    if (startYmd && endYmd) {
+      const configured = await queryConfiguredCloseRange(stockCode, exchange, startYmd, endYmd);
+      if (configured) return configured;
+    }
     const startDate = normalizeEastmoneyKlineEndDate(startDateRaw);
     const endDate = normalizeEastmoneyKlineEndDate(endDateRaw);
     return await queryEastmoneyCnCloseList(stockCode, exchange, startDate, endDate, "eastmoney-kline-list")

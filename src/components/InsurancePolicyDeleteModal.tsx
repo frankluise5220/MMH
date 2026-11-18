@@ -75,9 +75,6 @@ export function InsurancePolicyDeleteModal({
 
         <div className="shrink-0 border-t border-slate-100 bg-white/95 px-4 py-3">
           <div className="flex items-center justify-end gap-2">
-            <button type="button" onClick={onClose} className="secondary-button h-9 px-4">
-              {t("common.cancel")}
-            </button>
             <button
               type="button"
               disabled={deleting}

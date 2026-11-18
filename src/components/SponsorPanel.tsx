@@ -4,7 +4,7 @@ import { ModalLayer } from "@/components/ModalLayer";
 import { useEffect, useState } from "react";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
-import { ArrowUpRight, CheckCircle2, Coffee, Heart, QrCode, Star } from "lucide-react";
+import { ArrowUpRight, CheckCircle2, Coffee, Heart, QrCode, Star, X } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { withBasePath } from "@/lib/base-path";
 
@@ -210,17 +210,19 @@ export function SponsorPanel() {
             className="relative flex max-h-full w-full max-w-xs flex-col items-center rounded-2xl bg-white p-4 shadow-xl"
             onClick={(event) => event.stopPropagation()}
           >
+            <button
+              type="button"
+              onClick={() => setZoomedTierId(null)}
+              className="absolute right-2 top-2 inline-flex h-7 w-7 items-center justify-center rounded-md text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600"
+              title={t("settings.sponsor.close")}
+              aria-label={t("settings.sponsor.close")}
+            >
+              <X className="h-4 w-4" />
+            </button>
             <span className="relative block h-72 w-72">
               <Image src={withBasePath(zoomedTier.qrUrl)} alt={qrHint} fill sizes="288px" unoptimized className="object-contain" />
             </span>
             <p className="mt-3 text-center text-xs text-slate-500">{qrHint}</p>
-            <button
-              type="button"
-              onClick={() => setZoomedTierId(null)}
-              className="mt-3 inline-flex h-8 items-center rounded-md border border-slate-200 px-4 text-xs text-slate-600 transition-colors hover:bg-slate-50"
-            >
-              {t("settings.sponsor.close")}
-            </button>
           </div>
         </ModalLayer>
       ) : null}

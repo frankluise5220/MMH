@@ -2480,7 +2480,15 @@ export default function SettingsAccountsPage() {
         <ModalLayer className="fixed inset-0 flex items-center justify-center bg-black/30 backdrop-blur-[1px] p-4" onMouseDown={() => { setDeleteTarget(null); setDeleteError(""); }}>
           <div className="w-[340px] max-w-[calc(100vw-2rem)] rounded-xl border border-slate-200 bg-white shadow-xl p-4"
             onMouseDown={e => e.stopPropagation()}>
-            <div className="text-sm font-semibold text-slate-800 mb-1">{t("settings.accounts.passwordTitle")}</div>
+            <div className="mb-1 flex items-start justify-between gap-2">
+              <div className="text-sm font-semibold text-slate-800">{t("settings.accounts.passwordTitle")}</div>
+              <button type="button"
+                onClick={() => { setDeleteTarget(null); setDeleteError(""); }}
+                className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                aria-label={t("table.close")} title={t("table.close")}>
+                <X className="h-4 w-4" />
+              </button>
+            </div>
             <div className="text-xs text-slate-500 mb-3">
               {tf("settings.accounts.passwordDesc", {
                 name: deleteTarget.account.name,
@@ -2505,8 +2513,6 @@ export default function SettingsAccountsPage() {
             />
             {deleteError && <div className="text-xs text-red-500 mt-1">{deleteError}</div>}
             <div className="mt-3 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-              <button onClick={() => { setDeleteTarget(null); setDeleteError(""); }}
-                className="inline-flex h-11 w-full items-center justify-center rounded-xl border border-slate-200 bg-white text-sm text-slate-600 active:bg-slate-50 sm:h-8 sm:w-auto sm:rounded-md sm:px-3 sm:text-xs sm:hover:bg-slate-50">{t("common.cancel")}</button>
               <button onClick={() => void submitDeleteWithPassword()}
                 className="inline-flex h-11 w-full items-center justify-center rounded-xl bg-red-600 text-sm font-medium text-white active:bg-red-700 sm:h-8 sm:w-auto sm:rounded-md sm:px-3 sm:text-xs sm:hover:bg-red-700">{t("settings.accounts.confirmDelete")}</button>
             </div>
@@ -3074,7 +3080,15 @@ export default function SettingsAccountsPage() {
           <ModalLayer className="fixed inset-0 flex items-center justify-center bg-black/30 backdrop-blur-[1px] p-4" onMouseDown={() => { if (!mergeBusy) setMergeModalOpen(false); }}>
             <div className="w-[420px] max-w-[calc(100vw-2rem)] rounded-xl border border-slate-200 bg-white shadow-xl p-4"
               onMouseDown={e => e.stopPropagation()}>
-              <div className="text-sm font-semibold text-slate-800 mb-1">{t("settings.accounts.merge.title")}</div>
+              <div className="mb-1 flex items-start justify-between gap-2">
+                <div className="text-sm font-semibold text-slate-800">{t("settings.accounts.merge.title")}</div>
+                <button type="button" disabled={mergeBusy}
+                  onClick={() => setMergeModalOpen(false)}
+                  className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-600 disabled:opacity-40"
+                  aria-label={t("table.close")} title={t("table.close")}>
+                  <X className="h-4 w-4" />
+                </button>
+              </div>
               <div className="text-xs text-slate-500 mb-3">{t("settings.accounts.merge.desc")}</div>
               <div className="mb-1.5 text-xs font-medium text-slate-600">{t("settings.accounts.merge.chooseName")}</div>
               <div className="space-y-2">
@@ -3102,11 +3116,6 @@ export default function SettingsAccountsPage() {
               </div>
               {mergeError && <div className="text-xs text-red-500 mt-2">{mergeError}</div>}
               <div className="mt-4 flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-                <button type="button" disabled={mergeBusy}
-                  onClick={() => setMergeModalOpen(false)}
-                  className="inline-flex h-11 w-full items-center justify-center rounded-xl border border-slate-200 bg-white text-sm text-slate-600 active:bg-slate-50 disabled:opacity-60 sm:h-8 sm:w-auto sm:rounded-md sm:px-3 sm:text-xs sm:hover:bg-slate-50">
-                  {t("common.cancel")}
-                </button>
                 <button type="button" disabled={mergeBusy || !mergeKeepId}
                   onClick={() => {
                     const mergeId = mergeSelectedIds.find((id) => id !== mergeKeepId) ?? "";

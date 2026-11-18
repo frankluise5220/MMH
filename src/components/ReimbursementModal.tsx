@@ -3,7 +3,7 @@ import { ModalLayer } from "@/components/ModalLayer";
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, Banknote, Check, Link2, Pencil, Plus, Printer, ReceiptText, Trash2 } from "lucide-react";
+import { ArrowLeft, Banknote, Check, Link2, Pencil, Plus, Printer, ReceiptText, Trash2, X } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { formatAmountDraft, formatMoney, formatMoneyYuan } from "@/lib/format";
 import { todayDateLocalYmd } from "@/lib/date-utils";
@@ -1163,7 +1163,16 @@ export function ReimbursementWorkspace({
           <div className="app-modal-panel max-w-lg">
             <div className="modal-header shrink-0">
               <div className="text-sm font-semibold text-slate-800">{t(editingBatchId ? "reimburse.batch.edit" : "reimburse.batchCreate")}</div>
-              <button type="button" onClick={() => { setShowCreateBatch(false); setEditingBatchId(null); setBatchTitle(""); setBatchNote(""); setBatchStartDate(""); setBatchEndDate(""); }} className="secondary-button h-8 px-2" disabled={busy}>{t("table.close")}</button>
+              <button
+                type="button"
+                onClick={() => { setShowCreateBatch(false); setEditingBatchId(null); setBatchTitle(""); setBatchNote(""); setBatchStartDate(""); setBatchEndDate(""); }}
+                className="secondary-button inline-flex h-8 w-8 shrink-0 items-center justify-center px-0"
+                disabled={busy}
+                title={t("table.close")}
+                aria-label={t("table.close")}
+              >
+                <X className="h-4 w-4" />
+              </button>
             </div>
             <div className="space-y-3 p-4">
               {globalMode && !editingBatchId ? (
@@ -1217,8 +1226,8 @@ export function ReimbursementWorkspace({
                 <div className="text-sm font-semibold text-slate-800">{t("reimburse.batch.reimburse")}</div>
                 <div className="mt-0.5 text-xs text-slate-500">{paymentBatch.title}</div>
               </div>
-              <button type="button" onClick={() => setPaymentBatch(null)} className="secondary-button h-8 px-2" disabled={busy}>
-                {t("table.close")}
+              <button title={t("table.close")} aria-label={t("table.close")} type="button" onClick={() => setPaymentBatch(null)} className="secondary-button inline-flex h-8 w-8 shrink-0 items-center justify-center px-0" disabled={busy}>
+                <X className="h-4 w-4" />
               </button>
             </div>
             <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
@@ -1344,7 +1353,16 @@ export function ReimbursementWorkspace({
                 <div className="text-sm font-semibold text-slate-800">{t("reimburse.source.add")}</div>
                 <div className="mt-0.5 text-xs text-slate-500">{linkingReimbursement.title}</div>
               </div>
-              <button type="button" onClick={() => { setLinkingReimbursementId(null); setLinkTransactionIds([]); }} className="secondary-button h-8 px-2" disabled={busy}>{t("table.close")}</button>
+              <button
+                type="button"
+                onClick={() => { setLinkingReimbursementId(null); setLinkTransactionIds([]); }}
+                className="secondary-button inline-flex h-8 w-8 shrink-0 items-center justify-center px-0"
+                disabled={busy}
+                title={t("table.close")}
+                aria-label={t("table.close")}
+              >
+                <X className="h-4 w-4" />
+              </button>
             </div>
             <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
               <section>
@@ -1462,7 +1480,16 @@ export function ReimbursementWorkspace({
                 <div className="text-sm font-semibold text-slate-800">{t("reimburse.document.batchApprove")}</div>
                 <div className="mt-0.5 text-xs text-slate-500">{t("reimburse.table.batchTitle", { title: selectedBatch?.title ?? "" })}</div>
               </div>
-              <button type="button" onClick={() => setBatchApproveOpen(false)} className="secondary-button h-8 px-2" disabled={busy}>{t("table.close")}</button>
+              <button
+                type="button"
+                onClick={() => setBatchApproveOpen(false)}
+                className="secondary-button inline-flex h-8 w-8 shrink-0 items-center justify-center px-0"
+                disabled={busy}
+                title={t("table.close")}
+                aria-label={t("table.close")}
+              >
+                <X className="h-4 w-4" />
+              </button>
             </div>
             <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4">
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">

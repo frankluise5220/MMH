@@ -2,7 +2,7 @@
 import { ModalLayer } from "@/components/ModalLayer";
 
 import { useState } from "react";
-import { Database, Plus } from "lucide-react";
+import { Database, Plus, X } from "lucide-react";
 import { ROW_ACTION_BUTTON_BOX_CLASS } from "@/components/AdvancedDataTable";
 import { DateStepper } from "./DateStepper";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
@@ -165,7 +165,9 @@ export function AddNavButton({
           <div className="w-full max-w-sm rounded-xl bg-white border border-slate-200 shadow-lg overflow-hidden">
             <div className="px-4 py-3 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
               <div className="text-sm font-semibold text-slate-800">{t("addNav.addNavShortTitle")}</div>
-              <button onClick={() => setOpen(false)} className="h-8 px-2 rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50">{t("table.close")}</button>
+              <button onClick={() => setOpen(false)} className="secondary-button inline-flex h-8 w-8 shrink-0 items-center justify-center px-0" title={t("table.close")} aria-label={t("table.close")}>
+                <X className="h-4 w-4" />
+              </button>
             </div>
             <div className="p-4 space-y-3">
               {wealthMode ? (

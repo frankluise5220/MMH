@@ -1,4 +1,5 @@
 "use client";
+import { X } from "lucide-react";
 import { ModalLayer } from "@/components/ModalLayer";
 
 import { useEffect, useMemo, useState } from "react";
@@ -104,8 +105,8 @@ export function DepositPayInterestModal({
                 {t("deposit.payInterest.title")}
                 <span className="ml-2 text-xs font-normal text-slate-500">{lot.fundName}</span>
               </div>
-              <button type="button" onClick={onClose} className="secondary-button h-8 px-2">
-                {t("investForm.close")}
+              <button title={t("investForm.close")} aria-label={t("investForm.close")} type="button" onClick={onClose} className="secondary-button inline-flex h-8 w-8 shrink-0 items-center justify-center px-0">
+                <X className="h-4 w-4" />
               </button>
             </div>
 
@@ -151,9 +152,6 @@ export function DepositPayInterestModal({
               </div>
 
               <div className="flex justify-end gap-2 pt-1">
-                <button type="button" onClick={onClose} className="secondary-button h-9 px-4 text-sm">
-                  {t("common.cancel")}
-                </button>
                 <button
                   type="button"
                   disabled={submitting}

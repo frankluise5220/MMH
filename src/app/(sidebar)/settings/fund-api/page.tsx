@@ -2,7 +2,7 @@
 import { ModalLayer } from "@/components/ModalLayer";
 
 import { useState, useEffect, type DragEvent } from "react";
-import { Power, PowerOff } from "lucide-react";
+import { Power, PowerOff, X } from "lucide-react";
 import { showConfirmDialog } from "@/lib/client/confirm-dialog";
 import {
   SettingsActionButton,
@@ -545,6 +545,11 @@ export default function FundQueryApiPage() {
           <div className="app-modal-panel max-w-2xl">
             <div className="modal-header shrink-0">
               <div className="text-sm font-semibold text-slate-800">{isCreating ? t("settings.fundApi.addTitle") : t("settings.fundApi.editTitle")}</div>
+              <button type="button" onClick={() => { setEditingId(null); setForm(makeForm()); }}
+                className="secondary-button inline-flex h-8 w-8 items-center justify-center px-0"
+                aria-label={t("table.close")} title={t("table.close")}>
+                <X className="h-4 w-4" />
+              </button>
             </div>
             <div className="space-y-3 p-5">
               <div className="space-y-1">
@@ -614,8 +619,6 @@ export default function FundQueryApiPage() {
                   className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
               </div>
               <div className="flex justify-end gap-2 border-t border-slate-100 pt-3">
-                <button onClick={() => { setEditingId(null); setForm(makeForm()); }}
-                  className="h-9 rounded-md border border-slate-200 bg-white px-4 text-sm text-slate-700 hover:bg-slate-50">{t("common.cancel")}</button>
                 <button onClick={save} disabled={saving || !effectiveCode || (isCreating && !testResult?.ok)}
                   title={!effectiveCode ? t("settings.fundApi.parserRequired") : isCreating && !testResult?.ok ? t("settings.fundApi.testRequired") : undefined}
                   className="h-9 rounded-md bg-blue-600 px-4 text-sm text-white hover:bg-blue-700 disabled:opacity-50">{isCreating ? t("settings.fundApi.create") : t("common.save")}</button>

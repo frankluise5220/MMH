@@ -823,7 +823,6 @@ export function BondFormModal({
             }}
           />
         )}
-        closeLabel={t("table.close")}
         onSubmit={onSubmit}
         tabs={[
           { id: "buy", label: t("fund.subtype.buy") },

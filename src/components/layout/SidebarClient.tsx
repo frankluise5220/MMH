@@ -1755,11 +1755,11 @@ export function SidebarClient({
               <button
                 type="button"
                 onClick={closeAccountFilter}
-                className="flex h-4 w-4 shrink-0 items-center justify-center rounded text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600"
+                className="flex h-5 w-5 shrink-0 items-center justify-center rounded text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600"
                 title={t("sidebar.accountFilterClose")}
                 aria-label={t("sidebar.accountFilterClose")}
               >
-                <X size={12} />
+                <X className="h-3.5 w-3.5" />
               </button>
             </div>
           ) : (

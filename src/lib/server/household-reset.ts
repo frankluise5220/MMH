@@ -101,6 +101,7 @@ export async function resetHouseholdData(input: {
     await tx.institution.deleteMany({ where: { householdId } });
     await tx.importBatch.deleteMany({ where: { householdId } });
     await tx.fundQueryApi.deleteMany({ where: { householdId } });
+    await tx.stockQuoteApi.deleteMany({ where: { householdId } });
     await tx.fxRate.deleteMany({ where: { householdId } });
     await tx.emailAccount.deleteMany({ where: { householdId } });
     await tx.tag.deleteMany({ where: { householdId } });

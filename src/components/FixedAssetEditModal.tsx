@@ -155,9 +155,6 @@ export function FixedAssetEditModal({
       }}
       footer={(
         <>
-          <button type="button" onClick={onClose} className="secondary-button h-9 px-4">
-            {t("common.cancel")}
-          </button>
           <button
             type="submit"
             disabled={saving}

@@ -295,7 +295,6 @@ function TagEditModal({
             </div>
           </div>
           <div className="flex justify-end gap-2 border-t border-slate-100 pt-3">
-            <button type="button" onClick={onCancel} className="secondary-button h-9 px-4">{t("common.cancel")}</button>
             <button type="submit" disabled={saving || !name.trim()} className="primary-button h-9 px-4 disabled:opacity-50">
               {saving ? t("settings.tags.saving") : t("common.save")}
             </button>

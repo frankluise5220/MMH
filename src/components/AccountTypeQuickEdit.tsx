@@ -5,6 +5,7 @@ import { createPortal } from "react-dom";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useI18n } from "@/lib/i18n";
+import { X } from "lucide-react";
 import { ClearableNoteField } from "@/components/ClearableNoteField";
 import { CalcInput } from "@/components/CalcInput";
 import { DateStepper } from "@/components/DateStepper";
@@ -405,7 +406,7 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
       {open && typeof document !== "undefined" ? createPortal(
         <ModalLayer className="fixed inset-0 flex items-center justify-center overflow-y-auto bg-slate-950/30 p-4" onMouseDown={() => !saving && setOpen(false)}>
           <div className="max-h-[calc(100dvh-2rem)] w-[720px] max-w-[calc(100vw-2rem)] overflow-y-auto rounded-xl border border-slate-200 bg-white p-4 shadow-xl" role="dialog" aria-modal="true" onMouseDown={(event) => event.stopPropagation()}>
-            <div className="mb-3 flex items-center justify-between"><h2 className="text-sm font-semibold text-slate-800">{t("settings.accounts.editTitle", { name: account.name })}</h2><button type="button" className="h-8 rounded border border-slate-200 px-2 text-sm text-slate-600" onClick={() => setOpen(false)}>{t("table.close")}</button></div>
+            <div className="mb-3 flex items-center justify-between"><h2 className="text-sm font-semibold text-slate-800">{t("settings.accounts.editTitle", { name: account.name })}</h2><button type="button" className="secondary-button inline-flex h-8 w-8 items-center justify-center px-0 text-slate-600" onClick={() => setOpen(false)} title={t("common.close")} aria-label={t("common.close")}><X className="h-4 w-4" /></button></div>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 md:grid-cols-3">
               <Field label={t("settings.accounts.name")}><input value={form.name ?? ""} onChange={(event) => setField("name", event.target.value)} className={inputClass} /></Field>
               <Field label={t("settings.accounts.type")}>{isFixedAssetAccount || loanAccountEditLocked ? <input value={isFixedAssetAccount ? t("txForm.fixedAssetToggle") : t(`account.kind.${kind}`)} readOnly className={`${inputClass} bg-slate-50 text-slate-500`} /> : <select value={kind} onChange={(event) => changeAccountKind(event.target.value as AccountKindValue)} disabled={kindSelectDisabled} className={inputClass}>{selectableAccountKinds.map((value) => <option key={value} value={value}>{t(`account.kind.${value}`)}</option>)}</select>}
@@ -479,7 +480,7 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
               </section>
             ) : null}
             {error ? <p className="mt-3 text-sm text-red-600">{error}</p> : null}
-            <div className="mt-4 flex justify-end gap-2"><button type="button" className="rounded border border-slate-200 px-3 py-2 text-sm text-slate-600" onClick={() => setOpen(false)} disabled={saving}>{t("common.cancel")}</button><button type="button" className="rounded bg-blue-600 px-3 py-2 text-sm text-white disabled:opacity-50" onClick={save} disabled={saving}>{saving ? t("accountTypeQuickEdit.saving") : t("common.save")}</button></div>
+            <div className="mt-4 flex justify-end gap-2"><button type="button" className="rounded bg-blue-600 px-3 py-2 text-sm text-white disabled:opacity-50" onClick={save} disabled={saving}>{saving ? t("accountTypeQuickEdit.saving") : t("common.save")}</button></div>
           </div>
         </ModalLayer>, document.body,
       ) : null}

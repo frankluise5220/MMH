@@ -1,4 +1,5 @@
 "use client";
+import { X } from "lucide-react";
 import { ModalLayer } from "@/components/ModalLayer";
 
 import { useEffect, useState } from "react";
@@ -217,8 +218,8 @@ export function InsuranceEntryEditModal({
       <div className="app-modal-panel max-w-xl">
         <div className="modal-header">
           <div className="text-sm font-semibold text-slate-800">{title}</div>
-          <button type="button" onClick={onClose} className="secondary-button h-8 px-2">
-            {t("table.close")}
+          <button title={t("table.close")} aria-label={t("table.close")} type="button" onClick={onClose} className="secondary-button inline-flex h-8 w-8 shrink-0 items-center justify-center px-0">
+            <X className="h-4 w-4" />
           </button>
         </div>
 

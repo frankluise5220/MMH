@@ -704,7 +704,7 @@ export function FirstUseGuide({ children }: { children: ReactNode }) {
             title={t("firstUseGuide.dismissToday")}
             aria-label={t("firstUseGuide.dismissToday")}
           >
-            <X size={18} />
+            <X className="h-4 w-4" />
           </button>
         </div>
       </div>

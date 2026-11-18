@@ -1,7 +1,7 @@
 "use client";
 import { ModalLayer } from "@/components/ModalLayer";
 
-import { Check, ChevronDown, ChevronRight, HandCoins, Pencil, Percent, ReceiptText, RefreshCw, Trash2 } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, HandCoins, Pencil, Percent, ReceiptText, RefreshCw, Trash2, X } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
@@ -1855,13 +1855,13 @@ export function LiabilityShell({
                   <div className="text-sm font-semibold text-slate-800">{t("liabilityShell.rateAdjustment")}</div>
                   <div className="mt-0.5 text-xs text-slate-500">{selectedRow?.name ?? t("liabilityShell.currentLoan")}</div>
                 </div>
-                <button
+                <button title={t("table.close")} aria-label={t("table.close")}
                   type="button"
                   onClick={() => setRateCardOpen(false)}
-                  className="secondary-button h-8 px-2"
+                  className="secondary-button inline-flex h-8 w-8 shrink-0 items-center justify-center px-0"
                   disabled={rateSaving}
                 >
-                  {t("table.close")}
+                  <X className="h-4 w-4" />
                 </button>
               </div>
 
@@ -1920,13 +1920,13 @@ export function LiabilityShell({
                     {t("liabilityShell.rebuild.subtitle", { date: rebuildDialog.effectiveDate })} · {selectedRow?.name ?? t("liabilityShell.currentLoan")}
                   </div>
                 </div>
-                <button
+                <button title={t("table.close")} aria-label={t("table.close")}
                   type="button"
                   onClick={() => setRebuildDialog(null)}
-                  className="secondary-button h-8 px-2"
+                  className="secondary-button inline-flex h-8 w-8 shrink-0 items-center justify-center px-0"
                   disabled={rebuildBusy}
                 >
-                  {t("table.close")}
+                  <X className="h-4 w-4" />
                 </button>
               </div>
 

@@ -504,7 +504,7 @@ export function InitModal({
       <div className="w-full max-w-6xl rounded-xl bg-white border border-slate-200 shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
         <div className="shrink-0 px-5 py-3 border-b border-slate-200 bg-slate-50 flex items-center justify-between">
           <div className="text-base font-bold text-slate-800">📦 {t("nav.initialData")}</div>
-          <button onClick={handleClose} disabled={busy} className="h-8 w-8 rounded-md border border-slate-200 bg-white flex items-center justify-center text-slate-400 hover:text-slate-600 hover:bg-slate-100 disabled:opacity-40"><X className="w-4 h-4" /></button>
+          <button onClick={handleClose} disabled={busy} title={t("table.close")} aria-label={t("table.close")} className="secondary-button inline-flex h-8 w-8 shrink-0 items-center justify-center px-0 disabled:opacity-40"><X className="h-4 w-4" /></button>
         </div>
         <div className="shrink-0 flex border-b border-slate-200 bg-slate-50/50">
           <button onClick={() => { setTab("balance"); setMessage(null); }} className={`flex items-center gap-1.5 px-5 py-2.5 text-sm font-medium border-b-2 transition-colors ${tab === "balance" ? "border-blue-600 text-blue-700 bg-white" : "border-transparent text-slate-500 hover:text-slate-700"}`}><Database className="w-4 h-4" />{t("initModal.tab.balance")}</button>
@@ -768,7 +768,6 @@ export function InitModal({
         <div className="shrink-0 px-5 py-3 border-t border-slate-200 bg-slate-50 flex items-center justify-between">
           <div className="text-xs text-slate-400">{tab === "balance" ? t("settings.accounts.count", { count: balanceRows.length }) : t("initModal.count.investAccounts", { accounts: new Set(fundRows.map((row) => row.investmentAccountId).filter(Boolean)).size, funds: fundRows.length })}</div>
           <div className="flex items-center gap-2">
-            <button onClick={handleClose} disabled={busy} className="h-9 px-4 rounded-md border border-slate-200 bg-white text-sm text-slate-700 hover:bg-slate-50 disabled:opacity-40">{t("common.cancel")}</button>
             <button onClick={handleSubmit} disabled={busy} className="h-9 px-5 rounded-md bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-50 flex items-center gap-1">
               {busy ? <><span className="w-3.5 h-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />{t("initModal.processing")}</> : t("common.save")}
             </button>

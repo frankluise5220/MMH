@@ -9,6 +9,7 @@ import { DateStepper } from "@/components/DateStepper";
 import { FundImportPreviewDialog, type FundImportDialogContext } from "@/components/FundImportPreviewDialog";
 import { StatementImportPreviewDialog, type StatementImportPreviewItem } from "@/components/StatementImportPreviewDialog";
 import { ImportPreviewTabs } from "@/components/ImportPreviewTabs";
+import { SimpleModal } from "@/components/SimpleModal";
 import { StockImportPreviewDialog, type StockImportDialogContext, type StockImportUploadItem } from "@/components/StockImportPreviewDialog";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { parseFlexibleDateToYmd } from "@/lib/date-utils";
@@ -1818,35 +1819,30 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
         }}
       />
       {props.excelExport && excelExportOpen ? (
-        <ModalLayer className="fixed inset-0 flex items-center justify-center bg-slate-900/25 px-4">
-          <div className="w-full max-w-md overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl">
-            <div className="border-b border-slate-100 px-4 py-3">
-              <div className="text-sm font-semibold text-slate-800">{props.excelExport.title ?? t("viewImport.exportExcel")}</div>
-              <div className="mt-1 text-xs text-slate-500">
-                {props.excelExport.description ?? t("viewImport.exportDescription")}
-              </div>
-            </div>
-            <div className="space-y-3 px-4 py-4">
-              <label className="block">
-                <span className="mb-1 block text-xs font-medium text-slate-600">{t("viewImport.exportStartDate")}</span>
-                <DateStepper value={excelExportStart} onChange={setExcelExportStart} />
-              </label>
-              <label className="block">
-                <span className="mb-1 block text-xs font-medium text-slate-600">{t("viewImport.exportEndDate")}</span>
-                <DateStepper value={excelExportEnd} onChange={setExcelExportEnd} />
-              </label>
-              {excelExportError ? <div className="rounded bg-red-50 px-3 py-2 text-xs text-red-700">{excelExportError}</div> : null}
-            </div>
-            <div className="flex justify-end gap-2 border-t border-slate-100 px-4 py-3">
-              <button type="button" onClick={() => setExcelExportOpen(false)} className="secondary-button h-8 px-3 text-xs" disabled={busy}>
-                {t("common.cancel")}
-              </button>
-              <button type="button" onClick={() => void handleExcelExport()} className="primary-button h-8 px-3 text-xs" disabled={busy}>
-                {busy ? t("viewImport.exporting") : t("viewImport.export")}
-              </button>
-            </div>
+        <SimpleModal
+          open={excelExportOpen}
+          onClose={() => setExcelExportOpen(false)}
+          closeDisabled={busy}
+          title={props.excelExport.title ?? t("viewImport.exportExcel")}
+          description={props.excelExport.description ?? t("viewImport.exportDescription")}
+          footer={
+            <button type="button" onClick={() => void handleExcelExport()} className="primary-button h-8 px-3 text-xs" disabled={busy}>
+              {busy ? t("viewImport.exporting") : t("viewImport.export")}
+            </button>
+          }
+        >
+          <div className="space-y-3">
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-slate-600">{t("viewImport.exportStartDate")}</span>
+              <DateStepper value={excelExportStart} onChange={setExcelExportStart} />
+            </label>
+            <label className="block">
+              <span className="mb-1 block text-xs font-medium text-slate-600">{t("viewImport.exportEndDate")}</span>
+              <DateStepper value={excelExportEnd} onChange={setExcelExportEnd} />
+            </label>
+            {excelExportError ? <div className="rounded bg-red-50 px-3 py-2 text-xs text-red-700">{excelExportError}</div> : null}
           </div>
-        </ModalLayer>
+        </SimpleModal>
       ) : null}
       {status ? <span className="ml-2 max-w-64 truncate text-xs text-slate-500" title={status}>{status}</span> : null}
     </div>

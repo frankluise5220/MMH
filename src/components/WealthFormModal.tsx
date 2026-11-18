@@ -657,7 +657,6 @@ export function WealthFormModal({
             }}
           />
         )}
-        closeLabel={t("table.close")}
         onSubmit={onSubmit}
         tabs={family === "advisor"
           // 投顾组合只有买入/赎回：分红在投顾平台直接体现为组合净值变化，核销不适用。
