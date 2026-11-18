@@ -495,14 +495,16 @@ model FundNavCache {
   @@index([navDate])
 }
 
-/// 货币基金「每万份收益」，单位：元/万份。货基净值恒为 1，收益数据只存这张表。
+/// 货币基金「每万份收益」，单位：元/万份。
+/// 货基按面值 1 元/份核算，净值不是变量；真正的收益数据是每日万份收益，必须与
+/// FundNavCache 分开存放——同一列既当净值又当万份收益，会把买入份额放大几千倍。
 model MoneyFundYield {
   id            String   @id @default(cuid())
   fundCode      String
   yieldDate     DateTime
-  incomePer10k  Decimal
-  sevenDayYield Decimal?
-  source        String?
+  incomePer10k  Decimal // 每万份收益（元），可为负
+  sevenDayYield Decimal? // 7 日年化（%），数据源不提供则留空
+  source        String? // eastmoney_history / manual
   createdAt     DateTime @default(now())
   updatedAt     DateTime @default(now()) @updatedAt
 

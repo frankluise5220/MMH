@@ -1051,6 +1051,16 @@ export function PropertyFormModal({
                   否则「成本 − 累计折旧」和旁边那个账面净值对不上。 */}
               <span className="ml-1 font-medium tabular-nums text-slate-800">{propertyAssetId ? formatMoney(settledAccumulated) : "—"}</span>
             </span>
+            {/* 折旧台账摘要：服务端按月自动落账，这里只报「已计提几期 / 最近一期」，
+                金额已经在上面那条「累计折旧」里了，不重复列。 */}
+            {propertyAssetId && selectedAsset?.depreciation && selectedAsset.depreciation.periods > 0 ? (
+              <span className="text-slate-500">
+                {t("propertyForm.depreciationPeriods", { count: String(selectedAsset.depreciation.periods) })}
+                {selectedAsset.depreciation.lastPeriod
+                  ? `（${t("propertyForm.depreciationRecent", { period: selectedAsset.depreciation.lastPeriod })}）`
+                  : ""}
+              </span>
+            ) : null}
             <span>
               {t("propertyForm.netBookValue")}
               <span className="ml-1 font-medium tabular-nums text-slate-800">{propertyAssetId ? formatMoney(netBookValue) : "—"}</span>

@@ -95,6 +95,7 @@ tmp-*.cjs
 tmp_*.js
 tmp-*.mjs
 tmp-*.diff
+tmp-*.png
 .tmp*.diff
 tmp_patch*.diff
 fix-*.ts
