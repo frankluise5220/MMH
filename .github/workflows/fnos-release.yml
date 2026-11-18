@@ -26,45 +26,46 @@ env:
   FNOS_FNPACK_VERSION: 1.2.1
 
 jobs:
+  # 2026-11-18: 公开 Release 只挂轻量变体（external-node，~21MB，运行时用应用中心装的
+  # Node.js 22）。bundled（内置 Node.js 22，~64MB）保留为手动兜底，只在 workflow_dispatch
+  # 且显式选 bundled/all 时才构建，且永不进 Release。
+  #
+  # 矩阵必须在 job 级算好：`jobs.<id>.if` 里引用 `matrix` 会被 GitHub 拒绝
+  # （Unrecognized named-value: 'matrix'，2026-11-18 dispatch 直接 422），所以用前置
+  # job 输出矩阵 JSON，再 `fromJSON` 喂给 build-fpk。
+  prepare:
+    name: Resolve build matrix
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.resolve.outputs.matrix }}
+    steps:
+      - id: resolve
+        env:
+          EVENT: ${{ github.event_name }}
+          VARIANT: ${{ github.event.inputs.package_variant }}
+        run: |
+          set -euo pipefail
+          variant="${VARIANT:-external-node}"
+          if [ "$EVENT" = "release" ]; then
+            variant="external-node"
+          fi
+          legs='[{"target_arch":"x86","node_arch":"x64","fnpack_arch":"amd64","runner":"ubuntu-22.04","package_variant":"bundled","node_major":22},{"target_arch":"arm64","node_arch":"arm64","fnpack_arch":"arm64","runner":"ubuntu-22.04-arm","package_variant":"bundled","node_major":22},{"target_arch":"x86","node_arch":"x64","fnpack_arch":"amd64","runner":"ubuntu-22.04","package_variant":"external-node","node_major":22},{"target_arch":"arm64","node_arch":"arm64","fnpack_arch":"arm64","runner":"ubuntu-22.04-arm","package_variant":"external-node","node_major":22}]'
+          case "$variant" in
+            all) matrix=$(echo "$legs" | jq -c '{include: .}') ;;
+            bundled) matrix=$(echo "$legs" | jq -c '{include: [.[] | select(.package_variant == "bundled")]}') ;;
+            external-node) matrix=$(echo "$legs" | jq -c '{include: [.[] | select(.package_variant == "external-node")]}') ;;
+            *) echo "::error::unknown package_variant=$variant"; exit 1 ;;
+          esac
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "resolved variant=$variant (event=$EVENT) matrix=$matrix"
+
   build-fpk:
-    name: Build and upload fnOS SQLite FPK (${{ matrix.target_arch }})
-    # 2026-11-18: 公开 Release 只挂轻量变体（external-node）。bundled（内置 Node.js 22）
-    # 保留为手动兜底，只在 workflow_dispatch 且显式选 bundled/all 时才构建——
-    # release: published 一律只出 external-node，避免两个包同时上线让用户不知道装哪个。
-    if: >-
-      (github.event_name == 'release' && matrix.package_variant == 'external-node')
-      || (github.event_name != 'release'
-      && (github.event.inputs.package_variant == 'all'
-      || github.event.inputs.package_variant == matrix.package_variant))
+    name: Build and upload fnOS SQLite FPK (${{ matrix.target_arch }} / ${{ matrix.package_variant }})
+    needs: prepare
     runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - target_arch: x86
-            node_arch: x64
-            fnpack_arch: amd64
-            runner: ubuntu-22.04
-            package_variant: bundled
-            node_major: 22
-          - target_arch: arm64
-            node_arch: arm64
-            fnpack_arch: arm64
-            runner: ubuntu-22.04-arm
-            package_variant: bundled
-            node_major: 22
-          - target_arch: x86
-            node_arch: x64
-            fnpack_arch: amd64
-            runner: ubuntu-22.04
-            package_variant: external-node
-            node_major: 22
-          - target_arch: arm64
-            node_arch: arm64
-            fnpack_arch: arm64
-            runner: ubuntu-22.04-arm
-            package_variant: external-node
-            node_major: 22
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5

@@ -685,9 +685,13 @@ expect(/github\.event_name == 'release' && matrix\.package_variant == 'external-
 expect(!/matrix\.package_variant == 'bundled'/.test(releaseUploadStep), "fnOS Release upload must not reference the bundled variant at all.");
 expect(/matrix\.package_variant == 'external-node' && '-external-node' \|\| ''/.test(releaseUploadStep), "fnOS Release upload must suffix the external-node variant filename, otherwise the two variants clobber each other on the Release.");
 // 构建矩阵本身：release 事件只跑 external-node；bundled 必须留着手动入口（dispatch 选 bundled/all）。
-const buildJobGate = (fnosReleaseWorkflow.split("if: >-")[1] || "").split("runs-on:")[0];
-expect(/github\.event_name == 'release' && matrix\.package_variant == 'external-node'/.test(buildJobGate), "fnOS build matrix must skip the bundled variant on release events (it is a manual-only fallback since 2026-11-18).");
-expect(/github\.event_name != 'release'/.test(buildJobGate) && /github\.event\.inputs\.package_variant == matrix\.package_variant/.test(buildJobGate), "fnOS build matrix must keep a manual dispatch path for the bundled variant.");
+// 注意矩阵是前置 job 算出来的——`jobs.<id>.if` 引用 `matrix` 会被 GitHub 拒绝
+// （Unrecognized named-value: 'matrix'，2026-11-18 实测 dispatch 422），
+// 所以只能断言 prepare 的解析逻辑 + build-fpk 的 fromJSON 取矩阵。
+expect(/matrix:\s*\$\{\{\s*fromJSON\(needs\.prepare\.outputs\.matrix\)\s*\}\}/.test(fnosReleaseWorkflow), "fnOS build matrix must come from the prepare job output (job-level `if` cannot read `matrix`).");
+expect(/variant="external-node"/.test(fnosReleaseWorkflow) && /if \[ "\$EVENT" = "release" \]/.test(fnosReleaseWorkflow), "fnOS prepare job must force external-node on release events.");
+expect(/select\(\.package_variant == "external-node"\)/.test(fnosReleaseWorkflow) && /select\(\.package_variant == "bundled"\)/.test(fnosReleaseWorkflow), "fnOS prepare job must keep both variants selectable so bundled stays a manual fallback.");
+expect(/all\) matrix=\$\(echo "\$legs" \| jq -c '\{include: \.\}'\)/.test(fnosReleaseWorkflow), "fnOS prepare job must expand to all legs when package_variant=all.");
 expect(/package_variant:[\s\S]{0,400}?default:\s*"external-node"/.test(fnosReleaseWorkflow), "fnOS workflow_dispatch must default package_variant to external-node.");
 expect(/target_arch/.test(fnosReleaseWorkflow) && /arm64/.test(fnosReleaseWorkflow), "fnOS release workflow must build both x86 and arm64 packages.");
 expect(/linux-\$\{FNPACK_ARCH\}/.test(fnosReleaseWorkflow), "fnOS release workflow must download fnpack for the current runner architecture.");
