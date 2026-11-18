@@ -58,6 +58,16 @@ services:
       # resolves relative paths against /workspace, which does not exist on the
       # host, so a bind mount like ./data:/app/data breaks Web updates.
       - appdata:/app/data
+      # Optional: expose the auto-backup directory (/app/data/backups) through a
+      # host path so it can be browsed from the NAS file manager. The appdata
+      # volume lives under /volume1/@docker/volumes/..., a root-only system
+      # directory that File Station does not show. Uncomment ONE line below and
+      # recreate the app container (`docker compose up -d --no-deps app`); move
+      # the existing packages into the host directory first, otherwise they stay
+      # hidden inside the volume. Absolute paths only — a relative path resolves
+      # against the updater's /workspace and breaks Web updates.
+      # - /volume1/docker/mmh/data/backups:/app/data/backups
+      # - ${MMH_BACKUP_HOST_DIR:?set MMH_BACKUP_HOST_DIR in .env}:/app/data/backups
     healthcheck:
       test:
         [
