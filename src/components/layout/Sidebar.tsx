@@ -11,7 +11,7 @@ import { getMaintainedAccountBalances } from "@/lib/server/account-balance";
 import { loadInvestBalances } from "@/lib/server/cached-data";
 import { computeLiabilityDisplaySummary } from "@/lib/server/liability-display-summary";
 import { getCachedHouseholdScope } from "@/lib/server/household-scope";
-import { isDepositAccount, isLoanOrSettlementAccountKind, isPureInvestmentAccount } from "@/lib/account-kind-utils";
+import { isDepositAccount, isLinkedFundWalletAccount, isLoanOrSettlementAccountKind, isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import { dominantFixedAssetType } from "@/lib/fixed-asset";
 import type { SidebarGroupMode } from "@/lib/client/appPreferences";
 import { loadCreditCardBillGroupBalances } from "@/lib/server/credit-card-display-balance";
@@ -85,13 +85,28 @@ async function getSidebarData() {
   ]);
   const currentCreditBalanceByAccountId = creditBillGroup.balanceByAccountId;
   const creditBillStorageIdByAccountId = creditBillGroup.billStorageIdByAccountId;
+  // 关联了货基的电子钱包「不统计，但要有数字」（2026-11-18 用户裁定）：侧栏这一行要显示
+  // 账面余额（与明细页表头同一个数），但统计口径（总资产、聚合父户折合）仍是 0。
+  const linkedWalletIds = accounts
+    .filter((account) => isLinkedFundWalletAccount(account) && !account.isAggregate)
+    .map((account) => account.id);
+  const linkedWalletLedgerBalanceByAccountId = linkedWalletIds.length > 0
+    ? await getMaintainedAccountBalances(
+        cashBalanceAccounts.filter((account) => linkedWalletIds.includes(account.id)),
+        hidFilter,
+        { countLinkedFundWallets: true },
+      )
+    : new Map<string, number>();
   const baseCurrency = normalizeCurrency(household?.baseCurrency);
   const rawItems = accounts.map((account) => {
     const isInvest = isPureInvestmentAccount(account);
     const investDetail = isInvest ? investBalByAccountId.get(account.id) : null;
+    const ledgerScoped = isLinkedFundWalletAccount(account) && !account.isAggregate;
     const balance = account.isAggregate
       // 聚合账户（父账户）没有明细：余额只能用子户折本位币后维护进 `balance` 列的值。
       ? Number(account.balance)
+      : ledgerScoped
+        ? (linkedWalletLedgerBalanceByAccountId.get(account.id) ?? Number(account.balance))
       : isInvest
       ? (investDetail?.marketValue ?? 0)
       : account.kind === AccountKind.insurance
@@ -125,6 +140,8 @@ async function getSidebarData() {
       shortLabel: display.selectorCoreLabel,
       hoverTitle: display.hoverTitle,
       balance,
+      // 客户端刷新要按这个口径请求，否则记账后会被统计口径的 0 覆盖回去。
+      balanceScope: ledgerScoped ? ("ledger" as const) : undefined,
       currency: normalizeCurrency(account.currency),
       kind: account.kind as string,
       groupName: display.groupName || (isLoanOrSettlementAccountKind(account.kind) ? "" : "未设置所有人"),

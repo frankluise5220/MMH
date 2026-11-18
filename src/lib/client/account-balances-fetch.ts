@@ -43,6 +43,12 @@ type ScopedAccountBalancesPayload = {
 type ConvertedSeedItem = {
   id?: string | null;
   convertedBalance?: number | null;
+  /**
+   * `ledger` = 账面口径（关联了货基的电子钱包）：屏幕上显示真实余额，但它对总资产的
+   * 贡献恒为 0，索引里必须按 0 记，否则下一次统计口径的增量补丁会拿真实值当「原本计入
+   * 的值」而从总额里减掉。
+   */
+  balanceScope?: "ledger" | null;
   /** 分组节点（固定资产小类、往来款汇总行）。 */
   children?: ConvertedSeedItem[];
   /** 多币种子账户：必须一起进折余额索引，否则子账户余额补丁会让总额增量失效。 */
@@ -74,7 +80,10 @@ export function seedConvertedBalances(items: ConvertedSeedItem[], totalConverted
   const walk = (item: ConvertedSeedItem) => {
     const id = String(item.id ?? "").trim();
     if (id && !isSyntheticSidebarId(id)) {
-      convertedBalanceById.set(id, finiteOrNull(item.convertedBalance ?? null));
+      convertedBalanceById.set(
+        id,
+        item.balanceScope === "ledger" ? 0 : finiteOrNull(item.convertedBalance ?? null),
+      );
     }
     for (const child of item.children ?? []) walk(child);
     for (const child of item.subAccounts ?? []) walk(child);
