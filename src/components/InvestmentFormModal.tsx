@@ -76,19 +76,13 @@ const p = parseNumber;
 /**
  * 手续费输入框的一次改动是否算「用户手填」。
  *
- * CalcInput 失焦时会无条件回抛格式化结果（5 → 5.00），这种「同值补零」不算用户编辑，
- * 否则之后改金额/净值时手续费就不再按费率自动重算（2026-10-16 的回归）。
- * 但「空 → 0」「0 → 0.」这类**数值相等、文字不同**的输入是在敲 0.x 的过程，必须认作编辑：
- * 否则「按费率自动回填手续费」的 effect 会把刚敲的 0 立刻抹掉，现象就是
- * 手续费金额 < 1 时根本输不进去（2026-11-18 用户反馈：想填 0.5，最后变成 5）。
+ * 唯一不算编辑的情况：CalcInput 失焦时无条件回抛的「补零格式化」（5 → 5.00、0.5 → 0.50）。
+ * 不算编辑才能保住「改金额/净值时手续费按费率自动重算」（2026-10-16 的回归），
+ * 而「空 → 0」「0 → 0.」虽然不是新数值、文字却变了，必须算编辑：
+ * 否则自动回填的 effect 会把刚敲的 0 抹掉，手续费 < 1 就输不进去（2026-11-18 反馈）。
  */
-function isFeeInputEdit(nextRaw: string, prevRaw: string) {
-  const next = nextRaw.trim();
-  const prev = prevRaw.trim();
-  if (next === prev) return false;
-  if (next === "") return true;
-  if (p(next) !== p(prev)) return true;
-  return next !== p(prev).toFixed(2);
+function isFeeInputEdit(next: string, prev: string) {
+  return next.trim() !== prev.trim() && next.trim() !== p(prev).toFixed(2);
 }
 
 function addFundTradingDays(date: string, days: number) {
@@ -2540,6 +2534,13 @@ export function InvestmentFormModal({
     }
   }
 
+  function handleFeeInputChange(nextFeeRaw: string) {
+    suppressFeeAutoCalcRef.current = false;
+    if (isFeeInputEdit(nextFeeRaw, fee)) setFeeEdited(true);
+    setFee(nextFeeRaw);
+    calculateUnitsAfterFeeChange(nextFeeRaw);
+  }
+
   function calculateFeeFromRate(nextRateRaw: string) {
     suppressFeeAutoCalcRef.current = false;
     setFeeEdited(prev => prev ? false : prev);
@@ -3805,16 +3806,7 @@ export function InvestmentFormModal({
                         <div className="text-xs font-medium text-slate-600">{t("investForm.feeAmount")}</div>
                         <CalcInput
                           value={fee}
-                          onChange={(v) => {
-                            suppressFeeAutoCalcRef.current = false;
-                            // CalcInput 失焦会无条件回抛格式化结果（5 → 5.00），
-                            // 数值没变就不算用户改过手续费，否则之后改份额/净值
-                            // 时手续费不再按费率自动重算；但「空 → 0」必须算编辑，
-                            // 否则自动回填会把正在敲的 0 抹掉（见 isFeeInputEdit）。
-                            if (isFeeInputEdit(v, fee)) setFeeEdited(true);
-                            setFee(v);
-                            calculateUnitsAfterFeeChange(v);
-                          }}
+                          onChange={handleFeeInputChange}
                           placeholder={computedFee || "0.00"}
                           label={t("investForm.feeAmount")}
                           precision={2}
@@ -4056,13 +4048,7 @@ export function InvestmentFormModal({
                   <div className="space-y-1">
                     <div className="text-xs font-medium text-slate-600">{t("investForm.feeAmount")}</div>
                     <CalcInput value={fee}
-                      onChange={(v) => {
-                        suppressFeeAutoCalcRef.current = false;
-                        // 同上：失焦重抛格式化值不算用户编辑，但正在敲的 0.x 要算。
-                        if (isFeeInputEdit(v, fee)) setFeeEdited(true);
-                        setFee(v);
-                        calculateUnitsAfterFeeChange(v);
-                      }}
+                      onChange={handleFeeInputChange}
                       placeholder={computedFee || "0.00"}
                       label={t("investForm.feeAmount")}
                       precision={2} />
