@@ -60,6 +60,7 @@ import { CURRENCY_OPTIONS, normalizeCurrency } from "@/lib/currency";
 import { formatCurrencyMoney } from "@/lib/format";
 import { getColorSchemeFromCookie, pnlColor, type ColorScheme } from "@/lib/client/colors";
 import { formatDateDisplay } from "@/lib/date-utils";
+import { withoutBasePath } from "@/lib/base-path";
 import {
   accountInstitutionTypeIsAllowed,
   accountRequiresInstitution,
@@ -507,7 +508,10 @@ export default function SettingsAccountsPage() {
     const params = new URLSearchParams(searchParams.toString());
     params.delete("edit");
     const qs = params.toString();
-    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+    // 地址栏带 fnOS 网关前缀，router.replace 又会自己加一遍 basePath，
+    // 不剥掉就会跳到 /app/mmh/app/mmh?...（404）。
+    const base = withoutBasePath(pathname);
+    router.replace(qs ? `${base}?${qs}` : base, { scroll: false });
   }, [pathname, router, searchParams]);
 
   // 已消费的深链 id：关窗时 setEditingId(null) 与 router.replace 之间有一帧参数还在，
