@@ -836,6 +836,14 @@ if (fs.existsSync(stageDir)) {
   expect(/MMH_NODE_MAX_OLD_SPACE_MB=\$\{node_max_old_space\}/.test(stageApplySettingsScript), `fnOS ${verifyTarget.id} stage cmd/apply-settings must persist the Node old-space guardrail.`);
   expect(!fs.existsSync(path.join(stageDir, "wizard", "install")), `fnOS ${verifyTarget.id} stage must not include wizard/install; the FN soft-store client parses it and would block silent updates on user input.`);
   expect(fs.existsSync(path.join(stageDir, "wizard", "config")), `fnOS ${verifyTarget.id} stage must include wizard/config so the service port remains editable.`);
+  const stageConfigWizardPath = path.join(stageDir, "wizard", "config");
+  if (fs.existsSync(stageConfigWizardPath)) {
+    const stageConfigWizard = read(stageConfigWizardPath);
+    expect(
+      stageConfigWizard.includes("默认值是 7777") && !stageConfigWizard.includes("7788"),
+      `fnOS ${verifyTarget.id} stage wizard/config must advertise 7777 as the default service port; a 7788 default contradicts Docker/desktop and the probe-forward rule.`,
+    );
+  }
   const stageUninstallWizardPath = path.join(stageDir, "wizard", "uninstall");
   expect(fs.existsSync(stageUninstallWizardPath), `fnOS ${verifyTarget.id} stage must include wizard/uninstall so manual uninstalls offer a keep/delete-data choice.`);
   if (fs.existsSync(stageUninstallWizardPath)) {
