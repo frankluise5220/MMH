@@ -108,8 +108,14 @@ const appPartCopies = (
   dockerfile.match(/^COPY --chown=node:node --from=build \/app\/parts\/p\d+\/ \/app\//gm) || []
 ).length;
 expect(
-  appPartCopies === 12 && /-size \+3500k/.test(dockerfile) && /"\$sz" -gt 4096/.test(dockerfile),
-  "Dockerfile must split the changed files into 12 separate COPY layers and fail the build when a single file exceeds 3.5 MB or a part exceeds 4 MB: domestic mirrors drop 8.75 MB blobs.",
+  appPartCopies === 16 &&
+    // 0.1.87: pdf-parse 的 web/pdf.worker.mjs.map 单个 5.27 MB，直接越过单文件阈值，
+    // Build and push 在 diff 步骤 exit 1。源码映射运行时不加载，构建后必须删掉，
+    // 不要把 3.5 MB 上限放大到能装下 map。
+    /find \.next\/standalone \.next\/static -type f -name '\*\.map' -delete/.test(dockerfile) &&
+    /-size \+3500k/.test(dockerfile) &&
+    /"\$worst" -gt 4096/.test(dockerfile),
+  "Dockerfile must prune *.map from the standalone output, split the changed files into 16 separate COPY layers, and fail the build when a single file exceeds 3.5 MB or a part exceeds 4 MB: domestic mirrors drop 8.75 MB blobs.",
 );
 expect(
   !/prisma-split/.test(dockerfile) && !/standalone-split/.test(dockerfile) && !/studio-core\/dist\/ui/.test(dockerfile),

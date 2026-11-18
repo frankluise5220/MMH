@@ -9,12 +9,16 @@
 #
 # 0.1.81 → 本版之间 package.json 的依赖没有变化（只有 version 与业务代码），
 # 因此 node_modules、prisma CLI、schema-engine、基础镜像都可以整层复用。
-# 构建时先按原版 Dockerfile 的完全相同命令编译出 standalone，再与 0.1.81 的
+# 构建时先按原版 Dockerfile 的完全相同命令编译出 standalone，再与上一版镜像的
 # /app 逐文件比对，只把变化的文件按体积从大到小装进当前最轻的桶（贪心均衡）；
 # 最终镜像每条 COPY 是一层，单层 < 4 MB。国内镜像站对 8.75 MB 的 blob 也会
 # 「下到 100% 后不落盘」，所以单文件阈值取 3.5 MB，而不是之前拍的 10 MB。
+# 分片数 16（0.1.87 起，此前 12）：每个分片是独立 blob，多几个小 blob 比一个大
+# blob 安全；16 档的容量是 64 MB，给 0.1.87 这种 1400+ 变化文件留余量。
 # 0.1.84 教训：原来是 `n % 12` 轮转，最大的 1/13/25… 个文件全部落进 p0，
 # 752 个变化文件时 p0 达 4168 KB 越限、App 镜像直接构建失败（GHCR 无 0.1.84）。
+# 0.1.87 教训：pdf-parse 的 *.map 单个 5.27 MB，绕过贪心分块直接撞上单文件阈值。
+# 源码映射运行时不加载，构建后从 standalone / static 里删掉，而不是放大 3.5 MB 上限。
 # 本版（0.1.87）以 0.1.86 镜像为底座：0.1.86 已公开，用户实际在跑的上一版就是它，
 # 层 digest 必须与 0.1.86 完全一致才能被旧 updater 本地跳过（旧二进制没有超时重试）。
 ARG BASE_IMAGE=ghcr.io/frankluise5220/mmh:0.1.86
@@ -65,7 +69,14 @@ RUN npx prisma generate \
   && test -x node_modules/@prisma/engines/schema-engine-debian-openssl-3.0.x
 
 COPY . .
-RUN npm run build
+# 源码映射（*.map）只是调试产物，运行时不加载，但 npm 包会带上很多：pdf-parse 一个包
+# 就有 10.6 MB 的 map，其中 dist/pdf-parse/web/pdf.worker.mjs.map 单个 5.27 MB，越过
+# 「单文件 ≤ 3.5 MB」的分层上限，0.1.87 的 Build and push 正是死在这里。构建后统一
+# 清掉，standalone 里不再出现 map，既不产生超大层，也不把调试垃圾塞进用户镜像。
+# 注意 `A && B || true` 会连 npm run build 的失败一起吞掉，所以这里不加 `|| true`：
+# 两个目录在构建后必然存在，缺了就应该构建失败。
+RUN npm run build \
+  && find .next/standalone .next/static -type f -name '*.map' -delete
 
 # 与 0.1.81 的 /app 逐文件比较，只保留真正变化的文件。
 # .next/standalone 在 0.1.81 里是被 COPY 到 /app 根目录的，所以它的相对路径
@@ -98,16 +109,18 @@ RUN set -eu; \
       echo "与 ${BASE_IMAGE} 没有任何文件差异，拒绝发布空更新" >&2; exit 1; \
     }; \
     chmod +x /app/delta/docker-entrypoint.sh 2>/dev/null || true; \
-    echo "changed files: $(find /app/delta -type f | wc -l)"; \
+    echo "changed files: $(find /app/delta -type f | wc -l), delta total: $(du -sk /app/delta | cut -f1) KB"; \
     oversize=$(find /app/delta -type f -size +3500k -print -quit); \
     if [ -n "$oversize" ]; then \
-      echo "单个变化文件超过 3.5 MB，无法切成安全层：$oversize" >&2; exit 1; \
+      echo "单个变化文件超过 3.5 MB，无法切成安全层：$oversize" >&2; \
+      find /app/delta -type f -size +3500k -printf '%s %p\n' | sort -rn | head -5 >&2; \
+      exit 1; \
     fi; \
-    for i in 0 1 2 3 4 5 6 7 8 9 10 11; do mkdir -p "/app/parts/p$i"; echo 0 > "/tmp/load$i"; done; \
+    for i in $(seq 0 15); do mkdir -p "/app/parts/p$i"; echo 0 > "/tmp/load$i"; done; \
     find /app/delta -type f -printf '%s %p\n' | sort -rn | while read -r size f; do \
       rel="${f#/app/delta/}"; \
       g=0; smallest=$(cat /tmp/load0); \
-      for i in 1 2 3 4 5 6 7 8 9 10 11; do \
+      for i in $(seq 1 15); do \
         v=$(cat "/tmp/load$i"); \
         if [ "$v" -lt "$smallest" ]; then g=$i; smallest=$v; fi; \
       done; \
@@ -115,11 +128,16 @@ RUN set -eu; \
       cp "$f" "/app/parts/p$g/$rel"; \
       echo $((smallest + (size + 1023) / 1024)) > "/tmp/load$g"; \
     done; \
-    for i in 0 1 2 3 4 5 6 7 8 9 10 11; do \
+    worst=0; \
+    for i in $(seq 0 15); do \
       sz=$(du -sk "/app/parts/p$i" | cut -f1); \
       echo "part p$i: ${sz} KB (uncompressed)"; \
-      if [ "$sz" -gt 4096 ]; then echo "part p$i exceeds 4 MB" >&2; exit 1; fi; \
-    done
+      if [ "$sz" -gt "$worst" ]; then worst=$sz; fi; \
+    done; \
+    if [ "$worst" -gt 4096 ]; then \
+      echo "最大分片 ${worst} KB 超过 4 MB：16 个分片装不下 $(du -sk /app/delta | cut -f1) KB 变化文件，需要继续裁体积（先看是不是又混进了 *.map）" >&2; \
+      exit 1; \
+    fi
 
 FROM ${BASE_IMAGE}
 
@@ -148,6 +166,10 @@ COPY --chown=node:node --from=build /app/parts/p8/ /app/
 COPY --chown=node:node --from=build /app/parts/p9/ /app/
 COPY --chown=node:node --from=build /app/parts/p10/ /app/
 COPY --chown=node:node --from=build /app/parts/p11/ /app/
+COPY --chown=node:node --from=build /app/parts/p12/ /app/
+COPY --chown=node:node --from=build /app/parts/p13/ /app/
+COPY --chown=node:node --from=build /app/parts/p14/ /app/
+COPY --chown=node:node --from=build /app/parts/p15/ /app/
 
 RUN test -x ./docker-entrypoint.sh \
   && test -f ./server.js \
