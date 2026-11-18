@@ -8,7 +8,7 @@ import { getInvestmentAccountView } from "@/lib/account-kind-utils";
 import { investProductTypeLabel } from "@/lib/account-kinds";
 import { prisma } from "@/lib/db/prisma";
 import { formatDateUtc, todayDateBusinessYmd } from "@/lib/date-utils";
-import { futureConfirmHoldingKey, loadFutureConfirmedBuyMap } from "@/lib/fund/future-confirm";
+import { futureConfirmHoldingKey, loadFutureConfirmedBuyMap, loadFutureConfirmedRedeemMap } from "@/lib/fund/future-confirm";
 import { signedFundAmount } from "@/lib/fund/transactions";
 import { formatMoney, formatPercent } from "@/lib/format";
 import { pnlClassFromRedUp } from "@/lib/client/colors";
@@ -133,7 +133,7 @@ export default async function InvestmentsPage({
   // 「确认日是否在未来」按账簿业务时区判断，容器 TZ 只是兜底。
   const businessTodayKey = todayDateBusinessYmd(await getRequestTimeZone());
 
-  const [fundHoldings, fundTransactions, futureConfirmedBuys] = await Promise.all([
+  const [fundHoldings, fundTransactions, futureConfirmedBuys, futureConfirmedRedeems] = await Promise.all([
     fundLikeAccountIds.length > 0 ? prisma.fundHolding.findMany({
       where: { accountId: { in: fundLikeAccountIds } },
       orderBy: [{ accountId: "asc" }, { fundName: "asc" }, { fundCode: "asc" }],
@@ -148,6 +148,8 @@ export default async function InvestmentsPage({
     }) : Promise.resolve([]),
     // 确认日在未来的买入份额不能算持仓，这里把它的金额改成在途。
     loadFutureConfirmedBuyMap(fundLikeAccountIds, businessTodayKey),
+    // 对称的另一侧：未来确认日的赎回已经扣了份额，但钱还没到账，读的时候加回来。
+    loadFutureConfirmedRedeemMap(fundLikeAccountIds, businessTodayKey),
   ]);
 
   const fundCodes = Array.from(new Set([
@@ -183,9 +185,11 @@ export default async function InvestmentsPage({
         const nav = holding.nav == null ? null : toNumber(holding.nav);
         const futureConfirmed = futureConfirmedBuys.get(futureConfirmHoldingKey(accountId, holding.fundCode));
         const pendingFromFutureConfirm = futureConfirmed?.cost ?? 0;
+        // 确认日在未来的赎回：库里已经扣了份额/成本，这里加回来，等确认日过后自然消失。
+        const futureRedeemUnits = futureConfirmedRedeems.get(futureConfirmHoldingKey(accountId, holding.fundCode))?.units ?? 0;
         // 确认日在未来的买入：份额未生效，金额记在途。
-        const units = Math.max(0, toNumber(holding.units) - (futureConfirmed?.units ?? 0));
-        const cost = Math.max(0, toNumber(holding.cost) - toNumber(holding.pendingCost) - pendingFromFutureConfirm);
+        const units = Math.max(0, toNumber(holding.units) - (futureConfirmed?.units ?? 0) + futureRedeemUnits);
+        const cost = Math.max(0, toNumber(holding.cost) - toNumber(holding.pendingCost) - pendingFromFutureConfirm + toNumber(holding.avgCost) * futureRedeemUnits);
         const pendingCost = toNumber(holding.pendingCost) + pendingFromFutureConfirm;
         const totalCost = cost + pendingCost;
         const marketValue = (nav == null || units <= 0 ? cost : units * nav) + pendingCost;

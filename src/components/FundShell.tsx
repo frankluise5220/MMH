@@ -797,7 +797,16 @@ export function FundShell(props: Props) {
     : isWealthAccount
       ? t("fundShell.account.wealth")
       : t("viewImport.fundAccount");
-  const fundAccountOptions = useMemo(() => investmentAccounts.filter((account: any) => isFundLikeInvestmentAccount(account)), [investmentAccounts]);
+  // 账户候选必须与当前视图同类：货基看每万份收益、开放式基金看净值，两套口径不能互串。
+  // `investProductType` 为空的历史账户仍放行，否则老数据会从下拉里消失。
+  const fundAccountOptions = useMemo(() => {
+    const wanted = isMoneyAccount ? "money" : null;
+    return investmentAccounts.filter(
+      (account: any) =>
+        isFundLikeInvestmentAccount(account) &&
+        (!wanted || !account.investProductType || account.investProductType === wanted),
+    );
+  }, [investmentAccounts, isMoneyAccount]);
   const detailNameLabel = isMetalAccount
     ? t("fundShell.col.species")
     : isWealthAccount
@@ -2107,41 +2116,46 @@ export function FundShell(props: Props) {
         sortValue: (p: any) => toNumber(p.pendingCost),
         render: (p: any) => toNumber(p.pendingCost) > 0 ? <span className="font-medium text-amber-600">{formatMoney(p.pendingCost)}</span> : <span className="text-slate-300">-</span>,
       } satisfies AdvancedDataTableColumn<any>]),
-      {
-        key: "floatingPnL",
-        label: t("fundShell.col.floatingPnL"),
-        width: colWidth("positions", "floatingPnL", 104),
-        minWidth: minFundColWidth("positions", "floatingPnL"),
-        align: "right",
-        className: "tabular-nums",
-        sortValue: (p) => positionDisplayMetrics(p).displayPnL,
-        render: (p) => {
-          const { displayPnL } = positionDisplayMetrics(p);
-          return <span className={pnl(displayPnL)}>{formatMoney(displayPnL)}</span>;
-        },
-      },
-      {
-        key: "floatingRate",
-        label: isWealthAccount ? t("fundShell.col.agreedAnnualRate") : t("overview.floatingRate"),
-        width: colWidth("positions", "floatingRate", 84),
-        minWidth: minFundColWidth("positions", "floatingRate"),
-        align: "right",
-        className: "tabular-nums",
-        sortValue: (p) => positionDisplayMetrics(p).displayAnnualizedRate ?? -Infinity,
-        render: (p) => {
-          const { displayAnnualizedRate } = positionDisplayMetrics(p);
-          if (displayAnnualizedRate == null) return <span className="text-slate-300">-</span>;
-          if (!isWealthAccount) {
-            return <span className={pnl(displayAnnualizedRate)}>{displayAnnualizedRate.toFixed(2)}%</span>;
-          }
-          // 约定年化不是盈亏，保持中性色，只回显购买时填的值。
-          return (
-            <span className="text-slate-700" title={t("fundShell.annualRate.agreedHint")}>
-              {displayAnnualizedRate.toFixed(2)}%
-            </span>
-          );
-        },
-      },
+      // 货币基金净值恒为 1，收益每天按万份收益结转为份额（已实现），不存在「净值涨跌」意义上的
+      // 浮盈，也没有浮盈率可言。这里算出来的 `市值 − 成本` 其实就是累计结转收益，挂成「浮盈」
+      // 会和已落账的收益重复表述，所以货基账户不提供这两列（含汇总行与移动端卡片）。
+      ...(isMoneyAccount ? [] : [
+        {
+          key: "floatingPnL",
+          label: t("fundShell.col.floatingPnL"),
+          width: colWidth("positions", "floatingPnL", 104),
+          minWidth: minFundColWidth("positions", "floatingPnL"),
+          align: "right",
+          className: "tabular-nums",
+          sortValue: (p: any) => positionDisplayMetrics(p).displayPnL,
+          render: (p: any) => {
+            const { displayPnL } = positionDisplayMetrics(p);
+            return <span className={pnl(displayPnL)}>{formatMoney(displayPnL)}</span>;
+          },
+        } satisfies AdvancedDataTableColumn<any>,
+        {
+          key: "floatingRate",
+          label: isWealthAccount ? t("fundShell.col.agreedAnnualRate") : t("overview.floatingRate"),
+          width: colWidth("positions", "floatingRate", 84),
+          minWidth: minFundColWidth("positions", "floatingRate"),
+          align: "right",
+          className: "tabular-nums",
+          sortValue: (p: any) => positionDisplayMetrics(p).displayAnnualizedRate ?? -Infinity,
+          render: (p: any) => {
+            const { displayAnnualizedRate } = positionDisplayMetrics(p);
+            if (displayAnnualizedRate == null) return <span className="text-slate-300">-</span>;
+            if (!isWealthAccount) {
+              return <span className={pnl(displayAnnualizedRate)}>{displayAnnualizedRate.toFixed(2)}%</span>;
+            }
+            // 约定年化不是盈亏，保持中性色，只回显购买时填的值。
+            return (
+              <span className="text-slate-700" title={t("fundShell.annualRate.agreedHint")}>
+                {displayAnnualizedRate.toFixed(2)}%
+              </span>
+            );
+          },
+        } satisfies AdvancedDataTableColumn<any>,
+      ]),
       {
         key: "historical",
         label: t("stockPanel.colHistoricalProfit"),
@@ -2169,6 +2183,7 @@ export function FundShell(props: Props) {
     fundCode,
     hideAssetCode,
     isMetalAccount,
+    isMoneyAccount,
     isWealthAccount,
     navColumnLabel,
     pnl,
@@ -2223,21 +2238,24 @@ export function FundShell(props: Props) {
         fund: t("liabilityShell.summaryRow"),
         cost: <span className="tabular-nums text-slate-800">{formatMoney(d.totalCost)}</span>,
         marketValue: <span className={`tabular-nums ${pnl(d.totalMarketValue)}`}>{formatMoney(d.totalMarketValue)}</span>,
-        floatingPnL: <span className={`tabular-nums ${pnl(floatingProfit)}`}>{formatMoney(floatingProfit)}</span>,
-        // 理财这一列是「约定年化」，没填就是「-」，绝不拿浮盈率冒充；基金列本来就是浮盈率。
-        floatingRate: isWealthAccount ? (
-          <span className="tabular-nums text-slate-700">
-            {wealthAnnualizedRate != null ? formatPercent(wealthAnnualizedRate / 100) : "-"}
-          </span>
-        ) : (
-          <span className={`tabular-nums ${pnl(floatingProfit)}`}>
-            {d.totalCost !== 0 ? formatPercent(floatingProfit / d.totalCost) : "-"}
-          </span>
-        ),
+        // 货币基金没有浮盈/浮盈率这两列（见 allPositionAdvancedColumns 里的说明），汇总行跟着一起省掉。
+        ...(isMoneyAccount ? {} : {
+          floatingPnL: <span className={`tabular-nums ${pnl(floatingProfit)}`}>{formatMoney(floatingProfit)}</span>,
+          // 理财这一列是「约定年化」，没填就是「-」，绝不拿浮盈率冒充；基金列本来就是浮盈率。
+          floatingRate: isWealthAccount ? (
+            <span className="tabular-nums text-slate-700">
+              {wealthAnnualizedRate != null ? formatPercent(wealthAnnualizedRate / 100) : "-"}
+            </span>
+          ) : (
+            <span className={`tabular-nums ${pnl(floatingProfit)}`}>
+              {d.totalCost !== 0 ? formatPercent(floatingProfit / d.totalCost) : "-"}
+            </span>
+          ),
+        }),
         historical: <span className={`tabular-nums ${pnl(d.positionHistoricalProfit)}`}>{formatMoney(d.positionHistoricalProfit)}</span>,
       },
     };
-  }, [d.positions, d.totalCost, d.totalMarketValue, d.positionHistoricalProfit, isWealthAccount, positionDisplayMetrics, pnl, t]);
+  }, [d.positions, d.totalCost, d.totalMarketValue, d.positionHistoricalProfit, isMoneyAccount, isWealthAccount, positionDisplayMetrics, pnl, t]);
 
   const clearedAdvancedColumns = useMemo<AdvancedDataTableColumn<any>[]>(() => [
     {
@@ -2421,7 +2439,10 @@ export function FundShell(props: Props) {
 
   }, [accountOptions]);
 
-  const statusOf = useCallback((e: any): "confirmed" | "pending" | "buy_failed" | "buy_refund" | "partial" => {
+  const statusOf = useCallback((e: any): "confirmed" | "pending" | "buy_failed" | "buy_refund" | "partial" | "money_income" => {
+    // 货基收益结转是「当天计提、当天归份额」，没有申购确认这一步；沿用普通买入的
+    // 待确认/确认会让人以为收益要等确认（甚至赎回）才作数，负收益日还会被钳成待确认。
+    if (e.source === TRANSACTION_SOURCE_MONEY_INCOME) return "money_income";
     if (isFundUnitsReconcileEntry(e)) return "confirmed";
     if (e.fundSubtype === "buy_failed") {
       const amount = Math.abs(detailAmountOf(e));
@@ -3057,6 +3078,7 @@ export function FundShell(props: Props) {
             if (s === "buy_failed") return <span className="text-rose-600">{t("fundShell.status.buyFailed")}</span>;
             if (s === "buy_refund") return <span className="text-emerald-700">{t("fundShell.status.buyRefund")}</span>;
             if (s === "partial") return <span className="text-amber-600">{t("fundShell.status.partial")}</span>;
+            if (s === "money_income") return <span className="text-slate-600">{t("fundShell.status.moneyIncome")}</span>;
             return <span className="text-emerald-700">{t("fundShell.status.confirmed")}</span>;
           },
         } satisfies AdvancedDataTableColumn<any>;
@@ -3174,6 +3196,8 @@ export function FundShell(props: Props) {
       : null;
     const editableInvestmentEntry = linkedBuyForRefund ?? e;
     const isUnitsReconcile = isFundUnitsReconcileEntry(e);
+    // 货基收益结转只增份额、没有资金账户与现金流水，链图标点了必然失败，直接不显示。
+    const isMoneyIncomeEntry = e.source === TRANSACTION_SOURCE_MONEY_INCOME;
     // 该行背后的现金流水已「对账」锁定：行内显示锁标记，点它就地解锁（与资金明细页同一入口）。
     const locked = isReconciled(String(e.id ?? ""));
 
@@ -3304,6 +3328,7 @@ export function FundShell(props: Props) {
         ) : null}
         {!isUnitsReconcile ? (
           <>
+            {!isMoneyIncomeEntry ? (
             <button
               type="button"
               onClick={(ev) => {
@@ -3323,6 +3348,7 @@ export function FundShell(props: Props) {
             >
               <LinkStatusIcon active={isLinked} title={linkTitle} />
             </button>
+            ) : null}
             <button
               type="button"
               onClick={(ev) => {
@@ -3638,21 +3664,26 @@ export function FundShell(props: Props) {
                           </div>
                           <div className="shrink-0 text-right">
                             <div className={`text-base font-semibold tabular-nums ${pnl(displayMV)}`}>{formatMoney(displayMV)}</div>
-                            <div className={`mt-0.5 text-[11px] tabular-nums ${isWealthAccount ? (displayAnnualizedRate != null ? "text-slate-500" : "text-slate-300") : displayAnnualizedRate != null ? pnl(displayAnnualizedRate) : "text-slate-300"}`}>
-                              {displayAnnualizedRate == null
-                                ? "-"
-                                : isWealthAccount
-                                  ? `${t("fundShell.col.agreedAnnualRate")} ${displayAnnualizedRate.toFixed(2)}%`
-                                  : `${displayAnnualizedRate.toFixed(2)}%`}
-                            </div>
+                            {/* 货基没有浮盈率（收益是每日结转，不是净值波动），这里连百分比都不显示。 */}
+                            {isMoneyAccount ? null : (
+                              <div className={`mt-0.5 text-[11px] tabular-nums ${isWealthAccount ? (displayAnnualizedRate != null ? "text-slate-500" : "text-slate-300") : displayAnnualizedRate != null ? pnl(displayAnnualizedRate) : "text-slate-300"}`}>
+                                {displayAnnualizedRate == null
+                                  ? "-"
+                                  : isWealthAccount
+                                    ? `${t("fundShell.col.agreedAnnualRate")} ${displayAnnualizedRate.toFixed(2)}%`
+                                    : `${displayAnnualizedRate.toFixed(2)}%`}
+                              </div>
+                            )}
                           </div>
                         </div>
 
-                        <div className="mt-2 grid grid-cols-4 gap-x-2">
+                        <div className={`mt-2 grid gap-x-2 ${isMoneyAccount ? "grid-cols-3" : "grid-cols-4"}`}>
                           <FundMobileDetailItem label={isMetalAccount ? t("fundShell.col.quantity") : t("viewImport.units")} value={isWealthAccount && !p.hasUnits ? "-" : formatFundUnits(p.units)} alignRight />
                           <FundMobileDetailItem label={t("fundShell.col.avgCost")} value={isWealthAccount && !p.hasUnits ? "-" : p.avgCost.toFixed(4)} alignRight />
                           <FundMobileDetailItem label={t("fundShell.col.cost")} value={formatMoney(p.cost)} alignRight />
-                          <FundMobileDetailItem label={t("overview.profit")} value={formatMoney(displayPnL)} valueClassName={pnl(displayPnL)} alignRight />
+                          {isMoneyAccount ? null : (
+                            <FundMobileDetailItem label={t("overview.profit")} value={formatMoney(displayPnL)} valueClassName={pnl(displayPnL)} alignRight />
+                          )}
                         </div>
 
                       </article>
@@ -4019,6 +4050,7 @@ export function FundShell(props: Props) {
                   ? (businessLinkInfo.labels.length > 0 ? businessLinkInfo.labels.join("；") : t("fundShell.linkedCashFlow"))
                   : t("fundShell.notLinked");
                 const isUnitsReconcile = isFundUnitsReconcileEntry(e);
+                const isMoneyIncomeEntry = e.source === TRANSACTION_SOURCE_MONEY_INCOME;
                 const locked = isReconciled(String(e.id ?? ""));
                 const unitsReconcileDeltaText = units != null
                   ? `${e.fundSubtype === "redeem" ? "-" : "+"}${formatFundUnits(Math.abs(toNumber(units)))}`
@@ -4059,8 +4091,8 @@ export function FundShell(props: Props) {
                             <span className={upCls}>+{formatMoney(Math.abs(amount))}</span>
                           ) : formatMoney(amount < 0 ? amount : Math.abs(amount))}
                         </div>
-                        <div className={`mt-0.5 text-[11px] ${status === "confirmed" || status === "buy_refund" ? "text-emerald-700" : status === "buy_failed" ? "text-rose-600" : "text-amber-600"}`}>
-                          {status === "confirmed" ? t("fundShell.status.confirmed") : status === "pending" ? t("fundShell.status.pending") : status === "buy_failed" ? t("fundShell.status.buyFailed") : status === "buy_refund" ? t("fundShell.status.buyRefund") : t("fundShell.status.partial")}
+                        <div className={`mt-0.5 text-[11px] ${status === "money_income" ? "text-slate-600" : status === "confirmed" || status === "buy_refund" ? "text-emerald-700" : status === "buy_failed" ? "text-rose-600" : "text-amber-600"}`}>
+                          {status === "money_income" ? t("fundShell.status.moneyIncome") : status === "confirmed" ? t("fundShell.status.confirmed") : status === "pending" ? t("fundShell.status.pending") : status === "buy_failed" ? t("fundShell.status.buyFailed") : status === "buy_refund" ? t("fundShell.status.buyRefund") : t("fundShell.status.partial")}
                         </div>
                       </div>
                     </div>
@@ -4097,6 +4129,7 @@ export function FundShell(props: Props) {
                         ) : null}
                         {!isUnitsReconcile ? (
                           <>
+                            {!isMoneyIncomeEntry ? (
                             <button
                               type="button"
                               onClick={() => {
@@ -4115,6 +4148,7 @@ export function FundShell(props: Props) {
                             >
                               <LinkStatusIcon active={businessLinkInfo.active} title={businessLinkTitle} />
                             </button>
+                            ) : null}
                             <button
                               type="button"
                               onClick={() => openDetailEdit(e.id)}

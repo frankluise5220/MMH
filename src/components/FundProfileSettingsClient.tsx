@@ -7,7 +7,6 @@ import Link from "next/link";
 import { FundConfirmDaysPanel, type ConfirmDayRow } from "@/components/FundConfirmDaysModal";
 import { FundFeeRatePanel, type FeeRateRecord } from "@/components/FundFeeRatePanel";
 import { FundScheduledTasksPanel, type RelatedScheduledTask } from "@/components/FundScheduledTasksPanel";
-import { MoneyFundYieldPanel } from "@/components/MoneyFundYieldPanel";
 import { RegularInvestForm } from "@/components/RegularInvestForm";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
@@ -364,40 +363,36 @@ export function FundProfileSettingsClient({ account, profile, backHref, onClose,
           </div>
         </section>
 
+        {/* 货基的每万份收益是「统计口径」而不是资料字段：数据由后台自动拉取、收益结转也按它计算，
+            资料页不再展示这张表（费率表对货基同样无意义），只保留定投计划。 */}
         <section className={sectionClass}>
-          <div className={sectionHeaderClass}>
-            <div className="flex min-w-0 items-center gap-2">
-              <CircleDollarSign className="h-4 w-4 shrink-0 text-emerald-600" />
-              {/* 货基这张卡里装的是每万份收益，不是费率，标题跟着换，否则「代销机构费率」下挂收益表 */}
-              <h2 className="text-sm font-semibold text-slate-900">
-                {isMoneyFund ? t("moneyYield.title") : t("fundSettings.institutionSection")}
-              </h2>
-            </div>
-            <span className="rounded bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700">
-              {isMoneyFund
-                ? t("moneyYield.navHint")
-                : account.institutionName || t("fundSettings.noInstitution")}
-            </span>
-          </div>
-          <div className="p-2.5">
-            {isMoneyFund ? (
-              // 货基没有申购/赎回费，费率表无意义；这里换成它真正的「行情」——每万份收益。
-              <MoneyFundYieldPanel accountId={account.id} fundCode={profile.fundCode} compact />
-            ) : (
-              <FundFeeRatePanel
-                accountId={account.id}
-                initialFundCode={profile.fundCode}
-                compact
-                preloadedRows={feeRateRows}
-                onSaved={(result) => {
-                  onFeeRatesSaved?.(result);
-                  dispatchFinanceDataChanged({ reason: "fund-fee-rate:save", accountIds: [account.id] });
-                }}
-                hideFundColumn
-              />
-            )}
-          </div>
-          <div className="border-t border-slate-100 p-2.5 pt-2">
+          {isMoneyFund ? null : (
+            <>
+              <div className={sectionHeaderClass}>
+                <div className="flex min-w-0 items-center gap-2">
+                  <CircleDollarSign className="h-4 w-4 shrink-0 text-emerald-600" />
+                  <h2 className="text-sm font-semibold text-slate-900">{t("fundSettings.institutionSection")}</h2>
+                </div>
+                <span className="rounded bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700">
+                  {account.institutionName || t("fundSettings.noInstitution")}
+                </span>
+              </div>
+              <div className="p-2.5">
+                <FundFeeRatePanel
+                  accountId={account.id}
+                  initialFundCode={profile.fundCode}
+                  compact
+                  preloadedRows={feeRateRows}
+                  onSaved={(result) => {
+                    onFeeRatesSaved?.(result);
+                    dispatchFinanceDataChanged({ reason: "fund-fee-rate:save", accountIds: [account.id] });
+                  }}
+                  hideFundColumn
+                />
+              </div>
+            </>
+          )}
+          <div className={isMoneyFund ? "p-2.5" : "border-t border-slate-100 p-2.5 pt-2"}>
             <div className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold text-slate-700">
               <CalendarClock className="h-3.5 w-3.5 text-indigo-600" />
               {t("fundSettings.scheduledTaskSection")}
@@ -420,6 +415,7 @@ export function FundProfileSettingsClient({ account, profile, backHref, onClose,
           editData={planToEditData(editPlan)}
           accountId={editPlan.accountId || account.id || ""}
           investmentAccounts={investmentAccounts}
+          defaultInvestProductType={account.investProductType ?? null}
           cashAccounts={cashAccounts}
           investmentAccountSSOptions={investmentAccountSSOptions}
           cashAccountSSOptions={cashAccountSSOptions}

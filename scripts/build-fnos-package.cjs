@@ -3418,6 +3418,19 @@ const MIGRATIONS = [
       db.exec("CREATE UNIQUE INDEX IF NOT EXISTS Category_householdId_type_name_key ON Category(householdId, type, name)");
     },
   },
+  {
+    // 电子钱包 → 货币基金支付关联（2026-11-18）：钱包可指定一个货基账户 + 具体基金代码。
+    // 支出弹窗勾选「从关联货基支付」时，服务端生成赎回（份额减、资金腿回钱包）。
+    // 可空列，存量钱包未绑定，行为不变。
+    version: "20261118_wallet_linked_money_fund",
+    description: "Add Account.linkedFundAccountId + linkedFundCode for wallet→money-fund payment link",
+    apply(db) {
+      if (!tableExists(db, "Account")) return;
+      addColumnIfMissing(db, "Account", "linkedFundAccountId", "TEXT");
+      addColumnIfMissing(db, "Account", "linkedFundCode", "TEXT");
+      db.exec('CREATE INDEX IF NOT EXISTS "Account_linkedFundAccountId_idx" ON "Account"("linkedFundAccountId")');
+    },
+  },
 ];
 
 // 到期日「周年 − 1 天」→ 周年；返回 null 表示不是旧口径。

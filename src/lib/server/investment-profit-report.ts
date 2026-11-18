@@ -683,11 +683,14 @@ function accountDailyNavDeltaProfit(params: {
     //    NAV that was actually published, because the market happened to be shut
     //    that day: 2026-10-12 was a JP holiday, yet 摩根日本精选股票(QDII)C
     //    published a NAV on it and its -21.39 delta vanished from the 10-12 row.
-    if (isTradingClosedDate(reportDateKey, "cn_fund")) continue;
     if (meta.isMoney) {
       // 货基没有净值行，收益也不来自净值差：当天结转进份额的金额就是当日收益。
       // 结转流水 units 是收益、nav 恒为 1，这里直接按日取，绝不回读净值缓存
       // （那里即使有货基行，数字也是每万份收益，乘份额会把报表算错）。
+      // 货基天天计息（周末、节假日照常结转份额），因此不能套用下面开放式基金那套
+      // 「非交易日没有净值」门禁 —— 套上就会把周末结转的收益凭空丢掉：2026-11-18
+      // 实测结转 4.01，日度报表只显示 2.87，差额 1.14 正好是 11-07/08/14/15 四个
+      // 周末日。门禁只对下面的净值型分支生效。
       for (const entry of params.entries) {
         if (entry.fundCode !== fundCode) continue;
         if (entry.source !== "money_fund_income") continue;
@@ -699,6 +702,7 @@ function accountDailyNavDeltaProfit(params: {
       }
       continue;
     }
+    if (isTradingClosedDate(reportDateKey, "cn_fund")) continue;
     const dateKey = fundNavTargetDateForOffset({
       referenceDate: params.date,
       navDateOffset: params.navDateOffsetByCode?.get(fundCode) ?? 0,

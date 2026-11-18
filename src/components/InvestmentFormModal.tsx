@@ -32,6 +32,7 @@ import { addTradingDaysUtc, countTradingDaysUtc, todayDateLocalYmd } from "@/lib
 import { findLinkedEntries, type RefundLinkableEntry } from "@/lib/fund/refund-link";
 import { formatFundUnitsValue, resolveQuantityDecimals, roundFundUnits } from "@/lib/fund/unit-precision-core";
 import { MONEY_FUND_NAV } from "@/lib/fund/moneyFund";
+import { isDepositAccount } from "@/lib/account-kind-utils";
 import { formatAmountDraft } from "@/lib/format";
 import {
   type FundSubtype,
@@ -781,7 +782,12 @@ export function InvestmentFormModal({
     if (productType === "bond") return account.investProductType === "bond";
     if (productType === "deposit") return account.investProductType === "deposit" || account.kind === "deposit";
     if (productType === "fund" || productType === "money") {
-      return account.investProductType === "fund" || account.investProductType === "money";
+      // 存款账户（kind=deposit 或历史的 investProductType=deposit）不是基金账户。
+      // 它的 investProductType 一般是空的，会被下面的「无类型放行」漏进来。
+      if (isDepositAccount(account)) return false;
+      // 开放式基金看净值、货基看每万份收益，是两套口径，账户不能互串；
+      // 产品类型缺失的历史纯投资账户两类都放行，否则老数据会从下拉里消失。
+      return !account.investProductType || account.investProductType === productType;
     }
     return true;
   };
@@ -4098,7 +4104,7 @@ export function InvestmentFormModal({
           extraFields={nestedEntityType === "cash-account"
             ? undefined
             : { kind: "investment", investProductType: productType === "deposit" ? "fund" : productType }}
-          hiddenFields={nestedEntityType === "cash-account" ? [] : ["kind"]}
+          hiddenFields={nestedEntityType === "cash-account" ? [] : ["kind", "investProductType"]}
           allowedAccountKinds={nestedEntityType === "cash-account" ? ["bank_debit", "ewallet"] : undefined}
           nestedFieldData={nestedFieldData}
           onNestedCreated={handleNestedOptionCreated}

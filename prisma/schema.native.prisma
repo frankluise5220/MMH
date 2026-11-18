@@ -85,9 +85,16 @@ model Account {
   tradingCalendar                                            TradingCalendar?
   defaultFundQueryApiId                                      String?
   fundUnitsDecimals                                          Int                         @default(2)
+  // 电子钱包 → 货币基金的支付关联：选中该钱包记账时，可以声明「这笔钱实际来自
+  // 关联的货基份额」，服务端据此生成一笔赎回（份额减、资金腿回钱包）。
+  // 一个钱包只绑一个货基账户；一个货基账户可以被多个钱包绑定。
+  linkedFundAccountId                                        String?
+  linkedFundCode                                             String?
   FundQueryApi                                               FundQueryApi?               @relation(fields: [defaultFundQueryApiId], references: [id], onDelete: SetNull)
   Parent                                                     Account?                    @relation("AccountHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
   Children                                                   Account[]                   @relation("AccountHierarchy")
+  LinkedFundAccount                                          Account?                    @relation("AccountLinkedFund", fields: [linkedFundAccountId], references: [id], onDelete: SetNull)
+  LinkedWallets                                              Account[]                   @relation("AccountLinkedFund")
   AccountGroup                                               AccountGroup                @relation(fields: [groupId], references: [id])
   Household                                                  Household                   @relation(fields: [householdId], references: [id])
   Institution                                                Institution?                @relation(fields: [institutionId], references: [id])
@@ -140,6 +147,7 @@ model Account {
   @@index([householdId, loanCategoryId])
   @@index([counterpartyId])
   @@index([parentId])
+  @@index([linkedFundAccountId])
   // 同一父账户下每个币种只能有一个子户（PG/SQLite 都允许多个 NULL，根账户互不冲突）。
   @@unique([parentId, currency])
 }

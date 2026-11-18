@@ -1215,12 +1215,15 @@ export default async function Home({
       // 账户层级父 id（与下拉分组头的 parentId 无关）：转账表单靠它认出
       // 「转入账户已经是子账户」，避免再问「是否创建子账户」（2026-10-18）。
       accountParentId: a.parentId ?? null,
+      // 电子钱包 → 货基支付关联：支出弹窗据此显示「从关联货基支付」。
+      linkedFundAccountId: a.linkedFundAccountId ?? null,
+      linkedFundCode: a.linkedFundCode ?? null,
     };
   });
 
   // Build hierarchical SmartSelect options: grouped by AccountGroup (isHeader),
   // ungrouped accounts shown flat with institution as subLabel
-  type SSOpt = { id: string; label: string; subLabel?: string; title?: string; isHeader?: boolean; isGroup?: boolean; parentId?: string; kind?: string | null; investProductType?: string | null; liabilityDirection?: string | null; institutionId?: string | null; institutionType?: string | null; counterpartyId?: string | null; counterpartyName?: string | null; isSettlementAccount?: boolean | null; isConsumerLoan?: boolean | null; billingDay?: number | null; currency?: string | null; isAggregate?: boolean | null };
+  type SSOpt = { id: string; label: string; subLabel?: string; title?: string; isHeader?: boolean; isGroup?: boolean; parentId?: string; kind?: string | null; investProductType?: string | null; liabilityDirection?: string | null; institutionId?: string | null; institutionType?: string | null; counterpartyId?: string | null; counterpartyName?: string | null; isSettlementAccount?: boolean | null; isConsumerLoan?: boolean | null; billingDay?: number | null; currency?: string | null; isAggregate?: boolean | null; linkedFundAccountId?: string | null; linkedFundCode?: string | null };
   const joinSSSubLabel = (parts: Array<string | null | undefined>) => {
     const result: string[] = [];
     const seen = new Set<string>();
@@ -1266,6 +1269,8 @@ export default async function Home({
           billingDay: a.billingDay ?? null,
           currency: a.currency ?? null,
           isAggregate: a.isAggregate === true,
+          linkedFundAccountId: a.linkedFundAccountId ?? null,
+          linkedFundCode: a.linkedFundCode ?? null,
         }));
       return [
         ...headerLabels.map(label => ({ id: `${headerPrefix}${label}`, label, isHeader: true })),
@@ -1310,6 +1315,8 @@ export default async function Home({
         billingDay: a.billingDay ?? null,
         currency: a.currency ?? null,
         isAggregate: a.isAggregate === true,
+        linkedFundAccountId: a.linkedFundAccountId ?? null,
+        linkedFundCode: a.linkedFundCode ?? null,
       }));
 
     // Build ungrouped account entries (no parentId)
@@ -1332,6 +1339,8 @@ export default async function Home({
       billingDay: a.billingDay ?? null,
       currency: a.currency ?? null,
       isAggregate: a.isAggregate === true,
+      linkedFundAccountId: a.linkedFundAccountId ?? null,
+      linkedFundCode: a.linkedFundCode ?? null,
     }));
 
     return [...groupHeaders, ...groupedItems, ...ungroupedItems];
@@ -1575,6 +1584,31 @@ export default async function Home({
       ),
       currency: a.currency,
     }));
+  // 开放式基金与货币基金是两套口径（净值涨跌 vs 每万份收益），账户不能互串：
+  // 货基视图只给货基账户、开放式基金视图只给开放式基金账户。
+  // `investProductType` 为空的历史账户两类都放行，否则老数据会在下拉里凭空消失。
+  const fundFamilyViewProductType: "fund" | "money" | null =
+    view === "investmoney" ? "money" : view === "investfund" ? "fund" : null;
+  const inFundFamilyView = (account: { kind: string; investProductType?: string | null }) =>
+    // 存款账户也躺在 investmentAccountList 里（kind=deposit、investProductType 为空），
+    // 基金视图必须剔掉，否则「无类型放行」会把定期存款也漏成基金账户。
+    !isDepositAccount(account) &&
+    (!fundFamilyViewProductType || !account.investProductType || account.investProductType === fundFamilyViewProductType);
+  const fundViewInvestmentAccountOptions = fundFamilyViewProductType
+    ? investmentAccountOptions.filter(inFundFamilyView)
+    : investmentAccountOptions;
+  const fundViewInvestmentAccounts = fundFamilyViewProductType
+    ? investmentAccountList.filter(inFundFamilyView)
+    : investmentAccountList;
+  const fundViewInvestmentAccountIds = new Set(fundViewInvestmentAccounts.map((account) => account.id));
+  const fundViewInvestmentAccountSSOptions = fundFamilyViewProductType
+    ? (() => {
+        // 小类被过滤掉的分组表头也要一起去掉，不然下拉里会留下点不动的空分组。
+        const options = investmentAccountSSOptions.filter((option) => option.isHeader || fundViewInvestmentAccountIds.has(option.id));
+        const usedParents = new Set(options.map((option) => option.parentId).filter(Boolean));
+        return options.filter((option) => !option.isHeader || usedParents.has(option.id));
+      })()
+    : investmentAccountSSOptions;
   // NestedAddModal fieldData for groups & institutions
   const nestedFieldData = {
     groupId: groups.filter(g => g.name !== "未指定").map(g => ({ id: g.id, name: g.name })),
@@ -3580,7 +3614,8 @@ export default async function Home({
                 accountId={selectedAccount?.id ?? investmentAccountOptions[0]?.id ?? ""}
                 accountLabel={selectedAccountLabel}
                 cashAccounts={cashAccountList}
-                investmentAccounts={investmentAccountOptions.map((item) => ({ id: item.id, name: item.label, label: item.label }))}
+                investmentAccounts={fundViewInvestmentAccountOptions.map((item) => ({ id: item.id, name: item.label, label: item.label }))}
+                defaultInvestProductType={selectedAccount?.investProductType ?? null}
                 transferTargetAccounts={accountOptions}
                 insuranceProductOptions={[]}
                 cashAccountSSOptions={cashAccountSSOptions}
@@ -3848,9 +3883,9 @@ export default async function Home({
               selectedAccountLabel={selectedAccountLabel}
               accountOptions={accountOptions}
               cashAccounts={cashAccountList}
-              investmentAccounts={investmentAccountList}
+              investmentAccounts={fundViewInvestmentAccounts}
               cashAccountSSOptions={cashAccountSSOptions}
-              investmentAccountSSOptions={investmentAccountSSOptions}
+              investmentAccountSSOptions={fundViewInvestmentAccountSSOptions}
               wealthHoldingOptions={wealthHoldingOptions}
               metalTypes={metalTypes}
               metalUnits={metalUnits}
@@ -3973,9 +4008,9 @@ export default async function Home({
               selectedAccountLabel={selectedAccountLabel}
               accountOptions={accountOptions}
               cashAccounts={cashAccountList}
-              investmentAccounts={investmentAccountList}
+              investmentAccounts={fundViewInvestmentAccounts}
               cashAccountSSOptions={cashAccountSSOptions}
-              investmentAccountSSOptions={investmentAccountSSOptions}
+              investmentAccountSSOptions={fundViewInvestmentAccountSSOptions}
               metalTypes={metalTypes}
               metalUnits={metalUnits}
               nestedFieldData={nestedFieldData}

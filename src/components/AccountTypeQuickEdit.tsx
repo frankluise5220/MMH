@@ -37,6 +37,7 @@ import { EQUAL_PAYMENT_REPAYMENT_METHOD,
 } from "@/lib/loan-repayment";
 import { isCollateralLoanType, isHomeLoanType, type LoanTypeValue } from "@/lib/loan-type";
 import { CurrencySmartSelect } from "@/components/CurrencySmartSelect";
+import { AccountEditDialog } from "@/components/accounts/AccountEditDialog";
 import { formatAmountDraft } from "@/lib/format";
 
 type AccountKindValue = "cash" | "bank_debit" | "bank_credit" | "ewallet" | "deposit" | "investment" | "fixed_asset" | "settlement" | "loan" | "other";
@@ -118,6 +119,8 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
   const { t } = useI18n();
   const router = useRouter();
   const [open, setOpen] = useState(false);
+  // 普通账户编辑：就地渲染「设置 → 账户管理」那份唯一实现，不跳转设置页。
+  const [accountDialogOpen, setAccountDialogOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [groups, setGroups] = useState<Group[]>([]);
@@ -208,6 +211,14 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
   }, [account, loanDetails, loanDetailsIsCollateralLoan, loanDetailsIsHomeLoan]);
 
   const openEditor = useCallback(async () => {
+    // 账户编辑只有一套：就是「系统设置 → 账户管理」里的编辑界面（AccountEditDialog）。
+    // 视图表头双击就地渲染同一个组件，不跳转、也不再维护第二套表单。
+    // 只有负债侧编辑贷款资料（loanDetails）仍用本弹窗——设置页对贷款账户是只读的，
+    // 还款资金账户只能在负债明细里调。
+    if (!loanDetails) {
+      setAccountDialogOpen(true);
+      return;
+    }
     resetForm();
     setOpen(true);
     const [data, categoryResponse] = await Promise.all([
@@ -227,7 +238,7 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
         .filter((item) => item.isActive !== false && item.isPlaceholder !== true && !["loan", "settlement", "investment", "fixed_asset"].includes(item.kind ?? ""))
         .map((item) => ({ id: item.id, name: item.name })));
     }
-  }, [account.id, resetForm]);
+  }, [account.id, loanDetails, resetForm]);
 
   useEffect(() => {
     if (openSignal <= 0) return;
@@ -401,7 +412,11 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
   return (
     <>
       {showTrigger ? (
-        <span className="page-title cursor-pointer" onDoubleClick={() => { void openEditor(); }} title={accountLabel || account.name}>{accountLabel || account.name}</span>
+        <span
+          className="page-title cursor-pointer"
+          onDoubleClick={() => { void openEditor(); }}
+          title={`${accountLabel || account.name} · ${t("accountTypeQuickEdit.openInSettingsHint")}`}
+        >{accountLabel || account.name}</span>
       ) : null}
       {open && typeof document !== "undefined" ? createPortal(
         <ModalLayer className="fixed inset-0 flex items-center justify-center overflow-y-auto bg-slate-950/30 p-4" onMouseDown={() => !saving && setOpen(false)}>
@@ -483,6 +498,9 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
             <div className="mt-4 flex justify-end gap-2"><button type="button" className="rounded bg-blue-600 px-3 py-2 text-sm text-white disabled:opacity-50" onClick={save} disabled={saving}>{saving ? t("accountTypeQuickEdit.saving") : t("common.save")}</button></div>
           </div>
         </ModalLayer>, document.body,
+      ) : null}
+      {accountDialogOpen ? (
+        <AccountEditDialog accountId={account.id} onClose={() => { setAccountDialogOpen(false); }} />
       ) : null}
     </>
   );

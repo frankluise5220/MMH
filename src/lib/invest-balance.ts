@@ -14,7 +14,7 @@ import { AccountKind, FundCashFlowKind, FundSubtype, StockTransactionAction } fr
 import type { HouseholdContext } from "@/lib/server/household-scope";
 import { getEffectiveLatestFundNavMap } from "@/lib/fund/navCache";
 import { getFundProfileNameMap, normalizeFundDisplayName } from "@/lib/fund/fundProfile";
-import { futureConfirmHoldingKey, loadFutureConfirmedBuyMap } from "@/lib/fund/future-confirm";
+import { futureConfirmHoldingKey, loadFutureConfirmedBuyMap, loadFutureConfirmedRedeemMap } from "@/lib/fund/future-confirm";
 import { deriveClosedCycles } from "@/lib/fund/closed-cycles";
 import { derivePositionCycles } from "@/lib/invest/position-cycles";
 import { MONEY_FUND_NAV } from "@/lib/fund/moneyFund";
@@ -489,11 +489,12 @@ export const computeInvestBalances = cache(
 
   const fundCodes = [...new Set(allHoldings.map(h => h.fundCode))];
   const displayPendingByHoldingKey = await loadDisplayPendingCostByHoldingKey(ctx, fundAccountIds);
+  // 「确认日在不在未来」两侧都要看：买入要折回在途，赎回要把份额加回去（见 future-confirm）。
+  const businessTodayKey = todayDateBusinessYmd(await resolveHouseholdTimeZone(ctx.householdId));
   // 确认日在未来的买入即使已带份额也不能算持仓，读取时统一转为在途金额。
-  const futureConfirmedByHoldingKey = await loadFutureConfirmedBuyMap(
-    fundAccountIds,
-    todayDateBusinessYmd(await resolveHouseholdTimeZone(ctx.householdId)),
-  );
+  const futureConfirmedByHoldingKey = await loadFutureConfirmedBuyMap(fundAccountIds, businessTodayKey);
+  // 反向补偿：未来确认日的赎回在写库时已扣份额，但钱还没到账，读的时候先加回来。
+  const futureRedeemByHoldingKey = await loadFutureConfirmedRedeemMap(fundAccountIds, businessTodayKey);
   const latestNavByCode = new Map<string, { nav: number; date: string }>();
   if (fundCodes.length > 0) {
     const caches = await getEffectiveLatestFundNavMap(fundCodes);
@@ -515,8 +516,10 @@ export const computeInvestBalances = cache(
 
     for (const h of holdings) {
       const futureConfirmed = futureConfirmedByHoldingKey.get(holdingKey(h.accountId, h.fundCode));
-      const units = Math.max(0, toNumber(h.units) - (futureConfirmed?.units ?? 0));
-      const storedCost = toNumber(h.cost);
+      // 确认日在未来的赎回：库里的份额和成本已经扣掉了，这里先按原样加回来。
+      const futureRedeemUnits = futureRedeemByHoldingKey.get(holdingKey(h.accountId, h.fundCode))?.units ?? 0;
+      const units = Math.max(0, toNumber(h.units) - (futureConfirmed?.units ?? 0) + futureRedeemUnits);
+      const storedCost = toNumber(h.cost) + toNumber(h.avgCost) * futureRedeemUnits;
       const storedPending = toNumber(h.pendingCost);
       const pendingFromFutureConfirm = futureConfirmed?.cost ?? 0;
       const displayPending = (displayPendingByHoldingKey.get(holdingKey(h.accountId, h.fundCode)) ?? 0) + pendingFromFutureConfirm;
@@ -1373,11 +1376,11 @@ export const computePositionDisplay = cache(
 
   const fundCodes = [...new Set(holdings.map(h => h.fundCode))];
   const displayPendingByHoldingKey = await loadDisplayPendingCostByHoldingKey(ctx, [accountId]);
+  const businessTodayKey = todayDateBusinessYmd(await resolveHouseholdTimeZone(ctx.householdId));
   // 确认日在未来的买入：份额已经写入，但还没到确认日，持仓里只应体现为在途金额。
-  const futureConfirmedByHoldingKey = await loadFutureConfirmedBuyMap(
-    [accountId],
-    todayDateBusinessYmd(await resolveHouseholdTimeZone(ctx.householdId)),
-  );
+  const futureConfirmedByHoldingKey = await loadFutureConfirmedBuyMap([accountId], businessTodayKey);
+  // 反向补偿：未来确认日的赎回在写库时已扣份额，但钱还没到账，读的时候先加回来。
+  const futureRedeemByHoldingKey = await loadFutureConfirmedRedeemMap([accountId], businessTodayKey);
   // Account-level money classification is the default for legacy holdings, but
   // a fund transaction carries the more precise product type. This prevents a
   // misclassified money account from forcing an ordinary fund's NAV to 1.
@@ -1431,8 +1434,11 @@ export const computePositionDisplay = cache(
     const futureConfirmed = futureConfirmedByHoldingKey.get(holdingKey(h.accountId, h.fundCode));
     const futureUnits = futureConfirmed?.units ?? 0;
     const futureCost = futureConfirmed?.cost ?? 0;
-    const units = Math.max(0, toNumber(h.units) - futureUnits);
-    const storedCost = toNumber(h.cost);
+    // 确认日在未来的赎回：份额/成本在库里已经扣掉了，读取时先加回来（成本按 avgCost 还原）。
+    const futureRedeem = futureRedeemByHoldingKey.get(holdingKey(h.accountId, h.fundCode));
+    const futureRedeemUnits = futureRedeem?.units ?? 0;
+    const units = Math.max(0, toNumber(h.units) - futureUnits + futureRedeemUnits);
+    const storedCost = toNumber(h.cost) + toNumber(h.avgCost) * futureRedeemUnits;
     const storedPending = toNumber(h.pendingCost);
     const pending = (displayPendingByHoldingKey.get(holdingKey(h.accountId, h.fundCode)) ?? 0) + futureCost;
     const confirmedCost = Math.max(0, storedCost - storedPending - futureCost);

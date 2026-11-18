@@ -79,3 +79,55 @@ export async function loadFutureConfirmedBuyMap(
 
   return result;
 }
+
+/**
+ * 已提交、确认日仍在未来的赎回（含转换转出）。
+ *
+ * 买 / 卖两侧不对称：`FundHolding` 是全量回放且不看日期，未来确认日的赎回在写库
+ * 那一刻就已经从份额里扣掉了；而赎回款要到 `arrivalDate` 才进现金账户。中间这段
+ * 时间总资产会凭空少一笔，份额也与真实渠道（确认日才扣份额）不一致。
+ *
+ * 读持仓的地方用它把份额加回去，确认日一过自然消失。成本按当前 `avgCost` 还原：
+ * 移动平均法下赎回本身不改平均成本，所以 `avgCost × 赎回份额` 精确等于当时被扣掉
+ * 的那部分成本（FIFO/LIFO 账户是近似口径）。
+ */
+type FutureConfirmedRedeem = { units: number; proceeds: number };
+
+export async function loadFutureConfirmedRedeemMap(
+  accountIds: readonly string[],
+  todayKey: string = todayDateBusinessYmd(),
+): Promise<Map<string, FutureConfirmedRedeem>> {
+  const ids = Array.from(new Set(accountIds.map((id) => String(id ?? "").trim()).filter(Boolean)));
+  const result = new Map<string, FutureConfirmedRedeem>();
+  if (ids.length === 0) return result;
+
+  const todayUtc = new Date(`${todayKey}T00:00:00.000Z`);
+
+  const rows = await prisma.fundTransaction.findMany({
+    where: {
+      fundAccountId: { in: ids },
+      deletedAt: null,
+      fundSubtype: { in: [FundSubtype.redeem, FundSubtype.switch_out] },
+      units: { gt: 0 },
+      confirmDate: { gt: todayUtc },
+    },
+    select: {
+      fundAccountId: true,
+      fundCode: true,
+      units: true,
+      grossAmount: true,
+      arrivalAmount: true,
+    },
+  });
+
+  for (const row of rows) {
+    if (!row.fundAccountId || !row.fundCode) continue;
+    const key = futureConfirmHoldingKey(row.fundAccountId, row.fundCode);
+    const current = result.get(key) ?? { units: 0, proceeds: 0 };
+    current.units += Math.max(0, toNumber(row.units));
+    current.proceeds += Math.abs(toNumber(row.arrivalAmount ?? row.grossAmount));
+    result.set(key, current);
+  }
+
+  return result;
+}

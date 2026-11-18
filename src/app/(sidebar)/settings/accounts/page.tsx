@@ -2,8 +2,8 @@
 import { ModalLayer } from "@/components/ModalLayer";
 
 import { useState, useEffect, useMemo, useCallback, useRef } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
-import { Power, PowerOff, CreditCard, Wallet, Building2, Landmark, PiggyBank, Banknote, Layers, Trash2, X, CornerDownRight, Plus, Pencil, SlidersHorizontal, Check, ChevronDown, ChevronRight, ChevronsUpDown, ChevronsDownUp } from "lucide-react";
+import { usePathname, useRouter, useSearchParams } from "next/navigation";
+import { Power, PowerOff, CreditCard, Wallet, Building2, Landmark, PiggyBank, Banknote, Layers, Trash2, X, CornerDownRight, Plus, Pencil, SlidersHorizontal, Check, ChevronDown, ChevronRight, ChevronsUpDown, ChevronsDownUp, Info } from "lucide-react";
 import { TransparentSideNavButtons } from "@/components/TransparentSideNavButtons";
 import type { AccountKind } from "@prisma/client";
 import { PRODUCT_TYPES, supportsCostBasisMethod } from "@/lib/investment-config";
@@ -24,6 +24,7 @@ import {
   type StatisticsUserItem,
 } from "@/components/AccountScopeFilter";
 import { CreditCardBillingDayRulesTable } from "@/components/CreditCardBillingDayRulesTable";
+import { AccountEditDialog } from "@/components/accounts/AccountEditDialog";
 import { AccountBatchImportButton } from "@/components/settings/AccountBatchImportButton";
 import type { CreditBillingDayRuleView } from "@/lib/credit/billing-day-rules";
 import { SettingsActionButton, SettingsInfoHint, SettingsPageHeader, useHideSettingDescriptions } from "@/components/settings/SettingsPageScaffold";
@@ -154,6 +155,9 @@ type Account = {
   parentId?: string | null;
   /** 多币种父账户（聚合账户）：只参与统计，本身没有明细。 */
   isAggregate?: boolean | null;
+  /** 电子钱包 → 货币基金支付关联（2026-11-18）。 */
+  linkedFundAccountId?: string | null;
+  linkedFundCode?: string | null;
 };
 
 /**
@@ -291,6 +295,7 @@ function getAccountDetailHref(account: Account) {
 
 export default function SettingsAccountsPage() {
   const router = useRouter();
+  const pathname = usePathname();
   const searchParams = useSearchParams();
   const { t } = useI18n();
   const tf = useCallback((key: string, values: Record<string, string | number>) => {
@@ -315,7 +320,6 @@ export default function SettingsAccountsPage() {
   const amountClass = useCallback((value: number) => pnlColor(value, colorScheme, "muted"), [colorScheme]);
   const [groups, setGroups] = useState<Group[]>([]);
   const [accounts, setAccounts] = useState<Account[]>([]);
-  const [loanCategories, setLoanCategories] = useState<LoanCategoryView[]>([]);
   const [institutions, setInstitutions] = useState<Institution[]>([]);
   const [counterparties, setCounterparties] = useState<Counterparty[]>([]);
   // 内存缓存未命中时首屏 accounts=[]；没有 loading 会误显示「暂无账户」。
@@ -332,15 +336,7 @@ export default function SettingsAccountsPage() {
   const [baseCurrency, setBaseCurrency] = useState("CNY");
   const [accountNameQuery, setAccountNameQuery] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [editForm, setEditForm] = useState<Record<string, string>>({});
-  const [editFormBaseline, setEditFormBaseline] = useState<Record<string, string>>({});
-  const [billingDayRules, setBillingDayRules] = useState<CreditBillingDayRuleView[]>([]);
-  const [billingDayRulesLoading, setBillingDayRulesLoading] = useState(false);
-  // 规则表加载失败时必须可见：静默退化成「暂无记录」会让用户以为规则丢了。
-  const [billingDayRulesError, setBillingDayRulesError] = useState("");
-  const [editError, setEditError] = useState("");
   const [showCreateAccount, setShowCreateAccount] = useState(false);
-  const [upgradingMultiCurrency, setUpgradingMultiCurrency] = useState(false);
   // ADT 表格当前视图（筛选+列排序后的全量行）：编辑弹窗的上一/下一导航沿此顺序。
   const [displayRows, setDisplayRows] = useState<Account[]>([]);
   // 账户列表分组维度（表头下拉）。none = 现有平铺状态。
@@ -355,21 +351,6 @@ export default function SettingsAccountsPage() {
 
   // 可选的上级账户 = 家庭里的多币种父账户（聚合账户）。父账户自己不能再挂上级，
   // 所以编辑父账户时这个下拉不渲染；子账户可以改挂到别的父账户或解除归属。
-  const parentAccountOptions = useMemo<Array<{ id: string; label: string; kind: string; subLabel: string }>>(
-    () => accounts
-      // 只有资金账户（含信用卡）能当父账户；历史遗留的非资金父账户不再作为新挂接候选。
-      .filter((account) => account.isAggregate === true && account.id !== editingId && supportsMultiCurrencyHierarchy(account.kind))
-      .map((account) => ({
-        id: account.id,
-        label: account.name,
-        // 子账户必须与父账户同类型：选项按当前编辑的类型过滤，避免选到保存必失败的项。
-        kind: normalizedAccountKind(account),
-        subLabel: tf("settings.accounts.hierarchyChildCount", {
-          count: accounts.filter((child) => child.parentId === account.id).length,
-        }),
-      })),
-    [accounts, editingId, tf],
-  );
 
   // Delete account with password verification
   const [deleteTarget, setDeleteTarget] = useState<{ account: Account; recordCount: number; toRecordCount: number; planCount: number; planGeneratedRecordCount: number } | null>(null);
@@ -384,7 +365,6 @@ export default function SettingsAccountsPage() {
   const [mergeError, setMergeError] = useState("");
 
   // Nested creation from SmartSelect in inline edit
-  const [nestedEntityType, setNestedEntityType] = useState<"institution" | "group" | null>(null);
 
   // 软删除记录预览弹窗（「待删」列点击打开）：预览 + 全选/逐条彻底删除。
   const [trashAccount, setTrashAccount] = useState<Account | null>(null);
@@ -517,354 +497,34 @@ export default function SettingsAccountsPage() {
 
   // 正在编辑的信用卡账户：账单日设置走「账单日设置」弹窗（按生效日期的规则表），
   // 这里只读展示当前生效值：账单日 · 还款日（固定日 / 账单日后 N 天）· 交易归属期。
-  const editingBillingAccount = useMemo(
-    () => (editingId ? accounts.find((account) => account.id === editingId) ?? null : null),
-    [accounts, editingId],
-  );
-
-
-  const loadBillingDayRules = useCallback(async (accountId: string) => {
-    setBillingDayRulesLoading(true);
-    setBillingDayRulesError("");
-    try {
-      const response = await fetch(
-        `/api/v1/bill/billing-day-rules?accountId=${encodeURIComponent(accountId)}`,
-        { cache: "no-store" },
-      );
-      const data = await response.json().catch(() => null) as
-        { ok?: boolean; error?: string; data?: { rules?: CreditBillingDayRuleView[] } } | null;
-      const rules = response.ok && data?.ok && Array.isArray(data.data?.rules) ? data.data.rules : null;
-      setBillingDayRules(rules ?? []);
-      // 读取失败不能退化成空表：这里保留服务端 error 便于定位（例如 Prisma client 未重新生成）。
-      if (!rules) setBillingDayRulesError(data?.error || t("creditBill.readFailed"));
-    } catch {
-      setBillingDayRules([]);
-      setBillingDayRulesError(t("creditBill.readFailed"));
-    } finally {
-      setBillingDayRulesLoading(false);
-    }
-  }, [t]);
-
-  // 贷款类别下拉数据源（2026-10-07）：贷款账户可在此处改类别，服务端按类别派生口径 loanType。
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const response = await fetch("/api/v1/loan-categories", { cache: "no-store" }).catch(() => null);
-      const data = await response?.json().catch(() => null) as {
-        ok?: boolean;
-        categories?: LoanCategoryView[];
-      } | null;
-      if (cancelled) return;
-      setLoanCategories(response?.ok && data?.ok && Array.isArray(data.categories) ? data.categories : []);
-    })();
-    return () => {
-      cancelled = true;
-    };
+  // 编辑弹窗本体在 <AccountEditDialog>（与各视图表头共用同一份实现），这里只负责开关与 ?edit= 深链。
+  const openEdit = useCallback((account: Account) => {
+    setEditingId(account.id);
   }, []);
 
-  // ---- Account handlers ----
-  function buildEditForm(a: Account): Record<string, string> {
-    const normalizedKind = normalizedAccountKind(a);
-    const editKind = normalizedKind;
-    const editInvestProductType = editKind === "investment" ? (a.investProductType || "fund") : editKind === "fixed_asset" ? "property" : "";
-    const supportsInstitution = editKind !== "settlement" && allowedInstitutionTypesForEdit(editKind, editInvestProductType).length > 0;
-    return {
-      name: a.name,
-      note: a.note || "",
-      // 自定义分组标签（2026-11-13）：空串 = 未分组。
-      accountGroup: a.accountGroup || "",
-      kind: editKind,
-      currency: normalizeCurrency(a.currency || baseCurrency),
-      groupId: a.groupId || "",
-      institutionId: supportsInstitution ? a.institutionId || "" : "",
-      counterpartyId: editKind === "settlement" ? a.counterpartyId || "" : "",
-      counterpartyReimbursable: (a.Counterparty?.isReimbursable === true).toString(),
-      billingDay: a.billingDay?.toString() || "",
-      repaymentDay: a.repaymentDay?.toString() || "",
-      repaymentOffsetDays: a.repaymentOffsetDays == null ? "" : String(a.repaymentOffsetDays),
-      repaymentDayMode: a.repaymentOffsetDays == null ? "fixed" : "offset",
-      creditLimit: a.creditLimit || "",
-      creditBillMode: a.creditBillMode === "consolidated" ? "consolidated" : "separate",
-      billingDayTxPeriod: a.billingDayTxPeriod === "next" ? "next" : "current",
-      numberMasked: a.numberMasked || "",
-      investProductType: editInvestProductType,
-      fixedAssetType: editKind === "fixed_asset" ? (a.fixedAssetType || "property") : "",
-      costBasisMethod: a.costBasisMethod || "moving_avg",
-      fundUnitsDecimals: String(a.fundUnitsDecimals ?? 2),
-      tradingCalendar: a.tradingCalendar || "cn_fund",
-      isConsumerLoan: a.isConsumerLoan === true ? "true" : "false",
-      loanCategoryId: editKind === "loan" ? a.loanCategoryId || "" : "",
-      // 多币种归属：空串 = 根账户（独立账户），否则为父账户 id。
-      parentId: a.parentId || "",
-    };
-  }
+  const clearEditQuery = useCallback(() => {
+    if (!searchParams.has("edit")) return;
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete("edit");
+    const qs = params.toString();
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+  }, [pathname, router, searchParams]);
 
-  // buildEditForm 每渲染重建（读 baseCurrency 等渲染期值）；openEdit 的稳定引用经 ref 间接调用。
-  const buildEditFormRef = useRef(buildEditForm);
-  buildEditFormRef.current = buildEditForm;
-
-  const openEdit = useCallback((a: Account) => {
-    const normalizedKind = normalizedAccountKind(a);
-    const nextForm = buildEditFormRef.current(a);
-    setEditingId(a.id);
-    setEditError("");
-    if (normalizedKind === "bank_credit") void loadBillingDayRules(a.id);
-    else {
-      setBillingDayRules([]);
-      setBillingDayRulesError("");
-    }
-    setEditForm(nextForm);
-    setEditFormBaseline(nextForm);
-  }, [loadBillingDayRules]);
-
-  function isEditFormDirty() {
-    const keys = new Set([...Object.keys(editForm), ...Object.keys(editFormBaseline)]);
-    for (const key of keys) {
-      if (String(editForm[key] ?? "") !== String(editFormBaseline[key] ?? "")) return true;
-    }
-    return false;
-  }
-
-  function navigateEditAccount(target: Account | null | undefined) {
-    if (!target || target.id === editingId) return;
-    if (isEditFormDirty() && !window.confirm(t("settings.accounts.unsavedChanges"))) return;
-    openEdit(target);
-  }
-
-  async function saveEdit(options?: { closeAfter?: boolean }) {
-    const closeAfter = options?.closeAfter === true;
-    if (!editingId) return;
-    setEditError("");
-    const savedId = editingId;
-    const previousAccount = accounts.find((account) => account.id === savedId) ?? null;
-    const nextKind = editForm.kind;
-    const nextInvestProductType = editForm.investProductType || "fund";
-    const nextInstitution = institutions.find((institution) => institution.id === editForm.institutionId);
-    if (isStockInvestmentAccount(nextKind, nextInvestProductType) && (!editForm.institutionId || !isStockAccountInstitutionType(nextInstitution?.type))) {
-      setEditError(t("entityForm.error.stockAccountInstitution"));
+  // 已消费的深链 id：关窗时 setEditingId(null) 与 router.replace 之间有一帧参数还在，
+  // 不记住就会立刻把弹窗重新打开。
+  const consumedEditQueryRef = useRef<string | null>(null);
+  useEffect(() => {
+    const targetId = (searchParams.get("edit") ?? "").trim();
+    if (!targetId) {
+      consumedEditQueryRef.current = null;
       return;
     }
-    if (accountRequiresInstitution(nextKind, nextInvestProductType) && !editForm.institutionId) {
-      setEditError(t("settings.accounts.import.institutionRequired"));
-      return;
-    }
-    if (editForm.institutionId && !accountInstitutionTypeMatches(nextKind, nextInvestProductType, nextInstitution?.type)) {
-      setEditError(t("settings.accounts.import.institutionNotAllowed"));
-      return;
-    }
-    if (nextKind === "settlement" && !String(editForm.counterpartyId ?? "").trim()) {
-      setEditError(t("liabilityTx.placeholder.selectCounterparty"));
-      return;
-    }
-    const isFixedAssetKind = nextKind === "fixed_asset";
-    const isConsumerLoan = editForm.isConsumerLoan === "true";
-    // 口径（2026-09-13）：贷款账户允许挂往来对象（贷款窗口借入）——消费贷有机构
-    // 或有往来对象（编辑前账户上已挂的）其一即可。
-    if (isConsumerLoan && (nextKind !== "loan" || (!editForm.institutionId && !previousAccount?.counterpartyId))) {
-      setEditError(t("settings.accounts.consumerLoanInstitutionRequired"));
-      return;
-    }
-    // 账单日 / 还款日都不再随本表单提交：两者都由下方「账单日 / 还款日变更记录」
-    // 按生效日期保存（银行通常同时改），表单里的旧值会把刚加的记录覆盖回去。
-    if (previousAccount?.kind === "bank_credit" && nextKind !== "bank_credit") {
-      const confirmed = await showConfirmDialog({
-        title: t("settings.accounts.loseCreditConfirmTitle"),
-        message: t("settings.accounts.loseCreditConfirmMessage"),
-        tone: "danger",
-      });
-      if (!confirmed) return;
-    }
-    const payload: Record<string, string> = isFixedAssetKind
-      ? { ...editForm, kind: "investment", investProductType: "property", institutionId: "", counterpartyId: "", fixedAssetType: editForm.fixedAssetType || "property", isConsumerLoan: "false" }
-      : nextKind === "settlement"
-        ? { ...editForm, institutionId: "", isConsumerLoan: "false" }
-        : { ...editForm, counterpartyId: nextKind === "loan" ? (editForm.counterpartyId || previousAccount?.counterpartyId || "") : "" };
-    // Convert the reimbursable switch to a JSON boolean; only settlement-account
-    // edits submit it because the field belongs to the counterparty object.
-    if (nextKind === "settlement") {
-      payload.counterpartyReimbursable = editForm.counterpartyReimbursable === "true" ? "true" : "false";
-    } else {
-      delete payload.counterpartyReimbursable;
-    }
-    // 账单日 / 还款日由下方「账单日 / 还款日变更记录」按生效日期保存，不随本表单提交 ——
-    // 否则表单里的旧值会把刚加的记录覆盖回去（还款日现在也跟着记录走）。
-    // 交易归属期（billingDayTxPeriod）仍走本表单。
-    if (previousAccount?.kind === "bank_credit" && nextKind === "bank_credit") {
-      delete payload.billingDay;
-      delete payload.repaymentDay;
-      delete payload.repaymentOffsetDays;
-      delete payload.repaymentDayMode;
-    }
-    const res = await fetch("/api/v1/accounts", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: savedId, ...payload, counterpartyReimbursable: payload.counterpartyReimbursable === "true" ? true : payload.counterpartyReimbursable === "false" ? false : undefined }),
-    });
-    const data = await res.json().catch(() => null) as {
-      ok?: boolean;
-      error?: string;
-      code?: string;
-      data?: {
-        affectedCreditAccountIds?: string[];
-        creditCycleRuleChanged?: boolean;
-      };
-    } | null;
-    if (!res.ok || data?.ok === false) {
-      const lockKey = accountRecordLockErrorKey(data?.code);
-      const parentKey = accountParentErrorKey(data?.code);
-      setEditError(lockKey ? t(lockKey) : parentKey ? t(parentKey) : (data?.error ?? t("settings.accounts.saveFailed")));
-      return;
-    }
-    // 保存成功后以当前表单为新基线，便于继续编辑/翻页；「保存并关闭」才关窗。
-    setEditFormBaseline({ ...editForm });
-    if (closeAfter) {
-      setEditingId(null);
-      setEditFormBaseline({});
-    }
-    const affectedCreditAccountIds = Array.isArray(data?.data?.affectedCreditAccountIds)
-      ? data.data.affectedCreditAccountIds.filter((id): id is string => Boolean(id))
-      : [];
-    const creditRuleChanged = Boolean(data?.data?.creditCycleRuleChanged) || Boolean(
-      previousAccount &&
-      (
-        previousAccount.kind === "bank_credit" ||
-        nextKind === "bank_credit"
-      ) &&
-      (
-        previousAccount.kind !== nextKind ||
-        String(previousAccount.institutionId ?? "") !== String(editForm.institutionId ?? "") ||
-        String(previousAccount.creditBillMode ?? "separate") !== String(editForm.creditBillMode ?? "separate")
-      ),
-    );
-    if (creditRuleChanged) {
-      dispatchFinanceDataChanged({
-        reason: "account-credit-cycle-settings",
-        accountIds: affectedCreditAccountIds.length > 0 ? affectedCreditAccountIds : [savedId],
-      });
-    }
-    void refreshSettingsAccounts("account:update");
-  }
-
-  /** 取消多币种：只在父账户仅剩一个子户时可用（子户提为根账户、父行删除）。 */
-  async function downgradeMultiCurrencyParent(target: Account) {
-    if (upgradingMultiCurrency) return;
-    const childCount = subAccountCountByParentId.get(target.id) ?? 0;
-    const confirmed = await showConfirmDialog({
-      title: t("settings.accounts.parentAccountDowngradeTitle"),
-      message: tf("settings.accounts.parentAccountDowngradeMessage", { name: target.name, count: childCount }),
-      tone: "danger",
-    });
-    if (!confirmed) return;
-    setUpgradingMultiCurrency(true);
-    setEditError("");
-    try {
-      const res = await fetch(`/api/v1/accounts/${encodeURIComponent(target.id)}/multi-currency`, { method: "DELETE" });
-      const data = await res.json().catch(() => null) as { ok?: boolean; error?: string } | null;
-      if (!res.ok || data?.ok !== true) {
-        setEditError(data?.error ?? t("settings.accounts.parentAccountDowngradeFailed"));
-        return;
-      }
-      setEditingId(null);
-      setEditFormBaseline({});
-      await refreshSettingsAccounts("account:multi-currency-downgrade");
-    } catch {
-      setEditError(t("settings.accounts.parentAccountDowngradeFailed"));
-    } finally {
-      setUpgradingMultiCurrency(false);
-    }
-  }
-
-  /** 把正在编辑的账户升级为多币种父账户（父行新建、本账户原地降级为币种子户）。 */
-  async function upgradeEditingAccountToMultiCurrency(target: Account) {
-    if (upgradingMultiCurrency) return;
-    const confirmed = await showConfirmDialog({
-      title: t("settings.accounts.parentAccountUpgradeTitle"),
-      message: tf("settings.accounts.parentAccountUpgradeMessage", { name: target.name }),
-    });
-    if (!confirmed) return;
-    setUpgradingMultiCurrency(true);
-    setEditError("");
-    try {
-      const res = await fetch(`/api/v1/accounts/${encodeURIComponent(target.id)}/multi-currency`, { method: "POST" });
-      const data = await res.json().catch(() => null) as { ok?: boolean; error?: string } | null;
-      if (!res.ok || data?.ok !== true) {
-        setEditError(data?.error ?? t("settings.accounts.parentAccountUpgradeFailed"));
-        return;
-      }
-      await refreshSettingsAccounts("account:multi-currency-upgrade");
-      // 升级后本账户变成子账户（id 不变），用最新数据重开编辑以显示新的归属。
-      const freshAccounts = (getCachedSettingsAccountData()?.accounts ?? []) as Account[];
-      const freshAccount = freshAccounts.find((account) => account.id === target.id);
-      if (freshAccount) openEdit(freshAccount);
-    } catch {
-      setEditError(t("settings.accounts.parentAccountUpgradeFailed"));
-    } finally {
-      setUpgradingMultiCurrency(false);
-    }
-  }
-
-  async function changeEditInstitution(institutionId: string) {
-    setEditForm((current) => ({ ...current, institutionId }));
-    if (editForm.kind !== "bank_credit" || !institutionId) return;
-    const result = await fetch(`/api/v1/accounts/credit-card-defaults?institutionId=${encodeURIComponent(institutionId)}&groupId=${encodeURIComponent(editForm.groupId || "")}`, { cache: "no-store" })
-      .then((response) => response.json())
-      .catch((error) => {
-        console.warn("[accounts] failed to load credit-card institution defaults", error);
-        return null;
-      });
-    if (!result?.ok || !result.data) return;
-    const offsetDays = result.data.repaymentOffsetDays == null ? "" : String(result.data.repaymentOffsetDays);
-    setEditForm((current) => current.institutionId !== institutionId ? current : ({
-      ...current,
-      billingDay: result.data.billingDay == null ? "" : String(result.data.billingDay),
-      repaymentDay: result.data.repaymentDay == null ? "" : String(result.data.repaymentDay),
-      repaymentOffsetDays: offsetDays,
-      repaymentDayMode: offsetDays ? "offset" : "fixed",
-      creditBillMode: result.data.creditBillMode === "consolidated" ? "consolidated" : "separate",
-      billingDayTxPeriod: result.data.billingDayTxPeriod === "next" ? "next" : "current",
-    }));
-  }
-
-  async function changeEditKind(nextKind: string) {
-    const nextInvestProductType = nextKind === "investment" ? (editForm.investProductType || "fund") : nextKind === "fixed_asset" ? "property" : "";
-    const selectedInstitution = institutions.find((institution) => institution.id === editForm.institutionId);
-    const keepInstitution = Boolean(selectedInstitution && accountInstitutionTypeMatches(nextKind, nextInvestProductType, selectedInstitution.type));
-    const nextInstitutionId = keepInstitution ? (editForm.institutionId || "") : "";
-    const existingCounterpartyId = accounts.find((account) => account.id === editingId)?.counterpartyId || "";
-    setEditForm((f) => ({
-      ...f,
-      kind: nextKind,
-      institutionId: nextInstitutionId,
-      counterpartyId: nextKind === "settlement" ? (f.counterpartyId || existingCounterpartyId) : "",
-      investProductType: nextInvestProductType,
-      fixedAssetType: nextKind === "fixed_asset" ? (f.fixedAssetType || "property") : "",
-      // Loan category sits one level below the account kind: default it when switching to "loan",
-      // clear it when switching away (the server clears it too).
-      loanCategoryId: nextKind === "loan" ? (f.loanCategoryId || loanCategories[0]?.id || "") : "",
-      // 子账户必须与父账户同类型：切换类型时先解除归属，否则保存会被后端拒绝。
-      parentId: nextKind === f.kind ? f.parentId : "",
-    }));
-    // Converting into a credit card while keeping the institution: prefill the
-    // institution's billing defaults for still-empty day fields (mirrors changeEditInstitution).
-    if (nextKind !== "bank_credit" || !nextInstitutionId) return;
-    const result = await fetch(`/api/v1/accounts/credit-card-defaults?institutionId=${encodeURIComponent(nextInstitutionId)}&groupId=${encodeURIComponent(editForm.groupId || "")}`, { cache: "no-store" })
-      .then((response) => response.json())
-      .catch((error) => {
-        console.warn("[accounts] failed to load credit-card institution defaults", error);
-        return null;
-      });
-    if (!result?.ok || !result.data) return;
-    const offsetDays = result.data.repaymentOffsetDays == null ? "" : String(result.data.repaymentOffsetDays);
-    setEditForm((current) => current.kind !== "bank_credit" || current.institutionId !== nextInstitutionId ? current : ({
-      ...current,
-      billingDay: current.billingDay || (result.data.billingDay == null ? "" : String(result.data.billingDay)),
-      repaymentDay: current.repaymentDay || (result.data.repaymentDay == null ? "" : String(result.data.repaymentDay)),
-      repaymentOffsetDays: current.repaymentOffsetDays || offsetDays,
-      repaymentDayMode: current.repaymentDay || current.repaymentOffsetDays
-        ? current.repaymentDayMode || (current.repaymentOffsetDays ? "offset" : "fixed")
-        : offsetDays ? "offset" : "fixed",
-    }));
-  }
+    if (consumedEditQueryRef.current === targetId) return;
+    if (!accounts.length) return;
+    consumedEditQueryRef.current = targetId;
+    if (accounts.some((account) => account.id === targetId)) setEditingId(targetId);
+    else clearEditQuery();
+  }, [accounts, clearEditQuery, searchParams]);
 
   const toggleActive = useCallback(async (id: string) => {
     await fetch("/api/v1/accounts", {
@@ -1540,14 +1200,15 @@ export default function SettingsAccountsPage() {
           <div className={`flex min-w-0 items-center gap-1.5 ${indentClass}`}>
             {parentName ? <CornerDownRight className="h-3 w-3 shrink-0 text-slate-300" aria-hidden="true" /> : null}
             {a.isPlaceholder || a.isAggregate ? (
-              // 聚合父账户没有明细，点进去只会是空列表（与侧边栏同一口径：只做折叠）。
+              // 聚合父账户没有可编辑的自身资料，保持纯文本。
               <span className="truncate text-sm font-medium text-slate-800">{a.name}</span>
             ) : (
+              // 账户管理里点账户名 = 打开编辑窗；跳账户视图改由右侧「记录」列承担（2026-11-18）。
               <button
                 type="button"
                 onClick={(event) => {
                   event.stopPropagation();
-                  void router.push(getAccountDetailHref(a));
+                  openEdit(a);
                 }}
                 className="min-w-0 max-w-full truncate rounded text-left text-sm font-medium text-slate-800 hover:text-blue-600 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-200"
               >
@@ -1810,11 +1471,25 @@ export default function SettingsAccountsPage() {
         count: a.recordCount ?? 0,
         deleted: a.deletedRecordCount ?? 0,
       }),
-      render: (a) => (
-        <span className="tabular-nums text-slate-500">
-          {tf("settings.accounts.recordCountShort", { count: a.recordCount ?? 0 })}
-        </span>
-      ),
+      render: (a) => {
+        const count = a.recordCount ?? 0;
+        const label = tf("settings.accounts.recordCountShort", { count });
+        // 聚合父账户/占位账户没有自己的明细，点进去只会是空列表。
+        if (isGroupSummaryRow(a) || a.isPlaceholder || a.isAggregate) {
+          return <span className="tabular-nums text-slate-500">{label}</span>;
+        }
+        // 点记录条数 → 跳转该账户的账户视图（原先挂在账户名上的跳转移到这里）。
+        return (
+          <button
+            type="button"
+            onClick={(event) => { event.stopPropagation(); void router.push(getAccountDetailHref(a)); }}
+            className="rounded px-1 tabular-nums text-slate-500 underline decoration-dotted underline-offset-2 transition hover:bg-blue-50 hover:text-blue-600 hover:decoration-solid focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-200"
+            title={tf("settings.accounts.recordCountTitle", { count, deleted: a.deletedRecordCount ?? 0 })}
+          >
+            {label}
+          </button>
+        );
+      },
     },
     {
       // 「待删」独立列：软删除记录数，点击打开预览弹窗（预览 + 全选/逐条彻底删除）。
@@ -1878,7 +1553,7 @@ export default function SettingsAccountsPage() {
         ? <span className="text-slate-500">{a.note}</span>
         : <span className="text-slate-300">-</span>),
     },
-  ], [t, tf, router, accountKindLabel, investmentLabel, fixedAssetTypeLabel, mergeSelectedIds, toggleMergeSelected, openTrash, ownerNameByGroupId, accountNameById, subAccountCountByParentId, accountGroupBy, balanceById, balanceBaseCurrency, amountClass]);
+  ], [t, tf, router, accountKindLabel, investmentLabel, fixedAssetTypeLabel, mergeSelectedIds, toggleMergeSelected, openTrash, openEdit, ownerNameByGroupId, accountNameById, subAccountCountByParentId, accountGroupBy, balanceById, balanceBaseCurrency, amountClass]);
 
   // 分组表头行只占「名称 + 余额」两格；其余列一律返回 null，
   // 否则伪行会被渲染成「启用」徽章、删除按钮这类真账户才有的内容。
@@ -2439,42 +2114,6 @@ export default function SettingsAccountsPage() {
         existingNames={accounts.map(a => a.name)}
       />
 
-      {/* Nested creation modals from SmartSelect in inline edit */}
-      {nestedEntityType && (
-        <EntityCreateForm
-          mode="compact"
-          entityType={nestedEntityType}
-          open={true}
-          onClose={() => setNestedEntityType(null)}
-          onCreated={(id, name, extra) => {
-            if (nestedEntityType === "institution") {
-              setInstitutions(prev => [...prev, { id, name, shortName: extra?.institutionShortName ?? null, type: extra?.type }]);
-              setEditForm(f => accountInstitutionTypeMatches(f.kind || "other", f.investProductType || "fund", extra?.type) ? { ...f, institutionId: id } : f);
-            } else if (nestedEntityType === "group") {
-              setGroups(prev => [...prev, { id, name, sortOrder: prev.length }]);
-              setEditForm(f => ({ ...f, groupId: id }));
-            }
-            void refreshSettingsAccounts(nestedEntityType === "institution" ? "institution:create-nested" : "account-group:create-nested");
-            setNestedEntityType(null);
-          }}
-          defaultType={
-            nestedEntityType !== "institution" ? undefined
-              : isStockInvestmentAccount(editForm.kind, editForm.investProductType || "fund") ? "brokerage"
-              : editForm.kind === "investment" && (["fund", "money"].includes(editForm.investProductType || "fund")) ? "fund_company"
-              // 电子钱包的机构已放开（银行/基金公司/证券等），新增机构仍默认第三方支付。
-              : editForm.kind === "ewallet" ? "payment"
-              : allowedInstitutionTypesForEdit(editForm.kind, editForm.investProductType || "fund").length === 1 ? allowedInstitutionTypesForEdit(editForm.kind, editForm.investProductType || "fund")[0]
-              : undefined
-          }
-          allowedInstitutionTypes={
-            nestedEntityType !== "institution" ? undefined
-              : isStockInvestmentAccount(editForm.kind, editForm.investProductType || "fund") ? ["brokerage"]
-              : allowedInstitutionTypesForEdit(editForm.kind, editForm.investProductType || "fund").length > 0 ? allowedInstitutionTypesForEdit(editForm.kind, editForm.investProductType || "fund")
-              : undefined
-          }
-        />
-      )}
-
       {/* Password confirmation dialog for deleting account with records */}
       {deleteTarget && (
         <ModalLayer className="fixed inset-0 flex items-center justify-center bg-black/30 backdrop-blur-[1px] p-4" onMouseDown={() => { setDeleteTarget(null); setDeleteError(""); }}>
@@ -2521,530 +2160,16 @@ export default function SettingsAccountsPage() {
       )}
 
       {/* Account edit modal */}
-      {editingId && (() => {
-        const editingAccount = accounts.find((account) => account.id === editingId);
-        if (!editingAccount) return null;
-        const normalizedKind = normalizedAccountKind(editingAccount);
-        // 口径（2026-09-15）：贷款账户建立后基本信息不可修改（与负债侧 4c0a7a7 一致）——
-        // 设置侧只读展示，还款资金账户在负债明细中调整；如需变更参数请删除贷款后重建。
-        const loanEditLocked = normalizedKind === "loan";
-        const loanLockedWrapperCls = loanEditLocked ? "pointer-events-none opacity-60" : "";
-        const editKind = (editForm.kind || normalizedKind) as AccountKind | "fixed_asset";
-        const isFixedAssetKind = editKind === "fixed_asset";
-        const isInvestmentKind = editKind === "investment" || isFixedAssetKind;
-        const editInvestProductType = editForm.investProductType || (isFixedAssetKind ? "property" : "fund");
-        const showCostBasisMethod = isInvestmentKind && supportsCostBasisMethod(editInvestProductType);
-        const isBillLikeKind = editKind === "bank_credit";
-        const supportsLastFour = editKind === "bank_credit" || editKind === "bank_debit";
-        const hasRecords = (editingAccount.recordCount ?? 0) > 0;
-        const kindEdit = accountKindOptionsForEdit({
-          currentKind: normalizedKind,
-          hasRecords,
-          emptyAccountKinds: SETTINGS_ACCOUNT_KIND_OPTIONS,
-        });
-        const editKindOptions = kindEdit.options;
-        // 父账户的类型必须与子户一致，编辑时锁死（服务端同样拒绝变更）。
-        const kindSelectDisabled = loanEditLocked || kindEdit.kindSelectDisabled || editingAccount.isAggregate === true;
-        // 父账户候选按账户类型过滤：子账户必须与父账户同类型。
-        const parentOptionsForKind = parentAccountOptions
-          .filter((option) => option.kind === editKind)
-          .map(({ id, label, subLabel }) => ({ id, label, subLabel }));
-        // 只有资金账户（含信用卡）允许父子层级（2026-10-20 用户裁定）。
-        // 历史数据里若已有归属，仍显示下拉以便解除，但不允许新挂接/升级。
-        const supportsHierarchy = supportsMultiCurrencyHierarchy(editKind);
-        const settlementCounterparties = counterparties.filter((counterparty) => isSettlementCounterpartyType(counterparty.type));
-        // Resolve the current account's object even when it is outside the
-        // settlement-counterparty filter, such as a merchant fallback.
-        const editingCounterparty = settlementCounterparties.find((counterparty) => counterparty.id === (editForm.counterpartyId || editingAccount.counterpartyId))
-          ?? counterparties.find((counterparty) => counterparty.id === (editForm.counterpartyId || editingAccount.counterpartyId))
-          ?? null;
-        const supportsInstitution = editKind !== "settlement" && allowedInstitutionTypesForEdit(editKind, editInvestProductType).length > 0;
-        const filteredInstitutions = institutions.filter((institution) =>
-          accountInstitutionTypeMatches(editKind, editInvestProductType, institution.type),
-        );
-        // 导航顺序 = 表格当前视图顺序（顶部筛选 + 列排序后的行序）。
-        const navigationAccounts = navigationAccountsState;
-        const currentNavIndex = navigationAccounts.findIndex((account) => account.id === editingId);
-        const previousAccountNav = currentNavIndex > 0 ? navigationAccounts[currentNavIndex - 1] : null;
-        const nextAccountNav = currentNavIndex >= 0 && currentNavIndex < navigationAccounts.length - 1 ? navigationAccounts[currentNavIndex + 1] : null;
-        const closeEditModal = () => {
-          setEditingId(null);
-          setEditError("");
-          setEditFormBaseline({});
-        };
-        return (
-          <ModalLayer className="fixed inset-0 flex items-start justify-center overflow-y-auto bg-black/30 p-0 backdrop-blur-[1px] md:p-4" onMouseDown={closeEditModal}>
-            <div
-              className="app-modal-panel relative mt-0 w-full max-w-[calc(100vw-2rem)] md:mt-20 md:!w-[720px] md:max-h-[calc(100dvh-7rem)]"
-              role="dialog"
-              aria-modal="true"
-              onMouseDown={e => e.stopPropagation()}
-            >
-              <div className="modal-header shrink-0">
-                <div className="min-w-0">
-                  <div className="truncate text-sm font-semibold text-slate-800">{t("settings.accounts.editTitle", { name: editingAccount.name })}</div>
-                  {/* 副标题把「这是什么账户」一次说清：类型 · 币种 · 归属状态，省得在表单里再找。 */}
-                  <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] text-slate-500">
-                    <span className={`inline-flex shrink-0 items-center gap-1 rounded border px-1 py-px font-medium [&>svg]:h-3 [&>svg]:w-3 ${kindColor(normalizedKind)}`}>
-                      {kindIcon(normalizedKind)}
-                      {accountKindLabel(normalizedKind)}
-                    </span>
-                    <span className="shrink-0 tabular-nums text-slate-400">{normalizeCurrency(editForm.currency || editingAccount.currency || baseCurrency)}</span>
-                    {editingAccount.isAggregate ? (
-                      <span className="shrink-0 rounded bg-sky-50 px-1 py-px text-sky-700">{t("settings.accounts.hierarchyMultiCurrency")}</span>
-                    ) : editingAccount.parentId ? (
-                      <span className="shrink-0 rounded bg-slate-100 px-1 py-px text-slate-500">
-                        {t("settings.accounts.hierarchyChildBadge")}
-                      </span>
-                    ) : null}
-                    {!editingAccount.isActive ? <span className="shrink-0 text-slate-400">{t("common.disabled")}</span> : null}
-                  </div>
-                </div>
-                <button type="button" onClick={closeEditModal}
-                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md border border-slate-200 bg-white text-slate-500 transition-colors hover:border-slate-300 hover:bg-white hover:text-slate-700" aria-label={t("table.close")}>
-                  <X className="h-4 w-4" />
-                </button>
-              </div>
-              {navigationAccounts.length > 1 ? (
-                <TransparentSideNavButtons
-                  scope="account"
-                  onPrevious={() => navigateEditAccount(previousAccountNav)}
-                  onNext={() => navigateEditAccount(nextAccountNav)}
-                  previousDisabled={!previousAccountNav}
-                  nextDisabled={!nextAccountNav}
-                  previousLabel={t("settings.accounts.previousAccount")}
-                  nextLabel={t("settings.accounts.nextAccount")}
-                />
-              ) : null}
-              <div className="min-h-0 flex-1 overflow-y-auto p-4">
-              {/* 多币种归属：父账户/子账户的关系只读展示（关系由转账时自动创建或升级产生）。
-                  「父账户只统计、不能记账」这类解释只在新手期显示，老用户只看归属事实。 */}
-              {editingAccount.parentId ? (
-                <div className="mb-3 rounded-md border border-slate-200/70 border-l-[3px] border-l-slate-300 bg-slate-50/80 px-2.5 py-1.5 text-[11px] leading-4 text-slate-600">
-                  {hideSettingDescriptions
-                    ? tf("settings.accounts.hierarchyParentOwner", {
-                        name: accountNameById.get(editingAccount.parentId) ?? "-",
-                        currency: editingAccount.currency,
-                      })
-                    : tf("settings.accounts.hierarchyParentHint", {
-                        name: accountNameById.get(editingAccount.parentId) ?? "-",
-                        currency: editingAccount.currency,
-                      })}
-                </div>
-              ) : editingAccount.isAggregate ? (
-                <div className="mb-3 rounded-md border border-slate-200/70 border-l-[3px] border-l-slate-300 bg-slate-50/80 px-2.5 py-1.5 text-[11px] leading-4 text-slate-600">
-                  <div>
-                    {hideSettingDescriptions
-                      ? `${t("settings.accounts.hierarchyMultiCurrency")} · ${tf("settings.accounts.hierarchyChildCount", { count: subAccountCountByParentId.get(editingAccount.id) ?? 0 })}`
-                      : tf("settings.accounts.hierarchyAggregateHint", { count: subAccountCountByParentId.get(editingAccount.id) ?? 0 })}
-                  </div>
-                  {/* 0 个子户（可直接新建的空父账户）也能取消：后端会删掉父行。 */}
-                  {(subAccountCountByParentId.get(editingAccount.id) ?? 0) <= 1 ? (
-                    <button
-                      type="button"
-                      onClick={() => void downgradeMultiCurrencyParent(editingAccount)}
-                      disabled={upgradingMultiCurrency}
-                      className="mt-1 text-[11px] font-medium text-rose-600 underline decoration-dotted underline-offset-2 transition-colors hover:text-rose-700 disabled:cursor-not-allowed disabled:text-slate-300"
-                    >
-                      {t("settings.accounts.parentAccountDowngrade")}
-                    </button>
-                  ) : null}
-                </div>
-              ) : null}
-              {loanEditLocked ? (
-                <div className="mb-3 rounded-md border border-amber-200/70 border-l-[3px] border-l-amber-400 bg-amber-50/70 px-2.5 py-1.5 text-[11px] leading-4 text-amber-700">
-                  {t("settings.accounts.loanEditableHint")}
-                </div>
-              ) : null}
-              <EditSection title={t("settings.accounts.editSectionBasic")}>
-              <div className="grid grid-cols-2 gap-x-3 gap-y-2.5 md:grid-cols-4">
-                <div>
-                  <label className={FIELD_LABEL_CLS}>{t("settings.accounts.name")}</label>
-                  <input value={editForm.name || ""} onChange={e => setEditForm(f => ({ ...f, name: e.target.value }))}
-                    className={FIELD_INPUT_CLS} />
-                </div>
-                <div>
-                  <label className={FIELD_LABEL_CLS}>{t("settings.accounts.type")}</label>
-                  <select
-                    value={editKind}
-                    onChange={e => void changeEditKind(e.target.value)}
-                    disabled={kindSelectDisabled}
-                    className={FIELD_INPUT_CLS}
-                  >
-                    {editKindOptions.map((value) => (
-                      <option key={value} value={value}>{t(`account.kind.${value}`)}</option>
-                    ))}
-                  </select>
-                </div>
-                {editKind === "loan" ? (
-                  <div>
-                    <label className={FIELD_LABEL_CLS}>{t("settings.accounts.loanCategory")}</label>
-                    <select
-                      value={editForm.loanCategoryId || loanCategories[0]?.id || ""}
-                      onChange={e => setEditForm(f => ({ ...f, loanCategoryId: e.target.value }))}
-                      className={FIELD_INPUT_CLS}
-                    >
-                      {loanCategories.map((category) => (
-                        <option key={category.id} value={category.id}>
-                          {category.isSystem ? t(`loan.type.${category.baseType}`) : category.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                ) : null}
-                <div>
-                  <label className={FIELD_LABEL_CLS}>{t("settings.accounts.owner")}</label>
-                  <div className={loanLockedWrapperCls}>
-                    <SmartSelect mode="single" value={editForm.groupId || ""}
-                      onChange={id => setEditForm(f => ({ ...f, groupId: id }))}
-                      options={statisticsUsers.map((owner) => ({ id: owner.id, label: owner.name }))}
-                      placeholder={t("settings.accounts.selectOwner")}
-                      behavior={{ density: "compact" }}
-                      onCreateClick={() => setNestedEntityType("group")} createLabel={t("settings.accounts.addOwner")} />
-                  </div>
-                </div>
-                {/* 自定义分组标签（2026-11-13）：用户自己起的分类名，只影响侧边栏 / 账户下拉的分组显示，
-                    与上面的「所有人」无关。用 datalist 复用已有标签，既省输入又避免同义重名。 */}
-                <div>
-                  <label className="mb-1 flex items-center gap-1 text-xs text-slate-500">
-                    <span>{t("settings.accounts.accountGroup")}</span>
-                    <SettingsInfoHint text={t("settings.accounts.accountGroupHint")} />
-                  </label>
-                  <input
-                    value={editForm.accountGroup || ""}
-                    onChange={e => setEditForm(f => ({ ...f, accountGroup: e.target.value }))}
-                    list="account-group-label-options"
-                    placeholder={t("settings.accounts.accountGroupPlaceholder")}
-                    className={FIELD_INPUT_CLS}
-                  />
-                  <datalist id="account-group-label-options">
-                    {accountGroupLabelOptions.map((label) => (
-                      <option key={label} value={label} />
-                    ))}
-                  </datalist>
-                </div>
-                {/* 多币种归属：只有资金账户（含信用卡）才有上级账户；父账户自己不能有上级。
-                    历史数据已有归属时仍显示，方便解除。 */}
-                {!editingAccount.isAggregate && (supportsHierarchy || Boolean(editForm.parentId)) && (
-                  <div>
-                    {/* 表单里不再写解释长句：「父账户只统计不记账」「怎么产生父账户」都收进 i 图标悬浮。
-                        「改为多币种父账户」是下拉底部的动作行，同样只在悬浮时给出后果说明。 */}
-                    <label className="mb-1 flex items-center gap-1 text-xs text-slate-500">
-                      <span>{t("settings.accounts.parentAccount")}</span>
-                      <SettingsInfoHint
-                        text={parentOptionsForKind.length === 0
-                          ? t("settings.accounts.parentAccountEmpty")
-                          : editForm.parentId
-                            ? t("settings.accounts.parentAccountHint")
-                            : t("settings.accounts.parentAccountNoneHint")}
-                      />
-                    </label>
-                    <SmartSelect mode="single" value={editForm.parentId || ""}
-                      onChange={id => setEditForm(f => ({ ...f, parentId: id }))}
-                      options={parentOptionsForKind}
-                      placeholder={t("settings.accounts.parentAccountNone")}
-                      behavior={{
-                        // 触发器和同排输入框一样高（h-8），否则整行高度参差不齐。
-                        density: "compact",
-                        // 下拉比单元格宽：底部动作行带一句后果说明，挤在 130px 的格子里会被截断。
-                        minDropdownWidth: 264,
-                        // 子账户不能再升级成父账户（服务端同样拒绝），先解除归属保存后再升级；
-                        // 非资金账户不允许升级为多币种父账户。
-                        footerAction: !editForm.parentId && supportsHierarchy
-                          ? {
-                              label: upgradingMultiCurrency
-                                ? t("settings.accounts.parentAccountUpgrading")
-                                : t("settings.accounts.parentAccountUpgrade"),
-                              hint: t("settings.accounts.parentAccountUpgradeInlineHint"),
-                              title: t("settings.accounts.parentAccountUpgradeHint"),
-                              icon: <Layers className="h-3.5 w-3.5" />,
-                              tone: "accent",
-                              disabled: upgradingMultiCurrency,
-                              onClick: () => void upgradeEditingAccountToMultiCurrency(editingAccount),
-                            }
-                          : undefined,
-                      }}
-                    />
-                  </div>
-                )}
-                {supportsInstitution && (
-                  <div>
-                    <label className={FIELD_LABEL_CLS}>{t("settings.accounts.institution")}</label>
-                    <div className={loanLockedWrapperCls}>
-                      <SmartSelect mode="single" value={editForm.institutionId || ""}
-                        onChange={changeEditInstitution}
-                        options={filteredInstitutions.map(i => ({
-                          id: i.id,
-                          label: institutionFullName(i),
-                          subLabel: institutionKindLabel(i.type),
-                        }))}
-                        placeholder={t("settings.accounts.selectInstitution")}
-                        behavior={{ density: "compact" }}
-                        onCreateClick={() => setNestedEntityType("institution")} createLabel={t("settings.accounts.addInstitution")} />
-                    </div>
-                  </div>
-                )}
-                {editKind === "settlement" && (
-                  <div>
-                    <label className={FIELD_LABEL_CLS}>{t("txForm.counterparty")}</label>
-                    <select
-                      value={editForm.counterpartyId || ""}
-                      onChange={(e) => setEditForm((f) => {
-                        // When switching objects, follow the new object's value;
-                        // never carry the previous object's object-level value over.
-                        const nextCp = counterparties.find((counterparty) => counterparty.id === e.target.value);
-                        return { ...f, counterpartyId: e.target.value, counterpartyReimbursable: (nextCp?.isReimbursable === true).toString() };
-                      })}
-                      disabled={loanEditLocked}
-                      className={FIELD_INPUT_CLS}
-                    >
-                      <option value="">{t("liabilityTx.placeholder.selectCounterparty")}</option>
-                      {settlementCounterparties.map((counterparty) => (
-                        <option key={counterparty.id} value={counterparty.id}>{counterparty.shortName?.trim() || counterparty.name}</option>
-                      ))}
-                    </select>
-                  </div>
-                )}
-                {editKind === "settlement" && (
-                  <div>
-                    <label className={FIELD_LABEL_CLS}>{t("institutionEdit.reimbursable")}</label>
-                    <select
-                      value={editForm.counterpartyReimbursable || "false"}
-                      onChange={(e) => setEditForm((f) => ({ ...f, counterpartyReimbursable: e.target.value }))}
-                      disabled={loanEditLocked || !editingCounterparty}
-                      className={FIELD_INPUT_CLS}
-                    >
-                      <option value="true">{t("settings.counterparties.reimbursableYes")}</option>
-                      <option value="false">{t("settings.counterparties.reimbursableNo")}</option>
-                    </select>
-                    {editingCounterparty ? (
-                      <p className="mt-1 text-[11px] leading-4 text-slate-400">
-                        {tf("settings.accounts.reimbursableObjectHint", { name: editingCounterparty.shortName?.trim() || editingCounterparty.name })} {t("institutionEdit.reimbursableHint")}
-                      </p>
-                    ) : null}
-                  </div>
-                )}
-                <div>
-                  <label className={FIELD_LABEL_CLS}>{t("settings.accounts.currency")}</label>
-                  <select
-                    value={normalizeCurrency(editForm.currency || baseCurrency)}
-                    onChange={e => setEditForm(f => ({ ...f, currency: e.target.value }))}
-                    // 父账户是统计单元：币种固定为账簿本位币（服务端同样强制）。
-                    disabled={loanEditLocked || hasRecords || editingAccount.isAggregate === true}
-                    className={FIELD_INPUT_CLS}
-                  >
-                    {CURRENCY_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>{t(`entityForm.currency.${option.value.toLowerCase()}`)}</option>
-                    ))}
-                  </select>
-                </div>
-                {isInvestmentKind && (
-                  isFixedAssetKind ? (
-                    <div>
-                      <label className={FIELD_LABEL_CLS}>{t("fixedAssetEdit.assetType")}</label>
-                      <select
-                        value={editForm.fixedAssetType || "property"}
-                        onChange={e => setEditForm(f => ({ ...f, fixedAssetType: e.target.value }))}
-                        className={FIELD_INPUT_CLS}
-                      >
-                        {FIXED_ASSET_TYPES.map((value) => (
-                          <option key={value} value={value}>{t(`fixedAsset.type.${value}`)}</option>
-                        ))}
-                      </select>
-                    </div>
-                  ) : (
-                    <div>
-                      <label className={FIELD_LABEL_CLS}>{t("settings.accounts.investmentAccountType")}</label>
-                      <select value={editInvestProductType} onChange={e => setEditForm(f => {
-                        const nextInvestProductType = e.target.value;
-                        const selectedInstitution = institutions.find((institution) => institution.id === f.institutionId);
-                        return {
-                          ...f,
-                          investProductType: nextInvestProductType,
-                          ...(isStockInvestmentAccount(editKind, nextInvestProductType) && selectedInstitution && !isStockAccountInstitutionType(selectedInstitution.type) ? { institutionId: "" } : {}),
-                        };
-                      })}
-                        disabled={hasRecords}
-                        className={FIELD_INPUT_CLS}>
-                        {investmentProductTypeOptions.map((item) => <option key={item.value} value={item.value}>{investmentLabel(item.value)}</option>)}
-                      </select>
-                    </div>
-                  )
-                )}
-              </div>
-              </EditSection>
-
-              {isInvestmentKind && (
-                <EditSection title={t("settings.accounts.editSectionInvest")} className="mt-4 rounded-lg border border-slate-200/60 bg-slate-50/50 p-3">
-                <div className="grid grid-cols-2 gap-x-3 gap-y-2.5 md:grid-cols-4">
-                  {showCostBasisMethod && (
-                    <div>
-                      <label className={FIELD_LABEL_CLS}>{t("settings.accounts.costBasisMethod")}</label>
-                      <select value={editForm.costBasisMethod || "moving_avg"} onChange={e => setEditForm(f => ({ ...f, costBasisMethod: e.target.value }))}
-                        className={FIELD_INPUT_CLS}>
-                        <option value="moving_avg">{t("settings.accounts.movingAverage")}</option>
-                        <option value="fifo">{t("settings.accounts.fifo")}</option>
-                        <option value="lifo">{t("settings.accounts.lifo")}</option>
-                      </select>
-                    </div>
-                  )}
-                  {editInvestProductType === "fund" && (
-                    <div>
-                      <label className={FIELD_LABEL_CLS}>{t("settings.accounts.fundUnitsDecimals")}</label>
-                      <input
-                        value={editForm.fundUnitsDecimals || "2"}
-                        onChange={e => setEditForm(f => ({ ...f, fundUnitsDecimals: e.target.value }))}
-                        className={FIELD_INPUT_CLS}
-                        inputMode="numeric"
-                        placeholder={t("settings.accounts.defaultUnitsDecimals")}
-                      />
-                    </div>
-                  )}
-                  {supportsTradingCalendarForAccount(editKind, editInvestProductType) && (
-                    <div>
-                      <label className={FIELD_LABEL_CLS}>{t("settings.accounts.tradingCalendar")}</label>
-                      <select
-                        value={editForm.tradingCalendar || "cn_fund"}
-                        onChange={e => setEditForm(f => ({ ...f, tradingCalendar: e.target.value }))}
-                        className={FIELD_INPUT_CLS}
-                      >
-                        {TRADING_CALENDARS.map((calendar) => (
-                          <option key={calendar} value={calendar}>{t(`tradingCalendar.${calendar}`)}</option>
-                        ))}
-                      </select>
-                    </div>
-                  )}
-                </div>
-                </EditSection>
-              )}
-
-              {supportsLastFour && (
-                <EditSection title={t("settings.accounts.editSectionCard")} className="mt-4 rounded-lg border border-slate-200/60 bg-slate-50/50 p-3">
-                <div className="grid grid-cols-2 gap-x-3 gap-y-2.5 md:grid-cols-4">
-                  {isBillLikeKind && (
-                    <>
-                      {/* 账单日与还款日都不在这里单独放字段：银行通常两者一起改，所以都由
-                          下方的「账单日 / 还款日变更记录」按生效日期管理。 */}
-                      <div>
-                        <label className={FIELD_LABEL_CLS}>{t("settings.accounts.creditLimitLabel")}</label>
-                        <CalcInput
-                          value={editForm.creditLimit || ""}
-                          onChange={(value) => setEditForm((f) => ({ ...f, creditLimit: value }))}
-                          label={t("settings.accounts.creditLimitLabel")}
-                          precision={2}
-                          compact
-                          inputClassName={`${FIELD_INPUT_CLS} pr-6`}
-                        />
-                      </div>
-                    </>
-                  )}
-                  {isBillLikeKind && (
-                    <div>
-                      <label className={FIELD_LABEL_CLS}>{t("settings.accounts.billingDayTxPeriodLabel")}</label>
-                      <select
-                        value={editForm.billingDayTxPeriod || "current"}
-                        onChange={e => setEditForm(f => ({ ...f, billingDayTxPeriod: e.target.value }))}
-                        className={FIELD_INPUT_CLS}
-                      >
-                        <option value="current">{t("settings.accounts.billingDayTxPeriod.current")}</option>
-                        <option value="next">{t("settings.accounts.billingDayTxPeriod.next")}</option>
-                      </select>
-                    </div>
-                  )}
-                  <div>
-                    <label className={FIELD_LABEL_CLS}>{t("settings.accounts.lastFourLabel")}</label>
-                    <input value={editForm.numberMasked || ""} onChange={e => setEditForm(f => ({ ...f, numberMasked: e.target.value }))}
-                      className={FIELD_INPUT_CLS} />
-                  </div>
-                  {isBillLikeKind && (
-                    <div>
-                      <label className={FIELD_LABEL_CLS}>{t("settings.accounts.billMode")}</label>
-                      <select
-                        value={editForm.creditBillMode || "separate"}
-                        onChange={e => setEditForm(f => ({ ...f, creditBillMode: e.target.value }))}
-                        className={FIELD_INPUT_CLS}
-                      >
-                        <option value="separate">{t("settings.accounts.separateBill")}</option>
-                        <option value="consolidated">{t("settings.accounts.consolidatedBill")}</option>
-                      </select>
-                    </div>
-                  )}
-                </div>
-                </EditSection>
-              )}
-
-              {isBillLikeKind && editingBillingAccount ? (
-                // 这张表自带卡片头（标题 + 「新增」按钮），外面不再套分区标题，避免重复。
-                <div className="mt-4">
-                  <CreditCardBillingDayRulesTable
-                    accountId={editingBillingAccount.id}
-                    rules={billingDayRules}
-                    onRulesChanged={setBillingDayRules}
-                    billingDay={editingBillingAccount.billingDay}
-                    // 账户级还款日只作为「记录里没写」时的默认值；口径由它是否有 offset 决定。
-                    repaymentDay={editingBillingAccount.repaymentDay ?? null}
-                    repaymentOffsetDays={editingBillingAccount.repaymentOffsetDays ?? null}
-                  />
-                  {billingDayRulesLoading ? <div className="mt-1 text-xs text-slate-400">{t("common.loading")}</div> : null}
-                  {!billingDayRulesLoading && billingDayRulesError ? (
-                    <div className="mt-1 text-xs text-rose-600">{billingDayRulesError}</div>
-                  ) : null}
-                </div>
-              ) : null}
-
-              <EditSection title={t("settings.accounts.note")} className="mt-4">
-                <ClearableNoteField
-                  multiline
-                  value={editForm.note || ""}
-                  onValueChange={value => setEditForm(f => ({ ...f, note: value }))}
-                  className="min-h-[76px] w-full resize-y rounded-md border border-slate-200 px-2 py-2 text-sm leading-5 outline-none transition-colors focus:border-blue-400 focus:ring-2 focus:ring-blue-100"
-                  placeholder={t("settings.accounts.notePlaceholder")}
-                  rows={3}
-                />
-              </EditSection>
-
-              {isInvestmentKind && editInvestProductType === "fund" ? (
-                <EditSection title={t("fundRules.title")} className="mt-4">
-                  <div className="mb-2 text-[11px] text-slate-400">{t("fundConfirmDays.embeddedHint")}</div>
-                  <FundConfirmDaysPanel
-                    accountId={editingAccount.id}
-                    compact
-                    onSaved={() => {
-                      dispatchFinanceDataChanged({ reason: "fund-confirm-days:save", accountIds: [editingAccount.id] });
-                    }}
-                  />
-                </EditSection>
-              ) : null}
-
-              </div>
-              {/* 按钮行移出滚动区：移动端整屏弹窗里，保存按钮要贴底不动，
-                  不能跟着长表单（备注、基金规则、账单日历史）滚到看不见的地方。
-                  桌面端仍是内容末尾的一行小按钮，视觉与改动前一致。 */}
-              <div className="shrink-0 border-t border-slate-100 bg-white px-4 pt-3 pb-[calc(env(safe-area-inset-bottom)+0.75rem)] md:px-4 md:pb-4">
-                <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-end">
-                  {editError ? <div className="text-xs text-red-600 md:mr-auto">{editError}</div> : null}
-                  <div className="flex gap-2 md:justify-end">
-                    <button
-                      type="button"
-                      onClick={() => void saveEdit({ closeAfter: false })}
-                      className="inline-flex h-11 flex-1 items-center justify-center rounded-xl border border-slate-200 bg-white text-sm font-medium text-slate-700 transition-colors active:bg-slate-100 md:h-8 md:flex-none md:rounded-md md:px-3 md:text-xs md:hover:bg-slate-50"
-                    >
-                      {t("common.save")}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void saveEdit({ closeAfter: true })}
-                      className="inline-flex h-11 flex-[1.4] items-center justify-center rounded-xl bg-blue-600 text-sm font-medium text-white active:bg-blue-700 md:h-8 md:flex-none md:rounded-md md:px-4 md:text-xs md:hover:bg-blue-700"
-                    >
-                      {t("settings.accounts.saveAndClose")}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </ModalLayer>
-        );
-      })()}
+      {editingId && (
+        <AccountEditDialog
+          accountId={editingId}
+          navigationAccounts={navigationAccountsState}
+          onClose={() => {
+            setEditingId(null);
+            clearEditQuery();
+          }}
+        />
+      )}
 
       {/* ===== Merge selection bar (bottom floating) ===== */}
       {mergeSelectedIds.length > 0 && (

@@ -12,6 +12,10 @@ import { useI18n } from "@/lib/i18n";
  *
  * 和开放式基金的净值面板完全不同：货基净值恒为 1.0000，可维护的是每日万份收益。
  * 面板同时提供「立即结转」，把万份收益按当日份额折成收益加进份额。
+ *
+ * 注意：万份收益属于统计口径，不进「基金资料」页（见 FundProfileSettingsClient）。
+ * 数据表与接口（money-yield / money-income/accrue）仍由后台任务按日拉取并结转，
+ * 这个组件目前没有页面挂载，保留给将来的统计/补录入口使用。
  */
 
 type YieldRow = { date: string; incomePer10k: number };

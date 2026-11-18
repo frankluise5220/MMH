@@ -3670,6 +3670,10 @@ async function restoreSingleHouseholdBackup(
           // 账户自定义分组标签（2026-11-13）：不显式恢复会静默落回 null，
           // 恢复后侧边栏/下拉的分组全变「未分组」。
           accountGroup: item.accountGroup == null ? null : String(item.accountGroup),
+          // 电子钱包 → 货币基金支付关联（2026-11-18）：漏写会让恢复后的钱包
+          // 丢失关联，支出弹窗不再出现「从关联货基支付」选项。
+          linkedFundAccountId: item.linkedFundAccountId == null ? null : String(item.linkedFundAccountId),
+          linkedFundCode: item.linkedFundCode == null ? null : String(item.linkedFundCode),
           usageCount: Number(item.usageCount ?? 0),
           lastUsedAt: item.lastUsedAt == null ? null : new Date(String(item.lastUsedAt)),
           householdId,

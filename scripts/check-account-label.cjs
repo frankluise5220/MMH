@@ -47,8 +47,9 @@ const LINE_RULES = [
     test: (line) => /\.join\("·"\)|\.join\('·'\)/.test(line) && /institution/i.test(line),
     // 导出/去重需要「完整身份串」，与界面显示设置无关，属于显式豁免。
     // 导出/去重/身份键需要「完整身份串」，与界面显示设置无关，属于显式豁免。
+    // newAccountName：新建账户时写进 Account.name 的落库名，不是界面渲染，与显示设置无关。
     allow: (line) =>
-      /exportAccountLabel|accountIdentityKey|identityKey|tailOrName|kindLabel\(account\.kind\)|\.split\("·"\)/i.test(line),
+      /exportAccountLabel|accountIdentityKey|identityKey|tailOrName|kindLabel\(account\.kind\)|\.split\("·"\)|newAccountName/i.test(line),
     hint: "禁止用 join(\"·\") 拼机构与名称；改用 accountTableCell(...).label / accountOptionRow(...).label",
   },
   {

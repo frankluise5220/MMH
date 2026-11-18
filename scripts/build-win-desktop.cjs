@@ -527,6 +527,10 @@ function applyRuntimeMigrations(db) {
   // 漏掉这段：升级后的桌面库打开账户页 / 侧边栏会报 "no such column: accountGroup"
   // （账户查询是全列 findMany，不是 select 白名单）。
   addColumnIfMissing(db, "Account", "accountGroup", "TEXT");
+  // 2026-11-18 电子钱包 → 货币基金支付关联。账户查询是全列 findMany，
+  // 漏掉这两列会让升级后的桌面库打开账户设置 / 记账弹窗时报 no such column。
+  addColumnIfMissing(db, "Account", "linkedFundAccountId", "TEXT");
+  addColumnIfMissing(db, "Account", "linkedFundCode", "TEXT");
   // 账户下拉分组维度。household-preferences 走全列 findUnique，缺列即首屏报错。
   addColumnIfMissing(db, "HouseholdPreference", "accountDropdownGroupBy", "TEXT NOT NULL DEFAULT 'owner'");
   // 2026-11-15 固定资产扩展属性（生产日期 / 重量）+ 折旧（方式 / 年限 / 残值 / 累计折旧）。

@@ -476,6 +476,7 @@ export function RegularInvestForm({
   prefilledConfirmDays,
   prefilledArrivalDays,
   lastUsedCashAccountId,
+  defaultInvestProductType = null,
   showTriggerButton = true,
   open,
   onOpenChange,
@@ -491,6 +492,11 @@ export function RegularInvestForm({
   accountId: string;
   accountLabel?: string;
   investmentAccounts?: { id: string; name: string; label: string }[];
+  /**
+   * 当前上下文的产品类型（fund / money / …）。只在「定投里顺手新建账户」时用到：
+   * 建出来的账户必须和当前账户同类，避免在货基页面里凭空建出一个开放式基金账户。
+   */
+  defaultInvestProductType?: string | null;
   /** 贵金属投资账户（investProductType === "metal"），供贵金属积存页签使用 */
   metalAccounts?: { id: string; name: string; label: string }[];
   cashAccounts?: { id: string; label: string; icon?: string; subLabel?: string }[];
@@ -1715,8 +1721,8 @@ export function RegularInvestForm({
                       onCreated={handleNestedAccountCreated}
                       extraFields={nestedEntityType === "cash-account"
                         ? undefined
-                        : { kind: "investment", investProductType: "fund" }}
-                      hiddenFields={nestedEntityType === "cash-account" ? [] : ["kind"]}
+                        : { kind: "investment", investProductType: defaultInvestProductType || "fund" }}
+                      hiddenFields={nestedEntityType === "cash-account" ? [] : ["kind", "investProductType"]}
                       allowedAccountKinds={nestedEntityType === "cash-account" ? ["bank_debit", "ewallet"] : undefined}
                       nestedFieldData={localNestedFieldData ?? nestedFieldData}
                       onNestedCreated={handleNestedOptionCreated}

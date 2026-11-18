@@ -2991,10 +2991,14 @@ export function AdvancedDataTable<T>({
     handleRowDragEnd();
   }, [handleRowDragEnd]);
 
-  function hasActiveTextSelection() {
+  function hasActiveTextSelection(root?: Node | null) {
     if (typeof window === "undefined") return false;
     const selection = window.getSelection();
-    return !!selection && !selection.isCollapsed && selection.toString().trim().length > 0;
+    if (!selection || selection.isCollapsed || selection.toString().trim().length === 0) return false;
+    // 只拦「在当前行里拖选文本」的点击：页面其他位置残留的选区不该让所有行都点不动。
+    if (!root) return true;
+    const { anchorNode, focusNode } = selection;
+    return !!anchorNode && !!focusNode && root.contains(anchorNode) && root.contains(focusNode);
   }
 
   const dropOnPreviewTarget = useCallback((sourceKey: string) => {
@@ -4033,12 +4037,12 @@ export function AdvancedDataTable<T>({
                   data-advanced-row-key={key}
                   data-advanced-table-body-row
                   ref={shouldVirtualizeRows ? rowVirtualizer.measureElement : undefined}
-                  onClick={() => {
+                  onClick={(event) => {
                     if (suppressNextClickRef.current) {
                       suppressNextClickRef.current = false;
                       return;
                     }
-                    if (hasActiveTextSelection()) return;
+                    if (hasActiveTextSelection(event.currentTarget)) return;
                     // 点过哪一行，Tab 回表格时方向键就从哪一行继续走。
                     setActiveRowKey(key);
                     toggleCurrentRow();

@@ -647,6 +647,70 @@ export async function PUT(req: NextRequest) {
     }
 
     const nextKind = String(data.kind ?? existing.kind);
+    // 电子钱包 → 货基支付关联（2026-11-18）：只有 ewallet 能配置，目标必须是
+    // 本账簿里的货币基金账户；解绑时两列一起清掉，避免留下半截关联。
+    if (body.linkedFundAccountId !== undefined) {
+      const rawLinkedId = String(body.linkedFundAccountId ?? "").trim();
+      if (!rawLinkedId) {
+        data.linkedFundAccountId = null;
+        data.linkedFundCode = null;
+      } else {
+        if (nextKind !== "ewallet") {
+          return NextResponse.json(
+            { ok: false, code: "ACCOUNT_LINKED_FUND_KIND", error: "Only e-wallet accounts can link a money fund" },
+            { status: 400 },
+          );
+        }
+        if (rawLinkedId === id) {
+          return NextResponse.json(
+            { ok: false, code: "ACCOUNT_LINKED_FUND_SELF", error: "An account cannot link itself" },
+            { status: 400 },
+          );
+        }
+        const linkedAccount = await prisma.account.findFirst({
+          where: { id: rawLinkedId, householdId, kind: "investment", investProductType: "money" },
+          select: { id: true, institutionId: true },
+        });
+        if (!linkedAccount) {
+          return NextResponse.json(
+            { ok: false, code: "ACCOUNT_LINKED_FUND_NOT_FOUND", error: "Money fund account not found in this household" },
+            { status: 404 },
+          );
+        }
+        // 2026-11-18 用户裁定：只能关联**本机构**的货币基金，不能跨机构串。
+        const walletInstitutionId = String(data.institutionId ?? existing.institutionId ?? "").trim() || null;
+        if (!walletInstitutionId || linkedAccount.institutionId !== walletInstitutionId) {
+          return NextResponse.json(
+            { ok: false, code: "ACCOUNT_LINKED_FUND_INSTITUTION", error: "The linked money fund must belong to the same institution as the e-wallet" },
+            { status: 400 },
+          );
+        }
+        // 基金代码来自持仓下拉，服务端仍校验 6 位且确实属于该货基账户。
+        const rawCode = body.linkedFundCode == null ? "" : String(body.linkedFundCode).trim();
+        if (rawCode && !/^\d{6}$/.test(rawCode)) {
+          return NextResponse.json(
+            { ok: false, code: "ACCOUNT_LINKED_FUND_CODE", error: "Fund code must be 6 digits" },
+            { status: 400 },
+          );
+        }
+        if (rawCode) {
+          const holding = await prisma.fundHolding.findUnique({
+            where: { accountId_fundCode: { accountId: rawLinkedId, fundCode: rawCode } },
+            select: { fundCode: true },
+          });
+          if (!holding) {
+            return NextResponse.json(
+              { ok: false, code: "ACCOUNT_LINKED_FUND_CODE_NOT_FOUND", error: "Fund code not found in the linked money fund account" },
+              { status: 404 },
+            );
+          }
+        }
+        data.linkedFundAccountId = rawLinkedId;
+        data.linkedFundCode = rawCode || null;
+      }
+    } else if (body.linkedFundCode !== undefined) {
+      data.linkedFundCode = String(body.linkedFundCode ?? "").trim() || null;
+    }
     const rawNextIsConsumerLoan = data.isConsumerLoan === undefined ? existing.isConsumerLoan === true : data.isConsumerLoan === true;
     let nextIsConsumerLoan = false;
     if (nextKind === "loan") {
@@ -1281,6 +1345,9 @@ export async function GET(req: Request) {
       liabilityDirection: account.liabilityDirection,
       note: account.note,
       accountGroup: account.accountGroup,
+      // 电子钱包 → 货基支付关联：支出弹窗据此显示「从关联货基支付」选项。
+      linkedFundAccountId: account.linkedFundAccountId,
+      linkedFundCode: account.linkedFundCode,
       currency: account.currency,
       groupName: account.kind === AccountKind.loan || account.kind === AccountKind.settlement ? "" : account.AccountGroup?.name ?? "",
       institutionName: account.Institution?.name ?? "",
