@@ -54,7 +54,12 @@ import {
 import { formatAmountDraft } from "@/lib/format";
 import { filterIncomeExpenseInstitutions } from "@/lib/institution-rules";
 import { buildCategoryParentOptions, buildCategoryTreeOptions } from "@/components/categorySmartSelect";
-import { buildCategoryQuickPickGroups, useCategoryUsage } from "@/lib/client/category-usage";
+import {
+  buildCategoryQuickPickGroups,
+  invalidateCategoryUsage,
+  recordRecentCategory,
+  useCategoryUsage,
+} from "@/lib/client/category-usage";
 import { readAccountDisplaySettings } from "@/lib/client/account-display-settings";
 import { getAccountDropdownGroupByPreference } from "@/lib/client/appPreferences";
 import { normalizeOptionalCurrency } from "@/lib/currency";
@@ -2434,6 +2439,9 @@ export function TransactionFormModal({
         formData.set("installmentRate", installmentRate);
       }
     }
+    // 「最近使用」按这次保存用到的分类记：编辑旧记录时入账日期不会前移，只靠服务端
+    // 按 TxRecord.date 的聚合永远进不了第一排，所以保存成功后本地再记一份。
+    const savedCategoryId = String(formData.get("categoryId") ?? "").trim();
     setSubmitting(true);
     try {
       const res = editEntryId ? await (editAction ?? action)(formData) : await action(formData);
@@ -2457,6 +2465,8 @@ export function TransactionFormModal({
           new CustomEvent(editEntryId ? "mmh:transaction:edit:success" : "mmh:create-transaction:success", { detail: { requestId } }),
         );
       }
+      recordRecentCategory(savedCategoryId);
+      invalidateCategoryUsage();
       requestAnimationFrame(() => {
         const refreshDetail = currentFinanceRefreshDetail();
         recordRecentAccounts(refreshDetail.accountIds ?? []);
