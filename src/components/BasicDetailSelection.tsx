@@ -699,12 +699,14 @@ const CONVERT_TARGET_GROUPS: ConvertTargetGroup[] = [
  * 往来目标只有「借款 / 还款」两个页签，页签内部的流向沿用原记录的现金方向：
  * 原来钱是出去的 → 借出 / 还款，原来钱是进来的 → 借入 / 收款。
  * 进窗后把往来款账户挪到另一侧即可换成反方向，所以这只是默认值。
+ *
+ * 方向必须用调用方算好的 `inflow`：理财 / 基金 / 股票的赎回记录 type 是 investment，
+ * 单看 `type === "income"` 会把「钱进来」当成「钱出去」，借入/收款就反了。
  */
 function convertLiabilityMode(
   targetKey: EntryConversionTargetKey,
-  entry: ConvertSourceEntry,
+  inflow: boolean,
 ): "borrow_in" | "lend_out" | "repay_out" | "collect_in" | null {
-  const inflow = String(entry.type ?? "").trim() === "income";
   if (targetKey === "liability_borrow") return inflow ? "borrow_in" : "lend_out";
   if (targetKey === "liability_repay") return inflow ? "collect_in" : "repay_out";
   return null;
@@ -940,7 +942,7 @@ export function EntryConvertMenu({
         }));
         break;
       default: {
-        const liabilityMode = convertLiabilityMode(targetKey, entry);
+        const liabilityMode = convertLiabilityMode(targetKey, inflow);
         if (!liabilityMode) return;
         const isLoanTarget = Boolean(liabilityAccountId) && entry.accountKind === "loan"
           && (liabilityMode === "borrow_in" || liabilityMode === "repay_out");
