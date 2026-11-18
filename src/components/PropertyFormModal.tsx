@@ -14,7 +14,13 @@ import { REQUIRED_FIELD_CLASS } from "@/lib/client/required-field";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
 import { useI18n } from "@/lib/i18n";
 import { todayDateLocalYmd } from "@/lib/date-utils";
-import { FIXED_ASSET_TYPES, normalizeFixedAssetType, type FixedAssetType } from "@/lib/fixed-asset";
+import {
+  FIXED_ASSET_TYPES,
+  fixedAssetProductionDateLabelKey,
+  fixedAssetSupportsWeight,
+  normalizeFixedAssetType,
+  type FixedAssetType,
+} from "@/lib/fixed-asset";
 import { resolveAssetDepreciation } from "@/lib/fixed-asset-depreciation";
 import { formatAmountDraft, formatMoney } from "@/lib/format";
 
@@ -642,8 +648,9 @@ export function PropertyFormModal({
           address: isNewAsset && assetType === "property" ? address.trim() || undefined : undefined,
           // 资产属性只在新购入时提交（已有资产改这些走「编辑资产」）。
           productionDate: isNewAsset && productionDate ? productionDate : undefined,
-          weight: isNewAsset && weight.trim() ? weight : undefined,
-          weightUnit: isNewAsset && weight.trim() ? weightUnit : undefined,
+          // 房产、车辆不登记重量，改成它们之后不提交（与编辑窗同一份口径）。
+          weight: isNewAsset && weight.trim() && fixedAssetSupportsWeight(assetType) ? weight : undefined,
+          weightUnit: isNewAsset && weight.trim() && fixedAssetSupportsWeight(assetType) ? weightUnit : undefined,
           // 本次折损/折旧（只在售出时用）：服务端把它加进累计折旧，损益按账面净值算。
           // 处置不做「手填折旧」——报废类是完全没了，损耗类由折损率决定。
           depreciation: isSaleTab && impairmentValue > 0 ? depreciation : undefined,
@@ -843,6 +850,11 @@ export function PropertyFormModal({
                   setPropertyType("");
                   setAddress("");
                 }
+                // 房产、车辆不登记重量：换了类型就把刚填的重量清掉，免得藏起来还提交上去。
+                if (!fixedAssetSupportsWeight(next)) {
+                  setWeight("");
+                  setWeightUnit("kg");
+                }
               }}
               options={FIXED_ASSET_TYPES.map((type) => ({ id: type, label: t(`fixedAsset.type.${type}`), title: t(`fixedAsset.type.${type}`) }))}
               behavior={{ minDropdownWidth: 200 }}
@@ -866,32 +878,35 @@ export function PropertyFormModal({
             </>
           ) : null}
           {/* 资产属性：生产日期 / 重量（2026-11-15 用户要求）。两个都能留空，之后在
-              「编辑资产」里也能改；重量只是登记属性，不参与估值或折旧计算。 */}
+              「编辑资产」里也能改；重量只是登记属性，不参与估值或折旧计算。
+              2026-11-17：房子叫「建成年份」、车叫「出厂日期」，且房产/车辆不登记重量。 */}
           <div className="space-y-1">
-            <div className="form-label">{t("fixedAssetEdit.productionDate")} <span className="text-slate-400">{t("stockFee.optional")}</span></div>
+            <div className="form-label">{t(fixedAssetProductionDateLabelKey(assetType))} <span className="text-slate-400">{t("stockFee.optional")}</span></div>
             <DateStepper value={productionDate} onChange={setProductionDate} />
           </div>
-          <div className="space-y-1">
-            <div className="form-label">{t("fixedAssetEdit.weight")} <span className="text-slate-400">{t("stockFee.optional")}</span></div>
-            <div className="flex items-center gap-2">
-              <div className="min-w-0 flex-1">
-                <CalcInput value={weight} onChange={setWeight} placeholder={t("stockFee.optional")} label={t("fixedAssetEdit.weight")} precision={3} />
-              </div>
-              <div className="w-20 shrink-0">
-                <SmartSelect
-                  mode="single"
-                  value={weightUnit}
-                  onChange={(value) => setWeightUnit(value === "t" ? "t" : value === "g" ? "g" : "kg")}
-                  options={[
-                    { id: "kg", label: t("fixedAssetEdit.weightUnit.kg"), title: t("fixedAssetEdit.weightUnit.kg") },
-                    { id: "t", label: t("fixedAssetEdit.weightUnit.t"), title: t("fixedAssetEdit.weightUnit.t") },
-                    { id: "g", label: t("fixedAssetEdit.weightUnit.g"), title: t("fixedAssetEdit.weightUnit.g") },
-                  ]}
-                  behavior={{ minDropdownWidth: 120 }}
-                />
+          {fixedAssetSupportsWeight(assetType) ? (
+            <div className="space-y-1">
+              <div className="form-label">{t("fixedAssetEdit.weight")} <span className="text-slate-400">{t("stockFee.optional")}</span></div>
+              <div className="flex items-center gap-2">
+                <div className="min-w-0 flex-1">
+                  <CalcInput value={weight} onChange={setWeight} placeholder={t("stockFee.optional")} label={t("fixedAssetEdit.weight")} precision={3} />
+                </div>
+                <div className="w-20 shrink-0">
+                  <SmartSelect
+                    mode="single"
+                    value={weightUnit}
+                    onChange={(value) => setWeightUnit(value === "t" ? "t" : value === "g" ? "g" : "kg")}
+                    options={[
+                      { id: "kg", label: t("fixedAssetEdit.weightUnit.kg"), title: t("fixedAssetEdit.weightUnit.kg") },
+                      { id: "t", label: t("fixedAssetEdit.weightUnit.t"), title: t("fixedAssetEdit.weightUnit.t") },
+                      { id: "g", label: t("fixedAssetEdit.weightUnit.g"), title: t("fixedAssetEdit.weightUnit.g") },
+                    ]}
+                    behavior={{ minDropdownWidth: 120 }}
+                  />
+                </div>
               </div>
             </div>
-          </div>
+          ) : null}
         </div>
       ) : null}
 

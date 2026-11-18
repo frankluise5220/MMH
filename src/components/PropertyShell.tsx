@@ -27,7 +27,12 @@ import { formatDateDisplay } from "@/lib/date-utils";
 import { formatCurrencyMoney, formatPercent } from "@/lib/format";
 import { pnlClassFromRedUp } from "@/lib/client/colors";
 import { useI18n } from "@/lib/i18n";
-import { normalizeFixedAssetType } from "@/lib/fixed-asset";
+import {
+  FIXED_ASSET_ATTRIBUTE_FIELDS,
+  fixedAssetSupportsWeight,
+  normalizeFixedAssetType,
+  type FixedAssetType,
+} from "@/lib/fixed-asset";
 import { normalizeDepreciationMethod, normalizeWeightUnit } from "@/lib/fixed-asset-depreciation";
 import { buildLiabilityActivityEditEvent } from "@/lib/liability-entry-edit";
 import { formatAccountTableLabel, formatAccountTableTitle, type AccountTableDisplaySource } from "@/lib/account-display";
@@ -194,24 +199,15 @@ function propertyStatusText(t: (key: string) => string, status: string | null | 
 
 function assetDetailText(position: PropertyPosition) {
   const type = position.assetType || "property";
-  const attrs = position.attributes ?? {};
+  const attrs = (position.attributes ?? {}) as Record<string, unknown>;
   if (type === "property") {
     const parts = [position.address, position.propertyType].filter((v) => v && String(v).trim());
     return parts.join(" · ") || "-";
   }
-  if (type === "vehicle") {
-    const parts = [attrs.plateNo, attrs.brandModel].filter((v) => v != null && String(v).trim());
-    return parts.join(" · ") || "-";
-  }
-  if (type === "equipment" || type === "furniture") {
-    const parts = [attrs.brand, attrs.model].filter((v) => v != null && String(v).trim());
-    return parts.join(" · ") || "-";
-  }
-  if (type === "collectible") {
-    const parts = [attrs.category, attrs.origin].filter((v) => v != null && String(v).trim());
-    return parts.join(" · ") || "-";
-  }
-  return "-";
+  // 合成明细列与类型专属列共用同一份属性清单（`FIXED_ASSET_ATTRIBUTE_FIELDS`）。
+  const fields = FIXED_ASSET_ATTRIBUTE_FIELDS[type as FixedAssetType] ?? [];
+  const parts = fields.map((field) => attrs[field.key]).filter((v) => v != null && String(v).trim());
+  return parts.length > 0 ? parts.join(" · ") : "-";
 }
 
 function attrText(attrs: Record<string, unknown> | null | undefined, key: string) {
@@ -228,31 +224,24 @@ type TypedDetailColumns = Array<{
 }>;
 
 function typedDetailColumnsFor(assetType: string | null | undefined): TypedDetailColumns {
-  switch (assetType || "") {
-    case "property":
-      return [
-        { key: "address", labelKey: "propertyForm.address", text: (p) => p.address && String(p.address).trim() ? String(p.address) : "-" },
-        { key: "propertyType", labelKey: "fixedAssetEdit.attr.propertyType", text: (p) => p.propertyType && String(p.propertyType).trim() ? String(p.propertyType) : "-" },
-      ];
-    case "vehicle":
-      return [
-        { key: "plateNo", labelKey: "fixedAssetEdit.attr.plateNo", text: (p) => attrText(p.attributes as Record<string, unknown>, "plateNo") },
-        { key: "brandModel", labelKey: "fixedAssetEdit.attr.brandModel", text: (p) => attrText(p.attributes as Record<string, unknown>, "brandModel") },
-      ];
-    case "equipment":
-    case "furniture":
-      return [
-        { key: "brand", labelKey: "fixedAssetEdit.attr.brand", text: (p) => attrText(p.attributes as Record<string, unknown>, "brand") },
-        { key: "model", labelKey: "fixedAssetEdit.attr.model", text: (p) => attrText(p.attributes as Record<string, unknown>, "model") },
-      ];
-    case "collectible":
-      return [
-        { key: "category", labelKey: "fixedAssetEdit.attr.category", text: (p) => attrText(p.attributes as Record<string, unknown>, "category") },
-        { key: "origin", labelKey: "fixedAssetEdit.attr.origin", text: (p) => attrText(p.attributes as Record<string, unknown>, "origin") },
-      ];
-    default:
-      return [{ key: "assetDetail", labelKey: "propertyShell.column.detail", text: (p) => assetDetailText(p) }];
+  const raw = String(assetType ?? "").trim();
+  // 房产的两列是资产行上的独立字段，其余类型的属性都在 attributes JSON 里，
+  // 清单与编辑窗共用 `FIXED_ASSET_ATTRIBUTE_FIELDS`，别在这里再抄一份键名。
+  if (raw === "property") {
+    return [
+      { key: "address", labelKey: "propertyForm.address", text: (p) => p.address && String(p.address).trim() ? String(p.address) : "-" },
+      { key: "propertyType", labelKey: "fixedAssetEdit.attr.propertyType", text: (p) => p.propertyType && String(p.propertyType).trim() ? String(p.propertyType) : "-" },
+    ];
   }
+  const fields = FIXED_ASSET_ATTRIBUTE_FIELDS[raw as FixedAssetType];
+  if (fields && fields.length > 0) {
+    return fields.map((field) => ({
+      key: field.key,
+      labelKey: field.labelKey,
+      text: (p: PropertyPosition) => attrText(p.attributes as Record<string, unknown>, field.key),
+    }));
+  }
+  return [{ key: "assetDetail", labelKey: "propertyShell.column.detail", text: (p) => assetDetailText(p) }];
 }
 
 type FixedAssetTransactionTableProps = {
@@ -629,6 +618,8 @@ export function PropertyShell({
 
   async function saveFixedAssetEdit(next: FixedAssetEditValue) {
     setSavingEdit(true);
+    // 重量只对按量计价的资产有意义：房产、车辆一律不写（老数据里残留的重量也顺手清掉）。
+    const keepsWeight = fixedAssetSupportsWeight(next.assetType);
     try {
       const response = await fetch("/api/v1/properties", {
         method: "PUT",
@@ -643,8 +634,8 @@ export function PropertyShell({
           purchaseDate: next.purchaseDate.trim() || null,
           productionDate: next.productionDate.trim() || null,
           // 重量留空就清掉（连带单位），别留一个没有数字的单位。
-          weight: next.weight.trim() || null,
-          weightUnit: next.weight.trim() ? next.weightUnit : null,
+          weight: keepsWeight && next.weight.trim() ? next.weight : null,
+          weightUnit: keepsWeight && next.weight.trim() ? next.weightUnit : null,
           purchasePrice: next.purchasePrice.trim() || null,
           depreciationMethod: next.depreciationMethod,
           usefulLifeMonths: (() => {

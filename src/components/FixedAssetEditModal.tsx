@@ -7,7 +7,14 @@ import { ClearableNoteField } from "./ClearableNoteField";
 import { useI18n } from "@/lib/i18n";
 /** 记账弹窗整窗外壳：宽度/标题栏/表单/卡片/固定页脚/高度锁定统一由它负责。 */
 import { EntryModalShell } from "@/components/EntryModalShell";
-import { FIXED_ASSET_TYPES, type FixedAssetType } from "@/lib/fixed-asset";
+import {
+  FIXED_ASSET_ATTRIBUTE_FIELDS,
+  FIXED_ASSET_TYPES,
+  fixedAssetAttributeKeysToDrop,
+  fixedAssetProductionDateLabelKey,
+  fixedAssetSupportsWeight,
+  type FixedAssetType,
+} from "@/lib/fixed-asset";
 import {
   DepreciationMethod,
   normalizeDepreciationMethod,
@@ -112,6 +119,24 @@ export function FixedAssetEditModal({
     return raw == null ? "" : String(raw);
   }
 
+  /* 切类型时把新类型用不到的登记值一并清掉（房产类型/地址、车牌号、品牌型号、重量…），
+     否则它们只是被藏起来，保存后仍会留在库里，下次换回旧类型又冒出来。 */
+  function switchAssetType(nextType: FixedAssetType) {
+    const attributes = { ...(current.attributes ?? {}) };
+    for (const key of fixedAssetAttributeKeysToDrop(current.assetType, nextType)) {
+      delete attributes[key];
+    }
+    const keepsWeight = fixedAssetSupportsWeight(nextType);
+    patch({
+      assetType: nextType,
+      attributes,
+      propertyType: nextType === "property" ? current.propertyType : "",
+      address: nextType === "property" ? current.address : "",
+      weight: keepsWeight ? current.weight : "",
+      weightUnit: keepsWeight ? current.weightUnit : "kg",
+    });
+  }
+
   return (
     /* 整窗外壳见 `EntryModalShell`（无页签：资产类型切换在表单内，内容长短变化由高度锁定吸收）；
        该弹窗原本就地渲染，故 `portal={false}` 保持挂载点不变。 */
@@ -170,11 +195,7 @@ export function FixedAssetEditModal({
                 <div className="form-label">{t("fixedAssetEdit.assetType")}</div>
                 <select
                   value={draft.assetType}
-                  onChange={(event) => {
-                    const next = { ...draft, assetType: event.target.value as FixedAssetType };
-                    setDraft(next);
-                    onChange?.(next);
-                  }}
+                  onChange={(event) => switchAssetType(event.target.value as FixedAssetType)}
                   className="form-input"
                 >
                   {FIXED_ASSET_TYPES.map((assetType) => (
@@ -215,44 +236,18 @@ export function FixedAssetEditModal({
                 </>
               ) : null}
 
-              {draft.assetType === "vehicle" ? (
-                <>
-                  <div className="space-y-1">
-                    <div className="form-label">{t("fixedAssetEdit.attr.plateNo")}</div>
-                    <input value={attributeValue("plateNo")} onChange={(event) => updateAttributes("plateNo", event.target.value)} className="form-input" />
-                  </div>
-                  <div className="space-y-1">
-                    <div className="form-label">{t("fixedAssetEdit.attr.brandModel")}</div>
-                    <input value={attributeValue("brandModel")} onChange={(event) => updateAttributes("brandModel", event.target.value)} className="form-input" />
-                  </div>
-                </>
-              ) : null}
-
-              {draft.assetType === "equipment" || draft.assetType === "furniture" ? (
-                <>
-                  <div className="space-y-1">
-                    <div className="form-label">{t("fixedAssetEdit.attr.brand")}</div>
-                    <input value={attributeValue("brand")} onChange={(event) => updateAttributes("brand", event.target.value)} className="form-input" />
-                  </div>
-                  <div className="space-y-1">
-                    <div className="form-label">{t("fixedAssetEdit.attr.model")}</div>
-                    <input value={attributeValue("model")} onChange={(event) => updateAttributes("model", event.target.value)} className="form-input" />
-                  </div>
-                </>
-              ) : null}
-
-              {draft.assetType === "collectible" ? (
-                <>
-                  <div className="space-y-1">
-                    <div className="form-label">{t("fixedAssetEdit.attr.category")}</div>
-                    <input value={attributeValue("category")} onChange={(event) => updateAttributes("category", event.target.value)} className="form-input" />
-                  </div>
-                  <div className="space-y-1">
-                    <div className="form-label">{t("fixedAssetEdit.attr.origin")}</div>
-                    <input value={attributeValue("origin")} onChange={(event) => updateAttributes("origin", event.target.value)} className="form-input" />
-                  </div>
-                </>
-              ) : null}
+              {/* 类型专属登记属性（车辆＝车牌号/品牌型号、设备家具＝品牌/型号、收藏品＝类别/来源），
+                  清单见 `FIXED_ASSET_ATTRIBUTE_FIELDS`，房产用上面的独立列。 */}
+              {FIXED_ASSET_ATTRIBUTE_FIELDS[draft.assetType].map((field) => (
+                <div className="space-y-1" key={field.key}>
+                  <div className="form-label">{t(field.labelKey)}</div>
+                  <input
+                    value={attributeValue(field.key)}
+                    onChange={(event) => updateAttributes(field.key, event.target.value)}
+                    className="form-input"
+                  />
+                </div>
+              ))}
 
               <div className="space-y-1">
                 <div className="form-label">{t("fixedAssetEdit.purchaseDate")}</div>
@@ -281,36 +276,40 @@ export function FixedAssetEditModal({
                 />
               </div>
               <div className="space-y-1">
-                <div className="form-label">{t("fixedAssetEdit.productionDate")}</div>
+                {/* 房子叫「建成年份」、车叫「出厂日期」，同一个 productionDate 列按类型换叫法。 */}
+                <div className="form-label">{t(fixedAssetProductionDateLabelKey(draft.assetType))}</div>
                 <DateStepper
                   value={draft.productionDate}
                   onChange={(value) => patch({ productionDate: value })}
                   className="form-input"
                 />
               </div>
-              <div className="space-y-1">
-                <div className="form-label">{t("fixedAssetEdit.weight")}</div>
-                <div className="flex items-center gap-2">
-                  <div className="min-w-0 flex-1">
-                    <CalcInput
-                      value={draft.weight}
-                      onChange={(value) => patch({ weight: value })}
-                      label={t("fixedAssetEdit.weight")}
-                      placeholder={t("stockFee.optional")}
-                      precision={3}
-                    />
+              {/* 重量只给按量计价的资产（设备 / 家具 / 收藏品）；房产、车辆不登记重量。 */}
+              {fixedAssetSupportsWeight(draft.assetType) ? (
+                <div className="space-y-1">
+                  <div className="form-label">{t("fixedAssetEdit.weight")}</div>
+                  <div className="flex items-center gap-2">
+                    <div className="min-w-0 flex-1">
+                      <CalcInput
+                        value={draft.weight}
+                        onChange={(value) => patch({ weight: value })}
+                        label={t("fixedAssetEdit.weight")}
+                        placeholder={t("stockFee.optional")}
+                        precision={3}
+                      />
+                    </div>
+                    <select
+                      value={draft.weightUnit}
+                      onChange={(event) => patch({ weightUnit: event.target.value })}
+                      className="form-input w-20 shrink-0"
+                    >
+                      <option value="kg">{t("fixedAssetEdit.weightUnit.kg")}</option>
+                      <option value="t">{t("fixedAssetEdit.weightUnit.t")}</option>
+                      <option value="g">{t("fixedAssetEdit.weightUnit.g")}</option>
+                    </select>
                   </div>
-                  <select
-                    value={draft.weightUnit}
-                    onChange={(event) => patch({ weightUnit: event.target.value })}
-                    className="form-input w-20 shrink-0"
-                  >
-                    <option value="kg">{t("fixedAssetEdit.weightUnit.kg")}</option>
-                    <option value="t">{t("fixedAssetEdit.weightUnit.t")}</option>
-                    <option value="g">{t("fixedAssetEdit.weightUnit.g")}</option>
-                  </select>
                 </div>
-              </div>
+              ) : null}
 
               {/* 折旧：处置/出售时按账面净值算损益，折损掉的这部分才不会被当成全额损失。 */}
               <div className="col-span-2 space-y-1 border-t border-slate-100 pt-3">
