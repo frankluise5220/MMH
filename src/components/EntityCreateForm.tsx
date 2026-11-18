@@ -703,33 +703,94 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     setDupWarning("");
   }, [mode, defaultName, defaultType, extraFields, defaultParentId, typeKey, config.fullFields, getDefaultTypeCompact, entityType, allowedInstitutionTypes, allowedAccountKinds, includeInitialBalanceFields, defaultValueForField, fallbackSelectValueForField]);
 
+  /**
+   * 表单只在「语义值」变化时重新初始化，绝不因为 props 引用换了个新对象就重置。
+   *
+   * 调用方普遍内联传 `allowedCounterpartyTypes={["person", "organization"]}`、
+   * `allowedInstitutionTypes={[...VALUES]}`、`extraFields={{ type }}`、
+   * `nestedFieldData={...}`，这些每次父组件渲染都是新引用；而 initForm 的依赖里
+   * 正好包含它们。以前 effect 直接依赖 initForm，于是父组件任何一次异步重渲染
+   * （例如弹窗打开几秒后账户/往来对象数据才加载完）都会把用户已经填好的
+   * 「往来对象名称」整张表单清空（2026-11-17 用户报障）。
+   * 现在把初始化条件收敛成一个值签名：内容没变就不动表单。
+   */
+  const initSignature = useMemo(
+    () => JSON.stringify({
+      mode,
+      entityType,
+      defaultName,
+      defaultType,
+      defaultParentId,
+      typeKey,
+      accountDefaultCurrency,
+      includeInitialBalanceFields: Boolean(includeInitialBalanceFields),
+      extraFields: extraFields ?? null,
+      allowedInstitutionTypes: allowedInstitutionTypes ?? null,
+      allowedAccountKinds: allowedAccountKinds ?? null,
+      allowedTypeValues: allowedTypeValues ?? null,
+    }),
+    [
+      mode,
+      entityType,
+      defaultName,
+      defaultType,
+      defaultParentId,
+      typeKey,
+      accountDefaultCurrency,
+      includeInitialBalanceFields,
+      extraFields,
+      allowedInstitutionTypes,
+      allowedAccountKinds,
+      allowedTypeValues,
+    ],
+  );
+  // initForm 的引用会随上面这些 props 的引用变化而无意义地重建，所以 effect 只通过 ref 调它。
+  const initFormRef = useRef(initForm);
+  initFormRef.current = initForm;
+  const runInitForm = useCallback(() => { initFormRef.current(); }, []);
+  const prevOpenRef = useRef(false);
+  const lastInitSignatureRef = useRef<string | null>(null);
+
   useEffect(() => {
     if (mode !== "compact") return;
-    if (open) {
-      // When a nested entity was just created, keep the current form state
-      // (including the newly selected entity) instead of re-initializing it.
-      // The flag must survive across renders: creating a nested entity fires
-      // notifySettingsDataChanged, and the parent's async refresh lands later
-      // as a nestedFieldData prop change. Clearing the flag on every render
-      // would let that late refresh wipe the user's input.
-      if (!nestedCreatedRef.current) initForm();
-      nestedCreatedRef.current = false;
-      // Sync nestedFieldData with compact prop changes
-      if (compactNestedFieldData) setNestedFieldData(compactNestedFieldData);
-    } else {
+    const opened = Boolean(open);
+    const justOpened = opened && !prevOpenRef.current;
+    prevOpenRef.current = opened;
+    if (!opened) {
       // Reset on close so a lingering flag never suppresses initialization
       // of the next open.
       nestedCreatedRef.current = false;
+      return;
     }
-  }, [mode, open, initForm, compactNestedFieldData]);
+    const signatureChanged = lastInitSignatureRef.current !== initSignature;
+    lastInitSignatureRef.current = initSignature;
+    // 刚打开、或初始化参数真的换了（例如正文父分类从 A 切到 B）才重建表单；
+    // 父组件的异步刷新只换引用，不会走到这里。
+    if ((justOpened || signatureChanged) && !nestedCreatedRef.current) runInitForm();
+    nestedCreatedRef.current = false;
+  }, [mode, open, initSignature, runInitForm]);
 
   useEffect(() => {
-    if (mode === "full") {
-      initForm();
-      // Sync nestedFieldData with fieldData changes
-      if (fieldData) setNestedFieldData(fieldData);
-    }
-  }, [mode, initForm, fieldData]);
+    // 只同步下拉数据源，不碰用户已填内容。
+    if (mode === "compact" && compactNestedFieldData) setNestedFieldData(compactNestedFieldData);
+  }, [mode, compactNestedFieldData]);
+
+  useEffect(() => {
+    if (mode !== "full") return;
+    // 弹窗形态跟随 open 开关；卡片/行内形态常驻，只在参数值变化时重建。
+    const opened = layout === "modal" ? Boolean(props.open) : true;
+    const justOpened = opened && !prevOpenRef.current;
+    prevOpenRef.current = opened;
+    if (!opened) return;
+    const signatureChanged = lastInitSignatureRef.current !== initSignature;
+    lastInitSignatureRef.current = initSignature;
+    if (justOpened || signatureChanged) runInitForm();
+  }, [mode, layout, props.open, initSignature, runInitForm]);
+
+  useEffect(() => {
+    // 只同步下拉数据源，不碰用户已填内容。
+    if (mode === "full" && fieldData) setNestedFieldData(fieldData);
+  }, [mode, fieldData]);
 
   /** Determine if the type selector should be shown in compact mode */
   const shouldHideType = !typeKey
