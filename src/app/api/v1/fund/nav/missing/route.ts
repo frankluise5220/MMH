@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { revalidatePath } from "next/cache";
-import { TransactionType } from "@prisma/client";
+import { FundProductType, TransactionType } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
 import { isTradingClosedDate } from "@/lib/date-utils";
@@ -172,7 +172,7 @@ export async function POST(req: NextRequest) {
     }
 
     const requestedCodes = Array.from(new Set(requests.map((item) => item.fundCode)));
-    const [txCodes, holdingCodes, fundTransactionCodes] = await Promise.all([
+    const [txCodes, holdingRows, fundTransactionCodes, moneyTxCodes] = await Promise.all([
       prisma.txRecord.findMany({
         where: {
           ...ctx.hidFilter,
@@ -188,7 +188,7 @@ export async function POST(req: NextRequest) {
           fundCode: { in: requestedCodes },
           Account: { ...ctx.hidFilter },
         },
-        select: { fundCode: true },
+        select: { fundCode: true, Account: { select: { investProductType: true } } },
         distinct: ["fundCode"],
       }),
       prisma.fundTransaction.findMany({
@@ -200,11 +200,31 @@ export async function POST(req: NextRequest) {
         select: { fundCode: true },
         distinct: ["fundCode"],
       }),
+      prisma.fundTransaction.findMany({
+        where: {
+          householdId: ctx.householdId,
+          deletedAt: null,
+          fundProductType: FundProductType.money,
+          fundCode: { in: requestedCodes },
+        },
+        select: { fundCode: true },
+        distinct: ["fundCode"],
+      }),
     ]);
+    // 货基没有「补净值」这回事：接口返回的是每万份收益，写进 FundNavCache 会被当成净值
+    // 乘份额（issue #26）。它的收益数据走 MoneyFundYield。
+    const moneyCodes = new Set(
+      [
+        ...holdingRows
+          .filter((row) => row.Account?.investProductType === FundProductType.money)
+          .map((row) => row.fundCode?.trim()),
+        ...moneyTxCodes.map((row) => row.fundCode?.trim()),
+      ].filter((code): code is string => Boolean(code)),
+    );
     const allowedCodes = new Set(
-      [...txCodes, ...holdingCodes, ...fundTransactionCodes]
+      [...txCodes, ...holdingRows, ...fundTransactionCodes]
         .map((row) => row.fundCode?.trim())
-        .filter((code): code is string => Boolean(code)),
+        .filter((code): code is string => typeof code === "string" && code.length > 0 && !moneyCodes.has(code)),
     );
     const allowedRequests = requests.filter((item) => allowedCodes.has(item.fundCode));
     if (allowedRequests.length === 0) {

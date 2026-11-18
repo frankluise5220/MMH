@@ -22,6 +22,7 @@ type FundProfileSettingsModalProps = {
     id: string;
     name: string;
     institutionName: string | null;
+    investProductType?: string | null;
   };
   fundCode: string;
   fallbackFundName?: string | null;

@@ -89,6 +89,7 @@ check_*.js
 check_*.ps1
 check-*.ps1
 tmp-*.ts
+tmp-*.err
 tmp-*.js
 tmp-*.cjs
 tmp_*.js

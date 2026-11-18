@@ -24,8 +24,13 @@ function findMmhApp(payload, key) {
   return apps.find((app) => app.id === "mmh");
 }
 
+// 2026-11-18 起公开 Release 只发布轻量变体（external-node），见 bump-release-version.cjs。
+// 按版本切换：0.1.86 及更早的清单仍指向 bundled（无后缀），否则复验历史发布会假红。
+const EXTERNAL_NODE_SINCE_PATCH = 87;
 function fnosFpkAssetName(version, assetSuffix) {
-  return `mmh-fnos-v${version}-${assetSuffix}.fpk`;
+  const patch = Number((/^0\.1\.(\d+)$/.exec(String(version)) || [])[1] ?? -1);
+  const variant = patch >= EXTERNAL_NODE_SINCE_PATCH ? "-external-node" : "";
+  return `mmh-fnos-v${version}-${assetSuffix}${variant}.fpk`;
 }
 
 function fnosVpsX86Url(version) {

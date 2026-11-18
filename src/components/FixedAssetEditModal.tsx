@@ -52,8 +52,29 @@ type FixedAssetEditMeta = {
   accountName?: string | null;
   marketValue?: number | null;
   cost?: number | null;
-  /** 折旧台账摘要（服务端按月自动落账）：已计提期数、累计金额、最近一期。 */
-  depreciation?: { periods: number; recorded: number; lastPeriod: string | null } | null;
+  /**
+   * 折旧台账摘要（服务端按月自动落账）。`periods` / `recorded` 只算自动计提；
+   * 手工登记的折损单独走 `manualCount` / `manualTotal`。
+   */
+  depreciation?: {
+    periods: number;
+    recorded: number;
+    lastPeriod: string | null;
+    manualCount?: number;
+    manualTotal?: number;
+  } | null;
+};
+
+/** 台账一行（自动计提 + 手工登记同表，靠 `manual` 区分）。 */
+type DepreciationLedgerRecord = {
+  id: string;
+  /** 所属月 YYYY-MM。 */
+  period: string;
+  amount: number;
+  accumulatedAfter: number;
+  method: string;
+  manual: boolean;
+  note: string | null;
 };
 
 function typeLabel(t: (key: string) => string, assetType: FixedAssetType) {
@@ -100,6 +121,59 @@ export function FixedAssetEditModal({
     }, todayDateLocalYmd());
   }, [draft, meta?.cost]);
 
+  /* 折损台账（自动计提 + 手工登记）：打开弹窗拉一次，登记/删除后 version+1 重拉。
+     手工登记的落库/回写口径在 src/lib/server/property-depreciation.ts，本组件只负责输入。 */
+  const assetId = value?.id ?? null;
+  const [ledger, setLedger] = useState<{
+    records: DepreciationLedgerRecord[];
+    manualTotal: number;
+    manualCount: number;
+  } | null>(null);
+  const [ledgerVersion, setLedgerVersion] = useState(0);
+  const [lossOpen, setLossOpen] = useState(false);
+  const [lossForm, setLossForm] = useState({ periodDate: todayDateLocalYmd(), amount: "", note: "" });
+  const [lossBusy, setLossBusy] = useState(false);
+  const [lossNotice, setLossNotice] = useState<string | null>(null);
+  const [lossError, setLossError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open || !assetId) {
+      setLedger(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(`/api/v1/properties/depreciations?propertyAssetId=${encodeURIComponent(assetId)}`, {
+          cache: "no-store",
+        });
+        const body = await res.json().catch(() => null);
+        if (cancelled) return;
+        if (res.ok && body?.ok) {
+          setLedger({
+            records: Array.isArray(body.data?.records) ? body.data.records : [],
+            manualTotal: Number(body.data?.manualTotal ?? 0),
+            manualCount: Number(body.data?.manualCount ?? 0),
+          });
+        }
+      } catch {
+        if (!cancelled) setLedger(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, assetId, ledgerVersion]);
+
+  // 关窗后重置登记表单，避免下次打开还留着上一条资产的草稿。
+  useEffect(() => {
+    if (open) return;
+    setLossOpen(false);
+    setLossNotice(null);
+    setLossError(null);
+    setLossForm({ periodDate: todayDateLocalYmd(), amount: "", note: "" });
+  }, [open]);
+
   if (!open || !draft || !meta) return null;
 
   const current = draft;
@@ -108,6 +182,66 @@ export function FixedAssetEditModal({
     const merged = { ...current, ...next };
     setDraft(merged);
     onChange?.(merged);
+  }
+
+  /* 登记一笔手工折损（一次性折完也是这条路：金额 = 全额，落在当月）。 */
+  async function submitLoss() {
+    if (!assetId || lossBusy) return;
+    setLossBusy(true);
+    setLossError(null);
+    setLossNotice(null);
+    try {
+      const res = await fetch("/api/v1/properties/depreciations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          propertyAssetId: assetId,
+          periodDate: lossForm.periodDate,
+          amount: lossForm.amount,
+          note: lossForm.note,
+        }),
+      });
+      const body = await res.json().catch(() => null);
+      if (!res.ok || !body?.ok) {
+        setLossError(String(body?.error ?? t("fixedAssetEdit.lossFailed")));
+        return;
+      }
+      const settled = Number(body.data?.settled ?? 0);
+      // 手工合计已经写回资产字段：同步草稿，免得保存时用旧值覆盖（服务端也会以台账为准）。
+      patch({ accumulatedDepreciation: String(settled) });
+      setLossOpen(false);
+      setLossForm({ periodDate: todayDateLocalYmd(), amount: "", note: "" });
+      setLossNotice(
+        body.data?.capped
+          ? t("fixedAssetEdit.lossCappedNotice", { value: formatMoney(Number(body.data?.applied ?? 0)) })
+          : t("fixedAssetEdit.lossSaved"),
+      );
+      setLedgerVersion((version) => version + 1);
+    } finally {
+      setLossBusy(false);
+    }
+  }
+
+  async function removeLoss(recordId: string) {
+    if (!assetId || lossBusy) return;
+    setLossBusy(true);
+    setLossError(null);
+    setLossNotice(null);
+    try {
+      const res = await fetch(
+        `/api/v1/properties/depreciations?propertyAssetId=${encodeURIComponent(assetId)}&id=${encodeURIComponent(recordId)}`,
+        { method: "DELETE" },
+      );
+      const body = await res.json().catch(() => null);
+      if (!res.ok || !body?.ok) {
+        setLossError(String(body?.error ?? t("fixedAssetEdit.lossFailed")));
+        return;
+      }
+      patch({ accumulatedDepreciation: String(Number(body.data?.settled ?? 0)) });
+      setLedgerVersion((version) => version + 1);
+    } finally {
+      setLossBusy(false);
+    }
   }
 
   function updateAttributes(key: string, value: string) {
@@ -326,7 +460,20 @@ export function FixedAssetEditModal({
                 </select>
               </div>
               <div className="space-y-1">
-                <div className="form-label">{t("fixedAssetEdit.usefulLifeYears")}</div>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="form-label">{t("fixedAssetEdit.usefulLifeYears")}</div>
+                  {draft.depreciationMethod === DepreciationMethod.straightLine ? (
+                    /* 一次折完 = 年限 0.1 年（≈1 个月）：小额物品没必要为了走直线法硬填 3 年。 */
+                    <button
+                      type="button"
+                      onClick={() => patch({ usefulLifeYears: "0.1" })}
+                      title={t("fixedAssetEdit.depreciateInOneGoHint")}
+                      className="shrink-0 text-[11px] text-indigo-600 hover:underline"
+                    >
+                      {t("fixedAssetEdit.depreciateInOneGo")}
+                    </button>
+                  ) : null}
+                </div>
                 <CalcInput
                   value={draft.usefulLifeYears}
                   onChange={(value) => patch({ usefulLifeYears: value })}
@@ -391,6 +538,124 @@ export function FixedAssetEditModal({
                   ) : null}
                 </div>
               ) : null}
+
+              {/* 折损台账：直线法逐月自动落账 + 手工登记（一次性折完、车况折损）。
+                  手工合计驱动上面那个「累计折旧 / 额外折损」输入框，保存时服务端也以台账为准。 */}
+              <div className="col-span-2 space-y-2 rounded-lg border border-slate-100 px-3 py-2">
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span className="form-label !mb-0">
+                      {draft.depreciationMethod === DepreciationMethod.straightLine
+                        ? t("fixedAssetEdit.extraLossRecords")
+                        : t("fixedAssetEdit.lossRecords")}
+                    </span>
+                    {(ledger?.manualCount ?? 0) > 0 ? (
+                      <span className="truncate text-[11px] text-slate-400">
+                        {t("fixedAssetEdit.lossTotalLine", {
+                          count: String(ledger?.manualCount ?? 0),
+                          value: formatMoney(ledger?.manualTotal ?? 0),
+                        })}
+                      </span>
+                    ) : null}
+                  </div>
+                  {draft.status === "active" ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setLossNotice(null);
+                        setLossError(null);
+                        setLossOpen((open) => !open);
+                      }}
+                      className="shrink-0 text-[11px] text-indigo-600 hover:underline"
+                    >
+                      {lossOpen ? t("common.cancel") : t("fixedAssetEdit.registerLoss")}
+                    </button>
+                  ) : null}
+                </div>
+
+                {lossOpen ? (
+                  <div data-loss-form="" className="grid grid-cols-2 gap-2 rounded-md bg-slate-50/70 p-2">
+                    <div className="space-y-1">
+                      <div className="form-label">{t("fixedAssetEdit.lossPeriod")}</div>
+                      <DateStepper
+                        value={lossForm.periodDate}
+                        onChange={(value) => setLossForm((form) => ({ ...form, periodDate: value }))}
+                        className="form-input"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="form-label">{t("fixedAssetEdit.lossAmount")}</div>
+                      <CalcInput
+                        value={lossForm.amount}
+                        onChange={(value) => setLossForm((form) => ({ ...form, amount: value }))}
+                        label={t("fixedAssetEdit.lossAmount")}
+                        placeholder={t("stockFee.optional")}
+                        precision={2}
+                      />
+                    </div>
+                    <div className="col-span-2 space-y-1">
+                      <div className="form-label">{t("fixedAssetEdit.lossNote")}</div>
+                      <input
+                        value={lossForm.note}
+                        onChange={(event) => setLossForm((form) => ({ ...form, note: event.target.value }))}
+                        className="form-input"
+                        placeholder={t("stockFee.optional")}
+                      />
+                    </div>
+                    <div className="col-span-2 flex justify-end">
+                      <button
+                        type="button"
+                        onClick={() => void submitLoss()}
+                        disabled={lossBusy}
+                        className="primary-button h-8 px-3 text-xs text-white disabled:opacity-50"
+                      >
+                        {t("fixedAssetEdit.submitLoss")}
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
+
+                {lossError ? <div className="text-[11px] text-rose-600">{lossError}</div> : null}
+                {lossNotice ? <div className="text-[11px] text-emerald-600">{lossNotice}</div> : null}
+
+                {ledger && ledger.records.length > 0 ? (
+                  <ul className="divide-y divide-slate-100">
+                    {ledger.records.slice(0, 6).map((record) => (
+                      <li key={record.id} className="flex items-center gap-2 py-1 text-[11px] text-slate-600">
+                        <span className="shrink-0 tabular-nums text-slate-400">{record.period}</span>
+                        <span className={record.manual
+                          ? "shrink-0 tabular-nums font-medium text-amber-600"
+                          : "shrink-0 tabular-nums"}
+                        >
+                          {formatMoney(record.amount)}
+                        </span>
+                        <span className="shrink-0 rounded bg-slate-100 px-1 text-[10px] text-slate-500">
+                          {record.manual ? t("fixedAssetEdit.manualLossTag") : t("fixedAssetEdit.autoLossTag")}
+                        </span>
+                        {record.note ? (
+                          <span className="min-w-0 flex-1 truncate text-slate-400" title={record.note}>{record.note}</span>
+                        ) : (
+                          <span className="flex-1" />
+                        )}
+                        <span className="shrink-0 tabular-nums text-slate-400">{formatMoney(record.accumulatedAfter)}</span>
+                        {record.manual && draft.status === "active" ? (
+                          <button
+                            type="button"
+                            data-loss-delete={record.id}
+                            onClick={() => void removeLoss(record.id)}
+                            disabled={lossBusy}
+                            className="shrink-0 text-slate-400 hover:text-rose-600 disabled:opacity-50"
+                          >
+                            {t("fixedAssetEdit.deleteLoss")}
+                          </button>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <div className="text-[11px] text-slate-400">{t("fixedAssetEdit.noLossRecords")}</div>
+                )}
+              </div>
 
               <div className="col-span-2 space-y-1">
                 <div className="form-label">{t("fixedAssetEdit.note")}</div>

@@ -31,6 +31,7 @@ import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
 import { addTradingDaysUtc, countTradingDaysUtc, todayDateLocalYmd } from "@/lib/date-utils";
 import { findLinkedEntries, type RefundLinkableEntry } from "@/lib/fund/refund-link";
 import { formatFundUnitsValue, resolveQuantityDecimals, roundFundUnits } from "@/lib/fund/unit-precision-core";
+import { MONEY_FUND_NAV } from "@/lib/fund/moneyFund";
 import { formatAmountDraft } from "@/lib/format";
 import {
   type FundSubtype,
@@ -71,6 +72,24 @@ function pnlCls(n: number | null | undefined): string {
 }
 
 const p = parseNumber;
+
+/**
+ * 手续费输入框的一次改动是否算「用户手填」。
+ *
+ * CalcInput 失焦时会无条件回抛格式化结果（5 → 5.00），这种「同值补零」不算用户编辑，
+ * 否则之后改金额/净值时手续费就不再按费率自动重算（2026-10-16 的回归）。
+ * 但「空 → 0」「0 → 0.」这类**数值相等、文字不同**的输入是在敲 0.x 的过程，必须认作编辑：
+ * 否则「按费率自动回填手续费」的 effect 会把刚敲的 0 立刻抹掉，现象就是
+ * 手续费金额 < 1 时根本输不进去（2026-11-18 用户反馈：想填 0.5，最后变成 5）。
+ */
+function isFeeInputEdit(nextRaw: string, prevRaw: string) {
+  const next = nextRaw.trim();
+  const prev = prevRaw.trim();
+  if (next === prev) return false;
+  if (next === "") return true;
+  if (p(next) !== p(prev)) return true;
+  return next !== p(prev).toFixed(2);
+}
 
 function addFundTradingDays(date: string, days: number) {
   return days > 0 ? addTradingDaysUtc(date, days, "cn_fund") : date;
@@ -612,7 +631,6 @@ export function InvestmentFormModal({
   const [loadedFundAccountData, setLoadedFundAccountData] = useState<LoadedFundAccountData | null>(null);
   const [holdingFundLoading, setHoldingFundLoading] = useState(false);
   const [linkedRefundEntryId, setLinkedRefundEntryId] = useState<string | null>(null);
-  const fundAccountDataCacheRef = useRef<Map<string, LoadedFundAccountData>>(new Map());
   const lastNavFetchKey = useRef<string>("");
   const navDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
   function setNavFromApi(navStr: string) {
@@ -1802,25 +1820,22 @@ export function InvestmentFormModal({
   const activeHoldings = activeLoadedFundData?.holdings ?? (propsProvideSelectedFundData ? holdings : undefined);
   const activeAllEntries = activeLoadedFundData?.allEntries ?? (propsProvideSelectedFundData ? allEntries : undefined);
 
+  // 赎回 / 分红的「可用份额」必须按服务端最新流水回放：props 里的 holdings /
+  // allEntries 只是打开弹窗那一刻上游给的快照（RSC 页面数据、Shell 首屏数据），
+  // 删除或改动基金买入后它既不会变，也不会自己补上，用户就会看到旧份额。
+  // 因此进入 as-of 模式后一律重取一次覆盖 props；props 仍先渲染，避免空一帧。
   useEffect(() => {
     if (!open || !isFundHoldingAsOfMode || !selectedHoldingAccountId) {
       setHoldingFundLoading(false);
       return;
     }
-    if (propsProvideSelectedFundData) {
-      setLoadedFundAccountData((current) => current?.accountId === selectedHoldingAccountId ? null : current);
-      setHoldingFundLoading(false);
-      return;
-    }
-    const cached = fundAccountDataCacheRef.current.get(selectedHoldingAccountId);
-    if (cached) {
-      setLoadedFundAccountData(cached);
-      setHoldingFundLoading(false);
-      return;
-    }
+    // 换了基金账户就先丢掉上一个账户的口径，避免用错账户的份额。
+    setLoadedFundAccountData((current) =>
+      current?.accountId === selectedHoldingAccountId ? current : null,
+    );
+    if (!propsProvideSelectedFundData) setHoldingFundLoading(true);
 
     const controller = new AbortController();
-    setHoldingFundLoading(true);
     const params = new URLSearchParams({
       accountId: selectedHoldingAccountId,
       entryScope: "account",
@@ -1857,7 +1872,6 @@ export function InvestmentFormModal({
               })).filter((entry: LinkedCandidateEntry) => entry.id || entry.fundCode)
             : [],
         };
-        fundAccountDataCacheRef.current.set(selectedHoldingAccountId, nextData);
         setLoadedFundAccountData(nextData);
       })
       .catch((error) => {
@@ -2412,7 +2426,10 @@ export function InvestmentFormModal({
     if (!isRedeemLike(redeemTerms.subtype)) return false;
 
     const unitsN = Math.max(0, p(options?.unitsRaw ?? redeemTerms.units));
-    const navN = Math.max(0, p(options?.navRaw ?? redeemTerms.nav));
+    // 货基面值恒为 1：净值框是只读展示，不能因为 state 为空就让联动失效。
+    const navN = redeemTerms.productType === "money"
+      ? MONEY_FUND_NAV
+      : Math.max(0, p(options?.navRaw ?? redeemTerms.nav));
     if (unitsN <= 0 || navN <= 0) return false;
 
     const recalculateFeeFromRate = options?.recalculateFeeFromRate ?? (options?.feeRaw === undefined && shouldRecalculateFeeFromRateForTerms(redeemTerms));
@@ -2452,7 +2469,8 @@ export function InvestmentFormModal({
   useEffect(() => {
     if (!open || !isRedeemLike(subtype)) return;
     if (mode === "edit" && !editAutoNavEnabledRef.current && !navEditedRef.current) return;
-    if (!nav.trim()) return;
+    // 货基没有净值输入（面值恒为 1），state 为空也要照常联动赎回金额。
+    if (!nav.trim() && productType !== "money") return;
     recalculateRedeemAmountsFromTerms({ recalculateFeeFromRate: shouldRecalculateFeeFromRateForCurrentInputs() });
   }, [feeEdited, feeRate, feeRateEdited, mode, nav, open, productType, subtype, units]);
 
@@ -3705,15 +3723,18 @@ export function InvestmentFormModal({
                           precision={fundUnitsDecimals}
                         />
                       </div>
-                      <button
-                        type="button"
-                        onClick={fetchNav}
-                        disabled={isMetalExtractEdit || navLoading || (productType === "metal" ? !metalTypeId || !metalUnitId : !fundCode)}
-                        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] border border-amber-200 bg-amber-50 text-amber-700 transition-colors hover:border-amber-300 hover:bg-amber-100 disabled:opacity-50"
-                        title={productType === "metal" ? t("investForm.fetchMetalPrice") : t("investForm.fetchNav")}
-                      >
-                        <DatabaseZap className={`h-4 w-4 ${navLoading ? "animate-pulse" : ""}`} />
-                      </button>
+                      {/* 货基没有可取的净值：取数接口返回的是每万份收益，填进净值框会把份额算错。 */}
+                      {productType === "money" ? null : (
+                        <button
+                          type="button"
+                          onClick={fetchNav}
+                          disabled={isMetalExtractEdit || navLoading || (productType === "metal" ? !metalTypeId || !metalUnitId : !fundCode)}
+                          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] border border-amber-200 bg-amber-50 text-amber-700 transition-colors hover:border-amber-300 hover:bg-amber-100 disabled:opacity-50"
+                          title={productType === "metal" ? t("investForm.fetchMetalPrice") : t("investForm.fetchNav")}
+                        >
+                          <DatabaseZap className={`h-4 w-4 ${navLoading ? "animate-pulse" : ""}`} />
+                        </button>
+                      )}
                       <div className="space-y-1">
                         <div className="text-xs font-medium text-slate-600">
                           {productType === "metal" ? t("investForm.metalPrice") : t("investForm.nav")}
@@ -3726,9 +3747,10 @@ export function InvestmentFormModal({
                         </div>
                         <input
                           inputMode="decimal"
-                          value={nav}
-                          readOnly={isMetalExtractEdit}
+                          value={productType === "money" ? MONEY_FUND_NAV.toFixed(4) : nav}
+                          readOnly={isMetalExtractEdit || productType === "money"}
                           onChange={(e) => {
+                            if (productType === "money") return;
                             const nextNav = e.target.value;
                             setNav(nextNav);
                             navEditedRef.current = true;
@@ -3787,8 +3809,9 @@ export function InvestmentFormModal({
                             suppressFeeAutoCalcRef.current = false;
                             // CalcInput 失焦会无条件回抛格式化结果（5 → 5.00），
                             // 数值没变就不算用户改过手续费，否则之后改份额/净值
-                            // 时手续费不再按费率自动重算。
-                            if (v.trim() === "" || p(v) !== p(fee)) setFeeEdited(true);
+                            // 时手续费不再按费率自动重算；但「空 → 0」必须算编辑，
+                            // 否则自动回填会把正在敲的 0 抹掉（见 isFeeInputEdit）。
+                            if (isFeeInputEdit(v, fee)) setFeeEdited(true);
                             setFee(v);
                             calculateUnitsAfterFeeChange(v);
                           }}
@@ -3919,7 +3942,7 @@ export function InvestmentFormModal({
                   </div>
                   <input
                     inputMode="decimal"
-                    value={productType === "money" ? "1.0000" : nav}
+                    value={productType === "money" ? MONEY_FUND_NAV.toFixed(4) : nav}
                     readOnly={productType === "money"}
                     onChange={(e) => {
                       // 货基净值是常量，输入框只显示不接收输入。
@@ -4035,8 +4058,8 @@ export function InvestmentFormModal({
                     <CalcInput value={fee}
                       onChange={(v) => {
                         suppressFeeAutoCalcRef.current = false;
-                        // 同上：失焦重抛格式化值不算用户编辑。
-                        if (v.trim() === "" || p(v) !== p(fee)) setFeeEdited(true);
+                        // 同上：失焦重抛格式化值不算用户编辑，但正在敲的 0.x 要算。
+                        if (isFeeInputEdit(v, fee)) setFeeEdited(true);
                         setFee(v);
                         calculateUnitsAfterFeeChange(v);
                       }}

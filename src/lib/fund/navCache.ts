@@ -626,13 +626,16 @@ export async function refreshHeldFundLatestNavs(options: {
         isPlaceholder: false,
         OR: [
           { investProductType: null },
-          { investProductType: { in: [FundProductType.fund, FundProductType.money] } },
+          // 货基不刷净值：它的「净值」恒为 1，东财返回的是每万份收益，
+          // 写进 FundNavCache 会被下游当成净值乘份额。收益数据走 MoneyFundYield。
+          { investProductType: FundProductType.fund },
         ],
       },
     },
     select: {
       accountId: true,
       fundCode: true,
+      Account: { select: { investProductType: true } },
     },
     orderBy: [
       { accountId: "asc" },
@@ -650,6 +653,8 @@ export async function refreshHeldFundLatestNavs(options: {
       const fundCode = holding.fundCode.trim();
       if (!fundCode) return;
       fundCodes.add(fundCode);
+      // 兜底：即使查询条件被改动，也不给货基写净值缓存。
+      if (holding.Account?.investProductType === FundProductType.money) return;
       try {
         // 只刷净值。基金名不在这里维护：名字只由 FundProfile 持有，
         // 且只允许在基金资料页写入。

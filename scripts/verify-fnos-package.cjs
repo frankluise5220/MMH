@@ -314,6 +314,9 @@ const fnosStageWorkflow = read(path.join(root, ".github", "workflows", "fnos-sta
 const prismaConfig = read(path.join(root, "prisma.config.ts"));
 const dbClient = read(path.join(root, "src", "lib", "db", "prisma.ts"));
 const systemUpdateRoute = read(path.join(root, "src", "app", "api", "v1", "settings", "system-update", "route.ts"));
+// 2026-11-16 起升级判定收敛到 service.ts，route.ts 只剩薄壳；断言要看实现文件，
+// 否则代码搬走后断言会以「功能缺失」的名义假红（2026-11-18 发布前遇到）。
+const systemUpdateService = read(path.join(root, "src", "lib", "server", "system-update", "service.ts"));
 const systemUpdatePage = read(path.join(root, "src", "app", "(sidebar)", "settings", "system-update", "page.tsx"));
 const authVerifyRoute = read(path.join(root, "src", "app", "api", "v1", "auth", "verify", "route.ts"));
 const backupSource = read(path.join(root, "src", "lib", "server", "backup.ts"));
@@ -627,7 +630,7 @@ expect(/verifySensitiveOperationPassword/.test(authVerifyRoute) && /getCurrentUs
 expect(!/process\.env\.(POSTGRES_PASSWORD|MMH_SYSTEM_PASSWORD)/.test(authVerifyRoute), "Sensitive operation verification must not rely on deployment database passwords.");
 expect(/FNOS_MANUAL_FPK/.test(buildScript), "fnOS package build should keep an explicit manual test FPK mode.");
 expect(/schema\.native\.prisma/.test(appBuildScript), "fnOS app build must generate and build against the SQLite schema.");
-expect(/MMH_DEPLOY_TARGET/.test(systemUpdateRoute), "System update API must detect fnOS by MMH_DEPLOY_TARGET.");
+expect(/MMH_DEPLOY_TARGET/.test(systemUpdateRoute + systemUpdateService), "System update API must detect fnOS by MMH_DEPLOY_TARGET.");
 expect(/!existsSync\(join\(projectRoot, "\.git"\)\)/.test(systemUpdateRoute), "System update API must not run git commands in package-managed runtimes without a .git directory.");
 expect(/isFnos/.test(systemUpdateRoute), "System update API must return an explicit isFnos flag.");
 expect(/remoteVersion/.test(systemUpdateRoute), "System update API must return the remote app version for update display.");
@@ -648,7 +651,7 @@ expect(
   /getPackageReleaseNotes/.test(systemUpdateRoute) && /mmhFnosManifestChangelog/.test(systemUpdateRoute),
   "System update API must show the shared mmhFnosManifestChangelog in the in-app 本版说明 instead of the long GitHub Release body (mmhReleaseNotes stays only as a fallback for older packages).",
 );
-expect(/readLocalPackageJson/.test(systemUpdateRoute) && /process\.argv\[1\]/.test(systemUpdateRoute), "System update API must fall back to the entry script directory when process.cwd() is not the app root (Synology starts the bundled server one level above app/server).");
+expect(/readLocalPackageJson/.test(systemUpdateRoute + systemUpdateService) && /process\.argv\[1\]/.test(systemUpdateService), "System update API must fall back to the entry script directory when process.cwd() is not the app root (Synology starts the bundled server one level above app/server).");
 expect(/githubProjectUrl/.test(systemUpdatePage) && /systemUpdate\.githubHome/.test(systemUpdatePage), "System update page must expose the GitHub project link for fnOS users.");
 // 共用更新说明的结尾是「完整说明见 GitHub Release v<ver>」，所以这行链接四个部署形态都要有；
 // 不能只在 packageManaged 下渲染（Docker / 独立同样需要入口）——标签行必须是普通 div，不是三元。
@@ -674,8 +677,18 @@ expect(/overwrite_files:\s*true/.test(fnosReleaseWorkflow), "fnOS workflow must 
 expect(/Verify built fnOS FPK/.test(fnosReleaseWorkflow) && /npm run check:fnos/.test(fnosReleaseWorkflow), "fnOS workflow must verify the built .fpk before upload.");
 const releaseUploadStep = (fnosReleaseWorkflow.split("Upload fnOS FPK to GitHub Release")[1] || "").split("- name:")[0];
 expect(/release-artifacts\/fnos\/mmh-fnos-v\*[^\n]*\.fpk/.test(releaseUploadStep), "fnOS workflow should upload .fpk files.");
-expect(!/matrix\.package_variant == 'bundled'/.test(releaseUploadStep), "fnOS Release upload must not gate to bundled: since 2026-11-14 both bundled and external-node FPKs are release assets.");
+// 2026-11-18 用户裁定：公开 Release 只发布 nodejsless（external-node）变体。
+// 这条断言的方向与 2026-11-14 版相反——那时「不得 gate 到 bundled」是为了两变体都上线，
+// 现在 bundled 明确不许进 Release（它只是手动兜底），所以上传步骤必须显式 gate 到
+// external-node，否则一次 dispatch 之后的 release 事件会把 64MB 的 bundled 也挂上去。
+expect(/github\.event_name == 'release' && matrix\.package_variant == 'external-node'/.test(releaseUploadStep), "fnOS Release upload must gate to external-node only: since 2026-11-18 bundled is a manual-only fallback and must never become a release asset.");
+expect(!/matrix\.package_variant == 'bundled'/.test(releaseUploadStep), "fnOS Release upload must not reference the bundled variant at all.");
 expect(/matrix\.package_variant == 'external-node' && '-external-node' \|\| ''/.test(releaseUploadStep), "fnOS Release upload must suffix the external-node variant filename, otherwise the two variants clobber each other on the Release.");
+// 构建矩阵本身：release 事件只跑 external-node；bundled 必须留着手动入口（dispatch 选 bundled/all）。
+const buildJobGate = (fnosReleaseWorkflow.split("if: >-")[1] || "").split("runs-on:")[0];
+expect(/github\.event_name == 'release' && matrix\.package_variant == 'external-node'/.test(buildJobGate), "fnOS build matrix must skip the bundled variant on release events (it is a manual-only fallback since 2026-11-18).");
+expect(/github\.event_name != 'release'/.test(buildJobGate) && /github\.event\.inputs\.package_variant == matrix\.package_variant/.test(buildJobGate), "fnOS build matrix must keep a manual dispatch path for the bundled variant.");
+expect(/package_variant:[\s\S]{0,400}?default:\s*"external-node"/.test(fnosReleaseWorkflow), "fnOS workflow_dispatch must default package_variant to external-node.");
 expect(/target_arch/.test(fnosReleaseWorkflow) && /arm64/.test(fnosReleaseWorkflow), "fnOS release workflow must build both x86 and arm64 packages.");
 expect(/linux-\$\{FNPACK_ARCH\}/.test(fnosReleaseWorkflow), "fnOS release workflow must download fnpack for the current runner architecture.");
 expect(/linux-\$\{NODE_ARCH\}/.test(fnosReleaseWorkflow), "fnOS release workflow must download the Node runtime for the package architecture.");

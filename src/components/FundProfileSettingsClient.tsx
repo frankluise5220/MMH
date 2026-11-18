@@ -7,6 +7,7 @@ import Link from "next/link";
 import { FundConfirmDaysPanel, type ConfirmDayRow } from "@/components/FundConfirmDaysModal";
 import { FundFeeRatePanel, type FeeRateRecord } from "@/components/FundFeeRatePanel";
 import { FundScheduledTasksPanel, type RelatedScheduledTask } from "@/components/FundScheduledTasksPanel";
+import { MoneyFundYieldPanel } from "@/components/MoneyFundYieldPanel";
 import { RegularInvestForm } from "@/components/RegularInvestForm";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { useI18n } from "@/lib/i18n";
@@ -33,6 +34,8 @@ type FundProfileSettingsClientProps = {
     id: string;
     name: string;
     institutionName: string | null;
+    /** money 时净值恒为 1，资料页改为维护每万份收益、隐藏净值偏移与费率。 */
+    investProductType?: string | null;
   };
   profile: FundProfileSettingsData;
   backHref?: string;
@@ -137,6 +140,7 @@ function planToEditData(plan: RelatedScheduledTask) {
 
 export function FundProfileSettingsClient({ account, profile, backHref, onClose, modal = false, fundCompanyOptions = [], onDirtyChange, confirmDayRows, feeRateRows, onProfileSaved, onConfirmDaysSaved, onFeeRatesSaved, preloadedPlans, investmentAccounts, cashAccounts, investmentAccountSSOptions, cashAccountSSOptions, onEditPlanOpenChange }: FundProfileSettingsClientProps) {
   const { t } = useI18n();
+  const isMoneyFund = account.investProductType === "money";
   const [form, setForm] = useState<ProfileForm>(() => toForm(profile));
   const [dirtyFields, setDirtyFields] = useState<Set<keyof ProfileForm>>(() => new Set());
   const [saving, setSaving] = useState(false);
@@ -326,6 +330,7 @@ export function FundProfileSettingsClient({ account, profile, backHref, onClose,
                 behavior={{ search: true, clearable: true, density: "compact" }}
               />
             </label>
+            {isMoneyFund ? null : (
             <label className="space-y-1">
               <span className="block text-xs font-medium text-slate-600">{t("fundSettings.navDateOffset")}</span>
               <select
@@ -337,6 +342,7 @@ export function FundProfileSettingsClient({ account, profile, backHref, onClose,
                 <option value={1}>{t("fundSettings.navDateOffsetPrevious")}</option>
               </select>
             </label>
+            )}
           </div>
           <div className="border-t border-slate-100 p-2.5 pt-2">
             <div className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold text-slate-700">
@@ -369,17 +375,22 @@ export function FundProfileSettingsClient({ account, profile, backHref, onClose,
             </span>
           </div>
           <div className="p-2.5">
-            <FundFeeRatePanel
-              accountId={account.id}
-              initialFundCode={profile.fundCode}
-              compact
-              preloadedRows={feeRateRows}
-              onSaved={(result) => {
-                onFeeRatesSaved?.(result);
-                dispatchFinanceDataChanged({ reason: "fund-fee-rate:save", accountIds: [account.id] });
-              }}
-              hideFundColumn
-            />
+            {isMoneyFund ? (
+              // 货基没有申购/赎回费，费率表无意义；这里换成它真正的「行情」——每万份收益。
+              <MoneyFundYieldPanel accountId={account.id} fundCode={profile.fundCode} compact />
+            ) : (
+              <FundFeeRatePanel
+                accountId={account.id}
+                initialFundCode={profile.fundCode}
+                compact
+                preloadedRows={feeRateRows}
+                onSaved={(result) => {
+                  onFeeRatesSaved?.(result);
+                  dispatchFinanceDataChanged({ reason: "fund-fee-rate:save", accountIds: [account.id] });
+                }}
+                hideFundColumn
+              />
+            )}
           </div>
           <div className="border-t border-slate-100 p-2.5 pt-2">
             <div className="mb-1.5 flex items-center gap-1.5 text-xs font-semibold text-slate-700">

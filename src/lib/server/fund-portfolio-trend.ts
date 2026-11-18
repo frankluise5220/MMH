@@ -374,7 +374,7 @@ export async function loadFundPortfolioTrendData(
       isActive: true,
       isPlaceholder: { not: true },
     },
-    select: { id: true, name: true, fundUnitsDecimals: true },
+    select: { id: true, name: true, fundUnitsDecimals: true, investProductType: true },
   });
   if (accounts.length === 0) {
     const currentYm = todayDateBusinessYmd(timeZone).slice(0, 7);
@@ -473,6 +473,7 @@ export async function loadFundPortfolioTrendData(
     decimals: number;
     positions: Map<string, Position>;
   };
+  const accountProductTypeById = new Map(accounts.map((account) => [account.id, account.investProductType]));
   const stateByAccount = new Map<string, AccountState>();
   for (const account of accounts) {
     stateByAccount.set(account.id, {
@@ -618,12 +619,13 @@ export async function loadFundPortfolioTrendData(
     // Aggregate positions across all accounts
     let totalUnits = 0;
     let totalCost = 0;
-    const activePositions: { fundCode: string; units: number; cost: number }[] = [];
-    for (const accountState of stateByAccount.values()) {
+    const activePositions: { fundCode: string; units: number; cost: number; isMoneyFund: boolean }[] = [];
+    for (const [accountId, accountState] of stateByAccount) {
+      const isMoneyFund = accountProductTypeById.get(accountId) === FundProductType.money;
       for (const pos of accountState.positions.values()) {
         totalUnits += pos.units;
         totalCost += pos.cost;
-        if (pos.units > 0) activePositions.push(pos);
+        if (pos.units > 0) activePositions.push({ ...pos, isMoneyFund });
       }
     }
 
@@ -631,6 +633,11 @@ export async function loadFundPortfolioTrendData(
     let marketValue = 0;
     if (totalUnits > 0) {
       for (const pos of activePositions) {
+        // 货基按面值 1 元/份，不查净值（缓存里即使有行也是万份收益）。
+        if (pos.isMoneyFund) {
+          marketValue += pos.units;
+          continue;
+        }
         const cacheKey = `${pos.fundCode}:${month}`;
         let navInfo = navLookupCache.get(cacheKey);
         if (navInfo === undefined) {

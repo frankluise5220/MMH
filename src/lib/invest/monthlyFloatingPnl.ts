@@ -72,6 +72,7 @@ type InvestmentAccount = {
   costBasisMethod: string | null;
   fundUnitsDecimals: number;
   tradingCalendar: string | null;
+  investProductType?: string | null;
 };
 
 function ymd(date: Date) {
@@ -192,9 +193,15 @@ async function buildAccountSnapshot(params: {
     const cost = roundMoney(holding.cost + holding.pendingCost);
     if (units <= 0.0001 && cost <= 0.01) continue;
     const navInfo = navByCode.get(fundCode);
-    if (!navInfo && units > 0.0001) missingNavCodes.push(fundCode);
+    // 货基面值恒为 1：净值缓存里的数字是万份收益，不能乘份额。
+    const isMoneyFund = params.account.investProductType === "money";
+    if (!navInfo && !isMoneyFund && units > 0.0001) missingNavCodes.push(fundCode);
     const confirmedCost = holding.cost;
-    const confirmedMarketValue = navInfo && units > 0 ? units * navInfo.nav : confirmedCost;
+    const confirmedMarketValue = isMoneyFund
+      ? units
+      : navInfo && units > 0
+        ? units * navInfo.nav
+        : confirmedCost;
     const rowMarketValue = roundMoney(confirmedMarketValue + holding.pendingCost);
     const floatingPnL = roundMoney(rowMarketValue - cost);
     totalCost += cost;
@@ -204,8 +211,8 @@ async function buildAccountSnapshot(params: {
       fundName: params.fundNameByCode.get(fundCode) ?? null,
       units,
       cost,
-      nav: navInfo?.nav ?? null,
-      navDate: navInfo?.navDate ?? null,
+      nav: isMoneyFund ? 1 : navInfo?.nav ?? null,
+      navDate: isMoneyFund ? null : navInfo?.navDate ?? null,
       marketValue: rowMarketValue,
       floatingPnL,
       floatingPnLRate: cost > 0 ? roundRate(floatingPnL / cost) : 0,

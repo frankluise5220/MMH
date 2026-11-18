@@ -818,6 +818,7 @@ export function PropertyShell({
           <div className="flex shrink-0 items-center justify-end gap-1">
             <button
               type="button"
+              data-fixed-asset-edit={assetId}
               onClick={(event) => {
                 event.stopPropagation();
                 openFixedAssetEdit(position);

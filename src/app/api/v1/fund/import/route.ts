@@ -357,10 +357,23 @@ type NavPreloadRequest = { fundCode: string; startDate: string; endDate: string 
  * 拆成「算计划」和「执行」两步：预览可以先等一小会儿就返回，剩下的交给后台。
  */
 async function planImportNavPreload(inputs: readonly FundImportInput[]): Promise<NavPreloadRequest[]> {
+  // 货基不预取「净值」：东财那条接口对它返回的是每万份收益，写进 FundNavCache 会被当成
+  // 净值乘份额（issue #26 的根因），它的收益数据走 MoneyFundYield。
+  const fundAccountIds = [...new Set(
+    inputs.map((input) => String(input.fundAccountId ?? "").trim()).filter(Boolean),
+  )];
+  const moneyAccountIds = fundAccountIds.length === 0
+    ? new Set<string>()
+    : new Set((await prisma.account.findMany({
+      where: { id: { in: fundAccountIds }, investProductType: FundProductType.money },
+      select: { id: true },
+    }).catch(() => [])).map((account) => account.id));
+
   const ranges = new Map<string, { min: string; max: string; dates: Set<string> }>();
   for (const input of inputs) {
     const fundCode = String(input.fundCode ?? "").trim();
     if (!/^\d{6}$/.test(fundCode)) continue;
+    if (moneyAccountIds.has(String(input.fundAccountId ?? "").trim())) continue;
     if (input.nav != null && input.nav > 0) continue;
     const date = normalizeImportDatePart(input.confirmDate) ?? normalizeImportDatePart(input.date);
     if (!date) continue;
@@ -1001,6 +1014,19 @@ async function enrichImportItem(
       }
     } else {
       feeRate = 0;
+    }
+
+    // 货基一元一份：东财对货基返回的「净值」其实是每万份收益（0.2~0.7），拿它折份额会把份额
+    // 放大几千倍（issue #26）。账户是货基时先钉死净值 = 1、份额 = 金额，下面两段反推/查净值
+    // 都因 nav 已非空而跳过，历史账单里那列数字即使带进来也不会参与折算。
+    const moneyFundAccount = fundAccountMeta.investProductType === FundProductType.money;
+    if (moneyFundAccount && (subtype === "buy" || subtype === "dividend_reinvest" || subtype === "redeem")) {
+      nav = 1;
+      calculatedFields.add("nav");
+      if (units == null && subtype !== "redeem") {
+        units = roundFundUnits(amount, normalizeFundUnitsDecimals(fundAccountMeta.fundUnitsDecimals));
+        calculatedFields.add("units");
+      }
     }
 
     // 净值留空时优先用行内数据反推（份额+金额→净值，与确认份额公式同源：份额=(金额-手续费)/净值），

@@ -492,6 +492,23 @@ model FundNavCache {
   @@index([navDate])
 }
 
+/// 货币基金「每万份收益」，单位：元/万份。
+/// 货基按面值 1 元/份核算，净值不是变量；真正的收益数据是每日万份收益，必须与
+/// FundNavCache 分开存放——同一列既当净值又当万份收益，会把买入份额放大几千倍。
+model MoneyFundYield {
+  id            String   @id @default(cuid())
+  fundCode      String
+  yieldDate     DateTime
+  incomePer10k  Decimal  @db.Decimal(20, 6) // 每万份收益（元），可为负
+  sevenDayYield Decimal? @db.Decimal(10, 4) // 7 日年化（%），数据源不提供则留空
+  source        String? // eastmoney_history / manual
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @default(now()) @updatedAt
+
+  @@unique([fundCode, yieldDate])
+  @@index([fundCode, yieldDate])
+}
+
 model FundProfile {
   fundCode        String           @id // 6 位基金代码，全局唯一（跨账户、跨账本共享的基金维度）
   fundName        String? // 基金简称
@@ -1172,9 +1189,17 @@ model PropertyValuation {
 
 /// 固定资产折旧台账（2026-11-18 用户裁定）。
 ///
-/// 设定直线法折旧后，系统按**月**自动生成一条记录：金额恒定 =
-/// （成本 − 残值）÷ 折旧月数，从购入月起补记到当前月；年折旧率 = 1/年限
-/// （10 年报废 = 每年 10%）。处置/售出时以台账累计定格。
+/// 两种来源共用一张表，靠 `method` 区分：
+/// - `straight_line`：设定直线法后系统按**月**自动生成：金额恒定 =
+///   （成本 − 残值）÷ 折旧月数，从购入月起补记到当前月；年折旧率 = 1/年限
+///   （10 年报废 = 每年 10%）。
+/// - `manual`：用户手工登记的折损 / 减值（一次性折完也走这里：登记一笔全额）。
+///   手工记录的 `periodMonth` 存**所属月最后一天**，这样同一月既有自动计提又有
+///   手工登记时不会撞 @@unique(propertyAssetId, periodMonth)；展示仍按 YYYY-MM。
+///   手工合计同步到 PropertyAsset.accumulatedDepreciation（none 模式它就是累计折旧，
+///   straight_line 模式下它就是「额外折损」）。
+///
+/// 处置/售出时以台账定格：自动部分取 straight_line 累计，手工部分取资产字段。
 ///
 /// 折旧是**账面价值减少**，不是现金支出：本表不产生 TxRecord、不改账户余额、
 /// 不进收支报表。口径实现见 src/lib/fixed-asset-depreciation.ts 与
@@ -1183,17 +1208,19 @@ model PropertyAssetDepreciation {
   id                String        @id @default(cuid())
   householdId       String
   propertyAssetId   String
-  /// 计提所属月：该月 1 日 UTC 零点（date-only 契约）。
+  /// 计提所属月：自动记录 = 该月 1 日、手工记录 = 该月最后一天（均 UTC 零点，date-only 契约）。
   periodMonth       DateTime
   /// 本期折旧额。
   amount            Decimal       @db.Decimal(18, 2)
-  /// 计提后的累计折旧（封顶可折旧基数，四舍五入收敛到最后一期）。
+  /// 计提后的累计折旧（自动部分封顶可折旧基数；手工部分封顶成本）。
   accumulatedAfter  Decimal       @db.Decimal(18, 2)
   /// 计提时冻结的口径快照，便于审计（成本 / 残值 / 折旧月数）。
   basisCost         Decimal       @db.Decimal(18, 2)
   basisSalvage      Decimal       @db.Decimal(18, 2)
   basisMonths       Int
   method            String        @default("straight_line")
+  /// 手工登记时的说明（自动计提为空）。
+  note              String?
   createdAt         DateTime      @default(now())
   Household         Household     @relation(fields: [householdId], references: [id], onDelete: Cascade)
   PropertyAsset     PropertyAsset @relation(fields: [propertyAssetId], references: [id], onDelete: Cascade)

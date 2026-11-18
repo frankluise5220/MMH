@@ -17,6 +17,7 @@ import { getFundProfileNameMap, normalizeFundDisplayName } from "@/lib/fund/fund
 import { futureConfirmHoldingKey, loadFutureConfirmedBuyMap } from "@/lib/fund/future-confirm";
 import { deriveClosedCycles } from "@/lib/fund/closed-cycles";
 import { derivePositionCycles } from "@/lib/invest/position-cycles";
+import { MONEY_FUND_NAV } from "@/lib/fund/moneyFund";
 import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import { isWealthLikeProductType } from "@/lib/investment-config";
 import { getMaintainedAccountBalances } from "@/lib/server/account-balance";
@@ -28,6 +29,16 @@ export type InvestBalanceDetail = {
   marketValue: number;
   totalCost: number;
   floatingPnL: number;
+  /**
+   * 货币基金单列口径。货基市值 = 份额 × 1，浮盈等于已结转的累计收益，
+   * 与开放式基金（份额 × 净值）不是一回事，统计上必须分开看。
+   * 仅基金账户会产生此分桶。
+   */
+  moneyFund?: {
+    marketValue: number;
+    totalCost: number;
+    floatingPnL: number;
+  };
 };
 
 /** Position detail display row — generated directly from the fundHolding table. */
@@ -465,6 +476,7 @@ export const computeInvestBalances = cache(
       )
     : new Map<string, number>();
 
+  const productTypeByAccountId = new Map(accounts.map((account) => [account.id, account.investProductType]));
   const holdingsByAccountId = new Map<string, typeof allHoldings>();
   for (const holding of allHoldings) {
     const holdings = holdingsByAccountId.get(holding.accountId);
@@ -498,6 +510,8 @@ export const computeInvestBalances = cache(
     const holdings = holdingsByAccountId.get(acctId) ?? [];
     let marketValue = 0;
     let totalCost = 0;
+    let moneyMarketValue = 0;
+    let moneyTotalCost = 0;
 
     for (const h of holdings) {
       const futureConfirmed = futureConfirmedByHoldingKey.get(holdingKey(h.accountId, h.fundCode));
@@ -508,15 +522,31 @@ export const computeInvestBalances = cache(
       const displayPending = (displayPendingByHoldingKey.get(holdingKey(h.accountId, h.fundCode)) ?? 0) + pendingFromFutureConfirm;
       const confirmedCost = Math.max(0, storedCost - storedPending - pendingFromFutureConfirm);
       const displayCost = confirmedCost + displayPending;
+      const isMoneyFund = productTypeByAccountId.get(h.accountId) === "money";
+      // 货基按面值 1 元/份计价：净值缓存里该代码的数字是每万份收益，绝不能当乘数。
       const navInfo = latestNavByCode.get(h.fundCode);
-      const latestNav = navInfo?.nav ?? toNumber(h.nav ?? 0);
+      const latestNav = isMoneyFund ? MONEY_FUND_NAV : navInfo?.nav ?? toNumber(h.nav ?? 0);
       const confirmedMV = latestNav > 0 && units > 0 ? units * latestNav : confirmedCost;
-      marketValue += confirmedMV + displayPending;
+      const rowMarketValue = confirmedMV + displayPending;
+      marketValue += rowMarketValue;
       totalCost += displayCost;
+      if (isMoneyFund) {
+        moneyMarketValue += rowMarketValue;
+        moneyTotalCost += displayCost;
+      }
     }
 
     const floatingPnL = marketValue - totalCost;
-    result.set(acctId, { marketValue, totalCost, floatingPnL });
+    result.set(acctId, {
+      marketValue,
+      totalCost,
+      floatingPnL,
+      moneyFund: {
+        marketValue: moneyMarketValue,
+        totalCost: moneyTotalCost,
+        floatingPnL: moneyMarketValue - moneyTotalCost,
+      },
+    });
   }
 
   for (const acctId of metalAccountIds) {

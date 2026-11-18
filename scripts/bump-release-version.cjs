@@ -35,8 +35,15 @@ function todayDate() {
   return `${y}-${m}-${d}`;
 }
 
+// 2026-11-18 起公开 Release 只发布轻量变体（external-node，不内置 Node.js）。
+// 资产名因此带 `-external-node` 后缀；bundled（内置 Node.js 22）退为手动兜底，
+// 不再随 Release 发布，清单里也就不能指向它。阈值保持与 check-release-version /
+// sync-fndepot-source 一致，避免三处约定漂移。
+const EXTERNAL_NODE_SINCE_PATCH = 87;
 function fnosFpkAssetName(version, assetSuffix) {
-  return `mmh-fnos-v${version}-${assetSuffix}.fpk`;
+  const patch = Number((/^0\.1\.(\d+)$/.exec(String(version)) || [])[1] ?? -1);
+  const variant = patch >= EXTERNAL_NODE_SINCE_PATCH ? "-external-node" : "";
+  return `mmh-fnos-v${version}-${assetSuffix}${variant}.fpk`;
 }
 
 function fnosVpsX86Url(version) {

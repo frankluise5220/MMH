@@ -30,9 +30,9 @@
  *   node scripts/sync-notes-from-release.cjs --version 0.1.78 --write --from-file docs/releases/v0.1.78.body.md
  *
  * 正文来源优先级：`--from-file` → GitHub Release（先按 tag 取，draft 回落到列表匹配）。
- * `--auto-manifest` 用正文条目机械压平成 `mmhFnosManifestChangelog`（超 600 字符时从尾部
- * 整条丢弃并打印丢掉的条目）；不给时只报告压平后的长度，需要人工用 `--manifest` 传入定稿。
- * CI 的渠道构建用 `--auto-manifest`，保证 FPK/SPK 里的版本说明与 Release 正文同源。
+ * `--auto-manifest` 用正文条目机械压平成 `mmhFnosManifestChangelog`；因 600 字符上限需要整条
+ * 丢弃时**直接失败并列出被丢条目**（只有显式 `--allow-drop` 才继续），压缩定稿由人用
+ * `--manifest-file` 给出。FPK/SPK 构建直接读 package.json 的该字段，不在这里生成。
  */
 
 const fs = require("node:fs");
@@ -283,10 +283,23 @@ async function main() {
       console.error(`[FAIL] 自动压平的 mmhFnosManifestChangelog 仍超过 ${MANIFEST_MAX} 字符（${text.length}）。`);
       process.exit(3);
     }
+    // 0.1.86 教训：截断只打 warn，包和商店文案静悄悄地少掉 14 条，而所有 check 只断言 ≤600，
+    // 全绿通过。丢条目必须当场失败，压缩是人的决定，不是脚本的副作用。
+    if (dropped.length && !flag("allow-drop")) {
+      console.error(
+        [
+          `[FAIL] 机械压平会因 ${MANIFEST_MAX} 字符上限丢弃 ${dropped.length} 条，应用中心的版本说明会缺血：`,
+          ...dropped.map((item) => `        - ${item}`),
+          "       请把压缩后的完整说明写进文件，用 --manifest-file <file> 传入；",
+          "       确实接受丢弃时显式加 --allow-drop。",
+        ].join("\n"),
+      );
+      process.exit(3);
+    }
     pkg.mmhFnosManifestChangelog = text;
     console.log(`[done] mmhFnosManifestChangelog 已按正文自动压平（${text.length} 字符）`);
     if (dropped.length) {
-      console.log(`[warn] 因 ${MANIFEST_MAX} 字符上限丢弃 ${dropped.length} 条：${dropped.map((item) => item.slice(0, 24)).join(" | ")}`);
+      console.log(`[warn] --allow-drop：因 ${MANIFEST_MAX} 字符上限丢弃 ${dropped.length} 条：${dropped.map((item) => item.slice(0, 24)).join(" | ")}`);
     }
   }
 

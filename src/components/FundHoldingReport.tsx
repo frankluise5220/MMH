@@ -677,6 +677,31 @@ export function FundHoldingReport({ rows, clearedRows, totals, isRedUp, groupMod
         ))}
       </div>
 
+      {/* 货基与开放式基金口径不同：前者市值 = 份额 × 1、收益靠份额结转，后者靠净值。 */}
+      <div className="grid shrink-0 grid-cols-1 gap-3 md:grid-cols-2">
+        {[
+          { key: "open", labelKey: "fundHoldingReport.bucket.openFund", bucket: totals.openFund },
+          { key: "money", labelKey: "fundHoldingReport.bucket.moneyFund", bucket: totals.moneyFund },
+        ].map((item) => (
+          <div key={item.key} className="rounded-lg border border-slate-200 bg-white px-3 py-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[11px] font-medium text-slate-600">{t(item.labelKey)}</span>
+              <span className="text-[10px] text-slate-400">
+                {item.bucket.holdingCount} {t("fundHoldingReport.bucket.countUnit")}
+              </span>
+            </div>
+            <div className="mt-1 flex items-center justify-between gap-3 text-xs tabular-nums">
+              <span className="text-slate-500">
+                {t("fundHoldingReport.bucket.marketValue")} {formatCurrencyMoney(item.bucket.marketValue, currency)}
+              </span>
+              <span className={valueClass(item.bucket.totalProfit, isRedUp)}>
+                {t("fundHoldingReport.bucket.profit")} {signedMoney(item.bucket.totalProfit, currency)}
+              </span>
+            </div>
+          </div>
+        ))}
+      </div>
+
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border border-slate-200 bg-white">
         <div className="flex shrink-0 flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b border-slate-100 px-3 py-2">
           <div className="shrink-0 whitespace-nowrap text-sm font-medium text-slate-800">{t("fundHoldingReport.holdingsTitle")}</div>

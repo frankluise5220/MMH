@@ -117,8 +117,10 @@ async function syncOneAsset(asset: AssetRow, householdId: string, asOfDateKey: s
   const targetPeriods = Math.min(dep.monthsUsed, dep.usefulLifeMonths);
   if (targetPeriods <= 0) return 0;
 
+  // 只看自动计提的行：手工登记（折损 / 减值）混在同一张表里，混进来会污染
+  // 「上一期累计」并把手工金额当成自动基数，等于把折损算两遍。
   const existing = await prisma.propertyAssetDepreciation.findMany({
-    where: { propertyAssetId: asset.id },
+    where: { propertyAssetId: asset.id, method: DepreciationMethod.straightLine },
     select: { periodMonth: true, accumulatedAfter: true },
     orderBy: { periodMonth: "asc" },
   });
@@ -189,8 +191,11 @@ async function syncOneAsset(asset: AssetRow, householdId: string, asOfDateKey: s
   }
 }
 
+/** 手工登记的折损 / 减值在台账里的 `method` 值（与自动计提区分）。 */
+export const MANUAL_DEPRECIATION_METHOD = "manual";
+
 /**
- * 台账累计折旧（不含手填的额外折损/减值）。可传入事务 client。
+ * 自动计提的累计折旧（不含手工登记的折损/减值）。可传入事务 client。
  *
  * `asOfPeriodMonth` 用于**处置 / 售出结算**：台账总是补到当前月，但结算日可能填在
  * 过去的月份（补记历史处置），不截断就会多算后面几期，账面净值偏低、损益虚高。
@@ -205,6 +210,7 @@ export async function recordedDepreciationTotal(
   const aggregate = await client.propertyAssetDepreciation.aggregate({
     where: {
       propertyAssetId,
+      method: DepreciationMethod.straightLine,
       ...(asOfPeriodMonth ? { periodMonth: { lte: asOfPeriodMonth } } : {}),
     },
     _sum: { amount: true },
@@ -212,12 +218,163 @@ export async function recordedDepreciationTotal(
   return round2(Number(aggregate._sum.amount ?? 0));
 }
 
-/** 资产页展示用：台账期间的最近几笔。 */
+/** 手工登记的折损合计（同步落在 PropertyAsset.accumulatedDepreciation 上）。 */
+export async function recordedManualDepreciationTotal(
+  propertyAssetId: string,
+  client: Pick<typeof prisma, "propertyAssetDepreciation"> = prisma,
+): Promise<number> {
+  const aggregate = await client.propertyAssetDepreciation.aggregate({
+    where: { propertyAssetId, method: MANUAL_DEPRECIATION_METHOD },
+    _sum: { amount: true },
+  });
+  return round2(Number(aggregate._sum.amount ?? 0));
+}
+
+/** 资产页展示用：台账期间的最近几笔（自动 + 手工）。 */
 export async function loadDepreciationLedger(propertyAssetId: string, take = 24) {
   return prisma.propertyAssetDepreciation.findMany({
     where: { propertyAssetId },
-    orderBy: { periodMonth: "desc" },
+    orderBy: [{ periodMonth: "desc" }, { createdAt: "desc" }],
     take,
-    select: { id: true, periodMonth: true, amount: true, accumulatedAfter: true },
+    select: { id: true, periodMonth: true, amount: true, accumulatedAfter: true, method: true, note: true },
+  });
+}
+
+/** 手工折旧台账的错误：路由直接按 status 映射 4xx，不要把用户输入问题报成 500。 */
+export class ManualDepreciationError extends Error {
+  constructor(message: string, readonly status = 400) {
+    super(message);
+    this.name = "ManualDepreciationError";
+  }
+}
+
+/**
+ * 手工登记的「所属月」：存该月**最后一天**（UTC 零点）。
+ *
+ * 自动计提落在月初，手工记录落在月末，这样同一月既有自动计提又有手工折损时
+ * 不会撞 @@unique(propertyAssetId, periodMonth)；展示一律按 YYYY-MM。
+ */
+export function manualDepreciationPeriodMonth(dateKey: string): Date {
+  const raw = String(dateKey ?? "").trim();
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
+  const date = match
+    ? new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])))
+    : new Date(raw);
+  if (Number.isNaN(date.getTime())) {
+    throw new ManualDepreciationError("折损日期无效");
+  }
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth() + 1, 0));
+}
+
+/**
+ * 登记一笔手工折损 / 减值（2026-11-18 用户裁定：手工也要能记明细）。
+ *
+ * 同一个月再登记时累加到那条记录上（一个月一条，避免同月多条把展示搞乱），
+ * 说明文字用「；」串起来。登记后把手工合计写回 `accumulatedDepreciation`：
+ * - `none` 模式 → 它就是累计折旧（`resolveAssetDepreciation` 直接读它）；
+ * - `straight_line` 模式 → 它是「额外折损」，叠加在自动计提之上。
+ * 合计封顶成本，不允许把净值折成负数。
+ */
+export async function addManualDepreciation(params: {
+  householdId: string;
+  propertyAssetId: string;
+  periodDateKey: string;
+  amount: number;
+  note?: string | null;
+}) {
+  const periodMonth = manualDepreciationPeriodMonth(params.periodDateKey);
+  const requested = round2(Math.max(0, Number(params.amount) || 0));
+  if (requested <= 0) throw new ManualDepreciationError("折损金额必须大于 0");
+
+  return prisma.$transaction(async (tx) => {
+    const asset = await tx.propertyAsset.findFirst({
+      where: { id: params.propertyAssetId, householdId: params.householdId, deletedAt: null },
+      select: { id: true, cost: true, salvageValue: true, usefulLifeMonths: true, status: true },
+    });
+    if (!asset) throw new ManualDepreciationError("资产不存在或不属于当前账簿", 404);
+    if (asset.status !== "active") {
+      throw new ManualDepreciationError("已售出 / 已处置的资产不能再登记折损（折旧已在结算时定格）", 409);
+    }
+
+    const cost = round2(Math.max(0, Number(asset.cost ?? 0)));
+    const previous = await recordedManualDepreciationTotal(asset.id, tx);
+    const capacity = round2(Math.max(0, cost - previous));
+    if (capacity <= 0) throw new ManualDepreciationError("累计折损已达成本，不能再登记");
+    const applied = round2(Math.min(requested, capacity));
+    const settled = round2(previous + applied);
+    const note = String(params.note ?? "").trim() || null;
+
+    const existing = await tx.propertyAssetDepreciation.findFirst({
+      where: { propertyAssetId: asset.id, periodMonth, method: MANUAL_DEPRECIATION_METHOD },
+      select: { id: true, amount: true, note: true },
+    });
+    const record = existing
+      ? await tx.propertyAssetDepreciation.update({
+          where: { id: existing.id },
+          data: {
+            amount: round2(Number(existing.amount) + applied),
+            accumulatedAfter: settled,
+            note: [existing.note, note].filter(Boolean).join("；") || null,
+            basisCost: cost,
+            basisSalvage: round2(Math.max(0, Number(asset.salvageValue ?? 0))),
+            basisMonths: Math.max(0, Math.round(Number(asset.usefulLifeMonths ?? 0))),
+          },
+          select: { id: true, periodMonth: true, amount: true, accumulatedAfter: true, method: true, note: true },
+        })
+      : await tx.propertyAssetDepreciation.create({
+          data: {
+            householdId: params.householdId,
+            propertyAssetId: asset.id,
+            periodMonth,
+            amount: applied,
+            accumulatedAfter: settled,
+            basisCost: cost,
+            basisSalvage: round2(Math.max(0, Number(asset.salvageValue ?? 0))),
+            basisMonths: Math.max(0, Math.round(Number(asset.usefulLifeMonths ?? 0))),
+            method: MANUAL_DEPRECIATION_METHOD,
+            note,
+          },
+          select: { id: true, periodMonth: true, amount: true, accumulatedAfter: true, method: true, note: true },
+        });
+
+    await tx.propertyAsset.update({
+      where: { id: asset.id },
+      data: { accumulatedDepreciation: String(settled) },
+    });
+
+    return { record, settled, applied, capped: applied < requested };
+  });
+}
+
+/** 删除一条手工折损记录并重算资产上的累计折旧；自动计提的行不允许删。 */
+export async function deleteManualDepreciation(params: {
+  householdId: string;
+  propertyAssetId: string;
+  id: string;
+}) {
+  return prisma.$transaction(async (tx) => {
+    const row = await tx.propertyAssetDepreciation.findFirst({
+      where: { id: params.id, propertyAssetId: params.propertyAssetId, householdId: params.householdId },
+      select: { id: true, method: true },
+    });
+    if (!row) throw new ManualDepreciationError("折损记录不存在", 404);
+    if (row.method !== MANUAL_DEPRECIATION_METHOD) {
+      throw new ManualDepreciationError("自动计提的折旧记录由系统维护，不能删除", 409);
+    }
+    const asset = await tx.propertyAsset.findFirst({
+      where: { id: params.propertyAssetId, householdId: params.householdId, deletedAt: null },
+      select: { id: true, status: true },
+    });
+    if (!asset) throw new ManualDepreciationError("资产不存在或不属于当前账簿", 404);
+    if (asset.status !== "active") {
+      throw new ManualDepreciationError("已售出 / 已处置的资产不能改折损记录", 409);
+    }
+    await tx.propertyAssetDepreciation.delete({ where: { id: row.id } });
+    const remaining = await recordedManualDepreciationTotal(asset.id, tx);
+    await tx.propertyAsset.update({
+      where: { id: asset.id },
+      data: { accumulatedDepreciation: String(remaining) },
+    });
+    return { settled: remaining };
   });
 }

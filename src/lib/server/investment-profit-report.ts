@@ -20,13 +20,15 @@ import { isStockCashInAction, isStockCashOutAction, stockCashAmount, totalStockF
 import { getInvestmentStatisticItems, type InvestmentStatisticEntryLike } from "@/lib/transaction-statistics";
 
 export type InvestmentProfitPeriod = "day" | "month" | "year";
-type InvestmentProfitKind = "fund" | "stock" | "wealth" | "deposit" | "fixedAsset";
+type InvestmentProfitKind = "fund" | "money" | "stock" | "wealth" | "deposit" | "fixedAsset";
 
 export type InvestmentProfitReportRow = {
   key: string;
   label: string;
   subLabel: string;
   fundProfit: number;
+  /** 货币基金单列：收益来自份额结转，估值恒按 1 元/份，与开放式基金不可合并看。 */
+  moneyProfit: number;
   stockProfit: number;
   wealthProfit: number;
   depositProfit: number;
@@ -258,6 +260,9 @@ function monthLabel(language: DisplayLanguage, month: number) {
 }
 
 function productKindOf(entry: InvestmentStatisticEntryLike): InvestmentProfitKind {
+  // 货基必须单独成一类：它的净值恒为 1，收益是份额结转，混进「基金」会让
+  // 开放式基金的净值型收益与货基的摊余型收益无法对照。
+  if (entry.fundProductType === "money") return "money";
   if (entry.fundProductType === "stock") return "stock";
   if (entry.fundProductType === "property") return "fixedAsset";
   if (entry.fundProductType === "wealth") return "wealth";
@@ -271,6 +276,7 @@ function createRow(bucket: Pick<Bucket, "key" | "label" | "subLabel">): Investme
     label: bucket.label,
     subLabel: bucket.subLabel,
     fundProfit: 0,
+    moneyProfit: 0,
     stockProfit: 0,
     wealthProfit: 0,
     depositProfit: 0,
@@ -283,7 +289,8 @@ function createRow(bucket: Pick<Bucket, "key" | "label" | "subLabel">): Investme
 
 function addProfit(row: InvestmentProfitReportRow, kind: InvestmentProfitKind, profit: number, count = 1) {
   if (profit === 0) return;
-  if (kind === "stock") row.stockProfit += profit;
+  if (kind === "money") row.moneyProfit += profit;
+  else if (kind === "stock") row.stockProfit += profit;
   else if (kind === "wealth") row.wealthProfit += profit;
   else if (kind === "deposit") row.depositProfit += profit;
   else if (kind === "fixedAsset") row.fixedAssetProfit += profit;
@@ -654,8 +661,9 @@ function accountDailyNavDeltaProfit(params: {
   const reportDateKey = ymd(params.date);
   // Future report dates must not reuse the latest historical NAV and create
   // a duplicated profit row before that date has actually occurred.
-  if (reportDateKey > params.todayKey) return { profit: 0, count: 0 };
+  if (reportDateKey > params.todayKey) return { profit: 0, moneyProfit: 0, count: 0 };
   let profit = 0;
+  let moneyProfit = 0;
   let count = 0;
   const fundCodes = new Set(params.entries.map((entry) => entry.fundCode).filter(Boolean) as string[]);
   for (const fundCode of fundCodes) {
@@ -676,6 +684,21 @@ function accountDailyNavDeltaProfit(params: {
     //    that day: 2026-10-12 was a JP holiday, yet 摩根日本精选股票(QDII)C
     //    published a NAV on it and its -21.39 delta vanished from the 10-12 row.
     if (isTradingClosedDate(reportDateKey, "cn_fund")) continue;
+    if (meta.isMoney) {
+      // 货基没有净值行，收益也不来自净值差：当天结转进份额的金额就是当日收益。
+      // 结转流水 units 是收益、nav 恒为 1，这里直接按日取，绝不回读净值缓存
+      // （那里即使有货基行，数字也是每万份收益，乘份额会把报表算错）。
+      for (const entry of params.entries) {
+        if (entry.fundCode !== fundCode) continue;
+        if (entry.source !== "money_fund_income") continue;
+        if (calcDateOf(entry) !== reportDateKey) continue;
+        const income = toNumber(entry.units);
+        if (income === 0) continue;
+        moneyProfit += income;
+        count += 1;
+      }
+      continue;
+    }
     const dateKey = fundNavTargetDateForOffset({
       referenceDate: params.date,
       navDateOffset: params.navDateOffsetByCode?.get(fundCode) ?? 0,
@@ -760,7 +783,7 @@ function accountDailyNavDeltaProfit(params: {
     if (fundProfit !== 0) count += 1;
     profit += fundProfit;
   }
-  return { profit: roundMoney(profit), count };
+  return { profit: roundMoney(profit), moneyProfit: roundMoney(moneyProfit), count };
 }
 function bucketDailyNavDeltaProfit(params: {
   bucket: Bucket;
@@ -773,6 +796,7 @@ function bucketDailyNavDeltaProfit(params: {
   missingNavByKey: Map<string, InvestmentProfitMissingNav>;
 }) {
   let profit = 0;
+  let moneyProfit = 0;
   let count = 0;
   for (
     let date = new Date(params.bucket.start);
@@ -791,10 +815,34 @@ function bucketDailyNavDeltaProfit(params: {
         missingNavByKey: params.missingNavByKey,
       });
       profit += result.profit;
+      moneyProfit += result.moneyProfit;
       count += result.count;
     }
   }
-  return { profit: roundMoney(profit), count };
+  return { profit: roundMoney(profit), moneyProfit: roundMoney(moneyProfit), count };
+}
+
+/**
+ * 报表区间内货基结转进份额的收益合计（= 货基当期已实现收益）。
+ * 结转流水没有现金流，金额直接记在 units 上（nav 恒为 1）。
+ */
+function bucketMoneyFundIncome(params: {
+  entriesByAccountId: Map<string, FundPositionEntryLike[]>;
+  start: Date;
+  end: Date;
+}): number {
+  const startKey = ymd(params.start);
+  const endKey = ymd(params.end);
+  let total = 0;
+  for (const entries of params.entriesByAccountId.values()) {
+    for (const entry of entries) {
+      if (entry.source !== "money_fund_income") continue;
+      const day = calcDateOf(entry);
+      if (!day || day < startKey || day > endKey) continue;
+      total += toNumber(entry.units);
+    }
+  }
+  return roundMoney(total);
 }
 
 function bucketCashFlows(params: {
@@ -1379,7 +1427,11 @@ async function applyFundValuationProfit(params: {
         missingNavByKey,
       });
       const row = params.rows.get(bucket.key);
-      if (row) addProfit(row, "fund", daily.profit, daily.count);
+      if (row) {
+        addProfit(row, "fund", daily.profit, daily.count);
+        // 笔数已随 fund 累加，这里只分金额，避免同一天被计两次。
+        addProfit(row, "money", daily.moneyProfit, 0);
+      }
       continue;
     }
 
@@ -1410,7 +1462,13 @@ async function applyFundValuationProfit(params: {
 
     const profit = roundMoney(currentSnapshot + cashOut - cashIn - previousSnapshot + moneyIncome);
     const row = params.rows.get(bucket.key);
-    if (row) addProfit(row, "fund", profit, Math.max(1, contributorCount));
+    if (row) {
+      // 快照总收益里已含货基（结转份额抬高了 units × 1），按结转金额拆出后
+      // 其余才是开放式基金的净值型收益，两者口径不同不能混在一起看。
+      const moneyProfit = bucketMoneyFundIncome({ entriesByAccountId, start: bucket.start, end: bucket.end });
+      addProfit(row, "fund", roundMoney(profit - moneyProfit), Math.max(1, contributorCount));
+      addProfit(row, "money", moneyProfit, 0);
+    }
     previousSnapshot = currentSnapshot;
   }
 
@@ -1899,6 +1957,7 @@ export async function loadInvestmentProfitReport(
   const orderedRows = buckets.map((bucket) => rows.get(bucket.key)!).map((row) => ({
     ...row,
     fundProfit: roundMoney(row.fundProfit),
+    moneyProfit: roundMoney(row.moneyProfit),
     stockProfit: roundMoney(row.stockProfit),
     wealthProfit: roundMoney(row.wealthProfit),
     depositProfit: roundMoney(row.depositProfit),
@@ -1909,6 +1968,7 @@ export async function loadInvestmentProfitReport(
   const totals = orderedRows.reduce(
     (sum, row) => ({
       fundProfit: roundMoney(sum.fundProfit + row.fundProfit),
+      moneyProfit: roundMoney(sum.moneyProfit + row.moneyProfit),
       stockProfit: roundMoney(sum.stockProfit + row.stockProfit),
       wealthProfit: roundMoney(sum.wealthProfit + row.wealthProfit),
       depositProfit: roundMoney(sum.depositProfit + row.depositProfit),
@@ -1917,7 +1977,7 @@ export async function loadInvestmentProfitReport(
       dividendIncome: roundMoney(sum.dividendIncome + row.dividendIncome),
       count: sum.count + row.count,
     }),
-    { fundProfit: 0, stockProfit: 0, wealthProfit: 0, depositProfit: 0, fixedAssetProfit: 0, totalProfit: 0, dividendIncome: 0, count: 0 },
+    { fundProfit: 0, moneyProfit: 0, stockProfit: 0, wealthProfit: 0, depositProfit: 0, fixedAssetProfit: 0, totalProfit: 0, dividendIncome: 0, count: 0 },
   );
 
   return {

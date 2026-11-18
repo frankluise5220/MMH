@@ -18,6 +18,11 @@ const prismaDb = fs.readFileSync(path.join(root, "src", "lib", "db", "prisma.ts"
 const prismaSchema = fs.readFileSync(path.join(root, "prisma", "schema.prisma"), "utf8");
 const standaloneStart = fs.readFileSync(path.join(root, "scripts", "start-standalone.cjs"), "utf8");
 const systemUpdateRoute = fs.readFileSync(path.join(root, "src", "app", "api", "v1", "settings", "system-update", "route.ts"), "utf8");
+// 2026-11-16 起升级判定收敛到 service.ts（route.ts 只剩薄壳）：镜像回退顺序、
+// /releases/latest 与 git ls-remote 都在 service 里。断言必须看实现文件，否则
+// 代码搬走后会以「用了 main 分支」的名义假红（2026-11-18 发布前遇到）。
+const systemUpdateService = fs.readFileSync(path.join(root, "src", "lib", "server", "system-update", "service.ts"), "utf8");
+const systemUpdateSource = systemUpdateRoute + "\n" + systemUpdateService;
 const updaterServer = fs.readFileSync(path.join(root, "scripts", "mmh-updater-server.mjs"), "utf8");
 const systemUpdatePage = fs.readFileSync(
   path.join(root, "src", "app", "(sidebar)", "settings", "system-update", "page.tsx"),
@@ -346,11 +351,11 @@ expect(/tags:\s*\n\s*-\s*"v\*"/.test(workflow), "Docker image workflow must run 
 expect(/type=raw,value=main,enable=\$\{\{\s*github\.event_name == 'push' &&\s*endsWith\(github\.ref,\s*'\/heads\/main'\)\s*\}\}/.test(workflow), "Docker workflow must publish main snapshots without moving latest.");
 
 expect(
-  /\/releases\/latest/.test(systemUpdateRoute) &&
-    /git ls-remote --tags/.test(systemUpdateRoute) &&
-    /IMAGE_FALLBACK_ORDER = \["fnvps", "dockerproxy", "nju", "ghcr", "daocloud", "custom"\]/.test(systemUpdateRoute) &&
-    !/raw\.githubusercontent\.com\/frankluise5220\/MMH\/main\/package\.json/.test(systemUpdateRoute) &&
-    !/refs\/heads\/main/.test(systemUpdateRoute),
+  /\/releases\/latest/.test(systemUpdateSource) &&
+    /git ls-remote --tags/.test(systemUpdateSource) &&
+    /IMAGE_FALLBACK_ORDER = \["fnvps", "dockerproxy", "nju", "ghcr", "daocloud", "custom"\]/.test(systemUpdateSource) &&
+    !/raw\.githubusercontent\.com\/frankluise5220\/MMH\/main\/package\.json/.test(systemUpdateSource) &&
+    !/refs\/heads\/main/.test(systemUpdateSource),
   "Docker update version checks must use the latest GitHub Release/tag and image mirrors, not the main branch.",
 );
 

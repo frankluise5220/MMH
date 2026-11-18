@@ -12,18 +12,18 @@ mmh
 
 ## 用户安装
 
-### 先选包：内置 Node.js 还是 external-node
+### 现在只有一支包：不含内置 Node.js（external-node）
 
-Release 里每种架构都有**两个** `.fpk`，功能完全一样，区别只在 Node.js 运行时由谁提供：
+**0.1.87 起 Release 每种架构只有一个 `.fpk`，文件名带 `-external-node`**，包内不含 Node.js：
 
-| 资产名 | Node.js | 体积 | 适用场景 |
-|---|---|---|---|
-| `mmh-fnos-v0.1.x-x86_64.fpk`<br>`mmh-fnos-v0.1.x-arm64.fpk` | **包内自带 22** | 较大 | 默认选择；离线设备，或应用中心装不上依赖时 |
-| `mmh-fnos-v0.1.x-x86_64-external-node.fpk`<br>`mmh-fnos-v0.1.x-arm64-external-node.fpk` | **不含**，安装时由应用中心自动装「Node.js 22」依赖 | 约 20MB | 想省空间，且设备能正常从应用中心拉依赖 |
+| 资产名 | Node.js | 体积 |
+|---|---|---|
+| `mmh-fnos-v0.1.x-x86_64-external-node.fpk` | **不含**，安装时由应用中心自动装「Node.js 22」依赖 | 约 21MB |
+| `mmh-fnos-v0.1.x-arm64-external-node.fpk` | 同上 | 约 21MB |
 
-> **不含 Node.js 的就是文件名带 `-external-node` 的那支。** 它体积小是因为包里整个删掉了 `app/bin/node`，运行时去 `/var/apps/nodejs_v22/bin/node`、`/vol*/@appcenter/nodejs_v22/bin/node` 等处找 Node.js 22（manifest 里声明了 `install_dep_apps=nodejs_v22`）。找不到或主版本低于 22 会直接报错并提示，不会静默降级到别的 Node。
+> 体积小是因为包里整个删掉了 `app/bin/node`，运行时去 `/vol*/@appcenter/nodejs_v22/bin/node` 等处找 Node.js 22（manifest 里声明了 `install_dep_apps=nodejs_v22`，应用中心会自己装这个依赖，不需要用户准备运行时）。找不到或主版本低于 22 会直接报错并提示，不会静默降级到别的 Node。
 >
-> 两者的 `appname` 都是 `mmh`，应用中心里只显示一个「MMH 记账」，装哪个都能覆盖升级。FN 软仓渠道目前下发的始终是**内置 Node.js 的 bundled 包**；想要 external-node 的轻量包，只能到 GitHub Release 手动下载。
+> 设备完全离线、应用中心拉不到「Node.js 22」时才需要内置 Node.js 的 bundled 包（文件名不带后缀，约 64MB）。它自 0.1.87 起只是手动兜底，**不再随 Release 发布**；`appname` 同样是 `mmh`，应用中心里只显示一个「MMH 记账」，装哪个都能覆盖升级。FN 软仓 / FnDepot 下发的也是轻量包。
 
 ### 推荐：FN 软仓安装和更新
 
@@ -47,7 +47,7 @@ https://gitee.com/hhxs2025/fn-appstores/releases
 
 ### 备用：手动安装 `.fpk`
 
-1. 按上文「先选包」表格挑一支，再按架构下载：x86_64 设备用 `*-x86_64.fpk`，ARM64 设备用 `*-arm64.fpk`。**文件名带 `-external-node` 的那支不含 Node.js**，需要设备能装上应用中心的「Node.js 22」依赖；不想管依赖就直接用不带后缀的 bundled 包。
+1. 按架构下载：x86_64 设备用 `*-x86_64-external-node.fpk`，ARM64 设备用 `*-arm64-external-node.fpk`。包内不含 Node.js，安装时应用中心会自动装上「Node.js 22」依赖；设备离线装不了依赖时，才需要内网自备 bundled 包（不随 Release 发布）。
 2. 在飞牛应用中心或支持手动安装 `.fpk` 的入口上传安装包。
 3. 安装过程没有向导，直接安装完成。首次安装的服务端口从 `7777` 开始自动探测，若已被占用则顺延到下一个空闲端口；覆盖安装或更新会沿用已有的持久端口。装好后可在应用中心的 MMH 设置页里改端口。系统初始化、删除账簿等敏感操作验证当前登录用户的密码（操作仅管理员可见）。
 4. 启动后访问：
@@ -116,16 +116,16 @@ release-artifacts/fnos/mmh-fnos-v0.1.x-arm64-fpk-source.tgz
 这个归档只用于排查 `manifest`、`cmd`、应用文件和图标结构，不是用户安装包。正式安装和应用源下载目标只能是 `.fpk`：
 
 ```text
-mmh-fnos-v0.1.x-x86_64.fpk                      # 内置 Node.js 22
-mmh-fnos-v0.1.x-arm64.fpk                       # 内置 Node.js 22
-mmh-fnos-v0.1.x-x86_64-external-node.fpk        # 不含 Node.js，约 20MB
-mmh-fnos-v0.1.x-arm64-external-node.fpk         # 不含 Node.js，约 20MB
+mmh-fnos-v0.1.x-x86_64-external-node.fpk        # 发布资产：不含 Node.js，约 21MB
+mmh-fnos-v0.1.x-arm64-external-node.fpk         # 发布资产：不含 Node.js，约 21MB
+mmh-fnos-v0.1.x-x86_64.fpk                      # 手动兜底：内置 Node.js 22，不随 Release 发布
+mmh-fnos-v0.1.x-arm64.fpk                       # 手动兜底：内置 Node.js 22，不随 Release 发布
 ```
 
 ## 发布
 
 - GitHub Release 通过 `.github/workflows/fnos-release.yml` 构建并上传 `release-artifacts/fnos/*.fpk`。
-- 一次发布固定是**四支**资产（x86_64/arm64 × bundled/external-node），matrix 里由 `package_variant` 和 `FNOS_EXTERNAL_NODE=1` 区分；`-external-node` 两支持续缺失即视为发布不完整。
+- 一次发布固定是**两支**资产（x86_64/arm64 × external-node）。matrix 仍保留 bundled 两条腿，但 `release: published` 只跑 external-node，上传步骤也 gate 到 `external-node`——`-external-node` 两支持续缺失即视为发布不完整，bundled 出现在 Release 上同样视为发布不完整（它只是 `workflow_dispatch` 手动兜底，且不上传 Release）。
 - Release workflow 每次发布都必须重新构建并覆盖既有 `.fpk` 资产，不能因为 Release 已存在某个 `.fpk` 就跳过构建。
 - 飞牛包版本直接使用 `package.json` 的 `0.1.x`，与 GitHub Release tag `v0.1.x` 和 GHCR 镜像 tag 一致；不要再发布 `v0.1.x-fnos` 或包内 `-fnos` 版本。
 - 上传前必须运行 `FNOS_VERIFY_BUILT_FPK=1 npm run check:fnos`，确认包内 `cmd/main`、manifest 和数据目录逻辑来自当前源码。

@@ -76,7 +76,7 @@ export default async function FundProfileSettingsPage({
 
   return (
     <FundProfileSettingsClient
-      account={{ id: account.id, name: account.name, institutionName }}
+      account={{ id: account.id, name: account.name, institutionName, investProductType: account.investProductType }}
       profile={profileData}
       // 基金公司是机构主体 → 只显示全称，简称仅用于账户标签，不再作为副标签重复出现。
       fundCompanyOptions={fundCompanyInstitutions.map((institution): SmartSelectOption => ({

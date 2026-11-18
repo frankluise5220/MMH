@@ -42,7 +42,7 @@ export function getIncomeExpenseStatisticAmount(
 
 type InvestmentStatisticType = "income" | "expense";
 
-type InvestmentProductKind = "fund" | "wealth" | "deposit" | "bond" | "liability";
+type InvestmentProductKind = "fund" | "money" | "wealth" | "deposit" | "bond" | "liability";
 
 const MONEY_EPSILON = 0.005;
 
@@ -395,6 +395,8 @@ export function buildStatisticCategoryItemsFromBuckets(
 }
 
 function classifyInvestmentProduct(entry: InvestmentStatisticEntryLike): InvestmentProductKind {
+  // 货基单独归类：收益来自份额结转，与开放式基金的净值涨跌不是同一口径。
+  if (entry.fundProductType === "money") return "money";
   if (entry.fundProductType === "bond") return "bond";
   if (entry.fundProductType === "wealth") return "wealth";
   if (entry.fundProductType === "deposit") return "deposit";
@@ -467,10 +469,10 @@ export function getInvestmentStatisticItems(entry: InvestmentStatisticEntryLike)
     }
   }
 
-  if (kind === "fund" && entry.realizedProfit != null) {
+  if ((kind === "fund" || kind === "money") && entry.realizedProfit != null) {
     const profit = toNumber(entry.realizedProfit);
     if (profit !== 0) {
-      const category = profitCategory("fund", profit);
+      const category = profitCategory(kind === "money" ? "fund" : kind, profit);
       items.push({
         idSuffix: "realized-profit",
         type: profit > 0 ? "income" : "expense",
@@ -478,7 +480,9 @@ export function getInvestmentStatisticItems(entry: InvestmentStatisticEntryLike)
         amount: Math.abs(profit),
         categoryName: category.name,
         categoryCandidates: category.candidates,
-        label: profit > 0 ? "基金收益" : "基金亏损",
+        label: kind === "money"
+          ? profit > 0 ? "货币基金收益" : "货币基金亏损"
+          : profit > 0 ? "基金收益" : "基金亏损",
       });
     }
   }

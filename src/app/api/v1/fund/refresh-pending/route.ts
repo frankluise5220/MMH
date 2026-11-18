@@ -58,7 +58,8 @@ export async function POST() {
       where: {
         householdId,
         deletedAt: null,
-        fundProductType: { in: [FundProductType.fund, FundProductType.money] },
+        // 货基净值恒为 1，不需要「补净值」；它的收益由结转任务单独维护。
+        fundProductType: FundProductType.fund,
         AND: [
           { fundSubtype: FundSubtype.buy },
           {

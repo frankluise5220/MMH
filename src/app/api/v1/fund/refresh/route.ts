@@ -74,7 +74,8 @@ export async function POST(req: NextRequest) {
         householdId,
         fundAccountId: accountId,
         deletedAt: null,
-        fundProductType: { in: [FundProductType.fund, FundProductType.money] },
+        // 货基不在这里补净值：接口返回的是每万份收益，写进 nav 会按它重算份额。
+        fundProductType: FundProductType.fund,
         OR: [
           { nav: null },
           { units: null },

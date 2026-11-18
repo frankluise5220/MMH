@@ -34,6 +34,21 @@ const FIXED_CATEGORIES = [
 const ARCH_KEYS = ["all", "x86", "arm"];
 const PLATFORM_KEYS = ["all", "x86", "arm"];
 const ASSET_SUFFIX = { x86: "x86_64", arm: "arm64" };
+// 2026-11-18 用户裁定：0.1.87 起公开 Release 只发布轻量变体（external-node，
+// 不内置 Node.js 22，靠应用中心装 nodejs_v22）。这个脚本会回填历史版本，
+// 所以资产名必须按版本切换：0.1.87 及以后带 `-external-node`，更早的版本
+// 资产仍是 bundled（无后缀），否则重跑回填会让旧条目找不到资产、sha256/size 变空。
+const EXTERNAL_NODE_SINCE_PATCH = 87;
+
+function usesExternalNode(version) {
+  const match = /^0\.1\.(\d+)$/.exec(String(version || "").trim());
+  return Boolean(match) && Number(match[1]) >= EXTERNAL_NODE_SINCE_PATCH;
+}
+
+function fnosAssetSuffix(version, arch) {
+  const base = ASSET_SUFFIX[arch];
+  return usesExternalNode(version) ? `${base}-external-node` : base;
+}
 const REPO_ROOT = path.resolve(__dirname, "..");
 const KEEP_RELEASE_COUNT = 5;
 
@@ -51,7 +66,7 @@ function fnosPackages(repo, version) {
   return {
     x86: { download_url: `http://fnapp.floatingice.win/apps/mmh-${version}.fpk` },
     arm: {
-      download_url: `https://github.com/${repo}/releases/download/v${version}/mmh-fnos-v${version}-arm64.fpk`,
+      download_url: `https://github.com/${repo}/releases/download/v${version}/mmh-fnos-v${version}-${fnosAssetSuffix(version, "arm")}.fpk`,
     },
   };
 }
@@ -244,8 +259,8 @@ async function main() {
     release.published_at = release.published_at || release.created_at;
     const iso = toShanghaiIso(release.published_at);
     if (iso) app.releases[version].updated_at = iso;
-    for (const [arch, suffix] of Object.entries(ASSET_SUFFIX)) {
-      const assetName = `mmh-fnos-v${version}-${suffix}.fpk`;
+    for (const arch of Object.keys(ASSET_SUFFIX)) {
+      const assetName = `mmh-fnos-v${version}-${fnosAssetSuffix(version, arch)}.fpk`;
       const asset = (release.assets || []).find((item) => item.name === assetName);
       if (!asset) {
         console.warn(`[warn] v${version} 缺少资产 ${assetName}`);

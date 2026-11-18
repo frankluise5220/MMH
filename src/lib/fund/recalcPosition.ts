@@ -5,6 +5,7 @@ import { FundCashFlowKind, FundSubtype, type Prisma } from "@prisma/client";
 import { toNumber } from "@/lib/date-utils";
 import { allocateBuyFailedRefunds, getEffectiveBuyUnits } from "@/lib/fund/refund-link";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
+import { MONEY_FUND_NAV } from "@/lib/fund/moneyFund";
 import { isFundUnitsReconcileEntry } from "@/lib/transaction-semantics";
 
 function toNum(v: unknown): number {
@@ -433,6 +434,10 @@ export async function recalcFundPositions(
     if (code && name && name !== code && !entryNameMap.has(code)) entryNameMap.set(code, name);
   }
 
+  // 货基按面值 1 元/份核算：净值缓存里该代码下的数字是「每万份收益」，不能写进持仓，
+  // 否则下游用 units × nav 估值会把货基市值算成份额的十分之一。
+  const isMoneyFundAccount = account.investProductType === "money";
+
   for (const code of codesToCalc) {
     const rec = symbolMap.get(code);
     if (!rec) { await client.fundHolding.deleteMany({ where: { accountId, fundCode: code } }); continue; }
@@ -446,7 +451,7 @@ export async function recalcFundPositions(
     });
     const navFromCache = navCacheMap.get(code);
     const navFromHolding = latestNavFromHolding?.nav != null ? toNum(latestNavFromHolding.nav) : null;
-    const navToUse = navFromCache ?? navFromHolding;
+    const navToUse = isMoneyFundAccount ? MONEY_FUND_NAV : navFromCache ?? navFromHolding;
 
     const existing = await client.fundHolding.findUnique({
       where: { accountId_fundCode: { accountId, fundCode: code } },

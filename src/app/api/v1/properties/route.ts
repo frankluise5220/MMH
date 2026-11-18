@@ -46,6 +46,7 @@ import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import {
   depreciationPeriodMonth,
   recordedDepreciationTotal,
+  recordedManualDepreciationTotal,
   syncPropertyAssetDepreciations,
 } from "@/lib/server/property-depreciation";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
@@ -159,11 +160,17 @@ async function findCashAccount(accountId: string | null, householdId: string) {
   return account;
 }
 
-/** 折旧台账摘要（单资产详情 / 资产编辑弹窗用）。 */
+/**
+ * 折旧台账摘要（单资产详情 / 资产编辑弹窗用）。
+ * `periods` / `recorded` 只算自动计提（直线法）；手工登记的折损单独给
+ * `manualCount` / `manualTotal`，否则两边混算会让处置结算把折损算两遍。
+ */
 type AssetDepreciationSummary = {
   periods: number;
   recorded: number;
   lastPeriod: string | null;
+  manualCount: number;
+  manualTotal: number;
 };
 
 function serializeAsset(row: {
@@ -215,7 +222,7 @@ function serializeAsset(row: {
     latestValuationDate: row.latestValuationDate ? formatDateUtc(row.latestValuationDate) : null,
     status: row.status,
     note: row.note ?? null,
-    depreciation: depreciation ?? { periods: 0, recorded: 0, lastPeriod: null },
+    depreciation: depreciation ?? { periods: 0, recorded: 0, lastPeriod: null, manualCount: 0, manualTotal: 0 },
   };
 }
 
@@ -321,27 +328,36 @@ export async function GET(req: NextRequest) {
         : Promise.resolve(null),
     ]);
 
-    // 折旧台账摘要：一次 groupBy 拿到每项资产的已计提期数、累计金额、最近一期，
-    // 不逐资产查（资产数会到几十个）。
+    // 折旧台账摘要：一次 groupBy（按资产 × 来源）拿到已计提期数、累计金额、最近一期，
+    // 不逐资产查（资产数会到几十个）。自动计提与手工折损分开累计。
     const depreciationGroups = assets.length > 0
       ? await prisma.propertyAssetDepreciation.groupBy({
-          by: ["propertyAssetId"],
+          by: ["propertyAssetId", "method"],
           where: { propertyAssetId: { in: assets.map((asset) => asset.id) } },
           _count: { _all: true },
           _sum: { amount: true },
           _max: { periodMonth: true },
         })
       : [];
-    const depreciationByAsset = new Map<string, AssetDepreciationSummary>(
-      depreciationGroups.map((group) => [
-        group.propertyAssetId,
-        {
-          periods: group._count._all,
-          recorded: toNumber(group._sum.amount ?? 0),
-          lastPeriod: group._max.periodMonth ? formatDateUtc(group._max.periodMonth) : null,
-        },
-      ]),
-    );
+    const depreciationByAsset = new Map<string, AssetDepreciationSummary>();
+    for (const group of depreciationGroups) {
+      const current = depreciationByAsset.get(group.propertyAssetId) ?? {
+        periods: 0,
+        recorded: 0,
+        lastPeriod: null,
+        manualCount: 0,
+        manualTotal: 0,
+      };
+      if ((group.method ?? "straight_line") === "manual") {
+        current.manualCount = group._count._all;
+        current.manualTotal = toNumber(group._sum.amount ?? 0);
+      } else {
+        current.periods = group._count._all;
+        current.recorded = toNumber(group._sum.amount ?? 0);
+        current.lastPeriod = group._max.periodMonth ? formatDateUtc(group._max.periodMonth) : null;
+      }
+      depreciationByAsset.set(group.propertyAssetId, current);
+    }
 
     return NextResponse.json({
       ok: true,
@@ -769,6 +785,12 @@ export async function PUT(req: NextRequest) {
       }
       if (body && "accumulatedDepreciation" in body) {
         extended.accumulatedDepreciation = String(parseNonNegativeNumber(body.accumulatedDepreciation));
+      }
+      // 有手工折损台账时累计折旧由台账驱动（登记/删除记录时已写回）。手填值若覆盖
+      // 它，会出现「编辑弹窗显示一个数、台账合计另一个数」，这里一律以台账为准。
+      const manualRecorded = await recordedManualDepreciationTotal(propertyAssetId, tx);
+      if (manualRecorded > 0) {
+        extended.accumulatedDepreciation = String(manualRecorded);
       }
       const updatedAsset = await tx.propertyAsset.update({
         where: { id: propertyAssetId },

@@ -756,6 +756,12 @@ export function FundShell(props: Props) {
   const formatFundUnits = useCallback((value: number) => value.toFixed(fundUnitsDecimals), [fundUnitsDecimals]);
   const accountProductType = selectedAccount?.investProductType ?? null;
   const isMetalAccount = accountProductType === "metal";
+  /**
+   * 货基：净值恒为 1，收益靠「每万份收益 → 份额结转」。所以「取净值 / 手填净值 / 净值曲线」
+   * 这三类入口对它都没有意义（东财的 DWJZ 是万份收益，写进净值会放大份额，见 issue #26），
+   * 它的收益维护入口是持仓行的「资料」按钮 → 资料页的万份收益面板。
+   */
+  const isMoneyAccount = accountProductType === "money";
   // 投顾组合账户与理财账户共用理财壳层（持仓列、录入与编辑链路同构）。
   const isWealthAccount = accountProductType === "wealth" || accountProductType === "advisor";
   /**
@@ -1916,7 +1922,7 @@ export function FundShell(props: Props) {
       >
         {!isMetalAccount ? (
           <>
-            <AddNavButton accountId={accountId} positions={[p]} defaultFundCode={p.fundCode} trigger="icon" wealthMode={isWealthAccount} />
+            {!isMoneyAccount ? <AddNavButton accountId={accountId} positions={[p]} defaultFundCode={p.fundCode} trigger="icon" wealthMode={isWealthAccount} /> : null}
             {!isWealthAccount ? <button
               type="button"
               onClick={(event) => {
@@ -1930,7 +1936,7 @@ export function FundShell(props: Props) {
               >
               <Settings2 />
             </button> : null}
-            {!isWealthAccount ? (
+            {!isWealthAccount && !isMoneyAccount ? (
               <button
                 type="button"
                 onClick={(event) => {
@@ -1973,6 +1979,7 @@ export function FundShell(props: Props) {
     fundChartOpen,
     fundCode,
     isMetalAccount,
+    isMoneyAccount,
     isWealthAccount,
     openFundSettings,
     positionAssetKey,
@@ -3459,7 +3466,8 @@ export function FundShell(props: Props) {
 
           <div className="flex items-center gap-2 text-xs text-slate-500 min-h-[24px]">
 
-            {!showCleared && !isWealthAccount && d.positions.length > 0 ? (
+            {/* 货基没有「取净值」这回事：接口给的是每万份收益，收益在资料页维护。 */}
+            {!showCleared && !isWealthAccount && !isMoneyAccount && d.positions.length > 0 ? (
               isMetalAccount
                 ? <RefreshMetalPriceButton accountId={accountId} />
                 : <RefreshNavButton accountId={accountId} symbols={d.positions.map((p: any) => p.fundCode).filter(Boolean)} />
@@ -3794,6 +3802,7 @@ export function FundShell(props: Props) {
           id: accountId,
           name: selectedAccount?.name ?? t("viewImport.fundAccount"),
           institutionName: institutionFullName(selectedAccount?.Institution) || null,
+          investProductType: selectedAccount?.investProductType ?? null,
         }}
         fundCode={fundSettingsCode ?? ""}
         fallbackFundName={fundSettingsName}

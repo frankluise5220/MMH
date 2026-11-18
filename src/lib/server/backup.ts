@@ -1044,6 +1044,7 @@ const SQLITE_PROPERTY_RESTORE_SCHEMA_SQL = [
     "basisSalvage" DECIMAL NOT NULL,
     "basisMonths" INTEGER NOT NULL,
     "method" TEXT NOT NULL DEFAULT 'straight_line',
+    "note" TEXT,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT "property_asset_depreciations_householdId_fkey" FOREIGN KEY ("householdId") REFERENCES "Household"("id") ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT "property_asset_depreciations_propertyAssetId_fkey" FOREIGN KEY ("propertyAssetId") REFERENCES "property_assets"("id") ON DELETE CASCADE ON UPDATE CASCADE

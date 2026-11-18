@@ -551,6 +551,10 @@ function applyRuntimeMigrations(db) {
   // （FundQueryApi 的读取都是全列 findMany，没有 select 白名单）。
   addColumnIfMissing(db, "FundQueryApi", "parser", "TEXT");
   addColumnIfMissing(db, "FundQueryApi", "parserConfig", "TEXT");
+  // 2026-11-18 折旧台账的手工登记说明。与 prisma/migrations/20261118_add_property_depreciation_note
+  // 同义（可空）。漏掉这段：升级后的桌面库读台账会报 "no such column: note"
+  // （台账查询是全列 findMany，没有 select 白名单）。
+  addColumnIfMissing(db, "property_asset_depreciations", "note", "TEXT");
 }
 
 fs.mkdirSync(dataDir, { recursive: true });

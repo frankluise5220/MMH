@@ -1,7 +1,8 @@
 import { FundProductType, FundSubtype, Prisma } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
-import { fetchHistoricalNavList } from "@/lib/fund/navCache";
+import { MONEY_FUND_NAV } from "@/lib/fund/moneyFund";
+import { ensureMoneyFundYieldRange } from "@/lib/fund/moneyFundYield";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { runExclusive, utcDayKey } from "@/lib/server/interest-accrual";
@@ -75,29 +76,10 @@ export function moneyFundDailyIncome(units: number, incomePer10k: number): numbe
 }
 
 /**
- * 把「每万份收益」从 lsjz 序列里挑出来。
- *
- * 东财对货基返回的 `DWJZ` 就是每万份收益（不是净值），这里按日期建索引；
- * 只取 (from, to] 区间，且必须落在区间的自然日内，缺哪天就少结哪天，绝不外推。
- * 负值保留——它代表当天的亏损分配（份额相应减少）。
+ * 万份收益的区间过滤（含负值）由 MoneyFundYield 模块负责，这里只消费它的结果：
+ * 键是自然日、值是每万份收益，缺哪天就少结哪天，绝不外推。
  */
-function incomeByDay(
-  rows: { date: string; nav: number }[],
-  from: Date,
-  to: Date,
-): Map<string, number> {
-  const map = new Map<string, number>();
-  for (const row of rows) {
-    const value = Number(row.nav);
-    if (!Number.isFinite(value)) continue;
-    const day = row.date.trim();
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) continue;
-    const date = new Date(`${day}T00:00:00.000Z`);
-    if (date <= from || date > to) continue;
-    map.set(day, value);
-  }
-  return map;
-}
+
 
 type UnitMove = { day: string; delta: number };
 
@@ -216,8 +198,8 @@ async function accrueOneFund(params: {
   for (let batch = 0; batch < MAX_BATCHES_PER_RUN && batchFrom <= yesterday; batch += 1) {
     const batchLast = addDays(batchFrom, DAYS_PER_BATCH - 1);
     const batchTo = batchLast < yesterday ? batchLast : yesterday;
-    const rows = await fetchHistoricalNavList(fundCode, ymd(batchFrom), ymd(batchTo));
-    const byDay = incomeByDay(rows, addDays(batchFrom, -1), batchTo);
+    // 万份收益先读本地表，缺口才回源；落库后历史重放不再依赖外部接口可用性。
+    const byDay = await ensureMoneyFundYieldRange(fundCode, ymd(batchFrom), ymd(batchTo));
     const days = Array.from(byDay.keys()).sort();
 
     // 幂等：同一天同一条来源只允许一条，重复触发（开机自检 + 定时任务）不会翻倍加份额。
@@ -267,10 +249,13 @@ async function accrueOneFund(params: {
           arrivalAmount: null,
           fee: null,
           // 净值恒为 1：份额增量在数值上等于收益金额（负收益就是份额减少）。
-          nav: new Prisma.Decimal(1),
+          nav: new Prisma.Decimal(MONEY_FUND_NAV),
           units: new Prisma.Decimal(income),
-          realizedProfit: null,
-          note: null,
+          // 结转金额同时记为已实现收益：统计里它是一条「货币基金收益」，
+          // 而不是一条 0 元买入（份额增加由 units 表达）。
+          realizedProfit: new Prisma.Decimal(income),
+          // 把依据写进流水：份额为什么多了 0.51，事后可逐日核对。
+          note: `每万份收益 ${per10k.toFixed(4)}，结转 ${income.toFixed(2)} 份`,
         },
         select: { id: true },
       });
