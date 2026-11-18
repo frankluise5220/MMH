@@ -458,8 +458,8 @@ export function ReimbursementPreview({
             <button type="button" onClick={() => window.print()} className="primary-button flex h-8 items-center gap-1.5 px-2.5" title={t("reimburse.print")}>
               <Printer className="h-4 w-4" />{t("reimburse.print")}
             </button>
-            <button type="button" onClick={onClose} className="secondary-button flex h-8 w-8 items-center justify-center p-0" title={t("table.close")}>
-              <X className="h-4 w-4" />
+            <button type="button" onClick={onClose} className="secondary-button inline-flex h-8 w-8 shrink-0 items-center justify-center px-0" title={t("table.close")} aria-label={t("table.close")}>
+              <X className="h-4 w-4 shrink-0" />
             </button>
           </div>
         </div>

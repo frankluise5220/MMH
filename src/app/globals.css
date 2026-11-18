@@ -547,6 +547,19 @@ html {
     @apply bg-slate-50 text-slate-900;
   }
 
+  /* 图标型 `.secondary-button`（弹窗 / 浮层右上角的关闭 `X`）的内边距必须能被 `px-0`、`p-0` 关掉。
+     `.secondary-button` 自带 `px-3`，它和 Tailwind 生成的 `.px-0` 同在 utilities 层，
+     但本文件手写的规则排在生成规则**之后**（编译产物里 `.px-0` 在 ~78k、`.secondary-button` 在 ~155k），
+     于是 `padding-inline: 0.75rem` 赢过 `px-0`：32px 的盒子内容宽只剩 32−24−2 = 6px，
+     lucide 的 svg 作为可收缩的 flex 项被压成一条竖线 —— 用户看到的「X 非常小，只有一个点」。
+     双类选择器（0,2,0）压过单类（0,1,0），与源码顺序无关；宽度/高度仍由调用点的
+     `h-8 w-8`（弹窗）/ `h-7 w-7`（表格工具条）决定，这里不动。 */
+  .secondary-button.px-0,
+  .secondary-button.p-0 {
+    padding-left: 0;
+    padding-right: 0;
+  }
+
   .primary-button {
     @apply inline-flex items-center justify-center rounded-[10px] bg-blue-600 px-4 text-sm font-medium text-white transition-colors;
     box-shadow: 0 10px 24px rgba(22, 119, 255, 0.18);

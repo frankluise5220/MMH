@@ -1622,9 +1622,11 @@ export function SmartSelect(props: SmartSelectProps) {
                       setShowNew(false);
                       setNewName("");
                     }}
-                    className="secondary-button h-8 w-8 px-0 text-slate-400"
+                    className="secondary-button inline-flex h-8 w-8 shrink-0 items-center justify-center px-0 text-slate-400"
+                    title={t("common.close")}
+                    aria-label={t("common.close")}
                   >
-                    <X className="h-3.5 w-3.5" />
+                    <X className="h-4 w-4 shrink-0" />
                   </button>
                 </div>
                 <div className="flex gap-1.5">
@@ -1744,7 +1746,7 @@ export function SmartSelect(props: SmartSelectProps) {
               className="text-slate-300 transition-colors hover:text-slate-500"
               tabIndex={-1}
             >
-              <X className="h-3.5 w-3.5" />
+              <X className="h-3.5 w-3.5 shrink-0" />
             </button>
             <ChevronDown className="h-3.5 w-3.5 shrink-0 text-slate-400" />
           </span>

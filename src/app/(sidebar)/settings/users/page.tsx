@@ -510,8 +510,8 @@ function UserModal({
       <div className="app-modal-panel max-w-md">
         <div className="modal-header shrink-0">
           <div className="text-sm font-semibold text-slate-800">{isEditing ? t("settings.users.modalTitleEdit") : t("settings.users.modalTitleAdd")}</div>
-          <button type="button" onClick={onCancel} className="secondary-button h-8 px-2">
-            <X className="h-4 w-4" />
+          <button type="button" onClick={onCancel} className="secondary-button inline-flex h-8 w-8 shrink-0 items-center justify-center px-0" title={t("table.close")} aria-label={t("table.close")}>
+            <X className="h-4 w-4 shrink-0" />
           </button>
         </div>
         {isEditing ? (
@@ -1046,8 +1046,8 @@ function RegisterModal({
       <div className="app-modal-panel max-w-md">
         <div className="modal-header shrink-0">
           <div className="text-sm font-semibold text-slate-800">{t("settings.users.register.title")}</div>
-          <button type="button" onClick={onClose} className="secondary-button h-8 px-2">
-            <X className="h-4 w-4" />
+          <button type="button" onClick={onClose} className="secondary-button inline-flex h-8 w-8 shrink-0 items-center justify-center px-0" title={t("table.close")} aria-label={t("table.close")}>
+            <X className="h-4 w-4 shrink-0" />
           </button>
         </div>
         <div className="p-5 space-y-4">
@@ -1739,10 +1739,12 @@ export default function UsersPage() {
                   setDeletePassword("");
                   setDeleteError("");
                 }}
-                className="secondary-button h-8 px-2"
+                className="secondary-button inline-flex h-8 w-8 shrink-0 items-center justify-center px-0"
                 disabled={deleting}
+                title={t("table.close")}
+                aria-label={t("table.close")}
               >
-                <X className="h-4 w-4" />
+                <X className="h-4 w-4 shrink-0" />
               </button>
             </div>
             <div className="space-y-4 p-5">
@@ -1787,10 +1789,12 @@ export default function UsersPage() {
                   setUnbindPassword("");
                   setUnbindError("");
                 }}
-                className="secondary-button h-8 px-2"
+                className="secondary-button inline-flex h-8 w-8 shrink-0 items-center justify-center px-0"
                 disabled={unbinding}
+                title={t("table.close")}
+                aria-label={t("table.close")}
               >
-                <X className="h-4 w-4" />
+                <X className="h-4 w-4 shrink-0" />
               </button>
             </div>
             <div className="space-y-4 p-5">

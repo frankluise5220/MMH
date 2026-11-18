@@ -194,7 +194,7 @@ export function EntryModalShell({
                 aria-label={closeTitle ?? t("table.close")}
                 className="secondary-button inline-flex h-8 w-8 shrink-0 items-center justify-center px-0"
               >
-                <X className="h-4 w-4" />
+                <X className="h-4 w-4 shrink-0" />
               </button>
             </div>
           </div>

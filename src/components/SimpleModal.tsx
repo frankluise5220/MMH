@@ -77,7 +77,7 @@ export function SimpleModal({
             title={t("common.close")}
             aria-label={t("common.close")}
           >
-            <X className="h-4 w-4" />
+            <X className="h-4 w-4 shrink-0" />
           </button>
         </div>
 

@@ -40,7 +40,7 @@ export function ImportPreviewHeader({
         title={t("table.close")}
         aria-label={t("table.close")}
       >
-        <X className="h-4 w-4" />
+        <X className="h-4 w-4 shrink-0" />
       </button>
     </div>
   );
