@@ -39,6 +39,14 @@ export type AssetDepreciationInput = {
   usefulLifeMonths?: number | null;
   salvageValue?: unknown;
   accumulatedDepreciation?: unknown;
+  /**
+   * 已落账的台账累计折旧（`property_asset_depreciations` 之和）。
+   *
+   * 传了就以它为准（直线法、未终止时），不再按日期推算：改过折旧年限 / 残值 / 成本
+   * 的资产，历史期间按当时基数落账（会计估计变更＝未来适用法），从头推算会和台账不一致。
+   * 调用方必须保证这个数是**结算日为止**的累计（期间没覆盖到位就别传）。
+   */
+  recordedAccumulated?: unknown;
 };
 
 export type AssetDepreciation = {
@@ -126,9 +134,14 @@ export function resolveAssetDepreciation(
   const monthly = method === DepreciationMethod.straightLine && usefulLifeMonths > 0
     ? depreciableBase / usefulLifeMonths
     : 0;
-  const autoAccumulated = monthly > 0
-    ? Math.min(depreciableBase, monthly * Math.min(monthsUsed, usefulLifeMonths))
-    : 0;
+  // 台账累计优先（直线法、未终止）：改过折旧年限 / 残值 / 成本后，历史期间是按
+  // 当时基数落账的，从头推算会把历史一起重算，和台账对不上。
+  const recordedAccumulated = clamp(num(input.recordedAccumulated), 0, depreciableBase);
+  const autoAccumulated = method === DepreciationMethod.straightLine && !settled && recordedAccumulated > 0
+    ? recordedAccumulated
+    : monthly > 0
+      ? Math.min(depreciableBase, monthly * Math.min(monthsUsed, usefulLifeMonths))
+      : 0;
 
   let accumulated: number;
   if (settled) {

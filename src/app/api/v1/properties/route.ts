@@ -43,7 +43,11 @@ import { ensurePropertyTransactionCashFlow } from "@/lib/property/cashFlow";
 import { findUnsettledCollateralLoanAccounts } from "@/lib/server/collateral-mortgage";
 import { getApiHouseholdScope } from "@/lib/server/api-auth";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
-import { recordedDepreciationTotal, syncPropertyAssetDepreciations } from "@/lib/server/property-depreciation";
+import {
+  depreciationPeriodMonth,
+  recordedDepreciationTotal,
+  syncPropertyAssetDepreciations,
+} from "@/lib/server/property-depreciation";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
 import { revalidateAfterInvestChange } from "@/lib/server/revalidate";
 
@@ -502,7 +506,12 @@ export async function POST(req: NextRequest) {
           //   再叠加手工登记的额外折损/减值 + 本次填写的折损/折旧（body.depreciation）。
           // 上限是成本（不能折成负数净值）。
           const depreciationAtTrade = resolveAssetDepreciation(existingAsset, formatDateUtc(tradeDate));
-          const recorded = await recordedDepreciationTotal(existingAsset.id, tx);
+          // 台账补到的是当前月，结算日可能填在过去的月份（补记历史处置）：
+          // 只取「结算日已满的整月」那几期，否则会多算后面几个月，净值偏低、损益虚高。
+          const cutoffMonth = existingAsset.purchaseDate && depreciationAtTrade.monthsUsed > 0
+            ? depreciationPeriodMonth(existingAsset.purchaseDate, depreciationAtTrade.monthsUsed)
+            : null;
+          const recorded = await recordedDepreciationTotal(existingAsset.id, tx, cutoffMonth);
           const autoPart = recorded > 0 ? recorded : depreciationAtTrade.autoAccumulated;
           const impairment = parseOptionalNonNegativeNumber(body.depreciation) ?? 0;
           settledAccumulated = Math.min(nextCost, autoPart + depreciationAtTrade.manualAccumulated + impairment);

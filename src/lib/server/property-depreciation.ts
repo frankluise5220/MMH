@@ -26,7 +26,7 @@ function round2(value: number) {
 }
 
 /** 第 k 期所属月的月初（UTC 零点，date-only 契约）。 */
-function periodMonthUtc(purchaseDate: Date, k: number): Date {
+export function depreciationPeriodMonth(purchaseDate: Date, k: number): Date {
   return new Date(Date.UTC(purchaseDate.getUTCFullYear(), purchaseDate.getUTCMonth() + k, 1));
 }
 
@@ -140,7 +140,7 @@ async function syncOneAsset(asset: AssetRow, householdId: string, asOfDateKey: s
   }[] = [];
 
   for (let k = 1; k <= targetPeriods; k += 1) {
-    const periodMonth = periodMonthUtc(asset.purchaseDate, k);
+    const periodMonth = depreciationPeriodMonth(asset.purchaseDate, k);
     const hit = existingMonths.get(periodMonth.getTime());
     if (hit != null) {
       accumulated = Number(hit);
@@ -189,13 +189,24 @@ async function syncOneAsset(asset: AssetRow, householdId: string, asOfDateKey: s
   }
 }
 
-/** 台账累计折旧（不含手填的额外折损/减值）。可传入事务 client。 */
+/**
+ * 台账累计折旧（不含手填的额外折损/减值）。可传入事务 client。
+ *
+ * `asOfPeriodMonth` 用于**处置 / 售出结算**：台账总是补到当前月，但结算日可能填在
+ * 过去的月份（补记历史处置），不截断就会多算后面几期，账面净值偏低、损益虚高。
+ * 传 `null` 表示「按 0 期」（购入未满一个月），不传表示全部期间。
+ */
 export async function recordedDepreciationTotal(
   propertyAssetId: string,
   client: Pick<typeof prisma, "propertyAssetDepreciation"> = prisma,
+  asOfPeriodMonth?: Date | null,
 ): Promise<number> {
+  if (asOfPeriodMonth === null) return 0;
   const aggregate = await client.propertyAssetDepreciation.aggregate({
-    where: { propertyAssetId },
+    where: {
+      propertyAssetId,
+      ...(asOfPeriodMonth ? { periodMonth: { lte: asOfPeriodMonth } } : {}),
+    },
     _sum: { amount: true },
   });
   return round2(Number(aggregate._sum.amount ?? 0));

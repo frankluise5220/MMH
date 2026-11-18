@@ -100,6 +100,8 @@ type PropertyAssetOption = {
   /** 重量 / 单位：损耗处置填数字（损耗掉的量）时用它折算折损率。 */
   weight?: number | null;
   weightUnit?: string | null;
+  /** 折旧台账摘要（服务端按月自动落账）：已计提期数、累计金额、最近一期。 */
+  depreciation?: { periods: number; recorded: number; lastPeriod: string | null } | null;
 };
 
 /**
@@ -289,6 +291,7 @@ export function PropertyFormModal({
         accumulatedDepreciation?: number | null;
         weight?: number | null;
         weightUnit?: string | null;
+        depreciation?: { periods: number; recorded: number; lastPeriod: string | null } | null;
       }> } } | null) => {
         if (cancelled) return;
         setExtraAssets((body?.data?.assets ?? []).map((asset) => ({
@@ -306,6 +309,7 @@ export function PropertyFormModal({
           accumulatedDepreciation: asset.accumulatedDepreciation ?? null,
           weight: asset.weight ?? null,
           weightUnit: asset.weightUnit ?? null,
+          depreciation: asset.depreciation ?? null,
         })));
       })
       // 拉不到就退回页面那份（保存时后端还会校验资产），别把弹窗卡死。
@@ -373,20 +377,33 @@ export function PropertyFormModal({
    * 已选资产的折旧：口径统一走 src/lib/fixed-asset-depreciation.ts（与 API 结算同一套），
    * 这里只做展示与「处置损益」预估。没有登记折旧时累计折旧为 0，行为和旧版完全一致。
    */
-  const assetDepreciation = useMemo(
-    () => (selectedAsset
-      ? resolveAssetDepreciation({
-        cost: selectedAsset.cost,
-        purchaseDate: selectedAsset.purchaseDate,
-        status: selectedAsset.status,
-        depreciationMethod: selectedAsset.depreciationMethod,
-        usefulLifeMonths: selectedAsset.usefulLifeMonths,
-        salvageValue: selectedAsset.salvageValue,
-        accumulatedDepreciation: selectedAsset.accumulatedDepreciation,
-      }, tradeDate)
-      : null),
-    [selectedAsset, tradeDate],
-  );
+  const assetDepreciation = useMemo(() => {
+    if (!selectedAsset) return null;
+    const input = {
+      cost: selectedAsset.cost,
+      purchaseDate: selectedAsset.purchaseDate,
+      status: selectedAsset.status,
+      depreciationMethod: selectedAsset.depreciationMethod,
+      usefulLifeMonths: selectedAsset.usefulLifeMonths,
+      salvageValue: selectedAsset.salvageValue,
+      accumulatedDepreciation: selectedAsset.accumulatedDepreciation,
+    };
+    const estimated = resolveAssetDepreciation(input, tradeDate);
+    /**
+     * 台账口径优先（与 POST 结算同源）：台账总是补到当前月，只有「结算日已满的整月数
+     * 正好等于台账已计提期数」时才能用它的累计；结算日填在过去时退回按日期推算，
+     * 否则会把结算日之后几期也算进去，账面净值偏低、处置损益虚高。
+     */
+    const summary = selectedAsset.depreciation ?? null;
+    const lifeMonths = Math.max(0, Math.round(Number(selectedAsset.usefulLifeMonths ?? 0)));
+    const ledgerCoversTradeDate = summary != null
+      && summary.periods > 0
+      && lifeMonths > 0
+      && Math.min(estimated.monthsUsed, lifeMonths) === Math.min(summary.periods, lifeMonths);
+    return ledgerCoversTradeDate
+      ? resolveAssetDepreciation({ ...input, recordedAccumulated: summary.recorded }, tradeDate)
+      : estimated;
+  }, [selectedAsset, tradeDate]);
   const impairmentValue = parseAmount(depreciation);
   /** 结算后的账面净值 = 成本 − (推算/手填的累计折旧 + 本次折损)。 */
   const settledAccumulated = Math.min(assetBookCost, (assetDepreciation?.accumulated ?? 0) + impairmentValue);
