@@ -1468,6 +1468,7 @@ export function FundShell(props: Props) {
 
   // Listen for fund data refresh event from modals (stable handler with debounce)
   const refreshBusy = useRef(false);
+  const refreshPending = useRef(false);
   const refreshTimer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const shellDataRequestSeq = useRef(0);
   const fundCodeRef = useRef(fundCode);
@@ -1572,7 +1573,13 @@ export function FundShell(props: Props) {
   const shellRefreshHandler = useCallback(async () => {
     if (refreshTimer.current) clearTimeout(refreshTimer.current);
     refreshTimer.current = setTimeout(async () => {
-      if (refreshBusy.current) return;
+      // 刷新还在飞时不能把新事件丢掉：连续删掉几笔时，飞行中的那次快照只反映了
+      // 前几笔，丢掉后一笔会让界面停在「删了一半」的状态。记一个 pending，
+      // 等本次结束再跑一次。
+      if (refreshBusy.current) {
+        refreshPending.current = true;
+        return;
+      }
       refreshBusy.current = true;
       try {
         const fc = fundCodeRef.current;
@@ -1621,6 +1628,10 @@ export function FundShell(props: Props) {
         }
       } catch {} finally {
         refreshBusy.current = false;
+        if (refreshPending.current) {
+          refreshPending.current = false;
+          void shellRefreshHandler();
+        }
       }
     }, 80);
   }, [entryAssetKey]);

@@ -31,9 +31,14 @@ export function revalidateAfterEntryOrderChange() {
 
 export function revalidateAfterInvestChange(options?: RevalidateOptions) {
   revalidateAfterTxChange(options);
-  revalidateTag("invest-balances", "max");
+  // 持仓必须 read-your-own-writes：投资账户的持仓 / 份额来自
+  // `loadInvestBalances`（unstable_cache，revalidate: false），命中缓存时
+  // `revalidateTag(tag, "max")` 是 stale-while-revalidate —— 写操作之后客户端
+  // 立刻 refetch 会先拿回写之前的快照（「删了几笔基金买入，赎回份额还是旧的」）。
+  // 持仓相关 tag 立即过期，不要改回 "max"。
+  expireTagNow("invest-balances");
+  expireTagNow("fund-holding");
   revalidateTag("invest-account-data", "max");
-  revalidateTag("fund-holding", "max");
   revalidateTag("stock-holding-report", "max");
   revalidateTag("stock-transactions", "max");
   revalidateTag("fixed-asset-display", "max");
@@ -74,9 +79,10 @@ export function revalidateAfterStockTransactionChange(options?: RevalidateOption
 export function revalidateAfterFundShellChange() {
   revalidateTag("common-data", "max");
   revalidateTag("entries", "max");
-  revalidateTag("invest-balances", "max");
+  // 同上：基金持仓 / 份额是 read-your-own-writes 的，必须立即过期。
+  expireTagNow("invest-balances");
+  expireTagNow("fund-holding");
   revalidateTag("invest-account-data", "max");
-  revalidateTag("fund-holding", "max");
 }
 
 /**
