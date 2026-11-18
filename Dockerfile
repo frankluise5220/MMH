@@ -11,10 +11,13 @@
 # 因此 node_modules、prisma CLI、schema-engine、基础镜像都可以整层复用。
 # 构建时先按原版 Dockerfile 的完全相同命令编译出 standalone，再与上一版镜像的
 # /app 逐文件比对，只把变化的文件按体积从大到小装进当前最轻的桶（贪心均衡）；
-# 最终镜像每条 COPY 是一层，单层 < 4 MB。国内镜像站对 8.75 MB 的 blob 也会
-# 「下到 100% 后不落盘」，所以单文件阈值取 3.5 MB，而不是之前拍的 10 MB。
+# 最终镜像每条 COPY 是一层，单层未压缩 < 4.5 MB。国内镜像站实测卡在 8.75 MB
+# 的 blob（下到 100% 后不落盘），4.5 MB 留了一倍余量；层本身还会再 gzip，实际
+# 下载的 blob 通常只有 1–2 MB。单文件阈值取 3.5 MB，而不是之前拍的 10 MB。
 # 分片数 16（0.1.87 起，此前 12）：每个分片是独立 blob，多几个小 blob 比一个大
-# blob 安全；16 档的容量是 64 MB，给 0.1.87 这种 1400+ 变化文件留余量。
+# blob 安全。16 档 × 4.5 MB = 72 MB 容量；0.1.87 实测 1428 个变化文件共 64.4 MB
+# （业务大改导致 Next chunk 全量重编），每片约 4.03 MB，正好落在 4 MB 与 4.5 MB 之间
+# ——所以阈值是 4608 KB 而不是 4096 KB，否则每片都差几十 KB。
 # 0.1.84 教训：原来是 `n % 12` 轮转，最大的 1/13/25… 个文件全部落进 p0，
 # 752 个变化文件时 p0 达 4168 KB 越限、App 镜像直接构建失败（GHCR 无 0.1.84）。
 # 0.1.87 教训：pdf-parse 的 *.map 单个 5.27 MB，绕过贪心分块直接撞上单文件阈值。
@@ -78,7 +81,7 @@ COPY . .
 RUN npm run build \
   && find .next/standalone .next/static -type f -name '*.map' -delete
 
-# 与 0.1.81 的 /app 逐文件比较，只保留真正变化的文件。
+# 与上一版镜像（BASE_IMAGE）的 /app 逐文件比较，只保留真正变化的文件。
 # .next/standalone 在 0.1.81 里是被 COPY 到 /app 根目录的，所以它的相对路径
 # 与 prev 的 /app 一一对应；其余资源按各自的目标目录对应。
 COPY --from=previous /app /app/prev
@@ -134,8 +137,8 @@ RUN set -eu; \
       echo "part p$i: ${sz} KB (uncompressed)"; \
       if [ "$sz" -gt "$worst" ]; then worst=$sz; fi; \
     done; \
-    if [ "$worst" -gt 4096 ]; then \
-      echo "最大分片 ${worst} KB 超过 4 MB：16 个分片装不下 $(du -sk /app/delta | cut -f1) KB 变化文件，需要继续裁体积（先看是不是又混进了 *.map）" >&2; \
+    if [ "$worst" -gt 4608 ]; then \
+      echo "最大分片 ${worst} KB 超过 4.5 MB：16 个分片装不下 $(du -sk /app/delta | cut -f1) KB 变化文件，需要继续裁体积（先看是不是又混进了 *.map）" >&2; \
       exit 1; \
     fi
 

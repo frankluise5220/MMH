@@ -114,8 +114,10 @@ expect(
     // 不要把 3.5 MB 上限放大到能装下 map。
     /find \.next\/standalone \.next\/static -type f -name '\*\.map' -delete/.test(dockerfile) &&
     /-size \+3500k/.test(dockerfile) &&
-    /"\$worst" -gt 4096/.test(dockerfile),
-  "Dockerfile must prune *.map from the standalone output, split the changed files into 16 separate COPY layers, and fail the build when a single file exceeds 3.5 MB or a part exceeds 4 MB: domestic mirrors drop 8.75 MB blobs.",
+    // 0.1.87 实测 1428 个变化文件共 64.4 MB，16 片每片约 4.03 MB；上限取 4608 KB
+    // （4.5 MB，镜站实测卡在 8.75 MB），4096 KB 会让每片差几十 KB 直接失败。
+    /"\$worst" -gt 4608/.test(dockerfile),
+  "Dockerfile must prune *.map from the standalone output, split the changed files into 16 separate COPY layers, and fail the build when a single file exceeds 3.5 MB or a part exceeds 4.5 MB: domestic mirrors drop 8.75 MB blobs.",
 );
 expect(
   !/prisma-split/.test(dockerfile) && !/standalone-split/.test(dockerfile) && !/studio-core\/dist\/ui/.test(dockerfile),
