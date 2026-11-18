@@ -12,6 +12,7 @@
  * @returns NAV info or null
  */
 import { prisma } from "@/lib/db/prisma";
+import { ensureDefaultFundQueryApisThrottled } from "@/lib/fund/queryApiDefaults";
 
 type NavResult = {
   nav: number;
@@ -37,6 +38,37 @@ type FundIdentityResult = {
   source: string;
 } | null;
 
+/**
+ * 取净值失败时的诊断信息。
+ *
+ * 以前所有失败都只回一句「未找到基金代码 X 的净值，请确认代码是否正确」，无法区分
+ * 「一个源都没配」「配置的源都不支持指定日期」「源全部报错」——排查时只能猜。
+ * 调用方传一个空对象进来，queryFundNav 会把它填成可读的失败路径。
+ */
+export type FundNavQueryAttempt = {
+  code: string;
+  host: string;
+  outcome: "ok" | "http_error" | "network_error" | "parse_error" | "empty";
+  status?: number;
+  message?: string;
+};
+
+export type FundNavQueryDiagnostics = {
+  reason?: "NO_QUERY_API" | "NO_MATCHING_API" | "ALL_FAILED";
+  activeApis?: number;
+  candidateApis?: string[];
+  attempts?: FundNavQueryAttempt[];
+  fallback?: "ok" | "empty" | "skipped";
+};
+
+function urlHost(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url.split("/")[0] ?? url;
+  }
+}
+
 const headers = {
   "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
   Referer: "http://fundf10.eastmoney.com/",
@@ -53,22 +85,41 @@ const MAX_FUND_QUERY_API_ATTEMPTS = 3;
  */
 const NAV_FETCH_TIMEOUT_MS = 8_000;
 
-async function fetchFromUrl(url: string, parser: (data: any) => NavResult): Promise<NavResult> {
+async function fetchFromUrl(
+  url: string,
+  parser: (data: any) => NavResult,
+  onOutcome?: (outcome: { outcome: FundNavQueryAttempt["outcome"]; status?: number; message?: string }) => void,
+): Promise<NavResult> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), NAV_FETCH_TIMEOUT_MS);
   try {
     const res = await fetch(url, { headers, cache: "no-store", signal: controller.signal });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      onOutcome?.({ outcome: "http_error", status: res.status });
+      return null;
+    }
     const text = await res.text();
     let data: any;
     try { data = JSON.parse(text); } catch {
       // Tiantian Fund returns data in JS format
       const m = text.match(/\{.+\}/);
-      if (!m) return null;
-      try { data = JSON.parse(m[0]); } catch { return null; }
+      if (!m) {
+        onOutcome?.({ outcome: "parse_error", message: "no json payload in response" });
+        return null;
+      }
+      try { data = JSON.parse(m[0]); } catch {
+        onOutcome?.({ outcome: "parse_error", message: "invalid json payload" });
+        return null;
+      }
     }
-    return parser(data);
-  } catch {
+    const result = parser(data);
+    onOutcome?.({ outcome: result ? "ok" : "empty" });
+    return result;
+  } catch (error) {
+    onOutcome?.({
+      outcome: "network_error",
+      message: error instanceof Error ? error.message : String(error),
+    });
     return null;
   } finally {
     clearTimeout(timer);
@@ -443,7 +494,14 @@ export async function queryFundNav(
   fundCode: string,
   dateStr?: string,
   accountId?: string,
+  diagnostics?: FundNavQueryDiagnostics,
 ): Promise<NavResult> {
+  const attempts: FundNavQueryAttempt[] = [];
+  if (diagnostics) {
+    diagnostics.attempts = attempts;
+    diagnostics.reason = undefined;
+    diagnostics.fallback = undefined;
+  }
   let account:
     | {
         defaultFundQueryApiId: string | null;
@@ -463,8 +521,19 @@ export async function queryFundNav(
   }
 
   // Get the list of active APIs
-  const activeApis = await getActiveApis(account?.householdId);
-  if (activeApis.length === 0) return null;
+  let activeApis = await getActiveApis(account?.householdId);
+  if (activeApis.length === 0) {
+    // FundQueryApi 是全局表：新装库、恢复备份（backup 里没有全局源时会整表清空）、
+    // 或用户从没打开过「设置 → 基金净值源」时它是空的。以前这种情况直接返回 null，
+    // 一次外部请求都不发，净值缓存表永远为空，界面只会报「未找到基金代码 X 的净值」。
+    await ensureDefaultFundQueryApisThrottled();
+    activeApis = await getActiveApis(account?.householdId);
+  }
+  if (activeApis.length === 0) {
+    if (diagnostics) diagnostics.reason = "NO_QUERY_API";
+    return null;
+  }
+  if (diagnostics) diagnostics.activeApis = activeApis.length;
 
   // Priority: account default API > account institution scenario > global priority order
   let orderedApis = activeApis;
@@ -482,6 +551,11 @@ export async function queryFundNav(
     .filter((api) => PARSERS[api.code] && (!dateStr || api.baseUrl.includes("{date}")))
     .slice(0, MAX_FUND_QUERY_API_ATTEMPTS);
 
+  if (diagnostics) {
+    diagnostics.candidateApis = candidateApis.map((api) => `${api.code}@${urlHost(api.baseUrl)}`);
+    if (candidateApis.length === 0) diagnostics.reason = "NO_MATCHING_API";
+  }
+
   for (const api of candidateApis) {
     const parser = PARSERS[api.code]!;
 
@@ -489,15 +563,25 @@ export async function queryFundNav(
     url = url.replaceAll("{code}", fundCode);
     if (dateStr) url = url.replaceAll("{date}", dateStr);
 
-    const result = await fetchFromUrl(url, parser);
-    if (result) return result;
+    const result = await fetchFromUrl(url, parser, (outcome) => {
+      attempts.push({ code: api.code, host: urlHost(url), ...outcome });
+    });
+    if (result) {
+      if (diagnostics) diagnostics.reason = undefined;
+      return result;
+    }
   }
 
   // Exact-date query failed; use the wider-range fallback only if it fits the same request budget.
   if (dateStr && candidateApis.length < MAX_FUND_QUERY_API_ATTEMPTS) {
     const historicalResult = await queryHistoricalNav(fundCode, dateStr);
+    if (diagnostics) diagnostics.fallback = historicalResult ? "ok" : "empty";
     if (historicalResult) return historicalResult;
+  } else if (diagnostics) {
+    diagnostics.fallback = "skipped";
   }
+
+  if (diagnostics && diagnostics.reason === undefined) diagnostics.reason = "ALL_FAILED";
 
   return null;
 }

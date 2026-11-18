@@ -12,6 +12,7 @@ import { ensureFundTransactionCashFlowLinks, findFundTransactionForEntryId } fro
 import { logger } from "@/lib/logger";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { getFundProfile } from "@/lib/fund/fundProfile";
+import type { FundNavQueryDiagnostics } from "@/lib/fund/queryApi";
 
 /**
  * GET /api/v1/fund/nav?code=&date=&accountId=&purpose=&applyDate=
@@ -29,9 +30,40 @@ function utcDate(dateStr: string) {
   return new Date(Date.UTC(y, m - 1, d));
 }
 
-async function getNav(fundCode: string, dateStr: string, accountId?: string) {
+/**
+ * 把「取数失败」翻译成能直接行动的原因。
+ * 以前所有失败共用一句「请确认代码是否正确」，导致源表为空 / 源不支持日期 / 源全部报错
+ * 三种完全不同的故障看起来一模一样。
+ */
+function navFailureMessage(fundCode: string, diagnostics: FundNavQueryDiagnostics): string {
+  if (diagnostics.reason === "NO_QUERY_API") {
+    return `没有可用的基金净值数据源（设置 → 基金净值源），无法查询 ${fundCode} 的净值`;
+  }
+  if (diagnostics.reason === "NO_MATCHING_API") {
+    return `已启用的净值源都不支持按指定日期取净值（接口地址缺少 {date}），无法查询 ${fundCode} 的历史净值`;
+  }
+  if (diagnostics.reason === "ALL_FAILED") {
+    const attempts = (diagnostics.attempts ?? [])
+      .map(
+        (attempt) =>
+          `${attempt.code}@${attempt.host}=${attempt.outcome}${
+            attempt.status ? `(${attempt.status})` : ""
+          }${attempt.message ? `:${attempt.message}` : ""}`,
+      )
+      .join(", ");
+    return `所有净值源都未返回 ${fundCode} 的净值（${attempts || "无尝试记录"}）`;
+  }
+  return `未找到基金代码 ${fundCode} 的净值，请确认代码是否正确`;
+}
+
+async function getNav(
+  fundCode: string,
+  dateStr: string,
+  accountId?: string,
+  diagnostics?: FundNavQueryDiagnostics,
+) {
   const navDate = utcDate(dateStr);
-  const cached = await getFundNav(fundCode, navDate, accountId);
+  const cached = await getFundNav(fundCode, navDate, accountId, diagnostics ? { diagnostics } : undefined);
   if (cached) {
     return {
       date: cached.actualDate ?? dateStr,
@@ -137,21 +169,48 @@ export async function GET(req: NextRequest) {
       const account = accountId
         ? await prisma.account.findUnique({ where: { id: accountId }, select: { tradingCalendar: true } })
         : null;
+      const todayYmd = todayDateBusinessYmd(await getRequestTimeZone());
       const recentBuyWithoutExactNav = purpose === "buy" && !!applyDate && isWithinRecentTradingDaysUtc(
         applyDate,
-        todayDateBusinessYmd(await getRequestTimeZone()),
+        todayYmd,
         2,
         account?.tradingCalendar ?? "cn_fund",
       );
       // Use getNav() (cache -> Eastmoney -> latest NAV fallback chain) so missing data for
       // future dates or non-trading days does not error directly
-      const data = await getNav(fundCode, date, accountId);
+      const diagnostics: FundNavQueryDiagnostics = {};
+      const data = await getNav(fundCode, date, accountId, diagnostics);
       if (!data) {
-        return NextResponse.json({ ok: false, code: "NAV_NOT_FOUND", error: `未找到基金代码 ${fundCode} 的净值，请确认代码是否正确` }, { status: 404 });
+        logger.warn(
+          `fund nav query failed: ${JSON.stringify({ fundCode, date, accountId, diagnostics })}`,
+          "fund/nav",
+        );
+        return NextResponse.json(
+          {
+            ok: false,
+            code: "NAV_NOT_FOUND",
+            error: navFailureMessage(fundCode, diagnostics),
+            diagnostics,
+          },
+          { status: 404 },
+        );
       }
       if (recentBuyWithoutExactNav && data.date !== date) {
+        // 近期买入但确认日净值没出来：不能用别的日期的净值算份额（份额会错）。
+        // 把「要的是哪天 / 现在最新是哪天」一起回给前端，前端才能给一句人话而不是英文。
+        const requestedDateInFuture = date > todayYmd;
         return NextResponse.json(
-          { ok: false, code: "EXACT_NAV_UNAVAILABLE", error: "Exact NAV is not available yet; buy units were not calculated." },
+          {
+            ok: false,
+            code: "EXACT_NAV_UNAVAILABLE",
+            error: requestedDateInFuture
+              ? `${date} 还没到，该日净值不存在（当前最新 ${data.date}），份额等确认日净值公布后再算`
+              : `${date} 的净值还没有公布（当前最新 ${data.date}），份额等该日净值公布后再算`,
+            requestedDate: date,
+            actualDate: data.date,
+            latestNav: data.nav,
+            requestedDateInFuture,
+          },
           { status: 404 },
         );
       }
@@ -159,9 +218,22 @@ export async function GET(req: NextRequest) {
     }
 
     // Without a date: query the real-time estimate
-    const latest = await refreshLatestFundNav(fundCode, accountId);
+    const diagnostics: FundNavQueryDiagnostics = {};
+    const latest = await refreshLatestFundNav(fundCode, accountId, diagnostics);
     if (!latest) {
-      return NextResponse.json({ ok: false, code: "NAV_NOT_FOUND", error: `未找到基金代码 ${fundCode} 的净值，请确认代码是否正确` }, { status: 404 });
+      logger.warn(
+        `fund latest nav query failed: ${JSON.stringify({ fundCode, accountId, diagnostics })}`,
+        "fund/nav",
+      );
+      return NextResponse.json(
+        {
+          ok: false,
+          code: "NAV_NOT_FOUND",
+          error: navFailureMessage(fundCode, diagnostics),
+          diagnostics,
+        },
+        { status: 404 },
+      );
     }
     const navDateStr = latest.navDate.toISOString().slice(0, 10);
     return NextResponse.json({

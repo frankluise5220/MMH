@@ -1,6 +1,6 @@
 import { prisma } from "@/lib/db/prisma";
 import { todayDateBusinessYmd } from "@/lib/date-utils";
-import { queryFundNav } from "@/lib/fund/queryApi";
+import { queryFundNav, type FundNavQueryDiagnostics } from "@/lib/fund/queryApi";
 import {
   fundTradingCalendarForProfile,
   getFundProfile,
@@ -252,8 +252,11 @@ export async function getFundNav(
   fundCode: string,
   navDate: Date,
   accountId?: string,
-  /** `network: false` → 只读缓存，未命中直接返回 null（导入预览要秒出明细时用）。 */
-  options?: { network?: boolean },
+  /**
+   * `network: false` → 只读缓存，未命中直接返回 null（导入预览要秒出明细时用）。
+   * `diagnostics` → 传空对象进来，取数失败时会被填成可读的失败路径（哪个源、什么状态）。
+   */
+  options?: { network?: boolean; diagnostics?: FundNavQueryDiagnostics },
 ): Promise<{ nav: number; cumNav: number | null; dateMatch: boolean; actualDate?: string } | null> {
   // 1. Query the cache table first
   const cached = await getFundNavFromCacheOnly(fundCode, navDate);
@@ -265,7 +268,7 @@ export async function getFundNav(
 
   // 2. Cache miss: fetch from the external API (trying configured priorities)
   const dateStr = navDate.toISOString().slice(0, 10);
-  const apiData = await queryFundNav(fundCode, dateStr, accountId);
+  const apiData = await queryFundNav(fundCode, dateStr, accountId, options?.diagnostics);
 
   if (!apiData) return null;
 
@@ -561,13 +564,14 @@ async function resolveEffectiveLatestNavTarget(fundCode: string, accountId?: str
 export async function refreshLatestFundNav(
   fundCode: string,
   accountId?: string,
+  diagnostics?: FundNavQueryDiagnostics,
 ): Promise<{ id: string; nav: number; cumNav: number | null; navDate: Date } | null> {
   const targetDate = await resolveEffectiveLatestNavTarget(fundCode, accountId);
   const targetNavDate = utcDate(targetDate);
   const cached = await getFundNavFromCacheOnly(fundCode, targetNavDate);
   if (cached) return getLatestFundNavOnOrBefore(fundCode, targetNavDate);
 
-  const apiData = await queryFundNav(fundCode, targetDate, accountId);
+  const apiData = await queryFundNav(fundCode, targetDate, accountId, diagnostics);
   if (!apiData?.date || !Number.isFinite(apiData.nav)) {
     return getLatestFundNavOnOrBefore(fundCode, targetNavDate);
   }

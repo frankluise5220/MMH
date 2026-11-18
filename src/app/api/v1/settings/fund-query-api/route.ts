@@ -2,65 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
-
-const DEFAULT_FUND_QUERY_APIS = [
-  {
-    code: "eastmoney",
-    name: "天天基金",
-    baseUrl: "http://fundgz.1234567.com.cn/js/{code}.js",
-    priority: 1,
-    isActive: true,
-  },
-  {
-    code: "eastmoney_history",
-    name: "东方财富历史净值",
-    baseUrl: "http://api.fund.eastmoney.com/f10/lsjz?fundCode={code}&pageIndex=1&pageSize=5&startDate={date}&endDate={date}",
-    priority: 2,
-    isActive: true,
-  },
-  {
-    code: "danjuan",
-    name: "蛋卷基金",
-    baseUrl: "https://danjuanfunds.com/djapi/fund/{code}",
-    priority: 3,
-    isActive: false,
-  },
-  {
-    code: "alipay",
-    name: "支付宝基金",
-    baseUrl: "https://fundmobapi.alipay.com/fund/v1/fund/detail?fundCode={code}",
-    priority: 5,
-    isActive: false,
-  },
-];
-
-const BROKEN_DEFAULT_BASE_URLS: Record<string, string[]> = {
-  alipay: ["https://fundapi.eastmoney.com/fundapi/{code}/nav"],
-};
-
-async function ensureDefaultFundQueryApis() {
-  await prisma.$transaction(
-    DEFAULT_FUND_QUERY_APIS.map((api) =>
-      prisma.fundQueryApi.upsert({
-        where: { code: api.code },
-        create: api,
-        update: {},
-      }),
-    ),
-  );
-}
-
-async function repairBrokenDefaultFundQueryApis() {
-  const updates = DEFAULT_FUND_QUERY_APIS.flatMap((api) =>
-    (BROKEN_DEFAULT_BASE_URLS[api.code] ?? []).map((baseUrl) =>
-      prisma.fundQueryApi.updateMany({
-        where: { code: api.code, baseUrl },
-        data: { baseUrl: api.baseUrl },
-      }),
-    ),
-  );
-  if (updates.length > 0) await prisma.$transaction(updates);
-}
+import {
+  ensureDefaultFundQueryApis,
+  repairBrokenDefaultFundQueryApis,
+} from "@/lib/fund/queryApiDefaults";
 
 // GET: list FundQueryApi entries within the current household
 export async function GET() {
