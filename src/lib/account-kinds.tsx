@@ -13,7 +13,9 @@ const KIND_LABEL_KEYS: Record<string, string> = {
   loan: "account.kind.loan",
   insurance: "account.kind.insurance",
   other: "account.kind.other",
-  bank_savings: "account.kind.bank_savings",
+  // 历史别名（库里从未存在该 kind，Postgres 枚举 AccountKind 无此值）：仅防御旧库脏数据，
+  // 统一按「借记卡」显示。储蓄卡与借记卡是同一个类型，别当成两种账户。
+  bank_savings: "account.kind.bank_debit",
 };
 
 // Legacy account-kind labels kept as data for callers without a `t` function
@@ -30,7 +32,7 @@ const KIND_LABEL_FALLBACK: Record<string, string> = {
   loan: "贷款",
   insurance: "保险",
   other: "其他",
-  bank_savings: "储蓄卡",
+  bank_savings: "借记卡",
 };
 
 export function kindLabel(k: string, t?: I18nT): string {

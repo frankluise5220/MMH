@@ -3,6 +3,7 @@ import { accountOptionFromParts } from "@/lib/account-display";
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 /** 记账弹窗整窗外壳：宽度/标题栏/表单/FT 页签卡片/固定页脚/高度锁定统一由它负责。 */
 import { EntryModalShell } from "@/components/EntryModalShell";
+import { EntryConvertHeaderAction } from "@/components/EntryConvertHeaderAction";
 import {
   HoldingAccountCreateModal,
   HoldingHoldingFields,
@@ -636,6 +637,26 @@ export function WealthFormModal({
           setOpen(false);
           if (mode === "create") reset();
         }}
+        headerExtra={(
+          <EntryConvertHeaderAction
+            source={mode === "edit" ? {
+              entryId: editEntryId,
+              type: "wealth",
+              date,
+              amount,
+              note: memo,
+              accountId: toAccountId,
+              cashAccountId,
+              fundName,
+              // 赎回 / 现金分红是钱进来，买入是钱出去：转换菜单只列同向目标。
+              inflow: subtype === "redeem" || subtype === "dividend_cash",
+            } : null}
+            onBeforeConvert={() => {
+              setOpen(false);
+              reset();
+            }}
+          />
+        )}
         closeLabel={t("table.close")}
         onSubmit={onSubmit}
         tabs={family === "advisor"

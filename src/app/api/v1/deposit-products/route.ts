@@ -4,6 +4,8 @@ import { getHouseholdScope } from "@/lib/server/household-scope";
 import { resolveOrCreateDepositProduct } from "@/lib/server/deposit-product";
 import { normalizeCurrency, normalizeOptionalCurrency } from "@/lib/currency";
 import { loadDepositHoldingCounts } from "@/lib/server/product-holding-counts";
+import { isPersonalInstitutionType } from "@/lib/institution-rules";
+import { personalInstitutionError } from "@/lib/server/product-family-guard";
 
 export const runtime = "nodejs";
 
@@ -138,6 +140,10 @@ export async function POST(req: NextRequest) {
         const institution = await prisma.institution.findFirst({ where: { id: institutionId, householdId } });
         if (!institution) {
           return NextResponse.json({ ok: false, code: "INSTITUTION_NOT_FOUND", error: "机构不存在" }, { status: 400 });
+        }
+        // 往来人员 / 往来组织 / 家庭成员不是存单的发行方（与理财 / 债券同口径）。
+        if (isPersonalInstitutionType(institution.type)) {
+          return NextResponse.json(personalInstitutionError("存款产品"), { status: 400 });
         }
       }
       const duplicate = await prisma.depositProduct.findFirst({ where: { householdId, institutionId, name } });

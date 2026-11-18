@@ -19,6 +19,7 @@ import { recordRecentAccounts, sortByAccountUsage, useAccountUsage } from "@/lib
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
 /** 整窗外壳（遮罩 / 标题栏 / 宽度档位 / 表单 / FT 页签与卡片 / 窗口底按钮行）：规则集中在它。 */
 import { EntryModalShell } from "@/components/EntryModalShell";
+import { EntryConvertHeaderAction } from "@/components/EntryConvertHeaderAction";
 import type { FolderTabsCardItem } from "@/components/FolderTabsCard";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { isEntryConversionRequest } from "@/lib/client/entry-conversion";
@@ -168,11 +169,16 @@ function isFixedRepaymentMethodValue(method: string) {
   return FIXED_REPAYMENT_METHODS.has(normalizeLoanRepaymentMethod(method));
 }
 
+// 日历日一律按 UTC 午夜读写（项目日期契约）。旧实现用 `new Date(`${value}T00:00:00`)`
+// 按本地时区解析、再用 formatDateUtc 输出，在 +08:00 下会整体早一天
+// （2026-01-15 加一个月得到 2026-02-14），月末还要夹到目标月最后一天。
 function addMonthsInput(dateInput: string, months: number) {
-  const date = new Date(`${dateInput}T00:00:00`);
-  if (!Number.isFinite(date.getTime())) return dateInput;
-  date.setMonth(date.getMonth() + months);
-  return formatDateInput(date);
+  const base = dateInputToUtcDate(dateInput);
+  if (!base || !Number.isFinite(base.getTime())) return dateInput;
+  const target = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth() + months, 1));
+  const lastDay = new Date(Date.UTC(target.getUTCFullYear(), target.getUTCMonth() + 1, 0)).getUTCDate();
+  target.setUTCDate(Math.min(base.getUTCDate(), lastDay));
+  return formatDateInput(target);
 }
 
 function dateInputTime(value: string) {
@@ -1462,7 +1468,7 @@ export function LiabilityTransactionModal({
       shouldPromptHistoricalRepayments({
         mode,
         isFixedRepaymentMethod,
-        firstRepaymentDate: isHomeLoanBorrow || autoDebit ? autoDebitFirstDate : firstRepaymentDate,
+        firstRepaymentDate: loanPlanFirstRepaymentDate,
         today,
         repaymentIntervalMonths,
       })
@@ -1527,7 +1533,7 @@ export function LiabilityTransactionModal({
     }
 
     const submittedAutoDebit = isHomeLoanBorrow || autoDebit;
-    const submittedFirstRepaymentDate = submittedAutoDebit ? autoDebitFirstDate : firstRepaymentDate;
+    const submittedFirstRepaymentDate = loanPlanFirstRepaymentDate;
     const submittedAutoDebitCashAccountId = isCollateralLoanBorrow ? autoDebitCashAccountId : cashAccountId;
     const submittedCashAccountId = isLoanBorrow
       ? submittedLoanFundingMode === "cash_disbursement"
@@ -1567,7 +1573,7 @@ export function LiabilityTransactionModal({
     formData.set("repaymentMethod", normalizeLoanRepaymentMethod(repaymentMethod));
     formData.set("repaymentIntervalMonths", repaymentIntervalMonths);
     formData.set("loanTotalRuns", loanTotalRuns);
-    formData.set("firstBillDate", isHomeLoanBorrow ? "" : firstBillDate);
+    formData.set("firstBillDate", isHomeLoanBorrow ? "" : loanPlanFirstBillDate);
     formData.set("firstRepaymentDate", submittedFirstRepaymentDate);
     formData.set("createRepaymentPlan", showBorrowPlan && isFixedRepaymentMethod && !isPlanlessOtherLoanBorrow ? "true" : "false");
     formData.set("autoDebit", submittedAutoDebit ? "true" : "false");
@@ -1828,6 +1834,25 @@ export function LiabilityTransactionModal({
   // 编辑贷款借入记录：只允许改还款资金账户，其它字段只读回填。
   const isLoanBorrowEditLocked = isLoanBorrow && !!editingEntryId;
   const showHomeLoanLprFields = isHomeLoanBorrow && selectedLiabilityInstitutionType !== "provident_fund";
+  // 其他贷款的分期计划以「发生日期」为锚：放款日 + 1 个还款间隔 = 首期。
+  // 未勾自动扣款时表单上不渲染「首期账单日 / 首次还款日」输入框，若仍沿用
+  // resetDraft 里的「今天 + 1 个月」，预览和落库的计划都会凭空从今天起算（2026-11-17 用户反馈）。
+  const otherLoanPlanAnchorDate = useMemo(() => {
+    if (!isLoanBorrow || activeLoanTab !== "other") return "";
+    // 勾了自动扣款就有可见的「首期账单日 / 扣款日期」输入框，以用户填的为准；
+    // 编辑模式由已保存的计划回填，也不覆盖。
+    if (autoDebit || editingEntryId) return "";
+    if (!isValidDateInput(date)) return "";
+    const runs = Number.parseInt(loanTotalRuns || "0", 10);
+    if (!Number.isFinite(runs) || runs <= 0) return "";
+    const intervalMonths = Math.max(1, Number.parseInt(repaymentIntervalMonths || "1", 10) || 1);
+    return addMonthsInput(date, intervalMonths);
+  }, [activeLoanTab, autoDebit, date, editingEntryId, isLoanBorrow, loanTotalRuns, repaymentIntervalMonths]);
+  // 计划首期日期（预览 / 历史还款提示 / 提交共用同一口径）。
+  const loanPlanFirstRepaymentDate = isHomeLoanBorrow || autoDebit
+    ? autoDebitFirstDate
+    : otherLoanPlanAnchorDate || firstRepaymentDate;
+  const loanPlanFirstBillDate = otherLoanPlanAnchorDate || firstBillDate;
   // Status of the selected repayable loan account's current scheduled period.
   const selectedRepayableLoanRow = useMemo(
     () => (isLoanRepaymentMode ? repayableLoanAccountRows.find((item) => item.accountId === liabilityAccountId) : undefined),
@@ -2257,7 +2282,7 @@ export function LiabilityTransactionModal({
   const isFixedRepaymentMethod = isFixedRepaymentMethodValue(repaymentMethod);
   const loanSchedulePreview = useMemo(() => {
     if (!showBorrowPlan || !isFixedRepaymentMethod) return null;
-    const firstRunDate = dateInputToUtcDate(isHomeLoanBorrow || autoDebit ? autoDebitFirstDate : firstRepaymentDate);
+    const firstRunDate = dateInputToUtcDate(loanPlanFirstRepaymentDate);
     const principalAmount = parseAbsMoneyText(principal);
     const totalRuns = Number.parseInt(loanTotalRuns || "0", 10);
     const intervalMonths = Number.parseInt(repaymentIntervalMonths || "1", 10);
@@ -2309,6 +2334,7 @@ export function LiabilityTransactionModal({
     historicalRateRows,
     isFixedRepaymentMethod,
     isHomeLoanBorrow,
+    loanPlanFirstRepaymentDate,
     loanTotalRuns,
     principal,
     repaymentIntervalMonths,
@@ -2881,6 +2907,26 @@ export function LiabilityTransactionModal({
             setOpen(false);
             resetDraft();
           }}
+          headerExtra={(
+            <EntryConvertHeaderAction
+              source={editingEntryId ? {
+                entryId: editingEntryId,
+                date,
+                amount: principal,
+                note,
+                accountId: liabilityAccountId,
+                accountKind: isLoanDialog ? "loan" : "settlement",
+                accountIsSettlementAccount: !isLoanDialog,
+                cashAccountId,
+                // 借入 / 收回是钱进来，借出 / 还款是钱出去：转换菜单只列同向目标。
+                inflow: mode === "borrow_in" || mode === "collect_in",
+              } : null}
+              onBeforeConvert={() => {
+                setOpen(false);
+                resetDraft();
+              }}
+            />
+          )}
           closeLabel={t("table.close")}
           onSubmit={onSubmit}
           tabs={liabilityTabs}
@@ -3235,7 +3281,10 @@ export function LiabilityTransactionModal({
                                       const checked = event.target.checked;
                                       setAutoDebit(checked);
                                       if (checked) {
-                                        setAutoDebitFirstDate(firstRepaymentDate || addMonthsInput(today, 1));
+                                        // 其他贷款的扣款日/账单日同样锚定发生日期，别弹回「今天 + 1 期」。
+                                        const anchorDate = otherLoanPlanAnchorDate;
+                                        setAutoDebitFirstDate(anchorDate || firstRepaymentDate || addMonthsInput(today, 1));
+                                        if (anchorDate) setFirstBillDate(anchorDate);
                                       } else {
                                         setFirstBillDate(firstBillDate || autoDebitFirstDate);
                                         setFirstRepaymentDate(firstRepaymentDate || autoDebitFirstDate);
@@ -3296,7 +3345,7 @@ export function LiabilityTransactionModal({
                                     setShowHistoricalRates(true);
                                     setHistoricalRateRows((prev) => prev.length > 0
                                       ? prev
-                                      : [createHistoricalRateRow((autoDebit ? autoDebitFirstDate : firstRepaymentDate) || date, annualRate)]);
+                                      : [createHistoricalRateRow(loanPlanFirstRepaymentDate || date, annualRate)]);
                                     setHistoricalRatesOpen(true);
                                   }}
                                 >
@@ -3342,8 +3391,8 @@ export function LiabilityTransactionModal({
                                         <tr key={`${row.period}-${row.date}`} className="border-t border-slate-100">
                                           <td className="px-2 py-1 text-slate-600">{row.period}/{loanTotalRuns}</td>
                                           <td className="px-2 py-1 text-slate-600">
-                                            {!isHomeLoanBorrow && isValidDateInput(firstBillDate)
-                                              ? addMonthsInput(firstBillDate, (row.period - 1) * loanSchedulePreview.intervalMonths)
+                                            {!isHomeLoanBorrow && isValidDateInput(loanPlanFirstBillDate)
+                                              ? addMonthsInput(loanPlanFirstBillDate, (row.period - 1) * loanSchedulePreview.intervalMonths)
                                               : row.date}
                                           </td>
                                           <td className="px-2 py-1 text-slate-600">{row.date}</td>
@@ -3439,7 +3488,7 @@ export function LiabilityTransactionModal({
         )}
       >
                   <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-800">
-                    {t("liabilityTx.historyPrompt.warning", { date: firstRepaymentDate || "-" })}
+                    {t("liabilityTx.historyPrompt.warning", { date: loanPlanFirstRepaymentDate || "-" })}
                   </div>
 
                   <label className="flex cursor-pointer items-start gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2">

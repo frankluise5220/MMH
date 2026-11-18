@@ -30,7 +30,7 @@ MMH（MoneyMoneyHome）は、ローカルファーストの家庭向け家計・
 
 ## 注意事项
 
-- VPS 自建源（`fnapp.floatingice.win`）的 `desc` 不会被 `sync.sh` 自动更新（sync 只同步 version/图标/FPK）。改完仓库副本后需手动同步到 VPS `/opt/fn-appstores-server/data/fn-appstores.json`，然后 `docker restart fn-appstores-server`（app.py 有 24 小时缓存）。
+- VPS 自建源（`fnapp.floatingice.win`）的 `desc` 由 `sync.sh` 自动同步：脚本从 `main/deploy/fnos/repository/api/apps` 取现成 desc（`REPO_DESC`），形态合格才整段替换，取不到就保留旧值并告警。所以改完仓库副本只需在 VPS 上 `bash /opt/fn-appstores-server/sync.sh --force`（脚本自己会等公告、重启两个容器），不用手改 `data/fn-appstores.json`。
 - **客户端换行渲染已按源码查证（2026-10-16，取代此前"未验证"的说法）**：`hhxs2025/fn-appstores-client` 的 `src/app/server/static/js/apps.js` 里，`:391` 是 `descEl.innerHTML = app.desc`（**按 HTML 渲染 → `<br>` 生效**），`:377-386` 会**去掉 HTML 标签后按真实 `\n` 拆行**、`lines.length >= 2` 就额外渲染一个与「应用介绍」重复的「更新内容」面板。**结论：条间/段间只能用 `<br>`，`desc` 里绝不允许出现真实换行。**
 - 当前 `desc` 形状：`【本版更新】<br>【功能改进】<br>• <条目><br>…<br>【Bug 修复】<br>• <条目><br>…<br>完整说明见 GitHub Release v<ver><br><br>【软件简介】<统一简介正文>`。更新说明段**从 `package.json.mmhReleaseNotesI18n["zh-CN"]` 派生**（`npm run sync:store-desc` 重写 4 处仓库副本，`npm run check:store-desc` 校验），不要手改；口径与校验见 `mmh-release` 技能的 `references/update-notes-surfaces.md` §2.5 / §3.3 / §3.4。
 - 简介正文的正典是 `deploy/app-intro-by-platform.md`（本文上面那几段是更早的多段式写法，逐字口径以正典为准）。

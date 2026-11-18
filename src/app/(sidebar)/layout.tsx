@@ -1,6 +1,7 @@
 import { Sidebar } from "@/components/layout/Sidebar";
 import { AIPanel } from "@/components/layout/AIPanel";
 import { BackgroundTaskStatusBar } from "@/components/BackgroundTaskStatusBar";
+import { EntryConversionFallbackWatcher } from "@/components/EntryConversionFallbackWatcher";
 import { FirstUseGuide } from "@/components/FirstUseGuide";
 import { StatementMailAutoImportHost } from "@/components/StatementMailAutoImportHost";
 import { MobileNavigation } from "@/components/layout/MobileNavigation";
@@ -34,6 +35,9 @@ export default async function SidebarLayout({
   return (
     <div className="flex h-dvh overflow-x-hidden overflow-y-hidden" data-device={deviceKind}>
       <BackgroundTaskStatusBar />
+      {/* 「转换」兜底：编辑窗里也能发起转换，而它可能挂在没有明细 Provider 的页面上
+          （报表、计划投资等）。明细页自己的 Watcher 会先认领并负责提示，这里只补漏。 */}
+      <EntryConversionFallbackWatcher />
       {/* 邮箱账单「下期自动导入」：通知栏点「打开导入」后在这里弹导入预览。 */}
       <StatementMailAutoImportHost />
       {/* 两层判断各管一件事：`isMobileDevice` 决定「有没有侧边栏这种形态」，

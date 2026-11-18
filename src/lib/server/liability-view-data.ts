@@ -3,9 +3,12 @@ import { AccountKind, LiabilityDirection, IntervalUnit, TransactionType } from "
 import { toNumber, formatDateUtc, parseDateInputToUtc, todayDateBusinessYmd } from "@/lib/date-utils";
 import {
   inferLiabilityActivityMode,
+  liabilityCashFlowDisplaySign,
+  liabilityFlowSides,
   liabilityPrincipalForAccountSide as canonicalLiabilityPrincipalForAccountSide,
   type LiabilityAccountFact,
 } from "@/lib/liability";
+import { parseSettlementAccountName } from "@/lib/account-import-match";
 import { normalizeSettlementTransferCategoryName } from "@/lib/default-categories";
 import { compareDetailEntriesAsc, compareDetailEntriesDesc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
 import { DEFAULT_LOAN_PREPAY_STRATEGY, parseLoanPrepayStrategy } from "@/lib/loan-prepay-strategy";
@@ -172,15 +175,30 @@ type LiabilityDetailEntry = {
   typeLabel: string;
   collateralLabel?: string | null;
   /**
-   * 明细两端账户（2026-11-17 用户要求：把「资金账户」拆成「流出账户 / 流入账户」，
-   * 不再显示「资金流向」那一列）。两端本来就存在 `entry.accountId` / `entry.toAccountId` 上，
-   * 谁流出由现金侧方向决定（`cashFlowAmount < 0` ＝钱从资金账户出去），
-   * 所以流出侧永远排在前、流入侧排在后，一行只填其中一侧。
+   * 「往来款账户 / 贷款账户」列：本行里往来款那一侧的账户。它在 `accountId` 还是
+   * `toAccountId` 上取决于这一行是借入还是借出，与行方向无关地固定展示这一侧。
    */
+  liabilityAccountLabel: string;
+  liabilityAccountTitle?: string;
+  /** 「对手账户」列：另一端账户（资金账户 / 对方账户）。没有两端账户的行留空。 */
+  counterpartyAccountLabel: string;
+  counterpartyAccountTitle?: string;
+  /** 「资金流向」列：`流出侧 → 流入侧`，两端用简称（往来款账户去掉「的往来款」后缀）。 */
+  flowFromLabel: string;
+  flowFromTitle?: string;
+  flowToLabel: string;
+  flowToTitle?: string;
+  /** 保留旧的流出/流入排序字段：报销、结算等既有逻辑仍在读它。 */
   fromAccountLabel: string;
   fromAccountTitle?: string;
   toAccountLabel: string;
   toAccountTitle?: string;
+  /** 分类列：与表格表头一致，批量修改的分类字段也读它。 */
+  categoryLabel: string;
+  /** 标签列。 */
+  tagLabels: string[];
+  /** 记账日（可空）；表格里是可隐藏列，批量修改的「记账日」对应它。 */
+  postedAt: string | null;
   /** 已被报销单关联的原始记录：往来款明细展示报销进度三步（已填报→已审核→已回款，悬停显示单据标题）。 */
   reimbursementLink?: { id: string; title: string; stage: "submitted" | "approved" | "paid" } | null;
   note: string;
@@ -288,6 +306,7 @@ export type LiabilityMetricEntry = {
   categoryId?: string | null;
   categoryName?: string | null;
   counterpartyInstitutionId?: string | null;
+  postedAt?: Date | null;
   note?: string | null;
   toNote?: string | null;
   principalAmount?: unknown;
@@ -327,19 +346,9 @@ export function liabilityPrincipalForAccountSide(
   return canonicalLiabilityPrincipalForAccountSide(entry, liabilityAccountIds);
 }
 
-function liabilityCashFlowForAccountSide(
-  entry: { amount: unknown; principalAmount?: unknown; source?: string | null; accountId?: string | null; toAccountId?: string | null },
-  liabilityAccountIds: Set<string>,
-) {
-  const amount = toNumber(entry.amount);
-  const principal = entry.principalAmount == null ? Math.abs(amount) : toNumber(entry.principalAmount);
-  const source = String(entry.source ?? "");
-  if (source === "liability_borrow_in") return principal;
-  if (source === "liability_financed_purchase") return 0;
-  if (source === "liability_repay_out" || source === "liability_prepay_out" || source === "liability_lend_out" || source === "scheduled_task") return -principal;
-  if (source === "liability_collect_in") return principal;
-  return liabilityAccountIds.has(entry.accountId ?? "") ? -amount : amount;
-}
+// 现金方向符号的唯一实现在 `@/lib/liability`：明细表排序与批量修改账户共用它，
+// 任何一边单独改都会让「改流出账户却改到流入侧」重新出现。
+const liabilityCashFlowForAccountSide = liabilityCashFlowDisplaySign;
 
 function liabilityPaymentTotal(
   entry: { amount: unknown; principalAmount?: unknown; interestAmount?: unknown; feeAmount?: unknown },
@@ -549,6 +558,17 @@ export function applyLiabilityRowEntryMetrics({
   }
 }
 
+/**
+ * 「资金流向」列只放得下名字：账户标签取最后一段（去掉机构前缀），往来款账户再去掉
+ * 「的往来款 / 的应付款 / 的应收款」这类后缀，得到「姜爷爷」这种对象名。
+ */
+function shortAccountLabel(label: string | null | undefined) {
+  const text = String(label ?? "").trim();
+  if (!text) return "";
+  const name = text.split("·").pop()?.trim() ?? text;
+  return parseSettlementAccountName(name) || name;
+}
+
 export function buildLiabilityDetailEntriesViewData({
   liabilityEntriesRaw,
   selectedLiabilityAccountIds,
@@ -565,6 +585,7 @@ export function buildLiabilityDetailEntriesViewData({
   mortgagedAssetByLoanAccountId,
   collateralNameByLoanAccountId,
   reimbursementLinkByEntryId,
+  tagNameById,
 }: {
   liabilityEntriesRaw: LiabilityMetricEntry[];
   selectedLiabilityAccountIds: Set<string>;
@@ -582,6 +603,8 @@ export function buildLiabilityDetailEntriesViewData({
   collateralNameByLoanAccountId?: Map<string, string>;
   /** txRecordId → 关联的报销单（stage：已填报/已审核/已回款；标题用于悬停提示）。 */
   reimbursementLinkByEntryId?: Map<string, { id: string; title: string; stage: "submitted" | "approved" | "paid" }>;
+  /** Tag.id → 名称；缺省时标签列留空。 */
+  tagNameById?: Map<string, string>;
 }) {
   const automaticRepaymentPlanIds = new Set<string>();
   if (selectedAutoDebitPlan?.id) automaticRepaymentPlanIds.add(selectedAutoDebitPlan.id);
@@ -680,7 +703,16 @@ export function buildLiabilityDetailEntriesViewData({
     const amount = toNumber(entry.amount);
     const reconcileTarget = getLiabilityBalanceReconcileTarget(entry);
     const isBalanceReconcile = reconcileTarget != null;
-    const isToLiabilityAccount = selectedLiabilityAccountIds.has(entry.toAccountId ?? "");
+    // 「往来款那一侧」的判定：优先看它是不是当前选中的往来账户；当选中的是别的往来账户
+    // （刚被批量改到另一个对象上）时，按账户类型兜底 —— 至少不能把资金账户（微信零钱这类）
+    // 当成往来款那一侧，否则表的「往来款账户 / 对手账户」两列会整个反过来
+    // （2026-11-17 报障：把往来款账户改成「张紫熙的往来款」后，显示成「微信零钱」在往来款列）。
+    const isToLiabilityAccount = selectedLiabilityAccountIds.has(entry.toAccountId ?? "")
+      || (
+        !selectedLiabilityAccountIds.has(entry.accountId ?? "")
+        && (accountFactsById?.get(entry.toAccountId ?? "")?.isSettlementAccount ?? false)
+        && !(accountFactsById?.get(entry.accountId ?? "")?.isSettlementAccount ?? false)
+      );
     const displayAmount = liabilityDisplayAmountByEntryId.get(entry.id) ?? liabilityPrincipalForAccountSide(entry, selectedLiabilityAccountIds);
     const cashFlowAmount = isBalanceReconcile ? displayAmount : liabilityCashFlowForAccountSide(entry, selectedLiabilityAccountIds);
     const interestAmount = Math.abs(toNumber(entry.interestAmount)) + (liabilityInterestByPrincipalKey.get(principalKey(entry)) ?? 0);
@@ -694,24 +726,27 @@ export function buildLiabilityDetailEntriesViewData({
         ? Math.abs(cashFlowAmount) + interestAmount + feeAmount
         : null;
     const liabilitySideAccountId = isToLiabilityAccount ? (entry.toAccountId ?? "") : (entry.accountId ?? "");
+    // 资金账户侧：编辑表单的「现金账户」默认值要用它，与「流出账户」不是同一个概念
+    // （流出账户可能是往来款账户本身，比如借出）。
     const cashSideAccountId = isToLiabilityAccount ? (entry.accountId ?? "") : (entry.toAccountId ?? "");
     // 流出/流入账户：两端就在 entry.accountId / entry.toAccountId 上，按钱的走向排序，
     // 流出侧恒排在前（cashFlowAmount<0 ＝资金账户出钱，>0 ＝资金账户进钱）。
+    // 方向判定统一走 `liabilityFlowSides`，批量修改账户调的是同一个函数，
+    // 这样「改流出账户」在明细与批量替换里永远指同一列。
     // 余额校准这类没有两端账户的行留空，金额列继续带正负号。
-    const fromAccountId = isBalanceReconcile
-      ? ""
-      : cashFlowAmount < 0
-        ? cashSideAccountId
-        : cashFlowAmount > 0
-          ? liabilitySideAccountId
-          : (entry.accountId ?? "");
-    const toAccountId = isBalanceReconcile
-      ? ""
-      : cashFlowAmount < 0
-        ? liabilitySideAccountId
-        : cashFlowAmount > 0
-          ? cashSideAccountId
-          : (entry.toAccountId ?? "");
+    const flowSides = isBalanceReconcile
+      ? { outflow: null, inflow: null }
+      : liabilityFlowSides(entry, selectedLiabilityAccountIds);
+    const fromAccountId = flowSides.outflow === "account"
+      ? (entry.accountId ?? "")
+      : flowSides.outflow === "toAccount"
+        ? (entry.toAccountId ?? "")
+        : "";
+    const toAccountId = flowSides.inflow === "account"
+      ? (entry.accountId ?? "")
+      : flowSides.inflow === "toAccount"
+        ? (entry.toAccountId ?? "")
+        : "";
     const relatedLiabilityDirection =
       liabilityDirectionByAccountId.get(liabilitySideAccountId) ??
       ((selectedLiabilityRow?.net ?? 0) >= 0 ? "receivable" : "payable");
@@ -766,6 +801,22 @@ export function buildLiabilityDetailEntriesViewData({
       fromAccountTitle: fromAccountId ? (accountTitleById?.get(fromAccountId) ?? "") : "",
       toAccountLabel: toAccountId ? (accountLabelById.get(toAccountId) ?? "") : "",
       toAccountTitle: toAccountId ? (accountTitleById?.get(toAccountId) ?? "") : "",
+      // 「往来款账户 / 对手账户」两列：账户归属只看它是往来款那一侧还是资金那一侧，
+      // 不看字段位置（借入与借出正好相反），与批量修改的账户字段同源。
+      liabilityAccountLabel: liabilitySideAccountId ? (accountLabelById.get(liabilitySideAccountId) ?? "") : "",
+      liabilityAccountTitle: liabilitySideAccountId ? (accountTitleById?.get(liabilitySideAccountId) ?? "") : "",
+      counterpartyAccountLabel: cashSideAccountId ? (accountLabelById.get(cashSideAccountId) ?? "") : "",
+      counterpartyAccountTitle: cashSideAccountId ? (accountTitleById?.get(cashSideAccountId) ?? "") : "",
+      // 「资金流向」：谁 → 谁，两端用短名；余额校准这类没有两端账户的行留空。
+      flowFromLabel: shortAccountLabel(fromAccountId ? accountLabelById.get(fromAccountId) : ""),
+      flowFromTitle: fromAccountId ? (accountTitleById?.get(fromAccountId) ?? "") : "",
+      flowToLabel: shortAccountLabel(toAccountId ? accountLabelById.get(toAccountId) : ""),
+      flowToTitle: toAccountId ? (accountTitleById?.get(toAccountId) ?? "") : "",
+      categoryLabel: entry.categoryName ?? "",
+      tagLabels: (entry.EntryTag ?? [])
+        .map((tag) => (tag.tagId ? tagNameById?.get(tag.tagId) ?? "" : ""))
+        .filter((label) => label.length > 0),
+      postedAt: entry.postedAt ? formatDateUtc(entry.postedAt) : null,
       collateralLabel: collateralNameByLoanAccountId?.get(liabilitySideAccountId) ?? null,
       reimbursementLink: reimbursementLinkByEntryId?.get(entry.id) ?? null,
       note: entry.note ?? "",
@@ -1365,8 +1416,11 @@ export function buildLiabilityRowsViewData({
     } satisfies LiabilityViewRow);
   }
 
+  // 往来款列表的顺序：严格按往来余额从大到小（net 降序 —— 应收大的在前，应付按「接近 0 的
+  // 在前、欠得最多的在后」）。旧口径用 payable + receivable，两者都是正数，等于「按绝对值」
+  // 把应收与应付混在一起排（2026-11-17 用户两轮裁定：先去掉绝对值混排，再要求纯降序）。
   const compareLiabilityRows = (a: LiabilityViewRow, b: LiabilityViewRow) => {
-    const amountDiff = (b.payable + b.receivable) - (a.payable + a.receivable);
+    const amountDiff = b.net - a.net;
     if (Math.abs(amountDiff) > ACTIVE_LIABILITY_EPSILON) return amountDiff;
     return a.name.localeCompare(b.name, "zh-CN");
   };

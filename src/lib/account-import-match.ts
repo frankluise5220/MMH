@@ -4,6 +4,11 @@ type ImportAccountMatchSource = {
   id: string;
   name: string;
   kind?: ImportAccountKind | null;
+  /**
+   * 账户是否启用。停用账户不再被挡在匹配之外（2026-11-18 用户裁定「停用不要阻止匹配」），
+   * 但它不参与竞争：候选里还有启用账户时只在启用账户里定案，所以 ambiguous 计数不被虚增。
+   */
+  isActive?: boolean | null;
   numberMasked?: string | null;
   Institution?: { name?: string | null; shortName?: string | null } | null;
   /**
@@ -225,7 +230,9 @@ const BANK_ALIASES: Array<{ canonical: string; aliases: string[] }> = [
   { canonical: "浦发银行", aliases: ["上海浦东发展银行", "浦发"] },
   { canonical: "兴业银行", aliases: ["兴业"] },
   { canonical: "平安银行", aliases: ["平安"] },
-  { canonical: "农商银行", aliases: ["农村商业银行", "农村信用社", "农信社", "农信", "江苏农信", "江苏农商", "省农信"] },
+  { canonical: "浙商银行", aliases: ["浙商"] },
+  // 「农商行」「农商」是账单里最常见的简写（财智导出写「付斌·农商行·信用卡」）。
+  { canonical: "农商银行", aliases: ["农村商业银行", "农村信用社", "农信社", "农信", "江苏农信", "江苏农商", "省农信", "农商行", "农商"] },
 ];
 
 const ACCOUNT_KIND_ALIASES: Array<{ kind: ImportAccountKind; aliases: string[] }> = [
@@ -843,6 +850,23 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(
    */
   const ownerOnlyKeys = new Set(indexed.flatMap((item) => item.ownerKeys).filter(Boolean));
 
+  /**
+   * 停用账户可以匹配，但不与启用账户抢候选（2026-11-18 用户裁定「停用不要阻止匹配」）。
+   *
+   * 背景：历史账单（财智导出的 2018-2021 流水）里几乎都是已经停用的老卡，把停用账户
+   * 排除在候选之外，这 444 条流水就只能落到「新建账户」上，凭空多出一张同名卡；
+   * 反过来把它们与启用账户同等对待，又会让「信用卡」这类泛词把 ambiguous 计数从 11 涨回 44。
+   * 所以规则是：只要这一阶段还有启用账户可选，就只在启用账户里定案；
+   * 一个启用账户都没有时才退回停用账户（此时唯一命中即认定为它）。
+   */
+  function activeFirst(matches: Array<(typeof indexed)[number]>, allowInactiveFallback = true) {
+    const active = matches.filter((item) => item.account.isActive !== false);
+    if (active.length > 0) return active;
+    // 启发式/宽松包含阶段（"信用卡" 这种泛词、尾号不明的排名）不许停用账户兜底，
+    // 否则一张停用的泛名卡会抢在银行/卡种都更贴合的那张启用卡前面定案。
+    return allowInactiveFallback ? matches : [];
+  }
+
   function bankKeyMatches(item: (typeof indexed)[number], targetBankKeys: string[]) {
     if (targetBankKeys.length === 0) return true;
     return targetBankKeys.some((targetBankKey) =>
@@ -884,7 +908,11 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(
       targetBankNames: string[];
     },
   ): ImportAccountMatchResult<T> {
-    const ambiguousAccounts = Array.from(new Map(ambiguousMatches.map((item) => [item.account.id, item.account])).values());
+    // 歧义候选只报启用账户（有启用候选时）：停用账户参与匹配，但不该出现在
+    // 「账户中有N个」的计数里。
+    const ambiguousAccounts = Array.from(
+      new Map(activeFirst(ambiguousMatches).map((item) => [item.account.id, item.account])).values(),
+    );
     return {
       account,
       ambiguousAccounts,
@@ -908,6 +936,7 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(
     if (criteria.targetKind) narrowed = narrowed.filter((item) => !item.account.kind || item.account.kind === criteria.targetKind);
     if (criteria.targetBankKeys.length > 0) narrowed = narrowed.filter((item) => bankKeyMatches(item, criteria.targetBankKeys));
     if (criteria.targetOwnerKeys.length > 0) narrowed = narrowed.filter((item) => ownerKeyMatches(item, criteria.targetOwnerKeys));
+    narrowed = activeFirst(narrowed);
     return narrowed.length === 1 ? narrowed[0].account : null;
   }
 
@@ -923,7 +952,7 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(
       if (kind === "loan" || kind === "settlement") return -60;
       return 0;
     };
-    const ranked = matches
+    const ranked = activeFirst(matches, false)
       .map((item) => ({ item, score: score(item) }))
       .sort((a, b) => b.score - a.score);
     if (ranked.length === 0) return null;
@@ -933,7 +962,7 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(
   }
 
   function pickUnionPayDebitSource(matches: Array<(typeof indexed)[number]>) {
-    const debitMatches = matches.filter((item) => item.account.kind === "bank_debit");
+    const debitMatches = activeFirst(matches, false).filter((item) => item.account.kind === "bank_debit");
     if (debitMatches.length === 1) return debitMatches[0].account;
     return null;
   }
@@ -952,12 +981,12 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(
     // 账本里只有一个「余额宝」时会静默落到别人名下。
     const alipayKeys = expandBankName("支付宝").map(normalizeImportAccountMatchKey).filter(Boolean);
     const yuebaoKey = normalizeImportAccountMatchKey("余额宝");
-    const matches = indexed.filter((item) => {
+    const matches = activeFirst(indexed.filter((item) => {
       if (item.account.kind && item.account.kind !== "ewallet") return false;
       if (!bankKeyMatches(item, alipayKeys)) return false;
       if (!ownerKeyMatches(item, effectiveOwnerKeys)) return false;
       return item.keys.some((candidateKey) => candidateKey === yuebaoKey || candidateKey.includes(yuebaoKey));
-    });
+    }), false);
     return matches.length === 1 ? matches[0].account : null;
   }
 
@@ -1005,12 +1034,12 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(
       if (excludeKeys.some((excludeKey) => key.includes(excludeKey))) continue;
 
       const bankKeys = expandBankName(group.bank).map(normalizeImportAccountMatchKey).filter(Boolean);
-      const matches = indexed.filter((item) =>
+      const matches = activeFirst(indexed.filter((item) =>
         (!group.targetKind || item.account.kind === group.targetKind) &&
         bankKeyMatches(item, bankKeys) &&
         ownerKeyMatches(item, effectiveOwnerKeys) &&
         item.keys.some((candidateKey) => aliasKeys.includes(candidateKey)),
-      );
+      ), false);
       if (matches.length === 1) return matches[0].account;
       if (matches.length > 1) return null;
     }
@@ -1061,7 +1090,7 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(
 
     for (const targetKey of targetKeys) {
       const exactMatches = indexed.filter((item) => item.keys.includes(targetKey));
-      const compatibleExactMatches = exactMatches.filter((item) => hasCompatibleLast4(item, last4));
+      const compatibleExactMatches = activeFirst(exactMatches.filter((item) => hasCompatibleLast4(item, last4)));
       if (compatibleExactMatches.length > 0) {
         // 「账户名就是用户输入的文本」优先于「只有机构名/别名撞上」。
         // 例子：账本里有「招商银行」(借记卡) 和「招商银行·朝朝宝」(投资)，
@@ -1126,10 +1155,10 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(
       // 先认「名字本身写着这个对象」的账户（「X的往来款」「X的普通应付款」）：
       // 账本里同时存在「加油卡的往来款」和挂在章啸名下的「加油卡」时，
       // 要落到名字写明对象的那一个，而不是变成歧义。
-      const namedMatches = indexed.filter(
+      const namedMatches = activeFirst(indexed.filter(
         (item) => isSettlementLike(item) &&
           normalizeImportAccountMatchKey(parseSettlementAccountName(item.account.name) ?? "") === settlementPersonKey,
-      );
+      ));
       if (namedMatches.length === 1) {
         return result(namedMatches[0].account, [], { targetKind, targetBankNames });
       }
@@ -1137,11 +1166,11 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(
         return result(null, namedMatches, { targetKind, targetBankNames });
       }
       // 再认「泛名账户 + 挂的往来对象」：账户名只叫「往来款」，靠 counterpartyId 识别。
-      const objectMatches = indexed.filter(
+      const objectMatches = activeFirst(indexed.filter(
         (item) => isSettlementLike(item) &&
           (item.keys.includes(settlementPersonKey) ||
             accountCounterpartyKeys(item.account).includes(settlementPersonKey)),
-      );
+      ));
       if (objectMatches.length === 1) {
         return result(objectMatches[0].account, [], { targetKind, targetBankNames });
       }
@@ -1160,7 +1189,7 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(
         return bankKeyMatches(item, targetBankKeys);
       });
       const byLast4Owned = byLast4IgnoringOwner.filter((item) => ownerKeyMatches(item, effectiveOwnerKeys));
-      const byLast4 = byLast4Owned.length > 0 ? byLast4Owned : byLast4IgnoringOwner;
+      const byLast4 = activeFirst(byLast4Owned.length > 0 ? byLast4Owned : byLast4IgnoringOwner);
       if (byLast4.length === 1) return result(byLast4[0].account, [], { targetKind, targetBankNames });
       if (byLast4.length > 1 && isImportUnionPayDebitTailSourceHint(raw)) {
         const paymentSource = pickUnionPayDebitSource(byLast4);
@@ -1186,12 +1215,12 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(
     }
 
     if (targetKind && targetBankKeys.length > 0) {
-      const byBankAndKind = indexed.filter((item) => {
+      const byBankAndKind = activeFirst(indexed.filter((item) => {
         if (item.account.kind !== targetKind) return false;
         if (!hasCompatibleLast4(item, last4)) return false;
         if (!ownerKeyMatches(item, effectiveOwnerKeys)) return false;
         return bankKeyMatches(item, targetBankKeys);
-      });
+      }));
       if (byBankAndKind.length === 1) return result(byBankAndKind[0].account, [], { targetKind, targetBankNames });
       if (byBankAndKind.length > 1) return result(null, byBankAndKind, { targetKind, targetBankNames });
     }
@@ -1215,13 +1244,13 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(
         );
       });
 
-      const compatiblePartialMatches = partialMatches.filter((item) => {
+      const compatiblePartialMatches = activeFirst(partialMatches.filter((item) => {
         if (!hasCompatibleLast4(item, last4)) return false;
         if (targetKind && item.account.kind && item.account.kind !== targetKind) return false;
         if (targetBankKeys.length > 0 && !bankKeyMatches(item, targetBankKeys)) return false;
         if (!ownerKeyMatches(item, effectiveOwnerKeys)) return false;
         return true;
-      });
+      }), false);
       if (compatiblePartialMatches.length === 1) {
         return result(compatiblePartialMatches[0].account, [], { targetKind, targetBankNames });
       }

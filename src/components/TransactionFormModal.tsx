@@ -53,7 +53,7 @@ import {
   type CreditCardInstallmentRateType,
 } from "@/lib/credit/installment";
 import { formatAmountDraft } from "@/lib/format";
-import { filterIncomeExpenseInstitutions } from "@/lib/institution-rules";
+import { filterIncomeExpenseInstitutions, INCOME_EXPENSE_INSTITUTION_TYPES } from "@/lib/institution-rules";
 import { buildCategoryParentOptions, buildCategoryTreeOptions } from "@/components/categorySmartSelect";
 import {
   buildCategoryQuickPickGroups,
@@ -1595,6 +1595,9 @@ export function TransactionFormModal({
       accountId: isTransferLike ? fromAccountId : accountId,
       toAccountId: isTransferLike ? toAccountId : "",
       cashAccountId: isTransferLike ? fromAccountId : accountId,
+      // 转账记录的方向取决于这一行属于哪个账户（行账户 = 流入侧 → 这笔是收款），
+      // 转换菜单据此决定列「赎回」还是「买入」。取原记录的行账户，不受窗口里改账户影响。
+      rowAccountId: isTransferLike ? String(editOriginalRef.current?.accountId ?? "") : "",
     };
   }, [open, editEntryId, editEntryOriginalType, txType, amount, date, note, accountId, fromAccountId, toAccountId]);
 
@@ -3630,7 +3633,7 @@ export function TransactionFormModal({
         title={t("txForm.addInstitution")}
         nameLabel={t("txForm.institutionName")}
         namePlaceholder={t("txForm.institutionNamePlaceholder")}
-        allowedInstitutionTypes={["bank", "payment"]}
+        allowedInstitutionTypes={[...INCOME_EXPENSE_INSTITUTION_TYPES]}
         existingNames={incomeExpenseInstitutionOptions.map((item) => item.name)}
         onCreated={(id, name, extra) => {
           const next = { id, name, type: extra?.type ?? "payment" };

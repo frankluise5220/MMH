@@ -147,8 +147,11 @@ for (const [file, key] of [
 // —— 因此 `desc` 里**一个真实换行都不能有**。这两条互为表里，少一条就把旧的重复故障带回来。
 const storeUpdateBlock = storeChangelog.softstoreUpdateBlock(version);
 const storeDescPrefix = `${storeUpdateBlock}${storeChangelog.HTML_SEPARATOR}${storeChangelog.HTML_SEPARATOR}${storeChangelog.INTRO_MARKER}`;
+// 两种落盘形态都要认：仓库根 `fn-appstores.json` 是 `{id,_manual:{desc}}` 旧形态，
+// `deploy/fnos/selfhosted-source/data/fn-appstores.json` 自 2.9/2.10 起由 sync.sh 写成
+// 扁平条目（desc 直接在条目上，没有 `_manual` 包装）。
 const mmhManualApps = (payload) =>
-  (Array.isArray(payload) ? payload : []).filter((item) => item.id === "mmh").map((item) => item._manual);
+  (Array.isArray(payload) ? payload : []).filter((item) => item.id === "mmh").map((item) => item._manual ?? item);
 for (const target of [
   { file: "deploy/fnos/repository/apps.example.json", field: "description", getApps: (payload) => payload.apps ?? [] },
   { file: "deploy/fnos/repository/api/apps", field: "desc", getApps: (payload) => payload.data ?? [] },

@@ -24,7 +24,9 @@ export function parseBaseUrl(raw: string | null | undefined): ParsedUrl {
       protocol: u.protocol,          // e.g. "http:" or "https:"
       host: u.hostname,
       port: u.port,
-      path: u.pathname + u.search + u.hash, // keep the full path part
+      // `{code}` / `{date}` 是请求地址里的占位符，但 URL 解析会把花括号编码成 %7B/%7D。
+      // 这里还原成原文：表单要显示占位符，保存时也直接写回，否则编辑一次地址就被写坏。
+      path: (u.pathname + u.search + u.hash).replaceAll("%7B", "{").replaceAll("%7D", "}"),
     };
   } catch {
     return { protocol: "https:", host: "", port: "", path: "" };

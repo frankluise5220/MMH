@@ -58,7 +58,7 @@ export function HoldingHoldingFields({
     ownerFilterLabel, cycleOwnerFilter,
     selectedHoldingId, setSelectedHoldingId, holdingSelectOptions, selectedHolding,
     selectedHoldingAmountAtDate, selectedHoldingUnitsAtDate,
-    unitsEditedRef, autoFilledUnitsForRef,
+    unitsEditedRef, autoFilledUnitsForRef, amountEditedRef,
   } = form;
 
   const summary = selectedHolding
@@ -97,8 +97,10 @@ export function HoldingHoldingFields({
           mode="single"
           value={selectedHoldingId}
           onChange={(id) => {
+            // 换持仓 = 换了一份本金/份额，允许重新带出（用户手填的金额在这一刻让位给新持仓）。
             unitsEditedRef.current = false;
             autoFilledUnitsForRef.current = null;
+            amountEditedRef.current = false;
             setSelectedHoldingId(id);
           }}
           options={holdingSelectOptions}

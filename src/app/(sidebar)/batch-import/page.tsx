@@ -1316,9 +1316,11 @@ export default function BatchImportPage() {
       .then((data) => {
         if (cancelled || !Array.isArray(data.accounts)) return;
         const accounts = data.accounts as AccountOption[];
-        const activeAccounts = accounts.filter((account) => account.isActive !== false);
-        accountMatcherRef.current = createImportAccountMatcher(activeAccounts);
-        accountIdentityConflictRef.current = createImportAccountIdentityConflictChecker(activeAccounts);
+        // 停用账户也参与匹配（2026-11-18 用户裁定「停用不要阻止匹配」）：历史账单里的
+        // 老卡多数已停用，挡掉它们只会把流水推到「新建账户」上。歧义由 matcher 内部的
+        // 「启用优先」兜住——有启用候选时只在启用账户里定案。
+        accountMatcherRef.current = createImportAccountMatcher(accounts);
+        accountIdentityConflictRef.current = createImportAccountIdentityConflictChecker(accounts);
         setAccountOptions(accounts);
         postImportDebugLog(importTraceIdRef.current, "accounts_request_succeeded", {
           accountCount: data.accounts.length,
@@ -1392,9 +1394,16 @@ export default function BatchImportPage() {
     return formatAccountTableTitle(account, accountDisplayLabel(account), readAccountDisplaySettings());
   }, [accountDisplayLabel]);
 
-  const activeAccountOptions = useMemo(
-    () => accountOptions.filter((account) => account.isActive !== false),
-    [accountOptions],
+  // 下拉同样列全部账户（停用账户也能被匹配到、也要能被手选回来），
+  // 只是排序把启用账户放前面：「停用不要阻止匹配」（2026-11-18 用户裁定）。
+  const accountPickerOptions = useMemo(
+    () => accountOptions
+      .slice()
+      .sort((a, b) => {
+        const activeDiff = Number(b.isActive !== false) - Number(a.isActive !== false);
+        return activeDiff !== 0 ? activeDiff : accountDisplayLabel(a).localeCompare(accountDisplayLabel(b), "zh-Hans-CN");
+      }),
+    [accountDisplayLabel, accountOptions],
   );
   const getAccountIdentityConflict = useMemo(
     () => accountIdentityConflictRef.current,
@@ -1407,12 +1416,12 @@ export default function BatchImportPage() {
 
   const accountSmartSelectOptions = useMemo<SmartSelectOption[]>(
     () =>
-      activeAccountOptions.map((account) => ({
+      accountPickerOptions.map((account) => ({
         id: account.id,
         label: accountDisplayLabel(account),
         title: accountHoverTitle(account),
       })),
-    [accountDisplayLabel, accountHoverTitle, activeAccountOptions],
+    [accountDisplayLabel, accountHoverTitle, accountPickerOptions],
   );
   const accountById = useMemo(() => new Map(accountOptions.map((account) => [account.id, account])), [accountOptions]);
 
@@ -1424,14 +1433,14 @@ export default function BatchImportPage() {
   }, []);
 
   const accountSmartSelectOptionsByRole = useCallback((role: AccountPickerRole) =>
-    activeAccountOptions
+    accountPickerOptions
       .filter((account) => accountMatchesPickerRole(account, role))
       .map((account) => ({
         id: account.id,
         label: accountDisplayLabel(account),
         title: accountHoverTitle(account),
       } satisfies SmartSelectOption)),
-  [accountDisplayLabel, accountHoverTitle, accountMatchesPickerRole, activeAccountOptions]);
+  [accountDisplayLabel, accountHoverTitle, accountMatchesPickerRole, accountPickerOptions]);
 
   const matchedAccountForText = useCallback((value: string) => {
     const matchedId = findMatchedAccountId(value);
@@ -2619,7 +2628,7 @@ export default function BatchImportPage() {
 
   const accountReplaceOptions = useMemo<BatchReplaceOption[]>(() => [
     { value: "", label: t("batchImport.unselected") },
-    ...activeAccountOptions.map((account) => {
+    ...accountPickerOptions.map((account) => {
       const label = accountDisplayLabel(account);
       return {
         value: account.id,
@@ -2627,7 +2636,7 @@ export default function BatchImportPage() {
         title: accountHoverTitle(account),
       };
     }),
-  ], [accountDisplayLabel, accountHoverTitle, activeAccountOptions, t]);
+  ], [accountDisplayLabel, accountHoverTitle, accountPickerOptions, t]);
 
   const replaceFields = useMemo<BatchReplaceFieldConfig<ReplaceField>[]>(() => [
     { value: "date", label: replaceFieldLabels.date, kind: "date" },

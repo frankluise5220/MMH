@@ -20,7 +20,9 @@
 // 6. 标准模板（交易时间/对方账户/收支大类/商品/支出/收入/账户）不被微信抢走；
 // 7. 支付宝表头命中 alipay，缺「交易状态」仍命中；
 // 8. 京东表头命中 jd，缺「收/付款方式」仍命中；
-// 9. 文件名先验不改变判定：名字带「微信」但内容是标准模板 → standard。
+// 9. 文件名先验不改变判定：名字带「微信」但内容是标准模板 → standard；
+// 10. 财智8 账户名不带「财智」软件名前缀（「财智.章啸的往来款_2026-11-17.xls」）；
+// 11. 财智8「样板行」列标记为是的行（连整张样板 sheet）一律不导入。
 //
 // 纯离线：不连数据库、不读用户文件。
 
@@ -224,6 +226,64 @@ check("微信专属列全被删光时，文件名先验把微信提到前面", (
   // 同理，没有文件名线索时无法与支付宝表头区分，落到 alipay 是可接受的（字段仍能解析）。
   const anonymous = parse("wechat-stripped-anonymous", stripped);
   assert.equal(anonymous.filenameHint, undefined);
+});
+
+console.log("[7] 财智8 账户明细");
+
+// 财智8 归一化后的列序（比标准模板多一列「入账日期」，位置与 COL 不同）。
+const CAIZHI_COL = { date: 0, majorType: 2, outflow: 3, inflow: 4, account: 5, counterparty: 6, category: 7 };
+
+const CAIZHI: string[][] = [
+  ["日期", "流入", "流出", "活动类型", "标签", "余额", "备注"],
+  ["2026-01-02", "100", "", "转入|付斌·招行·信用卡·8448", "", "100", ""],
+  ["2026-01-03", "", "30", "服装及饰品", "", "70", "运动裤"],
+];
+
+// 财智导出的工作簿里会混进「样板行」：多一列「样板行」，标记「是」的行是账本里的
+// 样板/示例数据（不是本账户流水），连整张 sheet 都可能是样板 sheet。
+const CAIZHI_WITH_SAMPLE: string[][] = [
+  ["日期", "流入", "流出", "活动类型", "标签", "余额", "备注", "样板行"],
+  ["2026-01-02", "", "300", "转出|付斌的招行3833", "", "14825.83", "", "是"],
+  ["2026-01-05", "", "10", "零食", "", "478.5", "", ""],
+  ["2026-01-06", "50", "", "转入|付斌·交行·2479", "", "528.5", "", "否"],
+];
+
+check("财智表头命中 caizhi，账户名取文件名", () => {
+  const out = parse("caizhi", CAIZHI, "付斌的招行2758_明细_2026-09-13.xls");
+  assert.equal(out.template, "caizhi");
+  assert.equal(out.rows.length - 1, 2);
+  assert.equal(out.rows[1][CAIZHI_COL.account], "付斌的招行2758");
+  assert.equal(out.rows[1][CAIZHI_COL.majorType], "转账");
+  assert.equal(out.rows[1][CAIZHI_COL.counterparty], "付斌·招行·信用卡·8448");
+  assert.equal(out.rows[2][CAIZHI_COL.majorType], "支出");
+});
+
+check("账户名不带「财智」软件名前缀（前缀式 / 中缀式）", () => {
+  const prefixed = parse("caizhi-name-prefix", CAIZHI, "财智.章啸的往来款_2026-11-17.xls");
+  assert.equal(prefixed.rows[1][CAIZHI_COL.account], "章啸的往来款");
+  const infixed = parse("caizhi-name-infix", CAIZHI, "姜慧的招行一卡通_财智_2026-09-03.xls");
+  assert.equal(infixed.rows[1][CAIZHI_COL.account], "姜慧的招行一卡通");
+});
+
+check("「样板行」列标记为是的行不导入", () => {
+  const out = parse("caizhi-sample", CAIZHI_WITH_SAMPLE, "付斌的苏宁、京东_明细_2026-11-17.xls");
+  assert.equal(out.template, "caizhi");
+  // 两行正常数据（空 / 「否」），样板行被剔除。
+  assert.equal(out.rows.length - 1, 2);
+  assert.equal(out.rows[1][CAIZHI_COL.outflow], "10");
+  assert.equal(out.rows[2][CAIZHI_COL.inflow], "50");
+  assert.equal(out.rows[1][CAIZHI_COL.account], "付斌的苏宁、京东");
+});
+
+check("整张 sheet 都是样板行时该 sheet 一条不取", () => {
+  const sheets: Sheet[] = [
+    { sheetName: "明细", rows: CAIZHI },
+    { sheetName: "Sheet1", rows: CAIZHI_WITH_SAMPLE.map((row, index) => (index === 0 ? row : [...row.slice(0, 7), "是"])) },
+  ];
+  const out = parseStatementSheetsStandard(sheets, { sourceFileName: "计划帐户(姜)_明细_2026-09-02.xls", fundAware: true });
+  assert.equal(out.template, "caizhi");
+  assert.equal(out.rows.length - 1, 2);
+  assert.equal(out.rows[1][CAIZHI_COL.account], "计划帐户(姜)");
 });
 
 console.log(`\ncheck:recognizer ok（${assertionCount} 条断言）`);

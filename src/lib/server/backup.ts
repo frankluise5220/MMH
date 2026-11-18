@@ -1032,6 +1032,21 @@ const SQLITE_PROPERTY_RESTORE_SCHEMA_SQL = [
     CONSTRAINT "property_valuations_householdId_fkey" FOREIGN KEY ("householdId") REFERENCES "Household"("id") ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT "property_valuations_propertyAssetId_fkey" FOREIGN KEY ("propertyAssetId") REFERENCES "property_assets"("id") ON DELETE CASCADE ON UPDATE CASCADE
   )`,
+  `CREATE TABLE IF NOT EXISTS "property_asset_depreciations" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "householdId" TEXT NOT NULL,
+    "propertyAssetId" TEXT NOT NULL,
+    "periodMonth" DATETIME NOT NULL,
+    "amount" DECIMAL NOT NULL,
+    "accumulatedAfter" DECIMAL NOT NULL,
+    "basisCost" DECIMAL NOT NULL,
+    "basisSalvage" DECIMAL NOT NULL,
+    "basisMonths" INTEGER NOT NULL,
+    "method" TEXT NOT NULL DEFAULT 'straight_line',
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "property_asset_depreciations_householdId_fkey" FOREIGN KEY ("householdId") REFERENCES "Household"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT "property_asset_depreciations_propertyAssetId_fkey" FOREIGN KEY ("propertyAssetId") REFERENCES "property_assets"("id") ON DELETE CASCADE ON UPDATE CASCADE
+  )`,
   `CREATE TABLE IF NOT EXISTS "property_transactions" (
     "id" TEXT NOT NULL PRIMARY KEY,
     "householdId" TEXT NOT NULL,
@@ -1061,6 +1076,8 @@ const SQLITE_PROPERTY_RESTORE_SCHEMA_SQL = [
   `CREATE INDEX IF NOT EXISTS "property_assets_householdId_status_idx" ON "property_assets"("householdId", "status")`,
   `CREATE INDEX IF NOT EXISTS "property_assets_accountId_idx" ON "property_assets"("accountId")`,
   `CREATE INDEX IF NOT EXISTS "property_assets_deletedAt_idx" ON "property_assets"("deletedAt")`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS "property_asset_depreciations_propertyAssetId_periodMonth_key" ON "property_asset_depreciations"("propertyAssetId", "periodMonth")`,
+  `CREATE INDEX IF NOT EXISTS "property_asset_depreciations_householdId_periodMonth_idx" ON "property_asset_depreciations"("householdId", "periodMonth")`,
   `CREATE INDEX IF NOT EXISTS "property_valuations_householdId_valuationDate_idx" ON "property_valuations"("householdId", "valuationDate")`,
   `CREATE INDEX IF NOT EXISTS "property_valuations_propertyAssetId_valuationDate_idx" ON "property_valuations"("propertyAssetId", "valuationDate")`,
   `CREATE UNIQUE INDEX IF NOT EXISTS "property_transactions_cashEntryId_key" ON "property_transactions"("cashEntryId") WHERE "cashEntryId" IS NOT NULL`,
@@ -1883,6 +1900,7 @@ export async function buildHouseholdBackupPayload(
     stockFeeRules,
     stockMarketFeeRules,
     propertyAssets,
+    propertyAssetDepreciations,
     propertyValuations,
     propertyTransactions,
     entryBusinessLinks,
@@ -2010,6 +2028,12 @@ export async function buildHouseholdBackupPayload(
       "propertyAsset",
       { where: { householdId }, orderBy: [{ createdAt: "asc" }] },
       { tableNames: ["property_assets"] },
+    ),
+    optionalPrismaFindMany<Record<string, unknown>>(
+      prisma,
+      "propertyAssetDepreciation",
+      { where: { householdId }, orderBy: [{ periodMonth: "asc" }, { createdAt: "asc" }] },
+      { tableNames: ["property_asset_depreciations"] },
     ),
     optionalPrismaFindMany<Record<string, unknown>>(
       prisma,
@@ -2221,6 +2245,7 @@ export async function buildHouseholdBackupPayload(
       stockFeeRules,
       stockMarketFeeRules,
       propertyAssets,
+      propertyAssetDepreciations,
       propertyValuations,
       propertyTransactions,
       entryBusinessLinks,
@@ -2350,6 +2375,7 @@ async function buildHouseholdBackupWorkbook(payload: HouseholdBackupPayload) {
     ["StockFeeRules", sheetRows(payload.data.stockFeeRules)],
     ["StockMarketFeeRules", sheetRows(payload.data.stockMarketFeeRules)],
     ["PropertyAssets", sheetRows(payload.data.propertyAssets)],
+    ["PropertyAssetDepreciations", sheetRows(payload.data.propertyAssetDepreciations)],
     ["PropertyValuations", sheetRows(payload.data.propertyValuations)],
     ["PropertyTransactions", sheetRows(payload.data.propertyTransactions)],
     ["EntryBusinessLinks", sheetRows(payload.data.entryBusinessLinks)],
@@ -2451,6 +2477,7 @@ export async function buildHouseholdTableExportWorkbook(payload: HouseholdBackup
     ["StockFeeRules", sheetRows(payload.data.stockFeeRules)],
     ["StockMarketFeeRules", sheetRows(payload.data.stockMarketFeeRules)],
     ["PropertyAssets", sheetRows(payload.data.propertyAssets)],
+    ["PropertyAssetDepreciations", sheetRows(payload.data.propertyAssetDepreciations)],
     ["PropertyValuations", sheetRows(payload.data.propertyValuations)],
     ["PropertyTransactions", sheetRows(payload.data.propertyTransactions)],
     ["EntryBusinessLinks", sheetRows(payload.data.entryBusinessLinks)],
@@ -2701,6 +2728,7 @@ export function parseBackupPayload(raw: unknown) {
       stockFeeRules: ensureArray(data.stockFeeRules ?? [], "data.stockFeeRules"),
       stockMarketFeeRules: ensureArray(data.stockMarketFeeRules ?? [], "data.stockMarketFeeRules"),
       propertyAssets: ensureArray(data.propertyAssets ?? [], "data.propertyAssets"),
+      propertyAssetDepreciations: ensureArray(data.propertyAssetDepreciations ?? [], "data.propertyAssetDepreciations"),
       propertyValuations: ensureArray(data.propertyValuations ?? [], "data.propertyValuations"),
       propertyTransactions: ensureArray(data.propertyTransactions ?? [], "data.propertyTransactions"),
       entryBusinessLinks: ensureArray(data.entryBusinessLinks ?? [], "data.entryBusinessLinks"),
@@ -2864,6 +2892,7 @@ async function restoreSingleHouseholdBackup(
   ));
   const backupContainsPropertyData =
     data.propertyAssets.length > 0 ||
+    data.propertyAssetDepreciations.length > 0 ||
     data.propertyValuations.length > 0 ||
     data.propertyTransactions.length > 0;
   const backupContainsStockData =
@@ -2891,6 +2920,7 @@ async function restoreSingleHouseholdBackup(
     const currentUserIds = currentUsers.map((item) => item.id);
     const currentAccountIds = currentAccounts.map((item) => item.id);
     const propertyAssetDelegate = getOptionalPrismaDelegate<OptionalPrismaRestoreDelegate>(tx, "propertyAsset");
+    const propertyAssetDepreciationDelegate = getOptionalPrismaDelegate<OptionalPrismaRestoreDelegate>(tx, "propertyAssetDepreciation");
     const propertyValuationDelegate = getOptionalPrismaDelegate<OptionalPrismaRestoreDelegate>(tx, "propertyValuation");
     const propertyTransactionDelegate = getOptionalPrismaDelegate<OptionalPrismaRestoreDelegate>(tx, "propertyTransaction");
 
@@ -2943,6 +2973,12 @@ async function restoreSingleHouseholdBackup(
       { where: { householdId } },
       { tableNames: ["property_valuations"] },
     );
+    const propertyAssetDepreciationsDeleted = await optionalPrismaDeleteMany(
+      tx,
+      "propertyAssetDepreciation",
+      { where: { householdId } },
+      { tableNames: ["property_asset_depreciations"] },
+    );
     const propertyAssetsDeleted = await optionalPrismaDeleteMany(
       tx,
       "propertyAsset",
@@ -2951,7 +2987,10 @@ async function restoreSingleHouseholdBackup(
     );
     if (
       backupContainsPropertyData &&
-      (!propertyTransactionsDeleted || !propertyValuationsDeleted || !propertyAssetsDeleted)
+      (!propertyTransactionsDeleted ||
+        !propertyValuationsDeleted ||
+        !propertyAssetDepreciationsDeleted ||
+        !propertyAssetsDeleted)
     ) {
       restoreError("当前系统版本不支持房产数据，请先更新并完成数据库迁移后再恢复。");
     }
@@ -3957,6 +3996,26 @@ async function restoreSingleHouseholdBackup(
             status: item.status == null ? "active" : String(item.status),
           })),
         new Set(["purchaseDate", "latestValuationDate", "deletedAt"]),
+      );
+    }
+
+    if (propertyAssetDepreciationDelegate) {
+      await createManyRecords(
+        propertyAssetDepreciationDelegate,
+        data.propertyAssetDepreciations
+          .filter((item) => importedPropertyAssets.has(String(item.propertyAssetId)))
+          .map((item) => ({
+            ...item,
+            householdId,
+            propertyAssetId: String(item.propertyAssetId),
+            amount: item.amount == null ? "0" : String(item.amount),
+            accumulatedAfter: item.accumulatedAfter == null ? "0" : String(item.accumulatedAfter),
+            basisCost: item.basisCost == null ? "0" : String(item.basisCost),
+            basisSalvage: item.basisSalvage == null ? "0" : String(item.basisSalvage),
+            basisMonths: Number(item.basisMonths ?? 0),
+            method: item.method == null ? "straight_line" : String(item.method),
+          })),
+        new Set(["periodMonth"]),
       );
     }
 

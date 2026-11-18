@@ -43,6 +43,12 @@ export type BatchReplaceFieldConfig<Field extends string> = {
   precision?: number;
   allowAmountFieldReferences?: boolean;
   smartSelectBehavior?: BatchReplaceSmartSelectBehavior;
+  /**
+   * 选中该字段时显示在面板里的说明（灰底小字）。
+   * 「流入 / 流出 / 金额」这类看起来相近、实际语义差别很大的字段必须写清楚，
+   * 否则用户不知道改的是数值还是方向（2026-11-17 用户在往来款界面提出）。
+   */
+  hint?: string;
 };
 
 type Props<Field extends string> = {
@@ -289,6 +295,12 @@ export function BatchReplacePopoverButton<Field extends string>({
                   />
                 )}
               </div>
+              {/* 字段说明放在 grid 外：grid 是 auto-fit 两列，塞进去会被挤成第三格。 */}
+              {fieldConfig?.hint ? (
+                <p className="mt-2 rounded bg-slate-50 px-2 py-1.5 text-[11px] leading-relaxed text-slate-500">
+                  {fieldConfig.hint}
+                </p>
+              ) : null}
               <div className="mt-3 flex justify-end gap-2">
                 <button type="button" onClick={() => { setOpen(false); setValue(""); }} className="h-9 rounded-[10px] border border-slate-300/70 bg-white px-3 text-sm text-slate-600 hover:bg-slate-50">{t("common.cancel")}</button>
                 <button type="button" onClick={applyReplace} disabled={!canApply} className="h-9 rounded-[10px] bg-blue-600 px-3 text-sm text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:opacity-50">

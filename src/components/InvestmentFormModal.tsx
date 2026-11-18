@@ -11,6 +11,7 @@ import { SmartSelect, type SmartSelectOption } from "./SmartSelect";
 import { useAccountSSFilter } from "./accountSSFilter";
 /** 整窗外壳（遮罩 / 标题栏 / 宽度档位 / 表单 / FT 页签与卡片 / 窗口底按钮行）：规则集中在它。 */
 import { EntryModalShell } from "@/components/EntryModalShell";
+import { EntryConvertHeaderAction } from "@/components/EntryConvertHeaderAction";
 /** 贵金属「提取实物」页签：同一个投资记账窗里完成提取实物，不再另开弹窗。 */
 import { MetalExtractFields, type MetalExtractSubmitRef } from "./MetalExtractFields";
 import { ModalLayer } from "@/components/ModalLayer";
@@ -244,8 +245,11 @@ type OpenInvestmentCreateDetail = {
   defaultFundName?: string;
   /** 「转换交易」带入的原记录备注。 */
   defaultMemo?: string;
-  /** 胶囊菜单 / 持仓行「提取实物」入口：直接把贵金属窗口落在提取实物页签上。 */
-  defaultSubtype?: "metal_extract";
+  /**
+   * 胶囊菜单 / 持仓行「提取实物」入口：直接把贵金属窗口落在提取实物页签上；
+   * 转换「流入交易」时用 buy / redeem 指定落在买入还是赎回页签。
+   */
+  defaultSubtype?: "metal_extract" | "buy" | "redeem";
   defaultMetalTypeId?: string | null;
   defaultMetalUnitId?: string | null;
 };
@@ -1516,6 +1520,8 @@ export function InvestmentFormModal({
       // 「提取实物」入口直接打开同一个贵金属窗口的提取实物页签，而不是另弹一个窗。
       const wantsMetalExtract = requestedProductType === "metal" && detail.defaultSubtype === "metal_extract";
       setMetalExtractTab(wantsMetalExtract);
+      // 转换「流入交易」：同一笔钱进来对应的是赎回页签，不是买入。
+      if (!wantsMetalExtract && detail.defaultSubtype === "redeem") setSubtype("redeem");
       setMetalExtractPreference({
         metalTypeId: detail.defaultMetalTypeId ?? undefined,
         metalUnitId: detail.defaultMetalUnitId ?? undefined,
@@ -1533,6 +1539,8 @@ export function InvestmentFormModal({
       }
       if (detail.defaultDate) setApplyDate(detail.defaultDate);
       if (typeof detail.defaultAmount === "number" && detail.defaultAmount > 0) {
+        // 转换带进来的金额属于这笔交易：赎回页签不要再按份额×净值重算它。
+        amountEditedRef.current = true;
         setAmount(formatAmountDraft(detail.defaultAmount));
       }
       if (typeof detail.defaultMemo === "string" && detail.defaultMemo.trim()) {
@@ -2053,14 +2061,13 @@ export function InvestmentFormModal({
       ? (s === "buy" ? t("investForm.subtype.depositIn") : t("investForm.subtype.depositOut"))
       : t(`fund.subtype.${s}`);
   function selectSubtype(nextSubtype: FundSubtype) {
+    // 2026-11-18 用户裁定：页签之间切换**不能把已经填好的数字清掉**（切页签不是撤销重来）。
+    // 费用/费率是按页签口径算的（申购费 ↔ 赎回费），仍回到自动；金额与份额保留。
     if (isRedeemLike(nextSubtype) && !isRedeemLike(subtype)) {
-      // Switching to redeem clears buy amount/fee; create mode may prefill application-date available units.
-      setAmount("");
       setFee("");
       setFeeEdited(false);
       setFeeRate("0");
       setFeeRateEdited(false);
-      amountEditedRef.current = false;
       if (mode === "create" && !arrivalDateEditedRef.current) {
         setArrivalDate(applyDate || today);
       }
@@ -2069,10 +2076,8 @@ export function InvestmentFormModal({
       const availableUnits = nextIsFundRedeemAsOfMode && fundCode.trim()
         ? (redeemAvailableUnitsByFund?.get(fundCode.trim()) ?? 0)
         : 0;
-      if (mode === "create") {
-        // 切到赎回页签等于重新进入该面板，这里会显式写入份额，因此同时清掉「用户改过份额」
-        // 标记，让后续按可交易份额回填（与 selectHoldingFund 一致）。
-        unitsEditedRef.current = false;
+      // 用户自己填过份额就保留；没填过才按可交易份额 / 持仓份额带出默认值。
+      if (mode === "create" && !unitsEditedRef.current) {
         if (nextIsFundRedeemAsOfMode) {
           setUnits(availableUnits > 0.0001 ? formatUnits(availableUnits) : "");
         } else {
@@ -2084,12 +2089,8 @@ export function InvestmentFormModal({
       }
     }
     if (isBuyLike(nextSubtype) && !isBuyLike(subtype)) {
-      // Switching back to buy clears redeem amount, arrival amount, and related auto-calc state.
-      setUnits("");
-      unitsEditedRef.current = false;
-      amountEditedRef.current = false;
+      // 切回买入：金额与份额保留，只有赎回专用的自动状态需要复位。
       navEditedRef.current = false;
-      setAmount("");
       setFee("");
       setFeeEdited(false);
       setFeeRate("0");
@@ -3351,6 +3352,26 @@ export function InvestmentFormModal({
           title={title}
           subtitle={t(`investment.product.${productType}`)}
           onClose={() => { setOpen(false); if (mode === "create") resetForCreate(); }}
+          headerExtra={(
+            <EntryConvertHeaderAction
+              source={mode === "edit" ? {
+                entryId: editEntryId ?? entry?.id ?? null,
+                type: productType,
+                date: applyDate,
+                amount,
+                note: memo,
+                accountId: toAccountId || cashAccountId,
+                cashAccountId,
+                fundName,
+                // 赎回 / 现金分红是钱进来，买入是钱出去：转换菜单只列同向目标。
+                inflow: subtype === "redeem" || subtype === "dividend_cash",
+              } : null}
+              onBeforeConvert={() => {
+                setOpen(false);
+                resetForCreate();
+              }}
+            />
+          )}
           closeLabel={t("investForm.close")}
           onSubmit={(event) => { void onSubmit(event); }}
           tabs={visibleTabIds.map((id) => ({ id, label: tabLabel(id) }))}
@@ -4030,7 +4051,10 @@ export function InvestmentFormModal({
 
               <div className="grid grid-cols-1 gap-2 items-end sm:grid-cols-2">
                 <div className="relative space-y-1">
-                  <div className="text-xs font-medium text-slate-600">{t("investForm.arrivalDate")}</div>
+                  <div className="text-xs font-medium text-slate-600">
+                    {/* 买入时这个日期是「哪天起份额可用（确认）」，赎回时才是资金到账日，标签不能共用 */}
+                    {t(isBuyLike(subtype) && productType !== "metal" ? "investForm.shareConfirmDate" : "investForm.arrivalDate")}
+                  </div>
                   <DateStepper value={arrivalDate} onChange={onArrivalDateChange} min={applyDate} />
                   <ConfirmRuleLockNotice anchorRef={panelRef} visible={confirmRuleHint === "arrival"} text={t("fundConfirmDays.localEditHint")} onClose={() => setConfirmRuleHint(null)} />
                 </div>

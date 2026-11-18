@@ -52,6 +52,8 @@ type FixedAssetEditMeta = {
   accountName?: string | null;
   marketValue?: number | null;
   cost?: number | null;
+  /** 折旧台账摘要（服务端按月自动落账）：已计提期数、累计金额、最近一期。 */
+  depreciation?: { periods: number; recorded: number; lastPeriod: string | null } | null;
 };
 
 function typeLabel(t: (key: string) => string, assetType: FixedAssetType) {
@@ -374,6 +376,22 @@ export function FixedAssetEditModal({
                     {t("fixedAssetEdit.netBookValue")}
                     <span className="ml-1 font-medium tabular-nums text-slate-700">{formatMoney(depreciationPreview.netBookValue)}</span>
                   </span>
+                  {meta.depreciation && meta.depreciation.periods > 0 ? (
+                    <>
+                      <span>
+                        {t("fixedAssetEdit.depreciationRecords")}
+                        <span className="ml-1 font-medium tabular-nums text-slate-700">
+                          {meta.depreciation.periods} · {formatMoney(meta.depreciation.recorded)}
+                        </span>
+                      </span>
+                      {meta.depreciation.lastPeriod ? (
+                        <span>
+                          {t("fixedAssetEdit.lastDepreciationPeriod")}
+                          <span className="ml-1 font-medium tabular-nums text-slate-700">{meta.depreciation.lastPeriod}</span>
+                        </span>
+                      ) : null}
+                    </>
+                  ) : null}
                 </div>
               ) : null}
 

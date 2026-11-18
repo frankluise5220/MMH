@@ -21,6 +21,7 @@ import {
   usePruneBasicDetailSelection,
   type BasicDetailBatchCategoryOption,
 } from "./BasicDetailSelection";
+import type { BatchReplaceField } from "@/lib/client/batchReplaceEntries";
 import { formatMoney } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
 import { pnlClassFromRedUp } from "@/lib/client/colors";
@@ -40,9 +41,26 @@ import {
   MORTGAGE_LPR_CONVERSION_BASE_RATE,
 } from "@/lib/loan-lpr";
 import { calcLoanScheduledAmount, roundLoanMoney } from "@/lib/loan-repayment";
-import { todayDateLocalYmd } from "@/lib/date-utils";
+import { formatDateDisplay, todayDateLocalYmd } from "@/lib/date-utils";
 import { formatLoanRecalculateSuccessMessage } from "@/lib/loan-repayment-recalculate-result";
 import { resolveLoanTypeValue, type LoanTypeValue } from "@/lib/loan-type";
+
+// 往来明细的批量修改字段 = 表格列里可改的那些，名称一一对应（2026-11-17 用户要求）：
+// 日期 / 记账日 / 类型 / 金额 / 往来款账户 / 对手账户 / 分类 / 标签 / 追加标签 / 备注。
+// 「资金流向」只读：方向由金额正负决定（填负数＝调换方向），不再单独给字段。
+// 表上没有「机构」列，这个字段在往来表里也一并去掉，避免改了却看不到。
+const batchReplaceFields: BatchReplaceField[] = [
+  "date",
+  "postedAt",
+  "type",
+  "amount",
+  "liabilityAccount",
+  "counterpartyAccount",
+  "categoryId",
+  "tagId",
+  "appendTagId",
+  "remark",
+];
 
 type LiabilityRow = {
   key: string;
@@ -99,11 +117,28 @@ type LiabilityEntry = {
   date: string;
   typeLabel: string;
   collateralLabel?: string | null;
+  /** 「往来款账户」：本行的往来款那一侧（贷款视图是贷款账户）；空串＝余额校准这类没有账户的行。 */
+  liabilityAccountLabel: string;
+  liabilityAccountTitle?: string;
+  /** 「对手账户」：另一端（资金账户 / 对方账户）。 */
+  counterpartyAccountLabel: string;
+  counterpartyAccountTitle?: string;
+  /** 「资金流向」：流出侧 → 流入侧，两端用短名（「姜爷爷 → 付斌」）。 */
+  flowFromLabel: string;
+  flowFromTitle?: string;
+  flowToLabel: string;
+  flowToTitle?: string;
   /** 两端账户：流出侧恒在前、流入侧在后（空串＝这类行没有两端账户，如余额校准）。 */
   fromAccountLabel: string;
   fromAccountTitle?: string;
   toAccountLabel: string;
   toAccountTitle?: string;
+  /** 分类列：与批量修改的「分类」同一名称。 */
+  categoryLabel: string;
+  /** 标签列：与批量修改的「标签」同一名称。 */
+  tagLabels: string[];
+  /** 记账日（可隐藏列）；批量修改的「记账日」写它。 */
+  postedAt: string | null;
   /** 已被报销单关联：明细行显示报销进度三步标识，悬停看到单据标题。 */
   reimbursementLink?: { id: string; title: string; stage: ReimbursementStage } | null;
   note: string;
@@ -1396,6 +1431,7 @@ export function LiabilityShell({
         label: t("liabilityShell.colType"),
         width: 110,
         minWidth: 70,
+        hideable: true,
         // 报销进度也参与筛选：搜「已审核」「已回款」能把这些行（含已走到该步的行）挑出来。
         // 进度标识本身画在操作栏（报销徽章按钮），类型列只保留类型文字。
         filterText: (entry) => {
@@ -1407,27 +1443,58 @@ export function LiabilityShell({
         render: (entry) => <span className="block truncate text-slate-700">{entry.typeLabel}</span>,
       },
       {
-        key: "fromAccount",
-        // 原来的「资金账户」+「资金流向」两列收成一对方位账户（2026-11-17 用户要求）：
-        // 两端本来就在 entry.accountId / entry.toAccountId 上，流向定序后
-        // 流出账户恒排在左、流入账户恒排在右，一行只填其中一侧。
-        label: t("liabilityShell.colFromAccount"),
-        width: 150,
+        // 账户口径（2026-11-17 用户要求）：不再按「流出 / 流入」列账户——那是资金方向，
+        // 借入与借出时往来款账户所在的一侧正好相反。表头固定成三列：
+        // 往来款账户（本行往来款那一侧）→ 对手账户（另一端）→ 资金流向（谁 → 谁）。
+        // 这三列的名称与批量修改里的字段一一对应。
+        key: "liabilityAccount",
+        label: isLoanTableView ? t("liabilityShell.colLoanAccount") : t("liabilityShell.colLiabilityAccount"),
+        width: 160,
         minWidth: 96,
-        filterText: (entry) => `${entry.fromAccountLabel} ${entry.toAccountLabel}`,
+        hideable: true,
+        filterText: (entry) => entry.liabilityAccountLabel,
         render: (entry) => (
-          <span className="block truncate text-slate-600" title={entry.fromAccountTitle || undefined}>{entry.fromAccountLabel || "-"}</span>
+          <span className="block truncate text-slate-700" title={entry.liabilityAccountTitle || undefined}>{entry.liabilityAccountLabel || "-"}</span>
         ),
       },
       {
-        key: "toAccount",
-        label: t("liabilityShell.colToAccount"),
-        width: 150,
+        key: "counterpartyAccount",
+        label: t("liabilityShell.colCounterpartyAccount"),
+        width: 160,
         minWidth: 96,
-        filterText: (entry) => `${entry.fromAccountLabel} ${entry.toAccountLabel}`,
+        filterText: (entry) => entry.counterpartyAccountLabel,
         render: (entry) => (
-          <span className="block truncate text-slate-600" title={entry.toAccountTitle || undefined}>{entry.toAccountLabel || "-"}</span>
+          <span className="block truncate text-slate-600" title={entry.counterpartyAccountTitle || undefined}>{entry.counterpartyAccountLabel || "-"}</span>
         ),
+      },
+      {
+        key: "flowDirection",
+        label: t("liabilityShell.colFlowDirection"),
+        width: 170,
+        minWidth: 110,
+        filterText: (entry) => `${entry.flowFromLabel} ${entry.flowToLabel}`,
+        render: (entry) => {
+          // 只有一端账户的行（收入/支出直接记在往来款账户上）就只显示那一端，不画箭头。
+          const hasBoth = Boolean(entry.flowFromLabel && entry.flowToLabel);
+          if (!hasBoth && !entry.flowFromLabel && !entry.flowToLabel) return <span className="text-slate-400">-</span>;
+          const title = entry.flowFromTitle && entry.flowToTitle
+            ? `${entry.flowFromTitle} → ${entry.flowToTitle}`
+            : `${entry.flowFromLabel || entry.flowFromTitle || ""} → ${entry.flowToLabel || entry.flowToTitle || ""}`;
+          if (!hasBoth) {
+            return (
+              <span className="block truncate text-slate-600" title={title.replace(" → ", "")}>
+                {entry.flowFromLabel || entry.flowToLabel}
+              </span>
+            );
+          }
+          return (
+            <span className="flex min-w-0 items-center gap-1 text-slate-600" title={title}>
+              <span className="truncate">{entry.flowFromLabel}</span>
+              <span className="shrink-0 text-slate-400">→</span>
+              <span className="truncate">{entry.flowToLabel}</span>
+            </span>
+          );
+        },
       },
     ];
     // 抵押物是抵押贷款专属字段：往来款/房贷/消费贷明细不展示该列。
@@ -1445,22 +1512,25 @@ export function LiabilityShell({
     columns.push(
       {
         key: "amount",
-        // 原来「流出」「流入」两列各有一半是空的：合成一列金额，方向交给左侧两个账户列。
-        // 有两端账户的行不写正负号（账户列已经排好谁先谁后，颜色区分进出）；
-        // 没有两端账户的行（余额校准等）保留正负号，否则看不出方向。
-        // 颜色跟「往来余额方向」的符号走（2026-11-17 用户裁定）：负数＝钱流向往来款账户（借出/应收增加）→ 绿色，
-        // 正数＝从往来款流回资金账户 → 红色。这里的符号就是本页规则里的负数，不要按现金账户视角反过来着色。
+        // 金额列只放数值：方向已经在「资金流向」列（谁 → 谁）里说清楚了，
+        // 有两端账户的行不再写正负号；没有两端账户的行（余额校准等）保留正负号。
+        // 颜色跟「资金账户的现金走向」走（`principal` 就是现金视角：>0 钱流进资金账户、
+        // <0 流出），即与明细页同一规则 —— 资金进来是红色（红涨绿跌时），
+        // 并且跟随「红涨绿跌 / 绿涨红跌」设置，不再写死红绿（2026-11-17 用户裁定）。
         label: t("liabilityShell.colAmount"),
         width: 130,
         minWidth: 96,
         align: "right",
         filterText: (entry) => entry.principal.toFixed(2),
+        // 排序按带符号的值：负数（钱流向往来款账户）与正数（流回资金账户）分组，
+        // 而不是把两者折成同一个「金额大小」再排（2026-11-17 用户裁定）。
+        sortValue: (entry) => entry.principal,
         render: (entry) => {
           if (entry.principal === 0) return <span className="text-slate-400">-</span>;
-          const hasFlow = Boolean(entry.fromAccountLabel && entry.toAccountLabel);
+          const hasFlow = Boolean(entry.flowFromLabel && entry.flowToLabel);
           const magnitude = formatMoney(Math.abs(entry.principal));
           return (
-            <span className={`font-semibold tabular-nums ${entry.principal < 0 ? "text-emerald-700" : "text-rose-700"}`}>
+            <span className={`font-semibold tabular-nums ${pnlClassFromRedUp(entry.principal, isRedUp, "strong")}`}>
               {hasFlow ? magnitude : `${entry.principal > 0 ? "+" : "-"}${magnitude}`}
             </span>
           );
@@ -1483,17 +1553,62 @@ export function LiabilityShell({
         align: "right",
         hideable: true,
         filterText: (entry) => entry.paymentTotal == null ? "-" : entry.paymentTotal.toFixed(2),
-        render: (entry) => (
-          <span className="font-semibold tabular-nums text-slate-700">
-            {entry.paymentTotal == null ? "-" : formatMoney(entry.paymentTotal)}
-          </span>
-        ),
+        // 着色与金额列同一口径：往来款视图这一列是「收款合计」（钱流进资金账户）→ 红；
+        // 贷款视图是「还款合计」（钱流出资金账户）→ 用 invert 取到流出色（绿）。
+        render: (entry) => {
+          if (entry.paymentTotal == null) return <span className="text-slate-400">-</span>;
+          const total = entry.paymentTotal;
+          return (
+            <span className={`font-semibold tabular-nums ${total === 0 ? "text-slate-500" : pnlClassFromRedUp(total, isRedUp, "strong", isSelectedBankLoan)}`}>
+              {formatMoney(total)}
+            </span>
+          );
+        },
       },
-      { key: "balance", label: t("liabilityShell.colBalance"), width: 130, minWidth: 92, align: "right", render: (entry) => <span className={`font-semibold tabular-nums ${amountClass(entry.balance, isRedUp)}`}>{formatMoney(entry.balance)}</span> },
+      { key: "balance", label: t("liabilityShell.colBalance"), width: 130, minWidth: 92, align: "right", sortValue: (entry) => entry.balance, render: (entry) => <span className={`font-semibold tabular-nums ${amountClass(entry.balance, isRedUp)}`}>{formatMoney(entry.balance)}</span> },
+      // 分类 / 标签 / 记账日三列：批量修改里能改这三项，就必须在表上看得见同名的一列，
+      // 否则「能改的东西」和「显示的东西」对不上（2026-11-17 用户要求）。
+      {
+        key: "category",
+        label: t("detail.column.category"),
+        width: 140,
+        minWidth: 96,
+        hideable: true,
+        filterText: (entry) => entry.categoryLabel,
+        render: (entry) => <span className="block truncate text-slate-600" title={entry.categoryLabel}>{entry.categoryLabel || "-"}</span>,
+      },
+      {
+        key: "tags",
+        label: t("detail.column.tags"),
+        width: 160,
+        minWidth: 96,
+        hideable: true,
+        filterText: (entry) => entry.tagLabels.join(" "),
+        render: (entry) => entry.tagLabels.length === 0
+          ? <span className="text-slate-400">-</span>
+          : (
+            <span className="flex min-w-0 flex-wrap items-center gap-1" title={entry.tagLabels.join("、")}>
+              {entry.tagLabels.map((label) => (
+                <span key={label} className="max-w-[7rem] truncate rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-600">{label}</span>
+              ))}
+            </span>
+          ),
+      },
+      {
+        key: "postedAt",
+        label: t("detail.column.postedAt"),
+        width: 100,
+        minWidth: 80,
+        hideable: true,
+        defaultHidden: true,
+        filterKind: "dateRange",
+        filterText: (entry) => entry.postedAt ?? "",
+        render: (entry) => <span className="tabular-nums text-slate-500">{entry.postedAt ? formatDateDisplay(entry.postedAt) : "-"}</span>,
+      },
       { key: "note", label: t("detail.column.remark"), width: 260, minWidth: 120, hideable: true, filterText: (entry) => entry.note, render: (entry) => <span className="block truncate text-slate-600" title={entry.note}>{entry.note || "-"}</span> },
     );
     return columns;
-  }, [t, isRedUp, isSelectedBankLoan, isSelectedCollateralLoan]);
+  }, [t, isRedUp, isLoanTableView, isSelectedBankLoan, isSelectedCollateralLoan]);
 
   const repaymentScheduleColumns = useMemo<AdvancedDataTableColumn<RepaymentScheduleRow>[]>(() => [
     {
@@ -1658,8 +1773,16 @@ export function LiabilityShell({
                 accountOptions={accountOptions}
                 categoryOptions={categoryOptions}
                 contextAccountId={selectedRow.accountId}
+                // 组合行没有单个 accountId，但它下面的每个往来款账户都在本页明细里：
+                // 把这些账户一起交给批量接口，才能按「当前页面」判定每行哪一端是往来款账户。
+                contextAccountIds={
+                  selectedRow.isGroup
+                    ? (childrenByParentKey.get(selectedRow.key) ?? []).map((child) => child.accountId).filter(Boolean)
+                    : undefined
+                }
                 columns={entryColumns}
                 entries={entries}
+                isLoanTableView={isLoanTableView}
                 loanType={accountLoanType(accountEditDataById.get(selectedRow.accountId))}
                 toolbarActions={(
                   <>
@@ -1906,16 +2029,22 @@ function LiabilityEntriesTable({
   accountOptions,
   categoryOptions,
   contextAccountId,
+  contextAccountIds,
   columns,
   entries,
+  isLoanTableView,
   loanType,
   toolbarActions,
 }: {
   accountOptions: AccountOption[];
   categoryOptions: BasicDetailBatchCategoryOption[];
   contextAccountId?: string | null;
+  /** 组合行的子账户：页面上下文可能是多个往来款账户。 */
+  contextAccountIds?: string[];
   columns: AdvancedDataTableColumn<LiabilityEntry>[];
   entries: LiabilityEntry[];
+  /** 贷款视图：表头叫「贷款账户」，批量字段也要跟着改名，两处才对得上。 */
+  isLoanTableView?: boolean;
   loanType: LoanTypeValue;
   toolbarActions?: React.ReactNode;
 }) {
@@ -2011,6 +2140,13 @@ function LiabilityEntriesTable({
             accountOptions={normalizedAccountOptions}
             categoryOptions={categoryOptions}
             contextAccountId={contextAccountId}
+            contextAccountIds={contextAccountIds}
+            // 字段名 = 表头名，一一对应（2026-11-17）。表里没有的列（如机构）不出现。
+            fields={batchReplaceFields}
+            // 贷款视图的表头是「贷款账户」，批量字段沿用同一个名字。
+            fieldLabelOverrides={isLoanTableView ? { liabilityAccount: t("liabilityShell.colLoanAccount") } : undefined}
+            // 本表金额的符号就是资金方向：负数会把这一行整体翻成反方向。
+            fieldHintOverrides={{ amount: t("liabilityShell.batchAmountHint") }}
           />
           <BasicDetailBatchDeleteButton recordLabel={t("liabilityShell.recordLabel")} />
         </>

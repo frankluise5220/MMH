@@ -8,11 +8,19 @@
  *    with the original activity text kept as category data.
  * 3. Balance-adjustment rows are excluded because MMH balance reconciliation
  *    should handle opening balances without polluting income statistics.
+ * 4. Rows flagged in the 财智 「样板行」 column are ledger samples, not this
+ *    account's entries: they are dropped (same rule as MMH's own templates).
+ * 5. The account name comes from the filename, with the 「财智」 software token
+ *    stripped — 「财智.章啸的往来款_2026-11-17.xls」 is the account 「章啸的往来款」.
  *
  * Input: SheetJS-parsed rows (or a text/CSV file read through the shared reader).
  * Output: MMH standard statement rows without the header.
  */
 
+import {
+  findTemplateSampleColumnIndex,
+  isTemplateSampleRowValue,
+} from "@/lib/import-template-sample";
 import { readStatementSheetRows } from "@/lib/statement/statement-sheet-reader";
 export type CaizhiWorkbookSheetRows = {
   sheetName: string;
@@ -39,6 +47,8 @@ type NormalizedCaizhiWorkbookRows = {
   profile: "caizhi";
   /** Balance-adjustment rows removed from import, used for user-facing summary. */
   balanceAdjustRows: CaizhiBalanceAdjustRow[];
+  /** 「样板行」列标记为是的行数（财智账本里的样板/示例数据，不导入）。 */
+  sampleRowCount: number;
 };
 
 // MMH standard headers, kept aligned with generic/Alipay/WeChat templates.
@@ -212,7 +222,8 @@ function normalizeCaizhiRow(
 
 /**
  * Detect and extract Caizhi 8 data from SheetJS workbook rows.
- * Returns { rows, sourceDataRowCount, includedSheetCount, profile, balanceAdjustRows }.
+ * Returns { rows, sourceDataRowCount, includedSheetCount, profile, balanceAdjustRows, sampleRowCount }.
+ * sourceDataRowCount 只数真正要导入的数据行（不含样板行、不含空白行）。
  */
 export function normalizeCaizhiWorkbookRows(
   sheets: CaizhiWorkbookSheetRows[],
@@ -222,6 +233,7 @@ export function normalizeCaizhiWorkbookRows(
   const balanceAdjustRows: CaizhiBalanceAdjustRow[] = [];
   let includedSheetCount = 0;
   let totalDataRows = 0;
+  let sampleRowCount = 0;
 
   for (const sheet of sheets) {
     const dataRows = sheet.rows;
@@ -231,12 +243,20 @@ export function normalizeCaizhiWorkbookRows(
     if (!headerIdx) continue;
 
     includedSheetCount++;
-    const dataStart = 1; // Skip the header row.
+    // 财智导出的工作簿会多带一列「样板行」：标记「是」的行是账本里的样板/示例数据，
+    // 不是本账户流水（同一文件里甚至可能整张 sheet 都是样板行），混进来会让条数与余额全错。
+    // 判据与 MMH 自己导出的模板同一套（import-template-sample）。
+    const sampleColumnIndex = findTemplateSampleColumnIndex(dataRows[0]);
 
-    for (let r = dataStart; r < dataRows.length; r++) {
+    for (let r = 1; r < dataRows.length; r++) {
       const row = dataRows[r];
       // Skip fully empty rows.
       if (!row.some((cell) => cleanText(cell))) continue;
+
+      if (sampleColumnIndex >= 0 && isTemplateSampleRowValue(row[sampleColumnIndex])) {
+        sampleRowCount++;
+        continue;
+      }
 
       totalDataRows++;
 
@@ -270,6 +290,7 @@ export function normalizeCaizhiWorkbookRows(
     includedSheetCount,
     profile: "caizhi",
     balanceAdjustRows,
+    sampleRowCount,
   };
 }
 
@@ -336,18 +357,36 @@ function detectCaizhiFundDetailHeaders(headerRow: string[]): boolean {
 }
 
 /**
+ * 财智导出的文件名会带上软件名（「财智.章啸的往来款_2026-11-17.xls」
+ * 「章啸的往来款_财智_2026-09-03.xls」）。软件名不是账户名的一部分，先剥掉再猜。
+ */
+function stripCaizhiSoftwareToken(name: string): string {
+  return name
+    // 前缀：财智 / 财智8 / caizhi8 + 分隔符
+    .replace(/^\s*(?:\u8d22\u667a|caizhi)\s*[8\u516b]?\s*[.\u3002\u00b7\u3001_\-\u2014\s]+/i, "")
+    // 中段：_财智_ / -财智8-
+    .replace(/[\s._\-\u2014]+(?:\u8d22\u667a|caizhi)\s*[8\u516b]?[\s._\-\u2014]*/gi, "_")
+    .trim();
+}
+
+/**
  * 尝试从文件名中提取财智8导出的账户名。
  * 财智8 导出名形如「XXX的YYY_明细_YYYY-MM-DD.xls」；账户名本身不含「的」时形如
- * 「计划帐户(姜)_明细_2026-09-02.xls」；人工改名后也可能长成「XXX的YYY_财智_2026-09-03.xls」。
+ * 「计划帐户(姜)_明细_2026-09-02.xls」；人工改名后也可能长成「XXX的YYY_财智_2026-09-03.xls」
+ * 或「财智.XXX的YYY_2026-11-17.xls」——带上的软件名一律不进账户名。
  */
 export function guessCaizhiAccountNameFromFilename(filename: string): string {
-  const base = String(filename ?? "").replace(/\.(xls|xlsx)$/i, "");
+  // 有些调用点传的是路径（命令行转换脚本），账户名只取文件名。
+  const baseName = String(filename ?? "").replace(/^.*[\\/]/, "");
+  const base = stripCaizhiSoftwareToken(baseName.replace(/\.(xls|xlsx|csv)$/i, ""));
   const withOwner = base.match(/^(.+?的.+?)_明细_/);
   if (withOwner) return withOwner[1];
   // 去掉「_明细_ / _财智_ + 日期」尾巴，避免整串文件名被当成账户名。
   const trimmed = base.replace(/_(?:明细|财智)?_?\d{4}-\d{2}-\d{2}.*$/, "");
-  if (trimmed && trimmed !== base) return trimmed;
-  return base || "财智账户";
+  const candidate = trimmed && trimmed !== base ? trimmed : base;
+  // 剥完只剩日期/分隔符（「财智_2026-11-17.xls」）：没有账户名可用，落到默认名。
+  if (!candidate || /^[\d\s._\-\u2014]+$/.test(candidate)) return "财智账户";
+  return candidate;
 }
 
 function caizhiFundSplitFundName(value: string): { fundCode: string; fundName: string } {

@@ -17,11 +17,15 @@ import {
 } from "@/components/settings/SettingsPageScaffold";
 import { parseBaseUrl, buildBaseUrl, PROTOCOL_OPTIONS, PORT_SUGGESTIONS } from "@/lib/urlInput";
 import type { ParsedUrl } from "@/lib/urlInput";
+import { FUND_PARSER_CODES, inferFundParserCode, isKnownFundParserCode, type FundParserCode } from "@/lib/fund/parser-code";
 import { useI18n } from "@/lib/i18n";
 
 type FundQueryApiRecord = {
   id: string;
   code: string;
+  /** 解析器标识；为空时沿用 `code`（存量行 `code` 本身就是解析器）。 */
+  parser?: string | null;
+  parserConfig?: unknown;
   name: string;
   baseUrl: string;
   apiKey: string | null;
@@ -34,9 +38,10 @@ type EditForm = Omit<Partial<FundQueryApiRecord>, "baseUrl"> & {
   urlParts: ParsedUrl;
 };
 
+/** 表单里的 `code` 实际承载「解析器」：回填优先用 `parser` 列。 */
 function makeForm(api?: Partial<FundQueryApiRecord> | null): EditForm {
   return {
-    code: api?.code ?? "",
+    code: (api?.parser ?? api?.code) ?? "",
     name: api?.name ?? "",
     urlParts: parseBaseUrl(api?.baseUrl),
     apiKey: api?.apiKey ?? "",
@@ -48,6 +53,7 @@ function makeForm(api?: Partial<FundQueryApiRecord> | null): EditForm {
 function flatForm(f: EditForm): Omit<EditForm, "urlParts"> & { baseUrl: string } {
   return {
     code: f.code,
+    parser: f.code,
     name: f.name,
     baseUrl: buildBaseUrl(f.urlParts),
     apiKey: f.apiKey,
@@ -55,6 +61,24 @@ function flatForm(f: EditForm): Omit<EditForm, "urlParts"> & { baseUrl: string }
     isActive: f.isActive,
   };
 }
+
+/** 测试失败原因码 → i18n key，后端只回码，文案在语言包里 */
+const TEST_FAIL_REASON_KEYS: Record<string, string> = {
+  UNKNOWN_PARSER: "settings.fundApi.testFailUnknownParser",
+  MISSING_PLACEHOLDER: "settings.fundApi.testFailMissingPlaceholder",
+  INVALID_FUND_CODE: "settings.fundApi.testFailInvalidFundCode",
+  NO_DATA: "settings.fundApi.testFailNoData",
+  REQUEST_FAILED: "settings.fundApi.testFailRequest",
+};
+
+/** 解析器 → 下拉文案 key。地址认不出来时用户从这里选。 */
+const PARSER_LABEL_KEYS: Record<FundParserCode, string> = {
+  eastmoney: "settings.fundApi.parserEastmoney",
+  eastmoney_history: "settings.fundApi.parserEastmoneyHistory",
+  danjuan: "settings.fundApi.parserDanjuan",
+  alipay: "settings.fundApi.parserAlipay",
+  json: "settings.fundApi.parserJson",
+};
 
 function sortApis(apis: FundQueryApiRecord[]) {
   return [...apis].sort((a, b) => a.priority - b.priority || a.name.localeCompare(b.name, "zh-Hans-CN"));
@@ -135,6 +159,19 @@ export default function FundQueryApiPage() {
   const [saving, setSaving] = useState(false);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{ ok: boolean; text: string } | null>(null);
+
+  // 解析器不再让用户手填：能从地址认出来就用认出来的，认不出才用他手动选的那个。
+  // 编辑态 code 不允许改（PUT 也不接收 code），固定用原值，只做「是否存在」的提示。
+  const isCreateMode = editingId === "__new__";
+  const formUrl = buildBaseUrl(form.urlParts);
+  const inferredCode = inferFundParserCode(formUrl);
+  const effectiveCode = isCreateMode ? (inferredCode ?? (form.code ?? "").trim()) : (form.code ?? "").trim();
+  // 地址或解析器一改，上一次的测试结论就作废，必须重新测。
+  useEffect(() => {
+    setTestResult(null);
+  }, [effectiveCode, formUrl]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -173,11 +210,13 @@ export default function FundQueryApiPage() {
   function openEdit(api: FundQueryApiRecord) {
     setEditingId(api.id);
     setForm(makeForm(api));
+    setTestResult(null);
   }
 
   function openCreate() {
     setEditingId("__new__");
     setForm(makeForm({ code: "", name: "", priority: apis.length + 1, isActive: true }));
+    setTestResult(null);
   }
 
   async function saveOrder(nextApis: FundQueryApiRecord[]) {
@@ -254,12 +293,67 @@ export default function FundQueryApiPage() {
     if (!saved) setApis(previous);
   }
 
+  async function testConnection() {
+    if (testing || saving) return;
+    const baseUrl = buildBaseUrl(form.urlParts).trim();
+    const code = effectiveCode;
+    if (!code) {
+      setTestResult({ ok: false, text: t("settings.fundApi.parserRequired") });
+      return;
+    }
+    if (!baseUrl) {
+      setTestResult({ ok: false, text: t("settings.fundApi.testFailMissingPlaceholder") });
+      return;
+    }
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const res = await fetch("/api/v1/settings/fund-query-api/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code, baseUrl }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        setTestResult({
+          ok: true,
+          text: t("settings.fundApi.testPassed", {
+            fund: String(data.fundCode ?? ""),
+            date: String(data.navDate ?? ""),
+            nav: String(data.nav ?? ""),
+          }),
+        });
+        return;
+      }
+      const reasonKey = TEST_FAIL_REASON_KEYS[String(data.reason ?? "")];
+      setTestResult({
+        ok: false,
+        text: reasonKey
+          ? t(reasonKey, { code, message: String(data.message ?? ""), fund: String(data.fundCode ?? "") })
+          : String(data.message ?? t("settings.fundApi.testFailRequest", { message: "" })),
+      });
+    } catch {
+      setTestResult({ ok: false, text: t("settings.fundApi.testFailRequest", { message: "" }) });
+    } finally {
+      setTesting(false);
+    }
+  }
+
   async function save() {
     if (!editingId) return;
+    if (!effectiveCode) {
+      alert(t("settings.fundApi.parserRequired"));
+      return;
+    }
+    if (editingId === "__new__" && !testResult?.ok) {
+      alert(t("settings.fundApi.testRequired"));
+      return;
+    }
     setSaving(true);
     try {
       const isCreate = editingId === "__new__";
-      const body = isCreate ? flatForm(form) : { id: editingId, ...flatForm(form) };
+      const flat = { ...flatForm(form), code: effectiveCode };
+      const body = isCreate ? flat : { id: editingId, ...flat };
       const res = await fetch("/api/v1/settings/fund-query-api", {
         method: isCreate ? "POST" : "PUT",
         headers: { "Content-Type": "application/json" },
@@ -270,7 +364,6 @@ export default function FundQueryApiPage() {
         if (isCreate && data.api) {
           setApis(prev => [...prev, data.api].sort((a, b) => a.priority - b.priority));
         } else {
-          const flat = flatForm(form);
           setApis(prev => prev.map(a => a.id === editingId ? { ...a, ...flat } as FundQueryApiRecord : a));
         }
         setEditingId(null);
@@ -369,7 +462,7 @@ export default function FundQueryApiPage() {
           <tr>
             <SettingsTh align="center">{t("settings.fundApi.order")}</SettingsTh>
             <SettingsTh>{t("settings.fundApi.name")}</SettingsTh>
-            <SettingsTh>{t("settings.fundApi.code")}</SettingsTh>
+            <SettingsTh>{t("settings.fundApi.parser")}</SettingsTh>
             <SettingsTh>{t("settings.fundApi.url")}</SettingsTh>
             <SettingsTh>{t("settings.fundApi.status")}</SettingsTh>
             <SettingsTh align="right">{t("settings.fundApi.actions")}</SettingsTh>
@@ -402,12 +495,18 @@ export default function FundQueryApiPage() {
                   {api.householdId == null ? (
                     <span className="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-normal text-slate-600">{t("settings.fundApi.builtIn")}</span>
                   ) : null}
-                  {api.code === "alipay" ? (
+                  {(api.parser ?? api.code) === "alipay" ? (
                     <span className="shrink-0 rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-normal text-blue-700">{t("settings.fundApi.alipayPriority")}</span>
                   ) : null}
                 </div>
               </SettingsTd>
-              <SettingsTd className="font-mono text-[11px] text-slate-500">{api.code}</SettingsTd>
+              <SettingsTd className="font-mono text-[11px]">
+                {isKnownFundParserCode(api.parser ?? api.code) ? (
+                  <span className="text-slate-500">{api.parser ?? api.code}</span>
+                ) : (
+                  <span className="text-red-600" title={t("settings.fundApi.parserMissingRow")}>{api.parser ?? api.code}</span>
+                )}
+              </SettingsTd>
               <SettingsTd className="truncate font-mono text-[11px] text-slate-400" title={api.baseUrl}>{api.baseUrl}</SettingsTd>
               <SettingsTd>
                 <span className={`rounded px-2 py-0.5 text-xs ${api.isActive ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>
@@ -448,17 +547,40 @@ export default function FundQueryApiPage() {
               <div className="text-sm font-semibold text-slate-800">{isCreating ? t("settings.fundApi.addTitle") : t("settings.fundApi.editTitle")}</div>
             </div>
             <div className="space-y-3 p-5">
+              <div className="space-y-1">
+                <div className="text-xs font-medium text-slate-600">{t("settings.fundApi.name")}</div>
+                <input value={form.name ?? ""} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+                  className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
+              </div>
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
-                  <div className="text-xs font-medium text-slate-600">{t("settings.fundApi.code")}</div>
-                  {isCreating ? (
-                    <input value={form.code ?? ""} onChange={e => setForm(f => ({ ...f, code: e.target.value }))}
-                      className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none font-mono" />
+                  <div className="text-xs font-medium text-slate-600">{t("settings.fundApi.parser")}</div>
+                  {isCreating && !inferredCode ? (
+                    <select
+                      value={form.code ?? ""}
+                      onChange={e => setForm(f => ({ ...f, code: e.target.value }))}
+                      className="h-9 w-full rounded-md border border-amber-300 bg-white px-3 text-sm outline-none"
+                    >
+                      <option value="">{t("settings.fundApi.parserPlaceholder")}</option>
+                      {FUND_PARSER_CODES.map((parserCode) => (
+                        <option key={parserCode} value={parserCode}>{t(PARSER_LABEL_KEYS[parserCode])}</option>
+                      ))}
+                    </select>
                   ) : (
-                    <div className="flex h-9 items-center rounded-md border border-slate-100 bg-slate-50 px-3 text-sm font-mono text-slate-500">
-                      {editingApi?.code ?? form.code}
+                    <div className="flex h-9 items-center gap-2 rounded-md border border-slate-100 bg-slate-50 px-3 text-sm">
+                      <span className="shrink-0 font-mono text-[11px] text-slate-500">{effectiveCode || t("settings.fundApi.parserPlaceholder")}</span>
+                      {inferredCode ? (
+                        <span className="shrink-0 rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] text-emerald-700">{t("settings.fundApi.parserAuto")}</span>
+                      ) : null}
                     </div>
                   )}
+                  <div className={`text-xs ${effectiveCode ? "text-slate-400" : "text-amber-600"}`}>
+                    {inferredCode
+                      ? t("settings.fundApi.parserAutoHint")
+                      : effectiveCode
+                        ? t("settings.fundApi.parserMissingRow")
+                        : t("settings.fundApi.parserUnknown")}
+                  </div>
                 </div>
                 <div className="space-y-1">
                   <div className="text-xs font-medium text-slate-600">{t("settings.fundApi.order")}</div>
@@ -468,13 +590,23 @@ export default function FundQueryApiPage() {
                 </div>
               </div>
               <div className="space-y-1">
-                <div className="text-xs font-medium text-slate-600">{t("settings.fundApi.name")}</div>
-                <input value={form.name ?? ""} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
-                  className="h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" />
-              </div>
-              <div className="space-y-1">
                 <div className="text-xs font-medium text-slate-600">{t("settings.fundApi.url")}</div>
                 <UrlInputGroup value={form.urlParts} onChange={next => setForm(f => ({ ...f, urlParts: next }))} />
+                <div className="flex flex-wrap items-center gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={testConnection}
+                    disabled={testing || saving}
+                    className="h-8 rounded-md border border-slate-200 bg-white px-3 text-xs text-slate-700 hover:bg-slate-50 disabled:opacity-50"
+                  >
+                    {testing ? t("settings.fundApi.testing") : t("settings.fundApi.test")}
+                  </button>
+                  {testResult ? (
+                    <span className={`text-xs ${testResult.ok ? "text-emerald-600" : "text-red-600"}`}>{testResult.text}</span>
+                  ) : (
+                    <span className="text-xs text-slate-400">{t("settings.fundApi.testHint")}</span>
+                  )}
+                </div>
               </div>
               <div className="space-y-1">
                 <div className="text-xs font-medium text-slate-600">{t("settings.fundApi.apiKey")}</div>
@@ -484,7 +616,8 @@ export default function FundQueryApiPage() {
               <div className="flex justify-end gap-2 border-t border-slate-100 pt-3">
                 <button onClick={() => { setEditingId(null); setForm(makeForm()); }}
                   className="h-9 rounded-md border border-slate-200 bg-white px-4 text-sm text-slate-700 hover:bg-slate-50">{t("common.cancel")}</button>
-                <button onClick={save} disabled={saving}
+                <button onClick={save} disabled={saving || !effectiveCode || (isCreating && !testResult?.ok)}
+                  title={!effectiveCode ? t("settings.fundApi.parserRequired") : isCreating && !testResult?.ok ? t("settings.fundApi.testRequired") : undefined}
                   className="h-9 rounded-md bg-blue-600 px-4 text-sm text-white hover:bg-blue-700 disabled:opacity-50">{isCreating ? t("settings.fundApi.create") : t("common.save")}</button>
               </div>
             </div>

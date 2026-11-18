@@ -3,6 +3,7 @@ import { materializeDueInstallmentPayments } from "@/lib/server/credit-card-inst
 import { ensureAccountGroupMemberPairing } from "@/lib/server/account-group-member-pairing";
 import { bootstrapPendingAccountBalances } from "@/lib/server/account-balance";
 import { runStatementMailAutoImportTick } from "@/lib/server/statement-mail-auto-import";
+import { syncPropertyAssetDepreciations } from "@/lib/server/property-depreciation";
 import { logger } from "@/lib/logger";
 
 /**
@@ -19,9 +20,11 @@ export async function runDueSystemTasks(): Promise<{
   materializedInstallments: number;
   bootstrappedAccountBalances: number;
   statementMailAutoImports: number;
+  propertyDepreciations: number;
 }> {
   const households = await prisma.household.findMany({ select: { id: true } });
   let materializedInstallments = 0;
+  let propertyDepreciations = 0;
   for (const household of households) {
     try {
       const result = await materializeDueInstallmentPayments(prisma, { householdId: household.id });
@@ -34,9 +37,19 @@ export async function runDueSystemTasks(): Promise<{
     } catch (error) {
       logger.error("owner/member pairing self-heal failed for household", "system-task", { householdId: household.id, error });
     }
+    // 固定资产直线法折旧：按月补记到当前月（走折旧台账，不动现金/收支）。
+    try {
+      const result = await syncPropertyAssetDepreciations({ householdId: household.id });
+      propertyDepreciations += result.created;
+    } catch (error) {
+      logger.error("property depreciation sync failed for household", "system-task", { householdId: household.id, error });
+    }
   }
   if (materializedInstallments > 0) {
     logger.info(`system task materialized ${materializedInstallments} installment rows`, "system-task");
+  }
+  if (propertyDepreciations > 0) {
+    logger.info(`system task recorded ${propertyDepreciations} property depreciation periods`, "system-task");
   }
   // 每轮 4 个账户做全量重算：与「只往前推进」不同，全量重算能纠正任何漏账，
   // 所以这一轮的吞吐直接决定错误最长存活时间。10 分钟 4 个 ≈ 每天 576 个，
@@ -58,5 +71,6 @@ export async function runDueSystemTasks(): Promise<{
     materializedInstallments,
     bootstrappedAccountBalances,
     statementMailAutoImports: mailAutoImports.created,
+    propertyDepreciations,
   };
 }

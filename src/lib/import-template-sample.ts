@@ -36,7 +36,8 @@ function normalizeTemplateHeaderText(value: unknown) {
   return String(value ?? "").trim().replace(/\s+/g, "").toLowerCase();
 }
 
-function isTemplateSampleRowValue(value: unknown) {
+/** 单个单元格是否为样板行标记（「是」/yes/1/样板…）；空白不是。 */
+export function isTemplateSampleRowValue(value: unknown) {
   return TEMPLATE_SAMPLE_ROW_VALUES.has(normalizeTemplateText(value));
 }
 

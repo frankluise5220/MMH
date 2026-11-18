@@ -2593,7 +2593,7 @@ export async function POST(req: Request) {
           })
         : null;
       if (counterpartyInstitutionId && !counterpartyInstitution) {
-        return NextResponse.json({ ok: false, code: "INVALID_COUNTERPARTY_INSTITUTION", error: "收支机构只能选择银行或第三方支付机构" }, { status: 400 });
+        return NextResponse.json({ ok: false, code: "INVALID_COUNTERPARTY_INSTITUTION", error: "收支对向方不能选择往来人员、往来组织或家庭成员" }, { status: 400 });
       }
 
       await prisma.$transaction(async (tx) => {
@@ -2680,7 +2680,7 @@ export async function POST(req: Request) {
           })
         : null;
       if (counterpartyInstitutionId && !counterpartyInstitution) {
-        return NextResponse.json({ ok: false, code: "INVALID_COUNTERPARTY_INSTITUTION", error: "收支机构只能选择银行或第三方支付机构" }, { status: 400 });
+        return NextResponse.json({ ok: false, code: "INVALID_COUNTERPARTY_INSTITUTION", error: "收支对向方不能选择往来人员、往来组织或家庭成员" }, { status: 400 });
       }
 
       await prisma.$transaction(async (tx) => {
@@ -4565,7 +4565,7 @@ return;
           })
         : null;
       if (counterpartyInstitutionId && !counterpartyInstitution) {
-        throw new Error("收支机构只能选择银行或第三方支付机构");
+        throw new Error("收支对向方不能选择往来人员、往来组织或家庭成员");
       }
       const keepFundDetail = body.keepFundDetail === true;
 

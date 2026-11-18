@@ -176,6 +176,11 @@ export function useHoldingEntryForm(options: UseHoldingEntryFormOptions) {
   const [editBusinessTransactionId, setEditBusinessTransactionId] = useState<string | null>(null);
   const unitsEditedRef = useRef(mode === "edit");
   const autoFilledUnitsForRef = useRef<string | null>(null);
+  /**
+   * 金额被用户填过（或切页签时保留下来）就不能被「选中持仓自动带出剩余本金」覆盖。
+   * 换持仓会把它复位，让新持仓的本金照旧带出来。
+   */
+  const amountEditedRef = useRef(mode === "edit");
   /** 最近一次做过「账户跟随持仓」反向同步的持仓 id；用于区分「持仓变了」与「用户改了账户」。 */
   const holdingSyncedIdRef = useRef<string | null>(null);
 
@@ -407,6 +412,7 @@ export function useHoldingEntryForm(options: UseHoldingEntryFormOptions) {
   }, [amountNumber, interestNumber, isRedeem, redeemPrincipalNumber]);
 
   function changeRedeemPrincipal(value: string) {
+    amountEditedRef.current = true;
     setAmount(value);
     if (isRedeem) setArrivalEdited(false);
   }
@@ -451,6 +457,7 @@ export function useHoldingEntryForm(options: UseHoldingEntryFormOptions) {
     setUnits("");
     setNav("");
     unitsEditedRef.current = false;
+    amountEditedRef.current = false;
     autoFilledUnitsForRef.current = null;
     setProductId("");
     setFundName("");
@@ -483,6 +490,7 @@ export function useHoldingEntryForm(options: UseHoldingEntryFormOptions) {
     setUnits("");
     setNav("");
     unitsEditedRef.current = false;
+    amountEditedRef.current = false;
     autoFilledUnitsForRef.current = null;
     setInterestAmount("");
     setArrivalAmount("");
@@ -496,57 +504,25 @@ export function useHoldingEntryForm(options: UseHoldingEntryFormOptions) {
     setEditBusinessTransactionId(null);
   }
 
-  /** 动作页签切换：字段重置逻辑沿用原分段按钮，逐项照搬以保证行为不变。 */
+  /**
+   * 动作页签切换：**只换页签口径，不清用户已经填好的数字**（2026-11-18 用户裁定：
+   * 理财窗四个页签切换时金额/份额/净值被清空，等于逼用户重新输入一遍）。
+   *
+   * 仍然要重置的只有「选择」：买入是在建新持仓，不能沿用上一页签选中的那只；
+   * 各页签的自动回填口径不同，所以把「上次自动回填的份额」清掉，让新页签重算一次
+   * （用户手改过的份额仍由 unitsEditedRef 保护，不会被覆盖）。
+   */
   function selectSubtypeTab(next: HoldingEntrySubtype) {
-    if (next === "buy") {
-      setSubtype("buy");
-      setSelectedHoldingId("");
-      setUnits("");
-      setNav("");
-      unitsEditedRef.current = false;
-      autoFilledUnitsForRef.current = null;
-      setInterestAmount("");
-      setArrivalAmount("");
-      setInterestEdited(false);
-      setArrivalEdited(false);
-      return;
-    }
-    if (next === "redeem") {
-      setSubtype("redeem");
-      setAmount("");
-      setUnits("");
-      setNav("");
-      unitsEditedRef.current = false;
-      autoFilledUnitsForRef.current = null;
-      if (!arrivalDateTouchedRef.current) setArrivalDate(date);
-      setInterestEdited(false);
-      setArrivalEdited(false);
-      return;
-    }
-    if (next === "dividend_cash") {
-      setSubtype("dividend_cash");
-      setAmount("");
-      setUnits("");
-      setNav("");
-      unitsEditedRef.current = false;
-      autoFilledUnitsForRef.current = null;
-      setInterestAmount("");
-      setArrivalAmount("");
-      if (!arrivalDateTouchedRef.current) setArrivalDate(date);
-      setInterestEdited(false);
-      setArrivalEdited(false);
-      return;
-    }
-    setSubtype("write_off");
-    setAmount("");
-    setUnits("");
-    setNav("");
-    unitsEditedRef.current = false;
+    setSubtype(next);
     autoFilledUnitsForRef.current = null;
-    setInterestAmount("");
-    setArrivalAmount("");
-    setInterestEdited(false);
-    setArrivalEdited(false);
+    if (next === "buy") {
+      // 买入不是对已有持仓的操作，选中的那只得清掉。
+      setSelectedHoldingId("");
+      return;
+    }
+    // 钱已经填好时要留住它：切到赎回页签后「选中持仓自动带出剩余本金」不能把它换掉。
+    if (next === "redeem" && parseNumber(amount) > 0) amountEditedRef.current = true;
+    if (!arrivalDateTouchedRef.current) setArrivalDate(date);
   }
   /** 把一条记录摊回草稿；事件路径与 openSignal 路径的既有差异通过 opts 表达。 */
   function applyDraft(
@@ -577,6 +553,8 @@ export function useHoldingEntryForm(options: UseHoldingEntryFormOptions) {
     setUnits(source.fundUnits != null ? String(Math.abs(source.fundUnits)) : "");
     setNav(source.fundNav != null ? String(Math.abs(source.fundNav)) : "");
     unitsEditedRef.current = opts.nextSubtype === "redeem";
+    // 编辑态的金额来自这条记录本身，不能再被「选中持仓带出本金」改写。
+    amountEditedRef.current = true;
     setProductId(source.wealthProductId ?? "");
     setFundName(source.fundName ?? "");
     setInterestAmount(opts.nextSubtype === "redeem" && source.depositInterest != null ? formatAmountDraft(source.depositInterest) : "");
@@ -700,6 +678,8 @@ export function useHoldingEntryForm(options: UseHoldingEntryFormOptions) {
         defaultCashAccountId?: string;
         defaultDate?: string;
         defaultAmount?: number;
+        /** 转换「流入交易」时直接落在赎回页签上（理财/债券窗的页签只有买入 / 赎回）。 */
+        defaultSubtype?: "buy" | "redeem";
       }>).detail;
       const nextDate = detail?.defaultDate || today;
       const nextCashAccountId = detail?.defaultCashAccountId ?? "";
@@ -711,7 +691,12 @@ export function useHoldingEntryForm(options: UseHoldingEntryFormOptions) {
       setHoldingFilterDate(nextDate);
       setArrivalDate(nextDate);
       arrivalDateTouchedRef.current = false;
-      if (typeof detail?.defaultAmount === "number" && detail.defaultAmount > 0) setAmount(formatAmountDraft(detail.defaultAmount));
+      if (detail?.defaultSubtype === "redeem") setSubtype("redeem");
+      if (typeof detail?.defaultAmount === "number" && detail.defaultAmount > 0) {
+        // 转换带过来的金额是这笔交易的金额，不能被赎回页签的「持仓剩余本金」自动带出覆盖。
+        amountEditedRef.current = true;
+        setAmount(formatAmountDraft(detail.defaultAmount));
+      }
       const explicitAccountId = detail?.[defaultAccountKey];
       setToAccountId(
         resolveAccountForCashAccount(
@@ -756,7 +741,10 @@ export function useHoldingEntryForm(options: UseHoldingEntryFormOptions) {
     setProductId(selectedHolding.wealthProductId ?? "");
     setFundName(selectedHolding.fundName);
     if (isRedeem && !editEntryId) {
-      setAmount(selectedHoldingAmountAtDate > 0 ? selectedHoldingAmountAtDate.toFixed(2) : "");
+      // 用户填过（或切页签时保留下来的）金额优先，只有没填过才按持仓剩余本金带出。
+      if (!amountEditedRef.current) {
+        setAmount(selectedHoldingAmountAtDate > 0 ? selectedHoldingAmountAtDate.toFixed(2) : "");
+      }
       const autoFillKey = `${selectedHoldingId}:${holdingFilterDate}`;
       // 用户手动改过份额后一律不覆盖；只有自动回填且日期/持仓变化时才刷新（见产品规则）。
       if (!unitsEditedRef.current && autoFilledUnitsForRef.current !== autoFillKey) {
@@ -915,9 +903,10 @@ export function useHoldingEntryForm(options: UseHoldingEntryFormOptions) {
     changeRedeemNav,
     changeRedeemInterest,
     selectSubtypeTab,
-    // 供调用方在输入框事件里读取/复位（赎回份额守卫）
+    // 供调用方在输入框事件里读取/复位（赎回份额 / 本金守卫）
     unitsEditedRef,
     autoFilledUnitsForRef,
+    amountEditedRef,
   };
 }
 

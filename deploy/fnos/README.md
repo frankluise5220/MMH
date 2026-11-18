@@ -135,12 +135,12 @@ mmh-fnos-v0.1.x-arm64-external-node.fpk         # 不含 Node.js，约 20MB
 ## 软仓源维护说明
 
 - 当前验证过的公开源地址是：
-  `http://fnapp.floatingice.win:5660`
+  `http://fnapp.floatingice.win`（直连 `http://107.175.62.109:5660`）
 - FN 软仓当前已经内置 MMH 源，普通用户不需要手动添加源。
-- VPS 软仓服务同步 GitHub `frankluise5220/MMH` 仓库的 `main/deploy/fnos/repository` 目录并对外提供 `/api/apps`；`fnpack.json` 作为源数据文件保留在同一目录。
+- VPS 侧不是镜像 `main/deploy/fnos/repository` 目录，而是 `sync.sh` 每小时读 GitHub Release：下载本版 fpk 到 `data/apps/`、拉两个群晖 SPK、重写 `data/fn-appstores.json`（mmh 的 `x86` + `arm` 两条目，FPK 由 5660 本地直发），再由 `fn-appstores.json` 监听器追加公告；管理页（`https://fnapp.floatingice.win/fnstore/`）与群晖源由 5661 的 Python 补丁旁路提供。详见 `docs/fnos-selfhosted-source.md`。
 - **`fnpack.json` 的 release 条目由「发布」创建，不由 `npm run release:version` 写入**：该文件会被 FnDepot 每小时镜像，bump 时就写条目会让还没发布的版本提前出现在用户的应用源里，点下载必然 404（FnDepot 报「Range 探测返回 HTTP 404」）。条目改由 `release: published` 触发的 `.github/workflows/fnos-fndepot-sync.yml` → `scripts/sync-fndepot-source.cjs` 建立并回填 `sha256` / `size`。**因此「源里没有当前版本」是正常的待发布状态，不是缺漏。**
 - `check:release-version` 会拦住三类坏源：条目缺 `sha256` / `size`（= 死链）、`changelog` 指向别的版本、版本数超过 5 或顺序错乱；`fnos-fndepot-sync.yml` 在回填前还会用 `sync-fndepot-source.cjs --check` 实时查一遍 GitHub Release，确认没有死链条目。
-- `download_url` 和 `download_urls.x86_64` 指向 VPS 托管的 x86_64 包 `http://fnapp.floatingice.win/apps/mmh-0.1.x.fpk`，`download_urls.arm64` 仍指向 GitHub Release 中的 arm64 FPK，直到 VPS 也托管 arm64 本地包。
+- `download_url` 和 `download_urls.x86_64` 指向 VPS 托管的 x86_64 包 `http://fnapp.floatingice.win/apps/mmh-0.1.x.fpk`，`download_urls.arm64` 仍指向 GitHub Release 中的 arm64 FPK —— 这是 FnDepot（GitHub 侧静态源）的口径；自建软仓源 `data/fn-appstores.json` 的两个条目都已本地托管（`/apps/mmh-<版本>-x86.fpk` 与 `-arm.fpk`）。
 
 ## 升级边界
 

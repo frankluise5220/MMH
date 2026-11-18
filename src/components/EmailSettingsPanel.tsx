@@ -2645,7 +2645,7 @@ export function EmailSettingsPanel({
                 {t("entityForm.accountTypeLabel")}
                 <select className="mt-1 h-9 w-full rounded-md border border-slate-200 bg-white px-3 text-sm outline-none" value={accountDraft.kind} onChange={(e) => setAccountDraft((current) => current ? { ...current, kind: e.target.value as AccountCreateDraft["kind"] } : current)}>
                   <option value="bank_credit">{t("account.kind.bank_credit")}</option>
-                  <option value="bank_debit">{t("account.kind.bank_savings")}</option>
+                  <option value="bank_debit">{t("account.kind.bank_debit")}</option>
                   <option value="ewallet">{t("account.kind.ewallet")}</option>
                   <option value="cash">{t("account.kind.cash")}</option>
                   <option value="other">{t("account.kind.other")}</option>

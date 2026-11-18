@@ -653,17 +653,19 @@ export function StatementImportPreviewDialog({
     [],
   );
 
-  // 匹配与选择只针对启用账户：停用账户不该进入导入候选（与 batch-import 页口径一致），
-  // 否则会虚增"账户中有N个"的 ambiguous 数量。
-  const activeBookAccounts = useMemo(
-    () => bookAccounts.filter((account) => account.isActive !== false),
-    [bookAccounts],
-  );
+  // 停用账户也要能匹配（2026-11-18 用户裁定「停用不要阻止匹配」）：历史账单里的老卡
+  // 大多已经停用，挡掉它们只会让这些行落到「新建账户」，凭空多出一张同名卡。
+  // matcher 里用「启用优先」兜住歧义（有启用候选时只在启用账户里定案），
+  // 所以这里可以放心把全部账户交给它；下拉同样列全，排序把启用账户放前面。
   const accountDisplayOptions = useMemo(
-    () => activeBookAccounts
-      .map((account) => buildBookAccountDisplayOption(account, accountDisplaySettings))
-      .sort((a, b) => a.selectorLabel.localeCompare(b.selectorLabel, "zh-Hans-CN")),
-    [accountDisplaySettings, activeBookAccounts],
+    () => bookAccounts
+      .map((account) => ({ account, option: buildBookAccountDisplayOption(account, accountDisplaySettings) }))
+      .sort((a, b) => {
+        const activeDiff = Number(b.account.isActive !== false) - Number(a.account.isActive !== false);
+        return activeDiff !== 0 ? activeDiff : a.option.selectorLabel.localeCompare(b.option.selectorLabel, "zh-Hans-CN");
+      })
+      .map((entry) => entry.option),
+    [accountDisplaySettings, bookAccounts],
   );
   const accountDisplayById = useMemo(
     () => new Map(accountDisplayOptions.map((account) => [account.id, account])),
@@ -686,7 +688,7 @@ export function StatementImportPreviewDialog({
     const owners = Array.from(
       new Set([
         ...bookAccountGroups.map((group) => group.name?.trim() ?? ""),
-        ...activeBookAccounts.flatMap((account) => ownerNamesFromAccountGroup(account.AccountGroup)),
+        ...bookAccounts.flatMap((account) => ownerNamesFromAccountGroup(account.AccountGroup)),
       ]),
     )
       .filter((name) => Boolean(name) && !PLACEHOLDER_OWNER_NAMES.has(name))
@@ -696,7 +698,7 @@ export function StatementImportPreviewDialog({
     // 文件名只写了账户名（「朝朝宝交易流水.xlsx」）时，用账户反推所有人；
     // 只有该账户名在账本里唯一属于一个人时才采信，否则仍是歧义。
     const ownersByAccountName = new Map<string, Set<string>>();
-    for (const account of activeBookAccounts) {
+    for (const account of bookAccounts) {
       const name = account.name?.trim() ?? "";
       const owner = account.AccountGroup?.name?.trim() ?? "";
       if (!name || !owner || PLACEHOLDER_OWNER_NAMES.has(owner)) continue;
@@ -708,21 +710,21 @@ export function StatementImportPreviewDialog({
     const hit = byAccountName.find(([name]) => fileName.includes(name));
     if (hit && hit[1].size === 1) return [...hit[1]][0];
     return "";
-  }, [activeBookAccounts, bookAccountGroups, bookAccounts, sourceAccountId, sourceFileName, sourceOwnerName]);
+  }, [bookAccountGroups, bookAccounts, sourceAccountId, sourceFileName, sourceOwnerName]);
   const accountLookup = useMemo<PreviewAccountLookup | null>(
     () => {
       if (!settingsBootstrapLoaded) return null;
-      const matchAccount = createImportAccountMatcher(activeBookAccounts, { ownerName: contextOwnerName });
+      const matchAccount = createImportAccountMatcher(bookAccounts, { ownerName: contextOwnerName });
       // 「所有人」的写法 = 分组名 + 配对家庭成员的姓名与简称（2026-11-05 用户口径）。
       // 「墨的零钱」要和「墨斗鱼的零钱」解析出同一个所有人，否则会被当成新账户。
       const ownerNames = Array.from(
         new Set([
           ...bookAccountGroups.map((group) => group.name).filter(Boolean),
-          ...activeBookAccounts.flatMap((account) => ownerNamesFromAccountGroup(account.AccountGroup)),
+          ...bookAccounts.flatMap((account) => ownerNamesFromAccountGroup(account.AccountGroup)),
         ]),
       );
       return {
-        accountById: new Map(activeBookAccounts.map((account) => [account.id, account])),
+        accountById: new Map(bookAccounts.map((account) => [account.id, account])),
         resolveAccount: (accountName) => matchAccount(accountName).account,
         matchAccount,
         ownerNames,
@@ -736,7 +738,7 @@ export function StatementImportPreviewDialog({
         },
       };
     },
-    [bookAccountGroups, activeBookAccounts, bookCounterparties, contextOwnerName, settingsBootstrapLoaded],
+    [bookAccountGroups, bookAccounts, bookCounterparties, contextOwnerName, settingsBootstrapLoaded],
   );
   const accountResolveCacheRef = useRef(new Map<string, string>());
   useEffect(() => {

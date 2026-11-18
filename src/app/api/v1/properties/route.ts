@@ -32,6 +32,7 @@ import { AccountKind, Prisma, PropertyTransactionAction } from "@prisma/client";
 import { normalizeCurrency } from "@/lib/currency";
 import { normalizeFixedAssetType } from "@/lib/fixed-asset";
 import {
+  DepreciationMethod,
   normalizeDepreciationMethod,
   normalizeWeightUnit,
   resolveAssetDepreciation,
@@ -42,6 +43,7 @@ import { ensurePropertyTransactionCashFlow } from "@/lib/property/cashFlow";
 import { findUnsettledCollateralLoanAccounts } from "@/lib/server/collateral-mortgage";
 import { getApiHouseholdScope } from "@/lib/server/api-auth";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
+import { recordedDepreciationTotal, syncPropertyAssetDepreciations } from "@/lib/server/property-depreciation";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
 import { revalidateAfterInvestChange } from "@/lib/server/revalidate";
 
@@ -153,6 +155,13 @@ async function findCashAccount(accountId: string | null, householdId: string) {
   return account;
 }
 
+/** 折旧台账摘要（单资产详情 / 资产编辑弹窗用）。 */
+type AssetDepreciationSummary = {
+  periods: number;
+  recorded: number;
+  lastPeriod: string | null;
+};
+
 function serializeAsset(row: {
   id: string;
   accountId: string;
@@ -177,7 +186,7 @@ function serializeAsset(row: {
   latestValuationDate?: Date | null;
   status: string;
   note?: string | null;
-}) {
+}, depreciation?: AssetDepreciationSummary) {
   return {
     id: row.id,
     accountId: row.accountId,
@@ -202,6 +211,7 @@ function serializeAsset(row: {
     latestValuationDate: row.latestValuationDate ? formatDateUtc(row.latestValuationDate) : null,
     status: row.status,
     note: row.note ?? null,
+    depreciation: depreciation ?? { periods: 0, recorded: 0, lastPeriod: null },
   };
 }
 
@@ -261,6 +271,15 @@ export async function GET(req: NextRequest) {
     // 单资产详情：固定资产编辑弹窗要读整行（生产日期 / 重量 / 折旧等新列），
     // 而持仓列表走的是白名单 select，拿不到这些字段。
     const assetId = req.nextUrl.searchParams.get("assetId")?.trim() || "";
+    // 单资产详情就是「用户点开编辑」这一刻：顺手把折旧台账补到当前月，
+    // 弹窗里的「已计提 N 期」不会落后于定时任务一轮。
+    if (assetId) {
+      try {
+        await syncPropertyAssetDepreciations({ householdId, propertyAssetId: assetId });
+      } catch {
+        // 补记失败不影响详情读取，系统任务下一轮会补。
+      }
+    }
 
     const [assets, transactions, linkedTransaction] = await Promise.all([
       prisma.propertyAsset.findMany({
@@ -298,10 +317,32 @@ export async function GET(req: NextRequest) {
         : Promise.resolve(null),
     ]);
 
+    // 折旧台账摘要：一次 groupBy 拿到每项资产的已计提期数、累计金额、最近一期，
+    // 不逐资产查（资产数会到几十个）。
+    const depreciationGroups = assets.length > 0
+      ? await prisma.propertyAssetDepreciation.groupBy({
+          by: ["propertyAssetId"],
+          where: { propertyAssetId: { in: assets.map((asset) => asset.id) } },
+          _count: { _all: true },
+          _sum: { amount: true },
+          _max: { periodMonth: true },
+        })
+      : [];
+    const depreciationByAsset = new Map<string, AssetDepreciationSummary>(
+      depreciationGroups.map((group) => [
+        group.propertyAssetId,
+        {
+          periods: group._count._all,
+          recorded: toNumber(group._sum.amount ?? 0),
+          lastPeriod: group._max.periodMonth ? formatDateUtc(group._max.periodMonth) : null,
+        },
+      ]),
+    );
+
     return NextResponse.json({
       ok: true,
       data: {
-        assets: assets.map(serializeAsset),
+        assets: assets.map((asset) => serializeAsset(asset, depreciationByAsset.get(asset.id))),
         transactions: transactions.map(serializeTransaction),
         linkedTransaction: linkedTransaction
           ? {
@@ -455,11 +496,16 @@ export async function POST(req: NextRequest) {
               unsettledCollateralMessage(unsettledCollaterals.map((account) => account.name)),
             );
           }
-          // 终止时把累计折旧结算下来落到资产上：直线法按日期推算的部分 + 本次填写的
-          // 折损/折旧（body.depreciation），上限是成本（不能折成负数净值）。
+          // 终止时把累计折旧结算下来落到资产上：
+          //   直线法部分 = 折旧台账已生成的累计（2026-11-18 起按月自动落账）；
+          //   台账还没补到这天（老数据 / 定时任务未跑）时退回按日期推算；
+          //   再叠加手工登记的额外折损/减值 + 本次填写的折损/折旧（body.depreciation）。
+          // 上限是成本（不能折成负数净值）。
           const depreciationAtTrade = resolveAssetDepreciation(existingAsset, formatDateUtc(tradeDate));
+          const recorded = await recordedDepreciationTotal(existingAsset.id, tx);
+          const autoPart = recorded > 0 ? recorded : depreciationAtTrade.autoAccumulated;
           const impairment = parseOptionalNonNegativeNumber(body.depreciation) ?? 0;
-          settledAccumulated = Math.min(nextCost, depreciationAtTrade.accumulated + impairment);
+          settledAccumulated = Math.min(nextCost, autoPart + depreciationAtTrade.manualAccumulated + impairment);
           if (partialLossRatio != null) {
             // 损耗：折损掉的那部分价值进本期损失，剩下 1−折损率 的净值原样重新入库。
             const netBookValueBeforeLoss = Math.max(0, nextCost - settledAccumulated);
@@ -738,6 +784,15 @@ export async function PUT(req: NextRequest) {
       return updatedAsset;
     });
     revalidateAfterInvestChange();
+    // 折旧设定落到直线法（或改了年限 / 残值 / 购入日）时立刻补记历史期间：
+    // 用户点保存后就要看到台账，不等下一轮 10 分钟的系统任务。
+    if (updated.status === "active" && updated.depreciationMethod === DepreciationMethod.straightLine) {
+      try {
+        await syncPropertyAssetDepreciations({ householdId, propertyAssetId });
+      } catch {
+        // 补记失败不回滚资产设置：系统任务下一轮会再补。
+      }
+    }
     return NextResponse.json({ ok: true, data: { asset: serializeAsset(updated) } }, { headers: corsHeaders() });
   } catch (error) {
     return NextResponse.json(

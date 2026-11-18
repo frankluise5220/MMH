@@ -13,6 +13,16 @@
  */
 import { prisma } from "@/lib/db/prisma";
 import { ensureDefaultFundQueryApisThrottled } from "@/lib/fund/queryApiDefaults";
+import { getOrCreateMasterKey, decrypt, isEncrypted } from "@/lib/auth/encrypt";
+import {
+  normalizeFundJsonParserConfig,
+  parseFundJsonNav,
+  parseNavDate,
+  parseNavNumber,
+  validateFundJsonParserConfig,
+  type FundJsonParserConfig,
+  type NavParseContext,
+} from "@/lib/fund/json-parser";
 
 type NavResult = {
   nav: number;
@@ -21,15 +31,26 @@ type NavResult = {
   date: string;
 } | null;
 
+/** 按返回报文解析净值的函数；`ctx` 只给需要按目标日挑选的源用（区间型 JSON 源）。 */
+type NavParser = (data: any, ctx: NavParseContext) => NavResult;
+
 type FundQueryApiConfig = {
   id: string;
   code: string;
+  /** 解析器标识；为空时沿用 `code`（兼容 `code` 就是解析器的存量数据）。 */
+  parser: string | null;
+  /** 仅 `parser = "json"` 的源使用：字段路径与鉴权方式。 */
+  parserConfig: unknown;
   name: string;
   baseUrl: string;
+  apiKey: string | null;
   priority: number;
   isActive: boolean;
   householdId: string | null;
 };
+
+/** 配置驱动的 JSON 源的解析器标识。 */
+export const CUSTOM_JSON_PARSER = "json";
 
 type FundIdentityResult = {
   code: string;
@@ -85,42 +106,120 @@ const MAX_FUND_QUERY_API_ATTEMPTS = 3;
  */
 const NAV_FETCH_TIMEOUT_MS = 8_000;
 
-async function fetchFromUrl(
+/** 一条源实际使用的解析器标识：新数据看 `parser`，存量数据回退到 `code`。 */
+function parserCodeOf(api: Pick<FundQueryApiConfig, "code" | "parser">): string {
+  return (api.parser ?? api.code ?? "").trim();
+}
+
+/** 只有 `parser = "json"` 的源才有配置；其余返回 null，走代码里的内置解析器。 */
+function jsonConfigOf(
+  api: Pick<FundQueryApiConfig, "code" | "parser" | "parserConfig">,
+): FundJsonParserConfig | null {
+  if (parserCodeOf(api) !== CUSTOM_JSON_PARSER) return null;
+  return normalizeFundJsonParserConfig(api.parserConfig);
+}
+
+/**
+ * 库里的 key 是密文（新写入的）或明文（2026-11 之前写入的），取数时才解密。
+ * 解密失败按「没配 key」处理：源可能因此返回 401，但那比抛错让整批导入失败好。
+ */
+async function resolveApiKey(raw: string | null | undefined): Promise<string> {
+  const value = (raw ?? "").trim();
+  if (!value) return "";
+  if (!isEncrypted(value)) return value;
+  try {
+    return decrypt(value, await getOrCreateMasterKey());
+  } catch {
+    return "";
+  }
+}
+
+function buildRequestHeaders(
+  config: FundJsonParserConfig | null,
+  apiKey: string,
+): Record<string, string> {
+  const result: Record<string, string> = { ...headers };
+  if (config && config.authIn === "header" && config.authName && apiKey) {
+    result[config.authName] = `${config.authPrefix}${apiKey}`;
+  }
+  return result;
+}
+
+/** key 走 URL 参数时用；地址不是合法 URL 就原样返回，不因为鉴权把请求搞坏。 */
+function appendQueryParam(url: string, name: string, value: string): string {
+  try {
+    const parsed = new URL(url);
+    parsed.searchParams.set(name, value);
+    return parsed.toString();
+  } catch {
+    return url;
+  }
+}
+
+type SourceFetchResult = {
+  result: NavResult;
+  /** 原始报文前若干字符，仅「测试连接」回显用。 */
+  raw?: string;
+};
+
+const RAW_PREVIEW_LIMIT = 4_000;
+
+async function fetchUrl(
+  api: FundQueryApiConfig,
   url: string,
-  parser: (data: any) => NavResult,
+  parser: NavParser,
+  ctx: NavParseContext,
   onOutcome?: (outcome: { outcome: FundNavQueryAttempt["outcome"]; status?: number; message?: string }) => void,
-): Promise<NavResult> {
+): Promise<SourceFetchResult> {
+  const config = jsonConfigOf(api);
+
+  let requestUrl = url;
+  let requestHeaders: Record<string, string> = { ...headers };
+  if (config) {
+    const apiKey = await resolveApiKey(api.apiKey);
+    if (apiKey && config.authIn === "header" && config.authName) {
+      requestHeaders = buildRequestHeaders(config, apiKey);
+    } else if (apiKey && config.authIn === "query" && config.authName) {
+      requestUrl = appendQueryParam(requestUrl, config.authName, apiKey);
+    }
+  }
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), NAV_FETCH_TIMEOUT_MS);
   try {
-    const res = await fetch(url, { headers, cache: "no-store", signal: controller.signal });
+    const res = await fetch(requestUrl, {
+      headers: requestHeaders,
+      cache: "no-store",
+      signal: controller.signal,
+    });
     if (!res.ok) {
       onOutcome?.({ outcome: "http_error", status: res.status });
-      return null;
+      return { result: null };
     }
     const text = await res.text();
+    const raw = text.slice(0, RAW_PREVIEW_LIMIT);
     let data: any;
     try { data = JSON.parse(text); } catch {
       // Tiantian Fund returns data in JS format
       const m = text.match(/\{.+\}/);
       if (!m) {
         onOutcome?.({ outcome: "parse_error", message: "no json payload in response" });
-        return null;
+        return { result: null, raw };
       }
       try { data = JSON.parse(m[0]); } catch {
         onOutcome?.({ outcome: "parse_error", message: "invalid json payload" });
-        return null;
+        return { result: null, raw };
       }
     }
-    const result = parser(data);
+    const result = parser(data, ctx);
     onOutcome?.({ outcome: result ? "ok" : "empty" });
-    return result;
+    return { result, raw };
   } catch (error) {
     onOutcome?.({
       outcome: "network_error",
       message: error instanceof Error ? error.message : String(error),
     });
-    return null;
+    return { result: null };
   } finally {
     clearTimeout(timer);
   }
@@ -191,29 +290,10 @@ function findValueByKeys(data: unknown, keys: string[], depth = 0): unknown {
   return undefined;
 }
 
-function parseNumberValue(value: unknown): number | undefined {
-  const raw = String(value ?? "").replace(/,/g, "").trim();
-  const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? n : undefined;
-}
-
-function parseDateValue(value: unknown): string | undefined {
-  const raw = String(value ?? "").trim();
-  if (!raw) return undefined;
-  const dashed = raw.match(/\d{4}-\d{1,2}-\d{1,2}/)?.[0];
-  if (dashed) {
-    const [y, m, d] = dashed.split("-").map((part) => part.padStart(2, "0"));
-    return `${y}-${m}-${d}`;
-  }
-  const compact = raw.match(/\d{8}/)?.[0];
-  if (compact) return `${compact.slice(0, 4)}-${compact.slice(4, 6)}-${compact.slice(6, 8)}`;
-  return undefined;
-}
-
 // Alipay/Ant Fortune field names vary across API versions, so only read explicit NAV
 // fields here instead of broadly guessing numbers.
 function parseAlipay(data: any): NavResult {
-  const nav = parseNumberValue(findValueByKeys(data, [
+  const nav = parseNavNumber(findValueByKeys(data, [
     "nav",
     "netValue",
     "unitNetValue",
@@ -223,14 +303,14 @@ function parseAlipay(data: any): NavResult {
   ]));
   if (!nav) return null;
 
-  const cumNav = parseNumberValue(findValueByKeys(data, [
+  const cumNav = parseNavNumber(findValueByKeys(data, [
     "cumNav",
     "totalNetValue",
     "accumulatedNetValue",
     "accumulativeNetValue",
     "ljjz",
   ]));
-  const date = parseDateValue(findValueByKeys(data, [
+  const date = parseNavDate(findValueByKeys(data, [
     "date",
     "navDate",
     "netValueDate",
@@ -316,12 +396,64 @@ export async function queryFundIdentity(fundCode: string): Promise<FundIdentityR
   return null;
 }
 
-const PARSERS: Record<string, (data: any) => NavResult> = {
+const PARSERS: Record<string, NavParser> = {
   eastmoney: parseEastmoney,
   eastmoney_history: parseEastmoneyHistory,
   danjuan: parseDanjuan,
   alipay: parseAlipay,
 };
+
+/**
+ * 一条源最终用哪个解析器。
+ *
+ * `json` 是配置驱动的那一类：拿库里的 `parserConfig` 现编一个解析器，配置缺字段
+ * 时返回 null（宁可这条源不参与取数，也不要每条净值都解析失败刷一堆诊断）。
+ * 其余按标识查表；查不到（例如存量数据里手填的 `sina`）也返回 null。
+ */
+function resolveParser(
+  api: Pick<FundQueryApiConfig, "code" | "parser" | "parserConfig">,
+): NavParser | null {
+  const code = parserCodeOf(api);
+  if (code === CUSTOM_JSON_PARSER) {
+    const config = jsonConfigOf(api);
+    if (!config || validateFundJsonParserConfig(config).length > 0) return null;
+    return (data, ctx) => {
+      const value = parseFundJsonNav(data, config, ctx);
+      if (!value) return null;
+      return {
+        date: value.date,
+        nav: value.nav,
+        cumNav: value.cumNav,
+        name: normalizeFundName(value.name) ?? undefined,
+      };
+    };
+  }
+  return PARSERS[code] ?? null;
+}
+
+/**
+ * 这条源能不能按指定日期取净值。
+ *
+ * 地址里有 `{date}` 直接算支持；`series` 模式的 JSON 源一次拿一段序列、自己从中
+ * 挑目标日，地址里没有占位符也算支持。其余（只能取最新净值的源）在「按确认日取
+ * 净值」时必须跳过，否则会把今天的净值记到历史确认日上。
+ */
+function apiSupportsDate(api: FundQueryApiConfig): boolean {
+  if (api.baseUrl.includes("{date}")) return true;
+  return jsonConfigOf(api)?.dateMode === "series";
+}
+
+/**
+ * 占位符替换。`{code}` 会被拼上配置里的后缀（同花顺一类的 `thscode` 要求
+ * `000001.SZ` 这种带市场后缀的写法），内置源没有配置，行为与以前一致。
+ */
+function buildRequestUrl(api: FundQueryApiConfig, fundCode: string, dateStr?: string): string {
+  const config = jsonConfigOf(api);
+  const code = `${fundCode}${config?.codeSuffix ?? ""}`;
+  let url = api.baseUrl.replaceAll("{code}", code);
+  if (dateStr) url = url.replaceAll("{date}", dateStr);
+  return url;
+}
 
 type FundProfileResult = {
   code: string;
@@ -547,23 +679,24 @@ export async function queryFundNav(
   }
 
   // Try at most three valid APIs after account and institution priority rules are applied.
-  const candidateApis = orderedApis
-    .filter((api) => PARSERS[api.code] && (!dateStr || api.baseUrl.includes("{date}")))
+  const candidates = orderedApis
+    .map((api) => ({ api, parser: resolveParser(api) }))
+    .filter(
+      (item): item is { api: FundQueryApiConfig; parser: NavParser } =>
+        Boolean(item.parser) && (!dateStr || apiSupportsDate(item.api)),
+    )
     .slice(0, MAX_FUND_QUERY_API_ATTEMPTS);
+  const candidateApis = candidates.map((item) => item.api);
 
   if (diagnostics) {
     diagnostics.candidateApis = candidateApis.map((api) => `${api.code}@${urlHost(api.baseUrl)}`);
     if (candidateApis.length === 0) diagnostics.reason = "NO_MATCHING_API";
   }
 
-  for (const api of candidateApis) {
-    const parser = PARSERS[api.code]!;
+  for (const { api, parser } of candidates) {
+    const url = buildRequestUrl(api, fundCode, dateStr);
 
-    let url = api.baseUrl;
-    url = url.replaceAll("{code}", fundCode);
-    if (dateStr) url = url.replaceAll("{date}", dateStr);
-
-    const result = await fetchFromUrl(url, parser, (outcome) => {
+    const { result } = await fetchUrl(api, url, parser, { targetDate: dateStr }, (outcome) => {
       attempts.push({ code: api.code, host: urlHost(url), ...outcome });
     });
     if (result) {
@@ -584,4 +717,177 @@ export async function queryFundNav(
   if (diagnostics && diagnostics.reason === undefined) diagnostics.reason = "ALL_FAILED";
 
   return null;
+}
+
+export type FundApiProbeResult = {
+  ok: boolean;
+  code: string;
+  fundCode: string;
+  /** 实际请求的地址（占位符已替换），失败时也让用户看到到底请求了哪里 */
+  url?: string;
+  /** `{date}` 被替换成的日期（地址不含 `{date}` 时为空） */
+  queriedDate?: string;
+  nav?: number;
+  cumNav?: number | null;
+  navDate?: string;
+  /** 失败原因码，前端据此选文案 */
+  reason?:
+    | "UNKNOWN_PARSER"
+    | "MISSING_PLACEHOLDER"
+    | "INVALID_FUND_CODE"
+    | "INVALID_URL"
+    | "CONFIG_INVALID"
+    | "REQUEST_FAILED"
+    | "NO_DATA";
+  outcome?: FundNavQueryAttempt["outcome"];
+  status?: number;
+  message?: string;
+  /** 解析配置本身的问题（`parser = "json"` 时）；有值时不必发请求。 */
+  configErrors?: string[];
+  /**
+   * 原始报文的前若干字符。
+   *
+   * 自定义 JSON 源要用户自己填字段路径，不给看返回长什么样是配不出来的 ——
+   * 失败时同样回显，「返回 200 但取不到值」才有可查的线索。
+   */
+  rawPreview?: string;
+};
+
+/** 探测默认用的基金代码：华夏成长，长期存续，任何源都该有这个代码。 */
+const PROBE_FUND_CODE = "000001";
+/** 含 `{date}` 的地址最多往前回退几天（够覆盖周末与短假）。 */
+const PROBE_DATE_LOOKBACK_DAYS = 6;
+
+function shiftYmd(ymd: string, days: number): string {
+  const [y, m, d] = ymd.split("-").map(Number);
+  return new Date(Date.UTC(y, m - 1, d) + days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
+/**
+ * 试算一条净值源：用真实基金代码发一次真实请求，回答「地址对不对 / 解析器认不认 / 拿到哪天多少净值」。
+ *
+ * 设置页新增源之前必须过这一关：解析器决定怎么拆返回内容，识别不出的源会被
+ * `queryFundNav` 的候选源过滤掉，永远不参与取数，而界面上仍然显示「已启用」。
+ * 自定义 JSON 源还需要看到原始报文才能填对字段路径，所以一并回显。
+ */
+export async function probeFundQueryApi(options: {
+  code: string;
+  /** 解析器标识；省略时沿用 `code`（兼容 `code` 就是解析器的存量数据）。 */
+  parser?: string;
+  parserConfig?: unknown;
+  baseUrl: string;
+  /** 用户刚输入的明文 key；库里存的密文也接受，取数时会先解密。 */
+  apiKey?: string;
+  fundCode?: string;
+  /** 探测基准日（业务日期 YYYY-MM-DD，由调用方按账本时区算好）；支持按日期查询的源从这天起往前找最近一个有净值的交易日 */
+  date: string;
+}): Promise<FundApiProbeResult> {
+  const code = options.code.trim();
+  const baseUrl = options.baseUrl.trim();
+  const fundCode = options.fundCode?.trim() || PROBE_FUND_CODE;
+  const base: FundApiProbeResult = { ok: false, code, fundCode };
+  const api: FundQueryApiConfig = {
+    id: "probe",
+    code,
+    parser: (options.parser ?? code).trim() || null,
+    parserConfig: options.parserConfig ?? null,
+    name: "",
+    baseUrl,
+    apiKey: options.apiKey ?? null,
+    priority: 0,
+    isActive: true,
+    householdId: null,
+  };
+
+  const parser = resolveParser(api);
+  if (!parser) {
+    const configErrors =
+      parserCodeOf(api) === CUSTOM_JSON_PARSER ? validateFundJsonParserConfig(api.parserConfig) : [];
+    if (configErrors.length > 0) {
+      return {
+        ...base,
+        reason: "CONFIG_INVALID",
+        configErrors,
+        message: `解析配置不完整：${configErrors.join("；")}`,
+      };
+    }
+    return {
+      ...base,
+      reason: "UNKNOWN_PARSER",
+      message: `未知的解析器：${parserCodeOf(api)}（可用：${[CUSTOM_JSON_PARSER, ...Object.keys(PARSERS)].join(" / ")}）`,
+    };
+  }
+  if (!/^\d{6}$/.test(fundCode)) {
+    return { ...base, reason: "INVALID_FUND_CODE", message: "基金代码必须是 6 位数字" };
+  }
+  try {
+    const parsed = new URL(baseUrl);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return { ...base, reason: "INVALID_URL", message: "请求地址只支持 http/https" };
+    }
+  } catch {
+    return { ...base, reason: "INVALID_URL", message: "请求地址不是合法 URL" };
+  }
+  if (!baseUrl.includes("{code}")) {
+    return { ...base, reason: "MISSING_PLACEHOLDER", message: "请求地址里缺少 {code} 占位符" };
+  }
+
+  const needsDate = apiSupportsDate(api);
+  const anchor = options.date.trim();
+  const dates = needsDate
+    ? Array.from({ length: PROBE_DATE_LOOKBACK_DAYS + 1 }, (_, index) => shiftYmd(anchor, -index))
+    : [anchor];
+
+  let last = {
+    url: "",
+    outcome: "empty" as FundNavQueryAttempt["outcome"],
+    status: undefined as number | undefined,
+    message: undefined as string | undefined,
+    raw: undefined as string | undefined,
+  };
+  for (const dateStr of dates) {
+    const url = buildRequestUrl(api, fundCode, dateStr);
+    last = { url, outcome: "empty", status: undefined, message: undefined, raw: undefined };
+    const { result, raw } = await fetchUrl(api, url, parser, { targetDate: dateStr }, (outcome) => {
+      last = {
+        url,
+        outcome: outcome.outcome,
+        status: outcome.status,
+        message: outcome.message,
+        raw: last.raw,
+      };
+    });
+    if (result) {
+      return {
+        ...base,
+        ok: true,
+        url,
+        queriedDate: needsDate ? dateStr : undefined,
+        nav: result.nav,
+        cumNav: result.cumNav ?? null,
+        navDate: result.date,
+        rawPreview: raw,
+      };
+    }
+    if (raw) last = { ...last, raw };
+  }
+
+  // 把底层错误换成用户能自己动手排查的说法：域名不通 / HTTP 状态 / 返回不是净值。
+  const host = last.url ? urlHost(last.url) : baseUrl;
+  const message =
+    last.outcome === "network_error"
+      ? `无法连接 ${host}（域名解析或网络不通，原始错误：${last.message ?? "unknown"}）`
+      : last.outcome === "http_error"
+        ? `HTTP ${last.status ?? "?"}`
+        : last.outcome === "parse_error"
+          ? `返回内容不是可解析的净值数据（${last.message ?? "unknown"}）`
+          : last.message;
+
+  return {
+    ...base,
+    ...last,
+    rawPreview: last.raw,
+    message,
+    reason: last.outcome === "empty" ? "NO_DATA" : "REQUEST_FAILED",
+  };
 }

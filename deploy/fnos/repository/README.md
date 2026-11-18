@@ -29,7 +29,7 @@ mmh-fnos-v0.1.x-arm64.fpk
 https://raw.githubusercontent.com/frankluise5220/MMH/main/deploy/fnos/repository
 ```
 
-这个源返回的 `download_url` 默认指向 VPS 托管的 x86_64 包 `http://fnapp.floatingice.win/apps/mmh-0.1.x.fpk`；`download_urls.x86_64` 使用同一个 VPS 包地址，`download_urls.arm64` 指向 GitHub Release 中的 `mmh-fnos-v0.1.x-arm64.fpk`。如果 VPS 后续也托管 arm64 包，再把 arm64 地址切到同一域名下。
+这个源返回的 `download_url` 默认指向 VPS 托管的 x86_64 包 `http://fnapp.floatingice.win/apps/mmh-0.1.x.fpk`；`download_urls.x86_64` 使用同一个 VPS 包地址，`download_urls.arm64` 指向 GitHub Release 中的 `mmh-fnos-v0.1.x-arm64.fpk`。arm64 故意留在 GitHub：这是 FnDepot（GitHub 侧静态源）的口径，与 VPS 自建源 `deploy/fnos/selfhosted-source/data/fn-appstores.json`（x86/arm 都本地托管）不同，改一处不要顺手改另一处。
 
 源文件字段包括：
 

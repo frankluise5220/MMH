@@ -4,6 +4,7 @@ import { ModalLayer } from "@/components/ModalLayer";
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 /** 记账弹窗整窗外壳：宽度/标题栏/表单/FT 页签卡片/固定页脚/高度锁定统一由它负责。 */
 import { EntryModalShell } from "@/components/EntryModalShell";
+import { EntryConvertHeaderAction } from "@/components/EntryConvertHeaderAction";
 
 import { Repeat } from "lucide-react";
 import { DateStepper } from "./DateStepper";
@@ -600,13 +601,15 @@ export function InsuranceFormModal({
 
   function resetForm(defaults?: {
     requestId?: string | null;
+    defaultSubtype?: string;
     defaultCashAccountId?: string;
     defaultInsuranceAccountId?: string;
     defaultDate?: string;
     defaultAmount?: string;
   }) {
     const presetDate = defaults?.defaultDate && /^\d{4}-\d{2}-\d{2}$/.test(defaults.defaultDate) ? defaults.defaultDate : today;
-    setSubtype("buy");
+    // 转换「流入交易」：同一笔钱进来对应的是退保页签，不是缴费。
+    setSubtype(defaults?.defaultSubtype === "redeem" ? "redeem" : "buy");
     setDate(presetDate);
     setArrivalDate(presetDate);
     arrivalDateTouchedRef.current = false;
@@ -773,6 +776,7 @@ export function InsuranceFormModal({
     function onCreate(ev: Event) {
       const detail = (ev as CustomEvent<{
         requestId: string;
+        defaultSubtype?: string;
         defaultCashAccountId?: string;
         defaultInsuranceAccountId?: string;
         defaultDate?: string;
@@ -780,6 +784,7 @@ export function InsuranceFormModal({
       }>).detail;
       resetForm({
         requestId: detail?.requestId ?? null,
+        defaultSubtype: detail?.defaultSubtype,
         defaultCashAccountId: detail?.defaultCashAccountId,
         defaultInsuranceAccountId: detail?.defaultInsuranceAccountId ?? defaultAccountId,
         defaultDate: detail?.defaultDate,
@@ -941,6 +946,25 @@ export function InsuranceFormModal({
           setOpen(false);
           if (mode === "create") resetForm();
         }}
+        headerExtra={(
+          <EntryConvertHeaderAction
+            source={isEditingRecord ? {
+              entryId: editEntryId ?? entry?.id ?? null,
+              type: "insurance",
+              date,
+              amount,
+              note: memo,
+              accountId: cashAccountId,
+              cashAccountId,
+              // 退保是钱进来、缴费是钱出去：转换菜单只列同向目标。
+              inflow: subtype === "redeem",
+            } : null}
+            onBeforeConvert={() => {
+              setOpen(false);
+              resetForm();
+            }}
+          />
+        )}
         onSubmit={onSubmit}
         tabs={[
           { id: "buy", label: t("insuranceFormModal.buy") },

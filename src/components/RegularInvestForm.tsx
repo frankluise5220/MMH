@@ -65,7 +65,8 @@ const ACCOUNT_KIND_LABEL_KEYS: Record<string, string> = {
   loan: "account.kind.loan",
   insurance: "account.kind.insurance",
   other: "account.kind.other",
-  bank_savings: "account.kind.bank_savings",
+  // 历史别名，库里不存在该 kind：统一按借记卡显示。
+  bank_savings: "account.kind.bank_debit",
 };
 
 function accountKindLabel(t: (key: string) => string, kind: string) {

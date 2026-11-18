@@ -18,6 +18,7 @@ import { isEntryConversionRequest } from "@/lib/client/entry-conversion";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
 /** 记账弹窗整窗外壳：宽度/标题栏/表单/FT 页签卡片/固定页脚/高度锁定统一由它负责。 */
 import { EntryModalShell } from "@/components/EntryModalShell";
+import { EntryConvertHeaderAction } from "@/components/EntryConvertHeaderAction";
 import { recordRecentAccounts, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
 import {
   invalidateStockHoldingsCache,
@@ -711,6 +712,8 @@ export function StockTransactionFormModal({
    * （股息税 includeZero=1，卖出/分红按交易日回放），数量也要跟着重算。
    */
   const pendingHoldingResyncRef = useRef(false);
+  /** 用户自己填过数量：切页签重算时不要拿持仓量覆盖它（换股票 / 重新打开时复位）。 */
+  const quantityEditedRef = useRef(false);
 
   function changeModalAction(nextAction: StockModalAction) {
     // 离开逆回购页签就退出编辑态，否则标题与「保存并继续」的显示会错位。
@@ -730,7 +733,9 @@ export function StockTransactionFormModal({
       setQuantity("");
       return;
     }
-    if (nextAction !== "sell") setQuantity("");
+    // 买入和卖出填的都是股数，切页签保留已填数量（2026-11-18：页签切换不该把数字清掉）；
+    // 分红/股本变动/股息税的数量口径不同，仍然清空。
+    if (nextAction !== "buy" && nextAction !== "sell") setQuantity("");
     if (nextAction === "buy") {
       // 买入靠代码输入框识别证券，留着 securityId 会让代码和证券对不上（用户接着改代码时尤其危险）。
       setSelectedSecurityId("");
@@ -760,7 +765,8 @@ export function StockTransactionFormModal({
     setStockCode(holding.stockCode);
     setStockName(holding.stockName?.trim() || holding.stockCode);
     setQuantity(action === "sell" ? formatStockQuantity(holding.quantity, language) : "");
-    // 换了一只股票，之前手填的合计不再对应这笔成交。
+    // 换了一只股票：数量按新持仓带出，之前手填的合计也不再对应这笔成交。
+    quantityEditedRef.current = false;
     setAmountTotalOverride(null);
   }
 
@@ -892,6 +898,7 @@ export function StockTransactionFormModal({
 
   /** 改数量/单价：手填的那笔「金额合计」就不再对应这次成交，回到自动。 */
   function handleQuantityInput(value: string) {
+    quantityEditedRef.current = true;
     setQuantity(value);
     setAmountTotalOverride(null);
   }
@@ -1025,6 +1032,7 @@ export function StockTransactionFormModal({
     setTradeDate(detail?.defaultDate ?? todayDateInputValue());
     setSettleDate("");
     setQuantity("");
+    quantityEditedRef.current = false;
     setPrice("");
     setGrossAmount(detail?.defaultAmount ? String(detail.defaultAmount) : "");
     setNetAmount("");
@@ -1078,6 +1086,7 @@ export function StockTransactionFormModal({
     setTradeDate(tx.tradeDate || todayDateInputValue());
     setSettleDate(tx.settleDate ?? "");
     setQuantity(tx.quantity == null ? "" : formatStockQuantity(Number(tx.quantity), language));
+    quantityEditedRef.current = true;
     setPrice(tx.price == null ? "" : String(Number(tx.price)));
     setGrossAmount(tx.grossAmount == null ? "" : formatAmountDraft(tx.grossAmount));
     setNetAmount(tx.netAmount == null ? "" : formatAmountDraft(tx.netAmount));
@@ -1602,7 +1611,10 @@ export function StockTransactionFormModal({
       setStockCode(holding.stockCode);
       setStockName(holding.stockName?.trim() || holding.stockCode);
     }
-    setQuantity(action === "sell" && holding ? formatStockQuantity(holding.quantity, language) : "");
+    // 用户自己填过数量就留着；没填过才按新页签口径带出（卖出 = 当日可卖数量）。
+    if (!quantityEditedRef.current) {
+      setQuantity(action === "sell" && holding ? formatStockQuantity(holding.quantity, language) : "");
+    }
     setAmountTotalOverride(null);
   }, [action, editingId, language, needsHoldingPicker, open, selectedSecurityId, sellHoldings, sellHoldingsLoading, stockCode]);
 
@@ -1895,6 +1907,24 @@ export function StockTransactionFormModal({
         width="md"
         title={repoEditing ? t("repoForm.editTitle") : editingId ? t("stockTx.editTitle") : t("stockTx.title")}
         onClose={close}
+        headerExtra={(
+          <EntryConvertHeaderAction
+            source={editingId || repoEditing?.entryId ? {
+              entryId: editingId ?? repoEditing?.entryId ?? null,
+              type: "stock",
+              // 卖出 / 现金分红是钱进来，买入是钱出去：转换菜单只列同向目标。
+              inflow: action === "sell" || action === "dividend",
+              date: repoEditing ? repoEditing.tradeDate : tradeDate,
+              amount: repoEditing
+                ? repoEditing.principal
+                : (Number(quantity) || 0) * (Number(price) || 0),
+              note: repoEditing ? repoEditing.note : note,
+              accountId: stockAccountId,
+              cashAccountId: repoEditing ? repoEditing.cashAccountId : cashAccountId,
+            } : null}
+            onBeforeConvert={close}
+          />
+        )}
         closeLabel={<X className="h-4 w-4" />}
         closeTitle={t("stockTx.close")}
         onSubmit={submit}

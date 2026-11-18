@@ -81,6 +81,7 @@ export const KNOWN_BACKUP_DATA_TABLES = [
   "stockFeeRules",
   "stockMarketFeeRules",
   "propertyAssets",
+  "propertyAssetDepreciations",
   "propertyValuations",
   "propertyTransactions",
   "entryBusinessLinks",

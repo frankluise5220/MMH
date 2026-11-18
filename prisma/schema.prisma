@@ -508,18 +508,23 @@ model FundProfile {
 }
 
 model FundQueryApi {
-  id          String     @id @default(cuid())
-  name        String
-  code        String     @unique
-  baseUrl     String
-  apiKey      String?
-  priority    Int        @default(0)
-  isActive    Boolean    @default(true)
-  householdId String?
-  createdAt   DateTime   @default(now())
-  updatedAt   DateTime   @default(now()) @updatedAt
-  Account     Account[]
-  Household   Household? @relation(fields: [householdId], references: [id])
+  id           String     @id @default(cuid())
+  name         String
+  code         String     @unique
+  baseUrl      String
+  apiKey       String?
+  /// 解析器标识（eastmoney / eastmoney_history / danjuan / alipay / json）。
+  /// 为空时沿用 `code`：2026-11 之前 `code` 本身就是解析器。
+  parser       String?
+  /// 自定义 JSON 源（parser = "json"）的取值配置：字段路径 + 鉴权方式。
+  parserConfig Json?
+  priority     Int        @default(0)
+  isActive     Boolean    @default(true)
+  householdId  String?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @default(now()) @updatedAt
+  Account      Account[]
+  Household    Household? @relation(fields: [householdId], references: [id])
 }
 
 model FundSnapshot {
@@ -1109,6 +1114,7 @@ model PropertyAsset {
   MortgageLoanAccount   Account?              @relation("MortgageLoanAccountToPropertyAsset", fields: [mortgageLoanAccountId], references: [id], onDelete: SetNull)
   Valuations            PropertyValuation[]
   Transactions          PropertyTransaction[]
+  Depreciations         PropertyAssetDepreciation[]
 
   @@index([householdId, accountId])
   @@index([householdId, mortgageLoanAccountId])
@@ -1134,6 +1140,39 @@ model PropertyValuation {
   @@index([householdId, valuationDate])
   @@index([propertyAssetId, valuationDate])
   @@map("property_valuations")
+}
+
+/// 固定资产折旧台账（2026-11-18 用户裁定）。
+///
+/// 设定直线法折旧后，系统按**月**自动生成一条记录：金额恒定 =
+/// （成本 − 残值）÷ 折旧月数，从购入月起补记到当前月；年折旧率 = 1/年限
+/// （10 年报废 = 每年 10%）。处置/售出时以台账累计定格。
+///
+/// 折旧是**账面价值减少**，不是现金支出：本表不产生 TxRecord、不改账户余额、
+/// 不进收支报表。口径实现见 src/lib/fixed-asset-depreciation.ts 与
+/// src/lib/server/property-depreciation.ts。
+model PropertyAssetDepreciation {
+  id                String        @id @default(cuid())
+  householdId       String
+  propertyAssetId   String
+  /// 计提所属月：该月 1 日 UTC 零点（date-only 契约）。
+  periodMonth       DateTime
+  /// 本期折旧额。
+  amount            Decimal       @db.Decimal(18, 2)
+  /// 计提后的累计折旧（封顶可折旧基数，四舍五入收敛到最后一期）。
+  accumulatedAfter  Decimal       @db.Decimal(18, 2)
+  /// 计提时冻结的口径快照，便于审计（成本 / 残值 / 折旧月数）。
+  basisCost         Decimal       @db.Decimal(18, 2)
+  basisSalvage      Decimal       @db.Decimal(18, 2)
+  basisMonths       Int
+  method            String        @default("straight_line")
+  createdAt         DateTime      @default(now())
+  Household         Household     @relation(fields: [householdId], references: [id], onDelete: Cascade)
+  PropertyAsset     PropertyAsset @relation(fields: [propertyAssetId], references: [id], onDelete: Cascade)
+
+  @@unique([propertyAssetId, periodMonth])
+  @@index([householdId, periodMonth])
+  @@map("property_asset_depreciations")
 }
 
 model PropertyTransaction {
@@ -1245,6 +1284,7 @@ model Household {
   StockTransaction          StockTransaction[]
   StockMarketFeeRule        StockMarketFeeRule[]
   PropertyAsset             PropertyAsset[]
+  PropertyAssetDepreciation PropertyAssetDepreciation[]
   PropertyValuation         PropertyValuation[]
   PropertyTransaction       PropertyTransaction[]
   EntryBusinessLink         EntryBusinessLink[]

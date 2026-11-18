@@ -1,4 +1,4 @@
-export type BatchReplaceField = "date" | "postedAt" | "type" | "amount" | "inflow" | "outflow" | "account" | "viewAccount" | "toAccount" | "categoryId" | "institution" | "tagId" | "appendTagId" | "remark";
+export type BatchReplaceField = "date" | "postedAt" | "type" | "amount" | "inflow" | "outflow" | "account" | "viewAccount" | "toAccount" | "outflowAccount" | "inflowAccount" | "liabilityAccount" | "counterpartyAccount" | "categoryId" | "institution" | "tagId" | "appendTagId" | "remark";
 
 type BatchReplaceRequest = {
   ids: string[];
@@ -13,6 +13,7 @@ type BatchReplaceResult = {
   updatedCount?: number;
   changed?: Array<{ id: string; date: string; oldValue: string; newValue: string; field: string }>;
   notFoundIds?: string[];
+  skippedNoFlowSide?: number;
   code?: string;
   error?: string;
 };

@@ -14,6 +14,7 @@ import { kindLabel } from "@/lib/account-kinds";
 import { recordRecentAccounts, sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
 import { useCloseOnNavigation } from "@/lib/client/useCloseOnNavigation";
 /** 记账弹窗整窗外壳：宽度/标题栏/表单/FT 页签卡片/固定页脚/高度锁定统一由它负责。 */
+import { EntryConvertHeaderAction } from "@/components/EntryConvertHeaderAction";
 import { EntryModalShell } from "@/components/EntryModalShell";
 import { dispatchFinanceDataChanged } from "@/lib/client/refresh";
 import { isEntryConversionRequest } from "@/lib/client/entry-conversion";
@@ -1734,6 +1735,26 @@ export function DepositFormModal({
           setOpen(false);
           if (mode === "create") reset();
         }}
+        headerExtra={(
+          <EntryConvertHeaderAction
+            source={mode === "edit" ? {
+              entryId: editEntryId,
+              type: "deposit",
+              date,
+              amount,
+              note: memo,
+              accountId: depositAccountId,
+              cashAccountId,
+              fundName,
+              // 取出是钱进来，存入是钱出去：转换菜单只列同向目标。
+              inflow: subtype === "redeem",
+            } : null}
+            onBeforeConvert={() => {
+              setOpen(false);
+              reset();
+            }}
+          />
+        )}
         closeLabel={t("investForm.close")}
         onSubmit={onSubmit}
         tabs={[

@@ -62,14 +62,15 @@ const SOFTSTORE_TARGETS = [
   {
     file: "fn-appstores.json",
     field: "desc",
+    // 旧形态 `{id,_manual:{desc}}`；VPS 种子副本自 2.9/2.10 起是扁平条目（desc 在条目上）。
     getApps: (payload) =>
-      (Array.isArray(payload) ? payload : []).filter((app) => app.id === "mmh").map((app) => app._manual),
+      (Array.isArray(payload) ? payload : []).filter((app) => app.id === "mmh").map((app) => app._manual ?? app),
   },
   {
     file: "deploy/fnos/selfhosted-source/data/fn-appstores.json",
     field: "desc",
     getApps: (payload) =>
-      (Array.isArray(payload) ? payload : []).filter((app) => app.id === "mmh").map((app) => app._manual),
+      (Array.isArray(payload) ? payload : []).filter((app) => app.id === "mmh").map((app) => app._manual ?? app),
   },
 ];
 

@@ -4,6 +4,8 @@ import { normalizeCurrency, normalizeOptionalCurrency } from "@/lib/currency";
 import { prisma } from "@/lib/db/prisma";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { deleteProductMaster } from "@/lib/server/product-master-delete";
+import { isPersonalInstitutionType } from "@/lib/institution-rules";
+import { personalInstitutionError } from "@/lib/server/product-family-guard";
 
 export const runtime = "nodejs";
 
@@ -81,6 +83,12 @@ export async function PUT(req: NextRequest, ctx: { params: Promise<{ id: string 
         const institution = await prisma.institution.findFirst({ where: { id: institutionId, householdId } });
         if (!institution) {
           return NextResponse.json({ ok: false, code: "INSTITUTION_NOT_FOUND", error: "机构不存在" }, { status: 400 });
+        }
+        // 往来人员 / 往来组织 / 家庭成员不是存单的发行方（与 POST 同口径）。
+        // 只在机构**发生变化**时拒绝：历史数据若本来就挂在往来对象下，改名 / 调利率
+        // 这类保存不能被卡死（下拉里那一项是禁用的，用户想改机构只能改到真实机构）。
+        if (institutionId !== product.institutionId && isPersonalInstitutionType(institution.type)) {
+          return NextResponse.json(personalInstitutionError("存款产品"), { status: 400 });
         }
       }
       data.institutionId = institutionId;

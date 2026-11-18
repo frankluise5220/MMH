@@ -19,6 +19,8 @@ import { syncIndependentBusinessTransactionFromTxRecord } from "@/lib/server/bus
 import { upsertStatementCategoryRuleFromSavedRecord } from "@/lib/statement/category-rules";
 import { attachEntryTags, replaceEntryTags, resolveWritableTagIds } from "@/lib/server/entry-tags";
 import { creditBillEffectiveDate } from "@/lib/credit/billing";
+import { BALANCE_INITIALIZATION_SOURCE, BALANCE_RECONCILE_SOURCE } from "@/lib/balance-reconcile";
+import { isLiabilityAccountKind, liabilityFlowSides, type LiabilityFlowSide } from "@/lib/liability";
 import { addTradingDaysUtc, toStatementMonth } from "@/lib/date-utils";
 import { isDepositAccount, isDepositPostingCategoryAllowed, isIncomeExpensePostingAccount } from "@/lib/account-kind-utils";
 
@@ -37,6 +39,10 @@ import { isDepositAccount, isDepositPostingCategoryAllowed, isIncomeExpensePosti
  *     account?: string;        // source account Account.id
  *     viewAccount?: string;    // account on the current detail-view side; for credit bills this may be accountId or toAccountId
  *     toAccount?: string;      // destination account Account.id
+ *     outflowAccount?: string; // 往来明细「流出账户」：按行方向落到 accountId 或 toAccountId
+ *     inflowAccount?: string;  // 往来明细「流入账户」：按行方向落到 accountId 或 toAccountId
+ *     liabilityAccount?: string;    // 往来明细「往来款账户」：往来款那一侧（按行方向定位，不看字段位置）
+ *     counterpartyAccount?: string; // 往来明细「对手账户」：另一端（资金账户 / 对方账户）
  *     categoryId?: string;     // income/expense category Category.id, pass empty string to clear
  *     institution?: string;    // counterparty institution name/short name, pass empty string to clear
  *     tagId?: string;           // readable Tag.id, pass empty string to clear all tags (replace semantics)
@@ -67,6 +73,10 @@ type BatchUpdateItem = {
   account?: string;
   viewAccount?: string;
   toAccount?: string;
+  outflowAccount?: string;
+  inflowAccount?: string;
+  liabilityAccount?: string;
+  counterpartyAccount?: string;
   categoryId?: string;
   institution?: string;
   tagId?: string;
@@ -110,10 +120,11 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const updates: BatchUpdateItem[] = body.updates;
     const contextAccountId = String(body.contextAccountId ?? "").trim() || null;
-    const contextAccountIds = Array.isArray(body.contextAccountIds)
-      ? Array.from(new Set(body.contextAccountIds.map((id: unknown) => String(id ?? "").trim()).filter(Boolean)))
-      : [];
-    const contextAccountIdSet = new Set(contextAccountIds.length > 0 ? contextAccountIds : (contextAccountId ? [contextAccountId] : []));
+    const contextAccountIdsRaw: unknown[] = Array.isArray(body.contextAccountIds) ? body.contextAccountIds : [];
+    const contextAccountIds: string[] = Array.from(new Set(
+      contextAccountIdsRaw.map((id) => String(id ?? "").trim()).filter((id) => id.length > 0),
+    ));
+    const contextAccountIdSet = new Set<string>(contextAccountIds.length > 0 ? contextAccountIds : (contextAccountId ? [contextAccountId] : []));
 
     if (!Array.isArray(updates) || updates.length === 0) {
       return NextResponse.json({ ok: false, code: "BATCH_EMPTY", error: "没有更新数据" }, { status: 400 });
@@ -238,7 +249,19 @@ export async function POST(req: NextRequest) {
     }
     const undo = await prepareEntryUndo(prisma, ctx.householdId, existingRecords.map((record) => record.id));
 
-    const accountIds = Array.from(new Set(updates.flatMap((item) => [item.account, item.viewAccount, item.toAccount, item.cashAccountId, item.fundAccountId].map((id) => String(id ?? "").trim()).filter(Boolean))));
+    // 往来明细的四个账户字段（liabilityAccount / counterpartyAccount / outflowAccount / inflowAccount）
+    // 必须一起参与预取：它们指向的账户未必出现在选中行里，漏掉就会被误判成「账户不存在」。
+    const accountIds = Array.from(new Set(updates.flatMap((item) => [
+      item.account,
+      item.viewAccount,
+      item.toAccount,
+      item.cashAccountId,
+      item.fundAccountId,
+      item.liabilityAccount,
+      item.counterpartyAccount,
+      item.outflowAccount,
+      item.inflowAccount,
+    ].map((id) => String(id ?? "").trim()).filter(Boolean))));
     const accounts = accountIds.length > 0
       ? await prisma.account.findMany({ where: { id: { in: accountIds }, ...hidFilter }, select: { id: true, name: true, kind: true, investProductType: true, billingDay: true, billingDayTxPeriod: true, tradingCalendar: true, Institution: { select: { type: true } } } })
       : [];
@@ -249,6 +272,55 @@ export async function POST(req: NextRequest) {
     const resolveAccountMeta = (accountId: string | null | undefined) => {
       const id = String(accountId ?? "").trim();
       return id ? accountById.get(id) ?? existingAccountById.get(id) ?? null : null;
+    };
+    /**
+     * 一行流水里哪一端是往来款账户 —— 决定「流出/流入账户」落在 accountId 还是
+     * toAccountId。绝不能默认关联账户在 toAccountId：借入与借出方向相反，同一个
+     * 页面里两端的字段会互换。
+     *
+     * 判定顺序：① 当前页面上下文（往来明细页选中的账户 / 组合行的子账户）；
+     * ② 账户种类兜底（恰好一端是往来款 / 贷款 / 信用卡类）；
+     * ③ 判不出来的行返回 null，由调用方跳过并计数，而不是猜一端去写。
+     */
+    const resolveLiabilityFlowSide = (entry: { accountId?: string | null; toAccountId?: string | null }): LiabilityFlowSide | null => {
+      const accountId = String(entry.accountId ?? "").trim();
+      const toAccountId = String(entry.toAccountId ?? "").trim();
+      // ① 行内数据能定：恰好一端是往来款 / 贷款 / 信用卡账户。这一条与页面无关，
+      //    所以同一页里方向相反的两类行（借入、借出）都能各判各的。
+      const liabilityEnds = [
+        { side: "account" as const, kind: resolveAccountMeta(accountId)?.kind ?? null },
+        { side: "toAccount" as const, kind: resolveAccountMeta(toAccountId)?.kind ?? null },
+      ].filter((end) => isLiabilityAccountKind(end.kind));
+      if (liabilityEnds.length === 1) return liabilityEnds[0].side;
+      // ② 行内端类型相同（往来款 A → 往来款 B）或都拿不到类型时，按当前页面上下文判：
+      //    页面选中的往来账户落在哪一端。
+      const accountInContext = !!accountId && contextAccountIdSet.has(accountId);
+      const toInContext = !!toAccountId && contextAccountIdSet.has(toAccountId);
+      if (accountInContext !== toInContext) return accountInContext ? "account" : "toAccount";
+      // ③ 两端都命中上下文或都不命中：判不出来就跳过，绝不按字段位置猜。
+      return null;
+    };
+    /**
+     * 往来款的四种方向，以及「金额填负数」时翻到哪一种（2026-11-17 用户裁定）。
+     *
+     * 本表的资金方向由 `source` 承载：借出/还款是负数方向（钱离开资金账户），
+     * 借入/收回是正数方向（钱进资金账户）。用户只需要改「金额」：填正数保持原方向
+     * 只改大小，填负数就把这一行整体翻成反方向 —— 两端账户互换、source 换成配对
+     * 的模式，金额按新方向的符号写，红绿与「资金流向」随之反过来。
+     * 贷款/信用卡等有计划关联的行不翻，避免把还款计划行改成借入。
+     */
+    const settlementModeFlip: Record<string, string> = {
+      lend_out: "collect_in",
+      collect_in: "lend_out",
+      borrow_in: "repay_out",
+      repay_out: "borrow_in",
+    };
+    const positiveSettlementModes = new Set(["borrow_in", "collect_in"]);
+    const settlementModeOf = (source: string | null | undefined) => {
+      const value = String(source ?? "");
+      if (!value.startsWith("liability_")) return null;
+      const mode = value.slice("liability_".length);
+      return settlementModeFlip[mode] ? mode : null;
     };
     const categoryIds = Array.from(new Set(updates.map((item) => String(item.categoryId ?? "").trim()).filter(Boolean)));
     const categories = categoryIds.length > 0
@@ -289,6 +361,8 @@ export async function POST(req: NextRequest) {
     const repaymentCategory = await resolveCreditCardRepaymentCategory(prisma, ctx.householdId);
 
     let updatedCount = 0;
+    // 「流出/流入账户」替换时，该行没有这一侧账户（余额校准）会被跳过，最后回传给前端提示。
+    let skippedNoFlowSide = 0;
     const changed: Array<{ id: string; date: string; oldValue: string; newValue: string; field: string }> = [];
     const touchedRecordIds = new Set<string>();
     const balanceAccountIds = new Set<string>();
@@ -442,6 +516,65 @@ export async function POST(req: NextRequest) {
         balanceAccountIds.add(account.id);
       }
 
+      // 往来明细的账户字段（2026-11-17 用户口径，与表头「往来款账户 / 对手账户」同名）：
+      //   liabilityAccount    → 往来款那一侧的账户（借入时在 toAccountId、借出时在 accountId）
+      //   counterpartyAccount → 另一端（资金账户 / 对方账户）
+      //   outflowAccount / inflowAccount → 保留旧的「资金流向侧」写法，语义相同。
+      // 每一行都按自己的实际方向定位，绝不默认哪一端在 toAccountId；
+      // 该行没有这一侧（余额校准这类）就跳过，不凭空为它补出另一端账户。
+      for (const field of ["liabilityAccount", "counterpartyAccount", "outflowAccount", "inflowAccount"] as const) {
+        if (item[field] === undefined) continue;
+        const accountId = String(item[field]).trim();
+        const account = accountById.get(accountId);
+        if (!account) return NextResponse.json({ ok: false, code: "ACCOUNT_NOT_FOUND", error: `账户不存在：${accountId}` }, { status: 400 });
+        // 余额校准 / 期初余额行在明细里没有两端账户，不能凭空给它写一端。
+        if (existing.source === BALANCE_RECONCILE_SOURCE || existing.source === BALANCE_INITIALIZATION_SOURCE) {
+          skippedNoFlowSide += 1;
+          continue;
+        }
+        const liabilitySide = resolveLiabilityFlowSide(existing);
+        if (!liabilitySide) {
+          skippedNoFlowSide += 1;
+          continue;
+        }
+        const sides = liabilityFlowSides(existing, contextAccountIdSet, liabilitySide);
+        const cashSide: LiabilityFlowSide = liabilitySide === "account" ? "toAccount" : "account";
+        const side: LiabilityFlowSide | null = field === "liabilityAccount"
+          ? liabilitySide
+          : field === "counterpartyAccount"
+            ? cashSide
+            : field === "outflowAccount"
+              ? sides.outflow
+              : sides.inflow;
+        if (!side) {
+          skippedNoFlowSide += 1;
+          continue;
+        }
+        const otherAccountId = String(
+          (side === "account" ? data.toAccountId : data.accountId)
+          ?? (side === "account" ? existing.toAccountId : existing.accountId)
+          ?? "",
+        );
+        if (String(data.type ?? existing.type) === TransactionType.transfer && otherAccountId && account.id === otherAccountId) {
+          return NextResponse.json({ ok: false, code: "SAME_ACCOUNT_NOT_ALLOWED", error: "流出账户与流入账户不能相同" }, { status: 400 });
+        }
+        if (side === "account") {
+          data.accountId = account.id;
+          data.accountName = account.name;
+        } else {
+          data.toAccountId = account.id;
+          data.toAccountName = account.name;
+        }
+        balanceAccountIds.add(account.id);
+        changed.push({
+          id,
+          date: ymd(existing.date),
+          oldValue: String((side === "account" ? existing.accountName : existing.toAccountName) ?? "-"),
+          newValue: account.name,
+          field,
+        });
+      }
+
       if (item.categoryId !== undefined) {
         const categoryId = String(item.categoryId).trim();
         if (!categoryId) {
@@ -573,17 +706,42 @@ export async function POST(req: NextRequest) {
             : Math.abs(oldN);
         const inflowAmount = Math.max(effectiveOldN, 0);
         const outflowAmount = Math.max(-effectiveOldN, 0);
-        const absNew = parseAmountUpdate(v, baseAmount, {
-          inflow: inflowAmount,
-          outflow: outflowAmount,
-        });
+        const referenceValues = { inflow: inflowAmount, outflow: outflowAmount };
+        const absNew = parseAmountUpdate(v, baseAmount, referenceValues);
         if (absNew == null) return NextResponse.json({ ok: false, code: "INVALID_AMOUNT", error: "Invalid amount expression" }, { status: 400 });
         const finalTypeForAmount = String(data.type ?? existing.type);
         if (amountField === "amount") {
-          const signed = finalTypeForAmount === TransactionType.transfer
-            ? -absNew
-            : oldN < 0 ? -absNew : absNew;
-          data.amount = signed;
+          // 往来款行（在往来账户上的 transfer）：金额的符号就是资金方向。
+          // 填负数＝把这一行整体翻成反方向（两端互换 + source 换配对模式），
+          // 填正数＝保持原方向只改大小（2026-11-17 用户裁定）。
+          const settlementMode = settlementModeOf(existing.source);
+          const isSettlementRow = finalTypeForAmount === TransactionType.transfer
+            && settlementMode != null
+            && (existing.account?.kind === "settlement" || existing.toAccount?.kind === "settlement");
+          const signedInput = evaluateAmountFieldExpression(v, baseAmount, referenceValues);
+          // 同一次批量里可能也改了账户，此时以已写入的值作为两端起点，避免把用户刚选的账户覆盖回去。
+          const sourceAccountId = typeof data.accountId === "string" ? data.accountId : existing.accountId;
+          const targetAccountId = typeof data.toAccountId === "string" ? data.toAccountId : existing.toAccountId;
+          if (isSettlementRow && settlementMode && (signedInput ?? 0) < 0 && sourceAccountId && targetAccountId) {
+            const nextMode = settlementModeFlip[settlementMode];
+            const nextAccountName = typeof data.accountName === "string" ? data.accountName : existing.accountName ?? null;
+            const nextToAccountName = typeof data.toAccountName === "string" ? data.toAccountName : existing.toAccountName ?? null;
+            data.accountId = targetAccountId;
+            data.accountName = nextToAccountName;
+            data.toAccountId = sourceAccountId;
+            data.toAccountName = nextAccountName;
+            data.source = `liability_${nextMode}`;
+            data.amount = positiveSettlementModes.has(nextMode) ? absNew : -absNew;
+            balanceAccountIds.add(sourceAccountId);
+            balanceAccountIds.add(targetAccountId);
+          } else if (isSettlementRow && settlementMode) {
+            // 方向不变，符号必须跟随该行的方向（收回/借入是正数），否则余额会跟着符号翻。
+            data.amount = positiveSettlementModes.has(settlementMode) ? absNew : -absNew;
+          } else {
+            data.amount = finalTypeForAmount === TransactionType.transfer
+              ? -absNew
+              : oldN < 0 ? -absNew : absNew;
+          }
         } else if (finalTypeForAmount === TransactionType.transfer) {
           const wantsInflow = amountField === "inflow";
           const sourceAccountId = existing.accountId;
@@ -639,7 +797,13 @@ export async function POST(req: NextRequest) {
       const finalToAccountId = typeof data.toAccountId === "string" ? data.toAccountId : existing.toAccountId;
       const finalAccount = resolveAccountMeta(finalAccountId);
       const finalToAccount = resolveAccountMeta(finalToAccountId);
-      const postingAccountChanged = item.account !== undefined || item.viewAccount !== undefined || Boolean(item.accountName);
+      const postingAccountChanged = item.account !== undefined
+        || item.viewAccount !== undefined
+        || item.liabilityAccount !== undefined
+        || item.counterpartyAccount !== undefined
+        || item.outflowAccount !== undefined
+        || item.inflowAccount !== undefined
+        || Boolean(item.accountName);
       const typeChangedToIncomeExpense = item.type !== undefined && (finalType === TransactionType.expense || finalType === TransactionType.income);
       if (
         (finalType === TransactionType.expense || finalType === TransactionType.income)
@@ -914,7 +1078,13 @@ export async function POST(req: NextRequest) {
         data.categoryName = null;
       } else if (
         existing.categoryName === CREDIT_CARD_REPAYMENT_CATEGORY_NAME &&
-        (item.type !== undefined || item.account !== undefined || item.toAccount !== undefined)
+        (item.type !== undefined
+          || item.account !== undefined
+          || item.toAccount !== undefined
+          || item.liabilityAccount !== undefined
+          || item.counterpartyAccount !== undefined
+          || item.outflowAccount !== undefined
+          || item.inflowAccount !== undefined)
       ) {
         data.categoryId = null;
         data.categoryName = null;
@@ -1155,6 +1325,7 @@ export async function POST(req: NextRequest) {
       updatedCount,
       changed,
       notFoundIds: notFoundIds.length > 0 ? notFoundIds : undefined,
+      skippedNoFlowSide: skippedNoFlowSide > 0 ? skippedNoFlowSide : undefined,
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : "更新失败";

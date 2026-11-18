@@ -188,7 +188,7 @@ export function swapLiabilityFlowDirection(mode: LiabilityActivityMode): Liabili
   return mode;
 }
 
-type LiabilityPrincipalEntryLike = {
+export type LiabilityPrincipalEntryLike = {
   amount: unknown;
   principalAmount?: unknown;
   source?: string | null;
@@ -225,6 +225,75 @@ export function liabilityPrincipalForAccountSide(
   if (sourceMode === "borrow_in" || sourceMode === "collect_in") return -principal;
   if (sourceMode) return principal;
   return amount;
+}
+
+/**
+ * 明细表里「流出账户 / 流入账户」用的现金方向符号。
+ *
+ * 与 `liabilityCashFlowForAccountSide`（负债余额视角：借出为正）不同，这里的符号
+ * 表达**资金账户的现金走向**：负数＝钱从资金账户流出，正数＝钱流进资金账户。
+ * 明细表按它把两端账户排成「流出在前、流入在后」，批量修改账户也必须用同一个
+ * 符号定位，否则改的会是另一侧（2026-11-17 用户要求：批量修改与明细同口径）。
+ */
+export function liabilityCashFlowDisplaySign(
+  entry: LiabilityPrincipalEntryLike,
+  liabilityAccountIdOrIds: string | Set<string>,
+  /**
+   * 明确指定「往来款账户在哪一列」。页面上下文能确定时优先用它：往来款账户
+   * 有时在 accountId、有时在 toAccountId（借入与借出方向相反），只看集合为空
+   * 就默认一端会把方向判反。不传时按 `liabilityAccountIdOrIds` 推断。
+   */
+  liabilitySideHint?: LiabilityFlowSide | null,
+) {
+  const amount = liabilityNumber(entry.amount);
+  const principal = entry.principalAmount == null ? Math.abs(amount) : liabilityNumber(entry.principalAmount);
+  const source = String(entry.source ?? "");
+  if (source === "liability_borrow_in") return principal;
+  if (source === "liability_financed_purchase") return 0;
+  if (
+    source === "liability_repay_out"
+    || source === "liability_prepay_out"
+    || source === "liability_lend_out"
+    || source === "scheduled_task"
+  ) return -principal;
+  if (source === "liability_collect_in") return principal;
+  if (liabilitySideHint) return liabilitySideHint === "account" ? -amount : amount;
+  const ids = typeof liabilityAccountIdOrIds === "string" ? new Set([liabilityAccountIdOrIds]) : liabilityAccountIdOrIds;
+  return ids.has(entry.accountId ?? "") ? -amount : amount;
+}
+
+export type LiabilityFlowSide = "account" | "toAccount";
+
+/**
+ * 一行往来明细的「流出账户 / 流入账户」各落在 `accountId` 还是 `toAccountId`。
+ *
+ * `liabilitySideHint` 由调用方按页面上下文给出（该行的往来款账户在哪一列）。
+ * 批量修改必须传它：只靠 `liabilityAccountIdOrIds` 时，集合为空（列表没有选中
+ * 具体账户、或是组合行）就会退化成「往来款恒在 accountId」，等于把关联账户
+ * 绑死在 toAccountId 上，改到相反的一端。
+ *
+ * 该侧没有账户（余额校准这类行）时返回 `null`，调用方必须跳过——批量改账户
+ * 只动真正存在的那一侧，不凭空创建另一端。
+ */
+export function liabilityFlowSides(
+  entry: LiabilityPrincipalEntryLike,
+  liabilityAccountIdOrIds: string | Set<string>,
+  liabilitySideHint?: LiabilityFlowSide | null,
+): { outflow: LiabilityFlowSide | null; inflow: LiabilityFlowSide | null } {
+  const ids = typeof liabilityAccountIdOrIds === "string" ? new Set([liabilityAccountIdOrIds]) : liabilityAccountIdOrIds;
+  // 资金侧 / 往来款侧各在哪一列，由往来款账户落在 toAccountId 还是 accountId 决定；
+  // 调用方已按页面上下文判定时以它为准。
+  const liabilitySide: LiabilityFlowSide = liabilitySideHint
+    ?? (ids.has(entry.toAccountId ?? "") ? "toAccount" : "account");
+  const cashSide: LiabilityFlowSide = liabilitySide === "toAccount" ? "account" : "toAccount";
+  const sign = liabilityCashFlowDisplaySign(entry, ids, liabilitySide);
+  const outflow = sign < 0 ? cashSide : sign > 0 ? liabilitySide : "account";
+  const inflow = sign < 0 ? liabilitySide : sign > 0 ? cashSide : "toAccount";
+  const idOf = (side: LiabilityFlowSide) => (side === "account" ? entry.accountId : entry.toAccountId);
+  return {
+    outflow: idOf(outflow) ? outflow : null,
+    inflow: idOf(inflow) ? inflow : null,
+  };
 }
 
 /**

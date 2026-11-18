@@ -54,11 +54,18 @@ function getFieldLabels(t: (key: string) => string): Record<BatchReplaceField, s
     postedAt: t("detail.column.postedAt"),
     type: t("batchImport.field.type"),
     amount: t("txForm.amount"),
-    inflow: t("detail.column.inflow"),
-    outflow: t("detail.column.outflow"),
+    // 表头叫「资金流向」，这两个字段就是给它定方向，名字必须跟着表头走（2026-11-17）。
+    inflow: t("basicDetailSelection.flowInLabel"),
+    outflow: t("basicDetailSelection.flowOutLabel"),
     account: t("basicDetailSelection.accountLabel"),
     viewAccount: t("basicDetailSelection.accountLabel"),
     toAccount: t("batchImport.field.counterAccount"),
+    // 往来明细的账户列是「往来款账户 / 对手账户」，批量替换直接复用表头的 i18n key，
+    // 这样表头改名不会和批量字段对不上（2026-11-17 用户要求）。
+    liabilityAccount: t("liabilityShell.colLiabilityAccount"),
+    counterpartyAccount: t("liabilityShell.colCounterpartyAccount"),
+    outflowAccount: t("basicDetailSelection.outflowAccountLabel"),
+    inflowAccount: t("basicDetailSelection.inflowAccountLabel"),
     categoryId: t("detail.column.category"),
     institution: t("batchImport.field.institution"),
     tagId: t("detail.column.tags"),
@@ -179,24 +186,36 @@ export function BasicDetailBatchReplaceButton({
   tagOptions = [],
   categoryTypes = [],
   fields = defaultBatchReplaceFields,
+  fieldLabelOverrides,
+  fieldHintOverrides,
   targetLabel,
   contextAccountId,
   contextAccountIds,
+  hint,
 }: {
   accountOptions: AccountOption[];
   categoryOptions?: BasicDetailBatchCategoryOption[];
   tagOptions?: BasicDetailBatchCategoryOption[];
   categoryTypes?: string[];
   fields?: BatchReplaceField[];
+  /**
+   * 覆盖个别字段的显示名，用来和调用方表格的表头逐字对齐（例如往来款表在贷款视图里
+   * 表头叫「贷款账户」，批量字段也得叫「贷款账户」，否则两处名字对不上）。
+   */
+  fieldLabelOverrides?: Partial<Record<BatchReplaceField, string>>;
+  /** 覆盖个别字段的说明文字（同一字段在不同表里语义不同时用）。 */
+  fieldHintOverrides?: Partial<Record<BatchReplaceField, string>>;
   targetLabel?: string;
   contextAccountId?: string | null;
   contextAccountIds?: string[];
+  /** 表格语境说明（例如往来款表的红绿/负数含义），显示在字段选择之上。 */
+  hint?: ReactNode;
 }) {
   const { t } = useI18n();
   const { selectedIds, clear } = useBasicDetailSelection();
   const selectedCount = selectedIds.size;
   const fieldConfigs = useMemo<BatchReplaceFieldConfig<BatchReplaceField>[]>(() => {
-    const fieldLabels = getFieldLabels(t);
+    const fieldLabels = { ...getFieldLabels(t), ...fieldLabelOverrides };
     const typeOptions = getTypeOptions(t);
     const accountSelectOptions = [
       { value: "", label: t("fundShell.selectAccount") },
@@ -214,9 +233,11 @@ export function BasicDetailBatchReplaceButton({
       date: { value: "date", label: fieldLabels.date, kind: "date" },
       postedAt: { value: "postedAt", label: fieldLabels.postedAt, kind: "date", allowEmpty: true },
       type: { value: "type", label: fieldLabels.type, kind: "select", options: typeOptions },
-      amount: { value: "amount", label: fieldLabels.amount, kind: "number", placeholder: t("basicDetailSelection.amountPlaceholder"), allowAmountFieldReferences: true },
-      inflow: { value: "inflow", label: fieldLabels.inflow, kind: "number", placeholder: t("basicDetailSelection.inflowPlaceholder"), allowAmountFieldReferences: true },
-      outflow: { value: "outflow", label: fieldLabels.outflow, kind: "number", placeholder: t("basicDetailSelection.outflowPlaceholder"), allowAmountFieldReferences: true },
+      // 三个金额字段长得像、改的东西完全不同（数值 / 流入方向 / 流出方向），
+      // 必须各自带一句说明，否则用户在往来款这类「红绿跟方向绑定」的表里必然理解错。
+      amount: { value: "amount", label: fieldLabels.amount, kind: "number", placeholder: t("basicDetailSelection.amountPlaceholder"), allowAmountFieldReferences: true, hint: t("basicDetailSelection.hint.amount") },
+      inflow: { value: "inflow", label: fieldLabels.inflow, kind: "number", placeholder: t("basicDetailSelection.inflowPlaceholder"), allowAmountFieldReferences: true, hint: t("basicDetailSelection.hint.inflow") },
+      outflow: { value: "outflow", label: fieldLabels.outflow, kind: "number", placeholder: t("basicDetailSelection.outflowPlaceholder"), allowAmountFieldReferences: true, hint: t("basicDetailSelection.hint.outflow") },
       account: {
         value: "account",
         label: fieldLabels.account,
@@ -234,6 +255,38 @@ export function BasicDetailBatchReplaceButton({
         label: fieldLabels.toAccount,
         kind: "smartSelect",
         options: accountSelectOptions,
+      },
+      // 只改「钱从哪出 / 进到哪」的那一列，金额正负与方向语义都不动；
+      // 该行本来没有这一侧（余额校准）会被后端跳过并计数。
+      outflowAccount: {
+        value: "outflowAccount",
+        label: fieldLabels.outflowAccount,
+        kind: "smartSelect",
+        options: accountSelectOptions,
+        hint: t("basicDetailSelection.hint.outflowAccount"),
+      },
+      inflowAccount: {
+        value: "inflowAccount",
+        label: fieldLabels.inflowAccount,
+        kind: "smartSelect",
+        options: accountSelectOptions,
+        hint: t("basicDetailSelection.hint.inflowAccount"),
+      },
+      // 往来明细的账户口径：往来款账户（本行往来款那一侧）与对手账户（另一端）。
+      // 与表头同名，且后端按每行实际方向定位，不受 accountId / toAccountId 位置影响。
+      liabilityAccount: {
+        value: "liabilityAccount",
+        label: fieldLabels.liabilityAccount,
+        kind: "smartSelect",
+        options: accountSelectOptions,
+        hint: t("basicDetailSelection.hint.liabilityAccount"),
+      },
+      counterpartyAccount: {
+        value: "counterpartyAccount",
+        label: fieldLabels.counterpartyAccount,
+        kind: "smartSelect",
+        options: accountSelectOptions,
+        hint: t("basicDetailSelection.hint.counterpartyAccount"),
       },
       categoryId: {
         value: "categoryId",
@@ -253,8 +306,14 @@ export function BasicDetailBatchReplaceButton({
       appendTagId: { value: "appendTagId", label: fieldLabels.appendTagId, kind: "select", options: [{ value: "", label: t("txForm.selectPlaceholder") }, ...tagOptions] },
       remark: { value: "remark", label: fieldLabels.remark, kind: "text", placeholder: t("stockPanel.batchNotePlaceholder"), allowEmpty: true },
     };
-    return fields.map((field) => configByField[field]).filter(Boolean);
-  }, [accountOptions, categoryOptions, categoryTypes, fields, t, tagOptions]);
+    return fields
+      .map((field) => {
+        const config = configByField[field];
+        const hintOverride = fieldHintOverrides?.[field];
+        return config && hintOverride ? { ...config, hint: hintOverride } : config;
+      })
+      .filter(Boolean);
+  }, [accountOptions, categoryOptions, categoryTypes, fieldHintOverrides, fieldLabelOverrides, fields, t, tagOptions]);
 
   async function applyReplace(field: BatchReplaceField, value: string) {
     const entryIds = Array.from(selectedIds);
@@ -267,7 +326,11 @@ export function BasicDetailBatchReplaceButton({
     }
     clear();
     dispatchFinanceDataChanged({ reason: "entry-batch-replace", entryIds });
-    return t("basicDetailSelection.replacedCount", { count: result.updatedCount ?? 0 });
+    const replaced = t("basicDetailSelection.replacedCount", { count: result.updatedCount ?? 0 });
+    // 往来明细里余额校准这类行没有「流出/流入」侧，改不了也不该改，单独说清楚。
+    return result.skippedNoFlowSide
+      ? `${replaced}・${t("basicDetailSelection.skippedNoFlowSide", { count: result.skippedNoFlowSide })}`
+      : replaced;
   }
 
   return (
@@ -277,7 +340,9 @@ export function BasicDetailBatchReplaceButton({
       targetLabel={targetLabel}
       buttonClassName="flex h-6 w-6 items-center justify-center rounded border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100 disabled:cursor-not-allowed disabled:opacity-40 [&_svg]:h-3.5 [&_svg]:w-3.5"
       onApply={applyReplace}
-    />
+    >
+      {hint ?? null}
+    </BatchReplacePopoverButton>
   );
 }
 
@@ -544,12 +609,40 @@ export type ConvertSourceEntry = {
     stockCode?: string | null;
     stockName?: string | null;
   } | null;
+  /**
+   * 这笔钱是**流进来**的吗（赎回 / 卖出 / 取出 / 退保 / 收款 → true；买入 / 申购 / 缴费 → false）。
+   *
+   * 单看 `type === "income"` 判断不出来：理财/基金/股票窗里的赎回记录 type 不是 income，
+   * 转账记录也分流入侧和流出侧。所以由各录入窗按自己的页签给出方向，这里只做兜底。
+   */
+  inflow?: boolean | null;
+  /** 该明细行所属账户（转账记录用它判断方向：行账户 === toAccountId 即流入）。 */
+  rowAccountId?: string | null;
+};
+
+type ConvertTarget = {
+  key: EntryConversionTargetKey;
+  labelKey: string;
+  /**
+   * 源记录的钱是**流进来**的（收入）时用的文案：同一类操作此时是「赎回 / 卖出」而不是「买入」，
+   * 派发时也直接落在对应页签上（2026-11-18 用户裁定：流入交易不能显示成「理财买入」，
+   * 应显示「理财赎回」并默认进赎回页签）。
+   */
+  inflowLabelKey?: string;
+  /**
+   * 这个目标本身的现金方向：钱进（收入 / 赎回 / 卖出 / 取出 / 收款）= "in"，
+   * 钱出（支出 / 代付 / 买入 / 申购 / 缴费）= "out"，转账、投资、往来这类两边都能走的 = "both"。
+   *
+   * 菜单只列与源记录**同向**的目标（2026-11-18 用户裁定：流入的金额转换时「只列资金流入的操作」，
+   * 买入 / 申购 / 缴费类完全不出现），钱流出的记录则反过来 —— 支出 / 代付这类不出现。
+   */
+  flow: "in" | "out" | "both";
 };
 
 type ConvertTargetGroup = {
   key: string;
   labelKey: string;
-  targets: Array<{ key: EntryConversionTargetKey; labelKey: string }>;
+  targets: ConvertTarget[];
 };
 
 /**
@@ -571,23 +664,25 @@ const CONVERT_TARGET_GROUPS: ConvertTargetGroup[] = [
     key: "cash",
     labelKey: "detail.convert.group.cash",
     targets: [
-      { key: "expense", labelKey: "detail.convert.target.expense" },
-      { key: "income", labelKey: "detail.convert.target.income" },
-      { key: "advance", labelKey: "detail.convert.target.advance" },
-      { key: "transfer", labelKey: "detail.convert.target.transfer" },
+      { key: "expense", labelKey: "detail.convert.target.expense", flow: "out" },
+      { key: "income", labelKey: "detail.convert.target.income", flow: "in" },
+      { key: "advance", labelKey: "detail.convert.target.advance", flow: "out" },
+      { key: "transfer", labelKey: "detail.convert.target.transfer", flow: "both" },
     ],
   },
   {
     key: "investment",
     labelKey: "detail.convert.group.investment",
+    // 投资类入口本身两个方向都能走（买入 / 赎回），所以 flow=both；钱进来时文案换成赎回/卖出，
+    // 打开窗也落在那个页签上。保险窗同样有「买入（缴费）/ 赎回（退保）」两个页签。
     targets: [
-      { key: "fund", labelKey: "detail.convert.target.fund" },
-      { key: "metal", labelKey: "detail.convert.target.metal" },
-      { key: "wealth", labelKey: "detail.convert.target.wealth" },
-      { key: "bond", labelKey: "detail.convert.target.bond" },
-      { key: "deposit", labelKey: "detail.convert.target.deposit" },
-      { key: "insurance", labelKey: "detail.convert.target.insurance" },
-      { key: "stock", labelKey: "detail.convert.target.stock" },
+      { key: "fund", labelKey: "detail.convert.target.fund", inflowLabelKey: "detail.convert.target.fundRedeem", flow: "both" },
+      { key: "metal", labelKey: "detail.convert.target.metal", inflowLabelKey: "detail.convert.target.metalRedeem", flow: "both" },
+      { key: "wealth", labelKey: "detail.convert.target.wealth", inflowLabelKey: "detail.convert.target.wealthRedeem", flow: "both" },
+      { key: "bond", labelKey: "detail.convert.target.bond", inflowLabelKey: "detail.convert.target.bondRedeem", flow: "both" },
+      { key: "deposit", labelKey: "detail.convert.target.deposit", inflowLabelKey: "detail.convert.target.depositRedeem", flow: "both" },
+      { key: "insurance", labelKey: "detail.convert.target.insurance", inflowLabelKey: "detail.convert.target.insuranceRedeem", flow: "both" },
+      { key: "stock", labelKey: "detail.convert.target.stock", inflowLabelKey: "detail.convert.target.stockSell", flow: "both" },
     ],
   },
   {
@@ -596,8 +691,8 @@ const CONVERT_TARGET_GROUPS: ConvertTargetGroup[] = [
     // 往来款窗只有「借款 / 还款」两个页签（借入借出、还款收款是同一页签的两种流向，
     // 由往来款账户落在流出侧还是流入侧决定），所以目标也只列这两项，文案直接复用页签 key。
     targets: [
-      { key: "liability_borrow", labelKey: "liabilityTx.flow.borrow" },
-      { key: "liability_repay", labelKey: "liabilityTx.flow.repay" },
+      { key: "liability_borrow", labelKey: "liabilityTx.flow.borrow", flow: "both" },
+      { key: "liability_repay", labelKey: "liabilityTx.flow.repay", flow: "both" },
     ],
   },
 ];
@@ -661,16 +756,36 @@ export function EntryConvertMenu({
   // 往来款/贷款的现金流行也存成 transfer，但它们的编辑窗是往来款窗（没有这四个页签），
   // 所以这类来源仍要保留现金组，别跟着一起吞掉。
   const sourceIsCashFamily = CONVERT_CASH_FAMILY_KEYS.has(sourceType) && !sourceIsLiability;
+  /**
+   * 源记录的钱是流进来的：投资类目标要说「赎回 / 卖出」而不是「买入」，否则转出来方向是反的。
+   *
+   * 方向优先取录入窗给出的 `inflow`（理财/基金/股票窗里赎回记录的 type 不是 income，
+   * 单看 type 会把赎回记录当成买入）；没给时退回老口径：income = 流入，
+   * 转账记录则看这一行属于哪个账户（行账户在流入侧 = 这笔是收款）。
+   */
+  const transferInflow = sourceType === "transfer"
+    && Boolean(entry.toAccountId)
+    && Boolean(entry.rowAccountId)
+    && String(entry.rowAccountId) === String(entry.toAccountId);
+  const inflow = entry.inflow ?? (sourceType === "income" || transferInflow);
+  const resolveTargetLabelKey = useCallback(
+    (target: ConvertTarget) => (inflow && target.inflowLabelKey ? target.inflowLabelKey : target.labelKey),
+    [inflow],
+  );
   const visibleGroups = useMemo(
     () => CONVERT_TARGET_GROUPS
       .filter((group) => !(group.key === "liability" && sourceIsLiability))
       .filter((group) => !(group.key === "cash" && sourceIsCashFamily))
       .map((group) => ({
         ...group,
-        targets: group.targets.filter((target) => target.key !== sourceType),
+        targets: group.targets
+          .filter((target) => target.key !== sourceType)
+          // 只列与源记录同向的目标：流入的记录不出现买入 / 申购 / 缴费 / 支出 / 代付，
+          // 流出的记录不出现收入；转账、投资、往来这类双向目标两边都留。
+          .filter((target) => (inflow ? target.flow !== "out" : target.flow !== "in")),
       }))
       .filter((group) => group.targets.length > 0),
-    [sourceIsLiability, sourceIsCashFamily, sourceType],
+    [sourceIsLiability, sourceIsCashFamily, sourceType, inflow],
   );
 
   // 菜单用 portal 定位：明细表格容器带 overflow 与固定高度，absolute 面板会被裁掉。
@@ -765,6 +880,8 @@ export function EntryConvertMenu({
           detail: {
             requestId,
             defaultProductType: targetKey,
+            // 钱进来时这笔就是赎回：直接落在赎回页签，不再是「买入」。
+            defaultSubtype: inflow ? "redeem" : "buy",
             defaultCashAccountId: moneyAccountId,
             defaultDate: date,
             defaultAmount: amount || undefined,
@@ -780,6 +897,7 @@ export function EntryConvertMenu({
         window.dispatchEvent(new CustomEvent(`mmh:${targetKey}:create`, {
           detail: {
             requestId,
+            defaultSubtype: inflow ? "redeem" : "buy",
             defaultCashAccountId: moneyAccountId,
             defaultDate: date,
             defaultAmount: amount || undefined,
@@ -790,7 +908,7 @@ export function EntryConvertMenu({
         window.dispatchEvent(new CustomEvent("mmh:deposit:create", {
           detail: {
             requestId,
-            defaultSubtype: "buy",
+            defaultSubtype: inflow ? "redeem" : "buy",
             defaultCashAccountId: moneyAccountId,
             defaultDate: date,
             defaultAmount: amount || undefined,
@@ -801,6 +919,8 @@ export function EntryConvertMenu({
         window.dispatchEvent(new CustomEvent("mmh:insurance:create", {
           detail: {
             requestId,
+            // 钱进来时这笔是退保（保险窗的第二个页签），不是缴费。
+            defaultSubtype: inflow ? "redeem" : "buy",
             defaultCashAccountId: moneyAccountId,
             defaultDate: date,
             defaultAmount: amount || undefined,
@@ -811,7 +931,7 @@ export function EntryConvertMenu({
         window.dispatchEvent(new CustomEvent("mmh:stock:create", {
           detail: {
             requestId,
-            defaultAction: "buy",
+            defaultAction: inflow ? "sell" : "buy",
             defaultStockAccountId: stock?.stockAccountId ?? "",
             defaultCashAccountId: stock?.cashAccountId || moneyAccountId,
             defaultDate: date,
@@ -842,7 +962,7 @@ export function EntryConvertMenu({
         }));
       }
     }
-  }, [cashAccountId, entry]);
+  }, [cashAccountId, entry, inflow]);
 
   const disabled = disabledProp || reconciled;
 
@@ -882,11 +1002,11 @@ export function EntryConvertMenu({
                   onClick={() => {
                     setOpen(false);
                     onBeforeConvert?.();
-                    dispatchConversion(target.key, t(target.labelKey));
+                    dispatchConversion(target.key, t(resolveTargetLabelKey(target)));
                   }}
                   className="block w-full px-2.5 py-1.5 text-left text-xs text-slate-700 hover:bg-indigo-50 hover:text-indigo-700"
                 >
-                  {t(target.labelKey)}
+                  {t(resolveTargetLabelKey(target))}
                 </button>
               ))}
             </div>

@@ -545,6 +545,12 @@ function applyRuntimeMigrations(db) {
     addColumnIfMissing(db, propertyAssetTable, "salvageValue", "DECIMAL(18,2) NOT NULL DEFAULT 0");
     addColumnIfMissing(db, propertyAssetTable, "accumulatedDepreciation", "DECIMAL(18,2) NOT NULL DEFAULT 0");
   }
+  // 2026-11-18 净值源可配置化：parser / parserConfig。
+  // 与 prisma/migrations/20261118_add_fund_query_api_parser 同义（两列可空，无需回填）。
+  // 漏掉这段：升级后的桌面库打开设置页或触发取净值会报 "no such column: parser"
+  // （FundQueryApi 的读取都是全列 findMany，没有 select 白名单）。
+  addColumnIfMissing(db, "FundQueryApi", "parser", "TEXT");
+  addColumnIfMissing(db, "FundQueryApi", "parserConfig", "TEXT");
 }
 
 fs.mkdirSync(dataDir, { recursive: true });

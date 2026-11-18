@@ -288,6 +288,9 @@ const FAMILY_CONFIG: Record<ProductLibraryFamily, FamilyConfig> = {
     update: (id, draft) => jsonPut(`/api/v1/deposit-products/${id}`, buildPayload(DEPOSIT_FIELDS, draft)),
     remove: (id, opts) => jsonDelete(`/api/v1/deposit-products/${id}`, opts),
     allowNoInstitution: true,
+    // 往来人员 / 往来组织 / 家庭成员不是存单的发行方：不进「所属机构」下拉
+    // （2026-11-18 用户反馈存款产品库能选到往来对象；与理财 / 债券同口径）。
+    excludedInstitutionTypes: PERSONAL_INSTITUTION_TYPES,
   },
   wealth: {
     titleKey: "productLibrary.title.wealth",
@@ -1015,12 +1018,16 @@ export function ProductLibraryModal({
           <div className="flex w-[360px] shrink-0 flex-col border-r border-slate-100">
             <div className="shrink-0 space-y-2 p-3">
               <div className="relative">
+                {/* 左内边距必须走内联样式：`.form-input` 的 `padding-inline` 与工具类同在
+                    `@layer utilities` 且排在其后，`pl-8` 会被 px-3 覆盖（同 CalcInput 的坑），
+                    放大镜就会压住 placeholder 文字。 */}
                 <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-400" />
                 <input
                   value={keyword}
                   onChange={(event) => setKeyword(event.target.value)}
                   placeholder={t("productLibrary.searchProductName")}
-                  className="form-input pl-8"
+                  className="form-input"
+                  style={{ paddingLeft: 32 }}
                 />
               </div>
               <div className="flex items-center gap-2">
@@ -1034,13 +1041,17 @@ export function ProductLibraryModal({
                   clearLabel={t("productLibrary.clearInstitutionFilter")}
                   emptyLabel={t("productLibrary.institutionNoMatch")}
                 />
+                {/* 新增产品：带文字（此前只有 `+` 图标 + title，等于没有入口）。 */}
                 <button
                   type="button"
                   onClick={startCreate}
-                  className="secondary-button h-8 shrink-0 px-2.5 text-xs"
                   title={t("productLibrary.addProduct")}
+                  className={`secondary-button h-8 shrink-0 gap-1 whitespace-nowrap px-2 text-xs ${
+                    isCreating ? "border-cyan-300 text-cyan-700 ring-1 ring-cyan-200" : ""
+                  }`}
                 >
-                  <Plus className="h-3.5 w-3.5" />
+                  <Plus className="h-3.5 w-3.5 shrink-0" />
+                  {t("productLibrary.addProduct")}
                 </button>
               </div>
             </div>
@@ -1054,7 +1065,17 @@ export function ProductLibraryModal({
               ) : loadError ? (
                 <div className="px-2 py-6 text-xs text-rose-600">{loadError}</div>
               ) : groupedRows.length === 0 ? (
-                <div className="px-2 py-6 text-xs text-slate-400">{t("productLibrary.empty")}</div>
+                <div className="flex flex-col items-center gap-2 px-2 py-6 text-xs text-slate-400">
+                  <span>{t("productLibrary.empty")}</span>
+                  <button
+                    type="button"
+                    onClick={startCreate}
+                    className="secondary-button h-8 gap-1 whitespace-nowrap px-2.5 text-xs text-slate-700"
+                  >
+                    <Plus className="h-3.5 w-3.5 shrink-0" />
+                    {t("productLibrary.addProduct")}
+                  </button>
+                </div>
               ) : (
                 groupedRows.map((group) => (
                   <div key={group.key} className="mb-1">

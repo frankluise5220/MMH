@@ -47,6 +47,7 @@ import {
   buildLiabilityRowsViewData,
 } from "@/lib/server/liability-view-data";
 import { loadCreditBillPageData } from "@/lib/server/credit-bill-page-data";
+import { readableTagWhere } from "@/lib/server/tag-scope";
 import { prepareEntryUndo, saveEntryUndo } from "@/lib/server/entry-undo";
 import { getCreditBillAccountIds } from "@/lib/server/credit-card-institution-settings";
 import { formatCurrencyMoney, formatMoney } from "@/lib/format";
@@ -1743,6 +1744,7 @@ export default async function Home({
             categoryId: true,
             categoryName: true,
             counterpartyInstitutionId: true,
+            postedAt: true,
             note: true,
             toNote: true,
             principalAmount: true,
@@ -1766,6 +1768,15 @@ export default async function Home({
           take: 50000,
         })
       : [];
+  // 往来明细的「标签」列与批量改标签要显示同一个名字：Tag 表很小，按账本一次取全。
+  const liabilityTagNameById = new Map<string, string>();
+  if (liabilityEntriesRaw.length > 0) {
+    const liabilityTags = await prisma.tag.findMany({
+      where: readableTagWhere(householdId),
+      select: { id: true, name: true },
+    });
+    for (const tag of liabilityTags) liabilityTagNameById.set(tag.id, tag.name);
+  }
   // 往来款明细要标出「这笔已被报销单关联」：关联表本身很小，按账本一次取全，
   // 避免拿 5 万条流水 id 去拼 IN 查询。
   const reimbursementLinkByEntryId = new Map<string, { id: string; title: string; stage: "submitted" | "approved" | "paid" }>();
@@ -1854,6 +1865,7 @@ export default async function Home({
     accountFactsById,
     displayAccountId: accountId,
     reimbursementLinkByEntryId,
+    tagNameById: liabilityTagNameById,
   });
 
   // Query the most recently used cash account.

@@ -59,6 +59,8 @@ type FixedAssetDetail = {
   usefulLifeMonths?: number | null;
   salvageValue?: number | null;
   accumulatedDepreciation?: number | null;
+  /** 折旧台账摘要：服务端按月自动落账后已计提的期数与累计。 */
+  depreciation?: { periods: number; recorded: number; lastPeriod: string | null } | null;
   note?: string | null;
   status?: string | null;
 };
@@ -613,6 +615,7 @@ export function PropertyShell({
       accountName: position.name,
       marketValue: position.marketValue,
       cost: position.cost,
+      depreciation: detail.depreciation ?? null,
     });
   }
 
