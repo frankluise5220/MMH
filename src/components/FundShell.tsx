@@ -56,6 +56,7 @@ import { FOLDER_TAB_STRIP, FolderTabRuler, folderTabClass, folderTabNeighbors } 
 
 import { RefreshNavButton } from "@/components/RefreshNavButton";
 import { RefreshMetalPriceButton } from "@/components/RefreshMetalPriceButton";
+import { RebuildMoneyIncomeButton } from "@/components/RebuildMoneyIncomeButton";
 
 import { AddNavButton } from "@/components/AddNavButton";
 
@@ -1943,6 +1944,11 @@ export function FundShell(props: Props) {
         {!isMetalAccount ? (
           <>
             {!isMoneyAccount ? <AddNavButton accountId={accountId} positions={[p]} defaultFundCode={p.fundCode} trigger="icon" wealthMode={isWealthAccount} /> : null}
+            {/* 货基收益靠万份收益逐日结转，改过买入日期后前面那段补不上：行内给一个
+                「从购买以来」强制重算入口，只作用于这一只基金。 */}
+            {isMoneyAccount && p.fundCode ? (
+              <RebuildMoneyIncomeButton accountId={accountId} fundCode={p.fundCode} fundName={p.name} />
+            ) : null}
             {!isWealthAccount ? <button
               type="button"
               onClick={(event) => {
@@ -3503,7 +3509,7 @@ export function FundShell(props: Props) {
 
           <div className="flex items-center gap-2 text-xs text-slate-500 min-h-[24px]">
 
-            {/* 货基没有「取净值」这回事：接口给的是每万份收益，收益在资料页维护。 */}
+            {/* 货基没有「取净值」这回事：接口给的是每万份收益，重算入口在每只持仓行上。 */}
             {!showCleared && !isWealthAccount && !isMoneyAccount && d.positions.length > 0 ? (
               isMetalAccount
                 ? <RefreshMetalPriceButton accountId={accountId} />

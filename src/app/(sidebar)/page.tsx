@@ -87,7 +87,7 @@ import { SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE,
   normalizeCreditCardLabelTemplate,
   resolveAccountTableLabel,
   stripVisibleHoverParts, accountRenderSettings } from "@/lib/account-display";
-import { getInvestmentAccountView, isCashLedgerAccount, isDepositAccount, isIncomeExpensePostingAccount, isIncomeExpensePostingOrDepositAccount, isLoanOrSettlementAccountKind, isPureInvestmentAccount,  isTransferDropdownAccount } from "@/lib/account-kind-utils";
+import { getInvestmentAccountView, isCashLedgerAccount, isDepositAccount, isIncomeExpensePostingAccount, isIncomeExpensePostingOrDepositAccount, isLinkedFundWalletAccount, isLoanOrSettlementAccountKind, isPureInvestmentAccount,  isTransferDropdownAccount } from "@/lib/account-kind-utils";
 import { ALL_CASH_DETAIL_SCOPE_ID, cashLedgerAccountIdsOf, cashLedgerFlowAccountId } from "@/lib/all-cash-entries";
 import { normalizeLoanType, resolveLoanTypeValue } from "@/lib/loan-type";
 import { resolveQuantityDecimals } from "@/lib/fund/unit-precision";
@@ -1955,14 +1955,28 @@ export default async function Home({
     selectedAccount?.kind === AccountKind.bank_credit &&
     !creditBillingDay;
 
+  // 关联了货基的电子钱包「不统计余额，但表头还是要有数字」（2026-11-18 用户裁定）：
+  // 统计口径（总资产/侧栏/合计）给 0，这里单独按账面口径折叠出真实余额给表头用。
+  const selectedAccountLedgerBalance = selectedAccount && isLinkedFundWalletAccount(selectedAccount)
+    ? (await getMaintainedAccountBalances(
+        [{
+          id: selectedAccount.id,
+          kind: selectedAccount.kind,
+          investProductType: selectedAccount.investProductType,
+          billingDay: selectedAccount.billingDay,
+        }],
+        hidFilter,
+        { countLinkedFundWallets: true },
+      )).get(selectedAccount.id)
+    : undefined;
   const selectedAccountRawBalanceValue = selectedAccount
-    ? isPureInvestmentAccount(selectedAccount)
+    ? selectedAccountLedgerBalance ?? (isPureInvestmentAccount(selectedAccount)
       ? investBalByAccountId.get(selectedAccount.id)?.marketValue ?? toNumber(selectedAccount.balance)
       : selectedAccount.kind === AccountKind.bank_credit
         ? creditBillBalanceValue
       : isLoanOrSettlementAccountKind(selectedAccount.kind)
         ? liabilityDisplaySummary.balanceByAccountId.get(selectedAccount.id) ?? cashDisplayBalanceByAccountId.get(selectedAccount.id) ?? toNumber(selectedAccount.balance)
-        : cashDisplayBalanceByAccountId.get(selectedAccount.id) ?? toNumber(selectedAccount.balance)
+        : cashDisplayBalanceByAccountId.get(selectedAccount.id) ?? toNumber(selectedAccount.balance))
     : 0;
   const selectedAccountFxRate = selectedAccount ? fxRateByCurrency.get(normalizeCurrency(selectedAccount.currency)) : null;
   const selectedAccountCurrency = selectedAccount ? normalizeCurrency(selectedAccount.currency) : baseCurrency;
@@ -3001,7 +3015,7 @@ export default async function Home({
       cashAccountId: lot.cashAccountId,
     }));
   const selectedAccountDisplayValue = selectedAccount
-    ? accountDisplayValueById.get(selectedAccount.id) ?? selectedAccountRawBalanceValue
+    ? selectedAccountLedgerBalance ?? accountDisplayValueById.get(selectedAccount.id) ?? selectedAccountRawBalanceValue
     : selectedAccountRawBalanceValue;
   const selectedViewHeaderAmount = view === "liability"
     ? liabilityDisplaySummaryValue
@@ -3138,6 +3152,7 @@ export default async function Home({
                   displayMultiplier={selectedAccount.kind === AccountKind.bank_credit ? -1 : 1}
                   baseCurrency={selectedAccountCurrency}
                   accountDisplayMode="original"
+                  balanceScope={isLinkedFundWalletAccount(selectedAccount) ? "ledger" : "statistics"}
                 />
               )}
               {view === "deposit" && selectedAccount && Math.abs(depositNonCertificateAmount) > 0.005 ? (
@@ -3157,6 +3172,16 @@ export default async function Home({
                       amount: formatCurrencyMoney(Math.abs(depositNonCertificateAmount), selectedAccountCurrency),
                     },
                   )}
+                </span>
+              ) : null}
+              {/* 关联了货基的电子钱包不统计余额（2026-11-18 用户裁定）：头部显示 0，
+                  这里说明原因，别让用户以为钱"消失了"。 */}
+              {selectedAccount && isLinkedFundWalletAccount(selectedAccount) ? (
+                <span
+                  className="text-xs text-slate-500"
+                  title={t("settings.accounts.linkedFund.balanceNotCounted")}
+                >
+                  {t("settings.accounts.linkedFund.balanceUncountedShort")}
                 </span>
               ) : null}
               {showSelectedAccountFxInline ? (

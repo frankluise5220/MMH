@@ -81,9 +81,20 @@ export async function ensureMoneyFundYieldRange(
   toYmd: string,
 ): Promise<Map<string, number>> {
   const cached = await loadMoneyFundYieldMap(fundCode, fromYmd, toYmd);
-  const latestCached = [...cached.keys()].sort().pop();
-  // 区间末尾附近已有数据就认为这段已同步；非交易日会让末尾空几天，留 4 天余量。
-  if (latestCached && latestCached >= shiftYmd(toYmd, -4)) return cached;
+  const cachedDays = [...cached.keys()].sort();
+  const earliestCached = cachedDays[0];
+  const latestCached = cachedDays[cachedDays.length - 1];
+  // 区间「两头」都有数据才算这段已同步。只看末尾是不够的：本地表里一旦存在缺口
+  // （比如只结过最近两周的收益），末尾有值就会短路，早期缺口永远补不上，重算历史
+  // 收益时会静默少结一大段。非交易日会让两头空几天，各留 4 天余量。
+  if (
+    earliestCached &&
+    latestCached &&
+    earliestCached <= shiftYmd(fromYmd, 4) &&
+    latestCached >= shiftYmd(toYmd, -4)
+  ) {
+    return cached;
+  }
 
   try {
     const rows = await fetchHistoricalNavList(fundCode, fromYmd, toYmd);

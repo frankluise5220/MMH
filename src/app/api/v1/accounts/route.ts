@@ -669,7 +669,7 @@ export async function PUT(req: NextRequest) {
         }
         const linkedAccount = await prisma.account.findFirst({
           where: { id: rawLinkedId, householdId, kind: "investment", investProductType: "money" },
-          select: { id: true, institutionId: true },
+          select: { id: true, institutionId: true, groupId: true },
         });
         if (!linkedAccount) {
           return NextResponse.json(
@@ -685,6 +685,16 @@ export async function PUT(req: NextRequest) {
             { status: 400 },
           );
         }
+        // 2026-11-18 用户裁定：还必须**同一所有人**（AccountGroup）。跨所有人关联等于记账时
+        // 从别人的货基里扣钱——「墨斗鱼的余额宝能关联付斌的货基」就是漏了这条。
+        const walletGroupId = String(data.groupId ?? existing.groupId ?? "").trim() || null;
+        if ((linkedAccount.groupId ?? null) !== walletGroupId) {
+          return NextResponse.json(
+            { ok: false, code: "ACCOUNT_LINKED_FUND_OWNER", error: "The linked money fund must belong to the same owner as the e-wallet" },
+            { status: 400 },
+          );
+        }
+
         // 基金代码来自持仓下拉，服务端仍校验 6 位且确实属于该货基账户。
         const rawCode = body.linkedFundCode == null ? "" : String(body.linkedFundCode).trim();
         if (rawCode && !/^\d{6}$/.test(rawCode)) {
@@ -1087,6 +1097,16 @@ export async function PUT(req: NextRequest) {
         affectedCreditAccountIds,
         { deleteManualCycles: false },
       );
+    }
+    // 关联/解绑货币基金会改变「这个钱包是否统计余额」（2026-11-18 用户裁定：关联后
+    // 钱包余额不再计入统计，避免和货基市值双计）。这里当场重算一次，让存储列立刻
+    // 落到 0（或解绑后折叠回真实值），不必等后台维护那一轮。
+    const linkedFundChanged =
+      data.linkedFundAccountId !== undefined
+      && String(data.linkedFundAccountId ?? "") !== String(existing.linkedFundAccountId ?? "");
+    if (linkedFundChanged) {
+      await recalcAndSaveAccountBalance(updated.id)
+        .catch(logger.catchLog("recalc wallet balance after linked fund change failed", "accounts/route.ts"));
     }
     // 归属变化后两个父账户的折合余额都要重算：旧父少了一个子户、新父多了一个。
     // 失败不阻塞保存（余额列下次重算会自愈），但必须留日志。

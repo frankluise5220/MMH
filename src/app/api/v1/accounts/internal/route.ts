@@ -6,7 +6,7 @@ import { computeInvestBalances } from "@/lib/invest-balance";
 import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
 import { getMaintainedAccountBalances } from "@/lib/server/account-balance";
 import { computeLiabilityDisplaySummary } from "@/lib/server/liability-display-summary";
-import { isDepositAccount, isPureInvestmentAccount } from "@/lib/account-kind-utils";
+import { isDepositAccount, isLinkedFundWalletAccount, isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import {
   loadCreditCardBillGroupBalances,
   sumCreditBalancesByBillGroup,
@@ -149,6 +149,9 @@ export async function GET(request: Request) {
     );
     const liabilityDisplaySummary = await computeLiabilityDisplaySummary(ctx);
     const enrichedAccounts = accounts.map((a) => {
+      // 关联了货币基金的电子钱包不统计余额（2026-11-18 用户裁定）：钱以货基份额持有，
+      // 再叠一次钱包余额就是双计。父户也一并归零，免得按存储的旧折叠值露出来。
+      if (isLinkedFundWalletAccount(a)) return { ...a, balance: 0 };
       // 聚合账户（父账户）没有明细，按明细折叠会被算成 0；它的 `balance`
       // 已经是子户折本位币之和，直接用列值。
       if (a.isAggregate) return a;

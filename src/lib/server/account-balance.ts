@@ -11,6 +11,7 @@ import {
   BALANCE_RECONCILE_TARGET_PREFIX,
   getBalanceAnchorTarget,
 } from "@/lib/balance-reconcile";
+import { isLinkedFundWalletAccount } from "@/lib/account-kind-utils";
 import { isLoanOrSettlementAccountKind } from "@/lib/liability";
 import { liabilityPrincipalForAccountSide } from "@/lib/liability";
 import { txRecordAccountScopeWhere } from "@/lib/transaction-account-scope";
@@ -68,6 +69,8 @@ type AccountBalanceLike = {
   kind: AccountKind;
   investProductType?: string | null;
   billingDay?: number | null;
+  /** 电子钱包关联的货币基金：关联后该钱包余额不参与统计（见 isLinkedFundWalletAccount）。 */
+  linkedFundAccountId?: string | null;
 };
 
 
@@ -209,14 +212,25 @@ function entryAffectsBalance(
 export async function computeAccountDisplayBalances(
   accounts: AccountBalanceLike[],
   hidFilter?: { householdId?: string },
+  options?: { countLinkedFundWallets?: boolean },
 ) {
   const accountIds = accounts.map((account) => account.id).filter(Boolean);
   const result = new Map<string, number>();
   if (accountIds.length === 0) return result;
+  // 关联了货币基金的电子钱包不统计余额（2026-11-18 用户裁定）：钱以货基份额持有，
+  // 再叠一次钱包余额就是双计。直接给 0，也不参与下面的折叠。
+  // 例外：明细页表头要显示「账面余额」（用户裁定「不统计，但表头还是要有数字」），
+  // 那时传 options.countLinkedFundWallets = true，照常折叠出真实值。
+  const countableAccounts = accounts.filter((account) => {
+    if (options?.countLinkedFundWallets) return true;
+    if (!isLinkedFundWalletAccount(account)) return true;
+    result.set(account.id, 0);
+    return false;
+  });
   // 「今天」按账簿设置的业务时区算，容器 TZ 只是兜底。
   const todayKey = todayDateBusinessYmd(await resolveHouseholdTimeZone(hidFilter?.householdId));
   const isOnOrBeforeToday = (date: Date) => localDateKey(date) <= todayKey;
-  const depositAccountIds = accounts
+  const depositAccountIds = countableAccounts
     .filter((account) => account.kind === AccountKind.deposit || account.investProductType === "deposit")
     .map((account) => account.id);
 
@@ -269,7 +283,7 @@ export async function computeAccountDisplayBalances(
     }
   }
 
-  const nonDepositAccounts = accounts.filter(
+  const nonDepositAccounts = countableAccounts.filter(
     (account) => account.kind !== AccountKind.deposit && account.investProductType !== "deposit",
   );
   const nonDepositAccountIds = nonDepositAccounts.map((account) => account.id);
@@ -959,6 +973,9 @@ async function advanceAccountBalanceStep(accountId: string) {
       investProductType: true,
       billingDay: true,
       balanceRecomputedAt: true,
+      linkedFundAccountId: true,
+      // 下面写完余额要判断要不要刷新父级聚合账户，所以 parentId 必须一起取。
+      parentId: true,
     },
   });
   if (!acc) return false;
@@ -973,9 +990,11 @@ async function advanceAccountBalanceStep(accountId: string) {
     billingDay: acc.billingDay,
   };
 
-  if (acc.kind === AccountKind.bank_credit) {
+  if (acc.kind === AccountKind.bank_credit || isLinkedFundWalletAccount(acc)) {
     if (acc.balanceRecomputedAt && localDateKey(acc.balanceRecomputedAt) >= todayKey) return false;
-    return writeAccountBalance(accountId, 0, todayEnd, acc.balanceRecomputedAt).catch(() => false);
+    const saved = await writeAccountBalance(accountId, 0, todayEnd, acc.balanceRecomputedAt).catch(() => false);
+    if (acc.parentId) await refreshParentAggregateBalance(prisma, [accountId]).catch(() => {});
+    return saved;
   }
 
   if (isDepositAccountLike(account)) {
@@ -1010,6 +1029,7 @@ export async function recalcAndSaveAccountBalance(accountId: string) {
       balanceRecomputedAt: true,
       isAggregate: true,
       parentId: true,
+      linkedFundAccountId: true,
     },
   });
   if (!acc) return false;
@@ -1031,6 +1051,14 @@ export async function recalcAndSaveAccountBalance(accountId: string) {
   // entirely so saving entries on a credit card does not pull its ledger.
   if (acc.kind === AccountKind.bank_credit) {
     return writeAccountBalance(accountId, 0, asOf, acc.balanceRecomputedAt).catch(() => false);
+  }
+
+  // 关联了货币基金的电子钱包同样不统计余额（2026-11-18 用户裁定）：钱以货基份额持有，
+  // 钱包余额再算一次就是双计。流水一条不动，只是这个缓存列固定写 0；解绑后会重新折叠回来。
+  if (isLinkedFundWalletAccount(acc)) {
+    const saved = await writeAccountBalance(accountId, 0, asOf, acc.balanceRecomputedAt).catch(() => false);
+    if (acc.parentId) await refreshParentAggregateBalance(prisma, [accountId]).catch(() => {});
+    return saved;
   }
 
   const account = {
@@ -1121,6 +1149,7 @@ async function applyEntryChangesWithLoadedRows(changes: EntryBalanceChange[]) {
       balance: true,
       balanceRecomputedAt: true,
       isAggregate: true,
+      linkedFundAccountId: true,
     },
   });
   // 「今天」按业务时区算：容器未设置 TZ 时进程时区是 UTC，会比北京时间晚 8 小时。
@@ -1157,6 +1186,12 @@ async function applyEntryChangesWithLoadedRows(changes: EntryBalanceChange[]) {
       billingDay: account.billingDay,
     };
     if (account.kind === AccountKind.bank_credit) {
+      await recalcOrMarkDirty(account.id);
+      continue;
+    }
+
+    // 关联了货基的钱包没有可增量维护的余额：整体重算（recalc 会写 0）。
+    if (isLinkedFundWalletAccount(account)) {
       await recalcOrMarkDirty(account.id);
       continue;
     }
@@ -1239,9 +1274,15 @@ async function applyEntryChangesWithLoadedRows(changes: EntryBalanceChange[]) {
   await refreshParentAggregateBalance(prisma, accounts.map((account) => account.id)).catch(() => {});
 }
 
+/**
+ * `options.countLinkedFundWallets = true` 时按「账面口径」返回：关联了货基的电子钱包
+ * 不再给 0，而是现场折叠出真实余额。只给明细页表头这类「展示这个账户有多少钱」的地方用；
+ * 统计口径（总资产、侧栏、列表合计）必须保持默认，否则会和货基市值双计。
+ */
 export async function getMaintainedAccountBalances(
   accounts: AccountBalanceLike[],
   hidFilter?: { householdId?: string },
+  options?: { countLinkedFundWallets?: boolean },
 ) {
   const result = new Map<string, number>();
   if (accounts.length === 0) return result;
@@ -1254,21 +1295,28 @@ export async function getMaintainedAccountBalances(
       id: true,
       kind: true,
       balance: true,
+      linkedFundAccountId: true,
     },
   });
   const rowById = new Map(rows.map((row) => [row.id, row]));
   for (const account of accounts) {
     const row = rowById.get(account.id);
-    result.set(
-      account.id,
-      row?.kind === AccountKind.bank_credit ? 0 : toNumber(row?.balance),
-    );
+    // 信用卡（看账单周期）与关联了货基的电子钱包（钱在货基份额里）都没有可统计余额，
+    // 后者口径见 isLinkedFundWalletAccount。
+    const linkedWallet = isLinkedFundWalletAccount(row);
+    const uncounted = row?.kind === AccountKind.bank_credit || (linkedWallet && !options?.countLinkedFundWallets);
+    result.set(account.id, uncounted ? 0 : toNumber(row?.balance));
   }
 
-  const depositAccounts = accounts.filter((account) => isDepositAccountLike(account));
-  if (depositAccounts.length > 0) {
-    const depositBalances = await computeAccountDisplayBalances(depositAccounts, hidFilter);
-    for (const [id, balance] of depositBalances) {
+  // 需要现场折叠的账户：存款账户（余额=存单现金价值），以及账面口径下的关联货基钱包
+  // （它的存储列按裁定固定写 0，真实值只能从流水折叠出来）。
+  const foldAccounts = accounts.filter((account) => {
+    if (isDepositAccountLike(account)) return true;
+    return !!options?.countLinkedFundWallets && isLinkedFundWalletAccount(rowById.get(account.id) ?? account);
+  });
+  if (foldAccounts.length > 0) {
+    const folded = await computeAccountDisplayBalances(foldAccounts, hidFilter, options);
+    for (const [id, balance] of folded) {
       result.set(id, balance);
     }
   }

@@ -37,6 +37,13 @@ export type MoneyIncomeAccrualResult = {
   days?: number;
   totalIncome?: number;
   entryIds?: string[];
+  /** 本次覆盖的起止日（YYYY-MM-DD），用来回话「从哪天算到哪天」。 */
+  fromDate?: string | null;
+  toDate?: string | null;
+  /** 一次调用最多补 MAX_BATCHES_PER_RUN 批，还没补到今天时为 true（再点一次接着补）。 */
+  truncated?: boolean;
+  /** 重算前清掉的旧结转条数。 */
+  removed?: number;
   reason?: string;
 };
 
@@ -123,6 +130,20 @@ type FundAccrualOutcome = {
   days: number;
   totalIncome: number;
   entryIds: string[];
+  fromDate: string | null;
+  toDate: string | null;
+  truncated: boolean;
+  removed: number;
+};
+
+const EMPTY_OUTCOME: FundAccrualOutcome = {
+  days: 0,
+  totalIncome: 0,
+  entryIds: [],
+  fromDate: null,
+  toDate: null,
+  truncated: false,
+  removed: 0,
 };
 
 async function accrueOneFund(params: {
@@ -131,9 +152,26 @@ async function accrueOneFund(params: {
   fundCode: string;
   fundName: string | null;
   today: Date;
+  rebuild?: boolean;
 }): Promise<FundAccrualOutcome> {
-  const { householdId, accountId, fundCode, fundName, today } = params;
+  const { householdId, accountId, fundCode, fundName, today, rebuild = false } = params;
   const yesterday = addDays(utcMidnight(today), -1);
+
+  // 强制重算：先把这只基金已有的结转流水清掉，游标随之归零，下面就从最早一笔交易
+  // 重新逐日重放。只删 source=money_fund_income 的记录——用户自己的买入 / 赎回一条不动，
+  // 万一中途取数失败，下次自检也会从建仓日重新补（结转本身是可以由流水重算出来的）。
+  let removed = 0;
+  if (rebuild) {
+    const deleted = await prisma.fundTransaction.deleteMany({
+      where: {
+        householdId,
+        fundAccountId: accountId,
+        fundCode,
+        source: TRANSACTION_SOURCE_MONEY_INCOME,
+      },
+    });
+    removed = deleted.count;
+  }
 
   const [holding, lastAccrual, entries] = await Promise.all([
     prisma.fundHolding.findUnique({
@@ -165,8 +203,9 @@ async function accrueOneFund(params: {
   ]);
 
   const currentUnits = Number(holding?.units ?? 0);
-  if (!(currentUnits > 0)) return { days: 0, totalIncome: 0, entryIds: [] };
-  if (entries.length === 0) return { days: 0, totalIncome: 0, entryIds: [] };
+  // 平时不给已赎空的基金结息；重算是为了核对历史，清仓后照样允许跑一遍。
+  if (!rebuild && !(currentUnits > 0)) return { ...EMPTY_OUTCOME, removed };
+  if (entries.length === 0) return { ...EMPTY_OUTCOME, removed };
 
   // 游标：上次结转到哪天的下一天；没结过就从建仓（确认）日开始。
   // 东财能翻页取到成立以来的每万份收益，所以历史可以补，不再人为截一个回看窗口。
@@ -176,7 +215,7 @@ async function accrueOneFund(params: {
     : firstEntry.confirmDate && firstEntry.confirmDate > firstEntry.applyDate
       ? utcMidnight(firstEntry.confirmDate)
       : addDays(utcMidnight(firstEntry.applyDate), 1);
-  if (cursorStart > yesterday) return { days: 0, totalIncome: 0, entryIds: [] };
+  if (cursorStart > yesterday) return { ...EMPTY_OUTCOME, removed };
 
   // 按日重放份额：不能用「当前份额」顶替历史份额，否则补历史时会把后期才有的份额
   // 算到早期，收益一路偏高。moves 已排序，指针单调右移即可。
@@ -194,6 +233,9 @@ async function accrueOneFund(params: {
   const entryIds: string[] = [];
   let totalIncome = 0;
   let batchFrom = cursorStart;
+  // 用户问的「算到哪天」：记录实际处理到的最后一天与是否补到了昨天。
+  let lastDay: string | null = null;
+  let reachedEnd = false;
 
   for (let batch = 0; batch < MAX_BATCHES_PER_RUN && batchFrom <= yesterday; batch += 1) {
     const batchLast = addDays(batchFrom, DAYS_PER_BATCH - 1);
@@ -266,15 +308,28 @@ async function accrueOneFund(params: {
       units = Math.max(0, round2(units + income));
     }
 
-    if (batchTo >= yesterday) break;
+    lastDay = ymd(batchTo);
+    if (batchTo >= yesterday) {
+      reachedEnd = true;
+      break;
+    }
     batchFrom = addDays(batchTo, 1);
   }
 
-  if (entryIds.length > 0) {
+  if (entryIds.length > 0 || removed > 0) {
     await recalcFundPositions(accountId, [fundCode]);
   }
 
-  return { days: entryIds.length, totalIncome, entryIds };
+  return {
+    days: entryIds.length,
+    totalIncome,
+    entryIds,
+    fromDate: ymd(cursorStart),
+    toDate: lastDay,
+    // 批数用完但还没补到今天：用户再点一次就会接着往下补。
+    truncated: !reachedEnd && cursorStart <= yesterday,
+    removed,
+  };
 }
 
 /**
@@ -285,13 +340,21 @@ async function accrueOneFund(params: {
 export async function accrueMoneyFundIncome(params: {
   householdId: string;
   fundAccountId?: string;
+  /** 只处理某一只基金（持仓行上的重算按钮用），不传则处理账户下全部货基。 */
+  fundCode?: string;
   today?: Date;
+  /** 强制重算：清掉已有结转，从最早一笔交易重新逐日重放（「从购买以来」一次算清）。 */
+  rebuild?: boolean;
 }): Promise<MoneyIncomeAccrualResult> {
   const { householdId, fundAccountId } = params;
   const today = params.today ?? new Date();
+  const fundCode = params.fundCode?.trim() || undefined;
+  const rebuild = params.rebuild === true;
 
   return runExclusive(
-    `money-fund-income:${householdId}:${fundAccountId ?? "*"}`,
+    // 锁粒度取账本级：自检（全账本）与手工重算（单账户）必须互斥，否则重算删流的
+    // 同时自检正在按旧游标补，会结出重复份额。
+    `money-fund-income:${householdId}`,
     async () => {
       const accounts = await prisma.account.findMany({
         where: {
@@ -307,10 +370,19 @@ export async function accrueMoneyFundIncome(params: {
       const entryIds: string[] = [];
       let days = 0;
       let totalIncome = 0;
+      let fromDate: string | null = null;
+      let toDate: string | null = null;
+      let truncated = false;
+      let removed = 0;
 
       for (const account of accounts) {
         const holdings = await prisma.fundHolding.findMany({
-          where: { accountId: account.id, units: { gt: 0 } },
+          // 重算 / 点名某只基金时都不过滤份额：清仓的基金也要能重放一遍核对历史。
+          where: {
+            accountId: account.id,
+            ...(fundCode ? { fundCode } : {}),
+            ...(fundCode || rebuild ? {} : { units: { gt: 0 } }),
+          },
           select: { fundCode: true, fundName: true },
         });
 
@@ -322,10 +394,15 @@ export async function accrueMoneyFundIncome(params: {
               fundCode: holding.fundCode,
               fundName: holding.fundName,
               today,
+              rebuild,
             });
             entryIds.push(...outcome.entryIds);
             days += outcome.days;
             totalIncome = round2(totalIncome + outcome.totalIncome);
+            removed += outcome.removed;
+            if (outcome.fromDate && (!fromDate || outcome.fromDate < fromDate)) fromDate = outcome.fromDate;
+            if (outcome.toDate && (!toDate || outcome.toDate > toDate)) toDate = outcome.toDate;
+            if (outcome.truncated) truncated = true;
           } catch (error) {
             // 单只基金取数失败不能拖垮整个账户：下一轮补跑即可（游标没推进）。
             logger.warn(
@@ -341,8 +418,15 @@ export async function accrueMoneyFundIncome(params: {
         }
       }
 
-      if (entryIds.length === 0) {
-        return { status: "skipped" as const, accounts: accounts.length, reason: "nothing to accrue" };
+      if (entryIds.length === 0 && removed === 0) {
+        return {
+          status: "skipped" as const,
+          accounts: accounts.length,
+          fromDate,
+          toDate,
+          truncated,
+          reason: "nothing to accrue",
+        };
       }
       return {
         status: "accrued" as const,
@@ -350,6 +434,10 @@ export async function accrueMoneyFundIncome(params: {
         days,
         totalIncome,
         entryIds,
+        fromDate,
+        toDate,
+        truncated,
+        removed,
       };
     },
     () => ({ status: "skipped" as const, reason: "busy" }),

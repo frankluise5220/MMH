@@ -32,6 +32,7 @@ export function LiveAccountBalance({
   displayMultiplier = 1,
   baseCurrency = "CNY",
   accountDisplayMode = "converted",
+  balanceScope = "statistics",
 }: {
   accountId?: string | null;
   initialValue: number;
@@ -41,6 +42,12 @@ export function LiveAccountBalance({
   displayMultiplier?: 1 | -1;
   baseCurrency?: string;
   accountDisplayMode?: "converted" | "original";
+  /**
+   * 数字口径。`statistics`（默认）＝统计口径：关联了货基的电子钱包返回 0。
+   * `ledger` ＝账面口径：返回该账户真实的账面余额（明细页表头要看到数字，
+   * 但这份余额仍不计入总资产，见 isLinkedFundWalletAccount）。
+   */
+  balanceScope?: "statistics" | "ledger";
 }) {
   const { t } = useI18n();
   const [value, setValue] = useState(initialValue);
@@ -72,7 +79,7 @@ export function LiveAccountBalance({
         try {
           if (Array.isArray(pendingIds) && pendingIds.length > 0) {
             if (mode === "account" && accountId && !pendingIds.includes(accountId)) return;
-            const scoped = await fetchScopedAccountBalances(pendingIds);
+            const scoped = await fetchScopedAccountBalances(pendingIds, { ledger: balanceScope === "ledger" });
             if (scoped?.ok) {
               if (mode === "total") {
                 if (scoped.totalConvertedBalance != null) {
@@ -94,6 +101,9 @@ export function LiveAccountBalance({
               }
             }
           }
+          // 账面口径没有全量兜底：`/internal` 是统计口径（关联钱包给 0），
+          // 拿它回填会把表头数字抹成 0。等价于抓不到就保持当前值。
+          if (balanceScope === "ledger") return;
           const data = await fetchInternalAccountBalances();
           if (!data?.ok || !Array.isArray(data.accounts)) return;
           const accounts = data.accounts as Array<{
@@ -156,7 +166,7 @@ export function LiveAccountBalance({
       if (refreshTimer.current) clearTimeout(refreshTimer.current);
       refreshPending.current = false;
     };
-  }, [accountDisplayMode, accountId, baseCurrency, mode]);
+  }, [accountDisplayMode, accountId, balanceScope, baseCurrency, mode]);
 
   const displayValue = value * displayMultiplier;
   const cls = missingFxRate ? "text-amber-700" : semantic === "liability" ? liabilityCls(displayValue, isRedUp) : pnlCls(displayValue, isRedUp);

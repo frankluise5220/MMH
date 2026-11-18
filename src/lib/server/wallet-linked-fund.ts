@@ -37,7 +37,7 @@ export async function applyWalletLinkedFund(
 ): Promise<WalletLinkedFundResult | null> {
   const wallet = await tx.account.findFirst({
     where: { id: params.walletAccountId, householdId: params.householdId },
-    select: { id: true, name: true, institutionId: true, linkedFundAccountId: true, linkedFundCode: true },
+    select: { id: true, name: true, institutionId: true, groupId: true, linkedFundAccountId: true, linkedFundCode: true },
   });
   if (!wallet?.linkedFundAccountId) return null;
 
@@ -48,12 +48,16 @@ export async function applyWalletLinkedFund(
       kind: "investment",
       investProductType: FundProductType.money,
     },
-    select: { id: true, name: true, institutionId: true },
+    select: { id: true, name: true, institutionId: true, groupId: true },
   });
   if (!fundAccount) throw new Error("关联的货币基金账户不存在，或该账户不是货币基金类型");
   // 与账户设置保存时的校验同口径：钱包与货基必须同机构（2026-11-18）。
   if (!wallet.institutionId || fundAccount.institutionId !== wallet.institutionId) {
     throw new Error("关联的货币基金账户与本钱包不属于同一机构");
+  }
+  // 也必须同一所有人：跨所有人联动等于从别人的货基里扣钱（2026-11-18）。
+  if ((fundAccount.groupId ?? null) !== (wallet.groupId ?? null)) {
+    throw new Error("关联的货币基金账户与本钱包不属于同一所有人");
   }
 
   let fundCode = wallet.linkedFundCode?.trim() || "";

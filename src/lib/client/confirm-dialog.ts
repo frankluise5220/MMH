@@ -137,6 +137,38 @@ export function showConfirmDialog({
   });
 }
 
+/**
+ * 轻量结果提示：右上角一条，几秒后自动消失。
+ *
+ * 行内操作（例如持仓行的「重算收益结转」）没有地方摆结果文本，又不想为一句「已结转 15 天」
+ * 弹一个需要点确认的对话框，统一走这里。同时只保留一条，后一条覆盖前一条。
+ */
+export function showToast({
+  message,
+  tone = "success",
+  duration = 3600,
+}: {
+  message: string;
+  tone?: "success" | "error";
+  duration?: number;
+}): void {
+  if (typeof document === "undefined" || !message) return;
+
+  document.getElementById("mmh-toast")?.remove();
+
+  const toast = document.createElement("div");
+  toast.id = "mmh-toast";
+  toast.setAttribute("role", "status");
+  toast.className =
+    tone === "error"
+      ? "fixed right-4 top-4 z-[10000] max-w-sm rounded-xl border border-rose-200 bg-rose-50 px-4 py-2.5 text-sm leading-6 text-rose-700 shadow-lg shadow-slate-900/10"
+      : "fixed right-4 top-4 z-[10000] max-w-sm rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-2.5 text-sm leading-6 text-emerald-700 shadow-lg shadow-slate-900/10";
+  toast.textContent = message;
+  document.body.appendChild(toast);
+
+  window.setTimeout(() => toast.remove(), duration);
+}
+
 export function showChoiceDialog<T extends string>({
   title,
   message,

@@ -9,6 +9,7 @@ import {
   type AccountLabelField,
   type AccountRenderSettings,
 } from "@/lib/account-display";
+import { isLinkedFundWalletAccount } from "@/lib/account-kind-utils";
 import { getMaintainedAccountBalances } from "@/lib/server/account-balance";
 import { addDaysUtc, formatDateUtc, startOfDayUtc, toNumber } from "@/lib/date-utils";
 import {
@@ -256,6 +257,7 @@ const NOTIFICATION_ACCOUNT_SELECT = {
   numberMasked: true,
   groupId: true,
   investProductType: true,
+  linkedFundAccountId: true,
   Institution: { select: { name: true, shortName: true } },
   AccountGroup: { select: { name: true } },
   Counterparty: { select: { name: true, shortName: true } },
@@ -422,13 +424,15 @@ export async function loadNotificationFeed(params: {
     const fundingAccountId = fundingAccountIdOf(plan, task, kind);
     const fundingAccount = fundingAccountId ? fundingAccountById.get(fundingAccountId) ?? null : null;
     // 信用卡的"余额"不是可用现金口径（getMaintainedAccountBalances 对信用卡直接给 0），
-    // 拿它判断余额不足会天天误报，所以信用卡付款账户不报警。
+    // 拿它判断余额不足会天天误报，所以信用卡付款账户不报警。关联了货基的电子钱包同理：
+    // 它的余额固定为 0，钱在货基份额里（2026-11-18 用户裁定）。
     const balance = fundingAccount ? fundingBalances.get(fundingAccount.id) : undefined;
     const blocked = balanceBlocks.has(plan.id);
     const insufficient =
       blocked ||
       (!!fundingAccount &&
         fundingAccount.kind !== AccountKind.bank_credit &&
+        !isLinkedFundWalletAccount(fundingAccount) &&
         typeof balance === "number" &&
         amount > 0 &&
         amount > balance + 0.005);

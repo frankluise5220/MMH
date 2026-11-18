@@ -119,15 +119,25 @@ export function fetchInternalAccountBalances(): Promise<InternalAccountBalancesP
   return request;
 }
 
-export function fetchScopedAccountBalances(accountIds: string[]): Promise<ScopedAccountBalancesPayload> {
+export function fetchScopedAccountBalances(
+  accountIds: string[],
+  /**
+   * `ledger: true` = 账面口径（关联了货基的电子钱包返回真实余额），只给明细页表头用。
+   * 这类请求**不能**参与 sidebar 总资产的增量补丁，否则统计口径会被账面口径污染。
+   */
+  options?: { ledger?: boolean },
+): Promise<ScopedAccountBalancesPayload> {
   const ids = Array.from(new Set(accountIds.map((id) => String(id ?? "").trim()).filter(Boolean)));
   if (ids.length === 0) return Promise.resolve(null);
-  const key = ids.slice().sort().join(",");
+  const ledger = options?.ledger === true;
+  const idKey = ids.slice().sort().join(",");
+  const key = ledger ? `ledger:${idKey}` : idKey;
   const existing = scopedInFlight.get(key);
   if (existing) return existing;
+  const query = `/api/v1/accounts/balances?ids=${encodeURIComponent(idKey)}${ledger ? "&ledger=1" : ""}`;
   const request = (async () => {
     try {
-      const res = await fetch(`/api/v1/accounts/balances?ids=${encodeURIComponent(key)}`, { cache: "no-store" });
+      const res = await fetch(query, { cache: "no-store" });
       const contentType = res.headers.get("content-type") || "";
       if (!res.ok || !contentType.includes("application/json")) return null;
       const payload = await res.json() as {
@@ -140,7 +150,8 @@ export function fetchScopedAccountBalances(accountIds: string[]): Promise<Scoped
         ok: true as const,
         baseCurrency: String(payload.baseCurrency || "CNY"),
         data: payload.data,
-        totalConvertedBalance: applyScopedConvertedBalanceDelta(payload.data),
+        // 账面口径的数值不参与统计缓存，直接不给总额增量。
+        totalConvertedBalance: ledger ? null : applyScopedConvertedBalanceDelta(payload.data),
       };
     } catch {
       return null;

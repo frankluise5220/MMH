@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { AccountKind, FundProductType } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
+import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { revalidateAfterSettingsChange } from "@/lib/server/revalidate";
 
@@ -133,6 +134,9 @@ export async function POST(_req: NextRequest, context: RouteContext) {
       };
     });
 
+    // 关联后钱包余额不再计入统计（isLinkedFundWalletAccount）：存储列当场归零，
+    // 免得用户先看到「钱包余额 + 货基市值」的双计数。
+    await recalcAndSaveAccountBalance(walletId).catch(() => {});
     revalidateAfterSettingsChange();
     return NextResponse.json({ ok: true, ...result });
   } catch (error) {
