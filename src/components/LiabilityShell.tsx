@@ -15,13 +15,11 @@ import {
   BasicDetailBatchDeleteButton,
   BasicDetailBatchDeleteMessage,
   BasicDetailBatchReplaceButton,
-  BasicDetailConvertButton,
   BasicDetailConvertWatcher,
   BasicDetailSelectionProvider,
   useBasicDetailSelection,
   usePruneBasicDetailSelection,
   type BasicDetailBatchCategoryOption,
-  type ConvertSourceEntry,
 } from "./BasicDetailSelection";
 import { formatMoney } from "@/lib/format";
 import { useI18n } from "@/lib/i18n";
@@ -164,46 +162,6 @@ type LiabilityEntry = {
     toAccountId?: string;
   };
 };
-
-/**
- * 往来款 / 借款明细行 → 「转换交易」的输入行。
- *
- * 这些行本身是「资金账户 ↔ 往来款（借款）账户」的转账，行上没有账户种类字段，
- * 可用的信息在 `liabilityEdit`（双击编辑时派发的往来款事件负载）里：债务侧账户、
- * 资金侧账户、日期、金额。余额校准行没有可转换的业务语义，返回 null。
- */
-function liabilityConvertSourceEntry(entry: LiabilityEntry, reconciled: boolean): ConvertSourceEntry | null {
-  const liabilityEdit = entry.liabilityEdit;
-  if (liabilityEdit) {
-    return {
-      id: entry.id,
-      type: "transfer",
-      date: liabilityEdit.defaultDate,
-      amount: Math.abs(liabilityEdit.defaultPrincipal || entry.amount),
-      note: liabilityEdit.defaultNote ?? entry.note,
-      // 债务侧账户：转换到别的往来款类型时直接落在同一对象上。
-      accountId: liabilityEdit.defaultLiabilityAccountId,
-      accountKind: liabilityEdit.dialogType === "loan" ? "loan" : "settlement",
-      accountIsSettlementAccount: liabilityEdit.dialogType !== "loan",
-      cashAccountId: liabilityEdit.defaultCashAccountId,
-      reconciledAt: reconciled ? entry.date : null,
-    };
-  }
-  if (entry.edit) {
-    return {
-      id: entry.id,
-      type: entry.edit.type,
-      date: entry.edit.date,
-      amount: Math.abs(entry.edit.amount ?? entry.amount),
-      note: entry.edit.note ?? entry.note,
-      accountId: entry.edit.accountId,
-      cashAccountId: entry.edit.type === "transfer" ? entry.edit.fromAccountId : entry.edit.accountId,
-      toAccountId: entry.edit.toAccountId,
-      reconciledAt: reconciled ? entry.date : null,
-    };
-  }
-  return null;
-}
 
 type RepaymentScheduleRow = {
   rowType: "payment" | "rate_adjustment";
@@ -1968,14 +1926,6 @@ function LiabilityEntriesTable({
   usePruneBasicDetailSelection(currentEntryIds);
   // 负债明细行就是背后的现金流水：现金明细页锁定的记录，这里同样要显示锁并能就地解锁。
   const { isReconciled } = useEntryReconcileState(currentEntryIds);
-  // 「转换」只在恰好选中一条记录时出现（与现金明细页一致）。
-  const convertSourceEntry = useMemo(() => {
-    if (selectedIds.size !== 1) return null;
-    const [onlyId] = Array.from(selectedIds);
-    const entry = entries.find((item) => item.id === onlyId);
-    if (!entry) return null;
-    return liabilityConvertSourceEntry(entry, isReconciled(entry.id));
-  }, [entries, isReconciled, selectedIds]);
   const normalizedAccountOptions = useMemo(
     () => accountOptions.map((account) => ({
       id: account.id,
@@ -2057,7 +2007,6 @@ function LiabilityEntriesTable({
       rowActionsMinWidth={124}
       batchActionSlot={(
         <>
-          {convertSourceEntry ? <BasicDetailConvertButton entry={convertSourceEntry} /> : null}
           <BasicDetailBatchReplaceButton
             accountOptions={normalizedAccountOptions}
             categoryOptions={categoryOptions}
