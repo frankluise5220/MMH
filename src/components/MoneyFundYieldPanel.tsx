@@ -113,13 +113,15 @@ export function MoneyFundYieldPanel({
 
   return (
     <div className={compact ? "space-y-1.5" : "space-y-2"}>
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-700">
-          <Coins className="h-3.5 w-3.5 text-amber-600" />
-          {t("moneyYield.title")}
+      {compact ? null : (
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-700">
+            <Coins className="h-3.5 w-3.5 text-amber-600" />
+            {t("moneyYield.title")}
+          </div>
+          <span className="text-[10px] text-slate-400">{t("moneyYield.navHint")}</span>
         </div>
-        <span className="text-[10px] text-slate-400">{t("moneyYield.navHint")}</span>
-      </div>
+      )}
 
       <div className="flex flex-wrap items-end gap-1.5">
         <label className="space-y-0.5">

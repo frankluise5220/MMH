@@ -368,10 +368,15 @@ export function FundProfileSettingsClient({ account, profile, backHref, onClose,
           <div className={sectionHeaderClass}>
             <div className="flex min-w-0 items-center gap-2">
               <CircleDollarSign className="h-4 w-4 shrink-0 text-emerald-600" />
-              <h2 className="text-sm font-semibold text-slate-900">{t("fundSettings.institutionSection")}</h2>
+              {/* 货基这张卡里装的是每万份收益，不是费率，标题跟着换，否则「代销机构费率」下挂收益表 */}
+              <h2 className="text-sm font-semibold text-slate-900">
+                {isMoneyFund ? t("moneyYield.title") : t("fundSettings.institutionSection")}
+              </h2>
             </div>
             <span className="rounded bg-emerald-50 px-2 py-0.5 text-xs font-medium text-emerald-700">
-              {account.institutionName || t("fundSettings.noInstitution")}
+              {isMoneyFund
+                ? t("moneyYield.navHint")
+                : account.institutionName || t("fundSettings.noInstitution")}
             </span>
           </div>
           <div className="p-2.5">
