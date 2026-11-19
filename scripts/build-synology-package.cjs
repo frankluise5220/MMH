@@ -2168,6 +2168,43 @@ function writeDsmAppConfig() {
 // needs (DATABASE_URL, MMH_DATA_DIR, secrets), so the bundled copy is pure
 // leakage: it carries DATABASE_URL / ADMIN_PASSWORD / RESEND_API_KEY /
 // PASSWORD_RESET_SECRET into the published archive. Drop it here.
+// Next's standalone tracing keeps whole packages, so `pdf-parse` and
+// `pdfjs-dist` arrive with their own source maps: 101 of them, 29 MB unpacked,
+// ~6.4 MB inside package.tgz. Nothing at runtime reads a .map (they only
+// decorate stack traces) and the Docker image already drops the ones under
+// .next, so strip every one from the staged server before package.tgz is built.
+function pruneSourceMaps(serverDir) {
+  if (!fs.existsSync(serverDir)) return 0;
+  let count = 0;
+  let bytes = 0;
+  const stack = [serverDir];
+  while (stack.length > 0) {
+    const current = stack.pop();
+    let entries = [];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const item = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(item);
+        continue;
+      }
+      if (!entry.name.endsWith(".map")) continue;
+      const size = fs.statSync(item).size;
+      fs.rmSync(item, { force: true });
+      count += 1;
+      bytes += size;
+    }
+  }
+  if (count > 0) {
+    console.log(`Pruned ${count} source maps (${(bytes / (1024 * 1024)).toFixed(1)} MB) from the Synology payload.`);
+  }
+  return count;
+}
+
 function stripBundledEnvFiles(serverRoot) {
   for (const name of [".env", ".env.local", ".env.production", ".env.development", ".env.test"]) {
     const abs = path.join(serverRoot, name);
@@ -2301,6 +2338,7 @@ function buildSpk() {
 
   const stagedServerDir = path.join(packageRoot, "app", "server");
   trimForeignPrebuilds(stagedServerDir, target.nodeArch);
+  pruneSourceMaps(stagedServerDir);
   const nodeTarballRoot = path.join(stageDir, ".synology-node");
   fs.rmSync(nodeTarballRoot, { recursive: true, force: true });
   mkdirp(nodeTarballRoot);

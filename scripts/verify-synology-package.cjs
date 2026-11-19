@@ -199,6 +199,10 @@ function verifySourceFiles() {
   expect(/check:synology/.test(packageJson), "package.json must expose check:synology.");
   expect(/MMH_DEPLOY_TARGET:\s*"synology"/.test(appBuildScript), "Synology app build must mark the deployment target.");
   expect(/MMH_BASE_PATH:\s*""/.test(packageScript), "Synology package build must explicitly clear the fnOS basePath.");
+  expect(
+    packageScript.includes("function pruneSourceMaps(") && packageScript.includes("pruneSourceMaps(stagedServerDir)"),
+    "Synology build must strip *.map from the staged server: pdfjs-dist / pdf-parse ship ~29 MB (6.4 MB compressed) of source maps that nothing reads at runtime.",
+  );
   expect(/MMH_DEPLOY_TARGET=synology/.test(packageScript), "Synology start script must mark runtime deployment as synology.");
   expect(/\.mmh-version/.test(packageScript), "Synology package must inject the outer package version into the runtime payload.");
   expect(/applyRuntimeReleaseNotes\(path\.join\(packageRoot, "app", "server", "package\.json"\)\)/.test(packageScript), "Synology package must inject the in-app 本版说明 into the runtime package.json (app/server/package.json).");
@@ -679,6 +683,11 @@ function verifyBuiltSpk() {
     );
     expect(!/^VAR_DIR="\$APP_DIR\/var"/m.test(startScript.stdout || ""), "Built start-stop-status must not write runtime data under SYNOPKG_PKGDEST/target.");
     const packageEntries = tarList(packageTgzPath, { gzip: true });
+    const shippedSourceMaps = packageEntries.filter((entry) => entry.endsWith(".map"));
+    expect(
+      shippedSourceMaps.length === 0,
+      `Built SPK must not ship source maps (${shippedSourceMaps.length} found, e.g. ${shippedSourceMaps.slice(0, 3).join(", ")}); pdfjs-dist / pdf-parse alone add ~6.4 MB compressed.`,
+    );
     for (const required of [
       "app/bin/node",
       "app/server/server.js",
