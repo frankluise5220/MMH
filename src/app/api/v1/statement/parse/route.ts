@@ -612,6 +612,14 @@ const BANK_NAMES = [
   "华夏银行",
 ];
 
+/**
+ * 全国有上百家「XX农村商业银行 / XX农商银行 / XX农村信用社」，白名单永远盖不全。
+ * 命中这类机构时统一归到账本的「农商银行」口径（BANK_ALIASES 的 canonical，
+ * 其后端匹配别名含「农村商业银行 / 农村信用社 / 江苏农商 …」），
+ * 这样账户名能稳定拼成「付斌的农商银行信用卡(2058)」并落回既有账户。
+ */
+const RURAL_BANK_NAME_RE = /农村商业银行|农商银行|农村合作银行|农村信用社|农信社|农商行/;
+
 function detectBankName(text: string) {
   const normalized = text.replace(/\s+/g, "");
   const found = BANK_NAMES.find((name) => normalized.includes(name));
@@ -622,7 +630,10 @@ function detectBankName(text: string) {
   const aliasText = normalized.replace(/(?:银行)?信用卡|贷记卡/g, "银行");
   const aliasFound = BANK_NAMES.find((name) => aliasText.includes(name));
   if (aliasFound === "中国邮政储蓄银行") return "邮储银行";
-  return aliasFound ?? "";
+  if (aliasFound) return aliasFound;
+  // 「江苏农商信用卡」这类写法只有把「信用卡」换成「银行」后才露出「农商银行」。
+  if (RURAL_BANK_NAME_RE.test(normalized) || RURAL_BANK_NAME_RE.test(aliasText)) return "农商银行";
+  return "";
 }
 
 function extractStatementAccountHeader(rowText: string, fallbackInstitutionName?: string) {
@@ -650,6 +661,55 @@ function extractStatementAccountHeader(rowText: string, fallbackInstitutionName?
 
 function isDebitOrRepaymentAccountContext(value: string) {
   return /扣款账号|扣款账户|还款账号|还款账户|自动还款|代扣|借记卡|储蓄卡|Debit\s*Account|Debit\s*Card|Payment\s*Account/i.test(value);
+}
+
+/** 「尊敬的客户」「尊敬的先生/女士」这类不是姓名，不能当所有人。 */
+const STATEMENT_OWNER_NAME_BLOCKLIST = new Set([
+  "客户",
+  "用户",
+  "您",
+  "尊敬的",
+  "亲爱的",
+  "持卡人",
+  "本人",
+  "会员",
+  "先生",
+  "女士",
+  "小姐",
+]);
+
+function normalizeStatementOwnerName(raw: string | undefined) {
+  const compact = String(raw ?? "").replace(/\s+/g, "").replace(/^尊敬(?:的)?/, "");
+  if (!compact) return "";
+  // 「付斌先生」被贪婪吃进称谓时剥掉；「尊敬的先生」剥完是空，按拒绝处理。
+  const name = compact.replace(/(?:先生|女士|小姐)$/, "");
+  if (!name || STATEMENT_OWNER_NAME_BLOCKLIST.has(name) || STATEMENT_OWNER_NAME_BLOCKLIST.has(compact)) return "";
+  return /^[\u4e00-\u9fa5·]{2,6}$/.test(name) ? name : "";
+}
+
+/**
+ * 账单里的持卡人（所有人）。农商行/平安等写法差异很大：
+ * 「尊敬的 付斌 先生，您好」「尊敬的付斌先生：」「付斌 先生」另起一行。
+ * 称谓后面允许直接跟标点/您好/空白/结尾，不能强制要求「您好」两个字。
+ */
+function extractStatementOwnerName(plain: string) {
+  const text = String(plain ?? "");
+  const salutation = text.match(
+    /尊敬(?:的)?\s*([\u4e00-\u9fa5·]{2,10}?)\s*(?:(?:先生|女士|小姐)\s*)?(?:[，,：:、]|您好|你好|\s|$)/,
+  )?.[1];
+  const fromSalutation = normalizeStatementOwnerName(salutation);
+  if (fromSalutation) return fromSalutation;
+
+  // 「付斌 先生」只在信件头部找，避免正文里出现的「张三 先生」被当成持卡人。
+  const head = text.replace(/\s+/g, " ").trim().slice(0, 600);
+  const titled = head.match(
+    /(?:^|[\s，,：:；;])([\u4e00-\u9fa5·]{2,6})\s*(?:先生|女士|小姐)(?=$|[\s，,：:；;。！!？?、])/,
+  )?.[1];
+  const fromTitled = normalizeStatementOwnerName(titled);
+  if (fromTitled) return fromTitled;
+
+  const labeled = text.match(/(?:持卡人|卡片所有人|账户所有人|户名)\s*[:：]\s*([\u4e00-\u9fa5·]{2,6})/)?.[1];
+  return normalizeStatementOwnerName(labeled);
 }
 
 function extractCreditCardLast4(text: string, fallbackInstitutionName?: string) {
@@ -683,10 +743,9 @@ function extractCreditCardLast4(text: string, fallbackInstitutionName?: string) 
 function extractCreditCardMeta(text: string): ParsedItemMeta & { accountName?: string } {
   const plain = stripHtml(text);
   const institutionName = detectBankName(plain);
-  // 「尊敬的付斌先生您好」和另起一行的「付斌 先生」都是持卡人写法（平安账单是后者）。
-  // 后者只在信件头部找，避免正文里出现的「张三 先生」被当成持卡人。
-  const ownerName = plain.match(/尊敬的\s*([\u4e00-\u9fa5·]{2,8})\s*(?:先生|女士|小姐)?\s*您好/)?.[1]?.trim()
-    ?? plain.slice(0, 240).match(/(?:^|\s)([\u4e00-\u9fa5·]{2,6})\s*(?:先生|女士|小姐)(?:\s|$)/)?.[1]?.trim();
+  // 「尊敬的付斌先生您好」「尊敬的 付斌 先生：」和另起一行的「付斌 先生」都是持卡人写法
+  // （平安账单是后者）。统一由 extractStatementOwnerName 处理。
+  const ownerName = extractStatementOwnerName(plain);
   const cardNumberMasked = extractCreditCardLast4(text, institutionName);
   const creditLimit = extractCreditLimit(plain);
   const periodMatch = plain.match(/(\d{4}[年\/\-.]\d{1,2}[月\/\-.]\d{1,2})日?\s*[-~至—]\s*(\d{4}[年\/\-.]\d{1,2}[月\/\-.]\d{1,2})日?/);
@@ -1725,7 +1784,7 @@ function extractCmbCreditCardMeta(text: string): ParsedItemMeta & { accountName?
   // "您2026年08月信用卡账单已出" line. Per-row card numbers are resolved in
   // the main parse loop instead.
   const cardNumberMasked = undefined;
-  const ownerName = plain.match(/尊敬的\s*([\u4e00-\u9fa5·]{2,8})\s*(?:先生|女士|小姐)?/)?.[1]?.trim();
+  const ownerName = extractStatementOwnerName(plain);
   const accountName = "招商银行信用卡";
   return {
     institutionName: "招商银行",
@@ -2036,7 +2095,7 @@ function extractMinshengCreditCardMeta(text: string): ParsedItemMeta & { account
   const minimumPayment = extractMinshengLabeledMoney(plain, [...CREDIT_CARD_MINIMUM_PAYMENT_LABELS]);
   const creditLimit = extractCreditLimit(plain);
   const cardNumberMasked = extractCreditCardLast4(plain, "民生银行");
-  const ownerName = plain.match(/尊敬的\s*([\u4e00-\u9fa5·]{2,8})\s*(?:先生|女士|小姐)?/)?.[1]?.trim();
+  const ownerName = extractStatementOwnerName(plain);
   const accountCore = `民生银行信用卡${cardNumberMasked ? `(${cardNumberMasked})` : ""}`;
   const accountName = ownerName ? `${ownerName}的${accountCore}` : accountCore;
 
@@ -2591,7 +2650,8 @@ function parseGenericCreditCardHtmlStatement(text: string): ParsedItem[] {
 
   const meta = extractCreditCardMeta(text);
   const period = extractStatementPeriod(text);
-  const institutionName = meta.institutionName || "信用卡";
+  // 机构名识别不出来时不能再拿「信用卡」当机构名去拼，否则账户会变成「信用卡信用卡」。
+  const institutionName = meta.institutionName || "";
   const baseMeta: ParsedItemMeta = {
     institutionName,
     ownerName: meta.ownerName,
