@@ -363,6 +363,14 @@ expect(/function resolveStoreIntro\(\)/.test(buildScript), "fnOS manifest desc m
 expect(/"deploy", "fnos", "repository", "fnpack\.json"/.test(buildScript), "fnOS manifest desc must read the shared intro from deploy/fnos/repository/fnpack.json.");
 expect(/desc=\$\{externalNode \?[\s\S]{0,200}storeIntro\}/.test(buildScript), "fnOS manifest desc must use the shared store intro for the official App Center listing.");
 expect(/display_name=\$\{displayName\}/.test(buildScript) && /title:\s*displayName,/.test(buildScript), "fnOS manifest display_name and the app/ui/config entry title must come from the single displayName constant.");
+// 启动失败要给用户看得懂的原因，而不是只有 mmh.log 里两行英文：
+// 1) 守卫把中文原因写进 STARTUP-ERROR.txt；2) 启动失败时顶一张说明页；
+// 3) 安装阶段就校验 payload 版本和「迁移集 ⊇ 账本」，装错包当场失败。
+expect(/function assertSchemaNotNewerThanBinary/.test(buildScript) && /STARTUP-ERROR\.txt/.test(buildScript), "fnOS init-sqlite guard must write a human-readable STARTUP-ERROR.txt.");
+expect(/payload_ready_and_verified\(\)\s*\{/.test(buildScript) && /EXPECTED_PAYLOAD_VERSION=/.test(buildScript), "fnOS lifecycle must verify the extracted payload version against the package version.");
+expect(/verify_database_schema\(\)\s*\{/.test(buildScript) && /--verify-schema/.test(buildScript), "fnOS lifecycle must reject a package whose payload predates the migrations recorded in the ledger.");
+expect(/fs\.copyFileSync\([\s\S]{0,240}startup-error-page\.cjs/.test(buildScript), "fnOS package must ship the startup error page script.");
+expect(fs.existsSync(path.join(root, "scripts", "fnos", "startup-error-page.cjs")), "Startup error page source script must exist.");
 // external-node 不内置运行时，必须靠 fnOS 的 install_dep_apps 把「Node.js 22」依赖装上
 // （司农记账就是这么做的），否则用户得自己去应用中心找 Node.js，装漏了就是启动失败。
 // bundled 自带 bin/node，不能声明依赖。

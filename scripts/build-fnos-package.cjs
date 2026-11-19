@@ -1074,8 +1074,92 @@ ensure_cmd_scripts() {
     fi
 }
 
+# 安装包里声明的版本（构建时注入）。解出来的 payload 必须和它一致：5.149 那次
+# 真机事故就是应用目录里躺着 0.1.77 的旧 payload、而用户以为装的是新包，界面
+# 什么都看不出来，只能看到一个起不来的应用。现在先重解包自愈，仍不一致就当面
+# 报错，而不是让用户对着一个打不开的图标猜。
+EXPECTED_PAYLOAD_VERSION="${version}"
+
+payload_version_of() {
+    local dest candidate actual
+    dest="\${1:-$(resolve_app_dest)}"
+    for candidate in "\${dest}/app/server/.mmh-version" "\${dest}/server/.mmh-version"; do
+        [ -f "$candidate" ] || continue
+        actual="$(tr -d '[:space:]' < "$candidate" 2>/dev/null || true)"
+        [ -n "$actual" ] || continue
+        printf '%s\\n' "$actual"
+        return 0
+    done
+    return 1
+}
+
+verify_payload_version() {
+    local dest actual
+    dest="\${1:-$(resolve_app_dest)}"
+    actual="$(payload_version_of "$dest" 2>/dev/null || true)"
+    # 老包没有版本文件时不做判断（不能因为缺少标记就把能跑的程序判成坏的）。
+    [ -n "$actual" ] || return 0
+    if [ "$actual" != "$EXPECTED_PAYLOAD_VERSION" ]; then
+        echo "MMH 安装内容与安装包不一致：安装包是 \${EXPECTED_PAYLOAD_VERSION}，解包出来的程序是 \${actual}。" >&2
+        echo "这通常是安装包被旧内容覆盖、或下载/解包损坏：应用目录里残留着更早版本的载荷。请重新从应用中心安装；本次已中止，账本数据没有被改动。" >&2
+        return 1
+    fi
+    return 0
+}
+
+# 安装/升级/启动前先问一句「这个 payload 认识账本里的迁移吗」。不认识就直接
+# 失败并说清楚要升级到哪个版本，而不是先谎报安装成功、再让用户对着打不开的
+# 图标猜。没有 Node 时（依赖还没装好）跳过，交给启动时的守卫兜底。
+verify_database_schema() {
+    local dest server_dir data_dir node_bin status had_errexit=0
+    dest="\${1:-$(resolve_app_dest)}"
+    if [ -f "\${dest}/app/server/scripts/init-sqlite.cjs" ]; then
+        server_dir="\${dest}/app/server"
+    elif [ -f "\${dest}/server/scripts/init-sqlite.cjs" ]; then
+        server_dir="\${dest}/server"
+    else
+        return 0
+    fi
+    data_dir="\${TRIM_DATADEST:-}"
+    if [ -z "$data_dir" ]; then
+        data_dir="$(resolve_pkgvar 2>/dev/null || true)"
+        [ -n "$data_dir" ] && data_dir="\${data_dir}/data"
+    fi
+    [ -n "$data_dir" ] || return 0
+    [ -f "\${data_dir}/mmh.db" ] || return 0
+    if command -v select_node_bin >/dev/null 2>&1; then
+        node_bin="$(select_node_bin 2>/dev/null || true)"
+    fi
+    [ -n "$node_bin" ] && [ -x "$node_bin" ] || return 0
+    case "$-" in
+        *e*) had_errexit=1 ;;
+    esac
+    set +e
+    ( cd "$server_dir" && MMH_DATA_DIR="$data_dir" DATABASE_URL="file:\${data_dir}/mmh.db" "$node_bin" "\${server_dir}/scripts/init-sqlite.cjs" --verify-schema ) >/dev/null 2>&1
+    status=$?
+    [ "$had_errexit" -eq 1 ] && set -e
+    if [ "$status" -eq 78 ]; then
+        echo "MMH 安装中止：这个账本是由更新版本的 MMH 写入的，当前安装包装上去也启动不了（旧程序不认识新版数据库结构）。" >&2
+        echo "请安装与账本匹配或更新的版本；账本数据没有被改动，原因已写入 \${data_dir}/STARTUP-ERROR.txt。" >&2
+        return 1
+    fi
+    return 0
+}
+
+payload_ready_and_verified() {
+    local dest="$1"
+    if ! verify_payload_version "$dest"; then
+        return 1
+    fi
+    if ! verify_database_schema "$dest"; then
+        return 1
+    fi
+    ensure_cmd_scripts
+    return 0
+}
+
 ensure_app_ready() {
-    local dest tgz attempt=0
+    local dest tgz attempt=0 stale=0
     dest="$(resolve_app_dest)"
     tgz="\${dest}/app.tgz"
 
@@ -1087,8 +1171,14 @@ ensure_app_ready() {
     # 这里最多等 20 秒，拿到 app.tgz 再走解包。
     while :; do
         if app_payload_is_ready "$dest"; then
-            ensure_cmd_scripts
-            return 0
+            if verify_payload_version "$dest" >/dev/null 2>&1; then
+                payload_ready_and_verified "$dest" || return 1
+                return 0
+            fi
+            # 应用目录里趴着旧版本的载荷（5.149 真机：装的是新包，跑的是 0.1.77）。
+            # 这里不能直接当作就绪返回，否则旁边的 app.tgz 永远没机会铺上去，
+            # 用户看到的就是「装完打不开」，而账本早已被新版迁移过。
+            stale=1
         fi
         tgz="\${dest}/app.tgz"
         if [ ! -f "$tgz" ]; then
@@ -1096,6 +1186,10 @@ ensure_app_ready() {
         fi
         if [ -f "$tgz" ]; then
             break
+        fi
+        if [ "$stale" -eq 1 ]; then
+            echo "MMH 应用目录里的程序版本与安装包不一致（安装包 \${EXPECTED_PAYLOAD_VERSION}），且找不到可用来覆盖的 app.tgz；请从应用中心重新安装。" >&2
+            return 1
         fi
         if [ "$attempt" -ge 20 ]; then
             echo "MMH payload is missing: no extracted app and no app.tgz under $dest or appcenter-downloads" >&2
@@ -1111,7 +1205,7 @@ ensure_app_ready() {
         return 1
     fi
     if app_payload_is_ready "$dest"; then
-        ensure_cmd_scripts
+        payload_ready_and_verified "$dest" || return 1
         return 0
     fi
 
@@ -1878,6 +1972,22 @@ ensure_runtime_owner () {
   chmod 700 "$sibling_backup" 2>/dev/null || true
 }
 
+# 账本比程序新时，进程根本起不来，用户点开应用只有一片空白/网关错误。这里在
+# 原访问入口（网关 socket + 本地端口）顶一个只读说明页，把 STARTUP-ERROR.txt
+# 的中文原因直接摊在用户眼前；status_app 仍读 mmh.pid，所以应用中心照旧显示
+# 「未启动」，不会把错误页误报成运行中。
+start_startup_error_page () {
+  local entry="$SERVER_DIR/scripts/startup-error-page.cjs"
+  if [ ! -f "$entry" ]; then
+    echo "MMH 未能启动：账本是由更新版本的 MMH 写入的，当前程序太旧；原因见 $DATA_DEST/STARTUP-ERROR.txt。" >&2
+    return 1
+  fi
+  nohup "$NODE_BIN" "$entry" >>"$LOG_FILE" 2>&1 &
+  echo "$!" > "$DATA_DEST/startup-error-page.pid"
+  echo "MMH 未能启动：账本是由更新版本的 MMH 写入的。已在原访问入口返回中文说明页，原因见 $DATA_DEST/STARTUP-ERROR.txt。" >&2
+  return 0
+}
+
 start_app () {
   mkdir -p "$DATA_DEST"
   if command -v ensure_app_ready >/dev/null 2>&1; then
@@ -1917,7 +2027,16 @@ ${externalNodeStartup}
   export MMH_DATA_DIR="$DATA_DEST"
   export DATABASE_URL="file:$DATA_DEST/mmh.db"
   export PRISMA_SCHEMA_PATH="$SERVER_DIR/prisma/schema.native.prisma"
-  (cd "$SERVER_DIR" && "$NODE_BIN" "$SERVER_DIR/scripts/init-sqlite.cjs") >>"$LOG_FILE" 2>&1 || exit 1
+  # 78 是 init-sqlite 专用的「账本比程序新，拒绝降级」退出码：这种情况不是
+  # 坏包也不是坏库，必须把中文原因交给用户，所以单独记下来，走说明页分支；
+  # 其它失败码按原样把日志尾巴打给安装/启动界面。
+  init_status=0
+  (cd "$SERVER_DIR" && "$NODE_BIN" "$SERVER_DIR/scripts/init-sqlite.cjs") >>"$LOG_FILE" 2>&1 || init_status=$?
+  if [ "$init_status" -ne 0 ] && [ "$init_status" -ne 78 ]; then
+    echo "MMH 数据库初始化失败（退出码 $init_status），账本未被改动。日志：$LOG_FILE" >&2
+    tail -n 5 "$LOG_FILE" 2>/dev/null | sed 's/^/  /' >&2
+    exit 1
+  fi
   existing_pid=""
   existing_cwd=""
   if [ -f "$PID_FILE" ]; then
@@ -1948,8 +2067,16 @@ ${externalNodeStartup}
     # to inject the prefix on the local TCP compatibility port (LAN/Android
     # clients hit "/" without it) while leaving the gateway socket untouched.
     export MMH_BASE_PATH="\${MMH_BASE_PATH:-/app/mmh}"
+    if [ "$init_status" -eq 78 ]; then
+      start_startup_error_page
+      exit 1
+    fi
     nohup "$NODE_BIN" "$mmh_gateway_entry" >>"$LOG_FILE" 2>&1 &
   else
+    if [ "$init_status" -eq 78 ]; then
+      start_startup_error_page
+      exit 1
+    fi
     nohup "$NODE_BIN" "$SERVER_DIR/server.js" >>"$LOG_FILE" 2>&1 &
   fi
   echo "$!" > "$PID_FILE"
@@ -2025,6 +2152,16 @@ stop_app () {
       kill -9 "$pid" >/dev/null 2>&1 || true
     fi
     rm -f "$PID_FILE"
+  fi
+  # 启动失败时留下的说明页也占着网关 socket / 本地端口，必须先收掉，否则下一次
+  # 启动会卡在 wait_listen_port_free 或者干脆被旧页面的 socket 顶住。
+  local error_pid
+  if [ -f "$DATA_DEST/startup-error-page.pid" ]; then
+    error_pid="$(cat "$DATA_DEST/startup-error-page.pid" 2>/dev/null || true)"
+    if [ -n "$error_pid" ] && kill -0 "$error_pid" >/dev/null 2>&1; then
+      kill "$error_pid" >/dev/null 2>&1 || true
+    fi
+    rm -f "$DATA_DEST/startup-error-page.pid"
   fi
   stop_leftover_mmh_server
   wait_listen_port_free || true
@@ -2359,6 +2496,10 @@ const MIGRATIONS = [
     // 漏掉这段：升级后的库打开固定资产编辑/处置会报 "no such column: accumulatedDepreciation"。
     // 新增列都有默认值，存量资产不回填。
     version: "20261115_add_fixed_asset_depreciation",
+    // introducedIn 只给「旧程序必须被挡住」的判断用：账本里出现这条迁移、而当前
+    // payload 不认识它时，中文提示就能直接说"请升级到 0.1.86 或更新"，而不是让
+    // 用户对着 20261115_xxx 猜。0.1.86 是第一个带这组迁移的发布包（0.1.85 不含）。
+    introducedIn: "0.1.86",
     description: "Add productionDate / weight / depreciation columns to PropertyAsset",
     apply(db) {
       for (const table of ["PropertyAsset", "property_assets"]) {
@@ -2381,6 +2522,7 @@ const MIGRATIONS = [
     // 漏掉这段：升级后的库跑分期落地会报 "no such column: materializedThroughNo"
     // （materialize 查计划整行，缺列直接抛错）。
     version: "20261115_add_installment_materialized_watermark",
+    introducedIn: "0.1.86",
     description: "Add CreditCardInstallmentPlan.materializedThroughNo",
     apply(db) {
       if (!tableExists(db, "CreditCardInstallmentPlan")) return;
@@ -4190,6 +4332,34 @@ function ensureMigrationTable(db) {
   db.exec("CREATE TABLE IF NOT EXISTS _mmh_native_schema (version TEXT NOT NULL PRIMARY KEY, appliedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)");
 }
 
+// 谁最后一次写过这个账本。旧版程序读到不认识的迁移时，靠它就能直接说出
+// 「账本由 0.1.86 写入，请升级到 >= 0.1.86」，而不是让用户对着迁移名猜版本。
+// 老账本没有这张表，守卫那边会退回到按迁移批次日期给提示。
+function ensureSchemaMetaTable(db) {
+  db.exec("CREATE TABLE IF NOT EXISTS _mmh_schema_meta (key TEXT NOT NULL PRIMARY KEY, value TEXT NOT NULL, updatedAt DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP)");
+}
+
+function recordWriterVersion(db) {
+  const version = currentProgramVersion();
+  if (!version) return;
+  try {
+    ensureSchemaMetaTable(db);
+    db.prepare("INSERT INTO _mmh_schema_meta (key, value, updatedAt) VALUES ('writerVersion', ?, CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updatedAt = CURRENT_TIMESTAMP").run(version);
+  } catch (error) {
+    console.error("MMH 记录写入版本失败（不影响本次启动）：" + (error && error.message ? error.message : String(error)));
+  }
+}
+
+function readWriterVersion(db) {
+  try {
+    const row = db.prepare("SELECT value FROM _mmh_schema_meta WHERE key = 'writerVersion'").get();
+    if (row && row.value) return String(row.value).trim();
+  } catch (error) {
+    // 老账本没有 _mmh_schema_meta，属于正常情况。
+  }
+  return "";
+}
+
 function migrationApplied(db, version) {
   return Boolean(db.prepare("SELECT version FROM _mmh_native_schema WHERE version = ?").get(version));
 }
@@ -4198,17 +4368,112 @@ function markMigrationApplied(db, version) {
   db.prepare("INSERT OR IGNORE INTO _mmh_native_schema (version) VALUES (?)").run(version);
 }
 
+const MIGRATION_INTRODUCED_IN = MIGRATIONS.reduce((map, migration) => {
+  if (migration.introducedIn) map[migration.version] = migration.introducedIn;
+  return map;
+}, {});
+
+function startupDataDir() {
+  const explicit = (process.env.MMH_DATA_DIR || "").trim();
+  if (explicit) return explicit;
+  return path.dirname(databasePathFromUrl(process.env.DATABASE_URL));
+}
+
+function currentProgramVersion() {
+  const fromEnv = (process.env.MMH_APP_VERSION || "").trim();
+  if (fromEnv) return fromEnv;
+  try {
+    const fromFile = fs.readFileSync(path.join(__dirname, "..", ".mmh-version"), "utf8").trim();
+    if (fromFile) return fromFile;
+  } catch (error) {
+    // 没有版本文件不影响提示内容，后面退化成"未知"。
+  }
+  return "";
+}
+
+function describeMigration(version) {
+  const introducedIn = MIGRATION_INTRODUCED_IN[version] || "";
+  const dateMatch = /^(\\d{4})(\\d{2})(\\d{2})_/.exec(version);
+  const dateText = dateMatch ? dateMatch[1] + "-" + dateMatch[2] + "-" + dateMatch[3] : "";
+  if (introducedIn && dateText) return version + "（" + introducedIn + " 引入，批次 " + dateText + "）";
+  if (introducedIn) return version + "（" + introducedIn + " 引入）";
+  if (dateText) return version + "（批次 " + dateText + "）";
+  return version;
+}
+
+function minimumRequiredVersion(unknownVersions) {
+  const parsed = [];
+  for (const version of unknownVersions) {
+    const introducedIn = MIGRATION_INTRODUCED_IN[version];
+    if (!introducedIn) continue;
+    const parts = introducedIn.split(".").map((part) => Number.parseInt(part, 10) || 0);
+    while (parts.length < 3) parts.push(0);
+    parsed.push(parts);
+  }
+  if (!parsed.length) return "";
+  parsed.sort((a, b) => a[0] - b[0] || a[1] - b[1] || a[2] - b[2]);
+  return parsed[parsed.length - 1].join(".");
+}
+
+function compareVersions(left, right) {
+  const parse = (value) => String(value || "").split(".").map((part) => Number.parseInt(part, 10) || 0);
+  const a = parse(left);
+  const b = parse(right);
+  const length = Math.max(a.length, b.length);
+  for (let index = 0; index < length; index += 1) {
+    const diff = (a[index] || 0) - (b[index] || 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
+function writeStartupErrorFile(text) {
+  const target = path.join(startupDataDir(), "STARTUP-ERROR.txt");
+  try {
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, text, "utf8");
+    return target;
+  } catch (error) {
+    return "";
+  }
+}
+
 function assertSchemaNotNewerThanBinary(db) {
   ensureMigrationTable(db);
   const known = new Set(MIGRATIONS.map((migration) => migration.version));
   known.add("0.1.0");
   const recorded = db.prepare("SELECT version FROM _mmh_native_schema").all().map((row) => String(row.version));
   const unknown = recorded.filter((version) => !known.has(version));
-  if (unknown.length > 0) {
-    console.error("MMH refused to start: the SQLite database was migrated by a newer MMH package and contains schema changes this binary does not know (" + unknown.join(", ") + ").");
-    console.error("Refusing to start prevents a downgrade from misreading or overwriting newer data. Install a package of version >= the one that wrote these changes, or restore the database from a backup.");
-    process.exit(78);
+  if (unknown.length === 0) return;
+  const currentVersion = currentProgramVersion();
+  const writerVersion = readWriterVersion(db);
+  const fromMigrations = minimumRequiredVersion(unknown);
+  const required = compareVersions(writerVersion, fromMigrations) >= 0 ? writerVersion : fromMigrations;
+  const upgradeHint = required ? required + " 或更新版本" : "最新版本";
+  const lines = [];
+  lines.push("MMH 未能启动：账本数据库是由更新版本的 MMH 写入的，当前安装的程序版本太旧。");
+  lines.push("");
+  lines.push("当前程序版本：" + (currentVersion || "未知"));
+  lines.push("账本最近写入方：" + (writerVersion || "未记录（老账本）"));
+  lines.push("账本要求版本：" + (required ? required + " 或更新" : "不低于写入该账本的版本"));
+  lines.push("账本里当前程序不认识的数据库变更：");
+  for (const version of unknown) lines.push("  - " + describeMigration(version));
+  lines.push("");
+  lines.push("为什么拒绝启动：旧程序读不懂新结构，继续运行可能误读或覆盖新版写入的数据，所以这里直接停下。账本数据没有被改动。");
+  lines.push("");
+  lines.push("怎么处理：");
+  lines.push("  1. 打开飞牛应用中心，把 MMH 升级到 " + upgradeHint + "，然后点启动；");
+  lines.push("  2. 暂时无法升级时，可从 /vol1/@appdata/mmh-upgrade-backups 里挑一份升级前的 mmh.db，替换 data/mmh.db 后重启应用。");
+  lines.push("");
+  lines.push("查看启动日志：/vol1/@appcenter/mmh/cmd/main log 50");
+  lines.push("生成时间：" + new Date().toISOString());
+  const target = writeStartupErrorFile(lines.join("\\n") + "\\n");
+  console.error("MMH 拒绝启动：账本数据库由更新版本的 MMH 写入（" + unknown.join(", ") + "），当前程序 " + (currentVersion || "未知版本") + " 不认识这些变更。");
+  console.error("拒绝启动是为了避免旧程序误读或覆盖新版数据，账本数据未被改动。请在飞牛应用中心把 MMH 升级到 " + upgradeHint + " 后重试。");
+  if (target) {
+    console.error("原因已写入 " + target + "（中文说明，可直接打开查看）。");
   }
+  process.exit(78);
 }
 
 function applyRuntimeMigrations(db) {
@@ -4229,11 +4494,18 @@ function applyRuntimeMigrations(db) {
 
 const dbPath = databasePathFromUrl(process.env.DATABASE_URL);
 const sqlPath = path.join(__dirname, "..", "prisma", "native-init.sql");
+const verifyOnly = process.argv.includes("--verify-schema");
 fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
 const db = new Database(dbPath);
 try {
   db.pragma("busy_timeout = 10000");
+  if (verifyOnly) {
+    const anyTable = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' LIMIT 1").get();
+    if (anyTable) assertSchemaNotNewerThanBinary(db);
+    console.log("MMH schema check passed: the payload understands every migration recorded in " + dbPath);
+    process.exit(0);
+  }
   const existing = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' LIMIT 1").get();
   if (!existing) {
     db.exec(fs.readFileSync(sqlPath, "utf8"));
@@ -4241,17 +4513,25 @@ try {
     db.prepare("INSERT OR IGNORE INTO _mmh_native_schema (version) VALUES (?)").run("0.1.0");
     applyRuntimeMigrations(db);
     applyMissingSchemaObjectsFromInitSql(db, sqlPath);
+    recordWriterVersion(db);
     console.log(\`SQLite database initialized at \${dbPath}\`);
   } else {
     assertSchemaNotNewerThanBinary(db);
     applyRuntimeMigrations(db);
     applyMissingSchemaObjectsFromInitSql(db, sqlPath);
+    recordWriterVersion(db);
     console.log(\`SQLite database already initialized and migrated at \${dbPath}\`);
   }
 } finally {
   db.close();
 }
 `);
+  // 启动失败说明页：账本比程序新时它顶在网关 socket / 本地端口上，把中文原因
+  // 直接摊给用户（脚本本身见 scripts/fnos/startup-error-page.cjs）。
+  fs.copyFileSync(
+    path.join(root, "scripts", "fnos", "startup-error-page.cjs"),
+    path.join(stageDir, "app", "server", "scripts", "startup-error-page.cjs"),
+  );
   for (const dependency of [
     "@prisma/client",
     "@prisma/adapter-better-sqlite3",

@@ -2,6 +2,7 @@ import type { Prisma } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
 import type { LinkedFundForReorder, LinkedWealthForReorder } from "@/lib/entry-reorder";
+import { chunk, IN_CHUNK_SIZE } from "@/lib/server/prisma-in-chunks";
 
 /** 与 account-balance.ts 的 BalanceDbClient 同型：允许传事务 client。 */
 type EntryBusinessDisplayClient = Prisma.TransactionClient | typeof prisma;
@@ -22,6 +23,33 @@ type EntryBusinessDisplayClient = Prisma.TransactionClient | typeof prisma;
  */
 type EntryLinkedFundDisplay = LinkedFundForReorder;
 
+/**
+ * SQLite 每条语句的绑定参数上限是 999（见 prisma-in-chunks.ts）。下面两个查询
+ * 各有 2 个 `{ in: ids }`（cashEntryId / businessEntryId），所以必须按 id 分块，
+ * 否则明细页这种「按整账户折叠余额」的调用会一次传入上万条 investment 行
+ * （2026-11-19 群晖 SPK 报 P2029：prisma.entryBusinessLink.findMany 参数超限）。
+ */
+const fundLinkSelect = {
+  id: true,
+  cashEntryId: true,
+  businessEntryId: true,
+  createdAt: true,
+  FundTransaction: {
+    select: { fundSubtype: true, arrivalDate: true, cashAccountId: true, deletedAt: true },
+  },
+} as const;
+
+type EntryBusinessLinkRow = {
+  createdAt: Date;
+  id: string;
+};
+
+/** 分块查询会打乱全局 orderBy，这里复现 `createdAt asc, id asc` 的先后语义。 */
+function compareLinkRows(a: EntryBusinessLinkRow, b: EntryBusinessLinkRow) {
+  const byCreatedAt = a.createdAt.getTime() - b.createdAt.getTime();
+  return byCreatedAt !== 0 ? byCreatedAt : a.id.localeCompare(b.id);
+}
+
 async function loadEntryLinkedFundDisplay(
   entryIds: Array<string | null | undefined>,
   householdId: string | null | undefined,
@@ -32,23 +60,21 @@ async function loadEntryLinkedFundDisplay(
   if (ids.length === 0 || !householdId) return map;
   const idSet = new Set(ids);
 
-  const links = await client.entryBusinessLink.findMany({
-    where: {
-      householdId,
-      deletedAt: null,
-      fundTransactionId: { not: null },
-      OR: [{ cashEntryId: { in: ids } }, { businessEntryId: { in: ids } }],
-    },
-    select: {
-      id: true,
-      cashEntryId: true,
-      businessEntryId: true,
-      FundTransaction: {
-        select: { fundSubtype: true, arrivalDate: true, cashAccountId: true, deletedAt: true },
+  const links: Array<Prisma.EntryBusinessLinkGetPayload<{ select: typeof fundLinkSelect }>> = [];
+  for (const part of chunk(ids, IN_CHUNK_SIZE)) {
+    const partRows = await client.entryBusinessLink.findMany({
+      where: {
+        householdId,
+        deletedAt: null,
+        fundTransactionId: { not: null },
+        OR: [{ cashEntryId: { in: part } }, { businessEntryId: { in: part } }],
       },
-    },
-    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-  });
+      select: fundLinkSelect,
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    });
+    links.push(...partRows);
+  }
+  links.sort(compareLinkRows);
 
   const priorityByEntryId = new Map<string, number>();
   for (const link of links) {
@@ -85,6 +111,16 @@ type EntryLinkedWealthDisplay = LinkedWealthForReorder;
  * 按申请日而不是入账日排序 / 显示 / 计息（detail-page-query 的 wealth_candidates
  * 只覆盖了 SQL 一侧）。
  */
+const wealthLinkSelect = {
+  id: true,
+  cashEntryId: true,
+  businessEntryId: true,
+  createdAt: true,
+  WealthTransaction: {
+    select: { action: true, arrivalDate: true, cashAccountId: true, deletedAt: true },
+  },
+} as const;
+
 async function loadEntryLinkedWealthDisplay(
   entryIds: Array<string | null | undefined>,
   householdId: string | null | undefined,
@@ -95,23 +131,21 @@ async function loadEntryLinkedWealthDisplay(
   if (ids.length === 0 || !householdId) return map;
   const idSet = new Set(ids);
 
-  const links = await client.entryBusinessLink.findMany({
-    where: {
-      householdId,
-      deletedAt: null,
-      wealthTransactionId: { not: null },
-      OR: [{ cashEntryId: { in: ids } }, { businessEntryId: { in: ids } }],
-    },
-    select: {
-      id: true,
-      cashEntryId: true,
-      businessEntryId: true,
-      WealthTransaction: {
-        select: { action: true, arrivalDate: true, cashAccountId: true, deletedAt: true },
+  const links: Array<Prisma.EntryBusinessLinkGetPayload<{ select: typeof wealthLinkSelect }>> = [];
+  for (const part of chunk(ids, IN_CHUNK_SIZE)) {
+    const partRows = await client.entryBusinessLink.findMany({
+      where: {
+        householdId,
+        deletedAt: null,
+        wealthTransactionId: { not: null },
+        OR: [{ cashEntryId: { in: part } }, { businessEntryId: { in: part } }],
       },
-    },
-    orderBy: [{ createdAt: "asc" }, { id: "asc" }],
-  });
+      select: wealthLinkSelect,
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    });
+    links.push(...partRows);
+  }
+  links.sort(compareLinkRows);
 
   const priorityByEntryId = new Map<string, number>();
   for (const link of links) {
