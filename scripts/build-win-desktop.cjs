@@ -387,6 +387,8 @@ function applyLoanCategoryMigration(db) {
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS "LoanCategory_householdId_name_key" ON "LoanCategory"("householdId","name")');
   db.exec('CREATE INDEX IF NOT EXISTS "LoanCategory_householdId_sortOrder_idx" ON "LoanCategory"("householdId","sortOrder")');
   addColumnIfMissing(db, "Account", "loanCategoryId", "TEXT");
+  // 轻量货基模式（2026-11-19）：钱包直接挂基金代码后的计息起始日。
+  addColumnIfMissing(db, "Account", "linkedFundStartDate", "TIMESTAMP");
   db.exec('CREATE INDEX IF NOT EXISTS "Account_householdId_loanCategoryId_idx" ON "Account"("householdId","loanCategoryId")');
   if (tableExists(db, "Account")) {
     db.prepare(
@@ -527,9 +529,10 @@ function applyRuntimeMigrations(db) {
   // 漏掉这段：升级后的桌面库打开账户页 / 侧边栏会报 "no such column: accountGroup"
   // （账户查询是全列 findMany，不是 select 白名单）。
   addColumnIfMissing(db, "Account", "accountGroup", "TEXT");
-  // 2026-11-18 电子钱包 → 货币基金支付关联。账户查询是全列 findMany，
-  // 漏掉这两列会让升级后的桌面库打开账户设置 / 记账弹窗时报 no such column。
-  addColumnIfMissing(db, "Account", "linkedFundAccountId", "TEXT");
+  // 2026-11-18 电子钱包 → 货币基金（轻量模式）：钱包只挂基金代码，不建货基账户。
+  // 账户查询是全列 findMany，漏掉这列会让升级后的桌面库打开账户设置 / 记账弹窗时报
+  // no such column。旧的 linkedFundAccountId（钱包绑货基账户）已随旧模型删除，
+  // 存量库里残留该列不影响（Prisma 只按 schema 取列）。
   addColumnIfMissing(db, "Account", "linkedFundCode", "TEXT");
   // 账户下拉分组维度。household-preferences 走全列 findUnique，缺列即首屏报错。
   addColumnIfMissing(db, "HouseholdPreference", "accountDropdownGroupBy", "TEXT NOT NULL DEFAULT 'owner'");

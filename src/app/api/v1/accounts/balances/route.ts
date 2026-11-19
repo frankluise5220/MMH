@@ -7,8 +7,6 @@
  *
  * Query params:
  *   ids (required) - comma-separated account ID list
- *   ledger=1      - 账面口径：关联了货基的电子钱包返回真实折叠余额（明细页表头用）。
- *                   默认是统计口径（该钱包给 0，避免与货基市值双计）。
  */
 import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
@@ -19,7 +17,7 @@ import { computeInvestBalances } from "@/lib/invest-balance";
 import { computeInsuranceAccountDisplayBalances } from "@/lib/insurance/balance";
 import { getMaintainedAccountBalances } from "@/lib/server/account-balance";
 import { computeLiabilityDisplaySummary } from "@/lib/server/liability-display-summary";
-import { isDepositAccount, isLinkedFundWalletAccount, isPureInvestmentAccount } from "@/lib/account-kind-utils";
+import { isDepositAccount, isPureInvestmentAccount } from "@/lib/account-kind-utils";
 import { loadCreditCardBillGroupBalances } from "@/lib/server/credit-card-display-balance";
 import { convertCurrencyAmounts, getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
 import { normalizeCurrency } from "@/lib/currency";
@@ -39,8 +37,6 @@ export async function GET(req: Request) {
   if (ids.length === 0) {
     return NextResponse.json({ ok: false, code: "INVALID_IDS", error: "ids 参数无效" }, { status: 400 });
   }
-  const ledgerScope = url.searchParams.get("ledger") === "1" || url.searchParams.get("ledger") === "true";
-  const balanceOptions = ledgerScope ? { countLinkedFundWallets: true } : undefined;
 
   try {
     const ctx = await getHouseholdScope();
@@ -62,12 +58,11 @@ export async function GET(req: Request) {
         // 多币种父子层级：父账户的余额是子户折本位币之和，不能按明细重算。
         parentId: true,
         isAggregate: true,
-        // 关联了货基的电子钱包要按「统计/账面」两种口径分别取值。
-        linkedFundAccountId: true,
       },
     });
 
     const investAccounts = accounts.filter((account) => isPureInvestmentAccount(account));
+    const investBalanceIds = Array.from(new Set(investAccounts.map((account) => account.id)));
     const insuranceIds = accounts
       .filter((account) => account.kind === AccountKind.insurance)
       .map((account) => account.id);
@@ -87,11 +82,11 @@ export async function GET(req: Request) {
       }));
 
     const [investBalByAccountId, displayBalanceByAccountId, creditBillGroup, insuranceDisplayBalanceByAccountId, liabilityDisplaySummary] = await Promise.all([
-      investAccounts.length > 0
-        ? computeInvestBalances(ctx, investAccounts.map((account) => account.id))
+      investBalanceIds.length > 0
+        ? computeInvestBalances(ctx, investBalanceIds)
         : Promise.resolve(new Map<string, { marketValue: number }>()),
       cashLikeAccounts.length > 0
-        ? getMaintainedAccountBalances(cashLikeAccounts, hidFilter, balanceOptions)
+        ? getMaintainedAccountBalances(cashLikeAccounts, hidFilter)
         : Promise.resolve(new Map<string, number>()),
       loadCreditCardBillGroupBalances(creditIds),
       insuranceIds.length > 0
@@ -102,11 +97,8 @@ export async function GET(req: Request) {
     const currentCreditBalanceByAccountId = creditBillGroup.balanceByAccountId;
     const creditBillStorageIdByAccountId = creditBillGroup.billStorageIdByAccountId;
     const enriched = accounts.map((a) => {
-      // 关联了货币基金的电子钱包不统计余额（2026-11-18 用户裁定）：父户也一并归零。
-      // 账面口径（ledger=1，明细页表头）例外：给真实折叠值。
-      if (isLinkedFundWalletAccount(a) && !ledgerScope) return { ...a, balance: 0 };
       // 聚合父户没有明细，折叠会得 0；它的 `balance` 已是子户折本位币之和，直接用列值。
-      if (a.isAggregate && !(ledgerScope && isLinkedFundWalletAccount(a))) return { ...a, balance: toNumber(a.balance) };
+      if (a.isAggregate) return { ...a, balance: toNumber(a.balance) };
       const balance = isPureInvestmentAccount(a)
         ? investBalByAccountId.get(a.id)?.marketValue ?? 0
         : a.kind === AccountKind.insurance

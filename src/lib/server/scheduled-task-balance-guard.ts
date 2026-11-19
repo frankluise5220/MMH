@@ -1,7 +1,6 @@
 import { AccountKind, RegularInvestStatus } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
-import { isLinkedFundWalletAccount } from "@/lib/account-kind-utils";
 import { startOfDayUtc, toNumber } from "@/lib/date-utils";
 import {
   isScheduledTaskBalanceInsufficient,
@@ -99,7 +98,6 @@ export async function resolveScheduledTaskBalanceBlocks(params: {
       kind: true,
       investProductType: true,
       billingDay: true,
-      linkedFundAccountId: true,
     },
   });
   const accountById = new Map(accounts.map((account) => [account.id, account]));
@@ -121,9 +119,7 @@ export async function resolveScheduledTaskBalanceBlocks(params: {
     if (!account) continue;
     // A credit card's "balance" is not a spendable-cash figure (the balance fold
     // always yields 0 for `bank_credit`), so judging with it would warn every day.
-    // 同一个理由适用于「关联了货基的电子钱包」：它的余额固定为 0，钱在货基份额里
-    // （2026-11-18 用户裁定），拿 0 去判汇款会天天误报。
-    if (account.kind === AccountKind.bank_credit || isLinkedFundWalletAccount(account)) continue;
+    if (account.kind === AccountKind.bank_credit) continue;
     const amount = Math.abs(toNumber(plan.amount));
     if (!(amount > 0)) continue;
     const available = availableByAccountId.get(fundingAccountId) ?? 0;

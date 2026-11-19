@@ -6,7 +6,7 @@ import { toNumber } from "@/lib/date-utils";
 import { allocateBuyFailedRefunds, getEffectiveBuyUnits } from "@/lib/fund/refund-link";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
 import { MONEY_FUND_NAV } from "@/lib/fund/moneyFund";
-import { isFundUnitsReconcileEntry } from "@/lib/transaction-semantics";
+import { isFundUnitsReconcileEntry, TRANSACTION_SOURCE_MONEY_INCOME } from "@/lib/transaction-semantics";
 
 function toNum(v: unknown): number {
   if (v === null || v === undefined) return 0;
@@ -30,6 +30,11 @@ export type FundPositionEntryLike = {
   isPending: boolean;
   confirmDate: string | null;
   arrivalDate: string | null;
+  /**
+   * 生效日（申请日）。只用来兜底：历史「钱包支出自动赎回」的业务行没有 confirmDate，
+   * 少了这个兜底，entryCalcDate 会返回空串，赎回被排到所有买入之前而减不掉份额。
+   */
+  date?: string | null;
   netBuyAmount?: number | null;
   pendingBuyAmount?: number | null;
   effectiveUnits?: number | null;
@@ -37,11 +42,27 @@ export type FundPositionEntryLike = {
   realizedProfit?: number | null;
 };
 
-function entryCalcDate(e: FundPositionEntryLike): string {
-  const subtype = e.subtype ?? (e.amount < 0 ? "buy" : "redeem");
+/**
+ * 一笔基金交易的「入账日」：确认日 → 到账日 → 申请日（买入类没有申请日兜底）。
+ *
+ * 导出是为了让明细页的「剩余份额」列（`loadFundTransactionEntryLike`）按同一个顺序回放份额；
+ * 两处口径一旦分叉，明细最后一行的份额就和持仓页对不上。
+ */
+export function fundEntryCalcDateKey(e: {
+  subtype?: string | null;
+  amount?: number | null;
+  confirmDate?: string | null;
+  arrivalDate?: string | null;
+  date?: string | null;
+}): string {
+  const subtype = e.subtype ?? ((e.amount ?? 0) < 0 ? "buy" : "redeem");
   return subtype === "buy" || subtype === "dividend_reinvest"
     ? (e.confirmDate ?? e.arrivalDate ?? "")
-    : (e.confirmDate ?? "");
+    : (e.confirmDate ?? e.arrivalDate ?? e.date ?? "");
+}
+
+function entryCalcDate(e: FundPositionEntryLike): string {
+  return fundEntryCalcDateKey(e);
 }
 
 function buyAvailableDate(e: FundPositionEntryLike): string {
@@ -64,7 +85,20 @@ function buyCostBasis(amount: number): number {
   return a > 0 ? a : 0;
 }
 
+/**
+ * 货币基金每日万份收益结转（红利再投）。
+ *
+ * 和开放式基金不一样：净值恒为 1 元，收益每天按万份收益折成份额真实入账，
+ * 这天的钱已经到手了，属于「已实现收益」而不是浮盈。所以结转必须同时抬成本
+ * （份额 × 1 元面值），否则收益会留在浮盈里，等到赎回那天再被算一次。
+ */
+function isMoneyIncomeEntry(e: FundPositionEntryLike): boolean {
+  return e.source === TRANSACTION_SOURCE_MONEY_INCOME;
+}
+
 function buyEntryCostBasis(e: FundPositionEntryLike, amount: number): number {
+  // 结转流水的现金成本是 0，但份额是按 1 元/份面值入账的，成本基础必须同步。
+  if (isMoneyIncomeEntry(e)) return Math.abs(toNum(e.units ?? 0));
   return e.netBuyAmount != null ? Math.max(0, toNum(e.netBuyAmount)) : buyCostBasis(amount);
 }
 
@@ -122,12 +156,22 @@ function calcByMovingAvg(entries: FundPositionEntryLike[], fundUnitsDecimals: nu
     }
 
     if (subtype === "buy") {
-      const costBasis = buyEntryCostBasis(e, amount);
       const u = e.units ?? 0;
-      // 负收益结转（货基某日万份收益为负）：只减份额、不动成本，不能当买入去加成本。
-      if (u < 0) rec.units = roundFundUnits(rec.units + u, fundUnitsDecimals);
-      else if (u === 0) rec.pendingCost += pendingBuyAmount(e, amount);
-      else { rec.cost += costBasis; rec.units = roundFundUnits(rec.units + u, fundUnitsDecimals); }
+      if (isMoneyIncomeEntry(e) && u !== 0) {
+        // 货基收益结转：份额与成本按 1 元面值同步走，收益当天就是已实现的真金白银。
+        rec.cost += u;
+        rec.units = roundFundUnits(rec.units + u, fundUnitsDecimals);
+        rec.historicalProfit += u;
+        realizedProfitByEntryId.set(e.id, u);
+      } else if (u < 0) {
+        // 非结转的负份额行（历史脏数据）：只减份额、加成本会把均价打负。
+        rec.units = roundFundUnits(rec.units + u, fundUnitsDecimals);
+      } else if (u === 0) {
+        rec.pendingCost += pendingBuyAmount(e, amount);
+      } else {
+        rec.cost += buyEntryCostBasis(e, amount);
+        rec.units = roundFundUnits(rec.units + u, fundUnitsDecimals);
+      }
     } else if (subtype === "dividend_cash") {
       rec.historicalProfit += e.realizedProfit != null ? toNum(e.realizedProfit) : Math.abs(amount);
     } else if (subtype === "redeem" || subtype === "switch_out") {
@@ -204,10 +248,32 @@ function calcByFifo(entries: FundPositionEntryLike[], fundUnitsDecimals: number,
     }
 
     if (subtype === "buy") {
-      const costBasis = buyEntryCostBasis(e, amount);
       const u = e.units ?? 0;
-      if (u < 0) {
-        // 负收益结转：按先进先出扣减批次数量，成本不动（否则会出现成本单价为负的批次）。
+      if (isMoneyIncomeEntry(e) && u !== 0) {
+        // 货基收益结转按 1 元面值入批次：收益已在当天实现，赎回时只需取回成本。
+        if (u > 0) {
+          codeLots.push({ units: u, costPerUnit: MONEY_FUND_NAV });
+          rec.cost += u;
+        } else {
+          // 负收益日按批次成本扣回份额（货基批次单价恒为 1）。
+          let remaining = -u;
+          const queue = lifo ? [...codeLots].reverse() : codeLots;
+          let costReduced = 0;
+          for (const lot of queue) {
+            if (remaining <= 0) break;
+            const take = Math.min(lot.units, remaining);
+            costReduced += take * lot.costPerUnit;
+            lot.units = Math.max(0, roundFundUnits(lot.units - take, fundUnitsDecimals));
+            remaining -= take;
+          }
+          lots.set(code, codeLots.filter((lot) => lot.units > 0));
+          rec.cost = Math.max(0, rec.cost - costReduced);
+        }
+        rec.units = roundFundUnits(rec.units + u, fundUnitsDecimals);
+        rec.historicalProfit += u;
+        realizedProfitByEntryId.set(e.id, u);
+      } else if (u < 0) {
+        // 非结转的负份额行（历史脏数据）：按先进先出扣减批次数量，成本不动。
         let remaining = -u;
         for (const lot of codeLots) {
           if (remaining <= 0) break;
@@ -218,7 +284,7 @@ function calcByFifo(entries: FundPositionEntryLike[], fundUnitsDecimals: number,
         lots.set(code, codeLots.filter((lot) => lot.units > 0));
         rec.units = roundFundUnits(rec.units + u, fundUnitsDecimals);
       } else if (u === 0) { rec.pendingCost += pendingBuyAmount(e, amount); }
-      else { codeLots.push({ units: u, costPerUnit: costBasis / u }); rec.units = roundFundUnits(rec.units + u, fundUnitsDecimals); rec.cost += costBasis; }
+      else { codeLots.push({ units: u, costPerUnit: buyEntryCostBasis(e, amount) / u }); rec.units = roundFundUnits(rec.units + u, fundUnitsDecimals); rec.cost += buyEntryCostBasis(e, amount); }
     } else if (subtype === "dividend_cash") {
       rec.historicalProfit += e.realizedProfit != null ? toNum(e.realizedProfit) : Math.abs(amount);
     } else if (subtype === "redeem" || subtype === "switch_out") {
@@ -380,8 +446,11 @@ export async function recalcFundPositions(
       const netBuyAmount = e.fundSubtype === "buy"
         ? grossAfterRefund
         : null;
+      // 货基收益结转允许负份额（某日万份收益为负），clamp 到 0 会把「减少」变成「在途成本」。
       const effectiveUnits = e.fundSubtype === "buy" && storedUnits != null
-        ? roundFundUnits(getEffectiveBuyUnits(storedUnits), fundUnitsDecimals)
+        ? (e.source === TRANSACTION_SOURCE_MONEY_INCOME
+          ? roundFundUnits(storedUnits, fundUnitsDecimals)
+          : roundFundUnits(getEffectiveBuyUnits(storedUnits), fundUnitsDecimals))
         : storedUnits;
       return {
         id: e.id,
@@ -395,6 +464,7 @@ export async function recalcFundPositions(
         isPending: e.fundSubtype === "buy_failed" || (e.fundConfirmDate == null && e.fundSubtype === "buy"),
         confirmDate: e.fundConfirmDate ? e.fundConfirmDate.toISOString().slice(0, 10) : null,
         arrivalDate: e.fundArrivalDate ? e.fundArrivalDate.toISOString().slice(0, 10) : null,
+        date: e.date ? new Date(e.date).toISOString().slice(0, 10) : null,
         netBuyAmount,
         effectiveUnits,
         realizedProfit: e.realizedProfit != null ? toNum(e.realizedProfit) : null,

@@ -3,7 +3,6 @@
 import { prisma } from "@/lib/db/prisma";
 import { AccountKind, CreditCardInstallmentSourceType, FundCashFlowKind, TransactionType, FundSubtype } from "@prisma/client";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
-import { applyWalletLinkedFund, type WalletLinkedFundResult } from "@/lib/server/wallet-linked-fund";
 import { calculateConfirmedBuyUnits } from "@/lib/fund/refund-link";
 import { recalcPreciousMetalPositions } from "@/lib/metal/recalcPosition";
 import { calculateWealthCashDividendProfit, recalcWealthPositions } from "@/lib/wealth-position";
@@ -535,9 +534,6 @@ export async function createTransaction(formData: FormData) {
   const ctx = await getHouseholdScope();
   const { householdId } = ctx;
   let createdEntryId: string | null = null;
-  // 电子钱包 ↔ 货基联动产生的业务行：事务外统一重算持仓与余额。
-  // 用对象包装，避免 TS 把「只在 $transaction 回调里赋值」的变量收窄成 never。
-  const walletLinkedResult = { current: null as WalletLinkedFundResult | null };
   // 本次确认新建的全部 TxRecord id：投资分支逐腿收集，普通分支在公共成功尾补入。
   // 一次确认只写一条撤销记录，绝不按腿循环调用 saveEntryUndo。
   const createdInvestmentEntryIds: string[] = [];
@@ -572,8 +568,6 @@ export async function createTransaction(formData: FormData) {
       if (formFromAccountId === formToAccountId) return { ok: false as const, error: t("sidebar.action.transferAccountsSame") };
       const fromAccountId = formFromAccountId;
       const toAccountId = formToAccountId;
-      // 转入账户若绑定了货基，勾选后自动生成申购。
-      const autoBuyLinkedFund = formData.get("autoBuyLinkedFund") === "true";
 
       await prisma.$transaction(async (tx) => {
         const [fromAcc, toAcc] = await Promise.all([
@@ -662,17 +656,6 @@ export async function createTransaction(formData: FormData) {
         });
         createdEntryId = created.id;
         await attachEntryTags({ tx, entryId: created.id, householdId, tagIds });
-        if (autoBuyLinkedFund) {
-          walletLinkedResult.current = await applyWalletLinkedFund(tx, {
-            householdId,
-            walletAccountId: toAcc.id,
-            direction: "buy",
-            amount: amountAbs,
-            date,
-            note,
-            sourceEntryId: created.id,
-          });
-        }
       });
 
       if (createdEntryId) {
@@ -688,8 +671,6 @@ export async function createTransaction(formData: FormData) {
       const originalCurrencyInput = String(formData.get("originalCurrency") ?? "").trim().toUpperCase() || null;
       const originalAmountInputRaw = Number(formData.get("originalAmount"));
       const originalAmountInput = Number.isFinite(originalAmountInputRaw) && originalAmountInputRaw !== 0 ? originalAmountInputRaw : null;
-      // 电子钱包 → 货基：支出时从关联货基赎付（默认关闭，只有勾选才联动）。
-      const payFromLinkedFund = formData.get("payFromLinkedFund") === "true";
 
       await prisma.$transaction(async (tx) => {
         const [acc, cat] = await Promise.all([
@@ -758,18 +739,6 @@ export async function createTransaction(formData: FormData) {
         });
         createdEntryId = created.id;
         await attachEntryTags({ tx, entryId: created.id, householdId, tagIds });
-
-        if (payFromLinkedFund) {
-          walletLinkedResult.current = await applyWalletLinkedFund(tx, {
-            householdId,
-            walletAccountId: acc.id,
-            direction: "redeem",
-            amount: amountAbs,
-            date,
-            note,
-            sourceEntryId: created.id,
-          });
-        }
 
         if (fixedAssetAccountId) {
           await linkExpenseToFixedAsset(tx, {
@@ -867,8 +836,6 @@ export async function createTransaction(formData: FormData) {
       const accountId = String(formData.get("accountId") ?? "").trim();
       const categoryId = String(formData.get("categoryId") ?? "").trim();
       const depositLotId = String(formData.get("depositSourceEntryId") ?? "").trim();
-      // 转入到账账户若绑定了货基，勾选后自动生成申购。
-      const autoBuyLinkedFund = formData.get("autoBuyLinkedFund") === "true";
       if (depositLotId && (!accountId || !(await depositLotBelongsToAccount({ householdId, accountId, lotId: depositLotId })))) {
         throw new Error("DEPOSIT_LOT_NOT_FOUND");
       }
@@ -934,17 +901,6 @@ export async function createTransaction(formData: FormData) {
         });
         createdEntryId = created.id;
         await attachEntryTags({ tx, entryId: created.id, householdId, tagIds });
-        if (acc && autoBuyLinkedFund) {
-          walletLinkedResult.current = await applyWalletLinkedFund(tx, {
-            householdId,
-            walletAccountId: acc.id,
-            direction: "buy",
-            amount: amountAbs,
-            date,
-            note,
-            sourceEntryId: created.id,
-          });
-        }
       });
 
       if (createdEntryId) {
@@ -1513,22 +1469,6 @@ export async function createTransaction(formData: FormData) {
       }
     } else {
       return { ok: false as const, error: t("sidebar.action.invalidType") };
-    }
-
-    // 电子钱包 ↔ 货基联动：事务里多写了货基业务行 + 资金腿，这里统一重算持仓与余额。
-    if (walletLinkedResult.current) {
-      await recalcFundPositions(walletLinkedResult.current.fundAccountId, [walletLinkedResult.current.fundCode]).catch((e) => {
-        console.error("wallet linked fund recalc positions:", e);
-      });
-      const linkedFund = await prisma.fundTransaction.findUnique({
-        where: { id: walletLinkedResult.current.fundTransactionId },
-        select: { cashEntryId: true },
-      });
-      if (linkedFund?.cashEntryId) {
-        await applyEntryChangesToAccountBalances([{ entryId: linkedFund.cashEntryId }]).catch((e) => {
-          console.error("wallet linked fund recalc balance:", e);
-        });
-      }
     }
 
     const touchedAccountIds =
@@ -3868,6 +3808,7 @@ export async function updateTransactionFromDialog(formData: FormData) {
         where: { id: entryId },
         data: expenseOrIncomeData,
       });
+
     });
 
     if (investRecalcAccountId) {

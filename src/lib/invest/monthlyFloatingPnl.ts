@@ -10,6 +10,7 @@ import {
 } from "@/lib/fund/recalcPosition";
 import { fundUnitsProfitStartDate } from "@/lib/fund/confirmDays";
 import { normalizeFundUnitsDecimals, roundFundUnits } from "@/lib/fund/unit-precision";
+import { TRANSACTION_SOURCE_MONEY_INCOME } from "@/lib/transaction-semantics";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 
 type SnapshotPosition = {
@@ -102,7 +103,8 @@ function buildMonthlyBuySummary(entries: FundPositionEntryLike[], monthStart: Da
     const subtype = entry.subtype ?? (entry.amount < 0 ? "buy" : "redeem");
     const confirmDate = entry.confirmDate ?? entry.arrivalDate;
     if (subtype !== "buy" || !confirmDate || confirmDate < start || confirmDate > end) continue;
-    if (entry.source === "dividend") continue;
+    // 分红再投、货基每日万份收益结转都不是「新增买入」，是收益兑现。
+    if (entry.source === "dividend" || entry.source === TRANSACTION_SOURCE_MONEY_INCOME) continue;
     amount += Math.abs(entry.amount);
     units += entry.units ?? 0;
     count += 1;

@@ -156,9 +156,9 @@ type Account = {
   parentId?: string | null;
   /** 多币种父账户（聚合账户）：只参与统计，本身没有明细。 */
   isAggregate?: boolean | null;
-  /** 电子钱包 → 货币基金支付关联（2026-11-18）。 */
-  linkedFundAccountId?: string | null;
   linkedFundCode?: string | null;
+  /** 轻量货基模式（2026-11-19）：计息起始日（YYYY-MM-DD）。 */
+  linkedFundStartDate?: string | null;
 };
 
 /**

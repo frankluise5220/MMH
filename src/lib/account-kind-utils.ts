@@ -13,8 +13,6 @@ export type AccountKindLike = {
   institutionType?: string | null;
   /** 多币种父账户（聚合账户）：只统计、不能记账，任何落账候选都必须排除。 */
   isAggregate?: boolean | null;
-  /** 电子钱包关联的货币基金账户：关联后该钱包不再统计余额（见 isLinkedFundWalletAccount）。 */
-  linkedFundAccountId?: string | null;
   Institution?: { type?: string | null; name?: string | null; shortName?: string | null } | null;
 };
 
@@ -168,21 +166,6 @@ function isConsumerLoanAccount(account: AccountKindLike | null | undefined) {
 export function resolveLoanType(account: { kind?: string | null; isConsumerLoan?: boolean | null; loanType?: string | null } | null | undefined): LoanTypeValue | null {
   if (!account || account.kind !== "loan") return null;
   return resolveLoanTypeValue(account.loanType, account.isConsumerLoan);
-}
-
-/**
- * 关联了货币基金的电子钱包（「余额宝」这类，2026-11-18 用户裁定）。
- *
- * 钱实际以货基份额持有，钱包只是过路账户：记账时「从关联货基支付 / 转入后自动申购」
- * 会让钱包净额回到 0。所以这种钱包**不再统计余额** —— 否则钱包余额 + 货基市值会把
- * 同一笔钱算两遍。明细流水与余额列照旧，只是这个余额不进任何总计。
- */
-export function isLinkedFundWalletAccount(
-  account: Pick<AccountKindLike, "kind" | "linkedFundAccountId"> | null | undefined,
-): boolean {
-  if (!account) return false;
-  if (String(account.kind ?? "").trim() !== "ewallet") return false;
-  return Boolean(String(account.linkedFundAccountId ?? "").trim());
 }
 
 export function isSpendableAccount(account: AccountKindLike | null | undefined) {

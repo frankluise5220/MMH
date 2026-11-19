@@ -1,4 +1,4 @@
-import { FundCashFlowKind, FundSubtype } from "@prisma/client";
+import { AccountKind, FundCashFlowKind, FundProductType, FundSubtype, TransactionType } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
 import { toNumber } from "@/lib/date-utils";
@@ -252,6 +252,170 @@ export async function loadFundStatisticSourceEntries(
   }
 
   return entries;
+}
+
+/**
+ * 新口径（2026-11-19 起）：电子钱包账户直接绑定货基代码，收益由
+ * wallet-money-fund-income 写在钱包账户上（type=investment、source=money_fund_income，
+ * 无份额、无净值）。这类行让钱包余额真实增加，报表按已实现收益计入收入。
+ *
+ * 旧口径（钱包绑定货基账户）的镜像行带 fundSubtype=buy 与份额，不在此列：
+ * 那份收益已经体现在货基账户的份额结转里，再算一次就是双份。
+ */
+export async function loadWalletMoneyFundIncomeEntries(
+  ctx: HouseholdContext,
+  params: {
+    start: Date;
+    endExclusive: Date;
+    accountIds?: string[] | null;
+  },
+): Promise<InvestmentStatisticSourceEntry[]> {
+  const accountIds = Array.from(new Set(params.accountIds?.filter(Boolean) ?? []));
+  const rows = await prisma.txRecord.findMany({
+    where: {
+      householdId: ctx.householdId,
+      deletedAt: null,
+      type: TransactionType.investment,
+      source: TRANSACTION_SOURCE_MONEY_INCOME,
+      fundSubtype: null,
+      date: { gte: params.start, lt: params.endExclusive },
+      ...(accountIds.length ? { accountId: { in: accountIds } } : {}),
+    },
+    select: {
+      id: true,
+      date: true,
+      amount: true,
+      fundCode: true,
+      fundName: true,
+      accountId: true,
+      accountName: true,
+      note: true,
+      createdAt: true,
+      account: { select: { name: true } },
+      EntryTag: {
+        select: { tagId: true, Tag: { select: { id: true, name: true, color: true } } },
+      },
+    },
+    orderBy: [{ date: "asc" }, { createdAt: "asc" }, { id: "asc" }],
+    take: 50000,
+  });
+  const fundNameByCode = await loadFundDisplayNames(rows.map((row) => row.fundCode));
+  return rows.map((row) => {
+    const fundName = row.fundCode
+      ? fundNameByCode.get(row.fundCode) ?? row.fundName ?? null
+      : row.fundName ?? null;
+    return {
+      id: `wallet-money-income:${row.id}`,
+      entryId: row.id,
+      canEdit: false,
+      date: row.date,
+      amount: row.amount,
+      type: TransactionType.investment,
+      source: TRANSACTION_SOURCE_MONEY_INCOME,
+      fundSubtype: null,
+      fundProductType: "money",
+      // 收益即当日入账金额；getInvestmentStatisticItems 用正负决定收入/支出。
+      realizedProfit: row.amount,
+      fundCode: row.fundCode,
+      fundName,
+      accountId: row.accountId,
+      accountName: row.account?.name ?? row.accountName ?? "",
+      counterpartyName: fundName,
+      note: row.note,
+      createdAt: row.createdAt,
+      tagIds: row.EntryTag.map((tag) => tag.tagId),
+      tags: row.EntryTag.map((tag) => ({
+        tagId: tag.tagId,
+        id: tag.Tag.id,
+        name: tag.Tag.name,
+        color: tag.Tag.color,
+      })),
+    };
+  });
+}
+
+/**
+ * 真正货币基金账户（kind=investment、investProductType=money）的每日万份收益。
+ *
+ * 结转由 money-fund-income-accrual 写成一条 fund_transactions：fundSubtype=buy、
+ * grossAmount=0、units=当日收益（按 1 元面值折成份额）、realizedProfit=同一笔金额。
+ * 它让货基份额真实增加，属于已实现收益，收入/支出报表要计入。
+ *
+ * `loadFundStatisticSourceEntries` 会跳过 source=money_fund_income 的行（那里由估值侧
+ * 的货基桶单算盈亏、并体现在持仓市值里），所以收入这一侧必须单独取一份。
+ *
+ * 旧口径钱包侧的镜像行（TxRecord、fundSubtype=buy、挂在 ewallet 上）与这里是一笔
+ * 收益的两侧记录，只算这里一份，镜像行继续排除。
+ */
+/**
+ * 真正货基账户收益行的统计 id 前缀。报表下钻拿它判断「这条报表行背后不是
+ * TxRecord，需要合成只读明细」，不要在两处各写一份字符串。
+ */
+export const FUND_ACCOUNT_MONEY_INCOME_STAT_ID_PREFIX = "fund-account-money-income";
+
+export async function loadFundAccountMoneyIncomeEntries(
+  ctx: HouseholdContext,
+  params: {
+    start: Date;
+    endExclusive: Date;
+    accountIds?: string[] | null;
+  },
+): Promise<InvestmentStatisticSourceEntry[]> {
+  const accountIds = Array.from(new Set(params.accountIds?.filter(Boolean) ?? []));
+  const rows = await prisma.fundTransaction.findMany({
+    where: {
+      householdId: ctx.householdId,
+      deletedAt: null,
+      source: TRANSACTION_SOURCE_MONEY_INCOME,
+      applyDate: { gte: params.start, lt: params.endExclusive },
+      ...(accountIds.length ? { fundAccountId: { in: accountIds } } : {}),
+      Account: { kind: AccountKind.investment, investProductType: FundProductType.money },
+    },
+    select: {
+      id: true,
+      applyDate: true,
+      realizedProfit: true,
+      units: true,
+      fundSubtype: true,
+      fundCode: true,
+      fundName: true,
+      fundAccountId: true,
+      note: true,
+      createdAt: true,
+      Account: { select: { name: true } },
+    },
+    orderBy: [{ applyDate: "asc" }, { createdAt: "asc" }, { id: "asc" }],
+    take: 50000,
+  });
+  const fundNameByCode = await loadFundDisplayNames(rows.map((row) => row.fundCode));
+  return rows.map((row) => {
+    const fundName = fundNameByCode.get(row.fundCode) ?? row.fundName ?? null;
+    // 结转行的 units 就是收益金额（面值 1 元）；realizedProfit 缺失时用它兜底。
+    const profit = row.realizedProfit == null ? toNumber(row.units) : toNumber(row.realizedProfit);
+    return {
+      id: `${FUND_ACCOUNT_MONEY_INCOME_STAT_ID_PREFIX}:${row.id}`,
+      entryId: row.id,
+      // 结转行在基金视图里不是可编辑的申购单，报表行不给编辑入口。
+      canEdit: false,
+      date: row.applyDate,
+      // 资金没有进出，economic result 只在 realizedProfit 上。
+      amount: 0,
+      type: TransactionType.investment,
+      source: TRANSACTION_SOURCE_MONEY_INCOME,
+      fundSubtype: row.fundSubtype,
+      fundProductType: FundProductType.money,
+      realizedProfit: profit,
+      fundCode: row.fundCode,
+      fundName,
+      accountId: row.fundAccountId,
+      accountName: row.Account.name,
+      counterpartyName: fundName,
+      note: row.note,
+      createdAt: row.createdAt,
+      tagIds: [],
+      tags: [],
+    };
+  });
 }
 
 export async function loadWealthStatisticSourceEntries(

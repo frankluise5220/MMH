@@ -4,12 +4,14 @@
  * 账户编辑弹窗——全站唯一实现。
  *
  * 「设置 → 账户管理」与各视图表头双击账户名共用这一个组件：字段、校验、多币种升级、
- * 余额宝关联、账单日规则只有一份，避免两套表单各自演化后又分叉。
+ * 账单日规则只有一份，避免两套表单各自演化后又分叉。
+ *
+ * 货币基金（货基收益）的关停/换绑/重算不在这个弹窗里，入口是「设置 → 账户」表头的
+ * 「货币基金」弹窗（MoneyFundIncomeDialog）；这里保持原本的账户字段布局，不掺货基内容。
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useRouter } from "next/navigation";
-import { Banknote, Building2, CreditCard, Info, Landmark, Layers, PiggyBank, Plus, Wallet, X } from "lucide-react";
+import { Banknote, Building2, CreditCard, Landmark, Layers, PiggyBank, Wallet, X } from "lucide-react";
 import type { AccountKind } from "@prisma/client";
 import { ModalLayer } from "@/components/ModalLayer";
 import { SmartSelect } from "@/components/SmartSelect";
@@ -91,9 +93,9 @@ type Account = {
   parentId?: string | null;
   /** 多币种父账户（聚合账户）：只参与统计，本身没有明细。 */
   isAggregate?: boolean | null;
-  /** 电子钱包 → 货币基金支付关联（2026-11-18）。 */
-  linkedFundAccountId?: string | null;
   linkedFundCode?: string | null;
+  /** 轻量货基模式（2026-11-19）：钱包直接挂代码后的计息起始日（YYYY-MM-DD）。 */
+  linkedFundStartDate?: string | null;
 };
 
 
@@ -117,16 +119,6 @@ function accountParentErrorKey(code: string | undefined) {
     case "ACCOUNT_PARENT_KIND_MISMATCH": return "settings.accounts.parentError.kindMismatch";
     case "ACCOUNT_HIERARCHY_KIND_NOT_ALLOWED": return "settings.accounts.parentError.kindNotAllowed";
     case "ACCOUNT_PARENT_KIND_NOT_ALLOWED": return "settings.accounts.parentError.kindNotAllowed";
-    default: return "";
-  }
-}
-
-function accountLinkedFundErrorKey(code: string | undefined) {
-  switch (code) {
-    case "ACCOUNT_LINKED_FUND_INSTITUTION": return "settings.accounts.linkedFund.errorInstitution";
-    case "ACCOUNT_LINKED_FUND_OWNER": return "settings.accounts.linkedFund.errorOwner";
-    case "ACCOUNT_LINKED_FUND_CODE": return "settings.accounts.linkedFund.errorCode";
-    case "ACCOUNT_LINKED_FUND_NOT_FOUND": return "settings.accounts.linkedFund.errorNotFound";
     default: return "";
   }
 }
@@ -178,7 +170,6 @@ export function AccountEditDialog({
   onSaved,
 }: AccountEditDialogProps) {
   const { t } = useI18n();
-  const router = useRouter();
   const hideSettingDescriptions = useHideSettingDescriptions();
 
   const onCloseRef = useRef(onClose);
@@ -219,13 +210,6 @@ export function AccountEditDialog({
   const [loanCategories, setLoanCategories] = useState<LoanCategoryView[]>([]);
   const [editForm, setEditForm] = useState<Record<string, string>>({});
   const [editFormBaseline, setEditFormBaseline] = useState<Record<string, string>>({});
-  // 电子钱包关联货基：基金代码下拉的选项来自所选货基账户的持仓（2026-11-18）。
-  const [linkedFundHoldings, setLinkedFundHoldings] = useState<Array<{ fundCode: string; fundName: string; units: number }>>([]);
-  const [linkedFundHoldingsLoading, setLinkedFundHoldingsLoading] = useState(false);
-  // 余额宝一键建户（2026-11-18）：只对支付宝电子钱包出现，点一次就把货基账户、000198 持仓与关联一起建好。
-  const [linkedFundBootstrapBusy, setLinkedFundBootstrapBusy] = useState(false);
-  const [linkedFundBootstrapMessage, setLinkedFundBootstrapMessage] = useState("");
-  const [linkedFundBootstrapError, setLinkedFundBootstrapError] = useState("");
   const [billingDayRules, setBillingDayRules] = useState<CreditBillingDayRuleView[]>([]);
   const [billingDayRulesLoading, setBillingDayRulesLoading] = useState(false);
   // 规则表加载失败时必须可见：静默退化成「暂无记录」会让用户以为规则丢了。
@@ -282,7 +266,6 @@ export function AccountEditDialog({
   const accountKindLabel = useCallback((kind: string) => t(`account.kind.${kind}`), [t]);
   const institutionKindLabel = (type: string | null | undefined) => institutionTypeLabel(type, t);
   const investmentLabel = useCallback((value: string | null | undefined) => t(`investment.product.${value || "fund"}`), [t]);
-  const fixedAssetTypeLabel = useCallback((value: string | null | undefined) => t(`fixedAsset.type.${value || "property"}`), [t]);
 
   const accountNameById = useMemo(
     () => new Map(accounts.map((account) => [account.id, account.name])),
@@ -356,113 +339,6 @@ export function AccountEditDialog({
     };
   }, []);
 
-  // 所选货基账户变化时拉取其持仓，作为「基金代码」下拉的唯一数据源（不再手输）。
-  useEffect(() => {
-    const accountId = editingId ? (editForm.linkedFundAccountId || "") : "";
-    if (!accountId) {
-      setLinkedFundHoldings([]);
-      setLinkedFundHoldingsLoading(false);
-      return;
-    }
-    let cancelled = false;
-    setLinkedFundHoldingsLoading(true);
-    fetch(`/api/v1/accounts/fund-holdings?accountId=${encodeURIComponent(accountId)}`, { cache: "no-store" })
-      .then((response) => response.json())
-      .then((data) => {
-        if (cancelled) return;
-        setLinkedFundHoldings(Array.isArray(data?.holdings) ? data.holdings : []);
-      })
-      .catch(() => {
-        if (!cancelled) setLinkedFundHoldings([]);
-      })
-      .finally(() => {
-        if (!cancelled) setLinkedFundHoldingsLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [editingId, editForm.linkedFundAccountId]);
-
-  // 只有支付宝电子钱包才提供余额宝一键建户（服务端同样校验，见 linked-fund/balance-bao）。
-  const canCreateBalanceBaoFund = useMemo(() => {
-    if (!editingId) return false;
-    const editingAccount = accounts.find((account) => account.id === editingId);
-    if (editingAccount?.kind !== "ewallet") return false;
-    const institution = institutions.find((item) => item.id === editForm.institutionId) ?? null;
-    return /支付宝|alipay/i.test(institutionFullName(institution));
-  }, [accounts, editingId, editForm.institutionId, institutions]);
-
-  // 关联货基的候选口径（2026-11-18 用户裁定）：同机构 + 同所有人。
-  // 「所有人」就是账户的 groupId（AccountGroup 配对家庭成员）。跨所有人关联等于记账时
-  // 从别人的货基里扣钱——「墨斗鱼的余额宝能选到付斌的货基」就是漏了这一条。
-  const linkedFundCandidates = useMemo(
-    () => accounts.filter((a) => a.id !== editingId
-      && a.isActive !== false && a.isPlaceholder !== true
-      && a.kind === "investment" && a.investProductType === "money"
-      && !!editForm.institutionId && a.institutionId === editForm.institutionId
-      && (a.groupId ?? "") === (editForm.groupId ?? "")),
-    [accounts, editingId, editForm.groupId, editForm.institutionId],
-  );
-
-  // 下拉只列候选人选。历史上存过的、不符合口径的关联（别人的货基）不展示、也不提示，
-  // 直接留空（2026-11-18 用户裁定：「自己名下没有相关的货币基金账户就留空，不要显示别人的账户」）。
-  const linkedFundAccountOptions = useMemo(
-    () => linkedFundCandidates.map((a) => ({ id: a.id, label: a.name })),
-    [linkedFundCandidates],
-  );
-
-  // 打开账户时把不合规的关联从表单里清掉，避免它悄悄跟着保存回数据库。
-  // 等账户列表到位再判定（accounts 为空时无法分辨「没有」和「还没加载」）。
-  const linkedFundCheckRef = useRef("");
-  useEffect(() => {
-    if (!editingId || editForm.kind !== "ewallet") return;
-    const linkedId = editForm.linkedFundAccountId || "";
-    if (!linkedId || accounts.length === 0) return;
-    const checkKey = `${editingId}:${linkedId}`;
-    if (linkedFundCheckRef.current === checkKey) return;
-    linkedFundCheckRef.current = checkKey;
-    if (linkedFundCandidates.some((a) => a.id === linkedId)) return;
-    setEditForm((form) => (form.linkedFundAccountId === linkedId ? { ...form, linkedFundAccountId: "", linkedFundCode: "" } : form));
-    setEditFormBaseline((form) => (form.linkedFundAccountId === linkedId ? { ...form, linkedFundAccountId: "", linkedFundCode: "" } : form));
-  }, [accounts.length, editForm.kind, editForm.linkedFundAccountId, editingId, linkedFundCandidates]);
-
-  /** 支付宝钱包一键建「所有人·机构·余额宝货币基金」并直接关联（幂等，已存在则复用）。 */
-  async function createBalanceBaoFundAccount() {
-    if (!editingId || linkedFundBootstrapBusy) return;
-    setLinkedFundBootstrapBusy(true);
-    setLinkedFundBootstrapMessage("");
-    setLinkedFundBootstrapError("");
-    try {
-      const response = await fetch(
-        `/api/v1/accounts/${encodeURIComponent(editingId)}/linked-fund/balance-bao`,
-        { method: "POST" },
-      );
-      const data = await response.json().catch(() => null) as {
-        ok?: boolean;
-        fundAccountId?: string;
-        fundCode?: string;
-        fundName?: string;
-      } | null;
-      if (!response.ok || data?.ok !== true || !data.fundAccountId || !data.fundCode) {
-        setLinkedFundBootstrapError(t("settings.accounts.linkedFund.createBalanceBaoFailed"));
-        return;
-      }
-      setEditForm((form) => ({
-        ...form,
-        linkedFundAccountId: data.fundAccountId!,
-        linkedFundCode: data.fundCode!,
-      }));
-      await refreshSettingsAccounts("account:linked-fund-balance-bao");
-      setLinkedFundBootstrapMessage(
-        tf("settings.accounts.linkedFund.createBalanceBaoDone", { name: data.fundName ?? data.fundCode }),
-      );
-    } catch {
-      setLinkedFundBootstrapError(t("settings.accounts.linkedFund.createBalanceBaoFailed"));
-    } finally {
-      setLinkedFundBootstrapBusy(false);
-    }
-  }
-
   // ---- Account handlers ----
   function buildEditForm(a: Account): Record<string, string> {
     const normalizedKind = normalizedAccountKind(a);
@@ -497,9 +373,7 @@ export function AccountEditDialog({
       loanCategoryId: editKind === "loan" ? a.loanCategoryId || "" : "",
       // 多币种归属：空串 = 根账户（独立账户），否则为父账户 id。
       parentId: a.parentId || "",
-      // 电子钱包 → 货基支付关联。
-      linkedFundAccountId: a.linkedFundAccountId || "",
-      linkedFundCode: a.linkedFundCode || "",
+      // 货基关联不随表单提交：卡片上的「关联 / 解绑」直接 PUT，避免顺手保存把计息起始日覆盖成今天。
     };
   }
 
@@ -512,9 +386,6 @@ export function AccountEditDialog({
     const nextForm = buildEditFormRef.current(a);
     setEditingId(a.id);
     setEditError("");
-    // 一键建户的提示属于「这一只账户」，换账户要清掉，别把上一条结果带过去。
-    setLinkedFundBootstrapMessage("");
-    setLinkedFundBootstrapError("");
     if (normalizedKind === "bank_credit") void loadBillingDayRules(a.id);
     else {
       setBillingDayRules([]);
@@ -536,6 +407,26 @@ export function AccountEditDialog({
     if (!target || target.id === editingId) return;
     if (isEditFormDirty() && !window.confirm(t("settings.accounts.unsavedChanges"))) return;
     openEdit(target);
+  }
+
+  function navigateEditAccountBy(direction: -1 | 1) {
+    const currentIndex = navigationAccountsState.findIndex((account) => account.id === editingId);
+    if (currentIndex < 0) return;
+    for (let index = currentIndex + direction; index >= 0 && index < navigationAccountsState.length; index += direction) {
+      const candidate = navigationAccountsState[index];
+      if (!candidate) continue;
+      navigateEditAccount(candidate);
+      return;
+    }
+  }
+
+  function hasEditableAccountInDirection(direction: -1 | 1) {
+    const currentIndex = navigationAccountsState.findIndex((account) => account.id === editingId);
+    if (currentIndex < 0) return false;
+    for (let index = currentIndex + direction; index >= 0 && index < navigationAccountsState.length; index += direction) {
+      if (navigationAccountsState[index]) return true;
+    }
+    return false;
   }
 
   async function saveEdit(options?: { closeAfter?: boolean }) {
@@ -602,11 +493,6 @@ export function AccountEditDialog({
       delete payload.repaymentOffsetDays;
       delete payload.repaymentDayMode;
     }
-    // 钱包改成别的类型时，连带清掉支付关联（服务端也只接受 ewallet 配置）。
-    if (nextKind !== "ewallet") {
-      payload.linkedFundAccountId = "";
-      payload.linkedFundCode = "";
-    }
     const res = await fetch("/api/v1/accounts", {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -624,8 +510,7 @@ export function AccountEditDialog({
     if (!res.ok || data?.ok === false) {
       const lockKey = accountRecordLockErrorKey(data?.code);
       const parentKey = accountParentErrorKey(data?.code);
-      const linkedFundKey = accountLinkedFundErrorKey(data?.code);
-      setEditError(lockKey ? t(lockKey) : parentKey ? t(parentKey) : linkedFundKey ? t(linkedFundKey) : (data?.error ?? t("settings.accounts.saveFailed")));
+      setEditError(lockKey ? t(lockKey) : parentKey ? t(parentKey) : (data?.error ?? t("settings.accounts.saveFailed")));
       return;
     }
     // 保存成功后以当前表单为新基线，便于继续编辑/翻页；「保存并关闭」才关窗。
@@ -718,34 +603,14 @@ export function AccountEditDialog({
     }
   }
 
-  /** 换「所有人」时同步清理货基关联：账户花的是谁的钱，不能跨人。 */
+  /** 换「所有人」：货基关联（代码 + 起始日）不随表单走，由卡片单独操作，这里只改归属。 */
   function changeEditOwner(ownerId: string) {
-    setEditForm((current) => {
-      const next: Record<string, string> = { ...current, groupId: ownerId };
-      if (current.kind === "ewallet" && current.linkedFundAccountId) {
-        const linked = accounts.find((account) => account.id === current.linkedFundAccountId);
-        if (!linked || (linked.groupId ?? "") !== (ownerId ?? "")) {
-          next.linkedFundAccountId = "";
-          next.linkedFundCode = "";
-        }
-      }
-      return next;
-    });
+    setEditForm((current) => ({ ...current, groupId: ownerId }));
   }
 
   async function changeEditInstitution(institutionId: string) {
-    setEditForm((current) => {
-      const next: Record<string, string> = { ...current, institutionId };
-      // 机构变了，原先关联的货基就不属于本机构了，连带清掉（服务端也会拒绝跨机构）。
-      if (current.kind === "ewallet" && current.linkedFundAccountId) {
-        const linked = accounts.find((account) => account.id === current.linkedFundAccountId);
-        if (!institutionId || !linked || linked.institutionId !== institutionId) {
-          next.linkedFundAccountId = "";
-          next.linkedFundCode = "";
-        }
-      }
-      return next;
-    });    if (editForm.kind !== "bank_credit" || !institutionId) return;
+    setEditForm((current) => ({ ...current, institutionId }));
+    if (editForm.kind !== "bank_credit" || !institutionId) return;
     const result = await fetch(`/api/v1/accounts/credit-card-defaults?institutionId=${encodeURIComponent(institutionId)}&groupId=${encodeURIComponent(editForm.groupId || "")}`, { cache: "no-store" })
       .then((response) => response.json())
       .catch((error) => {
@@ -858,9 +723,6 @@ export function AccountEditDialog({
         );
         // 导航顺序 = 表格当前视图顺序（顶部筛选 + 列排序后的行序）。
         const navigationAccounts = navigationAccountsState;
-        const currentNavIndex = navigationAccounts.findIndex((account) => account.id === editingId);
-        const previousAccountNav = currentNavIndex > 0 ? navigationAccounts[currentNavIndex - 1] : null;
-        const nextAccountNav = currentNavIndex >= 0 && currentNavIndex < navigationAccounts.length - 1 ? navigationAccounts[currentNavIndex + 1] : null;
         const closeEditModal = () => {
           setEditingId(null);
           setEditError("");
@@ -905,10 +767,10 @@ export function AccountEditDialog({
               {navigationAccounts.length > 1 ? (
                 <TransparentSideNavButtons
                   scope="account"
-                  onPrevious={() => navigateEditAccount(previousAccountNav)}
-                  onNext={() => navigateEditAccount(nextAccountNav)}
-                  previousDisabled={!previousAccountNav}
-                  nextDisabled={!nextAccountNav}
+                  onPrevious={() => navigateEditAccountBy(-1)}
+                  onNext={() => navigateEditAccountBy(1)}
+                  previousDisabled={!hasEditableAccountInDirection(-1)}
+                  nextDisabled={!hasEditableAccountInDirection(1)}
                   previousLabel={t("settings.accounts.previousAccount")}
                   nextLabel={t("settings.accounts.nextAccount")}
                 />
@@ -954,12 +816,9 @@ export function AccountEditDialog({
                 </div>
               ) : null}
               <EditSection title={t("settings.accounts.editSectionBasic")}>
-              {/* 2026-11-18 用户要求：左边是字段区（两列，三行），右边独立一张「关联货币基金」卡片，
-                  不再和字段挤在同一个 4 列栅格里。 */}
-              <div className={`grid gap-3 ${editKind === "ewallet" ? "md:grid-cols-[minmax(0,1fr)_300px] md:items-start" : ""}`}>
-              <div className="grid grid-cols-2 gap-x-3 gap-y-2.5">
-                {/* 顺序与原来一致（2026-11-18 用户要求）：名称、类型排第一行，
-                    所有人、分组紧随其后，只是整体收成左边两列。 */}
+              {/* 基本资料恢复成原来的平铺栅格（桌面 4 列 / 窄屏 2 列）：货基设定搬到
+                  设置 → 账户 表头的「货币基金」弹窗后，这里不再为侧栏卡片留位置。 */}
+              <div className="grid grid-cols-2 gap-x-3 gap-y-2.5 md:grid-cols-4">
                 <div>
                   <label className={FIELD_LABEL_CLS}>{t("settings.accounts.name")}</label>
                   <input value={editForm.name || ""} onChange={e => setEditForm(f => ({ ...f, name: e.target.value }))}
@@ -1173,67 +1032,6 @@ export function AccountEditDialog({
                     </div>
                   )
                 )}
-              </div>
-              {/* 右栏卡片：只有电子钱包才有「关联货币基金」，与左栏字段并排，窄屏自动落到下方。 */}
-              {editKind === "ewallet" && (
-                <div className="rounded-md border border-slate-200 bg-slate-50 p-3 md:self-start">
-                  <div className="mb-2 flex items-center gap-1 text-xs font-medium text-slate-700">
-                    <span>{t("settings.accounts.linkedFund.title")}</span>
-                    {/* 说明只在悬浮时出现，不占版面（2026-11-18 用户要求）。 */}
-                    <span
-                      className="inline-flex shrink-0 cursor-help items-center text-slate-400"
-                      role="img"
-                      title={t("settings.accounts.linkedFund.hint")}
-                      aria-label={t("settings.accounts.linkedFund.hint")}
-                    >
-                      <Info className="h-3.5 w-3.5" aria-hidden="true" />
-                    </span>
-                    {/* 支付宝钱包才给这个入口：一次建好「所有人·机构·余额宝货币基金」并关联（2026-11-18）。 */}
-                    {canCreateBalanceBaoFund && (
-                      <button
-                        type="button"
-                        onClick={() => void createBalanceBaoFundAccount()}
-                        disabled={linkedFundBootstrapBusy}
-                        className="ml-auto inline-flex items-center gap-1 rounded px-1 py-0.5 text-[11px] font-normal text-blue-600 transition hover:bg-blue-50 hover:text-blue-700 disabled:cursor-not-allowed disabled:text-slate-400"
-                      >
-                        <Plus className="h-3 w-3" aria-hidden="true" />
-                        {linkedFundBootstrapBusy
-                          ? t("settings.accounts.linkedFund.createBalanceBaoBusy")
-                          : t("settings.accounts.linkedFund.createBalanceBao")}
-                      </button>
-                    )}
-                  </div>
-                  <div className="grid gap-2">
-                    <SmartSelect mode="single" value={editForm.linkedFundAccountId || ""}
-                      onChange={(id) => setEditForm((f) => ({ ...f, linkedFundAccountId: id, linkedFundCode: "" }))}
-                      options={linkedFundAccountOptions}
-                      placeholder={t("settings.accounts.linkedFund.accountPlaceholder")}
-                      behavior={{ density: "compact" }} />
-                    <SmartSelect mode="single" value={editForm.linkedFundCode || ""}
-                      onChange={(code) => setEditForm((f) => ({ ...f, linkedFundCode: code }))}
-                      options={linkedFundHoldings.map((holding) => ({
-                        id: holding.fundCode,
-                        // 下拉里认基金名称，代码只作副标题；留空 = 由服务端自动匹配唯一持仓。
-                        label: holding.fundName || holding.fundCode,
-                        subLabel: holding.fundName ? holding.fundCode : undefined,
-                      }))}
-                      placeholder={linkedFundHoldingsLoading
-                        ? t("settings.accounts.linkedFund.loading")
-                        : t("settings.accounts.linkedFund.codePlaceholder")}
-                      behavior={{ density: "compact" }} />
-                  </div>
-                  {editForm.linkedFundAccountId && (
-                    <div className="mt-2 text-[11px] leading-snug text-slate-500">
-                      {t("settings.accounts.linkedFund.balanceNotCounted")}
-                    </div>
-                  )}
-                  {(linkedFundBootstrapMessage || linkedFundBootstrapError) && (
-                    <div className={`mt-2 text-[11px] ${linkedFundBootstrapError ? "text-rose-600" : "text-emerald-600"}`}>
-                      {linkedFundBootstrapError || linkedFundBootstrapMessage}
-                    </div>
-                  )}
-                </div>
-              )}
               </div>
               </EditSection>
 

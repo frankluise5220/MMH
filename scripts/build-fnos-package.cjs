@@ -3600,16 +3600,24 @@ const MIGRATIONS = [
     },
   },
   {
-    // 电子钱包 → 货币基金支付关联（2026-11-18）：钱包可指定一个货基账户 + 具体基金代码。
-    // 支出弹窗勾选「从关联货基支付」时，服务端生成赎回（份额减、资金腿回钱包）。
-    // 可空列，存量钱包未绑定，行为不变。
+    // 电子钱包 → 货币基金（2026-11-18 轻量模式）：钱包只记一个 6 位基金代码。
+    // 旧的 linkedFundAccountId（钱包绑货基账户）旧模型已整体删除，这里不再建该列；
+    // 已升级过的存量库残留该列不影响 Prisma 读取。
     version: "20261118_wallet_linked_money_fund",
-    description: "Add Account.linkedFundAccountId + linkedFundCode for wallet→money-fund payment link",
+    description: "Add Account.linkedFundCode for wallet→money-fund link",
     apply(db) {
       if (!tableExists(db, "Account")) return;
-      addColumnIfMissing(db, "Account", "linkedFundAccountId", "TEXT");
       addColumnIfMissing(db, "Account", "linkedFundCode", "TEXT");
-      db.exec('CREATE INDEX IF NOT EXISTS "Account_linkedFundAccountId_idx" ON "Account"("linkedFundAccountId")');
+    },
+  },
+  {
+    // 轻量货基模式（2026-11-19 用户裁定）：钱包直接挂货基代码，每天按万份收益结息，
+    // 不再建货基账户。可空列，存量钱包不绑定时行为不变。
+    version: "20261119_wallet_money_fund_start_date",
+    description: "Add Account.linkedFundStartDate for wallet-direct money fund accrual",
+    apply(db) {
+      if (!tableExists(db, "Account")) return;
+      addColumnIfMissing(db, "Account", "linkedFundStartDate", "DATETIME");
     },
   },
 ];

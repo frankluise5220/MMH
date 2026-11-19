@@ -30,10 +30,18 @@ export function DebitBalanceReconcileButton({
   accountId,
   accountLabel,
   currentBalance,
+  editRequest,
+  onEditRequestHandled,
 }: {
   accountId: string;
   accountLabel: string;
   currentBalance: number;
+  /**
+   * 由父组件发起的编辑请求：贷款账户的「编辑」在没有借款记录时没有可编辑的明细行，
+   * 直接把要校准的行交给这里，避免依赖 window 事件在组件挂载前被丢弃。
+   */
+  editRequest?: EditDetail | null;
+  onEditRequestHandled?: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const [reconcileAmount, setReconcileAmount] = useState("");
@@ -55,21 +63,31 @@ export function DebitBalanceReconcileButton({
     setInfo("");
   }
 
+  function applyEditDetail(detail: EditDetail) {
+    setOpen(true);
+    setEditingEntryId(detail.entryId ?? null);
+    setDate((detail.date ?? todayYmd()).slice(0, 10));
+    setReconcileAmount(detail.amount != null && Number.isFinite(detail.amount) ? formatAmountDraft(detail.amount) : "");
+    setError("");
+    setInfo("");
+  }
+
   useEffect(() => {
     function handleEdit(event: Event) {
       const detail = (event as CustomEvent<EditDetail>).detail;
       if (!detail?.entryId || detail.accountId !== accountId) return;
-      setOpen(true);
-      setEditingEntryId(detail.entryId);
-      setDate((detail.date ?? todayYmd()).slice(0, 10));
-      setReconcileAmount(detail.amount != null && Number.isFinite(detail.amount) ? formatAmountDraft(detail.amount) : "");
-      setError("");
-      setInfo("");
+      applyEditDetail(detail);
     }
 
     window.addEventListener("mmh:balance-reconcile:edit", handleEdit as EventListener);
     return () => window.removeEventListener("mmh:balance-reconcile:edit", handleEdit as EventListener);
   }, [accountId]);
+
+  useEffect(() => {
+    if (!editRequest || editRequest.accountId !== accountId) return;
+    applyEditDetail(editRequest);
+    onEditRequestHandled?.();
+  }, [accountId, editRequest, onEditRequestHandled]);
 
   async function submit() {
     if (!Number.isFinite(parsedReconcileAmount)) {

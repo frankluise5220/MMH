@@ -1049,6 +1049,24 @@ const SQLITE_PROPERTY_RESTORE_SCHEMA_SQL = [
     CONSTRAINT "property_asset_depreciations_householdId_fkey" FOREIGN KEY ("householdId") REFERENCES "Household"("id") ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT "property_asset_depreciations_propertyAssetId_fkey" FOREIGN KEY ("propertyAssetId") REFERENCES "property_assets"("id") ON DELETE CASCADE ON UPDATE CASCADE
   )`,
+  // 电子钱包的货基绑定区间（2026-11-19）：每段一个基金代码 + 起止日，换绑只关旧段。
+  `CREATE TABLE IF NOT EXISTS "wallet_linked_funds" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "householdId" TEXT NOT NULL,
+    "accountId" TEXT NOT NULL,
+    "fundCode" TEXT NOT NULL,
+    "fundName" TEXT,
+    "startDate" DATETIME NOT NULL,
+    "endDate" DATETIME,
+    "note" TEXT,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT "wallet_linked_funds_householdId_fkey" FOREIGN KEY ("householdId") REFERENCES "Household"("id") ON DELETE CASCADE ON UPDATE CASCADE,
+    CONSTRAINT "wallet_linked_funds_accountId_fkey" FOREIGN KEY ("accountId") REFERENCES "Account"("id") ON DELETE CASCADE ON UPDATE CASCADE
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS "wallet_linked_funds_accountId_startDate_key" ON "wallet_linked_funds"("accountId", "startDate")`,
+  `CREATE INDEX IF NOT EXISTS "wallet_linked_funds_householdId_accountId_startDate_idx" ON "wallet_linked_funds"("householdId", "accountId", "startDate")`,
+  `CREATE INDEX IF NOT EXISTS "wallet_linked_funds_householdId_fundCode_idx" ON "wallet_linked_funds"("householdId", "fundCode")`,
   `CREATE TABLE IF NOT EXISTS "property_transactions" (
     "id" TEXT NOT NULL PRIMARY KEY,
     "householdId" TEXT NOT NULL,
@@ -1904,6 +1922,7 @@ export async function buildHouseholdBackupPayload(
     stockMarketFeeRules,
     propertyAssets,
     propertyAssetDepreciations,
+    walletLinkedFunds,
     propertyValuations,
     propertyTransactions,
     entryBusinessLinks,
@@ -2043,6 +2062,14 @@ export async function buildHouseholdBackupPayload(
       "propertyAssetDepreciation",
       { where: { householdId }, orderBy: [{ periodMonth: "asc" }, { createdAt: "asc" }] },
       { tableNames: ["property_asset_depreciations"] },
+    ),
+    // 电子钱包的货基绑定区间（2026-11-19）：同一钱包不同时间绑不同基金的历史，
+    // 丢了会让「某天该用哪只基金的万份收益」无从判断，必须随包导出。
+    optionalPrismaFindMany<Record<string, unknown>>(
+      prisma,
+      "walletLinkedFund",
+      { where: { householdId }, orderBy: [{ accountId: "asc" }, { startDate: "asc" }] },
+      { tableNames: ["wallet_linked_funds"] },
     ),
     optionalPrismaFindMany<Record<string, unknown>>(
       prisma,
@@ -2257,6 +2284,7 @@ export async function buildHouseholdBackupPayload(
       stockMarketFeeRules,
       propertyAssets,
       propertyAssetDepreciations,
+      walletLinkedFunds,
       propertyValuations,
       propertyTransactions,
       entryBusinessLinks,
@@ -2388,6 +2416,7 @@ async function buildHouseholdBackupWorkbook(payload: HouseholdBackupPayload) {
     ["StockMarketFeeRules", sheetRows(payload.data.stockMarketFeeRules)],
     ["PropertyAssets", sheetRows(payload.data.propertyAssets)],
     ["PropertyAssetDepreciations", sheetRows(payload.data.propertyAssetDepreciations)],
+    ["WalletLinkedFunds", sheetRows(payload.data.walletLinkedFunds)],
     ["PropertyValuations", sheetRows(payload.data.propertyValuations)],
     ["PropertyTransactions", sheetRows(payload.data.propertyTransactions)],
     ["EntryBusinessLinks", sheetRows(payload.data.entryBusinessLinks)],
@@ -2491,6 +2520,7 @@ export async function buildHouseholdTableExportWorkbook(payload: HouseholdBackup
     ["StockMarketFeeRules", sheetRows(payload.data.stockMarketFeeRules)],
     ["PropertyAssets", sheetRows(payload.data.propertyAssets)],
     ["PropertyAssetDepreciations", sheetRows(payload.data.propertyAssetDepreciations)],
+    ["WalletLinkedFunds", sheetRows(payload.data.walletLinkedFunds)],
     ["PropertyValuations", sheetRows(payload.data.propertyValuations)],
     ["PropertyTransactions", sheetRows(payload.data.propertyTransactions)],
     ["EntryBusinessLinks", sheetRows(payload.data.entryBusinessLinks)],
@@ -2743,6 +2773,7 @@ export function parseBackupPayload(raw: unknown) {
       stockMarketFeeRules: ensureArray(data.stockMarketFeeRules ?? [], "data.stockMarketFeeRules"),
       propertyAssets: ensureArray(data.propertyAssets ?? [], "data.propertyAssets"),
       propertyAssetDepreciations: ensureArray(data.propertyAssetDepreciations ?? [], "data.propertyAssetDepreciations"),
+      walletLinkedFunds: ensureArray(data.walletLinkedFunds ?? [], "data.walletLinkedFunds"),
       propertyValuations: ensureArray(data.propertyValuations ?? [], "data.propertyValuations"),
       propertyTransactions: ensureArray(data.propertyTransactions ?? [], "data.propertyTransactions"),
       entryBusinessLinks: ensureArray(data.entryBusinessLinks ?? [], "data.entryBusinessLinks"),
@@ -2909,6 +2940,7 @@ async function restoreSingleHouseholdBackup(
     data.propertyAssetDepreciations.length > 0 ||
     data.propertyValuations.length > 0 ||
     data.propertyTransactions.length > 0;
+  const backupContainsWalletLinkedFundData = data.walletLinkedFunds.length > 0;
   const backupContainsStockData =
     data.stockSecurities.length > 0 ||
     data.stockHoldings.length > 0 ||
@@ -2937,6 +2969,8 @@ async function restoreSingleHouseholdBackup(
     const propertyAssetDepreciationDelegate = getOptionalPrismaDelegate<OptionalPrismaRestoreDelegate>(tx, "propertyAssetDepreciation");
     const propertyValuationDelegate = getOptionalPrismaDelegate<OptionalPrismaRestoreDelegate>(tx, "propertyValuation");
     const propertyTransactionDelegate = getOptionalPrismaDelegate<OptionalPrismaRestoreDelegate>(tx, "propertyTransaction");
+    // 电子钱包货基绑定区间表：老版本库里没有这张表，缺失时按空处理，不阻断恢复。
+    const walletLinkedFundDelegate = getOptionalPrismaDelegate<OptionalPrismaRestoreDelegate>(tx, "walletLinkedFund");
 
     if (isSystemRestore && !options.skipGlobalReset) {
       // The installation id is this deployment's own identity, not backup data,
@@ -2999,6 +3033,15 @@ async function restoreSingleHouseholdBackup(
       { where: { householdId } },
       { tableNames: ["property_assets"] },
     );
+    const walletLinkedFundsDeleted = await optionalPrismaDeleteMany(
+      tx,
+      "walletLinkedFund",
+      { where: { householdId } },
+      { tableNames: ["wallet_linked_funds"] },
+    );
+    if (backupContainsWalletLinkedFundData && !walletLinkedFundsDeleted) {
+      restoreError("当前系统版本不支持电子钱包关联货基的绑定记录，请先更新并完成数据库迁移后再恢复。");
+    }
     if (
       backupContainsPropertyData &&
       (!propertyTransactionsDeleted ||
@@ -3670,10 +3713,10 @@ async function restoreSingleHouseholdBackup(
           // 账户自定义分组标签（2026-11-13）：不显式恢复会静默落回 null，
           // 恢复后侧边栏/下拉的分组全变「未分组」。
           accountGroup: item.accountGroup == null ? null : String(item.accountGroup),
-          // 电子钱包 → 货币基金支付关联（2026-11-18）：漏写会让恢复后的钱包
-          // 丢失关联，支出弹窗不再出现「从关联货基支付」选项。
-          linkedFundAccountId: item.linkedFundAccountId == null ? null : String(item.linkedFundAccountId),
           linkedFundCode: item.linkedFundCode == null ? null : String(item.linkedFundCode),
+          // 轻量货基模式的计息起始日（2026-11-19）：漏写会让恢复后的钱包丢掉日期，
+          // 要么不计息、要么从「今天」重新开始算，历史收益行还在、基数却变了。
+          linkedFundStartDate: item.linkedFundStartDate == null ? null : new Date(String(item.linkedFundStartDate)),
           usageCount: Number(item.usageCount ?? 0),
           lastUsedAt: item.lastUsedAt == null ? null : new Date(String(item.lastUsedAt)),
           householdId,
@@ -4057,6 +4100,26 @@ async function restoreSingleHouseholdBackup(
             method: item.method == null ? "straight_line" : String(item.method),
           })),
         new Set(["periodMonth"]),
+      );
+    }
+
+    if (walletLinkedFundDelegate) {
+      // 绑定区间是钱包账户的从属数据：账户没进这次恢复的，行也不能留，
+      // 否则会挂到不存在（或别人的）账户 id 上。
+      await createManyRecords(
+        walletLinkedFundDelegate,
+        data.walletLinkedFunds
+          .filter((item) => importedAccounts.has(String(item.accountId)) && item.startDate != null && item.startDate !== "")
+          .map((item) => ({
+            ...item,
+            householdId,
+            accountId: String(item.accountId),
+            fundCode: String(item.fundCode ?? ""),
+            fundName: item.fundName == null ? null : String(item.fundName),
+            note: item.note == null ? null : String(item.note),
+          })),
+        new Set(["endDate"]),
+        "wallet_linked_funds",
       );
     }
 

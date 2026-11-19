@@ -9,7 +9,6 @@ import {
   type AccountLabelField,
   type AccountRenderSettings,
 } from "@/lib/account-display";
-import { isLinkedFundWalletAccount } from "@/lib/account-kind-utils";
 import { getMaintainedAccountBalances } from "@/lib/server/account-balance";
 import { addDaysUtc, formatDateUtc, startOfDayUtc, toNumber } from "@/lib/date-utils";
 import {
@@ -257,7 +256,6 @@ const NOTIFICATION_ACCOUNT_SELECT = {
   numberMasked: true,
   groupId: true,
   investProductType: true,
-  linkedFundAccountId: true,
   Institution: { select: { name: true, shortName: true } },
   AccountGroup: { select: { name: true } },
   Counterparty: { select: { name: true, shortName: true } },
@@ -432,7 +430,6 @@ export async function loadNotificationFeed(params: {
       blocked ||
       (!!fundingAccount &&
         fundingAccount.kind !== AccountKind.bank_credit &&
-        !isLinkedFundWalletAccount(fundingAccount) &&
         typeof balance === "number" &&
         amount > 0 &&
         amount > balance + 0.005);

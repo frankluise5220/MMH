@@ -102,10 +102,18 @@ export function MoneyFundYieldPanel({
       if (!response.ok || !payload?.ok) throw new Error(payload?.error ?? "");
       const days = Number(payload.data?.days ?? 0);
       const income = Number(payload.data?.totalIncome ?? 0);
+      const pendingFrom: string | null = payload.data?.pendingFrom ?? null;
+      const skippedDays = Number(payload.data?.skippedDays ?? 0);
+      const notes: string[] = [];
+      if (pendingFrom) notes.push(t("moneyIncomeRebuild.pending", { from: pendingFrom, to: payload.data?.toDate ?? "-" }));
+      if (skippedDays > 0) notes.push(t("moneyIncomeRebuild.skipped", { count: String(skippedDays) }));
       setMessage(
-        days > 0
-          ? `${t("moneyYield.accrued")} ${days} ${t("moneyYield.daysUnit")} · ${income.toFixed(2)}`
-          : t("moneyYield.accruedNothing"),
+        [
+          days > 0
+            ? `${t("moneyYield.accrued")} ${days} ${t("moneyYield.daysUnit")} · ${income.toFixed(2)}`
+            : t("moneyYield.accruedNothing"),
+          ...notes,
+        ].join("｜"),
       );
       dispatchFinanceDataChanged({ reason: "money-fund-income:accrue", accountIds: [accountId] });
     } catch {

@@ -3,7 +3,7 @@ import type { Prisma, PrismaClient } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { normalizeCurrency } from "@/lib/currency";
 import { isAggregateAccount, multiCurrencyChildName } from "@/lib/account-hierarchy";
-import { isLinkedFundWalletAccount, supportsMultiCurrencyHierarchy } from "@/lib/account-kind-utils";
+import { supportsMultiCurrencyHierarchy } from "@/lib/account-kind-utils";
 import { convertCurrencyAmounts, getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
 
 type Db = Prisma.TransactionClient | PrismaClient;
@@ -103,18 +103,9 @@ export async function recomputeAggregateAccountBalance(
 ): Promise<{ total: number; missingCurrencies: string[] } | null> {
   const parent = await db.account.findFirst({
     where: { id: parentId, isAggregate: true },
-    select: { id: true, householdId: true, currency: true, kind: true, linkedFundAccountId: true },
+    select: { id: true, householdId: true, currency: true, kind: true },
   });
   if (!parent) return null;
-  // 关联了货币基金的电子钱包不统计余额（2026-11-18 用户裁定）：多币种父户同样处理，
-  // 钱在货基份额里，子户合计再加一遍就是双计。
-  if (isLinkedFundWalletAccount(parent)) {
-    await db.account.update({
-      where: { id: parent.id },
-      data: { balance: 0, balanceRecomputedAt: new Date() },
-    });
-    return { total: 0, missingCurrencies: [] };
-  }
   const children = await db.account.findMany({
     where: { parentId: parent.id },
     select: { balance: true, currency: true },

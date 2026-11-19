@@ -100,6 +100,9 @@ const SYSTEM_CATEGORY_LABEL_KEYS: Record<string, string> = {
   "基金收益": "systemCategory.fundProfit",
   "基金赎回": "systemCategory.fundRedeem",
   "基金投资": "systemCategory.fundInvestment",
+  // 电子钱包 ↔ 货币基金联动资金腿在钱包侧的展示（2026-11-19）。
+  "从货币基金转入（赎回）": "systemCategory.walletLinkedFundIn",
+  "转出到货币基金（买入）": "systemCategory.walletLinkedFundOut",
   "绩效": "systemCategory.performanceBonus",
   "加班费": "systemCategory.overtimePay",
   "加油": "systemCategory.fuel",

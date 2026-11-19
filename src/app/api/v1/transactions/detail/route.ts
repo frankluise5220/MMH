@@ -1290,16 +1290,17 @@ function linkedWealthDetailFields(record: any, wealthRow: any) {
 }
 
 function linkedFundTransactionIdOf(entry: {
-  EntryBusinessLinkCash?: Array<{ fundTransactionId?: string | null }> | null;
-  EntryBusinessLinkBusiness?: Array<{ fundTransactionId?: string | null }> | null;
+  EntryBusinessLinkCash?: Array<{ fundTransactionId?: string | null; linkType?: string | null }> | null;
+  EntryBusinessLinkBusiness?: Array<{ fundTransactionId?: string | null; linkType?: string | null }> | null;
 }) {
   return [...(entry.EntryBusinessLinkCash ?? []), ...(entry.EntryBusinessLinkBusiness ?? [])]
-    .find((link) => link.fundTransactionId)?.fundTransactionId ?? null;
+    .find((link) => link.fundTransactionId)
+    ?.fundTransactionId ?? null;
 }
 
 // Fund (non-wealth) counterpart of linkedWealthDetailFields: a cash leg TxRecord carries no fund
 // fields of its own, so every reader must back-fill them from the linked fund_transactions row.
-function linkedFundDetailFields(record: any, fundRow: any) {
+function linkedFundDetailFields(record: any, fundRow: any): Record<string, unknown> {
   // 买入退款资金腿：这条流水自己就是「钱退回到现金账户」那一腿，`date` 是到账日、
   // `amount` 是退款金额。若沿用买入口径（申请日 / 买入金额 / 现金→基金方向），
   // 资金侧会把它显示成申请日当天又一笔买入，退款到账当天看不到这笔收入。
@@ -2107,6 +2108,9 @@ export async function GET(req: Request) {
       const bounds = await queryDetailDateBounds({
         accountIds: normalizedListAccountIds,
         householdId: hidFilter.householdId ?? "",
+        // 单账户明细要跟列表同口径（关联货基钱包会隐藏内部搬运腿），否则滑轨两端
+        // 可能来自一条列表里看不到的行。
+        sortAccountId: allCashScope ? null : account?.id ?? null,
       });
       return NextResponse.json({
         ok: true,

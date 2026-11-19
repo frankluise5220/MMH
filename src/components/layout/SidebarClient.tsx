@@ -66,7 +66,7 @@ import { useI18n } from "@/lib/i18n";
 import { sortByAccountUsage, useAccountUsage } from "@/lib/client/recentAccounts";
 import { accountUsageScore } from "@/lib/account-usage-score";
 import { UndoLastOperationButton } from "@/components/UndoLastOperationButton";
-import { getInvestmentAccountView, isLinkedFundWalletAccount, resolveLoanType } from "@/lib/account-kind-utils";
+import { getInvestmentAccountView, resolveLoanType } from "@/lib/account-kind-utils";
 import { FIXED_ASSET_TYPES } from "@/lib/fixed-asset";
 import { LOAN_TYPES, type LoanTypeValue } from "@/lib/loan-type";
 import { dispatchFirstUseGuideOpen } from "@/lib/client/onboardingGuide";
@@ -83,11 +83,6 @@ type AccountItem = {
   currency?: string | null;
   baseCurrency?: string | null;
   fxRateMissing?: boolean;
-  /**
-   * `ledger` = 关联了货基的电子钱包：这一行显示账面余额，但它**不计入统计**，
-   * 所以刷新要按 `ledger=1` 单独请求，且不能 seed 进总资产增量索引。
-   */
-  balanceScope?: "ledger" | null;
   kind: string;
   groupName?: string;
   /** 账户自定义分组标签（2026-11-13），空 = 未分组。 */
@@ -415,7 +410,6 @@ function getSidebarItemSignature(item: AccountItem): string {
     item.currency ?? "",
     item.baseCurrency ?? "",
     item.fxRateMissing ? "1" : "0",
-    item.balanceScope ?? "",
     item.kind,
     item.groupName ?? "",
     item.institution ?? "",
@@ -461,8 +455,6 @@ function toSidebarAccountItem(a: any, t: (key: string, params?: Record<string, s
     currency: a.currency ?? null,
     baseCurrency: a.baseCurrency ?? null,
     fxRateMissing: !!a.fxRateMissing,
-    // `/internal` 给的是统计口径（关联钱包 0），这里只标记口径，真实数值由 ledger 补丁覆盖。
-    balanceScope: isLinkedFundWalletAccount(a) ? "ledger" : undefined,
     kind: a.kind,
     groupName: display.groupName || t("batchImport.ownerUnset"),
     institution: a.Institution?.name?.trim() || display.institutionName || undefined,
@@ -696,9 +688,6 @@ export function SidebarClient({
   const sidebarRefreshBusy = useRef(false);
   const sidebarRefreshPending = useRef(false);
   const pendingScopedAccountIds = useRef<string[] | "full" | null>(null);
-  // 「账面口径」的账户（关联了货基的电子钱包）：侧栏显示真实余额，但统计口径是 0，
-  // 所以刷新时必须单独按 ledger 请求，否则会被统计口径的值覆盖成 0。
-  const ledgerScopedIdSet = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     startTransition(() => {
@@ -718,20 +707,6 @@ export function SidebarClient({
   }, [householdId]);
 
   useEffect(() => {
-    const ids = new Set<string>();
-    const walk = (list: readonly AccountItem[]) => {
-      for (const item of list) {
-        const id = item.id ? String(item.id) : "";
-        if (id && item.balanceScope === "ledger") ids.add(id);
-        if (item.children?.length) walk(item.children);
-        if (item.subAccounts?.length) walk(item.subAccounts);
-      }
-    };
-    walk(items);
-    ledgerScopedIdSet.current = ids;
-  }, [items]);
-
-  useEffect(() => {
     const applyScopedRows = (rows: ScopedAccountBalance[]) => {
       if (rows.length === 0) return;
       startTransition(() => {
@@ -743,12 +718,6 @@ export function SidebarClient({
           return next;
         });
       });
-    };
-    // 账面口径的账户必须单独按 ledger 请求（`/internal` 与统计口径都会把它给成 0）。
-    const fetchLedgerRows = async (ids: string[]) => {
-      if (ids.length === 0) return [];
-      const scoped = await fetchScopedAccountBalances(ids, { ledger: true });
-      return scoped?.ok ? scoped.data : [];
     };
     const debouncedRefresh = () => {
       if (sidebarRefreshTimer.current) clearTimeout(sidebarRefreshTimer.current);
@@ -762,15 +731,8 @@ export function SidebarClient({
         sidebarRefreshBusy.current = true;
         try {
           if (Array.isArray(pendingIds) && pendingIds.length > 0) {
-            const ledgerIds = ledgerScopedIdSet.current;
-            const statsIds = pendingIds.filter((id) => !ledgerIds.has(id));
-            const scopedLedgerOnly = pendingIds.filter((id) => ledgerIds.has(id));
-            const rows: ScopedAccountBalance[] = [];
-            if (statsIds.length > 0) {
-              const scoped = await fetchScopedAccountBalances(statsIds);
-              if (scoped?.ok) rows.push(...scoped.data);
-            }
-            rows.push(...(await fetchLedgerRows(scopedLedgerOnly)));
+            const scoped = await fetchScopedAccountBalances(pendingIds);
+            const rows: ScopedAccountBalance[] = scoped?.ok ? scoped.data : [];
             if (rows.length > 0) {
               applyScopedRows(rows);
               return;
@@ -811,8 +773,6 @@ export function SidebarClient({
               });
             });
           }
-          // `/internal` 是统计口径（关联货基的钱包给 0）：兜底之后得把账面口径补回来。
-          applyScopedRows(await fetchLedgerRows(Array.from(ledgerScopedIdSet.current)));
         } catch {
         } finally {
           sidebarRefreshBusy.current = false;

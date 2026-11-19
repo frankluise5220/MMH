@@ -1,6 +1,6 @@
 import { FundCashFlowKind, FundProductType, FundSubtype, Prisma, TransactionType } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
-import { toNumber } from "@/lib/date-utils";
+import { formatDateUtc, toNumber } from "@/lib/date-utils";
 import { entryBusinessTypeLabel, upsertEntryBusinessCashFlowLink } from "@/lib/server/entry-business-link";
 import { createManySkipDuplicatesCompat } from "@/lib/server/prisma-create-many";
 import { regularInvestRefundNote } from "@/lib/fund/regular-invest-display";
@@ -9,6 +9,7 @@ import { resolveCategorySnapshot } from "@/lib/default-categories";
 import { getCashFlowDate } from "@/lib/cash-flow-date";
 import { ENTRY_ORIGIN_MANUAL, isRegularInvestRefundEntry, TRANSACTION_SOURCE_REGULAR_INVEST_REFUND } from "@/lib/transaction-semantics";
 import { getFundProfileNameMap, normalizeFundDisplayName } from "@/lib/fund/fundProfile";
+import { fundEntryCalcDateKey } from "@/lib/fund/recalcPosition";
 
 type Tx = Prisma.TransactionClient;
 
@@ -259,7 +260,10 @@ export async function createFundTransactionWithCashFlows(
     data: {
       householdId: params.householdId,
       fundAccountId: params.fundAccountId,
-      cashAccountId: primaryCashEntry?.accountId ?? null,
+      // cashAccountId 记的必须是**现金腿**那一侧的账户：赎回/切换到账/退款资金腿的
+      // accountId 是基金账户，不能拿它当资金来源，否则现金侧明细会把「对方账户」
+      // 显示成基金账户自己（2026-11-19）。
+      cashAccountId: params.cashAccountId ?? primaryCashEntry?.accountId ?? null,
       cashEntryId: primaryCashEntry?.id ?? null,
       fundCode,
       fundName: params.fundName ?? null,
@@ -351,9 +355,14 @@ export async function findFundTransactionForEntryId(
     });
     if (byCashEntry) return byCashEntry;
 
+    // 旧「电子钱包联动货基账户」模型曾给普通支出流水挂过一条指向货基赎回业务行的
+    // link（wallet_linked_cashflow，该模型已于 2026-11-19 整体删除）。存量库里这些
+    // link 仍以软删状态存在，保留这条排除条件是为了不让「编辑一笔支付宝支出」被判成
+    // 「编辑基金赎回」（2026-11-19 用户裁定 A）；枚举值本身也仍需保留，否则删行会失败。
     const link = await client.entryBusinessLink.findFirst({
       where: {
         deletedAt: null,
+        linkType: { not: "wallet_linked_cashflow" },
         ...householdWhere,
         OR: [
           { cashEntryId: id },
@@ -815,6 +824,46 @@ export async function loadFundTransactionEntryLike(params: {
   });
 
   const fundNameByCode = await getFundProfileNameMap(rows.map((row) => row.fundCode));
+  /**
+   * 明细行「剩余份额」：账户内每只基金各成一桶，按 `recalcPosition` 的入账日
+   * （`fundEntryCalcDateKey`：确认日 → 到账日 → 申请日）从早到晚回放份额，
+   * 取该行入账之后的持仓份额。
+   *
+   * 必须和持仓页共用同一口径：这一列展示的就是「这笔之后这只基金还剩多少份额」，
+   * 明细最后一行的数字要等于持仓页的份额，否则用户会当成账不平。货基尤其明显——
+   * 余额就是份额 × 1 元面值，每天的万份收益结转都会加份额。
+   *
+   * 方向规则逐条对齐 `calcByMovingAvg`：`buy` 按带符号份额增减（货基收益结转也是 buy）、
+   * `redeem` / `switch_out` 扣减，其余 subtype（`buy_failed` 申购失败、`dividend_cash`
+   * 现金分红等）不动份额，负份额按持仓口径 clamp 到 0。
+   */
+  const remainingUnitsByTxnId = new Map<string, number>();
+  {
+    const ordered = rows
+      .map((row) => ({
+        row,
+        key: fundEntryCalcDateKey({
+          subtype: row.fundSubtype,
+          confirmDate: row.confirmDate ? formatDateUtc(row.confirmDate) : null,
+          arrivalDate: row.arrivalDate ? formatDateUtc(row.arrivalDate) : null,
+          date: row.applyDate ? formatDateUtc(row.applyDate) : null,
+        }),
+      }))
+      .sort((a, b) => a.key.localeCompare(b.key));
+    const buckets = new Map<string, number>();
+    for (const { row } of ordered) {
+      const code = String(row.fundCode ?? "");
+      const subtype = String(row.fundSubtype ?? "");
+      const rawUnits = row.units == null ? 0 : Number(row.units);
+      const units = Number.isFinite(rawUnits) ? rawUnits : 0;
+      let bucket = buckets.get(code) ?? 0;
+      if (subtype === "buy") bucket += units;
+      else if (subtype === "redeem" || subtype === "switch_out") bucket -= Math.abs(units);
+      bucket = Math.max(0, Math.round(bucket * 1e6) / 1e6);
+      buckets.set(code, bucket);
+      remainingUnitsByTxnId.set(row.id, bucket);
+    }
+  }
   const entries: any[] = [];
   for (const row of rows) {
     const displayFundName = fundNameByCode.get(row.fundCode) ?? normalizeFundDisplayName(row.fundCode, row.fundName) ?? row.fundName;
@@ -839,6 +888,7 @@ export async function loadFundTransactionEntryLike(params: {
       fundSubtype: row.fundSubtype,
       source: row.source,
       fundUnits: row.units,
+      fundRemainingUnits: remainingUnitsByTxnId.get(row.id) ?? null,
       fundNav: row.nav,
       fundFee: row.fee,
       fundConfirmDate: row.confirmDate,
@@ -872,6 +922,7 @@ export async function loadFundTransactionEntryLike(params: {
         fundSubtype: FundSubtype.buy_failed,
         source: "regular_invest_refund",
         fundUnits: null,
+        fundRemainingUnits: remainingUnitsByTxnId.get(row.id) ?? null,
         fundNav: null,
         fundFee: null,
         fundConfirmDate: row.applyDate,

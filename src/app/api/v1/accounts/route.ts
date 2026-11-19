@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { AccountKind, TransactionType } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { parseSettlementAgreementInput, upsertSettlementAgreementForAccount } from "@/lib/server/settlement-agreement";
-import { toNumber } from "@/lib/date-utils";
+import { formatDateUtc, parseDateInputToUtc, toNumber, todayDateBusinessYmd } from "@/lib/date-utils";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { getHouseholdTimeZone } from "@/lib/server/household-preferences";
 import { resolveLoanCategoryForWrite } from "@/lib/server/loan-category";
@@ -42,6 +42,12 @@ import {
   isAccountIdentityUniqueError,
 } from "@/lib/server/account-identity-unique";
 import { revalidateAfterSettingsChange } from "@/lib/server/revalidate";
+import {
+  WALLET_LINKED_FUND_ERROR,
+  WalletLinkedFundError,
+  bindWalletLinkedFundSegment,
+  closeWalletLinkedFundSegment,
+} from "@/lib/server/wallet-linked-fund-periods";
 import { recalcStockPositions } from "@/lib/stock/recalcPosition";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { logger } from "@/lib/logger";
@@ -647,13 +653,15 @@ export async function PUT(req: NextRequest) {
     }
 
     const nextKind = String(data.kind ?? existing.kind);
-    // 电子钱包 → 货基支付关联（2026-11-18）：只有 ewallet 能配置，目标必须是
-    // 本账簿里的货币基金账户；解绑时两列一起清掉，避免留下半截关联。
-    if (body.linkedFundAccountId !== undefined) {
-      const rawLinkedId = String(body.linkedFundAccountId ?? "").trim();
-      if (!rawLinkedId) {
-        data.linkedFundAccountId = null;
-        data.linkedFundCode = null;
+    // 货基绑定（2026-11-19 用户裁定 + 追加：绑定历史要留表）：电子钱包直接挂一只货基代码，
+    // 不建货币基金账户、也不搬余额——钱包里的钱就是货基里的钱（面值 1 元），每天按万份收益
+    // 记一条收益流水。这里只做参数校验；真正的区间写入在账户更新之后交给
+    // wallet-linked-fund-periods 统一处理（同一钱包可以在不同时间绑不同的基金）。
+    let linkedFundIntent: { code: string; startDateYmd: string } | null | undefined;
+    if (body.linkedFundCode !== undefined) {
+      const rawCode = String(body.linkedFundCode ?? "").trim();
+      if (!rawCode) {
+        linkedFundIntent = null;
       } else {
         if (nextKind !== "ewallet") {
           return NextResponse.json(
@@ -661,65 +669,39 @@ export async function PUT(req: NextRequest) {
             { status: 400 },
           );
         }
-        if (rawLinkedId === id) {
-          return NextResponse.json(
-            { ok: false, code: "ACCOUNT_LINKED_FUND_SELF", error: "An account cannot link itself" },
-            { status: 400 },
-          );
-        }
-        const linkedAccount = await prisma.account.findFirst({
-          where: { id: rawLinkedId, householdId, kind: "investment", investProductType: "money" },
-          select: { id: true, institutionId: true, groupId: true },
-        });
-        if (!linkedAccount) {
-          return NextResponse.json(
-            { ok: false, code: "ACCOUNT_LINKED_FUND_NOT_FOUND", error: "Money fund account not found in this household" },
-            { status: 404 },
-          );
-        }
-        // 2026-11-18 用户裁定：只能关联**本机构**的货币基金，不能跨机构串。
-        const walletInstitutionId = String(data.institutionId ?? existing.institutionId ?? "").trim() || null;
-        if (!walletInstitutionId || linkedAccount.institutionId !== walletInstitutionId) {
-          return NextResponse.json(
-            { ok: false, code: "ACCOUNT_LINKED_FUND_INSTITUTION", error: "The linked money fund must belong to the same institution as the e-wallet" },
-            { status: 400 },
-          );
-        }
-        // 2026-11-18 用户裁定：还必须**同一所有人**（AccountGroup）。跨所有人关联等于记账时
-        // 从别人的货基里扣钱——「墨斗鱼的余额宝能关联付斌的货基」就是漏了这条。
-        const walletGroupId = String(data.groupId ?? existing.groupId ?? "").trim() || null;
-        if ((linkedAccount.groupId ?? null) !== walletGroupId) {
-          return NextResponse.json(
-            { ok: false, code: "ACCOUNT_LINKED_FUND_OWNER", error: "The linked money fund must belong to the same owner as the e-wallet" },
-            { status: 400 },
-          );
-        }
-
-        // 基金代码来自持仓下拉，服务端仍校验 6 位且确实属于该货基账户。
-        const rawCode = body.linkedFundCode == null ? "" : String(body.linkedFundCode).trim();
-        if (rawCode && !/^\d{6}$/.test(rawCode)) {
+        if (!/^\d{6}$/.test(rawCode)) {
           return NextResponse.json(
             { ok: false, code: "ACCOUNT_LINKED_FUND_CODE", error: "Fund code must be 6 digits" },
             { status: 400 },
           );
         }
-        if (rawCode) {
-          const holding = await prisma.fundHolding.findUnique({
-            where: { accountId_fundCode: { accountId: rawLinkedId, fundCode: rawCode } },
-            select: { fundCode: true },
-          });
-          if (!holding) {
-            return NextResponse.json(
-              { ok: false, code: "ACCOUNT_LINKED_FUND_CODE_NOT_FOUND", error: "Fund code not found in the linked money fund account" },
-              { status: 404 },
-            );
-          }
+        const rawStartDate = String(body.linkedFundStartDate ?? "").trim();
+        const startDateYmd = rawStartDate
+          || todayDateBusinessYmd(await getHouseholdTimeZone(householdId));
+        if (!parseDateInputToUtc(startDateYmd)) {
+          return NextResponse.json(
+            { ok: false, code: "ACCOUNT_LINKED_FUND_START_DATE", error: "Start date must be YYYY-MM-DD" },
+            { status: 400 },
+          );
         }
-        data.linkedFundAccountId = rawLinkedId;
-        data.linkedFundCode = rawCode || null;
+        // 换绑只能往后接：新段起始日必须晚于当前生效段（提前查，避免账户更新完才报错）。
+        const openSegment = await prisma.walletLinkedFund.findFirst({
+          where: { accountId: existing.id, endDate: null },
+          orderBy: { startDate: "desc" },
+          select: { startDate: true },
+        });
+        if (openSegment && parseDateInputToUtc(startDateYmd)! <= openSegment.startDate) {
+          return NextResponse.json(
+            {
+              ok: false,
+              code: "ACCOUNT_LINKED_FUND_OVERLAP",
+              error: `Start date must be later than the current binding (${formatDateUtc(openSegment.startDate)})`,
+            },
+            { status: 409 },
+          );
+        }
+        linkedFundIntent = { code: rawCode, startDateYmd };
       }
-    } else if (body.linkedFundCode !== undefined) {
-      data.linkedFundCode = String(body.linkedFundCode ?? "").trim() || null;
     }
     const rawNextIsConsumerLoan = data.isConsumerLoan === undefined ? existing.isConsumerLoan === true : data.isConsumerLoan === true;
     let nextIsConsumerLoan = false;
@@ -1098,16 +1080,6 @@ export async function PUT(req: NextRequest) {
         { deleteManualCycles: false },
       );
     }
-    // 关联/解绑货币基金会改变「这个钱包是否统计余额」（2026-11-18 用户裁定：关联后
-    // 钱包余额不再计入统计，避免和货基市值双计）。这里当场重算一次，让存储列立刻
-    // 落到 0（或解绑后折叠回真实值），不必等后台维护那一轮。
-    const linkedFundChanged =
-      data.linkedFundAccountId !== undefined
-      && String(data.linkedFundAccountId ?? "") !== String(existing.linkedFundAccountId ?? "");
-    if (linkedFundChanged) {
-      await recalcAndSaveAccountBalance(updated.id)
-        .catch(logger.catchLog("recalc wallet balance after linked fund change failed", "accounts/route.ts"));
-    }
     // 归属变化后两个父账户的折合余额都要重算：旧父少了一个子户、新父多了一个。
     // 失败不阻塞保存（余额列下次重算会自愈），但必须留日志。
     if (parentChanging) {
@@ -1118,6 +1090,40 @@ export async function PUT(req: NextRequest) {
       if (nextParentId) {
         await recomputeAggregateAccountBalance(prisma, nextParentId)
           .catch(logger.catchLog("recompute next parent balance after parent change failed", "accounts/route.ts"));
+      }
+    }
+    // 货基绑定区间：绑定/换绑开新段并自动关旧段，解绑关当前段；快照字段由服务函数同步。
+    if (linkedFundIntent !== undefined) {
+      try {
+        if (linkedFundIntent === null) {
+          await closeWalletLinkedFundSegment({
+            householdId,
+            accountId: updated.id,
+            todayYmd: todayDateBusinessYmd(await getHouseholdTimeZone(householdId)),
+          }).catch(async (error: unknown) => {
+            // 老数据只有 Account 快照、没有区间记录：直接清快照即可。
+            if (error instanceof WalletLinkedFundError && error.code === WALLET_LINKED_FUND_ERROR.segmentMissing) {
+              await prisma.account.update({
+                where: { id: updated.id },
+                data: { linkedFundCode: null, linkedFundStartDate: null },
+              });
+              return;
+            }
+            throw error;
+          });
+        } else {
+          await bindWalletLinkedFundSegment({
+            householdId,
+            accountId: updated.id,
+            fundCode: linkedFundIntent.code,
+            startDate: linkedFundIntent.startDateYmd,
+          });
+        }
+      } catch (error) {
+        if (error instanceof WalletLinkedFundError) {
+          return NextResponse.json({ ok: false, code: error.code, error: error.message }, { status: 400 });
+        }
+        throw error;
       }
     }
     revalidateAfterSettingsChange();
@@ -1365,9 +1371,9 @@ export async function GET(req: Request) {
       liabilityDirection: account.liabilityDirection,
       note: account.note,
       accountGroup: account.accountGroup,
-      // 电子钱包 → 货基支付关联：支出弹窗据此显示「从关联货基支付」选项。
-      linkedFundAccountId: account.linkedFundAccountId,
       linkedFundCode: account.linkedFundCode,
+      // 轻量货基模式：钱包直接挂代码后的计息起始日（编辑窗回填用）。
+      linkedFundStartDate: account.linkedFundStartDate ? formatDateUtc(account.linkedFundStartDate) : null,
       currency: account.currency,
       groupName: account.kind === AccountKind.loan || account.kind === AccountKind.settlement ? "" : account.AccountGroup?.name ?? "",
       institutionName: account.Institution?.name ?? "",

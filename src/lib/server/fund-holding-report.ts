@@ -99,7 +99,10 @@ export type FundHoldingReportTotals = {
   clearedCount: number;
   clearedTotalInvested: number;
   clearedHistoricalProfit: number;
-  /** 货币基金分桶：市值 = 份额 × 1，浮盈即累计结转收益。 */
+  /**
+   * 货币基金分桶：市值 = 份额 × 1。每日万份收益结转时份额和成本按面值同步增加，
+   * 收益在结转当天就已实现（`historicalProfit`），所以这里的浮盈恒为 0。
+   */
   moneyFund: FundHoldingReportBucket;
   /** 开放式基金分桶：市值 = 份额 × 净值。 */
   openFund: FundHoldingReportBucket;

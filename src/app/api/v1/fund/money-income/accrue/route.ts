@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { accrueMoneyFundIncome } from "@/lib/server/money-fund-income-accrual";
+import { accrueWalletMoneyFundIncome } from "@/lib/server/wallet-money-fund-income";
 import { revalidateAfterInvestChange } from "@/lib/server/revalidate";
 import { logger } from "@/lib/logger";
 
@@ -20,6 +21,8 @@ import { logger } from "@/lib/logger";
  *   - `{ fundCode }`：只结某一只基金（持仓行上的「重算收益结转」按钮用）；
  *   - `{ rebuild: true }`：强制重算——先清掉该（些）基金已有的结转，再从最早一笔交易
  *     逐日重放。改过买入日期之后用它把历史补齐。
+ *   - `{ accountId, fromDate: "YYYY-MM-DD" }`：从这一天起重算（电子钱包直接挂货基代码的
+ *     轻量模式）——先删掉该日及以后的收益行，再按当前余额与万份收益补到昨天。
  */
 export async function POST(request: Request) {
   try {
@@ -28,14 +31,28 @@ export async function POST(request: Request) {
       accountId?: unknown;
       fundCode?: unknown;
       rebuild?: unknown;
+      fromDate?: unknown;
     } | null;
     const accountId = typeof body?.accountId === "string" && body.accountId.trim() ? body.accountId.trim() : undefined;
     const fundCode = typeof body?.fundCode === "string" && body.fundCode.trim() ? body.fundCode.trim() : undefined;
     const rebuild = body?.rebuild === true;
+    const fromDateRaw = typeof body?.fromDate === "string" ? body.fromDate.trim() : "";
+    const fromDate = /^\d{4}-\d{2}-\d{2}$/.test(fromDateRaw) ? fromDateRaw : undefined;
 
-    const result = await accrueMoneyFundIncome({ householdId, fundAccountId: accountId, fundCode, rebuild });
-    if (result.status === "accrued") revalidateAfterInvestChange();
-    return NextResponse.json({ ok: true, data: result });
+    // 两套模型各结各的：有关联货基账户的老数据走 fund_transactions，
+    // 直接挂代码的钱包（2026-11-19 轻量模型）走自己的流水。互不重叠。
+    // 「从某天重算」只属于轻量模式：老模型是份额体系，按日期删一半会把持仓算坏。
+    const result = fromDate
+      ? null
+      : await accrueMoneyFundIncome({ householdId, fundAccountId: accountId, fundCode, rebuild });
+    const walletResult = await accrueWalletMoneyFundIncome({
+      householdId,
+      walletAccountId: accountId,
+      rebuild: fromDate ? false : rebuild,
+      rebuildFrom: fromDate,
+    });
+    if (result?.status === "accrued" || walletResult.status === "accrued") revalidateAfterInvestChange();
+    return NextResponse.json({ ok: true, data: { ...(result ?? { status: "skipped" }), wallet: walletResult } });
   } catch (error) {
     logger.error("Money fund income accrual route failed", "money-fund-income", error);
     return NextResponse.json(

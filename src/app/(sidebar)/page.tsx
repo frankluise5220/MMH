@@ -28,6 +28,7 @@ import { InsuranceShell } from "@/components/InsuranceShell";
 import { RegularInvestForm } from "@/components/RegularInvestForm";
 import { DashboardOverview } from "@/components/DashboardOverview";
 import { UnifiedEntryLauncher } from "@/components/UnifiedEntryLauncher";
+import { MoneyFundHeaderButton } from "@/components/accounts/MoneyFundHeaderButton";
 import type { DetailEntry } from "@/components/DetailViewClient";
 import { BasicDetailPanel } from "@/components/BasicDetailPanel";
 import { CreditBillSummaryTable } from "@/components/CreditBillSummaryTable";
@@ -87,7 +88,7 @@ import { SIDEBAR_CREDIT_CARD_LABEL_TEMPLATE,
   normalizeCreditCardLabelTemplate,
   resolveAccountTableLabel,
   stripVisibleHoverParts, accountRenderSettings } from "@/lib/account-display";
-import { getInvestmentAccountView, isCashLedgerAccount, isDepositAccount, isIncomeExpensePostingAccount, isIncomeExpensePostingOrDepositAccount, isLinkedFundWalletAccount, isLoanOrSettlementAccountKind, isPureInvestmentAccount,  isTransferDropdownAccount } from "@/lib/account-kind-utils";
+import { getInvestmentAccountView, isCashLedgerAccount, isDepositAccount, isIncomeExpensePostingAccount, isIncomeExpensePostingOrDepositAccount, isLoanOrSettlementAccountKind, isPureInvestmentAccount,  isTransferDropdownAccount } from "@/lib/account-kind-utils";
 import { ALL_CASH_DETAIL_SCOPE_ID, cashLedgerAccountIdsOf, cashLedgerFlowAccountId } from "@/lib/all-cash-entries";
 import { normalizeLoanType, resolveLoanTypeValue } from "@/lib/loan-type";
 import { resolveQuantityDecimals } from "@/lib/fund/unit-precision";
@@ -587,6 +588,25 @@ export default async function Home({
   const billStorageAccountId = billAccountIds[0] ?? selectedAccount?.id ?? "";
   const isLiabilityAccount = isLoanOrSettlementAccountKind(selectedAccount?.kind);
   const isInvestAccount = selectedAccount ? isPureInvestmentAccount(selectedAccount) : false;
+  // 电子钱包视图表头的货基入口（2026-11-19 用户裁定：设定属于这只钱包，入口就放在
+  // 这只钱包的视图表头上）。弹窗只针对当前这只钱包，不再给账户下拉框。
+  const isWalletView = selectedAccount?.kind === AccountKind.ewallet;
+  const moneyFundWallet = selectedAccount && isWalletView
+    ? {
+        id: selectedAccount.id,
+        name: selectedAccount.name,
+        kind: selectedAccount.kind,
+        institutionName: selectedAccount.Institution?.name ?? null,
+        institutionShortName: selectedAccount.Institution?.shortName ?? null,
+        numberMasked: selectedAccount.numberMasked ?? null,
+        currency: selectedAccount.currency ?? null,
+        isActive: selectedAccount.isActive,
+        linkedFundCode: selectedAccount.linkedFundCode ?? null,
+        linkedFundStartDate: selectedAccount.linkedFundStartDate
+          ? new Date(selectedAccount.linkedFundStartDate).toISOString()
+          : null,
+      }
+    : null;
   const isDepositView = selectedAccount ? isDepositAccount(selectedAccount) : false;
   const isOverview = !viewParam && !accountId && !accountName;
   const isInsuranceView = selectedAccount?.kind === AccountKind.insurance;
@@ -1215,15 +1235,13 @@ export default async function Home({
       // 账户层级父 id（与下拉分组头的 parentId 无关）：转账表单靠它认出
       // 「转入账户已经是子账户」，避免再问「是否创建子账户」（2026-10-18）。
       accountParentId: a.parentId ?? null,
-      // 电子钱包 → 货基支付关联：支出弹窗据此显示「从关联货基支付」。
-      linkedFundAccountId: a.linkedFundAccountId ?? null,
       linkedFundCode: a.linkedFundCode ?? null,
     };
   });
 
   // Build hierarchical SmartSelect options: grouped by AccountGroup (isHeader),
   // ungrouped accounts shown flat with institution as subLabel
-  type SSOpt = { id: string; label: string; subLabel?: string; title?: string; isHeader?: boolean; isGroup?: boolean; parentId?: string; kind?: string | null; investProductType?: string | null; liabilityDirection?: string | null; institutionId?: string | null; institutionType?: string | null; counterpartyId?: string | null; counterpartyName?: string | null; isSettlementAccount?: boolean | null; isConsumerLoan?: boolean | null; billingDay?: number | null; currency?: string | null; isAggregate?: boolean | null; linkedFundAccountId?: string | null; linkedFundCode?: string | null };
+  type SSOpt = { id: string; label: string; subLabel?: string; title?: string; isHeader?: boolean; isGroup?: boolean; parentId?: string; kind?: string | null; investProductType?: string | null; liabilityDirection?: string | null; institutionId?: string | null; institutionType?: string | null; counterpartyId?: string | null; counterpartyName?: string | null; isSettlementAccount?: boolean | null; isConsumerLoan?: boolean | null; billingDay?: number | null; currency?: string | null; isAggregate?: boolean | null; linkedFundCode?: string | null };
   const joinSSSubLabel = (parts: Array<string | null | undefined>) => {
     const result: string[] = [];
     const seen = new Set<string>();
@@ -1269,7 +1287,6 @@ export default async function Home({
           billingDay: a.billingDay ?? null,
           currency: a.currency ?? null,
           isAggregate: a.isAggregate === true,
-          linkedFundAccountId: a.linkedFundAccountId ?? null,
           linkedFundCode: a.linkedFundCode ?? null,
         }));
       return [
@@ -1315,7 +1332,6 @@ export default async function Home({
         billingDay: a.billingDay ?? null,
         currency: a.currency ?? null,
         isAggregate: a.isAggregate === true,
-        linkedFundAccountId: a.linkedFundAccountId ?? null,
         linkedFundCode: a.linkedFundCode ?? null,
       }));
 
@@ -1339,7 +1355,6 @@ export default async function Home({
       billingDay: a.billingDay ?? null,
       currency: a.currency ?? null,
       isAggregate: a.isAggregate === true,
-      linkedFundAccountId: a.linkedFundAccountId ?? null,
       linkedFundCode: a.linkedFundCode ?? null,
     }));
 
@@ -1955,22 +1970,8 @@ export default async function Home({
     selectedAccount?.kind === AccountKind.bank_credit &&
     !creditBillingDay;
 
-  // 关联了货基的电子钱包「不统计余额，但表头还是要有数字」（2026-11-18 用户裁定）：
-  // 统计口径（总资产/侧栏/合计）给 0，这里单独按账面口径折叠出真实余额给表头用。
-  const selectedAccountLedgerBalance = selectedAccount && isLinkedFundWalletAccount(selectedAccount)
-    ? (await getMaintainedAccountBalances(
-        [{
-          id: selectedAccount.id,
-          kind: selectedAccount.kind,
-          investProductType: selectedAccount.investProductType,
-          billingDay: selectedAccount.billingDay,
-        }],
-        hidFilter,
-        { countLinkedFundWallets: true },
-      )).get(selectedAccount.id)
-    : undefined;
   const selectedAccountRawBalanceValue = selectedAccount
-    ? selectedAccountLedgerBalance ?? (isPureInvestmentAccount(selectedAccount)
+    ? (isPureInvestmentAccount(selectedAccount)
       ? investBalByAccountId.get(selectedAccount.id)?.marketValue ?? toNumber(selectedAccount.balance)
       : selectedAccount.kind === AccountKind.bank_credit
         ? creditBillBalanceValue
@@ -2194,7 +2195,7 @@ export default async function Home({
     const linkedFundCashAccountId = linkedFundForDisplay?.cashAccountId ?? e.accountId;
     const linkedFundAccountName = linkedFundForDisplay?.Account?.name ?? linkedFundAccountId ?? "";
     const linkedFundCashAccountName = linkedFundForDisplay?.CashAccount?.name ?? e.accountName ?? "";
-    return ({
+    const row: DetailEntry = ({
     id: e.id,
     cashEntryId: linkedWealth?.cashEntryId ?? linkedFund?.cashEntryId ?? e.id,
     businessTransactionId: linkedWealth?.id ?? linkedFund?.id ?? null,
@@ -2288,7 +2289,8 @@ export default async function Home({
       tagId: et.tagId,
       Tag: et.Tag ? { name: et.Tag.name, color: et.Tag.color } : null,
     })),
-  });
+    });
+    return row;
   });
   const pagedDetailEntries: DetailEntry[] = pagedDetailData
     ? allDetailEntries
@@ -3015,7 +3017,7 @@ export default async function Home({
       cashAccountId: lot.cashAccountId,
     }));
   const selectedAccountDisplayValue = selectedAccount
-    ? selectedAccountLedgerBalance ?? accountDisplayValueById.get(selectedAccount.id) ?? selectedAccountRawBalanceValue
+    ? accountDisplayValueById.get(selectedAccount.id) ?? selectedAccountRawBalanceValue
     : selectedAccountRawBalanceValue;
   const selectedViewHeaderAmount = view === "liability"
     ? liabilityDisplaySummaryValue
@@ -3152,7 +3154,6 @@ export default async function Home({
                   displayMultiplier={selectedAccount.kind === AccountKind.bank_credit ? -1 : 1}
                   baseCurrency={selectedAccountCurrency}
                   accountDisplayMode="original"
-                  balanceScope={isLinkedFundWalletAccount(selectedAccount) ? "ledger" : "statistics"}
                 />
               )}
               {view === "deposit" && selectedAccount && Math.abs(depositNonCertificateAmount) > 0.005 ? (
@@ -3174,16 +3175,6 @@ export default async function Home({
                   )}
                 </span>
               ) : null}
-              {/* 关联了货基的电子钱包不统计余额（2026-11-18 用户裁定）：头部显示 0，
-                  这里说明原因，别让用户以为钱"消失了"。 */}
-              {selectedAccount && isLinkedFundWalletAccount(selectedAccount) ? (
-                <span
-                  className="text-xs text-slate-500"
-                  title={t("settings.accounts.linkedFund.balanceNotCounted")}
-                >
-                  {t("settings.accounts.linkedFund.balanceUncountedShort")}
-                </span>
-              ) : null}
               {showSelectedAccountFxInline ? (
                 <AccountFxRateInline
                   fromCurrency={selectedAccountCurrency}
@@ -3201,6 +3192,11 @@ export default async function Home({
               ) : null}
             </div>
             <div className={`flex shrink-0 flex-wrap items-center justify-end gap-2 ${currentInvestData ? "hidden desktop:flex" : ""}`}>
+              {/* 电子钱包视图：货基设定入口（2026-11-19 用户裁定「放在电子钱包的视图的表头」）。
+                  只在钱包视图出现，点开默认定位到当前这只钱包。 */}
+              {moneyFundWallet ? (
+                <MoneyFundHeaderButton account={moneyFundWallet} />
+              ) : null}
               {/* 「胶囊菜单」（用户口径）：视图右上角的快捷记账入口，悬浮展开一级菜单、
                   行内 ▸ 再展开二级菜单（如 债券 ▸ 债券/逆回购借出/逆回购回款、
                   银行理财 ▸ 银行理财/投顾组合）。派发走下方 case "xxx" 的 CustomEvent

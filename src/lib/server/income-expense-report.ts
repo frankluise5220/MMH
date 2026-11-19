@@ -15,7 +15,7 @@ import {
   SYSTEM_INVESTMENT_DIVIDEND_CATEGORY,
   SYSTEM_WEALTH_PROFIT_CATEGORY,
 } from "@/lib/default-categories";
-import { loadFundStatisticSourceEntries, loadWealthStatisticSourceEntries } from "@/lib/server/investment-statistic-sources";
+import { loadFundAccountMoneyIncomeEntries, loadFundStatisticSourceEntries, loadWalletMoneyFundIncomeEntries, loadWealthStatisticSourceEntries } from "@/lib/server/investment-statistic-sources";
 import type { HouseholdContext } from "@/lib/server/household-scope";
 import { getBusinessResultStatisticItems, getIncomeExpenseStatisticAmount, getInvestmentStatisticItems, isBondInterestIncomeEntry } from "@/lib/transaction-statistics";
 import { BALANCE_INITIALIZATION_SOURCE, BALANCE_RECONCILE_SOURCE } from "@/lib/balance-reconcile";
@@ -266,7 +266,7 @@ export async function getIncomeExpenseReport(
     params.userIds?.length ||
     params.accountIds?.length,
   );
-  const [categories, records, fundStatisticRecords, investmentRecords, businessResultRecords, wealthStatisticRecords] = await Promise.all([
+  const [categories, records, fundStatisticRecords, investmentRecords, businessResultRecords, wealthStatisticRecords, walletMoneyIncomeRecords, fundAccountMoneyIncomeRecords] = await Promise.all([
     prisma.category.findMany({
       where: {
         ...hidFilter,
@@ -412,7 +412,29 @@ export async function getIncomeExpenseReport(
       endExclusive,
       accountIds: (params.institutionIds?.length || params.institutionId || params.userIds?.length || params.accountIds?.length) ? scopedAccountIds : undefined,
     }),
+    loadWalletMoneyFundIncomeEntries(ctx, {
+      start: rangeStart,
+      endExclusive,
+      accountIds: hasScopedAccountFilter ? scopedAccountIds : undefined,
+    }),
+    loadFundAccountMoneyIncomeEntries(ctx, {
+      start: rangeStart,
+      endExclusive,
+      accountIds: hasScopedAccountFilter ? scopedAccountIds : undefined,
+    }),
   ]);
+
+  // 货基每日收益与基金交易同路处理：都是已实现收益，走 getInvestmentStatisticItems
+  // 生成收入/支出行。两处来源互不重叠：
+  //   - walletMoneyIncomeRecords：电子钱包直接绑货基代码，收益记在钱包账户上（无份额）；
+  //   - fundAccountMoneyIncomeRecords：真正的货基账户，收益是份额结转（fund_transactions）。
+  // 旧口径钱包侧镜像行（fundSubtype 非空）由 loadFundStatisticSourceEntries 一并跳过，
+  // 不会与货基账户侧重复。
+  const statisticFundRecords = [
+    ...fundStatisticRecords,
+    ...walletMoneyIncomeRecords,
+    ...fundAccountMoneyIncomeRecords,
+  ];
 
   const nodesById = new Map<string, ReportCategoryNode>();
   const nodesByTypeAndName = new Map<string, ReportCategoryNode>();
@@ -625,7 +647,7 @@ export async function getIncomeExpenseReport(
   });
 
   const independentFundEntryIds = new Set(
-    fundStatisticRecords.flatMap((record) => [record.id, record.entryId]),
+    statisticFundRecords.flatMap((record) => [record.id, record.entryId]),
   );
   const representedLegacyInvestmentEntryIds = new Set(
     investmentRecords
@@ -664,7 +686,7 @@ export async function getIncomeExpenseReport(
     }
   }
 
-  for (const record of fundStatisticRecords) {
+  for (const record of statisticFundRecords) {
     const investmentName = record.fundName?.trim() || record.fundCode?.trim() || "";
     for (const item of getInvestmentStatisticItems(record)) {
       const category = findCategoryByName(item.type, item.categoryCandidates);

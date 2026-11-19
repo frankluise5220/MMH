@@ -11,6 +11,8 @@ import { getInsuranceDetailCategoryName, getInsuranceDetailNote } from "@/lib/in
 import { dispatchEntryEdit, EntryRowActions, type EditPayload } from "./EntryRowActions";
 import { AdvancedDataTable, ROW_ACTION_BUTTON_BOX_CLASS, type AdvancedDataTableColumn, type AdvancedDataTableDropPosition } from "./AdvancedDataTable";
 import { BusinessLinkActionButton } from "./BusinessLinkActionButton";
+import { EntryCategoryFilter } from "./EntryCategoryFilter";
+import { DEFAULT_ENTRY_CATEGORIES, matchesEntryCategories, type EntryCategory } from "@/lib/entry-categories";
 import { EntryAttachmentWindow } from "./EntryAttachmentWindow";
 import { BasicDetailBatchDeleteButton,
   BasicDetailBatchReconcileButton,
@@ -176,6 +178,12 @@ function entryAuditSortKey(value: string | Date | null | undefined): string {
 
 export type DetailEntry = {
   id: string;
+  /**
+   * 报表合成的只读行：背后没有 TxRecord（例如真正货基账户的每日收益结转，
+   * 它只存在 fund_transactions 里）。这类行必须能出现在报表下钻里让合计对得上，
+   * 但不能编辑 / 删除 / 勾选 / 拖拽 —— 任何一条都会拿一个不存在的 id 去写库。
+   */
+  readOnly?: boolean;
   cashEntryId?: string | null;
   businessTransactionId?: string | null;
   /** 债券侧存单 id（单条详情才返回；逆回购编辑据此找存单）。 */
@@ -286,6 +294,8 @@ export type DetailEntry = {
   depositAnnualRate?: number | null;
   depositInterest?: number | null;
   depositSourceEntryId?: string | null;
+  /** 存单计息方式（daily / monthly），编辑存单时回填「按日计息 / 按月付息」。 */
+  depositInterestCalcBasis?: string | null;
   fundFee: number | null;
   fundConfirmDate: string | null;
   fundArrivalDate: string | null;
@@ -641,6 +651,10 @@ function investmentCategoryLabel(
   // 买入退款资金腿：`source` 才是权威标记。历史行可能把买入分类（基金买入 / 理财买入）
   // 存到了这条流水上，不能让它盖掉「买入退回」。
   if (isFundBuyRefundCashLeg(entry)) return t("detailView.buyRefund");
+  // 货基每日收益结转（含电子钱包侧的收益镜像行）：`source` 才是权威标记。
+  // 库里的 `categoryName` 不可信 —— 投资类流水的系统分类由数据库触发器按
+  // `fundSubtype=buy` 改写成「基金买入」，直接把收益行标成买入（2026-11-19 实测）。
+  if (String(entry.source ?? "") === TRANSACTION_SOURCE_MONEY_INCOME) return t("fund.subtype.moneyIncome");
   if (entry.categoryName) return systemCategoryLabel(entry.categoryName, t);
   const subtype = String(entry.fundSubtype ?? "");
   const source = String(entry.source ?? "");
@@ -673,7 +687,6 @@ function investmentCategoryLabel(
     if (subtype === "buy") return t("detailView.metalBuy");
   }
   if (productType === "fund" || productType === "money" || !productType) {
-    if (source === TRANSACTION_SOURCE_MONEY_INCOME) return t("fund.subtype.moneyIncome");
     if (subtype === "buy" && source === "regular_invest") return t("detailView.fundRegularInvest");
     if (subtype === "buy" && source === "dividend") return t("detailView.dividendInvest");
     if (subtype === "redeem") return t("detailView.fundRedeem");
@@ -730,6 +743,7 @@ export function DetailViewClient({
   reconcileEnabled = false,
   reconcileContextAccountId,
   showDateRangeFilter = false,
+  showEntryCategoryFilter = false,
   dateRange,
   onDateRangeChange,
   dateRangeBounds,
@@ -787,6 +801,11 @@ export function DetailViewClient({
   onPageStep?: (delta: 1 | -1) => boolean;
   /** 表头时间筛选器（双滑块）。它是数据范围，独立于 `filters.date`。 */
   showDateRangeFilter?: boolean;
+  /**
+   * 「交易类型」多选下拉（收支 / 转账 / 收益 / 其他）。账户明细页开启；
+   * 报表明细、信用卡账单不开，避免把收益类行默认藏掉。
+   */
+  showEntryCategoryFilter?: boolean;
   /** 受控的时间范围（父层持有并负责按范围重取）。 */
   dateRange?: { from: string; to: string };
   onDateRangeChange?: (next: { from: string; to: string }) => void;
@@ -1070,6 +1089,19 @@ export function DetailViewClient({
   const [refreshedEntries, setRefreshedEntries] = useState<{ accountId: string; entries: DetailEntry[] } | null>(null);
   const [linkingIds, setLinkingIds] = useState<Set<string>>(new Set());
   const entries = refreshedEntries?.accountId === accountId ? refreshedEntries.entries : initialEntries;
+  /**
+   * 「交易类型」筛选（收支 / 转账 / 收益 / 其他）。与列筛选同一层：只影响展示，
+   * 不改服务端分页与合计。默认全选（含收益）——货基每日结转、基金分红都会改余额，
+   * 藏起来余额列就凭空跳动（2026-11-19：电子钱包明细必须看得到每天的收益结转）。
+   */
+  const [entryCategories, setEntryCategories] = useState<EntryCategory[]>(() => [...DEFAULT_ENTRY_CATEGORIES]);
+  const visibleEntries = useMemo(
+    () =>
+      showEntryCategoryFilter
+        ? entries.filter((entry) => matchesEntryCategories(entry, entryCategories))
+        : entries,
+    [entries, entryCategories, showEntryCategoryFilter],
+  );
   const linkDetailCashFlow = useCallback(async (entry: DetailEntry) => {
     const id = String(entry.id ?? "").trim();
     if (!id || linkingIds.has(id)) return;
@@ -1187,6 +1219,8 @@ export function DetailViewClient({
     edit?: Omit<EditPayload, "entryId">;
     customEditEvent?: { name: string; detail: Record<string, unknown> };
   } => {
+    // 报表合成行没有 TxRecord，任何编辑窗打开后都保存不了，直接不给入口。
+    if (e.readOnly) return {};
     const dateStr = (e.date ?? "").slice(0, 10);
     const amount = toNumber(e.amount);
     // 报表下钻把赎回本金抹成 0（本金不计收支），编辑窗必须用记账原值，
@@ -1951,18 +1985,23 @@ export function DetailViewClient({
   const tableResetKey = resetKey ?? `${accountId}:detail-table`;
   const mobileGroups = useMemo(() => {
     const groups: Array<{ date: string; entries: DetailEntry[] }> = [];
-    for (const entry of entries) {
+    for (const entry of visibleEntries) {
       const date = detailEntryDayKey(entry, flowAccountIdOf(entry)) || t("detailView.noDate");
       const current = groups[groups.length - 1];
       if (current?.date === date) current.entries.push(entry);
       else groups.push({ date, entries: [entry] });
     }
     return groups;
-  }, [accountId, entries, flowAccountIdOf, t]);
+  }, [accountId, flowAccountIdOf, t, visibleEntries]);
 
   return (
     <>
     <div className="h-full overflow-y-auto bg-slate-100 desktop:hidden">
+      {showEntryCategoryFilter ? (
+        <div className="sticky top-0 z-20 flex items-center justify-end gap-2 border-b border-slate-200 bg-slate-100/96 px-3 py-2 backdrop-blur">
+          <EntryCategoryFilter value={entryCategories} onChange={setEntryCategories} />
+        </div>
+      ) : null}
       {mobileGroups.length > 0 ? (
         <div className="pb-4">
           {mobileGroups.map((group, groupIndex) => (
@@ -2038,7 +2077,7 @@ export function DetailViewClient({
       storageKey={storageKey}
       resetKey={tableResetKey}
       columns={columns}
-      rows={entries}
+      rows={visibleEntries}
       showDateRangeFilter={showDateRangeFilter}
       dateRange={dateRange}
       onDateRangeChange={onDateRangeChange}
@@ -2054,15 +2093,20 @@ export function DetailViewClient({
       selectAllScope="renderedRows"
       selectedKeys={selectedIds}
       onSelectionChange={setSelection}
+      // 报表合成行没有 TxRecord：勾选后批量删除 / 批量替换会拿不存在的 id 去写库。
+      rowSelectable={(entry) => !entry.readOnly}
       onRowDoubleClick={(entry) => {
+        if (entry.readOnly) return;
         void openEntryEditor(entry, isReconciledEntry(entry));
       }}
       draggableRows={draggableRows}
-      rowDragDisabled={(entry) => !canManuallyReorderDetailEntry(entry)}
+      rowDragDisabled={(entry) => Boolean(entry.readOnly) || !canManuallyReorderDetailEntry(entry)}
       rowDropAllowed={(source, target, _sourceIndex, _targetIndex, position) => canDropDetailEntry(source, target, position)}
       rowDropTargetAtEnd={rowDropTargetAtEnd}
       onRowReorder={(source, target, _sourceIndex, _targetIndex, position) => reorderEntryByDrag(source, target, position)}
       rowActions={(entry) => {
+        // 合成行没有任何可执行操作（编辑 / 删除 / 对账锁定 / 业务关联都指向 TxRecord）。
+        if (entry.readOnly) return null;
         const { edit, customEditEvent } = buildEntryEditRequest(entry);
         const linkLabels = entry.businessLinkLabels ?? [];
         const hasBusinessLink = (entry.businessLinkCount ?? 0) > 0;
@@ -2114,7 +2158,14 @@ export function DetailViewClient({
       compactRows={compactRows}
       toolbarMode={toolbarMode}
       toolbarLeftContent={customToolbarLeft}
-      toolbarRightContent={toolbarRightContent}
+      toolbarRightContent={showEntryCategoryFilter ? (
+        /* AdvancedDataTable 给 toolbarRightContent 的外层是普通 div，块级子元素会各自
+           换行：这里必须自己包一层 flex 行，交易类型才会和「共 N 条 / 导入导出」同排。 */
+        <div className="flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2">
+          <EntryCategoryFilter value={entryCategories} onChange={setEntryCategories} />
+          {toolbarRightContent}
+        </div>
+      ) : toolbarRightContent}
       showTableStateInCustomToolbar={toolbarMode === "custom"}
       sortable={sortable}
       sortRows={(rows, currentSort) => {

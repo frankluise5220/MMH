@@ -748,11 +748,12 @@ export async function queryDetailPage(args: DetailPageQueryArgs): Promise<Detail
   const limit = pageOffset + fetchRows;
   // 余额取折叠集合（全量账本）算出的值，页码取显示集合的编号：范围 / 筛选只影响
   // 「列出哪些行」，不影响「每行余额是多少」。
-  const rows = await prisma.$queryRaw<Array<{ id: string; runningBalance: unknown; totalCount: unknown }>>(Prisma.sql`
+  const rows = await prisma.$queryRaw<Array<{ id: string; runningBalance: unknown; totalCount: unknown; dayKey: string }>>(Prisma.sql`
     ${orderingCtes}
     SELECT
       p."id" AS "id",
       (COALESCE(lb."anchorBalance", 0) + lb."groupBalance") AS "runningBalance",
+      CAST(lb."dayKey" AS TEXT) AS "dayKey",
       (SELECT MAX(p2."rowNumber") FROM "paged" p2) AS "totalCount"
     FROM "paged" p
     INNER JOIN "ledger_balanced" lb ON lb."id" = p."id"
@@ -778,11 +779,12 @@ export async function queryDetailPage(args: DetailPageQueryArgs): Promise<Detail
     page = Math.min(requestedPage, Math.max(1, Math.ceil(totalCount / pageSize)));
     const retryOffset = (page - 1) * pageSize;
     if (retryOffset !== pageOffset) {
-      pageRows = await prisma.$queryRaw<Array<{ id: string; runningBalance: unknown; totalCount: unknown }>>(Prisma.sql`
+      pageRows = await prisma.$queryRaw<Array<{ id: string; runningBalance: unknown; totalCount: unknown; dayKey: string }>>(Prisma.sql`
         ${orderingCtes}
         SELECT
           p."id" AS "id",
           (COALESCE(lb."anchorBalance", 0) + lb."groupBalance") AS "runningBalance",
+          CAST(lb."dayKey" AS TEXT) AS "dayKey",
           (SELECT MAX(p2."rowNumber") FROM "paged" p2) AS "totalCount"
         FROM "paged" p
         INNER JOIN "ledger_balanced" lb ON lb."id" = p."id"
@@ -1025,6 +1027,7 @@ type DetailFacetsResult = {
 export async function queryDetailDateBounds(args: {
   accountIds: string[];
   householdId: string;
+  sortAccountId?: string | null;
 }): Promise<{ min: string; max: string; futureMax: string | null } | null> {
   const accountIds = normalizedAccountIds(args.accountIds);
   if (accountIds.length === 0) return null;
@@ -1033,6 +1036,7 @@ export async function queryDetailDateBounds(args: {
     accountIds,
     householdId: args.householdId,
     timeZone,
+    sortAccountId: args.sortAccountId,
     filters: null,
     dateRange: null,
   });

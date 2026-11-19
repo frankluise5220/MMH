@@ -20,6 +20,8 @@ type AccrualResponse = {
     toDate?: string | null;
     truncated?: boolean;
     removed?: number;
+    pendingFrom?: string | null;
+    skippedDays?: number;
   };
 };
 
@@ -70,6 +72,14 @@ export function RebuildMoneyIncomeButton({
 
       const data = payload.data;
       const days = data?.days ?? 0;
+      // 缺数据不能当成「没有收益」糊过去：说明还没结到哪天、缺的几天是什么原因。
+      const notes: string[] = [];
+      if (data?.pendingFrom) {
+        notes.push(t("moneyIncomeRebuild.pending", { from: data.pendingFrom, to: data.toDate ?? "-" }));
+      }
+      if ((data?.skippedDays ?? 0) > 0) {
+        notes.push(t("moneyIncomeRebuild.skipped", { count: String(data?.skippedDays) }));
+      }
       if (days > 0) {
         const text = t("moneyIncomeRebuild.done", {
           from: data?.fromDate ?? "-",
@@ -77,11 +87,10 @@ export function RebuildMoneyIncomeButton({
           days: String(days),
           amount: formatMoney(data?.totalIncome ?? 0),
         });
-        showToast({
-          message: data?.truncated ? `${text}｜${t("moneyIncomeRebuild.truncated")}` : text,
-        });
+        if (data?.truncated) notes.unshift(t("moneyIncomeRebuild.truncated"));
+        showToast({ message: [text, ...notes].join("｜") });
       } else {
-        showToast({ message: t("moneyIncomeRebuild.empty") });
+        showToast({ message: notes.length > 0 ? notes.join("｜") : t("moneyIncomeRebuild.empty") });
       }
       await new Promise((resolve) => setTimeout(resolve, 100));
       dispatchFinanceDataChanged({ reason: "money-income-rebuild" });

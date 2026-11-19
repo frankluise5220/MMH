@@ -548,6 +548,13 @@ export function LiabilityShell({
   const [editingLoanDetails, setEditingLoanDetails] = useState<LoanQuickEditValue | null>(null);
   const [accountEditOpenSignal, setAccountEditOpenSignal] = useState(0);
   const [pendingLoanEditAccountId, setPendingLoanEditAccountId] = useState<string | null>(null);
+  /** 贷款账户「编辑」落到余额校准弹窗的一次性请求（见 openLiabilityAccountProperties）。 */
+  const [pendingLoanReconcileEdit, setPendingLoanReconcileEdit] = useState<{
+    accountId: string;
+    entryId?: string;
+    date?: string;
+    amount?: number;
+  } | null>(null);
   const rowClickTimerRef = useRef<number | null>(null);
   /** 最近一次在表格里自己点选的行；它不该触发「滚到选中行」。 */
   const selfSelectedRowKeyRef = useRef<string | null>(null);
@@ -555,9 +562,13 @@ export function LiabilityShell({
   const [rowScrollRequest, setRowScrollRequest] = useState<{ key: string; id: number } | null>(null);
   // 收起「显示已还完」时直接过滤掉已结清行；是否展开只由用户勾选决定，
   // 不再由选中的行反向改写这个开关（见上面的 showSettledRows 说明）。
+  // 例外：点名选中的行始终保留——从设置页 / 侧边栏点一个余额为 0 的贷款账户进来时，
+  // 行被滤掉会让页面回退到第一条往来款行（#30 第 3 条）。
   const baseRows = useMemo(
-    () => (showSettledRows ? rows : rows.filter((row) => !isSettledLiabilityRow(row))),
-    [rows, showSettledRows],
+    () => (showSettledRows
+      ? rows
+      : rows.filter((row) => !isSettledLiabilityRow(row) || row.key === selectedKey)),
+    [rows, selectedKey, showSettledRows],
   );
   const childrenByParentKey = useMemo(() => collectLiabilityChildrenByParentKey(baseRows), [baseRows]);
   const safeAccountEditData = Array.isArray(accountEditData) ? accountEditData : EMPTY_ACCOUNT_EDIT_DATA;
@@ -752,17 +763,51 @@ export function LiabilityShell({
     };
   }, [accountEditDataById, entries]);
 
+  /**
+   * 贷款账户没有借款记录（例如新建账户时只填了初始余额）时，可编辑的只有那条余额初始化行。
+   * 明细里它的编辑动作是 mmh:balance-reconcile:edit，放到余额校准按钮里统一处理。
+   */
+  const balanceReconcileEditForAccount = useCallback((accountId: string) => {
+    const entry = entries.find((item) => item.balanceReconcileEdit?.accountId === accountId);
+    return entry?.balanceReconcileEdit ?? null;
+  }, [entries]);
+
+  /** 打开余额校准弹窗：有余额初始化行就带着它一起填，没有就开空白的「校准当前余额」。 */
+  const openLoanReconcileFor = useCallback((accountId: string) => {
+    const reconcile = balanceReconcileEditForAccount(accountId);
+    setPendingLoanReconcileEdit(
+      reconcile
+        ? { accountId: reconcile.accountId, entryId: reconcile.entryId, date: reconcile.date, amount: reconcile.amount }
+        : { accountId, date: todayKey },
+    );
+  }, [balanceReconcileEditForAccount, todayKey]);
+
   useEffect(() => {
     if (!pendingLoanEditAccountId) return;
-    const detail = loanSetupEditForAccount(pendingLoanEditAccountId);
-    if (!detail) return;
+    // 明细行属于当前选中行；行还没切过来时 entries 还是上一行的，等选中行变了再判断。
+    if (selectedRow?.accountId !== pendingLoanEditAccountId) return;
     const account = accountEditDataById.get(pendingLoanEditAccountId);
     if (!account) return;
-    setEditingLiabilityAccount(account);
-    setEditingLoanDetails(detail);
-    setAccountEditOpenSignal((value) => value + 1);
     setPendingLoanEditAccountId(null);
-  }, [accountEditDataById, loanSetupEditForAccount, pendingLoanEditAccountId]);
+    const detail = loanSetupEditForAccount(pendingLoanEditAccountId);
+    if (detail) {
+      setEditingLiabilityAccount(account);
+      setEditingLoanDetails(detail);
+      setAccountEditOpenSignal((value) => value + 1);
+      return;
+    }
+    openLoanReconcileFor(pendingLoanEditAccountId);
+  }, [
+    accountEditDataById,
+    loanSetupEditForAccount,
+    openLoanReconcileFor,
+    pendingLoanEditAccountId,
+    selectedRow?.accountId,
+  ]);
+
+  const handleReconcileEditRequestHandled = useCallback(() => {
+    setPendingLoanReconcileEdit(null);
+  }, []);
 
   function openLiabilityRow(row: LiabilityRow) {
     if (rowClickTimerRef.current) {
@@ -797,6 +842,11 @@ export function LiabilityShell({
         setAccountEditOpenSignal((value) => value + 1);
         return;
       }
+      // 行已经选中：明细就在手边，直接开余额校准，不必再 push 一次同值 URL 等 RSC 回包。
+      if (selectedRow?.accountId === row.accountId) {
+        openLoanReconcileFor(row.accountId);
+        return;
+      }
       setPendingLoanEditAccountId(row.accountId);
       const params = new URLSearchParams(window.location.search);
       params.set("view", "liability");
@@ -809,7 +859,14 @@ export function LiabilityShell({
     setEditingLiabilityAccount(account);
     setEditingLoanDetails(null);
     setAccountEditOpenSignal((value) => value + 1);
-  }, [accountEditDataById, loanSetupEditForAccount, router, toggleLiabilityRowExpanded]);
+  }, [
+    accountEditDataById,
+    loanSetupEditForAccount,
+    openLoanReconcileFor,
+    router,
+    selectedRow?.accountId,
+    toggleLiabilityRowExpanded,
+  ]);
 
   function openRateAdjustment(row: LiabilityRow) {
     if (!row.accountId) return;
@@ -1797,11 +1854,22 @@ export function LiabilityShell({
                         {t("reimburse.entry")}
                       </button>
                     ) : null}
-                    {!selectedRow.isGroup && !selectedRow.isLoan && selectedRow.accountId ? (
+                    {/*
+                      贷款账户也要挂这个按钮：新建贷款账户时填的「初始余额」在明细里是一条
+                      余额初始化行，它的编辑动作派发 mmh:balance-reconcile:edit，没有监听方
+                      就点了没反应（2026-11-19 #30 第 2 条）。
+                    */}
+                    {!selectedRow.isGroup && selectedRow.accountId ? (
                       <DebitBalanceReconcileButton
                         accountId={selectedRow.accountId}
                         accountLabel={selectedRow.name}
                         currentBalance={selectedRow.net}
+                        editRequest={
+                          pendingLoanReconcileEdit?.accountId === selectedRow.accountId
+                            ? pendingLoanReconcileEdit
+                            : null
+                        }
+                        onEditRequestHandled={handleReconcileEditRequestHandled}
                       />
                     ) : null}
                   </>

@@ -85,7 +85,9 @@ export async function POST(req: Request) {
     if (checkOnly) {
       return NextResponse.json({
         ok: true,
-        message: impacts.length > 0 ? "存在关联业务，请选择删除范围" : "可以删除",
+        message: impacts.length > 0
+          ? "存在关联业务，请选择删除范围"
+          : "可以删除",
         needConfirm: impacts.length > 0,
         impacts,
         depositGeneratedRecordCount,

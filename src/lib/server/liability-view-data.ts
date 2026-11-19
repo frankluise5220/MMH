@@ -1154,7 +1154,18 @@ export function buildLiabilityRowsViewData({
     const balance = cashDisplayBalanceByAccountId.get(account.id) ?? toNumber(account.balance);
     const isInstitutionLoanAccount = account.kind === AccountKind.loan && !account.counterpartyId;
     const isLoanAccount = isInstitutionLoanAccount && account.liabilityDirection !== LiabilityDirection.receivable;
-    if (isInstitutionLoanAccount && Math.abs(balance) < ACTIVE_LIABILITY_EPSILON) continue;
+    // 余额为 0 的贷款（新建账户只填了初始余额、或已结清）默认不出现在贷款视图里，
+    // 但用户从设置页 / 侧边栏点名进这一个账户时，行被丢掉就会回退到第一条往来款行，
+    // 看起来就是「点贷款账户却跳到往来款界面」。显式选中的账户一律保留。
+    const explicitlyRequested =
+      selectedAccountId === account.id || liabilityPersonParam === `account:${account.id}`;
+    if (
+      isInstitutionLoanAccount &&
+      !explicitlyRequested &&
+      Math.abs(balance) < ACTIVE_LIABILITY_EPSILON
+    ) {
+      continue;
+    }
     if (!isInstitutionLoanAccount && !account.isActive && Math.abs(balance) < ACTIVE_LIABILITY_EPSILON) continue;
     const ordinaryGroupKey = objectName ? `settlement-object:${objectName}` : `settlement-account:${account.id}`;
     visibleLiabilityAccounts.push({

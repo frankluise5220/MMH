@@ -4,6 +4,8 @@ import { ensureAccountGroupMemberPairing } from "@/lib/server/account-group-memb
 import { bootstrapPendingAccountBalances } from "@/lib/server/account-balance";
 import { runStatementMailAutoImportTick } from "@/lib/server/statement-mail-auto-import";
 import { syncPropertyAssetDepreciations } from "@/lib/server/property-depreciation";
+import { accrueMoneyFundIncome } from "@/lib/server/money-fund-income-accrual";
+import { accrueWalletMoneyFundIncome } from "@/lib/server/wallet-money-fund-income";
 import { logger } from "@/lib/logger";
 
 /**
@@ -11,20 +13,24 @@ import { logger } from "@/lib/logger";
  *
  * Currently: materialize due credit-card installment payment rows for ALL
  * households, self-heal the owner group <-> family member pairing (every
- * person owner becomes a real family member and vice versa), and pull the
- * next period's bill for households that enabled "next period auto import"
- * on an emailed statement. Runs periodically from `src/instrumentation-node.ts`
- * so all of them stay correct independent of any login.
+ * person owner becomes a real family member and vice versa), accrue money-fund
+ * daily income into shares (the yield is real money that lands every day, not a
+ * redemption-time settlement), and pull the next period's bill for households
+ * that enabled "next period auto import" on an emailed statement. Runs
+ * periodically from `src/instrumentation-node.ts` so all of them stay correct
+ * independent of any login.
  */
 export async function runDueSystemTasks(): Promise<{
   materializedInstallments: number;
   bootstrappedAccountBalances: number;
   statementMailAutoImports: number;
   propertyDepreciations: number;
+  moneyFundIncomeAccruals: number;
 }> {
   const households = await prisma.household.findMany({ select: { id: true } });
   let materializedInstallments = 0;
   let propertyDepreciations = 0;
+  let moneyFundIncomeAccruals = 0;
   for (const household of households) {
     try {
       const result = await materializeDueInstallmentPayments(prisma, { householdId: household.id });
@@ -44,9 +50,26 @@ export async function runDueSystemTasks(): Promise<{
     } catch (error) {
       logger.error("property depreciation sync failed for household", "system-task", { householdId: household.id, error });
     }
+    // 货基每日万份收益是真实入账：服务端自己补结到昨天，用户不开页面也不会漏。
+    try {
+      const result = await accrueMoneyFundIncome({ householdId: household.id });
+      if (result.status === "accrued") moneyFundIncomeAccruals += result.days ?? 0;
+    } catch (error) {
+      logger.error("money fund income accrual failed for household", "system-task", { householdId: household.id, error });
+    }
+    // 轻量模型（2026-11-19 用户裁定）：钱包直接挂货基代码，按日余额结息。
+    try {
+      const result = await accrueWalletMoneyFundIncome({ householdId: household.id });
+      if (result.status === "accrued") moneyFundIncomeAccruals += result.days ?? 0;
+    } catch (error) {
+      logger.error("wallet money fund income accrual failed for household", "system-task", { householdId: household.id, error });
+    }
   }
   if (materializedInstallments > 0) {
     logger.info(`system task materialized ${materializedInstallments} installment rows`, "system-task");
+  }
+  if (moneyFundIncomeAccruals > 0) {
+    logger.info(`system task accrued ${moneyFundIncomeAccruals} money-fund income days`, "system-task");
   }
   if (propertyDepreciations > 0) {
     logger.info(`system task recorded ${propertyDepreciations} property depreciation periods`, "system-task");
@@ -72,5 +95,6 @@ export async function runDueSystemTasks(): Promise<{
     bootstrappedAccountBalances,
     statementMailAutoImports: mailAutoImports.created,
     propertyDepreciations,
+    moneyFundIncomeAccruals,
   };
 }

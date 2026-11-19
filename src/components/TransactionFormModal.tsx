@@ -97,9 +97,6 @@ type AccountOption = {
   accountParentId?: string | null;
   /** 多币种父账户（聚合账户）标记：它自己不能记账。 */
   isAggregate?: boolean | null;
-  /** 电子钱包 → 货基支付关联：选中后支出弹窗出现「从关联货基支付」。 */
-  linkedFundAccountId?: string | null;
-  linkedFundCode?: string | null;
 };
 
 type CategoryOption = {
@@ -762,9 +759,6 @@ export function TransactionFormModal({
     });
   }, [depositLotOptions, depositLotsLoading, editEntryId, open, showDepositLotSelect]);
   const [fixedAssetLinked, setFixedAssetLinked] = useState(false);
-  // 电子钱包 ↔ 货基联动：支出从关联货基赎付，转入自动申购成关联货基。默认关闭。
-  const [payFromLinkedFund, setPayFromLinkedFund] = useState(false);
-  const [autoBuyLinkedFund, setAutoBuyLinkedFund] = useState(false);
   const [fixedAssetAccountId, setFixedAssetAccountId] = useState("");
   const [fixedAssetAssetId, setFixedAssetAssetId] = useState("");
   const [fixedAssetLinkLocked, setFixedAssetLinkLocked] = useState(false);
@@ -1550,8 +1544,6 @@ export function TransactionFormModal({
     setCategoryId("");
     setEditCategoryFallback(null);
     setFixedAssetLinked(false);
-    setPayFromLinkedFund(false);
-    setAutoBuyLinkedFund(false);
     setFixedAssetAccountId("");
     setFixedAssetAssetId("");
     setFixedAssetLinkLocked(false);
@@ -1686,14 +1678,12 @@ export function TransactionFormModal({
       setTxCurrency("");
       setLocalAmount("");
       setFixedAssetLinked(false);
-      setPayFromLinkedFund(false);
       setFixedAssetAccountId("");
       setFixedAssetAssetId("");
       setFixedAssetLinkLocked(false);
       setFixedAssetAccountNestedOpen(false);
       setFixedAssetAccountAutoOpen(false);
     }
-    if (nextType !== "income" && nextType !== "transfer") setAutoBuyLinkedFund(false);
   }
 
   function handleCategoryChange(nextCategoryId: string) {
@@ -2428,7 +2418,6 @@ export function TransactionFormModal({
         formData.set("fromAccountId", fromAccountId);
         // 外币转账可能刚自动建了币种子账户，落账要用子账户 id。
         formData.set("toAccountId", transferToAccountId);
-        formData.set("autoBuyLinkedFund", autoBuyLinkedFund ? "true" : "false");
         if (showDepositLotSelect) formData.set("depositSourceEntryId", depositLotId);
         } else if (txType === "income") {
           formData.set("accountId", accountId);
@@ -2471,11 +2460,6 @@ export function TransactionFormModal({
           if (shouldLinkFixedAsset) {
             formData.set("fixedAssetAccountId", fixedAssetAccountId);
             if (fixedAssetAssetId) formData.set("fixedAssetAssetId", fixedAssetAssetId);
-          }
-          if (txType === "expense") {
-            formData.set("payFromLinkedFund", payFromLinkedFund ? "true" : "false");
-          } else if (txType === "income") {
-            formData.set("autoBuyLinkedFund", autoBuyLinkedFund ? "true" : "false");
           }
           formData.set("locationId", locationId);
       }
@@ -2981,22 +2965,6 @@ export function TransactionFormModal({
                         }
                       }} placeholder={txType === "expense" ? t("txForm.amountPlaceholderExpense") : t("txForm.amountPlaceholderIncome")} label={t("txForm.amount")} precision={2} />
                     </div>
-                    {(() => {
-                      const target = accountMetaById.get(accountId);
-                      if (!target?.linkedFundAccountId) return null;
-                      const inflow = txType !== "expense";
-                      return (
-                        <label className="flex items-center gap-2 text-xs text-slate-600">
-                          <input
-                            type="checkbox"
-                            checked={inflow ? autoBuyLinkedFund : payFromLinkedFund}
-                            onChange={(e) => inflow ? setAutoBuyLinkedFund(e.target.checked) : setPayFromLinkedFund(e.target.checked)}
-                          />
-                          <span>{t(inflow ? "txForm.autoBuyLinkedFund" : "txForm.fromLinkedFund")}</span>
-                          {target.linkedFundCode ? <span className="text-slate-400">{target.linkedFundCode}</span> : null}
-                        </label>
-                      );
-                    })()}
                     {showPostedAmount ? (
                       <>
                         <div className="min-w-0 space-y-1">
@@ -3443,17 +3411,6 @@ export function TransactionFormModal({
                     <div className="form-label">{t("txForm.amount")}</div>
                     <CalcInput ref={amountInputRef} value={amount} onChange={setAmount} placeholder={t("txForm.amountExample")} label={t("txForm.amount")} precision={2} />
                   </div>
-                  {(() => {
-                    const target = accountMetaById.get(toAccountId);
-                    if (!target?.linkedFundAccountId) return null;
-                    return (
-                      <label className="flex items-center gap-2 text-xs text-slate-600">
-                        <input type="checkbox" checked={autoBuyLinkedFund} onChange={(e) => setAutoBuyLinkedFund(e.target.checked)} />
-                        <span>{t("txForm.autoBuyLinkedFund")}</span>
-                        {target.linkedFundCode ? <span className="text-slate-400">{target.linkedFundCode}</span> : null}
-                      </label>
-                    );
-                  })()}
 
                   {/* Row 5: note + attachment */}
                   <div className="space-y-1">

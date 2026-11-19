@@ -7,6 +7,26 @@ import { loadEntryLinkedInvestmentDisplay } from "@/lib/server/entry-business-di
 import { buildEntryBusinessLinkSummary, entryBusinessLinkSummaryInclude } from "@/lib/server/entry-business-link";
 import { getHouseholdBaseCurrency } from "@/lib/server/fx-rates";
 import type { HouseholdContext } from "@/lib/server/household-scope";
+import { FUND_ACCOUNT_MONEY_INCOME_STAT_ID_PREFIX } from "@/lib/server/investment-statistic-sources";
+import { TRANSACTION_SOURCE_MONEY_INCOME } from "@/lib/transaction-semantics";
+
+/**
+ * 报表行背后没有 TxRecord 时需要的信息：真正货基账户（`investProductType=money`）
+ * 的每日万份收益结转只写 fund_transactions（`source=money_fund_income`），
+ * 报表把它算进了收入，下钻明细却查不到对应流水。这些行要按报表行原样合成一条
+ * 只读明细，否则「合计有、明细缺」。
+ */
+export type ReportDetailSyntheticRow = {
+  entryId: string;
+  date: string;
+  type: "income" | "expense";
+  categoryName: string | null;
+  accountId: string;
+  accountName: string;
+  counterpartyName: string;
+  note: string;
+  amount: number;
+};
 
 type ReportDetailEntryOverrides = {
   categoryByEntryId: ReadonlyMap<string, string>;
@@ -17,6 +37,8 @@ type ReportDetailEntryOverrides = {
    * 不能再对记账原值折一次（否则 244 USD 的流水会被折两遍）。
    */
   amountByEntryId: ReadonlyMap<string, number>;
+  /** 查不到 TxRecord 时用来合成只读明细行。 */
+  syntheticByEntryId: ReadonlyMap<string, ReportDetailSyntheticRow>;
 };
 
 /**
@@ -26,18 +48,24 @@ type ReportDetailEntryOverrides = {
  */
 export function buildReportDetailEntryOverrides(
   rows: ReadonlyArray<{
+    id?: string | null;
     entryId: string;
+    date?: string | null;
+    type?: string | null;
     amount?: number | null;
     categoryName?: string | null;
     realizedProfit?: number | null;
     accountId?: string | null;
     accountName?: string | null;
+    counterpartyName?: string | null;
+    note?: string | null;
   }>,
 ): ReportDetailEntryOverrides {
   const categoryByEntryId = new Map<string, string>();
   const realizedProfitByEntryId = new Map<string, number | null>();
   const accountByEntryId = new Map<string, { accountId: string; accountName: string }>();
   const amountByEntryId = new Map<string, number>();
+  const syntheticByEntryId = new Map<string, ReportDetailSyntheticRow>();
 
   for (const row of rows) {
     const categoryName = row.categoryName?.trim() ?? "";
@@ -66,9 +94,28 @@ export function buildReportDetailEntryOverrides(
         accountByEntryId.set(row.entryId, { accountId, accountName });
       }
     }
+    // 备用：只有当同 id 在 txRecord 里查不到时才会用到（见 loadReportDetailEntries 末尾）。
+    // 只认「真正货基账户收益」这一类报表行：其他报表行的 entryId 指向的要么是
+    // TxRecord，要么是本来就缺明细的老问题，不能顺手给它们造一条 money income 行。
+    const rowDate = row.date?.trim().slice(0, 10) ?? "";
+    const rowType = row.type === "income" || row.type === "expense" ? row.type : null;
+    const isFundAccountMoneyIncomeRow = (row.id ?? "").startsWith(`${FUND_ACCOUNT_MONEY_INCOME_STAT_ID_PREFIX}:`);
+    if (isFundAccountMoneyIncomeRow && rowDate && rowType && !syntheticByEntryId.has(row.entryId)) {
+      syntheticByEntryId.set(row.entryId, {
+        entryId: row.entryId,
+        date: rowDate,
+        type: rowType,
+        categoryName: row.categoryName?.trim() || null,
+        accountId: row.accountId?.trim() ?? "",
+        accountName: row.accountName?.trim() ?? "",
+        counterpartyName: row.counterpartyName?.trim() ?? "",
+        note: row.note?.trim() ?? "",
+        amount: row.amount != null && Number.isFinite(row.amount) ? Math.abs(row.amount) : 0,
+      });
+    }
   }
 
-  return { categoryByEntryId, realizedProfitByEntryId, accountByEntryId, amountByEntryId };
+  return { categoryByEntryId, realizedProfitByEntryId, accountByEntryId, amountByEntryId, syntheticByEntryId };
 }
 
 export async function loadReportDetailEntries(
@@ -271,6 +318,50 @@ export async function loadReportDetailEntries(
 
   return uniqueEntryIds.flatMap((entryId) => {
     const entry = detailEntryById.get(entryId);
-    return entry ? [entry] : [];
+    if (entry) return [entry];
+    // 真正货基账户的收益结转没有 TxRecord，按报表行合成一条只读明细，
+    // 否则报表合计里有这笔收益、下钻列表里却没有，用户会认为统计算错了。
+    const synthetic = overrides?.syntheticByEntryId.get(entryId);
+    return synthetic && overrides ? [buildSyntheticReportDetailEntry(synthetic, overrides, displayCurrency)] : [];
   });
+}
+
+function buildSyntheticReportDetailEntry(
+  row: ReportDetailSyntheticRow,
+  overrides: ReportDetailEntryOverrides,
+  displayCurrency: string,
+): DetailEntry {
+  const amount = overrides.amountByEntryId.get(row.entryId) ?? Math.abs(row.amount);
+  return {
+    id: row.entryId,
+    readOnly: true,
+    date: row.date,
+    amount,
+    bookAmount: amount,
+    currency: displayCurrency,
+    displayAmount: amount,
+    displayRealizedProfit: row.type === "income" ? amount : -amount,
+    displayCurrency,
+    runningBalance: null,
+    type: row.type,
+    categoryId: null,
+    categoryName: row.categoryName,
+    accountId: row.accountId || null,
+    accountName: row.accountName || null,
+    toAccountId: null,
+    toAccountName: null,
+    note: row.note || null,
+    fundSubtype: null,
+    fundCode: null,
+    fundName: row.counterpartyName || null,
+    source: TRANSACTION_SOURCE_MONEY_INCOME,
+    fundProductType: "money",
+    fundUnits: null,
+    fundNav: null,
+    fundFee: null,
+    fundConfirmDate: null,
+    fundArrivalDate: null,
+    fundArrivalAmount: null,
+    entryTags: [],
+  };
 }

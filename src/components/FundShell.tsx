@@ -29,6 +29,9 @@ import { BasicDetailReconcileLockButton } from "@/components/BasicDetailSelectio
 
 import { ChartLine, Library, List, Package, Pencil, Settings2, SlidersHorizontal, Trash2, X } from "lucide-react";
 
+import { EntryCategoryFilter } from "@/components/EntryCategoryFilter";
+import { ENTRY_CATEGORY_VALUES, matchesEntryCategories, type EntryCategory } from "@/lib/entry-categories";
+
 import { FundProfileSettingsModal } from "@/components/FundProfileSettingsModal";
 import { openMetalExtract } from "@/lib/client/metal-extract-event";
 import type { FundProfileNavigationItem } from "@/components/FundProfileSettingsClient";
@@ -939,6 +942,11 @@ export function FundShell(props: Props) {
     [d.allEntries],
   );
   const { isReconciled } = useEntryReconcileState(detailReconcileIds);
+
+  // 明细「交易类型」筛选：默认全部（含收益）。货基的每日万份收益结转、基金分红都是
+  // 真实入账的收益流水，默认藏起来会让人以为「收益只在赎回时才落账」；嫌条数多可以
+  // 在「交易类型」下拉里取消「收益」。
+  const [detailCategories, setDetailCategories] = useState<EntryCategory[]>(() => [...ENTRY_CATEGORY_VALUES]);
   useEffect(() => {
     isReconciledRef.current = isReconciled;
   }, [isReconciled]);
@@ -1120,6 +1128,8 @@ export function FundShell(props: Props) {
     } catch {}
   }, []);
 
+
+
   const colWidth = useCallback((table: FundTableKey, key: string, fallback: number) => {
     const width = columnWidths[table]?.[key];
     const minWidth = minFundColWidth(table, key);
@@ -1128,7 +1138,15 @@ export function FundShell(props: Props) {
 
   const isSingleNormalFundScope = Boolean(fundCode && !showAllRecords && !isMetalAccount && !isWealthAccount);
   const isAllWealthDetailScope = Boolean(isWealthAccount && !fundCode);
-  const hideRemainingUnitsDetailColumn = !isWealthAccount || isAllWealthDetailScope;
+  /**
+   * 「剩余份额」列：理财按产品回放、货基按份额回放。
+   *
+   * 货基的余额就是「份额 × 1 元面值」，每天的万份收益结转都会加份额，赎回再减份额，
+   * 明细里没有这列就看不出「这一天的收益进了多少份额、赎回后还剩多少」（用户 2026-11-19 要求）。
+   * 理财的「全部记录」跨产品，份额不能相加，仍不显示。
+   */
+  const showRemainingUnitsDetailColumn = isMoneyAccount || (isWealthAccount && !isAllWealthDetailScope);
+  const hideRemainingUnitsDetailColumn = !showRemainingUnitsDetailColumn;
   const visiblePositionCols = useMemo(
     () => positionCols.filter(([key]) => !hiddenPositionColumns.has(key as PositionColumnKey)),
     [hiddenPositionColumns, positionCols],
@@ -1257,7 +1275,7 @@ export function FundShell(props: Props) {
       isWealthAccount ? t("fundShell.export.wealthName") : t("viewImport.fundName"),
       navColumnLabel,
       isMetalAccount ? t("fundShell.col.quantity") : t("viewImport.units"),
-      ...(isWealthAccount ? [t("fundShell.col.remainingUnits")] : []),
+      ...(showRemainingUnitsDetailColumn ? [t("fundShell.col.remainingUnits")] : []),
       t("fundShell.col.subtype"),
       detailAmountColumnLabel,
       t("overview.profit"),
@@ -1279,6 +1297,9 @@ export function FundShell(props: Props) {
       const nav = e.fundNav != null ? e.fundNav : "";
 
       const units = displayUnitsOf(e) != null ? displayUnitsOf(e) : "";
+
+      // 理财走 wealthRemainingUnits（按产品回放），基金/货基走 fundRemainingUnits（按份额回放）。
+      const remainingUnitsRaw = e.wealthRemainingUnits ?? e.fundRemainingUnits;
 
       const amt = e.amount != null ? detailAmountOf(e) : "";
 
@@ -1334,7 +1355,7 @@ export function FundShell(props: Props) {
 
         units === "" ? "" : Number(units),
 
-        ...(isWealthAccount ? [e.wealthRemainingUnits != null ? Number(e.wealthRemainingUnits) : ""] : []),
+        ...(showRemainingUnitsDetailColumn ? [remainingUnitsRaw != null ? Number(remainingUnitsRaw) : ""] : []),
 
         subtype,
 
@@ -1696,7 +1717,8 @@ export function FundShell(props: Props) {
       : fundCode
         ? d.allEntries.filter((e: any) => entryAssetKey(e) === fundCode)
         : isWealthAccount ? d.allEntries ?? [] : [];
-    return [...source]
+    return source
+      .filter((e: any) => matchesEntryCategories(e, detailCategories))
       .sort((a: any, b: any) => {
         const byApplyDate = fundApplyDateOf(b).localeCompare(fundApplyDateOf(a));
         if (byApplyDate !== 0) return byApplyDate;
@@ -1704,7 +1726,7 @@ export function FundShell(props: Props) {
         if (byCreatedAt !== 0) return byCreatedAt;
         return String(b.id ?? "").localeCompare(String(a.id ?? ""));
       });
-  }, [d.allEntries, entryAssetKey, fundApplyDateOf, fundCode, isWealthAccount, showAllRecords]);
+  }, [d.allEntries, detailCategories, entryAssetKey, fundApplyDateOf, fundCode, isWealthAccount, showAllRecords]);
   // 明细表勾选的行 → 去重后的基金（理财/贵金属按产品），供「导出选中基金」使用。
   const selectedFundCodes = useMemo(() => {
     const codes = new Set<string>();
@@ -2840,7 +2862,10 @@ export function FundShell(props: Props) {
     const numberFilterText = (value: number | null | undefined) =>
       value == null || !Number.isFinite(value) ? null : String(value);
     const navValueOf = (entry: any) => entry.fundNav != null ? toNumber(entry.fundNav) : null;
-    const remainingUnitsValueOf = (entry: any) => entry.wealthRemainingUnits != null ? toNumber(entry.wealthRemainingUnits) : null;
+    const remainingUnitsValueOf = (entry: any) => {
+      const raw = entry.wealthRemainingUnits ?? entry.fundRemainingUnits;
+      return raw != null ? toNumber(raw) : null;
+    };
     const detailSubtypeLabelOf = (entry: any) => {
       const info = fl(t, entry.fundSubtype, entry.source, entry.fundProductType);
       return isSingleNormalFundScope ? compactFundSubtypeLabel(t, entry, info.label) : info.label;
@@ -3950,6 +3975,11 @@ export function FundShell(props: Props) {
 
             {batchDeleteMessage ? <span className="px-1 text-[10px] text-rose-500">{batchDeleteMessage}</span> : null}
 
+            <EntryCategoryFilter
+              value={detailCategories}
+              onChange={setDetailCategories}
+            />
+
             <div className="relative order-last" ref={detailColumnMenuRef}>
 
               <button
@@ -4111,7 +4141,9 @@ export function FundShell(props: Props) {
                       {!hideRemainingUnitsDetailColumn ? (
                         <FundMobileDetailItem
                           label={t("fundShell.col.remainingUnits")}
-                          value={e.wealthRemainingUnits != null ? formatFundUnits(toNumber(e.wealthRemainingUnits)) : "-"}
+                          value={(e.wealthRemainingUnits ?? e.fundRemainingUnits) != null
+                            ? formatFundUnits(toNumber(e.wealthRemainingUnits ?? e.fundRemainingUnits))
+                            : "-"}
                           alignRight
                         />
                       ) : null}

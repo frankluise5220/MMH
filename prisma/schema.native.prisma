@@ -85,16 +85,14 @@ model Account {
   tradingCalendar                                            TradingCalendar?
   defaultFundQueryApiId                                      String?
   fundUnitsDecimals                                          Int                         @default(2)
-  // 电子钱包 → 货币基金的支付关联：选中该钱包记账时，可以声明「这笔钱实际来自
-  // 关联的货基份额」，服务端据此生成一笔赎回（份额减、资金腿回钱包）。
-  // 一个钱包只绑一个货基账户；一个货基账户可以被多个钱包绑定。
-  linkedFundAccountId                                        String?
   linkedFundCode                                             String?
+  // 轻量模式（2026-11-19 用户裁定）：钱包直接挂一只货币基金代码，不再建货基账户。
+  // 从这一天起，每天按「前一日日终余额 ÷ 10000 × 每万份收益」在本账户记一条收益流水，
+  // 余额即本金（1 元面值），不产生份额、不做申赎联动。为空表示不自动计息。
+  linkedFundStartDate                                        DateTime?
   FundQueryApi                                               FundQueryApi?               @relation(fields: [defaultFundQueryApiId], references: [id], onDelete: SetNull)
   Parent                                                     Account?                    @relation("AccountHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
   Children                                                   Account[]                   @relation("AccountHierarchy")
-  LinkedFundAccount                                          Account?                    @relation("AccountLinkedFund", fields: [linkedFundAccountId], references: [id], onDelete: SetNull)
-  LinkedWallets                                              Account[]                   @relation("AccountLinkedFund")
   AccountGroup                                               AccountGroup                @relation(fields: [groupId], references: [id])
   Household                                                  Household                   @relation(fields: [householdId], references: [id])
   Institution                                                Institution?                @relation(fields: [institutionId], references: [id])
@@ -147,9 +145,39 @@ model Account {
   @@index([householdId, loanCategoryId])
   @@index([counterpartyId])
   @@index([parentId])
-  @@index([linkedFundAccountId])
   // 同一父账户下每个币种只能有一个子户（PG/SQLite 都允许多个 NULL，根账户互不冲突）。
   @@unique([parentId, currency])
+  WalletLinkedFunds WalletLinkedFund[]
+}
+
+/// 电子钱包「直接挂货基代码」的绑定区间（2026-11-19 用户要求：同一钱包可能在不同
+/// 时间绑不同的货基，必须留一张表记录每一段，而不是只存当前那一只）。
+///
+/// - 每段 = 一个 fundCode + 起止日（endDate 为空表示当前仍在生效）。
+/// - 同一账户同一时刻只有一段生效；换绑时把旧段 endDate 设为新段起始日前一天。
+/// - 收益按「这一天落在哪一段」取对应基金的每万份收益，Account.linkedFundCode /
+///   linkedFundStartDate 只作为当前段的冗余快照（列表展示与明细过滤用，保持同步）。
+model WalletLinkedFund {
+  id           String    @id @default(cuid())
+  householdId  String
+  accountId    String
+  fundCode     String
+  fundName     String?
+  /// 生效起始日（含），当天开始计息。
+  startDate    DateTime
+  /// 生效结束日（含）；为空 = 当前生效。解绑或换绑时写入。
+  endDate      DateTime?
+  /// 保留备注（如「从余额宝换成 000509」），可空。
+  note         String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @default(now()) @updatedAt
+  Account      Account   @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  Household    Household @relation(fields: [householdId], references: [id], onDelete: Cascade)
+
+  @@unique([accountId, startDate])
+  @@index([householdId, accountId, startDate])
+  @@index([householdId, fundCode])
+  @@map("wallet_linked_funds")
 }
 
 model AccountAlias {
@@ -1379,6 +1407,7 @@ model Household {
   StatementMailAutoImport   StatementMailAutoImport[]
   StatementMailAutoImportJob StatementMailAutoImportJob[]
   transactions              TxRecord[]
+  WalletLinkedFund          WalletLinkedFund[]
 }
 
 /// 账簿级显示/行为设置。**这里是唯一真源**；浏览器 cookie 只是它的读缓存
@@ -2519,6 +2548,10 @@ enum EntryBusinessLinkType {
   legacy_combined_record
   generated_detail
   adjustment
+  /// 电子钱包收支 → 关联货基赎回/申购：这条 link 让「删支出/改支出金额」能找到它的赎回腿。
+  /// 挂在原收支流水上（不是资金腿），findFundTransactionForEntryId 必须忽略它，
+  /// 否则编辑普通支出会被当成编辑基金赎回。
+  wallet_linked_cashflow
 }
 
 enum EntryCashFlowDirection {

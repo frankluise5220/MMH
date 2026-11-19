@@ -13,7 +13,7 @@ import StatisticsCharts from "@/components/StatisticsCharts";
 import { StatisticsFilterPanel } from "@/components/StatisticsFilterPanel";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 import { loadAssetMonthEndLevels } from "@/lib/server/asset-flow-trend";
-import { loadWealthStatisticSourceEntries } from "@/lib/server/investment-statistic-sources";
+import { loadFundAccountMoneyIncomeEntries, loadWealthStatisticSourceEntries } from "@/lib/server/investment-statistic-sources";
 import { buildStatisticsCurrencyConverter } from "@/lib/server/statistics-currency";
 import { buildStatisticsFundDisplayResolver } from "@/lib/server/statistics-fund-display";
 import { isPureInvestmentAccount } from "@/lib/account-kind-utils";
@@ -26,7 +26,7 @@ import {
   SYSTEM_INSURANCE_RETURN_CATEGORY,
 } from "@/lib/default-categories";
 import { addStatisticCategoryBucket, addStatisticTagBucket, buildStatisticCategoryItemsFromBuckets, buildStatisticTagItemsFromBuckets, createStatisticCategoryResolver, createStatisticDistributionCollector, getBusinessResultStatisticItems, getIncomeExpenseStatisticAmount, getInvestmentStatisticItems, isBondInterestIncomeEntry, BOND_INTEREST_INCOME_CATEGORY_CANDIDATES } from "@/lib/transaction-statistics";
-import { isCreditCardRepaymentTransfer, isLiabilityPrincipalCashFlow, TRANSACTION_SOURCE_BOND } from "@/lib/transaction-semantics";
+import { isCreditCardRepaymentTransfer, isLiabilityPrincipalCashFlow, TRANSACTION_SOURCE_BOND, TRANSACTION_SOURCE_MONEY_INCOME } from "@/lib/transaction-semantics";
 import { getServerT } from "@/lib/server/i18n";
 import { categoryOrderBy } from "@/lib/category-order";
 
@@ -240,6 +240,15 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
     tagIds: selectedTagIds,
     excludeEntryIds: representedInvestmentEntryIds,
   });
+  // 真正货基账户（kind=investment/money）的每日万份收益结转行。结转行没有标签，
+  // 按标签筛选时整批不计入。
+  const fundAccountMoneyIncomeEntries = selectedTagIds?.length
+    ? []
+    : await loadFundAccountMoneyIncomeEntries(ctx, {
+        start: periodStart,
+        endExclusive: periodEnd,
+        accountIds: scopedAccountIds,
+      });
 
   // ── Tag filter ──
   const filteredEntries = selectedTagIds
@@ -252,6 +261,7 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
   const fx = await buildStatisticsCurrencyConverter(ctx.householdId, [
     ...filteredEntries,
     ...wealthStatisticEntries,
+    ...fundAccountMoneyIncomeEntries,
     ...allAccounts.map((account) => ({ accountId: account.id })),
   ]);
   const resolvePnlFundDisplay = await buildStatisticsFundDisplayResolver(
@@ -349,6 +359,28 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
           }
         }
       } else if (e.type === TransactionType.investment) {
+      // 新口径（2026-11-19）：电子钱包直接绑货基代码，收益按日结进钱包余额。
+      // 这是已实现收益，计入收入/支出；不进 investPnL，避免与收入列重复计。
+      // 旧口径的镜像行带 fundSubtype 与份额，已由货基账户口径覆盖，这里排除。
+      if (e.source === TRANSACTION_SOURCE_MONEY_INCOME && !e.fundSubtype) {
+        const profit = toNumber(e.amount);
+        if (profit !== 0) {
+          for (const item of fx.convertItems(e, getInvestmentStatisticItems({ ...e, realizedProfit: profit }))) {
+            if (item.type === "income") {
+              row.income += item.amount;
+              addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", candidates: item.categoryCandidates, fallbackName: item.categoryName }), item.amount);
+              dist.add("income", e, item.amount);
+              addStatisticTagBucket(incomeByTag, e.EntryTag, item.amount, untaggedLabel);
+            } else {
+              row.expense += item.amount;
+              addStatisticCategoryBucket(expenseByCat, resolveCategory({ type: "expense", candidates: item.categoryCandidates, fallbackName: item.categoryName }), item.amount);
+              dist.add("expense", e, item.amount);
+              addStatisticTagBucket(expenseByTag, e.EntryTag, item.amount, untaggedLabel);
+            }
+          }
+        }
+        continue;
+      }
       if (e.source === "insurance") {
         const effectiveAmount = Math.abs(amount);
         const isRefund = e.insuranceAction === "refund" || e.fundSubtype === "redeem" || e.fundSubtype === "switch_out";
@@ -417,6 +449,27 @@ export default async function StatisticsPage({ searchParams }: { searchParams: P
         profit: signedProfit,
         profitRate: rate,
       });
+    }
+  }
+
+  // 真正货基账户的每日万份收益：计入收入与分类分布，不进 investPnL / pnlItems
+  // （货基盈亏在估值侧已按「货币基金」桶单独算过，这里再加一次就是双份）。
+  for (const e of fundAccountMoneyIncomeEntries) {
+    const d = e.date;
+    const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+    if (!monthMap.has(m)) monthMap.set(m, { income: 0, expense: 0, investPnL: 0, investCost: 0 });
+    const row = monthMap.get(m)!;
+    // 与 API 统计同一口径：先按汇率折本位币，再累加（缺少汇率时该行不计入）。
+    for (const item of fx.convertItems(e, getInvestmentStatisticItems(e))) {
+      if (item.type === "income") {
+        row.income += item.amount;
+        addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", candidates: item.categoryCandidates, fallbackName: item.categoryName }), item.amount);
+        dist.add("income", e, item.amount);
+      } else {
+        row.expense += item.amount;
+        addStatisticCategoryBucket(expenseByCat, resolveCategory({ type: "expense", candidates: item.categoryCandidates, fallbackName: item.categoryName }), item.amount);
+        dist.add("expense", e, item.amount);
+      }
     }
   }
 

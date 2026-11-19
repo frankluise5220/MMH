@@ -91,6 +91,9 @@ export async function linkExpenseToFixedAsset(
   });
   const mortgageLoanAccountId = isMortgageLoanAccount(fundingAccount) ? (fundingAccount?.id ?? null) : null;
 
+  // 抵押中的资产（status = "mortgaged"）仍然是可关联的固定资产：房贷走
+  // syncCollateralAssetLink 时会先把资产标成抵押中，之后这里再按 "active" 查就会
+  // 找不到，创建房贷直接报 "Fixed asset not found"。所以只排除已处置/已删除的资产。
   const requestedPropertyAssetId = params.propertyAssetId?.trim() ?? "";
   const requestedPropertyAsset = requestedPropertyAssetId
     ? await client.propertyAsset.findFirst({
@@ -98,7 +101,7 @@ export async function linkExpenseToFixedAsset(
           id: requestedPropertyAssetId,
           householdId: params.householdId,
           accountId: propertyAccount.id,
-          status: "active",
+          status: { notIn: ["sold", "disposed", "deleted"] },
           deletedAt: null,
         },
       })
@@ -117,7 +120,7 @@ export async function linkExpenseToFixedAsset(
     where: {
       householdId: params.householdId,
       accountId: propertyAccount.id,
-      status: "active",
+      status: { notIn: ["sold", "disposed", "deleted"] },
       deletedAt: null,
     },
     orderBy: [{ purchaseDate: "asc" }, { createdAt: "asc" }],
@@ -145,7 +148,7 @@ export async function linkExpenseToFixedAsset(
         where: {
           householdId: params.householdId,
           accountId: propertyAccount.id,
-          status: "active",
+          status: { notIn: ["sold", "disposed", "deleted"] },
           deletedAt: null,
         },
         orderBy: [{ purchaseDate: "asc" }, { createdAt: "asc" }],
@@ -219,7 +222,7 @@ export async function linkExpenseToFixedAsset(
     where: {
       householdId: params.householdId,
       accountId: propertyAccount.id,
-      status: "active",
+      status: { notIn: ["sold", "disposed", "deleted"] },
       deletedAt: null,
     },
     orderBy: [{ purchaseDate: "asc" }, { createdAt: "asc" }],

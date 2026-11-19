@@ -1594,6 +1594,8 @@ export function BasicDetailPanel({
           // 时间筛选器在两种模式下都开：滑轨两端取全量边界（bounds=1），与当前
           // 页有多少行、以及范围/日期列筛选都无关。
           showDateRangeFilter
+          // 账户明细（含电子钱包）开「交易类型」筛选，默认不看收益交易。
+          showEntryCategoryFilter
           dateRange={detailDateRange}
           dateRangeBounds={serverDateBounds}
           onDateRangeBoundsRefresh={refreshServerDateBounds}

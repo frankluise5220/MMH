@@ -2,7 +2,7 @@ import { FundProductType, FundSubtype, Prisma } from "@prisma/client";
 
 import { prisma } from "@/lib/db/prisma";
 import { MONEY_FUND_NAV } from "@/lib/fund/moneyFund";
-import { ensureMoneyFundYieldRange } from "@/lib/fund/moneyFundYield";
+import { ensureMoneyFundYieldRange, shiftYmd } from "@/lib/fund/moneyFundYield";
 import { recalcFundPositions } from "@/lib/fund/recalcPosition";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { runExclusive, utcDayKey } from "@/lib/server/interest-accrual";
@@ -44,6 +44,13 @@ export type MoneyIncomeAccrualResult = {
   truncated?: boolean;
   /** 重算前清掉的旧结转条数。 */
   removed?: number;
+  /**
+   * 因万份收益取数失败而停顿的起始日（缺数据的那天）。非空表示这几天的收益**还没结**，
+   * 不是「没有收益」；网络恢复后再点一次会从这里继续。
+   */
+  pendingFrom?: string | null;
+  /** 数据源确认没有万份收益、已按 0 收益跳过的天数（不会结出份额）。 */
+  skippedDays?: number;
   reason?: string;
 };
 
@@ -134,6 +141,8 @@ type FundAccrualOutcome = {
   toDate: string | null;
   truncated: boolean;
   removed: number;
+  pendingFrom: string | null;
+  skippedDays: number;
 };
 
 const EMPTY_OUTCOME: FundAccrualOutcome = {
@@ -144,8 +153,9 @@ const EMPTY_OUTCOME: FundAccrualOutcome = {
   toDate: null,
   truncated: false,
   removed: 0,
+  pendingFrom: null,
+  skippedDays: 0,
 };
-
 async function accrueOneFund(params: {
   householdId: string;
   accountId: string;
@@ -236,13 +246,33 @@ async function accrueOneFund(params: {
   // 用户问的「算到哪天」：记录实际处理到的最后一天与是否补到了昨天。
   let lastDay: string | null = null;
   let reachedEnd = false;
+  let pendingFrom: string | null = null;
+  let skippedDays = 0;
+  const yesterdayKey = ymd(yesterday);
 
   for (let batch = 0; batch < MAX_BATCHES_PER_RUN && batchFrom <= yesterday; batch += 1) {
     const batchLast = addDays(batchFrom, DAYS_PER_BATCH - 1);
     const batchTo = batchLast < yesterday ? batchLast : yesterday;
-    // 万份收益先读本地表，缺口才回源；落库后历史重放不再依赖外部接口可用性。
-    const byDay = await ensureMoneyFundYieldRange(fundCode, ymd(batchFrom), ymd(batchTo));
-    const days = Array.from(byDay.keys()).sort();
+    const batchFromKey = ymd(batchFrom);
+    const batchToKey = ymd(batchTo);
+    // 万份收益先读本地表，只对逐日缺口回源；落库后历史重放不再依赖外部接口可用性。
+    const range = await ensureMoneyFundYieldRange(fundCode, batchFromKey, batchToKey);
+    const byDay = range.yields;
+
+    // 取数失败且有缺口：不能把缺失日当「当天无收益」跳过。游标一旦越过缺口，那几天
+    // 的份额就永久少结（连重算也补不回来），所以停在缺口前一天，下次从缺口继续。
+    let cutoffKey = batchToKey;
+    if (range.unresolved && range.missingDates.length > 0) {
+      pendingFrom = pendingFrom ?? range.missingDates[0];
+      cutoffKey = shiftYmd(range.missingDates[0], -1);
+      if (cutoffKey < batchFromKey) break;
+    } else {
+      // 回源成功仍没有的日期＝数据源没披露：跳过不结（份额不变），但计数上报。
+      skippedDays += range.missingDates.length;
+    }
+    const days = Array.from(byDay.keys())
+      .filter((day) => day >= batchFromKey && day <= cutoffKey)
+      .sort();
 
     // 幂等：同一天同一条来源只允许一条，重复触发（开机自检 + 定时任务）不会翻倍加份额。
     // 一次查出本批已有结转的日期，避免逐日一次查询。
@@ -308,12 +338,18 @@ async function accrueOneFund(params: {
       units = Math.max(0, round2(units + income));
     }
 
-    lastDay = ymd(batchTo);
-    if (batchTo >= yesterday) {
-      reachedEnd = true;
-      break;
+    lastDay = cutoffKey;
+    if (cutoffKey >= batchToKey) {
+      if (batchToKey >= yesterdayKey) {
+        reachedEnd = true;
+        break;
+      }
+      batchFrom = addDays(batchTo, 1);
+      continue;
     }
-    batchFrom = addDays(batchTo, 1);
+    // 缺口阻断：本批只结到缺口前一天，剩下的等下次（truncated 会提示还没算完）。
+    pendingFrom = pendingFrom ?? shiftYmd(cutoffKey, 1);
+    break;
   }
 
   if (entryIds.length > 0 || removed > 0) {
@@ -329,6 +365,8 @@ async function accrueOneFund(params: {
     // 批数用完但还没补到今天：用户再点一次就会接着往下补。
     truncated: !reachedEnd && cursorStart <= yesterday,
     removed,
+    pendingFrom,
+    skippedDays,
   };
 }
 
@@ -374,6 +412,8 @@ export async function accrueMoneyFundIncome(params: {
       let toDate: string | null = null;
       let truncated = false;
       let removed = 0;
+      let pendingFrom: string | null = null;
+      let skippedDays = 0;
 
       for (const account of accounts) {
         const holdings = await prisma.fundHolding.findMany({
@@ -403,6 +443,10 @@ export async function accrueMoneyFundIncome(params: {
             if (outcome.fromDate && (!fromDate || outcome.fromDate < fromDate)) fromDate = outcome.fromDate;
             if (outcome.toDate && (!toDate || outcome.toDate > toDate)) toDate = outcome.toDate;
             if (outcome.truncated) truncated = true;
+            skippedDays += outcome.skippedDays;
+            if (outcome.pendingFrom && (!pendingFrom || outcome.pendingFrom < pendingFrom)) {
+              pendingFrom = outcome.pendingFrom;
+            }
           } catch (error) {
             // 单只基金取数失败不能拖垮整个账户：下一轮补跑即可（游标没推进）。
             logger.warn(
@@ -425,7 +469,9 @@ export async function accrueMoneyFundIncome(params: {
           fromDate,
           toDate,
           truncated,
-          reason: "nothing to accrue",
+          pendingFrom,
+          skippedDays,
+          reason: pendingFrom ? "yield data unavailable" : "nothing to accrue",
         };
       }
       return {
@@ -438,6 +484,8 @@ export async function accrueMoneyFundIncome(params: {
         toDate,
         truncated,
         removed,
+        pendingFrom,
+        skippedDays,
       };
     },
     () => ({ status: "skipped" as const, reason: "busy" }),
