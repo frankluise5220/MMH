@@ -26,6 +26,8 @@ const DETAIL_FILTER_KEYS = [
   "account",
   "remark",
   "entryOrigin",
+  /** 内部用：排除某几种 source（绑定货基钱包的「收益」开关）。不是表头列。 */
+  "entryOriginNot",
   "inflow",
   "outflow",
 ] as const;
@@ -243,6 +245,11 @@ export function buildDetailFilterSql(filters: DetailFilters | null | undefined):
         break;
       case "entryOrigin":
         predicates.push(Prisma.sql`COALESCE(c."source", '') IN (${Prisma.join(values)})`);
+        break;
+      case "entryOriginNot":
+        // 「收益」开关关掉时排除货基收益行。谓词落在 visible / paged 显示层，
+        // 余额折叠链（ledger_*）不受影响 —— 收益确实进了账户余额，只是不列出。
+        predicates.push(Prisma.sql`COALESCE(c."source", '') NOT IN (${Prisma.join(values)})`);
         break;
       default:
         break;

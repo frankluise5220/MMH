@@ -21,6 +21,11 @@ type ChunkedDetailLoadOptions<T> = {
    * 都要带上它，否则「全部」视图会把范围外的流水也拉回来。
    */
   range?: string;
+  /**
+   * 服务端列筛选 JSON（`filters`）。绑定货基钱包的「收益」开关关掉时用它排除
+   * 货基结转行，让「全部」视图的页码 / 总数与明细行同一口径。
+   */
+  filtersJson?: string;
 };
 
 type ChunkedDetailLoadResult<T> = {
@@ -39,6 +44,7 @@ async function fetchDetailPage<T>(
   signal: AbortSignal | undefined,
   errorMessage: string | undefined,
   range: string | undefined,
+  filtersJson: string | undefined,
 ): Promise<DetailPage<T>> {
   const params = new URLSearchParams({
     accountId,
@@ -46,6 +52,7 @@ async function fetchDetailPage<T>(
     pageSize: String(pageSize),
   });
   if (range) params.set("range", range);
+  if (filtersJson) params.set("filters", filtersJson);
   // 不要再加 `cache: "no-store"`：明细接口按「条目数 + updatedAt」发了 ETag，
   // 浏览器刷新时会带 If-None-Match 回来，没变就吃 304（本地副本）、一变就回 200。
   // 「全部」一次十几 MB，只有允许缓存才谈得上「刷新不重新加载」。
@@ -86,6 +93,7 @@ export async function loadAllDetailEntries<T>({
   onProgress,
   errorMessage,
   range,
+  filtersJson,
 }: ChunkedDetailLoadOptions<T>): Promise<ChunkedDetailLoadResult<T>> {
   const entries: T[] = [];
   let totalCount = Number.NaN;
@@ -93,7 +101,7 @@ export async function loadAllDetailEntries<T>({
 
   // 第一屏：小页先让列表长出来（虚拟滚动阈值 200 行，500 行稳过）。
   try {
-    const first = await fetchDetailPage<T>(accountId, 1, DETAIL_ALL_FIRST_PAGE_SIZE, signal, errorMessage, range);
+    const first = await fetchDetailPage<T>(accountId, 1, DETAIL_ALL_FIRST_PAGE_SIZE, signal, errorMessage, range, filtersJson);
     if (Number.isFinite(first.totalCount)) totalCount = first.totalCount;
     entries.push(...first.entries);
     if (isCurrent && !isCurrent()) {
@@ -137,6 +145,7 @@ export async function loadAllDetailEntries<T>({
         signal,
         errorMessage,
         range,
+        filtersJson,
       );
       if (Number.isFinite(chunkPage.totalCount)) totalCount = chunkPage.totalCount;
       chunks.push({ page, entries: chunkPage.entries });

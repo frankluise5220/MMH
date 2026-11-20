@@ -160,7 +160,11 @@ export function MoneyFundIncomeDialog({ open, account, onClose, onChanged }: Pro
     return text;
   };
 
-  const [recalcDate, setRecalcDate] = useState(() => todayDateLocalYmd());
+  /** 重算区间：默认「最近绑定的货基绑定日 → 今天」。 */
+  const [recalcFrom, setRecalcFrom] = useState(() => todayDateLocalYmd());
+  const [recalcTo, setRecalcTo] = useState(() => todayDateLocalYmd());
+  /** 用户改过区间后，段列表回来不许再覆盖他填的日期。 */
+  const recalcTouchedRef = useRef(false);
   const [segments, setSegments] = useState<LinkedFundSegment[]>([]);
   const [segmentsLoading, setSegmentsLoading] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -241,13 +245,27 @@ export function MoneyFundIncomeDialog({ open, account, onClose, onChanged }: Pro
     if (didInitRef.current) return;
     didInitRef.current = true;
     const startDate = toYmd(account.linkedFundStartDate) || todayDateLocalYmd();
-    setRecalcDate(startDate);
+    setRecalcFrom(startDate);
+    setRecalcTo(todayDateLocalYmd());
+    recalcTouchedRef.current = false;
     setDrafts({});
     setNewDraft(EMPTY_DRAFT);
     setMessage("");
     setError("");
     void loadSegments(account.id);
   }, [account.id, account.linkedFundStartDate, loadSegments, open]);
+
+  /**
+   * 默认区间 = 「最近绑定的那段」的起始日 → 今天。
+   *
+   * 段列表是异步回来的，账户快照可能是旧代码/旧起始日，所以以区间表的当前段为准；
+   * 用户已经动过日期就不再覆盖。
+   */
+  useEffect(() => {
+    if (!open || recalcTouchedRef.current) return;
+    const latestStart = toYmd(currentSegment?.startDate);
+    if (latestStart) setRecalcFrom(latestStart);
+  }, [currentSegment?.startDate, open]);
 
   async function accrueNow(accountId: string, fromDate?: string) {
     await fetch("/api/v1/fund/money-income/accrue", {
@@ -443,10 +461,16 @@ export function MoneyFundIncomeDialog({ open, account, onClose, onChanged }: Pro
 
   async function recalc() {
     if (busy || !boundCode) return;
-    const fromDate = recalcDate || boundStartDate || todayDateLocalYmd();
+    const fromDate = recalcFrom || boundStartDate || todayDateLocalYmd();
+    const toDate = recalcTo || todayDateLocalYmd();
+    if (toDate < fromDate) {
+      setMessage("");
+      setError(t("settings.accounts.linkedFund.recalcRangeInvalid"));
+      return;
+    }
     const confirmed = await showConfirmDialog({
       title: t("settings.accounts.linkedFund.recalcConfirmTitle"),
-      message: tf("settings.accounts.linkedFund.recalcConfirm", { date: fromDate }),
+      message: tf("settings.accounts.linkedFund.recalcConfirm", { from: fromDate, to: toDate }),
       confirmLabel: t("settings.accounts.linkedFund.recalc"),
     });
     if (!confirmed) return;
@@ -457,7 +481,7 @@ export function MoneyFundIncomeDialog({ open, account, onClose, onChanged }: Pro
       const response = await fetch("/api/v1/fund/money-income/accrue", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accountId: account.id, fromDate }),
+        body: JSON.stringify({ accountId: account.id, fromDate, toDate }),
       });
       const data = await response.json().catch(() => null) as {
         ok?: boolean;
@@ -711,23 +735,44 @@ export function MoneyFundIncomeDialog({ open, account, onClose, onChanged }: Pro
 
           {boundCode && (
             <div className="grid gap-1">
-              <label className={FIELD_LABEL_CLS}>{t("settings.accounts.linkedFund.recalcFromLabel")}</label>
-              <div className="flex items-center gap-2">
-                <input
-                  type="date"
-                  value={recalcDate}
-                  onChange={(event) => setRecalcDate(event.target.value)}
-                  className={FIELD_INPUT_CLS}
-                />
+              <div className="flex items-end gap-2">
+                <label className="grid min-w-0 flex-1 gap-1">
+                  <span className={FIELD_LABEL_CLS}>{t("settings.accounts.linkedFund.recalcFromLabel")}</span>
+                  <input
+                    type="date"
+                    value={recalcFrom}
+                    max={todayYmd}
+                    onChange={(event) => {
+                      recalcTouchedRef.current = true;
+                      setRecalcFrom(event.target.value);
+                    }}
+                    className={FIELD_INPUT_CLS}
+                  />
+                </label>
+                <span className="pb-2 text-xs text-slate-400">~</span>
+                <label className="grid min-w-0 flex-1 gap-1">
+                  <span className={FIELD_LABEL_CLS}>{t("settings.accounts.linkedFund.recalcToLabel")}</span>
+                  <input
+                    type="date"
+                    value={recalcTo}
+                    max={todayYmd}
+                    onChange={(event) => {
+                      recalcTouchedRef.current = true;
+                      setRecalcTo(event.target.value);
+                    }}
+                    className={FIELD_INPUT_CLS}
+                  />
+                </label>
                 <button
                   type="button"
                   onClick={() => void recalc()}
                   disabled={busy}
-                  className="inline-flex h-[var(--field-h-compact)] shrink-0 items-center rounded-md border border-slate-200 bg-white px-3 text-xs font-medium text-slate-700 shadow-sm transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-400"
+                  className="inline-flex h-[var(--field-h)] shrink-0 items-center rounded-md border border-slate-200 bg-white px-3 text-xs font-medium text-slate-700 shadow-sm transition-colors hover:bg-slate-50 disabled:cursor-not-allowed disabled:text-slate-400"
                 >
                   {busy ? t("settings.accounts.linkedFund.recalcBusy") : t("settings.accounts.linkedFund.recalc")}
                 </button>
               </div>
+              <div className="text-[11px] text-slate-400">{t("settings.accounts.linkedFund.recalcHint")}</div>
             </div>
           )}
 

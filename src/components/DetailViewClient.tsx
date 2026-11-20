@@ -744,6 +744,9 @@ export function DetailViewClient({
   reconcileContextAccountId,
   showDateRangeFilter = false,
   showEntryCategoryFilter = false,
+  showMoneyIncomeToggle = false,
+  showMoneyIncome = false,
+  onMoneyIncomeChange,
   dateRange,
   onDateRangeChange,
   dateRangeBounds,
@@ -806,6 +809,12 @@ export function DetailViewClient({
    * 报表明细、信用卡账单不开，避免把收益类行默认藏掉。
    */
   showEntryCategoryFilter?: boolean;
+  /** 绑定货基的钱包：表头显示「收益」开关，替代「交易类型」下拉。 */
+  showMoneyIncomeToggle?: boolean;
+  /** 收益开关状态；由 URL 的 showMoneyIncome 驱动。 */
+  showMoneyIncome?: boolean;
+  /** 切换收益开关：父层写回 URL 并按新口径重取表格。 */
+  onMoneyIncomeChange?: (next: boolean) => void;
   /** 受控的时间范围（父层持有并负责按范围重取）。 */
   dateRange?: { from: string; to: string };
   onDateRangeChange?: (next: { from: string; to: string }) => void;
@@ -1096,11 +1105,15 @@ export function DetailViewClient({
    */
   const [entryCategories, setEntryCategories] = useState<EntryCategory[]>(() => [...DEFAULT_ENTRY_CATEGORIES]);
   const visibleEntries = useMemo(
-    () =>
-      showEntryCategoryFilter
-        ? entries.filter((entry) => matchesEntryCategories(entry, entryCategories))
-        : entries,
-    [entries, entryCategories, showEntryCategoryFilter],
+    () => entries.filter((entry) => {
+      // 「收益」没勾：兜底挡掉货基结转行。「全部」模式的数据来自整份明细缓存，
+      // 那条加载路径不带服务端 filters，必须在这里再挡一次才不会漏出来。
+      if (showMoneyIncomeToggle && !showMoneyIncome && entry.source === TRANSACTION_SOURCE_MONEY_INCOME) {
+        return false;
+      }
+      return !showEntryCategoryFilter || matchesEntryCategories(entry, entryCategories);
+    }),
+    [entries, entryCategories, showEntryCategoryFilter, showMoneyIncomeToggle, showMoneyIncome],
   );
   const linkDetailCashFlow = useCallback(async (entry: DetailEntry) => {
     const id = String(entry.id ?? "").trim();
@@ -1994,12 +2007,28 @@ export function DetailViewClient({
     return groups;
   }, [accountId, flowAccountIdOf, t, visibleEntries]);
 
+  /** 表头筛选控件：绑定货基的钱包换成「收益」开关，其它账户仍是「交易类型」下拉。 */
+  const tableToolbarFilters = showMoneyIncomeToggle ? (
+    <label className="inline-flex cursor-pointer select-none items-center gap-1.5 whitespace-nowrap rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-600">
+      <input
+        type="checkbox"
+        data-testid="money-income-toggle"
+        checked={showMoneyIncome}
+        onChange={(event) => onMoneyIncomeChange?.(event.target.checked)}
+        className="h-3.5 w-3.5 accent-blue-600"
+      />
+      <span>{t("detailView.showMoneyIncome")}</span>
+    </label>
+  ) : showEntryCategoryFilter ? (
+    <EntryCategoryFilter value={entryCategories} onChange={setEntryCategories} />
+  ) : null;
+
   return (
     <>
     <div className="h-full overflow-y-auto bg-slate-100 desktop:hidden">
-      {showEntryCategoryFilter ? (
+      {tableToolbarFilters ? (
         <div className="sticky top-0 z-20 flex items-center justify-end gap-2 border-b border-slate-200 bg-slate-100/96 px-3 py-2 backdrop-blur">
-          <EntryCategoryFilter value={entryCategories} onChange={setEntryCategories} />
+          {tableToolbarFilters}
         </div>
       ) : null}
       {mobileGroups.length > 0 ? (
@@ -2158,11 +2187,11 @@ export function DetailViewClient({
       compactRows={compactRows}
       toolbarMode={toolbarMode}
       toolbarLeftContent={customToolbarLeft}
-      toolbarRightContent={showEntryCategoryFilter ? (
+      toolbarRightContent={tableToolbarFilters ? (
         /* AdvancedDataTable 给 toolbarRightContent 的外层是普通 div，块级子元素会各自
-           换行：这里必须自己包一层 flex 行，交易类型才会和「共 N 条 / 导入导出」同排。 */
+           换行：这里必须自己包一层 flex 行，开关才会和「共 N 条 / 导入导出」同排。 */
         <div className="flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2">
-          <EntryCategoryFilter value={entryCategories} onChange={setEntryCategories} />
+          {tableToolbarFilters}
           {toolbarRightContent}
         </div>
       ) : toolbarRightContent}

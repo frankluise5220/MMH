@@ -228,8 +228,8 @@ async function loadWalletDailyEndBalance(
   return { dayKeys, balanceOf };
 }
 
-/** 重算起始日只接受 `YYYY-MM-DD` 业务日字符串，其余一律当「没填」。 */
-function normalizeStartKey(value: string | null | undefined): string | null {
+/** 重算区间端点只接受 `YYYY-MM-DD` 业务日字符串，其余一律当「没填」。 */
+function normalizeDayKey(value: string | null | undefined): string | null {
   const trimmed = String(value ?? "").trim();
   return /^\d{4}-\d{2}-\d{2}$/.test(trimmed) ? trimmed : null;
 }
@@ -239,8 +239,10 @@ async function accrueOneWallet(params: {
   wallet: WalletTarget;
   today: Date;
   rebuild: boolean;
-  /** 从这一天（含）起重算：删掉该日及以后的收益行，再从这天补到昨天。 */
+  /** 从这一天（含）起重算：删掉该日及以后的收益行，再从这天补到终点（默认昨天）。 */
   rebuildFrom?: string | null;
+  /** 重算终点（含）；默认补到昨天，因为当天的万份收益还没公布。 */
+  rebuildTo?: string | null;
 }): Promise<WalletMoneyFundAccrualResult> {
   const { householdId, wallet, today, rebuild } = params;
   const yesterday = addDaysUtc(utcMidnight(today), -1);
@@ -253,10 +255,18 @@ async function accrueOneWallet(params: {
   const walletStartKey = segments[0].startKey;
 
   // 起算日不能早于第一段的起始日：那天之前本来就不该有收益。
-  const rebuildFromRaw = normalizeStartKey(params.rebuildFrom);
+  const rebuildFromRaw = normalizeDayKey(params.rebuildFrom);
   const rebuildFromKey = rebuildFromRaw && rebuildFromRaw < walletStartKey ? walletStartKey : rebuildFromRaw;
 
-  // 重算按「钱包」删，不限基金代码：从这天起可能有多个段的收益行都要重放。
+  // 重算终点（用户选的「到某天」）：只在「从某天重算」时生效，晚于昨天一律夹到昨天
+  // ——当天的万份收益还没公布。
+  const rebuildToRaw = rebuildFromKey ? normalizeDayKey(params.rebuildTo) : null;
+  const rebuildToKey = rebuildToRaw && rebuildToRaw > yesterdayKey ? yesterdayKey : rebuildToRaw;
+  /** 本轮的计息上限：没选终点就是昨天。 */
+  const accrualEndKey = rebuildToKey && rebuildToKey < yesterdayKey ? rebuildToKey : yesterdayKey;
+
+  // 重算按「钱包」删，不限基金代码：区间里可能有多个段的收益行都要重放。
+  // 选了终点就只删这一段，区间之后的行保持原样（用户只要求重放这一段）。
   let removed = 0;
   if (rebuild) {
     const deleted = await prisma.txRecord.deleteMany({
@@ -268,7 +278,10 @@ async function accrueOneWallet(params: {
       where: {
         accountId: wallet.id,
         source: TRANSACTION_SOURCE_MONEY_INCOME,
-        date: { gte: new Date(`${rebuildFromKey}T00:00:00.000Z`) },
+        date: {
+          gte: new Date(`${rebuildFromKey}T00:00:00.000Z`),
+          ...(rebuildToKey ? { lte: new Date(`${rebuildToKey}T00:00:00.000Z`) } : {}),
+        },
       },
     });
     removed = deleted.count;
@@ -316,7 +329,7 @@ async function accrueOneWallet(params: {
       truncated = true;
       break;
     }
-    const segmentEndKey = segment.endKey && segment.endKey < yesterdayKey ? segment.endKey : yesterdayKey;
+    const segmentEndKey = segment.endKey && segment.endKey < accrualEndKey ? segment.endKey : accrualEndKey;
     let fromKey = segment.startKey;
     if (cursorKey && cursorKey > fromKey) fromKey = cursorKey;
     if (fromKey > segmentEndKey) continue;
@@ -348,7 +361,7 @@ async function accrueOneWallet(params: {
       ...EMPTY,
       wallets: 1,
       fromDate: cursorKey ?? walletStartKey,
-      toDate: null,
+      toDate: rebuildToKey,
       pendingFrom,
       truncated,
       reason: pendingFrom ? "yield data unavailable" : "nothing to accrue",
@@ -427,7 +440,9 @@ async function accrueOneWallet(params: {
         fundSubtype: null,
         fundNav: null,
         fundUnits: null,
-        note: `每万份收益 ${per10k.toFixed(4)}，收益 ${income.toFixed(2)} 元`,
+        // 份额按面值折：货基 1 元/份，计息基数（前一日日终余额）就是当天持有的份额。
+        // 把代码、份额、收益都写进备注，明细里不用点开就能核对这笔收益怎么算出来的。
+        note: `基金代码 ${fundCode}，份额 ${base.toFixed(2)}，每万份收益 ${per10k.toFixed(4)}，收益 ${income.toFixed(2)} 元`,
         dayOrder: 0,
       });
       created += 1;
@@ -448,7 +463,7 @@ async function accrueOneWallet(params: {
     totalIncome,
     fromDate: minFromKey,
     toDate: maxToKey,
-    truncated: truncated || maxToKey < yesterdayKey,
+    truncated: truncated || maxToKey < accrualEndKey,
     pendingFrom,
     reason: created === 0 ? "nothing to accrue" : undefined,
   });
@@ -460,7 +475,8 @@ async function accrueOneWallet(params: {
  * 触发时机与旧货基结转一致：开机自检 + 手工接口。漏跑几天不会丢——从上次结转日的
  * 次日继续，单次最多补 366 天，剩下的下次接着补。
  *
- * `rebuildFrom`：从这一天（含）起重算——先删掉该日及以后的收益行，再从这天补到昨天。
+ * `rebuildFrom` / `rebuildTo`：重算区间 `[from, to]`（含两端）——先删掉这段收益行，
+ * 再按当前余额与万份收益重放。`to` 默认昨天（当天收益还没公布），晚于昨天会被夹回昨天。
  * 改了历史流水、或万份收益数据修正之后用它把某一段重放（`rebuild` 是整段重来）。
  */
 export async function accrueWalletMoneyFundIncome(params: {
@@ -469,11 +485,13 @@ export async function accrueWalletMoneyFundIncome(params: {
   today?: Date;
   rebuild?: boolean;
   rebuildFrom?: string | null;
+  rebuildTo?: string | null;
 }): Promise<WalletMoneyFundAccrualResult> {
   const { householdId, walletAccountId } = params;
   const today = params.today ?? new Date();
   const rebuild = params.rebuild === true;
-  const rebuildFrom = normalizeStartKey(params.rebuildFrom);
+  const rebuildFrom = normalizeDayKey(params.rebuildFrom);
+  const rebuildTo = normalizeDayKey(params.rebuildTo);
 
   return runExclusive(`wallet-money-fund-income:${householdId}`, async () => {
     const rows = await prisma.account.findMany({
@@ -526,7 +544,7 @@ export async function accrueWalletMoneyFundIncome(params: {
 
     for (const wallet of wallets) {
       try {
-        const outcome = await accrueOneWallet({ householdId, wallet, today, rebuild, rebuildFrom });
+        const outcome = await accrueOneWallet({ householdId, wallet, today, rebuild, rebuildFrom, rebuildTo });
         removed += outcome.removed ?? 0;
         days += outcome.days ?? 0;
         totalIncome = round2(totalIncome + (outcome.totalIncome ?? 0));

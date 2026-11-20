@@ -32,7 +32,7 @@ import { loadReadableTagsByRecentUse } from "@/lib/server/tag-scope";
 import { categoryOrderBy } from "@/lib/category-order";
 import { DETAIL_ALL_PAGE_SIZE } from "@/lib/detail-pagination-preference";
 import { queryDetailPage } from "@/lib/server/detail-page-query";
-import { parseDetailDateRange } from "@/lib/server/detail-query-filters";
+import { parseDetailDateRange, type DetailFilters } from "@/lib/server/detail-query-filters";
 
 // ── Types ──
 
@@ -176,7 +176,7 @@ async function _loadEntriesPageForAccount(
    */
   fetchRowsValue?: number,
 ) {
-  const hidFilter = JSON.parse(hidFilterStr) as { householdId: string };
+  const hidFilter = JSON.parse(hidFilterStr) as { householdId: string; filters?: DetailFilters | null };
   const hid = { householdId: hidFilter.householdId };
   const accountIds = Array.isArray(accountId) ? accountId : [accountId];
   const sortAccountId = Array.isArray(accountId) ? undefined : accountId;
@@ -190,6 +190,7 @@ async function _loadEntriesPageForAccount(
     fetchRows: fetchRowsValue,
     sortAccountId,
     includeRunningBalances: !!sortAccountId,
+    filters: hidFilter.filters ?? null,
     dateRange: rangeStr ? parseDetailDateRange(rangeStr) : null,
   });
   const pageRows = pageData.pageIds.length > 0

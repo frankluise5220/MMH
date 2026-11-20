@@ -5,6 +5,7 @@ import { canRefreshCurrentRoute, replaceCurrentRouteUrl } from "@/lib/client/rou
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
+import { TRANSACTION_SOURCE_MONEY_INCOME } from "@/lib/transaction-semantics";
 import { X } from "lucide-react";
 import { BasicDetailBatchDeleteMessage, BasicDetailSelectionProvider } from "@/components/BasicDetailSelection";
 import type { BasicDetailBatchCategoryOption } from "@/components/BasicDetailSelection";
@@ -109,6 +110,10 @@ type BasicDetailPanelProps = {
   totalCount: number;
   originalCount: number;
   hasDetailFilters: boolean;
+  /** 绑定货基的电子钱包：表头把「交易类型」筛选换成「收益」开关。 */
+  showMoneyIncomeToggle?: boolean;
+  /** 「收益」开关是否勾上；默认不勾，勾选后明细才列出货基收益行。 */
+  showMoneyIncome?: boolean;
   initialPage: number;
   initialPageSize: number;
   /**
@@ -384,6 +389,8 @@ export function BasicDetailPanel({
   totalCount,
   originalCount,
   hasDetailFilters,
+  showMoneyIncomeToggle = false,
+  showMoneyIncome = false,
   initialPage,
   initialPageSize,
   initialDateRange,
@@ -419,6 +426,17 @@ export function BasicDetailPanel({
 }: BasicDetailPanelProps) {
   const router = useRouter();
   const { t } = useI18n();
+  // 「收益」开关：关掉时只在 SQL 显示层排除货基收益行；余额折叠链仍把这些收益
+  // 记进账户余额，所以隐藏行不会让余额凭空少一块。
+  //
+  // URL 写回是 replaceState（不触发 RSC），所以 props 里的值不会立刻跟着变；
+  // 开关必须自己是受控的，否则点一下会被旧 prop 弹回去。
+  const [localShowMoneyIncome, setLocalShowMoneyIncome] = useState(showMoneyIncome);
+  useEffect(() => setLocalShowMoneyIncome(showMoneyIncome), [showMoneyIncome]);
+  const hideMoneyIncome = showMoneyIncomeToggle && !localShowMoneyIncome;
+  const moneyIncomeFilters = hideMoneyIncome
+    ? { entryOriginNot: [TRANSACTION_SOURCE_MONEY_INCOME] }
+    : null;
   const normalizedInitialPageSize = normalizeDetailPageSize(initialPageSize);
   const [localEntries, setLocalEntries] = useState(entries);
   const [localTotalCount, setLocalTotalCount] = useState(totalCount);
@@ -635,7 +653,8 @@ export function BasicDetailPanel({
   );
   const reuseSharedAllCash = deriveFromAllCashCache && sharedAllCashReady;
   const detailCacheScopeId = reuseSharedAllCash ? ALL_CASH_DETAIL_SCOPE_ID : accountId;
-  const detailAllKey = detailAllCacheKey(detailCacheScopeId);
+  // 「收益」开关分两种口径的整份缓存：关掉时那份只含非收益行，不能和全量混用。
+  const detailAllKey = `${detailAllCacheKey(detailCacheScopeId)}${hideMoneyIncome ? ":hideIncome" : ""}`;
   const businessTodayKey = todayDateBusinessYmd(getTimeZonePreference());
 
   /**
@@ -795,22 +814,32 @@ export function BasicDetailPanel({
     const sharedReady = deriveFromAllCashCache
       && isDetailAllReady(ALL_CASH_DETAIL_SCOPE_ID, detailAllRangeKey);
     const scopeId = sharedReady ? ALL_CASH_DETAIL_SCOPE_ID : accountId;
-    return { key: detailAllCacheKey(scopeId), accountId: scopeId };
-  }, [accountId, deriveFromAllCashCache, detailAllRangeKey]);
+    return {
+      key: `${detailAllCacheKey(scopeId)}${hideMoneyIncome ? ":hideIncome" : ""}`,
+      accountId: scopeId,
+    };
+  }, [accountId, deriveFromAllCashCache, detailAllRangeKey, hideMoneyIncome]);
 
-  const reloadDetailPage = useCallback((signal?: AbortSignal) => {
+  const reloadDetailPage = useCallback((signal?: AbortSignal, hideIncomeOverride?: boolean) => {
     if (!clientPaginationEnabled) return;
     const requestKey = `${accountId}|${detailAll ? "all" : String(safePage)}|${pageSize}|${serverDateRangeKey}`;
     if (detailAll) {
       const scope = resolveDetailCacheScope();
       // 共享缓存刚作废：渲染用的 key 下一帧就会切到本账户，由那个 effect 启动加载；
       // 这里按旧 key 发起的 `ensureDetailAll` 会变成一次全账簿重拉，必须跳过。
-      if (scope.key !== detailAllKey) return;
+      // 收益开关刚切时 props 还是旧值，key 要按 override 现算，不能用这一帧的闭包。
+      if (hideIncomeOverride === undefined && scope.key !== detailAllKey) return;
+      const hide = hideIncomeOverride ?? hideMoneyIncome;
+      const effectiveKey = hideIncomeOverride === undefined
+        ? detailAllKey
+        : `${detailAllCacheKey(scope.accountId)}${hide ? ":hideIncome" : ""}`;
+      const effectiveFilters = hide ? { entryOriginNot: [TRANSACTION_SOURCE_MONEY_INCOME] } : null;
       // 「全部」= 窗口内整份：缓存里已经有了，只取快照，不发请求。
       const snapshot = ensureDetailAll<DetailEntry>({
-        key: detailAllKey,
+        key: effectiveKey,
         accountId: scope.accountId,
         range: detailAllRangeKey,
+        filters: effectiveFilters,
         errorMessage: t("basicDetail.loadFailed"),
       });
       // 空快照 = 刚发起的任务还没有数据，别把已有列表清空。
@@ -818,7 +847,8 @@ export function BasicDetailPanel({
       return;
     }
     // 缓存优先：窗口内数据齐了就从本地切这一页。
-    const cached = readCachedDetailPage(safePage, pageSize);
+    // 收益开关刚切时缓存还是旧口径，必须跳过缓存直接打接口。
+    const cached = hideIncomeOverride === undefined ? readCachedDetailPage(safePage, pageSize) : null;
     if (cached) {
       if (requestKey !== detailPageKeyRef.current) return;
       setLocalEntries(cached.entries);
@@ -836,6 +866,10 @@ export function BasicDetailPanel({
       page: String(safePage),
       pageSize: String(pageSize),
     });
+    // 收益开关刚切时 props 还是旧值，用 override 立刻按新口径重取。
+    if (hideIncomeOverride ?? hideMoneyIncome) {
+      params.set("filters", JSON.stringify({ entryOriginNot: [TRANSACTION_SOURCE_MONEY_INCOME] }));
+    }
     // 窗口还没齐（刚进页面）：照旧按页取一次，范围无条件下推。
     if (hasDetailDateRange) params.set("range", serverDateRangeKey);
     // 不带 `no-store`：接口发了 ETag，刷新/重进时浏览器会带 If-None-Match 回来，
@@ -871,6 +905,31 @@ export function BasicDetailPanel({
   }, [accountId, applyDetailAllSnapshot, clientPaginationEnabled, detailAll, detailAllKey, detailAllRangeKey, hasDetailDateRange, pageSize, readCachedDetailPage, resolveDetailCacheScope, safePage, serverDateRangeKey, t]);
 
   /**
+   * 表头「收益」开关：写回 URL（刷新/分享后口径不变），然后按新口径把表格重取一次。
+   *
+   * 不能只做本地行过滤：服务端分页的页码 / 共 N 条都是按过滤后的结果集算的，
+   * 本地藏几行只会让这一页看起来少、翻页还是对不上。所以这里让 SQL 显示层
+   * （entryOriginNot）重新查，余下的排序 / 合计由服务端同一口径给出。
+   */
+  const handleMoneyIncomeChange = useCallback((next: boolean) => {
+    if (typeof window === "undefined") return;
+    const url = new URL(window.location.href);
+    if (next) url.searchParams.set("showMoneyIncome", "1");
+    else url.searchParams.delete("showMoneyIncome");
+    const nextHref = `${url.pathname}${url.search}${url.hash}`;
+    // 口径变了：整份明细缓存不能再用，否则点「全部」又冒出刚关掉的收益行。
+    setLocalShowMoneyIncome(next);
+    dropDetailAllCache([detailAllKey]);
+    if (!clientPaginationEnabled) {
+      router.replace(nextHref, { scroll: false });
+      if (canRefreshCurrentRoute()) router.refresh();
+      return;
+    }
+    replaceCurrentRouteUrl(nextHref);
+    reloadDetailPage(undefined, !next);
+  }, [clientPaginationEnabled, detailAllKey, reloadDetailPage, router]);
+
+  /**
    * 只改行文本（备注 / 分类 / 标签…）时的最低限度刷新，只在索引分页视图使用：
    * 按当前页取一次**服务端列表口径的完整行**，按 id 覆盖表格与缓存里的那几行。
    * 行数 / 排序 / 逐笔余额 / 总条数都不变，所以不作废整份缓存、不重算期初余额、
@@ -886,6 +945,9 @@ export function BasicDetailPanel({
       page: String(safePage),
       pageSize: String(pageSize),
     });
+    if (hideMoneyIncome) {
+      params.set("filters", JSON.stringify(moneyIncomeFilters));
+    }
     if (hasDetailDateRange) params.set("range", serverDateRangeKey);
     const requestKey = detailPageKeyRef.current;
     try {
@@ -929,6 +991,7 @@ export function BasicDetailPanel({
         key: detailAllKey,
         accountId: scope.accountId,
         range: detailAllRangeKey,
+        filters: moneyIncomeFilters,
         errorMessage: t("basicDetail.loadFailed"),
       });
     };
@@ -1105,8 +1168,14 @@ export function BasicDetailPanel({
       const affectedKeys = eventAccountIds.length === 0
         ? undefined
         : Array.from(new Set([
-          ...eventAccountIds.map(detailAllCacheKey),
-          ...(affectsCashScope ? [detailAllCacheKey(ALL_CASH_DETAIL_SCOPE_ID)] : []),
+          ...eventAccountIds.flatMap((id) => [
+            detailAllCacheKey(id),
+            `${detailAllCacheKey(id)}:hideIncome`,
+          ]),
+          ...(affectsCashScope ? [
+            detailAllCacheKey(ALL_CASH_DETAIL_SCOPE_ID),
+            `${detailAllCacheKey(ALL_CASH_DETAIL_SCOPE_ID)}:hideIncome`,
+          ] : []),
         ]));
 
       // ③ 只改行文本：行数 / 排序 / 逐笔余额 / 总条数都不变。
@@ -1594,8 +1663,11 @@ export function BasicDetailPanel({
           // 时间筛选器在两种模式下都开：滑轨两端取全量边界（bounds=1），与当前
           // 页有多少行、以及范围/日期列筛选都无关。
           showDateRangeFilter
-          // 账户明细（含电子钱包）开「交易类型」筛选，默认不看收益交易。
-          showEntryCategoryFilter
+          // 绑定货基的钱包：表头换成「收益」开关（默认关），其它账户保留交易类型筛选。
+          showEntryCategoryFilter={!showMoneyIncomeToggle}
+          showMoneyIncomeToggle={showMoneyIncomeToggle}
+          showMoneyIncome={localShowMoneyIncome}
+          onMoneyIncomeChange={handleMoneyIncomeChange}
           dateRange={detailDateRange}
           dateRangeBounds={serverDateBounds}
           onDateRangeBoundsRefresh={refreshServerDateBounds}

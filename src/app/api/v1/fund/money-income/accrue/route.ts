@@ -21,8 +21,9 @@ import { logger } from "@/lib/logger";
  *   - `{ fundCode }`：只结某一只基金（持仓行上的「重算收益结转」按钮用）；
  *   - `{ rebuild: true }`：强制重算——先清掉该（些）基金已有的结转，再从最早一笔交易
  *     逐日重放。改过买入日期之后用它把历史补齐。
- *   - `{ accountId, fromDate: "YYYY-MM-DD" }`：从这一天起重算（电子钱包直接挂货基代码的
- *     轻量模式）——先删掉该日及以后的收益行，再按当前余额与万份收益补到昨天。
+ *   - `{ accountId, fromDate: "YYYY-MM-DD", toDate?: "YYYY-MM-DD" }`：重算一段时间
+ *     （电子钱包直接挂货基代码的轻量模式）——先删掉区间 `[fromDate, toDate]` 的收益行，
+ *     再按当前余额与万份收益重放。`toDate` 省略 = 补到昨天；晚于昨天会被夹回昨天。
  */
 export async function POST(request: Request) {
   try {
@@ -32,16 +33,25 @@ export async function POST(request: Request) {
       fundCode?: unknown;
       rebuild?: unknown;
       fromDate?: unknown;
+      toDate?: unknown;
     } | null;
     const accountId = typeof body?.accountId === "string" && body.accountId.trim() ? body.accountId.trim() : undefined;
     const fundCode = typeof body?.fundCode === "string" && body.fundCode.trim() ? body.fundCode.trim() : undefined;
     const rebuild = body?.rebuild === true;
     const fromDateRaw = typeof body?.fromDate === "string" ? body.fromDate.trim() : "";
     const fromDate = /^\d{4}-\d{2}-\d{2}$/.test(fromDateRaw) ? fromDateRaw : undefined;
+    const toDateRaw = typeof body?.toDate === "string" ? body.toDate.trim() : "";
+    const toDate = /^\d{4}-\d{2}-\d{2}$/.test(toDateRaw) ? toDateRaw : undefined;
+    if (fromDate && toDate && toDate < fromDate) {
+      return NextResponse.json(
+        { ok: false, code: "MONEY_INCOME_RANGE_INVALID", error: "重算结束日不能早于起始日" },
+        { status: 400 },
+      );
+    }
 
     // 两套模型各结各的：有关联货基账户的老数据走 fund_transactions，
     // 直接挂代码的钱包（2026-11-19 轻量模型）走自己的流水。互不重叠。
-    // 「从某天重算」只属于轻量模式：老模型是份额体系，按日期删一半会把持仓算坏。
+    // 「重算一段时间」只属于轻量模式：老模型是份额体系，按日期删一半会把持仓算坏。
     const result = fromDate
       ? null
       : await accrueMoneyFundIncome({ householdId, fundAccountId: accountId, fundCode, rebuild });
@@ -50,6 +60,7 @@ export async function POST(request: Request) {
       walletAccountId: accountId,
       rebuild: fromDate ? false : rebuild,
       rebuildFrom: fromDate,
+      rebuildTo: fromDate ? toDate : undefined,
     });
     if (result?.status === "accrued" || walletResult.status === "accrued") revalidateAfterInvestChange();
     return NextResponse.json({ ok: true, data: { ...(result ?? { status: "skipped" }), wallet: walletResult } });

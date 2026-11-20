@@ -44,6 +44,8 @@ type Job<T> = {
   finishedAt: number;
   /** 加载时用的数据范围（`from~to`，空串表示无界）。缩小范围时靠它判断能否本地裁剪。 */
   range?: string;
+  /** 加载时的服务端列筛选，避免「收益」开关前后复用同一份缓存。 */
+  filtersKey?: string;
 };
 
 const TTL_MS = 10 * 60 * 1000;
@@ -247,13 +249,17 @@ export function ensureDetailAll<T>(options: {
   accountId: string;
   range?: string;
   errorMessage?: string;
+  /** 「收益」开关关掉时排除货基结转行；整份缓存按它分口径。 */
+  filters?: Record<string, string[]> | null;
 }): DetailAllSnapshot<T> {
+  const filtersKey = options.filters ? JSON.stringify(options.filters) : "";
   const existing = jobs.get(options.key) as Job<T> | undefined;
   // 已加载的范围覆盖当前请求的范围 → 直接复用，缩小窗口不会重新拉数据。
   if (
     existing
     && (!existing.done || Date.now() - existing.finishedAt < TTL_MS)
     && detailRangeCovers(existing.range, options.range)
+    && (existing.filtersKey ?? "") === filtersKey
   ) {
     const visible = visibleRows(existing);
     return {
@@ -284,6 +290,7 @@ export function ensureDetailAll<T>(options: {
     controller: new AbortController(),
     finishedAt: 0,
     range: options.range,
+    filtersKey,
   };
   const isCurrent = () => jobs.get(options.key) === (job as Job<unknown>);
   jobs.set(options.key, job as Job<unknown>);
@@ -291,6 +298,7 @@ export function ensureDetailAll<T>(options: {
   void loadAllDetailEntries<T>({
     accountId: options.accountId,
     range: options.range,
+    filtersJson: filtersKey || undefined,
     errorMessage: options.errorMessage,
     signal: job.controller.signal,
     isCurrent,

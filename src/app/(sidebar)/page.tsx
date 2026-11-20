@@ -111,7 +111,7 @@ import {
 } from "@/lib/server/loan-rate-adjustments";
 import { getInsuranceDisplayTypeLabel, getInsuranceMetricLabel, getInsuranceMetricMode } from "@/lib/insurance/display";
 import { BALANCE_INITIALIZATION_SOURCE, BALANCE_RECONCILE_SOURCE, applyBalanceReconcileEntry, effectiveAmountForAccount, getBalanceReconcileTarget } from "@/lib/balance-reconcile";
-import {  isCreditCardRepaymentTransfer, isFundBuyRefundCashLeg } from "@/lib/transaction-semantics";
+import {  isCreditCardRepaymentTransfer, isFundBuyRefundCashLeg, TRANSACTION_SOURCE_MONEY_INCOME } from "@/lib/transaction-semantics";
 import { ensureSettlementTransferCategory, resolveCategorySnapshot, resolveCreditCardRepaymentCategory } from "@/lib/default-categories";
 import { getInvestmentCategoryName } from "@/lib/investment-category";
 import { buildWealthCashFlowNote } from "@/lib/wealth-cash-note";
@@ -368,6 +368,8 @@ export default async function Home({
     view?: string;
     /** 股票视图页签：`repo` = 直接落在逆回购页签（胶囊菜单入口用）。 */
     stockTab?: string;
+    /** 绑定货基的钱包明细：1 = 表头「收益」开关勾上，列出货基收益行。 */
+    showMoneyIncome?: string;
     billMonth?: string;
     hideZeroBills?: string;
     hideSettledBills?: string;
@@ -756,7 +758,14 @@ export default async function Home({
   const pagedDetailData = usePagedDetailEntries
     ? await loadEntriesPageForAccount(
         isAllCashView ? cashLedgerAccountIds : accountId,
-        JSON.stringify(hidFilter),
+        // 绑定货基的钱包：「收益」开关没勾就在 SQL 显示层排除货基收益行；
+        // 余额折叠链不过滤，收益仍然计入账户余额（只是不在表里列出）。
+        JSON.stringify({
+          ...hidFilter,
+          ...(moneyFundWallet?.linkedFundCode && params?.showMoneyIncome !== "1"
+            ? { filters: { entryOriginNot: [TRANSACTION_SOURCE_MONEY_INCOME] } }
+            : {}),
+        }),
         pagedDetailPage,
         pagedDetailPageSize,
         initialDetailRangeStr,
@@ -4050,6 +4059,10 @@ export default async function Home({
               <div className="panel-surface flex min-h-0 flex-1 flex-col overflow-hidden">
                 <BasicDetailPanel
                   accountId={detailScopeAccountId}
+                  // 绑定货基的钱包：表头「交易类型」筛选换成「收益」开关，
+                  // 默认不勾（和后端 SQL 的排除条件一致）。
+                  showMoneyIncomeToggle={!!moneyFundWallet?.linkedFundCode}
+                  showMoneyIncome={params?.showMoneyIncome === "1"}
                   isInvestAccount={isInvestAccount}
                   entries={pagedDetailEntries}
                   totalCount={detailFilteredCount}
