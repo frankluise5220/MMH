@@ -56,12 +56,22 @@ function vpsX86Url(version) {
   return `http://fnapp.floatingice.win/apps/mmh-${version}.fpk`;
 }
 
-function expectedReleaseAssets(version) {
+// 0.1.87 起 fnOS 只发轻量包（`-external-node.fpk`）：bundled 版改由应用中心/软仓
+// 按需构建，不再作为 Release 资产。老版本继续认旧名，历史版本巡检不受影响。
+function fpkCandidates(version, arch) {
   return [
-    `mmh-fnos-v${version}-x86_64.fpk`,
-    `mmh-fnos-v${version}-arm64.fpk`,
-    `mmh-synology-v${version}-x86_64.spk`,
-    `mmh-synology-v${version}-arm64.spk`,
+    `mmh-fnos-v${version}-${arch}-external-node.fpk`,
+    `mmh-fnos-v${version}-${arch}.fpk`,
+  ];
+}
+
+// 一个「渠道位」至少要有一个候选在场（不是要求每个文件名都存在）。
+function expectedAssetGroups(version) {
+  return [
+    { label: "fnOS x86 包", names: fpkCandidates(version, "x86_64") },
+    { label: "fnOS arm 包", names: fpkCandidates(version, "arm64") },
+    { label: "群晖 x86 包", names: [`mmh-synology-v${version}-x86_64.spk`] },
+    { label: "群晖 arm 包", names: [`mmh-synology-v${version}-arm64.spk`] },
   ];
 }
 
@@ -102,10 +112,13 @@ function createChecks({ version, repo }) {
         );
         if (release.draft) throw new Error("Release 仍是 draft，未公开");
         for (const asset of release.assets || []) state.assets.set(asset.name, asset);
-        const missing = expectedReleaseAssets(version).filter((name) => !state.assets.has(name));
+        const groups = expectedAssetGroups(version);
+        const missing = groups
+          .filter((group) => !group.names.some((name) => state.assets.has(name)))
+          .map((group) => group.label);
         if (missing.length) throw new Error(`缺少资产：${missing.join("、")}`);
         const extras = [...state.assets.keys()].filter((name) => !name.includes(`v${version}`));
-        return `${expectedReleaseAssets(version).length} 个资产齐全${
+        return `${groups.length} 个渠道位齐全${
           extras.length ? `（另有：${extras.join("、")}）` : ""
         }`;
       },
@@ -152,12 +165,12 @@ function createChecks({ version, repo }) {
           );
         }
         const problems = [];
-        for (const [arch, assetName] of [
-          ["x86", `mmh-fnos-v${version}-x86_64.fpk`],
-          ["arm", `mmh-fnos-v${version}-arm64.fpk`],
+        for (const [arch, candidates] of [
+          ["x86", fpkCandidates(version, "x86_64")],
+          ["arm", fpkCandidates(version, "arm64")],
         ]) {
           const pkg = entry.packages?.[arch] || {};
-          const asset = state.assets.get(assetName);
+          const asset = candidates.map((name) => state.assets.get(name)).find(Boolean);
           if (!pkg.sha256 || !pkg.size) {
             problems.push(`${arch} 缺 sha256/size（回填未完成）`);
             continue;
@@ -260,7 +273,9 @@ function createChecks({ version, repo }) {
         const response = await request(vpsX86Url(version), { method: "HEAD" });
         if (!response.ok) throw new Error(`mmh-${version}.fpk 返回 HTTP ${response.status}`);
         const size = Number(response.headers.get("content-length"));
-        const asset = state.assets.get(`mmh-fnos-v${version}-x86_64.fpk`);
+        const asset = fpkCandidates(version, "x86_64")
+          .map((name) => state.assets.get(name))
+          .find(Boolean);
         if (asset && size !== Number(asset.size)) {
           throw new Error(`镜像包 ${size} 字节与 Release 资产 ${asset.size} 不符`);
         }
