@@ -1,3 +1,5 @@
+import { isRuralBankName } from "./statement/credit-card-institution";
+
 type ImportAccountKind = "bank_debit" | "bank_credit" | "loan" | "cash" | "ewallet" | "investment" | "other" | string;
 
 type ImportAccountMatchSource = {
@@ -234,6 +236,8 @@ const BANK_ALIASES: Array<{ canonical: string; aliases: string[] }> = [
   // 「农商行」「农商」是账单里最常见的简写（财智导出写「付斌·农商行·信用卡」）。
   { canonical: "农商银行", aliases: ["农村商业银行", "农村信用社", "农信社", "农信", "江苏农信", "江苏农商", "省农信", "农商行", "农商"] },
 ];
+
+/** 农商体系的判定与账单解析共用一份（src/lib/statement/credit-card-institution.ts）。 */
 
 const ACCOUNT_KIND_ALIASES: Array<{ kind: ImportAccountKind; aliases: string[] }> = [
   { kind: "bank_credit", aliases: ["信用卡", "贷记卡"] },
@@ -790,11 +794,14 @@ export function parseImportPaymentCardAccount(
   );
   if (!bank) return null;
 
-  // 机构名优先用原文里写全的那个：「江苏农商联合银行储蓄卡(5516)」的 canonical
-  // 只有「农商银行」，直接用会把账户名写成「农商银行储蓄卡(5516)」，
-  // 与账本机构名「江苏农商联合银行」不一致。原文出现的最长机构名更准。
+  // 机构名优先用原文里写全的那个（「中国工商银行储蓄卡」比 canonical「工商银行」更准）；
+  // 但农商体系例外：原文写「江苏农村商业银行」也要收到「农商银行」，与账本口径一致。
   const spellOut = raw.match(/[\u4e00-\u9fa5]{2,12}?(?:银行|信用社)/)?.[0] ?? "";
-  const institutionName = spellOut && expandImportBankName(spellOut).length > 0 ? spellOut : bank.canonical;
+  const institutionName = isRuralBankName(spellOut)
+    ? "农商银行"
+    : spellOut && expandImportBankName(spellOut).length > 0
+      ? spellOut
+      : bank.canonical;
 
   const last4 = extractImportAccountLast4(raw);
   const kindLabel = raw.match(/储蓄卡|借记卡|一卡通|银行卡|信用卡|贷记卡/)?.[0] ?? (kind === "bank_credit" ? "信用卡" : "储蓄卡");

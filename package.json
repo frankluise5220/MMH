@@ -37,6 +37,7 @@
     "check:account-label": "node scripts/check-account-label.cjs",
     "check:client-boundary": "node scripts/check-client-boundary.cjs",
     "check:import-match": "tsx scripts/verify-import-account-match.ts",
+    "check:credit-card-institution": "tsx scripts/verify-credit-card-institution.ts",
     "check:single-writer": "node scripts/check-single-writer.cjs",
     "check:account-balance": "tsx scripts/verify-account-balance-window.ts",
     "check:running-balance": "tsx scripts/verify-detail-running-balance-recalc.ts",

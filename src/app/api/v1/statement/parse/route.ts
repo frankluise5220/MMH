@@ -12,6 +12,8 @@ import {
   parseSpdbOriginalAmount,
   STATEMENT_IMPORT_FIELD_HEADERS,
 } from "@/lib/statement/header-catalog";
+import { detectStatementBankName as detectBankName } from "@/lib/statement/credit-card-institution";
+import { extractStatementOwnerName } from "@/lib/statement/statement-owner-name";
 import {
   hasImportableStatementRows,
   parseStatementTemplateRows,
@@ -590,52 +592,6 @@ function normalizeStatementMonthDayCell(value?: string, period?: ReturnType<type
   return ymdFromParts(period.end.year, month, day);
 }
 
-const BANK_NAMES = [
-  "兴业银行",
-  "浦发银行",
-  "平安银行",
-  "邮储银行",
-  "中国邮政储蓄银行",
-  "江苏农信",
-  "江苏农村商业银行",
-  "江苏银行",
-  "工商银行",
-  "农业银行",
-  "中国银行",
-  "建设银行",
-  "交通银行",
-  "招商银行",
-  "中信银行",
-  "民生银行",
-  "光大银行",
-  "广发银行",
-  "华夏银行",
-];
-
-/**
- * 全国有上百家「XX农村商业银行 / XX农商银行 / XX农村信用社」，白名单永远盖不全。
- * 命中这类机构时统一归到账本的「农商银行」口径（BANK_ALIASES 的 canonical，
- * 其后端匹配别名含「农村商业银行 / 农村信用社 / 江苏农商 …」），
- * 这样账户名能稳定拼成「付斌的农商银行信用卡(2058)」并落回既有账户。
- */
-const RURAL_BANK_NAME_RE = /农村商业银行|农商银行|农村合作银行|农村信用社|农信社|农商行/;
-
-function detectBankName(text: string) {
-  const normalized = text.replace(/\s+/g, "");
-  const found = BANK_NAMES.find((name) => normalized.includes(name));
-  if (found === "中国邮政储蓄银行") return "邮储银行";
-  if (found) return found;
-  // 有些账单只写「平安信用卡」「中信信用卡」，通篇没有「银行」二字；把
-  // 「信用卡/贷记卡」当「银行」再比一次，否则整张账单的机构名都是空的。
-  const aliasText = normalized.replace(/(?:银行)?信用卡|贷记卡/g, "银行");
-  const aliasFound = BANK_NAMES.find((name) => aliasText.includes(name));
-  if (aliasFound === "中国邮政储蓄银行") return "邮储银行";
-  if (aliasFound) return aliasFound;
-  // 「江苏农商信用卡」这类写法只有把「信用卡」换成「银行」后才露出「农商银行」。
-  if (RURAL_BANK_NAME_RE.test(normalized) || RURAL_BANK_NAME_RE.test(aliasText)) return "农商银行";
-  return "";
-}
-
 function extractStatementAccountHeader(rowText: string, fallbackInstitutionName?: string) {
   const normalized = rowText.replace(/\s+/g, " ").trim();
   if (!/(?:主卡|副卡|Main Card|Supplementary Card|合计)/i.test(normalized)) return null;
@@ -661,55 +617,6 @@ function extractStatementAccountHeader(rowText: string, fallbackInstitutionName?
 
 function isDebitOrRepaymentAccountContext(value: string) {
   return /扣款账号|扣款账户|还款账号|还款账户|自动还款|代扣|借记卡|储蓄卡|Debit\s*Account|Debit\s*Card|Payment\s*Account/i.test(value);
-}
-
-/** 「尊敬的客户」「尊敬的先生/女士」这类不是姓名，不能当所有人。 */
-const STATEMENT_OWNER_NAME_BLOCKLIST = new Set([
-  "客户",
-  "用户",
-  "您",
-  "尊敬的",
-  "亲爱的",
-  "持卡人",
-  "本人",
-  "会员",
-  "先生",
-  "女士",
-  "小姐",
-]);
-
-function normalizeStatementOwnerName(raw: string | undefined) {
-  const compact = String(raw ?? "").replace(/\s+/g, "").replace(/^尊敬(?:的)?/, "");
-  if (!compact) return "";
-  // 「付斌先生」被贪婪吃进称谓时剥掉；「尊敬的先生」剥完是空，按拒绝处理。
-  const name = compact.replace(/(?:先生|女士|小姐)$/, "");
-  if (!name || STATEMENT_OWNER_NAME_BLOCKLIST.has(name) || STATEMENT_OWNER_NAME_BLOCKLIST.has(compact)) return "";
-  return /^[\u4e00-\u9fa5·]{2,6}$/.test(name) ? name : "";
-}
-
-/**
- * 账单里的持卡人（所有人）。农商行/平安等写法差异很大：
- * 「尊敬的 付斌 先生，您好」「尊敬的付斌先生：」「付斌 先生」另起一行。
- * 称谓后面允许直接跟标点/您好/空白/结尾，不能强制要求「您好」两个字。
- */
-function extractStatementOwnerName(plain: string) {
-  const text = String(plain ?? "");
-  const salutation = text.match(
-    /尊敬(?:的)?\s*([\u4e00-\u9fa5·]{2,10}?)\s*(?:(?:先生|女士|小姐)\s*)?(?:[，,：:、]|您好|你好|\s|$)/,
-  )?.[1];
-  const fromSalutation = normalizeStatementOwnerName(salutation);
-  if (fromSalutation) return fromSalutation;
-
-  // 「付斌 先生」只在信件头部找，避免正文里出现的「张三 先生」被当成持卡人。
-  const head = text.replace(/\s+/g, " ").trim().slice(0, 600);
-  const titled = head.match(
-    /(?:^|[\s，,：:；;])([\u4e00-\u9fa5·]{2,6})\s*(?:先生|女士|小姐)(?=$|[\s，,：:；;。！!？?、])/,
-  )?.[1];
-  const fromTitled = normalizeStatementOwnerName(titled);
-  if (fromTitled) return fromTitled;
-
-  const labeled = text.match(/(?:持卡人|卡片所有人|账户所有人|户名)\s*[:：]\s*([\u4e00-\u9fa5·]{2,6})/)?.[1];
-  return normalizeStatementOwnerName(labeled);
 }
 
 function extractCreditCardLast4(text: string, fallbackInstitutionName?: string) {

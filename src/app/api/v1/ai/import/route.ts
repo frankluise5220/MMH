@@ -19,6 +19,7 @@ import { assertInstitutionDisplayNamesUnique } from "@/lib/server/institution-na
 import { findRecentTransactionDuplicate } from "@/lib/server/transaction-dedupe";
 import { createImportAccountMatcher } from "@/lib/account-import-match";
 import { enrichAiParsedItems } from "@/lib/statement/ai-import-enrichment";
+import { isRuralBankName } from "@/lib/statement/credit-card-institution";
 import type { ParsedItem } from "@/lib/ai/parser";
 import { isSpendableAccount } from "@/lib/account-kind-utils";
 import { ENTRY_ORIGIN_AI_IMPORT } from "@/lib/transaction-semantics";
@@ -317,6 +318,9 @@ export async function POST(req: NextRequest) {
   }
 
   function normalizeInstitutionName(text: string) {
+    // 农商体系统一归到账本「农商银行」口径：账单会写「XX农村商业银行 / XX农商银行 /
+    // XX农村信用社 / 江苏农信」，逐家建机构会把同一家银行拆成十几个账户。
+    if (isRuralBankName(text)) return "农商银行";
     if (/招行|招商/.test(text)) return "招商银行";
     if (/交行|交通/.test(text)) return "交通银行";
     if (/工行|工商银行/.test(text)) return "工商银行";
@@ -332,7 +336,6 @@ export async function POST(req: NextRequest) {
     if (/平安/.test(text)) return "平安银行";
     if (/邮储/.test(text)) return "邮储银行";
     if (/中信/.test(text)) return "中信银行";
-    if (/农商行|农商银行|农信|农商/.test(text)) return "农商银行";
     if (/花呗|余额宝|支付宝/.test(text)) return "支付宝";
     if (/微信/.test(text)) return "微信";
     if (/白条|京东/.test(text)) return "京东金融";
