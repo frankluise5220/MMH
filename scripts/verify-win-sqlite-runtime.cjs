@@ -60,7 +60,11 @@ fs.writeFileSync(
     // 存量库分支会按这份“全新安装结构”补建缺失的表；applyRuntimeMigrations 里给
     // transactions / precious_metal_transactions / FundConfirmDays 补列时不判表存在，
     // 所以这三张表必须在这里出现，否则校验脚本自己就会以 "no such table" 失败。
-    'CREATE TABLE "transactions" ("id" TEXT NOT NULL PRIMARY KEY, "source" TEXT);',
+    // 2026-11-20 货基收益迁移（type/source 改写 + 「一天一条」部分唯一索引）会读写
+    // type / deletedAt / accountId / date / categoryId / categoryName / householdId。
+    // 真实存量库这些列早就在，夹具若只建 id/source 会让 applyRuntimeMigrations 以
+    // "no such column: deletedAt" 失败——失败的是夹具，不是迁移代码。
+    'CREATE TABLE "transactions" ("id" TEXT NOT NULL PRIMARY KEY, "source" TEXT, "type" TEXT NOT NULL DEFAULT \'expense\', "accountId" TEXT, "date" DATETIME, "deletedAt" DATETIME, "householdId" TEXT, "categoryId" TEXT, "categoryName" TEXT, "fundSubtype" TEXT);',
     'CREATE TABLE "precious_metal_transactions" ("id" TEXT NOT NULL PRIMARY KEY, "date" DATETIME NOT NULL);',
     'CREATE TABLE "FundConfirmDays" ("id" TEXT NOT NULL PRIMARY KEY);',
     'CREATE TABLE "UserSettings" ("id" TEXT NOT NULL PRIMARY KEY, "sessionDays" INTEGER NOT NULL DEFAULT 30);',
@@ -92,11 +96,21 @@ function expect(condition, message) {
 }
 
 const nodeModules = path.join(root, "node_modules");
-const runInit = () =>
-  execFileSync(process.execPath, [path.join(appDir, "scripts", "init-sqlite.cjs")], {
-    env: { ...process.env, MMH_DATA_DIR: dataDir, NODE_PATH: nodeModules },
-    stdio: "ignore",
-  });
+const runInit = () => {
+  try {
+    execFileSync(process.execPath, [path.join(appDir, "scripts", "init-sqlite.cjs")], {
+      env: { ...process.env, MMH_DATA_DIR: dataDir, NODE_PATH: nodeModules },
+      stdio: "pipe",
+      encoding: "utf8",
+    });
+  } catch (error) {
+    // stdio 收起来是为了平时安静；失败时必须把 init-sqlite 的真实报错（"no such column" 等）吐出来，
+    // 否则这里只剩一个 status:1 的 execFileSync 异常，看不出是迁移代码还是夹具的问题。
+    process.stdout.write(String(error.stdout || ""));
+    process.stderr.write(String(error.stderr || ""));
+    throw error;
+  }
+};
 
 runInit();
 
