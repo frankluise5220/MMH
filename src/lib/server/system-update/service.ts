@@ -317,7 +317,17 @@ async function checkImageUpdateNotice(): Promise<UpdateNotice> {
     .map((source) => resultBySource.get(source))
     .find((result) => result?.ok && (result.version?.revision || result.version?.commit || result.version?.digest));
   if (!selected) {
-    return unavailableNotice(target, "image", `镜像版本检查失败或超时，已按顺序尝试：${sourceOrder.join("、")}`);
+    // 失败原因要能直接指向「网络」还是「镜像」，否则用户只会看到「检查失败」。
+    // DNS 故障（NAS 的 resolv.conf 失效、53 端口被拦）在实测里最长见：
+    // updater 报 `dial tcp: lookup <host> on 127.0.0.11:53: i/o timeout`。
+    const attempted = sourceOrder.map((source) => resultBySource.get(source)).filter(Boolean);
+    const rawError = String(attempted.find((result) => result?.error)?.error || "").trim();
+    const dnsFailed = /lookup |no such host|i\/o timeout|server misbehaving|name resolution|ECONNREFUSED/i.test(rawError);
+    const summary = dnsFailed
+      ? "无法解析更新源域名（这台机器的 DNS 不可用）：请先恢复 NAS / 路由器的 DNS 解析，或在 docker-compose.yml 给 updater 加 extra_hosts 指向镜像站 IP 后重启该容器，再重试。"
+      : `镜像版本检查失败或超时，已按顺序尝试：${sourceOrder.join("、")}`;
+    const detail = rawError ? `${summary}（原始错误：${rawError.slice(0, 200)}）` : summary;
+    return unavailableNotice(target, "image", detail);
   }
 
   const remoteVersionObj = selected.version ?? {};

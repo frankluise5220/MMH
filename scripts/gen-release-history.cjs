@@ -30,6 +30,21 @@ const tags = git(["tag", "--list", "v0.1.*", "--sort=-v:refname"])
 // 此时 tag 上的说明还是上一批内容。其余历史版本仍以 tag 为准。
 const workingPkg = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
 
+// 历史说明直接渲染进「系统设置 → 系统更新 → 历史更新」，属于用户可见的公开文案。
+// 旧版本的说明里把真实家庭成员姓名/网名当例子写了进去，生成时统一换成示例名，
+// 这样既不用改写历史 tag，又能保证重跑后不会把姓名带回来。
+const PERSON_NAME_REDACTIONS = [
+  ["付斌", "张三"],
+  ["墨斗鱼", "李四"],
+  ["Fu Bin", "Zhang San"],
+];
+
+function redactPersonNames(text) {
+  let output = String(text || "");
+  for (const [from, to] of PERSON_NAME_REDACTIONS) output = output.split(from).join(to);
+  return output;
+}
+
 const entries = [];
 for (const tag of tags) {
   let pkg;
@@ -43,8 +58,8 @@ for (const tag of tags) {
   const notes = source.mmhReleaseNotesI18n || {};
   // 语言键统一成界面语言码（zh-CN / en-US / ja-JP），与 API 的 RELEASE_NOTES_LANGUAGES 一致；
   // package.json 里历史上可能写 "en"，一并接受。
-  const zh = String(notes["zh-CN"] || "").trim();
-  const en = String(notes["en-US"] || notes["en"] || "").trim();
+  const zh = redactPersonNames(notes["zh-CN"] || "").trim();
+  const en = redactPersonNames(notes["en-US"] || notes["en"] || "").trim();
   if (!zh && !en) continue;
   let date = "";
   try {

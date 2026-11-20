@@ -565,9 +565,29 @@ function getImageVersionCheckBody(imageSourceConfig: ImageSourceConfig | null) {
   return { customAppImage, timeoutMs: IMAGE_VERSION_CHECK_TIMEOUT_MS };
 }
 
+/**
+ * 镜像检查失败的文案。DNS 故障要单独说清楚：实测里最常见的是
+ * `dial tcp: lookup fnapp.floatingice.win on 127.0.0.11:53: i/o timeout`
+ * （NAS 的 resolv.conf 失效 / 53 端口被拦），此时「检查失败」会让人以为是镜像或版本问题。
+ */
+function describeImageVersionFailure(
+  results: ImageVersionSpeedResult[],
+  sourceOrder: string[],
+  error?: unknown,
+) {
+  const raw = String(
+    results.map((result) => result?.error).find((message) => message) ||
+      (error instanceof Error ? error.message : error ? String(error) : ""),
+  ).trim();
+  const dnsFailed = /lookup |no such host|i\/o timeout|server misbehaving|name resolution|ECONNREFUSED/i.test(raw);
+  const summary = dnsFailed
+    ? "无法解析更新源域名（这台机器的 DNS 不可用）：请先恢复 NAS / 路由器的 DNS 解析，或在 docker-compose.yml 给 updater 增加 extra_hosts 指向镜像站 IP 后重启该容器，再重试。"
+    : `镜像版本检查失败或超时，已按顺序尝试：${sourceOrder.join("、")}`;
+  return raw ? `${summary}（原始错误：${raw.slice(0, 200)}）` : summary;
+}
+
 function getImageVersionFetchError(imageSourceConfig: ImageSourceConfig | null) {
-  const sourceText = getImageVersionSourceOrder(imageSourceConfig).join("、");
-  return `镜像版本检查失败或超时，已按顺序尝试：${sourceText}`;
+  return describeImageVersionFailure([], getImageVersionSourceOrder(imageSourceConfig));
 }
 
 async function getImageVersionFallback(
@@ -590,7 +610,9 @@ async function getImageVersionFallback(
     const selected = sourceOrder
       .map((source) => resultBySource.get(source))
       .find((result) => result?.ok && (result.version?.revision || result.version?.commit || result.version?.digest));
-    if (!selected) return null;
+    if (!selected) {
+      return { fetchError: describeImageVersionFailure(results, sourceOrder), canCheckUpdate: false };
+    }
 
     const revision = String(selected.version?.revision || selected.version?.commit || "").trim();
     const remoteDigest = String(selected.version?.digest || "").trim();
@@ -601,7 +623,9 @@ async function getImageVersionFallback(
     const localDigest = String(localImageVersion?.digest || "").trim();
     const remoteCommit = getComparableShortCommit(revision) || remoteDigestShort;
     const localCommit = getComparableShortCommit(base.localCommitFull || base.localCommit);
-    if (!remoteCommit || (!localCommit && !localDigest)) return null;
+    if (!remoteCommit || (!localCommit && !localDigest)) {
+      return { fetchError: describeImageVersionFailure(results, sourceOrder, "镜像缺少可比对的版本信息"), canCheckUpdate: false };
+    }
     const needsUpdate = remoteDigest && localDigest
       ? remoteDigest !== localDigest
       : localCommit !== remoteCommit;
@@ -618,8 +642,8 @@ async function getImageVersionFallback(
       canCheckUpdate: true,
       fetchError: undefined,
     };
-  } catch {
-    return null;
+  } catch (error) {
+    return { fetchError: describeImageVersionFailure([], sourceOrder, error), canCheckUpdate: false };
   }
 }
 
