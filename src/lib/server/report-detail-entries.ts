@@ -11,10 +11,10 @@ import { FUND_ACCOUNT_MONEY_INCOME_STAT_ID_PREFIX } from "@/lib/server/investmen
 import { TRANSACTION_SOURCE_MONEY_INCOME } from "@/lib/transaction-semantics";
 
 /**
- * 报表行背后没有 TxRecord 时需要的信息：真正货基账户（`investProductType=money`）
- * 的每日万份收益结转只写 fund_transactions（`source=money_fund_income`），
- * 报表把它算进了收入，下钻明细却查不到对应流水。这些行要按报表行原样合成一条
- * 只读明细，否则「合计有、明细缺」。
+ * 报表行背后没有 TxRecord 时需要的信息：报表合计是按统计口径算出来的，很多行
+ * 并没有对应的账本流水 —— 真正货基账户的每日万份收益只写 fund_transactions
+ * （`source=money_fund_income`），赎回收益 / 业务事实派生行也只存在于统计阶段。
+ * 这类行要按报表行原样合成一条只读明细，否则「合计有、明细缺」，用户会认为统计算出错。
  */
 export type ReportDetailSyntheticRow = {
   entryId: string;
@@ -26,6 +26,8 @@ export type ReportDetailSyntheticRow = {
   counterpartyName: string;
   note: string;
   amount: number;
+  /** 货基账户每日万份收益结转：只有这类行需要还原 money income 的 source 与产品类型。 */
+  moneyIncome: boolean;
 };
 
 type ReportDetailEntryOverrides = {
@@ -95,12 +97,13 @@ export function buildReportDetailEntryOverrides(
       }
     }
     // 备用：只有当同 id 在 txRecord 里查不到时才会用到（见 loadReportDetailEntries 末尾）。
-    // 只认「真正货基账户收益」这一类报表行：其他报表行的 entryId 指向的要么是
-    // TxRecord，要么是本来就缺明细的老问题，不能顺手给它们造一条 money income 行。
+    // 报表合计里的每一行都要能在明细里找到落点：查不到 TxRecord 的统计行一律按
+    // 报表行合成只读明细，不再静默丢行。金额与分类都取报表自己的值，保证
+    // 「合计 = 明细之和」；moneyIncome 只用于还原货基收益的 source 语义。
     const rowDate = row.date?.trim().slice(0, 10) ?? "";
     const rowType = row.type === "income" || row.type === "expense" ? row.type : null;
     const isFundAccountMoneyIncomeRow = (row.id ?? "").startsWith(`${FUND_ACCOUNT_MONEY_INCOME_STAT_ID_PREFIX}:`);
-    if (isFundAccountMoneyIncomeRow && rowDate && rowType && !syntheticByEntryId.has(row.entryId)) {
+    if (rowDate && rowType && !syntheticByEntryId.has(row.entryId)) {
       syntheticByEntryId.set(row.entryId, {
         entryId: row.entryId,
         date: rowDate,
@@ -111,6 +114,7 @@ export function buildReportDetailEntryOverrides(
         counterpartyName: row.counterpartyName?.trim() ?? "",
         note: row.note?.trim() ?? "",
         amount: row.amount != null && Number.isFinite(row.amount) ? Math.abs(row.amount) : 0,
+        moneyIncome: isFundAccountMoneyIncomeRow,
       });
     }
   }
@@ -319,8 +323,8 @@ export async function loadReportDetailEntries(
   return uniqueEntryIds.flatMap((entryId) => {
     const entry = detailEntryById.get(entryId);
     if (entry) return [entry];
-    // 真正货基账户的收益结转没有 TxRecord，按报表行合成一条只读明细，
-    // 否则报表合计里有这笔收益、下钻列表里却没有，用户会认为统计算错了。
+    // 报表里有、账本里没有的行（货基结转、赎回收益拆分、业务事实派生行……）按
+    // 报表原值合成一条只读明细，否则报表合计里有这笔数、下钻列表里却没有。
     const synthetic = overrides?.syntheticByEntryId.get(entryId);
     return synthetic && overrides ? [buildSyntheticReportDetailEntry(synthetic, overrides, displayCurrency)] : [];
   });
@@ -332,15 +336,18 @@ function buildSyntheticReportDetailEntry(
   displayCurrency: string,
 ): DetailEntry {
   const amount = overrides.amountByEntryId.get(row.entryId) ?? Math.abs(row.amount);
+  const realizedProfit = overrides.realizedProfitByEntryId.get(row.entryId) ?? null;
   return {
     id: row.entryId,
+    // 报表合成行没有 TxRecord，任何编辑 / 删除 / 对账 / 勾选 / 拖拽都必须关掉，
+    // 否则写回操作会指向一个不存在的账本流水。
     readOnly: true,
     date: row.date,
     amount,
     bookAmount: amount,
     currency: displayCurrency,
     displayAmount: amount,
-    displayRealizedProfit: row.type === "income" ? amount : -amount,
+    displayRealizedProfit: realizedProfit ?? (row.type === "income" ? amount : -amount),
     displayCurrency,
     runningBalance: null,
     type: row.type,
@@ -354,8 +361,8 @@ function buildSyntheticReportDetailEntry(
     fundSubtype: null,
     fundCode: null,
     fundName: row.counterpartyName || null,
-    source: TRANSACTION_SOURCE_MONEY_INCOME,
-    fundProductType: "money",
+    source: row.moneyIncome ? TRANSACTION_SOURCE_MONEY_INCOME : null,
+    fundProductType: row.moneyIncome ? "money" : null,
     fundUnits: null,
     fundNav: null,
     fundFee: null,
