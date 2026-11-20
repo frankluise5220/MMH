@@ -102,11 +102,17 @@ jobs:
         # 放在回填之前，保证「源里有死链」时直接停住，不把回填结果提交上去。
         # 这一步不会误报：workflow 只在 release: published 触发，当前版本一定有 Release；
         # 手动 dispatch 但尚未发布的情况，上面的「Wait for release FPK assets」已经会先失败。
+        #
+        # 2026-11-20 v0.1.88：这一步原本没传 token，脚本匿名遍历十几个历史版本后撞上
+        # 60 次/小时的配额（GitHub API 403 at v0.1.83），回填整步失败。必须显式传 token。
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/sync-fndepot-source.cjs --input deploy/fnos/repository/fnpack.json --check
 
       - name: Backfill sha256/size/updated_at into fnpack.json
         env:
           VERSION: ${{ steps.meta.outputs.version }}
+          GITHUB_TOKEN: ${{ github.token }}
         run: node scripts/sync-fndepot-source.cjs --input deploy/fnos/repository/fnpack.json
 
       - name: Rewrite the FN soft-store 【本版更新】 blocks from package.json

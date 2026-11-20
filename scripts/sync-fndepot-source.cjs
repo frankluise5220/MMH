@@ -108,9 +108,20 @@ function compareVersions(left, right) {
 async function fetchRelease(repo, version) {
   const url = `https://api.github.com/repos/${repo}/releases/tags/v${version}`;
   const headers = { Accept: "application/vnd.github+json", "User-Agent": "mmh-fndepot-sync" };
-  if (process.env.GITHUB_TOKEN) headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
+  // 2026-11-20 v0.1.88：workflow 只导出了 GH_TOKEN（gh CLI 的变量名），这里只认
+  // GITHUB_TOKEN，于是回填改用匿名请求，遍历历史版本到 v0.1.83 就撞上 60 次/小时
+  // 配额返回 403，整个 FnDepot 元数据回填失败。两个变量名都是通行写法，必须都认。
+  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+  if (token) headers.Authorization = `Bearer ${token}`;
   const resp = await fetch(url, { headers });
   if (resp.status === 404) return null;
+  if (resp.status === 403 || resp.status === 429) {
+    const remaining = resp.headers.get("x-ratelimit-remaining");
+    throw new Error(
+      `GitHub API ${resp.status} for ${url} (x-ratelimit-remaining=${remaining ?? "?"}); ` +
+        "export GITHUB_TOKEN or GH_TOKEN so the FnDepot backfill can read every release",
+    );
+  }
   if (!resp.ok) throw new Error(`GitHub API ${resp.status} for ${url}`);
   return resp.json();
 }
