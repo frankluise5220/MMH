@@ -2047,8 +2047,10 @@ export function DetailViewClient({
       ) : null}
       {mobileGroups.length > 0 ? (
         <div className="pb-4">
+          {/* 日期分组不是按日期连续切出来的（表头按金额等列排序时同一天会分成多段），
+              所以 key 只能用「日期 + 位置」：拿首行 id 拼 key 一旦列表里有重复行就会撞 key。 */}
           {mobileGroups.map((group, groupIndex) => (
-            <section key={`${group.date}:${group.entries[0]?.id ?? groupIndex}`} className={detailDateBackground ? (groupIndex % 2 === 0 ? "bg-sky-50/30" : "bg-emerald-50/30") : undefined}>
+            <section key={`${group.date}:${groupIndex}`} className={detailDateBackground ? (groupIndex % 2 === 0 ? "bg-sky-50/30" : "bg-emerald-50/30") : undefined}>
               <div className="sticky top-0 z-10 border-y border-slate-200 bg-slate-100/96 px-3 py-1.5 text-xs font-semibold text-slate-500 backdrop-blur">
                 {formatDateDisplay(group.date, dateDisplayFormat)}
               </div>

@@ -75,7 +75,7 @@ async function fetchDetailPage<T>(
  * 1. 先取一页小的（`DETAIL_ALL_FIRST_PAGE_SIZE`）立刻渲染：行数超过表格虚拟化
  *    阈值（200 行）后虚拟滚动条马上出现，用户不用盯着切「全部」前那一页「自适应」
  *    行数干等。
- * 2. 其余按 `DETAIL_ALL_CHUNK_SIZE` 顺序翻页补齐（首屏已展示的前几行跳过，不重复），
+ * 2. 其余按 `DETAIL_ALL_CHUNK_SIZE` 顺序翻页补齐（首屏已展示的前几行按 id 去重，不重复），
  *    每块通过 `onChunk` 交给视图，边到边显示。服务端按 `rowNumber` 区间取页
  *    （`> offset AND <= offset + pageSize`），页间既不重复也不遗漏，逐笔余额都在
  *    全量口径上算好。
@@ -98,12 +98,33 @@ export async function loadAllDetailEntries<T>({
   const entries: T[] = [];
   let totalCount = Number.NaN;
   const emit = () => onChunk?.([...entries], totalCount);
+  /**
+   * 按 id 去重后再入列。
+   *
+   * 分块是按**位置**翻页的（`rowNumber > offset`），首屏那 500 行又落在第 1 块的区间里，
+   * 所以本来就要跳过重复。但只靠「位置跳过」在加载过程中数据一变就不成立：几万条的
+   * 「全部」视图要翻 9 块，中间只要有人插一笔 / 删一笔（例如货基每日收益结转），
+   * 后面每块的边界就整体位移，同一行会在两块里各出现一次 —— 于是明细列表出现重复行，
+   * 移动端分组还会报 "two children with the same key"。
+   * id 是流水的唯一标识，按它去重既保留顺序，也不会因为总量漂移而漏行 / 重行。
+   */
+  const seenIds = new Set<string>();
+  const appendEntries = (list: T[]) => {
+    for (const entry of list) {
+      const id = (entry as { id?: unknown } | null)?.id;
+      if (typeof id === "string") {
+        if (seenIds.has(id)) continue;
+        seenIds.add(id);
+      }
+      entries.push(entry);
+    }
+  };
 
   // 第一屏：小页先让列表长出来（虚拟滚动阈值 200 行，500 行稳过）。
   try {
     const first = await fetchDetailPage<T>(accountId, 1, DETAIL_ALL_FIRST_PAGE_SIZE, signal, errorMessage, range, filtersJson);
     if (Number.isFinite(first.totalCount)) totalCount = first.totalCount;
-    entries.push(...first.entries);
+    appendEntries(first.entries);
     if (isCurrent && !isCurrent()) {
       return { entries: [...entries], totalCount, stopped: true };
     }
@@ -116,6 +137,7 @@ export async function loadAllDetailEntries<T>({
     if (signal?.aborted) throw error;
     // 首屏失败：丢掉已拿到的一部分，交给下面的分块逻辑从头拉。
     entries.length = 0;
+    seenIds.clear();
     totalCount = Number.NaN;
   }
 
@@ -162,11 +184,10 @@ export async function loadAllDetailEntries<T>({
   }
 
   chunks.sort((a, b) => a.page - b.page);
+  // 按页序合并：首屏的 500 行本来就在第 1 块区间里，交给 appendEntries 按 id 去重，
+  // 不再用「已加载条数 - 块偏移」猜该跳过几行（加载期间数据一变那个算式就错位）。
   for (const chunk of chunks) {
-    // 首屏那 500 行落在第 1 块的区间里，按位置跳过，别拉出重复行。
-    const offset = (chunk.page - 1) * DETAIL_ALL_CHUNK_SIZE;
-    const alreadyLoaded = Math.max(0, Math.min(chunk.entries.length, entries.length - offset));
-    entries.push(...(alreadyLoaded > 0 ? chunk.entries.slice(alreadyLoaded) : chunk.entries));
+    appendEntries(chunk.entries);
   }
   emit();
   return { entries: [...entries], totalCount, stopped: false };
