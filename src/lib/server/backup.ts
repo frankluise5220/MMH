@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { prisma } from "@/lib/db/prisma";
+import { prisma, runSerialized } from "@/lib/db/prisma";
 import { normalizeAiApiMode } from "@/lib/ai/config";
 import { upsertEntryBusinessCashFlowLink } from "@/lib/server/entry-business-link";
 import { INSTALLATION_ID_SETTING_KEY } from "@/lib/server/installation-id";
@@ -1955,7 +1955,7 @@ export async function buildHouseholdBackupPayload(
     prisma.depositProduct.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.bondProduct.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.repoProductCustom.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
-    prisma.account.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
+    runSerialized(() => prisma.account.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] })),
     prisma.regularInvestPlan.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.creditCardInstallmentPlan.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.creditCardBillingDay.findMany({
@@ -1996,8 +1996,8 @@ export async function buildHouseholdBackupPayload(
       orderBy: [{ priority: "asc" }, { createdAt: "asc" }],
     }),
     prisma.statementRecognitionRule.findMany({ where: { householdId }, orderBy: [{ priority: "desc" }, { hitCount: "desc" }, { updatedAt: "desc" }] }),
-    prisma.importBatch.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
-    prisma.txRecord.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
+    runSerialized(() => prisma.importBatch.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] })),
+    runSerialized(() => prisma.txRecord.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] })),
     prisma.emailAccount.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.statementMailAutoImport.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
     prisma.preciousMetalType.findMany({ where: { householdId }, orderBy: [{ sortOrder: "asc" }, { name: "asc" }] }),
@@ -2083,7 +2083,7 @@ export async function buildHouseholdBackupPayload(
       { where: { householdId }, orderBy: [{ createdAt: "asc" }] },
       { tableNames: ["property_transactions"] },
     ),
-    prisma.entryBusinessLink.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
+    runSerialized(() => prisma.entryBusinessLink.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] })),
     includeGlobals
       ? prisma.fundNavCache.findMany({ orderBy: [{ fundCode: "asc" }, { navDate: "asc" }] })
       : Promise.resolve([]),
@@ -2161,11 +2161,11 @@ export async function buildHouseholdBackupPayload(
     accountIds.length > 0
       ? prisma.fundSnapshot.findMany({ where: { accountId: { in: accountIds } }, orderBy: [{ accountId: "asc" }, { snapshotDate: "asc" }] })
       : Promise.resolve([]),
-    prisma.attachment.findMany({ where: { transactions: { householdId } }, orderBy: [{ createdAt: "asc" }] }),
-    prisma.entryTag.findMany({
+    runSerialized(() => prisma.attachment.findMany({ where: { transactions: { householdId } }, orderBy: [{ createdAt: "asc" }] })),
+    runSerialized(() => prisma.entryTag.findMany({
       where: { transactions: { householdId } },
       orderBy: [{ entryId: "asc" }, { tagId: "asc" }],
-    }),
+    })),
     prisma.householdPreference.findMany({ where: { householdId }, orderBy: [{ createdAt: "asc" }] }),
   ]);
 

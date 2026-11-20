@@ -8,8 +8,15 @@ const globalForPrisma = globalThis as unknown as {
   prismaPool?: Pool;
 };
 
+/**
+ * 池上限。NAS 机器上 pg 的 max_connections 通常只有 100，不能开太大；
+ * 但 4 太小：手动备份/系统备份会在一个 `Promise.all` 里发起 80+ 条查询，
+ * 4 个连接瞬间被占满，同期的页面请求全部排在队尾并撞 `connectionTimeoutMillis`
+ * （2026-11-20 生产现象：每 6 小时自动备份时全站 500 约 5 分钟）。
+ * 提到 8 让备份与页面各有一半可用的连接，配合 backup.ts 里的大表串行化。
+ */
 function defaultPgPoolMax() {
-  return process.env.NODE_ENV === "production" ? 4 : 8;
+  return 8;
 }
 
 export function getConfiguredPgPoolMax() {
@@ -39,6 +46,24 @@ export function getConfiguredTransactionOptions() {
     timeout: Number.isFinite(timeout) && timeout > 0 ? timeout : 30_000,
     maxWait: Number.isFinite(maxWait) && maxWait > 0 ? maxWait : 10_000,
   };
+}
+
+/**
+ * 把几条查询排成一条串行链，避免它们在同一个 `Promise.all` 里同时抢连接。
+ *
+ * 只给备份导出里「单表就能读几十 MB」的查询用（`transactions`、`entryBusinessLinks`、
+ * `attachments`、`entryTags`、`importBatches`）。链是进程级的，一旦有慢查询排进去，
+ * 后续 `runSerialized` 调用都要等它，所以**不要**在请求路径上使用。
+ */
+let serializedTail: Promise<unknown> = Promise.resolve();
+
+export function runSerialized<T>(task: () => Promise<T>): Promise<T> {
+  const run = serializedTail.then(task, task);
+  serializedTail = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
 }
 
 /**
@@ -73,10 +98,17 @@ function createClient(): PrismaClient {
   const pool = globalForPrisma.prismaPool ?? new Pool({
     connectionString,
     max: getConfiguredPgPoolMax(),
-    connectionTimeoutMillis: Number(process.env.PG_CONNECT_TIMEOUT_MS ?? 5_000),
+    // 5s 只够「池里有空连接」的场景；备份那几十条并发查询排队时，5s 会让备份自己
+    // 和同期页面请求一起失败（报错文案是 pg-pool 的 connection timeout，看起来像数据库挂了）。
+    connectionTimeoutMillis: Number(process.env.PG_CONNECT_TIMEOUT_MS ?? 10_000),
     idleTimeoutMillis: Number(process.env.PG_IDLE_TIMEOUT_MS ?? 30_000),
     keepAlive: true,
     keepAliveInitialDelayMillis: Number(process.env.PG_KEEPALIVE_INITIAL_DELAY_MS ?? 10_000),
+  });
+  // 空闲连接被服务端/中间设备掐断时 pg 会在这里抛错；没有监听器会变成
+  // unhandled 'error' 事件直接带走进程，日志里也看不到原因。
+  pool.on("error", (error) => {
+    console.error("[prisma] pg pool idle client error:", error instanceof Error ? error.message : String(error));
   });
   globalForPrisma.prismaPool = pool;
 
