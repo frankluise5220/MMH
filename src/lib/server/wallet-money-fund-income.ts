@@ -8,6 +8,7 @@ import { resolveFundName } from "@/lib/fund/fundProfile";
 import { ensureMoneyFundYieldRange, shiftYmd } from "@/lib/fund/moneyFundYield";
 import { moneyFundDailyIncome } from "@/lib/server/money-fund-income-accrual";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
+import { createManySkipDuplicatesCompat } from "@/lib/server/prisma-create-many";
 import { runExclusive, utcDayKey } from "@/lib/server/interest-accrual";
 import { logger } from "@/lib/logger";
 import { ENTRY_ORIGIN_SCHEDULED_TASK, TRANSACTION_SOURCE_MONEY_INCOME } from "@/lib/transaction-semantics";
@@ -21,8 +22,13 @@ import { ENTRY_ORIGIN_SCHEDULED_TASK, TRANSACTION_SOURCE_MONEY_INCOME } from "@/
  *
  *   当日收益 = 前一日日终余额 ÷ 10000 × 当日每万份收益
  *
- * 收益直接在本钱包记一条 `type=investment` 的流水（分类「基金收益」），余额随之上涨，
+ * 收益直接在本钱包记一条 `type=income` 的流水（分类「基金收益」），余额随之上涨，
  * 次日再按新的余额计息（自然复利）。不产生份额、不生成申赎腿、不影响基金持仓。
+ *
+ * 为什么是 income 而不是 investment（2026-11-20 用户裁定）：万份收益就是当天到账的
+ * 收入，不是基金申赎。记成 investment 会让明细把它当「基金赎回」编辑，弹基金交易窗、
+ * 还要求选一个「货币基金账户」——轻量模型里根本没有这个账户。source 仍保留，
+ * 它只是幂等键和报表口径标记，与 type 无关。
  *
  * 同一只钱包可以在不同时间挂不同的货基（用户 2026-11-19 追加要求）：
  * 绑定关系存在 wallet_linked_funds 的「区间」里，逐日计息时按日期找到当天生效的那一段，
@@ -33,7 +39,9 @@ import { ENTRY_ORIGIN_SCHEDULED_TASK, TRANSACTION_SOURCE_MONEY_INCOME } from "@/
  *      持有了一整天的钱少拿收益（货基规则是赎回份额 T+1 起才不享收益）。
  *   2. 日终余额必须与明细/账户余额同一条折叠链（`applyBalanceAnchorEntry`），
  *      否则「收益基数」会和用户看到的余额对不上。
- *   3. 幂等：同一钱包同一天同一只基金只允许一条 `source=money_fund_income`；重复触发不会翻倍。
+ *   3. 幂等：同一钱包同一天只允许一条 `source=money_fund_income`（**与基金代码无关**）。
+ *      钱包里的钱一天只能呆在一只货基里，换绑当天不可能两头都拿收益；把基金代码放进
+ *      幂等键会让「新旧两段区间有一天重叠」结出两条收益（2026-11-20 用户报的重复收益）。
  */
 
 const MONEY_INCOME_CATEGORY_NAME = "基金收益";
@@ -371,7 +379,8 @@ async function accrueOneWallet(params: {
   const minFromKey = plans.reduce((min, plan) => (plan.fromKey < min ? plan.fromKey : min), plans[0].fromKey);
   const maxToKey = plans.reduce((max, plan) => (plan.toKey > max ? plan.toKey : max), plans[0].toKey);
 
-  // 幂等：本批已经结过的 (日期, 基金) 直接跳过（重复触发不会翻倍）。
+  // 幂等键是「日期」而不是「日期 + 基金代码」：一只钱包一天只可能有一只货基在生息，
+  // 换绑/新增段的区间只要有一天重叠，按基金代码去重就会结出两条收益。
   const existing = new Set(
     (
       await prisma.txRecord.findMany({
@@ -384,15 +393,24 @@ async function accrueOneWallet(params: {
             lte: new Date(`${maxToKey}T00:00:00.000Z`),
           },
         },
-        select: { date: true, fundCode: true },
+        select: { date: true },
       })
-    ).map((row) => `${utcDayKey(row.date)}|${String(row.fundCode ?? "").trim()}`),
+    ).map((row) => utcDayKey(row.date)),
   );
 
   const { balanceOf } = await loadWalletDailyEndBalance(wallet.id, maxToKey);
 
   let created = 0;
   let totalIncome = 0;
+  /**
+   * 本轮已经排进 rows 的收益累计（按日升序处理，轮到某天时它就等于「该日之前」的收益之和）。
+   *
+   * 为什么不直接信 balanceOf：折叠链只读库里已有的行，本轮要写的收益行还没落库，
+   * 于是每一天的基数都停在「删完之后/补之前」的那个余额上——收益不再滚进本金，
+   * 重算出来的每天份额一模一样，备注里的份额也跟着错（2026-11-20 用户报）。
+   * 货基按面值计，收益次日就变成份额，必须把这部分加进基数。
+   */
+  let carriedIncome = 0;
   const rows: Prisma.TxRecordCreateManyInput[] = [];
 
   for (const plan of plans) {
@@ -408,17 +426,22 @@ async function accrueOneWallet(params: {
       .sort();
 
     for (const day of days) {
-      if (existing.has(`${day}|${fundCode}`)) continue;
-      const base = balanceOf(shiftYmd(day, -1));
+      // existing 同时承担两件事：库里已有的收益日、以及本轮前面几段已经排过的收益日。
+      if (existing.has(day)) continue;
+      // 前一日日终余额 + 本轮此前各天已排的收益（还没落库，折叠链看不到，见 carriedIncome）。
+      const base = round2(balanceOf(shiftYmd(day, -1)) + carriedIncome);
       if (!(base > 0)) continue;
       const per10k = plan.yields.get(day)!;
       const income = moneyFundDailyIncome(base, per10k);
       if (income === 0) continue;
+      existing.add(day);
+      carriedIncome = round2(carriedIncome + income);
       rows.push({
         householdId,
         accountId: wallet.id,
         accountName: wallet.name,
-        type: TransactionType.investment,
+        // 收益是收入（2026-11-20）：不是基金申赎，明细/编辑都按 income 处理。
+        type: TransactionType.income,
         amount: new Prisma.Decimal(income),
         date: new Date(`${day}T00:00:00.000Z`),
         currency: wallet.currency ?? "CNY",
@@ -432,11 +455,10 @@ async function accrueOneWallet(params: {
         fundProductType: FundProductType.money,
         // 轻量模型没有份额：余额就是本金，收益只加余额（不写 fundUnits，免得被当成持仓）。
         //
-        // fundSubtype 故意留空（收益不是申购）：库里有个触发器
-        // （transactions_set_investment_system_category）会给 investment 行兜底分类，
-        // 落库的 categoryName 会是「基金买入」——账簿里的「基金收益」分类是 income 型，
-        // 触发器只认 investment 型分类。明细展示层按 source=money_fund_income 覆盖成
-        // 「收益结转」，月度收益/买入汇总也排除这些行，所以不要为它另造同名分类。
+        // fundSubtype 留空（收益不是申购）。type=income 后分类就是账簿里那个 income 型
+        // 的「基金收益」，不会再被 transactions_set_investment_system_category 这个
+        // investment 触发器改写成「基金买入」；月度收益/买入汇总仍按 source 排除这些行，
+        // 所以不要为它另造同名分类。
         fundSubtype: null,
         fundNav: null,
         fundUnits: null,
@@ -451,8 +473,10 @@ async function accrueOneWallet(params: {
   }
 
   if (rows.length > 0) {
-    // createMany 一次落库：补历史时逐条 create 会把几十秒耗在往返上。
-    await prisma.txRecord.createMany({ data: rows });
+    // 一次落库；skipDuplicates 是并发的最后一道闸——两个实例/两个手工触发同时补历史时，
+    // 「先查后写」都查不到对方尚未提交的行，只有数据库唯一索引能拦住重复。
+    const inserted = await createManySkipDuplicatesCompat(prisma.txRecord, rows);
+    created = inserted.count;
     needBalanceRecalc = true;
   }
 

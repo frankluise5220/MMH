@@ -626,6 +626,9 @@ function activityLabel(type: string, fundSubtype: string | null, source: string 
   }
   if ((source === "advance" || source === "reimbursement") && type !== "expense") return t("txForm.advance");
   if (type === "investment" && (source === "deposit" || source === "deposit_manual")) return t("detailView.deposit");
+  // 钱包绑货基的每日收益结转就是收入（2026-11-20 起落库 type=income，老行迁移前仍是
+  // investment）：类型列必须读「收入」，否则明细还在叫它「投资」。
+  if (source === TRANSACTION_SOURCE_MONEY_INCOME) return formatType("income", t);
   return formatType(type, t);
 }
 
@@ -1088,6 +1091,10 @@ export function DetailViewClient({
     if (entry.type === "investment") return investmentCategoryLabel(entry, entryFundProductType, t);
     if (isCreditCardRepaymentDisplayEntry(entry)) return t("transaction.category.creditCardRepayment");
     if (isLicensedInsuranceEntry(entry)) return getInsuranceDetailCategoryName(entry);
+    // 钱包货基收益（2026-11-20 起 type=income）的 categoryName 仍不可信：老行的
+    // 「基金收益」被 investment 触发器改写过、新行迁移也不是同一条分类记录。
+    // 统一按 source 显示，和基金账户侧的收益行同名。
+    if (String(entry.source ?? "") === TRANSACTION_SOURCE_MONEY_INCOME) return t("fund.subtype.moneyIncome");
     const categoryLabel = systemCategoryLabel(entry.categoryName, t);
     if (categoryLabel) return categoryLabel;
     if (entry.type === "income" && entry.source === "advance") {
@@ -1268,6 +1275,13 @@ export function DetailViewClient({
           },
         },
       };
+    }
+    // 钱包绑货基的每日收益结转是「收入」，不是基金赎回：走普通收支编辑窗。
+    // 否则基金窗会把它当成赎回、还要求选一个轻量模型里根本不存在的货币基金账户
+    // （2026-11-20 用户报障）。迁移前的老行还是 investment，也一并按收入编辑。
+    if (String(e.source ?? "") === TRANSACTION_SOURCE_MONEY_INCOME) {
+      const incomeEdit = buildBasicEntryEditPayload({ ...e, type: "income" }, flowAccountIdOf(e));
+      return { edit: { ...incomeEdit, type: "income", reconciledReadOnly: isReconciledEntry(e) } };
     }
     const entryFundProductType = entryProductTypeOf(e);
     const isRedeemEditEntry =

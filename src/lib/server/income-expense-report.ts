@@ -19,6 +19,7 @@ import { loadFundAccountMoneyIncomeEntries, loadFundStatisticSourceEntries, load
 import type { HouseholdContext } from "@/lib/server/household-scope";
 import { getBusinessResultStatisticItems, getIncomeExpenseStatisticAmount, getInvestmentStatisticItems, isBondInterestIncomeEntry } from "@/lib/transaction-statistics";
 import { BALANCE_INITIALIZATION_SOURCE, BALANCE_RECONCILE_SOURCE } from "@/lib/balance-reconcile";
+import { TRANSACTION_SOURCE_MONEY_INCOME } from "@/lib/transaction-semantics";
 import { buildStatisticsCurrencyConverter } from "@/lib/server/statistics-currency";
 import { getReportEntryDate } from "@/lib/report-entry-date";
 import { getServerT } from "@/lib/server/i18n";
@@ -287,6 +288,12 @@ export async function getIncomeExpenseReport(
         OR: [
           { type: { in: [TransactionType.income, TransactionType.expense] } },
           { type: TransactionType.investment, source: "insurance" },
+        ],
+        // 钱包货基收益（source=money_fund_income）在 walletMoneyIncomeRecords 里单独
+        // 统计。2026-11-20 起这些行是 income 型，不排除就会在这里被当成普通收入再算一次。
+        // source 可空，不能写成 source: { not: ... }（SQL 的 NULL 比较会把普通收支整类筛掉）。
+        AND: [
+          { OR: [{ source: null }, { source: { not: TRANSACTION_SOURCE_MONEY_INCOME } }] },
         ],
         date: { gte: rangeStart, lt: endExclusive },
         ...accountFilter,

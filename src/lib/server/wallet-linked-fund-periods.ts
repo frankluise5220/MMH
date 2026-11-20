@@ -13,6 +13,7 @@
 import { Prisma } from "@prisma/client";
 import { parseDateInputToUtc } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
+import { getFundProfileNameMap, normalizeFundDisplayName } from "@/lib/fund/fundProfile";
 import { logger } from "@/lib/logger";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { shiftYmd } from "@/lib/fund/moneyFundYield";
@@ -52,6 +53,24 @@ export const WALLET_LINKED_FUND_ERROR = {
 } as const;
 
 const YMD_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/**
+ * 名称兜底：客户端没带（或只带了代码本身）时用基金资料库补一次。
+ *
+ * 只读 FundProfile、不发外部请求 —— 保存是用户等着的动作，不能被一个慢的外部接口拖住；
+ * 资料库没有就留 null，客户端的代码输入框已经用 /api/v1/fund/name 查过了。
+ */
+async function fundNameOrDefault(fundCode: string, provided?: string | null): Promise<string | null> {
+  const given = normalizeFundDisplayName(fundCode, provided);
+  if (given) return given;
+  try {
+    const names = await getFundProfileNameMap([fundCode]);
+    return names.get(fundCode) ?? null;
+  } catch (error) {
+    logger.warn(`Resolve linked fund name failed: ${fundCode}`, "wallet-linked-fund-periods", error);
+    return null;
+  }
+}
 
 function toSegment(row: {
   id: string;
@@ -146,6 +165,7 @@ export async function bindWalletLinkedFundSegment(params: {
   if (!start) {
     throw new WalletLinkedFundError(WALLET_LINKED_FUND_ERROR.startDate, "绑定起始日无效");
   }
+  const fundName = await fundNameOrDefault(fundCode, params.fundName);
 
   return prisma.$transaction(async (tx) => {
     const account = await tx.account.findFirst({
@@ -180,7 +200,7 @@ export async function bindWalletLinkedFundSegment(params: {
         householdId: params.householdId,
         accountId: params.accountId,
         fundCode,
-        fundName: params.fundName?.trim() || null,
+        fundName,
         startDate: start,
         note: params.note?.trim() || null,
       },
@@ -286,6 +306,7 @@ export async function saveWalletLinkedFundSegment(params: {
     );
   }
 
+  const resolvedFundName = await fundNameOrDefault(fundCode, params.fundName);
   const result = await prisma.$transaction(async (tx) => {
     const account = await tx.account.findFirst({
       where: { id: params.accountId, householdId: params.householdId },
@@ -328,32 +349,41 @@ export async function saveWalletLinkedFundSegment(params: {
       }
     }
 
-    // 改段会让旧的收益行与新的区间/代码对不上：先清掉，调用方重算时按新段重建。
+    // 段变了 = 那段时间的收益归属变了，旧行必须清掉，调用方重算时按新段重建。
+    // 删除范围是「新区间」+（改段时）「旧区间」，**不限基金代码**：一只钱包一天只能
+    // 有一只货基在生息，区间里其它基金留下的收益行（删段时选了「保留收益」、补录一段
+    // 覆盖了已结息历史）留着就会和新结的收益叠成两条——2026-11-20 用户报的重复收益。
     let removedIncome = 0;
+    const ranges: Array<{ gte: Date; lte?: Date }> = [
+      { gte: start, ...(end ? { lte: end } : {}) },
+    ];
     if (target) {
       const oldEndKey = target.endDate ? utcDayKey(target.endDate) : null;
       const changed = utcDayKey(target.startDate) !== startDateYmd
         || oldEndKey !== (endDateYmd || null)
         || target.fundCode !== fundCode;
       if (changed) {
-        const removed = await tx.txRecord.deleteMany({
-          where: {
-            accountId: params.accountId,
-            source: TRANSACTION_SOURCE_MONEY_INCOME,
-            fundCode: target.fundCode,
-            date: {
-              gte: target.startDate,
-              ...(target.endDate ? { lte: target.endDate } : {}),
-            },
-          },
+        ranges.push({
+          gte: target.startDate,
+          ...(target.endDate ? { lte: target.endDate } : {}),
         });
-        removedIncome = removed.count;
       }
+    }
+    for (const range of ranges) {
+      const removed = await tx.txRecord.deleteMany({
+        where: {
+          accountId: params.accountId,
+          source: TRANSACTION_SOURCE_MONEY_INCOME,
+          date: range,
+        },
+      });
+      removedIncome += removed.count;
     }
 
     const data = {
       fundCode,
-      fundName: params.fundName?.trim() || null,
+      // 查不到名称时保留该段原来的名字：宁可显示旧名，也不要把它清成空。
+      fundName: resolvedFundName ?? target?.fundName ?? null,
       startDate: start,
       endDate: end,
     };

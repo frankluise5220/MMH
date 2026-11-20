@@ -3620,6 +3620,50 @@ const MIGRATIONS = [
       addColumnIfMissing(db, "Account", "linkedFundStartDate", "DATETIME");
     },
   },
+  {
+    // 2026-11-20 电子钱包货基收益一天只能有一条（与基金代码无关）。
+    // 与 prisma/migrations/20261120_wallet_money_income_unique_day 及
+    // build-win-desktop.cjs 的 applyRuntimeMigrations 同义：换绑基金后新旧两段区间只要
+    // 有一天重叠就会结出两条收益（2026-11-20 用户报的重复收益）。代码层已按日期去重，
+    // 这条部分唯一索引兜住并发双写；建索引前先清掉存量重复（SQLite 没有
+    // DELETE ... USING，用 rowid 保留同一天最新一条）。
+    version: "20261120_wallet_money_income_unique_day",
+    description: "Unique wallet money-fund income per account and day",
+    apply(db) {
+      if (!tableExists(db, "transactions")) return;
+      db.exec("DELETE FROM transactions WHERE source = 'money_fund_income' AND deletedAt IS NULL AND rowid NOT IN (SELECT MAX(rowid) FROM transactions WHERE source = 'money_fund_income' AND deletedAt IS NULL GROUP BY accountId, date)");
+      db.exec("CREATE UNIQUE INDEX IF NOT EXISTS transactions_money_income_account_day_key ON transactions(accountId, date) WHERE source = 'money_fund_income' AND deletedAt IS NULL");
+    },
+  },
+  {
+    // 2026-11-20 钱包货基收益改为「收入」：type=investment 会让明细把它当基金赎回编辑，
+    // 弹基金窗还要求选一个轻量模型里不存在的货币基金账户（用户报障）。
+    // 与 prisma/migrations/20261120_wallet_money_income_as_income 及
+    // build-win-desktop.cjs 的 applyRuntimeMigrations 同义。source 仍保留（幂等键 + 报表口径），
+    // 旧口径镜像行带 fundSubtype=buy，不在此列。
+    version: "20261120_wallet_money_income_as_income",
+    description: "Reclassify wallet money-fund income rows from investment to income",
+    apply(db) {
+      if (!tableExists(db, "transactions")) return;
+      db.exec("UPDATE transactions SET type = 'income' WHERE source = 'money_fund_income' AND type = 'investment'");
+    },
+  },
+  {
+    // 2026-11-20 承接上一条：老行的 categoryId 指向 investment 型的「基金买入」，
+    // 改 type 后被触发器清空，编辑窗就没有默认分类了。这里只补 categoryId 为空的行，
+    // 指回本账簿 income 型的「基金收益」（用户自己改过分类的不覆盖）。
+    // 与 prisma/migrations/20261120_wallet_money_income_category_fix 及
+    // build-win-desktop.cjs 的 applyRuntimeMigrations 同义。
+    version: "20261120_wallet_money_income_category_fix",
+    description: "Point wallet money-fund income rows at the income-typed fund profit category",
+    apply(db) {
+      if (!tableExists(db, "transactions")) return;
+      if (tableExists(db, "Category")) {
+        db.exec("UPDATE transactions SET categoryId = (SELECT id FROM Category WHERE householdId = transactions.householdId AND name = '基金收益' AND type = 'income' LIMIT 1), categoryName = '基金收益' WHERE source = 'money_fund_income' AND categoryId IS NULL AND EXISTS (SELECT 1 FROM Category WHERE householdId = transactions.householdId AND name = '基金收益' AND type = 'income')");
+      }
+      db.exec("UPDATE transactions SET type = 'income' WHERE source = 'money_fund_income' AND type = 'investment'");
+    },
+  },
 ];
 
 // 到期日「周年 − 1 天」→ 周年；返回 null 表示不是旧口径。

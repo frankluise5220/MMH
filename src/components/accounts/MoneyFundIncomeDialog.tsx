@@ -80,6 +80,47 @@ const segmentsCache = new Map<string, LinkedFundSegment[]>();
 /** 同一账户正在飞的预热请求：hover 连点时只发一次。 */
 const segmentsInflight = new Map<string, Promise<void>>();
 
+/**
+ * 货基代码 → 基金名称（module 级缓存）：弹窗开了又关、同一代码多次输入都只查一次。
+ * 名称是「输入」的产物，不是列表数据，所以不放进 segmentsCache。
+ */
+const fundNameCache = new Map<string, string>();
+/** 同一代码正在飞的名字查询：连续补查只发一次请求。 */
+const fundNameInflight = new Map<string, Promise<string>>();
+
+/** 内置名单里本来就有名字的（余额宝那几只），不必问接口。 */
+function catalogFundName(code: string) {
+  return ALIPAY_BALANCE_BAO_FUNDS.find((fund) => fund.code === code)?.name ?? "";
+}
+
+/**
+ * 按代码查基金名称（GET /api/v1/fund/name：FundProfile → 外部身份接口）。
+ *
+ * 内置名单只是输入建议，用户完全可以填名单外的货基（2026-11-20 用户报：015651 名称
+ * 一直是空的）。查不到返回空字符串，由调用方决定怎么显示，不抛错。
+ */
+async function fetchFundName(code: string): Promise<string> {
+  const trimmed = code.trim();
+  if (!/^\d{6}$/.test(trimmed)) return "";
+  const known = catalogFundName(trimmed) || fundNameCache.get(trimmed) || "";
+  if (known) return known;
+  let task = fundNameInflight.get(trimmed);
+  if (!task) {
+    task = fetch(`/api/v1/fund/name?code=${encodeURIComponent(trimmed)}`)
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data: { ok?: boolean; name?: unknown } | null) => {
+        const name = typeof data?.name === "string" ? data.name.trim() : "";
+        return data?.ok === true ? name : "";
+      })
+      .catch(() => "")
+      .finally(() => fundNameInflight.delete(trimmed));
+    fundNameInflight.set(trimmed, task);
+  }
+  const name = await task;
+  if (name) fundNameCache.set(trimmed, name);
+  return name;
+}
+
 /** 拉一次段列表；失败返回 null（调用方据此决定是清空还是留着缓存）。 */
 async function fetchSegmentList(accountId: string): Promise<LinkedFundSegment[] | null> {
   try {
@@ -176,6 +217,45 @@ export function MoneyFundIncomeDialog({ open, account, onClose, onChanged }: Pro
   const [newDraft, setNewDraft] = useState<SegmentDraft>(EMPTY_DRAFT);
   /** 正在提交的行（NEW_ROW_KEY = 新增行），只用来显示省略号。 */
   const [savingId, setSavingId] = useState<string | null>(null);
+  /** 输入代码后查回来的名称（代码 → 名称）：段上没存名字时也能显示。 */
+  const [lookupNames, setLookupNames] = useState<Record<string, string>>({});
+  /** 正在查名称的代码：表格里显示「查询中…」，别让人以为「就是没有名字」。 */
+  const [lookupPending, setLookupPending] = useState<Record<string, boolean>>({});
+
+  /**
+   * 补齐基金名称：输入满 6 位就查，保存前再兜一次（2026-11-20 用户要求）。
+   *
+   * 返回查到的名称（查不到是空字符串）。同一代码的并发调用共享同一个请求，
+   * 命中缓存直接返回，不会因为点了「确定」又打一次接口。
+   */
+  const resolveFundName = useCallback(async (rawCode: string): Promise<string> => {
+    const code = rawCode.trim();
+    if (!/^\d{6}$/.test(code)) return "";
+    const known = catalogFundName(code) || fundNameCache.get(code) || "";
+    if (known) return known;
+    setLookupPending((previous) => (previous[code] ? previous : { ...previous, [code]: true }));
+    try {
+      const name = await fetchFundName(code);
+      if (name) {
+        setLookupNames((previous) => (previous[code] === name ? previous : { ...previous, [code]: name }));
+      }
+      return name;
+    } finally {
+      if (!fundNameInflight.has(code)) {
+        setLookupPending((previous) => {
+          if (!previous[code]) return previous;
+          const next = { ...previous };
+          delete next[code];
+          return next;
+        });
+      }
+    }
+  }, []);
+
+  /** 名称列显示：段上存的名字 → 内置名单 → 这次查回来的名字。 */
+  function displayFundName(code: string, fallback?: string | null) {
+    return fundNameOf(code, fallback) || lookupNames[code.trim()] || "";
+  }
 
   /** 顶部用于表明「在给哪只钱包挂货基」：账户标签与其他页面同口径。 */
   const accountLabel = useMemo(() => accountOptionFromParts({
@@ -259,13 +339,26 @@ export function MoneyFundIncomeDialog({ open, account, onClose, onChanged }: Pro
    * 默认区间 = 「最近绑定的那段」的起始日 → 今天。
    *
    * 段列表是异步回来的，账户快照可能是旧代码/旧起始日，所以以区间表的当前段为准；
-   * 用户已经动过日期就不再覆盖。
+   * 当前没有生效段（最新一段已经填了退出日期）时，用最新那一段的起始日 —— 否则
+   * 用户会看到一个空起点、甚至整块「重算」都不显示。用户已经动过日期就不再覆盖。
    */
   useEffect(() => {
     if (!open || recalcTouchedRef.current) return;
-    const latestStart = toYmd(currentSegment?.startDate);
+    const latestStart = toYmd(orderedSegments[0]?.startDate);
     if (latestStart) setRecalcFrom(latestStart);
-  }, [currentSegment?.startDate, open]);
+  }, [open, orderedSegments]);
+
+  /**
+   * 历史段的名字是空的（接口没带、或早于「按代码查名称」这条链路）→ 打开弹窗时补查。
+   * resolveFundName 自带缓存与在飞合并，重复触发不会重复打接口。
+   */
+  useEffect(() => {
+    if (!open || segments.length === 0) return;
+    for (const segment of segments) {
+      if ((segment.fundName ?? "").trim()) continue;
+      void resolveFundName(segment.fundCode);
+    }
+  }, [open, resolveFundName, segments]);
 
   async function accrueNow(accountId: string, fromDate?: string) {
     await fetch("/api/v1/fund/money-income/accrue", {
@@ -322,6 +415,8 @@ export function MoneyFundIncomeDialog({ open, account, onClose, onChanged }: Pro
     setMessage("");
     setError("");
     const fundCode = draft.fundCode.trim();
+    // 名称和代码一起存：输入时的查询可能还没回来（用户手快直接点确定），这里再兜一次。
+    const fundName = displayFundName(fundCode) || (await resolveFundName(fundCode));
     try {
       const response = await fetch("/api/v1/accounts/linked-funds", {
         method: "PUT",
@@ -332,7 +427,7 @@ export function MoneyFundIncomeDialog({ open, account, onClose, onChanged }: Pro
           startDate: draft.startDate,
           endDate: draft.endDate || null,
           fundCode,
-          fundName: fundNameOf(fundCode) || null,
+          fundName: fundName.trim() || null,
         }),
       });
       const data = await response.json().catch(() => null) as { ok?: boolean; code?: string; error?: string } | null;
@@ -354,8 +449,14 @@ export function MoneyFundIncomeDialog({ open, account, onClose, onChanged }: Pro
       }
       onChanged("account:linked-fund-segment-save");
       await loadSegments(account.id, { silent: true });
-      // 段变了：服务端已删掉这段旧代码/旧区间的收益行，这里立刻按新段重结。
-      await accrueNow(account.id);
+      // 段变了：服务端已把新旧区间里的收益行删掉，这里必须**按区间起点重结**。
+      // 不带 fromDate 走的是增量结转（游标 = 最后一条收益日 + 1），删出来的空档
+      // 永远不会被回补，那几天就白丢了。
+      const previous = segmentId ? segments.find((item) => item.id === segmentId) : null;
+      const fromDate = previous && previous.startDate < draft.startDate
+        ? previous.startDate
+        : draft.startDate;
+      await accrueNow(account.id, fromDate);
       await loadSegments(account.id, { silent: true });
     } catch {
       setError(t("settings.accounts.linkedFund.bindFailed"));
@@ -460,7 +561,10 @@ export function MoneyFundIncomeDialog({ open, account, onClose, onChanged }: Pro
   }
 
   async function recalc() {
-    if (busy || !boundCode) return;
+    // 只要有钱包上任何一段绑定就能重算：重算按日期区间重放收益，跟「当前有没有生效段」无关。
+    // （2026-11-20 用户报：第一次添加时看不到「重算」按钮——那段当时填了退出日期，
+    // 当前段为空，旧条件 boundCode 就把它连区块一起藏了。）
+    if (busy || segments.length === 0) return;
     const fromDate = recalcFrom || boundStartDate || todayDateLocalYmd();
     const toDate = recalcTo || todayDateLocalYmd();
     if (toDate < fromDate) {
@@ -587,6 +691,8 @@ export function MoneyFundIncomeDialog({ open, account, onClose, onChanged }: Pro
                     const dirty = isDirty(segment);
                     const saving = savingId === segment.id;
                     const active = !draft.endDate;
+                    const fundName = displayFundName(draft.fundCode, segment.fundName);
+                    const lookupWaiting = Boolean(lookupPending[draft.fundCode.trim()]);
                     return (
                       <tr key={segment.id} className={dirty ? "bg-amber-50/60" : "hover:bg-slate-50"}>
                         <td className={TD_CLS}>
@@ -613,7 +719,11 @@ export function MoneyFundIncomeDialog({ open, account, onClose, onChanged }: Pro
                         <td className={TD_CLS}>
                           <input
                             value={draft.fundCode}
-                            onChange={(event) => patchDraft(segment, { fundCode: event.target.value.replace(/[^\d]/g, "").slice(0, 6) })}
+                            onChange={(event) => {
+                              const code = event.target.value.replace(/[^\d]/g, "").slice(0, 6);
+                              patchDraft(segment, { fundCode: code });
+                              if (code.length === 6) void resolveFundName(code);
+                            }}
                             placeholder={t("settings.accounts.linkedFund.fundCodePlaceholder")}
                             inputMode="numeric"
                             maxLength={6}
@@ -625,10 +735,14 @@ export function MoneyFundIncomeDialog({ open, account, onClose, onChanged }: Pro
                         <td className={TD_CLS}>
                           <div className="flex min-w-0 items-center gap-1">
                             <span
-                              className="min-w-0 truncate text-slate-800"
-                              title={fundNameOf(draft.fundCode, segment.fundName) || undefined}
+                              className={`min-w-0 truncate ${fundName ? "text-slate-800" : "text-slate-400"}`}
+                              title={fundName || undefined}
                             >
-                              {fundNameOf(draft.fundCode, segment.fundName) || "-"}
+                              {fundName || (lookupWaiting
+                                ? t("settings.accounts.linkedFund.fundNameLookup")
+                                : draft.fundCode.length === 6
+                                  ? t("settings.accounts.linkedFund.fundNameNotFound")
+                                  : "-")}
                             </span>
                             {active ? (
                               <span className="shrink-0 rounded bg-emerald-50 px-1 py-px text-[10px] font-medium text-emerald-700">
@@ -688,10 +802,11 @@ export function MoneyFundIncomeDialog({ open, account, onClose, onChanged }: Pro
                     <td className={TD_CLS}>
                       <input
                         value={newDraft.fundCode}
-                        onChange={(event) => setNewDraft((previous) => ({
-                          ...previous,
-                          fundCode: event.target.value.replace(/[^\d]/g, "").slice(0, 6),
-                        }))}
+                        onChange={(event) => {
+                          const code = event.target.value.replace(/[^\d]/g, "").slice(0, 6);
+                          setNewDraft((previous) => ({ ...previous, fundCode: code }));
+                          if (code.length === 6) void resolveFundName(code);
+                        }}
                         placeholder={t("settings.accounts.linkedFund.fundCodePlaceholder")}
                         inputMode="numeric"
                         maxLength={6}
@@ -703,7 +818,10 @@ export function MoneyFundIncomeDialog({ open, account, onClose, onChanged }: Pro
                     <td className={TD_CLS}>
                       <span className="truncate text-[11px] text-slate-400">
                         {newDraft.fundCode.length === 6
-                          ? (fundNameOf(newDraft.fundCode) || "-")
+                          ? (displayFundName(newDraft.fundCode)
+                            || (lookupPending[newDraft.fundCode.trim()]
+                              ? t("settings.accounts.linkedFund.fundNameLookup")
+                              : t("settings.accounts.linkedFund.fundNameNotFound")))
                           : t("settings.accounts.linkedFund.historyNewRow")}
                       </span>
                     </td>
@@ -733,7 +851,7 @@ export function MoneyFundIncomeDialog({ open, account, onClose, onChanged }: Pro
             ))}
           </datalist>
 
-          {boundCode && (
+          {segments.length > 0 && (
             <div className="grid gap-1">
               <div className="flex items-end gap-2">
                 <label className="grid min-w-0 flex-1 gap-1">

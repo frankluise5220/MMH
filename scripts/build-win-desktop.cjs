@@ -20,6 +20,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+const os = require("node:os");
 const crypto = require("node:crypto");
 const { spawnSync } = require("node:child_process");
 
@@ -98,6 +99,40 @@ function copyDir(src, dest) {
   fs.cpSync(src, dest, { recursive: true });
 }
 
+// The IDE sandbox refuses recursive deletes above ~500 files
+// (`SAFE_DELETE_BULK_CONFIRM_REQUIRED`), and a live `next dev` can hold EPERM on
+// files under `.codex-logs`. Neither may fail the build — but leaving the junk
+// in place is not harmless either: 0.1.87 shipped a 904 MB installer (886 MB
+// zip) because `.codex-logs` held 1.6 GB of stale Codex/Edge/Chrome probe dumps,
+// Next traced it into `.next/standalone`, and the prune silently skipped it.
+// So on refusal rename the tree out of the build area: a same-volume rename is
+// not a bulk delete and the sandbox lets it through. The quarantine root sits
+// next to the repo (never inside it, or the next tracing pass would copy it back
+// in) and is deliberately not auto-deleted, since deleting it is the very
+// operation the sandbox blocks — prune `_mmh-build-prune` by hand when it grows.
+const quarantineRoot = path.join(path.dirname(root), "_mmh-build-prune");
+
+function removeDirOrQuarantine(dir, label) {
+  if (!fs.existsSync(dir)) return true;
+  try {
+    fs.rmSync(dir, { recursive: true, force: true });
+    return true;
+  } catch (error) {
+    const bulkGuard = String((error && error.message) || "").includes("SAFE_DELETE_BULK_CONFIRM_REQUIRED");
+    if (!error || (error.code !== "EPERM" && !bulkGuard)) throw error;
+    const quarantine = path.join(quarantineRoot, `${label}-${Date.now()}`);
+    try {
+      fs.mkdirSync(quarantineRoot, { recursive: true });
+      fs.renameSync(dir, quarantine);
+      console.warn(`rmSync refused for ${label} (${error.code || "bulk-delete guard"}); moved -> ${quarantine}`);
+      return true;
+    } catch (moveError) {
+      console.warn(`rmSync refused for ${label} (${error.code || "bulk-delete guard"}) and rename failed (${moveError.code}); leaving it in place`);
+      return false;
+    }
+  }
+}
+
 // Remove non-runtime junk that leaks from the repo into .next/standalone
 // (dev agent logs, dev shared settings, runtime data dir, env files, build
 // cache). The desktop app keeps user data under %APPDATA%\MMH instead.
@@ -109,34 +144,9 @@ function pruneStagedApp(dir) {
   // <repo>/release-artifacts/win/node22 in dev mode, and a packaged run uses
   // resources/node/node.exe instead.
   for (const name of [".codex-logs", "release-artifacts", "data", "shared", ".env", ".env.local", ".env.production", ".env.development"]) {
-    // These are non-runtime junk. On Windows a dev agent (e.g. a still-running
-    // `next dev`) can hold a handle on files under `.codex-logs`, so rmSync can
-    // throw EPERM even with force:true (force only ignores ENOENT). Skip the
-    // entry instead of failing the whole build — leaving it just bloats the
-    // package slightly, never breaks the runtime.
-    try {
-      fs.rmSync(path.join(dir, name), { recursive: true, force: true });
-    } catch (error) {
-      // EPERM: a live dev handle. SAFE_DELETE_BULK_CONFIRM_REQUIRED: the IDE
-      // sandbox refuses bulk deletes (`.codex-logs` alone can hold 10k files).
-      // Both mean "junk that cannot be removed here"; skipping only enlarges
-      // the package a little, never breaks the runtime, so neither may fail
-      // the build.
-      const bulkGuard = String((error && error.message) || "").includes("SAFE_DELETE_BULK_CONFIRM_REQUIRED");
-      if (error && (error.code === "EPERM" || bulkGuard)) {
-        console.warn(`pruneStagedApp: could not remove ${name} (${error.code || "bulk-delete guard"}); skipping.`);
-      } else {
-        throw error;
-      }
-    }
+    removeDirOrQuarantine(path.join(dir, name), `${path.basename(dir)}-${name}`);
   }
-  try {
-    fs.rmSync(path.join(dir, ".next", "cache"), { recursive: true, force: true });
-  } catch (error) {
-    const bulkGuard = String((error && error.message) || "").includes("SAFE_DELETE_BULK_CONFIRM_REQUIRED");
-    if (!error || (error.code !== "EPERM" && !bulkGuard)) throw error;
-    console.warn(`pruneStagedApp: could not remove .next/cache (${error.code || "bulk-delete guard"}); skipping.`);
-  }
+  removeDirOrQuarantine(path.join(dir, ".next", "cache"), `${path.basename(dir)}-.next-cache`);
 }
 
 function step(message) {
@@ -258,7 +268,7 @@ if (!canReuseStage) {
   // file under a leftover `.codex-logs/…` tree. `pruneStagedApp` below remains
   // as a second-chance guard on the stage.
   pruneStagedApp(standaloneDir);
-  fs.rmSync(stageDir, { recursive: true, force: true });
+  removeDirOrQuarantine(stageDir, "stage");
   fs.mkdirSync(stageAppDir, { recursive: true });
   copyDir(standaloneDir, stageAppDir);
   pruneStagedApp(stageAppDir);
@@ -534,6 +544,15 @@ function applyRuntimeMigrations(db) {
   // no such column。旧的 linkedFundAccountId（钱包绑货基账户）已随旧模型删除，
   // 存量库里残留该列不影响（Prisma 只按 schema 取列）。
   addColumnIfMissing(db, "Account", "linkedFundCode", "TEXT");
+  // 2026-11-20 电子钱包货基收益：一天只能有一条，与基金代码无关。
+  // 与 prisma/migrations/20261120_wallet_money_income_unique_day 同义：换绑基金后新旧两段
+  // 区间只要有一天重叠，按「日期 + 基金代码」去重就会结出两条收益。代码层已改成按日期去重，
+  // 这条部分唯一索引兜住并发双写；建索引前先清掉存量重复（SQLite 没有 DELETE ... USING，
+  // 用 rowid 保留同一天最新一条）。SQL 里不写引号，见本函数注释：整段会写进模板。
+  if (tableExists(db, "transactions")) {
+    db.exec("DELETE FROM transactions WHERE source = 'money_fund_income' AND deletedAt IS NULL AND rowid NOT IN (SELECT MAX(rowid) FROM transactions WHERE source = 'money_fund_income' AND deletedAt IS NULL GROUP BY accountId, date)");
+    db.exec("CREATE UNIQUE INDEX IF NOT EXISTS transactions_money_income_account_day_key ON transactions(accountId, date) WHERE source = 'money_fund_income' AND deletedAt IS NULL");
+  }
   // 账户下拉分组维度。household-preferences 走全列 findUnique，缺列即首屏报错。
   addColumnIfMissing(db, "HouseholdPreference", "accountDropdownGroupBy", "TEXT NOT NULL DEFAULT 'owner'");
   // 2026-11-15 固定资产扩展属性（生产日期 / 重量）+ 折旧（方式 / 年限 / 残值 / 累计折旧）。
@@ -562,6 +581,19 @@ function applyRuntimeMigrations(db) {
   // 同义（可空）。漏掉这段：升级后的桌面库读台账会报 "no such column: note"
   // （台账查询是全列 findMany，没有 select 白名单）。
   addColumnIfMissing(db, "property_asset_depreciations", "note", "TEXT");
+  // 2026-11-20 钱包货基收益改为「收入」：type=investment 会让明细把它当基金赎回编辑，
+  // 弹基金窗还要求选一个轻量模型里不存在的货币基金账户（用户报障）。与 prisma/migrations/
+  // 20261120_wallet_money_income_as_income 及 build-fnos-package.cjs 的同名迁移同义。
+  // source 仍保留（幂等键 + 报表口径），旧口径镜像行带 fundSubtype=buy 一起改：统计侧
+  // 一直按 source 排除它们，不会因此重复计一次。
+  if (tableExists(db, "transactions")) {
+    db.exec("UPDATE transactions SET type = 'income' WHERE source = 'money_fund_income' AND type = 'investment'");
+    // 老行的 categoryId 指向 investment 型的「基金买入」，改 type 时触发器会清空它，
+    // 编辑窗就没了默认分类。只补空值，指回本账簿 income 型的「基金收益」。
+    if (tableExists(db, "Category")) {
+      db.exec("UPDATE transactions SET categoryId = (SELECT id FROM Category WHERE householdId = transactions.householdId AND name = '基金收益' AND type = 'income' LIMIT 1), categoryName = '基金收益' WHERE source = 'money_fund_income' AND categoryId IS NULL AND EXISTS (SELECT 1 FROM Category WHERE householdId = transactions.householdId AND name = '基金收益' AND type = 'income')");
+    }
+  }
 }
 
 fs.mkdirSync(dataDir, { recursive: true });

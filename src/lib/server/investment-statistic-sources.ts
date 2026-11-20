@@ -256,8 +256,12 @@ export async function loadFundStatisticSourceEntries(
 
 /**
  * 新口径（2026-11-19 起）：电子钱包账户直接绑定货基代码，收益由
- * wallet-money-fund-income 写在钱包账户上（type=investment、source=money_fund_income，
- * 无份额、无净值）。这类行让钱包余额真实增加，报表按已实现收益计入收入。
+ * wallet-money-fund-income 写在钱包账户上（source=money_fund_income，无份额、无净值）。
+ * 这类行让钱包余额真实增加，报表按已实现收益计入收入。
+ *
+ * 2026-11-20 用户裁定收益行是收入（type=income），所以这里**不能**再按 type 过滤：
+ * 加 type 条件会让「编辑过的收益行」整类从报表消失。只认 source，并在
+ * income-expense-report 的普通收支查询里排除同一 source，避免两边各算一次。
  *
  * 旧口径（钱包绑定货基账户）的镜像行带 fundSubtype=buy 与份额，不在此列：
  * 那份收益已经体现在货基账户的份额结转里，再算一次就是双份。
@@ -275,7 +279,6 @@ export async function loadWalletMoneyFundIncomeEntries(
     where: {
       householdId: ctx.householdId,
       deletedAt: null,
-      type: TransactionType.investment,
       source: TRANSACTION_SOURCE_MONEY_INCOME,
       fundSubtype: null,
       date: { gte: params.start, lt: params.endExclusive },
@@ -310,6 +313,8 @@ export async function loadWalletMoneyFundIncomeEntries(
       canEdit: false,
       date: row.date,
       amount: row.amount,
+      // 统计口径仍是「投资已实现收益」：TxRecord 自己是 income，这里只喂给
+      // getInvestmentStatisticItems 决定它落在投资收益分项。
       type: TransactionType.investment,
       source: TRANSACTION_SOURCE_MONEY_INCOME,
       fundSubtype: null,

@@ -238,6 +238,32 @@ export async function GET(req: NextRequest) {
       const isToSelf = e.toAccountId && scopeAccountIds.includes(e.toAccountId);
       const isFromSelf = e.accountId && scopeAccountIds.includes(e.accountId);
 
+      // 钱包绑货基的每日收益结转：2026-11-20 起落库为 income，迁移前的老行仍是 investment。
+      // 两种 type 必须走同一口径——金额算「收入」、不进 investPnL、分类走投资收益候选
+      // （与 income-expense-report 的 walletMoneyIncomeRecords 一致）。不能让新的 income 行
+      // 落进下面的普通收入分支：那会改用库里的 categoryName 当分类桶，同一个账簿在统计页
+      // 与收支报表上就会给出不同的收入分类。
+      if (e.source === TRANSACTION_SOURCE_MONEY_INCOME && !e.fundSubtype) {
+        const profit = toNumber(e.amount);
+        if (profit !== 0) {
+          const statisticEntry = { ...e, type: TransactionType.investment, realizedProfit: profit };
+          for (const item of fx.convertItems(e, getInvestmentStatisticItems(statisticEntry))) {
+            if (item.type === "income") {
+              row.income += item.amount;
+              addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", candidates: item.categoryCandidates, fallbackName: item.categoryName }), item.amount);
+              dist.add("income", e, item.amount);
+              addStatisticTagBucket(incomeByTag, e.EntryTag, item.amount, untaggedLabel);
+            } else {
+              row.expense += item.amount;
+              addStatisticCategoryBucket(expenseByCat, resolveCategory({ type: "expense", candidates: item.categoryCandidates, fallbackName: item.categoryName }), item.amount);
+              dist.add("expense", e, item.amount);
+              addStatisticTagBucket(expenseByTag, e.EntryTag, item.amount, untaggedLabel);
+            }
+          }
+        }
+        continue;
+      }
+
       if (e.type === TransactionType.income) {
         const effectiveAmount = getIncomeExpenseStatisticAmount(e.type, amount);
         row.income += effectiveAmount;
@@ -296,27 +322,8 @@ export async function GET(req: NextRequest) {
           }
         }
       } else if (e.type === TransactionType.investment) {
-        // 新口径（2026-11-19）：电子钱包直接绑货基代码的每日收益，计入收入/支出，
-        // 不进 investPnL（避免与收入列重复）。旧口径镜像行带 fundSubtype，排除。
-        if (e.source === TRANSACTION_SOURCE_MONEY_INCOME && !e.fundSubtype) {
-          const profit = toNumber(e.amount);
-          if (profit !== 0) {
-            for (const item of fx.convertItems(e, getInvestmentStatisticItems({ ...e, realizedProfit: profit }))) {
-              if (item.type === "income") {
-                row.income += item.amount;
-                addStatisticCategoryBucket(incomeByCat, resolveCategory({ type: "income", candidates: item.categoryCandidates, fallbackName: item.categoryName }), item.amount);
-                dist.add("income", e, item.amount);
-                addStatisticTagBucket(incomeByTag, e.EntryTag, item.amount, untaggedLabel);
-              } else {
-                row.expense += item.amount;
-                addStatisticCategoryBucket(expenseByCat, resolveCategory({ type: "expense", candidates: item.categoryCandidates, fallbackName: item.categoryName }), item.amount);
-                dist.add("expense", e, item.amount);
-                addStatisticTagBucket(expenseByTag, e.EntryTag, item.amount, untaggedLabel);
-              }
-            }
-          }
-          continue;
-        }
+        // 钱包货基收益（含迁移前仍是 investment 的老行）已在循环开头按 source 单独处理，
+        // 这里不要再重复一遍。
         if (e.source === "insurance") {
           const effectiveAmount = Math.abs(amount);
           const isRefund = e.insuranceAction === "refund" || e.fundSubtype === "redeem" || e.fundSubtype === "switch_out";

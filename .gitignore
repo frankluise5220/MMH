@@ -195,6 +195,7 @@ deploy/fnos/selfhosted-source/
 public/test-results.json
 /src/app/test-results/
 .codex-logs/
+.prune-quarantine/
 .playwright-cli/
 public/branding/*.preview.png
 public/branding/mmh-logo-*-directions.svg

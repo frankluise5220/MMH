@@ -38,7 +38,7 @@ import { isWealthLikeProductType } from "@/lib/investment-config";
 import { createBondEntry, editBondEntry, bondEntryInputFromFormData } from "@/lib/server/bond-transactions";
 import { resolveOrCreateAdvanceAccount } from "@/lib/server/advance-account";
 import { createCreditCardInstallmentPlan } from "@/lib/server/credit-card-installment";
-import { ENTRY_ORIGIN_MANUAL, ENTRY_ORIGIN_SCHEDULED_TASK, isCreditCardRepaymentTransfer, statementMonthForTransfer, TRANSACTION_SOURCE_METAL_EXTRACT } from "@/lib/transaction-semantics";
+import { ENTRY_ORIGIN_MANUAL, ENTRY_ORIGIN_SCHEDULED_TASK, isCreditCardRepaymentTransfer, statementMonthForTransfer, TRANSACTION_SOURCE_METAL_EXTRACT, TRANSACTION_SOURCE_MONEY_INCOME } from "@/lib/transaction-semantics";
 import { updateMetalExtractEntry } from "@/lib/server/sidebar-actions/metal-actions";
 import { ensureSettlementTransferCategory, resolveCategorySnapshot, resolveCreditCardRepaymentCategory, SYSTEM_DEPOSIT_INTEREST_CATEGORY } from "@/lib/default-categories";
 import { getInvestmentCategoryName } from "@/lib/investment-category";
@@ -3743,8 +3743,10 @@ export async function updateTransactionFromDialog(formData: FormData) {
           : type === "expense" ? { depositSourceEntryId: null } : {}),
         toAccountId: null,
         toAccountName: null,
-        fundCode: null,
-        fundProductType: null,
+        // 钱包货基收益行（source=money_fund_income）的基金代码/产品类型是「这笔收益
+        // 来自哪只货基」的来源标记，编辑金额/日期/备注时不能顺手清掉（2026-11-20）。
+        fundCode: entry.source === TRANSACTION_SOURCE_MONEY_INCOME ? entry.fundCode : null,
+        fundProductType: entry.source === TRANSACTION_SOURCE_MONEY_INCOME ? entry.fundProductType : null,
             toNote: null,
             date,
             postedAt,
