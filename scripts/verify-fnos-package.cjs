@@ -648,15 +648,25 @@ expect(/isFnos/.test(systemUpdateRoute), "System update API must return an expli
 expect(/remoteVersion/.test(systemUpdateRoute), "System update API must return the remote app version for update display.");
 expect(/飞牛版请通过飞牛应用中心更新 MMH 应用包/.test(systemUpdateRoute), "System update API must reject in-app updates for fnOS.");
 expect(/packageManaged \? t\("settings\.systemUpdate\.versionInfo"\)/.test(systemUpdatePage), "System update page must label package-managed details as version information.");
-expect(/function ReleaseNotesText/.test(systemUpdatePage) && /<ReleaseNotesText value=\{releaseNotesText\}/.test(systemUpdatePage), "System update page must render package release notes as structured multi-line text instead of collapsing them into one paragraph.");
+// 0.1.88 起本版说明从「版本信息」正文移进「历史更新」页签：数据由
+// scripts/gen-release-history.cjs 在构建期从各 tag 的 package.json 抽出并写进
+// src/lib/release-notes-history.ts，包内用户不联网也能看到多行正文 —— 这比从
+// API 取 mmhFnosManifestChangelog（单行）更符合 fnOS/群晖这类无 .git 的运行形态。
 expect(
-  /localReleaseNotesI18n\?\.\[language\]/.test(systemUpdatePage)
-    && /localReleaseNotesI18n\?\.\["zh-CN"\]/.test(systemUpdatePage),
-  "System update page must pick the release notes by the current UI language and fall back to the canonical zh-CN in-app body; the shared one-line mmhFnosManifestChangelog is only the last resort, because a single-line note renders as one unbroken block.",
+  /function ReleaseNotesText/.test(systemUpdatePage)
+    && /<ReleaseNotesText value=\{body\}/.test(systemUpdatePage)
+    && /@\/lib\/release-notes-history/.test(systemUpdatePage),
+  "System update page must render the release notes as structured multi-line text from the bundled history module instead of collapsing them into one paragraph.",
 );
 expect(
-  /\{releaseNotesText \? \(\s*<>/.test(systemUpdatePage) && !/packageManaged && (localReleaseNotes|releaseNotesText)/.test(systemUpdatePage),
-  "System update page must show release notes on every deployment form, not only package-managed ones.",
+  /const noteKey: "zh-CN" \| "en-US" = language === "en-US"/.test(systemUpdatePage)
+    && /entry\.notes\[noteKey\] \|\| entry\.notes\["zh-CN"\]/.test(systemUpdatePage),
+  "The history panel must pick the notes by the current UI language and fall back to the canonical zh-CN body; the shared one-line mmhFnosManifestChangelog is only the last resort, because a single-line note renders as one unbroken block.",
+);
+expect(
+  /\{activeTab === "history" \? \(\s*<ReleaseHistoryPanel/.test(systemUpdatePage)
+    && !/packageManaged && (RELEASE_HISTORY|ReleaseHistoryPanel)/.test(systemUpdatePage),
+  "Release notes must be reachable on every deployment form, not only package-managed ones.",
 );
 expect(/getPackageReleaseNotesI18n/.test(systemUpdateRoute), "System update API must return the optional per-language release notes alongside the Chinese ones.");
 expect(

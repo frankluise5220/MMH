@@ -13,6 +13,7 @@ import {
   type MmhDesktopBridge,
 } from "@/lib/client/desktop-bridge";
 import { useI18n } from "@/lib/i18n";
+import { RELEASE_HISTORY } from "@/lib/release-notes-history";
 
 type VersionInfo = {
   ok: boolean;
@@ -267,6 +268,55 @@ function ReleaseNotesText({ value }: { value: string }) {
   );
 }
 
+/**
+ * 「历史更新」页签：把各版本说明整段搬到这里，版本信息页只留版本号与查询入口。
+ *
+ * 数据来自 `src/lib/release-notes-history.ts`（构建期由 `scripts/gen-release-history.cjs`
+ * 从各 git tag 的 package.json 生成），不联网、不受 GitHub API 限流影响。
+ * 当前版本用 `currentVersion` 打标记，方便升级后一眼看到自己停在哪。
+ */
+function ReleaseHistoryPanel({ currentVersion }: { currentVersion?: string }) {
+  const { t, language } = useI18n();
+  const noteKey: "zh-CN" | "en-US" = language === "en-US" ? "en-US" : "zh-CN";
+  const current = String(currentVersion || "").trim();
+
+  if (RELEASE_HISTORY.length === 0) {
+    return (
+      <div className="rounded-lg border border-dashed border-slate-200 bg-slate-50/80 px-4 py-6 text-center text-sm text-slate-500">
+        {t("settings.systemUpdate.history.empty")}
+      </div>
+    );
+  }
+
+  return (
+    <section className="rounded-lg border border-slate-200 bg-white p-4">
+      <div className="divide-y divide-slate-100">
+        {RELEASE_HISTORY.map((entry) => {
+          const body = entry.notes[noteKey] || entry.notes["zh-CN"] || "";
+          return (
+            <article key={entry.version} className="py-4 first:pt-0 last:pb-0">
+              <header className="mb-2 flex flex-wrap items-center gap-2">
+                <span className="text-sm font-semibold text-slate-900">v{entry.version}</span>
+                {entry.version === current ? (
+                  <span className="rounded bg-emerald-50 px-1.5 py-0.5 text-[11px] font-medium text-emerald-700">
+                    {t("settings.systemUpdate.history.current")}
+                  </span>
+                ) : null}
+                {entry.date ? <span className="text-xs text-slate-400">{entry.date}</span> : null}
+              </header>
+              {body ? (
+                <ReleaseNotesText value={body} />
+              ) : (
+                <div className="text-xs text-slate-400">{t("settings.systemUpdate.history.empty")}</div>
+              )}
+            </article>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 // 用户经常把文档里的占位符连尖括号一起粘进来（`repo/mmh:<0.1.87>`）：那个地址在
 // registry 里并不存在，只会在「检查更新」里表现成"镜像版本检查失败"，从现象很难
 // 联想到是输入多打了两个字符。镜像引用本身不含空白和尖括号，所以直接清掉。
@@ -283,7 +333,9 @@ function deriveUpdaterImage(appImage: string) {
 }
 
 export default function SystemUpdatePage() {
-  const { t, language } = useI18n();
+  const { t } = useI18n();
+  // 两个页签：「版本信息」只放版本号与查询/升级入口，「历史更新」放各版本说明正文。
+  const [activeTab, setActiveTab] = useState<"version" | "history">("version");
   const [versionInfo, setVersionInfo] = useState<VersionInfo | null>(null);
   const [loadingVersion, setLoadingVersion] = useState(true);
   const [updating, setUpdating] = useState(false);
@@ -782,13 +834,6 @@ export default function SystemUpdatePage() {
     : packageManaged
       ? `${cleanVersionPart(versionInfo?.localVersion) || "unknown"} ${packageLabel}`
       : formatVersionLine(versionInfo?.localVersion, versionInfo?.localCommit, versionInfo?.localCommitDate, timeZone);
-  const localReleaseNotes = versionInfo?.localReleaseNotes?.trim() || "";
-  // 「本版说明」按界面语言取正文，该语言没有就回落中文正文；两者都为空时整块不渲染。
-  // `localReleaseNotes` 是各商店共用的单行短说明，`ReleaseNotesText` 按 `\n` 切行渲染，
-  // 单行文本会挤成一整团，所以它只作最后兜底（旧包没有 mmhReleaseNotesI18n 时的回落）。
-  const releaseNotesText = versionInfo?.localReleaseNotesI18n?.[language]?.trim()
-    || versionInfo?.localReleaseNotesI18n?.["zh-CN"]?.trim()
-    || localReleaseNotes;
   const availableVersionText = formatVersionLine(
     versionInfo?.remoteVersion,
     versionInfo?.remoteCommit,
@@ -932,8 +977,34 @@ sudo docker compose -p mmh up -d app updater`}</pre>
 
   return (
     <div className="space-y-4">
-      <h2 className="text-sm font-semibold text-slate-800">{packageManaged ? t("settings.systemUpdate.versionInfo") : t("settings.systemUpdate.title")}</h2>
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-sm font-semibold text-slate-800">{t("settings.systemUpdate.title")}</h2>
+        <div
+          role="tablist"
+          aria-label={t("settings.systemUpdate.title")}
+          className="inline-flex items-center gap-0.5 rounded-md border border-slate-200 bg-white p-0.5"
+        >
+          {(["version", "history"] as const).map((tab) => (
+            <button
+              key={tab}
+              type="button"
+              role="tab"
+              aria-selected={activeTab === tab}
+              onClick={() => setActiveTab(tab)}
+              className={`h-7 rounded px-3 text-xs font-medium transition-colors ${
+                activeTab === tab ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-50"
+              }`}
+            >
+              {t(tab === "version" ? "settings.systemUpdate.tab.version" : "settings.systemUpdate.tab.history")}
+            </button>
+          ))}
+        </div>
+      </div>
 
+      {activeTab === "history" ? (
+        <ReleaseHistoryPanel currentVersion={versionInfo?.localVersion} />
+      ) : (
+        <>
       <section className="rounded-lg border border-slate-200 bg-white p-4">
         <div className="mb-3 flex items-center justify-between gap-3">
           <div className="text-sm font-medium text-slate-800">
@@ -970,13 +1041,6 @@ sudo docker compose -p mmh up -d app updater`}</pre>
                   <span className="ml-2 text-xs text-slate-500">{versionInfo.localCommitMsg}</span>
                 ) : null}
               </div>
-
-              {releaseNotesText ? (
-                <>
-                  <div className="text-slate-500">{t("settings.systemUpdate.releaseNotes")}</div>
-                  <ReleaseNotesText value={releaseNotesText} />
-                </>
-              ) : null}
 
               <div className="text-slate-500">{t("settings.systemUpdate.projectUrl")}</div>
               <div className="min-w-0">
@@ -1313,6 +1377,8 @@ sudo docker compose -p mmh up -d app updater`}</pre>
           ) : null}
         </section>
       ) : null}
+        </>
+      )}
     </div>
   );
 }
