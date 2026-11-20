@@ -24,7 +24,7 @@
 # 源码映射运行时不加载，构建后从 standalone / static 里删掉，而不是放大 3.5 MB 上限。
 # 本版（0.1.87）以 0.1.86 镜像为底座：0.1.86 已公开，用户实际在跑的上一版就是它，
 # 层 digest 必须与 0.1.86 完全一致才能被旧 updater 本地跳过（旧二进制没有超时重试）。
-ARG BASE_IMAGE=ghcr.io/frankluise5220/mmh:0.1.86
+ARG BASE_IMAGE=ghcr.io/frankluise5220/mmh:0.1.87
 ARG NODE_BUILD_IMAGE=node:20-bookworm
 # 兼容 CI 现有的 build-args；prisma 运行时现在整层复用 BASE_IMAGE，不再单独安装。
 ARG PRISMA_CLI_VERSION=7.8.0
