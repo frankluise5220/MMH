@@ -10,11 +10,11 @@
 #   sh /opt/mmh-draft-registry/sync-draft-image.sh --version 0.1.87 --sha d894e9c
 #   sh /opt/mmh-draft-registry/sync-draft-image.sh --version 0.1.87 --tag sha-d894e9c
 #
-# 拉取端（你自己的测试实例）：
-#   docker login fnapp.floatingice.win -u mmh          # 口令见 /etc/nginx/mmh-draft.htpasswd
-#   MMH_IMAGE_SOURCE=custom
+# 拉取端（你自己的测试实例，不用登录、不用改 compose）：
+#   MMH_IMAGE_SOURCE=custom，或在「设置 → 系统更新 → 镜像源」里直接填地址
 #   CUSTOM_MMH_APP_IMAGE=fnapp.floatingice.win/draft/mmh:<ver>
 #   CUSTOM_MMH_UPDATER_IMAGE=fnapp.floatingice.win/draft/mmh-updater:<ver>
+#   443 反代对 /v2/ 匿名只读（auth_basic off），push 只走本机 127.0.0.1:5001。
 set -euo pipefail
 
 DOCKER="${DOCKER:-docker}"
@@ -28,7 +28,7 @@ TAG=""
 DRY_RUN=0
 
 usage() {
-  sed -n '2,24p' "$0"
+  sed -n '2,17p' "$0"
   exit 2
 }
 
@@ -79,8 +79,7 @@ done
 
 if [ "$DRY_RUN" = "0" ]; then
   echo
-  echo "已就绪（仅需登录可见）："
-  echo "  docker login $PUBLIC_REGISTRY -u mmh"
+  echo "已就绪（匿名可拉，公开后删除）："
   echo "  $PUBLIC_REGISTRY/$NAMESPACE/mmh:$VERSION"
   echo "  $PUBLIC_REGISTRY/$NAMESPACE/mmh-updater:$VERSION"
   echo
