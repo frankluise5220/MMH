@@ -436,11 +436,24 @@ async function updateEnvValues(values) {
   await writeFile(envPath, text);
 }
 
+/**
+ * 镜像引用的归一化：去掉空白和尖括号。
+ *
+ * 文档里写的是 `repo/mmh:<ver>` 这种占位符，用户照抄时会把 `<` `>` 一起填进来
+ * （实测发生在 5.148：`.env` 里成了 `draft/mmh:<0.1.87>`）。这个标签在 registry
+ * 里并不存在，`/speed` 只会返回一句"检查失败"，从报错完全看不出是输入多了两个
+ * 字符。镜像引用本身不含空白与尖括号，所以这里直接清掉，读旧值也清，避免已经
+ * 写脏的 `.env` 继续把检查卡死。
+ */
+function normalizeImageRef(value) {
+  return String(value ?? "").replace(/[<>\s]/g, "").trim();
+}
+
 async function getImageSourceConfig() {
   const env = await readEnvValues();
   const source = env.MMH_IMAGE_SOURCE || "auto";
-  const customAppImage = env.CUSTOM_MMH_APP_IMAGE || "";
-  const customUpdaterImage = env.CUSTOM_MMH_UPDATER_IMAGE || "";
+  const customAppImage = normalizeImageRef(env.CUSTOM_MMH_APP_IMAGE);
+  const customUpdaterImage = normalizeImageRef(env.CUSTOM_MMH_UPDATER_IMAGE);
   return {
     source,
     appImage: env.MMH_APP_IMAGE || "",
@@ -462,8 +475,8 @@ async function getImageSourceConfig() {
 
 async function saveImageSourceConfig(input) {
   const source = String(input?.source || "auto").trim();
-  const customAppImage = String(input?.customAppImage || "").trim();
-  const customUpdaterImage = String(input?.customUpdaterImage || "").trim();
+  const customAppImage = normalizeImageRef(input?.customAppImage);
+  const customUpdaterImage = normalizeImageRef(input?.customUpdaterImage);
   const values = { MMH_IMAGE_SOURCE: source };
 
   if (source === "custom") {

@@ -267,10 +267,17 @@ function ReleaseNotesText({ value }: { value: string }) {
   );
 }
 
+// 用户经常把文档里的占位符连尖括号一起粘进来（`repo/mmh:<0.1.87>`）：那个地址在
+// registry 里并不存在，只会在「检查更新」里表现成"镜像版本检查失败"，从现象很难
+// 联想到是输入多打了两个字符。镜像引用本身不含空白和尖括号，所以直接清掉。
+function normalizeImageRef(value: string) {
+  return value.replace(/[<>\s]/g, "").trim();
+}
+
 // The updater image lives in the same registry as the app image with the repo
 // name `mmh-updater`, so the custom source only needs the app image address.
 function deriveUpdaterImage(appImage: string) {
-  const value = appImage.trim();
+  const value = normalizeImageRef(appImage);
   if (!value) return "";
   return value.replace(/\/(mmh)(?=[:@]|$)/, "/mmh-updater");
 }
@@ -451,7 +458,12 @@ export default function SystemUpdatePage() {
   async function saveImageSource(draftOverride?: ImageSourceDraft) {
     setSavingImageSource(true);
     setImageSourceMessage("");
-    const draft = draftOverride ?? imageSourceDraft;
+    const raw = draftOverride ?? imageSourceDraft;
+    const draft: ImageSourceDraft = {
+      ...raw,
+      customAppImage: normalizeImageRef(raw.customAppImage),
+      customUpdaterImage: normalizeImageRef(raw.customUpdaterImage),
+    };
     try {
       const res = await fetch("/api/v1/settings/system-update?config=1", {
         method: "POST",
@@ -462,6 +474,7 @@ export default function SystemUpdatePage() {
       if (!res.ok || !data?.ok) {
         throw new Error(data?.error || t("settings.systemUpdate.saveFailed"));
       }
+      setImageSourceDraft(draft);
       setVersionInfo((prev) => prev ? { ...prev, imageSourceConfig: data.config } : prev);
       setImageSourceMessage(t("settings.systemUpdate.saved"));
       return true;

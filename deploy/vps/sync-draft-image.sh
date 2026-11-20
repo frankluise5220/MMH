@@ -12,8 +12,10 @@
 #
 # 拉取端（你自己的测试实例，不用登录、不用改 compose）：
 #   MMH_IMAGE_SOURCE=custom，或在「设置 → 系统更新 → 镜像源」里直接填地址
-#   CUSTOM_MMH_APP_IMAGE=fnapp.floatingice.win/draft/mmh:<ver>
-#   CUSTOM_MMH_UPDATER_IMAGE=fnapp.floatingice.win/draft/mmh-updater:<ver>
+#   CUSTOM_MMH_APP_IMAGE=fnapp.floatingice.win/draft/mmh:0.1.87
+#   CUSTOM_MMH_UPDATER_IMAGE=fnapp.floatingice.win/draft/mmh-updater:0.1.87
+#   上面写的是实际值；`<ver>` 这种尖括号是占位符，别一起填进去（填了会变成
+#   `draft/mmh:<0.1.87>` 这种不存在的标签，页面只会报"镜像版本检查失败"）。
 #   443 反代对 /v2/ 匿名只读（auth_basic off），push 只走本机 127.0.0.1:5001。
 set -euo pipefail
 
