@@ -47,6 +47,7 @@ export function EntryTagsField({
         onChange={onChange}
         options={options}
         placeholder={t("txForm.selectTags")}
+        behavior={{ removableChips: true }}
         onInlineCreate={async (name, color) => {
           const res = await fetch("/api/v1/tags", {
             method: "POST",

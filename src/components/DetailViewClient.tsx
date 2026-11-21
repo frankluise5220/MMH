@@ -3,7 +3,7 @@
 import { replaceCurrentRouteUrl } from "@/lib/client/route-url-sync";
 
 import { useCallback, useState, useEffect, useLayoutEffect, useMemo, useRef, type ReactNode, type MouseEvent } from "react";
-import { Paperclip } from "lucide-react";
+import { Paperclip, X } from "lucide-react";
 import { formatDateDisplay, formatDateUtc as localDateKey, toNumber, todayDateBusinessYmd } from "@/lib/date-utils";
 import { formatCurrencyMoney } from "@/lib/format";
 import { getColorSchemeFromCookie, pnlColor } from "@/lib/client/colors";
@@ -1347,6 +1347,12 @@ export function DetailViewClient({
             fundSourceEntryId: e.fundSourceEntryId ?? null,
             fundArrivalAmount: e.fundArrivalAmount != null ? toNumber(e.fundArrivalAmount) : null,
             linkedCandidateEntries: linkedInvestmentCandidateEntries,
+            tagIds: e.entryTags?.map((item) => item.tagId) ?? [],
+            tags: e.entryTags?.map((item) => ({
+              id: item.tagId,
+              name: item.Tag?.name ?? "",
+              color: item.Tag?.color ?? null,
+            })) ?? [],
           } satisfies Omit<EditPayload, "entryId">;
 
     const balanceReconcileTarget = getBalanceReconcileTarget(e);
@@ -1382,7 +1388,7 @@ export function DetailViewClient({
    * 再交给 `buildEntryEditRequest` 构造 payload。取失败时退回用行数据，基础编辑
    * 窗至少能打开。
    */
-  const openEntryEditor = useCallback(async (entry: DetailEntry, reconciledReadOnly = false) => {
+  const openEntryEditor = useCallback(async (entry: DetailEntry, reconciledReadOnly = false, removeTagId?: string) => {
     let source = entry;
     try {
       const response = await fetch(`/api/v1/transactions/detail?id=${encodeURIComponent(entry.id)}`);
@@ -1396,7 +1402,16 @@ export function DetailViewClient({
       }
     }
     const { edit, customEditEvent } = buildEntryEditRequest(source);
-    const nextEdit = edit ? { ...edit, reconciledReadOnly } : edit;
+    let nextEdit = edit ? { ...edit, reconciledReadOnly } : edit;
+    // 点明细标签上的 X：打开编辑窗时先把这个标签从回填值里去掉，
+    // 用户点保存即由既有的 replaceEntryTags 全量替换链路落库。
+    if (nextEdit && removeTagId) {
+      nextEdit = {
+        ...nextEdit,
+        tagIds: (nextEdit.tagIds ?? []).filter((id) => id !== removeTagId),
+        tags: (nextEdit.tags ?? []).filter((tag) => (tag.id ?? tag.tagId) !== removeTagId),
+      };
+    }
     const nextCustomEditEvent = customEditEvent
       ? { ...customEditEvent, detail: { ...customEditEvent.detail, reconciledReadOnly } }
       : undefined;
@@ -1912,18 +1927,40 @@ export function DetailViewClient({
       filterText: (e) => e.entryTags?.map((et) => et.Tag?.name ?? "").join(" ") ?? "",
       render: (e) => e.entryTags && e.entryTags.length > 0 ? (
         <span className="inline-flex flex-wrap gap-0.5">
-          {e.entryTags.map((et) => {
-            const c = et.Tag?.color || "#3B82F6";
-            return (
-              <span
-                key={et.tagId}
-                className="rounded-full border px-1 py-0.5 text-[10px] leading-none"
-                style={{ backgroundColor: c + "18", color: c, borderColor: c + "60" }}
-              >
-                {et.Tag?.name}
-              </span>
-            );
-          })}
+          {(() => {
+            const editable = buildEntryEditRequest(e).edit;
+            const canRemoveTag = Boolean(editable && !editable.reconciledReadOnly);
+            return e.entryTags.map((et) => {
+              const c = et.Tag?.color || "#3B82F6";
+              return (
+                <span
+                  key={et.tagId}
+                  className="inline-flex max-w-full items-center gap-0.5 rounded-full border px-1 py-0.5 text-[10px] leading-none"
+                  style={{ backgroundColor: c + "18", color: c, borderColor: c + "60" }}
+                >
+                  <span className="truncate">{et.Tag?.name}</span>
+                  {canRemoveTag ? (
+                    <button
+                      type="button"
+                      title={t("settings.tags.delete")}
+                      aria-label={t("settings.tags.delete")}
+                      onPointerDown={(event) => event.stopPropagation()}
+                      onMouseDown={(event) => event.stopPropagation()}
+                      onDoubleClick={(event) => event.stopPropagation()}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        void openEntryEditor(e, isReconciledEntry(e), et.tagId);
+                      }}
+                      className="inline-flex h-3 w-3 shrink-0 items-center justify-center rounded-full hover:bg-black/10"
+                    >
+                      <X className="h-2.5 w-2.5" />
+                    </button>
+                  ) : null}
+                </span>
+              );
+            });
+          })()}
         </span>
       ) : null,
     },
@@ -1993,7 +2030,7 @@ export function DetailViewClient({
         </span>
       ),
     },
-  ], [accountColumnDefaultHidden, accountColumnDisplayFallback, resolvedAccountColumnLabel, accountColumnMode, accountDisplayFallback, accountId, accountOptionById, accountTypeFilterTextOf, dateDisplayFormat, detailCategoryLabel, detailFlowAmountOf, entryProductTypeOf, flowAccountIdOf, inflowCls, outflowCls, relatedAccountDefaultHidden, relatedAccountTarget, renderNavigableAccountLabel, runningBalanceDefaultHidden, showAccountColumn, showRunningBalance, t]);
+  ], [accountColumnDefaultHidden, accountColumnDisplayFallback, resolvedAccountColumnLabel, accountColumnMode, accountDisplayFallback, accountId, accountOptionById, accountTypeFilterTextOf, buildEntryEditRequest, dateDisplayFormat, detailCategoryLabel, detailFlowAmountOf, entryProductTypeOf, flowAccountIdOf, inflowCls, outflowCls, openEntryEditor, relatedAccountDefaultHidden, relatedAccountTarget, renderNavigableAccountLabel, runningBalanceDefaultHidden, showAccountColumn, showRunningBalance, t]);
 
   const customToolbarLeft = toolbarMode === "custom" ? (
     <div className="flex min-w-0 items-center gap-2">

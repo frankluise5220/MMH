@@ -179,6 +179,8 @@ type SmartSelectMultiBehavior = SmartSelectSharedBehavior & {
     onCreated?: (tag: SmartSelectOption) => void;
     buttonLabel?: string;
   };
+  /** 在触发器里给每个已选 chip 增加 X，点一下即从 value 中移除该选项（不打开下拉）。 */
+  removableChips?: boolean;
 };
 
 type SingleModeProps = {
@@ -478,6 +480,7 @@ function normalizeSingleBehavior(props: SingleModeProps, options: SmartSelectOpt
           label: props.createLabel,
         }
       : undefined),
+    removableChips: false,
   };
 }
 
@@ -519,6 +522,7 @@ function normalizeMultiBehavior(props: MultiModeProps, options: SmartSelectOptio
           onCreated: props.onCreated,
         }
       : undefined),
+    removableChips: behavior?.removableChips ?? false,
   };
 }
 
@@ -569,6 +573,7 @@ export function SmartSelect(props: SmartSelectProps) {
     showGroupCounts,
     onDropdownClose,
     create,
+    removableChips,
   } = normalizedBehavior;
   const micro = density === "micro";
   const dense = density === "dense" || micro;
@@ -715,6 +720,11 @@ export function SmartSelect(props: SmartSelectProps) {
     }
     closeDropdown();
   }, [closeDropdown, multiDraft, onChange]);
+  const removeMultiChip = useCallback((id: string) => {
+    const next = (multiDraft ?? (value as string[])).filter((item) => item !== id);
+    if (multiDraft !== null) setMultiDraft(next);
+    (onChange as (ids: string[]) => void)(next);
+  }, [multiDraft, value, onChange]);
 
   const calcPosition = useCallback(() => {
     if (!triggerRef.current) return;
@@ -1733,6 +1743,8 @@ export function SmartSelect(props: SmartSelectProps) {
             value={value as string[]}
             options={effectiveOptions}
             placeholder={placeholder}
+            removableChips={removableChips}
+            onRemove={removeMultiChip}
           />
         )}
         {mode === "single" && value && clearable ? (
@@ -1763,10 +1775,14 @@ function MultiTriggerDisplay({
   value,
   options,
   placeholder,
+  removableChips,
+  onRemove,
 }: {
   value: string[];
   options: SmartSelectOption[];
   placeholder?: string;
+  removableChips?: boolean;
+  onRemove?: (id: string) => void;
 }) {
   const { t } = useI18n();
   const selected = options.filter((option) => value.includes(option.id));
@@ -1792,6 +1808,21 @@ function MultiTriggerDisplay({
             style={{ backgroundColor: option.color || PRESET_COLORS[0] }}
           />
           <span className="truncate">{option.label}</span>
+          {removableChips && onRemove ? (
+            <button
+              type="button"
+              title={t("settings.tags.delete")}
+              aria-label={t("settings.tags.delete")}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                onRemove(option.id);
+              }}
+              className="inline-flex h-3 w-3 shrink-0 items-center justify-center rounded-full hover:bg-black/10"
+            >
+              <X className="h-2.5 w-2.5" />
+            </button>
+          ) : null}
         </span>
       ))}
       {selected.length > 3 ? (

@@ -2790,6 +2790,7 @@ export function TransactionFormModal({
                         options={tagSelectOptions} placeholder={t("txForm.selectTags")}
                         onInlineCreate={createTagInline}
                         onCreated={handleTagCreated}
+                        behavior={{ removableChips: true }}
                       />
                     </div>
                     {txType === "expense" ? (
@@ -3402,6 +3403,7 @@ export function TransactionFormModal({
                         options={tagSelectOptions} placeholder={t("txForm.selectTags")}
                         onInlineCreate={createTagInline}
                         onCreated={handleTagCreated}
+                        behavior={{ removableChips: true }}
                       />
                     </div>
                   </div>
