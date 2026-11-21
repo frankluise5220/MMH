@@ -274,30 +274,32 @@ export async function POST(req: NextRequest) {
       return id ? accountById.get(id) ?? existingAccountById.get(id) ?? null : null;
     };
     /**
-     * 一行流水里哪一端是往来款账户 —— 决定「流出/流入账户」落在 accountId 还是
-     * toAccountId。绝不能默认关联账户在 toAccountId：借入与借出方向相反，同一个
-     * 页面里两端的字段会互换。
+     * 一行流水里「账户」（视图账户）落在哪一端 —— 决定批量编辑的
+     * liabilityAccount / counterpartyAccount / outflowAccount / inflowAccount
+     * 写到 accountId 还是 toAccountId。
      *
-     * 判定顺序：① 当前页面上下文（往来明细页选中的账户 / 组合行的子账户）；
-     * ② 账户种类兜底（恰好一端是往来款 / 贷款 / 信用卡类）；
-     * ③ 判不出来的行返回 null，由调用方跳过并计数，而不是猜一端去写。
+     * 原始记录里视图账户可能在 accountId、也可能在 toAccountId（借入与借出相反），
+     * 对手账户就是原始交易的另一端。账户是什么类型与这件事无关：往来款↔资金账户、
+     * 往来款↔往来款都按同一条规则处理（2026-11-21 用户裁定）。
+     *
+     * 判定顺序：① 当前页面上下文（视图账户 / 组合行的子账户）落在哪一端；
+     * ② 上下文判不出来时（两端都在/都不在视图账户集合），按账户种类兜底；
+     * ③ 仍判不出来就返回 null，由调用方跳过并计数，不猜一端去写。
      */
     const resolveLiabilityFlowSide = (entry: { accountId?: string | null; toAccountId?: string | null }): LiabilityFlowSide | null => {
       const accountId = String(entry.accountId ?? "").trim();
       const toAccountId = String(entry.toAccountId ?? "").trim();
-      // ① 行内数据能定：恰好一端是往来款 / 贷款 / 信用卡账户。这一条与页面无关，
-      //    所以同一页里方向相反的两类行（借入、借出）都能各判各的。
+      // ① 视图账户落在哪一端，那一端就是「账户」，另一端就是「对手账户」。
+      const accountInContext = !!accountId && contextAccountIdSet.has(accountId);
+      const toInContext = !!toAccountId && contextAccountIdSet.has(toAccountId);
+      if (accountInContext !== toInContext) return accountInContext ? "account" : "toAccount";
+      // ② 上下文判不出来时（两端都是视图账户、或都不在视图里），才按账户种类兜底。
       const liabilityEnds = [
         { side: "account" as const, kind: resolveAccountMeta(accountId)?.kind ?? null },
         { side: "toAccount" as const, kind: resolveAccountMeta(toAccountId)?.kind ?? null },
       ].filter((end) => isLiabilityAccountKind(end.kind));
       if (liabilityEnds.length === 1) return liabilityEnds[0].side;
-      // ② 行内端类型相同（往来款 A → 往来款 B）或都拿不到类型时，按当前页面上下文判：
-      //    页面选中的往来账户落在哪一端。
-      const accountInContext = !!accountId && contextAccountIdSet.has(accountId);
-      const toInContext = !!toAccountId && contextAccountIdSet.has(toAccountId);
-      if (accountInContext !== toInContext) return accountInContext ? "account" : "toAccount";
-      // ③ 两端都命中上下文或都不命中：判不出来就跳过，绝不按字段位置猜。
+      // ③ 判不出来就跳过，绝不按字段位置猜。
       return null;
     };
     /**

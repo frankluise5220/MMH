@@ -375,11 +375,58 @@ export default function SystemUpdatePage() {
   // resources\app: the app must be reinstalled and the page has to say so.
   const [desktopRequiresInstaller, setDesktopRequiresInstaller] = useState(false);
 
+  // 版本信息主链路整支失败（服务端 500 / 网络断了）时的兜底：只问那条仅依赖
+  // 本地 updater 的换源通道，拼一份「版本未知但能换源」的最低限度结果。
+  // 没有它，DNS 一挂用户就看到「读取版本信息失败」，连带失去把镜像源改回来的
+  // 唯一入口——而那正是最需要换源的时刻（2026-11-20 5.148）。
+  const loadImageSourceFallback = useCallback(async (): Promise<VersionInfo | null> => {
+    try {
+      const res = await fetch("/api/v1/settings/system-update?imageSource=1", { cache: "no-store" });
+      const data = await res.json().catch(() => null) as {
+        deploymentTarget?: VersionInfo["deploymentTarget"];
+        isDocker?: boolean;
+        updaterEnabled?: boolean;
+        config?: ImageSourceConfig | null;
+      } | null;
+      if (!data) return null;
+      if (data.config) {
+        setImageSourceDraft({
+          source: data.config.source || "auto",
+          customAppImage: data.config.customAppImage || "",
+          customUpdaterImage: deriveUpdaterImage(data.config.customAppImage || ""),
+        });
+      }
+      return {
+        ok: true,
+        deploymentTarget: data.deploymentTarget,
+        isDocker: Boolean(data.isDocker),
+        updaterEnabled: Boolean(data.updaterEnabled),
+        imageSourceConfig: data.config ?? null,
+        localVersion: "unknown",
+        localCommit: "unknown",
+        localCommitMsg: "",
+        localCommitDate: "",
+        remoteCommit: "unknown",
+        remoteCommitMsg: "",
+        needsUpdate: false,
+        canCheckUpdate: false,
+        fetchError: t("settings.systemUpdate.fetchInfoFailed"),
+      };
+    } catch {
+      return null;
+    }
+  }, [t]);
+
   const loadVersionInfo = useCallback(async (options?: { checkRemote?: boolean }) => {
     setLoadingVersion(true);
     try {
       const query = options?.checkRemote ? "?check=1" : "";
       const res = await fetch(`/api/v1/settings/system-update${query}`, { cache: "no-store" });
+      if (!res.ok) {
+        const fallback = await loadImageSourceFallback();
+        setVersionInfo(fallback);
+        return fallback;
+      }
       const data = await res.json() as VersionInfo;
       setVersionInfo(data);
       if (data?.imageSourceConfig) {
@@ -391,12 +438,13 @@ export default function SystemUpdatePage() {
       }
       return data;
     } catch {
-      setVersionInfo(null);
-      return null;
+      const fallback = await loadImageSourceFallback();
+      setVersionInfo(fallback);
+      return fallback;
     } finally {
       setLoadingVersion(false);
     }
-  }, []);
+  }, [loadImageSourceFallback]);
 
   // 首屏就带 `?check=1`：Docker / 飞牛 / 群晖没有别的更新提示通道（没有桌面端的
   // 启动自检），只查本地版本的话首屏永远停在「未获取」，用户根本看不到有更新。

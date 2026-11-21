@@ -40,7 +40,7 @@ import { resolveOrCreateAdvanceAccount } from "@/lib/server/advance-account";
 import { createCreditCardInstallmentPlan } from "@/lib/server/credit-card-installment";
 import { ENTRY_ORIGIN_MANUAL, ENTRY_ORIGIN_SCHEDULED_TASK, isCreditCardRepaymentTransfer, statementMonthForTransfer, TRANSACTION_SOURCE_METAL_EXTRACT, TRANSACTION_SOURCE_MONEY_INCOME } from "@/lib/transaction-semantics";
 import { updateMetalExtractEntry } from "@/lib/server/sidebar-actions/metal-actions";
-import { ensureSettlementTransferCategory, resolveCategorySnapshot, resolveCreditCardRepaymentCategory, SYSTEM_DEPOSIT_INTEREST_CATEGORY } from "@/lib/default-categories";
+import { ensureDefaultCategory, ensureSettlementTransferCategory, resolveCategorySnapshot, resolveCreditCardRepaymentCategory, SYSTEM_DEPOSIT_INTEREST_CATEGORY, SYSTEM_VOUCHER_CATEGORY } from "@/lib/default-categories";
 import { getInvestmentCategoryName } from "@/lib/investment-category";
 import { calculateDepositAccruedInterest, depositSegmentInterest, round2 } from "@/lib/deposit-maturity";
 import { getCashFlowDate } from "@/lib/cash-flow-date";
@@ -217,6 +217,65 @@ function parseMoneyInput(value: FormDataEntryValue | null) {
   const n = Number(raw.replace(/,/g, ""));
   if (!Number.isFinite(n)) return 0;
   return n;
+}
+
+/**
+ * 券 / 包（红包、优惠券）抵扣金额。界面填的「金额」是消费总额，券包是其中被
+ * 红包 / 优惠券抵扣的部分；主交易只记实付（总额 − 券包），券包另生成一条 income。
+ * 非法值（负数、非数字、大于消费总额）一律按 0 处理，服务端不信任前端。
+ */
+function parseVoucherAmount(rawValue: FormDataEntryValue | null, totalAmountAbs: number): number {
+  const raw = typeof rawValue === "string" ? rawValue.trim() : "";
+  if (!raw) return 0;
+  const n = Number(raw.replace(/,/g, ""));
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return Math.min(n, Math.max(0, totalAmountAbs));
+}
+
+/**
+ * 为主交易生成「券 / 包」收入分录（source=voucher）。
+ *
+ * 收款账户：转账 / 代付是 toAccountId（被转账的账户），纯支出是付款账户自身。
+ * 这条 income 与主交易同 date / postedAt，用 voucherSourceEntryId 指回主交易，
+ * 便于编辑时反查回填；分类用系统分类「红包优惠券」。
+ */
+async function createVoucherIncomeEntry(
+  tx: any,
+  args: {
+    householdId: string;
+    sourceEntryId: string;
+    receivingAccountId: string;
+    receivingAccountName: string;
+    voucherAmount: number;
+    date: Date;
+    postedAt: Date | null;
+    currency: string | null;
+    statementMonth: string | null;
+    note: string | null;
+  },
+): Promise<void> {
+  if (args.voucherAmount <= 0) return;
+  // 确保系统分类存在（存量账簿可能还没同步过新版本号），保证 categoryId 非空。
+  const category = await ensureDefaultCategory(tx, args.householdId, "income", SYSTEM_VOUCHER_CATEGORY, null, true);
+  await tx.txRecord.create({
+    data: {
+      accountId: args.receivingAccountId,
+      accountName: args.receivingAccountName,
+      amount: round2(args.voucherAmount),
+      type: TransactionType.income,
+      date: args.date,
+      postedAt: args.postedAt,
+      categoryId: category?.id ?? null,
+      categoryName: SYSTEM_VOUCHER_CATEGORY,
+      currency: args.currency ?? null,
+      statementMonth: args.statementMonth,
+      note: args.note ?? null,
+      source: "voucher",
+      voucherAmount: round2(args.voucherAmount),
+      voucherSourceEntryId: args.sourceEntryId,
+      ...{ householdId: args.householdId },
+    },
+  });
 }
 
 /**
@@ -518,6 +577,11 @@ export async function createTransaction(formData: FormData) {
   const postedAtInput = parseOptionalDateTimeInput(formData.get("postedAt"));
   const amountRaw = parseMoneyInput(formData.get("amount") ?? null);
   const amountAbs = Math.abs(amountRaw);
+  // 券 / 包抵扣：界面金额是消费总额，主交易只记实付（总额 − 券包）。
+  const voucherAmount = ["expense", "transfer", "advance"].includes(type)
+    ? parseVoucherAmount(formData.get("voucherAmount"), amountAbs)
+    : 0;
+  const paidAmountAbs = Math.max(0, amountAbs - voucherAmount);
   const note = String(formData.get("note") ?? "").trim();
   const toNote = String(formData.get("toNote") ?? "").trim();
   const counterpartyInstitutionId = String(formData.get("counterpartyInstitutionId") ?? "").trim();
@@ -604,7 +668,9 @@ export async function createTransaction(formData: FormData) {
           source: requestedSource,
           note,
         });
-        const signedTransferAmount = liabilityMode === "collect_in" ? amountAbs : -amountAbs;
+        // 券包只作用于普通转账；往来款（liability）保持原口径，不拆实付。
+        const appliedVoucher = liabilityMode ? 0 : voucherAmount;
+        const signedTransferAmount = liabilityMode === "collect_in" ? amountAbs : -Math.max(0, amountAbs - appliedVoucher);
         const transferSource = liabilityMode ? liabilitySourceForMode(liabilityMode) : ORDINARY_TRANSFER_SOURCE;
 
         const transferStatementMonth = statementMonthForTransfer(date, fromAcc, toAcc);
@@ -651,11 +717,26 @@ export async function createTransaction(formData: FormData) {
             principalAmount: liabilityMode ? amountAbs : null,
             interestAmount: liabilityMode ? 0 : null,
             feeAmount: liabilityMode ? 0 : null,
+            voucherAmount: appliedVoucher > 0 ? round2(appliedVoucher) : null,
             ...{ householdId },
           },
         });
         createdEntryId = created.id;
         await attachEntryTags({ tx, entryId: created.id, householdId, tagIds });
+        if (appliedVoucher > 0) {
+          await createVoucherIncomeEntry(tx, {
+            householdId,
+            sourceEntryId: created.id,
+            receivingAccountId: toAcc.id,
+            receivingAccountName: toAcc.name,
+            voucherAmount: appliedVoucher,
+            date,
+            postedAt,
+            currency: transferCurrency,
+            statementMonth: transferStatementMonth,
+            note: note ? `券包抵扣：${note}` : "券包抵扣",
+          });
+        }
       });
 
       if (createdEntryId) {
@@ -697,6 +778,9 @@ export async function createTransaction(formData: FormData) {
           (acc.kind === AccountKind.bank_credit || acc.kind === AccountKind.loan) && acc.billingDay
             ? toStatementMonth(creditBillEffectiveDate({ type, date, postedAt }) ?? date, acc.billingDay, acc.billingDayTxPeriod)
             : null;
+        // 券包只作用于普通支出；信用卡分期不拆实付，避免期供与券包相互干扰。
+        const appliedVoucher = createInstallment ? 0 : voucherAmount;
+        const paidAmountRaw = amountRaw < 0 ? -(Math.max(0, amountAbs - appliedVoucher)) : Math.max(0, amountAbs - appliedVoucher);
         const duplicate = createInstallment
           ? null
           : await findRecentManualTransactionDuplicate(tx, {
@@ -704,7 +788,7 @@ export async function createTransaction(formData: FormData) {
               type: TransactionType.expense,
               date,
               accountId: acc.id,
-              amount: amountRaw,
+              amount: paidAmountRaw,
               categoryId: cat?.id ?? null,
               note,
             });
@@ -723,7 +807,7 @@ export async function createTransaction(formData: FormData) {
             accountName: acc.name,
             categoryId: cat?.id ?? null,
             categoryName: cat?.name ?? null,
-            amount: amountRaw,
+            amount: paidAmountRaw,
             type: TransactionType.expense,
             date,
             currency: recordCurrency ?? normalizeCurrency(acc.currency),
@@ -734,11 +818,27 @@ export async function createTransaction(formData: FormData) {
             originalAmount: originalCurrencyInput && originalCurrencyInput !== recordCurrency ? originalAmountInput : null,
             locationId: locationIdInput,
             locationName: locationNameInput,
+            voucherAmount: appliedVoucher > 0 ? round2(appliedVoucher) : null,
             ...{ householdId },
           },
         });
         createdEntryId = created.id;
         await attachEntryTags({ tx, entryId: created.id, householdId, tagIds });
+        // 纯支出：券包作为收入记回付款账户本身。
+        if (appliedVoucher > 0) {
+          await createVoucherIncomeEntry(tx, {
+            householdId,
+            sourceEntryId: created.id,
+            receivingAccountId: acc.id,
+            receivingAccountName: acc.name,
+            voucherAmount: appliedVoucher,
+            date,
+            postedAt,
+            currency: recordCurrency ?? normalizeCurrency(acc.currency),
+            statementMonth,
+            note: note ? `券包抵扣：${note}` : "券包抵扣",
+          });
+        }
 
         if (fixedAssetAccountId) {
           await linkExpenseToFixedAsset(tx, {
@@ -802,7 +902,9 @@ export async function createTransaction(formData: FormData) {
         });
         const advanceAccount = resolvedAdvance.account;
         if (advanceAccount.id === acc.id) throw new Error(t("sidebar.action.cashAccountSameAsSettlement"));
-        const transfer = resolveAdvanceTransfer({ amount: amountRaw, cashAccount: acc, advanceAccount });
+        // 代付金额是消费总额，主交易只记实付（总额 − 券包）。
+        const paidAmountRaw = amountRaw < 0 ? -(Math.max(0, amountAbs - voucherAmount)) : Math.max(0, amountAbs - voucherAmount);
+        const transfer = resolveAdvanceTransfer({ amount: paidAmountRaw, cashAccount: acc, advanceAccount });
         const statementMonth = statementMonthForTransfer(date, transfer.fromAccount, transfer.toAccount);
 
         const created = await tx.txRecord.create({
@@ -822,11 +924,27 @@ export async function createTransaction(formData: FormData) {
             source: "advance",
             note: note || transfer.defaultNote,
             toNote: null,
+            voucherAmount: voucherAmount > 0 ? round2(voucherAmount) : null,
             householdId,
           },
         });
         createdEntryId = created.id;
         await attachEntryTags({ tx, entryId: created.id, householdId, tagIds });
+        // 代付：券包作为收入进被转账的账户（advance 账户）。
+        if (voucherAmount > 0) {
+          await createVoucherIncomeEntry(tx, {
+            householdId,
+            sourceEntryId: created.id,
+            receivingAccountId: transfer.toAccount.id,
+            receivingAccountName: transfer.toAccount.name,
+            voucherAmount,
+            date,
+            postedAt: null,
+            currency: normalizeCurrency(acc.currency),
+            statementMonth,
+            note: note ? `券包抵扣：${note}` : "券包抵扣",
+          });
+        }
       });
 
       if (createdEntryId) {
@@ -3239,6 +3357,12 @@ export async function updateTransactionFromDialog(formData: FormData) {
   const postedAtInput = parseOptionalDateTimeInput(formData.get("postedAt"));
   const amountRaw = parseMoneyInput(formData.get("amount") ?? null);
   const amountAbs = Math.abs(amountRaw);
+  // 券 / 包抵扣：编辑窗金额是消费总额，主交易只记实付。界面没带该字段时沿用原值，
+  // 避免把原本拆过券包的交易在编辑后错误放大成消费总额。
+  const formVoucherRaw = formData.get("voucherAmount");
+  const voucherAmount = formVoucherRaw != null
+    ? parseVoucherAmount(formVoucherRaw, amountAbs)
+    : 0;
   const note = String(formData.get("note") ?? "").trim();
   const toNote = String(formData.get("toNote") ?? "").trim();
   // 在「对方账户」里编辑转账时，备注只写第二备注（toNote），第一备注保持原值。
@@ -3246,6 +3370,13 @@ export async function updateTransactionFromDialog(formData: FormData) {
   const counterpartyInstitutionId = String(formData.get("counterpartyInstitutionId") ?? "").trim();
   const tagIdsRaw = String(formData.get("tagIds") ?? "[]");
   const tagIds: string[] = JSON.parse(tagIdsRaw).filter((id: string) => typeof id === "string" && id.length > 0);
+  // 编辑普通支出时也可以补设消费分期（原来只有新建才带开关）。已分期的记录在
+  // 前端只做只读回填、不会再提交 createInstallment，这里再做一次服务端去重兜底。
+  const editCreateInstallment = formData.get("createInstallment") === "true";
+  const editInstallmentAmount = parseMoneyInput(formData.get("installmentAmount"));
+  const editInstallmentTotal = Number.parseInt(String(formData.get("installmentTotal") ?? "0"), 10);
+  const editInstallmentRate = Number(String(formData.get("installmentRate") ?? "0"));
+  const editInstallmentRateType = String(formData.get("installmentRateType") ?? "period_fee") as CreditCardInstallmentRateType;
 
   const date = dateStr && !Number.isNaN(new Date(dateStr).getTime()) ? new Date(dateStr) : new Date();
   const postedAt = type === "expense" || type === "income" || type === "transfer" ? (postedAtInput ?? date) : null;
@@ -3731,8 +3862,49 @@ export async function updateTransactionFromDialog(formData: FormData) {
           ? toStatementMonth(creditBillEffectiveDate({ type, date, postedAt }) ?? date, acc.billingDay, acc.billingDayTxPeriod)
           : null;
 
+      // 编辑支出补设分期：沿用新建消费分期同样的守卫（仅信用卡 / 必须有账单月 /
+      // 金额在 0~消费总额之间 / 费率类型合法），并按 sourceEntryId 唯一约束去重。
+      const editWantsInstallment = type === "expense" && editCreateInstallment;
+      if (editWantsInstallment) {
+        if (acc.kind !== AccountKind.bank_credit) throw new Error(t("sidebar.action.installmentCreditCardOnly"));
+        if (!statementMonth) throw new Error(t("sidebar.action.creditCardMissingBillingDay"));
+        if (editInstallmentAmount <= 0 || editInstallmentAmount > amountAbs) {
+          throw new Error(t("sidebar.action.installmentAmountInvalid"));
+        }
+        if (editInstallmentRateType !== "annual_interest" && editInstallmentRateType !== "period_fee") {
+          throw new Error(t("sidebar.action.installmentRateTypeInvalid"));
+        }
+        const alreadyInstalled = entry.creditCardInstallmentPlanId
+          || await tx.creditCardInstallmentPlan.findFirst({ where: { sourceEntryId: entryId }, select: { id: true } });
+        if (alreadyInstalled) throw new Error(t("txForm.installmentAlreadySet"));
+      }
+      // 支出编辑：界面金额是消费总额，主交易只记实付（总额 − 券包）；
+      // 分期支出不拆券包（与新建分期口径一致），券包 income 分录金额在编辑里保持不变。
+      const editAppliedVoucher = type === "expense" && !editWantsInstallment ? voucherAmount : 0;
+      const editPaidAmount = amountRaw < 0
+        ? -(Math.max(0, amountAbs - editAppliedVoucher))
+        : Math.max(0, amountAbs - editAppliedVoucher);
+      const existingVoucherEntry = await tx.txRecord.findFirst({
+        where: { voucherSourceEntryId: entryId, source: "voucher", deletedAt: null },
+        select: { id: true },
+      });
+      if (editAppliedVoucher > 0) {
+        if (existingVoucherEntry) {
+          await tx.txRecord.update({
+            where: { id: existingVoucherEntry.id },
+            data: { amount: round2(editAppliedVoucher), voucherAmount: round2(editAppliedVoucher) },
+          });
+        }
+      } else if (existingVoucherEntry) {
+        // 用户清掉了券包：软删旧分录，避免主交易按消费额记账后又多出一条券包收入。
+        await tx.txRecord.update({
+          where: { id: existingVoucherEntry.id },
+          data: { deletedAt: new Date() },
+        });
+      }
       const expenseOrIncomeData: Record<string, unknown> = {
-        amount: amountRaw,
+        amount: editPaidAmount,
+        voucherAmount: editAppliedVoucher > 0 ? round2(editAppliedVoucher) : null,
         accountId: acc.id,
         accountName: acc.name,
         categoryId: cat ? cat.id : null,
@@ -3810,6 +3982,28 @@ export async function updateTransactionFromDialog(formData: FormData) {
         where: { id: entryId },
         data: expenseOrIncomeData,
       });
+
+      if (editWantsInstallment) {
+        await createCreditCardInstallmentPlan(tx, {
+          householdId: ctx.householdId,
+          account: { id: acc.id, name: acc.name },
+          sourceType: CreditCardInstallmentSourceType.transaction,
+          sourceEntryId: entryId,
+          originalAmount: amountAbs,
+          principal: editInstallmentAmount,
+          totalRuns: editInstallmentTotal,
+          rateType: editInstallmentRateType,
+          rate: editInstallmentRate,
+          adjustmentDate: date,
+          adjustmentStatementMonth: statementMonth!,
+          billingDay: acc.billingDay ?? 1,
+          firstPaymentDate: date,
+          firstPaymentStatementMonth: statementMonth!,
+          category: cat ? { id: cat.id, name: cat.name } : null,
+          label: note || cat?.name || t("creditBill.creditCardExpense"),
+          tagIds,
+        });
+      }
 
     });
 

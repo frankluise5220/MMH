@@ -2248,6 +2248,11 @@ model TxRecord {
   entryOrigin                         String?                              @default("manual")
   originalCurrency                    String?
   originalAmount                      Decimal?                             @db.Decimal(18, 2)
+  // 券 / 包（红包、优惠券等）抵扣金额：记主交易时界面填「消费总额」，
+  // 主交易 amount 只记实付（消费总额 − 券包），券包另生成一条 income 分录
+  // （source=voucher，voucherSourceEntryId 指回本条主交易）。纯支出时券包收入记回付款账户。
+  voucherAmount                       Decimal?                             @db.Decimal(18, 2)
+  voucherSourceEntryId                String?
   locationId                          String?
   locationName                        String?
   // 对账锁定：reconciledAt 非空表示该记录已「对账」——不可删除、不可修改（编辑窗只读），

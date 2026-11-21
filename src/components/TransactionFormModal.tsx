@@ -643,6 +643,8 @@ export function TransactionFormModal({
   const [postedAt, setPostedAt] = useState(() => toDateInputValue(today));
   const [postedAtEdited, setPostedAtEdited] = useState(false);
   const [amount, setAmount] = useState("");
+  // 券 / 包（红包、优惠券）抵扣金额：amount 填消费总额，券包为其中被抵扣的部分。
+  const [voucherAmount, setVoucherAmount] = useState("");
   const [fxToAmount, setFxToAmount] = useState("");
   const [fxRate, setFxRate] = useState("");
   const [fxFeeAmount, setFxFeeAmount] = useState("");
@@ -655,6 +657,8 @@ export function TransactionFormModal({
   const [localAmount, setLocalAmount] = useState("");
   const [fxPostingV2, setFxPostingV2] = useState(true);
   const [createInstallment, setCreateInstallment] = useState(false);
+  // 编辑一笔已分期的原消费时，分期方案只读回填（不允许在这个窗里改/关）。
+  const [installmentLocked, setInstallmentLocked] = useState(false);
   const [installmentAmount, setInstallmentAmount] = useState("");
   const [installmentAmountEdited, setInstallmentAmountEdited] = useState(false);
   const [installmentTotal, setInstallmentTotal] = useState("12");
@@ -1199,14 +1203,16 @@ export function TransactionFormModal({
   // 不强行升级成"本币入账 + 原币事实"。
   const showPostedAmount = txPostingIsForeign && fxPostingV2;
   // 信用卡消费的「分期」开关放在金额输入框前面（金额行内占一列），不单独占一行。
-  const showInstallmentToggle = txType === "expense" && selectedAccountIsCreditCard && !editEntryId;
+  const showInstallmentToggle = txType === "expense" && selectedAccountIsCreditCard;
+  // 金额行布局：固定资产开关 | 交易货币 | 券包(1/3) | 金额(2/3) | [分期开关] | [外币入账金额+换算按钮]
+  // 券包与金额按 1:2 分配余下宽度（用户 2026-11-21 定），交易货币在券包左边。
   const expenseAmountRowClass = showInstallmentToggle
     ? showPostedAmount
-      ? "grid grid-cols-[4.5rem_5.33rem_auto_minmax(0,1fr)_minmax(0,1fr)_auto] items-end gap-3"
-      : "grid grid-cols-[4.5rem_5.33rem_auto_minmax(0,1fr)] items-end gap-3"
+      ? "grid grid-cols-[4.5rem_5.33rem_minmax(0,1fr)_minmax(0,2fr)_auto_minmax(0,1fr)_auto] items-end gap-3"
+      : "grid grid-cols-[4.5rem_5.33rem_minmax(0,1fr)_minmax(0,2fr)_auto] items-end gap-3"
     : showPostedAmount
-      ? "grid grid-cols-[4.5rem_5.33rem_minmax(0,1fr)_minmax(0,1fr)_auto] items-end gap-3"
-      : "grid grid-cols-[4.5rem_5.33rem_minmax(0,1fr)] items-end gap-3";
+      ? "grid grid-cols-[4.5rem_5.33rem_minmax(0,1fr)_minmax(0,2fr)_minmax(0,1fr)_auto] items-end gap-3"
+      : "grid grid-cols-[4.5rem_5.33rem_minmax(0,1fr)_minmax(0,2fr)] items-end gap-3";
   // FT 页签（窗口顶部）：支出 / 收入 / 代付 / 转账。外汇窗没有页签；
   // 从某类账户进来时类型被锁定，只保留当前一个页签（不可切换）。
   const entryTabs = useMemo<FolderTabsCardItem[]>(() => {
@@ -1521,6 +1527,7 @@ export function TransactionFormModal({
     setPostedAt(toDateInputValue(today));
     setPostedAtEdited(false);
     setAmount("");
+    setVoucherAmount("");
     setFxToAmount("");
     setFxRate("");
     setFxFeeAmount("");
@@ -1528,6 +1535,7 @@ export function TransactionFormModal({
     setFxFromCurrencyDraft("CNY");
     setFxToCurrencyDraft("USD");
     setCreateInstallment(false);
+    setInstallmentLocked(false);
     setInstallmentAmount("");
     setInstallmentAmountEdited(false);
     setInstallmentTotal("12");
@@ -1878,6 +1886,16 @@ export function TransactionFormModal({
         locationName?: string;
         originalCurrency?: string | null;
         originalAmount?: number | null;
+        voucherAmount?: number | null;
+        installmentPlan?: {
+          id: string;
+          status: string;
+          principal: number;
+          totalRuns: number;
+          rateType: string;
+          rate: number;
+          originalAmount: number;
+        } | null;
       }>).detail;
       if (!detail?.requestId || !detail.entryId) return;
       // 编辑既有记录永远不是「从某账户锁定类型」的入口：上一次新建留下的 lockedType /
@@ -1899,7 +1917,14 @@ export function TransactionFormModal({
         fromAccountId: detail.fromAccountId ?? undefined,
         toAccountId: detail.toAccountId ?? undefined,
       };
-      setCreateInstallment(false);
+      const editInstallmentPlan = detail.installmentPlan ?? null;
+      setCreateInstallment(Boolean(editInstallmentPlan));
+      setInstallmentLocked(Boolean(editInstallmentPlan));
+      setInstallmentAmountEdited(false);
+      setInstallmentAmount(editInstallmentPlan ? formatAmountDraft(editInstallmentPlan.principal) : "");
+      setInstallmentTotal(editInstallmentPlan ? String(editInstallmentPlan.totalRuns) : "12");
+      setInstallmentRateType((editInstallmentPlan?.rateType as CreditCardInstallmentRateType) ?? "period_fee");
+      setInstallmentRate(editInstallmentPlan ? String(editInstallmentPlan.rate) : "0");
       setFixedAssetLinked(detail.fixedAssetLinked === true || Boolean(detail.fixedAssetAccountId));
       setFixedAssetAccountId(detail.fixedAssetAccountId?.trim() ?? "");
       setFixedAssetAssetId(detail.fixedAssetAssetId?.trim() ?? "");
@@ -1936,9 +1961,13 @@ export function TransactionFormModal({
         setAmount(originalNumericAbs !== 0 ? formatAmountDraft(originalNumericAbs) : "");
         setLocalAmount(numericAmount !== 0 ? formatAmountDraft(Math.abs(numericAmount)) : "");
       } else {
+        // 有券包时主交易 amount 是实付，界面要显示消费总额（实付 + 券包）。
+        const editVoucher = Number(detail.voucherAmount ?? 0);
+        const voucher = Number.isFinite(editVoucher) && editVoucher > 0 ? editVoucher : 0;
+        setVoucherAmount(voucher > 0 ? formatAmountDraft(voucher) : "");
         setAmount(
           dialogAmount !== 0
-            ? formatAmountDraft(dialogAmount)
+            ? formatAmountDraft(dialogAmount + (["expense", "transfer", "advance"].includes(detail.type) ? voucher : 0))
             : "",
         );
         setLocalAmount("");
@@ -2406,6 +2435,10 @@ export function TransactionFormModal({
       formData.set("date", date);
       if (txType === "expense" || txType === "income" || txType === "transfer") formData.set("postedAt", postedAt);
       formData.set("amount", String(dialogAmountToStoredAmount(txType, amount)));
+      // 券 / 包抵扣：仅支出 / 转账 / 代付页签有该字段。
+      if (txType === "expense" || txType === "transfer" || txType === "advance") {
+        formData.set("voucherAmount", voucherAmount);
+      }
       // 默认一个备注：note 与 toNote 同值。
       // 例外——在转账的对方账户里编辑时，备注只写第二备注，第一备注由服务端保留原值。
       const toNoteOnly = txType === "transfer" && editNoteScopeRef.current === "toNote";
@@ -2464,7 +2497,7 @@ export function TransactionFormModal({
           formData.set("locationId", locationId);
       }
       formData.set("tagIds", JSON.stringify(selectedTagIds));
-      if (txType === "expense" && createInstallment && !editEntryId) {
+      if (txType === "expense" && createInstallment && !installmentLocked) {
         formData.set("createInstallment", "true");
         formData.set("installmentAmount", installmentAmount);
         formData.set("installmentTotal", installmentTotal);
@@ -2841,7 +2874,9 @@ export function TransactionFormModal({
                     ? expenseAmountRowClass
                     : txType === "income"
                       ? "grid grid-cols-[5.33rem_minmax(0,1fr)] items-end gap-3"
-                      : "space-y-1"}>
+                      : txType === "advance"
+                        ? "grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)] items-end gap-3"
+                        : "space-y-1"}>
                     {txType === "expense" ? (
                       <div className="space-y-1">
                         <div className="form-label">{t("txForm.fixedAssetToggle")}</div>
@@ -2909,6 +2944,18 @@ export function TransactionFormModal({
                         )}
                       </div>
                     ) : null}
+                    {txType === "expense" ? (
+                      <div className="min-w-0 space-y-1">
+                        <div className="form-label">{t("txForm.voucherAmount")}</div>
+                        <CalcInput
+                          value={voucherAmount}
+                          onChange={setVoucherAmount}
+                          placeholder={t("txForm.voucherAmountPlaceholder")}
+                          label={t("txForm.voucherAmount")}
+                          precision={2}
+                        />
+                      </div>
+                    ) : null}
                     {txType === "income" ? (
                       <div className="min-w-0 space-y-1">
                         <div className="form-label">{t("txForm.txnCurrency")}</div>
@@ -2917,6 +2964,28 @@ export function TransactionFormModal({
                         </div>
                       </div>
                     ) : null}
+                    {txType === "advance" ? (
+                      <div className="min-w-0 space-y-1">
+                        <div className="form-label">{t("txForm.voucherAmount")}</div>
+                        <CalcInput
+                          value={voucherAmount}
+                          onChange={setVoucherAmount}
+                          placeholder={t("txForm.voucherAmountPlaceholder")}
+                          label={t("txForm.voucherAmount")}
+                          precision={2}
+                        />
+                      </div>
+                    ) : null}
+                    <div className="min-w-0 space-y-1">
+                      <div className="form-label">{t("txForm.amount")}</div>
+                      <CalcInput ref={amountInputRef} value={amount} onChange={(value) => {
+                        setAmount(value);
+                        if (createInstallment && !installmentLocked && !installmentAmountEdited) {
+                          const numeric = Math.abs(Number(value));
+                          setInstallmentAmount(Number.isFinite(numeric) && numeric > 0 ? formatAmountDraft(numeric) : "");
+                        }
+                      }} placeholder={txType === "expense" ? t("txForm.amountPlaceholderExpense") : t("txForm.amountPlaceholderIncome")} label={t("txForm.amount")} precision={2} />
+                    </div>
                     {showInstallmentToggle ? (
                       <div className="space-y-1">
                         <div className="form-label">{t("txForm.installment")}</div>
@@ -2925,7 +2994,10 @@ export function TransactionFormModal({
                           role="switch"
                           aria-checked={createInstallment}
                           aria-label={t("txForm.installment")}
+                          title={installmentLocked ? t("txForm.installmentAlreadySet") : undefined}
+                          disabled={installmentLocked}
                           onClick={() => {
+                            if (installmentLocked) return;
                             const next = !createInstallment;
                             setCreateInstallment(next);
                             if (next && !installmentAmountEdited) {
@@ -2935,9 +3007,11 @@ export function TransactionFormModal({
                           }}
                           className={[
                             "flex h-9 w-12 items-center justify-center rounded-[10px] border px-2 text-xs font-medium transition",
-                            createInstallment
-                              ? "border-blue-300 bg-blue-50 text-blue-700"
-                              : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50",
+                            installmentLocked
+                              ? "cursor-not-allowed border-blue-200 bg-blue-50 text-blue-400 opacity-70"
+                              : createInstallment
+                                ? "border-blue-300 bg-blue-50 text-blue-700"
+                                : "border-slate-200 bg-white text-slate-500 hover:bg-slate-50",
                           ].join(" ")}
                         >
                           <span
@@ -2956,16 +3030,6 @@ export function TransactionFormModal({
                         </button>
                       </div>
                     ) : null}
-                    <div className="min-w-0 space-y-1">
-                      <div className="form-label">{t("txForm.amount")}</div>
-                      <CalcInput ref={amountInputRef} value={amount} onChange={(value) => {
-                        setAmount(value);
-                        if (createInstallment && !installmentAmountEdited) {
-                          const numeric = Math.abs(Number(value));
-                          setInstallmentAmount(Number.isFinite(numeric) && numeric > 0 ? formatAmountDraft(numeric) : "");
-                        }
-                      }} placeholder={txType === "expense" ? t("txForm.amountPlaceholderExpense") : t("txForm.amountPlaceholderIncome")} label={t("txForm.amount")} precision={2} />
-                    </div>
                     {showPostedAmount ? (
                       <>
                         <div className="min-w-0 space-y-1">
@@ -3017,13 +3081,19 @@ export function TransactionFormModal({
 
                   {showInstallmentToggle && createInstallment ? (
                     <div className="border-y border-slate-200 py-3 space-y-3">
+                      {installmentLocked ? (
+                        <div className="rounded-md bg-blue-50 px-3 py-2 text-xs text-blue-700">
+                          {t("txForm.installmentAlreadySet")}
+                        </div>
+                      ) : null}
                       <div className="grid grid-cols-3 gap-3">
                             <div className="space-y-1">
                               <div className="form-label">{t("txForm.installmentAmount")}</div>
                               <CalcInput value={installmentAmount} onChange={(value) => {
+                                if (installmentLocked) return;
                                 setInstallmentAmount(value);
                                 setInstallmentAmountEdited(true);
-                              }} placeholder={t("txForm.installmentAmountPlaceholder")} label={t("txForm.installmentAmount")} precision={2} />
+                              }} disabled={installmentLocked} placeholder={t("txForm.installmentAmountPlaceholder")} label={t("txForm.installmentAmount")} precision={2} />
                             </div>
                             <div className="space-y-1">
                               <div className="form-label">{t("txForm.periods")}</div>
@@ -3032,6 +3102,7 @@ export function TransactionFormModal({
                                 min={2}
                                 max={120}
                                 step={1}
+                                disabled={installmentLocked}
                                 value={installmentTotal}
                                 onChange={(event) => setInstallmentTotal(event.target.value)}
                                 className="form-input"
@@ -3044,6 +3115,7 @@ export function TransactionFormModal({
                                 min={0}
                                 max={100}
                                 step="0.0001"
+                                disabled={installmentLocked}
                                 value={installmentRate}
                                 onChange={(event) => setInstallmentRate(event.target.value)}
                                 className="form-input"
@@ -3052,12 +3124,12 @@ export function TransactionFormModal({
                           </div>
                           <div className="flex items-center justify-between gap-3">
                             <div className="inline-flex h-8 overflow-hidden rounded border border-slate-200 bg-white">
-                              <button type="button" onClick={() => setInstallmentRateType("period_fee")}
-                                className={`px-3 text-xs ${installmentRateType === "period_fee" ? "bg-slate-800 text-white" : "text-slate-600 hover:bg-slate-50"}`}>
+                              <button type="button" disabled={installmentLocked} onClick={() => setInstallmentRateType("period_fee")}
+                                className={`px-3 text-xs disabled:cursor-not-allowed disabled:opacity-60 ${installmentRateType === "period_fee" ? "bg-slate-800 text-white" : "text-slate-600 hover:bg-slate-50"}`}>
                                 {t("txForm.periodFee")}
                               </button>
-                              <button type="button" onClick={() => setInstallmentRateType("annual_interest")}
-                                className={`border-l border-slate-200 px-3 text-xs ${installmentRateType === "annual_interest" ? "bg-slate-800 text-white" : "text-slate-600 hover:bg-slate-50"}`}>
+                              <button type="button" disabled={installmentLocked} onClick={() => setInstallmentRateType("annual_interest")}
+                                className={`border-l border-slate-200 px-3 text-xs disabled:cursor-not-allowed disabled:opacity-60 ${installmentRateType === "annual_interest" ? "bg-slate-800 text-white" : "text-slate-600 hover:bg-slate-50"}`}>
                                 {t("txForm.annualRate")}
                               </button>
                             </div>
@@ -3408,10 +3480,22 @@ export function TransactionFormModal({
                     </div>
                   </div>
 
-                  {/* Row 4: amount（独占一行，排备注上方） */}
-                  <div className="space-y-1">
-                    <div className="form-label">{t("txForm.amount")}</div>
-                    <CalcInput ref={amountInputRef} value={amount} onChange={setAmount} placeholder={t("txForm.amountExample")} label={t("txForm.amount")} precision={2} />
+                  {/* Row 4: 券包(1/3) + 金额(2/3) 并排（用户 2026-11-21 定） */}
+                  <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)] items-end gap-3">
+                    <div className="space-y-1">
+                      <div className="form-label">{t("txForm.voucherAmount")}</div>
+                      <CalcInput
+                        value={voucherAmount}
+                        onChange={setVoucherAmount}
+                        placeholder={t("txForm.voucherAmountPlaceholder")}
+                        label={t("txForm.voucherAmount")}
+                        precision={2}
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="form-label">{t("txForm.amount")}</div>
+                      <CalcInput ref={amountInputRef} value={amount} onChange={setAmount} placeholder={t("txForm.amountExample")} label={t("txForm.amount")} precision={2} />
+                    </div>
                   </div>
 
                   {/* Row 5: note + attachment */}

@@ -1,11 +1,10 @@
 import { AccountKind, FundProductType, Prisma, TransactionType } from "@prisma/client";
 
-import { applyBalanceAnchorEntry } from "@/lib/balance-reconcile";
 import { addDaysUtc } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
-import { compareDetailEntriesAsc, getDetailEntryDisplayDate } from "@/lib/detail-entry-order";
 import { resolveFundName } from "@/lib/fund/fundProfile";
 import { ensureMoneyFundYieldRange, shiftYmd } from "@/lib/fund/moneyFundYield";
+import { queryDailyEndBalances } from "@/lib/server/detail-page-query";
 import { moneyFundDailyIncome } from "@/lib/server/money-fund-income-accrual";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { createManySkipDuplicatesCompat } from "@/lib/server/prisma-create-many";
@@ -100,25 +99,6 @@ type SegmentPlan = LinkedFundSegment & {
   yields: Map<string, number>;
 };
 
-type BalanceRow = {
-  id: string;
-  date: Date;
-  postedAt: Date | null;
-  createdAt: Date;
-  dayOrder: number | null;
-  type: string;
-  amount: Prisma.Decimal;
-  accountId: string;
-  toAccountId: string | null;
-  source: string | null;
-  toNote: string | null;
-  reconciledBalance: Prisma.Decimal | null;
-  principalAmount: Prisma.Decimal | null;
-  fundArrivalAmount: Prisma.Decimal | null;
-  fundSubtype: string | null;
-  fundProductType: string | null;
-};
-
 function utcMidnight(date: Date): Date {
   return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
 }
@@ -175,54 +155,21 @@ async function loadWalletSegments(wallet: WalletTarget): Promise<LinkedFundSegme
 /**
  * 钱包的「日终余额」时间线（只算到 `untilKey`，含当天）。
  *
- * 折叠规则与账户余额 / 明细余额列共用 `applyBalanceAnchorEntry`：锚点行直接钉值，
- * 其余行按 `amount`（收款侧取 `fundArrivalAmount` 的绝对值）累加。
- * 只返回有流水的日子，收益循环里用「最近一个 ≤ 该日的值」取基数。
+ * 直接复用明细页的余额引擎（`queryDailyEndBalances` → `ledger_balanced` CTE），
+ * 使计息基数与用户在明细余额列看到的是**同一个数字**。
+ *
+ * 为什么不再自己折叠（2026-11-21 用户报「明细余额 21279.90 却按 14886.80 计息」）：
+ * 旧实现用 `getDetailEntryDisplayDate` + `applyBalanceAnchorEntry` 另起一条链。两条链
+ * 在关联业务生效日（赎回款到账日）、锚点分段、金额方向上各自实现，长期看必然分叉——
+ * 该账户两条链从 7 月起就差约 6963 元，且差额随流水波动。既然用户核对的是明细余额列，
+ * 计息就只能以那一条链为准，绝不能有两套「日终余额」。
  */
 async function loadWalletDailyEndBalance(
+  householdId: string,
   walletId: string,
   untilKey: string,
-): Promise<{ dayKeys: string[]; balanceOf: (dayKey: string) => number }> {
-  const rows = (await prisma.txRecord.findMany({
-    where: {
-      deletedAt: null,
-      OR: [{ accountId: walletId }, { toAccountId: walletId }],
-      // 入账日（postedAt）可能晚于 date，这里放宽到次日，最后仍按 displayDate 过滤。
-      date: { lte: new Date(`${shiftYmd(untilKey, 1)}T00:00:00.000Z`) },
-    },
-    select: {
-      id: true,
-      date: true,
-      postedAt: true,
-      createdAt: true,
-      dayOrder: true,
-      type: true,
-      amount: true,
-      accountId: true,
-      toAccountId: true,
-      source: true,
-      toNote: true,
-      reconciledBalance: true,
-      principalAmount: true,
-      fundArrivalAmount: true,
-      fundSubtype: true,
-      fundProductType: true,
-    },
-  })) as BalanceRow[];
-
-  const ordered = rows
-    .filter((row) => row.accountId === walletId || row.toAccountId === walletId)
-    .sort((a, b) => compareDetailEntriesAsc(a, b, walletId));
-
-  const byDay = new Map<string, number>();
-  let running = 0;
-  for (const row of ordered) {
-    const displayDay = utcDayKey(getDetailEntryDisplayDate(row, walletId));
-    if (displayDay > untilKey) continue;
-    running = applyBalanceAnchorEntry(running, row, walletId);
-    byDay.set(displayDay, running);
-  }
-
+): Promise<{ balanceOf: (dayKey: string) => number }> {
+  const byDay = await queryDailyEndBalances({ accountId: walletId, householdId, untilKey });
   const dayKeys = [...byDay.keys()].sort();
   let cursor = 0;
   let current = 0;
@@ -233,7 +180,7 @@ async function loadWalletDailyEndBalance(
     }
     return current;
   };
-  return { dayKeys, balanceOf };
+  return { balanceOf };
 }
 
 /** 重算区间端点只接受 `YYYY-MM-DD` 业务日字符串，其余一律当「没填」。 */
@@ -398,7 +345,7 @@ async function accrueOneWallet(params: {
     ).map((row) => utcDayKey(row.date)),
   );
 
-  const { balanceOf } = await loadWalletDailyEndBalance(wallet.id, maxToKey);
+  const { balanceOf } = await loadWalletDailyEndBalance(householdId, wallet.id, maxToKey);
 
   let created = 0;
   let totalIncome = 0;
@@ -462,9 +409,11 @@ async function accrueOneWallet(params: {
         fundSubtype: null,
         fundNav: null,
         fundUnits: null,
-        // 份额按面值折：货基 1 元/份，计息基数（前一日日终余额）就是当天持有的份额。
-        // 把代码、份额、收益都写进备注，明细里不用点开就能核对这笔收益怎么算出来的。
-        note: `基金代码 ${fundCode}，份额 ${base.toFixed(2)}，每万份收益 ${per10k.toFixed(4)}，收益 ${income.toFixed(2)} 元`,
+        // 货基 1 元/份，计息基数就是前一日日终的账户余额（明细里能查到的那个数）。
+        // 备注叫「计息余额」而不是「份额」：用户核对的是明细余额列，写「份额」会以为
+        // 是另一套数字（2026-11-21 用户报「余额 2 万多却按 1.4 万算」）。代码、基数、
+        // 万份收益、收益都写进备注，明细里不用点开就能逐项对账。
+        note: `基金代码 ${fundCode}，计息余额 ${base.toFixed(2)}，每万份收益 ${per10k.toFixed(4)}，收益 ${income.toFixed(2)} 元`,
         dayOrder: 0,
       });
       created += 1;

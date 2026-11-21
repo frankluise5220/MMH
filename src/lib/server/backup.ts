@@ -817,6 +817,10 @@ const TRANSACTION_RESTORE_COLUMNS = [
   { name: "reimbursementDifferenceCategoryName", select: 'x."reimbursementDifferenceCategoryName"' },
   { name: "reconciledAt", select: "NULLIF(x.\"reconciledAt\", '')::timestamptz" },
   { name: "reconciledBalance", select: "NULLIF(x.\"reconciledBalance\", '')::numeric" },
+  // 2026-11-21 券 / 包抵扣：主交易存 voucherAmount，券包 income 分录用
+  // voucherSourceEntryId 指回主交易（恢复后要能反查回填编辑窗）。
+  { name: "voucherAmount", select: "NULLIF(x.\"voucherAmount\", '')::numeric" },
+  { name: "voucherSourceEntryId", select: 'x."voucherSourceEntryId"' },
 ] as const;
 
 const TRANSACTION_RESTORE_INSERT_SQL = `INSERT INTO "transactions" (${TRANSACTION_RESTORE_COLUMNS
@@ -4375,6 +4379,10 @@ async function restoreSingleHouseholdBackup(
               reconciledAt: item.reconciledAt == null ? null : new Date(String(item.reconciledAt)),
               reconciledBalance:
                 item.reconciledBalance == null ? null : String(item.reconciledBalance),
+              voucherAmount:
+                item.voucherAmount == null ? null : String(item.voucherAmount),
+              voucherSourceEntryId:
+                item.voucherSourceEntryId == null ? null : String(item.voucherSourceEntryId),
             };
           },
         {

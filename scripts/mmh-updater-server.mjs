@@ -488,7 +488,14 @@ async function saveImageSourceConfig(input) {
     values.CUSTOM_MMH_UPDATER_IMAGE = updaterImage;
     values.MMH_APP_IMAGE = customAppImage;
     values.MMH_UPDATER_IMAGE = updaterImage;
-  } else if (source !== "auto") {
+  } else if (source === "auto") {
+    // 切回「自动」时必须把上一次写死的地址清掉：compose 用的是
+    // ${MMH_APP_IMAGE:-默认源}，空值会回落到默认源，而残留的旧地址会让「自动」
+    // 继续拉那个可能已经失效的仓库（2026-11-20 5.148：custom 指向一个没有 tag
+    // 的 draft 仓库，切回 auto 后 MMH_APP_IMAGE 仍留着坏地址，重建即失败）。
+    values.MMH_APP_IMAGE = "";
+    values.MMH_UPDATER_IMAGE = "";
+  } else {
     const selected = imageSources[source];
     if (!selected) throw new Error(`未知镜像源: ${source}`);
     values.MMH_APP_IMAGE = selected.app;

@@ -98,6 +98,17 @@ export type EditPayload = {
   currency?: string | null;
   originalCurrency?: string | null;
   originalAmount?: number | null;
+  voucherAmount?: number | null;
+  /** 原消费自带的消费分期方案；非空表示已分期，编辑窗里分期开关只读。 */
+  installmentPlan?: {
+    id: string;
+    status: string;
+    principal: number;
+    totalRuns: number;
+    rateType: string;
+    rate: number;
+    originalAmount: number;
+  } | null;
   locationId?: string;
   locationName?: string;
   tags?: Array<{

@@ -860,6 +860,50 @@ export async function queryDetailRunningBalancesForEntries(args: {
 }
 
 /**
+ * 账户每个业务日的「日终余额」时间线，口径与明细余额列逐字一致。
+ *
+ * 供钱包货基计息使用：计息基数必须是用户在明细里看到的那个余额，不能另起一套
+ * 折叠链（2026-11-21 用户报「明细余额 21279.90 却按 14886.80 计息」）。直接复用
+ * 明细页的 `ledger_balanced` CTE（含关联业务到账日回填、锚点、金额方向），按 dayKey
+ * 取该日最后一笔的事后余额；rowNumber 越小越新，故每个 dayKey 取 MIN(rowNumber)。
+ */
+export async function queryDailyEndBalances(args: {
+  accountId: string;
+  householdId: string;
+  untilKey: string;
+}): Promise<Map<string, number>> {
+  const accountId = String(args.accountId ?? "").trim();
+  if (!accountId) return new Map();
+  const { liabilityAccountMode, depositAccountMode } = await loadAccountBalanceModes(accountId);
+  const orderingCtes = buildOrderingCtesSql({
+    accountIds: [accountId],
+    householdId: args.householdId,
+    timeZone: await getHouseholdTimeZone(args.householdId),
+    sortAccountId: accountId,
+    liabilityAccountMode,
+    depositAccountMode,
+  });
+  const rows = await prisma.$queryRaw<Array<{ dayKey: string; runningBalance: unknown }>>(Prisma.sql`
+    ${orderingCtes}
+    SELECT
+      CAST(b."dayKey" AS TEXT) AS "dayKey",
+      (COALESCE(b."anchorBalance", 0) + b."groupBalance") AS "runningBalance"
+    FROM "ledger_balanced" b
+    WHERE CAST(b."dayKey" AS TEXT) <= ${args.untilKey}
+    ORDER BY b."rowNumber" ASC
+  `);
+  // rowNumber ASC = 新→旧；同一天第一次出现即该日最后一笔的事后余额。
+  const byDay = new Map<string, number>();
+  for (const row of rows) {
+    const key = String(row.dayKey);
+    if (byDay.has(key)) continue;
+    const value = Number(row.runningBalance);
+    if (Number.isFinite(value)) byDay.set(key, value);
+  }
+  return byDay;
+}
+
+/**
  * 「截至某一天收盘」的账户余额 —— 明细按时间窗口展示时的**期初余额**。
  *
  * 客户端只拉窗口内的行，本地折叠就缺一个起点；这个起点必须由**列表同一条折叠链**

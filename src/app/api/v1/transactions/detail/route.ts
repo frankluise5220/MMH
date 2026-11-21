@@ -1052,6 +1052,7 @@ async function loadApiDetailRecord(entryId: string) {
     counterpartyInstitutionName: entry.counterpartyInstitutionName ?? null,
     originalCurrency: entry.originalCurrency ?? null,
     originalAmount: entry.originalAmount == null ? null : toNumber(entry.originalAmount),
+    voucherAmount: entry.voucherAmount == null ? null : toNumber(entry.voucherAmount),
     locationId: entry.locationId ?? null,
     locationName: entry.locationName ?? null,
     toAccountId: entry.toAccountId,
@@ -1832,7 +1833,19 @@ export async function GET(req: Request) {
           Attachment: { select: { id: true, name: true, mimeType: true, url: true } },
           account: { include: { Institution: { select: { name: true } } } },
           toAccount: { include: { Institution: { select: { name: true } } } },
-          CreditCardInstallmentPlan: { select: { sourceType: true, sourceStatementMonth: true } },
+          CreditCardInstallmentPlan: {
+            select: {
+              id: true, sourceType: true, sourceStatementMonth: true, status: true,
+              sourceEntryId: true, installmentPrincipal: true, totalRuns: true,
+              rateType: true, rate: true, originalAmount: true,
+            },
+          },
+          CreditCardInstallmentSource: {
+            select: {
+              id: true, sourceType: true, status: true, installmentPrincipal: true,
+              totalRuns: true, rateType: true, rate: true, originalAmount: true,
+            },
+          },
         },
       });
       if (!record || record.deletedAt || record.householdId !== hidFilter.householdId) {
@@ -1908,6 +1921,7 @@ export async function GET(req: Request) {
         counterpartyInstitutionName: record.counterpartyInstitutionName ?? null,
         originalCurrency: record.originalCurrency ?? null,
         originalAmount: record.originalAmount == null ? null : toNumber(record.originalAmount),
+        voucherAmount: record.voucherAmount == null ? null : toNumber(record.voucherAmount),
         locationId: record.locationId ?? null,
         locationName: record.locationName ?? null,
         toAccountId: record.toAccountId,
@@ -1957,6 +1971,19 @@ export async function GET(req: Request) {
         installmentRole: record.installmentRole,
         installmentSourceType: record.CreditCardInstallmentPlan?.sourceType ?? null,
         installmentSourceStatementMonth: record.CreditCardInstallmentPlan?.sourceStatementMonth ?? null,
+        // 原消费自带的消费分期方案（由 sourceEntryId 反向关联）。编辑窗据此判断
+        // 「已分期」：分期方案的参数不在行内，也不允许在编辑普通支出时改动。
+        installmentPlan: record.CreditCardInstallmentSource?.[0]
+          ? {
+              id: record.CreditCardInstallmentSource[0].id,
+              status: record.CreditCardInstallmentSource[0].status,
+              principal: toNumber(record.CreditCardInstallmentSource[0].installmentPrincipal),
+              totalRuns: record.CreditCardInstallmentSource[0].totalRuns,
+              rateType: record.CreditCardInstallmentSource[0].rateType,
+              rate: toNumber(record.CreditCardInstallmentSource[0].rate),
+              originalAmount: toNumber(record.CreditCardInstallmentSource[0].originalAmount),
+            }
+          : null,
         source: record.source,
         ...(linkedFundTransaction ? {
           date: formatDateUtc(linkedFundTransaction.applyDate),
@@ -2273,6 +2300,7 @@ export async function GET(req: Request) {
       counterpartyInstitutionName: e.counterpartyInstitutionName ?? null,
       originalCurrency: e.originalCurrency ?? null,
       originalAmount: e.originalAmount == null ? null : toNumber(e.originalAmount),
+      voucherAmount: e.voucherAmount == null ? null : toNumber(e.voucherAmount),
       locationId: e.locationId ?? null,
       locationName: e.locationName ?? null,
       // 对账锁定 + 余额锚点：RSC 直出与客户端分页取数必须给同款形状，

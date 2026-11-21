@@ -47,7 +47,8 @@ type DefaultCategoryTemplate = {
 };
 
 type CategoryWriter = typeof prisma | Prisma.TransactionClient;
-export const CATEGORY_HIERARCHY_NORMALIZATION_VERSION = "2026-09-21-fund-dividend-category-v1";
+// 2026-11-21：新增收入系统分类「红包优惠券」（券 / 包抵扣分录用），提升版本号以让存量账簿补建。
+export const CATEGORY_HIERARCHY_NORMALIZATION_VERSION = "2026-11-21-voucher-category-v1";
 
 type DefaultCategoryTemplateChild = {
   name: string;
@@ -76,6 +77,8 @@ export const SYSTEM_BOND_PROFIT_CATEGORY = "债券收益";
 export const SYSTEM_BOND_LOSS_CATEGORY = "债券亏损";
 export const SYSTEM_DEPOSIT_INTEREST_CATEGORY = "存款利息";
 export const SYSTEM_DEPOSIT_FEE_CATEGORY = "存款手续费";
+// 券 / 包（红包、优惠券）抵扣：记主交易时另生成一条 income 进收款账户（或纯支出时的付款账户）。
+export const SYSTEM_VOUCHER_CATEGORY = "红包优惠券";
 const SYSTEM_BAD_DEBT_EXPENSE_CATEGORY = "坏账";
 export const SYSTEM_INVESTMENT_DIVIDEND_CATEGORY = "投资分红";
 export const SYSTEM_REIMBURSEMENT_INCOME_CATEGORY = "报销";
@@ -377,6 +380,12 @@ const defaultCategoryTemplates: DefaultCategoryTemplate[] = [
     type: "income",
     name: "福利补助",
     children: ["社保补贴", "公积金", "养老金", "失业金", "生育津贴", "政府补助"],
+  },
+  {
+    type: "income",
+    name: SYSTEM_VOUCHER_CATEGORY,
+    isSystem: true,
+    children: [],
   },
   {
     type: "income",
@@ -966,7 +975,7 @@ async function ensureDefaultCategoryTemplatesForHousehold(writer: CategoryWriter
   }
 }
 
-async function ensureDefaultCategory(
+export async function ensureDefaultCategory(
   writer: CategoryWriter,
   householdId: string,
   type: DefaultCategoryType,

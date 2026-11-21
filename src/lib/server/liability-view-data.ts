@@ -7,6 +7,7 @@ import {
   liabilityFlowSides,
   liabilityPrincipalForAccountSide as canonicalLiabilityPrincipalForAccountSide,
   type LiabilityAccountFact,
+  type LiabilityFlowSide,
 } from "@/lib/liability";
 import { parseSettlementAccountName } from "@/lib/account-import-match";
 import { normalizeSettlementTransferCategoryName } from "@/lib/default-categories";
@@ -703,18 +704,21 @@ export function buildLiabilityDetailEntriesViewData({
     const amount = toNumber(entry.amount);
     const reconcileTarget = getLiabilityBalanceReconcileTarget(entry);
     const isBalanceReconcile = reconcileTarget != null;
-    // 「往来款那一侧」的判定：优先看它是不是当前选中的往来账户；当选中的是别的往来账户
-    // （刚被批量改到另一个对象上）时，按账户类型兜底 —— 至少不能把资金账户（微信零钱这类）
-    // 当成往来款那一侧，否则表的「往来款账户 / 对手账户」两列会整个反过来
-    // （2026-11-17 报障：把往来款账户改成「张紫熙的往来款」后，显示成「微信零钱」在往来款列）。
-    const isToLiabilityAccount = selectedLiabilityAccountIds.has(entry.toAccountId ?? "")
-      || (
-        !selectedLiabilityAccountIds.has(entry.accountId ?? "")
-        && (accountFactsById?.get(entry.toAccountId ?? "")?.isSettlementAccount ?? false)
-        && !(accountFactsById?.get(entry.accountId ?? "")?.isSettlementAccount ?? false)
-      );
+    // 原始转账只有 accountId / toAccountId 两端：当前查看的账户恒为「往来款账户」侧，
+    // 另一端恒为「对手账户」——A 视图下对手是 B、B 视图下对手是 A，与账户类型、
+    // 是否为资金账户无关（2026-11-21 用户裁定）。只有当前视图账户不在这一行两端时
+    // （汇总视图没指定具体账户），才退回按选中集合判断。
+    const viewedSide: LiabilityFlowSide | null =
+      displayAccountId && entry.accountId === displayAccountId
+        ? "account"
+        : displayAccountId && entry.toAccountId === displayAccountId
+          ? "toAccount"
+          : null;
+    const isToLiabilityAccount = viewedSide
+      ? viewedSide === "toAccount"
+      : selectedLiabilityAccountIds.has(entry.toAccountId ?? "");
     const displayAmount = liabilityDisplayAmountByEntryId.get(entry.id) ?? liabilityPrincipalForAccountSide(entry, selectedLiabilityAccountIds);
-    const cashFlowAmount = isBalanceReconcile ? displayAmount : liabilityCashFlowForAccountSide(entry, selectedLiabilityAccountIds);
+    const cashFlowAmount = isBalanceReconcile ? displayAmount : liabilityCashFlowForAccountSide(entry, selectedLiabilityAccountIds, viewedSide);
     const interestAmount = Math.abs(toNumber(entry.interestAmount)) + (liabilityInterestByPrincipalKey.get(principalKey(entry)) ?? 0);
     const feeAmount = Math.abs(toNumber(entry.feeAmount)) + (liabilityFeeByPrincipalKey.get(principalKey(entry)) ?? 0);
     const isSelectedBankLoan = selectedLiabilityRow?.isLoan === true;
@@ -736,7 +740,7 @@ export function buildLiabilityDetailEntriesViewData({
     // 余额校准这类没有两端账户的行留空，金额列继续带正负号。
     const flowSides = isBalanceReconcile
       ? { outflow: null, inflow: null }
-      : liabilityFlowSides(entry, selectedLiabilityAccountIds);
+      : liabilityFlowSides(entry, selectedLiabilityAccountIds, viewedSide);
     const fromAccountId = flowSides.outflow === "account"
       ? (entry.accountId ?? "")
       : flowSides.outflow === "toAccount"

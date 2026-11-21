@@ -1921,7 +1921,8 @@ export default async function Home({
     accountTitleById,
     liabilityDirectionByAccountId,
     accountFactsById,
-    displayAccountId: accountId,
+    displayAccountId: accountId
+      || (liabilityPersonParam.startsWith("account:") ? liabilityPersonParam.slice("account:".length) : null),
     reimbursementLinkByEntryId,
     tagNameById: liabilityTagNameById,
   });

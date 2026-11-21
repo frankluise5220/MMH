@@ -254,6 +254,7 @@ export type DetailEntry = {
   counterpartyInstitutionName?: string | null;
   originalCurrency?: string | null;
   originalAmount?: number | null;
+  voucherAmount?: string | number | null;
   locationId?: string | null;
   locationName?: string | null;
   toAccountId: string | null;
@@ -301,6 +302,16 @@ export type DetailEntry = {
   fundArrivalDate: string | null;
   fundSourceEntryId?: string | null;
   fundArrivalAmount: number | null;
+  /** 原消费自带的消费分期方案（sourceEntryId 反向关联），编辑窗据此只读回填。 */
+  installmentPlan?: {
+    id: string;
+    status: string;
+    principal: number;
+    totalRuns: number;
+    rateType: string;
+    rate: number;
+    originalAmount: number;
+  } | null;
   businessLinkCount?: number;
   businessLinkLabels?: string[];
   relatedAccountId?: string | null;
@@ -390,6 +401,8 @@ function buildBasicEntryEditPayload(entry: DetailEntry, currentAccountId?: strin
     counterpartyInstitutionName: entry.counterpartyInstitutionName ?? undefined,
     originalCurrency: entry.originalCurrency ?? null,
     originalAmount: entry.originalAmount != null ? toNumber(entry.originalAmount) : null,
+    voucherAmount: entry.voucherAmount != null ? toNumber(entry.voucherAmount) : null,
+    installmentPlan: entry.installmentPlan ?? null,
     locationId: entry.locationId ?? undefined,
     locationName: entry.locationName ?? undefined,
     fromAccountId: entry.type === "transfer" ? entry.accountId ?? undefined : undefined,
@@ -1025,10 +1038,18 @@ export function DetailViewClient({
     }
     if (accountId && accountColumnScopeIds.has(accountId)) {
       if (entry.accountId === accountId) return { id: entry.accountId, name: entry.accountName };
-      if (entry.toAccountId === accountId) return { id: accountId, name: entry.toAccountName };
+      // 合并信用卡账单：同账单组的另一张卡（如当前看 5542、还款进 9726）也是
+      // 「本行」。否则 own 落到付款方，关联账户列会取对侧被还的卡，和卡号列
+      // 显示成同一张卡（2026-11-21 报障：还到 9726 的行关联账户显示「浦发·9726」）。
+      if (
+        entry.toAccountId &&
+        (entry.toAccountId === accountId || billFlowAccountIdSet?.has(entry.toAccountId))
+      ) {
+        return { id: entry.toAccountId, name: entry.toAccountName };
+      }
     }
     return { id: entry.accountId, name: entry.accountName };
-  }, [accountColumnScopeIds, accountId, primaryAccountTarget]);
+  }, [accountColumnScopeIds, accountId, billFlowAccountIdSet, primaryAccountTarget]);
   /**
    * 「关联账户」= 账户列的另一侧：全部交易记录里通常是收入方 `toAccount`，
    * 换汇等反向行则是 `accountId`。旧逻辑按 scope 推断方向，而首页把全部资金

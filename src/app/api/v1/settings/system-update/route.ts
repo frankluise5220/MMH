@@ -2,6 +2,8 @@
  * System update API.
  *
  * GET: returns the current version, deployment target, remote version, and whether an update is needed.
+ * GET ?imageSource=1: only the local updater's image-source config (no GitHub / git / release-notes call),
+ * so the settings page keeps its "switch mirror" panel even when the remote check dies.
  * POST ?mode=update: Docker deployments delegate to the host updater (pull the app/updater images and recreate the containers).
  * Non-Docker (source) deployments run git fetch + fast-forward merge, then install dependencies, generate Prisma, sync the database, and build.
  * POST ?mode=rebuild: does not pull code; only reinstalls dependencies, generates Prisma, syncs the database, and builds.
@@ -652,6 +654,29 @@ export async function GET(req: NextRequest) {
   if (auth) return auth;
   try {
     const { searchParams } = new URL(req.url);
+    // 换源面板的独立通道：只问本地 updater 的 /config，不碰 GitHub、git 和
+    // Release 正文。主链路任何一处超时（DNS 失效、GitHub 不可达）都会让设置页
+    // 只剩一句「读取版本信息失败」，而那正是最需要换源的时候——2026-11-20
+    // 5.148 就是 DNS 全挂、页面上连改回官方源的入口都没有。
+    if (searchParams.get("imageSource") === "1") {
+      const target = getDeploymentTarget();
+      const updaterEnabled = getUpdaterConfig().enabled;
+      let config: ImageSourceConfig | null = null;
+      if (target === "docker" && updaterEnabled) {
+        try {
+          config = (await callUpdater("/config", undefined, 3_000))?.config ?? null;
+        } catch {
+          config = null;
+        }
+      }
+      return NextResponse.json({
+        ok: true,
+        deploymentTarget: target,
+        isDocker: target === "docker",
+        updaterEnabled,
+        config,
+      });
+    }
     const checkRemote = searchParams.get("check") === "1";
     const projectRoot = process.cwd();
     const pkg = readLocalPackageJson(projectRoot);
@@ -772,7 +797,78 @@ export async function GET(req: NextRequest) {
       ...versionInfo,
     });
   } catch (e) {
-    return NextResponse.json({ ok: false, code: "FETCH_FAILED", error: e instanceof Error ? e.message : "查询失败" }, { status: 500 });
+    // 远端检查链路（DNS / GitHub / git）整条挂掉时，仍返回一份本地可算的降级
+    // 结果，而不是一句 500。设置页要靠 imageSourceConfig 才渲染「镜像源」面板，
+    // 直接抛错会把用户唯一的自救入口一起吞掉（2026-11-20 5.148：DNS 全挂，
+    // 页面只剩「读取版本信息失败」，连改回官方源都做不到）。
+    const errorMessage = e instanceof Error ? e.message : "查询失败";
+    const fallbackTarget = getDeploymentTarget();
+    const fallbackDocker = fallbackTarget === "docker";
+    const fallbackFnos = fallbackTarget === "fnos";
+    const fallbackSynology = fallbackTarget === "synology";
+    const fallbackWindows = fallbackTarget === "windows";
+    const fallbackUpdaterEnabled = getUpdaterConfig().enabled;
+    let fallbackConfig: ImageSourceConfig | null = null;
+    if (fallbackDocker && fallbackUpdaterEnabled) {
+      try {
+        fallbackConfig = (await callUpdater("/config", undefined, 3_000))?.config ?? null;
+      } catch {
+        fallbackConfig = null;
+      }
+    }
+    let fallbackPkg: ReturnType<typeof readLocalPackageJson> = {};
+    let fallbackLocal: ReturnType<typeof getLocalGitInfo> = {
+      localCommit: "unknown",
+      localCommitFull: "unknown",
+      localCommitMsg: "",
+      localCommitDate: "",
+      versionSource: "env",
+    };
+    try {
+      fallbackPkg = readLocalPackageJson(process.cwd());
+    } catch {
+      fallbackPkg = {};
+    }
+    try {
+      fallbackLocal = { ...fallbackLocal, ...getLocalGitInfo(process.cwd()) };
+    } catch {
+      // 只剩上面那份兜底值：版本显示 unknown，但换源面板照常可用。
+    }
+    const fallbackVersion = typeof fallbackPkg.version === "string" && fallbackPkg.version.trim()
+      ? fallbackPkg.version.trim()
+      : "unknown";
+    return NextResponse.json({
+      ok: true,
+      degraded: true,
+      deploymentTarget: fallbackTarget,
+      isDocker: fallbackDocker,
+      isFnos: fallbackFnos,
+      isSynology: fallbackSynology,
+      isWindows: fallbackWindows,
+      updateMode: fallbackWindows ? "desktop" : fallbackFnos || fallbackSynology ? fallbackTarget : "git",
+      updaterEnabled: fallbackUpdaterEnabled,
+      imageSourceConfig: fallbackConfig,
+      localVersion: fallbackVersion,
+      localReleaseNotes: getPackageReleaseNotes(fallbackPkg),
+      localReleaseNotesI18n: getPackageReleaseNotesI18n(fallbackPkg),
+      ...fallbackLocal,
+      remoteName: "",
+      remoteBranch: "",
+      remoteUrl: "",
+      remoteVersion: "",
+      remoteCommit: "unknown",
+      remoteCommitMsg: "",
+      remoteCommitDate: "",
+      needsUpdate: false,
+      canCheckUpdate: false,
+      githubUrl: DEFAULT_GITHUB_REPO_URL,
+      githubVersion: "",
+      githubCommit: "unknown",
+      githubCommitMsg: "",
+      githubCommitDate: "",
+      githubCanCheck: false,
+      fetchError: errorMessage,
+    });
   }
 }
 

@@ -465,6 +465,11 @@ function applyRuntimeMigrations(db) {
   // 漏掉这段：升级后的旧桌面库读明细会报 "no such column: reconciledAt"。
   addColumnIfMissing(db, "transactions", "reconciledAt", "DATETIME");
   addColumnIfMissing(db, "transactions", "reconciledBalance", "DECIMAL(18,2)");
+  // 2026-11-21 券 / 包（红包、优惠券）抵扣。主交易 amount 记实付，券包另生成一条
+  // source=voucher 的 income 分录（voucherSourceEntryId 指回主交易）。两列可空，
+  // 漏掉会让升级后的桌面库读写明细时报 "no such column: voucherAmount"。
+  addColumnIfMissing(db, "transactions", "voucherAmount", "DECIMAL(18,2)");
+  addColumnIfMissing(db, "transactions", "voucherSourceEntryId", "TEXT");
   // 2026-10-17 金属交易到账日。与 build-fnos-package.cjs 的
   // 20261017_add_metal_arrival_date 同义（可空，读取侧回退到 date）。
   // 0.1.74 漏了这段，升级后的桌面库查贵金属会报 "no such column: arrivalDate"。

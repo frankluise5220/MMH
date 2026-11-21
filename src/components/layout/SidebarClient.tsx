@@ -1140,7 +1140,7 @@ export function SidebarClient({
       !accountFilterQuery || accountItemFilterHaystack(item).includes(accountFilterQuery);
     const childMatchesAccountFilter = (child: AccountItem) =>
       accountItemFilterHaystack(child).includes(accountFilterQuery);
-    return items.flatMap((item) => {
+    const visible = items.flatMap((item) => {
       if (item.kind === FIXED_ASSET_SUMMARY_KIND && item.children?.length) {
         if (!showFixedAssets) return [];
         const selfMatched = matchesAccountFilter(item);
