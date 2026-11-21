@@ -53,6 +53,7 @@ import {
   getSidebarCollapsedPreference,
   getSidebarGroupPreference,
   getSidebarHideZeroPreference,
+  getSidebarMergeConsolidatedCreditCardsPreference,
   getSidebarOwnerFilterPreference,
   getSidebarShowFixedAssetsPreference,
   getSidebarShowAllCashEntriesPreference,
@@ -106,6 +107,11 @@ type AccountItem = {
    * 组内每张卡显示同一份账单余额，汇总时必须按它去重，否则负债会算成 N 倍。
    */
   creditBillStorageId?: string | null;
+  /** 合并账单组键（household + 机构 + 所有人）；仅合并账单信用卡有值。 */
+  creditBillGroupKey?: string | null;
+  /** 折叠后的「机构·信用卡」行：承载组内全部卡 id，供选中态判断。 */
+  creditBillGroupAccountIds?: string[];
+  isCreditBillGroupRow?: boolean;
   /**
    * 多币种子账户。独立于 `children`：`children` 已被固定资产小类、
    * 往来款汇总行等「分组节点」占用，混用会把那些节点也当账户行渲染出来。
@@ -425,6 +431,7 @@ function getSidebarItemSignature(item: AccountItem): string {
     item.parentId ?? "",
     item.isAggregate ? "1" : "0",
     item.creditBillStorageId ?? "",
+    item.creditBillGroupKey ?? "",
     childSignature,
     subAccountSignature,
   ].join("\u0001");
@@ -510,6 +517,7 @@ export function SidebarClient({
     sidebarShowFixedAssets: boolean;
     sidebarShowAllCashEntries: boolean;
     sidebarShowReimbursements: boolean;
+    sidebarMergeConsolidatedCreditCards?: boolean;
     sidebarCollapsed: boolean;
     sidebarGroupBy: "kind" | "institution" | "accountGroup";
   };
@@ -548,6 +556,9 @@ export function SidebarClient({
   const [showFixedAssets, setShowFixedAssets] = useState(() => initialPreferences?.sidebarShowFixedAssets ?? getSidebarShowFixedAssetsPreference());
   const [showAllCashEntries, setShowAllCashEntries] = useState(() => initialPreferences?.sidebarShowAllCashEntries ?? getSidebarShowAllCashEntriesPreference());
   const [showReimbursements, setShowReimbursements] = useState(() => initialPreferences?.sidebarShowReimbursements ?? getSidebarShowReimbursementsPreference());
+  const [mergeConsolidatedCreditCards, setMergeConsolidatedCreditCards] = useState(
+    () => initialPreferences?.sidebarMergeConsolidatedCreditCards ?? getSidebarMergeConsolidatedCreditCardsPreference(),
+  );
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => initialPreferences?.sidebarCollapsed ?? getSidebarCollapsedPreference());
   const [sidebarGroupBy, setSidebarGroupBy] = useState<"kind" | "institution" | "accountGroup">(() => initialPreferences?.sidebarGroupBy ?? getSidebarGroupPreference());
   const accountsScrollRef = useRef<HTMLDivElement | null>(null);
@@ -857,6 +868,7 @@ export function SidebarClient({
       setShowFixedAssets(prefs.sidebarShowFixedAssets);
       setShowAllCashEntries(prefs.sidebarShowAllCashEntries);
       setShowReimbursements(prefs.sidebarShowReimbursements);
+      setMergeConsolidatedCreditCards(prefs.sidebarMergeConsolidatedCreditCards);
       setHideFirstUseGuide(prefs.sidebarHideInitialData);
       setSidebarCollapsed(prefs.sidebarCollapsed);
       setSidebarGroupBy(getSidebarGroupPreference());
@@ -1070,6 +1082,47 @@ export function SidebarClient({
         : "text-slate-500 hover:bg-white hover:text-slate-900"
     }`;
 
+  /**
+   * 合并账单信用卡折叠：同一所有人在同一机构下的合并账单组只留一条
+   * 「机构·信用卡」。余额/跳转沿用组内主卡（组内每张卡本就显示同一份账单），
+   * 搜索账户时保持逐张卡，方便按卡名定位。
+   */
+  const collapseCreditBillGroups = useCallback((list: AccountItem[]): AccountItem[] => {
+    if (!mergeConsolidatedCreditCards || accountFilterQuery) return list;
+    const membersByGroup = new Map<string, AccountItem[]>();
+    for (const item of list) {
+      if (item.kind !== "bank_credit" || !item.creditBillGroupKey) continue;
+      const members = membersByGroup.get(item.creditBillGroupKey) ?? [];
+      members.push(item);
+      membersByGroup.set(item.creditBillGroupKey, members);
+    }
+    if (membersByGroup.size === 0) return list;
+    const emitted = new Set<string>();
+    return list.flatMap((item) => {
+      if (item.kind !== "bank_credit" || !item.creditBillGroupKey) return [item];
+      const key = item.creditBillGroupKey;
+      if (emitted.has(key)) return [];
+      emitted.add(key);
+      const members = membersByGroup.get(key) ?? [item];
+      if (members.length <= 1) return members;
+      const storageId = item.creditBillStorageId || item.id || "";
+      const leader = members.find((member) => member.id === storageId) ?? members[0];
+      const institution = (leader.institution || "").trim() || t("insurance.noInstitution");
+      const label = `${institution}·${t("sidebar.kind.creditCard")}`;
+      return [{
+        ...leader,
+        name: label,
+        label,
+        shortLabel: label,
+        hoverTitle: [leader.groupName, label, members.map((member) => member.name).filter(Boolean).join(" / ")]
+          .filter(Boolean)
+          .join(" · "),
+        isCreditBillGroupRow: true,
+        creditBillGroupAccountIds: members.map((member) => member.id).filter((id): id is string => !!id),
+      }];
+    });
+  }, [mergeConsolidatedCreditCards, accountFilterQuery, t]);
+
   // Restore and Refine Grouping logic
   const visibleItems = useMemo(() => {
     const passesCommonVisibility = (item: AccountItem) => {
@@ -1136,7 +1189,8 @@ export function SidebarClient({
         baseCurrency,
       }];
     });
-  }, [items, hideZero, selectedOwnerFilter, showFixedAssets, baseCurrency, accountFilterQuery, displayBalance, displayBalanceValue, t]);
+    return collapseCreditBillGroups(visible);
+  }, [items, hideZero, selectedOwnerFilter, showFixedAssets, baseCurrency, accountFilterQuery, displayBalance, displayBalanceValue, collapseCreditBillGroups, t]);
 
   const sections = useMemo(() => {
     // 「设置 → 显示 → 按使用频率调整账户顺序」关掉后保持账户原始顺序。
@@ -1322,6 +1376,7 @@ export function SidebarClient({
       }
       return selectedView === "investproperty" && !selectedAccountId && !selectedAccount;
     }
+    if (item.creditBillGroupAccountIds?.includes(selectedAccountId)) return true;
     if (item.id ? selectedAccountId === item.id : !selectedAccountId && selectedAccount === item.name) return true;
     // 选中的是多币种子账户时，父账户行、所属分区/子分组也必须算「选中」，
     // 否则打开子账户后侧边栏会把当前分区折叠掉、滚动位置也找不到它。
@@ -1371,6 +1426,8 @@ export function SidebarClient({
   }
 
   function sidebarItemRowLabel(it: AccountItem) {
+    // 折叠后的「机构·信用卡」已经是最终文案；按机构/分组视图不能再给它加一次类型前缀。
+    if (it.isCreditBillGroupRow) return it.label;
     return sidebarGroupBy !== "kind" && it.kind !== "loan_summary" && it.kind !== REIMBURSEMENT_SUMMARY_KIND
       ? it.kind === FIXED_ASSET_SUMMARY_KIND
         ? it.label

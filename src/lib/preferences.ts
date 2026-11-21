@@ -79,6 +79,7 @@ export type PreferenceRow = {
   sidebarShowFixedAssets?: boolean | null;
   sidebarShowAllCashEntries?: boolean | null;
   sidebarShowReimbursements?: boolean | null;
+  sidebarMergeConsolidatedCreditCards?: boolean | null;
   detailDateBackground?: boolean | null;
   detailWindowYears?: number | null;
   rowHeightMode?: number | string | null;
@@ -112,6 +113,8 @@ export type AppPreferences = {
   sidebarShowFixedAssets: boolean;
   sidebarShowAllCashEntries: boolean;
   sidebarShowReimbursements: boolean;
+  /** 合并账单（同机构 + 同所有人）的信用卡在侧边栏只显示一条「机构·信用卡」。 */
+  sidebarMergeConsolidatedCreditCards: boolean;
   detailDateBackground: boolean;
   detailWindowYears: number;
   rowHeightMode: RowHeightMode;
@@ -239,6 +242,7 @@ export function preferencesFromRow(row: PreferenceRow | null | undefined): AppPr
     sidebarShowFixedAssets: normalizeBoolean(row?.sidebarShowFixedAssets, true),
     sidebarShowAllCashEntries: normalizeBoolean(row?.sidebarShowAllCashEntries, true),
     sidebarShowReimbursements: normalizeBoolean(row?.sidebarShowReimbursements, true),
+    sidebarMergeConsolidatedCreditCards: normalizeBoolean(row?.sidebarMergeConsolidatedCreditCards, false),
     detailDateBackground: normalizeBoolean(row?.detailDateBackground, false),
     detailWindowYears: normalizeDetailWindowYears(row?.detailWindowYears ?? DEFAULT_DETAIL_WINDOW_YEARS),
     rowHeightMode: normalizeRowHeightMode(row?.rowHeightMode ?? DEFAULT_ROW_HEIGHT_MODE),
@@ -278,6 +282,10 @@ export const PREFERENCE_COOKIE_MIRROR = [
   { key: "sidebar_show_fixed_assets", pick: (p: AppPreferences) => String(p.sidebarShowFixedAssets) },
   { key: "sidebar_show_all_cash_entries", pick: (p: AppPreferences) => String(p.sidebarShowAllCashEntries) },
   { key: "sidebar_show_reimbursements", pick: (p: AppPreferences) => String(p.sidebarShowReimbursements) },
+  {
+    key: "sidebar_merge_consolidated_credit_cards",
+    pick: (p: AppPreferences) => String(p.sidebarMergeConsolidatedCreditCards),
+  },
   { key: "detail_date_background", pick: (p: AppPreferences) => String(p.detailDateBackground) },
   { key: "advanced_data_table_row_height_mode", pick: (p: AppPreferences) => String(p.rowHeightMode) },
   { key: "mmh_account_label_fields", pick: (p: AppPreferences) => serializeAccountLabelFields(p.accountLabelFields) },

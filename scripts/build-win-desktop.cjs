@@ -499,6 +499,9 @@ function applyRuntimeMigrations(db) {
   // 2026-11-12 逆回购占款天数口径。同上是全列 findUnique，存量库缺这一列会让
   // 首屏/侧边栏抛 "no such column: repoOccupiedDaysMode"。
   addColumnIfMissing(db, "HouseholdPreference", "repoOccupiedDaysMode", "TEXT NOT NULL DEFAULT 'actual'");
+  // 2026-11-21 合并账单信用卡侧边栏单条显示。household-preferences.ts 用全列
+  // findUnique，存量库缺列会让首屏/侧边栏抛 "no such column"。
+  addColumnIfMissing(db, "HouseholdPreference", "sidebarMergeConsolidatedCreditCards", "BOOLEAN NOT NULL DEFAULT 0");
   // 2026-10-29 账单日 / 还款日变更记录。与 build-fnos-package.cjs 的
   // 20261029_credit_billing_repayment_day 同义（两列可空，读取侧回退账户级设置）。
   // 漏掉这段：升级后的桌面库打开账户 / 负债 / 账单页会报

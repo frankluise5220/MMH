@@ -15,6 +15,7 @@ import { isDepositAccount, isLoanOrSettlementAccountKind, isPureInvestmentAccoun
 import { dominantFixedAssetType } from "@/lib/fixed-asset";
 import type { SidebarGroupMode } from "@/lib/client/appPreferences";
 import { loadCreditCardBillGroupBalances } from "@/lib/server/credit-card-display-balance";
+import { creditBillGroupKey } from "@/lib/server/credit-card-institution-settings";
 import { convertCurrencyAmounts } from "@/lib/server/fx-rates";
 import { normalizeCurrency } from "@/lib/currency";
 
@@ -155,6 +156,11 @@ async function getSidebarData() {
       creditBillStorageId: account.kind === AccountKind.bank_credit
         ? (creditBillStorageIdByAccountId.get(account.id) ?? account.id)
         : null,
+      // 合并账单组键（同 household + 机构 + 所有人）。只有真正开了合并账单的卡才有值，
+      // 客户端据此把一组卡折叠成「机构·信用卡」一条；独立账单的卡保持逐张显示。
+      creditBillGroupKey: account.kind === AccountKind.bank_credit && account.creditBillMode === "consolidated"
+        ? creditBillGroupKey(account)
+        : null,
     };
   });
   const conversion = await convertCurrencyAmounts({
@@ -187,6 +193,7 @@ export async function Sidebar() {
     sidebarShowFixedAssets: cookieStore.get("sidebar_show_fixed_assets")?.value !== "false",
     sidebarShowAllCashEntries: cookieStore.get("sidebar_show_all_cash_entries")?.value !== "false",
     sidebarShowReimbursements: cookieStore.get("sidebar_show_reimbursements")?.value !== "false",
+    sidebarMergeConsolidatedCreditCards: cookieStore.get("sidebar_merge_consolidated_credit_cards")?.value === "true",
     sidebarCollapsed: cookieStore.get("sidebar_collapsed")?.value === "true",
     sidebarGroupBy: ((): SidebarGroupMode => {
       const value = cookieStore.get("sidebar_group_by")?.value;

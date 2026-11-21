@@ -3664,6 +3664,18 @@ const MIGRATIONS = [
       db.exec("UPDATE transactions SET type = 'income' WHERE source = 'money_fund_income' AND type = 'investment'");
     },
   },
+  {
+    // 2026-11-21 合并账单（同机构 + 同所有人）信用卡在侧边栏折叠成一条。
+    // 与 prisma/migrations/20261121_add_sidebar_merge_consolidated_credit_cards
+    // 及 build-win-desktop.cjs 的 applyRuntimeMigrations 同义。全新安装由
+    // native-init.sql 按 schema 建列，这里只补存量库（默认关，保持原行为）。
+    version: "20261121_add_sidebar_merge_consolidated_credit_cards",
+    description: "Add HouseholdPreference.sidebarMergeConsolidatedCreditCards",
+    apply(db) {
+      if (!tableExists(db, "HouseholdPreference")) return;
+      addColumnIfMissing(db, "HouseholdPreference", "sidebarMergeConsolidatedCreditCards", "BOOLEAN NOT NULL DEFAULT 0");
+    },
+  },
 ];
 
 // 到期日「周年 − 1 天」→ 周年；返回 null 表示不是旧口径。

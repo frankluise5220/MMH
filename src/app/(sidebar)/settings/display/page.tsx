@@ -25,6 +25,7 @@ import {
   getSidebarGroupPreference,
   getSidebarHideInitialDataPreference,
   getSidebarHideZeroPreference,
+  getSidebarMergeConsolidatedCreditCardsPreference,
   getSidebarShowFixedAssetsPreference,
   getSidebarShowAllCashEntriesPreference,
   getSidebarShowReimbursementsPreference,
@@ -44,6 +45,7 @@ import {
   setSidebarGroupPreference,
   setSidebarHideInitialDataPreference,
   setSidebarHideZeroPreference,
+  setSidebarMergeConsolidatedCreditCardsPreference,
   setSidebarShowFixedAssetsPreference,
   setSidebarShowAllCashEntriesPreference,
   setSidebarShowReimbursementsPreference,
@@ -238,6 +240,7 @@ export default function DisplaySettingsPage() {
   const [accountLabelFields, setAccountLabelFieldsState] = useState<AccountLabelField[]>(DEFAULT_ACCOUNT_LABEL_FIELDS);
   const [sidebarGroupBy, setSidebarGroupBy] = useState<SidebarGroupMode>("kind");
   const [sidebarHideZero, setSidebarHideZero] = useState(false);
+  const [sidebarMergeConsolidatedCreditCards, setSidebarMergeConsolidatedCreditCards] = useState(false);
   const [sidebarHideInitialData, setSidebarHideInitialData] = useState(false);
   const [sidebarShowFixedAssets, setSidebarShowFixedAssets] = useState(true);
   const [sidebarShowAllCashEntries, setSidebarShowAllCashEntries] = useState(true);
@@ -272,6 +275,7 @@ export default function DisplaySettingsPage() {
     setScheme(getColorSchemePreference());
     setSidebarGroupBy(getSidebarGroupPreference());
     setSidebarHideZero(getSidebarHideZeroPreference());
+    setSidebarMergeConsolidatedCreditCards(getSidebarMergeConsolidatedCreditCardsPreference());
     setSidebarHideInitialData(getSidebarHideInitialDataPreference());
     setSidebarShowFixedAssets(getSidebarShowFixedAssetsPreference());
     setSidebarShowAllCashEntries(getSidebarShowAllCashEntriesPreference());
@@ -598,6 +602,27 @@ export default function DisplaySettingsPage() {
     } catch {
       setSidebarHideZero(prev);
       setSidebarHideZeroPreference(prev);
+    }
+  }
+
+  async function updateSidebarMergeConsolidatedCreditCards(next: boolean) {
+    const prev = sidebarMergeConsolidatedCreditCards;
+    setSidebarMergeConsolidatedCreditCards(next);
+    setSidebarMergeConsolidatedCreditCardsPreference(next);
+    try {
+      const res = await fetch("/api/v1/settings/app-preferences", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sidebarMergeConsolidatedCreditCards: next }),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        setSidebarMergeConsolidatedCreditCards(prev);
+        setSidebarMergeConsolidatedCreditCardsPreference(prev);
+      }
+    } catch {
+      setSidebarMergeConsolidatedCreditCards(prev);
+      setSidebarMergeConsolidatedCreditCardsPreference(prev);
     }
   }
 
@@ -1162,6 +1187,17 @@ export default function DisplaySettingsPage() {
                 {t("settings.display.groupByAccountGroup")}
               </button>
             </div>
+          </SettingRow>
+          <SettingRow
+            title={t("settings.display.mergeConsolidatedCreditCards")}
+            desc={t("settings.display.mergeConsolidatedCreditCardsDesc")}
+            hideDesc={hideSettingDescriptions}
+          >
+            <SettingsSwitch
+              checked={sidebarMergeConsolidatedCreditCards}
+              onCheckedChange={(next) => void updateSidebarMergeConsolidatedCreditCards(next)}
+              label={t("settings.display.mergeConsolidatedCreditCards")}
+            />
           </SettingRow>
           <SettingRow
             title={t("settings.display.accountDropdownGroupBy")}

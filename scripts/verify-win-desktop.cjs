@@ -278,6 +278,7 @@ expect(
 for (const [column, type] of [
   ["detailWindowYears", "INTEGER NOT NULL DEFAULT 5"],
   ["accountUsageSortEnabled", "BOOLEAN NOT NULL DEFAULT 1"],
+  ["sidebarMergeConsolidatedCreditCards", "BOOLEAN NOT NULL DEFAULT 0"],
 ]) {
   expect(
     buildScript.includes(`addColumnIfMissing(db, "HouseholdPreference", "${column}", "${type}")`),

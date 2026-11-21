@@ -1439,6 +1439,8 @@ model HouseholdPreference {
   sidebarShowFixedAssets            Boolean         @default(true)
   sidebarShowAllCashEntries         Boolean         @default(true)
   sidebarShowReimbursements         Boolean         @default(true)
+  /// 合并账单（同机构 + 同所有人）的信用卡在侧边栏折叠成一条「机构·信用卡」。
+  sidebarMergeConsolidatedCreditCards Boolean       @default(false)
   detailDateBackground              Boolean         @default(false)
   /// 明细默认观测窗口（年）。0 = 不限（全部时间）。「全部」视图与首屏都按它裁数据。
   detailWindowYears                 Int             @default(5)

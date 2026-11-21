@@ -118,6 +118,9 @@ export async function PUT(req: NextRequest) {
     if (has("sidebarShowReimbursements")) {
       patch.sidebarShowReimbursements = normalizeBoolean(body.sidebarShowReimbursements, true);
     }
+    if (has("sidebarMergeConsolidatedCreditCards")) {
+      patch.sidebarMergeConsolidatedCreditCards = normalizeBoolean(body.sidebarMergeConsolidatedCreditCards, false);
+    }
     if (has("detailDateBackground")) patch.detailDateBackground = normalizeBoolean(body.detailDateBackground, false);
     if (has("detailWindowYears")) patch.detailWindowYears = normalizeDetailWindowYears(body.detailWindowYears);
     if (has("rowHeightMode")) patch.rowHeightMode = normalizeRowHeightMode(body.rowHeightMode);

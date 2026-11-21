@@ -128,7 +128,7 @@ expect(
 
 // 2026-10-26/27 HouseholdPreference 新列：全列 findUnique 的读取方缺列即报错，
 // 用户看到的是「首页/侧边栏空了」。
-for (const column of ["detailWindowYears", "accountUsageSortEnabled"]) {
+for (const column of ["detailWindowYears", "accountUsageSortEnabled", "sidebarMergeConsolidatedCreditCards"]) {
   expect(
     columnsOf("HouseholdPreference").includes(column),
     "HouseholdPreference." + column + " must be backfilled on upgraded databases.",

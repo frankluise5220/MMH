@@ -57,6 +57,7 @@ const SIDEBAR_HIDE_INITIAL_DATA_KEY = "sidebar_hide_initial_data";
 const SIDEBAR_SHOW_FIXED_ASSETS_KEY = "sidebar_show_fixed_assets";
 const SIDEBAR_SHOW_ALL_CASH_ENTRIES_KEY = "sidebar_show_all_cash_entries";
 const SIDEBAR_SHOW_REIMBURSEMENTS_KEY = "sidebar_show_reimbursements";
+const SIDEBAR_MERGE_CONSOLIDATED_CREDIT_CARDS_KEY = "sidebar_merge_consolidated_credit_cards";
 const DETAIL_DATE_BACKGROUND_KEY = "detail_date_background";
 const ROW_HEIGHT_MODE_KEY = "advanced_data_table_row_height_mode";
 export const ACCOUNT_LABEL_FIELDS_COOKIE = "mmh_account_label_fields";
@@ -100,6 +101,7 @@ type AppPreferencesSnapshot = {
   sidebarShowFixedAssets: boolean;
   sidebarShowAllCashEntries: boolean;
   sidebarShowReimbursements: boolean;
+  sidebarMergeConsolidatedCreditCards: boolean;
   detailDateBackground: boolean;
   rowHeightMode: RowHeightMode;
   sidebarCollapsed: boolean;
@@ -371,6 +373,25 @@ export function setSidebarShowReimbursementsPreference(value: boolean) {
   emitPreferencesChanged();
 }
 
+/** 合并账单信用卡在侧边栏是否折叠成「机构·信用卡」一条（默认关，保持原行为）。 */
+export function getSidebarMergeConsolidatedCreditCardsPreference(): boolean {
+  try {
+    const value = localStorage.getItem(SIDEBAR_MERGE_CONSOLIDATED_CREDIT_CARDS_KEY)
+      ?? parseCookieValue(SIDEBAR_MERGE_CONSOLIDATED_CREDIT_CARDS_KEY);
+    return value === "true" || value === "1";
+  } catch {
+    return parseCookieValue(SIDEBAR_MERGE_CONSOLIDATED_CREDIT_CARDS_KEY) === "true";
+  }
+}
+
+export function setSidebarMergeConsolidatedCreditCardsPreference(value: boolean) {
+  try {
+    localStorage.setItem(SIDEBAR_MERGE_CONSOLIDATED_CREDIT_CARDS_KEY, String(value));
+  } catch {}
+  setCookieValue(SIDEBAR_MERGE_CONSOLIDATED_CREDIT_CARDS_KEY, String(value));
+  emitPreferencesChanged();
+}
+
 export function getDetailDateBackgroundPreference(): boolean {
   try {
     const value = localStorage.getItem(DETAIL_DATE_BACKGROUND_KEY) ?? parseCookieValue(DETAIL_DATE_BACKGROUND_KEY);
@@ -523,6 +544,7 @@ export function getAppPreferences(): AppPreferencesSnapshot {
     sidebarShowFixedAssets: getSidebarShowFixedAssetsPreference(),
     sidebarShowAllCashEntries: getSidebarShowAllCashEntriesPreference(),
     sidebarShowReimbursements: getSidebarShowReimbursementsPreference(),
+    sidebarMergeConsolidatedCreditCards: getSidebarMergeConsolidatedCreditCardsPreference(),
     detailDateBackground: getDetailDateBackgroundPreference(),
     rowHeightMode: getRowHeightModePreference(),
     sidebarCollapsed: getSidebarCollapsedPreference(),

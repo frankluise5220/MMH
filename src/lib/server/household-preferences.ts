@@ -56,6 +56,7 @@ export function preferenceRowData(prefs: AppPreferences) {
     sidebarShowFixedAssets: prefs.sidebarShowFixedAssets,
     sidebarShowAllCashEntries: prefs.sidebarShowAllCashEntries,
     sidebarShowReimbursements: prefs.sidebarShowReimbursements,
+    sidebarMergeConsolidatedCreditCards: prefs.sidebarMergeConsolidatedCreditCards,
     detailDateBackground: prefs.detailDateBackground,
     detailWindowYears: prefs.detailWindowYears,
     rowHeightMode: prefs.rowHeightMode,
