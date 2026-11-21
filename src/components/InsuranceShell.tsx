@@ -1295,6 +1295,12 @@ export function InsuranceShell({
         width: 120,
         minWidth: 90,
         align: "right",
+        // 金额表头筛选改为「范围」（最小~最大）：用渲染的带符号原值比较，
+        // 与列里显示的金额一致（赎回为正、缴费为负）。
+        filterKind: "numberRange",
+        filterText: (entry) => String(entry.amount),
+        filterNumber: (entry) => entry.amount,
+        sortValue: (entry) => entry.amount,
         render: (entry) => (
           <span className={`font-semibold tabular-nums ${amountClass(entry.amount)}`}>
             {formatMoney(entry.amount)}

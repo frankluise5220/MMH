@@ -1388,7 +1388,14 @@ export function DetailViewClient({
         source: e.source,
       },
     };
-    const liabilityEditEvent = balanceReconcileEditEvent
+    // 带券包的往来款转账（source=liability_*、type=transfer，voucherAmount>0）是在
+    // 转账弹窗里记的：主交易记实付、券包另成收入腿。编辑时必须回到同一个转账弹窗
+    // 才能改券包 / 金额；借入借出窗口没有券包字段，会把这 5 块券吞掉（2026-11-21 用户报障）。
+    // 无券包的普通往来转账仍走借入借出窗口，保持原行为。
+    const isVoucherLiabilityTransfer = e.type === "transfer"
+      && e.source?.startsWith("liability_")
+      && toNumber(e.voucherAmount) > 0;
+    const liabilityEditEvent = balanceReconcileEditEvent || isVoucherLiabilityTransfer
       ? null
       : buildLiabilityActivityEditEvent({ ...e, date: dateStr }, accountOptionById);
 

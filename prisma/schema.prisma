@@ -2249,8 +2249,9 @@ model TxRecord {
   originalCurrency                    String?
   originalAmount                      Decimal?                             @db.Decimal(18, 2)
   // 券 / 包（红包、优惠券等）抵扣金额：记主交易时界面填「消费总额」，
-  // 主交易 amount 只记实付（消费总额 − 券包），券包另生成一条 income 分录
-  // （source=voucher，voucherSourceEntryId 指回本条主交易）。纯支出时券包收入记回付款账户。
+  // 主交易 amount 只记实付（消费总额 − 券包）。只有转账 / 代付才另生成一条
+  // income 分录（source=voucher，voucherSourceEntryId 指回本条主交易）记到
+  // 收款账户，用于两边分别记总额与实付；纯支出只记实付，不生成券包收入。
   voucherAmount                       Decimal?                             @db.Decimal(18, 2)
   voucherSourceEntryId                String?
   locationId                          String?

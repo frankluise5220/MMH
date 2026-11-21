@@ -216,6 +216,12 @@ function dialogAmountToStoredAmount(type: TxType, value: string) {
   return type === "expense" ? -parsed : parsed;
 }
 
+// 实际支付 = 金额（总额）− 券包抵扣，与服务端 paidAmountAbs 口径一致。
+// 分期金额按实际支付计算，而不是按总额。
+function actualPaymentAmount(amount: string, voucherAmount: string) {
+  return Math.max(0, Math.abs(parseMoneyDraft(amount)) - Math.abs(parseMoneyDraft(voucherAmount)));
+}
+
 function compactIds(ids: Array<string | null | undefined>) {
   return Array.from(new Set(ids.map((id) => String(id ?? "").trim()).filter(Boolean)));
 }
@@ -661,6 +667,12 @@ export function TransactionFormModal({
   const [installmentLocked, setInstallmentLocked] = useState(false);
   const [installmentAmount, setInstallmentAmount] = useState("");
   const [installmentAmountEdited, setInstallmentAmountEdited] = useState(false);
+  // 分期金额跟随「实际支付」（金额 − 券包），用户手改过则不再覆盖。
+  const syncInstallmentFromPayment = (nextAmount: string, nextVoucher: string) => {
+    if (installmentLocked || installmentAmountEdited) return;
+    const paid = actualPaymentAmount(nextAmount, nextVoucher);
+    setInstallmentAmount(paid > 0 ? formatAmountDraft(paid) : "");
+  };
   const [installmentTotal, setInstallmentTotal] = useState("12");
   const [installmentRateType, setInstallmentRateType] = useState<CreditCardInstallmentRateType>("period_fee");
   const [installmentRate, setInstallmentRate] = useState("0");
@@ -1204,15 +1216,15 @@ export function TransactionFormModal({
   const showPostedAmount = txPostingIsForeign && fxPostingV2;
   // 信用卡消费的「分期」开关放在金额输入框前面（金额行内占一列），不单独占一行。
   const showInstallmentToggle = txType === "expense" && selectedAccountIsCreditCard;
-  // 金额行布局：固定资产开关 | 交易货币 | 券包(1/3) | 金额(2/3) | [分期开关] | [外币入账金额+换算按钮]
-  // 券包与金额按 1:2 分配余下宽度（用户 2026-11-21 定），交易货币在券包左边。
+  // 金额行布局：固定资产开关 | 交易货币 | 券包(1/3) | 金额(1/3) | 实际支付(1/3) | [分期开关] | [外币入账金额+换算按钮]
+  // 三个金额框等宽（券包 / 金额 / 实际支付，用户 2026-11-21 定），交易货币在券包左边。
   const expenseAmountRowClass = showInstallmentToggle
     ? showPostedAmount
-      ? "grid grid-cols-[4.5rem_5.33rem_minmax(0,1fr)_minmax(0,2fr)_auto_minmax(0,1fr)_auto] items-end gap-3"
-      : "grid grid-cols-[4.5rem_5.33rem_minmax(0,1fr)_minmax(0,2fr)_auto] items-end gap-3"
+      ? "grid grid-cols-[3.5rem_5.33rem_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto_minmax(0,1fr)_auto] items-end gap-3"
+      : "grid grid-cols-[3.5rem_5.33rem_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto] items-end gap-3"
     : showPostedAmount
-      ? "grid grid-cols-[4.5rem_5.33rem_minmax(0,1fr)_minmax(0,2fr)_minmax(0,1fr)_auto] items-end gap-3"
-      : "grid grid-cols-[4.5rem_5.33rem_minmax(0,1fr)_minmax(0,2fr)] items-end gap-3";
+      ? "grid grid-cols-[3.5rem_5.33rem_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto] items-end gap-3"
+      : "grid grid-cols-[3.5rem_5.33rem_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)] items-end gap-3";
   // FT 页签（窗口顶部）：支出 / 收入 / 代付 / 转账。外汇窗没有页签；
   // 从某类账户进来时类型被锁定，只保留当前一个页签（不可切换）。
   const entryTabs = useMemo<FolderTabsCardItem[]>(() => {
@@ -1402,12 +1414,15 @@ export function TransactionFormModal({
       // amount/date/note can be corrected. Dedicated-window rules still block
       // account-pair changes and new records; liability pairs keep their own window.
       if (
-        !liabilityMode &&
         editOriginalTransferAccounts &&
         fromAccountId === editOriginalTransferAccounts.fromAccountId &&
         toAccountId === editOriginalTransferAccounts.toAccountId
       ) {
-        return false;
+        // 账户对不变：普通转账照旧原地保存；带券包的往来款转账（从本弹窗记的，
+        // 无利息/手续费拆分）也原地保存，否则会被下面重定向到借入借出窗口，
+        // 那里没有券包字段、吞掉券包改动（2026-11-21 用户报障）。
+        if (!liabilityMode) return false;
+        if (Number(String(voucherAmount).replace(/,/g, "")) > 0) return false;
       }
       if (operation === "liability" && liabilityMode && editEntryOriginalType !== "transfer") {
         return false;
@@ -2875,7 +2890,7 @@ export function TransactionFormModal({
                     : txType === "income"
                       ? "grid grid-cols-[5.33rem_minmax(0,1fr)] items-end gap-3"
                       : txType === "advance"
-                        ? "grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)] items-end gap-3"
+                        ? "grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)] items-end gap-3"
                         : "space-y-1"}>
                     {txType === "expense" ? (
                       <div className="space-y-1">
@@ -2949,7 +2964,10 @@ export function TransactionFormModal({
                         <div className="form-label">{t("txForm.voucherAmount")}</div>
                         <CalcInput
                           value={voucherAmount}
-                          onChange={setVoucherAmount}
+                          onChange={(value) => {
+                            setVoucherAmount(value);
+                            if (createInstallment) syncInstallmentFromPayment(amount, value);
+                          }}
                           placeholder={t("txForm.voucherAmountPlaceholder")}
                           label={t("txForm.voucherAmount")}
                           precision={2}
@@ -2980,12 +2998,17 @@ export function TransactionFormModal({
                       <div className="form-label">{t("txForm.amount")}</div>
                       <CalcInput ref={amountInputRef} value={amount} onChange={(value) => {
                         setAmount(value);
-                        if (createInstallment && !installmentLocked && !installmentAmountEdited) {
-                          const numeric = Math.abs(Number(value));
-                          setInstallmentAmount(Number.isFinite(numeric) && numeric > 0 ? formatAmountDraft(numeric) : "");
-                        }
+                        if (createInstallment) syncInstallmentFromPayment(value, voucherAmount);
                       }} placeholder={txType === "expense" ? t("txForm.amountPlaceholderExpense") : t("txForm.amountPlaceholderIncome")} label={t("txForm.amount")} precision={2} />
                     </div>
+                    {(txType === "expense" || txType === "advance") ? (
+                      <div className="min-w-0 space-y-1">
+                        <div className="form-label">{t("txForm.actualPayment")}</div>
+                        <div className="flex h-9 items-center justify-end rounded-[10px] border border-slate-200 bg-slate-50 px-3 text-sm font-medium text-slate-700">
+                          {formatAmountDraft(actualPaymentAmount(amount, voucherAmount))}
+                        </div>
+                      </div>
+                    ) : null}
                     {showInstallmentToggle ? (
                       <div className="space-y-1">
                         <div className="form-label">{t("txForm.installment")}</div>
@@ -3000,10 +3023,7 @@ export function TransactionFormModal({
                             if (installmentLocked) return;
                             const next = !createInstallment;
                             setCreateInstallment(next);
-                            if (next && !installmentAmountEdited) {
-                              const numeric = Math.abs(Number(amount));
-                              setInstallmentAmount(Number.isFinite(numeric) && numeric > 0 ? formatAmountDraft(numeric) : "");
-                            }
+                            if (next) syncInstallmentFromPayment(amount, voucherAmount);
                           }}
                           className={[
                             "flex h-9 w-12 items-center justify-center rounded-[10px] border px-2 text-xs font-medium transition",
@@ -3480,8 +3500,8 @@ export function TransactionFormModal({
                     </div>
                   </div>
 
-                  {/* Row 4: 券包(1/3) + 金额(2/3) 并排（用户 2026-11-21 定） */}
-                  <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,2fr)] items-end gap-3">
+                  {/* Row 4: 券包(1/3) + 金额(1/3) + 实际支付(1/3) 并排（用户 2026-11-21 定） */}
+                  <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)] items-end gap-3">
                     <div className="space-y-1">
                       <div className="form-label">{t("txForm.voucherAmount")}</div>
                       <CalcInput
@@ -3495,6 +3515,12 @@ export function TransactionFormModal({
                     <div className="space-y-1">
                       <div className="form-label">{t("txForm.amount")}</div>
                       <CalcInput ref={amountInputRef} value={amount} onChange={setAmount} placeholder={t("txForm.amountExample")} label={t("txForm.amount")} precision={2} />
+                    </div>
+                    <div className="space-y-1">
+                      <div className="form-label">{t("txForm.actualPayment")}</div>
+                      <div className="flex h-9 items-center justify-end rounded-[10px] border border-slate-200 bg-slate-50 px-3 text-sm font-medium text-slate-700">
+                        {formatAmountDraft(Math.max(0, Math.abs(parseMoneyDraft(amount)) - Math.abs(parseMoneyDraft(voucherAmount))))}
+                      </div>
                     </div>
                   </div>
 

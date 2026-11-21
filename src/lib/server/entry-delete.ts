@@ -806,7 +806,19 @@ export async function softDeleteEntriesByIds(
         logger.catchLog("收集整笔业务资金腿失败", "entry-delete.ts")(error);
         return [] as string[];
       });
-  const ids = Array.from(new Set([...baseIds, ...wholeBusinessLegIds]));
+  const primaryIds = Array.from(new Set([...baseIds, ...wholeBusinessLegIds]));
+  // 券包抵扣的第二条腿（source=voucher，由转账 / 代付生成）随主交易一并删除，
+  // 避免主交易删掉后券包 income 成为孤儿继续计入余额。支出自 2026-11-21 起不再生成该腿。
+  const voucherLegs = await prisma.txRecord.findMany({
+    where: {
+      householdId: ctx.householdId,
+      source: "voucher",
+      voucherSourceEntryId: { in: primaryIds },
+      deletedAt: null,
+    },
+    select: { id: true },
+  });
+  const ids = Array.from(new Set([...primaryIds, ...voucherLegs.map((leg) => leg.id)]));
   const undo = await prepareEntryUndo(prisma, ctx.householdId, ids);
   let deletedCount = 0;
   let keptBusinessCount = 0;

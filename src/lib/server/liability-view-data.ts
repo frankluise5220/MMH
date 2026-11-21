@@ -260,6 +260,7 @@ type LiabilityDetailEntry = {
     postedAt?: string | null;
     amount: number;
     note: string;
+    voucherAmount?: number | null;
     source?: string | null;
     entryKind?: "transfer" | "liability";
     tagIds?: string[];
@@ -313,6 +314,7 @@ export type LiabilityMetricEntry = {
   principalAmount?: unknown;
   interestAmount?: unknown;
   feeAmount?: unknown;
+  voucherAmount?: unknown;
   /** 对账锁定钉住的本行事后余额；非空即该行是余额锚点。 */
   reconciledBalance?: unknown;
   regularInvestPlanId?: string | null;
@@ -838,7 +840,10 @@ export function buildLiabilityDetailEntriesViewData({
             amount: reconcileTarget,
           }
         : undefined,
-      liabilityEdit: !isBalanceReconcile && entry.type === TransactionType.transfer && liabilityEditMode
+      // 带券包的往来转账（source=liability_*、voucherAmount>0）是在通用转账弹窗
+      // 记的：主交易记实付、券包另成收入腿。这里必须回退到通用记账弹窗才能改
+      // 券包/金额；借入借出窗口没有券包字段，会把券吞掉（2026-11-21 用户报障）。
+      liabilityEdit: !isBalanceReconcile && entry.type === TransactionType.transfer && liabilityEditMode && !(toNumber(entry.voucherAmount) > 0)
         ? (() => {
             const repaymentMemo = selectedRepaymentPlan ? decodeScheduledTaskMemo(selectedRepaymentPlan.memo) : null;
             const autoDebitMemo = selectedAutoDebitPlan ? decodeScheduledTaskMemo(selectedAutoDebitPlan.memo) : null;
@@ -920,6 +925,10 @@ export function buildLiabilityDetailEntriesViewData({
             date: entryDateKey,
             amount: isToLiabilityAccount ? Math.abs(amount) : -Math.abs(amount),
             note: entry.note ?? "",
+            // 券包抵扣要跟着代付记录一起回填编辑窗：信用卡明细视图的
+            // buildBasicEntryEditPayload 也带这个字段，两个入口必须一致，
+            // 否则从往来款账户点开编辑会把券包吞掉（2026-11-21 报障）。
+            voucherAmount: entry.voucherAmount != null ? toNumber(entry.voucherAmount) : null,
             accountId: cashSideAccountId,
             advanceAccountId: liabilitySideAccountId,
             categoryId: entry.categoryId ?? "",
@@ -932,6 +941,9 @@ export function buildLiabilityDetailEntriesViewData({
               postedAt: entryDate.toISOString(),
               amount: Math.abs(amount),
               note: entry.note ?? "",
+              // 带券包的往来转账回退到通用记账弹窗后，券包字段必须随 payload
+              // 一起过去，否则弹窗显示不出券包（与信用卡明细视图同口径）。
+              voucherAmount: entry.voucherAmount != null ? toNumber(entry.voucherAmount) : null,
               source: entry.source ?? null,
               entryKind: entry.entryKind === "liability" ? "liability" as const : "transfer" as const,
               fromAccountId: entry.accountId ?? "",

@@ -1221,11 +1221,11 @@ export default function DisplaySettingsPage() {
               ))}
             </div>
           </SettingRow>
-          <SettingRow title={t("settings.display.hideZero")} desc={t("settings.display.hideZeroDesc")} hideDesc={hideSettingDescriptions}>
+          <SettingRow title={t("settings.display.showZero")} desc={t("settings.display.showZeroDesc")} hideDesc={hideSettingDescriptions}>
             <SettingsSwitch
-              checked={sidebarHideZero}
-              onCheckedChange={updateSidebarHideZero}
-              label={t("settings.display.hideZero")}
+              checked={!sidebarHideZero}
+              onCheckedChange={(next) => void updateSidebarHideZero(!next)}
+              label={t("settings.display.showZero")}
             />
           </SettingRow>
           <SettingRow title={t("settings.display.showFixedAssets")} desc={t("settings.display.showFixedAssetsDesc")} hideDesc={hideSettingDescriptions}>

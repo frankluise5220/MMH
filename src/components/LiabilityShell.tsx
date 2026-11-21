@@ -1578,7 +1578,12 @@ export function LiabilityShell({
         width: 130,
         minWidth: 96,
         align: "right",
-        filterText: (entry) => entry.principal.toFixed(2),
+        // 金额表头筛选按「范围」（最小~最大）：取渲染出来的金额大小（绝对值），
+        // 与资金流向列显示的值一致；无金额（principal=0，渲染为 "-"）的行不参与。
+        // 排序仍按带符号值分组（见下方 sortValue），二者口径不同是刻意的。
+        filterKind: "numberRange",
+        filterText: (entry) => entry.principal === 0 ? "" : String(Math.abs(entry.principal)),
+        filterNumber: (entry) => entry.principal === 0 ? null : Math.abs(entry.principal),
         // 排序按带符号的值：负数（钱流向往来款账户）与正数（流回资金账户）分组，
         // 而不是把两者折成同一个「金额大小」再排（2026-11-17 用户裁定）。
         sortValue: (entry) => entry.principal,

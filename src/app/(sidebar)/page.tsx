@@ -1808,6 +1808,7 @@ export default async function Home({
             principalAmount: true,
             interestAmount: true,
             feeAmount: true,
+            voucherAmount: true,
             reconciledBalance: true,
             regularInvestPlanId: true,
             installmentNo: true,

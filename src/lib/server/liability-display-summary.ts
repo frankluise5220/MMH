@@ -187,6 +187,7 @@ async function _computeLiabilityDisplaySummary(
       principalAmount: true,
       interestAmount: true,
       feeAmount: true,
+      voucherAmount: true,
       regularInvestPlanId: true,
       fundSubtype: true,
       fundConfirmDate: true,
