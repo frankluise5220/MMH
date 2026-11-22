@@ -18,6 +18,8 @@ import {
   hasImportableStatementRows,
   parseStatementTemplateRows,
 } from "@/lib/statement/excel-preview";
+import { parseHtmlSheets } from "@/lib/statement/eml-sheet-reader";
+import { parseStatementSheetsStandard } from "@/lib/statement/recognizer-pipeline";
 import { TEMPLATE_GUIDE_TITLE_HINTS } from "@/lib/import-template-sample";
 import {
   inferSignedAmountInflowSign,
@@ -927,6 +929,30 @@ function parsePlainStatementImportTable(text: string): ParsedItem[] {
   }
 
   return [];
+}
+
+/**
+ * 邮箱链路（mail.html 已由 mailparser 解码）的 HTML 表格账单：
+ * 走与本地文件同一套识别管线（sinopec/财智/京东/支付宝/微信/标准），命中专用识别器
+ * 后把标准 11 列行转成 ParsedItem。信用卡 HTML 由现有 parseStructuredStatement 处理，
+ * 这里只在专用识别器（如中石化加油卡）命中时才产出，避免抢走信用卡账单。
+ */
+function parseEmailHtmlTables(html: string): ParsedItem[] {
+  if (!html || !/<table\b/i.test(html)) return [];
+  const sheets = parseHtmlSheets(html);
+  if (sheets.length === 0) return [];
+  const recognized = parseStatementSheetsStandard(sheets, {
+    sourceFileName: "mail-statement.html",
+    fieldHeaders: STATEMENT_IMPORT_FIELD_HEADERS,
+  });
+  if (recognized.template === "standard") return [];
+  const items = parseStatementTemplateRows(
+    recognized.rows,
+    "",
+    STATEMENT_IMPORT_FIELD_HEADERS,
+    TEMPLATE_GUIDE_TITLE_HINTS,
+  );
+  return hasImportableStatementRows(items) ? items : [];
 }
 
 function positiveMoneyCell(value: string) {
@@ -2852,6 +2878,30 @@ export async function POST(req: Request) {
     const { householdId } = await getHouseholdScope();
     const body = await req.json().catch(() => null);
     const text = ((body?.text ?? "") as string).trim();
+    // 邮箱链路：邮件正文 HTML 也送进来，供「非信用卡」表格账单（如中石化加油卡）识别。
+    const mailHtml = typeof body?.html === "string" ? body.html : "";
+    if (!text && !mailHtml) {
+      return NextResponse.json({ ok: false, code: "MISSING_TEXT", error: "缺少 text" }, { status: 400 });
+    }
+
+    // 邮箱 HTML 表格账单优先：命中专用识别器（sinopec 等）即用，否则退回信用卡/文本解析。
+    const htmlTableItems = mailHtml ? parseEmailHtmlTables(mailHtml) : [];
+    if (htmlTableItems.length > 0) {
+      const normalizedHtmlItems = normalizeExplicitStatementFlowDirections(htmlTableItems);
+      return NextResponse.json({
+        ok: true,
+        items: normalizedHtmlItems,
+        meta: {
+          charCount: text.length || mailHtml.length,
+          parseMethod: "email_html_table",
+          itemCount: normalizedHtmlItems.length,
+          hasDates: normalizedHtmlItems.filter((i) => i.date).length,
+          hasAmounts: normalizedHtmlItems.filter((i) => i.amount > 0).length,
+          hasCounterparties: normalizedHtmlItems.filter((i) => i.counterparty).length,
+        },
+      });
+    }
+
     if (!text) {
       return NextResponse.json({ ok: false, code: "MISSING_TEXT", error: "缺少 text" }, { status: 400 });
     }

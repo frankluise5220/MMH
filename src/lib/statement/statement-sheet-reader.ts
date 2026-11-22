@@ -1,4 +1,5 @@
 import { decodeTextFile } from "@/lib/text/decode-text-file";
+import { parseEmlSheets } from "@/lib/statement/eml-sheet-reader";
 
 export type StatementSheetRows = {
   sheetName: string;
@@ -29,6 +30,18 @@ function fileExtension(file: File) {
 export function isSpreadsheetWorkbookFile(file: File) {
   const ext = fileExtension(file);
   return ext === "xlsx" || ext === "xls";
+}
+
+function isEmlFile(file: File) {
+  const ext = fileExtension(file);
+  return ext === "eml" || /message\/rfc822/i.test(String(file?.type ?? ""));
+}
+
+/** 把原始字节按 latin1 映射成「每字节一个 char」，供 quoted-printable 解码逐字节还原。 */
+function bytesToLatin1(bytes: Uint8Array): string {
+  let out = "";
+  for (let i = 0; i < bytes.length; i++) out += String.fromCharCode(bytes[i]);
+  return out;
 }
 
 /** CSV 解析（支持引号包裹和 "" 转义）：账单只有一份语法，全局共用一份实现。 */
@@ -75,6 +88,11 @@ export function parseStatementCsv(text: string): string[][] {
  * 表头别名匹配随之全失效。文本型文件统一先过 `decodeTextFile` 探测编码。
  */
 export async function readStatementSheetRows(file: File): Promise<StatementSheetRows[]> {
+  // .eml 邮件账单：正文 HTML 里才是表格，按 CSV 读只会得到邮件头与乱码标签。
+  if (isEmlFile(file)) {
+    const sheets = parseEmlSheets(bytesToLatin1(new Uint8Array(await file.arrayBuffer())));
+    if (sheets.length > 0) return sheets;
+  }
   if (!isSpreadsheetWorkbookFile(file)) {
     return [{ sheetName: file.name, rows: parseStatementCsv(await decodeTextFile(file)) }];
   }

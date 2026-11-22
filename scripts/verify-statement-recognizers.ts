@@ -38,6 +38,8 @@ import {
   stripTemplateRows,
   TEMPLATE_GUIDE_TITLE_HINTS,
 } from "../src/lib/import-template-sample";
+import { parseEmlSheets, parseHtmlSheets } from "../src/lib/statement/eml-sheet-reader";
+import { readStatementSheetRows } from "../src/lib/statement/statement-sheet-reader";
 
 type Sheet = { sheetName: string; rows: string[][] };
 
@@ -313,4 +315,183 @@ check("marker column is localized (Sample Row / サンプル行)", () => {
   assert.equal(isTemplateSampleRowValue("否"), false);
 });
 
+console.log("[8] 中石化加油卡电子钱包账单（表头与财智同形，靠内容判据区分）");
+
+// 与用户样本一致：日期|流入|流出|活动类型|标签|余额|备注。
+const SINOPEC: string[][] = [
+  ["日期", "流入", "流出", "活动类型", "标签", "余额", "备注"],
+  ["2017-06-01", "3406.08", "", "余额调整", "", "3406.08", ""],
+  ["2017-06-15", "", "300", "YZ汽油", "", "3106.08", ""],
+  ["2017-08-11", "", "295.9", "YZ汽油", "", "2810.18", "79000"],
+  ["2017-10-20", "400", "", "转入|02/07/交行2479/03", "", "3210.18", ""],
+  ["2020-06-20", "40", "", "转入|中石油加油卡", "", "3250.18", ""],
+];
+
+check("中石化账单命中 sinopec（即使文件名带 _明细_日期 也不被财智抢走）", () => {
+  const out = parse("sinopec", SINOPEC, "中石化加油卡_明细_2026-11-22.xls");
+  assert.equal(out.template, "sinopec");
+  assert.equal(out.filenameHint, "sinopec");
+  // 余额调整被剔除，剩 4 条流水。
+  assert.equal(out.rows.length - 1, 4);
+});
+
+check("账户固定为钱包「中石化加油卡」，不依赖文件名", () => {
+  const named = parse("sinopec-named", SINOPEC, "中石化加油卡_明细_2026-11-22.xls");
+  const anonymous = parse("sinopec-anonymous", SINOPEC, "流水.xls");
+  for (const out of [named, anonymous]) {
+    assert.equal(out.template, "sinopec");
+    for (const row of out.rows.slice(1)) assert.equal(row[CAIZHI_COL.account], "中石化加油卡");
+  }
+});
+
+check("YZ汽油 → 支出 + 分类「加油」+ 机构「中国石化」，里程进备注", () => {
+  const out = parse("sinopec-fuel", SINOPEC, "中石化加油卡.xls");
+  const fuel = out.rows[1];
+  assert.equal(fuel[CAIZHI_COL.majorType], "支出");
+  assert.equal(fuel[CAIZHI_COL.outflow], "300");
+  assert.equal(fuel[CAIZHI_COL.category], "加油");
+  assert.equal(fuel[8], "中国石化");
+  const withMileage = out.rows[2];
+  assert.equal(withMileage[10], "79000");
+});
+
+check("转入|xxx → 转账 + 对向账户为充值来源", () => {
+  const out = parse("sinopec-topup", SINOPEC, "中石化加油卡.xls");
+  const topup = out.rows[3];
+  assert.equal(topup[CAIZHI_COL.majorType], "转账");
+  assert.equal(topup[CAIZHI_COL.inflow], "400");
+  assert.equal(topup[CAIZHI_COL.counterparty], "02/07/交行2479/03");
+  assert.equal(topup[CAIZHI_COL.category], "充值");
+});
+
+check("余额调整行进入余额校准通道，不作为流水", () => {
+  const out = parse("sinopec-balance", SINOPEC, "中石化加油卡.xls");
+  assert.ok(out.caizhiBalanceAdjustRows, "应有余额校准行");
+  assert.equal(out.caizhiBalanceAdjustRows!.length, 1);
+  assert.equal(out.caizhiBalanceAdjustRows![0].date, "2017-06-01");
+  assert.equal(out.caizhiBalanceAdjustRows![0].targetBalance, 3406.08);
+});
+
+check("普通财智文件（无中石化活动类型）仍判 caizhi，不被吞", () => {
+  const out = parse("caizhi-not-sinopec", CAIZHI, "付斌的招行2758_明细_2026-09-13.xls");
+  assert.equal(out.template, "caizhi");
+  assert.equal(out.rows[1][CAIZHI_COL.account], "付斌的招行2758");
+});
+
+// eml 账单的「交易信息」11 列与「付费信息」5 列（用户 2026-11-22 口径：原表字段全进备注）。
+const SINOPEC_EMAIL_TRADE: string[][] = [
+  ["卡号", "持卡人", "交易时间", "交易类型", "油品", "数量(升)", "单价(元)", "金额(元)", "奖励分值", "余额(元)", "地点"],
+  ["1000113200006508614", "付斌", "2024-01-02 07:30:04", "消费", "95号汽油", "42.56", "7.99", "340.0", "0.0", "4360.0", "扬州邗城站"],
+];
+const SINOPEC_EMAIL_PAYMENT: string[][] = [
+  ["序号", "付费时间", "付费地点", "收款方式", "充值金额(元)"],
+  ["1", "2024-01-02 07:32:43", "易捷红包充值网点1", "null", "305.54"],
+  ["2", "2024-01-10 12:16:51", "江苏支付宝第一商户", "支付宝", "110.0"],
+];
+
+check("eml 交易信息表：命中 sinopec，升数/单价/地点/油品全部写进备注", () => {
+  const out = parse("sinopec-email-trade", SINOPEC_EMAIL_TRADE, "中石化加油卡_账单导入_2024-01.xlsx");
+  assert.equal(out.template, "sinopec");
+  assert.equal(out.rows.length - 1, 1);
+  const row = out.rows[1];
+  assert.equal(row[CAIZHI_COL.majorType], "支出");
+  assert.equal(row[CAIZHI_COL.outflow], "340");
+  assert.equal(row[CAIZHI_COL.account], "中石化加油卡");
+  assert.equal(row[CAIZHI_COL.category], "加油");
+  assert.equal(row[8], "中国石化");
+  const remark = row[10];
+  for (const field of ["油品:95号汽油", "数量(升):42.56", "单价(元):7.99", "地点:扬州邗城站", "余额(元):4360.0"]) {
+    assert.ok(remark.includes(field), `备注应含 ${field}，实际 ${remark}`);
+  }
+  // 账户统一属性（卡号/持卡人/交易类型）不进备注。
+  for (const field of ["持卡人", "卡号", "交易类型"]) {
+    assert.ok(!remark.includes(field), `备注不应含账户属性 ${field}，实际 ${remark}`);
+  }
+});
+
+check("eml 付费信息表：充值按收入落钱包，地点/收款方式进备注", () => {
+  const sheets: Sheet[] = [
+    { sheetName: "交易信息", rows: SINOPEC_EMAIL_TRADE },
+    { sheetName: "付费信息", rows: SINOPEC_EMAIL_PAYMENT },
+  ];
+  const out = parseStatementSheetsStandard(sheets, { sourceFileName: "中石化加油卡_账单导入_2024-01.xlsx", fundAware: true });
+  assert.equal(out.template, "sinopec");
+  const topups = out.rows.slice(1).filter((r) => r[CAIZHI_COL.majorType] === "收入");
+  assert.equal(topups.length, 2);
+  assert.equal(topups[0][CAIZHI_COL.inflow], "305.54");
+  assert.ok(topups[0][10].includes("地点:易捷红包充值网点1"));
+  assert.ok(topups[1][10].includes("收款方式:支付宝"));
+});
+
+(async () => {
+console.log("[9] .eml 邮件账单直接导入（正文 HTML 表格 → sheet 行）");
+
+const EML_BODY = [
+  "From: jykwt-support@sinopec.com",
+  "Subject: =?GB2312?B?dGVzdA==?=",
+  "Content-Type: text/html; charset=\"utf-8\"",
+  "Content-Transfer-Encoding: quoted-printable",
+  "",
+  "<html><body>",
+  "<h2>=E4=BA=A4=E6=98=93=E4=BF=A1=E6=81=AF</h2><table><tr><td>=E5=8D=A1=E5=8F=B7</td><td>=E6=8C=81=E5=8D=A1=E4=BA=BA</td><td>=E4=BA=A4=E6=98=93=E6=97=B6=E9=97=B4</td><td>=E4=BA=A4=E6=98=93=E7=B1=BB=E5=9E=8B</td><td>=E6=B2=B9=E5=93=81</td><td>=E6=95=B0=E9=87=8F(=E5=8D=87)</td><td>=E5=8D=95=E4=BB=B7(=E5=85=83)</td><td>=E9=87=91=E9=A2=9D(=E5=85=83)</td><td>=E5=A5=96=E5=8A=B1=E5=88=86=E5=80=BC</td><td>=E4=BD=99=E9=A2=9D(=E5=85=83)</td><td>=E5=9C=B0=E7=82=B9</td></tr>",
+  "<tr><td>1000113200006508614</td><td>=E4=BB=98=E6=96=8C</td><td>2024-01-02 07:30:04</td><td>=E6=B6=88=E8=B4=B9</td><td>95=E5=8F=B7=E6=B1=BD=E6=B2=B9</td><td>42.56</td><td>7.99</td><td>340.0</td><td>0.0</td><td>4360.0</td><td>=E6=89=AC=E5=B7=9E=E9=82=97=E5=9F=8E=E7=AB=99</td></tr>",
+  "<tr><td colspan=3D\"11\">=E5=B0=8F=E8=AE=A1=EF=BC=9A</td></tr>",
+  "</table></div>",
+  "<h2>=E4=BB=98=E8=B4=B9=E4=BF=A1=E6=81=AF</h2><table><tr><td>=E5=BA=8F=E5=8F=B7</td><td>=E4=BB=98=E8=B4=B9=E6=97=B6=E9=97=B4</td><td>=E4=BB=98=E8=B4=B9=E5=9C=B0=E7=82=B9</td><td>=E6=94=B6=E6=AC=BE=E6=96=B9=E5=BC=8F</td><td>=E5=85=85=E5=80=BC=E9=87=91=E9=A2=9D(=E5=85=83)</td></tr>",
+  "<tr><td>1</td><td>2024-01-02 07:32:43</td><td>=E6=98=93=E6=8D=B7=E7=BA=A2=E5=8C=85=E5=85=85=E5=80=BC=E7=BD=91=E7=82=B91</td><td>=null</td><td>305.54</td></tr>",
+  "</table></body></html>",
+].join("\r\n");
+
+check("parseEmlSheets 按 h2 标题提取表格，quoted-printable 中文正常解码，小计行被剔除", () => {
+  const sheets = parseEmlSheets(EML_BODY);
+  assert.equal(sheets.length, 2);
+  assert.equal(sheets[0].sheetName, "交易信息");
+  assert.equal(sheets[0].rows.length, 2, "表头 + 1 条消费行，小计行剔除");
+  assert.equal(sheets[0].rows[1][4], "95号汽油", "QP 字节应还原成 UTF-8 中文");
+  assert.equal(sheets[0].rows[1][10], "扬州邗城站");
+  assert.equal(sheets[1].sheetName, "付费信息");
+  assert.equal(sheets[1].rows.length, 2);
+});
+
+const emlBuf = Buffer.from(EML_BODY, "latin1");
+const emlFile = new File(
+  [emlBuf.buffer.slice(emlBuf.byteOffset, emlBuf.byteOffset + emlBuf.byteLength) as ArrayBuffer],
+  "中国石化加油卡对账单.eml",
+  { type: "message/rfc822" },
+);
+const emlSheets = await readStatementSheetRows(emlFile);
+const emlOut = parseStatementSheetsStandard(emlSheets, { sourceFileName: emlFile.name, fundAware: true });
+check("eml 经 readStatementSheetRows → 识别器 → 消费/充值记录（含升数/单价/地点备注）", () => {
+  assert.equal(emlOut.template, "sinopec");
+  assert.equal(emlOut.rows.length - 1, 2); // 1 消费 + 1 充值
+  const fuel = emlOut.rows[1];
+  assert.equal(fuel[CAIZHI_COL.account], "中石化加油卡");
+  assert.match(fuel[10], /数量\(升\):42\.56/);
+  assert.match(fuel[10], /单价\(元\):7\.99/);
+  assert.match(fuel[10], /地点:扬州邗城站/);
+});
+
+// 邮箱链路：mail.html 是已解码的 UTF-8 HTML 字符串（imap-client 的 simpleParser 已解 QP）。
+const MAIL_HTML = [
+  "<html><body>",
+  "<h2>交易信息</h2><table><tr><td>卡号</td><td>持卡人</td><td>交易时间</td><td>交易类型</td><td>油品</td><td>数量(升)</td><td>单价(元)</td><td>金额(元)</td><td>奖励分值</td><td>余额(元)</td><td>地点</td></tr>",
+  "<tr><td>1000113200006508614</td><td>付斌</td><td>2024-01-02 07:30:04</td><td>消费</td><td>95号汽油</td><td>42.56</td><td>7.99</td><td>340.0</td><td>0.0</td><td>4360.0</td><td>扬州邗城站</td></tr>",
+  "</table></body></html>",
+].join("");
+
+check("邮箱链路 mail.html（已解码 HTML）走 parseHtmlSheets → sinopec，升数/单价/地点进备注", () => {
+  const sheets = parseHtmlSheets(MAIL_HTML);
+  assert.equal(sheets.length, 1);
+  assert.equal(sheets[0].sheetName, "交易信息");
+  const out = parseStatementSheetsStandard(sheets, { sourceFileName: "mail-statement.html", fundAware: true });
+  assert.equal(out.template, "sinopec");
+  assert.equal(out.rows.length - 1, 1);
+  assert.equal(out.rows[1][CAIZHI_COL.account], "中石化加油卡");
+  assert.match(out.rows[1][10], /数量\(升\):42\.56/);
+  assert.match(out.rows[1][10], /单价\(元\):7\.99/);
+  assert.match(out.rows[1][10], /地点:扬州邗城站/);
+  assert.doesNotMatch(out.rows[1][10], /持卡人|卡号|交易类型/);
+});
+
 console.log(`\ncheck:recognizer ok（${assertionCount} 条断言）`);
+})();

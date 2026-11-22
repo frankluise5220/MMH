@@ -1336,7 +1336,10 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
       {
         // 财智8检测：文件名含 "财智"，或命中财智导出命名「XXX的YYY_明细_YYYY-MM-DD」。
         // 注意：财智8 自己导出的文件名里没有"财智"两个字，只认"财智"会让专用通道永不生效。
-        const isCaizhiFile = /财智|_明细_\d{4}-\d{2}-\d{2}/.test(file.name);
+        // 中石化加油卡账单也是「XXX_明细_日期」命名、表头与财智同形，一并纳入本通道；
+        // 具体归属由识别器按活动类型内容判据区分（sinopec 优先于 caizhi）。
+        const isCaizhiFile = /财智|_明细_\d{4}-\d{2}-\d{2}/.test(file.name)
+          || /中石化|中国石化|加油卡|sinopec/i.test(file.name);
 
         if (isCaizhiFile) {
           // 财智基金账户明细模板（第二个财智模板）：活动类型+基金名称表头 → 转换为基金导入格式，
@@ -1352,17 +1355,19 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
             setStatus(t("viewImport.recognizedCount", { count: caizhiFund.rowCount }));
             return;
           }
-          // caizhiRows 已带 MMH 标准表头（与京东/支付宝/微信模板同一形态），可直接解析。
-          const { caizhiRows, caizhiBalanceAdjustRows } = await readStatementWorkbookRowsAndText(file, STATEMENT_IMPORT_FIELD_HEADERS);
+          // caizhiRows / sinopecRows 都已带 MMH 标准表头（与京东/支付宝/微信模板同一形态），可直接解析。
+          // sinopec 命中时行内账户已固定为钱包账户「中石化加油卡」，无需文件名猜测。
+          const { caizhiRows, sinopecRows, caizhiBalanceAdjustRows } = await readStatementWorkbookRowsAndText(file, STATEMENT_IMPORT_FIELD_HEADERS);
           setBalanceAdjustments(
             (caizhiBalanceAdjustRows ?? [])
               .filter((row) => row.targetBalance != null && row.date)
               .map((row) => ({ date: row.date, balance: Number(row.targetBalance) })),
           );
-          if (caizhiRows && caizhiRows.length > 0) {
+          const specialRows = sinopecRows && sinopecRows.length > 0 ? sinopecRows : caizhiRows;
+          if (specialRows && specialRows.length > 0) {
             const localItems = normalizeStatementExcelParsedItems(
               parseStatementTemplateRows(
-                caizhiRows,
+                specialRows,
                 statementDefaultAccountName(props),
                 STATEMENT_IMPORT_FIELD_HEADERS,
                 t("settings.accounts.import.sheetGuideTitle"),
@@ -1375,7 +1380,7 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
             setStatus(t("viewImport.recognizedCount", { count: items.length }));
             return;
           }
-          // 文件名像财智但格式不符（如已结构化的对向账户表格）→ 落回下方通用链路解析。
+          // 文件名像财智/中石化但格式不符（如已结构化的对向账户表格）→ 落回下方通用链路解析。
         }
 
         // 普通文件：走原有京东/支付宝/微信/标准模板链路
@@ -1752,7 +1757,7 @@ export function ViewExcelImportMenuButton(props: ViewExcelImportMenuButtonProps)
         accept={
           // PDF 只能进流水通道（基金/股票页签的文件仍然是 Excel 模板）。
           props.kind === "normal"
-            ? ".pdf,application/pdf,.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+            ? ".pdf,application/pdf,.eml,message/rfc822,.xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
             : ".xlsx,.xls,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
         }
         className="hidden"

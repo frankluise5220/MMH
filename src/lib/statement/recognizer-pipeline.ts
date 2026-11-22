@@ -36,13 +36,18 @@ import {
 } from "@/lib/statement/caizhi-template";
 import { normalizeJdWorkbookRows } from "@/lib/statement/jd-template";
 import { normalizeWechatWorkbookRows } from "@/lib/statement/wechat-template";
+import {
+  detectSinopecWorkbook,
+  type SinopecBalanceAdjustRow,
+  type SinopecWorkbookSheetRows as SinopecWorkbookRows,
+} from "@/lib/statement/sinopec-template";
 import { guessOwnerFromFilename } from "@/lib/statement/owner-from-filename";
 import { normalizeStatementHeader } from "@/lib/statement/header-utils";
 
 export type StatementFieldHeaders = Record<StatementImportField, readonly string[]>;
 
 /** 识别器命中的账单格式；standard = 兜底（MMH 标准模板）。 */
-export type StatementFileTemplate = "caizhi" | "jd" | "alipay" | "wechat" | "standard";
+export type StatementFileTemplate = "sinopec" | "caizhi" | "jd" | "alipay" | "wechat" | "standard";
 
 export type RecognizedStatementSheets = {
   template: StatementFileTemplate;
@@ -53,8 +58,12 @@ export type RecognizedStatementSheets = {
   filenameHint?: StatementTemplateHint;
   /** 仅 caizhi：财智8 归一化出的全部标准行（= rows）。 */
   caizhiRows?: string[][];
-  /** 仅 caizhi：余额校准行（余额调整/初始化等，不作为流水导入）。 */
+  /** 余额校准行（余额调整/初始化等，不作为流水导入）。caizhi 与 sinopec 共用此字段，消费端无需区分。 */
   caizhiBalanceAdjustRows?: CaizhiBalanceAdjustRow[];
+  /** 仅 sinopec：中石化加油卡归一化出的全部标准行（= rows），供视图导入菜单走财智同形通道。 */
+  sinopecRows?: string[][];
+  /** 仅 sinopec：余额校准行（与 caizhiBalanceAdjustRows 同值，语义别名）。 */
+  sinopecBalanceAdjustRows?: SinopecBalanceAdjustRow[];
 };
 
 // —— 基金表头识别（原 batch-import/page.tsx，原样移入）——
@@ -249,6 +258,8 @@ export function mergeStandardWorkbookRows(
 export type StatementTemplateHint = Exclude<StatementFileTemplate, "standard">;
 
 const TEMPLATE_HINT_PATTERNS: ReadonlyArray<{ template: StatementTemplateHint; pattern: RegExp }> = [
+  // 中石化加油卡必须先于「财智」：其账单文件名常带「_明细_日期」，会被财智 hint 抢走。
+  { template: "sinopec", pattern: /\u4e2d\u77f3\u5316|\u4e2d\u56fd\u77f3\u5316|\u52a0\u6cb9\u5361|sinopec/i },
   { template: "caizhi", pattern: /\u8d22\u667a|caizhi|czb?8/i },
   { template: "jd", pattern: /\u4eac\u4e1c|jingdong|\bjd\b/i },
   { template: "alipay", pattern: /\u652f\u4ed8\u5b9d|alipay/i },
@@ -272,7 +283,9 @@ export function guessStatementTemplateHint(sourceFileName = ""): StatementTempla
 
 // —— 第 1 步：专用识别器清单（命中即短路）——
 
-const STATEMENT_RECOGNIZER_ORDER: readonly StatementTemplateHint[] = ["caizhi", "jd", "alipay", "wechat"];
+// sinopec 必须在 caizhi 之前：两者表头同形（日期|流入|流出|活动类型|标签|余额|备注），
+// 只能靠 sinopec 的内容判据（YZ汽油/中石化/加油/充值）把加油卡钱包账单先认领走。
+const STATEMENT_RECOGNIZER_ORDER: readonly StatementTemplateHint[] = ["sinopec", "caizhi", "jd", "alipay", "wechat"];
 
 export function recognizeStatementSheets(
   rawSheetRows: Array<{ sheetName: string; rows: string[][] }>,
@@ -282,6 +295,21 @@ export function recognizeStatementSheets(
 
   // 每个识别器只管「自己的表头特征能不能认出来」，顺序由文件名先验调整。
   const runners: Record<StatementTemplateHint, () => RecognizedStatementSheets | null> = {
+    // 中石化加油卡：表头与财智同形，靠活动类型内容特征认领，账户固定为钱包账户。
+    sinopec: () => {
+      const sinopecRows = detectSinopecWorkbook(rawSheetRows as SinopecWorkbookRows[]);
+      if (!sinopecRows) return null;
+      const balanceAdjustRows = sinopecRows.balanceAdjustRows.filter((row) => row.targetBalance != null);
+      return {
+        template: "sinopec",
+        rows: sinopecRows.rows,
+        sourceDataRowCount: sinopecRows.sourceDataRowCount,
+        includedSheetCount: sinopecRows.includedSheetCount,
+        sinopecRows: sinopecRows.rows,
+        caizhiBalanceAdjustRows: balanceAdjustRows,
+        sinopecBalanceAdjustRows: balanceAdjustRows,
+      };
+    },
     // 财智8 需要从文件名猜账户名。
     caizhi: () => {
       const caizhiRows = normalizeCaizhiWorkbookRows(

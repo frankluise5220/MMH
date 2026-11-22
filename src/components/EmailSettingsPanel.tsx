@@ -898,7 +898,8 @@ export function EmailSettingsPanel({
       const bookLookupsPromise = autoOpenPreview ? loadBookLookups() : Promise.resolve(bookLookupsRef.current);
       const res = await fetch("/api/v1/statement/parse", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: sourceContent }),
+        // 带上邮件正文 HTML，供非信用卡的表格账单（如中石化加油卡）走专用识别器。
+        body: JSON.stringify({ text: sourceContent, html: mail?.html || "" }),
       });
       const data = await res.json();
       if (data.ok) {

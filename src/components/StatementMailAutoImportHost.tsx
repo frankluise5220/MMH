@@ -61,7 +61,8 @@ export function StatementMailAutoImportHost() {
       const parseRes = await fetch("/api/v1/statement/parse", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: payload.content }),
+        // job.content 无附件时就是邮件 HTML，同时传 html 让非信用卡表格账单（中石化等）走专用识别器。
+        body: JSON.stringify({ text: payload.content, html: payload.content || "" }),
       });
       const parsed = await parseRes.json().catch(() => null);
       if (!parsed?.ok) throw new Error(parsed?.error || "parse");

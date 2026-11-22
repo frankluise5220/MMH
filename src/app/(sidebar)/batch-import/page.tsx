@@ -46,6 +46,7 @@ import {
 import { excludeFundTradeRows } from "@/lib/statement/fund-trade-split";
 import { buildJdImportTemplate } from "@/lib/statement/jd-template";
 import { buildWechatImportTemplate } from "@/lib/statement/wechat-template";
+import { buildSinopecImportTemplate } from "@/lib/statement/sinopec-template";
 import { parseStatementCsv } from "@/lib/statement/statement-sheet-reader";
 // 识别器清单/兜底/截表头/多 sheet 合并统一在 recognizer-pipeline（勿在此手抄）。
 import {
@@ -125,7 +126,7 @@ type ParsedItem = {
 };
 
 type ImportTemplate = {
-  key: "normal" | "credit" | "fund" | "wechat" | "jd";
+  key: "normal" | "credit" | "fund" | "wechat" | "jd" | "sinopec";
   title: string;
   description: string;
   status: string;
@@ -394,6 +395,26 @@ function buildTemplates(t: (key: string, params?: Record<string, string | number
   },
   buildWechatImportTemplate(t),
   buildJdImportTemplate(t),
+  buildSinopecImportTemplate({
+    filename: `${t("batchImport.template.sinopec.filename")}.xlsx`,
+    title: t("batchImport.template.sinopec.title"),
+    description: t("batchImport.template.sinopec.description"),
+    status: t("batchImport.template.normal.status"),
+    sheetName: t("batchImport.sheet.template"),
+    fields: [
+      { name: "date", label: t("batchImport.template.sinopec.label.date"), required: true, note: t("batchImport.template.sinopec.field.date") },
+      { name: "inflow", label: t("batchImport.template.sinopec.label.inflow"), required: false, note: t("batchImport.template.sinopec.field.inflow") },
+      { name: "outflow", label: t("batchImport.template.sinopec.label.outflow"), required: false, note: t("batchImport.template.sinopec.field.outflow") },
+      { name: "activityType", label: t("batchImport.template.sinopec.label.activityType"), required: true, note: t("batchImport.template.sinopec.field.activityType") },
+      { name: "tag", label: t("batchImport.template.sinopec.label.tag"), required: false, note: t("batchImport.template.sinopec.field.tag") },
+      { name: "balance", label: t("batchImport.template.sinopec.label.balance"), required: false, note: t("batchImport.template.sinopec.field.balance") },
+      { name: "remark", label: t("batchImport.template.sinopec.label.remark"), required: false, note: t("batchImport.template.sinopec.field.remark") },
+    ],
+    guideNotes: [
+      t("batchImport.guide.currentSupport"),
+      t("batchImport.guide.sinopecBill"),
+    ],
+  }),
   {
     key: "fund",
     title: t("batchImport.template.fund.title"),
@@ -3441,12 +3462,12 @@ export default function BatchImportPage() {
                 >
                   {template.downloadFormat === "xlsx" ? t("batchImport.downloadXlsxTemplate") : t("batchImport.downloadCsvTemplate")}
                 </button>
-                {(template.key === "normal" || template.key === "wechat" || template.key === "jd") && (
+                {(template.key === "normal" || template.key === "wechat" || template.key === "jd" || template.key === "sinopec") && (
                   <label className="px-3 py-1.5 text-sm rounded-md bg-blue-600 text-white hover:bg-blue-700 cursor-pointer inline-flex items-center">
                     {t("batchImport.uploadBillFile")}
                     <input
                       type="file"
-                      accept=".csv,.xlsx,.xls,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+                      accept=".csv,.eml,message/rfc822,.xlsx,.xls,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
                       className="sr-only"
                       onClick={() => {
                         setUploadDebug(t("batchImport.uploadControlClicked"));

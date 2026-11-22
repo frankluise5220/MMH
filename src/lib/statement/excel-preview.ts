@@ -525,7 +525,9 @@ type ReadStatementWorkbookResult = {
   text: string;
   /** 检测为财智8格式时为标准化后的行（含 MMH 标准表头，可直接交 parseStatementTemplateRows）；否则 undefined */
   caizhiRows?: string[][];
-  /** 财智余额调整行（余额校准用：指定日期把账户余额校正为目标值） */
+  /** 检测为中石化加油卡格式时为标准化后的行（与 caizhiRows 同形态）；否则 undefined */
+  sinopecRows?: string[][];
+  /** 财智/中石化余额调整行（余额校准用：指定日期把账户余额校正为目标值） */
   caizhiBalanceAdjustRows?: CaizhiBalanceAdjustRow[];
 };
 
@@ -553,6 +555,7 @@ export function normalizeStatementSheetsRows(
     rows: result.rows,
     text,
     caizhiRows: result.caizhiRows,
+    sinopecRows: result.sinopecRows,
     caizhiBalanceAdjustRows: result.caizhiBalanceAdjustRows,
   };
 }
