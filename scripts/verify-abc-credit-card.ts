@@ -111,8 +111,10 @@ assert.ok(instSpend && instOffset && instPrincipal, "三条分期行都要在");
 assert.equal(instSpend.type, "expense", "原消费仍是正常消费支出");
 assert.equal(instSpend.date, "2020-07-31");
 assert.equal(instSpend.remark, "商户分期 泰州苏宁易购商贸有限公司", "消费行就是一笔正常消费，备注不写分期");
+assert.equal(instSpend.category, undefined, "消费行照原分类识别，识别不到就留空（未分类），不能挂银行分期");
 assert.equal(instOffset.type, "expense", "冲抵行仍是支出大类（正数=负支出，靠 inflow 落到账户）");
 assert.equal(instOffset.remark, "商户分期 泰州苏宁易购商贸有限公司（分期冲抵：转分期本金 5698.00，分 6 期，分期日 2020-07-31）");
+assert.equal(instOffset.category, "银行分期", "冲抵行不管商户是谁，都归银行分期");
 assert.equal(instPrincipal.type, "expense", "本期本金行是支出");
 assert.equal(instPrincipal.category, "银行分期", "本金行归银行分期");
 assert.equal(instPrincipal.remark, "商户分期 泰州苏宁易购商贸有限公司（分期本金 1/6，本期应还 950.00，剩余本金 4748.00）");
@@ -125,6 +127,18 @@ assert.equal(
   Number((instItems.filter((item) => item.date === "2020-07-31").reduce((acc, item) => acc + (item.outflow ?? 0) - (item.inflow ?? 0), 0)).toFixed(2)),
   950,
   "分期三条净额应等于本期应还本金",
+);
+
+// ── 有商户别名时：消费行取原分类，冲抵/本金行恒为银行分期 ──
+const aliasedItems = parseAbchinaCreditCardStatement(installmentHtml(), (text) =>
+  text.includes("苏宁易购") ? { category: "购物", counterparty: "苏宁易购" } : {},
+);
+assert.equal(aliasedItems.find((item) => item.outflow === 5698)?.category, "购物", "消费行按原分类识别");
+assert.equal(aliasedItems.find((item) => item.inflow === 5698)?.category, "银行分期", "冲抵行不被别名改写");
+assert.equal(
+  aliasedItems.find((item) => item.amount === 950 && item.outflow === 950)?.category,
+  "银行分期",
+  "本金行不被别名改写",
 );
 
 // ── 往期分期的续期：本期交易明细里没有消费行，只补当期应还本金（含提前结清） ──

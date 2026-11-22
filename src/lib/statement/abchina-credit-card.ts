@@ -372,7 +372,9 @@ export function parseAbchinaCreditCardStatement(
     }
 
     // 商户分期按银行实际入账拆三条：消费 / 冲抵 / 本期本金。
-    // 分类沿用这笔消费的正常分类（分期只是付款方式，不是花钱的去向），
+    // 分类口径（用户 2026-11-23 裁定）：
+    //   消费行 = 照原分类识别，识别不到就留空（未分类），不能挂「银行分期」；
+    //   冲抵行与本期本金行 = 一律「银行分期」，它们本身就是分期动作。
     // 三条净额等于「本期应还本金」，后续期由各自账单的【分期明细】续。
     // 消费行不写分期口径，原摘要是「商户分期 X」就照抄；分期信息只写在冲抵行。
     const notes = installmentRemarks(plan, description);
@@ -389,7 +391,7 @@ export function parseAbchinaCreditCardStatement(
       type: "expense",
       amount: absAmount,
       inflow: absAmount,
-      category: alias.category,
+      category: BANK_INSTALLMENT_CATEGORY,
       remark: notes.offset,
       rawDescription: `${description}（分期冲抵）`,
     });
@@ -399,7 +401,7 @@ export function parseAbchinaCreditCardStatement(
         type: "expense",
         amount: plan.currentPrincipal,
         outflow: plan.currentPrincipal,
-        category: alias.category ?? BANK_INSTALLMENT_CATEGORY,
+        category: BANK_INSTALLMENT_CATEGORY,
         remark: notes.principal,
         rawDescription: `${description}（第 ${plan.currentPeriod} 期本金）`,
       });
