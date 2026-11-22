@@ -61,6 +61,9 @@ type BookAccount = {
   kind: string;
   isActive?: boolean;
   numberMasked?: string | null;
+  /** 信用卡合并账单：同机构多张卡在导入层面是同一笔，匹配到多张时取第一张。 */
+  creditBillMode?: string | null;
+  institutionId?: string | null;
   groupId?: string | null;
   investProductType?: string | null;
   label?: string | null;

@@ -12,7 +12,10 @@ type ImportAccountMatchSource = {
    */
   isActive?: boolean | null;
   numberMasked?: string | null;
-  Institution?: { name?: string | null; shortName?: string | null } | null;
+  /** 信用卡账单模式：consolidated = 同机构同所有人的卡合并成一份账单，导入时不必区分具体卡。 */
+  creditBillMode?: string | null;
+  institutionId?: string | null;
+  Institution?: { id?: string | null; name?: string | null; shortName?: string | null } | null;
   /**
    * 账户所有人（分组）。2026-11-05：`Institution` 是配对到的家庭成员，
    * 它的姓名与**简称**和分组名一样，都是「所有人」的合法写法。
@@ -60,6 +63,8 @@ export type ImportAccountIdentityConflict = {
 };
 
 export const IMPORT_ACCOUNT_ID_PREFIX = "account-id:";
+
+const CREDIT_BILL_MODE_CONSOLIDATED = "consolidated";
 
 export function encodeImportAccountId(accountId: string) {
   return `${IMPORT_ACCOUNT_ID_PREFIX}${accountId}`;
@@ -907,6 +912,35 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(
     return Array.from(ownerKeys);
   }
 
+  /**
+   * 合并账单卡的归属键：同机构 + 同所有人 + creditBillMode=consolidated。
+   * 任一项缺失就返回 null —— 宁可保留歧义让用户选，也不猜。
+   */
+  function consolidatedCreditKey(item: (typeof indexed)[number]) {
+    const account = item.account;
+    if (account.kind !== "bank_credit" || account.creditBillMode !== CREDIT_BILL_MODE_CONSOLIDATED) return null;
+    const institutionName = account.Institution?.name?.trim() || account.Institution?.shortName?.trim() || "";
+    const institutionKey = account.institutionId?.trim()
+      ? `id:${account.institutionId.trim()}`
+      : institutionName
+        ? `name:${normalizeImportAccountMatchKey(institutionName)}`
+        : null;
+    if (!institutionKey) return null;
+    if (item.ownerKeys.length === 0) return null;
+    return `${institutionKey}|${[...item.ownerKeys].sort().join("|")}`;
+  }
+
+  /**
+   * 2026-11-22 用户裁定：某机构信用卡设为合并账单时，导入不要求匹配到具体卡，
+   * 取第一个匹配到的账户即可。只有「全部候选都是同一机构的合并信用卡」才收口，
+   * 避免把别家银行、单独账单或不同所有人的卡吞进来。
+   */
+  function pickConsolidatedCreditAccount(matches: Array<(typeof indexed)[number]>) {
+    const key = consolidatedCreditKey(matches[0]);
+    if (!key) return null;
+    return matches.every((item) => consolidatedCreditKey(item) === key) ? matches[0].account : null;
+  }
+
   function result(
     account: T | null,
     ambiguousMatches: Array<(typeof indexed)[number]>,
@@ -917,12 +951,16 @@ export function createImportAccountMatcher<T extends ImportAccountMatchSource>(
   ): ImportAccountMatchResult<T> {
     // 歧义候选只报启用账户（有启用候选时）：停用账户参与匹配，但不该出现在
     // 「账户中有N个」的计数里。
+    const ambiguousCandidates = activeFirst(ambiguousMatches);
     const ambiguousAccounts = Array.from(
-      new Map(activeFirst(ambiguousMatches).map((item) => [item.account.id, item.account])).values(),
+      new Map(ambiguousCandidates.map((item) => [item.account.id, item.account])).values(),
     );
+    const consolidated = account || ambiguousCandidates.length < 2
+      ? null
+      : pickConsolidatedCreditAccount(ambiguousCandidates);
     return {
-      account,
-      ambiguousAccounts,
+      account: consolidated ?? account,
+      ambiguousAccounts: consolidated ? [] : ambiguousAccounts,
       targetKind: criteria.targetKind,
       targetBankNames: criteria.targetBankNames,
     };

@@ -26,7 +26,9 @@ type Source = {
   kind?: ImportAccountKind | null;
   isActive?: boolean | null;
   numberMasked?: string | null;
-  Institution?: { name?: string | null; shortName?: string | null } | null;
+  creditBillMode?: string | null;
+  institutionId?: string | null;
+  Institution?: { id?: string | null; name?: string | null; shortName?: string | null } | null;
   AccountGroup?: {
     name?: string | null;
     Institution?: { name?: string | null; shortName?: string | null } | null;
@@ -492,6 +494,71 @@ expectInactive("付斌·农商行·信用卡", "rcb-jd", "停用的泛名卡不�
   } else {
     failed += 1;
     console.error(`FAIL  歧义候选混入停用账户：${leaked.map((account) => account.id).join(", ")}`);
+  }
+}
+
+// 2026-11-22 用户裁定：某机构信用卡设为合并账单时，导入不要求匹配到具体卡，
+// 同机构合并卡多候选只取第一张；单独账单/别家银行/不同所有人的卡不得被吞进来。
+{
+  const cc = (id: string, name: string, institutionId: string, institution: string, owner: string, mode = "consolidated"): Source => ({
+    id,
+    name,
+    kind: "bank_credit",
+    creditBillMode: mode,
+    institutionId,
+    Institution: { name: institution },
+    AccountGroup: { name: owner },
+  });
+
+  const sameInstitution = createImportAccountMatcher([
+    cc("cmb-a", "信用卡(1111)", "inst-cmb", "招商银行", "付斌"),
+    cc("cmb-b", "信用卡(2222)", "inst-cmb", "招商银行", "付斌"),
+  ]);
+  const consolidatedHit = sameInstitution("招商银行信用卡");
+  if (consolidatedHit.account?.id === "cmb-a" && consolidatedHit.ambiguousAccounts.length === 0) {
+    console.log("PASS  同机构合并信用卡多候选 -> 取第一张 cmb-a，不再提示歧义");
+  } else {
+    failed += 1;
+    console.error(
+      `FAIL  同机构合并信用卡多候选 -> ${consolidatedHit.account?.id ?? `歧义${consolidatedHit.ambiguousAccounts.length}个`}，期望 cmb-a`,
+    );
+  }
+
+  const mixed = createImportAccountMatcher([
+    cc("cmb-a", "信用卡(1111)", "inst-cmb", "招商银行", "付斌"),
+    cc("cmb-b", "信用卡(2222)", "inst-cmb", "招商银行", "付斌"),
+    cc("cmb-separate", "信用卡(3333)", "inst-cmb", "招商银行", "付斌", "separate"),
+    cc("icbc-a", "信用卡(4444)", "inst-icbc", "工商银行", "付斌"),
+  ]);
+  const mixedHit = mixed("招商银行信用卡");
+  if (!mixedHit.account && mixedHit.ambiguousAccounts.length >= 3) {
+    console.log(`PASS  同机构混入单独账单卡仍保留 ${mixedHit.ambiguousAccounts.length} 个歧义候选`);
+  } else {
+    failed += 1;
+    console.error(
+      `FAIL  同机构混入单独账单卡应保留歧义 -> ${mixedHit.account?.id ?? `${mixedHit.ambiguousAccounts.length}个歧义`}，期望 ≥3 个歧义候选`,
+    );
+  }
+
+  const crossOwner = createImportAccountMatcher([
+    cc("cmb-fubin", "信用卡(1111)", "inst-cmb", "招商银行", "付斌"),
+    cc("cmb-modouyu", "信用卡(2222)", "inst-cmb", "招商银行", "墨斗鱼"),
+  ]);
+  const noOwnerHit = crossOwner("招商银行信用卡");
+  if (!noOwnerHit.account && noOwnerHit.ambiguousAccounts.length === 2) {
+    console.log("PASS  同机构合并卡跨所有人仍保留 2 个歧义候选");
+  } else {
+    failed += 1;
+    console.error(
+      `FAIL  同机构合并卡跨所有人应保留歧义 -> ${noOwnerHit.account?.id ?? `${noOwnerHit.ambiguousAccounts.length}个歧义`}，期望 2 个歧义候选`,
+    );
+  }
+  const ownedHit = crossOwner("付斌的招商银行信用卡");
+  if (ownedHit.account?.id === "cmb-fubin") {
+    console.log("PASS  写明所有人时仍按原有口径命中该所有人的合并卡");
+  } else {
+    failed += 1;
+    console.error(`FAIL  写明所有人时应命中 cmb-fubin -> ${ownedHit.account?.id ?? `${ownedHit.ambiguousAccounts.length}个歧义`}`);
   }
 }
 

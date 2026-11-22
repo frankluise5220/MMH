@@ -153,6 +153,9 @@ type AccountOption = {
   hoverTitle?: string | null;
   displaySubLabel?: string | null;
   numberMasked?: string | null;
+  /** 信用卡合并账单：同机构多张卡在导入层面是同一笔，匹配到多张时取第一张。 */
+  creditBillMode?: string | null;
+  institutionId?: string | null;
   /** 账户币种：回退渲染时也要能补出「非本位币」。 */
   currency?: string | null;
   isActive?: boolean;
