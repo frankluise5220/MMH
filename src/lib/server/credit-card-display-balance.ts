@@ -16,14 +16,12 @@
  * `billStorageIdByAccountId`：汇总求和时按它去重，否则组内 N 张卡会把负债
  * 算成 N 倍。
  */
-import { AccountKind, type CreditBillMode } from "@prisma/client";
+import { AccountKind } from "@prisma/client";
 
 import { creditCardDisplayBalanceFromCurrentCycle } from "@/lib/credit/billing";
 import { toNumber } from "@/lib/date-utils";
 import { prisma } from "@/lib/db/prisma";
-import { creditBillGroupKey } from "@/lib/server/credit-card-institution-settings";
-
-const CREDIT_BILL_MODE_CONSOLIDATED: CreditBillMode = "consolidated";
+import { getCreditBillAccountIds } from "@/lib/server/credit-card-institution-settings";
 
 export const CREDIT_CARD_CYCLE_BALANCE_SELECT = {
   accountId: true,
@@ -109,55 +107,24 @@ export async function loadCreditCardBillGroupBalances(
       groupId: true,
       kind: true,
       creditBillMode: true,
+      cardRole: true,
+      primaryCardId: true,
     },
   });
 
-  // 组键与 `getCreditBillAccountIds` 共用一份实现：同 household + 同机构 + 同所有人。
-  // 不同所有人的卡属于不同 groupId，绝不会落进同一份账单。
-  const consolidatedGroups = new Map<
-    string,
-    { householdId: string; institutionId: string; groupId: string }
-  >();
+  // 账单组统一由 getCreditBillAccountIds 判定（独立 / 合并 / 附属卡），
+  // 与账单页、导入落账共用同一份口径：附属卡的余额跟着主卡走，
+  // 汇总时按同一个 storageId 去重，不会把一份账单算成两张卡。
+  const groupByAccountId = new Map<string, { storageId: string; memberIds: string[] }>();
   for (const account of accounts) {
     if (account.kind !== AccountKind.bank_credit) continue;
-    if (account.creditBillMode !== CREDIT_BILL_MODE_CONSOLIDATED) continue;
-    const key = creditBillGroupKey(account);
-    if (!key || !account.institutionId || !account.groupId) continue;
-    consolidatedGroups.set(key, {
-      householdId: account.householdId,
-      institutionId: account.institutionId,
-      groupId: account.groupId,
-    });
-  }
-
-  // 组内全部成员：合并账单的 cycle 只挂在主卡上，但余额要在每张卡上显示。
-  const memberIdsByGroupKey = new Map<string, string[]>();
-  const groupKeyByAccountId = new Map<string, string>();
-  if (consolidatedGroups.size > 0) {
-    const members = await prisma.account.findMany({
-      where: {
-        OR: Array.from(consolidatedGroups.values()),
-        kind: AccountKind.bank_credit,
-        creditBillMode: CREDIT_BILL_MODE_CONSOLIDATED,
-      },
-      select: { id: true, householdId: true, institutionId: true, groupId: true },
-      orderBy: { id: "asc" },
-    });
-    for (const member of members) {
-      const key = creditBillGroupKey(member);
-      if (!key) continue;
-      const list = memberIdsByGroupKey.get(key) ?? [];
-      list.push(member.id);
-      memberIdsByGroupKey.set(key, list);
-      groupKeyByAccountId.set(member.id, key);
-    }
+    const memberIds = await getCreditBillAccountIds(prisma, account);
+    groupByAccountId.set(account.id, { storageId: memberIds[0] ?? account.id, memberIds });
   }
 
   const allCycleAccountIds = new Set(ids);
   for (const id of ids) {
-    const key = groupKeyByAccountId.get(id);
-    if (!key) continue;
-    for (const memberId of memberIdsByGroupKey.get(key) ?? []) allCycleAccountIds.add(memberId);
+    for (const memberId of groupByAccountId.get(id)?.memberIds ?? []) allCycleAccountIds.add(memberId);
   }
 
   const rows = await prisma.creditCardCycle.findMany({
@@ -167,10 +134,10 @@ export async function loadCreditCardBillGroupBalances(
   const balanceByCycleAccountId = creditCardDisplayBalancesFromCycles(rows);
 
   for (const id of ids) {
-    const groupKey = groupKeyByAccountId.get(id);
-    const members = groupKey ? memberIdsByGroupKey.get(groupKey) ?? [id] : [id];
-    // 与 `getCreditBillAccountIds` 一致：组内 id 升序第一个是账单存储账户（主卡）。
-    const storageId = members[0] ?? id;
+    const group = groupByAccountId.get(id);
+    const members = group?.memberIds ?? [id];
+    // [0] 恒为账单存储账户（主卡），由 getCreditBillAccountIds 保证。
+    const storageId = group?.storageId ?? id;
     billStorageIdByAccountId.set(id, storageId);
 
     let value = balanceByCycleAccountId.get(storageId);

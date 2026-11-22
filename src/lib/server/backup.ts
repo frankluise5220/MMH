@@ -3711,6 +3711,12 @@ async function restoreSingleHouseholdBackup(
           billingDay: item.billingDay == null ? null : Number(item.billingDay),
           repaymentDay: item.repaymentDay == null ? null : Number(item.repaymentDay),
           creditBillMode: item.creditBillMode == null ? "separate" : (String(item.creditBillMode) as never),
+          // 卡别（2026-11-22）：与账单模式并存的主卡 / 附属卡属性。
+          cardRole: item.cardRole == null ? "primary" : (String(item.cardRole) as never),
+          // 附属卡（2026-11-22）：所有人直接恢复；主卡是自引用外键，和 parentId
+          // 一样先留空，等全部账户建完再补挂（见下面的补挂循环）。
+          cardHolderName: item.cardHolderName == null ? null : String(item.cardHolderName),
+          primaryCardId: null,
           numberMasked: item.numberMasked == null ? null : String(item.numberMasked),
           routeKey: item.routeKey == null ? null : String(item.routeKey),
           note: item.note == null ? null : String(item.note),
@@ -3757,6 +3763,13 @@ async function restoreSingleHouseholdBackup(
         const parentId = item.parentId == null ? "" : String(item.parentId);
         if (!parentId || parentId === accountId || !importedAccountIds.has(parentId)) continue;
         await tx.account.update({ where: { id: accountId }, data: { parentId } });
+      }
+      // 附属卡主卡补挂：只认本次恢复进来的账户，指向自身 / 不存在的一律脱钩。
+      for (const item of data.accounts) {
+        const accountId = String(item.id);
+        const primaryCardId = item.primaryCardId == null ? "" : String(item.primaryCardId);
+        if (!primaryCardId || primaryCardId === accountId || !importedAccountIds.has(primaryCardId)) continue;
+        await tx.account.update({ where: { id: accountId }, data: { primaryCardId } });
       }
     }
 

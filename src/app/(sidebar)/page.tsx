@@ -191,7 +191,10 @@ type AccountQuickEditSource = {
   repaymentDay?: number | null;
   repaymentOffsetDays?: number | null;
   creditLimit?: unknown;
-  creditBillMode?: "separate" | "consolidated" | null;
+  creditBillMode?: "separate" | "consolidated" | "supplementary" | null;
+  cardRole?: "primary" | "supplementary" | null;
+  cardHolderName?: string | null;
+  primaryCardId?: string | null;
   numberMasked?: string | null;
   investProductType?: string | null;
   costBasisMethod?: string | null;
@@ -220,6 +223,7 @@ function toAccountQuickEditValue(account: AccountQuickEditSource): AccountQuickE
     repaymentOffsetDays: account.repaymentOffsetDays,
     creditLimit: account.creditLimit == null ? null : String(account.creditLimit),
     creditBillMode: account.creditBillMode,
+    cardRole: account.cardRole,
     numberMasked: account.numberMasked,
     investProductType: account.investProductType,
     costBasisMethod: account.costBasisMethod,

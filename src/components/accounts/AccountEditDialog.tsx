@@ -77,7 +77,12 @@ type Account = {
   Counterparty: { id: string; name: string; shortName?: string | null; isReimbursable?: boolean | null } | null;
   counterpartyId?: string | null;
   billingDay: number | null; repaymentDay: number | null; repaymentOffsetDays?: number | null;
-  creditBillMode?: "separate" | "consolidated";
+  creditBillMode?: "separate" | "consolidated" | "supplementary";
+  /** 卡别：主卡 / 附属卡，与账单模式并存。 */
+  cardRole?: "primary" | "supplementary";
+  /** 附属卡持卡人（用户自定义填写）与其归属的主卡。 */
+  cardHolderName?: string | null;
+  primaryCardId?: string | null;
   billingDayTxPeriod?: string | null;
   creditLimit: string | null; numberMasked: string | null;
   investProductType: string | null; costBasisMethod: string | null;
@@ -361,7 +366,10 @@ export function AccountEditDialog({
       repaymentOffsetDays: a.repaymentOffsetDays == null ? "" : String(a.repaymentOffsetDays),
       repaymentDayMode: a.repaymentOffsetDays == null ? "fixed" : "offset",
       creditLimit: a.creditLimit || "",
-      creditBillMode: a.creditBillMode === "consolidated" ? "consolidated" : "separate",
+      creditBillMode: a.creditBillMode === "consolidated" ? "consolidated" : a.creditBillMode === "supplementary" ? "supplementary" : "separate",
+      cardRole: a.cardRole === "supplementary" ? "supplementary" : "primary",
+      cardHolderName: a.cardHolderName || "",
+      primaryCardId: a.primaryCardId || "",
       billingDayTxPeriod: a.billingDayTxPeriod === "next" ? "next" : "current",
       numberMasked: a.numberMasked || "",
       investProductType: editInvestProductType,
@@ -532,7 +540,8 @@ export function AccountEditDialog({
       (
         previousAccount.kind !== nextKind ||
         String(previousAccount.institutionId ?? "") !== String(editForm.institutionId ?? "") ||
-        String(previousAccount.creditBillMode ?? "separate") !== String(editForm.creditBillMode ?? "separate")
+        String(previousAccount.creditBillMode ?? "separate") !== String(editForm.creditBillMode ?? "separate") ||
+        String(previousAccount.primaryCardId ?? "") !== String(editForm.primaryCardId ?? "")
       ),
     );
     if (creditRuleChanged) {
@@ -609,7 +618,8 @@ export function AccountEditDialog({
   }
 
   async function changeEditInstitution(institutionId: string) {
-    setEditForm((current) => ({ ...current, institutionId }));
+    // 主卡按机构筛选：换机构后原主卡不在候选里，必须同步清空。
+    setEditForm((current) => ({ ...current, institutionId, primaryCardId: "" }));
     if (editForm.kind !== "bank_credit" || !institutionId) return;
     const result = await fetch(`/api/v1/accounts/credit-card-defaults?institutionId=${encodeURIComponent(institutionId)}&groupId=${encodeURIComponent(editForm.groupId || "")}`, { cache: "no-store" })
       .then((response) => response.json())
@@ -625,7 +635,10 @@ export function AccountEditDialog({
       repaymentDay: result.data.repaymentDay == null ? "" : String(result.data.repaymentDay),
       repaymentOffsetDays: offsetDays,
       repaymentDayMode: offsetDays ? "offset" : "fixed",
-      creditBillMode: result.data.creditBillMode === "consolidated" ? "consolidated" : "separate",
+      // 机构默认值模板不含附属卡：已选附属卡时切机构只换候选，不重置账单模式。
+      creditBillMode: current.creditBillMode === "supplementary"
+        ? "supplementary"
+        : result.data.creditBillMode === "consolidated" ? "consolidated" : "separate",
       billingDayTxPeriod: result.data.billingDayTxPeriod === "next" ? "next" : "current",
     }));
   }
@@ -648,6 +661,8 @@ export function AccountEditDialog({
       loanCategoryId: nextKind === "loan" ? (f.loanCategoryId || loanCategories[0]?.id || "") : "",
       // 子账户必须与父账户同类型：切换类型时先解除归属，否则保存会被后端拒绝。
       parentId: nextKind === f.kind ? f.parentId : "",
+      // 换类型/机构后附属卡主卡候选可能整组变化，不允许沿用旧选择。
+      primaryCardId: nextInstitutionId === f.institutionId && nextKind === f.kind ? f.primaryCardId : "",
     }));
     // Converting into a credit card while keeping the institution: prefill the
     // institution's billing defaults for still-empty day fields (mirrors changeEditInstitution).
@@ -694,6 +709,17 @@ export function AccountEditDialog({
         const editInvestProductType = editForm.investProductType || (isFixedAssetKind ? "property" : "fund");
         const showCostBasisMethod = isInvestmentKind && supportsCostBasisMethod(editInvestProductType);
         const isBillLikeKind = editKind === "bank_credit";
+        // 卡别=附属卡才显示主卡选择；兼容历史上「账单模式=附属卡」的存量数据。
+        const isSupplementaryCard = isBillLikeKind
+          && (editForm.cardRole === "supplementary" || editForm.creditBillMode === "supplementary");
+        // 主卡候选：先按当前机构过滤，再排除自身与其他附属卡（附属卡不能再挂附属卡）。
+        const primaryCardOptions = accounts
+          .filter((candidate) => candidate.kind === "bank_credit"
+            && candidate.id !== editingAccount.id
+            && candidate.creditBillMode !== "supplementary"
+            && candidate.cardRole !== "supplementary"
+            && candidate.institutionId === editForm.institutionId)
+          .map((candidate) => ({ id: candidate.id, label: candidate.name, subLabel: candidate.numberMasked || "" }));
         const supportsLastFour = editKind === "bank_credit" || editKind === "bank_debit";
         const hasRecords = (editingAccount.recordCount ?? 0) > 0;
         const kindEdit = accountKindOptionsForEdit({
@@ -884,9 +910,9 @@ export function AccountEditDialog({
                     ))}
                   </datalist>
                 </div>
-                {/* 多币种归属：只有资金账户（含信用卡）才有上级账户；父账户自己不能有上级。
-                    历史数据已有归属时仍显示，方便解除。 */}
-                {!editingAccount.isAggregate && (supportsHierarchy || Boolean(editForm.parentId)) && (
+                {/* 信用卡（2026-11-22 用户裁定）：不提供手工选择上级账户，多币种改造走下方勾选开关。
+                    其他资金账户仍保留上级账户下拉；历史数据已有归属时仍显示，方便解除。 */}
+                {editKind !== "bank_credit" && !editingAccount.isAggregate && (supportsHierarchy || Boolean(editForm.parentId)) && (
                   <div>
                     {/* 表单里不再写解释长句：「父账户只统计不记账」「怎么产生父账户」都收进 i 图标悬浮。
                         「改为多币种父账户」是下拉底部的动作行，同样只在悬浮时给出后果说明。 */}
@@ -926,6 +952,25 @@ export function AccountEditDialog({
                           : undefined,
                       }}
                     />
+                  </div>
+                )}
+                {editKind === "bank_credit" && (
+                  <div className="flex items-start gap-2">
+                    <input
+                      type="checkbox"
+                      checked={editingAccount.isAggregate === true}
+                      disabled={editingAccount.isAggregate === true || Boolean(editForm.parentId) || upgradingMultiCurrency}
+                      onChange={() => void upgradeEditingAccountToMultiCurrency(editingAccount)}
+                      className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-sky-600"
+                    />
+                    <div className="min-w-0">
+                      <label className="block text-xs font-medium text-slate-700">
+                        {t("settings.accounts.createAggregateLabel")}
+                      </label>
+                      <div className="mt-0.5 text-[11px] leading-4 text-slate-500">
+                        {t("settings.accounts.parentAccountUpgradeInlineHint")}
+                      </div>
+                    </div>
                   </div>
                 )}
                 {supportsInstitution && (
@@ -1119,9 +1164,28 @@ export function AccountEditDialog({
                   </div>
                   {isBillLikeKind && (
                     <div>
+                      <label className={FIELD_LABEL_CLS}>{t("settings.accounts.cardRole")}</label>
+                      <select
+                        value={editForm.cardRole || "primary"}
+                        onChange={e => setEditForm(f => ({
+                          ...f,
+                          cardRole: e.target.value,
+                          ...(e.target.value === "supplementary"
+                            ? {} : { cardHolderName: "", primaryCardId: "" }),
+                        }))}
+                        className={FIELD_INPUT_CLS}
+                      >
+                        <option value="primary">{t("settings.accounts.cardRolePrimary")}</option>
+                        <option value="supplementary">{t("settings.accounts.cardRoleSupplementary")}</option>
+                      </select>
+                    </div>
+                  )}
+                  {/* 附属卡的账单无条件并入主卡，账单模式对它无意义，不显示。 */}
+                  {isBillLikeKind && !isSupplementaryCard && (
+                    <div>
                       <label className={FIELD_LABEL_CLS}>{t("settings.accounts.billMode")}</label>
                       <select
-                        value={editForm.creditBillMode || "separate"}
+                        value={editForm.creditBillMode === "supplementary" ? "separate" : editForm.creditBillMode || "separate"}
                         onChange={e => setEditForm(f => ({ ...f, creditBillMode: e.target.value }))}
                         className={FIELD_INPUT_CLS}
                       >
@@ -1129,6 +1193,30 @@ export function AccountEditDialog({
                         <option value="consolidated">{t("settings.accounts.consolidatedBill")}</option>
                       </select>
                     </div>
+                  )}
+                  {isSupplementaryCard && (
+                    <>
+                      <div>
+                        <label className={FIELD_LABEL_CLS}>{t("settings.accounts.cardHolderName")}</label>
+                        <input
+                          value={editForm.cardHolderName || ""}
+                          onChange={e => setEditForm(f => ({ ...f, cardHolderName: e.target.value }))}
+                          className={FIELD_INPUT_CLS}
+                        />
+                      </div>
+                      <div>
+                        <label className={FIELD_LABEL_CLS}>{t("settings.accounts.primaryCard")}</label>
+                        <SmartSelect
+                          mode="single"
+                          value={editForm.primaryCardId || ""}
+                          onChange={id => setEditForm(f => ({ ...f, primaryCardId: id }))}
+                          options={primaryCardOptions}
+                          placeholder={t("settings.accounts.selectPrimaryCard")}
+                          searchable
+                          behavior={{ density: "compact" }}
+                        />
+                      </div>
+                    </>
                   )}
                 </div>
                 </EditSection>

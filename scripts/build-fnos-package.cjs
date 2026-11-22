@@ -3676,6 +3676,32 @@ const MIGRATIONS = [
       addColumnIfMissing(db, "HouseholdPreference", "sidebarMergeConsolidatedCreditCards", "BOOLEAN NOT NULL DEFAULT 0");
     },
   },
+  {
+    // 2026-11-22 附属卡：账单模式新增 supplementary，账户上新增「所有人」
+    // （用户自定义填写的持卡人姓名）与「主卡」自关联。与
+    // prisma/migrations/20261122_add_supplementary_card 及
+    // build-win-desktop.cjs 的 applyRuntimeMigrations 同义。全新安装由
+    // native-init.sql 按 schema 建列，这里只补存量库。
+    version: "20261122_add_supplementary_card",
+    description: "Add supplementary-card holder name and primary card link to Account",
+    apply(db) {
+      if (!tableExists(db, "Account")) return;
+      addColumnIfMissing(db, "Account", "cardHolderName", "TEXT");
+      addColumnIfMissing(db, "Account", "primaryCardId", "TEXT");
+      db.exec('CREATE INDEX IF NOT EXISTS "Account_householdId_primaryCardId_idx" ON "Account"("householdId","primaryCardId")');
+    },
+  },
+  {
+    // 2026-11-22 卡别：与账单模式并存的「主卡 / 副卡」独立属性。
+    // 存量账户仍是主卡，默认 'primary'；与 prisma/migrations/20261122_add_card_role
+    // 及 build-win-desktop.cjs 的 applyRuntimeMigrations 同义。
+    version: "20261122_add_card_role",
+    description: "Add account card role (primary / supplementary) to Account",
+    apply(db) {
+      if (!tableExists(db, "Account")) return;
+      addColumnIfMissing(db, "Account", "cardRole", "TEXT NOT NULL DEFAULT 'primary'");
+    },
+  },
 ];
 
 // 到期日「周年 − 1 天」→ 周年；返回 null 表示不是旧口径。

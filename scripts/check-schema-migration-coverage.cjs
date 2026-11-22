@@ -110,6 +110,9 @@ const releaseCriticalColumns = [
   ["precious_metal_transactions", "arrivalDate", "20261017_add_metal_arrival_date", "20261017_add_metal_arrival_date"],
   ["Account", "parentId", "20261018_add_account_parent", "20261018_add_account_parent"],
   ["FundConfirmDays", "manualOverride", "20261018_fund_confirm_rule_manual_override", "20261018_fund_confirm_rule_manual_override"],
+  ["Account", "cardHolderName", "20261122_add_supplementary_card", "20261122_add_supplementary_card"],
+  ["Account", "primaryCardId", "20261122_add_supplementary_card", "20261122_add_supplementary_card"],
+  ["Account", "cardRole", "20261122_add_card_role", "20261122_add_card_role"],
 ];
 for (const [table, column, migrationDir, migrationVersion] of releaseCriticalColumns) {
   const schemaHasIt = schema.includes(` ${column} `) || schema.includes(`${column} `);

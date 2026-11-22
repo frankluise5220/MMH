@@ -507,6 +507,16 @@ function applyRuntimeMigrations(db) {
   // 2026-11-21 合并账单信用卡侧边栏单条显示。household-preferences.ts 用全列
   // findUnique，存量库缺列会让首屏/侧边栏抛 "no such column"。
   addColumnIfMissing(db, "HouseholdPreference", "sidebarMergeConsolidatedCreditCards", "BOOLEAN NOT NULL DEFAULT 0");
+  // 2026-11-22 附属卡：卡片所有人（用户自定义填写）与所属主卡。
+  // 与 prisma/migrations/20261122_add_supplementary_card 及
+  // build-fnos-package.cjs 的 MIGRATIONS 同义。漏掉这段：升级后的桌面库
+  // 读账户整行（settings/bootstrap、账单页）会报 "no such column"。
+  addColumnIfMissing(db, "Account", "cardHolderName", "TEXT");
+  addColumnIfMissing(db, "Account", "primaryCardId", "TEXT");
+  db.exec('CREATE INDEX IF NOT EXISTS "Account_householdId_primaryCardId_idx" ON "Account"("householdId","primaryCardId")');
+  // 2026-11-22 卡别（主卡 / 副卡）：与账单模式并存的独立属性。全列 findUnique
+  // 会读整行，存量库缺列会让账户/设置页抛 "no such column: cardRole"。
+  addColumnIfMissing(db, "Account", "cardRole", "TEXT NOT NULL DEFAULT 'primary'");
   // 2026-10-29 账单日 / 还款日变更记录。与 build-fnos-package.cjs 的
   // 20261029_credit_billing_repayment_day 同义（两列可空，读取侧回退账户级设置）。
   // 漏掉这段：升级后的桌面库打开账户 / 负债 / 账单页会报

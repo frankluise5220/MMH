@@ -75,7 +75,7 @@ type CreditAccountRow = AccountListRow & {
   availableLimit: number;
   billingDay: number | null;
   repaymentDay: number | null;
-  creditBillMode: "separate" | "consolidated";
+  creditBillMode: "separate" | "consolidated" | "supplementary";
   currentAmount: number;
   currentBill: number;
   paid: number;
@@ -318,7 +318,11 @@ export async function computeOverviewSummary(
       billingDay: true,
       repaymentDay: true,
       creditBillMode: true,
+      // 附属卡：卡别决定账单归属；billMode=supplementary 仅作历史数据兼容。
+      cardRole: true,
       institutionId: true,
+      // 附属卡：余额/账单周期并入主卡，概览合计按主卡去重。
+      primaryCardId: true,
       numberMasked: true,
       investProductType: true,
       // 多币种层级：父账户代表子账户参与统计，子账户不进合计。
@@ -545,8 +549,30 @@ export async function computeOverviewSummary(
       consolidatedStorageIdByOwnerInstitution.set(key, account.id);
     }
   }
+  // 附属卡（2026-11-22 裁定）：卡别=附属卡无条件跟随主卡账单；billMode=supplementary
+  // 仅为历史数据兼容。去重键取主卡那份，主卡合并账单时再归到它的组主卡。
+  const isSupplementaryBillAccount = (account: { cardRole?: string | null; creditBillMode: string }) =>
+    account.cardRole === "supplementary" || account.creditBillMode === "supplementary";
+  const supplementaryPrimaryIds = creditAccounts
+    .filter((account) => isSupplementaryBillAccount(account) && !!account.primaryCardId)
+    .map((account) => account.primaryCardId as string);
+  const supplementaryPrimaryRows = supplementaryPrimaryIds.length > 0
+    ? await prisma.account.findMany({
+        where: { id: { in: Array.from(new Set(supplementaryPrimaryIds)) }, ...hidFilter },
+        select: { id: true, institutionId: true, groupId: true, creditBillMode: true },
+      })
+    : [];
+  const primaryById = new Map(supplementaryPrimaryRows.map((row) => [row.id, row]));
   const creditStorageIdByAccountId = new Map(
     creditAccounts.map((account) => {
+      if (isSupplementaryBillAccount(account)) {
+        const primary = account.primaryCardId ? primaryById.get(account.primaryCardId) : null;
+        if (!primary) return [account.id, account.id] as const;
+        const storageId = primary.creditBillMode === "consolidated" && primary.institutionId
+          ? consolidatedStorageIdByOwnerInstitution.get(billGroupKey(primary)) ?? primary.id
+          : primary.id;
+        return [account.id, storageId] as const;
+      }
       if (account.creditBillMode !== "consolidated" || !account.institutionId) {
         return [account.id, account.id] as const;
       }

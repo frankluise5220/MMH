@@ -6,6 +6,7 @@ import { connect as tlsConnect, type TLSSocket } from "node:tls";
 import type { Readable } from "stream";
 import { extractPdfContent } from "@/lib/mail/pdf";
 import { extractSpreadsheetText } from "@/lib/mail/spreadsheet";
+import { addDaysUtc, parseDateInputToUtc, resolveBusinessTimeZone } from "@/lib/date-utils";
 
 type ImapConfig = {
   host: string;
@@ -16,7 +17,7 @@ type ImapConfig = {
   mailbox?: string;
 };
 
-type MailListItem = { uid: number; subject: string; from: string; date: string; hash: string };
+type MailListItem = { uid: number; subject: string; from: string; date: string; hash: string; /** 这封邮件所在的文件夹（跨文件夹搜索时才有值）。 */ mailbox?: string };
 export type MailAttachment = { id: string; filename: string; contentType: string; size: number; text?: string; parseError?: string };
 export type MailDetail = { uid: number; subject: string; from: string; date: string; text: string; html: string; attachments: MailAttachment[] };
 export type MailListMeta = {
@@ -29,6 +30,9 @@ export type MailListMeta = {
   sinceDate: string;
   endDate: string;
   searchMode?: "imap" | "scan";
+  /** 跨文件夹搜索时：实际搜过的文件夹数 / 命中的文件夹名。 */
+  mailboxCount?: number;
+  mailboxes?: string[];
   timingMs?: {
     connect?: number;
     list?: number;
@@ -54,7 +58,13 @@ type SearchObject = {
   all?: boolean;
 };
 
-const IMAP_OPERATION_TIMEOUT_MS = 15000;
+/**
+ * 单个 IMAP 操作的上限，同时用作建连/握手/空闲超时。
+ *
+ * 原来 15s 太紧：QQ 邮箱被限速时建连实测能到 12.4s，再慢一点就直接判「连接超时」，
+ * 而这类慢是网络侧的，等一等就能成，不该当成失败。
+ */
+const IMAP_OPERATION_TIMEOUT_MS = 60000;
 const IMAP_CLIENT_NAME = "MMH";
 /** 一轮 FETCH 取多少封 envelope。200 封/轮在常见邮箱上 100~300ms。 */
 const MAIL_FETCH_CHUNK_SIZE = 200;
@@ -67,17 +77,67 @@ const MAIL_FETCH_CHUNK_SIZE = 200;
  * 也只能在最近 50 封里找，永远翻不到一个月以前的账单邮件。
  */
 const MAIL_SCAN_ENVELOPE_BUDGET = 3000;
-/** 列表动作的整体时间预算：客户端 20s 就会 abort，这里留足余量。 */
-const MAIL_LIST_TIME_BUDGET_MS = 12000;
+/**
+ * 「取邮件列表」整体兜底时限，**从 HTTP 请求开始算**（含建连 + 打开文件夹）。
+ *
+ * 它只用来防请求挂死（连接假死、服务器不回），**不是**正常的截断线：
+ * 实测这条链路 1.6~17s（QQ 建连本身 0.6~12.4s 波动），120s 是 7 倍余量，
+ * 只有真的卡住才会碰到。旧值 30s 会把「建连慢 + 邮箱大」的正常查询切掉，
+ * 用户看到的就是少的几条或「读取超时」。
+ */
+export const MAIL_LIST_TOTAL_BUDGET_MS = 120000;
+/**
+ * `mailbox` 传这个值 = 「不限定文件夹」：先连上去把文件夹列出来，再逐个搜索。
+ *
+ * 账单邮件常被邮箱规则分流到「其他文件夹/信用卡」这类子文件夹，INBOX 里根本没有，
+ * 用户以前得自己记住文件夹名填进账户配置，填错就一条都读不到。
+ */
+export const ALL_MAILBOXES = "*";
+/** 跨文件夹搜索最多遍历多少个文件夹：防止遇到目录极多的账号时一个请求跑太久。 */
+const MAX_MAILBOXES_PER_SEARCH = 50;
 
 type MailListFilters = {
   limit: number;
   keywords: string[];
   subjectKeyword?: string;
   fromKeyword?: string;
+  /** 本地精筛的边界：业务时区的日界换算成 UTC 时刻。 */
   sinceValid?: Date | null;
   beforeValid?: Date | null;
+  /** 下推给 IMAP 的粗筛边界：故意放宽，避开服务器时区与业务时区的日界差；缺省退回上面两个。 */
+  searchSince?: Date | null;
+  searchBefore?: Date | null;
 };
+
+/** 某时刻在指定时区的偏移（毫秒）。用 Intl 反解，不依赖进程 TZ。 */
+function timeZoneOffsetMs(instant: Date, timeZone: string): number {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    hourCycle: "h23",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+  const parts = formatter.formatToParts(instant);
+  const read = (type: string) => Number(parts.find((part) => part.type === type)?.value ?? 0);
+  const asUtc = Date.UTC(read("year"), read("month") - 1, read("day"), read("hour"), read("minute"), read("second"));
+  return asUtc - instant.getTime();
+}
+
+/** 业务时区「YYYY-MM-DD 00:00」→ UTC 时刻（两轮校正，够覆盖夏令时边界）。 */
+function zonedDayStartUtc(dateKey: string, timeZone: string): Date | null {
+  const base = parseDateInputToUtc(dateKey);
+  if (!base) return null;
+  const guess = new Date(Date.UTC(base.getUTCFullYear(), base.getUTCMonth(), base.getUTCDate()));
+  let result = guess;
+  for (let i = 0; i < 2; i += 1) {
+    result = new Date(guess.getTime() - timeZoneOffsetMs(result, timeZone));
+  }
+  return result;
+}
 
 function buildClient(config: ImapConfig) {
   return new ImapFlow({
@@ -201,10 +261,15 @@ function buildMailSearchQuery(input: {
   fromKeyword?: string;
   sinceValid?: Date | null;
   beforeValid?: Date | null;
+  searchSince?: Date | null;
+  searchBefore?: Date | null;
 }) {
   const query: SearchObject = {};
-  if (input.sinceValid) query.since = input.sinceValid;
-  if (input.beforeValid) query.before = input.beforeValid;
+  // 下推用的是放宽过的粗筛边界；本地精筛仍走 sinceValid/beforeValid。
+  const since = input.searchSince ?? input.sinceValid;
+  const before = input.searchBefore ?? input.beforeValid;
+  if (since) query.since = since;
+  if (before) query.before = before;
 
   if (input.includeText) {
     if (input.keywords.length > 0) {
@@ -270,11 +335,22 @@ async function trySearchMailListRows(
   // 所以这里下推返回空集一律再跑一次「只按日期筛」，不把 0 当真结果。
   // 带日期时服务端已把范围收窄，那次本地筛的翻页量很小；不带日期时下推一次就能命中。
   const textTerms = [...filters.keywords, filters.subjectKeyword, filters.fromKeyword].filter(Boolean);
+  const dateOnlyQuery = buildMailSearchQuery({ ...filters, includeText: false });
+  const textQuery = buildMailSearchQuery({ ...filters, includeText: true });
+  // 有日期窗口时把「只按日期」排第一：SINCE/BEFORE 是 IMAP 标准条件，服务端都会认，
+  // 窗口内的 envelope 通常只有几十封，本地再筛关键词足够；而 QQ 邮箱对
+  // 「SINCE/BEFORE + SUBJECT 中文」恒返回空集，先下推只会白等一整轮 SEARCH。
+  // 无日期窗口时才没有可下推的条件，必须靠文本下推把几万封收窄。
+  // 「只按日期」返回空集时仍会再跑一轮文本下推确认，不把 0 直接当真结果。
+  const hasDateWindow = Boolean(filters.sinceValid || filters.beforeValid);
   const plans: Array<{ pushed: boolean; query: SearchObject }> = [];
-  if (textTerms.length > 0) {
-    plans.push({ pushed: true, query: buildMailSearchQuery({ ...filters, includeText: true }) });
+  if (!hasDateWindow && textTerms.length > 0) {
+    plans.push({ pushed: true, query: textQuery });
   }
-  plans.push({ pushed: false, query: buildMailSearchQuery({ ...filters, includeText: false }) });
+  plans.push({ pushed: false, query: dateOnlyQuery });
+  if (hasDateWindow && textTerms.length > 0) {
+    plans.push({ pushed: true, query: textQuery });
+  }
   if (!plans[0].pushed) trace.push("search text local only");
 
   for (let index = 0; index < plans.length; index += 1) {
@@ -282,7 +358,10 @@ async function trySearchMailListRows(
     const isLastPlan = index === plans.length - 1;
     try {
       trace.push(plan.pushed ? "search start (text pushed down)" : "search start");
-      const searched = await withTimeout(client.search(plan.query, { uid: true }), "IMAP mail list search timed out");
+      // SEARCH 没法中途取消，但也不该被单独切掉：给它剩余预算，只有整个请求的兜底时限到了才放弃。
+      const searchStartedAt = Date.now();
+      const searchTimeoutMs = Math.max(1000, deadline - searchStartedAt);
+      const searched = await withTimeout(client.search(plan.query, { uid: true }), "IMAP mail list search timed out", searchTimeoutMs);
       if (searched === false) {
         trace.push("search unavailable");
         return null;
@@ -290,7 +369,7 @@ async function trySearchMailListRows(
       const uids = Array.isArray(searched)
         ? Array.from(new Set(searched.filter((uid) => Number.isFinite(uid)))).sort((a, b) => b - a)
         : [];
-      trace.push(`search ok ${uids.length}`);
+      trace.push(`search ok ${uids.length} (${Date.now() - searchStartedAt}ms)`);
       // 下推返回空集：可能是服务端不认非 ASCII 匹配，再用不带文本的条件确认一遍。
       if (uids.length === 0) {
         if (!isLastPlan) continue;
@@ -583,8 +662,13 @@ function describeConnectFailure(config: ImapConfig, error: unknown, probe: Endpo
   return `预检能收到欢迎语（${probe.greeting?.slice(0, 20) ?? "* OK"}），但正式连接在 15 秒内没有完成：服务器可能对该 IP 做了连接数或频率限制，请稍后重试`;
 }
 
-export async function connectAndOpenBox(config: ImapConfig, trace: string[] = []) {
-  const mailbox = (config.mailbox ?? "INBOX").trim() || "INBOX";
+/**
+ * 只建连，不打开任何文件夹。
+ *
+ * 跨文件夹搜索要在一个连接里反复 SELECT 不同文件夹，所以不能像
+ * connectAndOpenBox 那样一上来就打开某一个箱。
+ */
+export async function connectImap(config: ImapConfig, trace: string[] = []) {
   const client = buildClient(config);
   const endpoint = `${config.host}:${config.port} secure=${config.secure ? "1" : "0"}`;
 
@@ -599,6 +683,20 @@ export async function connectAndOpenBox(config: ImapConfig, trace: string[] = []
   try {
     await withTimeout(client.connect(), `IMAP connection timed out (${endpoint})`);
     trace.push("connect ok");
+    return { client, probe };
+  } catch (error) {
+    client.close();
+    const described = describeConnectFailure(config, error, probe);
+    trace.push(`error: ${described}`);
+    throw new Error(described);
+  }
+}
+
+export async function connectAndOpenBox(config: ImapConfig, trace: string[] = []) {
+  const mailbox = (config.mailbox ?? "INBOX").trim() || "INBOX";
+  const { client, probe } = await connectImap(config, trace);
+
+  try {
     await withTimeout(client.mailboxOpen(mailbox, { readOnly: true }), "Mailbox folder open timed out");
     trace.push(`mailbox open ok: ${mailbox}`);
     return { client, mailbox };
@@ -608,6 +706,37 @@ export async function connectAndOpenBox(config: ImapConfig, trace: string[] = []
     trace.push(`error: ${described}`);
     throw new Error(described);
   }
+}
+
+/** 把服务器上的文件夹名全列出来（跳过 \Noselect 的纯容器，那些打不开）。 */
+export async function listMailboxPaths(client: MailClient["client"], trace: string[] = []) {
+  const source = (client as unknown as { list?: () => Promise<unknown> | AsyncIterable<unknown> }).list;
+  const boxes: string[] = [];
+
+  const collect = (input: unknown) => {
+    if (!Array.isArray(input)) return;
+    for (const raw of input) {
+      const box = raw as { path?: string; name?: string; flags?: Set<string> | string[] };
+      const path = (box.path ?? box.name ?? "").toString().trim();
+      if (!path) continue;
+      const flags = box.flags instanceof Set ? Array.from(box.flags) : Array.isArray(box.flags) ? box.flags : [];
+      if (flags.some((flag) => /\\noselect/i.test(String(flag)))) continue;
+      boxes.push(path);
+    }
+  };
+
+  if (typeof source === "function") {
+    const listed = await source.call(client);
+    if (listed && typeof (listed as AsyncIterable<unknown>)[Symbol.asyncIterator] === "function") {
+      for await (const chunk of listed as AsyncIterable<unknown>) collect(chunk);
+    } else {
+      collect(listed);
+    }
+  }
+
+  const unique = Array.from(new Set(boxes));
+  trace.push(`mailbox list ${unique.length}: ${unique.slice(0, 8).join(" | ")}${unique.length > 8 ? " …" : ""}`);
+  return unique;
 }
 
 export async function closeImap(target: MailClient["client"] | MailClient) {
@@ -623,9 +752,26 @@ export async function closeImap(target: MailClient["client"] | MailClient) {
   }
 }
 
+export type MailListOptions = {
+  limit: number;
+  scanLimit?: number;
+  sinceDate?: string;
+  endDate?: string;
+  keyword?: string;
+  keywords?: string[];
+  subjectIncludes?: string;
+  fromIncludes?: string;
+  deadline?: number;
+  /**
+   * 跨文件夹搜索时置 true：SEARCH 不可用也不退回「翻整个箱」。
+   * 否则 20 个文件夹各翻 3000 封 envelope，一个请求根本跑不完。
+   */
+  disableScanFallback?: boolean;
+};
+
 export async function listMails(
   target: MailClient["client"] | MailClient,
-  options: { limit: number; scanLimit?: number; sinceDate?: string; endDate?: string; keyword?: string; keywords?: string[]; subjectIncludes?: string; fromIncludes?: string },
+  options: MailListOptions,
   trace: string[] = []
 ): Promise<{ items: MailListItem[]; meta: MailListMeta }> {
   const client = "client" in target ? target.client : target;
@@ -644,12 +790,20 @@ export async function listMails(
   const subjectKeyword = options.subjectIncludes?.trim().toLowerCase();
   const fromKeyword = options.fromIncludes?.trim().toLowerCase();
   const hasKeyword = Boolean(keywords.length > 0 || subjectKeyword || fromKeyword);
-  const since = options.sinceDate ? new Date(`${options.sinceDate}T00:00:00.000Z`) : null;
-  const sinceValid = since && !Number.isNaN(since.getTime()) ? since : null;
-  const before = options.endDate ? new Date(`${options.endDate}T00:00:00.000Z`) : null;
-  const beforeValid = before && !Number.isNaN(before.getTime())
-    ? new Date(before.getTime() + 24 * 60 * 60 * 1000)
-    : null;
+  // 用户填的是业务时区的日历日（「7-1 到 8-1」= 北京时间 7-1 00:00 ~ 8-1 23:59），
+  // 而邮件 Date 是真实 UTC 时刻。旧实现两边都用 UTC 零点：服务器（东八区）按
+  // SINCE 01-Jul 给出 7-1 00:00 起的邮件，本地却按 UTC 7-1 00:00 再筛一遍，
+  // 首日 00:00-08:00（北京）的邮件会被静默丢掉。
+  // 现在：本地精筛用业务时区日界，下推给 IMAP 的日期宽取一天，由服务器先粗筛。
+  const timeZone = resolveBusinessTimeZone();
+  const sinceValid = options.sinceDate ? zonedDayStartUtc(options.sinceDate, timeZone) : null;
+  const endDayStart = options.endDate ? zonedDayStartUtc(options.endDate, timeZone) : null;
+  const beforeValid = endDayStart ? new Date(endDayStart.getTime() + 24 * 60 * 60 * 1000) : null;
+  const sinceDayUtc = options.sinceDate ? parseDateInputToUtc(options.sinceDate) : null;
+  const endDayUtc = options.endDate ? parseDateInputToUtc(options.endDate) : null;
+  // IMAP 只认「DD-Mon-YYYY」，没有时分；传 UTC 零点可避开 imapflow 对 BEFORE 的自动 +1 天。
+  const searchSince = sinceDayUtc ? addDaysUtc(sinceDayUtc, -1) : null;
+  const searchBefore = endDayUtc ? addDaysUtc(endDayUtc, 2) : null;
   const filters: MailListFilters = {
     limit: options.limit,
     keywords,
@@ -657,8 +811,14 @@ export async function listMails(
     fromKeyword,
     sinceValid,
     beforeValid,
+    searchSince,
+    searchBefore,
   };
-  const deadline = Date.now() + MAIL_LIST_TIME_BUDGET_MS;
+  const deadline = options.deadline ?? Date.now() + MAIL_LIST_TOTAL_BUDGET_MS;
+  trace.push(
+    `date window local ${sinceValid?.toISOString() ?? "-"} ~ ${beforeValid?.toISOString() ?? "-"} (tz ${timeZone})`,
+  );
+  trace.push(`date window imap ${searchSince?.toISOString() ?? "-"} ~ ${searchBefore?.toISOString() ?? "-"}`);
 
   const searchedRows = await trySearchMailListRows(client, filters, deadline, trace);
   if (searchedRows) {
@@ -674,6 +834,24 @@ export async function listMails(
         sinceDate: options.sinceDate ?? "",
         endDate: options.endDate ?? "",
         searchMode: "imap",
+      },
+    };
+  }
+
+  if (options.disableScanFallback) {
+    trace.push("search unavailable, scan fallback disabled (multi-mailbox)");
+    return {
+      items: [],
+      meta: {
+        total,
+        scanned: 0,
+        matched: 0,
+        limited: options.limit,
+        hasKeyword,
+        scanLimit: 0,
+        sinceDate: options.sinceDate ?? "",
+        endDate: options.endDate ?? "",
+        searchMode: "scan",
       },
     };
   }
@@ -699,6 +877,112 @@ export async function listMails(
   };
 }
 
+/**
+ * 「不限定文件夹」的读信：先列出服务器上的所有文件夹，再逐个用同一套
+ * 日期 + 关键词条件搜，最后合并按邮件时间取最新 limit 封。
+ *
+ * 每个文件夹各取自己的最新 limit 封不会漏：全局最新的 N 封里任意一封，
+ * 在它自己那个文件夹里也必然属于该箱最新的 N 封之内。
+ */
+export async function listMailsAcrossMailboxes(
+  client: MailClient["client"],
+  options: MailListOptions,
+  trace: string[] = [],
+): Promise<{ items: MailListItem[]; meta: MailListMeta }> {
+  const deadline = options.deadline ?? Date.now() + MAIL_LIST_TOTAL_BUDGET_MS;
+  const boxes = await listMailboxPaths(client, trace);
+  const pool: MailListItem[] = [];
+  const searchedBoxes: string[] = [];
+  let scanned = 0;
+  let matched = 0;
+  let total = 0;
+
+  for (const box of boxes.slice(0, MAX_MAILBOXES_PER_SEARCH)) {
+    if (Date.now() >= deadline) {
+      trace.push(`mailbox loop deadline hit at ${box}`);
+      break;
+    }
+    try {
+      await withTimeout(client.mailboxOpen(box, { readOnly: true }), `Mailbox folder open timed out: ${box}`);
+    } catch (error) {
+      // 容器/受限文件夹会拒绝 SELECT（QQ 的「其他文件夹」就是），跳过继续。
+      trace.push(`mailbox skip ${box}: ${error instanceof Error ? error.message : String(error)}`);
+      continue;
+    }
+    const boxStartedAt = Date.now();
+    const boxResult = await listMails(client, { ...options, deadline, disableScanFallback: true }, trace)
+      .catch((error: unknown) => {
+        trace.push(`mailbox fail ${box}: ${error instanceof Error ? error.message : String(error)}`);
+        return null;
+      });
+    if (!boxResult) continue;
+    if (boxResult.meta.total === 0) {
+      trace.push(`box empty ${box}`);
+      continue;
+    }
+    searchedBoxes.push(box);
+    matched += boxResult.meta.matched;
+    scanned += boxResult.meta.scanned;
+    total += boxResult.meta.total;
+    for (const item of boxResult.items) pool.push({ ...item, mailbox: box });
+    trace.push(`box done ${box}: ${boxResult.items.length}/${boxResult.meta.matched} (${Date.now() - boxStartedAt}ms)`);
+  }
+
+  // 同一封邮件可能同时出现在「所有邮件」和「收件箱」里，按内容指纹去重后再截断。
+  const seen = new Set<string>();
+  const items = pool
+    .sort((a, b) => (Date.parse(b.date) || 0) - (Date.parse(a.date) || 0))
+    .filter((item) => {
+      if (seen.has(item.hash)) return false;
+      seen.add(item.hash);
+      return true;
+    })
+    .slice(0, options.limit);
+
+  const hasKeyword = Boolean(
+    (options.keyword ?? "").trim()
+    || (options.keywords ?? []).some((item) => item.trim())
+    || options.subjectIncludes?.trim()
+    || options.fromIncludes?.trim(),
+  );
+
+  return {
+    items,
+    meta: {
+      total,
+      scanned,
+      matched,
+      limited: options.limit,
+      hasKeyword,
+      scanLimit: scanned,
+      sinceDate: options.sinceDate ?? "",
+      endDate: options.endDate ?? "",
+      searchMode: "imap",
+      mailboxCount: searchedBoxes.length,
+      mailboxes: searchedBoxes,
+    },
+  };
+}
+
+/**
+ * 修复邮件头 `charset=""` 的编码误判。
+ *
+ * 农行金穗信用卡电子账单的 MIME 头写 `charset=""`（空串），真实编码只写在 HTML 的
+ * `<meta charset=gbk>` 里。mailparser 按空 charset 解 → 中文全变乱码 → 账单识别器
+ * 连「交易明细」都匹配不到，反而把客服热线里的数字当交易。
+ * 这里只在「MIME charset 为空 + HTML meta 明确写了 GBK 系」时把空串补成 gbk，
+ * 其它邮件（含 multipart 附件）原样返回，避免误伤。
+ */
+function repairEmptyMailCharset(source: Buffer, decodedHtml: string): Buffer | null {
+  const head = source.subarray(0, 8 * 1024).toString("latin1");
+  if (!/charset\s*=\s*["']\s*["']/i.test(head)) return null;
+  // meta 在 base64 正文里，只能从 mailparser 解出的 HTML 里读（ASCII 标签本身不受乱码影响）。
+  const metaCharset = decodedHtml.match(/<meta[^>]*charset\s*=\s*["']?\s*(gb18030|gb2312|gbk)\b/i)?.[1];
+  if (!metaCharset) return null;
+  const patchedHead = head.replace(/charset\s*=\s*["']\s*["']/i, `charset="${metaCharset.toLowerCase()}"`);
+  return Buffer.concat([Buffer.from(patchedHead, "latin1"), source.subarray(8 * 1024)]);
+}
+
 export async function fetchMailDetail(target: MailClient["client"] | MailClient, uid: number) {
   const client = "client" in target ? target.client : target;
   const downloaded = await withTimeout(
@@ -721,7 +1005,9 @@ export async function fetchMailDetail(target: MailClient["client"] | MailClient,
   const source = Buffer.concat(chunks);
   if (!source.length) throw new Error("Email content not found.");
 
-  const parsed = await simpleParser(source);
+  let parsed = await simpleParser(source);
+  const repaired = repairEmptyMailCharset(source, String(parsed.html ?? ""));
+  if (repaired) parsed = await simpleParser(repaired);
   const attachments = await Promise.all((parsed.attachments ?? []).map(async (attachment, index): Promise<MailAttachment> => {
     const filename = (attachment.filename ?? `Attachment ${index + 1}`).toString();
     const contentType = (attachment.contentType ?? "").toString();

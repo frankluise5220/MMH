@@ -105,6 +105,8 @@ export async function POST(req: Request) {
         institutionId: true,
         kind: true,
         creditBillMode: true,
+        cardRole: true,
+        primaryCardId: true,
         billingDay: true,
         repaymentDay: true,
         billingDayTxPeriod: true,

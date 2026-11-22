@@ -13,7 +13,8 @@ const BodySchema = z.object({
   secure: z.boolean().default(true),
   user: z.string().optional(),
   password: z.string().optional(),
-  mailbox: z.string().min(1).default("INBOX"),
+  /** 跨文件夹搜索时由列表项带回来；不传则用账户里保存的文件夹。 */
+  mailbox: z.string().min(1).optional(),
   uid: z.number().int().min(1),
   debug: z.boolean().optional(),
 });
@@ -34,7 +35,8 @@ export async function POST(req: NextRequest) {
     secure = account.imapSecure;
     user = account.username;
     password = account.password;
-    mailbox = account.mailbox;
+    // uid 只在各自文件夹内唯一，必须按列表项所在文件夹去取正文。
+    mailbox = parsed.data.mailbox?.trim() || account.mailbox;
   }
 
   if (!host || !user || !password) {

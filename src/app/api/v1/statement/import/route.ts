@@ -115,6 +115,10 @@ const ParsedItemSchema = z.object({
     statementPeriodStart: z.string().optional(),
     statementPeriodEnd: z.string().optional(),
     statementDueDate: z.string().optional(),
+    /** 卡别：主卡/附属卡，解析器给出的权威判定。 */
+    cardRole: z.enum(["primary", "supplementary"]).optional(),
+    /** 附属卡所属主卡的卡号后四位。 */
+    primaryCardMasked: z.string().optional(),
   }).optional(),
 });
 
@@ -350,6 +354,8 @@ async function loadStatementBillCandidateAccounts(tx: Db, householdId: string, c
       kind: true,
       billingDay: true,
       creditBillMode: true,
+      cardRole: true,
+      primaryCardId: true,
     },
   });
 }

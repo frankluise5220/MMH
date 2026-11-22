@@ -37,6 +37,7 @@ import { EQUAL_PAYMENT_REPAYMENT_METHOD,
 } from "@/lib/loan-repayment";
 import { isCollateralLoanType, isHomeLoanType, type LoanTypeValue } from "@/lib/loan-type";
 import { CurrencySmartSelect } from "@/components/CurrencySmartSelect";
+import { SmartSelect } from "@/components/SmartSelect";
 import { AccountEditDialog } from "@/components/accounts/AccountEditDialog";
 import { formatAmountDraft } from "@/lib/format";
 
@@ -48,7 +49,9 @@ type Group = { id: string; name: string };
 export type AccountQuickEditValue = {
   id: string; name: string; kind: string; currency?: string | null; note?: string | null;
   groupId?: string | null; institutionId?: string | null; billingDay?: number | null;
-  repaymentDay?: number | null; repaymentOffsetDays?: number | null; creditLimit?: unknown; creditBillMode?: "separate" | "consolidated" | null;
+  repaymentDay?: number | null; repaymentOffsetDays?: number | null; creditLimit?: unknown; creditBillMode?: "separate" | "consolidated" | "supplementary" | null;
+  cardRole?: "primary" | "supplementary" | null;
+  cardHolderName?: string | null; primaryCardId?: string | null;
   numberMasked?: string | null; investProductType?: string | null; costBasisMethod?: string | null;
   fundUnitsDecimals?: number | null; tradingCalendar?: string | null; fixedAssetType?: string | null;
   counterpartyId?: string | null; liabilityDirection?: string | null; isConsumerLoan?: boolean | null;
@@ -127,6 +130,8 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
   const [institutions, setInstitutions] = useState<Institution[]>([]);
   const [counterparties, setCounterparties] = useState<Counterparty[]>([]);
   const [cashAccounts, setCashAccounts] = useState<Array<{ id: string; name: string }>>([]);
+  // 附属卡主卡候选（非附属卡的信用卡，带机构用于筛选）。
+  const [creditAccounts, setCreditAccounts] = useState<Array<{ id: string; name: string; institutionId: string | null }>>([]);
   const [loanCategories, setLoanCategories] = useState<LoanCategoryOption[]>([]);
   const [form, setForm] = useState<Record<string, string>>({});
   const [loanForm, setLoanForm] = useState<Record<string, string>>({});
@@ -145,6 +150,11 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
   const isFixedAssetAccount = kind === "fixed_asset" || isFixedAssetAccountLike({ kind, investProductType: productType });
   const isInvestment = kind === "investment";
   const isCredit = kind === "bank_credit";
+  const isSupplementaryCard = isCredit && (form.cardRole === "supplementary" || form.creditBillMode === "supplementary");
+  // 主卡候选必须先按当前机构过滤：机构未选时下拉为空，避免跨机构挂卡。
+  const primaryCardOptions = !form.institutionId ? [] : creditAccounts
+    .filter((item) => String(item.institutionId ?? "") === form.institutionId)
+    .map((item) => ({ id: item.id, label: item.name }));
   const supportsInstitution = kind !== "settlement" && allowedInstitutionTypesForAccount(kind, productType).length > 0;
   const supportsLastFour = isCredit || kind === "bank_debit";
   const showCostBasis = isInvestment && supportsCostBasisMethod(productType);
@@ -175,7 +185,11 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
       repaymentDay: account.repaymentDay == null ? "" : String(account.repaymentDay), creditLimit: account.creditLimit == null ? "" : formatAmountDraft(account.creditLimit),
       repaymentOffsetDays: account.repaymentOffsetDays == null ? "" : String(account.repaymentOffsetDays),
       repaymentDayMode: account.repaymentOffsetDays != null ? "offset" : "fixed",
-      creditBillMode: account.creditBillMode === "consolidated" ? "consolidated" : "separate",       numberMasked: account.numberMasked ?? "",
+      creditBillMode: account.creditBillMode === "consolidated" ? "consolidated" : account.creditBillMode === "supplementary" ? "supplementary" : "separate",
+      cardRole: account.cardRole === "supplementary" ? "supplementary" : "primary",
+      cardHolderName: account.cardHolderName ?? "",
+      primaryCardId: account.primaryCardId ?? "",
+      numberMasked: account.numberMasked ?? "",
       billingDayTxPeriod: (account as { billingDayTxPeriod?: string | null }).billingDayTxPeriod === "next" ? "next" : "current",
       investProductType: nextInvestProductType, costBasisMethod: account.costBasisMethod ?? "moving_avg",
       counterpartyId: nextKind === "settlement" ? account.counterpartyId ?? "" : "",
@@ -231,12 +245,19 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
       setGroups(data.groups as Group[]);
       setInstitutions(data.institutions as Institution[]);
       setCounterparties((data.counterparties ?? []) as Counterparty[]);
-      const cachedAccounts = data.accounts as Array<{ id: string; name: string; kind?: string; isActive?: boolean; isPlaceholder?: boolean; recordCount?: number }>;
+      const cachedAccounts = data.accounts as Array<{ id: string; name: string; kind?: string; creditBillMode?: string | null; cardRole?: string | null; numberMasked?: string | null; institutionId?: string | null; isActive?: boolean; isPlaceholder?: boolean; recordCount?: number }>;
       const cachedAccount = cachedAccounts.find((item) => item.id === account.id);
       if (typeof cachedAccount?.recordCount === "number") setRecordCount(cachedAccount.recordCount);
       setCashAccounts(cachedAccounts
         .filter((item) => item.isActive !== false && item.isPlaceholder !== true && !["loan", "settlement", "investment", "fixed_asset"].includes(item.kind ?? ""))
         .map((item) => ({ id: item.id, name: item.name })));
+      setCreditAccounts(cachedAccounts
+        .filter((item) => item.kind === "bank_credit" && item.id !== account.id && item.creditBillMode !== "supplementary" && item.cardRole !== "supplementary")
+        .map((item) => ({
+          id: item.id,
+          name: item.numberMasked ? `${item.name} · ${item.numberMasked}` : item.name,
+          institutionId: item.institutionId ?? null,
+        })));
     }
   }, [account.id, loanDetails, resetForm]);
 
@@ -429,7 +450,12 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
               {kind === "loan" ? <Field label={t("settings.accounts.loanCategory")}><select value={form.loanCategoryId || loanCategories[0]?.id || ""} onChange={(event) => setField("loanCategoryId", event.target.value)} className={inputClass}>{loanCategories.map((category) => <option key={category.id} value={category.id}>{category.isSystem ? t(`loan.type.${category.baseType}`) : category.name}</option>)}</select></Field> : null}
               {isFixedAssetAccount && <Field label={t("fixedAssetEdit.assetType")}><select value={form.fixedAssetType || "property"} disabled={loanAccountEditLocked} onChange={(event) => setField("fixedAssetType", event.target.value)} className={inputClass}>{FIXED_ASSET_TYPES.map((value) => <option key={value} value={value}>{t(`fixedAsset.type.${value}`)}</option>)}</select></Field>}
               <Field label={t("settings.accounts.owner")}><select value={form.groupId ?? ""} disabled={loanAccountEditLocked} onChange={(event) => setField("groupId", event.target.value)} className={inputClass}><option value="">{t("settings.accounts.selectOwner")}</option>{groups.map((group) => <option key={group.id} value={group.id}>{group.name}</option>)}</select></Field>
-              {supportsInstitution && !isFixedAssetAccount && <Field label={t("settings.accounts.institution")}><select value={form.institutionId ?? ""} disabled={loanAccountEditLocked} onChange={(event) => setField("institutionId", event.target.value)} className={inputClass}><option value="">{t("settings.accounts.selectInstitution")}</option>{filteredInstitutions.map((institution) => <option key={institution.id} value={institution.id}>{institutionFullName(institution)}</option>)}</select></Field>}
+              {supportsInstitution && !isFixedAssetAccount && <Field label={t("settings.accounts.institution")}><select value={form.institutionId ?? ""} disabled={loanAccountEditLocked} onChange={(event) => setForm((current) => ({
+                ...current,
+                institutionId: event.target.value,
+                // 主卡按机构筛选：换机构后原主卡必然不在候选里。
+                primaryCardId: "",
+              }))} className={inputClass}><option value="">{t("settings.accounts.selectInstitution")}</option>{filteredInstitutions.map((institution) => <option key={institution.id} value={institution.id}>{institutionFullName(institution)}</option>)}</select></Field>}
               {kind === "settlement" && account.agreementAnnualRate !== undefined && (
                 <>
                   <Field label={t("liabilityTx.agreementAnnualRate")}><input value={form.agreementAnnualRate ?? ""} onChange={(event) => setField("agreementAnnualRate", event.target.value)} inputMode="decimal" className={inputClass} /></Field>
@@ -462,7 +488,30 @@ export function AccountTypeQuickEdit({ account, accountLabel, openSignal = 0, sh
               {isCredit && form.repaymentDayMode === "offset" && <Field label={t("settings.accounts.repaymentOffsetDaysLabel")}><input value={form.repaymentOffsetDays ?? ""} onChange={(event) => setField("repaymentOffsetDays", event.target.value)} className={inputClass} inputMode="numeric" placeholder={t("entityForm.repaymentOffsetDaysPlaceholder")} /></Field>}
               {isCredit && <Field label={t("settings.accounts.creditLimitLabel")}><CalcInput value={form.creditLimit ?? ""} onChange={(value) => setField("creditLimit", value)} label={t("settings.accounts.creditLimitLabel")} precision={2} inputClassName={inputClass} /></Field>}
               {supportsLastFour && <Field label={t("settings.accounts.lastFourLabel")}><input value={form.numberMasked ?? ""} onChange={(event) => setField("numberMasked", event.target.value)} className={inputClass} /></Field>}
-              {isCredit && <Field label={t("settings.accounts.billMode")}><select value={form.creditBillMode || "separate"} onChange={(event) => setField("creditBillMode", event.target.value)} className={inputClass}><option value="separate">{t("settings.accounts.separateBill")}</option><option value="consolidated">{t("settings.accounts.consolidatedBill")}</option></select></Field>}
+              {isCredit && <Field label={t("settings.accounts.cardRole")}><select
+                value={form.cardRole || "primary"}
+                onChange={(event) => setForm((current) => ({
+                  ...current,
+                  cardRole: event.target.value,
+                  ...(event.target.value === "supplementary"
+                    ? {} : { cardHolderName: "", primaryCardId: "" }),
+                }))}
+                className={inputClass}
+              >
+                <option value="primary">{t("settings.accounts.cardRolePrimary")}</option>
+                <option value="supplementary">{t("settings.accounts.cardRoleSupplementary")}</option>
+              </select></Field>}
+              {/* 附属卡的账单无条件并入主卡，账单模式对它无意义，不显示。 */}
+              {isCredit && !isSupplementaryCard && <Field label={t("settings.accounts.billMode")}><select
+                value={form.creditBillMode === "supplementary" ? "separate" : form.creditBillMode || "separate"}
+                onChange={(event) => setField("creditBillMode", event.target.value)}
+                className={inputClass}
+              >
+                <option value="separate">{t("settings.accounts.separateBill")}</option>
+                <option value="consolidated">{t("settings.accounts.consolidatedBill")}</option>
+              </select></Field>}
+              {isSupplementaryCard && <Field label={t("settings.accounts.cardHolderName")}><input value={form.cardHolderName ?? ""} onChange={(event) => setField("cardHolderName", event.target.value)} className={inputClass} /></Field>}
+              {isSupplementaryCard && <Field label={t("settings.accounts.primaryCard")}><SmartSelect mode="single" value={form.primaryCardId ?? ""} onChange={(id) => setField("primaryCardId", id)} options={primaryCardOptions} placeholder={t("settings.accounts.selectPrimaryCard")} searchable /></Field>}
 
             </div>
             <Field label={t("settings.accounts.note")}><ClearableNoteField multiline value={form.note ?? ""} onValueChange={(value) => setField("note", value)} className="min-h-20 w-full rounded-md border border-slate-200 bg-white px-2 py-1.5 text-sm text-slate-800 outline-none focus:border-blue-400 focus:ring-1 focus:ring-blue-100 disabled:bg-slate-100 disabled:text-slate-400" /></Field>

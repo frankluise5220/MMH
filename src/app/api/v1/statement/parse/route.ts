@@ -20,6 +20,7 @@ import {
 } from "@/lib/statement/excel-preview";
 import { parseHtmlSheets } from "@/lib/statement/eml-sheet-reader";
 import { parseStatementSheetsStandard } from "@/lib/statement/recognizer-pipeline";
+import { isAbchinaCreditCardStatement, parseAbchinaCreditCardStatement } from "@/lib/statement/abchina-credit-card";
 import { TEMPLATE_GUIDE_TITLE_HINTS } from "@/lib/import-template-sample";
 import {
   inferSignedAmountInflowSign,
@@ -2305,6 +2306,12 @@ type CreditCardStatementTemplate = {
 };
 
 const CREDIT_CARD_STATEMENT_TEMPLATES: CreditCardStatementTemplate[] = [
+  {
+    // 农行金穗：竖排表头的 HTML 邮件正文，通用 HTML 模板认不出来。
+    name: "abc-abchina",
+    matches: isAbchinaCreditCardStatement,
+    parse: (text: string) => parseAbchinaCreditCardStatement(text, (value) => aliasMatch(value)),
+  },
   {
     name: "minsheng",
     matches: isMinshengCreditCardStatement,

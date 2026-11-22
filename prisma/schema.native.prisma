@@ -63,6 +63,11 @@ model Account {
   repaymentOffsetDays                                        Int?
   creditBillMode                                             CreditBillMode              @default(separate)
   billingDayTxPeriod                                         CreditBillingDayTxPeriod    @default(current)
+  // 卡别（2026-11-22 用户裁定）：与账单模式并存的独立属性，primary=主卡、supplementary=附属卡。
+  // 附属卡才显示 cardHolderName（用户自定义填写的持卡人）与 primaryCardId（归属主卡）。
+  cardRole                                                   AccountCardRole             @default(primary)
+  cardHolderName                                             String?
+  primaryCardId                                              String?
   numberMasked                                               String?
   routeKey                                                   String?                     @unique
   note                                                       String?
@@ -93,6 +98,9 @@ model Account {
   FundQueryApi                                               FundQueryApi?               @relation(fields: [defaultFundQueryApiId], references: [id], onDelete: SetNull)
   Parent                                                     Account?                    @relation("AccountHierarchy", fields: [parentId], references: [id], onDelete: SetNull)
   Children                                                   Account[]                   @relation("AccountHierarchy")
+  // 附属卡 → 主卡（同一张卡表内的自关联；删主卡时附属卡自动脱钩，不删卡）。
+  PrimaryCard                                                Account?                    @relation("AccountPrimaryCard", fields: [primaryCardId], references: [id], onDelete: SetNull)
+  SupplementaryCards                                         Account[]                   @relation("AccountPrimaryCard")
   AccountGroup                                               AccountGroup                @relation(fields: [groupId], references: [id])
   Household                                                  Household                   @relation(fields: [householdId], references: [id])
   Institution                                                Institution?                @relation(fields: [institutionId], references: [id])
@@ -142,6 +150,7 @@ model Account {
   @@index([householdId, kind])
   @@index([householdId, name])
   @@index([householdId, institutionId, creditBillMode])
+  @@index([householdId, primaryCardId])
   @@index([householdId, loanCategoryId])
   @@index([counterpartyId])
   @@index([parentId])
@@ -2407,6 +2416,14 @@ enum LiabilityDirection {
 enum CreditBillMode {
   separate
   consolidated
+  // 附属卡：账单并入所选主卡，卡背面单独填写持有人（所有人）。
+  supplementary
+}
+
+/// 信用卡卡别：主卡 / 附属卡。与账单模式（creditBillMode）并存，互不影响。
+enum AccountCardRole {
+  primary
+  supplementary
 }
 
 enum CreditBillingDayTxPeriod {

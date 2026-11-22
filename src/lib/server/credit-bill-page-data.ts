@@ -1181,6 +1181,8 @@ export async function refreshCreditCardCycleCachesForAccountIds(params: {
       repaymentDay: true,
       repaymentOffsetDays: true,
       creditBillMode: true,
+      cardRole: true,
+      primaryCardId: true,
       billingDayTxPeriod: true,
     },
   });

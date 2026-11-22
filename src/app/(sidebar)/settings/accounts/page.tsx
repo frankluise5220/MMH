@@ -140,7 +140,12 @@ type Account = {
   Counterparty: { id: string; name: string; shortName?: string | null; isReimbursable?: boolean | null } | null;
   counterpartyId?: string | null;
   billingDay: number | null; repaymentDay: number | null; repaymentOffsetDays?: number | null;
-  creditBillMode?: "separate" | "consolidated";
+  creditBillMode?: "separate" | "consolidated" | "supplementary";
+  /** 卡别：主卡 / 附属卡，与账单模式并存。 */
+  cardRole?: "primary" | "supplementary";
+  /** 附属卡：所有人（自由文本）与归属主卡。 */
+  cardHolderName?: string | null;
+  primaryCardId?: string | null;
   billingDayTxPeriod?: string | null;
   creditLimit: string | null; numberMasked: string | null;
   investProductType: string | null; costBasisMethod: string | null;
@@ -2102,6 +2107,15 @@ export default function SettingsAccountsPage() {
         fieldData={{
           groupId: statisticsUsers,
           institutionId: institutions,
+          // 附属卡主卡：同账簿内非附属卡的信用卡，带上 institutionId 供表单按当前机构筛选；
+          // 附属卡不能再挂附属卡。
+          primaryCardId: accounts
+            .filter((account) => account.kind === "bank_credit" && account.creditBillMode !== "supplementary" && account.cardRole !== "supplementary")
+            .map((account) => ({
+              id: account.id,
+              name: account.numberMasked ? `${account.name} · ${account.numberMasked}` : account.name,
+              institutionId: account.institutionId,
+            })),
           // 往来款账户的「往来对象」下拉：只允许 person/organization（merchant 是常用商户，不当往来款对象）
           counterpartyId: counterparties
             .filter((counterparty) => isSettlementCounterpartyType(counterparty.type))

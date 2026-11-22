@@ -171,6 +171,8 @@ export async function GET(req: Request) {
         repaymentDay: true,
         repaymentOffsetDays: true,
         creditBillMode: true,
+        cardRole: true,
+        primaryCardId: true,
         billingDayTxPeriod: true,
       },
     });

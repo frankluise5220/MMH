@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { AccountKind, TransactionType } from "@prisma/client";
+import { AccountKind, TransactionType, type Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 import { parseSettlementAgreementInput, upsertSettlementAgreementForAccount } from "@/lib/server/settlement-agreement";
 import { formatDateUtc, parseDateInputToUtc, toNumber, todayDateBusinessYmd } from "@/lib/date-utils";
@@ -15,6 +15,7 @@ import { resolveTradingCalendarForAccount } from "@/lib/fund/trading-calendar";
 import { ACCOUNT_PRODUCT_TYPES_ACCEPTED, supportsCostBasisMethod } from "@/lib/investment-config";
 import {
   getCreditCardInstitutionDefaults,
+  normalizeAccountCardRole,
   normalizeCreditBillMode,
   normalizeCreditBillingDayTxPeriod,
   syncCreditCardInstitutionSettings,
@@ -140,6 +141,61 @@ function groupCreditCardIdsByBillingDay(rows: Array<{ id: string; billingDay: nu
     groups.set(row.billingDay, ids);
   }
   return groups;
+}
+
+class SupplementaryCardError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+    readonly status = 400,
+  ) {
+    super(message);
+  }
+}
+
+/**
+ * 附属卡属性归一化 + 校验：卡别=附属卡（或历史账单模式=附属卡）才写这两个字段；
+ * 主卡必须是同一 household 下的主卡信用卡。MIGRATION 前卡别/主卡失效时一律清空，
+ * 避免留下半吊子的附属卡数据。账单模式与卡别并存，互不改写对方。
+ */
+async function resolveSupplementaryCardFields(args: {
+  writer: typeof prisma | Prisma.TransactionClient;
+  householdId: string;
+  /** 附属卡所属机构：与 UI 的「先按机构筛选主卡」保持同一口径。 */
+  institutionId: string | null;
+  mode: ReturnType<typeof normalizeCreditBillMode>;
+  cardRole: ReturnType<typeof normalizeAccountCardRole>;
+  cardHolderName: unknown;
+  primaryCardId: unknown;
+  excludeAccountId?: string;
+}): Promise<{ cardHolderName: string | null; primaryCardId: string | null }> {
+  if (args.cardRole !== "supplementary" && args.mode !== "supplementary") {
+    return { cardHolderName: null, primaryCardId: null };
+  }
+  const cardHolderName = String(args.cardHolderName ?? "").trim() || null;
+  const primaryCardId = String(args.primaryCardId ?? "").trim();
+  if (!primaryCardId) throw new SupplementaryCardError("PRIMARY_CARD_REQUIRED", "请选择主卡");
+  if (args.excludeAccountId && primaryCardId === args.excludeAccountId) {
+    throw new SupplementaryCardError("INVALID_PRIMARY_CARD", "主卡不能是附属卡自身");
+  }
+  const primary = await args.writer.account.findFirst({
+    where: {
+      id: primaryCardId,
+      householdId: args.householdId,
+      kind: AccountKind.bank_credit,
+      // 不允许附属卡再挂附属卡（账单组只支持一层）；历史 billMode=附属卡的行也不作主卡。
+      cardRole: "primary",
+      creditBillMode: { not: "supplementary" },
+    },
+    select: { id: true, institutionId: true },
+  });
+  if (!primary) {
+    throw new SupplementaryCardError("INVALID_PRIMARY_CARD", "主卡必须是本账簿内的信用卡账户（且不能是附属卡）");
+  }
+  if (args.institutionId && primary.institutionId !== args.institutionId) {
+    throw new SupplementaryCardError("INVALID_PRIMARY_CARD", "主卡必须与附属卡属于同一机构");
+  }
+  return { cardHolderName, primaryCardId };
 }
 
 function corsHeaders() {
@@ -381,16 +437,31 @@ export async function POST(req: NextRequest) {
     const creditLimit = isCreditLike
       ? String(body.creditLimit ?? "").trim() || creditDefaults?.creditLimit || null
       : null;
-    const creditBillMode = isCreditLike
+    const cardRole = isCreditLike ? normalizeAccountCardRole(body.cardRole) : normalizeAccountCardRole(null);
+    const requestedCreditBillMode: ReturnType<typeof normalizeCreditBillMode> = isCreditLike
       ? body.creditBillMode !== undefined
         ? normalizeCreditBillMode(body.creditBillMode)
         : creditDefaults?.creditBillMode ?? normalizeCreditBillMode(null)
       : normalizeCreditBillMode(null);
+    // 附属卡无条件并入主卡账单，账单模式对附属卡不再可选：内部沿用 supplementary 作为
+    // 账单口径（仅服务端使用，UI 不提供该选项）；主卡不允许再选这个内部口径。
+    const creditBillMode: ReturnType<typeof normalizeCreditBillMode> = cardRole === "supplementary"
+      ? "supplementary"
+      : requestedCreditBillMode === "supplementary" ? "separate" : requestedCreditBillMode;
     const billingDayTxPeriod = isCreditLike
       ? body.billingDayTxPeriod !== undefined
         ? normalizeCreditBillingDayTxPeriod(body.billingDayTxPeriod)
         : creditDefaults?.billingDayTxPeriod ?? normalizeCreditBillingDayTxPeriod(null)
       : normalizeCreditBillingDayTxPeriod(null);
+    const supplementaryFields = await resolveSupplementaryCardFields({
+      writer: prisma,
+      householdId,
+      institutionId: kind === "settlement" ? null : institution?.id ?? null,
+      mode: creditBillMode,
+      cardRole,
+      cardHolderName: body.cardHolderName,
+      primaryCardId: body.primaryCardId,
+    });
     const numberMasked = accountSupportsNumberMasked(kind)
       ? String(body.numberMasked ?? "").trim() || null
       : null;
@@ -451,6 +522,8 @@ export async function POST(req: NextRequest) {
           creditLimit,
           creditBillMode,
           billingDayTxPeriod,
+          cardRole,
+          ...supplementaryFields,
           numberMasked,
           note,
           accountGroup,
@@ -527,6 +600,7 @@ export async function POST(req: NextRequest) {
         repaymentDay: account.repaymentDay,
         repaymentOffsetDays: account.repaymentOffsetDays,
         creditBillMode: account.creditBillMode,
+        cardRole: account.cardRole,
         billingDayTxPeriod: account.billingDayTxPeriod,
       });
       const institutionCards = account.institutionId
@@ -560,6 +634,9 @@ export async function POST(req: NextRequest) {
   } catch (e) {
     if (isAccountIdentityUniqueError(e)) {
       return NextResponse.json({ ok: false, code: "ACCOUNT_IDENTITY_CONFLICT", error: e.message }, { status: e.status });
+    }
+    if (e instanceof SupplementaryCardError) {
+      return NextResponse.json({ ok: false, code: e.code, error: e.message }, { status: e.status });
     }
     return NextResponse.json({ ok: false, code: "INTERNAL_ERROR", error: e instanceof Error ? e.message : "Create account failed" }, { status: 500 });
   }
@@ -788,9 +865,17 @@ export async function PUT(req: NextRequest) {
       data.repaymentOffsetDays = nextRepaymentDayMode === "offset" ? nextRepaymentOffsetDays : null;
       data.creditLimit = body.creditLimit !== undefined ? (String(body.creditLimit ?? "").trim() || null) : existing.creditLimit;
       data.numberMasked = body.numberMasked !== undefined ? (String(body.numberMasked ?? "").trim() || null) : existing.numberMasked;
-      data.creditBillMode = body.creditBillMode !== undefined
+      const nextCardRole = body.cardRole !== undefined
+        ? normalizeAccountCardRole(body.cardRole)
+        : normalizeAccountCardRole(existing.cardRole);
+      const requestedMode = body.creditBillMode !== undefined
         ? normalizeCreditBillMode(body.creditBillMode)
         : existing.creditBillMode;
+      // 附属卡无条件合并账单：账单模式由卡别推导，UI 不再提供 supplementary 选项。
+      data.cardRole = nextCardRole;
+      data.creditBillMode = nextCardRole === "supplementary"
+        ? "supplementary"
+        : requestedMode === "supplementary" ? "separate" : requestedMode;
       data.billingDayTxPeriod = body.billingDayTxPeriod !== undefined
         ? normalizeCreditBillingDayTxPeriod(body.billingDayTxPeriod)
         : existing.billingDayTxPeriod;
@@ -805,7 +890,35 @@ export async function PUT(req: NextRequest) {
           : existing.numberMasked
         : null;
       data.creditBillMode = normalizeCreditBillMode(null);
+      data.cardRole = normalizeAccountCardRole(null);
       data.billingDayTxPeriod = normalizeCreditBillingDayTxPeriod(null);
+    }
+    // 附属卡属性与主卡校验：切回主卡（且账单模式也不是附属卡）时自动清空；
+    // 留在附属卡时允许只改所有人或只改主卡（未提交的字段沿用原值）。
+    const nextModeForSupplementary = (data.creditBillMode ?? existing.creditBillMode) as ReturnType<typeof normalizeCreditBillMode>;
+    const nextCardRoleForSupplementary = (data.cardRole ?? existing.cardRole) as ReturnType<typeof normalizeAccountCardRole>;
+    if (
+      nextCardRoleForSupplementary === "supplementary" ||
+      nextModeForSupplementary === "supplementary" ||
+      existing.creditBillMode === "supplementary" ||
+      existing.cardRole === "supplementary" ||
+      body.cardHolderName !== undefined ||
+      body.primaryCardId !== undefined
+    ) {
+      const resolved = await resolveSupplementaryCardFields({
+        writer: prisma,
+        householdId: existing.householdId,
+        institutionId: data.institutionId !== undefined
+          ? (data.institutionId == null ? null : String(data.institutionId))
+          : existing.institutionId,
+        mode: nextModeForSupplementary,
+        cardRole: nextCardRoleForSupplementary,
+        cardHolderName: body.cardHolderName !== undefined ? body.cardHolderName : existing.cardHolderName,
+        primaryCardId: body.primaryCardId !== undefined ? body.primaryCardId : existing.primaryCardId,
+        excludeAccountId: id,
+      });
+      data.cardHolderName = resolved.cardHolderName;
+      data.primaryCardId = resolved.primaryCardId;
     }
     if (nextKind === "settlement") {
       data.institutionId = null;
@@ -980,7 +1093,8 @@ export async function PUT(req: NextRequest) {
         (body.repaymentDayMode !== undefined && data.repaymentOffsetDays !== existing.repaymentOffsetDays) ||
         (body.repaymentOffsetDays !== undefined && data.repaymentOffsetDays !== existing.repaymentOffsetDays) ||
         (body.billingDayTxPeriod !== undefined && data.billingDayTxPeriod !== existing.billingDayTxPeriod) ||
-        (body.creditBillMode !== undefined && data.creditBillMode !== existing.creditBillMode)
+        (body.creditBillMode !== undefined && data.creditBillMode !== existing.creditBillMode) ||
+        (data.primaryCardId !== undefined && String(data.primaryCardId ?? "") !== String(existing.primaryCardId ?? ""))
       );
 
     const updated = await prisma.$transaction(async (tx) => {
@@ -1049,6 +1163,7 @@ export async function PUT(req: NextRequest) {
         repaymentDay: updated.repaymentDay,
         repaymentOffsetDays: updated.repaymentOffsetDays,
         creditBillMode: updated.creditBillMode,
+        cardRole: updated.cardRole,
         billingDayTxPeriod: updated.billingDayTxPeriod,
       });
       const institutionCards = updated.institutionId
@@ -1138,6 +1253,9 @@ export async function PUT(req: NextRequest) {
         repaymentOffsetDays: updated.repaymentOffsetDays,
         creditBillMode: updated.creditBillMode,
         billingDayTxPeriod: updated.billingDayTxPeriod,
+        cardRole: updated.cardRole,
+        cardHolderName: updated.cardHolderName,
+        primaryCardId: updated.primaryCardId,
         institutionId: updated.institutionId,
         note: updated.note,
         brokerageCashAccountId: brokerageCashAccount?.id ?? null,
@@ -1148,6 +1266,9 @@ export async function PUT(req: NextRequest) {
   } catch (e) {
     if (isAccountIdentityUniqueError(e)) {
       return NextResponse.json({ ok: false, code: "ACCOUNT_IDENTITY_CONFLICT", error: e.message }, { status: e.status });
+    }
+    if (e instanceof SupplementaryCardError) {
+      return NextResponse.json({ ok: false, code: e.code, error: e.message }, { status: e.status });
     }
     return NextResponse.json({ ok: false, code: "INTERNAL_ERROR", error: e instanceof Error ? e.message : "Update account failed" }, { status: 500 });
   }
@@ -1374,6 +1495,10 @@ export async function GET(req: Request) {
       linkedFundCode: account.linkedFundCode,
       // 轻量货基模式：钱包直接挂代码后的计息起始日（编辑窗回填用）。
       linkedFundStartDate: account.linkedFundStartDate ? formatDateUtc(account.linkedFundStartDate) : null,
+      // 卡别与附属卡属性（编辑窗回填用）；loadCommonData 已带出全部列，无需额外查询。
+      cardRole: account.cardRole,
+      cardHolderName: account.cardHolderName,
+      primaryCardId: account.primaryCardId,
       currency: account.currency,
       groupName: account.kind === AccountKind.loan || account.kind === AccountKind.settlement ? "" : account.AccountGroup?.name ?? "",
       institutionName: account.Institution?.name ?? "",

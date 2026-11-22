@@ -57,7 +57,35 @@ const SmartSelect = dynamic(
   { ssr: false },
 ) as SmartSelectComponent;
 
-const MAIL_SEARCH_LIMIT = 50;
+/**
+ * 一次「读取邮件」最多列多少封。
+ *
+ * 100 是按「3 个月窗口」估的：账单类邮件一个月几封到十几封，3 个月撑不满 100；
+ * 真打满也只是一次 FETCH 100 封 envelope（每封约 7ms），对邮箱服务器可以忽略。
+ */
+const MAIL_SEARCH_LIMIT = 100;
+/** 一次查询的日期跨度上限（自然月）。窗口再大命中就上百封，列表翻不动，也没必要一次全拉。 */
+const MAIL_SEARCH_MAX_MONTHS = 3;
+/**
+ * 「读取邮件」不限定文件夹：账单常被邮箱规则分流到「其他文件夹/信用卡」这类子文件夹，
+ * INBOX 里根本没有。服务端收到这个值会先列出文件夹，再逐个按同一套条件搜。
+ */
+const MAIL_ALL_MAILBOXES = "*";
+
+/** 跨文件夹时不同文件夹的 uid 会重复，列表的 key / 选中态必须连文件夹一起比。 */
+function mailItemKey(item: { uid: number; mailbox?: string } | null | undefined) {
+  return item ? `${item.mailbox ?? ""}#${item.uid}` : "";
+}
+
+/** 起止跨度是否超过 MAIL_SEARCH_MAX_MONTHS 个自然月（正好 3 个月算允许）。 */
+function exceedsMailSearchRange(sinceDate: string, endDate: string) {
+  const start = new Date(`${sinceDate}T00:00:00.000Z`);
+  const end = new Date(`${endDate}T00:00:00.000Z`);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) return false;
+  const limitEnd = new Date(start.getTime());
+  limitEnd.setUTCMonth(limitEnd.getUTCMonth() + MAIL_SEARCH_MAX_MONTHS);
+  return end.getTime() > limitEnd.getTime();
+}
 
 function dateInputValue(date: Date) {
   const year = date.getFullYear();
@@ -154,9 +182,9 @@ function mailSenderAddress(raw?: string | null): string | null {
   return value.includes("@") ? value : null;
 }
 
-type MailItem = { uid: number; subject: string; from: string; date: string; hash?: string };
+type MailItem = { uid: number; subject: string; from: string; date: string; hash?: string; /** 来自哪个文件夹（跨文件夹搜索时才有值）。 */ mailbox?: string };
 type MailAttachment = { id: string; filename: string; contentType: string; size: number; text?: string; parseError?: string };
-type MailDetail = { uid: number; subject: string; from: string; date: string; text: string; html: string; attachments?: MailAttachment[]; hash?: string };
+type MailDetail = { uid: number; subject: string; from: string; date: string; text: string; html: string; attachments?: MailAttachment[]; hash?: string; mailbox?: string };
 type MailListMeta = {
   total: number;
   scanned: number;
@@ -164,6 +192,7 @@ type MailListMeta = {
   limited: number;
   hasKeyword: boolean;
   scanLimit: number;
+  mailboxCount?: number;
   sinceDate: string;
   endDate: string;
   searchMode?: "imap" | "scan";
@@ -724,15 +753,19 @@ export function EmailSettingsPanel({
           : meta.endDate
             ? t("settings.email.scanUntil", { date: meta.endDate })
             : t("settings.email.scanRecent", { limit: meta.scanLimit }));
+    // 不限定文件夹时把「搜了几个箱」写进说明，用户能确认账单所在的子文件夹确实被覆盖了。
+    const boxScope = typeof meta.mailboxCount === "number" && meta.mailboxCount > 1
+      ? `${t("settings.email.mailSearchAllBoxes", { count: meta.mailboxCount })} · `
+      : "";
     const hasKeyword = Boolean(keyword.trim());
     if (itemCount > 0) {
       return hasKeyword
-        ? t("settings.email.scanMatched", { scope, scanned: meta.scanned, keyword, matched: meta.matched, itemCount, timing })
-        : t("settings.email.scanListed", { scope, scanned: meta.scanned, itemCount, timing });
+        ? t("settings.email.scanMatched", { scope: `${boxScope}${scope}`, scanned: meta.scanned, keyword, matched: meta.matched, itemCount, timing })
+        : t("settings.email.scanListed", { scope: `${boxScope}${scope}`, scanned: meta.scanned, itemCount, timing });
     }
     return hasKeyword
-      ? t("settings.email.scanNoMatch", { scope, scanned: meta.scanned, keyword, timing })
-      : t("settings.email.scanNoMail", { scope, scanned: meta.scanned, timing });
+      ? t("settings.email.scanNoMatch", { scope: `${boxScope}${scope}`, scanned: meta.scanned, keyword, timing })
+      : t("settings.email.scanNoMail", { scope: `${boxScope}${scope}`, scanned: meta.scanned, timing });
   }
 
   async function listMails(accountId = selectedId, keywordOverride?: string) {
@@ -744,9 +777,20 @@ export function EmailSettingsPanel({
       setError(t("settings.email.invalidDateRange"));
       return;
     }
+    // 只填一端等于放开另一端：只填起始是一直查到现在，只填终止是从最早查起，范围都不受控。
+    if (Boolean(sinceDate) !== Boolean(endDate)) {
+      setError(t("settings.email.rangeTooLong", { months: MAIL_SEARCH_MAX_MONTHS }));
+      return;
+    }
+    if (sinceDate && endDate && exceedsMailSearchRange(sinceDate, endDate)) {
+      setError(t("settings.email.rangeTooLong", { months: MAIL_SEARCH_MAX_MONTHS }));
+      return;
+    }
     setLoadingMails(true); setError(""); setSelectedMail(null); setMailListHint(""); setParsedItems([]); setImportPreview(null); setImportComplete(null);
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 20000);
+    // 服务端兜底 120s（MAIL_LIST_TOTAL_BUDGET_MS，含建连），这里只做「比服务端更晚放手」，
+    // 让慢查询跑完而不是被前端掐断。正常 2~17s 就返回，这个值只在真卡住时才用到。
+    const timer = setTimeout(() => controller.abort(), 130000);
     const traceId = createImportTraceId("settings-email-mail");
     const startedAt = performance.now();
     mailImportTraceIdRef.current = traceId;
@@ -764,6 +808,8 @@ export function EmailSettingsPanel({
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           accountId,
+          // 「不限定文件夹」：服务端先列文件夹，再逐个搜，合并取最新 MAIL_SEARCH_LIMIT 封。
+          mailbox: MAIL_ALL_MAILBOXES,
           limit: MAIL_SEARCH_LIMIT,
           scanLimit: MAIL_SEARCH_LIMIT,
           sinceDate,
@@ -820,25 +866,27 @@ export function EmailSettingsPanel({
     return buildStatementMailContent(mail) || fallbackContent.trim();
   }
 
-  async function fetchMail(uid: number, autoParse = false) {
+  async function fetchMail(uid: number, autoParse = false, mailboxOverride?: string) {
     if (!selectedId) return;
     setLoadingMails(true); setError(""); setParsedItems([]); setImportPreview(null); setImportComplete(null);
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 20000);
+    // 取正文同样要重新建连（QQ 实测 0.6~12.4s）+ 下载整封 HTML，与列表同一取舍。
+    const timer = setTimeout(() => controller.abort(), 130000);
     const traceId = createImportTraceId("settings-email-mail");
     const startedAt = performance.now();
-    const listedMail = mailItems.find((item) => item.uid === uid);
+    // 跨文件夹搜索时 uid 只在各自文件夹里唯一，必须连文件夹一起定位。
+    const listedMail = mailItems.find((item) => item.uid === uid && (mailboxOverride ? item.mailbox === mailboxOverride : true));
     mailImportTraceIdRef.current = traceId;
     postImportDebugLog(traceId, "email_fetch_started", mailDebugDetails(listedMail ?? { uid }, selectedId));
     try {
       const res = await fetch("/api/v1/email/imap/fetch", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accountId: selectedId, uid }),
+        body: JSON.stringify({ accountId: selectedId, uid, mailbox: mailboxOverride }),
         signal: controller.signal,
       });
       const data = await res.json();
       if (data.ok) {
-        const nextMail = { ...data.item, hash: listedMail?.hash } as MailDetail;
+        const nextMail = { ...data.item, hash: listedMail?.hash, mailbox: data.mailbox ?? mailboxOverride } as MailDetail;
         const content = buildStatementParseContent(nextMail, nextMail.text || nextMail.html || "");
         setSelectedMail(nextMail);
         setMailContent(nextMail.text || nextMail.html || "");
@@ -2386,11 +2434,16 @@ export function EmailSettingsPanel({
               </div>
               <div className="max-h-[430px] overflow-auto divide-y divide-slate-100">
                 {mailItems.map(m => (
-                  <button key={m.uid} className={`w-full text-left px-2.5 py-2 text-xs ${selectedMail?.uid === m.uid ? "bg-blue-50" : "hover:bg-slate-50"}`}
-                    onClick={() => fetchMail(m.uid)}>
+                  <button key={mailItemKey(m)} className={`w-full text-left px-2.5 py-2 text-xs ${mailItemKey(selectedMail) === mailItemKey(m) ? "bg-blue-50" : "hover:bg-slate-50"}`}
+                    onClick={() => fetchMail(m.uid, false, m.mailbox)}>
                     <div className="truncate font-medium text-slate-800">{m.subject || t("settings.email.noSubject")}</div>
                     <div className="truncate text-[11px] text-slate-500">{m.from}</div>
-                    <div className="mt-0.5 text-[10px] text-slate-400">{m.date}</div>
+                    <div className="mt-0.5 flex items-center gap-1.5 text-[10px] text-slate-400">
+                      <span className="shrink-0">{m.date}</span>
+                      {m.mailbox && m.mailbox.toUpperCase() !== "INBOX" && (
+                        <span className="truncate rounded bg-slate-100 px-1 text-[10px] text-slate-500" title={m.mailbox}>{m.mailbox}</span>
+                      )}
+                    </div>
                   </button>
                 ))}
                 {mailItems.length === 0 && !loadingMails && (

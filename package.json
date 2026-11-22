@@ -64,7 +64,8 @@
     "codex:prisma": "node scripts/codex-prisma-run.cjs",
     "caizhi:convert": "tsx scripts/caizhi/convert-caizhi-backup.ts",
     "check:restore-compat": "tsx scripts/verify-restore-compat.ts",
-    "bench:reports": "tsx scripts/bench-reports.ts"
+    "bench:reports": "tsx scripts/bench-reports.ts",
+    "check:abc-credit-card": "tsx scripts/verify-abc-credit-card.ts"
   },
   "dependencies": {
     "@ai-sdk/openai": "^3.0.64",

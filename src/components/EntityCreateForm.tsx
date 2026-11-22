@@ -76,6 +76,7 @@ const AGGREGATE_HIDDEN_ACCOUNT_FIELDS = [
   "repaymentDay",
   "repaymentOffsetDays",
   "creditLimit",
+  "cardRole",
   "creditBillMode",
 ] as const;
 
@@ -143,7 +144,7 @@ type CompactModeProps = {
   /** For category type: pre-selected parent category */
   defaultParentId?: string;
   /** Pre-populated data for dynamic select fields (groups & institutions) in compact account creation */
-  nestedFieldData?: Record<string, Array<{ id: string; name: string; type?: string }>>;
+  nestedFieldData?: Record<string, Array<{ id: string; name: string; type?: string; institutionId?: string | null }>>;
   /** When creating a non-investment account, also collect initial balance anchor data. */
   includeInitialBalanceFields?: boolean;
   /** For account creation: initial currency selected from the current ledger setting. */
@@ -166,7 +167,7 @@ type FullModeProps = {
    *  created inside this form, so the parent can keep shared option data fresh. */
   onNestedCreated?: (id: string, name: string, extra?: { kind?: string; type?: string }) => void;
   /** Dynamic data for select fields that need runtime-populated options */
-  fieldData?: Record<string, Array<{ id: string; name: string; type?: string }>>;
+  fieldData?: Record<string, Array<{ id: string; name: string; type?: string; institutionId?: string | null }>>;
   /** Existing entity names for client-side duplicate check.
    *  For categories, pass only the names of the **same type** (income/expense each
    *  have their own namespace — see @@unique([householdId, type, name])). */
@@ -271,10 +272,22 @@ const CURRENCY_OPTION_KEYS = CURRENCY_OPTIONS.map((option) => ({
 
 /* ---- Credit bill mode options ---- */
 
+// 账单模式不再提供「附属卡」：附属卡由卡别决定，账单无条件并入主卡。
 const CREDIT_BILL_MODE_OPTIONS = [
   { value: "separate", labelKey: "entityForm.creditBillMode.separate" },
   { value: "consolidated", labelKey: "entityForm.creditBillMode.consolidated" },
 ];
+
+/* ---- 卡别（主卡 / 附属卡）：与账单模式并存的独立属性 ---- */
+
+const CARD_ROLE_OPTIONS = [
+  { value: "primary", labelKey: "settings.accounts.cardRolePrimary" },
+  { value: "supplementary", labelKey: "settings.accounts.cardRoleSupplementary" },
+];
+
+/** 附属卡附加字段在「卡别=附属卡」时出现；兼容历史「账单模式=附属卡」的数据。 */
+const isSupplementaryCardForm = (f: Record<string, string>) =>
+  f.kind === "bank_credit" && (f.cardRole === "supplementary" || f.creditBillMode === "supplementary");
 
 /* ---- Credit repayment day mode options ---- */
 
@@ -374,7 +387,11 @@ const ENTITY_CONFIG = {
       { key: "repaymentDay", labelKey: "settings.accounts.repaymentDayLabel", type: "text", placeholderKey: "entityForm.dayRangePlaceholder", condition: (f) => f.kind === "bank_credit" && f.repaymentDayMode !== "offset" },
       { key: "repaymentOffsetDays", labelKey: "settings.accounts.repaymentOffsetDaysLabel", type: "text", placeholderKey: "entityForm.repaymentOffsetDaysPlaceholder", condition: (f) => f.kind === "bank_credit" && f.repaymentDayMode === "offset" },
       { key: "creditLimit", labelKey: "settings.accounts.creditLimitLabel", type: "text", placeholderKey: "entityForm.creditLimitPlaceholder", condition: (f) => f.kind === "bank_credit" },
-      { key: "creditBillMode", labelKey: "entityForm.creditBillModeLabel", type: "select", options: CREDIT_BILL_MODE_OPTIONS, defaultValue: "separate", condition: (f) => f.kind === "bank_credit" },
+      { key: "cardRole", labelKey: "settings.accounts.cardRole", type: "select", options: CARD_ROLE_OPTIONS, defaultValue: "primary", condition: (f) => f.kind === "bank_credit" },
+      { key: "creditBillMode", labelKey: "entityForm.creditBillModeLabel", type: "select", options: CREDIT_BILL_MODE_OPTIONS, defaultValue: "separate", condition: (f) => f.kind === "bank_credit" && !isSupplementaryCardForm(f) },
+      // 附属卡：所有人由用户自由填写；主卡从同机构、非附属卡的信用卡账户中选（fieldData 由账户设置页提供）。
+      { key: "cardHolderName", labelKey: "entityForm.cardHolderName", type: "text", placeholderKey: "entityForm.optional", condition: isSupplementaryCardForm },
+      { key: "primaryCardId", labelKey: "entityForm.primaryCard", type: "select", optionsFromData: "primaryCardId", condition: isSupplementaryCardForm },
       { key: "numberMasked", labelKey: "settings.accounts.lastFourLabel", type: "text", placeholderKey: "entityForm.lastFourPlaceholder", condition: (f) => f.kind === "bank_credit" || f.kind === "bank_debit" },
       { key: "costBasisMethod", labelKey: "settings.accounts.costBasisMethod", type: "select", options: COST_BASIS_OPTIONS, defaultValue: "moving_avg", condition: (f) => f.kind === "investment" && supportsCostBasisMethod(f.investProductType ?? "fund") },
       { key: "note", labelKey: "detail.column.remark", type: "text", placeholderKey: "entityForm.notePlaceholder", multiline: true, rows: 4 },
@@ -537,7 +554,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
   // Nested creation state (for full mode "+ New" buttons on dynamic select fields)
   const [nestedEntityType, setNestedEntityType] = useState<NestedEntityType | null>(null);
   const [nestedOpen, setNestedOpen] = useState(false);
-  const [nestedFieldData, setNestedFieldData] = useState<Record<string, Array<{ id: string; name: string; type?: string }>>>(fieldData ?? compactNestedFieldData ?? {});
+  const [nestedFieldData, setNestedFieldData] = useState<Record<string, Array<{ id: string; name: string; type?: string; institutionId?: string | null }>>>(fieldData ?? compactNestedFieldData ?? {});
   // Set when a nested entity is created so the compact sync effect does not
   // re-initialize (and wipe) the form that just gained the new entity.
   const nestedCreatedRef = useRef(false);
@@ -560,8 +577,19 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
     if (entityType === "account" && field.key === "currency" && !accountDefaultCurrency && !(extraFields && field.key in extraFields)) {
       return [{ value: "", label: t("entityForm.ledgerDefaultCurrency") }, ...opts];
     }
+    // 附属卡主卡候选先按当前机构过滤（原生 select 分支也走同一口径）。
+    if (field.key === "primaryCardId") {
+      const institutionId = String(form.institutionId ?? "");
+      if (!institutionId) return [{ value: "", label: t("entityForm.none") }];
+      return [
+        { value: "", label: t("entityForm.none") },
+        ...(nestedFieldData.primaryCardId ?? [])
+          .filter((card) => card.institutionId === institutionId)
+          .map((card) => ({ value: card.id, label: card.name })),
+      ];
+    }
     return opts;
-  }, [accountDefaultCurrency, allowedTypeValues, config.types, entityType, extraFields, nestedFieldData, parentCategories, t]);
+  }, [accountDefaultCurrency, allowedTypeValues, config.types, entityType, extraFields, form.institutionId, nestedFieldData, parentCategories, t]);
 
   useEffect(() => {
     if (entityType !== "account" || form.kind !== "bank_credit" || !form.institutionId) return;
@@ -580,7 +608,10 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
             repaymentOffsetDays: offsetDays,
             repaymentDayMode: offsetDays ? "offset" : "fixed",
             creditLimit: result.data.creditLimit == null ? "" : formatAmountDraft(result.data.creditLimit),
-            creditBillMode: result.data.creditBillMode === "consolidated" ? "consolidated" : "separate",
+            // 附属卡账单由主卡决定，内部保持 supplementary；主卡才用机构默认账单模式。
+            creditBillMode: current.cardRole === "supplementary" || current.creditBillMode === "supplementary"
+              ? "supplementary"
+              : result.data.creditBillMode === "consolidated" ? "consolidated" : "separate",
             billingDayTxPeriod: (result.data as { billingDayTxPeriod?: string }).billingDayTxPeriod === "next" ? "next" : "current",
           };
         });
@@ -1053,6 +1084,15 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
       patch.loanType = value === "loan" ? (current.loanType || "home") : "";
       patch.isConsumerLoan = value === "loan" && current.loanType === "consumer" ? "true" : "false";
     }
+    if (field.key === "institutionId") {
+      // 主卡按机构筛选：换机构后原选择必然不在候选里，必须清空而不是留一个隐藏的旧值。
+      patch.primaryCardId = "";
+    }
+    if (field.key === "cardRole" && value !== "supplementary") {
+      // 切回主卡：附属卡资料随之清空（账单模式由服务端按主卡口径重算）。
+      patch.cardHolderName = "";
+      patch.primaryCardId = "";
+    }
     if (field.key === "loanType") {
       patch.isConsumerLoan = value === "consumer" ? "true" : "false";
     }
@@ -1066,6 +1106,27 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
       }
     }
     return patch;
+  }
+
+  /** 附属卡主卡：候选先按当前机构过滤，再用 SmartSelect 下拉（与账户编辑/快编同口径）。 */
+  function renderPrimaryCardSelect(field: FieldDef) {
+    const institutionId = String(form.institutionId ?? "");
+    const options: SmartSelectOption[] = !institutionId ? [] : (nestedFieldData.primaryCardId ?? [])
+      .filter((card) => card.institutionId === institutionId)
+      .map((card) => ({ id: card.id, label: card.name }));
+    return (
+      <div key={field.key}>
+        <label className="form-label mb-1 block">{t(field.labelKey)}</label>
+        <SmartSelect
+          mode="single"
+          value={form.primaryCardId ?? ""}
+          onChange={(id) => setForm((prev) => ({ ...prev, primaryCardId: id }))}
+          options={options}
+          placeholder={t("settings.accounts.selectPrimaryCard")}
+          searchable
+        />
+      </div>
+    );
   }
 
   /** Build the POST body and submit */
@@ -1327,6 +1388,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                     </div>
                   );
                 }
+                if (field.key === "primaryCardId") return renderPrimaryCardSelect(field);
 
                 const opts = selectOptionsForField(field);
                 if (opts.length === 0 && !field.optionsFromData) return null;
@@ -1701,6 +1763,7 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
                       </div>
                     );
                   }
+                  if (field.key === "primaryCardId") return renderPrimaryCardSelect(field);
 
                   const opts = selectOptionsForField(field);
                   if (opts.length === 0 && !field.optionsFromData) return null;

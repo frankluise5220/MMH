@@ -85,7 +85,9 @@ async function _loadCommonData(hidFilter: { householdId: string }) {
 // Bump the cache key whenever serialized object fields are added or removed;
 // otherwise old objects may lack a field and make `field === true` always false
 // (observed with isReimbursable on 2026-09-21).
-const COMMON_DATA_CACHE_VERSION = "2026-11-05-owner-group-family-member-short-name-v1";
+// 2026-11-22 卡别：Account 新增 cardRole 列（与已有的 cardHolderName / primaryCardId
+// 一起），旧缓存对象没有这些字段，编辑窗会读成空并提交空值（服务端会拒绝保存）。
+const COMMON_DATA_CACHE_VERSION = "2026-11-22-card-role-v1";
 export const loadCommonData = unstable_cache(
   _loadCommonData,
   ["common-data", CATEGORY_HIERARCHY_NORMALIZATION_VERSION, COMMON_DATA_CACHE_VERSION],

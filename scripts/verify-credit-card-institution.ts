@@ -11,6 +11,11 @@
 import { detectStatementBankName, isRuralBankName } from "../src/lib/statement/credit-card-institution";
 import { extractStatementOwnerName } from "../src/lib/statement/statement-owner-name";
 import { parseImportPaymentCardAccount, resolveImportAccountFromList } from "../src/lib/account-import-match";
+import {
+  getCreditBillAccountIds,
+  normalizeAccountCardRole,
+  normalizeCreditBillMode,
+} from "../src/lib/server/credit-card-institution-settings";
 
 let failures = 0;
 function check(label: string, actual: unknown, expected: unknown) {
@@ -81,8 +86,109 @@ for (const text of [
   check(`落回既有农商信用卡账户：${text}`, resolveImportAccountFromList(text, accounts)?.id, "acc-rural-credit");
 }
 
-if (failures > 0) {
-  console.error(`\n${failures} 个用例失败`);
-  process.exit(1);
+// ── 附属卡（2026-11-22）：账单模式归一化 + 账单组口径 ──
+check("账单模式归一：supplementary", normalizeCreditBillMode("supplementary"), "supplementary");
+check("账单模式归一：consolidated", normalizeCreditBillMode("consolidated"), "consolidated");
+check("账单模式归一：未知值回落 separate", normalizeCreditBillMode("unknown"), "separate");
+check("卡别归一：supplementary", normalizeAccountCardRole("supplementary"), "supplementary");
+check("卡别归一：primary", normalizeAccountCardRole("primary"), "primary");
+check("卡别归一：存量/未知值回落 primary", normalizeAccountCardRole(undefined), "primary");
+
+type BillRow = {
+  id: string;
+  householdId: string;
+  institutionId: string | null;
+  groupId: string;
+  kind: string;
+  creditBillMode: string;
+  cardRole?: string | null;
+  primaryCardId: string | null;
+};
+
+function mockBillWriter(rows: BillRow[]) {
+  const matches = (row: BillRow, where: Record<string, unknown> | undefined): boolean => {
+    if (!where) return true;
+    if (Array.isArray(where.OR) && !where.OR.some((part) => matches(row, part as Record<string, unknown>))) return false;
+    for (const [key, cond] of Object.entries(where)) {
+      if (key === "OR") continue;
+      const value = (row as unknown as Record<string, unknown>)[key];
+      if (cond && typeof cond === "object" && !Array.isArray(cond)) {
+        const op = cond as Record<string, unknown>;
+        if ("in" in op && !(op.in as string[]).includes(String(value))) return false;
+        if ("not" in op && value === op.not) return false;
+      } else if (value !== cond) return false;
+    }
+    return true;
+  };
+  return {
+    account: {
+      findFirst: async ({ where }: { where?: Record<string, unknown> }) =>
+        rows.find((row) => matches(row, where)) ?? null,
+      findMany: async ({ where, orderBy }: { where?: Record<string, unknown>; orderBy?: { id?: string } }) => {
+        const found = rows.filter((row) => matches(row, where));
+        if (orderBy?.id === "asc") found.sort((a, b) => a.id.localeCompare(b.id));
+        return found;
+      },
+    },
+  } as never;
 }
-console.log("\n全部通过");
+
+const hid = "h1";
+const inst = "i1";
+const owner = "g1";
+const credit = (
+  id: string,
+  mode: string,
+  primaryCardId: string | null = null,
+  institutionId: string | null = inst,
+  groupId = owner,
+  cardRole = "primary",
+): BillRow => ({
+  id, householdId: hid, institutionId, groupId, kind: "bank_credit", creditBillMode: mode, cardRole, primaryCardId,
+});
+const billIds = async (rows: BillRow[], id: string) => {
+  const row = rows.find((item) => item.id === id) as Parameters<typeof getCreditBillAccountIds>[1];
+  return (await getCreditBillAccountIds(mockBillWriter(rows), row)).join(",");
+};
+
+void (async () => {
+  const separateOnly = [credit("solo", "separate")];
+  check("独立账单仍只有自己", await billIds(separateOnly, "solo"), "solo");
+
+  const consolidated = [credit("a", "consolidated"), credit("b", "consolidated")];
+  check("合并账单组不受影响", await billIds(consolidated, "b"), "a,b");
+
+  const withSupplementary = [...consolidated, credit("s", "supplementary", "a")];
+  check("附属卡并入主卡所在合并账单", await billIds(withSupplementary, "s"), "a,b,s");
+  check("主卡账单包含其附属卡", await billIds(withSupplementary, "a"), "a,b,s");
+  check("合并组另一张卡也看到同一份账单", await billIds(withSupplementary, "b"), "a,b,s");
+
+  // 2026-11-22 用户裁定：副卡无条件合并，账单模式对副卡不再可选（cardRole 才是口径）。
+  const roleDriven = [credit("main2", "consolidated"), credit("sub2", "separate", "main2", inst, owner, "supplementary")];
+  check("卡别=副卡即使账单模式是独立也并入主卡", await billIds(roleDriven, "sub2"), "main2,sub2");
+  check("主卡侧同样看到卡别副卡", await billIds(roleDriven, "main2"), "main2,sub2");
+  check("卡别副卡不能当主卡", await billIds([
+    credit("subA", "separate", "subB", inst, owner, "supplementary"),
+    credit("subB", "separate", "subA", inst, owner, "supplementary"),
+  ], "subA"), "subA");
+
+  const separatePrimary = [credit("m", "separate"), credit("x", "supplementary", "m")];
+  check("主卡是独立账单时 = 主卡 + 附属卡", await billIds(separatePrimary, "x"), "m,x");
+  check("主卡侧也含附属卡", await billIds(separatePrimary, "m"), "m,x");
+
+  check("主卡缺失退化为单卡", await billIds([credit("orphan", "supplementary", "missing")], "orphan"), "orphan");
+  check("附属卡不可再挂附属卡", await billIds([
+    credit("s1", "supplementary", "s2"),
+    credit("s2", "supplementary", "s1"),
+  ], "s1"), "s1");
+  check("跨 household 的主卡无效", await billIds([
+    { ...credit("main", "separate"), householdId: "h2" },
+    credit("cross", "supplementary", "main"),
+  ], "cross"), "cross");
+
+  if (failures > 0) {
+    console.error(`\n${failures} 个用例失败`);
+    process.exit(1);
+  }
+  console.log("\n全部通过");
+})();

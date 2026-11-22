@@ -25,6 +25,8 @@ async function resolveBillStorageAccountId(accountId: string) {
       institutionId: true,
       kind: true,
       creditBillMode: true,
+      cardRole: true,
+      primaryCardId: true,
     },
   });
   if (!account) return null;

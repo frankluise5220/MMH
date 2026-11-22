@@ -40,6 +40,8 @@ export async function GET(request: Request) {
         repaymentDay: true,
         repaymentOffsetDays: true,
         creditBillMode: true,
+        cardRole: true,
+        primaryCardId: true,
         billingDayTxPeriod: true,
       },
     });

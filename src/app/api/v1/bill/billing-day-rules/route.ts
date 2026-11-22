@@ -127,6 +127,8 @@ async function resolveBillGroup(householdId: string, accountId: string) {
       groupId: true,
       kind: true,
       creditBillMode: true,
+      cardRole: true,
+      primaryCardId: true,
       billingDay: true,
       repaymentDay: true,
       repaymentOffsetDays: true,
