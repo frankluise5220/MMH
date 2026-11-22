@@ -26,6 +26,7 @@ import {
   parseSpdbOriginalAmount,
 } from "@/lib/statement/header-catalog";
 import type { CaizhiBalanceAdjustRow } from "@/lib/statement/caizhi-template";
+import { EML_HTML_SHEET_NAME } from "@/lib/statement/eml-sheet-reader";
 import { readStatementSheetRows } from "@/lib/statement/statement-sheet-reader";
 import { normalizeStatementHeader as normalizeHeader } from "@/lib/statement/header-utils";
 import { wechatMetaFromRow, wechatMetaHeaderIndexes } from "@/lib/statement/wechat-transfer-guard";
@@ -543,13 +544,19 @@ export function normalizeStatementSheetsRows(
   fieldHeaders: StatementFieldHeaders = STATEMENT_IMPORT_FIELD_HEADERS,
 ): ReadStatementWorkbookResult {
   const sheetRows = readonlySheetRows.map((sheet) => ({ sheetName: sheet.sheetName, rows: sheet.rows }));
+  // 「邮件正文」这张 sheet 只承载整篇 HTML（供服务端按 HTML 结构识别农行这类模板），
+  // 不参与模板识别，也不该把上兆的长行丢进表格识别里。
+  const htmlSheet = sheetRows.find((sheet) => sheet.sheetName === EML_HTML_SHEET_NAME);
+  const contentSheets = htmlSheet ? sheetRows.filter((sheet) => sheet !== htmlSheet) : sheetRows;
   // 识别器清单（财智8→京东→支付宝→微信，短路）与兜底统一在 recognizer-pipeline。
-  const result = parseStatementSheetsStandard(sheetRows, { sourceFileName, fieldHeaders });
+  const result = parseStatementSheetsStandard(contentSheets, { sourceFileName, fieldHeaders });
 
-  const text = sheetRows
-    .flatMap((sheet) => sheet.rows.filter((row) => row.some(Boolean)))
-    .map((row) => row.join("\t"))
-    .join("\n");
+  const text = htmlSheet
+    ? String(htmlSheet.rows[0]?.[0] ?? "")
+    : contentSheets
+        .flatMap((sheet) => sheet.rows.filter((row) => row.some(Boolean)))
+        .map((row) => row.join("\t"))
+        .join("\n");
 
   return {
     rows: result.rows,

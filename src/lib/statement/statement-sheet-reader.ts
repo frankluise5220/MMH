@@ -1,5 +1,5 @@
 import { decodeTextFile } from "@/lib/text/decode-text-file";
-import { parseEmlSheets } from "@/lib/statement/eml-sheet-reader";
+import { EML_HTML_SHEET_NAME, emlBodyHtml, parseEmlSheets } from "@/lib/statement/eml-sheet-reader";
 
 export type StatementSheetRows = {
   sheetName: string;
@@ -90,8 +90,13 @@ export function parseStatementCsv(text: string): string[][] {
 export async function readStatementSheetRows(file: File): Promise<StatementSheetRows[]> {
   // .eml 邮件账单：正文 HTML 里才是表格，按 CSV 读只会得到邮件头与乱码标签。
   if (isEmlFile(file)) {
-    const sheets = parseEmlSheets(bytesToLatin1(new Uint8Array(await file.arrayBuffer())));
+    const rawLatin1 = bytesToLatin1(new Uint8Array(await file.arrayBuffer()));
+    const sheets = parseEmlSheets(rawLatin1);
     if (sheets.length > 0) return sheets;
+    // 提不出表（银行用嵌套布局表，明细行不是独立表格）：把正文明文交给服务端，
+    // text 里保留完整 HTML，农行这类「按 HTML 结构解析」的模板才认得出。
+    const html = emlBodyHtml(rawLatin1);
+    if (html) return [{ sheetName: EML_HTML_SHEET_NAME, rows: [[html]] }];
   }
   if (!isSpreadsheetWorkbookFile(file)) {
     return [{ sheetName: file.name, rows: parseStatementCsv(await decodeTextFile(file)) }];

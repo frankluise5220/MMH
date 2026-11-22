@@ -7,6 +7,7 @@
 // 纯离线：不连库、不连邮箱、不读用户文件。
 
 import assert from "node:assert/strict";
+import { emlBodyHtml, parseEmlBody, parseHtmlSheets } from "../src/lib/statement/eml-sheet-reader";
 import {
   isAbchinaCreditCardStatement,
   parseAbchinaCreditCardStatement,
@@ -217,5 +218,55 @@ assert.deepEqual(
 
 // 非农行 HTML 不产出，交给别的模板。
 assert.deepEqual(parseAbchinaCreditCardStatement("<html><tr><td>工商银行</td></tr></html>"), []);
+
+// ── .eml 正文解码：农行真实形态是「Content-Transfer-Encoding: base64 + charset=""」 ──
+function encodeBase64(bytes: Uint8Array) {
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  let out = "";
+  for (let i = 0; i < bytes.length; i += 3) {
+    const a = bytes[i];
+    const b = bytes[i + 1] ?? 0;
+    const c = bytes[i + 2] ?? 0;
+    const triplet = (a << 16) | (b << 8) | c;
+    out += alphabet[(triplet >> 18) & 63];
+    out += alphabet[(triplet >> 12) & 63];
+    out += i + 1 < bytes.length ? alphabet[(triplet >> 6) & 63] : "=";
+    out += i + 2 < bytes.length ? alphabet[triplet & 63] : "=";
+  }
+  return out;
+}
+
+// 「银行」的 GBK 字节（D2 F8 D0 D0）拼进 ASCII 骨架，用来验证 charset="" 时的编码探测。
+const gbkBody = new Uint8Array([
+  ...new TextEncoder().encode("<html><head><meta charset=gbk></head><body><table><tr><td>ABC"),
+  0xd2,
+  0xf8,
+  0xd0,
+  0xd0,
+  ...new TextEncoder().encode("</td></tr></table></body></html>"),
+]);
+const eml = [
+  "Return-Path: <bill@abchina.com>",
+  "",
+  "Subject: 金穗信用卡电子对账单",
+  "Content-Type: Text/HTML;",
+  '\tcharset=""',
+  "Content-Transfer-Encoding: base64",
+  "",
+  encodeBase64(gbkBody),
+  "",
+].join("\r\n");
+assert.match(parseEmlBody(eml), /ABC银行/, "base64 正文 + 空 charset 必须按 GBK 探测解出中文");
+assert.match(emlBodyHtml(eml), /<table>/, "解出来的必须是可直接交给解析器的 HTML");
+
+// 嵌套布局表：外层表含内层表时，按深度配对，不能把内层 </table> 当外层结束。
+const nestedHtml =
+  "<html><body><table><tr><td>" +
+  "<table><tr><td>2020-07-31</td><td>商户分期</td><td>-5698.00</td></tr>" +
+  "<tr><td>2020-08-03</td><td>约定还款</td><td>1325.20</td></tr></table>" +
+  "</td></tr></table></body></html>";
+const nestedSheets = parseHtmlSheets(nestedHtml);
+assert.equal(nestedSheets.length, 1, "只收叶子表，外层布局表不单独成表");
+assert.deepEqual(nestedSheets[0].rows[1], ["2020-08-03", "约定还款", "1325.20"], "嵌套表的两行都要提出来");
 
 console.log("check:abc-credit-card PASS");
