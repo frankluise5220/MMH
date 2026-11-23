@@ -168,9 +168,19 @@ async function resolveSupplementaryCardFields(args: {
   cardHolderName: unknown;
   primaryCardId: unknown;
   excludeAccountId?: string;
-}): Promise<{ cardHolderName: string | null; primaryCardId: string | null }> {
+}): Promise<{
+  cardHolderName: string | null;
+  primaryCardId: string | null;
+  /** 主卡上已有的账单属性：附属卡一律沿用，不再单独填写。 */
+  primary: {
+    billingDay: number | null;
+    repaymentDay: number | null;
+    repaymentOffsetDays: number | null;
+    billingDayTxPeriod: string | null;
+  } | null;
+}> {
   if (args.cardRole !== "supplementary" && args.mode !== "supplementary") {
-    return { cardHolderName: null, primaryCardId: null };
+    return { cardHolderName: null, primaryCardId: null, primary: null };
   }
   const cardHolderName = String(args.cardHolderName ?? "").trim() || null;
   const primaryCardId = String(args.primaryCardId ?? "").trim();
@@ -187,7 +197,14 @@ async function resolveSupplementaryCardFields(args: {
       cardRole: "primary",
       creditBillMode: { not: "supplementary" },
     },
-    select: { id: true, institutionId: true },
+    select: {
+      id: true,
+      institutionId: true,
+      billingDay: true,
+      repaymentDay: true,
+      repaymentOffsetDays: true,
+      billingDayTxPeriod: true,
+    },
   });
   if (!primary) {
     throw new SupplementaryCardError("INVALID_PRIMARY_CARD", "主卡必须是本账簿内的信用卡账户（且不能是附属卡）");
@@ -195,7 +212,16 @@ async function resolveSupplementaryCardFields(args: {
   if (args.institutionId && primary.institutionId !== args.institutionId) {
     throw new SupplementaryCardError("INVALID_PRIMARY_CARD", "主卡必须与附属卡属于同一机构");
   }
-  return { cardHolderName, primaryCardId };
+  return {
+    cardHolderName,
+    primaryCardId,
+    primary: {
+      billingDay: primary.billingDay,
+      repaymentDay: primary.repaymentDay,
+      repaymentOffsetDays: primary.repaymentOffsetDays,
+      billingDayTxPeriod: primary.billingDayTxPeriod,
+    },
+  };
 }
 
 function corsHeaders() {
@@ -462,6 +488,16 @@ export async function POST(req: NextRequest) {
       cardHolderName: body.cardHolderName,
       primaryCardId: body.primaryCardId,
     });
+    // 附属卡沿用主卡的账单日 / 还款日 / 交易归属期（账单本来就并进主卡）。
+    // 额度是例外：总览按账单组求和额度，附属卡再记一份会重复计算，所以恒为 null。
+    const inheritedCredit = cardRole === "supplementary" ? supplementaryFields.primary : null;
+    const effectiveBillingDay = inheritedCredit ? inheritedCredit.billingDay : billingDay;
+    const effectiveRepaymentDay = inheritedCredit ? inheritedCredit.repaymentDay : repaymentDay;
+    const effectiveRepaymentOffsetDays = inheritedCredit ? inheritedCredit.repaymentOffsetDays : repaymentOffsetDays;
+    const effectiveBillingDayTxPeriod = inheritedCredit
+      ? normalizeCreditBillingDayTxPeriod(inheritedCredit.billingDayTxPeriod)
+      : billingDayTxPeriod;
+    const effectiveCreditLimit = cardRole === "supplementary" ? null : creditLimit;
     const numberMasked = accountSupportsNumberMasked(kind)
       ? String(body.numberMasked ?? "").trim() || null
       : null;
@@ -516,14 +552,15 @@ export async function POST(req: NextRequest) {
           // 多币种父账户：自身不记账，余额由子户折算汇总（初始 0）。
           isAggregate: createAggregate,
           isActive: true,
-          billingDay,
-          repaymentDay,
-          repaymentOffsetDays,
-          creditLimit,
+          billingDay: effectiveBillingDay,
+          repaymentDay: effectiveRepaymentDay,
+          repaymentOffsetDays: effectiveRepaymentOffsetDays,
+          creditLimit: effectiveCreditLimit,
           creditBillMode,
-          billingDayTxPeriod,
+          billingDayTxPeriod: effectiveBillingDayTxPeriod,
           cardRole,
-          ...supplementaryFields,
+          cardHolderName: supplementaryFields.cardHolderName,
+          primaryCardId: supplementaryFields.primaryCardId,
           numberMasked,
           note,
           accountGroup,
@@ -897,6 +934,13 @@ export async function PUT(req: NextRequest) {
     // 留在附属卡时允许只改所有人或只改主卡（未提交的字段沿用原值）。
     const nextModeForSupplementary = (data.creditBillMode ?? existing.creditBillMode) as ReturnType<typeof normalizeCreditBillMode>;
     const nextCardRoleForSupplementary = (data.cardRole ?? existing.cardRole) as ReturnType<typeof normalizeAccountCardRole>;
+    /** 切成附属卡时要跟主卡对齐的账单属性；主卡没配账单日时保持为空，不做任何推断。 */
+    let inheritedSupplementaryCredit: {
+      billingDay: number | null;
+      repaymentDay: number | null;
+      repaymentOffsetDays: number | null;
+      billingDayTxPeriod: string | null;
+    } | null = null;
     if (
       nextCardRoleForSupplementary === "supplementary" ||
       nextModeForSupplementary === "supplementary" ||
@@ -919,6 +963,14 @@ export async function PUT(req: NextRequest) {
       });
       data.cardHolderName = resolved.cardHolderName;
       data.primaryCardId = resolved.primaryCardId;
+      if (nextKind === "bank_credit" && nextCardRoleForSupplementary === "supplementary" && resolved.primary) {
+        inheritedSupplementaryCredit = resolved.primary;
+        // 附属卡不单独持有账单日 / 还款日 / 额度：全部沿用主卡。
+        data.repaymentDay = resolved.primary.repaymentDay;
+        data.repaymentOffsetDays = resolved.primary.repaymentOffsetDays;
+        data.billingDayTxPeriod = normalizeCreditBillingDayTxPeriod(resolved.primary.billingDayTxPeriod);
+        data.creditLimit = null;
+      }
     }
     if (nextKind === "settlement") {
       data.institutionId = null;
@@ -1176,6 +1228,19 @@ export async function PUT(req: NextRequest) {
       await prisma.$transaction(async (tx) => {
         for (const [billingDay, accountIds] of groupCreditCardIdsByBillingDay(priorBillingDayRows)) {
           await ensureInitialCreditCardBillingDayRules(tx, { accountIds, billingDay });
+        }
+        if (
+          inheritedSupplementaryCredit?.billingDay != null &&
+          inheritedSupplementaryCredit.billingDay !== existing.billingDay
+        ) {
+          // 附属卡不持有自己的账单日：把主卡的账单日当成一次变更记进规则，
+          // 随后 syncCreditCardBillingDaysFromRules 会把 account.billingDay 对齐到主卡。
+          await recordCreditCardBillingDayChange(tx, {
+            accountIds: [updated.id],
+            billingDay: inheritedSupplementaryCredit.billingDay,
+            repaymentDay: inheritedSupplementaryCredit.repaymentDay,
+            repaymentOffsetDays: inheritedSupplementaryCredit.repaymentOffsetDays,
+          });
         }
         if (body.billingDay !== undefined && nextCreditBillingDay !== existing.billingDay && nextCreditBillingDay != null) {
           await recordCreditCardBillingDayChange(tx, {

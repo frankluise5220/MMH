@@ -1127,7 +1127,8 @@ export function AccountEditDialog({
               {supportsLastFour && (
                 <EditSection title={t("settings.accounts.editSectionCard")} className="mt-4 rounded-lg border border-slate-200/60 bg-slate-50/50 p-3">
                 <div className="grid grid-cols-2 gap-x-3 gap-y-2.5 md:grid-cols-4">
-                  {isBillLikeKind && (
+                  {/* 额度 / 账单日 / 还款日都是主卡属性：附属卡一律从主卡继承，这里不再出现。 */}
+                  {isBillLikeKind && !isSupplementaryCard && (
                     <>
                       {/* 账单日与还款日都不在这里单独放字段：银行通常两者一起改，所以都由
                           下方的「账单日 / 还款日变更记录」按生效日期管理。 */}
@@ -1144,7 +1145,7 @@ export function AccountEditDialog({
                       </div>
                     </>
                   )}
-                  {isBillLikeKind && (
+                  {isBillLikeKind && !isSupplementaryCard && (
                     <div>
                       <label className={FIELD_LABEL_CLS}>{t("settings.accounts.billingDayTxPeriodLabel")}</label>
                       <select
@@ -1215,6 +1216,9 @@ export function AccountEditDialog({
                           searchable
                           behavior={{ density: "compact" }}
                         />
+                        <div className="mt-1 text-[11px] leading-4 text-slate-400">
+                          {t("settings.accounts.supplementaryBillingInheritHint")}
+                        </div>
                       </div>
                     </>
                   )}
@@ -1222,7 +1226,7 @@ export function AccountEditDialog({
                 </EditSection>
               )}
 
-              {isBillLikeKind && editingBillingAccount ? (
+              {isBillLikeKind && !isSupplementaryCard && editingBillingAccount ? (
                 // 这张表自带卡片头（标题 + 「新增」按钮），外面不再套分区标题，避免重复。
                 <div className="mt-4">
                   <CreditCardBillingDayRulesTable

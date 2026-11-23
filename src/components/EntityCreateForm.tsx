@@ -352,6 +352,8 @@ const ENTITY_CONFIG = {
     fullFields: [
       { key: "name", labelKey: "entityForm.accountNameLabel", type: "text", placeholderKey: "entityForm.accountNamePlaceholder" },
       { key: "kind", labelKey: "entityForm.accountTypeLabel", type: "select", options: ACCOUNT_KIND_OPTIONS, defaultValue: "bank_debit" },
+      // 卡别紧跟账户类型：选了信用卡就先定主卡/附属卡，再谈其它属性。
+      { key: "cardRole", labelKey: "settings.accounts.cardRole", type: "select", options: CARD_ROLE_OPTIONS, defaultValue: "primary", condition: (f) => f.kind === "bank_credit" },
       // The loan category is one level below the account kind, so it follows `kind`;
       // the server derives the account's loanType from it.
       { key: "loanType", labelKey: "settings.accounts.loanCategory", type: "select", options: LOAN_TYPE_OPTIONS, defaultValue: "home", condition: (f) => f.kind === "loan" },
@@ -381,13 +383,13 @@ const ENTITY_CONFIG = {
       { key: "agreementTermValue", labelKey: "liabilityTx.agreementTerm", type: "text", placeholderKey: "stockFee.optional", condition: (f) => f.kind === "settlement" },
       { key: "agreementDueDate", labelKey: "liabilityTx.agreementDueDate", type: "date", condition: (f) => f.kind === "settlement" },
       { key: "currency", labelKey: "detail.column.currency", type: "select", options: CURRENCY_OPTION_KEYS, defaultValue: "CNY" },
-      { key: "billingDay", labelKey: "settings.accounts.billingDayLabel", type: "text", placeholderKey: "entityForm.billingDayPlaceholder", condition: (f) => f.kind === "bank_credit" },
-      { key: "billingDayTxPeriod", labelKey: "settings.accounts.billingDayTxPeriodLabel", type: "select", options: CREDIT_BILLING_DAY_TX_PERIOD_OPTIONS, defaultValue: "current", condition: (f) => f.kind === "bank_credit" },
-      { key: "repaymentDayMode", labelKey: "settings.accounts.repaymentDayModeLabel", type: "select", options: CREDIT_REPAYMENT_DAY_MODE_OPTIONS, defaultValue: "fixed", condition: (f) => f.kind === "bank_credit" },
-      { key: "repaymentDay", labelKey: "settings.accounts.repaymentDayLabel", type: "text", placeholderKey: "entityForm.dayRangePlaceholder", condition: (f) => f.kind === "bank_credit" && f.repaymentDayMode !== "offset" },
-      { key: "repaymentOffsetDays", labelKey: "settings.accounts.repaymentOffsetDaysLabel", type: "text", placeholderKey: "entityForm.repaymentOffsetDaysPlaceholder", condition: (f) => f.kind === "bank_credit" && f.repaymentDayMode === "offset" },
-      { key: "creditLimit", labelKey: "settings.accounts.creditLimitLabel", type: "text", placeholderKey: "entityForm.creditLimitPlaceholder", condition: (f) => f.kind === "bank_credit" },
-      { key: "cardRole", labelKey: "settings.accounts.cardRole", type: "select", options: CARD_ROLE_OPTIONS, defaultValue: "primary", condition: (f) => f.kind === "bank_credit" },
+      // 账单日 / 还款日 / 额度都是主卡属性：附属卡一律从主卡继承，表单不再询问。
+      { key: "billingDay", labelKey: "settings.accounts.billingDayLabel", type: "text", placeholderKey: "entityForm.billingDayPlaceholder", condition: (f) => f.kind === "bank_credit" && !isSupplementaryCardForm(f) },
+      { key: "billingDayTxPeriod", labelKey: "settings.accounts.billingDayTxPeriodLabel", type: "select", options: CREDIT_BILLING_DAY_TX_PERIOD_OPTIONS, defaultValue: "current", condition: (f) => f.kind === "bank_credit" && !isSupplementaryCardForm(f) },
+      { key: "repaymentDayMode", labelKey: "settings.accounts.repaymentDayModeLabel", type: "select", options: CREDIT_REPAYMENT_DAY_MODE_OPTIONS, defaultValue: "fixed", condition: (f) => f.kind === "bank_credit" && !isSupplementaryCardForm(f) },
+      { key: "repaymentDay", labelKey: "settings.accounts.repaymentDayLabel", type: "text", placeholderKey: "entityForm.dayRangePlaceholder", condition: (f) => f.kind === "bank_credit" && !isSupplementaryCardForm(f) && f.repaymentDayMode !== "offset" },
+      { key: "repaymentOffsetDays", labelKey: "settings.accounts.repaymentOffsetDaysLabel", type: "text", placeholderKey: "entityForm.repaymentOffsetDaysPlaceholder", condition: (f) => f.kind === "bank_credit" && !isSupplementaryCardForm(f) && f.repaymentDayMode === "offset" },
+      { key: "creditLimit", labelKey: "settings.accounts.creditLimitLabel", type: "text", placeholderKey: "entityForm.creditLimitPlaceholder", condition: (f) => f.kind === "bank_credit" && !isSupplementaryCardForm(f) },
       { key: "creditBillMode", labelKey: "entityForm.creditBillModeLabel", type: "select", options: CREDIT_BILL_MODE_OPTIONS, defaultValue: "separate", condition: (f) => f.kind === "bank_credit" && !isSupplementaryCardForm(f) },
       // 附属卡：所有人由用户自由填写；主卡从同机构、非附属卡的信用卡账户中选（fieldData 由账户设置页提供）。
       { key: "cardHolderName", labelKey: "entityForm.cardHolderName", type: "text", placeholderKey: "entityForm.optional", condition: isSupplementaryCardForm },
@@ -1125,6 +1127,9 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
           placeholder={t("settings.accounts.selectPrimaryCard")}
           searchable
         />
+        <div className="mt-1 text-[11px] leading-4 text-slate-400">
+          {t("settings.accounts.supplementaryBillingInheritHint")}
+        </div>
       </div>
     );
   }
@@ -1162,6 +1167,11 @@ export function EntityCreateForm(props: EntityCreateFormProps) {
       }
       if (accountRequiresInstitution(accountKind, investProductType) && !form.institutionId) {
         setError(t("settings.accounts.import.institutionRequired"));
+        return;
+      }
+      // 附属卡的账单日 / 还款日 / 额度都从主卡取，因此必须先选出主卡。
+      if (accountKind === "bank_credit" && form.cardRole === "supplementary" && !form.primaryCardId) {
+        setError(t("settings.accounts.primaryCardRequired"));
         return;
       }
       if (form.institutionId && !accountInstitutionTypeIsAllowed(accountKind, investProductType, selectedInstitution?.type)) {
