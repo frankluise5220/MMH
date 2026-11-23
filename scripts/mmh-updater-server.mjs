@@ -5,7 +5,15 @@ import { access, readFile, rename, writeFile } from "node:fs/promises";
 const port = Number(process.env.MMH_UPDATER_PORT || 7788);
 const token = String(process.env.MMH_UPDATE_TOKEN || "").trim();
 const workdir = process.env.MMH_WORKDIR || "/workspace";
-const composeProject = process.env.MMH_COMPOSE_PROJECT || "mmh";
+// The value passed as `-p` to every compose command. `.env` is only a hint:
+// the containers were created by whichever `-p` / NAS stack name the install
+// used, while all three container_names are fixed (mmh-app / mmh-db /
+// mmh-updater). When the two disagree, `up -d --force-recreate app` tries to
+// create a name that is still in use, and the rollback reuses the same `-p`
+// and fails identically — the user is left with a half-applied update and no
+// GUI way out. So the real project name is resolved from this container's own
+// label at the start of every run; `.env` is the fallback, not the source.
+let composeProject = process.env.MMH_COMPOSE_PROJECT || "mmh";
 const composeFile = process.env.MMH_COMPOSE_FILE || `${workdir}/docker-compose.yml`;
 const taskStateFile = `${workdir}/.mmh-update-task.json`;
 const usedImagesFile = `${workdir}/.mmh-used-images.json`;
@@ -65,7 +73,43 @@ let task = {
 let hostWorkdir = "";
 let currentUpdaterImage = "";
 
+/**
+ * Resolve the Compose project that actually owns this container.
+ *
+ * The label `com.docker.compose.project` is written by `docker compose` at
+ * create time, so it survives `.env` edits, a renamed install directory and
+ * `-p` differences. `HOSTNAME` inside the container is the container id, which
+ * `docker inspect` accepts directly; `mmh-updater` is kept as a fallback for
+ * runtimes that do not set it.
+ */
+async function resolveComposeProject() {
+  const candidates = [process.env.HOSTNAME, "mmh-updater"].filter(Boolean);
+  for (const container of candidates) {
+    let raw = "";
+    try {
+      raw = await captureDocker(["inspect", container, "--format", "{{json .Config.Labels}}"]);
+    } catch {
+      continue;
+    }
+    let labels = null;
+    try {
+      labels = raw ? JSON.parse(raw) : null;
+    } catch {
+      labels = null;
+    }
+    const label = String(labels?.["com.docker.compose.project"] || "").trim();
+    if (!label) continue;
+    if (label !== composeProject) {
+      pushLog(`compose 项目名以容器标签为准：${label}（MMH_COMPOSE_PROJECT 写的是 ${composeProject}）`);
+      composeProject = label;
+    }
+    return;
+  }
+  pushLog(`未能从容器标签解析 compose 项目名，沿用 MMH_COMPOSE_PROJECT=${composeProject}`);
+}
+
 async function resolveHostWorkdir() {
+  await resolveComposeProject();
   try {
     const source = await captureDocker([
       "inspect",
@@ -726,23 +770,134 @@ function extractImageVersion(manifestText) {
   }
 }
 
-function normalizeTimeoutMs(input, fallback = 12000) {
+function normalizeTimeoutMs(input, fallback = 20000) {
   const n = Number(input);
   if (!Number.isFinite(n)) return fallback;
-  return Math.min(Math.max(Math.round(n), 3000), 15000);
+  return Math.min(Math.max(Math.round(n), 3000), 30000);
 }
 
-function testImageManifest(source, image, timeoutMs = 12000) {
-  return new Promise((resolve) => {
-    if (!image) {
-      resolve({ source, ok: false, error: "未填写镜像地址" });
-      return;
-    }
+const MANIFEST_ACCEPT_HEADER = [
+  "application/vnd.oci.image.index.v1+json",
+  "application/vnd.docker.distribution.manifest.list.v2+json",
+  "application/vnd.oci.image.manifest.v1+json",
+  "application/vnd.docker.distribution.manifest.v2+json",
+].join(", ");
 
-    const startedAt = Date.now();
+function parseImageReference(image) {
+  let rest = String(image || "").trim();
+  if (!rest) return null;
+  let reference = "";
+  const atIndex = rest.lastIndexOf("@");
+  if (atIndex > 0) {
+    reference = rest.slice(atIndex + 1);
+    rest = rest.slice(0, atIndex);
+  }
+  const lastSlash = rest.lastIndexOf("/");
+  const lastColon = rest.lastIndexOf(":");
+  if (!reference && lastColon > lastSlash) {
+    reference = rest.slice(lastColon + 1);
+    rest = rest.slice(0, lastColon);
+  }
+  const segments = rest.split("/").filter(Boolean);
+  let host = "docker.io";
+  if (segments.length > 1 && (/[.:]/.test(segments[0]) || segments[0] === "localhost")) {
+    host = segments.shift();
+  }
+  const repo = segments.join("/");
+  if (!repo) return null;
+  return {
+    host,
+    repo: host === "docker.io" && !repo.includes("/") ? `library/${repo}` : repo,
+    reference: reference || "latest",
+  };
+}
+
+// Registry 可能回 401 要求 Bearer token（ghcr / docker hub 匿名也要走一次
+// token 端点）。这里只做一次换票重试，失败就交回调用方回落 buildx。
+async function fetchRegistryResponse(url, headers, signal) {
+  let response = await fetch(url, { headers, signal });
+  if (response.status !== 401) return response;
+  const challenge = response.headers.get("www-authenticate") || "";
+  const realm = /realm="([^"]+)"/.exec(challenge)?.[1];
+  if (!realm) return response;
+  const service = /service="([^"]*)"/.exec(challenge)?.[1] || "";
+  const scope = /scope="([^"]*)"/.exec(challenge)?.[1] || "";
+  const query = [service ? `service=${encodeURIComponent(service)}` : "", scope ? `scope=${encodeURIComponent(scope)}` : ""]
+    .filter(Boolean)
+    .join("&");
+  const tokenResponse = await fetch(query ? `${realm}?${query}` : realm, { signal });
+  if (!tokenResponse.ok) return response;
+  const payload = await tokenResponse.json().catch(() => null);
+  const token = payload?.token || payload?.access_token;
+  if (!token) return response;
+  return await fetch(url, { headers: { ...headers, Authorization: `Bearer ${token}` }, signal });
+}
+
+function versionInfoFromLabels(digest, labels) {
+  const revision = String(labels?.["org.opencontainers.image.revision"] || "");
+  return {
+    digest: String(digest || ""),
+    digestShort: shortDigest(digest),
+    revision,
+    commit: revision.slice(0, 7),
+    created: String(labels?.["org.opencontainers.image.created"] || ""),
+    message: String(labels?.["org.opencontainers.image.description"] || "").split("\n")[0] || "",
+    version: String(labels?.["org.opencontainers.image.version"] || ""),
+  };
+}
+
+/**
+ * 直接按 Registry HTTP API 取 manifest 与 config：index 一跳到 amd64 子项，
+ * 再一次取 config blob 读 Labels，总请求数固定为 3，匿名源实测 2-3 秒。
+ * `docker buildx imagetools inspect` 会把 index 里每个子项（含 attestation）
+ * 都拉一遍，公网源实测 8 秒以上，历史 bug 就出在它撞上 6 秒预算。
+ */
+async function probeImageViaRegistry(image, timeoutMs) {
+  const parsed = parseImageReference(image);
+  if (!parsed) return null;
+  const base = parsed.host === "docker.io" ? "https://registry-1.docker.io" : `https://${parsed.host}`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const manifestUrl = `${base}/v2/${parsed.repo}/manifests/${parsed.reference}`;
+    const manifestResponse = await fetchRegistryResponse(manifestUrl, { Accept: MANIFEST_ACCEPT_HEADER }, controller.signal);
+    if (!manifestResponse.ok) return null;
+    const digest = manifestResponse.headers.get("docker-content-digest") || "";
+    const manifest = await manifestResponse.json().catch(() => null);
+    if (!manifest) return null;
+    let configDigest = "";
+    if (Array.isArray(manifest.manifests)) {
+      const host = manifest.manifests.find((item) => (item?.platform?.os || "linux") === "linux" && item?.platform?.architecture === "amd64");
+      if (!host?.digest) return null;
+      const hostResponse = await fetchRegistryResponse(`${base}/v2/${parsed.repo}/manifests/${host.digest}`, { Accept: MANIFEST_ACCEPT_HEADER }, controller.signal);
+      if (!hostResponse.ok) return null;
+      const hostManifest = await hostResponse.json().catch(() => null);
+      configDigest = hostManifest?.config?.digest || "";
+    } else {
+      configDigest = manifest?.config?.digest || "";
+    }
+    let labels = {};
+    if (configDigest) {
+      const configResponse = await fetchRegistryResponse(`${base}/v2/${parsed.repo}/blobs/${configDigest}`, {}, controller.signal);
+      if (configResponse.ok) {
+        const config = await configResponse.json().catch(() => null);
+        labels = config?.config?.Labels || {};
+      }
+    }
+    return { digest, labels };
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function inspectImageWithBuildx(source, image, timeoutMs, startedAt) {
+  return new Promise((resolve) => {
     let stdout = "";
     let stderr = "";
     let settled = false;
+    let timedOut = false;
     const child = spawn("docker", [
       "buildx",
       "imagetools",
@@ -752,7 +907,11 @@ function testImageManifest(source, image, timeoutMs = 12000) {
       "{{json .}}",
     ], { cwd: workdir });
     const timer = setTimeout(() => {
-      if (!settled) child.kill("SIGTERM");
+      if (settled || timedOut) return;
+      timedOut = true;
+      try {
+        child.kill("SIGTERM");
+      } catch {}
     }, timeoutMs);
 
     child.stdout.on("data", (chunk) => {
@@ -765,6 +924,10 @@ function testImageManifest(source, image, timeoutMs = 12000) {
       settled = true;
       clearTimeout(timer);
       const ms = Date.now() - startedAt;
+      if (timedOut) {
+        resolve({ source, image, ok: false, ms, error: `镜像检查超时（超过 ${Math.round(timeoutMs / 1000)} 秒）` });
+        return;
+      }
       resolve({
         source,
         image,
@@ -780,6 +943,23 @@ function testImageManifest(source, image, timeoutMs = 12000) {
       resolve({ source, image, ok: false, ms: Date.now() - startedAt, error: error.message });
     });
   });
+}
+
+async function testImageManifest(source, image, timeoutMs = 20000) {
+  if (!image) return { source, ok: false, error: "未填写镜像地址" };
+  const startedAt = Date.now();
+  const probed = await probeImageViaRegistry(image, Math.max(3000, Math.min(timeoutMs, 10000)));
+  if (probed) {
+    return {
+      source,
+      image,
+      ok: true,
+      ms: Date.now() - startedAt,
+      version: versionInfoFromLabels(probed.digest, probed.labels),
+      error: "",
+    };
+  }
+  return await inspectImageWithBuildx(source, image, timeoutMs, startedAt);
 }
 
 async function testImageSourceSpeed(input) {

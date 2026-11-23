@@ -519,6 +519,23 @@ expect(
     /MMH_UPDATE_ALLOW_NO_SNAPSHOT/.test(nasEnvExample),
   "The no-snapshot escape hatch must exist in the updater and be documented in the NAS env example.",
 );
+
+// The compose project that owns the containers is not necessarily the one in
+// `.env`: a `-p` flag, a NAS stack name or a renamed install directory leaves
+// `MMH_COMPOSE_PROJECT=mmh` pointing at nothing. All three container_names are
+// fixed, so `docker compose -p <env value> up -d --force-recreate app` tries to
+// create a name that is still in use, and the rollback — same `-p` — fails the
+// same way, leaving a half-applied update that only the host shell can fix.
+// The project must therefore come from the updater's own container label.
+expect(
+  /com\.docker\.compose\.project/.test(updaterServer) &&
+    /let composeProject =/.test(updaterServer) &&
+    /async function resolveComposeProject/.test(updaterServer) &&
+    updaterServer.indexOf("await resolveComposeProject()") > 0 &&
+    updaterServer.indexOf("await resolveComposeProject()") <
+      updaterServer.indexOf("await takePreUpdateSnapshot()"),
+  "The Docker updater must resolve the Compose project from its own `com.docker.compose.project` label before touching the stack, and keep `MMH_COMPOSE_PROJECT` only as a fallback: a mismatch makes both the recreate and the rollback collide with the fixed container names.",
+);
 expect(
   /rolledback/.test(systemUpdatePage) &&
     /"settings.systemUpdate.rolledBack"/.test(i18nCore) &&
