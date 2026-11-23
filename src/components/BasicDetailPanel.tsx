@@ -16,6 +16,7 @@ import { foldRunningBalancesInDescOrder, removeEntriesAndUpdateRunningBalances }
 import { HANDSET_HIDDEN_CLASS, ViewExcelImportMenuButton } from "@/components/ViewExcelImportMenuButton";
 import {
   FINANCE_DATA_CHANGED_EVENT,
+  applyReconcileRecords,
   classifyFinanceEntryChange,
   financeChangeAffectsAccount,
   isBulkFinanceEntryChange,
@@ -42,6 +43,7 @@ import {
   filterEntriesByRange,
   invalidateDetailAll,
   isDetailAllReady,
+  patchDetailAllRowFields,
   patchDetailAllRows,
   peekDetailAll,
   subscribeDetailAll,
@@ -1177,6 +1179,18 @@ export function BasicDetailPanel({
             `${detailAllCacheKey(ALL_CASH_DETAIL_SCOPE_ID)}:hideIncome`,
           ] : []),
         ]));
+
+      // ②.5 对账锁定 / 解锁：只写 `reconciledAt` / `reconciledBalance` 两列，
+      // 行集合、排序、逐笔余额都不变（锚点值就是当时显示的事后余额）。服务端已经把
+      // 落库值带回事件里了，就地合并即可 —— 以前它落在「结构变化」档，「全部」视图
+      // 会整份重拉几万行，用户点一次锁要等好几秒。缓存同样按字段补，不整行替换。
+      const reconciledRecords = detail.reconciledRecords ?? [];
+      if (detail.reason === "entry-reconcile" && reconciledRecords.length > 0) {
+        const patchedRows = applyReconcileRecords(localEntries, reconciledRecords);
+        if (patchedRows !== localEntries) setLocalEntries(patchedRows);
+        for (const key of affectedKeys ?? []) patchDetailAllRowFields(key, reconciledRecords);
+        return;
+      }
 
       // ③ 只改行文本：行数 / 排序 / 逐笔余额 / 总条数都不变。
       //    索引分页视图 → 取回当前页完整行、按 id 覆盖，零整份重拉、零期初余额重算；

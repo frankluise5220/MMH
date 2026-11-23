@@ -15,6 +15,11 @@ export type FinanceDataChangedDetail = {
    * Absent/true keeps the previous full-refresh behavior.
    */
   balanceChanged?: boolean;
+  /**
+   * 对账锁定 / 解锁落库后的两列（`reason === "entry-reconcile"` 时带）。
+   * 明细页据此按 id 就地改行：锁标记立刻出现 / 消失，余额列与行集合都不动。
+   */
+  reconciledRecords?: Array<{ id: string; reconciledAt?: string | null; reconciledBalance?: number | null }>;
 };
 
 /**
@@ -116,8 +121,43 @@ export type FinanceEntryImpact = "none" | "text" | "structure";
  * 索引「全部」视图与筛选 / 标签视图不适用 `text` 档：前者编辑的行可能不在当前页，
  * 后者改了筛选列值会让该行进出结果集，两者都必须重算整个结果集。
  */
+/**
+ * 把对账落库结果按 id 合进现有行：只覆盖 `reconciledAt` / `reconciledBalance`。
+ *
+ * 与 `patchDetailAllRows` 的区别是它接受「缺字段的补丁对象」而不是整行 —— 对账返回的
+ * 就只有这两列，拿它整行替换会把 runningBalance 等字段抹掉。一条都没命中时返回
+ * 原数组引用，调用方可以据此跳过 setState。
+ */
+export function applyReconcileRecords<
+  T extends { id: string; reconciledAt?: string | null; reconciledBalance?: number | null },
+>(
+  rows: T[],
+  records: ReadonlyArray<{ id: string; reconciledAt?: string | null; reconciledBalance?: number | null }>,
+): T[] {
+  if (rows.length === 0 || records.length === 0) return rows;
+  const byId = new Map(records.map((record) => [record.id, record]));
+  let changed = false;
+  const next = rows.map((row) => {
+    const record = byId.get(row.id);
+    if (!record) return row;
+    const reconciledAt = record.reconciledAt ?? null;
+    const reconciledBalance = record.reconciledBalance ?? null;
+    if ((row.reconciledAt ?? null) === reconciledAt && (row.reconciledBalance ?? null) === reconciledBalance) {
+      return row;
+    }
+    changed = true;
+    return { ...row, reconciledAt, reconciledBalance };
+  });
+  return changed ? next : rows;
+}
+
 export function classifyFinanceEntryChange(detail: FinanceDataChangedDetail): FinanceEntryImpact {
   if (!financeChangeTouchesEntries(detail)) return "none";
+  // 对账只写 reconciledAt / reconciledBalance 两列：行集合、日期、金额、账户、
+  // 排序都没变，逐笔余额也不变（锚点值就是当时那一行显示的事后余额）。
+  // 所以按「文本」档处理，由调用方用事件里的 records 就地改行；绝不能落进
+  // 「结构」档 —— 那会让「全部」视图整份重拉（5 万行），用户点了锁要等半天。
+  if (detail.reason === "entry-reconcile") return "text";
   if (
     detail.balanceChanged === false
     && (detail.entryIds?.length ?? 0) > 0

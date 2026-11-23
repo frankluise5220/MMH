@@ -21,7 +21,7 @@ import { toNumber } from "@/lib/date-utils";
 import { recalcAndSaveAccountBalance } from "@/lib/server/account-balance";
 import { queryDetailRunningBalancesForEntries } from "@/lib/server/detail-page-query";
 import { getHouseholdScope } from "@/lib/server/household-scope";
-import { revalidateAfterTxChange } from "@/lib/server/revalidate";
+import { revalidateAfterEntryOrderChange } from "@/lib/server/revalidate";
 
 export const runtime = "nodejs";
 
@@ -34,6 +34,22 @@ const BodySchema = z.object({
 
 function money(value: number) {
   return Number(value.toFixed(2));
+}
+
+/**
+ * 账户余额重算放后台，不挂在响应上。
+ *
+ * 锁定 / 解锁只写 `reconciledAt` / `reconciledBalance`，没有任何一笔流水的金额、
+ * 账户、日期发生变化，所以账户余额的计算结果必然不变（写进去的锚点值本身就是
+ * 当时现算的事后余额）。这里还同步重算纯属浪费：实测 6366 行的账户多花 0.4~0.6s，
+ * 3100 行那个账户 1.7s（写入锚点后改为「从锚点往后折叠」，反而更慢），用户点了锁
+ * 就干等着。丢到后台只是顺手校正历史脏值，失败也不影响本次操作。
+ */
+function recalcInBackground(accountIds: Set<string>) {
+  if (accountIds.size === 0) return;
+  void Promise.all(
+    Array.from(accountIds).map((accountId) => recalcAndSaveAccountBalance(accountId).catch(() => undefined)),
+  );
 }
 
 export async function POST(req: Request) {
@@ -67,15 +83,19 @@ export async function POST(req: Request) {
       where: { id: { in: entries.map((entry) => entry.id) }, householdId },
       data: { reconciledAt: null, reconciledBalance: null },
     });
-    for (const accountId of affectedAccountIds) {
-      await recalcAndSaveAccountBalance(accountId).catch(() => {});
-    }
-    revalidateAfterTxChange();
+    recalcInBackground(affectedAccountIds);
+    // 只失效 tag，不 purge 任何路由：明细页正是路由 "/overview"，purge 它等于让 dev
+    // 在响应期间同步重渲染整个首页（实测 unlock 一条要 7.9 秒）。行集合 / 余额都没变，
+    // 锁标记由客户端按回传的两列就地补，导航到别的页面时 tag 已失效，拿到的一定是新值。
+    revalidateAfterEntryOrderChange();
     return NextResponse.json({
       ok: true,
       action,
       count: result.count,
       accountIds: Array.from(affectedAccountIds),
+      // 落库后的两列原样回传：明细页据此就地改行（锁标记 / 锚点），
+      // 不必为了两个字段重拉整页乃至整份（「全部」视图是 5 万行）。
+      records: entries.map((entry) => ({ id: entry.id, reconciledAt: null, reconciledBalance: null })),
     });
   }
 
@@ -87,6 +107,7 @@ export async function POST(req: Request) {
       action,
       count: 0,
       accountIds: Array.from(affectedAccountIds),
+      records: [],
     });
   }
 
@@ -129,25 +150,29 @@ export async function POST(req: Request) {
   }
 
   const reconciledAt = new Date();
-  for (const entry of targets) {
-    await prisma.txRecord.update({
+  const records: Array<{ id: string; reconciledAt: string | null; reconciledBalance: number | null }> = [];
+  // 一次事务提交：以前是 N 条 update 各自自动提交，选中几十行时光等待 fsync / 往返
+  // 就够转好几秒。行数不变、值不同，Prisma 的批量 update 表达不了，用事务数组包住。
+  const updates = targets.map((entry) => {
+    const reconciledBalance = money(toNumber(balanceById.get(entry.id)));
+    records.push({ id: entry.id, reconciledAt: reconciledAt.toISOString(), reconciledBalance });
+    return prisma.txRecord.update({
       where: { id: entry.id },
-      data: {
-        reconciledAt,
-        reconciledBalance: money(toNumber(balanceById.get(entry.id))),
-      },
+      data: { reconciledAt, reconciledBalance },
     });
-  }
+  });
+  if (updates.length > 0) await prisma.$transaction(updates);
 
-  for (const accountId of affectedAccountIds) {
-    await recalcAndSaveAccountBalance(accountId).catch(() => {});
-  }
-  revalidateAfterTxChange();
+  recalcInBackground(affectedAccountIds);
+  // 同 unlock：只失效 tag。`revalidatePath("/overview")` 就是明细页自己，
+  // purge 它会让响应多等一次整页重渲染（实测 2.6s → 8s 不等）。
+  revalidateAfterEntryOrderChange();
 
   return NextResponse.json({
     ok: true,
     action,
     count: targets.length,
     accountIds: Array.from(affectedAccountIds),
+    records,
   });
 }

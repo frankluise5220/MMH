@@ -369,6 +369,31 @@ export function patchDetailAllRows<T extends { id: string }>(key: string, rows: 
   if (stale) stale.entries = apply(stale.entries as T[]);
 }
 
+/**
+ * 按 id 合并若干字段（不是整行替换）。
+ *
+ * 用于「服务端只回了几列」的局部更新（对账锁：`reconciledAt` / `reconciledBalance`）。
+ * 这类补丁对象缺 `runningBalance` / 分类 / 关联业务字段，走 `patchDetailAllRows`
+ * 整行替换会把这些列抹掉，所以必须这里按字段展开合并。
+ */
+export function patchDetailAllRowFields(
+  key: string,
+  patches: ReadonlyArray<{ id: string } & Record<string, unknown>>,
+) {
+  if (patches.length === 0) return;
+  const byId = new Map(patches.map((patch) => [patch.id, patch]));
+  const apply = (entries: unknown[]) =>
+    entries.map((entry) => {
+      const row = entry as { id?: unknown } | null;
+      const patch = row && typeof row.id === "string" ? byId.get(row.id) : undefined;
+      return patch ? { ...(entry as Record<string, unknown>), ...patch } : entry;
+    });
+  const job = jobs.get(key);
+  if (job?.entries.length) job.entries = apply(job.entries);
+  const stale = staleSnapshots.get(key);
+  if (stale) stale.entries = apply(stale.entries);
+}
+
 /** 结构变化事件带来的行标识：用来修正兜底数据，避免删掉的行复活、新增的行被遮住。 */
 export type CacheChangeOptions = {
   /** 本次事件涉及的行（新增 / 修改 / 删除都在内）。 */

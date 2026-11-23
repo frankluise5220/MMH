@@ -139,6 +139,37 @@ function zonedDayStartUtc(dateKey: string, timeZone: string): Date | null {
   return result;
 }
 
+/**
+ * 搜狐（sohu.com）IMAP 的 NAMESPACE 响应不合规，必须跳过。
+ *
+ * 实测 `4 NAMESPACE` 的回包是 `* CAPABILITY (("" "/")) NIL NIL` ——
+ * 数据是对的，但 untagged 关键字写成了 CAPABILITY 而不是 NAMESPACE（RFC 2342 要求后者）。
+ * imapflow 只把 NAMESPACE 处理器挂在 `untagged.NAMESPACE` 上，于是这条回包被当成
+ * capabilities 更新处理，namespace 始终为空，解析器此后也不再对后续命令收尾：
+ * 紧接着的 `LIST "" "INBOX"` 服务器 100ms 就回了包，客户端却一直等到 socketTimeout，
+ * 最终 connect() 之后的所有操作都抛 `Connection not available`（NoConnection）。
+ *
+ * 这就是「sohu 邮箱一直测试失败」的真正原因（与密码/端口无关，LOGIN 是成功的）。
+ * 这里在 connect 之前拦掉 NAMESPACE，直接给出该服务器的实际命名空间：
+ * 裸 socket 实测 `LIST "" ""` 返回 `* LIST (\Noselect) "/" "/"`，即 prefix 空、delimiter "/"。
+ */
+const BROKEN_NAMESPACE_HOSTS = /(?:^|\.)sohu\.com$/i;
+
+function skipBrokenNamespace(client: InstanceType<typeof ImapFlow>, host: string) {
+  if (!BROKEN_NAMESPACE_HOSTS.test(host)) return;
+  const namespace = { prefix: "", delimiter: "/" };
+  const originalRun = client.run.bind(client);
+  const patched = async (command: string, ...rest: unknown[]) => {
+    if (String(command).toUpperCase() === "NAMESPACE") {
+      (client as unknown as { namespaces: unknown }).namespaces = { personal: [namespace], other: false, shared: false };
+      (client as unknown as { namespace: unknown }).namespace = namespace;
+      return namespace;
+    }
+    return (originalRun as unknown as (cmd: string, ...args: unknown[]) => Promise<unknown>)(command, ...rest);
+  };
+  (client as unknown as { run: unknown }).run = patched;
+}
+
 function buildClient(config: ImapConfig) {
   return new ImapFlow({
     host: config.host,
@@ -670,6 +701,7 @@ function describeConnectFailure(config: ImapConfig, error: unknown, probe: Endpo
  */
 export async function connectImap(config: ImapConfig, trace: string[] = []) {
   const client = buildClient(config);
+  skipBrokenNamespace(client, config.host);
   const endpoint = `${config.host}:${config.port} secure=${config.secure ? "1" : "0"}`;
 
   trace.push(`connect ${endpoint}`);

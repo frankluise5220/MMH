@@ -42,26 +42,26 @@ const HORIZONTAL_SCROLL_TOLERANCE_PX = 4;
 const ROW_VIRTUALIZATION_THRESHOLD = 200;
 const HEADER_SORT_CLICK_DELAY_MS = 220;
 /**
- * 长按整行进入拖拽的触发时长。600ms 是刻意取的值：短到不用刻意等，又长于普通点按/双击的间隔，
+ * 长按整行进入拖拽的触发时长。400ms：短到不用刻意等，又长于普通点按的间隔，
  * 按住期间只做浅色高亮，不到点不起拖，不会和「滑动列表 / 点开记录」抢手势。
  */
-const ROW_LONG_PRESS_DRAG_DELAY_MS = 600;
+const ROW_LONG_PRESS_DRAG_DELAY_MS = 400;
 /** 长按待触发期间允许的抖动；超过即视为滚动或选字，取消本次长按。 */
 const ROW_LONG_PRESS_MOVE_TOLERANCE_PX = 10;
 /** 拖拽中手指贴近视口上下边缘时自动滚动，避免长列表拖不动。 */
 const ROW_DRAG_AUTO_SCROLL_MARGIN_PX = 56;
 const ROW_DRAG_AUTO_SCROLL_MAX_STEP = 22;
 /**
- * 表头列拖拽的悬浮提示时长：鼠标在表头上停留超过 500ms 才弹出「按住可拾起列」，
- * 短于普通扫过表头的时间，又不用刻意等待，顺便把「表头可以拖」这件事告诉用户。
+ * 表头列拖拽的悬浮提示时长：鼠标在表头上停留超过 300ms 才弹出「按住可拾起列」，
+ * 必须早于拾起时长（400ms），否则提示还没出来列就已经能拖了。
  */
-const COLUMN_DRAG_HINT_DELAY_MS = 500;
+const COLUMN_DRAG_HINT_DELAY_MS = 300;
 /**
- * 表头长按拾起一列的触发时长，与行长按拖拽（600ms）取同一档：短到不用刻意等，
+ * 表头长按拾起一列的触发时长，与行长按拖拽（400ms）取同一档：短到不用刻意等，
  * 又长于普通点按的间隔；按住期间表头只做浅色高亮，不到点不起拖，点表头排序、
  * 拉手柄改列宽的手势都不被抢。松手前移动超过容忍距离则本次长按作废。
  */
-const COLUMN_LONG_PRESS_DRAG_DELAY_MS = 600;
+const COLUMN_LONG_PRESS_DRAG_DELAY_MS = 400;
 // Compact rows stay fixed; the user-facing row-height preference owns normal density.
 const COMPACT_ROW_HEIGHT = 30;
 const COMPACT_ROW_CONTENT_HEIGHT = 20;
@@ -3253,7 +3253,7 @@ export function AdvancedDataTable<T>({
     window.addEventListener("pointermove", handlePointerMove, { passive: true });
     window.addEventListener("pointerup", handlePointerRelease, { passive: true });
     window.addEventListener("pointercancel", handlePointerRelease, { passive: true });
-    // 按住满 600ms 才起拖，中间这段时间足够移动端弹出自己的长按菜单（选中/复制），
+    // 按住满 ROW_LONG_PRESS_DRAG_DELAY_MS 才起拖，中间这段时间足够移动端弹出自己的长按菜单（选中/复制），
     // 一旦弹出，本次长按就废了，所以在待触发阶段就要把它按回去。
     const blockContextMenu = (event: Event) => event.preventDefault();
     window.addEventListener("scroll", cancelPending, true);
@@ -3324,7 +3324,7 @@ export function AdvancedDataTable<T>({
       stopAutoScroll();
       endPointerRowDrag(0, 0, false);
     };
-    // 手指已经按住 600ms 才进入拖拽，此时必须挡住页面继续滚动；
+    // 手指已经按住满长按时长才进入拖拽，此时必须挡住页面继续滚动；
     // 非 passive 的 touchmove 是唯一可靠的拦截点（触摸滚动无法用 pointer 事件取消）。
     const blockTouchScroll = (event: TouchEvent) => {
       if (event.cancelable) event.preventDefault();
@@ -3836,7 +3836,7 @@ export function AdvancedDataTable<T>({
                     data-advanced-table-header-cell={column.key}
                     // 钉住的列：transform 由 syncHeaderToScrollLeft 反向补偿（表头在滚动容器外）。
                     data-advanced-table-sticky-header={column.sticky === "right" ? "" : undefined}
-                    // 按住表头 0.6s 拾起该列，左右拖动调整位置（「行操作」列钉在最右，不参与）。
+                    // 按住表头 0.4s 拾起该列，左右拖动调整位置（「行操作」列钉在最右，不参与）。
                     onPointerDown={(event) => handleColumnPointerDown(event, column.key)}
                     onMouseEnter={(event) => {
                       if (column.key !== "__row_actions") scheduleHeaderDragHint(event.currentTarget);

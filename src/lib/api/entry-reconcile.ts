@@ -8,8 +8,15 @@
 
 type EntryReconcileAction = "lock" | "unlock";
 
+/** 服务端落库后的对账两列，供明细页就地改行（不重取列表）。 */
+export type EntryReconcileRecord = {
+  id: string;
+  reconciledAt: string | null;
+  reconciledBalance: number | null;
+};
+
 type EntryReconcileResponse =
-  | { ok: true; action: EntryReconcileAction; count: number; accountIds: string[] }
+  | { ok: true; action: EntryReconcileAction; count: number; accountIds: string[]; records?: EntryReconcileRecord[] }
   | { ok: false; error: string; code?: string; reconciledIds?: string[] };
 
 export async function callReconcileEntries(body: {

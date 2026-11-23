@@ -494,6 +494,34 @@ export default function AISettingsClient({
     return { channelId, modelId: modelData.model?.id || entry.id };
   }
 
+  /**
+   * 「支持图片」原先只能由 model-capabilities 的名字启发式决定（只认 gpt-4o / qwen-vl
+   * 这类带 vl 的名字），用户接的渠道若是不带 vl 的多模态型号（百炼 qwen4e-max 等），
+   * 就会被判成不支持图片，且没有任何地方能纠正，上传截图一律被
+   * VISION_NOT_SUPPORTED 拦住。这里把徽标做成开关，直接改 AiModel.vision——
+   * /api/v1/ai/chat 的 isVisionCapableModel 会读这个字段，判过一次就不再拦。
+   */
+  function handleToggleVision(entry: ModelEntry, next: boolean) {
+    setModels(prev => prev.map(item => (item.id === entry.id ? { ...item, supportsVision: next } : item)));
+    const revert = () => setModels(prev => prev.map(item => (item.id === entry.id ? { ...item, supportsVision: !next } : item)));
+    void fetch("/api/v1/settings/ai-config", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ updateModelId: entry.id, vision: next }),
+    }).then(async (response) => {
+      const data = await response.json().catch(() => null) as any;
+      if (!response.ok || !data?.ok) {
+        revert();
+        alert(t("settings.ai.client.syncFailed"));
+        return;
+      }
+      dispatchAiConfigChanged();
+    }).catch(() => {
+      revert();
+      alert(t("settings.ai.client.syncFailed"));
+    });
+  }
+
   function handleRemoveModel(id: string) {
     const entry = models.find(m => m.id === id);
     if (!entry) return;
@@ -648,9 +676,16 @@ export default function AISettingsClient({
                 </SettingsTd>
                 <SettingsTd>
                   <div className="flex flex-wrap gap-1.5">
-                    {supportsVision
-                      ? <span className="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] text-emerald-700">{t("settings.ai.client.category.vision")}</span>
-                      : <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-500">{t("settings.ai.client.noVision")}</span>}
+                    <button
+                      type="button"
+                      onClick={() => handleToggleVision(m, !supportsVision)}
+                      title={t("settings.ai.client.visionToggleHint")}
+                      className={supportsVision
+                        ? "rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] text-emerald-700 hover:bg-emerald-100"
+                        : "rounded-full bg-slate-100 px-2 py-0.5 text-[11px] text-slate-500 hover:bg-slate-200"}
+                    >
+                      {supportsVision ? t("settings.ai.client.category.vision") : t("settings.ai.client.noVision")}
+                    </button>
                     {isActive ? <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[11px] text-blue-700">{t("settings.display.default")}</span> : null}
                   </div>
                 </SettingsTd>

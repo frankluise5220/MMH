@@ -25,6 +25,10 @@ const VISION_MODEL_KEYWORDS = [
   "qwen-vl",
   "qwen_vl",
   "qwen2-vl",
+  // 百炼从 qwen3 / qwen4 起全系原生多模态，型号名里不再带 vl（如 qwen4e-max、
+  // qwen3.8-flash）。漏判的后果是截图上传直接被 VISION_NOT_SUPPORTED 拦住。
+  "qwen3",
+  "qwen4",
   "glm-4v",
   "internvl",
   "llava",

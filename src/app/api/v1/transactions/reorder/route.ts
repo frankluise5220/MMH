@@ -113,7 +113,7 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: false, code: "ENTRY_NOT_FOUND", error: "记录不存在" }, { status: 404 });
     }
     if (isReorderBalanceAnchor(target)) {
-      return NextResponse.json({ ok: false, code: "BALANCE_ANCHOR_NOT_MOVABLE", error: "余额校准记录固定在当天末尾，不能手动移动" }, { status: 400 });
+      return NextResponse.json({ ok: false, code: "BALANCE_ANCHOR_NOT_MOVABLE", error: "余额校准 / 对账锁定的记录固定在当天末尾，不能手动移动" }, { status: 400 });
     }
 
     // 赎回行的生效日是业务表的 arrivalDate：TxRecord 上的
@@ -213,14 +213,21 @@ export async function POST(req: Request) {
     const reorderedRows = reordered.rows;
     const normalizedOrders = normalizeSameDayOrders(reorderedRows);
 
-    await prisma.$transaction(async (tx) => {
-      for (const row of sameDayRows) {
-        await tx.txRecord.updateMany({
-          where: { id: row.id, householdId },
-          data: { dayOrder: normalizedOrders.get(row.id) ?? 0 },
-        });
-      }
-    });
+    // 只写真正变了的行：整组无条件刷新会把当天每一行的 updatedAt 都推一遍，
+    // 移动端增量同步会把整天的记录当成「被改过」重发。
+    const changedOrders = sameDayRows
+      .map((row) => ({ id: row.id, dayOrder: normalizedOrders.get(row.id) ?? 0, before: row.dayOrder }))
+      .filter((row) => row.before !== row.dayOrder);
+    if (changedOrders.length > 0) {
+      await prisma.$transaction(async (tx) => {
+        for (const row of changedOrders) {
+          await tx.txRecord.updateMany({
+            where: { id: row.id, householdId },
+            data: { dayOrder: row.dayOrder },
+          });
+        }
+      });
+    }
 
     revalidateAfterEntryOrderChange();
 

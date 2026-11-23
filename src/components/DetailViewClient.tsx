@@ -28,12 +28,12 @@ import { useI18n } from "@/lib/i18n";
 import { BALANCE_INITIALIZATION_SOURCE, BALANCE_RECONCILE_SOURCE, effectiveAmountForAccount, getBalanceReconcileTarget, isReconciledEntry } from "@/lib/balance-reconcile";
 import { compareDetailEntriesAsc, compareDetailEntriesDesc, getDetailEntryDisplayDate, getDetailEntryTradeDate } from "@/lib/detail-entry-order";
 import { removeEntriesAndUpdateRunningBalances } from "@/lib/detail-running-balance";
-import { normalizeSameDayOrders, rebaseRunningBalancesAfterSameDayReorder, startOfDayRunningBalanceSeed } from "@/lib/entry-reorder";
+import { isReorderBalanceAnchor, normalizeSameDayOrders, rebaseRunningBalancesAfterSameDayReorder, startOfDayRunningBalanceSeed } from "@/lib/entry-reorder";
 import { buildLiabilityActivityEditEvent, inferLiabilityMode, isLiabilityActivityEntry, type LiabilityMode } from "@/lib/liability-entry-edit";
 import { resolveAccountProductType, resolveEntryProductType, toBusinessLinkType } from "@/lib/entry-product-type";
 import { parseLoanPrepayStrategy } from "@/lib/loan-prepay-strategy";
 import { accountTypeSearchText } from "@/lib/account-kinds";
-import { dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT, financeChangeTouchesEntries, type FinanceDataChangedDetail } from "@/lib/client/refresh";
+import { applyReconcileRecords, dispatchFinanceDataChanged, FINANCE_DATA_CHANGED_EVENT, financeChangeTouchesEntries, type FinanceDataChangedDetail } from "@/lib/client/refresh";
 import { withBasePath } from "@/lib/base-path";
 import {
   ENTRY_ORIGIN_AI_IMPORT,
@@ -539,8 +539,16 @@ function detailEntryDayKey(entry: DetailEntry, accountId: string) {
   return localDateKey(getDetailEntryDisplayDate(entry, accountId));
 }
 
+/**
+ * 可拖判定必须与服务端 reorder 的 `isReorderBalanceAnchor` 同一口径。
+ *
+ * 之前这里只看 `getBalanceReconcileTarget`（余额校准 / 期初），漏了**对账锁定行**
+ * （`reconciledBalance` 非空）：这类行前端照样给出拖拽手柄、本地也先挪了，
+ * 但 POST /transactions/reorder 会回 400 BALANCE_ANCHOR_NOT_MOVABLE，于是
+ * 乐观更新被回滚 —— 用户看到的就是「拖过去又弹回去，刷新还是原样」。
+ */
 function canManuallyReorderDetailEntry(entry: DetailEntry) {
-  return getBalanceReconcileTarget(entry) == null;
+  return !isReorderBalanceAnchor(entry);
 }
 
 function batchCategoryTypeForEntry(entry: DetailEntry) {
@@ -1492,7 +1500,6 @@ export function DetailViewClient({
   const entriesRef = useRef(entries);
   const reorderPersistChainRef = useRef(Promise.resolve());
   const reorderGenRef = useRef(0);
-  const reorderAbortPersistRef = useRef(false);
   useEffect(() => {
     entriesRef.current = entries;
   }, [entries]);
@@ -1551,16 +1558,17 @@ export function DetailViewClient({
     // 排序开着时同日顺序由 dayOrder 决定，必须把编号一起改掉（与数组顺序改动同一帧提交）。
     const nextWithOrders = applyLocalSameDayOrders(nextWithBalances, dayKey, flowAccountIdOf);
     const gen = ++reorderGenRef.current;
-    reorderAbortPersistRef.current = false;
     detailRefreshSeqRef.current += 1;
     entriesRef.current = nextWithOrders;
     setRefreshedEntries({ accountId, entries: nextWithOrders });
     reorderPersistChainRef.current = reorderPersistChainRef.current
       .catch(() => undefined)
       .then(async () => {
-        if (reorderAbortPersistRef.current) return;
+        // 每个拖拽都要落库：服务端按「当天整组重排」计算，跳过中间的拖拽会让
+        // 前一次的相对位置整个丢失（A 拖完立刻拖 B，只发 B 的话 A 就白拖了）。
+        // 代次只用来决定「谁有资格把响应写回界面」。
         const data = await persistEntryReorder({ entryId: source.id, targetEntryId: target.id, targetPosition: position });
-        if (reorderAbortPersistRef.current) return;
+        if (gen !== reorderGenRef.current) return;
         if (!data.orderedEntryIds?.length && !data.runningBalances) return;
         const currentEntries = entriesRef.current;
         const orderedEntries = applyServerEntryOrder(currentEntries, data.orderedEntryIds ?? []);
@@ -1576,7 +1584,8 @@ export function DetailViewClient({
         setRefreshedEntries({ accountId, entries: confirmedWithOrders });
       })
       .catch((error) => {
-        reorderAbortPersistRef.current = true;
+        // 已被更晚的拖拽取代就别回滚：那会把更新的乐观结果一起抹掉。
+        if (gen !== reorderGenRef.current) return;
         entriesRef.current = previousEntries;
         setRefreshedEntries({ accountId, entries: previousEntries });
         window.alert(error instanceof Error ? error.message : t("detailView.alert.reorderFailed"));
@@ -1629,6 +1638,18 @@ export function DetailViewClient({
         && !eventAccountIds.includes(accountId)
         && !eventAccountIds.some((id) => accountColumnScopeIds.has(id))
       ) return;
+      // 对账锁：只改 reconciledAt / reconciledBalance 两列，事件里带着落库值，
+      // 就地补到本页行上即可，不必为一个锁标记重取整页（甚至整份）。
+      const reconciledRecords = detail.reconciledRecords ?? [];
+      if (detail.reason === "entry-reconcile" && reconciledRecords.length > 0) {
+        setRefreshedEntries((current) => {
+          const base = current?.accountId === accountId ? current.entries : entries;
+          const patched = applyReconcileRecords(base, reconciledRecords);
+          if (patched === base && current) return current;
+          return { accountId, entries: patched };
+        });
+        return;
+      }
       const deletedEntryIds = detail.deletedEntryIds ?? [];
       if (deletedEntryIds.length > 0) {
         const deletedSet = new Set(deletedEntryIds);

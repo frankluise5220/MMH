@@ -170,8 +170,11 @@ export function recalculateLoadedRunningBalances(
  *
  * 不能复用 `recalculateLoadedRunningBalances`：那个会先用客户端的
  * `compareDetailEntriesAsc` 重排，而明细顺序必须与 SQL 的
- * `dayKey DESC, isAnchor DESC, dayOrder DESC, displayAt DESC, createdAt DESC, id DESC`
- * 逐键一致；只要同一天有多行、客户端少一个次级键，整段余额就会错开
+ * `dayKey DESC, anchorRank DESC, CASE WHEN anchorRank = 1 THEN 0 ELSE dayOrder END DESC,
+ * displayAt DESC, createdAt DESC, id DESC`
+ * 逐键一致（只有余额校准 / 期初余额这类合成锚点提到当天最后、不吃 dayOrder，
+ * 对账锁定行留在原位，见 detail-page-query.ts 的 buildDetailOrderKeysSql）；
+ * 只要同一天有多行、客户端少一个次级键，整段余额就会错开
  * （实测同一账户 2064 行里会有 99 行对不上，最大差 2 万多）。
  *
  * 现在的用法是：一行数据只在「全部收支」缓存里存一份，单账户视图按

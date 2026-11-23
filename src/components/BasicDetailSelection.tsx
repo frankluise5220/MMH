@@ -437,7 +437,12 @@ export function BasicDetailBatchReconcileButton({ contextAccountId }: { contextA
       }
       setDeleteMessage(t("reconcile.lockedCount", { count: data.count }));
       clear();
-      dispatchFinanceDataChanged({ reason: "entry-reconcile", accountIds: data.accountIds, entryIds });
+      dispatchFinanceDataChanged({
+        reason: "entry-reconcile",
+        accountIds: data.accountIds,
+        entryIds,
+        reconciledRecords: data.records,
+      });
     } catch {
       setDeleteMessage(t("reconcile.failed"));
     } finally {
@@ -504,7 +509,12 @@ export function BasicDetailReconcileLockButton({
         window.alert(data.error || t("reconcile.failed"));
         return;
       }
-      dispatchFinanceDataChanged({ reason: "entry-reconcile", accountIds: data.accountIds, entryIds: [entryId] });
+      dispatchFinanceDataChanged({
+        reason: "entry-reconcile",
+        accountIds: data.accountIds,
+        entryIds: [entryId],
+        reconciledRecords: data.records,
+      });
     } catch {
       window.alert(t("reconcile.failed"));
     } finally {
