@@ -85,6 +85,25 @@ export function getBalanceAnchorTarget(entry: BalanceReconcileEntryLike) {
   return getBalanceReconcileTarget(entry);
 }
 
+/**
+ * 「合成锚点」= 余额校准 / 期初余额行（不是对账锁定行）。
+ *
+ * 两类锚点的排序位置不同：
+ * - 合成锚点代表「当天结束时的账户余额」，只有它才是当天最末一笔；
+ * - 对账锁定行钉住的是「这一条记录的事后余额」，留在自己原本的行位置。
+ *   以前两者都按 `isAnchor DESC` 提前，锁当天中午那笔就成了当天的「最后一笔」，
+ *   当天更晚的行反而落到它前面（用户报告：锁定像是锁了「这一天」而不是这一条）。
+ *
+ * 判定只看 source + 备注前缀，**不看** `reconciledBalance`：校准行本身也可能被
+ * 对账锁定，那时它依然是日终余额行，位置不能因此掉回普通行（与 SQL 的
+ * `anchorRank` 同口径）。
+ */
+export function isSyntheticBalanceAnchor(entry: BalanceReconcileEntryLike) {
+  const source = String(entry.source ?? "");
+  if (source !== BALANCE_RECONCILE_SOURCE && source !== BALANCE_INITIALIZATION_SOURCE) return false;
+  return getBalanceReconcileTarget(entry) != null;
+}
+
 function amountForAccount(entry: AccountFlowEntryLike, accountId?: string | null) {
   const amount = toNumber(entry.amount);
   if (isLiabilityAccountReceivingSide(entry, accountId)) return toNumber(entry.principalAmount);

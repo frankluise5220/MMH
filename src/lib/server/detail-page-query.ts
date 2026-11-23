@@ -117,6 +117,17 @@ function buildDisplayedCte(name: string, source: string, effectiveAmountCase: Pr
             )
           ELSE NULL
         END AS "anchorTarget",
+        -- 锚点排序档位：1 = 余额校准 / 期初余额行，0 = 其余（含对账锁定行）。
+        -- 只有校准余额代表「当天结束时的余额」，必须排在该天最末（DESC 首位）；
+        -- 对账锁定行钉的是「这一条记录的事后余额」，位置留在它原本所在的行。
+        -- 注意先判 source 再判 reconciledBalance：校准行本身也可能被「对账」锁定，
+        -- 那时它依然是日终余额行，不能因为多了 reconciledBalance 就掉回普通行位置。
+        CASE
+          WHEN c."source" IN (${BALANCE_RECONCILE_SOURCE}, ${BALANCE_INITIALIZATION_SOURCE})
+            AND TRIM(COALESCE(c."toNote", '')) LIKE ${`${BALANCE_RECONCILE_TARGET_PREFIX}%`}
+            THEN 1
+          ELSE 0
+        END AS "anchorRank",
         CASE
           ${effectiveAmountCase}
         END AS "effectiveAmount"
@@ -134,19 +145,38 @@ function buildOrderedCte(name: string, source: string) {
     )`;
 }
 
+/**
+ * 明细行的全局排序键（新 → 旧），显示 / 折叠两条链共用，必须逐字一致。
+ *
+ * `dayOrder` 是「同一天内手工拖拽」产生的视觉次序。
+ *
+ * `anchorRank` 只给「合成锚点」（余额校准 / 期初余额行）提权：它们代表当天
+ * 结束时的账户余额，`displayAt` 就是 23:59:59，必须排在当天最后，否则会被当天
+ * 稍后的普通行顶掉（曾导致 9-18 校准 0 被当天上午一条 dayOrder=1000 的行压过，
+ * 10-15 收入 8946.74 显示成 10076.77）。
+ *
+ * **对账锁定行不参与提权**：它钉住的是这一条记录的事后余额，位置必须就是它
+ * 原本在当天的位置。以前用 `isAnchor DESC` 把所有锚点都提到当天最前，锁当天
+ * 中午那笔就等于把它当成当天的「最后一笔」，当天更晚的行反而落到它前面。
+ */
+function buildDetailOrderKeysSql(alias: string) {
+  const a = Prisma.raw(`"${alias}"`);
+  return Prisma.sql`
+    ${a}."dayKey" DESC,
+    ${a}."anchorRank" DESC,
+    CASE WHEN ${a}."anchorRank" = 1 THEN 0 ELSE COALESCE(${a}."dayOrder", 0) END DESC,
+    ${a}."displayAt" DESC,
+    ${a}."createdAt" DESC,
+    ${a}."id" DESC`;
+}
+
 function buildRankedCte(name: string, source: string) {
   return Prisma.sql`
     ${cteRef(name)} AS (
       SELECT
         o.*,
         ROW_NUMBER() OVER (
-          ORDER BY
-            o."dayKey" DESC,
-            o."isAnchor" DESC,
-            COALESCE(o."dayOrder", 0) DESC,
-            o."displayAt" DESC,
-            o."createdAt" DESC,
-            o."id" DESC
+          ORDER BY ${buildDetailOrderKeysSql("o")}
         ) AS "rowNumber"
       FROM ${cteRef(source)} o
     )`;
@@ -548,13 +578,7 @@ function buildOrderingCtesSql(args: {
       SELECT
         o.*,
         ROW_NUMBER() OVER (
-          ORDER BY
-            o."dayKey" DESC,
-            o."isAnchor" DESC,
-            COALESCE(o."dayOrder", 0) DESC,
-            o."displayAt" DESC,
-            o."createdAt" DESC,
-            o."id" DESC
+          ORDER BY ${buildDetailOrderKeysSql("o")}
         ) AS "rowNumber"
       FROM "ordered" o
     ),
@@ -694,13 +718,7 @@ export async function queryDetailPage(args: DetailPageQueryArgs): Promise<Detail
     // 数据库（PG 12+ / SQLite）不会执行它。
     // 服务端单列排序（表头点击）只在这一条路径生效：它没有逐笔余额，
     // 排序键可以自由替换；单账户带余额的路径必须按时间顺序折叠，忽略 sort。
-    const orderBySql = buildDetailOrderBySql(args.sort) ?? Prisma.sql`
-        o."dayKey" DESC,
-        o."isAnchor" DESC,
-        COALESCE(o."dayOrder", 0) DESC,
-        o."displayAt" DESC,
-        o."createdAt" DESC,
-        o."id" DESC`;
+    const orderBySql = buildDetailOrderBySql(args.sort) ?? buildDetailOrderKeysSql("o");
     // 一次扫描同时拿「总数」和「当前页」：COUNT(*) OVER () 跟着这 200 行走，
     // 省掉一次完整 CTE。百万行时那一趟单独就是 10 秒量级，翻页感受差别很大。
     // 页码越界（前端带着过期页码）时窗口取不到行，再回退一次计数并夹到最后一页。

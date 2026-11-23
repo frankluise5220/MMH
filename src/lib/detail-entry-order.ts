@@ -1,8 +1,4 @@
-import {
-  BALANCE_INITIALIZATION_SOURCE,
-  BALANCE_RECONCILE_SOURCE,
-  getBalanceReconcileTarget,
-} from "@/lib/balance-reconcile";
+import { isSyntheticBalanceAnchor } from "@/lib/balance-reconcile";
 
 type DetailEntryLike = {
   id: string;
@@ -16,6 +12,7 @@ type DetailEntryLike = {
   source?: string | null | undefined;
   fundProductType?: string | null | undefined;
   toNote?: string | null | undefined;
+  reconciledBalance?: unknown;
   fundConfirmDate?: Date | string | number | null | undefined;
   fundArrivalDate?: Date | string | number | null | undefined;
 };
@@ -40,11 +37,11 @@ function localDateKey(date: Date) {
   return `${y}-${m}-${d}`;
 }
 
-function isBalanceAnchor(entry: DetailEntryLike) {
-  const source = String(entry.source ?? "");
-  if (source !== BALANCE_RECONCILE_SOURCE && source !== BALANCE_INITIALIZATION_SOURCE) return false;
-  return getBalanceReconcileTarget(entry) != null;
-}
+/**
+ * 排序档位必须与 SQL 的 `anchorRank` 完全同口径，所以直接复用
+ * `isSyntheticBalanceAnchor`：余额校准 / 期初余额行提到当天最后，对账锁定行
+ * 留在原位（它锁的是这一条记录，不是这一天）。
+ */
 
 /**
  * 投资业务行的「资金腿」：钱进入收款账户（当前明细账户）的到账日。
@@ -119,11 +116,14 @@ export function compareDetailEntriesDescBy(
   const byDay = bDay.localeCompare(aDay, "en");
   if (byDay !== 0) return byDay;
 
-  const aAnchor = isBalanceAnchor(a);
-  const bAnchor = isBalanceAnchor(b);
-  if (aAnchor !== bAnchor) return aAnchor ? -1 : 1;
+  // 与 SQL 的 `anchorRank DESC, CASE WHEN anchorRank = 1 THEN 0 ELSE dayOrder END DESC`
+  // 同口径：只有「合成锚点」（余额校准 / 期初余额）提到当天最后；对账锁定行按自己
+  // 原本的 dayOrder 位置参与排序，不能被顶到当天末尾（锁的是这一条记录，不是这一天）。
+  const aSynthetic = isSyntheticBalanceAnchor(a);
+  const bSynthetic = isSyntheticBalanceAnchor(b);
+  if (aSynthetic !== bSynthetic) return aSynthetic ? -1 : 1;
 
-  const byDayOrder = (b.dayOrder ?? 0) - (a.dayOrder ?? 0);
+  const byDayOrder = (bSynthetic ? 0 : (b.dayOrder ?? 0)) - (aSynthetic ? 0 : (a.dayOrder ?? 0));
   if (byDayOrder !== 0) return byDayOrder;
 
   const byDate = bDate.getTime() - aDate.getTime();
