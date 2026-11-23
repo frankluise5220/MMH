@@ -22,7 +22,7 @@ export const IMAGE_FALLBACK_ORDER = ["fnvps", "dockerproxy", "nju", "ghcr", "dao
 export const STANDARD_IMAGE_SOURCE_ORDER = IMAGE_FALLBACK_ORDER.filter((source) => source !== "custom");
 export const UPDATER_DEFAULT_TIMEOUT_MS = 5_000;
 export const VERSION_CHECK_TIMEOUT_MS = 5_000;
-export const IMAGE_VERSION_CHECK_TIMEOUT_MS = 6_000;
+export const IMAGE_VERSION_CHECK_TIMEOUT_MS = 20_000;
 
 const GITHUB_REPO_API_URL = "https://api.github.com/repos/frankluise5220/MMH";
 
