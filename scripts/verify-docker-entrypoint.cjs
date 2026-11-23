@@ -53,10 +53,14 @@ expect(
   "Compose files must not set MMH_BASE_PATH at runtime; the Docker build already bakes empty and Next cannot change it afterwards.",
 );
 
+// 底座必须钉死在 0.1.81：它是最后一个全量构建、只有 19 层的版本，所有存量用户
+// 本地都有这些层。改成任何后发布的版本都会把「每版 +13 层」的历史带回来——
+// 0.1.89 就是以 0.1.88 为底座长到 135 层，超过 overlay2 的 128 层硬限，
+// `docker pull` 直接 max depth exceeded，整版 Docker 渠道不可用。
 expect(
-  /^ARG BASE_IMAGE=ghcr\.io\/[\w-]+\/mmh:\d+\.\d+\.\d+\s*$/m.test(dockerfile) &&
-    (dockerfile.match(/^FROM \$\{BASE_IMAGE\}/gm) || []).length === 2,
-  "Dockerfile must build FROM the published baseline image: it already supplies gosu, the prisma CLI, node_modules and the runtime ENV, and its layers are reused by digest on every installed host. Rebuilding those layers forces a full re-download.",
+  /^ARG BASE_IMAGE=ghcr\.io\/[\w-]+\/mmh:0\.1\.81\s*$/m.test(dockerfile) &&
+    (dockerfile.match(/^FROM \$\{BASE_IMAGE\}/gm) || []).length === 1,
+  "Dockerfile must build FROM the fixed 0.1.81 anchor and use it exactly once: it is the last full build (19 layers) every installed host already has, so its layers are skipped by digest. Any newer anchor reintroduces the per-release layer stacking that broke 0.1.89.",
 );
 expect(/COPY --chown=node:node --from=build/.test(dockerfile), "Dockerfile must copy app files as node-owned files.");
 expect(/ensure_session_secret/.test(entrypoint), "Docker entrypoint must generate and persist MMH_SESSION_SECRET when it is not configured.");
@@ -94,30 +98,28 @@ expect(
     nodeLimitCallIndex < prismaPushIndex,
   "Docker entrypoint must apply the Node old-space guardrail before Prisma schema sync and app start.",
 );
-// 0.1.82 第一版为了把镜像做小，改了 apt / prisma-deps / standalone 这些早期层，
-// 38 层里只有 8 层（全是基础镜像层）能被 0.1.81 用户复用，其余 30 层 76 MB 全部
-// 要重下；其中 8.75 MB 的 blob 在两台独立网络的机器上都卡在 "Download complete"
-// 之后不落盘，900 秒也不推进。现在只以原版镜像为底座叠加差异层。
-expect(
-  /COPY --from=previous \/app \/app\/prev/.test(dockerfile) &&
-    /cmp -s/.test(dockerfile) &&
-    /\/app\/delta/.test(dockerfile),
-  "Dockerfile must diff the freshly built standalone against the published baseline /app and ship only the changed files.",
-);
-const appPartCopies = (
-  dockerfile.match(/^COPY --chown=node:node --from=build \/app\/parts\/p\d+\/ \/app\//gm) || []
+// 0.1.82 为了「只让用户下载变化文件」，改成以上一版镜像为底座、把差异文件塞进
+// 16 个分片。它满足了单层体积，却让层数每版 +13，到 0.1.89 撞死 128 层上限。
+// 现在层的内容由文件路径决定：固定 96 个桶，层数恒为 19 + 96。
+// 桶数、hash 公式、两条体积阈值任何一个被改，层复用或镜像站兼容性就断了。
+const bucketCopies = (
+  dockerfile.match(/^COPY --chown=node:node --from=build \/app\/buckets\/b\d+\/ \/app\//gm) || []
 ).length;
 expect(
-  appPartCopies === 16 &&
+  /^ARG BUCKET_COUNT=96$/m.test(dockerfile) &&
+    bucketCopies === 96 &&
+    // 分桶只认相对路径的 sha1，不允许掺入版本号、时间戳或「本版是否变化」——
+    // 一旦掺入，所有桶每版都会换 digest，增量复用立刻失效。
+    /printf '%s' "\$rel" \| sha1sum \| cut -c1-8/.test(dockerfile) &&
+    /0x\$fhash % BUCKET_COUNT/.test(dockerfile) &&
     // 0.1.87: pdf-parse 的 web/pdf.worker.mjs.map 单个 5.27 MB，直接越过单文件阈值，
     // Build and push 在 diff 步骤 exit 1。源码映射运行时不加载，构建后必须删掉，
     // 不要把 3.5 MB 上限放大到能装下 map。
     /find \.next\/standalone \.next\/static -type f -name '\*\.map' -delete/.test(dockerfile) &&
     /-size \+3500k/.test(dockerfile) &&
-    // 0.1.87 实测 1428 个变化文件共 64.4 MB，16 片每片约 4.03 MB；上限取 4608 KB
-    // （4.5 MB，镜站实测卡在 8.75 MB），4096 KB 会让每片差几十 KB 直接失败。
+    // 镜像站实测卡在 8.75 MB 的 blob（下到 100% 后不落盘），上限取 4608 KB。
     /"\$worst" -gt 4608/.test(dockerfile),
-  "Dockerfile must prune *.map from the standalone output, split the changed files into 16 separate COPY layers, and fail the build when a single file exceeds 3.5 MB or a part exceeds 4.5 MB: domestic mirrors drop 8.75 MB blobs.",
+  "Dockerfile must ship the app as 96 path-hashed buckets (one COPY per bucket): layer content follows the file path, so unchanged buckets keep their digest and only the changed buckets are downloaded. Keep the 3.5 MB per-file and 4.5 MB per-bucket limits.",
 );
 expect(
   !/prisma-split/.test(dockerfile) && !/standalone-split/.test(dockerfile) && !/studio-core\/dist\/ui/.test(dockerfile),
@@ -473,25 +475,14 @@ expect(
 // 8.75 MB 的 blob 在 148 和 5.149 两台独立网络的机器上都会在
 // "Download complete" 之后停住，900 秒也不落盘。
 const layerGate = fs.readFileSync(path.join(root, "scripts", "check-image-layer-sizes.mjs"), "utf8");
+// 门禁的核心判据必须是「总层数」而不是「新增层数」：0.1.89 每一层都不大，
+// 单层体积全绿，但 135 层照样让所有 Docker 用户 pull 失败。层数是结构约束。
 expect(
   /^const HARD_LIMIT_MB = 4\.5;/m.test(layerGate) &&
-    /MAX_FRESH_LAYERS/.test(layerGate) &&
-    /MAX_FRESH_TOTAL_MB/.test(layerGate),
-  "The layer-size gate must use a 4.5 MB per-layer limit and also cap the number/total size of fresh layers, so breaking layer reuse fails the build instead of only shrinking individual layers.",
-);
-// 基线必须等于「存量用户正在跑的上一个补丁版」，随 package.json 版本滚动：
-// 钉死成某个具体版本会在下一版立刻过期，而留空/浮动 tag 会让门禁失去比较基准。
-const releaseVersion = String(
-  JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")).version || "",
-).trim();
-const previousPatch = releaseVersion.replace(/\.(\d+)$/, (_, patch) => `.${Number(patch) - 1}`);
-expect(
-  /^0\.1\.\d+$/.test(releaseVersion) &&
-    new RegExp(
-      `^ARG BASE_IMAGE=ghcr\\.io\\/frankluise5220\\/mmh:${previousPatch.replace(/\./g, "\\.")}\\s*$`,
-      "m",
-    ).test(dockerfile),
-  `BASE_IMAGE must stay pinned to the version installed users are running (${previousPatch}): their old updater has no timeout and cannot recover from a stalled pull.`,
+    /^const MAX_TOTAL_LAYERS = 120;/m.test(layerGate) &&
+    /all\.count > MAX_TOTAL_LAYERS/.test(layerGate) &&
+    /MAX_FRESH_LAYERS/.test(layerGate),
+  "The layer gate must hard-fail on total layer count (overlay2 stops at 128), not only on per-layer size and fresh-layer count: 0.1.89 passed the size checks and still made the image unpullable.",
 );
 expect(
   /dropdb --force -U/.test(updaterServer) &&

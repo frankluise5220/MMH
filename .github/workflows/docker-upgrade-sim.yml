@@ -81,11 +81,15 @@ jobs:
             # tag-less/shallow runner, so every run degraded to the 0.1.52
             # floor and the 0.1.65 -> 0.1.66 upgrade blocker was never
             # simulated (migration-failure-ledger section 23).
+            # 0.1.89 的镜像长到 135 层，超过 overlay2 的 128 层上限，任何机器都拉不
+            # 下来（failed to register layer: max depth exceeded）。拿它当基线会让
+            # 这个 gate 因为「基线自己不可用」而变红，掩盖真正的升级问题。
             prev="$(
               {
                 git ls-remote --tags --refs origin 'refs/tags/v*' | sed 's#.*refs/tags/v##'
                 printf '%s\n' "${image_tag}"
-              } | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V -u | grep -B1 -x "${image_tag}" | head -n1
+              } | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | grep -vx '0\.1\.89' | sort -V -u \
+                | grep -B1 -x "${image_tag}" | head -n1
             )"
             # Only a base strictly above the floor is worth adding: GHCR has no
             # 0.1.49-0.1.51 image, so pulling one would fail the job for nothing.

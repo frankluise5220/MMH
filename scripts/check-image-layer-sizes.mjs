@@ -26,10 +26,16 @@ const OWNER = process.env.MMH_IMAGE_OWNER || "frankluise5220";
 const DEFAULT_REPOS = ["mmh", "mmh-updater"];
 // 8.75 MB 实测会卡，取 4.5 MB 留余量。
 const HARD_LIMIT_MB = 4.5;
-// 只缩小单层还不够：0.1.82 第一版把 19 层放大到 38 层，30 个新层 76 MB 全部要重下。
-// 层复用被破坏同样判红。
-const MAX_FRESH_LAYERS = 16;
-const MAX_FRESH_TOTAL_MB = 32;
+// overlay2 的硬上限是 128 层。0.1.89 因为「每版把差异文件叠到上一版镜像上」
+// 长到了 135 层，`docker pull` 直接 max depth exceeded，整版 Docker 渠道报废。
+// 所以层数是结构约束，不是提示：镜像必须由固定的底座 + 固定数量的桶组成。
+const MAX_TOTAL_LAYERS = 120;
+// 桶数上限 96，再加 1 层收尾校验（RUN test）——超过就说明又多出了计划外的层，
+// 层数会重新开始累积。0.1.82 第一版把 19 层放大到 38 层，就是这条路。
+const MAX_FRESH_LAYERS = 100;
+// 新增层的总体积不设上限：桶结构下最多 96 层 × 4.5 MB，已经被这两个硬约束封死。
+// 切到桶结构的首版会让用户完整下载一次应用文件（约 250 MB），这是结构性迁移的
+// 一次性成本，用层数上限去拦它没有意义——拦的是"层数失控"，不是"下载量"。
 
 function parseArgs(argv) {
   const args = { only: null, tag: "latest", since: null, maxMb: HARD_LIMIT_MB, reportOnly: false };
@@ -156,9 +162,19 @@ async function main() {
     const all = summarize(layers);
     console.log(`\n${name}:${args.tag}  (${result.digest.slice(0, 19)}…)`);
     console.log(
-      `  全量：layers=${all.count}  total=${formatMb(all.total)} MB  max=${formatMb(all.max)} MB` +
+      `  全量：layers=${all.count}/${MAX_TOTAL_LAYERS}  total=${formatMb(all.total)} MB  max=${formatMb(all.max)} MB` +
         "（含基础镜像层，存量用户本地已有，不用再下载）",
     );
+    // 层数是结构约束：超过 overlay2 的上限，镜像根本落不了盘，
+    // 和层大小是两回事——0.1.89 每一层都不大，但 135 层照样全军覆没。
+    if (all.count > MAX_TOTAL_LAYERS) {
+      console.error(
+        `  ✗ ${all.count} 层超过 overlay2 的可用上限（${MAX_TOTAL_LAYERS}，硬限 128）：` +
+          "用户会 failed to register layer: max depth exceeded，整版 Docker 渠道不可用。",
+      );
+      console.error("    修法：底座与桶数都是固定值，不要为了让某版少传文件而临时叠层。");
+      failed = true;
+    }
 
     let baseline = null;
     if (args.since) {
@@ -202,8 +218,7 @@ async function main() {
 
     // updater 用 12 个 2.44 MB 分块取代一个大 node 运行时层，新增层数天然更多。
     const maxFreshLayers = name === "mmh" ? MAX_FRESH_LAYERS : 24;
-    const tooManyFresh =
-      fresh.length > maxFreshLayers || freshSummary.total > MAX_FRESH_TOTAL_MB * 1024 * 1024;
+    const tooManyFresh = fresh.length > maxFreshLayers;
     if (oversized.length > 0 || tooManyFresh) {
       failed = true;
       if (oversized.length > 0) {
@@ -213,10 +228,10 @@ async function main() {
       }
       if (tooManyFresh) {
         console.error(
-          `  ✗ 相对 ${args.since} 新增 ${fresh.length} 层 / ${formatMb(freshSummary.total)} MB，超过 ${maxFreshLayers} 层 / ${MAX_FRESH_TOTAL_MB} MB：层复用被破坏，存量用户要重下整份应用镜像。`,
+          `  ✗ 相对 ${args.since} 新增 ${fresh.length} 层，超过 ${maxFreshLayers} 层：说明又多出了计划外的层，层数会重新开始累积。`,
         );
       }
-      console.error("    修法：以用户正在跑的版本为 FROM 基线，只叠加少量 < 4.5 MB 的差异层，不要改早期层。");
+      console.error("    修法：层的内容应由文件路径决定（固定桶），不要按「这版改了什么」临时叠层。");
     } else if (args.reportOnly) {
       console.log(`  · 报告模式：新增层最大 ${formatMb(freshSummary.max)} MB，不做判定`);
     } else {

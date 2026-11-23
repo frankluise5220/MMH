@@ -1,37 +1,33 @@
-# 存量 Docker 用户跑的是原版 0.1.81（含它自己的旧 updater）。这一版能否升级，
-# 只取决于旧执行器 `compose pull` 能不能把新镜像的层从镜像站拉全：新写进
-# 0.1.82/0.1.83 的 updater 代码要升级成功后才生效，对这次升级毫无帮助。
+# 镜像交付的两个硬约束，二者一起决定了这一版的结构：
 #
-# 所以这里直接以已发布的 0.1.81 镜像为底座。它的 19 个层按 blob digest 原样
-# 保留，用户本地全部跳过后只需下载下面几条差异层。**任何对 apt / npm ci /
-# prisma 运行时 / standalone 结构早期层的改写都会让 digest 变化**，把用户拖回
-# 「重下几十个层」的坑；0.1.82 第一版就是这样把 19 层变成 38 层的。
+# 1. overlay2 最多 128 层。层数超过上限时 `docker pull` 直接
+#    `failed to register layer: max depth exceeded`——0.1.89 就是这么坏掉的
+#    （135 层），连带所有 Docker 用户都升不上去。
+# 2. 国内镜像站按**单个 blob** 断线：实测 8.75 MB 的层能下到 100% 却不落盘。
+#    所以每一层都要小，单层按 4.5 MB 控制。
 #
-# 0.1.81 → 本版之间 package.json 的依赖没有变化（只有 version 与业务代码），
-# 因此 node_modules、prisma CLI、schema-engine、基础镜像都可以整层复用。
-# 构建时先按原版 Dockerfile 的完全相同命令编译出 standalone，再与上一版镜像的
-# /app 逐文件比对，只把变化的文件按体积从大到小装进当前最轻的桶（贪心均衡）；
-# 最终镜像每条 COPY 是一层，单层未压缩 < 4.5 MB。国内镜像站实测卡在 8.75 MB
-# 的 blob（下到 100% 后不落盘），4.5 MB 留了一倍余量；层本身还会再 gzip，实际
-# 下载的 blob 通常只有 1–2 MB。单文件阈值取 3.5 MB，而不是之前拍的 10 MB。
-# 分片数 16（0.1.87 起，此前 12）：每个分片是独立 blob，多几个小 blob 比一个大
-# blob 安全。16 档 × 4.5 MB = 72 MB 容量；0.1.87 实测 1428 个变化文件共 64.4 MB
-# （业务大改导致 Next chunk 全量重编），每片约 4.03 MB，正好落在 4 MB 与 4.5 MB 之间
-# ——所以阈值是 4608 KB 而不是 4096 KB，否则每片都差几十 KB。
-# 0.1.84 教训：原来是 `n % 12` 轮转，最大的 1/13/25… 个文件全部落进 p0，
-# 752 个变化文件时 p0 达 4168 KB 越限、App 镜像直接构建失败（GHCR 无 0.1.84）。
-# 0.1.87 教训：pdf-parse 的 *.map 单个 5.27 MB，绕过贪心分块直接撞上单文件阈值。
-# 源码映射运行时不加载，构建后从 standalone / static 里删掉，而不是放大 3.5 MB 上限。
-# 本版（0.1.89）以 0.1.88 镜像为底座：0.1.88 已公开，用户实际在跑的上一版就是它，
-# 层 digest 必须与 0.1.88 完全一致才能被旧 updater 本地跳过（旧二进制没有超时重试）。
-ARG BASE_IMAGE=ghcr.io/frankluise5220/mmh:0.1.88
+# 0.1.82 起为了只让用户下载变化文件，改成「以上一版镜像为底座、把差异文件塞进
+# 16 个分片」。它满足了约束 2，却让层数每版 +13，到 0.1.89 就撞死约束 1。
+#
+# 现在的做法把层的内容交给**文件路径**决定，而不是「这版改了什么」：
+#   - 底座固定为 0.1.81（19 层，所有存量用户本地已有，按 digest 直接跳过）；
+#   - 应用文件全量按 sha1(相对路径) % 96 分桶，每个桶一层；
+#   - 某文件没改 → 它在同一桶、桶内容不变 → 层 digest 不变 → 用户跳过；
+#   - 某文件改了 → 只有它所在的那一桶变化 → 用户只下这一桶（≤4.5 MB）。
+#
+# 于是层数恒为 19 + 96 = 115，不再随版本增长；增量复用靠内容寻址，不再靠堆叠层。
+# 代价只有一次：切到这个结构的首版，96 个桶的 digest 全是新的，用户要完整下载
+# 一遍应用文件（约 250 MB，但仍是 96 个小 blob，不会触发断线）。
+#
+# 96 是"层数上限"和"桶体积"之间的取中：应用树超过约 400 MB 时单桶会逼近 4.5 MB，
+# 那时需要整体换桶数（+1 次全量下载），而不是逐版加桶。
+ARG BASE_IMAGE=ghcr.io/frankluise5220/mmh:0.1.81
 ARG NODE_BUILD_IMAGE=node:20-bookworm
-# 兼容 CI 现有的 build-args；prisma 运行时现在整层复用 BASE_IMAGE，不再单独安装。
+# 兼容 CI 现有的 build-args；prisma 运行时整层复用 BASE_IMAGE，不再单独安装。
 ARG PRISMA_CLI_VERSION=7.8.0
 ARG DOTENV_VERSION=17.4.2
 ARG APP_VERSION=0.1.0
-
-FROM ${BASE_IMAGE} AS previous
+ARG BUCKET_COUNT=96
 
 FROM ${NODE_BUILD_IMAGE} AS build
 
@@ -39,6 +35,7 @@ ARG APP_COMMIT=unknown
 ARG APP_COMMIT_MESSAGE=""
 ARG APP_COMMIT_DATE=""
 ARG APP_VERSION=0.1.0
+ARG BUCKET_COUNT=96
 
 WORKDIR /app
 ENV DATABASE_URL=postgresql://build:build@127.0.0.1:5432/build?schema=public
@@ -81,64 +78,49 @@ COPY . .
 RUN npm run build \
   && find .next/standalone .next/static -type f -name '*.map' -delete
 
-# 与上一版镜像（BASE_IMAGE）的 /app 逐文件比较，只保留真正变化的文件。
-# .next/standalone 在 0.1.81 里是被 COPY 到 /app 根目录的，所以它的相对路径
-# 与 prev 的 /app 一一对应；其余资源按各自的目标目录对应。
-COPY --from=previous /app /app/prev
+# 把运行时要用的文件摊平成"目标绝对路径"的镜像树，再按路径分桶。
+# 之所以全量摊平而不是与上一版做 diff：diff 出来的分片每版都是新 digest，
+# 层数只增不减；按路径分桶则是"文件没动，层就没动"。
 RUN set -eu; \
-    mkdir -p /app/delta; \
-    copy_changed() { \
-      src="$1"; dst="$2"; \
-      [ -e "/app/$src" ] || return 0; \
-      if [ -d "/app/$src" ]; then \
-        (cd "/app/$src" && find . -type f) | while read -r f; do \
-          if [ ! -f "/app/prev/$dst/$f" ] || ! cmp -s "/app/$src/$f" "/app/prev/$dst/$f"; then \
-            mkdir -p "/app/delta/$dst/$(dirname "$f")"; \
-            cp "/app/$src/$f" "/app/delta/$dst/$f"; \
-          fi; \
-        done; \
-      elif [ ! -f "/app/prev/$dst" ] || ! cmp -s "/app/$src" "/app/prev/$dst"; then \
-        mkdir -p "/app/delta/$(dirname "$dst")"; \
-        cp "/app/$src" "/app/delta/$dst"; \
-      fi; \
-    }; \
-    copy_changed .next/standalone .; \
-    copy_changed .next/static .next/static; \
-    copy_changed public public; \
-    copy_changed prisma prisma; \
-    copy_changed prisma.config.ts prisma.config.ts; \
-    copy_changed scripts/docker-entrypoint.sh docker-entrypoint.sh; \
-    test -n "$(find /app/delta -type f -print -quit)" || { \
-      echo "与 ${BASE_IMAGE} 没有任何文件差异，拒绝发布空更新" >&2; exit 1; \
-    }; \
-    chmod +x /app/delta/docker-entrypoint.sh 2>/dev/null || true; \
-    echo "changed files: $(find /app/delta -type f | wc -l), delta total: $(du -sk /app/delta | cut -f1) KB"; \
-    oversize=$(find /app/delta -type f -size +3500k -print -quit); \
-    if [ -n "$oversize" ]; then \
-      echo "单个变化文件超过 3.5 MB，无法切成安全层：$oversize" >&2; \
-      find /app/delta -type f -size +3500k -printf '%s %p\n' | sort -rn | head -5 >&2; \
+    rm -rf /app/tree /app/buckets; \
+    mkdir -p /app/tree /app/buckets; \
+    cp -a /app/.next/standalone/. /app/tree/; \
+    mkdir -p /app/tree/.next; \
+    cp -a /app/.next/static /app/tree/.next/static; \
+    cp -a /app/public /app/tree/public; \
+    cp -a /app/prisma /app/tree/prisma; \
+    if [ -f /app/prisma.config.ts ]; then cp -a /app/prisma.config.ts /app/tree/prisma.config.ts; fi; \
+    cp -a /app/scripts/docker-entrypoint.sh /app/tree/docker-entrypoint.sh; \
+    chmod +x /app/tree/docker-entrypoint.sh; \
+    i=0; while [ "$i" -lt "$BUCKET_COUNT" ]; do mkdir -p "/app/buckets/b$i"; i=$((i + 1)); done; \
+    cd /app/tree; \
+    find . -type f -print > /tmp/tree-files.txt; \
+    while read -r f; do \
+      rel="${f#./}"; \
+      fhash="$(printf '%s' "$rel" | sha1sum | cut -c1-8)"; \
+      b=$(( 0x$fhash % BUCKET_COUNT )); \
+      mkdir -p "/app/buckets/b$b/$(dirname "$rel")"; \
+      cp "$f" "/app/buckets/b$b/$rel"; \
+    done < /tmp/tree-files.txt; \
+    echo "--- bucket sizes (uncompressed) ---"; \
+    worst=0; total=0; used=0; \
+    i=0; while [ "$i" -lt "$BUCKET_COUNT" ]; do \
+      sz=$(du -sk "/app/buckets/b$i" | cut -f1); \
+      if [ "$sz" -gt 0 ]; then used=$((used + 1)); fi; \
+      total=$((total + sz)); \
+      if [ "$sz" -gt "$worst" ]; then worst=$sz; fi; \
+      i=$((i + 1)); \
+    done; \
+    echo "buckets: used=$used/$BUCKET_COUNT total=${total} KB worst=${worst} KB"; \
+    oversize_file=$(find /app/tree -type f -size +3500k -print -quit); \
+    if [ -n "$oversize_file" ]; then \
+      echo "单个文件超过 3.5 MB，无法切成安全层：$oversize_file" >&2; \
+      find /app/tree -type f -size +3500k -printf '%s %p\n' | sort -rn | head -5 >&2; \
       exit 1; \
     fi; \
-    for i in $(seq 0 15); do mkdir -p "/app/parts/p$i"; echo 0 > "/tmp/load$i"; done; \
-    find /app/delta -type f -printf '%s %p\n' | sort -rn | while read -r size f; do \
-      rel="${f#/app/delta/}"; \
-      g=0; smallest=$(cat /tmp/load0); \
-      for i in $(seq 1 15); do \
-        v=$(cat "/tmp/load$i"); \
-        if [ "$v" -lt "$smallest" ]; then g=$i; smallest=$v; fi; \
-      done; \
-      mkdir -p "/app/parts/p$g/$(dirname "$rel")"; \
-      cp "$f" "/app/parts/p$g/$rel"; \
-      echo $((smallest + (size + 1023) / 1024)) > "/tmp/load$g"; \
-    done; \
-    worst=0; \
-    for i in $(seq 0 15); do \
-      sz=$(du -sk "/app/parts/p$i" | cut -f1); \
-      echo "part p$i: ${sz} KB (uncompressed)"; \
-      if [ "$sz" -gt "$worst" ]; then worst=$sz; fi; \
-    done; \
     if [ "$worst" -gt 4608 ]; then \
-      echo "最大分片 ${worst} KB 超过 4.5 MB：16 个分片装不下 $(du -sk /app/delta | cut -f1) KB 变化文件，需要继续裁体积（先看是不是又混进了 *.map）" >&2; \
+      echo "最大桶 ${worst} KB 超过 4.5 MB（应用树 ${total} KB / ${BUCKET_COUNT} 桶），" >&2; \
+      echo "镜像站会卡在 Download complete，需要调大 BUCKET_COUNT 并接受一次全量下载。" >&2; \
       exit 1; \
     fi
 
@@ -156,23 +138,104 @@ ENV APP_VERSION=${APP_VERSION}
 ENV NODE_ENV=production
 ENV TZ=Asia/Shanghai
 
-# 每一条 COPY 都是一层 < 4 MB；0.1.81 的 19 层在用户本地全部 Already exists。
-COPY --chown=node:node --from=build /app/parts/p0/ /app/
-COPY --chown=node:node --from=build /app/parts/p1/ /app/
-COPY --chown=node:node --from=build /app/parts/p2/ /app/
-COPY --chown=node:node --from=build /app/parts/p3/ /app/
-COPY --chown=node:node --from=build /app/parts/p4/ /app/
-COPY --chown=node:node --from=build /app/parts/p5/ /app/
-COPY --chown=node:node --from=build /app/parts/p6/ /app/
-COPY --chown=node:node --from=build /app/parts/p7/ /app/
-COPY --chown=node:node --from=build /app/parts/p8/ /app/
-COPY --chown=node:node --from=build /app/parts/p9/ /app/
-COPY --chown=node:node --from=build /app/parts/p10/ /app/
-COPY --chown=node:node --from=build /app/parts/p11/ /app/
-COPY --chown=node:node --from=build /app/parts/p12/ /app/
-COPY --chown=node:node --from=build /app/parts/p13/ /app/
-COPY --chown=node:node --from=build /app/parts/p14/ /app/
-COPY --chown=node:node --from=build /app/parts/p15/ /app/
+# 每条 COPY 是一层：b0..b95 合计 96 层，加上底座 19 层恒为 115 层。
+# 桶的内容只由文件路径和文件内容决定，所以没改的桶在用户本地是 Already exists。
+COPY --chown=node:node --from=build /app/buckets/b0/ /app/
+COPY --chown=node:node --from=build /app/buckets/b1/ /app/
+COPY --chown=node:node --from=build /app/buckets/b2/ /app/
+COPY --chown=node:node --from=build /app/buckets/b3/ /app/
+COPY --chown=node:node --from=build /app/buckets/b4/ /app/
+COPY --chown=node:node --from=build /app/buckets/b5/ /app/
+COPY --chown=node:node --from=build /app/buckets/b6/ /app/
+COPY --chown=node:node --from=build /app/buckets/b7/ /app/
+COPY --chown=node:node --from=build /app/buckets/b8/ /app/
+COPY --chown=node:node --from=build /app/buckets/b9/ /app/
+COPY --chown=node:node --from=build /app/buckets/b10/ /app/
+COPY --chown=node:node --from=build /app/buckets/b11/ /app/
+COPY --chown=node:node --from=build /app/buckets/b12/ /app/
+COPY --chown=node:node --from=build /app/buckets/b13/ /app/
+COPY --chown=node:node --from=build /app/buckets/b14/ /app/
+COPY --chown=node:node --from=build /app/buckets/b15/ /app/
+COPY --chown=node:node --from=build /app/buckets/b16/ /app/
+COPY --chown=node:node --from=build /app/buckets/b17/ /app/
+COPY --chown=node:node --from=build /app/buckets/b18/ /app/
+COPY --chown=node:node --from=build /app/buckets/b19/ /app/
+COPY --chown=node:node --from=build /app/buckets/b20/ /app/
+COPY --chown=node:node --from=build /app/buckets/b21/ /app/
+COPY --chown=node:node --from=build /app/buckets/b22/ /app/
+COPY --chown=node:node --from=build /app/buckets/b23/ /app/
+COPY --chown=node:node --from=build /app/buckets/b24/ /app/
+COPY --chown=node:node --from=build /app/buckets/b25/ /app/
+COPY --chown=node:node --from=build /app/buckets/b26/ /app/
+COPY --chown=node:node --from=build /app/buckets/b27/ /app/
+COPY --chown=node:node --from=build /app/buckets/b28/ /app/
+COPY --chown=node:node --from=build /app/buckets/b29/ /app/
+COPY --chown=node:node --from=build /app/buckets/b30/ /app/
+COPY --chown=node:node --from=build /app/buckets/b31/ /app/
+COPY --chown=node:node --from=build /app/buckets/b32/ /app/
+COPY --chown=node:node --from=build /app/buckets/b33/ /app/
+COPY --chown=node:node --from=build /app/buckets/b34/ /app/
+COPY --chown=node:node --from=build /app/buckets/b35/ /app/
+COPY --chown=node:node --from=build /app/buckets/b36/ /app/
+COPY --chown=node:node --from=build /app/buckets/b37/ /app/
+COPY --chown=node:node --from=build /app/buckets/b38/ /app/
+COPY --chown=node:node --from=build /app/buckets/b39/ /app/
+COPY --chown=node:node --from=build /app/buckets/b40/ /app/
+COPY --chown=node:node --from=build /app/buckets/b41/ /app/
+COPY --chown=node:node --from=build /app/buckets/b42/ /app/
+COPY --chown=node:node --from=build /app/buckets/b43/ /app/
+COPY --chown=node:node --from=build /app/buckets/b44/ /app/
+COPY --chown=node:node --from=build /app/buckets/b45/ /app/
+COPY --chown=node:node --from=build /app/buckets/b46/ /app/
+COPY --chown=node:node --from=build /app/buckets/b47/ /app/
+COPY --chown=node:node --from=build /app/buckets/b48/ /app/
+COPY --chown=node:node --from=build /app/buckets/b49/ /app/
+COPY --chown=node:node --from=build /app/buckets/b50/ /app/
+COPY --chown=node:node --from=build /app/buckets/b51/ /app/
+COPY --chown=node:node --from=build /app/buckets/b52/ /app/
+COPY --chown=node:node --from=build /app/buckets/b53/ /app/
+COPY --chown=node:node --from=build /app/buckets/b54/ /app/
+COPY --chown=node:node --from=build /app/buckets/b55/ /app/
+COPY --chown=node:node --from=build /app/buckets/b56/ /app/
+COPY --chown=node:node --from=build /app/buckets/b57/ /app/
+COPY --chown=node:node --from=build /app/buckets/b58/ /app/
+COPY --chown=node:node --from=build /app/buckets/b59/ /app/
+COPY --chown=node:node --from=build /app/buckets/b60/ /app/
+COPY --chown=node:node --from=build /app/buckets/b61/ /app/
+COPY --chown=node:node --from=build /app/buckets/b62/ /app/
+COPY --chown=node:node --from=build /app/buckets/b63/ /app/
+COPY --chown=node:node --from=build /app/buckets/b64/ /app/
+COPY --chown=node:node --from=build /app/buckets/b65/ /app/
+COPY --chown=node:node --from=build /app/buckets/b66/ /app/
+COPY --chown=node:node --from=build /app/buckets/b67/ /app/
+COPY --chown=node:node --from=build /app/buckets/b68/ /app/
+COPY --chown=node:node --from=build /app/buckets/b69/ /app/
+COPY --chown=node:node --from=build /app/buckets/b70/ /app/
+COPY --chown=node:node --from=build /app/buckets/b71/ /app/
+COPY --chown=node:node --from=build /app/buckets/b72/ /app/
+COPY --chown=node:node --from=build /app/buckets/b73/ /app/
+COPY --chown=node:node --from=build /app/buckets/b74/ /app/
+COPY --chown=node:node --from=build /app/buckets/b75/ /app/
+COPY --chown=node:node --from=build /app/buckets/b76/ /app/
+COPY --chown=node:node --from=build /app/buckets/b77/ /app/
+COPY --chown=node:node --from=build /app/buckets/b78/ /app/
+COPY --chown=node:node --from=build /app/buckets/b79/ /app/
+COPY --chown=node:node --from=build /app/buckets/b80/ /app/
+COPY --chown=node:node --from=build /app/buckets/b81/ /app/
+COPY --chown=node:node --from=build /app/buckets/b82/ /app/
+COPY --chown=node:node --from=build /app/buckets/b83/ /app/
+COPY --chown=node:node --from=build /app/buckets/b84/ /app/
+COPY --chown=node:node --from=build /app/buckets/b85/ /app/
+COPY --chown=node:node --from=build /app/buckets/b86/ /app/
+COPY --chown=node:node --from=build /app/buckets/b87/ /app/
+COPY --chown=node:node --from=build /app/buckets/b88/ /app/
+COPY --chown=node:node --from=build /app/buckets/b89/ /app/
+COPY --chown=node:node --from=build /app/buckets/b90/ /app/
+COPY --chown=node:node --from=build /app/buckets/b91/ /app/
+COPY --chown=node:node --from=build /app/buckets/b92/ /app/
+COPY --chown=node:node --from=build /app/buckets/b93/ /app/
+COPY --chown=node:node --from=build /app/buckets/b94/ /app/
+COPY --chown=node:node --from=build /app/buckets/b95/ /app/
 
 RUN test -x ./docker-entrypoint.sh \
   && test -f ./server.js \
