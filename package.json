@@ -56,6 +56,7 @@
     "check:migration-coverage": "node scripts/check-schema-migration-coverage.cjs",
     "check:release-version": "node scripts/check-release-version.cjs",
     "check:channels": "node scripts/check-channels.cjs",
+    "check:draft-ready": "node scripts/check-draft-ready.cjs",
     "sync:store-desc": "node scripts/store-changelog.cjs --write",
     "check:store-desc": "node scripts/store-changelog.cjs --check",
     "release:notes": "node scripts/release-notes.cjs",
