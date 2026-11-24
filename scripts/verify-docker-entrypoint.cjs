@@ -116,7 +116,9 @@ expect(
     // Build and push 在 diff 步骤 exit 1。源码映射运行时不加载，构建后必须删掉，
     // 不要把 3.5 MB 上限放大到能装下 map。
     /find \.next\/standalone \.next\/static -type f -name '\*\.map' -delete/.test(dockerfile) &&
-    /-size \+3500k/.test(dockerfile) &&
+    // 阈值必须按压缩后体积判：registry 里存的是 gzip blob，sharp 的
+    // libvips-cpp.so 有 8 MB，压完 2.7 MB，按未压缩大小判会误杀正常文件。
+    /gzip -6 -c \| wc -c/.test(dockerfile) &&
     // 镜像站实测卡在 8.75 MB 的 blob（下到 100% 后不落盘），上限取 4608 KB。
     /"\$worst" -gt 4608/.test(dockerfile),
   "Dockerfile must ship the app as 96 path-hashed buckets (one COPY per bucket): layer content follows the file path, so unchanged buckets keep their digest and only the changed buckets are downloaded. Keep the 3.5 MB per-file and 4.5 MB per-bucket limits.",

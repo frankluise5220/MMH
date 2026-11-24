@@ -102,25 +102,26 @@ RUN set -eu; \
       mkdir -p "/app/buckets/b$b/$(dirname "$rel")"; \
       cp "$f" "/app/buckets/b$b/$rel"; \
     done < /tmp/tree-files.txt; \
-    echo "--- bucket sizes (uncompressed) ---"; \
+    echo "--- bucket sizes (gzip, one tar per bucket) ---"; \
     worst=0; total=0; used=0; \
     i=0; while [ "$i" -lt "$BUCKET_COUNT" ]; do \
-      sz=$(du -sk "/app/buckets/b$i" | cut -f1); \
-      if [ "$sz" -gt 0 ]; then used=$((used + 1)); fi; \
-      total=$((total + sz)); \
-      if [ "$sz" -gt "$worst" ]; then worst=$sz; fi; \
+      sz=$(tar -C "/app/buckets/b$i" -cf - . 2>/dev/null | gzip -6 -c | wc -c); \
+      kb=$(( sz / 1024 )); \
+      if [ "$kb" -gt 0 ]; then used=$((used + 1)); fi; \
+      total=$((total + kb)); \
+      if [ "$kb" -gt "$worst" ]; then worst=$kb; fi; \
       i=$((i + 1)); \
     done; \
     echo "buckets: used=$used/$BUCKET_COUNT total=${total} KB worst=${worst} KB"; \
-    oversize_file=$(find /app/tree -type f -size +3500k -print -quit); \
-    if [ -n "$oversize_file" ]; then \
-      echo "单个文件超过 3.5 MB，无法切成安全层：$oversize_file" >&2; \
-      find /app/tree -type f -size +3500k -printf '%s %p\n' | sort -rn | head -5 >&2; \
+    huge_file=$(find /app/tree -type f -size +40000k -print -quit); \
+    if [ -n "$huge_file" ]; then \
+      echo "单个文件超过 40 MB，压不进任何安全层：$huge_file" >&2; \
       exit 1; \
     fi; \
     if [ "$worst" -gt 4608 ]; then \
-      echo "最大桶 ${worst} KB 超过 4.5 MB（应用树 ${total} KB / ${BUCKET_COUNT} 桶），" >&2; \
+      echo "最大桶压缩后 ${worst} KB 超过 4.5 MB（应用树 ${total} KB / ${BUCKET_COUNT} 桶），" >&2; \
       echo "镜像站会卡在 Download complete，需要调大 BUCKET_COUNT 并接受一次全量下载。" >&2; \
+      find /app/buckets -type f -size +1500k -printf '%s %p\n' | sort -rn | head -5 >&2; \
       exit 1; \
     fi
 
