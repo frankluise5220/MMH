@@ -81,6 +81,12 @@ RUN npm run build \
 # 把运行时要用的文件摊平成"目标绝对路径"的镜像树，再按路径分桶。
 # 之所以全量摊平而不是与上一版做 diff：diff 出来的分片每版都是新 digest，
 # 层数只增不减；按路径分桶则是"文件没动，层就没动"。
+#
+# 分桶前先处理两个 16.6 MB 的 libvips：
+#   - sharp 的预编译包同时带 glibc 与 musl 两套，本镜像跑 debian(glibc)，musl
+#     那套永远加载不到，直接删掉（省 17 MB，也去掉一个必超体积上限的层）；
+#   - 剩下的 glibc libvips 去掉静态符号表后再压，单文件才落得进 4.5 MB 的桶。
+#     strip 只动静态符号，动态符号保留，所以随后用 node 实际 require 一次验证。
 RUN set -eu; \
     rm -rf /app/tree /app/buckets; \
     mkdir -p /app/tree /app/buckets; \
@@ -92,6 +98,12 @@ RUN set -eu; \
     if [ -f /app/prisma.config.ts ]; then cp -a /app/prisma.config.ts /app/tree/prisma.config.ts; fi; \
     cp -a /app/scripts/docker-entrypoint.sh /app/tree/docker-entrypoint.sh; \
     chmod +x /app/tree/docker-entrypoint.sh; \
+    rm -rf /app/tree/node_modules/@img/sharp-libvips-linuxmusl-x64 \
+           /app/tree/node_modules/@img/sharp-linuxmusl-x64 \
+           /app/tree/node_modules/@next/swc-linux-x64-musl \
+           /app/tree/node_modules/@next/swc-linux-arm64-musl; \
+    find /app/tree/node_modules/@img -name 'libvips-cpp.so.*' -exec strip --strip-unneeded {} + 2>/dev/null || true; \
+    node -e "const s=require('/app/tree/node_modules/sharp'); if(!s.versions||!s.versions.vips){console.error('sharp/libvips 不可用');process.exit(1)} console.log('sharp vips', s.versions.vips)"; \
     i=0; while [ "$i" -lt "$BUCKET_COUNT" ]; do mkdir -p "/app/buckets/b$i"; i=$((i + 1)); done; \
     cd /app/tree; \
     find . -type f -print > /tmp/tree-files.txt; \
