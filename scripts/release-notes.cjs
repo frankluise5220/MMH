@@ -21,6 +21,8 @@ const { spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+// 与发布闸门共用同一份解析，避免「draft 有哪些条目」在两处算出不同结果。
+const { parseNoteGroups } = require("./sync-notes-from-release.cjs");
 
 const REPO_ROOT = path.resolve(__dirname, "..");
 const argv = process.argv.slice(2);
@@ -77,8 +79,8 @@ function run(script, args) {
   if (result.status !== 0) process.exit(result.status ?? 1);
 }
 
-// `--push-draft` 是本文件的参数，不能透传给下游（它会按 --version 的取值方式误读）。
-const passthrough = argv.filter((a) => a !== "--push-draft");
+// `--push-draft` / `--force` 是本文件的参数，不能透传给下游（它会按 --version 的取值方式误读）。
+const passthrough = argv.filter((a) => a !== "--push-draft" && a !== "--force");
 run("sync-notes-from-release.cjs", ["--write", "--auto-manifest", ...passthrough]);
 run("store-changelog.cjs", ["--write"]);
 syncSoftstoreChangelog();
@@ -94,8 +96,26 @@ syncSoftstoreChangelog();
  * 用 `gh` 而不是手拼 API：发布流程里的资产校验、Windows 上传本来就用它，
  * `--notes-file -` 还能直接吃 stdin。令牌按 GH_TOKEN → GITHUB_TOKEN →
  * `~/.codebuddy/mcp.json` 的细粒度 PAT 取（与 release-publish.cjs 同源）。
+ *
+ * ── 为什么默认拒绝覆盖非空且不一致的 draft ──────────────────────────────────
+ * 正文的正典方向是 **draft → 仓库**（update-notes-surfaces.md §2）。用户会在发布前
+ * 直接改 draft 措辞、删条目，draft 的最后一版才是最终稿。此时若从仓库侧推正文上去，
+ * 就是把用户刚写的东西抹掉——而这恰好发生在他改完之后、打包之前，代价是整版文案回退。
+ * 所以 draft 已有内容且与 `mmhReleaseNotes` 不一致时**直接失败并列出差异条目**，
+ * 让人先跑 `release:notes --write` 回灌；确实要用仓库正文覆盖时显式加 `--force`。
  */
-function pushDraft() {
+function bulletsOf(markdown) {
+  return [...parseNoteGroups(markdown).values()].flatMap((group) => group.items);
+}
+
+/** 只比语义：换行符差异、尾部空行不算「用户改过正文」。 */
+function normalizeBody(text) {
+  return String(text || "")
+    .replace(/\r\n/g, "\n")
+    .trim();
+}
+
+async function pushDraft() {
   const pkg = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, "package.json"), "utf8"));
   const at = argv.indexOf("--version");
   const version = String((at >= 0 ? argv[at + 1] : pkg.version) || "").replace(/^v/, "");
@@ -106,6 +126,26 @@ function pushDraft() {
   const body = String(pkg.mmhReleaseNotes || "").trim();
   if (!body) {
     console.error("[FAIL] package.json 的 mmhReleaseNotes 是空的，先回灌正文");
+    process.exit(1);
+  }
+
+  let current = null;
+  try {
+    current = normalizeBody((await releaseBody(version)).body);
+  } catch {
+    // 取不到（draft 尚未创建 / 网络失败）就没有可覆盖的内容，按首次填充处理。
+    current = null;
+  }
+  if (current && current !== normalizeBody(body) && !argv.includes("--force")) {
+    const draftItems = bulletsOf(current);
+    const repoItems = bulletsOf(body);
+    const onlyDraft = draftItems.filter((item) => !repoItems.includes(item));
+    const onlyRepo = repoItems.filter((item) => !draftItems.includes(item));
+    console.error(`[FAIL] Release v${version} 的正文与 package.json 不一致，拒绝覆盖：draft 才是最终稿。`);
+    if (onlyDraft.length) console.error(`  draft 有、仓库没有（会被删掉）：${onlyDraft.map((i) => i.slice(0, 30)).join(" | ")}`);
+    if (onlyRepo.length) console.error(`  仓库有、draft 已删：${onlyRepo.map((i) => i.slice(0, 30)).join(" | ")}`);
+    console.error("  要保留 draft 的写法：npm run release:notes -- --version " + version);
+    console.error("  确实要用仓库正文覆盖 draft：加 --force。");
     process.exit(1);
   }
   let token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN || "";
@@ -136,4 +176,9 @@ function pushDraft() {
   console.log(`[done] Release v${version} 正文已与 package.json 对齐`);
 }
 
-if (argv.includes("--push-draft")) pushDraft();
+if (argv.includes("--push-draft")) {
+  pushDraft().catch((error) => {
+    console.error(`[error] ${error.message}`);
+    process.exit(1);
+  });
+}
