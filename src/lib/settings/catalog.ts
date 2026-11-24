@@ -200,6 +200,7 @@ const SETTINGS_ITEM_DESCRIPTION_KEYS: Record<string, string> = {
   api: "settings.item.api.desc",
   mcp: "settings.item.mcp.desc",
   "fund-api": "settings.item.fund-api.desc",
+  "stock-api": "settings.item.stock-api.desc",
   "scheduled-tasks": "settings.item.scheduled-tasks.desc",
   display: "settings.item.display.desc",
   "color-scheme": "settings.item.color-scheme.desc",
