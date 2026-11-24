@@ -1,4 +1,4 @@
-import { AccountKind, CreditCardInstallmentSourceType, TransactionType, type CreditBillingDayTxPeriod, type Prisma } from "@prisma/client";
+import { AccountKind, CreditCardInstallmentSourceType, TransactionType, Prisma, type CreditBillingDayTxPeriod } from "@prisma/client";
 import type { DetailEntry } from "@/components/DetailViewClient";
 import type { CreditBillSummaryRow } from "@/components/CreditBillSummaryTable";
 import { prisma } from "@/lib/db/prisma";
@@ -11,7 +11,6 @@ import {
   buildCreditCardCyclePersistRows,
   buildCreditBillCycleDefinitionsFromBillingDayRules,
   computeCreditBillCascade,
-  creditBillDateRangeWhere,
   creditBillEffectiveDate,
   billingDayAtDate,
   cycleForStatementMonthWithBillingDayRules,
@@ -27,12 +26,18 @@ import {
 } from "@/lib/credit/billing";
 import { partitionCreditCycles } from "@/lib/server/credit-cycles";
 import { markInitialBillingDayRules } from "@/lib/credit/billing-day-rules";
-import { compareDetailEntriesDesc } from "@/lib/detail-entry-order";
 import { normalizeCreditCardInstallmentStatementMonths, materializeDueInstallmentPayments } from "@/lib/server/credit-card-installment";
 import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
 import { getCreditBillAccountIds } from "@/lib/server/credit-card-institution-settings";
 import { reconcileCreditCardBillingDayRulesFromAccounts } from "@/lib/server/credit-card-billing-day-rules";
-import { buildEntryBusinessLinkSummary, entryBusinessLinkSummaryInclude } from "@/lib/server/entry-business-link";
+import { buildEntryBusinessLinkSummary } from "@/lib/server/entry-business-link";
+import {
+  CREDIT_BILL_DETAIL_TYPES,
+  creditBillEntryEffectiveDate,
+  creditBillScopeKey,
+  loadCreditBillEntryChannel,
+  type CreditBillEntryChannel,
+} from "@/lib/server/credit-bill-entry-channel";
 
 type SelectedBillAccount = {
   id: string;
@@ -98,9 +103,18 @@ type LoadCreditBillPageDataParams = {
   view: string;
   t: (key: string) => string;
   forceCycleRefresh?: boolean;
+  /** 手动重算时允许「全锁卡」也走一遍（金额仍保持锁定值），见 refreshCreditCardCycleCachesForAccountIds。 */
+  forceLockedCyclesRefresh?: boolean;
   categoryLabels: Map<string, string>;
   isSettlementLiabilityAccountId: (accountId: string | null | undefined) => boolean;
   isCreditCardRepaymentForDisplay: (entry: any) => boolean;
+  /**
+   * 该卡（含副卡组）的全部流水，由 `loadCreditBillEntryChannel` 一次读出。
+   *
+   * 这里不再自己查 `prisma.txRecord`：月份列表、当期明细、还款汇总、周期失效
+   * 判定全部从这一份数据在内存里派生，同一次渲染只读一次库。
+   */
+  entryChannel: CreditBillEntryChannel;
 };
 
 function ymdUtc(d: Date) {
@@ -159,6 +173,7 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
     categoryLabels,
     isSettlementLiabilityAccountId,
     isCreditCardRepaymentForDisplay,
+    entryChannel,
   } = params;
 
   const billAccountIdSet = new Set(billAccountIds);
@@ -175,15 +190,6 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
       console.error("materialize installment payments failed:", error);
     });
   }
-
-  const billScope: Prisma.TxRecordWhereInput | undefined = selectedAccount
-    ? {
-        OR: [
-          { accountId: { in: scopedBillAccountIds } },
-          { toAccountId: { in: scopedBillAccountIds } },
-        ],
-      }
-    : undefined;
 
   // 账期判断用的「今天」必须是业务时区的今天：`new Date()` 取 UTC 日期会在
   // 北京时间 00:00–08:00 把账期算成前一天（当期账单/还款日提示全错）。
@@ -322,23 +328,54 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
   // 落在邻月（例如 2017-06 被写成 05.01 ~ 05.31），相邻月份就会被挤成「两个月
   // 一期」，而这一期自己的流水没有周期可落。这类周期一律丢弃，按账单日规则重算，
   // 并通过下面的 stale 判断触发一次回写，把库里的坏周期改回来。
-  const { accepted: consistentPersistedCycles, rejectedMonths: repairedCycleMonths } = partitionCreditCycles(
+  const { accepted: consistentPersistedCycles, rejectedMonths: rejectedCycleMonths } = partitionCreditCycles(
     persistedCyclesInitial,
     billingDayTxPeriod,
   );
   const persistedCycleByMonth = new Map(consistentPersistedCycles.map((cycle) => [cycle.statementMonth, cycle]));
-  const latestBillTxUpdatedAt = isBillAccount && selectedAccount && billScope
-    ? await prisma.txRecord.findFirst({
-        where: { AND: [billScope] },
-        orderBy: { updatedAt: "desc" },
-        select: { updatedAt: true },
-      })
+  // 写回时的「这一期是否已存在」必须看**含坏周期的全部行**：坏周期仍在库里，用上面
+  // 只看自洽行的 map 判存在会把它当成缺失期再 INSERT 一次，撞 (accountId, statementMonth)
+  // 唯一约束后整个事务回滚——坏周期永远修不掉，且每次首屏都白跑一次失败事务。
+  const persistedAnyCycleByMonth = new Map(persistedCyclesInitial.map((cycle) => [cycle.statementMonth, cycle]));
+  // 「坏周期」只有**真能修**的才算待修：判坏有两类原因，
+  //   ① 这一期自己的起止日与账单日规则不符 → 重算会写回正确账期，可以修；
+  //   ② 与邻期接不上（手工改期/对账单导入把某一期锁成自然月，缝在两侧）→ 重算
+  //      得到的账期与库里完全一致（锁定期还会原样保留起止日），写回无任何变化。
+  // 只有 ① 才该点亮 stale；否则第 ② 类会让 stale 永远为真，每次打开账单都要把
+  // 全卡上百期重算一遍（实测花呗 140 期：2018-03 手工锁期、2019-09 是它的缝）。
+  const repairedCycleMonths = new Set(
+    [...rejectedCycleMonths].filter((statementMonth) => {
+      const cycle = persistedAnyCycleByMonth.get(statementMonth);
+      if (!cycle) return false;
+      if (
+        hasCreditCardCycleLockSource(cycle.lockSource, CREDIT_CARD_MANUAL_CYCLE_LOCK_SOURCE) ||
+        hasCreditCardCycleLockSource(cycle.lockSource, CREDIT_CARD_STATEMENT_IMPORT_CYCLE_LOCK_SOURCE)
+      ) {
+        return false;
+      }
+      if (!hasBillingDayRules || !selectedAccount) return true;
+      const definition = cycleForStatementMonthWithBillingDayRules({
+        statementMonth,
+        billingDayRules,
+        repaymentDay: selectedAccount.repaymentDay ?? null,
+        repaymentOffsetDays: selectedAccount.repaymentOffsetDays ?? null,
+        now: creditBillNow,
+        fallbackBillingDay,
+        billingDayTxPeriod,
+      });
+      if (!definition) return true;
+      return (
+        !sameCreditCycleDay(cycle.periodStart, definition.start) ||
+        !sameCreditCycleDay(cycle.periodEnd, definition.end)
+      );
+    }),
+  );
+  // 周期缓存 stale 判定必须用**含软删行**的最新 updatedAt（删掉一笔流水后周期要
+  // 重算），所以取通道的 latestAnyUpdatedAt，不能用 activeRows 的最大值。
+  const latestBillTxUpdatedAt = isBillAccount && selectedAccount && entryChannel.latestAnyUpdatedAt
+    ? { updatedAt: entryChannel.latestAnyUpdatedAt }
     : null;
-  const activeBillTxCount = isBillAccount && selectedAccount && billScope
-    ? await prisma.txRecord.count({
-        where: { AND: [billScope, { deletedAt: null }] },
-      })
-    : 0;
+  const activeBillTxCount = isBillAccount && selectedAccount ? entryChannel.activeCount : 0;
   const latestCycleUpdatedAt = persistedCyclesInitial.reduce<Date | null>(
     (latest, cycle) => (!latest || cycle.updatedAt > latest ? cycle.updatedAt : latest),
     null,
@@ -356,9 +393,28 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
     if (overrideAmount === undefined) return false;
     return Math.abs(toNumber(cycle.effectiveBill) - overrideAmount) > 0.005;
   });
+  // 锁定期（手工改账期 manual_cycle / 对账单导入 statement_import）的应还金额是外部
+  // 事实：重算时把它当作 override 注入累计链，并且不覆盖这几期的金额。否则记一笔账
+  // 就把银行给的/用户手改的金额冲掉，锁定形同虚设。
+  const lockedCycleBillByMonth = new Map<string, number>();
+  for (const cycle of persistedCyclesInitial) {
+    if (
+      hasCreditCardCycleLockSource(cycle.lockSource, CREDIT_CARD_MANUAL_CYCLE_LOCK_SOURCE) ||
+      hasCreditCardCycleLockSource(cycle.lockSource, CREDIT_CARD_STATEMENT_IMPORT_CYCLE_LOCK_SOURCE)
+    ) {
+      lockedCycleBillByMonth.set(cycle.statementMonth, toNumber(cycle.effectiveBill));
+    }
+  }
+  // 「全锁」只说明已有账期不必重算；一旦跨进新账期（当前期没有周期行），仍然必须
+  // 重算把这一期补出来，否则新账单永远不会出现。
+  const allCyclesLocked =
+    persistedCyclesInitial.length > 0 &&
+    lockedCycleBillByMonth.size === persistedCyclesInitial.length &&
+    (!currentStatementMonth || persistedCycleByMonth.has(currentStatementMonth));
   const creditCycleCacheStale = !!(
     isBillAccount &&
     selectedAccount &&
+    (!allCyclesLocked || !!params.forceLockedCyclesRefresh) &&
     (
       forceCycleRefresh ||
       persistedCyclesInitial.length === 0 ||
@@ -377,7 +433,13 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
       ) ||
       !latestCycleUpdatedAt ||
       latestCycleUpdatedAt < creditBillSummaryLogicUpdatedAt ||
-      latestCycleUpdatedAt < todayUtcStart ||
+      // 这里故意不按「今天还没算过」自动重算：跨天本身不会改变已出账期的金额，
+      // 而每次打开/切换账单都重算会把该卡全部历史周期（实测单卡 138~157 期）
+      // 全部汇总 + 逐期 upsert 一遍。重算改由两处触发：
+      //   ① 记账 / 编辑 / 删除流水后的 `invalidateCreditCardCycleCacheForAccountIds`（会立刻重建）；
+      //   ② 账单页工具条的「重算账单」按钮（强制）。
+      // 下面保留的都是「结构性缺失」兜底：周期表为空、当前期没行、坏周期待修、
+      // 计算口径升级、以及写入路径漏失效导致流水比周期新。
       (!!latestBillingDayRuleUpdatedAt && latestBillingDayRuleUpdatedAt > latestCycleUpdatedAt) ||
       repairedCycleMonths.size > 0 ||
       importedStatementCycleNeedsRecalc ||
@@ -392,12 +454,8 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
   const availableBillMonths =
     isBillAccount && selectedAccount && hasBillingDayRules
       ? await (async () => {
-          const rows = await prisma.txRecord.findMany({
-            where: {
-              AND: [billScope!, { deletedAt: null }],
-            },
-            select: { date: true, postedAt: true, type: true },
-          });
+          // 月份列表同样从通道派生：整卡流水已经在内存里，不再扫一遍库。
+          const rows = entryChannel.activeRows;
           const candidateMonths = new Set<string>();
           for (const row of rows) {
             const date = creditBillEffectiveDate(row);
@@ -493,35 +551,30 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
             };
           }
 
-          const cycleMatch = {
-            ...creditBillDateRangeWhere(start, addDaysUtc(end, 1)),
-            deletedAt: null,
-          };
-          const repaymentMatch = {
-            amount: { lt: 0 },
-            toAccountId: { in: billAccountIds },
-            type: TransactionType.transfer,
-            deletedAt: null,
-            date: { gte: addDaysUtc(end, 1), lt: addDaysUtc(repayEnd, 1) },
-          };
-          const [cycleFlowRows, paidAgg] = await Promise.all([
-            prisma.txRecord.findMany({
-              where: {
-                AND: [
-                  cycleMatch,
-                  ...(billScope ? [billScope] : []),
-                  { OR: [{ accountId: { in: billAccountIds } }, { toAccountId: { in: billAccountIds } }] },
-                ],
-              },
-              select: { accountId: true, toAccountId: true, amount: true, type: true, categoryName: true },
-            }),
-            prisma.txRecord.aggregate({
-              where: {
-                AND: [repaymentMatch, ...(billScope ? [billScope] : [])],
-              },
-              _sum: { amount: true },
-            }),
-          ]);
+          // 当期账单流水 + 还款汇总：都从通道的 activeRows 在内存里筛 / 折。
+          const cycleStartMs = start.getTime();
+          const cycleEndExclusiveMs = addDaysUtc(end, 1).getTime();
+          const repayEndExclusiveMs = addDaysUtc(repayEnd, 1).getTime();
+          const cycleFlowRows = entryChannel.activeRows.filter((row) => {
+            if (!(row.accountId && billAccountIdSet.has(row.accountId)) && !(row.toAccountId && billAccountIdSet.has(row.toAccountId))) {
+              return false;
+            }
+            const effective = creditBillEntryEffectiveDate(row);
+            if (!effective) return false;
+            const ms = effective.getTime();
+            return ms >= cycleStartMs && ms < cycleEndExclusiveMs;
+          });
+          // 金额用 Decimal 累加：SQL 的 aggregate 原本走 decimal，改成浮点求和会在
+          // 分位上产生 0.01 级别的漂移。
+          const paidDecimal = entryChannel.activeRows.reduce((sum, row) => {
+            if (row.type !== TransactionType.transfer) return sum;
+            if (!row.toAccountId || !billAccountIdSet.has(row.toAccountId)) return sum;
+            if (toNumber(row.amount) >= 0) return sum;
+            if (!(row.date instanceof Date)) return sum;
+            const ms = row.date.getTime();
+            return ms >= cycleEndExclusiveMs && ms < repayEndExclusiveMs ? sum.plus(row.amount) : sum;
+          }, new Prisma.Decimal(0));
+          const paidAgg = { _sum: { amount: paidDecimal } };
 
           const flows = summarizeCreditBillSignedFlows(cycleFlowRows, billAccountIdSet);
           const bill = flows.bill;
@@ -546,35 +599,26 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
     return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
   })();
 
-  const lastRepayToAccountId = await (async () => {
+  // 「最近一笔从这张卡转出（amount > 0 的转入卡侧）」的对手账户：同样从通道派生。
+  // 原实现两次查询条件完全一致，这里合并成一次内存遍历，结果同源。
+  const lastRepayCounterpartyAccountId = (() => {
     if (!isBillAccount || !selectedAccount) return undefined;
-    const lastEntry = await prisma.txRecord.findFirst({
-      where: {
-        accountId: { in: billAccountIds.length > 0 ? billAccountIds : [selectedAccount.id] },
-        type: TransactionType.transfer,
-        amount: { gt: 0 },
-      },
-      orderBy: { date: "desc" },
-      take: 1,
-    });
-    if (!lastEntry) return undefined;
-    return lastEntry.toAccountId ?? undefined;
+    const idSet = new Set(billAccountIds.length > 0 ? billAccountIds : [selectedAccount.id]);
+    let latest: { date: Date; toAccountId: string | null } | null = null;
+    for (const row of entryChannel.rows) {
+      if (!row.accountId || !idSet.has(row.accountId)) continue;
+      if (row.type !== TransactionType.transfer) continue;
+      if (toNumber(row.amount) <= 0) continue;
+      if (!(row.date instanceof Date)) continue;
+      if (!latest || row.date > latest.date) {
+        latest = { date: row.date, toAccountId: row.toAccountId ?? null };
+      }
+    }
+    return latest?.toAccountId ?? undefined;
   })();
 
-  const lastRepayFromAccountId = await (async () => {
-    if (!isBillAccount || !selectedAccount) return undefined;
-    const lastEntry = await prisma.txRecord.findFirst({
-      where: {
-        accountId: { in: billAccountIds.length > 0 ? billAccountIds : [selectedAccount.id] },
-        type: TransactionType.transfer,
-        amount: { gt: 0 },
-      },
-      orderBy: { date: "desc" },
-      take: 1,
-    });
-    if (!lastEntry) return undefined;
-    return lastEntry.toAccountId ?? undefined;
-  })();
+  const lastRepayToAccountId = lastRepayCounterpartyAccountId;
+  const lastRepayFromAccountId = lastRepayCounterpartyAccountId;
 
   const billMonthsForList = (() => {
     const months = new Set<string>();
@@ -690,33 +734,15 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
     creditCycleCacheStale &&
     isBillAccount &&
     selectedAccount &&
-    billScope &&
     creditCycleDefinitions.length > 0
-      ? await (() => {
-          const rangeStart = creditCycleDateRange!.start;
-          const rangeEndExclusive = creditCycleDateRange!.endExclusive;
-          return prisma.txRecord.findMany({
-            where: {
-              AND: [
-                billScope,
-                { deletedAt: null },
-                {
-                  AND: [
-                    { OR: [{ accountId: { in: billAccountIds } }, { toAccountId: { in: billAccountIds } }] },
-                    creditBillDateRangeWhere(rangeStart, rangeEndExclusive),
-                  ],
-                },
-              ],
-            },
-            select: {
-              date: true,
-              postedAt: true,
-              amount: true,
-              accountId: true,
-              toAccountId: true,
-              type: true,
-              categoryName: true,
-            },
+      ? (() => {
+          const rangeStartMs = creditCycleDateRange!.start.getTime();
+          const rangeEndExclusiveMs = creditCycleDateRange!.endExclusive.getTime();
+          return entryChannel.activeRows.filter((row) => {
+            const effective = creditBillEntryEffectiveDate(row);
+            if (!effective) return false;
+            const ms = effective.getTime();
+            return ms >= rangeStartMs && ms < rangeEndExclusiveMs;
           });
         })()
       : [];
@@ -841,10 +867,15 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
     : computeCreditBillCascade({
         monthsForCascade: billMonthsForCumulative,
         summaryByMonth: billSummaryByMonth,
-        overrides: billOverrides.map((override) => ({
-          statementMonth: override.statementMonth,
-          amount: Number(override.amount),
-        })),
+        // 锁定期的金额排在前面、用户手改的 BillOverride 排在后面：Map 构造时后者覆盖
+        // 前者，保住「用户最后一次手改优先」的既有口径。
+        overrides: [
+          ...Array.from(lockedCycleBillByMonth, ([statementMonth, amount]) => ({ statementMonth, amount })),
+          ...billOverrides.map((override) => ({
+            statementMonth: override.statementMonth,
+            amount: Number(override.amount),
+          })),
+        ],
       });
   const {
     overrideByMonth,
@@ -885,8 +916,14 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
         },
       });
       if (creditCardCyclePersistRows.length === 0) return;
+      // 只写**真的变了**的期：stale 判定里只要有一期被判「坏周期」就会走这条重算
+      // 路径，而重算结果常常与库中完全一致（坏周期多半是手工锁期这类外部事实，
+      // 改不动）。以前无条件对全部期 upsert，一次首屏就是 140 次 UPDATE。
+      const creates: Prisma.CreditCardCycleCreateManyInput[] = [];
+      const updates: { statementMonth: string; data: Prisma.CreditCardCycleUpdateInput }[] = [];
       for (const row of creditCardCyclePersistRows) {
-        const persistedCycle = persistedCycleByMonth.get(row.statementMonth);
+        // 用「全部行」判存在：被判坏的期也要走 UPDATE 把它修正，绝不能再 INSERT。
+        const persistedCycle = persistedAnyCycleByMonth.get(row.statementMonth);
         const hasManualCycleLock = hasCreditCardCycleLockSource(
           persistedCycle?.lockSource,
           CREDIT_CARD_MANUAL_CYCLE_LOCK_SOURCE,
@@ -908,14 +945,20 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
         const isCurrentCycle = hasFixedCyclePeriodLock && persistedCycle
           ? todayUtcStart >= periodStart && todayUtcStart < addDaysUtc(periodEnd, 1)
           : row.isCurrentCycle;
-        await tx.creditCardCycle.upsert({
-          where: {
-            accountId_statementMonth: {
-              accountId: billStorageAccountId,
-              statementMonth: row.statementMonth,
-            },
-          },
-          create: {
+        // 锁定期只用新数据刷新「还款/累计/账期状态」，金额保持外部事实（对账单导入或
+        // 手工改账期那一刻的值）。用户又在这期手改过金额（BillOverride）时例外：
+        // 那个值必须落库，否则下次打开又会判定为「override 与缓存不一致」而反复重算。
+        const amounts = hasFixedCyclePeriodLock && !billOverrideAmountByMonthInitial.has(row.statementMonth)
+          ? {}
+          : {
+              expenseAbs: String(row.expenseAbs),
+              income: String(row.income),
+              rawBill: String(row.rawBill),
+              effectiveBill: String(row.effectiveBill),
+            };
+
+        if (!persistedCycle) {
+          creates.push({
             accountId: billStorageAccountId,
             statementMonth: row.statementMonth,
             periodStart,
@@ -931,22 +974,38 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
             isCurrentCycle,
             isLocked,
             lockSource,
+          });
+          continue;
+        }
+
+        const desired = {
+          periodStart,
+          periodEnd,
+          dueDate,
+          ...amounts,
+          paid: String(row.paid),
+          cumulativeRemain: String(row.cumulativeRemain),
+          cumulativeOverpaid: String(row.cumulativeOverpaid),
+          isCurrentCycle,
+          isLocked,
+          lockSource,
+        };
+        if (isCreditCardCycleRowUnchanged(persistedCycle, desired)) continue;
+        updates.push({ statementMonth: row.statementMonth, data: desired });
+      }
+
+      if (creates.length > 0) {
+        await tx.creditCardCycle.createMany({ data: creates });
+      }
+      for (const update of updates) {
+        await tx.creditCardCycle.update({
+          where: {
+            accountId_statementMonth: {
+              accountId: billStorageAccountId,
+              statementMonth: update.statementMonth,
+            },
           },
-          update: {
-            periodStart,
-            periodEnd,
-            dueDate,
-            expenseAbs: String(row.expenseAbs),
-            income: String(row.income),
-            paid: String(row.paid),
-            rawBill: String(row.rawBill),
-            effectiveBill: String(row.effectiveBill),
-            cumulativeRemain: String(row.cumulativeRemain),
-            cumulativeOverpaid: String(row.cumulativeOverpaid),
-            isCurrentCycle,
-            isLocked,
-            lockSource,
-          },
+          data: update.data,
         });
       }
     }, { maxWait: 10_000, timeout: 60_000 });
@@ -1001,59 +1060,14 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
           // detail table) uses. Prisma cannot order by a per-type COALESCE, so
           // rows are fetched in the same three branches as
           // creditBillDateRangeWhere and merged in memory.
-          const range = { gte: start, lt: addDaysUtc(end, 1) };
-          const detailInclude = {
-            EntryTag: { include: { Tag: true } },
-            Attachment: { select: { id: true, name: true, mimeType: true, url: true } },
-            ...entryBusinessLinkSummaryInclude,
-            account: { include: { Institution: { select: { name: true, shortName: true } }, AccountGroup: { select: { name: true } } } },
-            toAccount: { include: { Institution: { select: { name: true, shortName: true } }, AccountGroup: { select: { name: true } } } },
-          };
-          const [postedRows, legacyRows, otherRows] = await Promise.all([
-            prisma.txRecord.findMany({
-              where: {
-                AND: [
-                  ...(billScope ? [billScope] : []),
-                  { deletedAt: null },
-                  { type: { in: [TransactionType.expense, TransactionType.income] } },
-                  { postedAt: range },
-                ],
-              },
-              include: detailInclude,
-              orderBy: [{ postedAt: "desc" }, { createdAt: "desc" }],
-              take: 500,
-            }),
-            prisma.txRecord.findMany({
-              where: {
-                AND: [
-                  ...(billScope ? [billScope] : []),
-                  { deletedAt: null },
-                  { type: { in: [TransactionType.expense, TransactionType.income] } },
-                  { postedAt: null },
-                  { date: range },
-                ],
-              },
-              include: detailInclude,
-              orderBy: [{ date: "desc" }, { createdAt: "desc" }],
-              take: 500,
-            }),
-            prisma.txRecord.findMany({
-              where: {
-                AND: [
-                  ...(billScope ? [billScope] : []),
-                  { deletedAt: null },
-                  { type: { in: [TransactionType.transfer, TransactionType.investment] } },
-                  { date: range },
-                ],
-              },
-              include: detailInclude,
-              orderBy: [{ date: "desc" }, { createdAt: "desc" }],
-              take: 500,
-            }),
-          ]);
-          const cycleEntries = [...postedRows, ...legacyRows, ...otherRows]
-            .sort((a, b) => compareDetailEntriesDesc(a, b, selectedAccount?.id ?? null))
-            .slice(0, 500);
+          // 当日 / 当期明细：在通道的轻量全量行里筛（三分支合并 + 生效日排序 +
+          // 500 行封顶），只对最后要展示的这批 id 取精装关联。
+          const cycleEntries = await entryChannel.loadCycleDetailRows({
+            start,
+            end: addDaysUtc(end, 1),
+            sortAccountId: selectedAccount?.id ?? null,
+            types: CREDIT_BILL_DETAIL_TYPES,
+          });
           const details: DetailEntry[] = cycleEntries.map((e) => ({
             id: e.id,
             date: toYmdOrNull(e.date) ?? "",
@@ -1159,6 +1173,11 @@ export async function loadCreditBillPageData(params: LoadCreditBillPageDataParam
 export async function refreshCreditCardCycleCachesForAccountIds(params: {
   householdId: string;
   accountIds: Iterable<string | null | undefined>;
+  /**
+   * 用户手动点「重算账单」时传 true：全锁卡也走一遍，好让还款进度/累计金额跟上，
+   * 但锁定期本身的金额与账期仍然保持外部事实（不会被重算覆盖）。
+   */
+  forceLocked?: boolean;
 }) {
   const accountIds = Array.from(
     new Set(Array.from(params.accountIds).filter((accountId): accountId is string => Boolean(accountId))),
@@ -1206,7 +1225,11 @@ export async function refreshCreditCardCycleCachesForAccountIds(params: {
     });
   }
 
+  let refreshedGroups = 0;
   for (const group of refreshGroups.values()) {
+    // 全卡账单都锁定（手工改账期 / 对账单导入）且当前期已有行时，重算既改不动任何
+    // 金额、又要白算 140+ 期，直接跳过；跨进新账期（当前期缺行）仍需补期。
+    if (!params.forceLocked && await areCreditCardCyclesFullyLocked(group.billStorageAccountId, params.householdId)) continue;
     await invalidateCreditCardCycleCacheForAccountIds(group.billAccountIds, { rebuild: false });
     await loadCreditBillPageData({
       householdId: params.householdId,
@@ -1221,11 +1244,107 @@ export async function refreshCreditCardCycleCachesForAccountIds(params: {
       view: "refresh",
       t: (key) => key,
       forceCycleRefresh: true,
+      forceLockedCyclesRefresh: !!params.forceLocked,
       categoryLabels: new Map(),
       isSettlementLiabilityAccountId: () => false,
       isCreditCardRepaymentForDisplay: () => false,
+      entryChannel: await loadCreditBillEntryChannel(params.householdId, creditBillScopeKey(group.billAccountIds)),
     });
+    refreshedGroups += 1;
   }
 
-  return refreshGroups.size;
+  return refreshedGroups;
+}
+
+/**
+ * 该卡（账单存储账户）的全部周期是否都已锁定，且当前账期已经在周期表里。
+ *
+ * 「全锁」本身不足以跳过重算：跨进新账期时当前期还没有行，必须算一次把它补出来。
+ * 这里用周期自身的 `periodStart..periodEnd` 判断今天是否落在某一期内，避免为了
+ * 判断「当前期是哪个月」再跑一遍账单日规则。
+ */
+async function areCreditCardCyclesFullyLocked(billStorageAccountId: string, householdId: string) {
+  const cycles = await prisma.creditCardCycle.findMany({
+    where: { accountId: billStorageAccountId },
+    select: { lockSource: true, periodStart: true, periodEnd: true },
+  });
+  if (cycles.length === 0) return false;
+  const allLocked = cycles.every(
+    (cycle) =>
+      hasCreditCardCycleLockSource(cycle.lockSource, CREDIT_CARD_MANUAL_CYCLE_LOCK_SOURCE) ||
+      hasCreditCardCycleLockSource(cycle.lockSource, CREDIT_CARD_STATEMENT_IMPORT_CYCLE_LOCK_SOURCE),
+  );
+  if (!allLocked) return false;
+  const todayUtcStart = businessTodayUtcStart(await getHouseholdTimeZone(householdId));
+  return cycles.some((cycle) => cycle.periodStart <= todayUtcStart && todayUtcStart <= cycle.periodEnd);
+}
+
+/**
+ * 周期行「是否需要落库」的判定：period / 到期日 / 状态位 / 金额都相同就跳过写入。
+ * 金额用数值比较 —— 库里是 `Decimal`（`"100"`），算出来是 `String(number)`（`"100"`），
+ * 字符串形式可能带尾零，直接比字符串会永远判定为「变了」。
+ */
+function sameCreditCycleDay(left: Date | null, right: Date | null): boolean {
+  if (!left || !right) return left === right;
+  return left.getTime() === right.getTime();
+}
+
+function sameCreditCycleAmount(left: unknown, right: unknown): boolean {
+  const a = Number(left);
+  const b = Number(right);
+  if (Number.isNaN(a) || Number.isNaN(b)) return String(left) === String(right);
+  // 必须按库里的列精度（`Decimal(18, 2)`）比较：汇总出来的是浮点结果（例如
+  // `1234.5649999`），写进 numeric(18,2) 会被四舍五入成 `1234.56`，用 `===` 比
+  // 就永远判定「变了」，每次打开账单都要把这几十期原样 UPDATE 一遍。
+  return Math.round(a * 100) === Math.round(b * 100);
+}
+
+function isCreditCardCycleRowUnchanged(
+  persisted: {
+    periodStart: Date;
+    periodEnd: Date;
+    dueDate: Date | null;
+    expenseAbs?: unknown;
+    income?: unknown;
+    paid?: unknown;
+    rawBill?: unknown;
+    effectiveBill?: unknown;
+    cumulativeRemain?: unknown;
+    cumulativeOverpaid?: unknown;
+    isCurrentCycle: boolean;
+    isLocked: boolean;
+    lockSource: string | null;
+  },
+  desired: {
+    periodStart: Date;
+    periodEnd: Date;
+    dueDate: Date | null;
+    expenseAbs?: string;
+    income?: string;
+    paid: string;
+    rawBill?: string;
+    effectiveBill?: string;
+    cumulativeRemain: string;
+    cumulativeOverpaid: string;
+    isCurrentCycle: boolean;
+    isLocked: boolean;
+    lockSource: string | null;
+  },
+): boolean {
+  if (!sameCreditCycleDay(persisted.periodStart, desired.periodStart)) return false;
+  if (!sameCreditCycleDay(persisted.periodEnd, desired.periodEnd)) return false;
+  if (!sameCreditCycleDay(persisted.dueDate, desired.dueDate)) return false;
+  if (persisted.isCurrentCycle !== desired.isCurrentCycle) return false;
+  if (persisted.isLocked !== desired.isLocked) return false;
+  if ((persisted.lockSource ?? null) !== (desired.lockSource ?? null)) return false;
+  if (!sameCreditCycleAmount(persisted.paid, desired.paid)) return false;
+  if (!sameCreditCycleAmount(persisted.cumulativeRemain, desired.cumulativeRemain)) return false;
+  if (!sameCreditCycleAmount(persisted.cumulativeOverpaid, desired.cumulativeOverpaid)) return false;
+  if (desired.expenseAbs !== undefined && !sameCreditCycleAmount(persisted.expenseAbs, desired.expenseAbs)) return false;
+  if (desired.income !== undefined && !sameCreditCycleAmount(persisted.income, desired.income)) return false;
+  if (desired.rawBill !== undefined && !sameCreditCycleAmount(persisted.rawBill, desired.rawBill)) return false;
+  if (desired.effectiveBill !== undefined && !sameCreditCycleAmount(persisted.effectiveBill, desired.effectiveBill)) {
+    return false;
+  }
+  return true;
 }

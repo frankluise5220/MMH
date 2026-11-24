@@ -16,6 +16,7 @@ import { NextResponse } from "next/server";
 import { prisma } from "@/lib/db/prisma";
 import { getCreditBillAccountIds } from "@/lib/server/credit-card-institution-settings";
 import { loadCreditBillPageData } from "@/lib/server/credit-bill-page-data";
+import { creditBillScopeKey, loadCreditBillEntryChannel } from "@/lib/server/credit-bill-entry-channel";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 
 export const runtime = "nodejs";
@@ -65,6 +66,7 @@ export async function GET(request: Request) {
       categoryLabels: new Map(),
       isSettlementLiabilityAccountId: () => false,
       isCreditCardRepaymentForDisplay: () => false,
+      entryChannel: await loadCreditBillEntryChannel(householdId, creditBillScopeKey(billAccountIds)),
     });
 
     return NextResponse.json({

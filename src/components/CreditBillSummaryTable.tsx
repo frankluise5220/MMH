@@ -5,7 +5,7 @@ import { ModalLayer } from "@/components/ModalLayer";
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { CalendarClock, CalendarDays, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, X } from "lucide-react";
+import { CalendarClock, CalendarDays, ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight, RefreshCw, X } from "lucide-react";
 import { AdvancedDataTable, type AdvancedDataTableColumn } from "@/components/AdvancedDataTable";
 import { CalcInput } from "@/components/CalcInput";
 import { DateStepper } from "@/components/DateStepper";
@@ -143,6 +143,8 @@ export function CreditBillSummaryTable({
   const [exportEndMonth, setExportEndMonth] = useState("");
   const [exportError, setExportError] = useState("");
   const [exportBusy, setExportBusy] = useState(false);
+  const [recalcBusy, setRecalcBusy] = useState(false);
+  const [recalcError, setRecalcError] = useState("");
   const summaryRefreshSeqRef = useRef(0);
   const totalPages = Math.max(1, Math.ceil(localRows.length / pageSize));
   const [page, setPage] = useState(() => clampPage(initialPage, totalPages));
@@ -398,6 +400,49 @@ export function CreditBillSummaryTable({
     router.replace(href, { scroll: false });
   }
 
+  // 手动强制重算：账单页平时只读 CreditCardCycle 缓存（记账写入时已经会重建），
+  // 这里给「导入对账单 / 批量改历史流水 / 怀疑缓存不对」兜底。重算后只重取账单
+  // 汇总行，不整页刷新，也不广播 finance:changed（明细行没有任何变化）。
+  async function recalcBillCycles() {
+    if (recalcBusy) return;
+    setRecalcBusy(true);
+    setRecalcError("");
+    try {
+      const response = await fetch("/api/v1/bill/recalc", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ accountId }),
+      });
+      const payload = await response.json().catch(() => null) as { ok?: boolean; error?: string } | null;
+      if (!response.ok || !payload?.ok) throw new Error(payload?.error ?? t("creditBill.recalcFailed"));
+
+      const url = new URL(window.location.href);
+      const params = new URLSearchParams({
+        accountId,
+        billMonth: url.searchParams.get("billMonth") || "all",
+        hideZeroBills: hideZeroBills ? "1" : "0",
+        hideSettledBills: hideSettledBills ? "1" : "0",
+      });
+      const seq = ++summaryRefreshSeqRef.current;
+      const summaryResponse = await fetch(`/api/v1/bill/summary?${params.toString()}`, { cache: "no-store" });
+      const summaryPayload = await summaryResponse.json().catch(() => null) as {
+        ok?: boolean;
+        error?: string;
+        data?: { rows?: CreditBillSummaryRow[] };
+      } | null;
+      if (!summaryResponse.ok || !summaryPayload?.ok) {
+        throw new Error(summaryPayload?.error ?? t("creditBill.recalcFailed"));
+      }
+      if (seq === summaryRefreshSeqRef.current && Array.isArray(summaryPayload.data?.rows)) {
+        setLocalRows(summaryPayload.data.rows);
+      }
+    } catch (error) {
+      setRecalcError(error instanceof Error ? error.message : t("creditBill.recalcFailed"));
+    } finally {
+      setRecalcBusy(false);
+    }
+  }
+
   function openExportDialog() {
     const options = exportBillOptions;
     const selectedExists = localSelectedBillMonth && options.some((row) => row.month === localSelectedBillMonth);
@@ -632,6 +677,19 @@ export function CreditBillSummaryTable({
           )}
           toolbarRightContent={(
             <div className="flex min-w-0 items-center gap-2">
+              <button
+                type="button"
+                onClick={() => { void recalcBillCycles(); }}
+                disabled={recalcBusy}
+                className="flex h-7 items-center gap-1 rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-700 hover:bg-blue-50 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-50"
+                title={t("creditBill.recalcTitle")}
+              >
+                <RefreshCw className={`h-3.5 w-3.5 ${recalcBusy ? "animate-spin" : ""}`} />
+                {t("creditBill.recalc")}
+              </button>
+              {recalcError ? (
+                <span className="max-w-[14rem] truncate text-xs text-rose-600" title={recalcError}>{recalcError}</span>
+              ) : null}
               <button
                 type="button"
                 onClick={() => setBillingDaySettingsOpen(true)}

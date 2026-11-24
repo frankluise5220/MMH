@@ -48,6 +48,11 @@ import {
   buildLiabilityRowsViewData,
 } from "@/lib/server/liability-view-data";
 import { loadCreditBillPageData } from "@/lib/server/credit-bill-page-data";
+import {
+  EMPTY_CREDIT_BILL_ENTRY_CHANNEL,
+  creditBillScopeKey,
+  loadCreditBillEntryChannel,
+} from "@/lib/server/credit-bill-entry-channel";
 import { readableTagWhere } from "@/lib/server/tag-scope";
 import { prepareEntryUndo, saveEntryUndo } from "@/lib/server/entry-undo";
 import { getCreditBillAccountIds } from "@/lib/server/credit-card-institution-settings";
@@ -651,6 +656,14 @@ export default async function Home({
   const detailScopeAccountId = isAllCashView ? ALL_CASH_DETAIL_SCOPE_ID : accountId;
   const needsDetailEntries = view === "detail" || view === "allcash" || view === "deposit" || view === "insurance" || (view === "bill" && isBillAccount);
 
+  // 账单视图只走一个读取通道：整卡流水读一次，月份列表 / 当期明细 / 还款汇总 /
+  // 周期失效判定全部从这一份派生（见 `credit-bill-entry-channel.ts`）。
+  // `loadCreditBillEntryChannel` 是 React `cache()`，同一次渲染里再取是同一个对象。
+  const billEntryChannel =
+    view === "bill" && isBillAccount && billAccountIds.length > 0
+      ? await loadCreditBillEntryChannel(householdId, creditBillScopeKey(billAccountIds))
+      : EMPTY_CREDIT_BILL_ENTRY_CHANNEL;
+
   const hid = { householdId };
   const where = isAllCashView
     ? cashLedgerAccountIds.length > 0
@@ -807,23 +820,15 @@ export default async function Home({
             take: DETAIL_ALL_PAGE_SIZE,
           })
         : view === "bill" && isBillAccount && billAccountIds.length > 0
-          ? await prisma.txRecord.findMany({
-              where: {
-                ...hid,
-                deletedAt: null,
-                ...txRecordAccountScopeWhere(billAccountIds),
-              },
-              include: {
-                EntryTag: { include: { Tag: true } },
-                Attachment: { select: { id: true, name: true, mimeType: true, url: true } },
-                ...entryBusinessLinkSummaryInclude,
-                account: { include: { Institution: { select: { name: true, shortName: true } }, AccountGroup: { select: { name: true } } } },
-                toAccount: { include: { Institution: { select: { name: true, shortName: true } }, AccountGroup: { select: { name: true } } } },
-              },
-              orderBy: [{ date: "desc" }, { createdAt: "desc" }],
-              take: DETAIL_ALL_PAGE_SIZE,
-            })
-        : await loadEntriesForAccount(accountId, JSON.stringify(hidFilter))
+          // 账单明细只有两种来源：单月用 `creditCardBillDetails.details`（账单页数据
+          // 已经用同一条通道按当期筛过），只有 `billMonth=all` 才需要把整卡流水精装成
+          // `DetailEntry`。月份模式若也在这里精装整卡，就是拿整卡几千行去渲染一期十几行。
+          ? billMonthParam === "all"
+            ? await billEntryChannel.loadDetailRows(
+                billEntryChannel.activeRows.map((row) => row.id),
+              )
+            : []
+          : await loadEntriesForAccount(accountId, JSON.stringify(hidFilter))
       : await prisma.txRecord.findMany({
           where,
           include: {
@@ -1979,6 +1984,7 @@ export default async function Home({
     categoryLabels,
     isSettlementLiabilityAccountId,
     isCreditCardRepaymentForDisplay,
+    entryChannel: billEntryChannel,
   });
   const missingBillingDayForBill =
     viewParam === "bill" &&

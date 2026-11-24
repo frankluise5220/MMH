@@ -8,24 +8,26 @@
  * not rebuild the bill summary list.
  */
 import { NextResponse } from "next/server";
-import { AccountKind, TransactionType, type Prisma } from "@prisma/client";
+import { AccountKind, TransactionType } from "@prisma/client";
 import type { DetailEntry } from "@/components/DetailViewClient";
 import { prisma } from "@/lib/db/prisma";
 import { addDaysUtc, toNumber, formatDateUtc } from "@/lib/date-utils";
-import {
-  creditBillDateRangeWhere,
-  cycleForStatementMonthWithBillingDayRules,
-} from "@/lib/credit/billing";
+import { cycleForStatementMonthWithBillingDayRules } from "@/lib/credit/billing";
 import { loadConsistentCreditCycles } from "@/lib/server/credit-cycles";
-import { compareDetailEntriesDesc } from "@/lib/detail-entry-order";
 import { getCreditBillAccountIds } from "@/lib/server/credit-card-institution-settings";
 import { reconcileCreditCardBillingDayRulesFromAccounts } from "@/lib/server/credit-card-billing-day-rules";
-import { buildEntryBusinessLinkSummary, entryBusinessLinkSummaryInclude } from "@/lib/server/entry-business-link";
+import { buildEntryBusinessLinkSummary } from "@/lib/server/entry-business-link";
+import {
+  CREDIT_BILL_DETAIL_TAKE,
+  CREDIT_BILL_DETAIL_TYPES,
+  creditBillScopeKey,
+  filterCreditBillCycleRows,
+  loadCreditBillEntryChannel,
+  type CreditBillDetailRow,
+} from "@/lib/server/credit-bill-entry-channel";
 import { getHouseholdScope } from "@/lib/server/household-scope";
 
 export const runtime = "nodejs";
-
-const CREDIT_BILL_DETAIL_TAKE = 500;
 
 function toValidDate(value: unknown): Date | null {
   if (value instanceof Date) {
@@ -63,16 +65,8 @@ function isSettlementLiabilityAccount(account?: { kind?: AccountKind | null; cou
 }
 
 function mapDetailEntry(
-  entry: Prisma.TxRecordGetPayload<{
-    include: {
-      EntryTag: { include: { Tag: true } };
-      Attachment: { select: { id: true; name: true; mimeType: true; url: true } };
-      EntryBusinessLinkCash: typeof entryBusinessLinkSummaryInclude.EntryBusinessLinkCash;
-      EntryBusinessLinkBusiness: typeof entryBusinessLinkSummaryInclude.EntryBusinessLinkBusiness;
-      account: { include: { Institution: { select: { name: true; shortName: true } }; AccountGroup: { select: { name: true } } } };
-      toAccount: { include: { Institution: { select: { name: true; shortName: true } }; AccountGroup: { select: { name: true } } } };
-    };
-  }>,
+  // 行的形状由唯一读取通道决定（`credit-bill-entry-channel`），这里只做映射。
+  entry: CreditBillDetailRow,
   billAccountIdSet: Set<string>,
 ): DetailEntry {
   return {
@@ -194,13 +188,6 @@ export async function GET(req: Request) {
       select: { effectiveDate: true, billingDay: true, repaymentDay: true, repaymentOffsetDays: true },
       orderBy: [{ effectiveDate: "asc" }],
     });
-    const billScope: Prisma.TxRecordWhereInput = {
-      OR: [
-        { accountId: { in: billAccountIds } },
-        { toAccountId: { in: billAccountIds } },
-      ],
-    };
-
     const cycle = showAllDetails
       ? null
       : await (async () => {
@@ -256,66 +243,22 @@ export async function GET(req: Request) {
       return NextResponse.json({ ok: false, code: "BILL_CYCLE_NOT_FOUND", error: "Bill cycle not found." }, { status: 404 });
     }
 
-    const dateScope: Prisma.TxRecordWhereInput[] = cycle
-      ? [creditBillDateRangeWhere(cycle.start, addDaysUtc(cycle.end, 1))]
-      : [];
-    const where: Prisma.TxRecordWhereInput = {
-      householdId,
-      type: { in: [TransactionType.expense, TransactionType.income, TransactionType.transfer, TransactionType.investment] },
-      deletedAt: null,
-      AND: [billScope, ...dateScope],
+    // 与 RSC 账单页共用同一个读取通道（`credit-bill-entry-channel`）：整卡轻量行
+    // 只读一次，按账期在内存里筛；只有最终返回的 ≤500 行才补精装关联。
+    // 排序口径不变：按生效日（支出/收入取记账日，缺失回退交易日期）倒序，500 行封顶。
+    const channel = await loadCreditBillEntryChannel(householdId, creditBillScopeKey(billAccountIds));
+    const cycleQuery = {
+      start: cycle?.start ?? null,
+      end: cycle ? addDaysUtc(cycle.end, 1) : null,
+      sortAccountId: accountId,
+      types: CREDIT_BILL_DETAIL_TYPES,
     };
-
-    const totalCount = await prisma.txRecord.count({ where });
-    // Rows must be ordered by the effective (display) date: the posting date
-    // for expense/income with a transaction-date fallback — the same key
-    // compareDetailEntriesDesc (shared with the client detail table) uses.
-    // Prisma cannot order by a per-type COALESCE, so rows are fetched in the
-    // same three branches as creditBillDateRangeWhere and merged in memory.
-    const range = cycle ? { gte: cycle.start, lt: addDaysUtc(cycle.end, 1) } : null;
-    const detailInclude = {
-      EntryTag: { include: { Tag: true } },
-      Attachment: { select: { id: true, name: true, mimeType: true, url: true } },
-      ...entryBusinessLinkSummaryInclude,
-      account: { include: { Institution: { select: { name: true, shortName: true } }, AccountGroup: { select: { name: true } } } },
-      toAccount: { include: { Institution: { select: { name: true, shortName: true } }, AccountGroup: { select: { name: true } } } },
-    };
-    const scopeAnd = (extra: Prisma.TxRecordWhereInput[]): Prisma.TxRecordWhereInput => ({
-      AND: [billScope, { householdId }, { deletedAt: null }, ...extra],
+    // 计数用筛选结果的长度，不必为此把整期行都精装出来。
+    const totalCount = filterCreditBillCycleRows(channel.activeRows, cycleQuery).length;
+    const rows = await channel.loadCycleDetailRows({
+      ...cycleQuery,
+      take: CREDIT_BILL_DETAIL_TAKE,
     });
-    const [postedRows, legacyRows, otherRows] = await Promise.all([
-      prisma.txRecord.findMany({
-        where: scopeAnd([
-          { type: { in: [TransactionType.expense, TransactionType.income] } },
-          ...(range ? [{ postedAt: range }] : []),
-        ]),
-        include: detailInclude,
-        orderBy: [{ postedAt: "desc" }, { createdAt: "desc" }],
-        take: CREDIT_BILL_DETAIL_TAKE,
-      }),
-      prisma.txRecord.findMany({
-        where: scopeAnd([
-          { type: { in: [TransactionType.expense, TransactionType.income] } },
-          { postedAt: null },
-          ...(range ? [{ date: range }] : []),
-        ]),
-        include: detailInclude,
-        orderBy: [{ date: "desc" }, { createdAt: "desc" }],
-        take: CREDIT_BILL_DETAIL_TAKE,
-      }),
-      prisma.txRecord.findMany({
-        where: scopeAnd([
-          { type: { in: [TransactionType.transfer, TransactionType.investment] } },
-          ...(range ? [{ date: range }] : []),
-        ]),
-        include: detailInclude,
-        orderBy: [{ date: "desc" }, { createdAt: "desc" }],
-        take: CREDIT_BILL_DETAIL_TAKE,
-      }),
-    ]);
-    const rows = [...postedRows, ...legacyRows, ...otherRows]
-      .sort((a, b) => compareDetailEntriesDesc(a, b, accountId))
-      .slice(0, CREDIT_BILL_DETAIL_TAKE);
 
     const details = rows.map((row) => mapDetailEntry(row, billAccountIdSet));
 

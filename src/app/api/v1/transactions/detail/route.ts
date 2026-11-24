@@ -81,7 +81,7 @@ import { depositLotBelongsToAccount } from "@/lib/server/deposit-lot-options";
 import { resolveOrCreateWealthAccount } from "@/lib/server/wealth-account";
 import { createBondEntry, editBondEntry, bondEntryInputFromFormData } from "@/lib/server/bond-transactions";
 import { resolveOrCreateAdvanceAccount } from "@/lib/server/advance-account";
-import { invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
+import { CREDIT_BILL_IMPACT_SELECT, invalidateCreditCardCycleCacheForAccountIds } from "@/lib/server/credit-card-cycle-cache";
 import { materializeDueInstallmentPayments } from "@/lib/server/credit-card-installment";
 import { prepareEntryUndo, saveCreatedEntryUndo, saveEntryUndo } from "@/lib/server/entry-undo";
 import { buildDetailExportRowsForScope } from "@/lib/server/detail-export-rows";
@@ -3712,6 +3712,15 @@ export async function PUT(req: Request) {
       return NextResponse.json({ ok: false, code: "MISSING_ID", error: "缺少 id" }, { status: 400 });
     }
 
+    // 编辑前快照：只改备注/分类/标签/往来对象时账单口径没有变化，稍后可以跳过
+    // 该卡 140+ 期账单重算（见文件末尾的 invalidate 调用）。
+    const billImpactBefore = entryId
+      ? await prisma.txRecord.findFirst({
+          where: { id: entryId, householdId: ctx.householdId },
+          select: CREDIT_BILL_IMPACT_SELECT,
+        })
+      : null;
+
     const dateStr = String(body.date ?? "").trim();
     const amountRaw = parseMoney(body.amount);
     const amountAbs = Math.abs(amountRaw);
@@ -4816,7 +4825,13 @@ return;
       if (accountId) accountsToRecalc.add(accountId);
     }
 
-    await invalidateCreditCardCycleCacheForAccountIds(accountsToRecalc).catch(
+    const billImpactAfter = await prisma.txRecord.findUnique({
+      where: { id: entryId },
+      select: CREDIT_BILL_IMPACT_SELECT,
+    });
+    await invalidateCreditCardCycleCacheForAccountIds(accountsToRecalc, {
+      billImpact: { before: billImpactBefore, after: billImpactAfter },
+    }).catch(
       logger.catchLog("信用卡账单缓存失效失败", "route.ts"),
     );
     if (changedInvestment) revalidateAfterInvestChange();
