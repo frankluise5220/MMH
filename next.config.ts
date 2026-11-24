@@ -33,6 +33,13 @@ const basePath = (process.env.MMH_BASE_PATH || "").trim().replace(/\/+$/, "");
 
 const nextConfig: NextConfig = {
   output: "standalone",
+  // 镜像里不装 sharp：它的预编译包同时带 glibc 与 musl 两套 libvips，单个
+  // libvips-cpp.so 有 16.6 MB，压成镜像层仍有 7.4 MB，越过国内镜像站的安全
+  // 单层（实测 8.75 MB 的 blob 会卡在 Download complete 不落盘），而镜像层数
+  // 又已经顶着 overlay2 的上限，没有腾挪空间。项目里只有 logo 和赞助二维码
+  // 用到 next/image，都是固定尺寸的小图、本来就 unoptimized，图片优化器对它们
+  // 没有收益。关掉后镜像少 33 MB，sharp 整个依赖也不再需要。
+  images: { unoptimized: true },
   // pdf-parse 是 ESM + CJS 双发布，内部还 require @napi-rs/canvas 的原生二进制。
   // 一旦被 webpack 打进 server chunk，加载时就会抛
   // "Object.defineProperty called on non-object"（2026-11-16 dev 实测），
