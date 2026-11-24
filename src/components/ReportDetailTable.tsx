@@ -32,8 +32,9 @@ const REPORT_BATCH_REPLACE_FIELDS: BatchReplaceField[] = [
   "date",
   "postedAt",
   "type",
-  "outflow",
-  "inflow",
+  // 与明细表一致：金额只有一个字段，方向由符号决定（负数＝反向），
+  // 不再单列「流入 / 流出」两项（2026-11-24 用户裁定）。
+  "amount",
   "account",
   "toAccount",
   "categoryId",

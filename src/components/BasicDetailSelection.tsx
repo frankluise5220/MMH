@@ -83,7 +83,10 @@ function getTypeOptions(t: (key: string) => string) {
     { value: "investment", label: t("transaction.type.investment") },
   ];
 }
-const defaultBatchReplaceFields: BatchReplaceField[] = ["date", "postedAt", "type", "outflow", "inflow", "amount", "viewAccount", "toAccount", "categoryId", "institution", "tagId", "appendTagId", "remark"];
+// 明细表的金额只有「金额」一个字段：表头拆成「流入 / 流出」两列只是显示口径，
+// 一条记录本身只有一笔金额，方向由符号决定。列表里再放「资金流向：流入/流出本账户」
+// 两个字段，用户会以为是第三、第四列（2026-11-24 用户裁定：只留金额，填负数即反向）。
+const defaultBatchReplaceFields: BatchReplaceField[] = ["date", "postedAt", "type", "amount", "viewAccount", "toAccount", "categoryId", "institution", "tagId", "appendTagId", "remark"];
 
 function scopeBatchCategoryOptions(
   categoryOptions: BasicDetailBatchCategoryOption[],
@@ -233,8 +236,10 @@ export function BasicDetailBatchReplaceButton({
       date: { value: "date", label: fieldLabels.date, kind: "date" },
       postedAt: { value: "postedAt", label: fieldLabels.postedAt, kind: "date", allowEmpty: true },
       type: { value: "type", label: fieldLabels.type, kind: "select", options: typeOptions },
-      // 三个金额字段长得像、改的东西完全不同（数值 / 流入方向 / 流出方向），
-      // 必须各自带一句说明，否则用户在往来款这类「红绿跟方向绑定」的表里必然理解错。
+      // 金额只有一个入口：正数按这一行原来的方向改大小，负数则反向（支出变流入、收入变流出），
+      // 收支大类与两端账户都不动。inflow / outflow 是旧口径，明细、报表下钻、信用卡账单三处
+      // 表格都不再提供（表头只有「流入 / 流出」两列，多列会让人以为还有第三、第四列）；
+      // 配置定义保留，只为满足 Record 全键约束与服务端历史入参。
       amount: { value: "amount", label: fieldLabels.amount, kind: "number", placeholder: t("basicDetailSelection.amountPlaceholder"), allowAmountFieldReferences: true, hint: t("basicDetailSelection.hint.amount") },
       inflow: { value: "inflow", label: fieldLabels.inflow, kind: "number", placeholder: t("basicDetailSelection.inflowPlaceholder"), allowAmountFieldReferences: true, hint: t("basicDetailSelection.hint.inflow") },
       outflow: { value: "outflow", label: fieldLabels.outflow, kind: "number", placeholder: t("basicDetailSelection.outflowPlaceholder"), allowAmountFieldReferences: true, hint: t("basicDetailSelection.hint.outflow") },

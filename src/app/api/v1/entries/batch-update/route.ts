@@ -709,7 +709,16 @@ export async function POST(req: NextRequest) {
         const inflowAmount = Math.max(effectiveOldN, 0);
         const outflowAmount = Math.max(-effectiveOldN, 0);
         const referenceValues = { inflow: inflowAmount, outflow: outflowAmount };
-        const absNew = parseAmountUpdate(v, baseAmount, referenceValues);
+        // 「-50」是带符号的目标金额（负号＝这一笔反向），不能当成「原值 - 50」的算式——
+        // 否则原值 50 时 `-50` 会算成 0，原值 100 时又变成 50，方向看起来时灵时不灵。
+        // 纯数字（含前导负号）一律按目标金额读，符号就是最终符号；余下以运算符开头的写法
+        // （*2、+10、-(30+5)、{流入}*0.5）仍然是相对算式，基于该行现值计算。
+        const signedLiteral = amountField === "amount" && /^-?\d+(?:\.\d+)?$/.test(v)
+          ? Number(v)
+          : null;
+        const absNew = signedLiteral != null
+          ? Math.abs(signedLiteral)
+          : parseAmountUpdate(v, baseAmount, referenceValues);
         if (absNew == null) return NextResponse.json({ ok: false, code: "INVALID_AMOUNT", error: "Invalid amount expression" }, { status: 400 });
         const finalTypeForAmount = String(data.type ?? existing.type);
         if (amountField === "amount") {
@@ -720,7 +729,7 @@ export async function POST(req: NextRequest) {
           const isSettlementRow = finalTypeForAmount === TransactionType.transfer
             && settlementMode != null
             && (existing.account?.kind === "settlement" || existing.toAccount?.kind === "settlement");
-          const signedInput = evaluateAmountFieldExpression(v, baseAmount, referenceValues);
+          const signedInput = signedLiteral ?? evaluateAmountFieldExpression(v, baseAmount, referenceValues);
           // 同一次批量里可能也改了账户，此时以已写入的值作为两端起点，避免把用户刚选的账户覆盖回去。
           const sourceAccountId = typeof data.accountId === "string" ? data.accountId : existing.accountId;
           const targetAccountId = typeof data.toAccountId === "string" ? data.toAccountId : existing.toAccountId;
@@ -739,10 +748,20 @@ export async function POST(req: NextRequest) {
           } else if (isSettlementRow && settlementMode) {
             // 方向不变，符号必须跟随该行的方向（收回/借入是正数），否则余额会跟着符号翻。
             data.amount = positiveSettlementModes.has(settlementMode) ? absNew : -absNew;
+          } else if (finalTypeForAmount === TransactionType.transfer) {
+            // 转账没有收支大类可翻：金额恒为转出额，两端账户不动。
+            data.amount = -absNew;
           } else {
-            data.amount = finalTypeForAmount === TransactionType.transfer
-              ? -absNew
-              : oldN < 0 ? -absNew : absNew;
+            // 收支行只改金额、不改大类（支出还是支出、收入还是收入）：输入符号决定钱往哪边走——
+            // 支出填 -50 就是这一笔流入本账户 50、填 50 是正常流出；收入反过来
+            // （2026-11-24 用户裁定）。注意入库符号与记账口径相反：支出流出存负数、
+            // 收入流入存正数，所以这里必须按 type 换算，不能直接写 signedLiteral。
+            // 写相对算式（*1.05、+{流入}*0.5）时没有符号可依，沿用该行当前方向，
+            // 这样退款行按比例调整不会被悄悄翻回来。
+            const storedNegative = signedLiteral != null
+              ? (finalTypeForAmount === TransactionType.expense ? signedLiteral > 0 : signedLiteral < 0)
+              : oldN < 0;
+            data.amount = storedNegative ? -absNew : absNew;
           }
         } else if (finalTypeForAmount === TransactionType.transfer) {
           const wantsInflow = amountField === "inflow";
@@ -771,7 +790,16 @@ export async function POST(req: NextRequest) {
           }
           data.amount = wantsInflow ? absNew : -absNew;
         }
-        changed.push({ id, date: ymd(existing.date), oldValue: String(baseAmount), newValue: String(absNew), field: amountField });
+        // 变更记录写实际落库的带符号金额：填 -50 时旧值/新值都是负数，用户核对时不会
+        // 看到「100 → 50」却查出一条 -50 的行。
+        const writtenAmount = typeof data.amount === "number" ? data.amount : absNew;
+        changed.push({
+          id,
+          date: ymd(existing.date),
+          oldValue: String(amountField === "amount" ? oldN : baseAmount),
+          newValue: String(writtenAmount),
+          field: amountField,
+        });
         amountTouchedIds.add(id);
         amountUpdateById.set(id, absNew);
       }
@@ -1299,7 +1327,21 @@ export async function POST(req: NextRequest) {
       for (const acctId of balanceAccountIds) {
         await recalcAndSaveAccountBalance(acctId).catch(() => {});
       }
-      await invalidateCreditCardCycleCacheForAccountIds(balanceAccountIds).catch(() => {});
+      // 批量改分类/备注/标签/机构是日常操作，这类更新不改变账单金额与账期，没必要
+      // 为它把涉及的信用卡 140+ 期账单全部重算一遍。
+      const BILL_AFFECTING_BATCH_FIELDS = [
+        "date", "postedAt", "type", "amount", "inflow", "outflow",
+        "account", "viewAccount", "toAccount", "outflowAccount", "inflowAccount",
+        "liabilityAccount", "counterpartyAccount", "cashAccountId", "fundAccountId",
+        "fundSubtype", "fundNav", "fundUnits", "refundAmount", "fundArrivalAmount",
+      ] as const;
+      const batchTouchesCreditBill = updates.some((item) => {
+        const record = item as unknown as Record<string, unknown>;
+        return BILL_AFFECTING_BATCH_FIELDS.some((field) => record[field] !== undefined);
+      });
+      await invalidateCreditCardCycleCacheForAccountIds(balanceAccountIds, {
+        billImpact: batchTouchesCreditBill ? undefined : "unchanged",
+      }).catch(() => {});
 
       for (const [acctId, codes] of fundCodesByInvestAcc.entries()) {
         await recalcFundPositions(acctId, Array.from(codes)).catch(() => {});
