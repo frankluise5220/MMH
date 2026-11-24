@@ -327,6 +327,19 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
   // state (the panel expands right below the form, and re-picking a user there
   // must be reflected here immediately).
   const resetAccount = (getSelectedLoginUser()?.name ?? username).trim();
+  // Ledger-local password recovery is not a toggle: the account owns the
+  // capability exactly when it has a bound email (the code is mailed to that
+  // address, never typed here). A free-text username still resolves against the
+  // selected ledger so the check works before the account is picked from the list.
+  const resetAccountUser =
+    getSelectedLoginUser() ??
+    systemUsers.find(
+      (user) =>
+        user.name.trim() === username.trim() &&
+        (!selectedHouseholdId || getLoginUserScopeId(user) === selectedHouseholdId),
+    ) ??
+    null;
+  const resetAccountEmail = (resetAccountUser?.email ?? "").trim();
   // Re-pointing the card at a different local account — another ledger, or
   // another user inside the same ledger — invalidates a code that was already
   // sent for the previous one, so the panel drops back to its first step. Same
@@ -591,6 +604,14 @@ export function LoginPageClient({ householdName, fnosGatewayUser }: { householdN
     setResetSentTo("");
     setResetHouseholdId("");
     setResetHouseholdChoices([]);
+    if (resetAccount && !resetAccountEmail) {
+      // No bound email means there is nowhere to send the code — the capability
+      // itself is missing, not just the transport.
+      setResetError(t("login.reset.noBoundEmail"));
+      setShowReset(true);
+      cancelHouseholdChoice();
+      return;
+    }
     if (!passwordResetEnabled) {
       setResetError(t("login.reset.mailNotConfigured"));
       setShowReset(true);

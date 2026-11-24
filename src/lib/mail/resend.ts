@@ -27,10 +27,10 @@ function normalizeResendError(input: { message?: string; name?: string; error?: 
   const raw = (input?.message || input?.error || "").trim();
   const lower = raw.toLowerCase();
   if (status === 401 || lower.includes("api key is invalid") || lower.includes("invalid api key")) {
-    return "Resend API Key 无效，请到系统设置 > 邮箱账户重新验证并保存有效的 API Key，或改用 SMTP 发件。";
+    return "Resend API Key 无效，请更新配置中的 API Key，或改用 SMTP 发件（系统设置 → 邮箱账户）。";
   }
   if (status === 403 || lower.includes("domain") || lower.includes("from")) {
-    return "Resend 发件地址或域名未通过验证，请检查系统设置里的 Resend 发件配置。";
+    return "Resend 发件地址或域名未通过验证，请检查 Resend 后台的域名验证与发件地址。";
   }
   return raw || `Resend 发信失败：${status}`;
 }

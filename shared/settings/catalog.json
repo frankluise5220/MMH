@@ -107,15 +107,6 @@
           "apiRefs": ["/api/v1/settings/email", "/api/v1/settings/email-accounts"]
         },
         {
-          "id": "password-recovery",
-          "label": "密码找回",
-          "description": "找回密码开关和发件设置",
-          "icon": "key-round",
-          "surfaces": ["web"],
-          "webHref": "/settings/password-recovery",
-          "apiRefs": ["/api/v1/settings/resend"]
-        },
-        {
           "id": "ai",
           "label": "AI 模型",
           "description": "识别和分析模型配置",
